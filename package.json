@@ -16,16 +16,25 @@
     "typecheck": "next typegen && tsc --noEmit",
     "check:licenses": "node scripts/check-licenses.mjs",
     "licenses": "node scripts/check-licenses.mjs --list",
-    "check": "npm run typecheck && npm run lint && npm run check:licenses"
+    "check": "npm run typecheck && npm run lint && npm run check:licenses",
+    "dc": "node scripts/dc.mjs",
+    "db:up": "node scripts/dc.mjs up -d --wait",
+    "db:down": "node scripts/dc.mjs down",
+    "db:reset": "node scripts/dc.mjs down -v && node scripts/dc.mjs up -d --wait",
+    "db:logs": "node scripts/dc.mjs logs -f db",
+    "db:psql": "node scripts/dc.mjs exec db psql -U notion -d notion",
+    "db:verify": "node scripts/verify-db.mjs"
   },
   "dependencies": {
     "next": "16.3.4",
+    "pg": "^8.23.0",
     "react": "19.2.8",
     "react-dom": "19.2.8"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
+    "@types/pg": "^8.23.1",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",

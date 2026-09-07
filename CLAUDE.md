@@ -40,6 +40,7 @@
   - **MinIO 사용 금지.** AGPLv3인 데다 2026-04-25 리포지토리 아카이브(개발 중단). 자체 호스팅이 필요하면 SeaweedFS(Apache-2.0), 기본은 Cloudflare R2.
   - **Tiptap Cloud 사용 안 함.** 에디터 라이브러리는 MIT라 문제없다. 협업 서버는 Hocuspocus(MIT) 자체 호스팅.
   - **Tiptap Tracked Changes(유료) 사용 안 함.** 제안 편집은 판결 U-2대로 Y.Doc 안의 자체 mark 3종으로 구현한다.
+  - **컨테이너 런타임은 WSL2 Ubuntu 안의 Docker Engine (`docker.io`, Apache-2.0).** Docker Desktop은 개인·교육·비영리 OSS·소규모 사업자(250명 미만 AND 연매출 $10M 미만)만 무료인 **조건부** 무료다. Rancher Desktop(Apache-2.0)을 먼저 시도했으나 이 환경에서 Windows↔WSL 브리지가 깨져 포기했다(아래 "알려진 문제"). Ubuntu 안에 직접 설치하면 그 브리지 자체를 안 거친다.
 
 ### 2. LLM 토큰은 하드 캡 — 초과 시 자동 결제 없이 차단한다
 
@@ -77,12 +78,46 @@ Next.js(App Router) + TypeScript + Tiptap(ProseMirror) + Yjs + TanStack + Radix
 
 ## 개발
 
+런타임: **WSL2 Ubuntu 안의 Docker Engine**. Windows 쪽에는 docker를 설치하지 않는다.
+
 ```bash
+# 최초 1회 — WSL2 + Ubuntu + Docker Engine
+wsl --install                                            # 관리자 PowerShell, 이후 재부팅
+wsl -d Ubuntu -u root -- apt-get update
+wsl -d Ubuntu -u root -- apt-get install -y docker.io docker-compose-v2
+wsl -d Ubuntu -u root -- systemctl enable --now docker
+wsl -d Ubuntu -u root -- usermod -aG docker $USER
+
+# 이후
 npm install
-npm run dev            # http://localhost:3000
-npm run check          # typecheck + lint + license 검사
-docker compose up -d   # postgres(pg_bigm) + valkey
+cp .env.example .env    # AUTH_SECRET 은 직접 생성해 채운다
+
+npm run db:up           # postgres(pg_bigm) + valkey 기동
+npm run db:verify       # 확장 · collation · 한국어 2-gram · valkey 확인
+npm run dev             # http://localhost:3000
+
+npm run check           # typecheck + lint + license
+npm run db:reset        # 볼륨까지 삭제 후 재생성
+npm run dc -- <args>    # 임의의 docker compose 명령
 ```
+
+`db:*` 스크립트는 [`scripts/dc.mjs`](scripts/dc.mjs)를 거친다. Windows에서는 `wsl -d Ubuntu` 안에서 실행하고, Linux·macOS에서는 `docker`를 그대로 호출한다. 컨테이너가 발행한 포트는 WSL2 localhost 포워딩으로 Windows의 `localhost:5432` · `localhost:6379`에 그대로 도달한다.
+
+DB collation은 **한 번 정하면 못 바꾼다.** ICU + `ko-KR`로 초기화하므로, 이미 만든 볼륨이 있다면 `db:reset` 후에 적용된다.
+
+### 왜 Rancher Desktop을 쓰지 않는가 (이 환경에서 겪은 것)
+
+Rancher Desktop 1.24.0을 먼저 설치했으나 WSL 2.7.13과의 조합에서 **Win32 socket proxy가 크래시-재시작 루프**를 돌았다.
+
+- `docker` 명령이 기동 후 **40~50초만 동작**하다 `failed to connect to the backend: timed out dialing Hyper-V socket`으로 죽는다
+- `%LOCALAPPDATA%\rancher-desktop\logs\background.log`에 `Background process Win32 socket proxy (pid ...) exited with status 1`이 1초 간격으로 반복
+- `docker.log`가 226MB까지 부풀었다
+- 레지스트리 `HKLM\...\Virtualization\GuestCommunicationServices`에 **Rancher Desktop의 vsock 서비스 GUID가 등록되지 않았다** (WSL 기본 2개만 존재). 관리자 권한으로 재실행해도 등록되지 않았다.
+- Kubernetes 끄기, 백엔드 재시작, 관리자 실행 모두 효과 없음
+
+컨테이너와 포트 포워딩은 멀쩡했으므로 문제는 **Windows↔WSL 제어 브리지 하나**였다. Ubuntu 안에 Docker Engine을 직접 설치하면 그 브리지를 아예 안 거친다.
+
+이 경험이 남긴 설계 원칙 하나: **`scripts/verify-db.mjs`는 `docker compose exec`가 아니라 앱과 같은 TCP 경로로 접속한다.** 검증은 실제 사용 경로를 재현해야 한다 — 그렇지 않으면 DB가 멀쩡한데 죽었다고 잘못 보고한다. 실제로 그랬다.
 
 ## 커밋 규칙
 

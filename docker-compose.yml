@@ -1,0 +1,66 @@
+# 로컬 개발용 인프라. 운영 배포에는 쓰지 않는다.
+#
+#   npm run db:up      기동
+#   npm run db:down    정지 (데이터 유지)
+#   npm run db:reset   볼륨까지 삭제 후 재생성
+#   npm run db:psql    psql 접속
+#
+# 런타임은 Rancher Desktop(dockerd/moby, Apache-2.0)을 쓴다.
+# Docker Desktop 은 조건부 무료라 CLAUDE.md 절대 제약 1과 어긋난다.
+
+name: notion-clone
+
+services:
+  db:
+    build:
+      context: ./docker/postgres
+      args:
+        POSTGRES_VERSION: "16"
+        PG_BIGM_VERSION: "1.2-20250903"
+    image: notion-clone/postgres:16-bigm
+    container_name: notion-clone-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: notion
+      POSTGRES_PASSWORD: notion_dev_only
+      POSTGRES_DB: notion
+      # 데이터베이스 레벨 collation 은 나중에 바꿀 수 없다 (인덱스 재구축 필요).
+      # ICU + ko-KR 로 초기화해 한국어 정렬이 처음부터 맞게 한다.
+      # libc 쪽 LC_* 는 C.UTF-8 로 두고 정렬만 ICU 에 맡긴다.
+      POSTGRES_INITDB_ARGS: >-
+        --encoding=UTF8
+        --locale=C.UTF-8
+        --locale-provider=icu
+        --icu-locale=ko-KR
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/postgres/initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U notion -d notion"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 15s
+
+  cache:
+    # Redis 가 아니라 Valkey 다. Redis 는 2024-03 부터 RSALv2/SSPL,
+    # 8.0 부터 AGPLv3 가 추가된 tri-license 다. 우리 용도로는 걸리지 않지만
+    # 판단 자체를 없앤다 — Valkey 는 BSD-3-Clause. (CLAUDE.md 절대 제약 1)
+    image: valkey/valkey:8-alpine
+    container_name: notion-clone-cache
+    restart: unless-stopped
+    # 개발 환경에서는 영속성이 필요 없다. perm_gen/acl_epoch 세대 카운터는
+    # 재시작 시 다시 세어도 되고, 오히려 캐시 미스가 나는 편이 안전하다.
+    command: ["valkey-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+volumes:
+  pgdata:
