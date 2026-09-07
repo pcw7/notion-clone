@@ -41,3 +41,42 @@ jobs:
 
       - name: 빌드
         run: npm run build
+
+  db:
+    name: 스키마 마이그레이션 · 불변식
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 의존성 설치
+        run: npm ci
+
+      # pg_bigm 을 소스에서 빌드하므로 첫 실행은 몇 분 걸린다.
+      # 로컬에서만 도는 인프라를 CI 가 한 번도 세워보지 않으면
+      # "내 컴퓨터에서는 됩니다" 가 그대로 남는다.
+      - name: 컨테이너 기동 (Postgres + pg_bigm, Valkey)
+        run: npm run db:up
+
+      - name: DB 환경 검증 (확장 · ICU collation · 한국어 2-gram)
+        run: npm run db:verify
+
+      - name: 마이그레이션
+        run: npm run db:migrate
+
+      - name: 스키마 · 불변식 검증
+        run: npm run db:verify:schema
+
+      # 같은 마이그레이션을 두 번 돌려도 안전해야 한다
+      - name: 재실행 멱등성
+        run: npm run db:migrate
+
+      - name: 실패 시 컨테이너 로그
+        if: failure()
+        run: npm run dc -- logs --tail 100

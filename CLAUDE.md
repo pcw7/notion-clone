@@ -96,10 +96,16 @@ npm run db:up           # postgres(pg_bigm) + valkey 기동
 npm run db:verify       # 확장 · collation · 한국어 2-gram · valkey 확인
 npm run dev             # http://localhost:3000
 
+npm run db:migrate      # 미적용 마이그레이션 실행
+npm run db:migrate:status
+npm run db:verify:schema # 스키마가 정본대로인지 + 불변식이 실제로 거부하는지
+
 npm run check           # typecheck + lint + license
-npm run db:reset        # 볼륨까지 삭제 후 재생성
+npm run db:reset        # 볼륨 삭제 → 재생성 → 마이그레이션
 npm run dc -- <args>    # 임의의 docker compose 명령
 ```
+
+> WSL2는 유휴 상태가 되면 VM을 내린다. 그러면 컨테이너도 함께 내려갔다가 다음 명령에서 `restart: unless-stopped`로 복구되는데, 그 사이 몇 초는 접속이 안 된다. 작업 시작할 때 `npm run db:up`을 한 번 치면 healthy까지 기다린다. 계속 띄워두고 싶으면 `%USERPROFILE%\.wslconfig` 에 `[wsl2]` / `vmIdleTimeout=-1`.
 
 `db:*` 스크립트는 [`scripts/dc.mjs`](scripts/dc.mjs)를 거친다. Windows에서는 `wsl -d Ubuntu` 안에서 실행하고, Linux·macOS에서는 `docker`를 그대로 호출한다. 컨테이너가 발행한 포트는 WSL2 localhost 포워딩으로 Windows의 `localhost:5432` · `localhost:6379`에 그대로 도달한다.
 
@@ -118,6 +124,18 @@ Rancher Desktop 1.24.0을 먼저 설치했으나 WSL 2.7.13과의 조합에서 *
 컨테이너와 포트 포워딩은 멀쩡했으므로 문제는 **Windows↔WSL 제어 브리지 하나**였다. Ubuntu 안에 Docker Engine을 직접 설치하면 그 브리지를 아예 안 거친다.
 
 이 경험이 남긴 설계 원칙 하나: **`scripts/verify-db.mjs`는 `docker compose exec`가 아니라 앱과 같은 TCP 경로로 접속한다.** 검증은 실제 사용 경로를 재현해야 한다 — 그렇지 않으면 DB가 멀쩡한데 죽었다고 잘못 보고한다. 실제로 그랬다.
+
+## 스키마 마이그레이션
+
+`db/migrations/NNNN_snake_case.sql` — raw SQL. ORM이 스키마를 소유하지 않는다.
+
+정본 스키마가 부분 인덱스 · GIN on uuid[] · 생성 컬럼 · 파티셔닝 · DEFERRABLE 순환 FK를 쓰기 때문이다. 스키마를 소유하려는 ORM은 이것들을 표현하지 못하거나 매번 싸운다. **스키마는 SQL로 쓰고, 애플리케이션은 그것을 읽기만 한다.**
+
+- 번호는 단조 증가하며 재사용하지 않는다.
+- **적용된 마이그레이션 파일은 수정하지 않는다.** 러너가 체크섬을 검사해 어긋나면 실행을 거부한다. 고칠 것이 있으면 새 마이그레이션을 추가한다.
+- 각 마이그레이션은 하나의 트랜잭션에서 돈다. `CREATE INDEX CONCURRENTLY` 처럼 트랜잭션 안에서 못 도는 것이 있으면 파일 첫 줄에 `-- migrate:no-transaction`.
+- 각 파일 머리에 **정본 문서의 어느 절을 옮긴 것인지** 적는다.
+- 표현 가능한 불변식은 `CHECK` · 부분 UNIQUE 인덱스로 **승격**한다. 주석으로만 남기지 않는다. 승격했으면 `scripts/verify-schema.mjs` 에 **거부되는지 확인하는 프로브**를 추가한다 — CHECK을 걸어놓고 동작을 확인하지 않으면 걸지 않은 것과 같다.
 
 ## 커밋 규칙
 

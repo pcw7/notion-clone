@@ -20,10 +20,13 @@
     "dc": "node scripts/dc.mjs",
     "db:up": "node scripts/dc.mjs up -d --wait",
     "db:down": "node scripts/dc.mjs down",
-    "db:reset": "node scripts/dc.mjs down -v && node scripts/dc.mjs up -d --wait",
+    "db:reset": "node scripts/dc.mjs down -v && node scripts/dc.mjs up -d --wait && node scripts/migrate.mjs",
     "db:logs": "node scripts/dc.mjs logs -f db",
     "db:psql": "node scripts/dc.mjs exec db psql -U notion -d notion",
-    "db:verify": "node scripts/verify-db.mjs"
+    "db:verify": "node scripts/verify-db.mjs",
+    "db:migrate": "node scripts/migrate.mjs",
+    "db:migrate:status": "node scripts/migrate.mjs --status",
+    "db:verify:schema": "node scripts/verify-schema.mjs"
   },
   "dependencies": {
     "next": "16.3.4",
