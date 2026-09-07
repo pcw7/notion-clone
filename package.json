@@ -17,11 +17,12 @@
     "check:licenses": "node scripts/check-licenses.mjs",
     "licenses": "node scripts/check-licenses.mjs --list",
     "check": "npm run typecheck && npm run lint && npm run check:licenses",
-    "db:up": "docker compose up -d --wait",
-    "db:down": "docker compose down",
-    "db:reset": "docker compose down -v && docker compose up -d --wait",
-    "db:logs": "docker compose logs -f db",
-    "db:psql": "docker compose exec db psql -U notion -d notion",
+    "dc": "node scripts/dc.mjs",
+    "db:up": "node scripts/dc.mjs up -d --wait",
+    "db:down": "node scripts/dc.mjs down",
+    "db:reset": "node scripts/dc.mjs down -v && node scripts/dc.mjs up -d --wait",
+    "db:logs": "node scripts/dc.mjs logs -f db",
+    "db:psql": "node scripts/dc.mjs exec db psql -U notion -d notion",
     "db:verify": "node scripts/verify-db.mjs"
   },
   "dependencies": {

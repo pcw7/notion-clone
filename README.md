@@ -61,7 +61,19 @@ Next.js(App Router) + TypeScript
 
 ## 개발
 
-**사전 준비**: [Rancher Desktop](https://rancherdesktop.io/) (Container Engine을 `dockerd (moby)`로, Kubernetes는 끔)
+**사전 준비 (Windows)** — WSL2 Ubuntu 안에 Docker Engine을 설치합니다. Windows 쪽에는 docker를 설치하지 않습니다.
+
+```powershell
+wsl --install            # 관리자 PowerShell, 이후 재부팅
+```
+
+```bash
+wsl -d Ubuntu -u root -- apt-get update
+wsl -d Ubuntu -u root -- apt-get install -y docker.io docker-compose-v2
+wsl -d Ubuntu -u root -- systemctl enable --now docker
+```
+
+**개발**
 
 ```bash
 npm install
@@ -74,4 +86,4 @@ npm run dev             # http://localhost:3000
 npm run check           # typecheck + lint + license
 ```
 
-Docker Desktop이 아니라 Rancher Desktop을 쓰는 이유는 라이선스입니다 — Docker Desktop은 조건부 무료입니다. 자세한 건 [CLAUDE.md](CLAUDE.md).
+Docker Desktop을 쓰지 않는 이유는 라이선스입니다 — 조건부 무료라서요. Rancher Desktop(Apache-2.0)도 시도했지만 이 환경에서 Windows↔WSL 브리지가 깨져 포기했습니다. 경위는 [CLAUDE.md](CLAUDE.md).
