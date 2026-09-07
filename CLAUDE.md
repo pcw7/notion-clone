@@ -105,7 +105,11 @@ npm run db:reset        # 볼륨 삭제 → 재생성 → 마이그레이션
 npm run dc -- <args>    # 임의의 docker compose 명령
 ```
 
-> WSL2는 유휴 상태가 되면 VM을 내린다. 그러면 컨테이너도 함께 내려갔다가 다음 명령에서 `restart: unless-stopped`로 복구되는데, 그 사이 몇 초는 접속이 안 된다. 작업 시작할 때 `npm run db:up`을 한 번 치면 healthy까지 기다린다. 계속 띄워두고 싶으면 `%USERPROFILE%\.wslconfig` 에 `[wsl2]` / `vmIdleTimeout=-1`.
+> **WSL2는 유휴 상태가 되면 VM을 내린다.** 컨테이너도 함께 멈췄다가 다음 `db:up` 에서 복구된다. 작업을 시작할 때 `npm run db:up` 을 한 번 치면 healthy까지 기다려준다.
+>
+> `.wslconfig` 의 `vmIdleTimeout=-1` 은 **WSL 2.7.13 에서 동작하지 않는 것을 확인했다** (`[wsl2]`·`[experimental]` 양쪽 다 시도, 90초 유휴 후 여전히 내려감). 안 되는 설정을 남겨두면 나중에 원인을 오해하게 되므로 넣지 않는다.
+>
+> DB가 필요한 테스트는 접속 실패 시 **건너뛴다.** CI의 `db` 잡은 `REQUIRE_DB=1` 로 돌려서 건너뛰지 못하게 한다 — 조용히 skip 되기만 하면 그 테스트는 썩는다.
 
 `db:*` 스크립트는 [`scripts/dc.mjs`](scripts/dc.mjs)를 거친다. Windows에서는 `wsl -d Ubuntu` 안에서 실행하고, Linux·macOS에서는 `docker`를 그대로 호출한다. 컨테이너가 발행한 포트는 WSL2 localhost 포워딩으로 Windows의 `localhost:5432` · `localhost:6379`에 그대로 도달한다.
 
@@ -136,6 +140,21 @@ Rancher Desktop 1.24.0을 먼저 설치했으나 WSL 2.7.13과의 조합에서 *
 - 각 마이그레이션은 하나의 트랜잭션에서 돈다. `CREATE INDEX CONCURRENTLY` 처럼 트랜잭션 안에서 못 도는 것이 있으면 파일 첫 줄에 `-- migrate:no-transaction`.
 - 각 파일 머리에 **정본 문서의 어느 절을 옮긴 것인지** 적는다.
 - 표현 가능한 불변식은 `CHECK` · 부분 UNIQUE 인덱스로 **승격**한다. 주석으로만 남기지 않는다. 승격했으면 `scripts/verify-schema.mjs` 에 **거부되는지 확인하는 프로브**를 추가한다 — CHECK을 걸어놓고 동작을 확인하지 않으면 걸지 않은 것과 같다.
+
+## 권한 코드 규칙
+
+정본 §3.3 규칙 A2: **level 은 전순서가 아니다.** `create` 는 `view` 를 포함하지 않는다.
+
+- 레벨을 정수로 매겨 비교하지 않는다. `src/lib/permissions/levels.ts` 는 레벨 비교 함수를 **의도적으로 제공하지 않는다.**
+- 판정의 진실은 `CapSet`(capability 비트마스크)이다. 물어야 할 질문은 `can(caps, 'edit_content')` 뿐이다.
+- `displayLevel()` 은 **화면 표시 전용**이다. 반환된 레벨을 판정에 다시 넣으면 안 된다. 올림하지 않고 부분집합 중 최대를 고르므로 과소 표시일 수 있다.
+- 매트릭스는 DB(`level_capability`)와 TS 상수 두 곳에 있다. `levels.db.test.ts` 가 일치를 강제한다. 한쪽만 고치면 CI가 막는다.
+
+정본 불변식 A9: **`effective()` 의 입력은 `user_id` 가 아니다.**
+
+- 권한을 묻는 모든 함수는 `SessionContext` 를 받는다. `UserId` 만 받는 권한 함수를 만들지 않는다.
+- `SessionContext` 는 브랜디드 타입이라 리터럴로 만들 수 없다. `resolveSessionContext()` 만 발급하고, 그 함수는 발급 전에 0단계 게이트(`can_enter_workspace`)를 통과시킨다.
+- 따라서 **`SessionContext` 를 갖고 있다는 것 자체가 "이 사용자는 이 워크스페이스에 들어올 수 있다"는 증명**이다. 우회하려면 타입을 캐스팅해야 하고, 그건 리뷰에서 보인다.
 
 ## 커밋 규칙
 

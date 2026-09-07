@@ -39,6 +39,10 @@ jobs:
       - name: 린트
         run: npm run lint
 
+      # DB 가 필요한 테스트는 여기서 건너뛴다. db 잡이 REQUIRE_DB=1 로 다시 돌린다.
+      - name: 단위 테스트
+        run: npm test
+
       - name: 빌드
         run: npm run build
 
@@ -72,6 +76,14 @@ jobs:
 
       - name: 스키마 · 불변식 검증
         run: npm run db:verify:schema
+
+      # REQUIRE_DB=1 이면 DB 가 필요한 테스트가 건너뛰지 않고 실패한다.
+      # 조용히 skip 되기만 하면 그 테스트는 썩는다.
+      - name: 테스트 (DB 필수 — TS 매트릭스 ↔ level_capability 일치)
+        run: npm test
+        env:
+          REQUIRE_DB: '1'
+          DATABASE_URL: postgresql://notion:notion_dev_only@localhost:5432/notion
 
       # 같은 마이그레이션을 두 번 돌려도 안전해야 한다
       - name: 재실행 멱등성
