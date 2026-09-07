@@ -4,6 +4,12 @@
 
 기획은 [`docs/notion-feature-research.md`](docs/notion-feature-research.md)에 끝나 있다. 기능 278개, MVP 65개, Phase 0~3.
 
+@AGENTS.md
+
+> ⚠ **Next.js 16이다.** `AGENTS.md`가 경고하듯 API·규약·파일 구조가 이전 버전과 다르다.
+> Next.js 코드를 쓰기 전에 `node_modules/next/dist/docs/` 의 해당 가이드를 먼저 읽는다.
+> `AGENTS.md` 블록은 `next dev`가 다시 써넣으므로 커밋해 둔다.
+
 ---
 
 ## 문서 계층 (충돌 시 위가 이긴다)

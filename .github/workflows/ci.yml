@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# 같은 브랜치에 새 커밋이 오면 이전 실행을 취소한다
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: 타입 · 린트 · 라이선스 · 빌드
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 의존성 설치
+        run: npm ci
+
+      # CLAUDE.md 절대 제약 1의 강제 지점.
+      # 타입·린트보다 먼저 돌린다 — 금지된 라이선스가 들어왔다면
+      # 코드가 맞는지 따지기 전에 그 사실부터 알아야 한다.
+      - name: 라이선스 검사
+        run: npm run check:licenses
+
+      - name: 타입체크
+        run: npm run typecheck
+
+      - name: 린트
+        run: npm run lint
+
+      - name: 빌드
+        run: npm run build
