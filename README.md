@@ -61,9 +61,17 @@ Next.js(App Router) + TypeScript
 
 ## 개발
 
+**사전 준비**: [Rancher Desktop](https://rancherdesktop.io/) (Container Engine을 `dockerd (moby)`로, Kubernetes는 끔)
+
 ```bash
 npm install
-docker compose up -d   # postgres(pg_bigm) + valkey
-npm run dev            # http://localhost:3000
-npm run check          # typecheck + lint + license
+cp .env.example .env    # AUTH_SECRET 을 생성해 채운다
+
+npm run db:up           # postgres(pg_bigm) + valkey
+npm run db:verify       # 확장 · collation · 한국어 2-gram 확인
+npm run dev             # http://localhost:3000
+
+npm run check           # typecheck + lint + license
 ```
+
+Docker Desktop이 아니라 Rancher Desktop을 쓰는 이유는 라이선스입니다 — Docker Desktop은 조건부 무료입니다. 자세한 건 [CLAUDE.md](CLAUDE.md).

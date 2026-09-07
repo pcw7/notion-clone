@@ -16,7 +16,13 @@
     "typecheck": "next typegen && tsc --noEmit",
     "check:licenses": "node scripts/check-licenses.mjs",
     "licenses": "node scripts/check-licenses.mjs --list",
-    "check": "npm run typecheck && npm run lint && npm run check:licenses"
+    "check": "npm run typecheck && npm run lint && npm run check:licenses",
+    "db:up": "docker compose up -d --wait",
+    "db:down": "docker compose down",
+    "db:reset": "docker compose down -v && docker compose up -d --wait",
+    "db:logs": "docker compose logs -f db",
+    "db:psql": "docker compose exec db psql -U notion -d notion",
+    "db:verify": "node scripts/verify-db.mjs"
   },
   "dependencies": {
     "next": "16.3.4",

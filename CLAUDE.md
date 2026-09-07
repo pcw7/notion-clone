@@ -40,6 +40,7 @@
   - **MinIO 사용 금지.** AGPLv3인 데다 2026-04-25 리포지토리 아카이브(개발 중단). 자체 호스팅이 필요하면 SeaweedFS(Apache-2.0), 기본은 Cloudflare R2.
   - **Tiptap Cloud 사용 안 함.** 에디터 라이브러리는 MIT라 문제없다. 협업 서버는 Hocuspocus(MIT) 자체 호스팅.
   - **Tiptap Tracked Changes(유료) 사용 안 함.** 제안 편집은 판결 U-2대로 Y.Doc 안의 자체 mark 3종으로 구현한다.
+  - **Docker Desktop 대신 Rancher Desktop (Apache-2.0).** Docker Desktop은 개인·교육·비영리 OSS·소규모 사업자(250명 미만 AND 연매출 $10M 미만)만 무료인 **조건부** 무료다. 조건을 계속 추적하느니 조건 없는 쪽을 쓴다. Rancher Desktop은 dockerd(moby)를 그대로 쓰므로 `docker` · `docker compose` 명령이 동일하다.
 
 ### 2. LLM 토큰은 하드 캡 — 초과 시 자동 결제 없이 차단한다
 
@@ -77,12 +78,21 @@ Next.js(App Router) + TypeScript + Tiptap(ProseMirror) + Yjs + TanStack + Radix
 
 ## 개발
 
+런타임: **Rancher Desktop**(Container Engine = `dockerd (moby)`, Kubernetes 끔).
+
 ```bash
 npm install
-npm run dev            # http://localhost:3000
-npm run check          # typecheck + lint + license 검사
-docker compose up -d   # postgres(pg_bigm) + valkey
+cp .env.example .env    # AUTH_SECRET 은 직접 생성해 채운다
+
+npm run db:up           # postgres(pg_bigm) + valkey 기동
+npm run db:verify       # 확장 · collation · 한국어 2-gram · valkey 확인
+npm run dev             # http://localhost:3000
+
+npm run check           # typecheck + lint + license
+npm run db:reset        # 볼륨까지 삭제 후 재생성
 ```
+
+DB collation은 **한 번 정하면 못 바꾼다.** ICU + `ko-KR`로 초기화하므로, 이미 만든 볼륨이 있다면 `db:reset` 후에 적용된다.
 
 ## 커밋 규칙
 
