@@ -1,0 +1,29 @@
+# 저장소 안에서는 항상 LF로 정규화한다 (Windows/macOS/Linux 혼용 대비)
+* text=auto eol=lf
+
+# 셸 스크립트는 반드시 LF
+*.sh text eol=lf
+
+# Windows 전용 스크립트는 CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 바이너리 — 변환 금지
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.pdf binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+
+# lock 파일은 diff에서 접어둔다
+package-lock.json linguist-generated=true -diff
+pnpm-lock.yaml linguist-generated=true -diff
+
+# 조사 문서는 언어 통계에서 제외 (코드 저장소로 인식되게)
+docs/** linguist-documentation=true

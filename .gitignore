@@ -1,0 +1,62 @@
+# dependencies
+node_modules/
+.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/releases
+!.yarn/plugins
+!.yarn/sdks
+!.yarn/versions
+
+# next.js
+.next/
+out/
+build/
+dist/
+*.tsbuildinfo
+next-env.d.ts
+
+# production
+/build
+
+# testing
+coverage/
+.nyc_output/
+playwright-report/
+test-results/
+
+# env — 절대 커밋 금지
+.env
+.env.*
+!.env.example
+
+# db / storage (로컬 볼륨)
+.data/
+*.sqlite
+*.sqlite3
+pgdata/
+
+# logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnpm-store/
+
+# editor / os
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json.example
+
+# claude code 로컬 설정 (에이전트 정의는 커밋한다)
+.claude/settings.local.json
+
+# misc
+.vercel
+*.pem
