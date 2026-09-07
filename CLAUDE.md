@@ -94,6 +94,32 @@ npm run db:reset        # 볼륨까지 삭제 후 재생성
 
 DB collation은 **한 번 정하면 못 바꾼다.** ICU + `ko-KR`로 초기화하므로, 이미 만든 볼륨이 있다면 `db:reset` 후에 적용된다.
 
+### 알려진 문제: Windows `docker` CLI 불안정 (Rancher Desktop 1.24.0 + WSL 2.7.13)
+
+Rancher Desktop의 **Win32 socket proxy**가 크래시-재시작 루프를 돈다. 증상:
+
+- `docker` 명령이 기동 후 **40~50초만 동작**하다가 `failed to connect to the backend: timed out dialing Hyper-V socket`으로 죽는다
+- `%LOCALAPPDATA%\rancher-desktop\logs\background.log` 에 `Background process Win32 socket proxy (pid ...) exited with status 1` 이 1초 간격으로 반복된다
+- `docker.log` 가 수백 MB까지 부풀어 오른다 (실제로 226MB까지 갔다)
+
+**컨테이너 자체는 영향이 없다.** WSL 안에서 정상 동작하고, `localhost:5432` · `localhost:6379` 도 Windows에서 정상 접근된다. 즉 **앱 개발에는 지장이 없고 `docker` 관리 명령만 막힌다.**
+
+그래서 `scripts/verify-db.mjs` 는 `docker compose exec` 가 아니라 **앱과 같은 TCP 경로**로 접속한다. 검증은 실제 사용 경로를 재현해야 한다 — 그렇지 않으면 DB가 멀쩡한데 죽었다고 잘못 보고한다.
+
+**우회 (컨테이너가 이미 떠 있다면 그냥 개발하면 된다):**
+
+```bash
+# 컨테이너 상태 확인
+wsl -d rancher-desktop -e docker ps
+
+# DB 검증 (docker CLI 불필요)
+npm run db:verify
+```
+
+**시도해볼 해결책** (둘 다 GUI 전용, `rdctl` 로는 설정 불가):
+1. Preferences → Application → **Administrative Access 켜기** — 소켓 프록시가 권한 부족으로 죽는 것일 수 있다
+2. Preferences → WSL → Integrations → **Ubuntu 체크** — Ubuntu 셸에서 `docker compose` 를 쓸 수 있게 된다
+
 ## 커밋 규칙
 
 - 한 커밋 = 한 가지 변경. 작게 자주.
