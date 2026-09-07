@@ -12,7 +12,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "typecheck": "tsc --noEmit",
+    "typegen": "next typegen",
+    "typecheck": "next typegen && tsc --noEmit",
     "check:licenses": "node scripts/check-licenses.mjs",
     "licenses": "node scripts/check-licenses.mjs --list",
     "check": "npm run typecheck && npm run lint && npm run check:licenses"
