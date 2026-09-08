@@ -10,7 +10,10 @@
  * - 검증 시 `purpose` 를 반드시 WHERE 절에 넣는다. 로그인 코드로 비밀번호를
  *   재설정할 수 있게 되는 것이 이 종류의 전형적인 취약점이다.
  * - `consumed_at` 은 **원자적으로** 채운다. 같은 코드로 두 세션이 만들어지면 안 된다.
- * - 존재하지 않는 이메일에도 **동일한 성공 응답**을 준다(계정 열거 방지).
+ * - 존재하지 않는 이메일에도 **똑같이 코드를 보낸다.** 로그인과 가입이 같은
+ *   입구를 쓰기 때문이다(F-14-01 시나리오 2). 계정 열거는 응답·메일 문구·
+ *   응답 시간을 동일하게 유지해서 막는다. 판결 근거는 14-auth-accounts.md
+ *   F-14-02 의 [정정].
  * - `auth_event` 는 세션이 없어도 기록한다(불변식 A10). 로그인 실패를 감사에
  *   남기지 못하면 감사가 무의미해진다.
  */
@@ -106,8 +109,9 @@ export type RequestCodeResult = {
 /**
  * 로그인 코드를 발급하고 메일로 보낸다.
  *
- * 가입되지 않은 이메일이면 challenge 를 만들지 않고 메일도 보내지 않는다.
- * 그래도 **호출자는 차이를 알 수 없다.**
+ * 계정이 있든 없든 동일하게 challenge 를 만들고 코드를 보낸다.
+ * 계정이 없으면 검증 시점에 만들어진다(F-14-01).
+ * 예외는 정지·삭제된 계정 하나뿐이고, 그때도 응답은 같다.
  */
 export async function requestLoginCode(
   email: string,
@@ -139,30 +143,58 @@ export async function requestLoginCode(
     }
   }
 
-  const account = await queryMaybe<{ user_id: string }>(
-    `SELECT ue.user_id
+  // verified_at 여부와 무관하게 이메일 자체를 찾는다.
+  //
+  // user_email.email 은 **전역 UNIQUE** 다. 미인증 이메일도 그 슬롯을 이미
+  // 차지하고 있으므로, 그 주소로 신규 가입을 시도하면 제약 위반으로 터진다.
+  // "verified 인 것만" 찾으면 이 경우를 신규 가입으로 오인한다.
+  const existing = await queryMaybe<{
+    user_id: string
+    is_verified: boolean
+    is_active: boolean
+  }>(
+    `SELECT ue.user_id,
+            (ue.verified_at IS NOT NULL) AS is_verified,
+            (u.status = 'active')        AS is_active
        FROM user_email ue
        JOIN "user" u ON u.id = ue.user_id
-      WHERE ue.email = $1
-        AND ue.verified_at IS NOT NULL
-        AND u.status = 'active'`,
+      WHERE ue.email = $1`,
     [normalized],
   )
 
+  const canLogIn = existing !== null && existing.is_verified && existing.is_active
+  const account = canLogIn ? existing : null
+
   await recordAuthEvent('code_requested', {
     email: normalized,
-    userId: account?.user_id ?? null,
+    userId: existing?.user_id ?? null,
     ctx,
     // 계정 존재 여부는 감사 로그에는 남긴다. 응답에만 안 드러나면 된다.
-    meta: { account_exists: account !== null },
+    meta: {
+      account_exists: existing !== null,
+      verified: existing?.is_verified ?? null,
+      active: existing?.is_active ?? null,
+    },
   })
 
-  if (!account) {
-    // 계정이 없다. challenge 도 메일도 만들지 않는다.
-    // 응답은 성공한 것과 구분되지 않는다. (F-14-02 엣지 케이스)
+  // 이메일이 이미 누군가에게 묶여 있는데 로그인에 쓸 수 없는 경우
+  // (미인증 별칭이거나 정지·삭제된 계정) 코드를 보내지 않는다.
+  //
+  // F-14-01 엣지 케이스: "이메일이 이미 다른 계정의 secondary 로 등록됨 → 가입 거부."
+  // 보내봐야 검증 시점에 UNIQUE 제약으로 실패할 뿐이다.
+  // 응답은 여전히 동일하다.
+  if (existing !== null && !canLogIn) {
     return { rateLimited: false, retryAfterSeconds: 0 }
   }
 
+  // 계정이 없어도 코드를 보낸다. 로그인과 가입이 같은 입구를 쓰기 때문이다.
+  //
+  // 원래 F-14-02 엣지 케이스는 "메일을 보내지 않는다"였으나, 그대로 하면
+  // 신규 사용자가 영원히 가입할 수 없다. F-14-01 시나리오 2번이 이긴다.
+  // 판결 근거는 docs/research/14-auth-accounts.md F-14-02 의 [정정] 참조.
+  //
+  // 계정 열거는 여전히 막힌다 — 응답도 메일 문구도 같고, challenge 는
+  // 양쪽 다 만들어지므로 DB 관찰로도 구분되지 않는다.
   const code = generateCode()
 
   const challengeId = await withTransaction(async (tx) => {
@@ -183,7 +215,7 @@ export async function requestLoginCode(
          (id, purpose, email, user_id, code_hash, expires_at, request_ip, request_ua, created_at)
        VALUES (gen_random_uuid(), 'login', $1, $2, '', now() + ($3 || ' seconds')::interval, $4, $5, now())
        RETURNING id`,
-      [normalized, account.user_id, String(LOGIN_CODE_TTL_SECONDS), ctx.ip, ctx.userAgent],
+      [normalized, account?.user_id ?? null, String(LOGIN_CODE_TTL_SECONDS), ctx.ip, ctx.userAgent],
     )
 
     // challenge id 를 salt 로 쓰므로 id 가 정해진 뒤에 해시한다.
@@ -204,7 +236,13 @@ export async function requestLoginCode(
 // ── 검증 ──────────────────────────────────────────────────────────────
 
 export type VerifyCodeOutcome =
-  | { readonly ok: true; readonly userId: string; readonly challengeId: string }
+  | {
+      readonly ok: true
+      /** null 이면 아직 계정이 없다 — 신규 가입 경로다 (F-14-01) */
+      readonly userId: string | null
+      readonly email: string
+      readonly challengeId: string
+    }
   | { readonly ok: false; readonly reason: 'invalid' | 'expired' | 'too_many_attempts' }
 
 /**
@@ -212,8 +250,9 @@ export type VerifyCodeOutcome =
  *
  * 실패 사유를 호출자에게는 구분해 돌려주되(만료와 오입력은 사용자에게 다른
  * 안내가 필요하다 — F-14-02), **계정 존재 여부는 절대 드러나지 않는다.**
- * 가입되지 않은 이메일은 challenge 자체가 없으므로 'invalid' 이 되고,
- * 이는 코드를 틀린 경우와 같다.
+ *
+ * 성공 시 userId 가 null 이면 아직 계정이 없다는 뜻이다. 계정 생성은
+ * 호출자(establishLogin)가 같은 트랜잭션에서 처리한다.
  */
 export async function verifyLoginCode(
   email: string,
@@ -293,7 +332,10 @@ export async function verifyLoginCode(
     [challenge.id],
   )
 
-  if (!consumed || !consumed.user_id) {
+  // user_id 가 NULL 인 것은 실패가 아니다 — 신규 가입 경로다.
+  // 여기서 `!consumed.user_id` 로 막으면 가입이 전부 거부된다.
+  if (!consumed) {
+    // 다른 요청이 먼저 소비했다. 같은 코드로 두 세션이 생기는 것을 막은 결과다.
     await recordAuthEvent('code_failed', {
       email: normalized,
       ctx,
@@ -308,5 +350,6 @@ export async function verifyLoginCode(
     ctx,
   })
 
-  return { ok: true, userId: consumed.user_id, challengeId: consumed.id }
+  // user_id 가 null 이면 신규 가입이다. 계정 생성은 호출자(establishLogin)가 한다.
+  return { ok: true, userId: consumed.user_id, email: normalized, challengeId: consumed.id }
 }
