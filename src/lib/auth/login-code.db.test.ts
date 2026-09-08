@@ -90,21 +90,43 @@ after(async () => {
 
 
 describe('requestLoginCode — 계정 열거 방지 (F-14-02)', () => {
-  test('가입되지 않은 이메일도 동일한 응답을 준다', async (t) => {
+  test('가입되지 않은 이메일에도 코드를 보낸다 — 가입 경로 [정정 판결]', async (t) => {
     if (!available) return t.skip(skipReason)
 
+    // 원안(F-14-02 엣지 케이스)은 "메일을 보내지 않는다"였으나 그대로 하면
+    // 신규 사용자가 영원히 가입할 수 없다. F-14-01 시나리오 2번이 이긴다.
     const unknown = freshEmail()
     const result = await loginCode.requestLoginCode(unknown, freshCtx())
 
     assert.equal(result.rateLimited, false)
-    // 개발 transport 라도 계정이 없으면 코드가 없다 — 메일을 보내지 않았다는 뜻
-    assert.equal(result.devCode, undefined)
+    assert.ok(result.devCode, '계정이 없어도 코드가 발급되어야 가입이 가능하다')
 
-    // challenge 자체가 만들어지지 않아야 한다
+    // challenge 도 만들어진다 — 계정 유무로 DB 상태가 갈리면 그 자체가 열거 신호다
     const rows = await pool.query(
-      `SELECT id FROM otp_challenge WHERE email = $1`, [unknown],
+      `SELECT user_id FROM otp_challenge WHERE email = $1`, [unknown],
     )
-    assert.equal(rows.length, 0, '없는 계정에 challenge 를 만들면 DB 크기로 열거가 가능해진다')
+    assert.equal(rows.length, 1)
+    assert.equal(
+      (rows[0] as { user_id: string | null }).user_id,
+      null,
+      '아직 계정이 없으므로 user_id 는 NULL 이다',
+    )
+  })
+
+  test('계정 유무에 따라 응답이 구분되지 않는다', async (t) => {
+    if (!available) return t.skip(skipReason)
+
+    const known = freshEmail()
+    await createVerifiedUser(known)
+    const unknown = freshEmail()
+
+    const a = await loginCode.requestLoginCode(known, freshCtx())
+    const b = await loginCode.requestLoginCode(unknown, freshCtx())
+
+    // 응답의 관측 가능한 형태가 같아야 한다 (devCode 는 개발 전용 채널)
+    assert.equal(a.rateLimited, b.rateLimited)
+    assert.equal(a.retryAfterSeconds, b.retryAfterSeconds)
+    assert.equal(typeof a.devCode, typeof b.devCode)
   })
 
   test('가입된 이메일은 challenge 가 생기지만 응답 형태는 같다', async (t) => {
@@ -121,9 +143,12 @@ describe('requestLoginCode — 계정 열거 방지 (F-14-02)', () => {
     assert.equal(rows.length, 1)
   })
 
-  test('미인증 이메일은 계정이 있어도 코드를 받지 못한다', async (t) => {
+  test('미인증 이메일은 코드를 받지 못한다 — 이미 UNIQUE 슬롯을 차지하고 있다', async (t) => {
     if (!available) return t.skip(skipReason)
 
+    // user_email.email 은 전역 UNIQUE 다. 미인증 별칭도 그 슬롯을 이미 차지하고
+    // 있으므로, 신규 가입으로 오인해 코드를 보내면 검증 시점에 제약 위반으로
+    // 터진다. F-14-01 엣지 케이스: "이미 다른 계정의 secondary → 가입 거부".
     const email = freshEmail()
     const userId = randomUUID()
     await pool.query(
@@ -135,7 +160,23 @@ describe('requestLoginCode — 계정 열거 방지 (F-14-02)', () => {
     )
 
     const result = await loginCode.requestLoginCode(email, freshCtx())
-    assert.equal(result.devCode, undefined, 'verified_at 이 NULL 이면 로그인 불가여야 한다')
+    assert.equal(result.devCode, undefined, 'verified_at 이 NULL 이면 로그인도 가입도 불가여야 한다')
+    assert.equal(result.rateLimited, false, '거부 사유가 응답으로 드러나면 안 된다')
+
+    const rows = await pool.query(`SELECT id FROM otp_challenge WHERE email = $1`, [email])
+    assert.equal(rows.length, 0)
+  })
+
+  test('정지된 계정은 코드를 받지 못한다', async (t) => {
+    if (!available) return t.skip(skipReason)
+
+    const email = freshEmail()
+    const userId = await createVerifiedUser(email)
+    await pool.query(`UPDATE "user" SET status = 'suspended' WHERE id = $1`, [userId])
+
+    const result = await loginCode.requestLoginCode(email, freshCtx())
+    assert.equal(result.devCode, undefined)
+    assert.equal(result.rateLimited, false)
   })
 })
 
@@ -157,6 +198,38 @@ describe('requestLoginCode — 재요청 시 이전 코드 무효화', () => {
     // 새 코드는 동작한다
     const fresh = await loginCode.verifyLoginCode(email, second.devCode!, freshCtx())
     assert.equal(fresh.ok, true)
+  })
+})
+
+describe('verifyLoginCode — 신규 가입 경로', () => {
+  test('계정이 없는 이메일의 코드가 검증된다 (userId=null)', async (t) => {
+    if (!available) return t.skip(skipReason)
+
+    // 이 케이스가 없어서 실제 버그를 놓쳤다. consumed.user_id 가 NULL 인 것을
+    // 실패로 판정해 가입이 전부 거부되고 있었는데, 테스트가 전부 기존 계정만
+    // 검증하고 있어서 13개가 통과했다.
+    const email = freshEmail()
+    const { devCode } = await loginCode.requestLoginCode(email, freshCtx())
+    const result = await loginCode.verifyLoginCode(email, devCode!, freshCtx())
+
+    assert.equal(result.ok, true, '신규 가입 코드가 거부되면 아무도 가입할 수 없다')
+    assert.equal((result as { userId: string | null }).userId, null)
+    assert.equal((result as { email: string }).email, email)
+  })
+
+  test('한 번 틀린 뒤 올바른 코드로 성공한다 — 오타는 흔하다', async (t) => {
+    if (!available) return t.skip(skipReason)
+
+    const email = freshEmail()
+    await createVerifiedUser(email)
+    const { devCode } = await loginCode.requestLoginCode(email, freshCtx())
+    const wrong = devCode === '000000' ? '111111' : '000000'
+
+    const bad = await loginCode.verifyLoginCode(email, wrong, freshCtx())
+    assert.equal(bad.ok, false)
+
+    const good = await loginCode.verifyLoginCode(email, devCode!, freshCtx())
+    assert.equal(good.ok, true, '오타 한 번에 로그인이 막히면 안 된다')
   })
 })
 
