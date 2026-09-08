@@ -79,11 +79,16 @@ jobs:
 
       # REQUIRE_DB=1 이면 DB 가 필요한 테스트가 건너뛰지 않고 실패한다.
       # 조용히 skip 되기만 하면 그 테스트는 썩는다.
-      - name: 테스트 (DB 필수 — TS 매트릭스 ↔ level_capability 일치)
+      - name: 테스트 (DB · Valkey 필수)
         run: npm test
         env:
           REQUIRE_DB: '1'
           DATABASE_URL: postgresql://notion:notion_dev_only@localhost:5432/notion
+          REDIS_URL: redis://localhost:6379
+          AUTH_SECRET: ci-only-secret-not-used-in-any-deployment
+          MAIL_TRANSPORT: console
+          # Valkey 가 없으면 빨리 포기하고 끝난다. 무한 재시도는 CI 를 매달아둔다.
+          VALKEY_MAX_RETRIES: '3'
 
       # 같은 마이그레이션을 두 번 돌려도 안전해야 한다
       - name: 재실행 멱등성

@@ -11,7 +11,6 @@ import { Pool, type PoolClient, type QueryResultRow } from 'pg'
 declare global {
   // Next.js 개발 모드는 모듈을 다시 평가한다. 그때마다 새 풀을 만들면
   // 커넥션이 계속 새고 결국 Postgres 의 max_connections 에 걸린다.
-  // eslint-disable-next-line no-var
   var __notionClonePool: Pool | undefined
 }
 
