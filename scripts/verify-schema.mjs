@@ -28,10 +28,13 @@ const client = new pg.Client({
   connectionTimeoutMillis: 5000,
 })
 
+// 마이그레이션을 추가하면 여기도 함께 갱신한다. 빠뜨리면 그 테이블은
+// 누가 지워도 검증이 통과한다 — 0004 의 level_capability 가 실제로 그랬다.
 const EXPECTED_TABLES = [
-  'auth_event', 'credential', 'group', 'group_member', 'mfa_backup_code', 'mfa_method',
-  'organization', 'otp_challenge', 'region', 'schema_migration', 'scim_token',
-  'session_policy', 'sso_config', 'user', 'user_email', 'user_session',
+  'auth_event', 'credential', 'group', 'group_member', 'level_capability',
+  'mfa_backup_code', 'mfa_method', 'organization', 'otp_challenge', 'region',
+  'schema_migration', 'scim_token', 'session_policy', 'sso_config',
+  'user', 'user_email', 'user_session',
   'workspace', 'workspace_invite', 'workspace_member',
 ]
 const EXPECTED_TYPES = [
