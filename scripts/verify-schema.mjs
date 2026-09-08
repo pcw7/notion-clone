@@ -97,7 +97,8 @@ try {
     const { rows } = await client.query(
       `SELECT count(*)::int AS n FROM pg_views WHERE schemaname='public' AND viewname='workspace_seat_count'`,
     )
-    rows[0].n === 1 ? ok('존재') : fail('없음')
+    if (rows[0].n === 1) ok('존재')
+    else fail('없음')
   }
 
   console.log('\n[4] 불변식이 실제로 막는가')
@@ -135,7 +136,8 @@ try {
     const { rows } = await client.query(
       `SELECT count(*)::int AS n FROM user_email WHERE email = 'test@example.com'`,
     )
-    rows[0].n === 1 ? ok('citext — 대소문자 무시 조회 동작') : fail('citext 조회 실패')
+    if (rows[0].n === 1) ok('citext — 대소문자 무시 조회 동작')
+    else fail('citext 조회 실패')
   }
 
   await mustReject(
