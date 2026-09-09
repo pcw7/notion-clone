@@ -31,12 +31,17 @@ const client = new pg.Client({
 // 마이그레이션을 추가하면 여기도 함께 갱신한다. 빠뜨리면 그 테이블은
 // 누가 지워도 검증이 통과한다 — 0004 의 level_capability 가 실제로 그랬다.
 const EXPECTED_TABLES = [
-  'auth_event', 'block', 'credential', 'group', 'group_member', 'level_capability',
-  'mfa_backup_code', 'mfa_method', 'organization', 'otp_challenge', 'region',
+  'auth_event', 'block', 'credential', 'doc_snapshot', 'doc_update',
+  'group', 'group_member', 'level_capability',
+  'mfa_backup_code', 'mfa_method', 'organization', 'otp_challenge',
+  'page_version', 'region',
   'schema_migration', 'scim_token', 'session_policy', 'sso_config',
   'user', 'user_email', 'user_session',
   'workspace', 'workspace_invite', 'workspace_member',
 ]
+
+/** 파티션은 부모 테이블 하나로 센다. doc_update_p00..p15 를 매번 나열하지 않는다. */
+const PARTITION_RE = /^doc_update_p\d+$/
 const EXPECTED_TYPES = [
   'block_lifecycle', 'block_parent_type', 'moderation_state', 'origin_kind',
   'user_status', 'user_type',
@@ -75,10 +80,15 @@ try {
     `)
     const got = new Set(rows.map((r) => r.tablename))
     const missing = EXPECTED_TABLES.filter((t) => !got.has(t))
-    const extra = [...got].filter((t) => !EXPECTED_TABLES.includes(t))
+    const extra = [...got].filter((t) => !EXPECTED_TABLES.includes(t) && !PARTITION_RE.test(t))
     if (missing.length) fail(`누락: ${missing.join(', ')}`)
     else ok(`${EXPECTED_TABLES.length}개 전부 존재`)
     if (extra.length) console.log(`  · 목록 밖: ${extra.join(', ')}`)
+
+    // 파티션 수가 줄면 그 해시 구간의 본문이 저장되지 않는다 — 조용히 실패한다.
+    const parts = [...got].filter((t) => PARTITION_RE.test(t))
+    if (parts.length === 16) ok('doc_update 해시 파티션 16개')
+    else fail(`doc_update 파티션이 ${parts.length}개다 (16개여야 함)`)
   }
 
   console.log('\n[2] ENUM 타입')
