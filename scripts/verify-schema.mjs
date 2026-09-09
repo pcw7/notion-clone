@@ -260,6 +260,46 @@ try {
     else fail(`좌석 계산이 ${seats} — 1이어야 한다`)
   }
 
+  console.log('\n[6] order_key 가 이진 순서로 비교되는가 (0008)')
+  {
+    // fractional-indexing 은 키를 `0-9 A-Z a-z` 의 이진 순서로 비교한다고 가정한다.
+    // DB 기본 collation(ICU ko-KR)은 대소문자를 다르게 정렬하므로,
+    // 그대로 두면 max(order_key) 가 진짜 마지막 형제를 놓치고 그 뒤에 만든 새 키가
+    // 이미 존재하는 키가 되어 UNIQUE 에 걸린다. 실측 임계값은 형제 37개다.
+    //
+    // "COLLATE C 를 걸었다"가 아니라 "실제로 이진 순서로 나오는가"를 확인한다.
+    const parentId = randomUUID()
+    const sample = ['a0', 'a9', 'aA', 'aZ', 'aa', 'az', 'z0', 'Zz']
+    for (const key of sample) {
+      await client.query(
+        `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key,
+                            ancestor_path, perm_scope_id, properties, format,
+                            created_at, last_edited_at)
+         VALUES (gen_random_uuid(), $1, 'paragraph', 'block', $2, $3, '{}', $2,
+                 '{}'::jsonb, '{}'::jsonb, now(), now())`,
+        [wsId, parentId, key],
+      )
+    }
+
+    const { rows } = await client.query(
+      'SELECT order_key FROM block WHERE parent_id = $1 ORDER BY order_key, id',
+      [parentId],
+    )
+    const got = rows.map((r) => r.order_key).join(' ')
+    // JS 의 문자열 비교는 UTF-16 코드 유닛 비교 = 이 문자 집합에서는 이진 순서다.
+    const want = [...sample].sort().join(' ')
+    if (got === want) ok(`ORDER BY order_key 가 이진 순서다 (${got})`)
+    else fail(`ORDER BY order_key 가 이진 순서가 아니다\n      DB: ${got}\n      JS: ${want}`)
+
+    const { rows: maxRows } = await client.query(
+      'SELECT max(order_key) AS m FROM block WHERE parent_id = $1',
+      [parentId],
+    )
+    const wantMax = [...sample].sort().at(-1)
+    if (maxRows[0].m === wantMax) ok(`max(order_key) = ${wantMax}`)
+    else fail(`max(order_key) 가 ${maxRows[0].m} — ${wantMax} 여야 한다. 새 형제 키가 기존 키와 충돌한다`)
+  }
+
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
 } catch (e) {
