@@ -29,6 +29,7 @@ import { asBlockId } from '../ids.ts'
 import { withTransaction, type Tx } from '../db/tx.ts'
 import { query } from '../db/pool.ts'
 import { orderKeyBetween } from './order-key.ts'
+import { MAX_TREE_DEPTH } from './types.ts'
 import {
   normalizeRichText,
   toPlainText,
@@ -37,14 +38,10 @@ import {
   type RichTextRun,
 } from '../contracts/rich-text.ts'
 
-/**
- * 최대 트리 깊이.
- *
- * 정본 §"실측 필요" 1번: "100, 초과 시 명시적 에러". 노션의 실제 상한은
- * 측정되지 않았으므로 우리가 정한다. 상한이 없으면 `ancestor_path` 배열이
- * 무한히 길어지고 breadcrumb 렌더가 먼저 무너진다.
- */
-export const MAX_TREE_DEPTH = 100
+// 트리 깊이 상한은 레지스트리(`types.ts`)가 소유한다 — 페이지 트리와 본문
+// 문서가 같은 값을 써야 하기 때문이다. 여기서 다시 내보내는 것은 호출자가
+// "페이지 관련 상수"를 찾는 자리가 이 파일이기 때문.
+export { MAX_TREE_DEPTH }
 
 /** 제목 평문 상한. rich text 런 하나의 상한(2000)과 같은 축으로 둔다. */
 export const MAX_TITLE_LENGTH = 2000
