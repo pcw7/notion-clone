@@ -15,6 +15,19 @@
 
 import { isColor, type Color } from '../contracts/rich-text.ts'
 
+/**
+ * 최대 트리 깊이.
+ *
+ * 정본 §"실측 필요" 1번: "100, 초과 시 명시적 에러". 노션의 실제 상한은
+ * 측정되지 않았으므로 우리가 정한다. 상한이 없으면 `ancestor_path` 배열이
+ * 무한히 길어지고 breadcrumb 렌더가 먼저 무너진다.
+ *
+ * 페이지 트리(`page.ts`)와 본문 문서(`editor/document.ts`)가 같은 값을 써야
+ * 하므로 레지스트리에 둔다. `page.ts` 에 두면 순수 모듈인 `document.ts` 가
+ * DB 커넥션 풀까지 끌고 오게 된다.
+ */
+export const MAX_TREE_DEPTH = 100
+
 /** MVP 12종. 순서는 `/` 메뉴 노출 순서와 무관하다. */
 export const MVP_BLOCK_TYPES = [
   'paragraph',
