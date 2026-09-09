@@ -31,7 +31,7 @@ const client = new pg.Client({
 // 마이그레이션을 추가하면 여기도 함께 갱신한다. 빠뜨리면 그 테이블은
 // 누가 지워도 검증이 통과한다 — 0004 의 level_capability 가 실제로 그랬다.
 const EXPECTED_TABLES = [
-  'auth_event', 'credential', 'group', 'group_member', 'level_capability',
+  'auth_event', 'block', 'credential', 'group', 'group_member', 'level_capability',
   'mfa_backup_code', 'mfa_method', 'organization', 'otp_challenge', 'region',
   'schema_migration', 'scim_token', 'session_policy', 'sso_config',
   'user', 'user_email', 'user_session',
@@ -92,13 +92,14 @@ try {
     else ok(`${EXPECTED_TYPES.length}개 전부 존재`)
   }
 
-  console.log('\n[3] 뷰 workspace_seat_count')
-  {
+  console.log('\n[3] 뷰')
+  for (const view of ['workspace_seat_count', 'live_block']) {
     const { rows } = await client.query(
-      `SELECT count(*)::int AS n FROM pg_views WHERE schemaname='public' AND viewname='workspace_seat_count'`,
+      `SELECT count(*)::int AS n FROM pg_views WHERE schemaname = 'public' AND viewname = $1`,
+      [view],
     )
-    if (rows[0].n === 1) ok('존재')
-    else fail('없음')
+    if (rows[0].n === 1) ok(view)
+    else fail(`${view} 없음`)
   }
 
   console.log('\n[4] 불변식이 실제로 막는가')
