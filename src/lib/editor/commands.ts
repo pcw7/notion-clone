@@ -469,43 +469,65 @@ export function outdentCommand(): Command {
  * F-01-06: 텍스트는 보존하고, 대상 타입이 지원하지 않는 format 은 버린다.
  * `normalizeFormat` 이 이미 그 규칙을 갖고 있으므로 여기서 다시 판단하지 않는다.
  */
+/**
+ * 타입 변환을 **주어진 트랜잭션에** 적용한다.
+ *
+ * 커맨드가 아니라 트랜잭션 변형으로 뽑아둔 이유: 슬래시 메뉴는 `/쿼리` 삭제와
+ * 타입 변환을 **한 트랜잭션**으로 묶어야 한다(그러지 않으면 Cmd+Z 를 두 번
+ * 눌러야 한다). 커맨드만 있으면 두 트랜잭션을 합칠 방법이 스텝 복사뿐인데,
+ * 그건 매핑이 어긋나기 쉽다.
+ *
+ * @param caretOffset 변환 후 캐럿을 둘 오프셋. 생략하면 트랜잭션의 현재 캐럿.
+ */
+export function applyTurnInto(
+  tr: Transaction,
+  blockId: string,
+  type: BlockType,
+  deps: CommandDeps = NO_COLLAPSE,
+  caretOffset?: number,
+): boolean {
+  const info = findContainerById(tr.doc, blockId)
+  if (!info || info.id === '') return false
+  if (info.contentNode.type.name === PAGE_REF_NODE) return false
+
+  const rule = toRuleBlock(info, deps.isCollapsed)
+  if (rule.type === type) return false
+
+  // 자식이 있는 블록을 자식 불가 타입으로 바꾸면 자식이 갈 곳이 없다.
+  if (rule.hasChildren && !specOf(type).canHaveChildren) return false
+
+  const offset =
+    caretOffset ?? (tr.selection.$from.parent.isTextblock ? tr.selection.$from.parentOffset : 0)
+
+  if (specOf(type).hasRichText) {
+    // to_do 로 갈 때 checked 를 켜진 상태로 물려받지 않는다.
+    const properties = type === 'to_do' ? { checked: false } : {}
+    setContentType(tr, info.id, type, properties, normalizeFormat(type, rule.format))
+    if (!specOf(rule.type).hasRichText) replaceTitle(tr, info.id, [])
+    placeCaret(tr, info.id, offset)
+    return true
+  }
+
+  // 텍스트를 담지 않는 타입으로 바꾸면 텍스트가 사라진다.
+  // 내용이 있으면 거부한다 — 조용히 버리지 않는다.
+  if (rule.title.length > 0) return false
+  tr.replaceWith(
+    info.contentPos,
+    info.contentPos + info.contentNode.nodeSize,
+    makeContentNode(type, [], {}, normalizeFormat(type, rule.format)),
+  )
+  placeCaret(tr, info.id, 0)
+  return true
+}
+
+/** F-01-06 Turn into. 텍스트를 보존하며 블록 타입을 바꾼다. */
 export function turnIntoCommand(type: BlockType, deps: CommandDeps = NO_COLLAPSE): Command {
   return (state, dispatch) => {
     const info = containerAt(state.selection.$from)
-    if (!info || info.id === '') return false
-    if (info.contentNode.type.name === PAGE_REF_NODE) return false
-
-    const rule = toRuleBlock(info, deps.isCollapsed)
-    if (rule.type === type) return false
-
-    // 자식이 있는 블록을 자식 불가 타입으로 바꾸면 자식이 갈 곳이 없다.
-    if (rule.hasChildren && !specOf(type).canHaveChildren) return false
+    if (!info) return false
 
     const tr = state.tr
-    const caretOffset = state.selection.$from.parentOffset
-
-    if (specOf(type).hasRichText) {
-      // to_do 로 갈 때 checked 를 켜진 상태로 물려받지 않는다.
-      const properties = type === 'to_do' ? { checked: false } : {}
-      setContentType(tr, info.id, type, properties, normalizeFormat(type, rule.format))
-      if (!specOf(rule.type).hasRichText) {
-        replaceTitle(tr, info.id, [])
-      }
-      placeCaret(tr, info.id, caretOffset)
-    } else {
-      // 텍스트를 담지 않는 타입으로 바꾸면 텍스트가 사라진다.
-      // 내용이 있으면 거부한다 — 조용히 버리지 않는다.
-      if (rule.title.length > 0) return false
-      const fresh = findContainerById(tr.doc, info.id)
-      if (!fresh) return false
-      tr.replaceWith(
-        fresh.contentPos,
-        fresh.contentPos + fresh.contentNode.nodeSize,
-        makeContentNode(type, [], {}, normalizeFormat(type, rule.format)),
-      )
-      placeCaret(tr, info.id, 0)
-    }
-
+    if (!applyTurnInto(tr, info.id, type, deps)) return false
     if (dispatch) dispatch(tr)
     return true
   }
