@@ -2,51 +2,34 @@
  * 워크스페이스 홈 — **`SessionContext` 를 요구하는 첫 화면.**
  *
  * 여기부터는 `getCurrentUser()`(신원 조회)로는 부족하다.
- * `resolveSessionContext()` 가 0단계 게이트(SSO 강제)까지 통과시킨 뒤에야
- * 워크스페이스 안의 것을 보여준다 — 정본 불변식 A9.
+ * `requirePageSession()` → `resolveSessionContext()` 가 0단계 게이트(SSO 강제)까지
+ * 통과시킨 뒤에야 워크스페이스 안의 것을 보여준다 — 정본 불변식 A9.
  *
  * 멤버가 아니거나 워크스페이스가 없으면 **둘 다 404** 다 (F-02-17).
  * 403 을 주면 "그 워크스페이스는 존재한다"를 알려주는 셈이 된다.
  */
 
 import Link from 'next/link'
-import { notFound, redirect } from 'next/navigation'
 
-import { asWorkspaceId } from '@/lib/ids'
-import { resolveSessionContext } from '@/lib/auth/session-context'
-import { readSessionToken } from '@/lib/auth/session-cookie'
+import { requirePageSession } from '@/lib/auth/page-session'
+import { listChildPages } from '@/lib/block/page'
 import { listMembers, listPendingInvites } from '@/lib/workspace/list'
 import { InviteForm } from './invite-form'
+import { NewPageButton } from './new-page-button'
 
-export default async function WorkspacePage({
-  params,
-}: {
-  params: Promise<{ workspaceId: string }>
-}) {
-  const { workspaceId: raw } = await params
+/** 제목 없는 페이지의 표시 문구. 저장된 값은 빈 배열이다. */
+const UNTITLED = '제목 없음'
 
-  let workspaceId
-  try {
-    workspaceId = asWorkspaceId(raw)
-  } catch {
-    notFound()
-  }
+export default async function WorkspacePage({ params }: PageProps<'/w/[workspaceId]'>) {
+  const { workspaceId } = await params
 
-  const token = await readSessionToken()
-  const session = await resolveSessionContext(token, workspaceId)
-
-  if (!session.ok) {
-    if (session.reason === 'no_session' || session.reason === 'expired' || session.reason === 'revoked') {
-      redirect('/login')
-    }
-    // not_a_member / member_inactive / sso_required — 존재 여부를 노출하지 않는다
-    notFound()
-  }
-
-  const ctx = session.context
+  // 진입 게이트는 page-session.ts 가 소유한다. 거부 코드 매핑
+  // (멤버 아님 → 404) 을 화면마다 복사하면 한 곳만 틀려도 존재가 유출된다.
+  const ctx = await requirePageSession(workspaceId)
   const canInvite = ctx.role === 'owner' || ctx.role === 'membership_admin'
 
-  const [members, invites] = await Promise.all([
+  const [rootPages, members, invites] = await Promise.all([
+    listChildPages(ctx, null),
     listMembers(ctx.workspaceId),
     canInvite ? listPendingInvites(ctx.workspaceId) : Promise.resolve([]),
   ])
@@ -65,6 +48,25 @@ export default async function WorkspacePage({
           전체 목록
         </Link>
       </header>
+
+      <section className="flex flex-col gap-3">
+        <h2 className="text-sm font-medium text-neutral-500">페이지 {rootPages.length}개</h2>
+        {rootPages.length > 0 && (
+          <ul className="divide-y divide-neutral-200 rounded-lg border border-neutral-200 dark:divide-neutral-800 dark:border-neutral-800">
+            {rootPages.map((p) => (
+              <li key={p.id}>
+                <Link
+                  href={`/w/${workspaceId}/${p.id}`}
+                  className="block px-4 py-3 text-sm hover:bg-neutral-50 dark:hover:bg-neutral-900"
+                >
+                  {p.plainTitle || UNTITLED}
+                </Link>
+              </li>
+            ))}
+          </ul>
+        )}
+        <NewPageButton workspaceId={workspaceId} />
+      </section>
 
       <section>
         <h2 className="text-sm font-medium text-neutral-500">멤버 {members.length}명</h2>
@@ -107,7 +109,7 @@ export default async function WorkspacePage({
       )}
 
       <p className="mt-auto text-xs text-neutral-400">
-        Phase 0 W1 완료 — 인증 · 워크스페이스 · 초대. 다음은 블록 모델과 에디터(W3–4).
+        Phase 0 W1–W3 완료 — 인증 · 워크스페이스 · 초대 · 블록 모델. W4 진행 중 — 페이지 · 에디터.
       </p>
     </main>
   )
