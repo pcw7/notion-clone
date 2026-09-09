@@ -49,6 +49,15 @@ export const MAX_RUN_CONTENT = 2000
 export const MAX_LINK_URL = 2000
 export const MAX_EQUATION = 1000
 
+/**
+ * rich text **배열**의 요소 수 상한 (01-block-editor.md "rich text 값 모델").
+ *
+ * 이 값이 쓰이는 곳은 블록 병합이다(F-01-19): 두 블록의 런을 이어붙였을 때
+ * 정규화 후에도 100을 넘으면 **잘라내지 말고 병합을 거부**한다.
+ * 잘라내면 사용자가 Backspace 한 번으로 텍스트를 잃는다.
+ */
+export const MAX_RICH_TEXT_RUNS = 100
+
 // ── 타입 ──────────────────────────────────────────────────────────────
 
 export type Annotations = {
