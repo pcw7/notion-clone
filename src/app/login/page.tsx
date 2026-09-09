@@ -100,7 +100,16 @@ export default function LoginPage() {
         const data = await res.json()
 
         if (res.ok) {
-          router.push('/')
+          // 초대 링크에서 왔으면 그리로 돌려보낸다.
+          //
+          // useSearchParams() 대신 window.location 을 읽는다 — 전자는 정적
+          // 렌더 시 Suspense 경계를 요구해서 이 화면을 동적으로 만들어버린다.
+          // 이 코드는 하이드레이션 이후 클릭 시점에만 돈다.
+          const next = new URLSearchParams(window.location.search).get('next')
+          // 오픈 리다이렉트 방지: 같은 출처의 절대경로만 허용한다.
+          // "//evil.com" 도 브라우저는 외부로 해석하므로 함께 막는다.
+          const safe = next && next.startsWith('/') && !next.startsWith('//') ? next : '/'
+          router.push(safe)
           router.refresh()
           return
         }
