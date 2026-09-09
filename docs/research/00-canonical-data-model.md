@@ -253,12 +253,19 @@ CREATE TABLE session_policy (
 CREATE TABLE workspace_invite (                              -- <14 R-7>
   id uuid PRIMARY KEY, workspace_id uuid NOT NULL REFERENCES workspace(id),
   kind text NOT NULL CHECK (kind IN ('email','link')),
-  email citext NULL, token text UNIQUE, role text NOT NULL,
+  email citext NULL, token_hash text UNIQUE, role text NOT NULL,   -- [정정] token -> token_hash. 아래 참조
   created_by uuid NOT NULL, created_at timestamptz NOT NULL,
   expires_at timestamptz NULL, revoked_at timestamptz NULL,
   accepted_by_user_id uuid NULL, accepted_at timestamptz NULL,
   CHECK ((kind = 'email') = (email IS NOT NULL))             -- 암묵 규약을 CHECK 로 승격
 );
+-- [정정 2026-09-09] token text -> token_hash text.
+--   초대 토큰은 세션 토큰과 같은 bearer 자격증명이다. 링크를 가진 사람이 곧
+--   워크스페이스 멤버가 된다. 그런데 이 표만 평문으로 저장하고 있었다 —
+--   같은 문서의 user_session.token_hash / scim_token.token_hash 와 어긋난다.
+--   DB 가 유출되면 대기 중인 초대를 그대로 수락해 남의 워크스페이스에 들어갈 수 있다.
+--   원문은 메일에만 두고 DB 에는 해시만 남긴다. 조회는 해시로 한다.
+--   반영: db/migrations/0005_invite_token_hash.sql
 
 CREATE TABLE sso_config (                                    -- <V-8: 06 -> 14 이관>
   workspace_id uuid PRIMARY KEY REFERENCES workspace(id),
