@@ -23,6 +23,8 @@
 
 `docs/research/_canon/`에 판결문 4건, `_critique/`에 커버리지 비평이 있다.
 
+**[`docs/HANDOFF.md`](docs/HANDOFF.md)** — 지금 어디까지 왔고 다음에 뭘 하는가. 세션을 이어받을 때 CLAUDE.md 다음으로 읽는다.
+
 ---
 
 ## 절대 제약
