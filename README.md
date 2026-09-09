@@ -81,6 +81,7 @@ scripts/                      전부 의존성 없는 .mjs
 | [도메인 상세 01~17](docs/research/) | 블록 에디터 · DB · 권한 · 협업 · 검색 · AI 등 |
 | [판결문](docs/research/_canon/) · [커버리지 비평](docs/research/_critique/) | 스키마 모순을 어떻게 판결했는지의 근거 |
 | [CLAUDE.md](CLAUDE.md) | 절대 제약 · 코딩 규칙 · 알려진 문제 |
+| [**인수인계**](docs/HANDOFF.md) | 진행 위치 · 다음 작업 · 내린 판결 · 세션 운영 요령 |
 
 ---
 
