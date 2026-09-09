@@ -73,9 +73,36 @@ const blockAttrSpec = {
   format: { default: {} as Record<string, unknown> },
 }
 
+/**
+ * 타입별 렌더 태그.
+ *
+ * `toDOM` 은 실제 DOM 이 아니라 **DOMOutputSpec(배열)** 을 돌려주므로 Node 에서도
+ * 안전하다 — 스키마 모듈은 서버·테스트에서도 로드된다.
+ *
+ * 의미가 있는 태그를 고른다(a11y). 리스트는 `<ul>/<ol>` 로 감쌀 수 없다 —
+ * 우리 트리는 리스트 항목이 임의 블록의 자식이 될 수 있어서 래퍼가 성립하지
+ * 않는다. 대신 `role="listitem"` 과 CSS 카운터로 표현한다.
+ */
+const RENDER_TAG: Readonly<Record<MvpBlockType, string>> = {
+  paragraph: 'p',
+  heading_1: 'h1',
+  heading_2: 'h2',
+  heading_3: 'h3',
+  bulleted_list_item: 'li',
+  numbered_list_item: 'li',
+  to_do: 'li',
+  toggle: 'div',
+  quote: 'blockquote',
+  callout: 'aside',
+  divider: 'hr',
+  image: 'figure',
+}
+
 /** 레지스트리 한 항목을 노드 스펙으로. */
 function blockContentSpec(type: MvpBlockType): NodeSpec {
   const spec = BLOCK_TYPES[type]
+  const tag = RENDER_TAG[type]
+
   return {
     group: 'blockContent',
     attrs: blockAttrSpec,
@@ -84,16 +111,24 @@ function blockContentSpec(type: MvpBlockType): NodeSpec {
     ...(spec.hasRichText
       ? { content: 'inline*' }
       : { atom: true, selectable: true, draggable: true }),
-    // 파싱 규칙은 렌더 계층(React NodeView)이 담당한다. 여기서는 최소한만 둔다 —
-    // 스키마는 서버·테스트에서도 DOM 없이 쓰이므로 DOM 지식을 넣지 않는다.
-    toDOM: () => ['div', { 'data-block-type': type }, ...(spec.hasRichText ? [0] : [])],
+    parseDOM: [{ tag: `${tag}[data-block-type="${type}"]` }],
+    toDOM: (node) => {
+      const format = (node.attrs.format ?? {}) as { block_color?: string }
+      const attrs: Record<string, string> = {
+        'data-block-type': type,
+        class: `blk blk-${type}`,
+      }
+      if (format.block_color) attrs['data-color'] = format.block_color
+      if (tag === 'li') attrs.role = 'listitem'
+      return spec.hasRichText ? [tag, attrs, 0] : [tag, attrs]
+    },
   } as NodeSpec
 }
 
 const nodes: Record<string, NodeSpec> = {
   doc: { content: 'blockGroup' },
 
-  blockGroup: { content: 'blockContainer+' },
+  blockGroup: { content: 'blockContainer+', toDOM: () => ['div', { class: 'blk-group' }, 0] },
 
   blockContainer: {
     content: 'blockContent blockGroup?',
@@ -117,7 +152,11 @@ const nodes: Record<string, NodeSpec> = {
       blockId: { default: '' },
     },
     defining: true,
-    toDOM: (node) => ['div', { 'data-block-id': String(node.attrs.blockId) }, 0],
+    toDOM: (node) => [
+      'div',
+      { 'data-block-id': String(node.attrs.blockId), class: 'blk-container' },
+      0,
+    ],
   },
 
   text: { group: 'inline', inline: true },
@@ -129,7 +168,7 @@ const nodes: Record<string, NodeSpec> = {
     // F-01-19: mention 은 원자다. `rich-text-ops.ts` 가 오프셋 단위를 1로
     // 정한 것과 짝을 이룬다 — ProseMirror 의 inline atom 도 nodeSize 1 이다.
     attrs: { mention: { default: {} }, plainText: { default: '' } },
-    toDOM: (node) => ['span', { 'data-mention': '' }, String(node.attrs.plainText)],
+    toDOM: (node) => ['span', { class: 'blk-mention' }, String(node.attrs.plainText)],
   },
 
   [EQUATION_NODE]: {
@@ -137,7 +176,7 @@ const nodes: Record<string, NodeSpec> = {
     inline: true,
     atom: true,
     attrs: { expression: { default: '' } },
-    toDOM: (node) => ['span', { 'data-equation': '' }, String(node.attrs.expression)],
+    toDOM: (node) => ['span', { class: 'blk-equation' }, String(node.attrs.expression)],
   },
 
 }
@@ -161,7 +200,7 @@ nodes[PAGE_REF_NODE] = {
   atom: true,
   selectable: true,
   attrs: { props: blockAttrSpec.props, format: blockAttrSpec.format, title: { default: '' } },
-  toDOM: (node) => ['div', { 'data-page-ref': '' }, String(node.attrs.title)],
+  toDOM: (node) => ['div', { class: 'blk blk-page-ref' }, String(node.attrs.title)],
 }
 
 // 모르는 타입의 보존 노드. 렌더는 회색 박스(F-01-02).
@@ -170,7 +209,11 @@ nodes[UNSUPPORTED_TYPE] = {
   atom: true,
   selectable: true,
   attrs: blockAttrSpec,
-  toDOM: () => ['div', { 'data-unsupported': '' }],
+  toDOM: (node) => [
+    'div',
+    { class: 'blk blk-unsupported' },
+    `지원하지 않는 블록: ${String((node.attrs.props as { original_type?: string })?.original_type ?? '알 수 없음')}`,
+  ],
 }
 
 // ── 마크 ──────────────────────────────────────────────────────────────
@@ -192,12 +235,23 @@ const marks: Record<string, MarkSpec> = {
   },
   color: {
     attrs: { color: {} },
-    toDOM: (mark) => ['span', { 'data-color': String(mark.attrs.color) }, 0],
+    toDOM: (mark) => ['span', { class: 'blk-color', 'data-color': String(mark.attrs.color) }, 0],
   },
 }
 
+const MARK_TAG: Readonly<Record<BooleanMark, string>> = {
+  bold: 'strong',
+  italic: 'em',
+  strikethrough: 's',
+  underline: 'u',
+  code: 'code',
+}
+
 for (const name of BOOLEAN_MARKS) {
-  marks[name] = { toDOM: () => ['span', { [`data-${name}`]: '' }, 0] }
+  marks[name] = {
+    parseDOM: [{ tag: MARK_TAG[name] }],
+    toDOM: () => [MARK_TAG[name], 0],
+  }
 }
 
 export const blockSchema = new Schema({ nodes, marks })
