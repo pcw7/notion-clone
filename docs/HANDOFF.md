@@ -127,11 +127,13 @@ W4 에서 이미 들어간 것: `F-01-07`(Tab 중첩) · `F-01-13`(토글 접힘
 
 ## 6. 세션 운영 요령 (실제로 겪은 것)
 
-**WSL2가 유휴 상태에서 VM을 내린다.** 그러면 Postgres·Valkey도 같이 멈춘다.
+**WSL2 VM 내려감 — 해결됨(PR #20).** `npm run db:up` 이 세션 유지 프로세스를 자동으로 띄운다.
+- 원인: WSL2는 **살아 있는 WSL 세션이 하나도 없으면** VM을 내린다. `docker compose up` 은 끝나면 세션도 닫힌다
 - 증상: `ECONNREFUSED 127.0.0.1:5432` (message 는 **비어 있고** `code` 에만 정보가 있다)
-- 대응: `npm run db:up` 한 번. healthy까지 기다려준다
-- **이 세션에서 4번 겪었다.** 명령을 여러 개 이어 쓸 때는 `npm run db:up >/dev/null 2>&1;` 를 **매번** 앞에 붙인다. 테스트 도중에도 내려간다 — `npm run check` 가 한 번은 skip 83개로 끝났다
+- **W4 세션에서만 5번 겪었다.** 매 명령 앞에 `npm run db:up` 을 붙이며 일했다. 지금은 필요 없다
+- ⚠ **진단 함정**: `docker compose ps` 로 상태를 묻는 **그 명령이 VM을 되살린다.** 확인하면 늘 `Up 1 second` 가 보이고 앱을 열면 죽어 있다. 컨테이너가 아니라 **VM이 통째로** 내려가 있던 것이다
 - `.wslconfig`의 `vmIdleTimeout=-1`은 **WSL 2.7.13에서 동작하지 않는 것을 확인**했다. 넣지 마라
+- 그래도 죽으면: `npm run db:up` (없어진 keepalive를 다시 띄운다). 끄려면 `WSL_KEEPALIVE=0`
 
 **`.env` 로드**: 스크립트는 자체적으로 `.env`를 읽지만, 셸에서 직접 `node --test`를 돌릴 땐 `set -a; source .env; set +a` 가 필요하다.
 

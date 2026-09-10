@@ -155,7 +155,7 @@ npm run db:migrate:status
 npm run db:reset            # 볼륨 삭제 → 재생성 → 마이그레이션
 ```
 
-> WSL2는 유휴 상태가 되면 VM을 내립니다. 컨테이너도 함께 멈췄다가 다음 `db:up`에서 복구되니, 작업 시작할 때 한 번 쳐주면 됩니다. (`.wslconfig`의 `vmIdleTimeout=-1`은 WSL 2.7.13에서 동작하지 않는 것을 확인했습니다.)
+> WSL2는 살아 있는 WSL 세션이 하나도 없으면 VM을 내립니다. 그러면 Postgres·Valkey도 같이 멈춰서 앱이 `ECONNREFUSED`를 맞습니다. `npm run db:up`이 **세션 유지 프로세스를 자동으로 띄우므로** 그럴 일이 없습니다 — `npm run db:down`이 정리하고, 끄려면 `WSL_KEEPALIVE=0`을 주면 됩니다. (`.wslconfig`의 `vmIdleTimeout=-1`은 WSL 2.7.13에서 동작하지 않는 것을 확인했습니다.)
 
 ---
 
