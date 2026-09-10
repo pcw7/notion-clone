@@ -17,7 +17,8 @@ import { docToPm } from './pm-adapter.ts'
 import { findContainerById } from './pm-blocks.ts'
 import { inputRulesPlugin } from './input-rules.ts'
 import { activeColor, activeFormats, setLink, setTextColor, toggleFormat } from './marks.ts'
-import { chain, createEditorKeymap, selectBlockCommand } from './keymap.ts'
+import { isBlockSelection, selectBlockCommand } from './block-selection.ts'
+import { chain, createEditorKeymap } from './keymap.ts'
 import type { EditorBlock } from './document.ts'
 
 let counter = 0
@@ -412,10 +413,26 @@ describe('키맵', () => {
     const state = caretAt(stateWith([blk(a, 'paragraph', '내용')]), a, 1)
     let next = state
     assert.ok(selectBlockCommand()(state, (tr) => { next = state.apply(tr) }))
-    assert.equal(next.selection.constructor.name, 'NodeSelection')
+    assert.ok(isBlockSelection(next.selection))
     const info = findContainerById(next.doc, a)
     assert.ok(info)
     assert.equal(next.selection.from, info.pos)
+  })
+
+  test('블록 선택 상태에서 Escape 를 다시 누르면 편집 모드로 돌아온다', () => {
+    const a = nextId()
+    const keymap = createEditorKeymap(deps)
+    const state = caretAt(stateWith([blk(a, 'paragraph', '내용')]), a, 1)
+
+    let selected = state
+    assert.ok(keymap.Escape(state, (tr) => { selected = state.apply(tr) }))
+    assert.ok(isBlockSelection(selected.selection))
+
+    let back = selected
+    assert.ok(keymap.Escape(selected, (tr) => { back = selected.apply(tr) }))
+    assert.equal(isBlockSelection(back.selection), false)
+    // 캐럿은 그 블록 안으로 돌아온다.
+    assert.equal(back.selection.$from.parent.textContent, '내용')
   })
 })
 

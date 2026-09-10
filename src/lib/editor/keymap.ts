@@ -32,9 +32,19 @@
 
 import { keydownHandler } from '@tiptap/pm/keymap'
 import { redo, undo } from '@tiptap/pm/history'
-import { NodeSelection, type Command, type EditorState, type Transaction } from '@tiptap/pm/state'
+import type { Command, EditorState, Transaction } from '@tiptap/pm/state'
 
 import type { BlockType } from '../block/types.ts'
+import {
+  deleteBlockSelectionCommand,
+  duplicateBlockSelectionCommand,
+  exitBlockSelectionCommand,
+  extendBlockSelectionCommand,
+  moveBlockSelectionCommand,
+  selectAllBlocksCommand,
+  selectBlockCommand,
+  turnSelectionIntoCommand,
+} from './block-selection.ts'
 import {
   createBlockKeymap,
   isComposingEvent,
@@ -44,7 +54,6 @@ import {
 } from './commands.ts'
 import { undoInputRuleCommand } from './input-rules.ts'
 import { setTextColor, toggleFormat } from './marks.ts'
-import { containerAt } from './pm-blocks.ts'
 
 /** 여러 커맨드를 순서대로 시도한다. 첫 성공에서 멈춘다. */
 export function chain(...commands: readonly Command[]): Command {
@@ -53,22 +62,6 @@ export function chain(...commands: readonly Command[]): Command {
       if (command(state, dispatch, view)) return true
     }
     return false
-  }
-}
-
-/**
- * Esc — 편집 모드에서 블록 선택 모드로 (F-12-01 시나리오 2).
- *
- * 캐럿을 지우고 현재 `blockContainer` 를 노드 선택으로 만든다. 이 상태에서
- * 같은 키가 다르게 동작하는 것이 F-12-01 이 말한 "모드 의존적" 단축키다.
- */
-export function selectBlockCommand(): Command {
-  return (state, dispatch) => {
-    if (state.selection instanceof NodeSelection) return false
-    const info = containerAt(state.selection.$from)
-    if (!info) return false
-    if (dispatch) dispatch(state.tr.setSelection(NodeSelection.create(state.doc, info.pos)))
-    return true
   }
 }
 
@@ -99,8 +92,20 @@ export type EditorKeymapDeps = CommandDeps & {
 /**
  * 전체 키맵. F-12-01 의 P0 최소 세트를 덮는다.
  *
- * 빠진 것: `/` 메뉴(별도 플러그인), `cmd+D` 복제와 블록 선택 모드의 이동
- * 단축키(F-01-09/F-01-08 과 함께), 표 관련(MVP 밖).
+ * ──────────────────────────────────────────────────────────────────────
+ * 모드 의존 키는 "블록 선택이 먼저"로 표현한다
+ * ──────────────────────────────────────────────────────────────────────
+ *
+ * F-12-01: *"단축키는 **모드 의존적**이다. 편집 모드(caret 있음)와 블록 선택
+ * 모드(caret 없음)에서 같은 키가 다르게 동작한다."*
+ *
+ * 모드를 나타내는 플래그를 따로 두지 않는다. 블록 선택용 커맨드는 전부
+ * `state.selection instanceof BlockSelection` 이 아니면 `false` 를 돌려주므로,
+ * `chain(블록선택용, 편집용)` 한 줄이 곧 분기다. 판정의 진실이 selection 하나뿐이라
+ * 모드가 어긋날 자리가 없다.
+ *
+ * 빠진 것: `/` 메뉴(별도 플러그인), 블록 이동 `Mod-Shift-↑↓`(F-01-08),
+ * 표 관련(MVP 밖).
  */
 export function createEditorKeymap(deps: EditorKeymapDeps): KeyBindings {
   const block = createBlockKeymap(deps)
@@ -109,9 +114,21 @@ export function createEditorKeymap(deps: EditorKeymapDeps): KeyBindings {
     ...block,
 
     // ★ 순서가 동작을 정의한다 — 파일 머리말 참조.
-    Backspace: chain(undoInputRuleCommand(), block.Backspace),
+    Backspace: chain(deleteBlockSelectionCommand(deps), undoInputRuleCommand(), block.Backspace),
+    Delete: chain(deleteBlockSelectionCommand(deps), block.Delete),
+    // 블록 선택 상태의 Enter 는 "이 블록을 편집한다"이지 분할이 아니다.
+    Enter: chain(exitBlockSelectionCommand(), block.Enter),
 
-    Escape: selectBlockCommand(),
+    // Esc 는 한 번 누르면 들어가고 한 번 더 누르면 나온다.
+    Escape: chain(exitBlockSelectionCommand(), selectBlockCommand()),
+
+    'Shift-ArrowUp': extendBlockSelectionCommand(-1, deps),
+    'Shift-ArrowDown': extendBlockSelectionCommand(1, deps),
+    ArrowUp: moveBlockSelectionCommand(-1, deps),
+    ArrowDown: moveBlockSelectionCommand(1, deps),
+
+    'Mod-d': duplicateBlockSelectionCommand(deps),
+    'Mod-a': selectAllBlocksCommand(),
 
     'Mod-b': toggleFormat('bold'),
     'Mod-i': toggleFormat('italic'),
@@ -138,7 +155,11 @@ export function createEditorKeymap(deps: EditorKeymapDeps): KeyBindings {
   }
 
   for (const [digit, type] of Object.entries(NUMBER_SHORTCUTS)) {
-    bindings[`Mod-Alt-${digit}`] = turnIntoCommand(type, deps)
+    // 블록 선택 상태면 선택 전부를, 아니면 캐럿이 있는 블록 하나를 바꾼다.
+    bindings[`Mod-Alt-${digit}`] = chain(
+      turnSelectionIntoCommand(type, deps),
+      turnIntoCommand(type, deps),
+    )
   }
 
   return bindings

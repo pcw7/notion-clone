@@ -18,7 +18,7 @@ import { isKnownBlockType, specOf, PAGE_TYPE, type BlockFormat, type BlockType }
 import type { RuleBlock } from './block-rules.ts'
 import { inlineToRuns } from './pm-adapter.ts'
 import { PAGE_REF_NODE } from './schema.ts'
-import { flattenVisible, type TreeNodeLike } from './tree.ts'
+import { flattenVisible, type TreeNodeLike, type VisibleIndex } from './tree.ts'
 
 export type ContainerInfo = {
   readonly id: string
@@ -106,23 +106,53 @@ export function toRuleBlock(info: ContainerInfo, isCollapsed: (id: string) => bo
 
 // ── 화면 순서 ─────────────────────────────────────────────────────────
 
-type PmTreeNode = TreeNodeLike & {
+export type VisibleBlock = TreeNodeLike & {
   readonly id: string
+  /** 컨테이너 노드 **앞**의 위치. */
+  readonly pos: number
   readonly collapsed: boolean
-  readonly children: PmTreeNode[]
+  readonly children: VisibleBlock[]
 }
 
-function treeFromGroup(group: PmNode, isCollapsed: (id: string) => boolean): PmTreeNode[] {
-  const out: PmTreeNode[] = []
+function treeFromGroup(
+  group: PmNode,
+  groupPos: number,
+  isCollapsed: (id: string) => boolean,
+): VisibleBlock[] {
+  const out: VisibleBlock[] = []
+  // `groupPos` 는 그룹 노드 **앞**이므로 첫 자식은 그 다음이다.
+  let pos = groupPos + 1
   group.forEach((container) => {
-    const info = describeContainer(container, 0) // 위치는 여기서 쓰지 않는다
+    const info = describeContainer(container, pos)
     out.push({
       id: info.id,
+      pos,
       collapsed: isCollapsed(info.id),
-      children: info.groupNode ? treeFromGroup(info.groupNode, isCollapsed) : [],
+      children:
+        info.groupNode && info.groupPos !== null
+          ? treeFromGroup(info.groupNode, info.groupPos, isCollapsed)
+          : [],
     })
+    pos += container.nodeSize
   })
   return out
+}
+
+/**
+ * 화면 순서로 평탄화한 블록 인덱스.
+ *
+ * `visibleNeighbors()` 가 쓰던 것을 밖으로 낸 것이다 — 멀티 블록 선택
+ * (F-01-09)의 범위 확장은 "이웃"만으로는 부족하고 **깊이**가 필요하다
+ * (선택된 블록의 자손을 건너뛰려면 어디까지가 자손인지 알아야 한다).
+ * `VisibleEntry.depth` 가 그 답을 이미 갖고 있다.
+ */
+export function visibleBlocks(
+  doc: PmNode,
+  isCollapsed: (id: string) => boolean,
+): VisibleIndex<VisibleBlock> {
+  if (doc.childCount === 0) return flattenVisible<VisibleBlock>([])
+  // 루트 blockGroup 은 doc 의 첫 자식이므로 그 앞 위치가 0 이다.
+  return flattenVisible(treeFromGroup(doc.child(0), 0, isCollapsed))
 }
 
 /**
@@ -141,8 +171,7 @@ export function visibleNeighbors(
   blockId: string,
   isCollapsed: (id: string) => boolean,
 ): { previous: string | null; next: string | null } {
-  if (doc.childCount === 0) return { previous: null, next: null }
-  const index = flattenVisible(treeFromGroup(doc.child(0), isCollapsed))
+  const index = visibleBlocks(doc, isCollapsed)
   return {
     previous: index.previous(blockId)?.node.id ?? null,
     next: index.next(blockId)?.node.id ?? null,

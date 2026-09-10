@@ -175,6 +175,26 @@
   text-underline-offset: 3px;
 }
 
+/*
+ * 블록 선택 (F-01-09).
+ *
+ * 하이라이트는 **최상위 컨테이너에만** 걸린다. 자손은 그 안에 들어 있으므로
+ * 배경 하나로 subtree 전체가 칠해진다 — "부모를 고르면 자식도 딸려 온다"가
+ * 화면에서 그대로 보인다. 자손마다 칠하면 겹쳐서 더 진해진다.
+ *
+ * `visible = false` 인 선택이라 브라우저는 아무 것도 그리지 않는다. 이 규칙이
+ * 없으면 선택 모드가 화면에서 **완전히 보이지 않는다.**
+ */
+.blk-editor .blk-selected {
+  background: rgba(35, 131, 226, 0.14);
+  border-radius: 3px;
+}
+
+/* 선택 모드에서는 캐럿이 없다 — 브라우저 선택 잔상도 지운다. */
+.ProseMirror-hideselection ::selection {
+  background: transparent;
+}
+
 /* ProseMirror 의 gap cursor — 원자 블록 앞뒤에 캐럿을 둘 자리. */
 .ProseMirror-gapcursor {
   display: none;
@@ -230,6 +250,7 @@
 .blk-color[data-color='red_background'],    [data-color='red_background']    { background: #fdebec; }
 
 @media (prefers-color-scheme: dark) {
+  .blk-editor .blk-selected { background: rgba(35, 131, 226, 0.28); }
   .blk-callout { border-color: #262626; background: #171717; }
   .blk-divider { border-top-color: #262626; }
   .blk-image-empty, .blk-unsupported { border-color: #404040; }
