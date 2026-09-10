@@ -281,18 +281,137 @@ describe('savePageBody — 자식 페이지', () => {
     assert.equal(loaded?.doc.blocks[1].title[0]?.plain_text, '하위')
   })
 
-  test('자식 페이지를 본문 블록 안에 중첩하면 거부한다 (Phase 0 범위)', async (t) => {
+  test('자식 페이지를 본문 블록 안으로 중첩하면 서브트리 경로가 다시 쓰인다', async (t) => {
     if (skipReason) return t.skip(skipReason)
+    const { queryOne } = await import('../db/pool.ts')
+
     const pageId = await newPage()
     const child = await createPage(fx.owner.ctx, { parentPageId: pageId })
+    // 자식 페이지에 본문과 손자를 달아 서브트리를 만든다.
+    //
+    // ⚠ 순서가 중요하다. 손자를 먼저 만들면 그 페이지 참조가 자식의 문서에
+    // 들어가 있어야 해서, 본문만 넣은 저장이 `page_ref_missing` 으로 거부된다.
+    const childBodyId = randomUUID()
+    assert.ok(
+      (await savePageBody(fx.owner.ctx, child.id, {
+        blocks: [{ id: childBodyId, type: 'paragraph', title: [textRun('자식 본문')] }],
+      })).ok,
+    )
+    const grandchild = await createPage(fx.owner.ctx, { parentPageId: child.id })
 
+    const toggle = blk('toggle', '토글')
     const ref: EditorBlock = { id: child.id, type: 'page', title: [] }
     const result = await savePageBody(fx.owner.ctx, pageId, {
-      blocks: [blk('toggle', '토글', [ref])],
+      blocks: [{ ...toggle, children: [ref] }],
+    })
+    assert.ok(result.ok, JSON.stringify(result))
+
+    const pathOf = async (id: string) =>
+      (await queryOne<{ ancestor_path: string[]; parent_id: string }>(
+        `SELECT ancestor_path, parent_id FROM block WHERE id = $1`,
+        [id],
+      ))
+
+    // 자식 페이지는 이제 토글의 자식이다.
+    const childRow = await pathOf(child.id)
+    assert.equal(childRow.parent_id, toggle.id)
+    assert.deepEqual(childRow.ancestor_path, [pageId, toggle.id])
+
+    // ★ 서브트리가 따라와야 한다. order_key 만 고쳤다면 여기가 옛 경로로 남는다.
+    assert.deepEqual((await pathOf(grandchild.id)).ancestor_path, [pageId, toggle.id, child.id])
+    assert.deepEqual((await pathOf(childBodyId)).ancestor_path, [pageId, toggle.id, child.id])
+
+    // 자식 페이지의 본문은 멀쩡해야 한다 — 다른 문서다.
+    const childBody = await loadPageBody(fx.owner.ctx, child.id)
+    assert.equal(childBody?.doc.blocks[0].title[0]?.plain_text, '자식 본문')
+
+    // 부모 문서에서도 토글 안에 보인다.
+    const parentBody = await loadPageBody(fx.owner.ctx, pageId)
+    assert.deepEqual(parentBody?.doc.blocks[0].children?.map((b) => b.id), [child.id])
+  })
+
+  test('중첩했다가 다시 페이지 직속으로 꺼낼 수 있다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { queryOne } = await import('../db/pool.ts')
+
+    const pageId = await newPage()
+    const child = await createPage(fx.owner.ctx, { parentPageId: pageId })
+    const toggle = blk('toggle', '토글')
+    const ref: EditorBlock = { id: child.id, type: 'page', title: [] }
+
+    assert.ok((await savePageBody(fx.owner.ctx, pageId, { blocks: [{ ...toggle, children: [ref] }] })).ok)
+    // 다시 최상위 본문으로.
+    assert.ok((await savePageBody(fx.owner.ctx, pageId, { blocks: [toggle, ref] })).ok)
+
+    const row = await queryOne<{ parent_id: string; ancestor_path: string[] }>(
+      `SELECT parent_id, ancestor_path FROM block WHERE id = $1`,
+      [child.id],
+    )
+    assert.equal(row.parent_id, pageId)
+    assert.deepEqual(row.ancestor_path, [pageId])
+  })
+
+  test('중첩한 자식 페이지가 순서에서 제자리에 온다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+
+    const pageId = await newPage()
+    const child = await createPage(fx.owner.ctx, { parentPageId: pageId })
+    const toggle = blk('toggle', '토글')
+    const first = blk('paragraph', '첫째')
+    const ref: EditorBlock = { id: child.id, type: 'page', title: [] }
+
+    // 토글 안에서 본문 뒤에 놓는다.
+    assert.ok(
+      (await savePageBody(fx.owner.ctx, pageId, {
+        blocks: [{ ...toggle, children: [first, ref] }],
+      })).ok,
+    )
+
+    const body = await loadPageBody(fx.owner.ctx, pageId)
+    assert.deepEqual(body?.doc.blocks[0].children?.map((b) => b.id), [first.id, child.id])
+  })
+
+  test('중첩이 깊이 상한을 넘기면 거부하고 아무것도 쓰지 않는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { queryOne } = await import('../db/pool.ts')
+
+    const pageId = await newPage()
+    const child = await createPage(fx.owner.ctx, { parentPageId: pageId })
+    const ref: EditorBlock = { id: child.id, type: 'page', title: [] }
+
+    // 토글을 깊게 쌓는다. 페이지 본문 블록도 ancestor_path 에 들어가므로
+    // 페이지를 99단 만들지 않고도 상한에 닿을 수 있다 — 훨씬 싸다.
+    const deepest = blk('toggle', '가장 깊은 토글')
+    let nested: EditorBlock = deepest
+    for (let i = 1; i < 99; i += 1) nested = blk('toggle', `t${i}`, [nested])
+
+    // 1) 깊은 토글 + 자식 페이지는 최상위에
+    assert.ok((await savePageBody(fx.owner.ctx, pageId, { blocks: [nested, ref] })).ok)
+    const before = await queryOne<{ ancestor_path: string[] }>(
+      `SELECT ancestor_path FROM block WHERE id = $1`,
+      [child.id],
+    )
+
+    // 2) 자식 페이지를 가장 깊은 토글 안으로 → 상한 초과
+    const withChildInside = (node: EditorBlock): EditorBlock =>
+      node.id === deepest.id
+        ? { ...node, children: [ref] }
+        : { ...node, children: (node.children ?? []).map(withChildInside) }
+
+    const result = await savePageBody(fx.owner.ctx, pageId, {
+      blocks: [withChildInside(nested)],
     })
 
     assert.equal(result.ok, false)
-    if (!result.ok) assert.equal(result.reason, 'page_ref_nested')
+    if (!result.ok) assert.equal(result.reason, 'page_ref_too_deep')
+
+    // 트랜잭션이 통째로 롤백돼야 한다 — 자식 페이지가 어중간한 자리에 남으면
+    // 트리가 깨진 채로 굴러간다.
+    const after = await queryOne<{ ancestor_path: string[] }>(
+      `SELECT ancestor_path FROM block WHERE id = $1`,
+      [child.id],
+    )
+    assert.deepEqual(after.ancestor_path, before.ancestor_path, '거부됐는데 자리가 바뀌었다')
   })
 
   test('휴지통에 있는 자식 페이지의 order_key 를 밀어내지 않는다 (B2)', async (t) => {

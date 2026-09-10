@@ -91,13 +91,9 @@ export async function PUT(request: Request, ctx: Ctx): Promise<Response> {
         },
         { status: 409 },
       )
-    case 'page_ref_nested':
+    case 'page_ref_too_deep':
       return Response.json(
-        {
-          error: 'page_ref_nested',
-          nested: result.nested,
-          message: '하위 페이지는 아직 본문 블록 안에 넣을 수 없습니다.',
-        },
+        { error: 'page_ref_too_deep', pageId: result.pageId, message: result.message },
         { status: 400 },
       )
   }
