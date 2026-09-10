@@ -37,19 +37,39 @@
  * → **트리거 조건: `/` 앞이 줄 시작 또는 공백일 때만**."* 그대로 구현한다.
  */
 
-import { Plugin, PluginKey, type EditorState, type Transaction } from '@tiptap/pm/state'
+import { NodeSelection, Plugin, PluginKey, type EditorState, type Transaction } from '@tiptap/pm/state'
 
 import { MVP_BLOCK_TYPES, specOf, type MvpBlockType } from '../block/types.ts'
 import { applyTurnInto, type CommandDeps } from './commands.ts'
-import { containerAt } from './pm-blocks.ts'
+import { containerAt, findContainerById } from './pm-blocks.ts'
+import { blockSchema, PAGE_REF_NODE } from './schema.ts'
 
-export type SlashCommand = {
-  readonly id: MvpBlockType
+type SlashCommandBase = {
   readonly label: string
   /** 검색 대상. 한글·영문을 함께 둔다. */
   readonly aliases: readonly string[]
-  readonly group: '기본 블록' | '미디어'
+  readonly group: '기본 블록' | '페이지' | '미디어'
 }
+
+/** 블록 타입 변환. 트랜잭션 하나로 끝난다. */
+export type BlockSlashCommand = SlashCommandBase & {
+  readonly kind: 'block'
+  readonly id: MvpBlockType
+}
+
+/**
+ * 하위 페이지 만들기 (F-02-13).
+ *
+ * 다른 커맨드와 달리 **서버 왕복이 필요하다** — 진짜 `block` 행을 만들어야
+ * 그 id 로 참조 노드를 넣을 수 있다. 그래서 `runSlashCommand` 가 처리하지 않고
+ * 호출자가 비동기로 다룬다(타입이 그걸 강제한다).
+ */
+export type PageSlashCommand = SlashCommandBase & {
+  readonly kind: 'page'
+  readonly id: 'page'
+}
+
+export type SlashCommand = BlockSlashCommand | PageSlashCommand
 
 /**
  * 타입별 라벨·별칭.
@@ -57,7 +77,7 @@ export type SlashCommand = {
  * `Record<MvpBlockType, …>` 이므로 레지스트리에 타입을 추가하면 **여기가
  * 컴파일 에러**가 된다. "슬래시 메뉴에만 없는 타입"이 생기지 않는다.
  */
-const CATALOG: Readonly<Record<MvpBlockType, Omit<SlashCommand, 'id'>>> = {
+const CATALOG: Readonly<Record<MvpBlockType, SlashCommandBase>> = {
   paragraph: { label: '텍스트', aliases: ['텍스트', 'text', 'p', '문단'], group: '기본 블록' },
   heading_1: { label: '제목 1', aliases: ['제목1', 'h1', 'heading1', '헤딩1'], group: '기본 블록' },
   heading_2: { label: '제목 2', aliases: ['제목2', 'h2', 'heading2', '헤딩2'], group: '기본 블록' },
@@ -80,11 +100,32 @@ const CATALOG: Readonly<Record<MvpBlockType, Omit<SlashCommand, 'id'>>> = {
   image: { label: '이미지', aliases: ['이미지', 'image', 'img', '사진'], group: '미디어' },
 }
 
-/** 메뉴에 나오는 커맨드 전부. 순서가 곧 노출 순서다. */
-export const SLASH_COMMANDS: readonly SlashCommand[] = MVP_BLOCK_TYPES.map((id) => ({
+/** 하위 페이지. 레지스트리의 블록 타입이 아니므로 여기 따로 둔다. */
+const PAGE_COMMAND: PageSlashCommand = {
+  kind: 'page',
+  id: 'page',
+  label: '페이지',
+  aliases: ['페이지', 'page', '하위페이지', 'subpage'],
+  group: '페이지',
+}
+
+const BLOCK_COMMANDS: readonly BlockSlashCommand[] = MVP_BLOCK_TYPES.map((id) => ({
+  kind: 'block',
   id,
   ...CATALOG[id],
 }))
+
+/**
+ * 메뉴에 나오는 커맨드 전부. 순서가 곧 노출 순서다.
+ *
+ * 기본 블록 → 페이지 → 미디어. 그룹으로 갈라 조립하므로 레지스트리에 타입이
+ * 늘어나도 자기 그룹 안에 알아서 들어간다.
+ */
+export const SLASH_COMMANDS: readonly SlashCommand[] = [
+  ...BLOCK_COMMANDS.filter((c) => c.group === '기본 블록'),
+  PAGE_COMMAND,
+  ...BLOCK_COMMANDS.filter((c) => c.group === '미디어'),
+]
 
 /**
  * prefix 필터.
@@ -201,7 +242,7 @@ export function slashMenuState(state: EditorState): SlashMenuState {
 export function runSlashCommand(
   state: EditorState,
   dispatch: ((tr: Transaction) => void) | undefined,
-  command: SlashCommand,
+  command: BlockSlashCommand,
   deps: CommandDeps,
 ): boolean {
   const menu = slashMenuState(state)
@@ -224,6 +265,70 @@ export function runSlashCommand(
   closeSlashMenu(tr)
   // 이미 그 타입이면 applyTurnInto 가 false 를 돌려준다 — 지우기만으로 충분하다.
   applyTurnInto(tr, info.id, command.id, deps, 0)
+
+  dispatch(tr.scrollIntoView())
+  return true
+}
+
+// ── 하위 페이지 삽입 (F-02-13) ────────────────────────────────────────
+
+/**
+ * 방금 만든 하위 페이지의 참조 노드를 넣는다.
+ *
+ * 서버가 **진짜 `block` 행**을 만든 뒤에 부른다 — 참조 노드의 컨테이너
+ * `blockId` 가 곧 그 페이지의 id 여야 하기 때문이다(`pmToDoc` 이 그렇게 읽는다).
+ * 가짜 id 로 먼저 넣고 나중에 바꾸면 그 사이의 자동 저장이 존재하지 않는
+ * 페이지를 참조하게 된다.
+ *
+ * 정본 F-02-13: 서브페이지는 **소유 관계**다(`block.parent_id`). `sidebar_alias`
+ * 나 `page_link` 로 표현하는 link_to_page·@멘션과 섞지 않는다 — *"섞는 순간
+ * 권한 상속이 무너진다."* MVP 는 서브페이지만이다(클론 대안).
+ *
+ * `/쿼리` 삭제와 삽입은 **한 트랜잭션**이다(Cmd+Z 한 번).
+ */
+export function insertSubpageRef(
+  state: EditorState,
+  dispatch: ((tr: Transaction) => void) | undefined,
+  page: { readonly id: string; readonly title: string },
+): boolean {
+  const info = containerAt(state.selection.$from)
+  if (!info) return false
+  if (!dispatch) return true
+
+  const tr = state.tr
+
+  // 메뉴가 아직 열려 있으면 `/쿼리` 를 지운다. 서버 왕복 사이에 사용자가 더
+  // 입력했어도 플러그인 상태가 매핑을 따라오므로 범위가 여전히 정확하다.
+  // 그 사이 메뉴가 닫혔다면(공백 입력 등) 지울 근거가 없으므로 그대로 둔다.
+  const menu = slashMenuState(state)
+  if (menu.active && state.selection.head > menu.from) {
+    tr.delete(menu.from, state.selection.head)
+  }
+  closeSlashMenu(tr)
+
+  const container = blockSchema.nodes.blockContainer.create({ blockId: page.id }, [
+    blockSchema.nodes[PAGE_REF_NODE].create({ props: {}, format: {}, title: page.title }),
+  ])
+
+  // 캐럿이 있던 블록이 비었으면 **그 자리를 대체한다.** 빈 문단을 남겨두면
+  // 사용자가 `/페이지` 를 친 줄이 빈 줄로 남는다.
+  const fresh = findContainerById(tr.doc, info.id)
+  const replaceable =
+    fresh !== null &&
+    fresh.contentNode.isTextblock &&
+    fresh.contentNode.content.size === 0 &&
+    (fresh.groupNode === null || fresh.groupNode.childCount === 0)
+
+  if (fresh !== null && replaceable) {
+    tr.replaceWith(fresh.pos, fresh.pos + fresh.node.nodeSize, container)
+  } else if (fresh !== null) {
+    tr.insert(fresh.pos + fresh.node.nodeSize, container)
+  } else {
+    return false
+  }
+
+  const placed = findContainerById(tr.doc, page.id)
+  if (placed) tr.setSelection(NodeSelection.create(tr.doc, placed.contentPos))
 
   dispatch(tr.scrollIntoView())
   return true

@@ -37,6 +37,7 @@ import { pmToDoc } from '@/lib/editor/pm-adapter'
 import {
   closeSlashMenu,
   filterSlashCommands,
+  insertSubpageRef,
   runSlashCommand,
   slashMenuState,
   type SlashCommand,
@@ -184,14 +185,57 @@ export function BodyEditor({
     }))
   }, [])
 
-  const execute = useCallback((command: SlashCommand) => {
+  /**
+   * 하위 페이지 만들기 (F-02-13).
+   *
+   * 서버가 진짜 `block` 행을 만든 **뒤에** 참조 노드를 넣는다 — 참조 노드의
+   * id 가 곧 그 페이지의 id 여야 하기 때문이다. 가짜 id 로 먼저 넣으면 그 사이
+   * 자동 저장이 존재하지 않는 페이지를 참조한다.
+   */
+  const createSubpage = useCallback(async () => {
     const view = viewRef.current
     if (!view) return
-    runSlashCommand(view.state, view.dispatch.bind(view), command, {
-      isCollapsed: (id) => collapsedRef.current.has(id),
-    })
-    view.focus()
-  }, [])
+    setStatus({ kind: 'saving' })
+    try {
+      const res = await fetch(`/api/workspaces/${workspaceId}/pages`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ parentPageId: pageId }),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        setStatus({ kind: 'error', message: '하위 페이지를 만들지 못했습니다.' })
+        return
+      }
+      const current = viewRef.current
+      if (!current) return
+      insertSubpageRef(current.state, current.dispatch.bind(current), {
+        id: String(data.page.id),
+        title: String(data.page.title ?? ''),
+      })
+      current.focus()
+    } catch {
+      setStatus({ kind: 'error', message: '연결에 실패했습니다.' })
+    }
+  }, [workspaceId, pageId])
+
+  const execute = useCallback(
+    (command: SlashCommand) => {
+      const view = viewRef.current
+      if (!view) return
+
+      if (command.kind === 'page') {
+        void createSubpage()
+        return
+      }
+
+      runSlashCommand(view.state, view.dispatch.bind(view), command, {
+        isCollapsed: (id) => collapsedRef.current.has(id),
+      })
+      view.focus()
+    },
+    [createSubpage],
+  )
 
   // ── 에디터 생성 ─────────────────────────────────────────────────────
 
