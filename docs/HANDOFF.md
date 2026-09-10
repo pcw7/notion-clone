@@ -216,12 +216,29 @@ C:\VibeCoding\notion 에서 노션 클론을 이어서 만든다.
 
 CLAUDE.md 와 docs/HANDOFF.md 를 먼저 읽어라. 특히:
 - 절대 제약 3개 (무료 라이브러리만 / LLM 토큰 하드 캡 / 정본 우선)
-- 문서 계층 — docs/research/00-canonical-data-model.md 가 스키마 정본이다
-- HANDOFF §2 다음 작업, §3 이미 내린 판결, §6 세션 운영 요령
+- 문서 계층 — docs/research/00-canonical-data-model.md 가 스키마 정본이다.
+  01~17 도메인 문서에는 판결로 폐기된 스키마가 남아 있으니 충돌하면 정본이 이긴다
+- HANDOFF §2 다음 작업 · §3 이미 내린 판결(같은 것을 다시 판단하지 마라) · §7 알려진 부채
 
-Phase 0 W1~W4 와 W5-a(페이지 트리)가 끝났다. 다음은 W5-b 편집 확장이다.
-첫 항목은 멀티 블록 선택(F-01-09) — 선택 모드가 없으면 드래그 이동도 복붙도
-대상이 없다. keymap.ts 의 selectBlockCommand() 에 자리만 잡혀 있다.
+Phase 0 W1~W4 와 W5-a(페이지 트리)가 끝났다. 다음은 W5-b 편집 확장이고
+첫 항목은 멀티 블록 선택(F-01-09)이다 — 선택 모드가 없으면 드래그 이동도
+복붙도 대상이 없다. keymap.ts 의 selectBlockCommand() 에 자리만 잡혀 있다.
+착수 전에 docs/research/01-block-editor.md 의 F-01-09 · F-01-08 · F-01-10 을 읽어라.
 
-작업은 브랜치 → 구현+테스트 → npm run check → PR → CI 확인 → 머지 순서로 한다.
+작업 순서:
+  브랜치 → 구현+테스트 → npm run check → npm run db:verify:schema
+  → PR → CI 두 잡 통과 확인(db 잡의 skip 이 0인지도 본다) → squash 머지
+
+PR 본문에는 "왜 이렇게 했는가"를 쓴다 — 정본과 다르게 한 것, 실패했다가
+고친 것, 의도적으로 안 만든 것.
+
+시간을 아끼려면 (전부 이전 세션에서 실제로 당한 것, 자세한 건 HANDOFF §6):
+- HTTP 로 API 를 확인할 때는 `npm run build && npm run start` 를 쓴다.
+  next dev 는 새 라우트를 등록하지 않는 일이 있고, 그때 404 응답의
+  content-type 이 text/html 이다(= 우리 404 가 아니라 Next 의 404)
+- 머지 후 `git checkout main` 하면 브랜치가 지워져 main 에 서 있다.
+  다음 작업 전에 반드시 새 브랜치를 판다 — 두 번 main 에 커밋했다
+- `npx prettier` 를 그냥 돌리지 마라. 설정이 없어 저장소 스타일
+  (작은따옴표·세미콜론 없음)을 통째로 뭉갠다
+- 비-ASCII 가 섞인 긴 문자열 치환은 스크립트 대신 Edit 도구로 한다
 ```
