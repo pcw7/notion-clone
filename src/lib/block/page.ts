@@ -334,8 +334,8 @@ export async function createPage(
 export async function getPage(ctx: SessionContext, pageId: BlockId): Promise<PageDetail | null> {
   const rows = await query<PageRow>(
     `SELECT ${PAGE_COLUMNS}
-       FROM block
-      WHERE id = $1 AND workspace_id = $2 AND type = 'page' AND lifecycle = 'live'`,
+       FROM live_block
+      WHERE id = $1 AND workspace_id = $2 AND type = 'page'`,
     [pageId, ctx.workspaceId],
   )
   const row = rows[0]
@@ -363,17 +363,17 @@ export async function listChildPages(
   const rows = parentPageId
     ? await query<PageRow>(
         `SELECT ${PAGE_COLUMNS}
-           FROM block
+           FROM live_block
           WHERE parent_type = 'block' AND parent_id = $1
-            AND workspace_id = $2 AND type = 'page' AND lifecycle = 'live'
+            AND workspace_id = $2 AND type = 'page'
           ORDER BY order_key, id`,
         [parentPageId, ctx.workspaceId],
       )
     : await query<PageRow>(
         `SELECT ${PAGE_COLUMNS}
-           FROM block
+           FROM live_block
           WHERE parent_type = 'workspace' AND parent_id = $1
-            AND workspace_id = $1 AND type = 'page' AND lifecycle = 'live'
+            AND workspace_id = $1 AND type = 'page'
           ORDER BY order_key, id`,
         [ctx.workspaceId],
       )
@@ -390,8 +390,8 @@ export async function listAncestors(
 
   const rows = await query<PageRow>(
     `SELECT ${PAGE_COLUMNS}
-       FROM block
-      WHERE id = ANY($1::uuid[]) AND workspace_id = $2 AND type = 'page' AND lifecycle = 'live'`,
+       FROM live_block
+      WHERE id = ANY($1::uuid[]) AND workspace_id = $2 AND type = 'page'`,
     [page.ancestors, ctx.workspaceId],
   )
 

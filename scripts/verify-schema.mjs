@@ -300,6 +300,52 @@ try {
     else fail(`max(order_key) 가 ${maxRows[0].m} — ${wantMax} 여야 한다. 새 형제 키가 기존 키와 충돌한다`)
   }
 
+  console.log('\n[7] live_block 뷰가 실제로 걸러내는가')
+  {
+    // 정본 §3.4: "모든 일반 조회는 이 뷰만 본다. 개별 쿼리에서 lifecycle 조건을
+    // 빼먹는 것이 1순위 버그다." 뷰가 있다는 것만으로는 부족하고 **걸러내는지**를 본다.
+    const parentId = randomUUID()
+    const ids = { live: randomUUID(), trashed: randomUUID(), purged: randomUUID() }
+
+    const insert = (id, key) =>
+      client.query(
+        `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key,
+                            ancestor_path, perm_scope_id, properties, format,
+                            created_at, last_edited_at)
+         VALUES ($1, $2, 'page', 'block', $3, $4, '{}', $3, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+        [id, wsId, parentId, key],
+      )
+
+    await insert(ids.live, 'a0')
+    await insert(ids.trashed, 'a1')
+    await insert(ids.purged, 'a2')
+
+    await client.query(
+      `UPDATE block SET lifecycle='trashed', trashed_at=now(), trash_root_id=id,
+                        purge_after = now() + interval '30 days'
+        WHERE id = $1`,
+      [ids.trashed],
+    )
+    await client.query(
+      `UPDATE block SET lifecycle='purged', trashed_at=now(), trash_root_id=id, purged_at=now()
+        WHERE id = $1`,
+      [ids.purged],
+    )
+
+    const { rows } = await client.query(
+      `SELECT id FROM live_block WHERE parent_id = $1 ORDER BY order_key`,
+      [parentId],
+    )
+    const got = rows.map((r) => r.id)
+    if (got.length === 1 && got[0] === ids.live) ok('live 만 보인다 (trashed · purged 제외)')
+    else fail(`live_block 이 ${got.length}행을 돌려줬다 — trashed/purged 가 새고 있다`)
+
+    // 같은 조건으로 block 을 직접 조회하면 3행이다. 뷰가 하는 일이 이것뿐이라는 확인.
+    const { rows: all } = await client.query(`SELECT id FROM block WHERE parent_id = $1`, [parentId])
+    if (all.length === 3) ok('block 직접 조회는 3행 — 뷰만이 필터를 건다')
+    else fail(`block 직접 조회가 ${all.length}행이다 (3행이어야 한다)`)
+  }
+
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
 } catch (e) {

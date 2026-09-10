@@ -18,6 +18,7 @@ import { NewPageButton } from '../new-page-button'
 import { PageTitle } from './page-title'
 import { BodyEditor } from './body-editor'
 import { MovePageControl } from './move-page-control'
+import { DeletePageButton } from './delete-page-button'
 
 /** 제목 없는 페이지의 표시 문구. 저장된 값은 빈 배열이다. */
 const UNTITLED = '제목 없음'
@@ -70,16 +71,24 @@ export default async function PageView({ params }: PageProps<'/w/[workspaceId]/[
           <span className="text-neutral-400">{page.plainTitle || UNTITLED}</span>
         </nav>
 
-        <MovePageControl
-          workspaceId={workspaceId}
-          pageId={page.id}
-          currentParentId={page.parentPageId}
-          targets={moveTargets.map((t) => ({
-            id: t.id,
-            title: t.title,
-            ancestors: [...t.ancestors],
-          }))}
-        />
+        <div className="flex flex-none items-start gap-2">
+          <MovePageControl
+            workspaceId={workspaceId}
+            pageId={page.id}
+            currentParentId={page.parentPageId}
+            targets={moveTargets.map((t) => ({
+              id: t.id,
+              title: t.title,
+              ancestors: [...t.ancestors],
+            }))}
+          />
+          <DeletePageButton
+            workspaceId={workspaceId}
+            pageId={page.id}
+            childCount={children.length}
+            parentPageId={page.parentPageId}
+          />
+        </div>
       </div>
 
       <PageTitle workspaceId={workspaceId} pageId={page.id} initialTitle={page.plainTitle} />

@@ -13,9 +13,11 @@ import Link from 'next/link'
 
 import { requirePageSession } from '@/lib/auth/page-session'
 import { listChildPages } from '@/lib/block/page'
+import { listTrash } from '@/lib/block/trash'
 import { listMembers, listPendingInvites } from '@/lib/workspace/list'
 import { InviteForm } from './invite-form'
 import { NewPageButton } from './new-page-button'
+import { TrashPanel } from './trash-panel'
 
 /** 제목 없는 페이지의 표시 문구. 저장된 값은 빈 배열이다. */
 const UNTITLED = '제목 없음'
@@ -28,8 +30,9 @@ export default async function WorkspacePage({ params }: PageProps<'/w/[workspace
   const ctx = await requirePageSession(workspaceId)
   const canInvite = ctx.role === 'owner' || ctx.role === 'membership_admin'
 
-  const [rootPages, members, invites] = await Promise.all([
+  const [rootPages, trash, members, invites] = await Promise.all([
     listChildPages(ctx, null),
+    listTrash(ctx),
     listMembers(ctx.workspaceId),
     canInvite ? listPendingInvites(ctx.workspaceId) : Promise.resolve([]),
   ])
@@ -67,6 +70,17 @@ export default async function WorkspacePage({ params }: PageProps<'/w/[workspace
         )}
         <NewPageButton workspaceId={workspaceId} />
       </section>
+
+      <TrashPanel
+        workspaceId={workspaceId}
+        entries={trash.map((e) => ({
+          id: e.id,
+          title: e.title,
+          trashedAt: e.trashedAt.toISOString(),
+          purgeAfter: e.purgeAfter?.toISOString() ?? null,
+          descendantCount: e.descendantCount,
+        }))}
+      />
 
       <section>
         <h2 className="text-sm font-medium text-neutral-500">멤버 {members.length}명</h2>
