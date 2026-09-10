@@ -73,7 +73,7 @@ export type MoveResult = {
   readonly noop: boolean
 }
 
-type MovingRow = {
+export type MovingRow = {
   id: string
   parent_type: string
   parent_id: string
@@ -81,7 +81,7 @@ type MovingRow = {
   perm_scope_id: string
 }
 
-type TargetRow = {
+export type TargetRow = {
   id: string
   type: string
   ancestor_path: string[]
@@ -183,6 +183,54 @@ export async function movePage(
       } satisfies MoveResult
     }
 
+    const placed = await relocateSubtree(tx, ctx, moving, target)
+
+    return {
+      pageId: asBlockId(moving.id),
+      parentBlockId: target === null ? null : asBlockId(target.id),
+      ancestors: placed.ancestors.map(asBlockId),
+      permScopeId: placed.permScopeId,
+      orderKey: placed.orderKey,
+      version: placed.version,
+      movedDescendants: placed.movedDescendants,
+      noop: false,
+    } satisfies MoveResult
+  })
+}
+
+export type RelocateResult = {
+  readonly ancestors: readonly string[]
+  readonly permScopeId: string
+  readonly orderKey: string
+  readonly version: string
+  readonly movedDescendants: number
+}
+
+/**
+ * 서브트리를 새 자리에 앉힌다 — **쓰기 부분만.**
+ *
+ * `movePage`(이동)와 `restorePage`(부모가 사라진 페이지를 되살릴 때)가 정확히
+ * 같은 일을 해야 해서 뽑았다. 두 곳에 복사해 두면 한쪽만 고쳐지고, 그러면
+ * `ancestor_path` 나 `perm_scope_id` 가 어긋난 채 **조용히** 굴러간다.
+ *
+ * 호출자가 `moving` 행을 이미 잠갔다고 가정한다. 사이클 검사는 호출자의 몫이지만
+ * (복원 경로에는 사이클이 있을 수 없다) **깊이 검사는 여기서 한다** — 호출자에게
+ * 맡기면 새 호출자가 빠뜨린다.
+ */
+export async function relocateSubtree(
+  tx: Tx,
+  ctx: SessionContext,
+  moving: MovingRow,
+  target: TargetRow | null,
+): Promise<RelocateResult> {
+  {
+    // 최상위로 가는 경우 형제 삽입을 직렬화한다. `movePage` 는 `lockTarget` 에서
+    // 이미 잡았지만 같은 트랜잭션 안이라 재진입이 무해하고, `restorePage` 처럼
+    // `lockTarget` 을 거치지 않는 호출자도 안전해진다.
+    if (target === null) {
+      await tx.query(`SELECT id FROM workspace WHERE id = $1 FOR UPDATE`, [ctx.workspaceId])
+    }
+
     const oldPath = moving.ancestor_path
     const newPath = target === null ? [] : [...target.ancestor_path, target.id]
 
@@ -256,16 +304,13 @@ export async function movePage(
     )
 
     return {
-      pageId: asBlockId(moving.id),
-      parentBlockId: target === null ? null : asBlockId(target.id),
-      ancestors: newPath.map(asBlockId),
+      ancestors: newPath,
       permScopeId: newScope,
       orderKey: updated.order_key,
       version: updated.version,
       movedDescendants: descendants.length,
-      noop: false,
-    } satisfies MoveResult
-  })
+    } satisfies RelocateResult
+  }
 }
 
 // ── 이동 대상 목록 ────────────────────────────────────────────────────
@@ -300,8 +345,8 @@ export async function listMovableTargets(
     ancestor_path: string[]
   }>(
     `SELECT id, properties, ancestor_path
-       FROM block
-      WHERE workspace_id = $1 AND type = 'page' AND lifecycle = 'live'
+       FROM live_block
+      WHERE workspace_id = $1 AND type = 'page'
         AND id <> $2
         AND NOT (ancestor_path @> ARRAY[$2::uuid])
       ORDER BY array_length(ancestor_path, 1) NULLS FIRST, order_key, id`,

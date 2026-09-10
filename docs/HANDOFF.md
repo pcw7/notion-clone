@@ -2,13 +2,13 @@
 
 새 세션이 이어받을 때 읽는 문서. **[CLAUDE.md](../CLAUDE.md)를 먼저 읽고 여기로 온다** — 거기에 절대 제약·스택·명령어·코딩 규칙이 있고, 이 문서는 **"지금 어디까지 왔고 다음에 뭘 하는가"**만 다룬다.
 
-최종 갱신: 2026-09-09 (PR #19 머지 시점 — W4 완료)
+최종 갱신: 2026-09-10 (PR #22 머지 시점 — W5-a 진행 중)
 
 ---
 
 ## 1. 지금 어디까지 왔나
 
-**Phase 0 (MVP, 6~8주) 중 W1–W4 완료. 다음은 W5.**
+**Phase 0 (MVP, 6~8주) 중 W1–W4 완료. W5-a 진행 중.**
 
 | 주차 | 내용 | 상태 | PR |
 |---|---|---|---|
@@ -16,37 +16,50 @@
 | W2 | 계약 고정 (권한) | ✅ | #4 |
 | W2 | 계약 고정 (API — RichText · 페이지네이션) | ✅ | #10 |
 | W3 | 블록 모델 | ✅ | #9 #10 |
-| W4 | **에디터 코어** | ✅ | #12 #13 #14 #15 #16 #17 #18 #19 |
-| **W5** | **페이지 트리 · 편집 확장** | **다음** | — |
+| W4 | 에디터 코어 | ✅ | #12 #13 #14 #15 #16 #17 #18 #19 |
+| **W5-a** | **페이지 트리** | **진행 중** | #21(이동) #22(휴지통) |
+| W5-b | 편집 확장 · 파일 | | |
 | W6 | 내비게이션 · 권한 | | |
 | W7 | 검색 | | |
 | W8 | DB 코어 · 뷰 | | |
 
-**동작하는 것**: 이메일 OTP 로그인 → 워크스페이스 생성 → 이메일 초대 → 수락 → 워크스페이스 진입 → **페이지 생성 → 본문 편집(12종 블록 · 분할/병합 · 중첩 · `/` 메뉴 · 마크다운 · 서식) → 자동 저장 → 하위 페이지**.
+**동작하는 것**: 이메일 OTP 로그인 → 워크스페이스 생성 → 이메일 초대 → 수락 → 워크스페이스 진입 → 페이지 생성 → 본문 편집(12종 블록 · 분할/병합 · 중첩 · `/` 메뉴 · 마크다운 · 서식) → 자동 저장 → 하위 페이지 → **페이지 이동 → 휴지통 · 복원 · 영구 삭제**.
 `npm run dev` 로 실제로 눌러볼 수 있다.
 
-**숫자**: 마이그레이션 8개 / 테이블 24개 / 테스트 424개(CI skip 0) / PR 19개 머지.
+**숫자**: 마이그레이션 8개 / 테이블 24개 / 테스트 468개(CI skip 0) / PR 22개 머지.
 
 ---
 
-## 2. 다음 작업 — W5 페이지 트리 · 편집 확장
+## 2. 다음 작업 — W5-a 나머지
 
-로드맵(마스터 문서 §5.2)의 W5 F-ID: `F-02-01` `F-02-04` `F-01-07` `F-01-13` `F-01-09` `F-01-08` `F-01-10`
+로드맵(마스터 문서 §5.2)의 정확한 F-ID:
 
-W4 에서 이미 들어간 것: `F-01-07`(Tab 중첩) · `F-01-13`(토글 접힘, 로컬 상태). 남은 것이 W5 의 실체다.
+| 구간 | F-ID | 상태 |
+|---|---|---|
+| **W5-a** 페이지 트리 | `F-02-01` `F-02-02` `F-02-13` `F-02-08` `F-02-15` `F-02-16` `F-11-05` | 아래 참조 |
+| **W5-b** 편집 확장 · 파일 | `F-01-08` `F-01-09` `F-01-10` `F-01-13` `F-01-15` `F-12-09` `F-09-08` `F-05-04` `F-12-16` | 미착수 |
+
+> ⚠ 이전 판의 이 문단은 `F-02-04`(=즐겨찾기)를 "휴지통"으로 잘못 적어 뒀다.
+> 휴지통은 **`F-11-05` / `F-02-11`**, 이동은 **`F-02-08`** 이다.
+
+W5-a 중 **이미 된 것**: `F-02-01`(page-as-block) · `F-02-15`(breadcrumb) · `F-02-16`(`/{uuid}` 라우팅) ·
+`F-02-02`(무한 중첩 — 생성/이동은 되고 사이드바 트리만 없음) · `F-02-08`(이동) · `F-11-05`(휴지통 3상태).
+W4 에서 미리 들어간 것: `F-01-07`(Tab 중첩) · `F-01-13`(토글 접힘, 로컬 상태).
 
 **권장 순서**
-1. **페이지 이동 · 휴지통 · 복원** (`F-02-04`) — 정본 §3.4 의 상태 전이 표가 이미 규칙을 다 정해 뒀다.
-   서브트리 이동은 `ancestor_path @> ARRAY[:id]` 단일 UPDATE + `perm_scope_id` 재계산(판결 X-7 · §3.11 트리거 5개).
-   **이걸 먼저 해야** `savePageBody` 의 `page_ref_nested` 제약(아래 §7)을 풀 수 있다.
-2. **사이드바 페이지 트리** — 부분 로드(`F-01-22` API 계약)를 염두에 두고 만든다.
-3. **멀티 블록 선택**(`F-01-09`) → **드래그·상하 이동**(`F-01-08`) → **복붙 구조 보존**(`F-01-10`).
+1. **`savePageBody` 의 `page_ref_nested` 완화** — 가장 작고, 지금 바로 가능하다.
+   `move-page.ts` 의 `relocateSubtree(tx, ctx, moving, target)` 가 이미 임의 블록을 대상으로 받으므로,
+   문서에서 하위 페이지의 부모가 바뀐 것을 감지해 그걸 부르면 된다(§7 의 제약이 풀린다).
+2. **서브페이지 인라인 생성** (`F-02-13`) — `/` 메뉴에 "페이지"를 넣어 본문에서 하위 페이지를 만든다.
+   `slash-menu.ts` 의 카탈로그는 `Record<MvpBlockType, …>` 이라 `page` 를 넣으려면 타입을 손봐야 한다.
+3. **사이드바 페이지 트리** (`F-02-03` / W6-a `F-07-16`) — 부분 로드(`F-01-22` API 계약)를 염두에 두고.
+4. **W5-b**: **멀티 블록 선택**(`F-01-09`) → **드래그·상하 이동**(`F-01-08`) → **복붙 구조 보존**(`F-01-10`).
    순서가 이렇다: 선택 모드가 없으면 이동도 복붙도 대상이 없다. `Escape` 로 진입하는 블록 선택 모드는
    `keymap.ts` 의 `selectBlockCommand()` 로 자리만 잡아 뒀다.
 
 **착수 전에 읽을 것**
-- `docs/research/02-page-workspace.md` F-02-04(휴지통·복원), `00-canonical-data-model.md` §3.4 상태 전이 표
 - `docs/research/01-block-editor.md` F-01-09 / F-01-10 (특히 "블록 경계를 넘는 부분 선택"이 이미 성립한다는 점 — 단일 contenteditable 이라 공짜로 얻었다)
+- `docs/research/02-page-workspace.md` F-02-13(서브페이지 vs link to page)
 
 **이미 준비된 것 (다시 만들지 말 것)**
 - `src/lib/editor/block-rules.ts` — 분할·병합 **결정** 함수. ProseMirror 를 모른다
@@ -54,6 +67,8 @@ W4 에서 이미 들어간 것: `F-01-07`(Tab 중첩) · `F-01-13`(토글 접힘
 - `src/lib/editor/rich-text-ops.ts` — 오프셋·분할·이어붙이기 (상한 초과 시 거부)
 - `src/lib/editor/document.ts` — `EditorDoc` 계약 · 검증 · 행↔문서 변환 · 투영
 - `src/lib/block/save-page-body.ts` — **프로젝터**. Phase 1 에서 상류만 Y.Doc 으로 바뀐다
+- `src/lib/block/move-page.ts` — 이동 + **`relocateSubtree()`**(서브트리 경로·스코프 재작성). 복원도 이걸 쓴다
+- `src/lib/block/trash.ts` — 3상태 전이. 복원·영구삭제는 **삭제 루트 단위**로만
 - `src/lib/editor/schema.ts` · `pm-adapter.ts` · `commands.ts` · `keymap.ts` · `input-rules.ts` · `slash-menu.ts`
 - `src/lib/auth/route-session.ts` · `page-session.ts` — 라우트 진입 게이트(거부 코드 매핑 한 곳)
 - `src/lib/testing/db-fixtures.ts` — `SessionContext` 를 캐스팅 없이 발급하는 테스트 픽스처
@@ -144,7 +159,14 @@ node -e 'const{execSync}=require("child_process");
   for(const pid of out.split(/\s+/).filter(Boolean)) try{process.kill(Number(pid))}catch(e){}'
 ```
 
+**`npx prettier` 를 그냥 돌리지 마라.** 저장소에 prettier 설정이 없어서 기본값(쌍따옴표 · 세미콜론)으로 파일 전체를 다시 포맷한다 — 이 저장소 스타일은 작은따옴표 · 세미콜론 없음이다. 한 번 당했고 `git checkout` 으로 되돌렸다.
+
 **긴 문자열 치환에 스크립트 + `replace`를 쓰면 조용히 실패한다.** 이 세션에서도 한 번 당했다(한글·`·` 같은 비-ASCII가 섞인 앵커에서 heredoc 인코딩이 어긋났다). **파일 수정은 Edit 도구를 쓴다.** 스크립트로 치환했다면 `assert` 를 넣고 `grep`으로 반영을 확인한다.
+
+**Turbopack dev 가 새 라우트를 등록하지 않는 일이 있다.** 새 `route.ts` 를 만들고 dev 를 켰는데 계속 404 가 났다.
+- 구분법: 응답의 **`content-type` 이 `text/html`** 이면 우리 404 가 아니라 **Next 의 404**(라우트 미매칭)다. 상태 코드만 보면 코드를 계속 뒤지게 된다
+- `.next/dev/types/routes.d.ts` 에 그 경로가 있는지 본다
+- 한 번은 dev 재시작으로 풀렸고, 한 번은 **`.next` 를 통째로 지워야** 풀렸다(`.next/dev` 만 지우는 것으로는 부족했다). 그때는 `pages/[pageId]/` 하위 라우트가 **전부** 안 잡혔다
 
 **node 의 strip-only TypeScript 모드 제약**: **파라미터 프로퍼티**(`constructor(readonly x: T)`)를 지원하지 않는다. `node --test` 가 `ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX` 로 죽는다. 명시적 필드로 쓴다.
 
@@ -154,8 +176,10 @@ node -e 'const{execSync}=require("child_process");
 
 | 항목 | 상태 | 어디 |
 |---|---|---|
-| **하위 페이지를 본문 블록 안에 중첩** | `page_ref_nested` 로 **거부한다.** 허용하려면 그 서브트리 전체의 `ancestor_path` 일괄 UPDATE(X-7)가 필요하고 그건 W5 의 일 | `src/lib/block/save-page-body.ts` |
-| **페이지 이동 · 삭제 · 휴지통 · 복원** | 미구현. `lifecycle` 전이 코드가 없다(테스트만 수동으로 UPDATE 한다) | W5 |
+| **하위 페이지를 본문 블록 안에 중첩** | `page_ref_nested` 로 **아직 거부한다.** 필요한 기계(`relocateSubtree`)는 PR #21 에서 생겼으므로 이제 붙이기만 하면 된다 | `src/lib/block/save-page-body.ts` |
+| **purge / hard-delete 배치 잡** | `purge_after` 가 지나도 자동으로 `purged` 가 되지 않는다. 수동 영구삭제만 있다. F-02-11 클론 대안이 "purge 배치는 초기엔 생략" 이라고 허용 | `src/lib/block/trash.ts` |
+| **휴지통 권한 필터** | 워크스페이스 멤버 전원이 모든 휴지통 항목을 본다. F-11-05 는 "권한 필터 누락 시 제목 유출"이라고 못박는다 | `listTrash` 의 `TODO(W6)` |
+| **B4 의 Private 루트** | 부모가 사라진 페이지를 복원하면 정본은 "복원 실행자의 Private 루트"로 보내라고 하지만, MVP 에 Private 루트가 없어 **워크스페이스 최상위**로 보낸다 | `trash.ts` `restorePage` |
 | **페이지 단위 ACL** | 없다. **워크스페이스 멤버 전원이 모든 페이지를 본다** | `src/lib/block/page.ts` `getPage` 의 `TODO(W6 / F-06-*)` |
 | **teamspace** | 테이블이 없다. 그래서 루트 페이지가 곧 `perm_scope_id` 루트다 | `page.ts` `lockParent` |
 | `code` 블록 | **MVP 12종에 없다.** 그래서 F-01-14 가 요구하는 "코드 블록 안에서 입력 규칙·키 전면 비활성"도 아직 할 것이 없다. 추가할 때 `if (type === 'code')` 를 심지 말고 레지스트리 항목으로 끈다 | `src/lib/block/types.ts` |
@@ -183,9 +207,9 @@ CLAUDE.md 와 docs/HANDOFF.md 를 먼저 읽어라. 특히:
 - 문서 계층 — docs/research/00-canonical-data-model.md 가 스키마 정본이다
 - HANDOFF §2 다음 작업, §3 이미 내린 판결, §6 세션 운영 요령
 
-Phase 0 W1~W4 가 끝났고 다음은 W5 페이지 트리 · 편집 확장이다.
-W5 의 첫 항목은 페이지 이동·휴지통·복원(F-02-04)이다 — 정본 §3.4 의 상태 전이
-표에 규칙이 이미 다 있고, 이걸 해야 savePageBody 의 page_ref_nested 제약이 풀린다.
+Phase 0 W1~W4 가 끝났고 W5-a(페이지 트리)를 진행 중이다.
+이동(F-02-08)과 휴지통(F-11-05)은 끝났다. 다음은 HANDOFF §2 의 권장 순서 1번 —
+savePageBody 의 page_ref_nested 완화다(relocateSubtree 가 이미 준비돼 있다).
 
 작업은 브랜치 → 구현+테스트 → npm run check → PR → CI 확인 → 머지 순서로 한다.
 ```
