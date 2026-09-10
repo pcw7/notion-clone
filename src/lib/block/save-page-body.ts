@@ -32,11 +32,18 @@
  * 자식 페이지는 프로젝터가 소유하지 않는다
  * ──────────────────────────────────────────────────────────────────────
  *
- * 문서에는 `type='page'` 참조 노드가 들어오지만, 프로젝터는 그 행의 **순서만**
- * 건드린다. 제목·properties·lifecycle 은 그 페이지 자신의 것이다.
+ * 문서에는 `type='page'` 참조 노드가 들어오지만, 프로젝터는 그 행의 **위치만**
+ * 건드린다(순서, 그리고 부모). 제목·properties·lifecycle 은 그 페이지 자신의 것이다.
+ *
+ * 부모가 바뀌는 경우 — 하위 페이지를 토글 안으로 끌어다 놓는 것 — 는
+ * `order_key` 만 고쳐서는 안 된다. 그 페이지 **서브트리 전체의 `ancestor_path`
+ * 와 `perm_scope_id`** 를 다시 써야 한다 [X-7 / §3.11 ④]. 그 일은
+ * `move-page.ts` 의 `relocateSubtree` 가 하고, 여기서는 부르기만 한다 —
+ * 두 벌로 만들면 한쪽만 고쳐져 권한이 조용히 틀어진다.
+ *
  * 그리고 문서에서 자식 페이지가 빠져 있으면 **저장을 거부한다** — 낡은 에디터
  * 탭 하나가 하위 페이지를 통째로 지워버리는 경로를 만들지 않기 위해서다.
- * 하위 페이지 삭제는 별도 API(W5)로만 한다.
+ * 하위 페이지 삭제는 휴지통 API 로만 한다.
  */
 
 import type { SessionContext } from '../auth/session-context.ts'
@@ -44,6 +51,7 @@ import type { BlockId } from '../ids.ts'
 import { withTransaction, type Tx } from '../db/tx.ts'
 import { PAGE_TYPE } from './types.ts'
 import { orderKeyBetween } from './order-key.ts'
+import { relocateSubtree, MoveError } from './move-page.ts'
 import {
   projectDocument,
   rowsToDoc,
@@ -86,9 +94,10 @@ export type SaveBodyResult =
     }
   | {
       readonly ok: false
-      readonly reason: 'page_ref_nested'
-      /** 본문 블록 안에 중첩된 자식 페이지들. Phase 0 은 페이지 직속만 지원한다. */
-      readonly nested: readonly string[]
+      readonly reason: 'page_ref_too_deep'
+      /** 옮기려던 자식 페이지. 그 서브트리가 깊이 상한을 넘는다. */
+      readonly pageId: string
+      readonly message: string
     }
 
 // ── 안정 비교 ─────────────────────────────────────────────────────────
@@ -112,7 +121,7 @@ function stableJson(value: unknown): string {
 
 // ── 본문 범위 조회 ────────────────────────────────────────────────────
 
-type ScopeRow = BodyRow & { lifecycle: string; ancestor_path: string[] }
+type ScopeRow = BodyRow & { lifecycle: string; ancestor_path: string[]; perm_scope_id: string }
 
 /**
  * 이 페이지의 **문서 범위**에 있는 행을 읽는다.
@@ -125,12 +134,12 @@ async function readScope(tx: Tx, ctx: SessionContext, pageId: string): Promise<S
   return tx.query<ScopeRow>(
     `WITH RECURSIVE doc_scope AS (
          SELECT b.id, b.type, b.parent_id, b.order_key, b.properties, b.format,
-                b.lifecycle, b.ancestor_path
+                b.lifecycle, b.ancestor_path, b.perm_scope_id
            FROM block b
           WHERE b.parent_id = $1 AND b.workspace_id = $2
        UNION ALL
          SELECT c.id, c.type, c.parent_id, c.order_key, c.properties, c.format,
-                c.lifecycle, c.ancestor_path
+                c.lifecycle, c.ancestor_path, c.perm_scope_id
            FROM block c
            JOIN doc_scope s ON c.parent_id = s.id
           WHERE s.type <> $3 AND c.workspace_id = $2
@@ -220,21 +229,19 @@ export async function savePageBody(
       return { ok: false, reason: 'page_ref_missing', missing } as const
     }
 
-    // Phase 0 은 페이지 직속 자식 페이지만 지원한다. 본문 블록 안에 중첩되면
-    // 그 페이지 서브트리 전체의 ancestor_path 를 갱신해야 하고
-    // (X-7 의 `ancestor_path @> ARRAY[:id]` 일괄 UPDATE), 그건 W5(페이지 이동)의
-    // 일이다. 조용히 잘못된 경로를 쓰는 대신 거부한다.
+    // ── 자리를 옮긴 자식 페이지 ───────────────────────────────────────
     //
-    // 문서가 요구하는 위치와 **DB 의 현재 위치** 둘 다 본다. 현재 위치가 이미
-    // 중첩돼 있으면 아래 쓰기 단계가 order_key 만 고치고 ancestor_path 를
-    // 방치하게 되는데, 그게 정확히 X-7 이 경계한 "권한이 조용히 틀어지는" 상태다.
-    const nested = [
-      ...projection.blocks.filter((b) => b.type === PAGE_TYPE && b.parentId !== pageId).map((b) => b.id),
-      ...livePageRefs.filter((r) => r.parent_id !== pageId).map((r) => r.id),
-    ]
-    if (nested.length > 0) {
-      return { ok: false, reason: 'page_ref_nested', nested: [...new Set(nested)] } as const
-    }
+    // 하위 페이지를 토글 안으로 끌어다 놓는 것 같은 조작이다. 부모가 바뀌면
+    // `order_key` 만 고쳐서는 안 되고 **그 페이지 서브트리 전체의
+    // `ancestor_path` 와 `perm_scope_id`** 를 다시 써야 한다 [X-7 / §3.11 ④].
+    // 방치하면 정확히 X-7 이 경계한 "권한이 조용히 틀어지는" 상태가 된다.
+    //
+    // 그 일은 `move-page.ts` 의 `relocateSubtree` 가 이미 한다. 여기서 다시
+    // 구현하지 않고 부른다 — 두 벌이면 한쪽만 고쳐져 어긋난다.
+    const currentParentOf = new Map(scope.map((r) => [r.id, r.parent_id]))
+    const pageRefMoves = projection.blocks.filter(
+      (b) => b.type === PAGE_TYPE && currentParentOf.get(b.id) !== b.parentId,
+    )
 
     // ── order_key 재할당 (문서 밖 형제를 피한다) ──────────────────────
     const occupiedByParent = new Map<string, Set<string>>()
@@ -298,11 +305,14 @@ export async function savePageBody(
       ])
     }
 
-    if (keyChanges.length > 0) {
+    // 자리를 옮기는 자식 페이지도 임시 키로 비켜둔다. 최종 키를 바로 쓰면
+    // 새 형제 그룹에서 아직 임시 키로 옮겨지지 않은 행과 충돌할 수 있다.
+    const tempKeyIds = [...new Set([...keyChanges, ...pageRefMoves].map((b) => b.id))]
+    if (tempKeyIds.length > 0) {
       await tx.query(
         `UPDATE block SET order_key = '~' || id::text
           WHERE id = ANY($1::uuid[]) AND workspace_id = $2`,
-        [keyChanges.map((b) => b.id), ctx.workspaceId],
+        [tempKeyIds, ctx.workspaceId],
       )
     }
 
@@ -354,10 +364,52 @@ export async function savePageBody(
       )
     }
 
-    // 자식 페이지는 위 루프에서 제외됐으므로 임시 키에 남아 있다. 키만 확정한다.
+    // ── 자리를 옮긴 자식 페이지: 서브트리째 재배치 ────────────────────
+    //
+    // `relocateSubtree` 가 `ancestor_path` · `perm_scope_id` · `version` 을
+    // 서브트리 전체에 다시 쓴다. 우리가 계산한 `order_key` 를 넘겨서
+    // 문서 위치가 그대로 반영되게 한다.
+    //
+    // 사이클은 있을 수 없다 — 대상은 **이 페이지의 문서 안 블록**이고, 그 블록이
+    // 옮겨지는 자식 페이지의 자손일 수는 없다(자식 페이지의 본문은 별도 문서다).
+    // 그래서 `relocateSubtree` 가 던질 수 있는 것은 깊이 초과뿐이다.
+    const movedPageIds = new Set(pageRefMoves.map((b) => b.id))
+    for (const b of pageRefMoves) {
+      const row = existing.get(b.id)
+      if (!row) continue
+      const parentRow = b.parentId === pageId ? null : existing.get(b.parentId)
+
+      try {
+        await relocateSubtree(
+          tx,
+          ctx,
+          {
+            id: row.id,
+            parent_type: 'block',
+            parent_id: row.parent_id,
+            ancestor_path: row.ancestor_path,
+            perm_scope_id: row.perm_scope_id,
+          },
+          {
+            id: b.parentId,
+            type: parentRow?.type ?? 'page',
+            ancestor_path: b.ancestorPath.slice(0, -1),
+            perm_scope_id: page.perm_scope_id,
+          },
+          b.orderKey,
+        )
+      } catch (e) {
+        if (e instanceof MoveError && e.code === 'too_deep') {
+          return { ok: false, reason: 'page_ref_too_deep', pageId: b.id, message: e.message } as const
+        }
+        throw e
+      }
+    }
+
+    // 남은 자식 페이지(순서만 바뀐 것)는 임시 키에 있다. 키만 확정한다.
     const updatedIds = new Set(toUpdate.map((b) => b.id))
     for (const b of keyChanges) {
-      if (updatedIds.has(b.id)) continue
+      if (updatedIds.has(b.id) || movedPageIds.has(b.id)) continue
       await tx.query(
         `UPDATE block SET order_key = $3 WHERE id = $1 AND workspace_id = $2`,
         [b.id, ctx.workspaceId, b.orderKey],
@@ -365,7 +417,11 @@ export async function savePageBody(
     }
 
     const wroteSomething =
-      toDelete.length > 0 || toInsert.length > 0 || toUpdate.length > 0 || keyChanges.length > 0
+      toDelete.length > 0 ||
+      toInsert.length > 0 ||
+      toUpdate.length > 0 ||
+      keyChanges.length > 0 ||
+      pageRefMoves.length > 0
 
     // X-6: `block.version` 은 페이지 단위 단조 변경 카운터이고 검색 인덱스의
     // external version 이다. **바뀐 게 없으면 올리지 않는다** — 올리면

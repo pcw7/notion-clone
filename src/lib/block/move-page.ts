@@ -222,6 +222,14 @@ export async function relocateSubtree(
   ctx: SessionContext,
   moving: MovingRow,
   target: TargetRow | null,
+  /**
+   * 새 형제 그룹에서 쓸 `order_key`. 생략하면 **맨 뒤**에 붙인다.
+   *
+   * 프로젝터(`save-page-body.ts`)는 문서 위치가 순서를 정하므로 자기가 계산한
+   * 키를 넘긴다. 맨 뒤에 붙여 놓고 나중에 고치면 그 사이에 키가 두 번 쓰이고,
+   * 지연 불가 UNIQUE 인덱스에서 중간 상태 충돌이 난다.
+   */
+  explicitOrderKey?: string,
 ): Promise<RelocateResult> {
   {
     // 최상위로 가는 경우 형제 삽입을 직렬화한다. `movePage` 는 `lockTarget` 에서
@@ -261,7 +269,9 @@ export async function relocateSubtree(
     const oldScope = moving.perm_scope_id
     const newScope = target === null ? moving.id : target.perm_scope_id
 
-    const orderKey = await nextSiblingKey(tx, target === null ? ctx.workspaceId : target.id)
+    const orderKey =
+      explicitOrderKey ??
+      (await nextSiblingKey(tx, target === null ? ctx.workspaceId : target.id))
 
     // ── ① 이동한 페이지 ────────────────────────────────────────────
     const updated = await tx.queryOne<{ order_key: string; version: string }>(
