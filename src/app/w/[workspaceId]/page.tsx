@@ -13,11 +13,9 @@ import Link from 'next/link'
 
 import { requirePageSession } from '@/lib/auth/page-session'
 import { listChildPages } from '@/lib/block/page'
-import { listTrash } from '@/lib/block/trash'
 import { listMembers, listPendingInvites } from '@/lib/workspace/list'
 import { InviteForm } from './invite-form'
 import { NewPageButton } from './new-page-button'
-import { TrashPanel } from './trash-panel'
 
 /** 제목 없는 페이지의 표시 문구. 저장된 값은 빈 배열이다. */
 const UNTITLED = '제목 없음'
@@ -30,9 +28,8 @@ export default async function WorkspacePage({ params }: PageProps<'/w/[workspace
   const ctx = await requirePageSession(workspaceId)
   const canInvite = ctx.role === 'owner' || ctx.role === 'membership_admin'
 
-  const [rootPages, trash, members, invites] = await Promise.all([
+  const [rootPages, members, invites] = await Promise.all([
     listChildPages(ctx, null),
-    listTrash(ctx),
     listMembers(ctx.workspaceId),
     canInvite ? listPendingInvites(ctx.workspaceId) : Promise.resolve([]),
   ])
@@ -53,8 +50,10 @@ export default async function WorkspacePage({ params }: PageProps<'/w/[workspace
       </header>
 
       <section className="flex flex-col gap-3">
-        <h2 className="text-sm font-medium text-neutral-500">페이지 {rootPages.length}개</h2>
-        {rootPages.length > 0 && (
+        <h2 className="text-sm font-medium text-neutral-500">
+          최상위 페이지 {rootPages.length}개
+        </h2>
+        {rootPages.length > 0 ? (
           <ul className="divide-y divide-neutral-200 rounded-lg border border-neutral-200 dark:divide-neutral-800 dark:border-neutral-800">
             {rootPages.map((p) => (
               <li key={p.id}>
@@ -67,20 +66,13 @@ export default async function WorkspacePage({ params }: PageProps<'/w/[workspace
               </li>
             ))}
           </ul>
+        ) : (
+          <p className="text-sm text-neutral-400">
+            왼쪽 사이드바의 &ldquo;+ 새 페이지&rdquo;로 시작하세요.
+          </p>
         )}
         <NewPageButton workspaceId={workspaceId} />
       </section>
-
-      <TrashPanel
-        workspaceId={workspaceId}
-        entries={trash.map((e) => ({
-          id: e.id,
-          title: e.title,
-          trashedAt: e.trashedAt.toISOString(),
-          purgeAfter: e.purgeAfter?.toISOString() ?? null,
-          descendantCount: e.descendantCount,
-        }))}
-      />
 
       <section>
         <h2 className="text-sm font-medium text-neutral-500">멤버 {members.length}명</h2>
