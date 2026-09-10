@@ -252,7 +252,7 @@ async function lockParent(
  * 를 보존한다)까지 같은 이름공간을 쓴다. `type='page'` 로 걸러서 max 를 구하면
  * 언젠가 반드시 충돌한다.
  */
-async function nextSiblingKey(tx: Tx, parentId: string): Promise<string> {
+export async function nextSiblingKey(tx: Tx, parentId: string): Promise<string> {
   const row = await tx.queryOne<{ max_key: string | null }>(
     `SELECT max(order_key) AS max_key FROM block WHERE parent_id = $1`,
     [parentId],
