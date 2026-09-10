@@ -71,6 +71,13 @@ export type CommandDeps = {
   expand?: (blockId: string) => void
   /** 규칙이 병합을 거부했을 때. 사용자에게 이유를 보여줄 유일한 기회다. */
   onBlocked?: (plan: Extract<MergePlan, { kind: 'blocked' }>) => void
+  /**
+   * 조작 자체를 하지 않았을 때의 이유 (F-01-09 의 하위 페이지 거부 등).
+   *
+   * `onBlocked` 와 따로 둔다 — 저쪽은 `MergePlan` 의 **판결**을 그대로
+   * 전달하는 통로라 `reason` 이 병합 어휘로 닫혀 있다.
+   */
+  onRefused?: (detail: string) => void
   /** 테스트에서 결정적 id 를 쓰기 위한 구멍. */
   newId?: () => string
 }

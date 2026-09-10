@@ -35,7 +35,7 @@ export function setTextColor(color: Color): Command {
   return (state, dispatch) => {
     if (!isColor(color)) return false
     const markType = blockSchema.marks.color
-    const { from, to, empty } = state.selection
+    const { empty, ranges } = state.selection
 
     if (empty) {
       // 선택이 없으면 다음에 타이핑할 글자에 적용한다(storedMarks).
@@ -48,8 +48,15 @@ export function setTextColor(color: Color): Command {
     }
 
     if (!dispatch) return true
-    const tr = state.tr.removeMark(from, to, markType)
-    if (color !== 'default') tr.addMark(from, to, markType.create({ color }))
+    // ⚠ `selection.from`/`to` 가 아니라 **`ranges` 전부**를 돈다.
+    // 블록 선택(F-01-09)은 선택된 블록마다 범위를 하나씩 갖고, `from`/`to` 는
+    // 그중 첫 범위일 뿐이다. 그것만 칠하면 여러 블록을 골라 색을 바꿨는데
+    // 첫 블록만 바뀐다. `toggleMark` 가 같은 이유로 `ranges` 를 돈다.
+    const tr = state.tr
+    for (const { $from, $to } of ranges) {
+      tr.removeMark($from.pos, $to.pos, markType)
+      if (color !== 'default') tr.addMark($from.pos, $to.pos, markType.create({ color }))
+    }
     dispatch(tr)
     return true
   }
@@ -65,14 +72,18 @@ export function setTextColor(color: Color): Command {
  */
 export function setLink(href: string | null): Command {
   return (state, dispatch) => {
-    const { from, to, empty } = state.selection
+    const { empty, ranges } = state.selection
     // 링크는 범위에 걸린다. 선택이 없으면 걸 자리가 없다.
     if (empty) return false
 
     if (!dispatch) return true
     const markType = blockSchema.marks.link
-    const tr = state.tr.removeMark(from, to, markType)
-    if (href !== null && href !== '') tr.addMark(from, to, markType.create({ href }))
+    const tr = state.tr
+    // `setTextColor` 와 같은 이유로 범위 전부를 돈다.
+    for (const { $from, $to } of ranges) {
+      tr.removeMark($from.pos, $to.pos, markType)
+      if (href !== null && href !== '') tr.addMark($from.pos, $to.pos, markType.create({ href }))
+    }
     dispatch(tr)
     return true
   }

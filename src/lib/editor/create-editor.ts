@@ -32,6 +32,7 @@ import { EditorState, type Command, type Plugin, type Transaction } from '@tipta
 import { EditorView } from '@tiptap/pm/view'
 
 import { blockIdPlugin } from './block-id-plugin.ts'
+import { blockSelectionPlugin } from './block-selection-plugin.ts'
 import { createKeydownHandler, type EditorKeymapDeps } from './keymap.ts'
 import { inputRulesPlugin } from './input-rules.ts'
 import { createNodeViews, type NodeViewDeps } from './node-views.ts'
@@ -55,6 +56,9 @@ export type CreateEditorOptions = {
  * `joinBackward` 계열이 뒤에서 돌면 규칙이 거부한 병합을 **구조적으로** 해버린다.
  * 남기는 것은 `Mod-a`(전체 선택)뿐이다 — 나머지 글자 지우기는 브라우저의
  * contenteditable 이 처리하고 ProseMirror 가 DOM 변화를 읽어 반영한다.
+ *
+ * `Mod-a` 는 이제 우리 3단 확장(F-12-01)이 먼저 받는다. 여기 남은 것은 그 커맨드가
+ * `false` 를 돌려줄 때(캐럿이 어느 블록에도 없을 때)의 폴백이다.
  */
 function safeBaseKeymap(): Record<string, Command> {
   const kept: Record<string, Command> = {}
@@ -72,6 +76,9 @@ export function createEditor(options: CreateEditorOptions): EditorView {
     // 순서: 입력 규칙이 슬래시 메뉴보다 앞이어야 `# ` 같은 접두사가 먼저 잡힌다.
     inputRulesPlugin(),
     slashMenuPlugin(),
+    // 블록 선택 하이라이트(F-01-09). 상태는 `state.selection` 이 갖고 있고
+    // 이 플러그인은 그리기만 한다.
+    blockSelectionPlugin(),
     // id 스탬프는 마지막이다. 다른 플러그인이 만든 노드까지 훑어야 한다.
     blockIdPlugin(),
     history(),

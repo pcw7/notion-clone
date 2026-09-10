@@ -32,6 +32,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import type { EditorView } from '@tiptap/pm/view'
 
+import { selectedBlockCount } from '@/lib/editor/block-selection'
 import { createEditor } from '@/lib/editor/create-editor'
 import { pmToDoc } from '@/lib/editor/pm-adapter'
 import {
@@ -82,6 +83,8 @@ export function BodyEditor({
 
   const [status, setStatus] = useState<SaveStatus>({ kind: 'idle' })
   const [menu, setMenu] = useState<MenuUi>(CLOSED_MENU)
+  /** 블록 선택 개수 — 화면 표시가 아니라 스크린리더 안내용이다(F-12-12). */
+  const [selectedBlocks, setSelectedBlocks] = useState(0)
 
   // ── 저장 ────────────────────────────────────────────────────────────
 
@@ -261,10 +264,14 @@ export function BodyEditor({
         },
         openPage: (id) => router.push(`/w/${workspaceId}/${id}`),
         onBlocked: (plan) => setStatus({ kind: 'error', message: plan.detail }),
+        onRefused: (detail) => setStatus({ kind: 'error', message: detail }),
       },
       onTransaction: (v, tr) => {
         syncMenu(v)
         applyCollapsedAttributes(v, collapsedRef.current)
+        // 같은 값이면 리렌더하지 않는다 — 트랜잭션마다 불리는 자리다.
+        const count = selectedBlockCount(v.state)
+        setSelectedBlocks((prev) => (prev === count ? prev : count))
         if (tr.docChanged) scheduleSave()
       },
     })
@@ -296,6 +303,12 @@ export function BodyEditor({
     const onKeyDown = (event: KeyboardEvent) => {
       // IME 조합 중에는 메뉴가 키를 가로채지 않는다 — 한글 입력이 깨진다.
       if (event.isComposing) return
+      // ★ 메뉴가 먹은 키는 에디터까지 가면 안 된다. `preventDefault()` 는
+      //   브라우저 기본 동작만 막을 뿐 ProseMirror 의 `handleKeyDown` 은 그대로
+      //   돌아서, Enter 로 항목을 고르면 그 직후 블록이 한 번 더 쪼개졌다.
+      if (['ArrowDown', 'ArrowUp', 'Enter', 'Escape'].includes(event.key)) {
+        event.stopPropagation()
+      }
       if (event.key === 'ArrowDown') {
         event.preventDefault()
         setMenu((m) => ({ ...m, index: (m.index + 1) % Math.max(items.length, 1) }))
@@ -379,6 +392,15 @@ export function BodyEditor({
           ))}
         </ul>
       )}
+
+      {/*
+        F-12-12: "블록 선택 모드에는 시각적 하이라이트뿐 아니라 aria-selected 와
+        라이브 리전 안내가 필요하다." aria-selected 는 데코레이션이 달고,
+        개수 안내가 여기다 — 하이라이트는 보이지 않는 사용자에게 아무 것도 알리지 않는다.
+      */}
+      <p role="status" aria-live="polite" className="sr-only">
+        {selectedBlocks > 0 ? `블록 ${selectedBlocks}개 선택됨` : ''}
+      </p>
 
       <p className="mt-2 h-4 text-xs text-neutral-400">
         {status.kind === 'saving' && '저장 중…'}
