@@ -32,6 +32,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import type { EditorView } from '@tiptap/pm/view'
 
+import { blockIdFromHash, revealBlockCommand } from '@/lib/editor/block-menu'
 import { selectedBlockCount } from '@/lib/editor/block-selection'
 import type { CommandDeps } from '@/lib/editor/commands'
 import { createEditor } from '@/lib/editor/create-editor'
@@ -54,6 +55,8 @@ type SaveStatus =
   | { kind: 'saving' }
   | { kind: 'saved' }
   | { kind: 'error'; message: string }
+  /** 오류가 아닌 안내 — 블록 링크를 복사했다 같은 것. */
+  | { kind: 'notice'; message: string }
   | { kind: 'conflict' }
 
 type MenuUi = { open: boolean; query: string; index: number; left: number; top: number }
@@ -75,6 +78,8 @@ export function BodyEditor({
   const mountRef = useRef<HTMLDivElement | null>(null)
   /** 블록 핸들의 좌표 기준. 에디터 DOM 이 아니라 그 바깥 틀이다(`block-gutter.tsx`). */
   const frameRef = useRef<HTMLDivElement | null>(null)
+  /** `Mod+/` 가 부를 "블록 메뉴 열기". 블록 핸들이 채운다. */
+  const openMenuRef = useRef<(() => void) | null>(null)
   const viewRef = useRef<EditorView | null>(null)
 
   /** 접힘 상태 — 문서에 없다(F-01-13). */
@@ -286,6 +291,7 @@ export function BodyEditor({
         openPage: (id) => router.push(`/w/${workspaceId}/${id}`),
         onBlocked: (plan) => setStatus({ kind: 'error', message: plan.detail }),
         onRefused: (detail) => setStatus({ kind: 'error', message: detail }),
+        openBlockMenu: () => openMenuRef.current?.(),
       },
       onTransaction: (v, tr) => {
         syncMenu(v)
@@ -298,7 +304,19 @@ export function BodyEditor({
 
     viewRef.current = view
 
+    // `/{pageId}#{blockId}` 로 들어왔으면 그 블록을 보여준다(F-01-08 "Copy link to
+    // block" 의 받는 쪽). 같은 페이지 안에서 해시만 바뀌는 경우도 받는다.
+    const reveal = (): void => {
+      const id = blockIdFromHash(window.location.hash)
+      const current = viewRef.current
+      if (!id || !current) return
+      revealBlockCommand(id, gutterDeps)(current.state, current.dispatch.bind(current))
+    }
+    reveal()
+    window.addEventListener('hashchange', reveal)
+
     return () => {
+      window.removeEventListener('hashchange', reveal)
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
       view.destroy()
       viewRef.current = null
@@ -382,6 +400,12 @@ export function BodyEditor({
         </p>
       )}
 
+      {status.kind === 'notice' && (
+        <p role="status" className="mb-3 break-all text-sm text-neutral-500">
+          {status.message}
+        </p>
+      )}
+
       {/*
         프레임: 왼쪽으로 3rem 넓혀 핸들이 들어갈 여백을 hover 영역에 포함시킨다.
         -ml-12 와 pl-12 가 상쇄하므로 에디터의 위치는 그대로다 — 슬래시 메뉴는
@@ -389,7 +413,15 @@ export function BodyEditor({
       */}
       <div ref={frameRef} className="relative -ml-12 pl-12">
         <div ref={mountRef} />
-        <BlockGutter viewRef={viewRef} frameRef={frameRef} deps={gutterDeps} />
+        <BlockGutter
+          viewRef={viewRef}
+          frameRef={frameRef}
+          deps={gutterDeps}
+          workspaceId={workspaceId}
+          pageId={pageId}
+          openMenuRef={openMenuRef}
+          onNotice={(message) => setStatus({ kind: 'notice', message })}
+        />
       </div>
 
       {menu.open && items.length > 0 && (

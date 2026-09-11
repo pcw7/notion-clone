@@ -34,7 +34,16 @@
  * 하나만 읽으면 된다.
  */
 
-import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type RefObject } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+  type MutableRefObject,
+  type PointerEvent as ReactPointerEvent,
+  type RefObject,
+} from 'react'
 import type { EditorView } from '@tiptap/pm/view'
 
 import {
@@ -48,8 +57,10 @@ import {
   type BlockLine,
   type DropHit,
 } from '@/lib/editor/block-handle'
+import { isBlockSelection } from '@/lib/editor/block-selection'
 import type { CommandDeps } from '@/lib/editor/commands'
 import { findContainerById } from '@/lib/editor/pm-blocks'
+import { BlockMenu } from './block-menu'
 
 /** 한 단 들여쓰기 = `.blk-group` 의 margin-left(1.5rem). 둘이 어긋나면 자식 드롭 판정이 틀린다. */
 const INDENT_PX = 24
@@ -60,6 +71,14 @@ const GUTTER_WIDTH_PX = 46
 
 type Hover = { blockId: string; top: number; left: number }
 type Guide = { top: number; left: number }
+/**
+ * 메뉴 자리. 핸들 바로 아래 — 노션도 핸들에서 메뉴가 떨어진다.
+ * `view` 를 함께 담는다 — 렌더 중에 `viewRef.current` 를 읽지 않기 위해서다(여는
+ * 순간, 즉 이벤트 처리 중에 잡아 둔다).
+ */
+type MenuAt = { top: number; left: number; view: EditorView }
+/** 핸들 한 줄의 높이(`.blk-gutter` 의 height). 메뉴는 그 아래에 뜬다. */
+const GUTTER_HEIGHT_PX = 24
 type Drag = {
   ids: string[]
   startX: number
@@ -122,14 +141,27 @@ export function BlockGutter({
   viewRef,
   frameRef,
   deps,
+  workspaceId,
+  pageId,
+  openMenuRef,
+  onNotice,
 }: {
   viewRef: RefObject<EditorView | null>
   /** 에디터를 감싼 프레임. 좌표의 기준이고, 드래그 중 흐림 표시를 다는 곳이다. */
   frameRef: RefObject<HTMLDivElement | null>
   deps: CommandDeps
+  workspaceId: string
+  pageId: string
+  /**
+   * `Mod+/` 로 메뉴를 열 통로. 키맵은 에디터가 만들 때 한 번 정해지므로 함수를
+   * 직접 넘길 수 없다 — 이 ref 에 여는 함수를 채워 두면 키맵이 그것을 부른다.
+   */
+  openMenuRef: MutableRefObject<(() => void) | null>
+  onNotice: (message: string) => void
 }) {
   const [hover, setHover] = useState<Hover | null>(null)
   const [guide, setGuide] = useState<Guide | null>(null)
+  const [menu, setMenu] = useState<MenuAt | null>(null)
   // 리스너 안에서 최신 값을 봐야 한다. state 는 리스너가 붙던 순간의 값에 갇힌다.
   const hoverRef = useRef<Hover | null>(null)
   const dragRef = useRef<Drag | null>(null)
@@ -247,13 +279,68 @@ export function BlockGutter({
     if (!d || !view) return
 
     if (!d.moved) {
-      // 클릭 — 잡은 것을 블록 선택으로. 다음 단계의 핸들 메뉴가 이 선택에 동작한다.
+      // 클릭 — 잡은 것을 블록 선택으로 만들고 메뉴를 연다(정본 시나리오 4).
+      // 포커스는 메뉴가 가져간다. 닫히면 에디터로 돌아온다.
       selectHandleTargetsCommand(d.ids)(view.state, view.dispatch.bind(view))
-    } else if (d.hit) {
-      dropBlocksCommand(d.ids, d.hit.target, deps)(view.state, view.dispatch.bind(view))
+      openAtHandle()
+      return
     }
+    if (d.hit) dropBlocksCommand(d.ids, d.hit.target, deps)(view.state, view.dispatch.bind(view))
     view.focus()
   }
+
+  /** 핸들 아래에 메뉴를 연다. */
+  const openAtHandle = (): void => {
+    const current = hoverRef.current
+    const view = viewRef.current
+    if (!current || !view) return
+    setMenu({ top: current.top + GUTTER_HEIGHT_PX, left: current.left - GUTTER_WIDTH_PX, view })
+  }
+
+  /** 우클릭 — 정본 F-12-01: "우클릭 또는 cmd/ctrl + / 로 블록 컨텍스트 메뉴." */
+  const onContextMenu = (event: ReactMouseEvent<HTMLButtonElement>): void => {
+    event.preventDefault()
+    const view = viewRef.current
+    const current = hoverRef.current
+    if (!view || !current) return
+    const info = findContainerById(view.state.doc, current.blockId)
+    if (!info) return
+    selectHandleTargetsCommand(handleTargets(view.state, info.pos))(view.state, view.dispatch.bind(view))
+    openAtHandle()
+  }
+
+  /**
+   * `Mod+/` — 지금 블록 선택의 첫 블록 옆에 연다. 키보드로 열었으니 핸들 hover 가
+   * 없을 수 있다. 블록의 줄 좌표를 직접 잰다.
+   */
+  const openForSelection = useCallback((): void => {
+    const view = viewRef.current
+    const frame = frameRef.current
+    if (!view || !frame) return
+    const sel = view.state.selection
+    if (!isBlockSelection(sel)) return
+    const dom = view.nodeDOM(sel.rootPositions[0])
+    const content = dom instanceof HTMLElement ? (dom.firstElementChild as HTMLElement | null) : null
+    if (!content) return
+    const rect = content.getBoundingClientRect()
+    const box = frame.getBoundingClientRect()
+    setMenu({ top: rect.top - box.top + GUTTER_HEIGHT_PX, left: rect.left - box.left - GUTTER_WIDTH_PX, view })
+  }, [viewRef, frameRef])
+
+  useEffect(() => {
+    openMenuRef.current = openForSelection
+    return () => {
+      openMenuRef.current = null
+    }
+  }, [openMenuRef, openForSelection])
+
+  const closeMenu = useCallback(
+    (restoreFocus: boolean): void => {
+      setMenu(null)
+      if (restoreFocus) viewRef.current?.focus()
+    },
+    [viewRef],
+  )
 
   const onAdd = (): void => {
     const view = viewRef.current
@@ -289,16 +376,31 @@ export function BlockGutter({
           <button
             type="button"
             tabIndex={-1}
-            aria-label="블록 옮기기 — 끌어서 옮기거나 눌러서 선택"
+            aria-label="블록 옮기기 — 끌어서 옮기거나 눌러서 메뉴 열기"
+            aria-haspopup="menu"
             className="blk-gutter-button blk-gutter-grip"
             onPointerDown={onPointerDown}
             onPointerMove={onPointerMove}
             onPointerUp={onPointerUp}
             onPointerCancel={() => endDrag()}
+            onContextMenu={onContextMenu}
           >
             ⋮⋮
           </button>
         </div>
+      )}
+
+      {menu && (
+        <BlockMenu
+          view={menu.view}
+          deps={deps}
+          top={menu.top}
+          left={menu.left}
+          workspaceId={workspaceId}
+          pageId={pageId}
+          onClose={closeMenu}
+          onNotice={onNotice}
+        />
       )}
 
       {guide && (

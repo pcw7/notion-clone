@@ -35,6 +35,7 @@ import { redo, undo } from '@tiptap/pm/history'
 import type { Command, EditorState, Transaction } from '@tiptap/pm/state'
 
 import type { BlockType } from '../block/types.ts'
+import { openBlockMenuCommand } from './block-menu.ts'
 import { moveBlocksCommand } from './block-move.ts'
 import {
   deleteBlockSelectionCommand,
@@ -88,6 +89,8 @@ const NUMBER_SHORTCUTS: Readonly<Record<string, BlockType>> = {
 export type EditorKeymapDeps = CommandDeps & {
   /** Cmd+K. 링크 URL 을 물어보는 것은 UI 의 일이므로 밖에서 받는다. */
   promptLink?: () => void
+  /** Mod+/. 블록 메뉴를 여는 것도 UI 의 일이다(F-12-01 "블록 컨텍스트 메뉴"). */
+  openBlockMenu?: () => void
 }
 
 /**
@@ -158,6 +161,10 @@ export function createEditorKeymap(deps: EditorKeymapDeps): KeyBindings {
       prompt()
       return true
     }
+  }
+
+  if (deps.openBlockMenu) {
+    bindings['Mod-/'] = openBlockMenuCommand(deps.openBlockMenu)
   }
 
   for (const [digit, type] of Object.entries(NUMBER_SHORTCUTS)) {

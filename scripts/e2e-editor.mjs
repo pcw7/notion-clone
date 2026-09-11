@@ -317,7 +317,14 @@ async function main() {
       await press(x, y)
       await release(x, y)
     }
-    const KEYS = { Escape: [27, 'Escape'], ArrowDown: [40, 'ArrowDown'] }
+    const KEYS = {
+      Escape: [27, 'Escape'],
+      Enter: [13, 'Enter'],
+      ArrowDown: [40, 'ArrowDown'],
+      ArrowRight: [39, 'ArrowRight'],
+      End: [35, 'End'],
+      '/': [191, 'Slash'],
+    }
     const SHIFT = 8
     // `Mod` 는 Mac 에서 Cmd(4), 그 외 Ctrl(2). 헤드리스 브라우저의 플랫폼을 따른다.
     const MOD = process.platform === 'darwin' ? 4 : 2
@@ -364,6 +371,9 @@ async function main() {
 
     await send('Page.enable')
     await send('Runtime.enable')
+    // 헤드리스는 창에 포커스가 없어서 클립보드 API 가 거부된다. 포커스를 흉내내고 권한을 준다.
+    await send('Emulation.setFocusEmulationEnabled', { enabled: true })
+    await send('Browser.grantPermissions', { origin: BASE, permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite'] })
     await send('Network.setCookie', { name: 'nc_session', value: session, domain: 'localhost', path: '/', httpOnly: true })
     await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${pageId}` })
 
@@ -426,6 +436,11 @@ async function main() {
     await click(g.x + g.w / 2, g.y + g.h / 2)
     await sleep(60)
     check('핸들을 누르면 그 블록이 선택된다', same(await selected(), ['A']), JSON.stringify(await selected()))
+    check('핸들을 누르면 블록 메뉴가 열리고 포커스가 메뉴로 간다', await evaluate(`!!document.activeElement?.closest('[role="menu"]')`))
+    await key('Escape')
+    await sleep(60)
+    check('Esc 로 메뉴를 닫으면 포커스가 에디터로 돌아온다', await evaluate(`document.activeElement === document.querySelector('.blk-editor')`))
+    check('메뉴를 닫아도 블록 선택은 그대로다', same(await selected(), ['A']), JSON.stringify(await selected()))
     await key('ArrowDown', MOD | SHIFT)
     await sleep(60)
     check('Mod+Shift+↓ — 토글을 통째로 건너뛴다(안으로 들어가지 않는다)', same(await order(), ['C', 'T', 't1', 'A', 'D', 'B']), JSON.stringify(await order()))
@@ -466,6 +481,92 @@ async function main() {
       (await settledShape('T | T > C | T > t1 | A | D | D > B')) === 'T | T > C | T > t1 | A | D | D > B',
       await savedShape(),
     )
+
+    section('블록 메뉴 (F-01-08 · F-12-01 · F-12-13)')
+    // 지금 문서: T > C, T > t1, A, D > B. A 를 대상으로 한다.
+    const menuOpen = () => evaluate(`!!document.querySelector('[role="menu"][aria-label="블록 메뉴"]')`)
+    const typeOf = (id) => evaluate(`document.querySelector('[data-block-id="${id}"] > [data-block-type]')?.getAttribute('data-block-type') ?? null`)
+    const aText = await rect(`[data-block-id="${ids.A}"] > *:first-child`)
+    await click(aText.x + aText.w / 2, aText.y + aText.h / 2)
+    await sleep(60)
+    await key('/', MOD)
+    await sleep(80)
+    check('Mod+/ — 편집 모드에서도 그 블록을 선택하고 메뉴를 연다', (await menuOpen()) && same(await selected(), ['A']), JSON.stringify(await selected()))
+    check('처음 포커스는 첫 켜진 항목(변환)', (await evaluate(`document.activeElement?.textContent`))?.startsWith('변환'))
+
+    await key('Enter')
+    await sleep(40)
+    check('Enter 로 하위 메뉴가 열리고 첫 켜진 항목에 선다 — 이미 텍스트라 "텍스트"는 건너뛴다', (await evaluate(`document.activeElement?.textContent`))?.startsWith('제목 1'), await evaluate(`document.activeElement?.textContent`))
+    await key('Enter')
+    await sleep(80)
+    check('변환 — A 가 제목 1 이 된다', (await typeOf(ids.A)) === 'heading_1', await typeOf(ids.A))
+    check('실행하면 메뉴가 닫히고 에디터로 포커스가 온다', !(await menuOpen()) && (await evaluate(`document.activeElement === document.querySelector('.blk-editor')`)))
+
+    await key('/', MOD)
+    await sleep(60)
+    await key('ArrowDown')
+    await key('ArrowRight')
+    await key('End')
+    await sleep(40)
+    check('색 하위 메뉴의 끝은 "빨강 배경"', (await evaluate(`document.activeElement?.textContent`))?.includes('빨강 배경'), await evaluate(`document.activeElement?.textContent`))
+    await key('Enter')
+    await sleep(80)
+    check('색 — 블록 색(format.block_color)이 칠해진다', (await evaluate(`document.querySelector('[data-block-id="${ids.A}"] > [data-block-type]')?.getAttribute('data-color')`)) === 'red_background')
+
+    await key('/', MOD)
+    await sleep(60)
+    await key('ArrowDown')
+    await key('ArrowDown')
+    await key('ArrowDown')
+    await key('Enter')
+    await sleep(150)
+    const notice = await evaluate(`[...document.querySelectorAll('[role="status"]')].map((e) => e.textContent).join(' ')`)
+    check('블록 링크 복사 — 안내가 뜬다', notice.includes('블록 링크를 복사했습니다'), notice)
+    const copied = await evaluate(`navigator.clipboard.readText()`)
+    check('클립보드에 /w/{ws}/{page}#{blockId} 가 들어간다', copied.endsWith(`/w/${workspaceId}/${pageId}#${ids.A}`), copied)
+
+    await key('/', MOD)
+    await sleep(60)
+    await key('ArrowDown')
+    await key('ArrowDown')
+    await key('Enter')
+    await sleep(100)
+    const countA = async () => (await order()).filter((t) => t === 'A').length
+    check('복제 — A 가 둘이 된다', (await countA()) === 2, JSON.stringify(await order()))
+    await key('/', MOD)
+    await sleep(60)
+    await key('End')
+    await key('Enter')
+    await sleep(100)
+    check('삭제 — 복제본이 지워져 A 가 다시 하나다(복제 뒤 선택이 복제본으로 옮겨 있다)', (await countA()) === 1, JSON.stringify(await order()))
+
+    const aLine2 = await line(ids.A)
+    await move(aLine2.x + 30, aLine2.y + aLine2.h / 2)
+    await waitFor(`!!document.querySelector('.blk-gutter-grip')`)
+    const g2 = await rect('.blk-gutter-grip')
+    await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: g2.x + g2.w / 2, y: g2.y + g2.h / 2, button: 'right', buttons: 2, clickCount: 1 })
+    await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: g2.x + g2.w / 2, y: g2.y + g2.h / 2, button: 'right', buttons: 0, clickCount: 1 })
+    await sleep(80)
+    check('핸들 우클릭으로도 열린다(정본 F-12-01) — 드래그는 시작하지 않는다', (await menuOpen()) && !(await evaluate(`!!document.querySelector('[data-dragging]')`)))
+    // 메뉴는 A 의 핸들 아래로 펼쳐져 바로 아래 줄들을 덮는다. "바깥"은 A 위의 T 로 잡는다.
+    const dText = await rect(`[data-block-id="${ids.D}"] > *:first-child`)
+    const underD = await evaluate(`document.elementFromPoint(${dText.x + 10}, ${dText.y + dText.h / 2})?.closest('[role="menu"]') ? '메뉴' : '본문'`)
+    const tOutside = await rect(`[data-block-id="${ids.T}"] .blk-text`)
+    await click(tOutside.x + 4, tOutside.y + tOutside.h / 2)
+    await sleep(80)
+    const outside = { menu: await menuOpen(), selected: await selected(), underD }
+    check('바깥을 누르면 닫힌다 — 누른 곳으로 캐럿이 간다', !outside.menu && outside.selected.length === 0, JSON.stringify(outside))
+
+    // 링크로 들어오면 그 블록이 선택된 채로 열린다(복사하는 쪽과 받는 쪽).
+    await send('Page.navigate', { url: copied })
+    await waitFor(`document.querySelectorAll('.blk-editor [data-block-id]').length > 0`, 15000)
+    const aSelected = `[...document.querySelectorAll('.blk-selected')].some((e) => e.getAttribute('data-block-id') === '${ids.A}')`
+    // 같은 페이지라 해시만 바뀐다(hashchange 경로).
+    check('블록 링크로 가면 그 블록이 선택된다 — 같은 페이지(hashchange)', await waitFor(aSelected, 3000), JSON.stringify(await selected()))
+    await send('Page.reload')
+    await sleep(300)
+    await waitFor(`document.querySelectorAll('.blk-editor [data-block-id]').length > 0`, 15000)
+    check('블록 링크로 처음 열어도 그 블록이 선택된다 — 새로고침(마운트 경로)', await waitFor(aSelected, 3000), JSON.stringify(await selected()))
 
     section('+ 버튼 (F-01-08 · F-01-04)')
     const dNow = await line(ids.D)
