@@ -27,7 +27,8 @@
     "db:migrate": "node scripts/migrate.mjs",
     "db:migrate:status": "node scripts/migrate.mjs --status",
     "db:verify:schema": "node scripts/verify-schema.mjs",
-    "test": "node --test \"src/**/*.test.ts\""
+    "test": "node --test \"src/**/*.test.ts\"",
+    "e2e": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/e2e-editor.mjs"
   },
   "dependencies": {
     "@tiptap/pm": "^3.31.3",
