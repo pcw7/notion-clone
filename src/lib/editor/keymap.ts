@@ -35,6 +35,7 @@ import { redo, undo } from '@tiptap/pm/history'
 import type { Command, EditorState, Transaction } from '@tiptap/pm/state'
 
 import type { BlockType } from '../block/types.ts'
+import { moveBlocksCommand } from './block-move.ts'
 import {
   deleteBlockSelectionCommand,
   duplicateBlockSelectionCommand,
@@ -104,7 +105,7 @@ export type EditorKeymapDeps = CommandDeps & {
  * `chain(블록선택용, 편집용)` 한 줄이 곧 분기다. 판정의 진실이 selection 하나뿐이라
  * 모드가 어긋날 자리가 없다.
  *
- * 빠진 것: `/` 메뉴(별도 플러그인), 블록 이동 `Mod-Shift-↑↓`(F-01-08),
+ * 빠진 것: `/` 메뉴(별도 플러그인), 드래그 핸들과 그 메뉴(F-01-08 의 나머지),
  * 표 관련(MVP 밖).
  */
 export function createEditorKeymap(deps: EditorKeymapDeps): KeyBindings {
@@ -126,6 +127,11 @@ export function createEditorKeymap(deps: EditorKeymapDeps): KeyBindings {
     'Shift-ArrowDown': extendBlockSelectionCommand(1, deps),
     ArrowUp: moveBlockSelectionCommand(-1, deps),
     ArrowDown: moveBlockSelectionCommand(1, deps),
+
+    // ⚠ 위 둘과 다르다. `moveBlockSelection` 은 **선택을** 이웃으로 옮기고
+    // 이쪽은 **블록 자체를** 옮긴다. 편집 모드에서도 동작한다(F-01-08).
+    'Mod-Shift-ArrowUp': moveBlocksCommand(-1, deps),
+    'Mod-Shift-ArrowDown': moveBlocksCommand(1, deps),
 
     'Mod-d': duplicateBlockSelectionCommand(deps),
     'Mod-a': selectAllBlocksCommand(),
