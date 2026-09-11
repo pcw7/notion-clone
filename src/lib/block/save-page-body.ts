@@ -271,7 +271,15 @@ export async function savePageBody(
         toInsert.push(target)
         continue
       }
-      if (row.order_key !== target.orderKey) keyChanges.push(target)
+      // ★ "키가 바뀌는 행"이 아니라 **(부모, 키) 자리가 바뀌는 행**이다.
+      // 키는 위치로 결정론적으로 매겨지므로(a0, a1, …) 루트 첫 블록을 다른 블록의
+      // 첫 자식으로 옮기면 키 문자열은 a0 그대로이고 부모만 바뀐다. 키만 비교하면
+      // 이 행은 임시 키로 비켜나지 않고 옛 자리 (옛 부모, a0) 에 남는데, 그 자리로
+      // 들어오는 형제의 UPDATE 가 먼저 돌면 UNIQUE 에 걸린다. 드래그(F-01-08)의
+      // "자식 드롭"이 처음 밟았다 — Tab/Shift+Tab 은 우연히 늘 키도 바뀌었다.
+      if (row.order_key !== target.orderKey || row.parent_id !== target.parentId) {
+        keyChanges.push(target)
+      }
       if (row.type === PAGE_TYPE) {
         // 자식 페이지는 순서(그리고 필요하면 부모)만. 내용은 그 페이지의 것이다.
         continue
