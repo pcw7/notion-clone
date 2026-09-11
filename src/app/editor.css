@@ -7,6 +7,8 @@
  *      사용자는 줄바꿈이 사라졌다고 판단한다(F-01-19 soft break).
  *   ② `[data-collapsed] > .blk-group { display: none }` — 접힘을 CSS 로
  *      표현한다. 자식을 DOM 에서 빼면 ProseMirror 의 위치 계산이 깨진다.
+ *      속성은 **데코레이션**이 단다(`collapse-plugin.ts`). 편집기 DOM 에 직접
+ *      달면 ProseMirror 가 다시 그리며 지워서, 접어도 자식이 숨겨지지 않았다.
  *   ③ 번호 목록의 CSS 카운터 — 우리 트리는 리스트 항목이 임의 블록의 자식이
  *      될 수 있어 `<ol>` 래퍼가 성립하지 않는다. 번호는 카운터로만 나온다.
  */

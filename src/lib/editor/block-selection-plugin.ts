@@ -58,10 +58,15 @@ export function decorateBlockSelection(state: EditorState): DecorationSet | null
  * 같아도, DOM selection 이 그 범위 안에 있으면 `selectionBetween` →
  * `TextSelection.between` 으로 선택을 **새로 만들어 dispatch** 한다(`readDOMChange`).
  *
- * 이 저장소는 접힘을 DOM 속성으로 그린다(`body-editor.tsx` 의
- * `applyCollapsedAttributes`, 매 트랜잭션). `setAttribute` 는 값이 같아도 mutation
- * 을 일으키므로, **접힌 토글을 블록 선택하면 트랜잭션마다 선택이 텍스트 선택으로
- * 바뀔 수 있다.** 헤드리스 테스트로는 잡히지 않는다 — MutationObserver 가 없다.
+ * 실제로 이 경로를 밟았다(#30). 당시 `body-editor.tsx` 가 접힘을 트랜잭션마다
+ * 컨테이너 DOM 에 `data-collapsed` 로 **직접** 달았고, **접힌 토글을 블록 선택하면
+ * 선택이 텍스트 선택으로 풀렸다.** 실제 브라우저로 확인했다 — 이 훅을 빼고 빌드하면
+ * 관련 검사 3개가 실패하고 넣으면 통과한다. 헤드리스 테스트로는 잡히지 않는다
+ * (MutationObserver 가 없다).
+ *
+ * 그 유발 원인은 접힘을 데코레이션으로 그리면서 사라졌다(`collapse-plugin.ts`).
+ * 그래도 훅은 남긴다 — 편집기 DOM 을 바깥에서 건드리는 것은 우리 코드만이 아니다
+ * (맞춤법 검사·번역·확장 프로그램). 어느 것이든 같은 경로로 블록 선택을 푼다.
  *
  * `selectionBetween` 은 이 prop 에 먼저 묻는다. `prosemirror-tables` 가
  * `CellSelection` 을 같은 훅으로 지킨다. 경계가 다르면(사용자가 다른 곳을 클릭)
