@@ -351,7 +351,7 @@ describe('planBlockMove — 문서를 고치지 않는다', () => {
     assert.equal(plan.kind, 'not_siblings')
   })
 
-  test('나가는 이동은 outdents 로 표시된다 — 드래그가 같은 계획을 쓸 것이다', () => {
+  test('나가는 이동은 outdents 로 표시된다', () => {
     const [a, a1] = [nextId(), nextId()]
     const state = stateOf([blk(a, 'toggle', 'A', [blk(a1)])])
     const plan = planBlockMove(state.doc, [posOf(state, a1)], 1)
