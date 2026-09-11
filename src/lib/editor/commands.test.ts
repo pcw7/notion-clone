@@ -686,6 +686,22 @@ describe('Tab — 들여쓰기 (F-01-07)', () => {
     assert.equal(run(state, indentCommand(deps())), null)
   })
 
+  test('하위 페이지 참조 밑으로도 들여쓸 수 없다 — 그 밑은 그 페이지의 문서다', () => {
+    // 레지스트리의 `page.canHaveChildren` 은 true 다(페이지 트리). 그것만 보고
+    // 들여쓰기를 허용하면 에디터에서는 된 것처럼 보이고, 저장할 때 `validateDoc`
+    // 이 "두 문서가 같은 블록을 소유한다"며 거부한다. 사용자는 "저장하지
+    // 못했습니다"만 본다.
+    const p = nextId()
+    const b = nextId()
+    let state = stateOf({ blocks: [blk(p, 'page', '하위'), blk(b, 'paragraph', '본문')] })
+    state = withCaret(state, b, 0)
+    // ⚠ `assert.equal(run(...), null)` 로 쓰지 않는다. 실패하면 node 가 메시지를
+    // 만들려고 EditorState(스키마까지 딸린 객체 그래프)를 통째로 inspect 하다가
+    // **멈춘다** — 이 테스트가 버그를 잡는지 확인하다 실제로 40초 넘게 멈췄다.
+    const next = run(state, indentCommand(deps()))
+    assert.ok(next === null, '하위 페이지 참조 밑으로 들여쓰기가 허용되었다')
+  })
+
   test('자기 자식을 데리고 들어간다', () => {
     const a = nextId()
     const b = nextId()
