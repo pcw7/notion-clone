@@ -103,6 +103,7 @@ npm run db:migrate:status
 npm run db:verify:schema # 스키마가 정본대로인지 + 불변식이 실제로 거부하는지
 
 npm run check           # typecheck + lint + license
+npm run e2e             # 실제 브라우저(Edge·Chrome 헤드리스)로 에디터 검증. build · db:up 먼저
 npm run db:reset        # 볼륨 삭제 → 재생성 → 마이그레이션
 npm run dc -- <args>    # 임의의 docker compose 명령
 ```

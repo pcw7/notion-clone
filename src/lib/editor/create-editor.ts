@@ -33,6 +33,7 @@ import { EditorView } from '@tiptap/pm/view'
 
 import { blockIdPlugin } from './block-id-plugin.ts'
 import { blockSelectionPlugin } from './block-selection-plugin.ts'
+import { collapsePlugin } from './collapse-plugin.ts'
 import { createKeydownHandler, type EditorKeymapDeps } from './keymap.ts'
 import { inputRulesPlugin } from './input-rules.ts'
 import { createNodeViews, type NodeViewDeps } from './node-views.ts'
@@ -79,6 +80,9 @@ export function createEditor(options: CreateEditorOptions): EditorView {
     // 블록 선택 하이라이트(F-01-09). 상태는 `state.selection` 이 갖고 있고
     // 이 플러그인은 그리기만 한다.
     blockSelectionPlugin(),
+    // 접힘(F-01-13). 편집기 DOM 에 속성을 직접 달면 PM 이 다시 그리며 지운다 —
+    // 데코레이션으로만 그린다(`collapse-plugin.ts` 머리말).
+    collapsePlugin(options.deps.isCollapsed),
     // id 스탬프는 마지막이다. 다른 플러그인이 만든 노드까지 훑어야 한다.
     blockIdPlugin(),
     history(),

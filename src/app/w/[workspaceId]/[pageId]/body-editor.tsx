@@ -289,7 +289,6 @@ export function BodyEditor({
       },
       onTransaction: (v, tr) => {
         syncMenu(v)
-        applyCollapsedAttributes(v, collapsedRef.current)
         // 같은 값이면 리렌더하지 않는다 — 트랜잭션마다 불리는 자리다.
         const count = selectedBlockCount(v.state)
         setSelectedBlocks((prev) => (prev === count ? prev : count))
@@ -298,7 +297,6 @@ export function BodyEditor({
     })
 
     viewRef.current = view
-    applyCollapsedAttributes(view, collapsedRef.current)
 
     return () => {
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
@@ -437,19 +435,4 @@ export function BodyEditor({
       </p>
     </section>
   )
-}
-
-/**
- * 접힘을 DOM 속성으로 반영한다.
- *
- * 자식을 DOM 에서 **빼지 않는다.** ProseMirror 는 DOM 구조로 위치를 계산하므로
- * 노드를 빼면 캐럿 위치가 어긋난다. `data-collapsed` 를 달고 CSS 가 숨긴다.
- */
-function applyCollapsedAttributes(view: EditorView, collapsed: ReadonlySet<string>): void {
-  const containers = view.dom.querySelectorAll<HTMLElement>('[data-block-id]')
-  for (const el of containers) {
-    const id = el.getAttribute('data-block-id') ?? ''
-    if (collapsed.has(id)) el.setAttribute('data-collapsed', 'true')
-    else el.removeAttribute('data-collapsed')
-  }
 }
