@@ -195,6 +195,69 @@
   background: transparent;
 }
 
+/*
+ * 블록 핸들 (F-01-08). 프레임 기준 절대 위치 — 편집기 DOM 밖에 그린다
+ * (`block-gutter.tsx` 머리말).
+ */
+.blk-gutter {
+  position: absolute;
+  z-index: 5;
+  display: flex;
+  gap: 2px;
+  align-items: center;
+  height: 1.5rem;
+}
+
+.blk-gutter-button {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 22px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: #a3a3a3;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.blk-gutter-button:hover {
+  background: rgba(0, 0, 0, 0.06);
+  color: #525252;
+}
+
+.blk-gutter-grip {
+  cursor: grab;
+  letter-spacing: -2px;
+  /* 터치에서 끄는 동안 브라우저가 페이지를 스크롤하지 않게. 포인터 이벤트 드래그의 전제다. */
+  touch-action: none;
+}
+
+[data-dragging='true'] {
+  user-select: none;
+}
+
+[data-dragging='true'] .blk-gutter-grip {
+  cursor: grabbing;
+}
+
+/* 끌고 있는 블록 — 드래그 시작 때 블록 선택이 되므로 그 하이라이트를 흐린다. */
+[data-dragging='true'] .blk-selected {
+  opacity: 0.4;
+}
+
+/* 파란 가이드 라인 — 정본 "가로선 = 위/아래 삽입". */
+.blk-drop-guide {
+  position: absolute;
+  right: 0;
+  z-index: 5;
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(35, 131, 226, 0.85);
+  pointer-events: none;
+}
+
 /* ProseMirror 의 gap cursor — 원자 블록 앞뒤에 캐럿을 둘 자리. */
 .ProseMirror-gapcursor {
   display: none;
@@ -251,6 +314,8 @@
 
 @media (prefers-color-scheme: dark) {
   .blk-editor .blk-selected { background: rgba(35, 131, 226, 0.28); }
+  .blk-gutter-button { color: #737373; }
+  .blk-gutter-button:hover { background: rgba(255, 255, 255, 0.08); color: #d4d4d4; }
   .blk-callout { border-color: #262626; background: #171717; }
   .blk-divider { border-top-color: #262626; }
   .blk-image-empty, .blk-unsupported { border-color: #404040; }

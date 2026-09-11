@@ -17,7 +17,8 @@
  * (라이브 리전)는 화면 컴포넌트의 몫이다 — 이 파일은 DOM 을 만들지 않는다.
  */
 
-import { Plugin, PluginKey, type EditorState } from '@tiptap/pm/state'
+import type { ResolvedPos } from '@tiptap/pm/model'
+import { Plugin, PluginKey, type EditorState, type Selection } from '@tiptap/pm/state'
 import { Decoration, DecorationSet } from '@tiptap/pm/view'
 
 import { BlockSelection, isBlockSelection } from './block-selection.ts'
@@ -43,11 +44,47 @@ export function decorateBlockSelection(state: EditorState): DecorationSet | null
   return DecorationSet.create(state.doc, decorations)
 }
 
+/**
+ * ProseMirror 가 DOM selection 을 다시 읽어 선택을 만들 때, 그 경계가 **지금 블록
+ * 선택의 경계와 같으면** 블록 선택을 그대로 돌려준다.
+ *
+ * ──────────────────────────────────────────────────────────────────────
+ * 왜 필요한가 — 블록 선택이 조용히 풀리는 경로
+ * ──────────────────────────────────────────────────────────────────────
+ *
+ * `visible = false` 여도 PM 은 anchor·head 를 DOM selection 에 걸어 둔다. 그리고
+ * 편집기 DOM 의 **속성 변경**을 문서 변경 후보로 등록해 그 범위를 다시 읽는다
+ * (prosemirror-view `registerMutation` 의 attributes 분기). 다시 읽은 결과 내용이
+ * 같아도, DOM selection 이 그 범위 안에 있으면 `selectionBetween` →
+ * `TextSelection.between` 으로 선택을 **새로 만들어 dispatch** 한다(`readDOMChange`).
+ *
+ * 이 저장소는 접힘을 DOM 속성으로 그린다(`body-editor.tsx` 의
+ * `applyCollapsedAttributes`, 매 트랜잭션). `setAttribute` 는 값이 같아도 mutation
+ * 을 일으키므로, **접힌 토글을 블록 선택하면 트랜잭션마다 선택이 텍스트 선택으로
+ * 바뀔 수 있다.** 헤드리스 테스트로는 잡히지 않는다 — MutationObserver 가 없다.
+ *
+ * `selectionBetween` 은 이 prop 에 먼저 묻는다. `prosemirror-tables` 가
+ * `CellSelection` 을 같은 훅으로 지킨다. 경계가 다르면(사용자가 다른 곳을 클릭)
+ * null 을 돌려 평소대로 텍스트 선택이 되게 한다 — 블록 선택 모드에서 나가는 길이다.
+ */
+export function keepBlockSelection(
+  state: EditorState,
+  $anchor: ResolvedPos,
+  $head: ResolvedPos,
+): Selection | null {
+  const sel = state.selection
+  if (!isBlockSelection(sel)) return null
+  if ($anchor.pos === sel.$anchorBlock.pos && $head.pos === sel.$headBlock.pos) return sel
+  return null
+}
+
 export function blockSelectionPlugin(): Plugin {
   return new Plugin({
     key: blockSelectionPluginKey,
     props: {
       decorations: (state) => decorateBlockSelection(state) ?? undefined,
+
+      createSelectionBetween: (view, $anchor, $head) => keepBlockSelection(view.state, $anchor, $head),
 
       /**
        * `Shift+클릭` — 클릭한 블록까지 선택을 늘린다 (F-01-09 시나리오).

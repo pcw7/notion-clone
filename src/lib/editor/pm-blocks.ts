@@ -87,6 +87,23 @@ export function blockTypeOf(contentNode: PmNode): BlockType {
 }
 
 /**
+ * **이 문서 안에서** 이 블록 밑에 자식을 둘 수 있는가.
+ *
+ * 레지스트리의 `canHaveChildren` 만 보면 안 된다. `page` 는 레지스트리상 자식을
+ * 가질 수 있지만(페이지 트리), 본문 문서의 `page_ref` 노드 밑은 **그 페이지의
+ * 문서**다. `validateDoc` 이 "두 문서가 같은 블록을 소유한다"며 저장을 거부한다.
+ * 여기서 먼저 막지 않으면 사용자는 들여쓰기·드롭이 된 것을 보고 나서
+ * "저장하지 못했습니다"만 받는다.
+ *
+ * 들여쓰기(Tab)와 드롭(F-01-08)이 이 판정을 공유한다 — 두 벌로 두면 한쪽만 고쳐진다.
+ */
+export function canNestUnder(info: ContainerInfo): boolean {
+  const type = blockTypeOf(info.contentNode)
+  if (type === PAGE_TYPE) return false
+  return specOf(type).canHaveChildren
+}
+
+/**
  * 규칙 함수의 입력으로 옮긴다.
  *
  * `collapsed` 는 문서에 없다 — F-01-13 이 접힘을 뷰어별 상태로 두라고 했기

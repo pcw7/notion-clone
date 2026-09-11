@@ -35,7 +35,7 @@ import {
   selectBlockCommand,
   turnSelectionIntoCommand,
 } from './block-selection.ts'
-import { decorateBlockSelection } from './block-selection-plugin.ts'
+import { decorateBlockSelection, keepBlockSelection } from './block-selection-plugin.ts'
 import { toggleFormat, setTextColor } from './marks.ts'
 import { findContainerById } from './pm-blocks.ts'
 import type { CommandDeps } from './commands.ts'
@@ -608,6 +608,37 @@ describe('데코레이션 — 최상위 블록에만 걸린다', () => {
     const a = nextId()
     const state = caretAt(stateOf([blk(a, 'paragraph', 'A')]), a, 0)
     assert.equal(decorateBlockSelection(state), null)
+  })
+})
+
+// ── DOM 에서 다시 읽힐 때 ─────────────────────────────────────────────
+
+describe('keepBlockSelection — PM 이 DOM selection 을 다시 읽어도 풀리지 않는다', () => {
+  test('같은 경계면 블록 선택을 그대로 돌려준다', () => {
+    // 접힘을 DOM 속성으로 그리는 탓에 PM 이 그 범위를 다시 읽고, DOM selection 이
+    // 그 안에 있으면 `TextSelection.between` 으로 선택을 새로 만든다.
+    // 이 훅이 없으면 접힌 토글을 선택했을 때 트랜잭션마다 선택이 풀린다.
+    const [a, b] = [nextId(), nextId()]
+    const state = select(stateOf([blk(a, 'toggle', 'A'), blk(b)]), a, b)
+    const sel = state.selection
+    assert.ok(isBlockSelection(sel))
+    const kept = keepBlockSelection(state, sel.$anchorBlock, sel.$headBlock)
+    assert.ok(kept === sel)
+  })
+
+  test('경계가 다르면 관여하지 않는다 — 다른 곳을 클릭하면 편집 모드로 나가야 한다', () => {
+    const [a, b] = [nextId(), nextId()]
+    const state = select(stateOf([blk(a, 'paragraph', 'A'), blk(b, 'paragraph', 'B')]), a)
+    const info = findContainerById(state.doc, b)
+    assert.ok(info)
+    const $inside = state.doc.resolve(info.contentPos + 1)
+    assert.ok(keepBlockSelection(state, $inside, $inside) === null)
+  })
+
+  test('블록 선택이 아니면 관여하지 않는다', () => {
+    const a = nextId()
+    const state = caretAt(stateOf([blk(a, 'paragraph', 'A')]), a, 0)
+    assert.ok(keepBlockSelection(state, state.selection.$anchor, state.selection.$head) === null)
   })
 })
 

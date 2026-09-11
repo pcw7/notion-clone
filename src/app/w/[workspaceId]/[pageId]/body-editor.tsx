@@ -33,6 +33,7 @@ import { useRouter } from 'next/navigation'
 import type { EditorView } from '@tiptap/pm/view'
 
 import { selectedBlockCount } from '@/lib/editor/block-selection'
+import type { CommandDeps } from '@/lib/editor/commands'
 import { createEditor } from '@/lib/editor/create-editor'
 import { pmToDoc } from '@/lib/editor/pm-adapter'
 import {
@@ -44,6 +45,7 @@ import {
   type SlashCommand,
 } from '@/lib/editor/slash-menu'
 import type { EditorDoc } from '@/lib/editor/document'
+import { BlockGutter } from './block-gutter'
 
 const SAVE_DEBOUNCE_MS = 1000
 
@@ -71,6 +73,8 @@ export function BodyEditor({
 }) {
   const router = useRouter()
   const mountRef = useRef<HTMLDivElement | null>(null)
+  /** 블록 핸들의 좌표 기준. 에디터 DOM 이 아니라 그 바깥 틀이다(`block-gutter.tsx`). */
+  const frameRef = useRef<HTMLDivElement | null>(null)
   const viewRef = useRef<EditorView | null>(null)
 
   /** 접힘 상태 — 문서에 없다(F-01-13). */
@@ -240,6 +244,27 @@ export function BodyEditor({
     [createSubpage],
   )
 
+  // ── 접힘 · 핸들 ─────────────────────────────────────────────────────
+
+  /**
+   * 접힌 블록을 펼친다. 에디터 커맨드(병합)와 블록 핸들(드롭) 둘 다 부른다 —
+   * 한 벌만 두어야 "펼쳤는데 한쪽 화면만 안 바뀌는" 일이 없다.
+   */
+  const expandBlock = useCallback((id: string) => {
+    collapsedRef.current.delete(id)
+    // 접힘은 CSS 로 표현되므로 DOM 을 다시 그리게 한다.
+    viewRef.current?.dispatch(viewRef.current.state.tr)
+  }, [])
+
+  const gutterDeps = useMemo<CommandDeps>(
+    () => ({
+      isCollapsed: (id) => collapsedRef.current.has(id),
+      expand: expandBlock,
+      onRefused: (detail) => setStatus({ kind: 'error', message: detail }),
+    }),
+    [expandBlock],
+  )
+
   // ── 에디터 생성 ─────────────────────────────────────────────────────
 
   useEffect(() => {
@@ -252,11 +277,7 @@ export function BodyEditor({
       editable: true,
       deps: {
         isCollapsed: (id) => collapsedRef.current.has(id),
-        expand: (id) => {
-          collapsedRef.current.delete(id)
-          // 접힘은 CSS 로 표현되므로 DOM 을 다시 그리게 한다.
-          viewRef.current?.dispatch(viewRef.current.state.tr)
-        },
+        expand: expandBlock,
         toggleCollapsed: (id) => {
           if (collapsedRef.current.has(id)) collapsedRef.current.delete(id)
           else collapsedRef.current.add(id)
@@ -363,7 +384,15 @@ export function BodyEditor({
         </p>
       )}
 
-      <div ref={mountRef} />
+      {/*
+        프레임: 왼쪽으로 3rem 넓혀 핸들이 들어갈 여백을 hover 영역에 포함시킨다.
+        -ml-12 와 pl-12 가 상쇄하므로 에디터의 위치는 그대로다 — 슬래시 메뉴는
+        섹션 기준 좌표를 쓰므로 영향이 없다.
+      */}
+      <div ref={frameRef} className="relative -ml-12 pl-12">
+        <div ref={mountRef} />
+        <BlockGutter viewRef={viewRef} frameRef={frameRef} deps={gutterDeps} />
+      </div>
 
       {menu.open && items.length > 0 && (
         <ul

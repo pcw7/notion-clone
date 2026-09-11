@@ -50,6 +50,7 @@ import { normalizeFormat, specOf, type BlockFormat, type BlockType } from '../bl
 import { planMerge, planSplit, type MergePlan } from './block-rules.ts'
 import { newBlockId, runsToInline } from './pm-adapter.ts'
 import {
+  canNestUnder,
   containerAt,
   findContainerById,
   toRuleBlock,
@@ -406,10 +407,9 @@ export function indentCommand(deps: CommandDeps = NO_COLLAPSE): Command {
     const prevInfo = findContainerById(state.doc, String(prevSibling.attrs.blockId ?? ''))
     if (!prevInfo) return false
 
-    // 자식을 가질 수 없는 타입(heading) 밑으로 넣지 않는다. 스키마는 허용하지만
-    // 레지스트리가 금지하고, 저장할 때 `validateDoc` 이 거부한다.
-    const prevType = toRuleBlock(prevInfo, deps.isCollapsed).type
-    if (!specOf(prevType).canHaveChildren) return false
+    // 자식을 가질 수 없는 블록 밑으로 넣지 않는다 — heading 뿐 아니라 하위 페이지
+    // 참조도다. 스키마는 둘 다 허용하지만 저장할 때 `validateDoc` 이 거부한다.
+    if (!canNestUnder(prevInfo)) return false
 
     const caretOffset = state.selection.$from.parentOffset
     const moving = info.node

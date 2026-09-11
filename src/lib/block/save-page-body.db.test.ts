@@ -204,6 +204,37 @@ describe('savePageBody — 순서 변경', () => {
     assert.equal(loaded?.doc.blocks.length, 1)
     assert.equal(loaded?.doc.blocks[0].children?.[0].id, child.id)
   })
+
+  test('★ 부모만 바뀌고 키 문자열은 같은 이동도 UNIQUE 에 걸리지 않는다', async (t) => {
+    // 실제 브라우저 검증에서 잡은 것(F-01-08 드래그). 키는 위치로 결정론적으로
+    // 매겨지므로(a0, a1, …) 루트 첫 블록 B(a0)를 D 의 첫 자식(역시 a0)으로
+    // 옮기면 **키 문자열이 그대로**다. 임시 키 단계가 "키가 바뀌는 행"만 비켜
+    // 두면 B 는 (페이지, a0) 에 남은 채로, C 를 (페이지, a0) 으로 옮기는 UPDATE 가
+    // 먼저 돌아 충돌한다. 기존 조작(Tab/Shift+Tab)은 우연히 늘 키도 바뀌어서
+    // 이 구멍을 밟지 않았다.
+    if (skipReason) return t.skip(skipReason)
+    const pageId = await newPage()
+    const [b, c, a, d] = [
+      blk('paragraph', 'B'),
+      blk('paragraph', 'C'),
+      blk('paragraph', 'A'),
+      blk('paragraph', 'D'),
+    ]
+
+    assert.ok((await savePageBody(fx.owner.ctx, pageId, { blocks: [b, c, a, d] })).ok)
+    const moved = await savePageBody(fx.owner.ctx, pageId, {
+      blocks: [c, a, { ...d, children: [b] }],
+    })
+    assert.ok(moved.ok, `저장이 거부됐다: ${JSON.stringify(moved)}`)
+
+    const loaded = await loadPageBody(fx.owner.ctx, pageId)
+    assert.ok(loaded)
+    assert.deepEqual(shape(loaded.doc), [
+      ['paragraph', 'C', []],
+      ['paragraph', 'A', []],
+      ['paragraph', 'D', [['paragraph', 'B', []]]],
+    ])
+  })
 })
 
 describe('savePageBody — 삭제 (X-3 / B5)', () => {
