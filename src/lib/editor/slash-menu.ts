@@ -100,6 +100,15 @@ const CATALOG: Readonly<Record<MvpBlockType, SlashCommandBase>> = {
   image: { label: '이미지', aliases: ['이미지', 'image', 'img', '사진'], group: '미디어' },
 }
 
+/**
+ * 블록 타입의 화면 이름. 블록 메뉴의 "변환" 목록(`block-menu.ts`)이 같은 이름을
+ * 쓴다 — 두 벌로 두면 슬래시 메뉴에서는 "할 일 목록"인데 핸들 메뉴에서는
+ * "체크리스트"가 되는 식으로 어긋난다.
+ */
+export function blockTypeLabel(type: MvpBlockType): string {
+  return CATALOG[type].label
+}
+
 /** 하위 페이지. 레지스트리의 블록 타입이 아니므로 여기 따로 둔다. */
 const PAGE_COMMAND: PageSlashCommand = {
   kind: 'page',
