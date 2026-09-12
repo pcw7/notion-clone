@@ -51,6 +51,8 @@ import type { BlockId } from '../ids.ts'
 import { withTransaction, type Tx } from '../db/tx.ts'
 import { PAGE_TYPE } from './types.ts'
 import { countFileReferences, fileReferenceDelta } from './image.ts'
+import { can } from '../permissions/levels.ts'
+import { effectiveCaps } from '../permissions/effective.ts'
 import { orderKeyBetween } from './order-key.ts'
 import { relocateSubtree, MoveError } from './move-page.ts'
 import {
@@ -80,6 +82,8 @@ export type SaveBodyResult =
       readonly writes: SaveWriteCounts
     }
   | { readonly ok: false; readonly reason: 'not_found' }
+  /** 볼 수는 있지만 고칠 수 없다(F-06-01 `edit_content`). */
+  | { readonly ok: false; readonly reason: 'forbidden' }
   | { readonly ok: false; readonly reason: 'invalid_document'; readonly issues: DocIssue[] }
   | {
       readonly ok: false
@@ -212,6 +216,12 @@ export async function savePageBody(
       [pageId, ctx.workspaceId],
     )
     if (!page) return { ok: false, reason: 'not_found' } as const
+
+    // W6-b: 볼 수만 있는 사람은 저장할 수 없다. **못 보는 사람에게는 `not_found`**
+    // 다 — "권한이 없다"고 답하면 그 페이지의 존재를 알려주게 된다.
+    const caps = await effectiveCaps(tx, ctx, pageId)
+    if (!can(caps, 'view')) return { ok: false, reason: 'not_found' } as const
+    if (!can(caps, 'edit_content')) return { ok: false, reason: 'forbidden' } as const
 
     if (options.expectedVersion !== undefined && options.expectedVersion !== page.version) {
       return { ok: false, reason: 'version_conflict', currentVersion: page.version } as const
@@ -551,6 +561,7 @@ export async function loadPageBody(
       [pageId, ctx.workspaceId],
     )
     if (!page) return null
+    if (!can(await effectiveCaps(tx, ctx, pageId), 'view')) return null
 
     const scope = await readScope(tx, ctx, pageId)
     // 휴지통에 있는 자식 페이지는 문서에 넣지 않는다. 다만 그 키는 점유된

@@ -98,6 +98,12 @@ export async function PUT(request: Request, ctx: Ctx): Promise<Response> {
   switch (result.reason) {
     case 'not_found':
       return Response.json({ error: 'not_found', retryable: false }, { status: 404 })
+    case 'forbidden':
+      // 볼 수는 있는데 고칠 수 없다. 다시 보내도 같으므로 retryable 이 아니다.
+      return Response.json(
+        { error: 'forbidden', retryable: false, message: '이 페이지를 편집할 권한이 없습니다.' },
+        { status: 403 },
+      )
     case 'invalid_document':
       return Response.json(
         { error: 'invalid_document', retryable: false, issues: result.issues },

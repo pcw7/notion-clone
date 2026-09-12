@@ -51,8 +51,8 @@
 import type { SessionContext } from '../auth/session-context.ts'
 import type { BlockId } from '../ids.ts'
 import { asBlockId } from '../ids.ts'
-import { query } from '../db/pool.ts'
-import { withTransaction } from '../db/tx.ts'
+import { withReadTransaction, withTransaction } from '../db/tx.ts'
+import { readableScopes } from '../permissions/effective.ts'
 import { toPlainText, type RichTextRun } from '../contracts/rich-text.ts'
 import { relocateSubtree, type MovingRow } from './move-page.ts'
 
@@ -307,23 +307,30 @@ export type TrashEntry = {
  * 워크스페이스 멤버 전원이 모든 페이지를 보므로 `workspace_id` 필터가 곧 전부다.
  */
 export async function listTrash(ctx: SessionContext): Promise<TrashEntry[]> {
-  const rows = await query<{
-    id: string
-    properties: { title?: unknown } | null
-    trashed_at: Date
-    purge_after: Date | null
-    descendant_count: string
-  }>(
-    `SELECT t.id, t.properties, t.trashed_at, t.purge_after,
-            (SELECT count(*) FROM block d
-              WHERE d.trash_root_id = t.id AND d.id <> t.id
-                AND d.workspace_id = t.workspace_id) AS descendant_count
-       FROM block t
-      WHERE t.workspace_id = $1 AND t.type = 'page'
-        AND t.lifecycle = 'trashed' AND t.trash_root_id = t.id
-      ORDER BY t.trashed_at DESC, t.id`,
-    [ctx.workspaceId],
-  )
+  // ★ W6-b: 휴지통도 권한으로 거른다. F-11-05 가 "권한 필터 누락 시 제목 유출"을
+  //    못박았고, 휴지통은 **지워진 페이지의 제목이 모이는 곳**이라 더 위험하다.
+  const rows = await withReadTransaction(async (tx) => {
+    const scopes = await readableScopes(tx, ctx)
+    if (scopes.length === 0) return []
+    return tx.query<{
+      id: string
+      properties: { title?: unknown } | null
+      trashed_at: Date
+      purge_after: Date | null
+      descendant_count: string
+    }>(
+      `SELECT t.id, t.properties, t.trashed_at, t.purge_after,
+              (SELECT count(*) FROM block d
+                WHERE d.trash_root_id = t.id AND d.id <> t.id
+                  AND d.workspace_id = t.workspace_id) AS descendant_count
+         FROM block t
+        WHERE t.workspace_id = $1 AND t.type = 'page'
+          AND t.lifecycle = 'trashed' AND t.trash_root_id = t.id
+          AND t.perm_scope_id = ANY($2::uuid[])
+        ORDER BY t.trashed_at DESC, t.id`,
+      [ctx.workspaceId, scopes],
+    )
+  })
 
   return rows.map((row) => {
     const raw = row.properties?.title
