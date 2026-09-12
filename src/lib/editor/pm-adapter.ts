@@ -222,7 +222,7 @@ function contentNodeFor(block: EditorBlock): PmNode {
   return nodeType.create({ props, format })
 }
 
-function containerFor(block: EditorBlock): PmNode {
+export function containerFor(block: EditorBlock): PmNode {
   const content = contentNodeFor(block)
   const children = block.children ?? []
 
@@ -259,7 +259,7 @@ export function docToPm(doc: EditorDoc): PmNode {
 
 // ── ProseMirror doc → EditorDoc ───────────────────────────────────────
 
-function blockFromContainer(container: PmNode): EditorBlock {
+export function blockFromContainer(container: PmNode): EditorBlock {
   const content = container.child(0)
   const group = container.childCount > 1 ? container.child(1) : null
 
