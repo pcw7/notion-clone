@@ -35,7 +35,7 @@ const EXPECTED_TABLES = [
   'group', 'group_member', 'level_capability',
   'mfa_backup_code', 'mfa_method', 'organization', 'otp_challenge',
   'page_version', 'region',
-  'acl_entry', 'block_acl_meta', 'file',
+  'acl_entry', 'block_acl_meta', 'favorite', 'file', 'recent_visit',
   'schema_migration', 'scim_token', 'session_policy', 'sso_config',
   'user', 'user_email', 'user_session',
   'workspace', 'workspace_invite', 'workspace_member',

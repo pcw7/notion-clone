@@ -80,6 +80,7 @@
 | `user_notification_pref` / `reminder` | SV | 채널 설정과 리마인더 | 05, 11 |
 | `suggestion` | SV | 제안 편집 **메타데이터 인덱스**(본문 진실은 Y.Doc mark) | 05, 11 |
 | `search_document` | SV | 검색 인덱스 정본. 색인 단위 = block | 07, 09, 12 |
+| `recent_visit` / `favorite` | MISC(07) | **[추가]** 사용자별 내비게이션 상태(최근 방문 · 즐겨찾기). 권한이 아니라 표시용 | 07 |
 | `discussion` / `comment` / `reaction` | MISC(05) | 코멘트 스레드. **CRDT 밖 관계형 테이블** | 05, 11 |
 | `automation` / `automation_trigger` / `automation_action` / `automation_run` | MISC(08) | 버튼·DB 자동화 정의와 실행 로그 | 08, 15 |
 | `file` | MISC(01/09) | blob 참조와 refcount | 01, 09, 11 |
@@ -1157,6 +1158,40 @@ ORDER BY score LIMIT 25;
 - 인덱싱 트리거는 `doc_update` outbox + `page_property_value` outbox 둘 다다. [X-6]
 - 임베딩(`vector_span`)은 **별개 파이프라인**(AI 클러스터 소유). 같은 테이블에 섞지 않는다.
 - `visible=false` 프로퍼티도 색인에서 제외하지 않는다 — 표시 규칙이지 접근 제어가 아니다. <16 R12>
+
+**[추가] 내비게이션 상태 — 최근 방문 · 즐겨찾기 ⟨07 F-07-04 · F-07-16⟩**
+
+> 이 두 표는 이 문서의 초판에 없었다. 07 문서가 `recent_visit(user_id, block_id, space_id,
+> last_visited_at, visit_count)` 를 "데이터 모델 함의"로 제시하는데 정본에 자리가 없어서,
+> 구현 시점(W6-a)에 여기에 추가한다. 즐겨찾기는 07 F-07-16 이 "사용자별 개인 목록"이라고만
+> 적었고 스키마 제안이 없어 같은 모양으로 정한다.
+
+```sql
+CREATE TABLE recent_visit (
+  user_id uuid NOT NULL, workspace_id uuid NOT NULL,
+  block_id uuid NOT NULL,                      -- type='page' 인 블록
+  last_visited_at timestamptz NOT NULL, visit_count int NOT NULL DEFAULT 1,
+  PRIMARY KEY (user_id, block_id)
+);
+CREATE INDEX ON recent_visit (user_id, workspace_id, last_visited_at DESC);
+
+CREATE TABLE favorite (
+  user_id uuid NOT NULL, workspace_id uuid NOT NULL,
+  block_id uuid NOT NULL, order_key text NOT NULL,
+  created_at timestamptz NOT NULL,
+  PRIMARY KEY (user_id, block_id)
+);
+CREATE INDEX ON favorite (user_id, workspace_id, order_key);
+```
+
+- **권한의 저장 지점이 아니다(C-7 과 충돌하지 않는다).** 여기 행이 있다고 접근이 생기지 않는다.
+  조회할 때마다 `effective()` 로 다시 거른다 — 07 F-07-04 엣지 케이스: *"최근 방문한 페이지의
+  권한이 회수됨 → 목록에서 즉시 제거(권한 필터를 **조회 시점에** 재적용)."*
+- **제목을 복사해 두지 않는다.** 같은 엣지 케이스 표: *"페이지 제목 변경 → 목록은 현재 제목을
+  보여줘야 함 → 제목을 복사 저장하지 말고 조인."*
+- `visit_count` 는 재방문 시 upsert 로 올린다. 같은 페이지를 오갈 때마다 행이 늘면 목록이 한
+  페이지로 가득 찬다.
+- 보관 상한(사용자당 200건)은 GC 의 몫이고 스키마 제약이 아니다 `[추정]`.
 
 ---
 

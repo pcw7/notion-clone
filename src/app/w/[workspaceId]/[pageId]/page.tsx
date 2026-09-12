@@ -14,11 +14,13 @@ import { requirePageSession } from '@/lib/auth/page-session'
 import { getPage, listAncestors, listChildPages } from '@/lib/block/page'
 import { loadPageBody } from '@/lib/block/save-page-body'
 import { listMovableTargets } from '@/lib/block/move-page'
+import { isFavorite, recordVisit } from '@/lib/nav/recent'
 import { NewPageButton } from '../new-page-button'
 import { PageTitle } from './page-title'
 import { BodyEditor } from './body-editor'
 import { MovePageControl } from './move-page-control'
 import { SharePanel } from './share-panel'
+import { FavoriteButton } from './favorite-button'
 import { DeletePageButton } from './delete-page-button'
 
 /** 제목 없는 페이지의 표시 문구. 저장된 값은 빈 배열이다. */
@@ -41,12 +43,19 @@ export default async function PageView({ params }: PageProps<'/w/[workspaceId]/[
   // 술어에 넣으므로 null 이 되고, 404 는 "없다"와 "볼 수 없다"를 구분하지 않는다.
   if (!page) notFound()
 
-  const [ancestors, children, body, moveTargets] = await Promise.all([
+  const [ancestors, children, body, moveTargets, favorite] = await Promise.all([
     listAncestors(ctx, page),
     listChildPages(ctx, page.id),
     loadPageBody(ctx, page.id),
     listMovableTargets(ctx, page.id),
+    isFavorite(ctx, page.id),
   ])
+
+  // 방문 기록(F-07-04). **`getPage` 를 통과한 뒤**에 남긴다 — 볼 수 없는 페이지를
+  // 열어본 흔적이 남으면 그 자체가 존재를 알려주는 신호가 된다.
+  // 실패해도 던지지 않는다(`recordVisit` 머리말): 기록이 빠지는 것이 화면이
+  // 안 열리는 것보다 낫다.
+  await recordVisit(ctx, page.id)
   // getPage 가 통과했으므로 여기서 null 이면 그 사이에 지워진 것이다.
   if (!body) notFound()
 
@@ -73,6 +82,7 @@ export default async function PageView({ params }: PageProps<'/w/[workspaceId]/[
         </nav>
 
         <div className="flex flex-none items-start gap-2">
+          <FavoriteButton workspaceId={workspaceId} pageId={page.id} initial={favorite} />
           <SharePanel workspaceId={workspaceId} pageId={page.id} />
           <MovePageControl
             workspaceId={workspaceId}
