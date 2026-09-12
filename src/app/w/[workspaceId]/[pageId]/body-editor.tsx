@@ -16,7 +16,7 @@
  * 커맨드는 `isCollapsed` 를 주입받아 병합·분할 규칙에 쓴다.
  *
  * ──────────────────────────────────────────────────────────────────────
- * 저장 — Phase 0 은 페이지 단위 LWW
+ * 저장 — Phase 0 은 페이지 단위 LWW + 저장 큐(F-05-04)
  * ──────────────────────────────────────────────────────────────────────
  *
  * 마스터 문서 §5.1 의 대체안: *"페이지 단위 last-write-wins + 다른 사람이
@@ -24,8 +24,9 @@
  * `version` 을 저장 시 되돌려 보낸다(낙관적 잠금). 409 가 오면 덮어쓰지 않고
  * 사용자에게 선택지를 준다.
  *
- * 디바운스는 1초다(§9-Q1 의 잠정 결정과 같은 값). 저장 중에 또 편집하면
- * 끝난 뒤 한 번 더 보낸다 — 마지막 상태가 반드시 서버에 도달해야 한다.
+ * **순서·재시도·영속화는 이 파일에 없다** — `src/lib/sync/page-sync.ts` 다.
+ * 여기서는 편집이 있을 때마다 문서를 큐에 넣고, 큐가 알려주는 상태를 그린다.
+ * 그래야 "네트워크가 끊겼을 때 어떻게 되는가"를 브라우저 없이 시험할 수 있다.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -36,7 +37,7 @@ import { blockIdFromHash, revealBlockCommand } from '@/lib/editor/block-menu'
 import { selectedBlockCount } from '@/lib/editor/block-selection'
 import type { CommandDeps } from '@/lib/editor/commands'
 import { createEditor } from '@/lib/editor/create-editor'
-import { pmToDoc } from '@/lib/editor/pm-adapter'
+import { docToPm, pmToDoc } from '@/lib/editor/pm-adapter'
 import {
   closeSlashMenu,
   filterSlashCommands,
@@ -47,14 +48,15 @@ import {
 } from '@/lib/editor/slash-menu'
 import type { EditorDoc } from '@/lib/editor/document'
 import { uploadImageFile } from '@/lib/file/upload-client'
+import { createPageSync, syncMessage, type PageSync } from '@/lib/sync/page-sync'
+import { deferredOutboxStore, openOutboxStore } from '@/lib/sync/outbox-store'
+import type { SyncState } from '@/lib/sync/outbox'
 import { BlockGutter } from './block-gutter'
-
-const SAVE_DEBOUNCE_MS = 1000
 
 type SaveStatus =
   | { kind: 'idle' }
-  | { kind: 'saving' }
-  | { kind: 'saved' }
+  /** 저장이 3초 이상 밀렸다. 그 전에는 아무것도 보여주지 않는다(F-05-04). */
+  | { kind: 'syncing' }
   | { kind: 'error'; message: string }
   /** 오류가 아닌 안내 — 블록 링크를 복사했다 같은 것. */
   | { kind: 'notice'; message: string }
@@ -85,11 +87,8 @@ export function BodyEditor({
 
   /** 접힘 상태 — 문서에 없다(F-01-13). */
   const collapsedRef = useRef<Set<string>>(new Set())
-  /** 서버가 마지막으로 알려준 version. 낙관적 잠금의 기준. */
-  const versionRef = useRef(initialVersion)
-  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const savingRef = useRef(false)
-  const pendingRef = useRef(false)
+  /** 저장 큐(F-05-04). 순서·재시도·영속화를 전부 여기가 한다. */
+  const syncRef = useRef<PageSync | null>(null)
 
   const [status, setStatus] = useState<SaveStatus>({ kind: 'idle' })
   const [menu, setMenu] = useState<MenuUi>(CLOSED_MENU)
@@ -98,84 +97,79 @@ export function BodyEditor({
 
   // ── 저장 ────────────────────────────────────────────────────────────
 
-  const save = useCallback(async (): Promise<void> => {
-    if (savingRef.current) {
-      // 저장 중에 또 편집됐다. 지금 도는 루프가 한 번 더 돈다.
-      pendingRef.current = true
-      return
-    }
+  /**
+   * 큐가 알려주는 상태를 화면 상태로.
+   *
+   * "저장됨"을 띄우지 않는다. 정본 F-05-04: *"기본 무표시. 미전송 op 가 3초
+   * 이상이면 '동기화 중…'."* 1초마다 깜빡이는 표시는 정보가 아니라 소음이고,
+   * 진짜 문제가 생겼을 때 그 안에 묻힌다.
+   */
+  const applySyncState = useCallback((state: SyncState) => {
+    setStatus((prev) => {
+      // 저장과 무관한 안내(블록 링크 복사 등)를 덮지 않는다.
+      if (prev.kind === 'notice' && state.kind !== 'rejected') return prev
+      switch (state.kind) {
+        case 'idle':
+        case 'queued':
+          return prev.kind === 'syncing' || prev.kind === 'conflict' ? { kind: 'idle' } : prev
+        case 'syncing':
+          return { kind: 'syncing' }
+        case 'rejected':
+          return state.conflict ? { kind: 'conflict' } : { kind: 'error', message: state.message }
+      }
+    })
+  }, [])
 
-    savingRef.current = true
-    setStatus({ kind: 'saving' })
-
-    try {
-      // 재귀 대신 루프다. 저장이 끝나는 사이에 들어온 편집을 반드시 한 번 더
-      // 보낸다 — 마지막 상태가 서버에 도달하지 않으면 사용자가 친 글이 사라진다.
-      do {
-        pendingRef.current = false
-
-        const view = viewRef.current
-        if (!view) return
-
-        const res = await fetch(`/api/workspaces/${workspaceId}/pages/${pageId}/body`, {
-          method: 'PUT',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ doc: pmToDoc(view.state.doc), version: versionRef.current }),
-        })
-        const data = await res.json()
-
-        if (res.status === 409 && data.error === 'version_conflict') {
-          setStatus({ kind: 'conflict' })
-          return
-        }
-        if (!res.ok) {
-          setStatus({ kind: 'error', message: data.message ?? '저장하지 못했습니다.' })
-          return
-        }
-
-        versionRef.current = String(data.version)
-      } while (pendingRef.current)
-
-      setStatus({ kind: 'saved' })
-      // 사이드바·하위 페이지 목록이 서버 렌더다.
-      router.refresh()
-    } catch {
-      setStatus({ kind: 'error', message: '연결에 실패했습니다.' })
-    } finally {
-      savingRef.current = false
-    }
-  }, [workspaceId, pageId, router])
-
-  const scheduleSave = useCallback(() => {
-    if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
-    saveTimerRef.current = setTimeout(() => void save(), SAVE_DEBOUNCE_MS)
-  }, [save])
+  /** 큐를 하나 만든다. 에디터가 사는 동안 하나뿐이다. */
+  const createSync = useCallback(
+    (): PageSync =>
+      createPageSync({
+        workspaceId,
+        pageId,
+        // IndexedDB 는 비동기로 열린다. 에디터는 지금 조립되므로 먼저 끼워 둔다.
+        store: deferredOutboxStore(openOutboxStore),
+        initialVersion,
+        send: async (entry) => {
+          try {
+            const res = await fetch(`/api/workspaces/${workspaceId}/pages/${pageId}/body`, {
+              method: 'PUT',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify(
+                // 빈 문자열이면 버전을 아예 보내지 않는다 = 순수 LWW 덮어쓰기.
+                entry.baseVersion === ''
+                  ? { doc: entry.doc }
+                  : { doc: entry.doc, version: entry.baseVersion },
+              ),
+            })
+            const data = (await res.json().catch(() => ({}))) as { version?: unknown; error?: unknown }
+            if (res.ok) return { ok: true, version: String(data.version ?? '') }
+            return { ok: false, status: res.status, error: typeof data.error === 'string' ? data.error : undefined }
+          } catch {
+            // 응답 자체가 없었다. 큐는 이것을 "다시 보낼 실패"로 다룬다.
+            return { ok: false, status: 0 }
+          }
+        },
+        fetchRemote: async () => {
+          try {
+            const res = await fetch(`/api/workspaces/${workspaceId}/pages/${pageId}/body`)
+            if (!res.ok) return null
+            const data = await res.json()
+            return { version: String(data.version), doc: data.doc as EditorDoc }
+          } catch {
+            return null
+          }
+        },
+        onState: applySyncState,
+        // 사이드바·하위 페이지 목록이 서버 렌더다.
+        onSaved: () => router.refresh(),
+      }),
+    [workspaceId, pageId, initialVersion, applySyncState, router],
+  )
 
   /** 충돌을 사용자가 해결한다 — 내 것으로 덮어쓴다. */
-  const overwrite = useCallback(async () => {
-    versionRef.current = ''
-    const view = viewRef.current
-    if (!view) return
-    setStatus({ kind: 'saving' })
-    try {
-      const res = await fetch(`/api/workspaces/${workspaceId}/pages/${pageId}/body`, {
-        method: 'PUT',
-        headers: { 'content-type': 'application/json' },
-        // version 을 빼면 순수 LWW 다 — 서버가 무조건 덮어쓴다.
-        body: JSON.stringify({ doc: pmToDoc(view.state.doc) }),
-      })
-      const data = await res.json()
-      if (!res.ok) {
-        setStatus({ kind: 'error', message: '저장하지 못했습니다.' })
-        return
-      }
-      versionRef.current = String(data.version)
-      setStatus({ kind: 'saved' })
-      router.refresh()
-    } catch {
-      setStatus({ kind: 'error', message: '연결에 실패했습니다.' })
-    }
-  }, [workspaceId, pageId, router])
+  const overwrite = useCallback(() => {
+    void syncRef.current?.overwrite()
+  }, [])
 
   // ── 슬래시 메뉴 ─────────────────────────────────────────────────────
 
@@ -208,7 +202,6 @@ export function BodyEditor({
   const createSubpage = useCallback(async () => {
     const view = viewRef.current
     if (!view) return
-    setStatus({ kind: 'saving' })
     try {
       const res = await fetch(`/api/workspaces/${workspaceId}/pages`, {
         method: 'POST',
@@ -277,6 +270,9 @@ export function BodyEditor({
     const mount = mountRef.current
     if (!mount) return
 
+    const sync = createSync()
+    syncRef.current = sync
+
     const view = createEditor({
       mount,
       doc: initialDoc,
@@ -303,7 +299,7 @@ export function BodyEditor({
         // 같은 값이면 리렌더하지 않는다 — 트랜잭션마다 불리는 자리다.
         const count = selectedBlockCount(v.state)
         setSelectedBlocks((prev) => (prev === count ? prev : count))
-        if (tr.docChanged) scheduleSave()
+        if (tr.docChanged) sync.queue(pmToDoc(v.state.doc))
       },
     })
 
@@ -321,6 +317,43 @@ export function BodyEditor({
     window.addEventListener('hashchange', reveal)
 
     /**
+     * 지난 세션이 못 보낸 문서를 되살린다(F-05-04: *"전송 중 브라우저 종료 →
+     * 다음 실행 시 재전송"*).
+     *
+     * 화면에도 되돌려 넣는다. 큐만 보내고 화면을 서버 문서로 두면, 다음 키
+     * 입력이 그 낡은 내용을 그대로 저장해 **방금 되살린 것을 다시 지운다.**
+     */
+    void sync.resume().then((restored) => {
+      const current = viewRef.current
+      if (!restored || !current) return
+      const next = docToPm(restored)
+      if (next.eq(current.state.doc)) return
+      const tr = current.state.tr.replaceWith(0, current.state.doc.content.size, next.content)
+      // 사용자가 친 것을 되살린 것이지 사용자가 방금 한 편집이 아니다.
+      // 되돌리기 스택에 넣으면 Ctrl+Z 한 번에 복구분이 날아간다.
+      tr.setMeta('addToHistory', false)
+      current.dispatch(tr)
+      // 문서를 통째로 갈아끼웠으므로 위치에 기대던 것을 다시 해야 한다.
+      // `#{blockId}` 로 들어온 경우 그 선택이 방금 날아갔다(e2e 가 잡았다).
+      reveal()
+      setStatus({ kind: 'notice', message: '연결이 끊겼을 때의 변경 사항을 복구했습니다.' })
+    })
+
+    // 연결이 돌아오면 기다리지 않고 보낸다.
+    const onOnline = (): void => void sync.sendNow()
+    window.addEventListener('online', onOnline)
+
+    /**
+     * 탭이 숨거나 닫힌다. 큐를 **지금** 디스크에 쓴다.
+     *
+     * `beforeunload` 가 아니라 `pagehide`·`visibilitychange` 다 — 모바일
+     * 브라우저는 탭을 버릴 때 `beforeunload` 를 부르지 않는다.
+     */
+    const onHide = (): void => void sync.flush()
+    window.addEventListener('pagehide', onHide)
+    document.addEventListener('visibilitychange', onHide)
+
+    /**
      * 에디터를 **빗나간** 파일 드롭을 삼킨다.
      *
      * 브라우저의 기본 동작은 그 파일을 여는 것이고, 그건 이 페이지를 떠나는
@@ -335,9 +368,14 @@ export function BodyEditor({
 
     return () => {
       window.removeEventListener('hashchange', reveal)
+      window.removeEventListener('online', onOnline)
+      window.removeEventListener('pagehide', onHide)
+      document.removeEventListener('visibilitychange', onHide)
       window.removeEventListener('dragover', swallowFileDrop)
       window.removeEventListener('drop', swallowFileDrop)
-      if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
+      void sync.flush()
+      sync.dispose()
+      syncRef.current = null
       view.destroy()
       viewRef.current = null
     }
@@ -415,9 +453,21 @@ export function BodyEditor({
       )}
 
       {status.kind === 'error' && (
-        <p role="alert" className="mb-3 text-sm text-red-600">
-          {status.message}
-        </p>
+        <div role="alert" className="mb-3 flex flex-wrap items-center gap-3 text-sm text-red-600">
+          <span>{status.message}</span>
+          {/*
+            정본 F-05-04: *"실패 시 '변경 사항을 저장하지 못했습니다 / 재시도'."*
+            격리된 항목은 디스크에 그대로 있으므로 이 버튼이 그것을 다시 보낸다 —
+            사용자가 친 글을 다시 치게 하지 않는다.
+          */}
+          <button
+            type="button"
+            onClick={() => void syncRef.current?.sendNow()}
+            className="rounded border border-red-300 px-2 py-1 text-xs dark:border-red-800"
+          >
+            다시 시도
+          </button>
+        </div>
       )}
 
       {status.kind === 'notice' && (
@@ -481,9 +531,13 @@ export function BodyEditor({
         {selectedBlocks > 0 ? `블록 ${selectedBlocks}개 선택됨` : ''}
       </p>
 
-      <p className="mt-2 h-4 text-xs text-neutral-400">
-        {status.kind === 'saving' && '저장 중…'}
-        {status.kind === 'saved' && '저장됨'}
+      {/*
+        정본 F-05-04: **기본 무표시.** 잘 되는 것은 조용해야 한다 — 1초마다
+        깜빡이는 "저장됨"은 정보가 아니라 소음이고, 진짜 문제가 그 안에 묻힌다.
+        3초 넘게 못 보냈을 때만 말한다.
+      */}
+      <p role="status" aria-live="polite" className="mt-2 h-4 text-xs text-neutral-400">
+        {syncMessage(status.kind === 'syncing' ? { kind: 'syncing' } : { kind: 'idle' })}
       </p>
     </section>
   )

@@ -847,6 +847,77 @@ async function main() {
     })()
     check('★ 올린 · 붙인 · 놓은 이미지가 모두 file_id 로 저장된다', droppedSaved.length >= 3, JSON.stringify(droppedSaved))
 
+    section('오프라인 저장 큐 (F-05-04)')
+    // 지금까지의 검사가 전부 "연결이 살아 있을 때"였다. 이 절은 **끊긴 동안 친 글이
+    // 살아남는가**를 본다 — 이 기능이 존재하는 이유다.
+    // ⚠ 네트워크를 통째로 끊지 않는다(`Network.emulateNetworkConditions`).
+    //    그러면 **페이지 자체가 로드되지 않아** 새로고침 시나리오를 볼 수 없다
+    //    (실제로 그렇게 썼다가 브라우저 오류 페이지를 받았다). 우리가 보려는 것은
+    //    "저장 요청이 실패하는 동안 친 글이 살아남는가"이므로 **저장 라우트만** 막는다.
+    const blockSaves = (yes) =>
+      send('Network.setBlockedURLs', { urls: yes ? ['*/pages/*/body'] : [] })
+    await send('Network.enable')
+
+    // 새 페이지에서 한다 — 앞 절들이 만든 상태와 섞이지 않게.
+    const syncPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: '{}' })).json()).page.id
+    const syncBodyUrl = `${BASE}/api/workspaces/${workspaceId}/pages/${syncPage}/body`
+    const savedText = async () => {
+      const body = await (await fetch(syncBodyUrl, { headers: authed })).json()
+      return body.doc.blocks.map((b) => b.title?.[0]?.text?.content ?? '').join(' | ')
+    }
+    const typeText = async (text) => {
+      await send('Input.insertText', { text })
+      await sleep(60)
+    }
+
+    await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${syncPage}` })
+    await waitFor(`!!document.querySelector('.blk-editor [data-block-id]')`, 15000)
+    await click((await rect('.blk-editor')).x + 40, (await rect('.blk-editor')).y + 10)
+    await typeText('온라인에서 친 글')
+    check('평상시 저장은 조용하다 — "저장됨"을 띄우지 않는다',
+      !(await evaluate(`[...document.querySelectorAll('[role="status"]')].some((e) => e.textContent.includes('저장'))`)))
+    check('온라인에서 친 글이 서버에 저장된다', (await (async () => {
+      for (let i = 0; i < 40; i += 1) { if ((await savedText()).includes('온라인에서 친 글')) return true; await sleep(150) }
+      return false
+    })()))
+
+    // ① 연결을 끊고 계속 친다.
+    await blockSaves(true)
+    await typeText(' + 끊긴 뒤에 친 글')
+    check('★ 3초 넘게 못 보내면 "동기화 중"이라고 말한다',
+      await waitFor(`[...document.querySelectorAll('[role="status"]')].some((e) => e.textContent.includes('동기화 중'))`, 15000))
+    check('끊긴 동안 친 글은 아직 서버에 없다', !(await savedText()).includes('끊긴 뒤에 친 글'), await savedText())
+
+    // ② 저장이 막힌 채로 탭을 다시 연다. 큐가 IndexedDB 에 있어야 살아남는다.
+    await send('Page.reload')
+    await waitFor(`!!document.querySelector('.blk-editor [data-block-id]')`, 20000)
+    check('★ 저장이 막힌 채 새로고침해도 친 글이 화면에 돌아온다 — IndexedDB 에 남아 있었다',
+      await waitFor(`document.querySelector('.blk-editor').textContent.includes('끊긴 뒤에 친 글')`, 15000),
+      await evaluate(`document.querySelector('.blk-editor').textContent`))
+    check('복구했다고 알려준다',
+      await waitFor(`[...document.querySelectorAll('[role="status"]')].some((e) => e.textContent.includes('복구'))`, 5000))
+    check('IndexedDB 에 실제로 남아 있다', await evaluate(`(async () => {
+      const db = await new Promise((ok, no) => { const r = indexedDB.open('notion-clone-outbox', 1); r.onsuccess = () => ok(r.result); r.onerror = () => no(r.error) })
+      const rows = await new Promise((ok) => { const r = db.transaction('saves').objectStore('saves').getAll(); r.onsuccess = () => ok(r.result) })
+      return rows.some((e) => JSON.stringify(e.doc).includes('끊긴 뒤에 친 글'))
+    })()`))
+
+    // ③ 연결이 돌아온다.
+    await blockSaves(false)
+    await evaluate(`window.dispatchEvent(new Event('online'))`)
+    const recovered = await (async () => {
+      for (let i = 0; i < 60; i += 1) { const t = await savedText(); if (t.includes('끊긴 뒤에 친 글')) return t; await sleep(200) }
+      return await savedText()
+    })()
+    check('★ 연결이 돌아오면 끊긴 동안 친 글이 저장된다', recovered.includes('끊긴 뒤에 친 글'), recovered)
+    check('큐가 비워진다 — 확정된 것을 남기지 않는다', await waitFor(`(async () => {
+      const db = await new Promise((ok) => { const r = indexedDB.open('notion-clone-outbox', 1); r.onsuccess = () => ok(r.result) })
+      const rows = await new Promise((ok) => { const r = db.transaction('saves').objectStore('saves').getAll(); r.onsuccess = () => ok(r.result) })
+      return rows.length === 0
+    })()`, 10000))
+    check('"동기화 중" 표시가 사라진다',
+      await waitFor(`![...document.querySelectorAll('[role="status"]')].some((e) => e.textContent.includes('동기화 중'))`, 5000))
+
     section('전체')
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))
     const serverErrors = serverOutput.split('\n').filter((l) => l.includes('⨯'))
