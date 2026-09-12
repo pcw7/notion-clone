@@ -113,7 +113,20 @@ export function resolveCaps(input: ResolveInput): CapSet {
   for (const nodeId of input.chain) {
     const grants: Grant[] = input.entries
       .filter((row) => row.node_id === nodeId && matches(row, input.principals))
-      // 우리 트리의 ACL 대상은 페이지다. database 는 W8 에서 온다.
+      // ⚠ 대상 종류를 `'page'` 로 **고정한다.** W8-a 에서 데이터베이스 블록이
+      //   생겼지만 여기는 아직 그것을 구분하지 않는다.
+      //
+      //   되는 것: `view` · `comment` · `edit` · `full_access` — 정본 §3.3 의
+      //   page 와 database 매트릭스에 **같은 이름으로 같은 capability 집합**이
+      //   있으므로 판정이 같다. 그래서 표의 공유(W8-a)가 정상 동작한다.
+      //
+      //   안 되는 것: `edit_content` · `create` 레벨을 **데이터베이스 노드에
+      //   직접 부여**하는 것. 그 둘은 database 매트릭스에만 있어서 아래
+      //   `isDefinedLevel` 이 걸러낸다 — 즉 조용히 무시된다. "행은 추가하지만
+      //   컬럼은 못 고치는 사람"(정본이 `create` 로 표현한 것)을 아직 만들 수 없다.
+      //
+      //   고치려면 `node_kind` 를 `acl_entry` 에서 읽어 여기까지 흘려야 하고,
+      //   그건 별개 변경이다(HANDOFF §7).
       .map((row) => ({ targetKind: 'page' as const, level: row.level as Level }))
       // ★ 페이지에 정의되지 않은 레벨(`create`·`edit_content` 는 database 전용)은
       //   **없는 grant 로 본다.** `capabilitiesOf` 는 그런 조합에 던지는데, 권한
