@@ -54,14 +54,22 @@ function ancestorsOf(nodes: readonly SidebarNode[], targetId: string): string[] 
   return walk(nodes, []) ?? []
 }
 
+export type NavRow = { id: string; title: string }
+
 export function Sidebar({
   workspaceId,
   tree,
   trash,
+  recent,
+  favorites,
 }: {
   workspaceId: string
   tree: SidebarNode[]
   trash: TrashRow[]
+  /** 최근 방문(F-07-04). 서버가 권한으로 걸러서 준다. */
+  recent: NavRow[]
+  /** 즐겨찾기(F-07-16). 같은 규칙. */
+  favorites: NavRow[]
 }) {
   const router = useRouter()
   const pathname = usePathname()
@@ -167,6 +175,13 @@ export function Sidebar({
         </button>
       </div>
 
+      {/*
+        F-07-16 의 사이드바는 트리 하나가 아니라 **섹션들**이다. 즐겨찾기는 위,
+        최근 방문은 아래 — 둘 다 서버가 권한으로 걸러서 준다(`nav/recent.ts`).
+        빈 섹션은 그리지 않는다. 아무것도 없는 제목만 남으면 공간만 먹는다.
+      */}
+      <NavSection label="즐겨찾기" rows={favorites} workspaceId={workspaceId} currentPageId={currentPageId} />
+
       <ul className="flex-1 overflow-auto">
         {tree.map((node) => (
           <TreeItem
@@ -194,6 +209,8 @@ export function Sidebar({
       >
         + 새 페이지
       </button>
+
+      <NavSection label="최근" rows={recent} workspaceId={workspaceId} currentPageId={currentPageId} />
 
       <TrashPanel workspaceId={workspaceId} entries={trash} />
     </nav>
@@ -282,5 +299,47 @@ function TreeItem({
         </ul>
       )}
     </li>
+  )
+}
+
+/**
+ * 사이드바의 한 섹션(즐겨찾기 · 최근).
+ *
+ * 트리가 아니라 **평평한 목록**이다 — 정본 F-07-16 이 상단 진입점과 트리 섹션을
+ * 성격이 다른 두 층으로 나눈 그대로다. 여기에 펼침/접힘을 넣으면 트리와 같은
+ * 상태를 두 벌 관리하게 된다.
+ */
+function NavSection({
+  label,
+  rows,
+  workspaceId,
+  currentPageId,
+}: {
+  label: string
+  rows: NavRow[]
+  workspaceId: string
+  currentPageId: string | null
+}) {
+  if (rows.length === 0) return null
+
+  return (
+    <section aria-label={label} className="flex flex-col gap-0.5">
+      <h2 className="px-2 text-xs font-medium text-neutral-400">{label}</h2>
+      <ul>
+        {rows.map((row) => (
+          <li key={row.id}>
+            <Link
+              href={`/w/${workspaceId}/${row.id}`}
+              aria-current={row.id === currentPageId ? 'page' : undefined}
+              className={`block truncate rounded px-2 py-1 text-sm hover:bg-neutral-100 dark:hover:bg-neutral-800 ${
+                row.id === currentPageId ? 'bg-neutral-100 dark:bg-neutral-800' : ''
+              }`}
+            >
+              {row.title || UNTITLED}
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </section>
   )
 }

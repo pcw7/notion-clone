@@ -1029,6 +1029,61 @@ async function main() {
       await panelText())
     check('막힌 뒤에도 권한은 그대로다', (await panelText()).includes('워크스페이스 모든 멤버'))
 
+    section('내비게이션 — 최근 · 즐겨찾기 (W6-a)')
+    // 방금까지 여러 페이지를 오갔으므로 사이드바에 "최근"이 있어야 한다.
+    await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${pageId}` })
+    await waitFor(`!!document.querySelector('nav[aria-label="페이지 트리"]')`, 15000)
+    check('★ 사이드바에 "최근" 섹션이 생긴다 — 방문이 기록됐다',
+      await waitFor(`!!document.querySelector('section[aria-label="최근"]')`, 5000),
+      await evaluate(`document.querySelector('nav[aria-label="페이지 트리"]')?.textContent?.slice(0, 120) ?? '(사이드바 없음)'`))
+    check('지금 보고 있는 페이지가 최근 목록에 있다',
+      await evaluate(`!!document.querySelector('section[aria-label="최근"] a[href$="/${pageId}"]')`))
+
+    // 즐겨찾기는 아직 없다 — 빈 섹션은 그리지 않는다.
+    check('즐겨찾기가 없으면 그 섹션도 없다', !(await evaluate(`!!document.querySelector('section[aria-label="즐겨찾기"]')`)))
+
+    const starBox = await evaluate(`(() => {
+      const b = document.querySelector('button[aria-label="즐겨찾기에 넣기"]')
+      if (!b) return null
+      b.scrollIntoView({ block: 'center' })
+      const r = b.getBoundingClientRect()
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+    })()`)
+    check('별 버튼이 있다 — 상태를 이름으로도 알린다', !!starBox)
+    if (starBox) {
+      await click(starBox.x, starBox.y)
+      check('★ 별을 누르면 즐겨찾기 섹션이 나타난다',
+        await waitFor(`!!document.querySelector('section[aria-label="즐겨찾기"] a[href$="/${pageId}"]')`, 10000))
+      check('별의 상태가 바뀐다 (aria-pressed)',
+        await waitFor(`document.querySelector('button[aria-label="즐겨찾기에서 빼기"]')?.getAttribute('aria-pressed') === 'true'`, 5000))
+
+      // 다시 누르면 사라진다.
+      const unstar = await evaluate(`(() => {
+        const b = document.querySelector('button[aria-label="즐겨찾기에서 빼기"]')
+        if (!b) return null
+        const r = b.getBoundingClientRect()
+        return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+      })()`)
+      if (unstar) {
+        await click(unstar.x, unstar.y)
+        check('다시 누르면 즐겨찾기에서 빠진다',
+          await waitFor(`!document.querySelector('section[aria-label="즐겨찾기"]')`, 10000))
+      }
+    }
+
+    // 제목을 복사해 두지 않는다 — 제목을 바꾸면 최근 목록도 바뀐다.
+    const renamed = `이름 바꾼 페이지 ${Date.now()}`
+    await fetch(`${BASE}/api/workspaces/${workspaceId}/pages/${pageId}`, {
+      method: 'PATCH',
+      headers: authed,
+      body: JSON.stringify({ title: renamed }),
+    })
+    await send('Page.reload')
+    await waitFor(`!!document.querySelector('section[aria-label="최근"]')`, 15000)
+    check('★ 제목을 바꾸면 최근 목록의 제목도 바뀐다 — 제목을 복사해 두지 않는다',
+      await waitFor(`document.querySelector('section[aria-label="최근"]')?.textContent.includes(${JSON.stringify(renamed)})`, 5000),
+      await evaluate(`document.querySelector('section[aria-label="최근"]')?.textContent ?? '(없음)'`))
+
     section('전체')
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))
     const serverErrors = serverOutput.split('\n').filter((l) => l.includes('⨯'))

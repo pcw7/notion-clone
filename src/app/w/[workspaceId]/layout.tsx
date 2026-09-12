@@ -13,6 +13,7 @@
 import { requirePageSession } from '@/lib/auth/page-session'
 import { listPageTree } from '@/lib/block/page-tree'
 import { listTrash } from '@/lib/block/trash'
+import { listFavorites, listRecent } from '@/lib/nav/recent'
 import { Sidebar, type SidebarNode } from './sidebar'
 
 /** 서버 타입에서 클라이언트로 넘길 최소 모양만 남긴다. */
@@ -32,7 +33,12 @@ export default async function WorkspaceLayout({
   const { workspaceId } = await params
   const ctx = await requirePageSession(workspaceId)
 
-  const [tree, trash] = await Promise.all([listPageTree(ctx), listTrash(ctx)])
+  const [tree, trash, recent, favorites] = await Promise.all([
+    listPageTree(ctx),
+    listTrash(ctx),
+    listRecent(ctx),
+    listFavorites(ctx),
+  ])
 
   return (
     <div className="flex min-h-screen">
@@ -46,6 +52,8 @@ export default async function WorkspaceLayout({
           purgeAfter: e.purgeAfter?.toISOString() ?? null,
           descendantCount: e.descendantCount,
         }))}
+        recent={recent.map((e) => ({ id: e.id, title: e.title }))}
+        favorites={favorites.map((e) => ({ id: e.id, title: e.title }))}
       />
       <div className="min-w-0 flex-1">{children}</div>
     </div>
