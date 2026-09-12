@@ -34,6 +34,7 @@ import { EditorView } from '@tiptap/pm/view'
 
 import { blockIdPlugin } from './block-id-plugin.ts'
 import { clipboardPlugin } from './block-clipboard.ts'
+import { imageDropPlugin } from './image-drop.ts'
 import { blockSelectionPlugin } from './block-selection-plugin.ts'
 import { collapsePlugin } from './collapse-plugin.ts'
 import { createKeydownHandler, type EditorKeymapDeps } from './keymap.ts'
@@ -97,6 +98,10 @@ export function createEditor(options: CreateEditorOptions): EditorView {
     // 블록 선택 하이라이트(F-01-09). 상태는 `state.selection` 이 갖고 있고
     // 이 플러그인은 그리기만 한다.
     blockSelectionPlugin(),
+    // 이미지 드롭·붙여넣기(F-01-15)는 **클립보드 플러그인보다 앞**이다. 스크린샷을
+    // 붙이면 파일과 HTML 이 같이 실려 오는 경우가 있어서, 뒤에 두면 HTML 경로가
+    // 먼저 먹는다.
+    imageDropPlugin(options.deps),
     // 복사·붙여넣기(F-01-10). 클립보드 HTML 은 스키마의 `toDOM` 으로 만든다 —
     // 화면에 그리는 것과 같은 규칙이라 따로 어긋날 자리가 없다.
     clipboardPlugin(options.deps, clipboardHtml),

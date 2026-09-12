@@ -42,6 +42,8 @@ import {
 } from '../block/image.ts'
 import { ALLOWED_IMAGE_MIME } from '../file/limits.ts'
 import type { UploadOutcome } from '../file/upload-client.ts'
+import { takeQueuedUpload } from './image-drop.ts'
+import { containerAt } from './pm-blocks.ts'
 
 export type ImageViewDeps = {
   /** 이 워크스페이스. 파일 주소를 만드는 데 쓴다(저장하지 않는다 — FS2). */
@@ -133,6 +135,19 @@ export function imageNodeView(
     if (file) void startUpload(file)
   })
 
+  /**
+   * 끌어다 놓거나 붙여넣어서 **이미 파일이 정해진 채로** 만들어진 블록인가.
+   *
+   * 그 경로(`image-drop.ts`)는 빈 블록을 먼저 넣고 파일은 큐에 둔다. 진행률 UI 가
+   * 여기 있으므로 올리는 일도 여기서 한다 — 두 벌의 업로드 상태를 만들지 않는다.
+   */
+  const queued = (): File | null => {
+    const pos = getPos()
+    if (pos === undefined) return null
+    const info = containerAt(view.state.doc.resolve(pos))
+    return info === null ? null : takeQueuedUpload(view, info.id)
+  }
+
   // ── 그리기 ──────────────────────────────────────────────────────────
 
   const renderEmpty = (): void => {
@@ -221,6 +236,9 @@ export function imageNodeView(
   }
 
   render()
+
+  const pending = queued()
+  if (pending !== null) void startUpload(pending)
 
   return {
     dom,

@@ -320,8 +320,23 @@ export function BodyEditor({
     reveal()
     window.addEventListener('hashchange', reveal)
 
+    /**
+     * 에디터를 **빗나간** 파일 드롭을 삼킨다.
+     *
+     * 브라우저의 기본 동작은 그 파일을 여는 것이고, 그건 이 페이지를 떠나는
+     * 일이다 — 조금 빗나가게 놓았을 뿐인데 편집하던 화면이 사라진다.
+     * 에디터 안쪽은 플러그인이 받아 이미지 블록으로 만든다(`image-drop.ts`).
+     */
+    const swallowFileDrop = (event: DragEvent): void => {
+      if ([...(event.dataTransfer?.types ?? [])].includes('Files')) event.preventDefault()
+    }
+    window.addEventListener('dragover', swallowFileDrop)
+    window.addEventListener('drop', swallowFileDrop)
+
     return () => {
       window.removeEventListener('hashchange', reveal)
+      window.removeEventListener('dragover', swallowFileDrop)
+      window.removeEventListener('drop', swallowFileDrop)
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
       view.destroy()
       viewRef.current = null

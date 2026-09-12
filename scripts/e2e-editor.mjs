@@ -743,6 +743,110 @@ async function main() {
     await waitFor(`!!document.querySelector('[data-block-id="${imgFileId}"] img')`, 15000)
     check('새로고침해도 그대로 보인다 — 문서에서 다시 읽어 그린다', true)
 
+    section('이미지 드롭 · 붙여넣기 (F-01-15)')
+    // PNG 한 장을 브라우저 안에서 만든다. 여기부터는 **진짜 File 객체**가 돈다 —
+    // DataTransfer 에 담아 drop · paste 이벤트로 흘려 넣으면 우리 플러그인이
+    // 실제로 받는 것과 같은 값이다.
+    const makeFile = (name, type, b64) => `(() => {
+      const bytes = Uint8Array.from(atob(${JSON.stringify(b64)}), (c) => c.charCodeAt(0))
+      return new File([bytes], ${JSON.stringify(name)}, { type: ${JSON.stringify(type)} })
+    })()`
+    const PNG_B64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+
+    const countImages = () => evaluate(`document.querySelectorAll('.blk-editor .blk-image').length`)
+    const before = await countImages()
+
+    // ① 붙여넣기 — 스크린샷을 붙이는 그 경로다(clipboardData.files).
+    const pasteTarget = await line(ids.A)
+    await click(pasteTarget.x + 20, pasteTarget.y + pasteTarget.h / 2)
+    await sleep(60)
+    // 이미 그려져 있는 이미지가 있으므로(앞 절) **새로 생긴 블록만** 본다.
+    const idsBeforePaste = await evaluate(`[...document.querySelectorAll('.blk-editor [data-block-id]')].map((e) => e.getAttribute('data-block-id'))`)
+    const newImageSelector = (known) => `[...document.querySelectorAll('.blk-editor [data-block-id]')]
+      .filter((c) => !${JSON.stringify(known)}.includes(c.getAttribute('data-block-id')))
+      .find((c) => c.querySelector('.blk-image'))`
+    await evaluate(`(() => {
+      const dt = new DataTransfer()
+      dt.items.add(${makeFile('붙인이미지.png', 'image/png', PNG_B64)})
+      document.querySelector('.blk-editor').dispatchEvent(
+        new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }),
+      )
+    })()`)
+    check('★ 이미지를 붙여넣으면 이미지 블록이 생긴다', await waitFor(`document.querySelectorAll('.blk-editor .blk-image').length === ${before + 1}`, 5000))
+    check('★ 붙인 이미지가 올라가 그려진다 — 빈 블록으로 남지 않는다',
+      await waitFor(`(() => {
+        const box = ${newImageSelector(idsBeforePaste)}
+        const img = box?.querySelector('.blk-image img')
+        return !!img && img.complete && img.naturalWidth > 0 && img.getAttribute('src').includes('/files/')
+      })()`, 15000),
+      await evaluate(`(${newImageSelector(idsBeforePaste)})?.querySelector('.blk-image')?.dataset.state ?? '(블록 없음)'`))
+
+    // ② 드롭 — 이미지가 아닌 파일은 받지 않되 이유를 말한다.
+    const dropLine = await line(ids.A)
+    const dropAt = { x: dropLine.x + 20, y: dropLine.y + dropLine.h / 2 }
+    const beforeReject = await countImages()
+    await evaluate(`(() => {
+      const dt = new DataTransfer()
+      dt.items.add(new File(['hello'], '메모.txt', { type: 'text/plain' }))
+      document.querySelector('.blk-editor').dispatchEvent(
+        new DragEvent('drop', { dataTransfer: dt, bubbles: true, cancelable: true, clientX: ${dropAt.x}, clientY: ${dropAt.y} }),
+      )
+    })()`)
+    check('★ 이미지가 아닌 파일은 조용히 버리지 않고 이유를 말한다',
+      await waitFor(`[...document.querySelectorAll('[role="status"]'), ...document.querySelectorAll('[role="alert"]')].some((e) => e.textContent.includes('이미지만'))`, 3000))
+    check('거부한 파일은 블록을 만들지 않는다', (await countImages()) === beforeReject, `${await countImages()} vs ${beforeReject}`)
+
+    // ③ 드롭 — 놓은 줄 바로 다음에 들어간다.
+    const beforeDrop = await countImages()
+    await evaluate(`(() => {
+      const dt = new DataTransfer()
+      dt.items.add(${makeFile('놓은이미지.png', 'image/png', PNG_B64)})
+      document.querySelector('.blk-editor').dispatchEvent(
+        new DragEvent('drop', { dataTransfer: dt, bubbles: true, cancelable: true, clientX: ${dropAt.x}, clientY: ${dropAt.y} }),
+      )
+    })()`)
+    check('★ 끌어다 놓으면 그 자리에 이미지 블록이 생긴다', await waitFor(`document.querySelectorAll('.blk-editor .blk-image').length === ${beforeDrop + 1}`, 5000))
+    const dropped = await evaluate(`(() => {
+      const containers = [...document.querySelectorAll('.blk-editor [data-block-id]')]
+      const at = containers.findIndex((c) => c.getAttribute('data-block-id') === '${ids.A}')
+      return { next: containers[at + 1]?.querySelector('.blk-image') ? '이미지' : containers[at + 1]?.firstElementChild?.getAttribute('data-block-type') ?? '없음' }
+    })()`)
+    check('놓은 줄 바로 다음에 들어간다 — 그 줄을 쪼개지 않는다', dropped.next === '이미지', JSON.stringify(dropped))
+
+    // ④ 에디터를 빗나간 드롭은 삼킨다 — 안 그러면 브라우저가 그 파일을 열고
+    //    편집하던 페이지를 떠난다.
+    const strayPrevented = await evaluate(`(() => {
+      const dt = new DataTransfer()
+      dt.items.add(new File(['x'], 'a.png', { type: 'image/png' }))
+      const ev = new DragEvent('drop', { dataTransfer: dt, bubbles: true, cancelable: true })
+      document.body.appendChild(document.createElement('div')).dispatchEvent(ev)
+      return ev.defaultPrevented
+    })()`)
+    check('★ 에디터 밖에 놓아도 브라우저가 파일을 열지 않는다 — 페이지를 떠나지 않게', strayPrevented)
+
+    // ⑤ 올라간 것이 서버에 file_id 로 저장된다.
+    const droppedSaved = await (async () => {
+      let last = []
+      for (let i = 0; i < 40; i += 1) {
+        const body = await (await fetch(bodyUrl, { headers: authed })).json()
+        const found = []
+        const walk = (blocks) => {
+          for (const b of blocks) {
+            if (b.type === 'image' && b.properties?.source?.type === 'file') found.push(b.properties.source.file_id)
+            if (b.children?.length) walk(b.children)
+          }
+        }
+        walk(body.doc.blocks)
+        if (found.length >= 3) return found
+        last = found
+        await sleep(150)
+      }
+      // 실패해도 **무엇이 저장돼 있었는지** 보여준다 — 빈 배열만 찍으면 원인을
+      // 알 수 없다(반사실 실험에서 실제로 헷갈렸다).
+      return last
+    })()
+    check('★ 올린 · 붙인 · 놓은 이미지가 모두 file_id 로 저장된다', droppedSaved.length >= 3, JSON.stringify(droppedSaved))
+
     section('전체')
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))
     const serverErrors = serverOutput.split('\n').filter((l) => l.includes('⨯'))
