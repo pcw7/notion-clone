@@ -18,6 +18,7 @@ import { NewPageButton } from '../new-page-button'
 import { PageTitle } from './page-title'
 import { BodyEditor } from './body-editor'
 import { MovePageControl } from './move-page-control'
+import { SharePanel } from './share-panel'
 import { DeletePageButton } from './delete-page-button'
 
 /** 제목 없는 페이지의 표시 문구. 저장된 값은 빈 배열이다. */
@@ -72,6 +73,7 @@ export default async function PageView({ params }: PageProps<'/w/[workspaceId]/[
         </nav>
 
         <div className="flex flex-none items-start gap-2">
+          <SharePanel workspaceId={workspaceId} pageId={page.id} />
           <MovePageControl
             workspaceId={workspaceId}
             pageId={page.id}
