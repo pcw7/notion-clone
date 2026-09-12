@@ -128,7 +128,13 @@ function blockContentSpec(type: MvpBlockType): NodeSpec {
 const nodes: Record<string, NodeSpec> = {
   doc: { content: 'blockGroup' },
 
-  blockGroup: { content: 'blockContainer+', toDOM: () => ['div', { class: 'blk-group' }, 0] },
+  blockGroup: {
+    content: 'blockContainer+',
+    // 붙여넣기용 파싱 규칙(F-01-10). 우리가 내보낸 HTML 을 다시 읽을 때 **중첩이
+    // 살아남게** 한다. 없으면 자식 그룹이 통째로 풀려 평평해진다.
+    parseDOM: [{ tag: 'div.blk-group' }],
+    toDOM: () => ['div', { class: 'blk-group' }, 0],
+  },
 
   blockContainer: {
     content: 'blockContent blockGroup?',
@@ -152,6 +158,11 @@ const nodes: Record<string, NodeSpec> = {
       blockId: { default: '' },
     },
     defining: true,
+    // ⚠ `blockId` 를 **읽지 않는다.** 붙여넣는 블록은 언제나 새 id 를 받아야 한다
+    // (F-01-10: "원본 ID 재사용 금지"). 규칙이 id 를 그대로 가져오면 같은 문서에서는
+    // 중복 id 가, 다른 문서에서는 다른 페이지 블록과 같은 uuid 가 된다.
+    // 빈 센티널로 들어와 `blockIdPlugin` 이 새로 찍는다.
+    parseDOM: [{ tag: 'div[data-block-id]' }],
     toDOM: (node) => [
       'div',
       { 'data-block-id': String(node.attrs.blockId), class: 'blk-container' },

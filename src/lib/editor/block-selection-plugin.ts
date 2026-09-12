@@ -79,7 +79,9 @@ export function keepBlockSelection(
 ): Selection | null {
   const sel = state.selection
   if (!isBlockSelection(sel)) return null
-  if ($anchor.pos === sel.$anchorBlock.pos && $head.pos === sel.$headBlock.pos) return sel
+  // ProseMirror 가 DOM 에 걸어 둔 것은 **기준 anchor·head**(선택 범위의 양끝)다.
+  // `$anchorBlock`/`$headBlock`(우리 경계)과 다르다 — 그쪽과 비교하면 늘 어긋난다.
+  if ($anchor.pos === sel.anchor && $head.pos === sel.head) return sel
   return null
 }
 

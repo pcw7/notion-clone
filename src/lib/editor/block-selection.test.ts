@@ -186,6 +186,16 @@ describe('BlockSelection — ProseMirror 선택으로서의 계약', () => {
     assert.equal(state.selection.empty, false)
   })
 
+  test('★ 블록 하나만 골라도 DOM 선택이 접히지 않는다 — 접히면 Ctrl+C 가 안 된다', () => {
+    const a = nextId()
+    const state = select(stateOf([blk(a, 'paragraph', 'A')]), a)
+    const sel = state.selection
+    assert.ok(isBlockSelection(sel))
+    assert.ok(sel.head > sel.anchor, `anchor=${sel.anchor} head=${sel.head}`)
+    // 그래도 우리 경계는 그대로다 — 판정은 이 둘만 본다.
+    assert.equal(sel.$anchorBlock.pos, sel.$headBlock.pos)
+  })
+
   test('범위는 컨테이너 전체를 덮는다 — subtree 가 통째로 대상이다', () => {
     const [a, a1] = [nextId(), nextId()]
     const state = select(stateOf([blk(a, 'toggle', 'A', [blk(a1, 'paragraph', 'a1')])]), a)
@@ -622,7 +632,8 @@ describe('keepBlockSelection — PM 이 DOM selection 을 다시 읽어도 풀�
     const state = select(stateOf([blk(a, 'toggle', 'A'), blk(b)]), a, b)
     const sel = state.selection
     assert.ok(isBlockSelection(sel))
-    const kept = keepBlockSelection(state, sel.$anchorBlock, sel.$headBlock)
+    // PM 이 DOM 에 거는 것은 기준 anchor·head(선택 범위의 양끝)다.
+    const kept = keepBlockSelection(state, state.doc.resolve(sel.anchor), state.doc.resolve(sel.head))
     assert.ok(kept === sel)
   })
 

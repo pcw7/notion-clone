@@ -324,6 +324,8 @@ async function main() {
       ArrowRight: [39, 'ArrowRight'],
       End: [35, 'End'],
       '/': [191, 'Slash'],
+      c: [67, 'KeyC'],
+      v: [86, 'KeyV'],
     }
     const SHIFT = 8
     // `Mod` 는 Mac 에서 Cmd(4), 그 외 Ctrl(2). 헤드리스 브라우저의 플랫폼을 따른다.
@@ -567,6 +569,72 @@ async function main() {
     await sleep(300)
     await waitFor(`document.querySelectorAll('.blk-editor [data-block-id]').length > 0`, 15000)
     check('블록 링크로 처음 열어도 그 블록이 선택된다 — 새로고침(마운트 경로)', await waitFor(aSelected, 3000), JSON.stringify(await selected()))
+
+    section('복사 · 붙여넣기 (F-01-10)')
+    // 지금 문서: T > C, T > t1, A(제목1·빨강배경), D > B.
+    const blocksMime = 'application/x-notion-clone-blocks+json'
+
+    // ① 블록을 고르고, 먼저 **무엇을 싣는지** 본다(합성 이벤트).
+    //    그다음 진짜 Ctrl+C / Ctrl+V 로 시스템 클립보드를 오간다 — 커스텀 MIME 이
+    //    실제로 살아남는지는 그렇게만 알 수 있다.
+    //    ⚠ execCommand('copy') 는 쓰지 않는다. 블록 선택은 캐럿이 없어 DOM 선택이
+    //    접혀 있고, 그러면 복사 이벤트 자체가 일어나지 않는다(그래서 직전에 복사해 둔
+    //    것이 그대로 붙었다).
+    const copyLine = await line(ids.T)
+    await move(copyLine.x + 30, copyLine.y + copyLine.h / 2)
+    await waitFor(`!!document.querySelector('.blk-gutter-grip')`)
+    const tGrip = await rect('.blk-gutter-grip')
+    await click(tGrip.x + tGrip.w / 2, tGrip.y + tGrip.h / 2)
+    await key('Escape')
+    await sleep(60)
+    check('복사할 블록을 고른다(T · 자식 둘)', same(await selected(), ['T']), JSON.stringify(await selected()))
+
+    const payload = await evaluate(`(() => {
+      const dt = new DataTransfer()
+      const ev = new ClipboardEvent('copy', { clipboardData: dt, bubbles: true, cancelable: true })
+      document.querySelector('.blk-editor').dispatchEvent(ev)
+      return { json: dt.getData('${blocksMime}'), text: dt.getData('text/plain'), html: dt.getData('text/html') }
+    })()`)
+    check('세 벌을 싣는다 — JSON · 평문 · HTML (정본의 3종)', !!payload.json && !!payload.text && !!payload.html, JSON.stringify(payload).slice(0, 300))
+    check('평문은 마크다운에 가깝다', payload.text.includes('- '), payload.text)
+    check('HTML 은 toDOM 형태다', payload.html.includes('data-block-type'), payload.html.slice(0, 200))
+    check('JSON 에 자식까지 들어 있다', (payload.json.match(/"type"/g) ?? []).length >= 3, payload.json.slice(0, 200))
+
+    await key('c', MOD)
+    await sleep(120)
+
+    const dLine = await line(ids.D)
+    await click(dLine.x + 20, dLine.y + dLine.h / 2)
+    await sleep(60)
+    await key('v', MOD)
+    await sleep(200)
+    const afterPaste = await order()
+    check('★ 진짜 클립보드로 붙는다 — 중첩까지 (T · C · t1 이 한 벌 더)', afterPaste.filter((t) => t === 'C').length === 2 && afterPaste.filter((t) => t === 't1').length === 2, JSON.stringify(afterPaste))
+    check('붙은 블록은 새 id 를 받는다', await evaluate(`(() => { const ids = [...document.querySelectorAll('.blk-editor [data-block-id]')].map((e) => e.getAttribute('data-block-id')); return new Set(ids).size === ids.length })()`))
+    // D 는 자식(B)이 있으므로 텍스트를 쪼개지 않고 **첫 자식 자리**에 들어간다
+    // (자식이 뒤 블록으로 딸려가는 것을 막는다 — §7-4 최빈 버그).
+    const pastedShape = 'T | T > C | T > t1 | A | D | D > T | D > T > C | D > T > t1 | D > B'
+    const savedAfterPaste = await settledShape(pastedShape)
+    check('붙여넣은 것이 서버에 저장된다 — 자식(B)은 그대로', savedAfterPaste === pastedShape, savedAfterPaste)
+
+    // ② 하위 페이지는 복사되지 않는다 — 안내가 뜬다.
+    const subpage = await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: JSON.stringify({ parentPageId: pageId }) })).json()
+    await send('Page.reload')
+    await waitFor(`document.querySelectorAll('.blk-editor [data-block-id]').length > 0`, 15000)
+    const subLine = await line(subpage.page.id)
+    await move(subLine.x + 30, subLine.y + subLine.h / 2)
+    await waitFor(`!!document.querySelector('.blk-gutter-grip')`)
+    const subGrip = await rect('.blk-gutter-grip')
+    await click(subGrip.x + subGrip.w / 2, subGrip.y + subGrip.h / 2)
+    await key('Escape')
+    await sleep(60)
+    const subPayload = await evaluate(`(() => {
+      const dt = new DataTransfer()
+      document.querySelector('.blk-editor').dispatchEvent(new ClipboardEvent('copy', { clipboardData: dt, bubbles: true, cancelable: true }))
+      return dt.getData('${blocksMime}')
+    })()`)
+    check('하위 페이지는 JSON 에 실리지 않는다', subPayload === '' || !subPayload.includes('"page"'), subPayload.slice(0, 200))
+    check('복사되지 않았다고 알려준다', await waitFor(`[...document.querySelectorAll('[role="status"]'), ...document.querySelectorAll('[role="alert"]')].some((e) => e.textContent.includes('하위 페이지는 복사되지 않았습니다'))`, 2000))
 
     section('+ 버튼 (F-01-08 · F-01-04)')
     const dNow = await line(ids.D)

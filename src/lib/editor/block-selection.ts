@@ -168,7 +168,13 @@ export class BlockSelection extends Selection {
       return new SelectionRange(doc.resolve(pos), doc.resolve(pos + node.nodeSize))
     })
 
-    super($anchorBlock, $headBlock, ranges)
+    // ⚠ 기준 anchor·head 는 **선택 범위의 양끝**이다. `$anchorBlock`/`$headBlock`
+    // 을 그대로 넘기면 블록 하나를 고른 경우 둘이 같아서 **DOM 선택이 접힌다.**
+    // 그러면 브라우저의 복사 명령이 "복사할 것이 없다"고 보고 `copy` 이벤트 자체를
+    // 일으키지 않아, 블록 하나를 골라 Ctrl+C 하면 아무 일도 일어나지 않는다
+    // (실제 브라우저 검증에서 잡았다). `CellSelection` 도 같은 이유로 셀 내용의
+    // 양끝을 기준으로 준다. 우리 판정은 아래 두 필드만 쓰므로 영향이 없다.
+    super(ranges[0].$from, ranges[ranges.length - 1].$to, ranges)
     this.$anchorBlock = $anchorBlock
     this.$headBlock = $headBlock
     this.rootPositions = roots
