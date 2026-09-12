@@ -15,6 +15,7 @@ import { listPageTree } from '@/lib/block/page-tree'
 import { listTrash } from '@/lib/block/trash'
 import { listFavorites, listRecent } from '@/lib/nav/recent'
 import { Sidebar, type SidebarNode } from './sidebar'
+import { SearchOverlay } from './search-overlay'
 
 /** 서버 타입에서 클라이언트로 넘길 최소 모양만 남긴다. */
 function toSidebarNode(node: Awaited<ReturnType<typeof listPageTree>>[number]): SidebarNode {
@@ -56,6 +57,19 @@ export default async function WorkspaceLayout({
         favorites={favorites.map((e) => ({ id: e.id, title: e.title }))}
       />
       <div className="min-w-0 flex-1">{children}</div>
+
+      {/*
+        검색 오버레이 — W7 / F-07-01. 레이아웃에 두는 이유가 사이드바와 같다:
+        페이지마다 렌더하면 페이지를 옮길 때마다 다시 마운트되고, 단축키 리스너가
+        라우트 전환 사이에 비는 구간이 생긴다.
+
+        빈 상태의 데이터는 **이미 읽은 `recent` 를 그대로 쓴다**(F-07-01:
+        "입력 0자 = 이동 모드(최근 방문)"). 같은 것을 두 번 질의하지 않는다.
+      */}
+      <SearchOverlay
+        workspaceId={workspaceId}
+        recent={recent.map((e) => ({ id: e.id, title: e.title }))}
+      />
     </div>
   )
 }
