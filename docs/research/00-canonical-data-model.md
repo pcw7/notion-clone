@@ -661,8 +661,10 @@ CREATE TABLE property (                       -- <C-4> id 는 전역 유니크 t
   can_place_in_panel boolean NOT NULL DEFAULT true,       -- <16 R4>
   deleted_at     timestamptz NULL,            -- soft delete(복원·undo)
   created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL,
-  UNIQUE (data_source_id, name)               -- <V-7> 확정. 대소문자 구분
+  -- [정정] 전체 UNIQUE → **부분 UNIQUE**. 근거는 이 블록 다음.
+  -- UNIQUE (data_source_id, name)            -- <V-7> 확정. 대소문자 구분
 );
+CREATE UNIQUE INDEX ON property (data_source_id, name) WHERE deleted_at IS NULL;  -- [정정]
 CREATE INDEX ON property (data_source_id) WHERE deleted_at IS NULL;
 -- 불변식 P1: data_source 당 type='title' 인 살아있는 property 는 정확히 1개.
 -- 불변식 P2: property.id 는 어떤 경로로도 변경되지 않는다(rename 은 name 만 바꾼다).
@@ -670,7 +672,45 @@ CREATE INDEX ON property (data_source_id) WHERE deleted_at IS NULL;
 -- 불변식 P4: name 해석은 정확 일치(대소문자 구분) 1건. 0건이면 400. 대소문자 무시 폴백 없음.
 -- 불변식 P5: origin='external' 과 writable 은 독립이다.
 --            "제목은 못 고치는데 우선순위는 고칠 수 있다"가 표현되어야 한다.
+```
 
+**[정정] `UNIQUE (data_source_id, name)` → 살아있는 행에만 거는 부분 UNIQUE** ⟨W8-a / 마이그레이션 0013⟩
+
+> 초판의 전체 UNIQUE 는 **이 표에 `deleted_at`(soft delete)이 있다는 사실과 충돌한다.**
+> 그대로 두면 "상태" 프로퍼티를 지운 뒤 같은 이름으로 다시 만들 수 없다 — 지운 행이
+> 이름을 **영구히** 점유한다. 실측으로 확인했다: 원안대로 전체 UNIQUE 를 걸면
+> `deleted_at` 을 채운 뒤의 동명 INSERT 가 `duplicate key value violates unique
+> constraint` 로 거부된다.
+>
+> 사용자가 즉시 부딪히는 버그이고, `deleted_at` 을 "soft delete(복원·undo)"로 둔
+> 이 표의 주석과도 어긋난다. V-7 이 확정한 것은 *"동명 프로퍼티 금지 + 대소문자
+> 구분 + 정확 일치 해석"* 이고, 그 판결의 근거는 *"data source 의 `properties` 가
+> **name 키 객체**"* 다 — 그 객체에는 **지워진 프로퍼티가 애초에 들어가지 않는다.**
+> 즉 부분 UNIQUE 가 V-7 을 어기는 것이 아니라 V-7 의 범위를 정확히 맞추는 것이다.
+>
+> 대소문자 구분은 그대로 유지한다(불변식 P4). **`select_option` 은 반대로 대소문자
+> 무시 유니크**이고, 이것은 1차 출처가 둘을 따로 명시한 것이다 — 같아 보인다고
+> 맞추면 둘 다 틀린다. 마이그레이션 0013 의 프로브가 두 규칙을 각각 확인한다.
+
+**[추가] `property_type` · `option_color` ENUM 정의** ⟨W8-a / 마이그레이션 0013⟩
+
+> 이 문서는 두 타입을 **쓰면서 정의하지 않았다.** 값 목록은 `03-database-core.md` 의
+> 프로퍼티 전수표(24종, 2026-09-06 에 헬프센터와 API 문서를 2차 대조)와 그 아래
+> *"옵션 색상 enum: default, gray, brown, orange, yellow, green, blue, purple, pink, red"*
+> 에 있다. 마이그레이션 0013 이 그 목록을 그대로 옮겼다.
+>
+> **24종을 한 번에 넣었다.** MVP 가 쓰는 것은 6종뿐이지만, `ALTER TYPE … ADD VALUE`
+> 로 추가한 값은 **같은 트랜잭션에서 쓸 수 없으므로** 나중에 넣으면 타입 추가와
+> 사용이 마이그레이션 두 개로 갈라진다.
+>
+> `option_color`(10색)는 `format.block_color`(19색)와 **다른 집합**이다. 1차 출처가
+> 둘을 따로 열거한다.
+>
+> 03 문서가 권한 `property.api_exposed boolean`(`button`·`verification` 이 API 에
+> 없으므로)은 **두지 않았다** — 그 값은 `type` 의 함수이므로 컬럼으로 두면 두 곳이
+> 어긋날 수 있다. 애플리케이션의 타입별 상수표에서 읽는다.
+
+```sql
 CREATE TABLE select_option (
   id uuid PRIMARY KEY,
   property_id text NOT NULL REFERENCES property(id) ON DELETE CASCADE,
