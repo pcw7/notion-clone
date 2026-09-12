@@ -971,6 +971,64 @@ async function main() {
         })()`))
     }
 
+    section('공유 패널 (F-06-05)')
+    // 새 페이지 + 하위 페이지에서 본다 — 상속 표시와 "따로 관리하기"가 핵심이다.
+    const shareParent = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: '{}' })).json()).page.id
+    const shareChild = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: JSON.stringify({ parentPageId: shareParent }) })).json()).page.id
+
+    const clickText = async (text, selector = 'button') => {
+      const box = await evaluate(`(() => {
+        const el = [...document.querySelectorAll(${JSON.stringify(selector)})].find((e) => e.textContent.trim().includes(${JSON.stringify(text)}))
+        if (!el) return null
+        el.scrollIntoView({ block: 'center' })
+        const r = el.getBoundingClientRect()
+        return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+      })()`)
+      if (!box) return false
+      await click(box.x, box.y)
+      await sleep(150)
+      return true
+    }
+    const panelText = () => evaluate(`document.querySelector('[role="dialog"][aria-label="공유 설정"]')?.textContent ?? '(패널 없음)'`)
+
+    // ① 루트 페이지 — 모두에게 전체 권한이 직접 부여돼 있다.
+    await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${shareParent}` })
+    await waitFor(`[...document.querySelectorAll('button')].some((b) => b.textContent.trim() === '공유')`, 15000)
+    check('공유 버튼이 있다', await clickText('공유'))
+    check('★ 루트 페이지는 "모든 멤버"에게 부여돼 있다',
+      await waitFor(`(document.querySelector('[role="dialog"][aria-label="공유 설정"]')?.textContent ?? '').includes('워크스페이스 모든 멤버')`, 5000),
+      await panelText())
+    check('루트에서는 상속 표시가 없다', !(await panelText()).includes('상위에서 상속됨'))
+
+    // ② 하위 페이지 — 같은 주체가 "상속됨"으로 보인다.
+    await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${shareChild}` })
+    await waitFor(`[...document.querySelectorAll('button')].some((b) => b.textContent.trim() === '공유')`, 15000)
+    await clickText('공유')
+    check('★ 하위 페이지에서는 "상위에서 상속됨"으로 표시된다',
+      await waitFor(`(document.querySelector('[role="dialog"][aria-label="공유 설정"]')?.textContent ?? '').includes('상위에서 상속됨')`, 5000),
+      await panelText())
+    check('상위 설정을 따르고 있다고 말해 준다', (await panelText()).includes('상위 페이지의 공유 설정을 따르고'))
+
+    // ③ ★ "따로 관리하기" — 끊는 순간 상속분이 복사돼야 한다(불변식 P1).
+    check('"따로 관리하기"를 누른다', await clickText('따로 관리하기'))
+    await waitFor(`(document.querySelector('[role="dialog"][aria-label="공유 설정"]')?.textContent ?? '').includes('따로 관리')`, 5000)
+    const afterRestrict = await panelText()
+    check('★ 끊어도 접근이 사라지지 않는다 — 상속분이 이 페이지로 복사됐다 (P1)',
+      afterRestrict.includes('워크스페이스 모든 멤버') && !afterRestrict.includes('상위에서 상속됨'),
+      afterRestrict)
+    check('끊었다는 것을 말로 알려준다', afterRestrict.includes('따로 관리되고 있습니다'))
+    check('서버에도 반영됐다 — 이제 이 노드가 직접 갖고 있다', await (async () => {
+      const data = await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages/${shareChild}/access`, { headers: authed })).json()
+      return data.entries.some((e) => e.principalType === 'workspace_everyone' && !e.inherited)
+    })())
+
+    // ④ 마지막 관리자를 지우려 하면 막고 이유를 말한다.
+    check('"제거"를 누른다', await clickText('제거'))
+    check('★ 관리할 사람이 아무도 안 남는 제거는 막는다',
+      await waitFor(`[...document.querySelectorAll('[role="alert"]')].some((e) => e.textContent.includes('관리할 수 있는 사람'))`, 5000),
+      await panelText())
+    check('막힌 뒤에도 권한은 그대로다', (await panelText()).includes('워크스페이스 모든 멤버'))
+
     section('전체')
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))
     const serverErrors = serverOutput.split('\n').filter((l) => l.includes('⨯'))
