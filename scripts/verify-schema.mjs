@@ -882,6 +882,73 @@ try {
       else fail(`order_idx 정렬이 ICU 로 돌고 있다: ${got} (b0 bZ ba 여야 한다)`)
     }
 
+    // ── ⑩ 파생 캐시 트리거 (0014 / 불변식 R2) ──
+    //
+    // "캐시는 트리거로만 갱신된다"는 규칙은 트리거가 실제로 도는지 확인해야
+    // 성립한다. 특히 **CASCADE DELETE 도 트리거를 돈다**는 것을 본다 — 안 돌면
+    // 프로퍼티를 물리 삭제했을 때 캐시에 유령 키가 남는다.
+    {
+      // rich_text 컬럼 하나를 더 만든다. 위의 pid(7) 은 **select** 라서 그 셀의
+      // text_value 는 옵션 id 이고, 트리거가 타입으로 걸러야 한다 — 두 방향을
+      // 모두 보려면 사람이 쓴 텍스트 컬럼이 따로 있어야 한다.
+      //
+      // ⚠ 처음에 select 셀에 텍스트를 넣고 rich_text 를 기대해서 거짓 실패를 봤다.
+      //   트리거는 옳게 걸렀고 단언이 틀렸다.
+      await client.query(
+        `INSERT INTO property (id, data_source_id, name, type, order_idx, created_at, updated_at)
+         VALUES ($1, $2, '메모', 'rich_text', 'c0', now(), now())`,
+        [pid(8), dsId],
+      )
+      await client.query(
+        `INSERT INTO page_property_value (page_id, property_id, value, text_value, updated_at)
+         VALUES ($1, $2, '{"type":"rich_text","rich_text":[]}'::jsonb, '사람이쓴텍스트', now())`,
+        [rowId, pid(8)],
+      )
+      // select 셀에는 옵션 id 모양의 값을 넣는다. 이것이 벡터에 들어가면 안 된다.
+      await client.query(
+        `INSERT INTO page_property_value (page_id, property_id, value, text_value, updated_at)
+         VALUES ($1, $2, '{"type":"select","select":null}'::jsonb, '옵션아이디값', now())`,
+        [rowId, pid(7)],
+      )
+      const read = async () => {
+        const { rows } = await client.query(
+          `SELECT properties_cache, cache_version, search_tsv::text AS tsv FROM page WHERE id = $1`,
+          [rowId],
+        )
+        return rows[0]
+      }
+
+      const after = await read()
+      // title(pid 1) · select(pid 7) · rich_text(pid 8) 세 셀이 전부 캐시에 있어야 한다.
+      const keys = Object.keys(after.properties_cache)
+      if (keys.length === 3) ok('셀을 쓰면 properties_cache 가 따라온다 (R2 · 3개 셀)')
+      else fail(`properties_cache 에 ${keys.length}개가 있다: ${JSON.stringify(after.properties_cache)}`)
+
+      if (Number(after.cache_version) > 0) ok(`cache_version 이 오른다 (${after.cache_version})`)
+      else fail('cache_version 이 오르지 않았다')
+
+      // ★ 양방향으로 본다: 사람이 쓴 텍스트는 들어가고, select 의 옵션 id 는 안 들어간다.
+      const tsv = after.tsv ?? ''
+      if (/사람이쓴텍스트/.test(tsv)) ok('search_tsv 에 rich_text 가 들어간다')
+      else fail(`search_tsv 에 rich_text 가 없다: ${tsv}`)
+
+      if (!/옵션아이디값/.test(tsv)) {
+        ok('★ search_tsv 에 select 의 text_value(옵션 id)가 들어가지 않는다')
+      } else {
+        fail(`옵션 id 가 검색 벡터에 색인됐다 — 사람이 찾을 수 없는 토큰이다: ${tsv}`)
+      }
+
+      // ★ CASCADE 로 셀이 사라져도 캐시가 따라오는가. "CASCADE 는 트리거를 안
+      //   돈다"고 착각하기 쉬운 지점이다.
+      await client.query(`DELETE FROM property WHERE id = $1`, [pid(8)])
+      const purged = await read()
+      if (!(pid(8) in purged.properties_cache) && !/사람이쓴텍스트/.test(purged.tsv ?? '')) {
+        ok('★ 프로퍼티 물리 삭제 → CASCADE 가 트리거를 돌려 캐시·벡터에서 사라진다')
+      } else {
+        fail(`프로퍼티를 지웠는데 캐시에 유령이 남았다: ${JSON.stringify(purged.properties_cache)} / ${purged.tsv}`)
+      }
+    }
+
     // ── 부정 요구사항 — 없어야 하는 컬럼 ──
     {
       const { rows } = await client.query(

@@ -258,6 +258,16 @@ node -e 'const{execSync}=require("child_process");
   for(const pid of out.split(/\s+/).filter(Boolean)) try{process.kill(Number(pid))}catch(e){}'
 ```
 
+**⚠ SQL 템플릿 리터럴 안의 주석에 백틱을 쓰지 마라.** W8 에서 **세 번** 당했다.
+
+우리 SQL 은 전부 `` `...` `` 템플릿 리터럴이고, 그 안의 `-- 주석` 에 식별자를 백틱으로 감싸면 **그 자리에서 문자열이 끝난다.** 증상은 SQL 오류가 아니라 엉뚱한 줄의 타입스크립트 구문 오류다:
+
+```
+src/lib/block/page.ts(476,43): error TS1005: ',' expected.
+```
+
+주석 안에서는 백틱 없이 `block.properties.title` 처럼 그냥 쓴다. 같은 이유로 `${...}` 도 조심한다 — 주석에 적어도 보간이 돈다.
+
 **`npx prettier` 를 그냥 돌리지 마라.** 저장소에 prettier 설정이 없어서 기본값(쌍따옴표 · 세미콜론)으로 파일 전체를 다시 포맷한다 — 이 저장소 스타일은 작은따옴표 · 세미콜론 없음이다. 한 번 당했고 `git checkout` 으로 되돌렸다.
 
 **긴 문자열 치환에 스크립트 + `replace`를 쓰면 조용히 실패한다.** 이 세션에서도 한 번 당했다(한글·`·` 같은 비-ASCII가 섞인 앵커에서 heredoc 인코딩이 어긋났다). **파일 수정은 Edit 도구를 쓴다.** 스크립트로 치환했다면 `assert` 를 넣고 `grep`으로 반영을 확인한다.
@@ -316,7 +326,10 @@ dev 재시작·`.next/dev` 삭제로 풀린 적도 있지만 재현이 안 된�
 | **`filter.in_trash: true`** | 휴지통 검색 옵션이 없다(`in_trash = false` 고정). 휴지통 목록은 별도 화면이 이미 한다 | 같은 곳 |
 | **데이터베이스 노드의 DB 전용 레벨** | `effective()` 가 ACL 대상 종류를 `'page'` 로 고정한다. `view`·`comment`·`edit`·`full_access` 는 정본 §3.3 의 두 매트릭스에 같은 내용으로 있어 정상 동작하지만, **`edit_content`·`create` 레벨을 데이터베이스 노드에 직접 부여하면 조용히 무시된다**(page 에 정의되지 않은 레벨이라 `isDefinedLevel` 이 걸러낸다). 즉 "행은 추가하지만 컬럼은 못 고치는 사람"(정본이 `create` 로 표현한 것)을 아직 만들 수 없다. 고치려면 `node_kind` 를 `acl_entry` 에서 읽어 `resolveCaps` 까지 흘려야 한다 | `src/lib/permissions/effective.ts` `resolveCaps` |
 | **인라인 데이터베이스** | 없다. `createDatabase` 는 **워크스페이스 직속 풀페이지 DB** 만 만든다. 페이지 본문 안에 만들면 프로젝터가 "문서에 없는 자식 블록"으로 보고 **그 페이지를 한 번 저장할 때 지운다**(`toDelete` 가 `type !== 'page'` 만 본다). 인라인은 블록 타입 레지스트리에 `database` 를 넣고 노드 뷰를 붙이는 작업과 **함께** 와야 한다 — 반쯤 만들면 데이터가 사라지는 경로가 열린다 | `src/lib/database/database.ts` 머리말 · `save-page-body.ts` |
-| **셀 쓰기 API · 행 추가** | 값 계약(`property-types.ts`)과 사이드카 파생은 있지만 **셀을 쓰는 함수가 없다.** `page_property_value` 에 쓰는 경로와 `properties_cache`·`search_tsv` 갱신 트리거(불변식 R2)가 함께 와야 한다 | `src/lib/database/` |
+| ~~셀 쓰기 API · 행 추가~~ | **해결.** `row.ts`(createRow · updateCells · clearCell · listRows · trashRow) + 마이그레이션 0014 의 R2 트리거 | `src/lib/database/row.ts` |
+| **`page.search_tsv` 는 한국어로 검색되지 않는다** | 마이그레이션 0012 머리말의 실측과 같은 이유다(PostgreSQL 에 한국어 config 가 없어 `'검색'` 이 `'검색이'` 를 못 찾는다). `search_document` 는 pg_bigm 축을 함께 갖지만 정본 §3.5 는 `search_tsv` 하나만 정의했다. **아직 어떤 검색 경로도 이 컬럼을 읽지 않는다** — DB 안 검색(F-03-19 · F-07-14)이 올 때 bigm 축을 같이 만든다 | `db/migrations/0014_page_cache.sql` |
+| **DB 행이 전역 검색에 안 걸린다** | DB 행은 `type='page'` 블록이라 `search_document` 행이 **생기기는 한다**(0012 의 트리거가 `WHEN NEW.type='page'`). 그런데 `title_text`·`body_text` 를 써 주는 경로가 없어 **색인에 있지만 찾을 수 없다.** 제목은 `row.ts` 의 `projectTitle` 이 `block.properties.title` 에 넣으므로 거기서 이어 주면 된다. F-07-01 이 "데이터베이스 엔트리 이름과 property 값"을 검색 대상으로 명시한다 | `src/lib/database/row.ts` · `src/lib/search/index-page.ts` |
+| **행 복원 · 행 휴지통 목록** | `trashRow` 는 있지만 복원·영구삭제가 없다. 페이지 휴지통(`trash.ts`)은 삭제 루트·자손 계산을 하는데 행에는 자손이 없어서 빌려 쓰지 않았다 | `src/lib/database/row.ts` |
 | **검색 전체 재색인 경로** | 없다. 마이그레이션 0012 의 백필은 **메타만** 넣고 `title_text` 를 NULL 로 남겼다(제목의 RichText[] 계약을 SQL 에 복제하지 않기 위해서다). 그래서 0012 이전에 만든 페이지는 **저장·이름변경이 한 번 일어날 때 검색 가능해진다.** 지금 데이터가 개발용뿐이라 재색인 잡을 만들지 않았다 — **운영 데이터가 생기기 전에 필요하다.** `indexPageText` 를 전체 페이지에 돌리는 스크립트면 된다 | `db/migrations/0012_search_document.sql` 꼬리 · `src/lib/search/index-page.ts` |
 | **`ancestor_titles` 를 채우지 않는다** | 정본 §3.9 에 컬럼은 있고 값은 NULL 이다. breadcrumb 은 `ancestor_ids` 로 `block` 을 조인해 만든다 — 복사해 두면 조상 제목이 바뀔 때마다 서브트리 전체가 낡는다(F-07-04 가 `recent_visit` 에 대해 경고한 함정과 같다). 조인이 비싸지는 규모가 오면 채운다 | `0012_search_document.sql` |
 | **tsvector 축은 본문 앞 10만 자만 본다** | tsvector 1MB 한도 때문이다(실측: 26만 자에서 넘는다). **pg_bigm 축은 전체를 보므로 한국어 검색은 안 잘린다** — 잘리는 것은 라틴 쿼리가 긴 영문 본문의 10만 자 뒤쪽을 못 찾는 경우뿐이다 | `0012_search_document.sql` 머리말 |
