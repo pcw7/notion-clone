@@ -36,6 +36,9 @@ const EXPECTED_TABLES = [
   'mfa_backup_code', 'mfa_method', 'organization', 'otp_challenge',
   'page_version', 'region',
   'acl_entry', 'block_acl_meta', 'favorite', 'file', 'recent_visit', 'search_document',
+  // W8-a DB 코어 (0013)
+  'database', 'data_source', 'database_data_source', 'property', 'select_option',
+  'page', 'page_property_value', 'relation_edge',
   'schema_migration', 'scim_token', 'session_policy', 'sso_config',
   'user', 'user_email', 'user_session',
   'workspace', 'workspace_invite', 'workspace_member',
@@ -46,6 +49,27 @@ const PARTITION_RE = /^doc_update_p\d+$/
 const EXPECTED_TYPES = [
   'block_lifecycle', 'block_parent_type', 'moderation_state', 'origin_kind',
   'user_status', 'user_type',
+  // W8-a (0013). 정본 §3.5 가 이 둘을 쓰면서 정의하지 않아 03 문서의 전수표에서 가져왔다.
+  'property_type', 'option_color',
+]
+
+/**
+ * **없어야 하는 컬럼.** 정본의 부정 요구사항을 그대로 옮긴 것이다.
+ *
+ * "컬럼을 추가하지 않는다"는 규칙은 주석으로 두면 반드시 깨진다 — 편해 보이는
+ * 순간이 오기 때문이다. 그 순간 순서나 삭제의 진실이 둘이 된다.
+ */
+const FORBIDDEN_COLUMNS = [
+  // 불변식 R4: 행 순서는 block.order_key, 삭제는 block.lifecycle 이다.
+  ['page', 'order_idx'], ['page', 'lifecycle'], ['page', 'deleted_at'],
+  // [X-9] 잠금은 node_lock 하나로 통합됐다. 04 문서 DDL 에 남아 있던 컬럼이다.
+  ['database', 'is_locked'],
+  // 불변식 DS2: is_linked 는 파생값이다.
+  ['data_source', 'is_linked'],
+  // [X-8] U-3 이 폐기했다. perm_scope_id 가 유일한 권한 축이다.
+  ['search_document', 'principals'],
+  // [X-7] ancestor_path uuid[] 단일 유지. block.path text 는 폐기됐다.
+  ['block', 'path'],
 ]
 
 let failed = false
@@ -588,6 +612,290 @@ try {
       `UPDATE search_document SET page_id = $2 WHERE doc_id = $1`,
       [anyPage, parentId],
     )
+  }
+
+  console.log('\n[9] DB 코어 (0013 / W8-a §3.5)')
+  {
+    // 3계층을 실제로 세워 본다. 정상 경로가 통과하지 않으면 아래 거부 검사가
+    // 무의미하다 — "막혔다"가 "제약이 동작한다"가 아니라 "설정이 틀렸다"일 수 있다.
+    const dbBlockId = randomUUID()
+    const dsId = randomUUID()
+    const rootId = randomUUID()
+
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key,
+                          ancestor_path, perm_scope_id, properties, format, created_at, last_edited_at)
+       VALUES ($1, $2, 'page', 'workspace', $2, 'd0', '{}', $1, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      [rootId, wsId],
+    )
+    // DB 컨테이너 블록. `type='database'` 는 블록 타입 레지스트리(애플리케이션)에
+    // 아직 없지만, `block.type` 은 text 라 DB 는 받는다 — 레지스트리 추가는 에디터
+    // 스키마에 영향이 있어 별도 변경이다.
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key,
+                          ancestor_path, perm_scope_id, properties, format, created_at, last_edited_at)
+       VALUES ($1, $2, 'database', 'block', $3, 'd0', $4, $3, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      [dbBlockId, wsId, rootId, [rootId]],
+    )
+    await client.query(`INSERT INTO database (id, created_at, updated_at) VALUES ($1, now(), now())`, [dbBlockId])
+    await client.query(
+      `INSERT INTO data_source (id, owner_database_id, name, created_at, updated_at)
+       VALUES ($1, $2, '표', now(), now())`,
+      [dsId, dbBlockId],
+    )
+    await client.query(
+      `INSERT INTO database_data_source (database_id, data_source_id, order_idx) VALUES ($1, $2, 'a0')`,
+      [dbBlockId, dsId],
+    )
+    ok('3계층 생성 — block(database) → database → data_source → 부착')
+
+    // ── 프로퍼티 ──
+    const pid = (n) => `p${String(n).padStart(20, '0')}` // nanoid(21) 자리 흉내
+    await client.query(
+      `INSERT INTO property (id, data_source_id, name, type, order_idx, created_at, updated_at)
+       VALUES ($1, $2, '이름', 'title', 'a0', now(), now())`,
+      [pid(1), dsId],
+    )
+    ok('title 프로퍼티 생성')
+
+    // 불변식 P1: 살아있는 title 은 정확히 1개.
+    await mustReject(
+      'P1: data_source 당 살아있는 title 은 1개뿐',
+      `INSERT INTO property (id, data_source_id, name, type, order_idx, created_at, updated_at)
+       VALUES ($1, $2, '제목2', 'title', 'a1', now(), now())`,
+      [pid(2), dsId],
+    )
+    // P1 의 나머지 절반 — title 은 soft delete 할 수 없다.
+    await mustReject(
+      'P1: title 프로퍼티는 soft delete 할 수 없다',
+      `UPDATE property SET deleted_at = now() WHERE id = $1`,
+      [pid(1)],
+    )
+
+    await mustReject(
+      'C-4: property.id 는 21자여야 한다 (nanoid)',
+      `INSERT INTO property (id, data_source_id, name, type, order_idx, created_at, updated_at)
+       VALUES ('too-short', $1, '짧은id', 'rich_text', 'a2', now(), now())`,
+      [dsId],
+    )
+    await mustReject(
+      '모르는 writable 값',
+      `INSERT INTO property (id, data_source_id, name, type, order_idx, writable, created_at, updated_at)
+       VALUES ($1, $2, '쓰기', 'rich_text', 'a3', 'sometimes', now(), now())`,
+      [pid(3), dsId],
+    )
+
+    // 이름 UNIQUE — 대소문자는 **구분한다** <V-7>.
+    await client.query(
+      `INSERT INTO property (id, data_source_id, name, type, order_idx, created_at, updated_at)
+       VALUES ($1, $2, '상태', 'select', 'a4', now(), now())`,
+      [pid(4), dsId],
+    )
+    await mustReject(
+      'V-7: 같은 이름의 살아있는 프로퍼티 두 개',
+      `INSERT INTO property (id, data_source_id, name, type, order_idx, created_at, updated_at)
+       VALUES ($1, $2, '상태', 'rich_text', 'a5', now(), now())`,
+      [pid(5), dsId],
+    )
+    {
+      // 대소문자가 다르면 **다른 이름**이다. select_option 과 반대 규칙이다.
+      await client.query('SAVEPOINT casecheck')
+      try {
+        await client.query(
+          `INSERT INTO property (id, data_source_id, name, type, order_idx, created_at, updated_at)
+           VALUES ($1, $2, 'Status', 'rich_text', 'a6', now(), now())`,
+          [pid(6), dsId],
+        )
+        ok('V-7: 대소문자가 다르면 다른 이름이다 (select_option 과 반대)')
+        await client.query(`DELETE FROM property WHERE id = $1`, [pid(6)])
+      } catch (e) {
+        fail(`대소문자가 다른 이름이 막혔다: ${e.message}`)
+      }
+      await client.query('RELEASE SAVEPOINT casecheck')
+    }
+
+    // ★ [정정] 정본의 전체 UNIQUE 를 부분 인덱스로 좁힌 것이 실제로 동작하는가.
+    //   이 검사가 없으면 "지운 이름을 다시 쓸 수 없다"는 버그가 조용히 남는다.
+    {
+      await client.query(`UPDATE property SET deleted_at = now() WHERE id = $1`, [pid(4)])
+      await client.query('SAVEPOINT reuse')
+      try {
+        await client.query(
+          `INSERT INTO property (id, data_source_id, name, type, order_idx, created_at, updated_at)
+           VALUES ($1, $2, '상태', 'select', 'a7', now(), now())`,
+          [pid(7), dsId],
+        )
+        ok('★ 지운 프로퍼티의 이름을 다시 쓸 수 있다 (정본 §3.5 [정정])')
+      } catch (e) {
+        fail(`지운 이름을 다시 쓸 수 없다 — 부분 UNIQUE 가 동작하지 않는다: ${e.message}`)
+      }
+      await client.query('RELEASE SAVEPOINT reuse')
+    }
+
+    // ── select 옵션: 이름은 대소문자 **무시** 유니크 ──
+    await client.query(
+      `INSERT INTO select_option (id, property_id, name, color, order_idx)
+       VALUES ($1, $2, '진행중', 'blue', 'a0')`,
+      [randomUUID(), pid(7)],
+    )
+    await mustReject(
+      '옵션 이름은 대소문자 무시 유니크 (property.name 과 반대)',
+      `INSERT INTO select_option (id, property_id, name, color, order_idx)
+       VALUES ($1, $2, '진행중', 'red', 'a1')`,
+      [randomUUID(), pid(7)],
+    )
+    await mustReject(
+      '모르는 옵션 색 (19색 블록 컬러와 다른 10색 집합이다)',
+      `INSERT INTO select_option (id, property_id, name, color, order_idx)
+       VALUES ($1, $2, '보라', 'lavender', 'a2')`,
+      [randomUUID(), pid(7)],
+    )
+
+    // ── ★ 불변식 R3 — 트리거가 실제로 거부하는가 ──
+    //
+    // CHECK 으로 쓸 수 없는 불변식(다른 표를 본다)이라 트리거로 승격했다.
+    // 걸어만 두고 확인하지 않으면 걸지 않은 것과 같다.
+    {
+      const notDsChild = randomUUID()
+      await client.query(
+        `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key,
+                            ancestor_path, perm_scope_id, properties, format, created_at, last_edited_at)
+         VALUES ($1, $2, 'page', 'block', $3, 'd1', $4, $3, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+        [notDsChild, wsId, rootId, [rootId]],
+      )
+      await mustReject(
+        '★ R3: parent_type 이 data_source 가 아닌 블록은 DB 행이 될 수 없다',
+        `INSERT INTO page (id, data_source_id) VALUES ($1, $2)`,
+        [notDsChild, dsId],
+      )
+
+      const paragraphInDs = randomUUID()
+      await client.query(
+        `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key,
+                            ancestor_path, perm_scope_id, properties, format, created_at, last_edited_at)
+         VALUES ($1, $2, 'paragraph', 'data_source', $3, 'd0', $4, $5, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+        [paragraphInDs, wsId, dsId, [rootId], dbBlockId],
+      )
+      await mustReject(
+        '★ R3: type 이 page 가 아닌 블록은 DB 행이 될 수 없다',
+        `INSERT INTO page (id, data_source_id) VALUES ($1, $2)`,
+        [paragraphInDs, dsId],
+      )
+    }
+
+    // ── 정상 행 ──
+    const rowId = randomUUID()
+    // ⚠ `order_key` 가 'd1' 인 이유: 위 R3 거부 검사가 같은 data_source 아래에
+    //   'd0' 짜리 블록을 이미 만들어 뒀다. `UNIQUE (parent_id, order_key)` 가
+    //   그것을 잡는다 — 처음에 'd0' 을 줬다가 여기서 걸렸다.
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key,
+                          ancestor_path, perm_scope_id, properties, format, created_at, last_edited_at)
+       VALUES ($1, $2, 'page', 'data_source', $3, 'd1', $4, $5, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      [rowId, wsId, dsId, [rootId], dbBlockId],
+    )
+    await client.query(`INSERT INTO page (id, data_source_id) VALUES ($1, $2)`, [rowId, dsId])
+    ok('★ R3: type=page AND parent_type=data_source 인 블록은 DB 행이 된다')
+
+    // `data_source_id` 가 `block.parent_id` 의 파생 캐시라는 것도 트리거가 본다.
+    {
+      const otherDs = randomUUID()
+      await client.query(
+        `INSERT INTO data_source (id, owner_database_id, name, created_at, updated_at)
+         VALUES ($1, $2, '다른 표', now(), now())`,
+        [otherDs, dbBlockId],
+      )
+      await mustReject(
+        '★ R3: page.data_source_id 가 block.parent_id 와 어긋날 수 없다',
+        `UPDATE page SET data_source_id = $2 WHERE id = $1`,
+        [rowId, otherDs],
+      )
+    }
+
+    // ── 셀 ──
+    await client.query(
+      `INSERT INTO page_property_value (page_id, property_id, value, text_value, updated_at)
+       VALUES ($1, $2, '[{"type":"text","text":{"content":"첫 행"}}]'::jsonb, '첫 행', now())`,
+      [rowId, pid(1)],
+    )
+    ok('셀 삽입 — value + 사이드카(text_value)')
+
+    await mustReject(
+      '같은 (행, 프로퍼티)에 셀 두 개 — 병합 단위가 이 쌍이다 [X-4]',
+      `INSERT INTO page_property_value (page_id, property_id, value, updated_at)
+       VALUES ($1, $2, '"중복"'::jsonb, now())`,
+      [rowId, pid(1)],
+    )
+    await mustReject(
+      '거꾸로 된 기간 — 기간 필터가 조용히 0건이 된다',
+      `INSERT INTO page_property_value (page_id, property_id, value, date_start, date_end, updated_at)
+       VALUES ($1, $2, '{}'::jsonb, '2026-02-01', '2026-01-01', now())`,
+      [rowId, pid(7)],
+    )
+    await mustReject(
+      'date_end 만 있는 값',
+      `INSERT INTO page_property_value (page_id, property_id, value, date_end, updated_at)
+       VALUES ($1, $2, '{}'::jsonb, '2026-01-01', now())`,
+      [rowId, pid(7)],
+    )
+    await mustReject(
+      '모르는 filled_by',
+      `INSERT INTO page_property_value (page_id, property_id, value, filled_by, updated_at)
+       VALUES ($1, $2, '{}'::jsonb, 'telepathy', now())`,
+      [rowId, pid(7)],
+    )
+
+    // ── relation_edge 는 자리만 예약했지만 제약은 동작해야 한다 ──
+    await mustReject(
+      '모르는 relation role',
+      `INSERT INTO relation_edge (property_id, from_page_id, to_page_id, order_idx, role)
+       VALUES ($1, $2, $2, 'a0', 'sibling')`,
+      [pid(7), rowId],
+    )
+    await mustReject(
+      '모르는 relation owner — sync 가 사용자 엣지를 지우지 못하게 하는 축이다 (E3)',
+      `INSERT INTO relation_edge (property_id, from_page_id, to_page_id, order_idx, owner)
+       VALUES ($1, $2, $2, 'a0', 'robot')`,
+      [pid(7), rowId],
+    )
+
+    // ── order_idx 가 이진 순서인가 (0008 과 같은 함정) ──
+    {
+      // ⚠ `b` 로 시작하는 키를 쓴다. 위에서 만든 옵션이 이미 'a0' 을 점유하고
+      //   있어서 `IN ('a0', …)` 가 그 행까지 끌어온다 — 처음에 그렇게 써서
+      //   "정렬이 ICU 로 돈다"는 거짓 실패를 봤다. 정렬은 맞았고 단언이 틀렸다.
+      for (const [i, k] of ['ba', 'bZ', 'b0'].entries()) {
+        await client.query(
+          `INSERT INTO select_option (id, property_id, name, color, order_idx)
+           VALUES ($1, $2, $3, 'default', $4)`,
+          [randomUUID(), pid(7), `옵션${i}`, k],
+        )
+      }
+      const { rows } = await client.query(
+        `SELECT order_idx FROM select_option WHERE property_id = $1 AND order_idx IN ('ba','bZ','b0')
+          ORDER BY order_idx`,
+        [pid(7)],
+      )
+      const got = rows.map((r) => r.order_idx).join(' ')
+      // ICU + ko-KR 로 돌면 'bZ' 가 'ba' 보다 뒤에 온다(마이그레이션 0008 의 그 함정).
+      if (got === 'b0 bZ ba') ok('order_idx 가 이진 순서로 비교된다 (b0 bZ ba)')
+      else fail(`order_idx 정렬이 ICU 로 돌고 있다: ${got} (b0 bZ ba 여야 한다)`)
+    }
+
+    // ── 부정 요구사항 — 없어야 하는 컬럼 ──
+    {
+      const { rows } = await client.query(
+        `SELECT table_name, column_name FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND (table_name, column_name) IN (${FORBIDDEN_COLUMNS.map((_, i) => `($${i * 2 + 1}, $${i * 2 + 2})`).join(', ')})`,
+        FORBIDDEN_COLUMNS.flat(),
+      )
+      if (rows.length === 0) {
+        ok(`부정 요구사항 ${FORBIDDEN_COLUMNS.length}건 — 폐기된 컬럼이 되살아나지 않았다`)
+      } else {
+        fail(`폐기된 컬럼이 존재한다: ${rows.map((r) => `${r.table_name}.${r.column_name}`).join(', ')}`)
+      }
+    }
   }
 
   await client.query('ROLLBACK')
