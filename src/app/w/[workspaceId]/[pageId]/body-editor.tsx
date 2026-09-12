@@ -34,6 +34,7 @@ import { useRouter } from 'next/navigation'
 import type { EditorView } from '@tiptap/pm/view'
 
 import { blockIdFromHash, revealBlockCommand } from '@/lib/editor/block-menu'
+import { plainTextForBlocks } from '@/lib/editor/block-clipboard'
 import { selectedBlockCount } from '@/lib/editor/block-selection'
 import type { CommandDeps } from '@/lib/editor/commands'
 import { createEditor } from '@/lib/editor/create-editor'
@@ -49,6 +50,7 @@ import {
 import type { EditorDoc } from '@/lib/editor/document'
 import { uploadImageFile } from '@/lib/file/upload-client'
 import { createPageSync, syncMessage, type PageSync } from '@/lib/sync/page-sync'
+import { SEND_TIMEOUT_MS } from '@/lib/sync/outbox'
 import { deferredOutboxStore, openOutboxStore } from '@/lib/sync/outbox-store'
 import type { SyncState } from '@/lib/sync/outbox'
 import { BlockGutter } from './block-gutter'
@@ -57,7 +59,8 @@ type SaveStatus =
   | { kind: 'idle' }
   /** 저장이 3초 이상 밀렸다. 그 전에는 아무것도 보여주지 않는다(F-05-04). */
   | { kind: 'syncing' }
-  | { kind: 'error'; message: string }
+  /** 저장 실패. `unsaved` 는 못 보낸 내용의 평문이다(F-12-16 "내용 보기"). */
+  | { kind: 'error'; message: string; unsaved?: string }
   /** 오류가 아닌 안내 — 블록 링크를 복사했다 같은 것. */
   | { kind: 'notice'; message: string }
   | { kind: 'conflict' }
@@ -94,6 +97,16 @@ export function BodyEditor({
   const [menu, setMenu] = useState<MenuUi>(CLOSED_MENU)
   /** 블록 선택 개수 — 화면 표시가 아니라 스크린리더 안내용이다(F-12-12). */
   const [selectedBlocks, setSelectedBlocks] = useState(0)
+  /**
+   * 브라우저가 "연결이 없다"고 말하는가 — F-12-16 의 `Offline` 배너.
+   *
+   * ⚠ `navigator.onLine` 은 **LAN 연결만 본다.** 공유기에는 붙어 있는데 인터넷이
+   * 죽은 경우 `true` 다. 그래서 이것은 배너를 띄우는 **보조** 신호일 뿐이고,
+   * 진짜 신호는 저장 큐의 상태다(정본도 "heartbeat 병행"을 요구한다).
+   */
+  const [offline, setOffline] = useState(false)
+  /** 저장하지 못한 내용을 펼쳐 보여주는 중인가(F-12-16 "내용 보기"). */
+  const [showUnsaved, setShowUnsaved] = useState(false)
 
   // ── 저장 ────────────────────────────────────────────────────────────
 
@@ -115,7 +128,14 @@ export function BodyEditor({
         case 'syncing':
           return { kind: 'syncing' }
         case 'rejected':
-          return state.conflict ? { kind: 'conflict' } : { kind: 'error', message: state.message }
+          if (state.conflict) return { kind: 'conflict' }
+          return {
+            kind: 'error',
+            message: state.message,
+            // 지금(=이벤트 중에) 꺼내 둔다. 렌더 중에 큐를 읽으면 React 가
+            // 화면과 어긋난 값을 그릴 수 있다.
+            unsaved: plainTextForBlocks(syncRef.current?.pending()?.doc.blocks ?? []),
+          }
       }
     })
   }, [])
@@ -134,6 +154,9 @@ export function BodyEditor({
             const res = await fetch(`/api/workspaces/${workspaceId}/pages/${pageId}/body`, {
               method: 'PUT',
               headers: { 'content-type': 'application/json' },
+              // 멈춘 요청을 실제로 끊는다 — 큐도 자체 타임아웃을 갖지만(F-12-16)
+              // 소켓까지 놓아주는 것은 여기서만 할 수 있다.
+              signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
               body: JSON.stringify(
                 // 빈 문자열이면 버전을 아예 보내지 않는다 = 순수 LWW 덮어쓰기.
                 entry.baseVersion === ''
@@ -141,9 +164,19 @@ export function BodyEditor({
                   : { doc: entry.doc, version: entry.baseVersion },
               ),
             })
-            const data = (await res.json().catch(() => ({}))) as { version?: unknown; error?: unknown }
+            const data = (await res.json().catch(() => ({}))) as {
+              version?: unknown
+              error?: unknown
+              retryable?: unknown
+            }
             if (res.ok) return { ok: true, version: String(data.version ?? '') }
-            return { ok: false, status: res.status, error: typeof data.error === 'string' ? data.error : undefined }
+            return {
+              ok: false,
+              status: res.status,
+              error: typeof data.error === 'string' ? data.error : undefined,
+              // 서버가 말해 주면 그 말을 따른다(F-12-16).
+              retryable: typeof data.retryable === 'boolean' ? data.retryable : undefined,
+            }
           } catch {
             // 응답 자체가 없었다. 큐는 이것을 "다시 보낼 실패"로 다룬다.
             return { ok: false, status: 0 }
@@ -340,8 +373,14 @@ export function BodyEditor({
     })
 
     // 연결이 돌아오면 기다리지 않고 보낸다.
-    const onOnline = (): void => void sync.sendNow()
+    const onOnline = (): void => {
+      setOffline(false)
+      void sync.sendNow()
+    }
+    const onOffline = (): void => setOffline(true)
+    setOffline(typeof navigator !== 'undefined' && navigator.onLine === false)
     window.addEventListener('online', onOnline)
+    window.addEventListener('offline', onOffline)
 
     /**
      * 탭이 숨거나 닫힌다. 큐를 **지금** 디스크에 쓴다.
@@ -369,6 +408,7 @@ export function BodyEditor({
     return () => {
       window.removeEventListener('hashchange', reveal)
       window.removeEventListener('online', onOnline)
+      window.removeEventListener('offline', onOffline)
       window.removeEventListener('pagehide', onHide)
       document.removeEventListener('visibilitychange', onHide)
       window.removeEventListener('dragover', swallowFileDrop)
@@ -452,6 +492,20 @@ export function BodyEditor({
         </div>
       )}
 
+      {/*
+        F-12-16 의 `Offline` 배너. **편집을 막지 않는다** — 정본: *"저장 실패 시
+        편집 차단이 아니라 경고 유지(입력을 막으면 사용자가 내용을 잃는다)."*
+        친 글은 큐에 쌓이고 연결이 돌아오면 나간다.
+      */}
+      {offline && (
+        <p
+          role="status"
+          className="mb-3 rounded-md border border-neutral-300 bg-neutral-50 px-3 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-900"
+        >
+          오프라인입니다. 계속 편집할 수 있고, 변경 사항은 연결이 돌아오면 저장됩니다.
+        </p>
+      )}
+
       {status.kind === 'error' && (
         <div role="alert" className="mb-3 flex flex-wrap items-center gap-3 text-sm text-red-600">
           <span>{status.message}</span>
@@ -467,6 +521,27 @@ export function BodyEditor({
           >
             다시 시도
           </button>
+          {/*
+            정본 F-12-16: *"조용히 버리면 데이터 손실 신고가 된다"* — 못 보낸 내용을
+            **볼 수 있어야** 한다. 권한이 사라졌거나 페이지가 지워진 경우 재시도는
+            영영 실패하므로, 사용자가 자기 글을 복사해 갈 길이 유일한 탈출구다.
+          */}
+          <button
+            type="button"
+            onClick={() => setShowUnsaved((v) => !v)}
+            className="rounded border border-red-300 px-2 py-1 text-xs dark:border-red-800"
+          >
+            {showUnsaved ? '내용 숨기기' : '저장하지 못한 내용 보기'}
+          </button>
+          {showUnsaved && (
+            <textarea
+              readOnly
+              aria-label="저장하지 못한 내용"
+              value={status.unsaved ?? ''}
+              onFocus={(e) => e.currentTarget.select()}
+              className="h-40 w-full rounded border border-red-200 bg-white p-2 font-mono text-xs text-neutral-800 dark:border-red-900 dark:bg-neutral-950 dark:text-neutral-200"
+            />
+          )}
         </div>
       )}
 

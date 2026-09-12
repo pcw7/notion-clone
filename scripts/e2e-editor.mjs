@@ -918,6 +918,59 @@ async function main() {
     check('"동기화 중" 표시가 사라진다',
       await waitFor(`![...document.querySelectorAll('[role="status"]')].some((e) => e.textContent.includes('동기화 중'))`, 5000))
 
+    section('오류 · 복구 UX (F-12-16)')
+    // ① 오프라인 배너 — 편집을 막지 않는다.
+    await evaluate(`window.dispatchEvent(new Event('offline'))`)
+    check('★ 오프라인이면 배너가 뜨고, 계속 편집할 수 있다고 말한다',
+      await waitFor(`[...document.querySelectorAll('[role="status"]')].some((e) => e.textContent.includes('오프라인'))`, 3000))
+    check('편집을 막지 않는다 — 입력을 막으면 사용자가 내용을 잃는다',
+      await evaluate(`document.querySelector('.blk-editor').contentEditable !== 'false'`))
+    await evaluate(`window.dispatchEvent(new Event('online'))`)
+    check('연결이 돌아오면 배너가 사라진다',
+      await waitFor(`![...document.querySelectorAll('[role="status"]')].some((e) => e.textContent.includes('오프라인'))`, 3000))
+
+    // ② 서버가 본문 크기 한도를 413 + retryable:false 로 거절한다.
+    const tooBig = await fetch(syncBodyUrl, {
+      method: 'PUT',
+      headers: authed,
+      body: JSON.stringify({ doc: { blocks: [{ id: randomUUID(), type: 'paragraph', title: [textRun('가'.repeat(400000))], properties: {}, format: {}, children: [] }] } }),
+    })
+    const tooBigBody = await tooBig.json()
+    check('★ 본문이 한도를 넘으면 413 이다', tooBig.status === 413, String(tooBig.status))
+    check('그리고 다시 보내도 소용없다고 말해 준다 (retryable:false)', tooBigBody.retryable === false, JSON.stringify(tooBigBody))
+
+    // ③ 화면에서는 **보내기 전에** 막고, 못 보낸 내용을 볼 수 있어야 한다.
+    const editorBox = await rect('.blk-editor')
+    await click(editorBox.x + 40, editorBox.y + 10)
+    await send('Input.insertText', { text: '넘치는 글'.repeat(80000) })
+    check('★ 한도를 넘으면 보내기 전에 말해 준다 — 413 을 받아 보지 않는다',
+      await waitFor(`[...document.querySelectorAll('[role="alert"]')].some((e) => e.textContent.includes('KB'))`, 15000),
+      await evaluate(`[...document.querySelectorAll('[role="alert"]')].map((e) => e.textContent).join(' / ')`))
+
+    // ⚠ 좌표를 읽기 전에 **보이는 곳으로 올린다.** 1MB 짜리 문단을 넣은 뒤라
+    //    화면이 캐럿을 따라 내려가 있어서 배너가 뷰포트 위로 밀려나 있고,
+    //    그 상태의 rect 는 음수라 클릭이 아무 데도 닿지 않는다(실제로 겪었다).
+    const seeButton = await evaluate(`(() => {
+      const b = [...document.querySelectorAll('button')].find((e) => e.textContent.includes('저장하지 못한 내용'))
+      if (!b) return null
+      b.scrollIntoView({ block: 'center' })
+      const r = b.getBoundingClientRect()
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+    })()`)
+    check('★ "저장하지 못한 내용 보기"가 있다 — 조용히 버리면 데이터 손실 신고가 된다', !!seeButton)
+    if (seeButton) {
+      await click(seeButton.x, seeButton.y)
+      check('★ 못 보낸 내용을 실제로 보여준다 — 복사해 갈 수 있다',
+        await waitFor(`(() => {
+          const t = document.querySelector('textarea[aria-label="저장하지 못한 내용"]')
+          return !!t && t.value.includes('넘치는 글')
+        })()`, 5000),
+        await evaluate(`(() => {
+          const t = document.querySelector('textarea[aria-label="저장하지 못한 내용"]')
+          return t ? '길이 ' + t.value.length + ' / 앞 ' + JSON.stringify(t.value.slice(0, 40)) : '(textarea 없음)'
+        })()`))
+    }
+
     section('전체')
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))
     const serverErrors = serverOutput.split('\n').filter((l) => l.includes('⨯'))
