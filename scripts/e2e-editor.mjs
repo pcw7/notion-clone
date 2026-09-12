@@ -41,7 +41,7 @@
  */
 
 import { spawn } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -646,6 +646,102 @@ async function main() {
     const afterPlus = await order()
     check('D 바로 아랫줄에 "/" 블록이 생긴다', afterPlus[afterPlus.indexOf('D') + 1] === '/', JSON.stringify(afterPlus))
     check('슬래시 메뉴가 열린다', await waitFor(`!!document.querySelector('[role="listbox"][aria-label="블록 삽입"]')`, 2000))
+
+    section('이미지 (F-01-15)')
+    // 빈 이미지 블록 둘을 문서 끝에 붙인다 — 하나는 URL, 하나는 업로드용.
+    // 문서를 통째로 바꾸지 않고 **덧붙인다**: 위에서 만든 하위 페이지가 빠지면
+    // 저장이 거부된다(낡은 탭이 하위 페이지를 지우는 것을 막는 규칙).
+    const imgUrlId = randomUUID()
+    const imgFileId = randomUUID()
+    const emptyImage = (id) => ({ id, type: 'image', title: [], properties: {}, format: {}, children: [] })
+    const currentDoc = (await (await fetch(bodyUrl, { headers: authed })).json()).doc
+    res = await fetch(bodyUrl, {
+      method: 'PUT',
+      headers: authed,
+      body: JSON.stringify({ doc: { blocks: [...currentDoc.blocks, emptyImage(imgUrlId), emptyImage(imgFileId)] } }),
+    })
+    if (!res.ok) throw new Error(`이미지 블록 저장 ${res.status} ${await res.text()}`)
+    await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${pageId}` })
+    await waitFor(`!!document.querySelector('[data-block-id="${imgFileId}"] .blk-image-pick')`, 15000)
+
+    /** 서버에 저장된 이 블록의 `properties.source`. */
+    const savedSource = async (id) => {
+      const body = await (await fetch(bodyUrl, { headers: authed })).json()
+      let found = null
+      const walk = (blocks) => {
+        for (const b of blocks) {
+          if (b.id === id) found = b.properties?.source ?? null
+          if (b.children?.length) walk(b.children)
+        }
+      }
+      walk(body.doc.blocks)
+      return found
+    }
+    const settledSource = async (id, predicate) => {
+      let source = null
+      for (let i = 0; i < 40; i += 1) {
+        source = await savedSource(id)
+        if (predicate(source)) return source
+        await sleep(150)
+      }
+      return source
+    }
+
+    check('빈 이미지 블록은 업로드 버튼과 주소 입력을 보여준다 — 정본 "빈 값" 엣지 케이스',
+      await evaluate(`!!document.querySelector('[data-block-id="${imgUrlId}"] .blk-image-pick') && !!document.querySelector('[data-block-id="${imgUrlId}"] .blk-image-url-input')`))
+
+    // ① javascript: 는 화면에서 먼저 막힌다(저장 경로도 막지만, 여기서 알려준다).
+    await evaluate(`(() => {
+      const i = document.querySelector('[data-block-id="${imgUrlId}"] .blk-image-url-input')
+      i.value = 'javascript:alert(1)'
+      i.closest('form').requestSubmit()
+    })()`)
+    await sleep(120)
+    const refused = await evaluate(`(() => {
+      const fig = document.querySelector('[data-block-id="${imgUrlId}"] .blk-image')
+      return { state: fig.dataset.state, alert: fig.querySelector('[role="alert"]')?.textContent ?? '' }
+    })()`)
+    check('★ javascript: 주소는 거부하고 이유를 말한다', refused.state === 'empty' && refused.alert.includes('http'), JSON.stringify(refused))
+
+    // ② 외부 URL — 불러오지 못하는 주소로 폴백까지 본다.
+    await evaluate(`(() => {
+      const i = document.querySelector('[data-block-id="${imgUrlId}"] .blk-image-url-input')
+      i.value = 'https://invalid.example/없는이미지.png'
+      i.closest('form').requestSubmit()
+    })()`)
+    check('외부 주소를 넣으면 이미지 블록이 된다', await waitFor(`document.querySelector('[data-block-id="${imgUrlId}"] .blk-image').dataset.state === 'ready'`, 3000))
+    check('★ 못 불러오면 깨진 이미지 대신 "불러올 수 없음" + 원본 링크 (정본 엣지 케이스)',
+      await waitFor(`(() => {
+        const e = document.querySelector('[data-block-id="${imgUrlId}"] .blk-image-error')
+        return !!e && !!e.querySelector('a.blk-image-origin')
+      })()`, 5000))
+    const urlSource = await settledSource(imgUrlId, (s) => s?.type === 'external')
+    check('외부 주소는 그대로 저장된다', urlSource?.type === 'external' && urlSource.url.startsWith('https://'), JSON.stringify(urlSource))
+
+    // ③ 업로드 — 진짜 파일을 고르고, 진짜 multipart 로 올라가, 진짜로 그려지는지.
+    const pngPath = join(profile, 'e2e.png')
+    writeFileSync(pngPath, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64'))
+    await send('DOM.enable')
+    const domRoot = (await send('DOM.getDocument', { depth: -1 })).root.nodeId
+    const inputNode = (await send('DOM.querySelector', { nodeId: domRoot, selector: `[data-block-id="${imgFileId}"] .blk-image-file` })).nodeId
+    check('업로드 입력은 허용 타입만 받는다', (await evaluate(`document.querySelector('[data-block-id="${imgFileId}"] .blk-image-file').accept`)).includes('image/png'))
+    await send('DOM.setFileInputFiles', { files: [pngPath], nodeId: inputNode })
+
+    check('★ 파일을 고르면 올라가고 그 자리에 그려진다',
+      await waitFor(`!!document.querySelector('[data-block-id="${imgFileId}"] img')`, 10000))
+    const loaded = await waitFor(`(() => { const i = document.querySelector('[data-block-id="${imgFileId}"] img'); return !!i && i.complete && i.naturalWidth > 0 })()`, 10000)
+    check('★ 올린 이미지가 실제로 디코드된다 — 스토리지→라우트→브라우저 전 경로', loaded,
+      await evaluate(`document.querySelector('[data-block-id="${imgFileId}"] img')?.src ?? '(img 없음)'`))
+    check('주소는 우리 content 라우트다 — 서명 URL 을 저장하지 않는다(FS2)',
+      await evaluate(`document.querySelector('[data-block-id="${imgFileId}"] img').getAttribute('src').startsWith('/api/workspaces/${workspaceId}/files/')`))
+
+    const fileSource = await settledSource(imgFileId, (s) => s?.type === 'file')
+    check('★ 저장되는 것은 file_id 다 — 주소가 아니다', fileSource?.type === 'file' && typeof fileSource.file_id === 'string' && !JSON.stringify(fileSource).includes('/api/'), JSON.stringify(fileSource))
+
+    // ④ 블록을 지우면 이미지도 같이 사라진다(참조 카운트는 DB 테스트가 본다).
+    await send('Page.reload')
+    await waitFor(`!!document.querySelector('[data-block-id="${imgFileId}"] img')`, 15000)
+    check('새로고침해도 그대로 보인다 — 문서에서 다시 읽어 그린다', true)
 
     section('전체')
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))

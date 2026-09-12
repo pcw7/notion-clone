@@ -46,6 +46,7 @@ import {
   type SlashCommand,
 } from '@/lib/editor/slash-menu'
 import type { EditorDoc } from '@/lib/editor/document'
+import { uploadImageFile } from '@/lib/file/upload-client'
 import { BlockGutter } from './block-gutter'
 
 const SAVE_DEBOUNCE_MS = 1000
@@ -281,6 +282,10 @@ export function BodyEditor({
       doc: initialDoc,
       editable: true,
       deps: {
+        workspaceId,
+        // 업로드는 XHR 로 한다(진행률). 자세한 이유는 `upload-client.ts`.
+        uploadImage: (file, onProgress) =>
+          uploadImageFile(workspaceId, file, { onProgress }),
         isCollapsed: (id) => collapsedRef.current.has(id),
         expand: expandBlock,
         toggleCollapsed: (id) => {

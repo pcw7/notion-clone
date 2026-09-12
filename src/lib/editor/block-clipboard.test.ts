@@ -17,6 +17,7 @@ import assert from 'node:assert/strict'
 import { EditorState, TextSelection, type Command } from '@tiptap/pm/state'
 
 import { textRun, toPlainText } from '../contracts/rich-text.ts'
+import { readCaption } from '../block/image.ts'
 import type { BlockType } from '../block/types.ts'
 import { blockSchema } from './schema.ts'
 import { docToPm, pmToDoc } from './pm-adapter.ts'
@@ -127,15 +128,36 @@ describe('무손실 라운드트립 — HTML 로는 안 되는 것까지', () =>
     const [todo, img, target] = [nextId(), nextId(), nextId()]
     const from = stateOf([
       blk(todo, 'to_do', '완료한 일', [], { checked: true }),
-      blk(img, 'image', '', [], { url: 'https://example.com/a.png', caption: '설명' }),
+      // 이미지의 저장 모양은 계약이다(`block/image.ts`) — 주소가 아니라 출처를 싣는다.
+      blk(img, 'image', '', [], {
+        source: { type: 'external', url: 'https://example.com/a.png' },
+        caption: [textRun('설명')],
+      }),
     ])
     const into = select(stateOf([blk(target, 'paragraph', '대상')]), target)
     const next = copyPaste(from, into, [todo, img])
     assert.ok(next)
     const pasted = pmToDoc(next.doc).blocks
     assert.equal(pasted[0].properties?.checked, true)
-    assert.equal(pasted[1].properties?.url, 'https://example.com/a.png')
-    assert.equal(pasted[1].properties?.caption, '설명')
+    assert.deepEqual(pasted[1].properties?.source, {
+      type: 'external',
+      url: 'https://example.com/a.png',
+    })
+    assert.equal(readCaption(pasted[1].properties), '설명')
+  })
+
+  test('★ 이미지를 복사하면 같은 파일을 가리킨다 — 바이트를 복제하지 않는다', () => {
+    const [img, target] = [nextId(), nextId()]
+    const fileId = '11111111-1111-4111-8111-111111111111'
+    const from = stateOf([blk(img, 'image', '', [], { source: { type: 'file', file_id: fileId } })])
+    const into = select(stateOf([blk(target, 'paragraph', '대상')]), target)
+    const next = copyPaste(from, into, [img])
+    assert.ok(next)
+    // 블록 id 는 새것이지만 파일은 같다. 프로젝터가 저장할 때 `ref_count` 를 2 로 올린다
+    // (`block/image.db.test.ts`) — 그래야 원본을 지워도 붙여넣은 쪽이 안 깨진다.
+    const pasted = pmToDoc(next.doc).blocks[0]
+    assert.notEqual(pasted.id, img)
+    assert.deepEqual(pasted.properties?.source, { type: 'file', file_id: fileId })
   })
 
   test('모르는 타입도 그대로 오간다 (F-01-02 의 보존 규칙)', () => {
