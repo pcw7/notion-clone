@@ -1141,8 +1141,68 @@ CREATE TABLE search_document (                 -- 검색 인덱스 정본. 09/12
   version bigint NOT NULL                      -- = block.version (external version) [X-6]
 );
 CREATE INDEX ON search_document (workspace_id, perm_scope_id);
-CREATE INDEX ON search_document USING gin (to_tsvector(lang, coalesce(title_text,'') || ' ' || coalesce(body_text,'')));
+-- [정정] 아래 한 줄은 PostgreSQL 에서 실행되지 않는다. 대체 형태는 이 블록 다음 참조.
+-- CREATE INDEX ON search_document USING gin (to_tsvector(lang, coalesce(title_text,'') || ' ' || coalesce(body_text,'')));
+tsv tsvector GENERATED ALWAYS AS (                   -- [정정] 컬럼으로 바뀐다
+  setweight(to_tsvector('simple', coalesce(left(title_text, 10000), '')), 'A') ||
+  setweight(to_tsvector('simple', coalesce(left(body_text, 100000), '')), 'B')) STORED;
+CREATE INDEX ON search_document USING gin (tsv);
+CREATE INDEX ON search_document USING gin (title_text gin_bigm_ops);  -- [정정] CJK 축
+CREATE INDEX ON search_document USING gin (body_text  gin_bigm_ops);
 ```
+
+**[정정] GIN 인덱스 식 → 고정 regconfig 의 GENERATED 컬럼 + pg_bigm 2축** ⟨W7 / 마이그레이션 0012⟩
+
+> 초판의 `USING gin (to_tsvector(lang, …))` 는 **PostgreSQL 16 에서 생성 자체가
+> 거부된다.** 구현 시점(W7)에 실측하고 여기를 먼저 고쳤다. 이유 셋:
+>
+> 1. **`to_tsvector(text, text)` 가 존재하지 않는다.** 2인자 형태는
+>    `to_tsvector(regconfig, text)` 뿐이다 → `function to_tsvector(text, text) does not exist`.
+> 2. **`lang::regconfig` 로 캐스팅해도 막힌다.** regconfig 를 런타임에 고르는 호출은
+>    STABLE 이고 인덱스 식은 IMMUTABLE 을 요구한다 →
+>    `functions in index expression must be marked IMMUTABLE`.
+>    즉 **"문서마다 다른 analyzer" 를 인덱스 식으로 표현하는 것이 Postgres 에서 불가능하다.**
+>    F-07-06 의 per-language analyzer 는 Elasticsearch 의 기능이고, v0 물리 구현이
+>    Postgres 인 이상 그대로 이식되지 않는다.
+> 3. **한국어 text search config 가 없다.** `pg_ts_config` 에 28개가 있고 CJK 는 0개다.
+>    `simple` 은 공백 분리 + 소문자화뿐이라 조사가 붙은 어절이 다른 토큰이 된다. 실측:
+>    `to_tsvector('simple','검색이 빠르다') @@ websearch_to_tsquery('simple','검색')` → **false**.
+>    같은 입력에 `LIKE likequery('검색')` → **true**.
+>
+> 그래서 **축이 둘이다**: 라틴 쿼리는 `tsv`(랭킹·구문 검색·불리언이 `ts_rank_cd` ·
+> `websearch_to_tsquery` 로 공짜), CJK 쿼리는 `gin_bigm_ops`. 분기는 **쿼리 쪽**
+> 스크립트로 한다. `lang` 컬럼은 남기고 값도 채우지만(F-07-06 의 "언어 감지 결과")
+> 인덱스 식에는 쓰지 않는다.
+>
+> `left()` 가 붙은 이유는 **tsvector 의 1MB 한도**다. 본문 상한이 1MB 인데(F-12-16)
+> 그 크기를 `to_tsvector` 에 넣으면 던지고, GENERATED 컬럼이면 그 예외가 **저장을
+> 통째로 거부한다.** 상한은 전부 고유한 한글 토큰으로 실측해 정했다:
+> 10만 자 → 한도의 42.9%, 20만 자 → 85.8%, 26만 자 → **112.5%(던진다)**.
+> `body_text` **자체는 자르지 않는다** — pg_bigm 축에는 한도가 없으므로 한국어
+> 검색은 본문 전체를 본다.
+
+**[범위] Phase 0 의 행은 `type='page'` 블록뿐이다** ⟨W7 / 마이그레이션 0012⟩
+
+> 색인 단위가 block 이라는 위 정의(`doc_id = block.id`)와 스키마는 그대로 두되,
+> Phase 0 에서 **행을 만드는 블록은 페이지뿐이다.** `title_text` = 페이지 제목,
+> `body_text` = 그 페이지 문서 범위의 본문 전체. 마이그레이션 0012 가 이것을
+> `CHECK (type = 'page' AND page_id = doc_id)` 로 승격했으므로, **블록 단위 색인으로
+> 확장할 때는 그 CHECK 을 떼는 마이그레이션이 변경의 일부가 된다** — 조용히 의미가
+> 달라지지 않게 하려는 것이다. 근거 셋:
+>
+> · Phase 0 의 저장 단위가 페이지다(§5.1 페이지 단위 LWW). 색인도 같은 단위면 갱신이
+>   저장과 같은 트랜잭션의 **1행 upsert** 로 끝난다. 블록 단위면 페이지 저장마다 N행을
+>   지우고 다시 넣는다.
+> · F-07-02 가 요구한 `setweight(title,'A') || setweight(body,'B')` 가 한 행 안에서
+>   성립한다. 본문 블록 행에는 제목이 없어 가중치 분리가 안 된다.
+> · F-07-02 의 "동일 페이지의 여러 블록 매칭 → 페이지 단위 접기(dedup 필수)"가
+>   **애초에 필요 없어진다.** 1페이지 = 1행이다.
+>
+> 쓰기자도 나뉘었다 — 텍스트(`title_text`·`body_text`·`lang`)는 앱이 쓰고, 메타
+> (`perm_scope_id`·`in_trash`·`ancestor_ids`·`version`·감사)는 `block` 의 트리거가
+> 따라간다. 그것이 F-07-06 이 요구한 *"본문 재색인 없이 메타만 partial update 하는
+> 경로"* 다. **권한 축을 앱이 복사하게 두면 갱신 누락이 권한 누출이 된다** — 실패
+> 방향을 고를 수 있을 때 "검색 결과가 낡는다" 쪽을 골랐다.
 
 **검색 쿼리 형태 (권한이 필터 절 안에 있어야 페이지네이션이 깨지지 않는다)**
 

@@ -32,6 +32,7 @@ import { orderKeyBetween } from './order-key.ts'
 import { can } from '../permissions/levels.ts'
 import { canViewPage, effectiveCaps } from '../permissions/effective.ts'
 import { MAX_TREE_DEPTH } from './types.ts'
+import { indexPageTitle } from '../search/index-page.ts'
 import {
   normalizeRichText,
   toPlainText,
@@ -137,6 +138,17 @@ function readTitle(properties: { title?: unknown } | null): RichTextRun[] {
     return salvaged === '' ? [] : [textRun(salvaged)]
   }
   return normalizeRichText(raw as RichTextRun[])
+}
+
+/**
+ * 페이지 블록의 제목을 평문으로 읽는다.
+ *
+ * `readTitle` 의 관대한 규칙(손상된 제목에서 평문만 살린다)을 밖에서도 쓸 수 있게
+ * 내보낸다. 검색 색인(W7)이 `block.properties` 를 직접 들고 있을 때 쓴다 —
+ * 규칙을 두 벌로 만들면 색인과 화면의 제목이 달라지는 날이 온다.
+ */
+export function plainTitleOf(properties: { title?: unknown } | null): string {
+  return toPlainText(readTitle(properties))
 }
 
 // ── 제목 정규화 ───────────────────────────────────────────────────────
@@ -333,8 +345,14 @@ export async function createPage(
       )
     }
 
+    // 검색 색인 — W7 (F-07-06). 행 자체는 위 INSERT 가 트리거를 돌려 이미
+    // 만들어졌고(마이그레이션 0012), 여기서 쓰는 것은 제목 텍스트뿐이다.
+    // 본문은 비어 있으므로 `indexPageText` 가 아니라 제목 전용 경로를 쓴다.
+    const summary = toSummary(row)
+    await indexPageTitle(tx, id, summary.plainTitle)
+
     return {
-      ...toSummary(row),
+      ...summary,
       ancestors: placement.ancestorPath.map(asBlockId),
       permScopeId: row.perm_scope_id,
       version: row.version,
@@ -444,24 +462,32 @@ export async function renamePage(
 ): Promise<PageDetail> {
   const normalized = assertValidTitle(title)
 
-  const rows = await query<PageRow>(
-    `UPDATE block
-        SET properties = jsonb_set(properties, '{title}', $3::jsonb, true),
-            last_edited_by = $4,
-            last_edited_at = now(),
-            version = version + 1
-      WHERE id = $1 AND workspace_id = $2 AND type = 'page' AND lifecycle = 'live'
-      RETURNING ${PAGE_COLUMNS}`,
-    [pageId, ctx.workspaceId, JSON.stringify(normalized), ctx.userId],
-  )
+  // 트랜잭션으로 감싼 이유는 검색 색인이다(F-07-06). 제목을 고치고 색인을 별도
+  // 커넥션으로 쓰면 "제목은 바뀌었는데 검색은 옛 제목으로만 찾히는" 상태가
+  // 남는다. 같은 트랜잭션이면 그 틈이 없다.
+  return withTransaction(async (tx) => {
+    const rows = await tx.query<PageRow>(
+      `UPDATE block
+          SET properties = jsonb_set(properties, '{title}', $3::jsonb, true),
+              last_edited_by = $4,
+              last_edited_at = now(),
+              version = version + 1
+        WHERE id = $1 AND workspace_id = $2 AND type = 'page' AND lifecycle = 'live'
+        RETURNING ${PAGE_COLUMNS}`,
+      [pageId, ctx.workspaceId, JSON.stringify(normalized), ctx.userId],
+    )
 
-  const row = rows[0]
-  if (!row) throw new PageError('not_found', '페이지를 찾을 수 없습니다.')
+    const row = rows[0]
+    if (!row) throw new PageError('not_found', '페이지를 찾을 수 없습니다.')
 
-  return {
-    ...toSummary(row),
-    ancestors: row.ancestor_path.map(asBlockId),
-    permScopeId: row.perm_scope_id,
-    version: row.version,
-  }
+    const summary = toSummary(row)
+    await indexPageTitle(tx, pageId, summary.plainTitle)
+
+    return {
+      ...summary,
+      ancestors: row.ancestor_path.map(asBlockId),
+      permScopeId: row.perm_scope_id,
+      version: row.version,
+    }
+  })
 }
