@@ -35,7 +35,7 @@ const EXPECTED_TABLES = [
   'group', 'group_member', 'level_capability',
   'mfa_backup_code', 'mfa_method', 'organization', 'otp_challenge',
   'page_version', 'region',
-  'acl_entry', 'block_acl_meta', 'favorite', 'file', 'recent_visit',
+  'acl_entry', 'block_acl_meta', 'favorite', 'file', 'recent_visit', 'search_document',
   'schema_migration', 'scim_token', 'session_policy', 'sso_config',
   'user', 'user_email', 'user_session',
   'workspace', 'workspace_invite', 'workspace_member',
@@ -438,6 +438,156 @@ try {
     const { rows: all } = await client.query(`SELECT id FROM block WHERE parent_id = $1`, [parentId])
     if (all.length === 3) ok('block 직접 조회는 3행 — 뷰만이 필터를 건다')
     else fail(`block 직접 조회가 ${all.length}행이다 (3행이어야 한다)`)
+  }
+
+  console.log('\n[8] 검색 색인 (0012 / F-07-06)')
+  {
+    // 이 절이 확인하는 것은 "테이블이 생겼다"가 아니라 **트리거가 실제로 유지하는가**
+    // 다. 색인의 권한 축(`perm_scope_id`)을 DB 가 따라가게 만든 것이 0012 의 핵심
+    // 설계이고, 그게 동작하지 않으면 검색이 권한을 우회한다.
+    const parentId = randomUUID()
+    const pageId = randomUUID()
+    const bodyId = randomUUID()
+
+    const insertBlock = (id, type, parent, key, scope) =>
+      client.query(
+        `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key,
+                            ancestor_path, perm_scope_id, properties, format,
+                            created_at, last_edited_at)
+         VALUES ($1, $2, $3, 'block', $4, $5, '{}', $6, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+        [id, wsId, type, parent, key, scope],
+      )
+
+    await insertBlock(pageId, 'page', parentId, 'a0', pageId)
+
+    // ① 트리거가 페이지 INSERT 에서 행을 만들었는가
+    {
+      const { rows } = await client.query(
+        `SELECT perm_scope_id, in_trash, version, region_id, page_id, parent_id
+           FROM search_document WHERE doc_id = $1`,
+        [pageId],
+      )
+      if (rows.length !== 1) fail(`페이지를 만들었는데 색인 행이 ${rows.length}개다`)
+      else if (rows[0].perm_scope_id !== pageId) fail('색인의 perm_scope_id 가 block 과 다르다')
+      else if (rows[0].in_trash !== false) fail('새 페이지가 in_trash = true 로 색인됐다')
+      else if (rows[0].page_id !== pageId) fail('page_id 가 doc_id 와 다르다')
+      else if (rows[0].parent_id !== parentId) fail('블록 부모가 parent_id 에 안 들어갔다')
+      else ok('페이지 INSERT → 색인 행 1건 (perm_scope_id · parent_id 동기)')
+    }
+
+    // ② 본문 블록은 색인 행을 만들지 않는다 (Phase 0 은 페이지 단위)
+    await insertBlock(bodyId, 'paragraph', pageId, 'a0', pageId)
+    {
+      const { rows } = await client.query(`SELECT 1 FROM search_document WHERE doc_id = $1`, [bodyId])
+      if (rows.length === 0) ok('본문 블록은 색인 행을 만들지 않는다')
+      else fail('본문 블록에 색인 행이 생겼다 — 트리거의 WHEN 조건이 새고 있다')
+    }
+
+    // ③ 앱이 텍스트를 쓰고, 그 뒤 메타 변경이 텍스트를 덮지 않는가
+    //    F-07-06: "본문 재색인 없이 메타만 partial update 하는 경로가 필요"
+    await client.query(
+      `UPDATE search_document SET title_text = '제목', body_text = '본문 내용', lang = 'ko'
+        WHERE doc_id = $1`,
+      [pageId],
+    )
+    const newScope = randomUUID()
+    await insertBlock(newScope, 'page', parentId, 'a5', newScope)
+    await client.query(`UPDATE block SET perm_scope_id = $2 WHERE id = $1`, [pageId, newScope])
+    {
+      const { rows } = await client.query(
+        `SELECT title_text, body_text, perm_scope_id FROM search_document WHERE doc_id = $1`,
+        [pageId],
+      )
+      if (rows[0].perm_scope_id !== newScope) fail('perm_scope_id 변경이 색인에 반영되지 않았다')
+      else if (rows[0].title_text !== '제목' || rows[0].body_text !== '본문 내용') {
+        fail('메타 갱신이 텍스트를 덮었다 — ON CONFLICT 가 텍스트 컬럼을 건드리고 있다')
+      } else ok('메타만 갱신되고 title_text · body_text 는 보존된다')
+    }
+
+    // ④ tsvector GENERATED 가 제목에 weight A 를 주는가
+    {
+      const { rows } = await client.query(
+        `SELECT tsv::text AS v FROM search_document WHERE doc_id = $1`,
+        [pageId],
+      )
+      if (/'제목':1A/.test(rows[0].v)) ok("tsvector 가 제목에 weight A 를 준다")
+      else fail(`tsvector 의 가중치가 기대와 다르다: ${rows[0].v}`)
+    }
+
+    // ⑤ 긴 본문이 색인을 깨뜨리지 않는가 — `left()` 가드가 없으면 여기서 죽는다.
+    //
+    //    tsvector 에는 1MB 한도가 있고 우리 본문 한도는 1MB 다(F-12-16). 자르지
+    //    않으면 `string is too long for tsvector` 가 나고, GENERATED 컬럼이라
+    //    그 예외가 **저장을 통째로 거부한다** — 색인 때문에 글을 잃는다.
+    //
+    //    ⚠ 본문은 **전부 서로 다른 토큰**이어야 한다. 같은 글자를 반복한 문자열은
+    //      (공백이 없으면) 거대한 토큰 하나가 되어 Postgres 가 lexeme 을 잘라버리고,
+    //      tsvector 가 작아져 한도에 닿지 않는다. 반사실로 확인했다 — 반복 문자열을
+    //      쓰면 `left()` 를 빼도 이 검사가 통과해 버려 검사가 무의미해진다.
+    {
+      const toks = []
+      for (let i = 0; i < 200_000; i += 1) {
+        toks.push(
+          String.fromCodePoint(0xac00 + (i % 11172)) +
+            String.fromCodePoint(0xac00 + (Math.floor(i / 11172) % 11172)) +
+            String.fromCodePoint(0xac00 + (Math.floor(i / 124813584) % 11172)),
+        )
+      }
+      const huge = toks.join(' ') // 고유 토큰 20만개 / 80만 자. 자르지 않으면 한도의 3배가 넘는다
+      try {
+        await client.query(`UPDATE search_document SET body_text = $2 WHERE doc_id = $1`, [pageId, huge])
+        ok('고유 토큰 20만개(80만 자) 본문 색인 성공 — left() 가 tsvector 1MB 한도를 막는다')
+      } catch (e) {
+        fail(`긴 본문이 색인을 깨뜨린다: ${e.message}`)
+      }
+      await client.query(`UPDATE search_document SET body_text = '본문 내용' WHERE doc_id = $1`, [pageId])
+    }
+
+    // ⑥ 휴지통 전이가 in_trash 로 따라가는가
+    await client.query(
+      `UPDATE block SET lifecycle='trashed', trashed_at=now(), trash_root_id=id,
+                        purge_after = now() + interval '30 days' WHERE id = $1`,
+      [pageId],
+    )
+    {
+      const { rows } = await client.query(`SELECT in_trash FROM search_document WHERE doc_id = $1`, [pageId])
+      if (rows[0]?.in_trash === true) ok('trashed → in_trash = true')
+      else fail('휴지통으로 보냈는데 색인이 in_trash = false 다 — 지운 페이지가 검색된다')
+    }
+
+    // ⑦ 영구 삭제는 색인에서 **사라져야** 한다 (유령 결과 금지).
+    //    `purged` 는 행이 남는 상태라 FK CASCADE 가 돌지 않는다 — 트리거가 지운다.
+    await client.query(
+      `UPDATE block SET lifecycle='purged', purged_at=now() WHERE id = $1`,
+      [pageId],
+    )
+    {
+      const { rows } = await client.query(`SELECT 1 FROM search_document WHERE doc_id = $1`, [pageId])
+      if (rows.length === 0) ok('purged → 색인 행 삭제 (유령 결과 금지)')
+      else fail('영구 삭제된 페이지가 색인에 남아 있다')
+    }
+
+    // ⑧ 물리 삭제는 CASCADE 로 사라지는가
+    await client.query(`DELETE FROM block WHERE id = $1`, [newScope])
+    {
+      const { rows } = await client.query(`SELECT 1 FROM search_document WHERE doc_id = $1`, [newScope])
+      if (rows.length === 0) ok('block 물리 삭제 → 색인 행 CASCADE 삭제')
+      else fail('삭제된 블록의 색인 행이 남아 있다')
+    }
+
+    // ⑨ 페이지 단위 색인의 불변식이 실제로 거부하는가
+    const anyPage = randomUUID()
+    await insertBlock(anyPage, 'page', parentId, 'a9', anyPage)
+    await mustReject(
+      'ck_search_page_scoped: type <> page 인 색인 행',
+      `UPDATE search_document SET type = 'paragraph' WHERE doc_id = $1`,
+      [anyPage],
+    )
+    await mustReject(
+      'ck_search_page_scoped: page_id <> doc_id',
+      `UPDATE search_document SET page_id = $2 WHERE doc_id = $1`,
+      [anyPage, parentId],
+    )
   }
 
   await client.query('ROLLBACK')

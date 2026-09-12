@@ -50,6 +50,8 @@ import type { SessionContext } from '../auth/session-context.ts'
 import type { BlockId } from '../ids.ts'
 import { withTransaction, type Tx } from '../db/tx.ts'
 import { PAGE_TYPE } from './types.ts'
+import { plainTitleOf } from './page.ts'
+import { indexPageText } from '../search/index-page.ts'
 import { countFileReferences, fileReferenceDelta } from './image.ts'
 import { can } from '../permissions/levels.ts'
 import { effectiveCaps } from '../permissions/effective.ts'
@@ -208,8 +210,13 @@ export async function savePageBody(
       ancestor_path: string[]
       perm_scope_id: string
       version: string
+      // 검색 색인의 `title_text` 용. 프로젝터는 페이지 제목을 **쓰지 않지만**
+      // (소유자는 그 페이지 자신이다), 색인 행의 제목이 비어 있을 수 있어서
+      // 읽어서 함께 넣는다 — 마이그레이션 0012 의 백필이 `title_text` 를 NULL 로
+      // 남겼으므로, 본문을 한 번 저장하면 제목까지 검색 가능해진다.
+      properties: { title?: unknown } | null
     }>(
-      `SELECT id, ancestor_path, perm_scope_id, version
+      `SELECT id, ancestor_path, perm_scope_id, version, properties
          FROM block
         WHERE id = $1 AND workspace_id = $2 AND type = 'page' AND lifecycle = 'live'
         FOR UPDATE`,
@@ -486,6 +493,24 @@ export async function savePageBody(
       )
       version = bumped.version
     }
+
+    // ── 검색 색인 ─────────────────────────────────────────────────────
+    //
+    // W7 / F-07-06. **같은 트랜잭션에서 동기로** 쓴다 — v0 대안이 "트랜잭션 안에서
+    // 자동 갱신되므로 파이프라인·지연·정합성 문제가 전부 사라진다"고 한 그 지점이다.
+    //
+    // `projection.blocks` 를 그대로 쓴다. 방금 쓴 내용이 메모리에 문서 순서로
+    // 있으므로 DB 를 다시 읽지 않는다 — 다시 읽으면 같은 사실의 출처가 둘이 되고,
+    // 스니펫 순서가 문서 순서와 어긋날 수 있다.
+    //
+    // **쓰기가 없었어도 쓴다.** 저장이 쓰기 0건인 경우는 문서가 그대로인 경우지만,
+    // 색인 텍스트가 비어 있는 경우(마이그레이션 0012 의 백필 행)가 여기 섞인다.
+    // 그때 건너뛰면 그 페이지는 한 번도 저장 내용이 바뀌지 않는 한 영원히 검색되지
+    // 않는다. 텍스트 UPDATE 1건은 싸다.
+    await indexPageText(tx, pageId, {
+      title: plainTitleOf(page.properties),
+      blocks: projection.blocks,
+    })
 
     return {
       ok: true,

@@ -309,6 +309,9 @@ dev 재시작·`.next/dev` 삭제로 풀린 적도 있지만 재현이 안 된�
 
 | 항목 | 상태 | 어디 |
 |---|---|---|
+| **검색 전체 재색인 경로** | 없다. 마이그레이션 0012 의 백필은 **메타만** 넣고 `title_text` 를 NULL 로 남겼다(제목의 RichText[] 계약을 SQL 에 복제하지 않기 위해서다). 그래서 0012 이전에 만든 페이지는 **저장·이름변경이 한 번 일어날 때 검색 가능해진다.** 지금 데이터가 개발용뿐이라 재색인 잡을 만들지 않았다 — **운영 데이터가 생기기 전에 필요하다.** `indexPageText` 를 전체 페이지에 돌리는 스크립트면 된다 | `db/migrations/0012_search_document.sql` 꼬리 · `src/lib/search/index-page.ts` |
+| **`ancestor_titles` 를 채우지 않는다** | 정본 §3.9 에 컬럼은 있고 값은 NULL 이다. breadcrumb 은 `ancestor_ids` 로 `block` 을 조인해 만든다 — 복사해 두면 조상 제목이 바뀔 때마다 서브트리 전체가 낡는다(F-07-04 가 `recent_visit` 에 대해 경고한 함정과 같다). 조인이 비싸지는 규모가 오면 채운다 | `0012_search_document.sql` |
+| **tsvector 축은 본문 앞 10만 자만 본다** | tsvector 1MB 한도 때문이다(실측: 26만 자에서 넘는다). **pg_bigm 축은 전체를 보므로 한국어 검색은 안 잘린다** — 잘리는 것은 라틴 쿼리가 긴 영문 본문의 10만 자 뒤쪽을 못 찾는 경우뿐이다 | `0012_search_document.sql` 머리말 |
 | **purge / hard-delete 배치 잡** | `purge_after` 가 지나도 자동으로 `purged` 가 되지 않는다. 수동 영구삭제만 있다. F-02-11 클론 대안이 "purge 배치는 초기엔 생략" 이라고 허용 | `src/lib/block/trash.ts` |
 | ~~휴지통 권한 필터~~ | **해결(#41).** `readableScopes` 로 거른다 | `listTrash` |
 | ~~사이드바 권한 필터~~ | **해결(#41).** 같은 함수 | `listPageTree` |
