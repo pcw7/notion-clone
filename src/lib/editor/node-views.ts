@@ -16,7 +16,9 @@
 import type { Node as PmNode } from '@tiptap/pm/model'
 import type { EditorView, NodeView } from '@tiptap/pm/view'
 
-export type NodeViewDeps = {
+import { imageNodeView, type ImageViewDeps } from './image-view.ts'
+
+export type NodeViewDeps = ImageViewDeps & {
   isCollapsed: (blockId: string) => boolean
   toggleCollapsed: (blockId: string) => void
   /** 하위 페이지로 이동. */
@@ -141,27 +143,6 @@ function toggleNodeView(
   }
 }
 
-/** image — MVP 는 URL 만. 업로드는 F-01-15(Phase 1). */
-function imageNodeView(node: PmNode): NodeView {
-  const dom = document.createElement('figure')
-  dom.className = 'blk blk-image'
-
-  const props = (node.attrs.props ?? {}) as { url?: string; caption?: string }
-  if (typeof props.url === 'string' && props.url !== '') {
-    const img = document.createElement('img')
-    img.src = props.url
-    img.alt = props.caption ?? ''
-    dom.append(img)
-  } else {
-    const empty = document.createElement('div')
-    empty.className = 'blk-image-empty'
-    empty.textContent = '이미지 URL 이 아직 없습니다'
-    dom.append(empty)
-  }
-
-  return { dom }
-}
-
 /** page_ref — 하위 페이지 링크. */
 function pageRefNodeView(
   node: PmNode,
@@ -193,7 +174,7 @@ export function createNodeViews(deps: NodeViewDeps): Record<
   return {
     to_do: (node, view, getPos) => todoNodeView(node, view, getPos),
     toggle: (node, view, getPos) => toggleNodeView(node, view, getPos, deps),
-    image: (node) => imageNodeView(node),
+    image: (node, view, getPos) => imageNodeView(node, view, getPos, deps),
     page_ref: (node, view, getPos) => pageRefNodeView(node, view, getPos, deps),
   }
 }

@@ -50,6 +50,7 @@ import type { SessionContext } from '../auth/session-context.ts'
 import type { BlockId } from '../ids.ts'
 import { withTransaction, type Tx } from '../db/tx.ts'
 import { PAGE_TYPE } from './types.ts'
+import { countFileReferences, fileReferenceDelta } from './image.ts'
 import { orderKeyBetween } from './order-key.ts'
 import { relocateSubtree, MoveError } from './move-page.ts'
 import {
@@ -421,6 +422,36 @@ export async function savePageBody(
       await tx.query(
         `UPDATE block SET order_key = $3 WHERE id = $1 AND workspace_id = $2`,
         [b.id, ctx.workspaceId, b.orderKey],
+      )
+    }
+
+    // ── 파일 참조 카운트 ──────────────────────────────────────────────
+    //
+    // 정본 F-01-15: *"같은 파일을 여러 블록이 참조 → 참조 카운트로 물리 삭제
+    // 제어"*, 불변식 FS1: *"`ref_count > 0` 인 객체를 지우지 않는다."*
+    //
+    // **이 트랜잭션 안에서 한다.** 블록을 넣고 카운트를 나중에 올리면 그 사이에
+    // GC 가 도는 순간 방금 붙인 이미지의 바이트가 사라진다.
+    //
+    // 자식 페이지는 양쪽 모두에서 뺀다. 그 행의 properties 는 그 페이지의
+    // 것이고 이 프로젝터가 쓰지 않으므로, 한쪽에만 세면 저장할 때마다 같은 값이
+    // 올라가거나 내려간다.
+    const before = countFileReferences(scope.filter((r) => r.type !== PAGE_TYPE))
+    const after = countFileReferences(
+      projection.blocks.filter((b) => b.type !== PAGE_TYPE).map((b) => ({ properties: b.properties })),
+    )
+    for (const [fileId, delta] of fileReferenceDelta(before, after)) {
+      // 워크스페이스로 한정한다 — 다른 워크스페이스의 파일 id 를 문서에 적어
+      // 넣어도 그 카운터는 움직이지 않는다(그 이미지는 어차피 보이지 않는다).
+      //
+      // 내릴 때 `GREATEST(…, 0)` 로 바닥을 둔다. 장부가 어긋났을 때 저장을
+      // 실패시키는 쪽이 더 나빠 보이지만 — 사용자는 자기가 쓴 글을 잃고,
+      // 얻는 것은 GC 힌트의 정확도뿐이다. 어긋나면 **덜 지우는 쪽**으로
+      // 기울게 둔다(FS1 이 지키려는 것이 그 방향이다).
+      await tx.query(
+        `UPDATE file SET ref_count = GREATEST(ref_count + $3, 0)
+          WHERE id = $1 AND workspace_id = $2`,
+        [fileId, ctx.workspaceId, delta],
       )
     }
 

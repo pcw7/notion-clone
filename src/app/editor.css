@@ -137,13 +137,78 @@
   border-radius: 0.375rem;
 }
 
-.blk-image-empty,
+.blk-image figcaption {
+  margin-top: 0.25rem;
+  color: #6b7280;
+  font-size: 0.8125rem;
+}
+
+/* 빈 상태·올리는 중·실패는 같은 자리에 같은 크기로 나타난다 — 상태가 바뀔 때
+   문단이 아래위로 튀지 않게 한다. */
+.blk-image[data-state='empty'] .blk-image-controls,
+.blk-image[data-state='uploading'] .blk-image-controls,
 .blk-unsupported {
   border: 1px dashed #d1d5db;
   border-radius: 0.375rem;
   padding: 0.75rem;
   color: #9ca3af;
   font-size: 0.875rem;
+}
+
+.blk-image-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.blk-image-pick,
+.blk-image-url-add {
+  border: 1px solid #e5e7eb;
+  border-radius: 0.25rem;
+  background: none;
+  padding: 0.25rem 0.5rem;
+  color: inherit;
+  font: inherit;
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+
+.blk-image-pick:hover,
+.blk-image-url-add:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.blk-image-url {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.blk-image-url-input {
+  border: 1px solid #e5e7eb;
+  border-radius: 0.25rem;
+  padding: 0.25rem 0.5rem;
+  font: inherit;
+  font-size: 0.875rem;
+  min-width: 14rem;
+}
+
+.blk-image-progress {
+  width: 12rem;
+  height: 0.5rem;
+}
+
+.blk-image-failure,
+.blk-image-error {
+  color: #b91c1c;
+  font-size: 0.875rem;
+  flex-basis: 100%;
+}
+
+.blk-image-error {
+  border: 1px dashed #fca5a5;
+  border-radius: 0.375rem;
+  padding: 0.75rem;
 }
 
 .blk-page-ref .blk-page-link {
@@ -392,7 +457,14 @@
   .blk-menu-swatch { border-color: #404040; }
   .blk-callout { border-color: #262626; background: #171717; }
   .blk-divider { border-top-color: #262626; }
-  .blk-image-empty, .blk-unsupported { border-color: #404040; }
+  .blk-image[data-state='empty'] .blk-image-controls,
+  .blk-image[data-state='uploading'] .blk-image-controls,
+  .blk-unsupported { border-color: #404040; }
+  .blk-image-pick, .blk-image-url-add, .blk-image-url-input { border-color: #404040; }
+  .blk-image-pick:hover, .blk-image-url-add:hover { background: rgba(255, 255, 255, 0.08); }
+  .blk-image figcaption { color: #a3a3a3; }
+  .blk-image-failure, .blk-image-error { color: #fca5a5; }
+  .blk-image-error { border-color: #7f1d1d; }
   .blk-mention, .blk-equation, .blk-editor code { background: #262626; }
   .blk-to_do .blk-checkbox { accent-color: #ededed; }
 

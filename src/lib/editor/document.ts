@@ -53,6 +53,7 @@ import {
   type BlockFormat,
   type BlockType,
 } from '../block/types.ts'
+import { IMAGE_TYPE, validateImageProperties } from '../block/image.ts'
 import { isUuid } from '../ids.ts'
 import { orderKeysBetween } from '../block/order-key.ts'
 import { validateRichText, type RichTextRun } from '../contracts/rich-text.ts'
@@ -127,6 +128,12 @@ export function validateDoc(doc: EditorDoc): DocIssue[] {
       if (block.title !== undefined) {
         const titleIssues = validateRichText(block.title, `${p}.title`)
         issues.push(...titleIssues)
+      }
+
+      // 이미지의 `source` 는 화면에서 `<img src>` 와 "원본 열기" 링크에 그대로
+      // 들어간다. 화면에서만 막으면 API 로 직접 저장하는 경로가 열려 있다.
+      if (block.type === IMAGE_TYPE) {
+        issues.push(...validateImageProperties(block.properties, `${p}.properties`))
       }
 
       const children = block.children ?? []
