@@ -35,6 +35,7 @@ const EXPECTED_TABLES = [
   'group', 'group_member', 'level_capability',
   'mfa_backup_code', 'mfa_method', 'organization', 'otp_challenge',
   'page_version', 'region',
+  'file',
   'schema_migration', 'scim_token', 'session_policy', 'sso_config',
   'user', 'user_email', 'user_session',
   'workspace', 'workspace_invite', 'workspace_member',
@@ -211,6 +212,35 @@ try {
      VALUES ($1,$2,'email','member',$3, now())`,
     [randomUUID(), wsId, userId],
   )
+
+  // ── file (0009 / 정본 §3.10) ───────────────────────────────────────
+  const fileRow = (extra = {}) => {
+    const row = {
+      id: randomUUID(), workspace_id: wsId, region_id: 'local',
+      storage_key: `probe/${randomUUID()}`, mime: 'image/png', size_bytes: 10,
+      original_name: 'a.png', ref_count: 0, ...extra,
+    }
+    return [row.id, row.workspace_id, row.region_id, row.storage_key, row.mime,
+            row.size_bytes, row.original_name, row.ref_count]
+  }
+  const insertFile = `INSERT INTO file (id, workspace_id, region_id, storage_key, mime,
+                        size_bytes, original_name, ref_count, created_at)
+                      VALUES ($1,$2,$3,$4,$5,$6,$7,$8, now())`
+
+  await mustReject('FS1 ref_count 음수', insertFile, fileRow({ ref_count: -1 }))
+  await mustReject('file size_bytes 음수', insertFile, fileRow({ size_bytes: -1 }))
+  await mustReject('file storage_key 빈 문자열', insertFile, fileRow({ storage_key: '' }))
+  await mustReject(
+    'F-12-09 파일명 900바이트 초과 (글자 수가 아니라 바이트)',
+    insertFile,
+    // 한글은 글자당 3바이트다. 301자 = 903바이트 — 글자 수로 세면 통과해 버린다.
+    fileRow({ original_name: '가'.repeat(301) }),
+  )
+  await mustReject('file 없는 region 참조', insertFile, fileRow({ region_id: 'nowhere-1' }))
+
+  const dupKey = `probe/${randomUUID()}`
+  await client.query(insertFile, fileRow({ storage_key: dupKey }))
+  await mustReject('같은 storage_key 두 번 — 덮어썼다는 뜻이다', insertFile, fileRow({ storage_key: dupKey }))
 
   console.log('\n[5] 좌석 계산 (M2 / M3)')
   {
