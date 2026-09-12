@@ -58,8 +58,16 @@ type NodeRow = { id: string; ancestor_path: string[]; perm_scope_id: string; par
 
 async function loadNode(tx: Tx, ctx: SessionContext, nodeId: string): Promise<NodeRow | null> {
   return tx.queryMaybe<NodeRow>(
+    // `type IN ('page','database')` — ACL 은 **블록 트리**에 걸리고
+    // (`acl_entry.node_kind = 'block'`) 데이터베이스도 블록이다(C-3 · X-2).
+    // W8-a 에서 풀페이지 데이터베이스를 만들면서 드러났다: `type='page'` 로
+    // 좁혀 두면 표의 공유를 아예 관리할 수 없다(`stopInheriting` 이 not_found).
+    //
+    // 본문 블록(paragraph 등)은 여전히 제외한다 — 권한 경계는 페이지·데이터베이스
+    // 단위이고, 문단마다 ACL 을 걸 수 있게 두면 `perm_scope_id` 재계산이
+    // 본문 편집마다 일어난다.
     `SELECT id, ancestor_path, perm_scope_id, parent_id
-       FROM block WHERE id = $1 AND workspace_id = $2 AND type = 'page'`,
+       FROM block WHERE id = $1 AND workspace_id = $2 AND type IN ('page', 'database')`,
     [nodeId, ctx.workspaceId],
   )
 }
