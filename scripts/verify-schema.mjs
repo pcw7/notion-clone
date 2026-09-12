@@ -35,7 +35,7 @@ const EXPECTED_TABLES = [
   'group', 'group_member', 'level_capability',
   'mfa_backup_code', 'mfa_method', 'organization', 'otp_challenge',
   'page_version', 'region',
-  'file',
+  'acl_entry', 'block_acl_meta', 'file',
   'schema_migration', 'scim_token', 'session_policy', 'sso_config',
   'user', 'user_email', 'user_session',
   'workspace', 'workspace_invite', 'workspace_member',
@@ -241,6 +241,70 @@ try {
   const dupKey = `probe/${randomUUID()}`
   await client.query(insertFile, fileRow({ storage_key: dupKey }))
   await mustReject('같은 storage_key 두 번 — 덮어썼다는 뜻이다', insertFile, fileRow({ storage_key: dupKey }))
+
+  // ── ACL (W6-b) ──────────────────────────────────────────────────────
+  //
+  // 권한은 틀려도 조용하다 — 화면이 깨지지 않고, 그냥 보이면 안 될 것이 보인다.
+  // 그래서 표현 가능한 규칙은 전부 CHECK 으로 올리고 여기서 거부를 확인한다.
+  const aclRow = (extra = {}) => {
+    const row = {
+      id: randomUUID(), node_kind: 'block', node_id: randomUUID(),
+      principal_type: 'workspace_everyone', principal_id: null,
+      level: 'full_access', hidden_from_search: false, ...extra,
+    }
+    return [row.id, row.node_kind, row.node_id, row.principal_type, row.principal_id,
+            row.level, row.hidden_from_search]
+  }
+  const insertAcl = `INSERT INTO acl_entry (id, node_kind, node_id, principal_type,
+                       principal_id, level, hidden_from_search)
+                     VALUES ($1,$2,$3,$4,$5,$6,$7)`
+
+  await mustReject('A1: level=none 행은 존재하지 않는다', insertAcl, aclRow({ level: 'none' }))
+  await mustReject(
+    "주체가 'user' 인데 id 가 없다 — '아무 사용자나'가 되어 버린다",
+    insertAcl,
+    aclRow({ principal_type: 'user', principal_id: null }),
+  )
+  await mustReject(
+    "주체가 'workspace_everyone' 인데 id 가 있다",
+    insertAcl,
+    aclRow({ principal_type: 'workspace_everyone', principal_id: randomUUID() }),
+  )
+  await mustReject(
+    'hidden_from_search 는 workspace_everyone 에만 의미가 있다',
+    insertAcl,
+    aclRow({ principal_type: 'user', principal_id: randomUUID(), hidden_from_search: true }),
+  )
+  await mustReject('모르는 node_kind', insertAcl, aclRow({ node_kind: 'database' }))
+  {
+    const nodeId = randomUUID()
+    await client.query(insertAcl, aclRow({ node_id: nodeId }))
+    await mustReject(
+      '같은 주체에게 두 번 부여 — 레벨 변경은 UPDATE 다',
+      insertAcl,
+      aclRow({ node_id: nodeId }),
+    )
+  }
+
+  // P1: 절단된 노드는 머티리얼라이즈 시각이 있어야 한다. 플래그만 내리면
+  //     "1명 제거"가 "전원 상실"이 된다.
+  {
+    const nodeId = randomUUID()
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key,
+                          ancestor_path, perm_scope_id, properties, format,
+                          created_at, last_edited_at)
+       VALUES ($1, $2, 'page', 'workspace', $2, 'a0', '{}', $1,
+               '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      [nodeId, wsId],
+    )
+    await mustReject(
+      'P1: 상속을 끊었는데 머티리얼라이즈 시각이 없다',
+      `INSERT INTO block_acl_meta (node_id, inherits_from_parent, materialized_at)
+       VALUES ($1, false, NULL)`,
+      [nodeId],
+    )
+  }
 
   console.log('\n[5] 좌석 계산 (M2 / M3)')
   {

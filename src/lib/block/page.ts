@@ -29,6 +29,8 @@ import { asBlockId } from '../ids.ts'
 import { withTransaction, type Tx } from '../db/tx.ts'
 import { query } from '../db/pool.ts'
 import { orderKeyBetween } from './order-key.ts'
+import { can } from '../permissions/levels.ts'
+import { canViewPage, effectiveCaps } from '../permissions/effective.ts'
 import { MAX_TREE_DEPTH } from './types.ts'
 import {
   normalizeRichText,
@@ -227,6 +229,11 @@ async function lockParent(
     throw new PageError('parent_not_found', '부모 페이지를 찾을 수 없습니다.')
   }
 
+  // W6-b: 남의 페이지 밑에 마음대로 하위 페이지를 만들 수 없다.
+  if (!can(await effectiveCaps(tx, ctx, parent.id), 'create_child')) {
+    throw new PageError('parent_not_found', '부모 페이지를 찾을 수 없습니다.')
+  }
+
   const ancestorPath = [...parent.ancestor_path, parent.id]
   if (ancestorPath.length >= MAX_TREE_DEPTH) {
     throw new PageError(
@@ -309,6 +316,23 @@ export async function createPage(
       ],
     )
 
+    // ★ 루트 페이지는 ACL 을 갖고 태어난다 — W6-b.
+    //
+    // `effective()` 가 켜진 뒤로 **ACL 이 없는 노드는 아무도 못 보는 노드**다.
+    // 지금까지 "워크스페이스 멤버면 다 본다"는 코드에 없는 규칙이었고(아무 검사도
+    // 하지 않았다), 그것을 데이터로 옮긴 것이 이 한 행이다. 마이그레이션 0010 이
+    // 기존 루트 페이지에 같은 행을 백필했다.
+    //
+    // 하위 페이지에는 넣지 않는다 — 부모에게서 상속받는 것이 맞고, 넣으면
+    // 부모의 공유 설정을 바꿔도 자식이 안 따라온다.
+    if (placement.parentType === 'workspace') {
+      await tx.query(
+        `INSERT INTO acl_entry (id, node_kind, node_id, principal_type, principal_id, level, granted_by)
+         VALUES ($1, 'block', $2, 'workspace_everyone', NULL, 'full_access', $3)`,
+        [randomUUID(), id, ctx.userId],
+      )
+    }
+
     return {
       ...toSummary(row),
       ancestors: placement.ancestorPath.map(asBlockId),
@@ -340,6 +364,10 @@ export async function getPage(ctx: SessionContext, pageId: BlockId): Promise<Pag
   )
   const row = rows[0]
   if (!row) return null
+
+  // 볼 수 없는 페이지는 **없는 페이지와 같다**(F-02-03: "접근 권한 없는 페이지는
+  // 존재도 노출 금지"). 403 과 404 를 구분해 주면 id 를 찍어 존재를 알아낼 수 있다.
+  if (!(await canViewPage(ctx, pageId))) return null
 
   return {
     ...toSummary(row),

@@ -41,7 +41,8 @@
 import type { SessionContext } from '../auth/session-context.ts'
 import type { BlockId } from '../ids.ts'
 import { asBlockId } from '../ids.ts'
-import { query } from '../db/pool.ts'
+import { withReadTransaction } from '../db/tx.ts'
+import { readableScopes } from '../permissions/effective.ts'
 import { toPlainText, type RichTextRun } from '../contracts/rich-text.ts'
 
 /** 트리를 엮는 데 필요한 최소 정보. 본문은 없다. */
@@ -155,18 +156,29 @@ export function buildPageTree(rows: readonly PageTreeRow[]): PageTreeNode[] {
  * 워크스페이스 멤버 전원이 모든 페이지를 보므로 `workspace_id` 가 전부다.
  */
 export async function listPageTree(ctx: SessionContext): Promise<PageTreeNode[]> {
-  const rows = await query<{
-    id: string
-    properties: { title?: unknown } | null
-    ancestor_path: string[]
-    order_key: string
-  }>(
-    `SELECT id, properties, ancestor_path, order_key
-       FROM live_block
-      WHERE workspace_id = $1 AND type = 'page'
-      ORDER BY order_key, id`,
-    [ctx.workspaceId],
-  )
+  // ★ W6-b: 볼 수 없는 페이지는 **제목도 나가지 않는다.**
+  //
+  // F-02-03: *"접근 권한 없는 페이지 → **존재도 노출 금지**."* 사이드바는 제목을
+  // 그대로 보여주므로, 여기서 거르지 않으면 권한 검사를 아무리 해도 제목이 샌다.
+  //
+  // 페이지마다 판정하지 않고 **볼 수 있는 스코프 목록**으로 한 번에 거른다
+  // (`readableScopes` 머리말 — 같은 스코프의 노드는 정의상 권한이 같다).
+  const rows = await withReadTransaction(async (tx) => {
+    const scopes = await readableScopes(tx, ctx)
+    if (scopes.length === 0) return []
+    return tx.query<{
+      id: string
+      properties: { title?: unknown } | null
+      ancestor_path: string[]
+      order_key: string
+    }>(
+      `SELECT id, properties, ancestor_path, order_key
+         FROM live_block
+        WHERE workspace_id = $1 AND type = 'page' AND perm_scope_id = ANY($2::uuid[])
+        ORDER BY order_key, id`,
+      [ctx.workspaceId, scopes],
+    )
+  })
 
   return buildPageTree(
     rows.map((row) => {
