@@ -326,6 +326,11 @@ async function main() {
       '/': [191, 'Slash'],
       c: [67, 'KeyC'],
       v: [86, 'KeyV'],
+      // W7 검색 오버레이 — `Mod+K` · `Mod+P` 로 열고 ↑↓ 로 고른다.
+      k: [75, 'KeyK'],
+      p: [80, 'KeyP'],
+      ArrowUp: [38, 'ArrowUp'],
+      Backspace: [8, 'Backspace'],
     }
     const SHIFT = 8
     // `Mod` 는 Mac 에서 Cmd(4), 그 외 Ctrl(2). 헤드리스 브라우저의 플랫폼을 따른다.
@@ -1083,6 +1088,140 @@ async function main() {
     check('★ 제목을 바꾸면 최근 목록의 제목도 바뀐다 — 제목을 복사해 두지 않는다',
       await waitFor(`document.querySelector('section[aria-label="최근"]')?.textContent.includes(${JSON.stringify(renamed)})`, 5000),
       await evaluate(`document.querySelector('section[aria-label="최근"]')?.textContent ?? '(없음)'`))
+
+    section('검색 오버레이 (W7 · F-07-01)')
+    // 이 절이 헤드리스로는 절대 안 보이는 것을 본다: 단축키가 에디터까지 새지
+    // 않는가 · 포커스가 돌아오는가 · ↑↓/Enter 가 본문을 건드리지 않는가.
+    {
+      // 찾을 대상 — 제목에 고유 토큰을 넣은 페이지를 API 로 만든다.
+      const token = `검색대상${Date.now()}`
+      const found = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
+        method: 'POST', headers: authed, body: JSON.stringify({ title: token }),
+      })).json()).page.id
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${pageId}` })
+      await waitFor(`!!document.querySelector('.blk-editor [data-block-id]')`, 15000)
+
+      const overlayOpen = () => evaluate(`!!document.querySelector('[data-testid="search-overlay"]')`)
+      const hitIds = () => evaluate(
+        `[...document.querySelectorAll('[data-testid="search-hit"]')].map((e) => e.dataset.pageId)`)
+      const selectedId = () => evaluate(
+        `document.querySelector('[data-testid="search-hit"][aria-selected="true"]')?.dataset.pageId ?? null`)
+
+      // ── 에디터에 포커스를 두고 연다 ──
+      const editorBox = await rect('.blk-editor')
+      await click(editorBox.x + 40, editorBox.y + 10)
+      const bodyBefore = await evaluate(`document.querySelector('.blk-editor')?.textContent ?? ''`)
+
+      await key('k', MOD)
+      check('★ Mod+K 로 열린다 (선택이 없을 때)', await waitFor(`!!document.querySelector('[data-testid="search-overlay"]')`, 5000))
+      check('입력창으로 포커스가 간다',
+        await waitFor(`document.activeElement === document.querySelector('[data-testid="search-input"]')`, 3000))
+
+      // 빈 입력 = 이동 모드. 방금까지 여러 페이지를 오갔으므로 최근 방문이 있다.
+      check('★ 빈 입력이면 최근 방문이 보인다 (F-07-01 이동 모드)',
+        await waitFor(`document.querySelector('[data-testid="search-results"]')?.textContent.includes('최근 방문')`, 3000),
+        await evaluate(`document.querySelector('[data-testid="search-results"]')?.textContent?.slice(0, 120) ?? '(없음)'`))
+
+      // ── 검색 모드 ──
+      await typeText(token)
+      check('★ 타이핑하면 결과가 바뀐다 — debounce 뒤 질의가 돈다',
+        await waitFor(`[...document.querySelectorAll('[data-testid="search-hit"]')].some((e) => e.dataset.pageId === ${JSON.stringify(found)})`, 8000),
+        JSON.stringify(await hitIds()))
+      check('일치 구간이 강조된다 (<mark>)',
+        await evaluate(`!!document.querySelector('[data-testid="search-hit"] mark')`))
+
+      // ── ↑↓ 이동 ──
+      const before = await selectedId()
+      await key('ArrowDown')
+      await sleep(80)
+      const afterDown = await selectedId()
+      const many = (await hitIds()).length > 1
+      check('★ ↓ 로 선택이 옮겨진다', many ? afterDown !== before : afterDown === before,
+        `결과 ${(await hitIds()).length}건 · ${before} → ${afterDown}`)
+      await key('ArrowUp')
+      await sleep(80)
+      check('★ ↑ 로 되돌아온다', (await selectedId()) === before)
+
+      // 오버레이가 열린 동안의 입력(검색어 타이핑 · ↑↓)이 본문에 닿지 않았다.
+      //
+      // `bodyBefore` 는 오버레이를 열기 **전**에 찍었다. 반사실로 확인한 결과
+      // 이 검사가 실제로 잡는 것은 화살표가 아니라 **타이핑이 에디터로 새는 것**
+      // 이었다(포커스 이동을 끄면 검색어가 본문에 박힌다). 이름을 그대로 적는다.
+      check('★ 오버레이가 열린 동안의 입력이 본문에 새지 않았다',
+        (await evaluate(`document.querySelector('.blk-editor')?.textContent ?? ''`)) === bodyBefore)
+
+      // ★ 위 검사를 **성립시키는 메커니즘**을 따로 본다.
+      //
+      //   처음에는 그 보호를 `stopPropagation()` 이 한다고 적었는데, 반사실로
+      //   확인해 보니 그 줄을 빼도 135개가 전부 통과했다. 실제 이유는 **포커스
+      //   격리**다 — 오버레이가 에디터 DOM 밖에 있고 포커스가 그쪽으로 가므로
+      //   ProseMirror 의 `handleKeyDown`(= `view.dom` 의 리스너)이 있는 경로를
+      //   이벤트가 지나지 않는다. 그 사실이 깨지면(오버레이를 에디터 안에 그리거나
+      //   포커스를 옮기지 않게 바꾸면) 이 검사가 잡는다.
+      check('★ 포커스가 에디터 DOM 밖에 있다 — 이것이 에디터를 지키는 메커니즘이다',
+        await evaluate(`(() => {
+          const active = document.activeElement
+          const editor = document.querySelector('.blk-editor')
+          return !!active && !!editor && !editor.contains(active)
+        })()`),
+        await evaluate(`document.activeElement?.getAttribute('data-testid') ?? document.activeElement?.tagName ?? '(없음)'`))
+
+      // ── Esc 로 닫고 포커스 복귀 ──
+      await key('Escape')
+      check('Esc 로 닫힌다', await waitFor(`!document.querySelector('[data-testid="search-overlay"]')`, 3000))
+      check('★ 포커스가 에디터로 돌아온다 (F-07-01)',
+        await waitFor(`document.activeElement?.closest('.blk-editor') !== null`, 3000),
+        await evaluate(`document.activeElement?.className ?? '(없음)'`))
+
+      // ── Mod+P 도 연다 (충돌 없는 우회 경로) ──
+      await key('p', MOD)
+      check('★ Mod+P 로도 열린다', await waitFor(`!!document.querySelector('[data-testid="search-overlay"]')`, 5000))
+
+      // ── 0건 상태 ──
+      await typeText(`없는말${Date.now()}`)
+      check('결과가 없으면 그렇게 말한다',
+        await waitFor(`!!document.querySelector('[data-testid="search-empty"]')`, 8000),
+        await evaluate(`document.querySelector('[data-testid="search-results"]')?.textContent?.slice(0, 80) ?? '(없음)'`))
+
+      // 지우면 다시 이동 모드 — 낡은 결과가 비치지 않는다.
+      for (let i = 0; i < 40; i += 1) await key('Backspace')
+      check('★ 지우면 이동 모드로 돌아간다 — 낡은 결과가 남지 않는다',
+        await waitFor(`document.querySelector('[data-testid="search-results"]')?.textContent.includes('최근 방문')
+                       && !document.querySelector('[data-testid="search-empty"]')`, 5000),
+        await evaluate(`document.querySelector('[data-testid="search-results"]')?.textContent?.slice(0, 120) ?? '(없음)'`))
+
+      // ── Enter 로 이동 ──
+      await typeText(token)
+      await waitFor(`[...document.querySelectorAll('[data-testid="search-hit"]')].some((e) => e.dataset.pageId === ${JSON.stringify(found)})`, 8000)
+      // 찾은 페이지가 선택될 때까지 ↓ 를 누른다(최근 방문과 섞일 수 있다).
+      for (let i = 0; i < 10 && (await selectedId()) !== found; i += 1) {
+        await key('ArrowDown')
+        await sleep(60)
+      }
+      check('목표 페이지가 선택됐다', (await selectedId()) === found)
+      await key('Enter')
+      check('★ Enter 로 그 페이지가 열린다',
+        await waitFor(`location.pathname.endsWith('/${found}')`, 8000),
+        await evaluate('location.pathname'))
+      check('오버레이가 닫혔다', !(await overlayOpen()))
+
+      // ── 사이드바 버튼 ──
+      await waitFor(`!!document.querySelector('nav[aria-label="페이지 트리"]')`, 15000)
+      const searchBtn = await evaluate(`(() => {
+        const b = [...document.querySelectorAll('nav[aria-label="페이지 트리"] button')]
+          .find((e) => e.textContent.includes('검색'))
+        if (!b) return null
+        const r = b.getBoundingClientRect()
+        return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+      })()`)
+      check('사이드바에 검색 버튼이 있다', searchBtn !== null)
+      if (searchBtn) {
+        await click(searchBtn.x, searchBtn.y)
+        check('★ 사이드바 버튼으로도 열린다', await waitFor(`!!document.querySelector('[data-testid="search-overlay"]')`, 5000))
+        await key('Escape')
+      }
+    }
 
     section('전체')
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))

@@ -31,6 +31,7 @@ import { usePathname, useRouter } from 'next/navigation'
 
 import { TrashPanel, type TrashRow } from './trash-panel'
 import { getSidebarStore } from './sidebar-state'
+import { openSearchOverlay } from './search-overlay'
 
 export type SidebarNode = {
   id: string
@@ -174,6 +175,22 @@ export function Sidebar({
           «
         </button>
       </div>
+
+      {/*
+        검색 진입점 — W7 / F-07-01. 단축키(`cmd/ctrl + K` · `cmd/ctrl + P`)만
+        두면 아무도 모르는 기능이 된다. 오버레이 자체는 레이아웃이 그리고
+        여기서는 여는 신호만 보낸다 — 사이드바 안에 모달을 두면 `<nav>` 안에
+        `role="dialog"` 가 들어가고, 사이드바를 접으면 검색도 같이 사라진다.
+      */}
+      <button
+        type="button"
+        onClick={openSearchOverlay}
+        title="검색 (Ctrl/Cmd + K)"
+        className="flex items-center gap-1.5 rounded-md px-2 py-1 text-left text-sm text-neutral-500 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+      >
+        <span aria-hidden>🔍</span>
+        <span>검색</span>
+      </button>
 
       {/*
         F-07-16 의 사이드바는 트리 하나가 아니라 **섹션들**이다. 즐겨찾기는 위,
