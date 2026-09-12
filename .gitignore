@@ -60,3 +60,6 @@ Thumbs.db
 # misc
 .vercel
 *.pem
+
+# 로컬 스토리지 드라이버가 쓰는 업로드 폴더 (FILE_STORAGE_DIR)
+/var/
