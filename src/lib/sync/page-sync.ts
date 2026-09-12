@@ -33,7 +33,11 @@
 
 import type { EditorDoc } from '../editor/document.ts'
 import {
+  SEND_TIMEOUT_MS,
+  SYNCING_AFTER_MS,
+  TOO_LARGE_MESSAGE,
   afterFailure,
+  bodyTooLarge,
   backoffMs,
   classifyFailure,
   coalesce,
@@ -49,7 +53,13 @@ import type { OutboxStore } from './outbox-store.ts'
 export type SendResult =
   | { readonly ok: true; readonly version: string }
   /** `status = 0` 은 응답 자체가 없었다는 뜻이다(네트워크 단절). */
-  | { readonly ok: false; readonly status: number; readonly error?: string }
+  | {
+      readonly ok: false
+      readonly status: number
+      readonly error?: string
+      /** 서버가 명시한 재시도 가능 여부(F-12-16). 없으면 상태 코드로 유추한다. */
+      readonly retryable?: boolean
+    }
 
 export type Cancel = () => void
 
@@ -86,6 +96,8 @@ export type PageSync = {
   /** 충돌을 "내 것으로 덮어쓰기"로 해결한다 — 버전을 빼고 보낸다. */
   overwrite(): Promise<void>
   version(): string
+  /** 지금 큐에 있는 것. 격리된 문서를 사용자에게 보여줄 때 쓴다(F-12-16). */
+  pending(): OutboxEntry | null
   dispose(): void
 }
 
@@ -112,16 +124,39 @@ export function createPageSync(deps: PageSyncDeps): PageSync {
 
   let cancelPersist: Cancel | null = null
   let cancelSend: Cancel | null = null
+  /** "3초 넘게 밀렸다"를 **때가 되면** 알리기 위한 타이머. */
+  let cancelTick: Cancel | null = null
 
   const clearTimers = (): void => {
     cancelPersist?.()
     cancelSend?.()
+    cancelTick?.()
     cancelPersist = null
     cancelSend = null
+    cancelTick = null
   }
 
+  /**
+   * 상태를 알린다.
+   *
+   * 아직 "밀렸다"고 할 만큼은 아니면 **그 시점에 다시 알리도록 예약**한다.
+   * 사건이 있을 때만 알리면, 요청이 멈춰 있는 동안에는 아무도 상태를 다시
+   * 계산하지 않아 화면이 조용한 채로 남는다 — 정본 F-12-16 이 "최악"이라고 부른
+   * 그 상태다(테스트가 잡았다).
+   */
   const report = (): void => {
-    if (!disposed) deps.onState(syncState(entry, now()))
+    if (disposed) return
+    cancelTick?.()
+    cancelTick = null
+    const state = syncState(entry, now())
+    deps.onState(state)
+    if (state.kind === 'queued' && entry !== null) {
+      const remaining = Math.max(0, entry.queuedAt + SYNCING_AFTER_MS - now())
+      cancelTick = schedule(() => {
+        cancelTick = null
+        report()
+      }, remaining)
+    }
   }
 
   const persist = async (): Promise<void> => {
@@ -157,6 +192,42 @@ export function createPageSync(deps: PageSyncDeps): PageSync {
   }
 
   /**
+   * 응답을 `SEND_TIMEOUT_MS` 까지만 기다린다 — F-12-16.
+   *
+   * `fetch` 는 죽은 프록시나 절반만 끊긴 와이파이에서 **끝나지 않는다.**
+   * 그대로 기다리면 전송 중 표시가 영영 안 풀려 그 세션의 저장이 통째로 멈춘다
+   * (테스트가 먼저 그 상태를 재현했다). 멈춘 요청은 버리고 "응답 없음"(status 0)
+   * 으로 다룬다 — 실제로 서버에 닿았을 수도 있지만, 그 경우는 409 비교가 잡는다.
+   *
+   * 실제 요청을 끊는 것(`AbortSignal`)은 보내는 쪽의 일이다. 여기서는 **기다리기를**
+   * 끊는다 — 주입된 `send` 가 무엇이든 큐가 멈추지 않게.
+   */
+  const withTimeout = (target: OutboxEntry): Promise<SendResult> =>
+    new Promise<SendResult>((resolve) => {
+      let done = false
+      const cancel = schedule(() => {
+        if (done) return
+        done = true
+        resolve({ ok: false, status: 0 })
+      }, SEND_TIMEOUT_MS)
+
+      void deps.send(target).then(
+        (result) => {
+          if (done) return
+          done = true
+          cancel()
+          resolve(result)
+        },
+        () => {
+          if (done) return
+          done = true
+          cancel()
+          resolve({ ok: false, status: 0 })
+        },
+      )
+    })
+
+  /**
    * 409 를 받았다. 진짜 충돌인가, 아니면 ack 를 못 받은 우리 저장인가.
    * @returns 우리 저장이었으면 true.
    */
@@ -175,9 +246,18 @@ export function createPageSync(deps: PageSyncDeps): PageSync {
     const current = entry
     if (current === null || current.status === 'rejected') return
 
+    // 한도는 사후 오류가 아니라 사전 경고다(F-12-16). 보내 봐야 413 이다.
+    if (bodyTooLarge(current.doc)) {
+      entry = { ...current, status: 'rejected', reason: TOO_LARGE_MESSAGE }
+      unpersisted = entry
+      await persist()
+      report()
+      return
+    }
+
     sending = true
     try {
-      const result = await deps.send(current)
+      const result = await withTimeout(current)
       if (disposed) return
 
       if (result.ok) {
@@ -191,7 +271,7 @@ export function createPageSync(deps: PageSyncDeps): PageSync {
         return
       }
 
-      const failure = classifyFailure(result.status, result.error)
+      const failure = classifyFailure(result.status, result.error, result.retryable)
       if (failure === 'conflict' && (await wasOurOwnSave(current))) return
 
       const next = afterFailure(entry ?? current, failure)
@@ -269,6 +349,8 @@ export function createPageSync(deps: PageSyncDeps): PageSync {
     },
 
     version: () => version,
+
+    pending: () => entry,
 
     dispose() {
       disposed = true

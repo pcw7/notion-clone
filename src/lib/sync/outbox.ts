@@ -45,6 +45,19 @@ export const MAX_ATTEMPTS = 5
 /** 이만큼 밀리면 "동기화 중…"을 보여준다(정본: 기본 무표시, 3초 이상이면 표시). */
 export const SYNCING_AFTER_MS = 3000
 
+/**
+ * 응답을 이만큼 기다리고 포기한다 — F-12-16.
+ *
+ * 정본 엣지 케이스: *"오류 메시지 없이 실패(무응답 타임아웃) → 클라이언트가 자체
+ * 타임아웃(예: 15초)을 걸고 '응답 없음' 상태를 만들어야 한다. 아무것도 표시하지
+ * 않는 것이 최악이다."*
+ *
+ * 우리에게는 더 나쁜 결과가 있었다. 전송 중 표시가 영영 안 풀려서 **그 세션의
+ * 저장이 통째로 멈췄다** — 큐에는 계속 쌓이는데 아무것도 나가지 않는다. 죽은
+ * 프록시나 절반만 끊긴 와이파이에서 `fetch` 는 실제로 안 끝난다.
+ */
+export const SEND_TIMEOUT_MS = 15_000
+
 export type OutboxStatus = 'pending' | 'rejected'
 
 export type OutboxEntry = {
@@ -127,7 +140,11 @@ export type Failure =
  * `status = 0` 은 "응답 자체가 없었다"(네트워크 단절 · 탭 종료)를 뜻하는 우리
  * 약속이다. 그게 **가장 중요한 재시도 경로**다 — 이 기능이 존재하는 이유다.
  */
-export function classifyFailure(status: number, error?: string): Failure {
+export function classifyFailure(status: number, error?: string, retryable?: boolean): Failure {
+  // 서버가 명시하면 그 말을 따른다 — 정본 F-12-16 의 `error_response.retryable`:
+  // *"retryable=false 인데 재시도하면 무한 루프가 된다. retryable 플래그는 선택이
+  // 아니라 필수."* 상태 코드로 유추하는 것은 서버가 말해주지 않을 때의 폴백이다.
+  if (retryable === false && status !== 409) return status === 401 || status === 403 ? 'forbidden' : 'invalid'
   if (status === 0) return 'retry'
   if (status === 429 || status >= 500) return 'retry'
   if (status === 401 || status === 403) return 'forbidden'
@@ -179,6 +196,30 @@ export function rejectionMessage(failure: Failure, attempts = 0): string {
       return `${attempts}번 시도했지만 저장하지 못했습니다. 연결을 확인하고 다시 시도해 주세요.`
   }
 }
+
+// ── 크기 한도 ─────────────────────────────────────────────────────────
+
+/**
+ * 한 번에 보낼 수 있는 문서의 크기.
+ *
+ * 정본 F-12-16 의 관찰 ②: *"정량 한도가 오류 메시지로만 노출된다 … 클론도 한도는
+ * **사후 오류가 아니라 사전 경고**로 노출하는 편이 낫다."* 노션의 붙여넣기 한도가
+ * 500KB(413)이고, 우리는 문서 전체를 보내므로 그보다 넉넉히 잡는다.
+ *
+ * 서버도 같은 값으로 막는다(`body/route.ts`). 한쪽만 두면 "화면은 되는데 저장이
+ * 안 되는" 상태가 생긴다.
+ */
+export const MAX_BODY_BYTES = 1024 * 1024
+
+/** 보내기 전에 잰다. 넘으면 **보내지 않고** 바로 말해 준다. */
+export function bodyTooLarge(doc: EditorDoc): boolean {
+  // UTF-8 바이트로 센다 — 한글은 글자당 3바이트라 글자 수로 세면 3배를 놓친다.
+  return new TextEncoder().encode(JSON.stringify(doc)).byteLength > MAX_BODY_BYTES
+}
+
+export const TOO_LARGE_MESSAGE = `이 페이지가 한 번에 저장할 수 있는 크기(${Math.round(
+  MAX_BODY_BYTES / 1024,
+)}KB)를 넘었습니다. 일부를 잘라 하위 페이지로 옮겨 주세요.`
 
 // ── 표시 ──────────────────────────────────────────────────────────────
 

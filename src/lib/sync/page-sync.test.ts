@@ -19,8 +19,11 @@ import { createPageSync, type SendResult } from './page-sync.ts'
 import { memoryOutboxStore } from './outbox-store.ts'
 import {
   MAX_ATTEMPTS,
+  MAX_BODY_BYTES,
+  SEND_TIMEOUT_MS,
   SYNCING_AFTER_MS,
   backoffMs,
+  bodyTooLarge,
   classifyFailure,
   coalesce,
   newEntry,
@@ -239,6 +242,62 @@ describe('★ 네트워크가 죽었을 때', () => {
   })
 })
 
+describe('★ 응답이 영영 오지 않을 때 (F-12-16)', () => {
+  /**
+   * 정본 F-12-16 엣지 케이스: *"오류 메시지 없이 실패(무응답 타임아웃) →
+   * 클라이언트가 자체 타임아웃(예: 15초)을 걸고 '응답 없음' 상태를 만들어야
+   * 한다. **아무것도 표시하지 않는 것이 최악이다.**"*
+   *
+   * 우리에게는 더 나쁜 결과가 있었다 — 전송 중 표시(`sending`)가 영영 안 풀려서
+   * **그 세션의 저장이 통째로 멈췄다.** 큐에는 계속 쌓이지만 아무것도 안 나간다.
+   */
+  function hangingHarness() {
+    const clock = fakeClock()
+    const store = memoryOutboxStore()
+    const states: SyncState[] = []
+    let calls = 0
+    let resolveSecond: ((r: SendResult) => void) | null = null
+
+    const sync = createPageSync({
+      workspaceId: WORKSPACE,
+      pageId: PAGE,
+      store,
+      initialVersion: '7',
+      send: async () => {
+        calls += 1
+        // 첫 요청은 영영 끝나지 않는다(끊긴 와이파이 · 죽은 프록시).
+        if (calls === 1) return new Promise<SendResult>(() => {})
+        return new Promise<SendResult>((resolve) => {
+          resolveSecond = resolve
+        })
+      },
+      fetchRemote: async () => null,
+      onState: (s) => states.push(s),
+      now: clock.now,
+      schedule: clock.schedule,
+    })
+    return { sync, clock, states, calls: () => calls, resolveSecond: () => resolveSecond }
+  }
+
+  test('★ 15초가 지나면 포기하고 다시 보낸다 — 저장이 멈춘 채로 두지 않는다', async () => {
+    const h = hangingHarness()
+    h.sync.queue(doc('가'))
+    await h.clock.advance(1000)
+    assert.equal(h.calls(), 1)
+
+    await h.clock.advance(SEND_TIMEOUT_MS)
+    await h.clock.advance(backoffMs(1))
+    assert.equal(h.calls(), 2, '첫 요청이 안 끝나 다음 전송이 영영 막혔다')
+  })
+
+  test('멈춰 있는 동안에도 상태는 "동기화 중"이다 — 아무것도 안 보여주는 것이 최악이다', async () => {
+    const h = hangingHarness()
+    h.sync.queue(doc('가'))
+    await h.clock.advance(1000 + SYNCING_AFTER_MS)
+    assert.equal(h.states[h.states.length - 1].kind, 'syncing')
+  })
+})
+
 describe('★ 다시 보내도 소용없는 실패', () => {
   const noRetry: [number, string][] = [
     [403, '권한'],
@@ -360,6 +419,67 @@ describe('★ 지난 세션이 못 보낸 것', () => {
   test('남은 것이 없으면 null', async () => {
     const h = harness()
     assert.equal(await h.sync.resume(), null)
+  })
+})
+
+describe('★ 한도는 사후 오류가 아니라 사전 경고다 (F-12-16)', () => {
+  const huge = (): EditorDoc => ({
+    blocks: [
+      {
+        id: '44444444-4444-4444-8444-444444444444',
+        type: 'paragraph',
+        // 한글 한 글자는 UTF-8 로 3바이트다. 글자 수로 셌다면 통과했을 크기.
+        title: [textRun('가'.repeat(MAX_BODY_BYTES / 2))],
+        properties: {},
+        format: {},
+        children: [],
+      },
+    ],
+  })
+
+  test('바이트로 잰다 — 글자 수가 아니라', () => {
+    assert.equal(bodyTooLarge(doc('가')), false)
+    assert.equal(bodyTooLarge(huge()), true)
+  })
+
+  test('★ 너무 크면 보내지 않고 바로 말해 준다 — 413 을 받아 보지 않는다', async () => {
+    const h = harness()
+    h.sync.queue(huge())
+    await h.clock.advance(1000)
+
+    assert.equal(h.sent.length, 0, '보내 봐야 413 이다')
+    const state = lastState(h)
+    assert.equal(state.kind, 'rejected')
+    assert.ok(state.kind === 'rejected' && state.message.includes('KB'))
+  })
+
+  test('큰 문서도 디스크에는 남는다 — 사용자가 잘라낼 때까지', async () => {
+    const h = harness()
+    h.sync.queue(huge())
+    await h.clock.advance(1000)
+    assert.ok(await h.store.read(PAGE))
+  })
+})
+
+describe('★ 서버가 말해 주는 retryable (F-12-16)', () => {
+  test('retryable:false 면 상태 코드와 무관하게 재시도하지 않는다', async () => {
+    // 503 은 보통 "다시 보낼 실패"지만, 서버가 아니라고 하면 아니다.
+    const h = harness({ results: [{ ok: false, status: 503, retryable: false }] })
+    h.sync.queue(doc('가'))
+    await h.clock.advance(1000)
+    await h.clock.advance(60_000)
+    assert.equal(h.sent.length, 1)
+    assert.equal(lastState(h).kind, 'rejected')
+  })
+
+  test('말해 주지 않으면 상태 코드로 유추한다', () => {
+    assert.equal(classifyFailure(503, undefined, undefined), 'retry')
+    assert.equal(classifyFailure(503, undefined, false), 'invalid')
+    assert.equal(classifyFailure(403, undefined, false), 'forbidden')
+  })
+
+  test('★ 충돌은 retryable:false 로도 충돌이다 — 사람이 결정하면 다시 보낸다', () => {
+    assert.equal(classifyFailure(409, 'version_conflict', false), 'conflict')
   })
 })
 
