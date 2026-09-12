@@ -473,6 +473,12 @@ export async function renamePage(
               last_edited_at = now(),
               version = version + 1
         WHERE id = $1 AND workspace_id = $2 AND type = 'page' AND lifecycle = 'live'
+          -- ★ DB 행은 제외한다 (W8-a). 행의 제목은 title 타입 프로퍼티의
+          --   **셀 값**이 정본이고 block.properties.title 은 거기서 온 투영이다
+          --   (database/row.ts 의 projectTitle). 여기서 덮으면 투영이 어긋나
+          --   "표에는 옛 제목, 페이지 머리에는 새 제목"이 된다.
+          --   행 제목은 셀을 고쳐서 바꾼다 — updateCells.
+          AND parent_type <> 'data_source'
         RETURNING ${PAGE_COLUMNS}`,
       [pageId, ctx.workspaceId, JSON.stringify(normalized), ctx.userId],
     )
