@@ -21,12 +21,14 @@ import { probeDatabase } from '../testing/db-fixtures.ts'
 import { withReadTransaction } from '../db/tx.ts'
 import { MVP_PROPERTY_TYPES, type MvpPropertyType } from './property-types.ts'
 import { operatorArity, operatorsFor } from './filter.ts'
+import { readOperatorCatalog, type OperatorCatalogEntry } from './operator-catalog.ts'
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'
 
 let skipReason = ''
-type CatalogRow = { property_type: string; operator: string; arity: number; label_ko: string }
-let catalog: CatalogRow[] = []
+let catalog: OperatorCatalogEntry[] = []
+/** 거르기 전의 표에 있는 타입들. */
+let rawTypes: string[] = []
 
 before(async () => {
   const problem = await probeDatabase()
@@ -35,12 +37,16 @@ before(async () => {
     if (REQUIRE_DB) throw new Error(`REQUIRE_DB=1 인데 ${skipReason}`)
     return
   }
-  catalog = await withReadTransaction((tx) =>
-    tx.query<CatalogRow>(
-      `SELECT property_type::text, operator, arity, label_ko
-         FROM filter_operator ORDER BY property_type, order_idx`,
-    ),
-  )
+  // 화면이 읽는 **그 함수**로 읽는다. 테스트가 SQL 을 따로 쓰면 "테스트는 맞는데
+  // 필터 패널이 읽는 경로는 틀린" 구간이 생긴다(operator-catalog.ts 머리말).
+  catalog = await readOperatorCatalog()
+  // 단 "MVP 밖 타입이 표에 없다"는 그 함수가 거르기 **전**의 표를 봐야 한다 —
+  // 거른 결과로 확인하면 항상 통과하는 검사가 된다.
+  rawTypes = (
+    await withReadTransaction((tx) =>
+      tx.query<{ t: string }>(`SELECT DISTINCT property_type::text AS t FROM filter_operator`),
+    )
+  ).map((r) => r.t)
 })
 
 after(async () => {
@@ -50,8 +56,8 @@ after(async () => {
   }
 })
 
-const catalogFor = (type: string): CatalogRow[] =>
-  catalog.filter((r) => r.property_type === type)
+const catalogFor = (type: string): OperatorCatalogEntry[] =>
+  catalog.filter((r) => r.propertyType === type)
 
 describe('★ 카탈로그와 컴파일러가 같은 연산자를 안다', () => {
   for (const type of MVP_PROPERTY_TYPES) {
@@ -91,14 +97,14 @@ describe('카탈로그 자체의 건강', () => {
   test('★ MVP 밖 타입은 카탈로그에 없다 — 필터 UI 가 쓸 수 없는 것을 보여주면 안 된다', async (t) => {
     if (skipReason) return t.skip(skipReason)
     const mvp = new Set<string>(MVP_PROPERTY_TYPES)
-    const extra = [...new Set(catalog.map((r) => r.property_type))].filter((t2) => !mvp.has(t2))
+    const extra = rawTypes.filter((t2) => !mvp.has(t2))
     assert.deepEqual(extra, [], `MVP 밖 타입이 카탈로그에 있다: ${extra.join(', ')}`)
   })
 
   test('라벨이 비어 있지 않고 중복되지 않는다 (타입 안에서)', async (t) => {
     if (skipReason) return t.skip(skipReason)
     for (const type of MVP_PROPERTY_TYPES) {
-      const labels = catalogFor(type).map((r) => r.label_ko)
+      const labels = catalogFor(type).map((r) => r.label)
       assert.ok(
         labels.every((l) => l.length > 0),
         `${type} 에 빈 라벨이 있다`,
