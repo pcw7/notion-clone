@@ -126,8 +126,11 @@ function toSummary(row: PageRow): PageSummary {
  * 계약을 어긴 값이 DB 에 있어도 **던지지 않는다.** 제목 하나가 망가졌다고
  * 페이지 목록 전체가 500 이 되면 복구할 방법이 없어진다. 읽기는 관대하게,
  * 쓰기는 엄격하게.
+ *
+ * 익스포트 스냅샷(`export/snapshot.ts`)도 이 함수로 읽는다 — 화면과 백업의 제목이
+ * 다른 규칙으로 읽히면 안 된다.
  */
-function readTitle(properties: { title?: unknown } | null): RichTextRun[] {
+export function readTitle(properties: { title?: unknown } | null): RichTextRun[] {
   const raw = properties?.title
   if (!Array.isArray(raw)) return []
   if (validateRichText(raw).length > 0) {
