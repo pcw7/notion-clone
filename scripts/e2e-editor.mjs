@@ -41,7 +41,7 @@
  */
 
 import { spawn } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -1676,6 +1676,106 @@ async function main() {
         await waitFor(`!document.querySelector('[data-testid="db-sort-chip"]')
           && document.querySelector('[data-testid="db-table"] tbody tr td[data-cell$=":0"]')?.textContent === ${JSON.stringify(title1)}`, 10000),
         JSON.stringify((await titles()).slice(0, 2)))
+
+      section('익스포트 (F-09-14)')
+      // 규칙(누가 · 범위 · 크기 거부 · 첨부 바이트)은 `download.db.test.ts` · `http.test.ts` 가 본다. 여기서는
+      // 버튼 → 요약 → 링크 → **브라우저가 실제로 ZIP 을 디스크에 받는** 길을 프로덕션 빌드로 끝까지 본다.
+      // 받은 ZIP 은 python zipfile 로 읽는다(우리가 짜지 않은 구현, HANDOFF §3.3-63).
+      const downloads = mkdtempSync(join(tmpdir(), 'nc-e2e-download-'))
+      try {
+        await send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: downloads })
+        const { findPython, runPythonJson } = await import(new URL('../src/lib/testing/external-tools.ts', import.meta.url).href)
+        const python = findPython()
+        const readZip = (file) => python === null
+          ? { bad: 'python 없음', names: [], texts: {}, error: 'python 을 찾지 못해 받은 ZIP 을 읽지 못했다' }
+          : runPythonJson(python, [
+              'import sys, json, zipfile',
+              'z = zipfile.ZipFile(sys.argv[1])',
+              'names = [i.filename for i in z.infolist()]',
+              "texts = {n: z.read(n).decode('utf-8') for n in names if n.endswith(('.md', '.csv', '.json'))}",
+              'print(json.dumps({"bad": z.testzip(), "names": names, "texts": texts}))',
+            ].join('\n'), [file])
+        /** 받기가 끝나 이름이 맞는 파일이 생길 때까지. 받는 중에는 `.crdownload` 로 있다. */
+        const downloaded = async (match) => {
+          for (let i = 0; i < 150; i += 1) {
+            const found = readdirSync(downloads).find((name) => match(name))
+            if (found) return found
+            await sleep(100)
+          }
+          return null
+        }
+        const exportPanelText = () => evaluate(`document.querySelector('[data-testid="export-panel"]')?.textContent ?? '(패널 없음)'`)
+        const summaryMatches = (pattern, ms = 15000) =>
+          waitFor(`${pattern}.test(document.querySelector('[data-testid="export-summary"]')?.textContent ?? '')`, ms)
+
+        // ── 페이지 — 본문 한 줄 + 하위 페이지 ──
+        const stamp = Date.now()
+        const exportTitle = `내보내기 ${stamp}`
+        const childTitle = `하위 ${stamp}`
+        const newPage = async (body) =>
+          (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: JSON.stringify(body) })).json()).page.id
+        const exportPage = await newPage({ title: exportTitle })
+        await newPage({ parentPageId: exportPage, title: childTitle })
+        const exportBodyUrl = `${BASE}/api/workspaces/${workspaceId}/pages/${exportPage}/body`
+        const current = await (await fetch(exportBodyUrl, { headers: authed })).json()
+        res = await fetch(exportBodyUrl, {
+          method: 'PUT',
+          headers: authed,
+          body: JSON.stringify({ version: current.version, doc: { blocks: [block(randomUUID(), 'paragraph', '익스포트 본문 한 줄'), ...current.doc.blocks] } }),
+        })
+        check('내보낼 페이지를 준비했다 — 본문 한 줄 + 하위 페이지', res.ok, `${res.status} ${await res.text()}`)
+
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${exportPage}` })
+        await waitFor(`!!document.querySelector('[data-testid="export-button"]')`, 15000)
+        await clickOn('[data-testid="export-button"]')
+        check('★ 누르면 먼저 센다 — 페이지 2개가 들어간다고 말한다', await summaryMatches('/^페이지 2 · 최대 /'), await exportPanelText())
+
+        const staying = await evaluate('location.href')
+        await clickOn('[data-testid="export-download"]')
+        const pageZip = await downloaded((name) => name === `${exportTitle}.zip`)
+        check('★ 내려받기를 누르면 브라우저가 ZIP 을 디스크에 받는다 — 이름은 페이지 제목', pageZip !== null,
+          readdirSync(downloads).join(', ') || '(빈 폴더)')
+        check('받는 동안 화면을 떠나지 않는다', (await evaluate('location.href')) === staying)
+        if (pageZip) {
+          const zip = readZip(join(downloads, pageZip))
+          check('★ 받은 ZIP 에 페이지 · 하위 페이지 · 보고서가 이 순서로 있다',
+            zip.bad === null && same(zip.names, [`${exportTitle}.md`, `${exportTitle}/${childTitle}.md`, '_export_report.json']),
+            zip.error ?? JSON.stringify(zip.names))
+          const markdown = zip.texts[`${exportTitle}.md`] ?? ''
+          check('본문 글자와 하위 페이지 링크가 들어 있다', markdown.includes('익스포트 본문 한 줄') && markdown.includes(`[${childTitle}](`),
+            markdown.slice(0, 300))
+          check('보고서가 요약과 같은 개수를 센다', JSON.parse(zip.texts['_export_report.json'] ?? '{}').counts?.pages === 2)
+        }
+
+        // ── 워크스페이스 — 소유자만 ──
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
+        check('소유자의 워크스페이스 홈에 전체 내보내기가 있다',
+          await waitFor(`document.querySelector('[data-testid="export-button"]')?.textContent === '워크스페이스 내보내기'`, 15000))
+        await clickOn('[data-testid="export-button"]')
+        check('★ 워크스페이스 요약은 표와 그 행까지 센다', await summaryMatches('/데이터베이스 1 · 행 \\d+ ·/'), await exportPanelText())
+        await clickOn('[data-testid="export-download"]')
+        const workspaceZip = await downloaded((name) => /^워크스페이스 \d{4}-\d{2}-\d{2}\.zip$/.test(name))
+        check('★ 워크스페이스 전체 ZIP 을 받는다', workspaceZip !== null, readdirSync(downloads).join(', '))
+        if (workspaceZip) {
+          const zip = readZip(join(downloads, workspaceZip))
+          const report = JSON.parse(zip.texts['_export_report.json'] ?? '{}')
+          check('★ 워크스페이스 ZIP 에 표의 CSV 와 앞에서 내보낸 페이지가 있고, 보고서의 범위가 워크스페이스다',
+            zip.bad === null && zip.names.includes(`${dbName}.csv`) && zip.names.includes(`${exportTitle}.md`) && report.scope?.kind === 'workspace',
+            zip.error ?? `${report.scope?.kind} · ${zip.names.filter((n) => !n.includes('/')).join(', ')}`)
+        }
+
+        // ── 표 — 풀페이지 표는 워크스페이스 직속이라 페이지 내보내기로는 닿지 않는다 ──
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${databaseId}` })
+        await waitFor(`!!document.querySelector('[data-testid="export-button"]')`, 15000)
+        await clickOn('[data-testid="export-button"]')
+        check('★ 표 화면에서도 내보낸다 — 표 하나와 그 행들', await summaryMatches('/^데이터베이스 1 · 행 \\d+ · 최대 /'), await exportPanelText())
+      } finally {
+        try {
+          rmSync(downloads, { recursive: true, force: true })
+        } catch {
+          /* 임시 폴더 */
+        }
+      }
     }
 
     section('전체')
