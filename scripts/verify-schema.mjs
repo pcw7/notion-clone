@@ -39,6 +39,8 @@ const EXPECTED_TABLES = [
   // W8-a DB 코어 (0013)
   'database', 'data_source', 'database_data_source', 'property', 'select_option',
   'page', 'page_property_value', 'relation_edge',
+  // W8-b 뷰 (0015)
+  'view', 'view_property', 'filter_operator',
   'schema_migration', 'scim_token', 'session_policy', 'sso_config',
   'user', 'user_email', 'user_session',
   'workspace', 'workspace_invite', 'workspace_member',
@@ -66,6 +68,14 @@ const FORBIDDEN_COLUMNS = [
   ['database', 'is_locked'],
   // 불변식 DS2: is_linked 는 파생값이다.
   ['data_source', 'is_linked'],
+  // 불변식 V2: 고정은 열별 boolean 이 아니라 경계 포인터 하나다
+  // (view.frozen_upto_property_id). boolean 이면 "3번째와 5번째만 고정" 같은
+  // 표현 불가능한 상태를 만들 수 있다.
+  ['view_property', 'frozen'],
+  // F-03-17 은 `(property_type, operator) → sql_template` 을 권했지만 SQL 을 DB 에
+  // 두지 않는다 — 같은 절이 "절대 문자열 연결로 SQL 을 만들지 말라"고도 경고한다.
+  // SQL 조각은 filter.ts 의 화이트리스트 맵이고 일치는 filter.db.test.ts 가 본다.
+  ['filter_operator', 'sql_template'],
   // [X-8] U-3 이 폐기했다. perm_scope_id 가 유일한 권한 축이다.
   ['search_document', 'principals'],
   // [X-7] ancestor_path uuid[] 단일 유지. block.path text 는 폐기됐다.
@@ -947,6 +957,109 @@ try {
       } else {
         fail(`프로퍼티를 지웠는데 캐시에 유령이 남았다: ${JSON.stringify(purged.properties_cache)} / ${purged.tsv}`)
       }
+    }
+
+    // ── ⑪ 뷰 (0015 / W8-b §3.6) ──
+    {
+      const viewId = randomUUID()
+      await client.query(
+        `INSERT INTO view (id, database_id, data_source_id, type, order_idx, configuration,
+                           created_at, updated_at)
+         VALUES ($1, $2, $3, 'table', 'a0', '{}'::jsonb, now(), now())`,
+        [viewId, dbBlockId, dsId],
+      )
+      ok('뷰 생성 (table)')
+
+      await mustReject(
+        '모르는 owner_kind',
+        `INSERT INTO view (id, database_id, data_source_id, owner_kind, type, order_idx,
+                           configuration, created_at, updated_at)
+         VALUES ($1, $2, $3, 'sidebar', 'table', 'a1', '{}'::jsonb, now(), now())`,
+        [randomUUID(), dbBlockId, dsId],
+      )
+      await mustReject(
+        '모르는 open_pages_in',
+        `INSERT INTO view (id, database_id, data_source_id, type, order_idx, open_pages_in,
+                           configuration, created_at, updated_at)
+         VALUES ($1, $2, $3, 'table', 'a2', 'new_window', '{}'::jsonb, now(), now())`,
+        [randomUUID(), dbBlockId, dsId],
+      )
+      // ★ DB 뷰인데 data_source 가 없으면 어떤 행을 보여줄지 알 수 없다.
+      await mustReject(
+        'database_view 인데 data_source 가 없다',
+        `INSERT INTO view (id, database_id, type, order_idx, configuration, created_at, updated_at)
+         VALUES ($1, $2, 'table', 'a3', '{}'::jsonb, now(), now())`,
+        [randomUUID(), dbBlockId],
+      )
+      await mustReject(
+        'load_limit 범위 밖',
+        `INSERT INTO view (id, database_id, data_source_id, type, order_idx, load_limit,
+                           configuration, created_at, updated_at)
+         VALUES ($1, $2, $3, 'table', 'a4', 0, '{}'::jsonb, now(), now())`,
+        [randomUUID(), dbBlockId, dsId],
+      )
+
+      // ── view_property ──
+      await client.query(
+        `INSERT INTO view_property (view_id, property_id, visible, order_idx)
+         VALUES ($1, $2, true, 'a0')`,
+        [viewId, pid(1)],
+      )
+      ok('view_property 생성')
+      await mustReject(
+        '같은 (뷰, 프로퍼티)에 두 행 — 순서 변경은 단일 행 UPDATE 다 (V1)',
+        `INSERT INTO view_property (view_id, property_id, order_idx) VALUES ($1, $2, 'a1')`,
+        [viewId, pid(1)],
+      )
+      await mustReject(
+        '폭이 0 이하',
+        `INSERT INTO view_property (view_id, property_id, order_idx, width)
+         VALUES ($1, $2, 'a5', 0)`,
+        [viewId, pid(4)],
+      )
+
+      // ★ 불변식 V2 의 경계 포인터가 실제로 프로퍼티를 가리킨다.
+      await client.query(`UPDATE view SET frozen_upto_property_id = $2 WHERE id = $1`, [
+        viewId,
+        pid(1),
+      ])
+      ok('frozen 은 경계 포인터 하나다 (V2 — 열별 boolean 이 아니다)')
+
+      // 뷰가 사라지면 view_property 도 사라진다 — 유령 설정이 남지 않는다.
+      await client.query(`DELETE FROM view WHERE id = $1`, [viewId])
+      {
+        const { rows } = await client.query(
+          `SELECT 1 FROM view_property WHERE view_id = $1`,
+          [viewId],
+        )
+        if (rows.length === 0) ok('뷰 삭제 → view_property CASCADE 삭제')
+        else fail('뷰를 지웠는데 view_property 가 남았다')
+      }
+    }
+
+    // ── ⑫ 연산자 카탈로그 (0015 / F-03-17) ──
+    {
+      const { rows } = await client.query(
+        `SELECT property_type::text AS t, count(*)::int AS n
+           FROM filter_operator GROUP BY property_type ORDER BY property_type`,
+      )
+      const byType = new Map(rows.map((r) => [r.t, r.n]))
+      // MVP 6종이 시딩됐는가. TS 맵과의 일치는 filter.db.test.ts 가 본다.
+      const expected = { title: 8, rich_text: 8, number: 8, select: 4, checkbox: 2, date: 7 }
+      const wrong = Object.entries(expected).filter(([t, n]) => byType.get(t) !== n)
+      if (wrong.length === 0) ok(`연산자 카탈로그 6종 시딩 (${rows.reduce((a, r) => a + r.n, 0)}행)`)
+      else fail(`카탈로그 개수가 다르다: ${wrong.map(([t, n]) => `${t} ${byType.get(t)}≠${n}`).join(', ')}`)
+
+      await mustReject(
+        'arity 는 0 또는 1 뿐이다',
+        `INSERT INTO filter_operator (property_type, operator, arity, label_ko, order_idx)
+         VALUES ('number', 'between', 2, '사이', 9)`,
+      )
+      await mustReject(
+        '같은 (타입, 연산자)를 두 번',
+        `INSERT INTO filter_operator (property_type, operator, arity, label_ko, order_idx)
+         VALUES ('number', 'equals', 1, '중복', 9)`,
+      )
     }
 
     // ── 부정 요구사항 — 없어야 하는 컬럼 ──
