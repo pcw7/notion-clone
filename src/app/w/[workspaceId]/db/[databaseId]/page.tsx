@@ -36,6 +36,7 @@ import { queryRows } from '@/lib/database/query'
 import { rowJson } from '@/lib/database/http'
 import { readOperatorCatalog } from '@/lib/database/operator-catalog'
 import { liveSorts } from '@/lib/database/filter-draft'
+import { ExportButton } from '../../export-button'
 import { DatabaseTitle } from './database-title'
 import { DatabaseTable } from './database-table'
 import { ViewToolbar } from './view-toolbar'
@@ -91,13 +92,17 @@ export default async function DatabasePage({
 
   return (
     <main className="flex min-h-screen min-w-0 flex-col gap-6 px-10 py-12">
-      <nav aria-label="상위 경로" className="flex flex-wrap items-center gap-1 text-sm text-neutral-500">
-        <Link href={`/w/${workspaceId}`} className="hover:underline underline-offset-4">
-          워크스페이스
-        </Link>
-        <span aria-hidden>/</span>
-        <span className="text-neutral-400">{name || UNTITLED}</span>
-      </nav>
+      <div className="flex items-start justify-between gap-3">
+        <nav aria-label="상위 경로" className="flex flex-wrap items-center gap-1 text-sm text-neutral-500">
+          <Link href={`/w/${workspaceId}`} className="hover:underline underline-offset-4">
+            워크스페이스
+          </Link>
+          <span aria-hidden>/</span>
+          <span className="text-neutral-400">{name || UNTITLED}</span>
+        </nav>
+        {/* 풀페이지 표는 워크스페이스 직속이라 페이지 내보내기로는 닿지 않는다(`lib/export/download.ts`). */}
+        <ExportButton workspaceId={workspaceId} rootId={databaseId} />
+      </div>
 
       <DatabaseTitle
         workspaceId={workspaceId}

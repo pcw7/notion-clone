@@ -13,7 +13,9 @@ import Link from 'next/link'
 
 import { requirePageSession } from '@/lib/auth/page-session'
 import { listChildPages } from '@/lib/block/page'
+import { canExportWorkspace } from '@/lib/export/download'
 import { listMembers, listPendingInvites } from '@/lib/workspace/list'
+import { ExportButton } from './export-button'
 import { InviteForm } from './invite-form'
 import { NewPageButton } from './new-page-button'
 
@@ -27,6 +29,8 @@ export default async function WorkspacePage({ params }: PageProps<'/w/[workspace
   // (멤버 아님 → 404) 을 화면마다 복사하면 한 곳만 틀려도 존재가 유출된다.
   const ctx = await requirePageSession(workspaceId)
   const canInvite = ctx.role === 'owner' || ctx.role === 'membership_admin'
+  // 표시 전용 — 판정은 내보내기 라우트가 `prepareExport` 로 다시 한다.
+  const canExport = canExportWorkspace(ctx)
 
   const [rootPages, members, invites] = await Promise.all([
     listChildPages(ctx, null),
@@ -111,6 +115,19 @@ export default async function WorkspacePage({ params }: PageProps<'/w/[workspace
               </ul>
             </>
           )}
+        </section>
+      )}
+
+      {canExport && (
+        <section>
+          <h2 className="text-sm font-medium text-neutral-500">데이터 내보내기</h2>
+          <p className="mt-1 text-xs text-neutral-500">
+            워크스페이스 전체를 Markdown · CSV 로 내려받습니다. 소유자만 할 수 있고, 소유자도 볼 수 있는
+            페이지만 들어갑니다. 멤버는 페이지 · 데이터베이스 화면에서 각각 내보냅니다.
+          </p>
+          <div className="mt-3">
+            <ExportButton workspaceId={ctx.workspaceId} label="워크스페이스 내보내기" align="left" />
+          </div>
         </section>
       )}
 

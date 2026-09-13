@@ -16,6 +16,7 @@ import { loadPageBody } from '@/lib/block/save-page-body'
 import { listMovableTargets } from '@/lib/block/move-page'
 import { isFavorite, recordVisit } from '@/lib/nav/recent'
 import { NewPageButton } from '../new-page-button'
+import { ExportButton } from '../export-button'
 import { PageTitle } from './page-title'
 import { BodyEditor } from './body-editor'
 import { MovePageControl } from './move-page-control'
@@ -94,6 +95,7 @@ export default async function PageView({ params }: PageProps<'/w/[workspaceId]/[
               ancestors: [...t.ancestors],
             }))}
           />
+          <ExportButton workspaceId={workspaceId} rootId={page.id} />
           <DeletePageButton
             workspaceId={workspaceId}
             pageId={page.id}
