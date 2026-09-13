@@ -94,11 +94,17 @@ export async function withTransaction<T>(fn: (tx: Tx) => Promise<T>): Promise<T>
 /**
  * 읽기 전용 트랜잭션. 스냅샷 일관성이 필요한 조회에 쓴다
  * (예: 권한 판정과 그 결과로 읽는 데이터가 같은 시점이어야 할 때).
+ *
+ * ★ **REPEATABLE READ** 다. PostgreSQL 의 기본(READ COMMITTED)은 **문장마다** 새 스냅샷을
+ *   찍어서, `readableScopes` 를 읽은 뒤 행을 읽는 사이에 커밋된 권한 변경이 섞였다 — 이 머리말의
+ *   약속이 지켜지지 않고 있었다. `tx.db.test.ts` 가 먼저 재현했다(두 문장 사이에 커밋한 행이 보였다).
+ *   REPEATABLE READ 는 첫 문장의 스냅샷을 끝까지 쓴다. 읽기 전용 트랜잭션은 직렬화 실패가 나지
+ *   않으므로 재시도 루프가 필요 없다.
  */
 export async function withReadTransaction<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
   const client = await getPool().connect()
   try {
-    await client.query('BEGIN READ ONLY')
+    await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY')
     const result = await fn(wrap(client))
     await client.query('COMMIT')
     return result
