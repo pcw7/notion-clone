@@ -146,8 +146,13 @@ export function assertSafeEntryPath(path: string): void {
   if (encoder.encode(path).length > MAX_NAME_BYTES) fail('이름이 너무 길다')
 }
 
-/** 대소문자 · 정규화만 다른 이름을 같게 본다. 풀리는 파일 시스템(NTFS · APFS)이 그렇게 본다. */
-function collisionKey(path: string): string {
+/**
+ * 대소문자 · 정규화만 다른 이름을 같게 본다. 풀리는 파일 시스템(NTFS · APFS)이 그렇게 본다.
+ *
+ * 파일 이름을 짓는 `names.ts` 도 이 함수로 겹침을 본다 — 두 벌이면 거기서 통과한 이름을 여기서
+ * 중복으로 거부한다.
+ */
+export function collisionKey(path: string): string {
   return path.normalize('NFC').toLowerCase()
 }
 
