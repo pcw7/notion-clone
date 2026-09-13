@@ -78,24 +78,35 @@ export function tableToCsv(columns: readonly CsvColumn[], rows: readonly CsvRow[
 
   const lines = [columns.map((column) => field(userText(column.name))).join(',')]
   for (const row of rows) {
-    lines.push(columns.map((column) => field(cellText(column, row.cells[column.propertyId], userText))).join(','))
+    const cells = columns.map((column) => {
+      const text = cellPlainText(column, row.cells[column.propertyId])
+      return field(USER_TEXT.has(column.type) ? userText(text) : text)
+    })
+    lines.push(cells.join(','))
   }
   return { csv: `${BOM}${lines.join('\r\n')}\r\n`, guardedFormulas }
 }
 
-function cellText(column: CsvColumn, raw: unknown, userText: (value: string) => string): string {
+/** 사용자가 쓴 글자를 담는 타입. 수식 막기는 이것에만 건다(머리말). */
+const USER_TEXT: ReadonlySet<MvpPropertyType> = new Set(['title', 'rich_text', 'select'])
+
+/**
+ * 칸 하나의 글자. CSV 와 행 Markdown 의 속성 줄(`plan.ts`)이 **같은 규칙**을 쓴다.
+ *
+ * 수식 막기는 여기 없다 — Excel 이 여는 CSV 만의 일이다.
+ */
+export function cellPlainText(column: CsvColumn, raw: unknown): string {
   const value = readCell(column.type, raw)
   switch (value.type) {
     case 'title':
-      return userText(toPlainText(value.title))
+      return toPlainText(value.title)
     case 'rich_text':
-      return userText(toPlainText(value.rich_text))
+      return toPlainText(value.rich_text)
     case 'number':
       return value.number === null ? '' : String(value.number)
     case 'select': {
       const id = value.select?.id
-      const name = id === undefined ? '' : (column.options?.find((option) => option.id === id)?.name ?? '')
-      return userText(name)
+      return id === undefined ? '' : (column.options?.find((option) => option.id === id)?.name ?? '')
     }
     case 'checkbox':
       return value.checkbox ? 'Yes' : 'No'
