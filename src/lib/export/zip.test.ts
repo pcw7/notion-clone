@@ -5,7 +5,7 @@
  *
  *   ① **이 파일의 읽기 코드** — 헤더 필드를 하나하나 대조한다(로컬 헤더 = 중앙 디렉터리,
  *      위치가 이어지는가, CRC 가 맞는가). 무엇이 어긋났는지 정확히 말해 준다
- *   ② **우리가 짜지 않은 구현** — python `zipfile`(CI 필수) · bsdtar · unzip. ①은 쓰기와 같은
+ *   ② **우리가 짜지 않은 구현** — python `zipfile` · bsdtar · unzip(셋 다 CI 필수). ①은 쓰기와 같은
  *      오해를 공유할 수 있다. 다른 사람이 짠 구현이 같은 이름 · 같은 바이트를 읽어야 끝이다
  *
  * 이 파일이 지키는 것.
@@ -33,8 +33,8 @@ import {
   type ZipWriterOptions,
 } from './zip.ts'
 import {
+  findBsdtar,
   findPython,
-  hasBsdtar,
   hasUnzip,
   run,
   runPythonJson,
@@ -319,7 +319,7 @@ describe('우리가 짜지 않은 구현이 같은 이름 · 같은 바이트로
 
   test('python zipfile — 무결성 · 이름 · UTF-8 플래그 · 내용', (t) => {
     const python = findPython()
-    if (python === null) return t.skip(unavailable('python', true))
+    if (python === null) return t.skip(unavailable('python'))
 
     const result = runPythonJson(
       python,
@@ -345,11 +345,12 @@ describe('우리가 짜지 않은 구현이 같은 이름 · 같은 바이트로
   })
 
   test('bsdtar 로 풀면 같은 파일이 같은 자리에 생긴다 (이모지 이름 제외 — 위 주석)', (t) => {
-    if (!hasBsdtar()) return t.skip(unavailable('bsdtar', false))
+    const bsdtar = findBsdtar()
+    if (bsdtar === null) return t.skip(unavailable('bsdtar'))
     assert.equal(bmpOnly.length, inputs.length - 1, '뺀 것은 이모지 항목 하나뿐이다')
     const out = join(dir, 'bsdtar')
     mkdirSync(out)
-    const result = run('tar', ['-xf', bmpFile, '-C', out])
+    const result = run(bsdtar, ['-xf', bmpFile, '-C', out])
     assert.equal(result.status, 0, result.stderr)
     for (const [path, data] of bmpOnly) {
       assert.ok(readFileSync(join(out, ...path.split('/'))).equals(bytesOf(data)), path)
@@ -357,7 +358,7 @@ describe('우리가 짜지 않은 구현이 같은 이름 · 같은 바이트로
   })
 
   test('unzip -t 가 무결하다고 한다', (t) => {
-    if (!hasUnzip()) return t.skip(unavailable('unzip', false))
+    if (!hasUnzip()) return t.skip(unavailable('unzip'))
     const result = run('unzip', ['-t', file])
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`)
   })

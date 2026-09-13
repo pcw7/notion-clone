@@ -4,8 +4,10 @@
  * ZIP · CSV 를 **우리가 짠 읽기 코드로만** 검사하면, 쓰기와 읽기가 같은 오해를 공유해도
  * 검사가 초록이다(Markdown 직렬화기를 micromark 로 렌더해 본 것과 같은 이유, HANDOFF §3.3-60).
  *
- * CI(ubuntu)에는 python3 가 기본으로 있다. 그래서 **CI 에서는 없으면 실패**한다 —
- * DB 테스트의 `REQUIRE_DB` 와 같은 이유다: 조용히 건너뛰기만 하는 검사는 썩는다.
+ * CI 는 python3 · bsdtar(`libarchive-tools`) · unzip 을 **설치한다**(`.github/workflows/ci.yml`).
+ * 그래서 **CI 에서는 없으면 건너뛰지 않고 실패**한다 — DB 테스트의 `REQUIRE_DB` 와 같은 이유다:
+ * 조용히 건너뛰기만 하는 검사는 썩는다. 처음에는 ubuntu 에 없는 bsdtar 를 "CI 에서 선택"으로 뒀다가
+ * db 잡이 skip 1 로 끝나 머지 규칙(skip 0)에 걸렸다(HANDOFF §3.3-63).
  */
 
 import { spawnSync } from 'node:child_process'
@@ -46,24 +48,25 @@ export function findPython(): string | null {
   return python
 }
 
-/** libarchive 의 tar. GNU tar 는 ZIP 을 읽지 못한다. */
-export function hasBsdtar(): boolean {
-  const result = run('tar', ['--version'])
-  return result.status === 0 && result.stdout.includes('bsdtar')
+/**
+ * libarchive 의 tar 명령. GNU tar 는 ZIP 을 읽지 못한다.
+ *
+ * 리눅스는 `libarchive-tools` 패키지의 `bsdtar` 이고, Windows 는 `tar.exe` 자체가 bsdtar 다.
+ */
+export function findBsdtar(): string | null {
+  if (run('bsdtar', ['--version']).status === 0) return 'bsdtar'
+  const tar = run('tar', ['--version'])
+  return tar.status === 0 && tar.stdout.includes('bsdtar') ? 'tar' : null
 }
 
 export function hasUnzip(): boolean {
   return run('unzip', ['-v']).status === 0
 }
 
-/**
- * 도구가 없을 때 테스트가 건너뛸 이유. **CI 면 던진다.**
- *
- * @param requiredInCi CI 이미지에 기본으로 있는 도구만 true 로 둔다(python3). bsdtar 는 ubuntu 에 없다.
- */
-export function unavailable(tool: string, requiredInCi: boolean): string {
+/** 도구가 없을 때 테스트가 건너뛸 이유. **CI 면 던진다** — CI 는 세 도구를 설치하므로 없다는 것은 설치가 깨졌다는 뜻이다. */
+export function unavailable(tool: string): string {
   const reason = `${tool} 을(를) 찾지 못해 외부 구현 검사를 건너뛴다`
-  if (requiredInCi && process.env.CI) throw new Error(`CI 에서는 ${tool} 이(가) 있어야 한다 — ${reason}`)
+  if (process.env.CI) throw new Error(`CI 에서는 ${tool} 이(가) 있어야 한다 — ${reason}`)
   return reason
 }
 

@@ -128,7 +128,7 @@ describe('① 우리가 짜지 않은 구현(python csv)이 같은 칸으로 읽
 
   test('쉼표 · 따옴표 · 줄바꿈 · 앞뒤 공백 · 한글 · 이모지', (t) => {
     const python = findPython()
-    if (python === null) return t.skip(unavailable('python', true))
+    if (python === null) return t.skip(unavailable('python'))
 
     const tricky = [
       '쉼표, 있음',
