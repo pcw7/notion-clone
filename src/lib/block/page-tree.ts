@@ -172,9 +172,13 @@ export async function listPageTree(ctx: SessionContext): Promise<PageTreeNode[]>
       ancestor_path: string[]
       order_key: string
     }>(
+      // ★ W8: DB 행을 뺀다. 행도 `type='page'` 블록이라(C-3) 타입만 보면 섞이고,
+      //   행의 조상인 컨테이너(`type='database'`)는 이 집합에 없으므로 행이 전부
+      //   **최상위 노드**가 된다. 행은 표가 보여준다 — 사이드바의 일이 아니다.
       `SELECT id, properties, ancestor_path, order_key
          FROM live_block
-        WHERE workspace_id = $1 AND type = 'page' AND perm_scope_id = ANY($2::uuid[])
+        WHERE workspace_id = $1 AND type = 'page' AND parent_type <> 'data_source'
+          AND perm_scope_id = ANY($2::uuid[])
         ORDER BY order_key, id`,
       [ctx.workspaceId, scopes],
     )
