@@ -27,6 +27,12 @@ jobs:
       - name: 의존성 설치
         run: npm ci
 
+      # 익스포트 산출물(ZIP · CSV)을 우리가 짜지 않은 구현으로 읽어 보는 도구.
+      # 테스트는 CI 에서 이 도구가 없으면 건너뛰지 않고 실패한다(src/lib/testing/external-tools.ts).
+      # bsdtar 는 ubuntu 러너에 없다 — 없던 때 db 잡이 skip 1 로 끝났다.
+      - name: 외부 구현 검사 도구 (python3 · bsdtar · unzip)
+        run: sudo apt-get update -q && sudo apt-get install -y -q python3 libarchive-tools unzip
+
       # CLAUDE.md 절대 제약 1의 강제 지점.
       # 타입·린트보다 먼저 돌린다 — 금지된 라이선스가 들어왔다면
       # 코드가 맞는지 따지기 전에 그 사실부터 알아야 한다.
@@ -61,6 +67,12 @@ jobs:
 
       - name: 의존성 설치
         run: npm ci
+
+      # 익스포트 산출물(ZIP · CSV)을 우리가 짜지 않은 구현으로 읽어 보는 도구.
+      # 테스트는 CI 에서 이 도구가 없으면 건너뛰지 않고 실패한다(src/lib/testing/external-tools.ts).
+      # bsdtar 는 ubuntu 러너에 없다 — 없던 때 db 잡이 skip 1 로 끝났다.
+      - name: 외부 구현 검사 도구 (python3 · bsdtar · unzip)
+        run: sudo apt-get update -q && sudo apt-get install -y -q python3 libarchive-tools unzip
 
       # pg_bigm 을 소스에서 빌드하므로 첫 실행은 몇 분 걸린다.
       # 로컬에서만 도는 인프라를 CI 가 한 번도 세워보지 않으면
