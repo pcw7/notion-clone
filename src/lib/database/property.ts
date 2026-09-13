@@ -39,7 +39,7 @@
  * 오류 대신 이유를 말해 주는 것은 이 계층의 일이다.
  */
 
-import { randomBytes } from 'node:crypto'
+import { randomBytes, randomUUID } from 'node:crypto'
 
 import type { SessionContext } from '../auth/session-context.ts'
 import { withTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
@@ -48,8 +48,12 @@ import { effectiveCaps } from '../permissions/effective.ts'
 import { orderKeyBetween } from '../block/order-key.ts'
 import {
   DEFAULT_PROPERTY_TYPE,
+  OPTION_COLORS,
   isMvpPropertyType,
+  isOptionColor,
   type MvpPropertyType,
+  type OptionColor,
+  type SelectOption,
 } from './property-types.ts'
 import { addPropertyToViews } from './view.ts'
 
@@ -122,6 +126,8 @@ export type PropertyFailure =
   | 'too_many_properties'
   /** 클라이언트가 낡은 스키마를 들고 있다. 다시 읽어야 한다. */
   | 'schema_conflict'
+  /** 옵션 색이 `option_color` ENUM 에 없다. */
+  | 'invalid_color'
 
 export type PropertyResult<T = SchemaSnapshot> =
   | { readonly ok: true; readonly value: T }
@@ -589,4 +595,101 @@ export async function restoreProperty(
     await bumpSchema(tx, dataSourceId)
     return { ok: true, value: await readSchema(tx, dataSourceId) } as const
   })
+}
+
+// ── select 옵션 ───────────────────────────────────────────────────────
+
+export type AddSelectOptionInput = {
+  readonly name: string
+  /** 생략하면 팔레트를 돌아가며 준다. */
+  readonly color?: OptionColor
+}
+
+export type SelectOptionResult = {
+  readonly option: SelectOption
+  /** `false` 면 같은 이름(대소문자 무시)의 옵션이 이미 있어서 그것을 돌려준 것이다. */
+  readonly created: boolean
+  readonly schemaVersion: string
+}
+
+/**
+ * select 프로퍼티에 옵션을 추가한다 — F-03-04 의 *"`XXX` 생성"*.
+ *
+ * **옵션은 스키마다.** 셀이 아니라 `select_option` 레지스트리에 들어가고, 그 컬럼을
+ * 쓰는 모든 행이 같은 목록을 본다. 그래서 `lockSchema`(= `edit_structure`)를 지나고
+ * `schema_version` 을 올린다. `edit_content` 만 가진 사람은 **기존 옵션을 고를 수는
+ * 있지만 새 옵션을 만들 수 없다.** 노션이 이 경우를 어떻게 다루는지 1차 출처로
+ * 확인하지 못했으므로 좁은 쪽을 골랐다 — 나중에 넓히는 것은 규칙 한 줄이지만,
+ * 넓게 열었다가 좁히면 이미 만들어진 옵션을 되돌릴 수 없다.
+ *
+ * **같은 이름이면 새로 만들지 않고 있는 것을 돌려준다.** 옵션 이름 유니크는
+ * 대소문자 무시다(`ux_select_option_name`). F-03-04 동시편집 엣지 케이스: *"A 가
+ * 옵션 생성, B 가 같은 이름 옵션 생성 → 서버에서 이름 정규화 후 병합, 두 id 중
+ * 하나로 수렴."* 거부하면 B 의 화면은 "생성 실패" 를 띄우지만, B 가 원한 것(그
+ * 이름의 옵션을 이 셀에 넣기)은 이미 가능하다.
+ */
+export async function addSelectOption(
+  ctx: SessionContext,
+  dataSourceId: string,
+  propertyId: string,
+  input: AddSelectOptionInput,
+): Promise<PropertyResult<SelectOptionResult>> {
+  const name = normalizeName(input.name)
+  if (name === null) return fail('invalid_name')
+  if (input.color !== undefined && !isOptionColor(input.color)) return fail('invalid_color')
+
+  return withTransaction(async (tx) => {
+    const ds = await lockSchema(tx, ctx, dataSourceId)
+    if (isFailure(ds)) return ds
+
+    const target = await tx.queryMaybe<{ type: string }>(
+      `SELECT type FROM property
+        WHERE id = $1 AND data_source_id = $2 AND deleted_at IS NULL`,
+      [propertyId, dataSourceId],
+    )
+    if (target === null) return fail('not_found')
+    // MVP 는 select 하나다. multi_select · status 가 같은 레지스트리를 쓰지만
+    // (0013 머리말) 그 타입이 들어올 때 여기를 연다.
+    if (target.type !== 'select') return fail('unsupported_type')
+
+    const stats = await tx.queryOne<{ n: string; last: string | null }>(
+      `SELECT count(*) AS n, max(order_idx) AS last FROM select_option WHERE property_id = $1`,
+      [propertyId],
+    )
+    // F-03-04 현실적 대안: "색상은 고정 10색 팔레트 라운드로빈". 개수로 돌리므로
+    // 결정적이다 — 무작위면 같은 조작을 두 번 했을 때 테스트가 다른 색을 본다.
+    const color = input.color ?? OPTION_COLORS[Number(stats.n) % OPTION_COLORS.length]
+
+    const inserted = await tx.queryMaybe<{ id: string; name: string; color: string }>(
+      `INSERT INTO select_option (id, property_id, name, color, order_idx)
+       VALUES ($1, $2, $3, $4::option_color, $5)
+       ON CONFLICT (property_id, lower(name)) DO NOTHING
+       RETURNING id, name, color::text AS color`,
+      [randomUUID(), propertyId, name, color, orderKeyBetween(stats.last, null)],
+    )
+
+    if (inserted !== null) {
+      return {
+        ok: true,
+        value: { option: toOption(inserted), created: true, schemaVersion: await bumpSchema(tx, dataSourceId) },
+      } as const
+    }
+
+    // 같은 이름이 이미 있다 — 그것으로 수렴한다. 바뀐 것이 없으므로 버전을 올리지
+    // 않는다(`moveProperty` 의 자기 앞 이동과 같은 규칙: 올리면 남의 낙관적 잠금을
+    // 헛되게 깨뜨린다).
+    const existing = await tx.queryOne<{ id: string; name: string; color: string }>(
+      `SELECT id, name, color::text AS color FROM select_option
+        WHERE property_id = $1 AND lower(name) = lower($2)`,
+      [propertyId, name],
+    )
+    return {
+      ok: true,
+      value: { option: toOption(existing), created: false, schemaVersion: ds.schema_version },
+    } as const
+  })
+}
+
+function toOption(row: { id: string; name: string; color: string }): SelectOption {
+  return { id: row.id, name: row.name, color: isOptionColor(row.color) ? row.color : 'default' }
 }

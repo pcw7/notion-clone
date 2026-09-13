@@ -25,9 +25,10 @@ import {
 } from '../testing/db-fixtures.ts'
 import { withReadTransaction } from '../db/tx.ts'
 import { grantAccess, revokeAccess, stopInheriting } from '../permissions/acl.ts'
-import { createDatabase, getDatabase, DEFAULT_TITLE_PROPERTY_NAME } from './database.ts'
+import { createDatabase, getDatabase, renameDatabase, DEFAULT_TITLE_PROPERTY_NAME } from './database.ts'
 import {
   addProperty,
+  addSelectOption,
   deleteProperty,
   getSchema,
   moveProperty,
@@ -131,6 +132,49 @@ describe('createDatabase — 불변식의 "적어도 1개"를 지킨다', () => 
       assert.equal(got.value.name, '읽을 표')
       assert.equal(got.value.isInline, false)
     }
+  })
+})
+
+describe('renameDatabase', () => {
+  test('★ 이름이 두 곳에 함께 바뀐다 — 블록 제목과 database.title_rich', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { databaseId } = await newTable('옛 이름')
+
+    const renamed = await renameDatabase(fx.owner.ctx, databaseId, '  새   이름 ')
+    assert.equal(renamed.ok, true)
+    if (renamed.ok) assert.equal(renamed.value.name, '새 이름')
+
+    // 사이드바·breadcrumb 이 읽는 쪽.
+    const got = await getDatabase(fx.owner.ctx, databaseId)
+    assert.equal(got.ok, true)
+    if (got.ok) assert.equal(got.value.name, '새 이름')
+
+    // 정본 §3.5 의 DB 제목. 한쪽만 쓰면 사이드바와 표 머리의 이름이 갈린다.
+    const stored = await withReadTransaction((tx) =>
+      tx.queryOne<{ plain: string }>(
+        `SELECT coalesce(string_agg(r->>'plain_text', ''), '') AS plain
+           FROM database d, jsonb_array_elements(d.title_rich) r
+          WHERE d.id = $1`,
+        [databaseId],
+      ),
+    )
+    assert.equal(stored.plain, '새 이름')
+  })
+
+  test('빈 이름으로 바꿀 수 있다 — 만들 때와 같은 규칙', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { databaseId } = await newTable('이름 있음')
+    const renamed = await renameDatabase(fx.owner.ctx, databaseId, '')
+    assert.equal(renamed.ok, true)
+    if (renamed.ok) assert.equal(renamed.value.name, '')
+  })
+
+  test('문자열이 아니면 거부', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { databaseId } = await newTable()
+    const renamed = await renameDatabase(fx.owner.ctx, databaseId, 42)
+    assert.equal(renamed.ok, false)
+    if (!renamed.ok) assert.equal(renamed.reason, 'invalid_name')
   })
 })
 
@@ -507,6 +551,95 @@ describe('★ 삭제는 soft delete 다 — 셀 값이 남는다', () => {
   })
 })
 
+describe('addSelectOption (F-03-04)', () => {
+  const withSelect = async () => {
+    const { databaseId, dataSourceId } = await newTable()
+    const schema = unwrap(await addProperty(fx.owner.ctx, dataSourceId, { name: '상태', type: 'select' }))
+    const propertyId = schema.properties.find((p) => p.name === '상태')!.id
+    return { databaseId, dataSourceId, propertyId }
+  }
+
+  test('★ 옵션을 만들면 schema_version 이 오른다 — 옵션은 스키마다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { dataSourceId, propertyId } = await withSelect()
+    const before = unwrap(await getSchema(fx.owner.ctx, dataSourceId)).schemaVersion
+
+    const r = await addSelectOption(fx.owner.ctx, dataSourceId, propertyId, { name: '할 일' })
+    assert.equal(r.ok, true)
+    if (!r.ok) return
+    assert.equal(r.value.created, true)
+    assert.equal(r.value.option.name, '할 일')
+    assert.ok(BigInt(r.value.schemaVersion) > BigInt(before))
+  })
+
+  test('★ 같은 이름이면 대소문자가 달라도 새로 만들지 않고 같은 옵션으로 수렴한다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { dataSourceId, propertyId } = await withSelect()
+
+    const first = await addSelectOption(fx.owner.ctx, dataSourceId, propertyId, { name: 'Done' })
+    const again = await addSelectOption(fx.owner.ctx, dataSourceId, propertyId, { name: 'done' })
+    assert.equal(first.ok && again.ok, true)
+    if (!first.ok || !again.ok) return
+
+    // F-03-04: "A가 옵션 생성, B가 같은 이름 옵션 생성 → 두 id 중 하나로 수렴."
+    assert.equal(again.value.created, false)
+    assert.equal(again.value.option.id, first.value.option.id)
+    assert.equal(again.value.option.name, 'Done', '먼저 만든 이름이 남는다')
+    // 바뀐 것이 없으므로 버전을 올리지 않는다 — 올리면 남의 낙관적 잠금이 헛되게 깨진다.
+    assert.equal(again.value.schemaVersion, first.value.schemaVersion)
+  })
+
+  test('색은 팔레트를 돌아가며 준다 — 결정적이다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { dataSourceId, propertyId } = await withSelect()
+    const colors: string[] = []
+    for (const name of ['가', '나', '다']) {
+      const r = await addSelectOption(fx.owner.ctx, dataSourceId, propertyId, { name })
+      if (r.ok) colors.push(r.value.option.color)
+    }
+    assert.deepEqual(colors, ['default', 'gray', 'brown'])
+  })
+
+  test('색을 지정할 수 있고, ENUM 에 없는 색은 거부', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { dataSourceId, propertyId } = await withSelect()
+
+    const blue = await addSelectOption(fx.owner.ctx, dataSourceId, propertyId, { name: '파랑', color: 'blue' })
+    assert.equal(blue.ok && blue.value.option.color, 'blue')
+
+    const bad = await addSelectOption(fx.owner.ctx, dataSourceId, propertyId, {
+      name: '형광',
+      color: 'neon' as never,
+    })
+    assert.equal(bad.ok, false)
+    if (!bad.ok) assert.equal(bad.reason, 'invalid_color')
+  })
+
+  test('select 이 아닌 컬럼에는 옵션을 만들 수 없다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { dataSourceId } = await withSelect()
+    const titleId = unwrap(await getSchema(fx.owner.ctx, dataSourceId)).properties[0].id
+
+    const r = await addSelectOption(fx.owner.ctx, dataSourceId, titleId, { name: '옵션' })
+    assert.equal(r.ok, false)
+    if (!r.ok) assert.equal(r.reason, 'unsupported_type')
+  })
+
+  test('빈 이름은 거부 · 지운 컬럼은 not_found', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { dataSourceId, propertyId } = await withSelect()
+
+    const blank = await addSelectOption(fx.owner.ctx, dataSourceId, propertyId, { name: '   ' })
+    assert.equal(blank.ok, false)
+    if (!blank.ok) assert.equal(blank.reason, 'invalid_name')
+
+    unwrap(await deleteProperty(fx.owner.ctx, dataSourceId, propertyId))
+    const gone = await addSelectOption(fx.owner.ctx, dataSourceId, propertyId, { name: '옵션' })
+    assert.equal(gone.ok, false)
+    if (!gone.ok) assert.equal(gone.reason, 'not_found')
+  })
+})
+
 describe('★ 권한 — 스키마 변경은 edit_structure 다', () => {
   test('★ 볼 수 없는 사람에게는 not_found 다 — 존재를 알리지 않는다', async (t) => {
     if (skipReason) return t.skip(skipReason)
@@ -523,9 +656,13 @@ describe('★ 권한 — 스키마 변경은 edit_structure 다', () => {
       true,
     )
 
+    const titleId = unwrap(await getSchema(fx.owner.ctx, dataSourceId)).properties[0].id
     for (const r of [
       await getSchema(other.ctx, dataSourceId),
       await addProperty(other.ctx, dataSourceId, { name: '몰래' }),
+      await addSelectOption(other.ctx, dataSourceId, titleId, { name: '몰래' }),
+      await getDatabase(other.ctx, databaseId),
+      await renameDatabase(other.ctx, databaseId, '몰래'),
     ]) {
       assert.equal(r.ok, false)
       if (!r.ok) assert.equal(r.reason, 'not_found')
@@ -553,13 +690,16 @@ describe('★ 권한 — 스키마 변경은 edit_structure 다', () => {
     // 볼 수는 있다.
     assert.equal((await getSchema(other.ctx, dataSourceId)).ok, true)
 
-    // 고칠 수는 없다 — 네 경로 모두.
+    // 고칠 수는 없다 — 옵션 추가·표 이름 변경도 스키마 쪽이다.
     const titleId = unwrap(await getSchema(fx.owner.ctx, dataSourceId)).properties[0].id
     for (const r of [
       await addProperty(other.ctx, dataSourceId, { name: '몰래' }),
       await updateProperty(other.ctx, dataSourceId, titleId, { name: '몰래' }),
       await moveProperty(other.ctx, dataSourceId, titleId, null),
       await deleteProperty(other.ctx, dataSourceId, titleId),
+      // 타입 검사보다 권한이 먼저다 — title 컬럼이라도 unsupported_type 이 아니라 forbidden.
+      await addSelectOption(other.ctx, dataSourceId, titleId, { name: '몰래' }),
+      await renameDatabase(other.ctx, databaseId, '몰래'),
     ]) {
       assert.equal(r.ok, false)
       if (!r.ok) assert.equal(r.reason, 'forbidden')

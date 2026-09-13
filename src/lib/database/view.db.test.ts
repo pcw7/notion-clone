@@ -28,6 +28,7 @@ import { grantAccess, revokeAccess, stopInheriting } from '../permissions/acl.ts
 import { createDatabase } from './database.ts'
 import {
   addProperty,
+  addSelectOption,
   deleteProperty,
   getSchema,
   moveProperty,
@@ -142,6 +143,27 @@ describe('★ 표를 만들면 뷰가 함께 생긴다', () => {
     const view = unwrap(await getView(fx.owner.ctx, table.defaultViewId))
     assert.equal(view.dataSourceId, table.dataSourceId)
     assert.equal(view.databaseId, table.databaseId)
+  })
+})
+
+describe('select 컬럼은 옵션을 싣는다', () => {
+  test('★ 옵션이 order_idx 순으로 컬럼에 실린다 — 셀은 id 만 들고 있다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const table = await newTable([
+      { name: '상태', type: 'select' },
+      { name: '메모', type: 'rich_text' },
+    ])
+    for (const name of ['할 일', '진행 중']) {
+      unwrap(await addSelectOption(fx.owner.ctx, table.dataSourceId, table.prop('상태'), { name }))
+    }
+
+    const view = unwrap(await getView(fx.owner.ctx, table.defaultViewId))
+    // 이것이 없으면 화면은 셀의 옵션 id 를 이름으로 바꿀 방법이 없다.
+    assert.deepEqual(
+      view.columns.find((c) => c.name === '상태')?.options.map((o) => o.name),
+      ['할 일', '진행 중'],
+    )
+    assert.deepEqual(view.columns.find((c) => c.name === '메모')?.options, [])
   })
 })
 
