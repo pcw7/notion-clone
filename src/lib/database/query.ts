@@ -45,12 +45,10 @@ import {
   type PropertyTypes,
   type SortKey,
 } from './filter.ts'
+// 상수는 화면과 나눠 쓴다(`limits.ts` 머리말). 기존 import 경로를 깨지 않게 다시 내보낸다.
+import { DEFAULT_QUERY_LIMIT, MAX_QUERY_LIMIT, MAX_QUERY_PAGINATION } from './limits.ts'
 
-/** 정본 §3.5 DB 상수. 이 깊이를 넘으면 완주를 보장하지 않는다. */
-export const MAX_QUERY_PAGINATION = 10_000
-/** 마스터 문서 W8-b: "keyset 커서 + '더 보기' 50행". */
-export const DEFAULT_QUERY_LIMIT = 50
-export const MAX_QUERY_LIMIT = 100
+export { DEFAULT_QUERY_LIMIT, MAX_QUERY_LIMIT, MAX_QUERY_PAGINATION }
 
 export type QueriedRow = {
   readonly id: string
