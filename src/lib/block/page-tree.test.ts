@@ -20,7 +20,7 @@ function row(
   ancestorPath: string[] = [],
   orderKey = 'a0',
 ): PageTreeRow {
-  return { id, title, ancestorPath, orderKey }
+  return { id, title, kind: 'page', ancestorPath, orderKey }
 }
 
 /** [제목, [자식…]] 로 납작하게. */
@@ -151,6 +151,20 @@ describe('buildPageTree — 정렬', () => {
     assert.deepEqual(
       tree[0].children[0].children.map((c) => c.title),
       ['앞', '뒤'],
+    )
+  })
+})
+
+describe('buildPageTree — 데이터베이스 (W8)', () => {
+  test('데이터베이스도 노드가 되고 종류를 싣는다 — 화면이 링크를 고른다', () => {
+    const db = nextId()
+    const tree = buildPageTree([row(nextId(), '페이지'), { ...row(db, '할 일', [], 'a1'), kind: 'database' }])
+    assert.deepEqual(
+      tree.map((n) => [n.title, n.kind]),
+      [
+        ['페이지', 'page'],
+        ['할 일', 'database'],
+      ],
     )
   })
 })

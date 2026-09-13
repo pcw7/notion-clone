@@ -123,7 +123,7 @@ describe('listPageTree', () => {
 
     const tree = await listPageTree(actor.ctx)
     // F-02-03: "사이드바가 페이지 본문을 끌고 오면 즉시 성능이 무너진다."
-    assert.deepEqual(Object.keys(tree[0]).sort(), ['children', 'hasChildren', 'id', 'parentId', 'title'])
+    assert.deepEqual(Object.keys(tree[0]).sort(), ['children', 'hasChildren', 'id', 'kind', 'parentId', 'title'])
     assert.equal(JSON.stringify(tree).includes('본문 텍스트'), false, '본문이 실려 나왔다')
   })
 })
@@ -180,6 +180,15 @@ describe('listPageTree — 데이터베이스 행 (W8)', () => {
       assert.ok(row.ok)
     }
 
-    assert.deepEqual(shape(await listPageTree(actor.ctx)), [['페이지', []]])
+    // 표 자신은 트리에 선다 — 풀페이지 DB 는 사이드바의 한 줄이다(F-04-14).
+    const tree = await listPageTree(actor.ctx)
+    assert.deepEqual(shape(tree), [
+      ['페이지', []],
+      ['할 일', []],
+    ])
+    assert.deepEqual(
+      tree.map((n) => n.kind),
+      ['page', 'database'],
+    )
   })
 })
