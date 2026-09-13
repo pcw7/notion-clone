@@ -339,6 +339,21 @@ describe('setViewColumn (불변식 V1 — 단일 행 UPDATE)', () => {
       false,
     )
   })
+
+  test('★ 제목 컬럼은 숨길 수 없다 — 행으로 들어가는 길이 사라진다 (F-04-12)', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const table = await newTable([{ name: 'A', type: 'number' }])
+
+    const r = await setViewColumn(fx.owner.ctx, table.defaultViewId, table.titleId, { visible: false })
+    assert.equal(r.ok, false)
+    if (!r.ok) assert.equal(r.reason, 'title_required')
+
+    // 거부됐으니 여전히 보인다. 폭 같은 다른 설정은 제목 컬럼에도 줄 수 있다.
+    const view = unwrap(await setViewColumn(fx.owner.ctx, table.defaultViewId, table.titleId, { width: 320 }))
+    const title = view.columns.find((c) => c.propertyId === table.titleId)
+    assert.equal(title?.visible, true)
+    assert.equal(title?.width, 320)
+  })
 })
 
 describe('★ 필터·정렬 저장', () => {

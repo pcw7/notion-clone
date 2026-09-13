@@ -116,6 +116,8 @@ export type ViewFailure =
   | 'invalid_filter'
   | 'invalid_sorts'
   | 'last_view'
+  /** 제목 컬럼은 숨길 수 없다(F-04-12). */
+  | 'title_required'
 
 export type ViewResult<T> =
   | { readonly ok: true; readonly value: T }
@@ -540,13 +542,18 @@ export async function setViewColumn(
     const gate = await openView(tx, ctx, viewId, 'edit_structure')
     if (isFailure(gate)) return gate
 
-    const existing = await tx.queryMaybe<{ one: number }>(
-      `SELECT 1 AS one
+    const existing = await tx.queryMaybe<{ type: string }>(
+      `SELECT p.type::text AS type
          FROM view_property vp JOIN property p ON p.id = vp.property_id
         WHERE vp.view_id = $1 AND vp.property_id = $2 AND p.deleted_at IS NULL`,
       [viewId, propertyId],
     )
     if (existing === null) return fail('not_found')
+    // F-04-12 엣지 케이스: *"title 프로퍼티 숨김 시도 → 거부(페이지 진입 경로 상실)."*
+    // 행을 여는 길이 제목 칸이고, 모든 컬럼을 숨긴 표에서도 제목 열은 남아야 한다
+    // (F-04-02: "모든 프로퍼티 숨김 → title 열만 남음"). 화면이 메뉴를 숨기는 것과
+    // 별개로 여기서 막는다 — API 로 직접 부르면 화면의 규칙은 없다.
+    if (input.visible === false && existing.type === 'title') return fail('title_required')
 
     await tx.query(
       `UPDATE view_property
