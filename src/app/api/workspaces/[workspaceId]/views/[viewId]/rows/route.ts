@@ -1,5 +1,5 @@
 /**
- * 뷰의 행 — GET `/api/workspaces/[workspaceId]/views/[viewId]/rows`
+ * 뷰의 행 — GET/POST `/api/workspaces/[workspaceId]/views/[viewId]/rows`
  *
  * 정본: 00-canonical-data-model.md §3.5 불변식 R1 · 03-database-core.md F-03-17
  *
@@ -13,18 +13,39 @@
  * 묻는다.
  *
  * 받는 것은 페이지네이션뿐이다: `cursor` · `limit`.
+ *
+ * ──────────────────────────────────────────────────────────────────────
+ * 행 추가도 **뷰의 주소**로 받는다
+ * ──────────────────────────────────────────────────────────────────────
+ *
+ * 행은 data_source 에 속하지만, 노션은 필터가 걸린 뷰에서 행을 추가하면 그 필터를
+ * 만족하는 값을 미리 채워 새 행이 화면에서 사라지지 않게 한다. 그 동작은 "어느
+ * 뷰에서 만들었는가" 를 알아야 가능하다. 지금은 미리 채우지 않지만, 주소를
+ * data_source 로 두면 나중에 그것을 붙일 자리가 없다.
  */
 
+import { isUuid } from '@/lib/ids'
 import { requireWorkspaceSession } from '@/lib/auth/route-session'
 import { getView } from '@/lib/database/view'
 import { queryRows } from '@/lib/database/query'
+import { createRow } from '@/lib/database/row'
+import {
+  failureResponse,
+  parseCells,
+  rowFailureStatus,
+  rowJson,
+} from '@/lib/database/http'
 
 type Ctx = RouteContext<'/api/workspaces/[workspaceId]/views/[viewId]/rows'>
+
+const notFound = () => Response.json({ error: 'not_found' }, { status: 404 })
 
 export async function GET(request: Request, ctx: Ctx): Promise<Response> {
   const { workspaceId, viewId } = await ctx.params
   const session = await requireWorkspaceSession(workspaceId)
   if (!session.ok) return session.response
+  // uuid 가 아니면 질의가 pg 형식 오류(500)로 죽는다. "없다"와 구분할 이유가 없다.
+  if (!isUuid(viewId)) return notFound()
 
   const view = await getView(session.ctx, viewId)
   if (!view.ok) {
@@ -52,15 +73,30 @@ export async function GET(request: Request, ctx: Ctx): Promise<Response> {
     // 화면이 컬럼 머리를 그리려면 스키마가 필요하다. 한 번에 준다 —
     // 표를 열 때마다 왕복이 둘이면 첫 화면이 느리다.
     columns: view.value.columns,
-    rows: page.value.rows.map((row) => ({
-      id: row.id,
-      title: row.title,
-      properties: row.properties,
-      lastEditedAt: row.lastEditedAt.toISOString(),
-      version: row.version,
-    })),
+    rows: page.value.rows.map(rowJson),
     hasMore: page.value.hasMore,
     nextCursor: page.value.nextCursor,
     complete: page.value.complete,
   })
+}
+
+export async function POST(request: Request, ctx: Ctx): Promise<Response> {
+  const { workspaceId, viewId } = await ctx.params
+  const session = await requireWorkspaceSession(workspaceId)
+  if (!session.ok) return session.response
+  if (!isUuid(viewId)) return notFound()
+
+  // 본문은 선택이다 — 빈 행 추가("+ 새로 만들기")가 가장 흔한 요청이다.
+  const body = (await request.json().catch(() => ({}))) as { cells?: unknown }
+  const cells = parseCells(body?.cells)
+  if (cells === null) return Response.json({ error: 'invalid_value' }, { status: 400 })
+
+  const view = await getView(session.ctx, viewId)
+  if (!view.ok) {
+    return Response.json({ error: view.reason }, { status: view.reason === 'forbidden' ? 403 : 404 })
+  }
+
+  const created = await createRow(session.ctx, view.value.dataSourceId, { cells })
+  if (!created.ok) return failureResponse(rowFailureStatus(created.reason), created)
+  return Response.json({ ok: true, row: rowJson(created.value) }, { status: 201 })
 }
