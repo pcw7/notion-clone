@@ -1159,8 +1159,16 @@ async function main() {
       // `bodyBefore` 는 오버레이를 열기 **전**에 찍었다. 반사실로 확인한 결과
       // 이 검사가 실제로 잡는 것은 화살표가 아니라 **타이핑이 에디터로 새는 것**
       // 이었다(포커스 이동을 끄면 검색어가 본문에 박힌다). 이름을 그대로 적는다.
-      check('★ 오버레이가 열린 동안의 입력이 본문에 새지 않았다',
-        (await evaluate(`document.querySelector('.blk-editor')?.textContent ?? ''`)) === bodyBefore)
+      {
+        const bodyAfter = await evaluate(`document.querySelector('.blk-editor')?.textContent ?? ''`)
+        // 실패하면 무엇이 달라졌는지 남긴다 — 참/거짓만으로는 새어 들어간 타이핑인지,
+        // 비동기로 바뀐 다른 글자인지 구분할 수 없다(추측하지 않는다, HANDOFF §6).
+        let at = 0
+        while (at < bodyBefore.length && bodyBefore[at] === bodyAfter[at]) at += 1
+        check('★ 오버레이가 열린 동안의 입력이 본문에 새지 않았다', bodyAfter === bodyBefore,
+          `처음 달라진 곳 ${at}자: 전 ${JSON.stringify(bodyBefore.slice(Math.max(0, at - 20), at + 40))}` +
+            ` / 후 ${JSON.stringify(bodyAfter.slice(Math.max(0, at - 20), at + 40))}`)
+      }
 
       // ★ 위 검사를 **성립시키는 메커니즘**을 따로 본다.
       //
