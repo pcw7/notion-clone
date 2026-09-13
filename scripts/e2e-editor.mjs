@@ -331,6 +331,10 @@ async function main() {
       p: [80, 'KeyP'],
       ArrowUp: [38, 'ArrowUp'],
       Backspace: [8, 'Backspace'],
+      // W8-b 표 그리드 — 칸 이동 · 비우기.
+      ArrowLeft: [37, 'ArrowLeft'],
+      Tab: [9, 'Tab'],
+      Delete: [46, 'Delete'],
     }
     const SHIFT = 8
     // `Mod` 는 Mac 에서 Cmd(4), 그 외 Ctrl(2). 헤드리스 브라우저의 플랫폼을 따른다.
@@ -1221,6 +1225,248 @@ async function main() {
         check('★ 사이드바 버튼으로도 열린다', await waitFor(`!!document.querySelector('[data-testid="search-overlay"]')`, 5000))
         await key('Escape')
       }
+    }
+
+    section('데이터베이스 표 (W8-b · F-04-14 · F-03-16)')
+    // 이 절이 헤드리스로는 볼 수 없는 것을 본다: 포커스가 칸을 따라 움직이는가 ·
+    // 편집기가 쓴 Enter 가 표의 규칙을 한 번 더 타지 않는가 · 표 끝의 Tab 이 표 밖으로
+    // 나가는가. 규칙 자체는 `grid-nav.test.ts` · `cell-format.test.ts` 가 본다.
+    {
+      const poll = async (fn, tries = 50) => {
+        for (let i = 0; i < tries; i += 1) {
+          if (await fn()) return true
+          await sleep(100)
+        }
+        return false
+      }
+      const clickOn = async (selector) => {
+        const p = await evaluate(`(() => {
+          const e = document.querySelector(${JSON.stringify(selector)})
+          if (!e) return null
+          e.scrollIntoView({ block: 'center' })
+          const r = e.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (p) await click(p.x, p.y)
+        return p !== null
+      }
+      const activeCell = () => evaluate(`document.activeElement?.dataset?.cell ?? null`)
+      const editingCell = () => evaluate(`document.querySelector('td[data-editing]')?.dataset.cell ?? null`)
+      const rowCount = () => evaluate(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length`)
+
+      // ── 사이드바에서 만든다 ──
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
+      await waitFor(`!!document.querySelector('nav[aria-label="페이지 트리"]')`, 15000)
+      const newDb = await evaluate(`(() => {
+        const b = [...document.querySelectorAll('nav[aria-label="페이지 트리"] button')]
+          .find((e) => e.textContent.includes('새 데이터베이스'))
+        if (!b) return null
+        b.scrollIntoView({ block: 'center' })
+        const r = b.getBoundingClientRect()
+        return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+      })()`)
+      check('사이드바에 "+ 새 데이터베이스" 가 있다', newDb !== null)
+      if (newDb) await click(newDb.x, newDb.y)
+      check('★ 누르면 풀페이지 데이터베이스 화면이 열린다',
+        await waitFor(`/\\/db\\/[0-9a-f-]{36}$/.test(location.pathname) && !!document.querySelector('[data-testid="db-table"]')`, 15000),
+        await evaluate('location.pathname'))
+      const databaseId = (await evaluate('location.pathname')).split('/').pop()
+      check('★ 사이드바에 표가 서고 지금 연 줄로 강조된다 — /db/ 경로를 읽는다',
+        await waitFor(`!!document.querySelector('nav[aria-label="페이지 트리"] a[href$="/db/${databaseId}"][aria-current="page"]')`, 10000))
+      check('빈 표는 비어 있다고 말하고, 머리와 "+ 새로 만들기" 는 남는다',
+        await evaluate(`!!document.querySelector('[data-testid="db-empty"]') && !!document.querySelector('[data-testid="db-add-row"]')
+          && document.querySelectorAll('[data-testid="db-table"] thead th[data-property-id]').length === 1`))
+
+      // ── 이름 ──
+      const dbName = `할 일 ${Date.now()}`
+      await clickOn('input[aria-label="데이터베이스 이름"]')
+      await typeText(dbName)
+      await key('Enter')
+      check('★ 표 이름을 바꾸면 사이드바의 이름도 바뀐다',
+        await waitFor(`document.querySelector('nav[aria-label="페이지 트리"] a[href$="/db/${databaseId}"]')?.textContent.includes(${JSON.stringify(dbName)})`, 10000))
+
+      const viewId = await evaluate(`new URL(document.querySelector('nav[aria-label="뷰"] a').href).searchParams.get('v')`)
+      const rowsApi = async () => (await fetch(`${BASE}/api/workspaces/${workspaceId}/views/${viewId}/rows`, { headers: authed })).json()
+      const cellOf = async (rowIndex, propertyId) => ((await rowsApi()).rows[rowIndex]?.properties ?? {})[propertyId]
+
+      // ── 속성 ──
+      const addColumn = async (name, type) => {
+        await clickOn('[data-testid="db-add-column"]')
+        await waitFor(`document.activeElement?.getAttribute('aria-label') === '속성 이름'`, 3000)
+        await typeText(name)
+        await evaluate(`(() => {
+          const s = document.querySelector('select[aria-label="속성 유형"]')
+          s.value = ${JSON.stringify(type)}
+          s.dispatchEvent(new Event('change', { bubbles: true }))
+        })()`)
+        // 사람이 누르는 버튼으로 제출한다 — 키 이벤트 흉내에 기대지 않는다.
+        await clickOn('[data-testid="db-add-column-form"] button[type="submit"]')
+        await waitFor(`!document.querySelector('[data-testid="db-add-column-form"]')`, 8000)
+      }
+      await addColumn('수량', 'number')
+      await addColumn('상태', 'select')
+      await addColumn('완료', 'checkbox')
+      const propIds = await evaluate(`[...document.querySelectorAll('[data-testid="db-table"] thead th[data-property-id]')].map((th) => th.dataset.propertyId)`)
+      check('★ 속성을 더하면 머리에 붙는다 — 제목 · 수량 · 상태 · 완료', propIds.length === 4, JSON.stringify(propIds))
+      const [, numberProp, selectProp, checkProp] = propIds
+
+      // ── 행 추가 → 제목 편집 → Tab ──
+      await clickOn('[data-testid="db-add-row"]')
+      check('★ "+ 새로 만들기" 는 새 행의 제목 칸을 편집 상태로 연다',
+        await waitFor(`document.querySelector('td[data-editing]')?.dataset.cell === '0:0'
+          && document.activeElement?.matches('[data-testid="db-cell-input"]')`, 8000),
+        String(await editingCell()))
+      const title1 = `첫 행 ${Date.now()}`
+      await typeText(title1)
+      await key('Tab')
+      check('★ 편집 중 Tab 은 저장하고 오른쪽 칸으로 — 포커스가 그 칸에 있다',
+        await waitFor(`document.activeElement?.dataset?.cell === '0:1'`, 3000), String(await activeCell()))
+      check('제목이 서버에 저장된다', await poll(async () => (await rowsApi()).rows[0]?.title === title1))
+
+      // ── 틀린 값 · 취소 ──
+      await key('Enter')
+      check('선택 칸의 Enter 는 편집을 시작한다',
+        await waitFor(`document.querySelector('td[data-editing]')?.dataset.cell === '0:1'`, 3000))
+      await typeText('abc')
+      await key('Enter')
+      check('★ 숫자가 아니면 저장하지 않고 편집에 머문다 — 이유를 말한다',
+        (await waitFor(`!!document.querySelector('[data-testid="db-error"]')`, 3000)) && (await editingCell()) === '0:1',
+        String(await editingCell()))
+      await key('Escape')
+      check('★ Esc 는 버리고 같은 칸을 선택한 채로 남는다',
+        await waitFor(`!document.querySelector('td[data-editing]') && document.activeElement?.dataset?.cell === '0:1'`, 3000),
+        String(await activeCell()))
+      check('버린 값은 서버에 가지 않았다', (await cellOf(0, numberProp)) === undefined, JSON.stringify(await cellOf(0, numberProp)))
+
+      // ── 둘째 행 — 아래 칸이 있어야 "아래로 간다/안 간다"를 구분할 수 있다 ──
+      await clickOn('[data-testid="db-add-row"]')
+      await waitFor(`document.querySelector('td[data-editing]')?.dataset.cell === '1:0'`, 8000)
+      const title2 = `둘째 행 ${Date.now()}`
+      await typeText(title2)
+      await key('Enter')
+      check('마지막 줄의 Enter 는 저장하고 제자리에 머문다 — 행을 몰래 만들지 않는다',
+        (await waitFor(`document.activeElement?.dataset?.cell === '1:0'`, 3000)) && (await rowCount()) === 2,
+        `${await activeCell()} · ${await rowCount()}행`)
+
+      // ── 편집 중 Enter 는 저장하고 아래 칸 ──
+      await key('ArrowUp')
+      await key('ArrowRight')
+      check('화살표로 선택이 움직인다', await waitFor(`document.activeElement?.dataset?.cell === '0:1'`, 3000), String(await activeCell()))
+      await key('Enter')
+      await waitFor(`!!document.querySelector('td[data-editing]')`, 3000)
+      await typeText('42')
+      await key('Enter')
+      check('★ 편집 중 Enter 는 저장하고 아래 칸을 선택한다 (F-03-16)',
+        await waitFor(`document.activeElement?.dataset?.cell === '1:1'`, 3000), String(await activeCell()))
+      check('숫자가 서버에 저장된다', await poll(async () => (await cellOf(0, numberProp))?.number === 42),
+        JSON.stringify(await cellOf(0, numberProp)))
+
+      // ── select ──
+      await key('ArrowUp')
+      await key('ArrowRight')
+      await key('Enter')
+      check('select 칸은 옵션 편집기를 열고 검색칸에 포커스를 둔다',
+        await waitFor(`document.activeElement?.matches('[data-testid="db-select-input"]')`, 3000))
+      await typeText('진행 중')
+      check('없는 이름이면 "만들기" 가 보인다', await waitFor(`!!document.querySelector('[data-testid="db-create-option"]')`, 3000))
+      await key('Enter')
+      // 만들기는 비동기다(옵션 POST 뒤에 칸에 넣는다). 그래서 이 검사는 표가 같은 Enter 를
+      // 한 번 더 처리하는지를 **가리지 못한다** — 반사실로 확인했다: 표의 defaultPrevented
+      // 가드를 빼도 통과한다. 선택이 잠깐 아래 칸으로 갔다가 요청이 끝난 뒤 되돌아온다.
+      // 그 가드는 아래의 "기존 옵션 고르기"(동기 경로)가 본다.
+      check('옵션을 만들면 편집기가 닫히고 그 칸이 선택된 채로 남는다',
+        await waitFor(`!document.querySelector('[data-testid="db-select-editor"]') && document.activeElement?.dataset?.cell === '0:2'`, 8000),
+        String(await activeCell()))
+      check('★ 만든 옵션이 칸에 칩으로 들어간다',
+        await waitFor(`document.querySelector('td[data-cell="0:2"] [data-testid="db-option-chip"]')?.textContent === '진행 중'`, 5000))
+      check('서버의 칸은 옵션 id 를 담고, 그 id 의 이름이 컬럼에 실린다',
+        await poll(async () => {
+          const body = await rowsApi()
+          const id = body.rows[0]?.properties?.[selectProp]?.select?.id
+          return !!id && body.columns.find((c) => c.propertyId === selectProp)?.options.find((o) => o.id === id)?.name === '진행 중'
+        }))
+
+      // 기존 옵션을 Enter 로 고른다 — 고르는 순간 칸이 "선택" 상태가 되므로, 같은 Enter 가
+      // 표에 닿으면 "선택 칸의 Enter = 편집 시작"이 되어 **편집기가 다시 열린다.**
+      await key('ArrowDown')
+      await key('Enter')
+      await waitFor(`document.activeElement?.matches('[data-testid="db-select-input"]')`, 3000)
+      await typeText('진행')
+      await waitFor(`!!document.querySelector('[data-testid="db-option"][aria-selected="true"]')`, 3000)
+      await key('Enter')
+      check('★ 기존 옵션을 고르는 Enter 가 표의 규칙을 한 번 더 타지 않는다 — 편집기가 다시 열리지 않는다',
+        await waitFor(`!document.querySelector('[data-testid="db-select-editor"]') && document.activeElement?.dataset?.cell === '1:2'
+          && document.querySelector('td[data-cell="1:2"] [data-testid="db-option-chip"]')?.textContent === '진행 중'`, 5000),
+        `선택 ${await activeCell()} · 편집기 ${await evaluate(`!!document.querySelector('[data-testid="db-select-editor"]')`)}`)
+      // 편집기가 다시 열렸을 때(= 위 검사가 실패한 경우)만 닫는다. 선택 상태에서 Esc 를
+      // 누르면 선택이 풀려 뒤의 검사가 연쇄로 실패하고, 무엇이 깨졌는지 가려진다.
+      if (await evaluate(`!!document.querySelector('[data-testid="db-select-editor"]')`)) await key('Escape')
+      await key('ArrowUp')
+
+      // ── checkbox ──
+      await key('ArrowRight')
+      await key('Enter')
+      check('★ 체크박스 칸의 Enter 는 토글이다 — 편집칸을 열지 않는다',
+        await waitFor(`document.querySelector('td[data-cell="0:3"] [role="img"]')?.getAttribute('aria-label') === '체크됨'
+          && !document.querySelector('td[data-editing]')`, 3000))
+      check('체크가 서버에 저장된다', await poll(async () => (await cellOf(0, checkProp))?.checkbox === true))
+
+      // ── 비우기 ──
+      await key('ArrowLeft')
+      await key('ArrowLeft')
+      await key('Delete')
+      check('Delete 는 선택한 칸을 비운다', await poll(async () => (await cellOf(0, numberProp))?.number === null),
+        JSON.stringify(await cellOf(0, numberProp)))
+
+      // ── 포커스가 진짜 칸에 있다 ──
+      await key('k', MOD)
+      await waitFor(`!!document.querySelector('[data-testid="search-overlay"]')`, 5000)
+      await key('Escape')
+      check('검색을 열었다 닫으면 포커스가 그 칸으로 돌아온다 — 칸이 실제 포커스를 갖고 있다 (roving tabindex)',
+        await waitFor(`!document.querySelector('[data-testid="search-overlay"]') && document.activeElement?.dataset?.cell === '0:1'`, 3000),
+        String(await activeCell()))
+
+      // ── 표 끝의 Tab ──
+      await key('ArrowDown')
+      await key('ArrowRight')
+      await key('ArrowRight')
+      check('마지막 칸을 선택했다', await waitFor(`document.activeElement?.dataset?.cell === '1:3'`, 3000), String(await activeCell()))
+      await key('Tab')
+      check('★ 표 끝의 Tab 은 포커스를 표 밖으로 보낸다 — 키보드 사용자를 가두지 않는다 (WCAG 2.1.2)',
+        await waitFor(`!!document.activeElement && document.activeElement !== document.body
+          && !document.querySelector('[data-testid="db-table"]').contains(document.activeElement)`, 3000),
+        await evaluate(`document.activeElement?.outerHTML?.slice(0, 100) ?? '(없음)'`))
+
+      // ── 새로고침 ──
+      await send('Page.reload')
+      await waitFor(`!!document.querySelector('[data-testid="db-table"] tbody tr')`, 15000)
+      check('★ 새로고침해도 값이 남는다 — 제목 · 옵션 칩 · 체크',
+        await evaluate(`(() => {
+          const row = document.querySelector('[data-testid="db-table"] tbody tr')
+          return row?.querySelector('td[data-cell="0:0"]')?.textContent === ${JSON.stringify(title1)}
+            && row?.querySelector('td[data-cell="0:2"] [data-testid="db-option-chip"]')?.textContent === '진행 중'
+            && row?.querySelector('td[data-cell="0:3"] [role="img"]')?.getAttribute('aria-label') === '체크됨'
+        })()`))
+      check('★ 사이드바에는 행이 없다 — 표 한 줄만 선다',
+        !(await evaluate(`document.querySelector('nav[aria-label="페이지 트리"]')?.textContent.includes(${JSON.stringify(title1)})`)))
+
+      // ── 더 보기 (F-04-15) ──
+      for (let i = 0; i < 55; i += 1) {
+        await fetch(`${BASE}/api/workspaces/${workspaceId}/views/${viewId}/rows`, { method: 'POST', headers: authed, body: '{}' })
+      }
+      await send('Page.reload')
+      await waitFor(`!!document.querySelector('[data-testid="db-load-more"]')`, 15000)
+      check('★ 첫 화면은 50행이고 "더 보기" 가 있다 — 무한 스크롤이 아니다', (await rowCount()) === 50, `${await rowCount()}행`)
+      await clickOn('[data-testid="db-load-more"]')
+      check('★ "더 보기" 가 나머지를 이어 붙이고 사라진다 — 57행',
+        await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === 57
+          && !document.querySelector('[data-testid="db-load-more"]')`, 8000),
+        `${await rowCount()}행`)
+      check('이어 붙인 행에 같은 행이 두 번 없다',
+        await evaluate(`(() => {
+          const ids = [...document.querySelectorAll('[data-testid="db-table"] tbody tr')].map((tr) => tr.dataset.rowId)
+          return new Set(ids).size === ids.length
+        })()`))
     }
 
     section('전체')
