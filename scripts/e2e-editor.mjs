@@ -1257,6 +1257,25 @@ async function main() {
         if (p) await click(p.x, p.y)
         return p !== null
       }
+      /**
+       * 팝오버가 조상 스크롤 상자에 잘리지 않는가.
+       *
+       * 한 축이 `auto` 인 상자는 다른 축의 `visible` 도 `auto` 로 계산된다(CSS 규칙).
+       * 그래서 표를 가로 스크롤 상자로 감싸면 칸 안의 절대 위치 팝오버가 **세로로 잘리고**
+       * 상자 안에 스크롤이 생긴다. 키보드와 `scrollIntoView` 로만 조작하는 검사는 이것을
+       * 보지 못한다 — 좌표로 본다.
+       */
+      const unclipped = (selector) => evaluate(`(() => {
+        const pop = document.querySelector(${JSON.stringify(selector)})
+        if (!pop) return { ok: false, detail: '팝오버가 없다' }
+        for (let box = pop.parentElement; box && box !== document.body; box = box.parentElement) {
+          if (!/(auto|scroll|hidden)/.test(getComputedStyle(box).overflowY)) continue
+          const p = pop.getBoundingClientRect()
+          const b = box.getBoundingClientRect()
+          return { ok: p.bottom <= b.bottom + 1, detail: box.className + ' · 팝오버 아래 ' + Math.round(p.bottom) + ' / 상자 아래 ' + Math.round(b.bottom) }
+        }
+        return { ok: true, detail: '자르는 조상이 없다' }
+      })()`)
       const activeCell = () => evaluate(`document.activeElement?.dataset?.cell ?? null`)
       const editingCell = () => evaluate(`document.querySelector('td[data-editing]')?.dataset.cell ?? null`)
       const rowCount = () => evaluate(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length`)
@@ -1297,9 +1316,16 @@ async function main() {
       const cellOf = async (rowIndex, propertyId) => ((await rowsApi()).rows[rowIndex]?.properties ?? {})[propertyId]
 
       // ── 속성 ──
+      let formChecked = false
       const addColumn = async (name, type) => {
         await clickOn('[data-testid="db-add-column"]')
         await waitFor(`document.activeElement?.getAttribute('aria-label') === '속성 이름'`, 3000)
+        if (!formChecked) {
+          // 행이 0개인 표 — 폼이 표보다 훨씬 길다. 잘림이 가장 잘 드러나는 순간이다.
+          formChecked = true
+          const clip = await unclipped('[data-testid="db-add-column-form"]')
+          check('★ 속성 추가 폼이 표 상자에 잘리지 않는다', clip.ok, clip.detail)
+        }
         await typeText(name)
         await evaluate(`(() => {
           const s = document.querySelector('select[aria-label="속성 유형"]')
@@ -1374,6 +1400,10 @@ async function main() {
       await key('Enter')
       check('select 칸은 옵션 편집기를 열고 검색칸에 포커스를 둔다',
         await waitFor(`document.activeElement?.matches('[data-testid="db-select-input"]')`, 3000))
+      {
+        const clip = await unclipped('[data-testid="db-select-editor"]')
+        check('★ 옵션 편집기가 표 상자에 잘리지 않는다 — 가로 스크롤 상자가 세로로도 자른다', clip.ok, clip.detail)
+      }
       await typeText('진행 중')
       check('없는 이름이면 "만들기" 가 보인다', await waitFor(`!!document.querySelector('[data-testid="db-create-option"]')`, 3000))
       await key('Enter')

@@ -406,7 +406,14 @@ export function DatabaseTable(props: {
 
   return (
     <section className="flex min-w-0 flex-col gap-3">
-      <div className="overflow-x-auto">
+      {/*
+        표를 가로 스크롤 상자로 감싸지 않는다. 한 축이 `auto` 인 상자는 다른 축의
+        `visible` 도 `auto` 로 계산되어(CSS 규칙), 칸 안의 팝오버(옵션 편집기 · 속성
+        추가 폼)가 **세로로 잘리고** 상자 안에 스크롤이 생긴다. 넓은 표는 페이지가
+        가로로 스크롤한다. 표 안에서만 스크롤하게 하려면 팝오버를 칸 밖(고정 위치)으로
+        빼야 한다 — e2e 의 잘림 검사가 그 조건을 본다.
+      */}
+      <div>
         <table
           role="grid"
           aria-label={tableName || '제목 없음'}
