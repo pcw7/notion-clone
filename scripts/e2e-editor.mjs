@@ -164,6 +164,13 @@ function connect(url) {
     ws.onopen = resolve
     ws.onerror = reject
   })
+  // 브라우저가 죽으면 소켓이 닫히고 대기 중인 요청의 응답은 영영 오지 않는다.
+  // 그대로 두면 스크립트가 **실패하지 않고 매달린다** — 실제로 10분 넘게 조용히
+  // 멈춰 있었다. 닫히는 순간 대기 중인 요청을 전부 실패시켜 어디서 죽었는지 남긴다.
+  ws.onclose = () => {
+    for (const settle of pending.values()) settle({ error: { message: '브라우저와의 연결이 끊겼다(브라우저가 종료됐다)' } })
+    pending.clear()
+  }
   return { ws, send, opened, pageErrors }
 }
 
