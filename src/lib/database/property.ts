@@ -51,6 +51,7 @@ import {
   isMvpPropertyType,
   type MvpPropertyType,
 } from './property-types.ts'
+import { addPropertyToViews } from './view.ts'
 
 /**
  * data_source 당 프로퍼티 상한.
@@ -332,12 +333,13 @@ export async function addProperty(
       [dataSourceId],
     )
 
+    const propertyId = newPropertyId()
     await tx.query(
       `INSERT INTO property (id, data_source_id, name, description, type, config, order_idx,
                              created_at, updated_at)
        VALUES ($1, $2, $3, $4, $5::property_type, $6::jsonb, $7, now(), now())`,
       [
-        newPropertyId(),
+        propertyId,
         dataSourceId,
         name,
         input.description ?? null,
@@ -346,6 +348,11 @@ export async function addProperty(
         orderKeyBetween(last?.order_idx ?? null, null),
       ],
     )
+
+    // ★ 새 콬럼은 이 data_source 의 **모든 뷰**에 나타나야 한다.
+    //   `view_property.visible` 기본값이 `false` 이고 행이 없으면 조인에서
+    //   바지므로, 시등하지 않으면 "콬럼을 추가했는데 표에 없다" 가 된다.
+    await addPropertyToViews(tx, dataSourceId, propertyId)
 
     await bumpSchema(tx, dataSourceId)
     return { ok: true, value: await readSchema(tx, dataSourceId) } as const
@@ -574,6 +581,10 @@ export async function restoreProperty(
         WHERE id = $1 AND data_source_id = $2`,
       [propertyId, dataSourceId, orderKeyBetween(last?.order_idx ?? null, null)],
     )
+
+    // 뷰에도 다시 넣는다. 지우는 동안 `view_property` 행은 남아 있었지만
+    // (폭·숬서 설정이 돌아오라고 그러다) 그 사이 만들어진 뷰에는 행이 없다.
+    await addPropertyToViews(tx, dataSourceId, propertyId)
 
     await bumpSchema(tx, dataSourceId)
     return { ok: true, value: await readSchema(tx, dataSourceId) } as const

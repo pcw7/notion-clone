@@ -48,6 +48,7 @@ import { effectiveCaps } from '../permissions/effective.ts'
 import { orderKeyBetween } from '../block/order-key.ts'
 import { nextSiblingKey, titleFromPlainText, plainTitleOf } from '../block/page.ts'
 import { newPropertyId } from './property.ts'
+import { DEFAULT_VIEW_NAME } from './view.ts'
 
 /** 제목 프로퍼티의 기본 이름. 노션은 "Name" 이고 우리는 한국어 UI 다. */
 export const DEFAULT_TITLE_PROPERTY_NAME = '이름'
@@ -62,6 +63,8 @@ export type DatabaseDetail = {
   readonly dataSourceId: string
   readonly schemaVersion: string
   readonly isInline: boolean
+  /** 기본 뷰. 표를 만들면 항상 하나가 함께 생긴다. */
+  readonly defaultViewId?: string
 }
 
 export type DatabaseFailure = 'not_found' | 'forbidden' | 'invalid_name'
@@ -143,15 +146,44 @@ export async function createDatabase(
 
     // P1 의 "적어도 1개". 제목 프로퍼티는 삭제도 타입 변경도 안 되므로
     // 여기서 만들어지는 것이 그 data_source 의 제목 컬럼 전부다.
+    const titlePropertyId = newPropertyId()
+    const titleOrder = orderKeyBetween(null, null)
     await tx.query(
       `INSERT INTO property (id, data_source_id, name, type, order_idx, created_at, updated_at)
        VALUES ($1, $2, $3, 'title', $4, now(), now())`,
-      [newPropertyId(), dataSourceId, DEFAULT_TITLE_PROPERTY_NAME, orderKeyBetween(null, null)],
+      [titlePropertyId, dataSourceId, DEFAULT_TITLE_PROPERTY_NAME, titleOrder],
+    )
+
+    // ★ 기본 뷰. **뷰가 없는 데이터베이스는 화면에 그릴 것이 없다** — `deleteView`
+    //   가 마지막 뷰 삭제를 막는 이유와 같다. 여기서 만들지 않으면 표를 만든
+    //   사람이 뷰를 먼저 만들어야 하는 상태가 된다.
+    //
+    //   `view.ts` 의 `createView` 를 부르지 않는다 — 그 함수는 자기 트랜잭션을
+    //   열고 권한을 다시 보는데, 여기는 방금 만들어지는 중인 밖에 ACL 행이 아직
+    //   보이지 않을 수 있는 같은 트랜잭션 어딘가다.
+    const viewId = randomUUID()
+    await tx.query(
+      `INSERT INTO view (id, owner_kind, database_id, data_source_id, name, type, order_idx,
+                         configuration, created_at, updated_at)
+       VALUES ($1, 'database_view', $2, $3, $4, 'table', $5, '{}'::jsonb, now(), now())`,
+      [viewId, id, dataSourceId, DEFAULT_VIEW_NAME, orderKeyBetween(null, null)],
+    )
+    await tx.query(
+      `INSERT INTO view_property (view_id, property_id, visible, order_idx)
+       VALUES ($1, $2, true, $3)`,
+      [viewId, titlePropertyId, titleOrder],
     )
 
     return {
       ok: true,
-      value: { id, name, dataSourceId, schemaVersion: '1', isInline: false },
+      value: {
+        id,
+        name,
+        dataSourceId,
+        schemaVersion: '1',
+        isInline: false,
+        defaultViewId: viewId,
+      },
     } as const
   })
 }
