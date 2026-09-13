@@ -48,8 +48,11 @@
  */
 
 import { useEffect, useRef, useState, type FocusEvent, type KeyboardEvent, type MouseEvent } from 'react'
+import { useRouter } from 'next/navigation'
 
 import type { DatabaseAccess } from '@/lib/database/database'
+import type { SortKey } from '@/lib/database/filter'
+import { sortFirst } from '@/lib/database/filter-draft'
 import type { RowJson } from '@/lib/database/http'
 import type { ViewColumn } from '@/lib/database/view'
 import { MAX_QUERY_PAGINATION } from '@/lib/database/limits'
@@ -60,6 +63,8 @@ import * as api from './table-api'
 import { CellDisplay, TYPE_ICON, TYPE_LABEL } from './cell-view'
 import { SelectEditor } from './select-editor'
 import { AddColumn } from './add-column'
+import { ColumnMenu } from './column-menu'
+import { isSortable } from './view-toolbar'
 
 const keyOf = (at: CellPos): string => `${at.row}:${at.col}`
 const samePos = (a: CellPos, b: CellPos): boolean => a.row === b.row && a.col === b.col
@@ -78,8 +83,11 @@ export function DatabaseTable(props: {
   hasMore: boolean
   nextCursor: string | null
   access: DatabaseAccess
+  /** 지금 뷰의 정렬(지워진 속성의 키를 뺀 것). 머리 메뉴의 정렬이 이것을 고친다. */
+  sorts: readonly SortKey[]
 }) {
   const { workspaceId, viewId, dataSourceId, tableName, access } = props
+  const router = useRouter()
 
   const [columns, setColumns] = useState<ViewColumn[]>(props.columns)
   const [rows, setRows] = useState<RowJson[]>(props.rows)
@@ -374,6 +382,31 @@ export function DatabaseTable(props: {
     return null
   }
 
+  // ── 머리 메뉴 ──────────────────────────────────────────────────────
+  //
+  // 전부 공유 설정(뷰 · 스키마)이다. 저장한 뒤 서버 렌더를 다시 받고, 표는 `page.tsx`
+  // 의 key(필터 · 정렬 · 컬럼)가 바뀌어 새로 마운트된다 — 정렬이 바뀐 목록에 옛 커서로
+  // 이어 붙이지 않는다.
+
+  const afterStructure = (result: api.ApiResult<null>): string | null => {
+    if (!result.ok) return result.message
+    router.refresh()
+    return null
+  }
+
+  const columnActions = (column: ViewColumn) => ({
+    onSort: async (direction: SortKey['direction']) =>
+      afterStructure(
+        await api.updateView(workspaceId, viewId, { sorts: sortFirst(props.sorts, column.propertyId, direction) }),
+      ),
+    onRename: async (name: string) =>
+      afterStructure(await api.renameColumn(workspaceId, dataSourceId, column.propertyId, name)),
+    onHide: async () =>
+      afterStructure(await api.setColumnVisible(workspaceId, viewId, column.propertyId, false)),
+    onDelete: async () =>
+      afterStructure(await api.deleteColumn(workspaceId, dataSourceId, column.propertyId)),
+  })
+
   // F-03-17: 누적 10,000건 상한. 여기서 멈추고 필터로 좁히라고 말한다 — "전부 훑는"
   // 로직은 반드시 깨진다. 무한 스크롤을 만들지 않는 이유이기도 하다.
   const reachedCap = rows.length >= MAX_QUERY_PAGINATION
@@ -431,13 +464,29 @@ export function DatabaseTable(props: {
                   scope="col"
                   data-property-id={column.propertyId}
                   style={{ width: column.width ?? defaultColumnWidth(column.type) }}
-                  className="truncate border border-neutral-200 px-2 py-1.5 text-left text-xs font-medium text-neutral-500 dark:border-neutral-800"
+                  className="border border-neutral-200 px-2 py-1.5 text-left text-xs font-medium text-neutral-500 dark:border-neutral-800"
                 >
-                  <span aria-hidden className="mr-1.5 text-neutral-400">
-                    {TYPE_ICON[column.type]}
-                  </span>
-                  {column.name}
-                  <span className="sr-only"> ({TYPE_LABEL[column.type]})</span>
+                  {/*
+                    `th` 에 truncate(overflow: hidden)를 걸지 않는다 — 머리 메뉴 팝오버가
+                    잘린다. 자르는 것은 이름 칸뿐이다.
+                  */}
+                  <div className="flex items-center gap-1">
+                    <span className="min-w-0 flex-1 truncate">
+                      <span aria-hidden className="mr-1.5 text-neutral-400">
+                        {TYPE_ICON[column.type]}
+                      </span>
+                      {column.name}
+                      <span className="sr-only"> ({TYPE_LABEL[column.type]})</span>
+                    </span>
+                    {access.canEditStructure && (
+                      <ColumnMenu
+                        name={column.name}
+                        isTitle={column.type === 'title'}
+                        sortable={isSortable(column)}
+                        {...columnActions(column)}
+                      />
+                    )}
+                  </div>
                 </th>
               ))}
               {access.canEditStructure && (

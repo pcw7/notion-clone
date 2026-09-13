@@ -8,6 +8,7 @@
  * try/catch 를 빠뜨려 낙관적으로 칠한 칸이 되돌아가지 않는 경로를 만들지 않는다.
  */
 
+import type { FilterNode, SortKey } from '@/lib/database/filter'
 import type { RowJson } from '@/lib/database/http'
 import type { PropertySummary } from '@/lib/database/property'
 import type { CellValue, MvpPropertyType, SelectOption } from '@/lib/database/property-types'
@@ -38,6 +39,14 @@ function messageOf(status: number, body: ErrorBody): string {
       return '다른 곳에서 먼저 바뀌었습니다. 새로고침하세요.'
     case 'readonly_property':
       return '읽기 전용 속성입니다.'
+    case 'invalid_filter':
+      return '필터를 확인하세요.'
+    case 'invalid_sorts':
+      return '정렬을 확인하세요.'
+    case 'title_required':
+      return '제목 속성은 숨길 수 없습니다.'
+    case 'title_immutable':
+      return '제목 속성은 지울 수 없습니다.'
   }
   return status >= 500 ? '서버에서 처리하지 못했습니다.' : '처리하지 못했습니다.'
 }
@@ -114,6 +123,58 @@ export function addOption(
     `${base(workspaceId)}/data-sources/${dataSourceId}/properties/${propertyId}/options`,
     { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ name }) },
     (body) => body.option as SelectOption,
+  )
+}
+
+/**
+ * 뷰의 필터 · 정렬을 저장한다. **보낸 키만** 바뀐다 — `filter: null` 은 "필터를 없애라",
+ * 키가 없으면 "그대로 둬라"다(`PATCH /views` 라우트가 `'filter' in body` 로 가른다).
+ */
+export function updateView(
+  workspaceId: string,
+  viewId: string,
+  patch: { readonly filter?: FilterNode | null; readonly sorts?: readonly SortKey[] },
+): Promise<ApiResult<null>> {
+  return call(
+    `${base(workspaceId)}/views/${viewId}`,
+    { method: 'PATCH', headers: JSON_HEADERS, body: JSON.stringify(patch) },
+    () => null,
+  )
+}
+
+/** 컬럼 하나를 보이거나 숨긴다 — 불변식 V1: 컬럼 하나가 주소다. */
+export function setColumnVisible(
+  workspaceId: string,
+  viewId: string,
+  propertyId: string,
+  visible: boolean,
+): Promise<ApiResult<null>> {
+  return call(
+    `${base(workspaceId)}/views/${viewId}/columns/${encodeURIComponent(propertyId)}`,
+    { method: 'PATCH', headers: JSON_HEADERS, body: JSON.stringify({ visible }) },
+    () => null,
+  )
+}
+
+export function renameColumn(
+  workspaceId: string,
+  dataSourceId: string,
+  propertyId: string,
+  name: string,
+): Promise<ApiResult<null>> {
+  return call(
+    `${base(workspaceId)}/data-sources/${dataSourceId}/properties/${encodeURIComponent(propertyId)}`,
+    { method: 'PATCH', headers: JSON_HEADERS, body: JSON.stringify({ name }) },
+    () => null,
+  )
+}
+
+/** 속성을 지운다 — soft delete 다. 셀 값은 서버에 남는다(`deleteProperty` 머리말). */
+export function deleteColumn(workspaceId: string, dataSourceId: string, propertyId: string): Promise<ApiResult<null>> {
+  return call(
+    `${base(workspaceId)}/data-sources/${dataSourceId}/properties/${encodeURIComponent(propertyId)}`,
+    { method: 'DELETE' },
+    () => null,
   )
 }
 

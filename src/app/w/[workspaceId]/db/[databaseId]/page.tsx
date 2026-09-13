@@ -34,8 +34,11 @@ import { getDatabase } from '@/lib/database/database'
 import { getView, listViews } from '@/lib/database/view'
 import { queryRows } from '@/lib/database/query'
 import { rowJson } from '@/lib/database/http'
+import { readOperatorCatalog } from '@/lib/database/operator-catalog'
+import { liveSorts } from '@/lib/database/filter-draft'
 import { DatabaseTitle } from './database-title'
 import { DatabaseTable } from './database-table'
+import { ViewToolbar } from './view-toolbar'
 
 const UNTITLED = '제목 없음'
 
@@ -61,14 +64,30 @@ export default async function DatabasePage({
   const view = await getView(ctx, current.id)
   if (!view.ok) notFound()
 
-  const page = await queryRows(ctx, view.value.dataSourceId, {
-    filter: view.value.filter,
-    sorts: view.value.sorts,
-    limit: view.value.loadLimit,
-  })
+  const [page, catalog] = await Promise.all([
+    queryRows(ctx, view.value.dataSourceId, {
+      filter: view.value.filter,
+      sorts: view.value.sorts,
+      limit: view.value.loadLimit,
+    }),
+    // 필터 패널의 연산자 드롭다운이 이것을 그린다 — 코드에 박지 않는다(F-03-17).
+    readOperatorCatalog(),
+  ])
   if (!page.ok) notFound()
 
   const { name, access } = database.value
+  const columns = view.value.columns
+  // 지워진 속성의 정렬 키를 뺀다. 그대로 두면 다른 키를 고친 저장까지 서버가 거부한다
+  // (`filter-draft.ts` 머리말).
+  const sorts = liveSorts(view.value.sorts, new Map(columns.map((c) => [c.propertyId, c.type])))
+  // 표를 새로 마운트하는 기준. 필터 · 정렬 · 컬럼(이름 · 보임)이 바뀌면 불러온 행과
+  // 커서가 무효다(F-04-15) — 옛 커서로 이어 붙이면 순서가 섞인다.
+  const tableKey = JSON.stringify([
+    view.value.id,
+    view.value.filter,
+    view.value.sorts,
+    columns.map((c) => [c.propertyId, c.name, c.visible]),
+  ])
 
   return (
     <main className="flex min-h-screen min-w-0 flex-col gap-6 px-10 py-12">
@@ -108,19 +127,30 @@ export default async function DatabasePage({
         ))}
       </nav>
 
+      <ViewToolbar
+        workspaceId={workspaceId}
+        viewId={view.value.id}
+        columns={[...columns]}
+        filter={view.value.filter}
+        sorts={sorts}
+        catalog={catalog}
+        canEdit={access.canEditStructure}
+      />
+
       <DatabaseTable
-        // 뷰를 바꾸면 표의 상태(선택 · 편집 · 불러온 행)를 버린다. 다른 뷰의 목록에
-        // 이전 뷰의 커서로 이어 붙이면 순서가 섞인다.
-        key={view.value.id}
+        // 뷰 · 필터 · 정렬 · 컬럼이 바뀌면 표의 상태(선택 · 편집 · 불러온 행)를 버린다.
+        // 다른 목록에 옛 커서로 이어 붙이면 순서가 섞인다.
+        key={tableKey}
         workspaceId={workspaceId}
         viewId={view.value.id}
         dataSourceId={view.value.dataSourceId}
         tableName={name}
-        columns={view.value.columns.filter((column) => column.visible)}
+        columns={columns.filter((column) => column.visible)}
         rows={page.value.rows.map(rowJson)}
         hasMore={page.value.hasMore}
         nextCursor={page.value.nextCursor}
         access={access}
+        sorts={sorts}
       />
     </main>
   )

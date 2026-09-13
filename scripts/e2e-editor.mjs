@@ -1159,8 +1159,16 @@ async function main() {
       // `bodyBefore` 는 오버레이를 열기 **전**에 찍었다. 반사실로 확인한 결과
       // 이 검사가 실제로 잡는 것은 화살표가 아니라 **타이핑이 에디터로 새는 것**
       // 이었다(포커스 이동을 끄면 검색어가 본문에 박힌다). 이름을 그대로 적는다.
-      check('★ 오버레이가 열린 동안의 입력이 본문에 새지 않았다',
-        (await evaluate(`document.querySelector('.blk-editor')?.textContent ?? ''`)) === bodyBefore)
+      {
+        const bodyAfter = await evaluate(`document.querySelector('.blk-editor')?.textContent ?? ''`)
+        // 실패하면 무엇이 달라졌는지 남긴다 — 참/거짓만으로는 새어 들어간 타이핑인지,
+        // 비동기로 바뀐 다른 글자인지 구분할 수 없다(추측하지 않는다, HANDOFF §6).
+        let at = 0
+        while (at < bodyBefore.length && bodyBefore[at] === bodyAfter[at]) at += 1
+        check('★ 오버레이가 열린 동안의 입력이 본문에 새지 않았다', bodyAfter === bodyBefore,
+          `처음 달라진 곳 ${at}자: 전 ${JSON.stringify(bodyBefore.slice(Math.max(0, at - 20), at + 40))}` +
+            ` / 후 ${JSON.stringify(bodyAfter.slice(Math.max(0, at - 20), at + 40))}`)
+      }
 
       // ★ 위 검사를 **성립시키는 메커니즘**을 따로 본다.
       //
@@ -1504,6 +1512,170 @@ async function main() {
           const ids = [...document.querySelectorAll('[data-testid="db-table"] tbody tr')].map((tr) => tr.dataset.rowId)
           return new Set(ids).size === ids.length
         })()`))
+
+      section('데이터베이스 필터 · 정렬 · 속성 (W8-b · F-04-09 · F-04-10 · F-04-12)')
+      // 규칙(평평한 AND · 덜 찬 규칙 · 지워진 속성)은 `filter-draft.test.ts` 가 본다. 여기서는
+      // 저장 → 서버 렌더 → 표 재마운트가 실제로 행 집합을 바꾸는지, 패널 초안이 그 과정을
+      // 견디는지, 편집할 수 없는 필터를 건드리지 않는지를 본다.
+      const titles = () => evaluate(`[...document.querySelectorAll('[data-testid="db-table"] tbody tr')]
+        .map((tr) => tr.querySelector('td[data-cell$=":0"]')?.textContent ?? '')`)
+      const setSelect = (selector, value) => evaluate(`(() => {
+        const s = document.querySelector(${JSON.stringify(selector)})
+        if (!s) return false
+        s.value = ${JSON.stringify(value)}
+        s.dispatchEvent(new Event('change', { bubbles: true }))
+        return true
+      })()`)
+      const chipTexts = (testId) => evaluate(`[...document.querySelectorAll('[data-testid="${testId}"]')].map((e) => e.textContent).join(' | ')`)
+
+      // 정렬에 쓸 숫자 — 첫 행 5, 둘째 행 30. 나머지 55행은 빈 칸이다.
+      const firstPage = (await rowsApi()).rows
+      for (const [title, n] of [[title1, 5], [title2, 30]]) {
+        const id = firstPage.find((r) => r.title === title)?.id
+        await fetch(`${BASE}/api/workspaces/${workspaceId}/rows/${id}`, {
+          method: 'PATCH', headers: authed,
+          body: JSON.stringify({ cells: [{ propertyId: numberProp, value: { type: 'number', number: n } }] }),
+        })
+      }
+      await send('Page.reload')
+      await waitFor(`!!document.querySelector('[data-testid="db-table"] tbody tr')`, 15000)
+
+      // ── 머리 메뉴 ──
+      await clickOn(`th[data-property-id="${propIds[0]}"] [data-testid="db-column-menu"]`)
+      check('제목 속성의 머리 메뉴에는 숨기기 · 삭제가 없다',
+        await waitFor(`!!document.querySelector('[data-testid="db-column-menu-panel"]')
+          && !document.querySelector('[data-testid="db-column-hide"]') && !document.querySelector('[data-testid="db-column-delete"]')`, 3000))
+      await clickOn(`th[data-property-id="${propIds[0]}"] [data-testid="db-column-menu"]`)
+
+      await clickOn(`th[data-property-id="${selectProp}"] [data-testid="db-column-menu"]`)
+      check('★ select 머리 메뉴에는 정렬이 없다 — 옵션 id 순서를 정렬처럼 보여주지 않는다',
+        await waitFor(`!!document.querySelector('[data-testid="db-column-menu-panel"]') && !document.querySelector('[data-testid="db-column-sort-asc"]')`, 3000))
+      await clickOn(`th[data-property-id="${selectProp}"] [data-testid="db-column-menu"]`)
+
+      await clickOn(`th[data-property-id="${numberProp}"] [data-testid="db-column-menu"]`)
+      await waitFor(`!!document.querySelector('[data-testid="db-column-menu-panel"]')`, 3000)
+      {
+        const clip = await unclipped('[data-testid="db-column-menu-panel"]')
+        check('★ 머리 메뉴가 잘리지 않는다 — th 에 overflow 를 걸지 않았다', clip.ok, clip.detail)
+      }
+      await clickOn('[data-testid="db-column-sort-desc"]')
+      check('★ 머리 메뉴의 내림차순 — 큰 수가 위, 빈 칸은 맨 아래 (NULLS LAST)',
+        await waitFor(`(() => {
+          const t = [...document.querySelectorAll('[data-testid="db-table"] tbody tr')].map((tr) => tr.querySelector('td[data-cell$=":0"]')?.textContent)
+          return t[0] === ${JSON.stringify(title2)} && t[1] === ${JSON.stringify(title1)}
+        })()`, 10000),
+        JSON.stringify((await titles()).slice(0, 3)))
+      check('정렬 칩이 걸린 조건을 보여준다', await waitFor(`[...document.querySelectorAll('[data-testid="db-sort-chip"]')].some((e) => e.textContent.includes('↓'))`, 5000),
+        await chipTexts('db-sort-chip'))
+
+      // ── 필터 패널 ──
+      await clickOn('[data-testid="db-filter-button"]')
+      await waitFor(`!!document.querySelector('[data-testid="db-filter-panel"]')`, 3000)
+      // 첫 규칙은 값을 넣지 않고 둔다(제목 · 포함 · 빈 값). 둘째 규칙을 저장한 뒤에도
+      // 이 규칙이 남아 있어야 "서버 렌더가 초안을 덮지 않는다"가 검사된다 — 규칙이 하나뿐이면
+      // 패널이 서버 값으로 다시 그려져도 똑같이 1개로 보여 가려내지 못한다.
+      await clickOn('[data-testid="db-filter-add"]')
+      await waitFor(`document.querySelectorAll('[data-testid="db-filter-rule"]').length === 1`, 3000)
+      await clickOn('[data-testid="db-filter-add"]')
+      await waitFor(`document.querySelectorAll('[data-testid="db-filter-rule"]').length === 2`, 3000)
+      const second = '[data-testid="db-filter-rule"]:nth-child(2)'
+      await setSelect(`${second} select[aria-label="필터 속성"]`, numberProp)
+      await waitFor(`!!document.querySelector('${second} select[aria-label="필터 조건"] option[value="greater_than"]')`, 3000)
+      check('★ 연산자는 카탈로그의 한국어 라벨이다 — 숫자 속성이면 "초과"가 있고 "포함"은 없다',
+        await evaluate(`(() => {
+          const labels = [...document.querySelectorAll('${second} select[aria-label="필터 조건"] option')].map((o) => o.textContent)
+          return labels.includes('초과') && !labels.includes('포함')
+        })()`))
+      await setSelect(`${second} select[aria-label="필터 조건"]`, 'greater_than')
+      check('값이 없는 규칙은 아직 적용되지 않는다고 말한다',
+        await waitFor(`document.querySelector('[data-testid="db-filter-panel"]')?.textContent.includes('값을 넣으면 적용됩니다')`, 3000))
+      check('값이 없는 규칙은 보내지 않는다 — 거부 오류도 없고 행도 그대로다',
+        (await rowCount()) === 50 && !(await evaluate(`!!document.querySelector('[data-testid="db-toolbar-error"]')`)),
+        `${await rowCount()}행 · ${await evaluate(`document.querySelector('[data-testid="db-toolbar-error"]')?.textContent ?? '오류 없음'`)}`)
+      await clickOn(`${second} input[data-testid="db-filter-value"]`)
+      await typeText('10')
+      await key('Enter')
+      check('★ 수량 > 10 필터가 저장되어 한 행만 남는다 — 값이 빈 첫 규칙이 저장을 막지 않는다',
+        await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === 1`, 10000), `${await rowCount()}행`)
+      check('필터 칩이 조건을 말한다 — 수량 · 초과 · 10',
+        await waitFor(`[...document.querySelectorAll('[data-testid="db-filter-chip"]')].some((e) => e.textContent === '수량 · 초과 · 10')`, 5000),
+        await chipTexts('db-filter-chip'))
+      check('★ 저장 뒤에도 값이 빈 규칙이 패널에 남는다 — 서버 렌더가 초안을 덮지 않는다',
+        await evaluate(`!!document.querySelector('[data-testid="db-filter-panel"]') && document.querySelectorAll('[data-testid="db-filter-rule"]').length === 2`),
+        `규칙 ${await evaluate(`document.querySelectorAll('[data-testid="db-filter-rule"]').length`)}줄`)
+
+      await send('Page.reload')
+      await waitFor(`!!document.querySelector('[data-testid="db-table"]')`, 15000)
+      check('★ 새로고침해도 필터 · 정렬이 남는다 — 뷰에 저장된 공유 상태다',
+        await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === 1
+          && document.querySelectorAll('[data-testid="db-filter-chip"]').length === 1 && document.querySelectorAll('[data-testid="db-sort-chip"]').length === 1`, 10000),
+        `${await rowCount()}행 · ${await chipTexts('db-filter-chip')} · ${await chipTexts('db-sort-chip')}`)
+
+      await clickOn('[data-testid="db-filter-button"]')
+      await waitFor(`!!document.querySelector('[data-testid="db-filter-remove"]')`, 3000)
+      await clickOn('[data-testid="db-filter-remove"]')
+      check('규칙을 지우면 필터가 없어지고 다시 50행 + "더 보기"다',
+        await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === 50
+          && !!document.querySelector('[data-testid="db-load-more"]') && !document.querySelector('[data-testid="db-filter-chip"]')`, 10000),
+        `${await rowCount()}행`)
+      await clickOn('[data-testid="db-filter-button"]')
+
+      // ── 편집할 수 없는 필터 ──
+      const viewUrl = `${BASE}/api/workspaces/${workspaceId}/views/${viewId}`
+      const orFilter = { op: 'or', children: [
+        { property_id: numberProp, operator: 'equals', value: 5 },
+        { property_id: numberProp, operator: 'equals', value: 30 },
+      ] }
+      await fetch(viewUrl, { method: 'PATCH', headers: authed, body: JSON.stringify({ filter: orFilter }) })
+      await send('Page.reload')
+      await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === 2`, 15000)
+      await clickOn('[data-testid="db-filter-button"]')
+      check('★ OR 필터는 편집할 수 없다고 말한다 — 규칙 줄로 펴지 않는다',
+        await waitFor(`!!document.querySelector('[data-testid="db-filter-not-editable"]') && !document.querySelector('[data-testid="db-filter-rule"]')`, 3000))
+      check('★ 패널을 열어도 서버의 OR 필터는 그대로다 — AND 로 다시 저장하지 않는다',
+        (await (await fetch(viewUrl, { headers: authed })).json()).view?.filter?.op === 'or')
+      await clickOn('[data-testid="db-filter-clear"]')
+      check('"필터 지우기" 로 없앤다',
+        await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === 50 && !document.querySelector('[data-testid="db-filter-chip"]')`, 10000),
+        `${await rowCount()}행`)
+
+      // ── 속성(표시) ──
+      await clickOn('[data-testid="db-properties-button"]')
+      await waitFor(`!!document.querySelector('[data-testid="db-properties-panel"]')`, 3000)
+      check('제목 속성의 표시 토글은 잠겨 있다 (F-04-12)',
+        await evaluate(`document.querySelector('[data-testid="db-property-toggle"][data-property-id="${propIds[0]}"]')?.disabled === true`))
+      await clickOn(`[data-testid="db-property-toggle"][data-property-id="${checkProp}"]`)
+      check('★ 속성을 숨기면 표 머리에서 빠진다',
+        await waitFor(`!document.querySelector('[data-testid="db-table"] thead th[data-property-id="${checkProp}"]')`, 10000))
+      await clickOn('[data-testid="db-properties-button"]')
+
+      // ── 이름 바꾸기 · 삭제 ──
+      await clickOn(`th[data-property-id="${numberProp}"] [data-testid="db-column-menu"]`)
+      await clickOn('[data-testid="db-column-rename"]')
+      await waitFor(`document.activeElement?.getAttribute('aria-label') === '속성 새 이름'`, 3000)
+      await evaluate(`document.activeElement.select()`)
+      await typeText('개수')
+      await clickOn('[data-testid="db-column-rename-save"]')
+      check('★ 머리 메뉴로 이름을 바꾸면 머리와 정렬 칩이 함께 바뀐다',
+        await waitFor(`document.querySelector('th[data-property-id="${numberProp}"]')?.textContent.includes('개수')
+          && [...document.querySelectorAll('[data-testid="db-sort-chip"]')].some((e) => e.textContent.includes('개수'))`, 10000),
+        await chipTexts('db-sort-chip'))
+
+      await clickOn(`th[data-property-id="${selectProp}"] [data-testid="db-column-menu"]`)
+      await clickOn('[data-testid="db-column-delete"]')
+      check('삭제는 메뉴 안에서 한 번 더 묻는다', await waitFor(`!!document.querySelector('[data-testid="db-column-delete-confirm"]')`, 3000))
+      await clickOn('[data-testid="db-column-delete-confirm"]')
+      check('★ 속성을 지우면 머리에서 빠진다',
+        await waitFor(`!document.querySelector('[data-testid="db-table"] thead th[data-property-id="${selectProp}"]')`, 10000))
+
+      // ── 정렬 지우기 ──
+      await clickOn('[data-testid="db-sort-button"]')
+      await waitFor(`!!document.querySelector('[data-testid="db-sort-remove"]')`, 3000)
+      await clickOn('[data-testid="db-sort-remove"]')
+      check('정렬을 지우면 칩이 사라지고 만든 순서로 돌아온다',
+        await waitFor(`!document.querySelector('[data-testid="db-sort-chip"]')
+          && document.querySelector('[data-testid="db-table"] tbody tr td[data-cell$=":0"]')?.textContent === ${JSON.stringify(title1)}`, 10000),
+        JSON.stringify((await titles()).slice(0, 2)))
     }
 
     section('전체')
