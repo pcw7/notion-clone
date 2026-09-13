@@ -131,6 +131,11 @@ describe('createDatabase — 불변식의 "적어도 1개"를 지킨다', () => 
       assert.equal(got.value.dataSourceId, dataSourceId)
       assert.equal(got.value.name, '읽을 표')
       assert.equal(got.value.isInline, false)
+      assert.deepEqual(got.value.access, {
+        canEditContent: true,
+        canCreateRows: true,
+        canEditStructure: true,
+      })
     }
   })
 })
@@ -689,6 +694,17 @@ describe('★ 권한 — 스키마 변경은 edit_structure 다', () => {
 
     // 볼 수는 있다.
     assert.equal((await getSchema(other.ctx, dataSourceId)).ok, true)
+
+    // 화면이 버튼을 그리지 않을 근거 — 셋 다 꺼져 있다(F-04-01: 비활성보다 미노출).
+    const seen = await getDatabase(other.ctx, databaseId)
+    assert.equal(seen.ok, true)
+    if (seen.ok) {
+      assert.deepEqual(seen.value.access, {
+        canEditContent: false,
+        canCreateRows: false,
+        canEditStructure: false,
+      })
+    }
 
     // 고칠 수는 없다 — 옵션 추가·표 이름 변경도 스키마 쪽이다.
     const titleId = unwrap(await getSchema(fx.owner.ctx, dataSourceId)).properties[0].id

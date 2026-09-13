@@ -67,6 +67,23 @@ export type DatabaseDetail = {
   readonly defaultViewId?: string
 }
 
+/**
+ * 이 사람이 이 표에서 할 수 있는 것 — **화면 표시 전용.**
+ *
+ * 화면이 "+ 새로 만들기"·컬럼 추가 버튼을 그릴지 정한다. F-04-01: *"`+` 버튼과 탭
+ * 컨텍스트 메뉴는 렌더하지 않는다(비활성 표시보다 미노출이 안전)."* 판정은 쓰기
+ * 경로가 `can()` 으로 **다시 한다** — 이 값으로 서버 판정을 대신하지 않는다
+ * (`displayLevel()` 과 같은 규칙).
+ */
+export type DatabaseAccess = {
+  /** 셀을 고칠 수 있다 (`edit_content`). */
+  readonly canEditContent: boolean
+  /** 행을 추가할 수 있다 (`create_child`). */
+  readonly canCreateRows: boolean
+  /** 컬럼 · 옵션 · 뷰 설정 · 표 이름을 고칠 수 있다 (`edit_structure`). */
+  readonly canEditStructure: boolean
+}
+
 export type DatabaseFailure = 'not_found' | 'forbidden' | 'invalid_name'
 
 export type DatabaseResult<T> =
@@ -259,11 +276,12 @@ type DatabaseRow = {
 export async function getDatabase(
   ctx: SessionContext,
   databaseId: string,
-): Promise<DatabaseResult<DatabaseDetail>> {
+): Promise<DatabaseResult<DatabaseDetail & { readonly access: DatabaseAccess }>> {
   return withReadTransaction(async (tx) => {
     const row = await loadDatabase(tx, ctx, databaseId)
     if (row === null) return { ok: false, reason: 'not_found' } as const
-    if (!can(await effectiveCaps(tx, ctx, databaseId), 'view')) {
+    const caps = await effectiveCaps(tx, ctx, databaseId)
+    if (!can(caps, 'view')) {
       return { ok: false, reason: 'not_found' } as const
     }
     return {
@@ -274,6 +292,11 @@ export async function getDatabase(
         dataSourceId: row.data_source_id,
         schemaVersion: row.schema_version,
         isInline: row.is_inline,
+        access: {
+          canEditContent: can(caps, 'edit_content'),
+          canCreateRows: can(caps, 'create_child'),
+          canEditStructure: can(caps, 'edit_structure'),
+        },
       },
     } as const
   })

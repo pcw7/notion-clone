@@ -36,6 +36,8 @@ import { openSearchOverlay } from './search-overlay'
 export type SidebarNode = {
   id: string
   title: string
+  /** 풀페이지 데이터베이스는 페이지 라우트로 열리지 않는다 — 링크를 고르는 근거다. */
+  kind: 'page' | 'database'
   hasChildren: boolean
   children: SidebarNode[]
 }
@@ -75,9 +77,13 @@ export function Sidebar({
   const router = useRouter()
   const pathname = usePathname()
 
-  /** `/w/{ws}/{pageId}` 에서 현재 페이지를 읽는다. 레이아웃은 자식 params 를 모른다. */
+  /**
+   * `/w/{ws}/{pageId}` · `/w/{ws}/db/{databaseId}` 에서 현재 노드를 읽는다. 레이아웃은
+   * 자식 params 를 모른다. `db/` 를 건너뛰지 않으면 데이터베이스 화면에서 현재 노드가
+   * 문자열 `'db'` 가 되어 아무 줄도 강조되지 않는다.
+   */
   const currentPageId = useMemo(() => {
-    const match = pathname.match(/^\/w\/[^/]+\/([^/]+)/)
+    const match = pathname.match(/^\/w\/[^/]+\/(?:db\/)?([^/]+)/)
     return match ? match[1] : null
   }, [pathname])
 
@@ -136,6 +142,25 @@ export function Sidebar({
     },
     [workspaceId, router, store],
   )
+
+  // 풀페이지 데이터베이스를 만들고 연다(F-04-14). "새 페이지"와 같은 규칙 — 이름을
+  // 먼저 묻지 않고 빈 표를 연다. 표·제목 컬럼·기본 뷰는 서버가 한 트랜잭션에서 만든다.
+  const addDatabase = useCallback(async () => {
+    setBusy(true)
+    try {
+      const res = await fetch(`/api/workspaces/${workspaceId}/databases`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{}',
+      })
+      const data = await res.json()
+      if (!res.ok) return
+      router.push(`/w/${workspaceId}/db/${data.database.id}`)
+      router.refresh()
+    } finally {
+      setBusy(false)
+    }
+  }, [workspaceId, router])
 
   if (collapsed) {
     return (
@@ -218,14 +243,24 @@ export function Sidebar({
         )}
       </ul>
 
-      <button
-        type="button"
-        disabled={busy}
-        onClick={() => void addChild(null)}
-        className="self-start rounded-md px-2 py-1 text-sm text-neutral-500 hover:bg-neutral-100 disabled:opacity-40 dark:hover:bg-neutral-800"
-      >
-        + 새 페이지
-      </button>
+      <div className="flex flex-col">
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => void addChild(null)}
+          className="self-start rounded-md px-2 py-1 text-sm text-neutral-500 hover:bg-neutral-100 disabled:opacity-40 dark:hover:bg-neutral-800"
+        >
+          + 새 페이지
+        </button>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => void addDatabase()}
+          className="self-start rounded-md px-2 py-1 text-sm text-neutral-500 hover:bg-neutral-100 disabled:opacity-40 dark:hover:bg-neutral-800"
+        >
+          + 새 데이터베이스
+        </button>
+      </div>
 
       <NavSection label="최근" rows={recent} workspaceId={workspaceId} currentPageId={currentPageId} />
 
@@ -279,23 +314,31 @@ function TreeItem({
         )}
 
         <Link
-          href={`/w/${workspaceId}/${node.id}`}
+          href={node.kind === 'database' ? `/w/${workspaceId}/db/${node.id}` : `/w/${workspaceId}/${node.id}`}
           aria-current={isCurrent ? 'page' : undefined}
           className="min-w-0 flex-1 truncate py-1 text-sm"
         >
+          {node.kind === 'database' && (
+            <span aria-hidden className="mr-1 text-neutral-400">
+              ▦
+            </span>
+          )}
           {node.title || UNTITLED}
         </Link>
 
-        <button
-          type="button"
-          disabled={busy}
-          onClick={() => onAddChild(node.id)}
-          aria-label={`${node.title || UNTITLED} 아래에 페이지 추가`}
-          title="하위 페이지 추가"
-          className="flex-none px-1 text-sm text-neutral-400 opacity-0 group-hover:opacity-100 focus:opacity-100 disabled:opacity-30"
-        >
-          +
-        </button>
+        {/* 데이터베이스 아래에는 하위 페이지를 만들지 않는다 — 그 자리는 표의 행이다. */}
+        {node.kind === 'page' && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => onAddChild(node.id)}
+            aria-label={`${node.title || UNTITLED} 아래에 페이지 추가`}
+            title="하위 페이지 추가"
+            className="flex-none px-1 text-sm text-neutral-400 opacity-0 group-hover:opacity-100 focus:opacity-100 disabled:opacity-30"
+          >
+            +
+          </button>
+        )}
       </div>
 
       {isOpen && node.children.length > 0 && (

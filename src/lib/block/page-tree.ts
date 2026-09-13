@@ -45,10 +45,18 @@ import { withReadTransaction } from '../db/tx.ts'
 import { readableScopes } from '../permissions/effective.ts'
 import { toPlainText, type RichTextRun } from '../contracts/rich-text.ts'
 
+/**
+ * 트리에 서는 블록의 종류. 풀페이지 데이터베이스도 사이드바의 한 줄이다(F-04-14:
+ * *"풀페이지: 페이지 전체가 데이터베이스이며 … 사이드바 항목명도 동일 폴백"*).
+ * 화면은 이것으로 링크를 고른다 — 데이터베이스는 페이지 라우트로 열 수 없다.
+ */
+export type PageTreeKind = 'page' | 'database'
+
 /** 트리를 엮는 데 필요한 최소 정보. 본문은 없다. */
 export type PageTreeRow = {
   readonly id: string
   readonly title: string
+  readonly kind: PageTreeKind
   /** 루트→부모까지의 **블록** id. 본문 블록도 들어 있다 [X-7]. */
   readonly ancestorPath: readonly string[]
   readonly orderKey: string
@@ -57,6 +65,7 @@ export type PageTreeRow = {
 export type PageTreeNode = {
   readonly id: BlockId
   readonly title: string
+  readonly kind: PageTreeKind
   /** 트리상의 부모(가장 가까운 페이지 조상). 최상위면 null. */
   readonly parentId: BlockId | null
   readonly hasChildren: boolean
@@ -91,6 +100,7 @@ export function buildPageTree(rows: readonly PageTreeRow[]): PageTreeNode[] {
   type Building = {
     id: BlockId
     title: string
+    kind: PageTreeKind
     parentId: BlockId | null
     hasChildren: boolean
     children: Building[]
@@ -106,6 +116,7 @@ export function buildPageTree(rows: readonly PageTreeRow[]): PageTreeNode[] {
       {
         id: asBlockId(row.id),
         title: row.title,
+        kind: row.kind,
         parentId: null,
         hasChildren: false,
         children: [],
@@ -168,16 +179,19 @@ export async function listPageTree(ctx: SessionContext): Promise<PageTreeNode[]>
     if (scopes.length === 0) return []
     return tx.query<{
       id: string
+      type: string
       properties: { title?: unknown } | null
       ancestor_path: string[]
       order_key: string
     }>(
-      // ★ W8: DB 행을 뺀다. 행도 `type='page'` 블록이라(C-3) 타입만 보면 섞이고,
-      //   행의 조상인 컨테이너(`type='database'`)는 이 집합에 없으므로 행이 전부
-      //   **최상위 노드**가 된다. 행은 표가 보여준다 — 사이드바의 일이 아니다.
-      `SELECT id, properties, ancestor_path, order_key
+      // ★ W8: 풀페이지 데이터베이스를 넣고, DB 행은 뺀다.
+      //   행도 `type='page'` 블록이라(C-3) 타입만 보면 섞이고, 행의 조상인
+      //   컨테이너가 이 집합에 없던 동안에는 행이 전부 **최상위 노드**가 됐다.
+      //   컨테이너를 넣은 지금도 행은 빼야 한다 — 표 하나가 사이드바를 행 수만큼
+      //   늘린다. 행은 표가 보여준다.
+      `SELECT id, type, properties, ancestor_path, order_key
          FROM live_block
-        WHERE workspace_id = $1 AND type = 'page' AND parent_type <> 'data_source'
+        WHERE workspace_id = $1 AND type IN ('page', 'database') AND parent_type <> 'data_source'
           AND perm_scope_id = ANY($2::uuid[])
         ORDER BY order_key, id`,
       [ctx.workspaceId, scopes],
@@ -189,6 +203,7 @@ export async function listPageTree(ctx: SessionContext): Promise<PageTreeNode[]>
       const raw = row.properties?.title
       return {
         id: row.id,
+        kind: row.type === 'database' ? 'database' : 'page',
         // 읽기는 관대하게 — 제목 하나가 망가졌다고 사이드바 전체가 500 이 되면
         // 사용자가 어디로도 이동할 수 없다.
         title: Array.isArray(raw) ? toPlainText(raw as RichTextRun[]) : '',

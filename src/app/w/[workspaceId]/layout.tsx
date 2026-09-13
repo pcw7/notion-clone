@@ -22,6 +22,7 @@ function toSidebarNode(node: Awaited<ReturnType<typeof listPageTree>>[number]): 
   return {
     id: node.id,
     title: node.title,
+    kind: node.kind,
     hasChildren: node.hasChildren,
     children: node.children.map(toSidebarNode),
   }
