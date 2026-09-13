@@ -51,7 +51,12 @@ import {
   type SortKey,
 } from './filter.ts'
 import { readPropertyTypes } from './query.ts'
-import { isMvpPropertyType, type MvpPropertyType } from './property-types.ts'
+import {
+  isMvpPropertyType,
+  isOptionColor,
+  type MvpPropertyType,
+  type SelectOption,
+} from './property-types.ts'
 import type { ValidationIssue } from '../contracts/rich-text.ts'
 
 /** MVP 가 만드는 뷰 타입. 정본의 `type` 은 10종이지만 Table 하나로 제품이 성립한다. */
@@ -72,6 +77,14 @@ export type ViewColumn = {
   readonly orderKey: string
   readonly width: number | null
   readonly wrap: boolean
+  /**
+   * select 컬럼의 옵션 목록(`order_idx` 순). 다른 타입은 빈 배열이다.
+   *
+   * 셀은 **옵션 id** 만 들고 있어서(`property-types.ts` 머리말) 이것 없이는 화면이
+   * 이름을 그릴 수 없다. 컬럼에 싣는 이유는 `GET /rows` 가 컬럼과 행을 한 왕복에
+   * 주는 것과 같다 — 옵션을 따로 읽으면 표를 열 때마다 왕복이 하나 더 는다.
+   */
+  readonly options: readonly SelectOption[]
 }
 
 export type ViewDetail = {
@@ -226,6 +239,25 @@ async function readColumns(tx: Tx, viewId: string): Promise<ViewColumn[]> {
       ORDER BY vp.order_idx, vp.property_id`,
     [viewId],
   )
+
+  const selectIds = rows.filter((r) => r.type === 'select').map((r) => r.property_id)
+  const optionRows =
+    selectIds.length === 0
+      ? []
+      : await tx.query<{ property_id: string; id: string; name: string; color: string }>(
+          `SELECT property_id, id, name, color::text AS color
+             FROM select_option
+            WHERE property_id = ANY($1::text[])
+            ORDER BY order_idx, id`,
+          [selectIds],
+        )
+  const optionsOf = new Map<string, SelectOption[]>()
+  for (const o of optionRows) {
+    const list = optionsOf.get(o.property_id) ?? []
+    list.push({ id: o.id, name: o.name, color: isOptionColor(o.color) ? o.color : 'default' })
+    optionsOf.set(o.property_id, list)
+  }
+
   return rows
     .filter((r) => isMvpPropertyType(r.type))
     .map((r) => ({
@@ -236,6 +268,7 @@ async function readColumns(tx: Tx, viewId: string): Promise<ViewColumn[]> {
       orderKey: r.order_idx,
       width: r.width,
       wrap: r.wrap,
+      options: optionsOf.get(r.property_id) ?? [],
     }))
 }
 

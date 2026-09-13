@@ -188,6 +188,60 @@ export async function createDatabase(
   })
 }
 
+/**
+ * 데이터베이스 이름을 바꾼다.
+ *
+ * 이름이 **두 곳**에 있다 — `block.properties.title`(사이드바 · breadcrumb · 최근
+ * 방문이 읽는 블록 제목)과 `database.title_rich`(정본 §3.5 의 DB 제목). 같은
+ * 트랜잭션에서 둘 다 쓴다. 하나만 쓰면 사이드바와 표 머리의 이름이 갈린다.
+ *
+ * `renamePage` 를 빌려 쓰지 않는다. 그 함수는 `type='page'` 만 받고 검색 색인을
+ * 함께 쓰는데, `search_document` 는 페이지만 담는다(CHECK 로 승격돼 있다).
+ *
+ * `edit_structure` 를 묻는다. 표의 이름은 모두가 보는 표의 모양이다 — 뷰 설정이
+ * 같은 capability 를 묻는 이유와 같다(`view.ts` 머리말).
+ */
+export async function renameDatabase(
+  ctx: SessionContext,
+  databaseId: string,
+  rawName: unknown,
+): Promise<DatabaseResult<DatabaseDetail>> {
+  if (typeof rawName !== 'string') return { ok: false, reason: 'invalid_name' } as const
+  const name = normalizeName(rawName)
+
+  return withTransaction(async (tx) => {
+    const row = await loadDatabase(tx, ctx, databaseId)
+    if (row === null) return { ok: false, reason: 'not_found' } as const
+    const caps = await effectiveCaps(tx, ctx, databaseId)
+    if (!can(caps, 'view')) return { ok: false, reason: 'not_found' } as const
+    if (!can(caps, 'edit_structure')) return { ok: false, reason: 'forbidden' } as const
+
+    const title = JSON.stringify(titleFromPlainText(name))
+    await tx.query(
+      `UPDATE block
+          SET properties = jsonb_set(properties, '{title}', $2::jsonb, true),
+              last_edited_by = $3, last_edited_at = now(), version = version + 1
+        WHERE id = $1`,
+      [databaseId, title, ctx.userId],
+    )
+    await tx.query(`UPDATE database SET title_rich = $2::jsonb, updated_at = now() WHERE id = $1`, [
+      databaseId,
+      title,
+    ])
+
+    return {
+      ok: true,
+      value: {
+        id: row.id,
+        name,
+        dataSourceId: row.data_source_id,
+        schemaVersion: row.schema_version,
+        isInline: row.is_inline,
+      },
+    } as const
+  })
+}
+
 type DatabaseRow = {
   id: string
   properties: { title?: unknown } | null

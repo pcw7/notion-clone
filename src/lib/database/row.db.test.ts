@@ -40,6 +40,8 @@ import {
 } from './row.ts'
 import { textRun } from '../contracts/rich-text.ts'
 import type { MvpPropertyType } from './property-types.ts'
+import { listTrash, restorePage } from '../block/trash.ts'
+import { asBlockId } from '../ids.ts'
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'
 
@@ -603,6 +605,42 @@ describe('listRows', () => {
     const listed = await listRows(fx.owner.ctx, table.dataSourceId)
     assert.equal(listed.ok, true)
     if (listed.ok) assert.equal(listed.value.rows.length, 0)
+  })
+
+  test('★ 지운 행은 휴지통에 나오고, 거기서 복원하면 표로 돌아온다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const table = await newTable()
+    const row = unwrapRow(
+      await createRow(fx.owner.ctx, table.dataSourceId, {
+        cells: [{ propertyId: table.titleId, value: { type: 'title', title: [textRun('지울 행')] } }],
+      }),
+    )
+    assert.equal((await trashRow(fx.owner.ctx, row.id)).ok, true)
+
+    // 노션도 지운 DB 페이지를 휴지통에 보여준다. 행은 삭제 루트가 자기 자신이고
+    // (`trash_root_id = id`) 자손이 없으므로 페이지 휴지통의 규칙이 그대로 맞는다.
+    const trashed = (await listTrash(fx.owner.ctx)).find((e) => e.id === row.id)
+    assert.ok(trashed !== undefined, '지운 행이 휴지통에 없다')
+    assert.equal(trashed.title, '지울 행')
+
+    // `restorePage` 는 `parent_type = 'block'` 일 때만 부모를 확인하고 재배치한다.
+    // 행의 부모는 data_source 라 그 분기에 들어가지 않고 lifecycle 만 돌아온다.
+    const restored = await restorePage(fx.owner.ctx, asBlockId(row.id))
+    assert.equal(restored.reparented, false)
+
+    const listed = await listRows(fx.owner.ctx, table.dataSourceId)
+    assert.equal(listed.ok, true)
+    if (listed.ok) assert.deepEqual(listed.value.rows.map((r) => r.id), [row.id])
+
+    // 표 밖으로 끌려 나가지 않았다 — 끌려 나갔다면 R3 트리거가 먼저 막았겠지만,
+    // 그 트리거가 없어지는 날에도 이 검사가 남는다.
+    const placed = await withReadTransaction((tx) =>
+      tx.queryOne<{ parent_type: string; parent_id: string }>(
+        `SELECT parent_type, parent_id FROM block WHERE id = $1`,
+        [row.id],
+      ),
+    )
+    assert.deepEqual({ ...placed }, { parent_type: 'data_source', parent_id: table.dataSourceId })
   })
 
   test('★ 커서로 끝까지 읽으면 중복·누락이 없다', async (t) => {

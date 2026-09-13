@@ -22,6 +22,9 @@ import { savePageBody } from './save-page-body.ts'
 import { trashPage } from './trash.ts'
 import { textRun } from '../contracts/rich-text.ts'
 import type { BlockId } from '../ids.ts'
+import { createDatabase } from '../database/database.ts'
+import { getSchema } from '../database/property.ts'
+import { createRow } from '../database/row.ts'
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'
 
@@ -153,5 +156,30 @@ describe('listPageTree — 본문 안에 중첩된 하위 페이지 (PR #23)', (
     assert.deepEqual(shape(tree), [['부모', [['자식', []]]]], '자식이 사이드바에서 사라졌다')
     assert.equal(tree[0].children[0].parentId, parent.id)
     assert.equal(tree[0].hasChildren, true)
+  })
+})
+
+describe('listPageTree — 데이터베이스 행 (W8)', () => {
+  test('★ DB 행은 사이드바 최상위로 새지 않는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { actor, mk } = await freshWorkspace()
+    await mk('페이지')
+
+    // DB 행도 `type='page'` 블록이다(C-3). 트리가 타입만 보고 모으면 행이 섞이고,
+    // 행의 조상 경로에 있는 컨테이너(`type='database'`)는 페이지 집합에 없으므로
+    // **최상위 노드**가 된다 — 행 50개짜리 표 하나가 사이드바를 50줄 늘린다.
+    const db = await createDatabase(actor.ctx, { name: '할 일' })
+    if (!db.ok) throw new Error(`표 생성 실패: ${db.reason}`)
+    const schema = await getSchema(actor.ctx, db.value.dataSourceId)
+    if (!schema.ok) throw new Error('스키마를 읽지 못했다')
+    const titleId = schema.value.properties[0].id
+    for (const title of ['행 1', '행 2']) {
+      const row = await createRow(actor.ctx, db.value.dataSourceId, {
+        cells: [{ propertyId: titleId, value: { type: 'title', title: [textRun(title)] } }],
+      })
+      assert.ok(row.ok)
+    }
+
+    assert.deepEqual(shape(await listPageTree(actor.ctx)), [['페이지', []]])
   })
 })

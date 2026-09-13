@@ -86,6 +86,38 @@ export const DEFAULT_PROPERTY_TYPE: MvpPropertyType = 'rich_text'
 export type OptionRef = { readonly id: string }
 
 /**
+ * 옵션 색. 마이그레이션 0013 의 `option_color` ENUM 과 **같은 순서**다.
+ *
+ * 새 옵션의 색은 이 순서로 돌아가며 준다(F-03-04 현실적 대안: "고정 10색
+ * 팔레트 라운드로빈"). 순서가 ENUM 과 어긋나도 동작은 하지만, 같게 두면
+ * `ORDER BY color` 와 화면의 팔레트가 같은 순서로 보인다.
+ */
+export const OPTION_COLORS = [
+  'default',
+  'gray',
+  'brown',
+  'orange',
+  'yellow',
+  'green',
+  'blue',
+  'purple',
+  'pink',
+  'red',
+] as const
+export type OptionColor = (typeof OPTION_COLORS)[number]
+
+export function isOptionColor(v: unknown): v is OptionColor {
+  return typeof v === 'string' && (OPTION_COLORS as readonly string[]).includes(v)
+}
+
+/** 화면이 셀을 그릴 때 필요한 옵션 모양. 셀은 id 만 들고 있으므로 이것으로 이름을 찾는다. */
+export type SelectOption = {
+  readonly id: string
+  readonly name: string
+  readonly color: OptionColor
+}
+
+/**
  * 날짜 값.
  *
  * `end` 가 없으면 단일 날짜다(정본 전수표). `time_zone` 은 IANA 이름이고
