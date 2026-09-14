@@ -264,14 +264,50 @@ export type ProjectablePage = {
 
 export type ProjectBodyResult = Extract<SaveBodyResult, { ok: true }> | Extract<SaveBodyResult, { reason: 'page_ref_missing' | 'page_ref_too_deep' }>
 
+type ProjectRefusal = Exclude<ProjectBodyResult, { ok: true }>
+
+/** 투영의 거부를 savepoint 까지 되돌리려고 던진다. `projectBodyRows` 밖으로 나가지 않는다. */
+class ProjectionRefused extends Error {
+  readonly result: ProjectRefusal
+
+  constructor(result: ProjectRefusal) {
+    super(result.reason)
+    this.name = 'ProjectionRefused'
+    this.result = result
+  }
+}
+
 /**
  * 문서를 이 페이지의 `block` 행으로 투영한다 — **프로젝터**(머리말).
  *
- * 권한 · 버전 검사 · 페이지 행 잠금은 호출자가 이미 했다. `savePageBody` 에서 떼어 냈을 뿐 동작은 같다
- * (CRDT 4a조각). 4b조각이 상류를 Y.Doc 으로 바꾸면 서버 명령들이 본문 세션의 결과(`readBodyYDoc`)를 이 함수에
- * 넘긴다 — 머리말의 "Phase 1 에서 바뀌는 것은 상류뿐이다".
+ * 권한 · 버전 검사 · 페이지 행 잠금은 호출자가 이미 했다. 4a조각이 `savePageBody` 에서 떼어 냈다. 4b조각이 상류를
+ * Y.Doc 으로 바꾸면 서버 명령들이 본문 세션의 결과(`readBodyYDoc`)를 이 함수에 넘긴다 — 머리말의 "Phase 1 에서
+ * 바뀌는 것은 상류뿐이다".
+ *
+ * **거부하면 아무것도 쓰지 않는다.** 깊이 초과(`page_ref_too_deep`)는 지우기 · 넣기 · 임시 키를 쓴 **뒤에**
+ * 알게 되는데, `withTransaction` 은 콜백이 반환하면 커밋한다 — 거부를 반환하던 동안 옮기려던 자식 페이지의
+ * `order_key` 가 임시 키(`'~' || id`)로 커밋돼 남았다(검사가 재현했다). 그래서 투영을 savepoint 안에서 돌리고
+ * 거부면 던져 되돌린 뒤 거부를 돌려준다 — 호출자가 되돌리기를 잊을 수 없다.
  */
 export async function projectBodyRows(
+  tx: Tx,
+  ctx: SessionContext,
+  page: ProjectablePage,
+  doc: EditorDoc,
+): Promise<ProjectBodyResult> {
+  try {
+    return await tx.savepoint('project_body', async () => {
+      const result = await projectRows(tx, ctx, page, doc)
+      if (!result.ok) throw new ProjectionRefused(result)
+      return result
+    })
+  } catch (e) {
+    if (e instanceof ProjectionRefused) return e.result
+    throw e
+  }
+}
+
+async function projectRows(
   tx: Tx,
   ctx: SessionContext,
   page: ProjectablePage,
