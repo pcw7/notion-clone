@@ -21,14 +21,15 @@ import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 
 import * as Y from 'yjs'
-import { initProseMirrorDoc, updateYFragment } from 'y-prosemirror'
-import { EditorState, type Transaction } from '@tiptap/pm/state'
+import { initProseMirrorDoc } from 'y-prosemirror'
+import type { Transaction } from '@tiptap/pm/state'
 import type { Node as PmNode } from '@tiptap/pm/model'
 
 import { textRun, type RichTextRun } from '../contracts/rich-text.ts'
 import { validateDoc, type EditorBlock, type EditorDoc } from '../editor/document.ts'
 import { docToPm, pmToDoc } from '../editor/pm-adapter.ts'
 import { blockSchema } from '../editor/schema.ts'
+import { edit, exchange, findBlock as find, peer } from '../testing/collab-peers.ts'
 import { BODY_FRAGMENT, createBodyYDoc, readBodyYDoc } from './ydoc.ts'
 
 const PAGE = randomUUID()
@@ -40,43 +41,11 @@ const block = (type: string, text: string | null, extra: Partial<EditorBlock> = 
   ...extra,
 })
 
-// ── 참여자 흉내 ───────────────────────────────────────────────────────
-
-/** 서버에서 받은 상태로 시작하는 참여자. */
-function peer(source: Y.Doc, clientId: number): Y.Doc {
-  const ydoc = new Y.Doc()
-  ydoc.clientID = clientId
-  Y.applyUpdate(ydoc, Y.encodeStateAsUpdate(source))
-  return ydoc
-}
-
-/** 에디터가 하는 쓰기 — ProseMirror 트랜잭션을 만들어 Y.Doc 에 옮긴다. */
-function edit(ydoc: Y.Doc, change: (tr: Transaction, doc: PmNode) => void): void {
-  const fragment = ydoc.getXmlFragment(BODY_FRAGMENT)
-  const { doc, meta } = initProseMirrorDoc(fragment, blockSchema)
-  const tr = EditorState.create({ schema: blockSchema, doc }).tr
-  change(tr, doc)
-  ydoc.transact(() => updateYFragment(ydoc, fragment, tr.doc, meta), 'editor')
-}
-
-type Found = { pos: number; node: PmNode }
-
-function find(doc: PmNode, blockId: string): Found {
-  const hits: Found[] = []
-  doc.descendants((node, pos) => {
-    if (node.type.name === 'blockContainer' && node.attrs.blockId === blockId) hits.push({ pos, node })
-    return hits.length === 0
-  })
-  assert.ok(hits.length === 1, `블록이 없다: ${blockId}`)
-  return hits[0]
-}
+// ── 참여자 흉내 — `testing/collab-peers.ts` ────────────────────────────
 
 /** 두 참여자가 서로의 update 를 받고, 같은 문서로 읽히는지 · 계약을 지키는지 본다. */
 function converge(a: Y.Doc, b: Y.Doc): EditorDoc {
-  const toB = Y.encodeStateAsUpdate(a, Y.encodeStateVector(b))
-  const toA = Y.encodeStateAsUpdate(b, Y.encodeStateVector(a))
-  Y.applyUpdate(b, toB)
-  Y.applyUpdate(a, toA)
+  exchange(a, b)
   const left = readBodyYDoc(a, PAGE).doc
   assert.deepEqual(readBodyYDoc(b, PAGE).doc, left, '두 참여자가 다른 문서를 본다')
   assert.deepEqual(validateDoc(left), [])
