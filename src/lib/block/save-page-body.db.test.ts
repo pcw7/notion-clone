@@ -404,7 +404,15 @@ describe('savePageBody — 자식 페이지', () => {
 
   test('중첩이 깊이 상한을 넘기면 거부하고 아무것도 쓰지 않는다', async (t) => {
     if (skipReason) return t.skip(skipReason)
-    const { queryOne } = await import('../db/pool.ts')
+    const { query, queryOne } = await import('../db/pool.ts')
+    // 거부 직전까지 투영이 쓴 것(지우기 · 넣기 · 임시 키)까지 보려고 그 페이지 아래 행 전체를 비교한다.
+    // 자식의 경로만 보면 `relocateSubtree` 가 경로를 쓰기 전에 던지므로 늘 같다.
+    const rowsUnder = async (id: string) =>
+      query<{ id: string; parent_id: string; order_key: string; ancestor_path: string[] }>(
+        `SELECT id, parent_id, order_key, ancestor_path FROM block
+          WHERE ancestor_path @> ARRAY[$1::uuid] ORDER BY id`,
+        [id],
+      )
 
     const pageId = await newPage()
     const child = await createPage(fx.owner.ctx, { parentPageId: pageId })
@@ -422,6 +430,7 @@ describe('savePageBody — 자식 페이지', () => {
       `SELECT ancestor_path FROM block WHERE id = $1`,
       [child.id],
     )
+    const rowsBefore = await rowsUnder(pageId)
 
     // 2) 자식 페이지를 가장 깊은 토글 안으로 → 상한 초과
     const withChildInside = (node: EditorBlock): EditorBlock =>
@@ -443,6 +452,7 @@ describe('savePageBody — 자식 페이지', () => {
       [child.id],
     )
     assert.deepEqual(after.ancestor_path, before.ancestor_path, '거부됐는데 자리가 바뀌었다')
+    assert.deepEqual(await rowsUnder(pageId), rowsBefore, '거부됐는데 투영이 쓰다 만 것(임시 키 · 지우기 · 넣기)이 커밋됐다')
   })
 
   test('휴지통에 있는 자식 페이지의 order_key 를 밀어내지 않는다 (B2)', async (t) => {
