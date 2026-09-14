@@ -12,6 +12,8 @@
  *   ⑤ **권한** — 읽기는 view, 쓰기는 edit_content, 볼 수 없으면 없는 것과 같다
  *   ⑥ **구조 위반은 append 가 한 번 고친다** — 수선을 같은 seq 에 쌓고 돌려준다 · 고친 뒤의 append 는 다시
  *      고치지 않는다(옮긴 블록이 복제되지 않는다)
+ *   ⑦ **본문 세션** — 서버 명령의 ProseMirror 변경을 준 actor · origin 으로 한 seq 에 쌓는다 · 바뀐 것이 없으면
+ *      쌓지 않는다 · 한 번만 쌓는다 · 처음 여는 세션은 그 순간의 행으로 옮긴다
  *
  * 참여자의 편집은 `testing/collab-peers.ts` 로 흉내 낸다 — 에디터가 Y.Doc 에 쓰는 것과 같은 함수다.
  */
@@ -31,11 +33,12 @@ import { loadPageBody, savePageBody } from '../block/save-page-body.ts'
 import { trashPage } from '../block/trash.ts'
 import { textRun } from '../contracts/rich-text.ts'
 import { getPool, query } from '../db/pool.ts'
+import { withTransaction } from '../db/tx.ts'
 import type { EditorBlock, EditorDoc } from '../editor/document.ts'
 import { docToPm, pmToDoc } from '../editor/pm-adapter.ts'
 import { blockSchema } from '../editor/schema.ts'
 import { grantAccess, revokeAccess } from '../permissions/acl.ts'
-import { appendDocUpdate, loadDocState, MAX_DOC_UPDATE_BYTES, type DocState } from './doc-store.ts'
+import { appendDocUpdate, loadDocState, MAX_DOC_UPDATE_BYTES, openBodyDoc, type DocState } from './doc-store.ts'
 import { readBodyYDoc } from './ydoc.ts'
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'
@@ -435,5 +438,57 @@ describe('⑥ 구조 위반은 append 가 한 번 고친다', () => {
     const stored = readBodyYDoc((await load(owner, page.id)).ydoc, page.id)
     assert.deepEqual(stored.fixes, [])
     assert.deepEqual(allTexts(stored.doc).sort(), ['!옆', '부모', '에스', '유'].sort())
+  })
+})
+
+// ── ⑦ 본문 세션 ───────────────────────────────────────────────────────
+
+describe('⑦ 본문 세션 — 서버 명령 경로 ② 의 원시 연산 (4a)', () => {
+  test('★ 세션의 ProseMirror 변경은 준 actor · origin 으로 한 seq 에 쌓이고, 다시 읽으면 보인다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { owner } = await freshWorkspace()
+    const { pageId, blockId } = await pageWithParagraph(owner)
+
+    const committed = await withTransaction(async (tx) => {
+      const body = await openBodyDoc(tx, owner.ctx, pageId)
+      body.change(insertAtStart(blockId, '서버 '))
+      assert.deepEqual(textsOf(body.read().doc), ['서버 원문'], '세션 안에서 바뀐 본문이 보이지 않는다')
+      return body.commit({ actorId: null, origin: 'api' })
+    })
+    assert.deepEqual(committed, { appended: true, seq: '2', repair: null })
+    assert.deepEqual(
+      (await logOf(pageId)).map((r) => [r.seq, r.origin, r.actor_id]),
+      [['1', 'import', null], ['2', 'api', null]],
+    )
+    assert.deepEqual(textsOf(bodyOf(await load(owner, pageId), pageId)), ['서버 원문'])
+  })
+
+  test('바꾼 것이 없으면 쌓지 않는다 · 한 세션은 한 번만 쌓는다 · 적용하지 못한 update 가 있으면 쌓지 못한다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { owner } = await freshWorkspace()
+    const { pageId, blockId } = await pageWithParagraph(owner)
+
+    await withTransaction(async (tx) => {
+      const body = await openBodyDoc(tx, owner.ctx, pageId)
+      assert.deepEqual(await body.commit({ actorId: owner.userId, origin: 'api' }), { appended: false, seq: '1' })
+      assert.throws(() => body.change(insertAtStart(blockId, '늦게 ')), /이미 쌓은/)
+      await assert.rejects(body.commit({ actorId: owner.userId, origin: 'api' }), /이미 쌓은/)
+    })
+    await withTransaction(async (tx) => {
+      const body = await openBodyDoc(tx, owner.ctx, pageId)
+      assert.equal(body.applyUpdate(Uint8Array.from([255, 255, 255, 255, 255, 255, 255, 255, 1])), 'invalid_update')
+      await assert.rejects(body.commit({ actorId: owner.userId, origin: 'api' }), /적용하지 못한/)
+    })
+    assert.equal((await logOf(pageId)).length, 1)
+  })
+
+  test('★ 처음 여는 세션은 그 순간의 행으로 옮긴다 — 하위 페이지 행을 먼저 만들고 부모를 처음 열면 참조가 이미 들어 있다 (명령은 세션을 먼저 연다)', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { owner } = await freshWorkspace()
+    const parent = await mkPage(owner, '부모')
+    const child = await mkPage(owner, '하위', parent.id)
+
+    const doc = await withTransaction(async (tx) => (await openBodyDoc(tx, owner.ctx, parent.id)).read().doc)
+    assert.deepEqual(doc.blocks.map((b) => [b.id, b.type]), [[child.id, 'page']])
   })
 })

@@ -2,7 +2,7 @@
 
 새 세션이 이어받을 때 읽는 문서. **[CLAUDE.md](../CLAUDE.md)를 먼저 읽고 여기로 온다** — 거기에 절대 제약·스택·명령어·코딩 규칙이 있고, 이 문서는 **"지금 어디까지 왔고 다음에 뭘 하는가"**만 다룬다.
 
-최종 갱신: 2026-09-14 (PR #69 시점 — Phase 0 MVP · Phase 1 의 첫 항목 익스포트(F-09-14) v1 이 닫혔다. **Phase 1 CRDT 동시편집(F-05-01) 진행 중 — 1조각(Y.Doc 본문 계약 · 정규화) · 2조각(`doc_update` 로그 저장소) · 3a조각(y-prosemirror 연쇄 삭제 막기 · 수선의 작성자 한 곳) · 3b조각(멘션 · 수식 서식) 끝 — 3조각이 닫혔다. 다음은 4조각(서버 명령 경로 ② + Y.Doc 을 상류로 하는 프로젝터)**, §2 CRDT 조각 표)
+최종 갱신: 2026-09-14 (PR #69 시점 — Phase 0 MVP · Phase 1 의 첫 항목 익스포트(F-09-14) v1 이 닫혔다. **Phase 1 CRDT 동시편집(F-05-01) 진행 중 — 1조각(Y.Doc 본문 계약 · 정규화) · 2조각(`doc_update` 로그 저장소) · 3a조각(y-prosemirror 연쇄 삭제 막기 · 수선의 작성자 한 곳) · 3b조각(멘션 · 수식 서식) · 4a조각(본문 세션 · 프로젝터 추출) 끝. 다음은 4b조각(넘기기 — 본문 정본을 행에서 Y.Doc 으로)**, §2 CRDT 조각 표)
 
 ---
 
@@ -29,7 +29,7 @@
 
 `npm run dev` 로 실제로 눌러볼 수 있고, **`npm run e2e` 가 실제 브라우저로 208개 항목을 확인한다.** 이 PC 에서는 **Chrome 으로** 돌린다 — Edge 153 헤드리스는 진짜 `Ctrl+C` 에서 종료된다(§6). 기존 클립보드 검사 2개는 이 환경에서 실패한다(§7).
 
-**숫자**: 마이그레이션 15개 / 테이블 39개 / 테스트 1550개(CI skip 0 · 이 PC 는 외부 도구 검사가 셸에 따라 1~2개 skip — PowerShell 은 unzip, Git Bash 는 bsdtar 를 못 찾는다) + 브라우저 검증 208개(이 PC 에서 206 통과 — 클립보드 2개) / PR 69개 머지(#70 포함).
+**숫자**: 마이그레이션 15개 / 테이블 39개 / 테스트 1556개(CI skip 0 · 이 PC 는 외부 도구 검사가 셸에 따라 1~2개 skip — PowerShell 은 unzip, Git Bash 는 bsdtar 를 못 찾는다) + 브라우저 검증 208개(이 PC 에서 206 통과 — 클립보드 2개) / PR 70개 머지(#71 포함).
 
 ---
 
@@ -84,7 +84,8 @@ v1 은 **동기 스트리밍 다운로드**다. 상한을 넘으면 흘려보내
 | 2 | **`doc_update` 로그 저장소** — `collab/doc-store.ts`. 읽기(스냅샷 + 뒤 update · 처음이면 행에서 옮김) · append(권한 → 스냅샷 잠금 → 적용해 보고 바뀐 부분만 seq + 1) · 압축(스냅샷만). 아직 부르는 경로가 없다 | ✅ #67 |
 | 3a | **y-prosemirror 연쇄 삭제 막기**(§3.2-14) — 변환에 넘기는 스키마 파사드(`collab/collab-schema.ts`) · 루트 `doc: blockGroup+` · 구조 위반을 Y.Doc 에 고쳐 쓰는 곳은 로그 저장소 append 하나(`collab/repair.ts` · `doc-store.ts`) | ✅ #69 |
 | 3b | **멘션 · 수식에 건 서식**을 Y.Doc 에 싣기(§3.2-15) — 서식을 노드 attr `marks` 에 비춘다(`editor/atom-marks.ts`: 만들 때 · appendTransaction · 읽을 때 되살리기) | ✅ #70 |
-| 4 | 서버 명령 경로 ②(V-5) + Y.Doc 을 상류로 하는 프로젝터 — 페이지 생성 · 휴지통 · 복원 · 이동 · PUT body 가 부모 Y.Doc 을 거친다 | ⬜ |
+| 4a | **넘기기 전의 원시 연산** — 호출자 트랜잭션 안의 본문 세션(`openBodyDoc`: 잠금 · 처음이면 옮김 · `change` · `applyUpdate` · `commit`) · ProseMirror 변경을 Y.Doc 에 쓰는 한 벌(`collab/body-edit.ts`) · 프로젝터 추출(`projectBodyRows`, 동작 그대로). 아직 어떤 경로도 부르지 않는다 | ✅ #71 |
+| 4b | **넘기기** — PUT body · 하위 페이지 생성 · 휴지통 · 복원 · 이동이 **한 PR 에서 함께** 부모 Y.Doc 을 거치고(서버 명령 경로 ② · V-5), 프로젝터가 세션의 결과를 투영한다 | ⬜ |
 | 5 | 협업 서버(Hocuspocus 자체 호스팅 · 3001) — join · update 권한 검사 · 저장 · 권한 회수 시 끊기(F-05-19) | ⬜ |
 | 6 | 에디터 바인딩 — `ySyncPlugin` · origin 범위 undo(F-05-15) · 오프라인 보존(y-indexeddb) · 두 탭 e2e | ⬜ |
 
@@ -127,6 +128,18 @@ v1 은 **동기 스트리밍 다운로드**다. 상한을 넘으면 흘려보내
   `repair` 를 받은 update 와 함께 퍼뜨린다
 - 수선이 도착하기 전까지 에디터 문서는 스키마를 어길 수 있다(한 블록에 내용 줄 둘 · 루트 그룹 둘). 명령 · 플러그인이 그
   모양에서 던지거나 엉뚱하게 동작하지 않는지 본다 — `pm-blocks.ts` 는 첫 루트 그룹만 평탄화한다(§7)
+
+4a조각이 정한 것 — 4b(넘기기)가 지켜야 할 것:
+- 서버 명령은 **부모 본문 세션을 먼저 열고**(`openBodyDoc(tx, ctx, pageId)`) 그다음 행을 쓰고, `change` 로 참조 노드를 넣거나 빼고,
+  `commit({ actorId, origin: 'api' })` 한다. 처음 여는 세션은 그 순간의 행으로 옮기므로, 하위 페이지 행을 먼저 쓰면 옮기기가 그
+  참조를 이미 담아 명령이 넣는 것과 **둘이 된다**(`doc-store.db.test.ts` ⑦ 이 고정)
+- 세션은 **권한을 보지 않는다.** 하위 페이지를 만드는 사람은 부모 본문의 `edit_content` 가 아니라 `create_child` 로 부모 문서에
+  참조를 넣는다 — 명령이 자기 권한을 검사한다. 참여자 경로(`appendDocUpdate`)만 권한 검사 + 세션이다
+- 프로젝터는 `projectBodyRows(tx, ctx, page, doc)` — 페이지 행을 `FOR UPDATE` 로 잡은 트랜잭션에서 세션의 `read().doc` 을 넘긴다.
+  지금 프로젝터는 문서에 없는 살아 있는 하위 페이지를 **거부**한다(`page_ref_missing`). 정본 의사코드는 "휴지통으로 전이"다 —
+  4b 에서는 모든 쓰기가 명령이라 거부로 충분하고, 참여자가 참조 노드를 지울 수 있게 되는 6조각에서 정본대로 바꾼다
+- ⚠ **잠금 순서.** 프로젝터 쪽은 페이지 행 `FOR UPDATE` 를, 세션은 `doc_snapshot` 행 `FOR UPDATE` 를 잡는다. 두 경로가 반대 순서로
+  잡으면 교착이다 — 4b 에서 한 방향(페이지 행 → 스냅샷)으로 정하고, 5조각의 참여자 경로가 투영까지 할 때도 같은 순서를 쓴다
 
 **W8 이 남긴 빈자리 — Phase 1 과 부딪히면 먼저 본다** (자세한 건 §7)
 1. **select 정렬** — 컴파일러가 select 를 옵션 **id** 로 정렬한다. 화면은 select 를 정렬 대상에서 **뺐다**.
@@ -333,7 +346,12 @@ W7 항목별 상태:
 - `src/lib/collab/normalize.ts` — 동시 편집이 만든 구조 위반을 고치는 순수 함수 · 결정론 id(`derivedBlockId`,
   페이지 id 가 씨앗). 에디터 바인딩도 **같은 함수**를 써야 참여자마다 같은 문서가 된다
 - `src/lib/collab/doc-store.ts` — **편집 로그 저장소.** `loadDocState`(스냅샷 + 뒤 update, 처음이면 행에서 옮김) ·
-  `appendDocUpdate`(권한 → 스냅샷 잠금 → 적용해 보고 바뀐 부분만 seq + 1 → 압축). 권한 검사가 안에 있다. 아직 부르는 경로가 없다
+  **`openBodyDoc`**(4a — 호출자 트랜잭션 안의 본문 세션: 스냅샷 잠금 · 처음이면 옮김 · `read` · `change` · `applyUpdate` · `commit`
+  으로 바뀐 부분 + 수선을 seq + 1 → 압축. **권한을 보지 않는다**) · `appendDocUpdate`(권한 검사 + 세션). 아직 부르는 경로가 없다
+- `src/lib/collab/body-edit.ts` — **`writeEditorChange`.** ProseMirror 변경을 Y.Doc 본문에 쓰는 한 벌(`collabSchema` 읽기 → 트랜잭션 →
+  서식 거울 → `updateYFragment`). 서버 명령과 테스트의 `edit` 이 같이 쓴다
+- `src/lib/block/save-page-body.ts` 의 **`projectBodyRows`** — 프로젝터(범위 읽기 → 투영 → 쓰기 → 버전 → 색인). 4a 에서 `savePageBody` 에서
+  떼어 냈다(동작 그대로). 4b 가 세션의 `read().doc` 을 넘긴다
 - `src/lib/testing/collab-peers.ts` — 에디터 없이 참여자를 흉내 낸다(`peer` · `edit` · `findBlock` · `exchange` · `changesSince`).
   `edit` 은 `ySyncPlugin` 이 쓰는 `updateYFragment` 를 부른다. client id 를 고정하면 결과가 결정론이다. 문서는 `collabSchema` 로 읽어
   위반이 있어도 지우지 않는다(위반 자리를 건드리는 편집은 ProseMirror 가 거부한다). **`bind`** 는 실제 `ySyncPlugin` 을 헤드리스로 붙인다
@@ -488,6 +506,7 @@ W7 항목별 상태:
 | 92 | **동시 편집 검사는 실제 `ySyncPlugin` 을 헤드리스로 붙인다** (#69) | `initProseMirrorDoc` 만 보면 바인딩의 다른 경로를 놓친다 — 루트는 `tr.replace` 의 Fitter 를 거쳐서 루트 그룹 둘이 그 경로에서만 지워졌다. `testing/collab-peers.ts` 의 `bind` 가 바인딩이 view 에서 쓰는 것(`state` · `dispatch` · `hasFocus`)만 흉내 낸다. EditorView 처럼 초기화 도중의 dispatch 에서는 아직 없는 플러그인 뷰를 부르지 않는다 — 처음 흉내는 거기서 죽었다. #70 부터 플러그인 뷰를 **전부** 붙인다(`yUndoPlugin` 을 함께 붙이려고) |
 | 93 | **attr 이 없는 마크 JSON 을 되살릴 때 `null` 이 아니라 `{}` 를 넘긴다 — 검사가 잡았다** (#70) | ProseMirror 의 `computeAttrs` 는 `value && value[name]` 으로 읽어 attrs 가 null 이면 "값이 없다" 검사를 건너뛴다 — `{ type: 'link' }` 에서 **`href: null` 인 링크**가 만들어져 `href="null"` 로 그려진다. "주소 없는 링크는 서식만 뺀다"는 검사가 처음 돌 때 실패해서 알았다. `{}` 면 던진다. 반사실: `null` 로 되돌리면 그 검사만 실패. 같은 검사의 두 번째 실패는 코드가 아니라 비교였다 — ProseMirror 의 attr 객체는 프로토타입이 없어(`Object.create(null)`) 리터럴과 strict `deepEqual` 이 어긋난다. JSON 으로 비교한다. Y 글자 서식을 읽는 `ydoc.ts` · `collabSchema.mark` 는 attrs 를 `?? null` 로 넘긴다 — Y 에서 null 값이 오는지는 확인하지 않았다 |
 | 94 | **e2e 가 서버 본문을 API 로 바꾸기 전에 "서버에 닿았다 → 큐가 비었다" 순서로 기다린다 — 큐만 보는 대기는 경쟁이 남았다** (#69 · #70) | 저장 큐의 `resume` 은 못 보낸 문서를 "서버보다 새것"으로 화면에 되살린다. 그래서 편집이 큐에 남은 채 스크립트가 서버 본문을 덧붙이고 이동하면 덧붙인 블록이 화면에 없다 — main 에서도 이미지 절이 매번 이렇게 멈춰 그 뒤 절이 돌지 않았다. #69 는 IndexedDB 큐가 비기를 기다렸는데 3a 빌드에서 통과하고 3b 빌드에서 **같은 자리가 다시 실패했다**(큐가 비었다는 검사는 통과). 큐는 디바운스 뒤에 디스크에 쓰므로(`page-sync.ts` queue) 쓰기 전이면 비어 보이고, 이동할 때 pagehide 가 그 항목을 쓴다. 보내기 전에는 디스크에 먼저 쓰므로(`attempt`) **서버에 닿은 것을 먼저 보고** 그 뒤 큐가 비었다면 확정이다. 고친 뒤 206 / 208. 두 번째 실패를 3b 회귀로 오해하지 않으려고 원인을 코드에서 먼저 찾았다 |
+| 95 | **4조각은 원시 연산(4a)과 넘기기(4b)로 자른다 — 넘기기는 경로 전부와 한 번에** (#71) | 정본을 넘기는 순간 행을 직접 고치는 경로가 하나라도 남으면 Y.Doc 과 행이 어긋난다(§2 순서의 근거). 그래서 넘기기는 쪼갤 수 없고, 쪼갤 수 있는 것은 **아무 경로도 부르지 않는 앞부분**뿐이다 — 호출자 트랜잭션 안의 본문 세션(`openBodyDoc`) · ProseMirror 변경을 Y.Doc 에 쓰는 한 벌(`body-edit.ts`) · 동작 그대로의 프로젝터 추출(`projectBodyRows`). 세션을 **권한 밖**에 둔 이유: 하위 페이지 생성은 부모 본문의 `edit_content` 가 아니라 `create_child` 로 부모 문서에 참조를 넣는다. 테스트의 `edit` 도 같은 한 벌을 쓰게 해 서버와 테스트가 갈라지지 않는다. 반사실: 받은 actor · origin 을 무시하면 2개 · 한 번만 쌓기 가드를 빼면 1개 · 적용 실패 세션의 쌓기 가드를 빼면 1개 · 서식 거울을 빼면 1개 · 편집 스키마로 읽으면 3개가 실패했다. **변경이 없을 때 돌아가는 줄은 빼도 실패가 0개** — `updateYFragment` 가 같은 문서에서 아무것도 쓰지 않아서다. 코드는 두고 "빠른 길일 뿐"으로 주석을 고쳤다 |
 
 ---
 
@@ -794,19 +813,23 @@ HANDOFF §2 의 CRDT 조각 표 · 순서 근거 · "N조각에서 확인한 것
   - 3a조각(#69) src/lib/collab/collab-schema.ts · repair.ts — y-prosemirror 연쇄 삭제 막기(§3.2-14, 다시 판단하지 마라):
     변환에 넘기는 스키마 파사드 collabSchema · 루트 doc: blockGroup+ · 구조 위반 수선은 appendDocUpdate 한 곳
   - 3b조각(#70) src/lib/editor/atom-marks.ts — 멘션 · 수식 서식을 노드 attr marks 에 비춘다(§3.2-15, 다시 판단하지 마라)
+  - 4a조각(#71) src/lib/collab/doc-store.ts(openBodyDoc) · body-edit.ts · block/save-page-body.ts(projectBodyRows) —
+    넘기기 전의 원시 연산. 아직 어떤 경로도 부르지 않는다
 
-다음 작업은 **4조각 — 서버 명령 경로 ②(정본 V-5) + Y.Doc 을 상류로 하는 프로젝터**다. 여기서 본문의 정본이 행에서
-Y.Doc 으로 넘어간다(판결 X-1). 지금까지 중 가장 크고, 되돌리기 가장 비싸다.
-  ① 먼저 자르는 법을 정한다(§4 "한 PR 이 커지면 자른다"). 단 **반쯤 넘기지 않는다** — 정본이 Y.Doc 으로 넘어간 뒤
-     행을 직접 고치는 경로(createPage 의 참조 삽입 · 휴지통 · 복원 · 이동 · PUT body)가 하나라도 남으면 프로젝터가
-     "문서에 없는 본문 행"으로 보고 그 행을 지운다(§2 순서의 근거). 넘기는 PR 은 그 경로 전부와 함께 온다.
-     넘기기 전 조각(프로젝터를 Y.Doc 에서 읽게 만들되 아직 켜지 않는 것 등)은 앞에 따로 둘 수 있다
-  ② 서버가 Y.Doc 에 쓸 때: initProseMirrorDoc(fragment, collabSchema) → ProseMirror 트랜잭션 →
-     syncAtomMarks(서식 거울) → updateYFragment → 그 update 를 appendDocUpdate 로. testing/collab-peers.ts 의 edit 이
-     같은 순서다. append 결과의 repair 는 버리지 않는다(5조각이 퍼뜨린다)
-  ③ 착수 전에 읽을 것: 00-canonical-data-model.md 판결 V-5 · X-1 · X-3 · 경로 표(§3.7 뒤 "쓰기 경로") ·
-     src/lib/block/save-page-body.ts(프로젝터 · readLiveBody) · page.ts(createPage) · trash.ts · move-page.ts ·
-     src/lib/collab/doc-store.ts · repair.ts 머리말 · HANDOFF §7 의 CRDT 항목들
+다음 작업은 **4b조각 — 넘기기**다. 여기서 본문의 정본이 행에서 Y.Doc 으로 넘어간다(판결 X-1). 되돌리기 가장 비싸다.
+HANDOFF §2 의 "4a조각이 정한 것 — 4b 가 지켜야 할 것"을 먼저 읽어라.
+  ① **반쯤 넘기지 않는다.** PUT body · 하위 페이지 생성(createPage 의 parentPageId) · 휴지통 · 복원 · 이동이 한 PR 에서
+     함께 부모 Y.Doc 을 거친다. 하나라도 행을 직접 고치면 그 페이지의 Y.Doc 과 행이 어긋나고, 다음 투영이 그 행을
+     지우거나 거부한다
+  ② 명령의 모양: 권한 검사 → 페이지 행 FOR UPDATE → openBodyDoc(부모) → (행 쓰기) → change(참조 노드 넣기 · 빼기) →
+     commit({ actorId, origin: 'api' }) → projectBodyRows(부모, read().doc). **세션을 먼저 열고 행을 쓴다**
+  ③ 정할 것: 복원이 참조 노드를 넣을 자리(B2 가 보존한 order_key 로 형제 사이를 찾을지 · 맨 뒤인지) · 이동 대상이 토글 같은
+     컨테이너일 때 그 컨테이너를 가진 페이지의 문서 · 잠금 순서(페이지 행 → doc_snapshot 한 방향)
+  ④ 검사를 먼저 만든다: 모든 경로 뒤 "행 = 부모 Y.Doc 의 투영"을 확인하는 도우미. 기존 DB 테스트(save-page-body · page ·
+     trash · move-page)가 그대로 통과해야 한다. 화면이 기대므로 build · e2e 필수
+  ⑤ 착수 전에 읽을 것: 00-canonical-data-model.md V-5 · X-1 · X-3 · 프로젝터 의사코드(§3.11 뒤 "block 프로젝터") ·
+     src/lib/block/page.ts(createPage) · trash.ts · move-page.ts · save-page-body.ts ·
+     src/app/w/[workspaceId]/[pageId]/body-editor.tsx(/page 만들기 — 참조 노드를 에디터가 넣는다)
 
 지켜야 할 것:
   - 4조각 전까지 어떤 경로도 Y.Doc 을 쓰지 않는다. 4조각은 정본을 넘기며 행을 직접 고치는 경로
@@ -843,7 +866,7 @@ PR 본문에는 "왜 이렇게 했는가"를 쓴다 — 정본과 다르게 한 
 
 시간을 아끼려면 (전부 이전 세션에서 실제로 당한 것, 자세한 건 HANDOFF §6):
 - 시작할 때 `npm run db:up` 을 한 번 돌린다. `npm test` 만 돌리면 DB 테스트가
-  **조용히 빠진다**(카운트에도 안 잡힌다). 1550개가 다 돌아야 CI 의 db 잡과 같다.
+  **조용히 빠진다**(카운트에도 안 잡힌다). 1556개가 다 돌아야 CI 의 db 잡과 같다.
   이 PC 에서는 외부 도구 검사가 셸에 따라 1~2개 skip 된다 — PowerShell 은 unzip(Git 의 unzip 은 Git Bash PATH 에만
   있다), Git Bash 는 bsdtar(Git 의 tar 는 GNU tar 다)를 못 찾는다. 정상이다(CI 는 설치하고 skip 0 이어야 한다)
 - CI 결과는 **HEAD 커밋의 실행**을 찾아서 본다(`gh run list --json databaseId,headSha`
