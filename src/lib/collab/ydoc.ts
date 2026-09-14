@@ -49,7 +49,7 @@
  *     **바인딩 · 서버 쓰기 경로는 `collabSchema` 를 넘겨 막는다.** 구조 위반은 로그 저장소가 append 에서
  *     한 번 고친다(`repair.ts`)
  *   - y-prosemirror 는 요소 노드를 옮길 때 attr 만 싣고 **마크를 싣지 않는다**(`createTypeFromElementNode`).
- *     멘션 · 수식에 건 서식은 Y.Doc 을 지나면 사라진다. 글자에 건 서식은 남는다
+ *     그래서 멘션 · 수식의 서식은 노드 attr `marks` 에 비쳐 싣고, 읽을 때 되살린다(`editor/atom-marks.ts`)
  *   - y-prosemirror 에는 "옮기기"가 없다. 순서를 바꾸면 요소를 제자리에서 고쳐 쓰므로, 둘이 동시에 순서를
  *     바꾸면 blockId 가 겹치거나(정규화가 새 id 를 준다) 글자가 겹칠 수 있다(되돌리지 않는다)
  */
@@ -59,6 +59,7 @@ import { prosemirrorToYXmlFragment } from 'y-prosemirror'
 import type { Mark, Node as PmNode } from '@tiptap/pm/model'
 
 import type { EditorDoc } from '../editor/document.ts'
+import { ATOM_MARKS_ATTR, INLINE_ATOM_NODES, marksFromAttr } from '../editor/atom-marks.ts'
 import { docToPm, pmToDoc } from '../editor/pm-adapter.ts'
 import { blockSchema } from '../editor/schema.ts'
 import { normalizeBody, type NormalizeFix } from './normalize.ts'
@@ -127,7 +128,10 @@ function elementToPm(element: Y.XmlElement): PmNode | null {
   // 모르는 노드 이름 — 새 버전 클라이언트가 넣은 블록이다. 읽기 결과에서만 빠지고 원본에는 남는다.
   if (type === undefined || type.isText) return null
   try {
-    return type.create(element.getAttributes() as Record<string, unknown>, childrenToPm(element))
+    const attrs = element.getAttributes() as Record<string, unknown>
+    // 인라인 원자의 서식은 attr 에 비쳐 있다(`editor/atom-marks.ts`).
+    const marks = INLINE_ATOM_NODES.has(type.name) ? marksFromAttr(attrs[ATOM_MARKS_ATTR]) : undefined
+    return type.create(attrs, childrenToPm(element), marks)
   } catch {
     return null
   }

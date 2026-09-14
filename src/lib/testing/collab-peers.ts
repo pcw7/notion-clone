@@ -17,6 +17,7 @@ import type { EditorView } from '@tiptap/pm/view'
 
 import { collabSchema } from '../collab/collab-schema.ts'
 import { BODY_FRAGMENT } from '../collab/ydoc.ts'
+import { atomMarksPlugin } from '../editor/atom-marks.ts'
 import { blockSchema } from '../editor/schema.ts'
 
 /** `source` 의 상태로 시작하는 참여자. */
@@ -31,9 +32,12 @@ export function peer(source: Y.Doc, clientId: number): Y.Doc {
 export function edit(ydoc: Y.Doc, change: (tr: Transaction, doc: PmNode) => void): void {
   const fragment = ydoc.getXmlFragment(BODY_FRAGMENT)
   const { doc, meta } = initProseMirrorDoc(fragment, collabSchema)
-  const tr = EditorState.create({ schema: blockSchema, doc }).tr
+  // 에디터처럼 서식 거울 플러그인을 거친 문서를 옮긴다(`editor/atom-marks.ts`).
+  const state = EditorState.create({ schema: blockSchema, doc, plugins: [atomMarksPlugin()] })
+  const tr = state.tr
   change(tr, doc)
-  ydoc.transact(() => updateYFragment(ydoc, fragment, tr.doc, meta), 'editor')
+  const next = state.apply(tr).doc
+  ydoc.transact(() => updateYFragment(ydoc, fragment, next, meta), 'editor')
 }
 
 export type FoundBlock = { readonly pos: number; readonly node: PmNode }
@@ -76,11 +80,13 @@ export type BoundEditor = {
  * 원격 update 는 `Y.applyUpdate(ydoc, …)` 로 넣는다 — 바인딩이 Y.Doc 을 관찰해 문서에 옮긴다.
  *
  * @param schema 에디터 상태의 스키마. 바인딩은 이것을 변환에 넘긴다(`collab-schema.ts` 머리말).
+ * @param plugins 바인딩 옆에 둘 플러그인. 기본은 에디터에 있는 서식 거울(`editor/atom-marks.ts`).
  */
-export function bind(ydoc: Y.Doc, schema: Schema = collabSchema): BoundEditor {
-  const plugin = ySyncPlugin(ydoc.getXmlFragment(BODY_FRAGMENT)) as Plugin
-  let state = EditorState.create({ schema, plugins: [plugin] })
-  const mounted: { view?: PluginView } = {}
+export function bind(ydoc: Y.Doc, schema: Schema = collabSchema, plugins: readonly Plugin[] = [atomMarksPlugin()]): BoundEditor {
+  const all = [ySyncPlugin(ydoc.getXmlFragment(BODY_FRAGMENT)) as Plugin, ...plugins]
+  let state = EditorState.create({ schema, plugins: all })
+  // EditorView 처럼 플러그인 뷰를 전부 차례로 만든다. 만들어지는 도중의 dispatch 는 이미 만든 뷰만 부른다.
+  const mounted: PluginView[] = []
   const view = {
     get state() {
       return state
@@ -88,16 +94,21 @@ export function bind(ydoc: Y.Doc, schema: Schema = collabSchema): BoundEditor {
     dispatch(tr: Transaction) {
       const previous = state
       state = state.apply(tr)
-      mounted.view?.update?.(view as unknown as EditorView, previous)
+      for (const pluginView of mounted) pluginView.update?.(view as unknown as EditorView, previous)
     },
     hasFocus: () => false,
   }
-  mounted.view = plugin.spec.view?.(view as unknown as EditorView)
+  for (const plugin of all) {
+    const pluginView = plugin.spec.view?.(view as unknown as EditorView)
+    if (pluginView !== undefined) mounted.push(pluginView)
+  }
   return {
     get state() {
       return state
     },
     dispatch: view.dispatch,
-    destroy: () => mounted.view?.destroy?.(),
+    destroy: () => {
+      for (const pluginView of mounted) pluginView.destroy?.()
+    },
   }
 }

@@ -2,7 +2,7 @@
 
 새 세션이 이어받을 때 읽는 문서. **[CLAUDE.md](../CLAUDE.md)를 먼저 읽고 여기로 온다** — 거기에 절대 제약·스택·명령어·코딩 규칙이 있고, 이 문서는 **"지금 어디까지 왔고 다음에 뭘 하는가"**만 다룬다.
 
-최종 갱신: 2026-09-14 (PR #69 시점 — Phase 0 MVP · Phase 1 의 첫 항목 익스포트(F-09-14) v1 이 닫혔다. **Phase 1 CRDT 동시편집(F-05-01) 진행 중 — 1조각(Y.Doc 본문 계약 · 정규화) · 2조각(`doc_update` 로그 저장소) · 3a조각(y-prosemirror 연쇄 삭제 막기 · 수선의 작성자 한 곳) 끝. 다음은 3b조각(멘션 · 수식 서식)**, §2 CRDT 조각 표)
+최종 갱신: 2026-09-14 (PR #69 시점 — Phase 0 MVP · Phase 1 의 첫 항목 익스포트(F-09-14) v1 이 닫혔다. **Phase 1 CRDT 동시편집(F-05-01) 진행 중 — 1조각(Y.Doc 본문 계약 · 정규화) · 2조각(`doc_update` 로그 저장소) · 3a조각(y-prosemirror 연쇄 삭제 막기 · 수선의 작성자 한 곳) · 3b조각(멘션 · 수식 서식) 끝 — 3조각이 닫혔다. 다음은 4조각(서버 명령 경로 ② + Y.Doc 을 상류로 하는 프로젝터)**, §2 CRDT 조각 표)
 
 ---
 
@@ -27,9 +27,9 @@
 
 **동작하는 것**: 이메일 OTP 로그인 → 워크스페이스 생성 → 이메일 초대 → 수락 → 워크스페이스 진입 → 페이지 생성 → 본문 편집(12종 블록 · 분할/병합 · 중첩 · `/` 메뉴 · 마크다운 · 서식) → 자동 저장 → 하위 페이지 → 페이지 이동 → 휴지통 · 복원 · 영구 삭제 → 멀티 블록 선택 → 블록 이동 · `+` 버튼 · 토글 접기 → 블록 메뉴 · 복사/붙여넣기(중첩 보존) · 이미지(올리기 · 주소 · 드롭 · 붙여넣기) · 끊겨도 사라지지 않는 저장(IndexedDB 큐) · 페이지 공유(상속 · 따로 관리하기) · 즐겨찾기 · 최근 방문 → **`Cmd+K` 검색(한국어가 조사를 넘는다 · 권한 필터가 쿼리 안에)** → **풀페이지 데이터베이스**(사이드바에서 만들기 · 속성 6종 추가 · 행 추가 · 셀 편집 · 키보드 이동 · select 옵션 만들기 · "더 보기" · 필터 · 정렬 · 속성 숨기기 · 머리 메뉴) → **내보내기**(페이지 · 표 · 워크스페이스 전체 — Markdown & CSV ZIP · 누르면 개수부터 · 볼 수 없는 페이지는 빠지고 `_export_report.json` 이 센다).
 
-`npm run dev` 로 실제로 눌러볼 수 있고, **`npm run e2e` 가 실제 브라우저로 207개 항목을 확인한다.** 이 PC 에서는 **Chrome 으로** 돌린다 — Edge 153 헤드리스는 진짜 `Ctrl+C` 에서 종료된다(§6). 기존 클립보드 검사 2개는 이 환경에서 실패한다(§7).
+`npm run dev` 로 실제로 눌러볼 수 있고, **`npm run e2e` 가 실제 브라우저로 208개 항목을 확인한다.** 이 PC 에서는 **Chrome 으로** 돌린다 — Edge 153 헤드리스는 진짜 `Ctrl+C` 에서 종료된다(§6). 기존 클립보드 검사 2개는 이 환경에서 실패한다(§7).
 
-**숫자**: 마이그레이션 15개 / 테이블 39개 / 테스트 1543개(CI skip 0 · 이 PC 는 외부 도구 검사가 셸에 따라 1~2개 skip — PowerShell 은 unzip, Git Bash 는 bsdtar 를 못 찾는다) + 브라우저 검증 207개(이 PC 에서 205 통과 — 클립보드 2개) / PR 68개 머지(#69 포함).
+**숫자**: 마이그레이션 15개 / 테이블 39개 / 테스트 1550개(CI skip 0 · 이 PC 는 외부 도구 검사가 셸에 따라 1~2개 skip — PowerShell 은 unzip, Git Bash 는 bsdtar 를 못 찾는다) + 브라우저 검증 208개(이 PC 에서 206 통과 — 클립보드 2개) / PR 69개 머지(#70 포함).
 
 ---
 
@@ -83,7 +83,7 @@ v1 은 **동기 스트리밍 다운로드**다. 상한을 넘으면 흘려보내
 | 1 | **Y.Doc 본문 계약** — 문서 ↔ Y.Doc(`collab/ydoc.ts`) · 동시 편집이 만든 구조 위반을 결정론적으로 고치는 정규화(`collab/normalize.ts`) · 두 참여자 수렴 검사(DB 없음). 의존성 yjs · y-prosemirror · y-protocols(전부 MIT) | ✅ #66 |
 | 2 | **`doc_update` 로그 저장소** — `collab/doc-store.ts`. 읽기(스냅샷 + 뒤 update · 처음이면 행에서 옮김) · append(권한 → 스냅샷 잠금 → 적용해 보고 바뀐 부분만 seq + 1) · 압축(스냅샷만). 아직 부르는 경로가 없다 | ✅ #67 |
 | 3a | **y-prosemirror 연쇄 삭제 막기**(§3.2-14) — 변환에 넘기는 스키마 파사드(`collab/collab-schema.ts`) · 루트 `doc: blockGroup+` · 구조 위반을 Y.Doc 에 고쳐 쓰는 곳은 로그 저장소 append 하나(`collab/repair.ts` · `doc-store.ts`) | ✅ #69 |
-| 3b | **멘션 · 수식에 건 서식**을 Y.Doc 에 싣기(§7) — 동시에 쓰는 참여자가 생기기 전의 전제 조건 | ⬜ |
+| 3b | **멘션 · 수식에 건 서식**을 Y.Doc 에 싣기(§3.2-15) — 서식을 노드 attr `marks` 에 비춘다(`editor/atom-marks.ts`: 만들 때 · appendTransaction · 읽을 때 되살리기) | ✅ #70 |
 | 4 | 서버 명령 경로 ②(V-5) + Y.Doc 을 상류로 하는 프로젝터 — 페이지 생성 · 휴지통 · 복원 · 이동 · PUT body 가 부모 Y.Doc 을 거친다 | ⬜ |
 | 5 | 협업 서버(Hocuspocus 자체 호스팅 · 3001) — join · update 권한 검사 · 저장 · 권한 회수 시 끊기(F-05-19) | ⬜ |
 | 6 | 에디터 바인딩 — `ySyncPlugin` · origin 범위 undo(F-05-15) · 오프라인 보존(y-indexeddb) · 두 탭 e2e | ⬜ |
@@ -343,6 +343,8 @@ W7 항목별 상태:
 - `src/lib/collab/repair.ts` — **`repairBodyYDoc`.** 구조 위반을 Y.Doc 에 고쳐 쓴다 — 프로젝션을 바꾸지 않고 고칠 곳만. 모르는 것이 있으면
   멈춘다. **부르는 곳은 `appendDocUpdate` 하나**다(수선의 작성자가 둘이면 블록이 복제된다)
 - `src/lib/collab/ydoc.ts` 의 `readBodyPm` — 고치지 않고 Y.Doc 을 그대로 비춘 ProseMirror 문서(스키마에 맞는다고 가정하지 마라)
+- `src/lib/editor/atom-marks.ts` — **멘션 · 수식 서식의 attr 거울**(`createInlineAtom` · `syncAtomMarks` · `atomMarksPlugin` · `marksFromAttr`).
+  에디터에 붙어 있다. 서버가 ProseMirror 트랜잭션으로 Y.Doc 에 쓸 때도 `updateYFragment` 앞에서 `syncAtomMarks` 를 거친다(§3.2-15)
 - `src/lib/block/save-page-body.ts` 의 `readLiveBody(tx, …)` — 트랜잭션 안에서 행으로 본문 읽기. 편집기(`loadPageBody`)와
   Y.Doc 옮기기가 같은 규칙으로 읽는다
 
@@ -382,6 +384,7 @@ W7 항목별 상태:
 | 12 | **익스포트 Markdown 의 문법** (01 문서는 노션 enhanced markdown 을 *"그대로 채택"* 하라 하고, 이 기능을 소유한 09 문서는 F-09-22 대안에서 *"커스텀 태그를 만들지 말라"* 고 한다) | **CommonMark + GFM + HTML 블록 셋**(`<details>` 토글 · `<aside>` 콜아웃 · `<u>` 밑줄). 색은 버리고 센다 (#59) | 소유 문서(09)를 따른다. 익스포트 파일을 여는 것은 우리 앱이 아니라 다른 도구다 — 거기서 `{color="red"}` 는 글자로, 탭 들여쓰기는 **코드 블록**으로 보인다. 노션 자신의 Markdown 익스포트가 쓰는 모양과 같다(F-09-14: *"노션의 export ZIP 레이아웃을 그대로 채택"*). 표현 못 한 것은 `losses` 로 세어 보고서에 싣는다 — F-09-14 가 가장 크게 경고한 실패가 *"백업이라 믿었는데 구멍이 있는 상태"* 다 |
 | 13 | **워크스페이스 전체 익스포트를 누가 할 수 있나** (3b 가 "정할 것"으로 남겼다. F-09-14 · F-02-22 는 노션 설정 화면의 "(관리자) Export all workspace content" 만 적었다) | **워크스페이스 소유자(`owner`)만.** 멤버 관리자(`membership_admin`)도 아니다. 페이지 · 표 범위는 볼 수 있는 모든 멤버 (#65) | ① **무엇을 볼 수 있는가는 역할이 아니라 스냅샷이 거른다**(§3.3-73) — 소유자가 내보내도 남의 비공개 페이지는 없다(F-09-20: admin 이라도 "모든 것을 본다"가 아니다). 역할이 정하는 것은 "한 번에 묶기"뿐이라 **멤버가 잃는 데이터가 없다** — 단 그러려면 표 화면에도 버튼이 있어야 해서 넣었다(풀페이지 표는 워크스페이스 직속이라 페이지 내보내기로 닿지 않는다) ② 잡 큐 · 속도 제한이 없는 동안 가장 무거운 동기 요청이다(블록 20만 · ZIP 4GiB) ③ 멤버 관리자는 멤버를 관리하는 역할이지 콘텐츠를 관리하지 않는다 ④ **좁은 쪽을 골랐다**(§3.3-49 와 같은 이유) — 넓히는 것은 `canExportWorkspace` 한 줄이고, 넓게 열었다 좁히면 쓰던 사람의 기능을 뺏는다. 판정은 스냅샷을 읽기 **전**이다 — 반사실: 게이트를 빼면 그 검사가, 스냅샷 뒤로 옮기면 블록 상한 0 에서 `too_large` 가 먼저 나와 같은 검사가 실패한다 |
 | 14 | **y-prosemirror 변환의 연쇄 삭제를 어떻게 막는가** (§7 이 후보 ⓐ 카디널리티 풀기 + appendTransaction 정규화 · ⓑ 변환 감싸기로 남겼다) | **ⓑ 를 포크 없이 — 변환에 넘기는 스키마만 관대한 파사드(`collabSchema`).** 편집 스키마는 루트(`doc: blockGroup+`) 하나만 풀었다. **구조 위반을 Y.Doc 에 고쳐 쓰는 곳은 로그 저장소의 append 하나**다 — 에디터 · 협업 서버는 쓰지 않는다 (#69) | ① y-prosemirror 는 변환에서 **우리가 넘긴 스키마 객체**의 `node` · `mark` · `text` 를 부르고, 바인딩은 `state.schema` 를 넘긴다 — exports 밖의 `createNodeFromYElement` 를 감쌀 필요가 없다. 파사드가 만든 노드는 `blockSchema` 의 노드이고 편집 규칙은 그대로다. 대가는 내부 구현 의존(1.3.7 고정 — 올리면 실제 바인딩 검사가 먼저 깨진다, §7) ② ⓐ 의 카디널리티 풀기는 편집 명령 전부의 전제를 바꾼다 — Fitter · `createAndFill` · split · join 이 내용 규칙에서 나온다. ⓐ 의 "`normalizeBody` 를 appendTransaction 으로"는 **모든 참여자가 수선을 쓴다**는 뜻인데, 진단에서 두 참여자가 같은 그룹 둘을 각자 합치자 **옮긴 블록이 복제됐다** — y-prosemirror 에 옮기기가 없어 합치기 · 올리기가 "지우고 새로 넣기"라서다(`repair.test.ts` ② 가 고정) ③ 작성자를 append 에 둔 이유: 스냅샷 행 `FOR UPDATE` 로 이미 페이지마다 한 줄로 서고, 잠근 뒤 읽은 상태(앞선 수선 포함)에서 계산하므로 수선끼리 겹치지 않는다 — 협업 서버가 여러 대여도 · API 경로가 써도 같다. 수선은 **같은 seq** 에 쌓고 보낸 쪽에 돌려준다(정본 origin 6값에 "시스템 수선"이 없고, 수선은 그 update 를 적용한 결과의 일부다) ④ 루트만 푼 이유: 바인딩은 루트를 `schema.node` 가 아니라 `tr.replace(0, size, …)` 로 채우고, `doc: blockGroup` 이면 Fitter 가 둘째 루트 그룹을 버린 뒤 다음 로컬 편집이 Y.Doc 에서 지운다(진단 · 검사). 편집기 · collab · export 테스트 618개가 루트를 푼 채로 통과했고 전체 선택 삭제는 여전히 그룹 하나다. `pmToDoc` 은 루트 그룹을 전부 읽게 했다. 반사실: 파사드가 내용을 검사하면 10개 · 마크를 던지면 1개 · 루트를 되돌리면 2개 · 저장소가 고치지 않으면 2개 · 수선이 모르는 것을 지나치면 2개 · 고칠 곳 대신 통째로 갈아쓰면 1개 · `pmToDoc` 이 첫 그룹만 읽으면 1개가 — 각각 그 항목만 실패 |
+| 15 | **멘션 · 수식에 건 서식을 Y.Doc 에 어떻게 싣는가** (y-prosemirror 가 요소 노드의 마크를 싣지 않는다 — §7) | **노드 attr `marks` 에 거울로 싣는다.** 진실은 ProseMirror 마크이고 세 자리에서 맞춘다 — 만들 때(`createInlineAtom`) · 편집 뒤(`atomMarksPlugin` appendTransaction) · 읽을 때(`collabSchema` · `readBodyYDoc` 이 attr 에서 되살림). 거울 트랜잭션은 되돌리기 기록을 **끄지 않는다.** 플러그인은 에디터에 지금 붙였다 (#70) | ① y-prosemirror 는 요소 노드를 attr 만으로 옮기고 되읽을 때도 마크를 넘기지 않으며, `updateYFragment` 는 ProseMirror attr 에 없는 Y attr 을 지운다 — Y 에 따로 써 둘 자리가 없어 **ProseMirror attr 이어야 한다** ② 마크를 없애고 attr 로 옮기는 대안은 `toggleMark` · 저장 어댑터가 멘션을 글자와 다르게 다뤄야 한다 — 편집 명령은 마크를 기준으로 짜여 있고 `addMark` 는 인라인 원자에도 마크를 건다(`node.isInline` 만 본다 — 소스로 확인). 거울이면 편집은 그대로다 ③ 형식은 `Mark.toJSON()` 배열이고 서식이 없으면 null — null attr 은 y-prosemirror 가 Y 에 쓰지 않아 서식 없는 원자의 Y.Doc 은 이전과 같다 ④ 기록을 끄지 않는 이유: y-prosemirror 는 한 상태 갱신에서 **마지막으로 적용된 트랜잭션**의 `addToHistory` 로 그 갱신 전체를 Y 에 쓸 때의 기록 여부를 정하고, undo 플러그인은 그 값이 false 인 Y 트랜잭션을 잡지 않는다(`captureTransaction`). 끄면 서식을 건 편집 전체가 협업 undo(F-05-15)에서 빠진다 — 실제 바인딩 + `yUndoPlugin` 검사로 확인했다. ⚠ `blockIdPlugin` 은 `addToHistory: false` 를 준다 — 6조각에서 분할 · 붙여넣기가 협업 undo 에서 빠지는지 본다(§7) ⑤ 에디터에 지금 붙인 이유: Phase 0 저장은 attr 을 보지 않아 동작이 같고, 6조각이 붙이기를 기억할 필요가 없다. 반사실: attr 을 안 채우면 3개 · 플러그인이 안 맞추면 4개 · 파사드가 안 되살리면 1개 · 읽기가 안 되살리면 3개 · 되살릴 때 `null` 을 넘기면 1개 · 기록을 끄면 협업 undo 검사 1개가 — 각각 그 주장의 검사만 실패(기록 끄기는 ProseMirror history 검사로는 가려지지 않는다 — 붙인 트랜잭션을 같은 항목으로 묶어서) |
 
 §9-Q7("Enter 분할/Backspace 병합 규칙 — W4 이전 필수")은 마스터 문서에 `[해결 · W4]` 로 기록했다.
 
@@ -482,7 +485,9 @@ W7 항목별 상태:
 | 89 | **seq 는 스냅샷 행을 `FOR UPDATE` 로 잡고 1씩 — 재시도 없음 · 압축은 스냅샷만** (#67) | 한 페이지의 append · 압축이 한 줄로 선다. 잠금 없이 `마지막 seq + 1` 을 계산하면 동시 append 가 같은 seq 를 받아 PK 로 던진다. 빈틈이 없어야 "합치지 않은 수 = 최신 seq − merged_seq" 가 성립한다. 압축은 들고 있는 Y.Doc 으로 스냅샷만 새로 쓰고 로그를 지우지 않는다(S1). 반사실: 잠금을 빼면 동시 append 검사만 · 압축이 로그를 지우거나 merged_seq 를 하나 더 올려 쓰면 압축 검사만 실패 |
 | 90 | **수선은 사본에서 먼저 고쳐 보고 확인한다 — 그 확인에 걸리는 입력은 찾지 못했다** (#69) | "읽기가 그대로이고 고칠 것이 남지 않았을 때만 원본에 적용한다"고 적었는데 **확인을 빼는 반사실에서 검사가 전부 통과했다.** 수선은 Y.Doc 을 자기의 정규화된 읽기에 맞추는 것이라 구성상 프로젝션이 같다(① 이 장면마다 본다). 코드는 남기고(비교가 어긋나는 날 본문을 바꾸는 대신 위반을 남긴다) "막는다"가 아니라 "도달하는 입력을 찾지 못한 방어"로 주석을 고쳤다 |
 | 91 | **모르는 노드 · 마크가 있으면 수선하지 않는다** (#69) | 수선은 매핑 없이 구조로 비교하므로 읽기에서 빠진 모르는 요소를 Y.Doc 에서 지운다. 바인딩은 매핑 동일성으로 그 요소를 건너뛰어 남긴다(진단으로 먼저 봤다 — 추측으로 단언을 쓰지 않았다). 위반을 남기는 쪽이 새 버전 클라이언트의 블록을 지우는 쪽보다 낫다. 반사실: 가드를 빼면 그 검사 2개만 실패 |
-| 92 | **동시 편집 검사는 실제 `ySyncPlugin` 을 헤드리스로 붙인다** (#69) | `initProseMirrorDoc` 만 보면 바인딩의 다른 경로를 놓친다 — 루트는 `tr.replace` 의 Fitter 를 거쳐서 루트 그룹 둘이 그 경로에서만 지워졌다. `testing/collab-peers.ts` 의 `bind` 가 바인딩이 view 에서 쓰는 것(`state` · `dispatch` · `hasFocus`)만 흉내 낸다. EditorView 처럼 초기화 도중의 dispatch 에서는 아직 없는 플러그인 뷰를 부르지 않는다 — 처음 흉내는 거기서 죽었다 |
+| 92 | **동시 편집 검사는 실제 `ySyncPlugin` 을 헤드리스로 붙인다** (#69) | `initProseMirrorDoc` 만 보면 바인딩의 다른 경로를 놓친다 — 루트는 `tr.replace` 의 Fitter 를 거쳐서 루트 그룹 둘이 그 경로에서만 지워졌다. `testing/collab-peers.ts` 의 `bind` 가 바인딩이 view 에서 쓰는 것(`state` · `dispatch` · `hasFocus`)만 흉내 낸다. EditorView 처럼 초기화 도중의 dispatch 에서는 아직 없는 플러그인 뷰를 부르지 않는다 — 처음 흉내는 거기서 죽었다. #70 부터 플러그인 뷰를 **전부** 붙인다(`yUndoPlugin` 을 함께 붙이려고) |
+| 93 | **attr 이 없는 마크 JSON 을 되살릴 때 `null` 이 아니라 `{}` 를 넘긴다 — 검사가 잡았다** (#70) | ProseMirror 의 `computeAttrs` 는 `value && value[name]` 으로 읽어 attrs 가 null 이면 "값이 없다" 검사를 건너뛴다 — `{ type: 'link' }` 에서 **`href: null` 인 링크**가 만들어져 `href="null"` 로 그려진다. "주소 없는 링크는 서식만 뺀다"는 검사가 처음 돌 때 실패해서 알았다. `{}` 면 던진다. 반사실: `null` 로 되돌리면 그 검사만 실패. 같은 검사의 두 번째 실패는 코드가 아니라 비교였다 — ProseMirror 의 attr 객체는 프로토타입이 없어(`Object.create(null)`) 리터럴과 strict `deepEqual` 이 어긋난다. JSON 으로 비교한다. Y 글자 서식을 읽는 `ydoc.ts` · `collabSchema.mark` 는 attrs 를 `?? null` 로 넘긴다 — Y 에서 null 값이 오는지는 확인하지 않았다 |
+| 94 | **e2e 가 서버 본문을 API 로 바꾸기 전에 "서버에 닿았다 → 큐가 비었다" 순서로 기다린다 — 큐만 보는 대기는 경쟁이 남았다** (#69 · #70) | 저장 큐의 `resume` 은 못 보낸 문서를 "서버보다 새것"으로 화면에 되살린다. 그래서 편집이 큐에 남은 채 스크립트가 서버 본문을 덧붙이고 이동하면 덧붙인 블록이 화면에 없다 — main 에서도 이미지 절이 매번 이렇게 멈춰 그 뒤 절이 돌지 않았다. #69 는 IndexedDB 큐가 비기를 기다렸는데 3a 빌드에서 통과하고 3b 빌드에서 **같은 자리가 다시 실패했다**(큐가 비었다는 검사는 통과). 큐는 디바운스 뒤에 디스크에 쓰므로(`page-sync.ts` queue) 쓰기 전이면 비어 보이고, 이동할 때 pagehide 가 그 항목을 쓴다. 보내기 전에는 디스크에 먼저 쓰므로(`attempt`) **서버에 닿은 것을 먼저 보고** 그 뒤 큐가 비었다면 확정이다. 고친 뒤 206 / 208. 두 번째 실패를 3b 회귀로 오해하지 않으려고 원인을 코드에서 먼저 찾았다 |
 
 ---
 
@@ -713,7 +718,7 @@ dev 재시작·`.next/dev` 삭제로 풀린 적도 있지만 재현이 안 된�
 | 비연속 블록 선택(`Alt+Shift+클릭`) | 없음. 정본이 P1 로 자른 것 | `block-selection.ts` |
 | 복붙의 P1·P2 | **외부 HTML·마크다운을 블록으로 파싱하지 않는다**(P1). 우리가 내보낸 HTML 은 스키마의 파싱 규칙으로 되읽지만, 남의 사이트에서 복사한 HTML 은 ProseMirror 기본 파서가 처리하는 만큼만 된다. URL 붙여넣기 형태 선택(P2)·`Mod+Shift+V` 전용 경로·Notion-flavored enhanced markdown 도 없다 | `block-clipboard.ts` |
 | ~~이미지·파일의 참조 카운트~~ | **해결(#36).** 프로젝터가 문서 전체의 파일 참조를 세므로 복사·붙여넣기도 자동으로 `ref_count` 를 올린다. 남은 것은 그 카운트를 쓰는 GC(위) | `src/lib/block/image.ts` · `save-page-body.ts` |
-| 브라우저 검증의 빈자리 | `npm run e2e`(#31)가 207개 항목을 **실제 입력으로** 확인한다 — 핸들·드래그·선택·이동·접힘·`+`·자동 저장·복붙·이미지(업로드·드롭·붙여넣기)·오프라인 저장 큐·공유 패널·즐겨찾기·**검색 오버레이**(W7). **표(DB) · 필터 · 정렬 · 머리 메뉴도 있다(#56 · #57)** — 팝오버가 잘리지 않는지는 좌표로 본다. **익스포트는 브라우저가 실제로 ZIP 을 받고(`Browser.setDownloadBehavior`) python 으로 읽는다(#65)** — python 이 없으면 그 검사들이 실패한다. e2e 검사의 반사실은 돌리지 않았다(라이브러리 검사 8개만 돌렸다). **IME(한글 조합)·일반 타이핑은 아직 검사가 없다** — CDP 의 `Input.imeSetComposition` 으로 조합을 흉내낼 수 있다. 드롭·붙여넣기는 합성 `DragEvent`/`ClipboardEvent` 라 **OS 수준 드래그는 재현하지 않는다**(파일 선택은 `DOM.setFileInputFiles` 로 진짜다). 네트워크 실패는 `Network.setBlockedURLs` 로 **저장 라우트만** 막는다(전체를 끊으면 페이지 자체가 안 열려 새로고침 시나리오를 볼 수 없다). **CI 에는 아직 넣지 않았다** — 로컬에서 안정적으로 초록인지 먼저 쌓는다. 한 번 도는 데 1분 남짓이다 | `scripts/e2e-editor.mjs` |
+| 브라우저 검증의 빈자리 | `npm run e2e`(#31)가 208개 항목을 **실제 입력으로** 확인한다 — 핸들·드래그·선택·이동·접힘·`+`·자동 저장·복붙·이미지(업로드·드롭·붙여넣기)·오프라인 저장 큐·공유 패널·즐겨찾기·**검색 오버레이**(W7). **표(DB) · 필터 · 정렬 · 머리 메뉴도 있다(#56 · #57)** — 팝오버가 잘리지 않는지는 좌표로 본다. **익스포트는 브라우저가 실제로 ZIP 을 받고(`Browser.setDownloadBehavior`) python 으로 읽는다(#65)** — python 이 없으면 그 검사들이 실패한다. e2e 검사의 반사실은 돌리지 않았다(라이브러리 검사 8개만 돌렸다). **IME(한글 조합)·일반 타이핑은 아직 검사가 없다** — CDP 의 `Input.imeSetComposition` 으로 조합을 흉내낼 수 있다. 드롭·붙여넣기는 합성 `DragEvent`/`ClipboardEvent` 라 **OS 수준 드래그는 재현하지 않는다**(파일 선택은 `DOM.setFileInputFiles` 로 진짜다). 네트워크 실패는 `Network.setBlockedURLs` 로 **저장 라우트만** 막는다(전체를 끊으면 페이지 자체가 안 열려 새로고침 시나리오를 볼 수 없다). **CI 에는 아직 넣지 않았다** — 로컬에서 안정적으로 초록인지 먼저 쌓는다. 한 번 도는 데 1분 남짓이다 | `scripts/e2e-editor.mjs` |
 | 테스트의 `assert.equal(run(...), null)` 패턴 | 기존 에디터 테스트 곳곳에 있다. **실패하는 날 CI 가 실패 대신 잡 타임아웃까지 매달린다**(§5). 지금은 전부 통과해서 드러나지 않는다. 새 테스트는 `assert.ok(x === null)` 로 쓴다 | `src/lib/editor/*.test.ts` |
 | **select 정렬** | 컴파일러(`compileSorts`)가 select 를 `text_value`(**옵션 id**)로 정렬한다. 화면은 select 를 정렬 대상에서 뺐다(§3.3-53). F-04-10 의 옵션 정의 순서는 `select_option.order_idx` 조인이고, 커서 캐스트도 그 타입에 맞춰야 한다 | `src/lib/database/filter.ts` · `view-toolbar.tsx` `isSortable` |
 | **행 페이지 열기** | 표에서 행을 여는 링크가 없다. `/w/{ws}/{rowId}` 는 열리지만 제목 저장을 `renamePage` 가 거부하고(행 제목은 셀이 정본) 이동 피커 · breadcrumb 이 행을 모른다. 반쯤 열리는 링크를 두지 않았다 | `src/app/w/[workspaceId]/[pageId]/` |
@@ -721,7 +726,7 @@ dev 재시작·`.next/dev` 삭제로 풀린 적도 있지만 재현이 안 된�
 | **필터 OR · 그룹 · 상대 날짜 · 개인 필터** | 패널은 평평한 AND 만 편집한다(§3.3-51). API 로 저장된 OR 필터는 지우기만 된다 | `filter-draft.ts` · `view-toolbar.tsx` |
 | **옵션 이름 · 색 변경 · 삭제 / 속성 복원 화면 / 컬럼 폭 · 순서 드래그 · 고정 · 줄바꿈** | 없다. 옵션 soft delete 는 `select_option` 에 `deleted_at` 이 없어 정본부터 본다. 속성 복원은 서버(`restoreProperty`)만 있다 | `column-menu.tsx` · `property.ts` |
 | **필터가 걸린 뷰에서 행 추가** | 조건을 미리 채우지 않는다 — 추가한 행이 새로고침 뒤 사라져 보일 수 있다. 행 추가 라우트를 뷰의 주소로 둔 것이 이것을 붙일 자리다 | `views/[viewId]/rows` POST |
-| **e2e 환경 · 흔들림** | 이 PC 의 헤드리스 브라우저에서 클립보드 검사 2개가 실패한다(§6). **#69 에서 이미지 절이 매번 같은 자리에서 실패해 그 뒤 절이 하나도 돌지 않고 있던 것을 발견했다 — main 빌드로도 같았다.** 앞 절 `+` 의 `/` 블록이 저장 큐에 남은 채 스크립트가 서버 본문을 PUT 으로 덧붙이고 이동하면, 새 페이지의 `resume` 이 큐의 문서(이미지 없음)를 "서버보다 새것"으로 화면에 되살린다(`page-sync.ts`). 덧붙이기 전에 IndexedDB 큐가 비기를 기다리게 해 끝까지 돈다(205 / 207). 서버 본문을 API 로 바꾸는 검사를 더할 때는 **큐가 빈 뒤에** 바꾼다 — 앱 쪽 동작은 설계대로다(끊겨도 친 글을 잃지 않는다). 검색 오버레이의 "입력이 본문에 새지 않았다"가 7번 중 2번 실패했다 — 원인 모름, 실패하면 달라진 글자를 남기게 했다. "앞 절 이미지가 비동기로 '불러올 수 없습니다'를 그린다"는 **확인하지 않은** 후보다 | `scripts/e2e-editor.mjs` |
+| **e2e 환경 · 흔들림** | 이 PC 의 헤드리스 브라우저에서 클립보드 검사 2개가 실패한다(§6). **#69 에서 이미지 절이 매번 같은 자리에서 실패해 그 뒤 절이 하나도 돌지 않고 있던 것을 발견했다 — main 빌드로도 같았다.** 앞 절 `+` 의 `/` 블록이 저장 큐에 남은 채 스크립트가 서버 본문을 PUT 으로 덧붙이고 이동하면, 새 페이지의 `resume` 이 큐의 문서(이미지 없음)를 "서버보다 새것"으로 화면에 되살린다(`page-sync.ts`). 덧붙이기 전에 **서버에 닿았는가 → 큐가 비었는가** 순서로 기다리게 해 끝까지 돈다(206 / 208, #70). 큐만 보던 첫 수정(#69)은 한 번 통과하고 다음 실행에서 같은 자리가 다시 실패했다(§3.3-94). 서버 본문을 API 로 바꾸는 검사를 더할 때는 같은 순서로 기다린 뒤에 바꾼다 — 앱 쪽 동작은 설계대로다(끊겨도 친 글을 잃지 않는다). 검색 오버레이의 "입력이 본문에 새지 않았다"가 7번 중 2번 실패했다 — 원인 모름, 실패하면 달라진 글자를 남기게 했다. "앞 절 이미지가 비동기로 '불러올 수 없습니다'를 그린다"는 **확인하지 않은** 후보다 | `scripts/e2e-editor.mjs` |
 | **클립보드 평문의 이미지 주소** | `plainTextForBlocks` 가 `properties.url` 을 읽는데 이미지는 #36 부터 `properties.source` 에 산다 — 이미지 블록을 복사하면 평문이 `![]()` 다. 익스포트 직렬화기(#59)는 `readImageSource` 를 쓴다. 평문 쪽을 직렬화기로 바꾸지는 않는다 — 평문은 이스케이프하지 않는 계약이다(`markdown.ts` 머리말) | `src/lib/editor/block-clipboard.ts` |
 | ~~`withReadTransaction` 은 스냅샷을 보장하지 않는다~~ | **해결(#62).** `BEGIN READ ONLY` 는 READ COMMITTED 라 문장마다 새 스냅샷이었다. `tx.db.test.ts` 가 **먼저 재현했고**(두 문장 사이에 다른 커넥션이 커밋한 행이 두 번째 문장에 보였다) `BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY` 로 바꾼 뒤 통과한다. 익스포트 스냅샷이 이 위에서 읽는다(§3.3-72) | `src/lib/db/tx.ts` |
 | **익스포트: 본문 글자에 건 링크는 상대 경로로 바꾸지 않는다** | F-09-14 *"내부 링크는 상대 경로로 재작성"* 중 **하위 페이지 참조 블록만** 했다(#61). 글자에 건 링크 마크가 앱 주소(`/w/{ws}/{id}` · 블록 링크)면 풀린 ZIP 에서 열리지 않는다. 절대 주소로 붙여 넣은 링크는 앱이 살아 있는 동안 웹 링크로 열린다. 붙이려면 Markdown 직렬화기의 `partsOf` 에 링크 주소 변환 훅을 흘려야 한다 | `src/lib/export/markdown.ts` · `plan.ts` |
@@ -733,7 +738,7 @@ dev 재시작·`.next/dev` 삭제로 풀린 적도 있지만 재현이 안 된�
 | **익스포트: 감사 로그가 없다** | 마스터 문서가 "보안 10종"에 내보내기를 넣었지만 감사 표가 없다(마이그레이션 15개 중에 없다). 누가 워크스페이스 전체를 받았는지 남지 않는다 | 같은 곳 |
 | **익스포트: HTML · PDF · "하위 페이지 포함" 끄기** | Markdown & CSV 만 있다(F-09-14: HTML P1 · PDF P2). 하위 페이지는 **항상 포함**이다 — F-09-14 가 끄는 쪽을 "가장 흔한 사고"로 적었다 | `export-button.tsx` |
 | ~~y-prosemirror 변환의 연쇄 삭제~~ | **해결(#69 · §3.2-14).** 바인딩 · 서버 쓰기 경로는 변환에 `collabSchema`(내용을 검사하지 않는 파사드)를 넘기고, 구조 위반은 로그 저장소의 append 한 곳이 고친다. 아래는 원래 적었던 위험이다 — `ySyncPlugin` · `initProseMirrorDoc` 은 Y 요소를 `createChecked` 로 만들다 실패하면 **원본 Y.Doc 에서** 지우고 그 삭제가 모든 참여자에게 퍼진다. 동시 편집이 흔하게 만드는 구조 위반(타입 동시 변경 · 그룹 둘 · 빈 그룹) 하나가 컨테이너 → 루트 그룹을 지운다 = **본문 전체 삭제.** 서버 명령 경로 ② 가 `initProseMirrorDoc` + `updateYFragment` 로 쓰면 서버에서도 같다. 후보(아직 판결 아님): ⓐ 스키마 카디널리티를 풀어(`doc: blockGroup*` · `blockGroup: blockContainer*` · `blockContainer: blockContent* blockGroup*`) 변환이 던지지 않게 하고 `normalizeBody` 를 appendTransaction 으로 돌린다 — 명령들이 `+` 에 기대는 곳부터 찾아야 한다(§6 "`+` 는 0개가 되면 던진다") ⓑ 변환을 감싸 지우지 않게 한다 — 그 함수는 패키지 `exports` 밖이다. `ydoc.test.ts` ④ 는 이제 편집 스키마로는 지우고 `collabSchema` 로는 지우지 않음을 함께 고정한다 | `src/lib/collab/collab-schema.ts` · `repair.ts` |
-| **멘션 · 수식에 건 서식이 Y.Doc 에 실리지 않는다** | y-prosemirror 가 요소 노드를 옮길 때 attr 만 싣는다(`createTypeFromElementNode`). 글자의 서식은 남는다. 에디터 바인딩이 오는 순간 굵게 건 멘션이 저장되며 풀린다. `ydoc.test.ts` ④ 가 고정 | 같은 곳 |
+| ~~멘션 · 수식에 건 서식이 Y.Doc 에 실리지 않는다~~ | **해결(#70 · §3.2-15).** 서식을 노드 attr `marks` 에 비춰 싣고 읽을 때 되살린다. 원래 적었던 것 — y-prosemirror 가 요소 노드를 옮길 때 attr 만 싣는다(`createTypeFromElementNode`). 글자의 서식은 남는다. 에디터 바인딩이 오는 순간 굵게 건 멘션이 저장되며 풀린다 | `src/lib/editor/atom-marks.ts` |
 | **동시 순서 변경의 글자 겹침** | y-prosemirror 에 옮기기가 없어 순서 변경이 요소 고쳐 쓰기다. 둘이 동시에 순서를 바꾸면 blockId 가 겹치거나(정규화가 새 id 를 준다) 글자가 두 번 들어간다(되돌리지 않는다). 얼마나 자주 겹치는지는 재지 않았다 | `src/lib/collab/normalize.ts` |
 | **모르는 노드 이름 — 스키마 버전 게이트** | 새 버전 클라이언트가 넣은 블록은 읽기 결과(= 프로젝션)에서 빠진다(원본 Y.Doc 에는 남는다). 옛 클라이언트의 바인딩은 `collabSchema` 로 그 요소를 받고 이웃 블록을 고쳐도 **남긴다**(#69 에서 확인 — 매핑 동일성으로 건너뛴다. 그 블록 자체를 옮기는 경우는 확인하지 않았다). 반대로 서버 수선은 매핑 없이 비교해 지우므로 모르는 것이 있으면 **고치지 않는다** — 그 페이지의 구조 위반이 남는다(§3.3-91). 협업 서버가 연결할 때 클라이언트의 스키마 버전을 확인해야 한다 | 같은 곳 · `src/lib/collab/repair.ts` |
 | **수선과 동시에 옮긴 블록에 친 글자** | 옮기는 수선(그룹 합치기 · 자식 올리기)은 옮긴 블록을 새 요소로 만든다. 수선과 **동시에** 그 블록에 친 글자는 지워진 옛 요소에 들어가 사라진다 — 동시 순서 변경과 같은 한계. 위반이 생긴 append 가 곧바로 고치므로 창은 짧다 — 재지 않았다 | `src/lib/collab/repair.ts` |
@@ -788,17 +793,20 @@ HANDOFF §2 의 CRDT 조각 표 · 순서 근거 · "N조각에서 확인한 것
   - 2조각(#67) src/lib/collab/doc-store.ts — doc_update 로그(append · 페이지 안 seq · 압축 · Phase 0 페이지 옮기기)
   - 3a조각(#69) src/lib/collab/collab-schema.ts · repair.ts — y-prosemirror 연쇄 삭제 막기(§3.2-14, 다시 판단하지 마라):
     변환에 넘기는 스키마 파사드 collabSchema · 루트 doc: blockGroup+ · 구조 위반 수선은 appendDocUpdate 한 곳
+  - 3b조각(#70) src/lib/editor/atom-marks.ts — 멘션 · 수식 서식을 노드 attr marks 에 비춘다(§3.2-15, 다시 판단하지 마라)
 
-다음 작업은 **3b조각 — 멘션 · 수식에 건 서식을 Y.Doc 에 싣는다**(§7). 동시에 쓰는 참여자를 붙이기 전의 마지막 전제 조건이다.
-  ① y-prosemirror 는 요소 노드를 Y 로 옮길 때 attr 만 싣고 마크를 싣지 않는다(createTypeFromElementNode).
-     반대 방향도 schema.node(이름, attrs, 자식) 로 만들어 마크를 넘기지 않는다. 그리고 updateYFragment 는
-     ProseMirror attr 에 없는 Y attr 을 지운다 — 그래서 서식을 실을 자리는 ProseMirror 노드 attr 이어야 한다.
-     굵게 건 멘션은 에디터 바인딩이 오는 순간 저장되며 풀린다. ydoc.test.ts ④ 의 손실 고정 검사가 풀리면
-     실패한다 — "막았다"는 검사로 바꾸고 반사실로 증명한다
-  ② 노드 attr 을 더하는 것은 저장 포맷 변경이다(ydoc.ts 머리말) — 기본값을 두어 이미 쓴 Y.Doc 이 그대로 읽히게 한다.
-     실제 바인딩(testing/collab-peers.ts 의 bind)으로 두 참여자 사이의 왕복을 본다
-  ③ 착수 전에 읽을 것: src/lib/collab/collab-schema.ts 머리말 · src/lib/editor/pm-adapter.ts(runsToInline · inlineToRuns) ·
-     node_modules/y-prosemirror/src/plugins/sync-plugin.js(createTypeFromElementNode · updateYFragment 의 attr 비교 · equalAttrs)
+다음 작업은 **4조각 — 서버 명령 경로 ②(정본 V-5) + Y.Doc 을 상류로 하는 프로젝터**다. 여기서 본문의 정본이 행에서
+Y.Doc 으로 넘어간다(판결 X-1). 지금까지 중 가장 크고, 되돌리기 가장 비싸다.
+  ① 먼저 자르는 법을 정한다(§4 "한 PR 이 커지면 자른다"). 단 **반쯤 넘기지 않는다** — 정본이 Y.Doc 으로 넘어간 뒤
+     행을 직접 고치는 경로(createPage 의 참조 삽입 · 휴지통 · 복원 · 이동 · PUT body)가 하나라도 남으면 프로젝터가
+     "문서에 없는 본문 행"으로 보고 그 행을 지운다(§2 순서의 근거). 넘기는 PR 은 그 경로 전부와 함께 온다.
+     넘기기 전 조각(프로젝터를 Y.Doc 에서 읽게 만들되 아직 켜지 않는 것 등)은 앞에 따로 둘 수 있다
+  ② 서버가 Y.Doc 에 쓸 때: initProseMirrorDoc(fragment, collabSchema) → ProseMirror 트랜잭션 →
+     syncAtomMarks(서식 거울) → updateYFragment → 그 update 를 appendDocUpdate 로. testing/collab-peers.ts 의 edit 이
+     같은 순서다. append 결과의 repair 는 버리지 않는다(5조각이 퍼뜨린다)
+  ③ 착수 전에 읽을 것: 00-canonical-data-model.md 판결 V-5 · X-1 · X-3 · 경로 표(§3.7 뒤 "쓰기 경로") ·
+     src/lib/block/save-page-body.ts(프로젝터 · readLiveBody) · page.ts(createPage) · trash.ts · move-page.ts ·
+     src/lib/collab/doc-store.ts · repair.ts 머리말 · HANDOFF §7 의 CRDT 항목들
 
 지켜야 할 것:
   - 4조각 전까지 어떤 경로도 Y.Doc 을 쓰지 않는다. 4조각은 정본을 넘기며 행을 직접 고치는 경로
@@ -835,7 +843,7 @@ PR 본문에는 "왜 이렇게 했는가"를 쓴다 — 정본과 다르게 한 
 
 시간을 아끼려면 (전부 이전 세션에서 실제로 당한 것, 자세한 건 HANDOFF §6):
 - 시작할 때 `npm run db:up` 을 한 번 돌린다. `npm test` 만 돌리면 DB 테스트가
-  **조용히 빠진다**(카운트에도 안 잡힌다). 1543개가 다 돌아야 CI 의 db 잡과 같다.
+  **조용히 빠진다**(카운트에도 안 잡힌다). 1550개가 다 돌아야 CI 의 db 잡과 같다.
   이 PC 에서는 외부 도구 검사가 셸에 따라 1~2개 skip 된다 — PowerShell 은 unzip(Git 의 unzip 은 Git Bash PATH 에만
   있다), Git Bash 는 bsdtar(Git 의 tar 는 GNU tar 다)를 못 찾는다. 정상이다(CI 는 설치하고 skip 0 이어야 한다)
 - CI 결과는 **HEAD 커밋의 실행**을 찾아서 본다(`gh run list --json databaseId,headSha`

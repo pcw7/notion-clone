@@ -21,7 +21,8 @@
  * `blockSchema` 를 원형으로 둔 파사드에서 변환이 부르는 세 메서드만 바꾼다. 노드 타입 · 마크 타입은
  * `blockSchema` 의 것 그대로라 만든 노드는 `blockSchema` 의 노드다.
  *
- *   - `node` — 내용 규칙을 검사하지 않는다(`NodeType.create`). 모르는 노드 이름은 null — 변환이 건너뛴다
+ *   - `node` — 내용 규칙을 검사하지 않는다(`NodeType.create`). 모르는 노드 이름은 null — 변환이 건너뛴다.
+ *     멘션 · 수식은 attr `marks` 에서 서식을 되살린다 — 변환은 마크를 넘기지 않는다(`editor/atom-marks.ts`)
  *   - `mark` — 모르는 이름이거나 만들 수 없는 마크(필수 attr 이 없는 링크)는 표식을 돌려준다
  *   - `text` — 그 표식을 빼고 만든다. 글자는 남고 서식만 빠진다(`ydoc.ts` 의 읽기와 같은 규칙)
  *
@@ -55,6 +56,7 @@
 
 import type { Fragment, Mark, MarkType, Node as PmNode, NodeType, Schema } from '@tiptap/pm/model'
 
+import { ATOM_MARKS_ATTR, INLINE_ATOM_NODES, marksFromAttr } from '../editor/atom-marks.ts'
 import { blockSchema } from '../editor/schema.ts'
 
 /** 만들 수 없는 마크의 자리. `text` 가 걸러내므로 문서에 들어가지 않는다. */
@@ -71,7 +73,9 @@ export function tolerantSchema(schema: Schema): Schema {
     const nodeType = typeof type === 'string' ? schema.nodes[type] : type
     if (nodeType === undefined || nodeType.isText) return null
     try {
-      return nodeType.create(attrs ?? null, content, marks)
+      // 인라인 원자의 서식은 attr 에 비쳐 있다 — y-prosemirror 는 마크를 넘기지 않는다(`editor/atom-marks.ts`).
+      const restored = INLINE_ATOM_NODES.has(nodeType.name) && marks === undefined ? marksFromAttr(attrs?.[ATOM_MARKS_ATTR]) : marks
+      return nodeType.create(attrs ?? null, content, restored)
     } catch {
       return null
     }
