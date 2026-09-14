@@ -55,6 +55,9 @@ import { withReadTransaction, withTransaction } from '../db/tx.ts'
 import { readableScopes } from '../permissions/effective.ts'
 import { toPlainText, type RichTextRun } from '../contracts/rich-text.ts'
 import { relocateSubtree, type MovingRow } from './move-page.ts'
+import { finishOrThrow, openPageBody, ownerPageOf } from './body-write.ts'
+import { plainTitleOf } from './page.ts'
+import { insertPageRefAfter, removePageRef } from './page-refs.ts'
 
 export type TrashErrorCode =
   /** 페이지가 없거나 다른 워크스페이스거나 상태가 맞지 않는다. */
@@ -95,13 +98,26 @@ export type TrashResult = {
  */
 export async function trashPage(ctx: SessionContext, pageId: BlockId): Promise<TrashResult> {
   return withTransaction(async (tx) => {
-    const target = await tx.queryMaybe<{ id: string }>(
-      `SELECT id FROM block
+    // X-3: "부모 Y.Doc 에서는 참조 노드만 제거"(CRDT 4b). 참조가 사는 본문을 가진 페이지를 대상보다 **먼저** 잡는다 —
+    // 잠금 순서는 본문 페이지 행 → 대상 행 → 스냅샷 한 방향이다(`body-write.ts`).
+    const peek = await tx.queryMaybe<{ parent_type: string; parent_id: string }>(
+      `SELECT parent_type, parent_id FROM block
+        WHERE id = $1 AND workspace_id = $2 AND type = 'page' AND lifecycle = 'live'`,
+      [pageId, ctx.workspaceId],
+    )
+    if (!peek) throw new TrashError('not_found', '페이지를 찾을 수 없습니다.')
+    const owner = peek.parent_type === 'block' ? await ownerPageOf(tx, ctx, peek.parent_id) : null
+    if (owner !== null) await tx.query(`SELECT id FROM block WHERE id = $1 FOR UPDATE`, [owner])
+
+    const target = await tx.queryMaybe<{ id: string; parent_id: string }>(
+      `SELECT id, parent_id FROM block
         WHERE id = $1 AND workspace_id = $2 AND type = 'page' AND lifecycle = 'live'
         FOR UPDATE`,
       [pageId, ctx.workspaceId],
     )
     if (!target) throw new TrashError('not_found', '페이지를 찾을 수 없습니다.')
+    if (target.parent_id !== peek.parent_id) throw new Error(`버리는 사이 페이지의 자리가 바뀌었다: ${pageId}`)
+    const ownerBody = owner === null ? null : await openPageBody(tx, ctx, owner)
 
     // 보존 기간은 워크스페이스 설정이다(§3.1 `workspace.trash_days`, 1~3650).
     const ws = await tx.queryOne<{ trash_days: number }>(
@@ -133,6 +149,11 @@ export async function trashPage(ctx: SessionContext, pageId: BlockId): Promise<T
       [target.id, ctx.workspaceId, ctx.userId, String(ws.trash_days)],
     )
 
+    if (ownerBody !== null) {
+      ownerBody.change(removePageRef(target.id))
+      await finishOrThrow(ownerBody)
+    }
+
     return {
       pageId: asBlockId(target.id),
       trashedDescendants: descendants.length,
@@ -160,14 +181,36 @@ export type RestoreResult = {
  */
 export async function restorePage(ctx: SessionContext, pageId: BlockId): Promise<RestoreResult> {
   return withTransaction(async (tx) => {
-    const target = await tx.queryMaybe<MovingRow & { trash_root_id: string | null }>(
-      `SELECT id, parent_type, parent_id, ancestor_path, perm_scope_id, trash_root_id
+    // X-3: "휴지통 복원 → 부모 Y.Doc 에 참조 노드 재삽입"(CRDT 4b). 부모가 살아 있을 때만이다 — 없으면 아래 B4 로 최상위에
+    // 올리고 어느 본문도 바꾸지 않는다. 본문 페이지 행을 대상보다 먼저 잡는다(`trashPage` 와 같은 순서).
+    const peek = await tx.queryMaybe<{ parent_type: string; parent_id: string }>(
+      `SELECT parent_type, parent_id FROM block
+        WHERE id = $1 AND workspace_id = $2 AND type = 'page' AND lifecycle = 'trashed'`,
+      [pageId, ctx.workspaceId],
+    )
+    let owner: string | null = null
+    if (peek?.parent_type === 'block') {
+      const parentLive = await tx.queryMaybe<{ id: string }>(
+        `SELECT id FROM block WHERE id = $1 AND workspace_id = $2 AND lifecycle = 'live'`,
+        [peek.parent_id, ctx.workspaceId],
+      )
+      if (parentLive !== null) owner = await ownerPageOf(tx, ctx, peek.parent_id)
+      if (owner !== null) await tx.query(`SELECT id FROM block WHERE id = $1 FOR UPDATE`, [owner])
+    }
+
+    const target = await tx.queryMaybe<
+      MovingRow & { trash_root_id: string | null; order_key: string; properties: { title?: unknown } | null }
+    >(
+      `SELECT id, parent_type, parent_id, ancestor_path, perm_scope_id, trash_root_id, order_key, properties
          FROM block
         WHERE id = $1 AND workspace_id = $2 AND type = 'page' AND lifecycle = 'trashed'
         FOR UPDATE`,
       [pageId, ctx.workspaceId],
     )
     if (!target) throw new TrashError('not_found', '휴지통에서 페이지를 찾을 수 없습니다.')
+    if (peek !== null && target.parent_id !== peek.parent_id) {
+      throw new Error(`되살리는 사이 페이지의 자리가 바뀌었다: ${pageId}`)
+    }
 
     if (target.trash_root_id !== target.id) {
       throw new TrashError(
@@ -195,6 +238,9 @@ export async function restorePage(ctx: SessionContext, pageId: BlockId): Promise
       )
       reparented = parent === null
     }
+
+    // 원래 부모의 본문을 행을 쓰기 전에 연다(`body-write.ts` 머리말). 부모가 사라졌으면 열 본문이 없다.
+    const ownerBody = !reparented && owner !== null ? await openPageBody(tx, ctx, owner) : null
 
     // ── B3: 대상 + trash_root_id 가 대상인 자손만 ───────────────────
     //
@@ -224,6 +270,27 @@ export async function restorePage(ctx: SessionContext, pageId: BlockId): Promise
     // 쓴다 — 여기서 따로 쓰면 언젠가 이동 쪽과 어긋난다.
     if (reparented) {
       await relocateSubtree(tx, ctx, target, null)
+    }
+
+    // 참조 노드를 원래 자리에 다시 넣는다. B2 가 `order_key` 를 보존했으므로 그 키보다 앞선 살아 있는 형제 중 가장 뒤의
+    // 것 바로 뒤가 원래 자리다 — 형제의 키는 본문 위치의 투영이라 본문 순서와 같다. 앞 형제가 없으면 그 그룹의 맨 앞.
+    if (ownerBody !== null) {
+      const before = await tx.queryMaybe<{ id: string }>(
+        `SELECT id FROM block
+          WHERE parent_id = $1 AND workspace_id = $2 AND id <> $3 AND lifecycle = 'live' AND order_key < $4
+          ORDER BY order_key DESC, id DESC
+          LIMIT 1`,
+        [target.parent_id, ctx.workspaceId, target.id, target.order_key],
+      )
+      ownerBody.change(
+        insertPageRefAfter(
+          target.id,
+          plainTitleOf(target.properties),
+          target.parent_id === owner ? null : target.parent_id,
+          before?.id ?? null,
+        ),
+      )
+      await finishOrThrow(ownerBody)
     }
 
     return {

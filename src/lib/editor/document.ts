@@ -244,6 +244,25 @@ export type Projection = {
 }
 
 /**
+ * 모르는 타입의 블록을 `unsupported` 로 감싼다 — 원본 타입과 페이로드를 보존한다(F-01-02).
+ *
+ * 투영(`projectDocument`)이 행으로 옮길 때 쓰는 **같은 함수**(`wrapUnsupported`)다. CRDT 4b 부터 받은 문서는 ProseMirror 를
+ * 거쳐 Y.Doc 에 들어가는데, `docToPm` 은 모르는 타입을 `unsupported` 노드로 만들며 원래 타입 이름을 담을 곳이 없다 —
+ * 옮기기 **전에** 감싸야 잃지 않는다(`save-page-body.db.test.ts` 의 모르는 타입 왕복이 잡았다).
+ */
+export function wrapUnknownTypes(doc: EditorDoc): EditorDoc {
+  const wrap = (blocks: readonly EditorBlock[]): EditorBlock[] =>
+    blocks.map((block) => {
+      const children = block.children === undefined ? undefined : wrap(block.children)
+      const withChildren = children === undefined ? block : { ...block, children }
+      const wrapped = wrapUnsupported(block.type, block.properties, block.format)
+      if (wrapped === null) return withChildren
+      return { ...withChildren, type: wrapped.type as BlockType, properties: { ...wrapped.properties } }
+    })
+  return { blocks: wrap(doc.blocks) }
+}
+
+/**
  * 형제 n개의 `order_key`.
  *
  * `orderKeysBetween(null, null, n)` 은 **결정론적**이다 — 같은 n 이면 항상

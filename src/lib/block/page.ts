@@ -33,6 +33,8 @@ import { can } from '../permissions/levels.ts'
 import { canViewPage, effectiveCaps } from '../permissions/effective.ts'
 import { MAX_TREE_DEPTH } from './types.ts'
 import { indexPageTitle } from '../search/index-page.ts'
+import { finishOrThrow, openPageBody } from './body-write.ts'
+import { appendPageRef } from './page-refs.ts'
 import {
   normalizeRichText,
   toPlainText,
@@ -297,6 +299,9 @@ export async function createPage(
 
   return withTransaction(async (tx) => {
     const placement = await lockParent(tx, ctx, input.parentPageId)
+    // 하위 페이지의 자리는 부모 본문의 참조 노드다(CRDT 4b · 판결 X-1). 행을 넣기 **전에** 부모 본문을 연다 —
+    // 명령이 자기가 바꾼 것을 자기가 쓰는 순서다(`body-write.ts` 머리말).
+    const parentBody = placement.parentType === 'block' ? await openPageBody(tx, ctx, placement.parentId) : null
     const orderKey = await nextSiblingKey(tx, placement.parentId)
 
     // id 는 앱이 만든다 — 정본 §3.4 가 `block.id` 에 "v4, 클라이언트 생성"이라고
@@ -351,8 +356,16 @@ export async function createPage(
     // 검색 색인 — W7 (F-07-06). 행 자체는 위 INSERT 가 트리거를 돌려 이미
     // 만들어졌고(마이그레이션 0012), 여기서 쓰는 것은 제목 텍스트뿐이다.
     // 본문은 비어 있으므로 `indexPageText` 가 아니라 제목 전용 경로를 쓴다.
-    const summary = toSummary(row)
+    let summary = toSummary(row)
     await indexPageTitle(tx, id, summary.plainTitle)
+
+    if (parentBody !== null) {
+      parentBody.change(appendPageRef(null, id, summary.plainTitle))
+      await finishOrThrow(parentBody)
+      // 투영이 순서 키를 문서 위치로 매긴다 — 돌려줄 키는 다시 읽는다.
+      const placed = await tx.queryOne<{ order_key: string }>(`SELECT order_key FROM block WHERE id = $1`, [id])
+      summary = { ...summary, orderKey: placed.order_key }
+    }
 
     return {
       ...summary,

@@ -30,6 +30,10 @@ import {
 import { asBlockId } from '../ids.ts'
 import { textRun } from '../contracts/rich-text.ts'
 import { orderKeyBetween } from './order-key.ts'
+import { savePageBody } from './save-page-body.ts'
+import { trashPage } from './trash.ts'
+import { query } from '../db/pool.ts'
+import { assertBodyMatchesYDoc } from '../testing/body-invariant.ts'
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'
 
@@ -118,25 +122,19 @@ describe('createPage', () => {
     const root = await createPage(fx.owner.ctx)
     const firstChild = await createPage(fx.owner.ctx, { parentPageId: root.id })
 
-    // 같은 부모 아래에 **페이지가 아닌** 본문 블록을 firstChild 뒤에 넣는다.
+    // 같은 부모 아래에 **페이지가 아닌** 본문 블록을 firstChild 뒤에 둔다.
     // ux_block_sibling_order 는 (parent_id, order_key) 전체에 걸린 UNIQUE 이고
-    // type 조건이 없다.
-    const bodyKey = orderKeyBetween(firstChild.orderKey, null)
-    await query(
-      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key,
-                          ancestor_path, perm_scope_id, properties, format,
-                          created_by, created_at, last_edited_by, last_edited_at)
-       VALUES (gen_random_uuid(), $1, 'paragraph', 'block', $2, $3, $4, $5,
-               '{}'::jsonb, '{}'::jsonb, $6, now(), $6, now())`,
-      [
-        fx.workspaceId,
-        root.id,
-        bodyKey,
-        [root.id],
-        root.permScopeId,
-        fx.owner.userId,
+    // type 조건이 없다. CRDT 4b 부터 본문의 정본은 Y.Doc 이라 SQL 로 행만 넣으면 다음 투영이
+    // 그 행을 지운다 — 본문 저장으로 넣는다.
+    const bodyId = randomUUID()
+    const saved = await savePageBody(fx.owner.ctx, root.id, {
+      blocks: [
+        { id: firstChild.id, type: 'page', title: [] },
+        { id: bodyId, type: 'paragraph', title: [textRun('본문')] },
       ],
-    )
+    })
+    assert.ok(saved.ok, JSON.stringify(saved))
+    const [{ order_key: bodyKey }] = await query<{ order_key: string }>(`SELECT order_key FROM block WHERE id = $1`, [bodyId])
 
     // 이제 자식 페이지를 하나 더 만든다. 본문 블록의 키를 무시하면 여기서 터진다.
     const secondChild = await createPage(fx.owner.ctx, { parentPageId: root.id })
@@ -148,19 +146,12 @@ describe('createPage', () => {
 
   test('휴지통에 있는 형제의 order_key 도 점유된 것으로 센다 (B2)', async (t) => {
     if (skipReason) return t.skip(skipReason)
-    const { query } = await import('../db/pool.ts')
-
     const root = await createPage(fx.owner.ctx)
     const doomed = await createPage(fx.owner.ctx, { parentPageId: root.id })
 
-    // B2: 삭제 시 parent_id·order_key 를 절대 변경하지 않는다.
-    await query(
-      `UPDATE block
-          SET lifecycle = 'trashed', trashed_at = now(), trashed_by = $2, trash_root_id = id,
-              purge_after = now() + interval '30 days'
-        WHERE id = $1`,
-      [doomed.id, fx.owner.userId],
-    )
+    // B2: 삭제 시 parent_id·order_key 를 절대 변경하지 않는다. CRDT 4b 부터 휴지통은 부모 본문의
+    // 참조도 빼므로 SQL 이 아니라 명령으로 버린다 — SQL 로 버리면 참조가 본문에 남아 투영이 그 키를 다시 매긴다.
+    await trashPage(fx.owner.ctx, doomed.id)
 
     const next = await createPage(fx.owner.ctx, { parentPageId: root.id })
     assert.ok(
@@ -232,6 +223,40 @@ describe('createPage', () => {
 
     const keys = created.map((p) => p.orderKey)
     assert.equal(new Set(keys).size, keys.length, `order_key 가 중복됐다: ${keys.join(', ')}`)
+  })
+})
+
+describe('createPage — 부모 본문 (X-1 · CRDT 4b)', () => {
+  test('★ 하위 페이지를 만들면 부모 본문 끝에 참조가 들어가고 행과 Y.Doc 이 같다 — 빈 본문에서는 빈 줄 행을 만들지 않는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+
+    const root = await createPage(fx.owner.ctx, { title: titleFromPlainText('부모') })
+    const first = await createPage(fx.owner.ctx, { parentPageId: root.id })
+    assert.deepEqual(
+      (await assertBodyMatchesYDoc(fx.owner.ctx, root.id, '첫 하위 페이지 뒤')).blocks.map((b) => [b.id, b.type]),
+      [[first.id, 'page']],
+    )
+
+    const paraId = randomUUID()
+    const saved = await savePageBody(fx.owner.ctx, root.id, {
+      blocks: [
+        { id: first.id, type: 'page', title: [] },
+        { id: paraId, type: 'paragraph', title: [textRun('본문')] },
+      ],
+    })
+    assert.ok(saved.ok, JSON.stringify(saved))
+    const second = await createPage(fx.owner.ctx, { parentPageId: root.id })
+    assert.deepEqual(
+      (await assertBodyMatchesYDoc(fx.owner.ctx, root.id, '둘째 하위 페이지 뒤')).blocks.map((b) => b.id),
+      [first.id, paraId, second.id],
+    )
+
+    const log = await query<{ origin: string; actor_id: string | null }>(
+      `SELECT origin, actor_id FROM doc_update WHERE page_id = $1 ORDER BY seq`,
+      [root.id],
+    )
+    assert.deepEqual(log.at(-1), { origin: 'api', actor_id: fx.owner.userId }, '하위 페이지 생성은 서버 명령(api)으로 쌓인다')
+    assert.ok(log.some((r) => r.origin === 'editor'), '본문 저장은 editor 로 쌓인다')
   })
 })
 
