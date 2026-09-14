@@ -2,7 +2,7 @@
 
 새 세션이 이어받을 때 읽는 문서. **[CLAUDE.md](../CLAUDE.md)를 먼저 읽고 여기로 온다** — 거기에 절대 제약·스택·명령어·코딩 규칙이 있고, 이 문서는 **"지금 어디까지 왔고 다음에 뭘 하는가"**만 다룬다.
 
-최종 갱신: 2026-09-14 (PR #67 시점 — Phase 0 MVP · Phase 1 의 첫 항목 익스포트(F-09-14) v1 이 닫혔다. **Phase 1 CRDT 동시편집(F-05-01) 진행 중 — 1조각(Y.Doc 본문 계약 · 정규화) · 2조각(`doc_update` 로그 저장소) 끝. 다음은 3조각(y-prosemirror 연쇄 삭제 막기 · 멘션 서식)**, §2 CRDT 조각 표)
+최종 갱신: 2026-09-14 (PR #69 시점 — Phase 0 MVP · Phase 1 의 첫 항목 익스포트(F-09-14) v1 이 닫혔다. **Phase 1 CRDT 동시편집(F-05-01) 진행 중 — 1조각(Y.Doc 본문 계약 · 정규화) · 2조각(`doc_update` 로그 저장소) · 3a조각(y-prosemirror 연쇄 삭제 막기 · 수선의 작성자 한 곳) 끝. 다음은 3b조각(멘션 · 수식 서식)**, §2 CRDT 조각 표)
 
 ---
 
@@ -29,7 +29,7 @@
 
 `npm run dev` 로 실제로 눌러볼 수 있고, **`npm run e2e` 가 실제 브라우저로 206개 항목을 확인한다.** 이 PC 에서는 **Chrome 으로** 돌린다 — Edge 153 헤드리스는 진짜 `Ctrl+C` 에서 종료된다(§6). 기존 클립보드 검사 2개는 이 환경에서 실패한다(§7).
 
-**숫자**: 마이그레이션 15개 / 테이블 39개 / 테스트 1513개(CI skip 0 · 이 PC 는 unzip 이 없어 1개 skip) + 브라우저 검증 206개(이 PC 에서 204 통과 — 클립보드 2개) / PR 66개 머지(#67 포함).
+**숫자**: 마이그레이션 15개 / 테이블 39개 / 테스트 1543개(CI skip 0 · 이 PC 는 외부 도구 검사가 셸에 따라 1~2개 skip — PowerShell 은 unzip, Git Bash 는 bsdtar 를 못 찾는다) + 브라우저 검증 206개(이 PC 에서 204 통과 — 클립보드 2개) / PR 68개 머지(#69 포함).
 
 ---
 
@@ -82,7 +82,8 @@ v1 은 **동기 스트리밍 다운로드**다. 상한을 넘으면 흘려보내
 |---|---|---|
 | 1 | **Y.Doc 본문 계약** — 문서 ↔ Y.Doc(`collab/ydoc.ts`) · 동시 편집이 만든 구조 위반을 결정론적으로 고치는 정규화(`collab/normalize.ts`) · 두 참여자 수렴 검사(DB 없음). 의존성 yjs · y-prosemirror · y-protocols(전부 MIT) | ✅ #66 |
 | 2 | **`doc_update` 로그 저장소** — `collab/doc-store.ts`. 읽기(스냅샷 + 뒤 update · 처음이면 행에서 옮김) · append(권한 → 스냅샷 잠금 → 적용해 보고 바뀐 부분만 seq + 1) · 압축(스냅샷만). 아직 부르는 경로가 없다 | ✅ #67 |
-| 3 | **y-prosemirror 연쇄 삭제 막기**(§7) · 멘션 · 수식 서식 — 동시에 쓰는 참여자가 생기기 전의 전제 조건 | ⬜ |
+| 3a | **y-prosemirror 연쇄 삭제 막기**(§3.2-14) — 변환에 넘기는 스키마 파사드(`collab/collab-schema.ts`) · 루트 `doc: blockGroup+` · 구조 위반을 Y.Doc 에 고쳐 쓰는 곳은 로그 저장소 append 하나(`collab/repair.ts` · `doc-store.ts`) | ✅ #69 |
+| 3b | **멘션 · 수식에 건 서식**을 Y.Doc 에 싣기(§7) — 동시에 쓰는 참여자가 생기기 전의 전제 조건 | ⬜ |
 | 4 | 서버 명령 경로 ②(V-5) + Y.Doc 을 상류로 하는 프로젝터 — 페이지 생성 · 휴지통 · 복원 · 이동 · PUT body 가 부모 Y.Doc 을 거친다 | ⬜ |
 | 5 | 협업 서버(Hocuspocus 자체 호스팅 · 3001) — join · update 권한 검사 · 저장 · 권한 회수 시 끊기(F-05-19) | ⬜ |
 | 6 | 에디터 바인딩 — `ySyncPlugin` · origin 범위 undo(F-05-15) · 오프라인 보존(y-indexeddb) · 두 탭 e2e | ⬜ |
@@ -107,6 +108,25 @@ v1 은 **동기 스트리밍 다운로드**다. 상한을 넘으면 흘려보내
   사라진다. Y.Doc 의 `update` 이벤트로 판정하고, 쌓는 것도 그 이벤트가 준 "실제로 바뀐 부분"이다(§3.3-85)
 - 앞선 update 가 없는 update 는 Yjs 가 pending 으로 들고 있는다 — 쌓지 않고 거부한다(§3.3-86)
 - 동시 첫 읽기 검사가 처음에는 경쟁을 만들지 못해 `ON CONFLICT` 를 빼도 통과했다 — 표 잠금으로 강제했다(§3.3-88)
+
+3a조각에서 확인한 것 (진단 스크립트로 먼저 재고, 검사로 옮겼다):
+- **실제 `ySyncPlugin` 을 헤드리스로 붙여 보니** 편집 스키마로 만든 상태는 원격 타입 충돌을 받는 순간 그 블록을 Y.Doc 에서
+  지운다. `collabSchema` 로는 받고 다른 블록을 고쳐도 남는다(`collab-schema.test.ts` ②)
+- **두 참여자가 같은 위반을 각자 정규화해 되써넣으면 옮긴 블록이 복제된다**(그룹 둘 합치기 → 블록 넷). 한 곳만 고치면
+  복제 없이 수렴하고 프로젝션도 그대로다. 후보 ⓐ 의 "appendTransaction 정규화"를 기각한 근거(§3.2-14)
+- **루트 그룹 둘은 파사드로 못 막는다** — 바인딩은 루트를 `tr.replace` 로 채우고 Fitter 가 둘째 그룹을 버린 뒤 다음 로컬
+  편집이 Y.Doc 에서 지운다. `doc: blockGroup+` 로만 풀었다
+- **모르는 노드는 바인딩에서 받아도 · 이웃을 고쳐도 남는다**(매핑 동일성으로 건너뛴다). 매핑 없이 비교하는 서버 수선은
+  지우므로 모르는 것이 있으면 수선을 멈춘다(§3.3-91)
+- 반사실이 통과한 것 하나: 수선의 사본 검증 단계 — 주석을 사실대로 고쳤다(§3.3-90)
+
+6조각(에디터 바인딩)이 지켜야 할 것 — 3a 가 정한 것:
+- 에디터 상태는 `EditorState.create({ schema: collabSchema, plugins: [ySyncPlugin(…)] })` — **`doc` 을 넘기지 않는다**
+  (넘기면 `state.schema` 가 `blockSchema` 가 되어 바인딩이 파사드를 거치지 않는다)
+- 에디터는 구조 위반을 **고쳐 쓰지 않는다**(정규화 appendTransaction 금지). 5조각의 협업 서버는 `appendDocUpdate` 결과의
+  `repair` 를 받은 update 와 함께 퍼뜨린다
+- 수선이 도착하기 전까지 에디터 문서는 스키마를 어길 수 있다(한 블록에 내용 줄 둘 · 루트 그룹 둘). 명령 · 플러그인이 그
+  모양에서 던지거나 엉뚱하게 동작하지 않는지 본다 — `pm-blocks.ts` 는 첫 루트 그룹만 평탄화한다(§7)
 
 **W8 이 남긴 빈자리 — Phase 1 과 부딪히면 먼저 본다** (자세한 건 §7)
 1. **select 정렬** — 컴파일러가 select 를 옵션 **id** 로 정렬한다. 화면은 select 를 정렬 대상에서 **뺐다**.
@@ -315,7 +335,14 @@ W7 항목별 상태:
 - `src/lib/collab/doc-store.ts` — **편집 로그 저장소.** `loadDocState`(스냅샷 + 뒤 update, 처음이면 행에서 옮김) ·
   `appendDocUpdate`(권한 → 스냅샷 잠금 → 적용해 보고 바뀐 부분만 seq + 1 → 압축). 권한 검사가 안에 있다. 아직 부르는 경로가 없다
 - `src/lib/testing/collab-peers.ts` — 에디터 없이 참여자를 흉내 낸다(`peer` · `edit` · `findBlock` · `exchange` · `changesSince`).
-  `edit` 은 `ySyncPlugin` 이 쓰는 `updateYFragment` 를 부른다. client id 를 고정하면 결과가 결정론이다. **편집 전 문서가 올바를 때만** 쓴다
+  `edit` 은 `ySyncPlugin` 이 쓰는 `updateYFragment` 를 부른다. client id 를 고정하면 결과가 결정론이다. 문서는 `collabSchema` 로 읽어
+  위반이 있어도 지우지 않는다(위반 자리를 건드리는 편집은 ProseMirror 가 거부한다). **`bind`** 는 실제 `ySyncPlugin` 을 헤드리스로 붙인다
+- `src/lib/testing/collab-scenarios.ts` — 동시 편집이 만드는 구조 위반 장면 6개(타입 충돌 · 빈 그룹 · 그룹 둘 · 자식 올리기 · id 겹침 · 루트 그룹 둘)
+- `src/lib/collab/collab-schema.ts` — **`collabSchema`.** y-prosemirror 변환에 넘기는 스키마 파사드(`node` · `mark` · `text` 만 던지지 않는다).
+  바인딩 · 서버 쓰기 경로는 반드시 이것을 넘긴다(§3.2-14)
+- `src/lib/collab/repair.ts` — **`repairBodyYDoc`.** 구조 위반을 Y.Doc 에 고쳐 쓴다 — 프로젝션을 바꾸지 않고 고칠 곳만. 모르는 것이 있으면
+  멈춘다. **부르는 곳은 `appendDocUpdate` 하나**다(수선의 작성자가 둘이면 블록이 복제된다)
+- `src/lib/collab/ydoc.ts` 의 `readBodyPm` — 고치지 않고 Y.Doc 을 그대로 비춘 ProseMirror 문서(스키마에 맞는다고 가정하지 마라)
 - `src/lib/block/save-page-body.ts` 의 `readLiveBody(tx, …)` — 트랜잭션 안에서 행으로 본문 읽기. 편집기(`loadPageBody`)와
   Y.Doc 옮기기가 같은 규칙으로 읽는다
 
@@ -354,6 +381,7 @@ W7 항목별 상태:
 | 11 | **표 UI 에 TanStack 을 쓰지 않는다** (F-03-16 이 권했다) | 평범한 `<table>` + 직접 만든 키보드 내비게이션 | 필터·정렬·페이지네이션이 **전부 서버 쪽**이고 한 번에 50행만 그린다. TanStack 의 핵심 가치(클라이언트 테이블 상태·가상화)를 쓰지 않으므로 코드가 더 늘어난다. 가상화가 필요해지면 그때 `@tanstack/react-virtual`(MIT)을 넣는다 |
 | 12 | **익스포트 Markdown 의 문법** (01 문서는 노션 enhanced markdown 을 *"그대로 채택"* 하라 하고, 이 기능을 소유한 09 문서는 F-09-22 대안에서 *"커스텀 태그를 만들지 말라"* 고 한다) | **CommonMark + GFM + HTML 블록 셋**(`<details>` 토글 · `<aside>` 콜아웃 · `<u>` 밑줄). 색은 버리고 센다 (#59) | 소유 문서(09)를 따른다. 익스포트 파일을 여는 것은 우리 앱이 아니라 다른 도구다 — 거기서 `{color="red"}` 는 글자로, 탭 들여쓰기는 **코드 블록**으로 보인다. 노션 자신의 Markdown 익스포트가 쓰는 모양과 같다(F-09-14: *"노션의 export ZIP 레이아웃을 그대로 채택"*). 표현 못 한 것은 `losses` 로 세어 보고서에 싣는다 — F-09-14 가 가장 크게 경고한 실패가 *"백업이라 믿었는데 구멍이 있는 상태"* 다 |
 | 13 | **워크스페이스 전체 익스포트를 누가 할 수 있나** (3b 가 "정할 것"으로 남겼다. F-09-14 · F-02-22 는 노션 설정 화면의 "(관리자) Export all workspace content" 만 적었다) | **워크스페이스 소유자(`owner`)만.** 멤버 관리자(`membership_admin`)도 아니다. 페이지 · 표 범위는 볼 수 있는 모든 멤버 (#65) | ① **무엇을 볼 수 있는가는 역할이 아니라 스냅샷이 거른다**(§3.3-73) — 소유자가 내보내도 남의 비공개 페이지는 없다(F-09-20: admin 이라도 "모든 것을 본다"가 아니다). 역할이 정하는 것은 "한 번에 묶기"뿐이라 **멤버가 잃는 데이터가 없다** — 단 그러려면 표 화면에도 버튼이 있어야 해서 넣었다(풀페이지 표는 워크스페이스 직속이라 페이지 내보내기로 닿지 않는다) ② 잡 큐 · 속도 제한이 없는 동안 가장 무거운 동기 요청이다(블록 20만 · ZIP 4GiB) ③ 멤버 관리자는 멤버를 관리하는 역할이지 콘텐츠를 관리하지 않는다 ④ **좁은 쪽을 골랐다**(§3.3-49 와 같은 이유) — 넓히는 것은 `canExportWorkspace` 한 줄이고, 넓게 열었다 좁히면 쓰던 사람의 기능을 뺏는다. 판정은 스냅샷을 읽기 **전**이다 — 반사실: 게이트를 빼면 그 검사가, 스냅샷 뒤로 옮기면 블록 상한 0 에서 `too_large` 가 먼저 나와 같은 검사가 실패한다 |
+| 14 | **y-prosemirror 변환의 연쇄 삭제를 어떻게 막는가** (§7 이 후보 ⓐ 카디널리티 풀기 + appendTransaction 정규화 · ⓑ 변환 감싸기로 남겼다) | **ⓑ 를 포크 없이 — 변환에 넘기는 스키마만 관대한 파사드(`collabSchema`).** 편집 스키마는 루트(`doc: blockGroup+`) 하나만 풀었다. **구조 위반을 Y.Doc 에 고쳐 쓰는 곳은 로그 저장소의 append 하나**다 — 에디터 · 협업 서버는 쓰지 않는다 (#69) | ① y-prosemirror 는 변환에서 **우리가 넘긴 스키마 객체**의 `node` · `mark` · `text` 를 부르고, 바인딩은 `state.schema` 를 넘긴다 — exports 밖의 `createNodeFromYElement` 를 감쌀 필요가 없다. 파사드가 만든 노드는 `blockSchema` 의 노드이고 편집 규칙은 그대로다. 대가는 내부 구현 의존(1.3.7 고정 — 올리면 실제 바인딩 검사가 먼저 깨진다, §7) ② ⓐ 의 카디널리티 풀기는 편집 명령 전부의 전제를 바꾼다 — Fitter · `createAndFill` · split · join 이 내용 규칙에서 나온다. ⓐ 의 "`normalizeBody` 를 appendTransaction 으로"는 **모든 참여자가 수선을 쓴다**는 뜻인데, 진단에서 두 참여자가 같은 그룹 둘을 각자 합치자 **옮긴 블록이 복제됐다** — y-prosemirror 에 옮기기가 없어 합치기 · 올리기가 "지우고 새로 넣기"라서다(`repair.test.ts` ② 가 고정) ③ 작성자를 append 에 둔 이유: 스냅샷 행 `FOR UPDATE` 로 이미 페이지마다 한 줄로 서고, 잠근 뒤 읽은 상태(앞선 수선 포함)에서 계산하므로 수선끼리 겹치지 않는다 — 협업 서버가 여러 대여도 · API 경로가 써도 같다. 수선은 **같은 seq** 에 쌓고 보낸 쪽에 돌려준다(정본 origin 6값에 "시스템 수선"이 없고, 수선은 그 update 를 적용한 결과의 일부다) ④ 루트만 푼 이유: 바인딩은 루트를 `schema.node` 가 아니라 `tr.replace(0, size, …)` 로 채우고, `doc: blockGroup` 이면 Fitter 가 둘째 루트 그룹을 버린 뒤 다음 로컬 편집이 Y.Doc 에서 지운다(진단 · 검사). 편집기 · collab · export 테스트 618개가 루트를 푼 채로 통과했고 전체 선택 삭제는 여전히 그룹 하나다. `pmToDoc` 은 루트 그룹을 전부 읽게 했다. 반사실: 파사드가 내용을 검사하면 10개 · 마크를 던지면 1개 · 루트를 되돌리면 2개 · 저장소가 고치지 않으면 2개 · 수선이 모르는 것을 지나치면 2개 · 고칠 곳 대신 통째로 갈아쓰면 1개 · `pmToDoc` 이 첫 그룹만 읽으면 1개가 — 각각 그 항목만 실패 |
 
 §9-Q7("Enter 분할/Backspace 병합 규칙 — W4 이전 필수")은 마스터 문서에 `[해결 · W4]` 로 기록했다.
 
@@ -452,6 +480,9 @@ W7 항목별 상태:
 | 87 | **Phase 0 페이지는 처음 읽을 때 같은 트랜잭션에서 옮기고, 이력은 스냅샷 PK 가 하나로 정한다** (#67) | 일괄 이관 잡이 없고 SQL 로는 Yjs 바이너리를 만들 수 없어 앱이 처음 읽을 때 옮긴다. `origin='import'` — 정본 CHECK 6값 중 "다른 형식에서 처음 만든다"에 가장 가깝다. actor 는 없다(시스템). 행을 따로 읽으면 그 사이의 저장이 빠진다(`readLiveBody(tx, …)`). 각자 만든 Y.Doc 은 client id 가 달라 내용이 같아도 **다른 CRDT 이력**이고 섞이면 본문이 두 번 들어간다 — `ON CONFLICT DO NOTHING` 으로 진 쪽이 이긴 쪽 것을 읽는다. 볼 수만 있는 사람이 처음 읽어도 옮긴다(내용은 그대로, 형식만 바뀐다) |
 | 88 | **동시 첫 읽기 검사는 표 잠금으로 경쟁을 강제한다 — 첫 검사는 반사실을 가려내지 못했다** (#67) | 처음에는 읽기 5개를 그냥 동시에 불렀는데 `ON CONFLICT` 를 빼도 통과했다 — 먼저 커밋한 쪽의 스냅샷을 나머지가 읽어 경쟁 자체가 일어나지 않았다. 주장(없으면 진 쪽이 PK 오류를 받는다)은 맞으므로 검사를 고쳤다(§5): 다른 커넥션이 `doc_snapshot` 에 `SHARE ROW EXCLUSIVE` 잠금을 걸고, `pg_locks` 로 5개가 모두 INSERT 앞에서 기다리는 것을 확인한 뒤 푼다. 기다리는 동안 무엇이 실패해도 잠금은 `finally` 에서 푼다. 이제 그 반사실에서 그 검사만 실패한다 |
 | 89 | **seq 는 스냅샷 행을 `FOR UPDATE` 로 잡고 1씩 — 재시도 없음 · 압축은 스냅샷만** (#67) | 한 페이지의 append · 압축이 한 줄로 선다. 잠금 없이 `마지막 seq + 1` 을 계산하면 동시 append 가 같은 seq 를 받아 PK 로 던진다. 빈틈이 없어야 "합치지 않은 수 = 최신 seq − merged_seq" 가 성립한다. 압축은 들고 있는 Y.Doc 으로 스냅샷만 새로 쓰고 로그를 지우지 않는다(S1). 반사실: 잠금을 빼면 동시 append 검사만 · 압축이 로그를 지우거나 merged_seq 를 하나 더 올려 쓰면 압축 검사만 실패 |
+| 90 | **수선은 사본에서 먼저 고쳐 보고 확인한다 — 그 확인에 걸리는 입력은 찾지 못했다** (#69) | "읽기가 그대로이고 고칠 것이 남지 않았을 때만 원본에 적용한다"고 적었는데 **확인을 빼는 반사실에서 검사가 전부 통과했다.** 수선은 Y.Doc 을 자기의 정규화된 읽기에 맞추는 것이라 구성상 프로젝션이 같다(① 이 장면마다 본다). 코드는 남기고(비교가 어긋나는 날 본문을 바꾸는 대신 위반을 남긴다) "막는다"가 아니라 "도달하는 입력을 찾지 못한 방어"로 주석을 고쳤다 |
+| 91 | **모르는 노드 · 마크가 있으면 수선하지 않는다** (#69) | 수선은 매핑 없이 구조로 비교하므로 읽기에서 빠진 모르는 요소를 Y.Doc 에서 지운다. 바인딩은 매핑 동일성으로 그 요소를 건너뛰어 남긴다(진단으로 먼저 봤다 — 추측으로 단언을 쓰지 않았다). 위반을 남기는 쪽이 새 버전 클라이언트의 블록을 지우는 쪽보다 낫다. 반사실: 가드를 빼면 그 검사 2개만 실패 |
+| 92 | **동시 편집 검사는 실제 `ySyncPlugin` 을 헤드리스로 붙인다** (#69) | `initProseMirrorDoc` 만 보면 바인딩의 다른 경로를 놓친다 — 루트는 `tr.replace` 의 Fitter 를 거쳐서 루트 그룹 둘이 그 경로에서만 지워졌다. `testing/collab-peers.ts` 의 `bind` 가 바인딩이 view 에서 쓰는 것(`state` · `dispatch` · `hasFocus`)만 흉내 낸다. EditorView 처럼 초기화 도중의 dispatch 에서는 아직 없는 플러그인 뷰를 부르지 않는다 — 처음 흉내는 거기서 죽었다 |
 
 ---
 
@@ -701,10 +732,14 @@ dev 재시작·`.next/dev` 삭제로 풀린 적도 있지만 재현이 안 된�
 | **익스포트: `security_policy.allow_export` 게이트가 없다** | 정본 §3.3 의 0단계 deny 정책(노션 Enterprise 의 "Disable export")인데 표가 아직 없다. 들어오면 `prepareExport` 의 역할 게이트 **앞**에 둔다 | `src/lib/export/download.ts` |
 | **익스포트: 감사 로그가 없다** | 마스터 문서가 "보안 10종"에 내보내기를 넣었지만 감사 표가 없다(마이그레이션 15개 중에 없다). 누가 워크스페이스 전체를 받았는지 남지 않는다 | 같은 곳 |
 | **익스포트: HTML · PDF · "하위 페이지 포함" 끄기** | Markdown & CSV 만 있다(F-09-14: HTML P1 · PDF P2). 하위 페이지는 **항상 포함**이다 — F-09-14 가 끄는 쪽을 "가장 흔한 사고"로 적었다 | `export-button.tsx` |
-| **⚠ y-prosemirror 변환의 연쇄 삭제 — 동시에 쓰는 참여자를 붙이기 전의 전제 조건** | `ySyncPlugin` · `initProseMirrorDoc` 은 Y 요소를 `createChecked` 로 만들다 실패하면 **원본 Y.Doc 에서** 지우고 그 삭제가 모든 참여자에게 퍼진다. 동시 편집이 흔하게 만드는 구조 위반(타입 동시 변경 · 그룹 둘 · 빈 그룹) 하나가 컨테이너 → 루트 그룹을 지운다 = **본문 전체 삭제.** 서버 명령 경로 ② 가 `initProseMirrorDoc` + `updateYFragment` 로 쓰면 서버에서도 같다. 후보(아직 판결 아님): ⓐ 스키마 카디널리티를 풀어(`doc: blockGroup*` · `blockGroup: blockContainer*` · `blockContainer: blockContent* blockGroup*`) 변환이 던지지 않게 하고 `normalizeBody` 를 appendTransaction 으로 돌린다 — 명령들이 `+` 에 기대는 곳부터 찾아야 한다(§6 "`+` 는 0개가 되면 던진다") ⓑ 변환을 감싸 지우지 않게 한다 — 그 함수는 패키지 `exports` 밖이다. `ydoc.test.ts` ④ 가 위험을 고정했다 — 풀리면 그 검사가 실패한다 | `src/lib/collab/ydoc.ts` 머리말 |
+| ~~y-prosemirror 변환의 연쇄 삭제~~ | **해결(#69 · §3.2-14).** 바인딩 · 서버 쓰기 경로는 변환에 `collabSchema`(내용을 검사하지 않는 파사드)를 넘기고, 구조 위반은 로그 저장소의 append 한 곳이 고친다. 아래는 원래 적었던 위험이다 — `ySyncPlugin` · `initProseMirrorDoc` 은 Y 요소를 `createChecked` 로 만들다 실패하면 **원본 Y.Doc 에서** 지우고 그 삭제가 모든 참여자에게 퍼진다. 동시 편집이 흔하게 만드는 구조 위반(타입 동시 변경 · 그룹 둘 · 빈 그룹) 하나가 컨테이너 → 루트 그룹을 지운다 = **본문 전체 삭제.** 서버 명령 경로 ② 가 `initProseMirrorDoc` + `updateYFragment` 로 쓰면 서버에서도 같다. 후보(아직 판결 아님): ⓐ 스키마 카디널리티를 풀어(`doc: blockGroup*` · `blockGroup: blockContainer*` · `blockContainer: blockContent* blockGroup*`) 변환이 던지지 않게 하고 `normalizeBody` 를 appendTransaction 으로 돌린다 — 명령들이 `+` 에 기대는 곳부터 찾아야 한다(§6 "`+` 는 0개가 되면 던진다") ⓑ 변환을 감싸 지우지 않게 한다 — 그 함수는 패키지 `exports` 밖이다. `ydoc.test.ts` ④ 는 이제 편집 스키마로는 지우고 `collabSchema` 로는 지우지 않음을 함께 고정한다 | `src/lib/collab/collab-schema.ts` · `repair.ts` |
 | **멘션 · 수식에 건 서식이 Y.Doc 에 실리지 않는다** | y-prosemirror 가 요소 노드를 옮길 때 attr 만 싣는다(`createTypeFromElementNode`). 글자의 서식은 남는다. 에디터 바인딩이 오는 순간 굵게 건 멘션이 저장되며 풀린다. `ydoc.test.ts` ④ 가 고정 | 같은 곳 |
 | **동시 순서 변경의 글자 겹침** | y-prosemirror 에 옮기기가 없어 순서 변경이 요소 고쳐 쓰기다. 둘이 동시에 순서를 바꾸면 blockId 가 겹치거나(정규화가 새 id 를 준다) 글자가 두 번 들어간다(되돌리지 않는다). 얼마나 자주 겹치는지는 재지 않았다 | `src/lib/collab/normalize.ts` |
-| **모르는 노드 이름 — 스키마 버전 게이트** | 새 버전 클라이언트가 넣은 블록은 읽기 결과(= 프로젝션)에서 빠진다(원본 Y.Doc 에는 남는다). 옛 클라이언트의 `ySyncPlugin` 은 그 요소를 **지운다**(위 연쇄 삭제). 협업 서버가 연결할 때 클라이언트의 스키마 버전을 확인해야 한다 | 같은 곳 |
+| **모르는 노드 이름 — 스키마 버전 게이트** | 새 버전 클라이언트가 넣은 블록은 읽기 결과(= 프로젝션)에서 빠진다(원본 Y.Doc 에는 남는다). 옛 클라이언트의 바인딩은 `collabSchema` 로 그 요소를 받고 이웃 블록을 고쳐도 **남긴다**(#69 에서 확인 — 매핑 동일성으로 건너뛴다. 그 블록 자체를 옮기는 경우는 확인하지 않았다). 반대로 서버 수선은 매핑 없이 비교해 지우므로 모르는 것이 있으면 **고치지 않는다** — 그 페이지의 구조 위반이 남는다(§3.3-91). 협업 서버가 연결할 때 클라이언트의 스키마 버전을 확인해야 한다 | 같은 곳 · `src/lib/collab/repair.ts` |
+| **수선과 동시에 옮긴 블록에 친 글자** | 옮기는 수선(그룹 합치기 · 자식 올리기)은 옮긴 블록을 새 요소로 만든다. 수선과 **동시에** 그 블록에 친 글자는 지워진 옛 요소에 들어가 사라진다 — 동시 순서 변경과 같은 한계. 위반이 생긴 append 가 곧바로 고치므로 창은 짧다 — 재지 않았다 | `src/lib/collab/repair.ts` |
+| **수선 전까지 에디터 문서가 스키마를 어긴다** | 바인딩은 Y.Doc 을 그대로 비추므로 수선이 도착하기 전까지 한 블록에 내용 줄 둘 · 루트 그룹 둘 같은 문서를 들고 있다. 그 자리를 건드리는 스텝은 ProseMirror 가 거부한다(던진다). 편집 명령 · 플러그인은 이 모양을 전제하지 않았다 — `pm-blocks.ts` 는 첫 루트 그룹만 평탄화하고, 블록 선택 · 핸들 · 접힘은 보지 않았다. 6조각에서 본다 | `src/lib/collab/collab-schema.ts` · `src/lib/editor/pm-blocks.ts` |
+| **파사드는 y-prosemirror 내부 구현에 기댄다** | 변환이 스키마의 `node` · `mark` · `text` 를 부른다는 것(1.3.7 · package-lock 고정). 올릴 때 `collab-schema.test.ts` ② 의 실제 바인딩 검사가 먼저 깨진다 | `src/lib/collab/collab-schema.ts` |
+| **수선마다 새 client id** | 수선은 사본(무작위 client id)에서 만든 update 라 수선 한 번마다 state vector 에 client 가 하나 는다. 드물어서 두었다. 고정 id 는 수선이 잠금 밖에서 한 번이라도 돌면 같은 id · clock 의 구조가 둘 생겨 문서가 깨지므로 쓰지 않았다 | `src/lib/collab/repair.ts` |
 | **append 마다 본문 전체를 읽어 적용한다** | 검증(깨짐 · pending · 바뀐 부분)을 위해 스냅샷 + 합치지 않은 update(최대 `COMPACT_EVERY` = 100개)로 Y.Doc 을 만든다. 협업 서버가 초당 여러 번 저장하면 비용이 된다 — 협업 서버(5조각)는 메모리에 Y.Doc 을 들고 있으므로 그때 경로를 나눌 수 있다. 재지 않았다 | `src/lib/collab/doc-store.ts` |
 | **Y.Doc 경로의 문서 전체 크기 상한이 없다** | update 한 개는 `MAX_BODY_BYTES`(1 MiB)로 막지만 쌓인 본문(스냅샷)의 크기는 보지 않는다. Phase 0 저장 경로의 본문 한도(F-12-16)에 해당하는 것이 아직 없다 | 같은 곳 |
 | **압축이 잡이 아니라 append 안에서 돈다** | 정본은 "compaction 잡이 갱신"이라 적었지만 잡 워커가 없다. 합치지 않은 update 가 `COMPACT_EVERY` 에 닿는 append 가 스냅샷을 쓴다 — 그 append 만 느리다 | 같은 곳 |
@@ -748,36 +783,38 @@ Phase 0(MVP)이 닫혔다 — W1~W8 전부. Phase 1 의 첫 항목 익스포트(
 지금은 CRDT 동시편집(마스터 문서 §5.2 의 2번 — 착수 순서는 고정이다)을 6조각으로 나눠 진행 중이다.
 HANDOFF §2 의 CRDT 조각 표 · 순서 근거 · "N조각에서 확인한 것"을 먼저 읽어라.
 
-끝난 것 — 둘 다 **아직 어떤 경로도 부르지 않는다**(앱 동작은 Phase 0 그대로, 행이 정본):
+끝난 것 — 전부 **아직 어떤 경로도 부르지 않는다**(앱 동작은 Phase 0 그대로, 행이 정본):
   - 1조각(#66) src/lib/collab/ydoc.ts · normalize.ts — Y.Doc 본문 계약 · 동시 편집이 만든 구조 위반 정규화
   - 2조각(#67) src/lib/collab/doc-store.ts — doc_update 로그(append · 페이지 안 seq · 압축 · Phase 0 페이지 옮기기)
+  - 3a조각(#69) src/lib/collab/collab-schema.ts · repair.ts — y-prosemirror 연쇄 삭제 막기(§3.2-14, 다시 판단하지 마라):
+    변환에 넘기는 스키마 파사드 collabSchema · 루트 doc: blockGroup+ · 구조 위반 수선은 appendDocUpdate 한 곳
 
-다음 작업은 **3조각 — 동시에 쓰는 참여자(서버 명령 · 협업 서버 · 에디터)를 붙이기 전의 전제 조건**이다(§7 앞쪽).
-  ① y-prosemirror 연쇄 삭제 막기.
-     y-prosemirror 의 Y.Doc → ProseMirror 변환(ySyncPlugin · initProseMirrorDoc)은 노드를
-     Schema.node = createChecked 로 만들다 던지면 **그 Y 요소를 원본 Y.Doc 에서 지운다.**
-     타입 동시 변경 하나가 컨테이너 → 루트 그룹까지 지운다 = 본문 전체 삭제(ydoc.test.ts ④ 가 고정).
-     §7 의 후보 중에서 판결하고 §3.2 에 근거와 함께 남긴다:
-       ⓐ 스키마 카디널리티를 푼다(doc: blockGroup* · blockGroup: blockContainer* ·
-          blockContainer: blockContent* blockGroup*) + normalizeBody 를 appendTransaction 으로 돌린다.
-          명령들이 `+` 에 기대는 곳부터 찾는다(block-selection.ts 의 blockDeletionRanges 등, §6)
-       ⓑ 변환을 감싸 지우지 않게 한다 — 그 함수(createNodeFromYElement)는 패키지 exports 밖이다
-     위험 고정 검사는 위험이 풀리면 실패한다 — 그 검사를 "막았다"는 검사로 바꾸고 반사실로 증명한다
-  ② 멘션 · 수식에 건 서식이 Y.Doc 에 실리지 않는다(y-prosemirror 가 요소 노드의 마크를 싣지 않는다).
-     ydoc.test.ts ④ 의 손실 고정 검사도 풀리면 실패한다
-  ③ 착수 전에 읽을 것: 05-collaboration-sync.md F-05-01 · F-05-15 · 01-block-editor.md F-01-17 ·
-     src/lib/editor/schema.ts 머리말 · src/lib/collab/ydoc.ts · normalize.ts 머리말 ·
-     node_modules/y-prosemirror/src/plugins/sync-plugin.js(createNodeFromYElement · updateYFragment)
+다음 작업은 **3b조각 — 멘션 · 수식에 건 서식을 Y.Doc 에 싣는다**(§7). 동시에 쓰는 참여자를 붙이기 전의 마지막 전제 조건이다.
+  ① y-prosemirror 는 요소 노드를 Y 로 옮길 때 attr 만 싣고 마크를 싣지 않는다(createTypeFromElementNode).
+     반대 방향도 schema.node(이름, attrs, 자식) 로 만들어 마크를 넘기지 않는다. 그리고 updateYFragment 는
+     ProseMirror attr 에 없는 Y attr 을 지운다 — 그래서 서식을 실을 자리는 ProseMirror 노드 attr 이어야 한다.
+     굵게 건 멘션은 에디터 바인딩이 오는 순간 저장되며 풀린다. ydoc.test.ts ④ 의 손실 고정 검사가 풀리면
+     실패한다 — "막았다"는 검사로 바꾸고 반사실로 증명한다
+  ② 노드 attr 을 더하는 것은 저장 포맷 변경이다(ydoc.ts 머리말) — 기본값을 두어 이미 쓴 Y.Doc 이 그대로 읽히게 한다.
+     실제 바인딩(testing/collab-peers.ts 의 bind)으로 두 참여자 사이의 왕복을 본다
+  ③ 착수 전에 읽을 것: src/lib/collab/collab-schema.ts 머리말 · src/lib/editor/pm-adapter.ts(runsToInline · inlineToRuns) ·
+     node_modules/y-prosemirror/src/plugins/sync-plugin.js(createTypeFromElementNode · updateYFragment 의 attr 비교 · equalAttrs)
 
 지켜야 할 것:
   - 4조각 전까지 어떤 경로도 Y.Doc 을 쓰지 않는다. 4조각은 정본을 넘기며 행을 직접 고치는 경로
     (createPage 의 참조 삽입 · 휴지통 · 복원 · 이동 · PUT body) 전부와 **함께** 와야 한다 —
     반쯤 넘기면 프로젝터가 그 행을 지운다
-  - Y.Doc 은 readBodyYDoc 으로만 읽는다(initProseMirrorDoc 으로 읽지 마라 — 지운다)
+  - Y.Doc 은 readBodyYDoc 으로만 읽는다. y-prosemirror 변환(initProseMirrorDoc · ySyncPlugin)에는 반드시 collabSchema 를
+    넘긴다 — blockSchema 를 넘기면 구조 위반을 만난 Y 요소를 지운다. 바인딩 상태는
+    EditorState.create({ schema: collabSchema, plugins }) 로 만들고 doc 을 넘기지 않는다(넘기면 state.schema 가 blockSchema 다)
+  - 구조 위반을 Y.Doc 에 고쳐 쓰는 곳은 appendDocUpdate 하나다. 에디터 · 협업 서버에 정규화 appendTransaction 을 두지 마라 —
+    둘이 각자 고치면 옮긴 블록이 복제된다(repair.test.ts ②). 5조각은 append 결과의 repair 를 받은 update 와 함께 퍼뜨린다
   - 로그는 appendDocUpdate 로만 쓴다. "바뀌었는가"를 state vector 로 판정하지 마라 —
     지우기만 하는 update 는 state vector 를 바꾸지 않는다(§3.3-85)
-  - 동시 편집 검사는 src/lib/testing/collab-peers.ts(peer · edit · exchange · changesSince)로
-    에디터 없이 흉내 낸다. client id 를 고정하면 결정론이다. edit 은 편집 전 문서가 올바를 때만 쓴다
+  - 동시 편집 검사는 src/lib/testing/collab-peers.ts(peer · edit · exchange · changesSince · bind)로
+    에디터 없이 흉내 낸다. client id 를 고정하면 결정론이다. bind 는 실제 ySyncPlugin 을 헤드리스로 붙인다 —
+    initProseMirrorDoc 만 보면 바인딩의 다른 경로(루트는 tr.replace 의 Fitter)를 놓친다(§3.3-92).
+    구조 위반 장면 6개는 testing/collab-scenarios.ts
 
 W8 이 남긴 빈자리(HANDOFF §2 · §7) — Phase 1 과 부딪히면 먼저 본다:
   - select 정렬(옵션 id 로 정렬된다 → 화면에서 뺐다) · 행 페이지 열기 ·
@@ -798,8 +835,9 @@ PR 본문에는 "왜 이렇게 했는가"를 쓴다 — 정본과 다르게 한 
 
 시간을 아끼려면 (전부 이전 세션에서 실제로 당한 것, 자세한 건 HANDOFF §6):
 - 시작할 때 `npm run db:up` 을 한 번 돌린다. `npm test` 만 돌리면 DB 테스트가
-  **조용히 빠진다**(카운트에도 안 잡힌다). 1513개가 다 돌아야 CI 의 db 잡과 같다.
-  이 PC 에는 unzip 이 없어 1개 skip 은 정상이다(CI 는 설치한다)
+  **조용히 빠진다**(카운트에도 안 잡힌다). 1543개가 다 돌아야 CI 의 db 잡과 같다.
+  이 PC 에서는 외부 도구 검사가 셸에 따라 1~2개 skip 된다 — PowerShell 은 unzip(Git 의 unzip 은 Git Bash PATH 에만
+  있다), Git Bash 는 bsdtar(Git 의 tar 는 GNU tar 다)를 못 찾는다. 정상이다(CI 는 설치하고 skip 0 이어야 한다)
 - CI 결과는 **HEAD 커밋의 실행**을 찾아서 본다(`gh run list --json databaseId,headSha`
   → `gh run watch`). 막 푸시한 직후에는 새 실행이 아직 없을 수 있다. 로그의 합계는
   ASCII 패턴(` # tests N` · ` # skipped N`)으로 찾는다 — PowerShell 파이프가 `ℹ` 를 못 잡는다
@@ -859,6 +897,10 @@ PR 본문에는 "왜 이렇게 했는가"를 쓴다 — 정본과 다르게 한 
   로 이어 붙였다가 PR 이 조용히 안 만들어졌다 — stderr 는 묶지 않는다(도구가 이미 받는다)
 - PowerShell 5.1: `gh … --json … | ConvertFrom-Json | Where-Object {…}` 는 배열이 **한 덩어리로** 흘러 걸러지지
   않는다. `| ForEach-Object { $_ } | Where-Object {…}` 로 풀어서 거른다
+- **판결 전에 후보를 진단 스크립트로 잰다.** 3a 에서 "여럿이 정규화해 되써넣으면 복제된다" · "루트 그룹 둘은 파사드로 못
+  막는다" · "모르는 노드는 바인딩에서 남는다"를 전부 먼저 쟀고, 그 결과가 판결과 단언을 정했다. 기억으로 쓴 단언은 없다
+- 실제 파일을 잠깐 바꾸는 반사실(스키마처럼 모두가 import 하는 파일)은 cf 폴더로 못 돌린다 — 백업을 scratchpad 에
+  두고 바꾼 뒤 그 검사만 돌리고 되돌린 다음 `cmp` 로 복원을 확인한다. cf 폴더 반사실과 동시에 돌리지 않는다
 ```
 
 ---

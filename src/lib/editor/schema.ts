@@ -126,7 +126,10 @@ function blockContentSpec(type: MvpBlockType): NodeSpec {
 }
 
 const nodes: Record<string, NodeSpec> = {
-  doc: { content: 'blockGroup' },
+  // 루트 그룹은 편집으로는 늘 하나다. `+` 인 이유는 협업 바인딩이다(`collab/collab-schema.ts` 머리말) —
+  // y-prosemirror 는 루트를 `tr.replace(0, size, …)` 로 채우는데, 정확히 하나를 요구하면 합친 Y.Doc 의
+  // 둘째 루트 그룹을 Fitter 가 버리고 다음 로컬 편집이 그것을 Y.Doc 에서 지운다. 합치는 것은 `repair.ts` 다.
+  doc: { content: 'blockGroup+' },
 
   blockGroup: {
     content: 'blockContainer+',

@@ -8,12 +8,13 @@
  *   ② **동시 편집이 수렴한다** — 두 참여자가 따로 편집하고 update 를 주고받으면 같은 문서로 읽히고,
  *      그 문서는 계약(`validateDoc`)을 지킨다. 구조를 어기는 조합도
  *   ③ **읽기는 원본을 바꾸지 않는다** — y-prosemirror 변환이라면 지웠을 노드(모르는 노드 이름)가 있어도
- *   ④ **알고 있는 손실 · 위험** — 인라인 원자(멘션)에 건 서식 · y-prosemirror 변환의 연쇄 삭제
+ *   ④ **알고 있는 손실 · 막은 위험** — 인라인 원자(멘션)에 건 서식 · y-prosemirror 변환의 연쇄 삭제(편집
+ *      스키마로 변환하면 지우고, 바인딩이 넘기는 `collabSchema` 로는 지우지 않는다)
  *
  * 참여자는 에디터 없이 흉내 낸다: Y.Doc → ProseMirror 문서(`initProseMirrorDoc`) → ProseMirror
  * 트랜잭션 → `updateYFragment`. y-prosemirror 의 `ySyncPlugin` 이 에디터 변경을 Y.Doc 에 쓸 때
- * 부르는 함수와 같다. 편집하기 전의 문서는 늘 올바르므로 `initProseMirrorDoc` 이 지우는 일은 없다
- * (지우는 경우는 ④ 가 따로 본다). client id 를 고정해 동시 삽입 순서를 결정론으로 만든다.
+ * 부르는 함수와 같다. 문서는 바인딩처럼 `collabSchema` 로 읽으므로 지우지 않는다(`testing/collab-peers.ts`).
+ * client id 를 고정해 동시 삽입 순서를 결정론으로 만든다.
  */
 
 import { test, describe } from 'node:test'
@@ -30,6 +31,7 @@ import { validateDoc, type EditorBlock, type EditorDoc } from '../editor/documen
 import { docToPm, pmToDoc } from '../editor/pm-adapter.ts'
 import { blockSchema } from '../editor/schema.ts'
 import { edit, exchange, findBlock as find, peer } from '../testing/collab-peers.ts'
+import { collabSchema } from './collab-schema.ts'
 import { BODY_FRAGMENT, createBodyYDoc, readBodyYDoc } from './ydoc.ts'
 
 const PAGE = randomUUID()
@@ -249,23 +251,28 @@ describe('③ 읽기', () => {
 // ── ④ 알고 있는 손실 ──────────────────────────────────────────────────
 
 describe('④ 알고 있는 손실 · 위험', () => {
-  test('y-prosemirror 변환은 타입 충돌 하나에 컨테이너와 루트 그룹을 Y.Doc 에서 지운다 — 에디터 바인딩이 같은 경로다 (붙이기 전에 막을 것)', () => {
+  test('★ y-prosemirror 변환은 타입 충돌 하나에 편집 스키마로는 본문을 Y.Doc 에서 지우고, 바인딩이 넘기는 collabSchema 로는 지우지 않는다', () => {
     const x = block('paragraph', '원문')
     const server = createBodyYDoc({ blocks: [x] })
     const [a, b] = [peer(server, 1), peer(server, 2)]
     edit(a, (tr, doc) => tr.setNodeMarkup(find(doc, x.id).pos + 1, blockSchema.nodes.heading_2, { props: {}, format: {} }))
     edit(b, (tr, doc) => tr.setNodeMarkup(find(doc, x.id).pos + 1, blockSchema.nodes.to_do, { props: { checked: false }, format: {} }))
-    assert.equal(converge(a, b).blocks.length, 1, '우리 읽기는 그 경로를 타지 않는다')
+    const merged = converge(a, b)
+    assert.equal(merged.blocks.length, 1, '우리 읽기는 그 경로를 타지 않는다')
 
-    // 합친 상태를 받은 세 번째 참여자가 y-prosemirror 로 문서를 만든다 — `ySyncPlugin` 이 하는 일이다.
-    const third = peer(a, 3)
-    const { doc } = initProseMirrorDoc(third.getXmlFragment(BODY_FRAGMENT), blockSchema)
+    // 합친 상태를 받은 참여자가 바인딩과 같은 스키마로 문서를 만든다 — 원본이 그대로다(`collab-schema.ts`).
+    const guarded = peer(a, 3)
+    const before = Buffer.from(Y.encodeStateAsUpdate(guarded))
+    initProseMirrorDoc(guarded.getXmlFragment(BODY_FRAGMENT), collabSchema)
+    assert.ok(Buffer.from(Y.encodeStateAsUpdate(guarded)).equals(before), 'collabSchema 로 변환했는데 Y.Doc 이 바뀌었다')
+    assert.deepEqual(readBodyYDoc(guarded, PAGE).doc, merged)
+
+    // 편집 스키마를 그대로 넘기면 라이브러리가 컨테이너 → 루트 그룹을 지운다 — 파사드가 필요한 이유다.
+    // 이 두 단언이 실패하면 y-prosemirror 가 바뀐 것이다: collab-schema.ts 머리말 · HANDOFF §3.2-14 를 다시 본다.
+    const unguarded = peer(a, 4)
+    const { doc } = initProseMirrorDoc(unguarded.getXmlFragment(BODY_FRAGMENT), blockSchema)
     assert.equal(doc.childCount, 0, 'y-prosemirror 가 본문을 통째로 버렸다')
-    assert.equal(
-      third.getXmlFragment(BODY_FRAGMENT).length,
-      0,
-      '그 삭제가 Y.Doc 에 기록됐다 — 이 검사가 실패하면 위험이 풀린 것이다. HANDOFF §7 을 고쳐라',
-    )
+    assert.equal(unguarded.getXmlFragment(BODY_FRAGMENT).length, 0, '그 삭제가 Y.Doc 에 기록됐다')
   })
 
   test('멘션에 건 굵게는 Y.Doc 을 지나면 사라진다 — 글자에 건 굵게는 남는다 (에디터 바인딩 전에 풀 것)', () => {

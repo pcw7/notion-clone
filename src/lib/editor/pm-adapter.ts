@@ -303,11 +303,10 @@ export function blockFromContainer(container: PmNode): EditorBlock {
  * 저장하면, 페이지를 열어보기만 해도 블록이 하나 생긴다.
  */
 export function pmToDoc(doc: PmNode): EditorDoc {
-  const group = doc.childCount > 0 ? doc.child(0) : null
-  if (!group) return { blocks: [] }
-
+  // 루트 그룹이 둘 이상이면 차례로 잇는다. 편집으로는 생기지 않고 합친 Y.Doc 을 비출 때만 생기지만
+  // (`schema.ts` 의 `doc`), 첫 그룹만 읽으면 저장이 나머지 블록을 조용히 잃는다.
   const blocks: EditorBlock[] = []
-  group.forEach((container) => blocks.push(blockFromContainer(container)))
+  doc.forEach((group) => group.forEach((container) => blocks.push(blockFromContainer(container))))
 
   if (blocks.length === 1) {
     const only = blocks[0]

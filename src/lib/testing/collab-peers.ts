@@ -2,18 +2,20 @@
  * 테스트가 쓰는 동시 편집 참여자 — 에디터 없이 Y.Doc 에 편집을 쓴다.
  *
  * `edit` 은 ProseMirror 트랜잭션을 만들어 `updateYFragment` 로 Y.Doc 에 옮긴다 — y-prosemirror 의
- * `ySyncPlugin` 이 에디터 변경을 Y.Doc 에 쓸 때 부르는 함수와 같다. client id 를 고정하면 동시 삽입의
- * 순서가 결정론이 된다.
+ * `ySyncPlugin` 이 에디터 변경을 Y.Doc 에 쓸 때 부르는 함수와 같다. 문서는 바인딩과 같이 `collabSchema` 로
+ * 읽으므로 구조 위반이 있어도 Y 요소를 지우지 않는다. 다만 위반 자리를 건드리는 편집은 ProseMirror 가 거부할 수
+ * 있다(그 자리의 내용 규칙을 검사한다). client id 를 고정하면 동시 삽입의 순서가 결정론이 된다.
  *
- * ⚠ **편집하기 전의 문서가 올바를 때만 쓴다.** `initProseMirrorDoc` 은 구조 위반을 만나면 Y 요소를
- * 지운다(`collab/ydoc.ts` 머리말). 합친 뒤의 상태를 읽을 때는 `readBodyYDoc` 을 쓴다.
+ * `bind` 는 실제 `ySyncPlugin` 을 헤드리스로 붙인다 — 바인딩 코드가 그대로 돈다.
  */
 
 import * as Y from 'yjs'
-import { initProseMirrorDoc, updateYFragment } from 'y-prosemirror'
-import { EditorState, type Transaction } from '@tiptap/pm/state'
-import type { Node as PmNode } from '@tiptap/pm/model'
+import { initProseMirrorDoc, updateYFragment, ySyncPlugin } from 'y-prosemirror'
+import { EditorState, type Plugin, type PluginView, type Transaction } from '@tiptap/pm/state'
+import type { Node as PmNode, Schema } from '@tiptap/pm/model'
+import type { EditorView } from '@tiptap/pm/view'
 
+import { collabSchema } from '../collab/collab-schema.ts'
 import { BODY_FRAGMENT } from '../collab/ydoc.ts'
 import { blockSchema } from '../editor/schema.ts'
 
@@ -28,7 +30,7 @@ export function peer(source: Y.Doc, clientId: number): Y.Doc {
 /** 에디터가 하는 쓰기 — ProseMirror 트랜잭션을 만들어 Y.Doc 에 옮긴다. */
 export function edit(ydoc: Y.Doc, change: (tr: Transaction, doc: PmNode) => void): void {
   const fragment = ydoc.getXmlFragment(BODY_FRAGMENT)
-  const { doc, meta } = initProseMirrorDoc(fragment, blockSchema)
+  const { doc, meta } = initProseMirrorDoc(fragment, collabSchema)
   const tr = EditorState.create({ schema: blockSchema, doc }).tr
   change(tr, doc)
   ydoc.transact(() => updateYFragment(ydoc, fragment, tr.doc, meta), 'editor')
@@ -58,4 +60,44 @@ export function exchange(a: Y.Doc, b: Y.Doc): void {
 /** `ydoc` 에만 있고 `base` 에는 없는 변경 — 참여자가 서버로 보내는 update 다. */
 export function changesSince(ydoc: Y.Doc, base: Y.Doc): Uint8Array {
   return Y.encodeStateAsUpdate(ydoc, Y.encodeStateVector(base))
+}
+
+export type BoundEditor = {
+  readonly state: EditorState
+  dispatch(tr: Transaction): void
+  destroy(): void
+}
+
+/**
+ * `ydoc` 에 `ySyncPlugin` 을 붙인 에디터 — EditorView 없이.
+ *
+ * 바인딩이 view 에서 쓰는 것만 흉내 낸다: `state` · `dispatch`(적용한 뒤 플러그인 뷰의 `update`) · `hasFocus`.
+ * EditorView 처럼 초기화 도중의 dispatch 에서는 아직 만들어지지 않은 플러그인 뷰를 부르지 않는다.
+ * 원격 update 는 `Y.applyUpdate(ydoc, …)` 로 넣는다 — 바인딩이 Y.Doc 을 관찰해 문서에 옮긴다.
+ *
+ * @param schema 에디터 상태의 스키마. 바인딩은 이것을 변환에 넘긴다(`collab-schema.ts` 머리말).
+ */
+export function bind(ydoc: Y.Doc, schema: Schema = collabSchema): BoundEditor {
+  const plugin = ySyncPlugin(ydoc.getXmlFragment(BODY_FRAGMENT)) as Plugin
+  let state = EditorState.create({ schema, plugins: [plugin] })
+  const mounted: { view?: PluginView } = {}
+  const view = {
+    get state() {
+      return state
+    },
+    dispatch(tr: Transaction) {
+      const previous = state
+      state = state.apply(tr)
+      mounted.view?.update?.(view as unknown as EditorView, previous)
+    },
+    hasFocus: () => false,
+  }
+  mounted.view = plugin.spec.view?.(view as unknown as EditorView)
+  return {
+    get state() {
+      return state
+    },
+    dispatch: view.dispatch,
+    destroy: () => mounted.view?.destroy?.(),
+  }
 }

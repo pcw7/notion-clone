@@ -235,6 +235,16 @@ describe('docToPm ↔ pmToDoc', () => {
   })
 })
 
+describe('루트 그룹', () => {
+  test('루트 그룹이 둘이어도 스키마에 맞고, 차례로 읽는다 — 첫 그룹만 읽으면 나머지 블록이 저장에서 빠진다', () => {
+    const groupOf = (text: string) =>
+      docToPm({ blocks: [{ id: randomUUID(), type: 'paragraph', title: [textRun(text)] }] }).child(0)
+    const doc = blockSchema.nodes.doc.create(null, [groupOf('첫 그룹'), groupOf('둘째 그룹')])
+    doc.check()
+    assert.deepEqual(pmToDoc(doc).blocks.map((blk) => toPlainText(blk.title)), ['첫 그룹', '둘째 그룹'])
+  })
+})
+
 describe('빈 문서', () => {
   test('빈 문서는 빈 문단 하나로 합성된다 — 타이핑할 자리가 필요하다', () => {
     const pm = docToPm({ blocks: [] })
