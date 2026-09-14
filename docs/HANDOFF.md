@@ -731,6 +731,9 @@ CLAUDE.md 와 docs/HANDOFF.md 를 먼저 읽어라. 특히:
   01~17 도메인 문서에는 판결로 폐기된 스키마가 남아 있으니 충돌하면 정본이 이긴다
 - HANDOFF §2 다음 작업 · §3 이미 내린 판결(같은 것을 다시 판단하지 마라) · §7 알려진 부채
 
+사용자에게 하는 설명 · 도구 사이의 진행 보고 · PR 본문은 **전부 한글로** 쓴다
+(커밋 prefix · 식별자 · F-ID · 라이브러리 이름은 영어 그대로).
+
 Phase 0(MVP)이 닫혔다 — W1~W8 전부. Phase 1 의 첫 항목 익스포트(F-09-14) v1 도 닫혔다.
 
 지금 동작하는 것: 로그인 → 워크스페이스 → 페이지 → 본문 편집(12종 블록) →
@@ -742,16 +745,39 @@ Phase 0(MVP)이 닫혔다 — W1~W8 전부. Phase 1 의 첫 항목 익스포트(
 익스포트(src/lib/export/)는 v1 이 닫혔다 — 워크스페이스 전체는 소유자만이다(§3.2-13, 다시
 판단하지 마라). 남은 것(잡 · 감사 로그 · security_policy 게이트 · HTML · PDF)은 §7.
 
-지금은 CRDT 동시편집(마스터 문서 §5.2 의 2번 — 착수 순서는 고정이다)을 조각으로 나눠 진행 중이다.
-HANDOFF §2 의 CRDT 조각 표와 그 아래 근거를 먼저 읽어라. 1조각(Y.Doc 본문 계약 · 정규화) ·
-2조각(doc_update 로그 저장소)이 끝났다.
-  - 다음은 3조각: y-prosemirror 연쇄 삭제 막기(§7 의 후보 ⓐ ⓑ 중에서 판결) · 멘션 · 수식 서식.
-    ydoc.test.ts ④ 의 위험 고정 검사는 위험이 풀리면 실패한다 — 그때 그 검사를 고치고 §7 을 갱신한다
-  - ⚠ y-prosemirror 변환은 구조 위반을 만나면 Y 요소를 지운다 — 타입 동시 변경 하나가 본문을
-    통째로 지운다. 동시에 쓰는 참여자(서버 명령 · 협업 서버 · 에디터 바인딩)가 생기기 전에 막는다(§7)
+지금은 CRDT 동시편집(마스터 문서 §5.2 의 2번 — 착수 순서는 고정이다)을 6조각으로 나눠 진행 중이다.
+HANDOFF §2 의 CRDT 조각 표 · 순서 근거 · "N조각에서 확인한 것"을 먼저 읽어라.
+
+끝난 것 — 둘 다 **아직 어떤 경로도 부르지 않는다**(앱 동작은 Phase 0 그대로, 행이 정본):
+  - 1조각(#66) src/lib/collab/ydoc.ts · normalize.ts — Y.Doc 본문 계약 · 동시 편집이 만든 구조 위반 정규화
+  - 2조각(#67) src/lib/collab/doc-store.ts — doc_update 로그(append · 페이지 안 seq · 압축 · Phase 0 페이지 옮기기)
+
+다음 작업은 **3조각 — 동시에 쓰는 참여자(서버 명령 · 협업 서버 · 에디터)를 붙이기 전의 전제 조건**이다(§7 앞쪽).
+  ① y-prosemirror 연쇄 삭제 막기.
+     y-prosemirror 의 Y.Doc → ProseMirror 변환(ySyncPlugin · initProseMirrorDoc)은 노드를
+     Schema.node = createChecked 로 만들다 던지면 **그 Y 요소를 원본 Y.Doc 에서 지운다.**
+     타입 동시 변경 하나가 컨테이너 → 루트 그룹까지 지운다 = 본문 전체 삭제(ydoc.test.ts ④ 가 고정).
+     §7 의 후보 중에서 판결하고 §3.2 에 근거와 함께 남긴다:
+       ⓐ 스키마 카디널리티를 푼다(doc: blockGroup* · blockGroup: blockContainer* ·
+          blockContainer: blockContent* blockGroup*) + normalizeBody 를 appendTransaction 으로 돌린다.
+          명령들이 `+` 에 기대는 곳부터 찾는다(block-selection.ts 의 blockDeletionRanges 등, §6)
+       ⓑ 변환을 감싸 지우지 않게 한다 — 그 함수(createNodeFromYElement)는 패키지 exports 밖이다
+     위험 고정 검사는 위험이 풀리면 실패한다 — 그 검사를 "막았다"는 검사로 바꾸고 반사실로 증명한다
+  ② 멘션 · 수식에 건 서식이 Y.Doc 에 실리지 않는다(y-prosemirror 가 요소 노드의 마크를 싣지 않는다).
+     ydoc.test.ts ④ 의 손실 고정 검사도 풀리면 실패한다
+  ③ 착수 전에 읽을 것: 05-collaboration-sync.md F-05-01 · F-05-15 · 01-block-editor.md F-01-17 ·
+     src/lib/editor/schema.ts 머리말 · src/lib/collab/ydoc.ts · normalize.ts 머리말 ·
+     node_modules/y-prosemirror/src/plugins/sync-plugin.js(createNodeFromYElement · updateYFragment)
+
+지켜야 할 것:
   - 4조각 전까지 어떤 경로도 Y.Doc 을 쓰지 않는다. 4조각은 정본을 넘기며 행을 직접 고치는 경로
-    전부와 **함께** 와야 한다 — 반쯤 넘기면 프로젝터가 그 행을 지운다
-  - Y.Doc 은 src/lib/collab/ydoc.ts 의 readBodyYDoc 으로만 읽는다(initProseMirrorDoc 으로 읽지 마라)
+    (createPage 의 참조 삽입 · 휴지통 · 복원 · 이동 · PUT body) 전부와 **함께** 와야 한다 —
+    반쯤 넘기면 프로젝터가 그 행을 지운다
+  - Y.Doc 은 readBodyYDoc 으로만 읽는다(initProseMirrorDoc 으로 읽지 마라 — 지운다)
+  - 로그는 appendDocUpdate 로만 쓴다. "바뀌었는가"를 state vector 로 판정하지 마라 —
+    지우기만 하는 update 는 state vector 를 바꾸지 않는다(§3.3-85)
+  - 동시 편집 검사는 src/lib/testing/collab-peers.ts(peer · edit · exchange · changesSince)로
+    에디터 없이 흉내 낸다. client id 를 고정하면 결정론이다. edit 은 편집 전 문서가 올바를 때만 쓴다
 
 W8 이 남긴 빈자리(HANDOFF §2 · §7) — Phase 1 과 부딪히면 먼저 본다:
   - select 정렬(옵션 id 로 정렬된다 → 화면에서 뺐다) · 행 페이지 열기 ·
@@ -822,6 +848,17 @@ PR 본문에는 "왜 이렇게 했는가"를 쓴다 — 정본과 다르게 한 
   머지가 권한 분류기에 막혔고 그 뒤 단독 머지(#59~#63)는 통과했다 — 원인은 확인하지 못했다.
   막히면 우회하지 말고 사용자에게 알린다. 권한 규칙 파일(.claude/settings*.json)은
   에이전트가 쓰면 "자기 권한 수정"으로 막힌다 — 사용자가 /permissions 로 넣는다
+- **라이브러리 동작을 기억으로 가정하지 마라.** CRDT 1조각에서 "y-prosemirror 변환은 검사하지 않는
+  create 를 쓴다"고 가정하고 주석까지 썼다가 틀렸다(createChecked + 지우기, §3.3-82). 검사가 이상하게
+  실패하면 추측하지 말고 저장소 안에 임시 진단 스크립트(`*.test.ts` 가 아닌 이름, 예: src/lib/collab/_debug.ts)
+  를 만들어 실제 상태(Y XML 등)를 찍어 본다 — 끝나면 지운다
+- **동시성 검사는 경쟁을 강제한다.** 그냥 Promise.all 로 부르면 먼저 커밋한 쪽을 나머지가 읽어 경쟁이
+  일어나지 않는다 — 2조각에서 반사실이 통과해서 알았다. 표 잠금 + pg_locks 로 대기 확인 뒤 풀기(§3.3-88)
+- DB 를 쓰는 반사실 변형은 **3개씩만** 동시에 돌린다 — 변형마다 커넥션 풀을 열어 Postgres 접속 한도(100)를 넘는다
+- PowerShell 5.1: 네이티브 명령에 `2>&1` 을 붙이면 `$?` 가 거짓이 된다. `git push … 2>&1 | …; if ($?) { gh pr create … }`
+  로 이어 붙였다가 PR 이 조용히 안 만들어졌다 — stderr 는 묶지 않는다(도구가 이미 받는다)
+- PowerShell 5.1: `gh … --json … | ConvertFrom-Json | Where-Object {…}` 는 배열이 **한 덩어리로** 흘러 걸러지지
+  않는다. `| ForEach-Object { $_ } | Where-Object {…}` 로 풀어서 거른다
 ```
 
 ---
