@@ -10,15 +10,15 @@
  */
 
 import * as Y from 'yjs'
-import { initProseMirrorDoc, updateYFragment, ySyncPlugin } from 'y-prosemirror'
+import { ySyncPlugin } from 'y-prosemirror'
 import { EditorState, type Plugin, type PluginView, type Transaction } from '@tiptap/pm/state'
 import type { Node as PmNode, Schema } from '@tiptap/pm/model'
 import type { EditorView } from '@tiptap/pm/view'
 
+import { writeEditorChange, type EditorChange } from '../collab/body-edit.ts'
 import { collabSchema } from '../collab/collab-schema.ts'
 import { BODY_FRAGMENT } from '../collab/ydoc.ts'
 import { atomMarksPlugin } from '../editor/atom-marks.ts'
-import { blockSchema } from '../editor/schema.ts'
 
 /** `source` 의 상태로 시작하는 참여자. */
 export function peer(source: Y.Doc, clientId: number): Y.Doc {
@@ -28,16 +28,9 @@ export function peer(source: Y.Doc, clientId: number): Y.Doc {
   return ydoc
 }
 
-/** 에디터가 하는 쓰기 — ProseMirror 트랜잭션을 만들어 Y.Doc 에 옮긴다. */
-export function edit(ydoc: Y.Doc, change: (tr: Transaction, doc: PmNode) => void): void {
-  const fragment = ydoc.getXmlFragment(BODY_FRAGMENT)
-  const { doc, meta } = initProseMirrorDoc(fragment, collabSchema)
-  // 에디터처럼 서식 거울 플러그인을 거친 문서를 옮긴다(`editor/atom-marks.ts`).
-  const state = EditorState.create({ schema: blockSchema, doc, plugins: [atomMarksPlugin()] })
-  const tr = state.tr
-  change(tr, doc)
-  const next = state.apply(tr).doc
-  ydoc.transact(() => updateYFragment(ydoc, fragment, next, meta), 'editor')
+/** 에디터가 하는 쓰기 — 서버 명령 경로와 같은 함수로 Y.Doc 에 옮긴다(`collab/body-edit.ts`). */
+export function edit(ydoc: Y.Doc, change: EditorChange): void {
+  writeEditorChange(ydoc, change, 'editor')
 }
 
 export type FoundBlock = { readonly pos: number; readonly node: PmNode }

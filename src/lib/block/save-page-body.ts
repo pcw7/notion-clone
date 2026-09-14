@@ -249,295 +249,323 @@ export async function savePageBody(
       return { ok: false, reason: 'version_conflict', currentVersion: page.version } as const
     }
 
-    const scope = await readScope(tx, ctx, pageId)
-    const projection = projectDocument(pageId, page.ancestor_path, doc)
-
-    // ── 자식 페이지 정합성 ────────────────────────────────────────────
-    const docIds = new Set(projection.blocks.map((b) => b.id))
-    const livePageRefs = scope.filter((r) => r.type === PAGE_TYPE && r.lifecycle === 'live')
-
-    const missing = livePageRefs.filter((r) => !docIds.has(r.id)).map((r) => r.id)
-    if (missing.length > 0) {
-      // 낡은 탭이 하위 페이지를 지워버리는 경로를 만들지 않는다.
-      return { ok: false, reason: 'page_ref_missing', missing } as const
-    }
-
-    // ── 자리를 옮긴 자식 페이지 ───────────────────────────────────────
-    //
-    // 하위 페이지를 토글 안으로 끌어다 놓는 것 같은 조작이다. 부모가 바뀌면
-    // `order_key` 만 고쳐서는 안 되고 **그 페이지 서브트리 전체의
-    // `ancestor_path` 와 `perm_scope_id`** 를 다시 써야 한다 [X-7 / §3.11 ④].
-    // 방치하면 정확히 X-7 이 경계한 "권한이 조용히 틀어지는" 상태가 된다.
-    //
-    // 그 일은 `move-page.ts` 의 `relocateSubtree` 가 이미 한다. 여기서 다시
-    // 구현하지 않고 부른다 — 두 벌이면 한쪽만 고쳐져 어긋난다.
-    const currentParentOf = new Map(scope.map((r) => [r.id, r.parent_id]))
-    const pageRefMoves = projection.blocks.filter(
-      (b) => b.type === PAGE_TYPE && currentParentOf.get(b.id) !== b.parentId,
-    )
-
-    // ── order_key 재할당 (문서 밖 형제를 피한다) ──────────────────────
-    const occupiedByParent = new Map<string, Set<string>>()
-    for (const row of scope) {
-      if (docIds.has(row.id)) continue
-      if (row.type !== PAGE_TYPE) continue // 본문 블록은 지워질 것이므로 비켜줄 필요가 없다
-      const set = occupiedByParent.get(row.parent_id) ?? new Set<string>()
-      set.add(row.order_key)
-      occupiedByParent.set(row.parent_id, set)
-    }
-
-    const targets = withReassignedKeys(projection.blocks, occupiedByParent)
-
-    // ── 차집합 ────────────────────────────────────────────────────────
-    const existing = new Map(scope.map((r) => [r.id, r]))
-    const toDelete = scope
-      .filter((r) => !docIds.has(r.id) && r.type !== PAGE_TYPE)
-      .map((r) => r.id)
-
-    const toInsert: ProjectedBlock[] = []
-    const toUpdate: ProjectedBlock[] = []
-    const keyChanges: ProjectedBlock[] = []
-
-    for (const target of targets) {
-      const row = existing.get(target.id)
-      if (!row) {
-        toInsert.push(target)
-        continue
-      }
-      // ★ "키가 바뀌는 행"이 아니라 **(부모, 키) 자리가 바뀌는 행**이다.
-      // 키는 위치로 결정론적으로 매겨지므로(a0, a1, …) 루트 첫 블록을 다른 블록의
-      // 첫 자식으로 옮기면 키 문자열은 a0 그대로이고 부모만 바뀐다. 키만 비교하면
-      // 이 행은 임시 키로 비켜나지 않고 옛 자리 (옛 부모, a0) 에 남는데, 그 자리로
-      // 들어오는 형제의 UPDATE 가 먼저 돌면 UNIQUE 에 걸린다. 드래그(F-01-08)의
-      // "자식 드롭"이 처음 밟았다 — Tab/Shift+Tab 은 우연히 늘 키도 바뀌었다.
-      if (row.order_key !== target.orderKey || row.parent_id !== target.parentId) {
-        keyChanges.push(target)
-      }
-      if (row.type === PAGE_TYPE) {
-        // 자식 페이지는 순서(그리고 필요하면 부모)만. 내용은 그 페이지의 것이다.
-        continue
-      }
-      const changed =
-        row.type !== target.type ||
-        row.parent_id !== target.parentId ||
-        row.order_key !== target.orderKey ||
-        stableJson(row.ancestor_path) !== stableJson(target.ancestorPath) ||
-        stableJson(row.properties ?? {}) !== stableJson(target.properties) ||
-        stableJson(row.format ?? {}) !== stableJson(target.format)
-      if (changed) toUpdate.push(target)
-    }
-
-    // ── 쓰기 ──────────────────────────────────────────────────────────
-    //
-    // 순서가 중요하다. `ux_block_sibling_order` 는 `CREATE UNIQUE INDEX` 로
-    // 만든 **지연 불가** 제약이라, 한 UPDATE 안에서 두 형제의 키를 맞바꾸면
-    // 중간 상태에서 충돌한다. 그래서 네 단계로 나눈다.
-    //
-    //   ① 사라진 본문 블록을 지운다        — 키가 비워진다
-    //   ② 키가 바뀌는 행을 임시 키로 옮긴다 — id 기반이라 서로 충돌하지 않고,
-    //                                         '~' 로 시작해 최종 키와도 겹치지 않는다
-    //   ③ 새 행을 최종 키로 넣는다
-    //   ④ ②의 행을 최종 키로 옮긴다
-
-    if (toDelete.length > 0) {
-      await tx.query(`DELETE FROM block WHERE id = ANY($1::uuid[]) AND workspace_id = $2`, [
-        toDelete,
-        ctx.workspaceId,
-      ])
-    }
-
-    // 자리를 옮기는 자식 페이지도 임시 키로 비켜둔다. 최종 키를 바로 쓰면
-    // 새 형제 그룹에서 아직 임시 키로 옮겨지지 않은 행과 충돌할 수 있다.
-    const tempKeyIds = [...new Set([...keyChanges, ...pageRefMoves].map((b) => b.id))]
-    if (tempKeyIds.length > 0) {
-      await tx.query(
-        `UPDATE block SET order_key = '~' || id::text
-          WHERE id = ANY($1::uuid[]) AND workspace_id = $2`,
-        [tempKeyIds, ctx.workspaceId],
-      )
-    }
-
-    // 개별 문장으로 쓴다. 위의 차집합 계산 덕분에 아무것도 안 바뀐 저장은
-    // 여기서 0건이 되고, 보통의 타이핑은 1~3건이다. 한 페이지를 통째로 새로
-    // 만드는 경우에만 블록 수만큼 문장이 나가는데, 그때가 문제가 되면
-    // unnest 배치로 바꾼다 (§9-Q1 의 관측 대상).
-    for (const b of toInsert) {
-      await tx.query(
-        `INSERT INTO block (
-           id, workspace_id, type, parent_type, parent_id, order_key,
-           ancestor_path, perm_scope_id, properties, format,
-           created_by, created_at, last_edited_by, last_edited_at
-         ) VALUES ($1, $2, $3, 'block', $4, $5, $6::uuid[], $7, $8::jsonb, $9::jsonb,
-                   $10, now(), $10, now())`,
-        [
-          b.id,
-          ctx.workspaceId,
-          b.type,
-          b.parentId,
-          b.orderKey,
-          b.ancestorPath,
-          page.perm_scope_id,
-          JSON.stringify(b.properties),
-          JSON.stringify(b.format),
-          ctx.userId,
-        ],
-      )
-    }
-
-    for (const b of toUpdate) {
-      await tx.query(
-        `UPDATE block
-            SET type = $3, parent_id = $4, order_key = $5, ancestor_path = $6::uuid[],
-                properties = $7::jsonb, format = $8::jsonb,
-                last_edited_by = $9, last_edited_at = now()
-          WHERE id = $1 AND workspace_id = $2`,
-        [
-          b.id,
-          ctx.workspaceId,
-          b.type,
-          b.parentId,
-          b.orderKey,
-          b.ancestorPath,
-          JSON.stringify(b.properties),
-          JSON.stringify(b.format),
-          ctx.userId,
-        ],
-      )
-    }
-
-    // ── 자리를 옮긴 자식 페이지: 서브트리째 재배치 ────────────────────
-    //
-    // `relocateSubtree` 가 `ancestor_path` · `perm_scope_id` · `version` 을
-    // 서브트리 전체에 다시 쓴다. 우리가 계산한 `order_key` 를 넘겨서
-    // 문서 위치가 그대로 반영되게 한다.
-    //
-    // 사이클은 있을 수 없다 — 대상은 **이 페이지의 문서 안 블록**이고, 그 블록이
-    // 옮겨지는 자식 페이지의 자손일 수는 없다(자식 페이지의 본문은 별도 문서다).
-    // 그래서 `relocateSubtree` 가 던질 수 있는 것은 깊이 초과뿐이다.
-    const movedPageIds = new Set(pageRefMoves.map((b) => b.id))
-    for (const b of pageRefMoves) {
-      const row = existing.get(b.id)
-      if (!row) continue
-      const parentRow = b.parentId === pageId ? null : existing.get(b.parentId)
-
-      try {
-        await relocateSubtree(
-          tx,
-          ctx,
-          {
-            id: row.id,
-            parent_type: 'block',
-            parent_id: row.parent_id,
-            ancestor_path: row.ancestor_path,
-            perm_scope_id: row.perm_scope_id,
-          },
-          {
-            id: b.parentId,
-            type: parentRow?.type ?? 'page',
-            ancestor_path: b.ancestorPath.slice(0, -1),
-            perm_scope_id: page.perm_scope_id,
-          },
-          b.orderKey,
-        )
-      } catch (e) {
-        if (e instanceof MoveError && e.code === 'too_deep') {
-          return { ok: false, reason: 'page_ref_too_deep', pageId: b.id, message: e.message } as const
-        }
-        throw e
-      }
-    }
-
-    // 남은 자식 페이지(순서만 바뀐 것)는 임시 키에 있다. 키만 확정한다.
-    const updatedIds = new Set(toUpdate.map((b) => b.id))
-    for (const b of keyChanges) {
-      if (updatedIds.has(b.id) || movedPageIds.has(b.id)) continue
-      await tx.query(
-        `UPDATE block SET order_key = $3 WHERE id = $1 AND workspace_id = $2`,
-        [b.id, ctx.workspaceId, b.orderKey],
-      )
-    }
-
-    // ── 파일 참조 카운트 ──────────────────────────────────────────────
-    //
-    // 정본 F-01-15: *"같은 파일을 여러 블록이 참조 → 참조 카운트로 물리 삭제
-    // 제어"*, 불변식 FS1: *"`ref_count > 0` 인 객체를 지우지 않는다."*
-    //
-    // **이 트랜잭션 안에서 한다.** 블록을 넣고 카운트를 나중에 올리면 그 사이에
-    // GC 가 도는 순간 방금 붙인 이미지의 바이트가 사라진다.
-    //
-    // 자식 페이지는 양쪽 모두에서 뺀다. 그 행의 properties 는 그 페이지의
-    // 것이고 이 프로젝터가 쓰지 않으므로, 한쪽에만 세면 저장할 때마다 같은 값이
-    // 올라가거나 내려간다.
-    const before = countFileReferences(scope.filter((r) => r.type !== PAGE_TYPE))
-    const after = countFileReferences(
-      projection.blocks.filter((b) => b.type !== PAGE_TYPE).map((b) => ({ properties: b.properties })),
-    )
-    for (const [fileId, delta] of fileReferenceDelta(before, after)) {
-      // 워크스페이스로 한정한다 — 다른 워크스페이스의 파일 id 를 문서에 적어
-      // 넣어도 그 카운터는 움직이지 않는다(그 이미지는 어차피 보이지 않는다).
-      //
-      // 내릴 때 `GREATEST(…, 0)` 로 바닥을 둔다. 장부가 어긋났을 때 저장을
-      // 실패시키는 쪽이 더 나빠 보이지만 — 사용자는 자기가 쓴 글을 잃고,
-      // 얻는 것은 GC 힌트의 정확도뿐이다. 어긋나면 **덜 지우는 쪽**으로
-      // 기울게 둔다(FS1 이 지키려는 것이 그 방향이다).
-      await tx.query(
-        `UPDATE file SET ref_count = GREATEST(ref_count + $3, 0)
-          WHERE id = $1 AND workspace_id = $2`,
-        [fileId, ctx.workspaceId, delta],
-      )
-    }
-
-    const wroteSomething =
-      toDelete.length > 0 ||
-      toInsert.length > 0 ||
-      toUpdate.length > 0 ||
-      keyChanges.length > 0 ||
-      pageRefMoves.length > 0
-
-    // X-6: `block.version` 은 페이지 단위 단조 변경 카운터이고 검색 인덱스의
-    // external version 이다. **바뀐 게 없으면 올리지 않는다** — 올리면
-    // 인덱서가 같은 내용을 계속 다시 읽는다.
-    let version = page.version
-    if (wroteSomething) {
-      const bumped = await tx.queryOne<{ version: string }>(
-        `UPDATE block
-            SET version = version + 1, last_edited_by = $2, last_edited_at = now()
-          WHERE id = $1
-          RETURNING version`,
-        [pageId, ctx.userId],
-      )
-      version = bumped.version
-    }
-
-    // ── 검색 색인 ─────────────────────────────────────────────────────
-    //
-    // W7 / F-07-06. **같은 트랜잭션에서 동기로** 쓴다 — v0 대안이 "트랜잭션 안에서
-    // 자동 갱신되므로 파이프라인·지연·정합성 문제가 전부 사라진다"고 한 그 지점이다.
-    //
-    // `projection.blocks` 를 그대로 쓴다. 방금 쓴 내용이 메모리에 문서 순서로
-    // 있으므로 DB 를 다시 읽지 않는다 — 다시 읽으면 같은 사실의 출처가 둘이 되고,
-    // 스니펫 순서가 문서 순서와 어긋날 수 있다.
-    //
-    // **쓰기가 없었어도 쓴다.** 저장이 쓰기 0건인 경우는 문서가 그대로인 경우지만,
-    // 색인 텍스트가 비어 있는 경우(마이그레이션 0012 의 백필 행)가 여기 섞인다.
-    // 그때 건너뛰면 그 페이지는 한 번도 저장 내용이 바뀌지 않는 한 영원히 검색되지
-    // 않는다. 텍스트 UPDATE 1건은 싸다.
-    await indexPageText(tx, pageId, {
-      title: plainTitleOf(page.properties),
-      blocks: projection.blocks,
-    })
-
-    return {
-      ok: true,
-      version,
-      writes: {
-        inserted: toInsert.length,
-        updated: toUpdate.length,
-        deleted: toDelete.length,
-        reordered: keyChanges.length,
-      },
-    } as const
+    return projectBodyRows(tx, ctx, page, doc)
   })
+}
+
+/** 프로젝터가 받는 페이지 행 — 호출자가 같은 트랜잭션에서 `FOR UPDATE` 로 잡은 것. */
+export type ProjectablePage = {
+  readonly id: string
+  readonly ancestor_path: string[]
+  readonly perm_scope_id: string
+  readonly version: string
+  readonly properties: { title?: unknown } | null
+}
+
+export type ProjectBodyResult = Extract<SaveBodyResult, { ok: true }> | Extract<SaveBodyResult, { reason: 'page_ref_missing' | 'page_ref_too_deep' }>
+
+/**
+ * 문서를 이 페이지의 `block` 행으로 투영한다 — **프로젝터**(머리말).
+ *
+ * 권한 · 버전 검사 · 페이지 행 잠금은 호출자가 이미 했다. `savePageBody` 에서 떼어 냈을 뿐 동작은 같다
+ * (CRDT 4a조각). 4b조각이 상류를 Y.Doc 으로 바꾸면 서버 명령들이 본문 세션의 결과(`readBodyYDoc`)를 이 함수에
+ * 넘긴다 — 머리말의 "Phase 1 에서 바뀌는 것은 상류뿐이다".
+ */
+export async function projectBodyRows(
+  tx: Tx,
+  ctx: SessionContext,
+  page: ProjectablePage,
+  doc: EditorDoc,
+): Promise<ProjectBodyResult> {
+  const pageId = page.id
+  const scope = await readScope(tx, ctx, pageId)
+  const projection = projectDocument(pageId, page.ancestor_path, doc)
+
+  // ── 자식 페이지 정합성 ────────────────────────────────────────────
+  const docIds = new Set(projection.blocks.map((b) => b.id))
+  const livePageRefs = scope.filter((r) => r.type === PAGE_TYPE && r.lifecycle === 'live')
+
+  const missing = livePageRefs.filter((r) => !docIds.has(r.id)).map((r) => r.id)
+  if (missing.length > 0) {
+    // 낡은 탭이 하위 페이지를 지워버리는 경로를 만들지 않는다.
+    return { ok: false, reason: 'page_ref_missing', missing } as const
+  }
+
+  // ── 자리를 옮긴 자식 페이지 ───────────────────────────────────────
+  //
+  // 하위 페이지를 토글 안으로 끌어다 놓는 것 같은 조작이다. 부모가 바뀌면
+  // `order_key` 만 고쳐서는 안 되고 **그 페이지 서브트리 전체의
+  // `ancestor_path` 와 `perm_scope_id`** 를 다시 써야 한다 [X-7 / §3.11 ④].
+  // 방치하면 정확히 X-7 이 경계한 "권한이 조용히 틀어지는" 상태가 된다.
+  //
+  // 그 일은 `move-page.ts` 의 `relocateSubtree` 가 이미 한다. 여기서 다시
+  // 구현하지 않고 부른다 — 두 벌이면 한쪽만 고쳐져 어긋난다.
+  const currentParentOf = new Map(scope.map((r) => [r.id, r.parent_id]))
+  const pageRefMoves = projection.blocks.filter(
+    (b) => b.type === PAGE_TYPE && currentParentOf.get(b.id) !== b.parentId,
+  )
+
+  // ── order_key 재할당 (문서 밖 형제를 피한다) ──────────────────────
+  const occupiedByParent = new Map<string, Set<string>>()
+  for (const row of scope) {
+    if (docIds.has(row.id)) continue
+    if (row.type !== PAGE_TYPE) continue // 본문 블록은 지워질 것이므로 비켜줄 필요가 없다
+    const set = occupiedByParent.get(row.parent_id) ?? new Set<string>()
+    set.add(row.order_key)
+    occupiedByParent.set(row.parent_id, set)
+  }
+
+  const targets = withReassignedKeys(projection.blocks, occupiedByParent)
+
+  // ── 차집합 ────────────────────────────────────────────────────────
+  const existing = new Map(scope.map((r) => [r.id, r]))
+  const toDelete = scope
+    .filter((r) => !docIds.has(r.id) && r.type !== PAGE_TYPE)
+    .map((r) => r.id)
+
+  const toInsert: ProjectedBlock[] = []
+  const toUpdate: ProjectedBlock[] = []
+  const keyChanges: ProjectedBlock[] = []
+
+  for (const target of targets) {
+    const row = existing.get(target.id)
+    if (!row) {
+      toInsert.push(target)
+      continue
+    }
+    // ★ "키가 바뀌는 행"이 아니라 **(부모, 키) 자리가 바뀌는 행**이다.
+    // 키는 위치로 결정론적으로 매겨지므로(a0, a1, …) 루트 첫 블록을 다른 블록의
+    // 첫 자식으로 옮기면 키 문자열은 a0 그대로이고 부모만 바뀐다. 키만 비교하면
+    // 이 행은 임시 키로 비켜나지 않고 옛 자리 (옛 부모, a0) 에 남는데, 그 자리로
+    // 들어오는 형제의 UPDATE 가 먼저 돌면 UNIQUE 에 걸린다. 드래그(F-01-08)의
+    // "자식 드롭"이 처음 밟았다 — Tab/Shift+Tab 은 우연히 늘 키도 바뀌었다.
+    if (row.order_key !== target.orderKey || row.parent_id !== target.parentId) {
+      keyChanges.push(target)
+    }
+    if (row.type === PAGE_TYPE) {
+      // 자식 페이지는 순서(그리고 필요하면 부모)만. 내용은 그 페이지의 것이다.
+      continue
+    }
+    const changed =
+      row.type !== target.type ||
+      row.parent_id !== target.parentId ||
+      row.order_key !== target.orderKey ||
+      stableJson(row.ancestor_path) !== stableJson(target.ancestorPath) ||
+      stableJson(row.properties ?? {}) !== stableJson(target.properties) ||
+      stableJson(row.format ?? {}) !== stableJson(target.format)
+    if (changed) toUpdate.push(target)
+  }
+
+  // ── 쓰기 ──────────────────────────────────────────────────────────
+  //
+  // 순서가 중요하다. `ux_block_sibling_order` 는 `CREATE UNIQUE INDEX` 로
+  // 만든 **지연 불가** 제약이라, 한 UPDATE 안에서 두 형제의 키를 맞바꾸면
+  // 중간 상태에서 충돌한다. 그래서 네 단계로 나눈다.
+  //
+  //   ① 사라진 본문 블록을 지운다        — 키가 비워진다
+  //   ② 키가 바뀌는 행을 임시 키로 옮긴다 — id 기반이라 서로 충돌하지 않고,
+  //                                         '~' 로 시작해 최종 키와도 겹치지 않는다
+  //   ③ 새 행을 최종 키로 넣는다
+  //   ④ ②의 행을 최종 키로 옮긴다
+
+  if (toDelete.length > 0) {
+    await tx.query(`DELETE FROM block WHERE id = ANY($1::uuid[]) AND workspace_id = $2`, [
+      toDelete,
+      ctx.workspaceId,
+    ])
+  }
+
+  // 자리를 옮기는 자식 페이지도 임시 키로 비켜둔다. 최종 키를 바로 쓰면
+  // 새 형제 그룹에서 아직 임시 키로 옮겨지지 않은 행과 충돌할 수 있다.
+  const tempKeyIds = [...new Set([...keyChanges, ...pageRefMoves].map((b) => b.id))]
+  if (tempKeyIds.length > 0) {
+    await tx.query(
+      `UPDATE block SET order_key = '~' || id::text
+        WHERE id = ANY($1::uuid[]) AND workspace_id = $2`,
+      [tempKeyIds, ctx.workspaceId],
+    )
+  }
+
+  // 개별 문장으로 쓴다. 위의 차집합 계산 덕분에 아무것도 안 바뀐 저장은
+  // 여기서 0건이 되고, 보통의 타이핑은 1~3건이다. 한 페이지를 통째로 새로
+  // 만드는 경우에만 블록 수만큼 문장이 나가는데, 그때가 문제가 되면
+  // unnest 배치로 바꾼다 (§9-Q1 의 관측 대상).
+  for (const b of toInsert) {
+    await tx.query(
+      `INSERT INTO block (
+         id, workspace_id, type, parent_type, parent_id, order_key,
+         ancestor_path, perm_scope_id, properties, format,
+         created_by, created_at, last_edited_by, last_edited_at
+       ) VALUES ($1, $2, $3, 'block', $4, $5, $6::uuid[], $7, $8::jsonb, $9::jsonb,
+                 $10, now(), $10, now())`,
+      [
+        b.id,
+        ctx.workspaceId,
+        b.type,
+        b.parentId,
+        b.orderKey,
+        b.ancestorPath,
+        page.perm_scope_id,
+        JSON.stringify(b.properties),
+        JSON.stringify(b.format),
+        ctx.userId,
+      ],
+    )
+  }
+
+  for (const b of toUpdate) {
+    await tx.query(
+      `UPDATE block
+          SET type = $3, parent_id = $4, order_key = $5, ancestor_path = $6::uuid[],
+              properties = $7::jsonb, format = $8::jsonb,
+              last_edited_by = $9, last_edited_at = now()
+        WHERE id = $1 AND workspace_id = $2`,
+      [
+        b.id,
+        ctx.workspaceId,
+        b.type,
+        b.parentId,
+        b.orderKey,
+        b.ancestorPath,
+        JSON.stringify(b.properties),
+        JSON.stringify(b.format),
+        ctx.userId,
+      ],
+    )
+  }
+
+  // ── 자리를 옮긴 자식 페이지: 서브트리째 재배치 ────────────────────
+  //
+  // `relocateSubtree` 가 `ancestor_path` · `perm_scope_id` · `version` 을
+  // 서브트리 전체에 다시 쓴다. 우리가 계산한 `order_key` 를 넘겨서
+  // 문서 위치가 그대로 반영되게 한다.
+  //
+  // 사이클은 있을 수 없다 — 대상은 **이 페이지의 문서 안 블록**이고, 그 블록이
+  // 옮겨지는 자식 페이지의 자손일 수는 없다(자식 페이지의 본문은 별도 문서다).
+  // 그래서 `relocateSubtree` 가 던질 수 있는 것은 깊이 초과뿐이다.
+  const movedPageIds = new Set(pageRefMoves.map((b) => b.id))
+  for (const b of pageRefMoves) {
+    const row = existing.get(b.id)
+    if (!row) continue
+    const parentRow = b.parentId === pageId ? null : existing.get(b.parentId)
+
+    try {
+      await relocateSubtree(
+        tx,
+        ctx,
+        {
+          id: row.id,
+          parent_type: 'block',
+          parent_id: row.parent_id,
+          ancestor_path: row.ancestor_path,
+          perm_scope_id: row.perm_scope_id,
+        },
+        {
+          id: b.parentId,
+          type: parentRow?.type ?? 'page',
+          ancestor_path: b.ancestorPath.slice(0, -1),
+          perm_scope_id: page.perm_scope_id,
+        },
+        b.orderKey,
+      )
+    } catch (e) {
+      if (e instanceof MoveError && e.code === 'too_deep') {
+        return { ok: false, reason: 'page_ref_too_deep', pageId: b.id, message: e.message } as const
+      }
+      throw e
+    }
+  }
+
+  // 남은 자식 페이지(순서만 바뀐 것)는 임시 키에 있다. 키만 확정한다.
+  const updatedIds = new Set(toUpdate.map((b) => b.id))
+  for (const b of keyChanges) {
+    if (updatedIds.has(b.id) || movedPageIds.has(b.id)) continue
+    await tx.query(
+      `UPDATE block SET order_key = $3 WHERE id = $1 AND workspace_id = $2`,
+      [b.id, ctx.workspaceId, b.orderKey],
+    )
+  }
+
+  // ── 파일 참조 카운트 ──────────────────────────────────────────────
+  //
+  // 정본 F-01-15: *"같은 파일을 여러 블록이 참조 → 참조 카운트로 물리 삭제
+  // 제어"*, 불변식 FS1: *"`ref_count > 0` 인 객체를 지우지 않는다."*
+  //
+  // **이 트랜잭션 안에서 한다.** 블록을 넣고 카운트를 나중에 올리면 그 사이에
+  // GC 가 도는 순간 방금 붙인 이미지의 바이트가 사라진다.
+  //
+  // 자식 페이지는 양쪽 모두에서 뺀다. 그 행의 properties 는 그 페이지의
+  // 것이고 이 프로젝터가 쓰지 않으므로, 한쪽에만 세면 저장할 때마다 같은 값이
+  // 올라가거나 내려간다.
+  const before = countFileReferences(scope.filter((r) => r.type !== PAGE_TYPE))
+  const after = countFileReferences(
+    projection.blocks.filter((b) => b.type !== PAGE_TYPE).map((b) => ({ properties: b.properties })),
+  )
+  for (const [fileId, delta] of fileReferenceDelta(before, after)) {
+    // 워크스페이스로 한정한다 — 다른 워크스페이스의 파일 id 를 문서에 적어
+    // 넣어도 그 카운터는 움직이지 않는다(그 이미지는 어차피 보이지 않는다).
+    //
+    // 내릴 때 `GREATEST(…, 0)` 로 바닥을 둔다. 장부가 어긋났을 때 저장을
+    // 실패시키는 쪽이 더 나빠 보이지만 — 사용자는 자기가 쓴 글을 잃고,
+    // 얻는 것은 GC 힌트의 정확도뿐이다. 어긋나면 **덜 지우는 쪽**으로
+    // 기울게 둔다(FS1 이 지키려는 것이 그 방향이다).
+    await tx.query(
+      `UPDATE file SET ref_count = GREATEST(ref_count + $3, 0)
+        WHERE id = $1 AND workspace_id = $2`,
+      [fileId, ctx.workspaceId, delta],
+    )
+  }
+
+  const wroteSomething =
+    toDelete.length > 0 ||
+    toInsert.length > 0 ||
+    toUpdate.length > 0 ||
+    keyChanges.length > 0 ||
+    pageRefMoves.length > 0
+
+  // X-6: `block.version` 은 페이지 단위 단조 변경 카운터이고 검색 인덱스의
+  // external version 이다. **바뀐 게 없으면 올리지 않는다** — 올리면
+  // 인덱서가 같은 내용을 계속 다시 읽는다.
+  let version = page.version
+  if (wroteSomething) {
+    const bumped = await tx.queryOne<{ version: string }>(
+      `UPDATE block
+          SET version = version + 1, last_edited_by = $2, last_edited_at = now()
+        WHERE id = $1
+        RETURNING version`,
+      [pageId, ctx.userId],
+    )
+    version = bumped.version
+  }
+
+  // ── 검색 색인 ─────────────────────────────────────────────────────
+  //
+  // W7 / F-07-06. **같은 트랜잭션에서 동기로** 쓴다 — v0 대안이 "트랜잭션 안에서
+  // 자동 갱신되므로 파이프라인·지연·정합성 문제가 전부 사라진다"고 한 그 지점이다.
+  //
+  // `projection.blocks` 를 그대로 쓴다. 방금 쓴 내용이 메모리에 문서 순서로
+  // 있으므로 DB 를 다시 읽지 않는다 — 다시 읽으면 같은 사실의 출처가 둘이 되고,
+  // 스니펫 순서가 문서 순서와 어긋날 수 있다.
+  //
+  // **쓰기가 없었어도 쓴다.** 저장이 쓰기 0건인 경우는 문서가 그대로인 경우지만,
+  // 색인 텍스트가 비어 있는 경우(마이그레이션 0012 의 백필 행)가 여기 섞인다.
+  // 그때 건너뛰면 그 페이지는 한 번도 저장 내용이 바뀌지 않는 한 영원히 검색되지
+  // 않는다. 텍스트 UPDATE 1건은 싸다.
+  await indexPageText(tx, pageId, {
+    title: plainTitleOf(page.properties),
+    blocks: projection.blocks,
+  })
+
+  return {
+    ok: true,
+    version,
+    writes: {
+      inserted: toInsert.length,
+      updated: toUpdate.length,
+      deleted: toDelete.length,
+      reordered: keyChanges.length,
+    },
+  } as const
 }
 
 /**
