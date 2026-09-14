@@ -156,6 +156,21 @@ async function readScope(tx: Tx, ctx: SessionContext, pageId: string): Promise<S
   )
 }
 
+/**
+ * **이 트랜잭션에서** 페이지 본문을 행으로부터 읽는다. 권한은 호출자가 이미 확인했다.
+ *
+ * `loadPageBody` 와 Y.Doc 옮기기(`collab/doc-store.ts`)가 같은 규칙으로 읽는다 — 두 벌이면 "편집기에서 본
+ * 본문과 옮겨진 본문이 다른" 페이지가 생긴다. 옮기기는 Y.Doc 을 쓰는 트랜잭션 안에서 읽어야 하므로
+ * (따로 읽으면 그 사이의 저장이 빠진다) 트랜잭션을 받는다.
+ *
+ * 휴지통에 있는 자식 페이지는 문서에 넣지 않는다. 다만 그 키는 점유된 상태로 남아 있고(B2), 저장 시
+ * `assignSiblingKeys` 가 비켜간다.
+ */
+export async function readLiveBody(tx: Tx, ctx: SessionContext, pageId: string): Promise<EditorDoc> {
+  const scope = await readScope(tx, ctx, pageId)
+  return rowsToDoc(pageId, scope.filter((r) => r.lifecycle === 'live'))
+}
+
 // ── order_key 할당 ────────────────────────────────────────────────────
 
 /**
@@ -588,11 +603,6 @@ export async function loadPageBody(
     if (!page) return null
     if (!can(await effectiveCaps(tx, ctx, pageId), 'view')) return null
 
-    const scope = await readScope(tx, ctx, pageId)
-    // 휴지통에 있는 자식 페이지는 문서에 넣지 않는다. 다만 그 키는 점유된
-    // 상태로 남아 있고(B2), 저장 시 assignSiblingKeys 가 비켜간다.
-    const live = scope.filter((r) => r.lifecycle === 'live')
-
-    return { doc: rowsToDoc(pageId, live), version: page.version }
+    return { doc: await readLiveBody(tx, ctx, pageId), version: page.version }
   })
 }
