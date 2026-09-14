@@ -36,6 +36,18 @@
  *   - 쌓는 것은 받은 바이트가 아니라 **적용해서 실제로 바뀐 부분**(그 이벤트가 준 update)이다
  *
  * ──────────────────────────────────────────────────────────────────────
+ * 구조 위반은 여기서 한 번 고친다
+ * ──────────────────────────────────────────────────────────────────────
+ *
+ * 적용한 본문이 스키마를 어기면(동시 편집이 합쳐져서) 수선(`repair.ts`)까지 **같은 seq** 에 쌓는다. 수선을 쓰는
+ * 곳이 이 줄 선 append 하나라서 수선끼리 겹쳐 블록이 복제되지 않는다 — 참여자마다 고치면 복제된다.
+ *
+ *   - 수선은 보낸 쪽이 갖지 않은 변경이므로 돌려준다(`repair`). 협업 서버는 받은 update 와 함께 퍼뜨린다
+ *   - 따로 seq 를 주지 않았다 — 수선은 이 update 를 지금 본문에 적용한 결과의 일부이고, 정본 origin 6값에
+ *     "시스템 수선"이 없다. 그래서 수선의 actor · origin 은 그 update 를 보낸 쪽의 것이다
+ *   - 바뀐 것이 없는 append(재전송)는 고치지 않는다 — 고칠 것은 바뀐 append 가 이미 고쳤다
+ *
+ * ──────────────────────────────────────────────────────────────────────
  * Phase 0 페이지는 처음 읽을 때 한 번 옮긴다
  * ──────────────────────────────────────────────────────────────────────
  *
@@ -58,6 +70,7 @@ import { isUuid } from '../ids.ts'
 import { effectiveCaps } from '../permissions/effective.ts'
 import { can } from '../permissions/levels.ts'
 import { MAX_BODY_BYTES } from '../sync/outbox.ts'
+import { repairBodyYDoc } from './repair.ts'
 import { createBodyYDoc } from './ydoc.ts'
 
 /** 정본 `doc_update.origin` 의 CHECK 값. */
@@ -97,6 +110,11 @@ export type AppendDocResult =
       /** 쌓았으면 새 seq, 바뀐 것이 없어 쌓지 않았으면 지금의 마지막 seq. */
       readonly seq: string
       readonly appended: boolean
+      /**
+       * 합친 본문의 구조 위반을 고친 update — 같은 seq 에 함께 쌓였다. 보낸 쪽은 이것을 갖고 있지 않으므로
+       * 적용하고 다른 참여자에게 퍼뜨린다. 고칠 것이 없었으면 null.
+       */
+      readonly repair: Uint8Array | null
     }
   | { readonly ok: false; readonly reason: AppendFailure }
 
@@ -157,7 +175,12 @@ export async function appendDocUpdate(
     if (state.ydoc.store.pendingStructs !== null || state.ydoc.store.pendingDs !== null) {
       return { ok: false, reason: 'missing_dependencies' } as const
     }
-    if (changes.length === 0) return { ok: true, seq: state.seq, appended: false } as const
+    if (changes.length === 0) return { ok: true, seq: state.seq, appended: false, repair: null } as const
+
+    // 합친 결과가 구조를 어기면 같은 줄 안에서 고친다 — 수선을 쓰는 곳은 여기 하나다(머리말 · `repair.ts`).
+    const repaired = repairBodyYDoc(state.ydoc, pageId)
+    const repair = repaired.kind === 'repaired' ? repaired.update : null
+    if (repair !== null) changes.push(repair)
 
     const seq = String(BigInt(state.seq) + BigInt(1))
     await tx.query(
@@ -171,7 +194,7 @@ export async function appendDocUpdate(
       // 지금 들고 있는 Y.Doc 이 곧 seq 까지의 상태다 — 다시 읽을 필요가 없다.
       await writeSnapshot(tx, pageId, state.ydoc, seq)
     }
-    return { ok: true, seq, appended: true } as const
+    return { ok: true, seq, appended: true, repair } as const
   })
 }
 

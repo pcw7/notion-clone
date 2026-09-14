@@ -38,12 +38,16 @@
  *   - **던지지 않는다** — 모르는 노드는 결과에서 빼고(원본에는 남는다), 모르는 마크는 글자는 두고 서식만 뺀다
  *   - **결정론** — 수렴한 두 Y.Doc 은 새로 매긴 id 까지 같은 문서로 읽힌다
  *
+ * 바인딩이 쓰는 `collabSchema`(`collab-schema.ts`)로 변환하면 지우지는 않지만, 그 변환은 이 참여자가 만든
+ * 이웃 글자 요소를 합치며 Y.Doc 을 고친다(y-prosemirror #160 처리). 읽기는 원본을 바꾸면 안 되므로 여전히 직접 옮긴다.
+ *
  * ──────────────────────────────────────────────────────────────────────
- * 알고 있는 손실 · 위험 — 에디터를 Y.Doc 에 붙이기 전에 풀어야 한다 (HANDOFF §7)
+ * 알고 있는 손실 · 위험 (HANDOFF §7)
  * ──────────────────────────────────────────────────────────────────────
  *
- *   - **위의 연쇄 삭제는 에디터 바인딩(`ySyncPlugin`)에서는 원본 Y.Doc 에서 일어나고 모든 참여자에게
- *     퍼진다.** 동시 편집 한 번이 페이지 본문을 통째로 지울 수 있다
+ *   - 위의 연쇄 삭제는 에디터 바인딩(`ySyncPlugin`)에서는 원본 Y.Doc 에서 일어나고 모든 참여자에게 퍼진다 —
+ *     **바인딩 · 서버 쓰기 경로는 `collabSchema` 를 넘겨 막는다.** 구조 위반은 로그 저장소가 append 에서
+ *     한 번 고친다(`repair.ts`)
  *   - y-prosemirror 는 요소 노드를 옮길 때 attr 만 싣고 **마크를 싣지 않는다**(`createTypeFromElementNode`).
  *     멘션 · 수식에 건 서식은 Y.Doc 을 지나면 사라진다. 글자에 건 서식은 남는다
  *   - y-prosemirror 에는 "옮기기"가 없다. 순서를 바꾸면 요소를 제자리에서 고쳐 쓰므로, 둘이 동시에 순서를
@@ -86,9 +90,21 @@ export type BodyRead = {
  * @param pageId 이 Y.Doc 의 페이지. 정규화가 새 id 를 만들 때의 씨앗이다(`NormalizeOptions.seed`).
  */
 export function readBodyYDoc(ydoc: Y.Doc, pageId: string): BodyRead {
-  const root = blockSchema.nodes.doc.create(null, childrenToPm(ydoc.getXmlFragment(BODY_FRAGMENT)))
-  const normalized = normalizeBody(root, { seed: pageId })
+  const normalized = normalizeBody(readBodyPm(ydoc), { seed: pageId })
   return { doc: pmToDoc(normalized.doc), fixes: normalized.fixes }
+}
+
+/**
+ * Y.Doc → ProseMirror 문서, 고치지 않고. 구조 위반까지 Y.Doc 을 그대로 비춘다 — 스키마에 맞는다고 가정하지 마라.
+ * 모르는 노드 · 마크만 빠진다(머리말). 원본을 바꾸지 않고 던지지 않는다.
+ */
+export function readBodyPm(ydoc: Y.Doc): PmNode {
+  return blockSchema.nodes.doc.create(null, childrenToPm(ydoc.getXmlFragment(BODY_FRAGMENT)))
+}
+
+/** Y 글자 attr 의 키 → 마크 이름. y-prosemirror 가 겹칠 수 있는 마크에 붙이는 해시를 뗀다. */
+export function markNameOf(key: string): string {
+  return HASHED_MARK.exec(key)?.[1] ?? key
 }
 
 // ── Y 요소 → ProseMirror 노드 (검사하지 않는다) ─────────────────────────
@@ -132,7 +148,7 @@ const HASHED_MARK = /(.*)(--[a-zA-Z0-9+/=]{8})$/
 function marksOf(attributes: Record<string, unknown> | undefined): Mark[] {
   const marks: Mark[] = []
   for (const [key, value] of Object.entries(attributes ?? {})) {
-    const type = blockSchema.marks[HASHED_MARK.exec(key)?.[1] ?? key]
+    const type = blockSchema.marks[markNameOf(key)]
     // 모르는 마크 — 글자는 두고 서식만 뺀다. y-prosemirror 는 이때 글자까지 지운다.
     if (type === undefined) continue
     try {

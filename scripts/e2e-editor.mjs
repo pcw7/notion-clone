@@ -664,6 +664,15 @@ async function main() {
     check('슬래시 메뉴가 열린다', await waitFor(`!!document.querySelector('[role="listbox"][aria-label="블록 삽입"]')`, 2000))
 
     section('이미지 (F-01-15)')
+    // 앞 절의 `+` 가 만든 "/" 블록이 아직 저장 큐에 있으면, 아래에서 서버 본문을 덧붙이고 이동하는 순간 새 페이지가
+    // 큐의 문서(이미지가 없다)를 화면에 되살린다 — 서버 문서보다 새것으로 보기 때문이다(`page-sync.ts` 의 resume).
+    // 그러면 덧붙인 이미지 블록이 화면에 없다. main 에서도 이 절이 매번 이렇게 실패해 뒤의 절이 돌지 않았다.
+    // 큐가 빌 때까지(= 서버가 받고 확정할 때까지) 기다린 뒤에 덧붙인다.
+    check('앞 절의 편집이 저장 큐에서 비워졌다 — 서버 본문을 덧붙이기 전에', await waitFor(`(async () => {
+      const db = await new Promise((ok) => { const r = indexedDB.open('notion-clone-outbox', 1); r.onsuccess = () => ok(r.result) })
+      const rows = await new Promise((ok) => { const r = db.transaction('saves').objectStore('saves').getAll(); r.onsuccess = () => ok(r.result) })
+      return rows.length === 0
+    })()`, 15000))
     // 빈 이미지 블록 둘을 문서 끝에 붙인다 — 하나는 URL, 하나는 업로드용.
     // 문서를 통째로 바꾸지 않고 **덧붙인다**: 위에서 만든 하위 페이지가 빠지면
     // 저장이 거부된다(낡은 탭이 하위 페이지를 지우는 것을 막는 규칙).

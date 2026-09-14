@@ -10,6 +10,8 @@
  *   ③ **seq 는 빈틈 없이 1씩** — 동시에 들어온 append 여러 개도
  *   ④ **압축은 스냅샷만 새로 쓴다** — 로그를 처음부터 적용한 결과와 같고, 로그는 지우지 않는다(S1)
  *   ⑤ **권한** — 읽기는 view, 쓰기는 edit_content, 볼 수 없으면 없는 것과 같다
+ *   ⑥ **구조 위반은 append 가 한 번 고친다** — 수선을 같은 seq 에 쌓고 돌려준다 · 고친 뒤의 append 는 다시
+ *      고치지 않는다(옮긴 블록이 복제되지 않는다)
  *
  * 참여자의 편집은 `testing/collab-peers.ts` 로 흉내 낸다 — 에디터가 Y.Doc 에 쓰는 것과 같은 함수다.
  */
@@ -31,6 +33,7 @@ import { textRun } from '../contracts/rich-text.ts'
 import { getPool, query } from '../db/pool.ts'
 import type { EditorBlock, EditorDoc } from '../editor/document.ts'
 import { docToPm, pmToDoc } from '../editor/pm-adapter.ts'
+import { blockSchema } from '../editor/schema.ts'
 import { grantAccess, revokeAccess } from '../permissions/acl.ts'
 import { appendDocUpdate, loadDocState, MAX_DOC_UPDATE_BYTES, type DocState } from './doc-store.ts'
 import { readBodyYDoc } from './ydoc.ts'
@@ -193,14 +196,14 @@ describe('② append — 적용해 보고 쌓는다', () => {
     edit(client, insertAtStart(blockId, '앞 '))
     const update = changesSince(client, state.ydoc)
 
-    assert.deepEqual(await appendDocUpdate(owner.ctx, pageId, update, { origin: 'editor' }), { ok: true, seq: '2', appended: true })
+    assert.deepEqual(await appendDocUpdate(owner.ctx, pageId, update, { origin: 'editor' }), { ok: true, seq: '2', appended: true, repair: null })
     assert.deepEqual(textsOf(bodyOf(await load(owner, pageId), pageId)), ['앞 원문'])
     assert.deepEqual(
       (await logOf(pageId)).map((r) => [r.seq, r.origin, r.actor_id]),
       [['1', 'import', null], ['2', 'editor', owner.userId]],
     )
 
-    assert.deepEqual(await appendDocUpdate(owner.ctx, pageId, update, { origin: 'editor' }), { ok: true, seq: '2', appended: false })
+    assert.deepEqual(await appendDocUpdate(owner.ctx, pageId, update, { origin: 'editor' }), { ok: true, seq: '2', appended: false, repair: null })
     assert.equal((await logOf(pageId)).length, 2)
   })
 
@@ -212,7 +215,7 @@ describe('② append — 적용해 보고 쌓는다', () => {
     edit(client, insertAtStart(blockId, '새 '))
     const whole = Y.encodeStateAsUpdate(client) // 서버가 이미 가진 구조까지 전부 담았다
 
-    assert.deepEqual(await appendDocUpdate(owner.ctx, pageId, whole, { origin: 'editor' }), { ok: true, seq: '2', appended: true })
+    assert.deepEqual(await appendDocUpdate(owner.ctx, pageId, whole, { origin: 'editor' }), { ok: true, seq: '2', appended: true, repair: null })
     const [stored] = await query<{ payload: Buffer }>(`SELECT payload FROM doc_update WHERE page_id = $1 AND seq = 2`, [pageId])
     assert.deepEqual(
       [...new Set(Y.decodeUpdate(stored.payload).structs.map((s) => s.id.client))],
@@ -237,7 +240,7 @@ describe('② append — 적용해 보고 쌓는다', () => {
     )
 
     const result = await appendDocUpdate(owner.ctx, pageId, changesSince(client, state.ydoc), { origin: 'editor' })
-    assert.deepEqual(result, { ok: true, seq: '2', appended: true })
+    assert.deepEqual(result, { ok: true, seq: '2', appended: true, repair: null })
     assert.deepEqual(textsOf(bodyOf(await load(owner, pageId), pageId)), ['글자'])
   })
 
@@ -256,7 +259,7 @@ describe('② append — 적용해 보고 쌓는다', () => {
     assert.equal((await logOf(pageId)).length, 1)
 
     assert.equal((await appendDocUpdate(owner.ctx, pageId, first, { origin: 'editor' })).ok, true)
-    assert.deepEqual(await appendDocUpdate(owner.ctx, pageId, second, { origin: 'editor' }), { ok: true, seq: '3', appended: true })
+    assert.deepEqual(await appendDocUpdate(owner.ctx, pageId, second, { origin: 'editor' }), { ok: true, seq: '3', appended: true, repair: null })
     assert.deepEqual(textsOf(bodyOf(await load(owner, pageId), pageId)), ['가나원문'])
   })
 
@@ -357,5 +360,80 @@ describe('⑤ 권한', () => {
     const page = await mkPage(owner, '지울 페이지')
     await trashPage(owner.ctx, page.id as never)
     assert.deepEqual(await loadDocState(owner.ctx, page.id), { ok: false, reason: 'not_found' })
+  })
+})
+
+// ── ⑥ 수선 ────────────────────────────────────────────────────────────
+
+const allTexts = (doc: EditorDoc): string[] =>
+  doc.blocks.flatMap((b) => [b.title.map((r) => r.plain_text).join(''), ...allTexts({ blocks: b.children ?? [] })])
+
+describe('⑥ 구조 위반은 append 가 한 번 고친다', () => {
+  test('★ 합쳐서 스키마를 어기는 append 는 같은 seq 에 수선까지 쌓고 수선을 돌려준다 — 보낸 쪽이 받으면 같은 문서다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { owner } = await freshWorkspace()
+    const page = await mkPage(owner, '타입 충돌')
+    const [x, other] = [randomUUID(), randomUUID()]
+    await saveBody(owner, page.id, () => ({ blocks: [para('원문', x), para('옆', other)] }))
+    const state = await load(owner, page.id)
+
+    const setType = (type: string, props: Record<string, unknown>) => (tr: Transaction, doc: PmNode) => {
+      tr.setNodeMarkup(findBlock(doc, x).pos + 1, blockSchema.nodes[type], { props, format: {} })
+    }
+    const [a, b] = [peer(state.ydoc, 41), peer(state.ydoc, 42)]
+    edit(a, setType('heading_2', {}))
+    edit(b, setType('to_do', { checked: false }))
+    const [fromA, fromB] = [changesSince(a, state.ydoc), changesSince(b, state.ydoc)]
+
+    assert.deepEqual(await appendDocUpdate(owner.ctx, page.id, fromA, { origin: 'editor' }), { ok: true, seq: '2', appended: true, repair: null })
+    const second = await appendDocUpdate(owner.ctx, page.id, fromB, { origin: 'editor' })
+    assert.ok(second.ok && second.repair !== null, '수선을 돌려주지 않았다')
+    if (!second.ok || second.repair === null) return
+    assert.equal(second.seq, '3', '수선이 따로 seq 를 받았다')
+    assert.deepEqual((await logOf(page.id)).map((r) => [r.seq, r.origin]), [['1', 'import'], ['2', 'editor'], ['3', 'editor']])
+
+    const stored = readBodyYDoc((await load(owner, page.id)).ydoc, page.id)
+    assert.deepEqual(stored.fixes, [], '저장된 본문에 고칠 것이 남았다')
+    assert.deepEqual(textsOf(stored.doc), ['원문', '옆'])
+
+    Y.applyUpdate(b, fromA)
+    Y.applyUpdate(b, second.repair)
+    assert.deepEqual(readBodyYDoc(b, page.id), stored)
+  })
+
+  test('★ 수선이 쌓인 뒤에 위반을 모르고 보낸 append 는 다시 고치지 않는다 — 옮긴 블록이 복제되지 않는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { owner } = await freshWorkspace()
+    const page = await mkPage(owner, '동시 들여쓰기')
+    const [x, s, u, other] = [randomUUID(), randomUUID(), randomUUID(), randomUUID()]
+    await saveBody(owner, page.id, () => ({ blocks: [para('부모', x), para('에스', s), para('유', u), para('옆', other)] }))
+    const state = await load(owner, page.id)
+
+    const nest = (childId: string) => (tr: Transaction, doc: PmNode) => {
+      const child = findBlock(doc, childId)
+      const parent = findBlock(doc, x)
+      tr.delete(child.pos, child.pos + child.node.nodeSize)
+      tr.insert(parent.pos + 1 + parent.node.child(0).nodeSize, blockSchema.nodes.blockGroup.create(null, [child.node]))
+    }
+    const [a, b] = [peer(state.ydoc, 51), peer(state.ydoc, 52)]
+    edit(a, nest(s))
+    edit(b, nest(u))
+    const [fromA, fromB] = [changesSince(a, state.ydoc), changesSince(b, state.ydoc)]
+    assert.equal((await appendDocUpdate(owner.ctx, page.id, fromA, { origin: 'editor' })).ok, true)
+    const second = await appendDocUpdate(owner.ctx, page.id, fromB, { origin: 'editor' })
+    assert.ok(second.ok && second.repair !== null, '전제: 두 번째 append 가 그룹 둘을 고쳤다')
+
+    // 수선을 받기 전의 참여자 — 위반이 든 본문을 보며 다른 블록을 고친다.
+    const unrepaired = peer(state.ydoc, 99)
+    Y.applyUpdate(unrepaired, fromA)
+    Y.applyUpdate(unrepaired, fromB)
+    const c = peer(unrepaired, 53)
+    edit(c, insertAtStart(other, '!'))
+    const third = await appendDocUpdate(owner.ctx, page.id, changesSince(c, unrepaired), { origin: 'editor' })
+    assert.deepEqual(third, { ok: true, seq: '4', appended: true, repair: null })
+
+    const stored = readBodyYDoc((await load(owner, page.id)).ydoc, page.id)
+    assert.deepEqual(stored.fixes, [])
+    assert.deepEqual(allTexts(stored.doc).sort(), ['!옆', '부모', '에스', '유'].sort())
   })
 })
