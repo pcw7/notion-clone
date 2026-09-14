@@ -32,6 +32,7 @@ import { DOMSerializer, Fragment } from '@tiptap/pm/model'
 import { EditorState, type Command, type Plugin, type Transaction } from '@tiptap/pm/state'
 import { EditorView } from '@tiptap/pm/view'
 
+import { atomMarksPlugin } from './atom-marks.ts'
 import { blockIdPlugin } from './block-id-plugin.ts'
 import { clipboardPlugin } from './block-clipboard.ts'
 import { imageDropPlugin } from './image-drop.ts'
@@ -108,6 +109,8 @@ export function createEditor(options: CreateEditorOptions): EditorView {
     // 접힘(F-01-13). 편집기 DOM 에 속성을 직접 달면 PM 이 다시 그리며 지운다 —
     // 데코레이션으로만 그린다(`collapse-plugin.ts` 머리말).
     collapsePlugin(options.deps.isCollapsed),
+    // 멘션 · 수식의 서식을 attr 에 비춘다 — 협업 바인딩이 Y.Doc 에 싣는 것은 attr 뿐이다(`atom-marks.ts`).
+    atomMarksPlugin(),
     // id 스탬프는 마지막이다. 다른 플러그인이 만든 노드까지 훑어야 한다.
     blockIdPlugin(),
     history(),

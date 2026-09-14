@@ -9,6 +9,7 @@
  *      바인딩은 위반을 고쳐 쓰지 않는다 — 수선은 로그 저장소 한 곳이다(`repair.ts`)
  *   ③ **모르는 것** — 모르는 · 만들 수 없는 마크는 글자를 남긴다. 모르는 노드는 받아도, 이웃을 고쳐도 남는다
  *   ④ **편집 규칙은 그대로다** — `blockSchema` 는 여전히 내용 규칙을 검사한다
+ *   ⑤ **멘션 · 수식 서식이 두 참여자 사이를 오간다** — 실제 바인딩으로 걸고 풀기(`editor/atom-marks.ts`)
  *
  * 편집 스키마를 그대로 넘기면 무엇이 지워지는지는 ② 의 마지막 검사와 `ydoc.test.ts` ④ 가 본다.
  */
@@ -18,11 +19,15 @@ import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 
 import * as Y from 'yjs'
-import { initProseMirrorDoc } from 'y-prosemirror'
+import { initProseMirrorDoc, undo as yUndo, yUndoPlugin } from 'y-prosemirror'
 
+import type { Node as PmNode } from '@tiptap/pm/model'
+
+import { textRun, type RichTextRun } from '../contracts/rich-text.ts'
+import { atomMarksPlugin } from '../editor/atom-marks.ts'
 import type { EditorBlock, EditorDoc } from '../editor/document.ts'
 import { blockSchema } from '../editor/schema.ts'
-import { bind, findBlock, peer } from '../testing/collab-peers.ts'
+import { bind, exchange, findBlock, peer } from '../testing/collab-peers.ts'
 import { mergedPeer, paragraph, violationScenes, type ViolationScene } from '../testing/collab-scenarios.ts'
 import { collabSchema } from './collab-schema.ts'
 import { BODY_FRAGMENT, createBodyYDoc, readBodyPm, readBodyYDoc } from './ydoc.ts'
@@ -167,5 +172,71 @@ describe('④ 편집 규칙은 그대로다', () => {
     const loose = collabSchema.node('blockContainer', { blockId: '' }, [para, para])
     assert.ok(loose.type === blockSchema.nodes.blockContainer, '다른 스키마의 노드를 만들었다')
     assert.ok(collabSchema.nodes === blockSchema.nodes, '노드 타입을 새로 만들었다')
+  })
+})
+
+// ── ⑤ 멘션 · 수식 서식 ────────────────────────────────────────────────
+
+describe('⑤ 멘션 · 수식에 건 서식 — 실제 바인딩으로 두 참여자', () => {
+  const bold = blockSchema.marks.bold
+  const mentionPage = (): Y.Doc => {
+    const mention: RichTextRun = {
+      type: 'mention',
+      annotations: { ...textRun('').annotations },
+      plain_text: '@누군가',
+      href: null,
+      mention: { type: 'user', user: { id: randomUUID() } } as RichTextRun['mention'],
+    }
+    return createBodyYDoc({ blocks: [{ ...paragraph(''), title: [textRun('앞 '), mention] }] })
+  }
+  const mentionAt = (doc: PmNode): number => {
+    let at = -1
+    doc.descendants((node, pos) => {
+      if (node.type.name === 'mention') at = pos
+      return at < 0
+    })
+    return at
+  }
+  const boldMention = (doc: PmNode): boolean => {
+    const node = doc.nodeAt(mentionAt(doc))
+    return node !== null && bold.isInSet(node.marks) !== undefined
+  }
+
+  test('★ 협업 undo(y-prosemirror)가 멘션에 건 굵게를 되돌린다 — 거울 트랜잭션이 기록을 끄지 않아서다', () => {
+    const local = peer(mentionPage(), 1)
+    const editor = bind(local, collabSchema, [atomMarksPlugin(), yUndoPlugin()])
+    try {
+      const at = mentionAt(editor.state.doc)
+      editor.dispatch(editor.state.tr.addMark(at, at + 1, bold.create()))
+      assert.equal(readBodyYDoc(local, PAGE).doc.blocks[0].title[1]?.annotations.bold, true, '전제: 굵게가 Y.Doc 에 실렸다')
+
+      assert.equal(yUndo(editor.state), true, '되돌릴 것이 기록되지 않았다')
+      assert.ok(!boldMention(editor.state.doc), '되돌렸는데 에디터의 멘션이 여전히 굵다')
+      assert.equal(readBodyYDoc(local, PAGE).doc.blocks[0].title[1]?.annotations.bold, false)
+    } finally {
+      editor.destroy()
+    }
+  })
+
+  test('★ 한 참여자가 멘션에 굵게를 걸면 다른 참여자의 에디터 · 읽기에도 굵게로 온다 — 풀면 풀린다', () => {
+    const server = mentionPage()
+    const [a, b] = [peer(server, 1), peer(server, 2)]
+    const [left, right] = [bind(a), bind(b)]
+    try {
+      const at = mentionAt(left.state.doc)
+      left.dispatch(left.state.tr.addMark(at, at + 1, bold.create()))
+      exchange(a, b)
+      assert.ok(boldMention(right.state.doc), '다른 참여자의 에디터에 굵게가 오지 않았다')
+      assert.equal(readBodyYDoc(b, PAGE).doc.blocks[0].title[1]?.annotations.bold, true, '다른 참여자의 읽기에 굵게가 오지 않았다')
+
+      const back = mentionAt(right.state.doc)
+      right.dispatch(right.state.tr.removeMark(back, back + 1, bold))
+      exchange(a, b)
+      assert.ok(!boldMention(left.state.doc), '푼 굵게가 처음 참여자의 에디터에 남았다')
+      assert.equal(readBodyYDoc(a, PAGE).doc.blocks[0].title[1]?.annotations.bold, false)
+    } finally {
+      left.destroy()
+      right.destroy()
+    }
   })
 })

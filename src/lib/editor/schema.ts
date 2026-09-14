@@ -181,7 +181,8 @@ const nodes: Record<string, NodeSpec> = {
     atom: true,
     // F-01-19: mention 은 원자다. `rich-text-ops.ts` 가 오프셋 단위를 1로
     // 정한 것과 짝을 이룬다 — ProseMirror 의 inline atom 도 nodeSize 1 이다.
-    attrs: { mention: { default: {} }, plainText: { default: '' } },
+    // `marks` — 이 노드에 건 서식의 거울. 협업 바인딩이 Y.Doc 에 싣는 것은 attr 뿐이다(`atom-marks.ts`).
+    attrs: { mention: { default: {} }, plainText: { default: '' }, marks: { default: null } },
     toDOM: (node) => ['span', { class: 'blk-mention' }, String(node.attrs.plainText)],
   },
 
@@ -189,7 +190,7 @@ const nodes: Record<string, NodeSpec> = {
     group: 'inline',
     inline: true,
     atom: true,
-    attrs: { expression: { default: '' } },
+    attrs: { expression: { default: '' }, marks: { default: null } },
     toDOM: (node) => ['span', { class: 'blk-equation' }, String(node.attrs.expression)],
   },
 

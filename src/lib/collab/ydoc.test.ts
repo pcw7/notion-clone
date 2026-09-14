@@ -8,7 +8,7 @@
  *   ② **동시 편집이 수렴한다** — 두 참여자가 따로 편집하고 update 를 주고받으면 같은 문서로 읽히고,
  *      그 문서는 계약(`validateDoc`)을 지킨다. 구조를 어기는 조합도
  *   ③ **읽기는 원본을 바꾸지 않는다** — y-prosemirror 변환이라면 지웠을 노드(모르는 노드 이름)가 있어도
- *   ④ **알고 있는 손실 · 막은 위험** — 인라인 원자(멘션)에 건 서식 · y-prosemirror 변환의 연쇄 삭제(편집
+ *   ④ **막은 손실 · 위험** — 인라인 원자(멘션 · 수식)에 건 서식이 남는다 · y-prosemirror 변환의 연쇄 삭제(편집
  *      스키마로 변환하면 지우고, 바인딩이 넘기는 `collabSchema` 로는 지우지 않는다)
  *
  * 참여자는 에디터 없이 흉내 낸다: Y.Doc → ProseMirror 문서(`initProseMirrorDoc`) → ProseMirror
@@ -250,7 +250,7 @@ describe('③ 읽기', () => {
 
 // ── ④ 알고 있는 손실 ──────────────────────────────────────────────────
 
-describe('④ 알고 있는 손실 · 위험', () => {
+describe('④ 막은 손실 · 위험', () => {
   test('★ y-prosemirror 변환은 타입 충돌 하나에 편집 스키마로는 본문을 Y.Doc 에서 지우고, 바인딩이 넘기는 collabSchema 로는 지우지 않는다', () => {
     const x = block('paragraph', '원문')
     const server = createBodyYDoc({ blocks: [x] })
@@ -275,7 +275,7 @@ describe('④ 알고 있는 손실 · 위험', () => {
     assert.equal(unguarded.getXmlFragment(BODY_FRAGMENT).length, 0, '그 삭제가 Y.Doc 에 기록됐다')
   })
 
-  test('멘션에 건 굵게는 Y.Doc 을 지나면 사라진다 — 글자에 건 굵게는 남는다 (에디터 바인딩 전에 풀 것)', () => {
+  test('★ 멘션 · 수식에 건 서식이 바이트를 지나도 남는다 — 노드 attr 에 비춰 싣는다(`editor/atom-marks.ts`)', () => {
     const mention: RichTextRun = {
       type: 'mention',
       annotations: { ...textRun('').annotations, bold: true },
@@ -283,13 +283,20 @@ describe('④ 알고 있는 손실 · 위험', () => {
       href: null,
       mention: { type: 'user', user: { id: randomUUID() } } as RichTextRun['mention'],
     }
-    const source: EditorDoc = { blocks: [{ ...block('paragraph', null), title: [textRun('앞', { bold: true }), mention] }] }
+    const equation: RichTextRun = {
+      type: 'equation',
+      annotations: { ...textRun('').annotations, italic: true, color: 'red' },
+      plain_text: 'x^2',
+      href: null,
+      equation: { expression: 'x^2' },
+    }
+    const source: EditorDoc = { blocks: [{ ...block('paragraph', null), title: [textRun('앞', { bold: true }), mention, equation] }] }
 
-    const viaPm = pmToDoc(docToPm(source)).blocks[0].title
-    const viaY = readBodyYDoc(createBodyYDoc(source), PAGE).doc.blocks[0].title
-    assert.equal(viaPm[1]?.annotations.bold, true, 'ProseMirror 까지는 남는다')
-    assert.equal(viaY[0]?.annotations.bold, true, '글자의 서식은 남는다')
-    assert.equal(viaY[1]?.type, 'mention')
-    assert.equal(viaY[1]?.annotations.bold, false, '이 검사가 실패하면 손실이 풀린 것이다 — HANDOFF §7 을 고쳐라')
+    const reloaded = new Y.Doc()
+    Y.applyUpdate(reloaded, Y.encodeStateAsUpdate(createBodyYDoc(source)))
+    const viaY = readBodyYDoc(reloaded, PAGE).doc.blocks[0].title
+    assert.deepEqual(viaY, pmToDoc(docToPm(source)).blocks[0].title)
+    assert.equal(viaY[1]?.annotations.bold, true, '멘션의 굵게가 빠졌다')
+    assert.equal(viaY[2]?.annotations.color, 'red', '수식의 색이 빠졌다')
   })
 })

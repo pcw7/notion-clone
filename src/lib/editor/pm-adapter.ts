@@ -52,6 +52,7 @@ import {
   type BlockFormat,
   type BlockType,
 } from '../block/types.ts'
+import { createInlineAtom } from './atom-marks.ts'
 import { canonicalizeRuns } from './rich-text-ops.ts'
 import {
   blockSchema,
@@ -99,23 +100,14 @@ export function runsToInline(runs: readonly RichTextRun[]): PmNode[] {
       continue
     }
 
+    // 원자의 서식은 attr 에도 비춘다 — 협업 바인딩이 Y.Doc 에 싣는 것은 attr 뿐이다(`atom-marks.ts`).
     if (run.type === 'equation') {
-      out.push(
-        blockSchema.nodes[EQUATION_NODE].create(
-          { expression: run.equation?.expression ?? '' },
-          null,
-          marks,
-        ),
-      )
+      out.push(createInlineAtom(blockSchema.nodes[EQUATION_NODE], { expression: run.equation?.expression ?? '' }, marks))
       continue
     }
 
     out.push(
-      blockSchema.nodes[MENTION_NODE].create(
-        { mention: run.mention ?? {}, plainText: run.plain_text ?? '' },
-        null,
-        marks,
-      ),
+      createInlineAtom(blockSchema.nodes[MENTION_NODE], { mention: run.mention ?? {}, plainText: run.plain_text ?? '' }, marks),
     )
   }
 

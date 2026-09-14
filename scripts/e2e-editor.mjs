@@ -667,8 +667,19 @@ async function main() {
     // 앞 절의 `+` 가 만든 "/" 블록이 아직 저장 큐에 있으면, 아래에서 서버 본문을 덧붙이고 이동하는 순간 새 페이지가
     // 큐의 문서(이미지가 없다)를 화면에 되살린다 — 서버 문서보다 새것으로 보기 때문이다(`page-sync.ts` 의 resume).
     // 그러면 덧붙인 이미지 블록이 화면에 없다. main 에서도 이 절이 매번 이렇게 실패해 뒤의 절이 돌지 않았다.
-    // 큐가 빌 때까지(= 서버가 받고 확정할 때까지) 기다린 뒤에 덧붙인다.
-    check('앞 절의 편집이 저장 큐에서 비워졌다 — 서버 본문을 덧붙이기 전에', await waitFor(`(async () => {
+    // 서버가 받고 확정할 때까지 기다린 뒤에 덧붙인다.
+    //
+    // IndexedDB 만 보면 부족하다 — 큐는 디바운스 뒤에야 디스크에 쓰므로(`page-sync.ts` queue) 쓰기 전이면 비어 보이고,
+    // 이동할 때 pagehide 가 그 항목을 쓴다. 큐만 보던 첫 수정은 한 번 통과하고 다음 실행에서 같은 자리가 다시 실패했다.
+    // 그래서 서버가 "/" 블록을 받은 것을 먼저 본다 — 보내기 전에 디스크에 먼저 쓰므로(`attempt`) 서버에 닿은 뒤
+    // 큐가 비었다면 확정된 것이다.
+    let slashOnServer = false
+    for (let i = 0; i < 60 && !slashOnServer; i += 1) {
+      slashOnServer = (await savedShape()).split(' | ').some((part) => part.endsWith('/'))
+      if (!slashOnServer) await sleep(150)
+    }
+    check('앞 절의 "/" 블록이 서버에 저장됐다 — 서버 본문을 덧붙이기 전에', slashOnServer, await savedShape())
+    check('앞 절의 편집이 저장 큐에서 비워졌다', await waitFor(`(async () => {
       const db = await new Promise((ok) => { const r = indexedDB.open('notion-clone-outbox', 1); r.onsuccess = () => ok(r.result) })
       const rows = await new Promise((ok) => { const r = db.transaction('saves').objectStore('saves').getAll(); r.onsuccess = () => ok(r.result) })
       return rows.length === 0
