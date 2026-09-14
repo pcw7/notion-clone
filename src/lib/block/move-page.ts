@@ -36,7 +36,9 @@ import { asBlockId } from '../ids.ts'
 import { query } from '../db/pool.ts'
 import { withTransaction, type Tx } from '../db/tx.ts'
 import { specOf, isKnownBlockType, MAX_TREE_DEPTH } from './types.ts'
-import { nextSiblingKey } from './page.ts'
+import { nextSiblingKey, plainTitleOf } from './page.ts'
+import { finishOrThrow, openPageBody, ownerPageOf, type PageBodyWrite } from './body-write.ts'
+import { appendPageRef, removePageRef } from './page-refs.ts'
 import { toPlainText, type RichTextRun } from '../contracts/rich-text.ts'
 
 export type MoveErrorCode =
@@ -141,14 +143,12 @@ export async function movePage(
   targetParentId: BlockId | null,
 ): Promise<MoveResult> {
   return withTransaction(async (tx) => {
-    const moving = await tx.queryMaybe<MovingRow>(
-      `SELECT id, parent_type, parent_id, ancestor_path, perm_scope_id
-         FROM block
-        WHERE id = $1 AND workspace_id = $2 AND type = 'page' AND lifecycle = 'live'
-        FOR UPDATE`,
+    const peek = await tx.queryMaybe<{ parent_type: string; parent_id: string; properties: { title?: unknown } | null }>(
+      `SELECT parent_type, parent_id, properties FROM block
+        WHERE id = $1 AND workspace_id = $2 AND type = 'page' AND lifecycle = 'live'`,
       [pageId, ctx.workspaceId],
     )
-    if (!moving) throw new MoveError('not_found', '페이지를 찾을 수 없습니다.')
+    if (!peek) throw new MoveError('not_found', '페이지를 찾을 수 없습니다.')
 
     // ── I5: 자기 자신 / 자손으로는 못 간다 ──────────────────────────
     //
@@ -158,6 +158,29 @@ export async function movePage(
     if (targetParentId === pageId) {
       throw new MoveError('cycle', '페이지를 자기 자신 안으로 옮길 수 없습니다.')
     }
+
+    // ── 두 본문 (CRDT 4b · 판결 X-1) ────────────────────────────────
+    //
+    // 페이지의 자리는 부모 본문의 참조 노드다. 옮기면 옛 자리의 본문에서 빼고 새 자리의 본문에 넣는다. 대상이 어느
+    // 페이지 본문에도 속하지 않으면(워크스페이스 직속 데이터베이스 같은 것) 참조를 둘 곳이 없다 — 옮길 위치가 아니다.
+    // 두 본문 페이지를 옮길 행 · 대상보다 먼저, id 순으로 잡는다(잠금 순서: 본문 페이지 행 → 옮길 행 · 대상 → 스냅샷).
+    const oldOwner = peek.parent_type === 'block' ? await ownerPageOf(tx, ctx, peek.parent_id) : null
+    const newOwner = targetParentId === null ? null : await ownerPageOf(tx, ctx, targetParentId)
+    if (targetParentId !== null && newOwner === null) {
+      throw new MoveError('target_not_found', '옮길 위치를 찾을 수 없습니다.')
+    }
+    const owners = [...new Set([oldOwner, newOwner].filter((id): id is string => id !== null))].sort()
+    for (const owner of owners) await tx.query(`SELECT id FROM block WHERE id = $1 FOR UPDATE`, [owner])
+
+    const moving = await tx.queryMaybe<MovingRow>(
+      `SELECT id, parent_type, parent_id, ancestor_path, perm_scope_id
+         FROM block
+        WHERE id = $1 AND workspace_id = $2 AND type = 'page' AND lifecycle = 'live'
+        FOR UPDATE`,
+      [pageId, ctx.workspaceId],
+    )
+    if (!moving) throw new MoveError('not_found', '페이지를 찾을 수 없습니다.')
+    if (moving.parent_id !== peek.parent_id) throw new Error(`옮기는 사이 페이지의 자리가 바뀌었다: ${pageId}`)
 
     const target = await lockTarget(tx, ctx, targetParentId)
 
@@ -183,15 +206,36 @@ export async function movePage(
       } satisfies MoveResult
     }
 
+    // 본문을 행을 쓰기 전에 연다(`body-write.ts` 머리말).
+    const bodies = new Map<string, PageBodyWrite>()
+    for (const owner of owners) bodies.set(owner, await openPageBody(tx, ctx, owner))
+
     const placed = await relocateSubtree(tx, ctx, moving, target)
+
+    if (oldOwner !== null) bodies.get(oldOwner)?.change(removePageRef(moving.id))
+    if (newOwner !== null && target !== null) {
+      // 대상이 그 본문을 가진 페이지 자신이면 본문 최상위, 본문 안의 블록이면 그 블록의 자식 끝이다.
+      const parentBlockId = target.id === newOwner ? null : target.id
+      bodies.get(newOwner)?.change(appendPageRef(parentBlockId, moving.id, plainTitleOf(peek.properties)))
+    }
+    for (const owner of owners) {
+      const body = bodies.get(owner)
+      if (body !== undefined) await finishOrThrow(body)
+    }
+
+    // 투영이 순서 키를 본문 위치로 다시 매겼을 수 있다 — 돌려줄 키 · 버전은 다시 읽는다.
+    const final = await tx.queryOne<{ order_key: string; version: string }>(
+      `SELECT order_key, version FROM block WHERE id = $1`,
+      [moving.id],
+    )
 
     return {
       pageId: asBlockId(moving.id),
       parentBlockId: target === null ? null : asBlockId(target.id),
       ancestors: placed.ancestors.map(asBlockId),
       permScopeId: placed.permScopeId,
-      orderKey: placed.orderKey,
-      version: placed.version,
+      orderKey: final.order_key,
+      version: final.version,
       movedDescendants: placed.movedDescendants,
       noop: false,
     } satisfies MoveResult

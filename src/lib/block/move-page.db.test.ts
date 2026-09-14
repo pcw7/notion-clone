@@ -27,6 +27,8 @@ import { movePage, MoveError } from './move-page.ts'
 import { loadPageBody, savePageBody } from './save-page-body.ts'
 import { textRun } from '../contracts/rich-text.ts'
 import { asBlockId, type BlockId } from '../ids.ts'
+import { assertBodyMatchesYDoc } from '../testing/body-invariant.ts'
+import { createDatabase } from '../database/database.ts'
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'
 
@@ -204,6 +206,66 @@ describe('movePage — 서브트리가 따라온다 (X-7)', () => {
         `d${i} 의 경로가 틀렸다`,
       )
     }
+  })
+})
+
+// ── 본문 (CRDT 4b) ────────────────────────────────────────────────────
+
+describe('movePage — 두 본문의 참조 노드 (X-1 · CRDT 4b)', () => {
+  test('★ 옮기면 옛 부모 본문에서 빠지고 새 부모 본문 끝에 들어간다 — 두 본문 모두 행과 Y.Doc 이 같다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const from = await page('옛 부모')
+    const to = await page('새 부모')
+    const moving = await page('옮길 것', from.id)
+    const stay = await page('원래 있던 자식', to.id)
+
+    await movePage(fx.owner.ctx, moving.id, to.id)
+    assert.deepEqual((await assertBodyMatchesYDoc(fx.owner.ctx, from.id, '옛 부모')).blocks, [])
+    assert.deepEqual((await assertBodyMatchesYDoc(fx.owner.ctx, to.id, '새 부모')).blocks.map((b) => b.id), [stay.id, moving.id])
+  })
+
+  test('최상위로 꺼내면 옛 부모 본문에서만 빠진다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const from = await page('옛 부모')
+    const moving = await page('꺼낼 것', from.id)
+    const other = await page('남는 것', from.id)
+
+    await movePage(fx.owner.ctx, moving.id, null)
+    assert.deepEqual((await assertBodyMatchesYDoc(fx.owner.ctx, from.id, '옛 부모')).blocks.map((b) => b.id), [other.id])
+  })
+
+  test('★ 같은 본문 안의 토글 안으로 옮긴다 — 한 본문에서 빼고 그 토글의 자식으로 넣는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const parent = await page('부모')
+    const child = await page('자식', parent.id)
+    const toggleId = randomUUID()
+    assert.ok(
+      (await savePageBody(fx.owner.ctx, parent.id, {
+        blocks: [
+          { id: toggleId, type: 'toggle', title: [textRun('토글')] },
+          { id: child.id, type: 'page', title: [] },
+        ],
+      })).ok,
+    )
+
+    await movePage(fx.owner.ctx, child.id, asBlockId(toggleId))
+    const doc = await assertBodyMatchesYDoc(fx.owner.ctx, parent.id, '부모')
+    assert.deepEqual(doc.blocks.map((b) => [b.id, (b.children ?? []).map((c) => c.id)]), [[toggleId, [child.id]]])
+    assert.equal((await rowOf(child.id)).parent_id, toggleId)
+  })
+
+  test('★ 어느 페이지 본문에도 속하지 않는 블록(워크스페이스 직속 데이터베이스)으로는 못 옮긴다 — 참조를 둘 곳이 없다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const database = await createDatabase(fx.owner.ctx, { name: '표' })
+    assert.ok(database.ok, JSON.stringify(database))
+    if (!database.ok) return
+    const moving = await page('옮길 것')
+
+    await assert.rejects(
+      () => movePage(fx.owner.ctx, moving.id, asBlockId(database.value.id)),
+      (e: unknown) => e instanceof MoveError && e.code === 'target_not_found',
+    )
+    assert.equal((await rowOf(moving.id)).parent_type, 'workspace', '거부됐는데 자리가 바뀌었다')
   })
 })
 

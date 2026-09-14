@@ -57,10 +57,13 @@ import { can } from '../permissions/levels.ts'
 import { effectiveCaps } from '../permissions/effective.ts'
 import { orderKeyBetween } from './order-key.ts'
 import { relocateSubtree, MoveError } from './move-page.ts'
+import { openPageBody } from './body-write.ts'
+import { docToPm } from '../editor/pm-adapter.ts'
 import {
   projectDocument,
   rowsToDoc,
   validateDoc,
+  wrapUnknownTypes,
   type BodyRow,
   type DocIssue,
   type EditorDoc,
@@ -249,7 +252,15 @@ export async function savePageBody(
       return { ok: false, reason: 'version_conflict', currentVersion: page.version } as const
     }
 
-    return projectBodyRows(tx, ctx, page, doc)
+    // 본문의 정본은 Y.Doc 이다(CRDT 4b · 판결 X-1). 받은 문서를 Y.Doc 에 옮기고 — `updateYFragment` 가 같은 부분은
+    // 건너뛰므로 바뀐 블록만 쓴다 — 그 결과를 투영하고, 받아들여지면 로그에 쌓는다(`body-write.ts`).
+    const body = await openPageBody(tx, ctx, pageId, 'editor')
+    // 모르는 타입은 옮기기 전에 감싼다 — ProseMirror 노드에는 원래 타입 이름을 담을 곳이 없다(`wrapUnknownTypes`).
+    const next = docToPm(wrapUnknownTypes(doc))
+    body.change((tr) => {
+      tr.replaceWith(0, tr.doc.content.size, next.content)
+    })
+    return body.finish()
   })
 }
 

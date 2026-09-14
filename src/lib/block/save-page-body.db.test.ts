@@ -20,6 +20,8 @@ import { textRun } from '../contracts/rich-text.ts'
 import type { EditorBlock, EditorDoc } from '../editor/document.ts'
 import type { BlockType } from './types.ts'
 import { asBlockId, type BlockId } from '../ids.ts'
+import { query } from '../db/pool.ts'
+import { assertBodyMatchesYDoc } from '../testing/body-invariant.ts'
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'
 
@@ -119,6 +121,38 @@ describe('savePageBody — 왕복', () => {
     assert.equal(back?.type, 'unsupported')
     assert.equal(back?.properties?.original_type, 'audio')
     assert.deepEqual(back?.properties?.original_properties, { url: 'https://example.com/a.mp3' })
+  })
+})
+
+describe('savePageBody — 본문의 정본은 Y.Doc (X-1 · CRDT 4b)', () => {
+  const logCount = async (pageId: string): Promise<string> =>
+    (await query<{ n: string }>(`SELECT count(*) AS n FROM doc_update WHERE page_id = $1`, [pageId]))[0].n
+
+  test('★ 저장하면 Y.Doc 에 쌓이고 행은 그 투영이다 · 같은 문서를 다시 저장하면 쌓지 않는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const pageId = await newPage()
+    const doc: EditorDoc = {
+      blocks: [blk('heading_1', '제목'), blk('toggle', '토글', [blk('paragraph', '안')]), blk('to_do', '할 일')],
+    }
+
+    assert.ok((await savePageBody(fx.owner.ctx, pageId, doc)).ok)
+    await assertBodyMatchesYDoc(fx.owner.ctx, pageId)
+    const logged = await logCount(pageId)
+
+    assert.ok((await savePageBody(fx.owner.ctx, pageId, doc)).ok)
+    assert.equal(await logCount(pageId), logged, '바뀐 것 없는 저장이 로그에 쌓였다')
+  })
+
+  test('★ 거부된 저장은 Y.Doc 에 아무것도 쌓지 않는다 — 자식 페이지를 빠뜨린 낡은 문서', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const pageId = await newPage()
+    const child = await createPage(fx.owner.ctx, { parentPageId: pageId })
+    const before = await logCount(pageId)
+
+    const result = await savePageBody(fx.owner.ctx, pageId, { blocks: [blk('paragraph', '하위 페이지가 없는 낡은 문서')] })
+    assert.equal(result.ok, false)
+    assert.equal(await logCount(pageId), before, '거부됐는데 로그에 쌓였다')
+    assert.deepEqual((await assertBodyMatchesYDoc(fx.owner.ctx, pageId)).blocks.map((b) => b.id), [child.id])
   })
 })
 

@@ -2,7 +2,7 @@
 
 새 세션이 이어받을 때 읽는 문서. **[CLAUDE.md](../CLAUDE.md)를 먼저 읽고 여기로 온다** — 거기에 절대 제약·스택·명령어·코딩 규칙이 있고, 이 문서는 **"지금 어디까지 왔고 다음에 뭘 하는가"**만 다룬다.
 
-최종 갱신: 2026-09-14 (PR #69 시점 — Phase 0 MVP · Phase 1 의 첫 항목 익스포트(F-09-14) v1 이 닫혔다. **Phase 1 CRDT 동시편집(F-05-01) 진행 중 — 1조각(Y.Doc 본문 계약 · 정규화) · 2조각(`doc_update` 로그 저장소) · 3a조각(y-prosemirror 연쇄 삭제 막기 · 수선의 작성자 한 곳) · 3b조각(멘션 · 수식 서식) · 4a조각(본문 세션 · 프로젝터 추출) 끝. 다음은 4b조각(넘기기 — 본문 정본을 행에서 Y.Doc 으로)**, §2 CRDT 조각 표)
+최종 갱신: 2026-09-14 (PR #69 시점 — Phase 0 MVP · Phase 1 의 첫 항목 익스포트(F-09-14) v1 이 닫혔다. **Phase 1 CRDT 동시편집(F-05-01) 진행 중 — 1조각(Y.Doc 본문 계약 · 정규화) · 2조각(`doc_update` 로그 저장소) · 3a조각(y-prosemirror 연쇄 삭제 막기 · 수선의 작성자 한 곳) · 3b조각(멘션 · 수식 서식) · 4a조각(본문 세션 · 프로젝터 추출) · **4b조각(넘기기 — 본문의 정본이 행에서 Y.Doc 으로 넘어갔다)** 끝. 다음은 5조각(협업 서버)**, §2 CRDT 조각 표)
 
 ---
 
@@ -29,7 +29,7 @@
 
 `npm run dev` 로 실제로 눌러볼 수 있고, **`npm run e2e` 가 실제 브라우저로 208개 항목을 확인한다.** 이 PC 에서는 **Chrome 으로** 돌린다 — Edge 153 헤드리스는 진짜 `Ctrl+C` 에서 종료된다(§6). 기존 클립보드 검사 2개는 이 환경에서 실패한다(§7).
 
-**숫자**: 마이그레이션 15개 / 테이블 39개 / 테스트 1556개(CI skip 0 · 이 PC 는 외부 도구 검사가 셸에 따라 1~2개 skip — PowerShell 은 unzip, Git Bash 는 bsdtar 를 못 찾는다) + 브라우저 검증 208개(이 PC 에서 206 통과 — 클립보드 2개) / PR 71개 머지(#72 포함).
+**숫자**: 마이그레이션 15개 / 테이블 39개 / 테스트 1577개(CI skip 0 · 이 PC 는 외부 도구 검사가 셸에 따라 1~2개 skip — PowerShell 은 unzip, Git Bash 는 bsdtar 를 못 찾는다) + 브라우저 검증 208개(이 PC 에서 206 통과 — 클립보드 2개) / PR 72개 머지(#73 포함).
 
 ---
 
@@ -85,7 +85,7 @@ v1 은 **동기 스트리밍 다운로드**다. 상한을 넘으면 흘려보내
 | 3a | **y-prosemirror 연쇄 삭제 막기**(§3.2-14) — 변환에 넘기는 스키마 파사드(`collab/collab-schema.ts`) · 루트 `doc: blockGroup+` · 구조 위반을 Y.Doc 에 고쳐 쓰는 곳은 로그 저장소 append 하나(`collab/repair.ts` · `doc-store.ts`) | ✅ #69 |
 | 3b | **멘션 · 수식에 건 서식**을 Y.Doc 에 싣기(§3.2-15) — 서식을 노드 attr `marks` 에 비춘다(`editor/atom-marks.ts`: 만들 때 · appendTransaction · 읽을 때 되살리기) | ✅ #70 |
 | 4a | **넘기기 전의 원시 연산** — 호출자 트랜잭션 안의 본문 세션(`openBodyDoc`: 잠금 · 처음이면 옮김 · `change` · `applyUpdate` · `commit`) · ProseMirror 변경을 Y.Doc 에 쓰는 한 벌(`collab/body-edit.ts`) · 프로젝터 추출(`projectBodyRows`, 동작 그대로). 아직 어떤 경로도 부르지 않는다 | ✅ #71 |
-| 4b | **넘기기** — PUT body · 하위 페이지 생성 · 휴지통 · 복원 · 이동이 **한 PR 에서 함께** 부모 Y.Doc 을 거치고(서버 명령 경로 ② · V-5), 프로젝터가 세션의 결과를 투영한다 | ⬜ |
+| 4b | **넘기기** — PUT body · 하위 페이지 생성 · 휴지통 · 복원 · 이동이 **한 PR 에서 함께** 본문 Y.Doc 을 거치고(서버 명령 경로 ② · V-5), 프로젝터가 그 결과를 투영한다. **본문 행은 이제 Y.Doc 의 투영이다**(`block/body-write.ts` · `block/page-refs.ts`) | ✅ #73 |
 | 5 | 협업 서버(Hocuspocus 자체 호스팅 · 3001) — join · update 권한 검사 · 저장 · 권한 회수 시 끊기(F-05-19) | ⬜ |
 | 6 | 에디터 바인딩 — `ySyncPlugin` · origin 범위 undo(F-05-15) · 오프라인 보존(y-indexeddb) · 두 탭 e2e | ⬜ |
 
@@ -132,7 +132,8 @@ v1 은 **동기 스트리밍 다운로드**다. 상한을 넘으면 흘려보내
 4a조각이 정한 것 — 4b(넘기기)가 지켜야 할 것:
 - 서버 명령은 **부모 본문 세션을 먼저 열고**(`openBodyDoc(tx, ctx, pageId)`) 그다음 행을 쓰고, `change` 로 참조 노드를 넣거나 빼고,
   `commit({ actorId, origin: 'api' })` 한다. 처음 여는 세션은 그 순간의 행으로 옮기므로, 하위 페이지 행을 먼저 쓰면 옮기기가 그
-  참조를 이미 담아 명령이 넣는 것과 **둘이 된다**(`doc-store.db.test.ts` ⑦ 이 고정)
+  참조를 이미 담는다(`doc-store.db.test.ts` ⑦ 이 고정). ⚠ 4a 에서는 "그러면 둘이 된다"고 적었는데 **4b 의 반사실이 뒤집었다** —
+  넣기가 이미 있는 참조를 넣지 않아 둘이 되지 않는다(§3.3-97)
 - 세션은 **권한을 보지 않는다.** 하위 페이지를 만드는 사람은 부모 본문의 `edit_content` 가 아니라 `create_child` 로 부모 문서에
   참조를 넣는다 — 명령이 자기 권한을 검사한다. 참여자 경로(`appendDocUpdate`)만 권한 검사 + 세션이다
 - 프로젝터는 `projectBodyRows(tx, ctx, page, doc)` — 페이지 행을 `FOR UPDATE` 로 잡은 트랜잭션에서 세션의 `read().doc` 을 넘긴다.
@@ -140,6 +141,21 @@ v1 은 **동기 스트리밍 다운로드**다. 상한을 넘으면 흘려보내
   4b 에서는 모든 쓰기가 명령이라 거부로 충분하고, 참여자가 참조 노드를 지울 수 있게 되는 6조각에서 정본대로 바꾼다
 - ⚠ **잠금 순서.** 프로젝터 쪽은 페이지 행 `FOR UPDATE` 를, 세션은 `doc_snapshot` 행 `FOR UPDATE` 를 잡는다. 두 경로가 반대 순서로
   잡으면 교착이다 — 4b 에서 한 방향(페이지 행 → 스냅샷)으로 정하고, 5조각의 참여자 경로가 투영까지 할 때도 같은 순서를 쓴다
+
+4b조각에서 한 것 · 확인한 것 (§3.2-16):
+- **넘긴 경로 다섯**: 본문 저장(PUT) · 하위 페이지 생성 · 휴지통 · 복원 · 이동. 전부 `body-write.ts` 의 순서(본문 페이지 행 잠금 →
+  `openPageBody` → 행 쓰기 → `change` → `finish` = 투영 먼저, 받아들여지면 쌓기)를 따른다. 로그 origin 은 본문 저장이 `'editor'`,
+  나머지 명령이 `'api'`
+- **참조가 사는 본문은 "가장 가까운 페이지 조상"의 Y.Doc 이다**(`ownerPageOf`) — 토글 안의 하위 페이지는 그 토글을 가진 페이지의 문서에 있다
+- **복원 자리**: B2 가 보존한 `order_key` 보다 앞선 살아 있는 형제 중 가장 뒤의 것 바로 뒤 · 없으면 그 그룹의 맨 앞. 형제의 키는 본문
+  위치의 투영이라 본문 순서와 같다. 토글 안에 있던 페이지도 그 토글 안 원래 자리로 돌아온다
+- **빈 본문은 대체 · 마지막 참조를 빼면 빈 문단으로**(`page-refs.ts`) — 빈 페이지 본문은 빈 문단 하나라 그 뒤에 붙이면 빈 줄 행이 생긴다
+- **발견해서 고친 것 둘**: ① 모르는 타입의 블록을 API 로 저장하면 원래 타입 이름이 사라졌다 — `docToPm` 이 옮기며 담을 곳이 없다.
+  옮기기 전에 프로젝터와 같은 함수로 감싼다(`wrapUnknownTypes`, 기존 왕복 검사가 잡았다) ② 거부된 저장의 부분 커밋(#72, §3.3-96)
+- 행으로 우회하던 검사를 실제 경로로 바꿨다: 본문 블록을 SQL 로 넣던 것 → 본문 저장, 형제를 SQL 로 버리던 것 → `trashPage`.
+  doc-store 검사는 저장 뒤 로그를 지워 **4b 이전 페이지**를 흉내 낸다 — 옮기기 경로는 운영 데이터에 여전히 필요하다
+- 대상이 어느 페이지 본문에도 속하지 않는 이동(워크스페이스 직속 데이터베이스)은 `target_not_found` 로 거부한다 — 이전에는 받아서
+  데이터베이스 블록 밑에 페이지 행이 생겼다
 
 **W8 이 남긴 빈자리 — Phase 1 과 부딪히면 먼저 본다** (자세한 건 §7)
 1. **select 정렬** — 컴파일러가 select 를 옵션 **id** 로 정렬한다. 화면은 select 를 정렬 대상에서 **뺐다**.
@@ -351,7 +367,12 @@ W7 항목별 상태:
 - `src/lib/collab/body-edit.ts` — **`writeEditorChange`.** ProseMirror 변경을 Y.Doc 본문에 쓰는 한 벌(`collabSchema` 읽기 → 트랜잭션 →
   서식 거울 → `updateYFragment`). 서버 명령과 테스트의 `edit` 이 같이 쓴다
 - `src/lib/block/save-page-body.ts` 의 **`projectBodyRows`** — 프로젝터(범위 읽기 → 투영 → 쓰기 → 버전 → 색인). 4a 에서 `savePageBody` 에서
-  떼어 냈다(동작 그대로). 4b 가 세션의 `read().doc` 을 넘긴다
+  떼어 냈다(동작 그대로). 4b 가 세션의 `read().doc` 을 넘긴다. **거부하면 savepoint 로 되돌린다**(#72)
+- `src/lib/block/body-write.ts` — **서버 명령의 본문 쓰기 한 단위**(`openPageBody` · `finish` · `finishOrThrow` · `ownerPageOf`). 본문 행을 바꾸는
+  새 경로는 반드시 이것을 거친다 — 행을 직접 고치면 Y.Doc 과 어긋나고 다음 투영이 그 행을 지우거나 거부한다
+- `src/lib/block/page-refs.ts` — 본문의 하위 페이지 참조 노드 변경(`appendPageRef` · `insertPageRefAfter` · `removePageRef`). 빈 본문은 대체,
+  마지막 참조를 빼면 빈 문단, 이미 있는 참조는 넣지 않는다
+- `src/lib/testing/body-invariant.ts` — `assertBodyMatchesYDoc` — 명령 뒤 "행 = 그 페이지 Y.Doc 의 투영"을 확인한다(스냅샷이 있어야 통과)
 - `src/lib/testing/collab-peers.ts` — 에디터 없이 참여자를 흉내 낸다(`peer` · `edit` · `findBlock` · `exchange` · `changesSince`).
   `edit` 은 `ySyncPlugin` 이 쓰는 `updateYFragment` 를 부른다. client id 를 고정하면 결과가 결정론이다. 문서는 `collabSchema` 로 읽어
   위반이 있어도 지우지 않는다(위반 자리를 건드리는 편집은 ProseMirror 가 거부한다). **`bind`** 는 실제 `ySyncPlugin` 을 헤드리스로 붙인다
@@ -403,6 +424,7 @@ W7 항목별 상태:
 | 13 | **워크스페이스 전체 익스포트를 누가 할 수 있나** (3b 가 "정할 것"으로 남겼다. F-09-14 · F-02-22 는 노션 설정 화면의 "(관리자) Export all workspace content" 만 적었다) | **워크스페이스 소유자(`owner`)만.** 멤버 관리자(`membership_admin`)도 아니다. 페이지 · 표 범위는 볼 수 있는 모든 멤버 (#65) | ① **무엇을 볼 수 있는가는 역할이 아니라 스냅샷이 거른다**(§3.3-73) — 소유자가 내보내도 남의 비공개 페이지는 없다(F-09-20: admin 이라도 "모든 것을 본다"가 아니다). 역할이 정하는 것은 "한 번에 묶기"뿐이라 **멤버가 잃는 데이터가 없다** — 단 그러려면 표 화면에도 버튼이 있어야 해서 넣었다(풀페이지 표는 워크스페이스 직속이라 페이지 내보내기로 닿지 않는다) ② 잡 큐 · 속도 제한이 없는 동안 가장 무거운 동기 요청이다(블록 20만 · ZIP 4GiB) ③ 멤버 관리자는 멤버를 관리하는 역할이지 콘텐츠를 관리하지 않는다 ④ **좁은 쪽을 골랐다**(§3.3-49 와 같은 이유) — 넓히는 것은 `canExportWorkspace` 한 줄이고, 넓게 열었다 좁히면 쓰던 사람의 기능을 뺏는다. 판정은 스냅샷을 읽기 **전**이다 — 반사실: 게이트를 빼면 그 검사가, 스냅샷 뒤로 옮기면 블록 상한 0 에서 `too_large` 가 먼저 나와 같은 검사가 실패한다 |
 | 14 | **y-prosemirror 변환의 연쇄 삭제를 어떻게 막는가** (§7 이 후보 ⓐ 카디널리티 풀기 + appendTransaction 정규화 · ⓑ 변환 감싸기로 남겼다) | **ⓑ 를 포크 없이 — 변환에 넘기는 스키마만 관대한 파사드(`collabSchema`).** 편집 스키마는 루트(`doc: blockGroup+`) 하나만 풀었다. **구조 위반을 Y.Doc 에 고쳐 쓰는 곳은 로그 저장소의 append 하나**다 — 에디터 · 협업 서버는 쓰지 않는다 (#69) | ① y-prosemirror 는 변환에서 **우리가 넘긴 스키마 객체**의 `node` · `mark` · `text` 를 부르고, 바인딩은 `state.schema` 를 넘긴다 — exports 밖의 `createNodeFromYElement` 를 감쌀 필요가 없다. 파사드가 만든 노드는 `blockSchema` 의 노드이고 편집 규칙은 그대로다. 대가는 내부 구현 의존(1.3.7 고정 — 올리면 실제 바인딩 검사가 먼저 깨진다, §7) ② ⓐ 의 카디널리티 풀기는 편집 명령 전부의 전제를 바꾼다 — Fitter · `createAndFill` · split · join 이 내용 규칙에서 나온다. ⓐ 의 "`normalizeBody` 를 appendTransaction 으로"는 **모든 참여자가 수선을 쓴다**는 뜻인데, 진단에서 두 참여자가 같은 그룹 둘을 각자 합치자 **옮긴 블록이 복제됐다** — y-prosemirror 에 옮기기가 없어 합치기 · 올리기가 "지우고 새로 넣기"라서다(`repair.test.ts` ② 가 고정) ③ 작성자를 append 에 둔 이유: 스냅샷 행 `FOR UPDATE` 로 이미 페이지마다 한 줄로 서고, 잠근 뒤 읽은 상태(앞선 수선 포함)에서 계산하므로 수선끼리 겹치지 않는다 — 협업 서버가 여러 대여도 · API 경로가 써도 같다. 수선은 **같은 seq** 에 쌓고 보낸 쪽에 돌려준다(정본 origin 6값에 "시스템 수선"이 없고, 수선은 그 update 를 적용한 결과의 일부다) ④ 루트만 푼 이유: 바인딩은 루트를 `schema.node` 가 아니라 `tr.replace(0, size, …)` 로 채우고, `doc: blockGroup` 이면 Fitter 가 둘째 루트 그룹을 버린 뒤 다음 로컬 편집이 Y.Doc 에서 지운다(진단 · 검사). 편집기 · collab · export 테스트 618개가 루트를 푼 채로 통과했고 전체 선택 삭제는 여전히 그룹 하나다. `pmToDoc` 은 루트 그룹을 전부 읽게 했다. 반사실: 파사드가 내용을 검사하면 10개 · 마크를 던지면 1개 · 루트를 되돌리면 2개 · 저장소가 고치지 않으면 2개 · 수선이 모르는 것을 지나치면 2개 · 고칠 곳 대신 통째로 갈아쓰면 1개 · `pmToDoc` 이 첫 그룹만 읽으면 1개가 — 각각 그 항목만 실패 |
 | 15 | **멘션 · 수식에 건 서식을 Y.Doc 에 어떻게 싣는가** (y-prosemirror 가 요소 노드의 마크를 싣지 않는다 — §7) | **노드 attr `marks` 에 거울로 싣는다.** 진실은 ProseMirror 마크이고 세 자리에서 맞춘다 — 만들 때(`createInlineAtom`) · 편집 뒤(`atomMarksPlugin` appendTransaction) · 읽을 때(`collabSchema` · `readBodyYDoc` 이 attr 에서 되살림). 거울 트랜잭션은 되돌리기 기록을 **끄지 않는다.** 플러그인은 에디터에 지금 붙였다 (#70) | ① y-prosemirror 는 요소 노드를 attr 만으로 옮기고 되읽을 때도 마크를 넘기지 않으며, `updateYFragment` 는 ProseMirror attr 에 없는 Y attr 을 지운다 — Y 에 따로 써 둘 자리가 없어 **ProseMirror attr 이어야 한다** ② 마크를 없애고 attr 로 옮기는 대안은 `toggleMark` · 저장 어댑터가 멘션을 글자와 다르게 다뤄야 한다 — 편집 명령은 마크를 기준으로 짜여 있고 `addMark` 는 인라인 원자에도 마크를 건다(`node.isInline` 만 본다 — 소스로 확인). 거울이면 편집은 그대로다 ③ 형식은 `Mark.toJSON()` 배열이고 서식이 없으면 null — null attr 은 y-prosemirror 가 Y 에 쓰지 않아 서식 없는 원자의 Y.Doc 은 이전과 같다 ④ 기록을 끄지 않는 이유: y-prosemirror 는 한 상태 갱신에서 **마지막으로 적용된 트랜잭션**의 `addToHistory` 로 그 갱신 전체를 Y 에 쓸 때의 기록 여부를 정하고, undo 플러그인은 그 값이 false 인 Y 트랜잭션을 잡지 않는다(`captureTransaction`). 끄면 서식을 건 편집 전체가 협업 undo(F-05-15)에서 빠진다 — 실제 바인딩 + `yUndoPlugin` 검사로 확인했다. ⚠ `blockIdPlugin` 은 `addToHistory: false` 를 준다 — 6조각에서 분할 · 붙여넣기가 협업 undo 에서 빠지는지 본다(§7) ⑤ 에디터에 지금 붙인 이유: Phase 0 저장은 attr 을 보지 않아 동작이 같고, 6조각이 붙이기를 기억할 필요가 없다. 반사실: attr 을 안 채우면 3개 · 플러그인이 안 맞추면 4개 · 파사드가 안 되살리면 1개 · 읽기가 안 되살리면 3개 · 되살릴 때 `null` 을 넘기면 1개 · 기록을 끄면 협업 undo 검사 1개가 — 각각 그 주장의 검사만 실패(기록 끄기는 ProseMirror history 검사로는 가려지지 않는다 — 붙인 트랜잭션을 같은 항목으로 묶어서) |
+| 16 | **본문 정본을 행에서 Y.Doc 으로 넘길 때 명령들이 무엇을 바꾸는가** (정본 X-1 · X-3 · V-5 는 방향만 정했다 — "참조 노드만 제거" · "재삽입" · "서버가 Y.Doc 로드 → 적용 → update 1개") | **다섯 경로가 한 PR 에서** 본문 Y.Doc 을 거친다: 본문 저장(받은 문서로 Y.Doc 을 맞춘다 · origin `editor`) · 하위 페이지 생성(부모 본문 끝에 참조) · 휴지통(참조 빼기) · 복원(보존된 `order_key` 로 찾은 **앞 형제 뒤**) · 이동(옛 본문에서 빼고 새 본문 끝에). 참조가 사는 문서는 **가장 가까운 페이지 조상**의 것이다. **투영 먼저, 쌓기 나중.** 어느 페이지 본문에도 속하지 않는 이동 대상은 거부한다 (#73) | ① **반쯤 넘기지 않았다** — 행만 고치는 경로가 남으면 행과 Y.Doc 이 어긋나 다음 투영이 행을 지우거나 거부한다. 반사실: 이동이 옛 본문에서 빼지 않으면 새 검사 셋에 기존 이동 검사 둘까지 5개가 실패했다(옛 본문의 투영이 새 자리로 간 행을 다시 넣으려다 PK 로 던진다) ② **복원 자리**: 정본은 "재삽입"만 적었다. B2 가 `order_key` 를 보존하고 형제의 키는 본문 위치의 투영이므로 "그 키보다 앞선 살아 있는 형제 중 가장 뒤의 것 바로 뒤"가 원래 자리다 — 휴지통에 있는 동안 형제가 바뀌어도 가장 가까운 자리로 온다. 토글 안에 있던 페이지도 그 토글 안으로 온다. 맨 뒤에 넣는 반사실에서 자리 검사 2개가 실패 ③ **투영 먼저**: 투영이 거부하면(자식 페이지 누락 · 깊이 초과) 로그에 아무것도 쌓지 않는다 — 거부해도 쌓는 반사실에서 1개 실패 ④ **본문 저장의 origin 은 `editor`**: 경로는 REST 지만 에디터가 보낸 사용자 편집이다. 나머지 명령은 `api`(경로 ②) ⑤ **데이터베이스 대상 거부**: 참조를 둘 문서가 없고, 이전에 받던 동작은 데이터베이스 블록 밑에 페이지 행을 만들어 C-3(행은 data_source 밑)과 어긋났다 — 좁히는 쪽이다. 거부를 빼는 반사실에서 1개 실패 ⑥ 투영은 지금 명령과 같은 트랜잭션에서 **동기로** 돈다 — 정본의 디바운스 워커 · `projected_seq` 는 참여자 update 가 들어오는 5조각의 몫이다(§7). 반사실: 본문 저장이 Y.Doc 을 거치지 않으면 8개 · 휴지통이 참조를 빼지 않으면 3개 · 모르는 타입을 감싸지 않으면 1개가 더 실패했다 |
 
 §9-Q7("Enter 분할/Backspace 병합 규칙 — W4 이전 필수")은 마스터 문서에 `[해결 · W4]` 로 기록했다.
 
@@ -508,6 +530,7 @@ W7 항목별 상태:
 | 94 | **e2e 가 서버 본문을 API 로 바꾸기 전에 "서버에 닿았다 → 큐가 비었다" 순서로 기다린다 — 큐만 보는 대기는 경쟁이 남았다** (#69 · #70) | 저장 큐의 `resume` 은 못 보낸 문서를 "서버보다 새것"으로 화면에 되살린다. 그래서 편집이 큐에 남은 채 스크립트가 서버 본문을 덧붙이고 이동하면 덧붙인 블록이 화면에 없다 — main 에서도 이미지 절이 매번 이렇게 멈춰 그 뒤 절이 돌지 않았다. #69 는 IndexedDB 큐가 비기를 기다렸는데 3a 빌드에서 통과하고 3b 빌드에서 **같은 자리가 다시 실패했다**(큐가 비었다는 검사는 통과). 큐는 디바운스 뒤에 디스크에 쓰므로(`page-sync.ts` queue) 쓰기 전이면 비어 보이고, 이동할 때 pagehide 가 그 항목을 쓴다. 보내기 전에는 디스크에 먼저 쓰므로(`attempt`) **서버에 닿은 것을 먼저 보고** 그 뒤 큐가 비었다면 확정이다. 고친 뒤 206 / 208. 두 번째 실패를 3b 회귀로 오해하지 않으려고 원인을 코드에서 먼저 찾았다 |
 | 95 | **4조각은 원시 연산(4a)과 넘기기(4b)로 자른다 — 넘기기는 경로 전부와 한 번에** (#71) | 정본을 넘기는 순간 행을 직접 고치는 경로가 하나라도 남으면 Y.Doc 과 행이 어긋난다(§2 순서의 근거). 그래서 넘기기는 쪼갤 수 없고, 쪼갤 수 있는 것은 **아무 경로도 부르지 않는 앞부분**뿐이다 — 호출자 트랜잭션 안의 본문 세션(`openBodyDoc`) · ProseMirror 변경을 Y.Doc 에 쓰는 한 벌(`body-edit.ts`) · 동작 그대로의 프로젝터 추출(`projectBodyRows`). 세션을 **권한 밖**에 둔 이유: 하위 페이지 생성은 부모 본문의 `edit_content` 가 아니라 `create_child` 로 부모 문서에 참조를 넣는다. 테스트의 `edit` 도 같은 한 벌을 쓰게 해 서버와 테스트가 갈라지지 않는다. 반사실: 받은 actor · origin 을 무시하면 2개 · 한 번만 쌓기 가드를 빼면 1개 · 적용 실패 세션의 쌓기 가드를 빼면 1개 · 서식 거울을 빼면 1개 · 편집 스키마로 읽으면 3개가 실패했다. **변경이 없을 때 돌아가는 줄은 빼도 실패가 0개** — `updateYFragment` 가 같은 문서에서 아무것도 쓰지 않아서다. 코드는 두고 "빠른 길일 뿐"으로 주석을 고쳤다 |
 | 96 | **본문 저장이 거부될 때 투영이 쓰다 만 것이 커밋되고 있었다 — 재현하고 고쳤다** (#72) | `withTransaction` 은 콜백이 **반환하면 커밋**한다. 그런데 프로젝터는 깊이 초과(`page_ref_too_deep`)를 지우기 · 넣기 · 임시 키를 쓴 **뒤에** 알고 거부를 반환했다 — 옮기려던 자식 페이지의 `order_key` 가 임시 키 `'~' || id` 로 남았다(형제 맨 뒤로 보이다가 다음 성공한 저장에서 제자리로 온다). 기존 검사는 자식의 `ancestor_path` 만 봤고 `relocateSubtree` 가 경로를 쓰기 전에 던지므로 늘 통과했다. 4b 가 거부 경로에서 Y.Doc 쓰기까지 되돌려야 해서 트랜잭션 의미를 읽다가 발견했다. 검사를 "그 페이지 아래 행 전체가 거부 전후로 같다"로 넓혀 **먼저 실패시키고**, 투영을 savepoint 안에서 돌려 거부면 던져 되돌리게 했다 — 호출자가 되돌리기를 잊을 수 없는 자리다. 반사실: savepoint 를 빼면 그 검사만 실패 |
+| 97 | **"세션을 먼저 열고 행을 쓴다"는 참조가 둘이 되는 것을 막지 않았다 — 막는 것은 넣기의 멱등성이다** (#73) | 4a 에서 "하위 페이지 행을 먼저 쓰고 부모 본문을 처음 열면 옮기기가 참조를 이미 담아, 명령이 넣으면 둘이 된다"고 적고 순서를 규칙으로 정했다. 4b 에서 하위 페이지 생성의 순서를 뒤집는 반사실을 돌리자 **검사가 전부 통과했다** — `page-refs.ts` 의 넣기가 이미 있는 참조를 넣지 않고, 옮기기가 담는 자리(행 순서의 끝)와 명령이 넣는 자리가 같아서다. 순서 규칙은 두되("명령이 자기가 바꾼 것을 자기가 쓴다") "둘이 된다"는 주석을 `body-write.ts` · `doc-store.ts` · `page.ts` 와 §2 에서 사실대로 고쳤다. 옮기기가 참조를 담는다는 사실은 `doc-store.db.test.ts` ⑦ 이, 넣기의 멱등성은 `page-refs.test.ts` ① 이 고정한다 |
 
 ---
 
@@ -764,6 +787,11 @@ dev 재시작·`.next/dev` 삭제로 풀린 적도 있지만 재현이 안 된�
 | **수선과 동시에 옮긴 블록에 친 글자** | 옮기는 수선(그룹 합치기 · 자식 올리기)은 옮긴 블록을 새 요소로 만든다. 수선과 **동시에** 그 블록에 친 글자는 지워진 옛 요소에 들어가 사라진다 — 동시 순서 변경과 같은 한계. 위반이 생긴 append 가 곧바로 고치므로 창은 짧다 — 재지 않았다 | `src/lib/collab/repair.ts` |
 | **수선 전까지 에디터 문서가 스키마를 어긴다** | 바인딩은 Y.Doc 을 그대로 비추므로 수선이 도착하기 전까지 한 블록에 내용 줄 둘 · 루트 그룹 둘 같은 문서를 들고 있다. 그 자리를 건드리는 스텝은 ProseMirror 가 거부한다(던진다). 편집 명령 · 플러그인은 이 모양을 전제하지 않았다 — `pm-blocks.ts` 는 첫 루트 그룹만 평탄화하고, 블록 선택 · 핸들 · 접힘은 보지 않았다. 6조각에서 본다 | `src/lib/collab/collab-schema.ts` · `src/lib/editor/pm-blocks.ts` |
 | **파사드는 y-prosemirror 내부 구현에 기댄다** | 변환이 스키마의 `node` · `mark` · `text` 를 부른다는 것(1.3.7 · package-lock 고정). 올릴 때 `collab-schema.test.ts` ② 의 실제 바인딩 검사가 먼저 깨진다 | `src/lib/collab/collab-schema.ts` |
+| **문서에서 빠진 살아 있는 하위 페이지 — 정본은 휴지통 전이, 지금은 거부** | 정본 프로젝터 의사코드는 "`type='page'` 인데 doc 에 없으면 `lifecycle='trashed'` 로 전이"다. 지금 프로젝터는 `page_ref_missing` 으로 **거부**한다(Phase 0 규칙 — 낡은 탭이 하위 페이지를 지우지 못하게). 4b 에서는 모든 쓰기가 명령이라 충분하다. 참여자가 참조 노드를 지울 수 있게 되는 5 · 6조각에서 정본대로 바꿔야 한다 — 거부하면 이미 받은 CRDT update 와 행이 어긋난다 | `src/lib/block/save-page-body.ts` |
+| **투영이 쓰기와 같은 트랜잭션에서 동기로 돈다** | 정본은 "디바운스 실행 · 페이지당 단일 워커"(p95 < 2s)이고 `projected_seq` 를 둔다. 지금은 명령마다 본문 전체를 투영하고 `projected_seq` 를 쓰지 않는다 — 명령은 드물어 괜찮지만, 참여자 update 가 초당 여러 번 오는 5조각에서는 비용이다. 잡 워커가 없다(마스터 문서: "스케줄러는 하나만") | `src/lib/block/body-write.ts` |
+| **하위 페이지 제목을 바꿔도 부모 본문의 참조 노드 title 은 그대로** | 참조 노드의 `title` attr 은 표시용이고 투영은 무시한다. 편집기는 행(`rowsToDoc`)에서 읽어 지금은 문제가 없다. 에디터가 Y.Doc 을 직접 비추는 6조각에서 낡은 제목이 보인다 | `src/lib/block/page-refs.ts` · `page.ts` `renamePage` |
+| **잠금 순서 규칙에 병행 검사가 없다** | 명령은 본문 페이지 행 → 대상 · 옮길 행 → 스냅샷 순서로 잡고, 이동은 두 본문 페이지를 id 순으로 잡는다. 휴지통 · 이동 · 저장을 동시에 부르는 교착 검사는 쓰지 않았다 | `trash.ts` · `move-page.ts` |
+| **Phase 0 편집기의 PUT 본문 저장은 Y.Doc 을 통째로 받은 문서로 맞춘다** | 참여자가 없는 지금은 괜찮다. 5조각의 협업 서버와 Phase 0 편집기가 같은 페이지를 동시에 쓰면, 낡은 문서를 PUT 한 쪽이 다른 쪽의 CRDT 편집을 되돌린다(`expectedVersion` 이 막는 것은 행 버전뿐이다). 6조각에서 편집기가 바인딩으로 바뀔 때까지 두 경로를 한 페이지에 섞지 않는다 | `src/lib/block/save-page-body.ts` |
 | **수선마다 새 client id** | 수선은 사본(무작위 client id)에서 만든 update 라 수선 한 번마다 state vector 에 client 가 하나 는다. 드물어서 두었다. 고정 id 는 수선이 잠금 밖에서 한 번이라도 돌면 같은 id · clock 의 구조가 둘 생겨 문서가 깨지므로 쓰지 않았다 | `src/lib/collab/repair.ts` |
 | **append 마다 본문 전체를 읽어 적용한다** | 검증(깨짐 · pending · 바뀐 부분)을 위해 스냅샷 + 합치지 않은 update(최대 `COMPACT_EVERY` = 100개)로 Y.Doc 을 만든다. 협업 서버가 초당 여러 번 저장하면 비용이 된다 — 협업 서버(5조각)는 메모리에 Y.Doc 을 들고 있으므로 그때 경로를 나눌 수 있다. 재지 않았다 | `src/lib/collab/doc-store.ts` |
 | **Y.Doc 경로의 문서 전체 크기 상한이 없다** | update 한 개는 `MAX_BODY_BYTES`(1 MiB)로 막지만 쌓인 본문(스냅샷)의 크기는 보지 않는다. Phase 0 저장 경로의 본문 한도(F-12-16)에 해당하는 것이 아직 없다 | 같은 곳 |
@@ -808,34 +836,31 @@ Phase 0(MVP)이 닫혔다 — W1~W8 전부. Phase 1 의 첫 항목 익스포트(
 지금은 CRDT 동시편집(마스터 문서 §5.2 의 2번 — 착수 순서는 고정이다)을 6조각으로 나눠 진행 중이다.
 HANDOFF §2 의 CRDT 조각 표 · 순서 근거 · "N조각에서 확인한 것"을 먼저 읽어라.
 
-끝난 것 — 전부 **아직 어떤 경로도 부르지 않는다**(앱 동작은 Phase 0 그대로, 행이 정본):
+끝난 것 — **본문의 정본이 행에서 Y.Doc 으로 넘어갔다**(4b). 본문 행은 Y.Doc 의 투영이고, 편집기는 아직 Phase 0 그대로(PUT 본문 저장)다:
   - 1조각(#66) src/lib/collab/ydoc.ts · normalize.ts — Y.Doc 본문 계약 · 동시 편집이 만든 구조 위반 정규화
   - 2조각(#67) src/lib/collab/doc-store.ts — doc_update 로그(append · 페이지 안 seq · 압축 · Phase 0 페이지 옮기기)
   - 3a조각(#69) src/lib/collab/collab-schema.ts · repair.ts — y-prosemirror 연쇄 삭제 막기(§3.2-14, 다시 판단하지 마라):
     변환에 넘기는 스키마 파사드 collabSchema · 루트 doc: blockGroup+ · 구조 위반 수선은 appendDocUpdate 한 곳
   - 3b조각(#70) src/lib/editor/atom-marks.ts — 멘션 · 수식 서식을 노드 attr marks 에 비춘다(§3.2-15, 다시 판단하지 마라)
-  - 4a조각(#71) src/lib/collab/doc-store.ts(openBodyDoc) · body-edit.ts · block/save-page-body.ts(projectBodyRows) —
-    넘기기 전의 원시 연산. 아직 어떤 경로도 부르지 않는다
+  - 4a조각(#71) src/lib/collab/doc-store.ts(openBodyDoc) · body-edit.ts · block/save-page-body.ts(projectBodyRows) — 원시 연산
+  - 4b조각(#73) src/lib/block/body-write.ts · page-refs.ts — 본문 저장 · 하위 페이지 생성 · 휴지통 · 복원 · 이동이 본문 Y.Doc 을
+    거친다(§3.2-16, 다시 판단하지 마라). 명령 뒤 "행 = Y.Doc 의 투영"은 testing/body-invariant.ts 로 확인한다
 
-다음 작업은 **4b조각 — 넘기기**다. 여기서 본문의 정본이 행에서 Y.Doc 으로 넘어간다(판결 X-1). 되돌리기 가장 비싸다.
-HANDOFF §2 의 "4a조각이 정한 것 — 4b 가 지켜야 할 것"을 먼저 읽어라.
-  ① **반쯤 넘기지 않는다.** PUT body · 하위 페이지 생성(createPage 의 parentPageId) · 휴지통 · 복원 · 이동이 한 PR 에서
-     함께 부모 Y.Doc 을 거친다. 하나라도 행을 직접 고치면 그 페이지의 Y.Doc 과 행이 어긋나고, 다음 투영이 그 행을
-     지우거나 거부한다
-  ② 명령의 모양: 권한 검사 → 페이지 행 FOR UPDATE → openBodyDoc(부모) → (행 쓰기) → change(참조 노드 넣기 · 빼기) →
-     commit({ actorId, origin: 'api' }) → projectBodyRows(부모, read().doc). **세션을 먼저 열고 행을 쓴다**
-  ③ 정할 것: 복원이 참조 노드를 넣을 자리(B2 가 보존한 order_key 로 형제 사이를 찾을지 · 맨 뒤인지) · 이동 대상이 토글 같은
-     컨테이너일 때 그 컨테이너를 가진 페이지의 문서 · 잠금 순서(페이지 행 → doc_snapshot 한 방향)
-  ④ 검사를 먼저 만든다: 모든 경로 뒤 "행 = 부모 Y.Doc 의 투영"을 확인하는 도우미. 기존 DB 테스트(save-page-body · page ·
-     trash · move-page)가 그대로 통과해야 한다. 화면이 기대므로 build · e2e 필수
-  ⑤ 착수 전에 읽을 것: 00-canonical-data-model.md V-5 · X-1 · X-3 · 프로젝터 의사코드(§3.11 뒤 "block 프로젝터") ·
-     src/lib/block/page.ts(createPage) · trash.ts · move-page.ts · save-page-body.ts ·
-     src/app/w/[workspaceId]/[pageId]/body-editor.tsx(/page 만들기 — 참조 노드를 에디터가 넣는다)
+다음 작업은 **5조각 — 협업 서버**(Hocuspocus 자체 호스팅 · 포트 3001)다. 참여자의 update 를 받는 첫 경로다.
+  ① 먼저 자르는 법을 정한다(§4). 후보: 서버 골격(연결 · join 권한 · 문서 로드 = loadDocState) → update 저장(appendDocUpdate ·
+     결과의 repair 를 받은 update 와 함께 퍼뜨린다) → 참여자 경로의 투영(행 갱신) → 권한 회수 시 끊기(F-05-19). 에디터 바인딩(6조각)
+     전이라 참여자는 테스트의 Hocuspocus 클라이언트다
+  ② HANDOFF §7 의 CRDT 항목 중 5조각에서 막히는 것부터 본다: 문서에서 빠진 하위 페이지를 **거부**하는 프로젝터(참여자가 참조 노드를
+     지우면 정본대로 휴지통 전이로 바꿔야 한다 — 이미 받은 update 를 거부할 수 없다) · 동기 투영의 비용(디바운스 · projected_seq) ·
+     Phase 0 PUT 과 참여자 경로를 한 페이지에 섞지 않기 · 스키마 버전 게이트 · 잠금 순서(본문 페이지 행 → 스냅샷)
+  ③ 의존성을 넣기 전에 라이선스 · 버전을 확인한다(@hocuspocus/server · provider — npm run check:licenses 가 막는다)
+  ④ 착수 전에 읽을 것: 05-collaboration-sync.md F-05-02 · F-05-19 · 정본 V-5 · X-1 프로젝터 의사코드 ·
+     src/lib/collab/doc-store.ts · repair.ts 머리말 · src/lib/block/body-write.ts 머리말 · HANDOFF §2 의 3a · 4a · 4b 항목
 
 지켜야 할 것:
-  - 4조각 전까지 어떤 경로도 Y.Doc 을 쓰지 않는다. 4조각은 정본을 넘기며 행을 직접 고치는 경로
-    (createPage 의 참조 삽입 · 휴지통 · 복원 · 이동 · PUT body) 전부와 **함께** 와야 한다 —
-    반쯤 넘기면 프로젝터가 그 행을 지운다
+  - 본문 행(parent_type='block')을 직접 고치는 경로를 새로 만들지 마라. 본문을 바꾸는 명령은 block/body-write.ts 의
+    openPageBody → (행 쓰기) → change → finish 를 거친다 — 행만 고치면 Y.Doc 과 어긋나고 다음 투영이 그 행을 지우거나
+    거부한다. 검사에서 SQL 로 본문 행을 넣지 마라(같은 이유)
   - Y.Doc 은 readBodyYDoc 으로만 읽는다. y-prosemirror 변환(initProseMirrorDoc · ySyncPlugin)에는 반드시 collabSchema 를
     넘긴다 — blockSchema 를 넘기면 구조 위반을 만난 Y 요소를 지운다. 바인딩 상태는
     EditorState.create({ schema: collabSchema, plugins }) 로 만들고 doc 을 넘기지 않는다(넘기면 state.schema 가 blockSchema 다)
@@ -867,7 +892,7 @@ PR 본문에는 "왜 이렇게 했는가"를 쓴다 — 정본과 다르게 한 
 
 시간을 아끼려면 (전부 이전 세션에서 실제로 당한 것, 자세한 건 HANDOFF §6):
 - 시작할 때 `npm run db:up` 을 한 번 돌린다. `npm test` 만 돌리면 DB 테스트가
-  **조용히 빠진다**(카운트에도 안 잡힌다). 1556개가 다 돌아야 CI 의 db 잡과 같다.
+  **조용히 빠진다**(카운트에도 안 잡힌다). 1577개가 다 돌아야 CI 의 db 잡과 같다.
   이 PC 에서는 외부 도구 검사가 셸에 따라 1~2개 skip 된다 — PowerShell 은 unzip(Git 의 unzip 은 Git Bash PATH 에만
   있다), Git Bash 는 bsdtar(Git 의 tar 는 GNU tar 다)를 못 찾는다. 정상이다(CI 는 설치하고 skip 0 이어야 한다)
 - CI 결과는 **HEAD 커밋의 실행**을 찾아서 본다(`gh run list --json databaseId,headSha`

@@ -24,6 +24,8 @@ import { loadPageBody, savePageBody } from './save-page-body.ts'
 import { listTrash, purgePage, restorePage, trashPage, TrashError } from './trash.ts'
 import { textRun } from '../contracts/rich-text.ts'
 import { asBlockId, type BlockId } from '../ids.ts'
+import type { EditorBlock } from '../editor/document.ts'
+import { assertBodyMatchesYDoc } from '../testing/body-invariant.ts'
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'
 
@@ -293,6 +295,58 @@ describe('listTrash — 삭제 루트만', () => {
       false,
       '휴지통 목록으로 남의 페이지 제목이 유출된다',
     )
+  })
+})
+
+// ── 부모 본문 (CRDT 4b) ───────────────────────────────────────────────
+
+describe('휴지통 · 복원 — 부모 본문의 참조 노드 (X-3 · CRDT 4b)', () => {
+  const para = (text: string): EditorBlock => ({ id: randomUUID(), type: 'paragraph', title: [textRun(text)] })
+  const ref = (id: string): EditorBlock => ({ id, type: 'page', title: [] })
+  const idsOf = (blocks: readonly EditorBlock[]): string[] => blocks.flatMap((b) => [b.id, ...idsOf(b.children ?? [])])
+
+  test('★ 버리면 부모 본문에서 참조가 빠지고, 되살리면 그 자리로 돌아온다 — 두 번 모두 행과 Y.Doc 이 같다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const parent = await page('부모')
+    const child = await page('자식', parent.id)
+    const [a, b] = [para('앞'), para('뒤')]
+    assert.ok((await savePageBody(fx.owner.ctx, parent.id, { blocks: [a, ref(child.id), b] })).ok)
+
+    await trashPage(fx.owner.ctx, child.id)
+    assert.deepEqual(idsOf((await assertBodyMatchesYDoc(fx.owner.ctx, parent.id, '버린 뒤')).blocks), [a.id, b.id])
+
+    await restorePage(fx.owner.ctx, child.id)
+    assert.deepEqual(idsOf((await assertBodyMatchesYDoc(fx.owner.ctx, parent.id, '되살린 뒤')).blocks), [a.id, child.id, b.id])
+  })
+
+  test('★ 토글 안에 있던 하위 페이지는 그 토글 안 원래 자리로 돌아온다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const parent = await page('부모')
+    const child = await page('자식', parent.id)
+    const [c1, c2] = [para('하나'), para('둘')]
+    const toggle: EditorBlock = { ...para('토글'), type: 'toggle', children: [c1, ref(child.id), c2] }
+    assert.ok((await savePageBody(fx.owner.ctx, parent.id, { blocks: [toggle] })).ok)
+
+    await trashPage(fx.owner.ctx, child.id)
+    assert.deepEqual(idsOf((await assertBodyMatchesYDoc(fx.owner.ctx, parent.id, '버린 뒤')).blocks), [toggle.id, c1.id, c2.id])
+
+    await restorePage(fx.owner.ctx, child.id)
+    assert.deepEqual(
+      idsOf((await assertBodyMatchesYDoc(fx.owner.ctx, parent.id, '되살린 뒤')).blocks),
+      [toggle.id, c1.id, child.id, c2.id],
+    )
+  })
+
+  test('하위 페이지 하나뿐인 본문에서 버려도 빈 줄 행이 남지 않는다 — 되살리면 다시 그것 하나다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const parent = await page('부모')
+    const child = await page('자식', parent.id)
+
+    await trashPage(fx.owner.ctx, child.id)
+    assert.deepEqual((await assertBodyMatchesYDoc(fx.owner.ctx, parent.id, '버린 뒤')).blocks, [])
+
+    await restorePage(fx.owner.ctx, child.id)
+    assert.deepEqual(idsOf((await assertBodyMatchesYDoc(fx.owner.ctx, parent.id, '되살린 뒤')).blocks), [child.id])
   })
 })
 

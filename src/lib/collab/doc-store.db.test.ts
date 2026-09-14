@@ -77,11 +77,24 @@ const para = (text: string, id: string = randomUUID()): EditorBlock => ({
   title: text === '' ? [] : [textRun(text)],
 })
 
+/**
+ * 본문을 저장한 뒤 그 페이지의 로그를 지운다 — **4b 이전에 저장된 Phase 0 페이지**(행만 있고 로그가 없다)를 흉내 낸다.
+ *
+ * 4b 부터 본문 저장이 곧 Y.Doc 옮기기 + 쓰기라서, 그대로 두면 "처음 읽을 때 옮긴다"는 이 파일의 검사들이 이미 옮겨진
+ * 페이지를 본다. 운영 데이터에는 4b 이전에 저장된 페이지가 남아 있으므로 옮기기 경로는 여전히 필요하다.
+ */
 async function saveBody(actor: Actor, pageId: string, edit: (doc: EditorDoc) => EditorDoc): Promise<void> {
   const body = await loadPageBody(actor.ctx, pageId as never)
   assert.ok(body !== null)
   const saved = await savePageBody(actor.ctx, pageId as never, edit(body.doc), { expectedVersion: body.version })
   assert.equal(saved.ok, true, JSON.stringify(saved))
+  await forgetYDoc(pageId)
+}
+
+/** 이 페이지의 로그 · 스냅샷을 지운다 — 행만 남은 Phase 0 페이지로 되돌린다. */
+async function forgetYDoc(pageId: string): Promise<void> {
+  await query(`DELETE FROM doc_update WHERE page_id = $1`, [pageId])
+  await query(`DELETE FROM doc_snapshot WHERE page_id = $1`, [pageId])
 }
 
 async function load(actor: Actor, pageId: string): Promise<DocState> {
@@ -487,6 +500,8 @@ describe('⑦ 본문 세션 — 서버 명령 경로 ② 의 원시 연산 (4a)'
     const { owner } = await freshWorkspace()
     const parent = await mkPage(owner, '부모')
     const child = await mkPage(owner, '하위', parent.id)
+    // 4b 부터 하위 페이지 생성이 부모 본문을 이미 옮겼다 — 4b 이전 페이지로 되돌려 옮기기를 본다.
+    await forgetYDoc(parent.id)
 
     const doc = await withTransaction(async (tx) => (await openBodyDoc(tx, owner.ctx, parent.id)).read().doc)
     assert.deepEqual(doc.blocks.map((b) => [b.id, b.type]), [[child.id, 'page']])
