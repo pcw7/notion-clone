@@ -41,9 +41,12 @@
  * `move-page.ts` 의 `relocateSubtree` 가 하고, 여기서는 부르기만 한다 —
  * 두 벌로 만들면 한쪽만 고쳐져 권한이 조용히 틀어진다.
  *
- * 그리고 문서에서 자식 페이지가 빠져 있으면 **저장을 거부한다** — 낡은 에디터
- * 탭 하나가 하위 페이지를 통째로 지워버리는 경로를 만들지 않기 위해서다.
- * 하위 페이지 삭제는 휴지통 API 로만 한다.
+ * 그리고 문서에서 살아 있는 자식 페이지가 빠져 있으면 **어디서 온 문서인가**로 가른다(CRDT 5b · HANDOFF §3.2-19).
+ *
+ *   - 본문 저장(PUT) · 명령 — **거부한다.** 문서를 통째로 받으므로 낡은 에디터 탭 하나가 그 사이 생긴 하위 페이지를
+ *     모른 채 보내면 "지웠다"와 "몰랐다"를 가를 수 없다. 하위 페이지 삭제는 휴지통 API 로 한다
+ *   - 참여자 update — **휴지통으로 보낸다**(정본 프로젝터). Yjs update 의 삭제는 보낸 쪽이 본 항목만 가리키므로 빠졌다는
+ *     것은 지웠다는 것이다. 휴지통 명령과 같은 쓰기 · 같은 권한이다(`trash-rows.ts`)
  */
 
 import type { SessionContext } from '../auth/session-context.ts'
@@ -57,6 +60,7 @@ import { can } from '../permissions/levels.ts'
 import { effectiveCaps } from '../permissions/effective.ts'
 import { orderKeyBetween } from './order-key.ts'
 import { relocateSubtree, MoveError } from './move-page.ts'
+import { pageChangeAccess, trashSubtreeRows } from './trash-rows.ts'
 import { openPageBody } from './body-write.ts'
 import { docToPm } from '../editor/pm-adapter.ts'
 import {
@@ -261,7 +265,10 @@ export async function savePageBody(
       tr.replaceWith(0, tr.doc.content.size, next.content)
     })
     const result = await body.finish()
-    return result.ok ? { ok: true, version: result.version, writes: result.writes } : result
+    if (result.ok) return { ok: true, version: result.version, writes: result.writes }
+    // 본문 저장은 빠진 하위 페이지를 거부하므로(`refuse` — 머리말) 버릴 권한을 묻는 거부는 나올 수 없다.
+    if (result.reason === 'page_ref_forbidden') throw new Error(`본문 저장의 투영이 휴지통 권한을 물었다: ${pageId}`)
+    return result
   })
 }
 
@@ -274,7 +281,29 @@ export type ProjectablePage = {
   readonly properties: { title?: unknown } | null
 }
 
-export type ProjectBodyResult = Extract<SaveBodyResult, { ok: true }> | Extract<SaveBodyResult, { reason: 'page_ref_missing' | 'page_ref_too_deep' }>
+/** 본문에서 빠진 **살아 있는** 하위 페이지를 어떻게 하는가 — HANDOFF §3.2-19. */
+export type MissingPageRefs =
+  /**
+   * 거부한다(`page_ref_missing`) — 문서를 **통째로** 받는 본문 저장(PUT) · 명령. 낡은 탭은 그 사이 생긴 하위 페이지를 모르고,
+   * 통째로 받은 문서에서는 "지웠다"와 "몰랐다"를 가를 수 없다
+   */
+  | 'refuse'
+  /**
+   * 휴지통으로 보낸다(정본 프로젝터 · CRDT 5b) — 참여자 update. Yjs update 의 삭제는 보낸 쪽이 **본 항목**만 가리키므로
+   * 빠졌다는 것은 지웠다는 것이다. 버릴 권한이 없으면 거부한다(`page_ref_forbidden`)
+   */
+  | 'trash'
+
+export type ProjectOptions = {
+  /** 없으면 `refuse`. */
+  readonly missingPageRefs?: MissingPageRefs
+}
+
+export type ProjectBodyResult =
+  | Extract<SaveBodyResult, { ok: true }>
+  | Extract<SaveBodyResult, { reason: 'page_ref_missing' | 'page_ref_too_deep' }>
+  /** `trash` 모드에서 빠진 하위 페이지를 버릴 권한(§3.2-18)이 없다. 볼 수 없는 하위 페이지도 같은 이유다. */
+  | { readonly ok: false; readonly reason: 'page_ref_forbidden'; readonly pageId: string }
 
 type ProjectRefusal = Exclude<ProjectBodyResult, { ok: true }>
 
@@ -296,20 +325,24 @@ class ProjectionRefused extends Error {
  * Y.Doc 으로 바꾸면 서버 명령들이 본문 세션의 결과(`readBodyYDoc`)를 이 함수에 넘긴다 — 머리말의 "Phase 1 에서
  * 바뀌는 것은 상류뿐이다".
  *
+ * 본문에서 빠진 살아 있는 하위 페이지는 `options.missingPageRefs` 가 정한다 — 거부(기본) 또는 휴지통 전이(CRDT 5b ·
+ * `MissingPageRefs`).
+ *
  * **거부하면 아무것도 쓰지 않는다.** 깊이 초과(`page_ref_too_deep`)는 지우기 · 넣기 · 임시 키를 쓴 **뒤에**
  * 알게 되는데, `withTransaction` 은 콜백이 반환하면 커밋한다 — 거부를 반환하던 동안 옮기려던 자식 페이지의
  * `order_key` 가 임시 키(`'~' || id`)로 커밋돼 남았다(검사가 재현했다). 그래서 투영을 savepoint 안에서 돌리고
- * 거부면 던져 되돌린 뒤 거부를 돌려준다 — 호출자가 되돌리기를 잊을 수 없다.
+ * 거부면 던져 되돌린 뒤 거부를 돌려준다 — 호출자가 되돌리기를 잊을 수 없다. 휴지통으로 보낸 하위 페이지도 함께 되돌아간다.
  */
 export async function projectBodyRows(
   tx: Tx,
   ctx: SessionContext,
   page: ProjectablePage,
   doc: EditorDoc,
+  options: ProjectOptions = {},
 ): Promise<ProjectBodyResult> {
   try {
     return await tx.savepoint('project_body', async () => {
-      const result = await projectRows(tx, ctx, page, doc)
+      const result = await projectRows(tx, ctx, page, doc, options.missingPageRefs ?? 'refuse')
       if (!result.ok) throw new ProjectionRefused(result)
       return result
     })
@@ -324,6 +357,7 @@ async function projectRows(
   ctx: SessionContext,
   page: ProjectablePage,
   doc: EditorDoc,
+  missingPageRefs: MissingPageRefs,
 ): Promise<ProjectBodyResult> {
   const pageId = page.id
   const scope = await readScope(tx, ctx, pageId)
@@ -334,9 +368,20 @@ async function projectRows(
   const livePageRefs = scope.filter((r) => r.type === PAGE_TYPE && r.lifecycle === 'live')
 
   const missing = livePageRefs.filter((r) => !docIds.has(r.id)).map((r) => r.id)
-  if (missing.length > 0) {
+  if (missing.length > 0 && missingPageRefs === 'refuse') {
     // 낡은 탭이 하위 페이지를 지워버리는 경로를 만들지 않는다.
     return { ok: false, reason: 'page_ref_missing', missing } as const
+  }
+
+  // 정본 프로젝터: "type='page' 인데 doc 에 없으면 lifecycle='trashed' 로 전이"(§3.4 · X-3). 참조 노드는 이미 빠졌으므로
+  // 행만 버린다 — 휴지통 명령과 같은 쓰기 · 같은 권한(`trash-rows.ts` · §3.2-18). 하나라도 버릴 수 없으면 거부한다 — 일부만
+  // 버리고 나머지를 남기면 그 참조가 빠진 Y.Doc 과 살아 있는 행이 어긋난다. 이미 버린 것은 savepoint 가 되돌린다.
+  // 버린 페이지의 `order_key` 는 그대로 남아(B2) 아래의 키 재할당이 비켜간다 — 되살리면 원래 자리다.
+  for (const id of missing) {
+    if ((await pageChangeAccess(tx, ctx, id)) !== 'ok') {
+      return { ok: false, reason: 'page_ref_forbidden', pageId: id } as const
+    }
+    await trashSubtreeRows(tx, ctx, id)
   }
 
   // ── 자리를 옮긴 자식 페이지 ───────────────────────────────────────
@@ -569,7 +614,9 @@ async function projectRows(
     toInsert.length > 0 ||
     toUpdate.length > 0 ||
     keyChanges.length > 0 ||
-    pageRefMoves.length > 0
+    pageRefMoves.length > 0 ||
+    // 휴지통으로 보낸 하위 페이지가 있다 — 본문이 보이는 모양이 바뀌었다. 거부 모드는 빠진 것이 있으면 여기까지 오지 않는다.
+    missing.length > 0
 
   // X-6: `block.version` 은 페이지 단위 단조 변경 카운터이고 검색 인덱스의
   // external version 이다. **바뀐 게 없으면 올리지 않는다** — 올리면

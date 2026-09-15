@@ -1,5 +1,5 @@
 /**
- * 페이지 본문을 바꾸는 한 단위 — 서버 명령 경로 ② · 참여자 경로 ①(판결 V-5) · F-05-01 · CRDT 4b조각 · 5a조각
+ * 페이지 본문을 바꾸는 한 단위 — 서버 명령 경로 ② · 참여자 경로 ①(판결 V-5) · F-05-01 · CRDT 4b조각 · 5a조각 · 5b조각
  *
  * 정본: 판결 X-1(본문 순서의 정본은 Y.Doc, `order_key` 는 프로젝터가 쓰는 파생) · X-3 · V-5(명령 1건 = 원자성 단위)
  *
@@ -17,8 +17,8 @@
  * 참조를 넣지 않는다(`page-refs.ts`). 하위 페이지 생성의 순서를 뒤집는 반사실에서 검사가 전부 통과했다 — 둘이 되는 것을 막는
  * 것은 이 순서가 아니라 넣기의 멱등성이다. 순서는 "명령이 자기가 바꾼 것을 자기가 쓴다"를 지키려고 둔다.
  *
- * ⑤에서 투영이 먼저인 이유: 투영이 거부하면(자식 페이지 누락 · 깊이 초과) 로그에 아무것도 쌓지 않아야 한다. 프로젝터는
- * 거부를 savepoint 로 되돌리므로 행도 그대로다.
+ * ⑤에서 투영이 먼저인 이유: 투영이 거부하면(자식 페이지 누락 · 깊이 초과 · 버릴 권한 없음) 로그에 아무것도 쌓지 않아야 한다.
+ * 프로젝터는 거부를 savepoint 로 되돌리므로 행도 그대로다.
  */
 
 import type { SessionContext } from '../auth/session-context.ts'
@@ -29,12 +29,24 @@ import type { EditorDoc } from '../editor/document.ts'
 import { isUuid } from '../ids.ts'
 import { effectiveCaps } from '../permissions/effective.ts'
 import { can } from '../permissions/levels.ts'
-import { projectBodyRows, type ProjectablePage, type ProjectBodyResult } from './save-page-body.ts'
+import {
+  projectBodyRows,
+  type MissingPageRefs,
+  type ProjectablePage,
+  type ProjectBodyResult,
+} from './save-page-body.ts'
 
 /** 투영이 받아들이면 로그에 쌓은 결과(`commit`)까지, 거부하면 거부만. */
 export type BodyWriteResult =
   | (Extract<ProjectBodyResult, { ok: true }> & { readonly commit: BodyCommit })
   | Exclude<ProjectBodyResult, { ok: true }>
+
+export type FinishOptions = {
+  /** 압축 기준. 없으면 `COMPACT_EVERY`. */
+  readonly compactEvery?: number
+  /** 본문에서 빠진 살아 있는 하위 페이지를 어떻게 하는가. 없으면 거부(`refuse`) — `save-page-body.ts` `MissingPageRefs`. */
+  readonly missingPageRefs?: MissingPageRefs
+}
 
 export type PageBodyWrite = {
   readonly pageId: string
@@ -48,7 +60,7 @@ export type PageBodyWrite = {
   /** 참여자가 보낸 update 를 적용한다(`appendDocUpdate`). 실패를 돌려주면 이 단위는 끝낼 수 없다. */
   applyUpdate(update: Uint8Array): 'applied' | 'invalid_update' | 'missing_dependencies'
   /** 바뀐 본문을 행으로 투영하고, 받아들여지면 로그에 쌓는다. 거부면 아무것도 쌓지 않고 거부를 돌려준다. */
-  finish(options?: { readonly compactEvery?: number }): Promise<BodyWriteResult>
+  finish(options?: FinishOptions): Promise<BodyWriteResult>
 }
 
 /**
@@ -80,7 +92,9 @@ export async function openPageBody(
            FROM block WHERE id = $1 AND workspace_id = $2`,
         [pageId, ctx.workspaceId],
       )
-      const result = await projectBodyRows(tx, ctx, page, session.read().doc)
+      const result = await projectBodyRows(tx, ctx, page, session.read().doc, {
+        missingPageRefs: options.missingPageRefs,
+      })
       if (!result.ok) return result
       const commit = await session.commit({ actorId: ctx.userId, origin, compactEvery: options.compactEvery })
       return { ...result, commit }
@@ -134,8 +148,8 @@ export type AppendFailure =
   | 'invalid_update'
   /** 앞선 update 가 없어 전부 적용되지 않는다. 보낸 쪽이 state vector 로 다시 맞춰야 한다. */
   | 'missing_dependencies'
-  /** 투영이 받지 않는다 — 살아 있는 하위 페이지의 참조가 문서에서 빠졌다. */
-  | 'page_ref_missing'
+  /** 투영이 받지 않는다 — 참조를 지운 살아 있는 하위 페이지를 버릴 권한이 없다(§3.2-18). */
+  | 'page_ref_forbidden'
   /** 투영이 받지 않는다 — 자리를 옮긴 하위 페이지의 서브트리가 깊이 상한을 넘는다. */
   | 'page_ref_too_deep'
 
@@ -168,8 +182,10 @@ export type AppendOptions = {
  *   - 권한을 쓰기마다 본다(F-05-19 "매 mutation 서버 재검사")
  *   - 바뀐 것이 없으면(이미 받은 것의 재전송) 투영을 건너뛴다 — 빠른 길일 뿐이다. 빼도 투영은 아무것도 쓰지 않고 쌓기는
  *     쌓지 않아 결과가 같다(반사실에서 검사가 전부 통과했다)
- *   - 투영이 거부하면 아무것도 쌓지 않고 거부를 돌려준다. ⚠ 살아 있는 하위 페이지의 참조가 빠진 update 를 **거부한다** —
- *     정본 프로젝터는 그 페이지를 휴지통으로 보낸다(§3.4 X-1 의사코드). 5b조각이 정본대로 바꾼다(HANDOFF §2)
+ *   - 살아 있는 하위 페이지의 참조가 빠진 update 는 **그 페이지를 휴지통으로 보낸다**(정본 프로젝터 · 5b · §3.2-19) — 휴지통
+ *     명령과 같은 쓰기 · 같은 권한이고, 버릴 권한이 없으면 거부한다(`page_ref_forbidden`)
+ *   - 투영이 거부하면 아무것도 쌓지 않고 거부를 돌려준다. 참여자의 로컬 문서에는 이미 들어가 있으므로 협업 서버는 그 연결을
+ *     닫는다
  */
 export async function appendDocUpdate(
   ctx: SessionContext,
@@ -198,8 +214,11 @@ export async function appendDocUpdate(
     if (applied !== 'applied') return { ok: false, reason: applied } as const
     if (!body.changed) return { ok: true, seq: body.seq, appended: false, repair: null } as const
 
-    const result = await body.finish({ compactEvery: options.compactEvery })
-    if (!result.ok) return { ok: false, reason: result.reason } as const
+    const result = await body.finish({ compactEvery: options.compactEvery, missingPageRefs: 'trash' })
+    if (!result.ok) {
+      if (result.reason === 'page_ref_missing') throw new Error(`휴지통으로 보내는 투영이 빠진 참조를 거부했다: ${pageId}`)
+      return { ok: false, reason: result.reason } as const
+    }
     const { commit } = result
     return commit.appended
       ? ({ ok: true, seq: commit.seq, appended: true, repair: commit.repair } as const)
