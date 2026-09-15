@@ -24,6 +24,8 @@
  * 함께 안 보이면 된다 — 행을 건드릴 이유가 없다. 실제로 건드리려 하면 DB 가
  * 거부한다(테스트로 확인한다).
  *
+ * 버리는 행 쓰기는 `trash-rows.ts` 에 있다 — 참여자가 본문에서 참조 노드를 지웠을 때 프로젝터가 같은 쓰기로 버린다(CRDT 5b).
+ *
  * ──────────────────────────────────────────────────────────────────────
  * 복원은 **삭제 루트 단위**로만
  * ──────────────────────────────────────────────────────────────────────
@@ -52,22 +54,22 @@
  * ──────────────────────────────────────────────────────────────────────
  *
  * 버리기 · 되살리기 · 영구 삭제는 대상 페이지의 `edit_content` 를 요구한다 — 본문 저장 · DB 행 삭제(`trashRow`)와 같은
- * capability 다. 대상 행을 잠근 뒤, **무엇을 쓰거나 알려주기 전에** 본다: 볼 수 없는 페이지에 "삭제 루트가 아니다"를
- * 답하면 그 페이지가 있다는 것과 묶음의 루트 id 를 알려주게 된다. 휴지통에 있는 페이지도 권한은 그대로다(ACL 을 지우지
- * 않는다 — 06 F-06-01 "삭제된 페이지: 권한 유지, 복원 시 그대로 적용").
+ * capability 다(판정은 `trash-rows.ts` 의 `pageChangeAccess` 한 곳). 대상 행을 잠근 뒤, **무엇을 쓰거나 알려주기 전에**
+ * 본다: 볼 수 없는 페이지에 "삭제 루트가 아니다"를 답하면 그 페이지가 있다는 것과 묶음의 루트 id 를 알려주게 된다.
+ * 휴지통에 있는 페이지도 권한은 그대로다(ACL 을 지우지 않는다 — 06 F-06-01 "삭제된 페이지: 권한 유지, 복원 시 그대로 적용").
  */
 
 import type { SessionContext } from '../auth/session-context.ts'
 import type { BlockId } from '../ids.ts'
 import { asBlockId } from '../ids.ts'
 import { withReadTransaction, withTransaction, type Tx } from '../db/tx.ts'
-import { effectiveCaps, readableScopes } from '../permissions/effective.ts'
-import { can } from '../permissions/levels.ts'
+import { readableScopes } from '../permissions/effective.ts'
 import { toPlainText, type RichTextRun } from '../contracts/rich-text.ts'
 import { relocateSubtree, type MovingRow } from './move-page.ts'
 import { finishOrThrow, openPageBody, ownerPageOf } from './body-write.ts'
 import { plainTitleOf } from './page.ts'
 import { insertPageRefAfter, removePageRef } from './page-refs.ts'
+import { pageChangeAccess, trashSubtreeRows } from './trash-rows.ts'
 
 export type TrashErrorCode =
   /** 페이지가 없거나 다른 워크스페이스거나 상태가 맞지 않거나 볼 수 없다. */
@@ -92,9 +94,9 @@ export class TrashError extends Error {
 
 /** 대상 페이지를 바꿀 수 있는가 — 머리말 "권한". 호출자가 대상 행을 잠갔다. */
 async function assertCanChange(tx: Tx, ctx: SessionContext, pageId: string, notFoundMessage: string): Promise<void> {
-  const caps = await effectiveCaps(tx, ctx, pageId)
-  if (!can(caps, 'view')) throw new TrashError('not_found', notFoundMessage)
-  if (!can(caps, 'edit_content')) throw new TrashError('forbidden', '이 페이지를 바꿀 권한이 없습니다.')
+  const access = await pageChangeAccess(tx, ctx, pageId)
+  if (access === 'not_found') throw new TrashError('not_found', notFoundMessage)
+  if (access === 'forbidden') throw new TrashError('forbidden', '이 페이지를 바꿀 권한이 없습니다.')
 }
 
 // ── 삭제 ──────────────────────────────────────────────────────────────
@@ -111,9 +113,7 @@ export type TrashResult = {
  * 페이지를 휴지통으로 (live → trashed).
  *
  * 자손 페이지 전체에 전파하되, **이미 따로 버려져 있던 자손은 건드리지 않는다**
- * (B3: "먼저 독립적으로 버려진 자손은 `trashed` 유지"). `lifecycle = 'live'`
- * 조건이 그 역할을 한다 — 건드리면 그 자손의 `trash_root_id` 가 덮여서 원래
- * 묶음으로 복원할 수 없게 된다.
+ * (B3 — `trash-rows.ts`).
  */
 export async function trashPage(ctx: SessionContext, pageId: BlockId): Promise<TrashResult> {
   return withTransaction(async (tx) => {
@@ -139,35 +139,7 @@ export async function trashPage(ctx: SessionContext, pageId: BlockId): Promise<T
     await assertCanChange(tx, ctx, target.id, '페이지를 찾을 수 없습니다.')
     const ownerBody = owner === null ? null : await openPageBody(tx, ctx, owner)
 
-    // 보존 기간은 워크스페이스 설정이다(§3.1 `workspace.trash_days`, 1~3650).
-    const ws = await tx.queryOne<{ trash_days: number }>(
-      `SELECT trash_days FROM workspace WHERE id = $1`,
-      [ctx.workspaceId],
-    )
-
-    const moved = await tx.queryOne<{ purge_after: Date }>(
-      `UPDATE block
-          SET lifecycle = 'trashed',
-              trashed_at = now(), trashed_by = $3, trash_root_id = id,
-              purge_after = now() + ($4 || ' days')::interval,
-              last_edited_by = $3, last_edited_at = now(), version = version + 1
-        WHERE id = $1 AND workspace_id = $2
-        RETURNING purge_after`,
-      [target.id, ctx.workspaceId, ctx.userId, String(ws.trash_days)],
-    )
-
-    // B5 / X-3: 전파는 페이지에만. 비페이지 블록은 CHECK 이 막는다.
-    const descendants = await tx.query<{ id: string }>(
-      `UPDATE block
-          SET lifecycle = 'trashed',
-              trashed_at = now(), trashed_by = $3, trash_root_id = $1,
-              purge_after = now() + ($4 || ' days')::interval,
-              version = version + 1
-        WHERE ancestor_path @> ARRAY[$1::uuid] AND workspace_id = $2
-          AND type = 'page' AND lifecycle = 'live'
-        RETURNING id`,
-      [target.id, ctx.workspaceId, ctx.userId, String(ws.trash_days)],
-    )
+    const trashed = await trashSubtreeRows(tx, ctx, target.id)
 
     if (ownerBody !== null) {
       ownerBody.change(removePageRef(target.id))
@@ -176,8 +148,8 @@ export async function trashPage(ctx: SessionContext, pageId: BlockId): Promise<T
 
     return {
       pageId: asBlockId(target.id),
-      trashedDescendants: descendants.length,
-      purgeAfter: moved.purge_after,
+      trashedDescendants: trashed.trashedDescendants,
+      purgeAfter: trashed.purgeAfter,
     }
   })
 }
@@ -393,9 +365,7 @@ export type TrashEntry = {
  * F-11-05: *"휴지통 목록에는 삭제 루트만 노출되어야 한다(자식 수천 개가
  * 목록에 쏟아지면 안 됨)."* `trash_root_id = id` 가 곧 "이 삭제 조작의 루트"다.
  *
- * TODO(W6 / F-06-*): 권한이 들어오면 **접근 가능한 페이지만** 노출해야 한다 —
- * F-11-05 가 "권한 필터 누락 시 제목 유출"이라고 못박은 지점이다. 지금은
- * 워크스페이스 멤버 전원이 모든 페이지를 보므로 `workspace_id` 필터가 곧 전부다.
+ * F-11-05 가 "권한 필터 누락 시 제목 유출"이라고 못박은 지점이라 볼 수 있는 스코프로 거른다(W6-b · §3.3-32).
  */
 export async function listTrash(ctx: SessionContext): Promise<TrashEntry[]> {
   // ★ W6-b: 휴지통도 권한으로 거른다. F-11-05 가 "권한 필터 누락 시 제목 유출"을

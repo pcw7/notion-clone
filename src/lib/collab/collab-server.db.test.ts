@@ -1,5 +1,5 @@
 /**
- * 협업 서버 — CRDT 5a조각 (DB · 실제 WebSocket)
+ * 협업 서버 — CRDT 5a조각 · 5b조각 (DB · 실제 WebSocket)
  *
  * 이 파일이 지키는 것.
  *
@@ -10,8 +10,8 @@
  *   ④ **쓰기마다 다시 묻는다** — 연결 뒤에 권한이 내려간 사람 · 세션이 끊긴 사람의 update 는 쌓이지도 퍼지지도 않는다
  *   ⑤ **수선은 모두에게 간다** — 오프라인 편집이 합쳐져 생긴 구조 위반을 로그가 한 번 고치고 두 참여자가 받는다
  *   ⑥ **명령이 쓴 것과 섞여도 수렴한다** — 메모리 문서가 모르던 로그를 다음 편집이 가져온다
- *   ⑦ **투영이 받지 않는 update 는 쌓지도 퍼뜨리지도 않는다** — 살아 있는 하위 페이지의 참조를 지운 편집(5b조각이
- *      정본대로 휴지통 전이로 바꾼다)
+ *   ⑦ **하위 페이지 참조를 지운 편집은 그 페이지를 휴지통으로 보내고 퍼진다**(정본 프로젝터 · 5b) — 버릴 권한이 없는 사람의
+ *      편집은 쌓지도 퍼뜨리지도 않고 그 연결을 닫는다
  *
  * 참여자는 `@hocuspocus/provider` 다 — 에디터 바인딩(6조각)이 쓸 클라이언트와 같다. 편집은 `testing/collab-peers.ts` 의
  * `edit` 으로 provider 의 Y.Doc 에 쓴다(에디터가 Y.Doc 에 쓰는 것과 같은 함수).
@@ -38,7 +38,7 @@ import { query } from '../db/pool.ts'
 import type { EditorBlock, EditorDoc } from '../editor/document.ts'
 import { blockSchema } from '../editor/schema.ts'
 import type { Level } from '../permissions/levels.ts'
-import { grantAccess, revokeAccess } from '../permissions/acl.ts'
+import { grantAccess, revokeAccess, stopInheriting } from '../permissions/acl.ts'
 import { assertBodyMatchesYDoc } from '../testing/body-invariant.ts'
 import { edit, findBlock } from '../testing/collab-peers.ts'
 import { createBareWorkspace, createUser, joinAs, probeDatabase, type Actor } from '../testing/db-fixtures.ts'
@@ -157,6 +157,9 @@ const logOf = (pageId: string) =>
     [pageId],
   )
 
+const lifecycleOf = async (id: string): Promise<string> =>
+  (await query<{ lifecycle: string }>(`SELECT lifecycle FROM block WHERE id = $1`, [id]))[0].lifecycle
+
 async function storedBody(actor: Actor, pageId: string): Promise<BodyRead> {
   const state = await loadDocState(actor.ctx, pageId)
   if (!state.ok) throw new Error(`본문을 읽지 못했다: ${pageId}`)
@@ -176,7 +179,7 @@ async function pageFixture(texts: string[]) {
   return { workspaceId, owner, member, pageId, ids, name: collabDocumentName(workspaceId, pageId) }
 }
 
-/** 모두에게 열린 페이지를 소유자만의 페이지로 바꾸고, 지정한 사람에게만 레벨을 준다. */
+/** 모두에게 열린 최상위 페이지를 소유자만의 페이지로 바꾸고, 지정한 사람에게만 레벨을 준다. */
 async function restrict(owner: Actor, pageId: string, grants: readonly [Actor, Level][]): Promise<void> {
   assert.equal((await grantAccess(owner.ctx, pageId, { type: 'user', id: owner.userId }, 'full_access')).ok, true)
   for (const [actor, level] of grants) {
@@ -383,33 +386,40 @@ describe('⑥ 명령이 쓴 것과 섞여도', () => {
   })
 })
 
-// ── ⑦ 투영이 받지 않는 update ────────────────────────────────────────
+// ── ⑦ 하위 페이지 참조를 지운 편집 ──────────────────────────────────
 
-describe('⑦ 투영이 받지 않는 update', () => {
-  test('★ 살아 있는 하위 페이지의 참조를 지운 편집은 쌓지도 퍼뜨리지도 않고 그 연결을 닫는다 (5b 가 휴지통 전이로 바꾼다)', async (t) => {
+describe('⑦ 하위 페이지 참조를 지운 편집', () => {
+  test('★ 그 페이지를 휴지통으로 보내고 모두에게 퍼진다 — 버릴 권한이 없는 사람의 편집은 쌓지도 퍼뜨리지도 않고 그 연결을 닫는다', async (t) => {
     if (skipReason) return t.skip(skipReason)
-    const { owner, member, pageId, ids, name } = await pageFixture(['원문'])
-    const child = await createPage(owner.ctx, { parentPageId: pageId as never, title: titleFromPlainText('하위') })
+    const { owner, member, pageId, name } = await pageFixture(['원문'])
+    const open = await createPage(owner.ctx, { parentPageId: pageId as never, title: titleFromPlainText('열린 하위') })
+    const guarded = await createPage(owner.ctx, { parentPageId: pageId as never, title: titleFromPlainText('지킨 하위') })
+    // 멤버는 볼 수만 있게 — 부모에게서 받던 것을 복사해 끊고 모두에게서 회수한다.
+    assert.equal((await stopInheriting(owner.ctx, guarded.id)).ok, true)
+    await restrict(owner, guarded.id, [[member, 'view']])
+
     const server = await startServer(t)
-    const [remover, writer, watcher] = [
-      join(t, server.url, name, cookieOf(owner)),
+    const [intruder, remover, watcher] = [
       join(t, server.url, name, cookieOf(member)),
       join(t, server.url, name, cookieOf(owner)),
+      join(t, server.url, name, cookieOf(owner)),
     ]
-    await ready(remover, writer, watcher)
-    assert.ok(hasBlock(remover.doc, pageId, child.id), '전제: 참조가 본문에 있다')
+    await ready(intruder, remover, watcher)
+    assert.ok(hasBlock(intruder.doc, pageId, guarded.id) && hasBlock(watcher.doc, pageId, open.id), '전제: 참조가 본문에 있다')
     const before = await logOf(pageId)
 
-    edit(remover.doc, removeBlock(child.id))
-    await waitFor('지운 쪽 연결이 닫힌다', () => remover.closed.length > 0)
-    assert.deepEqual(remover.closed, ['page_ref_missing'])
+    edit(intruder.doc, removeBlock(guarded.id))
+    await waitFor('버릴 권한이 없는 쪽 연결이 닫힌다', () => intruder.closed.length > 0)
+    assert.deepEqual(intruder.closed, ['page_ref_forbidden'])
 
-    edit(writer.doc, insertAtStart(ids[0], '!'))
-    await waitFor('뒤에 보낸 편집이 닿는다', () => textsOf(bodyOf(watcher.doc, pageId))[0].startsWith('!'))
-    assert.ok(hasBlock(watcher.doc, pageId, child.id), '참조를 지운 편집이 퍼졌다')
-    assert.equal((await logOf(pageId)).length, before.length + 1)
-    const [row] = await query<{ lifecycle: string }>(`SELECT lifecycle FROM block WHERE id = $1`, [child.id])
-    assert.equal(row.lifecycle, 'live')
+    edit(remover.doc, removeBlock(open.id))
+    await waitFor('뒤에 보낸 편집이 닿는다', () => !hasBlock(watcher.doc, pageId, open.id))
+    assert.ok(hasBlock(watcher.doc, pageId, guarded.id), '버릴 권한이 없는 편집이 퍼졌다')
+
+    assert.deepEqual([await lifecycleOf(open.id), await lifecycleOf(guarded.id)], ['trashed', 'live'])
+    const log = await logOf(pageId)
+    assert.equal(log.length, before.length + 1)
+    assert.deepEqual([log.at(-1)?.actor_id], [owner.userId])
     await assertBodyMatchesYDoc(owner.ctx, pageId)
   })
 })
