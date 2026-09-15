@@ -16,6 +16,8 @@
  *      쌓지 않는다 · 한 번만 쌓는다 · 처음 여는 세션은 그 순간의 행으로 옮긴다
  *
  * 참여자의 편집은 `testing/collab-peers.ts` 로 흉내 낸다 — 에디터가 Y.Doc 에 쓰는 것과 같은 함수다.
+ * append(`appendDocUpdate`)는 5a조각부터 `block/body-write.ts` 에 있고 행 투영까지 한다 — 투영은
+ * `block/body-write.db.test.ts` 가 본다.
  */
 
 import { test, describe, before, after } from 'node:test'
@@ -28,6 +30,7 @@ import type { Node as PmNode } from '@tiptap/pm/model'
 
 import { createBareWorkspace, createUser, joinAs, probeDatabase, type Actor } from '../testing/db-fixtures.ts'
 import { changesSince, edit, findBlock, peer } from '../testing/collab-peers.ts'
+import { appendDocUpdate } from '../block/body-write.ts'
 import { createPage, titleFromPlainText } from '../block/page.ts'
 import { loadPageBody, savePageBody } from '../block/save-page-body.ts'
 import { trashPage } from '../block/trash.ts'
@@ -38,7 +41,7 @@ import type { EditorBlock, EditorDoc } from '../editor/document.ts'
 import { docToPm, pmToDoc } from '../editor/pm-adapter.ts'
 import { blockSchema } from '../editor/schema.ts'
 import { grantAccess, revokeAccess } from '../permissions/acl.ts'
-import { appendDocUpdate, loadDocState, MAX_DOC_UPDATE_BYTES, openBodyDoc, type DocState } from './doc-store.ts'
+import { loadDocState, MAX_DOC_UPDATE_BYTES, openBodyDoc, type DocState } from './doc-store.ts'
 import { readBodyYDoc } from './ydoc.ts'
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'

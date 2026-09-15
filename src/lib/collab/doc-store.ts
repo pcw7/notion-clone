@@ -5,8 +5,6 @@
  *       판결 C-11 · C-12 · V-5(쓰기 경로 ① 은 `doc_update` 1행 append, ② 는 서버가 로드해 update 1개)
  *       마이그레이션 0007_doc_sync.sql
  *
- * **아직 어떤 경로도 부르지 않는다.** 정본을 행에서 Y.Doc 으로 넘기는 것은 4b조각이다(HANDOFF §2).
- *
  * ──────────────────────────────────────────────────────────────────────
  * 로그가 정본, 스냅샷은 캐시
  * ──────────────────────────────────────────────────────────────────────
@@ -28,9 +26,11 @@
  * ──────────────────────────────────────────────────────────────────────
  *
  * 세션은 **호출자의 트랜잭션 안에서** 스냅샷을 잠그고(처음이면 행에서 옮긴 뒤) 본문을 불러와, 변경을 모아
- * 한 seq 로 쌓는다. 쓰기 경로 둘이 같은 세션을 쓴다.
+ * 한 seq 로 쌓는다. 쓰기 경로 둘이 같은 세션을 쓰고, 둘 다 `block/body-write.ts` 의 한 단위(페이지 행 잠금 → 세션 →
+ * 투영 → 쌓기)를 거친다 — 본문 행은 Y.Doc 의 투영이라(4b) 투영 없이 쌓는 길을 두지 않는다.
  *
- *   ① 참여자가 보낸 update — `appendDocUpdate`(권한 검사 → 세션 → `applyUpdate` → `commit`)
+ *   ① 참여자가 보낸 update — `appendDocUpdate`(권한 검사 → 세션 → `applyUpdate` → 투영 → `commit`). 협업 서버가
+ *     update 마다 부른다(5a조각이 투영과 함께 `body-write.ts` 로 옮겼다)
  *   ② 서버 명령 — 명령이 자기 권한을 검사하고 세션을 열어 ProseMirror 변경(`change`)을 쓴다. 하위 페이지를
  *     만드는 사람은 부모 본문의 `edit_content` 가 아니라 `create_child` 로 부모 문서에 참조를 넣으므로, 세션은
  *     권한을 보지 않는다
@@ -58,7 +58,8 @@
  * 적용한 본문이 스키마를 어기면(동시 편집이 합쳐져서) 수선(`repair.ts`)까지 **같은 seq** 에 쌓는다. 수선을 쓰는
  * 곳이 이 줄 선 세션 하나라서 수선끼리 겹쳐 블록이 복제되지 않는다 — 참여자마다 고치면 복제된다.
  *
- *   - 수선은 보낸 쪽이 갖지 않은 변경이므로 돌려준다(`repair`). 협업 서버는 받은 update 와 함께 퍼뜨린다
+ *   - 수선은 보낸 쪽이 갖지 않은 변경이므로 돌려준다(`repair`). 협업 서버는 수선이 든 로그 꼬리를 메모리 문서에 적용해
+ *     모든 연결에 퍼뜨린다(`collab-server.ts`)
  *   - 따로 seq 를 주지 않았다 — 수선은 이 변경을 지금 본문에 적용한 결과의 일부이고, 정본 origin 6값에
  *     "시스템 수선"이 없다. 그래서 수선의 actor · origin 은 그 변경을 쌓는 쪽의 것이다
  *   - 바뀐 것이 없는 쓰기(재전송)는 고치지 않는다 — 고칠 것은 바뀐 쓰기가 이미 고쳤다
@@ -81,7 +82,8 @@ import * as Y from 'yjs'
 
 import type { SessionContext } from '../auth/session-context.ts'
 import { readLiveBody } from '../block/save-page-body.ts'
-import { withTransaction, type Tx } from '../db/tx.ts'
+import { query } from '../db/pool.ts'
+import { withReadTransaction, withTransaction, type Tx } from '../db/tx.ts'
 import { isUuid } from '../ids.ts'
 import { effectiveCaps } from '../permissions/effective.ts'
 import { can } from '../permissions/levels.ts'
@@ -114,35 +116,8 @@ export type LoadDocResult =
   /** 없거나 볼 수 없거나 휴지통에 있는 페이지 — 구분하지 않는다(HANDOFF §3.3-31). */
   | { readonly ok: false; readonly reason: 'not_found' }
 
-export type AppendFailure =
-  | 'not_found'
-  /** 볼 수는 있지만 고칠 수 없다(`edit_content` 없음). */
-  | 'forbidden'
-  | 'too_large'
-  /** Yjs update 로 읽히지 않는다. */
-  | 'invalid_update'
-  /** 앞선 update 가 없어 전부 적용되지 않는다. 보낸 쪽이 state vector 로 다시 맞춰야 한다. */
-  | 'missing_dependencies'
-
-export type AppendDocResult =
-  | {
-      readonly ok: true
-      /** 쌓았으면 새 seq, 바뀐 것이 없어 쌓지 않았으면 지금의 마지막 seq. */
-      readonly seq: string
-      readonly appended: boolean
-      /**
-       * 합친 본문의 구조 위반을 고친 update — 같은 seq 에 함께 쌓였다. 보낸 쪽은 이것을 갖고 있지 않으므로
-       * 적용하고 다른 참여자에게 퍼뜨린다. 고칠 것이 없었으면 null.
-       */
-      readonly repair: Uint8Array | null
-    }
-  | { readonly ok: false; readonly reason: AppendFailure }
-
-export type AppendOptions = {
-  readonly origin: DocOrigin
-  /** 압축 기준. 없으면 `COMPACT_EVERY`. */
-  readonly compactEvery?: number
-}
+/** 살아 있는 페이지에 대한 이 세션의 권한. 볼 수 없으면 없는 것과 같다(`none`). */
+export type PageAccess = 'none' | 'view' | 'edit'
 
 export type CommitOptions = {
   /** 쌓는 사람. 시스템이면 null. */
@@ -161,6 +136,10 @@ export type BodyDocSession = {
   readonly pageId: string
   /** 잠근 뒤 읽은 본문 + 이 세션의 변경. */
   readonly ydoc: Y.Doc
+  /** 잠근 뒤 읽은 본문의 마지막 seq. */
+  readonly seq: string
+  /** 이 세션이 본문을 바꿨는가 — 받은 update 가 이미 가진 것뿐이면 false 다. */
+  readonly changed: boolean
   /** 지금 본문을 정규화해 읽는다(`readBodyYDoc`). */
   read(): BodyRead
   /** ProseMirror 변경을 쓴다 — 서버 명령 경로 ②(`body-edit.ts`). */
@@ -179,6 +158,26 @@ export async function loadDocState(ctx: SessionContext, pageId: string): Promise
     const state = (await readState(tx, pageId)) ?? (await bootstrapThenRead(tx, ctx, pageId))
     return { ok: true, value: state } as const
   })
+}
+
+/** 이 세션이 이 페이지를 볼 수 있는가 · 고칠 수 있는가 — 협업 서버가 연결을 받을 때 묻는다. */
+export async function pageAccess(ctx: SessionContext, pageId: string): Promise<PageAccess> {
+  return withReadTransaction((tx) => accessOf(tx, ctx, pageId))
+}
+
+/**
+ * `afterSeq` 뒤에 쌓인 update 를 seq 순서로 — 권한을 보지 않는다.
+ *
+ * 협업 서버가 메모리 문서를 로그에 맞출 때 읽는다. 그 문서의 연결은 이미 권한 검사를 거쳤다.
+ */
+export async function readDocUpdatesAfter(
+  pageId: string,
+  afterSeq: string,
+): Promise<readonly { readonly seq: string; readonly payload: Uint8Array }[]> {
+  return query<{ seq: string; payload: Buffer }>(
+    `SELECT seq, payload FROM doc_update WHERE page_id = $1 AND seq > $2 ORDER BY seq`,
+    [pageId, afterSeq],
+  )
 }
 
 // ── 쓰기 ──────────────────────────────────────────────────────────────
@@ -212,6 +211,10 @@ export async function openBodyDoc(tx: Tx, ctx: SessionContext, pageId: string): 
   return {
     pageId,
     ydoc,
+    seq: state.seq,
+    get changed() {
+      return changes.length > 0
+    },
     read: () => readBodyYDoc(ydoc, pageId),
     change(change) {
       assertOpen()
@@ -260,37 +263,9 @@ export async function openBodyDoc(tx: Tx, ctx: SessionContext, pageId: string): 
   }
 }
 
-/** 참여자가 보낸 update 를 쌓는다 — 쓰기 경로 ①. */
-export async function appendDocUpdate(
-  ctx: SessionContext,
-  pageId: string,
-  update: Uint8Array,
-  options: AppendOptions,
-): Promise<AppendDocResult> {
-  if (update.byteLength > MAX_DOC_UPDATE_BYTES) return { ok: false, reason: 'too_large' }
-
-  return withTransaction(async (tx) => {
-    const access = await accessOf(tx, ctx, pageId)
-    if (access === 'none') return { ok: false, reason: 'not_found' } as const
-    if (access !== 'edit') return { ok: false, reason: 'forbidden' } as const
-
-    const body = await openBodyDoc(tx, ctx, pageId)
-    const applied = body.applyUpdate(update)
-    if (applied !== 'applied') return { ok: false, reason: applied } as const
-
-    const committed = await body.commit({ actorId: ctx.userId, origin: options.origin, compactEvery: options.compactEvery })
-    return committed.appended
-      ? ({ ok: true, seq: committed.seq, appended: true, repair: committed.repair } as const)
-      : ({ ok: true, seq: committed.seq, appended: false, repair: null } as const)
-  })
-}
-
 // ── 내부 ──────────────────────────────────────────────────────────────
 
-type Access = 'none' | 'view' | 'edit'
-
-/** 살아 있는 페이지에 대한 이 세션의 권한. 볼 수 없으면 없는 것과 같다. */
-async function accessOf(tx: Tx, ctx: SessionContext, pageId: string): Promise<Access> {
+async function accessOf(tx: Tx, ctx: SessionContext, pageId: string): Promise<PageAccess> {
   if (!isUuid(pageId)) return 'none'
   const page = await tx.queryMaybe<{ id: string }>(
     `SELECT id FROM block WHERE id = $1 AND workspace_id = $2 AND type = 'page' AND lifecycle = 'live'`,
