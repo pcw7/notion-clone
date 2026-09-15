@@ -9,10 +9,10 @@
  */
 
 import { cookies } from 'next/headers'
+import { SESSION_COOKIE } from './constants.ts'
 import type { IssuedSession } from './session.ts'
 
-/** 쿠키 이름. */
-export const SESSION_COOKIE = 'nc_session'
+export { SESSION_COOKIE }
 
 export async function setSessionCookie(session: IssuedSession): Promise<void> {
   // Next.js 16 에서 cookies() 는 async 다 (14 이하와 다르다).

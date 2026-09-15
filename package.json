@@ -28,9 +28,11 @@
     "db:migrate:status": "node scripts/migrate.mjs --status",
     "db:verify:schema": "node scripts/verify-schema.mjs",
     "test": "node --test \"src/**/*.test.ts\"",
-    "e2e": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/e2e-editor.mjs"
+    "e2e": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/e2e-editor.mjs",
+    "collab": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/collab-server.mjs"
   },
   "dependencies": {
+    "@hocuspocus/server": "^4.7.0",
     "@tiptap/pm": "^3.31.3",
     "fractional-indexing": "^4.0.0",
     "ioredis": "^6.0.0",
@@ -43,6 +45,7 @@
     "yjs": "^13.6.32"
   },
   "devDependencies": {
+    "@hocuspocus/provider": "^4.7.0",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/pg": "^8.23.1",

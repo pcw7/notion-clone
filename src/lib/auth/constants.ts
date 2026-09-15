@@ -34,6 +34,14 @@ export const LOGIN_CODE_LENGTH = 6
 /** "Login tokens expire after 90 days" — 1차 출처 */
 export const SESSION_MAX_LIFETIME_DAYS = 90
 
+/**
+ * 세션 쿠키 이름.
+ *
+ * 협업 서버(Next 런타임 밖)도 업그레이드 요청의 쿠키에서 읽으므로 `next/headers` 를 부르는 `session-cookie.ts` 가 아니라
+ * 여기 둔다.
+ */
+export const SESSION_COOKIE = 'nc_session'
+
 // ── 레이트리밋 (F-14-16) ──────────────────────────────────────────────
 //
 // 전부 클론의 설계 결정이다. Notion 은 이 영역을 공개하지 않는다.

@@ -260,7 +260,8 @@ export async function savePageBody(
     body.change((tr) => {
       tr.replaceWith(0, tr.doc.content.size, next.content)
     })
-    return body.finish()
+    const result = await body.finish()
+    return result.ok ? { ok: true, version: result.version, writes: result.writes } : result
   })
 }
 
