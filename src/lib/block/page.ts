@@ -16,9 +16,10 @@
  *      — 자식 페이지와 본문 문단이 같은 이름공간을 쓴다
  *   4. 깊이는 `MAX_TREE_DEPTH` 를 넘지 못한다
  *
- * **워크스페이스 경계가 이 파일의 보안 축이다.** 모든 조회는 `workspace_id` 를
- * 술어에 넣는다. 블록 id 는 uuid 라 추측할 수 없지만, 추측 불가능성은 권한이
- * 아니다 — 링크가 유출되면 그대로 뚫린다.
+ * **보안 축은 둘이다.** 모든 조회는 `workspace_id` 를 술어에 넣고(워크스페이스 경계), 그 안에서 **페이지 권한**을
+ * 본다 — 하나를 읽으면 `view`, 제목을 담는 목록은 `perm_scope_id = ANY(readableScopes)`. 한때 이 머리말이
+ * "워크스페이스 경계가 보안 축"이라고만 적었고, 그 전제로 남은 목록 둘이 볼 수 없는 페이지의 제목을 내줬다(#76).
+ * 블록 id 는 uuid 라 추측할 수 없지만, 추측 불가능성은 권한이 아니다 — 링크가 유출되면 그대로 뚫린다.
  */
 
 import { randomUUID } from 'node:crypto'
@@ -26,11 +27,11 @@ import { randomUUID } from 'node:crypto'
 import type { SessionContext } from '../auth/session-context.ts'
 import type { BlockId } from '../ids.ts'
 import { asBlockId } from '../ids.ts'
-import { withTransaction, type Tx } from '../db/tx.ts'
+import { withReadTransaction, withTransaction, type Tx } from '../db/tx.ts'
 import { query } from '../db/pool.ts'
 import { orderKeyBetween } from './order-key.ts'
 import { can } from '../permissions/levels.ts'
-import { canViewPage, effectiveCaps } from '../permissions/effective.ts'
+import { canViewPage, effectiveCaps, readableScopes } from '../permissions/effective.ts'
 import { MAX_TREE_DEPTH } from './types.ts'
 import { indexPageTitle } from '../search/index-page.ts'
 import { finishOrThrow, openPageBody } from './body-write.ts'
@@ -379,15 +380,10 @@ export async function createPage(
 // ── 조회 ──────────────────────────────────────────────────────────────
 
 /**
- * 페이지 하나를 읽는다.
+ * 페이지 하나를 읽는다 — **볼 수 있는 페이지만.**
  *
- * `workspace_id` 술어가 이 함수의 보안이다. `SessionContext` 는 이미
- * "이 사용자는 이 워크스페이스에 들어올 수 있다"의 증명이므로(불변식 A9),
- * 워크스페이스가 일치하면 읽기를 허용한다.
- *
- * TODO(W6 / F-06-*): 페이지 단위 ACL(`acl_entry`)이 들어오면 여기서
- * `can(caps, 'view')` 를 추가로 물어야 한다. 지금은 워크스페이스 멤버 전원이
- * 모든 페이지를 본다 — 명세가 권한을 W6 으로 잘랐다.
+ * `workspace_id` 술어는 워크스페이스 경계일 뿐이다. `SessionContext` 는 "이 워크스페이스에 들어올 수 있다"의 증명이지
+ * "이 페이지를 볼 수 있다"의 증명이 아니다(W6-b 부터 페이지 단위 ACL 이 있다). 그래서 `view` 를 따로 묻는다.
  */
 export async function getPage(ctx: SessionContext, pageId: BlockId): Promise<PageDetail | null> {
   const rows = await query<PageRow>(
@@ -412,50 +408,71 @@ export async function getPage(ctx: SessionContext, pageId: BlockId): Promise<Pag
 }
 
 /**
- * 자식 페이지 목록.
+ * 자식 페이지 목록 — **볼 수 있는 페이지만.**
  *
  * `parentPageId` 가 null 이면 워크스페이스 루트 페이지들.
  * 정렬은 B7 이 정한 `ORDER BY order_key, id` 다 — `order_key` 만으로 정렬하면
  * 결정적이지 않다(다른 부모의 자식을 섞어 볼 때 같은 키가 나온다).
+ *
+ * 권한은 사이드바 · 휴지통과 같은 규칙으로 SQL 안에서 거른다(`perm_scope_id = ANY(readableScopes)` — HANDOFF §3.3-32).
+ * 부모를 볼 수 없으면 비어 있다 — 따로 공유받은 하위 페이지가 있어도 그 부모 id 로 관계를 알려주지 않는다. 없는 부모와
+ * 같은 답이다.
  */
 export async function listChildPages(
   ctx: SessionContext,
   parentPageId: BlockId | null,
 ): Promise<PageSummary[]> {
-  const rows = parentPageId
-    ? await query<PageRow>(
-        `SELECT ${PAGE_COLUMNS}
-           FROM live_block
-          WHERE parent_type = 'block' AND parent_id = $1
-            AND workspace_id = $2 AND type = 'page'
-          ORDER BY order_key, id`,
-        [parentPageId, ctx.workspaceId],
-      )
-    : await query<PageRow>(
-        `SELECT ${PAGE_COLUMNS}
-           FROM live_block
-          WHERE parent_type = 'workspace' AND parent_id = $1
-            AND workspace_id = $1 AND type = 'page'
-          ORDER BY order_key, id`,
-        [ctx.workspaceId],
-      )
+  const rows = await withReadTransaction(async (tx) => {
+    if (parentPageId !== null && !can(await effectiveCaps(tx, ctx, parentPageId), 'view')) return []
+    const scopes = await readableScopes(tx, ctx)
+    if (scopes.length === 0) return []
+    return parentPageId
+      ? tx.query<PageRow>(
+          `SELECT ${PAGE_COLUMNS}
+             FROM live_block
+            WHERE parent_type = 'block' AND parent_id = $1
+              AND workspace_id = $2 AND type = 'page'
+              AND perm_scope_id = ANY($3::uuid[])
+            ORDER BY order_key, id`,
+          [parentPageId, ctx.workspaceId, scopes],
+        )
+      : tx.query<PageRow>(
+          `SELECT ${PAGE_COLUMNS}
+             FROM live_block
+            WHERE parent_type = 'workspace' AND parent_id = $1
+              AND workspace_id = $1 AND type = 'page'
+              AND perm_scope_id = ANY($2::uuid[])
+            ORDER BY order_key, id`,
+          [ctx.workspaceId, scopes],
+        )
+  })
 
   return rows.map(toSummary)
 }
 
-/** breadcrumb 용 조상 체인. 루트→부모 순서 그대로 돌려준다. */
+/**
+ * breadcrumb 용 조상 체인 — **볼 수 있는 조상만.** 루트→부모 순서 그대로 돌려준다.
+ *
+ * 비공개 조상 밑에서 따로 공유받은 페이지를 열면 그 조상은 빠진다 — 사이드바가 그 페이지를 가장 가까운 볼 수 있는 조상
+ * 밑에 두는 것과 같다(`page-tree.ts`).
+ */
 export async function listAncestors(
   ctx: SessionContext,
   page: PageDetail,
 ): Promise<PageSummary[]> {
   if (page.ancestors.length === 0) return []
 
-  const rows = await query<PageRow>(
-    `SELECT ${PAGE_COLUMNS}
-       FROM live_block
-      WHERE id = ANY($1::uuid[]) AND workspace_id = $2 AND type = 'page'`,
-    [page.ancestors, ctx.workspaceId],
-  )
+  const rows = await withReadTransaction(async (tx) => {
+    const scopes = await readableScopes(tx, ctx)
+    if (scopes.length === 0) return []
+    return tx.query<PageRow>(
+      `SELECT ${PAGE_COLUMNS}
+         FROM live_block
+        WHERE id = ANY($1::uuid[]) AND workspace_id = $2 AND type = 'page'
+          AND perm_scope_id = ANY($3::uuid[])`,
+      [page.ancestors, ctx.workspaceId, scopes],
+    )
+  })
 
   // ancestor_path 의 순서가 정본이다. IN 조회 결과 순서에 의존하면 안 된다.
   const byId = new Map(rows.map((r) => [r.id, toSummary(r)]))
