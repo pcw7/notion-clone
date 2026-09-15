@@ -46,6 +46,7 @@ import {
   unionCaps,
   NO_CAPABILITIES,
   type CapSet,
+  type Capability,
   type Grant,
   type Level,
 } from './levels.ts'
@@ -206,6 +207,20 @@ async function resolveChain(tx: Tx, ctx: SessionContext, chain: string[]): Promi
  * 같다.** 스코프 노드의 수는 "권한을 따로 준 페이지"의 수라 보통 아주 적다.
  */
 export async function readableScopes(tx: Tx, ctx: SessionContext): Promise<string[]> {
+  return scopesWith(tx, ctx, ['view'])
+}
+
+/**
+ * `required` capability 를 **전부** 가진 `perm_scope_id` 들 — `readableScopes` 의 일반형.
+ *
+ * 같은 스코프의 노드는 정의상 권한이 같으므로(위 머리말) "볼 수 있는 곳"뿐 아니라 "하위 페이지를 둘 수 있는 곳"도
+ * 스코프로 거른다 — 이동 대상 목록(`listMovableTargets`)이 쓴다.
+ */
+export async function scopesWith(
+  tx: Tx,
+  ctx: SessionContext,
+  required: readonly Capability[],
+): Promise<string[]> {
   const scopes = await tx.query<ChainRow>(
     `SELECT DISTINCT b.id, b.ancestor_path
        FROM block b
@@ -221,7 +236,7 @@ export async function readableScopes(tx: Tx, ctx: SessionContext): Promise<strin
   for (const scope of scopes) {
     const chain = [scope.id, ...[...scope.ancestor_path].reverse()]
     const caps = await resolveChain(tx, ctx, chain)
-    if (can(caps, 'view')) readable.push(scope.id)
+    if (required.every((capability) => can(caps, capability))) readable.push(scope.id)
   }
   return readable
 }

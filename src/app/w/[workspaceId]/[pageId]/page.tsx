@@ -92,7 +92,7 @@ export default async function PageView({ params }: PageProps<'/w/[workspaceId]/[
             targets={moveTargets.map((t) => ({
               id: t.id,
               title: t.title,
-              ancestors: [...t.ancestors],
+              path: [...t.path],
             }))}
           />
           <ExportButton workspaceId={workspaceId} rootId={page.id} />

@@ -21,6 +21,9 @@ function statusFor(code: MoveError['code']): number {
     case 'not_found':
     case 'target_not_found':
       return 404
+    // 볼 수는 있는데 옮길 수 없다. 볼 수 없으면 not_found 다(§3.3-31).
+    case 'forbidden':
+      return 403
     case 'cycle':
     case 'too_deep':
       return 400

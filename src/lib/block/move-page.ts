@@ -28,13 +28,25 @@
  * 본문 블록도 `ancestor_path` 와 `perm_scope_id` 를 갖는다. ②③의 술어가
  * `ancestor_path @> ARRAY[:id]` 이므로 본문 블록까지 한 번에 갱신된다 — 따로
  * 다루지 않는다.
+ *
+ * ──────────────────────────────────────────────────────────────────────
+ * 권한 — 옮길 페이지는 바꿀 수 있어야, 옮길 곳은 하위 페이지를 둘 수 있어야 (HANDOFF §3.2-18)
+ * ──────────────────────────────────────────────────────────────────────
+ *
+ * 06 F-06-20: *"이동자가 대상 위치에 대한 권한이 없음 → 이동 거부. 원본 권한 + 대상 부모의 create 권한 둘 다 필요."*
+ *
+ *   - 옮길 페이지: `edit_content` — 휴지통과 같은 규칙. 볼 수 없으면 `not_found`, 볼 수만 있으면 `forbidden`
+ *   - 옮길 곳: `create_child` — 하위 페이지 생성(`createPage`)과 같은 capability 이고 같은 매핑이다. 볼 수 없는 곳도, 볼 수만
+ *     있는 곳도 `target_not_found`. 최상위로 옮기는 것은 막지 않는다(최상위 페이지 생성도 막지 않는다)
+ *   - 이동 대상 목록은 같은 규칙으로 거른다 — 화면이 서버가 거부할 곳을 보여주지 않는다
  */
 
 import type { SessionContext } from '../auth/session-context.ts'
 import type { BlockId } from '../ids.ts'
 import { asBlockId } from '../ids.ts'
-import { query } from '../db/pool.ts'
-import { withTransaction, type Tx } from '../db/tx.ts'
+import { withReadTransaction, withTransaction, type Tx } from '../db/tx.ts'
+import { effectiveCaps, readableScopes, scopesWith } from '../permissions/effective.ts'
+import { can } from '../permissions/levels.ts'
 import { specOf, isKnownBlockType, MAX_TREE_DEPTH } from './types.ts'
 import { nextSiblingKey, plainTitleOf } from './page.ts'
 import { finishOrThrow, openPageBody, ownerPageOf, type PageBodyWrite } from './body-write.ts'
@@ -42,9 +54,11 @@ import { appendPageRef, removePageRef } from './page-refs.ts'
 import { toPlainText, type RichTextRun } from '../contracts/rich-text.ts'
 
 export type MoveErrorCode =
-  /** 옮길 페이지가 없거나 다른 워크스페이스거나 휴지통에 있다. */
+  /** 옮길 페이지가 없거나 다른 워크스페이스거나 휴지통에 있거나 볼 수 없다. */
   | 'not_found'
-  /** 대상 부모가 없거나 다른 워크스페이스거나 자식을 가질 수 없는 타입이다. */
+  /** 옮길 페이지를 볼 수는 있지만 바꿀 수 없다(`edit_content` 없음). */
+  | 'forbidden'
+  /** 대상 부모가 없거나 다른 워크스페이스거나 자식을 가질 수 없는 타입이거나, 거기에 하위 페이지를 둘 수 없다. */
   | 'target_not_found'
   /** 자기 자신 또는 자기 자손으로 옮기려 했다 (I5). */
   | 'cycle'
@@ -119,6 +133,12 @@ async function lockTarget(
   // 없음 / 다른 워크스페이스 / 휴지통 — 전부 같은 오류다. 구분하면 존재를 유출한다.
   if (!target) throw new MoveError('target_not_found', '옮길 위치를 찾을 수 없습니다.')
 
+  // 거기에 하위 페이지를 둘 수 있어야 한다(머리말 "권한"). 타입을 알려주는 아래 거부보다 먼저 본다 — 볼 수 없는 블록의
+  // 타입을 알려주지 않는다.
+  if (!can(await effectiveCaps(tx, ctx, target.id), 'create_child')) {
+    throw new MoveError('target_not_found', '옮길 위치를 찾을 수 없습니다.')
+  }
+
   if (isKnownBlockType(target.type) && !specOf(target.type).canHaveChildren) {
     throw new MoveError(
       'target_not_found',
@@ -181,6 +201,11 @@ export async function movePage(
     )
     if (!moving) throw new MoveError('not_found', '페이지를 찾을 수 없습니다.')
     if (moving.parent_id !== peek.parent_id) throw new Error(`옮기는 사이 페이지의 자리가 바뀌었다: ${pageId}`)
+
+    // 옮길 페이지를 바꿀 수 있어야 한다(머리말 "권한"). 볼 수 없으면 없는 것과 같다 — 이미 그 자리인지도 알려주지 않는다.
+    const caps = await effectiveCaps(tx, ctx, moving.id)
+    if (!can(caps, 'view')) throw new MoveError('not_found', '페이지를 찾을 수 없습니다.')
+    if (!can(caps, 'edit_content')) throw new MoveError('forbidden', '이 페이지를 옮길 권한이 없습니다.')
 
     const target = await lockTarget(tx, ctx, targetParentId)
 
@@ -372,8 +397,11 @@ export async function relocateSubtree(
 export type MoveTarget = {
   readonly id: BlockId
   readonly title: string
-  /** 루트→부모 순서의 조상 id. 화면에서 경로를 그릴 때 쓴다. */
-  readonly ancestors: readonly BlockId[]
+  /**
+   * 루트→부모 순서의 조상 페이지 제목 — **볼 수 있는 조상만.** 화면이 경로 라벨을 그린다. 볼 수 없는 조상은 제목도
+   * id 도 싣지 않는다(F-02-03 "존재도 노출 금지").
+   */
+  readonly path: readonly string[]
 }
 
 /**
@@ -385,32 +413,56 @@ export type MoveTarget = {
  *   - 거르는 규칙이 `movePage` 의 거부 규칙과 **같은 곳에서** 나온다.
  *     클라이언트가 따로 거르면 두 규칙이 언젠가 어긋난다
  *
- * 자손을 제외하면 남은 후보들의 **조상도 모두 후보 안에 있다** — 후보 C 의
- * 조상 A 가 옮길 페이지의 자손이라면 C 도 자손이어야 하므로. 그래서 화면이
- * 이 목록만으로 경로 라벨을 만들 수 있다.
+ * 권한도 같다 — 하위 페이지를 둘 수 있는 곳(`create_child`)만 담는다(머리말 "권한"). 노드마다 판정하지 않고 스코프로
+ * 거른다(`scopesWith` — 같은 스코프의 노드는 정의상 권한이 같다). 그래서 **후보의 조상이 후보 안에 있다는 보장은 없다**
+ * — 볼 수만 있는 조상 · 볼 수 없는 조상이 빠진다. 경로 라벨은 볼 수 있는 조상 페이지의 제목으로 서버가 만든다.
  */
 export async function listMovableTargets(
   ctx: SessionContext,
   pageId: BlockId,
 ): Promise<MoveTarget[]> {
-  const rows = await query<{
-    id: string
-    properties: { title?: unknown } | null
-    ancestor_path: string[]
-  }>(
-    `SELECT id, properties, ancestor_path
-       FROM live_block
-      WHERE workspace_id = $1 AND type = 'page'
-        AND id <> $2
-        AND NOT (ancestor_path @> ARRAY[$2::uuid])
-      ORDER BY array_length(ancestor_path, 1) NULLS FIRST, order_key, id`,
-    [ctx.workspaceId, pageId],
-  )
+  return withReadTransaction(async (tx) => {
+    const creatable = await scopesWith(tx, ctx, ['view', 'create_child'])
+    if (creatable.length === 0) return []
 
-  return rows.map((row) => {
-    const raw = row.properties?.title
-    // 읽기는 관대하게 — 제목 하나가 망가졌다고 이동 자체를 막지 않는다.
-    const title = Array.isArray(raw) ? toPlainText(raw as RichTextRun[]) : ''
-    return { id: asBlockId(row.id), title, ancestors: row.ancestor_path.map(asBlockId) }
+    const rows = await tx.query<{ id: string; properties: { title?: unknown } | null; ancestor_path: string[] }>(
+      `SELECT id, properties, ancestor_path
+         FROM live_block
+        WHERE workspace_id = $1 AND type = 'page'
+          AND id <> $2
+          AND NOT (ancestor_path @> ARRAY[$2::uuid])
+          AND perm_scope_id = ANY($3::uuid[])
+        ORDER BY array_length(ancestor_path, 1) NULLS FIRST, order_key, id`,
+      [ctx.workspaceId, pageId, creatable],
+    )
+
+    // 경로 라벨 — 조상 중 볼 수 있는 페이지의 제목만 읽는다. 본문 블록(토글 같은) 조상은 라벨에 넣지 않는다.
+    const ancestorIds = [...new Set(rows.flatMap((row) => row.ancestor_path))]
+    const readable = ancestorIds.length === 0 ? [] : await readableScopes(tx, ctx)
+    const ancestors =
+      readable.length === 0
+        ? []
+        : await tx.query<{ id: string; properties: { title?: unknown } | null }>(
+            `SELECT id, properties FROM live_block
+              WHERE id = ANY($1::uuid[]) AND workspace_id = $2 AND type = 'page'
+                AND perm_scope_id = ANY($3::uuid[])`,
+            [ancestorIds, ctx.workspaceId, readable],
+          )
+    const titleOf = new Map(ancestors.map((a) => [a.id, titleText(a.properties)]))
+
+    return rows.map((row) => ({
+      id: asBlockId(row.id),
+      title: titleText(row.properties),
+      path: row.ancestor_path.flatMap((id) => {
+        const title = titleOf.get(id)
+        return title === undefined ? [] : [title]
+      }),
+    }))
   })
+}
+
+/** 읽기는 관대하게 — 제목 하나가 망가졌다고 이동 자체를 막지 않는다. */
+function titleText(properties: { title?: unknown } | null): string {
+  const raw = properties?.title
+  return Array.isArray(raw) ? toPlainText(raw as RichTextRun[]) : ''
 }

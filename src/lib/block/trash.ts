@@ -46,13 +46,23 @@
  * 테이블을 **존재하지 않는다**고 못박은 이유이기도 하다.
  * (`save-page-body.ts` 의 키 할당이 휴지통 형제의 `order_key` 를 비켜 가는 것도
  * 같은 규칙의 뒷면이다.)
+ *
+ * ──────────────────────────────────────────────────────────────────────
+ * 권한 — 볼 수 없으면 없는 것, 볼 수만 있으면 forbidden (HANDOFF §3.2-18)
+ * ──────────────────────────────────────────────────────────────────────
+ *
+ * 버리기 · 되살리기 · 영구 삭제는 대상 페이지의 `edit_content` 를 요구한다 — 본문 저장 · DB 행 삭제(`trashRow`)와 같은
+ * capability 다. 대상 행을 잠근 뒤, **무엇을 쓰거나 알려주기 전에** 본다: 볼 수 없는 페이지에 "삭제 루트가 아니다"를
+ * 답하면 그 페이지가 있다는 것과 묶음의 루트 id 를 알려주게 된다. 휴지통에 있는 페이지도 권한은 그대로다(ACL 을 지우지
+ * 않는다 — 06 F-06-01 "삭제된 페이지: 권한 유지, 복원 시 그대로 적용").
  */
 
 import type { SessionContext } from '../auth/session-context.ts'
 import type { BlockId } from '../ids.ts'
 import { asBlockId } from '../ids.ts'
-import { withReadTransaction, withTransaction } from '../db/tx.ts'
-import { readableScopes } from '../permissions/effective.ts'
+import { withReadTransaction, withTransaction, type Tx } from '../db/tx.ts'
+import { effectiveCaps, readableScopes } from '../permissions/effective.ts'
+import { can } from '../permissions/levels.ts'
 import { toPlainText, type RichTextRun } from '../contracts/rich-text.ts'
 import { relocateSubtree, type MovingRow } from './move-page.ts'
 import { finishOrThrow, openPageBody, ownerPageOf } from './body-write.ts'
@@ -60,8 +70,10 @@ import { plainTitleOf } from './page.ts'
 import { insertPageRefAfter, removePageRef } from './page-refs.ts'
 
 export type TrashErrorCode =
-  /** 페이지가 없거나 다른 워크스페이스거나 상태가 맞지 않는다. */
+  /** 페이지가 없거나 다른 워크스페이스거나 상태가 맞지 않거나 볼 수 없다. */
   | 'not_found'
+  /** 볼 수는 있지만 바꿀 수 없다(`edit_content` 없음). */
+  | 'forbidden'
   /** 삭제 루트가 아니다 — 복원/영구삭제는 루트 단위로만 한다. */
   | 'not_a_trash_root'
 
@@ -76,6 +88,13 @@ export class TrashError extends Error {
     this.code = code
     this.trashRootId = trashRootId
   }
+}
+
+/** 대상 페이지를 바꿀 수 있는가 — 머리말 "권한". 호출자가 대상 행을 잠갔다. */
+async function assertCanChange(tx: Tx, ctx: SessionContext, pageId: string, notFoundMessage: string): Promise<void> {
+  const caps = await effectiveCaps(tx, ctx, pageId)
+  if (!can(caps, 'view')) throw new TrashError('not_found', notFoundMessage)
+  if (!can(caps, 'edit_content')) throw new TrashError('forbidden', '이 페이지를 바꿀 권한이 없습니다.')
 }
 
 // ── 삭제 ──────────────────────────────────────────────────────────────
@@ -117,6 +136,7 @@ export async function trashPage(ctx: SessionContext, pageId: BlockId): Promise<T
     )
     if (!target) throw new TrashError('not_found', '페이지를 찾을 수 없습니다.')
     if (target.parent_id !== peek.parent_id) throw new Error(`버리는 사이 페이지의 자리가 바뀌었다: ${pageId}`)
+    await assertCanChange(tx, ctx, target.id, '페이지를 찾을 수 없습니다.')
     const ownerBody = owner === null ? null : await openPageBody(tx, ctx, owner)
 
     // 보존 기간은 워크스페이스 설정이다(§3.1 `workspace.trash_days`, 1~3650).
@@ -211,6 +231,8 @@ export async function restorePage(ctx: SessionContext, pageId: BlockId): Promise
     if (peek !== null && target.parent_id !== peek.parent_id) {
       throw new Error(`되살리는 사이 페이지의 자리가 바뀌었다: ${pageId}`)
     }
+    // 삭제 루트인지 알려주기 전에 본다(머리말 "권한").
+    await assertCanChange(tx, ctx, target.id, '휴지통에서 페이지를 찾을 수 없습니다.')
 
     if (target.trash_root_id !== target.id) {
       throw new TrashError(
@@ -324,6 +346,8 @@ export async function purgePage(ctx: SessionContext, pageId: BlockId): Promise<P
       [pageId, ctx.workspaceId],
     )
     if (!target) throw new TrashError('not_found', '휴지통에서 페이지를 찾을 수 없습니다.')
+    // 삭제 루트인지 알려주기 전에 본다(머리말 "권한").
+    await assertCanChange(tx, ctx, target.id, '휴지통에서 페이지를 찾을 수 없습니다.')
 
     if (target.trash_root_id !== target.id) {
       throw new TrashError(
