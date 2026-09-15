@@ -1003,6 +1003,7 @@ ds  채널:    { ds_id, change_seq, kind: 'row_upsert'|'row_removed'|'schema_cha
 ```
 
 - 구독 시점 권한검사 + **권한 회수 시 서버 강제 unsubscribe**. push 모델의 권한 경계는 채널 join 과 update 수신 두 지점이다.
+- **[추가] 프로세스 사이 전파 ⟨CRDT 5c · 마이그레이션 0016⟩** — 레지스트리를 가진 협업 서버가 다른 프로세스(API 명령 · 권한 변경)의 커밋을 아는 통로는 **쓰는 트랜잭션의 트리거가 보내는 Postgres NOTIFY** 다. 채널 `collab_doc`(`{page_id}:{seq}`) · `collab_access`(`ws:{workspace_id}` · `user:{user_id}`). 표를 만들지 않는다(구독은 여전히 연결 수명). 신호는 커밋된 것만 · 커밋 순서대로 오고, 받는 쪽은 권한 신호를 처리한 뒤에야 뒤따르는 `doc_update` 를 퍼뜨린다 — 회수 뒤에 커밋된 update 는 회수된 연결에 가지 않는다. 듣는 연결이 끊긴 사이의 신호는 사라지므로 다시 붙으면 전부 다시 판정 · 동기화한다. 권한 신호는 워크스페이스 단위라 정밀 무효화(서브트리)가 아니다.
 - `seq` / `change_seq` gap 감지 → 클라이언트가 `state_vector`(doc) 또는 `last_change_seq`(ds)를 보내고 서버가 **delta 만** 회신. full refetch 가 아니다.
 - ds 채널 페이로드는 반드시 **적용 가능한 값**이어야 한다. "재조회하라"는 신호를 실으면 C-11 이 폐기한 pull 모델이 되살아난다.
 

@@ -169,15 +169,24 @@ export async function pageAccess(ctx: SessionContext, pageId: string): Promise<P
  * `afterSeq` 뒤에 쌓인 update 를 seq 순서로 — 권한을 보지 않는다.
  *
  * 협업 서버가 메모리 문서를 로그에 맞출 때 읽는다. 그 문서의 연결은 이미 권한 검사를 거쳤다.
+ *
+ * @param throughSeq 여기까지만 읽는다. 커밋 신호가 알린 seq 를 넘겨 읽으면 아직 도착하지 않은 권한 신호를 앞지른다
+ *   (`collab-server.ts` 머리말).
  */
 export async function readDocUpdatesAfter(
   pageId: string,
   afterSeq: string,
+  throughSeq?: string,
 ): Promise<readonly { readonly seq: string; readonly payload: Uint8Array }[]> {
-  return query<{ seq: string; payload: Buffer }>(
-    `SELECT seq, payload FROM doc_update WHERE page_id = $1 AND seq > $2 ORDER BY seq`,
-    [pageId, afterSeq],
-  )
+  return throughSeq === undefined
+    ? query<{ seq: string; payload: Buffer }>(
+        `SELECT seq, payload FROM doc_update WHERE page_id = $1 AND seq > $2 ORDER BY seq`,
+        [pageId, afterSeq],
+      )
+    : query<{ seq: string; payload: Buffer }>(
+        `SELECT seq, payload FROM doc_update WHERE page_id = $1 AND seq > $2 AND seq <= $3 ORDER BY seq`,
+        [pageId, afterSeq, throughSeq],
+      )
 }
 
 // ── 쓰기 ──────────────────────────────────────────────────────────────

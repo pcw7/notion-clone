@@ -1078,6 +1078,32 @@ try {
     }
   }
 
+  console.log('\n[10] 협업 서버 신호 트리거 (0016 / CRDT 5c · F-05-19)')
+  {
+    // 권한 판정이 읽는 표에서 트리거 하나가 빠지면 그 쓰기로 회수된 연결이 계속 본문을 받는다 — 틀려도 조용하다.
+    // 여기서는 있고 켜져 있는지만 본다. NOTIFY 는 커밋해야 오므로 롤백하는 이 스크립트로는 보이지 않는다 — 실제 쓰기로 신호가
+    // 오는지는 src/lib/collab/change-feed.db.test.ts ① 이 본다.
+    const expected = [
+      ['doc_update', 'tg_collab_doc_update'],
+      ['block', 'tg_collab_access_block'],
+      ['acl_entry', 'tg_collab_access_acl_entry'],
+      ['block_acl_meta', 'tg_collab_access_block_acl_meta'],
+      ['workspace_member', 'tg_collab_access_workspace_member'],
+      ['sso_config', 'tg_collab_access_sso_config'],
+      ['user_session', 'tg_collab_access_user_session'],
+      ['user_session', 'tg_collab_access_user_session_delete'],
+    ]
+    const { rows } = await client.query(
+      `SELECT c.relname AS tbl, t.tgname AS name, t.tgenabled AS enabled
+         FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
+        WHERE t.tgname LIKE 'tg_collab_%' AND t.tgparentid = 0`,
+    )
+    const got = new Map(rows.map((r) => [`${r.tbl}.${r.name}`, r.enabled]))
+    const missing = expected.filter(([tbl, name]) => got.get(`${tbl}.${name}`) !== 'O')
+    if (missing.length === 0) ok(`신호 트리거 ${expected.length}개가 있고 켜져 있다`)
+    else fail(`신호 트리거가 없거나 꺼져 있다: ${missing.map(([tbl, name]) => `${tbl}.${name}`).join(', ')}`)
+  }
+
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
 } catch (e) {
