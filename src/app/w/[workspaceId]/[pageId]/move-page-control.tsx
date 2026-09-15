@@ -5,8 +5,11 @@
  *
  * 사이드바 드래그 앤 드롭(W5-b)이 같은 연산의 다른 진입점이 된다. 그래서
  * 이 컴포넌트는 **목록과 호출만** 하고, 어디로 옮길 수 있는지는 서버가 정한다
- * (`listMovableTargets`). 자손 제외 규칙이 화면과 서버 양쪽에 있으면
+ * (`listMovableTargets`). 자손 제외 · 권한 규칙이 화면과 서버 양쪽에 있으면
  * 언젠가 어긋나고, 그때 화면은 고를 수 있는데 서버는 거부하는 상태가 된다.
+ *
+ * 경로 라벨도 서버가 준다 — 볼 수 있는 조상의 제목만 온다. 후보 목록에서 조상 제목을 찾던 예전 방식은 볼 수 없는 조상을
+ * 후보에 넣어야 성립했다(그래서 제목이 샜다).
  */
 
 import { useMemo, useState } from 'react'
@@ -15,7 +18,8 @@ import { useRouter } from 'next/navigation'
 export type MoveTargetOption = {
   id: string
   title: string
-  ancestors: string[]
+  /** 루트→부모 순서의 볼 수 있는 조상 제목. */
+  path: string[]
 }
 
 const UNTITLED = '제목 없음'
@@ -37,26 +41,18 @@ export function MovePageControl({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  /** id → 제목. 경로 라벨을 만들 때 쓴다. */
-  const titleById = useMemo(() => {
-    const map = new Map<string, string>()
-    for (const t of targets) map.set(t.id, t.title || UNTITLED)
-    return map
-  }, [targets])
-
   const rows = useMemo(() => {
     const q = filter.trim().toLowerCase()
     const withPath = targets.map((t) => ({
       ...t,
       label: t.title || UNTITLED,
-      // 후보의 조상은 전부 후보 안에 있다(listMovableTargets 주석 참조).
-      path: t.ancestors.map((a) => titleById.get(a) ?? UNTITLED).join(' / '),
+      path: t.path.map((title) => title || UNTITLED).join(' / '),
     }))
     if (q === '') return withPath
     return withPath.filter(
       (t) => t.label.toLowerCase().includes(q) || t.path.toLowerCase().includes(q),
     )
-  }, [targets, filter, titleById])
+  }, [targets, filter])
 
   async function move(targetParentId: string | null) {
     setBusy(true)
@@ -72,6 +68,7 @@ export function MovePageControl({
         setError(
           data.error === 'too_deep' ? '그 위치로 옮기면 깊이 제한을 넘습니다.'
           : data.error === 'cycle' ? '자기 하위 페이지 안으로는 옮길 수 없습니다.'
+          : data.error === 'forbidden' ? '이 페이지를 옮길 권한이 없습니다.'
           : '옮기지 못했습니다.',
         )
         return

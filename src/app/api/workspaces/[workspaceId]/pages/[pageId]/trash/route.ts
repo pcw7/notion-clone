@@ -35,7 +35,8 @@ function errorResponse(e: unknown): Response {
   if (!(e instanceof TrashError)) throw e
   // not_a_trash_root 는 409 다 — 요청이 잘못된 게 아니라 **지금 상태에서**
   // 할 수 없는 일이고, 화면은 `trashRootId` 로 대안을 제시할 수 있다.
-  const status = e.code === 'not_found' ? 404 : 409
+  // forbidden 은 볼 수는 있는데 바꿀 수 없을 때만 온다 — 볼 수 없으면 not_found 다(§3.3-31).
+  const status = e.code === 'not_found' ? 404 : e.code === 'forbidden' ? 403 : 409
   return Response.json(
     { error: e.code, message: e.message, trashRootId: e.trashRootId },
     { status },
