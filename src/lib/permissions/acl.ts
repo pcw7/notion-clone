@@ -363,6 +363,60 @@ export async function resumeInheriting(ctx: SessionContext, pageId: string): Pro
   })
 }
 
+// ── 트리의 자리가 정하는 것 ──────────────────────────────────────────
+
+/**
+ * 권한 스코프의 경계인가 — ACL 행이 있거나 상속을 끊었다(정본 §3.11 `perm_scope_id` 의 정의. 공개 링크는 아직 없다).
+ *
+ * 경계인 노드는 어디로 옮겨도 자기가 스코프다(`block/move-page.ts` `relocateSubtree`). 호출자의 트랜잭션에서 읽는다.
+ */
+export async function isScopeBoundary(tx: Tx, nodeId: string): Promise<boolean> {
+  return (await hasEntries(tx, nodeId)) || (await isCut(tx, nodeId))
+}
+
+/**
+ * 최상위 노드가 워크스페이스에서 상속한다 — `workspace_everyone → full_access` 한 행.
+ *
+ * MVP 에는 teamspace 가 없어 최상위 노드의 상속 원천이 워크스페이스다. 그 상속을 데이터로 옮긴 것이 이 행이다(마이그레이션 0010 이
+ * 백필했다 — "ACL 이 없는 노드는 아무도 못 보는 노드"다). 최상위에 **만들 때**(`createPage` · `createDatabase`)와 최상위로 **옮길 때**
+ * (06 F-06-20 "이동 즉시 새 부모의 권한이 상속") 이 함수 하나를 부른다. 한때 옮길 때는 넣지 않아, 최상위로 꺼낸 페이지를 옮긴
+ * 사람까지 아무도 못 봤다(HANDOFF §3.2-21).
+ *
+ *   - 상속을 끊은 노드는 받지 않는다 — 상속하지 않기로 한 노드다
+ *   - 이미 `workspace_everyone` 행이 있으면 `full_access` 로 올린다. `full_access` 는 capability 전부라 상속분과 명시 부여의
+ *     합집합이 곧 `full_access` 다
+ *   - 옮겨 가 워크스페이스 밖(다른 페이지 밑)으로 갈 때 이 행을 지우지 않는다 — 명시 부여와 가를 출처 열이 없다(§7 "ACL provenance")
+ */
+export async function inheritFromWorkspace(tx: Tx, ctx: SessionContext, nodeId: string): Promise<void> {
+  if (await isCut(tx, nodeId)) return
+  await tx.query(
+    `INSERT INTO acl_entry (id, node_kind, node_id, principal_type, principal_id, level, granted_by)
+     VALUES ($1, 'block', $2, 'workspace_everyone', NULL, 'full_access', $3)
+     ON CONFLICT (node_kind, node_id, principal_type, principal_id)
+     DO UPDATE SET level = EXCLUDED.level WHERE acl_entry.level <> EXCLUDED.level`,
+    [randomUUID(), nodeId, ctx.userId],
+  )
+}
+
+/**
+ * 부모가 사라져 최상위로 되살린 노드는 되살린 사람만 본다 — 정본 B4 "복원 실행자의 Private 루트로 재부모화".
+ *
+ * MVP 에는 Private 루트가 없어 최상위에 두고, 정본 `move_to_private` 처럼 되살린 사람에게 `full_access` 를 준다. 워크스페이스에서
+ * 상속시키지 않는다 — 그러면 비공개 부모 밑에 있던 페이지가 복원 한 번으로 워크스페이스 전체에 열린다.
+ *
+ * 이미 있는 명시 부여는 지우지 않는다. 정본 `move_to_private` 은 지우지만 되돌릴 수 없는 쪽이라, `resumeInheriting` 과 같이 남는
+ * 쪽으로 기운다. 되살리려면 이미 `edit_content` 가 있었다(§3.2-18) — `full_access` 로 올리는 것은 정본의 Private 루트와 같다.
+ */
+export async function grantToRestorer(tx: Tx, ctx: SessionContext, nodeId: string): Promise<void> {
+  await tx.query(
+    `INSERT INTO acl_entry (id, node_kind, node_id, principal_type, principal_id, level, granted_by)
+     VALUES ($1, 'block', $2, 'user', $3, 'full_access', $3)
+     ON CONFLICT (node_kind, node_id, principal_type, principal_id)
+     DO UPDATE SET level = EXCLUDED.level WHERE acl_entry.level <> EXCLUDED.level`,
+    [randomUUID(), nodeId, ctx.userId],
+  )
+}
+
 // ── 조회 ──────────────────────────────────────────────────────────────
 
 export type AccessEntry = {

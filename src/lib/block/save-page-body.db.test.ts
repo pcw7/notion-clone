@@ -22,6 +22,9 @@ import type { BlockType } from './types.ts'
 import { asBlockId, type BlockId } from '../ids.ts'
 import { query } from '../db/pool.ts'
 import { assertBodyMatchesYDoc } from '../testing/body-invariant.ts'
+import { grantAccess, revokeAccess, stopInheriting } from '../permissions/acl.ts'
+import { canViewPage } from '../permissions/effective.ts'
+import { listPageTree } from './page-tree.ts'
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'
 
@@ -414,6 +417,31 @@ describe('savePageBody — 자식 페이지', () => {
     )
     assert.equal(row.parent_id, pageId)
     assert.deepEqual(row.ancestor_path, [pageId])
+  })
+
+  test('★ 상속을 끊은 하위 페이지를 토글 안으로 옮겨도 자기 스코프를 지킨다 — 볼 수 없는 멤버의 사이드바에 나가지 않는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { queryOne } = await import('../db/pool.ts')
+    const member = await joinAs(fx.workspaceId, await createUser('멤버'), 'member')
+
+    const pageId = await newPage()
+    const secret = await createPage(fx.owner.ctx, { parentPageId: pageId, title: titleFromPlainText('비밀') })
+    assert.equal((await stopInheriting(fx.owner.ctx, secret.id)).ok, true)
+    assert.equal((await grantAccess(fx.owner.ctx, secret.id, { type: 'user', id: fx.owner.userId }, 'full_access')).ok, true)
+    assert.equal((await revokeAccess(fx.owner.ctx, secret.id, { type: 'workspace_everyone' })).ok, true)
+
+    const toggle = blk('toggle', '토글')
+    const ref: EditorBlock = { id: secret.id, type: 'page', title: [] }
+    assert.ok((await savePageBody(fx.owner.ctx, pageId, { blocks: [{ ...toggle, children: [ref] }] })).ok)
+
+    const row = await queryOne<{ parent_id: string; perm_scope_id: string }>(
+      `SELECT parent_id, perm_scope_id FROM block WHERE id = $1`,
+      [secret.id],
+    )
+    assert.equal(row.parent_id, toggle.id, '전제: 토글 안으로 옮겼다')
+    assert.equal(row.perm_scope_id, secret.id, '비공개 하위 페이지의 스코프가 부모 페이지의 것으로 덮였다')
+    assert.equal(await canViewPage(member.ctx, secret.id), false)
+    assert.ok(!JSON.stringify(await listPageTree(member.ctx)).includes(secret.id), '멤버의 사이드바에 볼 수 없는 페이지가 나왔다')
   })
 
   test('중첩한 자식 페이지가 순서에서 제자리에 온다', async (t) => {

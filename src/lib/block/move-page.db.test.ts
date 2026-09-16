@@ -20,9 +20,14 @@ import {
   createUser,
   createBareWorkspace,
   joinAs,
+  type Actor,
   type Fixture,
 } from '../testing/db-fixtures.ts'
-import { createPage, titleFromPlainText, MAX_TREE_DEPTH } from './page.ts'
+import { grantAccess, revokeAccess, stopInheriting } from '../permissions/acl.ts'
+import { canViewPage } from '../permissions/effective.ts'
+import { searchPages } from '../search/search.ts'
+import { listPageTree } from './page-tree.ts'
+import { createPage, listChildPages, titleFromPlainText, MAX_TREE_DEPTH } from './page.ts'
 import { movePage, MoveError } from './move-page.ts'
 import { loadPageBody, savePageBody } from './save-page-body.ts'
 import { textRun } from '../contracts/rich-text.ts'
@@ -74,6 +79,29 @@ async function rowOf(id: string) {
        FROM block WHERE id = $1`,
     [id],
   )
+}
+
+/** 소유자만 남긴다 — 소유자에게 full_access 를 준 뒤 모두에게서 회수한다. */
+async function restrictToOwner(pageId: string) {
+  assert.equal((await grantAccess(fx.owner.ctx, pageId, { type: 'user', id: fx.owner.userId }, 'full_access')).ok, true)
+  assert.equal((await revokeAccess(fx.owner.ctx, pageId, { type: 'workspace_everyone' })).ok, true)
+}
+
+/** 이 사람이 그 페이지를 볼 수 있는가, 사이드바에 그 페이지가 있는가 — 둘이 어긋나면 누출이거나 사라짐이다. */
+async function seenBy(actor: Actor, pageId: string) {
+  return {
+    view: await canViewPage(actor.ctx, pageId),
+    sidebar: JSON.stringify(await listPageTree(actor.ctx)).includes(pageId),
+  }
+}
+
+async function aclOf(nodeId: string) {
+  const { query } = await import('../db/pool.ts')
+  const rows = await query<{ principal_type: string; principal_id: string | null; level: string }>(
+    `SELECT principal_type, principal_id, level FROM acl_entry WHERE node_id = $1 ORDER BY principal_type, principal_id`,
+    [nodeId],
+  )
+  return rows.map((row) => [row.principal_type, row.principal_id, row.level])
 }
 
 // ── 기본 ──────────────────────────────────────────────────────────────
@@ -272,29 +300,81 @@ describe('movePage — 두 본문의 참조 노드 (X-1 · CRDT 4b)', () => {
 // ── 권한 스코프 ───────────────────────────────────────────────────────
 
 describe('movePage — perm_scope_id (§3.11 트리거 ④)', () => {
-  test('루트 아래로 들어가면 서브트리 전체가 새 스코프를 받는다', async (t) => {
+  // 정의: perm_scope_id(N) = N 자신 또는 가장 가까운 조상 중 acl_entry 를 갖거나 상속을 끊은 노드. 경계인 페이지는 옮겨도 자기가
+  // 스코프다 — 목록(사이드바 · 하위 목록 · 검색)은 스코프로 거르므로, 스코프가 틀리면 볼 수 없는 페이지의 제목이 나가거나 볼 수
+  // 있는 페이지가 사라진다. 한때 이 절의 첫 검사가 "루트를 옮기면 대상의 스코프를 받는다"를 단언했다 — 루트는 ACL 을 가진 경계다.
+
+  test('경계가 아닌 페이지를 옮기면 서브트리 전체가 새 부모의 스코프를 받는다', async (t) => {
     if (skipReason) return t.skip(skipReason)
 
-    const target = await page('대상 루트')
-    const moving = await page('옮길 루트')
-    const child = await page('자식', moving.id)
-
-    // 이동 전: 각 루트가 자기 스코프다.
-    assert.equal(moving.permScopeId, moving.id)
-    assert.equal(child.permScopeId, moving.id)
+    const oldParent = await page('옛 부모')
+    const target = await page('새 부모')
+    const moving = await page('옮길 자식', oldParent.id)
+    const grandchild = await page('손자', moving.id)
+    assert.equal(moving.permScopeId, oldParent.id, '전제: 자기 ACL 이 없어 부모의 스코프를 따른다')
 
     await movePage(fx.owner.ctx, moving.id, target.id)
 
     assert.equal((await rowOf(moving.id)).perm_scope_id, target.id)
     assert.equal(
-      (await rowOf(child.id)).perm_scope_id,
+      (await rowOf(grandchild.id)).perm_scope_id,
       target.id,
-      '자손의 스코프가 옛 루트를 계속 가리킨다 — 권한이 조용히 틀어진다',
+      '자손의 스코프가 옛 부모를 계속 가리킨다 — 권한이 조용히 틀어진다',
     )
   })
 
-  test('최상위로 꺼내면 자기 자신이 스코프 루트가 된다', async (t) => {
+  test('★ 자기 ACL 을 가진 페이지는 옮겨도 자기 스코프를 지킨다 — 볼 수 있는 멤버의 사이드바에서 사라지지 않는다', async (t) => {
     if (skipReason) return t.skip(skipReason)
+    const member = await joinAs(fx.workspaceId, await createUser('멤버'), 'member')
+
+    const privateTarget = await page('소유자만의 대상')
+    await restrictToOwner(privateTarget.id)
+    const moving = await page('모두에게 열린 루트') // 최상위 페이지는 workspace_everyone ACL 을 갖고 태어난다 — 경계다
+    const child = await page('열린 루트의 자식', moving.id)
+
+    await movePage(fx.owner.ctx, moving.id, privateTarget.id)
+
+    assert.deepEqual(
+      [(await rowOf(moving.id)).perm_scope_id, (await rowOf(child.id)).perm_scope_id],
+      [moving.id, moving.id],
+      '경계인 페이지와 그것을 따르던 자손이 대상의 스코프로 덮였다',
+    )
+    assert.deepEqual(await seenBy(member, moving.id), { view: true, sidebar: true })
+    assert.deepEqual(await seenBy(member, child.id), { view: true, sidebar: true })
+  })
+
+  test('★ 상속을 끊은 비공개 페이지를 공개 페이지 밑으로 옮겨도 멤버의 사이드바 · 하위 목록 · 검색에 제목이 나가지 않는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const member = await joinAs(fx.workspaceId, await createUser('멤버'), 'member')
+    const token = `leak${randomUUID().slice(0, 8)}`
+
+    const publicTarget = await page('공개 대상')
+    const box = await page('상자')
+    const secret = await page(`기밀 ${token}`, box.id)
+    assert.equal((await stopInheriting(fx.owner.ctx, secret.id)).ok, true)
+    await restrictToOwner(secret.id)
+
+    await movePage(fx.owner.ctx, secret.id, publicTarget.id)
+
+    assert.equal((await rowOf(secret.id)).perm_scope_id, secret.id, '비공개 페이지의 스코프가 공개 대상의 것으로 덮였다')
+    assert.deepEqual(await seenBy(member, secret.id), { view: false, sidebar: false })
+    assert.deepEqual(
+      (await listChildPages(member.ctx, publicTarget.id)).map((p) => p.id),
+      [],
+      '멤버의 하위 목록에 볼 수 없는 페이지가 나왔다',
+    )
+    const hits = async (actor: Actor) => {
+      const outcome = await searchPages(actor.ctx, { query: token })
+      assert.ok(outcome.ok)
+      return outcome.results.results.map((hit) => hit.pageId)
+    }
+    assert.deepEqual(await hits(fx.owner), [secret.id], '전제: 볼 수 있는 사람의 검색에는 걸린다')
+    assert.deepEqual(await hits(member), [], '멤버의 검색에 볼 수 없는 페이지가 걸렸다')
+  })
+
+  test('★ 최상위로 꺼내면 자기 자신이 스코프 루트가 되고 워크스페이스에서 상속한다 — 최상위 페이지가 태어날 때와 같다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const member = await joinAs(fx.workspaceId, await createUser('멤버'), 'member')
 
     const parent = await page('부모')
     const moving = await page('자식', parent.id)
@@ -305,13 +385,49 @@ describe('movePage — perm_scope_id (§3.11 트리거 ④)', () => {
 
     assert.equal((await rowOf(moving.id)).perm_scope_id, moving.id)
     assert.equal((await rowOf(grandchild.id)).perm_scope_id, moving.id)
+    assert.deepEqual(await aclOf(moving.id), [['workspace_everyone', null, 'full_access']])
+    // ACL 이 없는 최상위 페이지는 아무도 못 본다 — 옮긴 사람조차 되돌릴 수 없다.
+    for (const actor of [fx.owner, member]) {
+      assert.deepEqual(await seenBy(actor, moving.id), { view: true, sidebar: true }, '최상위로 꺼낸 페이지를 볼 수 없다')
+      assert.deepEqual(await seenBy(actor, grandchild.id), { view: true, sidebar: true })
+    }
+  })
+
+  test('최상위로 꺼낼 때 모두에게 준 행이 이미 있으면 full_access 로 올린다 — 워크스페이스에서 받는 상속분과의 합집합', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+
+    const parent = await page('부모')
+    const moving = await page('모두에게 보기만 준 자식', parent.id)
+    assert.equal((await grantAccess(fx.owner.ctx, moving.id, { type: 'workspace_everyone' }, 'view')).ok, true)
+
+    await movePage(fx.owner.ctx, moving.id, null)
+
+    assert.deepEqual(await aclOf(moving.id), [['workspace_everyone', null, 'full_access']])
+  })
+
+  test('★ 상속을 끊은 페이지는 최상위로 꺼내도 워크스페이스에 열리지 않는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const member = await joinAs(fx.workspaceId, await createUser('멤버'), 'member')
+
+    const parent = await page('부모')
+    const moving = await page('끊은 자식', parent.id)
+    assert.equal((await stopInheriting(fx.owner.ctx, moving.id)).ok, true)
+    await restrictToOwner(moving.id)
+
+    await movePage(fx.owner.ctx, moving.id, null)
+
+    assert.equal((await rowOf(moving.id)).perm_scope_id, moving.id)
+    assert.deepEqual(await aclOf(moving.id), [['user', fx.owner.userId, 'full_access']])
+    assert.deepEqual(await seenBy(member, moving.id), { view: false, sidebar: false })
+    assert.deepEqual(await seenBy(fx.owner, moving.id), { view: true, sidebar: true })
   })
 
   test('본문 블록의 스코프도 함께 옮겨간다', async (t) => {
     if (skipReason) return t.skip(skipReason)
 
+    const oldParent = await page('옛 부모')
     const target = await page('대상')
-    const moving = await page('옮길 것')
+    const moving = await page('옮길 것', oldParent.id)
     const blockId = randomUUID()
     assert.ok(
       (await savePageBody(fx.owner.ctx, moving.id, {

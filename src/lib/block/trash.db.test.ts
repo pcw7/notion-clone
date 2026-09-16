@@ -26,6 +26,8 @@ import { textRun } from '../contracts/rich-text.ts'
 import { asBlockId, type BlockId } from '../ids.ts'
 import type { EditorBlock } from '../editor/document.ts'
 import { assertBodyMatchesYDoc } from '../testing/body-invariant.ts'
+import { canViewPage } from '../permissions/effective.ts'
+import { listPageTree } from './page-tree.ts'
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'
 
@@ -477,6 +479,38 @@ describe('restorePage — 부모가 사라진 경우 (B4)', () => {
       [grandchild.id],
     )
     assert.deepEqual(gc.ancestor_path, [child.id])
+  })
+
+  test('★ 최상위로 올린 페이지는 되살린 사람만 본다 — 아무도 못 보는 페이지가 되지 않고, 워크스페이스에 열리지도 않는다(정본 B4)', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const restorer = await joinAs(fx.workspaceId, await createUser('되살릴 멤버'), 'member')
+    const bystander = await joinAs(fx.workspaceId, await createUser('다른 멤버'), 'member')
+
+    const parent = await page('사라질 부모')
+    const child = await page('자식', parent.id)
+    const grandchild = await page('손자', child.id)
+    await trashPage(fx.owner.ctx, child.id)
+    await trashPage(fx.owner.ctx, parent.id)
+    await purgePage(fx.owner.ctx, parent.id)
+
+    const result = await restorePage(restorer.ctx, child.id)
+    assert.equal(result.reparented, true, '전제: 부모가 없어 최상위로 올렸다')
+
+    const { query } = await import('../db/pool.ts')
+    const acl = await query<{ principal_type: string; principal_id: string | null; level: string }>(
+      `SELECT principal_type, principal_id, level FROM acl_entry WHERE node_id = $1`,
+      [child.id],
+    )
+    assert.deepEqual(acl.map((r) => [r.principal_type, r.principal_id, r.level]), [['user', restorer.userId, 'full_access']])
+    for (const id of [child.id, grandchild.id]) {
+      assert.deepEqual(
+        [await canViewPage(restorer.ctx, id), await canViewPage(bystander.ctx, id), await canViewPage(fx.owner.ctx, id)],
+        [true, false, false],
+        '되살린 사람만 볼 수 있어야 한다 — 정본 B4 "복원 실행자의 Private 루트"',
+      )
+    }
+    assert.ok(JSON.stringify(await listPageTree(restorer.ctx)).includes(child.id), '되살린 사람의 사이드바에 없다')
+    assert.ok(!JSON.stringify(await listPageTree(bystander.ctx)).includes(child.id), '다른 멤버의 사이드바에 나왔다')
   })
 })
 
