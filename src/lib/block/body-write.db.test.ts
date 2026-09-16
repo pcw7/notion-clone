@@ -7,6 +7,9 @@
  *   ② **살아 있는 하위 페이지의 참조를 지운 update 는 그 페이지를 자손과 함께 휴지통으로 보낸다**(정본 프로젝터 · 5b) — 휴지통
  *      명령과 같은 상태가 되고, 되살리면 본문의 원래 자리로 돌아온다
  *   ③ **그 하위 페이지를 버릴 권한이 없으면 거부하고 아무것도 쓰지 않는다** — 볼 수 없는 하위 페이지 · 볼 수만 있는 하위 페이지
+ *   ④ **하위 페이지 참조를 깊이 상한을 넘는 자리로 옮긴 update 는 거부하지 않고 들어갈 수 있는 깊이까지 올린다** — 참조를 담은
+ *      블록을 옮겨도 같고, 하위 페이지 서브트리의 높이까지 센다. 올린 것은 같은 seq 의 수선이다. 모르는 노드가 있어 수선을 쓸 수
+ *      없을 때만 거부한다
  *
  * 로그 자체의 성질(seq · 압축 · 재전송 · pending · 수선 · 권한)은 `collab/doc-store.db.test.ts` 가 본다.
  */
@@ -15,14 +18,16 @@ import { test, describe, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 
-import type * as Y from 'yjs'
+import * as Y from 'yjs'
 import type { Transaction } from '@tiptap/pm/state'
 import type { Node as PmNode } from '@tiptap/pm/model'
 
 import { loadDocState } from '../collab/doc-store.ts'
+import { BODY_FRAGMENT, readBodyYDoc } from '../collab/ydoc.ts'
 import { textRun } from '../contracts/rich-text.ts'
 import { query, queryOne } from '../db/pool.ts'
 import type { EditorBlock, EditorDoc } from '../editor/document.ts'
+import { docToPm } from '../editor/pm-adapter.ts'
 import { grantAccess, revokeAccess, stopInheriting } from '../permissions/acl.ts'
 import type { Level } from '../permissions/levels.ts'
 import { assertBodyMatchesYDoc } from '../testing/body-invariant.ts'
@@ -180,6 +185,156 @@ describe('참여자 update 는 행으로 투영된다', () => {
     }
     assert.equal(await logLength(pageId), logBefore, '거부한 update 를 쌓았다')
     assert.deepEqual(await loadPageBody(owner.ctx, pageId as never), rowsBefore, '거부했는데 행이 바뀌었다')
+    await assertBodyMatchesYDoc(owner.ctx, pageId)
+  })
+})
+
+// ── ④ 깊이 상한 ───────────────────────────────────────────────────────
+
+/** 토글을 `ids` 순서로 한 줄로 겹친다 — `ids[0]` 이 최상위(깊이 1)이고 `inner` 는 가장 안쪽 토글의 자식이다. */
+function toggleChain(ids: readonly string[], inner: EditorBlock[] = []): EditorBlock {
+  let node: EditorBlock = { id: ids[ids.length - 1], type: 'toggle', title: [textRun(`t${ids.length}`)], children: inner }
+  for (let i = ids.length - 2; i >= 0; i -= 1) node = { id: ids[i], type: 'toggle', title: [textRun(`t${i + 1}`)], children: [node] }
+  return node
+}
+
+const refTo = (pageId: string): EditorBlock => ({ id: pageId, type: 'page', title: [] })
+
+/** 참여자가 본문을 `blocks` 로 바꾼 update — 에디터가 하는 쓰기(`edit`)로 만든다. */
+function rewriting(base: Y.Doc, blocks: EditorBlock[], clientId: number): { client: Y.Doc; update: Uint8Array } {
+  const client = peer(base, clientId)
+  const next = docToPm({ blocks })
+  edit(client, (tr: Transaction) => {
+    tr.replaceWith(0, tr.doc.content.size, next.content)
+  })
+  return { client, update: changesSince(client, base) }
+}
+
+/** 문서에서 그 블록의 자식 id. */
+function childIdsOf(doc: EditorDoc, blockId: string): string[] | null {
+  const walk = (blocks: readonly EditorBlock[]): string[] | null => {
+    for (const b of blocks) {
+      if (b.id === blockId) return (b.children ?? []).map((c) => c.id)
+      const found = walk(b.children ?? [])
+      if (found !== null) return found
+    }
+    return null
+  }
+  return walk(doc.blocks)
+}
+
+const placeOf = (id: string) =>
+  queryOne<{ parent_id: string; ancestor_path: string[] }>(`SELECT parent_id, ancestor_path FROM block WHERE id = $1`, [id])
+
+describe('깊이 상한을 넘는 자리로 옮긴 하위 페이지 참조', () => {
+  test('★ 거부하지 않고 들어갈 수 있는 깊이까지 올린다 — 행 · Y.Doc · 보낸 쪽이 같은 자리다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { owner } = await workspace()
+    const pageId = await mk(owner, '페이지')
+    const child = await mk(owner, '하위', pageId)
+    // 토글 99 개 — 가장 안쪽 토글의 자식은 깊이 100 이다. 하위 페이지 경로가 [페이지, 토글 99 개] 가 되어 상한에 닿는다.
+    const ids = Array.from({ length: 99 }, () => randomUUID())
+    assert.ok((await savePageBody(owner.ctx, pageId as never, { blocks: [toggleChain(ids), refTo(child)] })).ok)
+    const base = await ydocOf(owner, pageId)
+
+    const { client, update } = rewriting(base, [toggleChain(ids, [refTo(child)])], 81)
+    const result = await appendDocUpdate(owner.ctx, pageId, update, { origin: 'editor' })
+    assert.ok(result.ok && result.appended, JSON.stringify(result))
+
+    // 가장 안쪽 토글(깊이 99)의 바로 뒤 형제 — 깊이 99 에서 경로가 [페이지, 토글 98 개] 다.
+    const place = await placeOf(child)
+    assert.equal(place.parent_id, ids[97], '들어갈 수 있는 가장 깊은 자리로 올리지 않았다')
+    assert.deepEqual(place.ancestor_path, [pageId, ...ids.slice(0, 98)])
+    const rows = await loadPageBody(owner.ctx, pageId as never)
+    assert.deepEqual(rows === null ? null : childIdsOf(rows.doc, ids[97]), [ids[98], child], '올린 참조가 그 토글 바로 뒤가 아니다')
+    await assertBodyMatchesYDoc(owner.ctx, pageId)
+
+    // 보낸 쪽은 올린 것을 갖고 있지 않다 — 돌려준 수선을 받으면 로그와 같은 문서다.
+    assert.ok(result.repair !== null, '올린 것을 수선으로 돌려주지 않았다')
+    Y.applyUpdate(client, result.repair)
+    const server = readBodyYDoc(await ydocOf(owner, pageId), pageId)
+    assert.deepEqual(readBodyYDoc(client, pageId), server)
+  })
+
+  test('★ 참조를 담은 토글을 깊이 옮겨도 같다 — 하위 페이지 서브트리의 높이까지 센다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { owner } = await workspace()
+    const pageId = await mk(owner, '페이지')
+    const child = await mk(owner, '하위', pageId)
+    const grandchild = await mk(owner, '손자', child)
+    const holder = randomUUID()
+    const ids = Array.from({ length: 97 }, () => randomUUID())
+    const holding = (children: EditorBlock[]): EditorBlock => ({ id: holder, type: 'toggle', title: [textRun('담은 토글')], children })
+    assert.ok((await savePageBody(owner.ctx, pageId as never, { blocks: [toggleChain(ids), holding([refTo(child)])] })).ok)
+    const base = await ydocOf(owner, pageId)
+
+    // 담은 토글을 가장 안쪽 토글(깊이 97) 밑으로 — 참조의 부모는 그대로 담은 토글이고 깊이는 99, 손자의 경로는 100 이 된다.
+    const { update } = rewriting(base, [toggleChain(ids, [holding([refTo(child)])])], 82)
+    const result = await appendDocUpdate(owner.ctx, pageId, update, { origin: 'editor' })
+    assert.ok(result.ok && result.appended, JSON.stringify(result))
+
+    // 손자까지 상한 안에 들려면 참조는 깊이 98 — 담은 토글 바로 뒤다.
+    const place = await placeOf(child)
+    assert.equal(place.parent_id, ids[96], '서브트리 높이를 세어 올리지 않았다')
+    assert.deepEqual(place.ancestor_path, [pageId, ...ids])
+    assert.deepEqual((await placeOf(grandchild)).ancestor_path, [pageId, ...ids, child], '자손 경로가 따라가지 않았다')
+    const rows = await loadPageBody(owner.ctx, pageId as never)
+    assert.deepEqual(rows === null ? null : childIdsOf(rows.doc, ids[96]), [holder, child])
+    assert.deepEqual(rows === null ? null : childIdsOf(rows.doc, holder), [])
+    await assertBodyMatchesYDoc(owner.ctx, pageId)
+  })
+
+  test('★ 상한을 이미 넘은 서브트리의 참조는 지금 깊이까지만 올린다 — 최상위까지 끌어올리지 않는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { owner } = await workspace()
+    const pageId = await mk(owner, '페이지')
+    const child = await mk(owner, '하위', pageId)
+    const [first, second, inner] = [randomUUID(), randomUUID(), randomUUID()]
+    const toggle = (id: string, children: EditorBlock[] = []): EditorBlock => ({ id, type: 'toggle', title: [textRun('토글')], children })
+    assert.ok(
+      (await savePageBody(owner.ctx, pageId as never, { blocks: [toggle(first, [refTo(child)]), toggle(second, [toggle(inner)])] })).ok,
+    )
+    // 하위 페이지의 본문을 깊이 100 까지 — 본문은 페이지에서 센 깊이만 막으므로 서브트리가 상한을 넘는다(경로 102).
+    const bodyIds = Array.from({ length: 99 }, () => randomUUID())
+    assert.ok((await savePageBody(owner.ctx, child as never, { blocks: [toggleChain(bodyIds, [para('바닥')])] })).ok)
+    const base = await ydocOf(owner, pageId)
+
+    // 참조를 깊이 2 에서 3 으로 — 더 깊어진다. 들어갈 수 있는 깊이는 지금 깊이(2)다.
+    const { update } = rewriting(base, [toggle(first), toggle(second, [toggle(inner, [refTo(child)])])], 84)
+    const result = await appendDocUpdate(owner.ctx, pageId, update, { origin: 'editor' })
+    assert.ok(result.ok && result.appended, JSON.stringify(result))
+
+    const place = await placeOf(child)
+    assert.equal(place.parent_id, second, '지금 깊이가 아니라 더 위로 올렸다')
+    const rows = await loadPageBody(owner.ctx, pageId as never)
+    assert.deepEqual(rows === null ? null : childIdsOf(rows.doc, second), [inner, child])
+    await assertBodyMatchesYDoc(owner.ctx, pageId)
+  })
+
+  test('모르는 노드가 있는 본문에서는 올린 것을 Y.Doc 에 쓸 수 없어 거부한다 — 아무것도 쓰지 않는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { owner } = await workspace()
+    const pageId = await mk(owner, '페이지')
+    const child = await mk(owner, '하위', pageId)
+    const ids = Array.from({ length: 99 }, () => randomUUID())
+    assert.ok((await savePageBody(owner.ctx, pageId as never, { blocks: [toggleChain(ids), refTo(child)] })).ok)
+    const base = await ydocOf(owner, pageId)
+    const [logBefore, placeBefore] = [await logLength(pageId), await placeOf(child)]
+
+    const { client } = rewriting(base, [toggleChain(ids, [refTo(child)])], 83)
+    // 새 버전 클라이언트가 넣은 블록 — 수선은 매핑 없이 비교해 이것을 지우므로 쓰지 않는다(`repair.ts`).
+    const root = client.getXmlFragment(BODY_FRAGMENT).get(0) as Y.XmlElement
+    const future = new Y.XmlElement('blockContainer')
+    future.setAttribute('blockId', randomUUID())
+    future.insert(0, [new Y.XmlElement('future_block_from_newer_client')])
+    client.transact(() => root.insert(root.length, [future]))
+
+    assert.deepEqual(
+      await appendDocUpdate(owner.ctx, pageId, changesSince(client, base), { origin: 'editor' }),
+      { ok: false, reason: 'page_ref_too_deep' },
+    )
+    assert.equal(await logLength(pageId), logBefore, '거부한 update 를 쌓았다')
+    assert.deepEqual(await placeOf(child), placeBefore, '거부했는데 행이 바뀌었다')
     await assertBodyMatchesYDoc(owner.ctx, pageId)
   })
 })

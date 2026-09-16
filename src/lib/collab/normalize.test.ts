@@ -4,7 +4,8 @@
  * 이 파일이 지키는 것.
  *
  *   ① **올바른 문서는 그대로다** — 고친 것 0개, 입력과 `eq`
- *   ② **규칙마다 스키마에 맞는 문서가 나오고, 잃지 않아야 할 것은 남는다**
+ *   ② **규칙마다 스키마에 맞는 문서가 나오고, 잃지 않아야 할 것은 남는다** — 받은 깊이보다 깊은 하위 페이지 참조는 들어갈 때까지
+ *      올라오고, 그 뒤에는 깊이 없이 읽어도 고칠 것이 없다(②-1)
  *   ③ **결정론 · 멱등** — 두 번 돌려도 같은 결과, 결과를 다시 넣으면 고칠 것이 없다
  *
  * 입력은 ProseMirror 의 **검사하지 않는** `create` 로 만든다 — `ydoc.ts` 가 Y.Doc 을 읽을 때 쓰는 것과
@@ -25,8 +26,8 @@ import { isUuid } from '../ids.ts'
 import { derivedBlockId, normalizeBody, type NormalizeFix, type NormalizeResult } from './normalize.ts'
 
 const SEED = randomUUID()
-const [A, B, C, D] = [randomUUID(), randomUUID(), randomUUID(), randomUUID()]
-const NAMES = new Map([[A, 'A'], [B, 'B'], [C, 'C'], [D, 'D']])
+const [A, B, C, D, R, S2] = [randomUUID(), randomUUID(), randomUUID(), randomUUID(), randomUUID(), randomUUID()]
+const NAMES = new Map([[A, 'A'], [B, 'B'], [C, 'C'], [D, 'D'], [R, 'R'], [S2, 'S']])
 
 const attrs = { props: {}, format: {} }
 const para = (text = '') => S.nodes.paragraph.create(attrs, text === '' ? [] : [S.text(text)])
@@ -188,6 +189,46 @@ describe('② 규칙', () => {
     assert.equal(total, count)
     assert.equal(deepest, MAX_TREE_DEPTH)
     assert.ok(has(result, 'children_lifted'))
+  })
+})
+
+describe('②-1 하위 페이지 참조의 깊이 — 받은 깊이가 있을 때만', () => {
+  const ref = (id: string) => container(id, S.nodes.page_ref.create(attrs))
+  // A(B(C R S D)) — R · S 는 깊이 3 의 하위 페이지 참조다.
+  const input = doc(
+    group(container(A, para('a'), group(container(B, para('b'), group(container(C, para('c')), ref(R), ref(S2), container(D, para('d'))))))),
+  )
+
+  /** 받은 깊이로 정규화하고 — 받은 깊이로도, 받지 않고도 — 다시 고칠 것이 없는지 본다. 수선된 Y.Doc 을 깊이 없이 읽는 쪽이 있다. */
+  function lifted(pageRefDepth: ReadonlyMap<string, number>): NormalizeResult {
+    const result = normalizeBody(input, { seed: SEED, pageRefDepth })
+    result.doc.check()
+    assert.deepEqual(validateDoc(pmToDoc(result.doc)), [])
+    for (const options of [{ seed: SEED, pageRefDepth }, { seed: SEED }]) {
+      const again = normalizeBody(result.doc, options)
+      assert.deepEqual(again.fixes, [], `다시 고칠 것이 남았다(${options.pageRefDepth === undefined ? '깊이 없이' : '받은 깊이로'})`)
+      assert.ok(again.doc.eq(result.doc))
+    }
+    return result
+  }
+
+  test('★ 받은 깊이보다 깊은 참조는 들어갈 때까지 한 단씩 부모의 바로 뒤 형제로 올라온다 — 다른 블록 · 받지 않은 참조는 그대로', () => {
+    assert.equal(shape(lifted(new Map([[R, 2]])).doc), 'A:a(B:b(C:c S D:d) R)')
+    assert.equal(shape(lifted(new Map([[R, 1]])).doc), 'A:a(B:b(C:c S D:d)) R')
+    assert.ok(has(lifted(new Map([[R, 1]])), 'page_ref_lifted'))
+    // 둘이 함께 올라오면 문서 순서를 지킨다.
+    assert.equal(shape(lifted(new Map([[R, 2], [S2, 2]])).doc), 'A:a(B:b(C:c D:d) R S)')
+  })
+
+  test('들어가는 참조 · 받은 깊이가 없는 문서는 그대로다 — 최상위보다 위로는 올리지 않는다', () => {
+    const untouched = 'A:a(B:b(C:c R S D:d))'
+    for (const limits of [new Map([[R, 3]]), new Map([[R, 99]]), new Map<string, number>()]) {
+      const result = lifted(limits)
+      assert.deepEqual(result.fixes, [])
+      assert.equal(shape(result.doc), untouched)
+    }
+    assert.deepEqual(normalizeBody(input, { seed: SEED }).fixes, [])
+    assert.equal(shape(lifted(new Map([[R, 0]])).doc), 'A:a(B:b(C:c S D:d)) R')
   })
 })
 

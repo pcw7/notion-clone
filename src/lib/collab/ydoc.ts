@@ -62,7 +62,7 @@ import type { EditorDoc } from '../editor/document.ts'
 import { ATOM_MARKS_ATTR, INLINE_ATOM_NODES, marksFromAttr } from '../editor/atom-marks.ts'
 import { docToPm, pmToDoc } from '../editor/pm-adapter.ts'
 import { blockSchema } from '../editor/schema.ts'
-import { normalizeBody, type NormalizeFix } from './normalize.ts'
+import { normalizeBody, type NormalizeFix, type NormalizeOptions } from './normalize.ts'
 
 /** 본문이 사는 `Y.XmlFragment` 의 이름. 저장 포맷의 일부다 — 바꾸지 않는다. */
 export const BODY_FRAGMENT = 'body'
@@ -85,13 +85,17 @@ export type BodyRead = {
   readonly fixes: readonly NormalizeFix[]
 }
 
+/** 읽기가 정규화에 더 넘기는 것 — 문서 밖의 사실(`NormalizeOptions`). */
+export type BodyReadOptions = Pick<NormalizeOptions, 'pageRefDepth'>
+
 /**
  * Y.Doc → 문서. 원본을 바꾸지 않고, 던지지 않고, 결정론적이다(머리말).
  *
  * @param pageId 이 Y.Doc 의 페이지. 정규화가 새 id 를 만들 때의 씨앗이다(`NormalizeOptions.seed`).
+ * @param options 하위 페이지 참조가 놓일 수 있는 깊이 — 참여자 경로의 투영만 넘긴다(`block/body-write.ts`).
  */
-export function readBodyYDoc(ydoc: Y.Doc, pageId: string): BodyRead {
-  const normalized = normalizeBody(readBodyPm(ydoc), { seed: pageId })
+export function readBodyYDoc(ydoc: Y.Doc, pageId: string, options: BodyReadOptions = {}): BodyRead {
+  const normalized = normalizeBody(readBodyPm(ydoc), { seed: pageId, pageRefDepth: options.pageRefDepth })
   return { doc: pmToDoc(normalized.doc), fixes: normalized.fixes }
 }
 
