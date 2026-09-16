@@ -112,6 +112,7 @@ export default async function PageView({ params }: PageProps<'/w/[workspaceId]/[
         pageId={page.id}
         initialDoc={body.doc}
         initialVersion={body.version}
+        initialPageRefTitles={body.pageRefTitles}
       />
 
       <section className="flex flex-col gap-3">

@@ -635,8 +635,14 @@ async function main() {
 
     // ② 하위 페이지는 복사되지 않는다 — 안내가 뜬다.
     const subpage = await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: JSON.stringify({ parentPageId: pageId }) })).json()
+    // 참조 노드는 제목을 싣지 않는다 — 화면은 서버가 권한으로 거른 제목 맵에서 읽는다(HANDOFF §3.2-22). 만든 뒤 이름을 바꿔
+    // 맵에서 온 이름인지 본다(노드에 남은 옛 제목이 아니라).
+    const subTitle = `참조 제목 ${Date.now()}`
+    await fetch(`${BASE}/api/workspaces/${workspaceId}/pages/${subpage.page.id}`, { method: 'PATCH', headers: authed, body: JSON.stringify({ title: subTitle }) })
     await send('Page.reload')
     await waitFor(`document.querySelectorAll('.blk-editor [data-block-id]').length > 0`, 15000)
+    check('★ 하위 페이지 참조는 서버가 준 제목(이름을 바꾼 뒤의 것)을 그린다',
+      await waitFor(`[...document.querySelectorAll('.blk-editor .blk-page-link')].some((e) => e.textContent === ${JSON.stringify(subTitle)} && !e.disabled)`, 5000))
     const subLine = await line(subpage.page.id)
     await move(subLine.x + 30, subLine.y + subLine.h / 2)
     await waitFor(`!!document.querySelector('.blk-gutter-grip')`)
@@ -1142,7 +1148,17 @@ async function main() {
       // ── 에디터에 포커스를 두고 연다 ──
       const editorBox = await rect('.blk-editor')
       await click(editorBox.x + 40, editorBox.y + 10)
-      const bodyBefore = await evaluate(`document.querySelector('.blk-editor')?.textContent ?? ''`)
+      // 편집할 수 있는 글자만 비교한다 — 편집 불가 노드 뷰(`contenteditable=false`: 이미지 · 참조 · 체크박스)는 뺀다. 이미지 노드
+      // 뷰는 오버레이가 열린 동안 비동기로 "이미지를 불러올 수 없습니다"를 그려, 본문 전체를 비교하면 이 검사가 간헐적으로
+      // 떨어졌다(#81 의 실행에서 넣어 둔 진단이 달라진 글자를 남겨 확인했다). 새는 타이핑은 편집 가능한 블록으로 들어간다.
+      const editableText = `(() => {
+        const root = document.querySelector('.blk-editor')
+        if (!root) return ''
+        const copy = root.cloneNode(true)
+        copy.querySelectorAll('[contenteditable="false"]').forEach((e) => e.remove())
+        return copy.textContent
+      })()`
+      const bodyBefore = await evaluate(editableText)
 
       await key('k', MOD)
       check('★ Mod+K 로 열린다 (선택이 없을 때)', await waitFor(`!!document.querySelector('[data-testid="search-overlay"]')`, 5000))
@@ -1180,7 +1196,7 @@ async function main() {
       // 이 검사가 실제로 잡는 것은 화살표가 아니라 **타이핑이 에디터로 새는 것**
       // 이었다(포커스 이동을 끄면 검색어가 본문에 박힌다). 이름을 그대로 적는다.
       {
-        const bodyAfter = await evaluate(`document.querySelector('.blk-editor')?.textContent ?? ''`)
+        const bodyAfter = await evaluate(editableText)
         // 실패하면 무엇이 달라졌는지 남긴다 — 참/거짓만으로는 새어 들어간 타이핑인지,
         // 비동기로 바뀐 다른 글자인지 구분할 수 없다(추측하지 않는다, HANDOFF §6).
         let at = 0
@@ -1796,6 +1812,32 @@ async function main() {
           /* 임시 폴더 */
         }
       }
+    }
+
+    section('볼 수 없는 하위 페이지의 참조 (HANDOFF §3.2-22)')
+    {
+      // 새 페이지에서 따로 본다 — 앞 절의 페이지에 "소유자도 못 보는 하위 페이지"를 남기지 않는다.
+      const createAt = async (parentPageId) =>
+        (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: JSON.stringify(parentPageId ? { parentPageId } : {}) })).json()).page.id
+      const refParent = await createAt(null)
+      const hiddenChild = await createAt(refParent)
+      const hiddenTitle = `숨긴 하위 ${Date.now()}`
+      const access = (body) =>
+        fetch(`${BASE}/api/workspaces/${workspaceId}/pages/${hiddenChild}/access`, { method: 'POST', headers: authed, body: JSON.stringify(body) })
+      await fetch(`${BASE}/api/workspaces/${workspaceId}/pages/${hiddenChild}`, { method: 'PATCH', headers: authed, body: JSON.stringify({ title: hiddenTitle }) })
+      // 상속을 끊고, 워크스페이스에 없는 사용자 하나에게만 남긴다 — 이 세션(소유자)도 그 페이지를 볼 수 없다.
+      await access({ action: 'restrict' })
+      await access({ action: 'grant', principal: { type: 'user', id: randomUUID() }, level: 'full_access' })
+      const revoked = await access({ action: 'revoke', principal: { type: 'workspace_everyone' } })
+      // 페이지 라우트에는 GET 이 없다(PATCH 뿐 — 처음에 그것으로 재서 405 로 실패했다). 권한을 거치는 본문 GET 으로 본다.
+      const hiddenBody = await fetch(`${BASE}/api/workspaces/${workspaceId}/pages/${hiddenChild}/body`, { headers: authed })
+      check('전제: 하위 페이지를 이 세션이 볼 수 없게 됐다', revoked.ok && hiddenBody.status === 404, `revoke ${revoked.status} · body ${hiddenBody.status}`)
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${refParent}` })
+      await waitFor(`!!document.querySelector('.blk-editor .blk-page-link')`, 15000)
+      check('★ 볼 수 없는 하위 페이지의 참조는 "접근 권한 없음"으로 그리고 열리지 않는다',
+        await waitFor(`[...document.querySelectorAll('.blk-editor .blk-page-link')].some((e) => e.textContent === '접근 권한 없음' && e.disabled)`, 5000))
+      check('★ 그 제목은 페이지 어디에도 없다', !(await evaluate(`document.documentElement.outerHTML.includes(${JSON.stringify(hiddenTitle)})`)))
     }
 
     section('전체')

@@ -54,26 +54,26 @@ describe('① 넣기', () => {
   test('★ 본문 맨 뒤에 넣는다', () => {
     const [a, b] = [para('가'), para('나')]
     const id = randomUUID()
-    const after = apply({ blocks: [a, b] }, appendPageRef(null, id, '하위'))
+    const after = apply({ blocks: [a, b] }, appendPageRef(null, id))
     assert.deepEqual(shape(after), [a.id, b.id, id])
     assert.equal(after.blocks[2].type, 'page')
   })
 
   test('★ 빈 본문(빈 문단 하나)은 참조로 대체한다 — 빈 줄 행을 만들지 않는다', () => {
     const id = randomUUID()
-    const after = apply({ blocks: [] }, appendPageRef(null, id, '하위'))
+    const after = apply({ blocks: [] }, appendPageRef(null, id))
     assert.deepEqual(shape(after), [id])
   })
 
   test('컨테이너의 자식 맨 뒤에 넣는다 — 그룹이 없으면 만들고, 있으면 끝에', () => {
     const lone = para('자식 없음')
     const id1 = randomUUID()
-    assert.deepEqual(shape(apply({ blocks: [lone] }, appendPageRef(lone.id, id1, '하위'))), [lone.id, `${lone.id}>${id1}`])
+    assert.deepEqual(shape(apply({ blocks: [lone] }, appendPageRef(lone.id, id1))), [lone.id, `${lone.id}>${id1}`])
 
     const child = para('자식')
     const parent = para('부모', [child])
     const id2 = randomUUID()
-    assert.deepEqual(shape(apply({ blocks: [parent] }, appendPageRef(parent.id, id2, '하위'))), [
+    assert.deepEqual(shape(apply({ blocks: [parent] }, appendPageRef(parent.id, id2))), [
       parent.id,
       `${parent.id}>${child.id}`,
       `${parent.id}>${id2}`,
@@ -82,12 +82,12 @@ describe('① 넣기', () => {
 
   test('★ 이미 본문에 있는 참조는 다시 넣지 않는다', () => {
     const ref = pageRef()
-    const after = apply({ blocks: [para('가'), ref] }, appendPageRef(null, ref.id, '하위'))
+    const after = apply({ blocks: [para('가'), ref] }, appendPageRef(null, ref.id))
     assert.equal(shape(after).filter((s) => s.endsWith(ref.id)).length, 1)
   })
 
   test('부모 컨테이너가 본문에 없으면 던진다', () => {
-    assert.throws(() => apply({ blocks: [para('가')] }, appendPageRef(randomUUID(), randomUUID(), '하위')), /본문에 없다/)
+    assert.throws(() => apply({ blocks: [para('가')] }, appendPageRef(randomUUID(), randomUUID())), /본문에 없다/)
   })
 })
 
@@ -95,12 +95,12 @@ describe('② 앞 형제 뒤에 넣기', () => {
   test('★ 앞 형제 바로 뒤에 넣는다 — 본문 최상위 · 컨테이너 안', () => {
     const [a, b] = [para('가'), para('나')]
     const id = randomUUID()
-    assert.deepEqual(shape(apply({ blocks: [a, b] }, insertPageRefAfter(id, '하위', null, a.id))), [a.id, id, b.id])
+    assert.deepEqual(shape(apply({ blocks: [a, b] }, insertPageRefAfter(id, null, a.id))), [a.id, id, b.id])
 
     const [c1, c2] = [para('하나'), para('둘')]
     const parent = para('부모', [c1, c2])
     const id2 = randomUUID()
-    assert.deepEqual(shape(apply({ blocks: [parent] }, insertPageRefAfter(id2, '하위', parent.id, c1.id))), [
+    assert.deepEqual(shape(apply({ blocks: [parent] }, insertPageRefAfter(id2, parent.id, c1.id))), [
       parent.id,
       `${parent.id}>${c1.id}`,
       `${parent.id}>${id2}`,
@@ -111,16 +111,16 @@ describe('② 앞 형제 뒤에 넣기', () => {
   test('★ 앞 형제가 없거나 본문에 없으면 그 그룹의 맨 앞 — 그룹이 없는 컨테이너면 만든다 · 빈 본문은 대체한다', () => {
     const [a, b] = [para('가'), para('나')]
     const id = randomUUID()
-    assert.deepEqual(shape(apply({ blocks: [a, b] }, insertPageRefAfter(id, '하위', null, null))), [id, a.id, b.id])
+    assert.deepEqual(shape(apply({ blocks: [a, b] }, insertPageRefAfter(id, null, null))), [id, a.id, b.id])
     const id2 = randomUUID()
-    assert.deepEqual(shape(apply({ blocks: [a, b] }, insertPageRefAfter(id2, '하위', null, randomUUID()))), [id2, a.id, b.id])
+    assert.deepEqual(shape(apply({ blocks: [a, b] }, insertPageRefAfter(id2, null, randomUUID()))), [id2, a.id, b.id])
 
     const lone = para('자식 없음')
     const id3 = randomUUID()
-    assert.deepEqual(shape(apply({ blocks: [lone] }, insertPageRefAfter(id3, '하위', lone.id, null))), [lone.id, `${lone.id}>${id3}`])
+    assert.deepEqual(shape(apply({ blocks: [lone] }, insertPageRefAfter(id3, lone.id, null))), [lone.id, `${lone.id}>${id3}`])
 
     const id4 = randomUUID()
-    assert.deepEqual(shape(apply({ blocks: [] }, insertPageRefAfter(id4, '하위', null, null))), [id4])
+    assert.deepEqual(shape(apply({ blocks: [] }, insertPageRefAfter(id4, null, null))), [id4])
   })
 })
 

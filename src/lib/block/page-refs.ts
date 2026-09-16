@@ -27,9 +27,9 @@ import { blockSchema, PAGE_REF_NODE } from '../editor/schema.ts'
 
 const { blockContainer: CONTAINER, blockGroup: GROUP } = blockSchema.nodes
 
-/** 하위 페이지 참조 노드. `title` 은 표시용이고 투영은 무시한다(제목은 그 페이지의 것). */
-export function pageRefNode(pageId: string, title: string): PmNode {
-  return CONTAINER.create({ blockId: pageId }, [blockSchema.nodes[PAGE_REF_NODE].create({ props: {}, format: {}, title })])
+/** 하위 페이지 참조 노드. 제목을 싣지 않는다 — 그 페이지의 것이고 볼 권한이 있어야 한다(`editor/schema.ts`). */
+export function pageRefNode(pageId: string): PmNode {
+  return CONTAINER.create({ blockId: pageId }, [blockSchema.nodes[PAGE_REF_NODE].create({ props: {}, format: {} })])
 }
 
 /** 본문이 비었는가 — 저장 가능한 문서로 읽으면 블록이 없다(빈 문단 하나). */
@@ -46,10 +46,10 @@ function replaceBodyWith(tr: Transaction, ref: PmNode): void {
  *
  * @throws 부모 컨테이너가 본문에 없으면 — 행과 Y.Doc 이 어긋나 있다는 뜻이다
  */
-export function appendPageRef(parentBlockId: string | null, pageId: string, title: string): EditorChange {
+export function appendPageRef(parentBlockId: string | null, pageId: string): EditorChange {
   return (tr) => {
     if (findContainerById(tr.doc, pageId) !== null) return
-    const ref = pageRefNode(pageId, title)
+    const ref = pageRefNode(pageId)
     if (parentBlockId === null) {
       if (isEmptyBody(tr)) replaceBodyWith(tr, ref)
       else tr.insert(tr.doc.content.size - 1, ref) // 마지막 루트 그룹의 끝
@@ -72,13 +72,12 @@ export function appendPageRef(parentBlockId: string | null, pageId: string, titl
  */
 export function insertPageRefAfter(
   pageId: string,
-  title: string,
   parentBlockId: string | null,
   afterBlockId: string | null,
 ): EditorChange {
   return (tr) => {
     if (findContainerById(tr.doc, pageId) !== null) return
-    const ref = pageRefNode(pageId, title)
+    const ref = pageRefNode(pageId)
     const after = afterBlockId === null ? null : findContainerById(tr.doc, afterBlockId)
     if (after !== null) {
       tr.insert(after.pos + after.node.nodeSize, ref)

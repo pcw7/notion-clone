@@ -298,7 +298,7 @@ export function runSlashCommand(
 export function insertSubpageRef(
   state: EditorState,
   dispatch: ((tr: Transaction) => void) | undefined,
-  page: { readonly id: string; readonly title: string },
+  page: { readonly id: string },
 ): boolean {
   const info = containerAt(state.selection.$from)
   if (!info) return false
@@ -316,7 +316,8 @@ export function insertSubpageRef(
   closeSlashMenu(tr)
 
   const container = blockSchema.nodes.blockContainer.create({ blockId: page.id }, [
-    blockSchema.nodes[PAGE_REF_NODE].create({ props: {}, format: {}, title: page.title }),
+    // 제목은 싣지 않는다(`schema.ts`) — 화면은 제목 맵에서 읽는다. 만든 사람은 편집기가 맵에 넣는다(`body-editor.tsx`).
+    blockSchema.nodes[PAGE_REF_NODE].create({ props: {}, format: {} }),
   ])
 
   // 캐럿이 있던 블록이 비었으면 **그 자리를 대체한다.** 빈 문단을 남겨두면

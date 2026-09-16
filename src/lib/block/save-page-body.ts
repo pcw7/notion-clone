@@ -57,7 +57,7 @@ import { plainTitleOf } from './page.ts'
 import { indexPageText } from '../search/index-page.ts'
 import { countFileReferences, fileReferenceDelta } from './image.ts'
 import { can } from '../permissions/levels.ts'
-import { effectiveCaps } from '../permissions/effective.ts'
+import { effectiveCaps, readableScopes } from '../permissions/effective.ts'
 import { orderKeyBetween } from './order-key.ts'
 import { relocateSubtree, MoveError } from './move-page.ts'
 import { pageChangeAccess, trashSubtreeRows } from './trash-rows.ts'
@@ -704,6 +704,14 @@ export type LoadedBody = {
   readonly doc: EditorDoc
   /** 저장 시 `expectedVersion` 으로 되돌려 보낼 값 [X-6]. */
   readonly version: string
+  /**
+   * 본문의 하위 페이지 참조가 가리키는 페이지의 제목(평문) — **이 사람이 볼 수 있는 것만.** 볼 수 없으면 `null`.
+   *
+   * 참조 노드는 제목을 싣지 않는다(`rowsToDoc` · `editor/schema.ts`). 부모를 볼 수 있다고 하위 페이지를 볼 수 있는 것이 아니다 —
+   * 상속을 끊고 소유자만 남긴 하위 페이지가 그렇다. 목록과 같은 규칙으로 거른다(`perm_scope_id = ANY(readableScopes)`,
+   * HANDOFF §3.3-32). 볼 수 없는 참조도 키는 있다 — 참조의 자리는 이미 본문에 보이고(§3.3-74), 화면이 "접근 권한 없음"을 그린다.
+   */
+  readonly pageRefTitles: Readonly<Record<string, string | null>>
 }
 
 /**
@@ -726,6 +734,12 @@ export async function loadPageBody(
     if (!page) return null
     if (!can(await effectiveCaps(tx, ctx, pageId), 'view')) return null
 
-    return { doc: await readLiveBody(tx, ctx, pageId), version: page.version }
+    const live = (await readScope(tx, ctx, pageId)).filter((r) => r.lifecycle === 'live')
+    const refs = live.filter((r) => r.type === PAGE_TYPE)
+    const readable = new Set(refs.length === 0 ? [] : await readableScopes(tx, ctx))
+    const pageRefTitles = Object.fromEntries(
+      refs.map((r) => [r.id, readable.has(r.perm_scope_id) ? plainTitleOf(r.properties as { title?: unknown } | null) : null]),
+    )
+    return { doc: rowsToDoc(pageId, live), version: page.version, pageRefTitles }
   })
 }

@@ -345,8 +345,10 @@ describe('savePageBody — 자식 페이지', () => {
 
     const loaded = await loadPageBody(fx.owner.ctx, pageId)
     assert.deepEqual(loaded?.doc.blocks.map((b) => b.id), [para.id, child.id])
-    // 자식 페이지의 제목은 프로젝터가 건드리지 않는다 — 그 페이지의 것이다.
-    assert.equal(loaded?.doc.blocks[1].title[0]?.plain_text, '하위')
+    // 자식 페이지의 제목은 프로젝터가 건드리지 않는다 — 그 페이지의 것이다. 참조 노드는 제목을 싣지 않고, 볼 수 있으면
+    // 따로 준다(HANDOFF §3.2-22).
+    assert.deepEqual(loaded?.doc.blocks[1].title, [])
+    assert.equal(loaded?.pageRefTitles[child.id], '하위')
   })
 
   test('자식 페이지를 본문 블록 안으로 중첩하면 서브트리 경로가 다시 쓰인다', async (t) => {

@@ -194,12 +194,9 @@ function contentNodeFor(block: EditorBlock): PmNode {
   const format = { ...(block.format ?? {}) }
 
   if (block.type === PAGE_TYPE) {
-    // 제목은 참조 표시용이다. 저장 시 프로젝터가 무시한다.
-    return blockSchema.nodes[PAGE_REF_NODE].create({
-      props,
-      format,
-      title: block.title.map((r) => r.plain_text ?? '').join(''),
-    })
+    // 참조 노드는 제목을 싣지 않는다(`schema.ts` · HANDOFF §3.2-22). 받은 문서에 제목이 있어도(옛 클라이언트 · 저장 큐) 버린다 —
+    // 여기서 옮기면 본문 저장이 그 제목을 Y.Doc 에 써 넣는다.
+    return blockSchema.nodes[PAGE_REF_NODE].create({ props, format })
   }
 
   const type: BlockType = isKnownBlockType(block.type) ? block.type : UNSUPPORTED_TYPE

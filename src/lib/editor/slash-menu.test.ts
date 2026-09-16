@@ -317,7 +317,7 @@ describe('실행', () => {
 // ── 하위 페이지 삽입 (F-02-13) ────────────────────────────────────────
 
 describe('insertSubpageRef', () => {
-  const newPage = { id: '00000000-0000-4000-8000-0000000000ff', title: '' }
+  const newPage = { id: '00000000-0000-4000-8000-0000000000ff' }
 
   function insert(state: EditorState, page = newPage): EditorState | null {
     let next: EditorState | null = null
@@ -373,16 +373,15 @@ describe('insertSubpageRef', () => {
     assert.equal(slashMenuState(next).active, false)
   })
 
-  test('제목이 참조 노드에 실린다 — 렌더용이고 저장 시 무시된다', () => {
+  test('참조 노드는 제목을 싣지 않는다 — 제목은 그 페이지의 것이고 화면은 권한으로 거른 맵에서 읽는다', () => {
     const a = nextId()
     const state = type(caretAt(stateWith([blk(a)]), a, 0), '/페이지')
-    const next = insert(state, { id: newPage.id, title: '새 하위 페이지' })
+    const next = insert(state, { id: newPage.id })
     assert.ok(next)
 
     const content = next.doc.child(0).child(0).child(0)
     assert.equal(content.type.name, 'page_ref')
-    assert.equal(content.attrs.title, '새 하위 페이지')
-    // 프로젝터는 참조 노드의 제목을 쓰지 않는다(그 페이지의 것이다).
+    assert.deepEqual(Object.keys(content.attrs).sort(), ['format', 'props'])
     assert.deepEqual(pmToDoc(next.doc).blocks[0].title, [])
   })
 
