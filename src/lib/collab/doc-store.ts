@@ -65,6 +65,17 @@
  *   - 바뀐 것이 없는 쓰기(재전송)는 고치지 않는다 — 고칠 것은 바뀐 쓰기가 이미 고쳤다
  *
  * ──────────────────────────────────────────────────────────────────────
+ * 투영이 어디까지 따라왔는가 — `projected_seq` (CRDT 5d)
+ * ──────────────────────────────────────────────────────────────────────
+ *
+ * 행 투영이 반영한 마지막 seq 를 스냅샷 행에 적는다(`markProjected` — 정본 §3.7 · X-1). 투영하는 단위가 스냅샷을 잠근 채 적으므로
+ * 쌓기와 한 줄로 선다. 로그의 마지막 seq 보다 작으면 행이 낡았다 — 참여자 경로가 투영을 미룬 동안이다(`block/body-write.ts`).
+ *
+ *   - 처음 옮긴 페이지는 1 이다 — 행에서 만든 본문이라 행과 같다
+ *   - 참여자 update 가 하위 페이지 참조를 넣거나 지웠는지 세션이 기록한다(`touchedPageRefs`). 그런 update 는 미루지 않는다 —
+ *     휴지통 권한 · 올리기 · 빼기가 그 순간의 행으로 정해야 하는 판단이다
+ *
+ * ──────────────────────────────────────────────────────────────────────
  * Phase 0 페이지는 처음 읽을 때 한 번 옮긴다
  * ──────────────────────────────────────────────────────────────────────
  *
@@ -72,6 +83,7 @@
  * — 정본 CHECK 의 6값 중 "다른 형식에서 Y.Doc 을 처음 만든다"에 가장 가깝다. actor 는 없다(시스템).
  *
  *   - 행은 **같은 트랜잭션**에서 읽는다 — 따로 읽으면 그 사이의 저장이 Y.Doc 에서 빠진다
+ *   - 옮긴 seq 1 은 이미 투영된 것이다(`projected_seq` = 1)
  *   - 둘이 동시에 처음 읽으면 스냅샷 행의 PK 가 한 명만 통과시키고(`ON CONFLICT DO NOTHING`) 진 쪽은 이긴
  *     쪽이 쓴 것을 읽는다. 각자 만든 Y.Doc 은 client id 가 달라 내용이 같아도 **다른 CRDT 이력**이고,
  *     둘이 섞이면 본문이 두 번 들어간다
@@ -87,6 +99,7 @@ import { withReadTransaction, withTransaction, type Tx } from '../db/tx.ts'
 import { isUuid } from '../ids.ts'
 import { effectiveCaps } from '../permissions/effective.ts'
 import { can } from '../permissions/levels.ts'
+import { PAGE_REF_NODE } from '../editor/schema.ts'
 import { MAX_BODY_BYTES } from '../sync/outbox.ts'
 import { writeEditorChange, type EditorChange } from './body-edit.ts'
 import { repairBodyYDoc } from './repair.ts'
@@ -125,6 +138,11 @@ export type CommitOptions = BodyReadOptions & {
   readonly origin: DocOrigin
   /** 압축 기준. 없으면 `COMPACT_EVERY`. */
   readonly compactEvery?: number
+  /**
+   * 이 세션의 변경이 없어도 수선을 본다. 밀린 투영만 하는 단위(`block/body-write.ts` `projectPendingBody`)는 받은 변경이 없는데,
+   * 그 사이 행이 바뀌어 참조를 올리거나 빼야 할 수 있다 — 투영은 고친 문서를 읽었으므로 Y.Doc 에도 써야 한다.
+   */
+  readonly repairWithoutChanges?: boolean
 }
 
 export type BodyCommit =
@@ -138,8 +156,15 @@ export type BodyDocSession = {
   readonly ydoc: Y.Doc
   /** 잠근 뒤 읽은 본문의 마지막 seq. */
   readonly seq: string
+  /** 잠근 스냅샷의 `projected_seq` — 행 투영이 반영한 마지막 seq(머리말). */
+  readonly projectedSeq: string
   /** 이 세션이 본문을 바꿨는가 — 받은 update 가 이미 가진 것뿐이면 false 다. */
   readonly changed: boolean
+  /**
+   * 적용한 참여자 update 가 하위 페이지 참조 요소를 넣거나 지웠는가. 참조를 담은 블록을 지우거나 옮겨도(y-prosemirror 는 옮기기를
+   * 지우고 새로 넣기로 쓴다) 안의 참조 요소가 함께 지워지고 들어간다(진단). 글자만 바꾼 update 는 아니다.
+   */
+  readonly touchedPageRefs: boolean
   /** 지금 본문을 정규화해 읽는다(`readBodyYDoc`). 투영이 이것으로 읽었으면 쌓을 때 같은 것을 넘긴다(`CommitOptions`). */
   read(options?: BodyReadOptions): BodyRead
   /** ProseMirror 변경을 쓴다 — 서버 명령 경로 ②(`body-edit.ts`). */
@@ -197,13 +222,13 @@ export async function readDocUpdatesAfter(
  * 이 페이지의 쓰기 · 압축이 여기서 한 줄로 선다. 잠근 뒤에 읽으므로 잠그기 전에 커밋된 쓰기까지 전부 보인다.
  */
 export async function openBodyDoc(tx: Tx, ctx: SessionContext, pageId: string): Promise<BodyDocSession> {
-  let mergedSeq = await lockSnapshot(tx, pageId)
-  if (mergedSeq === null) {
+  let locked = await lockSnapshot(tx, pageId)
+  if (locked === null) {
     await bootstrap(tx, ctx, pageId)
-    mergedSeq = await lockSnapshot(tx, pageId)
+    locked = await lockSnapshot(tx, pageId)
   }
-  if (mergedSeq === null) throw new Error(`옮긴 직후의 스냅샷이 없다: ${pageId}`)
-  const lockedMergedSeq = mergedSeq
+  if (locked === null) throw new Error(`옮긴 직후의 스냅샷이 없다: ${pageId}`)
+  const lockedMergedSeq = locked.merged_seq
 
   const state = await readState(tx, pageId)
   if (state === null) throw new Error(`잠근 스냅샷을 읽지 못했다: ${pageId}`)
@@ -213,6 +238,7 @@ export async function openBodyDoc(tx: Tx, ctx: SessionContext, pageId: string): 
   const collect = (change: Uint8Array): void => void changes.push(change)
   ydoc.on('update', collect)
   let status: 'open' | 'broken' | 'committed' = 'open'
+  let touchedPageRefs = false
   const assertOpen = (): void => {
     if (status === 'committed') throw new Error(`이미 쌓은 본문 세션이다: ${pageId}`)
   }
@@ -221,8 +247,12 @@ export async function openBodyDoc(tx: Tx, ctx: SessionContext, pageId: string): 
     pageId,
     ydoc,
     seq: state.seq,
+    projectedSeq: locked.projected_seq,
     get changed() {
       return changes.length > 0
+    },
+    get touchedPageRefs() {
+      return touchedPageRefs
     },
     read: (options) => readBodyYDoc(ydoc, pageId, options),
     change(change) {
@@ -231,11 +261,17 @@ export async function openBodyDoc(tx: Tx, ctx: SessionContext, pageId: string): 
     },
     applyUpdate(update) {
       assertOpen()
+      const watch = (transaction: Y.Transaction): void => {
+        if (touchesPageRefs(ydoc, transaction)) touchedPageRefs = true
+      }
+      ydoc.on('afterTransaction', watch)
       try {
         Y.applyUpdate(ydoc, update)
       } catch {
         status = 'broken'
         return 'invalid_update'
+      } finally {
+        ydoc.off('afterTransaction', watch)
       }
       if (ydoc.store.pendingStructs !== null || ydoc.store.pendingDs !== null) {
         status = 'broken'
@@ -248,7 +284,7 @@ export async function openBodyDoc(tx: Tx, ctx: SessionContext, pageId: string): 
       if (status === 'broken') throw new Error(`적용하지 못한 update 가 있는 세션은 쌓을 수 없다: ${pageId}`)
       status = 'committed'
       ydoc.off('update', collect)
-      if (changes.length === 0) return { appended: false, seq: state.seq }
+      if (changes.length === 0 && options.repairWithoutChanges !== true) return { appended: false, seq: state.seq }
 
       // 합친 결과가 구조를 어기면 같은 줄 안에서 고친다 — 수선을 쓰는 곳은 여기 하나다(머리말 · `repair.ts`).
       const repaired = repairBodyYDoc(ydoc, pageId, { pageRefDepth: options.pageRefDepth, pageRefs: options.pageRefs })
@@ -261,6 +297,7 @@ export async function openBodyDoc(tx: Tx, ctx: SessionContext, pageId: string): 
       }
       const repair = repaired.kind === 'repaired' ? repaired.update : null
       if (repair !== null) changes.push(repair)
+      if (changes.length === 0) return { appended: false, seq: state.seq }
 
       const seq = String(BigInt(state.seq) + BigInt(1))
       await tx.query(
@@ -279,7 +316,49 @@ export async function openBodyDoc(tx: Tx, ctx: SessionContext, pageId: string): 
   }
 }
 
+/**
+ * 행 투영이 `seq` 까지 반영했다고 적는다(머리말 "투영이 어디까지 따라왔는가"). 호출자가 이 페이지의 스냅샷을 잠갔다. 뒤로 가지 않는다.
+ */
+export async function markProjected(tx: Tx, pageId: string, seq: string): Promise<void> {
+  await tx.query(`UPDATE doc_snapshot SET projected_seq = GREATEST(projected_seq, $2) WHERE page_id = $1`, [pageId, seq])
+}
+
+/** 행 투영이 로그를 따라잡았는가 — 잠그지 않고 본다. 밀린 투영을 돌릴지 고르는 데만 쓴다(잠근 뒤 세션이 다시 본다). */
+export async function projectionLag(pageId: string): Promise<{ readonly projectedSeq: string; readonly lastSeq: string } | null> {
+  const rows = await query<{ projected_seq: string; last_seq: string | null }>(
+    `SELECT s.projected_seq, (SELECT max(u.seq) FROM doc_update u WHERE u.page_id = s.page_id) AS last_seq
+       FROM doc_snapshot s WHERE s.page_id = $1`,
+    [pageId],
+  )
+  if (rows.length === 0) return null
+  return { projectedSeq: rows[0].projected_seq, lastSeq: rows[0].last_seq ?? rows[0].projected_seq }
+}
+
 // ── 내부 ──────────────────────────────────────────────────────────────
+
+/** 이 Y 트랜잭션이 하위 페이지 참조 요소를 넣거나 지웠는가(`BodyDocSession.touchedPageRefs`). */
+function touchesPageRefs(ydoc: Y.Doc, transaction: Y.Transaction): boolean {
+  const isPageRef = (struct: unknown): boolean =>
+    struct instanceof Y.Item &&
+    struct.content instanceof Y.ContentType &&
+    struct.content.type instanceof Y.XmlElement &&
+    struct.content.type.nodeName === PAGE_REF_NODE
+  let found = false
+  Y.iterateDeletedStructs(transaction, transaction.deleteSet, (struct) => {
+    if (isPageRef(struct)) found = true
+  })
+  if (found) return true
+  for (const [client, after] of transaction.afterState) {
+    const before = transaction.beforeState.get(client) ?? 0
+    if (after <= before) continue
+    const structs = ydoc.store.clients.get(client) ?? []
+    // 구조체는 clock 순서다 — 이 트랜잭션이 넣은 것은 뒤쪽에 있다.
+    for (let i = structs.length - 1; i >= 0 && structs[i].id.clock + structs[i].length > before; i -= 1) {
+      if (structs[i].id.clock < after && isPageRef(structs[i])) return true
+    }
+  }
+  return false
+}
 
 async function accessOf(tx: Tx, ctx: SessionContext, pageId: string): Promise<PageAccess> {
   if (!isUuid(pageId)) return 'none'
@@ -310,12 +389,11 @@ async function readState(tx: Tx, pageId: string): Promise<DocState | null> {
   return { ydoc, seq: updates.at(-1)?.seq ?? snapshot.merged_seq }
 }
 
-async function lockSnapshot(tx: Tx, pageId: string): Promise<string | null> {
-  const row = await tx.queryMaybe<{ merged_seq: string }>(
-    `SELECT merged_seq FROM doc_snapshot WHERE page_id = $1 FOR UPDATE`,
+async function lockSnapshot(tx: Tx, pageId: string): Promise<{ merged_seq: string; projected_seq: string } | null> {
+  return tx.queryMaybe<{ merged_seq: string; projected_seq: string }>(
+    `SELECT merged_seq, projected_seq FROM doc_snapshot WHERE page_id = $1 FOR UPDATE`,
     [pageId],
   )
-  return row?.merged_seq ?? null
 }
 
 /** 행의 본문으로 seq 1 을 만든다. 누가 먼저 만들었으면 아무것도 하지 않는다(머리말). */
@@ -323,8 +401,8 @@ async function bootstrap(tx: Tx, ctx: SessionContext, pageId: string): Promise<v
   const initial = createBodyYDoc(await readLiveBody(tx, ctx, pageId))
   const bytes = Buffer.from(Y.encodeStateAsUpdate(initial))
   const claimed = await tx.queryMaybe<{ page_id: string }>(
-    `INSERT INTO doc_snapshot (page_id, state, state_vector, merged_seq, updated_at)
-     VALUES ($1, $2, $3, 1, now())
+    `INSERT INTO doc_snapshot (page_id, state, state_vector, merged_seq, projected_seq, updated_at)
+     VALUES ($1, $2, $3, 1, 1, now())
      ON CONFLICT (page_id) DO NOTHING
      RETURNING page_id`,
     [pageId, bytes, Buffer.from(Y.encodeStateVector(initial))],

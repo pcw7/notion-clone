@@ -13,6 +13,9 @@
  *   ⑤ **이 본문의 살아 있는 하위 페이지가 아닌 참조는 뺀다** — 같은 참조를 둘이 동시에 옮겨 생긴 둘째 · 휴지통에 간 페이지 · 다른
  *      본문으로 옮겨진 페이지. 페이지 행을 만들거나 옮기거나 던지지 않고, 뺀 것은 같은 seq 의 수선이다. 모르는 노드가 있어 수선을
  *      쓸 수 없을 때만 거부한다
+ *   ⑥ **투영을 미루면(5d) 하위 페이지 참조를 건드리지 않은 update 는 쌓기만 한다** — 행 · version · 색인은 밀린 투영 한 번에 따라오고
+ *      version 은 한 번 오른다. 참조를 지우거나 참조를 담은 블록을 옮긴 update 는 곧바로 투영한다. 명령은 밀린 투영을 따라잡는다.
+ *      밀린 투영은 받은 변경이 없어도 행에 맞춰 참조를 빼는 수선을 쓴다
  *
  * 로그 자체의 성질(seq · 압축 · 재전송 · pending · 수선 · 권한)은 `collab/doc-store.db.test.ts` 가 본다.
  */
@@ -36,7 +39,7 @@ import type { Level } from '../permissions/levels.ts'
 import { assertBodyMatchesYDoc } from '../testing/body-invariant.ts'
 import { changesSince, edit, findBlock, peer } from '../testing/collab-peers.ts'
 import { createBareWorkspace, createUser, joinAs, probeDatabase, type Actor } from '../testing/db-fixtures.ts'
-import { appendDocUpdate } from './body-write.ts'
+import { appendDocUpdate, projectPendingBody } from './body-write.ts'
 import { createPage, titleFromPlainText } from './page.ts'
 import { loadPageBody, savePageBody } from './save-page-body.ts'
 import { restorePage } from './trash.ts'
@@ -459,5 +462,172 @@ describe('이 본문의 살아 있는 하위 페이지가 아닌 참조 (유령 
     assert.equal(await logLength(pageId), logBefore, '거부한 update 를 쌓았다')
     assert.deepEqual(await lifecyclePlaceOf(child), placeBefore, '거부했는데 행이 바뀌었다')
     await assertBodyMatchesYDoc(owner.ctx, pageId)
+  })
+})
+
+// ── ⑥ 투영 미루기 (5d) ───────────────────────────────────────────────
+
+describe('참여자 경로의 투영 미루기 (5d)', () => {
+  const projectedSeqOf = async (pageId: string) =>
+    (await queryOne<{ projected_seq: string }>(`SELECT projected_seq FROM doc_snapshot WHERE page_id = $1`, [pageId])).projected_seq
+  const lastSeqOf = async (pageId: string) =>
+    (await queryOne<{ seq: string }>(`SELECT max(seq)::text AS seq FROM doc_update WHERE page_id = $1`, [pageId])).seq
+  const indexedBodyOf = async (pageId: string) =>
+    (await queryOne<{ body_text: string | null }>(`SELECT body_text FROM search_document WHERE doc_id = $1`, [pageId])).body_text ?? ''
+  const rowTextsOf = async (actor: Actor, pageId: string) => {
+    const rows = await loadPageBody(actor.ctx, pageId as never)
+    return rows === null ? null : textsOf(rows.doc)
+  }
+  /** 참여자가 그 블록 앞에 글자를 친 update — 하위 페이지 참조를 건드리지 않는다. */
+  const typing = (base: Y.Doc, blockId: string, text: string, clientId: number) => {
+    const client = peer(base, clientId)
+    edit(client, (tr: Transaction, doc: PmNode) => {
+      tr.insertText(text, findBlock(doc, blockId).pos + 2)
+    })
+    return { client, update: changesSince(client, base) }
+  }
+  const deferred = { origin: 'editor', projection: 'deferred' } as const
+
+  test('★ 참조를 건드리지 않은 update 는 쌓기만 한다 — 행 · version · 색인이 그대로다. 밀린 투영 한 번이 전부 옮기고 version 은 한 번 오른다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { owner } = await workspace()
+    const blockId = randomUUID()
+    const pageId = await pageWith(owner, [para('원문', blockId)])
+    let base = await ydocOf(owner, pageId)
+    const [versionBefore, indexedBefore, lastBefore] = [(await rowOf(pageId)).version, await indexedBodyOf(pageId), await lastSeqOf(pageId)]
+    assert.equal(await projectedSeqOf(pageId), lastBefore, '전제: 본문 저장은 곧바로 투영했다')
+
+    for (const [i, text] of ['가', '나', '다'].entries()) {
+      const { client, update } = typing(base, blockId, text, 101 + i)
+      const result = await appendDocUpdate(owner.ctx, pageId, update, deferred)
+      assert.ok(result.ok && result.appended, JSON.stringify(result))
+      base = client
+    }
+    assert.equal(await lastSeqOf(pageId), String(BigInt(lastBefore) + BigInt(3)))
+    assert.deepEqual(await rowTextsOf(owner, pageId), ['원문'], '미룬 update 가 행에 투영됐다')
+    assert.deepEqual(
+      [(await rowOf(pageId)).version, await indexedBodyOf(pageId), await projectedSeqOf(pageId)],
+      [versionBefore, indexedBefore, lastBefore],
+      '미룬 update 가 version · 색인 · projected_seq 를 바꿨다',
+    )
+
+    assert.equal(await projectPendingBody(owner.ctx, pageId), 'projected')
+    assert.deepEqual(await rowTextsOf(owner, pageId), ['다나가원문'])
+    assert.equal((await rowOf(pageId)).version, String(BigInt(versionBefore) + BigInt(1)), '창 안의 update 셋에 version 이 한 번 오르지 않았다')
+    assert.ok((await indexedBodyOf(pageId)).includes('다나가원문'), '색인이 따라오지 않았다')
+    assert.equal(await projectedSeqOf(pageId), await lastSeqOf(pageId))
+    await assertBodyMatchesYDoc(owner.ctx, pageId)
+
+    const versionAfter = (await rowOf(pageId)).version
+    assert.equal(await projectPendingBody(owner.ctx, pageId), 'up_to_date')
+    assert.equal((await rowOf(pageId)).version, versionAfter, '따라잡은 뒤의 투영이 또 썼다')
+  })
+
+  test('★ 참조를 지운 update 는 미루기를 청해도 곧바로 투영한다 — 그 하위 페이지는 그 자리에서 휴지통으로 가고 밀린 글자까지 따라잡는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { owner } = await workspace()
+    const blockId = randomUUID()
+    const pageId = await pageWith(owner, [para('원문', blockId)])
+    const child = await mk(owner, '하위', pageId)
+    const base = await ydocOf(owner, pageId)
+    const typed = typing(base, blockId, '앞 ', 111)
+    assert.ok((await appendDocUpdate(owner.ctx, pageId, typed.update, deferred)).ok)
+    assert.notEqual(await projectedSeqOf(pageId), await lastSeqOf(pageId), '전제: 글자는 쌓기만 했다')
+
+    const result = await appendDocUpdate(owner.ctx, pageId, removingRef(typed.client, child, 112), deferred)
+    assert.ok(result.ok && result.appended, JSON.stringify(result))
+    assert.equal((await rowOf(child)).lifecycle, 'trashed', '지운 하위 페이지를 곧바로 버리지 않았다')
+    assert.equal(await projectedSeqOf(pageId), await lastSeqOf(pageId), '참조를 건드린 update 를 미뤘다')
+    assert.deepEqual(await rowTextsOf(owner, pageId), ['앞 원문'], '밀린 글자를 따라잡지 않았다')
+    await assertBodyMatchesYDoc(owner.ctx, pageId)
+  })
+
+  test('★ 참조를 담은 블록을 옮긴 update 도 곧바로 투영한다 — 참조 자체는 그대로여도 그 경로가 바뀐다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { owner } = await workspace()
+    const pageId = await mk(owner, '페이지')
+    const child = await mk(owner, '하위', pageId)
+    const [holder, neighbor] = [randomUUID(), randomUUID()]
+    const holding: EditorBlock = { id: holder, type: 'toggle', title: [textRun('담은 토글')], children: [refTo(child)] }
+    assert.ok((await savePageBody(owner.ctx, pageId as never, { blocks: [holding, para('옆', neighbor)] })).ok)
+    const base = await ydocOf(owner, pageId)
+
+    const { update } = rewriting(base, [{ ...para('옆', neighbor), children: [holding] }], 113)
+    const result = await appendDocUpdate(owner.ctx, pageId, update, deferred)
+    assert.ok(result.ok && result.appended, JSON.stringify(result))
+    assert.equal(await projectedSeqOf(pageId), await lastSeqOf(pageId), '참조를 담은 블록을 옮긴 update 를 미뤘다')
+    assert.deepEqual((await placeOf(child)).ancestor_path, [pageId, neighbor, holder])
+    await assertBodyMatchesYDoc(owner.ctx, pageId)
+  })
+
+  test('★ 참조를 넣기만 한 update 도 곧바로 투영한다 — 휴지통에 간 페이지의 참조를 되살려도(되돌리기) 그 자리에서 뺀다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { trashPage } = await import('./trash.ts')
+    const { owner } = await workspace()
+    const blockId = randomUUID()
+    const pageId = await pageWith(owner, [para('원문', blockId)])
+    const child = await mk(owner, '하위', pageId)
+    await trashPage(owner.ctx, child as never)
+    // 휴지통으로 보낸 뒤의 본문에서 참조를 다시 넣는다 — 지우는 것 없이 넣기만 한 update 다(되돌리기가 이렇게 쓴다).
+    const { update } = rewriting(await ydocOf(owner, pageId), [para('원문', blockId), refTo(child)], 141)
+
+    const result = await appendDocUpdate(owner.ctx, pageId, update, deferred)
+    assert.ok(result.ok && result.appended, JSON.stringify(result))
+    assert.equal(await projectedSeqOf(pageId), await lastSeqOf(pageId), '참조를 넣기만 한 update 를 미뤘다')
+    assert.ok(!JSON.stringify(readBodyYDoc(await ydocOf(owner, pageId), pageId).doc).includes(child), '되살린 참조를 곧바로 빼지 않았다')
+    assert.equal((await rowOf(child)).lifecycle, 'trashed')
+    await assertBodyMatchesYDoc(owner.ctx, pageId)
+  })
+
+  test('★ 명령은 밀린 투영까지 따라잡는다 — 하위 페이지를 만들면 쌓기만 했던 글자도 행에 온다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { owner } = await workspace()
+    const blockId = randomUUID()
+    const pageId = await pageWith(owner, [para('원문', blockId)])
+    const typed = typing(await ydocOf(owner, pageId), blockId, '앞 ', 121)
+    assert.ok((await appendDocUpdate(owner.ctx, pageId, typed.update, deferred)).ok)
+
+    const child = await mk(owner, '하위', pageId)
+    assert.equal(await projectedSeqOf(pageId), await lastSeqOf(pageId))
+    const rows = await loadPageBody(owner.ctx, pageId as never)
+    assert.deepEqual(rows?.doc.blocks.map((b) => b.id), [blockId, child])
+    assert.deepEqual(await rowTextsOf(owner, pageId), ['앞 원문', ''], '명령이 밀린 글자를 따라잡지 않았다')
+    await assertBodyMatchesYDoc(owner.ctx, pageId)
+  })
+
+  test('★ 그 사이 행이 바뀌어 둘 수 없게 된 참조는 밀린 투영이 빼고 수선으로 쌓는다 — 받은 변경이 없어도', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { owner } = await workspace()
+    const blockId = randomUUID()
+    const pageId = await pageWith(owner, [para('원문', blockId)])
+    const child = await mk(owner, '하위', pageId)
+    const typed = typing(await ydocOf(owner, pageId), blockId, '앞 ', 131)
+    assert.ok((await appendDocUpdate(owner.ctx, pageId, typed.update, deferred)).ok)
+    // 참조를 빼는 것을 잊은 경로를 흉내 낸다 — 페이지 행만 휴지통으로(본문 행은 건드리지 않는다). 지금은 그런 경로가 없어 이
+    // 장면을 명령으로는 만들 수 없다. 밀린 투영이 받은 변경 없이도 수선을 쓰는지만 본다.
+    await query(
+      `UPDATE block SET lifecycle = 'trashed', trashed_at = now(), trashed_by = $2, trash_root_id = id,
+                        purge_after = now() + interval '30 days'
+        WHERE id = $1`,
+      [child, owner.userId],
+    )
+    const logBefore = Number(await logLength(pageId))
+
+    assert.equal(await projectPendingBody(owner.ctx, pageId), 'projected')
+    const log = await query<{ origin: string }>(`SELECT origin FROM doc_update WHERE page_id = $1 ORDER BY seq`, [pageId])
+    assert.equal(log.length, logBefore + 1, '뺀 참조를 수선으로 쌓지 않았다')
+    assert.equal(log.at(-1)?.origin, 'api')
+    assert.ok(!JSON.stringify(readBodyYDoc(await ydocOf(owner, pageId), pageId).doc).includes(child), 'Y.Doc 에 참조가 남았다')
+    assert.equal(await projectedSeqOf(pageId), await lastSeqOf(pageId))
+    await assertBodyMatchesYDoc(owner.ctx, pageId)
+  })
+
+  test('처음 옮긴 본문은 이미 투영된 것이다 — projected_seq 가 1 이다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { owner } = await workspace()
+    const pageId = await mk(owner, '처음 여는 페이지')
+    await ydocOf(owner, pageId)
+    assert.deepEqual([await projectedSeqOf(pageId), await lastSeqOf(pageId)], ['1', '1'])
+    assert.equal(await projectPendingBody(owner.ctx, pageId), 'up_to_date')
   })
 })

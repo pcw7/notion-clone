@@ -1,5 +1,5 @@
 /**
- * 페이지 본문을 바꾸는 한 단위 — 서버 명령 경로 ② · 참여자 경로 ①(판결 V-5) · F-05-01 · CRDT 4b조각 · 5a조각 · 5b조각
+ * 페이지 본문을 바꾸는 한 단위 — 서버 명령 경로 ② · 참여자 경로 ①(판결 V-5) · F-05-01 · CRDT 4b조각 · 5a조각 · 5b조각 · 5d조각
  *
  * 정본: 판결 X-1(본문 순서의 정본은 Y.Doc, `order_key` 는 프로젝터가 쓰는 파생) · X-3 · V-5(명령 1건 = 원자성 단위)
  *
@@ -18,12 +18,33 @@
  * 것은 이 순서가 아니라 넣기의 멱등성이다. 순서는 "명령이 자기가 바꾼 것을 자기가 쓴다"를 지키려고 둔다.
  *
  * ⑤에서 투영이 먼저인 이유: 투영이 거부하면(자식 페이지 누락 · 깊이 초과 · 버릴 권한 없음) 로그에 아무것도 쌓지 않아야 한다.
- * 프로젝터는 거부를 savepoint 로 되돌리므로 행도 그대로다.
+ * 프로젝터는 거부를 savepoint 로 되돌리므로 행도 그대로다. 투영한 뒤에는 `projected_seq` 를 적는다.
+ *
+ * ──────────────────────────────────────────────────────────────────────
+ * 참여자 경로는 투영을 미룬다 (5d · 정본 X-1 프로젝터 "디바운스 실행 · 페이지당 단일 워커")
+ * ──────────────────────────────────────────────────────────────────────
+ *
+ * 글자 하나마다 본문 행 · 페이지 version · 검색 색인을 다시 쓰면 쓰기가 증폭된다(정본 §6.2-22). 그래서 협업 서버가 부르는
+ * `appendDocUpdate` 는 `projection: 'deferred'` 로 **쌓기만 하고**, 협업 서버가 페이지마다 창을 열어 밀린 것을 한 번에
+ * 투영한다(`projectPendingBody` · `collab/projection-scheduler.ts`). 행은 그 창만큼 낡는다 — 에디터는 Y.Doc 을 보므로 상관없다.
+ *
+ *   - **하위 페이지 참조를 넣거나 지운 update 는 미루지 않는다**(`touchedPageRefs`). 지운 하위 페이지를 휴지통으로 보내는 것 ·
+ *     버릴 권한이 없으면 거부하는 것 · 깊이 상한으로 올리는 것 · 둘 수 없는 참조를 빼는 것은 **그 update 를 받는 순간** 정해야
+ *     한다 — 미루면 거부할 수 없고(이미 퍼졌다) 누가 버렸는지도 흐려진다. 드문 편집이라 곧바로 투영하는 비용은 작다
+ *   - 명령 · 본문 저장(PUT)은 미루지 않는다. 그 투영은 본문 전체를 읽으므로 밀린 투영까지 따라잡는다
+ *   - 밀린 투영은 이미 쌓인 것을 행에 옮길 뿐이라 권한을 다시 보지 않는다 — 쌓을 때 봤다
  */
 
 import type { SessionContext } from '../auth/session-context.ts'
 import type { EditorChange } from '../collab/body-edit.ts'
-import { MAX_DOC_UPDATE_BYTES, openBodyDoc, type BodyCommit, type DocOrigin } from '../collab/doc-store.ts'
+import {
+  MAX_DOC_UPDATE_BYTES,
+  markProjected,
+  openBodyDoc,
+  projectionLag,
+  type BodyCommit,
+  type DocOrigin,
+} from '../collab/doc-store.ts'
 import { hasUnknownBodyContent } from '../collab/repair.ts'
 import { withTransaction, type Tx } from '../db/tx.ts'
 import type { EditorBlock, EditorDoc } from '../editor/document.ts'
@@ -61,6 +82,8 @@ export type FinishOptions = {
    *     깊이까지 올려(`normalize.ts` `page_ref_lifted`) 투영하고, 같은 올리기를 수선으로 같은 seq 에 쌓는다
    */
   readonly deepPageRefs?: 'refuse' | 'lift'
+  /** 수선을 쌓게 되면 남길 출처. 없으면 세션을 열 때의 출처. 밀린 투영은 `'api'` — 참여자가 보낸 변경이 아니다. */
+  readonly origin?: DocOrigin
 }
 
 export type PageBodyWrite = {
@@ -69,6 +92,10 @@ export type PageBodyWrite = {
   readonly seq: string
   /** 이 단위가 본문을 바꿨는가. */
   readonly changed: boolean
+  /** 잠근 스냅샷의 `projected_seq`. */
+  readonly projectedSeq: string
+  /** 적용한 참여자 update 가 하위 페이지 참조 요소를 넣거나 지웠는가(`doc-store.ts` `BodyDocSession.touchedPageRefs`). */
+  readonly touchedPageRefs: boolean
   /** 지금 본문(이 단위의 변경까지). */
   read(): EditorDoc
   change(change: EditorChange): void
@@ -76,6 +103,11 @@ export type PageBodyWrite = {
   applyUpdate(update: Uint8Array): 'applied' | 'invalid_update' | 'missing_dependencies'
   /** 바뀐 본문을 행으로 투영하고, 받아들여지면 로그에 쌓는다. 거부면 아무것도 쌓지 않고 거부를 돌려준다. */
   finish(options?: FinishOptions): Promise<BodyWriteResult>
+  /**
+   * 행 투영을 미루고 쌓기만 한다(머리말 "참여자 경로는 투영을 미룬다"). 구조 위반의 수선은 한다 — 행을 모르고도 고칠 수 있다.
+   * `projected_seq` 는 그대로라 밀린 투영(`projectPendingBody`)이 따라잡는다.
+   */
+  appendWithoutProjection(options?: Pick<FinishOptions, 'compactEvery'>): Promise<BodyCommit>
 }
 
 /**
@@ -96,6 +128,10 @@ export async function openPageBody(
     seq: session.seq,
     get changed() {
       return session.changed
+    },
+    projectedSeq: session.projectedSeq,
+    get touchedPageRefs() {
+      return session.touchedPageRefs
     },
     read: () => session.read().doc,
     change: (change) => session.change(change),
@@ -135,11 +171,64 @@ export async function openPageBody(
         missingPageRefs: options.missingPageRefs,
       })
       if (!result.ok) return result
-      // 수선은 투영이 읽은 것과 같은 것으로 고친다 — 그래야 올리거나 뺀 참조가 행과 Y.Doc 에서 같다.
-      const commit = await session.commit({ actorId: ctx.userId, origin, compactEvery: options.compactEvery, pageRefDepth, pageRefs })
+      // 수선은 투영이 읽은 것과 같은 것으로 고친다 — 그래야 올리거나 뺀 참조가 행과 Y.Doc 에서 같다. 이 단위가 바꾼 것이 없어도
+      // (밀린 투영) 올리거나 뺀 것이 있으면 쓴다.
+      const commit = await session.commit({
+        actorId: ctx.userId,
+        origin: options.origin ?? origin,
+        compactEvery: options.compactEvery,
+        pageRefDepth,
+        pageRefs,
+        repairWithoutChanges: dropping || limits.size > 0,
+      })
+      await markProjected(tx, pageId, commit.seq)
       return { ...result, commit }
     },
+    appendWithoutProjection: (options = {}) =>
+      session.commit({ actorId: ctx.userId, origin, compactEvery: options.compactEvery }),
   }
+}
+
+export type ProjectPendingResult =
+  | 'projected'
+  /** 이미 로그를 따라잡았다 — 아무것도 쓰지 않았다. */
+  | 'up_to_date'
+  /** 페이지가 없거나 본문 로그가 없다. */
+  | 'not_found'
+
+/**
+ * 밀린 투영을 한다 — 쌓기만 한 참여자 update 들을 행에 한 번에 옮긴다(머리말 "참여자 경로는 투영을 미룬다"). 협업 서버의
+ * 투영 창이 부른다.
+ *
+ * 명령과 같은 줄에 선다: 페이지 행 잠금 → 스냅샷 잠금 → 투영 → `projected_seq`. 그래서 창이 둘 겹치거나(서버 둘) 그 사이 명령이
+ * 따라잡았으면 잠근 뒤 따라잡은 것을 보고 아무것도 쓰지 않는다. **권한을 보지 않는다** — 옮기는 것은 이미 쌓인 것이다.
+ * 휴지통에 간 페이지도 투영한다 — 되살리면 본문 행이 그대로 쓰인다.
+ *
+ * @param ctx 행에 남길 편집자(`last_edited_by`)와 워크스페이스. 협업 서버는 창 안에서 마지막으로 쌓은 사람을 넘긴다 — 창 안에
+ *   편집자가 여럿이면 마지막 사람으로 남는다(HANDOFF §7).
+ */
+export async function projectPendingBody(ctx: SessionContext, pageId: string): Promise<ProjectPendingResult> {
+  if (!isUuid(pageId)) return 'not_found'
+  // 잠그기 전에 한 번 본다 — 빠른 길이다. 대부분은 이미 따라잡았다(창이 겹쳤거나 참조를 건드린 update 가 곧바로 투영했다). 잠근 뒤에
+  // 다시 보는 것(아래)이 경쟁(창 둘 · 서버 둘)을 막는다. 둘은 서로를 가려 하나씩 빼는 반사실은 통과하고, 둘 다 빼면 "따라잡았으면
+  // 쓰지 않는다" 검사가 실패했다(HANDOFF §3.3-114).
+  const lag = await projectionLag(pageId)
+  if (lag === null) return 'not_found'
+  if (BigInt(lag.lastSeq) <= BigInt(lag.projectedSeq)) return 'up_to_date'
+
+  return withTransaction(async (tx) => {
+    const page = await tx.queryMaybe<{ id: string }>(
+      `SELECT id FROM block WHERE id = $1 AND workspace_id = $2 AND type = 'page' FOR UPDATE`,
+      [pageId, ctx.workspaceId],
+    )
+    if (page === null) return 'not_found' as const
+    const body = await openPageBody(tx, ctx, pageId)
+    if (BigInt(body.seq) <= BigInt(body.projectedSeq)) return 'up_to_date' as const
+    // 빠진 참조는 거부 모드다 — 참조를 지운 update 는 미루지 않았으므로(곧바로 휴지통) 여기서 빠진 참조를 만나면 그 규칙이 깨진 것이다.
+    const result = await body.finish({ deepPageRefs: 'lift', origin: 'api' })
+    if (!result.ok) throw new Error(`밀린 투영이 거부됐다(${result.reason}): ${pageId}`)
+    return 'projected' as const
+  })
 }
 
 /**
@@ -275,6 +364,11 @@ export type AppendOptions = {
   readonly origin: DocOrigin
   /** 압축 기준. 없으면 `COMPACT_EVERY`. */
   readonly compactEvery?: number
+  /**
+   * `'deferred'` 면 하위 페이지 참조를 건드리지 않은 update 는 쌓기만 한다(머리말 "참여자 경로는 투영을 미룬다"). 부르는 쪽이
+   * 밀린 투영(`projectPendingBody`)을 돌릴 책임을 진다 — 협업 서버가 그렇게 한다. 없으면 `'now'`: 부르는 쪽이 잊어도 행이 낡지 않는다.
+   */
+  readonly projection?: 'now' | 'deferred'
 }
 
 /**
@@ -321,6 +415,13 @@ export async function appendDocUpdate(
     const applied = body.applyUpdate(update)
     if (applied !== 'applied') return { ok: false, reason: applied } as const
     if (!body.changed) return { ok: true, seq: body.seq, appended: false, repair: null } as const
+
+    if (options.projection === 'deferred' && !body.touchedPageRefs) {
+      const commit = await body.appendWithoutProjection({ compactEvery: options.compactEvery })
+      return commit.appended
+        ? ({ ok: true, seq: commit.seq, appended: true, repair: commit.repair } as const)
+        : ({ ok: true, seq: commit.seq, appended: false, repair: null } as const)
+    }
 
     const result = await body.finish({ compactEvery: options.compactEvery, missingPageRefs: 'trash', deepPageRefs: 'lift' })
     if (!result.ok) {
