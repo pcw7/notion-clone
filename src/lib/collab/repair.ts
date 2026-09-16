@@ -66,10 +66,10 @@ export type RepairResult =
  * `ydoc` 의 구조 위반을 고친다. 고쳤으면 그 update 를 `ydoc` 에 적용하고 돌려준다.
  *
  * @param options 읽기와 같은 것을 넘긴다(`readBodyYDoc`) — 투영이 읽은 문서로 고쳐야 행과 Y.Doc 이 같은 자리다. 하위 페이지
- *   참조를 올린 수선은 이것 없이 읽어도 같은 문서가 된다(올린 뒤의 문서에는 이것으로도 고칠 것이 없다).
+ *   참조를 올리거나 뺀 수선은 이것 없이 읽어도 같은 문서가 된다(고친 뒤의 문서에는 이것으로도 고칠 것이 없다).
  */
 export function repairBodyYDoc(ydoc: Y.Doc, pageId: string, options: BodyReadOptions = {}): RepairResult {
-  const normalizeOptions = { seed: pageId, pageRefDepth: options.pageRefDepth }
+  const normalizeOptions = { seed: pageId, pageRefDepth: options.pageRefDepth, pageRefs: options.pageRefs }
   const normalized = normalizeBody(readBodyPm(ydoc), normalizeOptions)
   const { fixes } = normalized
   if (fixes.length === 0) return { kind: 'clean' }

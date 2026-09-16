@@ -132,5 +132,15 @@ export async function PUT(request: Request, ctx: Ctx): Promise<Response> {
         { error: 'page_ref_too_deep', retryable: false, pageId: result.pageId, message: result.message },
         { status: 400 },
       )
+    case 'page_ref_unknown':
+      // 이 본문의 하위 페이지가 아닌 참조는 빼고 저장하지만, 본문에 모르는 블록이 있으면 뺄 수 없다. 다시 보내도 같다.
+      return Response.json(
+        {
+          error: 'page_ref_unknown',
+          retryable: false,
+          message: '본문에 이 버전이 모르는 블록이 있어 하위 페이지 참조를 정리할 수 없습니다. 새로고침한 뒤 다시 시도하세요.',
+        },
+        { status: 400 },
+      )
   }
 }

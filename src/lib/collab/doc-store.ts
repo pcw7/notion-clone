@@ -251,12 +251,13 @@ export async function openBodyDoc(tx: Tx, ctx: SessionContext, pageId: string): 
       if (changes.length === 0) return { appended: false, seq: state.seq }
 
       // 합친 결과가 구조를 어기면 같은 줄 안에서 고친다 — 수선을 쓰는 곳은 여기 하나다(머리말 · `repair.ts`).
-      const repaired = repairBodyYDoc(ydoc, pageId, { pageRefDepth: options.pageRefDepth })
-      // 올린 참조를 쓰지 못하면 행(투영은 올린 자리를 읽었다)과 Y.Doc 이 다른 자리다. 호출자가 먼저 거른다
+      const repaired = repairBodyYDoc(ydoc, pageId, { pageRefDepth: options.pageRefDepth, pageRefs: options.pageRefs })
+      // 올리거나 뺀 참조를 쓰지 못하면 행(투영은 고친 문서를 읽었다)과 Y.Doc 이 다르다. 호출자가 먼저 거른다
       // (`block/body-write.ts` — 모르는 노드가 있으면 거부) — 여기 닿으면 그 거르기가 빠진 것이다. 검사로 강제하지 못한
-      // 방어다: 앞의 거르기가 있는 한 닿는 입력이 없어, 이 줄을 빼는 반사실에서 검사가 전부 통과했다(HANDOFF §3.3-110).
-      if (repaired.kind === 'skipped' && repaired.fixes.includes('page_ref_lifted')) {
-        throw new Error(`올린 하위 페이지 참조를 Y.Doc 에 쓰지 못했다(${repaired.reason}): ${pageId}`)
+      // 방어다: 앞의 거르기가 있는 한 닿는 입력이 없어, 이 줄을 빼는 반사실(올리기 #82 · 빼기 #83)에서 검사가 전부 통과했다
+      // (HANDOFF §3.3-110 · §3.3-113).
+      if (repaired.kind === 'skipped' && repaired.fixes.some((fix) => fix === 'page_ref_lifted' || fix === 'page_ref_dropped')) {
+        throw new Error(`고친 하위 페이지 참조를 Y.Doc 에 쓰지 못했다(${repaired.reason}): ${pageId}`)
       }
       const repair = repaired.kind === 'repaired' ? repaired.update : null
       if (repair !== null) changes.push(repair)

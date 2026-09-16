@@ -22,12 +22,13 @@
  *   토글을 제목으로 바꾸는 동안 자식을 넣는다    자식을 못 갖는 타입에 자식  자식을 바로 뒤 형제로 올린다
  *   둘이 빈 페이지를 동시에 처음 채운다          루트 그룹 둘              합친다
  *   하위 페이지 참조를 깊은 곳으로 옮긴다 ③      그 서브트리가 상한을 넘음  들어갈 수 있는 깊이까지 뒤 형제로 올린다
+ *   둘이 같은 하위 페이지 참조를 옮긴다 ③        참조 둘(둘째는 새 id)     본문에 둘 수 없는 참조를 뺀다
  *
  *   ① 타입은 병합할 수 없다(F-05-01 시나리오 4: "한쪽 값만 남는다"). 어느 쪽이 남는지는 Yjs 의
  *      동시 삽입 순서(client id)가 정한다 — "늦게 한 쪽이 이긴다"가 아니다
  *   ② 새 id 는 무작위가 아니다. 무작위면 프로젝터가 읽을 때마다 새 `block` 행을 만든다
- *   ③ 동시 편집이 아니어도 생긴다. 서브트리의 높이는 문서 밖(DB)에 있어 받은 깊이(`pageRefDepth`)가 있을 때만 본다 —
- *      참여자 경로다(HANDOFF §3.2-23)
+ *   ③ 동시 편집이 아니어도 생긴다(휴지통 · 다른 본문으로 간 페이지를 가리키는 낡은 참조). 서브트리의 높이와 페이지가 어디
+ *      사는지는 문서 밖(DB)에 있어 받았을 때만 본다(`pageRefDepth` · `pageRefs`) — 투영과 그 수선이 넘긴다(HANDOFF §3.2-23 · §3.2-24)
  *
  * ──────────────────────────────────────────────────────────────────────
  * 세 가지 성질
@@ -66,6 +67,8 @@ export type NormalizeFix =
   | 'children_lifted'
   /** 하위 페이지 참조가 받은 깊이(`NormalizeOptions.pageRefDepth`)보다 깊다 — 들어갈 수 있는 깊이까지 뒤 형제로 올렸다. */
   | 'page_ref_lifted'
+  /** 본문에 둘 수 있는 하위 페이지(`NormalizeOptions.pageRefs`)가 아닌 참조를 뺐다. */
+  | 'page_ref_dropped'
   /** 텍스트 블록 안의 블록 노드 · 원자 블록 안의 자식을 버렸다. */
   | 'invalid_content_dropped'
   /** `props` · `format` 이 객체가 아니어서 빈 객체로 바꿨다. */
@@ -98,6 +101,15 @@ export type NormalizeOptions = {
    * (`block/body-write.ts` `pageRefDepthLimits`). 둘이 같은 값을 넘기므로 수선된 Y.Doc 은 이것 없이 읽어도 같은 문서다.
    */
   readonly pageRefDepth?: ReadonlyMap<string, number>
+  /**
+   * 이 본문에 둘 수 있는 하위 페이지 — 이 본문 범위의 **살아 있는** 페이지 id. 다른 id 의 참조는 뺀다(`page_ref_dropped`). 없으면
+   * 보지 않는다.
+   *
+   * 페이지가 있는지 · 어디 사는지 · 휴지통에 갔는지는 행이 정한다 — 문서의 참조가 페이지를 만들거나 옮기거나 되살리지 않는다.
+   * 같은 참조를 둘이 동시에 옮기면 둘째가 새 id 를 받고(위의 id 규칙) 그 id 는 어떤 페이지도 아니다. 투영과 그 수선만
+   * 넘긴다(`block/body-write.ts`) — 뺀 Y.Doc 은 이것 없이 읽어도 같은 문서다.
+   */
+  readonly pageRefs?: ReadonlySet<string>
 }
 
 const { doc: DOC, blockGroup: GROUP, blockContainer: CONTAINER, paragraph: PARAGRAPH } = blockSchema.nodes
@@ -223,6 +235,12 @@ export function normalizeBody(input: PmNode, options: NormalizeOptions): Normali
     const nestable = canNest(content) && depth < MAX_TREE_DEPTH
     const children = containersOf(inner, path, nestable ? depth + 1 : depth)
     if (groups > 0 && children.length === 0) fixes.push('empty_group_removed')
+
+    // 둘 수 없는 참조는 컨테이너째 뺀다. 참조는 자식을 갖지 못하므로 자식은 이미 이 깊이로 올라와 있다 — 잃지 않는다.
+    if (content.type.name === PAGE_REF_NODE && options.pageRefs !== undefined && !options.pageRefs.has(blockId)) {
+      fixes.push('page_ref_dropped')
+      return children
+    }
 
     if (children.length === 0) return [CONTAINER.create({ blockId }, [content])]
     if (!nestable) {

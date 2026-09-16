@@ -86,16 +86,16 @@ export type BodyRead = {
 }
 
 /** 읽기가 정규화에 더 넘기는 것 — 문서 밖의 사실(`NormalizeOptions`). */
-export type BodyReadOptions = Pick<NormalizeOptions, 'pageRefDepth'>
+export type BodyReadOptions = Pick<NormalizeOptions, 'pageRefDepth' | 'pageRefs'>
 
 /**
  * Y.Doc → 문서. 원본을 바꾸지 않고, 던지지 않고, 결정론적이다(머리말).
  *
  * @param pageId 이 Y.Doc 의 페이지. 정규화가 새 id 를 만들 때의 씨앗이다(`NormalizeOptions.seed`).
- * @param options 하위 페이지 참조가 놓일 수 있는 깊이 — 참여자 경로의 투영만 넘긴다(`block/body-write.ts`).
+ * @param options 하위 페이지 참조를 행에 맞춘다(놓일 수 있는 깊이 · 둘 수 있는 페이지) — 투영만 넘긴다(`block/body-write.ts`).
  */
 export function readBodyYDoc(ydoc: Y.Doc, pageId: string, options: BodyReadOptions = {}): BodyRead {
-  const normalized = normalizeBody(readBodyPm(ydoc), { seed: pageId, pageRefDepth: options.pageRefDepth })
+  const normalized = normalizeBody(readBodyPm(ydoc), { seed: pageId, pageRefDepth: options.pageRefDepth, pageRefs: options.pageRefs })
   return { doc: pmToDoc(normalized.doc), fixes: normalized.fixes }
 }
 
