@@ -90,7 +90,7 @@ import { can } from '../permissions/levels.ts'
 import { MAX_BODY_BYTES } from '../sync/outbox.ts'
 import { writeEditorChange, type EditorChange } from './body-edit.ts'
 import { repairBodyYDoc } from './repair.ts'
-import { createBodyYDoc, readBodyYDoc, type BodyRead } from './ydoc.ts'
+import { createBodyYDoc, readBodyYDoc, type BodyRead, type BodyReadOptions } from './ydoc.ts'
 
 /** 정본 `doc_update.origin` 의 CHECK 값. */
 export const DOC_ORIGINS = ['editor', 'api', 'automation', 'restore', 'import', 'external_sync'] as const
@@ -119,7 +119,7 @@ export type LoadDocResult =
 /** 살아 있는 페이지에 대한 이 세션의 권한. 볼 수 없으면 없는 것과 같다(`none`). */
 export type PageAccess = 'none' | 'view' | 'edit'
 
-export type CommitOptions = {
+export type CommitOptions = BodyReadOptions & {
   /** 쌓는 사람. 시스템이면 null. */
   readonly actorId: string | null
   readonly origin: DocOrigin
@@ -140,13 +140,13 @@ export type BodyDocSession = {
   readonly seq: string
   /** 이 세션이 본문을 바꿨는가 — 받은 update 가 이미 가진 것뿐이면 false 다. */
   readonly changed: boolean
-  /** 지금 본문을 정규화해 읽는다(`readBodyYDoc`). */
-  read(): BodyRead
+  /** 지금 본문을 정규화해 읽는다(`readBodyYDoc`). 투영이 이것으로 읽었으면 쌓을 때 같은 것을 넘긴다(`CommitOptions`). */
+  read(options?: BodyReadOptions): BodyRead
   /** ProseMirror 변경을 쓴다 — 서버 명령 경로 ②(`body-edit.ts`). */
   change(change: EditorChange): void
   /** 참여자가 보낸 update 를 적용한다 — 경로 ①. 실패를 돌려준 세션은 쌓을 수 없다. */
   applyUpdate(update: Uint8Array): 'applied' | 'invalid_update' | 'missing_dependencies'
-  /** 이 세션의 변경을 한 seq 로 쌓는다(구조 위반의 수선까지). */
+  /** 이 세션의 변경을 한 seq 로 쌓는다(구조 위반의 수선까지 — 읽을 때 넘긴 것과 같은 것으로 고친다). */
   commit(options: CommitOptions): Promise<BodyCommit>
 }
 
@@ -224,7 +224,7 @@ export async function openBodyDoc(tx: Tx, ctx: SessionContext, pageId: string): 
     get changed() {
       return changes.length > 0
     },
-    read: () => readBodyYDoc(ydoc, pageId),
+    read: (options) => readBodyYDoc(ydoc, pageId, options),
     change(change) {
       assertOpen()
       writeEditorChange(ydoc, change, SERVER_COMMAND_ORIGIN)
@@ -251,7 +251,13 @@ export async function openBodyDoc(tx: Tx, ctx: SessionContext, pageId: string): 
       if (changes.length === 0) return { appended: false, seq: state.seq }
 
       // 합친 결과가 구조를 어기면 같은 줄 안에서 고친다 — 수선을 쓰는 곳은 여기 하나다(머리말 · `repair.ts`).
-      const repaired = repairBodyYDoc(ydoc, pageId)
+      const repaired = repairBodyYDoc(ydoc, pageId, { pageRefDepth: options.pageRefDepth })
+      // 올린 참조를 쓰지 못하면 행(투영은 올린 자리를 읽었다)과 Y.Doc 이 다른 자리다. 호출자가 먼저 거른다
+      // (`block/body-write.ts` — 모르는 노드가 있으면 거부) — 여기 닿으면 그 거르기가 빠진 것이다. 검사로 강제하지 못한
+      // 방어다: 앞의 거르기가 있는 한 닿는 입력이 없어, 이 줄을 빼는 반사실에서 검사가 전부 통과했다(HANDOFF §3.3-110).
+      if (repaired.kind === 'skipped' && repaired.fixes.includes('page_ref_lifted')) {
+        throw new Error(`올린 하위 페이지 참조를 Y.Doc 에 쓰지 못했다(${repaired.reason}): ${pageId}`)
+      }
       const repair = repaired.kind === 'repaired' ? repaired.update : null
       if (repair !== null) changes.push(repair)
 

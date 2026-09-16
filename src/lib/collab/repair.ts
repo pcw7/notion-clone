@@ -41,7 +41,7 @@ import { updateYFragment } from 'y-prosemirror'
 import { pmToDoc } from '../editor/pm-adapter.ts'
 import { blockSchema } from '../editor/schema.ts'
 import { normalizeBody, type NormalizeFix } from './normalize.ts'
-import { BODY_FRAGMENT, markNameOf, readBodyPm } from './ydoc.ts'
+import { BODY_FRAGMENT, markNameOf, readBodyPm, type BodyReadOptions } from './ydoc.ts'
 
 /** 수선 트랜잭션의 origin. 참여자의 UndoManager 가 추적하지 않는다(F-05-15 — 내 편집만 되돌린다). */
 export const REPAIR_ORIGIN = 'repair'
@@ -62,12 +62,18 @@ export type RepairResult =
       readonly fixes: readonly NormalizeFix[]
     }
 
-/** `ydoc` 의 구조 위반을 고친다. 고쳤으면 그 update 를 `ydoc` 에 적용하고 돌려준다. */
-export function repairBodyYDoc(ydoc: Y.Doc, pageId: string): RepairResult {
-  const normalized = normalizeBody(readBodyPm(ydoc), { seed: pageId })
+/**
+ * `ydoc` 의 구조 위반을 고친다. 고쳤으면 그 update 를 `ydoc` 에 적용하고 돌려준다.
+ *
+ * @param options 읽기와 같은 것을 넘긴다(`readBodyYDoc`) — 투영이 읽은 문서로 고쳐야 행과 Y.Doc 이 같은 자리다. 하위 페이지
+ *   참조를 올린 수선은 이것 없이 읽어도 같은 문서가 된다(올린 뒤의 문서에는 이것으로도 고칠 것이 없다).
+ */
+export function repairBodyYDoc(ydoc: Y.Doc, pageId: string, options: BodyReadOptions = {}): RepairResult {
+  const normalizeOptions = { seed: pageId, pageRefDepth: options.pageRefDepth }
+  const normalized = normalizeBody(readBodyPm(ydoc), normalizeOptions)
   const { fixes } = normalized
   if (fixes.length === 0) return { kind: 'clean' }
-  if (hasUnknownContent(ydoc.getXmlFragment(BODY_FRAGMENT))) return { kind: 'skipped', reason: 'unknown_content', fixes }
+  if (hasUnknownBodyContent(ydoc)) return { kind: 'skipped', reason: 'unknown_content', fixes }
 
   const expected = JSON.stringify(pmToDoc(normalized.doc))
   const probe = new Y.Doc()
@@ -82,7 +88,7 @@ export function repairBodyYDoc(ydoc: Y.Doc, pageId: string): RepairResult {
   } finally {
     probe.off('update', collect)
   }
-  const after = normalizeBody(readBodyPm(probe), { seed: pageId })
+  const after = normalizeBody(readBodyPm(probe), normalizeOptions)
   const verified = changes.length > 0 && after.fixes.length === 0 && JSON.stringify(pmToDoc(after.doc)) === expected
   probe.destroy()
   if (!verified) return { kind: 'skipped', reason: 'unverified', fixes }
@@ -90,6 +96,11 @@ export function repairBodyYDoc(ydoc: Y.Doc, pageId: string): RepairResult {
   const update = changes.length === 1 ? changes[0] : Y.mergeUpdates(changes)
   Y.applyUpdate(ydoc, update, REPAIR_ORIGIN)
   return { kind: 'repaired', update, fixes }
+}
+
+/** 본문에 이 스키마가 모르는 것이 있어 수선을 쓸 수 없는가(머리말 "모르는 것이 있으면 고치지 않는다"). */
+export function hasUnknownBodyContent(ydoc: Y.Doc): boolean {
+  return hasUnknownContent(ydoc.getXmlFragment(BODY_FRAGMENT))
 }
 
 /** 이 스키마가 모르는 노드 이름 · 마크 이름 · 글자가 아닌 삽입이 하나라도 있는가. */

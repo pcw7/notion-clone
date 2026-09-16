@@ -21,10 +21,13 @@
  *     않고 요소를 고쳐 쓴다 — attr 이 LWW)                                 나머지는 결정론적 새 id ②
  *   토글을 제목으로 바꾸는 동안 자식을 넣는다    자식을 못 갖는 타입에 자식  자식을 바로 뒤 형제로 올린다
  *   둘이 빈 페이지를 동시에 처음 채운다          루트 그룹 둘              합친다
+ *   하위 페이지 참조를 깊은 곳으로 옮긴다 ③      그 서브트리가 상한을 넘음  들어갈 수 있는 깊이까지 뒤 형제로 올린다
  *
  *   ① 타입은 병합할 수 없다(F-05-01 시나리오 4: "한쪽 값만 남는다"). 어느 쪽이 남는지는 Yjs 의
  *      동시 삽입 순서(client id)가 정한다 — "늦게 한 쪽이 이긴다"가 아니다
  *   ② 새 id 는 무작위가 아니다. 무작위면 프로젝터가 읽을 때마다 새 `block` 행을 만든다
+ *   ③ 동시 편집이 아니어도 생긴다. 서브트리의 높이는 문서 밖(DB)에 있어 받은 깊이(`pageRefDepth`)가 있을 때만 본다 —
+ *      참여자 경로다(HANDOFF §3.2-23)
  *
  * ──────────────────────────────────────────────────────────────────────
  * 세 가지 성질
@@ -61,6 +64,8 @@ export type NormalizeFix =
   | 'empty_group_removed'
   /** 자식을 못 갖는 타입(또는 깊이 상한)의 자식을 뒤 형제로 올렸다. */
   | 'children_lifted'
+  /** 하위 페이지 참조가 받은 깊이(`NormalizeOptions.pageRefDepth`)보다 깊다 — 들어갈 수 있는 깊이까지 뒤 형제로 올렸다. */
+  | 'page_ref_lifted'
   /** 텍스트 블록 안의 블록 노드 · 원자 블록 안의 자식을 버렸다. */
   | 'invalid_content_dropped'
   /** `props` · `format` 이 객체가 아니어서 빈 객체로 바꿨다. */
@@ -85,6 +90,14 @@ export type NormalizeOptions = {
    * 겹친다. 씨앗이 없으면 두 페이지의 같은 자리 블록이 같은 id(= 같은 `block` 행)를 받는다.
    */
   readonly seed: string
+  /**
+   * 하위 페이지 참조가 놓일 수 있는 가장 깊은 본문 깊이(최상위 블록 = 1) — 참조하는 페이지 id → 깊이. 더 깊은 참조는 부모의
+   * 바로 뒤 형제로, 들어갈 때까지 한 단씩 올린다(`page_ref_lifted`). 없는 참조는 보지 않는다.
+   *
+   * 그 페이지 서브트리의 높이는 DB 에만 있으므로 문서만 보고는 알 수 없다 — 참여자 경로의 투영과 그 수선만 넘긴다
+   * (`block/body-write.ts` `pageRefDepthLimits`). 둘이 같은 값을 넘기므로 수선된 Y.Doc 은 이것 없이 읽어도 같은 문서다.
+   */
+  readonly pageRefDepth?: ReadonlyMap<string, number>
 }
 
 const { doc: DOC, blockGroup: GROUP, blockContainer: CONTAINER, paragraph: PARAGRAPH } = blockSchema.nodes
@@ -212,9 +225,26 @@ export function normalizeBody(input: PmNode, options: NormalizeOptions): Normali
     if (groups > 0 && children.length === 0) fixes.push('empty_group_removed')
 
     if (children.length === 0) return [CONTAINER.create({ blockId }, [content])]
-    if (nestable) return [CONTAINER.create({ blockId }, [content, GROUP.create(null, children)])]
-    fixes.push('children_lifted')
-    return [CONTAINER.create({ blockId }, [content]), ...children]
+    if (!nestable) {
+      fixes.push('children_lifted')
+      return [CONTAINER.create({ blockId }, [content]), ...children]
+    }
+    // 자식 자리(depth + 1)에 들어가지 못하는 참조는 이 컨테이너 뒤로 뺀다. 이 컨테이너를 받은 쪽이 한 단 위에서 다시 본다 —
+    // 올라갈 때마다 한 단씩이다. 최상위(깊이 1)보다 위는 없다.
+    const lifted = children.filter((child) => deeperThanAllowed(child, depth + 1))
+    if (lifted.length === 0) return [CONTAINER.create({ blockId }, [content, GROUP.create(null, children)])]
+    fixes.push('page_ref_lifted')
+    const kept = children.filter((child) => !lifted.includes(child))
+    return [
+      CONTAINER.create({ blockId }, kept.length === 0 ? [content] : [content, GROUP.create(null, kept)]),
+      ...lifted,
+    ]
+  }
+
+  /** 이 컨테이너가 `depth` 에 놓이면 받은 깊이를 넘는 하위 페이지 참조인가. */
+  const deeperThanAllowed = (container: PmNode, depth: number): boolean => {
+    const limit = options.pageRefDepth?.get(String(container.attrs.blockId))
+    return limit !== undefined && depth > limit && container.firstChild?.type.name === PAGE_REF_NODE
   }
 
   const top: PmNode[] = []

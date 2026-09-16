@@ -466,6 +466,35 @@ describe('savePageBody — 자식 페이지', () => {
     assert.deepEqual(body?.doc.blocks[0].children?.map((b) => b.id), [first.id, child.id])
   })
 
+  test('참조를 담은 블록을 다른 블록 밑으로 옮기면 하위 페이지와 그 서브트리의 경로가 따라간다 — 참조의 부모가 그대로여도', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { queryOne } = await import('../db/pool.ts')
+    const pathOf = async (id: string) =>
+      (await queryOne<{ ancestor_path: string[] }>(`SELECT ancestor_path FROM block WHERE id = $1`, [id])).ancestor_path
+
+    const pageId = await newPage()
+    const child = await createPage(fx.owner.ctx, { parentPageId: pageId })
+    const grandchild = await createPage(fx.owner.ctx, { parentPageId: child.id })
+    const holder = blk('toggle', '참조를 담은 토글')
+    const outer = blk('toggle', '바깥 토글')
+    const ref: EditorBlock = { id: child.id, type: 'page', title: [] }
+
+    assert.ok((await savePageBody(fx.owner.ctx, pageId, { blocks: [{ ...holder, children: [ref] }, outer] })).ok)
+    assert.deepEqual(await pathOf(child.id), [pageId, holder.id], '전제: 토글 안으로 옮겼다')
+
+    // 토글째 바깥 토글 밑으로 — 참조의 부모(토글)는 그대로다.
+    assert.ok(
+      (await savePageBody(fx.owner.ctx, pageId, { blocks: [{ ...outer, children: [{ ...holder, children: [ref] }] }] })).ok,
+    )
+    assert.deepEqual(await pathOf(holder.id), [pageId, outer.id], '전제: 토글 행은 따라갔다')
+    assert.deepEqual(await pathOf(child.id), [pageId, outer.id, holder.id], '하위 페이지의 경로가 옛 자리에 남았다')
+    assert.deepEqual(
+      await pathOf(grandchild.id),
+      [pageId, outer.id, holder.id, child.id],
+      '하위 페이지 자손의 경로가 옛 자리에 남았다',
+    )
+  })
+
   test('중첩이 깊이 상한을 넘기면 거부하고 아무것도 쓰지 않는다', async (t) => {
     if (skipReason) return t.skip(skipReason)
     const { query, queryOne } = await import('../db/pool.ts')

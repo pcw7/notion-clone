@@ -34,6 +34,7 @@ import { textRun } from '../contracts/rich-text.ts'
 import { asBlockId, type BlockId } from '../ids.ts'
 import { assertBodyMatchesYDoc } from '../testing/body-invariant.ts'
 import { createDatabase } from '../database/database.ts'
+import type { EditorBlock } from '../editor/document.ts'
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'
 
@@ -570,6 +571,34 @@ describe('movePage — 깊이 상한', () => {
     const shallow = await mk('얕은 대상', null)
     const ok = await movePage(actor.ctx, movingRoot.id, shallow.id)
     assert.equal(ok.noop, false)
+  })
+
+  test('상한을 이미 넘은 서브트리도 더 깊어지지 않는 곳으로는 옮길 수 있다 — 본문 중첩이 만든 서브트리', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { queryOne } = await import('../db/pool.ts')
+    const host = await page('원래 부모')
+    const sameDepth = await page('같은 깊이의 부모')
+    const moving = await page('본문이 깊은 페이지', host.id)
+
+    // 본문은 페이지에서 센 깊이만 막는다(`validateDoc` · 정규화) — 깊이 1 인 페이지의 본문 경로는 상한을 넘을 수 있다.
+    let nested: EditorBlock = { id: randomUUID(), type: 'paragraph', title: [textRun('바닥')] }
+    for (let i = 1; i < MAX_TREE_DEPTH; i += 1) {
+      nested = { id: randomUUID(), type: 'toggle', title: [textRun(`t${i}`)], children: [nested] }
+    }
+    assert.ok((await savePageBody(fx.owner.ctx, moving.id, { blocks: [nested] })).ok)
+    const deepest = await queryOne<{ n: number }>(
+      `SELECT max(cardinality(ancestor_path)) AS n FROM block WHERE ancestor_path @> ARRAY[$1::uuid]`,
+      [moving.id],
+    )
+    assert.ok(deepest.n >= MAX_TREE_DEPTH, `전제: 서브트리가 상한을 넘는다(${deepest.n})`)
+
+    assert.equal((await movePage(fx.owner.ctx, moving.id, sameDepth.id)).noop, false, '같은 깊이로 옮기지 못했다')
+    assert.equal((await movePage(fx.owner.ctx, moving.id, null)).noop, false, '더 얕은 곳으로 옮기지 못했다')
+    await assert.rejects(
+      () => movePage(fx.owner.ctx, moving.id, host.id),
+      (e: unknown) => e instanceof MoveError && e.code === 'too_deep',
+      '상한을 넘은 서브트리를 더 깊은 곳으로 옮기는 것은 여전히 거부한다',
+    )
   })
 })
 

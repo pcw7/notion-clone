@@ -9,6 +9,8 @@
  *      저장소 하나로 둔 근거다(저장소 쪽은 `doc-store.db.test.ts` ⑥)
  *   ③ **고칠 곳만 건드린다** — 수선과 동시에 다른 블록에 친 글자가 남는다
  *   ④ **모르는 것이 있으면 고치지 않는다** — Y.Doc 을 한 바이트도 바꾸지 않는다
+ *   ⑤ **받은 깊이보다 깊은 하위 페이지 참조를 올린다** — 그 뒤에는 깊이 없이 읽어도 같은 문서이고, 올리기와 동시에 담은 블록 ·
+ *      이웃 블록에 친 글자가 남는다(옮기는 것은 글자 없는 참조 요소뿐이다)
  */
 
 import { test, describe } from 'node:test'
@@ -18,7 +20,7 @@ import { randomUUID } from 'node:crypto'
 import * as Y from 'yjs'
 
 import type { EditorBlock } from '../editor/document.ts'
-import { edit, exchange, findBlock } from '../testing/collab-peers.ts'
+import { edit, exchange, findBlock, peer } from '../testing/collab-peers.ts'
 import { mergedPeer, paragraph, violationScenes, type ViolationScene } from '../testing/collab-scenarios.ts'
 import { repairBodyYDoc } from './repair.ts'
 import { BODY_FRAGMENT, createBodyYDoc, readBodyYDoc } from './ydoc.ts'
@@ -152,5 +154,58 @@ describe('④ 모르는 것이 있으면 고치지 않는다', () => {
     const result = repairBodyYDoc(server, PAGE)
     assert.ok(result.kind === 'skipped' && result.reason === 'unknown_content', `결과: ${result.kind}`)
     assert.ok(bytes(server).equals(before), '고치지 않는다면서 Y.Doc 을 바꿨다')
+  })
+})
+
+// ── ⑤ 하위 페이지 참조 올리기 ─────────────────────────────────────────
+
+describe('⑤ 받은 깊이보다 깊은 하위 페이지 참조를 올린다', () => {
+  const [holder, ref, elder, younger, neighbor] = [randomUUID(), randomUUID(), randomUUID(), randomUUID(), randomUUID()]
+  // 담은 토글(형 · 참조 · 동생) · 이웃 — 참조는 깊이 2 다.
+  const source = (): Y.Doc =>
+    createBodyYDoc({
+      blocks: [
+        paragraph('담은', {
+          id: holder,
+          type: 'toggle',
+          children: [paragraph('형', { id: elder }), { id: ref, type: 'page', title: [] }, paragraph('동생', { id: younger })],
+        }),
+        paragraph('이웃', { id: neighbor }),
+      ],
+    })
+  const topLevel = new Map([[ref, 1]])
+  const idsOf = (ydoc: Y.Doc): unknown =>
+    readBodyYDoc(ydoc, PAGE).doc.blocks.map((b) => [b.id, (b.children ?? []).map((c) => c.id)])
+
+  test('★ 올린 수선을 쓴다 — 그 뒤에는 깊이 없이 읽어도 같은 문서이고 수선을 받은 참여자도 같다', () => {
+    const base = source()
+    const [server, other] = [peer(base, 9), peer(base, 10)]
+    const expected = readBodyYDoc(server, PAGE, { pageRefDepth: topLevel })
+    assert.deepEqual(expected.fixes, ['page_ref_lifted'], '전제: 받은 깊이로 읽으면 올린다')
+    assert.deepEqual(readBodyYDoc(server, PAGE).fixes, [], '전제: 깊이 없이 읽으면 고칠 것이 없다')
+
+    const result = repairBodyYDoc(server, PAGE, { pageRefDepth: topLevel })
+    assert.ok(result.kind === 'repaired', `올리지 않았다: ${result.kind}`)
+    assert.deepEqual(readBodyYDoc(server, PAGE), { doc: expected.doc, fixes: [] }, '깊이 없이 읽은 문서가 투영이 읽은 것과 다르다')
+    assert.deepEqual(idsOf(server), [[holder, [elder, younger]], [ref, []], [neighbor, []]])
+
+    Y.applyUpdate(other, result.update)
+    assert.deepEqual(readBodyYDoc(other, PAGE), readBodyYDoc(server, PAGE))
+    assert.deepEqual(repairBodyYDoc(server, PAGE, { pageRefDepth: topLevel }), { kind: 'clean' }, '올린 뒤에 또 썼다')
+  })
+
+  test('★ 올리기와 동시에 담은 블록 · 형제 · 이웃 블록에 친 글자가 남는다', () => {
+    const base = source()
+    const [server, typist] = [peer(base, 9), peer(base, 11)]
+    edit(typist, (tr) => {
+      for (const id of [neighbor, younger, elder, holder]) tr.insertText('!', findBlock(tr.doc, id).pos + 2)
+    })
+    assert.equal(repairBodyYDoc(server, PAGE, { pageRefDepth: topLevel }).kind, 'repaired')
+    exchange(server, typist)
+
+    assert.deepEqual(textsOf(server), ['!담은', '!형', '!동생', '', '!이웃'])
+    assert.deepEqual(idsOf(server), [[holder, [elder, younger]], [ref, []], [neighbor, []]])
+    assert.deepEqual(readBodyYDoc(server, PAGE).fixes, [])
+    assert.deepEqual(readBodyYDoc(typist, PAGE), readBodyYDoc(server, PAGE))
   })
 })

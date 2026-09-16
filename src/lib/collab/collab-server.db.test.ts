@@ -19,6 +19,8 @@
  *      까지만 적용한다
  *   ⑪ **권한 검사와 연결 등록 사이에 회수돼도** 첫 동기화에 본문을 답하기 전에 닫는다
  *   ⑫ **신호를 듣는 연결이 끊겨도** 다시 붙으면 그 사이 명령이 쓴 것을 가져오고, 그 사이 회수된 연결은 가져온 것을 받기 전에 닫는다
+ *   ⑬ **하위 페이지 참조를 깊이 상한을 넘는 자리로 옮긴 편집은 연결을 닫지 않는다** — 들어갈 수 있는 깊이까지 올린 문서를 옮긴
+ *      사람도 받는다(HANDOFF §3.2-23)
  *
  * ⑩ 은 커밋 신호를 붙잡아 두었다가 놓아 "신호가 늦게 온다"를 만든다(`holdableFeed`). ④ 도 신호를 붙잡는다 — 권한 신호가 먼저
  * 닫으면 "쓰기마다 다시 묻는다"를 가려낼 수 없다.
@@ -48,6 +50,7 @@ import { trashPage } from '../block/trash.ts'
 import { textRun } from '../contracts/rich-text.ts'
 import { getPool, query } from '../db/pool.ts'
 import type { EditorBlock, EditorDoc } from '../editor/document.ts'
+import { docToPm } from '../editor/pm-adapter.ts'
 import { blockSchema } from '../editor/schema.ts'
 import type { Level } from '../permissions/levels.ts'
 import { grantAccess, revokeAccess, stopInheriting } from '../permissions/acl.ts'
@@ -698,5 +701,57 @@ describe('⑫ 신호를 듣는 연결이 끊겨도', () => {
     assert.ok(hasBlock(a.doc, pageId, child.id), '끊긴 사이 명령이 쓴 것을 가져오지 않았다')
     assert.deepEqual(b.closed, ['not_found'])
     assert.ok(!hasBlock(b.doc, pageId, child.id), '끊긴 사이 회수된 연결이 그 뒤의 것을 받았다')
+  })
+})
+
+// ── ⑬ 깊이 상한을 넘는 자리로 옮긴 하위 페이지 참조 ────────────────────
+
+describe('⑬ 깊이 상한을 넘는 자리로 옮긴 하위 페이지 참조', () => {
+  test('★ 연결을 닫지 않고, 들어갈 수 있는 깊이까지 올린 문서를 옮긴 사람 · 다른 참여자가 함께 받는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { owner, member, pageId, ids, name } = await pageFixture(['원문'])
+    const child = await createPage(owner.ctx, { parentPageId: pageId as never, title: titleFromPlainText('하위') })
+    // 토글 99 개 — 가장 안쪽 토글의 자식은 깊이 100 이라 하위 페이지 경로가 상한에 닿는다.
+    const toggles = Array.from({ length: 99 }, () => randomUUID())
+    const nest = (inner: EditorBlock[]): EditorBlock => {
+      let node: EditorBlock = { id: toggles[98], type: 'toggle', title: [textRun('t99')], children: inner }
+      for (let i = 97; i >= 0; i -= 1) node = { id: toggles[i], type: 'toggle', title: [textRun(`t${i + 1}`)], children: [node] }
+      return node
+    }
+    const ref: EditorBlock = { id: child.id, type: 'page', title: [] }
+    const saved = await savePageBody(owner.ctx, pageId as never, { blocks: [para('원문', ids[0]), nest([]), ref] })
+    assert.equal(saved.ok, true, JSON.stringify(saved))
+
+    const server = await startServer(t)
+    const [mover, watcher] = [join(t, server.url, name, cookieOf(owner)), join(t, server.url, name, cookieOf(member))]
+    await ready(mover, watcher)
+    const before = await logOf(pageId)
+
+    const next = docToPm({ blocks: [para('원문', ids[0]), nest([ref])] })
+    edit(mover.doc, (tr) => {
+      tr.replaceWith(0, tr.doc.content.size, next.content)
+    })
+    edit(mover.doc, insertAtStart(ids[0], '뒤에 보낸 '))
+    await waitFor('뒤에 보낸 편집이 닿는다', () => textsOf(bodyOf(watcher.doc, pageId))[0] === '뒤에 보낸 원문')
+    assert.deepEqual(mover.closed, [], '깊이 초과로 옮긴 사람의 연결을 닫았다')
+
+    const childrenOf = (doc: EditorDoc, blockId: string): string[] | null => {
+      const walk = (blocks: readonly EditorBlock[]): string[] | null => {
+        for (const b of blocks) {
+          if (b.id === blockId) return (b.children ?? []).map((c) => c.id)
+          const found = walk(b.children ?? [])
+          if (found !== null) return found
+        }
+        return null
+      }
+      return walk(doc.blocks)
+    }
+    await waitFor('옮긴 사람도 올린 것을 받는다', () => readBodyYDoc(mover.doc, pageId).fixes.length === 0 && childrenOf(bodyOf(mover.doc, pageId), toggles[97])?.length === 2)
+    const stored = await storedBody(owner, pageId)
+    assert.deepEqual(childrenOf(stored.doc, toggles[97]), [toggles[98], child.id], '가장 안쪽 토글 바로 뒤로 올리지 않았다')
+    assert.deepEqual(readBodyYDoc(mover.doc, pageId), stored)
+    assert.deepEqual(readBodyYDoc(watcher.doc, pageId), stored)
+    assert.equal((await logOf(pageId)).length, before.length + 2, '올린 것이 따로 seq 를 받았다')
+    await assertBodyMatchesYDoc(owner.ctx, pageId)
   })
 })

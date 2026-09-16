@@ -393,10 +393,15 @@ async function projectRows(
   //
   // 그 일은 `move-page.ts` 의 `relocateSubtree` 가 이미 한다. 여기서 다시
   // 구현하지 않고 부른다 — 두 벌이면 한쪽만 고쳐져 어긋난다.
-  const currentParentOf = new Map(scope.map((r) => [r.id, r.parent_id]))
-  const pageRefMoves = projection.blocks.filter(
-    (b) => b.type === PAGE_TYPE && currentParentOf.get(b.id) !== b.parentId,
-  )
+  //
+  // 부모가 그대로여도 **경로가 바뀌면** 옮긴 것이다 — 참조를 담은 토글을 다른 블록 밑으로 옮기는 경우다. 한때 부모만 비교해
+  // 토글 행의 경로는 따라가고 하위 페이지와 그 서브트리의 경로는 옛 자리에 남았다(검사가 재현했다). 깊이 검사도 건너뛰었다.
+  const currentRowOf = new Map(scope.map((r) => [r.id, r]))
+  const pageRefMoves = projection.blocks.filter((b) => {
+    if (b.type !== PAGE_TYPE) return false
+    const row = currentRowOf.get(b.id)
+    return row?.parent_id !== b.parentId || stableJson(row.ancestor_path) !== stableJson(b.ancestorPath)
+  })
 
   // ── order_key 재할당 (문서 밖 형제를 피한다) ──────────────────────
   const occupiedByParent = new Map<string, Set<string>>()

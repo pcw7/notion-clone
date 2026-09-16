@@ -75,7 +75,7 @@ export type MoveErrorCode =
   | 'target_not_found'
   /** 자기 자신 또는 자기 자손으로 옮기려 했다 (I5). */
   | 'cycle'
-  /** 옮기면 서브트리의 어딘가가 MAX_TREE_DEPTH 를 넘는다. */
+  /** 옮기면 서브트리가 더 깊어져 어딘가가 MAX_TREE_DEPTH 를 넘는다. */
   | 'too_deep'
 
 export class MoveError extends Error {
@@ -337,6 +337,10 @@ export async function relocateSubtree(
     //
     // 페이지 하나가 아니라 **서브트리에서 가장 깊은 노드**로 판정해야 한다.
     // 페이지만 보고 통과시키면 자손이 상한을 넘은 채 저장된다.
+    //
+    // **더 깊어지지 않는 이동은 거부하지 않는다.** 본문은 페이지에서 센 깊이만 막으므로(`validateDoc` · 정규화) 상한을 이미
+    // 넘은 서브트리가 생긴다 — 깊이 1 인 페이지의 본문이 경로 길이 101 까지 간다(검사 · 진단). 그런 페이지를 같은 깊이 ·
+    // 더 얕은 곳으로도 못 옮기면 되돌릴 길이 없다. 참여자 경로가 참조를 올릴 때 끝이 있는 것도 이 규칙이다(`pageRefDepthLimits`).
     const deepest = await tx.queryOne<{ max_depth: number | null }>(
       `SELECT max(coalesce(array_length(ancestor_path, 1), 0)) AS max_depth
          FROM block
@@ -345,7 +349,7 @@ export async function relocateSubtree(
     )
     const deepestRelative = (deepest.max_depth ?? oldPath.length) - oldPath.length
     const newDeepest = newPath.length + deepestRelative
-    if (newDeepest >= MAX_TREE_DEPTH) {
+    if (newDeepest >= MAX_TREE_DEPTH && newPath.length > oldPath.length) {
       throw new MoveError(
         'too_deep',
         `옮기면 깊이가 상한(${MAX_TREE_DEPTH})을 넘습니다. 더 얕은 위치를 고르세요.`,
