@@ -33,15 +33,19 @@ import { can } from '../permissions/levels.ts'
 import { MAX_TREE_DEPTH, PAGE_TYPE } from './types.ts'
 import {
   projectBodyRows,
+  readBodyScope,
+  type BodyScopeRow,
   type MissingPageRefs,
   type ProjectablePage,
   type ProjectBodyResult,
+  type SaveBodyResult,
 } from './save-page-body.ts'
 
 /** 투영이 받아들이면 로그에 쌓은 결과(`commit`)까지, 거부하면 거부만. */
 export type BodyWriteResult =
   | (Extract<ProjectBodyResult, { ok: true }> & { readonly commit: BodyCommit })
   | Exclude<ProjectBodyResult, { ok: true }>
+  | Extract<SaveBodyResult, { reason: 'page_ref_unknown' }>
 
 export type FinishOptions = {
   /** 압축 기준. 없으면 `COMPACT_EVERY`. */
@@ -103,11 +107,20 @@ export async function openPageBody(
            FROM block WHERE id = $1 AND workspace_id = $2`,
         [pageId, ctx.workspaceId],
       )
+      // 투영이 읽는 범위를 여기서 한 번 읽어 넘긴다 — 본문에 둘 수 있는 하위 페이지를 정하는 것도 같은 행이다.
+      const scope = await readBodyScope(tx, ctx, pageId)
+      // 본문에 둘 수 있는 하위 페이지는 이 본문 범위의 살아 있는 페이지뿐이다(§3.2-24). 다른 참조(같은 참조를 둘이 동시에 옮겨 생긴
+      // 둘째 · 휴지통에 간 페이지 · 다른 본문으로 간 페이지 · 없는 페이지)는 읽기가 빼고 수선이 Y.Doc 에서 뺀다 — 투영은 페이지
+      // 행을 만들거나 옮기지 않는다.
+      const pageRefs = new Set(scope.filter((r) => r.type === PAGE_TYPE && r.lifecycle === 'live').map((r) => r.id))
+      const first = session.read({ pageRefs })
+      const dropping = first.fixes.includes('page_ref_dropped')
       const limits =
-        options.deepPageRefs === 'lift' ? await pageRefDepthLimits(tx, ctx, page, session.read().doc) : new Map<string, number>()
-      // 올린 것을 Y.Doc 에 쓰지 못하면 행과 Y.Doc 이 다른 자리가 된다 — 수선은 모르는 노드가 있으면 쓰지 않는다(`repair.ts`).
+        options.deepPageRefs === 'lift' ? await pageRefDepthLimits(tx, ctx, page, scope, first.doc) : new Map<string, number>()
+      // 고친 것을 Y.Doc 에 쓰지 못하면 행과 Y.Doc 이 달라진다 — 수선은 모르는 노드가 있으면 쓰지 않는다(`repair.ts`).
       // 이때만 거부한다. 모르는 노드는 새 버전 클라이언트가 넣으므로 스키마 버전 게이트가 들어오면 닿지 않는다(HANDOFF §7).
-      if (limits.size > 0 && hasUnknownBodyContent(session.ydoc)) {
+      if ((dropping || limits.size > 0) && hasUnknownBodyContent(session.ydoc)) {
+        if (dropping) return { ok: false, reason: 'page_ref_unknown' } as const
         const [tooDeep] = limits.keys()
         return {
           ok: false,
@@ -117,12 +130,13 @@ export async function openPageBody(
         } as const
       }
       const pageRefDepth = limits.size > 0 ? limits : undefined
-      const result = await projectBodyRows(tx, ctx, page, session.read({ pageRefDepth }).doc, {
+      const doc = pageRefDepth === undefined ? first.doc : session.read({ pageRefs, pageRefDepth }).doc
+      const result = await projectBodyRows(tx, ctx, page, doc, scope, {
         missingPageRefs: options.missingPageRefs,
       })
       if (!result.ok) return result
-      // 수선은 투영이 읽은 것과 같은 것으로 고친다 — 그래야 올린 참조가 행과 Y.Doc 에서 같은 자리다.
-      const commit = await session.commit({ actorId: ctx.userId, origin, compactEvery: options.compactEvery, pageRefDepth })
+      // 수선은 투영이 읽은 것과 같은 것으로 고친다 — 그래야 올리거나 뺀 참조가 행과 Y.Doc 에서 같다.
+      const commit = await session.commit({ actorId: ctx.userId, origin, compactEvery: options.compactEvery, pageRefDepth, pageRefs })
       return { ...result, commit }
     },
   }
@@ -144,6 +158,7 @@ async function pageRefDepthLimits(
   tx: Tx,
   ctx: SessionContext,
   page: ProjectablePage,
+  scope: readonly BodyScopeRow[],
   doc: EditorDoc,
 ): Promise<Map<string, number>> {
   const refs: { readonly id: string; readonly depth: number }[] = []
@@ -158,12 +173,8 @@ async function pageRefDepthLimits(
   if (refs.length === 0) return limits
 
   const base = page.ancestor_path.length
-  const rows = await tx.query<{ id: string; depth: number }>(
-    `SELECT id, cardinality(ancestor_path) AS depth FROM block
-      WHERE id = ANY($1::uuid[]) AND workspace_id = $2 AND type = 'page' AND ancestor_path @> ARRAY[$3::uuid]`,
-    [refs.map((r) => r.id), ctx.workspaceId, page.id],
-  )
-  const rowDepthOf = new Map(rows.map((r) => [r.id, r.depth]))
+  // 문서의 참조는 이미 이 범위의 살아 있는 하위 페이지뿐이다(`pageRefs` 로 읽었다).
+  const rowDepthOf = new Map(scope.filter((r) => r.type === PAGE_TYPE).map((r) => [r.id, r.ancestor_path.length]))
   const deepening = refs.filter((r) => {
     const rowDepth = rowDepthOf.get(r.id)
     return rowDepth !== undefined && base + r.depth > rowDepth
@@ -240,6 +251,11 @@ export type AppendFailure =
    * 없으면 거부하지 않고 올린다(`FinishOptions.deepPageRefs`).
    */
   | 'page_ref_too_deep'
+  /**
+   * 본문에 둘 수 없는 하위 페이지 참조(휴지통 · 다른 본문 · 없는 페이지 · 동시에 옮겨 생긴 둘째)가 있는데 본문에 모르는 노드가 있어
+   * 뺀 것을 Y.Doc 에 쓸 수 없다. 모르는 노드가 없으면 거부하지 않고 뺀다(§3.2-24).
+   */
+  | 'page_ref_unknown'
 
 export type AppendDocResult =
   | {
@@ -274,6 +290,8 @@ export type AppendOptions = {
  *     명령과 같은 쓰기 · 같은 권한이고, 버릴 권한이 없으면 거부한다(`page_ref_forbidden`)
  *   - 하위 페이지 참조를 그 서브트리가 깊이 상한을 넘는 자리로 옮긴 update 는 **들어갈 수 있는 깊이까지 올린다**(§3.2-23) —
  *     올린 것은 수선으로 같은 seq 에 쌓여 보낸 쪽도 받는다. 본문에 모르는 노드가 있어 수선을 쓸 수 없을 때만 거부한다
+ *   - 이 본문 범위의 살아 있는 하위 페이지가 아닌 참조는 **뺀다**(§3.2-24) — 같은 참조를 둘이 동시에 옮겨 생긴 둘째 · 휴지통 ·
+ *     다른 본문으로 간 페이지. 뺀 것도 같은 seq 의 수선이다. 본문에 모르는 노드가 있어 수선을 쓸 수 없을 때만 거부한다
  *   - 투영이 거부하면 아무것도 쌓지 않고 거부를 돌려준다. 참여자의 로컬 문서에는 이미 들어가 있으므로 협업 서버는 그 연결을
  *     닫는다
  */

@@ -10,6 +10,9 @@
  *   ④ **하위 페이지 참조를 깊이 상한을 넘는 자리로 옮긴 update 는 거부하지 않고 들어갈 수 있는 깊이까지 올린다** — 참조를 담은
  *      블록을 옮겨도 같고, 하위 페이지 서브트리의 높이까지 센다. 올린 것은 같은 seq 의 수선이다. 모르는 노드가 있어 수선을 쓸 수
  *      없을 때만 거부한다
+ *   ⑤ **이 본문의 살아 있는 하위 페이지가 아닌 참조는 뺀다** — 같은 참조를 둘이 동시에 옮겨 생긴 둘째 · 휴지통에 간 페이지 · 다른
+ *      본문으로 옮겨진 페이지. 페이지 행을 만들거나 옮기거나 던지지 않고, 뺀 것은 같은 seq 의 수선이다. 모르는 노드가 있어 수선을
+ *      쓸 수 없을 때만 거부한다
  *
  * 로그 자체의 성질(seq · 압축 · 재전송 · pending · 수선 · 권한)은 `collab/doc-store.db.test.ts` 가 본다.
  */
@@ -335,6 +338,126 @@ describe('깊이 상한을 넘는 자리로 옮긴 하위 페이지 참조', () 
     )
     assert.equal(await logLength(pageId), logBefore, '거부한 update 를 쌓았다')
     assert.deepEqual(await placeOf(child), placeBefore, '거부했는데 행이 바뀌었다')
+    await assertBodyMatchesYDoc(owner.ctx, pageId)
+  })
+})
+
+// ── ⑤ 이 본문의 하위 페이지가 아닌 참조 ──────────────────────────────
+
+describe('이 본문의 살아 있는 하위 페이지가 아닌 참조 (유령 페이지)', () => {
+  const toggle = (id: string, children: EditorBlock[] = []): EditorBlock => ({ id, type: 'toggle', title: [textRun('토글')], children })
+  const lifecyclePlaceOf = (id: string) =>
+    queryOne<{ lifecycle: string; parent_id: string; order_key: string; ancestor_path: string[] }>(
+      `SELECT lifecycle, parent_id, order_key, ancestor_path FROM block WHERE id = $1`,
+      [id],
+    )
+  const pageRowsUnder = async (pageId: string) =>
+    (await query<{ id: string }>(`SELECT id FROM block WHERE type = 'page' AND ancestor_path @> ARRAY[$1::uuid] ORDER BY id`, [pageId])).map(
+      (r) => r.id,
+    )
+
+  test('★ 같은 참조를 둘이 동시에 다른 곳으로 옮기면 하나만 남는다 — 유령 페이지를 만들지 않고 보낸 쪽도 같은 문서다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { owner } = await workspace()
+    const pageId = await mk(owner, '페이지')
+    const child = await mk(owner, '하위', pageId)
+    const [first, second] = [randomUUID(), randomUUID()]
+    assert.ok((await savePageBody(owner.ctx, pageId as never, { blocks: [toggle(first), toggle(second), refTo(child)] })).ok)
+    const base = await ydocOf(owner, pageId)
+
+    const a = rewriting(base, [toggle(first, [refTo(child)]), toggle(second)], 91)
+    const b = rewriting(base, [toggle(first), toggle(second, [refTo(child)])], 92)
+    assert.ok((await appendDocUpdate(owner.ctx, pageId, a.update, { origin: 'editor' })).ok)
+    const result = await appendDocUpdate(owner.ctx, pageId, b.update, { origin: 'editor' })
+    assert.ok(result.ok && result.appended, JSON.stringify(result))
+
+    assert.deepEqual(await pageRowsUnder(pageId), [child], '같은 참조가 둘이 되어 유령 페이지가 생겼다')
+    // 문서 순서의 첫째가 id 를 갖는다(정규화) — 첫 토글 안이다.
+    assert.equal((await lifecyclePlaceOf(child)).parent_id, first)
+    const rows = await loadPageBody(owner.ctx, pageId as never)
+    assert.deepEqual(rows === null ? null : [childIdsOf(rows.doc, first), childIdsOf(rows.doc, second)], [[child], []])
+    await assertBodyMatchesYDoc(owner.ctx, pageId)
+
+    // 둘째를 보낸 쪽은 첫째의 편집과 뺀 수선을 받으면 로그와 같은 문서다.
+    assert.ok(result.repair !== null, '뺀 것을 수선으로 돌려주지 않았다')
+    Y.applyUpdate(b.client, a.update)
+    Y.applyUpdate(b.client, result.repair)
+    assert.deepEqual(readBodyYDoc(b.client, pageId), readBodyYDoc(await ydocOf(owner, pageId), pageId))
+  })
+
+  test('★ 휴지통에 간 하위 페이지의 참조를 옮긴 낡은 update 는 그 참조를 뺀다 — 휴지통 페이지는 자리를 지킨다(B2)', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { trashPage } = await import('./trash.ts')
+    const { owner } = await workspace()
+    const pageId = await mk(owner, '페이지')
+    const child = await mk(owner, '하위', pageId)
+    const holder = randomUUID()
+    assert.ok((await savePageBody(owner.ctx, pageId as never, { blocks: [toggle(holder), refTo(child)] })).ok)
+    const base = await ydocOf(owner, pageId)
+    const { update } = rewriting(base, [toggle(holder, [refTo(child)])], 93)
+    const before = await lifecyclePlaceOf(child)
+    await trashPage(owner.ctx, child as never)
+
+    const result = await appendDocUpdate(owner.ctx, pageId, update, { origin: 'editor' })
+    assert.ok(result.ok, JSON.stringify(result))
+    const after = await lifecyclePlaceOf(child)
+    assert.deepEqual(
+      [after.lifecycle, after.parent_id, after.order_key],
+      ['trashed', before.parent_id, before.order_key],
+      '휴지통 페이지가 옮겨졌다(B2)',
+    )
+    const rows = await loadPageBody(owner.ctx, pageId as never)
+    assert.deepEqual(rows === null ? null : childIdsOf(rows.doc, holder), [])
+    await assertBodyMatchesYDoc(owner.ctx, pageId)
+  })
+
+  test('★ 다른 본문으로 옮겨진 페이지의 참조를 옮긴 낡은 update 는 그 참조를 뺀다 — 던지지 않고 옮겨진 자리를 지킨다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { movePage } = await import('./move-page.ts')
+    const { owner } = await workspace()
+    const pageId = await mk(owner, '페이지')
+    const other = await mk(owner, '다른 페이지')
+    const child = await mk(owner, '하위', pageId)
+    const holder = randomUUID()
+    assert.ok((await savePageBody(owner.ctx, pageId as never, { blocks: [toggle(holder), refTo(child)] })).ok)
+    const base = await ydocOf(owner, pageId)
+    const { update } = rewriting(base, [toggle(holder, [refTo(child)])], 94)
+    await movePage(owner.ctx, child as never, other as never)
+    const before = await lifecyclePlaceOf(child)
+
+    const result = await appendDocUpdate(owner.ctx, pageId, update, { origin: 'editor' })
+    assert.ok(result.ok, JSON.stringify(result))
+    assert.deepEqual(await lifecyclePlaceOf(child), before, '다른 본문으로 옮겨진 페이지가 다시 움직였다')
+    const rows = await loadPageBody(owner.ctx, pageId as never)
+    assert.deepEqual(rows === null ? null : childIdsOf(rows.doc, holder), [])
+    await assertBodyMatchesYDoc(owner.ctx, pageId)
+    await assertBodyMatchesYDoc(owner.ctx, other)
+  })
+
+  test('모르는 노드가 있는 본문에서는 뺄 참조를 Y.Doc 에서 뺄 수 없어 거부한다 — 아무것도 쓰지 않는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { trashPage } = await import('./trash.ts')
+    const { owner } = await workspace()
+    const pageId = await mk(owner, '페이지')
+    const child = await mk(owner, '하위', pageId)
+    const holder = randomUUID()
+    assert.ok((await savePageBody(owner.ctx, pageId as never, { blocks: [toggle(holder), refTo(child)] })).ok)
+    const base = await ydocOf(owner, pageId)
+    const { client } = rewriting(base, [toggle(holder, [refTo(child)])], 95)
+    const root = client.getXmlFragment(BODY_FRAGMENT).get(0) as Y.XmlElement
+    const future = new Y.XmlElement('blockContainer')
+    future.setAttribute('blockId', randomUUID())
+    future.insert(0, [new Y.XmlElement('future_block_from_newer_client')])
+    client.transact(() => root.insert(root.length, [future]))
+    await trashPage(owner.ctx, child as never)
+    const [logBefore, placeBefore] = [await logLength(pageId), await lifecyclePlaceOf(child)]
+
+    assert.deepEqual(await appendDocUpdate(owner.ctx, pageId, changesSince(client, base), { origin: 'editor' }), {
+      ok: false,
+      reason: 'page_ref_unknown',
+    })
+    assert.equal(await logLength(pageId), logBefore, '거부한 update 를 쌓았다')
+    assert.deepEqual(await lifecyclePlaceOf(child), placeBefore, '거부했는데 행이 바뀌었다')
     await assertBodyMatchesYDoc(owner.ctx, pageId)
   })
 })

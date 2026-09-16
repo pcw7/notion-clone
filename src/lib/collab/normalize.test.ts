@@ -5,7 +5,7 @@
  *
  *   ① **올바른 문서는 그대로다** — 고친 것 0개, 입력과 `eq`
  *   ② **규칙마다 스키마에 맞는 문서가 나오고, 잃지 않아야 할 것은 남는다** — 받은 깊이보다 깊은 하위 페이지 참조는 들어갈 때까지
- *      올라오고, 그 뒤에는 깊이 없이 읽어도 고칠 것이 없다(②-1)
+ *      올라오고, 그 뒤에는 깊이 없이 읽어도 고칠 것이 없다(②-1). 받은 집합에 없는 참조는 빠진다(②-2)
  *   ③ **결정론 · 멱등** — 두 번 돌려도 같은 결과, 결과를 다시 넣으면 고칠 것이 없다
  *
  * 입력은 ProseMirror 의 **검사하지 않는** `create` 로 만든다 — `ydoc.ts` 가 Y.Doc 을 읽을 때 쓰는 것과
@@ -229,6 +229,44 @@ describe('②-1 하위 페이지 참조의 깊이 — 받은 깊이가 있을 �
     }
     assert.deepEqual(normalizeBody(input, { seed: SEED }).fixes, [])
     assert.equal(shape(lifted(new Map([[R, 0]])).doc), 'A:a(B:b(C:c S D:d)) R')
+  })
+})
+
+describe('②-2 본문에 둘 수 없는 하위 페이지 참조 — 받은 집합이 있을 때만', () => {
+  const ref = (id: string) => container(id, S.nodes.page_ref.create(attrs))
+
+  /** 받은 집합으로 정규화하고 — 받은 집합으로도, 받지 않고도 — 다시 고칠 것이 없는지 본다. 수선된 Y.Doc 을 집합 없이 읽는 쪽이 있다. */
+  function dropped(input: PmNode, pageRefs: ReadonlySet<string>): NormalizeResult {
+    const result = normalizeBody(input, { seed: SEED, pageRefs })
+    result.doc.check()
+    assert.deepEqual(validateDoc(pmToDoc(result.doc)), [])
+    for (const options of [{ seed: SEED, pageRefs }, { seed: SEED }]) {
+      const again = normalizeBody(result.doc, options)
+      assert.deepEqual(again.fixes, [], `다시 고칠 것이 남았다(${options.pageRefs === undefined ? '집합 없이' : '받은 집합으로'})`)
+      assert.ok(again.doc.eq(result.doc))
+    }
+    return result
+  }
+
+  test('★ 받은 집합에 없는 참조는 컨테이너째 빠진다 — 다른 블록 · 받은 참조는 그대로이고, 집합이 없으면 보지 않는다', () => {
+    const input = doc(group(container(A, para('a'), group(ref(R))), ref(S2), container(D, para('d'))))
+    const result = dropped(input, new Set([R]))
+    assert.equal(shape(result.doc), 'A:a(R) D:d')
+    assert.deepEqual(result.fixes, ['page_ref_dropped'])
+
+    assert.deepEqual(dropped(input, new Set([R, S2])).fixes, [])
+    assert.deepEqual(normalizeBody(input, { seed: SEED }).fixes, [])
+    assert.equal(shape(dropped(input, new Set()).doc), 'A:a D:d')
+  })
+
+  test('★ 같은 참조가 둘이면 문서 순서의 첫째만 남는다 — 둘째가 받은 새 id 는 어떤 페이지도 아니다', () => {
+    // 둘이 같은 참조를 동시에 다른 곳으로 옮긴 모양 — y-prosemirror 에는 옮기기가 없어 둘 다 새 요소를 넣는다.
+    const input = doc(group(container(A, para('a'), group(ref(R))), ref(R)))
+    assert.equal(shape(normalized(input).doc), 'A:a(R) ?', '전제: 집합 없이 읽으면 둘째가 새 id 의 참조로 남는다')
+
+    const result = dropped(input, new Set([R]))
+    assert.equal(shape(result.doc), 'A:a(R)')
+    assert.ok(has(result, 'duplicate_id') && has(result, 'page_ref_dropped'))
   })
 })
 

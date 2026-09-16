@@ -11,6 +11,8 @@
  *   ④ **모르는 것이 있으면 고치지 않는다** — Y.Doc 을 한 바이트도 바꾸지 않는다
  *   ⑤ **받은 깊이보다 깊은 하위 페이지 참조를 올린다** — 그 뒤에는 깊이 없이 읽어도 같은 문서이고, 올리기와 동시에 담은 블록 ·
  *      이웃 블록에 친 글자가 남는다(옮기는 것은 글자 없는 참조 요소뿐이다)
+ *   ⑥ **본문에 둘 수 없는 하위 페이지 참조를 뺀다** — 같은 참조를 둘이 동시에 옮긴 문서에서 하나만 남고, 그 뒤에는 집합 없이 읽어도
+ *      같은 문서다
  */
 
 import { test, describe } from 'node:test'
@@ -20,6 +22,7 @@ import { randomUUID } from 'node:crypto'
 import * as Y from 'yjs'
 
 import type { EditorBlock } from '../editor/document.ts'
+import { docToPm } from '../editor/pm-adapter.ts'
 import { edit, exchange, findBlock, peer } from '../testing/collab-peers.ts'
 import { mergedPeer, paragraph, violationScenes, type ViolationScene } from '../testing/collab-scenarios.ts'
 import { repairBodyYDoc } from './repair.ts'
@@ -207,5 +210,42 @@ describe('⑤ 받은 깊이보다 깊은 하위 페이지 참조를 올린다', 
     assert.deepEqual(idsOf(server), [[holder, [elder, younger]], [ref, []], [neighbor, []]])
     assert.deepEqual(readBodyYDoc(server, PAGE).fixes, [])
     assert.deepEqual(readBodyYDoc(typist, PAGE), readBodyYDoc(server, PAGE))
+  })
+})
+
+// ── ⑥ 본문에 둘 수 없는 하위 페이지 참조 ──────────────────────────────
+
+describe('⑥ 본문에 둘 수 없는 하위 페이지 참조를 뺀다', () => {
+  test('★ 같은 참조를 둘이 동시에 옮긴 문서에서 하나만 남기는 수선을 쓴다 — 그 뒤에는 집합 없이 읽어도 같고 수선을 받은 참여자도 같다', () => {
+    const [ref, first, second] = [randomUUID(), randomUUID(), randomUUID()]
+    const toggle = (id: string, children: EditorBlock[] = []): EditorBlock => ({ ...paragraph('토글', { id }), type: 'toggle', children })
+    const pageRef: EditorBlock = { id: ref, type: 'page', title: [] }
+    const base = createBodyYDoc({ blocks: [toggle(first), toggle(second), pageRef] })
+    const rewrite = (ydoc: Y.Doc, blocks: EditorBlock[]): void => {
+      const next = docToPm({ blocks })
+      edit(ydoc, (tr) => {
+        tr.replaceWith(0, tr.doc.content.size, next.content)
+      })
+    }
+    const [server, other] = [peer(base, 21), peer(base, 22)]
+    rewrite(server, [toggle(first, [pageRef]), toggle(second)])
+    rewrite(other, [toggle(first), toggle(second, [pageRef])])
+    exchange(server, other)
+
+    const pageRefs = new Set([ref])
+    const pageRefCount = (ydoc: Y.Doc, options = {}) =>
+      JSON.stringify(readBodyYDoc(ydoc, PAGE, options).doc).split('"type":"page"').length - 1
+    assert.equal(pageRefCount(server), 2, '전제: 집합 없이 읽으면 참조가 둘이다')
+    const expected = readBodyYDoc(server, PAGE, { pageRefs })
+    assert.ok(expected.fixes.includes('page_ref_dropped'), '전제: 받은 집합으로 읽으면 뺀다')
+
+    const result = repairBodyYDoc(server, PAGE, { pageRefs })
+    assert.ok(result.kind === 'repaired', `빼지 않았다: ${result.kind}`)
+    assert.deepEqual(readBodyYDoc(server, PAGE), { doc: expected.doc, fixes: [] }, '집합 없이 읽은 문서가 투영이 읽은 것과 다르다')
+    assert.equal(pageRefCount(server), 1)
+
+    Y.applyUpdate(other, result.update)
+    assert.deepEqual(readBodyYDoc(other, PAGE), readBodyYDoc(server, PAGE))
+    assert.deepEqual(repairBodyYDoc(server, PAGE, { pageRefs }), { kind: 'clean' }, '뺀 뒤에 또 썼다')
   })
 })

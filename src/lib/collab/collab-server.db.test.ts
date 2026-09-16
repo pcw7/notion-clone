@@ -21,6 +21,8 @@
  *   ⑫ **신호를 듣는 연결이 끊겨도** 다시 붙으면 그 사이 명령이 쓴 것을 가져오고, 그 사이 회수된 연결은 가져온 것을 받기 전에 닫는다
  *   ⑬ **하위 페이지 참조를 깊이 상한을 넘는 자리로 옮긴 편집은 연결을 닫지 않는다** — 들어갈 수 있는 깊이까지 올린 문서를 옮긴
  *      사람도 받는다(HANDOFF §3.2-23)
+ *   ⑭ **같은 하위 페이지 참조를 둘이 동시에 다른 곳으로 옮겨도 유령 페이지가 생기지 않는다** — 참조 하나만 남긴 문서를 둘 다
+ *      받는다(HANDOFF §3.2-24)
  *
  * ⑩ 은 커밋 신호를 붙잡아 두었다가 놓아 "신호가 늦게 온다"를 만든다(`holdableFeed`). ④ 도 신호를 붙잡는다 — 권한 신호가 먼저
  * 닫으면 "쓰기마다 다시 묻는다"를 가려낼 수 없다.
@@ -752,6 +754,52 @@ describe('⑬ 깊이 상한을 넘는 자리로 옮긴 하위 페이지 참조',
     assert.deepEqual(readBodyYDoc(mover.doc, pageId), stored)
     assert.deepEqual(readBodyYDoc(watcher.doc, pageId), stored)
     assert.equal((await logOf(pageId)).length, before.length + 2, '올린 것이 따로 seq 를 받았다')
+    await assertBodyMatchesYDoc(owner.ctx, pageId)
+  })
+})
+
+// ── ⑭ 같은 하위 페이지 참조를 둘이 동시에 옮긴다 ──────────────────────
+
+describe('⑭ 같은 하위 페이지 참조를 둘이 동시에 다른 곳으로 옮긴다', () => {
+  test('★ 유령 페이지를 만들지 않고, 참조 하나만 남긴 문서를 두 참여자가 함께 받는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { owner, member, pageId, ids, name } = await pageFixture(['원문'])
+    const child = await createPage(owner.ctx, { parentPageId: pageId as never, title: titleFromPlainText('하위') })
+    const [first, second] = [randomUUID(), randomUUID()]
+    const toggle = (id: string, children: EditorBlock[] = []): EditorBlock => ({ id, type: 'toggle', title: [textRun('토글')], children })
+    const ref: EditorBlock = { id: child.id, type: 'page', title: [] }
+    const saved = await savePageBody(owner.ctx, pageId as never, { blocks: [para('원문', ids[0]), toggle(first), toggle(second), ref] })
+    assert.equal(saved.ok, true, JSON.stringify(saved))
+    const rewrite = (doc: Y.Doc, blocks: EditorBlock[]): void => {
+      const next = docToPm({ blocks })
+      edit(doc, (tr) => {
+        tr.replaceWith(0, tr.doc.content.size, next.content)
+      })
+    }
+
+    const server = await startServer(t)
+    const [a, b] = [join(t, server.url, name, cookieOf(owner), 61), join(t, server.url, name, cookieOf(member), 62)]
+    await ready(a, b)
+    const socketOfB = b.provider.configuration.websocketProvider
+    socketOfB.disconnect()
+    await waitFor('b 가 끊긴다', () => !b.provider.isSynced)
+    const before = await logOf(pageId)
+    rewrite(a.doc, [para('원문', ids[0]), toggle(first, [ref]), toggle(second)])
+    await waitFor('a 의 이동이 쌓인다', async () => (await logOf(pageId)).length === before.length + 1)
+    rewrite(b.doc, [para('원문', ids[0]), toggle(first), toggle(second, [ref])])
+
+    socketOfB.connect()
+    const has = (ydoc: Y.Doc, clientId: number) => Y.decodeStateVector(Y.encodeStateVector(ydoc)).has(clientId)
+    const refCount = (ydoc: Y.Doc) => JSON.stringify(bodyOf(ydoc, pageId)).split('"type":"page"').length - 1
+    await waitFor('서로의 이동을 받는다', () => has(a.doc, 62) && has(b.doc, 61))
+    await waitFor('뺀 수선까지 받는다', () => refCount(a.doc) === 1 && refCount(b.doc) === 1)
+
+    const pages = await query<{ id: string }>(`SELECT id FROM block WHERE type = 'page' AND ancestor_path @> ARRAY[$1::uuid]`, [pageId])
+    assert.deepEqual(pages.map((r) => r.id), [child.id], '같은 참조가 둘이 되어 유령 페이지가 생겼다')
+    assert.deepEqual(a.closed.concat(b.closed), [], '동시에 옮긴 참여자의 연결을 닫았다')
+    const stored = await storedBody(owner, pageId)
+    assert.deepEqual(readBodyYDoc(a.doc, pageId), stored)
+    assert.deepEqual(readBodyYDoc(b.doc, pageId), stored)
     await assertBodyMatchesYDoc(owner.ctx, pageId)
   })
 })

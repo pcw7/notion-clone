@@ -1,12 +1,13 @@
 /**
  * 페이지 본문 저장 — 프로젝터 (판결 X-1 / X-3 / X-6)
  *
- * 이 파일이 지키는 것 네 가지. 전부 조용히 깨지는 종류다.
+ * 이 파일이 지키는 것 다섯 가지. 전부 조용히 깨지는 종류다.
  *
  *   ① 왕복 무손실 — 저장한 문서를 다시 읽으면 같아야 한다
  *   ② 안 바뀌면 안 쓴다 — 같은 문서를 두 번 저장하면 두 번째는 쓰기 0건
  *   ③ 순서를 맞바꿔도 UNIQUE 에 걸리지 않는다 (지연 불가 제약 + 임시 키)
  *   ④ 낡은 문서가 하위 페이지를 지우지 못한다
+ *   ⑤ 문서의 참조가 페이지를 만들거나 옮기지 못한다 — 이 본문의 살아 있는 하위 페이지가 아닌 참조는 빼고 저장한다
  */
 
 import { test, describe, before, after } from 'node:test'
@@ -574,6 +575,77 @@ describe('savePageBody — 자식 페이지', () => {
     )
     assert.equal(row[0].order_key, trashed.orderKey, '휴지통 페이지의 키가 바뀌었다 (B2 위반)')
     assert.equal(row[0].lifecycle, 'trashed')
+  })
+})
+
+describe('savePageBody — 이 본문의 하위 페이지가 아닌 참조 (유령 페이지)', () => {
+  const ref = (id: string): EditorBlock => ({ id, type: 'page', title: [] })
+  const placeOf = async (id: string) =>
+    (
+      await query<{ lifecycle: string; parent_id: string; order_key: string; ancestor_path: string[]; version: string }>(
+        `SELECT lifecycle, parent_id, order_key, ancestor_path, version FROM block WHERE id = $1`,
+        [id],
+      )
+    )[0]
+  const idsOf = (doc: EditorDoc | undefined): unknown =>
+    doc?.blocks.map((b) => (b.children?.length ? [b.id, b.children.map((c) => c.id)] : b.id))
+
+  test('★ 없는 페이지를 가리키는 참조는 빼고 저장한다 — 페이지 행을 만들지 않는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const pageId = await newPage()
+    const kept = blk('paragraph', '남는 글')
+    const ghost = randomUUID()
+
+    const result = await savePageBody(fx.owner.ctx, pageId, { blocks: [kept, ref(ghost)] })
+    assert.ok(result.ok, JSON.stringify(result))
+    assert.equal(await placeOf(ghost), undefined, '없는 페이지를 가리키는 참조가 페이지 행이 됐다')
+    assert.deepEqual(idsOf((await loadPageBody(fx.owner.ctx, pageId))?.doc), [kept.id])
+    await assertBodyMatchesYDoc(fx.owner.ctx, pageId)
+  })
+
+  test('★ 다른 본문의 페이지를 가리키는 참조는 빼고 저장한다 — 그 페이지를 옮기지도 던지지도 않는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const pageId = await newPage()
+    const other = await newPage('다른 최상위')
+    const foreign = await createPage(fx.owner.ctx, { parentPageId: other })
+    const kept = blk('paragraph', '남는 글')
+    const [otherBefore, foreignBefore] = [await placeOf(other), await placeOf(foreign.id)]
+
+    const result = await savePageBody(fx.owner.ctx, pageId, { blocks: [kept, ref(foreign.id), ref(other)] })
+    assert.ok(result.ok, JSON.stringify(result))
+    assert.deepEqual([await placeOf(other), await placeOf(foreign.id)], [otherBefore, foreignBefore], '다른 본문의 페이지가 움직였다')
+    assert.deepEqual(idsOf((await loadPageBody(fx.owner.ctx, pageId))?.doc), [kept.id])
+    await assertBodyMatchesYDoc(fx.owner.ctx, pageId)
+    await assertBodyMatchesYDoc(fx.owner.ctx, other)
+  })
+
+  test('★ 휴지통에 간 하위 페이지를 담은 낡은 문서는 그 참조를 빼고 저장한다 — 자리를 옮기지 않고(B2) 되살리면 원래 자리다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { trashPage, restorePage } = await import('./trash.ts')
+    const pageId = await newPage()
+    const child = await createPage(fx.owner.ctx, { parentPageId: pageId })
+    const first = blk('paragraph', '가')
+    const toggle = blk('toggle', '토글')
+    assert.ok((await savePageBody(fx.owner.ctx, pageId, { blocks: [first, toggle, ref(child.id)] })).ok)
+    const before = await placeOf(child.id)
+    await trashPage(fx.owner.ctx, child.id)
+
+    // 휴지통으로 보낸 것을 모르는 탭 — 글자를 고치고 하위 페이지를 토글 안으로 옮겼다.
+    const stale = { blocks: [{ ...first, title: [textRun('가!')] }, { ...toggle, children: [ref(child.id)] }] }
+    const result = await savePageBody(fx.owner.ctx, pageId, stale)
+    assert.ok(result.ok, JSON.stringify(result))
+    const after = await placeOf(child.id)
+    assert.deepEqual(
+      [after.lifecycle, after.parent_id, after.order_key],
+      ['trashed', before.parent_id, before.order_key],
+      '휴지통 페이지의 자리가 바뀌었다(B2)',
+    )
+    assert.deepEqual(idsOf((await loadPageBody(fx.owner.ctx, pageId))?.doc), [first.id, toggle.id])
+    await assertBodyMatchesYDoc(fx.owner.ctx, pageId)
+
+    await restorePage(fx.owner.ctx, child.id)
+    assert.deepEqual(idsOf((await loadPageBody(fx.owner.ctx, pageId))?.doc), [first.id, toggle.id, child.id], '되살린 자리가 원래 자리가 아니다')
+    await assertBodyMatchesYDoc(fx.owner.ctx, pageId)
   })
 })
 

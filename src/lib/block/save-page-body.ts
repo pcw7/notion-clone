@@ -41,6 +41,11 @@
  * `move-page.ts` 의 `relocateSubtree` 가 하고, 여기서는 부르기만 한다 —
  * 두 벌로 만들면 한쪽만 고쳐져 권한이 조용히 틀어진다.
  *
+ * 반대로 문서에 **이 본문의 살아 있는 자식 페이지가 아닌 참조**가 있으면 — 없는 페이지 · 다른 본문의 페이지 · 휴지통에 간
+ * 페이지 · 같은 참조를 둘이 동시에 옮겨 새 id 를 받은 둘째 — 투영에 오기 전에 뺀다(`body-write.ts` 의 `pageRefs` · HANDOFF
+ * §3.2-24). 투영은 그런 참조를 받으면 던진다. 한때 본문 블록처럼 넣어 제목 없는 페이지 행을 만들었고(유령 페이지), 다른 본문의
+ * 페이지면 PK 위반으로 던졌고, 휴지통 페이지면 그 자리를 옮겼다(B2 위반) — 검사가 넷 다 재현했다.
+ *
  * 그리고 문서에서 살아 있는 자식 페이지가 빠져 있으면 **어디서 온 문서인가**로 가른다(CRDT 5b · HANDOFF §3.2-19).
  *
  *   - 본문 저장(PUT) · 명령 — **거부한다.** 문서를 통째로 받으므로 낡은 에디터 탭 하나가 그 사이 생긴 하위 페이지를
@@ -113,6 +118,11 @@ export type SaveBodyResult =
       readonly pageId: string
       readonly message: string
     }
+  /**
+   * 본문에 둘 수 없는 하위 페이지 참조를 빼야 하는데 본문(Y.Doc)에 모르는 노드가 있어 뺄 수 없다(`body-write.ts` · HANDOFF §3.2-24).
+   * 모르는 노드는 협업 참여자만 넣으므로 본문 저장에서는 드물다.
+   */
+  | { readonly ok: false; readonly reason: 'page_ref_unknown' }
 
 // ── 안정 비교 ─────────────────────────────────────────────────────────
 
@@ -136,6 +146,17 @@ function stableJson(value: unknown): string {
 // ── 본문 범위 조회 ────────────────────────────────────────────────────
 
 type ScopeRow = BodyRow & { lifecycle: string; ancestor_path: string[]; perm_scope_id: string }
+
+/** 본문 범위의 행 — `readBodyScope`. 투영하는 쪽이 읽어 `projectBodyRows` 에 넘긴다. */
+export type BodyScopeRow = ScopeRow
+
+/**
+ * 투영이 읽는 이 페이지의 문서 범위(`readScope`). 투영하는 단위(`body-write.ts` `finish`)가 **행을 다 쓴 뒤에** 읽어, 본문에 둘 수 있는
+ * 하위 페이지를 정하고 같은 행을 투영에 넘긴다 — 두 번 읽지 않고, 두 판단이 다른 행을 보지 않는다.
+ */
+export async function readBodyScope(tx: Tx, ctx: SessionContext, pageId: string): Promise<readonly BodyScopeRow[]> {
+  return readScope(tx, ctx, pageId)
+}
 
 /**
  * 이 페이지의 **문서 범위**에 있는 행을 읽는다.
@@ -338,11 +359,12 @@ export async function projectBodyRows(
   ctx: SessionContext,
   page: ProjectablePage,
   doc: EditorDoc,
+  scope: readonly BodyScopeRow[],
   options: ProjectOptions = {},
 ): Promise<ProjectBodyResult> {
   try {
     return await tx.savepoint('project_body', async () => {
-      const result = await projectRows(tx, ctx, page, doc, options.missingPageRefs ?? 'refuse')
+      const result = await projectRows(tx, ctx, page, doc, scope, options.missingPageRefs ?? 'refuse')
       if (!result.ok) throw new ProjectionRefused(result)
       return result
     })
@@ -357,11 +379,18 @@ async function projectRows(
   ctx: SessionContext,
   page: ProjectablePage,
   doc: EditorDoc,
+  scope: readonly ScopeRow[],
   missingPageRefs: MissingPageRefs,
 ): Promise<ProjectBodyResult> {
   const pageId = page.id
-  const scope = await readScope(tx, ctx, pageId)
   const projection = projectDocument(pageId, page.ancestor_path, doc)
+
+  // 문서의 참조는 이 본문 범위의 살아 있는 하위 페이지여야 한다 — 부르는 쪽이 읽기에서 뺐다(`body-write.ts` `pageRefs`). 여기 닿으면
+  // 그 거르기가 빠진 것이다. 넣으면 페이지 행을 만들거나(유령 페이지) 휴지통 · 다른 본문의 페이지를 옮기게 된다(머리말). 검사로
+  // 강제하지 못한 방어다 — 거르기가 있는 한 닿는 입력이 없어 이 줄을 빼는 반사실에서 검사가 전부 통과했다(HANDOFF §3.3-113).
+  const liveChildPages = new Set(scope.filter((r) => r.type === PAGE_TYPE && r.lifecycle === 'live').map((r) => r.id))
+  const stray = projection.blocks.find((b) => b.type === PAGE_TYPE && !liveChildPages.has(b.id))
+  if (stray !== undefined) throw new Error(`투영에 이 본문의 살아 있는 하위 페이지가 아닌 참조가 왔다: ${stray.id}`)
 
   // ── 자식 페이지 정합성 ────────────────────────────────────────────
   const docIds = new Set(projection.blocks.map((b) => b.id))
