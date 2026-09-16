@@ -360,7 +360,7 @@ export async function createPage(
     await indexPageTitle(tx, id, summary.plainTitle)
 
     if (parentBody !== null) {
-      parentBody.change(appendPageRef(null, id, summary.plainTitle))
+      parentBody.change(appendPageRef(null, id))
       await finishOrThrow(parentBody)
       // 투영이 순서 키를 문서 위치로 매긴다 — 돌려줄 키는 다시 읽는다.
       const placed = await tx.queryOne<{ order_key: string }>(`SELECT order_key FROM block WHERE id = $1`, [id])

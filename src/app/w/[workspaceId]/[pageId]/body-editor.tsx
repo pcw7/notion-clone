@@ -74,11 +74,14 @@ export function BodyEditor({
   pageId,
   initialDoc,
   initialVersion,
+  initialPageRefTitles,
 }: {
   workspaceId: string
   pageId: string
   initialDoc: EditorDoc
   initialVersion: string
+  /** 하위 페이지 참조의 제목 — 볼 수 있는 것만, 볼 수 없으면 null(`loadPageBody`). 참조 노드는 제목을 싣지 않는다. */
+  initialPageRefTitles: Readonly<Record<string, string | null>>
 }) {
   const router = useRouter()
   const mountRef = useRef<HTMLDivElement | null>(null)
@@ -90,6 +93,8 @@ export function BodyEditor({
 
   /** 접힘 상태 — 문서에 없다(F-01-13). */
   const collapsedRef = useRef<Set<string>>(new Set())
+  /** 하위 페이지 참조의 제목 — 문서에 없다. 서버가 권한으로 거른 것에서 시작하고, 여기서 만든 하위 페이지를 더한다. */
+  const pageRefTitlesRef = useRef<Map<string, string | null>>(new Map(Object.entries(initialPageRefTitles)))
   /** 저장 큐(F-05-04). 순서·재시도·영속화를 전부 여기가 한다. */
   const syncRef = useRef<PageSync | null>(null)
 
@@ -248,10 +253,10 @@ export function BodyEditor({
       }
       const current = viewRef.current
       if (!current) return
-      insertSubpageRef(current.state, current.dispatch.bind(current), {
-        id: String(data.page.id),
-        title: String(data.page.title ?? ''),
-      })
+      // 만든 사람은 그 페이지를 볼 수 있다. 노드 뷰가 참조를 그리기 전에 넣는다.
+      const id = String(data.page.id)
+      pageRefTitlesRef.current.set(id, String(data.page.title ?? ''))
+      insertSubpageRef(current.state, current.dispatch.bind(current), { id })
       current.focus()
     } catch {
       setStatus({ kind: 'error', message: '연결에 실패했습니다.' })
@@ -323,6 +328,7 @@ export function BodyEditor({
           viewRef.current?.dispatch(viewRef.current.state.tr)
         },
         openPage: (id) => router.push(`/w/${workspaceId}/${id}`),
+        pageRefTitle: (id) => pageRefTitlesRef.current.get(id),
         onBlocked: (plan) => setStatus({ kind: 'error', message: plan.detail }),
         onRefused: (detail) => setStatus({ kind: 'error', message: detail }),
         openBlockMenu: () => openMenuRef.current?.(),

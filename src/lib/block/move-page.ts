@@ -61,7 +61,7 @@ import { grantToRestorer, inheritFromWorkspace, isScopeBoundary } from '../permi
 import { effectiveCaps, readableScopes, scopesWith } from '../permissions/effective.ts'
 import { can } from '../permissions/levels.ts'
 import { specOf, isKnownBlockType, MAX_TREE_DEPTH } from './types.ts'
-import { nextSiblingKey, plainTitleOf } from './page.ts'
+import { nextSiblingKey } from './page.ts'
 import { finishOrThrow, openPageBody, ownerPageOf, type PageBodyWrite } from './body-write.ts'
 import { appendPageRef, removePageRef } from './page-refs.ts'
 import { toPlainText, type RichTextRun } from '../contracts/rich-text.ts'
@@ -254,7 +254,7 @@ export async function movePage(
     if (newOwner !== null && target !== null) {
       // 대상이 그 본문을 가진 페이지 자신이면 본문 최상위, 본문 안의 블록이면 그 블록의 자식 끝이다.
       const parentBlockId = target.id === newOwner ? null : target.id
-      bodies.get(newOwner)?.change(appendPageRef(parentBlockId, moving.id, plainTitleOf(peek.properties)))
+      bodies.get(newOwner)?.change(appendPageRef(parentBlockId, moving.id))
     }
     for (const owner of owners) {
       const body = bodies.get(owner)

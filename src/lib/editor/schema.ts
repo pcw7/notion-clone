@@ -210,12 +210,18 @@ for (const type of MVP_BLOCK_TYPES) {
 }
 
 // 자식 페이지 참조. 본문에 보이지만 내용은 그 페이지의 것이다.
+//
+// **제목을 싣지 않는다.** 제목은 그 페이지의 것이고 보려면 그 페이지를 볼 권한이 있어야 한다 — 부모를 볼 수 있다고 하위
+// 페이지를 볼 수 있는 것이 아니다. 한때 `title` attr 이 있어 명령 · 본문 저장이 그것을 Y.Doc 에 써 넣었고, 부모를 볼 수 있는
+// 사람(편집기 · 협업 참여자)에게 비공개 하위 페이지의 제목이 갔다(HANDOFF §3.2-22). 화면은 권한으로 거른 제목 맵을 따로 받는다
+// (`loadPageBody` 의 `pageRefTitles` · `node-views.ts`). attr 자체를 없앴으므로 어느 경로도 제목을 쓸 수 없다 — 옛 Y.Doc 에 남은
+// `title` attr 은 `NodeType.create` 가 무시하고, 다음 쓰기(`updateYFragment`)가 지운다.
 nodes[PAGE_REF_NODE] = {
   group: 'blockContent',
   atom: true,
   selectable: true,
-  attrs: { props: blockAttrSpec.props, format: blockAttrSpec.format, title: { default: '' } },
-  toDOM: (node) => ['div', { class: 'blk blk-page-ref' }, String(node.attrs.title)],
+  attrs: { props: blockAttrSpec.props, format: blockAttrSpec.format },
+  toDOM: () => ['div', { class: 'blk blk-page-ref' }, '하위 페이지'],
 }
 
 // 모르는 타입의 보존 노드. 렌더는 회색 박스(F-01-02).

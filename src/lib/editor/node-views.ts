@@ -23,6 +23,11 @@ export type NodeViewDeps = ImageViewDeps & {
   toggleCollapsed: (blockId: string) => void
   /** 하위 페이지로 이동. */
   openPage: (pageId: string) => void
+  /**
+   * 하위 페이지 참조의 제목 — 볼 수 있으면 평문, 볼 수 없으면 `null`, 모르면 `undefined`. 참조 노드는 제목을 싣지 않는다
+   * (`schema.ts`) — 서버가 권한으로 거른 맵에서 읽는다(`loadPageBody` 의 `pageRefTitles`).
+   */
+  pageRefTitle: (pageId: string) => string | null | undefined
 }
 
 /** 컨테이너의 blockId 를 찾는다. 노드 뷰는 내용 노드만 받으므로 위로 올라간다. */
@@ -156,11 +161,19 @@ function pageRefNodeView(
   const link = document.createElement('button')
   link.type = 'button'
   link.className = 'blk-page-link'
-  link.textContent = String(node.attrs.title || '제목 없음')
+  // 제목은 노드에 없다 — 권한으로 거른 맵에서 읽는다. 볼 수 없는 페이지는 자리만 보이고 열리지 않는다(열어도 404 다).
+  const title = deps.pageRefTitle(containerIdAt(view, getPos))
+  if (title === null) {
+    link.textContent = '접근 권한 없음'
+    link.disabled = true
+    link.classList.add('blk-page-link-denied')
+  } else {
+    link.textContent = title === undefined ? '하위 페이지' : title || '제목 없음'
+  }
   link.addEventListener('mousedown', (event) => event.preventDefault())
   link.addEventListener('click', () => {
     const id = containerIdAt(view, getPos)
-    if (id !== '') deps.openPage(id)
+    if (id !== '' && deps.pageRefTitle(id) !== null) deps.openPage(id)
   })
 
   dom.append(link)

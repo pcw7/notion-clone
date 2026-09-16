@@ -93,7 +93,7 @@ describe('② 규칙', () => {
 
   test('★ 자식을 못 갖는 타입의 자식은 뒤 형제로 올라온다 — 잃지 않는다', () => {
     const divider = S.nodes.divider.create(attrs)
-    const pageRef = S.nodes.page_ref.create({ ...attrs, title: '하위' })
+    const pageRef = S.nodes.page_ref.create(attrs)
     const result = normalized(
       doc(group(
         container(A, heading('h'), group(container(B, para('b')))),

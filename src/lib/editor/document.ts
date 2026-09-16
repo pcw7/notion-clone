@@ -212,7 +212,9 @@ export function rowsToDoc(pageId: string, rows: readonly BodyRow[]): EditorDoc {
       return {
         id: row.id,
         type,
-        title: Array.isArray(title) ? (title as RichTextRun[]) : [],
+        // 하위 페이지 참조는 제목을 싣지 않는다 — 그 페이지의 제목이고 보려면 그 페이지를 볼 권한이 있어야 한다. 부모 본문을 읽는
+        // 사람이 하위 페이지를 볼 수 있다는 보장이 없다(HANDOFF §3.2-22). 화면은 `loadPageBody` 의 `pageRefTitles` 를 쓴다.
+        title: type !== PAGE_TYPE && Array.isArray(title) ? (title as RichTextRun[]) : [],
         properties: rest,
         format: (row.format ?? {}) as BlockFormat,
         // 자식 페이지의 본문은 따라가지 않는다.

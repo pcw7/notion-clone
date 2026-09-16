@@ -43,7 +43,7 @@ export async function GET(_request: Request, ctx: Ctx): Promise<Response> {
   const body = await loadPageBody(session.ctx, pageId)
   if (!body) return Response.json({ error: 'not_found' }, { status: 404 })
 
-  return Response.json({ ok: true, version: body.version, doc: body.doc })
+  return Response.json({ ok: true, version: body.version, doc: body.doc, pageRefTitles: body.pageRefTitles })
 }
 
 export async function PUT(request: Request, ctx: Ctx): Promise<Response> {

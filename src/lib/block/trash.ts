@@ -67,7 +67,6 @@ import { readableScopes } from '../permissions/effective.ts'
 import { toPlainText, type RichTextRun } from '../contracts/rich-text.ts'
 import { relocateSubtree, type MovingRow } from './move-page.ts'
 import { finishOrThrow, openPageBody, ownerPageOf } from './body-write.ts'
-import { plainTitleOf } from './page.ts'
 import { insertPageRefAfter, removePageRef } from './page-refs.ts'
 import { pageChangeAccess, trashSubtreeRows } from './trash-rows.ts'
 
@@ -280,12 +279,7 @@ export async function restorePage(ctx: SessionContext, pageId: BlockId): Promise
         [target.parent_id, ctx.workspaceId, target.id, target.order_key],
       )
       ownerBody.change(
-        insertPageRefAfter(
-          target.id,
-          plainTitleOf(target.properties),
-          target.parent_id === owner ? null : target.parent_id,
-          before?.id ?? null,
-        ),
+        insertPageRefAfter(target.id, target.parent_id === owner ? null : target.parent_id, before?.id ?? null),
       )
       await finishOrThrow(ownerBody)
     }
