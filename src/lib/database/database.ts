@@ -44,6 +44,7 @@ import { randomUUID } from 'node:crypto'
 import type { SessionContext } from '../auth/session-context.ts'
 import { withTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
 import { can } from '../permissions/levels.ts'
+import { inheritFromWorkspace } from '../permissions/acl.ts'
 import { effectiveCaps } from '../permissions/effective.ts'
 import { orderKeyBetween } from '../block/order-key.ts'
 import { nextSiblingKey, titleFromPlainText, plainTitleOf } from '../block/page.ts'
@@ -135,12 +136,8 @@ export async function createDatabase(
       [id, ctx.workspaceId, orderKey, JSON.stringify({ title: titleFromPlainText(name) }), ctx.userId],
     )
 
-    // 루트 노드는 ACL 을 갖고 태어난다(W6-b 의 규칙).
-    await tx.query(
-      `INSERT INTO acl_entry (id, node_kind, node_id, principal_type, principal_id, level, granted_by)
-       VALUES ($1, 'block', $2, 'workspace_everyone', NULL, 'full_access', $3)`,
-      [randomUUID(), id, ctx.userId],
-    )
+    // 루트 노드는 ACL 을 갖고 태어난다(W6-b 의 규칙) — 최상위 페이지와 같은 함수다.
+    await inheritFromWorkspace(tx, ctx, id)
 
     await tx.query(
       `INSERT INTO database (id, title_rich, is_inline, created_at, updated_at)

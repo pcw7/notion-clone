@@ -262,8 +262,11 @@ export async function restorePage(ctx: SessionContext, pageId: BlockId): Promise
 
     // 원위치가 사라졌으면 최상위로. 경로·권한 스코프 갱신은 이동과 **같은 코드**를
     // 쓴다 — 여기서 따로 쓰면 언젠가 이동 쪽과 어긋난다.
+    //
+    // 최상위에서는 되살린 사람만 본다(정본 B4 "복원 실행자의 Private 루트" · `grantToRestorer`). 한때 아무 행도 넣지 않아
+    // 되살린 페이지를 아무도 못 봤다 — ACL 이 없는 최상위 노드다(HANDOFF §3.2-21).
     if (reparented) {
-      await relocateSubtree(tx, ctx, target, null)
+      await relocateSubtree(tx, ctx, target, null, { atTopLevel: 'restorer_only' })
     }
 
     // 참조 노드를 원래 자리에 다시 넣는다. B2 가 `order_key` 를 보존했으므로 그 키보다 앞선 살아 있는 형제 중 가장 뒤의

@@ -559,7 +559,7 @@ async function projectRows(
           ancestor_path: b.ancestorPath.slice(0, -1),
           perm_scope_id: page.perm_scope_id,
         },
-        b.orderKey,
+        { orderKey: b.orderKey },
       )
     } catch (e) {
       if (e instanceof MoveError && e.code === 'too_deep') {

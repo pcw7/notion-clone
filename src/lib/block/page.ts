@@ -31,6 +31,7 @@ import { withReadTransaction, withTransaction, type Tx } from '../db/tx.ts'
 import { query } from '../db/pool.ts'
 import { orderKeyBetween } from './order-key.ts'
 import { can } from '../permissions/levels.ts'
+import { inheritFromWorkspace } from '../permissions/acl.ts'
 import { canViewPage, effectiveCaps, readableScopes } from '../permissions/effective.ts'
 import { MAX_TREE_DEPTH } from './types.ts'
 import { indexPageTitle } from '../search/index-page.ts'
@@ -346,12 +347,10 @@ export async function createPage(
     //
     // 하위 페이지에는 넣지 않는다 — 부모에게서 상속받는 것이 맞고, 넣으면
     // 부모의 공유 설정을 바꿔도 자식이 안 따라온다.
+    //
+    // 최상위로 **옮길 때**도 같은 행이 필요해 한 함수로 모았다(`inheritFromWorkspace`, HANDOFF §3.2-21).
     if (placement.parentType === 'workspace') {
-      await tx.query(
-        `INSERT INTO acl_entry (id, node_kind, node_id, principal_type, principal_id, level, granted_by)
-         VALUES ($1, 'block', $2, 'workspace_everyone', NULL, 'full_access', $3)`,
-        [randomUUID(), id, ctx.userId],
-      )
+      await inheritFromWorkspace(tx, ctx, id)
     }
 
     // 검색 색인 — W7 (F-07-06). 행 자체는 위 INSERT 가 트리거를 돌려 이미

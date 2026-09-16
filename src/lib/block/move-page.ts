@@ -21,7 +21,8 @@
  *
  *   ① 이동한 페이지의 `parent_type` · `parent_id` · `order_key`
  *   ② **서브트리 전체**의 `ancestor_path` — 앞부분을 새 경로로 갈아 끼운다 [X-7]
- *   ③ 경계를 넘는 노드의 `perm_scope_id` [§3.11 트리거 ④]
+ *   ③ `perm_scope_id` [§3.11 트리거 ④] — 옮긴 페이지가 **경계(자기 ACL · 상속 끊기)면 그대로**, 아니면 그것과 옛 스코프를 따르던
+ *      자손이 새 부모의 스코프를 받는다. 최상위로 오면 먼저 상속 원천을 ACL 행으로 둔다(아래 "최상위")
  *   ④ `version` — 구조 변경도 페이지 변경이다 [X-6]. 경로가 바뀌면 breadcrumb 과
  *      검색 문서가 바뀌므로 **자손 페이지들의 version 도** 올라야 인덱스가 낡지 않는다
  *
@@ -39,12 +40,24 @@
  *   - 옮길 곳: `create_child` — 하위 페이지 생성(`createPage`)과 같은 capability 이고 같은 매핑이다. 볼 수 없는 곳도, 볼 수만
  *     있는 곳도 `target_not_found`. 최상위로 옮기는 것은 막지 않는다(최상위 페이지 생성도 막지 않는다)
  *   - 이동 대상 목록은 같은 규칙으로 거른다 — 화면이 서버가 거부할 곳을 보여주지 않는다
+ *
+ * ──────────────────────────────────────────────────────────────────────
+ * 최상위 — 상속 원천이 부모 페이지가 아니다 (HANDOFF §3.2-21)
+ * ──────────────────────────────────────────────────────────────────────
+ *
+ * ACL 이 없는 노드는 아무도 못 본다(`effective()` 는 허용의 합집합뿐이다). 페이지 밑에서는 부모에게서 상속하지만 최상위에는 부모
+ * 페이지가 없다 — 그래서 최상위로 올 때 상속 원천을 행으로 둔다.
+ *
+ *   - 옮기기: 워크스페이스에서 상속한다(`inheritFromWorkspace` — 최상위에 만들 때와 같은 행). 06 F-06-20 "이동 즉시 새 부모의
+ *     권한이 상속된다". 상속을 끊은 페이지는 받지 않는다
+ *   - 부모가 사라져 되살리기(B4): 되살린 사람만(`grantToRestorer`) — 정본 "복원 실행자의 Private 루트"
  */
 
 import type { SessionContext } from '../auth/session-context.ts'
 import type { BlockId } from '../ids.ts'
 import { asBlockId } from '../ids.ts'
 import { withReadTransaction, withTransaction, type Tx } from '../db/tx.ts'
+import { grantToRestorer, inheritFromWorkspace, isScopeBoundary } from '../permissions/acl.ts'
 import { effectiveCaps, readableScopes, scopesWith } from '../permissions/effective.ts'
 import { can } from '../permissions/levels.ts'
 import { specOf, isKnownBlockType, MAX_TREE_DEPTH } from './types.ts'
@@ -275,6 +288,22 @@ export type RelocateResult = {
   readonly movedDescendants: number
 }
 
+export type RelocateOptions = {
+  /**
+   * 새 형제 그룹에서 쓸 `order_key`. 생략하면 **맨 뒤**에 붙인다.
+   *
+   * 프로젝터(`save-page-body.ts`)는 문서 위치가 순서를 정하므로 자기가 계산한
+   * 키를 넘긴다. 맨 뒤에 붙여 놓고 나중에 고치면 그 사이에 키가 두 번 쓰이고,
+   * 지연 불가 UNIQUE 인덱스에서 중간 상태 충돌이 난다.
+   */
+  readonly orderKey?: string
+  /**
+   * 최상위로 갈 때 누가 보는가(머리말 "최상위"). 기본은 옮기기 — 워크스페이스에서 상속한다. 부모가 사라져 되살리는
+   * `restorePage` 만 `'restorer_only'` 를 넘긴다.
+   */
+  readonly atTopLevel?: 'inherit_workspace' | 'restorer_only'
+}
+
 /**
  * 서브트리를 새 자리에 앉힌다 — **쓰기 부분만.**
  *
@@ -291,14 +320,7 @@ export async function relocateSubtree(
   ctx: SessionContext,
   moving: MovingRow,
   target: TargetRow | null,
-  /**
-   * 새 형제 그룹에서 쓸 `order_key`. 생략하면 **맨 뒤**에 붙인다.
-   *
-   * 프로젝터(`save-page-body.ts`)는 문서 위치가 순서를 정하므로 자기가 계산한
-   * 키를 넘긴다. 맨 뒤에 붙여 놓고 나중에 고치면 그 사이에 키가 두 번 쓰이고,
-   * 지연 불가 UNIQUE 인덱스에서 중간 상태 충돌이 난다.
-   */
-  explicitOrderKey?: string,
+  options: RelocateOptions = {},
 ): Promise<RelocateResult> {
   {
     // 최상위로 가는 경우 형제 삽입을 직렬화한다. `movePage` 는 `lockTarget` 에서
@@ -332,14 +354,22 @@ export async function relocateSubtree(
 
     // ── perm_scope_id ───────────────────────────────────────────────
     //
-    // 정본 §3.11: 스코프는 "자신 또는 가장 가까운 경계 조상"이다. 지금은
-    // `acl_entry` · `public_link` 가 없으므로 **경계는 워크스페이스 최상위뿐**이다.
-    // W6 에서 경계가 늘어나면 이 두 줄만 바뀐다.
+    // 정본 §3.11: 스코프는 "자신 또는 가장 가까운 조상 중 ACL 을 갖거나 상속을 끊은 노드"다. 그래서 옮긴 페이지가 **경계면 자기
+    // 스코프를 지키고**, 경계가 아닐 때만 새 부모의 스코프를 받는다. 자손은 옮긴 페이지의 옛 스코프를 따르던 것만 따라간다(아래 ③).
+    //
+    // 한때 여기는 "지금은 acl_entry 가 없으므로 경계는 워크스페이스 최상위뿐"(W5-a)이라며 늘 대상의 스코프를 썼고 W6-b 뒤에도 그대로
+    // 남았다. 상속을 끊은 비공개 페이지를 공개 페이지 밑으로 옮기면 목록 · 사이드바 · 검색이 그 제목을 내줬다(HANDOFF §3.2-21).
+    //
+    // 최상위로 오면 먼저 상속 원천을 행으로 둔다(머리말 "최상위") — 그 뒤로는 늘 경계다.
+    if (target === null) {
+      if (options.atTopLevel === 'restorer_only') await grantToRestorer(tx, ctx, moving.id)
+      else await inheritFromWorkspace(tx, ctx, moving.id)
+    }
     const oldScope = moving.perm_scope_id
-    const newScope = target === null ? moving.id : target.perm_scope_id
+    const newScope = target === null || (await isScopeBoundary(tx, moving.id)) ? moving.id : target.perm_scope_id
 
     const orderKey =
-      explicitOrderKey ??
+      options.orderKey ??
       (await nextSiblingKey(tx, target === null ? ctx.workspaceId : target.id))
 
     // ── ① 이동한 페이지 ────────────────────────────────────────────
@@ -368,8 +398,9 @@ export async function relocateSubtree(
     // 앞의 `oldPath.length + 1` 개를 `newPath ++ [pageId]` 로 바꾸면 된다.
     // Postgres 배열은 1-based 라 남길 구간의 시작은 `oldPath.length + 2`.
     //
-    // ③ perm_scope 는 **경계를 넘던 노드만** 고친다. 서브트리 안에 자기
-    //    스코프 경계가 있는 노드는 그대로 둬야 한다(W6 에서 실제로 생긴다).
+    // ③ perm_scope 는 **옮긴 페이지의 옛 스코프를 따르던 노드만** 고친다. 서브트리 안에
+    //    자기 스코프 경계가 있는 노드는 그대로다. 옮긴 페이지가 경계였으면 옛 스코프 = 새
+    //    스코프 = 자기라 아무것도 바뀌지 않는다.
     // ④ version 은 `type='page'` 인 자손만 올린다 — 경로가 바뀌면 breadcrumb 과
     //    검색 문서가 달라지므로 인덱서가 다시 읽어야 한다.
     const descendants = await tx.query<{ id: string }>(
