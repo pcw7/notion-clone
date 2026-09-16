@@ -1,5 +1,5 @@
 /**
- * 협업 서버 — Hocuspocus 자체 호스팅 (F-05-02 · F-05-19 · F-05-01 · CRDT 5a조각 · 5c조각)
+ * 협업 서버 — Hocuspocus 자체 호스팅 (F-05-02 · F-05-19 · F-05-01 · CRDT 5a조각 · 5c조각 · 5d조각)
  *
  * 정본: 판결 C-11(페이지 = 동기화 단위 = 권한 단위 = 채널 단위 = CRDT 문서 단위) · V-5(쓰기 경로 ① 은 `doc_update` 1행
  *       append) · §3.7 런타임 구독 레지스트리("구독 시점 권한검사 + 권한 회수 시 서버 강제 unsubscribe")
@@ -16,8 +16,10 @@
  * `beforeSync` 훅은 적용 전에 불리고 Hocuspocus 가 끝나기를 기다린다(한 연결의 메시지는 차례로 처리된다 · 4.7.0 소스).
  * 쌓기가 거부되면 던진다 — 그 update 는 메모리 문서에 들어가지 않고 그 문서 연결이 닫힌다(진단으로 확인했다).
  *
- *   - 쌓기는 `appendDocUpdate`(`block/body-write.ts`) — 로그와 행 투영을 한 트랜잭션에서 한다. 세션은 **update 마다
- *     다시 해석한다**(F-05-19 "매 mutation 서버 재검사")
+ *   - 쌓기는 `appendDocUpdate`(`block/body-write.ts`) — 세션은 **update 마다 다시 해석한다**(F-05-19 "매 mutation 서버 재검사")
+ *   - **행 투영은 미룬다**(5d). 하위 페이지 참조를 건드리지 않은 update 는 쌓기만 하고, 그 페이지의 투영을 창에 청한다
+ *     (`projection-scheduler.ts` — 처음 청한 때부터 1s 뒤 한 번). 참조를 건드린 update 는 쌓는 트랜잭션에서 곧바로 투영한다 —
+ *     휴지통 권한 거부처럼 받는 순간 정할 것이 있다. 퍼뜨리기는 투영과 무관하다(아래). 내릴 때 열린 창을 곧바로 돌린다
  *   - 참여자의 로컬 문서에는 거부된 update 가 이미 들어가 있다. provider 는 닫힌 문서에 다시 붙지 않고 `close` 의
  *     `reason` 만 받는다 — 로컬 문서를 버리고 다시 여는 것은 에디터 바인딩(6조각)의 일이다
  *
@@ -76,10 +78,11 @@ import { Server, type Connection, type Document, type LocalTransactionOrigin } f
 
 import { SESSION_COOKIE } from '../auth/constants.ts'
 import { resolveSessionContext, type SessionContext, type SessionDenialReason } from '../auth/session-context.ts'
-import { appendDocUpdate, type AppendFailure } from '../block/body-write.ts'
+import { appendDocUpdate, projectPendingBody, type AppendFailure } from '../block/body-write.ts'
 import { asWorkspaceId, isUuid, type WorkspaceId } from '../ids.ts'
 import { openChangeFeed, type ChangeFeed, type ChangeFeedHandlers, type CollabSignal } from './change-feed.ts'
 import { loadDocState, pageAccess, readDocUpdatesAfter } from './doc-store.ts'
+import { createProjectionScheduler, type ProjectionScheduler } from './projection-scheduler.ts'
 
 /** y-protocols/sync 의 메시지 종류. SyncStep1(0)은 state vector 뿐이고 답으로 본문이 간다. 둘 · 셋이 update 를 싣는다. */
 const SYNC_STEP_1 = 0
@@ -102,6 +105,8 @@ export type CollabServerOptions = {
   readonly stopOnSignals?: boolean
   /** 커밋 신호를 여는 함수. 없으면 Postgres LISTEN(`openChangeFeed`). 검사가 신호를 붙잡아 두거나 다시 붙는 간격을 줄 때 바꾼다. */
   readonly openFeed?: (handlers: ChangeFeedHandlers) => Promise<ChangeFeed>
+  /** 밀린 투영의 창. 없으면 `projectPendingBody` 를 기본 창(`PROJECTION_DELAY_MS`)으로. 검사가 창을 길게 두고 `flush` 로 돌린다. */
+  readonly projector?: ProjectionScheduler
 }
 
 export type CollabContext = {
@@ -152,6 +157,7 @@ export function createCollabServer(options: CollabServerOptions): Server<CollabC
   /** 지금 도는 다시 판정. 꼬리 적용은 이것이 끝난 뒤에 한다(머리말). */
   let rechecking: Promise<void> | null = null
   let feed: ChangeFeed | null = null
+  const projector = options.projector ?? createProjectionScheduler({ project: (pageId, ctx) => projectPendingBody(ctx, pageId) })
 
   const settleWaiters = (document: Document, outcome: bigint | Error): void => {
     const list = waiters.get(document)
@@ -295,6 +301,7 @@ export function createCollabServer(options: CollabServerOptions): Server<CollabC
     },
 
     async onDestroy() {
+      await projector.flush()
       await feed?.close()
       feed = null
     },
@@ -358,9 +365,12 @@ export function createCollabServer(options: CollabServerOptions): Server<CollabC
 
       const resolved = await resolveSessionContext(context.token, context.workspaceId)
       if (!resolved.ok) throw rejection(sessionRejection(resolved.reason))
-      const appended = await appendDocUpdate(resolved.context, context.pageId, payload, { origin: 'editor' })
+      const appended = await appendDocUpdate(resolved.context, context.pageId, payload, { origin: 'editor', projection: 'deferred' })
       if (!appended.ok) throw rejection(appended.reason)
-      if (appended.appended) await appliedThrough(document, BigInt(appended.seq))
+      if (!appended.appended) return
+      // 곧바로 투영했으면(참조를 건드린 update) 창에서 잠그기 전에 따라잡은 것을 보고 끝난다.
+      projector.request(context.pageId, resolved.context)
+      await appliedThrough(document, BigInt(appended.seq))
     },
   })
 }

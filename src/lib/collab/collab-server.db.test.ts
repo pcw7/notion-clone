@@ -23,6 +23,8 @@
  *      사람도 받는다(HANDOFF §3.2-23)
  *   ⑭ **같은 하위 페이지 참조를 둘이 동시에 다른 곳으로 옮겨도 유령 페이지가 생기지 않는다** — 참조 하나만 남긴 문서를 둘 다
  *      받는다(HANDOFF §3.2-24)
+ *   ⑮ **행 투영은 창에서 한 번이다**(5d) — 편집은 곧바로 퍼지고 행 · version 은 창이 열린 동안 그대로다. 창이 지나거나 서버를
+ *      내리면 밀린 편집 전부를 한 번에 투영한다(version 한 번)
  *
  * ⑩ 은 커밋 신호를 붙잡아 두었다가 놓아 "신호가 늦게 온다"를 만든다(`holdableFeed`). ④ 도 신호를 붙잡는다 — 권한 신호가 먼저
  * 닫으면 "쓰기마다 다시 묻는다"를 가려낼 수 없다.
@@ -46,6 +48,7 @@ import type { Node as PmNode } from '@tiptap/pm/model'
 import { SESSION_COOKIE } from '../auth/constants.ts'
 import { revokeSession } from '../auth/session.ts'
 import { hashSessionToken } from '../auth/session-context.ts'
+import { projectPendingBody } from '../block/body-write.ts'
 import { createPage, titleFromPlainText } from '../block/page.ts'
 import { loadPageBody, savePageBody } from '../block/save-page-body.ts'
 import { trashPage } from '../block/trash.ts'
@@ -62,6 +65,7 @@ import { createBareWorkspace, createUser, joinAs, probeDatabase, type Actor } fr
 import { openChangeFeed, type ChangeFeed, type ChangeFeedHandlers, type CollabSignal } from './change-feed.ts'
 import { collabDocumentName, createCollabServer, type CollabServerOptions } from './collab-server.ts'
 import { loadDocState } from './doc-store.ts'
+import { createProjectionScheduler, type ProjectionScheduler } from './projection-scheduler.ts'
 import { readBodyYDoc, type BodyRead } from './ydoc.ts'
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'
@@ -86,15 +90,22 @@ after(async () => {
 
 const APP_ORIGIN = 'http://app.test'
 
-type Running = { readonly url: string; stop(): Promise<void> }
+type Running = { readonly url: string; readonly projector: ProjectionScheduler; stop(): Promise<void> }
 
-/** 검사마다 서버를 띄운다 — 포트는 OS 가 고른다. 검사가 끝나면 내린다. */
-async function startServer(t: TestContext, extra: Pick<CollabServerOptions, 'openFeed'> = {}): Promise<Running> {
-  const server = createCollabServer({ port: 0, allowedOrigins: [APP_ORIGIN], quiet: true, stopOnSignals: false, ...extra })
+/**
+ * 검사마다 서버를 띄운다 — 포트는 OS 가 고른다. 검사가 끝나면 내린다.
+ *
+ * 밀린 투영의 창은 길게 둔다 — 행을 보는 검사는 그 전에 `projector.flush()` 한다. 창이 지나기를 시간으로 기다리지 않는다.
+ * 창 자체가 도는지는 ⑮ 이 본다.
+ */
+async function startServer(t: TestContext, extra: Pick<CollabServerOptions, 'openFeed' | 'projector'> = {}): Promise<Running> {
+  const projector =
+    extra.projector ?? createProjectionScheduler({ project: (pageId, ctx) => projectPendingBody(ctx, pageId), delayMs: 600_000 })
+  const server = createCollabServer({ port: 0, allowedOrigins: [APP_ORIGIN], quiet: true, stopOnSignals: false, ...extra, projector })
   await server.listen()
   const stop = () => Promise.race([server.destroy(), new Promise<void>((resolve) => setTimeout(resolve, 5000))])
   t.after(stop)
-  return { url: `ws://127.0.0.1:${server.address.port}`, stop }
+  return { url: `ws://127.0.0.1:${server.address.port}`, projector, stop }
 }
 
 type Participant = {
@@ -337,6 +348,7 @@ describe('③ 편집', () => {
 
     const last = (await logOf(pageId)).at(-1)
     assert.deepEqual([last?.origin, last?.actor_id], ['editor', owner.userId])
+    await server.projector.flush()
     const rows = await loadPageBody(owner.ctx, pageId as never)
     assert.deepEqual(rows === null ? null : textsOf(rows.doc), ['앞 원문', '둘째'], '행에 투영되지 않았다')
     await assertBodyMatchesYDoc(owner.ctx, pageId)
@@ -424,6 +436,7 @@ describe('⑤ 수선은 모두에게 간다', () => {
     assert.deepEqual(readBodyYDoc(a.doc, pageId), stored)
     assert.deepEqual(readBodyYDoc(b.doc, pageId), stored)
     assert.equal((await logOf(pageId)).length, before.length + 2, '수선이 따로 seq 를 받았다')
+    await server.projector.flush()
     await assertBodyMatchesYDoc(owner.ctx, pageId)
   })
 })
@@ -448,6 +461,7 @@ describe('⑥ 명령이 쓴 것과 섞여도', () => {
     const stored = await storedBody(owner, pageId)
     assert.deepEqual(readBodyYDoc(a.doc, pageId), stored)
     assert.deepEqual(readBodyYDoc(b.doc, pageId), stored)
+    await server.projector.flush()
     await assertBodyMatchesYDoc(owner.ctx, pageId)
   })
 })
@@ -486,6 +500,7 @@ describe('⑦ 하위 페이지 참조를 지운 편집', () => {
     const log = await logOf(pageId)
     assert.equal(log.length, before.length + 1)
     assert.deepEqual([log.at(-1)?.actor_id], [owner.userId])
+    await server.projector.flush()
     await assertBodyMatchesYDoc(owner.ctx, pageId)
   })
 })
@@ -754,6 +769,7 @@ describe('⑬ 깊이 상한을 넘는 자리로 옮긴 하위 페이지 참조',
     assert.deepEqual(readBodyYDoc(mover.doc, pageId), stored)
     assert.deepEqual(readBodyYDoc(watcher.doc, pageId), stored)
     assert.equal((await logOf(pageId)).length, before.length + 2, '올린 것이 따로 seq 를 받았다')
+    await server.projector.flush()
     await assertBodyMatchesYDoc(owner.ctx, pageId)
   })
 })
@@ -800,6 +816,62 @@ describe('⑭ 같은 하위 페이지 참조를 둘이 동시에 다른 곳으�
     const stored = await storedBody(owner, pageId)
     assert.deepEqual(readBodyYDoc(a.doc, pageId), stored)
     assert.deepEqual(readBodyYDoc(b.doc, pageId), stored)
+    await server.projector.flush()
+    await assertBodyMatchesYDoc(owner.ctx, pageId)
+  })
+})
+
+// ── ⑮ 행 투영은 창에서 한 번 ─────────────────────────────────────────
+
+describe('⑮ 행 투영은 창에서 한 번이다', () => {
+  const versionOf = async (pageId: string) => (await query<{ version: string }>(`SELECT version FROM block WHERE id = $1`, [pageId]))[0].version
+  const caughtUp = async (pageId: string) =>
+    (
+      await query<{ ok: boolean }>(
+        `SELECT s.projected_seq = (SELECT max(u.seq) FROM doc_update u WHERE u.page_id = s.page_id) AS ok FROM doc_snapshot s WHERE s.page_id = $1`,
+        [pageId],
+      )
+    )[0].ok
+  const rowTexts = async (actor: Actor, pageId: string) => {
+    const rows = await loadPageBody(actor.ctx, pageId as never)
+    return rows === null ? null : textsOf(rows.doc)
+  }
+
+  test('★ 편집은 곧바로 퍼지고 행 · version 은 창이 열린 동안 그대로다 — 서버를 내리면 열린 창을 곧바로 한 번에 투영한다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { owner, member, pageId, ids, name } = await pageFixture(['원문'])
+    const server = await startServer(t) // 창이 길다 — 저절로 닫히지 않는다
+    const [a, b] = [join(t, server.url, name, cookieOf(owner)), join(t, server.url, name, cookieOf(member))]
+    await ready(a, b)
+    const [versionBefore, logBefore] = [await versionOf(pageId), (await logOf(pageId)).length]
+
+    for (const text of ['가', '나', '다']) edit(a.doc, insertAtStart(ids[0], text))
+    await waitFor('다른 참여자가 곧바로 받는다', () => textsOf(bodyOf(b.doc, pageId))[0] === '다나가원문')
+    await waitFor('셋 다 쌓인다', async () => (await logOf(pageId)).length === logBefore + 3)
+    assert.deepEqual(await rowTexts(owner, pageId), ['원문'], '창이 열린 동안 행에 투영됐다')
+    assert.equal(await versionOf(pageId), versionBefore)
+    assert.equal(await caughtUp(pageId), false)
+
+    a.provider.destroy()
+    b.provider.destroy()
+    await server.stop()
+    assert.deepEqual(await rowTexts(owner, pageId), ['다나가원문'], '내릴 때 열린 창을 투영하지 않았다')
+    assert.equal(await versionOf(pageId), String(BigInt(versionBefore) + BigInt(1)), '창 안의 편집 셋에 version 이 한 번 오르지 않았다')
+    assert.equal(await caughtUp(pageId), true)
+    await assertBodyMatchesYDoc(owner.ctx, pageId)
+  })
+
+  test('창이 지나면 기다리지 않아도 스스로 투영한다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { owner, pageId, ids, name } = await pageFixture(['원문'])
+    const projector = createProjectionScheduler({ project: (id, ctx) => projectPendingBody(ctx, id), delayMs: 100 })
+    const server = await startServer(t, { projector })
+    const a = join(t, server.url, name, cookieOf(owner))
+    await ready(a)
+
+    edit(a.doc, insertAtStart(ids[0], '앞 '))
+    await waitFor('창이 지나 투영한다', async () => (await rowTexts(owner, pageId))?.[0] === '앞 원문')
+    assert.equal(await caughtUp(pageId), true)
     await assertBodyMatchesYDoc(owner.ctx, pageId)
   })
 })
