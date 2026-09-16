@@ -955,6 +955,9 @@ CREATE TABLE doc_snapshot (                    -- 현재 상태. compaction 잡�
 );
 -- 불변식 S3: projected_seq < merged_seq 인 구간은 block 테이블이 낡았다는 뜻이다.
 --            검색/API/사이드바는 이 지연을 감수하고, 에디터는 Y.Doc 을 직접 본다. [X-1]
+--            [추가 ⟨CRDT 5d · 마이그레이션 0017⟩] 기준은 merged_seq 가 아니라 **이 페이지 로그의 마지막 seq** 다.
+--            merged_seq 는 압축 지점이라 그 뒤에 밀린 update 를 가리지 못하고, 투영이 압축보다 자주 돌아
+--            projected_seq > merged_seq 가 보통이다. §6.2-21 의 지연도 (마지막 seq − projected_seq) 로 잰다.
 
 CREATE TABLE page_version (                    -- 사용자 노출 버전 <C-12>
   id uuid PRIMARY KEY, page_id uuid NOT NULL,
@@ -1497,6 +1500,8 @@ project(page_id):                                   -- 디바운스 실행. 페�
   block.version += 1;  doc_snapshot.projected_seq = merged_seq
   enqueue search_document upsert
 ```
+**[추가] 디바운스를 거는 경로 ⟨CRDT 5d · HANDOFF §3.2-25⟩** — 디바운스는 **참여자 update(쓰기 경로 ①) 가운데 하위 페이지 참조를 넣거나 지우지 않은 것**에만 건다. 협업 서버가 쌓기만 하고 페이지마다 창을 열어 한 번에 투영한다. 참조를 건드린 update 는 쌓는 트랜잭션에서 곧바로 투영한다 — `soft-handle`(휴지통 전이)은 그 update 를 보낸 사람의 권한으로 **받는 순간** 거부하거나 받아야 해서다(미루면 이미 퍼진 뒤라 거부할 수 없다). 서버 명령(경로 ②)은 디바운스하지 않고 본문 전체를 투영하므로 밀린 투영을 함께 따라잡는다. 투영한 단위가 스냅샷을 잠근 채 `projected_seq` 를 적는다.
+
 프로젝터가 **`order_key` 의 유일한 쓰기자**이므로 `UNIQUE(parent_id, order_key)` 충돌이 구조적으로 발생하지 않는다. `parent_type in ('data_source','teamspace','workspace')` 인 행은 프로젝터가 건드리지 않는다(그쪽은 order_key 가 정본).
 
 ---
