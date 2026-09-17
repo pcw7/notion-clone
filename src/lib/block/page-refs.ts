@@ -22,7 +22,7 @@ import type { Transaction } from '@tiptap/pm/state'
 
 import type { EditorChange } from '../collab/body-edit.ts'
 import { emptyParagraphContainer, pmToDoc } from '../editor/pm-adapter.ts'
-import { findContainerById } from '../editor/pm-blocks.ts'
+import { findContainerById, isBlankLeaf } from '../editor/pm-blocks.ts'
 import { blockSchema, PAGE_REF_NODE } from '../editor/schema.ts'
 
 const { blockContainer: CONTAINER, blockGroup: GROUP } = blockSchema.nodes
@@ -92,6 +92,30 @@ export function insertPageRefAfter(
     if (parent === null) throw new Error(`참조를 넣을 부모 블록이 본문에 없다: ${parentBlockId}`)
     if (parent.groupPos !== null) tr.insert(parent.groupPos + 1, ref)
     else tr.insert(parent.contentPos + parent.contentNode.nodeSize, GROUP.create(null, [ref]))
+  }
+}
+
+/**
+ * `atBlockId` 자리에 참조를 넣는다 — 편집기에서 하위 페이지를 만들 때 캐럿이 있던 블록(F-02-13 · CRDT 6b조각).
+ *
+ * 그 블록이 비었으면(`isBlankLeaf`) **대체하고**, 아니면 **바로 뒤 형제**로 넣는다 — 편집기의 `insertSubpageRef` 와 같은 자리다.
+ * 협업 편집기는 참조를 로컬에 넣지 않고 이 자리를 서버에 넘긴다: 로컬에도 넣으면 같은 참조가 둘이 되어 문서 순서의 첫째만 남는다
+ * (§3.2-24) — 사용자가 고른 자리가 아닐 수 있다.
+ *
+ * 그 블록이 본문에 없으면(그 사이 지워졌다 · 다른 본문의 블록이다 · 아직 서버에 닿지 않았다) 본문 **맨 뒤**다 — 거부하지 않는다.
+ * 페이지는 이미 만들었고 자리만 흔들린다.
+ */
+export function placePageRefAt(pageId: string, atBlockId: string): EditorChange {
+  return (tr, doc) => {
+    if (findContainerById(tr.doc, pageId) !== null) return
+    const at = findContainerById(tr.doc, atBlockId)
+    if (at === null) {
+      appendPageRef(null, pageId)(tr, doc)
+      return
+    }
+    const ref = pageRefNode(pageId)
+    if (isBlankLeaf(at)) tr.replaceWith(at.pos, at.pos + at.node.nodeSize, ref)
+    else tr.insert(at.pos + at.node.nodeSize, ref)
   }
 }
 

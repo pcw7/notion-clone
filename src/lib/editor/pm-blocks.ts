@@ -48,6 +48,16 @@ export function describeContainer(node: PmNode, pos: number): ContainerInfo {
   }
 }
 
+/**
+ * 하위 페이지 참조가 **대체할** 블록인가 — 글자 없는 글 블록이고 자식이 없다.
+ *
+ * `/페이지` 를 친 줄이 빈 줄로 남지 않게 한다. 편집기(`slash-menu.ts` `insertSubpageRef`)와 서버 명령
+ * (`block/page-refs.ts` `placePageRefAt`)이 같은 규칙을 쓴다 — 두 벌이면 협업 편집기와 Phase 0 편집기가 다른 자리에 넣는다.
+ */
+export function isBlankLeaf(info: ContainerInfo): boolean {
+  return info.contentNode.isTextblock && info.contentNode.content.size === 0 && (info.groupNode === null || info.groupNode.childCount === 0)
+}
+
 /** 이 위치를 담고 있는 가장 가까운 `blockContainer`. */
 export function containerAt($pos: ResolvedPos): ContainerInfo | null {
   for (let depth = $pos.depth; depth > 0; depth -= 1) {

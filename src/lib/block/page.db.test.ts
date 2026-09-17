@@ -27,13 +27,14 @@ import {
   PageError,
   MAX_TREE_DEPTH,
 } from './page.ts'
-import { asBlockId } from '../ids.ts'
+import { asBlockId, type BlockId } from '../ids.ts'
 import { textRun } from '../contracts/rich-text.ts'
 import { orderKeyBetween } from './order-key.ts'
 import { savePageBody } from './save-page-body.ts'
 import { trashPage } from './trash.ts'
 import { query } from '../db/pool.ts'
 import { assertBodyMatchesYDoc } from '../testing/body-invariant.ts'
+import type { EditorBlock } from '../editor/document.ts'
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'
 
@@ -257,6 +258,103 @@ describe('createPage — 부모 본문 (X-1 · CRDT 4b)', () => {
     )
     assert.deepEqual(log.at(-1), { origin: 'api', actor_id: fx.owner.userId }, '하위 페이지 생성은 서버 명령(api)으로 쌓인다')
     assert.ok(log.some((r) => r.origin === 'editor'), '본문 저장은 editor 로 쌓인다')
+  })
+})
+
+describe('createPage — 편집기가 준 자리 (F-02-13 · CRDT 6b)', () => {
+  const para = (text: string, id: string = randomUUID()): EditorBlock => ({ id, type: 'paragraph', title: text === '' ? [] : [textRun(text)] })
+  const rowOf = async (id: string) =>
+    (await query<{ parent_id: string; ancestor_path: string[]; order_key: string }>(
+      `SELECT parent_id, ancestor_path, order_key FROM block WHERE id = $1`,
+      [id],
+    ))[0]
+
+  async function parentWith(blocks: EditorBlock[]): Promise<BlockId> {
+    const root = await createPage(fx.owner.ctx, { title: titleFromPlainText('부모') })
+    const saved = await savePageBody(fx.owner.ctx, root.id, { blocks })
+    assert.ok(saved.ok, JSON.stringify(saved))
+    return root.id
+  }
+
+  test('★ 캐럿이 있던 빈 블록은 참조로 대체하고, 글자가 있는 블록이면 바로 뒤에 넣는다 — 행과 Y.Doc 이 같고 대체한 블록 행은 없다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const [a, blank, b] = [para('가'), para(''), para('나')]
+    const root = await parentWith([a, blank, b])
+
+    const replaced = await createPage(fx.owner.ctx, { parentPageId: root, at: asBlockId(blank.id) })
+    assert.deepEqual(
+      (await assertBodyMatchesYDoc(fx.owner.ctx, root, '빈 블록 자리')).blocks.map((x) => x.id),
+      [a.id, replaced.id, b.id],
+    )
+    assert.equal((await query(`SELECT 1 FROM block WHERE id = $1`, [blank.id])).length, 0, '대체한 빈 블록의 행이 남았다')
+
+    const after = await createPage(fx.owner.ctx, { parentPageId: root, at: asBlockId(a.id) })
+    assert.deepEqual(
+      (await assertBodyMatchesYDoc(fx.owner.ctx, root, '글자 있는 블록 뒤')).blocks.map((x) => x.id),
+      [a.id, after.id, replaced.id, b.id],
+    )
+    assert.equal(after.orderKey, (await rowOf(after.id)).order_key, '돌려준 순서 키가 투영한 행과 다르다')
+    assert.deepEqual(
+      (await listChildPages(fx.owner.ctx, root)).map((p) => p.id),
+      [after.id, replaced.id],
+      '하위 페이지 목록이 본문 순서가 아니다',
+    )
+  })
+
+  test('★ 토글 안의 블록 자리면 하위 페이지의 부모는 그 토글이다 — 돌려준 부모 · 조상도 투영한 자리다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const inner = para('안')
+    const toggle: EditorBlock = { id: randomUUID(), type: 'toggle', title: [textRun('토글')], children: [inner] }
+    const root = await parentWith([toggle])
+
+    const created = await createPage(fx.owner.ctx, { parentPageId: root, at: asBlockId(inner.id) })
+    const row = await rowOf(created.id)
+    assert.deepEqual([row.parent_id, row.ancestor_path], [toggle.id, [root, toggle.id]])
+    assert.deepEqual([created.parentPageId, created.ancestors], [toggle.id, [root, toggle.id]], '돌려준 자리가 투영 전의 자리다')
+    const body = await assertBodyMatchesYDoc(fx.owner.ctx, root, '토글 안')
+    assert.deepEqual(body.blocks[0].children?.map((x) => x.id), [inner.id, created.id])
+  })
+
+  test('★ 그 블록이 부모 본문에 없으면 맨 뒤에 넣는다 — 다른 페이지 본문의 블록이어도 그 본문을 건드리지 않는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const a = para('가')
+    const root = await parentWith([a])
+    const elsewhere = para('다른 페이지')
+    const other = await parentWith([elsewhere])
+    const otherBefore = await assertBodyMatchesYDoc(fx.owner.ctx, other, '다른 페이지 전')
+
+    const created = await createPage(fx.owner.ctx, { parentPageId: root, at: asBlockId(elsewhere.id) })
+    assert.deepEqual((await assertBodyMatchesYDoc(fx.owner.ctx, root, '맨 뒤')).blocks.map((x) => x.id), [a.id, created.id])
+    assert.deepEqual(await assertBodyMatchesYDoc(fx.owner.ctx, other, '다른 페이지 뒤'), otherBefore)
+    const missing = await createPage(fx.owner.ctx, { parentPageId: root, at: asBlockId(randomUUID()) })
+    assert.deepEqual((await assertBodyMatchesYDoc(fx.owner.ctx, root, '없는 블록')).blocks.map((x) => x.id), [a.id, created.id, missing.id])
+  })
+
+  test(`★ 그 자리가 깊이 상한(${MAX_TREE_DEPTH})을 넘기면 too_deep 로 거부하고 아무것도 쓰지 않는다 — 부모 페이지는 얕아도`, async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    // 토글 99 개 — 가장 안쪽 토글의 자식은 본문 깊이 100 이다. 거기 넣으면 하위 페이지 경로가 [부모, 토글 99 개] 로 상한에 닿는다.
+    const deep = para('깊은 곳')
+    const ids = Array.from({ length: 99 }, () => randomUUID())
+    let chain: EditorBlock = { id: ids[98], type: 'toggle', title: [textRun('t99')], children: [deep] }
+    for (let i = 97; i >= 0; i -= 1) chain = { id: ids[i], type: 'toggle', title: [textRun(`t${i + 1}`)], children: [chain] }
+    const root = await parentWith([chain])
+    const counts = async () =>
+      (await query<{ pages: string; log: string }>(
+        `SELECT (SELECT count(*) FROM block WHERE workspace_id = $1 AND type = 'page') AS pages,
+                (SELECT count(*) FROM doc_update WHERE page_id = $2) AS log`,
+        [fx.workspaceId, root],
+      ))[0]
+    const before = await counts()
+
+    await assert.rejects(
+      createPage(fx.owner.ctx, { parentPageId: root, at: asBlockId(deep.id) }),
+      (e: unknown) => e instanceof PageError && e.code === 'too_deep',
+    )
+    assert.deepEqual(await counts(), before, '거부한 생성이 페이지 행이나 로그를 남겼다')
+
+    // 한 단 얕은 자리(가장 안쪽 토글 바로 뒤)는 받는다 — 거부가 자리 때문이지 부모 때문이 아니다.
+    const shallower = await createPage(fx.owner.ctx, { parentPageId: root, at: asBlockId(ids[98]) })
+    assert.equal((await rowOf(shallower.id)).ancestor_path.length, MAX_TREE_DEPTH - 1)
   })
 })
 

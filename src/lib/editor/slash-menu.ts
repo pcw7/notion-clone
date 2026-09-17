@@ -41,7 +41,7 @@ import { NodeSelection, Plugin, PluginKey, type EditorState, type Transaction } 
 
 import { MVP_BLOCK_TYPES, specOf, type MvpBlockType } from '../block/types.ts'
 import { applyTurnInto, type CommandDeps } from './commands.ts'
-import { containerAt, findContainerById } from './pm-blocks.ts'
+import { containerAt, findContainerById, isBlankLeaf } from './pm-blocks.ts'
 import { blockSchema, PAGE_REF_NODE } from './schema.ts'
 
 type SlashCommandBase = {
@@ -321,15 +321,10 @@ export function insertSubpageRef(
   ])
 
   // 캐럿이 있던 블록이 비었으면 **그 자리를 대체한다.** 빈 문단을 남겨두면
-  // 사용자가 `/페이지` 를 친 줄이 빈 줄로 남는다.
+  // 사용자가 `/페이지` 를 친 줄이 빈 줄로 남는다. 서버 명령도 같은 규칙이다(`isBlankLeaf`).
   const fresh = findContainerById(tr.doc, info.id)
-  const replaceable =
-    fresh !== null &&
-    fresh.contentNode.isTextblock &&
-    fresh.contentNode.content.size === 0 &&
-    (fresh.groupNode === null || fresh.groupNode.childCount === 0)
 
-  if (fresh !== null && replaceable) {
+  if (fresh !== null && isBlankLeaf(fresh)) {
     tr.replaceWith(fresh.pos, fresh.pos + fresh.node.nodeSize, container)
   } else if (fresh !== null) {
     tr.insert(fresh.pos + fresh.node.nodeSize, container)
