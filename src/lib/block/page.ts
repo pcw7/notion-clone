@@ -35,8 +35,8 @@ import { inheritFromWorkspace } from '../permissions/acl.ts'
 import { canViewPage, effectiveCaps, readableScopes } from '../permissions/effective.ts'
 import { MAX_TREE_DEPTH } from './types.ts'
 import { indexPageTitle } from '../search/index-page.ts'
-import { finishOrThrow, openPageBody } from './body-write.ts'
-import { appendPageRef } from './page-refs.ts'
+import { openPageBody } from './body-write.ts'
+import { appendPageRef, placePageRefAt } from './page-refs.ts'
 import {
   normalizeRichText,
   toPlainText,
@@ -195,6 +195,11 @@ export type CreatePageInput = {
   /** 자식 페이지로 만들 부모. 생략하면 워크스페이스 루트 페이지가 된다. */
   readonly parentPageId?: BlockId | null
   readonly title?: readonly RichTextRun[]
+  /**
+   * 부모 본문에서 참조를 넣을 자리 — 편집기의 캐럿이 있던 블록(`page-refs.ts` `placePageRefAt`: 비었으면 대체 · 아니면 바로 뒤 ·
+   * 본문에 없으면 맨 뒤). 생략하면 본문 맨 뒤다. 최상위 페이지는 넣을 본문이 없어 보지 않는다.
+   */
+  readonly at?: BlockId | null
 }
 
 type ParentPlacement = {
@@ -356,22 +361,26 @@ export async function createPage(
     // 검색 색인 — W7 (F-07-06). 행 자체는 위 INSERT 가 트리거를 돌려 이미
     // 만들어졌고(마이그레이션 0012), 여기서 쓰는 것은 제목 텍스트뿐이다.
     // 본문은 비어 있으므로 `indexPageText` 가 아니라 제목 전용 경로를 쓴다.
-    let summary = toSummary(row)
-    await indexPageTitle(tx, id, summary.plainTitle)
+    await indexPageTitle(tx, id, toSummary(row).plainTitle)
 
+    let current = row
     if (parentBody !== null) {
-      parentBody.change(appendPageRef(null, id))
-      await finishOrThrow(parentBody)
-      // 투영이 순서 키를 문서 위치로 매긴다 — 돌려줄 키는 다시 읽는다.
-      const placed = await tx.queryOne<{ order_key: string }>(`SELECT order_key FROM block WHERE id = $1`, [id])
-      summary = { ...summary, orderKey: placed.order_key }
+      parentBody.change(input.at ? placePageRefAt(id, input.at) : appendPageRef(null, id))
+      const result = await parentBody.finish()
+      if (!result.ok && result.reason === 'page_ref_too_deep') {
+        // 자리가 본문 안 깊은 곳(토글 안)이면 부모 페이지의 깊이만 본 위 검사를 지나 투영이 거부한다.
+        throw new PageError('too_deep', `페이지 깊이가 상한(${MAX_TREE_DEPTH})에 도달했습니다. 더 깊은 하위 페이지를 만들 수 없습니다.`)
+      }
+      if (!result.ok) throw new Error(`본문 투영이 하위 페이지 생성을 거부했다(${result.reason}): ${placement.parentId}`)
+      // 투영이 자리(부모 · 순서 키 · 경로)를 문서 위치로 매긴다 — 돌려줄 것은 다시 읽는다. 토글 안이면 부모가 그 토글이다.
+      current = await tx.queryOne<PageRow>(`SELECT ${PAGE_COLUMNS} FROM block WHERE id = $1`, [id])
     }
 
     return {
-      ...summary,
-      ancestors: placement.ancestorPath.map(asBlockId),
-      permScopeId: row.perm_scope_id,
-      version: row.version,
+      ...toSummary(current),
+      ancestors: current.ancestor_path.map(asBlockId),
+      permScopeId: current.perm_scope_id,
+      version: current.version,
     }
   })
 }

@@ -1,5 +1,5 @@
 /**
- * POST /api/workspaces/[workspaceId]/pages — 페이지 생성
+ * POST /api/workspaces/[workspaceId]/pages — 페이지 생성 (`{ parentPageId?, title?, at? }` — `at` 은 부모 본문에서 참조를 넣을 자리)
  * GET  /api/workspaces/[workspaceId]/pages?parent=<pageId> — 자식 페이지 목록
  *
  * 정본: 00-canonical-data-model.md §3.4 (페이지는 `type='page'` 블록이다 — C-3)
@@ -30,7 +30,7 @@ export async function POST(
 
   const parsed = await readJsonBody(request)
   if (!parsed.ok) return parsed.response
-  const body = (parsed.body ?? {}) as { parentPageId?: unknown; title?: unknown }
+  const body = (parsed.body ?? {}) as { parentPageId?: unknown; title?: unknown; at?: unknown }
 
   let parentPageId = null
   if (body.parentPageId != null) {
@@ -42,10 +42,22 @@ export async function POST(
     }
   }
 
+  // 부모 본문에서 참조를 넣을 자리 — 편집기의 캐럿이 있던 블록(`createPage` 의 `at`). 본문에 없는 블록이면 맨 뒤라
+  // 무엇도 알려주지 않는다. uuid 가 아닌 것만 요청이 틀렸다.
+  let at = null
+  if (body.at != null) {
+    try {
+      at = asBlockId(body.at)
+    } catch {
+      return Response.json({ error: 'invalid_at' }, { status: 400 })
+    }
+  }
+
   try {
     const page = await createPage(session.ctx, {
       parentPageId,
       title: titleFromPlainText(body.title),
+      at,
     })
     return Response.json({
       ok: true,

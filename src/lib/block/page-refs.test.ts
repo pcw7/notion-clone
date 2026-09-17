@@ -6,6 +6,7 @@
  *   ① **넣기** — 본문 끝 · 컨테이너 자식 끝(그룹이 없으면 만든다) · 빈 본문은 대체한다 · 이미 있으면 넣지 않는다
  *   ② **앞 형제 뒤에 넣기** — 앞 형제가 없으면 그 그룹의 맨 앞 · 앞 형제가 본문에 없어도 맨 앞
  *   ③ **빼기** — 형제가 있으면 그것만 · 컨테이너의 마지막 자식이면 그룹째 · 본문의 마지막 블록이면 빈 문단으로
+ *   ④ **캐럿이 있던 블록 자리에 넣기**(6b) — 빈 글 블록이면 대체 · 아니면 바로 뒤 · 본문에 없으면 맨 뒤
  */
 
 import { test, describe } from 'node:test'
@@ -18,7 +19,7 @@ import type { EditorChange } from '../collab/body-edit.ts'
 import { textRun } from '../contracts/rich-text.ts'
 import type { EditorBlock, EditorDoc } from '../editor/document.ts'
 import { docToPm, pmToDoc } from '../editor/pm-adapter.ts'
-import { appendPageRef, insertPageRefAfter, removePageRef } from './page-refs.ts'
+import { appendPageRef, insertPageRefAfter, placePageRefAt, removePageRef } from './page-refs.ts'
 
 const para = (text: string, children: EditorBlock[] = []): EditorBlock => ({
   id: randomUUID(),
@@ -27,6 +28,12 @@ const para = (text: string, children: EditorBlock[] = []): EditorBlock => ({
   ...(children.length > 0 ? { children } : {}),
 })
 const pageRef = (): EditorBlock => ({ id: randomUUID(), type: 'page', title: [] })
+const blank = (children: EditorBlock[] = []): EditorBlock => ({
+  id: randomUUID(),
+  type: 'paragraph',
+  title: [],
+  ...(children.length > 0 ? { children } : {}),
+})
 
 /** 변경을 적용한 뒤 스키마를 확인하고 저장 가능한 문서로 읽는다. */
 function apply(doc: EditorDoc, change: EditorChange): EditorDoc {
@@ -146,5 +153,66 @@ describe('③ 빼기', () => {
   test('본문에 없으면 아무것도 하지 않는다', () => {
     const a = para('가')
     assert.deepEqual(shape(apply({ blocks: [a] }, removePageRef(randomUUID()))), [a.id])
+  })
+})
+
+describe('④ 캐럿이 있던 블록 자리에 넣기 (6b)', () => {
+  test('★ 빈 글 블록이면 그 자리를 대체한다 — 최상위 · 컨테이너 안 · 빈 본문', () => {
+    const [a, empty, b] = [para('가'), blank(), para('나')]
+    const id = randomUUID()
+    assert.deepEqual(shape(apply({ blocks: [a, empty, b] }, placePageRefAt(id, empty.id))), [a.id, id, b.id])
+
+    const [c1, emptyChild] = [para('하나'), blank()]
+    const parent = para('부모', [c1, emptyChild])
+    const id2 = randomUUID()
+    assert.deepEqual(shape(apply({ blocks: [parent] }, placePageRefAt(id2, emptyChild.id))), [
+      parent.id,
+      `${parent.id}>${c1.id}`,
+      `${parent.id}>${id2}`,
+    ])
+
+    const only = blank()
+    const id3 = randomUUID()
+    assert.deepEqual(shape(apply({ blocks: [only] }, placePageRefAt(id3, only.id))), [id3])
+  })
+
+  test('★ 글자가 있거나 · 자식이 있거나 · 글 블록이 아니면 바로 뒤 형제로 넣는다 — 무엇도 지우지 않는다', () => {
+    const [a, b] = [para('가'), para('나')]
+    const id = randomUUID()
+    assert.deepEqual(shape(apply({ blocks: [a, b] }, placePageRefAt(id, a.id))), [a.id, id, b.id])
+
+    const child = para('자식')
+    const emptyWithChild = blank([child])
+    const id2 = randomUUID()
+    assert.deepEqual(shape(apply({ blocks: [emptyWithChild, b] }, placePageRefAt(id2, emptyWithChild.id))), [
+      emptyWithChild.id,
+      `${emptyWithChild.id}>${child.id}`,
+      id2,
+      b.id,
+    ])
+
+    const divider: EditorBlock = { id: randomUUID(), type: 'divider', title: [] }
+    const id3 = randomUUID()
+    assert.deepEqual(shape(apply({ blocks: [divider, b] }, placePageRefAt(id3, divider.id))), [divider.id, id3, b.id])
+
+    const [c1, c2] = [para('하나'), para('둘')]
+    const parent = para('부모', [c1, c2])
+    const id4 = randomUUID()
+    assert.deepEqual(shape(apply({ blocks: [parent] }, placePageRefAt(id4, c1.id))), [
+      parent.id,
+      `${parent.id}>${c1.id}`,
+      `${parent.id}>${id4}`,
+      `${parent.id}>${c2.id}`,
+    ])
+  })
+
+  test('★ 그 블록이 본문에 없으면 맨 뒤에 넣는다 — 던지지 않는다 · 이미 있는 참조는 다시 넣지 않는다', () => {
+    const [a, b] = [para('가'), para('나')]
+    const id = randomUUID()
+    assert.deepEqual(shape(apply({ blocks: [a, b] }, placePageRefAt(id, randomUUID()))), [a.id, b.id, id])
+
+    const ref = pageRef()
+    const after = apply({ blocks: [a, ref, b] }, placePageRefAt(ref.id, a.id))
+    assert.deepEqual(shape(after), [a.id, ref.id, b.id])
   })
 })

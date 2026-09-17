@@ -56,7 +56,7 @@
 
 import type { SessionContext } from '../auth/session-context.ts'
 import type { BlockId } from '../ids.ts'
-import { withTransaction, type Tx } from '../db/tx.ts'
+import { withReadTransaction, withTransaction, type Tx } from '../db/tx.ts'
 import { PAGE_TYPE } from './types.ts'
 import { plainTitleOf } from './page.ts'
 import { indexPageText } from '../search/index-page.ts'
@@ -760,20 +760,47 @@ export async function loadPageBody(
   pageId: BlockId,
 ): Promise<LoadedBody | null> {
   return withTransaction(async (tx) => {
-    const page = await tx.queryMaybe<{ version: string }>(
-      `SELECT version FROM block
-        WHERE id = $1 AND workspace_id = $2 AND type = 'page' AND lifecycle = 'live'`,
-      [pageId, ctx.workspaceId],
-    )
+    const page = await readableLivePage(tx, ctx, pageId)
     if (!page) return null
-    if (!can(await effectiveCaps(tx, ctx, pageId), 'view')) return null
-
     const live = (await readScope(tx, ctx, pageId)).filter((r) => r.lifecycle === 'live')
-    const refs = live.filter((r) => r.type === PAGE_TYPE)
-    const readable = new Set(refs.length === 0 ? [] : await readableScopes(tx, ctx))
-    const pageRefTitles = Object.fromEntries(
-      refs.map((r) => [r.id, readable.has(r.perm_scope_id) ? plainTitleOf(r.properties as { title?: unknown } | null) : null]),
-    )
-    return { doc: rowsToDoc(pageId, live), version: page.version, pageRefTitles }
+    return { doc: rowsToDoc(pageId, live), version: page.version, pageRefTitles: await pageRefTitlesOf(tx, ctx, live) }
   })
+}
+
+/**
+ * 본문의 하위 페이지 참조 제목만 — `LoadedBody.pageRefTitles` 와 같은 맵(CRDT 6b조각).
+ *
+ * 협업 편집기는 본문을 Y.Doc 으로 받으므로 행으로 만든 문서가 필요 없고, 다른 참여자가 만든 · 되살린 · 옮겨 온 참조를 받으면
+ * 그 제목을 모른다(`NodeViewDeps.pageRefTitle` 이 `undefined`). 그때 이것을 다시 읽는다. 참조는 넣거나 지운 update 가 곧바로
+ * 투영되므로(§3.2-25) 행에 이미 있다. 볼 수 없는 페이지 · 없는 페이지는 null 이다(`loadPageBody` 와 같다).
+ */
+export async function loadPageRefTitles(
+  ctx: SessionContext,
+  pageId: BlockId,
+): Promise<LoadedBody['pageRefTitles'] | null> {
+  return withReadTransaction(async (tx) => {
+    if (!(await readableLivePage(tx, ctx, pageId))) return null
+    const live = (await readScope(tx, ctx, pageId)).filter((r) => r.lifecycle === 'live')
+    return pageRefTitlesOf(tx, ctx, live)
+  })
+}
+
+/** 볼 수 있는 살아 있는 페이지 — 없거나 볼 수 없으면 null(둘을 가르지 않는다). */
+async function readableLivePage(tx: Tx, ctx: SessionContext, pageId: BlockId): Promise<{ version: string } | null> {
+  const page = await tx.queryMaybe<{ version: string }>(
+    `SELECT version FROM block
+      WHERE id = $1 AND workspace_id = $2 AND type = 'page' AND lifecycle = 'live'`,
+    [pageId, ctx.workspaceId],
+  )
+  if (!page) return null
+  return can(await effectiveCaps(tx, ctx, pageId), 'view') ? page : null
+}
+
+/** 범위의 살아 있는 하위 페이지 → 제목(볼 수 없으면 null). 목록과 같은 규칙이다(`LoadedBody.pageRefTitles`). */
+async function pageRefTitlesOf(tx: Tx, ctx: SessionContext, live: readonly ScopeRow[]): Promise<LoadedBody['pageRefTitles']> {
+  const refs = live.filter((r) => r.type === PAGE_TYPE)
+  const readable = new Set(refs.length === 0 ? [] : await readableScopes(tx, ctx))
+  return Object.fromEntries(
+    refs.map((r) => [r.id, readable.has(r.perm_scope_id) ? plainTitleOf(r.properties as { title?: unknown } | null) : null]),
+  )
 }

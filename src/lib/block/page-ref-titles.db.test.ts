@@ -6,7 +6,8 @@
  *
  * 이 파일이 지키는 것.
  *
- *   ① **본문을 읽으면 참조 노드에는 제목이 없다.** 제목은 볼 수 있는 하위 페이지만 따로 준다 — 볼 수 없으면 `null`
+ *   ① **본문을 읽으면 참조 노드에는 제목이 없다.** 제목은 볼 수 있는 하위 페이지만 따로 준다 — 볼 수 없으면 `null`. 제목 맵만
+ *      따로 읽어도(협업 편집기가 모르는 참조를 받았을 때 · 6b) 같은 맵이고, 볼 수 없는 페이지면 맵도 없다
  *   ② **참조 노드를 쓰는 어떤 경로도 제목을 Y.Doc 에 남기지 않는다** — 하위 페이지 생성 · 본문 저장(PUT) · 이동 · 휴지통 복원 ·
  *      옮기기 전 페이지의 첫 읽기. 로그 바이트 어디에도 없어야 한다(협업 참여자는 Y.Doc 을 그대로 받는다)
  *   ③ **옛 Y.Doc 의 참조 제목 attr** 을 읽어도 바인딩이 던지거나 참조를 지우지 않고, 다음 본문 저장이 그 attr 을 지운다
@@ -29,7 +30,7 @@ import { createBareWorkspace, createUser, joinAs, probeDatabase, type Actor } fr
 import { appendDocUpdate } from './body-write.ts'
 import { movePage } from './move-page.ts'
 import { createPage, titleFromPlainText } from './page.ts'
-import { loadPageBody, savePageBody } from './save-page-body.ts'
+import { loadPageBody, loadPageRefTitles, savePageBody } from './save-page-body.ts'
 import { restorePage, trashPage } from './trash.ts'
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'
@@ -130,6 +131,31 @@ describe('① 본문을 읽으면', () => {
 
     const ownerSees = await loadPageBody(owner.ctx, parent.id)
     assert.deepEqual(ownerSees?.pageRefTitles, { [visible.id]: '보이는 하위', [secret.id]: secretTitle })
+  })
+
+  test('★ 제목 맵만 따로 읽어도 같은 맵이다 — 나중에 생긴 참조도 오고, 볼 수 없는 · 휴지통의 · 없는 페이지는 맵이 없다 (6b)', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { owner, member, page } = await workspace()
+    const secretTitle = token('secret')
+
+    const parent = await page('부모')
+    const visible = await page('보이는 하위', parent.id)
+    const secret = await page(secretTitle, parent.id)
+    await hideFromMembers(owner, secret.id)
+    // 편집기를 연 뒤에 다른 사람이 만든 참조 — 협업 편집기는 Y.Doc 으로 받고 제목을 모른다.
+    const later = await page('나중 하위', parent.id)
+
+    const memberTitles = await loadPageRefTitles(member.ctx, parent.id)
+    assert.deepEqual(memberTitles, { [visible.id]: '보이는 하위', [secret.id]: null, [later.id]: '나중 하위' })
+    assert.deepEqual(memberTitles, (await loadPageBody(member.ctx, parent.id))?.pageRefTitles, '본문 읽기의 맵과 다르다')
+    assert.ok(!JSON.stringify(memberTitles).includes(secretTitle), '볼 수 없는 하위 페이지의 제목이 맵에 있다')
+    assert.deepEqual(await loadPageRefTitles(owner.ctx, parent.id), (await loadPageBody(owner.ctx, parent.id))?.pageRefTitles)
+
+    assert.equal(await loadPageRefTitles(member.ctx, secret.id), null, '볼 수 없는 페이지의 맵을 줬다')
+    await trashPage(owner.ctx, later.id as never)
+    assert.equal(await loadPageRefTitles(owner.ctx, later.id), null, '휴지통 페이지의 맵을 줬다')
+    assert.deepEqual(Object.keys((await loadPageRefTitles(owner.ctx, parent.id)) ?? {}).sort(), [visible.id, secret.id].sort())
+    assert.equal(await loadPageRefTitles(owner.ctx, randomUUID() as never), null)
   })
 })
 
