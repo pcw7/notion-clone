@@ -71,6 +71,14 @@
  *   - 판정하지 못하면(DB 오류) `unavailable` 로 닫는다 — 회수를 모른 채 두지 않는다. 판정 중 DB 오류를 끼우는 검사는 없다
  *
  * 거부 이유(`CollabRejection`)가 provider 와의 계약이다: 연결을 받을 때는 `authenticationFailed` 로, 받은 뒤에는 `close` 로 간다.
+ *
+ * ──────────────────────────────────────────────────────────────────────
+ * 편집 확인 요청에 답한다 (6c)
+ * ──────────────────────────────────────────────────────────────────────
+ *
+ * 브라우저 연결(`collab-connection.ts`)은 서버가 확인한 편집만 보존본에서 지운다. 확인은 stateless 요청에 대한 답이다
+ * (`collab-protocol.ts`) — 서버가 그 요청을 처리할 때에는 같은 연결에서 앞서 받은 update 가 전부 쌓여 있다(위 "쌓은 것만
+ * 퍼뜨린다"). 읽기 전용 연결에는 확인하지 않는다고 답한다.
  */
 
 import * as Y from 'yjs'
@@ -81,6 +89,7 @@ import { resolveSessionContext, type SessionContext, type SessionDenialReason } 
 import { appendDocUpdate, projectPendingBody, type AppendFailure } from '../block/body-write.ts'
 import { asWorkspaceId, isUuid, type WorkspaceId } from '../ids.ts'
 import { openChangeFeed, type ChangeFeed, type ChangeFeedHandlers, type CollabSignal } from './change-feed.ts'
+import { collabDocumentName, confirmationReply, parseConfirmationRequest } from './collab-protocol.ts'
 import { loadDocState, pageAccess, readDocUpdatesAfter } from './doc-store.ts'
 import { createProjectionScheduler, type ProjectionScheduler } from './projection-scheduler.ts'
 
@@ -127,9 +136,7 @@ export type CollabRejection =
   | 'unavailable'
   | AppendFailure
 
-export function collabDocumentName(workspaceId: string, pageId: string): string {
-  return `${workspaceId}:${pageId}`
-}
+export { collabDocumentName }
 
 export function parseCollabDocumentName(name: string): { readonly workspaceId: WorkspaceId; readonly pageId: string } | null {
   const parts = name.split(':')
@@ -351,6 +358,13 @@ export function createCollabServer(options: CollabServerOptions): Server<CollabC
       if (address === null || document === undefined || !document.isDestroyed) return
       loaded.delete(address.pageId)
       settleWaiters(document, new Error(`문서를 내렸다: ${documentName}`))
+    },
+
+    async onStateless({ connection, payload }) {
+      // 편집 확인 요청(`collab-protocol.ts`) — 한 연결의 메시지는 차례로 처리되므로 지금 그 연결에서 앞서 받은 update 는 전부
+      // 쌓였다. 답은 지금 보낸다.
+      const token = parseConfirmationRequest(payload)
+      if (token !== null) connection.sendStateless(confirmationReply(token, connection.readOnly))
     },
 
     async beforeSync({ type, payload, connection, context, document }) {

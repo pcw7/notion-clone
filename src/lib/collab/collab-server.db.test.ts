@@ -25,6 +25,7 @@
  *      받는다(HANDOFF §3.2-24)
  *   ⑮ **행 투영은 창에서 한 번이다**(5d) — 편집은 곧바로 퍼지고 행 · version 은 창이 열린 동안 그대로다. 창이 지나거나 서버를
  *      내리면 밀린 편집 전부를 한 번에 투영한다(version 한 번)
+ *   ⑯ **편집 확인 요청에는 앞선 update 가 쌓인 뒤에 답하고, 읽기 전용 연결에는 확인하지 않는다고 답한다**(6c · `collab-protocol.ts`)
  *
  * ⑩ 은 커밋 신호를 붙잡아 두었다가 놓아 "신호가 늦게 온다"를 만든다(`holdableFeed`). ④ 도 신호를 붙잡는다 — 권한 신호가 먼저
  * 닫으면 "쓰기마다 다시 묻는다"를 가려낼 수 없다.
@@ -36,16 +37,14 @@
  * 퍼뜨리므로, 막았어야 할 update 가 퍼졌다면 뒤에 보낸 것보다 먼저 닿았다.
  */
 
-import { test, describe, before, after, type TestContext } from 'node:test'
+import { test, describe, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 
 import * as Y from 'yjs'
-import { HocuspocusProvider } from '@hocuspocus/provider'
 import type { Transaction } from '@tiptap/pm/state'
 import type { Node as PmNode } from '@tiptap/pm/model'
 
-import { SESSION_COOKIE } from '../auth/constants.ts'
 import { revokeSession } from '../auth/session.ts'
 import { hashSessionToken } from '../auth/session-context.ts'
 import { projectPendingBody } from '../block/body-write.ts'
@@ -62,10 +61,23 @@ import { grantAccess, revokeAccess, stopInheriting } from '../permissions/acl.ts
 import { assertBodyMatchesYDoc } from '../testing/body-invariant.ts'
 import { edit, findBlock } from '../testing/collab-peers.ts'
 import { createBareWorkspace, createUser, joinAs, probeDatabase, type Actor } from '../testing/db-fixtures.ts'
-import { openChangeFeed, type ChangeFeed, type ChangeFeedHandlers, type CollabSignal } from './change-feed.ts'
-import { collabDocumentName, createCollabServer, type CollabServerOptions } from './collab-server.ts'
+import {
+  APP_ORIGIN,
+  cookieOf,
+  docSignal,
+  holdableFeed,
+  join,
+  ready,
+  startServer,
+  waitFor,
+  waitUntil,
+  type Participant,
+} from '../testing/collab-server-harness.ts'
+import { openChangeFeed, type ChangeFeed } from './change-feed.ts'
+import { collabDocumentName } from './collab-server.ts'
+import { confirmationRequest, parseConfirmationReply, type ConfirmationReply } from './collab-protocol.ts'
 import { loadDocState } from './doc-store.ts'
-import { createProjectionScheduler, type ProjectionScheduler } from './projection-scheduler.ts'
+import { createProjectionScheduler } from './projection-scheduler.ts'
 import { readBodyYDoc, type BodyRead } from './ydoc.ts'
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'
@@ -87,132 +99,6 @@ after(async () => {
 })
 
 // ── 도우미 ────────────────────────────────────────────────────────────
-
-const APP_ORIGIN = 'http://app.test'
-
-type Running = { readonly url: string; readonly projector: ProjectionScheduler; stop(): Promise<void> }
-
-/**
- * 검사마다 서버를 띄운다 — 포트는 OS 가 고른다. 검사가 끝나면 내린다.
- *
- * 밀린 투영의 창은 길게 둔다 — 행을 보는 검사는 그 전에 `projector.flush()` 한다. 창이 지나기를 시간으로 기다리지 않는다.
- * 창 자체가 도는지는 ⑮ 이 본다.
- */
-async function startServer(t: TestContext, extra: Pick<CollabServerOptions, 'openFeed' | 'projector'> = {}): Promise<Running> {
-  const projector =
-    extra.projector ?? createProjectionScheduler({ project: (pageId, ctx) => projectPendingBody(ctx, pageId), delayMs: 600_000 })
-  const server = createCollabServer({ port: 0, allowedOrigins: [APP_ORIGIN], quiet: true, stopOnSignals: false, ...extra, projector })
-  await server.listen()
-  const stop = () => Promise.race([server.destroy(), new Promise<void>((resolve) => setTimeout(resolve, 5000))])
-  t.after(stop)
-  return { url: `ws://127.0.0.1:${server.address.port}`, projector, stop }
-}
-
-type Participant = {
-  readonly doc: Y.Doc
-  readonly provider: HocuspocusProvider
-  /** 연결을 받지 않은 이유. */
-  failure: string | null
-  /** 받은 뒤에 서버가 이 문서 연결을 닫은 이유. */
-  readonly closed: string[]
-}
-
-const cookieOf = (actor: Actor, extra: Record<string, string> = {}): Record<string, string> => ({
-  cookie: `${SESSION_COOKIE}=${actor.token}`,
-  ...extra,
-})
-
-/** 페이지 하나에 붙는 참여자. `headers` 는 업그레이드 요청에 싣는다 — 브라우저가 쿠키 · Origin 을 싣는 것처럼. */
-function join(t: TestContext, url: string, name: string, headers: Record<string, string>, clientId?: number): Participant {
-  class HeaderSocket extends WebSocket {
-    constructor(address: string | URL) {
-      // Node 의 WebSocket(undici)은 두 번째 인자로 헤더를 받는다(진단으로 확인).
-      super(address, { headers } as unknown as string[])
-    }
-  }
-  const doc = new Y.Doc()
-  if (clientId !== undefined) doc.clientID = clientId
-  const closed: string[] = []
-  const state = { failure: null as string | null }
-  const provider = new HocuspocusProvider({
-    url,
-    name,
-    document: doc,
-    WebSocketPolyfill: HeaderSocket,
-    onAuthenticationFailed: ({ reason }) => {
-      state.failure = reason
-    },
-    // 소켓이 끊길 때도 불리지만 이유가 비어 있다. 서버가 문서 연결을 닫을 때만 이유가 있다.
-    onClose: ({ event }) => {
-      if (event.reason) closed.push(event.reason)
-    },
-  })
-  t.after(() => provider.destroy())
-  return {
-    doc,
-    provider,
-    closed,
-    get failure() {
-      return state.failure
-    },
-  }
-}
-
-async function waitFor(label: string, check: () => boolean | Promise<boolean>, ms = 10_000): Promise<void> {
-  const end = Date.now() + ms
-  for (;;) {
-    if (await check()) return
-    if (Date.now() > end) assert.fail(`기다리다 끝났다 — ${label}`)
-    await new Promise((resolve) => setTimeout(resolve, 20))
-  }
-}
-
-const ready = (...participants: Participant[]) =>
-  waitFor('연결 · 첫 동기화', () => participants.every((p) => p.provider.isAuthenticated && p.provider.isSynced))
-
-/** 조건이 서거나 시간이 다 될 때까지 — 실패하지 않는다. 뒤따르는 단언이 무엇이 달랐는지 보여 준다. */
-async function waitUntil(check: () => boolean, ms = 10_000): Promise<void> {
-  const end = Date.now() + ms
-  while (!check() && Date.now() < end) await new Promise((resolve) => setTimeout(resolve, 20))
-}
-
-/** 커밋 신호를 붙잡아 두었다가 차례대로 놓는다 — 신호가 늦게 도착하는 장면을 만든다(실제 LISTEN 을 감싼다). */
-function holdableFeed() {
-  let target: ChangeFeedHandlers | null = null
-  let held: CollabSignal[] | null = null
-  return {
-    open(handlers: ChangeFeedHandlers): Promise<ChangeFeed> {
-      target = handlers
-      return openChangeFeed({
-        onSignal: (signal) => {
-          if (held === null) handlers.onSignal(signal)
-          else held.push(signal)
-        },
-        onResync: () => handlers.onResync(),
-      })
-    },
-    hold(): void {
-      held = []
-    },
-    held: (): readonly CollabSignal[] => held ?? [],
-    /** 붙잡은 신호를 `until` 에 맞는 것까지 차례대로 놓는다. `until` 이 없으면 전부 놓고 붙잡기를 끝낸다. */
-    release(until?: (signal: CollabSignal) => boolean): void {
-      assert.ok(held !== null && target !== null, '붙잡고 있지 않다')
-      if (until === undefined) {
-        const all = held
-        held = null
-        for (const signal of all) target.onSignal(signal)
-        return
-      }
-      const index = held.findIndex(until)
-      assert.ok(index >= 0, '놓을 신호를 붙잡지 않았다')
-      for (const signal of held.splice(0, index + 1)) target.onSignal(signal)
-    },
-  }
-}
-
-const docSignal = (pageId: string, seq: string) => (signal: CollabSignal) =>
-  signal.kind === 'doc' && signal.pageId === pageId && signal.seq === seq
 
 const para = (text: string, id: string = randomUUID()): EditorBlock => ({
   id,
@@ -873,5 +759,41 @@ describe('⑮ 행 투영은 창에서 한 번이다', () => {
     await waitFor('창이 지나 투영한다', async () => (await rowTexts(owner, pageId))?.[0] === '앞 원문')
     assert.equal(await caughtUp(pageId), true)
     await assertBodyMatchesYDoc(owner.ctx, pageId)
+  })
+})
+
+describe('⑯ 편집 확인 요청 (6c)', () => {
+  test('★ 앞선 update 가 쌓인 뒤에 확인한다고 답하고, 읽기 전용 연결에는 확인하지 않는다고 답한다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { owner, member, pageId, ids, name } = await pageFixture(['원문'])
+    await restrict(owner, pageId, [[member, 'view']])
+    const feed = holdableFeed()
+    const server = await startServer(t, { openFeed: (handlers) => feed.open(handlers) })
+    t.after(() => feed.releaseIfHeld())
+    const [writer, reader] = [join(t, server.url, name, cookieOf(owner)), join(t, server.url, name, cookieOf(member))]
+    await ready(writer, reader)
+    const replies = (p: Participant): ConfirmationReply[] => {
+      const got: ConfirmationReply[] = []
+      p.provider.on('stateless', ({ payload }: { payload: string }) => {
+        const reply = parseConfirmationReply(payload)
+        if (reply !== null) got.push(reply)
+      })
+      return got
+    }
+    const [toWriter, toReader] = [replies(writer), replies(reader)]
+
+    feed.hold()
+    const before = (await logOf(pageId)).length
+    edit(writer.doc, insertAtStart(ids[0], '앞 '))
+    writer.provider.sendStateless(confirmationRequest('w1'))
+    await waitFor('쌓였다(확인은 신호를 기다린다)', async () => (await logOf(pageId)).length === before + 1)
+    reader.provider.sendStateless(confirmationRequest('r1'))
+    await waitFor('읽기 전용 연결이 답을 받았다', () => toReader.length === 1)
+    assert.deepEqual(toReader, [{ token: 'r1', confirmed: false }])
+    assert.deepEqual(toWriter, [], '앞선 update 가 확인되기 전에 확인한다고 답했다')
+
+    feed.release()
+    await waitFor('고칠 수 있는 연결이 답을 받았다', () => toWriter.length === 1)
+    assert.deepEqual(toWriter, [{ token: 'w1', confirmed: true }])
   })
 })
