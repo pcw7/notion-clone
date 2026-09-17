@@ -37,7 +37,7 @@ import { blockIdFromHash, revealBlockCommand } from '@/lib/editor/block-menu'
 import { plainTextForBlocks } from '@/lib/editor/block-clipboard'
 import { selectedBlockCount } from '@/lib/editor/block-selection'
 import type { CommandDeps } from '@/lib/editor/commands'
-import { createEditor } from '@/lib/editor/create-editor'
+import { createDocumentState, createEditor, type EditorDeps } from '@/lib/editor/create-editor'
 import { docToPm, pmToDoc } from '@/lib/editor/pm-adapter'
 import {
   closeSlashMenu,
@@ -311,11 +311,7 @@ export function BodyEditor({
     const sync = createSync()
     syncRef.current = sync
 
-    const view = createEditor({
-      mount,
-      doc: initialDoc,
-      editable: true,
-      deps: {
+    const deps: EditorDeps = {
         workspaceId,
         // 업로드는 XHR 로 한다(진행률). 자세한 이유는 `upload-client.ts`.
         uploadImage: (file, onProgress) =>
@@ -332,7 +328,12 @@ export function BodyEditor({
         onBlocked: (plan) => setStatus({ kind: 'error', message: plan.detail }),
         onRefused: (detail) => setStatus({ kind: 'error', message: detail }),
         openBlockMenu: () => openMenuRef.current?.(),
-      },
+    }
+    const view = createEditor({
+      mount,
+      state: createDocumentState(initialDoc, deps),
+      editable: true,
+      deps,
       onTransaction: (v, tr) => {
         syncMenu(v)
         // 같은 값이면 리렌더하지 않는다 — 트랜잭션마다 불리는 자리다.
