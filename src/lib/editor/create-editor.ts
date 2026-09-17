@@ -47,11 +47,15 @@ import type { EditorBlock } from './document.ts'
 import { slashMenuPlugin } from './slash-menu.ts'
 import type { EditorDoc } from './document.ts'
 
+export type EditorDeps = EditorKeymapDeps & NodeViewDeps
+
 export type CreateEditorOptions = {
   readonly mount: HTMLElement
-  readonly doc: EditorDoc
+  /** 에디터 상태 — Phase 0 편집기는 `createDocumentState`, 협업 편집기는 `collab/collab-editor.ts`. */
+  readonly state: EditorState
   readonly editable: boolean
-  readonly deps: EditorKeymapDeps & NodeViewDeps
+  /** 상태를 만들 때 넘긴 것과 같아야 한다 — 키맵의 되돌리기 명령이 상태의 기록 플러그인과 짝이다. */
+  readonly deps: EditorDeps
   readonly onTransaction: (view: EditorView, tr: Transaction) => void
 }
 
@@ -88,11 +92,12 @@ function clipboardHtml(blocks: readonly EditorBlock[]): string {
   return wrapper.innerHTML
 }
 
-export function createEditor(options: CreateEditorOptions): EditorView {
-  const ourKeys = createKeydownHandler(options.deps)
-  const baseKeys = keydownHandler(safeBaseKeymap())
-
-  const plugins: Plugin[] = [
+/**
+ * 편집 플러그인 — 되돌리기 기록 플러그인과 커서 플러그인은 뺀다. Phase 0 편집기와 협업 편집기가 **같은 목록**을 쓴다
+ * (`createDocumentState` · `collab/collab-editor.ts`) — 두 벌이면 한쪽에만 플러그인이 붙는다.
+ */
+export function editingPlugins(deps: EditorDeps): Plugin[] {
+  return [
     // 순서: 입력 규칙이 슬래시 메뉴보다 앞이어야 `# ` 같은 접두사가 먼저 잡힌다.
     inputRulesPlugin(),
     slashMenuPlugin(),
@@ -102,28 +107,38 @@ export function createEditor(options: CreateEditorOptions): EditorView {
     // 이미지 드롭·붙여넣기(F-01-15)는 **클립보드 플러그인보다 앞**이다. 스크린샷을
     // 붙이면 파일과 HTML 이 같이 실려 오는 경우가 있어서, 뒤에 두면 HTML 경로가
     // 먼저 먹는다.
-    imageDropPlugin(options.deps),
+    imageDropPlugin(deps),
     // 복사·붙여넣기(F-01-10). 클립보드 HTML 은 스키마의 `toDOM` 으로 만든다 —
     // 화면에 그리는 것과 같은 규칙이라 따로 어긋날 자리가 없다.
-    clipboardPlugin(options.deps, clipboardHtml),
+    clipboardPlugin(deps, clipboardHtml),
     // 접힘(F-01-13). 편집기 DOM 에 속성을 직접 달면 PM 이 다시 그리며 지운다 —
     // 데코레이션으로만 그린다(`collapse-plugin.ts` 머리말).
-    collapsePlugin(options.deps.isCollapsed),
+    collapsePlugin(deps.isCollapsed),
     // 멘션 · 수식의 서식을 attr 에 비춘다 — 협업 바인딩이 Y.Doc 에 싣는 것은 attr 뿐이다(`atom-marks.ts`).
     atomMarksPlugin(),
     // id 스탬프는 마지막이다. 다른 플러그인이 만든 노드까지 훑어야 한다.
     blockIdPlugin(),
-    history(),
-    // 원자 블록(divider·image) 앞뒤에 캐럿을 둘 자리를 만든다.
-    gapCursor(),
-    dropCursor(),
   ]
+}
 
-  const state = EditorState.create({
+/** 원자 블록(divider·image) 앞뒤에 캐럿을 둘 자리 · 드롭 위치 표시. 기록 플러그인 뒤에 둔다. */
+export function cursorPlugins(): Plugin[] {
+  return [gapCursor(), dropCursor()]
+}
+
+/** Phase 0 편집기의 상태 — 받은 문서를 편집 스키마로 열고 ProseMirror history 로 되돌린다. */
+export function createDocumentState(doc: EditorDoc, deps: EditorDeps): EditorState {
+  return EditorState.create({
     schema: blockSchema,
-    doc: docToPm(options.doc),
-    plugins,
+    doc: docToPm(doc),
+    plugins: [...editingPlugins(deps), history(), ...cursorPlugins()],
   })
+}
+
+export function createEditor(options: CreateEditorOptions): EditorView {
+  const ourKeys = createKeydownHandler(options.deps)
+  const baseKeys = keydownHandler(safeBaseKeymap())
+  const state = options.state
 
   // `dispatchTransaction` 안에서 `this` 는 타입상 EditorView 가 아니다.
   // 클로저로 잡아 쓰는 편이 캐스팅보다 정직하다.

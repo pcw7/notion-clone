@@ -28,9 +28,11 @@
  * 거부가 아니라 **보정**이다. `appendTransaction` 은 원래 트랜잭션 **뒤에**
  * 붙으므로 사용자 조작을 그대로 살리면서 id 만 채운다.
  *
- * `addToHistory: false` 를 준다. id 를 찍은 것이 undo 스택에 별도 항목으로
- * 쌓이면 Cmd+Z 를 두 번 눌러야 한 동작이 취소된다 — F-01-19 가 "분할은
- * 트랜잭션 1개 = undo 1회"로 요구한 것과 같은 이유다.
+ * **되돌리기 기록을 끄지 않는다**(한때 `addToHistory: false` 를 줬다). "id 를 찍은 것이 undo 스택에 따로 쌓이면 Cmd+Z 를 두 번
+ * 눌러야 한다"고 적었는데 사실이 아니었다 — ProseMirror history 는 appendTransaction 이 붙인 트랜잭션을 원래 편집과 같은 항목으로
+ * 묶어, 기록하든 끄든 붙여넣기 한 번이 되돌리기 한 번이다(진단 · `create-editor.test.ts`). 반대로 협업 편집기에서는 끄면 **붙여넣기
+ * 전체가 되돌리기에서 빠졌다** — y-prosemirror 는 한 상태 갱신에서 마지막으로 적용된 트랜잭션의 `addToHistory` 로 그 갱신 전체의
+ * 기록 여부를 정한다(HANDOFF §3.2-15 ④ 가 걱정한 것 · `collab/collab-editor.test.ts`). `atom-marks.ts` 와 같은 이유다.
  */
 
 import type { Node as PmNode } from '@tiptap/pm/model'
@@ -82,7 +84,6 @@ export function blockIdPlugin(): Plugin {
         tr.setNodeMarkup(fix.pos, undefined, { ...node.attrs, blockId: fix.id })
       }
       // attrs 만 바꾸므로 위치가 밀리지 않는다 — 매핑이 필요 없다.
-      tr.setMeta('addToHistory', false)
       return tr
     },
   })

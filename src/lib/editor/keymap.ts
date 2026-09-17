@@ -91,6 +91,17 @@ export type EditorKeymapDeps = CommandDeps & {
   promptLink?: () => void
   /** Mod+/. 블록 메뉴를 여는 것도 UI 의 일이다(F-12-01 "블록 컨텍스트 메뉴"). */
   openBlockMenu?: () => void
+  /**
+   * 되돌리기 · 다시 하기. 없으면 ProseMirror history(Phase 0 편집기). 협업 편집기는 y-prosemirror 의 것을 넘긴다 — 내 편집만
+   * 되돌린다(F-05-15 · `collab/collab-editor.ts`).
+   */
+  history?: { readonly undo: Command; readonly redo: Command }
+  /**
+   * 명령이 던지면 키를 삼킨다(`createKeydownHandler`). 협업 편집기는 수선이 도착하기 전까지 스키마를 어긴 문서를 볼 수 있고
+   * (HANDOFF §7) 명령은 그 모양을 전제하지 않았다 — 진단에서 타입이 동시에 바뀐 블록 뒤의 Backspace 가 던졌다. 명령은
+   * dispatch 하기 전에 던지므로 문서는 그대로다. Phase 0 편집기는 켜지 않는다 — 거기서 던지면 버그다.
+   */
+  swallowCommandErrors?: boolean
 }
 
 /**
@@ -145,10 +156,10 @@ export function createEditorKeymap(deps: EditorKeymapDeps): KeyBindings {
     'Mod-Shift-s': toggleFormat('strikethrough'),
     'Mod-e': toggleFormat('code'),
 
-    'Mod-z': undo,
-    'Mod-Shift-z': redo,
+    'Mod-z': deps.history?.undo ?? undo,
+    'Mod-Shift-z': deps.history?.redo ?? redo,
     // Windows 관례. Mac 에서도 눌러 봤을 때 되는 편이 낫다.
-    'Mod-y': redo,
+    'Mod-y': deps.history?.redo ?? redo,
 
     // 마지막 색을 재적용하는 Cmd+Shift+H 는 "마지막 사용 색"을 기억해야 하므로
     // UI 상태가 필요하다. 색 해제만 여기 둔다.
@@ -197,6 +208,13 @@ export function createKeydownHandler(
     if (isComposingEvent(view, event)) return false
     // keydownHandler 는 prosemirror-view 의 EditorView 를 기대하지만 실제로
     // 쓰는 것은 state·dispatch 뿐이다. 테스트에서 view 없이 돌리기 위해 좁힌다.
-    return handler(view as never, event)
+    if (!deps.swallowCommandErrors) return handler(view as never, event)
+    try {
+      return handler(view as never, event)
+    } catch (error) {
+      // 수선이 곧 온다 — 이 키만 먹고 문서는 건드리지 않는다(`EditorKeymapDeps.swallowCommandErrors`).
+      console.warn('[editor] 스키마를 어긴 문서에서 명령이 던졌다 — 키를 삼킨다:', error)
+      return true
+    }
   }
 }

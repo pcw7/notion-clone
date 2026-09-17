@@ -66,18 +66,14 @@ export type BoundEditor = {
 }
 
 /**
- * `ydoc` 에 `ySyncPlugin` 을 붙인 에디터 — EditorView 없이.
+ * 에디터 상태를 EditorView 없이 돌린다 — 플러그인 뷰까지. 조립된 상태(`collab/collab-editor.ts`)를 그대로 검사할 때 쓴다.
  *
- * 바인딩이 view 에서 쓰는 것만 흉내 낸다: `state` · `dispatch`(적용한 뒤 플러그인 뷰의 `update`) · `hasFocus`.
+ * 바인딩이 view 에서 쓰는 것만 흉내 낸다: `state` · `dispatch`(적용한 뒤 플러그인 뷰의 `update`) · `hasFocus`. `dom` 은
+ * 이벤트를 받기만 한다 — 드롭 커서 플러그인 뷰가 리스너를 단다.
  * EditorView 처럼 초기화 도중의 dispatch 에서는 아직 만들어지지 않은 플러그인 뷰를 부르지 않는다.
- * 원격 update 는 `Y.applyUpdate(ydoc, …)` 로 넣는다 — 바인딩이 Y.Doc 을 관찰해 문서에 옮긴다.
- *
- * @param schema 에디터 상태의 스키마. 바인딩은 이것을 변환에 넘긴다(`collab-schema.ts` 머리말).
- * @param plugins 바인딩 옆에 둘 플러그인. 기본은 에디터에 있는 서식 거울(`editor/atom-marks.ts`).
  */
-export function bind(ydoc: Y.Doc, schema: Schema = collabSchema, plugins: readonly Plugin[] = [atomMarksPlugin()]): BoundEditor {
-  const all = [ySyncPlugin(ydoc.getXmlFragment(BODY_FRAGMENT)) as Plugin, ...plugins]
-  let state = EditorState.create({ schema, plugins: all })
+export function headless(initial: EditorState): BoundEditor {
+  let state = initial
   // EditorView 처럼 플러그인 뷰를 전부 차례로 만든다. 만들어지는 도중의 dispatch 는 이미 만든 뷰만 부른다.
   const mounted: PluginView[] = []
   const view = {
@@ -90,8 +86,9 @@ export function bind(ydoc: Y.Doc, schema: Schema = collabSchema, plugins: readon
       for (const pluginView of mounted) pluginView.update?.(view as unknown as EditorView, previous)
     },
     hasFocus: () => false,
+    dom: new EventTarget(),
   }
-  for (const plugin of all) {
+  for (const plugin of initial.plugins) {
     const pluginView = plugin.spec.view?.(view as unknown as EditorView)
     if (pluginView !== undefined) mounted.push(pluginView)
   }
@@ -104,4 +101,16 @@ export function bind(ydoc: Y.Doc, schema: Schema = collabSchema, plugins: readon
       for (const pluginView of mounted) pluginView.destroy?.()
     },
   }
+}
+
+/**
+ * `ydoc` 에 `ySyncPlugin` 을 붙인 에디터 — EditorView 없이(`headless`).
+ *
+ * 원격 update 는 `Y.applyUpdate(ydoc, …)` 로 넣는다 — 바인딩이 Y.Doc 을 관찰해 문서에 옮긴다.
+ *
+ * @param schema 에디터 상태의 스키마. 바인딩은 이것을 변환에 넘긴다(`collab-schema.ts` 머리말).
+ * @param plugins 바인딩 옆에 둘 플러그인. 기본은 에디터에 있는 서식 거울(`editor/atom-marks.ts`).
+ */
+export function bind(ydoc: Y.Doc, schema: Schema = collabSchema, plugins: readonly Plugin[] = [atomMarksPlugin()]): BoundEditor {
+  return headless(EditorState.create({ schema, plugins: [ySyncPlugin(ydoc.getXmlFragment(BODY_FRAGMENT)) as Plugin, ...plugins] }))
 }
