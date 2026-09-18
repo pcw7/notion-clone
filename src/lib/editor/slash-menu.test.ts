@@ -13,13 +13,12 @@ import { EditorState, TextSelection, type Transaction } from '@tiptap/pm/state'
 import { textRun } from '../contracts/rich-text.ts'
 import { MVP_BLOCK_TYPES } from '../block/types.ts'
 import { blockSchema } from './schema.ts'
-import { docToPm, pmToDoc } from './pm-adapter.ts'
+import { docToPm } from './pm-adapter.ts'
 import { findContainerById } from './pm-blocks.ts'
 import {
   SLASH_COMMANDS,
   closeSlashMenu,
   filterSlashCommands,
-  insertSubpageRef,
   runSlashCommand,
   slashMenuPlugin,
   slashMenuState,
@@ -311,85 +310,5 @@ describe('실행', () => {
     const next = execute(state, 'toggle')
     assert.ok(next)
     assert.equal(slashMenuState(next).active, false)
-  })
-})
-
-// ── 하위 페이지 삽입 (F-02-13) ────────────────────────────────────────
-
-describe('insertSubpageRef', () => {
-  const newPage = { id: '00000000-0000-4000-8000-0000000000ff' }
-
-  function insert(state: EditorState, page = newPage): EditorState | null {
-    let next: EditorState | null = null
-    const handled = insertSubpageRef(state, (tr: Transaction) => {
-      next = state.apply(tr)
-    }, page)
-    return handled ? next : null
-  }
-
-  test('빈 블록이면 그 자리를 대체한다 — 빈 줄이 남지 않는다', () => {
-    const a = nextId()
-    const state = type(caretAt(stateWith([blk(a)]), a, 0), '/페이지')
-    const next = insert(state)
-    assert.ok(next)
-
-    const blocks = pmToDoc(next.doc).blocks
-    assert.equal(blocks.length, 1, `블록이 ${blocks.length}개 — 빈 문단이 남았다`)
-    assert.equal(blocks[0].type, 'page')
-    // 컨테이너의 blockId 가 곧 페이지 id 여야 한다. pmToDoc 이 그렇게 읽는다.
-    assert.equal(blocks[0].id, newPage.id)
-  })
-
-  test('내용이 있는 블록이면 뒤에 새 블록으로 넣는다', () => {
-    const a = nextId()
-    const state = type(caretAt(stateWith([blk(a)]), a, 0), '앞말 /페이지')
-    const next = insert(state)
-    assert.ok(next)
-
-    const blocks = pmToDoc(next.doc).blocks
-    assert.deepEqual(blocks.map((b) => b.type), ['paragraph', 'page'])
-    assert.equal(blocks[0].title[0]?.plain_text, '앞말 ', '`/쿼리` 만 지워야 한다')
-    assert.equal(blocks[1].id, newPage.id)
-  })
-
-  test('메뉴가 닫혀 있으면 텍스트를 지우지 않는다', () => {
-    // 서버 왕복 사이에 사용자가 공백을 쳐서 메뉴가 닫힌 경우.
-    const a = nextId()
-    const state = caretAt(stateWith([blk(a, 'paragraph', '평문')]), a, 2)
-    assert.equal(slashMenuState(state).active, false)
-
-    const next = insert(state)
-    assert.ok(next)
-    const blocks = pmToDoc(next.doc).blocks
-    assert.equal(blocks[0].title[0]?.plain_text, '평문', '멀쩡한 텍스트를 지웠다')
-    assert.equal(blocks[1].type, 'page')
-  })
-
-  test('실행 후 메뉴가 닫힌다', () => {
-    const a = nextId()
-    const state = type(caretAt(stateWith([blk(a)]), a, 0), '/페이지')
-    const next = insert(state)
-    assert.ok(next)
-    assert.equal(slashMenuState(next).active, false)
-  })
-
-  test('참조 노드는 제목을 싣지 않는다 — 제목은 그 페이지의 것이고 화면은 권한으로 거른 맵에서 읽는다', () => {
-    const a = nextId()
-    const state = type(caretAt(stateWith([blk(a)]), a, 0), '/페이지')
-    const next = insert(state, { id: newPage.id })
-    assert.ok(next)
-
-    const content = next.doc.child(0).child(0).child(0)
-    assert.equal(content.type.name, 'page_ref')
-    assert.deepEqual(Object.keys(content.attrs).sort(), ['format', 'props'])
-    assert.deepEqual(pmToDoc(next.doc).blocks[0].title, [])
-  })
-
-  test('한 트랜잭션이다 — undo 한 번으로 되돌아간다', () => {
-    const a = nextId()
-    const state = type(caretAt(stateWith([blk(a)]), a, 0), '/페이지')
-    let count = 0
-    insertSubpageRef(state, () => { count += 1 }, newPage)
-    assert.equal(count, 1)
   })
 })

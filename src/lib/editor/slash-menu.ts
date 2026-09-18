@@ -37,12 +37,11 @@
  * → **트리거 조건: `/` 앞이 줄 시작 또는 공백일 때만**."* 그대로 구현한다.
  */
 
-import { NodeSelection, Plugin, PluginKey, type EditorState, type Transaction } from '@tiptap/pm/state'
+import { Plugin, PluginKey, type EditorState, type Transaction } from '@tiptap/pm/state'
 
 import { MVP_BLOCK_TYPES, specOf, type MvpBlockType } from '../block/types.ts'
 import { applyTurnInto, type CommandDeps } from './commands.ts'
-import { containerAt, findContainerById, isBlankLeaf } from './pm-blocks.ts'
-import { blockSchema, PAGE_REF_NODE } from './schema.ts'
+import { containerAt } from './pm-blocks.ts'
 
 type SlashCommandBase = {
   readonly label: string
@@ -279,62 +278,7 @@ export function runSlashCommand(
   return true
 }
 
-// ── 하위 페이지 삽입 (F-02-13) ────────────────────────────────────────
-
-/**
- * 방금 만든 하위 페이지의 참조 노드를 넣는다.
- *
- * 서버가 **진짜 `block` 행**을 만든 뒤에 부른다 — 참조 노드의 컨테이너
- * `blockId` 가 곧 그 페이지의 id 여야 하기 때문이다(`pmToDoc` 이 그렇게 읽는다).
- * 가짜 id 로 먼저 넣고 나중에 바꾸면 그 사이의 자동 저장이 존재하지 않는
- * 페이지를 참조하게 된다.
- *
- * 정본 F-02-13: 서브페이지는 **소유 관계**다(`block.parent_id`). `sidebar_alias`
- * 나 `page_link` 로 표현하는 link_to_page·@멘션과 섞지 않는다 — *"섞는 순간
- * 권한 상속이 무너진다."* MVP 는 서브페이지만이다(클론 대안).
- *
- * `/쿼리` 삭제와 삽입은 **한 트랜잭션**이다(Cmd+Z 한 번).
- */
-export function insertSubpageRef(
-  state: EditorState,
-  dispatch: ((tr: Transaction) => void) | undefined,
-  page: { readonly id: string },
-): boolean {
-  const info = containerAt(state.selection.$from)
-  if (!info) return false
-  if (!dispatch) return true
-
-  const tr = state.tr
-
-  // 메뉴가 아직 열려 있으면 `/쿼리` 를 지운다. 서버 왕복 사이에 사용자가 더
-  // 입력했어도 플러그인 상태가 매핑을 따라오므로 범위가 여전히 정확하다.
-  // 그 사이 메뉴가 닫혔다면(공백 입력 등) 지울 근거가 없으므로 그대로 둔다.
-  const menu = slashMenuState(state)
-  if (menu.active && state.selection.head > menu.from) {
-    tr.delete(menu.from, state.selection.head)
-  }
-  closeSlashMenu(tr)
-
-  const container = blockSchema.nodes.blockContainer.create({ blockId: page.id }, [
-    // 제목은 싣지 않는다(`schema.ts`) — 화면은 제목 맵에서 읽는다. 만든 사람은 편집기가 맵에 넣는다(`body-editor.tsx`).
-    blockSchema.nodes[PAGE_REF_NODE].create({ props: {}, format: {} }),
-  ])
-
-  // 캐럿이 있던 블록이 비었으면 **그 자리를 대체한다.** 빈 문단을 남겨두면
-  // 사용자가 `/페이지` 를 친 줄이 빈 줄로 남는다. 서버 명령도 같은 규칙이다(`isBlankLeaf`).
-  const fresh = findContainerById(tr.doc, info.id)
-
-  if (fresh !== null && isBlankLeaf(fresh)) {
-    tr.replaceWith(fresh.pos, fresh.pos + fresh.node.nodeSize, container)
-  } else if (fresh !== null) {
-    tr.insert(fresh.pos + fresh.node.nodeSize, container)
-  } else {
-    return false
-  }
-
-  const placed = findContainerById(tr.doc, page.id)
-  if (placed) tr.setSelection(NodeSelection.create(tr.doc, placed.contentPos))
-
-  dispatch(tr.scrollIntoView())
-  return true
-}
+// ── 하위 페이지 (F-02-13) ─────────────────────────────────────────────
+//
+// 참조 노드를 여기서 넣지 않는다. 서버(`block/page.ts` `createPage` 의 `at`)가 캐럿이 있던 블록 자리에 넣고, 참여자에게는
+// 동기화로 온다 — 로컬에도 넣으면 같은 참조가 둘이 되어 문서 순서의 첫째만 남는다(HANDOFF §3.2-24 · 3.3-119).

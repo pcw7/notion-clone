@@ -29,7 +29,9 @@
  *   npm run build        # 프로덕션 빌드를 검증한다(HANDOFF §6 — next dev 는 믿지 않는다)
  *   npm run e2e
  *
- * 서버는 이 스크립트가 직접 띄운다(기본 포트 3100 — 개발 서버 3000 과 겹치지 않게).
+ * 서버는 이 스크립트가 직접 띄운다 — 앱(기본 3100)과 **협업 서버**(기본 3101)를 함께. 본문 편집은 협업 서버를 거쳐
+ * 로그에 쌓이므로(CRDT 6d), 협업 서버가 없으면 편집이 저장되지 않는다. 앱에는 `COLLAB_URL` 로 알려 준다 —
+ * `NEXT_PUBLIC_*` 는 빌드할 때 값이 박혀 검사 전용 포트를 쓸 수 없다.
  * 로그인 코드는 콘솔 메일러(`MAIL_TRANSPORT=console`)가 찍은 것을 서버 출력에서
  * 읽는다. 매 실행마다 새 계정·워크스페이스를 만든다.
  *
@@ -52,7 +54,9 @@ const ROOT = fileURLToPath(new URL('..', import.meta.url))
 const { textRun } = await import(new URL('../src/lib/contracts/rich-text.ts', import.meta.url).href)
 
 const PORT = Number(process.env.E2E_PORT ?? 3100)
+const COLLAB_PORT = Number(process.env.E2E_COLLAB_PORT ?? 3101)
 const BASE = `http://localhost:${PORT}`
+const COLLAB_URL = `ws://localhost:${COLLAB_PORT}`
 const HEADFUL = process.env.E2E_HEADFUL === '1'
 
 // ── 결과 ──────────────────────────────────────────────────────────────
@@ -102,7 +106,7 @@ function startServer() {
   const server = spawn(
     process.execPath,
     [join(ROOT, 'node_modules', 'next', 'dist', 'bin', 'next'), 'start', '-p', String(PORT)],
-    { cwd: ROOT, env: { ...process.env, MAIL_TRANSPORT: 'console' }, stdio: ['ignore', 'pipe', 'pipe'] },
+    { cwd: ROOT, env: { ...process.env, MAIL_TRANSPORT: 'console', COLLAB_URL }, stdio: ['ignore', 'pipe', 'pipe'] },
   )
   const collect = (chunk) => {
     serverOutput += chunk.toString('utf8')
@@ -110,6 +114,43 @@ function startServer() {
   server.stdout.on('data', collect)
   server.stderr.on('data', collect)
   return server
+}
+
+/**
+ * 협업 서버(F-05-02) — 본문 편집이 여기를 거쳐 로그에 쌓인다.
+ *
+ * 오프라인 절은 이 프로세스를 **내렸다 올려서** 끊김을 만든다. `Network.setBlockedURLs` 로는 이미 열린 웹소켓이 끊기지
+ * 않고, 네트워크를 통째로 끊으면 페이지 자체가 로드되지 않아 새로고침 시나리오를 볼 수 없다.
+ */
+function startCollabServer() {
+  const collab = spawn(process.execPath, ['--disable-warning=MODULE_TYPELESS_PACKAGE_JSON', join(ROOT, 'scripts', 'collab-server.mjs')], {
+    cwd: ROOT,
+    env: { ...process.env, COLLAB_PORT: String(COLLAB_PORT), NEXT_PUBLIC_APP_URL: BASE },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  const collect = (chunk) => {
+    serverOutput += chunk.toString('utf8')
+  }
+  collab.stdout.on('data', collect)
+  collab.stderr.on('data', collect)
+  return collab
+}
+
+/** 협업 서버가 받을 준비가 됐는가 — 웹소켓이 열리는지로 본다. */
+async function waitForCollab() {
+  for (let i = 0; i < 150; i += 1) {
+    const opened = await new Promise((resolve) => {
+      const socket = new WebSocket(COLLAB_URL)
+      socket.onopen = () => {
+        socket.close()
+        resolve(true)
+      }
+      socket.onerror = () => resolve(false)
+    })
+    if (opened) return
+    await sleep(200)
+  }
+  throw new Error(`협업 서버가 ${COLLAB_URL} 에서 뜨지 않았다\n${serverOutput.slice(-2000)}`)
 }
 
 async function waitForServer() {
@@ -211,7 +252,7 @@ async function launchBrowser(executable) {
   }
   if (target === null) throw new Error('브라우저 페이지에 붙지 못했다')
 
-  return { browser, profile, url: target.webSocketDebuggerUrl }
+  return { browser, profile, port, url: target.webSocketDebuggerUrl }
 }
 
 // ── 본문 ──────────────────────────────────────────────────────────────
@@ -225,12 +266,29 @@ async function main() {
   console.log(`서버: ${BASE}`)
 
   const server = startServer()
+  let collab = startCollabServer()
   let browser = null
   let profile = null
   let cdp = null
+  const tabs = []
+
+  /** 협업 서버를 내린다 — 끊김을 만드는 유일한 길(위 `startCollabServer`). */
+  const stopCollab = async () => {
+    if (collab === null) return
+    const exited = new Promise((resolve) => collab.on('exit', resolve))
+    collab.kill()
+    collab = null
+    await exited
+  }
+  const restartCollab = async () => {
+    if (collab !== null) return
+    collab = startCollabServer()
+    await waitForCollab()
+  }
 
   try {
     await waitForServer()
+    await waitForCollab()
 
     // ── API 로 준비: 로그인 → 워크스페이스 → 페이지 → 본문 ──
     const json = { 'content-type': 'application/json', origin: BASE }
@@ -298,6 +356,7 @@ async function main() {
     const launched = await launchBrowser(executable)
     browser = launched.browser
     profile = launched.profile
+    const devtoolsPort = launched.port
     cdp = connect(launched.url)
     await cdp.opened
     const { send, pageErrors } = cdp
@@ -333,6 +392,8 @@ async function main() {
       '/': [191, 'Slash'],
       c: [67, 'KeyC'],
       v: [86, 'KeyV'],
+      // 되돌리기 — 협업 편집기에서는 내 편집만 되돌린다(F-05-15).
+      z: [90, 'KeyZ'],
       // W7 검색 오버레이 — `Mod+K` · `Mod+P` 로 열고 ↑↓ 로 고른다.
       k: [75, 'KeyK'],
       p: [80, 'KeyP'],
@@ -386,6 +447,76 @@ async function main() {
         await sleep(80)
       }
     }
+
+    /**
+     * 같은 브라우저에 탭을 하나 더 연다 — 두 사람이 같은 페이지를 보는 장면(F-05-01).
+     *
+     * 쿠키는 프로필 전체가 공유하므로 로그인은 그대로다. 돌려주는 것은 그 탭의 `evaluate` · `waitFor` · 입력이다.
+     */
+    const openTab = async (url) => {
+      const { targetId } = await send('Target.createTarget', { url })
+      let info = null
+      for (let i = 0; i < 100 && info === null; i += 1) {
+        const list = await (await fetch(`http://127.0.0.1:${devtoolsPort}/json/list`)).json()
+        info = list.find((t) => t.id === targetId && t.webSocketDebuggerUrl) ?? null
+        if (info === null) await sleep(100)
+      }
+      if (info === null) throw new Error('두 번째 탭에 붙지 못했다')
+      const tab = connect(info.webSocketDebuggerUrl)
+      await tab.opened
+      tabs.push(tab)
+      await tab.send('Runtime.enable')
+      await tab.send('Page.enable')
+      const evaluateIn = async (expression) => {
+        const r = await tab.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true })
+        if (r.exceptionDetails) throw new Error(`evaluate(tab): ${r.exceptionDetails.exception?.description ?? r.exceptionDetails.text}`)
+        return r.result.value
+      }
+      const waitForIn = async (expression, ms = 10000) => {
+        const end = Date.now() + ms
+        while (Date.now() < end) {
+          if (await evaluateIn(expression)) return true
+          await sleep(40)
+        }
+        return false
+      }
+      return {
+        send: tab.send,
+        evaluate: evaluateIn,
+        waitFor: waitForIn,
+        /**
+         * 이 탭의 본문 첫 블록 **끝**에 캐럿을 두고 친다.
+         *
+         * 두 탭이 같은 자리에 치면 글자가 서로 사이에 끼어 든다(CRDT 로서는 맞는 결과다 — 둘 다 남는다). 검사가 보려는 것은
+         * "서로 지우지 않는가"이므로 자리를 갈라 친다.
+         */
+        async typeInBody(text) {
+          const box = await evaluateIn(`(() => { const e = document.querySelector('.blk-editor'); const r = e.getBoundingClientRect()
+            return { x: r.x + 40, y: r.y + 10 } })()`)
+          await tab.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: box.x, y: box.y, button: 'left', buttons: 1, clickCount: 1 })
+          await tab.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: box.x, y: box.y, button: 'left', buttons: 0, clickCount: 1 })
+          const end = { key: 'End', code: 'End', windowsVirtualKeyCode: 35, nativeVirtualKeyCode: 35 }
+          await tab.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', ...end })
+          await tab.send('Input.dispatchKeyEvent', { type: 'keyUp', ...end })
+          await tab.send('Input.insertText', { text })
+        },
+      }
+    }
+
+    /**
+     * 보존본(IndexedDB) — 서버가 확인하지 않은 편집(`collab/pending-store.ts`).
+     *
+     * 값은 Yjs update 바이트다. 글자는 그 안에 UTF-8 로 들어 있어 디코딩해 찾는다 — 무엇이 남아 있는지 보려면 그걸로 충분하다.
+     */
+    const PENDING_ROWS = `(async () => {
+      try {
+        const db = await new Promise((ok, no) => { const r = indexedDB.open('notion-clone-collab', 1); r.onsuccess = () => ok(r.result); r.onerror = () => no(r.error) })
+        if (!db.objectStoreNames.contains('pending-edits')) return []
+        const rows = await new Promise((ok) => { const r = db.transaction('pending-edits').objectStore('pending-edits').getAll(); r.onsuccess = () => ok(r.result) })
+        return rows.map((row) => new TextDecoder().decode(new Uint8Array(row.update)))
+      } catch { return [] }
+    })()`
+    const PENDING_EMPTY = `(async () => (await ${PENDING_ROWS}).length === 0)()`
 
     await send('Page.enable')
     await send('Runtime.enable')
@@ -670,26 +801,15 @@ async function main() {
     check('슬래시 메뉴가 열린다', await waitFor(`!!document.querySelector('[role="listbox"][aria-label="블록 삽입"]')`, 2000))
 
     section('이미지 (F-01-15)')
-    // 앞 절의 `+` 가 만든 "/" 블록이 아직 저장 큐에 있으면, 아래에서 서버 본문을 덧붙이고 이동하는 순간 새 페이지가
-    // 큐의 문서(이미지가 없다)를 화면에 되살린다 — 서버 문서보다 새것으로 보기 때문이다(`page-sync.ts` 의 resume).
-    // 그러면 덧붙인 이미지 블록이 화면에 없다. main 에서도 이 절이 매번 이렇게 실패해 뒤의 절이 돌지 않았다.
-    // 서버가 받고 확정할 때까지 기다린 뒤에 덧붙인다.
-    //
-    // IndexedDB 만 보면 부족하다 — 큐는 디바운스 뒤에야 디스크에 쓰므로(`page-sync.ts` queue) 쓰기 전이면 비어 보이고,
-    // 이동할 때 pagehide 가 그 항목을 쓴다. 큐만 보던 첫 수정은 한 번 통과하고 다음 실행에서 같은 자리가 다시 실패했다.
-    // 그래서 서버가 "/" 블록을 받은 것을 먼저 본다 — 보내기 전에 디스크에 먼저 쓰므로(`attempt`) 서버에 닿은 뒤
-    // 큐가 비었다면 확정된 것이다.
+    // 앞 절의 `+` 가 만든 "/" 블록이 서버 로그에 쌓이기 전에 아래에서 본문을 덧붙이면(PUT), 그 저장이 "/" 블록을 모른 채
+    // 문서를 맞춰 버린다. 서버가 받은 것을 먼저 보고 덧붙인다 — 본문 행은 투영 창(1s)만큼 늦으므로 기다린다.
     let slashOnServer = false
     for (let i = 0; i < 60 && !slashOnServer; i += 1) {
       slashOnServer = (await savedShape()).split(' | ').some((part) => part.endsWith('/'))
       if (!slashOnServer) await sleep(150)
     }
     check('앞 절의 "/" 블록이 서버에 저장됐다 — 서버 본문을 덧붙이기 전에', slashOnServer, await savedShape())
-    check('앞 절의 편집이 저장 큐에서 비워졌다', await waitFor(`(async () => {
-      const db = await new Promise((ok) => { const r = indexedDB.open('notion-clone-outbox', 1); r.onsuccess = () => ok(r.result) })
-      const rows = await new Promise((ok) => { const r = db.transaction('saves').objectStore('saves').getAll(); r.onsuccess = () => ok(r.result) })
-      return rows.length === 0
-    })()`, 15000))
+    check('앞 절의 편집을 서버가 확인해 보존본이 비워졌다', await waitFor(PENDING_EMPTY, 15000))
     // 빈 이미지 블록 둘을 문서 끝에 붙인다 — 하나는 URL, 하나는 업로드용.
     // 문서를 통째로 바꾸지 않고 **덧붙인다**: 위에서 만든 하위 페이지가 빠지면
     // 저장이 거부된다(낡은 탭이 하위 페이지를 지우는 것을 막는 규칙).
@@ -889,23 +1009,28 @@ async function main() {
     })()
     check('★ 올린 · 붙인 · 놓은 이미지가 모두 file_id 로 저장된다', droppedSaved.length >= 3, JSON.stringify(droppedSaved))
 
-    section('오프라인 저장 큐 (F-05-04)')
-    // 지금까지의 검사가 전부 "연결이 살아 있을 때"였다. 이 절은 **끊긴 동안 친 글이
-    // 살아남는가**를 본다 — 이 기능이 존재하는 이유다.
-    // ⚠ 네트워크를 통째로 끊지 않는다(`Network.emulateNetworkConditions`).
-    //    그러면 **페이지 자체가 로드되지 않아** 새로고침 시나리오를 볼 수 없다
-    //    (실제로 그렇게 썼다가 브라우저 오류 페이지를 받았다). 우리가 보려는 것은
-    //    "저장 요청이 실패하는 동안 친 글이 살아남는가"이므로 **저장 라우트만** 막는다.
-    const blockSaves = (yes) =>
-      send('Network.setBlockedURLs', { urls: yes ? ['*/pages/*/body'] : [] })
+    section('오프라인 편집 보존 · 오류 UX (F-05-04 · F-12-16)')
+    // 지금까지의 검사가 전부 "연결이 살아 있을 때"였다. 이 절은 **끊긴 동안 친 글이 살아남는가**를 본다 — 이 기능이
+    // 존재하는 이유다.
+    // ⚠ 끊김은 **협업 서버를 내려서** 만든다. `Network.setBlockedURLs` 는 이미 열린 웹소켓을 끊지 못하고,
+    //    네트워크를 통째로 끊으면 페이지 자체가 로드되지 않아 새로고침 시나리오를 볼 수 없다.
     await send('Network.enable')
 
     // 새 페이지에서 한다 — 앞 절들이 만든 상태와 섞이지 않게.
     const syncPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: '{}' })).json()).page.id
     const syncBodyUrl = `${BASE}/api/workspaces/${workspaceId}/pages/${syncPage}/body`
+    /** 서버가 가진 본문 — 행은 투영 창(1s)만큼 늦다. */
     const savedText = async () => {
       const body = await (await fetch(syncBodyUrl, { headers: authed })).json()
       return body.doc.blocks.map((b) => b.title?.[0]?.text?.content ?? '').join(' | ')
+    }
+    const savedHas = async (text, ms = 15000) => {
+      const end = Date.now() + ms
+      for (;;) {
+        if ((await savedText()).includes(text)) return true
+        if (Date.now() > end) return false
+        await sleep(200)
+      }
     }
     const typeText = async (text) => {
       await send('Input.insertText', { text })
@@ -918,79 +1043,60 @@ async function main() {
     await typeText('온라인에서 친 글')
     check('평상시 저장은 조용하다 — "저장됨"을 띄우지 않는다',
       !(await evaluate(`[...document.querySelectorAll('[role="status"]')].some((e) => e.textContent.includes('저장'))`)))
-    check('온라인에서 친 글이 서버에 저장된다', (await (async () => {
-      for (let i = 0; i < 40; i += 1) { if ((await savedText()).includes('온라인에서 친 글')) return true; await sleep(150) }
-      return false
-    })()))
+    check('온라인에서 친 글이 서버에 쌓인다', await savedHas('온라인에서 친 글'))
+    check('확인된 편집은 보존본에 남지 않는다', await waitFor(PENDING_EMPTY, 10000))
 
-    // ① 연결을 끊고 계속 친다.
-    await blockSaves(true)
+    // ① 협업 서버를 내리고 계속 친다.
+    await stopCollab()
     await typeText(' + 끊긴 뒤에 친 글')
-    check('★ 3초 넘게 못 보내면 "동기화 중"이라고 말한다',
+    check('★ 3초 넘게 서버가 확인하지 않으면 "동기화 중"이라고 말한다',
       await waitFor(`[...document.querySelectorAll('[role="status"]')].some((e) => e.textContent.includes('동기화 중'))`, 15000))
-    check('끊긴 동안 친 글은 아직 서버에 없다', !(await savedText()).includes('끊긴 뒤에 친 글'), await savedText())
-
-    // ② 저장이 막힌 채로 탭을 다시 연다. 큐가 IndexedDB 에 있어야 살아남는다.
-    await send('Page.reload')
-    await waitFor(`!!document.querySelector('.blk-editor [data-block-id]')`, 20000)
-    check('★ 저장이 막힌 채 새로고침해도 친 글이 화면에 돌아온다 — IndexedDB 에 남아 있었다',
-      await waitFor(`document.querySelector('.blk-editor').textContent.includes('끊긴 뒤에 친 글')`, 15000),
-      await evaluate(`document.querySelector('.blk-editor').textContent`))
-    check('복구했다고 알려준다',
-      await waitFor(`[...document.querySelectorAll('[role="status"]')].some((e) => e.textContent.includes('복구'))`, 5000))
-    check('IndexedDB 에 실제로 남아 있다', await evaluate(`(async () => {
-      const db = await new Promise((ok, no) => { const r = indexedDB.open('notion-clone-outbox', 1); r.onsuccess = () => ok(r.result); r.onerror = () => no(r.error) })
-      const rows = await new Promise((ok) => { const r = db.transaction('saves').objectStore('saves').getAll(); r.onsuccess = () => ok(r.result) })
-      return rows.some((e) => JSON.stringify(e.doc).includes('끊긴 뒤에 친 글'))
-    })()`))
-
-    // ③ 연결이 돌아온다.
-    await blockSaves(false)
-    await evaluate(`window.dispatchEvent(new Event('online'))`)
-    const recovered = await (async () => {
-      for (let i = 0; i < 60; i += 1) { const t = await savedText(); if (t.includes('끊긴 뒤에 친 글')) return t; await sleep(200) }
-      return await savedText()
-    })()
-    check('★ 연결이 돌아오면 끊긴 동안 친 글이 저장된다', recovered.includes('끊긴 뒤에 친 글'), recovered)
-    check('큐가 비워진다 — 확정된 것을 남기지 않는다', await waitFor(`(async () => {
-      const db = await new Promise((ok) => { const r = indexedDB.open('notion-clone-outbox', 1); r.onsuccess = () => ok(r.result) })
-      const rows = await new Promise((ok) => { const r = db.transaction('saves').objectStore('saves').getAll(); r.onsuccess = () => ok(r.result) })
-      return rows.length === 0
-    })()`, 10000))
-    check('"동기화 중" 표시가 사라진다',
-      await waitFor(`![...document.querySelectorAll('[role="status"]')].some((e) => e.textContent.includes('동기화 중'))`, 5000))
-
-    section('오류 · 복구 UX (F-12-16)')
-    // ① 오프라인 배너 — 편집을 막지 않는다.
-    await evaluate(`window.dispatchEvent(new Event('offline'))`)
-    check('★ 오프라인이면 배너가 뜨고, 계속 편집할 수 있다고 말한다',
-      await waitFor(`[...document.querySelectorAll('[role="status"]')].some((e) => e.textContent.includes('오프라인'))`, 3000))
+    check('★ 끊기면 배너로 알리고, 계속 편집할 수 있다고 말한다',
+      await waitFor(`[...document.querySelectorAll('[role="status"]')].some((e) => e.textContent.includes('오프라인'))`, 20000))
     check('편집을 막지 않는다 — 입력을 막으면 사용자가 내용을 잃는다',
       await evaluate(`document.querySelector('.blk-editor').contentEditable !== 'false'`))
-    await evaluate(`window.dispatchEvent(new Event('online'))`)
-    check('연결이 돌아오면 배너가 사라진다',
-      await waitFor(`![...document.querySelectorAll('[role="status"]')].some((e) => e.textContent.includes('오프라인'))`, 3000))
+    check('끊긴 동안 친 글은 아직 서버에 없다', !(await savedText()).includes('끊긴 뒤에 친 글'), await savedText())
+    check('★ 끊긴 동안 친 글이 IndexedDB 보존본에 남는다',
+      await waitFor(`(async () => (await ${PENDING_ROWS}).some((u) => u.includes('끊긴 뒤에 친 글')))()`, 10000))
 
-    // ② 서버가 본문 크기 한도를 413 + retryable:false 로 거절한다.
+    // ② 끊긴 채로 탭을 다시 연다. 보존본이 IndexedDB 에 있어야 살아남는다.
+    await send('Page.reload')
+    await waitFor(`!!document.querySelector('.blk-editor [data-block-id]')`, 20000)
+    check('★ 끊긴 채 새로고침해도 친 글이 화면에 돌아온다 — 보존본을 서버 본문 위에 되살린다',
+      await waitFor(`document.querySelector('.blk-editor').textContent.includes('끊긴 뒤에 친 글')`, 15000),
+      await evaluate(`document.querySelector('.blk-editor').textContent`))
+
+    // ③ 서버가 돌아온다. 브라우저가 알리면 기다리지 않고 곧바로 다시 붙는다.
+    await restartCollab()
+    await evaluate(`window.dispatchEvent(new Event('online'))`)
+    check('★ 서버가 돌아오면 끊긴 동안 친 글이 쌓인다', await savedHas('끊긴 뒤에 친 글', 30000), await savedText())
+    check('보존본이 비워진다 — 확인된 것을 남기지 않는다', await waitFor(PENDING_EMPTY, 15000))
+    check('"동기화 중" 표시가 사라진다',
+      await waitFor(`![...document.querySelectorAll('[role="status"]')].some((e) => e.textContent.includes('동기화 중'))`, 10000))
+    check('오프라인 배너가 사라진다',
+      await waitFor(`![...document.querySelectorAll('[role="status"]')].some((e) => e.textContent.includes('오프라인'))`, 10000))
+
+    // ④ 서버가 받을 수 없는 편집(한 번에 보내기 한도 초과) — 버리고 다시 열고, 버린 내용을 보여 준다.
     const tooBig = await fetch(syncBodyUrl, {
       method: 'PUT',
       headers: authed,
       body: JSON.stringify({ doc: { blocks: [{ id: randomUUID(), type: 'paragraph', title: [textRun('가'.repeat(400000))], properties: {}, format: {}, children: [] }] } }),
     })
     const tooBigBody = await tooBig.json()
-    check('★ 본문이 한도를 넘으면 413 이다', tooBig.status === 413, String(tooBig.status))
+    check('본문 저장 라우트는 한도를 넘으면 413 이다', tooBig.status === 413, String(tooBig.status))
     check('그리고 다시 보내도 소용없다고 말해 준다 (retryable:false)', tooBigBody.retryable === false, JSON.stringify(tooBigBody))
 
-    // ③ 화면에서는 **보내기 전에** 막고, 못 보낸 내용을 볼 수 있어야 한다.
-    const editorBox = await rect('.blk-editor')
-    await click(editorBox.x + 40, editorBox.y + 10)
-    await send('Input.insertText', { text: '넘치는 글'.repeat(80000) })
-    check('★ 한도를 넘으면 보내기 전에 말해 준다 — 413 을 받아 보지 않는다',
-      await waitFor(`[...document.querySelectorAll('[role="alert"]')].some((e) => e.textContent.includes('KB'))`, 15000),
+    const hugeEditor = await rect('.blk-editor')
+    await click(hugeEditor.x + 40, hugeEditor.y + 10)
+    // 한 번에 보낼 수 있는 update 상한(1MiB)을 **확실히** 넘긴다 — 아슬아슬하면 통과해 버려 이 절이 아무것도 보지 않는다.
+    await send('Input.insertText', { text: '넘치는 글'.repeat(200000) })
+    check('★ 서버가 받지 못한 편집은 버리고 다시 열며, 그 사실을 말해 준다',
+      await waitFor(`[...document.querySelectorAll('[role="alert"]')].some((e) => e.textContent.includes('받지 못한'))`, 20000),
       await evaluate(`[...document.querySelectorAll('[role="alert"]')].map((e) => e.textContent).join(' / ')`))
+    check('★ 버린 편집은 화면에서도 사라진다 — 서버 본문으로 다시 열었다',
+      await waitFor(`!document.querySelector('.blk-editor').textContent.includes('넘치는 글')`, 15000))
 
-    // ⚠ 좌표를 읽기 전에 **보이는 곳으로 올린다.** 1MB 짜리 문단을 넣은 뒤라
-    //    화면이 캐럿을 따라 내려가 있어서 배너가 뷰포트 위로 밀려나 있고,
+    // ⚠ 좌표를 읽기 전에 **보이는 곳으로 올린다.** 큰 문단을 넣은 뒤라 화면이 캐럿을 따라 내려가 있을 수 있고,
     //    그 상태의 rect 는 음수라 클릭이 아무 데도 닿지 않는다(실제로 겪었다).
     const seeButton = await evaluate(`(() => {
       const b = [...document.querySelectorAll('button')].find((e) => e.textContent.includes('저장하지 못한 내용'))
@@ -1002,7 +1108,7 @@ async function main() {
     check('★ "저장하지 못한 내용 보기"가 있다 — 조용히 버리면 데이터 손실 신고가 된다', !!seeButton)
     if (seeButton) {
       await click(seeButton.x, seeButton.y)
-      check('★ 못 보낸 내용을 실제로 보여준다 — 복사해 갈 수 있다',
+      check('★ 버린 내용을 실제로 보여준다 — 복사해 갈 수 있다',
         await waitFor(`(() => {
           const t = document.querySelector('textarea[aria-label="저장하지 못한 내용"]')
           return !!t && t.value.includes('넘치는 글')
@@ -1011,6 +1117,41 @@ async function main() {
           const t = document.querySelector('textarea[aria-label="저장하지 못한 내용"]')
           return t ? '길이 ' + t.value.length + ' / 앞 ' + JSON.stringify(t.value.slice(0, 40)) : '(textarea 없음)'
         })()`))
+    }
+
+    section('두 탭 동시 편집 (F-05-01 · F-05-15)')
+    {
+      // 같은 페이지를 탭 둘에서 연다 — 한쪽이 친 글이 다른 쪽에 오고, 같은 문단을 함께 쳐도 서로 지우지 않는다.
+      const sharedPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: '{}' })).json()).page.id
+      const sharedUrl = `${BASE}/w/${workspaceId}/${sharedPage}`
+      await send('Page.navigate', { url: sharedUrl })
+      await waitFor(`!!document.querySelector('.blk-editor')`, 15000)
+      const other = await openTab(sharedUrl)
+      check('둘째 탭이 같은 페이지를 연다', await other.waitFor(`!!document.querySelector('.blk-editor')`, 20000))
+
+      const box = await rect('.blk-editor')
+      await click(box.x + 40, box.y + 10)
+      await send('Input.insertText', { text: '첫째 탭' })
+      check('★ 한 탭에서 친 글이 다른 탭에 나타난다',
+        await other.waitFor(`document.querySelector('.blk-editor').textContent.includes('첫째 탭')`, 20000),
+        await other.evaluate(`document.querySelector('.blk-editor').textContent`))
+
+      await other.typeInBody('둘째 탭 ')
+      check('★ 반대 방향도 온다 — 그리고 같은 문단이 서로를 지우지 않는다',
+        await waitFor(`(() => { const t = document.querySelector('.blk-editor').textContent
+          return t.includes('첫째 탭') && t.includes('둘째 탭') })()`, 20000),
+        await evaluate(`document.querySelector('.blk-editor').textContent`))
+
+      // 되돌리기는 내 편집만(F-05-15) — 첫째 탭의 Mod+Z 가 둘째 탭이 친 글을 지우면 안 된다.
+      await click(box.x + 40, box.y + 10)
+      await key('z', MOD)
+      check('★ 되돌리기는 내가 친 것만 되돌린다 — 다른 탭이 친 글은 남는다',
+        await waitFor(`(() => { const t = document.querySelector('.blk-editor').textContent
+          return !t.includes('첫째 탭') && t.includes('둘째 탭') })()`, 10000),
+        await evaluate(`document.querySelector('.blk-editor').textContent`))
+      check('그 되돌리기가 다른 탭에도 간다',
+        await other.waitFor(`!document.querySelector('.blk-editor').textContent.includes('첫째 탭')`, 20000),
+        await other.evaluate(`document.querySelector('.blk-editor').textContent`))
     }
 
     section('공유 패널 (F-06-05)')
@@ -1845,9 +1986,11 @@ async function main() {
     const serverErrors = serverOutput.split('\n').filter((l) => l.includes('⨯'))
     check('서버에서 오류가 나지 않았다', serverErrors.length === 0, serverErrors.join('\n      '))
   } finally {
+    for (const tab of tabs) tab.ws.close()
     cdp?.ws.close()
     browser?.kill()
     server.kill()
+    collab?.kill()
     if (profile) {
       // 브라우저가 파일을 막 놓는 중일 수 있다. 못 지워도 임시 폴더다.
       await sleep(300)

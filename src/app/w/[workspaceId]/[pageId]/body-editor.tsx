@@ -1,86 +1,112 @@
 'use client'
 
 /**
- * 본문 에디터 — W4 의 화면
+ * 본문 에디터 — 협업 편집기를 협업 서버에 붙인 화면 (F-05-01 · F-05-04 · F-05-15 · F-05-19 · CRDT 6d조각)
  *
- * 여기서 하는 일은 **조립과 저장**뿐이다. 편집 규칙은 전부 `src/lib/editor/`
- * 에 있고 DOM 없이 테스트된다. 이 파일에 규칙을 쓰기 시작하면 그 순간부터
- * 테스트할 수 없는 코드가 된다.
- *
- * ──────────────────────────────────────────────────────────────────────
- * 접힘 상태는 여기에 있다
- * ──────────────────────────────────────────────────────────────────────
- *
- * F-01-13: *"문서 데이터로 저장하면 상대 화면이 멋대로 접힘 → 로컬 저장 권장."*
- * 그래서 `collapsed` 는 문서에도 서버에도 없고 이 컴포넌트의 `useRef` 에 있다.
- * 커맨드는 `isCollapsed` 를 주입받아 병합·분할 규칙에 쓴다.
+ * 여기서 하는 일은 **조립과 표시**뿐이다. 편집 규칙은 `src/lib/editor/`, 연결과 보존은 `src/lib/collab/` 에 있고 둘 다 DOM 없이
+ * 검사된다. 이 파일에 규칙을 쓰기 시작하면 그 순간부터 검사할 수 없는 코드가 된다.
  *
  * ──────────────────────────────────────────────────────────────────────
- * 저장 — Phase 0 은 페이지 단위 LWW + 저장 큐(F-05-04)
+ * 저장이라는 단계가 없다
  * ──────────────────────────────────────────────────────────────────────
  *
- * 마스터 문서 §5.1 의 대체안: *"페이지 단위 last-write-wins + 다른 사람이
- * 편집 중 배너."* 배너를 띄우려면 충돌을 **알아야** 하므로 읽을 때 받은
- * `version` 을 저장 시 되돌려 보낸다(낙관적 잠금). 409 가 오면 덮어쓰지 않고
- * 사용자에게 선택지를 준다.
+ * 편집은 Y.Doc 에 쓰이고(`collab/collab-editor.ts`), 연결이 그것을 협업 서버로 보내 로그에 쌓는다(`collab/collab-connection.ts`).
+ * 본문 행은 그 결과의 투영이다(판결 X-1). 그래서 PUT 저장 · 낙관적 잠금 · 충돌 배너가 없다 — 두 사람이 같은 문단을 쳐도 서로를
+ * 덮어쓰지 않기 때문이다.
  *
- * **순서·재시도·영속화는 이 파일에 없다** — `src/lib/sync/page-sync.ts` 다.
- * 여기서는 편집이 있을 때마다 문서를 큐에 넣고, 큐가 알려주는 상태를 그린다.
- * 그래야 "네트워크가 끊겼을 때 어떻게 되는가"를 브라우저 없이 시험할 수 있다.
+ *   - **서버가 준 Y 상태로 시작한다**(`initialState`) — 첫 동기화 전에도 본문이 보인다(빈 화면 없이)
+ *   - **끊겨도 친 글을 잃지 않는다**(F-05-04) — 서버가 확인하지 않은 편집은 IndexedDB 에 남고(`collab/pending-store.ts`),
+ *     다시 열면 되살려 보낸다. 확인된 것은 남기지 않는다
+ *   - **서버가 문서를 닫으면 연결이 로컬 문서를 버리고 다시 연다** — 그때 `doc` 이 바뀌므로 편집기를 새 문서로 다시 만든다.
+ *     다시 여는 동안에는 편집을 막는다(버린 문서에 친 편집은 쌓이지 않는다). 버린 편집은 사용자에게 보여 준다(F-12-16)
+ *   - **하위 페이지는 서버가 자리를 정한다**(§3.2-25 · 6b) — `/쿼리` 를 지운 편집이 서버에 쌓인 뒤에 캐럿이 있던 블록 id 를 넘긴다.
+ *     참조 노드는 동기화로 도착한다 — 로컬에 넣으면 참조가 둘이 된다
+ *   - **참조의 제목은 문서에 없다**(§3.2-22) — 서버가 권한으로 거른 맵을 주고, 모르는 참조를 받으면 다시 읽는다
+ *
+ * 접힘 상태는 여전히 이 컴포넌트의 `useRef` 에 있다(F-01-13: *"문서 데이터로 저장하면 상대 화면이 멋대로 접힘"*).
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
+import { NodeSelection } from '@tiptap/pm/state'
 import type { EditorView } from '@tiptap/pm/view'
+import type * as Y from 'yjs'
 
 import { blockIdFromHash, revealBlockCommand } from '@/lib/editor/block-menu'
 import { plainTextForBlocks } from '@/lib/editor/block-clipboard'
 import { selectedBlockCount } from '@/lib/editor/block-selection'
 import type { CommandDeps } from '@/lib/editor/commands'
-import { createDocumentState, createEditor, type EditorDeps } from '@/lib/editor/create-editor'
-import { docToPm, pmToDoc } from '@/lib/editor/pm-adapter'
+import { createEditor, type EditorDeps } from '@/lib/editor/create-editor'
+import { createNodeViews } from '@/lib/editor/node-views'
+import { containerAt, findContainerById } from '@/lib/editor/pm-blocks'
+import { PAGE_REF_NODE } from '@/lib/editor/schema'
 import {
   closeSlashMenu,
   filterSlashCommands,
-  insertSubpageRef,
   runSlashCommand,
   slashMenuState,
   type SlashCommand,
 } from '@/lib/editor/slash-menu'
-import type { EditorDoc } from '@/lib/editor/document'
+import { createCollabEditorState } from '@/lib/collab/collab-editor'
+import { openCollabConnection, type CollabConnection, type CollabSnapshot, type DiscardedDoc } from '@/lib/collab/collab-connection'
+import { decodeBodyState } from '@/lib/collab/collab-protocol'
+import { openPendingEditStore, pendingEditKey } from '@/lib/collab/pending-store'
+import { BODY_FRAGMENT, readBodyYDoc } from '@/lib/collab/ydoc'
 import { uploadImageFile } from '@/lib/file/upload-client'
-import { createPageSync, syncMessage, type PageSync } from '@/lib/sync/page-sync'
-import { SEND_TIMEOUT_MS } from '@/lib/sync/outbox'
-import { deferredOutboxStore, openOutboxStore } from '@/lib/sync/outbox-store'
-import type { SyncState } from '@/lib/sync/outbox'
 import { BlockGutter } from './block-gutter'
 
-type SaveStatus =
+/** 이 시간 넘게 서버가 확인하지 않으면 "동기화 중…"을 보여 준다 — 그 전에는 무표시다(F-05-04). */
+const SYNCING_AFTER_MS = 3000
+/** 하위 페이지를 만들기 전에 `/쿼리` 지우기가 서버에 쌓이기를 기다리는 한도. */
+const CONFIRM_TIMEOUT_MS = 10_000
+/** 서버가 넣은 참조가 동기화로 도착하기를 기다리는 한도 — 도착하면 그 블록을 고른다. */
+const REF_ARRIVAL_TIMEOUT_MS = 5000
+
+type Status =
   | { kind: 'idle' }
-  /** 저장이 3초 이상 밀렸다. 그 전에는 아무것도 보여주지 않는다(F-05-04). */
-  | { kind: 'syncing' }
-  /** 저장 실패. `unsaved` 는 못 보낸 내용의 평문이다(F-12-16 "내용 보기"). */
-  | { kind: 'error'; message: string; unsaved?: string }
   /** 오류가 아닌 안내 — 블록 링크를 복사했다 같은 것. */
   | { kind: 'notice'; message: string }
-  | { kind: 'conflict' }
+  /** `unsaved` 는 서버가 받지 못해 버린 편집의 평문이다(F-12-16 "내용 보기"). */
+  | { kind: 'error'; message: string; unsaved?: string }
 
 type MenuUi = { open: boolean; query: string; index: number; left: number; top: number }
 
 const CLOSED_MENU: MenuUi = { open: false, query: '', index: 0, left: 0, top: 0 }
 
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+/** 문서에 있는 하위 페이지 참조의 blockId. */
+function pageRefIds(view: EditorView): string[] {
+  const ids: string[] = []
+  view.state.doc.descendants((node, _pos, parent) => {
+    if (node.type.name !== PAGE_REF_NODE) return true
+    const id = String(parent?.attrs.blockId ?? '')
+    if (id !== '') ids.push(id)
+    return false
+  })
+  return ids
+}
+
 export function BodyEditor({
   workspaceId,
   pageId,
-  initialDoc,
-  initialVersion,
+  userId,
+  collabUrl,
+  initialState,
+  canEdit,
   initialPageRefTitles,
 }: {
   workspaceId: string
   pageId: string
-  initialDoc: EditorDoc
-  initialVersion: string
-  /** 하위 페이지 참조의 제목 — 볼 수 있는 것만, 볼 수 없으면 null(`loadPageBody`). 참조 노드는 제목을 싣지 않는다. */
+  /** 보존본 열쇠에 들어간다 — 같은 브라우저의 다른 사람에게 내 편집을 보내지 않는다. */
+  userId: string
+  /** 협업 서버 주소. 서버 렌더가 준다(`collab/collab-url.ts`). */
+  collabUrl: string
+  /** 서버가 준 본문 Y 상태(base64) — 첫 동기화 전에도 본문이 보인다. */
+  initialState: string
+  /** 이 사람이 이 페이지를 고칠 수 있는가 — 연결이 읽기 전용으로 받으면 그쪽이 이긴다. */
+  canEdit: boolean
+  /** 하위 페이지 참조의 제목 — 볼 수 있는 것만, 볼 수 없으면 null. 참조 노드는 제목을 싣지 않는다. */
   initialPageRefTitles: Readonly<Record<string, string | null>>
 }) {
   const router = useRouter()
@@ -90,195 +116,73 @@ export function BodyEditor({
   /** `Mod+/` 가 부를 "블록 메뉴 열기". 블록 핸들이 채운다. */
   const openMenuRef = useRef<(() => void) | null>(null)
   const viewRef = useRef<EditorView | null>(null)
+  const connectionRef = useRef<CollabConnection | null>(null)
+  /** 지금 편집기가 붙어 있는 Y.Doc — 연결이 문서를 버리고 다시 열면 바뀐다. */
+  const boundDocRef = useRef<Y.Doc | null>(null)
+  /** 협업 편집기가 돌려준 deps — 노드 뷰를 다시 만들 때 그대로 쓴다(되돌리기 짝이 들어 있다). */
+  const editorDepsRef = useRef<EditorDeps | null>(null)
 
   /** 접힘 상태 — 문서에 없다(F-01-13). */
   const collapsedRef = useRef<Set<string>>(new Set())
-  /** 하위 페이지 참조의 제목 — 문서에 없다. 서버가 권한으로 거른 것에서 시작하고, 여기서 만든 하위 페이지를 더한다. */
+  /** 하위 페이지 참조의 제목 — 문서에 없다. 서버가 권한으로 거른 것에서 시작하고, 모르는 참조를 받으면 다시 읽는다. */
   const pageRefTitlesRef = useRef<Map<string, string | null>>(new Map(Object.entries(initialPageRefTitles)))
-  /** 저장 큐(F-05-04). 순서·재시도·영속화를 전부 여기가 한다. */
-  const syncRef = useRef<PageSync | null>(null)
+  /** 제목을 다시 읽는 중인가 — 한 번에 하나만. */
+  const refreshingTitlesRef = useRef(false)
 
-  const [status, setStatus] = useState<SaveStatus>({ kind: 'idle' })
+  const [status, setStatus] = useState<Status>({ kind: 'idle' })
   const [menu, setMenu] = useState<MenuUi>(CLOSED_MENU)
   /** 블록 선택 개수 — 화면 표시가 아니라 스크린리더 안내용이다(F-12-12). */
   const [selectedBlocks, setSelectedBlocks] = useState(0)
-  /**
-   * 브라우저가 "연결이 없다"고 말하는가 — F-12-16 의 `Offline` 배너.
-   *
-   * ⚠ `navigator.onLine` 은 **LAN 연결만 본다.** 공유기에는 붙어 있는데 인터넷이
-   * 죽은 경우 `true` 다. 그래서 이것은 배너를 띄우는 **보조** 신호일 뿐이고,
-   * 진짜 신호는 저장 큐의 상태다(정본도 "heartbeat 병행"을 요구한다).
-   */
-  const [offline, setOffline] = useState(false)
-  /** 저장하지 못한 내용을 펼쳐 보여주는 중인가(F-12-16 "내용 보기"). */
+  /** 연결이 알려주는 것 — 온라인 · 읽기 전용 · 미확인 편집 · 다시 여는 중 · 닫힘. */
+  const [link, setLink] = useState<Pick<CollabSnapshot, 'online' | 'readOnly' | 'unconfirmed' | 'reopening' | 'closed'>>({
+    online: false,
+    readOnly: null,
+    unconfirmed: false,
+    reopening: false,
+    closed: null,
+  })
+  /** 미확인 편집이 3초 넘게 남아 있다 — 그때만 "동기화 중…"을 말한다(F-05-04: 기본 무표시). */
+  const [syncing, setSyncing] = useState(false)
+  const syncingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /** 버린 편집의 내용을 펼쳐 보여주는 중인가(F-12-16 "내용 보기"). */
   const [showUnsaved, setShowUnsaved] = useState(false)
 
-  // ── 저장 ────────────────────────────────────────────────────────────
+  const editable = canEdit && link.readOnly !== true && !link.reopening && link.closed === null
+  /** 물을 때마다 판단한다 — `createEditor` 가 이 함수를 그대로 쓴다. */
+  const editableRef = useRef(editable)
+  editableRef.current = editable
 
-  /**
-   * 큐가 알려주는 상태를 화면 상태로.
-   *
-   * "저장됨"을 띄우지 않는다. 정본 F-05-04: *"기본 무표시. 미전송 op 가 3초
-   * 이상이면 '동기화 중…'."* 1초마다 깜빡이는 표시는 정보가 아니라 소음이고,
-   * 진짜 문제가 생겼을 때 그 안에 묻힌다.
-   */
-  const applySyncState = useCallback((state: SyncState) => {
-    setStatus((prev) => {
-      // 저장과 무관한 안내(블록 링크 복사 등)를 덮지 않는다.
-      if (prev.kind === 'notice' && state.kind !== 'rejected') return prev
-      switch (state.kind) {
-        case 'idle':
-        case 'queued':
-          return prev.kind === 'syncing' || prev.kind === 'conflict' ? { kind: 'idle' } : prev
-        case 'syncing':
-          return { kind: 'syncing' }
-        case 'rejected':
-          if (state.conflict) return { kind: 'conflict' }
-          return {
-            kind: 'error',
-            message: state.message,
-            // 지금(=이벤트 중에) 꺼내 둔다. 렌더 중에 큐를 읽으면 React 가
-            // 화면과 어긋난 값을 그릴 수 있다.
-            unsaved: plainTextForBlocks(syncRef.current?.pending()?.doc.blocks ?? []),
-          }
-      }
-    })
-  }, [])
+  useEffect(() => {
+    viewRef.current?.setProps({ editable: () => editableRef.current })
+  }, [editable])
 
-  /** 큐를 하나 만든다. 에디터가 사는 동안 하나뿐이다. */
-  const createSync = useCallback(
-    (): PageSync =>
-      createPageSync({
-        workspaceId,
-        pageId,
-        // IndexedDB 는 비동기로 열린다. 에디터는 지금 조립되므로 먼저 끼워 둔다.
-        store: deferredOutboxStore(openOutboxStore),
-        initialVersion,
-        send: async (entry) => {
-          try {
-            const res = await fetch(`/api/workspaces/${workspaceId}/pages/${pageId}/body`, {
-              method: 'PUT',
-              headers: { 'content-type': 'application/json' },
-              // 멈춘 요청을 실제로 끊는다 — 큐도 자체 타임아웃을 갖지만(F-12-16)
-              // 소켓까지 놓아주는 것은 여기서만 할 수 있다.
-              signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
-              body: JSON.stringify(
-                // 빈 문자열이면 버전을 아예 보내지 않는다 = 순수 LWW 덮어쓰기.
-                entry.baseVersion === ''
-                  ? { doc: entry.doc }
-                  : { doc: entry.doc, version: entry.baseVersion },
-              ),
-            })
-            const data = (await res.json().catch(() => ({}))) as {
-              version?: unknown
-              error?: unknown
-              retryable?: unknown
-            }
-            if (res.ok) return { ok: true, version: String(data.version ?? '') }
-            return {
-              ok: false,
-              status: res.status,
-              error: typeof data.error === 'string' ? data.error : undefined,
-              // 서버가 말해 주면 그 말을 따른다(F-12-16).
-              retryable: typeof data.retryable === 'boolean' ? data.retryable : undefined,
-            }
-          } catch {
-            // 응답 자체가 없었다. 큐는 이것을 "다시 보낼 실패"로 다룬다.
-            return { ok: false, status: 0 }
-          }
-        },
-        fetchRemote: async () => {
-          try {
-            const res = await fetch(`/api/workspaces/${workspaceId}/pages/${pageId}/body`)
-            if (!res.ok) return null
-            const data = await res.json()
-            return { version: String(data.version), doc: data.doc as EditorDoc }
-          } catch {
-            return null
-          }
-        },
-        onState: applySyncState,
-        // 사이드바·하위 페이지 목록이 서버 렌더다.
-        onSaved: () => router.refresh(),
-      }),
-    [workspaceId, pageId, initialVersion, applySyncState, router],
-  )
+  // ── 제목 맵 ─────────────────────────────────────────────────────────
 
-  /** 충돌을 사용자가 해결한다 — 내 것으로 덮어쓴다. */
-  const overwrite = useCallback(() => {
-    void syncRef.current?.overwrite()
-  }, [])
-
-  // ── 슬래시 메뉴 ─────────────────────────────────────────────────────
-
-  const syncMenu = useCallback((view: EditorView) => {
-    const state = slashMenuState(view.state)
-    if (!state.active) {
-      setMenu((prev) => (prev.open ? CLOSED_MENU : prev))
-      return
-    }
-    // 캐럿 위치에 띄운다. 뷰포트 아래쪽이면 위로 뒤집는 것은 CSS 가 한다.
-    const coords = view.coordsAtPos(view.state.selection.head)
-    const box = view.dom.getBoundingClientRect()
-    setMenu((prev) => ({
-      open: true,
-      query: state.query,
-      // 쿼리가 바뀌면 선택을 첫 항목으로 되돌린다.
-      index: prev.query === state.query ? prev.index : 0,
-      left: coords.left - box.left,
-      top: coords.bottom - box.top,
-    }))
-  }, [])
-
-  /**
-   * 하위 페이지 만들기 (F-02-13).
-   *
-   * 서버가 진짜 `block` 행을 만든 **뒤에** 참조 노드를 넣는다 — 참조 노드의
-   * id 가 곧 그 페이지의 id 여야 하기 때문이다. 가짜 id 로 먼저 넣으면 그 사이
-   * 자동 저장이 존재하지 않는 페이지를 참조한다.
-   */
-  const createSubpage = useCallback(async () => {
-    const view = viewRef.current
-    if (!view) return
+  /** 모르는 참조를 받았으면 맵을 다시 읽는다 — 노드 뷰는 맵이 바뀌어도 스스로 다시 그리지 않는다. */
+  const refreshPageRefTitles = useCallback(async () => {
+    if (refreshingTitlesRef.current) return
+    refreshingTitlesRef.current = true
     try {
-      const res = await fetch(`/api/workspaces/${workspaceId}/pages`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ parentPageId: pageId }),
-      })
-      const data = await res.json()
-      if (!res.ok) {
-        setStatus({ kind: 'error', message: '하위 페이지를 만들지 못했습니다.' })
-        return
-      }
-      const current = viewRef.current
-      if (!current) return
-      // 만든 사람은 그 페이지를 볼 수 있다. 노드 뷰가 참조를 그리기 전에 넣는다.
-      const id = String(data.page.id)
-      pageRefTitlesRef.current.set(id, String(data.page.title ?? ''))
-      insertSubpageRef(current.state, current.dispatch.bind(current), { id })
-      current.focus()
+      const res = await fetch(`/api/workspaces/${workspaceId}/pages/${pageId}/page-ref-titles`)
+      if (!res.ok) return
+      const data = (await res.json()) as { pageRefTitles?: Record<string, string | null> }
+      pageRefTitlesRef.current = new Map(Object.entries(data.pageRefTitles ?? {}))
+      const view = viewRef.current
+      const deps = editorDepsRef.current
+      if (view && deps) view.setProps({ nodeViews: createNodeViews(deps) })
     } catch {
-      setStatus({ kind: 'error', message: '연결에 실패했습니다.' })
+      // 다음 참조가 도착하면 다시 청한다.
+    } finally {
+      refreshingTitlesRef.current = false
     }
   }, [workspaceId, pageId])
 
-  const execute = useCallback(
-    (command: SlashCommand) => {
-      const view = viewRef.current
-      if (!view) return
-
-      if (command.kind === 'page') {
-        void createSubpage()
-        return
-      }
-
-      runSlashCommand(view.state, view.dispatch.bind(view), command, {
-        isCollapsed: (id) => collapsedRef.current.has(id),
-      })
-      view.focus()
+  const checkUnknownRefs = useCallback(
+    (view: EditorView) => {
+      const unknown = pageRefIds(view).some((id) => !pageRefTitlesRef.current.has(id))
+      if (unknown) void refreshPageRefTitles()
     },
-    [createSubpage],
+    [refreshPageRefTitles],
   )
 
   // ── 접힘 · 핸들 ─────────────────────────────────────────────────────
@@ -302,109 +206,231 @@ export function BodyEditor({
     [expandBlock],
   )
 
-  // ── 에디터 생성 ─────────────────────────────────────────────────────
+  // ── 슬래시 메뉴 ─────────────────────────────────────────────────────
+
+  const syncMenu = useCallback((view: EditorView) => {
+    const state = slashMenuState(view.state)
+    if (!state.active) {
+      setMenu((prev) => (prev.open ? CLOSED_MENU : prev))
+      return
+    }
+    // 캐럿 위치에 띄운다. 뷰포트 아래쪽이면 위로 뒤집는 것은 CSS 가 한다.
+    const coords = view.coordsAtPos(view.state.selection.head)
+    const box = view.dom.getBoundingClientRect()
+    setMenu((prev) => ({
+      open: true,
+      query: state.query,
+      // 쿼리가 바뀌면 선택을 첫 항목으로 되돌린다.
+      index: prev.query === state.query ? prev.index : 0,
+      left: coords.left - box.left,
+      top: coords.bottom - box.top,
+    }))
+  }, [])
+
+  /**
+   * 하위 페이지 만들기 (F-02-13 · CRDT 6b · 6d).
+   *
+   * 참조 노드를 **로컬에 넣지 않는다** — 서버도 부모 본문에 넣으므로 둘이 되고, 그러면 문서 순서의 첫째만 남아 사용자가 고른
+   * 자리가 아닐 수 있다(§3.2-24). 대신 캐럿이 있던 블록 id 를 넘겨 서버가 그 자리에 넣는다(`createPage` 의 `at`).
+   *
+   * `/쿼리` 를 지운 편집이 **서버에 쌓인 뒤에** 넘긴다 — 먼저 넘기면 서버가 보는 그 블록에는 아직 `/페이지` 글자가 있어
+   * 대체가 아니라 뒤에 들어간다.
+   */
+  const createSubpage = useCallback(async () => {
+    const view = viewRef.current
+    const connection = connectionRef.current
+    if (!view || !connection) return
+    const at = containerAt(view.state.selection.$from)?.id ?? null
+
+    // 메뉴가 열려 있으면 `/쿼리` 를 지운다. 서버 왕복 사이에 더 입력했어도 플러그인 상태가 매핑을 따라온다.
+    const tr = view.state.tr
+    const state = slashMenuState(view.state)
+    if (state.active && view.state.selection.head > state.from) tr.delete(state.from, view.state.selection.head)
+    closeSlashMenu(tr)
+    view.dispatch(tr)
+
+    try {
+      await Promise.race([
+        connection.confirm(),
+        sleep(CONFIRM_TIMEOUT_MS).then(() => {
+          throw new Error('timeout')
+        }),
+      ])
+    } catch {
+      setStatus({ kind: 'error', message: '연결이 끊겨 하위 페이지를 만들지 못했습니다. 연결이 돌아오면 다시 시도해 주세요.' })
+      return
+    }
+
+    let id: string
+    try {
+      const res = await fetch(`/api/workspaces/${workspaceId}/pages`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ parentPageId: pageId, at }),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        setStatus({ kind: 'error', message: '하위 페이지를 만들지 못했습니다.' })
+        return
+      }
+      id = String(data.page.id)
+      // 만든 사람은 그 페이지를 볼 수 있다. 참조가 도착하기 전에 맵에 넣어 둔다.
+      pageRefTitlesRef.current.set(id, String(data.page.title ?? ''))
+    } catch {
+      setStatus({ kind: 'error', message: '연결에 실패했습니다.' })
+      return
+    }
+
+    // 사이드바 · 하위 페이지 목록은 서버 렌더다.
+    router.refresh()
+
+    // 참조 노드는 서버가 넣고 동기화로 온다 — 도착하면 그 블록을 고른다.
+    const deadline = Date.now() + REF_ARRIVAL_TIMEOUT_MS
+    for (;;) {
+      const current = viewRef.current
+      if (!current) return
+      const placed = findContainerById(current.state.doc, id)
+      if (placed) {
+        current.dispatch(current.state.tr.setSelection(NodeSelection.create(current.state.doc, placed.contentPos)).scrollIntoView())
+        current.focus()
+        return
+      }
+      if (Date.now() > deadline) return
+      await sleep(50)
+    }
+  }, [workspaceId, pageId, router])
+
+  const execute = useCallback(
+    (command: SlashCommand) => {
+      const view = viewRef.current
+      if (!view) return
+
+      if (command.kind === 'page') {
+        void createSubpage()
+        return
+      }
+
+      runSlashCommand(view.state, view.dispatch.bind(view), command, {
+        isCollapsed: (id) => collapsedRef.current.has(id),
+      })
+      view.focus()
+    },
+    [createSubpage],
+  )
+
+  // ── 편집기 · 연결 ───────────────────────────────────────────────────
 
   useEffect(() => {
     const mount = mountRef.current
     if (!mount) return
-
-    const sync = createSync()
-    syncRef.current = sync
+    let disposed = false
 
     const deps: EditorDeps = {
-        workspaceId,
-        // 업로드는 XHR 로 한다(진행률). 자세한 이유는 `upload-client.ts`.
-        uploadImage: (file, onProgress) =>
-          uploadImageFile(workspaceId, file, { onProgress }),
-        isCollapsed: (id) => collapsedRef.current.has(id),
-        expand: expandBlock,
-        toggleCollapsed: (id) => {
-          if (collapsedRef.current.has(id)) collapsedRef.current.delete(id)
-          else collapsedRef.current.add(id)
-          viewRef.current?.dispatch(viewRef.current.state.tr)
-        },
-        openPage: (id) => router.push(`/w/${workspaceId}/${id}`),
-        pageRefTitle: (id) => pageRefTitlesRef.current.get(id),
-        onBlocked: (plan) => setStatus({ kind: 'error', message: plan.detail }),
-        onRefused: (detail) => setStatus({ kind: 'error', message: detail }),
-        openBlockMenu: () => openMenuRef.current?.(),
-    }
-    const view = createEditor({
-      mount,
-      state: createDocumentState(initialDoc, deps),
-      editable: true,
-      deps,
-      onTransaction: (v, tr) => {
-        syncMenu(v)
-        // 같은 값이면 리렌더하지 않는다 — 트랜잭션마다 불리는 자리다.
-        const count = selectedBlockCount(v.state)
-        setSelectedBlocks((prev) => (prev === count ? prev : count))
-        if (tr.docChanged) sync.queue(pmToDoc(v.state.doc))
+      workspaceId,
+      // 업로드는 XHR 로 한다(진행률). 자세한 이유는 `upload-client.ts`.
+      uploadImage: (file, onProgress) => uploadImageFile(workspaceId, file, { onProgress }),
+      isCollapsed: (id) => collapsedRef.current.has(id),
+      expand: expandBlock,
+      toggleCollapsed: (id) => {
+        if (collapsedRef.current.has(id)) collapsedRef.current.delete(id)
+        else collapsedRef.current.add(id)
+        viewRef.current?.dispatch(viewRef.current.state.tr)
       },
-    })
+      openPage: (id) => router.push(`/w/${workspaceId}/${id}`),
+      pageRefTitle: (id) => pageRefTitlesRef.current.get(id),
+      onBlocked: (plan) => setStatus({ kind: 'error', message: plan.detail }),
+      onRefused: (detail) => setStatus({ kind: 'error', message: detail }),
+      openBlockMenu: () => openMenuRef.current?.(),
+    }
 
-    viewRef.current = view
-
-    // `/{pageId}#{blockId}` 로 들어왔으면 그 블록을 보여준다(F-01-08 "Copy link to
-    // block" 의 받는 쪽). 같은 페이지 안에서 해시만 바뀌는 경우도 받는다.
+    /** `#{blockId}` 로 들어왔으면 그 블록을 보여준다(F-01-08 의 받는 쪽). */
     const reveal = (): void => {
       const id = blockIdFromHash(window.location.hash)
       const current = viewRef.current
       if (!id || !current) return
       revealBlockCommand(id, gutterDeps)(current.state, current.dispatch.bind(current))
     }
-    reveal()
-    window.addEventListener('hashchange', reveal)
 
-    /**
-     * 지난 세션이 못 보낸 문서를 되살린다(F-05-04: *"전송 중 브라우저 종료 →
-     * 다음 실행 시 재전송"*).
-     *
-     * 화면에도 되돌려 넣는다. 큐만 보내고 화면을 서버 문서로 두면, 다음 키
-     * 입력이 그 낡은 내용을 그대로 저장해 **방금 되살린 것을 다시 지운다.**
-     */
-    void sync.resume().then((restored) => {
-      const current = viewRef.current
-      if (!restored || !current) return
-      const next = docToPm(restored)
-      if (next.eq(current.state.doc)) return
-      const tr = current.state.tr.replaceWith(0, current.state.doc.content.size, next.content)
-      // 사용자가 친 것을 되살린 것이지 사용자가 방금 한 편집이 아니다.
-      // 되돌리기 스택에 넣으면 Ctrl+Z 한 번에 복구분이 날아간다.
-      tr.setMeta('addToHistory', false)
-      current.dispatch(tr)
-      // 문서를 통째로 갈아끼웠으므로 위치에 기대던 것을 다시 해야 한다.
-      // `#{blockId}` 로 들어온 경우 그 선택이 방금 날아갔다(e2e 가 잡았다).
+    /** 이 Y.Doc 에 편집기를 붙인다 — 연결이 문서를 버리고 다시 열면 다시 부른다. */
+    const bind = (ydoc: Y.Doc): void => {
+      viewRef.current?.destroy()
+      const collab = createCollabEditorState(ydoc.getXmlFragment(BODY_FRAGMENT), deps)
+      editorDepsRef.current = collab.deps
+      boundDocRef.current = ydoc
+      const view = createEditor({
+        mount,
+        state: collab.state,
+        editable: () => editableRef.current,
+        // ★ 협업 편집기가 돌려준 deps 를 넘긴다 — 받은 것을 그대로 넘기면 Mod-z 가 아무것도 되돌리지 않는다(§3.3-117).
+        deps: collab.deps,
+        onTransaction: (v) => {
+          syncMenu(v)
+          // 같은 값이면 리렌더하지 않는다 — 트랜잭션마다 불리는 자리다.
+          const count = selectedBlockCount(v.state)
+          setSelectedBlocks((prev) => (prev === count ? prev : count))
+          checkUnknownRefs(v)
+        },
+      })
+      viewRef.current = view
       reveal()
-      setStatus({ kind: 'notice', message: '연결이 끊겼을 때의 변경 사항을 복구했습니다.' })
-    })
-
-    // 연결이 돌아오면 기다리지 않고 보낸다.
-    const onOnline = (): void => {
-      setOffline(false)
-      void sync.sendNow()
     }
-    const onOffline = (): void => setOffline(true)
-    setOffline(typeof navigator !== 'undefined' && navigator.onLine === false)
-    window.addEventListener('online', onOnline)
-    window.addEventListener('offline', onOffline)
 
-    /**
-     * 탭이 숨거나 닫힌다. 큐를 **지금** 디스크에 쓴다.
-     *
-     * `beforeunload` 가 아니라 `pagehide`·`visibilitychange` 다 — 모바일
-     * 브라우저는 탭을 버릴 때 `beforeunload` 를 부르지 않는다.
-     */
-    const onHide = (): void => void sync.flush()
-    window.addEventListener('pagehide', onHide)
-    document.addEventListener('visibilitychange', onHide)
+    void (async () => {
+      const store = await openPendingEditStore()
+      if (disposed) return
+      const connection = await openCollabConnection({
+        url: collabUrl,
+        workspaceId,
+        pageId,
+        initialState: decodeBodyState(initialState),
+        store,
+        storeKey: pendingEditKey(userId, pageId),
+        onChange: (snapshot) => {
+          // 3초를 재는 것은 여기다 — 미확인이 풀리면 타이머를 끄고 곧바로 조용해진다.
+          if (snapshot.unconfirmed && syncingTimerRef.current === null) {
+            syncingTimerRef.current = setTimeout(() => setSyncing(true), SYNCING_AFTER_MS)
+          } else if (!snapshot.unconfirmed && syncingTimerRef.current !== null) {
+            clearTimeout(syncingTimerRef.current)
+            syncingTimerRef.current = null
+            setSyncing(false)
+          }
+          setLink({
+            online: snapshot.online,
+            readOnly: snapshot.readOnly,
+            unconfirmed: snapshot.unconfirmed,
+            reopening: snapshot.reopening,
+            closed: snapshot.closed,
+          })
+          // 버리고 다시 연 문서 — 편집기를 그 문서로 다시 만든다.
+          if (!disposed && snapshot.doc !== boundDocRef.current) bind(snapshot.doc)
+        },
+        onDiscarded: (discarded: DiscardedDoc) => {
+          if (!discarded.unconfirmed) return
+          const text = plainTextForBlocks(readBodyYDoc(discarded.doc, pageId).doc.blocks)
+          setStatus({
+            kind: 'error',
+            message: '서버가 받지 못한 편집이 있어 본문을 다시 불러왔습니다. 아래에서 내용을 확인해 복사해 주세요.',
+            unsaved: text,
+          })
+        },
+      })
+      if (disposed) {
+        void connection.destroy()
+        return
+      }
+      connectionRef.current = connection
+      bind(connection.snapshot().doc)
+      checkUnknownRefs(viewRef.current!)
+    })()
+
+    // 같은 페이지 안에서 해시만 바뀌는 경우도 받는다.
+    window.addEventListener('hashchange', reveal)
 
     /**
      * 에디터를 **빗나간** 파일 드롭을 삼킨다.
      *
-     * 브라우저의 기본 동작은 그 파일을 여는 것이고, 그건 이 페이지를 떠나는
-     * 일이다 — 조금 빗나가게 놓았을 뿐인데 편집하던 화면이 사라진다.
-     * 에디터 안쪽은 플러그인이 받아 이미지 블록으로 만든다(`image-drop.ts`).
+     * 브라우저의 기본 동작은 그 파일을 여는 것이고, 그건 이 페이지를 떠나는 일이다 — 조금 빗나가게 놓았을 뿐인데 편집하던
+     * 화면이 사라진다. 에디터 안쪽은 플러그인이 받아 이미지 블록으로 만든다(`image-drop.ts`).
      */
     const swallowFileDrop = (event: DragEvent): void => {
       if ([...(event.dataTransfer?.types ?? [])].includes('Files')) event.preventDefault()
@@ -413,21 +439,19 @@ export function BodyEditor({
     window.addEventListener('drop', swallowFileDrop)
 
     return () => {
+      disposed = true
+      if (syncingTimerRef.current !== null) clearTimeout(syncingTimerRef.current)
       window.removeEventListener('hashchange', reveal)
-      window.removeEventListener('online', onOnline)
-      window.removeEventListener('offline', onOffline)
-      window.removeEventListener('pagehide', onHide)
-      document.removeEventListener('visibilitychange', onHide)
       window.removeEventListener('dragover', swallowFileDrop)
       window.removeEventListener('drop', swallowFileDrop)
-      void sync.flush()
-      sync.dispose()
-      syncRef.current = null
-      view.destroy()
+      void connectionRef.current?.destroy()
+      connectionRef.current = null
+      viewRef.current?.destroy()
       viewRef.current = null
+      boundDocRef.current = null
     }
-    // 마운트 시 한 번만 만든다. initialDoc 이 바뀌어도 다시 만들지 않는다 —
-    // 편집 중인 내용을 서버 렌더가 덮어쓰면 사용자가 방금 친 글이 사라진다.
+    // 마운트 시 한 번만 만든다. 서버 렌더가 다시 와도 편집기를 다시 만들지 않는다 —
+    // 편집 중인 문서를 갈아끼우면 사용자가 방금 친 글이 사라진다.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -474,80 +498,58 @@ export function BodyEditor({
 
   // ── 렌더 ────────────────────────────────────────────────────────────
 
+  const banner = (() => {
+    if (link.closed === 'not_found') return '이 페이지에 접근할 수 없습니다. 권한이 바뀌었거나 페이지가 지워졌습니다.'
+    if (link.closed === 'login') return '로그인이 풀렸습니다. 다시 로그인하면 이어서 편집할 수 있습니다.'
+    if (link.closed === 'misconfigured') return '협업 서버에 연결할 수 없습니다. 설정을 확인해 주세요.'
+    if (link.reopening) return '다른 곳의 변경과 맞추는 중입니다. 잠시 편집할 수 없습니다.'
+    if (canEdit && link.readOnly === true) return '이 페이지를 고칠 권한이 사라져 읽기 전용입니다.'
+    if (!canEdit) return '읽기 전용입니다 — 이 페이지를 고칠 권한이 없습니다.'
+    if (!link.online) return '오프라인입니다. 계속 편집할 수 있고, 변경 사항은 연결이 돌아오면 저장됩니다.'
+    return null
+  })()
+
   return (
     <section aria-label="본문" className="relative">
-      {status.kind === 'conflict' && (
-        <div
-          role="alert"
-          className="mb-3 flex flex-wrap items-center gap-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm dark:border-amber-800 dark:bg-amber-950"
-        >
-          <span>다른 사람이 이 페이지를 먼저 저장했습니다. 지금 저장하면 그 내용을 덮어씁니다.</span>
-          <button
-            type="button"
-            onClick={() => void overwrite()}
-            className="rounded border border-amber-400 px-2 py-1 text-xs"
-          >
-            내 것으로 덮어쓰기
-          </button>
-          <button
-            type="button"
-            onClick={() => router.refresh()}
-            className="rounded border border-neutral-300 px-2 py-1 text-xs dark:border-neutral-700"
-          >
-            다시 불러오기
-          </button>
-        </div>
-      )}
-
       {/*
-        F-12-16 의 `Offline` 배너. **편집을 막지 않는다** — 정본: *"저장 실패 시
-        편집 차단이 아니라 경고 유지(입력을 막으면 사용자가 내용을 잃는다)."*
-        친 글은 큐에 쌓이고 연결이 돌아오면 나간다.
+        F-12-16 의 `Offline` 배너와 닫힘 안내. **편집을 막지 않는다** — 정본: *"저장 실패 시 편집 차단이 아니라 경고 유지"*.
+        친 글은 보존본에 쌓이고 연결이 돌아오면 나간다. 다시 여는 중 · 읽기 전용 · 닫힘일 때만 편집기가 잠긴다.
       */}
-      {offline && (
+      {banner && (
         <p
           role="status"
           className="mb-3 rounded-md border border-neutral-300 bg-neutral-50 px-3 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-900"
         >
-          오프라인입니다. 계속 편집할 수 있고, 변경 사항은 연결이 돌아오면 저장됩니다.
+          {banner}
         </p>
       )}
 
       {status.kind === 'error' && (
         <div role="alert" className="mb-3 flex flex-wrap items-center gap-3 text-sm text-red-600">
           <span>{status.message}</span>
-          {/*
-            정본 F-05-04: *"실패 시 '변경 사항을 저장하지 못했습니다 / 재시도'."*
-            격리된 항목은 디스크에 그대로 있으므로 이 버튼이 그것을 다시 보낸다 —
-            사용자가 친 글을 다시 치게 하지 않는다.
-          */}
-          <button
-            type="button"
-            onClick={() => void syncRef.current?.sendNow()}
-            className="rounded border border-red-300 px-2 py-1 text-xs dark:border-red-800"
-          >
-            다시 시도
-          </button>
-          {/*
-            정본 F-12-16: *"조용히 버리면 데이터 손실 신고가 된다"* — 못 보낸 내용을
-            **볼 수 있어야** 한다. 권한이 사라졌거나 페이지가 지워진 경우 재시도는
-            영영 실패하므로, 사용자가 자기 글을 복사해 갈 길이 유일한 탈출구다.
-          */}
-          <button
-            type="button"
-            onClick={() => setShowUnsaved((v) => !v)}
-            className="rounded border border-red-300 px-2 py-1 text-xs dark:border-red-800"
-          >
-            {showUnsaved ? '내용 숨기기' : '저장하지 못한 내용 보기'}
-          </button>
-          {showUnsaved && (
-            <textarea
-              readOnly
-              aria-label="저장하지 못한 내용"
-              value={status.unsaved ?? ''}
-              onFocus={(e) => e.currentTarget.select()}
-              className="h-40 w-full rounded border border-red-200 bg-white p-2 font-mono text-xs text-neutral-800 dark:border-red-900 dark:bg-neutral-950 dark:text-neutral-200"
-            />
+          {status.unsaved !== undefined && (
+            <>
+              {/*
+                정본 F-12-16: *"조용히 버리면 데이터 손실 신고가 된다"* — 못 보낸 내용을 **볼 수 있어야** 한다.
+                서버가 거부한 편집은 다시 보낼 길이 없으므로, 사용자가 자기 글을 복사해 갈 길이 유일한 탈출구다.
+              */}
+              <button
+                type="button"
+                onClick={() => setShowUnsaved((v) => !v)}
+                className="rounded border border-red-300 px-2 py-1 text-xs dark:border-red-800"
+              >
+                {showUnsaved ? '내용 숨기기' : '저장하지 못한 내용 보기'}
+              </button>
+              {showUnsaved && (
+                <textarea
+                  readOnly
+                  aria-label="저장하지 못한 내용"
+                  value={status.unsaved}
+                  onFocus={(e) => e.currentTarget.select()}
+                  className="h-40 w-full rounded border border-red-200 bg-white p-2 font-mono text-xs text-neutral-800 dark:border-red-900 dark:bg-neutral-950 dark:text-neutral-200"
+                />
+              )}
+            </>
           )}
         </div>
       )}
@@ -616,10 +618,10 @@ export function BodyEditor({
       {/*
         정본 F-05-04: **기본 무표시.** 잘 되는 것은 조용해야 한다 — 1초마다
         깜빡이는 "저장됨"은 정보가 아니라 소음이고, 진짜 문제가 그 안에 묻힌다.
-        3초 넘게 못 보냈을 때만 말한다.
+        서버가 3초 넘게 확인하지 않았을 때만 말한다.
       */}
       <p role="status" aria-live="polite" className="mt-2 h-4 text-xs text-neutral-400">
-        {syncMessage(status.kind === 'syncing' ? { kind: 'syncing' } : { kind: 'idle' })}
+        {syncing ? '동기화 중…' : ''}
       </p>
     </section>
   )

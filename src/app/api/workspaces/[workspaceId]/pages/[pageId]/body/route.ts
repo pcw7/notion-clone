@@ -15,8 +15,8 @@
  * ──────────────────────────────────────────────────────────────────────
  *
  * 정본: *"retryable=false 인데 재시도하면 무한 루프가 된다. **retryable 플래그는
- * 선택이 아니라 필수.**"* 저장 큐(`src/lib/sync/`)가 이 값을 보고 "다시 보낼
- * 실패"와 "보내도 소용없는 실패"를 가른다. 상태 코드로 유추하는 길도 있지만,
+ * 선택이 아니라 필수.**"* 보내는 쪽이 이 값을 보고 "다시 보낼 실패"와 "보내도 소용없는 실패"를 가른다.
+ * ⚠ 본문 편집기는 더 이상 이 라우트로 저장하지 않는다(CRDT 6d — 협업 서버로 간다). 남은 부르는 곳은 검사 · 도구다(6e 에서 정한다). 상태 코드로 유추하는 길도 있지만,
  * 같은 409 가 충돌(재시도 의미 있음)일 수도 하위 페이지 누락(의미 없음)일 수도
  * 있어서 서버가 말해 주는 편이 정확하다.
  */
@@ -24,7 +24,7 @@
 import { asBlockId } from '@/lib/ids'
 import { readJsonBody, requireWorkspaceSession } from '@/lib/auth/route-session'
 import { loadPageBody, savePageBody } from '@/lib/block/save-page-body'
-import { MAX_BODY_BYTES, TOO_LARGE_MESSAGE } from '@/lib/sync/outbox'
+import { MAX_BODY_BYTES, TOO_LARGE_MESSAGE } from '@/lib/block/body-limits'
 
 type Ctx = RouteContext<'/api/workspaces/[workspaceId]/pages/[pageId]/body'>
 
