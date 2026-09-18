@@ -53,7 +53,8 @@ export type CreateEditorOptions = {
   readonly mount: HTMLElement
   /** 에디터 상태 — Phase 0 편집기는 `createDocumentState`, 협업 편집기는 `collab/collab-editor.ts`. */
   readonly state: EditorState
-  readonly editable: boolean
+  /** 물을 때마다 판단한다 — 협업 편집기는 권한 · 연결 상태에 따라 도중에 바뀐다(`view.setProps` 로 다시 묻게 한다). */
+  readonly editable: () => boolean
   /** 상태를 만들 때 넘긴 것과 같아야 한다 — 키맵의 되돌리기 명령이 상태의 기록 플러그인과 짝이다. */
   readonly deps: EditorDeps
   readonly onTransaction: (view: EditorView, tr: Transaction) => void
@@ -140,17 +141,21 @@ export function createEditor(options: CreateEditorOptions): EditorView {
   const baseKeys = keydownHandler(safeBaseKeymap())
   const state = options.state
 
-  // `dispatchTransaction` 안에서 `this` 는 타입상 EditorView 가 아니다.
-  // 클로저로 잡아 쓰는 편이 캐스팅보다 정직하다.
-  const view: EditorView = new EditorView(options.mount, {
+  // ⚠ **만들어지는 도중에 트랜잭션이 온다.** 협업 바인딩(`ySyncPlugin`)은 플러그인 뷰를 만들 때 Y.Doc 의 내용을 문서에
+  //   넣으려고 곧바로 dispatch 한다 — 그 순간 아래 `view` 는 아직 대입 전이다(Phase 0 편집기는 생성 중 dispatch 가 없어
+  //   드러나지 않았고, 협업 편집기를 붙이자 본문이 통째로 비어 보였다). ProseMirror 는 `this` 를 그 뷰로 부르므로
+  //   대입 전에는 그것을 쓴다.
+  let view: EditorView | null = null
+  const created: EditorView = new EditorView(options.mount, {
     state,
-    editable: () => options.editable,
+    editable: options.editable,
     // ★ IME 게이트가 여기 하나뿐이다 — `createKeydownHandler` 내부.
     handleKeyDown: (v, event) => ourKeys(v, event) || baseKeys(v, event),
     nodeViews: createNodeViews(options.deps),
     dispatchTransaction(tr) {
-      view.updateState(view.state.apply(tr))
-      options.onTransaction(view, tr)
+      const self = view ?? (this as unknown as EditorView)
+      self.updateState(self.state.apply(tr))
+      options.onTransaction(self, tr)
     },
     attributes: {
       class: 'blk-editor',
@@ -162,5 +167,6 @@ export function createEditor(options: CreateEditorOptions): EditorView {
     },
   })
 
+  view = created
   return view
 }

@@ -9,10 +9,14 @@
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
 
+import * as Y from 'yjs'
+
 import { asBlockId } from '@/lib/ids'
 import { requirePageSession } from '@/lib/auth/page-session'
 import { getPage, listAncestors, listChildPages } from '@/lib/block/page'
-import { loadPageBody } from '@/lib/block/save-page-body'
+import { loadPageRefTitles } from '@/lib/block/save-page-body'
+import { loadDocState, pageAccess } from '@/lib/collab/doc-store'
+import { collabServerUrl } from '@/lib/collab/collab-url'
 import { listMovableTargets } from '@/lib/block/move-page'
 import { isFavorite, recordVisit } from '@/lib/nav/recent'
 import { NewPageButton } from '../new-page-button'
@@ -44,10 +48,14 @@ export default async function PageView({ params }: PageProps<'/w/[workspaceId]/[
   // 술어에 넣으므로 null 이 되고, 404 는 "없다"와 "볼 수 없다"를 구분하지 않는다.
   if (!page) notFound()
 
-  const [ancestors, children, body, moveTargets, favorite] = await Promise.all([
+  // 본문은 Y.Doc 이 정본이다(판결 X-1 · CRDT 6d) — 협업 편집기가 그 상태로 시작하고 협업 서버에 붙는다. 행으로 만든 문서는
+  // 더 이상 화면이 읽지 않고, 참조 제목만 따로 받는다(참조 노드는 제목을 싣지 않는다 — §3.2-22).
+  const [ancestors, children, state, pageRefTitles, access, moveTargets, favorite] = await Promise.all([
     listAncestors(ctx, page),
     listChildPages(ctx, page.id),
-    loadPageBody(ctx, page.id),
+    loadDocState(ctx, page.id),
+    loadPageRefTitles(ctx, page.id),
+    pageAccess(ctx, page.id),
     listMovableTargets(ctx, page.id),
     isFavorite(ctx, page.id),
   ])
@@ -57,8 +65,8 @@ export default async function PageView({ params }: PageProps<'/w/[workspaceId]/[
   // 실패해도 던지지 않는다(`recordVisit` 머리말): 기록이 빠지는 것이 화면이
   // 안 열리는 것보다 낫다.
   await recordVisit(ctx, page.id)
-  // getPage 가 통과했으므로 여기서 null 이면 그 사이에 지워진 것이다.
-  if (!body) notFound()
+  // getPage 가 통과했으므로 여기서 실패하면 그 사이에 지워진 것이다.
+  if (!state.ok || pageRefTitles === null) notFound()
 
   return (
     <main className="mx-auto flex min-h-screen max-w-3xl flex-col gap-6 px-6 py-12">
@@ -110,9 +118,11 @@ export default async function PageView({ params }: PageProps<'/w/[workspaceId]/[
       <BodyEditor
         workspaceId={workspaceId}
         pageId={page.id}
-        initialDoc={body.doc}
-        initialVersion={body.version}
-        initialPageRefTitles={body.pageRefTitles}
+        userId={ctx.userId}
+        collabUrl={collabServerUrl()}
+        initialState={Buffer.from(Y.encodeStateAsUpdate(state.value.ydoc)).toString('base64')}
+        canEdit={access === 'edit'}
+        initialPageRefTitles={pageRefTitles}
       />
 
       <section className="flex flex-col gap-3">

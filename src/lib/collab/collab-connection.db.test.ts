@@ -13,6 +13,10 @@
  *   ⑤ **권한이 강등되면 버리고 읽기 전용으로 다시 연다 · 읽기 전용으로 받았는데 보존본에 편집이 있으면 버리고 알린다**
  *   ⑥ **볼 수 없게 되면 닫고 보존본을 지운다 · 세션이 끊기면 로그인으로 닫고 보존본은 남긴다**
  *   ⑦ **서버가 판정하지 못해 닫으면(`unavailable`) 로컬을 버리지 않고 다시 붙어 그 사이 편집까지 보낸다**
+ *   ⑧ **`confirm()` 은 창을 기다리지 않고 지금 청하며, 서버가 쌓은 뒤에 끝난다**(6d 의 하위 페이지 생성이 쓴다) — 끊겨 있었으면
+ *      다시 붙는 대로 청한다(창을 기다리지 않는다)
+ *   ⑨ **연결이 돌아왔다는 신호를 받으면 provider 의 다음 시도를 기다리지 않고 곧바로 다시 붙는다** — 그리고 **내린 연결은 다시
+ *      붙지 않는다**(예약된 재시도가 소켓을 되살리지 않는다)
  *
  * 끊김은 소켓 클래스가 만든다 — `gate.offline` 이면 닫힌 포트로 붙는다. 서버 쪽 처리 순서는 커밋 신호를 붙잡아(`holdableFeed`) 멈춘다 —
  * 참여자 update 는 자기 seq 의 신호가 적용될 때까지 확인되지 않는다(`collab-server.ts` 머리말).
@@ -158,6 +162,7 @@ const typeAt = (blockId: string, text: string) => (tr: Transaction, doc: PmNode)
 
 type Opened = {
   readonly connection: CollabConnection
+  readonly onlineSource: EventTarget
   readonly discarded: DiscardedDoc[]
   readonly gate: Gate
   readonly wire: Wire
@@ -171,10 +176,13 @@ async function open(
   target: { workspaceId: string; pageId: string },
   store: CollabConnectionOptions['store'],
   gate: Gate = { offline: false },
+  extra: Partial<CollabConnectionOptions> = {},
 ): Promise<Opened> {
   const discarded: DiscardedDoc[] = []
   const wire: Wire = { sockets: [], received: [], sent: [] }
+  const onlineSource = new EventTarget()
   const connection = await openCollabConnection({
+    onlineSource,
     url: running.url,
     workspaceId: target.workspaceId,
     pageId: target.pageId,
@@ -185,9 +193,10 @@ async function open(
     confirmDelayMs: 20,
     retryDelayMs: 50,
     onDiscarded: (d) => discarded.push(d),
+    ...extra,
   })
   t.after(() => connection.destroy())
-  return { connection, discarded, gate, wire, doc: () => connection.snapshot().doc }
+  return { connection, discarded, gate, wire, onlineSource, doc: () => connection.snapshot().doc }
 }
 
 const settled = (opened: Opened) => () => {
@@ -466,5 +475,114 @@ describe('닫힌 이유 → 하는 일', () => {
     assert.equal(rejectionAction('sso_required'), 'login')
     assert.equal(rejectionAction('unavailable'), 'retry')
     assert.equal(rejectionAction('forbidden_origin'), 'misconfigured')
+  })
+})
+
+// ── ⑧ 지금 확인 청하기 ─────────────────────────────────────────────
+
+describe('⑧ confirm()', () => {
+  test('★ 창을 기다리지 않고 지금 청하며, 서버가 쌓은 뒤에 끝난다 — 내린 연결에서는 던진다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { workspaceId, owner, pageId, blockId } = await fixture()
+    const feed = holdableFeed()
+    const running = await startServer(t, { openFeed: (handlers) => feed.open(handlers) })
+    t.after(() => feed.releaseIfHeld())
+    const store = memoryPendingEditStore()
+    // 창을 아주 길게 둔다 — 저절로 확인되면 이 검사가 아무것도 가려내지 못한다.
+    const me = await open(t, running, owner, { workspaceId, pageId }, store, { offline: false }, { confirmDelayMs: 600_000 })
+    await waitFor('연결', settled(me))
+
+    feed.hold()
+    const before = await logLength(pageId)
+    edit(me.doc(), typeAt(blockId, '지금 '))
+    let done = false
+    const pending = me.connection.confirm().then(() => {
+      done = true
+    })
+    await waitFor('쌓였다(확인은 신호를 기다린다)', async () => (await logLength(pageId)) === before + 1)
+    assert.equal(done, false, '서버가 쌓기 전에 끝났다')
+
+    feed.release()
+    await pending
+    assert.equal(store.entries.size, 0, '확인됐는데 보존본이 남았다')
+    assert.equal(await logTexts(pageId, '지금 '), true)
+    // 확인할 것이 없으면 곧바로 끝난다.
+    await me.connection.confirm()
+
+    await me.connection.destroy()
+    await assert.rejects(() => me.connection.confirm())
+  })
+
+  test('★ 끊겨 있으면 다시 붙는 대로 청한다 — 창을 기다리지 않는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { workspaceId, owner, pageId, blockId } = await fixture()
+    const running = await startServer(t)
+    const store = memoryPendingEditStore()
+    const me = await open(t, running, owner, { workspaceId, pageId }, store, { offline: false }, { confirmDelayMs: 600_000 })
+    await waitFor('연결', settled(me))
+
+    me.gate.offline = true
+    me.wire.sockets.at(-1)?.close()
+    await waitFor('끊겼다', () => !me.connection.snapshot().online)
+    edit(me.doc(), typeAt(blockId, '끊긴 채 '))
+    let done = false
+    const pending = me.connection.confirm().then(() => {
+      done = true
+    })
+    await waitFor('한동안 기다린다', () => me.wire.sockets.length >= 3, 10_000)
+    assert.equal(done, false, '서버에 닿지도 않았는데 끝났다')
+
+    me.gate.offline = false
+    me.onlineSource.dispatchEvent(new Event('online'))
+    await pending
+    assert.equal(await logTexts(pageId, '끊긴 채 '), true)
+    assert.equal(store.entries.size, 0)
+  })
+})
+
+// ── ⑨ 연결이 돌아왔다는 신호 ───────────────────────────────────────
+
+describe('⑨ 연결이 돌아오면', () => {
+  test('★ provider 의 다음 시도를 기다리지 않고 곧바로 다시 붙어 그 사이 친 편집을 보낸다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { workspaceId, owner, pageId, blockId } = await fixture()
+    const running = await startServer(t)
+    const store = memoryPendingEditStore()
+    const me = await open(t, running, owner, { workspaceId, pageId }, store)
+    await waitFor('연결', settled(me))
+
+    me.gate.offline = true
+    me.wire.sockets.at(-1)?.close()
+    await waitFor('끊겼다', () => !me.connection.snapshot().online)
+    edit(me.doc(), typeAt(blockId, '돌아온 뒤 '))
+    // 두 번 넘게 헛되이 시도하게 둔다 — provider 는 시도마다 간격을 두 배로 늘린다(다음 시도는 2s 뒤가 넘는다).
+    await waitFor('두 번 넘게 시도했다', () => me.wire.sockets.length >= 4, 20_000)
+
+    me.gate.offline = false
+    const sockets = me.wire.sockets.length
+    me.onlineSource.dispatchEvent(new Event('online'))
+    await waitFor('곧바로 다시 붙었다', () => me.wire.sockets.length > sockets, 800)
+    await waitFor('그 사이 친 편집이 쌓였다', async () => await logTexts(pageId, '돌아온 뒤 '))
+    await waitFor('보존본이 비워졌다', () => store.entries.size === 0)
+  })
+
+  test('★ 내린 연결은 다시 붙지 않는다 — 소켓이 예약해 둔 재시도가 그것을 되살리지 않는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { workspaceId, owner, pageId } = await fixture()
+    const running = await startServer(t)
+    const me = await open(t, running, owner, { workspaceId, pageId }, memoryPendingEditStore())
+    await waitFor('연결', settled(me))
+
+    // 붙어 있던 소켓이 끊기면 **다음 시도를 예약한다**(`onClose` 의 setTimeout). 그 예약이 남아 있는 동안 내린다 —
+    // 재시도 루프가 이미 도는 중이면 예약이 아니라 루프라 이 장면이 아니다.
+    me.gate.offline = true
+    me.wire.sockets.at(-1)?.close()
+    await waitFor('끊겼다', () => !me.connection.snapshot().online)
+
+    await me.connection.destroy()
+    const sockets = me.wire.sockets.length
+    // 예약된 시도가 지나갈 만큼 기다린다 — 되살아나면 소켓이 는다.
+    await new Promise((resolve) => setTimeout(resolve, 4000))
+    assert.equal(me.wire.sockets.length, sockets, '내린 연결이 다시 붙었다')
   })
 })

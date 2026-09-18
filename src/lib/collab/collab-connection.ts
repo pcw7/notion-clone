@@ -42,6 +42,16 @@
  * 보존본의 열쇠(`storeKey`)는 부르는 쪽이 정한다 — 사용자를 넣어야 같은 브라우저에서 다른 사람이 열 때 그 편집을 보내지 않는다.
  *
  * ⚠ 다시 여는 동안(`reopening`) 편집기는 버린 문서를 붙들고 있다 — 그 문서에 친 편집은 쌓지 않으므로 편집기를 막아야 한다(6d).
+ *
+ * 브라우저가 **연결이 돌아왔다고 알리면 곧바로 다시 붙는다**(`online`). provider 의 소켓은 다시 붙을 때마다 간격을 두 배로 늘려
+ * (최대 30s) 기다리는데, 그 사이에 연결이 돌아와도 그만큼 조용히 기다린다 — 사용자는 이미 연결이 있는데 저장이 안 되는 것으로 본다.
+ *
+ * **provider 마다 소켓 하나**다. 문서를 버리고 다시 열 때 provider 와 소켓을 함께 새로 만든다 — 하나의 소켓을 다시 쓰면 소켓이
+ * provider 를 **문서 이름 하나로만** 기억해(`providerMap`) 옛 provider 를 떼는 순간 새 provider 의 자리가 지워진다.
+ *
+ * ⚠ 내린 소켓은 **예약된 재시도로 되살아난다** — 4.7.0 의 `destroy()` 는 `onClose` 가 걸어 둔 재시도 타이머를 지우지 않고, 그
+ * 타이머가 부르는 `connect()` 가 "다시 붙기"를 되돌린다. 그래서 내릴 때 그 길을 막는다(막지 않으면 버린 연결마다 소켓이 영영
+ * 다시 붙는다 — 검사 프로세스가 끝나지 않아 찾았다).
  */
 
 import * as Y from 'yjs'
@@ -51,7 +61,7 @@ import { collabDocumentName, confirmationRequest, parseConfirmationReply } from 
 
 /** 서버가 확인하지 않은 편집의 보존본. 페이지 · 사용자마다 합친 update 하나다. */
 export type PendingEditStore = {
-  /** 탭을 닫아도 남는가. false 면 화면이 "탭을 닫으면 사라진다"고 말할 수 있어야 한다(`sync/outbox-store.ts` 와 같다). */
+  /** 탭을 닫아도 남는가. false 면 화면이 "탭을 닫으면 사라진다"고 말할 수 있어야 한다(`pending-store.ts`). */
   readonly durable: boolean
   read(key: string): Promise<Uint8Array | null>
   /** null 이면 지운다. */
@@ -132,12 +142,24 @@ export type CollabConnectionOptions = {
   readonly confirmDelayMs?: number
   /** `unavailable` 뒤 다시 붙기까지의 첫 간격 — 거듭되면 두 배씩, 최대 30s. 기본 1s. */
   readonly retryDelayMs?: number
+  /** "연결이 돌아왔다"(`online`)를 알리는 곳. 기본은 브라우저의 `window` — 브라우저 밖(검사)에서는 넣어 준다. */
+  readonly onlineSource?: EventTarget
   onChange?(snapshot: CollabSnapshot): void
   onDiscarded?(discarded: DiscardedDoc): void
 }
 
 export type CollabConnection = {
   snapshot(): CollabSnapshot
+  /**
+   * 지금까지의 편집이 서버 로그에 쌓이기를 기다린다 — 확인을 **곧바로** 청하고 답을 받을 때까지(창을 기다리지 않는다).
+   *
+   * 하위 페이지를 만들 때 쓴다(6d): 편집기는 `/쿼리` 를 지운 편집이 서버에 있는 뒤에야 그 블록 자리를 서버에 넘길 수 있다 —
+   * 먼저 넘기면 서버가 보는 그 블록에는 아직 글자가 있어 대체 대신 뒤에 들어간다.
+   *
+   * 확인할 것이 없으면 곧바로 끝난다. 끊겨 있으면 다시 붙어 확인될 때까지 기다리므로 **부르는 쪽이 시간을 끊는다**.
+   * 문서를 버리거나 닫으면 던진다 — 그 편집은 서버에 가지 않는다.
+   */
+  confirm(): Promise<void>
   /** provider 를 내린다. 보존본은 지우지 않는다 — 탭을 닫아도 확인받지 못한 편집은 남아야 한다. 밀린 보존본 쓰기를 기다린다. */
   destroy(): Promise<void>
 }
@@ -174,6 +196,25 @@ export async function openCollabConnection(options: CollabConnectionOptions): Pr
   /** 답을 기다리는 확인 요청 — 답이 오면 앞의 `covers` 개가 확인된다. 연결이 바뀌면 버린다. */
   let awaiting: { readonly token: string; readonly covers: number; readonly provider: HocuspocusProvider } | null = null
   let tokens = 0
+  /** 쌓은 편집 수 · 확인된 편집 수 — `confirm()` 이 "내 편집까지 확인됐다"를 알아보는 기준이다. */
+  let appendedCount = unconfirmed.length
+  let confirmedCount = 0
+  /** `confirm()` 이 기다리는 쪽 — `target` 만큼 확인되면 끝난다. */
+  let waiting: { readonly target: number; resolve(): void; reject(error: Error): void }[] = []
+
+  const settleWaiting = (): void => {
+    waiting = waiting.filter((waiter) => {
+      if (confirmedCount < waiter.target) return true
+      waiter.resolve()
+      return false
+    })
+  }
+
+  const failWaiting = (reason: string): void => {
+    const waiters = waiting
+    waiting = []
+    for (const waiter of waiters) waiter.reject(new Error(`편집을 서버에 쌓지 못했다: ${reason}`))
+  }
 
   const snapshot = (): CollabSnapshot => ({
     doc,
@@ -207,6 +248,7 @@ export async function openCollabConnection(options: CollabConnectionOptions): Pr
   const onLocalUpdate = (update: Uint8Array, origin: unknown): void => {
     if (origin === INITIAL || origin === RESTORED || origin instanceof HocuspocusProvider) return
     unconfirmed.push(update)
+    appendedCount += 1
     persist()
     scheduleConfirm()
     emit()
@@ -216,6 +258,11 @@ export async function openCollabConnection(options: CollabConnectionOptions): Pr
 
   const scheduleConfirm = (): void => {
     if (confirmTimer !== null || awaiting !== null || unconfirmed.length === 0) return
+    // 기다리는 쪽(`confirm()`)이 있으면 창을 기다리지 않는다 — 지금 보낼 수 없으면(동기화 전 · 끊김) 다음 `synced` 가 다시 부른다.
+    if (waiting.length > 0) {
+      sendConfirm()
+      return
+    }
     confirmTimer = setTimeout(sendConfirm, confirmDelayMs)
   }
 
@@ -238,7 +285,9 @@ export async function openCollabConnection(options: CollabConnectionOptions): Pr
       return
     }
     unconfirmed = unconfirmed.slice(covers)
+    confirmedCount += covers
     persist()
+    settleWaiting()
     scheduleConfirm()
     emit()
   }
@@ -250,17 +299,22 @@ export async function openCollabConnection(options: CollabConnectionOptions): Pr
     provider = null
     awaiting = null
     online = false
-    // 그 provider 의 이벤트를 처리하는 도중일 수 있다 — 내리는 것은 그 뒤로 미룬다. 소켓은 provider 마다 따로라 함께 내린다.
+    // **곧바로** 내린다. 소켓은 provider 를 문서 이름 하나로 기억하므로(`providerMap`), 새 provider 를 붙인 뒤에 옛 것을
+    // 내리면 그 `detach` 가 새 provider 의 자리를 지운다. 소켓도 함께 내리고 되살아나지 못하게 막는다(머리말).
     if (current !== null) {
-      queueMicrotask(() => {
-        current.destroy()
-        current.configuration.websocketProvider.destroy()
-      })
+      const dying = current.configuration.websocketProvider
+      current.destroy()
+      dying.destroy()
+      dying.connect = () => Promise.resolve()
     }
   }
 
+  /** 지금 붙어 있는(또는 붙을) 문서 — 브라우저가 `online` 을 알리면 그대로 다시 붙는다. */
+  let attached: { readonly target: Y.Doc; readonly swap: boolean } | null = null
+
   /** `target` 에 provider 를 붙인다. `swap` 이면 첫 동기화 때 그 문서로 바꾼다(버리고 다시 열기). */
   const connect = (target: Y.Doc, swap: boolean): void => {
+    attached = { target, swap }
     const socket = new HocuspocusProviderWebsocket({ url: options.url, WebSocketPolyfill: options.WebSocketPolyfill })
     const next = new HocuspocusProvider({
       websocketProvider: socket,
@@ -335,6 +389,7 @@ export async function openCollabConnection(options: CollabConnectionOptions): Pr
   const forgetUnconfirmed = (reason: string): void => {
     const hadEdits = unconfirmed.length > 0
     unconfirmed = []
+    failWaiting(reason)
     persist()
     options.onDiscarded?.({ reason, doc, unconfirmed: hadEdits })
   }
@@ -355,9 +410,21 @@ export async function openCollabConnection(options: CollabConnectionOptions): Pr
   const close = (kind: CollabClosed, reason: string, forget: boolean): void => {
     dropProvider()
     if (forget && !reopening) forgetUnconfirmed(reason)
+    // 닫힌 연결에서는 확인이 오지 않는다 — 기다리는 쪽(`confirm`)을 붙잡아 두지 않는다. 보존본은 남을 수 있다(로그인).
+    failWaiting(reason)
     closed = kind
     emit()
   }
+
+  /** 연결이 돌아왔다 — 소켓이 예약해 둔 다음 시도를 기다리지 않고 지금 붙는다(머리말). */
+  const onBrowserOnline = (): void => {
+    if (destroyed || closed !== null || online || attached === null) return
+    const { target, swap } = attached
+    dropProvider()
+    connect(target, swap)
+  }
+  const onlineSource = options.onlineSource ?? (typeof window === 'undefined' ? null : window)
+  onlineSource?.addEventListener('online', onBrowserOnline)
 
   doc.on('update', onLocalUpdate)
   connect(doc, false)
@@ -365,8 +432,26 @@ export async function openCollabConnection(options: CollabConnectionOptions): Pr
 
   return {
     snapshot,
+    confirm() {
+      if (destroyed) return Promise.reject(new Error('연결을 내렸다'))
+      if (closed !== null) return Promise.reject(new Error(`연결이 닫혔다: ${closed}`))
+      const target = appendedCount
+      if (confirmedCount >= target) return Promise.resolve()
+      const pending = new Promise<void>((resolve, reject) => {
+        waiting = [...waiting, { target, resolve, reject }]
+      })
+      // 창을 기다리지 않는다 — 지금 청한다(앞선 요청이 도는 중이면 그 답 뒤에 이어서 청한다).
+      if (confirmTimer !== null) {
+        clearTimeout(confirmTimer)
+        confirmTimer = null
+      }
+      sendConfirm()
+      return pending
+    },
     async destroy() {
       destroyed = true
+      onlineSource?.removeEventListener('online', onBrowserOnline)
+      failWaiting('연결을 내렸다')
       if (retryTimer !== null) clearTimeout(retryTimer)
       if (confirmTimer !== null) clearTimeout(confirmTimer)
       doc.off('update', onLocalUpdate)
