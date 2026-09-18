@@ -51,7 +51,24 @@ import { setTimeout as sleep } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
+
+/** `.env` 를 아주 단순하게 읽는다(`migrate.mjs` · `collab-server.mjs` 와 같다). 이미 있는 환경 변수가 이긴다. */
+function loadEnv(file = join(ROOT, '.env')) {
+  if (!existsSync(file)) return {}
+  const out = {}
+  for (const line of readFileSync(file, 'utf8').split('\n')) {
+    const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)$/i)
+    if (m) out[m[1]] = m[2].trim().replace(/^["']|["']$/g, '')
+  }
+  return out
+}
+for (const [key, value] of Object.entries(loadEnv())) process.env[key] ??= value
+
 const { textRun } = await import(new URL('../src/lib/contracts/rich-text.ts', import.meta.url).href)
+// 본문 준비 · 확인은 **서버 명령 경로**로 한다(CRDT 6e). 본문 저장 API(PUT)는 걷어냈다 — 편집은 협업 서버로만 간다.
+const { resolveSessionContext } = await import(new URL('../src/lib/auth/session-context.ts', import.meta.url).href)
+const { savePageBody, loadPageBody } = await import(new URL('../src/lib/block/save-page-body.ts', import.meta.url).href)
+const { closePool } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
 
 const PORT = Number(process.env.E2E_PORT ?? 3100)
 const COLLAB_PORT = Number(process.env.E2E_COLLAB_PORT ?? 3101)
@@ -308,6 +325,21 @@ async function main() {
 
     res = await fetch(`${BASE}/api/workspaces`, { method: 'POST', headers: authed, body: JSON.stringify({ name: 'E2E' }) })
     const { workspaceId } = await res.json()
+
+    // 본문을 준비하고 확인하는 길 — 명령 경로를 그대로 부른다(앱과 같은 DB).
+    const resolved = await resolveSessionContext(session, workspaceId)
+    if (!resolved.ok) throw new Error(`세션을 해석하지 못했다: ${resolved.reason}`)
+    const ctx = resolved.context
+    const saveBody = async (page, doc, options = {}) => {
+      const result = await savePageBody(ctx, page, doc, options)
+      if (!result.ok) throw new Error(`본문 준비 실패(${result.reason}): ${JSON.stringify(result)}`)
+      return result
+    }
+    const readBody = async (page) => {
+      const body = await loadPageBody(ctx, page)
+      if (!body) throw new Error(`본문을 읽지 못했다: ${page}`)
+      return body
+    }
     res = await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: '{}' })
     const pageId = (await res.json()).page.id
 
@@ -323,13 +355,11 @@ async function main() {
         block(ids.D, 'paragraph', 'D'),
       ],
     }
-    const bodyUrl = `${BASE}/api/workspaces/${workspaceId}/pages/${pageId}/body`
-    res = await fetch(bodyUrl, { method: 'PUT', headers: authed, body: JSON.stringify({ doc }) })
-    if (!res.ok) throw new Error(`본문 저장 ${res.status} ${await res.text()}`)
+    await saveBody(pageId, doc)
 
     /** 서버에 저장된 구조를 `A | A > a1` 꼴로. */
     const savedShape = async () => {
-      const body = await (await fetch(bodyUrl, { headers: authed })).json()
+      const body = await readBody(pageId)
       const out = []
       const walk = (blocks, prefix) => {
         for (const b of blocks) {
@@ -816,19 +846,14 @@ async function main() {
     const imgUrlId = randomUUID()
     const imgFileId = randomUUID()
     const emptyImage = (id) => ({ id, type: 'image', title: [], properties: {}, format: {}, children: [] })
-    const currentDoc = (await (await fetch(bodyUrl, { headers: authed })).json()).doc
-    res = await fetch(bodyUrl, {
-      method: 'PUT',
-      headers: authed,
-      body: JSON.stringify({ doc: { blocks: [...currentDoc.blocks, emptyImage(imgUrlId), emptyImage(imgFileId)] } }),
-    })
-    if (!res.ok) throw new Error(`이미지 블록 저장 ${res.status} ${await res.text()}`)
+    const currentDoc = (await readBody(pageId)).doc
+    await saveBody(pageId, { blocks: [...currentDoc.blocks, emptyImage(imgUrlId), emptyImage(imgFileId)] })
     await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${pageId}` })
     await waitFor(`!!document.querySelector('[data-block-id="${imgFileId}"] .blk-image-pick')`, 15000)
 
     /** 서버에 저장된 이 블록의 `properties.source`. */
     const savedSource = async (id) => {
-      const body = await (await fetch(bodyUrl, { headers: authed })).json()
+      const body = await readBody(pageId)
       let found = null
       const walk = (blocks) => {
         for (const b of blocks) {
@@ -990,7 +1015,7 @@ async function main() {
     const droppedSaved = await (async () => {
       let last = []
       for (let i = 0; i < 40; i += 1) {
-        const body = await (await fetch(bodyUrl, { headers: authed })).json()
+        const body = await readBody(pageId)
         const found = []
         const walk = (blocks) => {
           for (const b of blocks) {
@@ -1018,10 +1043,9 @@ async function main() {
 
     // 새 페이지에서 한다 — 앞 절들이 만든 상태와 섞이지 않게.
     const syncPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: '{}' })).json()).page.id
-    const syncBodyUrl = `${BASE}/api/workspaces/${workspaceId}/pages/${syncPage}/body`
     /** 서버가 가진 본문 — 행은 투영 창(1s)만큼 늦다. */
     const savedText = async () => {
-      const body = await (await fetch(syncBodyUrl, { headers: authed })).json()
+      const body = await readBody(syncPage)
       return body.doc.blocks.map((b) => b.title?.[0]?.text?.content ?? '').join(' | ')
     }
     const savedHas = async (text, ms = 15000) => {
@@ -1077,15 +1101,6 @@ async function main() {
       await waitFor(`![...document.querySelectorAll('[role="status"]')].some((e) => e.textContent.includes('오프라인'))`, 10000))
 
     // ④ 서버가 받을 수 없는 편집(한 번에 보내기 한도 초과) — 버리고 다시 열고, 버린 내용을 보여 준다.
-    const tooBig = await fetch(syncBodyUrl, {
-      method: 'PUT',
-      headers: authed,
-      body: JSON.stringify({ doc: { blocks: [{ id: randomUUID(), type: 'paragraph', title: [textRun('가'.repeat(400000))], properties: {}, format: {}, children: [] }] } }),
-    })
-    const tooBigBody = await tooBig.json()
-    check('본문 저장 라우트는 한도를 넘으면 413 이다', tooBig.status === 413, String(tooBig.status))
-    check('그리고 다시 보내도 소용없다고 말해 준다 (retryable:false)', tooBigBody.retryable === false, JSON.stringify(tooBigBody))
-
     const hugeEditor = await rect('.blk-editor')
     await click(hugeEditor.x + 40, hugeEditor.y + 10)
     // 한 번에 보낼 수 있는 update 상한(1MiB)을 **확실히** 넘긴다 — 아슬아슬하면 통과해 버려 이 절이 아무것도 보지 않는다.
@@ -1893,14 +1908,11 @@ async function main() {
           (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: JSON.stringify(body) })).json()).page.id
         const exportPage = await newPage({ title: exportTitle })
         await newPage({ parentPageId: exportPage, title: childTitle })
-        const exportBodyUrl = `${BASE}/api/workspaces/${workspaceId}/pages/${exportPage}/body`
-        const current = await (await fetch(exportBodyUrl, { headers: authed })).json()
-        res = await fetch(exportBodyUrl, {
-          method: 'PUT',
-          headers: authed,
-          body: JSON.stringify({ version: current.version, doc: { blocks: [block(randomUUID(), 'paragraph', '익스포트 본문 한 줄'), ...current.doc.blocks] } }),
-        })
-        check('내보낼 페이지를 준비했다 — 본문 한 줄 + 하위 페이지', res.ok, `${res.status} ${await res.text()}`)
+        const current = await readBody(exportPage)
+        const prepared = await savePageBody(ctx, exportPage, {
+          blocks: [block(randomUUID(), 'paragraph', '익스포트 본문 한 줄'), ...current.doc.blocks],
+        }, { expectedVersion: current.version })
+        check('내보낼 페이지를 준비했다 — 본문 한 줄 + 하위 페이지', prepared.ok, JSON.stringify(prepared))
 
         await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${exportPage}` })
         await waitFor(`!!document.querySelector('[data-testid="export-button"]')`, 15000)
@@ -1970,9 +1982,9 @@ async function main() {
       await access({ action: 'restrict' })
       await access({ action: 'grant', principal: { type: 'user', id: randomUUID() }, level: 'full_access' })
       const revoked = await access({ action: 'revoke', principal: { type: 'workspace_everyone' } })
-      // 페이지 라우트에는 GET 이 없다(PATCH 뿐 — 처음에 그것으로 재서 405 로 실패했다). 권한을 거치는 본문 GET 으로 본다.
-      const hiddenBody = await fetch(`${BASE}/api/workspaces/${workspaceId}/pages/${hiddenChild}/body`, { headers: authed })
-      check('전제: 하위 페이지를 이 세션이 볼 수 없게 됐다', revoked.ok && hiddenBody.status === 404, `revoke ${revoked.status} · body ${hiddenBody.status}`)
+      // 페이지 라우트에는 GET 이 없다(PATCH 뿐 — 처음에 그것으로 재서 405 로 실패했다). 권한을 거치는 제목 맵 라우트로 본다.
+      const hiddenTitles = await fetch(`${BASE}/api/workspaces/${workspaceId}/pages/${hiddenChild}/page-ref-titles`, { headers: authed })
+      check('전제: 하위 페이지를 이 세션이 볼 수 없게 됐다', revoked.ok && hiddenTitles.status === 404, `revoke ${revoked.status} · titles ${hiddenTitles.status}`)
 
       await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${refParent}` })
       await waitFor(`!!document.querySelector('.blk-editor .blk-page-link')`, 15000)
@@ -1986,6 +1998,7 @@ async function main() {
     const serverErrors = serverOutput.split('\n').filter((l) => l.includes('⨯'))
     check('서버에서 오류가 나지 않았다', serverErrors.length === 0, serverErrors.join('\n      '))
   } finally {
+    await closePool().catch(() => undefined)
     for (const tab of tabs) tab.ws.close()
     cdp?.ws.close()
     browser?.kill()

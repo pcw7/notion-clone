@@ -100,7 +100,6 @@ import { isUuid } from '../ids.ts'
 import { effectiveCaps } from '../permissions/effective.ts'
 import { can } from '../permissions/levels.ts'
 import { PAGE_REF_NODE } from '../editor/schema.ts'
-import { MAX_BODY_BYTES } from '../block/body-limits.ts'
 import { writeEditorChange, type EditorChange } from './body-edit.ts'
 import { repairBodyYDoc } from './repair.ts'
 import { createBodyYDoc, readBodyYDoc, type BodyRead, type BodyReadOptions } from './ydoc.ts'
@@ -109,8 +108,13 @@ import { createBodyYDoc, readBodyYDoc, type BodyRead, type BodyReadOptions } fro
 export const DOC_ORIGINS = ['editor', 'api', 'automation', 'restore', 'import', 'external_sync'] as const
 export type DocOrigin = (typeof DOC_ORIGINS)[number]
 
-/** update 한 개의 상한. 본문 한도(F-12-16 · `MAX_BODY_BYTES`)와 같은 자릿수로 둔다. */
-export const MAX_DOC_UPDATE_BYTES = MAX_BODY_BYTES
+/**
+ * update 한 개의 상한 — F-12-16 의 본문 한도가 이제 여기 하나다(CRDT 6e).
+ *
+ * 본문을 통째로 받던 저장(PUT)이 사라지면서 "한 번에 받는 것"은 참여자가 보내는 update 하나가 됐다. 넘으면 **적용하기 전에**
+ * 거부하고(`too_large`) 그 문서 연결을 닫는다 — 브라우저는 그 편집을 버리고 다시 열며 버린 내용을 보여 준다(6c · 6d).
+ */
+export const MAX_DOC_UPDATE_BYTES = 1024 * 1024
 
 /** 합치지 않은 update 가 이만큼 쌓이면 쓰기가 스냅샷을 새로 쓴다. */
 export const COMPACT_EVERY = 100
