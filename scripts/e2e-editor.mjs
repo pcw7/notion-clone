@@ -69,6 +69,9 @@ const { textRun } = await import(new URL('../src/lib/contracts/rich-text.ts', im
 const { resolveSessionContext } = await import(new URL('../src/lib/auth/session-context.ts', import.meta.url).href)
 const { savePageBody, loadPageBody } = await import(new URL('../src/lib/block/save-page-body.ts', import.meta.url).href)
 const { closePool } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+// 알림은 자기 글에는 오지 않는다 — 인박스를 보려면 동료가 하나 필요하다(코멘트 4조각).
+const { createUser, joinAs } = await import(new URL('../src/lib/testing/db-fixtures.ts', import.meta.url).href)
+const { createDiscussion } = await import(new URL('../src/lib/comment/discussion.ts', import.meta.url).href)
 
 const PORT = Number(process.env.E2E_PORT ?? 3100)
 const COLLAB_PORT = Number(process.env.E2E_COLLAB_PORT ?? 3101)
@@ -1226,6 +1229,135 @@ async function main() {
       await waitFor(`[...document.querySelectorAll('[role="alert"]')].some((e) => e.textContent.includes('관리할 수 있는 사람'))`, 5000),
       await panelText())
     check('막힌 뒤에도 권한은 그대로다', (await panelText()).includes('워크스페이스 모든 멤버'))
+
+    section('코멘트 패널 · 인박스 (F-05-08 · F-11-07)')
+    {
+      const commentPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
+        method: 'POST',
+        headers: authed,
+        body: JSON.stringify({ title: `코멘트 대상 ${Date.now()}` }),
+      })).json()).page.id
+
+      /** 화면에 있는 요소를 셀렉터로 누른다 — aria-label 로 고른다. */
+      const clickSelector = async (sel) => {
+        const box = await evaluate(`(() => {
+          const el = document.querySelector(${JSON.stringify(sel)})
+          if (!el) return null
+          el.scrollIntoView({ block: 'center' })
+          const r = el.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (!box) return false
+        await click(box.x, box.y)
+        await sleep(120)
+        return true
+      }
+      /**
+       * 컨테이너 **안에서** 글자가 정확히 같은 버튼을 누른다.
+       *
+       * `clickText` 는 `includes` 라 "해결"이 필터의 "해결됨"을, "읽음"이 필터의 "안 읽음"을 먼저 잡는다 — 실제로
+       * 그래서 처음 돌렸을 때 필터만 눌리고 아무것도 해결되지 않았다. 탭과 동작 버튼은 컨테이너가 다르므로
+       * 그것으로 가른다.
+       */
+      const clickIn = async (container, text, selector = 'button') => {
+        const box = await evaluate(`(() => {
+          const root = document.querySelector(${JSON.stringify(container)})
+          if (!root) return null
+          const el = [...root.querySelectorAll(${JSON.stringify(selector)})].find((e) => e.textContent.trim() === ${JSON.stringify(text)})
+          if (!el) return null
+          el.scrollIntoView({ block: 'center' })
+          const r = el.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (!box) return false
+        await click(box.x, box.y)
+        await sleep(150)
+        return true
+      }
+      const THREAD = 'article[aria-label="코멘트 스레드"]'
+      const PANEL_FILTER = '[role="group"][aria-label="코멘트 필터"]'
+      const INBOX_FILTER = '[role="group"][aria-label="인박스 필터"]'
+      // `li` 로 잡으면 사이드바 트리의 첫 `li` 가 걸린다 — 목록에 이름을 붙여 거기서만 찾는다.
+      const INBOX_LIST = 'ul[aria-label="알림 목록"]'
+      const commentPanel = () =>
+        evaluate(`document.querySelector('[role="dialog"][aria-label="코멘트"]')?.textContent ?? '(패널 없음)'`)
+      const panelHas = (text, ms = 8000) =>
+        waitFor(
+          `(document.querySelector('[role="dialog"][aria-label="코멘트"]')?.textContent ?? '').includes(${JSON.stringify(text)})`,
+          ms,
+        )
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${commentPage}` })
+      await waitFor(`[...document.querySelectorAll('button')].some((b) => b.textContent.trim().startsWith('코멘트'))`, 15000)
+
+      // ① 페이지에 코멘트를 남긴다.
+      check('코멘트 버튼이 있다', await clickText('코멘트'))
+      check('빈 상태를 말해 준다', await panelHas('아직 코멘트가 없습니다'), await commentPanel())
+      check('새 코멘트 입력칸에 쓴다', await clickSelector('textarea[aria-label="새 코멘트"]'))
+      await typeText('이 문단 근거가 뭔가요')
+      check('코멘트를 남긴다', await clickText('코멘트 남기기'))
+      check('★ 남긴 코멘트가 스레드로 보인다', await panelHas('이 문단 근거가 뭔가요'), await commentPanel())
+
+      // ② 답글.
+      check('답글 버튼을 누른다', await clickIn(THREAD, '답글'))
+      check('답글 입력칸에 쓴다', await clickSelector('textarea[aria-label="답글"]'))
+      await typeText('출처를 붙이겠습니다')
+      check('답글을 남긴다', await clickIn(THREAD, '답글 남기기'))
+      check('★ 답글이 같은 스레드에 붙는다', await panelHas('출처를 붙이겠습니다'), await commentPanel())
+
+      // ③ 지운 코멘트는 자리만 남는다(D3) — 내용이 화면에서 사라진다.
+      check('내 코멘트를 지운다', await clickIn(THREAD, '지우기'))
+      check('★ 지운 자리는 "삭제된 코멘트"로 남는다', await panelHas('삭제된 코멘트'), await commentPanel())
+      check('★ 지운 글은 화면에 남지 않는다', !(await commentPanel()).includes('이 문단 근거가 뭔가요'), await commentPanel())
+
+      // ④ 해결하면 열림 목록에서 빠지고 해결됨에서 보인다.
+      check('해결을 누른다', await clickIn(THREAD, '해결'))
+      check('★ 해결한 스레드는 열림 목록에서 빠진다',
+        await waitFor(
+          `(document.querySelector('[role="dialog"][aria-label="코멘트"]')?.textContent ?? '').includes('아직 코멘트가 없습니다')`,
+          8000,
+        ),
+        await commentPanel())
+      check('해결됨 필터를 누른다', await clickIn(PANEL_FILTER, '해결됨'))
+      check('★ 해결됨에서는 보인다', await panelHas('출처를 붙이겠습니다'), await commentPanel())
+      check('다시 열 수 있다', await clickIn(THREAD, '다시 열기'))
+
+      // ⑤ 다른 사람이 코멘트를 달면 인박스로 온다 — 알림은 자기 글에는 오지 않으므로 동료가 필요하다.
+      const mate = await joinAs(workspaceId, await createUser('동료'), 'member')
+      const fromMate = await createDiscussion(mate.ctx, {
+        pageId: commentPage,
+        richText: [textRun('동료가 남긴 코멘트')],
+      })
+      check('동료가 코멘트를 남겼다', fromMate.ok, JSON.stringify(fromMate))
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/inbox` })
+      await waitFor(`!!document.querySelector('[role="group"][aria-label="인박스 필터"]')`, 15000)
+      const inboxText = () => evaluate(`document.querySelector('main')?.textContent ?? '(없음)'`)
+      check('★ 동료의 코멘트가 인박스에 온다', (await inboxText()).includes('동료가 남긴 코멘트'), await inboxText())
+      check('안 읽음 배지가 사이드바에 있다',
+        await evaluate(`!!document.querySelector('[aria-label="안 읽은 알림 1개"]')`),
+        await evaluate(`document.querySelector('nav')?.textContent?.slice(0, 120) ?? '(없음)'`))
+
+      // ⑥ 읽음 · 보관 — 필터 넷이 서로 다른 것을 준다.
+      check('읽음으로 표시한다', await clickIn(INBOX_LIST, '읽음'))
+      check('★ 읽으면 안 읽음 목록에서 빠진다',
+        (await clickIn(INBOX_FILTER, '안 읽음')) &&
+          (await waitFor(`(document.querySelector('main')?.textContent ?? '').includes('알림이 없습니다')`, 8000)),
+        await inboxText())
+      check('읽음 목록에서는 보인다',
+        (await clickIn(INBOX_FILTER, '읽음')) &&
+          (await waitFor(`(document.querySelector('main')?.textContent ?? '').includes('동료가 남긴 코멘트')`, 8000)),
+        await inboxText())
+      check('보관하면 전체에서도 빠진다',
+        (await clickIn(INBOX_LIST, '보관')) &&
+          (await clickIn(INBOX_FILTER, '전체')) &&
+          (await waitFor(`(document.querySelector('main')?.textContent ?? '').includes('알림이 없습니다')`, 8000)),
+        await inboxText())
+      check('★ 보관 목록에서는 보인다 — 읽음과 보관은 따로다',
+        (await clickIn(INBOX_FILTER, '보관')) &&
+          (await waitFor(`(document.querySelector('main')?.textContent ?? '').includes('동료가 남긴 코멘트')`, 8000)),
+        await inboxText())
+    }
 
     section('내비게이션 — 최근 · 즐겨찾기 (W6-a)')
     // 방금까지 여러 페이지를 오갔으므로 사이드바에 "최근"이 있어야 한다.

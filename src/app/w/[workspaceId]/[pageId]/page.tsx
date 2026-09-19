@@ -18,6 +18,7 @@ import { loadPageRefTitles } from '@/lib/block/save-page-body'
 import { loadDocState, pageAccess } from '@/lib/collab/doc-store'
 import { collabServerUrl } from '@/lib/collab/collab-url'
 import { listMovableTargets } from '@/lib/block/move-page'
+import { listDiscussions } from '@/lib/comment/discussion'
 import { isFavorite, recordVisit } from '@/lib/nav/recent'
 import { NewPageButton } from '../new-page-button'
 import { ExportButton } from '../export-button'
@@ -25,6 +26,7 @@ import { PageTitle } from './page-title'
 import { BodyEditor } from './body-editor'
 import { MovePageControl } from './move-page-control'
 import { SharePanel } from './share-panel'
+import { CommentPanel } from './comment-panel'
 import { FavoriteButton } from './favorite-button'
 import { DeletePageButton } from './delete-page-button'
 
@@ -50,7 +52,7 @@ export default async function PageView({ params }: PageProps<'/w/[workspaceId]/[
 
   // 본문은 Y.Doc 이 정본이다(판결 X-1 · CRDT 6d) — 협업 편집기가 그 상태로 시작하고 협업 서버에 붙는다. 행으로 만든 문서는
   // 더 이상 화면이 읽지 않고, 참조 제목만 따로 받는다(참조 노드는 제목을 싣지 않는다 — §3.2-22).
-  const [ancestors, children, state, pageRefTitles, access, moveTargets, favorite] = await Promise.all([
+  const [ancestors, children, state, pageRefTitles, access, moveTargets, favorite, openThreads] = await Promise.all([
     listAncestors(ctx, page),
     listChildPages(ctx, page.id),
     loadDocState(ctx, page.id),
@@ -58,6 +60,8 @@ export default async function PageView({ params }: PageProps<'/w/[workspaceId]/[
     pageAccess(ctx, page.id),
     listMovableTargets(ctx, page.id),
     isFavorite(ctx, page.id),
+    // 버튼에 띄울 수만 먼저 읽는다 — 패널을 열기 전에 목록을 한 번 더 부르지 않으려고.
+    listDiscussions(ctx, page.id, { resolved: false }),
   ])
 
   // 방문 기록(F-07-04). **`getPage` 를 통과한 뒤**에 남긴다 — 볼 수 없는 페이지를
@@ -92,6 +96,11 @@ export default async function PageView({ params }: PageProps<'/w/[workspaceId]/[
 
         <div className="flex flex-none items-start gap-2">
           <FavoriteButton workspaceId={workspaceId} pageId={page.id} initial={favorite} />
+          <CommentPanel
+            workspaceId={workspaceId}
+            pageId={page.id}
+            initialOpenCount={openThreads.ok ? openThreads.discussions.length : 0}
+          />
           <SharePanel workspaceId={workspaceId} pageId={page.id} />
           <MovePageControl
             workspaceId={workspaceId}
