@@ -35,6 +35,7 @@ import { inheritFromWorkspace } from '../permissions/acl.ts'
 import { canViewPage, effectiveCaps, readableScopes } from '../permissions/effective.ts'
 import { MAX_TREE_DEPTH } from './types.ts'
 import { indexPageTitle } from '../search/index-page.ts'
+import { autoSubscribe } from '../notification/subscription.ts'
 import { openPageBody } from './body-write.ts'
 import { appendPageRef, placePageRefAt } from './page-refs.ts'
 import {
@@ -362,6 +363,10 @@ export async function createPage(
     // 만들어졌고(마이그레이션 0012), 여기서 쓰는 것은 제목 텍스트뿐이다.
     // 본문은 비어 있으므로 `indexPageText` 가 아니라 제목 전용 경로를 쓴다.
     await indexPageTitle(tx, id, toSummary(row).plainTitle)
+
+    // 만든 사람은 이 페이지의 코멘트를 받는다(F-11-09 `auto_created`). 행이 없을 때만 넣으므로 나중에 뮤트하면
+    // 그 값이 이긴다(불변식 N1 · `notification/subscription.ts`).
+    await autoSubscribe(tx, ctx.userId, id, 'auto_created', 'all_comments')
 
     let current = row
     if (parentBody !== null) {
