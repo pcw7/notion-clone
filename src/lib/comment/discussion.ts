@@ -65,6 +65,8 @@ import {
 import { withTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
 import type { EditorBlock, EditorDoc } from '../editor/document.ts'
 import { isUuid } from '../ids.ts'
+import { notifyComment } from '../notification/fanout.ts'
+import { autoSubscribe } from '../notification/subscription.ts'
 import { effectiveCaps } from '../permissions/effective.ts'
 import { can, type Capability } from '../permissions/levels.ts'
 import {
@@ -248,18 +250,35 @@ export async function createDiscussion(
        VALUES ($1, $2, $3, $4::jsonb, now())`,
       [commentId, discussionId, ctx.userId, JSON.stringify(text.value)],
     )
+    // 글을 쓴 사람은 그 스레드의 답글을 받는다(`auto_edited`). 알림은 같은 트랜잭션에서 — 코멘트만 남고 알림이
+    // 없는 상태를 만들지 않는다(`notification/fanout.ts`).
+    await autoSubscribe(tx, ctx.userId, input.pageId, 'auto_edited', 'replies_and_mentions')
+    await notifyComment(tx, ctx, {
+      pageId: input.pageId,
+      discussionId,
+      commentId,
+      threadStarterId: ctx.userId,
+      blockId,
+    })
     return { ok: true, discussionId, commentId } as const
   })
 }
 
 // ── 답글 ──────────────────────────────────────────────────────────────
 
-type DiscussionRow = { id: string; page_id: string; resolved: boolean }
+type DiscussionRow = {
+  id: string
+  page_id: string
+  parent_block_id: string
+  created_by: string
+  resolved: boolean
+}
 
 async function lockDiscussion(tx: Tx, ctx: SessionContext, discussionId: string): Promise<DiscussionRow | null> {
   if (!isUuid(discussionId)) return null
   return tx.queryMaybe<DiscussionRow>(
-    `SELECT id, page_id, resolved FROM discussion WHERE id = $1 AND workspace_id = $2 FOR UPDATE`,
+    `SELECT id, page_id, parent_block_id, created_by, resolved
+       FROM discussion WHERE id = $1 AND workspace_id = $2 FOR UPDATE`,
     [discussionId, ctx.workspaceId],
   )
 }
@@ -290,6 +309,14 @@ export async function replyToDiscussion(
        VALUES ($1, $2, $3, $4::jsonb, now())`,
       [commentId, discussionId, ctx.userId, JSON.stringify(text.value)],
     )
+    await autoSubscribe(tx, ctx.userId, row.page_id, 'auto_edited', 'replies_and_mentions')
+    await notifyComment(tx, ctx, {
+      pageId: row.page_id,
+      discussionId,
+      commentId,
+      threadStarterId: row.created_by,
+      blockId: row.parent_block_id,
+    })
     if (row.resolved) {
       await tx.query(
         `UPDATE discussion SET resolved = false, resolved_by = NULL, resolved_at = NULL WHERE id = $1`,

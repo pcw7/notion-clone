@@ -1132,6 +1132,31 @@ CREATE TABLE reminder (
 CREATE INDEX ON reminder (target_at) WHERE fired_at IS NULL;
 ```
 
+**[정정] `activity_event` 의 PK 는 `(id, created_at)` 이다** ⟨코멘트 3조각 / 마이그레이션 0020⟩
+
+> 초판은 `id uuid PRIMARY KEY` 와 `PARTITION BY RANGE (created_at)` 을 함께 적었다.
+> **PostgreSQL 에서 그 둘은 같이 설 수 없다.** 실측:
+> `unique constraint on partitioned table must include all partitioning columns` (SQLSTATE 0A000).
+> 파티션 키를 PK 에 넣는다 — `doc_update` 가 `(page_id, seq)` 인 것과 같은 이유다.
+>
+> 파티션을 미리 만드는 잡이 아직 없으므로 `DEFAULT` 파티션을 둔다. 없으면 범위를
+> 벗어나는 시각이 오는 순간 **쓰기가 통째로 실패한다.**
+
+**[보강] 인앱 인박스에서 3단 필터의 ②는 "읽을 때"다** ⟨코멘트 3조각⟩
+
+> 아래 파이프라인이 ②(권한 재검사)를 팬아웃이 아니라 **배달 시점**에 두라고 한 이유는
+> *"이벤트와 배달 사이에 권한이 회수될 수 있고, 알림 본문이 곧 콘텐츠 유출 경로"* 여서다.
+> 채널(푸시 · 이메일)이 있을 때는 배달이 별도 시점이지만, **인앱 인박스에는 그 시점이
+> 없다** — 알림이 곧 저장이고, 사용자가 보는 순간이 배달이다.
+>
+> 그래서 ②를 **인박스 조회 쿼리 안**에 둔다 — `perm_scope_id = ANY(readableScopes)`
+> (검색 · 사이드바와 같은 규칙, §3.3-32). 권한이 회수되면 이미 만들어진 알림도 사라진다.
+> 팬아웃은 **대상자만 고른다**(구독 + 직접 트리거). 그 시점에는 받는 사람의 세션이 없어
+> `effective()` 를 부를 수도 없다 — 불변식 A9 가 요구하는 입력이 `user_id` 가 아니다.
+>
+> ③(활성 뷰어 억제)은 presence(F-05-03)가 없어 **아직 없다.** 순서는 그대로 지킨다 —
+> presence 가 생기면 ② 다음에 들어간다.
+
 **배달 파이프라인 (3단 필터, 순서 고정)**
 `activity_event` → ① 대상자 산출(`subscription.level` + 직접 트리거) → ② **배달 시점 권한 재검사** → ③ presence 조회로 활성 뷰어 억제 → `notification_delivery` 스케줄.
 ②를 팬아웃 시점이 아니라 배달 시점에 두는 이유: 이벤트와 배달 사이에 권한이 회수될 수 있고, 알림 본문(멘션 스니펫)이 곧 콘텐츠 유출 경로다.

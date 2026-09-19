@@ -43,13 +43,15 @@ const EXPECTED_TABLES = [
   'view', 'view_property', 'filter_operator',
   // 코멘트 1조각 (0018)
   'discussion', 'comment', 'reaction',
+  // 코멘트 3조각 — 활동 · 구독 · 알림 (0020)
+  'activity_event', 'subscription', 'notification',
   'schema_migration', 'scim_token', 'session_policy', 'sso_config',
   'user', 'user_email', 'user_session',
   'workspace', 'workspace_invite', 'workspace_member',
 ]
 
-/** 파티션은 부모 테이블 하나로 센다. doc_update_p00..p15 를 매번 나열하지 않는다. */
-const PARTITION_RE = /^doc_update_p\d+$/
+/** 파티션은 부모 테이블 하나로 센다. doc_update_p00..p15 · activity_event_YYYY 를 매번 나열하지 않는다. */
+const PARTITION_RE = /^(doc_update_p\d+|activity_event_(\d{4}|default))$/
 const EXPECTED_TYPES = [
   'block_lifecycle', 'block_parent_type', 'moderation_state', 'origin_kind',
   'user_status', 'user_type',
@@ -123,7 +125,7 @@ try {
     if (extra.length) console.log(`  · 목록 밖: ${extra.join(', ')}`)
 
     // 파티션 수가 줄면 그 해시 구간의 본문이 저장되지 않는다 — 조용히 실패한다.
-    const parts = [...got].filter((t) => PARTITION_RE.test(t))
+    const parts = [...got].filter((t) => /^doc_update_p\d+$/.test(t))
     if (parts.length === 16) ok('doc_update 해시 파티션 16개')
     else fail(`doc_update 파티션이 ${parts.length}개다 (16개여야 함)`)
   }
@@ -1224,6 +1226,96 @@ try {
       )
       if (rows.length === 0) ok('discussion.parent_block_id 에 FK 가 없다 — 본문 블록 행은 Y.Doc 의 투영이다')
       else fail(`discussion.parent_block_id 에 FK 가 생겼다: ${rows.map((r) => r.conname).join(', ')}`)
+    }
+  }
+
+  console.log('\n[12] 활동 · 구독 · 알림 (0020 / §3.8 · F-11-07 · F-11-08)')
+  {
+    const pageId = randomUUID()
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key,
+                          ancestor_path, perm_scope_id, properties, format, created_at, last_edited_at)
+       VALUES ($1, $2, 'page', 'workspace', $2, 'n0', '{}', $1, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      [pageId, wsId],
+    )
+    const eventId = randomUUID()
+    await client.query(
+      `INSERT INTO activity_event (id, workspace_id, page_id, block_id, actor_id, type, payload, created_at)
+       VALUES ($1, $2, $3, $4, $5, 'comment.created', '{"discussion_id":"x"}'::jsonb, now())`,
+      [eventId, wsId, pageId, randomUUID(), userId],
+    )
+    ok('활동 이벤트 생성 (block_id 는 투영되지 않은 블록이어도 된다 — FK 없음)')
+
+    // 파티션이 하나라도 빠지면 그 구간의 쓰기가 통째로 실패한다. DEFAULT 는 해가 바뀌어도 받는 마지막 방어다.
+    {
+      const { rows } = await client.query(
+        `SELECT c.relname FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid
+          WHERE i.inhparent = 'activity_event'::regclass ORDER BY c.relname`,
+      )
+      const names = rows.map((r) => r.relname)
+      const expected = ['activity_event_2026', 'activity_event_2027', 'activity_event_default']
+      if (expected.every((n) => names.includes(n))) ok(`activity_event 파티션 ${names.length}개 (DEFAULT 포함)`)
+      else fail(`activity_event 파티션이 부족하다: ${names.join(', ')}`)
+    }
+
+    await mustReject(
+      '모르는 이벤트 종류',
+      `INSERT INTO activity_event (id, workspace_id, page_id, actor_id, type, payload, created_at)
+       VALUES ($1, $2, $3, $4, 'comment.exploded', '{}'::jsonb, now())`,
+      [randomUUID(), wsId, pageId, userId],
+    )
+
+    // 구독 — page_kind 가 level CHECK 의 판별자다(정본 §3.8).
+    await client.query(
+      `INSERT INTO subscription (id, user_id, page_id, page_kind, level, source, created_at)
+       VALUES ($1, $2, $3, 'page', 'all_comments', 'auto_created', now())`,
+      [randomUUID(), userId, pageId],
+    )
+    ok('구독 생성 (page · all_comments · auto_created)')
+    await mustReject(
+      '같은 사람이 같은 페이지를 두 번 구독',
+      `INSERT INTO subscription (id, user_id, page_id, page_kind, level, source, created_at)
+       VALUES ($1, $2, $3, 'page', 'none', 'explicit', now())`,
+      [randomUUID(), userId, pageId],
+    )
+    await mustReject(
+      'page 인데 db_item 의 레벨',
+      `INSERT INTO subscription (id, user_id, page_id, page_kind, level, source, created_at)
+       VALUES ($1, $2, $3, 'page', 'all_updates', 'explicit', now())`,
+      [randomUUID(), randomUUID(), pageId],
+    )
+
+    // 알림 — N3: payload 를 복제하지 않고 event_ids[] 로 가리킨다.
+    const notifyOne = randomUUID()
+    await client.query(
+      `INSERT INTO notification (id, recipient_id, workspace_id, page_id, event_ids, kind, group_key, created_at)
+       VALUES ($1, $2, $3, $4, ARRAY[$5::uuid], 'comment', 'discussion:x', now())`,
+      [notifyOne, userId, wsId, pageId, eventId],
+    )
+    ok('알림 생성 (event_ids[] 로 이벤트를 가리킨다)')
+    await mustReject(
+      '가리키는 이벤트가 없는 알림',
+      `INSERT INTO notification (id, recipient_id, workspace_id, page_id, event_ids, kind, group_key, created_at)
+       VALUES ($1, $2, $3, $4, '{}'::uuid[], 'comment', 'discussion:x', now())`,
+      [randomUUID(), userId, wsId, pageId],
+    )
+    await mustReject(
+      '모르는 알림 종류',
+      `INSERT INTO notification (id, recipient_id, workspace_id, page_id, event_ids, kind, group_key, created_at)
+       VALUES ($1, $2, $3, $4, ARRAY[$5::uuid], 'carrier_pigeon', 'discussion:x', now())`,
+      [randomUUID(), userId, wsId, pageId, eventId],
+    )
+
+    // 불변식 N2 — **없어야 하는 제약**이다. 같은 group_key 로 안 읽은 알림 둘이 들어가야 한다.
+    try {
+      await client.query(
+        `INSERT INTO notification (id, recipient_id, workspace_id, page_id, event_ids, kind, group_key, created_at)
+         VALUES ($1, $2, $3, $4, ARRAY[$5::uuid], 'comment_reply', 'discussion:x', now())`,
+        [randomUUID(), userId, wsId, pageId, eventId],
+      )
+      ok('N2: 같은 group_key 로 안 읽은 알림 둘 — 저장은 개별, 병합은 조회 시점이다')
+    } catch (e) {
+      fail(`N2: UNIQUE(group_key) WHERE read_at IS NULL 제약이 생겼다 (${e.code})`)
     }
   }
 
