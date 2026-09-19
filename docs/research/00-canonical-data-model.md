@@ -56,6 +56,7 @@
 | `database_data_source` | DB | 부착(attachment) 조인. linked database 를 표현 | 04 |
 | `property` | DB | 프로퍼티 정의. **id 는 전역 유니크 text(nanoid 21)** | 03, 04, 09, 15, 16 |
 | `select_option` | DB | select/multi-select/status 옵션 | 03 |
+| `status_group` | DB | status 의 세 범주(To-do · In progress · Complete). `select_option.group_id` 가 가리킨다 `[보강]` | 03 |
 | `page_property_value` | DB | **셀 값 EAV 정본** + 타입별 사이드카 컬럼 | 03, 04, 09 |
 | `relation_edge` | DB | relation 셀의 유일한 정본. 역방향 조회를 가능하게 하는 축 | 03, 04, 15 |
 | `property_dependency` / `derived_value` | DB | formula·rollup 의존 그래프와 값 캐시 | 03 |
@@ -800,6 +801,46 @@ CREATE INDEX ON derived_value (property_id) WHERE stale;
 CREATE INDEX ON derived_value (property_id, num_value) WHERE NOT stale AND num_value IS NOT NULL;
 -- 불변식 D1: formula/rollup 필터·정렬은 derived_value 의 사이드카 컬럼으로만 컴파일된다.
 ```
+
+**[보강] `status_group` — `select_option.group_id` 가 가리키는 표** ⟨보드 4c-1조각 / 마이그레이션 0023⟩
+
+초판은 `select_option.group_id uuid NULL` 자리만 두고 **그것이 가리킬 표를 정의하지 않았다.** 03 F-03-05 가 권고한
+모양(*"`select_option.group_id` + `status_group` 테이블 · **kind 컬럼 필수**"*)을 그대로 옮긴다.
+
+```sql
+CREATE TYPE status_group_kind AS ENUM ('todo', 'in_progress', 'complete');
+
+CREATE TABLE status_group (
+  id          uuid PRIMARY KEY,
+  property_id text NOT NULL REFERENCES property(id) ON DELETE CASCADE,
+  kind        status_group_kind NOT NULL,
+  UNIQUE (property_id, kind),                 -- SG1
+  UNIQUE (property_id, id)                    -- 복합 FK 의 대상
+);
+ALTER TABLE select_option ADD FOREIGN KEY (property_id, group_id)
+  REFERENCES status_group (property_id, id);  -- SG2
+```
+
+- **그룹의 이름 · 색은 컬럼이 아니다.** 그룹은 프로퍼티마다 정확히 셋이고 사용자가 더하거나 지우거나 이름을 바꿀 수
+  없다(F-03-05: *"You can't change the three main categories"*). 이름 · 색은 `kind` 의 함수라 애플리케이션 상수에서
+  읽는다 — `property.api_exposed` 를 두지 않은 것과 같은 이유(컬럼으로 두면 두 곳이 어긋난다). "완료인가"는
+  `kind = 'complete'` 로 묻는다 — 진행률 · 자동화가 그룹 **이름**에 기대지 않는다.
+- **불변식 SG1** 그룹은 (프로퍼티, kind) 에 하나다. **SG2** 옵션의 그룹은 **같은 프로퍼티의** 그룹이다 — 단일 FK
+  (`group_id → status_group.id`)는 남의 프로퍼티의 그룹을 가리키는 것을 못 막는다. 복합 FK 로 막는다(`MATCH SIMPLE` 이라
+  `group_id` 가 NULL 인 select 옵션은 검사를 건너뛴다). **SG3** `status` 프로퍼티의 옵션은 `group_id NOT NULL`, 그 밖의
+  옵션은 `group_id IS NULL`. **SG4** 그룹은 `status` 프로퍼티에만 생긴다. SG3 · SG4 는 `property.type` 을 봐야 해서
+  CHECK 으로 쓸 수 없다 — 트리거로 지킨다(R2 와 같은 방식).
+- **status 는 "그룹이 강제되는 select" 다**(F-03-05 의 현실적 대안). 셀 값의 봉투만 다르고
+  (`{"type":"status","status":{"id":…}}`) 사이드카(`text_value` = 옵션 id) · 필터 연산자 넷 · 보드의 그룹 키가 select 와
+  같다. **옵션 순서는 그룹 순서가 먼저다**(`todo → in_progress → complete`, 그 안에서 `order_idx`) — ENUM 의 선언
+  순서가 곧 그 순서다. 나중에 "진행 중" 그룹에 더한 옵션이 `완료` 뒤에 서면 보드의 열이 흐름을 거스른다.
+- **기본 옵션은 `property.config.default_option_id` 다 — status 에만 있다**(F-03-05: *"노션에서 유일하게 기본 옵션을
+  갖는 프로퍼티"* · F-03-21 의 유일한 예외). **새 행의 초깃값일 뿐이다.** 03 은 *"`default_option_id IS NOT NULL` 이면
+  `value NOT NULL` 을 강제"* 까지 적었으나(2차 출처) **채택하지 않았다**: status 컬럼을 나중에 더한 표의 기존 행은 값이
+  없어 그 불변식이 처음부터 성립하지 않고, 성립시키려면 스키마 잠금 안에서 행 수만큼 셀을 쓰며 모든 행의 `version` 을
+  올려야 한다. 반만 지키는 불변식은 두지 않는다. 호출자가 그 셀을 **보냈으면 그것이 이긴다 — 빈 값이어도**(보드의
+  "값 없음" 열에서 만든 카드가 그 열에 남는다).
+- 옵션을 **다른 그룹으로 옮기기** · 그룹 단위 필터("To-do 전체") · 보드의 그룹(범주) 단위 열은 아직 없다.
 
 **DB 상수**
 

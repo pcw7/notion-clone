@@ -52,11 +52,13 @@ function messageOf(status: number, body: ErrorBody): string {
       return '제목 속성은 지울 수 없습니다.'
     // ── 보드 (4b) ──
     case 'group_required':
-      return '보드에는 그룹 기준이 필요합니다. 선택 또는 체크박스 속성을 먼저 만드세요.'
+      return '보드에는 그룹 기준이 필요합니다. 선택 · 상태 · 체크박스 속성을 먼저 만드세요.'
     case 'not_grouped':
       return '이 보드의 그룹 속성이 지워졌습니다. 그룹 기준을 다시 고르세요.'
     case 'invalid_group':
       return '그룹 설정을 확인하세요.'
+    case 'invalid_config':
+      return '속성 설정을 확인하세요.'
     case 'unsupported_type':
       return '지원하지 않는 뷰 종류입니다.'
     case 'invalid_value':

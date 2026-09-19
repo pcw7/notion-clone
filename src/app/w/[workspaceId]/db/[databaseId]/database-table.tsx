@@ -56,7 +56,15 @@ import { sortFirst } from '@/lib/database/filter-draft'
 import type { RowJson } from '@/lib/database/http'
 import type { ViewColumn } from '@/lib/database/view'
 import { MAX_QUERY_PAGINATION } from '@/lib/database/limits'
-import { emptyValue, type CellValue, type MvpPropertyType } from '@/lib/database/property-types'
+import {
+  emptyValue,
+  insertOption,
+  isOptionType,
+  optionIdOf,
+  optionValue,
+  type CellValue,
+  type MvpPropertyType,
+} from '@/lib/database/property-types'
 import { cellText, defaultColumnWidth, draftOf, parseDraft, readCell, sameValue } from '@/lib/database/cell-format'
 import { handleGridKey, type CellPos, type GridMode, type KeyResult } from '@/lib/database/grid-nav'
 import * as api from './table-api'
@@ -194,8 +202,8 @@ export function DatabaseTable(props: {
     const row = rows[at.row]
     const column = columns[at.col]
     if (row === undefined || column === undefined) return true
-    // select 는 고르는 순간 저장됐다. 편집을 닫는 것 말고 할 일이 없다.
-    if (column.type === 'select' || column.type === 'checkbox') return true
+    // select · status 는 고르는 순간 저장됐다. 편집을 닫는 것 말고 할 일이 없다.
+    if (isOptionType(column.type) || column.type === 'checkbox') return true
 
     const previous = valueAt(row, column)
     const parsed = parseDraft(column.type, draft, previous)
@@ -314,8 +322,8 @@ export function DatabaseTable(props: {
   const pickOption = (at: CellPos, optionId: string | null) => {
     const row = rows[at.row]
     const column = columns[at.col]
-    if (row === undefined || column === undefined) return
-    void saveCell(row.id, column, { type: 'select', select: optionId === null ? null : { id: optionId } }, valueAt(row, column))
+    if (row === undefined || column === undefined || !isOptionType(column.type)) return
+    void saveCell(row.id, column, optionValue(column.type, optionId), valueAt(row, column))
     setMode({ kind: 'selected', at })
   }
 
@@ -329,12 +337,9 @@ export function DatabaseTable(props: {
     }
     const option = result.value
     // 같은 이름이면 서버가 기존 옵션을 준다(수렴). 이미 목록에 있으면 넣지 않는다.
+    // status 옵션은 자기 그룹의 끝에 선다 — 서버가 읽어 주는 순서와 같게(`insertOption`).
     setColumns((current) =>
-      current.map((c) =>
-        c.propertyId === column.propertyId && !c.options.some((o) => o.id === option.id)
-          ? { ...c, options: [...c.options, option] }
-          : c,
-      ),
+      current.map((c) => (c.propertyId === column.propertyId ? { ...c, options: insertOption(c.options, option) } : c)),
     )
     pickOption(at, option.id)
   }
@@ -376,7 +381,8 @@ export function DatabaseTable(props: {
         orderKey: property.orderKey,
         width: null,
         wrap: false,
-        options: [],
+        // status 는 만드는 순간 옵션 셋이 함께 생긴다 — 스키마 응답이 싣고 온다.
+        options: property.options ?? [],
       },
     ])
     return null
@@ -526,12 +532,13 @@ export function DatabaseTable(props: {
                         isSelected ? 'shadow-[inset_0_0_0_2px_theme(colors.blue.500)]' : ''
                       }`}
                     >
-                      {isEditing && column.type === 'select' ? (
+                      {isEditing && isOptionType(column.type) ? (
                         <>
                           <CellDisplay value={value} options={column.options} />
                           <SelectEditor
                             options={column.options}
-                            currentId={value.type === 'select' ? (value.select?.id ?? null) : null}
+                            currentId={optionIdOf(value)}
+                            isStatus={column.type === 'status'}
                             canCreate={access.canEditStructure}
                             onPick={(optionId) => pickOption(at, optionId)}
                             onCreate={(name) => void createOption(at, name)}

@@ -639,7 +639,7 @@ function BoardCard({
               data-testid="db-board-badge"
               className="max-w-full truncate text-xs text-neutral-600 dark:text-neutral-300"
             >
-              {value.type === 'select' ? (
+              {value.type === 'select' || value.type === 'status' ? (
                 <CellDisplay value={value} options={column.options} />
               ) : value.type === 'checkbox' ? (
                 `☑ ${column.name}`

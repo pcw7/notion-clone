@@ -49,6 +49,8 @@ const EXPECTED_TABLES = [
   'link_edge',
   // 보드 4a조각 — 뷰별 · 그룹별 수동 순서 (0022)
   'row_position',
+  // 보드 4c-1조각 — status 의 세 범주 (0023)
+  'status_group',
   'schema_migration', 'scim_token', 'session_policy', 'sso_config',
   'user', 'user_email', 'user_session',
   'workspace', 'workspace_invite', 'workspace_member',
@@ -61,6 +63,8 @@ const EXPECTED_TYPES = [
   'user_status', 'user_type',
   // W8-a (0013). 정본 §3.5 가 이 둘을 쓰면서 정의하지 않아 03 문서의 전수표에서 가져왔다.
   'property_type', 'option_color',
+  // 보드 4c-1 (0023)
+  'status_group_kind',
 ]
 
 /**
@@ -1142,6 +1146,103 @@ try {
         const { rows } = await client.query(`SELECT 1 FROM row_position WHERE view_id = $1`, [viewId])
         if (rows.length === 0) ok('뷰 삭제 → row_position CASCADE 삭제')
         else fail('뷰를 지웠는데 row_position 이 남았다')
+      }
+    }
+
+    // ── ⑭ status_group (0023 / §3.5 [보강] · 보드 4c-1조각) ──
+    // 불변식 SG1~SG4. status 는 "그룹이 강제되는 select" 다 — 그 강제를 DB 가 실제로 하는지 본다.
+    {
+      const statusProp = pid(91)
+      const otherStatus = pid(92)
+      const selectProp = pid(93)
+      for (const [id, name, type, key] of [
+        [statusProp, '진행 상태', 'status', 'm1'],
+        [otherStatus, '검수 상태', 'status', 'm2'],
+        [selectProp, '분류', 'select', 'm3'],
+      ]) {
+        await client.query(
+          `INSERT INTO property (id, data_source_id, name, type, order_idx, created_at, updated_at)
+           VALUES ($1, $2, $3, $4::property_type, $5, now(), now())`,
+          [id, dsId, name, type, key],
+        )
+      }
+      const todo = randomUUID()
+      const otherTodo = randomUUID()
+      await client.query(`INSERT INTO status_group (id, property_id, kind) VALUES ($1, $2, 'todo')`, [todo, statusProp])
+      await client.query(`INSERT INTO status_group (id, property_id, kind) VALUES ($1, $2, 'complete')`, [randomUUID(), statusProp])
+      await client.query(`INSERT INTO status_group (id, property_id, kind) VALUES ($1, $2, 'todo')`, [otherTodo, otherStatus])
+      ok('status_group 생성 (프로퍼티마다 kind 별로)')
+
+      await mustReject(
+        'SG1: 같은 (프로퍼티, kind) 의 그룹 두 개',
+        `INSERT INTO status_group (id, property_id, kind) VALUES ($1, $2, 'todo')`,
+        [randomUUID(), statusProp],
+      )
+      await mustReject(
+        '모르는 kind (세 범주는 고정이다 — ENUM)',
+        `INSERT INTO status_group (id, property_id, kind) VALUES ($1, $2, 'blocked')`,
+        [randomUUID(), statusProp],
+      )
+      await mustReject(
+        'SG4: status 가 아닌 프로퍼티에 그룹',
+        `INSERT INTO status_group (id, property_id, kind) VALUES ($1, $2, 'todo')`,
+        [randomUUID(), selectProp],
+      )
+
+      await client.query(
+        `INSERT INTO select_option (id, property_id, name, color, group_id, order_idx)
+         VALUES ($1, $2, '시작 전', 'gray', $3, 'a0')`,
+        [randomUUID(), statusProp, todo],
+      )
+      ok('status 옵션 생성 (그룹과 함께)')
+      await mustReject(
+        'SG3: 그룹 없는 status 옵션',
+        `INSERT INTO select_option (id, property_id, name, color, order_idx) VALUES ($1, $2, '그룹 없음', 'gray', 'a1')`,
+        [randomUUID(), statusProp],
+      )
+      await mustReject(
+        'SG3: 그룹을 가진 select 옵션',
+        `INSERT INTO select_option (id, property_id, name, color, group_id, order_idx)
+         VALUES ($1, $2, '그룹 있음', 'gray', $3, 'a0')`,
+        [randomUUID(), selectProp, todo],
+      )
+      await mustReject(
+        'SG2: **남의 프로퍼티의** 그룹을 가리키는 옵션 (복합 FK — 단일 FK 로는 못 막는다)',
+        `INSERT INTO select_option (id, property_id, name, color, group_id, order_idx)
+         VALUES ($1, $2, '남의 그룹', 'gray', $3, 'a2')`,
+        [randomUUID(), statusProp, otherTodo],
+      )
+      await mustReject(
+        'SG2: 없는 그룹',
+        `INSERT INTO select_option (id, property_id, name, color, group_id, order_idx)
+         VALUES ($1, $2, '없는 그룹', 'gray', $3, 'a3')`,
+        [randomUUID(), statusProp, randomUUID()],
+      )
+      await mustReject(
+        'SG3: 있던 status 옵션의 그룹을 NULL 로',
+        `UPDATE select_option SET group_id = NULL WHERE property_id = $1`,
+        [statusProp],
+      )
+
+      {
+        const { rows } = await client.query(
+          `SELECT operator FROM filter_operator WHERE property_type = 'status' ORDER BY order_idx`,
+        )
+        const got = rows.map((r) => r.operator).join(',')
+        if (got === 'equals,does_not_equal,is_empty,is_not_empty') ok('status 의 필터 연산자 넷이 시딩됐다 (select 와 같다)')
+        else fail(`status 연산자: ${got}`)
+      }
+
+      // 프로퍼티가 사라지면 그룹 · 옵션이 함께 사라진다(둘 다 property 를 CASCADE 로 가리킨다 · 복합 FK 가 막지 않는다).
+      await client.query(`DELETE FROM property WHERE id = $1`, [statusProp])
+      {
+        const { rows } = await client.query(
+          `SELECT (SELECT count(*) FROM status_group WHERE property_id = $1)::int AS groups,
+                  (SELECT count(*) FROM select_option WHERE property_id = $1)::int AS options`,
+          [statusProp],
+        )
+        if (rows[0].groups === 0 && rows[0].options === 0) ok('프로퍼티 삭제 → status_group · select_option CASCADE 삭제')
+        else fail(`프로퍼티를 지웠는데 남았다: ${JSON.stringify(rows[0])}`)
       }
     }
 

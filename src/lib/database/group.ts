@@ -8,9 +8,9 @@
  * 그룹 키는 문자열 하나다 — 빈 값 그룹은 ''
  * ──────────────────────────────────────────────────────────────────────
  *
- * F-04-11 의 버킷 규칙 중 MVP 는 **select · checkbox** 둘이다(04 의 현실적 대안: *"MVP 는 select/status/checkbox
- * 3종 그룹만"* — status 타입은 아직 없다). 키는 select 가 **옵션 id**(셀의 사이드카가 그것이다 · §3.2-8),
- * checkbox 가 `'true'` · `'false'`. 값이 빈 행은 `''` 그룹("No X")에 모인다 — 정본 `row_position.group_key
+ * F-04-11 의 버킷 규칙 중 **select · status · checkbox** 셋이다(04 의 현실적 대안: *"MVP 는 select/status/checkbox
+ * 3종 그룹만"*). 키는 select · status 가 **옵션 id**(셀의 사이드카가 그것이다 · §3.2-8 — status 는 "그룹이 강제되는
+ * select" 라 같은 길을 탄다 · `property-types.ts` `OPTION_TYPES`), checkbox 가 `'true'` · `'false'`. 값이 빈 행은 `''` 그룹("No X")에 모인다 — 정본 `row_position.group_key
  * DEFAULT ''` 가 그 자리다. 없는 옵션을 가리키는 셀(옵션이 지워진 뒤)도 `''` 로 접는다 — SQL 의 키 식이
  * 그렇게 계산하므로 카운트 · 행 · 커서가 한 규칙을 본다.
  *
@@ -72,11 +72,13 @@ import {
 import {
   isGroupableType,
   isMvpPropertyType,
-  isOptionColor,
+  isOptionType,
+  optionValue,
   type CellValue,
   type GroupableType,
   type SelectOption,
 } from './property-types.ts'
+import { readOptionsOf } from './options.ts'
 import {
   decodeCursorValues,
   encodeCursorValues,
@@ -90,7 +92,7 @@ import { MAX_QUERY_LIMIT } from './limits.ts'
 
 // ── 계약 ──────────────────────────────────────────────────────────────
 
-/** 그룹으로 묶을 수 있는 타입. F-04-11 의 9종 중 MVP 둘(머리말). 정의는 클라이언트도 읽는 `property-types.ts` 에 있다. */
+/** 그룹으로 묶을 수 있는 타입. F-04-11 의 9종 중 셋(머리말). 정의는 클라이언트도 읽는 `property-types.ts` 에 있다. */
 export { GROUPABLE_TYPES, isGroupableType, type GroupableType } from './property-types.ts'
 
 /** 값이 없는 행의 그룹. 정본 `row_position.group_key DEFAULT ''`. */
@@ -123,7 +125,7 @@ export function validateGroupBy(raw: unknown, types: PropertyTypes): ValidationI
   if (typeof g.property_id !== 'string' || !types.has(g.property_id)) {
     issues.push({ path: 'groupBy.property_id', message: '없는 프로퍼티입니다' })
   } else if (!isGroupableType(types.get(g.property_id))) {
-    issues.push({ path: 'groupBy.property_id', message: 'select · checkbox 프로퍼티만 그룹으로 묶을 수 있습니다' })
+    issues.push({ path: 'groupBy.property_id', message: 'select · status · checkbox 프로퍼티만 그룹으로 묶을 수 있습니다' })
   }
   if (g.hidden !== undefined) {
     if (!Array.isArray(g.hidden) || g.hidden.some((k) => typeof k !== 'string')) {
@@ -152,7 +154,7 @@ export function normalizeGroupBy(raw: GroupBy): GroupBy {
 
 export type BoardGroup = {
   readonly key: string
-  /** select 그룹의 옵션. `''` 그룹 · checkbox 그룹은 null. */
+  /** select · status 그룹의 옵션. `''` 그룹 · checkbox 그룹은 null. */
   readonly option: SelectOption | null
   /** 필터를 지난 행 수. 숨긴 그룹도 센다(숨긴 그룹 목록에 개수를 보여 준다). */
   readonly count: number
@@ -272,17 +274,14 @@ async function openBoard(
     loadLimit: view.load_limit,
     groupBy,
     propertyType,
-    options: propertyType === 'select' ? await readOptions(tx, groupBy.property_id) : [],
+    options: isOptionType(propertyType) ? await readOptions(tx, groupBy.property_id) : [],
     types,
   }
 }
 
+/** 열의 순서가 곧 이 순서다. status 옵션은 그룹 순서가 먼저다(`options.ts` 머리말). */
 async function readOptions(tx: Tx, propertyId: string): Promise<SelectOption[]> {
-  const rows = await tx.query<{ id: string; name: string; color: string }>(
-    `SELECT id, name, color::text AS color FROM select_option WHERE property_id = $1 ORDER BY order_idx, id`,
-    [propertyId],
-  )
-  return rows.map((o) => ({ id: o.id, name: o.name, color: isOptionColor(o.color) ? o.color : 'default' }))
+  return (await readOptionsOf(tx, [propertyId])).get(propertyId) ?? []
 }
 
 /**
@@ -489,7 +488,7 @@ export async function queryGroupRows(
 
 function cellValueFor(board: Board, groupKey: string): CellValue {
   if (board.propertyType === 'checkbox') return { type: 'checkbox', checkbox: groupKey === 'true' }
-  return { type: 'select', select: groupKey === NO_VALUE_KEY ? null : { id: groupKey } }
+  return optionValue(board.propertyType, groupKey === NO_VALUE_KEY ? null : groupKey)
 }
 
 /**

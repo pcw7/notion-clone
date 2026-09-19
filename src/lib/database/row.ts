@@ -59,6 +59,7 @@ import {
   deriveSidecars,
   emptyValue,
   isMvpPropertyType,
+  optionValue,
   validateCellValue,
   type CellValue,
   type MvpPropertyType,
@@ -107,7 +108,7 @@ export type RowResult<T> =
 
 // ── 스키마 · 권한 ─────────────────────────────────────────────────────
 
-type PropertyMeta = { id: string; type: string; writable: string; order_idx: string }
+type PropertyMeta = { id: string; type: string; writable: string; order_idx: string; config: unknown }
 
 type DataSourceGate = {
   dataSourceId: string
@@ -144,7 +145,7 @@ async function openDataSource(
   if (need !== 'view' && !can(caps, need)) return { ok: false, reason: 'forbidden' } as const
 
   const rows = await tx.query<PropertyMeta>(
-    `SELECT id, type, writable, order_idx FROM property
+    `SELECT id, type, writable, order_idx, config FROM property
       WHERE data_source_id = $1 AND deleted_at IS NULL`,
     [dataSourceId],
   )
@@ -159,6 +160,28 @@ async function openDataSource(
 
 function isFailure<T>(v: T | RowResult<never>): v is RowResult<never> {
   return typeof v === 'object' && v !== null && 'ok' in v
+}
+
+// ── 기본값 ────────────────────────────────────────────────────────────
+
+/**
+ * 새 행이 받는 기본 셀 — **status 의 기본 옵션 하나뿐이다**(F-03-05: *"status 는 노션에서 유일하게 기본 옵션을 갖는
+ * 프로퍼티다. 신규 행은 그 옵션을 자동으로 받는다"* · F-03-21 의 유일한 예외).
+ *
+ * 호출자가 그 프로퍼티의 셀을 **보냈으면 그것이 이긴다 — 빈 값이어도.** 보드의 "상태 없음" 열의 `+` 가 빈 값을
+ * 명시해 보내는 이유가 이것이다(`board-drag.ts` `prefillCells`): 안 보내면 새 카드가 기본 옵션의 열로 가 버린다.
+ *
+ * 기본 옵션은 **만들 때만** 적용한다. 셀을 비우는 것을 막지 않는다(`property.ts` `seedStatus` 머리말 · §3.2-29).
+ */
+function defaultCells(gate: DataSourceGate, given: readonly RowCell[]): RowCell[] {
+  const sent = new Set(given.map((cell) => cell.propertyId))
+  const out: RowCell[] = []
+  for (const meta of gate.properties.values()) {
+    if (meta.type !== 'status' || sent.has(meta.id) || meta.writable === 'readonly') continue
+    const id = (meta.config as { default_option_id?: unknown } | null)?.default_option_id
+    if (typeof id === 'string' && id.length > 0) out.push({ propertyId: meta.id, value: optionValue('status', id) })
+  }
+  return out
 }
 
 // ── 셀 쓰기 ───────────────────────────────────────────────────────────
@@ -317,7 +340,8 @@ export async function createRow(
       return { ok: false, reason: 'schema_conflict', currentVersion: gate.schemaVersion } as const
     }
 
-    const prepared = prepareCells(gate, input.cells ?? [])
+    const given = input.cells ?? []
+    const prepared = prepareCells(gate, [...given, ...defaultCells(gate, given)])
     if (isFailure(prepared)) return prepared
 
     const rowId = randomUUID()

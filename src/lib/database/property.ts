@@ -45,16 +45,23 @@ import type { SessionContext } from '../auth/session-context.ts'
 import { withTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
 import { can } from '../permissions/levels.ts'
 import { effectiveCaps } from '../permissions/effective.ts'
-import { orderKeyBetween } from '../block/order-key.ts'
+import { orderKeyBetween, orderKeysBetween } from '../block/order-key.ts'
+import { isUuid } from '../ids.ts'
 import {
   DEFAULT_PROPERTY_TYPE,
   OPTION_COLORS,
+  STATUS_DEFAULT_OPTIONS,
+  STATUS_GROUP_KINDS,
   isMvpPropertyType,
   isOptionColor,
+  isOptionType,
+  isStatusGroupKind,
   type MvpPropertyType,
   type OptionColor,
   type SelectOption,
+  type StatusGroupKind,
 } from './property-types.ts'
+import { readOptionsOf, toSelectOption } from './options.ts'
 import { addPropertyToViews } from './view.ts'
 
 /**
@@ -104,6 +111,13 @@ export type PropertySummary = {
   readonly type: MvpPropertyType
   readonly config: Record<string, unknown>
   readonly orderKey: string
+  /**
+   * select · status 의 옵션(`options.ts` 의 순서). 다른 타입에는 없다.
+   *
+   * **옵션은 스키마다** — status 는 만드는 순간 옵션 셋이 함께 생기므로, 스키마 응답에 없으면 방금 더한 상태 컬럼의
+   * 편집기가 새로고침 전까지 비어 있다.
+   */
+  readonly options?: readonly SelectOption[]
 }
 
 export type SchemaSnapshot = {
@@ -128,6 +142,10 @@ export type PropertyFailure =
   | 'schema_conflict'
   /** 옵션 색이 `option_color` ENUM 에 없다. */
   | 'invalid_color'
+  /** 옵션의 그룹이 틀렸다 — status 가 아닌데 그룹을 줬거나, 세 범주에 없는 값이다. */
+  | 'invalid_group'
+  /** status 의 `config.default_option_id` 가 이 프로퍼티의 옵션이 아니다(또는 모르는 키가 있다). */
+  | 'invalid_config'
 
 export type PropertyResult<T = SchemaSnapshot> =
   | { readonly ok: true; readonly value: T }
@@ -216,7 +234,7 @@ type PropertyRow = {
   order_idx: string
 }
 
-function toSummary(row: PropertyRow): PropertySummary {
+function toSummary(row: PropertyRow, optionsOf: ReadonlyMap<string, readonly SelectOption[]>): PropertySummary {
   return {
     id: row.id,
     name: row.name,
@@ -226,6 +244,7 @@ function toSummary(row: PropertyRow): PropertySummary {
     type: isMvpPropertyType(row.type) ? row.type : DEFAULT_PROPERTY_TYPE,
     config: row.config ?? {},
     orderKey: row.order_idx,
+    ...(isOptionType(row.type) ? { options: optionsOf.get(row.id) ?? [] } : {}),
   }
 }
 
@@ -243,10 +262,11 @@ async function readSchema(tx: Tx, dataSourceId: string): Promise<SchemaSnapshot>
       [dataSourceId],
     ),
   ])
+  const optionsOf = await readOptionsOf(tx, rows.filter((r) => isOptionType(r.type)).map((r) => r.id))
   return {
     dataSourceId,
     schemaVersion: ds.schema_version,
-    properties: rows.map(toSummary),
+    properties: rows.map((row) => toSummary(row, optionsOf)),
   }
 }
 
@@ -350,10 +370,12 @@ export async function addProperty(
         name,
         input.description ?? null,
         type,
-        JSON.stringify(input.config ?? {}),
+        // status 의 config 는 받지 않는다 — 기본 옵션 id 는 아래에서 만든 옵션에서 나온다.
+        JSON.stringify(type === 'status' ? {} : (input.config ?? {})),
         orderKeyBetween(last?.order_idx ?? null, null),
       ],
     )
+    if (type === 'status') await seedStatus(tx, propertyId)
 
     // ★ 새 콬럼은 이 data_source 의 **모든 뷰**에 나타나야 한다.
     //   `view_property.visible` 기본값이 `false` 이고 행이 없으면 조인에서
@@ -411,6 +433,10 @@ export async function updateProperty(
       [propertyId, dataSourceId],
     )
     if (target === null) return fail('not_found')
+
+    if (target.type === 'status' && input.config !== undefined) {
+      if (!(await isValidStatusConfig(tx, propertyId, input.config))) return fail('invalid_config')
+    }
 
     if (name !== undefined) {
       const dup = await tx.queryMaybe<{ one: number }>(
@@ -603,6 +629,8 @@ export type AddSelectOptionInput = {
   readonly name: string
   /** 생략하면 팔레트를 돌아가며 준다. */
   readonly color?: OptionColor
+  /** status 옵션의 범주. 생략하면 `todo`. select 에 주면 거부한다(`invalid_group` · 불변식 SG3). */
+  readonly group?: StatusGroupKind
 }
 
 export type SelectOptionResult = {
@@ -637,6 +665,7 @@ export async function addSelectOption(
   const name = normalizeName(input.name)
   if (name === null) return fail('invalid_name')
   if (input.color !== undefined && !isOptionColor(input.color)) return fail('invalid_color')
+  if (input.group !== undefined && !isStatusGroupKind(input.group)) return fail('invalid_group')
 
   return withTransaction(async (tx) => {
     const ds = await lockSchema(tx, ctx, dataSourceId)
@@ -648,9 +677,19 @@ export async function addSelectOption(
       [propertyId, dataSourceId],
     )
     if (target === null) return fail('not_found')
-    // MVP 는 select 하나다. multi_select · status 가 같은 레지스트리를 쓰지만
-    // (0013 머리말) 그 타입이 들어올 때 여기를 연다.
-    if (target.type !== 'select') return fail('unsupported_type')
+    // select · status 가 같은 레지스트리를 쓴다(0013 머리말). multi_select 는 그 타입이 들어올 때 연다.
+    if (!isOptionType(target.type)) return fail('unsupported_type')
+    // 불변식 SG3: status 옵션은 그룹이 있고, 그 밖의 옵션은 없다. DB 트리거도 막지만 이유를 말해 주는 쪽이 낫다.
+    if (target.type === 'select' && input.group !== undefined) return fail('invalid_group')
+
+    const groupKind: StatusGroupKind | null = target.type === 'status' ? (input.group ?? 'todo') : null
+    const group =
+      groupKind === null
+        ? null
+        : await tx.queryOne<{ id: string }>(
+            `SELECT id FROM status_group WHERE property_id = $1 AND kind = $2::status_group_kind`,
+            [propertyId, groupKind],
+          )
 
     const stats = await tx.queryOne<{ n: string; last: string | null }>(
       `SELECT count(*) AS n, max(order_idx) AS last FROM select_option WHERE property_id = $1`,
@@ -661,35 +700,92 @@ export async function addSelectOption(
     const color = input.color ?? OPTION_COLORS[Number(stats.n) % OPTION_COLORS.length]
 
     const inserted = await tx.queryMaybe<{ id: string; name: string; color: string }>(
-      `INSERT INTO select_option (id, property_id, name, color, order_idx)
-       VALUES ($1, $2, $3, $4::option_color, $5)
+      `INSERT INTO select_option (id, property_id, name, color, group_id, order_idx)
+       VALUES ($1, $2, $3, $4::option_color, $5, $6)
        ON CONFLICT (property_id, lower(name)) DO NOTHING
        RETURNING id, name, color::text AS color`,
-      [randomUUID(), propertyId, name, color, orderKeyBetween(stats.last, null)],
+      [randomUUID(), propertyId, name, color, group?.id ?? null, orderKeyBetween(stats.last, null)],
     )
 
     if (inserted !== null) {
       return {
         ok: true,
-        value: { option: toOption(inserted), created: true, schemaVersion: await bumpSchema(tx, dataSourceId) },
+        value: {
+          option: toSelectOption({ ...inserted, group_kind: groupKind }),
+          created: true,
+          schemaVersion: await bumpSchema(tx, dataSourceId),
+        },
       } as const
     }
 
     // 같은 이름이 이미 있다 — 그것으로 수렴한다. 바뀐 것이 없으므로 버전을 올리지
     // 않는다(`moveProperty` 의 자기 앞 이동과 같은 규칙: 올리면 남의 낙관적 잠금을
     // 헛되게 깨뜨린다).
-    const existing = await tx.queryOne<{ id: string; name: string; color: string }>(
-      `SELECT id, name, color::text AS color FROM select_option
-        WHERE property_id = $1 AND lower(name) = lower($2)`,
+    // status 면 있는 옵션의 **그룹도 그대로** 돌려준다 — 요청한 그룹으로 옮기지 않는다(옮기기는 다른 명령이다).
+    const existing = await tx.queryOne<{ id: string; name: string; color: string; group_kind: string | null }>(
+      `SELECT o.id, o.name, o.color::text AS color, g.kind::text AS group_kind
+         FROM select_option o
+         LEFT JOIN status_group g ON g.id = o.group_id
+        WHERE o.property_id = $1 AND lower(o.name) = lower($2)`,
       [propertyId, name],
     )
     return {
       ok: true,
-      value: { option: toOption(existing), created: false, schemaVersion: ds.schema_version },
+      value: { option: toSelectOption(existing), created: false, schemaVersion: ds.schema_version },
     } as const
   })
 }
 
-function toOption(row: { id: string; name: string; color: string }): SelectOption {
-  return { id: row.id, name: row.name, color: isOptionColor(row.color) ? row.color : 'default' }
+// ── status ────────────────────────────────────────────────────────────
+
+/**
+ * status 프로퍼티의 세 그룹과 기본 옵션 셋을 만들고 첫 옵션을 **기본 옵션**으로 건다 (F-03-05 시나리오 1).
+ *
+ * 프로퍼티 행이 먼저 있어야 한다 — 그룹 · 옵션이 그것을 FK 로 가리키고, 0023 의 트리거가 그 타입을 읽는다.
+ *
+ * **기본 옵션은 새 행의 초깃값일 뿐이다**(HANDOFF §3.2-29). F-03-05 는 *"기본 옵션이 있는 동안 셀을 비울 수
+ * 없다"* 까지 적었지만(2차 출처) 그 불변식은 이미 있는 행에서 성립하지 않는다 — status 컬럼을 나중에 더하면 기존
+ * 행은 값이 없다. 전부 채우려면 스키마 잠금 안에서 행 수만큼 셀을 쓰고 모든 행의 `version` 을 올려야 한다(남의
+ * 낙관적 잠금을 전부 깬다). 반만 지키는 불변식을 두지 않았다.
+ */
+async function seedStatus(tx: Tx, propertyId: string): Promise<void> {
+  const groupIds = new Map<StatusGroupKind, string>()
+  for (const kind of STATUS_GROUP_KINDS) {
+    const id = randomUUID()
+    groupIds.set(kind, id)
+    await tx.query(
+      `INSERT INTO status_group (id, property_id, kind) VALUES ($1, $2, $3::status_group_kind)`,
+      [id, propertyId, kind],
+    )
+  }
+
+  const keys = orderKeysBetween(null, null, STATUS_DEFAULT_OPTIONS.length)
+  let defaultOptionId: string | null = null
+  for (const [i, option] of STATUS_DEFAULT_OPTIONS.entries()) {
+    const id = randomUUID()
+    defaultOptionId ??= id
+    await tx.query(
+      `INSERT INTO select_option (id, property_id, name, color, group_id, order_idx)
+       VALUES ($1, $2, $3, $4::option_color, $5, $6)`,
+      [id, propertyId, option.name, option.color, groupIds.get(option.group), keys[i]],
+    )
+  }
+  await tx.query(`UPDATE property SET config = $2::jsonb WHERE id = $1`, [
+    propertyId,
+    JSON.stringify({ default_option_id: defaultOptionId }),
+  ])
+}
+
+/** status 의 config 는 `default_option_id`(이 프로퍼티의 옵션 id 또는 null) 하나다. 모르는 키는 거부한다. */
+async function isValidStatusConfig(tx: Tx, propertyId: string, config: Record<string, unknown>): Promise<boolean> {
+  if (typeof config !== 'object' || config === null || Array.isArray(config)) return false
+  if (Object.keys(config).some((key) => key !== 'default_option_id')) return false
+  const id = config.default_option_id
+  if (id === undefined || id === null) return true
+  if (typeof id !== 'string' || !isUuid(id)) return false
+  const found = await tx.queryMaybe<{ one: number }>(
+    `SELECT 1 AS one FROM select_option WHERE id = $1 AND property_id = $2`,
+    [id, propertyId],
+  )
+  return found !== null
 }
