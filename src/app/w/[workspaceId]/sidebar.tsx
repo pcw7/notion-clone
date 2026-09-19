@@ -65,10 +65,13 @@ export function Sidebar({
   trash,
   recent,
   favorites,
+  inboxUnread,
 }: {
   workspaceId: string
   tree: SidebarNode[]
   trash: TrashRow[]
+  /** 안 읽은 알림 수(F-11-07). 서버가 권한으로 걸러서 센다 — 볼 수 없게 된 페이지의 알림은 빠진다(§3.3-131). */
+  inboxUnread: number
   /** 최근 방문(F-07-04). 서버가 권한으로 걸러서 준다. */
   recent: NavRow[]
   /** 즐겨찾기(F-07-16). 같은 규칙. */
@@ -216,6 +219,23 @@ export function Sidebar({
         <span aria-hidden>🔍</span>
         <span>검색</span>
       </button>
+
+      {/* 인박스 — F-11-07. 배지는 "지금 안 읽은 수"이고 서버가 권한으로 걸러 센다. */}
+      <Link
+        href={`/w/${workspaceId}/inbox`}
+        className="flex items-center gap-1.5 rounded-md px-2 py-1 text-left text-sm text-neutral-500 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+      >
+        <span aria-hidden>📥</span>
+        <span>인박스</span>
+        {inboxUnread > 0 && (
+          <span
+            aria-label={`안 읽은 알림 ${inboxUnread}개`}
+            className="ml-auto rounded-full bg-neutral-900 px-1.5 text-xs text-white dark:bg-neutral-100 dark:text-neutral-900"
+          >
+            {inboxUnread}
+          </span>
+        )}
+      </Link>
 
       {/*
         F-07-16 의 사이드바는 트리 하나가 아니라 **섹션들**이다. 즐겨찾기는 위,

@@ -14,6 +14,7 @@ import { requirePageSession } from '@/lib/auth/page-session'
 import { listPageTree } from '@/lib/block/page-tree'
 import { listTrash } from '@/lib/block/trash'
 import { listFavorites, listRecent } from '@/lib/nav/recent'
+import { unreadCount } from '@/lib/notification/inbox'
 import { Sidebar, type SidebarNode } from './sidebar'
 import { SearchOverlay } from './search-overlay'
 
@@ -35,11 +36,12 @@ export default async function WorkspaceLayout({
   const { workspaceId } = await params
   const ctx = await requirePageSession(workspaceId)
 
-  const [tree, trash, recent, favorites] = await Promise.all([
+  const [tree, trash, recent, favorites, inboxUnread] = await Promise.all([
     listPageTree(ctx),
     listTrash(ctx),
     listRecent(ctx),
     listFavorites(ctx),
+    unreadCount(ctx),
   ])
 
   return (
@@ -56,6 +58,7 @@ export default async function WorkspaceLayout({
         }))}
         recent={recent.map((e) => ({ id: e.id, title: e.title }))}
         favorites={favorites.map((e) => ({ id: e.id, title: e.title }))}
+        inboxUnread={inboxUnread}
       />
       <div className="min-w-0 flex-1">{children}</div>
 
