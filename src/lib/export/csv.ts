@@ -39,7 +39,7 @@
 
 import { toPlainText } from '../contracts/rich-text.ts'
 import { readCell } from '../database/cell-format.ts'
-import type { MvpPropertyType, SelectOption } from '../database/property-types.ts'
+import { optionIdOf, type MvpPropertyType, type SelectOption } from '../database/property-types.ts'
 
 export type CsvColumn = {
   readonly propertyId: string
@@ -88,7 +88,7 @@ export function tableToCsv(columns: readonly CsvColumn[], rows: readonly CsvRow[
 }
 
 /** 사용자가 쓴 글자를 담는 타입. 수식 막기는 이것에만 건다(머리말). */
-const USER_TEXT: ReadonlySet<MvpPropertyType> = new Set(['title', 'rich_text', 'select'])
+const USER_TEXT: ReadonlySet<MvpPropertyType> = new Set(['title', 'rich_text', 'select', 'status'])
 
 /**
  * 칸 하나의 글자. CSV 와 행 Markdown 의 속성 줄(`plan.ts`)이 **같은 규칙**을 쓴다.
@@ -104,9 +104,10 @@ export function cellPlainText(column: CsvColumn, raw: unknown): string {
       return toPlainText(value.rich_text)
     case 'number':
       return value.number === null ? '' : String(value.number)
-    case 'select': {
-      const id = value.select?.id
-      return id === undefined ? '' : (column.options?.find((option) => option.id === id)?.name ?? '')
+    case 'select':
+    case 'status': {
+      const id = optionIdOf(value)
+      return id === null ? '' : (column.options?.find((option) => option.id === id)?.name ?? '')
     }
     case 'checkbox':
       return value.checkbox ? 'Yes' : 'No'

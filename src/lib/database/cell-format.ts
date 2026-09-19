@@ -33,6 +33,7 @@ import { MAX_RUN_CONTENT, textRun, toPlainText } from '../contracts/rich-text.ts
 import {
   emptyValue,
   validateCellValue,
+  optionIdOf,
   type CellValue,
   type DateValue,
   type MvpPropertyType,
@@ -68,9 +69,10 @@ export function cellText(value: CellValue, options: readonly SelectOption[] = []
       return toPlainText(value.rich_text)
     case 'number':
       return value.number === null ? '' : String(value.number)
-    case 'select': {
-      const id = value.select?.id
-      return id === undefined ? '' : (options.find((o) => o.id === id)?.name ?? '')
+    case 'select':
+    case 'status': {
+      const id = optionIdOf(value)
+      return id === null ? '' : (options.find((o) => o.id === id)?.name ?? '')
     }
     case 'checkbox':
       return value.checkbox ? '체크됨' : '체크 안 됨'
@@ -107,6 +109,7 @@ export function draftOf(value: CellValue): string {
       // `<input type="date">` 가 받는 모양. 시각은 이 입력칸이 고치지 않는다.
       return value.date === null ? '' : value.date.start.slice(0, 10)
     case 'select':
+    case 'status':
     case 'checkbox':
       return ''
   }
@@ -168,6 +171,7 @@ export function parseDraft(type: MvpPropertyType, draft: string, previous: CellV
     }
 
     case 'select':
+    case 'status':
     case 'checkbox':
       return { ok: false, message: '입력칸으로 고치는 타입이 아닙니다' }
   }
@@ -217,6 +221,7 @@ export function defaultColumnWidth(type: MvpPropertyType): number {
       return 220
     case 'number':
     case 'select':
+    case 'status':
     case 'date':
       return 160
     case 'checkbox':

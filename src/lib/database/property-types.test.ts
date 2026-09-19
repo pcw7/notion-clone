@@ -19,10 +19,16 @@ import {
   DEFAULT_PROPERTY_TYPE,
   deriveSidecars,
   emptyValue,
+  insertOption,
   isEmptyValue,
+  isGroupableType,
   isMvpPropertyType,
+  isOptionType,
+  optionIdOf,
+  optionValue,
   validateCellValue,
   type CellValue,
+  type SelectOption,
 } from './property-types.ts'
 import { textRun } from '../contracts/rich-text.ts'
 
@@ -30,9 +36,9 @@ const valid = (type: Parameters<typeof validateCellValue>[0], v: unknown): boole
   validateCellValue(type, v).length === 0
 
 describe('레지스트리', () => {
-  test('MVP 6종이다 (마스터 W8-a "프로퍼티 5종" + 필수 title)', () => {
+  test('MVP 6종 + status (마스터 W8-a "프로퍼티 5종" + 필수 title · 보드 4c-1 이 status 를 더했다)', () => {
     assert.deepEqual([...MVP_PROPERTY_TYPES], [
-      'title', 'rich_text', 'number', 'select', 'checkbox', 'date',
+      'title', 'rich_text', 'number', 'select', 'status', 'checkbox', 'date',
     ])
   })
 
@@ -271,6 +277,64 @@ describe('검증 — 쓰기 경로는 관대하지 않다', () => {
       })
       assert.ok(issues.length > 0)
       assert.match(issues[0].path, /^value\.rich_text/)
+    })
+  })
+})
+
+describe('status — 그룹이 강제되는 select (보드 4c-1 · F-03-05)', () => {
+  test('★ 봉투의 키가 타입 이름이다 — status 칸에 select 봉투는 거부, 그 반대도', () => {
+    assert.ok(valid('status', { type: 'status', status: { id: 'opt' } }))
+    assert.ok(valid('status', { type: 'status', status: null }))
+    assert.ok(!valid('status', { type: 'select', select: { id: 'opt' } }))
+    assert.ok(!valid('select', { type: 'status', status: { id: 'opt' } }))
+    assert.ok(!valid('status', { type: 'status', status: { id: '' } }))
+    assert.ok(!valid('status', { type: 'status', status: 'opt' }))
+  })
+
+  test('★ 사이드카는 select 와 같은 축(옵션 id) — 필터 · 보드의 그룹 키가 한 규칙을 본다', () => {
+    assert.equal(deriveSidecars({ type: 'status', status: { id: 'opt' } }).text, 'opt')
+    assert.equal(deriveSidecars({ type: 'status', status: null }).text, null)
+    assert.deepEqual(deriveSidecars({ type: 'status', status: { id: 'opt' } }), deriveSidecars({ type: 'select', select: { id: 'opt' } }))
+  })
+
+  test('빈 값 · 옵션 타입 · 그룹으로 묶을 수 있는 타입', () => {
+    assert.deepEqual(emptyValue('status'), { type: 'status', status: null })
+    assert.ok(isEmptyValue({ type: 'status', status: null }))
+    assert.ok(!isEmptyValue({ type: 'status', status: { id: 'opt' } }))
+    assert.ok(isOptionType('select') && isOptionType('status') && !isOptionType('checkbox'))
+    assert.ok(isGroupableType('status'))
+  })
+
+  test('optionIdOf · optionValue — 봉투의 키를 아는 곳은 여기 하나다', () => {
+    assert.deepEqual(optionValue('status', 'opt'), { type: 'status', status: { id: 'opt' } })
+    assert.deepEqual(optionValue('select', 'opt'), { type: 'select', select: { id: 'opt' } })
+    assert.deepEqual(optionValue('status', null), { type: 'status', status: null })
+    assert.equal(optionIdOf(optionValue('status', 'opt')), 'opt')
+    assert.equal(optionIdOf(optionValue('select', null)), null)
+    assert.equal(optionIdOf({ type: 'checkbox', checkbox: true }), null)
+  })
+
+  describe('insertOption — 새 옵션은 서버가 읽어 주는 자리에 선다', () => {
+    const o = (id: string, group?: SelectOption['group']): SelectOption => ({ id, name: id, color: 'default', ...(group ? { group } : {}) })
+    const status = [o('시작 전', 'todo'), o('진행 중', 'in_progress'), o('완료', 'complete')]
+    const ids = (list: readonly SelectOption[]) => list.map((x) => x.id)
+
+    test('★ 자기 그룹의 끝 — "할 일"에 만든 옵션이 완료 뒤에 서지 않는다', () => {
+      assert.deepEqual(ids(insertOption(status, o('보류', 'todo'))), ['시작 전', '보류', '진행 중', '완료'])
+      assert.deepEqual(ids(insertOption(status, o('검토 중', 'in_progress'))), ['시작 전', '진행 중', '검토 중', '완료'])
+      assert.deepEqual(ids(insertOption(status, o('취소', 'complete'))), ['시작 전', '진행 중', '완료', '취소'])
+    })
+
+    test('select 옵션은 맨 뒤 · 이미 있는 id 는 그대로', () => {
+      const select = [o('a'), o('b')]
+      assert.deepEqual(ids(insertOption(select, o('c'))), ['a', 'b', 'c'])
+      assert.deepEqual(ids(insertOption(status, o('완료', 'complete'))), ['시작 전', '진행 중', '완료'])
+    })
+
+    test('원래 배열을 바꾸지 않는다', () => {
+      const before = JSON.stringify(status)
+      insertOption(status, o('보류', 'todo'))
+      assert.equal(JSON.stringify(status), before)
     })
   })
 })

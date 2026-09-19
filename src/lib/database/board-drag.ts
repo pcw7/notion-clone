@@ -36,7 +36,7 @@
  */
 
 import type { RowCell } from './row.ts'
-import type { GroupableType, SelectOption } from './property-types.ts'
+import { optionValue, type GroupableType, type SelectOption } from './property-types.ts'
 
 // ── 좌표 ──────────────────────────────────────────────────────────────
 
@@ -164,8 +164,10 @@ export function prefillCells(propertyType: GroupableType, propertyId: string, ke
   if (propertyType === 'checkbox') {
     return [{ propertyId, value: { type: 'checkbox', checkbox: key === 'true' } }]
   }
-  if (key === '') return []
-  return [{ propertyId, value: { type: 'select', select: { id: key } } }]
+  // status 는 새 행이 기본 옵션을 받는다(`row.ts` `defaultCells`). "상태 없음" 열의 `+` 는 빈 값을 **명시해** 보내야
+  // 카드가 그 열에 남는다. select 는 기본값이 없어 안 보내는 것이 곧 빈 값이다.
+  if (key === '') return propertyType === 'status' ? [{ propertyId, value: optionValue('status', null) }] : []
+  return [{ propertyId, value: optionValue(propertyType, key) }]
 }
 
 /** 열 머리의 이름. 노션의 "No Status" 자리. */

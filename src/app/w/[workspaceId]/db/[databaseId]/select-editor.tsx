@@ -30,15 +30,16 @@
  * 사라진다.
  */
 
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 
-import type { SelectOption } from '@/lib/database/property-types'
+import { STATUS_GROUP_LABEL, type SelectOption } from '@/lib/database/property-types'
 import { OptionChip } from './cell-view'
 
 export function SelectEditor({
   options,
   currentId,
   canCreate,
+  isStatus = false,
   onPick,
   onCreate,
 }: {
@@ -46,6 +47,12 @@ export function SelectEditor({
   currentId: string | null
   /** 새 옵션을 만들 수 있는가(`edit_structure`). 없으면 "만들기" 항목을 그리지 않는다. */
   canCreate: boolean
+  /**
+   * status 칸인가. 목록을 그룹 머리(할 일 · 진행 중 · 완료)로 구획하고(F-03-05 시나리오 2), 새 옵션은 **할 일**
+   * 그룹에 만든다고 말한다. 옵션은 이미 그룹 순서로 온다(`options.ts`) — 여기서는 그룹이 바뀌는 자리에 머리만 끼운다.
+   * 머리는 옵션이 아니라서 ↑↓ 의 색인에 들지 않는다.
+   */
+  isStatus?: boolean
   onPick: (optionId: string | null) => void
   onCreate: (name: string) => void
 }) {
@@ -113,8 +120,17 @@ export function SelectEditor({
 
       <ul role="listbox" aria-label="옵션" className="max-h-56 overflow-auto">
         {matches.map((option, i) => (
+          <Fragment key={option.id}>
+          {isStatus && option.group !== undefined && option.group !== matches[i - 1]?.group && (
+            <li
+              role="presentation"
+              data-testid="db-status-group"
+              className="px-2 pb-0.5 pt-1.5 text-[11px] font-medium text-neutral-400"
+            >
+              {STATUS_GROUP_LABEL[option.group]}
+            </li>
+          )}
           <li
-            key={option.id}
             role="option"
             aria-selected={i === active}
             data-testid="db-option"
@@ -129,6 +145,7 @@ export function SelectEditor({
             <OptionChip option={option} />
             {option.id === currentId && <span className="text-xs text-neutral-400">선택됨</span>}
           </li>
+          </Fragment>
         ))}
 
         {showCreate && (
@@ -143,7 +160,7 @@ export function SelectEditor({
               active === matches.length ? 'bg-neutral-100 dark:bg-neutral-800' : ''
             }`}
           >
-            ‘{q}’ 만들기
+            ‘{q}’ 만들기{isStatus ? ` — ${STATUS_GROUP_LABEL.todo} 그룹에` : ''}
           </li>
         )}
 

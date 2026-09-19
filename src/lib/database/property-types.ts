@@ -54,12 +54,19 @@ import {
   type ValidationIssue,
 } from '../contracts/rich-text.ts'
 
-/** MVP 가 만드는 프로퍼티 타입. 스키마의 ENUM 은 24종이지만 여기가 실제 범위다. */
+/**
+ * 앱이 만드는 프로퍼티 타입. 스키마의 ENUM 은 24종이지만 여기가 실제 범위다.
+ *
+ * MVP 는 6종이었고(HANDOFF §3.2-7) 보드 4c-1 이 `status` 를 더했다 — F-03-05 의 현실적 대안 그대로
+ * **"그룹이 강제되는 select"** 다. 옵션 레지스트리 · 사이드카(옵션 id) · 필터 연산자가 select 와 같고, 다른 것은
+ * 옵션마다 그룹이 붙는다는 것과 새 행이 받는 기본 옵션(`config.default_option_id`)뿐이다.
+ */
 export const MVP_PROPERTY_TYPES = [
   'title',
   'rich_text',
   'number',
   'select',
+  'status',
   'checkbox',
   'date',
 ] as const
@@ -72,17 +79,64 @@ export function isMvpPropertyType(t: unknown): t is MvpPropertyType {
 }
 
 /**
- * 그룹(보드)으로 묶을 수 있는 타입. F-04-11 의 9종 중 MVP 둘 — 규칙은 `group.ts` 머리말.
+ * 그룹(보드)으로 묶을 수 있는 타입. F-04-11 의 9종 중 셋 — 규칙은 `group.ts` 머리말.
  *
  * 여기(클라이언트에서도 읽는 계약 모듈)에 두는 이유: 도구줄의 "그룹" 패널이 고를 수 있는 속성을 거르는데, `group.ts` 는
  * DB 모듈을 끌어오므로 클라이언트 번들이 가져갈 수 없다.
  */
-export const GROUPABLE_TYPES = ['select', 'checkbox'] as const
+export const GROUPABLE_TYPES = ['select', 'status', 'checkbox'] as const
 export type GroupableType = (typeof GROUPABLE_TYPES)[number]
 
 export function isGroupableType(t: unknown): t is GroupableType {
-  return t === 'select' || t === 'checkbox'
+  return t === 'select' || t === 'status' || t === 'checkbox'
 }
+
+/**
+ * 옵션 레지스트리(`select_option`)를 쓰는 타입. 셀이 **옵션 id 하나**를 가리킨다.
+ *
+ * select 와 status 가 갈라지는 곳은 셋뿐이다 — 값 봉투의 키(`select` / `status`), 옵션의 그룹, 기본 옵션.
+ * 그 밖의 분기(사이드카 · 필터 · 표시 · 보드의 그룹 키)는 전부 이 술어 하나로 묻는다. 타입마다 `case` 를 늘리면
+ * "select 에서는 되는데 status 에서는 안 되는" 구간이 생긴다.
+ */
+export const OPTION_TYPES = ['select', 'status'] as const
+export type OptionType = (typeof OPTION_TYPES)[number]
+
+export function isOptionType(t: unknown): t is OptionType {
+  return t === 'select' || t === 'status'
+}
+
+/**
+ * status 의 세 범주. **고정이다** — F-03-05: *"You can't change the three main categories."*
+ *
+ * 이름 · 색은 `kind` 의 함수라 DB 에 없다(마이그레이션 0023 머리말). "완료인가"는 `kind === 'complete'` 로 묻는다 —
+ * 이름으로 묻지 않는다(진행률 · 자동화가 이름에 기대면 번역이 규칙을 깬다).
+ */
+export const STATUS_GROUP_KINDS = ['todo', 'in_progress', 'complete'] as const
+export type StatusGroupKind = (typeof STATUS_GROUP_KINDS)[number]
+
+export function isStatusGroupKind(v: unknown): v is StatusGroupKind {
+  return typeof v === 'string' && (STATUS_GROUP_KINDS as readonly string[]).includes(v)
+}
+
+export const STATUS_GROUP_LABEL: Readonly<Record<StatusGroupKind, string>> = Object.freeze({
+  todo: '할 일',
+  in_progress: '진행 중',
+  complete: '완료',
+})
+
+/**
+ * status 프로퍼티를 만들 때 함께 생기는 옵션 — F-03-05 시나리오 1: `Not started`(To-do) · `In progress` · `Done`.
+ * 첫째가 기본 옵션이 된다.
+ */
+export const STATUS_DEFAULT_OPTIONS: readonly {
+  readonly name: string
+  readonly color: 'gray' | 'blue' | 'green'
+  readonly group: StatusGroupKind
+}[] = Object.freeze([
+  { name: '시작 전', color: 'gray', group: 'todo' },
+  { name: '진행 중', color: 'blue', group: 'in_progress' },
+  { name: '완료', color: 'green', group: 'complete' },
+])
 
 /**
  * 신규 프로퍼티의 기본 타입.
@@ -128,6 +182,8 @@ export type SelectOption = {
   readonly id: string
   readonly name: string
   readonly color: OptionColor
+  /** status 옵션의 범주. select 옵션에는 없다(불변식 SG3 — 마이그레이션 0023). */
+  readonly group?: StatusGroupKind
 }
 
 /**
@@ -147,6 +203,7 @@ export type CellValue =
   | { readonly type: 'rich_text'; readonly rich_text: readonly RichTextRun[] }
   | { readonly type: 'number'; readonly number: number | null }
   | { readonly type: 'select'; readonly select: OptionRef | null }
+  | { readonly type: 'status'; readonly status: OptionRef | null }
   /** `checkbox` 에는 null 이 없다. 기본값은 `false` 다(전수표). */
   | { readonly type: 'checkbox'; readonly checkbox: boolean }
   | { readonly type: 'date'; readonly date: DateValue | null }
@@ -179,6 +236,8 @@ export function emptyValue(type: MvpPropertyType): CellValue {
       return { type: 'number', number: null }
     case 'select':
       return { type: 'select', select: null }
+    case 'status':
+      return { type: 'status', status: null }
     case 'checkbox':
       // ★ `null` 이 아니다. 체크하지 않은 상태가 곧 `false` 다.
       return { type: 'checkbox', checkbox: false }
@@ -198,6 +257,8 @@ export function isEmptyValue(value: CellValue): boolean {
       return value.number === null
     case 'select':
       return value.select === null
+    case 'status':
+      return value.status === null
     case 'date':
       return value.date === null
     case 'checkbox':
@@ -289,15 +350,17 @@ export function validateCellValue(
       return []
     }
 
-    case 'select': {
-      const sel = v.select
+    case 'select':
+    case 'status': {
+      // 봉투의 키가 타입 이름이다(`{type:'status', status:{id}}`) — 모양은 같다.
+      const sel = v[type]
       if (sel === null) return []
       if (typeof sel !== 'object' || sel === null || Array.isArray(sel)) {
-        return [{ path: `${path}.select`, message: '객체 또는 null 이어야 합니다' }]
+        return [{ path: `${path}.${type}`, message: '객체 또는 null 이어야 합니다' }]
       }
       const id = (sel as Record<string, unknown>).id
       if (typeof id !== 'string' || id.length === 0) {
-        return [{ path: `${path}.select.id`, message: '옵션 id 가 필요합니다' }]
+        return [{ path: `${path}.${type}.id`, message: '옵션 id 가 필요합니다' }]
       }
       return []
     }
@@ -373,8 +436,9 @@ export function deriveSidecars(value: CellValue): Sidecars {
       return { ...NO_SIDECARS, num: value.number }
 
     case 'select':
-      // ★ 옵션 **id**. 이름이 아니다(머리말 참조).
-      return { ...NO_SIDECARS, text: value.select?.id ?? null }
+    case 'status':
+      // ★ 옵션 **id**. 이름이 아니다(머리말 참조). status 도 같은 축이다 — 필터 · 보드의 그룹 키가 한 규칙을 본다.
+      return { ...NO_SIDECARS, text: optionIdOf(value) }
 
     case 'checkbox':
       return { ...NO_SIDECARS, bool: value.checkbox }
@@ -386,6 +450,38 @@ export function deriveSidecars(value: CellValue): Sidecars {
       return { ...NO_SIDECARS, dateStart: start, dateEnd: end }
     }
   }
+}
+
+// ── 옵션 값 ───────────────────────────────────────────────────────────
+
+/** 셀이 가리키는 옵션 id. 옵션 타입이 아니거나 비어 있으면 null. */
+export function optionIdOf(value: CellValue): string | null {
+  if (value.type === 'select') return value.select?.id ?? null
+  if (value.type === 'status') return value.status?.id ?? null
+  return null
+}
+
+/** 옵션 id 로 그 타입의 값을 만든다. `null` 이면 빈 값. 봉투의 키를 아는 곳은 여기 하나다. */
+export function optionValue(type: OptionType, optionId: string | null): CellValue {
+  const ref = optionId === null ? null : { id: optionId }
+  return type === 'status' ? { type: 'status', status: ref } : { type: 'select', select: ref }
+}
+
+/**
+ * 새 옵션을 목록의 **제자리**에 끼운다 — 서버가 읽어 주는 순서(`options.ts`: 그룹 순서 → 만든 순서)와 같게.
+ *
+ * 화면은 옵션을 만든 뒤 목록을 다시 읽지 않는다(불러온 행을 버리지 않으려고). 그냥 맨 뒤에 붙이면 status 의 "할 일"
+ * 그룹에 만든 옵션이 `완료` 뒤에 서 있다가 새로고침하면 자리를 옮긴다. select 옵션은 그룹이 없어 늘 맨 뒤다.
+ * 이미 있는 id 면 그대로 돌려준다(같은 이름은 서버가 기존 옵션으로 수렴시킨다).
+ */
+export function insertOption(options: readonly SelectOption[], option: SelectOption): SelectOption[] {
+  if (options.some((o) => o.id === option.id)) return [...options]
+  if (option.group === undefined) return [...options, option]
+  const rank = (o: SelectOption): number => (o.group === undefined ? -1 : STATUS_GROUP_KINDS.indexOf(o.group))
+  const mine = rank(option)
+  // 자기 그룹보다 뒤 그룹의 첫 옵션 앞. 없으면 맨 뒤.
+  const at = options.findIndex((o) => rank(o) > mine)
+  return at < 0 ? [...options, option] : [...options.slice(0, at), option, ...options.slice(at)]
 }
 
 /**

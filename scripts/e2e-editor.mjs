@@ -2515,6 +2515,86 @@ async function main() {
           JSON.stringify(await labelsOf()))
         await clickOn('[data-testid="db-group-button"]')
       }
+      section('데이터베이스 상태 속성 (보드 4c-1 · F-03-05)')
+      // 값 계약 · 그룹 불변식 · 기본 옵션 · 옵션 순서는 `status.db.test.ts` · `verify-schema` ⑭ 가 본다. 여기서는 화면이
+      // 그것을 **보여 주는지**를 본다 — 색 점 칩 · 그룹 머리로 구획된 편집기 · 새 옵션의 자리 · 보드의 자동 선택.
+      // ⚠ 익스포트 절 **뒤**에 있다(표를 하나 더 만든다 — 보드 절 머리말과 같은 이유).
+      {
+        const created = await (await fetch(`${BASE}/api/workspaces/${workspaceId}/databases`, {
+          method: 'POST', headers: authed, body: JSON.stringify({ name: `상태 ${Date.now()}` }),
+        })).json()
+        const statusDb = created.database
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${statusDb.id}` })
+        await waitFor(`!!document.querySelector('[data-testid="db-add-column"]')`, 15000)
+
+        await addColumn('진행', 'status')
+        const statusProp = await evaluate(`[...document.querySelectorAll('[data-testid="db-table"] thead th[data-property-id]')].at(-1)?.dataset.propertyId`)
+        check('★ 상태 속성을 더하면 머리에 붙는다', await evaluate(`document.querySelector('th[data-property-id="${statusProp}"]')?.textContent.includes('진행')`))
+
+        // ── 새 행은 기본 옵션을 받는다 ──
+        await clickOn('[data-testid="db-add-row"]')
+        await waitFor(`document.activeElement?.matches('[data-testid="db-cell-input"]')`, 8000)
+        await typeText('첫 일')
+        await key('Enter')
+        check('★ 새 행은 기본 옵션 "시작 전"을 받는다 — 색 점이 있는 칩(select 의 칩과 다르다)',
+          await waitFor(`(() => { const chip = document.querySelector('td[data-cell="0:1"] [data-testid="db-option-chip"]')
+            return chip?.textContent === '시작 전' && chip.dataset.statusGroup === 'todo' && chip.querySelector('span[aria-hidden]') !== null })()`, 8000),
+          await evaluate(`document.querySelector('td[data-cell="0:1"]')?.innerHTML ?? '(칸 없음)'`))
+
+        // ── 편집기: 그룹 머리 셋 · 새 옵션은 "할 일" 그룹에 ──
+        const openStatusEditor = async () => {
+          await clickOn('td[data-cell="0:1"]')
+          await clickOn('td[data-cell="0:1"]')
+          return waitFor(`document.activeElement?.matches('[data-testid="db-select-input"]')`, 3000)
+        }
+        const optionNames = () => evaluate(`[...document.querySelectorAll('[data-testid="db-option"] [data-testid="db-option-chip"]')].map((e) => e.textContent)`)
+        check('상태 칸을 두 번 누르면 옵션 편집기가 열린다', await openStatusEditor())
+        check('★ 편집기가 그룹 머리 셋으로 구획된다 — 할 일 · 진행 중 · 완료',
+          JSON.stringify(await evaluate(`[...document.querySelectorAll('[data-testid="db-status-group"]')].map((e) => e.textContent)`))
+            === JSON.stringify(['할 일', '진행 중', '완료']))
+        await typeText('검토')
+        check('★ 새 옵션은 어느 그룹에 생기는지 말한다 — "할 일 그룹에"',
+          await waitFor(`document.querySelector('[data-testid="db-create-option"]')?.textContent.includes('할 일 그룹에')`, 3000),
+          await evaluate(`document.querySelector('[data-testid="db-create-option"]')?.textContent ?? '(없음)'`))
+        await clickOn('[data-testid="db-create-option"]')
+        check('만든 옵션이 칸에 들어간다 — 할 일 그룹의 칩',
+          await waitFor(`(() => { const chip = document.querySelector('td[data-cell="0:1"] [data-testid="db-option-chip"]')
+            return !document.querySelector('[data-testid="db-select-editor"]') && chip?.textContent === '검토' && chip.dataset.statusGroup === 'todo' })()`, 8000))
+        await openStatusEditor()
+        check('★ 새 옵션은 자기 그룹의 끝에 선다 — 새로고침 없이도 서버가 읽어 주는 순서다(완료 뒤가 아니다)',
+          JSON.stringify(await optionNames()) === JSON.stringify(['시작 전', '검토', '진행 중', '완료']), JSON.stringify(await optionNames()))
+        await key('Escape')
+        await send('Page.reload')
+        await waitFor(`!!document.querySelector('td[data-cell="0:1"] [data-testid="db-option-chip"]')`, 15000)
+        await openStatusEditor()
+        check('새로고침해도 같은 순서다', JSON.stringify(await optionNames()) === JSON.stringify(['시작 전', '검토', '진행 중', '완료']),
+          JSON.stringify(await optionNames()))
+        await key('Escape')
+
+        // ── 보드: status 가 그룹 기준으로 잡힌다 · "없음" 열의 + 는 그 열에 남는다 ──
+        await clickOn('[data-testid="db-view-add"]')
+        await waitFor(`!!document.querySelector('[data-testid="db-view-add-board"]')`, 3000)
+        await clickOn('[data-testid="db-view-add-board"]')
+        await waitFor(`!!document.querySelector('[data-testid="db-board"]')`, 15000)
+        const boardColumns = () => evaluate(`[...document.querySelectorAll('[data-testid="db-board-column"]')]
+          .map((c) => c.getAttribute('aria-label') + ':' + c.querySelector('[data-testid="db-board-count"]').textContent)`)
+        check('★ 보드를 만들면 상태 속성이 그룹 기준으로 잡히고 열이 그룹 순서다',
+          JSON.stringify(await boardColumns()) === JSON.stringify(['진행 없음:0', '시작 전:0', '검토:1', '진행 중:0', '완료:0']),
+          JSON.stringify(await boardColumns()))
+        await clickOn(`[data-testid="db-board-column"][data-group-key=""] [data-testid="db-board-add"]`)
+        await waitFor(`document.activeElement?.matches('[data-testid="db-board-title-input"]')`, 8000)
+        await typeText('빈 카드')
+        await key('Enter')
+        check('★ "없음" 열의 + 로 만든 카드는 그 열에 남는다 — 기본 옵션의 열로 가지 않는다',
+          (await waitFor(`document.querySelector('[data-group-key=""] [data-testid="db-board-card-title"]')?.textContent === '빈 카드'`, 5000))
+            && JSON.stringify(await boardColumns()) === JSON.stringify(['진행 없음:1', '시작 전:0', '검토:1', '진행 중:0', '완료:0']),
+          JSON.stringify(await boardColumns()))
+        await send('Page.reload')
+        await waitFor(`!!document.querySelector('[data-testid="db-board"]')`, 15000)
+        check('새로고침해도 그 열에 있다 — 서버에도 빈 값으로 남았다',
+          JSON.stringify(await boardColumns()) === JSON.stringify(['진행 없음:1', '시작 전:0', '검토:1', '진행 중:0', '완료:0']),
+          JSON.stringify(await boardColumns()))
+      }
     }
 
     section('볼 수 없는 하위 페이지의 참조 (HANDOFF §3.2-22)')

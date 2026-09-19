@@ -42,7 +42,8 @@ import type { SessionContext } from '../auth/session-context.ts'
 import { readImageSource } from '../block/image.ts'
 import { plainTitleOf, readTitle } from '../block/page.ts'
 import { PAGE_TYPE } from '../block/types.ts'
-import { DEFAULT_PROPERTY_TYPE, isMvpPropertyType, isOptionColor, type SelectOption } from '../database/property-types.ts'
+import { DEFAULT_PROPERTY_TYPE, isMvpPropertyType, isOptionType } from '../database/property-types.ts'
+import { readOptionsOf } from '../database/options.ts'
 import { withReadTransaction, type Tx } from '../db/tx.ts'
 import { rowsToDoc, type BodyRow, type EditorBlock, type EditorDoc } from '../editor/document.ts'
 import { isUuid } from '../ids.ts'
@@ -285,25 +286,8 @@ async function readTables(tx: Tx, databaseIds: readonly string[]): Promise<Map<s
       ORDER BY data_source_id, order_idx, id`,
     [sourceIds],
   )
-  const selectIds = properties.filter((p) => p.type === 'select').map((p) => p.id)
-  const options = selectIds.length === 0
-    ? []
-    : await tx.query<{ property_id: string; id: string; name: string; color: string }>(
-        `SELECT property_id, id, name, color::text AS color
-           FROM select_option
-          WHERE property_id = ANY($1::text[])
-          ORDER BY property_id, order_idx, id`,
-        [selectIds],
-      )
-
-  const optionsOf = new Map<string, SelectOption[]>()
-  for (const option of options) {
-    push(optionsOf, option.property_id, {
-      id: option.id,
-      name: option.name,
-      color: isOptionColor(option.color) ? option.color : 'default',
-    })
-  }
+  // 옵션을 읽는 곳은 `database/options.ts` 하나다 — status 옵션의 그룹 순서가 표 · 보드 · 익스포트에서 같다.
+  const optionsOf = await readOptionsOf(tx, properties.filter((p) => isOptionType(p.type)).map((p) => p.id))
 
   const tables = new Map<string, Table>()
   for (const source of sources) {
@@ -316,7 +300,7 @@ async function readTables(tx: Tx, databaseIds: readonly string[]): Promise<Map<s
           name: p.name,
           // 스키마 ENUM 은 24종이다. 읽기는 관대하게 — `property.ts` 의 `toSummary` 와 같은 규칙.
           type: isMvpPropertyType(p.type) ? p.type : DEFAULT_PROPERTY_TYPE,
-          ...(p.type === 'select' ? { options: optionsOf.get(p.id) ?? [] } : {}),
+          ...(isOptionType(p.type) ? { options: optionsOf.get(p.id) ?? [] } : {}),
         })),
     })
   }

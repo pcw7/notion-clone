@@ -49,6 +49,8 @@ export function propertyFailureStatus(reason: PropertyFailure): number {
       return 409
     case 'invalid_name':
     case 'invalid_color':
+    case 'invalid_group':
+    case 'invalid_config':
     case 'unsupported_type':
     case 'title_immutable':
       return 400

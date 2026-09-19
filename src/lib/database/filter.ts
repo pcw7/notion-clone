@@ -91,6 +91,8 @@ const AXIS: Readonly<Record<MvpPropertyType, Axis>> = Object.freeze({
   //   그래서 `equals` 는 id 비교이고 이름 비교가 아니다 — 옵션 이름을 바꿔도
   //   필터가 따라오는 이유가 그것이다.
   select: 'text',
+  // status 도 옵션 id 다 — select 와 한 규칙(`property-types.ts` `OPTION_TYPES`).
+  status: 'text',
   checkbox: 'bool',
   date: 'date',
 })
@@ -210,6 +212,7 @@ const BY_TYPE: Readonly<Record<MvpPropertyType, Readonly<Record<string, Operator
     rich_text: TEXT_OPERATORS,
     number: NUMBER_OPERATORS,
     select: SELECT_OPERATORS,
+    status: SELECT_OPERATORS,
     checkbox: CHECKBOX_OPERATORS,
     date: DATE_OPERATORS,
   })

@@ -13,7 +13,7 @@
 import { isUuid } from '@/lib/ids'
 import { readJsonBody, requireWorkspaceSession } from '@/lib/auth/route-session'
 import { addSelectOption } from '@/lib/database/property'
-import type { OptionColor } from '@/lib/database/property-types'
+import type { OptionColor, StatusGroupKind } from '@/lib/database/property-types'
 import { failureResponse, propertyFailureStatus } from '@/lib/database/http'
 
 type Ctx = RouteContext<'/api/workspaces/[workspaceId]/data-sources/[dataSourceId]/properties/[propertyId]/options'>
@@ -26,12 +26,14 @@ export async function POST(request: Request, ctx: Ctx): Promise<Response> {
 
   const parsed = await readJsonBody(request)
   if (!parsed.ok) return parsed.response
-  const body = (parsed.body ?? {}) as { name?: unknown; color?: unknown }
+  const body = (parsed.body ?? {}) as { name?: unknown; color?: unknown; group?: unknown }
 
   const added = await addSelectOption(session.ctx, dataSourceId, propertyId, {
     name: typeof body.name === 'string' ? body.name : '',
     // 색 검사는 라이브러리가 한다(`invalid_color`).
     ...(body.color !== undefined ? { color: body.color as OptionColor } : {}),
+    // status 옵션의 범주. 값 검사는 라이브러리가 한다(`invalid_group`).
+    ...(body.group !== undefined ? { group: body.group as StatusGroupKind } : {}),
   })
   if (!added.ok) return failureResponse(propertyFailureStatus(added.reason), added)
   return Response.json(

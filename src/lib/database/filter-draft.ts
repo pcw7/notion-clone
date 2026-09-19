@@ -168,6 +168,7 @@ export function describeRule(
 function valueLabel(value: unknown, column: RuleColumn): string {
   switch (column.type) {
     case 'select':
+    case 'status':
       // F-03-17: *"필터가 참조하던 select 옵션 삭제 → 규칙은 남고 매칭 0건. UI 에 '삭제된 옵션' 배지."*
       return column.options.find((o) => o.id === value)?.name ?? '지워진 옵션'
     case 'checkbox':

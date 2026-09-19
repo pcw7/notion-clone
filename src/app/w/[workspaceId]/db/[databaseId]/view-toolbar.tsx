@@ -48,7 +48,7 @@ import {
 } from '@/lib/database/filter-draft'
 import type { GroupBy } from '@/lib/database/group'
 import type { OperatorCatalogEntry } from '@/lib/database/operator-catalog'
-import { isGroupableType, type MvpPropertyType } from '@/lib/database/property-types'
+import { isGroupableType, isOptionType, type MvpPropertyType } from '@/lib/database/property-types'
 import type { ViewColumn } from '@/lib/database/view'
 import { setColumnVisible, updateView, type ApiResult } from './table-api'
 import { TYPE_ICON } from './cell-view'
@@ -80,9 +80,10 @@ const FIELD =
  * ⚠ select 를 뺀다. 지금의 컴파일러는 select 를 사이드카(`text_value` = **옵션 id**)로
  *   정렬해서 사용자에게는 아무 규칙 없는 순서로 보인다. F-04-10 이 요구하는 것은
  *   **옵션 정의 순서**(`select_option.order_idx` 조인)이고 그것이 들어올 때 연다.
+ *   status 도 같은 사이드카라 같이 뺀다(`OPTION_TYPES`).
  */
 export function isSortable(column: Pick<ViewColumn, 'type'>): boolean {
-  return column.type !== 'select'
+  return !isOptionType(column.type)
 }
 
 export function ViewToolbar({
@@ -470,6 +471,7 @@ function RuleValue({
 }) {
   switch (column.type) {
     case 'select':
+    case 'status':
       return (
         <select
           aria-label="필터 값"
@@ -765,7 +767,7 @@ function GroupPanel({
 
       {groupable.length === 0 && (
         <p className="text-sm text-neutral-400" data-testid="db-group-none">
-          선택 또는 체크박스 속성이 없습니다. 속성을 먼저 만드세요.
+          선택 · 상태 · 체크박스 속성이 없습니다. 속성을 먼저 만드세요.
         </p>
       )}
 

@@ -52,12 +52,8 @@ import {
 } from './filter.ts'
 import { readPropertyTypes } from './query.ts'
 import { isGroupableType, normalizeGroupBy, validateGroupBy, type GroupBy } from './group.ts'
-import {
-  isMvpPropertyType,
-  isOptionColor,
-  type MvpPropertyType,
-  type SelectOption,
-} from './property-types.ts'
+import { isMvpPropertyType, isOptionType, type MvpPropertyType, type SelectOption } from './property-types.ts'
+import { readOptionsOf } from './options.ts'
 import type { ValidationIssue } from '../contracts/rich-text.ts'
 
 /** MVP 가 만드는 뷰 타입. 정본의 `type` 은 10종이지만 Table 하나로 제품이 성립한다. */
@@ -258,23 +254,8 @@ async function readColumns(tx: Tx, viewId: string): Promise<ViewColumn[]> {
     [viewId],
   )
 
-  const selectIds = rows.filter((r) => r.type === 'select').map((r) => r.property_id)
-  const optionRows =
-    selectIds.length === 0
-      ? []
-      : await tx.query<{ property_id: string; id: string; name: string; color: string }>(
-          `SELECT property_id, id, name, color::text AS color
-             FROM select_option
-            WHERE property_id = ANY($1::text[])
-            ORDER BY order_idx, id`,
-          [selectIds],
-        )
-  const optionsOf = new Map<string, SelectOption[]>()
-  for (const o of optionRows) {
-    const list = optionsOf.get(o.property_id) ?? []
-    list.push({ id: o.id, name: o.name, color: isOptionColor(o.color) ? o.color : 'default' })
-    optionsOf.set(o.property_id, list)
-  }
+  // 옵션을 읽는 곳은 `options.ts` 하나다(그쪽 머리말 — status 옵션은 그룹 순서가 먼저다).
+  const optionsOf = await readOptionsOf(tx, rows.filter((r) => isOptionType(r.type)).map((r) => r.property_id))
 
   return rows
     .filter((r) => isMvpPropertyType(r.type))
@@ -328,13 +309,14 @@ function liveGroupBy(raw: unknown, columns: readonly ViewColumn[]): GroupBy | nu
 
 /**
  * 보드가 그룹 프로퍼티 없이 만들어질 때 고르는 규칙 — F-04-03: *"status → select → multi_select → person"*.
- * 지금 있는 타입은 select 뿐이다. checkbox 는 묶을 수는 있지만 자동으로 고르지는 않는다(원문 목록에 없다).
+ * 지금 있는 타입은 status · select 다 — **status 가 먼저**이고 같은 타입 안에서는 스키마 순서다. checkbox 는 묶을
+ * 수는 있지만 자동으로 고르지는 않는다(원문 목록에 없다).
  */
 async function pickGroupProperty(tx: Tx, dataSourceId: string): Promise<GroupBy | null> {
   const row = await tx.queryMaybe<{ id: string }>(
     `SELECT id FROM property
-      WHERE data_source_id = $1 AND deleted_at IS NULL AND type = 'select'
-      ORDER BY order_idx, id LIMIT 1`,
+      WHERE data_source_id = $1 AND deleted_at IS NULL AND type IN ('status', 'select')
+      ORDER BY (type = 'status') DESC, order_idx, id LIMIT 1`,
     [dataSourceId],
   )
   return row === null ? null : { property_id: row.id }

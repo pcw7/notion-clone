@@ -5,6 +5,7 @@
  */
 
 import { cellText } from '@/lib/database/cell-format'
+import { optionIdOf } from '@/lib/database/property-types'
 import type { CellValue, MvpPropertyType, OptionColor, SelectOption } from '@/lib/database/property-types'
 
 export const TYPE_LABEL: Readonly<Record<MvpPropertyType, string>> = {
@@ -12,6 +13,7 @@ export const TYPE_LABEL: Readonly<Record<MvpPropertyType, string>> = {
   rich_text: '텍스트',
   number: '숫자',
   select: '선택',
+  status: '상태',
   checkbox: '체크박스',
   date: '날짜',
 }
@@ -22,6 +24,7 @@ export const TYPE_ICON: Readonly<Record<MvpPropertyType, string>> = {
   rich_text: '≡',
   number: '#',
   select: '▾',
+  status: '◔',
   checkbox: '☑',
   date: '◷',
 }
@@ -45,7 +48,38 @@ const OPTION_CLASS: Readonly<Record<OptionColor, string>> = {
   red: 'bg-red-100 text-red-800 dark:bg-red-900/60 dark:text-red-100',
 }
 
+/** status 칩의 점. 칩 배경과 같은 색 계열의 진한 쪽이다. */
+const DOT_CLASS: Readonly<Record<OptionColor, string>> = {
+  default: 'bg-neutral-400',
+  gray: 'bg-neutral-500',
+  brown: 'bg-stone-500',
+  orange: 'bg-orange-500',
+  yellow: 'bg-yellow-500',
+  green: 'bg-green-500',
+  blue: 'bg-blue-500',
+  purple: 'bg-purple-500',
+  pink: 'bg-pink-500',
+  red: 'bg-red-500',
+}
+
+/**
+ * 옵션 칩. **status 옵션(그룹이 있다)은 색 점 + 둥근 알약**으로 그린다 — F-03-05: *"셀에는 색 점 + 이름 표시
+ * (select 의 알약형 칩과 시각적으로 구분)."* 칩을 쓰는 곳(칸 · 편집기 목록 · 보드 열 머리 · 카드 배지)이 옵션만
+ * 넘기면 모양이 따라온다.
+ */
 export function OptionChip({ option }: { option: SelectOption }) {
+  if (option.group !== undefined) {
+    return (
+      <span
+        data-testid="db-option-chip"
+        data-status-group={option.group}
+        className={`inline-flex max-w-full items-center gap-1 rounded-full px-2 py-0.5 text-xs ${OPTION_CLASS[option.color]}`}
+      >
+        <span aria-hidden className={`h-1.5 w-1.5 flex-none rounded-full ${DOT_CLASS[option.color]}`} />
+        <span className="truncate">{option.name}</span>
+      </span>
+    )
+  }
   return (
     <span
       data-testid="db-option-chip"
@@ -72,8 +106,10 @@ export function CellDisplay({ value, options }: { value: CellValue; options: rea
           {value.checkbox ? '✓' : ''}
         </span>
       )
-    case 'select': {
-      const option = options.find((o) => o.id === value.select?.id)
+    case 'select':
+    case 'status': {
+      const id = optionIdOf(value)
+      const option = id === null ? undefined : options.find((o) => o.id === id)
       return option ? <OptionChip option={option} /> : null
     }
     case 'number':

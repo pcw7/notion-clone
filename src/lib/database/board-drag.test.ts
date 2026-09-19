@@ -162,6 +162,11 @@ describe('prefillCells · groupLabel', () => {
     assert.deepEqual(prefillCells('select', 'p', ''), [])
   })
 
+  test("★ status: '' 그룹은 빈 값을 **명시해** 보낸다 — 안 보내면 새 카드가 기본 옵션의 열로 가 버린다", () => {
+    assert.deepEqual(prefillCells('status', 'p', ''), [{ propertyId: 'p', value: { type: 'status', status: null } }])
+    assert.deepEqual(prefillCells('status', 'p', 'opt1'), [{ propertyId: 'p', value: { type: 'status', status: { id: 'opt1' } } }])
+  })
+
   test("checkbox: 'true' · 'false'", () => {
     assert.deepEqual(prefillCells('checkbox', 'p', 'true'), [{ propertyId: 'p', value: { type: 'checkbox', checkbox: true } }])
     assert.deepEqual(prefillCells('checkbox', 'p', 'false'), [{ propertyId: 'p', value: { type: 'checkbox', checkbox: false } }])
