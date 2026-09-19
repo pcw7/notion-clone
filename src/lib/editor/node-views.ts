@@ -28,6 +28,11 @@ export type NodeViewDeps = ImageViewDeps & {
    * (`schema.ts`) — 서버가 권한으로 거른 맵에서 읽는다(`loadPageBody` 의 `pageRefTitles`).
    */
   pageRefTitle: (pageId: string) => string | null | undefined
+  /**
+   * 멘션 노드가 그릴 이름 — 사람이면 이름, 페이지면 제목. 볼 수 없거나 없으면 `null`, 모르면 `undefined`. 노드에는 id 뿐이다
+   * (정본 §3.9 `link_edge` 절) — 서버가 권한으로 거른 맵에서 읽는다(`block/mention-candidates.ts` `loadMentionLabels`).
+   */
+  mentionLabel: (kind: 'user' | 'page', id: string) => string | null | undefined
 }
 
 /** 컨테이너의 blockId 를 찾는다. 노드 뷰는 내용 노드만 받으므로 위로 올라간다. */
@@ -180,6 +185,51 @@ function pageRefNodeView(
   return { dom, stopEvent: () => true }
 }
 
+/** 멘션 attr 이 가리키는 대상 — 노션 공개 API 모양(`mention.user.id` · `mention.page.id`). 그 밖의 멘션이면 null. */
+function mentionTargetOf(attrs: unknown): { kind: 'user' | 'page'; id: string } | null {
+  const m = attrs as { type?: unknown; user?: { id?: unknown }; page?: { id?: unknown } } | null
+  if (m?.type === 'user' && typeof m.user?.id === 'string') return { kind: 'user', id: m.user.id }
+  if (m?.type === 'page' && typeof m.page?.id === 'string') return { kind: 'page', id: m.page.id }
+  return null
+}
+
+/**
+ * mention — 사람 · 페이지 칩. 이름은 노드에 없다(`schema.ts` — `plainText` 는 비어 있다). 권한으로 거른 맵에서 읽고,
+ * 볼 수 없는 페이지는 자리만 보이고 열리지 않는다(하위 페이지 참조와 같은 규칙 · §3.2-22).
+ */
+function mentionNodeView(node: PmNode, _view: EditorView, _getPos: () => number | undefined, deps: NodeViewDeps): NodeView {
+  const dom = document.createElement('span')
+  dom.className = 'blk-mention'
+  dom.contentEditable = 'false'
+  const target = mentionTargetOf(node.attrs.mention)
+  if (target === null) {
+    // 날짜 등 아직 그리지 않는 멘션 — 저장된 평문이 있으면 그것, 없으면 표식만.
+    dom.textContent = String(node.attrs.plainText || '@')
+    return { dom, stopEvent: () => true }
+  }
+  dom.dataset.mentionKind = target.kind
+  dom.dataset.mentionId = target.id
+  const label = deps.mentionLabel(target.kind, target.id)
+  if (target.kind === 'user') {
+    dom.classList.add('blk-mention-user')
+    dom.textContent = `@${label ?? (label === null ? '알 수 없는 사용자' : '…')}`
+    return { dom, stopEvent: () => true }
+  }
+  dom.classList.add('blk-mention-page')
+  if (label === null) {
+    dom.textContent = '볼 수 없는 페이지'
+    dom.classList.add('blk-mention-denied')
+    return { dom, stopEvent: () => true }
+  }
+  dom.textContent = label === undefined ? '페이지' : label || '제목 없음'
+  dom.setAttribute('role', 'link')
+  dom.addEventListener('mousedown', (event) => event.preventDefault())
+  dom.addEventListener('click', () => {
+    if (deps.mentionLabel('page', target.id) !== null) deps.openPage(target.id)
+  })
+  return { dom, stopEvent: () => true }
+}
+
 export function createNodeViews(deps: NodeViewDeps): Record<
   string,
   (node: PmNode, view: EditorView, getPos: () => number | undefined) => NodeView
@@ -189,5 +239,6 @@ export function createNodeViews(deps: NodeViewDeps): Record<
     toggle: (node, view, getPos) => toggleNodeView(node, view, getPos, deps),
     image: (node, view, getPos) => imageNodeView(node, view, getPos, deps),
     page_ref: (node, view, getPos) => pageRefNodeView(node, view, getPos, deps),
+    mention: (node, view, getPos) => mentionNodeView(node, view, getPos, deps),
   }
 }

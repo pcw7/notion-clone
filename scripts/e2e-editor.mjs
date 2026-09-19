@@ -1454,9 +1454,95 @@ async function main() {
       await key('Escape')
     }
 
+    section('@ 멘션 (F-07-08 · F-07-09 · F-05-09)')
+    {
+      const mentionBlock = randomUUID()
+      const targetTitle = `멘션대상문서${Date.now() % 100000}`
+      const targetPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
+        method: 'POST',
+        headers: authed,
+        body: JSON.stringify({ title: targetTitle }),
+      })).json()).page.id
+      const mentionPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
+        method: 'POST',
+        headers: authed,
+        body: JSON.stringify({ title: `멘션하는문서 ${Date.now()}` }),
+      })).json()).page.id
+      await saveBody(mentionPage, {
+        blocks: [{ id: mentionBlock, type: 'paragraph', title: [textRun('담당 ')], properties: {}, format: {}, children: [] }],
+      })
+      // 알림은 자기 글에는 오지 않는다 — 멘션당할 동료를 하나 만든다.
+      const pal = await joinAs(workspaceId, await createUser('박동료'), 'member')
+      const { listInbox } = await import(new URL('../src/lib/notification/inbox.ts', import.meta.url).href)
+
+      const listbox = () => evaluate(`document.querySelector('[role="listbox"][aria-label="멘션"]')?.textContent ?? '(없음)'`)
+      const mentions = () =>
+        evaluate(`[...document.querySelectorAll('.blk-mention')].map((e) => e.textContent).join('|')`)
+      /** 한 글자씩 — 여러 글자를 한 번에 넣으면 붙여넣기로 보고 열지 않는다(07 F-07-08). */
+      const typeChars = async (text) => {
+        for (const ch of text) await typeText(ch)
+      }
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${mentionPage}` })
+      await waitFor(`!!document.querySelector('[data-block-id="${mentionBlock}"]')`, 15000)
+      const box = await line(mentionBlock)
+      await click(box.x + 4, box.y + box.h / 2)
+      await key('End')
+
+      // ① 사람 멘션 — `@박` → 박동료 → Enter.
+      await typeChars('@박')
+      check('★ @ 를 치면 후보 팝업이 뜨고 동료가 보인다',
+        await waitFor(`(document.querySelector('[role="listbox"][aria-label="멘션"]')?.textContent ?? '').includes('박동료')`, 8000),
+        await listbox())
+      await key('Enter')
+      check('★ 고르면 @쿼리가 이름 칩으로 바뀐다 — 노드에는 id 뿐이고 이름은 맵에서 온다',
+        await waitFor(`[...document.querySelectorAll('.blk-mention-user')].some((e) => e.textContent === '@박동료')`, 5000),
+        await mentions())
+      check('팝업은 닫힌다', await waitFor(`!document.querySelector('[role="listbox"][aria-label="멘션"]')`, 3000))
+
+      // ② 페이지 멘션 — 볼 수 있는 페이지가 후보에 있고, 고르면 제목 칩이 된다.
+      await typeChars('@멘션대상')
+      check('페이지 후보가 보인다',
+        await waitFor(`(document.querySelector('[role="listbox"][aria-label="멘션"]')?.textContent ?? '').includes(${JSON.stringify(targetTitle)})`, 8000),
+        await listbox())
+      await key('Enter')
+      check('★ 페이지 멘션은 지금 제목을 그린다',
+        await waitFor(`[...document.querySelectorAll('.blk-mention-page')].some((e) => e.textContent === ${JSON.stringify(targetTitle)})`, 5000),
+        await mentions())
+
+      // ③ 이메일을 방해하지 않는다 — 글자 뒤의 @ 는 열리지 않는다.
+      await typeChars(' me@ex')
+      check('★ 글자 뒤의 @ 는 팝업을 열지 않는다', !(await evaluate(`!!document.querySelector('[role="listbox"][aria-label="멘션"]')`)))
+
+      // ④ 멘션 알림 — 동료의 인박스에 온다(멘션을 넣은 update 는 미루지 않으므로 곧 도착한다).
+      let inbox = []
+      for (let i = 0; i < 40 && !inbox.some((it) => it.kind === 'mention'); i += 1) {
+        inbox = await listInbox(pal.ctx)
+        if (!inbox.some((it) => it.kind === 'mention')) await sleep(250)
+      }
+      check('★ 멘션당한 동료의 인박스에 멘션 알림이 온다', inbox.some((it) => it.kind === 'mention' && it.pageId === mentionPage), JSON.stringify(inbox))
+
+      // ⑤ 새로 고쳐도 이름이 남는다 — 서버가 권한으로 거른 맵을 실어 준다.
+      await send('Page.reload')
+      await waitFor(`!!document.querySelector('[data-block-id="${mentionBlock}"]')`, 15000)
+      check('★ 새로 고친 뒤에도 이름 · 제목이 그려진다', await waitFor(`[...document.querySelectorAll('.blk-mention')].map((e) => e.textContent).join('|').includes('@박동료')`, 5000), await mentions())
+
+      // ⑥ 백링크 — 멘션된 페이지에서 "이 페이지를 멘션한 페이지" 가 보인다.
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${targetPage}` })
+      await waitFor(`!!document.querySelector('.blk-editor')`, 15000)
+      check('★ 멘션된 페이지에 백링크가 뜬다',
+        await waitFor(`(document.querySelector('details[aria-label="백링크"]')?.textContent ?? '').includes('멘션하는문서')`, 8000),
+        await evaluate(`document.querySelector('details[aria-label="백링크"]')?.textContent ?? '(없음)'`))
+    }
+
     section('내비게이션 — 최근 · 즐겨찾기 (W6-a)')
     // 방금까지 여러 페이지를 오갔으므로 사이드바에 "최근"이 있어야 한다.
     await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${pageId}` })
+    await waitFor(`!!document.querySelector('nav[aria-label="페이지 트리"]')`, 15000)
+    // 사이드바(레이아웃)와 본문(페이지)은 같은 요청에서 **병렬로** 렌더된다 — 이 방문의 기록이 이번 사이드바에 실린다는
+    // 보장이 없다. 앞 절들이 다른 페이지를 많이 다녀 이 페이지가 최근 목록 밖으로 밀리면 그 경쟁이 드러난다(§7).
+    // 한 번 더 열어 방금 기록된 방문을 본다.
+    await send('Page.reload')
     await waitFor(`!!document.querySelector('nav[aria-label="페이지 트리"]')`, 15000)
     check('★ 사이드바에 "최근" 섹션이 생긴다 — 방문이 기록됐다',
       await waitFor(`!!document.querySelector('section[aria-label="최근"]')`, 5000),

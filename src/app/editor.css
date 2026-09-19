@@ -497,3 +497,16 @@
     box-shadow: inset 0 -2px 0 rgba(250, 204, 21, 0.45);
   }
 }
+
+/*
+  멘션 칩 — F-07-08 (코멘트 5b조각).
+  노드에는 id 뿐이고 이름은 노드 뷰가 권한으로 거른 맵에서 그린다(`node-views.ts`). 볼 수 없는 페이지는 자리만.
+*/
+.blk-mention-user { color: #1d4ed8; font-weight: 500; }
+.blk-mention-page { cursor: pointer; text-decoration: underline; text-decoration-color: #9ca3af; text-underline-offset: 3px; }
+.blk-mention-denied { color: #9ca3af; cursor: default; text-decoration: none; }
+
+@media (prefers-color-scheme: dark) {
+  .blk-mention-user { color: #93c5fd; }
+  .blk-mention-denied { color: #6b7280; }
+}

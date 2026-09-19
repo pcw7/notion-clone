@@ -19,6 +19,10 @@ import { loadDocState, pageAccess } from '@/lib/collab/doc-store'
 import { collabServerUrl } from '@/lib/collab/collab-url'
 import { listMovableTargets } from '@/lib/block/move-page'
 import { listDiscussions } from '@/lib/comment/discussion'
+import { listBacklinks } from '@/lib/block/link-edges'
+import { loadMentionLabels, mentionIdsOf } from '@/lib/block/mention-candidates'
+import { readBodyYDoc } from '@/lib/collab/ydoc'
+import { withReadTransaction } from '@/lib/db/tx'
 import { isFavorite, recordVisit } from '@/lib/nav/recent'
 import { NewPageButton } from '../new-page-button'
 import { ExportButton } from '../export-button'
@@ -72,6 +76,13 @@ export default async function PageView({ params }: PageProps<'/w/[workspaceId]/[
   // getPage 가 통과했으므로 여기서 실패하면 그 사이에 지워진 것이다.
   if (!state.ok || pageRefTitles === null) notFound()
 
+  // 멘션 노드에는 id 뿐이다 — 이름 · 제목은 권한으로 거른 맵으로 준다(참조 제목과 같은 규칙 · §3.2-22). 백링크는
+  // 역인덱스(`link_edge`)에서, 볼 수 있는 페이지만(F-07-09).
+  const [mentionLabels, backlinks] = await Promise.all([
+    loadMentionLabels(ctx, mentionIdsOf(readBodyYDoc(state.value.ydoc, page.id).doc)),
+    withReadTransaction((tx) => listBacklinks(tx, ctx, page.id)),
+  ])
+
   return (
     <main className="mx-auto flex min-h-screen max-w-3xl flex-col gap-6 px-6 py-12">
       <div className="flex items-start justify-between gap-3">
@@ -124,6 +135,22 @@ export default async function PageView({ params }: PageProps<'/w/[workspaceId]/[
 
       <PageTitle workspaceId={workspaceId} pageId={page.id} initialTitle={page.plainTitle} />
 
+      {/* 백링크 — F-07-09 "제목 아래 `{#} backlinks`, 접힌 채로". 볼 수 없는 페이지는 개수에도 없다. */}
+      {backlinks.length > 0 && (
+        <details aria-label="백링크" className="text-sm text-neutral-500">
+          <summary className="cursor-pointer select-none">이 페이지를 멘션한 페이지 {backlinks.length}</summary>
+          <ul className="mt-1 flex flex-col gap-1 pl-4">
+            {backlinks.map((b) => (
+              <li key={b.pageId}>
+                <Link href={`/w/${workspaceId}/${b.pageId}`} className="hover:underline underline-offset-4">
+                  {b.title || UNTITLED}
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+
       <BodyEditor
         workspaceId={workspaceId}
         pageId={page.id}
@@ -132,6 +159,7 @@ export default async function PageView({ params }: PageProps<'/w/[workspaceId]/[
         initialState={Buffer.from(Y.encodeStateAsUpdate(state.value.ydoc)).toString('base64')}
         canEdit={access === 'edit'}
         initialPageRefTitles={pageRefTitles}
+        initialMentionLabels={mentionLabels}
       />
 
       <section className="flex flex-col gap-3">
