@@ -46,13 +46,30 @@ import {
   withOperator,
   type FilterRule,
 } from '@/lib/database/filter-draft'
+import type { GroupBy } from '@/lib/database/group'
 import type { OperatorCatalogEntry } from '@/lib/database/operator-catalog'
-import type { MvpPropertyType } from '@/lib/database/property-types'
+import { isGroupableType, type MvpPropertyType } from '@/lib/database/property-types'
 import type { ViewColumn } from '@/lib/database/view'
 import { setColumnVisible, updateView, type ApiResult } from './table-api'
 import { TYPE_ICON } from './cell-view'
 
-type Panel = 'filter' | 'sort' | 'properties'
+type Panel = 'filter' | 'sort' | 'properties' | 'group'
+
+/**
+ * 보드의 그룹 설정(보드 4b조각). 보드 뷰일 때만 온다 — "그룹" 버튼과 패널이 그때만 그려진다.
+ *
+ * `groups` 는 서버가 읽은 그룹 전부(숨긴 것 포함 · 카운트)다. 패널은 초안을 두지 않는다 — 고르는 즉시 저장하고 서버
+ * 렌더를 다시 받는다(보드가 `groupBy` 를 담은 key 로 새로 마운트된다).
+ */
+export type BoardSettings = {
+  readonly groupBy: GroupBy | null
+  readonly groups: readonly {
+    readonly key: string
+    readonly label: string
+    readonly count: number
+    readonly hidden: boolean
+  }[]
+}
 
 const FIELD =
   'rounded border border-neutral-300 bg-transparent px-1.5 py-1 text-sm disabled:opacity-60 dark:border-neutral-700'
@@ -76,6 +93,7 @@ export function ViewToolbar({
   sorts,
   catalog,
   canEdit,
+  board,
 }: {
   workspaceId: string
   viewId: string
@@ -86,6 +104,8 @@ export function ViewToolbar({
   sorts: SortKey[]
   catalog: OperatorCatalogEntry[]
   canEdit: boolean
+  /** 보드 뷰의 그룹 설정. 표에는 없다. */
+  board?: BoardSettings
 }) {
   const router = useRouter()
   const [panel, setPanel] = useState<Panel | null>(null)
@@ -134,6 +154,15 @@ export function ViewToolbar({
         {canEdit && (
           <ToolbarButton label="속성" count={hidden} active={panel === 'properties'} testId="db-properties-button" onClick={() => toggle('properties')} />
         )}
+        {board !== undefined && (
+          <ToolbarButton
+            label="그룹"
+            count={board.groups.filter((g) => g.hidden).length}
+            active={panel === 'group'}
+            testId="db-group-button"
+            onClick={() => toggle('group')}
+          />
+        )}
         {busy && <span className="text-xs text-neutral-400">저장하는 중…</span>}
 
         {panel === 'filter' && (
@@ -161,6 +190,16 @@ export function ViewToolbar({
             columns={columns}
             busy={busy}
             onToggle={(propertyId, visible) => run(() => setColumnVisible(workspaceId, viewId, propertyId, visible))}
+            onClose={() => setPanel(null)}
+          />
+        )}
+        {panel === 'group' && board !== undefined && (
+          <GroupPanel
+            columns={columns}
+            board={board}
+            canEdit={canEdit}
+            busy={busy}
+            onSave={(next) => run(() => updateView(workspaceId, viewId, { groupBy: next }))}
             onClose={() => setPanel(null)}
           />
         )}
@@ -657,6 +696,110 @@ function SortPanel({
       )}
       {draft.length >= MAX_SORT_KEYS && (
         <p className="text-xs text-neutral-400">정렬은 {MAX_SORT_KEYS}개까지입니다.</p>
+      )}
+    </Popover>
+  )
+}
+
+// ── 그룹 (보드) ───────────────────────────────────────────────────────
+
+/**
+ * 그룹 기준 · 빈 그룹 숨김 · 그룹별 보이기 (F-04-11 · F-04-03).
+ *
+ * 고르는 즉시 저장한다(초안 없음) — 필터 패널과 달리 "값을 아직 안 넣은 규칙"이 없다. 그룹 기준을 바꾸면 숨긴 그룹
+ * 목록은 버린다(키 공간이 다르다) — `hide_empty` 는 속성과 무관하므로 남긴다. 그룹 설정은 `edit_structure` 다(F-04-03
+ * 의 분리) — 없는 사람에게는 잠긴 채로 보여 준다.
+ */
+function GroupPanel({
+  columns,
+  board,
+  canEdit,
+  busy,
+  onSave,
+  onClose,
+}: {
+  columns: ViewColumn[]
+  board: BoardSettings
+  canEdit: boolean
+  busy: boolean
+  onSave: (next: GroupBy) => Promise<boolean>
+  onClose: () => void
+}) {
+  const groupable = columns.filter((c) => isGroupableType(c.type))
+  const current = board.groupBy
+  const dead = current !== null && !groupable.some((c) => c.propertyId === current.property_id)
+  const locked = !canEdit || busy
+
+  const toggleHidden = (key: string, hidden: boolean) => {
+    if (current === null) return
+    const next = new Set(current.hidden ?? [])
+    if (hidden) next.add(key)
+    else next.delete(key)
+    void onSave({ ...current, hidden: [...next] })
+  }
+
+  return (
+    <Popover label="그룹" testId="db-group-panel" onClose={onClose}>
+      <label className="flex items-center gap-2 text-sm">
+        그룹 기준
+        <select
+          aria-label="그룹 기준"
+          data-testid="db-group-property"
+          value={current?.property_id ?? ''}
+          disabled={locked}
+          onChange={(e) => {
+            if (e.target.value === '') return
+            void onSave({ property_id: e.target.value, ...(current?.hide_empty ? { hide_empty: true } : {}) })
+          }}
+          className={FIELD}
+        >
+          {current === null && <option value="">속성을 고르세요…</option>}
+          {dead && <option value={current.property_id}>지워진 속성</option>}
+          {groupable.map((c) => (
+            <option key={c.propertyId} value={c.propertyId}>
+              {c.name}
+            </option>
+          ))}
+        </select>
+      </label>
+
+      {groupable.length === 0 && (
+        <p className="text-sm text-neutral-400" data-testid="db-group-none">
+          선택 또는 체크박스 속성이 없습니다. 속성을 먼저 만드세요.
+        </p>
+      )}
+
+      {current !== null && !dead && (
+        <>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              data-testid="db-group-hide-empty"
+              checked={current.hide_empty === true}
+              disabled={locked}
+              onChange={(e) => void onSave({ ...current, hide_empty: e.target.checked })}
+            />
+            빈 그룹 숨기기
+          </label>
+          <ul aria-label="그룹 표시" className="flex flex-col gap-1">
+            {board.groups.map((g) => (
+              <li key={g.key}>
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    data-testid="db-group-visible"
+                    data-group-key={g.key}
+                    checked={!g.hidden}
+                    disabled={locked}
+                    onChange={(e) => toggleHidden(g.key, !e.target.checked)}
+                  />
+                  {g.label}
+                  <span className="text-xs tabular-nums text-neutral-400">{g.count}</span>
+                </label>
+              </li>
+            ))}
+          </ul>
+        </>
       )}
     </Popover>
   )

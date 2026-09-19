@@ -72,6 +72,19 @@ export function isMvpPropertyType(t: unknown): t is MvpPropertyType {
 }
 
 /**
+ * 그룹(보드)으로 묶을 수 있는 타입. F-04-11 의 9종 중 MVP 둘 — 규칙은 `group.ts` 머리말.
+ *
+ * 여기(클라이언트에서도 읽는 계약 모듈)에 두는 이유: 도구줄의 "그룹" 패널이 고를 수 있는 속성을 거르는데, `group.ts` 는
+ * DB 모듈을 끌어오므로 클라이언트 번들이 가져갈 수 없다.
+ */
+export const GROUPABLE_TYPES = ['select', 'checkbox'] as const
+export type GroupableType = (typeof GROUPABLE_TYPES)[number]
+
+export function isGroupableType(t: unknown): t is GroupableType {
+  return t === 'select' || t === 'checkbox'
+}
+
+/**
  * 신규 프로퍼티의 기본 타입.
  *
  * F-03-03 의 `[확인필요]` 였던 것을 `rich_text` 로 둔다 — 03 문서가 *"신규

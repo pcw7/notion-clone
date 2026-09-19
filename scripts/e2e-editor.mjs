@@ -2278,6 +2278,243 @@ async function main() {
           /* 임시 폴더 */
         }
       }
+      section('데이터베이스 보드 (보드 4b · F-04-03 · F-04-11)')
+      // 규칙(드롭 자리 · 상태 · 되돌리기)은 `board-drag.test.ts` 가, 서버(셀 값 + 자리 한 트랜잭션 · 그룹 질의 · 커서)는
+      // `group.db.test.ts` 가 본다. 여기서는 **실제 포인터로** 카드를 끌어 놓는 길과, 그 결과가 서버에 남는지를 본다.
+      // ⚠ 익스포트 절 **뒤**에 있다 — 그 절의 워크스페이스 요약이 표 개수(1)를 센다. 이 절은 표를 둘 더 만든다.
+      {
+        const { textRun } = await import(new URL('../src/lib/contracts/rich-text.ts', import.meta.url).href)
+        const api = async (method, path, body) => {
+          const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+            method,
+            headers: authed,
+            ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+          })
+          return { status: r.status, body: await r.json().catch(() => null) }
+        }
+
+        // ── 그룹으로 삼을 속성이 없으면 보드를 만들 수 없다 (§3.2-27) ──
+        const bare = (await api('POST', '/databases', { name: `보드 없음 ${Date.now()}` })).body.database
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${bare.id}` })
+        await waitFor(`!!document.querySelector('[data-testid="db-view-add"]')`, 15000)
+        await clickOn('[data-testid="db-view-add"]')
+        await waitFor(`!!document.querySelector('[data-testid="db-view-add-board"]')`, 3000)
+        await clickOn('[data-testid="db-view-add-board"]')
+        check('★ select · checkbox 속성이 없는 표에서 보드를 만들면 이유를 말한다(group_required) — 속성을 대신 만들지 않는다',
+          (await waitFor(`document.querySelector('[data-testid="db-view-error"]')?.textContent.includes('그룹 기준')`, 8000))
+            && (await api('GET', `/databases/${bare.id}/views`)).body.views.length === 1,
+          await evaluate(`document.querySelector('[data-testid="db-view-error"]')?.textContent ?? '(오류 없음)'`))
+
+        // ── 보드용 표: 상태(select) · 완료(checkbox) · 행 다섯 ──
+        const db = (await api('POST', '/databases', { name: `보드 ${Date.now()}` })).body.database
+        const dsId = db.dataSourceId
+        const tableViewId = db.defaultViewId
+        const statusProp = (await api('POST', `/data-sources/${dsId}/properties`, { name: '상태', type: 'select' })).body.property.id
+        const doneProp = (await api('POST', `/data-sources/${dsId}/properties`, { name: '완료', type: 'checkbox' })).body.property.id
+        const option = async (name) =>
+          (await api('POST', `/data-sources/${dsId}/properties/${statusProp}/options`, { name })).body.option.id
+        const todo = await option('할 일')
+        const doing = await option('진행 중')
+        const doneOpt = await option('완료')
+        await option('보류') // 행이 없는 옵션 — 빈 그룹 숨김을 본다
+        const titleProp = (await api('GET', `/views/${tableViewId}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+        const addRow = async (title, status, done = false) =>
+          (await api('POST', `/views/${tableViewId}/rows`, { cells: [
+            { propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } },
+            ...(status ? [{ propertyId: statusProp, value: { type: 'select', select: { id: status } } }] : []),
+            ...(done ? [{ propertyId: doneProp, value: { type: 'checkbox', checkbox: true } }] : []),
+          ] })).body.row.id
+        const rowA = await addRow('A 카드', todo)
+        const rowB = await addRow('B 카드', todo)
+        const rowC = await addRow('C 카드', todo, true)
+        const rowD = await addRow('D 카드', doing)
+        const rowE = await addRow('E 카드', null)
+        const rowOf = async (rowId) => (await api('GET', `/views/${tableViewId}/rows`)).body.rows.find((r) => r.id === rowId)
+        const statusOf = async (rowId) => (await rowOf(rowId))?.properties[statusProp]?.select?.id ?? null
+
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+        await waitFor(`!!document.querySelector('[data-testid="db-table"]')`, 15000)
+        await clickOn('[data-testid="db-view-add"]')
+        await waitFor(`!!document.querySelector('[data-testid="db-view-add-board"]')`, 3000)
+        await clickOn('[data-testid="db-view-add-board"]')
+        check('★ "+ 보드 만들기" → 새 탭이 서고 보드가 그려진다 — 그룹은 첫 select(상태)가 자동으로 잡힌다',
+          await waitFor(`new URL(location.href).searchParams.get('v') && !!document.querySelector('[data-testid="db-board"]')
+            && document.querySelector('[data-testid="db-view-tab"][aria-current="page"]')?.dataset.viewType === 'board'`, 15000))
+        const boardViewId = await evaluate(`new URL(location.href).searchParams.get('v')`)
+        const columnsOf = () => evaluate(`[...document.querySelectorAll('[data-testid="db-board-column"]')]
+          .map((c) => c.getAttribute('aria-label') + ':' + c.querySelector('[data-testid="db-board-count"]').textContent)`)
+        const labelsOf = () => evaluate(`[...document.querySelectorAll('[data-testid="db-board-column"]')].map((c) => c.getAttribute('aria-label'))`)
+        const cardsIn = (key) => evaluate(`[...document.querySelectorAll('[data-testid="db-board-column"][data-group-key="${key}"] [data-row-id]')].map((c) => c.dataset.rowId)`)
+        const same = (a, b) => JSON.stringify(a) === JSON.stringify(b)
+        check('★ 열은 "상태 없음" · 옵션 순서이고, 머리의 숫자는 그 그룹의 행 수다',
+          same(await columnsOf(), ['상태 없음:1', '할 일:3', '진행 중:1', '완료:0', '보류:0']), JSON.stringify(await columnsOf()))
+        check('카드는 제목과 배지(체크된 완료)를 보여 준다 — 그룹 프로퍼티 자체는 배지에 없다',
+          await evaluate(`(() => { const c = document.querySelector('[data-row-id="${rowC}"]')
+            return c?.querySelector('[data-testid="db-board-card-title"]')?.textContent === 'C 카드'
+              && [...c.querySelectorAll('[data-testid="db-board-badge"]')].map((b) => b.textContent).join('|') === '☑ 완료' })()`))
+        check('값이 빈 배지는 그리지 않는다 — A 카드에는 배지가 없다',
+          await evaluate(`document.querySelectorAll('[data-row-id="${rowA}"] [data-testid="db-board-badge"]').length === 0`))
+
+        // ── 드래그 ──
+        const cardRect = (rowId) => rect(`[data-testid="db-board"] [data-row-id="${rowId}"]`)
+        const columnRect = (key) => rect(`[data-testid="db-board-column"][data-group-key="${key}"]`)
+        /** 카드 한가운데를 잡아 (tx, ty) 로 끈다. 놓지 않으면 드래그 중 상태로 돌아온다. */
+        const dragCard = async (rowId, tx, ty, { drop = true } = {}) => {
+          const r = await cardRect(rowId)
+          const sx = r.x + r.w / 2
+          const sy = r.y + r.h / 2
+          await move(sx, sy)
+          await press(sx, sy)
+          for (let i = 1; i <= 10; i += 1) {
+            await move(sx + ((tx - sx) * i) / 10, sy + ((ty - sy) * i) / 10, true)
+            await sleep(16)
+          }
+          if (drop) {
+            await release(tx, ty)
+            await sleep(80)
+          }
+        }
+        const dropShown = () => evaluate(`!!document.querySelector('[data-testid="db-board-drop"]')`)
+
+        // A 를 "진행 중" 열의 맨 뒤로. 놓기 전에 자리 표시가 그 열에 선다.
+        const doingCol = await columnRect(doing)
+        const doingEnd = { x: doingCol.x + doingCol.w / 2, y: doingCol.y + doingCol.h - 10 }
+        await dragCard(rowA, doingEnd.x, doingEnd.y, { drop: false })
+        check('★ 끄는 동안 자리 표시가 대상 열에 서고 카드는 흐려진다',
+          await evaluate(`!!document.querySelector('[data-testid="db-board-column"][data-group-key="${doing}"][data-drop-target] [data-testid="db-board-drop"]')
+            && document.querySelector('[data-row-id="${rowA}"]')?.dataset.dragging === 'true'`))
+        await release(doingEnd.x, doingEnd.y)
+        check('★ 놓으면 카드가 그 열로 옮겨 가고 머리 숫자가 따라간다(낙관적)',
+          (await waitFor(`!document.querySelector('[data-testid="db-board-drop"]') && !document.querySelector('[data-dragging]')`, 3000))
+            && same(await cardsIn(doing), [rowD, rowA])
+            && same(await columnsOf(), ['상태 없음:1', '할 일:2', '진행 중:2', '완료:0', '보류:0']),
+          JSON.stringify(await columnsOf()))
+        check('★ 서버에 셀 값이 남았다 — 드롭 = 요청 하나(셀 값 + 자리)', await poll(async () => (await statusOf(rowA)) === doing))
+
+        // 열 안 재정렬: C 를 B 앞으로 (할 일: B, C → C, B)
+        const bRect = await cardRect(rowB)
+        await dragCard(rowC, bRect.x + bRect.w / 2, bRect.y + 4)
+        check('★ 열 안에서 끌어 놓으면 순서가 바뀐다 — C 가 B 앞',
+          await waitFor(`JSON.stringify([...document.querySelectorAll('[data-group-key="${todo}"] [data-row-id]')].map((c) => c.dataset.rowId)) === ${JSON.stringify(JSON.stringify([rowC, rowB]))}`, 3000),
+          JSON.stringify(await cardsIn(todo)))
+        await sleep(400) // 요청이 끝나길
+        await send('Page.reload')
+        await waitFor(`!!document.querySelector('[data-testid="db-board"]')`, 15000)
+        check('★ 새로고침해도 열 · 순서가 남는다 — 자리의 정본은 서버(row_position)다',
+          same(await cardsIn(todo), [rowC, rowB]) && same(await cardsIn(doing), [rowD, rowA]),
+          `${JSON.stringify(await cardsIn(todo))} · ${JSON.stringify(await cardsIn(doing))}`)
+
+        // 제자리 드롭은 요청을 만들지 않는다 — 버전이 그대로다
+        const versionBefore = (await rowOf(rowB)).version
+        const bNow = await cardRect(rowB)
+        await dragCard(rowB, bNow.x + bNow.w / 2, bNow.y + bNow.h - 4)
+        await sleep(300)
+        check('★ 제자리(마지막 카드의 아래쪽)에 놓으면 요청을 보내지 않는다 — 버전이 그대로다',
+          (await rowOf(rowB)).version === versionBefore && same(await cardsIn(todo), [rowC, rowB]))
+
+        // ── 열 머리의 + : 그 그룹 값이 미리 채워진 새 카드 ──
+        await clickOn(`[data-testid="db-board-column"][data-group-key="${doneOpt}"] [data-testid="db-board-add"]`)
+        check('★ 열의 + 는 그 그룹 값이 미리 채워진 카드를 만들고 제목 입력칸을 연다',
+          await waitFor(`document.activeElement?.matches('[data-testid="db-board-title-input"]')
+            && document.querySelectorAll('[data-group-key="${doneOpt}"] [data-row-id]').length === 1`, 8000))
+        const newCard = await evaluate(`document.querySelector('[data-group-key="${doneOpt}"] [data-row-id]')?.dataset.rowId`)
+        await typeText('새 카드')
+        await key('Enter')
+        check('★ Enter 로 제목이 저장되고, 서버의 상태 값은 완료다',
+          (await waitFor(`document.querySelector('[data-row-id="${newCard}"] [data-testid="db-board-card-title"]')?.textContent === '새 카드'`, 5000))
+            && (await poll(async () => (await statusOf(newCard)) === doneOpt && (await rowOf(newCard))?.title === '새 카드')),
+          JSON.stringify(await rowOf(newCard)))
+
+        // ── 그룹 숨기기 · 보이기 (edit_structure) ──
+        await clickOn(`[data-testid="db-board-column"][data-group-key=""] [data-testid="db-board-hide"]`)
+        check('★ 열 머리에서 숨기면 열이 빠지고 "숨긴 그룹" 띠에 숫자와 함께 남는다',
+          await waitFor(`!document.querySelector('[data-testid="db-board-column"][data-group-key=""]')
+            && document.querySelector('[data-testid="db-board-hidden-group"]')?.textContent.includes('상태 없음')`, 10000))
+        const strip = await rect('[data-testid="db-board-hidden"]')
+        await dragCard(rowB, strip.x + 20, strip.y + strip.h / 2, { drop: false })
+        check('숨긴 그룹으로는 끌어 놓을 수 없다 — 띠에는 자리 표시가 서지 않는다',
+          !(await evaluate(`!!document.querySelector('[data-testid="db-board-hidden"] [data-testid="db-board-drop"]')`)))
+        await key('Escape')
+        check('Esc 로 취소하면 흐림과 자리 표시가 걷힌다',
+          await waitFor(`!document.querySelector('[data-dragging]') && !document.querySelector('[data-testid="db-board-drop"]')`, 2000))
+        await release(strip.x + 20, strip.y + strip.h / 2)
+        await sleep(200)
+        check('취소한 드래그는 아무것도 바꾸지 않는다', same(await cardsIn(todo), [rowC, rowB]))
+        await clickOn('[data-testid="db-board-show"]')
+        check('★ "보이기" 로 돌아온다',
+          await waitFor(`!!document.querySelector('[data-testid="db-board-column"][data-group-key=""]') && !document.querySelector('[data-testid="db-board-hidden"]')`, 10000))
+
+        // ── 도구줄 "그룹" 패널: 빈 그룹 숨기기 · 그룹 기준 바꾸기 ──
+        const pickGroupProperty = (propertyId) => evaluate(`(() => {
+          const s = document.querySelector('[data-testid="db-group-property"]')
+          s.value = ${JSON.stringify(propertyId)}
+          s.dispatchEvent(new Event('change', { bubbles: true }))
+        })()`)
+        await clickOn('[data-testid="db-group-button"]')
+        await waitFor(`!!document.querySelector('[data-testid="db-group-panel"]')`, 3000)
+        check('그룹 패널은 그룹 기준 · 빈 그룹 숨기기 · 그룹별 보이기를 보여 준다',
+          await evaluate(`document.querySelector('[data-testid="db-group-property"]')?.value === '${statusProp}'
+            && document.querySelectorAll('[data-testid="db-group-visible"]').length === 5`))
+        await clickOn('[data-testid="db-group-hide-empty"]')
+        check('★ 빈 그룹 숨기기 — 행이 없는 "보류" 열이 빠진다(완료는 새 카드가 있어 남는다)',
+          await waitFor(`JSON.stringify([...document.querySelectorAll('[data-testid="db-board-column"]')].map((c) => c.getAttribute('aria-label'))) === ${JSON.stringify(JSON.stringify(['상태 없음', '할 일', '진행 중', '완료']))}`, 10000),
+          JSON.stringify(await labelsOf()))
+        await pickGroupProperty(doneProp)
+        check('★ 그룹 기준을 체크박스로 바꾸면 열이 "체크 안 됨 · 체크됨" 이 된다',
+          await waitFor(`JSON.stringify([...document.querySelectorAll('[data-testid="db-board-column"]')].map((c) => c.getAttribute('aria-label'))) === ${JSON.stringify(JSON.stringify(['체크 안 됨', '체크됨']))}`, 10000),
+          JSON.stringify(await labelsOf()))
+        check('체크됨 열에 C 카드가 있다', same(await cardsIn('true'), [rowC]), JSON.stringify(await cardsIn('true')))
+        await pickGroupProperty(statusProp)
+        await waitFor(`document.querySelector('[data-testid="db-board-column"]')?.getAttribute('aria-label') === '상태 없음'`, 10000)
+        await clickOn('[data-testid="db-group-button"]')
+
+        // ── 정렬이 걸린 보드: 열 안 이동은 없고, 열 사이 이동은 셀 값만 ──
+        await api('PATCH', `/views/${boardViewId}`, { sorts: [{ property_id: titleProp, direction: 'asc' }] })
+        await send('Page.reload')
+        await waitFor(`document.querySelector('[data-testid="db-board"]')?.dataset.manualOrder === 'false'`, 15000)
+        check('★ 정렬이 걸리면 열 안 순서는 정렬이 정한다 — 할 일: B, C (제목 오름차순 · 자리는 무시)',
+          same(await cardsIn(todo), [rowB, rowC]), JSON.stringify(await cardsIn(todo)))
+        const bSorted = await cardRect(rowB)
+        await dragCard(rowC, bSorted.x + bSorted.w / 2, bSorted.y + 4, { drop: false })
+        check('★ 정렬된 보드에서는 열 안에 자리 표시가 서지 않는다', !(await dropShown()))
+        await release(bSorted.x + bSorted.w / 2, bSorted.y + 4)
+        await sleep(200)
+        check('놓아도 순서가 그대로다', same(await cardsIn(todo), [rowB, rowC]))
+        const noneCol = await columnRect('')
+        await dragCard(rowB, noneCol.x + noneCol.w / 2, noneCol.y + noneCol.h - 10)
+        check('★ 정렬된 보드의 열 사이 이동은 셀 값만 바꾸고 자리는 정렬이 정한다 — 상태 없음: B, E',
+          (await waitFor(`JSON.stringify([...document.querySelectorAll('[data-group-key=""] [data-row-id]')].map((c) => c.dataset.rowId)) === ${JSON.stringify(JSON.stringify([rowB, rowE]))}`, 5000))
+            && (await poll(async () => (await statusOf(rowB)) === null)),
+          JSON.stringify(await cardsIn('')))
+        await api('PATCH', `/views/${boardViewId}`, { sorts: [] })
+
+        // ── 종류 바꾸기: 보드 ↔ 표 ──
+        await clickOn('[data-testid="db-view-menu"]')
+        await waitFor(`!!document.querySelector('[data-testid="db-view-type-table"]')`, 3000)
+        await clickOn('[data-testid="db-view-type-table"]')
+        check('★ 뷰 메뉴로 표로 바꾸면 같은 뷰가 표로 그려진다',
+          await waitFor(`!!document.querySelector('[data-testid="db-table"]') && !document.querySelector('[data-testid="db-board"]')
+            && document.querySelector('[data-testid="db-view-tab"][aria-current="page"]')?.dataset.viewType === 'table'`, 10000))
+        await clickOn('[data-testid="db-view-menu"]')
+        await waitFor(`!!document.querySelector('[data-testid="db-view-type-board"]')`, 3000)
+        await clickOn('[data-testid="db-view-type-board"]')
+        check('다시 보드로 — 그룹 설정(빈 그룹 숨김)이 남아 있다',
+          (await waitFor(`!!document.querySelector('[data-testid="db-board"]')`, 10000)) && !(await labelsOf()).includes('보류'),
+          JSON.stringify(await labelsOf()))
+
+        // ── 그룹 프로퍼티가 지워지면 "그룹 기준을 고르라" (§3.2-26) ──
+        await api('DELETE', `/data-sources/${dsId}/properties/${statusProp}`)
+        await send('Page.reload')
+        check('★ 그룹 프로퍼티를 지우면 보드는 다른 속성을 자동으로 고르지 않고 고르라고 말한다',
+          await waitFor(`!!document.querySelector('[data-testid="db-board-needs-group"]') && !document.querySelector('[data-testid="db-board"]')`, 15000))
+        await clickOn('[data-testid="db-group-button"]')
+        await waitFor(`!!document.querySelector('[data-testid="db-group-panel"]')`, 3000)
+        await pickGroupProperty(doneProp)
+        check('그룹 패널에서 체크박스 속성을 고르면 보드가 돌아온다',
+          await waitFor(`!!document.querySelector('[data-testid="db-board"]') && document.querySelectorAll('[data-testid="db-board-column"]').length === 2`, 10000),
+          JSON.stringify(await labelsOf()))
+        await clickOn('[data-testid="db-group-button"]')
+      }
     }
 
     section('볼 수 없는 하위 페이지의 참조 (HANDOFF §3.2-22)')
