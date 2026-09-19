@@ -21,6 +21,10 @@
  * 코멘트가 본문 안에 들어가는 순간 "해결됨으로 거르기"와 "페이지를 넘겨 읽기"가 전부 문서 전체 읽기가 된다
  * (정본 §3.9: *"코멘트는 CRDT 에 넣지 않는다(관계형)"*).
  *
+ * 글자 범위에 단 스레드는 앵커를 하나 더 갖는다(`anchor.ts` — 2조각). **앵커는 보낸 쪽이 자기 Y.Doc 에서 만들고**,
+ * 이곳은 모양만 보고 받아 둔다. 지금 풀리는지는 보지 않는다 — 방금 친 글자를 가리키면 그 update 가 도착하기 전까지
+ * 풀리지 않고, 도착하면 스스로 풀린다. 풀리지 않는 동안은 고아로 보이고 원문 스냅샷(`quoted_text`)이 그 자리를 지킨다.
+ *
  * ──────────────────────────────────────────────────────────────────────
  * 권한 — 쓰는 권한과 정리하는 권한을 나눈다
  * ──────────────────────────────────────────────────────────────────────
@@ -46,6 +50,8 @@
 
 import { randomUUID } from 'node:crypto'
 
+import type * as Y from 'yjs'
+
 import type { SessionContext } from '../auth/session-context.ts'
 import { readBodyState } from '../collab/doc-store.ts'
 import { readBodyYDoc } from '../collab/ydoc.ts'
@@ -61,6 +67,15 @@ import type { EditorBlock, EditorDoc } from '../editor/document.ts'
 import { isUuid } from '../ids.ts'
 import { effectiveCaps } from '../permissions/effective.ts'
 import { can, type Capability } from '../permissions/levels.ts'
+import {
+  acceptAnchor,
+  anchorFromStored,
+  bodyView,
+  resolveTextRangeAnchor,
+  storedAnchor,
+  type AnchorRange,
+  type TextRangeAnchor,
+} from './anchor.ts'
 
 /**
  * 코멘트 한 개의 평문 상한.
@@ -80,6 +95,8 @@ export type CommentFailure =
   | 'forbidden'
   /** 이 페이지 본문에 그 블록이 없다(Y.Doc 에 물었다). */
   | 'block_not_found'
+  /** 앵커를 받을 수 없다 — 모양이 아니거나, 블록 없이 왔거나, 페이지 스레드에 달렸다(D4). */
+  | 'invalid_anchor'
   /** 공백뿐인 코멘트. */
   | 'empty'
   | 'too_long'
@@ -147,16 +164,23 @@ export function bodyBlockIds(doc: EditorDoc): Set<string> {
   return ids
 }
 
+type BodyLook = {
+  /** 본문에 있는 블록 id — 정규화해 읽은 것(`readBodyYDoc`), 투영이 보는 것과 같다. */
+  readonly ids: ReadonlySet<string>
+  /** 앵커를 풀 때 쓴다. 아직 Y.Doc 으로 옮기지 않은 페이지면 null. */
+  readonly ydoc: Y.Doc | null
+}
+
 /**
- * 이 페이지 본문에 있는 블록 id — 아직 Y.Doc 으로 옮기지 않은 페이지면 빈 집합이다.
+ * 이 페이지 본문 — 아직 Y.Doc 으로 옮기지 않은 페이지면 비어 있다.
  *
- * 빈 집합은 "본문에 블록이 없다"와 같게 취급한다. 페이지를 열면 첫 읽기가 옮기므로(`loadDocState`), 코멘트를 달 수 있는
+ * 빈 것은 "본문에 블록이 없다"와 같게 취급한다. 페이지를 열면 첫 읽기가 옮기므로(`loadDocState`), 코멘트를 달 수 있는
  * 화면에 닿은 페이지는 이미 옮겨져 있다.
  */
-async function bodyIdsOf(tx: Tx, pageId: string): Promise<Set<string>> {
+async function bodyOf(tx: Tx, pageId: string): Promise<BodyLook> {
   const state = await readBodyState(tx, pageId)
-  if (state === null) return new Set<string>()
-  return bodyBlockIds(readBodyYDoc(state.ydoc, pageId).doc)
+  if (state === null) return { ids: new Set<string>(), ydoc: null }
+  return { ids: bodyBlockIds(readBodyYDoc(state.ydoc, pageId).doc), ydoc: state.ydoc }
 }
 
 // ── 스레드 만들기 ─────────────────────────────────────────────────────
@@ -165,6 +189,11 @@ export type CreateDiscussionInput = {
   readonly pageId: string
   /** 스레드를 달 본문 블록. 생략하거나 `pageId` 와 같으면 페이지 스레드다. */
   readonly blockId?: string | null
+  /**
+   * 글자 범위 앵커 — **보낸 쪽이 자기 Y.Doc 에서 만든다**(`anchor.ts` `textRangeAnchor`). 없으면 블록 하나를 가리키는
+   * 스레드다. 페이지 스레드에는 둘 수 없다(불변식 D4).
+   */
+  readonly anchor?: unknown
   readonly richText: unknown
 }
 
@@ -188,15 +217,31 @@ export async function createDiscussion(
     const blockId = input.blockId ?? input.pageId
     if (blockId !== input.pageId) {
       // 본문에 있는가 — Y.Doc 에 묻는다(머리말). 행에 물으면 방금 친 블록에 코멘트를 달 수 없다.
-      if (!isUuid(blockId) || !(await bodyIdsOf(tx, input.pageId)).has(blockId)) return fail('block_not_found')
+      if (!isUuid(blockId) || !(await bodyOf(tx, input.pageId)).ids.has(blockId)) return fail('block_not_found')
+    }
+
+    // 앵커는 받아 두기만 한다 — **풀리는지는 보지 않는다.** 보낸 쪽이 방금 친 글자를 가리키면 그 update 가 도착하기
+    // 전까지 풀리지 않는데(`anchor.ts` 머리말), 그때 거부하면 "방금 고른 글에 코멘트 달기"가 끊긴다.
+    let anchor: TextRangeAnchor | null = null
+    if (input.anchor !== undefined && input.anchor !== null) {
+      if (blockId === input.pageId) return fail('invalid_anchor', '페이지 스레드에는 글자 범위를 둘 수 없습니다.')
+      anchor = acceptAnchor(input.anchor)
+      if (anchor === null) return fail('invalid_anchor')
     }
 
     const discussionId = randomUUID()
     const commentId = randomUUID()
     await tx.query(
-      `INSERT INTO discussion (id, workspace_id, page_id, parent_block_id, created_by, created_at)
-       VALUES ($1, $2, $3, $4, $5, now())`,
-      [discussionId, ctx.workspaceId, input.pageId, blockId, ctx.userId],
+      `INSERT INTO discussion (id, workspace_id, page_id, parent_block_id, anchor, created_by, created_at)
+       VALUES ($1, $2, $3, $4, $5::jsonb, $6, now())`,
+      [
+        discussionId,
+        ctx.workspaceId,
+        input.pageId,
+        blockId,
+        anchor === null ? null : JSON.stringify(storedAnchor(anchor)),
+        ctx.userId,
+      ],
     )
     await tx.query(
       `INSERT INTO comment (id, discussion_id, created_by, rich_text, created_at)
@@ -434,14 +479,24 @@ export type CommentView = {
   readonly reactions: readonly ReactionView[]
 }
 
+export type DiscussionAnchorView = {
+  /** 만들 때의 원문 스냅샷. 앵커를 풀지 못하면 이것을 보여준다(05 F-05-07 "반드시 저장한다"). */
+  readonly quotedText: string
+  /** 지금 풀리는 범위(블록 안 오프셋). 못 풀면 null, 길이 0 이면 범위가 다 지워진 것이다. */
+  readonly range: AnchorRange | null
+}
+
 export type DiscussionView = {
   readonly id: string
   readonly pageId: string
   readonly blockId: string
   /** 페이지 스레드인가 — 본문의 한 블록이 아니라 페이지 전체에 달렸다. */
   readonly onPage: boolean
+  /** 글자 범위에 달린 스레드면 그 앵커. 블록 하나를 가리키는 스레드면 null. */
+  readonly anchor: DiscussionAnchorView | null
   /**
-   * 앵커 블록이 본문에서 사라졌는가. 05 F-05-07: *"스레드는 생존. '원본 없음(orphaned)' 표시 후 페이지 코멘트로 강등"*.
+   * 가리키던 자리가 본문에서 사라졌는가 — 블록이 없거나, 앵커가 풀리지 않거나, 범위가 다 지워졌다.
+   * 05 F-05-07: *"스레드는 생존. '원본 없음(orphaned)' 표시 후 페이지 코멘트로 강등"*.
    * 판정은 Y.Doc 이 한다(머리말) — 행은 늦거나 이미 지워져 있다.
    */
   readonly orphaned: boolean
@@ -513,12 +568,13 @@ export async function listDiscussions(
       id: string
       page_id: string
       parent_block_id: string
+      anchor: unknown
       resolved: boolean
       resolved_by: string | null
       created_by: string
       created_at: Date
     }>(
-      `SELECT id, page_id, parent_block_id, resolved, resolved_by, created_by, created_at
+      `SELECT id, page_id, parent_block_id, anchor, resolved, resolved_by, created_by, created_at
          FROM discussion
         WHERE page_id = $1 AND workspace_id = $2 AND ($3::boolean IS NULL OR resolved = $3)
         ORDER BY created_at, id`,
@@ -553,8 +609,11 @@ export async function listDiscussions(
     )
 
     // 본문은 스레드가 본문 블록을 가리킬 때만 읽는다 — 페이지 스레드뿐이면 Y.Doc 을 펼칠 이유가 없다.
-    const anchored = rows.some((r) => r.parent_block_id !== pageId)
-    const bodyIds = anchored ? await bodyIdsOf(tx, pageId) : new Set<string>()
+    const onBlock = rows.some((r) => r.parent_block_id !== pageId)
+    const body = onBlock ? await bodyOf(tx, pageId) : { ids: new Set<string>(), ydoc: null }
+    // 앵커를 푸는 변환은 페이지마다 한 번만 만든다 — 스레드마다 만들면 본문을 스레드 수만큼 펼친다.
+    const anchors = rows.map((r) => anchorFromStored(r.anchor))
+    const view = anchors.some((a) => a !== null) && body.ydoc !== null ? bodyView(body.ydoc) : null
 
     const byDiscussion = new Map<string, CommentView[]>()
     for (const c of comments) {
@@ -571,19 +630,28 @@ export async function listDiscussions(
       })
     }
 
-    const discussions = rows.map((r) => ({
-      id: r.id,
-      pageId: r.page_id,
-      blockId: r.parent_block_id,
-      onPage: r.parent_block_id === pageId,
-      orphaned: r.parent_block_id !== pageId && !bodyIds.has(r.parent_block_id),
-      resolved: r.resolved,
-      resolvedBy: r.resolved_by,
-      createdBy: r.created_by,
-      createdAt: r.created_at,
-      comments: byDiscussion.get(r.id) ?? [],
-      reactions: reactions.get(`discussion:${r.id}`) ?? [],
-    }))
+    const discussions = rows.map((r, i): DiscussionView => {
+      const anchor = anchors[i]
+      const range =
+        anchor === null || body.ydoc === null || view === null
+          ? null
+          : resolveTextRangeAnchor(body.ydoc, r.parent_block_id, anchor, view)
+      const lost = anchor !== null && (range === null || range.start === range.end)
+      return {
+        id: r.id,
+        pageId: r.page_id,
+        blockId: r.parent_block_id,
+        onPage: r.parent_block_id === pageId,
+        anchor: anchor === null ? null : { quotedText: anchor.quotedText, range },
+        orphaned: r.parent_block_id !== pageId && (!body.ids.has(r.parent_block_id) || lost),
+        resolved: r.resolved,
+        resolvedBy: r.resolved_by,
+        createdBy: r.created_by,
+        createdAt: r.created_at,
+        comments: byDiscussion.get(r.id) ?? [],
+        reactions: reactions.get(`discussion:${r.id}`) ?? [],
+      }
+    })
     return { ok: true, discussions } as const
   })
 }
