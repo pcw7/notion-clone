@@ -31,8 +31,17 @@ export type CollabEditor = {
   readonly deps: EditorDeps
 }
 
-/** 본문 프래그먼트(`ydoc.getXmlFragment(BODY_FRAGMENT)`)에 붙은 편집기 상태. */
-export function createCollabEditorState(fragment: Y.XmlFragment, deps: EditorDeps): CollabEditor {
+/**
+ * 본문 프래그먼트(`ydoc.getXmlFragment(BODY_FRAGMENT)`)에 붙은 편집기 상태.
+ *
+ * @param extra 편집 규칙이 아닌 플러그인 — 코멘트 하이라이트처럼 **본문을 바꾸지 않고 그리기만** 하는 것들.
+ *   맨 뒤에 둔다: 키맵은 먼저 등록된 플러그인이 이기고, 이것들은 키를 잡지 않는다.
+ */
+export function createCollabEditorState(
+  fragment: Y.XmlFragment,
+  deps: EditorDeps,
+  extra: readonly Plugin[] = [],
+): CollabEditor {
   const collabDeps: EditorDeps = {
     ...deps,
     history: { undo: undoCommand, redo: redoCommand },
@@ -40,7 +49,13 @@ export function createCollabEditorState(fragment: Y.XmlFragment, deps: EditorDep
   }
   const state = EditorState.create({
     schema: collabSchema,
-    plugins: [ySyncPlugin(fragment) as Plugin, ...editingPlugins(collabDeps), yUndoPlugin() as Plugin, ...cursorPlugins()],
+    plugins: [
+      ySyncPlugin(fragment) as Plugin,
+      ...editingPlugins(collabDeps),
+      yUndoPlugin() as Plugin,
+      ...cursorPlugins(),
+      ...extra,
+    ],
   })
   return { state, deps: collabDeps }
 }

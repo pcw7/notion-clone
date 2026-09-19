@@ -25,6 +25,18 @@
 
 import { useCallback, useEffect, useState } from 'react'
 
+const FOCUS_EVENT = 'nc:comment-focus'
+
+/**
+ * 패널을 열고 그 스레드를 보여준다 — 본문의 하이라이트를 눌렀을 때 · 방금 만든 스레드.
+ *
+ * 모듈 스토어를 두지 않고 DOM 이벤트로 알린다(검색 오버레이와 같은 규칙) — 부르는 쪽(본문 편집기)과 그리는 쪽(패널)이
+ * 서로를 모르는 것이 이 한 기능에는 충분하고, 상태를 둘로 두지 않는다.
+ */
+export function openCommentThread(discussionId: string): void {
+  window.dispatchEvent(new CustomEvent(FOCUS_EVENT, { detail: discussionId }))
+}
+
 type Run = { plain_text?: string }
 
 type CommentView = {
@@ -87,6 +99,8 @@ export function CommentPanel({
   const [replyTo, setReplyTo] = useState<string | null>(null)
   const [replyDraft, setReplyDraft] = useState('')
   const [editing, setEditing] = useState<{ id: string; text: string } | null>(null)
+  /** 본문에서 눌러 들어온 스레드 — 테두리로 표시하고 그리로 스크롤한다. */
+  const [focused, setFocused] = useState<string | null>(null)
 
   const pageUrl = `/api/workspaces/${workspaceId}/pages/${pageId}/discussions`
   const actionUrl = `/api/workspaces/${workspaceId}/discussions`
@@ -123,6 +137,20 @@ export function CommentPanel({
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [open])
+
+  // 본문의 하이라이트를 누르면 열린 목록에서 그 스레드를 보여준다.
+  useEffect(() => {
+    const onFocus = (e: Event) => {
+      const id = (e as CustomEvent<string>).detail
+      setOpen(true)
+      setResolved(false)
+      setFocused(id)
+      setError(null)
+      void load(false)
+    }
+    window.addEventListener(FOCUS_EVENT, onFocus)
+    return () => window.removeEventListener(FOCUS_EVENT, onFocus)
+  }, [load])
 
   const send = useCallback(
     async (url: string, body: unknown, method = 'POST'): Promise<boolean> => {
@@ -245,7 +273,15 @@ export function CommentPanel({
               <article
                 key={thread.id}
                 aria-label="코멘트 스레드"
-                className="flex flex-col gap-2 rounded-md border border-neutral-200 p-3 dark:border-neutral-800"
+                data-discussion-id={thread.id}
+                ref={(el) => {
+                  if (el !== null && focused === thread.id) el.scrollIntoView({ block: 'nearest' })
+                }}
+                className={`flex flex-col gap-2 rounded-md border p-3 ${
+                  focused === thread.id
+                    ? 'border-neutral-900 dark:border-neutral-100'
+                    : 'border-neutral-200 dark:border-neutral-800'
+                }`}
               >
                 {thread.anchor !== null && (
                   <p className="text-xs text-neutral-500">

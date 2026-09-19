@@ -478,3 +478,22 @@
   .blk-color[data-color='pink_background'],   [data-color='pink_background']   { background: #4e2c3c; }
   .blk-color[data-color='red_background'],    [data-color='red_background']    { background: #522e2a; }
 }
+
+/*
+  코멘트가 달린 글자 — F-05-07 (코멘트 4b조각).
+
+  데코레이션이 붙이는 클래스다(`lib/comment/highlight.ts`). 문서에 마크를 넣지 않으므로 Y.Doc 에도 로그에도 남지
+  않는다 — 하이라이트는 본문이 아니라 코멘트의 것이다. 겹치면 데코레이션이 겹쳐 색이 진해진다(중첩 렌더).
+*/
+.blk-comment {
+  background: rgba(250, 204, 21, 0.35);
+  box-shadow: inset 0 -2px 0 rgba(202, 138, 4, 0.55);
+  cursor: pointer;
+}
+
+@media (prefers-color-scheme: dark) {
+  .blk-comment {
+    background: rgba(250, 204, 21, 0.22);
+    box-shadow: inset 0 -2px 0 rgba(250, 204, 21, 0.45);
+  }
+}

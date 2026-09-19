@@ -1192,6 +1192,21 @@ async function main() {
     }
     const panelText = () => evaluate(`document.querySelector('[role="dialog"][aria-label="공유 설정"]')?.textContent ?? '(패널 없음)'`)
 
+    /** 화면에 있는 요소를 셀렉터로 누른다 — aria-label 로 고른다. */
+    const clickSelector = async (sel) => {
+      const box = await evaluate(`(() => {
+        const el = document.querySelector(${JSON.stringify(sel)})
+        if (!el) return null
+        el.scrollIntoView({ block: 'center' })
+        const r = el.getBoundingClientRect()
+        return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+      })()`)
+      if (!box) return false
+      await click(box.x, box.y)
+      await sleep(120)
+      return true
+    }
+
     // ① 루트 페이지 — 모두에게 전체 권한이 직접 부여돼 있다.
     await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${shareParent}` })
     await waitFor(`[...document.querySelectorAll('button')].some((b) => b.textContent.trim() === '공유')`, 15000)
@@ -1238,20 +1253,6 @@ async function main() {
         body: JSON.stringify({ title: `코멘트 대상 ${Date.now()}` }),
       })).json()).page.id
 
-      /** 화면에 있는 요소를 셀렉터로 누른다 — aria-label 로 고른다. */
-      const clickSelector = async (sel) => {
-        const box = await evaluate(`(() => {
-          const el = document.querySelector(${JSON.stringify(sel)})
-          if (!el) return null
-          el.scrollIntoView({ block: 'center' })
-          const r = el.getBoundingClientRect()
-          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
-        })()`)
-        if (!box) return false
-        await click(box.x, box.y)
-        await sleep(120)
-        return true
-      }
       /**
        * 컨테이너 **안에서** 글자가 정확히 같은 버튼을 누른다.
        *
@@ -1357,6 +1358,100 @@ async function main() {
         (await clickIn(INBOX_FILTER, '보관')) &&
           (await waitFor(`(document.querySelector('main')?.textContent ?? '').includes('동료가 남긴 코멘트')`, 8000)),
         await inboxText())
+    }
+
+    section('본문 글자에 단 코멘트 (F-05-07)')
+    {
+      const anchorBlock = randomUUID()
+      const anchorPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
+        method: 'POST',
+        headers: authed,
+        body: JSON.stringify({ title: `앵커 대상 ${Date.now()}` }),
+      })).json()).page.id
+      await saveBody(anchorPage, {
+        blocks: [{ id: anchorBlock, type: 'paragraph', title: [textRun('가나다라마바사')], properties: {}, format: {}, children: [] }],
+      })
+
+      const blockText = () =>
+        evaluate(`document.querySelector('[data-block-id="${anchorBlock}"] > *:first-child')?.textContent ?? '(없음)'`)
+      const highlighted = () =>
+        evaluate(`[...document.querySelectorAll('.blk-comment')].map((e) => e.textContent).join('|')`)
+      const composer = () =>
+        evaluate(`document.querySelector('[role="dialog"][aria-label="고른 글자에 코멘트"]')?.textContent ?? '(없음)'`)
+      const panelText = () =>
+        evaluate(`document.querySelector('[role="dialog"][aria-label="코멘트"]')?.textContent ?? '(패널 없음)'`)
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${anchorPage}` })
+      await waitFor(`!!document.querySelector('[data-block-id="${anchorBlock}"]')`, 15000)
+
+      // 좌표로 캐럿 자리를 맞추지 않는다 — 클릭이 글자 사이 어디에 떨어질지는 글꼴 · 여백에 달렸고, 처음에 그것으로
+      // 재다가 "지웠는데 한 글자가 남는" 실패를 봤다. `End` 에서 왼쪽으로 세는 것은 어디를 눌러도 같다.
+      // 블록의 **왼쪽 끝**을 누른다. 가운데를 누르면 하이라이트 위에 떨어져 패널이 열리고, 그러면 포커스가 옮겨져
+      // 이어지는 키가 편집기에 닿지 않는다 — 처음에 그것으로 "지워지지 않는" 실패를 봤다.
+      const caretInBlock = async () => {
+        const box = await line(anchorBlock)
+        await click(box.x + 4, box.y + box.h / 2)
+      }
+      /** 블록의 **마지막** `n` 글자를 고른다. */
+      const selectLast = async (n) => {
+        await caretInBlock()
+        await key('End')
+        for (let i = 0; i < n; i += 1) await key('ArrowLeft', SHIFT)
+        await sleep(120)
+      }
+      /** 블록의 맨 앞으로. 한 블록뿐이라 왼쪽 끝에서 더 눌러도 그대로다. */
+      const caretToStart = async () => {
+        await caretInBlock()
+        await key('End')
+        for (let i = 0; i < 20; i += 1) await key('ArrowLeft')
+        await sleep(80)
+      }
+
+      // ① 글자를 고르면 버튼이 뜨고, 누르면 고른 글자를 보여 준다.
+      await selectLast(3)
+      check('★ 글자를 고르면 "코멘트 달기"가 뜬다',
+        await waitFor(`[...document.querySelectorAll('button')].some((b) => b.textContent.trim() === '코멘트 달기')`, 5000))
+      check('버튼을 누른다', await clickText('코멘트 달기'))
+      check('고른 글자를 보여 준다', (await composer()).includes('마바사'), await composer())
+
+      check('코멘트를 쓴다', await clickSelector('textarea[aria-label="고른 글자에 남길 코멘트"]'))
+      await typeText('이 표현을 바꾸죠')
+      check('남긴다', await clickText('남기기'))
+
+      // ② 하이라이트가 그 글자에 남고, 패널이 그 스레드를 연다.
+      check('★ 고른 글자에 하이라이트가 남는다',
+        await waitFor(`[...document.querySelectorAll('.blk-comment')].map((e) => e.textContent).join('') === '마바사'`, 8000),
+        await highlighted())
+      check('★ 방금 만든 스레드가 패널에 열린다',
+        await waitFor(`(document.querySelector('[role="dialog"][aria-label="코멘트"]')?.textContent ?? '').includes('이 표현을 바꾸죠')`, 8000),
+        await panelText())
+      check('패널이 인용한 원문을 보여 준다', (await panelText()).includes('마바사'), await panelText())
+      await key('Escape')
+
+      // ③ ★ 앞에 글자를 쳐도 같은 글자를 덮는다 — 오프셋이 아니라 글자를 가리키기 때문이다.
+      await caretToStart()
+      await typeText('앞')
+      check('전제: 맨 앞에 글자가 들어갔다', (await blockText()) === '앞가나다라마바사', await blockText())
+      check('★ 앞에 친 글자는 하이라이트 밖에 남는다 — 같은 글자를 계속 덮는다',
+        await waitFor(`[...document.querySelectorAll('.blk-comment')].map((e) => e.textContent).join('') === '마바사'`, 8000),
+        await highlighted())
+
+      // ④ ★ 그 글자를 다 지우면 하이라이트가 사라지고, 스레드는 "원본 없음"으로 남는다.
+      await selectLast(3)
+      await key('Backspace')
+      check('전제: 마지막 세 글자가 지워졌다', (await blockText()) === '앞가나다라', await blockText())
+      check('★ 가리키던 글자를 다 지우면 하이라이트가 사라진다',
+        await waitFor(`document.querySelectorAll('.blk-comment').length === 0`, 8000),
+        await highlighted())
+
+      await send('Page.reload')
+      await waitFor(`[...document.querySelectorAll('button')].some((b) => b.textContent.trim().startsWith('코멘트'))`, 15000)
+      check('패널을 연다', await clickText('코멘트'))
+      check('★ 스레드는 살아남아 "원본 없음"으로 보인다',
+        await waitFor(`(document.querySelector('[role="dialog"][aria-label="코멘트"]')?.textContent ?? '').includes('원본 없음')`, 8000),
+        await panelText())
+      check('지워진 원문 스냅샷은 그대로 보여 준다', (await panelText()).includes('마바사'), await panelText())
+      await key('Escape')
     }
 
     section('내비게이션 — 최근 · 즐겨찾기 (W6-a)')
