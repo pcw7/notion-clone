@@ -39,7 +39,7 @@
 import { randomUUID } from 'node:crypto'
 
 import type { SessionContext } from '../auth/session-context.ts'
-import { withTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
+import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
 import { can } from '../permissions/levels.ts'
 import { effectiveCaps } from '../permissions/effective.ts'
 import { orderKeyBetween } from '../block/order-key.ts'
@@ -389,7 +389,7 @@ export async function createView(
   const type = input.type ?? 'table'
   if (!MVP_VIEW_TYPES.includes(type)) return fail('unsupported_type')
 
-  return withTransaction(async (tx) => {
+  return withCommandTransaction(async (tx) => {
     const gate = await openDatabase(tx, ctx, databaseId, 'edit_structure')
     if (isFailure(gate)) return gate
 
@@ -544,7 +544,7 @@ export async function updateView(
     return fail('invalid_sorts')
   }
 
-  return withTransaction(async (tx) => {
+  return withCommandTransaction(async (tx) => {
     const gate = await openView(tx, ctx, viewId, 'edit_structure')
     if (isFailure(gate)) return gate
 
@@ -628,7 +628,7 @@ export async function setViewColumn(
     return fail('invalid_sorts')
   }
 
-  return withTransaction(async (tx) => {
+  return withCommandTransaction(async (tx) => {
     const gate = await openView(tx, ctx, viewId, 'edit_structure')
     if (isFailure(gate)) return gate
 
@@ -678,7 +678,7 @@ export async function moveViewColumn(
   propertyId: string,
   beforeId: string | null,
 ): Promise<ViewResult<ViewDetail>> {
-  return withTransaction(async (tx) => {
+  return withCommandTransaction(async (tx) => {
     const gate = await openView(tx, ctx, viewId, 'edit_structure')
     if (isFailure(gate)) return gate
 
@@ -717,7 +717,7 @@ export async function moveViewColumn(
  * 그 상태를 만들면 사용자가 표를 되살릴 방법이 없다. 노션도 마지막 뷰 삭제를 막는다.
  */
 export async function deleteView(ctx: SessionContext, viewId: string): Promise<ViewResult<null>> {
-  return withTransaction(async (tx) => {
+  return withCommandTransaction(async (tx) => {
     const gate = await openView(tx, ctx, viewId, 'edit_structure')
     if (isFailure(gate)) return gate
 

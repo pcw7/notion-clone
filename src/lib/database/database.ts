@@ -42,7 +42,7 @@
 import { randomUUID } from 'node:crypto'
 
 import type { SessionContext } from '../auth/session-context.ts'
-import { withTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
+import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
 import { can } from '../permissions/levels.ts'
 import { inheritFromWorkspace } from '../permissions/acl.ts'
 import { effectiveCaps } from '../permissions/effective.ts'
@@ -115,7 +115,7 @@ export async function createDatabase(
 ): Promise<DatabaseResult<DatabaseDetail>> {
   const name = normalizeName(input.name)
 
-  return withTransaction(async (tx) => {
+  return withCommandTransaction(async (tx) => {
     const id = randomUUID()
     const dataSourceId = randomUUID()
 
@@ -223,7 +223,7 @@ export async function renameDatabase(
   if (typeof rawName !== 'string') return { ok: false, reason: 'invalid_name' } as const
   const name = normalizeName(rawName)
 
-  return withTransaction(async (tx) => {
+  return withCommandTransaction(async (tx) => {
     const row = await loadDatabase(tx, ctx, databaseId)
     if (row === null) return { ok: false, reason: 'not_found' } as const
     const caps = await effectiveCaps(tx, ctx, databaseId)

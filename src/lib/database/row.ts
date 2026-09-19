@@ -49,7 +49,7 @@
 import { randomUUID } from 'node:crypto'
 
 import type { SessionContext } from '../auth/session-context.ts'
-import { withTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
+import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
 import { can } from '../permissions/levels.ts'
 import { effectiveCaps } from '../permissions/effective.ts'
 import { orderKeyBetween } from '../block/order-key.ts'
@@ -329,7 +329,7 @@ export async function createRow(
   dataSourceId: string,
   input: CreateRowInput = {},
 ): Promise<RowResult<RowSummary>> {
-  return withTransaction(async (tx) => {
+  return withCommandTransaction(async (tx) => {
     const gate = await openDataSource(tx, ctx, dataSourceId, 'create_child')
     if (isFailure(gate)) return gate
 
@@ -411,7 +411,7 @@ export async function updateCells(
   rowId: string,
   input: UpdateCellsInput,
 ): Promise<RowResult<RowSummary>> {
-  return withTransaction((tx) => updateCellsIn(tx, ctx, rowId, input))
+  return withCommandTransaction((tx) => updateCellsIn(tx, ctx, rowId, input))
 }
 
 /**
@@ -615,7 +615,7 @@ export async function listRows(
  * 자기 자신뿐이다. 빌려 쓰면 그 함수가 행까지 신경 쓰게 된다.
  */
 export async function trashRow(ctx: SessionContext, rowId: string): Promise<RowResult<null>> {
-  return withTransaction(async (tx) => {
+  return withCommandTransaction(async (tx) => {
     const row = await tx.queryMaybe<{ data_source_id: string }>(
       `SELECT p.data_source_id
          FROM page p JOIN block b ON b.id = p.id

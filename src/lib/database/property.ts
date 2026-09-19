@@ -42,7 +42,7 @@
 import { randomBytes, randomUUID } from 'node:crypto'
 
 import type { SessionContext } from '../auth/session-context.ts'
-import { withTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
+import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
 import { can } from '../permissions/levels.ts'
 import { effectiveCaps } from '../permissions/effective.ts'
 import { orderKeyBetween, orderKeysBetween } from '../block/order-key.ts'
@@ -335,7 +335,7 @@ export async function addProperty(
     return fail('invalid_name')
   }
 
-  return withTransaction(async (tx) => {
+  return withCommandTransaction(async (tx) => {
     const ds = await lockSchema(tx, ctx, dataSourceId, input.expectedVersion)
     if (isFailure(ds)) return ds
 
@@ -423,7 +423,7 @@ export async function updateProperty(
     return fail('invalid_name')
   }
 
-  return withTransaction(async (tx) => {
+  return withCommandTransaction(async (tx) => {
     const ds = await lockSchema(tx, ctx, dataSourceId, input.expectedVersion)
     if (isFailure(ds)) return ds
 
@@ -487,7 +487,7 @@ export async function moveProperty(
   beforeId: string | null,
   expectedVersion?: string,
 ): Promise<PropertyResult> {
-  return withTransaction(async (tx) => {
+  return withCommandTransaction(async (tx) => {
     const ds = await lockSchema(tx, ctx, dataSourceId, expectedVersion)
     if (isFailure(ds)) return ds
 
@@ -544,7 +544,7 @@ export async function deleteProperty(
   propertyId: string,
   expectedVersion?: string,
 ): Promise<PropertyResult> {
-  return withTransaction(async (tx) => {
+  return withCommandTransaction(async (tx) => {
     const ds = await lockSchema(tx, ctx, dataSourceId, expectedVersion)
     if (isFailure(ds)) return ds
 
@@ -582,7 +582,7 @@ export async function restoreProperty(
   propertyId: string,
   expectedVersion?: string,
 ): Promise<PropertyResult> {
-  return withTransaction(async (tx) => {
+  return withCommandTransaction(async (tx) => {
     const ds = await lockSchema(tx, ctx, dataSourceId, expectedVersion)
     if (isFailure(ds)) return ds
 
@@ -667,7 +667,7 @@ export async function addSelectOption(
   if (input.color !== undefined && !isOptionColor(input.color)) return fail('invalid_color')
   if (input.group !== undefined && !isStatusGroupKind(input.group)) return fail('invalid_group')
 
-  return withTransaction(async (tx) => {
+  return withCommandTransaction(async (tx) => {
     const ds = await lockSchema(tx, ctx, dataSourceId)
     if (isFailure(ds)) return ds
 

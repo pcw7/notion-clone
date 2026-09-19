@@ -401,6 +401,35 @@ describe('★ 카드 이동 — 셀 값 + 자리를 한 트랜잭션으로', () 
   })
 })
 
+describe('★ 거부된 이동은 아무것도 바꾸지 않는다 (#103)', () => {
+  // 이 저장소의 명령은 실패를 던지지 않고 값으로 돌려준다 — 그래서 **쓴 뒤에** 실패를 돌려주면 트랜잭션이 커밋된다.
+  // `moveRow` 가 셀을 쓰고 옛 자리를 지운 뒤에 `beforeRowId` 를 검사하고 있었다: 화면이 낡아서(그 카드가 그사이 다른 열로
+  // 갔다) 거부된 이동이 **셀 값은 바꿔 놓은 채** not_found 를 돌려줬고, 화면은 낙관적 이동을 되돌려 서버와 어긋났다.
+  test('★ 그사이 다른 열로 간 카드 앞에 놓으면 not_found — 셀 값 · 자리 · 버전이 그대로다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const table = await newTable()
+    const a = await table.row('A', table.todo)
+    await table.row('B', table.todo)
+    const c = await table.row('C', table.doing)
+    const board = unwrap(await createView(fx.owner.ctx, table.databaseId, { type: 'board' }))
+
+    // A 에 자리를 준다(할 일: B, A). 그사이 C 는 "완료"로 갔다 — 화면은 아직 C 가 "진행 중"에 있다고 믿는다.
+    const placed = unwrap(await moveRow(fx.owner.ctx, board.id, { rowId: a.id, groupKey: table.todo }))
+    unwrap(await moveRow(fx.owner.ctx, board.id, { rowId: c.id, groupKey: table.done }))
+    const positionsBefore = await positionsIn(board.id)
+
+    const stale = await moveRow(fx.owner.ctx, board.id, { rowId: a.id, groupKey: table.doing, beforeRowId: c.id })
+    assert.equal(stale.ok === false && stale.reason, 'not_found')
+
+    const page = unwrap(await queryGroups(fx.owner.ctx, board.id))
+    assert.deepEqual(titlesOf(page, table.todo), ['B', 'A'], 'A 는 제 열에 그대로 있다')
+    assert.deepEqual(titlesOf(page, table.doing), [])
+    assert.deepEqual(await positionsIn(board.id), positionsBefore, '자리도 그대로다')
+    const rowA = page.groups.find((g) => g.key === table.todo)!.rows.find((r) => r.id === a.id)!
+    assert.equal(rowA.version, placed.row.version, '버전이 오르지 않았다')
+  })
+})
+
 describe('그룹별 커서', () => {
   test('★ load_limit 만큼 끊고, 그룹 커서로 이어 읽으면 중복 · 누락이 없다 — 자리 있는 행과 없는 행이 섞여도', async (t) => {
     if (skipReason) return t.skip(skipReason)
