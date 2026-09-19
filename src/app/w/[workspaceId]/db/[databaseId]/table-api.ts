@@ -9,9 +9,12 @@
  */
 
 import type { FilterNode, SortKey } from '@/lib/database/filter'
+import type { GroupBy } from '@/lib/database/group'
 import type { RowJson } from '@/lib/database/http'
 import type { PropertySummary } from '@/lib/database/property'
 import type { CellValue, MvpPropertyType, SelectOption } from '@/lib/database/property-types'
+import type { RowCell } from '@/lib/database/row'
+import type { MvpViewType, ViewSummary } from '@/lib/database/view'
 
 export type ApiResult<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly message: string }
 
@@ -47,6 +50,17 @@ function messageOf(status: number, body: ErrorBody): string {
       return '제목 속성은 숨길 수 없습니다.'
     case 'title_immutable':
       return '제목 속성은 지울 수 없습니다.'
+    // ── 보드 (4b) ──
+    case 'group_required':
+      return '보드에는 그룹 기준이 필요합니다. 선택 또는 체크박스 속성을 먼저 만드세요.'
+    case 'not_grouped':
+      return '이 보드의 그룹 속성이 지워졌습니다. 그룹 기준을 다시 고르세요.'
+    case 'invalid_group':
+      return '그룹 설정을 확인하세요.'
+    case 'unsupported_type':
+      return '지원하지 않는 뷰 종류입니다.'
+    case 'invalid_value':
+      return '요청 값을 확인하세요.'
   }
   return status >= 500 ? '서버에서 처리하지 못했습니다.' : '처리하지 못했습니다.'
 }
@@ -78,10 +92,11 @@ export function updateCell(
   )
 }
 
-export function createRow(workspaceId: string, viewId: string): Promise<ApiResult<RowJson>> {
+/** 행을 만든다. `cells` 는 미리 채울 값 — 보드 열의 `+` 가 그룹 값을 넣는다(F-04-03). */
+export function createRow(workspaceId: string, viewId: string, cells: readonly RowCell[] = []): Promise<ApiResult<RowJson>> {
   return call(
     `${base(workspaceId)}/views/${viewId}/rows`,
-    { method: 'POST', headers: JSON_HEADERS, body: '{}' },
+    { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ cells }) },
     (body) => body.row as RowJson,
   )
 }
@@ -97,6 +112,59 @@ export function loadRows(workspaceId: string, viewId: string, cursor: string): P
       hasMore: body.hasMore === true,
       nextCursor: typeof body.nextCursor === 'string' ? body.nextCursor : null,
     }),
+  )
+}
+
+// ── 보드 (4b) ──────────────────────────────────────────────────────────
+
+/** 보드 한 열의 다음 페이지 — 그룹별 독립 커서(F-04-15). `cursor` 가 null 이면 첫 페이지다. */
+export function loadGroupRows(
+  workspaceId: string,
+  viewId: string,
+  groupKey: string,
+  cursor: string | null,
+): Promise<ApiResult<RowPage>> {
+  const query = new URLSearchParams({ group: groupKey })
+  if (cursor !== null) query.set('cursor', cursor)
+  return call(`${base(workspaceId)}/views/${viewId}/groups?${query}`, { method: 'GET' }, (body) => ({
+    rows: body.rows as RowJson[],
+    hasMore: body.hasMore === true,
+    nextCursor: typeof body.nextCursor === 'string' ? body.nextCursor : null,
+  }))
+}
+
+export type MoveResult = { readonly row: RowJson; readonly groupKey: string; readonly positioned: boolean }
+
+/**
+ * 카드 이동 — **요청 하나**다. 셀 값과 열 안 자리를 서버가 한 트랜잭션으로 쓴다(마스터 문서 §5.2 4번 · §3.3-148).
+ * 셀 PATCH 와 자리 저장을 따로 부르지 않는다.
+ */
+export function moveCard(
+  workspaceId: string,
+  viewId: string,
+  input: { readonly rowId: string; readonly groupKey: string; readonly beforeRowId: string | null },
+): Promise<ApiResult<MoveResult>> {
+  return call(
+    `${base(workspaceId)}/views/${viewId}/groups`,
+    { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ action: 'move', ...input }) },
+    (body) => ({
+      row: body.row as RowJson,
+      groupKey: body.groupKey as string,
+      positioned: body.positioned === true,
+    }),
+  )
+}
+
+/** 뷰를 만든다. 보드인데 `groupBy` 가 없으면 서버가 첫 select 를 고르고, 고를 것이 없으면 `group_required` 다. */
+export function createView(
+  workspaceId: string,
+  databaseId: string,
+  input: { readonly name?: string; readonly type: MvpViewType; readonly groupBy?: GroupBy },
+): Promise<ApiResult<ViewSummary>> {
+  return call(
+    `${base(workspaceId)}/databases/${databaseId}/views`,
+    { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify(input) },
+    (body) => body.view as ViewSummary,
   )
 }
 
@@ -127,13 +195,18 @@ export function addOption(
 }
 
 /**
- * 뷰의 필터 · 정렬을 저장한다. **보낸 키만** 바뀐다 — `filter: null` 은 "필터를 없애라",
- * 키가 없으면 "그대로 둬라"다(`PATCH /views` 라우트가 `'filter' in body` 로 가른다).
+ * 뷰의 필터 · 정렬 · 종류 · 그룹을 저장한다. **보낸 키만** 바뀐다 — `filter: null` 은 "필터를 없애라",
+ * 키가 없으면 "그대로 둬라"다(`PATCH /views` 라우트가 `'filter' in body` 로 가른다). `groupBy` 도 같다.
  */
 export function updateView(
   workspaceId: string,
   viewId: string,
-  patch: { readonly filter?: FilterNode | null; readonly sorts?: readonly SortKey[] },
+  patch: {
+    readonly type?: MvpViewType
+    readonly filter?: FilterNode | null
+    readonly sorts?: readonly SortKey[]
+    readonly groupBy?: GroupBy | null
+  },
 ): Promise<ApiResult<null>> {
   return call(
     `${base(workspaceId)}/views/${viewId}`,

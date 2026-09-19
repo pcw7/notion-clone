@@ -69,7 +69,14 @@ import {
   type PropertyTypes,
   type SortKey,
 } from './filter.ts'
-import { isMvpPropertyType, isOptionColor, type CellValue, type SelectOption } from './property-types.ts'
+import {
+  isGroupableType,
+  isMvpPropertyType,
+  isOptionColor,
+  type CellValue,
+  type GroupableType,
+  type SelectOption,
+} from './property-types.ts'
 import {
   decodeCursorValues,
   encodeCursorValues,
@@ -83,13 +90,8 @@ import { MAX_QUERY_LIMIT } from './limits.ts'
 
 // ── 계약 ──────────────────────────────────────────────────────────────
 
-/** 그룹으로 묶을 수 있는 타입. F-04-11 의 9종 중 MVP 둘(머리말). */
-export const GROUPABLE_TYPES = ['select', 'checkbox'] as const
-export type GroupableType = (typeof GROUPABLE_TYPES)[number]
-
-export function isGroupableType(t: unknown): t is GroupableType {
-  return t === 'select' || t === 'checkbox'
-}
+/** 그룹으로 묶을 수 있는 타입. F-04-11 의 9종 중 MVP 둘(머리말). 정의는 클라이언트도 읽는 `property-types.ts` 에 있다. */
+export { GROUPABLE_TYPES, isGroupableType, type GroupableType } from './property-types.ts'
 
 /** 값이 없는 행의 그룹. 정본 `row_position.group_key DEFAULT ''`. */
 export const NO_VALUE_KEY = ''
