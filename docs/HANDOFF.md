@@ -984,6 +984,7 @@ W7 항목별 상태:
 - **`assert.equal(EditorState, null)` 로 쓰지 않는다.** 실패하면 node 가 메시지를 만들려고 EditorState(스키마까지 딸린 객체 그래프)를 통째로 inspect 하다 **멈춘다**(40초 넘게). `assert.ok(x === null, '…')` 로 쓴다. 기존 테스트에 이 패턴이 남아 있다(§7).
 - **입력 규칙은 한 글자씩 타이핑해 확인한다.** `handleTextInput` 을 직접 부른다 — 텍스트를 한 번에 넣으면 규칙이 아예 돌지 않아 "패턴은 맞는데 트리거되지 않는" 경우를 놓친다.
 - **DB 테스트는 `REQUIRE_DB=1`로 CI에서 강제한다.** 조용히 skip되면 그 테스트는 썩는다.
+- **DB 테스트의 skip 은 테스트마다 `t.skip` 으로 건다.** `describe(…, { skip: skipReason })` 는 **등록 시점**에 평가돼 `before()` 가 채우기 전의 빈 문자열을 본다 — skip 되지 않는다. 로컬은 DB 가 떠 있어 드러나지 않고, DB 가 없는 CI 첫 잡에서 그 파일의 테스트가 전부 실패한다(#101 에서 18개). 새 `.db.test.ts` 를 쓰면 `DATABASE_URL=postgres://x:y@127.0.0.1:1/none npm test` 로 **DB 없는 잡을 흉내 내** 본다 — fail 0 · skip 만 늘어야 한다
 - 마이그레이션을 추가하면 `scripts/verify-schema.mjs`의 `EXPECTED_TABLES`도 갱신한다.
 
 ---

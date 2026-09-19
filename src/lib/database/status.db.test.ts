@@ -36,6 +36,9 @@ const readCellValue = (raw: unknown) => readCell('status', raw)
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'
 
+// ⚠ skip 은 **테스트마다** `t.skip` 으로 건다. `describe(…, { skip: skipReason })` 는 등록 시점에 평가돼 `before()` 가
+//   채우기 전의 빈 문자열을 본다 — DB 가 없는 CI 잡에서 18개가 skip 되지 않고 실패했다(#101).
+
 let skipReason = ''
 let fx: Fixture
 
@@ -88,8 +91,9 @@ async function newTable(before: readonly { name: string; type: 'select' | 'check
 
 const titled = (t: Table, title: string) => ({ propertyId: t.titleId, value: { type: 'title' as const, title: [textRun(title)] } })
 
-describe('① 만들기 — 그룹 셋 · 옵션 셋 · 기본 옵션', { skip: skipReason || undefined }, () => {
-  test('★ 스키마 응답이 옵션 셋을 그룹과 함께 싣고 오고, 첫 옵션이 기본 옵션이다', async () => {
+describe('① 만들기 — 그룹 셋 · 옵션 셋 · 기본 옵션', () => {
+  test('★ 스키마 응답이 옵션 셋을 그룹과 함께 싣고 오고, 첫 옵션이 기본 옵션이다', async (ctx) => {
+    if (skipReason) return ctx.skip(skipReason)
     const t = await newTable()
     assert.deepEqual(
       t.status.options!.map((o) => [o.name, o.color, o.group]),
@@ -98,7 +102,8 @@ describe('① 만들기 — 그룹 셋 · 옵션 셋 · 기본 옵션', { skip: 
     assert.equal(t.status.config.default_option_id, t.option('시작 전'))
   })
 
-  test('그룹은 프로퍼티마다 셋이다 — kind 별로 하나', async () => {
+  test('그룹은 프로퍼티마다 셋이다 — kind 별로 하나', async (ctx) => {
+    if (skipReason) return ctx.skip(skipReason)
     const t = await newTable()
     const kinds = await withReadTransaction((tx) =>
       // ⚠ `ORDER BY kind` 라고 쓰면 text 로 바꾼 **출력 별칭**을 잡아 가나다순이 된다 — ENUM 순서는 표의 컬럼으로 묻는다.
@@ -110,7 +115,8 @@ describe('① 만들기 — 그룹 셋 · 옵션 셋 · 기본 옵션', { skip: 
     assert.deepEqual(kinds.map((k) => k.kind), ['todo', 'in_progress', 'complete'])
   })
 
-  test('만들 때 준 config 는 받지 않는다 — 기본 옵션 id 는 만든 옵션에서 나온다', async () => {
+  test('만들 때 준 config 는 받지 않는다 — 기본 옵션 id 는 만든 옵션에서 나온다', async (ctx) => {
+    if (skipReason) return ctx.skip(skipReason)
     const created = unwrap(await createDatabase(fx.owner.ctx, { name: 'config' }))
     const schema = unwrap(
       await addProperty(fx.owner.ctx, created.dataSourceId, { name: '상태', type: 'status', config: { default_option_id: 'x', junk: 1 } }),
@@ -121,8 +127,9 @@ describe('① 만들기 — 그룹 셋 · 옵션 셋 · 기본 옵션', { skip: 
   })
 })
 
-describe('② ③ 옵션 — 그룹과 순서', { skip: skipReason || undefined }, () => {
-  test('그룹을 안 주면 todo, 주면 그 그룹이다', async () => {
+describe('② ③ 옵션 — 그룹과 순서', () => {
+  test('그룹을 안 주면 todo, 주면 그 그룹이다', async (ctx) => {
+    if (skipReason) return ctx.skip(skipReason)
     const t = await newTable()
     const plain = unwrap(await addSelectOption(fx.owner.ctx, t.dataSourceId, t.status.id, { name: '보류' }))
     const review = unwrap(await addSelectOption(fx.owner.ctx, t.dataSourceId, t.status.id, { name: '검토 중', group: 'in_progress' }))
@@ -130,7 +137,8 @@ describe('② ③ 옵션 — 그룹과 순서', { skip: skipReason || undefined 
     assert.equal(review.option.group, 'in_progress')
   })
 
-  test('★ 옵션 순서는 그룹 순서가 먼저다 — 나중에 더한 "검토 중"(진행 중)이 완료 앞에 선다', async () => {
+  test('★ 옵션 순서는 그룹 순서가 먼저다 — 나중에 더한 "검토 중"(진행 중)이 완료 앞에 선다', async (ctx) => {
+    if (skipReason) return ctx.skip(skipReason)
     const t = await newTable()
     unwrap(await addSelectOption(fx.owner.ctx, t.dataSourceId, t.status.id, { name: '검토 중', group: 'in_progress' }))
     unwrap(await addSelectOption(fx.owner.ctx, t.dataSourceId, t.status.id, { name: '보류' }))
@@ -139,7 +147,8 @@ describe('② ③ 옵션 — 그룹과 순서', { skip: skipReason || undefined 
     assert.deepEqual(names, ['시작 전', '보류', '진행 중', '검토 중', '완료'])
   })
 
-  test('같은 이름이면 있는 옵션을 **그 그룹 그대로** 돌려준다 — 요청한 그룹으로 옮기지 않는다', async () => {
+  test('같은 이름이면 있는 옵션을 **그 그룹 그대로** 돌려준다 — 요청한 그룹으로 옮기지 않는다', async (ctx) => {
+    if (skipReason) return ctx.skip(skipReason)
     const t = await newTable()
     const again = unwrap(await addSelectOption(fx.owner.ctx, t.dataSourceId, t.status.id, { name: '완료', group: 'todo' }))
     assert.equal(again.created, false)
@@ -147,7 +156,8 @@ describe('② ③ 옵션 — 그룹과 순서', { skip: skipReason || undefined 
     assert.equal(again.option.group, 'complete')
   })
 
-  test('★ select 옵션에 그룹을 주면 거부한다(SG3) · 모르는 그룹도', async () => {
+  test('★ select 옵션에 그룹을 주면 거부한다(SG3) · 모르는 그룹도', async (ctx) => {
+    if (skipReason) return ctx.skip(skipReason)
     const t = await newTable([{ name: '분류', type: 'select' }])
     const schema = unwrap(await getSchema(fx.owner.ctx, t.dataSourceId))
     const selectId = schema.properties.find((p) => p.name === '분류')!.id
@@ -161,8 +171,9 @@ describe('② ③ 옵션 — 그룹과 순서', { skip: skipReason || undefined 
   })
 })
 
-describe('④ 새 행의 기본 옵션', { skip: skipReason || undefined }, () => {
-  test('★ 셀을 안 보내면 기본 옵션을 받는다 — 사이드카까지(필터가 찾는다)', async () => {
+describe('④ 새 행의 기본 옵션', () => {
+  test('★ 셀을 안 보내면 기본 옵션을 받는다 — 사이드카까지(필터가 찾는다)', async (ctx) => {
+    if (skipReason) return ctx.skip(skipReason)
     const t = await newTable()
     const row = unwrap(await createRow(fx.owner.ctx, t.dataSourceId, { cells: [titled(t, '새 행')] }))
     assert.equal(optionIdOf(readCellValue(row.properties[t.status.id])), t.option('시작 전'))
@@ -176,7 +187,8 @@ describe('④ 새 행의 기본 옵션', { skip: skipReason || undefined }, () =
     assert.deepEqual(found.rows.map((r) => r.id), [row.id])
   })
 
-  test('★ 보낸 셀이 이긴다 — 다른 옵션도, **빈 값도**', async () => {
+  test('★ 보낸 셀이 이긴다 — 다른 옵션도, **빈 값도**', async (ctx) => {
+    if (skipReason) return ctx.skip(skipReason)
     const t = await newTable()
     const done = unwrap(
       await createRow(fx.owner.ctx, t.dataSourceId, {
@@ -190,7 +202,8 @@ describe('④ 새 행의 기본 옵션', { skip: skipReason || undefined }, () =
     assert.equal(optionIdOf(readCellValue(empty.properties[t.status.id])), null)
   })
 
-  test('기본 옵션을 해제하면 새 행은 빈 값이다 · 비우는 것은 막지 않는다(§3.2-29)', async () => {
+  test('기본 옵션을 해제하면 새 행은 빈 값이다 · 비우는 것은 막지 않는다(§3.2-29)', async (ctx) => {
+    if (skipReason) return ctx.skip(skipReason)
     const t = await newTable()
     const first = unwrap(await createRow(fx.owner.ctx, t.dataSourceId, {}))
     const cleared = unwrap(
@@ -203,7 +216,8 @@ describe('④ 새 행의 기본 옵션', { skip: skipReason || undefined }, () =
     assert.equal(optionIdOf(readCellValue(second.properties[t.status.id])), null)
   })
 
-  test('status 가 나중에 더해진 표의 기존 행은 값이 없다 — 전부 채우지 않는다(§3.2-29)', async () => {
+  test('status 가 나중에 더해진 표의 기존 행은 값이 없다 — 전부 채우지 않는다(§3.2-29)', async (ctx) => {
+    if (skipReason) return ctx.skip(skipReason)
     const created = unwrap(await createDatabase(fx.owner.ctx, { name: '기존 행' }))
     const old = unwrap(await createRow(fx.owner.ctx, created.dataSourceId, {}))
     const schema = unwrap(await addProperty(fx.owner.ctx, created.dataSourceId, { name: '상태', type: 'status' }))
@@ -215,15 +229,17 @@ describe('④ 새 행의 기본 옵션', { skip: skipReason || undefined }, () =
   })
 })
 
-describe('⑤ config.default_option_id', { skip: skipReason || undefined }, () => {
-  test('이 프로퍼티의 다른 옵션으로 바꿀 수 있고 새 행이 그것을 받는다', async () => {
+describe('⑤ config.default_option_id', () => {
+  test('이 프로퍼티의 다른 옵션으로 바꿀 수 있고 새 행이 그것을 받는다', async (ctx) => {
+    if (skipReason) return ctx.skip(skipReason)
     const t = await newTable()
     unwrap(await updateProperty(fx.owner.ctx, t.dataSourceId, t.status.id, { config: { default_option_id: t.option('진행 중') } }))
     const row = unwrap(await createRow(fx.owner.ctx, t.dataSourceId, {}))
     assert.equal(optionIdOf(readCellValue(row.properties[t.status.id])), t.option('진행 중'))
   })
 
-  test('★ 남의 프로퍼티의 옵션 · 모르는 키 · uuid 가 아닌 값은 거부한다', async () => {
+  test('★ 남의 프로퍼티의 옵션 · 모르는 키 · uuid 가 아닌 값은 거부한다', async (ctx) => {
+    if (skipReason) return ctx.skip(skipReason)
     const t = await newTable()
     const other = await newTable()
     for (const config of [
@@ -240,8 +256,9 @@ describe('⑤ config.default_option_id', { skip: skipReason || undefined }, () =
   })
 })
 
-describe('⑥ 필터 · 보드 — select 와 같은 길', { skip: skipReason || undefined }, () => {
-  test('값 계약: 봉투가 status 여야 한다 — select 봉투는 거부', async () => {
+describe('⑥ 필터 · 보드 — select 와 같은 길', () => {
+  test('값 계약: 봉투가 status 여야 한다 — select 봉투는 거부', async (ctx) => {
+    if (skipReason) return ctx.skip(skipReason)
     const t = await newTable()
     const r = await createRow(fx.owner.ctx, t.dataSourceId, {
       cells: [{ propertyId: t.status.id, value: { type: 'select', select: { id: t.option('완료') } } as never }],
@@ -249,13 +266,15 @@ describe('⑥ 필터 · 보드 — select 와 같은 길', { skip: skipReason ||
     assert.equal(r.ok === false && r.reason, 'invalid_value')
   })
 
-  test('★ 보드의 자동 선택은 status 가 select 보다 먼저다 — select 가 스키마에서 앞에 있어도(F-04-03)', async () => {
+  test('★ 보드의 자동 선택은 status 가 select 보다 먼저다 — select 가 스키마에서 앞에 있어도(F-04-03)', async (ctx) => {
+    if (skipReason) return ctx.skip(skipReason)
     const t = await newTable([{ name: '분류', type: 'select' }])
     const view = unwrap(await createView(fx.owner.ctx, t.databaseId, { type: 'board' }))
     assert.equal(view.groupBy?.property_id, t.status.id)
   })
 
-  test('★ 열은 "상태 없음" → 그룹 순서의 옵션이고, 카드를 옮기면 status 값이 바뀐다', async () => {
+  test('★ 열은 "상태 없음" → 그룹 순서의 옵션이고, 카드를 옮기면 status 값이 바뀐다', async (ctx) => {
+    if (skipReason) return ctx.skip(skipReason)
     const t = await newTable()
     unwrap(await addSelectOption(fx.owner.ctx, t.dataSourceId, t.status.id, { name: '검토 중', group: 'in_progress' }))
     const a = unwrap(await createRow(fx.owner.ctx, t.dataSourceId, { cells: [titled(t, 'A')] }))
@@ -277,7 +296,8 @@ describe('⑥ 필터 · 보드 — select 와 같은 길', { skip: skipReason ||
     assert.equal(optionIdOf(readCellValue(emptied.row.properties[t.status.id])), null)
   })
 
-  test('뷰의 컬럼이 status 옵션을 그룹과 함께 싣는다 · 그룹 기준으로 고를 수 있다', async () => {
+  test('뷰의 컬럼이 status 옵션을 그룹과 함께 싣는다 · 그룹 기준으로 고를 수 있다', async (ctx) => {
+    if (skipReason) return ctx.skip(skipReason)
     const t = await newTable([{ name: '완료 여부', type: 'checkbox' }])
     const table = unwrap(await createView(fx.owner.ctx, t.databaseId, { type: 'table' }))
     const detail = unwrap(await getView(fx.owner.ctx, table.id))
@@ -289,8 +309,9 @@ describe('⑥ 필터 · 보드 — select 와 같은 길', { skip: skipReason ||
   })
 })
 
-describe('⑦ 익스포트', { skip: skipReason || undefined }, () => {
-  test('CSV 칸은 옵션 이름이다 — id 가 아니다', async () => {
+describe('⑦ 익스포트', () => {
+  test('CSV 칸은 옵션 이름이다 — id 가 아니다', async (ctx) => {
+    if (skipReason) return ctx.skip(skipReason)
     const t = await newTable()
     const column = { propertyId: t.status.id, name: '상태', type: 'status' as const, options: [...t.status.options!] }
     assert.equal(cellPlainText(column, { type: 'status', status: { id: t.option('완료') } }), '완료')
