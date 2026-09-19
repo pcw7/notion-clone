@@ -32,6 +32,7 @@ import { NodeSelection } from '@tiptap/pm/state'
 import type { EditorView } from '@tiptap/pm/view'
 import type * as Y from 'yjs'
 
+import { textRun } from '@/lib/contracts/rich-text'
 import { blockIdFromHash, revealBlockCommand } from '@/lib/editor/block-menu'
 import { plainTextForBlocks } from '@/lib/editor/block-clipboard'
 import { selectedBlockCount } from '@/lib/editor/block-selection'
@@ -52,8 +53,11 @@ import { openCollabConnection, type CollabConnection, type CollabSnapshot, type 
 import { decodeBodyState } from '@/lib/collab/collab-protocol'
 import { openPendingEditStore, pendingEditKey } from '@/lib/collab/pending-store'
 import { BODY_FRAGMENT, readBodyYDoc } from '@/lib/collab/ydoc'
+import { acceptAnchor, textRangeAnchor } from '@/lib/comment/anchor'
+import { commentHighlightPlugin, setCommentThreads, type AnchoredThread } from '@/lib/comment/highlight'
 import { uploadImageFile } from '@/lib/file/upload-client'
 import { BlockGutter } from './block-gutter'
+import { openCommentThread } from './comment-panel'
 
 /** 이 시간 넘게 서버가 확인하지 않으면 "동기화 중…"을 보여 준다 — 그 전에는 무표시다(F-05-04). */
 const SYNCING_AFTER_MS = 3000
@@ -70,6 +74,9 @@ type Status =
   | { kind: 'error'; message: string; unsaved?: string }
 
 type MenuUi = { open: boolean; query: string; index: number; left: number; top: number }
+
+/** 고른 글자에 코멘트를 달 수 있는 자리 — 편집기 기준 좌표까지 들고 있다. */
+type CommentTarget = { blockId: string; start: number; end: number; left: number; top: number }
 
 const CLOSED_MENU: MenuUi = { open: false, query: '', index: 0, left: 0, top: 0 }
 
@@ -147,6 +154,23 @@ export function BodyEditor({
   /** 버린 편집의 내용을 펼쳐 보여주는 중인가(F-12-16 "내용 보기"). */
   const [showUnsaved, setShowUnsaved] = useState(false)
 
+  // ── 코멘트 (F-05-07 · 코멘트 4b조각) ────────────────────────────────
+
+  /** 지금 고른 글자에 코멘트를 달 수 있는가 — 있으면 그 자리에 버튼을 띄운다. */
+  const [commentTarget, setCommentTarget] = useState<CommentTarget | null>(null)
+  /** 코멘트를 쓰는 중 — 앵커는 **여는 순간** 만든다(아래). */
+  const [composing, setComposing] = useState<{
+    blockId: string
+    anchor: unknown
+    quoted: string
+    left: number
+    top: number
+  } | null>(null)
+  const [commentDraft, setCommentDraft] = useState('')
+  /** 이 사람이 코멘트를 쓸 수 있는가 — 목록을 읽을 때 서버가 함께 준다. 편집 권한과 다르다. */
+  const canCommentRef = useRef(false)
+  const [canComment, setCanComment] = useState(false)
+
   const editable = canEdit && link.readOnly !== true && !link.reopening && link.closed === null
   /** 물을 때마다 판단한다 — `createEditor` 가 이 함수를 그대로 쓴다. */
   const editableRef = useRef(editable)
@@ -207,6 +231,118 @@ export function BodyEditor({
   )
 
   // ── 슬래시 메뉴 ─────────────────────────────────────────────────────
+
+  /**
+   * 본문의 하이라이트를 다시 그린다 — 열린 스레드 중 **글자 범위에 달린 것**만.
+   *
+   * 앵커는 여기서 풀지 않는다. 플러그인이 붙어 있는 Y.Doc 으로 풀고, 문서가 바뀌면 스스로 다시 푼다
+   * (`lib/comment/highlight.ts` 머리말).
+   */
+  const loadThreads = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/workspaces/${workspaceId}/pages/${pageId}/discussions?resolved=false`)
+      if (!res.ok) return
+      const data = (await res.json()) as {
+        canComment?: boolean
+        discussions?: { id: string; blockId: string; anchor: unknown }[]
+      }
+      canCommentRef.current = data.canComment === true
+      setCanComment(data.canComment === true)
+      const threads: AnchoredThread[] = []
+      for (const thread of data.discussions ?? []) {
+        // **서버가 준 범위를 믿지 않는다**(§3.3-139) — 서버가 읽은 순간의 것이라 그 뒤에 친 글자만큼 어긋난다.
+        // 상대 위치만 받아 여기서, 이 편집기가 붙어 있는 Y.Doc 으로 푼다.
+        const anchor = acceptAnchor(thread.anchor)
+        if (anchor === null) continue
+        threads.push({ discussionId: thread.id, blockId: thread.blockId, anchor })
+      }
+      const view = viewRef.current
+      if (view) setCommentThreads(view, threads)
+    } catch {
+      // 다음에 다시 청한다 — 하이라이트가 없다고 편집을 막지 않는다.
+    }
+  }, [workspaceId, pageId])
+
+  /** 고른 글자가 한 블록 안이면 그 자리에 "코멘트" 버튼을 띄운다. */
+  const syncCommentTarget = useCallback((view: EditorView) => {
+    const { from, to, empty } = view.state.selection
+    if (empty || !canCommentRef.current) {
+      setCommentTarget((prev) => (prev === null ? prev : null))
+      return
+    }
+    const container = containerAt(view.state.doc.resolve(from))
+    if (container === null) {
+      setCommentTarget(null)
+      return
+    }
+    const first = container.contentPos + 1
+    const last = container.contentPos + container.contentNode.nodeSize - 1
+    // 블록을 넘는 선택 · 블록 선택에는 달 수 없다 — 앵커가 블록 하나를 가리킨다(정본 §3.9).
+    if (from < first || to > last) {
+      setCommentTarget(null)
+      return
+    }
+    const coords = view.coordsAtPos(from)
+    const box = view.dom.getBoundingClientRect()
+    setCommentTarget({
+      blockId: container.id,
+      start: from - first,
+      end: to - first,
+      left: coords.left - box.left,
+      top: coords.top - box.top,
+    })
+  }, [])
+
+  /**
+   * 고른 글자에 코멘트를 쓰기 시작한다.
+   *
+   * **앵커를 여는 순간 만든다**(§3.3-128) — 편집기가 자기 Y.Doc 에서 만들어야 한다. 서버에 오프셋을 보내면, 내가 방금 친
+   * 글자를 서버가 아직 모르는 동안 엉뚱한 글자에 코멘트가 붙는다. 상대 위치는 그 뒤의 편집에도 같은 글자를 가리킨다.
+   */
+  const openComposer = useCallback(() => {
+    const target = commentTarget
+    const ydoc = boundDocRef.current
+    if (target === null || ydoc === null) return
+    const anchor = textRangeAnchor(ydoc, target.blockId, target.start, target.end)
+    if (anchor === null) {
+      setStatus({ kind: 'error', message: '고른 글자에는 코멘트를 달 수 없습니다.' })
+      return
+    }
+    setComposing({ blockId: target.blockId, anchor, quoted: anchor.quotedText, left: target.left, top: target.top })
+    setCommentDraft('')
+  }, [commentTarget])
+
+  const submitComment = useCallback(async () => {
+    if (composing === null) return
+    const text = commentDraft.trim()
+    if (text === '') return
+    try {
+      const res = await fetch(`/api/workspaces/${workspaceId}/pages/${pageId}/discussions`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          action: 'open',
+          blockId: composing.blockId,
+          anchor: composing.anchor,
+          richText: [textRun(text)],
+        }),
+      })
+      if (!res.ok) {
+        const data = (await res.json().catch(() => ({}))) as { message?: string }
+        setStatus({ kind: 'error', message: data.message ?? '코멘트를 남기지 못했습니다.' })
+        return
+      }
+      const data = (await res.json()) as { discussionId?: string }
+      setComposing(null)
+      setCommentDraft('')
+      await loadThreads()
+      // 만든 스레드를 패널에서 보여 준다. 서버가 그려 준 개수도 다시 받는다.
+      if (data.discussionId !== undefined) openCommentThread(data.discussionId)
+      router.refresh()
+    } catch {
+      setStatus({ kind: 'error', message: '연결에 실패했습니다.' })
+    }
+  }, [composing, commentDraft, workspaceId, pageId, loadThreads, router])
 
   const syncMenu = useCallback((view: EditorView) => {
     const state = slashMenuState(view.state)
@@ -354,7 +490,10 @@ export function BodyEditor({
     /** 이 Y.Doc 에 편집기를 붙인다 — 연결이 문서를 버리고 다시 열면 다시 부른다. */
     const bind = (ydoc: Y.Doc): void => {
       viewRef.current?.destroy()
-      const collab = createCollabEditorState(ydoc.getXmlFragment(BODY_FRAGMENT), deps)
+      // 하이라이트 플러그인은 **이 Y.Doc** 으로 앵커를 푼다 — 연결이 문서를 버리고 다시 열면 여기서 새 문서로 다시 붙는다.
+      const collab = createCollabEditorState(ydoc.getXmlFragment(BODY_FRAGMENT), deps, [
+        commentHighlightPlugin({ ydoc, onOpen: openCommentThread }),
+      ])
       editorDepsRef.current = collab.deps
       boundDocRef.current = ydoc
       const view = createEditor({
@@ -365,6 +504,7 @@ export function BodyEditor({
         deps: collab.deps,
         onTransaction: (v) => {
           syncMenu(v)
+          syncCommentTarget(v)
           // 같은 값이면 리렌더하지 않는다 — 트랜잭션마다 불리는 자리다.
           const count = selectedBlockCount(v.state)
           setSelectedBlocks((prev) => (prev === count ? prev : count))
@@ -373,6 +513,8 @@ export function BodyEditor({
       })
       viewRef.current = view
       reveal()
+      // 이 문서에 달린 스레드를 그린다. 다시 붙을 때마다 읽는다 — 그 사이에 남이 단 코멘트가 있을 수 있다.
+      void loadThreads()
     }
 
     void (async () => {
@@ -577,6 +719,65 @@ export function BodyEditor({
           onNotice={(message) => setStatus({ kind: 'notice', message })}
         />
       </div>
+
+      {/*
+        고른 글자에 코멘트 — F-05-07. 캐럿 위치 기준은 슬래시 메뉴와 같은 셈이다(`view.dom` 기준 좌표).
+        `onMouseDown` 을 막는 이유: 버튼을 누르는 순간 선택이 풀리면 앵커를 만들 자리를 잃는다.
+      */}
+      {canComment && commentTarget !== null && composing === null && (
+        <button
+          type="button"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={openComposer}
+          style={{ left: commentTarget.left, top: Math.max(commentTarget.top - 34, 0) }}
+          className="absolute z-10 rounded-md border border-neutral-300 bg-white px-2 py-1 text-xs shadow dark:border-neutral-700 dark:bg-neutral-900"
+        >
+          코멘트 달기
+        </button>
+      )}
+
+      {composing !== null && (
+        <div
+          role="dialog"
+          aria-label="고른 글자에 코멘트"
+          style={{ left: composing.left, top: composing.top + 24 }}
+          className="absolute z-20 flex w-72 flex-col gap-2 rounded-lg border border-neutral-200 bg-white p-3 shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
+        >
+          {/* 무엇에 다는지 보여 준다 — 앵커가 나중에 풀리지 않아도 이 글이 패널에 남는다(quoted_text). */}
+          <p className="truncate text-xs text-neutral-500">“{composing.quoted}”</p>
+          <form
+            className="flex flex-col gap-2"
+            onSubmit={(e) => {
+              e.preventDefault()
+              void submitComment()
+            }}
+          >
+            <textarea
+              aria-label="고른 글자에 남길 코멘트"
+              autoFocus
+              value={commentDraft}
+              onChange={(e) => setCommentDraft(e.target.value)}
+              rows={2}
+              className="rounded border border-neutral-300 bg-transparent p-2 text-sm dark:border-neutral-700"
+            />
+            <div className="flex gap-1">
+              <button
+                type="submit"
+                className="rounded border border-neutral-300 px-2 py-0.5 text-xs disabled:opacity-50 dark:border-neutral-700"
+              >
+                남기기
+              </button>
+              <button
+                type="button"
+                onClick={() => setComposing(null)}
+                className="rounded border border-neutral-300 px-2 py-0.5 text-xs dark:border-neutral-700"
+              >
+                취소
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
 
       {menu.open && items.length > 0 && (
         <ul

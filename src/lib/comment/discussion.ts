@@ -509,7 +509,13 @@ export type CommentView = {
 export type DiscussionAnchorView = {
   /** 만들 때의 원문 스냅샷. 앵커를 풀지 못하면 이것을 보여준다(05 F-05-07 "반드시 저장한다"). */
   readonly quotedText: string
-  /** 지금 풀리는 범위(블록 안 오프셋). 못 풀면 null, 길이 0 이면 범위가 다 지워진 것이다. */
+  /**
+   * 상대 위치 그대로(base64). **편집기가 자기 Y.Doc 에서 다시 푼다**(§3.3-139) — 아래 `range` 는 서버가 읽은
+   * 순간의 것이라, 그 뒤에 친 글자만큼 어긋난다. 문서를 볼 수 있는 사람에게만 나가므로 감출 것이 아니다.
+   */
+  readonly start: string
+  readonly end: string
+  /** 서버가 읽은 순간의 범위(블록 안 오프셋). 못 풀면 null, 길이 0 이면 범위가 다 지워진 것이다. */
   readonly range: AnchorRange | null
 }
 
@@ -669,7 +675,7 @@ export async function listDiscussions(
         pageId: r.page_id,
         blockId: r.parent_block_id,
         onPage: r.parent_block_id === pageId,
-        anchor: anchor === null ? null : { quotedText: anchor.quotedText, range },
+        anchor: anchor === null ? null : { quotedText: anchor.quotedText, start: anchor.start, end: anchor.end, range },
         orphaned: r.parent_block_id !== pageId && (!body.ids.has(r.parent_block_id) || lost),
         resolved: r.resolved,
         resolvedBy: r.resolved_by,
