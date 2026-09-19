@@ -13,6 +13,7 @@
 import type { DatabaseFailure } from './database.ts'
 import type { PropertyFailure } from './property.ts'
 import type { RowCell, RowFailure } from './row.ts'
+import type { GroupFailure } from './group.ts'
 
 export function rowFailureStatus(reason: RowFailure): number {
   switch (reason) {
@@ -28,6 +29,12 @@ export function rowFailureStatus(reason: RowFailure): number {
     case 'invalid_value':
       return 400
   }
+}
+
+export function groupFailureStatus(reason: GroupFailure): number {
+  // 그룹이 없는 뷰에 보드 질의 · 카드 이동 — 입력이 아니라 뷰의 상태가 허락하지 않는다.
+  if (reason === 'not_grouped') return 409
+  return rowFailureStatus(reason)
 }
 
 export function propertyFailureStatus(reason: PropertyFailure): number {

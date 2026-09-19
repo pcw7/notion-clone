@@ -47,6 +47,8 @@ const EXPECTED_TABLES = [
   'activity_event', 'subscription', 'notification',
   // 코멘트 5a조각 — 멘션의 역인덱스 (0021)
   'link_edge',
+  // 보드 4a조각 — 뷰별 · 그룹별 수동 순서 (0022)
+  'row_position',
   'schema_migration', 'scim_token', 'session_policy', 'sso_config',
   'user', 'user_email', 'user_session',
   'workspace', 'workspace_invite', 'workspace_member',
@@ -1066,6 +1068,81 @@ try {
         `INSERT INTO filter_operator (property_type, operator, arity, label_ko, order_idx)
          VALUES ('number', 'equals', 1, '중복', 9)`,
       )
+    }
+
+    // ── ⑬ row_position · view.type (0022 / §3.6 · 보드 4a조각) ──
+    {
+      const viewId = randomUUID()
+      const boardRow = randomUUID()
+      await client.query(
+        `INSERT INTO view (id, database_id, data_source_id, type, order_idx, group_by, configuration,
+                           created_at, updated_at)
+         VALUES ($1, $2, $3, 'board', 'b0', '{"property_id": "p1"}'::jsonb, '{}'::jsonb, now(), now())`,
+        [viewId, dbBlockId, dsId],
+      )
+      ok('뷰 생성 (board · group_by jsonb)')
+      await mustReject(
+        '정본에 없는 뷰 타입 (ck_view_type — 0022 가 승격)',
+        `INSERT INTO view (id, database_id, data_source_id, type, order_idx, configuration, created_at, updated_at)
+         VALUES ($1, $2, $3, 'kanban', 'b1', '{}'::jsonb, now(), now())`,
+        [randomUUID(), dbBlockId, dsId],
+      )
+
+      await client.query(
+        `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key,
+                            ancestor_path, perm_scope_id, properties, format, created_at, last_edited_at)
+         VALUES ($1, $2, 'page', 'data_source', $3, 'z0', $4, $5, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+        [boardRow, wsId, dsId, [rootId, dbBlockId], dbBlockId],
+      )
+      await client.query(`INSERT INTO page (id, data_source_id) VALUES ($1, $2)`, [boardRow, dsId])
+
+      // 빈 값 그룹은 '' 다 — DEFAULT 가 그 자리를 준다.
+      await client.query(`INSERT INTO row_position (view_id, row_id, order_idx) VALUES ($1, $2, 'a0')`, [viewId, boardRow])
+      await client.query(
+        `INSERT INTO row_position (view_id, group_key, row_id, order_idx) VALUES ($1, $2, $3, 'a0')`,
+        [viewId, randomUUID(), boardRow],
+      )
+      {
+        const { rows } = await client.query(`SELECT group_key FROM row_position WHERE view_id = $1 ORDER BY group_key`, [viewId])
+        if (rows.length === 2 && rows[0].group_key === '') ok("row_position 생성 — group_key 기본값 '' · 같은 행이 다른 그룹에 자리를 가질 수 있다(PK 가 그룹을 포함)")
+        else fail(`row_position 이 예상과 다르다: ${JSON.stringify(rows)}`)
+      }
+      await mustReject(
+        '같은 (뷰, 그룹, 행)에 두 자리',
+        `INSERT INTO row_position (view_id, group_key, row_id, order_idx) VALUES ($1, '', $2, 'a1')`,
+        [viewId, boardRow],
+      )
+      await mustReject(
+        '빈 order_idx',
+        `INSERT INTO row_position (view_id, group_key, row_id, order_idx) VALUES ($1, 'g', $2, '')`,
+        [viewId, boardRow],
+      )
+      await mustReject(
+        '없는 뷰 (FK)',
+        `INSERT INTO row_position (view_id, group_key, row_id, order_idx) VALUES ($1, '', $2, 'a0')`,
+        [randomUUID(), boardRow],
+      )
+      await mustReject(
+        '행이 아닌 것 (FK → page — 일반 페이지 · 아무 uuid 는 자리를 가질 수 없다)',
+        `INSERT INTO row_position (view_id, group_key, row_id, order_idx) VALUES ($1, '', $2, 'a0')`,
+        [viewId, randomUUID()],
+      )
+      {
+        const { rows } = await client.query(
+          `SELECT collation_name FROM information_schema.columns
+            WHERE table_name = 'row_position' AND column_name = 'order_idx'`,
+        )
+        if (rows[0]?.collation_name === 'C') ok('row_position.order_idx 는 COLLATE "C" (fractional index 는 이진 순서)')
+        else fail(`row_position.order_idx collation: ${rows[0]?.collation_name}`)
+      }
+
+      // 뷰가 사라지면 자리도 사라진다 · 행이 사라져도 사라진다.
+      await client.query(`DELETE FROM view WHERE id = $1`, [viewId])
+      {
+        const { rows } = await client.query(`SELECT 1 FROM row_position WHERE view_id = $1`, [viewId])
+        if (rows.length === 0) ok('뷰 삭제 → row_position CASCADE 삭제')
+        else fail('뷰를 지웠는데 row_position 이 남았다')
+      }
     }
 
     // ── 부정 요구사항 — 없어야 하는 컬럼 ──

@@ -387,7 +387,23 @@ export async function updateCells(
   rowId: string,
   input: UpdateCellsInput,
 ): Promise<RowResult<RowSummary>> {
-  return withTransaction(async (tx) => {
+  return withTransaction((tx) => updateCellsIn(tx, ctx, rowId, input))
+}
+
+/**
+ * `updateCells` 의 트랜잭션 안쪽. **셀을 쓰는 다른 명령이 같은 트랜잭션에서 부른다.**
+ *
+ * 보드의 카드 이동(`group.ts` `moveRow`)이 "셀 값 + 순서"를 한 트랜잭션에 넣어야 한다(마스터 문서 §5.2 4번:
+ * *"2 mutation 을 서버 단일 API 로"*). 셀을 쓰는 규칙(검증 · 사이드카 · 제목 투영 · 버전)을 그쪽에 복사하지
+ * 않고 이 함수를 부른다 — 쓰는 길은 하나다.
+ */
+export async function updateCellsIn(
+  tx: Tx,
+  ctx: SessionContext,
+  rowId: string,
+  input: UpdateCellsInput,
+): Promise<RowResult<RowSummary>> {
+  {
     // 행을 잠근다. 같은 행의 셀을 동시에 쓰면 `properties_cache` 재생성이
     // 겹치는데, 잠금이 있으면 순서가 정해져 마지막 재생성이 전부를 본다.
     const row = await tx.queryMaybe<{ data_source_id: string; version: string }>(
@@ -425,7 +441,7 @@ export async function updateCells(
     const summary = await readRow(tx, rowId)
     if (summary === null) return { ok: false, reason: 'not_found' } as const
     return { ok: true, value: summary } as const
-  })
+  }
 }
 
 /**
@@ -496,7 +512,7 @@ function toRowSummary(row: RowRow): RowSummary {
   }
 }
 
-async function readRow(tx: Tx, rowId: string): Promise<RowSummary | null> {
+export async function readRow(tx: Tx, rowId: string): Promise<RowSummary | null> {
   const row = await tx.queryMaybe<RowRow>(
     `SELECT b.id, b.order_key, p.properties_cache, b.properties,
             b.created_at, b.last_edited_at, b.version
