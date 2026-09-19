@@ -30,6 +30,7 @@ import { grantAccess, revokeAccess, stopInheriting } from '../permissions/acl.ts
 import type { Level } from '../permissions/levels.ts'
 import { changesSince, edit, findBlock, peer } from '../testing/collab-peers.ts'
 import { createBareWorkspace, createUser, joinAs, probeDatabase, type Actor } from '../testing/db-fixtures.ts'
+import { textRangeAnchor } from './anchor.ts'
 import {
   createDiscussion,
   deleteComment,
@@ -97,8 +98,14 @@ async function restrict(owner: Actor, member: Actor, pageId: string, level: Leve
 }
 
 /** 한 스레드를 열고 그 id 를 준다. */
-async function openThread(actor: Actor, pageId: string, text: string, blockId?: string): Promise<string> {
-  const made = await createDiscussion(actor.ctx, { pageId, blockId, richText: says(text) })
+async function openThread(
+  actor: Actor,
+  pageId: string,
+  text: string,
+  blockId?: string,
+  anchor?: unknown,
+): Promise<string> {
+  const made = await createDiscussion(actor.ctx, { pageId, blockId, anchor, richText: says(text) })
   assert.equal(made.ok, true, JSON.stringify(made))
   return made.ok ? made.discussionId : ''
 }
@@ -432,5 +439,137 @@ describe('반응', () => {
       emoji: '좋은 생각입니다',
     })
     assert.equal(sentence.ok === false && sentence.reason, 'invalid_emoji')
+  })
+})
+
+// ── ⑦ 범위 앵커 (2조각) ──────────────────────────────────────────────
+
+describe('글자 범위에 단 스레드', () => {
+  test('목록이 지금 범위와 만들 때의 원문 스냅샷을 함께 준다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { owner } = await workspace()
+    const blockId = randomUUID()
+    const pageId = await pageWith(owner, [para('가나다라마바사', blockId)])
+    const anchor = textRangeAnchor(await ydocOf(owner, pageId), blockId, 2, 5)
+    assert.ok(anchor !== null)
+
+    const made = await createDiscussion(owner.ctx, { pageId, blockId, anchor, richText: says('이 표현이 맞나요') })
+    assert.equal(made.ok, true, JSON.stringify(made))
+
+    const [thread] = await threadsOf(owner, pageId)
+    assert.equal(thread.onPage, false)
+    assert.equal(thread.orphaned, false)
+    assert.equal(thread.anchor?.quotedText, '다라마')
+    assert.deepEqual(thread.anchor?.range, { start: 2, end: 5, text: '다라마' })
+  })
+
+  test('★ 범위가 밀려도 같은 글자를 가리키고, 그 글자를 다 지우면 고아가 된다 — 원문은 남는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { owner } = await workspace()
+    const blockId = randomUUID()
+    const pageId = await pageWith(owner, [para('가나다라마바사', blockId)])
+    const base = await ydocOf(owner, pageId)
+    const anchor = textRangeAnchor(base, blockId, 2, 5)
+    assert.ok(anchor !== null)
+    await openThread(owner, pageId, '이 표현이 맞나요', blockId, anchor)
+
+    // 참여자가 앞에 글자를 친다 — 협업 서버가 쓰는 그 경로다.
+    const typing = peer(base, 91)
+    edit(typing, (tr: Transaction, doc: PmNode) => {
+      tr.insertText('앞앞', findBlock(doc, blockId).pos + 2)
+    })
+    assert.equal((await appendDocUpdate(owner.ctx, pageId, changesSince(typing, base), { origin: 'editor' })).ok, true)
+
+    const [moved] = await threadsOf(owner, pageId)
+    assert.deepEqual(moved.anchor?.range, { start: 4, end: 7, text: '다라마' }, '밀렸을 뿐 같은 글자다')
+    assert.equal(moved.orphaned, false)
+
+    // 이제 그 글자를 전부 지운다.
+    const after = await ydocOf(owner, pageId)
+    const deleting = peer(after, 92)
+    edit(deleting, (tr: Transaction, doc: PmNode) => {
+      const { pos } = findBlock(doc, blockId)
+      tr.delete(pos + 2 + 4, pos + 2 + 7)
+    })
+    assert.equal((await appendDocUpdate(owner.ctx, pageId, changesSince(deleting, after), { origin: 'editor' })).ok, true)
+
+    const [lost] = await threadsOf(owner, pageId)
+    assert.equal(lost.orphaned, true, '가리킬 글자가 없다')
+    assert.deepEqual(lost.anchor?.range, { start: 4, end: 4, text: '' }, '범위는 비었지만 자리는 안다')
+    assert.equal(lost.anchor?.quotedText, '다라마', '보여줄 원문은 남는다')
+    assert.deepEqual(textsOf(lost.comments), ['이 표현이 맞나요'], '스레드와 글은 그대로다')
+  })
+
+  test('★ 아직 서버에 없는 글자를 가리켜도 받아 두고, 그 update 가 도착하면 스스로 풀린다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { owner } = await workspace()
+    const blockId = randomUUID()
+    const pageId = await pageWith(owner, [para('원문', blockId)])
+    const base = await ydocOf(owner, pageId)
+
+    // 편집기가 방금 친 글자를 고른다 — 그 update 는 아직 서버에 가지 않았다.
+    const typing = peer(base, 93)
+    edit(typing, (tr: Transaction, doc: PmNode) => {
+      tr.insertText('새글', findBlock(doc, blockId).pos + 2)
+    })
+    const anchor = textRangeAnchor(typing, blockId, 0, 2)
+    assert.ok(anchor !== null)
+    assert.equal(anchor.quotedText, '새글')
+
+    const made = await createDiscussion(owner.ctx, { pageId, blockId, anchor, richText: says('방금 친 글에') })
+    assert.equal(made.ok, true, '풀리지 않는다고 거부하면 "방금 고른 글에 코멘트"가 끊긴다')
+
+    const [pending] = await threadsOf(owner, pageId)
+    assert.equal(pending.anchor?.range, null, '서버는 아직 그 글자를 모른다')
+    assert.equal(pending.orphaned, true)
+
+    assert.equal((await appendDocUpdate(owner.ctx, pageId, changesSince(typing, base), { origin: 'editor' })).ok, true)
+
+    const [healed] = await threadsOf(owner, pageId)
+    assert.deepEqual(healed.anchor?.range, { start: 0, end: 2, text: '새글' })
+    assert.equal(healed.orphaned, false, '도착하자 스스로 풀렸다')
+  })
+
+  test('페이지 스레드에는 범위를 둘 수 없고, 모양이 아닌 앵커는 받지 않는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { owner } = await workspace()
+    const blockId = randomUUID()
+    const pageId = await pageWith(owner, [para('가나다라마바사', blockId)])
+    const anchor = textRangeAnchor(await ydocOf(owner, pageId), blockId, 2, 5)
+    assert.ok(anchor !== null)
+
+    const onPage = await createDiscussion(owner.ctx, { pageId, anchor, richText: says('페이지에') })
+    assert.equal(onPage.ok === false && onPage.reason, 'invalid_anchor')
+
+    const junk = await createDiscussion(owner.ctx, {
+      pageId,
+      blockId,
+      anchor: { ...anchor, start: '!!!' },
+      richText: says('망가진 앵커'),
+    })
+    assert.equal(junk.ok === false && junk.reason, 'invalid_anchor')
+
+    const noSnapshot = await createDiscussion(owner.ctx, {
+      pageId,
+      blockId,
+      anchor: { start: anchor.start, end: anchor.end, quotedText: '' },
+      richText: says('원문 없는 앵커'),
+    })
+    assert.equal(noSnapshot.ok === false && noSnapshot.reason, 'invalid_anchor')
+
+    assert.deepEqual(await threadsOf(owner, pageId), [], '거부된 앵커가 스레드를 남기지 않았다')
+  })
+
+  test('블록 스레드는 앵커 없이 그대로다 — 2조각이 1조각을 바꾸지 않았다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { owner } = await workspace()
+    const blockId = randomUUID()
+    const pageId = await pageWith(owner, [para('가나다라마바사', blockId)])
+    await openThread(owner, pageId, '블록 전체에', blockId)
+
+    const [thread] = await threadsOf(owner, pageId)
+    assert.equal(thread.anchor, null)
+    assert.equal(thread.onPage, false)
+    assert.equal(thread.orphaned, false)
   })
 })

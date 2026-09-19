@@ -1106,7 +1106,7 @@ try {
     else fail(`신호 트리거가 없거나 꺼져 있다: ${missing.map(([tbl, name]) => `${tbl}.${name}`).join(', ')}`)
   }
 
-  console.log('\n[11] 코멘트 (0018 / §3.9 · F-05-08)')
+  console.log('\n[11] 코멘트 (0018 · 0019 / §3.9 · F-05-08 · F-05-07)')
   {
     // 정상 경로가 먼저 통과해야 한다. 페이지 블록 하나를 세우고 그 위에 스레드를 연다.
     const pageId = randomUUID()
@@ -1178,6 +1178,38 @@ try {
       `INSERT INTO reaction (target_kind, target_id, user_id, emoji, created_at) VALUES ('block', $1, $2, '@', now())`,
       [commentId, userId],
     )
+
+    // 범위 앵커의 모양 (0019 / F-05-07). 값의 내용은 SQL 로 볼 수 없다 — 모양만 못박는다.
+    {
+      const anchored = randomUUID()
+      const blockId = randomUUID()
+      const shape = JSON.stringify({ kind: 'text_range', start: 'AQI=', end: 'AQM=', quoted_text: '인용' })
+      await client.query(
+        `INSERT INTO discussion (id, workspace_id, page_id, parent_block_id, anchor, created_by, created_at)
+         VALUES ($1, $2, $3, $4, $5::jsonb, $6, now())`,
+        [anchored, wsId, pageId, blockId, shape, userId],
+      )
+      ok('본문 블록에 단 범위 앵커 (parent_block_id 는 투영되지 않은 블록이어도 된다)')
+
+      await mustReject(
+        'D4: 페이지 스레드에 범위 앵커',
+        `INSERT INTO discussion (id, workspace_id, page_id, parent_block_id, anchor, created_by, created_at)
+         VALUES ($1, $2, $3, $3, $4::jsonb, $5, now())`,
+        [randomUUID(), wsId, pageId, shape, userId],
+      )
+      await mustReject(
+        'D5: quoted_text 없는 앵커',
+        `INSERT INTO discussion (id, workspace_id, page_id, parent_block_id, anchor, created_by, created_at)
+         VALUES ($1, $2, $3, $4, '{"kind":"text_range","start":"AQI=","end":"AQM="}'::jsonb, $5, now())`,
+        [randomUUID(), wsId, pageId, randomUUID(), userId],
+      )
+      await mustReject(
+        'D5: 모르는 앵커 종류',
+        `INSERT INTO discussion (id, workspace_id, page_id, parent_block_id, anchor, created_by, created_at)
+         VALUES ($1, $2, $3, $4, '{"kind":"block","quoted_text":"x","start":"a","end":"b"}'::jsonb, $5, now())`,
+        [randomUUID(), wsId, pageId, randomUUID(), userId],
+      )
+    }
 
     // 부정 요구사항 — parent_block_id 에 FK 가 **없어야** 한다(0018 머리말).
     // 걸리는 순간 ① 방금 친 문단(아직 투영 전)에 코멘트를 달 수 없고 ② 남이 그 문단을 지우면 스레드가 조용히 사라지거나
