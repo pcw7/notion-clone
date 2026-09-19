@@ -15,8 +15,9 @@
  */
 
 import { requireWorkspaceSession } from '@/lib/auth/route-session'
-import { deleteView, getView, updateView, type ViewFailure } from '@/lib/database/view'
+import { deleteView, getView, updateView, type MvpViewType, type ViewFailure } from '@/lib/database/view'
 import type { FilterNode, SortKey } from '@/lib/database/filter'
+import type { GroupBy } from '@/lib/database/group'
 
 type Ctx = RouteContext<'/api/workspaces/[workspaceId]/views/[viewId]'>
 
@@ -52,18 +53,22 @@ export async function PATCH(request: Request, ctx: Ctx): Promise<Response> {
 
   const body = (await request.json().catch(() => ({}))) as {
     name?: unknown
+    type?: unknown
     filter?: unknown
     sorts?: unknown
     loadLimit?: unknown
+    groupBy?: unknown
   }
 
-  // ★ `filter` 는 `null` 과 "안 보냄"을 구분해야 한다 — 전자는 "필터를 없애라",
+  // ★ `filter` · `groupBy` 는 `null` 과 "안 보냄"을 구분해야 한다 — 전자는 "없애라",
   //   후자는 "그대로 둬라" 다. `'filter' in body` 로 가른다.
   const updated = await updateView(session.ctx, viewId, {
     ...(typeof body.name === 'string' ? { name: body.name } : {}),
+    ...(typeof body.type === 'string' ? { type: body.type as MvpViewType } : {}),
     ...('filter' in body ? { filter: body.filter as FilterNode | null } : {}),
     ...('sorts' in body ? { sorts: body.sorts as SortKey[] } : {}),
     ...(typeof body.loadLimit === 'number' ? { loadLimit: body.loadLimit } : {}),
+    ...('groupBy' in body ? { groupBy: body.groupBy as GroupBy | null } : {}),
   })
 
   if (!updated.ok) {

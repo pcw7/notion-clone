@@ -51,6 +51,7 @@ import {
   type SortKey,
 } from './filter.ts'
 import { readPropertyTypes } from './query.ts'
+import { isGroupableType, normalizeGroupBy, validateGroupBy, type GroupBy } from './group.ts'
 import {
   isMvpPropertyType,
   isOptionColor,
@@ -60,7 +61,11 @@ import {
 import type { ValidationIssue } from '../contracts/rich-text.ts'
 
 /** MVP 가 만드는 뷰 타입. 정본의 `type` 은 10종이지만 Table 하나로 제품이 성립한다. */
-export const MVP_VIEW_TYPES = ['table'] as const
+/**
+ * 받는 뷰 타입. 정본의 10종 중 셋 — 마이그레이션 0022 의 CHECK 이 전체 집합이고 이것은 그 부분집합이다.
+ * `board` 는 그룹이 필수다(F-04-03). `list` 는 표의 축약 렌더러라 서버 쪽은 타입 이름뿐이다(F-04-04).
+ */
+export const MVP_VIEW_TYPES = ['table', 'board', 'list'] as const
 export type MvpViewType = (typeof MVP_VIEW_TYPES)[number]
 
 export const DEFAULT_VIEW_NAME = '표'
@@ -97,6 +102,12 @@ export type ViewDetail = {
   readonly filter: FilterNode | null
   readonly sorts: readonly SortKey[]
   readonly loadLimit: number
+  /**
+   * 그룹 설정. **살아 있는 · 묶을 수 있는 프로퍼티를 가리킬 때만** 값이 있다 — 그룹 프로퍼티가 지워지면 저장된
+   * 값은 그대로 두고 여기서 null 로 준다(복원하면 돌아온다 · `group.ts` 머리말). 보드가 이것을 null 로 받으면
+   * "그룹 속성을 고르라"는 상태다.
+   */
+  readonly groupBy: GroupBy | null
   /** 스키마 순서가 아니라 **뷰 순서**다. 숨긴 컬럼도 들어 있다(화면이 거른다). */
   readonly columns: readonly ViewColumn[]
 }
@@ -118,6 +129,10 @@ export type ViewFailure =
   | 'last_view'
   /** 제목 컬럼은 숨길 수 없다(F-04-12). */
   | 'title_required'
+  /** `groupBy` 의 모양 · 프로퍼티 타입이 틀렸다. `issues` 가 어디인지 말한다. */
+  | 'invalid_group'
+  /** 보드는 그룹이 필수인데 고를 수 있는 프로퍼티가 없다(F-04-03). */
+  | 'group_required'
 
 export type ViewResult<T> =
   | { readonly ok: true; readonly value: T }
@@ -210,6 +225,7 @@ type ViewRow = {
   order_idx: string
   filter: unknown
   sorts: unknown
+  group_by: unknown
   load_limit: number
 }
 
@@ -277,11 +293,12 @@ async function readColumns(tx: Tx, viewId: string): Promise<ViewColumn[]> {
 async function readView(tx: Tx, viewId: string): Promise<ViewDetail | null> {
   const row = await tx.queryMaybe<ViewRow>(
     `SELECT v.id, v.database_id, v.data_source_id, v.name, v.type, v.order_idx,
-            v.filter, v.sorts, v.load_limit
+            v.filter, v.sorts, v.group_by, v.load_limit
        FROM view v WHERE v.id = $1`,
     [viewId],
   )
   if (row === null) return null
+  const columns = await readColumns(tx, viewId)
   return {
     id: row.id,
     databaseId: row.database_id,
@@ -294,8 +311,33 @@ async function readView(tx: Tx, viewId: string): Promise<ViewDetail | null> {
     filter: (row.filter as FilterNode | null) ?? null,
     sorts: Array.isArray(row.sorts) ? (row.sorts as SortKey[]) : [],
     loadLimit: row.load_limit,
-    columns: await readColumns(tx, viewId),
+    groupBy: liveGroupBy(row.group_by, columns),
+    columns,
   }
+}
+
+/** 저장된 `group_by` 가 살아 있는 · 묶을 수 있는 컬럼을 가리킬 때만 돌려준다(`ViewDetail.groupBy` 주석). */
+function liveGroupBy(raw: unknown, columns: readonly ViewColumn[]): GroupBy | null {
+  if (typeof raw !== 'object' || raw === null) return null
+  const g = raw as GroupBy
+  if (typeof g.property_id !== 'string') return null
+  const column = columns.find((c) => c.propertyId === g.property_id)
+  if (column === undefined || !isGroupableType(column.type)) return null
+  return normalizeGroupBy(g)
+}
+
+/**
+ * 보드가 그룹 프로퍼티 없이 만들어질 때 고르는 규칙 — F-04-03: *"status → select → multi_select → person"*.
+ * 지금 있는 타입은 select 뿐이다. checkbox 는 묶을 수는 있지만 자동으로 고르지는 않는다(원문 목록에 없다).
+ */
+async function pickGroupProperty(tx: Tx, dataSourceId: string): Promise<GroupBy | null> {
+  const row = await tx.queryMaybe<{ id: string }>(
+    `SELECT id FROM property
+      WHERE data_source_id = $1 AND deleted_at IS NULL AND type = 'select'
+      ORDER BY order_idx, id LIMIT 1`,
+    [dataSourceId],
+  )
+  return row === null ? null : { property_id: row.id }
 }
 
 export async function getView(ctx: SessionContext, viewId: string): Promise<ViewResult<ViewDetail>> {
@@ -345,6 +387,8 @@ export async function listViews(
 export type CreateViewInput = {
   readonly name?: string
   readonly type?: MvpViewType
+  /** 보드가 아니어도 둘 수 있다(F-04-11: "table view 도 group 을 가질 수 있다"). 보드인데 없으면 자동으로 고른다. */
+  readonly groupBy?: GroupBy
 }
 
 /**
@@ -367,6 +411,9 @@ export async function createView(
     const gate = await openDatabase(tx, ctx, databaseId, 'edit_structure')
     if (isFailure(gate)) return gate
 
+    const grouped = await resolveGroupBy(tx, gate.dataSourceId, type, input.groupBy, null)
+    if (isFailure(grouped)) return grouped
+
     const last = await tx.queryMaybe<{ order_idx: string }>(
       `SELECT order_idx FROM view
         WHERE database_id = $1 AND owner_kind = 'database_view'
@@ -377,9 +424,17 @@ export async function createView(
     const viewId = randomUUID()
     await tx.query(
       `INSERT INTO view (id, owner_kind, database_id, data_source_id, name, type, order_idx,
-                         configuration, created_at, updated_at)
-       VALUES ($1, 'database_view', $2, $3, $4, $5, $6, '{}'::jsonb, now(), now())`,
-      [viewId, databaseId, gate.dataSourceId, name, type, orderKeyBetween(last?.order_idx ?? null, null)],
+                         group_by, configuration, created_at, updated_at)
+       VALUES ($1, 'database_view', $2, $3, $4, $5, $6, $7::jsonb, '{}'::jsonb, now(), now())`,
+      [
+        viewId,
+        databaseId,
+        gate.dataSourceId,
+        name,
+        type,
+        orderKeyBetween(last?.order_idx ?? null, null),
+        grouped === null ? null : JSON.stringify(grouped),
+      ],
     )
 
     await seedViewProperties(tx, viewId, gate.dataSourceId)
@@ -440,10 +495,45 @@ export async function addPropertyToViews(
 
 export type UpdateViewInput = {
   readonly name?: string
+  /** 뷰 타입 전환(F-04-01). 보드로 바꾸는데 그룹이 없으면 자동으로 고른다. */
+  readonly type?: MvpViewType
   /** `null` 을 주면 필터를 없앤다. 생략하면 그대로 둔다. */
   readonly filter?: FilterNode | null
   readonly sorts?: readonly SortKey[]
   readonly loadLimit?: number
+  /** `null` 을 주면 그룹을 없앤다(보드는 거부 — `group_required`). 생략하면 그대로 둔다. */
+  readonly groupBy?: GroupBy | null
+}
+
+/**
+ * 저장할 `group_by` 를 정한다 — 주어진 것을 검증하고, 보드인데 없으면 고르고, 그래도 없으면 거부.
+ *
+ * `current` 는 지금 저장된 값이다(만들 때는 null). 주어진 것이 없으면(undefined) 그것을 쓴다 — 죽은 프로퍼티를
+ * 가리키는 저장값은 **그대로 둔다**(읽기에서 무시 · 복원하면 돌아온다). 단 보드로 **바꾸는** 순간에는 살아 있는
+ * 것을 요구한다 — 그룹 없는 보드를 만들지 않는다. `null` 은 "없애라"다.
+ */
+async function resolveGroupBy(
+  tx: Tx,
+  dataSourceId: string,
+  type: string,
+  given: GroupBy | null | undefined,
+  current: unknown,
+): Promise<GroupBy | null | ViewResult<never>> {
+  const types = await readPropertyTypes(tx, dataSourceId)
+  if (given !== undefined && given !== null) {
+    const issues = validateGroupBy(given, types)
+    if (issues.length > 0) return fail('invalid_group', issues)
+    return normalizeGroupBy(given)
+  }
+  const kept =
+    given === undefined && typeof current === 'object' && current !== null ? (current as GroupBy) : null
+  if (type !== 'board') return kept
+
+  // 보드의 그룹을 "없애라"(null)는 거부다 — 조용히 다른 것을 고르면 사용자가 지운 설정이 되살아난다.
+  if (given === null) return fail('group_required')
+  if (kept !== null && isGroupableType(types.get(kept.property_id))) return kept
+  const picked = await pickGroupProperty(tx, dataSourceId)
+  return picked === null ? fail('group_required') : picked
 }
 
 /**
@@ -461,6 +551,7 @@ export async function updateView(
 ): Promise<ViewResult<ViewDetail>> {
   const name = input.name === undefined ? undefined : normalizeName(input.name, DEFAULT_VIEW_NAME)
   if (input.name !== undefined && name === null) return fail('invalid_name')
+  if (input.type !== undefined && !MVP_VIEW_TYPES.includes(input.type)) return fail('unsupported_type')
 
   if (
     input.loadLimit !== undefined &&
@@ -486,6 +577,18 @@ export async function updateView(
       if (issues.length > 0) return fail('invalid_sorts', issues)
     }
 
+    // 타입 · 그룹은 서로에 기댄다(보드 ⇒ 그룹) — 지금 값과 합쳐서 본다.
+    const current = await tx.queryOne<{ type: string; group_by: unknown }>(
+      `SELECT type, group_by FROM view WHERE id = $1`,
+      [viewId],
+    )
+    const type = input.type ?? current.type
+    const touchesGroup = input.groupBy !== undefined || input.type !== undefined
+    const grouped = touchesGroup
+      ? await resolveGroupBy(tx, gate.dataSourceId, type, input.groupBy, current.group_by)
+      : null
+    if (isFailure(grouped)) return grouped
+
     await tx.query(
       `UPDATE view
           SET name = coalesce($2, name),
@@ -494,6 +597,8 @@ export async function updateView(
               filter = CASE WHEN $3::boolean THEN $4::jsonb ELSE filter END,
               sorts = CASE WHEN $5::boolean THEN $6::jsonb ELSE sorts END,
               load_limit = coalesce($7, load_limit),
+              type = coalesce($8, type),
+              group_by = CASE WHEN $9::boolean THEN $10::jsonb ELSE group_by END,
               updated_at = now()
         WHERE id = $1`,
       [
@@ -504,6 +609,9 @@ export async function updateView(
         input.sorts !== undefined,
         input.sorts === undefined ? null : JSON.stringify(input.sorts),
         input.loadLimit ?? null,
+        input.type ?? null,
+        touchesGroup,
+        grouped === null ? null : JSON.stringify(grouped),
       ],
     )
 

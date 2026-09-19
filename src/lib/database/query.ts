@@ -87,7 +87,7 @@ export type QueryResult =
   | { readonly ok: true; readonly value: QueryPage }
   | { readonly ok: false; readonly reason: QueryFailure }
 
-type RowRow = {
+export type RowRow = {
   id: string
   order_key: string
   properties_cache: Record<string, unknown> | null
@@ -211,7 +211,7 @@ export async function queryRows(
   })
 }
 
-function toQueriedRow(row: RowRow): QueriedRow {
+export function toQueriedRow(row: RowRow): QueriedRow {
   return {
     id: row.id,
     title: plainTitleOf(row.properties),
@@ -232,12 +232,12 @@ function toQueriedRow(row: RowRow): QueriedRow {
 // ⚠ 커서에 정렬 값이 들어간다는 것은 **그 값이 클라이언트에 노출된다**는 뜻이다.
 //   이미 그 행을 보여 줬으므로 새로 새는 정보는 없다 — 마지막 행의 값이다.
 
-function encodeCursorValues(values: readonly unknown[]): string {
+export function encodeCursorValues(values: readonly unknown[]): string {
   const normalized = values.map((v) => (v instanceof Date ? v.toISOString() : v))
   return Buffer.from(JSON.stringify(normalized), 'utf8').toString('base64url')
 }
 
-function decodeCursorValues(raw: string | null | undefined): unknown[] | null {
+export function decodeCursorValues(raw: string | null | undefined): unknown[] | null {
   if (typeof raw !== 'string' || raw.length === 0 || raw.length > 4096) return null
   try {
     const parsed: unknown = JSON.parse(Buffer.from(raw, 'base64url').toString('utf8'))

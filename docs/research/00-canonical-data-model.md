@@ -867,7 +867,29 @@ CREATE TABLE row_position (
 CREATE INDEX ON row_position (view_id, group_key, order_idx);
 -- 뷰별 수동 순서(row_position.order_idx)와 트리 순서(block.order_key)는 별개 축이며
 -- 서로를 대체하지 않는다. <C-3 경계선언>
+```
 
+**[보강] `view.group_by` 의 모양과 `row_position.group_key` 의 뜻** ⟨보드 4a조각 / 마이그레이션 0022⟩
+
+초판은 `group_by jsonb` 와 `group_key text DEFAULT ''` 만 적고 안을 비워 두었다. 구현이 정한 것:
+
+- `group_by = { property_id, hidden?: text[], hide_empty?: boolean }` — `sorts` 와 같은 snake_case. `sub_group_by` 는 같은 모양이
+  될 것이나 아직 쓰지 않는다.
+- **그룹 순서는 옵션 순서(`select_option.order_idx`, 스키마 전역)다.** 뷰별 `group_order` 배열을 두지 않는다 — 04 F-04-11 의
+  동시편집 엣지가 권한 트레이드오프(배열 LWW 를 없애는 대신 뷰별 그룹 순서를 포기). 숨김은 `hidden` 배열(LWW · 죽은 키는 읽기가
+  무시한다 — 매 조회마다 정리하지 않는다).
+- **`group_key` 의 뜻**: select = 옵션 id · checkbox = `'true'` / `'false'` · 값 없음 = `''`(DEFAULT). 지워진 옵션을 가리키는 셀도
+  `''` 로 접는다 — SQL 의 키 식 하나가 카운트 · 행 · 커서에 같이 쓰인다. 묶을 수 있는 타입은 지금 select · checkbox 둘이고,
+  F-04-11 의 나머지 버킷 규칙(multi_select 중복 등장 · date 단위 · number 구간)은 그 타입이 들어올 때 같은 자리에 더한다.
+- **자리 없는 행이 정상이다.** 열의 순서는 자리 있는 행(`order_idx`) → 자리 없는 행(트리 순서 `block.order_key`). 행을 만들 때
+  뷰 수만큼 자리를 미리 만들지 않는다. 정렬(`view.sorts`)이 살아 있으면 `row_position` 을 읽지도 쓰지도 않는다 — 드롭은 셀 값만
+  바꾼다.
+- **죽은 참조**: 그룹 프로퍼티가 지워져도 `group_by` 저장값은 두고 읽기가 null 로 준다(복원하면 숨김 설정까지 돌아온다).
+  04 F-04-11 의 "다음 후보로 자동 재바인딩 · 후보가 없으면 status 생성"은 하지 않는다 — 조용히 다른 프로퍼티로 묶인 보드는
+  사용자가 설명할 수 없다. 보드를 **만들거나 보드로 바꿀 때**만 첫 select 를 고르고, 고를 것이 없으면 거부한다(`group_required`).
+- `view.type` 의 주석 10종을 CHECK(`ck_view_type`)으로 승격했다(0022).
+
+```sql
 CREATE TABLE view_user_override (
   view_id uuid NOT NULL REFERENCES view(id) ON DELETE CASCADE,
   user_id uuid NOT NULL, filter jsonb, sorts jsonb,
