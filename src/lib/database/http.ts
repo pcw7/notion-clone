@@ -51,6 +51,7 @@ export function propertyFailureStatus(reason: PropertyFailure): number {
     case 'invalid_color':
     case 'invalid_group':
     case 'invalid_config':
+    case 'invalid_target':
     case 'unsupported_type':
     case 'title_immutable':
       return 400

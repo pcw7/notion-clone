@@ -1246,6 +1246,114 @@ try {
       }
     }
 
+    // ── ⑮ relation_edge 의 규칙 (0024 / §3.5 C2 · E1 · [보강] RE1 · relation 5a조각) ──
+    // 캐시 투영 · 끝점 검사 · 양방향 대칭. E1 의 트리거는 **지연**(커밋 시점)이라 `SET CONSTRAINTS … IMMEDIATE` 로
+    // 그 자리에서 검사를 돌려 본다 — 안 그러면 이 트랜잭션이 끝날 때에야 터진다.
+    {
+      const otherDb = randomUUID()
+      const otherDs = randomUUID()
+      await client.query(
+        `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key,
+                            ancestor_path, perm_scope_id, properties, format, created_at, last_edited_at)
+         VALUES ($1, $2, 'database', 'block', $3, 'zz', $4, $3, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+        [otherDb, wsId, rootId, [rootId]],
+      )
+      await client.query(`INSERT INTO database (id, created_at, updated_at) VALUES ($1, now(), now())`, [otherDb])
+      await client.query(
+        `INSERT INTO data_source (id, owner_database_id, name, created_at, updated_at) VALUES ($1, $2, '대상', now(), now())`,
+        [otherDs, otherDb],
+      )
+      const rowIn = async (ds, container, key) => {
+        const id = randomUUID()
+        await client.query(
+          `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key,
+                              ancestor_path, perm_scope_id, properties, format, created_at, last_edited_at)
+           VALUES ($1, $2, 'page', 'data_source', $3, $4, $5, $6, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+          [id, wsId, ds, key, [rootId, container], container],
+        )
+        await client.query(`INSERT INTO page (id, data_source_id) VALUES ($1, $2)`, [id, ds])
+        return id
+      }
+      const from = await rowIn(dsId, dbBlockId, 'r1')
+      const to = await rowIn(otherDs, otherDb, 'r1')
+      const to2 = await rowIn(otherDs, otherDb, 'r2')
+
+      const oneWay = pid(94)
+      const pairA = pid(95)
+      const pairB = pid(96)
+      const property = (id, ds, name, key, config) =>
+        client.query(
+          `INSERT INTO property (id, data_source_id, name, type, config, order_idx, created_at, updated_at)
+           VALUES ($1, $2, $3, 'relation', $4::jsonb, $5, now(), now())`,
+          [id, ds, name, JSON.stringify(config), key],
+        )
+      await property(oneWay, dsId, '단방향', 'n1', { target_data_source_id: otherDs })
+      await property(pairA, dsId, '양방향 A', 'n2', { target_data_source_id: otherDs, synced_property_id: pairB })
+      await property(pairB, otherDs, '양방향 B', 'n1', { target_data_source_id: dsId, synced_property_id: pairA })
+
+      const edge = `INSERT INTO relation_edge (property_id, from_page_id, to_page_id, order_idx) VALUES ($1, $2, $3, $4)`
+      await client.query(edge, [oneWay, from, to2, 'a1'])
+      await client.query(edge, [oneWay, from, to, 'a0'])
+      {
+        const { rows } = await client.query(`SELECT properties_cache -> $2 AS v FROM page WHERE id = $1`, [from, oneWay])
+        const v = rows[0]?.v
+        if (v?.type === 'relation' && v.count === 2 && v.relation?.map((r) => r.id).join() === [to, to2].join()) {
+          ok('C2: 엣지가 properties_cache 에 렌더용 배열로 투영된다 — order_idx 순 · count')
+        } else fail(`relation 캐시가 예상과 다르다: ${JSON.stringify(v)}`)
+      }
+      await client.query(`DELETE FROM relation_edge WHERE property_id = $1 AND to_page_id = $2`, [oneWay, to])
+      {
+        const { rows } = await client.query(`SELECT (properties_cache -> $2 ->> 'count')::int AS n FROM page WHERE id = $1`, [from, oneWay])
+        if (rows[0]?.n === 1) ok('엣지를 지우면 캐시가 따라간다 (DELETE 트리거)')
+        else fail(`엣지를 지웠는데 캐시의 count 가 ${rows[0]?.n} 이다`)
+      }
+
+      await mustReject('RE1: relation 이 아닌 프로퍼티의 엣지', edge, [pid(1), from, to, 'a0'])
+      await mustReject('RE1: 시작이 그 프로퍼티의 data_source 의 행이 아니다', edge, [oneWay, to, to2, 'a0'])
+      await mustReject('RE1: 끝이 대상 data_source 의 행이 아니다', edge, [oneWay, from, from, 'a0'])
+
+      // E1 — 지연 제약. 그 자리에서 돌려 본다.
+      const mustRejectDeferred = async (label, statements) => {
+        await client.query('SAVEPOINT probe')
+        try {
+          for (const [sql, params] of statements) await client.query(sql, params)
+          await client.query('SET CONSTRAINTS tg_relation_edge_mirror IMMEDIATE')
+          await client.query('ROLLBACK TO SAVEPOINT probe')
+          fail(`${label} — 거부되어야 하는데 통과했다`)
+        } catch (e) {
+          await client.query('ROLLBACK TO SAVEPOINT probe')
+          ok(`${label} — 거부됨 (${e.code})`)
+        }
+      }
+      await mustRejectDeferred('E1: 짝이 있는 프로퍼티의 엣지에 거울상이 없다', [[edge, [pairA, from, to, 'a0']]])
+
+      await client.query('SAVEPOINT pair')
+      await client.query(edge, [pairA, from, to, 'a0'])
+      await client.query(edge, [pairB, to, from, 'a0'])
+      try {
+        await client.query('SET CONSTRAINTS tg_relation_edge_mirror IMMEDIATE')
+        ok('E1: 엣지와 거울상을 함께 넣으면 통과한다')
+      } catch (e) {
+        fail(`E1: 대칭 엣지가 거부됐다 (${e.code})`)
+      }
+      await client.query('SET CONSTRAINTS tg_relation_edge_mirror DEFERRED')
+      await mustRejectDeferred('E1: 한쪽만 지우면 거울상이 남는다', [
+        [`DELETE FROM relation_edge WHERE property_id = $1 AND from_page_id = $2`, [pairA, from]],
+      ])
+      // 페이지가 사라지면 양쪽 엣지가 함께 CASCADE 된다 — 검사에 걸리지 않는다.
+      await client.query(`DELETE FROM block WHERE id = $1`, [to])
+      try {
+        await client.query('SET CONSTRAINTS tg_relation_edge_mirror IMMEDIATE')
+        const { rows } = await client.query(`SELECT count(*)::int AS n FROM relation_edge WHERE property_id IN ($1, $2)`, [pairA, pairB])
+        if (rows[0].n === 0) ok('페이지 영구 삭제 → 양쪽 엣지 CASCADE (E1 검사에 걸리지 않는다)')
+        else fail(`페이지를 지웠는데 엣지가 ${rows[0].n}개 남았다`)
+      } catch (e) {
+        fail(`페이지 영구 삭제가 E1 에 걸렸다 (${e.code})`)
+      }
+      await client.query('SET CONSTRAINTS tg_relation_edge_mirror DEFERRED')
+      await client.query('RELEASE SAVEPOINT pair')
+    }
+
     // ── 부정 요구사항 — 없어야 하는 컬럼 ──
     {
       const { rows } = await client.query(

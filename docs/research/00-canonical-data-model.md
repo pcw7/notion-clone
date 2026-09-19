@@ -802,6 +802,38 @@ CREATE INDEX ON derived_value (property_id, num_value) WHERE NOT stale AND num_v
 -- 불변식 D1: formula/rollup 필터·정렬은 derived_value 의 사이드카 컬럼으로만 컴파일된다.
 ```
 
+**[보강] `relation_edge` 의 규칙 — 캐시 투영 · 끝점 · 양방향 대칭의 집행** ⟨relation 5a조각 / 마이그레이션 0024⟩
+
+초판은 표와 불변식 C2 · E1 을 적었지만 **그것을 무엇이 지키는지**는 적지 않았다. C-2 판결문(`_canon/database.md`)의
+*"properties_cache 에만 렌더용 배열로 투영된다"* 도 이 문서에는 빠져 있었다. 셋을 보탠다.
+
+- **캐시 투영(C2 · R2 의 보강).** `properties_cache` 는 EAV 와 **`relation_edge` 를 함께 읽어** 재생성한다 — R2 의
+  "`page_property_value` 변경 트리거로만"은 "그리고 `relation_edge` 변경 트리거로"까지다. 두 트리거가 **같은 함수**를
+  부른다(재생성 규칙이 하나다). relation 칸의 모양:
+
+  ```json
+  "<property_id>": {"type":"relation","relation":[{"id":"<to_page_id>"}, …],"count":<전체 개수>}
+  ```
+
+  배열은 `order_idx` 순 **앞 25개**(노션 API 가 relation 을 25개 + `has_more` 로 주는 크기), `count` 는 전체다. 03 F-03-10:
+  *"한 셀에 수천 개 연결 → 상위 N개 + '+N개 더'."* ★ 캐시의 id 는 **걸러지지 않았다** — 볼 수 없는 행 · 휴지통에 간 행이
+  섞여 있다. 권한은 사람마다 달라 캐시에 넣을 수 없고, 휴지통은 되돌릴 수 있어 엣지를 지우지 않는다(03: *"복원 시
+  되살아나야 함"*). 제목을 붙이며 거르는 것은 읽는 쪽이다.
+- **불변식 RE1(끝점).** 엣지는 `type='relation'` 프로퍼티의 것이고, `from_page` 는 그 프로퍼티의 data_source 의 행,
+  `to_page` 는 `config.target_data_source_id` 의 행이다. FK 는 "행이다"까지만 본다 — 다른 표의 행을 가리키는 엣지는
+  rollup 이 엉뚱한 스키마의 프로퍼티를 읽게 만든다. 다른 표를 봐야 해서 CHECK 이 아니라 트리거다.
+- **E1 의 집행.** 03 F-03-10 은 *"엣지 1행 + 역방향 조회"* 를 권하며 *"2행 복제는 동시성에서 반드시 불일치를 만든다"* 고
+  했다. **정본 E1(두 행 · 같은 트랜잭션)이 이긴다** — 어느 방향의 칸이든 `WHERE property_id = ? AND from_page_id = ?` 한
+  모양으로 읽고, 방향마다 칩 순서를 따로 갖는다. 03 이 걱정한 불일치는 **지연 제약 트리거**(`DEFERRABLE INITIALLY
+  DEFERRED`)가 커밋 시점에 막는다: 넣은 엣지 (P, a→b) 에 짝 S 가 있으면 (S, b→a) 가 있어야 하고, 지운 엣지는 P 와 S 가
+  아직 있으면 거울상도 없어야 한다. 애플리케이션이 거울상을 빠뜨리면 **트랜잭션이 죽는다.** 물리 삭제로 CASCADE 된
+  엣지는 검사하지 않는다(그 프로퍼티가 이미 없고, 페이지가 사라지면 양쪽 엣지가 함께 CASCADE 된다).
+- `property.config`(relation): `{"target_data_source_id", "synced_property_id"?, "limit"?: "one"}`. **같은 표를 가리키는
+  프로퍼티 하나가 양쪽으로 동작할 때는 자기 자신이 짝이다**(`synced_property_id` = 자기 id) — 03: *"자기참조는 프로퍼티
+  1개로 양방향 동작이 기본."* 역방향 프로퍼티는 `limit` 을 물려받지 않는다.
+- 거울상 엣지는 **시스템이 유지하는 투영**이다. 연결 명령은 대상 표의 `edit_content` 를 요구하지 않고(대상 행을 **볼 수
+  있어야** 한다), 대상 행의 `block.version` · `last_edited_*` 를 올리지 않는다 — 그 행을 고친 사람이 없다.
+
 **[보강] `status_group` — `select_option.group_id` 가 가리키는 표** ⟨보드 4c-1조각 / 마이그레이션 0023⟩
 
 초판은 `select_option.group_id uuid NULL` 자리만 두고 **그것이 가리킬 표를 정의하지 않았다.** 03 F-03-05 가 권고한

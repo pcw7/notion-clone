@@ -73,6 +73,7 @@ import {
   emptyValue,
   insertOption,
   isEmptyValue,
+  isMvpPropertyType,
   isOptionType,
   optionIdOf,
   optionValue,
@@ -388,6 +389,9 @@ export function DatabaseTable(props: {
     const result = await api.addColumn(workspaceId, dataSourceId, name, type)
     if (!result.ok) return result.message
     const property = result.value
+    // 표가 그리는 것은 셀 타입뿐이다. 엣지 타입(relation)의 칸은 relation 5b 가 그린다 — 이 폼은 그것을 만들지 않는다.
+    const cellType = property.type
+    if (!isMvpPropertyType(cellType)) return null
     // 다시 읽지 않고 붙인다. 이미 불러온 행들을 버리면 "더 보기"로 모은 것이 사라진다.
     // 기존 행에는 이 컬럼의 값이 없으므로 빈 값으로 그려진다.
     setColumns((current) => [
@@ -395,7 +399,7 @@ export function DatabaseTable(props: {
       {
         propertyId: property.id,
         name: property.name,
-        type: property.type,
+        type: cellType,
         visible: true,
         orderKey: property.orderKey,
         width: null,
