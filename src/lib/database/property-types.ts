@@ -79,6 +79,53 @@ export function isMvpPropertyType(t: unknown): t is MvpPropertyType {
 }
 
 /**
+ * **엣지 타입** — 값이 셀(`page_property_value`)이 아니라 `relation_edge` 에 있는 타입 (relation 5a · 불변식 C2).
+ *
+ * `MVP_PROPERTY_TYPES` 에 넣지 않는다. 그 목록은 "셀 값 계약이 있는 타입"이고(`CellValue` · 사이드카 · 필터 축 · 표시가
+ * 전부 그것을 키로 삼는다), relation 은 그 어느 것도 아니다 — 값은 엣지이고, 쓰는 길은 `relation.ts` 의 연결 명령
+ * 하나이며, 셀 쓰기 경로(`row.ts` `prepareCells`)는 `isMvpPropertyType` 으로 relation 을 **거부한다**(C2 의 집행 지점).
+ * 읽기 모델(`properties_cache`)에는 렌더용 배열로 투영된다(마이그레이션 0024).
+ */
+export const EDGE_PROPERTY_TYPES = ['relation'] as const
+export type EdgePropertyType = (typeof EDGE_PROPERTY_TYPES)[number]
+
+/** 앱이 만드는 프로퍼티 타입 전부 — 셀 타입 + 엣지 타입. 스키마(`PropertySummary.type`)가 이것이다. */
+export const APP_PROPERTY_TYPES = [...MVP_PROPERTY_TYPES, ...EDGE_PROPERTY_TYPES] as const
+export type AppPropertyType = (typeof APP_PROPERTY_TYPES)[number]
+
+export function isAppPropertyType(t: unknown): t is AppPropertyType {
+  return typeof t === 'string' && (APP_PROPERTY_TYPES as readonly string[]).includes(t)
+}
+
+/** 캐시가 싣는 relation 칸의 앞쪽 개수. 마이그레이션 0024 의 `rn <= 25` 와 **같은 수**여야 한다. */
+export const RELATION_CACHE_LIMIT = 25
+
+/**
+ * `properties_cache` 에 투영된 relation 칸 (마이그레이션 0024). **`CellValue` 가 아니다** — 셀로 쓸 수 없다.
+ *
+ * `relation` 은 `order_idx` 순 앞 25개, `count` 는 전체 개수다. ★ id 는 **걸러지지 않았다** — 볼 수 없는 행 · 휴지통에
+ * 간 행이 섞여 있다. 제목을 붙이며 거르는 것은 `relation.ts` `readRelation` 이다.
+ */
+export type RelationValue = {
+  readonly type: 'relation'
+  readonly relation: readonly OptionRef[]
+  readonly count: number
+}
+
+const EMPTY_RELATION: RelationValue = Object.freeze({ type: 'relation', relation: Object.freeze([]), count: 0 })
+
+/** 캐시의 한 칸을 relation 값으로 읽는다. 없거나 모양이 틀리면 빈 값(읽기는 관대하게). */
+export function readRelationValue(raw: unknown): RelationValue {
+  if (typeof raw !== 'object' || raw === null) return EMPTY_RELATION
+  const v = raw as Record<string, unknown>
+  if (v.type !== 'relation' || !Array.isArray(v.relation)) return EMPTY_RELATION
+  const relation = v.relation
+    .filter((r): r is { id: string } => typeof r === 'object' && r !== null && typeof (r as { id?: unknown }).id === 'string')
+    .map((r) => ({ id: r.id }))
+  return { type: 'relation', relation, count: typeof v.count === 'number' ? v.count : relation.length }
+}
+
+/**
  * 그룹(보드)으로 묶을 수 있는 타입. F-04-11 의 9종 중 셋 — 규칙은 `group.ts` 머리말.
  *
  * 여기(클라이언트에서도 읽는 계약 모듈)에 두는 이유: 도구줄의 "그룹" 패널이 고를 수 있는 속성을 거르는데, `group.ts` 는

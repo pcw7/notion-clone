@@ -52,10 +52,12 @@ import {
   OPTION_COLORS,
   STATUS_DEFAULT_OPTIONS,
   STATUS_GROUP_KINDS,
+  isAppPropertyType,
   isMvpPropertyType,
   isOptionColor,
   isOptionType,
   isStatusGroupKind,
+  type AppPropertyType,
   type MvpPropertyType,
   type OptionColor,
   type SelectOption,
@@ -108,7 +110,8 @@ export type PropertySummary = {
   readonly id: string
   readonly name: string
   readonly description: string | null
-  readonly type: MvpPropertyType
+  /** 셀 타입 7종 + 엣지 타입(`relation`). 모르는 타입은 읽기에서 `rich_text` 로 접는다(`toSummary`). */
+  readonly type: AppPropertyType
   readonly config: Record<string, unknown>
   readonly orderKey: string
   /**
@@ -146,6 +149,8 @@ export type PropertyFailure =
   | 'invalid_group'
   /** status 의 `config.default_option_id` 가 이 프로퍼티의 옵션이 아니다(또는 모르는 키가 있다). */
   | 'invalid_config'
+  /** relation 의 대상 data_source 가 없거나 볼 수 없다 — 둘을 구분하지 않는다(존재가 샌다). */
+  | 'invalid_target'
 
 export type PropertyResult<T = SchemaSnapshot> =
   | { readonly ok: true; readonly value: T }
@@ -184,7 +189,7 @@ type DataSourceRow = { id: string; schema_version: string; container_id: string 
  * 상속받은 페이지 grant 로는 정상 동작한다. 대상 종류를 `effective()` 에 흘리는
  * 것은 별개 변경이다 — HANDOFF §7 에 남긴다.
  */
-async function lockSchema(
+export async function lockSchema(
   tx: Tx,
   ctx: SessionContext,
   dataSourceId: string,
@@ -211,12 +216,16 @@ async function lockSchema(
   return ds
 }
 
+export function isSchemaFailure(v: unknown): v is PropertyResult<never> {
+  return typeof v === 'object' && v !== null && 'ok' in v
+}
+
 function isFailure(v: DataSourceRow | PropertyResult<never>): v is PropertyResult<never> {
   return 'ok' in v
 }
 
 /** 스키마를 고쳤으면 반드시 부른다. 이것이 stale 쓰기 차단의 유일한 축이다. */
-async function bumpSchema(tx: Tx, dataSourceId: string): Promise<string> {
+export async function bumpSchema(tx: Tx, dataSourceId: string): Promise<string> {
   const row = await tx.queryOne<{ schema_version: string }>(
     `UPDATE data_source SET schema_version = schema_version + 1, updated_at = now()
       WHERE id = $1 RETURNING schema_version`,
@@ -241,14 +250,14 @@ function toSummary(row: PropertyRow, optionsOf: ReadonlyMap<string, readonly Sel
     description: row.description,
     // 스키마 ENUM 은 24종이라 MVP 밖 타입이 DB 에 있을 수 있다. 읽기는 관대하게
     // — 모르는 타입 하나가 스키마 조회 전체를 500 으로 만들면 복구할 길이 없다.
-    type: isMvpPropertyType(row.type) ? row.type : DEFAULT_PROPERTY_TYPE,
+    type: isAppPropertyType(row.type) ? row.type : DEFAULT_PROPERTY_TYPE,
     config: row.config ?? {},
     orderKey: row.order_idx,
     ...(isOptionType(row.type) ? { options: optionsOf.get(row.id) ?? [] } : {}),
   }
 }
 
-async function readSchema(tx: Tx, dataSourceId: string): Promise<SchemaSnapshot> {
+export async function readSchema(tx: Tx, dataSourceId: string): Promise<SchemaSnapshot> {
   const [ds, rows] = await Promise.all([
     tx.queryOne<{ schema_version: string }>(
       `SELECT schema_version FROM data_source WHERE id = $1`,
@@ -339,52 +348,103 @@ export async function addProperty(
     const ds = await lockSchema(tx, ctx, dataSourceId, input.expectedVersion)
     if (isFailure(ds)) return ds
 
-    const counts = await tx.queryOne<{ n: string; dup: string }>(
-      `SELECT count(*) AS n,
-              count(*) FILTER (WHERE name = $2) AS dup
-         FROM property
-        WHERE data_source_id = $1 AND deleted_at IS NULL`,
-      [dataSourceId, name],
-    )
-    // F-03-02: 노션 UI 는 동명을 허용하는 것으로 보이지만 *"formula 의
-    // `prop("이름")` 해석이 모호해지므로 클론에서는 **금지 권고**"* 다.
-    // DB 의 부분 UNIQUE 도 막지만 그쪽은 23505 를 던질 뿐이다.
-    if (Number(counts.dup) > 0) return fail('duplicate_name')
-    if (Number(counts.n) >= MAX_PROPERTIES_PER_DATA_SOURCE) return fail('too_many_properties')
-
-    const last = await tx.queryMaybe<{ order_idx: string }>(
-      `SELECT order_idx FROM property
-        WHERE data_source_id = $1 AND deleted_at IS NULL
-        ORDER BY order_idx DESC LIMIT 1`,
-      [dataSourceId],
-    )
-
-    const propertyId = newPropertyId()
-    await tx.query(
-      `INSERT INTO property (id, data_source_id, name, description, type, config, order_idx,
-                             created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5::property_type, $6::jsonb, $7, now(), now())`,
-      [
-        propertyId,
-        dataSourceId,
-        name,
-        input.description ?? null,
-        type,
-        // status 의 config 는 받지 않는다 — 기본 옵션 id 는 아래에서 만든 옵션에서 나온다.
-        JSON.stringify(type === 'status' ? {} : (input.config ?? {})),
-        orderKeyBetween(last?.order_idx ?? null, null),
-      ],
-    )
-    if (type === 'status') await seedStatus(tx, propertyId)
-
-    // ★ 새 콬럼은 이 data_source 의 **모든 뷰**에 나타나야 한다.
-    //   `view_property.visible` 기본값이 `false` 이고 행이 없으면 조인에서
-    //   바지므로, 시등하지 않으면 "콬럼을 추가했는데 표에 없다" 가 된다.
-    await addPropertyToViews(tx, dataSourceId, propertyId)
+    const inserted = await insertPropertyIn(tx, dataSourceId, {
+      name,
+      type,
+      description: input.description ?? null,
+      // status 의 config 는 받지 않는다 — 기본 옵션 id 는 아래에서 만든 옵션에서 나온다.
+      config: type === 'status' ? {} : (input.config ?? {}),
+    })
+    if (isSchemaFailure(inserted)) return inserted
+    if (type === 'status') await seedStatus(tx, inserted)
 
     await bumpSchema(tx, dataSourceId)
     return { ok: true, value: await readSchema(tx, dataSourceId) } as const
   })
+}
+
+/**
+ * 프로퍼티 행 하나를 **맨 뒤에** 넣는다 — 이름 중복 · 상한 검사 · 뷰 시딩까지. 잠금과 버전 올리기는 호출자의 일이다.
+ *
+ * `relation.ts` 가 함께 쓴다: 양방향 relation 은 프로퍼티 **둘**을(때로는 서로 다른 data_source 에) 한 트랜잭션에서
+ * 만들고 서로의 id 를 config 에 적는다 — 그래서 id 를 미리 받아 둘 수 있다.
+ */
+export async function insertPropertyIn(
+  tx: Tx,
+  dataSourceId: string,
+  input: {
+    readonly id?: string
+    /** 이미 `normalizeName` 을 지난 이름. */
+    readonly name: string
+    readonly type: AppPropertyType
+    readonly description: string | null
+    readonly config: Record<string, unknown>
+  },
+): Promise<string | PropertyResult<never>> {
+  const slot = await checkPropertySlots(tx, dataSourceId, [input.name])
+  if (slot !== null) return slot
+
+  const last = await tx.queryMaybe<{ order_idx: string }>(
+    `SELECT order_idx FROM property
+      WHERE data_source_id = $1 AND deleted_at IS NULL
+      ORDER BY order_idx DESC LIMIT 1`,
+    [dataSourceId],
+  )
+
+  const propertyId = input.id ?? newPropertyId()
+  await tx.query(
+    `INSERT INTO property (id, data_source_id, name, description, type, config, order_idx,
+                           created_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5::property_type, $6::jsonb, $7, now(), now())`,
+    [
+      propertyId,
+      dataSourceId,
+      input.name,
+      input.description,
+      input.type,
+      JSON.stringify(input.config),
+      orderKeyBetween(last?.order_idx ?? null, null),
+    ],
+  )
+
+  // ★ 새 컬럼은 이 data_source 의 **모든 뷰**에 나타나야 한다.
+  //   `view_property.visible` 기본값이 `false` 이고 행이 없으면 조인에서
+  //   빠지므로, 시딩하지 않으면 "컬럼을 추가했는데 표에 없다" 가 된다.
+  await addPropertyToViews(tx, dataSourceId, propertyId)
+  return propertyId
+}
+
+/**
+ * 이 이름들로 프로퍼티를 더 만들 수 있는가 — 이름 중복(있는 것과 · 서로) · 상한. 만들 수 있으면 null.
+ *
+ * ★ **쓰기 전에 전부 검사한다.** 프로퍼티를 여럿 만드는 명령(양방향 relation)이 첫 프로퍼티를 넣은 뒤에 역방향의 이름이
+ *   겹친다는 것을 알면 안 된다 — 이것으로 먼저 전부 묻는다. 거부를 돌려주면 롤백되는 안전망(`withCommandTransaction` ·
+ *   HANDOFF §3.3-158)이 있지만 검사를 앞에 두는 것이 먼저다.
+ */
+export async function checkPropertySlots(
+  tx: Tx,
+  dataSourceId: string,
+  names: readonly string[],
+): Promise<PropertyResult<never> | null> {
+  if (new Set(names).size !== names.length) return fail('duplicate_name')
+  const counts = await tx.queryOne<{ n: string; dup: string }>(
+    `SELECT count(*) AS n,
+            count(*) FILTER (WHERE name = ANY($2::text[])) AS dup
+       FROM property
+      WHERE data_source_id = $1 AND deleted_at IS NULL`,
+    [dataSourceId, names],
+  )
+  // F-03-02: 노션 UI 는 동명을 허용하는 것으로 보이지만 *"formula 의
+  // `prop("이름")` 해석이 모호해지므로 클론에서는 **금지 권고**"* 다.
+  // DB 의 부분 UNIQUE 도 막지만 그쪽은 23505 를 던질 뿐이다.
+  if (Number(counts.dup) > 0) return fail('duplicate_name')
+  if (Number(counts.n) + names.length > MAX_PROPERTIES_PER_DATA_SOURCE) return fail('too_many_properties')
+  return null
+}
+
+/** 이름을 검사하고 정리한다(`relation.ts` 가 같은 규칙을 쓴다). 틀리면 null. */
+export function normalizePropertyName(raw: unknown): string | null {
+  return normalizeName(raw)
 }
 
 // ── 수정 ──────────────────────────────────────────────────────────────
