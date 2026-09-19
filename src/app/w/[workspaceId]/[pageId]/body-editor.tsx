@@ -58,6 +58,8 @@ import { commentHighlightPlugin, setCommentThreads, type AnchoredThread } from '
 import { uploadImageFile } from '@/lib/file/upload-client'
 import { BlockGutter } from './block-gutter'
 import { openCommentThread } from './comment-panel'
+import { closeMentionMenu, insertMention, mentionMenuState, type MentionPick } from '@/lib/editor/mention-menu'
+import { MENTION_NODE } from '@/lib/editor/schema'
 
 /** 이 시간 넘게 서버가 확인하지 않으면 "동기화 중…"을 보여 준다 — 그 전에는 무표시다(F-05-04). */
 const SYNCING_AFTER_MS = 3000
@@ -74,6 +76,34 @@ type Status =
   | { kind: 'error'; message: string; unsaved?: string }
 
 type MenuUi = { open: boolean; query: string; index: number; left: number; top: number }
+
+type MentionLabelMap = {
+  readonly users: Readonly<Record<string, string | null>>
+  readonly pages: Readonly<Record<string, string | null>>
+}
+
+type MentionCandidate = { kind: 'user' | 'page'; id: string; label: string }
+
+type MentionUi = { open: boolean; query: string; index: number; left: number; top: number }
+
+const CLOSED_MENTION: MentionUi = { open: false, query: '', index: 0, left: 0, top: 0 }
+
+/** 07 F-07-08: "debounce(~150ms)". 한글은 한 글자가 곧 한 음절이라 짧은 쪽을 고른다. */
+const MENTION_DEBOUNCE_MS = 150
+
+/** 본문에 있는 멘션 노드의 대상 id — 이름 맵에 없는 것을 찾을 때. */
+function mentionIdsIn(view: EditorView): { users: string[]; pages: string[] } {
+  const users: string[] = []
+  const pages: string[] = []
+  view.state.doc.descendants((node) => {
+    if (node.type.name !== MENTION_NODE) return true
+    const m = node.attrs.mention as { type?: unknown; user?: { id?: unknown }; page?: { id?: unknown } } | null
+    if (m?.type === 'user' && typeof m.user?.id === 'string') users.push(m.user.id)
+    else if (m?.type === 'page' && typeof m.page?.id === 'string') pages.push(m.page.id)
+    return false
+  })
+  return { users, pages }
+}
 
 /** 고른 글자에 코멘트를 달 수 있는 자리 — 편집기 기준 좌표까지 들고 있다. */
 type CommentTarget = { blockId: string; start: number; end: number; left: number; top: number }
@@ -102,6 +132,7 @@ export function BodyEditor({
   initialState,
   canEdit,
   initialPageRefTitles,
+  initialMentionLabels,
 }: {
   workspaceId: string
   pageId: string
@@ -115,6 +146,8 @@ export function BodyEditor({
   canEdit: boolean
   /** 하위 페이지 참조의 제목 — 볼 수 있는 것만, 볼 수 없으면 null. 참조 노드는 제목을 싣지 않는다. */
   initialPageRefTitles: Readonly<Record<string, string | null>>
+  /** 멘션 노드가 그릴 이름 — 서버가 권한으로 거른 맵(`loadMentionLabels`). 노드에는 id 뿐이다. */
+  initialMentionLabels: MentionLabelMap
 }) {
   const router = useRouter()
   const mountRef = useRef<HTMLDivElement | null>(null)
@@ -135,11 +168,23 @@ export function BodyEditor({
   const pageRefTitlesRef = useRef<Map<string, string | null>>(new Map(Object.entries(initialPageRefTitles)))
   /** 제목을 다시 읽는 중인가 — 한 번에 하나만. */
   const refreshingTitlesRef = useRef(false)
+  /** 멘션 노드의 이름 맵 — 문서에 없다. 서버가 권한으로 거른 것에서 시작하고, 모르는 id 를 받으면 다시 읽는다. */
+  const mentionLabelsRef = useRef<{ users: Map<string, string | null>; pages: Map<string, string | null> }>({
+    users: new Map(Object.entries(initialMentionLabels.users)),
+    pages: new Map(Object.entries(initialMentionLabels.pages)),
+  })
+  const refreshingLabelsRef = useRef(false)
+  /** 한글 IME 조합 중인가 — 조합 중에는 후보를 묻지 않는다(07 F-07-08: "조합 중 문자열로 질의하면 후보가 요동침"). */
+  const composingIme = useRef(false)
+  const candidateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const [status, setStatus] = useState<Status>({ kind: 'idle' })
   const [menu, setMenu] = useState<MenuUi>(CLOSED_MENU)
   /** 블록 선택 개수 — 화면 표시가 아니라 스크린리더 안내용이다(F-12-12). */
   const [selectedBlocks, setSelectedBlocks] = useState(0)
+  /** `@` 멘션 메뉴 — 트리거 · 쿼리는 플러그인이(`editor/mention-menu.ts`), 후보 · 팝업 · 키는 여기가. */
+  const [mentionUi, setMentionUi] = useState<MentionUi>(CLOSED_MENTION)
+  const [mentionCandidates, setMentionCandidates] = useState<MentionCandidate[]>([])
   /** 연결이 알려주는 것 — 온라인 · 읽기 전용 · 미확인 편집 · 다시 여는 중 · 닫힘. */
   const [link, setLink] = useState<Pick<CollabSnapshot, 'online' | 'readOnly' | 'unconfirmed' | 'reopening' | 'closed'>>({
     online: false,
@@ -344,6 +389,106 @@ export function BodyEditor({
     }
   }, [composing, commentDraft, workspaceId, pageId, loadThreads, router])
 
+  /** 모르는 멘션 id 를 받았으면 이름 맵을 다시 읽는다 — 노드 뷰는 맵이 바뀌어도 스스로 다시 그리지 않는다. */
+  const refreshMentionLabels = useCallback(
+    async (users: readonly string[], pages: readonly string[]) => {
+      if (refreshingLabelsRef.current) return
+      refreshingLabelsRef.current = true
+      try {
+        const params = new URLSearchParams({ users: users.join(','), pages: pages.join(',') })
+        const res = await fetch(`/api/workspaces/${workspaceId}/mention-labels?${params.toString()}`)
+        if (!res.ok) return
+        const data = (await res.json()) as { users?: Record<string, string | null>; pages?: Record<string, string | null> }
+        for (const [id, label] of Object.entries(data.users ?? {})) mentionLabelsRef.current.users.set(id, label)
+        for (const [id, label] of Object.entries(data.pages ?? {})) mentionLabelsRef.current.pages.set(id, label)
+        const view = viewRef.current
+        const deps = editorDepsRef.current
+        if (view && deps) view.setProps({ nodeViews: createNodeViews(deps) })
+      } catch {
+        // 다음 멘션이 도착하면 다시 청한다.
+      } finally {
+        refreshingLabelsRef.current = false
+      }
+    },
+    [workspaceId],
+  )
+
+  const checkUnknownMentions = useCallback(
+    (view: EditorView) => {
+      const ids = mentionIdsIn(view)
+      const users = ids.users.filter((id) => !mentionLabelsRef.current.users.has(id))
+      const pages = ids.pages.filter((id) => !mentionLabelsRef.current.pages.has(id))
+      if (users.length > 0 || pages.length > 0) void refreshMentionLabels(users, pages)
+    },
+    [refreshMentionLabels],
+  )
+
+  /** 후보를 묻는다 — 디바운스 뒤에, IME 조합 중이 아닐 때만. */
+  const fetchMentionCandidates = useCallback(
+    (query: string) => {
+      if (candidateTimerRef.current !== null) clearTimeout(candidateTimerRef.current)
+      candidateTimerRef.current = setTimeout(() => {
+        candidateTimerRef.current = null
+        if (composingIme.current) return
+        void (async () => {
+          try {
+            const res = await fetch(`/api/workspaces/${workspaceId}/mention-candidates?q=${encodeURIComponent(query)}`)
+            if (!res.ok) return
+            const data = (await res.json()) as { candidates?: MentionCandidate[] }
+            // 늦게 온 답은 버린다 — 그 사이 쿼리가 바뀌었을 수 있다.
+            setMentionUi((m) => {
+              if (!m.open || m.query !== query) return m
+              setMentionCandidates(data.candidates ?? [])
+              return m
+            })
+          } catch {
+            // 후보가 없다고 입력을 막지 않는다 — 팝업은 열린 채 비어 있다.
+          }
+        })()
+      }, MENTION_DEBOUNCE_MS)
+    },
+    [workspaceId],
+  )
+
+  const syncMentionMenu = useCallback(
+    (view: EditorView) => {
+      const state = mentionMenuState(view.state)
+      if (!state.active) {
+        setMentionUi((prev) => (prev.open ? CLOSED_MENTION : prev))
+        return
+      }
+      const coords = view.coordsAtPos(view.state.selection.head)
+      const box = view.dom.getBoundingClientRect()
+      setMentionUi((prev) => {
+        if (!prev.open || prev.query !== state.query) fetchMentionCandidates(state.query)
+        return {
+          open: true,
+          query: state.query,
+          index: prev.query === state.query ? prev.index : 0,
+          left: coords.left - box.left,
+          top: coords.bottom - box.top,
+        }
+      })
+    },
+    [fetchMentionCandidates],
+  )
+
+  /**
+   * 후보를 고른다 — `@쿼리` 를 멘션 노드로 바꾼다(`insertMention`, 한 트랜잭션).
+   *
+   * 이름을 맵에 **먼저** 넣는다. 노드에는 id 뿐이라 맵에 없으면 노드 뷰가 "…" 을 그린다 — 방금 고른 이름을 서버에 다시
+   * 물을 이유가 없다. 역인덱스는 여기서 쓰지 않는다 — 프로젝터가 쓴다(정본 L1).
+   */
+  const pickMention = useCallback((candidate: MentionCandidate) => {
+    const view = viewRef.current
+    if (!view) return
+    const map = candidate.kind === 'user' ? mentionLabelsRef.current.users : mentionLabelsRef.current.pages
+    map.set(candidate.id, candidate.label)
+    const pick: MentionPick = { kind: candidate.kind, id: candidate.id }
+    insertMention(view.state, view.dispatch.bind(view), pick)
+    view.focus()
+  }, [])
+
   const syncMenu = useCallback((view: EditorView) => {
     const state = slashMenuState(view.state)
     if (!state.active) {
@@ -474,6 +619,7 @@ export function BodyEditor({
       },
       openPage: (id) => router.push(`/w/${workspaceId}/${id}`),
       pageRefTitle: (id) => pageRefTitlesRef.current.get(id),
+      mentionLabel: (kind, id) => (kind === 'user' ? mentionLabelsRef.current.users : mentionLabelsRef.current.pages).get(id),
       onBlocked: (plan) => setStatus({ kind: 'error', message: plan.detail }),
       onRefused: (detail) => setStatus({ kind: 'error', message: detail }),
       openBlockMenu: () => openMenuRef.current?.(),
@@ -504,7 +650,9 @@ export function BodyEditor({
         deps: collab.deps,
         onTransaction: (v) => {
           syncMenu(v)
+          syncMentionMenu(v)
           syncCommentTarget(v)
+          checkUnknownMentions(v)
           // 같은 값이면 리렌더하지 않는다 — 트랜잭션마다 불리는 자리다.
           const count = selectedBlockCount(v.state)
           setSelectedBlocks((prev) => (prev === count ? prev : count))
@@ -512,6 +660,15 @@ export function BodyEditor({
         },
       })
       viewRef.current = view
+      // 한글 IME — 조합 중에는 후보를 묻지 않고, 조합이 끝나면 그때의 쿼리로 묻는다.
+      view.dom.addEventListener('compositionstart', () => {
+        composingIme.current = true
+      })
+      view.dom.addEventListener('compositionend', () => {
+        composingIme.current = false
+        const state = mentionMenuState(view.state)
+        if (state.active) fetchMentionCandidates(state.query)
+      })
       reveal()
       // 이 문서에 달린 스레드를 그린다. 다시 붙을 때마다 읽는다 — 그 사이에 남이 단 코멘트가 있을 수 있다.
       void loadThreads()
@@ -637,6 +794,34 @@ export function BodyEditor({
     window.addEventListener('keydown', onKeyDown, true)
     return () => window.removeEventListener('keydown', onKeyDown, true)
   }, [menu.open, menu.index, items, execute])
+
+  // `@` 메뉴의 키 조작 — 슬래시 메뉴와 같은 규칙(IME 조합 중엔 손대지 않고, 먹은 키는 에디터까지 보내지 않는다).
+  useEffect(() => {
+    if (!mentionUi.open) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.isComposing) return
+      if (['ArrowDown', 'ArrowUp', 'Enter', 'Tab', 'Escape'].includes(event.key)) event.stopPropagation()
+      const count = Math.max(mentionCandidates.length, 1)
+      if (event.key === 'ArrowDown') {
+        event.preventDefault()
+        setMentionUi((m) => ({ ...m, index: (m.index + 1) % count }))
+      } else if (event.key === 'ArrowUp') {
+        event.preventDefault()
+        setMentionUi((m) => ({ ...m, index: (m.index - 1 + count) % count }))
+      } else if (event.key === 'Enter' || event.key === 'Tab') {
+        event.preventDefault()
+        const candidate = mentionCandidates[mentionUi.index]
+        if (candidate) pickMention(candidate)
+      } else if (event.key === 'Escape') {
+        event.preventDefault()
+        const view = viewRef.current
+        // Esc 는 친 글자(`@온보`)를 남긴 채 닫는다(07 F-07-08 엣지 표).
+        if (view) view.dispatch(closeMentionMenu(view.state.tr))
+      }
+    }
+    window.addEventListener('keydown', onKeyDown, true)
+    return () => window.removeEventListener('keydown', onKeyDown, true)
+  }, [mentionUi.open, mentionUi.index, mentionCandidates, pickMention])
 
   // ── 렌더 ────────────────────────────────────────────────────────────
 
@@ -777,6 +962,40 @@ export function BodyEditor({
             </div>
           </form>
         </div>
+      )}
+
+      {mentionUi.open && (
+        <ul
+          role="listbox"
+          aria-label="멘션"
+          style={{ left: mentionUi.left, top: mentionUi.top }}
+          className="absolute z-10 max-h-72 w-64 overflow-auto rounded-lg border border-neutral-200 bg-white py-1 shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
+        >
+          {mentionCandidates.length === 0 && (
+            // 07 F-07-08: 후보 0건이어도 팝업을 닫지 않는다 — 비어 있다고 말해 준다.
+            <li className="px-3 py-1.5 text-sm text-neutral-500">
+              {mentionUi.query === '' ? '사람이나 페이지 이름을 입력하세요' : '일치하는 사람 · 페이지가 없습니다'}
+            </li>
+          )}
+          {mentionCandidates.map((candidate, i) => (
+            <li key={`${candidate.kind}:${candidate.id}`}>
+              <button
+                type="button"
+                role="option"
+                aria-selected={i === mentionUi.index}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => pickMention(candidate)}
+                onMouseEnter={() => setMentionUi((m) => ({ ...m, index: i }))}
+                className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm ${
+                  i === mentionUi.index ? 'bg-neutral-100 dark:bg-neutral-800' : ''
+                }`}
+              >
+                <span className="text-xs text-neutral-400">{candidate.kind === 'user' ? '사람' : '페이지'}</span>
+                <span>{candidate.kind === 'user' ? `@${candidate.label}` : candidate.label || '제목 없음'}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
       )}
 
       {menu.open && items.length > 0 && (
