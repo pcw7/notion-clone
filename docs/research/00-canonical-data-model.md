@@ -1360,6 +1360,40 @@ CREATE INDEX ON favorite (user_id, workspace_id, order_key);
   페이지로 가득 찬다.
 - 보관 상한(사용자당 200건)은 GC 의 몫이고 스키마 제약이 아니다 `[추정]`.
 
+**[추가] `link_edge` — 멘션의 역인덱스 · 백링크의 원천 ⟨07 F-07-08 · F-07-09 · 05 F-05-09 / 마이그레이션 0021⟩**
+
+> 초판에는 이 표가 없다. 05 F-05-09 가 `mention_index(source_type, source_id, page_id,
+> mentioned_type, mentioned_id, created_at)` 를, 07 F-07-09 가 `link_edge(source_block_id,
+> source_page_id, target_page_id, link_type, created_at)` 를 각각 "데이터 모델 함의"로 제시했다.
+> 같은 것이다 — 본문의 멘션 노드를 거꾸로 찾는 파생 표. 07 의 이름을 쓰고 05 의 다형 대상을 받는다.
+
+```sql
+CREATE TABLE link_edge (
+  source_page_id  uuid NOT NULL REFERENCES block(id) ON DELETE CASCADE,
+  source_block_id uuid NOT NULL,               -- 본문 블록. FK 없음 — 그 행은 Y.Doc 의 투영이다 [X-1]
+  target_kind     text NOT NULL CHECK (target_kind IN ('page','user')),
+  target_id       uuid NOT NULL,               -- 다형. FK 없음 — 지워진 대상은 조회가 거른다
+  created_at      timestamptz NOT NULL,
+  PRIMARY KEY (source_block_id, target_kind, target_id)
+);
+CREATE INDEX ON link_edge (target_kind, target_id, source_page_id);   -- 백링크 · "누가 나를 멘션했나"
+CREATE INDEX ON link_edge (source_page_id);                           -- 투영이 페이지 단위로 갈아 끼운다
+```
+
+- **불변식 L1 — 이 표는 프로젝터만 쓴다.** 마스터 문서 §5.2 는 *"에디터가 `mention` 인라인 노드를
+  만들 때 역인덱스를 함께 기록한다"* 고 적었지만, 이 문서의 판결 X-1 이 이긴다: 본문의 정본은
+  Y.Doc 이고 행은 그 투영이다. 에디터가 따로 기록하면 진실이 둘이 된다 — 동시 편집으로 멘션이
+  지워졌는데 행이 남거나, 오프라인에서 넣은 멘션의 행이 없다. **Y.Doc 에 넣은 멘션이 투영될 때**
+  이 표가 갱신된다(`block` 행 · `search_document` 와 같은 시점, 같은 트랜잭션).
+- **불변식 L2 — 트리는 여기 없다.** 하위 페이지 참조(`page_ref` 노드)는 `block.parent_id` 가 정본이고
+  이 표에 들어가지 않는다. 07 F-07-09 가 경고한 순환(`link_type='child'` 를 섞으면 breadcrumb ·
+  `ancestor_ids` 가 무한 루프)은 그래서 생기지 않는다 — 이 표의 그래프는 순환해도 된다.
+- **불변식 L3 — 멘션 하나가 알림 하나가 아니다.** 투영 한 번에 **새로 생긴** (페이지, 사람) 당 알림
+  하나다(05 F-05-09: *"한 문단에 같은 사람 5번 멘션 → 알림 1건"*). 이미 있던 edge 는 다시 알리지
+  않는다. 그래서 투영은 페이지의 edge 를 통째로 갈아 끼우지 않고 **차분**(넣을 것 · 지울 것)을 쓴다.
+- 멘션 노드는 **표시 텍스트를 저장하지 않는다**(07 F-07-08 · 05 F-05-09 *"page_id 만 저장하고 렌더 시
+  조인"*). 이름 · 제목은 그릴 때 권한으로 거른 맵에서 온다 — 하위 페이지 참조의 제목과 같은 규칙(§3.2-22).
+
 ---
 
 ### 3.10 자동화 · 파일 · 과금 · 외부 동기화 ⟨08 / 01·09 / 13 / 15⟩

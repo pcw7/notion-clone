@@ -64,6 +64,8 @@ import { withReadTransaction, withTransaction, type Tx } from '../db/tx.ts'
 import { PAGE_TYPE } from './types.ts'
 import { plainTitleOf } from './page.ts'
 import { indexPageText } from '../search/index-page.ts'
+import { notifyMentions } from '../notification/fanout.ts'
+import { projectLinkEdges } from './link-edges.ts'
 import { countFileReferences, fileReferenceDelta } from './image.ts'
 import { can } from '../permissions/levels.ts'
 import { effectiveCaps, readableScopes } from '../permissions/effective.ts'
@@ -688,6 +690,16 @@ async function projectRows(
     title: plainTitleOf(page.properties),
     blocks: projection.blocks,
   })
+
+  // ── 멘션 역인덱스 (F-07-09 · F-05-09) ──────────────────────────────
+  //
+  // 색인과 같은 자리 · 같은 이유다 — 행의 투영이고(정본 L1), 같은 트랜잭션이어야 "본문에는 있는데 백링크에는 없는"
+  // 상태가 없다. 차분이 낸 "처음 멘션된 사람"이 곧 알림 대상이다(L3). 행위자는 `ctx` — 멘션을 넣은 update 는
+  // 미루지 않으므로 그 참여자의 세션이 여기까지 온다(`body-write.ts`).
+  const edges = await projectLinkEdges(tx, pageId, projection.blocks)
+  if (edges.newUserIds.length > 0) {
+    await notifyMentions(tx, ctx, { pageId, blockId: edges.firstBlockId, userIds: edges.newUserIds })
+  }
 
   return {
     ok: true,

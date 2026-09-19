@@ -96,6 +96,8 @@ export type PageBodyWrite = {
   readonly projectedSeq: string
   /** 적용한 참여자 update 가 하위 페이지 참조 요소를 넣거나 지웠는가(`doc-store.ts` `BodyDocSession.touchedPageRefs`). */
   readonly touchedPageRefs: boolean
+  /** 적용한 참여자 update 가 멘션 요소를 넣거나 지웠는가 — 미루면 알림의 행위자가 창의 마지막 사람으로 바뀐다. */
+  readonly touchedMentions: boolean
   /** 지금 본문(이 단위의 변경까지). */
   read(): EditorDoc
   change(change: EditorChange): void
@@ -132,6 +134,9 @@ export async function openPageBody(
     projectedSeq: session.projectedSeq,
     get touchedPageRefs() {
       return session.touchedPageRefs
+    },
+    get touchedMentions() {
+      return session.touchedMentions
     },
     read: () => session.read().doc,
     change: (change) => session.change(change),
@@ -416,7 +421,9 @@ export async function appendDocUpdate(
     if (applied !== 'applied') return { ok: false, reason: applied } as const
     if (!body.changed) return { ok: true, seq: body.seq, appended: false, repair: null } as const
 
-    if (options.projection === 'deferred' && !body.touchedPageRefs) {
+    // 멘션을 넣은 update 도 미루지 않는다 — 밀린 투영은 창의 **마지막** 참여자 세션으로 돌아(`projection-scheduler.ts`)
+    // 멘션 알림의 행위자가 엉뚱한 사람이 된다. 곧바로 투영하면 이 참여자가 행위자다(§3.3-141).
+    if (options.projection === 'deferred' && !body.touchedPageRefs && !body.touchedMentions) {
       const commit = await body.appendWithoutProjection({ compactEvery: options.compactEvery })
       return commit.appended
         ? ({ ok: true, seq: commit.seq, appended: true, repair: commit.repair } as const)

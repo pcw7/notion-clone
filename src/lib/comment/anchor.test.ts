@@ -19,7 +19,7 @@ import type { Transaction } from '@tiptap/pm/state'
 import * as Y from 'yjs'
 
 import { createBodyYDoc } from '../collab/ydoc.ts'
-import { textRun, type RichTextRun } from '../contracts/rich-text.ts'
+import { textRun, userMentionRun, type RichTextRun } from '../contracts/rich-text.ts'
 import type { EditorBlock } from '../editor/document.ts'
 import { changesSince, edit, findBlock, peer } from '../testing/collab-peers.ts'
 import {
@@ -140,7 +140,7 @@ describe('앵커는 동시 편집을 견딘다', () => {
 
   test('인라인 원자(멘션)를 건너뛰는 범위도 가리킨다 — 원자는 한 자로 센다', () => {
     // 원자가 있으면 한 블록의 글자가 Y.XmlText 하나에 있지 않다 — 오프셋을 Y 인덱스로 셀 수 없다는 근거다(머리말).
-    const mention: RichTextRun = { ...textRun('@'), type: 'mention', mention: { type: 'user', user_id: 'u1' } }
+    const mention: RichTextRun = userMentionRun('00000000-0000-4000-8000-0000000000aa')
     const ydoc = createBodyYDoc({ blocks: [para(A, [textRun('앞'), mention, textRun('뒤글자')])] })
     const anchor = textRangeAnchor(ydoc, A, 0, 4)
     assert.ok(anchor !== null, '원자를 낀 범위를 만들지 못했다')
