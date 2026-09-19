@@ -21,7 +21,8 @@
  * 뷰 종류가 화면을 고른다 (보드 4b조각)
  * ──────────────────────────────────────────────────────────────────────
  *
- * `view.type === 'board'` 면 보드, 그 외(table · list)는 표다 — list 의 축약 렌더러는 4c.
+ * `view.type === 'board'` 면 보드, 그 외(table · list)는 표 컴포넌트다 — list 는 **같은 컴포넌트의 다른 모양**
+ * (`variant="list"` · F-04-04 · `lib/database/list-layout.ts`)이고 제목을 맨 앞에 세운다.
  * 보드인데 그룹 프로퍼티가 지워졌으면(`groupBy: null` · `not_grouped`) "그룹 기준을 고르라"는
  * 상태를 보여준다. 자동으로 다른 속성을 고르지 않는다(HANDOFF §3.2-26).
  *
@@ -44,6 +45,7 @@ import { getView, listViews } from '@/lib/database/view'
 import { queryRows } from '@/lib/database/query'
 import { queryGroups } from '@/lib/database/group'
 import { groupLabel } from '@/lib/database/board-drag'
+import { listColumns, variantOf } from '@/lib/database/list-layout'
 import { isGroupableType } from '@/lib/database/property-types'
 import { rowJson } from '@/lib/database/http'
 import { readOperatorCatalog } from '@/lib/database/operator-catalog'
@@ -137,6 +139,7 @@ export default async function DatabasePage({
     columns.map((c) => [c.propertyId, c.name, c.visible]),
   ])
   const visibleColumns = columns.filter((column) => column.visible)
+  const variant = variantOf(view.value.type)
 
   return (
     <main className="flex min-h-screen min-w-0 flex-col gap-6 px-10 py-12">
@@ -210,7 +213,8 @@ export default async function DatabasePage({
             viewId={view.value.id}
             dataSourceId={view.value.dataSourceId}
             tableName={name}
-            columns={visibleColumns}
+            variant={variant}
+            columns={listColumns(variant, visibleColumns)}
             rows={tablePage.value.rows.map(rowJson)}
             hasMore={tablePage.value.hasMore}
             nextCursor={tablePage.value.nextCursor}

@@ -521,6 +521,53 @@ describe('뷰 목록 · 생성 · 삭제', () => {
     if (!r.ok) assert.equal(r.reason, 'unsupported_type')
   })
 
+  // ── List 뷰 (보드 4c-2조각 · F-04-04) ──
+  // F-04-04: *"신규 테이블 불필요 — table view 스키마의 부분집합."* 서버에서 list 는 **타입 이름뿐**이다.
+
+  test('★ list 뷰는 그룹 없이 만들어지고 컬럼이 표처럼 시딩된다 — 보드와 달리 그룹이 필수가 아니다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const table = await newTable([{ name: '수량', type: 'number' }])
+    const created = await createView(fx.owner.ctx, table.databaseId, { type: 'list', name: '목록' })
+    assert.equal(created.ok, true)
+    if (!created.ok) return
+    assert.equal(created.value.type, 'list')
+    assert.equal(created.value.groupBy, null)
+    assert.deepEqual(created.value.columns.map((c) => [c.name, c.visible]), [['이름', true], ['수량', true]])
+    const tabs = await listViews(fx.owner.ctx, table.databaseId)
+    assert.ok(tabs.ok && tabs.value.some((v) => v.id === created.value.id && v.type === 'list'))
+  })
+
+  test('★ 표 ↔ list 로 바꿔도 필터 · 정렬 · 숨긴 컬럼이 그대로다 — 모양만 바뀐다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const table = await newTable([{ name: '수량', type: 'number' }])
+    const numberId = table.prop('수량')
+    const filter = { property_id: numberId, operator: 'greater_than', value: 1 }
+    const sorts = [{ property_id: numberId, direction: 'desc' as const }]
+    assert.equal((await updateView(fx.owner.ctx, table.defaultViewId, { filter, sorts })).ok, true)
+    assert.equal((await setViewColumn(fx.owner.ctx, table.defaultViewId, numberId, { visible: false })).ok, true)
+
+    const asList = await updateView(fx.owner.ctx, table.defaultViewId, { type: 'list' })
+    assert.equal(asList.ok, true)
+    if (!asList.ok) return
+    assert.equal(asList.value.type, 'list')
+    assert.deepEqual(asList.value.filter, filter)
+    assert.deepEqual(asList.value.sorts, sorts)
+    assert.equal(asList.value.columns.find((c) => c.propertyId === numberId)?.visible, false)
+
+    const back = await updateView(fx.owner.ctx, table.defaultViewId, { type: 'table' })
+    assert.ok(back.ok && back.value.type === 'table' && back.value.columns.find((c) => c.propertyId === numberId)?.visible === false)
+  })
+
+  test('list → board 는 그룹을 요구한다 — 묶을 속성이 없으면 거부하고 list 로 남는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const table = await newTable()
+    assert.equal((await updateView(fx.owner.ctx, table.defaultViewId, { type: 'list' })).ok, true)
+    const r = await updateView(fx.owner.ctx, table.defaultViewId, { type: 'board' })
+    assert.equal(r.ok === false && r.reason, 'group_required')
+    const still = await getView(fx.owner.ctx, table.defaultViewId)
+    assert.ok(still.ok && still.value.type === 'list')
+  })
+
   test('★ 마지막 뷰는 지울 수 없다 — 그릴 것이 없어진다', async (t) => {
     if (skipReason) return t.skip(skipReason)
     const table = await newTable()

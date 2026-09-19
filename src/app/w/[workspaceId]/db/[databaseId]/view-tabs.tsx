@@ -23,8 +23,8 @@ import * as api from './table-api'
 /** 탭의 종류 아이콘. 장식이다 — 이름이 곧 종류를 말한다. */
 export const VIEW_TYPE_ICON: Readonly<Record<string, string>> = { table: '▦', board: '▥', list: '≡' }
 const VIEW_TYPE_LABEL: Readonly<Record<MvpViewType, string>> = { table: '표', board: '보드', list: '목록' }
-/** 이 화면이 만들 수 있는 종류. `list` 는 4c 에서 연다. */
-const CREATABLE: readonly MvpViewType[] = ['table', 'board']
+/** 이 화면이 만들 수 있는 종류 — 서버가 받는 셋 전부(`MVP_VIEW_TYPES`). */
+const CREATABLE: readonly MvpViewType[] = ['table', 'board', 'list']
 
 const MENU_ITEM =
   'block w-full rounded px-2 py-1 text-left text-sm hover:bg-neutral-100 disabled:opacity-40 dark:hover:bg-neutral-800'

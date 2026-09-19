@@ -13,6 +13,19 @@
  * 가치(클라이언트 테이블 상태 · 가상화)를 쓰지 않는다.
  *
  * ──────────────────────────────────────────────────────────────────────
+ * List 뷰도 이 컴포넌트다 — `variant="list"` (보드 4c-2조각 · F-04-04)
+ * ──────────────────────────────────────────────────────────────────────
+ *
+ * F-04-04: *"table view 렌더러에 `variant='list'` 를 두어 셀 컴포넌트를 재사용하고 그리드 레이아웃만 교체한다. 별도
+ * 컴포넌트 트리를 만들면 셀 에디터를 두 벌 유지하게 된다."* 그래서 List 는 **같은 DOM(격자 · 행 · 칸)에 배치만 다르다** —
+ * 선택 · 편집 · 키보드 이동 · 저장 · "더 보기"가 전부 한 벌이다. 다른 것은 셋: 머리 행을 화면에서 감춘다(이름은 스크린
+ * 리더에 남긴다 · 머리 메뉴와 속성 추가는 List 에 없다), 행이 가로로 흐른다(제목 왼쪽 · 속성 오른쪽), 빈 칸을 접는다.
+ * 어느 칸을 접는지는 `lib/database/list-layout.ts` 가 정한다(DOM 없이 검사).
+ *
+ * `display` 를 바꾼 `<table>` 은 브라우저가 표의 암묵 역할을 떼어낼 수 있다. 그래서 `grid` · `rowgroup` · `row` ·
+ * `gridcell` 을 **명시한다.**
+ *
+ * ──────────────────────────────────────────────────────────────────────
  * 규칙은 순수 함수에 있고, 이 파일은 조립만 한다
  * ──────────────────────────────────────────────────────────────────────
  *
@@ -59,6 +72,7 @@ import { MAX_QUERY_PAGINATION } from '@/lib/database/limits'
 import {
   emptyValue,
   insertOption,
+  isEmptyValue,
   isOptionType,
   optionIdOf,
   optionValue,
@@ -67,6 +81,7 @@ import {
 } from '@/lib/database/property-types'
 import { cellText, defaultColumnWidth, draftOf, parseDraft, readCell, sameValue } from '@/lib/database/cell-format'
 import { handleGridKey, type CellPos, type GridMode, type KeyResult } from '@/lib/database/grid-nav'
+import { isCollapsed, type TableVariant } from '@/lib/database/list-layout'
 import * as api from './table-api'
 import { CellDisplay, TYPE_ICON, TYPE_LABEL } from './cell-view'
 import { SelectEditor } from './select-editor'
@@ -93,8 +108,12 @@ export function DatabaseTable(props: {
   access: DatabaseAccess
   /** 지금 뷰의 정렬(지워진 속성의 키를 뺀 것). 머리 메뉴의 정렬이 이것을 고친다. */
   sorts: readonly SortKey[]
+  /** `list` 면 같은 격자를 목록 모양으로 그린다(머리말). 기본은 `table`. */
+  variant?: TableVariant
 }) {
   const { workspaceId, viewId, dataSourceId, tableName, access } = props
+  const variant: TableVariant = props.variant ?? 'table'
+  const isList = variant === 'list'
   const router = useRouter()
 
   const [columns, setColumns] = useState<ViewColumn[]>(props.columns)
@@ -458,12 +477,14 @@ export function DatabaseTable(props: {
           aria-label={tableName || '제목 없음'}
           aria-rowcount={rows.length + 1}
           data-testid="db-table"
+          data-variant={variant}
           onKeyDown={onKeyDown}
-          style={{ width: totalWidth }}
-          className="table-fixed border-collapse text-sm"
+          style={isList ? undefined : { width: totalWidth }}
+          className={isList ? 'block w-full text-sm' : 'table-fixed border-collapse text-sm'}
         >
-          <thead>
-            <tr>
+          {/* List 는 머리 행을 화면에서 감춘다. 컬럼 이름은 스크린 리더에 남는다. */}
+          <thead role="rowgroup" className={isList ? 'sr-only' : undefined}>
+            <tr role="row">
               {columns.map((column) => (
                 <th
                   key={column.propertyId}
@@ -484,7 +505,8 @@ export function DatabaseTable(props: {
                       {column.name}
                       <span className="sr-only"> ({TYPE_LABEL[column.type]})</span>
                     </span>
-                    {access.canEditStructure && (
+                    {/* 감춘 머리 안의 버튼은 Tab 으로는 닿는데 보이지 않는다 — List 에는 두지 않는다. */}
+                    {access.canEditStructure && !isList && (
                       <ColumnMenu
                         name={column.name}
                         isTitle={column.type === 'title'}
@@ -495,7 +517,7 @@ export function DatabaseTable(props: {
                   </div>
                 </th>
               ))}
-              {access.canEditStructure && (
+              {access.canEditStructure && !isList && (
                 <th className="w-11 border border-neutral-200 p-0 dark:border-neutral-800">
                   <AddColumn onAdd={addColumn} />
                 </th>
@@ -503,14 +525,34 @@ export function DatabaseTable(props: {
             </tr>
           </thead>
 
-          <tbody>
+          <tbody role="rowgroup" className={isList ? 'block' : undefined}>
             {rows.map((row, r) => (
-              <tr key={row.id} data-row-id={row.id}>
+              <tr
+                key={row.id}
+                role="row"
+                data-row-id={row.id}
+                className={
+                  isList
+                    ? 'flex items-center gap-1 border-b border-neutral-100 hover:bg-neutral-50 dark:border-neutral-900 dark:hover:bg-neutral-900/60'
+                    : undefined
+                }
+              >
                 {columns.map((column, c) => {
                   const at = { row: r, col: c }
                   const value = valueAt(row, column)
                   const isSelected = mode.kind !== 'idle' && samePos(mode.at, at)
                   const isEditing = mode.kind === 'editing' && samePos(mode.at, at)
+                  // List: 빈 칸은 접는다. 선택 · 편집 중이면 비어 있어도 선다(`list-layout.ts`).
+                  const collapsed = isCollapsed(variant, column.type, value, isSelected)
+                  const display =
+                    isList && isEmptyValue(value) && column.type !== 'checkbox' ? (
+                      // 제목은 "제목 없음", 선택된 빈 속성 칸은 그 속성의 이름 — 무엇을 채우는 자리인지 말한다.
+                      <span className="truncate text-neutral-400" data-testid="db-list-placeholder">
+                        {column.type === 'title' ? '제목 없음' : column.name}
+                      </span>
+                    ) : (
+                      <CellDisplay value={value} options={column.options} />
+                    )
                   return (
                     <td
                       key={column.propertyId}
@@ -525,20 +567,32 @@ export function DatabaseTable(props: {
                       data-cell={keyOf(at)}
                       data-property-id={column.propertyId}
                       data-editing={isEditing || undefined}
+                      data-collapsed={collapsed || undefined}
+                      title={isList && column.type !== 'title' ? column.name : undefined}
                       onMouseDown={(e) => onCellMouseDown(at, e)}
                       onFocus={() => onCellFocus(at)}
                       onBlur={(e) => onCellBlur(at, e)}
-                      className={`relative h-9 border border-neutral-200 px-2 align-middle outline-none dark:border-neutral-800 ${
-                        isSelected ? 'shadow-[inset_0_0_0_2px_theme(colors.blue.500)]' : ''
-                      }`}
+                      className={
+                        isList
+                          ? `relative h-9 items-center rounded px-1.5 outline-none ${collapsed ? 'hidden' : 'flex'} ${
+                              column.type === 'title' ? 'min-w-0 flex-1' : 'max-w-[16rem] flex-none'
+                            } ${isEditing && column.type !== 'title' ? 'min-w-[11rem]' : ''} ${
+                              isSelected ? 'shadow-[inset_0_0_0_2px_theme(colors.blue.500)]' : ''
+                            }`
+                          : `relative h-9 border border-neutral-200 px-2 align-middle outline-none dark:border-neutral-800 ${
+                              isSelected ? 'shadow-[inset_0_0_0_2px_theme(colors.blue.500)]' : ''
+                            }`
+                      }
                     >
                       {isEditing && isOptionType(column.type) ? (
                         <>
-                          <CellDisplay value={value} options={column.options} />
+                          {display}
                           <SelectEditor
                             options={column.options}
                             currentId={optionIdOf(value)}
                             isStatus={column.type === 'status'}
+                            // List 의 속성은 오른쪽에 붙어 있다 — 왼쪽 기준으로 열면 화면 밖으로 나간다.
+                            align={isList ? 'right' : 'left'}
                             canCreate={access.canEditStructure}
                             onPick={(optionId) => pickOption(at, optionId)}
                             onCreate={(name) => void createOption(at, name)}
@@ -558,13 +612,16 @@ export function DatabaseTable(props: {
                             column.type === 'number' ? 'text-right tabular-nums' : ''
                           }`}
                         />
+                      ) : isList ? (
+                        // 칸이 flex 라 안쪽 글자가 줄어들 수 있어야 말줄임이 된다.
+                        <div className="min-w-0 flex-1">{display}</div>
                       ) : (
-                        <CellDisplay value={value} options={column.options} />
+                        display
                       )}
                     </td>
                   )
                 })}
-                {access.canEditStructure && (
+                {access.canEditStructure && !isList && (
                   <td aria-hidden className="border border-neutral-200 dark:border-neutral-800" />
                 )}
               </tr>
