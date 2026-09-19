@@ -91,6 +91,45 @@ export async function withTransaction<T>(fn: (tx: Tx) => Promise<T>): Promise<T>
   }
 }
 
+/** `withCommandTransaction` 이 롤백을 일으키려고 안에서 던지는 표식. 밖으로 나가지 않는다. */
+class CommandRejected<T> extends Error {
+  readonly result: T
+  constructor(result: T) {
+    super('command rejected')
+    this.result = result
+  }
+}
+
+/**
+ * **명령**을 위한 트랜잭션 — 콜백이 `{ ok: false }` 를 돌려주면 **ROLLBACK** 하고 그 값을 그대로 돌려준다.
+ *
+ * 이 저장소의 명령은 거부를 던지지 않고 값으로 돌려준다(`{ ok: false, reason }`). `withTransaction` 은 "정상 반환 =
+ * COMMIT" 이라 **쓴 뒤에 거부를 돌려주면 그 쓰기가 커밋된다.** 실제로 둘이 그랬다:
+ *
+ *   · `group.ts` `moveRow` — 셀을 쓰고 옛 자리를 지운 **뒤에** `beforeRowId` 를 검사했다. 화면이 낡아서 거부된 이동이
+ *     셀 값은 바꿔 놓은 채 `not_found` 를 돌려줬고, 화면은 낙관적 이동을 되돌려 서버와 어긋났다(#103 이 재현 · 수정)
+ *   · `relation.ts` `addRelationProperty` — 첫 프로퍼티를 넣은 뒤 역방향의 이름이 겹치면 반쪽짜리 relation 이 남았다
+ *
+ * 검사를 쓰기 앞에 두는 것이 먼저다(헛된 쓰기도 없다). 이것은 그 규율이 깨졌을 때의 **안전망**이다 — 거부된 명령은 어떤
+ * 경우에도 아무것도 바꾸지 않는다.
+ *
+ * ⚠ 거부하면서도 **남겨야 하는 것**이 있는 명령에는 쓰지 않는다(로그인 코드의 실패 횟수처럼). 그건 `withTransaction` 이다.
+ */
+export async function withCommandTransaction<T extends { readonly ok: boolean }>(
+  fn: (tx: Tx) => Promise<T>,
+): Promise<T> {
+  try {
+    return await withTransaction(async (tx) => {
+      const result = await fn(tx)
+      if (!result.ok) throw new CommandRejected(result)
+      return result
+    })
+  } catch (e) {
+    if (e instanceof CommandRejected) return e.result as T
+    throw e
+  }
+}
+
 /**
  * 읽기 전용 트랜잭션. 스냅샷 일관성이 필요한 조회에 쓴다
  * (예: 권한 판정과 그 결과로 읽는 데이터가 같은 시점이어야 할 때).

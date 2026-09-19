@@ -54,7 +54,7 @@
  */
 
 import type { SessionContext } from '../auth/session-context.ts'
-import { withTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
+import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
 import { can } from '../permissions/levels.ts'
 import { effectiveCaps } from '../permissions/effective.ts'
 import { orderKeyBetween, orderKeysBetween } from '../block/order-key.ts'
@@ -499,7 +499,8 @@ export async function moveRow(
   viewId: string,
   input: MoveRowInput,
 ): Promise<GroupResult<MoveOutcome>> {
-  return withTransaction(async (tx) => {
+  // 거부를 돌려주면 롤백된다(`withCommandTransaction` 머리말) — 아래의 "쓰기 전에 검사"가 깨져도 반쯤 옮긴 카드는 없다.
+  return withCommandTransaction(async (tx) => {
     const board = await openBoard(tx, ctx, viewId, 'edit_content')
     if (isFailure(board)) return board
     if (!catalogOf(board).some((g) => g.key === input.groupKey)) return fail('invalid_value')
@@ -514,6 +515,11 @@ export async function moveRow(
     )
     if (row === null) return fail('not_found')
 
+    // ★ **쓰기 전에** 놓을 자리를 검사한다. 화면이 낡아 `beforeRowId` 의 카드가 그사이 다른 열로 갔을 수 있다 — 셀을 쓴
+    //   뒤에 알면 "값은 바뀌었는데 거부된" 이동이 된다(#103).
+    const manual = !hasLiveSort(board)
+    if (manual && !(await isInGroup(tx, board, input.beforeRowId ?? null, input.groupKey))) return fail('not_found')
+
     // ── ① 셀 값. 이미 그 그룹이면 건드리지 않는다 ──
     const current = await currentKeyOf(tx, board, input.rowId)
     if (current !== input.groupKey) {
@@ -526,10 +532,8 @@ export async function moveRow(
     // ── ② 자리. 옛 그룹의 자리는 지운다 — PK 가 (뷰, 그룹, 행)이라 두 열에 남을 수 있다 ──
     await tx.query(`DELETE FROM row_position WHERE view_id = $1 AND row_id = $2`, [viewId, input.rowId])
 
-    const manual = !hasLiveSort(board)
     if (manual) {
       const orderIdx = await placeIn(tx, board, input)
-      if (isFailure(orderIdx)) return orderIdx
       await tx.query(
         `INSERT INTO row_position (view_id, group_key, row_id, order_idx) VALUES ($1, $2, $3, $4)`,
         [viewId, input.groupKey, input.rowId, orderIdx],
@@ -563,18 +567,21 @@ async function currentKeyOf(tx: Tx, board: Board, rowId: string): Promise<string
  *   null            → 열의 맨 뒤. 자리 없는 행이 있으면 그것들에 먼저 자리를 준다 —
  *                     안 그러면 "맨 뒤"로 놓은 카드가 자리 없는 행들 **앞**에 그려진다
  */
-async function placeIn(tx: Tx, board: Board, input: MoveRowInput): Promise<string | GroupResult<never>> {
+/** `before` 가 그 그룹의 살아 있는 카드인가. null(맨 뒤)이면 언제나 참이다. `moveRow` 가 **쓰기 전에** 묻는다. */
+async function isInGroup(tx: Tx, board: Board, before: string | null, groupKey: string): Promise<boolean> {
+  if (before === null) return true
+  const target = await tx.queryMaybe<{ one: number }>(
+    `SELECT 1 AS one FROM page p JOIN block b ON b.id = p.id
+      WHERE p.id = $1 AND p.data_source_id = $2 AND p.is_template = false AND b.lifecycle = 'live'`,
+    [before, board.dataSourceId],
+  )
+  return target !== null && (await currentKeyOf(tx, board, before)) === groupKey
+}
+
+/** 그 그룹에서의 새 자리 키. `beforeRowId` 는 `moveRow` 가 이미 검사했다(`isInGroup`). */
+async function placeIn(tx: Tx, board: Board, input: MoveRowInput): Promise<string> {
   const { groupKey, rowId } = input
   const before = input.beforeRowId ?? null
-
-  if (before !== null) {
-    const target = await tx.queryMaybe<{ one: number }>(
-      `SELECT 1 AS one FROM page p JOIN block b ON b.id = p.id
-        WHERE p.id = $1 AND p.data_source_id = $2 AND p.is_template = false AND b.lifecycle = 'live'`,
-      [before, board.dataSourceId],
-    )
-    if (target === null || (await currentKeyOf(tx, board, before)) !== groupKey) return fail('not_found')
-  }
 
   await materializePositions(tx, board, groupKey, rowId, before)
 

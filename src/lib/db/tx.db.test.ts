@@ -15,7 +15,7 @@ import { randomUUID } from 'node:crypto'
 
 import { createBareWorkspace, probeDatabase } from '../testing/db-fixtures.ts'
 import { query } from './pool.ts'
-import { withReadTransaction } from './tx.ts'
+import { withCommandTransaction, withReadTransaction } from './tx.ts'
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'
 
@@ -63,4 +63,48 @@ test('읽기 트랜잭션은 쓰기를 거부한다', async (t) => {
     ),
     (e: unknown) => (e as { code?: string }).code === '25006', // read_only_sql_transaction
   )
+})
+
+// ── withCommandTransaction — 거부된 명령은 아무것도 바꾸지 않는다 (#103) ──
+//
+// 이 저장소의 명령은 거부를 값으로 돌려준다(`{ ok: false }`). `withTransaction` 은 정상 반환이면 COMMIT 이라, 쓴 뒤에
+// 거부를 돌려주면 그 쓰기가 남는다 — `moveRow` 가 실제로 그랬다. 반사실: 안전망을 `withTransaction` 으로 되돌리면 첫
+// 검사가 실패한다(쓴 행이 남는다).
+
+const INSERT_WORKSPACE = `INSERT INTO workspace (id, name, region_id, created_at) VALUES (gen_random_uuid(), $1, 'local', now())`
+
+test('★ 콜백이 { ok: false } 를 돌려주면 그 전에 쓴 것이 롤백되고, 돌려준 값은 그대로 나온다', async (t) => {
+  if (skipReason) return t.skip(skipReason)
+  const name = `거부-${randomUUID()}`
+  const rejected = { ok: false as const, reason: 'not_found', detail: { kept: true } }
+
+  const result = await withCommandTransaction(async (tx) => {
+    await tx.query(INSERT_WORKSPACE, [name])
+    return rejected
+  })
+
+  assert.equal(result, rejected, '같은 객체를 그대로 돌려준다 — issues · currentVersion 을 잃지 않는다')
+  const [after] = await query<{ n: number }>(COUNT_BY_NAME, [name])
+  assert.equal(after.n, 0, '거부된 명령이 쓴 행이 남았다')
+})
+
+test('{ ok: true } 면 커밋한다 · 던지면 롤백하고 그대로 던진다', async (t) => {
+  if (skipReason) return t.skip(skipReason)
+  const kept = `통과-${randomUUID()}`
+  const accepted = await withCommandTransaction(async (tx) => {
+    await tx.query(INSERT_WORKSPACE, [kept])
+    return { ok: true as const, value: 1 }
+  })
+  assert.deepEqual(accepted, { ok: true, value: 1 })
+  assert.equal((await query<{ n: number }>(COUNT_BY_NAME, [kept]))[0].n, 1)
+
+  const thrown = `던짐-${randomUUID()}`
+  await assert.rejects(
+    withCommandTransaction(async (tx) => {
+      await tx.query(INSERT_WORKSPACE, [thrown])
+      throw new Error('진짜 오류')
+    }),
+    /진짜 오류/,
+  )
+  assert.equal((await query<{ n: number }>(COUNT_BY_NAME, [thrown]))[0].n, 0)
 })
