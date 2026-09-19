@@ -126,12 +126,19 @@ export async function listInbox(ctx: SessionContext, options: ListInboxOptions =
       .map((e) => e.payload.comment_id)
       .filter((id): id is string => typeof id === 'string')
     const comments = await readComments(tx, commentIds)
+    // 멘션 알림은 코멘트가 아니라 본문 블록을 가리킨다 — 그 블록의 **지금** 글을 읽는다(행은 투영이라 늦거나 없을 수 있다).
+    const blockIds = [...events.values()]
+      .map((e) => e.payload.block_id)
+      .filter((id): id is string => typeof id === 'string')
+    const blocks = await readBlockTexts(tx, ctx, blockIds)
     const titles = await readTitles(tx, ctx, groups.map((g) => g.page_id))
 
     return groups.map((g): InboxItem => {
       const event = g.latest_event === null ? undefined : events.get(g.latest_event)
       const commentId = typeof event?.payload.comment_id === 'string' ? event.payload.comment_id : null
       const comment = commentId === null ? undefined : comments.get(commentId)
+      const blockId = typeof event?.payload.block_id === 'string' ? event.payload.block_id : null
+      const blockText = commentId === null && blockId !== null ? (blocks.get(blockId) ?? null) : null
       return {
         groupKey: g.group_key,
         kind: g.kind as NotificationKind,
@@ -143,7 +150,14 @@ export async function listInbox(ctx: SessionContext, options: ListInboxOptions =
         lastAt: g.last_at,
         actorId: event?.actorId ?? null,
         discussionId: typeof event?.payload.discussion_id === 'string' ? event.payload.discussion_id : null,
-        preview: comment === undefined || comment.deleted ? null : comment.text.slice(0, MAX_PREVIEW),
+        preview:
+          comment !== undefined
+            ? comment.deleted
+              ? null
+              : comment.text.slice(0, MAX_PREVIEW)
+            : blockText === null
+              ? null
+              : blockText.slice(0, MAX_PREVIEW),
         deleted: comment?.deleted ?? false,
       }
     })
@@ -165,6 +179,16 @@ async function readComments(tx: Tx, ids: readonly string[]): Promise<Map<string,
       },
     ]),
   )
+}
+
+/** 멘션이 든 블록의 지금 글 — 없으면(아직 투영 전 · 지워짐) 미리보기가 없다. */
+async function readBlockTexts(tx: Tx, ctx: SessionContext, ids: readonly string[]): Promise<Map<string, string>> {
+  if (ids.length === 0) return new Map()
+  const rows = await tx.query<{ id: string; properties: { title?: unknown } }>(
+    `SELECT id, properties FROM block WHERE id = ANY($1::uuid[]) AND workspace_id = $2`,
+    [[...new Set(ids)], ctx.workspaceId],
+  )
+  return new Map(rows.map((r) => [r.id, plainTitleOf(r.properties)]))
 }
 
 /** 제목은 **복사해 두지 않는다** — 바뀐 제목을 보여줘야 한다(정본 §3.9 의 내비게이션 규칙과 같다). */

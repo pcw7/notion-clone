@@ -99,7 +99,7 @@ import { withReadTransaction, withTransaction, type Tx } from '../db/tx.ts'
 import { isUuid } from '../ids.ts'
 import { effectiveCaps } from '../permissions/effective.ts'
 import { can } from '../permissions/levels.ts'
-import { PAGE_REF_NODE } from '../editor/schema.ts'
+import { MENTION_NODE, PAGE_REF_NODE } from '../editor/schema.ts'
 import { writeEditorChange, type EditorChange } from './body-edit.ts'
 import { repairBodyYDoc } from './repair.ts'
 import { createBodyYDoc, readBodyYDoc, type BodyRead, type BodyReadOptions } from './ydoc.ts'
@@ -169,6 +169,8 @@ export type BodyDocSession = {
    * 지우고 새로 넣기로 쓴다) 안의 참조 요소가 함께 지워지고 들어간다(진단). 글자만 바꾼 update 는 아니다.
    */
   readonly touchedPageRefs: boolean
+  /** 적용한 참여자 update 가 멘션 요소를 넣거나 지웠는가 — 그 update 는 미루지 않는다(멘션 알림의 행위자가 그 참여자다). */
+  readonly touchedMentions: boolean
   /** 지금 본문을 정규화해 읽는다(`readBodyYDoc`). 투영이 이것으로 읽었으면 쌓을 때 같은 것을 넘긴다(`CommitOptions`). */
   read(options?: BodyReadOptions): BodyRead
   /** ProseMirror 변경을 쓴다 — 서버 명령 경로 ②(`body-edit.ts`). */
@@ -243,6 +245,7 @@ export async function openBodyDoc(tx: Tx, ctx: SessionContext, pageId: string): 
   ydoc.on('update', collect)
   let status: 'open' | 'broken' | 'committed' = 'open'
   let touchedPageRefs = false
+  let touchedMentions = false
   const assertOpen = (): void => {
     if (status === 'committed') throw new Error(`이미 쌓은 본문 세션이다: ${pageId}`)
   }
@@ -258,6 +261,9 @@ export async function openBodyDoc(tx: Tx, ctx: SessionContext, pageId: string): 
     get touchedPageRefs() {
       return touchedPageRefs
     },
+    get touchedMentions() {
+      return touchedMentions
+    },
     read: (options) => readBodyYDoc(ydoc, pageId, options),
     change(change) {
       assertOpen()
@@ -266,7 +272,8 @@ export async function openBodyDoc(tx: Tx, ctx: SessionContext, pageId: string): 
     applyUpdate(update) {
       assertOpen()
       const watch = (transaction: Y.Transaction): void => {
-        if (touchesPageRefs(ydoc, transaction)) touchedPageRefs = true
+        if (touchesElement(ydoc, transaction, PAGE_REF_NODE)) touchedPageRefs = true
+        if (touchesElement(ydoc, transaction, MENTION_NODE)) touchedMentions = true
       }
       ydoc.on('afterTransaction', watch)
       try {
@@ -340,13 +347,16 @@ export async function projectionLag(pageId: string): Promise<{ readonly projecte
 
 // ── 내부 ──────────────────────────────────────────────────────────────
 
-/** 이 Y 트랜잭션이 하위 페이지 참조 요소를 넣거나 지웠는가(`BodyDocSession.touchedPageRefs`). */
-function touchesPageRefs(ydoc: Y.Doc, transaction: Y.Transaction): boolean {
+/**
+ * 이 Y 트랜잭션이 이름이 `nodeName` 인 요소를 넣거나 지웠는가 — 하위 페이지 참조(`touchedPageRefs`) · 멘션(`touchedMentions`).
+ * 둘 다 "미루지 않는 update" 의 근거다: 참조는 행(휴지통 · 자리)이, 멘션은 알림의 행위자가 그 update 에 매여 있다.
+ */
+function touchesElement(ydoc: Y.Doc, transaction: Y.Transaction, nodeName: string): boolean {
   const isPageRef = (struct: unknown): boolean =>
     struct instanceof Y.Item &&
     struct.content instanceof Y.ContentType &&
     struct.content.type instanceof Y.XmlElement &&
-    struct.content.type.nodeName === PAGE_REF_NODE
+    struct.content.type.nodeName === nodeName
   let found = false
   Y.iterateDeletedStructs(transaction, transaction.deleteSet, (struct) => {
     if (isPageRef(struct)) found = true

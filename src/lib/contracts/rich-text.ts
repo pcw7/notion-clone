@@ -12,6 +12,8 @@
  * 표현할 수 없는 것은 다르다.
  */
 
+import { isUuid } from '../ids.ts'
+
 // ── 색 ────────────────────────────────────────────────────────────────
 //
 // **정확히 19개다.** `default` + 텍스트 9종 + 배경 9종.
@@ -200,6 +202,9 @@ export function validateRichText(value: unknown, path = 'rich_text'): Validation
       const m = run.mention as Record<string, unknown> | undefined
       if (typeof m?.type !== 'string') {
         issues.push({ path: `${p}.mention.type`, message: 'mention 타입이 필요합니다' })
+      } else if ((m.type === 'user' || m.type === 'page') && mentionTarget(run as RichTextRun) === null) {
+        // 사람 · 페이지 멘션은 대상 id 가 전부다 — 표시 텍스트는 저장하지 않는다(정본 §3.9 link_edge 절).
+        issues.push({ path: `${p}.mention.${m.type}.id`, message: '대상 id 가 uuid 여야 합니다' })
       }
     }
   })
@@ -265,4 +270,42 @@ export function normalizeRichText(runs: readonly RichTextRun[]): RichTextRun[] {
   }
 
   return out
+}
+
+// ── 멘션 ──────────────────────────────────────────────────────────────
+//
+// 노션 공개 API 의 모양 그대로다 — `mention: { type: 'user', user: { id } }` · `{ type: 'page', page: { id } }`.
+// **표시 텍스트를 저장하지 않는다**(07 F-07-08 · 05 F-05-09: "page_id 만 저장하고 렌더 시 조인"). 저장하면 이름을
+// 바꾸는 순간 전부 낡고, 볼 수 없는 페이지의 제목이 본문에 실린다(§3.2-22 와 같은 누출). `plain_text` 는 비운다 —
+// 그래서 검색 색인에도 들어가지 않는다(07 F-07-08: "워크스페이스 검색은 멘션을 찾지 못한다").
+
+export type MentionTarget = { readonly kind: 'user' | 'page'; readonly id: string }
+
+/** 사람 · 페이지 멘션이 가리키는 대상. 그 밖의 멘션(날짜 등)이거나 id 가 uuid 가 아니면 null. */
+export function mentionTarget(run: RichTextRun): MentionTarget | null {
+  if (run.type !== 'mention' || run.mention === undefined) return null
+  const m = run.mention as { type?: unknown; user?: { id?: unknown }; page?: { id?: unknown } }
+  if (m.type === 'user' && typeof m.user?.id === 'string' && isUuid(m.user.id)) return { kind: 'user', id: m.user.id }
+  if (m.type === 'page' && typeof m.page?.id === 'string' && isUuid(m.page.id)) return { kind: 'page', id: m.page.id }
+  return null
+}
+
+export function userMentionRun(userId: string, annotations: Partial<Annotations> = {}): RichTextRun {
+  return {
+    type: 'mention',
+    annotations: { ...DEFAULT_ANNOTATIONS, ...annotations },
+    plain_text: '',
+    href: null,
+    mention: { type: 'user', user: { id: userId } },
+  }
+}
+
+export function pageMentionRun(pageId: string, annotations: Partial<Annotations> = {}): RichTextRun {
+  return {
+    type: 'mention',
+    annotations: { ...DEFAULT_ANNOTATIONS, ...annotations },
+    plain_text: '',
+    href: null,
+    mention: { type: 'page', page: { id: pageId } },
+  }
 }

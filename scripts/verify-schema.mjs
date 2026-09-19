@@ -45,6 +45,8 @@ const EXPECTED_TABLES = [
   'discussion', 'comment', 'reaction',
   // 코멘트 3조각 — 활동 · 구독 · 알림 (0020)
   'activity_event', 'subscription', 'notification',
+  // 코멘트 5a조각 — 멘션의 역인덱스 (0021)
+  'link_edge',
   'schema_migration', 'scim_token', 'session_policy', 'sso_config',
   'user', 'user_email', 'user_session',
   'workspace', 'workspace_invite', 'workspace_member',
@@ -1316,6 +1318,63 @@ try {
       ok('N2: 같은 group_key 로 안 읽은 알림 둘 — 저장은 개별, 병합은 조회 시점이다')
     } catch (e) {
       fail(`N2: UNIQUE(group_key) WHERE read_at IS NULL 제약이 생겼다 (${e.code})`)
+    }
+  }
+
+  console.log('\n[13] 멘션 역인덱스 (0021 / §3.9 link_edge · F-07-09 · F-05-09)')
+  {
+    const sourcePage = randomUUID()
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key,
+                          ancestor_path, perm_scope_id, properties, format, created_at, last_edited_at)
+       VALUES ($1, $2, 'page', 'workspace', $2, 'l0', '{}', $1, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      [sourcePage, wsId],
+    )
+    const blockId = randomUUID()
+    await client.query(
+      `INSERT INTO link_edge (source_page_id, source_block_id, target_kind, target_id, created_at)
+       VALUES ($1, $2, 'user', $3, now())`,
+      [sourcePage, blockId, userId],
+    )
+    await client.query(
+      `INSERT INTO link_edge (source_page_id, source_block_id, target_kind, target_id, created_at)
+       VALUES ($1, $2, 'page', $3, now())`,
+      [sourcePage, blockId, randomUUID()],
+    )
+    ok('사람 · 페이지 멘션 edge 생성 (source_block_id 는 투영되지 않은 블록, target 은 없는 페이지여도 된다 — FK 없음)')
+
+    await mustReject(
+      '같은 (블록, 대상)을 두 번',
+      `INSERT INTO link_edge (source_page_id, source_block_id, target_kind, target_id, created_at)
+       VALUES ($1, $2, 'user', $3, now())`,
+      [sourcePage, blockId, userId],
+    )
+    await mustReject(
+      '대상 종류는 page · user 둘뿐이다',
+      `INSERT INTO link_edge (source_page_id, source_block_id, target_kind, target_id, created_at)
+       VALUES ($1, $2, 'database', $3, now())`,
+      [sourcePage, randomUUID(), randomUUID()],
+    )
+    await mustReject(
+      '없는 페이지에서 나가는 edge (source_page_id FK)',
+      `INSERT INTO link_edge (source_page_id, source_block_id, target_kind, target_id, created_at)
+       VALUES ($1, $2, 'user', $3, now())`,
+      [randomUUID(), randomUUID(), userId],
+    )
+
+    // 부정 요구사항 — source_block_id · target_id 에 FK 가 **없어야** 한다(0021 머리말 · §3.3-125 와 같은 이유).
+    {
+      const { rows } = await client.query(
+        `SELECT conname, (SELECT array_agg(a.attname ORDER BY a.attnum) FROM unnest(conkey) k JOIN pg_attribute a
+                    ON a.attrelid = conrelid AND a.attnum = k) AS cols
+           FROM pg_constraint WHERE contype = 'f' AND conrelid = 'link_edge'::regclass`,
+      )
+      const fkCols = rows.flatMap((r) => r.cols)
+      if (!fkCols.includes('source_block_id') && !fkCols.includes('target_id')) {
+        ok('link_edge 의 FK 는 source_page_id 뿐이다 — 본문 블록 · 다형 대상에는 걸지 않는다')
+      } else {
+        fail(`link_edge 에 걸면 안 되는 FK 가 있다: ${rows.map((r) => `${r.conname}(${r.cols})`).join(', ')}`)
+      }
     }
   }
 

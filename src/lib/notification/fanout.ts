@@ -108,3 +108,55 @@ export async function notifyComment(tx: Tx, ctx: SessionContext, event: CommentE
   }
   return recipients.size
 }
+
+// ── 멘션 ──────────────────────────────────────────────────────────────
+
+export type MentionEvent = {
+  readonly pageId: string
+  /** 멘션이 든 블록 중 하나 — 인박스가 미리보기로 그 블록의 글을 읽는다(복제하지 않는다). */
+  readonly blockId: string | null
+  /** 이 투영에서 이 페이지에 처음 멘션된 사람들(`block/link-edges.ts` 가 차분으로 냈다). */
+  readonly userIds: readonly string[]
+}
+
+/** 한 페이지의 멘션 알림을 조회 시점에 묶는 열쇠 — 스레드가 아니라 페이지 단위다. */
+export const mentionGroupKey = (pageId: string): string => `mention:${pageId}`
+
+/**
+ * 본문에 사람 멘션이 새로 생겼을 때의 알림. 투영과 같은 트랜잭션에서(`save-page-body.ts`).
+ *
+ * 받는 사람은 **이 워크스페이스의 살아 있는 멤버**뿐이다 — 편집기가 보낸 id 를 그대로 믿지 않는다. 나간 사람 · 다른
+ * 워크스페이스의 uuid 는 edge 에는 남되(노드가 남으니까) 알림은 없다. 뮤트(`none`)는 여기서도 이긴다(N1). 그 페이지를
+ * 볼 수 있는지는 인박스가 읽을 때 본다(§3.3-131 — 05 F-05-09: "접근 못 하는 사람은 알림을 받지 않는다").
+ *
+ * 행위자는 `ctx` 다 — 멘션을 넣은 update 는 미루지 않으므로(`body-write.ts`) 그 참여자의 세션이 여기까지 온다.
+ */
+export async function notifyMentions(tx: Tx, ctx: SessionContext, event: MentionEvent): Promise<number> {
+  const candidates = event.userIds.filter((id) => id !== ctx.userId)
+  if (candidates.length === 0) return 0
+
+  const members = await tx.query<{ user_id: string }>(
+    `SELECT user_id FROM workspace_member
+      WHERE workspace_id = $1 AND status = 'active' AND user_id = ANY($2::uuid[])`,
+    [ctx.workspaceId, candidates],
+  )
+  const levels = await subscribersOf(tx, event.pageId)
+  const recipients = members.map((m) => m.user_id).filter((id) => levels.get(id) !== 'none')
+  if (recipients.length === 0) return 0
+
+  const activity = await recordActivity(tx, ctx, {
+    pageId: event.pageId,
+    blockId: event.blockId,
+    type: 'user.mentioned',
+    payload: event.blockId === null ? {} : { block_id: event.blockId },
+  })
+  const groupKey = mentionGroupKey(event.pageId)
+  for (const userId of recipients) {
+    await tx.query(
+      `INSERT INTO notification (id, recipient_id, workspace_id, page_id, event_ids, kind, group_key, created_at)
+       VALUES ($1, $2, $3, $4, ARRAY[$5::uuid], 'mention', $6, now())`,
+      [randomUUID(), userId, ctx.workspaceId, event.pageId, activity.id, groupKey],
+    )
+  }
+  return recipients.length
+}
