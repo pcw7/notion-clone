@@ -41,6 +41,8 @@ const EXPECTED_TABLES = [
   'page', 'page_property_value', 'relation_edge',
   // W8-b 뷰 (0015)
   'view', 'view_property', 'filter_operator',
+  // 코멘트 1조각 (0018)
+  'discussion', 'comment', 'reaction',
   'schema_migration', 'scim_token', 'session_policy', 'sso_config',
   'user', 'user_email', 'user_session',
   'workspace', 'workspace_invite', 'workspace_member',
@@ -1102,6 +1104,95 @@ try {
     const missing = expected.filter(([tbl, name]) => got.get(`${tbl}.${name}`) !== 'O')
     if (missing.length === 0) ok(`신호 트리거 ${expected.length}개가 있고 켜져 있다`)
     else fail(`신호 트리거가 없거나 꺼져 있다: ${missing.map(([tbl, name]) => `${tbl}.${name}`).join(', ')}`)
+  }
+
+  console.log('\n[11] 코멘트 (0018 / §3.9 · F-05-08)')
+  {
+    // 정상 경로가 먼저 통과해야 한다. 페이지 블록 하나를 세우고 그 위에 스레드를 연다.
+    const pageId = randomUUID()
+    const discussionId = randomUUID()
+    const commentId = randomUUID()
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key,
+                          ancestor_path, perm_scope_id, properties, format, created_at, last_edited_at)
+       VALUES ($1, $2, 'page', 'workspace', $2, 'c0', '{}', $1, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      [pageId, wsId],
+    )
+    await client.query(
+      `INSERT INTO discussion (id, workspace_id, page_id, parent_block_id, created_by, created_at)
+       VALUES ($1, $2, $3, $3, $4, now())`,
+      [discussionId, wsId, pageId, userId],
+    )
+    await client.query(
+      `INSERT INTO comment (id, discussion_id, created_by, rich_text, created_at)
+       VALUES ($1, $2, $3, '[{"type":"text"}]'::jsonb, now())`,
+      [commentId, discussionId, userId],
+    )
+    ok('스레드 + 코멘트 생성 (page_id = parent_block_id 인 페이지 스레드)')
+
+    // 불변식 D1 — '해결됨'은 세 컬럼이 함께 움직인다.
+    await mustReject(
+      'D1: 누가 언제 해결했는지 없는 해결',
+      `UPDATE discussion SET resolved = true WHERE id = $1`,
+      [discussionId],
+    )
+    await mustReject(
+      'D1: 해결하지 않았는데 해결자가 있다',
+      `UPDATE discussion SET resolved_by = $2, resolved_at = now() WHERE id = $1`,
+      [discussionId, userId],
+    )
+
+    // 불변식 D2 — 살아 있는 코멘트는 비어 있지 않다.
+    await mustReject(
+      'D2: 빈 코멘트',
+      `INSERT INTO comment (id, discussion_id, created_by, rich_text, created_at)
+       VALUES ($1, $2, $3, '[]'::jsonb, now())`,
+      [randomUUID(), discussionId, userId],
+    )
+    await mustReject(
+      'D2: rich_text 가 배열이 아니다',
+      `INSERT INTO comment (id, discussion_id, created_by, rich_text, created_at)
+       VALUES ($1, $2, $3, '{"text":"안녕"}'::jsonb, now())`,
+      [randomUUID(), discussionId, userId],
+    )
+
+    // 불변식 D3 — 지운 코멘트는 내용을 남기지 않는다. 읽기에서 거르는 것만으로는 부족하다(0018 머리말).
+    await mustReject(
+      'D3: 지웠는데 내용이 남았다',
+      `UPDATE comment SET deleted_at = now() WHERE id = $1`,
+      [commentId],
+    )
+
+    // 반응은 PK 가 곧 2P-Set 이다(정본 §3.9).
+    await client.query(
+      `INSERT INTO reaction (target_kind, target_id, user_id, emoji, created_at) VALUES ('comment', $1, $2, '@', now())`,
+      [commentId, userId],
+    )
+    await mustReject(
+      '같은 (대상, 사람, 이모지)를 두 번',
+      `INSERT INTO reaction (target_kind, target_id, user_id, emoji, created_at) VALUES ('comment', $1, $2, '@', now())`,
+      [commentId, userId],
+    )
+    await mustReject(
+      '반응 대상은 comment · discussion 둘뿐이다',
+      `INSERT INTO reaction (target_kind, target_id, user_id, emoji, created_at) VALUES ('block', $1, $2, '@', now())`,
+      [commentId, userId],
+    )
+
+    // 부정 요구사항 — parent_block_id 에 FK 가 **없어야** 한다(0018 머리말).
+    // 걸리는 순간 ① 방금 친 문단(아직 투영 전)에 코멘트를 달 수 없고 ② 남이 그 문단을 지우면 스레드가 조용히 사라지거나
+    // 본문 저장이 막힌다. 05 F-05-07 은 "스레드는 생존"이라고 정했다.
+    {
+      const { rows } = await client.query(
+        `SELECT conname FROM pg_constraint
+          WHERE contype = 'f' AND conrelid = 'discussion'::regclass
+            AND 'parent_block_id' = ANY (
+                  SELECT a.attname FROM unnest(conkey) k JOIN pg_attribute a
+                    ON a.attrelid = conrelid AND a.attnum = k)`,
+      )
+      if (rows.length === 0) ok('discussion.parent_block_id 에 FK 가 없다 — 본문 블록 행은 Y.Doc 의 투영이다')
+      else fail(`discussion.parent_block_id 에 FK 가 생겼다: ${rows.map((r) => r.conname).join(', ')}`)
+    }
   }
 
   await client.query('ROLLBACK')

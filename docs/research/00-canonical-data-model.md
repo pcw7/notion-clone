@@ -1144,13 +1144,17 @@ CREATE INDEX ON reminder (target_at) WHERE fired_at IS NULL;
 CREATE TABLE discussion (                      -- 코멘트는 CRDT 에 넣지 않는다(관계형)
   id uuid PRIMARY KEY,
   parent_block_id uuid NOT NULL,               -- 페이지 코멘트면 page block, 인라인이면 대상 block
+                                               -- [보강] FK 를 걸지 않는다(본문 블록 행은 Y.Doc 의 투영이다)
+  page_id uuid NOT NULL REFERENCES block(id),  -- [보강] 권한 · 알림 라우팅의 축. 아래 참조
   workspace_id uuid NOT NULL,
   anchor jsonb NULL,                           -- RelativePosition 범위 + quoted_text 폴백
   resolved boolean NOT NULL DEFAULT false,
   resolved_by uuid NULL, resolved_at timestamptz NULL,
+  created_by uuid NOT NULL,                    -- [보강] 수정·삭제 권한의 근거(아래)
   created_at timestamptz NOT NULL
 );
 CREATE INDEX ON discussion (parent_block_id, resolved, created_at);
+CREATE INDEX ON discussion (page_id, resolved, created_at);   -- [보강] 페이지의 스레드 목록
 -- comments uuid[] 컬럼은 두지 않는다. 순서는 comment.created_at 이 준다(C-10 의 배열 폐기 원칙 승계).
 
 CREATE TABLE comment (
@@ -1194,6 +1198,40 @@ CREATE INDEX ON search_document USING gin (tsv);
 CREATE INDEX ON search_document USING gin (title_text gin_bigm_ops);  -- [정정] CJK 축
 CREATE INDEX ON search_document USING gin (body_text  gin_bigm_ops);
 ```
+
+**[보강] `discussion` 의 축 — `page_id` · `created_by` 추가, `parent_block_id` 에 FK 없음** ⟨코멘트 1조각 / 마이그레이션 0018⟩
+
+> 초판의 `discussion` 은 `workspace_id` 와 `parent_block_id` 만 갖는다. 그 둘로는
+> **코멘트를 볼 수 있는지 물을 수 없다.** 이 문서가 정한 권한의 축은 페이지이고
+> (§3.3 A9 · `effective()`), 알림 라우팅의 축도 페이지다(§3.8 `activity_event.page_id`
+> — *"알림 라우팅의 기준 축"*).
+>
+> `parent_block_id` 로 페이지를 거슬러 갈 수 없다. 본문 블록의 행은 **Y.Doc 의
+> 투영**이기 때문이다(판결 X-1):
+>
+> 1. 투영은 늦다. 참여자가 방금 친 블록의 행은 아직 없을 수 있다(투영 디바운스 창).
+> 2. 투영은 지운다. 다른 참여자가 그 블록을 지우면 행이 사라진다(프로젝터의 hard delete).
+>
+> 그래서 ① `page_id`(페이지 블록 FK)를 추가하고 ② `parent_block_id` 에는 **FK 를 걸지
+> 않는다.** FK 를 걸면 셋 중 하나가 된다 — 남이 문단을 지울 때 스레드가 조용히
+> 사라지거나(CASCADE), 코멘트가 달린 문단을 아무도 못 지우거나(RESTRICT), 아직
+> 투영되지 않은 블록에 코멘트를 못 달거나(삽입 검사). 05 F-05-07 의 엣지 케이스는
+> 첫째를 명시적으로 부정한다: *"앵커 텍스트가 전부 삭제됨 → 스레드는 생존.
+> '원본 없음(orphaned)' 표시 후 페이지 코멘트로 강등."*
+>
+> **대상 블록이 있는지는 행이 아니라 Y.Doc 에 묻는다.** 본문의 정본이 Y.Doc 이므로
+> 그것이 유일하게 맞는 질문이다. 고아 판정도 읽을 때 같은 곳에 묻는다.
+>
+> `created_by` 는 초판에 없다. `comment.created_by` 는 있는데 스레드에는 없어서,
+> "이 스레드를 누가 열었는가"를 첫 코멘트로 유추하게 된다 — 그 코멘트는 지워질 수
+> 있다(아래 D3). 수정·삭제 권한의 근거이므로 행에 적는다.
+>
+> 승격한 불변식 셋(마이그레이션 0018, `verify-schema.mjs` 가 거부를 확인한다):
+> **D1** `resolved`·`resolved_by`·`resolved_at` 은 함께 움직인다. **D2** 살아 있는
+> 코멘트는 비어 있지 않다(05 F-05-08: *"빈 코멘트 제출 → 거부"*). **D3** 지운 코멘트는
+> `rich_text` 를 비운다 — 행은 남겨 *"삭제된 코멘트"* 자리를 지키되 내용은 남기지
+> 않는다. 읽기에서 거르는 것만으로는 부족하다(익스포트 · 색인 · 알림 본문이 같은
+> 표를 읽는다).
 
 **[정정] GIN 인덱스 식 → 고정 regconfig 의 GENERATED 컬럼 + pg_bigm 2축** ⟨W7 / 마이그레이션 0012⟩
 

@@ -376,6 +376,16 @@ async function accessOf(tx: Tx, ctx: SessionContext, pageId: string): Promise<Pa
   return can(caps, 'edit_content') ? 'edit' : 'view'
 }
 
+/**
+ * 잠그지 않고 읽는 본문 상태 — **권한을 보지 않는다**(호출자가 봤다). 아직 Y.Doc 으로 옮기지 않은 페이지면 null 이다.
+ *
+ * 본문의 정본은 Y.Doc 이다(X-1). "이 블록이 이 본문에 있는가"를 `block` 행에 물으면 두 번 틀린다 — 방금 친 블록의 행은
+ * 아직 없고(투영 디바운스), 남이 지운 블록의 행은 이미 없다. 코멘트의 자리가 그것을 묻는다(`comment/discussion.ts`).
+ */
+export async function readBodyState(tx: Tx, pageId: string): Promise<DocState | null> {
+  return readState(tx, pageId)
+}
+
 /** 스냅샷 + 그 뒤의 update. 옮기지 않은 페이지면 null. */
 async function readState(tx: Tx, pageId: string): Promise<DocState | null> {
   const snapshot = await tx.queryMaybe<{ state: Buffer; merged_seq: string }>(
