@@ -40,6 +40,7 @@ export function SelectEditor({
   currentId,
   canCreate,
   isStatus = false,
+  align = 'left',
   onPick,
   onCreate,
 }: {
@@ -53,6 +54,8 @@ export function SelectEditor({
    * 머리는 옵션이 아니라서 ↑↓ 의 색인에 들지 않는다.
    */
   isStatus?: boolean
+  /** 팝오버를 칸의 어느 쪽에 맞춰 여는가. List 의 속성 칸은 오른쪽에 붙어 있어 `right` 다. */
+  align?: 'left' | 'right'
   onPick: (optionId: string | null) => void
   onCreate: (name: string) => void
 }) {
@@ -101,7 +104,9 @@ export function SelectEditor({
   return (
     <div
       data-testid="db-select-editor"
-      className="absolute left-0 top-full z-20 mt-1 w-64 rounded-md border border-neutral-200 bg-white p-1 shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
+      className={`absolute top-full z-20 mt-1 w-64 rounded-md border border-neutral-200 bg-white p-1 shadow-lg dark:border-neutral-700 dark:bg-neutral-900 ${
+        align === 'right' ? 'right-0' : 'left-0'
+      }`}
     >
       <input
         ref={inputRef}

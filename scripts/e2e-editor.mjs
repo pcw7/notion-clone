@@ -2595,6 +2595,94 @@ async function main() {
           JSON.stringify(await boardColumns()) === JSON.stringify(['진행 없음:1', '시작 전:0', '검토:1', '진행 중:0', '완료:0']),
           JSON.stringify(await boardColumns()))
       }
+      section('데이터베이스 List 뷰 (보드 4c-2 · F-04-04)')
+      // 어느 칸을 접는지 · 제목이 앞인지는 `list-layout.test.ts` 가, 서버(그룹 없이 만들어진다 · 모양만 바뀐다)는
+      // `view.db.test.ts` 가 본다. 여기서는 **같은 격자가 목록 모양으로 그려지는지**와, 표의 키보드 · 편집이 그 모양에서도
+      // 그대로 도는지를 본다 — List 는 별도 컴포넌트가 아니다(F-04-04).
+      // ⚠ 익스포트 절 **뒤**에 있다(표를 하나 더 만든다).
+      {
+        const { textRun } = await import(new URL('../src/lib/contracts/rich-text.ts', import.meta.url).href)
+        const api = async (method, path, body) => {
+          const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+            method,
+            headers: authed,
+            ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+          })
+          return { status: r.status, body: await r.json().catch(() => null) }
+        }
+        const listDb = (await api('POST', '/databases', { name: `목록 ${Date.now()}` })).body.database
+        const dsId = listDb.dataSourceId
+        const tableViewId = listDb.defaultViewId
+        const countProp = (await api('POST', `/data-sources/${dsId}/properties`, { name: '수량', type: 'number' })).body.property.id
+        await api('POST', `/data-sources/${dsId}/properties`, { name: '완료', type: 'checkbox' })
+        const titleProp = (await api('GET', `/views/${tableViewId}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+        const addItem = async (title, count) =>
+          (await api('POST', `/views/${tableViewId}/rows`, { cells: [
+            { propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } },
+            ...(count === undefined ? [] : [{ propertyId: countProp, value: { type: 'number', number: count } }]),
+          ] })).body.row.id
+        await addItem('A 항목', 3)
+        const rowB = await addItem('B 항목')
+
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${listDb.id}` })
+        await waitFor(`!!document.querySelector('[data-testid="db-table"]')`, 15000)
+        await clickOn('[data-testid="db-view-add"]')
+        await waitFor(`!!document.querySelector('[data-testid="db-view-add-list"]')`, 3000)
+        await clickOn('[data-testid="db-view-add-list"]')
+        check('★ "+ 목록 만들기" → 새 탭이 서고 같은 격자가 목록 모양으로 그려진다',
+          await waitFor(`document.querySelector('[data-testid="db-table"]')?.dataset.variant === 'list'
+            && document.querySelector('[data-testid="db-view-tab"][aria-current="page"]')?.dataset.viewType === 'list'`, 15000))
+        check('★ 머리 행은 화면에 없다 — 컬럼 이름은 스크린 리더에 남고, 머리 메뉴 · 속성 추가는 없다',
+          await evaluate(`(() => { const head = document.querySelector('[data-testid="db-table"] thead')
+            const r = head.getBoundingClientRect()
+            return r.width <= 1 && r.height <= 1 && head.textContent.includes('수량')
+              && !document.querySelector('[data-testid="db-column-menu"]') && !document.querySelector('[data-testid="db-add-column"]') })()`))
+        check('★ 제목은 왼쪽, 값이 있는 속성은 오른쪽 — 빈 속성은 자리를 차지하지 않고 체크박스는 남는다',
+          await evaluate(`(() => {
+            const cell = (k) => document.querySelector('td[data-cell="' + k + '"]')
+            const box = (k) => cell(k).getBoundingClientRect()
+            return box('0:0').x < box('0:1').x && cell('0:1').textContent === '3'
+              && cell('1:1').dataset.collapsed === 'true' && box('1:1').width === 0
+              && cell('1:2').dataset.collapsed === undefined && box('1:2').width > 0
+          })()`),
+          await evaluate(`JSON.stringify([...document.querySelectorAll('[data-testid="db-table"] tbody td')].map((td) => td.dataset.cell + ':' + (td.dataset.collapsed ?? '') + ':' + Math.round(td.getBoundingClientRect().width)))`))
+
+        // ── 키보드: 표의 규칙 그대로 — 접혀 있던 빈 칸이 선다 ──
+        await clickOn('td[data-cell="1:0"]')
+        await key('ArrowRight')
+        check('★ 키보드로 옮겨 가면 접혀 있던 빈 칸이 서고 무엇을 채우는 자리인지 말한다',
+          await waitFor(`(() => { const td = document.querySelector('td[data-cell="1:1"]')
+            return document.activeElement === td && td.dataset.collapsed === undefined && td.getBoundingClientRect().width > 0
+              && td.querySelector('[data-testid="db-list-placeholder"]')?.textContent === '수량' })()`, 3000),
+          await evaluate(`document.activeElement?.dataset?.cell ?? '(포커스 없음)'`))
+        await key('Enter')
+        await waitFor(`document.activeElement?.matches('[data-testid="db-cell-input"]')`, 3000)
+        await typeText('7')
+        await key('Enter')
+        check('★ 그 자리에서 값을 넣으면 배지가 된다 — 셀 편집이 표와 한 벌이다',
+          (await waitFor(`document.querySelector('td[data-cell="1:1"]')?.textContent === '7'`, 5000))
+            && (await poll(async () => ((await api('GET', `/views/${tableViewId}/rows`)).body.rows.find((r) => r.id === rowB)?.properties[countProp]?.number) === 7)))
+        await clickOn('td[data-cell="0:0"]')
+        check('다른 칸으로 옮겨도 값이 있는 칸은 남는다', await evaluate(`document.querySelector('td[data-cell="1:1"]')?.dataset.collapsed === undefined`))
+
+        // ── 새 항목 ──
+        await clickOn('[data-testid="db-add-row"]')
+        await waitFor(`document.activeElement?.matches('[data-testid="db-cell-input"]')`, 8000)
+        await typeText('C 항목')
+        await key('Enter')
+        check('"+ 새로 만들기" 가 목록 끝에 항목을 더하고 제목을 바로 받는다',
+          await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === 3
+            && document.querySelector('td[data-cell="2:0"]')?.textContent === 'C 항목'`, 8000))
+
+        // ── 종류 바꾸기: list → 표 ──
+        await clickOn('[data-testid="db-view-menu"]')
+        await waitFor(`!!document.querySelector('[data-testid="db-view-type-table"]')`, 3000)
+        await clickOn('[data-testid="db-view-type-table"]')
+        check('★ 표로 바꾸면 같은 뷰가 머리 행 · 머리 메뉴와 함께 표로 그려진다',
+          await waitFor(`document.querySelector('[data-testid="db-table"]')?.dataset.variant === 'table'
+            && !!document.querySelector('[data-testid="db-column-menu"]')
+            && document.querySelector('td[data-cell="1:1"]')?.textContent === '7'`, 10000))
+      }
     }
 
     section('볼 수 없는 하위 페이지의 참조 (HANDOFF §3.2-22)')
