@@ -11,7 +11,8 @@
 import type { FilterNode, SortKey } from '@/lib/database/filter'
 import type { GroupBy } from '@/lib/database/group'
 import type { RowJson } from '@/lib/database/http'
-import type { PropertySummary } from '@/lib/database/property'
+import type { DatabaseListItem } from '@/lib/database/database'
+import type { PropertySummary, SchemaSnapshot } from '@/lib/database/property'
 import type { CellValue, MvpPropertyType, SelectOption } from '@/lib/database/property-types'
 import type { RowCell } from '@/lib/database/row'
 import type { MvpViewType, ViewSummary } from '@/lib/database/view'
@@ -59,6 +60,11 @@ function messageOf(status: number, body: ErrorBody): string {
       return '그룹 설정을 확인하세요.'
     case 'invalid_config':
       return '속성 설정을 확인하세요.'
+    // ── relation (5b-2) ──
+    case 'invalid_target':
+      return '대상 표를 찾을 수 없습니다. 그사이 지워졌거나 볼 수 없는 표입니다.'
+    case 'unknown_property':
+      return '이 속성을 찾을 수 없습니다. 그사이 지워졌을 수 있습니다.'
     case 'unsupported_type':
       return '지원하지 않는 뷰 종류입니다.'
     case 'invalid_value':
@@ -168,6 +174,92 @@ export function loadRelationLabels(
     `${base(workspaceId)}/relation-labels`,
     { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ ids }) },
     (body) => (body.labels ?? {}) as Record<string, string | null>,
+  )
+}
+
+export type RelatedRow = { readonly id: string; readonly title: string }
+
+export type RelationPage = {
+  readonly items: readonly RelatedRow[]
+  readonly total: number
+  /** 대상 표를 볼 수 없어 제목을 받지 못한 개수. */
+  readonly hidden: number
+  readonly hasMore: boolean
+}
+
+/** 한 칸의 연결을 제목과 함께 — 행 고르기 팝오버의 위쪽. 권한 · 휴지통은 서버가 걸렀다. */
+export function readRelation(workspaceId: string, rowId: string, propertyId: string): Promise<ApiResult<RelationPage>> {
+  return call(`${base(workspaceId)}/rows/${rowId}/relations/${encodeURIComponent(propertyId)}`, { method: 'GET' }, (body) => ({
+    items: (body.items ?? []) as RelatedRow[],
+    total: typeof body.total === 'number' ? body.total : 0,
+    hidden: typeof body.hidden === 'number' ? body.hidden : 0,
+    hasMore: body.hasMore === true,
+  }))
+}
+
+/** 이 칸에 더할 수 있는 행을 제목으로 찾는다. 이미 연결된 행은 서버가 뺀다. */
+export function searchCandidates(
+  workspaceId: string,
+  rowId: string,
+  propertyId: string,
+  query: string,
+): Promise<ApiResult<RelatedRow[]>> {
+  return call(
+    `${base(workspaceId)}/rows/${rowId}/relations/${encodeURIComponent(propertyId)}/candidates?q=${encodeURIComponent(query)}`,
+    { method: 'GET' },
+    (body) => (body.items ?? []) as RelatedRow[],
+  )
+}
+
+/**
+ * 연결을 더하고 뺀다 — **"이 목록으로 바꿔라"는 없다**(값이 집합이라 통째로 덮으면 동시에 더한 남의 연결이 사라진다 ·
+ * `relation.ts` 머리말). 답은 바뀐 행이다(캐시의 relation 칸이 갱신돼 있다).
+ */
+export function linkRows(
+  workspaceId: string,
+  rowId: string,
+  propertyId: string,
+  change: { readonly add?: readonly string[]; readonly remove?: readonly string[] },
+): Promise<ApiResult<RowJson>> {
+  return call(
+    `${base(workspaceId)}/rows/${rowId}/relations/${encodeURIComponent(propertyId)}`,
+    { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify(change) },
+    (body) => body.row as RowJson,
+  )
+}
+
+/** 볼 수 있는 데이터베이스 — relation 의 대상을 고를 때. */
+export function listDatabases(workspaceId: string): Promise<ApiResult<DatabaseListItem[]>> {
+  return call(`${base(workspaceId)}/databases`, { method: 'GET' }, (body) => (body.databases ?? []) as DatabaseListItem[])
+}
+
+export type AddRelationInput = {
+  readonly name: string
+  readonly targetDataSourceId: string
+  readonly twoWay?: { readonly name: string }
+  readonly limit?: 'one'
+}
+
+/**
+ * relation 프로퍼티를 만든다. 돌려주는 것은 **이 표에 새로 생긴 프로퍼티들**이다 — 하나, 또는 같은 표에 양방향이면 둘.
+ *
+ * 스키마를 통째로 받아 "처음 보는 것"을 고르지 않는다. 표가 들고 있는 컬럼은 **보이는 것뿐**이라, 그렇게 고르면 감춰 둔
+ * 속성이 새 컬럼인 척 붙는다. 서버가 만든 id(`property` · `syncedPropertyId`)로 집는다. 다른 표에 생긴 역방향은 이 표의
+ * 스키마에 없으므로 자연히 빠진다.
+ */
+export function addRelation(
+  workspaceId: string,
+  dataSourceId: string,
+  input: AddRelationInput,
+): Promise<ApiResult<PropertySummary[]>> {
+  return call(
+    `${base(workspaceId)}/data-sources/${dataSourceId}/relations`,
+    { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify(input) },
+    (body) => {
+      const schema = body.schema as SchemaSnapshot
+      const created = [(body.property as PropertySummary | undefined)?.id, body.syncedPropertyId as string | null]
+      return schema.properties.filter((p) => created.includes(p.id))
+    },
   )
 }
 

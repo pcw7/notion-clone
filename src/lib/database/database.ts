@@ -45,7 +45,7 @@ import type { SessionContext } from '../auth/session-context.ts'
 import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
 import { can } from '../permissions/levels.ts'
 import { inheritFromWorkspace } from '../permissions/acl.ts'
-import { effectiveCaps } from '../permissions/effective.ts'
+import { effectiveCaps, readableScopes } from '../permissions/effective.ts'
 import { orderKeyBetween } from '../block/order-key.ts'
 import { nextSiblingKey, titleFromPlainText, plainTitleOf } from '../block/page.ts'
 import { newPropertyId } from './property.ts'
@@ -296,6 +296,42 @@ export async function getDatabase(
         },
       },
     } as const
+  })
+}
+
+export type DatabaseListItem = {
+  readonly id: string
+  readonly name: string
+  readonly dataSourceId: string
+}
+
+/** 목록의 상한. relation 의 대상 고르기가 읽는다 — 워크스페이스에 표가 이보다 많으면 검색이 있어야 한다(HANDOFF §7). */
+export const MAX_DATABASE_LIST = 200
+
+/**
+ * 이 사람이 **볼 수 있는** 데이터베이스들 — relation 프로퍼티의 대상을 고를 때 읽는다(relation 5b-2 · F-03-10 시나리오 1).
+ *
+ * 권한은 목록 필터와 같은 축이다(`readableScopes` — 사이드바 · 검색 · 제목 맵과 같다): 볼 수 없는 표는 **쿼리 밖으로 나오지
+ * 않는다.** 뽑아서 거르지 않는다 — 거르기를 빠뜨려 이름이 새는 경로를 만들지 않는다. 이름순으로 준다(같은 이름은 만든 순서).
+ */
+export async function listDatabases(ctx: SessionContext): Promise<DatabaseListItem[]> {
+  return withReadTransaction(async (tx) => {
+    const scopes = await readableScopes(tx, ctx)
+    if (scopes.length === 0) return []
+    const rows = await tx.query<{ id: string; properties: { title?: unknown } | null; data_source_id: string }>(
+      `SELECT b.id, b.properties, ds.id AS data_source_id
+         FROM block b
+         JOIN database d ON d.id = b.id
+         JOIN data_source ds ON ds.owner_database_id = d.id
+        WHERE b.workspace_id = $1 AND b.type = 'database' AND b.lifecycle = 'live'
+          AND b.perm_scope_id = ANY($2::uuid[])
+        ORDER BY b.created_at, b.id
+        LIMIT $3`,
+      [ctx.workspaceId, scopes, MAX_DATABASE_LIST],
+    )
+    return rows
+      .map((row) => ({ id: row.id, name: plainTitleOf(row.properties), dataSourceId: row.data_source_id }))
+      .sort((a, b) => a.name.localeCompare(b.name, 'ko'))
   })
 }
 

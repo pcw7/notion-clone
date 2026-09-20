@@ -27,7 +27,7 @@ export function useRelationLabels(
   initial: RelationLabels,
   rows: readonly RowJson[],
   columns: readonly ViewColumn[],
-): RelationLabels {
+): { readonly labels: RelationLabels; readonly addLabels: (known: RelationLabels) => void } {
   const [labels, setLabels] = useState<RelationLabels>(initial)
   const asked = useRef<Set<string> | null>(null)
   const propertyKey = columns
@@ -65,5 +65,15 @@ export function useRelationLabels(
     })
   }, [rows, propertyKey, workspaceId])
 
-  return labels
+  /**
+   * 이미 아는 제목을 바로 넣는다 — 행 고르기에서 방금 고른 행의 제목은 후보 목록이 갖고 있었다. 다시 묻지 않는다
+   * ("물은 id"에도 적는다 — 안 그러면 다음 effect 가 그 id 를 또 묻는다).
+   */
+  const addLabels = (known: RelationLabels) => {
+    asked.current ??= new Set()
+    for (const id of Object.keys(known)) asked.current.add(id)
+    setLabels((current) => ({ ...current, ...known }))
+  }
+
+  return { labels, addLabels }
 }
