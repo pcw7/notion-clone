@@ -46,6 +46,7 @@ import { isCellColumn } from '@/lib/database/view-columns'
 import { queryRows } from '@/lib/database/query'
 import { queryGroups } from '@/lib/database/group'
 import { loadRelationLabels, relationIdsIn } from '@/lib/database/relation'
+import { computeRollups, EMPTY_ROLLUP_PAGE } from '@/lib/database/rollup'
 import { groupLabel } from '@/lib/database/board-drag'
 import { listColumns, variantOf } from '@/lib/database/list-layout'
 import { isGroupableType } from '@/lib/database/property-types'
@@ -152,6 +153,16 @@ export default async function DatabasePage({
   const relationLabels =
     relationPropertyIds.length === 0 ? {} : await loadRelationLabels(ctx, relationIdsIn(firstRows, relationPropertyIds))
 
+  // ── rollup 칸의 값 ──
+  // 값은 행에 없다 — 어디에도 저장하지 않고 **읽을 때 계산한다**(정본 §3.5 [보강] rollup v1 · 보는 사람마다 다르다).
+  // 제목 맵과 같은 자리에서 첫 화면 것을 함께 계산한다. 그 뒤에 온 행("더 보기" · 새 행)의 것은 화면이
+  // `POST /rollup-values` 로 받는다(`use-rollup-values.ts`). 보드는 아직 rollup 배지를 그리지 않는다(§7).
+  const computed =
+    tablePage === null || !visibleColumns.some((c) => c.type === 'rollup')
+      ? null
+      : await computeRollups(ctx, view.value.dataSourceId, firstRows.map((row) => row.id))
+  const rollupValues = computed !== null && computed.ok ? computed.value : EMPTY_ROLLUP_PAGE
+
   return (
     <main className="flex min-h-screen min-w-0 flex-col gap-6 px-10 py-12">
       <div className="flex items-start justify-between gap-3">
@@ -231,6 +242,7 @@ export default async function DatabasePage({
             hasMore={tablePage.value.hasMore}
             nextCursor={tablePage.value.nextCursor}
             relationLabels={relationLabels}
+            rollupValues={rollupValues}
             access={access}
             sorts={sorts}
           />

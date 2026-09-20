@@ -20,6 +20,8 @@ import assert from 'node:assert/strict'
 
 import {
   aggregate,
+  rollupIsEmpty,
+  ROLLUP_FUNCTION_LABEL,
   effectiveRollupFunction,
   isRollupFunction,
   isRollupTargetType,
@@ -227,5 +229,36 @@ describe('⑦ config 읽기', () => {
     assert.equal(readRollupConfig({ relation_property_id: 'r', target_property_id: 7 }), null)
     assert.equal(readRollupConfig(null), null)
     assert.equal(readRollupConfig([]), null)
+  })
+})
+
+describe('⑧ 화면이 묻는 것 (5c-2)', () => {
+  test('함수마다 화면에 그릴 이름이 있다 — 목록에서 고르는 글자다', () => {
+    for (const fn of ROLLUP_FUNCTIONS) {
+      assert.equal(typeof ROLLUP_FUNCTION_LABEL[fn], 'string', fn)
+      assert.ok(ROLLUP_FUNCTION_LABEL[fn].length > 0, fn)
+    }
+    assert.equal(new Set(Object.values(ROLLUP_FUNCTION_LABEL)).size, ROLLUP_FUNCTIONS.length, '이름이 겹치면 무엇을 골랐는지 모른다')
+  })
+
+  test('★ 그릴 것이 없는 칸 — 받지 못한 칸 · 없음(null) 은 비었고, **0 과 false 는 값이다**', () => {
+    assert.equal(rollupIsEmpty(undefined), true, '아직 받지 못했다')
+    assert.equal(rollupIsEmpty({ state: 'ok', result: { kind: 'number', number: null }, hidden: 0 }), true)
+    assert.equal(rollupIsEmpty({ state: 'ok', result: { kind: 'percent', percent: null }, hidden: 0 }), true)
+    assert.equal(rollupIsEmpty({ state: 'ok', result: { kind: 'date', date: null }, hidden: 0 }), true)
+    assert.equal(rollupIsEmpty({ state: 'ok', result: { kind: 'values', values: [], count: 0 }, hidden: 0 }), true)
+
+    assert.equal(rollupIsEmpty({ state: 'ok', result: { kind: 'number', number: 0 }, hidden: 0 }), false, '0 은 값이다')
+    assert.equal(rollupIsEmpty({ state: 'ok', result: { kind: 'percent', percent: 0 }, hidden: 0 }), false, '0% 는 값이다')
+    assert.equal(
+      rollupIsEmpty({ state: 'ok', result: { kind: 'values', values: [box(false)], count: 1 }, hidden: 0 }),
+      false,
+      'false 는 값이다',
+    )
+  })
+
+  test('★ 말할 것이 있으면 비어 있지 않다 — 볼 수 없는 항목 · 너무 많음', () => {
+    assert.equal(rollupIsEmpty({ state: 'ok', result: { kind: 'number', number: null }, hidden: 2 }), false)
+    assert.equal(rollupIsEmpty({ state: 'too_many' }), false)
   })
 })

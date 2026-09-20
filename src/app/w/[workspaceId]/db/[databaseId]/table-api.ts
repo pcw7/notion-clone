@@ -15,6 +15,7 @@ import type { DatabaseListItem } from '@/lib/database/database'
 import type { PropertySummary, SchemaSnapshot } from '@/lib/database/property'
 import type { CellValue, MvpPropertyType, SelectOption } from '@/lib/database/property-types'
 import type { RowCell } from '@/lib/database/row'
+import type { RollupFunction, RollupPage } from '@/lib/database/rollup-functions'
 import type { MvpViewType, ViewSummary } from '@/lib/database/view'
 
 export type ApiResult<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly message: string }
@@ -260,6 +261,57 @@ export function addRelation(
       const created = [(body.property as PropertySummary | undefined)?.id, body.syncedPropertyId as string | null]
       return schema.properties.filter((p) => created.includes(p.id))
     },
+  )
+}
+
+// ── rollup (5c-2) ────────────────────────────────────────────────────
+
+/**
+ * 표의 스키마. **대상 표의 것도 읽는다** — rollup 폼이 "무엇을 모을까"를 고르게 하려면 그 표의 프로퍼티 목록이 필요하다.
+ * 볼 수 없는 표면 없는 것과 같은 답이다.
+ */
+export function readProperties(workspaceId: string, dataSourceId: string): Promise<ApiResult<readonly PropertySummary[]>> {
+  return call(
+    `${base(workspaceId)}/data-sources/${dataSourceId}/properties`,
+    { method: 'GET' },
+    (body) => (body.schema as SchemaSnapshot).properties,
+  )
+}
+
+export type AddRollupInput = {
+  readonly name: string
+  readonly relationPropertyId: string
+  readonly targetPropertyId: string
+  readonly function: RollupFunction
+}
+
+/** rollup 프로퍼티를 만든다. relation 과 달리 늘 하나다(반대쪽에 생기는 것이 없다). */
+export function addRollup(
+  workspaceId: string,
+  dataSourceId: string,
+  input: AddRollupInput,
+): Promise<ApiResult<PropertySummary>> {
+  return call(
+    `${base(workspaceId)}/data-sources/${dataSourceId}/rollups`,
+    { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify(input) },
+    (body) => body.property as PropertySummary,
+  )
+}
+
+/**
+ * 이 행들의 rollup 칸을 계산해 받는다. 읽기인데 POST 인 이유는 `relation-labels` 와 같다 — id 목록이 길다.
+ *
+ * 답은 **묻는 사람의 것**이다(볼 수 없는 행을 집계에서 뺀 결과). 공유 캐시에 넣지 않는다.
+ */
+export function rollupValues(
+  workspaceId: string,
+  dataSourceId: string,
+  rowIds: readonly string[],
+): Promise<ApiResult<RollupPage>> {
+  return call(
+    `${base(workspaceId)}/data-sources/${dataSourceId}/rollup-values`,
+    { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ rowIds }) },
+    (body) => ({ columns: body.columns as RollupPage['columns'], values: body.values as RollupPage['values'] }),
   )
 }
 

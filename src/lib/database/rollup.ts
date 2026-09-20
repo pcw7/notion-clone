@@ -56,7 +56,7 @@ import {
 import { readOptionsOf } from './options.ts'
 import { canViewDataSource } from './relation.ts'
 import { readCell } from './cell-format.ts'
-import { isOptionType, readRelationConfig, type CellValue, type MvpPropertyType, type SelectOption } from './property-types.ts'
+import { isOptionType, readRelationConfig, type CellValue } from './property-types.ts'
 import {
   aggregate,
   effectiveRollupFunction,
@@ -64,17 +64,28 @@ import {
   isRollupTargetType,
   readRollupConfig,
   rollupFunctionsFor,
+  MAX_ROLLUP_ROWS,
+  type RollupCell,
+  type RollupColumnInfo,
   type RollupFunction,
+  type RollupPage,
+} from './rollup-functions.ts'
+
+// 모양은 DB 를 모르는 모듈에 있다 — 화면이 값으로도 타입으로도 읽는다(§3.3-163 의 경계).
+export {
+  readRollupConfig,
+  EMPTY_ROLLUP_PAGE,
+  MAX_ROLLUP_ROWS,
+  type RollupCell,
+  type RollupColumnInfo,
+  type RollupConfig,
+  type RollupFunction,
+  type RollupPage,
   type RollupResult,
 } from './rollup-functions.ts'
 
-export { readRollupConfig, type RollupConfig, type RollupFunction, type RollupResult } from './rollup-functions.ts'
-
 /** 한 칸이 집계하는 연결의 상한(머리말). 마스터 §5.2-5 의 "1,000행까지". */
 export const MAX_ROLLUP_LINKS = 1000
-
-/** 한 번에 계산을 물을 수 있는 행 수. 표 한 화면(50행)과 보드의 여러 열을 덮는다. */
-export const MAX_ROLLUP_ROWS = 500
 
 // ── 프로퍼티 만들기 ───────────────────────────────────────────────────
 
@@ -164,35 +175,6 @@ export async function addRollupProperty(
 }
 
 // ── 읽을 때 계산 ──────────────────────────────────────────────────────
-
-/** rollup 컬럼 하나의 상태 — 행과 무관하다(스키마의 일이다). */
-export type RollupColumnInfo =
-  | {
-      readonly state: 'ok'
-      /** **실제로 적용한** 함수. 대상 타입에 맞지 않으면 `show_original` 로 접힌 것이다. */
-      readonly function: RollupFunction
-      readonly relationPropertyId: string
-      readonly targetPropertyId: string
-      readonly targetType: MvpPropertyType
-      /** `show_original` 이 옵션 id 를 이름으로 그릴 때. 대상이 select · status 이고 **그 표를 볼 수 있을 때만** 채운다. */
-      readonly targetOptions: readonly SelectOption[]
-    }
-  /** relation 프로퍼티가 지워졌거나(복원하면 돌아온다) config 가 rollup 의 모양이 아니다. */
-  | { readonly state: 'relation_missing' }
-  /** 대상 프로퍼티가 지워졌거나 더는 셀 타입이 아니다. */
-  | { readonly state: 'target_missing' }
-
-/** 한 칸. `too_many` 는 머리말. */
-export type RollupCell =
-  | { readonly state: 'ok'; readonly result: RollupResult; /** 볼 수 없어서 집계에서 뺀 연결의 수. */ readonly hidden: number }
-  | { readonly state: 'too_many' }
-
-export type RollupPage = {
-  /** rollup 프로퍼티 id → 상태. 이 표의 살아 있는 rollup 전부. */
-  readonly columns: Readonly<Record<string, RollupColumnInfo>>
-  /** 행 id → rollup 프로퍼티 id → 칸. `state: 'ok'` 인 컬럼만 싣는다. 이 표의 살아 있는 행이 아닌 id 는 키가 없다. */
-  readonly values: Readonly<Record<string, Readonly<Record<string, RollupCell>>>>
-}
 
 export type RollupReadResult =
   | { readonly ok: true; readonly value: RollupPage }

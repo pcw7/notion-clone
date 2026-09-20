@@ -25,6 +25,7 @@
  */
 
 import { isEmptyValue, type CellValue, type MvpPropertyType, type RelationValue } from './property-types.ts'
+import { rollupIsEmpty, type RollupCell } from './rollup-functions.ts'
 
 export type TableVariant = 'table' | 'list'
 
@@ -62,4 +63,14 @@ export function isCollapsed(variant: TableVariant, type: MvpPropertyType, value:
  */
 export function isRelationCollapsed(variant: TableVariant, value: RelationValue, active: boolean): boolean {
   return variant === 'list' && !active && value.count === 0
+}
+
+/**
+ * rollup 칸을 접는가 — 그릴 것이 없으면 접는다(`rollupIsEmpty`).
+ *
+ * **아직 받지 못한 칸도 접는다.** 값은 행에 없고 따로 물어 오므로(`use-rollup-values.ts`) 그 사이에 빈 자리를 세워 두면
+ * 목록이 한 번 들썩인다. 받으면 그때 선다.
+ */
+export function isRollupCollapsed(variant: TableVariant, cell: RollupCell | undefined, active: boolean): boolean {
+  return variant === 'list' && !active && rollupIsEmpty(cell)
 }
