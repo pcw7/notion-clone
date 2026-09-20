@@ -303,9 +303,24 @@ export async function createPage(
   ctx: SessionContext,
   input: CreatePageInput = {},
 ): Promise<PageDetail> {
+  return withTransaction((tx) => createPageIn(tx, ctx, input))
+}
+
+/**
+ * 같은 일을 **주어진 트랜잭션 안에서** 한다 — 페이지를 여럿 만드는 명령(복제 6a `duplicate.ts`)이 쓴다.
+ *
+ * `withTransaction` 은 풀에서 커넥션을 새로 잡는다. 그래서 트랜잭션 안에서 `createPage` 를 부르면 **다른 트랜잭션**이
+ * 시작되고, 그쪽이 바깥 트랜잭션이 이미 `FOR UPDATE` 로 잡은 부모 행을 기다리다 교착한다. 나누는 이유가 그것이다
+ * (`property.ts` `insertPropertyIn` 과 같은 모양).
+ */
+export async function createPageIn(
+  tx: Tx,
+  ctx: SessionContext,
+  input: CreatePageInput = {},
+): Promise<PageDetail> {
   const title = assertValidTitle(input.title ?? [])
 
-  return withTransaction(async (tx) => {
+  {
     const placement = await lockParent(tx, ctx, input.parentPageId)
     // 하위 페이지의 자리는 부모 본문의 참조 노드다(CRDT 4b · 판결 X-1). 행을 넣기 **전에** 부모 본문을 연다 —
     // 명령이 자기가 바꾼 것을 자기가 쓰는 순서다(`body-write.ts` 머리말).
@@ -387,7 +402,7 @@ export async function createPage(
       permScopeId: current.perm_scope_id,
       version: current.version,
     }
-  })
+  }
 }
 
 // ── 조회 ──────────────────────────────────────────────────────────────

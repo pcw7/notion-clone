@@ -64,7 +64,7 @@ function loadEnv(file = join(ROOT, '.env')) {
 }
 for (const [key, value] of Object.entries(loadEnv())) process.env[key] ??= value
 
-const { textRun } = await import(new URL('../src/lib/contracts/rich-text.ts', import.meta.url).href)
+const { textRun, pageMentionRun, mentionTarget } = await import(new URL('../src/lib/contracts/rich-text.ts', import.meta.url).href)
 // 본문 준비 · 확인은 **서버 명령 경로**로 한다(CRDT 6e). 본문 저장 API(PUT)는 걷어냈다 — 편집은 협업 서버로만 간다.
 const { resolveSessionContext } = await import(new URL('../src/lib/auth/session-context.ts', import.meta.url).href)
 const { savePageBody, loadPageBody } = await import(new URL('../src/lib/block/save-page-body.ts', import.meta.url).href)
@@ -3120,6 +3120,70 @@ async function main() {
             && !document.querySelector('[data-testid="db-rollup-relation"]')`, 5000))
         await key('Escape')
       }
+    }
+
+    section('페이지 복제 (복제 6a · F-02-09 · F-08-01)')
+    // 재매핑 · 권한 · 상한의 규칙은 `duplicate-remap.test.ts` · `duplicate.db.test.ts` 가 본다. 여기서는 빌드된 앱에서
+    // 라우트가 실제로 답하는지, 그리고 **사본이 열리는 진짜 페이지인지**를 본다.
+    {
+      const newPage = async (title, parent) => {
+        const res = await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
+          method: 'POST',
+          headers: authed,
+          body: JSON.stringify({ title, ...(parent ? { parentPageId: parent } : {}) }),
+        })
+        return (await res.json()).page.id
+      }
+      const duplicate = async (pageId, body = {}) => {
+        const res = await fetch(`${BASE}/api/workspaces/${workspaceId}/pages/${pageId}/duplicate`, {
+          method: 'POST',
+          headers: authed,
+          body: JSON.stringify(body),
+        })
+        return { status: res.status, body: await res.json().catch(() => null) }
+      }
+      const stamp = Date.now()
+      const outside = await newPage(`바깥 문서 ${stamp}`)
+      const source = await newPage(`복제 원본 ${stamp}`)
+      const child = await newPage('하위 문서', source)
+      const marker = `사본에서도 보이는 글 ${stamp}`
+      await saveBody(source, {
+        blocks: [
+          { id: randomUUID(), type: 'paragraph', title: [textRun(marker)], properties: {}, format: {}, children: [] },
+          { id: randomUUID(), type: 'paragraph', title: [pageMentionRun(child), pageMentionRun(outside)], properties: {}, format: {}, children: [] },
+          { id: child, type: 'page', title: [], properties: {}, format: {}, children: [] },
+        ],
+      })
+
+      const made = await duplicate(source)
+      check('★ 복제하면 사본이 생긴다 — 제목에 꼬리표가 붙고 하위 페이지까지 따라온다',
+        made.status === 201 && made.body?.page?.plainTitle === `복제 원본 ${stamp} (1)` && made.body?.pages === 2
+          && made.body?.skipped === 0,
+        `${made.status} ${JSON.stringify(made.body?.page?.plainTitle)} pages=${made.body?.pages}`)
+
+      const copyId = made.body.page.id
+      const copied = await readBody(copyId)
+      const runs = copied.doc.blocks[1].title
+      const copiedChild = copied.doc.blocks[2]
+      check('★ 안쪽 멘션은 **사본의** 하위 페이지를, 바깥 멘션은 원본을 가리킨다 — 이 조각이 고정한 규칙',
+        mentionTarget(runs[0])?.id === copiedChild.id && mentionTarget(runs[0])?.id !== child
+          && mentionTarget(runs[1])?.id === outside,
+        `${mentionTarget(runs[0])?.id} · ${mentionTarget(runs[1])?.id}`)
+      check('원본의 본문은 그대로다 — 복제가 원본을 고치지 않는다',
+        mentionTarget((await readBody(source)).doc.blocks[1].title[0])?.id === child)
+
+      const cycle = await duplicate(source, { parentPageId: source })
+      check('자기 자신 안으로는 복제할 수 없다', cycle.status === 400 && cycle.body?.error === 'cycle',
+        `${cycle.status} ${JSON.stringify(cycle.body)}`)
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${copyId}` })
+      check('★ 사본은 열리는 진짜 페이지다 — 본문과 하위 페이지가 화면에 선다',
+        (await waitFor(`document.body.textContent.includes(${JSON.stringify(marker)})`, 15000))
+          && (await evaluate(`document.querySelectorAll('.blk-editor .blk-page-link').length === 1
+            && [...document.querySelectorAll('.blk-editor .blk-page-link')].every((e) => e.textContent === '하위 문서')`)),
+        await evaluate(`[...document.querySelectorAll('.blk-editor .blk-page-link')].map((e) => e.textContent).join() || '(참조 없음)'`))
+      check('사이드바에도 사본이 선다',
+        await waitFor(`!!document.querySelector('nav[aria-label="페이지 트리"] a[href$="/${copyId}"]')`, 8000))
     }
 
     section('볼 수 없는 하위 페이지의 참조 (HANDOFF §3.2-22)')
