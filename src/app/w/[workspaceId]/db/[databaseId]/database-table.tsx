@@ -67,7 +67,7 @@ import type { DatabaseAccess } from '@/lib/database/database'
 import type { SortKey } from '@/lib/database/filter'
 import { sortFirst } from '@/lib/database/filter-draft'
 import type { RowJson } from '@/lib/database/http'
-import type { ViewColumn } from '@/lib/database/view'
+import { isCellColumn, type CellColumn, type ViewColumn } from '@/lib/database/view-columns'
 import { MAX_QUERY_PAGINATION } from '@/lib/database/limits'
 import {
   emptyValue,
@@ -77,14 +77,16 @@ import {
   isOptionType,
   optionIdOf,
   optionValue,
+  readRelationValue,
   type CellValue,
   type MvpPropertyType,
 } from '@/lib/database/property-types'
 import { cellText, defaultColumnWidth, draftOf, parseDraft, readCell, sameValue } from '@/lib/database/cell-format'
 import { handleGridKey, type CellPos, type GridMode, type KeyResult } from '@/lib/database/grid-nav'
-import { isCollapsed, type TableVariant } from '@/lib/database/list-layout'
+import { isCollapsed, isRelationCollapsed, type TableVariant } from '@/lib/database/list-layout'
 import * as api from './table-api'
-import { CellDisplay, TYPE_ICON, TYPE_LABEL } from './cell-view'
+import { CellDisplay, RelationChips, TYPE_ICON, TYPE_LABEL, type RelationLabels } from './cell-view'
+import { useRelationLabels } from './use-relation-labels'
 import { SelectEditor } from './select-editor'
 import { AddColumn } from './add-column'
 import { ColumnMenu } from './column-menu'
@@ -111,6 +113,8 @@ export function DatabaseTable(props: {
   sorts: readonly SortKey[]
   /** `list` 면 같은 격자를 목록 모양으로 그린다(머리말). 기본은 `table`. */
   variant?: TableVariant
+  /** 첫 화면의 relation 제목(서버 렌더가 준다). 그 뒤에 온 행의 것은 `useRelationLabels` 가 받는다. */
+  relationLabels: RelationLabels
 }) {
   const { workspaceId, viewId, dataSourceId, tableName, access } = props
   const variant: TableVariant = props.variant ?? 'table'
@@ -158,12 +162,17 @@ export function DatabaseTable(props: {
     }
   }, [mode])
 
-  const valueAt = (row: RowJson, column: ViewColumn): CellValue =>
+  // ★ 셀 값은 **셀 컬럼**에만 있다. relation 컬럼의 값은 셀이 아니라 캐시의 `RelationValue` 다(불변식 C2) — 셀의 규칙
+  //   (`readCell` · `parseDraft` · `emptyValue`)에 넘기면 조용히 틀린 값이 된다. 타입이 그것을 막는다(`isCellColumn`).
+  const valueAt = (row: RowJson, column: CellColumn): CellValue =>
     readCell(column.type, row.properties[column.propertyId])
+
+  // relation 칸의 제목 — 첫 화면은 서버가 줬고, "더 보기" · 새 행의 것은 여기서 받는다.
+  const labels = useRelationLabels(workspaceId, props.relationLabels, rows, columns)
 
   // ── 저장 ───────────────────────────────────────────────────────────
 
-  const saveCell = async (rowId: string, column: ViewColumn, next: CellValue, previous: CellValue) => {
+  const saveCell = async (rowId: string, column: CellColumn, next: CellValue, previous: CellValue) => {
     // 같은 값이면 보내지 않는다 — 셀 쓰기마다 block.version 이 오른다(X-6).
     if (sameValue(previous, next)) return
 
@@ -200,6 +209,12 @@ export function DatabaseTable(props: {
     const column = columns[at.col]
     if (row === undefined || column === undefined) return
 
+    // relation 칸은 아직 읽기 전용이다 — 행 고르기는 relation 5b-2 가 붙인다. 선택만 한다.
+    if (!isCellColumn(column)) {
+      setMode({ kind: 'selected', at })
+      return
+    }
+
     // F-03-16 엣지 케이스: *"읽기 전용 프로퍼티 편집 시도 → 편집 모드 진입 차단."*
     if (!access.canEditContent) {
       setMode({ kind: 'selected', at })
@@ -221,7 +236,7 @@ export function DatabaseTable(props: {
   const commitEdit = (at: CellPos): boolean => {
     const row = rows[at.row]
     const column = columns[at.col]
-    if (row === undefined || column === undefined) return true
+    if (row === undefined || column === undefined || !isCellColumn(column)) return true
     // select · status 는 고르는 순간 저장됐다. 편집을 닫는 것 말고 할 일이 없다.
     if (isOptionType(column.type) || column.type === 'checkbox') return true
 
@@ -255,7 +270,7 @@ export function DatabaseTable(props: {
       case 'clear': {
         const row = target ? rows[target.row] : undefined
         const column = target ? columns[target.col] : undefined
-        if (row && column && access.canEditContent) {
+        if (row && column && isCellColumn(column) && access.canEditContent) {
           void saveCell(row.id, column, emptyValue(column.type), valueAt(row, column))
         }
         setMode(result.mode)
@@ -342,7 +357,7 @@ export function DatabaseTable(props: {
   const pickOption = (at: CellPos, optionId: string | null) => {
     const row = rows[at.row]
     const column = columns[at.col]
-    if (row === undefined || column === undefined || !isOptionType(column.type)) return
+    if (row === undefined || column === undefined || !isCellColumn(column) || !isOptionType(column.type)) return
     void saveCell(row.id, column, optionValue(column.type, optionId), valueAt(row, column))
     setMode({ kind: 'selected', at })
   }
@@ -543,19 +558,31 @@ export function DatabaseTable(props: {
               >
                 {columns.map((column, c) => {
                   const at = { row: r, col: c }
-                  const value = valueAt(row, column)
                   const isSelected = mode.kind !== 'idle' && samePos(mode.at, at)
                   const isEditing = mode.kind === 'editing' && samePos(mode.at, at)
+                  // 칸은 둘 중 하나다 — 셀(값이 EAV 에 있다) 아니면 relation(값이 엣지이고 여기에는 캐시의 id 가 있다).
+                  const cell = isCellColumn(column)
+                    ? ({ kind: 'cell', column, value: valueAt(row, column) } as const)
+                    : ({ kind: 'relation', column, value: readRelationValue(row.properties[column.propertyId]) } as const)
                   // List: 빈 칸은 접는다. 선택 · 편집 중이면 비어 있어도 선다(`list-layout.ts`).
-                  const collapsed = isCollapsed(variant, column.type, value, isSelected)
+                  const collapsed =
+                    cell.kind === 'cell'
+                      ? isCollapsed(variant, cell.column.type, cell.value, isSelected)
+                      : isRelationCollapsed(variant, cell.value, isSelected)
+                  const empty =
+                    cell.kind === 'cell'
+                      ? isEmptyValue(cell.value) && cell.column.type !== 'checkbox'
+                      : cell.value.count === 0
                   const display =
-                    isList && isEmptyValue(value) && column.type !== 'checkbox' ? (
+                    isList && empty ? (
                       // 제목은 "제목 없음", 선택된 빈 속성 칸은 그 속성의 이름 — 무엇을 채우는 자리인지 말한다.
                       <span className="truncate text-neutral-400" data-testid="db-list-placeholder">
                         {column.type === 'title' ? '제목 없음' : column.name}
                       </span>
+                    ) : cell.kind === 'cell' ? (
+                      <CellDisplay value={cell.value} options={column.options} />
                     ) : (
-                      <CellDisplay value={value} options={column.options} />
+                      <RelationChips value={cell.value} labels={labels} />
                     )
                   return (
                     <td
@@ -567,7 +594,7 @@ export function DatabaseTable(props: {
                       role="gridcell"
                       tabIndex={focusTarget !== null && samePos(focusTarget, at) ? 0 : -1}
                       aria-selected={isSelected}
-                      aria-readonly={!access.canEditContent || undefined}
+                      aria-readonly={!access.canEditContent || cell.kind === 'relation' || undefined}
                       data-cell={keyOf(at)}
                       data-property-id={column.propertyId}
                       data-editing={isEditing || undefined}
@@ -588,12 +615,12 @@ export function DatabaseTable(props: {
                             }`
                       }
                     >
-                      {isEditing && isOptionType(column.type) ? (
+                      {isEditing && cell.kind === 'cell' && isOptionType(cell.column.type) ? (
                         <>
                           {display}
                           <SelectEditor
                             options={column.options}
-                            currentId={optionIdOf(value)}
+                            currentId={optionIdOf(cell.value)}
                             isStatus={column.type === 'status'}
                             // List 의 속성은 오른쪽에 붙어 있다 — 왼쪽 기준으로 열면 화면 밖으로 나간다.
                             align={isList ? 'right' : 'left'}

@@ -58,7 +58,7 @@ import type { RowJson } from '@/lib/database/http'
 import type { GroupBy } from '@/lib/database/group'
 import type { ViewColumn } from '@/lib/database/view'
 import type { GroupableType, SelectOption } from '@/lib/database/property-types'
-import { isEmptyValue } from '@/lib/database/property-types'
+import { isEmptyValue, readRelationValue } from '@/lib/database/property-types'
 import { cellText, parseDraft, readCell, sameValue } from '@/lib/database/cell-format'
 import {
   groupLabel,
@@ -69,7 +69,8 @@ import {
   type DropTarget,
 } from '@/lib/database/board-drag'
 import * as api from './table-api'
-import { CellDisplay, OptionChip } from './cell-view'
+import { CellDisplay, OptionChip, RelationChips, type RelationLabels } from './cell-view'
+import { useRelationLabels } from './use-relation-labels'
 
 /** `GET /groups` 의 그룹 하나 — 행은 `rowJson`. 서버 렌더(`page.tsx`)도 같은 모양으로 내려준다. */
 export type BoardGroupJson = {
@@ -121,6 +122,8 @@ export function DatabaseBoard(props: {
   manualOrder: boolean
   groups: BoardGroupJson[]
   access: DatabaseAccess
+  /** 첫 화면의 relation 제목(서버 렌더가 준다). 그 뒤에 온 카드의 것은 `useRelationLabels` 가 받는다. */
+  relationLabels: RelationLabels
 }) {
   const { workspaceId, viewId, tableName, columns, property, groupBy, manualOrder, access } = props
   const router = useRouter()
@@ -408,6 +411,13 @@ export function DatabaseBoard(props: {
 
   // ── 그리기 ──────────────────────────────────────────────────────────
 
+  const labels = useRelationLabels(
+    workspaceId,
+    props.relationLabels,
+    groups.flatMap((g) => g.rows),
+    columns,
+  )
+
   const visible = groups.filter((g) => !g.hidden)
   const hiddenGroups = groups.filter((g) => g.hidden)
 
@@ -476,6 +486,7 @@ export function DatabaseBoard(props: {
                     row={row}
                     groupKey={group.key}
                     badgeColumns={badgeColumns}
+                    relationLabels={labels}
                     dragging={draggingId === row.id}
                     dropBefore={isTarget && drop.beforeRowId === row.id}
                     editing={editing?.rowId === row.id ? editing : null}
@@ -566,6 +577,7 @@ function BoardCard({
   row,
   groupKey,
   badgeColumns,
+  relationLabels,
   dragging,
   dropBefore,
   editing,
@@ -582,6 +594,7 @@ function BoardCard({
   row: RowJson
   groupKey: string
   badgeColumns: readonly ViewColumn[]
+  relationLabels: RelationLabels
   dragging: boolean
   dropBefore: boolean
   editing: Editing | null
@@ -630,6 +643,15 @@ function BoardCard({
           </div>
         )}
         {badgeColumns.map((column) => {
+          if (column.type === 'relation') {
+            const related = readRelationValue(row.properties[column.propertyId])
+            if (related.count === 0) return null
+            return (
+              <span key={column.propertyId} title={column.name} data-testid="db-board-badge" className="max-w-full">
+                <RelationChips value={related} labels={relationLabels} />
+              </span>
+            )
+          }
           const value = readCell(column.type, row.properties[column.propertyId])
           if (value.type === 'checkbox' ? !value.checkbox : isEmptyValue(value)) return null
           return (

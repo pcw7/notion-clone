@@ -157,6 +157,20 @@ export function moveCard(
   )
 }
 
+// ── relation (5b-1) ────────────────────────────────────────────────────
+
+/** 연결된 행들의 제목. 첫 화면의 것은 서버 렌더가 준다 — 이것은 그 뒤에 온 행("더 보기" · 새 행)의 몫이다. */
+export function loadRelationLabels(
+  workspaceId: string,
+  ids: readonly string[],
+): Promise<ApiResult<Record<string, string | null>>> {
+  return call(
+    `${base(workspaceId)}/relation-labels`,
+    { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ ids }) },
+    (body) => (body.labels ?? {}) as Record<string, string | null>,
+  )
+}
+
 /** 뷰를 만든다. 보드인데 `groupBy` 가 없으면 서버가 첫 select 를 고르고, 고를 것이 없으면 `group_required` 다. */
 export function createView(
   workspaceId: string,

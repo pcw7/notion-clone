@@ -49,7 +49,7 @@ import {
 import type { GroupBy } from '@/lib/database/group'
 import type { OperatorCatalogEntry } from '@/lib/database/operator-catalog'
 import { isGroupableType, isOptionType, type MvpPropertyType } from '@/lib/database/property-types'
-import type { ViewColumn } from '@/lib/database/view'
+import { isCellColumn, type CellColumn, type ViewColumn } from '@/lib/database/view-columns'
 import { setColumnVisible, updateView, type ApiResult } from './table-api'
 import { TYPE_ICON } from './cell-view'
 
@@ -83,7 +83,8 @@ const FIELD =
  *   status 도 같은 사이드카라 같이 뺀다(`OPTION_TYPES`).
  */
 export function isSortable(column: Pick<ViewColumn, 'type'>): boolean {
-  return !isOptionType(column.type)
+  // relation 은 사이드카가 없다 — 정렬 · 필터의 축이 아니다(값이 엣지다 · HANDOFF §7).
+  return column.type !== 'relation' && !isOptionType(column.type)
 }
 
 export function ViewToolbar({
@@ -113,9 +114,11 @@ export function ViewToolbar({
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
+  // 필터 · 정렬은 **셀 컬럼만** 받는다. relation 은 사이드카가 없어 거를 축이 없다 — 패널에 아예 나오지 않는다.
+  const cellColumns = useMemo(() => columns.filter(isCellColumn), [columns])
   const types = useMemo(
-    () => new Map<string, MvpPropertyType>(columns.map((c) => [c.propertyId, c.type])),
-    [columns],
+    () => new Map<string, MvpPropertyType>(cellColumns.map((c) => [c.propertyId, c.type])),
+    [cellColumns],
   )
   const read = readRules(filter)
   const hidden = columns.filter((c) => !c.visible).length
@@ -143,7 +146,7 @@ export function ViewToolbar({
       ? []
       : read.editable
         ? read.rules.map((rule) =>
-            describeRule(rule, columns.find((c) => c.propertyId === rule.property_id), catalog),
+            describeRule(rule, cellColumns.find((c) => c.propertyId === rule.property_id), catalog),
           )
         : ['고급 필터 (여기서 고칠 수 없음)']
 
@@ -168,7 +171,7 @@ export function ViewToolbar({
 
         {panel === 'filter' && (
           <FilterPanel
-            columns={columns}
+            columns={cellColumns}
             catalog={catalog}
             filter={filter}
             types={types}
@@ -179,7 +182,7 @@ export function ViewToolbar({
         )}
         {panel === 'sort' && (
           <SortPanel
-            columns={columns.filter(isSortable)}
+            columns={cellColumns.filter(isSortable)}
             sorts={sorts}
             canEdit={canEdit}
             onSave={(next) => run(() => updateView(workspaceId, viewId, { sorts: next }))}
@@ -304,7 +307,7 @@ function FilterPanel({
   onSave,
   onClose,
 }: {
-  columns: ViewColumn[]
+  columns: CellColumn[]
   catalog: OperatorCatalogEntry[]
   filter: FilterNode | null
   types: ReadonlyMap<string, MvpPropertyType>
@@ -463,7 +466,7 @@ function RuleValue({
   disabled,
   onChange,
 }: {
-  column: ViewColumn
+  column: CellColumn
   value: unknown
   disabled: boolean
   /** `undefined` 는 "값 없음"이다 — 그 규칙은 저장 트리에서 빠진다. */
@@ -619,7 +622,7 @@ function SortPanel({
   onClose,
 }: {
   /** 정렬할 수 있는 컬럼만(`isSortable`). */
-  columns: ViewColumn[]
+  columns: CellColumn[]
   sorts: SortKey[]
   canEdit: boolean
   onSave: (next: SortKey[]) => Promise<boolean>
