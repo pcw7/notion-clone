@@ -97,6 +97,36 @@ export function isAppPropertyType(t: unknown): t is AppPropertyType {
   return typeof t === 'string' && (APP_PROPERTY_TYPES as readonly string[]).includes(t)
 }
 
+/** 한 칸에 몇 개까지 연결할 수 있는가. F-03-10: *"`1 페이지` 또는 `제한 없음`"*. */
+export type RelationLimit = 'one' | 'none'
+
+/**
+ * `property.config` — relation. snake_case 로 저장한다(정본 E1 의 키 이름 그대로).
+ *
+ * 여기(계약 모듈)에 두는 이유: 뷰의 컬럼(`view.ts`)이 이것을 읽어 화면에 넘기는데, `relation.ts` 는 `property.ts` 를,
+ * `property.ts` 는 `view.ts` 를 끌어온다 — 거기 두면 값 import 가 순환한다.
+ */
+export type RelationConfig = {
+  readonly target_data_source_id: string
+  /** 양방향의 짝. 자기 자신일 수 있다(같은 표 · 프로퍼티 하나). 없으면 단방향. */
+  readonly synced_property_id?: string
+  readonly limit?: RelationLimit
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/** 저장된 config 를 읽는다. relation 의 모양이 아니면 null. */
+export function readRelationConfig(raw: unknown): RelationConfig | null {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null
+  const c = raw as Record<string, unknown>
+  if (typeof c.target_data_source_id !== 'string' || !UUID.test(c.target_data_source_id)) return null
+  return {
+    target_data_source_id: c.target_data_source_id,
+    ...(typeof c.synced_property_id === 'string' ? { synced_property_id: c.synced_property_id } : {}),
+    ...(c.limit === 'one' ? { limit: 'one' as const } : {}),
+  }
+}
+
 /** 캐시가 싣는 relation 칸의 앞쪽 개수. 마이그레이션 0024 의 `rn <= 25` 와 **같은 수**여야 한다. */
 export const RELATION_CACHE_LIMIT = 25
 

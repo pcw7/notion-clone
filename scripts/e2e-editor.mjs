@@ -2683,6 +2683,110 @@ async function main() {
             && !!document.querySelector('[data-testid="db-column-menu"]')
             && document.querySelector('td[data-cell="1:1"]')?.textContent === '7'`, 10000))
       }
+      section('데이터베이스 relation 칸 (relation 5b-1 · F-03-10)')
+      // 엣지 · 거울상 · 권한 · 제목 맵의 규칙은 `relation.db.test.ts` · `verify-schema` ⑮ 가 본다. 여기서는 화면이 그것을
+      // **그리는지**를 본다 — 제목 칩 · 휴지통에 간 연결 · "더 보기"로 온 행의 제목 · 목록과 보드의 배지.
+      // ⚠ 익스포트 절 **뒤**에 있다(표를 둘 더 만든다).
+      {
+        const { textRun } = await import(new URL('../src/lib/contracts/rich-text.ts', import.meta.url).href)
+        const api = async (method, path, body) => {
+          const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+            method,
+            headers: authed,
+            ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+          })
+          return { status: r.status, body: await r.json().catch(() => null) }
+        }
+        const stamp = Date.now()
+        const projects = (await api('POST', '/databases', { name: `프로젝트 ${stamp}` })).body.database
+        const tasks = (await api('POST', '/databases', { name: `작업 ${stamp}` })).body.database
+        const made = (await api('POST', `/data-sources/${tasks.dataSourceId}/relations`, {
+          name: '프로젝트', targetDataSourceId: projects.dataSourceId, twoWay: { name: '작업들' },
+        })).body
+        const relId = made.property.id
+        const titleOf = async (db) => (await api('GET', `/views/${db.defaultViewId}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+        const rowIn = async (db, titleProp, title) =>
+          (await api('POST', `/views/${db.defaultViewId}/rows`, { cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } }] })).body.row.id
+        const projectTitle = await titleOf(projects)
+        const taskTitle = await titleOf(tasks)
+        const alpha = await rowIn(projects, projectTitle, '알파')
+        const beta = await rowIn(projects, projectTitle, '베타')
+        const gone = await rowIn(projects, projectTitle, '버릴 것')
+        const gamma = await rowIn(projects, projectTitle, '감마')
+        const t1 = await rowIn(tasks, taskTitle, '작업 하나')
+        const t2 = await rowIn(tasks, taskTitle, '작업 둘')
+        const t3 = await rowIn(tasks, taskTitle, '작업 셋')
+        await api('POST', `/rows/${t1}/relations/${relId}`, { add: [alpha, beta, gone] })
+        await api('POST', `/rows/${t2}/relations/${relId}`, { add: [gamma] })
+        await api('DELETE', `/rows/${gone}`)
+
+        const chipsIn = (cell) => evaluate(`[...document.querySelectorAll('td[data-cell="${cell}"] [data-testid="db-relation-chip"]')].map((e) => e.textContent.replace('↗', '').trim())`)
+        const same = (a, b) => JSON.stringify(a) === JSON.stringify(b)
+
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${tasks.id}` })
+        await waitFor(`!!document.querySelector('[data-testid="db-table"] tbody tr')`, 15000)
+        check('★ relation 컬럼이 표에 서고, 연결된 행의 제목이 칩으로 보인다 — 첫 화면에 함께 온다(서버 렌더)',
+          (await evaluate(`document.querySelector('th[data-property-id="${relId}"]')?.textContent.includes('프로젝트')`))
+            && same(await chipsIn('0:1'), ['알파', '베타']),
+          JSON.stringify(await chipsIn('0:1')))
+        check('★ 휴지통에 간 연결은 칩도 "볼 수 없는 연결"도 아니다 — 그냥 없다(복원하면 돌아온다)',
+          await evaluate(`!document.querySelector('td[data-cell="0:1"] [data-testid="db-relation-hidden"]')
+            && !document.querySelector('[data-testid="db-table"]').textContent.includes('버릴 것')`))
+        check('연결이 없는 칸은 비어 있다', same(await chipsIn('2:1'), []))
+
+        await clickOn('td[data-cell="0:1"]')
+        await clickOn('td[data-cell="0:1"]')
+        check('relation 칸은 아직 읽기 전용이다 — 두 번 눌러도 편집기가 열리지 않는다(행 고르기는 5b-2)',
+          await evaluate(`document.querySelector('td[data-cell="0:1"]')?.getAttribute('aria-readonly') === 'true'
+            && !document.querySelector('td[data-editing]') && !document.querySelector('[data-testid="db-select-editor"]')`))
+
+        await clickOn('[data-testid="db-filter-button"]')
+        await waitFor(`!!document.querySelector('[data-testid="db-filter-panel"]')`, 3000)
+        await clickOn('[data-testid="db-filter-add"]')
+        check('★ 필터 패널의 속성 목록에 relation 이 없다 — 값이 셀이 아니라 거를 축이 없다',
+          await waitFor(`(() => { const s = document.querySelector('select[aria-label="필터 속성"]')
+            return !!s && ![...s.options].some((o) => o.textContent === '프로젝트') })()`, 5000))
+        await clickOn('[data-testid="db-filter-remove"]')
+        await clickOn('[data-testid="db-filter-button"]')
+
+        // ── "더 보기"로 온 행의 제목은 그때 받는다 ──
+        await api('PATCH', `/views/${tasks.defaultViewId}`, { loadLimit: 1 })
+        await send('Page.reload')
+        await waitFor(`!!document.querySelector('[data-testid="db-load-more"]')`, 15000)
+        check('첫 화면에는 한 행뿐이다 — 감마의 제목은 아직 화면에 없다',
+          (await evaluate(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length`)) === 1
+            && !(await evaluate(`document.documentElement.outerHTML.includes('감마')`)))
+        await clickOn('[data-testid="db-load-more"]')
+        check('★ "더 보기"로 온 행의 제목은 그때 받아 칩이 선다 — 캐시의 id 로 직접 읽지 않는다',
+          await waitFor(`[...document.querySelectorAll('td[data-cell="1:1"] [data-testid="db-relation-chip"]')].map((e) => e.textContent.replace('↗', '').trim()).join() === '감마'`, 8000),
+          JSON.stringify(await chipsIn('1:1')))
+        await api('PATCH', `/views/${tasks.defaultViewId}`, { loadLimit: 50 })
+
+        // ── 반대쪽 표: 거울상이 칸에 보인다 ──
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${projects.id}` })
+        await waitFor(`!!document.querySelector('[data-testid="db-table"] tbody tr')`, 15000)
+        check('★ 양방향 — 프로젝트 표의 "작업들" 칸에 그 작업이 보인다(한쪽에서만 연결했다)',
+          (await evaluate(`document.querySelector('th[data-property-id="${made.syncedPropertyId}"]')?.textContent.includes('작업들')`))
+            && same(await chipsIn('0:1'), ['작업 하나']) && same(await chipsIn('2:1'), ['작업 둘']),
+          `${JSON.stringify(await chipsIn('0:1'))} · ${JSON.stringify(await chipsIn('2:1'))}`)
+
+        // ── 목록 · 보드의 배지 ──
+        const listView = (await api('POST', `/databases/${tasks.id}/views`, { type: 'list', name: '목록' })).body.view
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${tasks.id}?v=${listView.id}` })
+        await waitFor(`document.querySelector('[data-testid="db-table"]')?.dataset.variant === 'list'`, 15000)
+        check('★ 목록에서도 칩이 서고, 연결이 없는 칸은 접힌다',
+          same(await chipsIn('0:1'), ['알파', '베타'])
+            && (await evaluate(`document.querySelector('td[data-cell="2:1"]')?.dataset.collapsed === 'true'`)),
+          JSON.stringify(await chipsIn('0:1')))
+
+        await api('POST', `/data-sources/${tasks.dataSourceId}/properties`, { name: '상태', type: 'status' })
+        const boardView = (await api('POST', `/databases/${tasks.id}/views`, { type: 'board', name: '보드' })).body.view
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${tasks.id}?v=${boardView.id}` })
+        await waitFor(`!!document.querySelector('[data-testid="db-board-card"]')`, 15000)
+        check('★ 보드 카드의 배지에도 제목 칩이 선다',
+          same(await evaluate(`[...document.querySelectorAll('[data-row-id="${t1}"] [data-testid="db-relation-chip"]')].map((e) => e.textContent.replace('↗', '').trim())`), ['알파', '베타'])
+            && (await evaluate(`document.querySelectorAll('[data-row-id="${t3}"] [data-testid="db-relation-chip"]').length`)) === 0)
+      }
     }
 
     section('볼 수 없는 하위 페이지의 참조 (HANDOFF §3.2-22)')

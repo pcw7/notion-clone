@@ -11,6 +11,7 @@
  *   ⑥ 더할 수 있는 것은 **대상 표의 · 살아 있는 · 볼 수 있는** 행뿐이고, 아니면 전부 같은 답이다
  *   ⑦ 읽기가 거른다 — 휴지통의 행은 빠지고(복원하면 돌아온다), 대상 표를 못 보면 개수만 받는다
  *   ⑧ DB 가 지킨다 — 거울상 없는 엣지는 커밋되지 않는다(E1 의 지연 제약 트리거)
+ *   ⑨ 화면이 그릴 것(5b-1) — 뷰의 컬럼에 relation 이 서고, 제목 맵은 제목 · null(볼 수 없다) · 키 없음(휴지통)으로 갈린다
  *
  * 반사실(HANDOFF §3.3-159~161): 거울상을 안 쓰면 ④ ⑤ 가 **커밋에서** 죽고, 빼기의 거울상을 안 지우면 ④ 의 빼기가,
  * 볼 수 있는지 안 보면 ⑥ 의 권한 검사가, 읽기가 lifecycle 을 안 보면 ⑦ 이 실패한다.
@@ -30,7 +31,17 @@ import { createDatabase } from './database.ts'
 import { getSchema } from './property.ts'
 import { readRelationValue } from './property-types.ts'
 import { createRow, trashRow, updateCells } from './row.ts'
-import { addRelationProperty, linkRows, readRelation, readRelationConfig, MAX_LINKS_PER_REQUEST } from './relation.ts'
+import {
+  addRelationProperty,
+  linkRows,
+  loadRelationLabels,
+  readRelation,
+  readRelationConfig,
+  relationIdsIn,
+  MAX_LINKS_PER_REQUEST,
+} from './relation.ts'
+import { createView, getView } from './view.ts'
+import { queryRows } from './query.ts'
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'
 
@@ -472,5 +483,68 @@ describe('⑧ DB 가 지킨다 (마이그레이션 0024)', () => {
       (e: unknown) => (e as { code?: string }).code === '23514',
     )
     assert.deepEqual(await idsOf(t, relId), [p])
+  })
+})
+
+describe('⑨ 화면이 그릴 것 (relation 5b-1)', () => {
+  test('★ 뷰의 컬럼에 relation 이 선다 — 대상 표 · 제한 · 짝이 있는지를 싣고, 셀 컬럼과 타입으로 갈린다', async (ctx) => {
+    if (skipReason) return ctx.skip(skipReason)
+    const { tasks, projects, relId, backId } = await tasksAndProjects({ twoWay: true, limit: 'one' })
+    const view = unwrap(await createView(fx.owner.ctx, tasks.databaseId, { type: 'table' }))
+    const column = unwrap(await getView(fx.owner.ctx, view.id)).columns.find((c) => c.propertyId === relId)!
+    assert.equal(column.type, 'relation')
+    assert.deepEqual(column.type === 'relation' && column.relation, {
+      targetDataSourceId: projects.dataSourceId,
+      limit: 'one',
+      synced: true,
+    })
+    // 역방향 컬럼은 대상 표의 뷰에 선다 — 제한을 물려받지 않는다.
+    const back = unwrap(await createView(fx.owner.ctx, projects.databaseId, { type: 'list' }))
+    const backColumn = unwrap(await getView(fx.owner.ctx, back.id)).columns.find((c) => c.propertyId === backId)!
+    assert.deepEqual(backColumn.type === 'relation' && backColumn.relation, {
+      targetDataSourceId: tasks.dataSourceId,
+      limit: 'none',
+      synced: true,
+    })
+  })
+
+  test('★ 제목 맵 — 볼 수 있으면 제목 · 볼 수 없으면 null · 휴지통에 갔으면 키가 없다', async (ctx) => {
+    if (skipReason) return ctx.skip(skipReason)
+    const { tasks, projects, relId } = await tasksAndProjects()
+    const secrets = await newTable('비밀 표')
+    const secretRel = unwrap(
+      await addRelationProperty(fx.owner.ctx, tasks.dataSourceId, { name: '비밀', targetDataSourceId: secrets.dataSourceId }),
+    ).propertyId
+    const task = await tasks.row('T')
+    const [seen, untitled, gone] = [await projects.row('보이는 것'), await projects.row(''), await projects.row('버릴 것')]
+    const secret = await secrets.row('비밀 제목')
+    unwrap(await linkRows(fx.owner.ctx, task, relId, { add: [seen, untitled, gone] }))
+    unwrap(await linkRows(fx.owner.ctx, task, secretRel, { add: [secret] }))
+    unwrap(await trashRow(fx.owner.ctx, gone))
+    await makePrivate(secrets.databaseId)
+
+    // 화면이 하는 대로: 행의 캐시에서 id 를 모아 한 번에 묻는다.
+    const page = unwrap(await queryRows(other.ctx, tasks.dataSourceId, { filter: null, sorts: [] }))
+    const ids = relationIdsIn(page.rows, [relId, secretRel])
+    assert.deepEqual([...ids].sort(), [seen, untitled, gone, secret].sort(), '캐시의 id 는 걸러지지 않았다')
+
+    const labels = await loadRelationLabels(other.ctx, ids)
+    assert.equal(labels[seen], '보이는 것')
+    assert.equal(labels[untitled], '', '제목이 빈 행은 빈 문자열이다 — 화면이 "제목 없음"을 고른다')
+    assert.equal(labels[secret], null, '살아 있지만 볼 수 없다')
+    assert.equal(gone in labels, false, '휴지통에 간 행은 키가 없다 — "볼 수 없는 연결"로 세지 않는다')
+    assert.ok(!JSON.stringify(labels).includes('비밀 제목'))
+
+    // 소유자는 비밀 표의 제목도 본다.
+    assert.equal((await loadRelationLabels(fx.owner.ctx, ids))[secret], '비밀 제목')
+  })
+
+  test('제목 맵은 이 워크스페이스의 **행**만 답한다 — 없는 id · uuid 가 아닌 값 · 일반 페이지는 키가 없다', async (ctx) => {
+    if (skipReason) return ctx.skip(skipReason)
+    const tasks = await newTable('작업')
+    const row = await tasks.row('행')
+    const labels = await loadRelationLabels(fx.owner.ctx, [row, randomUUID(), 'nope', tasks.databaseId])
+    assert.deepEqual(labels, { [row]: '행' })
+    assert.deepEqual(await loadRelationLabels(fx.owner.ctx, []), {})
   })
 })

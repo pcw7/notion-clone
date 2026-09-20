@@ -42,8 +42,10 @@ import { isUuid } from '@/lib/ids'
 import { requirePageSession } from '@/lib/auth/page-session'
 import { getDatabase } from '@/lib/database/database'
 import { getView, listViews } from '@/lib/database/view'
+import { isCellColumn } from '@/lib/database/view-columns'
 import { queryRows } from '@/lib/database/query'
 import { queryGroups } from '@/lib/database/group'
+import { loadRelationLabels, relationIdsIn } from '@/lib/database/relation'
 import { groupLabel } from '@/lib/database/board-drag'
 import { listColumns, variantOf } from '@/lib/database/list-layout'
 import { isGroupableType } from '@/lib/database/property-types'
@@ -102,7 +104,7 @@ export default async function DatabasePage({
   const columns = view.value.columns
   // 지워진 속성의 정렬 키를 뺀다. 그대로 두면 다른 키를 고친 저장까지 서버가 거부한다
   // (`filter-draft.ts` 머리말).
-  const sorts = liveSorts(view.value.sorts, new Map(columns.map((c) => [c.propertyId, c.type])))
+  const sorts = liveSorts(view.value.sorts, new Map(columns.filter(isCellColumn).map((c) => [c.propertyId, c.type])))
 
   // ── 보드 ──
   const groupBy = view.value.groupBy
@@ -140,6 +142,15 @@ export default async function DatabasePage({
   ])
   const visibleColumns = columns.filter((column) => column.visible)
   const variant = variantOf(view.value.type)
+
+  // ── relation 칸의 제목 ──
+  // 캐시의 id 는 걸러지지 않았다(마이그레이션 0024). 제목은 권한 · 휴지통을 거르는 한 곳(`loadRelationLabels`)에서 받아
+  // 첫 화면과 함께 내려준다 — 마운트 뒤에 받으면 칩이 빈 채로 한 번 그려졌다가 채워진다. 그 뒤에 온 행("더 보기")의 것은
+  // 화면이 `POST /relation-labels` 로 받는다.
+  const relationPropertyIds = visibleColumns.filter((c) => c.type === 'relation').map((c) => c.propertyId)
+  const firstRows = tablePage !== null ? tablePage.value.rows : groups.flatMap((g) => g.rows)
+  const relationLabels =
+    relationPropertyIds.length === 0 ? {} : await loadRelationLabels(ctx, relationIdsIn(firstRows, relationPropertyIds))
 
   return (
     <main className="flex min-h-screen min-w-0 flex-col gap-6 px-10 py-12">
@@ -193,6 +204,7 @@ export default async function DatabasePage({
             groupBy={groupBy}
             manualOrder={board.value.manualOrder}
             groups={groups}
+            relationLabels={relationLabels}
             access={access}
           />
         ) : (
@@ -218,6 +230,7 @@ export default async function DatabasePage({
             rows={tablePage.value.rows.map(rowJson)}
             hasMore={tablePage.value.hasMore}
             nextCursor={tablePage.value.nextCursor}
+            relationLabels={relationLabels}
             access={access}
             sorts={sorts}
           />

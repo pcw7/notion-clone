@@ -24,7 +24,7 @@
  * 항목에서 체크박스가 사라져 누를 곳이 없다.
  */
 
-import { isEmptyValue, type CellValue, type MvpPropertyType } from './property-types.ts'
+import { isEmptyValue, type CellValue, type MvpPropertyType, type RelationValue } from './property-types.ts'
 
 export type TableVariant = 'table' | 'list'
 
@@ -34,7 +34,7 @@ export function variantOf(viewType: string): TableVariant {
 }
 
 /** List 의 컬럼 순서 — 제목이 맨 앞, 나머지는 뷰 순서 그대로. 표는 건드리지 않는다. */
-export function listColumns<C extends { readonly type: MvpPropertyType }>(
+export function listColumns<C extends { readonly type: string }>(
   variant: TableVariant,
   columns: readonly C[],
 ): C[] {
@@ -52,4 +52,14 @@ export function isCollapsed(variant: TableVariant, type: MvpPropertyType, value:
   // 제목은 비어도 "제목 없음"으로 선다 — 항목 자체가 사라지면 안 된다.
   if (type === 'title') return false
   return isEmptyValue(value)
+}
+
+/**
+ * relation 칸을 접는가 — 연결이 하나도 없을 때만(`count` 가 0). 표에서는 접지 않는다.
+ *
+ * `count` 를 본다, 그릴 수 있는 칩의 수가 아니라. 볼 수 없는 연결만 있는 칸은 "볼 수 없는 연결 N개"를 말해야 한다 —
+ * 접으면 연결이 있다는 사실 자체가 사라진다.
+ */
+export function isRelationCollapsed(variant: TableVariant, value: RelationValue, active: boolean): boolean {
+  return variant === 'list' && !active && value.count === 0
 }

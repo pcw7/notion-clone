@@ -70,7 +70,7 @@
 import type { SessionContext } from '../auth/session-context.ts'
 import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
 import { can } from '../permissions/levels.ts'
-import { effectiveCaps } from '../permissions/effective.ts'
+import { effectiveCaps, readableScopes } from '../permissions/effective.ts'
 import { orderKeysBetween } from '../block/order-key.ts'
 import { isUuid } from '../ids.ts'
 import type { ValidationIssue } from '../contracts/rich-text.ts'
@@ -89,31 +89,12 @@ import {
 import { decodeCursorValues, encodeCursorValues } from './query.ts'
 import { readRow, type RowSummary } from './row.ts'
 import { MAX_QUERY_LIMIT } from './limits.ts'
+import { readRelationConfig, readRelationValue, type RelationConfig, type RelationLimit } from './property-types.ts'
 
 // ── 계약 ──────────────────────────────────────────────────────────────
 
-/** 한 칸에 몇 개까지 연결할 수 있는가. F-03-10: *"`1 페이지` 또는 `제한 없음`"*. */
-export type RelationLimit = 'one' | 'none'
-
-/** `property.config` — relation. snake_case 로 저장한다(정본 E1 의 키 이름 그대로). */
-export type RelationConfig = {
-  readonly target_data_source_id: string
-  /** 양방향의 짝. 자기 자신일 수 있다(같은 표 · 프로퍼티 하나). 없으면 단방향. */
-  readonly synced_property_id?: string
-  readonly limit?: RelationLimit
-}
-
-/** 저장된 config 를 읽는다. relation 의 모양이 아니면 null. */
-export function readRelationConfig(raw: unknown): RelationConfig | null {
-  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null
-  const c = raw as Record<string, unknown>
-  if (typeof c.target_data_source_id !== 'string' || !isUuid(c.target_data_source_id)) return null
-  return {
-    target_data_source_id: c.target_data_source_id,
-    ...(typeof c.synced_property_id === 'string' ? { synced_property_id: c.synced_property_id } : {}),
-    ...(c.limit === 'one' ? { limit: 'one' as const } : {}),
-  }
-}
+// config 계약은 `property-types.ts` 에 있다(클라이언트도 읽고, 여기 두면 `view.ts` 와 값 import 가 순환한다).
+export { readRelationConfig, type RelationConfig, type RelationLimit } from './property-types.ts'
 
 /** 한 요청이 더하고 빼는 연결의 상한. 넘으면 나눠 보낸다. */
 export const MAX_LINKS_PER_REQUEST = 100
@@ -528,4 +509,63 @@ function plainTitle(raw: unknown): string {
         .map((r) => (typeof r === 'object' && r !== null ? String((r as { plain_text?: unknown }).plain_text ?? '') : ''))
         .join('')
     : ''
+}
+
+// ── 제목 맵 — 표 · 보드 · 목록이 칩을 그릴 때 (relation 5b-1) ──────────────
+
+/** 한 번에 물을 수 있는 id 수. 표 50행 × relation 컬럼 몇 개 × 캐시의 25개를 덮는다. */
+export const MAX_RELATION_LABELS = 2000
+
+/**
+ * 연결된 행들의 제목 — **캐시의 id 를 여기서 거른다.**
+ *
+ * 캐시(`properties_cache`)의 relation 칸은 걸러지지 않은 id 다(0024 머리말). 화면이 그 id 로 제목을 직접 읽으면 볼 수
+ * 없는 행의 제목이 샌다. 표는 한 화면에 50행 × 컬럼 수만큼 칸이 있어 칸마다 `readRelation` 을 부를 수 없다 — 그래서
+ * **id 를 모아 한 번에** 묻는다(`mention-labels` · `page-ref-titles` 와 같은 모양).
+ *
+ * 답은 셋으로 갈린다:
+ *
+ *   제목(string)   볼 수 있고 살아 있다. 제목이 비었으면 빈 문자열(화면이 "제목 없음"을 고른다)
+ *   null           살아 있지만 **볼 수 없다** — 칩 대신 "볼 수 없는 연결 N개"로 센다(F-03-10 · F-03-11)
+ *   (키 없음)      휴지통에 갔거나 없는 행 — 그리지 않는다. 복원하면 다시 제목이 온다
+ *
+ * `null` 과 "키 없음"을 가르는 것은 존재를 알리는 것이 아니다 — 묻는 사람은 이미 그 id 와 개수를 캐시에서 받았다.
+ * 가르지 않으면 휴지통에 간 연결이 "볼 수 없는 연결"로 세어져 영영 남는다.
+ *
+ * 권한은 목록 필터와 같은 축이다(`readableScopes` — 행은 표의 스코프를 물려받는다).
+ */
+export async function loadRelationLabels(
+  ctx: SessionContext,
+  ids: readonly string[],
+): Promise<Record<string, string | null>> {
+  const wanted = [...new Set(ids.filter((id) => typeof id === 'string' && isUuid(id)))].slice(0, MAX_RELATION_LABELS)
+  if (wanted.length === 0) return {}
+  return withReadTransaction(async (tx) => {
+    const scopes = await readableScopes(tx, ctx)
+    const rows = await tx.query<{ id: string; title: unknown; readable: boolean }>(
+      `SELECT b.id, b.properties->'title' AS title, (b.perm_scope_id = ANY($3::uuid[])) AS readable
+         FROM page p
+         JOIN block b ON b.id = p.id
+        WHERE p.id = ANY($1::uuid[]) AND b.workspace_id = $2
+          AND b.lifecycle = 'live' AND p.is_template = false`,
+      [wanted, ctx.workspaceId, scopes],
+    )
+    const out: Record<string, string | null> = {}
+    for (const row of rows) out[row.id] = row.readable ? plainTitle(row.title) : null
+    return out
+  })
+}
+
+/** 행들의 캐시에서 relation 칸의 id 를 모은다 — `loadRelationLabels` 에 넘길 것. */
+export function relationIdsIn(
+  rows: readonly { readonly properties: Readonly<Record<string, unknown>> }[],
+  propertyIds: readonly string[],
+): string[] {
+  const ids = new Set<string>()
+  for (const row of rows) {
+    for (const propertyId of propertyIds) {
+      for (const ref of readRelationValue(row.properties[propertyId]).relation) ids.add(ref.id)
+    }
+  }
+  return [...ids]
 }

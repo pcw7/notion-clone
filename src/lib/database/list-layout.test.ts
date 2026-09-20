@@ -13,7 +13,7 @@
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { isCollapsed, listColumns, variantOf } from './list-layout.ts'
+import { isCollapsed, isRelationCollapsed, listColumns, variantOf } from './list-layout.ts'
 import { emptyValue, type CellValue, type MvpPropertyType } from './property-types.ts'
 import { textRun } from '../contracts/rich-text.ts'
 
@@ -79,5 +79,21 @@ describe('isCollapsed', () => {
 
   test('제목은 비어도 접지 않는다 — 항목이 사라지면 안 된다', () => {
     assert.equal(isCollapsed('list', 'title', emptyValue('title'), false), false)
+  })
+})
+
+describe('isRelationCollapsed (relation 5b-1)', () => {
+  const none = { type: 'relation' as const, relation: [], count: 0 }
+  // 캐시의 id 가 전부 볼 수 없는 행이어도 count 는 남는다 — 화면이 "볼 수 없는 연결 N개"를 말한다.
+  const hiddenOnly = { type: 'relation' as const, relation: [{ id: 'x' }], count: 1 }
+
+  test('★ 연결이 하나도 없을 때만 접는다 — 개수를 본다(그릴 수 있는 칩의 수가 아니다)', () => {
+    assert.equal(isRelationCollapsed('list', none, false), true)
+    assert.equal(isRelationCollapsed('list', hiddenOnly, false), false)
+  })
+
+  test('선택된 칸 · 표에서는 접지 않는다', () => {
+    assert.equal(isRelationCollapsed('list', none, true), false)
+    assert.equal(isRelationCollapsed('table', none, false), false)
   })
 })

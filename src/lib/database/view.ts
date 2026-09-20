@@ -52,7 +52,8 @@ import {
 } from './filter.ts'
 import { readPropertyTypes } from './query.ts'
 import { isGroupableType, normalizeGroupBy, validateGroupBy, type GroupBy } from './group.ts'
-import { isMvpPropertyType, isOptionType, type MvpPropertyType, type SelectOption } from './property-types.ts'
+import { isMvpPropertyType, isOptionType, readRelationConfig } from './property-types.ts'
+import type { ViewColumn } from './view-columns.ts'
 import { readOptionsOf } from './options.ts'
 import type { ValidationIssue } from '../contracts/rich-text.ts'
 
@@ -70,23 +71,9 @@ export const MAX_VIEW_NAME_LENGTH = 200
 export const MIN_LOAD_LIMIT = 1
 export const MAX_LOAD_LIMIT = 200
 
-export type ViewColumn = {
-  readonly propertyId: string
-  readonly name: string
-  readonly type: MvpPropertyType
-  readonly visible: boolean
-  readonly orderKey: string
-  readonly width: number | null
-  readonly wrap: boolean
-  /**
-   * select 컬럼의 옵션 목록(`order_idx` 순). 다른 타입은 빈 배열이다.
-   *
-   * 셀은 **옵션 id** 만 들고 있어서(`property-types.ts` 머리말) 이것 없이는 화면이
-   * 이름을 그릴 수 없다. 컬럼에 싣는 이유는 `GET /rows` 가 컬럼과 행을 한 왕복에
-   * 주는 것과 같다 — 옵션을 따로 읽으면 표를 열 때마다 왕복이 하나 더 는다.
-   */
-  readonly options: readonly SelectOption[]
-}
+// 컬럼의 모양은 `view-columns.ts` 에 있다 — 화면(클라이언트)이 `isCellColumn` 을 **값으로** 쓰는데, 이 파일은 DB 모듈을
+// 끌어오므로 클라이언트 번들이 가져갈 수 없다(`next build` 가 "Can't resolve 'dns'" 로 죽는다).
+export { isCellColumn, type CellColumn, type RelationColumn, type ViewColumn } from './view-columns.ts'
 
 export type ViewDetail = {
   readonly id: string
@@ -240,12 +227,13 @@ async function readColumns(tx: Tx, viewId: string): Promise<ViewColumn[]> {
     property_id: string
     name: string
     type: string
+    config: unknown
     visible: boolean
     order_idx: string
     width: number | null
     wrap: boolean
   }>(
-    `SELECT vp.property_id, p.name, p.type::text AS type,
+    `SELECT vp.property_id, p.name, p.type::text AS type, p.config,
             vp.visible, vp.order_idx, vp.width, vp.wrap
        FROM view_property vp
        JOIN property p ON p.id = vp.property_id
@@ -257,18 +245,35 @@ async function readColumns(tx: Tx, viewId: string): Promise<ViewColumn[]> {
   // 옵션을 읽는 곳은 `options.ts` 하나다(그쪽 머리말 — status 옵션은 그룹 순서가 먼저다).
   const optionsOf = await readOptionsOf(tx, rows.filter((r) => isOptionType(r.type)).map((r) => r.property_id))
 
-  return rows
-    .filter((r) => isMvpPropertyType(r.type))
-    .map((r) => ({
+  const columns: ViewColumn[] = []
+  for (const r of rows) {
+    const base = {
       propertyId: r.property_id,
       name: r.name,
-      type: r.type as MvpPropertyType,
       visible: r.visible,
       orderKey: r.order_idx,
       width: r.width,
       wrap: r.wrap,
       options: optionsOf.get(r.property_id) ?? [],
-    }))
+    }
+    if (isMvpPropertyType(r.type)) {
+      columns.push({ ...base, type: r.type })
+      continue
+    }
+    // 엣지 타입. config 가 relation 의 모양이 아니면(손상) 그리지 않는다 — 모르는 타입과 같은 취급이다.
+    const config = r.type === 'relation' ? readRelationConfig(r.config) : null
+    if (config === null) continue
+    columns.push({
+      ...base,
+      type: 'relation',
+      relation: {
+        targetDataSourceId: config.target_data_source_id,
+        limit: config.limit ?? 'none',
+        synced: config.synced_property_id !== undefined,
+      },
+    })
+  }
+  return columns
 }
 
 async function readView(tx: Tx, viewId: string): Promise<ViewDetail | null> {

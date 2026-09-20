@@ -34,6 +34,7 @@ import {
   emptyValue,
   validateCellValue,
   optionIdOf,
+  type AppPropertyType,
   type CellValue,
   type DateValue,
   type MvpPropertyType,
@@ -213,11 +214,13 @@ function canonical(v: unknown): string {
  * F-04-12: *"`width` 미설정 → NULL 유지 + 렌더 시 타입별 기본 폭 계산. **기본값을
  * 물리적으로 써 넣지 말 것.**"* 써 넣으면 기본 폭 정책을 나중에 바꿀 수 없다.
  */
-export function defaultColumnWidth(type: MvpPropertyType): number {
+export function defaultColumnWidth(type: AppPropertyType): number {
   switch (type) {
     case 'title':
       return 280
     case 'rich_text':
+    // relation 은 제목 칩이 여럿 선다 — 텍스트와 같은 폭.
+    case 'relation':
       return 220
     case 'number':
     case 'select':
