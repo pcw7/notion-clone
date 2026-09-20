@@ -125,11 +125,11 @@ type DataSourceGate = {
  * capability 이고, 정본 §3.3 의 database 매트릭스가 그 둘을 갈라 놓은 이유가
  * "값은 고치지만 컬럼은 못 고치는 사람"이다(`property.ts` 머리말 참조).
  */
-async function openDataSource(
+export async function openDataSource(
   tx: Tx,
   ctx: SessionContext,
   dataSourceId: string,
-  need: 'view' | 'edit_content' | 'create_child',
+  need: 'view' | 'edit_content' | 'create_child' | 'edit_structure',
 ): Promise<DataSourceGate | RowResult<never>> {
   const ds = await tx.queryMaybe<{ id: string; container_id: string; schema_version: string }>(
     `SELECT ds.id, ds.owner_database_id AS container_id, ds.schema_version
@@ -158,7 +158,8 @@ async function openDataSource(
   }
 }
 
-function isFailure<T>(v: T | RowResult<never>): v is RowResult<never> {
+/** 행 명령의 실패인가. 게이트(`openDataSource`)의 결과를 좁히는 데 쓴다 — `template.ts` 도 같은 게이트를 연다. */
+export function isRowFailure<T>(v: T | RowResult<never>): v is RowResult<never> {
   return typeof v === 'object' && v !== null && 'ok' in v
 }
 
@@ -329,9 +330,35 @@ export async function createRow(
   dataSourceId: string,
   input: CreateRowInput = {},
 ): Promise<RowResult<RowSummary>> {
-  return withCommandTransaction(async (tx) => {
-    const gate = await openDataSource(tx, ctx, dataSourceId, 'create_child')
-    if (isFailure(gate)) return gate
+  return withCommandTransaction((tx) => createRowIn(tx, ctx, dataSourceId, input))
+}
+
+/**
+ * `createRow` 의 트랜잭션 안쪽. **행을 만드는 다른 명령이 같은 트랜잭션에서 부른다.**
+ *
+ * 템플릿 행(`template.ts` · F-08-02)이 이 길로 태어난다. 템플릿도 행이므로(C-3 의 연장) 만드는 길을 따로 파지
+ * 않는다 — 갈라지는 것은 `page.is_template` 한 칸과 **묻는 권한**뿐이다:
+ *
+ *   일반 행   `create_child`    — 폼 제출처럼 "내용은 못 보면서 행만 추가"하는 자리가 있다(규칙 A2)
+ *   템플릿    `edit_structure`  — 모두의 `New ▾` 목록을 바꾸는 일이다. `create_child` 만 가진 사람이 다른 사람이
+ *                                 만들 행의 초기 상태를 정하게 두지 않는다(08 F-08-02 의 *"DB 편집 권한 없음 →
+ *                                 목록 노출은 하되 생성 불가"* 가 가르는 자리)
+ *
+ * ⚠ **그 구분은 오늘 관찰되지 않는다.** `resolveCaps` 가 ACL 의 대상 종류를 `'page'` 로 고정해서 데이터베이스
+ *   노드에 `create` · `edit_content` 레벨을 부여할 수 없고(HANDOFF §7), 줄 수 있는 레벨에서는 두 capability 가
+ *   늘 함께 온다. 검사도 그래서 이 줄을 가려내지 못한다(`template.db.test.ts` 머리말) — §7 이 풀리면 그때
+ *   차이가 드러난다. 지금 이렇게 써 두는 이유는 그날 이 줄을 다시 판단하지 않기 위해서다.
+ */
+export async function createRowIn(
+  tx: Tx,
+  ctx: SessionContext,
+  dataSourceId: string,
+  input: CreateRowInput & { readonly isTemplate?: boolean } = {},
+): Promise<RowResult<RowSummary>> {
+  const isTemplate = input.isTemplate === true
+  {
+    const gate = await openDataSource(tx, ctx, dataSourceId, isTemplate ? 'edit_structure' : 'create_child')
+    if (isRowFailure(gate)) return gate
 
     if (
       input.expectedSchemaVersion !== undefined &&
@@ -342,7 +369,7 @@ export async function createRow(
 
     const given = input.cells ?? []
     const prepared = prepareCells(gate, [...given, ...defaultCells(gate, given)])
-    if (isFailure(prepared)) return prepared
+    if (isRowFailure(prepared)) return prepared
 
     const rowId = randomUUID()
     const container = await tx.queryOne<{ ancestor_path: string[]; perm_scope_id: string }>(
@@ -379,7 +406,11 @@ export async function createRow(
       ],
     )
     // R3 트리거가 이 쌍을 검사한다(type · parent_type · data_source_id 일치).
-    await tx.query(`INSERT INTO page (id, data_source_id) VALUES ($1, $2)`, [rowId, dataSourceId])
+    await tx.query(`INSERT INTO page (id, data_source_id, is_template) VALUES ($1, $2, $3)`, [
+      rowId,
+      dataSourceId,
+      isTemplate,
+    ])
 
     if (prepared.length > 0) {
       await writeCells(tx, rowId, prepared)
@@ -389,7 +420,7 @@ export async function createRow(
     const summary = await readRow(tx, rowId)
     if (summary === null) return { ok: false, reason: 'not_found' } as const
     return { ok: true, value: summary } as const
-  })
+  }
 }
 
 // ── 셀 수정 ───────────────────────────────────────────────────────────
@@ -441,7 +472,7 @@ export async function updateCellsIn(
     if (row === null) return { ok: false, reason: 'not_found' } as const
 
     const gate = await openDataSource(tx, ctx, row.data_source_id, 'edit_content')
-    if (isFailure(gate)) return gate
+    if (isRowFailure(gate)) return gate
 
     if (
       input.expectedSchemaVersion !== undefined &&
@@ -454,7 +485,7 @@ export async function updateCellsIn(
     }
 
     const prepared = prepareCells(gate, input.cells)
-    if (isFailure(prepared)) return prepared
+    if (isRowFailure(prepared)) return prepared
 
     if (prepared.length > 0) {
       await writeCells(tx, rowId, prepared)
@@ -493,7 +524,7 @@ export async function clearCell(
     if (!isMvpPropertyType(meta.type)) return { ok: false, reason: 'unknown_property' } as const
     return { type: meta.type }
   }).then((pre) =>
-    isFailure(pre)
+    isRowFailure(pre)
       ? pre
       : updateCells(ctx, rowId, {
           cells: [{ propertyId, value: emptyValue(pre.type as MvpPropertyType) }],
@@ -573,7 +604,7 @@ export async function listRows(
 
   return withReadTransaction(async (tx) => {
     const gate = await openDataSource(tx, ctx, dataSourceId, 'view')
-    if (isFailure(gate)) return gate
+    if (isRowFailure(gate)) return gate
 
     const rows = await tx.query<RowRow>(
       `SELECT b.id, b.order_key, p.properties_cache, b.properties,
@@ -613,20 +644,24 @@ export async function listRows(
  * `trash.ts` 의 `trashPage` 를 쓰지 않는 이유: 그 함수는 **페이지 트리**의
  * 삭제 루트·자손 개수를 계산하는데, DB 행에는 자손이 없고 "삭제 루트"도
  * 자기 자신뿐이다. 빌려 쓰면 그 함수가 행까지 신경 쓰게 된다.
+ *
+ * **템플릿 행은 이 길로 버리지 않는다**(`is_template = false` · F-08-02). 템플릿을 목록에서 빼는 것은 모두의
+ * `New ▾` 를 바꾸는 일이라 `edit_structure` 를 묻는다 — `deleteTemplate`(`template.ts`)이 그 길이다. 행 목록에
+ * 나오지 않는 것을 행 명령으로 지울 수 있으면 권한이 두 값이 된다.
  */
 export async function trashRow(ctx: SessionContext, rowId: string): Promise<RowResult<null>> {
   return withCommandTransaction(async (tx) => {
     const row = await tx.queryMaybe<{ data_source_id: string }>(
       `SELECT p.data_source_id
          FROM page p JOIN block b ON b.id = p.id
-        WHERE p.id = $1 AND b.workspace_id = $2 AND b.lifecycle = 'live'
+        WHERE p.id = $1 AND b.workspace_id = $2 AND b.lifecycle = 'live' AND p.is_template = false
         FOR UPDATE OF b`,
       [rowId, ctx.workspaceId],
     )
     if (row === null) return { ok: false, reason: 'not_found' } as const
 
     const gate = await openDataSource(tx, ctx, row.data_source_id, 'edit_content')
-    if (isFailure(gate)) return gate
+    if (isRowFailure(gate)) return gate
 
     await tx.query(
       `UPDATE block

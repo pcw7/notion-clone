@@ -14,6 +14,7 @@ import type { DatabaseFailure } from './database.ts'
 import type { PropertyFailure } from './property.ts'
 import type { RowCell, RowFailure } from './row.ts'
 import type { GroupFailure } from './group.ts'
+import type { TemplateFailure } from './template.ts'
 
 export function rowFailureStatus(reason: RowFailure): number {
   switch (reason) {
@@ -54,6 +55,20 @@ export function propertyFailureStatus(reason: PropertyFailure): number {
     case 'invalid_target':
     case 'unsupported_type':
     case 'title_immutable':
+      return 400
+  }
+}
+
+export function templateFailureStatus(reason: TemplateFailure): number {
+  switch (reason) {
+    case 'not_found':
+      return 404
+    case 'forbidden':
+      return 403
+    // 상한은 입력이 아니라 **지금 상태**가 허락하지 않는 것이다 — 하나 지우면 같은 요청이 통과한다.
+    case 'too_many':
+      return 409
+    case 'invalid_value':
       return 400
   }
 }

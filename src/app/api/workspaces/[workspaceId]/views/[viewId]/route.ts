@@ -58,6 +58,7 @@ export async function PATCH(request: Request, ctx: Ctx): Promise<Response> {
     sorts?: unknown
     loadLimit?: unknown
     groupBy?: unknown
+    defaultTemplateId?: unknown
   }
 
   // ★ `filter` · `groupBy` 는 `null` 과 "안 보냄"을 구분해야 한다 — 전자는 "없애라",
@@ -69,6 +70,8 @@ export async function PATCH(request: Request, ctx: Ctx): Promise<Response> {
     ...('sorts' in body ? { sorts: body.sorts as SortKey[] } : {}),
     ...(typeof body.loadLimit === 'number' ? { loadLimit: body.loadLimit } : {}),
     ...('groupBy' in body ? { groupBy: body.groupBy as GroupBy | null } : {}),
+    // 기본 템플릿도 `null`(빈 페이지로 돌려라)과 "안 보냄"을 구분한다(F-08-03).
+    ...('defaultTemplateId' in body ? { defaultTemplateId: body.defaultTemplateId as string | null } : {}),
   })
 
   if (!updated.ok) {

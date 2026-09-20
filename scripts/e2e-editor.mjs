@@ -3120,6 +3120,67 @@ async function main() {
             && !document.querySelector('[data-testid="db-rollup-relation"]')`, 5000))
         await key('Escape')
       }
+
+      section('데이터베이스 템플릿 — 서버 (템플릿 6c-1 · F-08-02 · F-08-03)')
+      // 권한 · 상한 · 기본 지정의 규칙은 `template.db.test.ts` 가 본다. 여기서는 빌드된 앱에서 라우트가 실제로 답하는지,
+      // 그리고 **불변식 R1 이 화면까지 지켜지는지** — 템플릿을 만들어도 표에 행이 늘지 않는지 — 를 본다.
+      // ⚠ 익스포트 절 **뒤**에 있다(표를 하나 더 만든다).
+      {
+        const { textRun } = await import(new URL('../src/lib/contracts/rich-text.ts', import.meta.url).href)
+        const api = async (method, path, body) => {
+          const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+            method,
+            headers: authed,
+            ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+          })
+          return { status: r.status, body: await r.json().catch(() => null) }
+        }
+        const stamp = Date.now()
+        const db = (await api('POST', '/databases', { name: `템플릿 표 ${stamp}` })).body.database
+        const titleId = (await api('GET', `/views/${db.defaultViewId}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+        await api('POST', `/views/${db.defaultViewId}/rows`, {
+          cells: [{ propertyId: titleId, value: { type: 'title', title: [textRun('보통 행')] } }],
+        })
+
+        const made = await api('POST', `/data-sources/${db.dataSourceId}/templates`, { title: '주간 회의' })
+        check('★ 템플릿을 만든다 — 라우트가 201 과 그 이름을 준다',
+          made.status === 201 && made.body?.template?.title === '주간 회의',
+          `${made.status} ${JSON.stringify(made.body)}`)
+
+        const listed = await api('GET', `/data-sources/${db.dataSourceId}/templates`)
+        const rows = await api('GET', `/views/${db.defaultViewId}/rows`)
+        check('★ 불변식 R1 — 템플릿은 템플릿 목록에만 있고 행 목록에는 없다',
+          listed.body?.templates?.map((t) => t.title).join() === '주간 회의'
+            && rows.body?.rows?.length === 1 && rows.body.rows[0].title === '보통 행',
+          `${JSON.stringify(listed.body?.templates)} · ${JSON.stringify(rows.body?.rows?.map((r) => r.title))}`)
+
+        const templateId = made.body.template.id
+        const badDefault = await api('PATCH', `/views/${db.defaultViewId}`, { defaultTemplateId: rows.body.rows[0].id })
+        const setDefault = await api('PATCH', `/views/${db.defaultViewId}`, { defaultTemplateId: templateId })
+        check('★ 기본 템플릿은 템플릿만 가리킨다 — 일반 행은 400 이고 템플릿은 붙는다',
+          badDefault.status === 400 && badDefault.body?.error === 'invalid_template'
+            && setDefault.status === 200 && setDefault.body?.view?.defaultTemplateId === templateId,
+          `${badDefault.status} ${JSON.stringify(badDefault.body)} · ${JSON.stringify(setDefault.body?.view?.defaultTemplateId)}`)
+
+        // 화면은 6c-2 가 붙인다. 지금 보는 것은 **템플릿이 있어도 표가 그대로 열리는가** 하나다 —
+        // 새 컬럼 · 새 행 종류가 생길 때마다 표가 열리지 않던 일이 여러 번 있었다.
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+        check('★ 템플릿이 있어도 표는 열리고 행은 하나다 — 템플릿이 섞여 보이지 않는다',
+          await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === 1`, 15000),
+          await evaluate(`[...document.querySelectorAll('[data-testid="db-table"] tbody tr')].map((tr) => tr.textContent).join(' | ')`))
+
+        const removed = await api('DELETE', `/templates/${templateId}`)
+        const afterDelete = await api('GET', `/data-sources/${db.dataSourceId}/templates`)
+        const view = await api('GET', `/views/${db.defaultViewId}`)
+        check('★ 템플릿을 버리면 목록에서 빠지고 기본 지정도 빈 페이지로 돌아간다',
+          removed.status === 200 && afterDelete.body?.templates?.length === 0
+            && view.body?.view?.defaultTemplateId === null,
+          `${removed.status} ${JSON.stringify(afterDelete.body)} · ${JSON.stringify(view.body?.view?.defaultTemplateId)}`)
+
+        const asRow = await api('DELETE', `/rows/${templateId}`)
+        check('행 라우트로는 템플릿을 버릴 수 없다 — 템플릿의 길은 하나다',
+          asRow.status === 404, `${asRow.status} ${JSON.stringify(asRow.body)}`)
+      }
     }
 
     section('페이지 복제 (복제 6a · 6b · F-02-09 · F-08-01)')

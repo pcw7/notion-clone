@@ -1379,6 +1379,59 @@ try {
         }
         await client.query('ROLLBACK TO SAVEPOINT plain')
       }
+
+      // ── ⑰ 뷰의 기본 템플릿 (0026 / §3.6 · F-08-03 · 템플릿 6c-1조각) ──
+      // `view.default_template_page_id` 는 0015 부터 아무것도 검사하지 않는 컬럼이었다. 일반 행을 가리키면
+      // 뷰 질의에는 보이는 행이 `New` 의 원본이 되고(R1 의 반대쪽이 무너진다), 다른 표의 템플릿을 가리키면
+      // 셀 복사가 프로퍼티를 하나도 못 맞춰 조용히 빈 행을 만든다.
+      {
+        const templateIn = async (ds, container, key) => {
+          const id = await rowIn(ds, container, key)
+          await client.query(`UPDATE page SET is_template = true WHERE id = $1`, [id])
+          return id
+        }
+        const mine = await templateIn(dsId, dbBlockId, 't1')
+        const theirs = await templateIn(otherDs, otherDb, 't1')
+        const viewId = randomUUID()
+        const insertView = `INSERT INTO view (id, database_id, data_source_id, name, type, order_idx, configuration,
+                                              default_template_page_id, created_at, updated_at)
+                            VALUES ($1, $2, $3, '표', 'table', 'a0', '{}'::jsonb, $4, now(), now())`
+
+        await client.query('SAVEPOINT tmpl')
+        try {
+          await client.query(insertView, [viewId, dbBlockId, dsId, mine])
+          ok('이 표의 템플릿을 기본으로 지정하면 통과한다')
+        } catch (e) {
+          fail(`이 표의 템플릿이 거부됐다 (${e.code} ${e.message})`)
+        }
+
+        // FK — 템플릿을 영구 삭제하면 지정이 풀린다. 휴지통(lifecycle)은 행이 남으므로 여기 걸리지 않는다.
+        await client.query(`DELETE FROM block WHERE id = $1`, [mine])
+        {
+          const { rows } = await client.query(`SELECT default_template_page_id AS id FROM view WHERE id = $1`, [viewId])
+          if (rows[0].id === null) ok('템플릿을 영구 삭제하면 기본 지정이 NULL 이 된다 (ON DELETE SET NULL)')
+          else fail('템플릿을 지웠는데 기본 지정이 남았다')
+        }
+        await client.query('ROLLBACK TO SAVEPOINT tmpl')
+
+        await mustReject('F-08-03: 일반 행을 기본 템플릿으로', insertView, [viewId, dbBlockId, dsId, from])
+        await mustReject('F-08-03: 다른 표의 템플릿을 기본 템플릿으로', insertView, [viewId, dbBlockId, dsId, theirs])
+        // FK 보다 트리거가 먼저 잡는다(23514) — `EXISTS` 가 실패하기 때문이다. FK 가 혼자 일하는 자리는
+        // 위의 `ON DELETE SET NULL` 하나다.
+        await mustReject('F-08-03: 없는 페이지를 기본 템플릿으로', insertView, [
+          viewId,
+          dbBlockId,
+          dsId,
+          randomUUID(),
+        ])
+        // UPDATE 쪽도 같은 트리거를 탄다 — INSERT 만 막으면 만든 뒤에 바꿔 끼울 수 있다.
+        await client.query(insertView, [viewId, dbBlockId, dsId, null])
+        await mustReject(
+          'F-08-03: 만든 뒤 UPDATE 로 일반 행을 끼울 수 없다',
+          `UPDATE view SET default_template_page_id = $2 WHERE id = $1`,
+          [viewId, from],
+        )
+      }
     }
 
     // ── 부정 요구사항 — 없어야 하는 컬럼 ──
