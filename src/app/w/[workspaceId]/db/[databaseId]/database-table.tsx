@@ -67,7 +67,7 @@ import type { DatabaseAccess } from '@/lib/database/database'
 import type { SortKey } from '@/lib/database/filter'
 import { sortFirst } from '@/lib/database/filter-draft'
 import type { RowJson } from '@/lib/database/http'
-import { isCellColumn, relationOf, type CellColumn, type ViewColumn } from '@/lib/database/view-columns'
+import { isCellColumn, relationOf, rollupOf, type CellColumn, type ViewColumn } from '@/lib/database/view-columns'
 import { MAX_QUERY_PAGINATION } from '@/lib/database/limits'
 import {
   emptyValue,
@@ -83,10 +83,12 @@ import {
 } from '@/lib/database/property-types'
 import { cellText, defaultColumnWidth, draftOf, parseDraft, readCell, sameValue } from '@/lib/database/cell-format'
 import { handleGridKey, type CellPos, type GridMode, type KeyResult } from '@/lib/database/grid-nav'
-import { isCollapsed, isRelationCollapsed, type TableVariant } from '@/lib/database/list-layout'
+import { isCollapsed, isRelationCollapsed, isRollupCollapsed, type TableVariant } from '@/lib/database/list-layout'
+import { rollupIsEmpty, type RollupPage } from '@/lib/database/rollup-functions'
 import * as api from './table-api'
-import { CellDisplay, RelationChips, TYPE_ICON, TYPE_LABEL, type RelationLabels } from './cell-view'
+import { CellDisplay, RelationChips, RollupDisplay, TYPE_ICON, TYPE_LABEL, type RelationLabels } from './cell-view'
 import { useRelationLabels } from './use-relation-labels'
+import { useRollupValues } from './use-rollup-values'
 import { SelectEditor } from './select-editor'
 import { RelationEditor } from './relation-editor'
 import { AddColumn } from './add-column'
@@ -116,6 +118,8 @@ export function DatabaseTable(props: {
   variant?: TableVariant
   /** 첫 화면의 relation 제목(서버 렌더가 준다). 그 뒤에 온 행의 것은 `useRelationLabels` 가 받는다. */
   relationLabels: RelationLabels
+  /** 첫 화면의 rollup 값(서버 렌더가 계산해 준다). 그 뒤에 온 행의 것은 `useRollupValues` 가 받는다. */
+  rollupValues: RollupPage
 }) {
   const { workspaceId, viewId, dataSourceId, tableName, access } = props
   const variant: TableVariant = props.variant ?? 'table'
@@ -171,6 +175,15 @@ export function DatabaseTable(props: {
   // relation 칸의 제목 — 첫 화면은 서버가 줬고, "더 보기" · 새 행의 것은 여기서 받는다.
   const { labels, addLabels } = useRelationLabels(workspaceId, props.relationLabels, rows, columns)
 
+  // rollup 칸의 값 — 행에 없다. 읽을 때 계산하고, 첫 화면의 것은 서버가 함께 준다(`use-rollup-values.ts`).
+  const { page: rollups, refresh: refreshRollups } = useRollupValues(
+    workspaceId,
+    dataSourceId,
+    props.rollupValues,
+    rows,
+    columns,
+  )
+
   // ── 저장 ───────────────────────────────────────────────────────────
 
   const saveCell = async (rowId: string, column: CellColumn, next: CellValue, previous: CellValue) => {
@@ -216,6 +229,12 @@ export function DatabaseTable(props: {
       return
     }
 
+    // rollup 칸은 **읽기 전용이다** — 값이 행에 없고 읽을 때 계산된다(정본 [보강] rollup v1). 고칠 것은 설정뿐이고
+    // 그것은 속성의 일이다(칸의 일이 아니다). 선택만 한다.
+    if (column.type === 'rollup') {
+      setMode({ kind: 'selected', at })
+      return
+    }
     // relation 칸의 편집기는 초안이 없다 — 고르는 순간마다 저장된다(`relation-editor.tsx`). 여는 것이 전부다.
     if (!isCellColumn(column)) {
       setMode({ kind: 'editing', at })
@@ -396,6 +415,8 @@ export function DatabaseTable(props: {
   const onRelationChange = (row: RowJson, known: Readonly<Record<string, string>>) => {
     addLabels(known)
     setRows((current) => current.map((r) => (r.id === row.id && notOlder(row.version, r.version) ? row : r)))
+    // ★ 이 행이 **무엇을 모으는지**가 바뀌었다 — rollup 은 연결을 타고 계산한다. 그 행만 다시 묻는다.
+    refreshRollups([row.id])
   }
 
   // ── 행 · 컬럼 ──────────────────────────────────────────────────────
@@ -469,6 +490,36 @@ export function DatabaseTable(props: {
     })
     // 기존 행에는 이 컬럼의 값이 없다 — `readRelationValue` 가 빈 연결로 읽는다.
     setColumns((current) => [...current, ...added])
+    return null
+  }
+
+  /**
+   * rollup 컬럼을 만든다. 늘 하나다(반대쪽에 생기는 것이 없다).
+   *
+   * 값은 붙이지 않는다 — 어디에도 저장되지 않으므로 응답에 실을 것이 없다. 컬럼이 늘면 `useRollupValues` 가 그것을
+   * 알아채고 **이미 불러온 행 전부**의 칸을 다시 묻는다(그 훅 머리말 ①).
+   */
+  const addRollupColumn = async (input: api.AddRollupInput): Promise<string | null> => {
+    const result = await api.addRollup(workspaceId, dataSourceId, input)
+    if (!result.ok) return result.message
+    const property = result.value
+    // 서버(`readColumns`)와 같은 함수로 읽는다 — 방금 만든 컬럼과 새로고침한 컬럼이 같게 동작하도록.
+    const rollup = rollupOf(property.config)
+    if (rollup === null) return null
+    setColumns((current) => [
+      ...current,
+      {
+        propertyId: property.id,
+        name: property.name,
+        type: 'rollup',
+        visible: true,
+        orderKey: property.orderKey,
+        width: null,
+        wrap: false,
+        options: [],
+        rollup,
+      },
+    ])
     return null
   }
 
@@ -588,8 +639,14 @@ export function DatabaseTable(props: {
                     workspaceId={workspaceId}
                     dataSourceId={dataSourceId}
                     tableName={tableName}
+                    relations={columns.flatMap((c) =>
+                      c.type === 'relation'
+                        ? [{ propertyId: c.propertyId, name: c.name, targetDataSourceId: c.relation.targetDataSourceId }]
+                        : [],
+                    )}
                     onAdd={addColumn}
                     onAddRelation={addRelationColumn}
+                    onAddRollup={addRollupColumn}
                   />
                 </th>
               )}
@@ -612,29 +669,39 @@ export function DatabaseTable(props: {
                   const at = { row: r, col: c }
                   const isSelected = mode.kind !== 'idle' && samePos(mode.at, at)
                   const isEditing = mode.kind === 'editing' && samePos(mode.at, at)
-                  // 칸은 둘 중 하나다 — 셀(값이 EAV 에 있다) 아니면 relation(값이 엣지이고 여기에는 캐시의 id 가 있다).
+                  // 칸은 셋 중 하나다 — 셀(값이 EAV 에 있다) · relation(값이 엣지이고 여기에는 캐시의 id 가 있다) ·
+                  // rollup(값이 **어디에도 없다** — 읽을 때 계산해 따로 받는다).
                   const cell = isCellColumn(column)
                     ? ({ kind: 'cell', column, value: valueAt(row, column) } as const)
-                    : ({ kind: 'relation', column, value: readRelationValue(row.properties[column.propertyId]) } as const)
+                    : column.type === 'relation'
+                      ? ({ kind: 'relation', column, value: readRelationValue(row.properties[column.propertyId]) } as const)
+                      : ({ kind: 'rollup', column, value: rollups.values[row.id]?.[column.propertyId] } as const)
                   // List: 빈 칸은 접는다. 선택 · 편집 중이면 비어 있어도 선다(`list-layout.ts`).
                   const collapsed =
                     cell.kind === 'cell'
                       ? isCollapsed(variant, cell.column.type, cell.value, isSelected)
-                      : isRelationCollapsed(variant, cell.value, isSelected)
+                      : cell.kind === 'relation'
+                        ? isRelationCollapsed(variant, cell.value, isSelected)
+                        : isRollupCollapsed(variant, cell.value, isSelected)
                   const empty =
                     cell.kind === 'cell'
                       ? isEmptyValue(cell.value) && cell.column.type !== 'checkbox'
-                      : cell.value.count === 0
+                      : cell.kind === 'relation'
+                        ? cell.value.count === 0
+                        : rollupIsEmpty(cell.value)
                   const display =
-                    isList && empty ? (
+                    // rollup 은 **채우는 자리가 아니다** — 빈 칸에 속성 이름을 세우면 "여기를 채우라"로 읽힌다.
+                    isList && empty && cell.kind !== 'rollup' ? (
                       // 제목은 "제목 없음", 선택된 빈 속성 칸은 그 속성의 이름 — 무엇을 채우는 자리인지 말한다.
                       <span className="truncate text-neutral-400" data-testid="db-list-placeholder">
                         {column.type === 'title' ? '제목 없음' : column.name}
                       </span>
                     ) : cell.kind === 'cell' ? (
                       <CellDisplay value={cell.value} options={column.options} />
-                    ) : (
+                    ) : cell.kind === 'relation' ? (
                       <RelationChips value={cell.value} labels={labels} />
+                    ) : (
+                      <RollupDisplay cell={cell.value} info={rollups.columns[column.propertyId]} />
                     )
                   return (
                     <td
@@ -646,7 +713,8 @@ export function DatabaseTable(props: {
                       role="gridcell"
                       tabIndex={focusTarget !== null && samePos(focusTarget, at) ? 0 : -1}
                       aria-selected={isSelected}
-                      aria-readonly={!access.canEditContent || undefined}
+                      // rollup 은 누구에게나 읽기 전용이다 — 값이 행에 없고 읽을 때 계산된다.
+                      aria-readonly={!access.canEditContent || cell.kind === 'rollup' || undefined}
                       data-cell={keyOf(at)}
                       data-property-id={column.propertyId}
                       data-editing={isEditing || undefined}

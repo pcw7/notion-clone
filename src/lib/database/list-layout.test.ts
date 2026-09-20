@@ -13,7 +13,7 @@
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { isCollapsed, isRelationCollapsed, listColumns, variantOf } from './list-layout.ts'
+import { isCollapsed, isRelationCollapsed, isRollupCollapsed, listColumns, variantOf } from './list-layout.ts'
 import { emptyValue, type CellValue, type MvpPropertyType } from './property-types.ts'
 import { textRun } from '../contracts/rich-text.ts'
 
@@ -95,5 +95,25 @@ describe('isRelationCollapsed (relation 5b-1)', () => {
   test('선택된 칸 · 표에서는 접지 않는다', () => {
     assert.equal(isRelationCollapsed('list', none, true), false)
     assert.equal(isRelationCollapsed('table', none, false), false)
+  })
+})
+
+describe('isRollupCollapsed (rollup 5c-2)', () => {
+  const filled = { state: 'ok', result: { kind: 'number', number: 3 }, hidden: 0 } as const
+  const none = { state: 'ok', result: { kind: 'number', number: null }, hidden: 0 } as const
+
+  test('★ 그릴 것이 없으면 접는다 — **아직 받지 못한 칸도** 접는다(받으면 그때 선다)', () => {
+    assert.equal(isRollupCollapsed('list', undefined, false), true)
+    assert.equal(isRollupCollapsed('list', none, false), true)
+    assert.equal(isRollupCollapsed('list', filled, false), false)
+  })
+
+  test('선택된 칸은 비어 있어도 선다 · 표는 접지 않는다', () => {
+    assert.equal(isRollupCollapsed('list', undefined, true), false)
+    assert.equal(isRollupCollapsed('table', undefined, false), false)
+  })
+
+  test('0 은 값이다 — 접지 않는다', () => {
+    assert.equal(isRollupCollapsed('list', { state: 'ok', result: { kind: 'number', number: 0 }, hidden: 0 }, false), false)
   })
 })

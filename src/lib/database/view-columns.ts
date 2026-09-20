@@ -7,7 +7,14 @@
  * 멀쩡했다). `testing/client-bundle.test.ts` 가 이 경계를 지킨다.
  */
 
-import { readRelationConfig, type MvpPropertyType, type RelationLimit, type SelectOption } from './property-types.ts'
+import {
+  isMvpPropertyType,
+  readRelationConfig,
+  type MvpPropertyType,
+  type RelationLimit,
+  type SelectOption,
+} from './property-types.ts'
+import { readRollupConfig, type RollupFunction } from './rollup-functions.ts'
 
 type ColumnBase = {
   readonly propertyId: string
@@ -46,7 +53,24 @@ export type RelationColumn = ColumnBase & {
   }
 }
 
-export type ViewColumn = CellColumn | RelationColumn
+/**
+ * rollup 컬럼(rollup 5c). **값이 행에 없다** — 어디에도 저장하지 않고 읽을 때 계산한다(정본 §3.5 [보강] rollup v1).
+ * 칸을 그리는 데 필요한 것은 따로 받는다(`rollup.ts` `computeRollups` → `RollupPage`).
+ *
+ * 그래서 여기 싣는 `rollup` 은 **설정**이다: 무엇을 타고(관계) 무엇을(대상) 어떻게(함수) 모으는지. 화면이 이것으로
+ * 그리지는 않는다 — 실제로 적용한 함수는 `RollupPage.columns[id].function` 이다(대상 타입에 맞지 않으면 접힌다).
+ * 속성 추가 폼이 방금 만든 컬럼을 새로고침 없이 붙일 때, 그리고 머리에 이름을 세울 때 쓴다.
+ */
+export type RollupColumn = ColumnBase & {
+  readonly type: 'rollup'
+  readonly rollup: {
+    readonly relationPropertyId: string
+    readonly targetPropertyId: string
+    readonly function: RollupFunction
+  }
+}
+
+export type ViewColumn = CellColumn | RelationColumn | RollupColumn
 
 /**
  * 저장된 config → 컬럼의 relation 부분. relation 의 모양이 아니면(손상) null — 그 컬럼은 그리지 않는다.
@@ -64,6 +88,26 @@ export function relationOf(config: unknown): RelationColumn['relation'] | null {
   }
 }
 
+/**
+ * 저장된 config → 컬럼의 rollup 부분. rollup 의 모양이 아니면 null — 그 컬럼은 그리지 않는다(relation 과 같은 규칙).
+ */
+export function rollupOf(config: unknown): RollupColumn['rollup'] | null {
+  const parsed = readRollupConfig(config)
+  if (parsed === null) return null
+  return {
+    relationPropertyId: parsed.relation_property_id,
+    targetPropertyId: parsed.target_property_id,
+    function: parsed.function,
+  }
+}
+
+/**
+ * 값이 셀에 있는 컬럼인가.
+ *
+ * **"relation 이 아니다"로 묻지 않는다.** 셀이 없는 타입은 relation 하나가 아니었고(rollup 이 둘째다) 앞으로도 는다
+ * (formula). 부정으로 물으면 새 타입이 들어올 때마다 이 술어를 고쳐야 하고, 고치기 전까지 그 타입이 **셀인 척**
+ * 통과한다 — `readCell` · `parseDraft` · 필터 축이 조용히 틀린 값을 만든다. 셀 타입 목록에 있는지로 묻는다.
+ */
 export function isCellColumn(column: ViewColumn): column is CellColumn {
-  return column.type !== 'relation'
+  return isMvpPropertyType(column.type)
 }

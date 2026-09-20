@@ -6,6 +6,7 @@
 
 import { cellText } from '@/lib/database/cell-format'
 import { optionIdOf } from '@/lib/database/property-types'
+import type { RollupCell, RollupColumnInfo } from '@/lib/database/rollup-functions'
 import type { AppPropertyType, CellValue, OptionColor, RelationValue, SelectOption } from '@/lib/database/property-types'
 
 export const TYPE_LABEL: Readonly<Record<AppPropertyType, string>> = {
@@ -165,6 +166,105 @@ export function RelationChips({ value, labels }: { value: RelationValue; labels:
           볼 수 없는 연결 {hidden}개
         </span>
       )}
+    </span>
+  )
+}
+
+// ── rollup (5c-2) ────────────────────────────────────────────────────
+
+const NOTE = 'flex-none text-xs text-neutral-400'
+
+/**
+ * rollup 칸 — 읽기 전용이다.
+ *
+ * 값은 행에 없다(읽을 때 계산한다 · `use-rollup-values.ts`). 그래서 받지 못한 칸(`undefined`)은 **빈 칸**이지 0 이 아니다 —
+ * 숫자 `null` 도 마찬가지다(연결이 0개인 평균 · 최소 · 최대 · 진행률 · 날짜 · `rollup-functions.ts` 머리말). 0 을 그리면
+ * "작업이 없는 프로젝트의 진행률 0%" 가 되어 "아무것도 안 끝났다"로 읽힌다.
+ *
+ * 그릴 수 없는 세 가지는 **말한다.** 조용히 비워 두면 "값이 없다"와 구분되지 않는다:
+ *
+ *   설정이 끊겼다    관계형 · 대상 속성이 지워졌다(복원하면 돌아온다)
+ *   너무 많다        한 칸의 연결이 상한을 넘었다 — 앞의 것만 더한 틀린 합 대신 그렇다고 말한다
+ *   볼 수 없는 항목  집계에서 뺀 연결의 수(정본: "N개 항목 접근 불가"). 값이 아니라 **개수만** 말한다
+ */
+export function RollupDisplay({ cell, info }: { cell: RollupCell | undefined; info: RollupColumnInfo | undefined }) {
+  if (info !== undefined && info.state !== 'ok') {
+    return (
+      <span
+        data-testid="db-rollup-broken"
+        title={info.state === 'relation_missing' ? '관계형 속성이 지워졌습니다' : '대상 속성이 지워졌습니다'}
+        className={NOTE}
+      >
+        설정이 끊겼습니다
+      </span>
+    )
+  }
+  if (cell === undefined) return null
+  if (cell.state === 'too_many') {
+    return (
+      <span data-testid="db-rollup-many" title="연결이 너무 많아 계산하지 않습니다" className={NOTE}>
+        연결이 너무 많습니다
+      </span>
+    )
+  }
+
+  const { result } = cell
+  const hidden =
+    cell.hidden > 0 ? (
+      <span data-testid="db-rollup-hidden" className={NOTE}>
+        볼 수 없는 항목 {cell.hidden}개
+      </span>
+    ) : null
+
+  // 값 목록(show_original)은 칩으로. 옵션 id 는 대상 표의 이름으로 그린다(볼 수 있는 표일 때만 옵션이 온다).
+  if (result.kind === 'values') {
+    const beyond = result.count - result.values.length
+    return (
+      <span className="flex min-w-0 items-center gap-1 overflow-hidden" data-testid="db-rollup">
+        {result.values.map((value, at) => (
+          <span
+            key={at}
+            data-testid="db-rollup-chip"
+            className="max-w-[10rem] flex-none truncate rounded bg-neutral-100 px-1.5 py-0.5 text-xs text-neutral-800 dark:bg-neutral-800 dark:text-neutral-200"
+          >
+            <CellDisplay value={value} options={info?.state === 'ok' ? info.targetOptions : []} />
+          </span>
+        ))}
+        {beyond > 0 && (
+          <span data-testid="db-rollup-more" className={NOTE}>
+            +{beyond}
+          </span>
+        )}
+        {hidden}
+      </span>
+    )
+  }
+
+  const text =
+    result.kind === 'number'
+      ? result.number === null
+        ? ''
+        : String(result.number)
+      : result.kind === 'percent'
+        ? result.percent === null
+          ? ''
+          : `${Math.round(result.percent * 1000) / 10}%`
+        : result.date === null
+          ? ''
+          : cellText({ type: 'date', date: { start: result.date } })
+
+  if (text === '' && hidden === null) return null
+  return (
+    <span className="flex min-w-0 items-center gap-1 overflow-hidden" data-testid="db-rollup">
+      {text !== '' && (
+        <span
+          data-testid="db-rollup-value"
+          className={`min-w-0 truncate ${result.kind === 'date' ? '' : 'tabular-nums'}`}
+        >
+          {text}
+        </span>
+      )}
+      {hidden}
     </span>
   )
 }

@@ -1,5 +1,5 @@
 /**
- * 컬럼 추가 — POST `/api/workspaces/[workspaceId]/data-sources/[dataSourceId]/properties`
+ * 컬럼 목록과 추가 — GET · POST `/api/workspaces/[workspaceId]/data-sources/[dataSourceId]/properties`
  *
  * 정본: 00-canonical-data-model.md §3.5 `property` · 03-database-core.md F-03-02
  *
@@ -11,11 +11,28 @@
 
 import { isUuid } from '@/lib/ids'
 import { readJsonBody, requireWorkspaceSession } from '@/lib/auth/route-session'
-import { addProperty } from '@/lib/database/property'
+import { addProperty, getSchema } from '@/lib/database/property'
 import type { MvpPropertyType } from '@/lib/database/property-types'
 import { failureResponse, propertyFailureStatus } from '@/lib/database/http'
 
 type Ctx = RouteContext<'/api/workspaces/[workspaceId]/data-sources/[dataSourceId]/properties'>
+
+/**
+ * 이 data_source 의 스키마. **다른 표의 것도 읽는다** — rollup 속성을 만들 때 폼이 대상 표의 프로퍼티 목록을 고르게
+ * 해야 하는데(rollup 5c-2), 그 표는 이 표가 아니다.
+ *
+ * 권한은 그 표의 `view` 다(`getSchema`). 볼 수 없으면 없는 것과 같은 답(404) — 스키마는 그 표의 내용이다.
+ */
+export async function GET(_request: Request, ctx: Ctx): Promise<Response> {
+  const { workspaceId, dataSourceId } = await ctx.params
+  const session = await requireWorkspaceSession(workspaceId)
+  if (!session.ok) return session.response
+  if (!isUuid(dataSourceId)) return Response.json({ error: 'not_found' }, { status: 404 })
+
+  const schema = await getSchema(session.ctx, dataSourceId)
+  if (!schema.ok) return failureResponse(propertyFailureStatus(schema.reason), schema)
+  return Response.json({ ok: true, schema: schema.value })
+}
 
 export async function POST(request: Request, ctx: Ctx): Promise<Response> {
   const { workspaceId, dataSourceId } = await ctx.params

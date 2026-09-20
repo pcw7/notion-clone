@@ -53,7 +53,7 @@ import {
 import { readPropertyTypes } from './query.ts'
 import { isGroupableType, normalizeGroupBy, validateGroupBy, type GroupBy } from './group.ts'
 import { isMvpPropertyType, isOptionType } from './property-types.ts'
-import { relationOf, type ViewColumn } from './view-columns.ts'
+import { relationOf, rollupOf, type ViewColumn } from './view-columns.ts'
 import { readOptionsOf } from './options.ts'
 import type { ValidationIssue } from '../contracts/rich-text.ts'
 
@@ -73,7 +73,7 @@ export const MAX_LOAD_LIMIT = 200
 
 // 컬럼의 모양은 `view-columns.ts` 에 있다 — 화면(클라이언트)이 `isCellColumn` 을 **값으로** 쓰는데, 이 파일은 DB 모듈을
 // 끌어오므로 클라이언트 번들이 가져갈 수 없다(`next build` 가 "Can't resolve 'dns'" 로 죽는다).
-export { isCellColumn, type CellColumn, type RelationColumn, type ViewColumn } from './view-columns.ts'
+export { isCellColumn, type CellColumn, type RelationColumn, type RollupColumn, type ViewColumn } from './view-columns.ts'
 
 export type ViewDetail = {
   readonly id: string
@@ -260,10 +260,18 @@ async function readColumns(tx: Tx, viewId: string): Promise<ViewColumn[]> {
       columns.push({ ...base, type: r.type })
       continue
     }
-    // 엣지 타입. config 가 relation 의 모양이 아니면(손상) 그리지 않는다 — 모르는 타입과 같은 취급이다.
-    const relation = r.type === 'relation' ? relationOf(r.config) : null
-    if (relation === null) continue
-    columns.push({ ...base, type: 'relation', relation })
+    // 셀이 아닌 타입. config 가 그 타입의 모양이 아니면(손상) 그리지 않는다 — 모르는 타입과 같은 취급이다.
+    if (r.type === 'relation') {
+      const relation = relationOf(r.config)
+      if (relation !== null) columns.push({ ...base, type: 'relation', relation })
+      continue
+    }
+    if (r.type === 'rollup') {
+      const rollup = rollupOf(r.config)
+      // 값은 여기서 읽지 않는다 — 읽을 때 계산하고(`rollup.ts` `computeRollups`) 보는 사람마다 다르다.
+      if (rollup !== null) columns.push({ ...base, type: 'rollup', rollup })
+      continue
+    }
   }
   return columns
 }

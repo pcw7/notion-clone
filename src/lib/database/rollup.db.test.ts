@@ -10,6 +10,7 @@
  *   ④ **권한 · 휴지통은 집계 안에서 거른다** — 볼 수 없는 행은 빠지고 `hidden` 으로 세어진다. 값도 옵션 이름도 새지 않는다
  *   ⑤ 설정이 끊겨도 rollup 은 남는다 — 지우면 `*_missing`, 복원하면 돌아온다. 맞지 않는 함수는 `show_original` 로 접힌다
  *   ⑥ 상한 — 한 칸의 연결이 상한을 넘으면 틀린 합 대신 `too_many`
+ *   ⑦ 화면이 그릴 것(5c-2) — 뷰의 컬럼에 rollup 이 서고(설정이 끊겨도 선다 · 손상된 config 는 빠진다) 셀 컬럼과 갈린다
  *
  * 반사실(HANDOFF §3.3-168~169): 읽을 수 있는지 안 보면 ④ 가(값이 샌다), lifecycle 을 안 보면 ④ 의 휴지통이, relation 이
  * 이 표의 것인지 안 보면 ① 이, 대상 표를 안 맞춰 보면 ① 이, 상한을 안 보면 ⑥ 이 실패한다.
@@ -30,6 +31,8 @@ import { addProperty, addSelectOption, deleteProperty, getSchema, restorePropert
 import type { CellValue, MvpPropertyType } from './property-types.ts'
 import { createRow, trashRow, updateCells } from './row.ts'
 import { addRelationProperty, linkRows } from './relation.ts'
+import { createView, getView } from './view.ts'
+import { isCellColumn } from './view-columns.ts'
 import { addRollupProperty, computeRollups, readRollupConfig, MAX_ROLLUP_ROWS, type RollupCell, type RollupFunction } from './rollup.ts'
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'
@@ -600,5 +603,43 @@ describe('⑥ 상한', () => {
     unwrap(await trashRow(fx.owner.ctx, tasks[3]))
     const after = unwrap(await computeRollups(fx.owner.ctx, w.projects.dataSourceId, [big], { maxLinks: 3 }))
     assert.deepEqual(ok(after.values[big][sum]).result, { kind: 'number', number: 3 })
+  })
+})
+
+describe('⑦ 화면이 그릴 것 (5c-2)', () => {
+  test('★ 뷰의 컬럼에 rollup 이 선다 — 설정을 싣고, 셀 컬럼과 타입으로 갈린다', async (ctx) => {
+    if (skipReason) return ctx.skip(skipReason)
+    const w = await world()
+    const sum = await w.rollup('총 시간', w.hours, 'sum')
+    const view = unwrap(await createView(fx.owner.ctx, w.projects.databaseId, { type: 'table' }))
+    const column = unwrap(await getView(fx.owner.ctx, view.id)).columns.find((c) => c.propertyId === sum)!
+    assert.equal(column.type, 'rollup')
+    assert.equal(isCellColumn(column), false, '셀 컬럼이 아니다 — 셀의 규칙에 넘어가면 안 된다')
+    assert.deepEqual(column.type === 'rollup' && column.rollup, {
+      relationPropertyId: w.back,
+      targetPropertyId: w.hours,
+      function: 'sum',
+    })
+  })
+
+  test('★ 설정이 끊겨도 컬럼은 선다 — 값이 "끊겼다"고 말하려면 칸이 있어야 한다', async (ctx) => {
+    if (skipReason) return ctx.skip(skipReason)
+    const w = await world()
+    const sum = await w.rollup('총 시간', w.hours, 'sum')
+    unwrap(await deleteProperty(fx.owner.ctx, w.tasks.dataSourceId, w.hours))
+    const view = unwrap(await createView(fx.owner.ctx, w.projects.databaseId, { type: 'table' }))
+    const columns = unwrap(await getView(fx.owner.ctx, view.id)).columns
+    assert.ok(columns.some((c) => c.propertyId === sum && c.type === 'rollup'))
+  })
+
+  test('손상된 config 의 rollup 컬럼은 빠진다 — 모르는 타입과 같은 취급이다', async (ctx) => {
+    if (skipReason) return ctx.skip(skipReason)
+    const w = await world()
+    const sum = await w.rollup('총 시간', w.hours, 'sum')
+    await withTransaction((tx) => tx.query(`UPDATE property SET config = '{}'::jsonb WHERE id = $1`, [sum]))
+    const view = unwrap(await createView(fx.owner.ctx, w.projects.databaseId, { type: 'table' }))
+    const columns = unwrap(await getView(fx.owner.ctx, view.id)).columns
+    assert.equal(columns.some((c) => c.propertyId === sum), false)
+    assert.ok(columns.some((c) => c.type === 'title'), '다른 컬럼은 그대로 선다')
   })
 })

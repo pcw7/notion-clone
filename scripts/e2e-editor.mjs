@@ -3017,11 +3017,108 @@ async function main() {
         const written = await api('PATCH', `/rows/${p1}`, { cells: [{ propertyId: sum.body.property.id, value: { type: 'number', number: 99 } }] })
         check('rollup 칸에는 쓸 수 없다 — 읽기 전용이다', written.status >= 400 && written.status < 500, `${written.status} ${JSON.stringify(written.body)}`)
 
+        // ── 화면 (5c-2) ──
+        const rollupIn = (cell) => evaluate(`document.querySelector('td[data-cell="${cell}"] [data-testid="db-rollup-value"]')?.textContent.trim() ?? null`)
+        const rollupIs = (cell, expected, ms = 8000) =>
+          waitFor(`(document.querySelector('td[data-cell="${cell}"] [data-testid="db-rollup-value"]')?.textContent.trim() ?? null) === ${JSON.stringify(expected)}`, ms)
+
         await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${projects.id}` })
-        check('★ rollup 속성이 있는 표도 열린다 — 컬럼은 아직 서지 않는다(화면은 5c-2)',
-          (await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === 2`, 15000))
-            && (await evaluate(`[...document.querySelectorAll('[data-testid="db-table"] thead th[data-property-id]')].map((th) => th.textContent).every((t) => !t.includes('총 시간'))`))
-            && !(await evaluate(`!!document.querySelector('[data-testid="db-error"]')`)))
+        await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === 2`, 15000)
+        const heads = () => evaluate(`[...document.querySelectorAll('[data-testid="db-table"] thead th[data-property-id]')].map((th) => th.textContent)`)
+        check('★ rollup 컬럼이 표에 서고 머리가 "롤업"이라고 말한다',
+          (await heads()).filter((t) => t.includes('총 시간') && t.includes('롤업')).length === 1,
+          JSON.stringify(await heads()))
+        check('★ 값은 첫 화면에 함께 온다(서버 렌더가 계산한다) — 합 7.5 · 평균 3.75',
+          (await rollupIn('0:2')) === '7.5' && (await rollupIn('0:3')) === '3.75',
+          `${await rollupIn('0:2')} · ${await rollupIn('0:3')}`)
+        check('★ 연결이 없는 행 — 합은 **0 을 그리고** 평균은 **빈 칸**이다(0 이 아니다)',
+          (await rollupIn('1:2')) === '0' && (await rollupIn('1:3')) === null,
+          `${await rollupIn('1:2')} · ${await rollupIn('1:3')}`)
+
+        await clickOn('td[data-cell="0:2"]')
+        await clickOn('td[data-cell="0:2"]')
+        check('★ rollup 칸은 읽기 전용이다 — 두 번 눌러도 편집기가 열리지 않는다',
+          (await evaluate(`document.querySelector('td[data-cell="0:2"]')?.getAttribute('aria-readonly') === 'true'`))
+            && !(await evaluate(`!!document.querySelector('td[data-editing]') || !!document.querySelector('[data-testid="db-cell-input"]')`)))
+
+        // ── 속성 추가 폼의 "롤업" — 관계 → 속성 → 계산 ──
+        await clickOn('[data-testid="db-add-column"]')
+        await waitFor(`document.activeElement?.getAttribute('aria-label') === '속성 이름'`, 3000)
+        await typeText('작업 수')
+        await setSelect('select[aria-label="속성 유형"]', 'rollup')
+        check('★ "롤업"을 고르면 3단이 뜬다 — 관계(이 표의 관계형) · 모을 속성(대상 표의 것) · 계산',
+          await waitFor(`(() => {
+            const rel = document.querySelector('[data-testid="db-rollup-relation"]')
+            const target = document.querySelector('[data-testid="db-rollup-target"]')
+            const fn = document.querySelector('[data-testid="db-rollup-function"]')
+            if (!rel || !target || !fn || target.disabled) return false
+            return [...rel.options].some((o) => o.textContent === '작업들')
+              && [...target.options].map((o) => o.textContent).join() === '이름,시간'
+              && [...fn.options].some((o) => o.textContent === '개수')
+          })()`, 8000),
+          await evaluate(`[...(document.querySelector('[data-testid="db-rollup-target"]')?.options ?? [])].map((o) => o.textContent).join()`))
+        check('★ 계산 목록은 **모을 속성의 타입**이 정한다 — 글에는 합계가 없다',
+          await evaluate(`(() => {
+            const fn = document.querySelector('[data-testid="db-rollup-function"]')
+            return !!fn && ![...fn.options].some((o) => o.textContent === '합계')
+          })()`))
+        await setSelect('[data-testid="db-rollup-function"]', 'count')
+        await clickOn('[data-testid="db-add-column-form"] button[type="submit"]')
+        check('★ 만들면 새로고침 없이 컬럼이 서고 **값까지 채워진다** — 이미 불러온 행의 새 칸도 받는다',
+          (await waitFor(`!document.querySelector('[data-testid="db-add-column-form"]')`, 8000))
+            && (await rollupIs('0:4', '3')) && (await rollupIs('1:4', '0')),
+          `${await rollupIn('0:4')} · ${await rollupIn('1:4')}`)
+
+        // ── relation 을 고치면 그 행의 rollup 을 다시 묻는다 ──
+        await clickOn('td[data-cell="1:1"]')
+        await clickOn('td[data-cell="1:1"]')
+        // ★ 후보는 팝오버가 열린 **뒤에** 온다 — 기다리지 않고 누르면 아무것도 고르지 않는다(처음에 그렇게 썼다가
+        //   이 절과 다음 절이 함께 틀렸다). 고른 뒤의 값을 보는 검사이므로 여기서 눌린 것까지 같이 본다.
+        const picked =
+          (await waitFor(`document.querySelectorAll('[data-testid="db-relation-candidate"]').length > 0`, 8000)) &&
+          (await clickOn('[data-testid="db-relation-candidate"]'))
+        check('★ 연결을 더하면 **그 행의 rollup 이 다시 계산된다** — 값은 연결을 타고 나온다',
+          picked && (await rollupIs('1:4', '1')) && (await rollupIs('1:2', '3')),
+          `고름=${picked} · ${await rollupIn('1:4')} · ${await rollupIn('1:2')}`)
+        await key('Escape')
+
+        // ── 설정이 끊기면 말한다 ──
+        await api('DELETE', `/data-sources/${tasks.dataSourceId}/properties/${hours}`)
+        await send('Page.reload')
+        await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === 2`, 15000)
+        check('★ 대상 속성이 지워지면 "설정이 끊겼습니다" — 조용히 비워 두지 않는다. 컬럼은 남는다(복원하면 돌아온다)',
+          (await evaluate(`document.querySelector('td[data-cell="0:2"] [data-testid="db-rollup-broken"]')?.textContent.trim() === '설정이 끊겼습니다'`))
+            && (await rollupIn('0:4')) === '3',
+          await evaluate(`document.querySelector('td[data-cell="0:2"]')?.textContent`))
+
+        // ── rollup 컬럼이 **없던** 표에 첫 컬럼을 만든다 ──
+        // 마운트 때 rollup 이 없으면 서버는 아무것도 계산하지 않았다. 그 자리를 "이미 물었다"로 적어 두면 첫 컬럼의
+        // 칸이 영영 빈 채로 남는다(`use-rollup-values.ts` 머리말) — 이 절이 그것을 본다.
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${tasks.id}` })
+        await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === 3`, 15000)
+        await clickOn('[data-testid="db-add-column"]')
+        await waitFor(`document.activeElement?.getAttribute('aria-label') === '속성 이름'`, 3000)
+        await typeText('프로젝트 수')
+        await setSelect('select[aria-label="속성 유형"]', 'rollup')
+        await waitFor(`document.querySelector('[data-testid="db-rollup-target"]')?.disabled === false`, 8000)
+        await setSelect('[data-testid="db-rollup-function"]', 'count')
+        await clickOn('[data-testid="db-add-column-form"] button[type="submit"]')
+        check('★ rollup 컬럼이 **없던** 표에 첫 컬럼을 만들어도 값이 온다 — 이미 불러온 행 전부를 다시 묻는다',
+          (await waitFor(`!document.querySelector('[data-testid="db-add-column-form"]')`, 8000))
+            && (await rollupIs('0:2', '2')) && (await rollupIs('1:2', '1')),
+          `${await rollupIn('0:2')} · ${await rollupIn('1:2')}`)
+
+        // ── 관계형이 없는 표 ──
+        const plain = (await api('POST', '/databases', { name: `롤업 없음 ${stamp}` })).body.database
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${plain.id}` })
+        await waitFor(`!!document.querySelector('[data-testid="db-add-column"]')`, 15000)
+        await clickOn('[data-testid="db-add-column"]')
+        await waitFor(`document.activeElement?.getAttribute('aria-label') === '속성 이름'`, 3000)
+        await setSelect('select[aria-label="속성 유형"]', 'rollup')
+        check('관계형 속성이 없는 표에서는 만들 수 없다고 말한다 — 롤업은 관계 위에서만 선다',
+          await waitFor(`!!document.querySelector('[data-testid="db-rollup-no-relation"]')
+            && !document.querySelector('[data-testid="db-rollup-relation"]')`, 5000))
+        await key('Escape')
       }
     }
 

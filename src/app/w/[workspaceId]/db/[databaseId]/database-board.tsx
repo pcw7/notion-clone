@@ -652,6 +652,8 @@ function BoardCard({
               </span>
             )
           }
+          // rollup 배지는 아직 없다 — 값이 행에 없어서 카드마다 따로 물어야 한다(표 · 목록은 5c-2 가 그린다 · §7).
+          if (column.type === 'rollup') return null
           const value = readCell(column.type, row.properties[column.propertyId])
           if (value.type === 'checkbox' ? !value.checkbox : isEmptyValue(value)) return null
           return (
