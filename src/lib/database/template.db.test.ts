@@ -27,13 +27,20 @@ import { probeDatabase, makeFixture, createUser, joinAs, type Actor, type Fixtur
 import { withReadTransaction, withTransaction } from '../db/tx.ts'
 import { grantAccess, revokeAccess } from '../permissions/acl.ts'
 import { restorePage } from '../block/trash.ts'
+import { loadPageBody, savePageBody } from '../block/save-page-body.ts'
+import { createPage, titleFromPlainText } from '../block/page.ts'
+import { textRun, toPlainText } from '../contracts/rich-text.ts'
+import type { EditorBlock } from '../editor/document.ts'
+import type { MvpPropertyType } from './property-types.ts'
 import { asBlockId } from '../ids.ts'
 import { createDatabase } from './database.ts'
-import { getSchema } from './property.ts'
-import { createRow, listRows, trashRow, type RowSummary } from './row.ts'
+import { addProperty, deleteProperty, getSchema } from './property.ts'
+import { addRelationProperty, linkRows, readRelation, searchCandidates } from './relation.ts'
+import { createRow, listRows, trashRow, updateCells, type RowSummary } from './row.ts'
 import { queryRows } from './query.ts'
 import { getView, updateView } from './view.ts'
 import {
+  createRowFromTemplate,
   createTemplate,
   deleteTemplate,
   listTemplates,
@@ -396,5 +403,356 @@ describe('기본 템플릿 — 살아 있는 이 표의 템플릿만 가리킨�
 
     await withTransaction((tx) => tx.query(`DELETE FROM block WHERE id = $1`, [template.id]))
     assert.equal(await storedDefaultOf(table.viewId), null, '영구 삭제됐는데 지정이 남았다')
+  })
+})
+
+// ── ⑥ 템플릿으로 행 만들기 (F-08-02) ──────────────────────────────────
+
+const para = (...runs: ReturnType<typeof textRun>[]): EditorBlock => ({
+  id: randomUUID(),
+  type: 'paragraph',
+  title: runs,
+})
+/** 하위 페이지 참조 블록 — 본문에서 그 페이지가 서는 자리(`page-refs.ts`). */
+const ref = (pageId: string): EditorBlock => ({ id: pageId, type: 'page', title: [] })
+
+const unwrapMade = (r: Awaited<ReturnType<typeof createRowFromTemplate>>) => {
+  assert.equal(r.ok, true, `실패: ${r.ok === false ? r.reason : ''}`)
+  if (!r.ok) throw new Error('unreachable')
+  return r.value
+}
+
+const titleCellOf = (propertyId: string, text: string) => ({
+  propertyId,
+  value: { type: 'title' as const, title: [textRun(text)] },
+})
+
+/**
+ * 프로퍼티를 더하고 **그 id** 를 준다.
+ *
+ * `addProperty` 는 스키마 스냅샷을 돌려준다 — 이름으로 찾아야 한다. ⚠ tsconfig 가 `*.test.ts` 를 타입 검사에서
+ * 빼므로(HANDOFF §6) `added.value.propertyId` 같은 오타는 **돌려 봐야** 드러난다. 실제로 그렇게 한 번 걸렸다.
+ */
+const addProp = async (dataSourceId: string, name: string, type: MvpPropertyType): Promise<string> => {
+  const added = await addProperty(fx.owner.ctx, dataSourceId, { name, type })
+  assert.equal(added.ok, true, `프로퍼티 ${name} 추가 실패`)
+  if (!added.ok) throw new Error('unreachable')
+  const found = added.value.properties.find((p) => p.name === name)
+  assert.ok(found !== undefined, `프로퍼티 ${name} 이 스키마에 없다`)
+  return found.id
+}
+
+const liveRowCount = async (dataSourceId: string): Promise<number> =>
+  Number(
+    (
+      await withReadTransaction((tx) =>
+        tx.queryOne<{ n: string }>(
+          `SELECT count(*) AS n FROM page p JOIN block b ON b.id = p.id
+            WHERE p.data_source_id = $1 AND b.lifecycle = 'live'`,
+          [dataSourceId],
+        ),
+      )
+    ).n,
+  )
+
+describe('템플릿으로 행 만들기 — 셀 · 본문이 따라온다', () => {
+  test('★ 셀과 제목이 그대로 실리고 꼬리표는 붙지 않는다 — 사본이 아니라 새 항목이다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const table = await newTable()
+    const propertyId = await addProp(table.dataSourceId, '중요도', 'number')
+
+    const template = unwrapTemplate(await createTemplate(fx.owner.ctx, table.dataSourceId, { title: '주간 회의' }))
+    assert.equal(
+      (await updateCells(fx.owner.ctx, template.id, { cells: [{ propertyId, value: { type: 'number', number: 3 } }] })).ok,
+      true,
+    )
+
+    const made = unwrapMade(await createRowFromTemplate(fx.owner.ctx, table.dataSourceId, template.id))
+    assert.notEqual(made.row.id, template.id)
+    assert.equal(made.row.title, '주간 회의', '꼬리표가 붙었거나 제목이 비었다')
+    assert.deepEqual(made.row.properties[propertyId], { type: 'number', number: 3 })
+    assert.equal(made.skippedPages, 0)
+    assert.equal(made.skippedLinks, 0)
+
+    // 새 행은 **템플릿이 아니다** — 표에 보이고 템플릿 목록에는 없다.
+    const listed = await listRows(fx.owner.ctx, table.dataSourceId)
+    assert.equal(listed.ok, true)
+    if (listed.ok) assert.deepEqual(listed.value.rows.map((r) => r.id), [made.row.id])
+    const templates = await listTemplates(fx.owner.ctx, table.dataSourceId)
+    assert.equal(templates.ok, true)
+    if (templates.ok) assert.deepEqual(templates.value.map((t2) => t2.id), [template.id])
+  })
+
+  test('★ 호출자가 준 셀이 템플릿의 값을 덮는다 — 보드 열의 값이 이긴다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const table = await newTable()
+    const propertyId = await addProp(table.dataSourceId, '중요도', 'number')
+
+    const template = unwrapTemplate(await createTemplate(fx.owner.ctx, table.dataSourceId, { title: '주간 회의' }))
+    assert.equal(
+      (await updateCells(fx.owner.ctx, template.id, { cells: [{ propertyId, value: { type: 'number', number: 3 } }] })).ok,
+      true,
+    )
+
+    const made = unwrapMade(
+      await createRowFromTemplate(fx.owner.ctx, table.dataSourceId, template.id, {
+        cells: [
+          { propertyId, value: { type: 'number', number: 99 } },
+          titleCellOf(table.titleId, '9월 3주'),
+        ],
+      }),
+    )
+    assert.deepEqual(made.row.properties[propertyId], { type: 'number', number: 99 })
+    assert.equal(made.row.title, '9월 3주')
+  })
+
+  test('★ 지워진 · 읽기 전용이 된 프로퍼티의 값은 무시한다 — 그 템플릿으로도 행이 만들어진다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const table = await newTable()
+    const gone = await addProp(table.dataSourceId, '없어질 것', 'number')
+    const frozen = await addProp(table.dataSourceId, '잠길 것', 'number')
+    const kept = await addProp(table.dataSourceId, '남을 것', 'number')
+
+    const template = unwrapTemplate(await createTemplate(fx.owner.ctx, table.dataSourceId, { title: '낡은 템플릿' }))
+    assert.equal(
+      (
+        await updateCells(fx.owner.ctx, template.id, {
+          cells: [
+            { propertyId: gone, value: { type: 'number', number: 1 } },
+            { propertyId: frozen, value: { type: 'number', number: 2 } },
+            { propertyId: kept, value: { type: 'number', number: 3 } },
+          ],
+        })
+      ).ok,
+      true,
+    )
+    assert.equal((await deleteProperty(fx.owner.ctx, table.dataSourceId, gone)).ok, true)
+    await withTransaction((tx) => tx.query(`UPDATE property SET writable = 'readonly' WHERE id = $1`, [frozen]))
+
+    const made = unwrapMade(await createRowFromTemplate(fx.owner.ctx, table.dataSourceId, template.id))
+    assert.deepEqual(made.row.properties[kept], { type: 'number', number: 3 })
+    assert.equal(made.row.properties[frozen], undefined, '읽기 전용 프로퍼티에 값이 실렸다')
+  })
+
+  test('★ 본문과 하위 페이지가 따라온다 — 하위 페이지는 새 id 이고 사본 본문이 그것을 가리킨다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const table = await newTable()
+    const template = unwrapTemplate(await createTemplate(fx.owner.ctx, table.dataSourceId, { title: '회의록' }))
+    const child = await createPage(fx.owner.ctx, {
+      title: titleFromPlainText('지난 안건'),
+      parentPageId: asBlockId(template.id),
+    })
+    assert.equal(
+      (
+        await savePageBody(fx.owner.ctx, asBlockId(template.id), {
+          blocks: [para(textRun('안건 정리')), ref(child.id)],
+        })
+      ).ok,
+      true,
+    )
+
+    const made = unwrapMade(await createRowFromTemplate(fx.owner.ctx, table.dataSourceId, template.id))
+    const body = await loadPageBody(fx.owner.ctx, asBlockId(made.row.id))
+    assert.ok(body !== null, '사본의 본문을 읽지 못했다')
+    assert.equal(toPlainText(body.doc.blocks[0].title), '안건 정리')
+    const copiedRef = body.doc.blocks.find((b) => b.type === 'page')
+    assert.ok(copiedRef !== undefined, '사본 본문에 하위 페이지 참조가 없다')
+    assert.notEqual(copiedRef.id, child.id, '하위 페이지가 원본을 가리킨다 — 새 id 를 받아야 한다')
+    assert.equal(made.skippedPages, 0)
+
+    // 원본 템플릿은 그대로다.
+    const original = await loadPageBody(fx.owner.ctx, asBlockId(template.id))
+    assert.equal(original?.doc.blocks.find((b) => b.type === 'page')?.id, child.id)
+  })
+})
+
+describe('템플릿으로 행 만들기 — relation 은 대상을 그대로 물려준다', () => {
+  test('★ 양방향이면 거울상이 상대 행에 생긴다 — 대상은 재매핑하지 않는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const tasks = await newTable()
+    const projects = await newTable()
+    const made = await addRelationProperty(fx.owner.ctx, tasks.dataSourceId, {
+      name: '프로젝트',
+      targetDataSourceId: projects.dataSourceId,
+      twoWay: { name: '작업들' },
+    })
+    assert.equal(made.ok, true)
+    if (!made.ok) throw new Error('unreachable')
+    const forward = made.value.propertyId
+    const back = made.value.syncedPropertyId as string
+
+    const project = await createRow(fx.owner.ctx, projects.dataSourceId, {
+      cells: [titleCellOf(projects.titleId, '가을 개편')],
+    })
+    assert.equal(project.ok, true)
+    if (!project.ok) throw new Error('unreachable')
+
+    const template = unwrapTemplate(await createTemplate(fx.owner.ctx, tasks.dataSourceId, { title: '개편 작업' }))
+    assert.equal((await linkRows(fx.owner.ctx, template.id, forward, { add: [project.value.id] })).ok, true)
+
+    const row = unwrapMade(await createRowFromTemplate(fx.owner.ctx, tasks.dataSourceId, template.id))
+    assert.equal(row.skippedLinks, 0)
+
+    const linked = await readRelation(fx.owner.ctx, row.row.id, forward)
+    assert.equal(linked.ok, true)
+    if (linked.ok) assert.deepEqual(linked.value.items.map((r) => r.title), ['가을 개편'])
+
+    // 거울상 — 상대 행의 칸에 템플릿과 새 행 **둘 다** 서 있다(엣지는 둘, 템플릿은 R1 이 가린다).
+    const mirrored = await readRelation(fx.owner.ctx, project.value.id, back)
+    assert.equal(mirrored.ok, true)
+    if (mirrored.ok) assert.deepEqual(mirrored.value.items.map((r) => r.id), [row.row.id])
+  })
+
+  test('★ 볼 수 없는 대상은 잇지 않고 개수로 말한다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const tasks = await newTable()
+    const secret = await newTable()
+    const made = await addRelationProperty(fx.owner.ctx, tasks.dataSourceId, {
+      name: '비밀 프로젝트',
+      targetDataSourceId: secret.dataSourceId,
+    })
+    assert.equal(made.ok, true)
+    if (!made.ok) throw new Error('unreachable')
+
+    const hidden = await createRow(fx.owner.ctx, secret.dataSourceId, {
+      cells: [titleCellOf(secret.titleId, '기밀 작업')],
+    })
+    assert.equal(hidden.ok, true)
+    if (!hidden.ok) throw new Error('unreachable')
+
+    const template = unwrapTemplate(await createTemplate(fx.owner.ctx, tasks.dataSourceId, { title: '비밀 템플릿' }))
+    assert.equal((await linkRows(fx.owner.ctx, template.id, made.value.propertyId, { add: [hidden.value.id] })).ok, true)
+
+    // 대상 표를 `other` 에게서 닫는다. 템플릿이 있는 표는 그대로 열려 있다.
+    assert.equal(
+      (await grantAccess(fx.owner.ctx, secret.databaseId, { type: 'user', id: fx.owner.userId }, 'full_access')).ok,
+      true,
+    )
+    assert.equal((await revokeAccess(fx.owner.ctx, secret.databaseId, { type: 'workspace_everyone', id: null })).ok, true)
+
+    const row = unwrapMade(await createRowFromTemplate(other.ctx, tasks.dataSourceId, template.id))
+    assert.equal(row.skippedLinks, 1, '볼 수 없는 대상을 이었거나 세지 않았다')
+
+    const edges = await withReadTransaction((tx) =>
+      tx.query<{ to_page_id: string }>(`SELECT to_page_id FROM relation_edge WHERE from_page_id = $1`, [row.row.id]),
+    )
+    assert.deepEqual(edges, [], '볼 수 없는 대상에 엣지가 생겼다')
+    assert.ok(!JSON.stringify(row).includes('기밀 작업'), '응답에 볼 수 없는 행의 제목이 실렸다')
+  })
+})
+
+describe('템플릿으로 행 만들기 — 거부하면 아무것도 남지 않는다', () => {
+  test('★ 일반 행 · 다른 표의 템플릿 · 휴지통의 템플릿 · 없는 id 는 전부 not_found 다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const table = await newTable()
+    const otherTable = await newTable()
+    const plain = await createRow(fx.owner.ctx, table.dataSourceId)
+    assert.equal(plain.ok, true)
+    if (!plain.ok) throw new Error('unreachable')
+    const theirs = unwrapTemplate(await createTemplate(fx.owner.ctx, otherTable.dataSourceId, { title: '남의 것' }))
+    const trashed = unwrapTemplate(await createTemplate(fx.owner.ctx, table.dataSourceId, { title: '버린 것' }))
+    assert.equal((await deleteTemplate(fx.owner.ctx, trashed.id)).ok, true)
+
+    const before = await liveRowCount(table.dataSourceId)
+    for (const [what, id] of [
+      ['일반 행', plain.value.id],
+      ['다른 표의 템플릿', theirs.id],
+      ['휴지통의 템플릿', trashed.id],
+      ['없는 id', randomUUID()],
+      ['uuid 가 아닌 것', 'not-a-uuid'],
+    ] as const) {
+      const refused = await createRowFromTemplate(fx.owner.ctx, table.dataSourceId, id)
+      assert.equal(refused.ok, false, `${what} 로 행이 만들어졌다`)
+      if (!refused.ok) assert.equal(refused.reason, 'not_found', what)
+    }
+    assert.equal(await liveRowCount(table.dataSourceId), before, '거부했는데 행이 생겼다')
+  })
+
+  test('★ 볼 수만 있는 사람은 템플릿으로도 행을 만들지 못한다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const table = await newTable()
+    const template = unwrapTemplate(await createTemplate(fx.owner.ctx, table.dataSourceId, { title: '템플릿' }))
+    assert.equal(
+      (await grantAccess(fx.owner.ctx, table.databaseId, { type: 'user', id: fx.owner.userId }, 'full_access')).ok,
+      true,
+    )
+    assert.equal((await revokeAccess(fx.owner.ctx, table.databaseId, { type: 'workspace_everyone', id: null })).ok, true)
+    assert.equal(
+      (await grantAccess(fx.owner.ctx, table.databaseId, { type: 'user', id: other.userId }, 'view')).ok,
+      true,
+    )
+
+    const before = await liveRowCount(table.dataSourceId)
+    const refused = await createRowFromTemplate(other.ctx, table.dataSourceId, template.id)
+    assert.equal(refused.ok, false)
+    if (!refused.ok) assert.equal(refused.reason, 'forbidden')
+    assert.equal(await liveRowCount(table.dataSourceId), before, '거부했는데 행이 생겼다')
+  })
+})
+
+describe('템플릿의 연결 칸 — 열린 쪽과 열지 않은 쪽', () => {
+  test('★ 템플릿의 연결 칸은 읽고 고칠 수 있다 — R1 은 목록의 규칙이다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const tasks = await newTable()
+    const projects = await newTable()
+    const made = await addRelationProperty(fx.owner.ctx, tasks.dataSourceId, {
+      name: '프로젝트',
+      targetDataSourceId: projects.dataSourceId,
+    })
+    assert.equal(made.ok, true)
+    if (!made.ok) throw new Error('unreachable')
+
+    const project = await createRow(fx.owner.ctx, projects.dataSourceId, {
+      cells: [titleCellOf(projects.titleId, '가을 개편')],
+    })
+    assert.equal(project.ok, true)
+    if (!project.ok) throw new Error('unreachable')
+
+    const template = unwrapTemplate(await createTemplate(fx.owner.ctx, tasks.dataSourceId, { title: '개편 작업' }))
+    const linked = await linkRows(fx.owner.ctx, template.id, made.value.propertyId, { add: [project.value.id] })
+    assert.equal(linked.ok, true, '템플릿의 연결 칸을 고치지 못했다 — F-08-02 가 요구하는 기능이다')
+
+    const read = await readRelation(fx.owner.ctx, template.id, made.value.propertyId)
+    assert.equal(read.ok, true)
+    if (read.ok) assert.deepEqual(read.value.items.map((r) => r.title), ['가을 개편'])
+  })
+
+  test('★ 템플릿은 연결의 **대상**이 될 수 없다 — 후보에도 없다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const tasks = await newTable()
+    const projects = await newTable()
+    const made = await addRelationProperty(fx.owner.ctx, tasks.dataSourceId, {
+      name: '프로젝트',
+      targetDataSourceId: projects.dataSourceId,
+    })
+    assert.equal(made.ok, true)
+    if (!made.ok) throw new Error('unreachable')
+
+    // 대상 표의 템플릿. 이름은 우연히 나올 수 없는 것으로 둔다(§6 — 누출 검사의 값).
+    const targetTemplate = unwrapTemplate(
+      await createTemplate(fx.owner.ctx, projects.dataSourceId, { title: '프로젝트 템플릿 987654' }),
+    )
+    const task = await createRow(fx.owner.ctx, tasks.dataSourceId)
+    assert.equal(task.ok, true)
+    if (!task.ok) throw new Error('unreachable')
+
+    const refused = await linkRows(fx.owner.ctx, task.value.id, made.value.propertyId, { add: [targetTemplate.id] })
+    assert.equal(refused.ok, false, '템플릿을 연결 대상으로 받았다 — 표에 없는 행을 가리키는 칸이 된다')
+    if (!refused.ok) assert.equal(refused.reason, 'invalid_value')
+
+    const edges = await withReadTransaction((tx) =>
+      tx.query<{ to_page_id: string }>(`SELECT to_page_id FROM relation_edge WHERE from_page_id = $1`, [task.value.id]),
+    )
+    assert.deepEqual(edges, [], '거부했는데 엣지가 생겼다')
+
+    const candidates = await searchCandidates(fx.owner.ctx, task.value.id, made.value.propertyId, '')
+    assert.equal(candidates.ok, true)
+    if (candidates.ok) {
+      assert.ok(
+        !candidates.value.items.some((c) => c.id === targetTemplate.id),
+        '후보 목록에 템플릿이 나왔다',
+      )
+      assert.ok(!JSON.stringify(candidates).includes('987654'), '후보 응답에 템플릿의 이름이 실렸다')
+    }
   })
 })

@@ -3121,7 +3121,7 @@ async function main() {
         await key('Escape')
       }
 
-      section('데이터베이스 템플릿 — 서버 (템플릿 6c-1 · F-08-02 · F-08-03)')
+      section('데이터베이스 템플릿 — 서버 (템플릿 6c-1 · 6c-2 · F-08-02 · F-08-03)')
       // 권한 · 상한 · 기본 지정의 규칙은 `template.db.test.ts` 가 본다. 여기서는 빌드된 앱에서 라우트가 실제로 답하는지,
       // 그리고 **불변식 R1 이 화면까지 지켜지는지** — 템플릿을 만들어도 표에 행이 늘지 않는지 — 를 본다.
       // ⚠ 익스포트 절 **뒤**에 있다(표를 하나 더 만든다).
@@ -3169,11 +3169,45 @@ async function main() {
           await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === 1`, 15000),
           await evaluate(`[...document.querySelectorAll('[data-testid="db-table"] tbody tr')].map((tr) => tr.textContent).join(' | ')`))
 
+        const template2 = await api('POST', `/data-sources/${db.dataSourceId}/templates`, { title: '점검 항목' })
+        const priority = await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '중요도', type: 'number' })
+        const priorityId = priority.body.property.id
+        await api('PATCH', `/rows/${template2.body.template.id}`, {
+          cells: [{ propertyId: priorityId, value: { type: 'number', number: 7 } }],
+        })
+
+        const fromTemplate = await api('POST', `/views/${db.defaultViewId}/rows`, {
+          templateId: template2.body.template.id,
+        })
+        check('★ 템플릿으로 행을 만든다 — 제목과 셀이 따라오고 꼬리표는 붙지 않는다',
+          fromTemplate.status === 201 && fromTemplate.body?.row?.title === '점검 항목'
+            && fromTemplate.body.row.properties?.[priorityId]?.number === 7
+            && fromTemplate.body.skippedPages === 0 && fromTemplate.body.skippedLinks === 0,
+          `${fromTemplate.status} ${JSON.stringify(fromTemplate.body)}`)
+
+        const overridden = await api('POST', `/views/${db.defaultViewId}/rows`, {
+          templateId: template2.body.template.id,
+          cells: [{ propertyId: priorityId, value: { type: 'number', number: 1 } }],
+        })
+        check('★ 보내 준 셀이 템플릿의 값을 덮는다 — 보드 열의 값이 이긴다',
+          overridden.body?.row?.properties?.[priorityId]?.number === 1,
+          JSON.stringify(overridden.body?.row?.properties))
+
+        const notATemplate = await api('POST', `/views/${db.defaultViewId}/rows`, { templateId: rows.body.rows[0].id })
+        check('일반 행 id 로는 만들 수 없다 — 템플릿만 원본이 된다',
+          notATemplate.status === 404, `${notATemplate.status} ${JSON.stringify(notATemplate.body)}`)
+
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+        check('★ 템플릿으로 만든 행은 표에 선다 — 보통 행 1 + 템플릿에서 2',
+          await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === 3`, 15000),
+          await evaluate(`[...document.querySelectorAll('[data-testid="db-table"] tbody tr')].map((tr) => tr.textContent).join(' | ')`))
+
         const removed = await api('DELETE', `/templates/${templateId}`)
         const afterDelete = await api('GET', `/data-sources/${db.dataSourceId}/templates`)
         const view = await api('GET', `/views/${db.defaultViewId}`)
         check('★ 템플릿을 버리면 목록에서 빠지고 기본 지정도 빈 페이지로 돌아간다',
-          removed.status === 200 && afterDelete.body?.templates?.length === 0
+          removed.status === 200
+            && afterDelete.body?.templates?.map((t) => t.title).join() === '점검 항목'
             && view.body?.view?.defaultTemplateId === null,
           `${removed.status} ${JSON.stringify(afterDelete.body)} · ${JSON.stringify(view.body?.view?.defaultTemplateId)}`)
 
