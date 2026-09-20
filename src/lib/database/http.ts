@@ -66,7 +66,10 @@ export function templateFailureStatus(reason: TemplateFailure): number {
     case 'forbidden':
       return 403
     // 상한은 입력이 아니라 **지금 상태**가 허락하지 않는 것이다 — 하나 지우면 같은 요청이 통과한다.
+    // 복제 상한 · 깊이도 같다: 요청은 맞고 템플릿이 커졌을 뿐이다.
     case 'too_many':
+    case 'too_large':
+    case 'too_deep':
       return 409
     case 'invalid_value':
       return 400

@@ -1,5 +1,8 @@
 /**
- * 데이터베이스 템플릿 — 템플릿 6c-1조각 (F-08-02 · F-08-03 의 저장 모양과 서버 명령)
+ * 데이터베이스 템플릿 — 템플릿 6c-1 · 6c-2조각 (F-08-02 · F-08-03)
+ *
+ *   6c-1  저장 모양과 서버 명령 — 템플릿 행 만들기 · 목록 · 버리기 · 뷰의 기본 템플릿
+ *   6c-2  **템플릿으로 행 만들기** — 셀 · 본문 · 하위 페이지 · relation 을 옮긴다(`createRowFromTemplate`)
  *
  * 정본: 00-canonical-data-model.md §3.5 (`page.is_template` · 불변식 R1) · §3.6 (`view.default_template_page_id`)
  *       08-templates-automation.md F-08-02 · F-08-03
@@ -64,8 +67,20 @@
 import type { SessionContext } from '../auth/session-context.ts'
 import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
 import { titleFromPlainText } from '../block/page.ts'
+import { orderKeysBetween } from '../block/order-key.ts'
+import { DuplicateError, duplicateSubtree, type SubtreeRow } from '../block/duplicate.ts'
+import { readableScopes } from '../permissions/effective.ts'
 import { isUuid } from '../ids.ts'
-import { createRowIn, isRowFailure, openDataSource, readRow, type RowResult, type RowSummary } from './row.ts'
+import {
+  createRowIn,
+  isRowFailure,
+  openDataSource,
+  readRow,
+  type RowCell,
+  type RowResult,
+  type RowSummary,
+} from './row.ts'
+import type { CellValue } from './property-types.ts'
 
 /** 한 표가 가질 수 있는 템플릿 수(머리말). */
 export const MAX_TEMPLATES_PER_SOURCE = 100
@@ -81,6 +96,10 @@ export type TemplateFailure =
   /** 상한을 넘었다(머리말). */
   | 'too_many'
   | 'invalid_value'
+  /** 템플릿이 복제 상한(페이지 · 블록 수)을 넘는다 — `duplicate.ts` 의 `too_large`. */
+  | 'too_large'
+  /** 템플릿의 하위 페이지가 깊이 상한을 넘는다 — `duplicate.ts` 의 `too_deep`. */
+  | 'too_deep'
 
 export type TemplateResult<T> =
   | { readonly ok: true; readonly value: T }
@@ -240,6 +259,218 @@ export async function deleteTemplate(ctx: SessionContext, templateId: string): P
     )
     return { ok: true, value: null } as const
   })
+}
+
+// ── 템플릿으로 행 만들기 ──────────────────────────────────────────────
+
+/**
+ * 템플릿을 복제해 새 행을 만든다 — 08 F-08-02 의 *"`New ▾` 에서 해당 템플릿 선택 시 그 상태로 새 행 생성"*.
+ *
+ * ──────────────────────────────────────────────────────────────────────
+ * 복제이지 참조가 아니다
+ * ──────────────────────────────────────────────────────────────────────
+ *
+ * 08: *"템플릿으로 생성한 페이지는 이후 자유롭게 수정 가능하며, **템플릿 원본과 링크되지 않는다** — 템플릿 변경은
+ * 기존 행에 소급되지 않는다."* 그래서 만든 뒤 두 행은 남남이다. 어디에도 "이 행은 저 템플릿에서 왔다"를 적지 않는다.
+ *
+ * 옮겨 오는 것은 셋이다.
+ *
+ *   셀 값      `page_property_value` 를 그대로 복사한다(사이드카는 `createRowIn` 이 파생한다)
+ *   본문 · 하위 페이지  6a 의 복제 엔진(`duplicateSubtree`) — 뿌리만 **행**으로 만든다
+ *   relation 엣지      대상을 **그대로** 물려준다(아래)
+ *
+ * rollup 은 옮길 것이 없다 — 읽을 때 계산한다(§3.3-167).
+ *
+ * ──────────────────────────────────────────────────────────────────────
+ * relation 은 재매핑하지 않는다 — 08 이 경고한 그대로다
+ * ──────────────────────────────────────────────────────────────────────
+ *
+ * 복제의 규칙은 *"안쪽은 사본을, 바깥은 원본을"*(§3.2-34)인데, relation 의 대상은 **언제나 바깥**이다: 대상은 다른
+ * 표(또는 같은 표)의 **행**이고 복제 범위(템플릿과 그 본문의 하위 페이지)에 들어 있지 않다. 그래서 규칙을 그대로
+ * 적용하면 "원본 유지"이고, 08 의 경고 *"relation property를 템플릿에 채워두면 그 템플릿으로 만든 모든 페이지가
+ * 동일 대상을 참조한다"* 와 같은 동작이 된다. **의도된 것**이다 — "이 프로젝트에 속한 작업" 템플릿의 쓸모가 거기 있다.
+ *
+ * 단 **볼 수 없는 대상은 잇지 않는다.** `linkRows` 가 볼 수 없는 행을 연결하지 못하게 막는 것과 같은 이유다(양방향이면
+ * 거울상이 그 행에 쓰인다 — 볼 수 없는 행을 고치게 된다). 몇 개를 못 이었는지는 돌려준다(`skippedLinks`) — 화면이
+ * 말할 수 있게(§3.3-174). 엣지를 쓰는 경로이므로 **거울상을 같은 트랜잭션에 함께 쓰고 건드리는 행을 id 순으로
+ * 잠근다**(relation 5a · 0024 의 지연 제약 트리거가 커밋에서 검사한다).
+ *
+ * ──────────────────────────────────────────────────────────────────────
+ * 제목에는 꼬리표를 붙이지 않는다
+ * ──────────────────────────────────────────────────────────────────────
+ *
+ * 복제는 사본에 ` (1)` 을 붙인다(§3.2-34). 여기서는 붙이지 않는다 — 만들어지는 것은 사본이 아니라 **새 항목**이고,
+ * "주간 회의 (1)" 은 복제의 말이지 템플릿의 말이 아니다. 제목도 셀이므로 셀 복사 규칙에 예외를 두지 않는다(08 이
+ * property 기본값을 템플릿 페이지 자신의 property 값으로 둔 것과 같은 이유). 호출자가 title 셀을 주면 그것이 이긴다.
+ */
+
+export type CreateFromTemplateInput = {
+  /**
+   * 템플릿의 값을 **덮는** 셀. 08 의 엣지 케이스 *"보드 뷰에서 그룹 컬럼값과 템플릿 property 가 충돌 → 그룹 컬럼값이
+   * 템플릿 값을 덮어씀"* 이다 — 보드의 열에서 만든 카드는 그 열의 값이어야 한다.
+   */
+  readonly cells?: readonly RowCell[]
+}
+
+export type TemplateRow = {
+  readonly row: RowSummary
+  /** 볼 수 없어서 복제하지 않은 하위 페이지 수. */
+  readonly skippedPages: number
+  /** 대상을 볼 수 없어서 잇지 않은 연결 수. */
+  readonly skippedLinks: number
+}
+
+type TemplateEdge = { property_id: string; to_page_id: string; order_idx: string; readable: boolean }
+
+export async function createRowFromTemplate(
+  ctx: SessionContext,
+  dataSourceId: string,
+  templateId: string,
+  input: CreateFromTemplateInput = {},
+): Promise<TemplateResult<TemplateRow>> {
+  return withCommandTransaction(async (tx) => {
+    // 행을 만드는 것이므로 `create_child` 다 — 템플릿을 **고르는** 것은 목록을 읽는 일이고(`view`), 만드는 것은
+    // 보통 행을 만드는 일과 같은 권한이다(08: *"템플릿 목록 노출은 하되 생성 불가"* 의 반대쪽).
+    const gate = await openDataSource(tx, ctx, dataSourceId, 'create_child')
+    if (isRowFailure(gate)) return fromRowFailure(gate)
+
+    const template = await tx.queryMaybe<SubtreeRow>(
+      `SELECT b.id, b.parent_id, b.ancestor_path, b.properties, b.format
+         FROM page p JOIN block b ON b.id = p.id
+        WHERE p.id = $1 AND p.data_source_id = $2 AND p.is_template
+          AND b.workspace_id = $3 AND b.lifecycle = 'live'`,
+      [isUuid(templateId) ? templateId : null, dataSourceId, ctx.workspaceId],
+    )
+    if (template === null) return fail('not_found')
+
+    // ── 셀 ──
+    // 지워진 · 읽기 전용이 된 프로퍼티의 값은 **무시한다**(08: *"템플릿에 저장된 property 가 이후 DB 에서 삭제됨 →
+    // 해당 값은 무시"*). 남겨 두면 `prepareCells` 가 요청 전체를 거부해 그 템플릿으로는 영영 행을 못 만든다.
+    const stored = await tx.query<{ property_id: string; value: CellValue }>(
+      `SELECT v.property_id, v.value
+         FROM page_property_value v
+         JOIN property pr ON pr.id = v.property_id
+        WHERE v.page_id = $1 AND pr.data_source_id = $2
+          AND pr.deleted_at IS NULL AND pr.writable <> 'readonly'`,
+      [template.id, dataSourceId],
+    )
+    const given = input.cells ?? []
+    const overridden = new Set(given.map((cell) => cell.propertyId))
+    const cells: RowCell[] = [
+      ...stored.filter((s) => !overridden.has(s.property_id)).map((s) => ({ propertyId: s.property_id, value: s.value })),
+      ...given,
+    ]
+
+    // ── relation 엣지 ──
+    // 잠그기 전에 **무엇을 잠글지** 알아야 한다. 대상 행이 살아 있고 템플릿이 아니어야 하며(`linkRows` 와 같은 조건),
+    // 볼 수 있는지는 제목 맵 · 집계와 같은 축으로 묻는다(`perm_scope_id = ANY(readableScopes)`).
+    const edges = await tx.query<TemplateEdge>(
+      `SELECT e.property_id, e.to_page_id, e.order_idx,
+              (tb.perm_scope_id = ANY($3::uuid[])) AS readable
+         FROM relation_edge e
+         JOIN property pr ON pr.id = e.property_id
+         JOIN page tp ON tp.id = e.to_page_id
+         JOIN block tb ON tb.id = tp.id
+        WHERE e.from_page_id = $1 AND pr.data_source_id = $2
+          AND pr.deleted_at IS NULL AND pr.type = 'relation'
+          AND tb.lifecycle = 'live' AND tp.is_template = false
+        ORDER BY e.property_id, e.order_idx COLLATE "C"`,
+      [template.id, dataSourceId, await readableScopes(tx, ctx)],
+    )
+    const linkable = edges.filter((e) => e.readable)
+
+    // ── 복제 — 뿌리만 행으로 만든다 ──
+    let created: RowResult<RowSummary> | null = null
+    let copied
+    try {
+      copied = await duplicateSubtree(tx, ctx, template, {
+        // 행은 컨테이너 바로 아래다 — 템플릿과 같은 깊이다.
+        depth: template.ancestor_path.length,
+        alsoLock: linkable.map((e) => e.to_page_id),
+        // ★ 엔진이 주는 제목(`duplicateTitle` 의 꼬리표가 붙은 것)을 **쓰지 않는다.** 행 제목의 정본은 title
+        //   셀이고(`row.ts`) 그것은 위에서 셀과 함께 복사했다 — 엔진의 제목은 `block.properties.title` 의
+        //   투영이라 서식이 없다. 꼬리표가 붙지 않는 것도 여기서 따라 나온다(머리말).
+        create: async () => {
+          created = await createRowIn(tx, ctx, dataSourceId, { cells })
+          if (!created.ok) throw new RowRejected(created)
+          return created.value.id
+        },
+      })
+    } catch (error) {
+      if (error instanceof RowRejected) return fromRowFailure(error.failure)
+      if (error instanceof DuplicateError) {
+        if (error.code === 'too_large') return fail('too_large')
+        if (error.code === 'too_deep') return fail('too_deep')
+      }
+      throw error
+    }
+    if (created === null || !(created as RowResult<RowSummary>).ok) throw new Error('사본 행이 만들어지지 않았다')
+
+    // ── 엣지 — 대상은 그대로, 거울상은 함께 ──
+    for (const edge of linkable) {
+      await tx.query(
+        `INSERT INTO relation_edge (property_id, from_page_id, to_page_id, order_idx)
+         VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING`,
+        [edge.property_id, copied.rootId, edge.to_page_id, edge.order_idx],
+      )
+    }
+    await writeMirrors(tx, dataSourceId, copied.rootId, linkable)
+
+    const summary = await readRow(tx, copied.rootId)
+    if (summary === null) return fail('not_found')
+    return {
+      ok: true,
+      value: { row: summary, skippedPages: copied.skipped, skippedLinks: edges.length - linkable.length },
+    } as const
+  })
+}
+
+/** 행 명령이 거부를 **값으로** 돌려주므로, 엔진 콜백 안에서는 예외로 바꿔 빠져나온다. */
+class RowRejected extends Error {
+  readonly failure: RowResult<never>
+
+  constructor(failure: RowResult<never>) {
+    super('행 만들기가 거부됐다')
+    this.name = 'RowRejected'
+    this.failure = failure
+  }
+}
+
+/**
+ * 양방향 relation 의 거울상 — **상대 행의 칸 맨 뒤**에 선다(칸마다 순서가 따로다 · `linkRows` 와 같은 규칙).
+ *
+ * 0024 의 지연 제약 트리거가 커밋에서 대칭을 검사하므로 **같은 트랜잭션**에서 써야 한다. 상대 행의 `block.version`
+ * 은 올리지 않는다 — 그 행을 고친 사람이 없다(§3.2-31).
+ */
+async function writeMirrors(
+  tx: Tx,
+  dataSourceId: string,
+  rowId: string,
+  edges: readonly TemplateEdge[],
+): Promise<void> {
+  if (edges.length === 0) return
+  const synced = new Map(
+    (
+      await tx.query<{ id: string; synced: string | null }>(
+        `SELECT id, config->>'synced_property_id' AS synced FROM property
+          WHERE data_source_id = $1 AND id = ANY($2::text[])`,
+        [dataSourceId, [...new Set(edges.map((e) => e.property_id))]],
+      )
+    ).map((r) => [r.id, r.synced]),
+  )
+  for (const edge of edges) {
+    const pair = synced.get(edge.property_id)
+    if (pair == null) continue
+    const tail = await tx.queryOne<{ max: string | null }>(
+      `SELECT max(order_idx COLLATE "C") AS max FROM relation_edge WHERE property_id = $1 AND from_page_id = $2`,
+      [pair, edge.to_page_id],
+    )
+    await tx.query(
+      `INSERT INTO relation_edge (property_id, from_page_id, to_page_id, order_idx)
+       VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING`,
+      [pair, edge.to_page_id, rowId, orderKeysBetween(tail.max, null, 1)[0]],
+    )
+  }
 }
 
 // ── 읽기(다른 명령이 쓴다) ────────────────────────────────────────────

@@ -249,7 +249,17 @@ type OpenRelation = {
   readonly canViewTarget: boolean
 }
 
-/** 행과 relation 프로퍼티를 열고 권한을 본다. 행은 아직 잠그지 않는다 — 잠금은 `lockRows` 가 id 순으로 한다. */
+/**
+ * 행과 relation 프로퍼티를 열고 권한을 본다. 행은 아직 잠그지 않는다 — 잠금은 `lockRows` 가 id 순으로 한다.
+ *
+ * **템플릿 행도 연다**(F-08-02). 불변식 R1(`is_template = false`)은 *목록*의 규칙이지 "이 행 하나를 열어라"의
+ * 규칙이 아니다 — 08 이 *"relation property 를 템플릿에 채워두면 그 템플릿으로 만든 모든 페이지가 동일 대상을
+ * 참조한다"* 고 경고한 그 기능이 성립하려면 템플릿의 연결 칸을 읽고 고칠 수 있어야 한다. 셀을 쓰는 `updateCells`
+ * 가 처음부터 템플릿을 구분하지 않은 것과 같은 축이다(`template.ts` 머리말 — 안을 고치는 것은 행의 길이다).
+ *
+ * **대상 쪽은 그대로 R1 을 지킨다**: 더할 수 있는 행 · 읽어 오는 행 · 후보 목록은 전부 `is_template = false` 다.
+ * 템플릿은 연결의 **대상**이 될 수 없다 — 표에 없는 행을 가리키는 칸이 되기 때문이다.
+ */
 async function openRelation(
   tx: Tx,
   ctx: SessionContext,
@@ -262,7 +272,7 @@ async function openRelation(
        FROM page p
        JOIN block b ON b.id = p.id
        JOIN data_source ds ON ds.id = p.data_source_id
-      WHERE p.id = $1 AND b.workspace_id = $2 AND b.lifecycle = 'live' AND p.is_template = false`,
+      WHERE p.id = $1 AND b.workspace_id = $2 AND b.lifecycle = 'live'`,
     [rowId, ctx.workspaceId],
   )
   if (row === null) return fail('not_found')

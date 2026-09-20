@@ -109,12 +109,47 @@ export type DuplicateResult = {
   readonly skipped: number
 }
 
-type SubtreeRow = {
+export type SubtreeRow = {
   id: string
   parent_id: string
   ancestor_path: string[]
   properties: { title?: unknown } | null
   format: Record<string, unknown> | null
+}
+
+/**
+ * **사본의 뿌리를 만드는 방법** — 이 엔진에서 호출자가 정하는 유일한 것.
+ *
+ * 페이지를 복제하면 뿌리도 페이지다(`createPageIn`). 그런데 **데이터베이스 템플릿**(F-08-02)의 사본은 페이지가
+ * 아니라 **행**이다(`parent_type='data_source'` · `createRowIn` · 제목이 셀이다). 자손 · 본문 · 재매핑 · 권한 ·
+ * 상한은 둘이 똑같으므로, 갈라지는 그 한 줄만 주입으로 뽑았다.
+ *
+ * 뿌리를 만든 **뒤에** 자손을 만든다 — 순서는 엔진이 지킨다(머리말 ②).
+ */
+export type DuplicateRoot = {
+  /** 사본 뿌리가 놓일 자리의 조상 경로 길이. 만들기 **전에** 깊이 상한을 재는 데 쓴다(`0` = 워크스페이스 최상위). */
+  readonly depth: number
+  /** 사본 뿌리를 만들고 그 id 를 돌려준다. */
+  readonly create: (title: readonly RichTextRun[]) => Promise<string>
+  /** 사본 뿌리의 제목. 생략하면 원본 제목 뒤에 꼬리표를 붙인다(`duplicateTitle`). */
+  readonly title?: readonly RichTextRun[]
+  /** 이 id 가 복제 대상 서브트리 **안**이면 거부한다(자기 자신 안으로 복제 · `cycle`). */
+  readonly forbidInside?: string | null
+  /**
+   * 서브트리 말고 **함께 잠글** 행들. 엔진의 잠금과 **한 문장**에서 id 순으로 잠근다.
+   *
+   * 템플릿이 relation 을 미리 채워 두면 사본도 같은 대상에 엣지를 단다(F-08-02) — 그 대상 행들이 여기 온다.
+   * 따로 잠그면 잠금 획득이 두 번이 되어, 같은 행들을 id 순으로 한 번에 잠그는 `linkRows` 와 **교착**할 수 있다.
+   */
+  readonly alsoLock?: readonly string[]
+}
+
+export type SubtreeCopy = {
+  readonly rootId: string
+  /** 만든 페이지 수(사본 뿌리 포함). */
+  readonly pages: number
+  /** 볼 수 없어서 복제하지 않은 하위 페이지 수(그 자손 포함). */
+  readonly skipped: number
 }
 
 export async function duplicatePage(
@@ -144,76 +179,129 @@ export async function duplicatePage(
         : null
       : options.parentPageId
 
-    // ── 서브트리 ──
-    const { subtree, totalPages } = await readSubtree(tx, ctx, source)
-    const copies = new Map<string, string>(subtree.map((row) => [row.id, randomUUID()]))
-    if (targetParentId !== null && copies.has(targetParentId)) {
-      throw new DuplicateError('cycle', '페이지를 자기 자신 안으로 복제할 수 없습니다.')
-    }
-
-    const blocks = await countBlocks(tx, ctx, subtree)
-    if (subtree.length > MAX_DUPLICATE_PAGES || blocks > MAX_DUPLICATE_BLOCKS) {
-      throw new DuplicateError(
-        'too_large',
-        `한 번에 복제할 수 있는 크기를 넘었습니다(페이지 ${MAX_DUPLICATE_PAGES}개 · 블록 ${MAX_DUPLICATE_BLOCKS}개).`,
+    // 깊이는 **만들기 전에** 잰다 — 대상 부모가 없으면 여기서 걸린다.
+    let rootDepth = 0
+    if (targetParentId !== null) {
+      const parent = await tx.queryMaybe<{ ancestor_path: string[] }>(
+        `SELECT ancestor_path FROM block WHERE id = $1 AND workspace_id = $2 AND type = $3 AND lifecycle = 'live'`,
+        [targetParentId, ctx.workspaceId, PAGE_TYPE],
       )
-    }
-    await assertDepthFits(tx, ctx, subtree, source, targetParentId)
-
-    // ── ① 원본 본문을 id 순으로 잠그고 읽는다(머리말) ──
-    const ordered = [...subtree].sort((a, b) => (a.id < b.id ? -1 : 1))
-    await tx.query(`SELECT id FROM block WHERE id = ANY($1::uuid[]) FOR UPDATE`, [ordered.map((r) => r.id)])
-    const bodies = new Map<string, EditorDoc>()
-    for (const row of ordered) {
-      bodies.set(row.id, (await openPageBody(tx, ctx, row.id)).read())
+      if (parent === null) throw new DuplicateError('target_not_found', '복제할 위치를 찾을 수 없습니다.')
+      rootDepth = parent.ancestor_path.length + 1
     }
 
-    // ── ② 사본을 위에서 아래로 만든다 ──
-    const byDepth = [...subtree].sort((a, b) => a.ancestor_path.length - b.ancestor_path.length)
     let root: PageDetail | null = null
-    for (const row of byDepth) {
-      const isRoot = row.id === source.id
-      const title = isRoot ? (options.title ?? duplicateTitle(readTitle(row.properties))) : readTitle(row.properties)
-      const parentOfCopy = isRoot ? targetParentId : parentCopyOf(row, copies)
-      const created = await createPageIn(tx, ctx, {
-        parentPageId: parentOfCopy === null ? null : asBlockId(parentOfCopy),
-        title,
-        // 사본은 원본 **바로 뒤**에 선다 — 같은 자리에 복제할 때만(F-02-09). 자식은 본문이 자리를 정하므로 맨 뒤여도 된다.
-        ...(isRoot && sameParent && targetParentId !== null ? { at: pageId } : {}),
-      }).catch(rethrowAsDuplicate)
-      // 사본의 id 는 `createPageIn` 이 정한다 — 미리 잡아 둔 자리를 그것으로 바꾼다.
-      copies.set(row.id, created.id)
-      if (isRoot) root = created
-      // 아이콘 · 커버는 제목과 달리 `format` 에 있다. 사본은 원본과 같은 모습이어야 한다.
-      if (row.format !== null && Object.keys(row.format).length > 0) {
-        await tx.query(`UPDATE block SET format = $2::jsonb WHERE id = $1`, [created.id, JSON.stringify(row.format)])
-      }
-    }
+    const copied = await duplicateSubtree(tx, ctx, source, {
+      depth: rootDepth,
+      forbidInside: targetParentId,
+      ...(options.title === undefined ? {} : { title: options.title }),
+      create: async (title) => {
+        const created = await createPageIn(tx, ctx, {
+          parentPageId: targetParentId === null ? null : asBlockId(targetParentId),
+          title,
+          // 사본은 원본 **바로 뒤**에 선다 — 같은 자리에 복제할 때만(F-02-09). 자식은 본문이 자리를 정하므로 맨 뒤여도 된다.
+          ...(sameParent && targetParentId !== null ? { at: pageId } : {}),
+        }).catch(rethrowAsDuplicate)
+        root = created
+        return created.id
+      },
+    })
     if (root === null) throw new Error(`복제할 원본이 서브트리에 없다: ${pageId}`)
 
-    // ── ③ 사본 본문을 쓴다 ──
-    for (const row of byDepth) {
-      const body = bodies.get(row.id)
-      if (body === undefined) continue
-      const remapped = remapBody(body, copies, randomUUID)
-      // 빈 본문에 빈 문서를 쓰면 바뀌는 것이 없다 — 세션을 열 이유도 없다.
-      if (remapped.blocks.length === 0) continue
-      const write = await openPageBody(tx, ctx, copies.get(row.id) as string)
-      const next = docToPm(wrapUnknownTypes(remapped))
-      write.change((tr) => {
-        tr.replaceWith(0, tr.doc.content.size, next.content)
-      })
-      const result = await write.finish()
-      if (!result.ok) {
-        if (result.reason === 'page_ref_too_deep') {
-          throw new DuplicateError('too_deep', `페이지 깊이가 상한(${MAX_TREE_DEPTH})에 도달했습니다.`)
-        }
-        throw new Error(`사본 본문의 투영이 거부됐다(${result.reason}): ${copies.get(row.id)}`)
-      }
-    }
-
-    return { page: root, pages: subtree.length, skipped: totalPages - subtree.length }
+    return { page: root, pages: copied.pages, skipped: copied.skipped }
   })
+}
+
+/**
+ * 복제의 안쪽 — **뿌리를 만드는 방법만 호출자가 정한다**(`DuplicateRoot`).
+ *
+ * 순서 세 단계(머리말)가 여기에 있다. 트랜잭션 안쪽이므로 부르는 쪽이 커밋을 쥔다 — 템플릿으로 행을 만드는 명령은
+ * 셀 쓰기 · 엣지 쓰기를 **같은 트랜잭션**에서 이어 한다(F-08-02).
+ */
+export async function duplicateSubtree(
+  tx: Tx,
+  ctx: SessionContext,
+  source: SubtreeRow,
+  root: DuplicateRoot,
+): Promise<SubtreeCopy> {
+  // ── 서브트리 ──
+  const { subtree, totalPages } = await readSubtree(tx, ctx, source)
+  const copies = new Map<string, string>(subtree.map((row) => [row.id, randomUUID()]))
+  if (root.forbidInside != null && copies.has(root.forbidInside)) {
+    throw new DuplicateError('cycle', '페이지를 자기 자신 안으로 복제할 수 없습니다.')
+  }
+
+  const blocks = await countBlocks(tx, ctx, subtree)
+  if (subtree.length > MAX_DUPLICATE_PAGES || blocks > MAX_DUPLICATE_BLOCKS) {
+    throw new DuplicateError(
+      'too_large',
+      `한 번에 복제할 수 있는 크기를 넘었습니다(페이지 ${MAX_DUPLICATE_PAGES}개 · 블록 ${MAX_DUPLICATE_BLOCKS}개).`,
+    )
+  }
+  const height = Math.max(...subtree.map((r) => r.ancestor_path.length)) - source.ancestor_path.length
+  if (root.depth + height + 1 > MAX_TREE_DEPTH) {
+    throw new DuplicateError('too_deep', `페이지 깊이가 상한(${MAX_TREE_DEPTH})에 도달했습니다.`)
+  }
+
+  // ── ① 원본 본문을 id 순으로 잠그고 읽는다(머리말) ──
+  // `ORDER BY id` 가 잠그는 **순서**를 정한다 — 배열만 정렬해 넘기면 Postgres 가 그 순서로 잠근다는 보장이 없다.
+  // 함께 잠글 행(`alsoLock` — relation 대상)도 같은 문장에 넣는다: 잠금 획득이 둘이면 그 사이에 끼어든
+  // `linkRows` 와 교착할 수 있다.
+  const ordered = [...subtree].sort((a, b) => (a.id < b.id ? -1 : 1))
+  await tx.query(`SELECT id FROM block WHERE id = ANY($1::uuid[]) ORDER BY id FOR UPDATE`, [
+    [...new Set([...ordered.map((r) => r.id), ...(root.alsoLock ?? [])])],
+  ])
+  const bodies = new Map<string, EditorDoc>()
+  for (const row of ordered) {
+    bodies.set(row.id, (await openPageBody(tx, ctx, row.id)).read())
+  }
+
+  // ── ② 사본을 위에서 아래로 만든다 ──
+  const byDepth = [...subtree].sort((a, b) => a.ancestor_path.length - b.ancestor_path.length)
+  let rootId: string | null = null
+  for (const row of byDepth) {
+    const isRoot = row.id === source.id
+    const title = isRoot ? (root.title ?? duplicateTitle(readTitle(row.properties))) : readTitle(row.properties)
+    const created = isRoot
+      ? await root.create(title)
+      : (
+          await createPageIn(tx, ctx, {
+            parentPageId: asBlockId(parentCopyOf(row, copies)),
+            title,
+          }).catch(rethrowAsDuplicate)
+        ).id
+    // 사본의 id 는 만든 쪽이 정한다 — 미리 잡아 둔 자리를 그것으로 바꾼다.
+    copies.set(row.id, created)
+    if (isRoot) rootId = created
+    // 아이콘 · 커버는 제목과 달리 `format` 에 있다. 사본은 원본과 같은 모습이어야 한다.
+    if (row.format !== null && Object.keys(row.format).length > 0) {
+      await tx.query(`UPDATE block SET format = $2::jsonb WHERE id = $1`, [created, JSON.stringify(row.format)])
+    }
+  }
+  if (rootId === null) throw new Error(`복제할 원본이 서브트리에 없다: ${source.id}`)
+
+  // ── ③ 사본 본문을 쓴다 ──
+  for (const row of byDepth) {
+    const body = bodies.get(row.id)
+    if (body === undefined) continue
+    const remapped = remapBody(body, copies, randomUUID)
+    // 빈 본문에 빈 문서를 쓰면 바뀌는 것이 없다 — 세션을 열 이유도 없다.
+    if (remapped.blocks.length === 0) continue
+    const write = await openPageBody(tx, ctx, copies.get(row.id) as string)
+    const next = docToPm(wrapUnknownTypes(remapped))
+    write.change((tr) => {
+      tr.replaceWith(0, tr.doc.content.size, next.content)
+    })
+    const result = await write.finish()
+    if (!result.ok) {
+      if (result.reason === 'page_ref_too_deep') {
+        throw new DuplicateError('too_deep', `페이지 깊이가 상한(${MAX_TREE_DEPTH})에 도달했습니다.`)
+      }
+      throw new Error(`사본 본문의 투영이 거부됐다(${result.reason}): ${copies.get(row.id)}`)
+    }
+  }
+
+  return { rootId, pages: subtree.length, skipped: totalPages - subtree.length }
 }
 
 /** 이 행의 부모 **페이지**의 사본. 부모가 본문 안의 블록이면 조상 경로에서 가장 가까운 복제 대상이 부모다. */
@@ -279,27 +367,4 @@ async function countBlocks(tx: Tx, ctx: SessionContext, subtree: readonly Subtre
     [ctx.workspaceId, subtree.map((r) => r.id)],
   )
   return Number(counted.n)
-}
-
-/** 복제한 뒤에도 가장 깊은 사본이 상한 안인가. 넘으면 **만들기 전에** 거부한다. */
-async function assertDepthFits(
-  tx: Tx,
-  ctx: SessionContext,
-  subtree: readonly SubtreeRow[],
-  source: SubtreeRow,
-  targetParentId: string | null,
-): Promise<void> {
-  const height = Math.max(...subtree.map((r) => r.ancestor_path.length)) - source.ancestor_path.length
-  let targetDepth = 0
-  if (targetParentId !== null) {
-    const parent = await tx.queryMaybe<{ ancestor_path: string[] }>(
-      `SELECT ancestor_path FROM block WHERE id = $1 AND workspace_id = $2 AND type = $3 AND lifecycle = 'live'`,
-      [targetParentId, ctx.workspaceId, PAGE_TYPE],
-    )
-    if (parent === null) throw new DuplicateError('target_not_found', '복제할 위치를 찾을 수 없습니다.')
-    targetDepth = parent.ancestor_path.length + 1
-  }
-  if (targetDepth + height + 1 > MAX_TREE_DEPTH) {
-    throw new DuplicateError('too_deep', `페이지 깊이가 상한(${MAX_TREE_DEPTH})에 도달했습니다.`)
-  }
 }

@@ -29,11 +29,13 @@ import { requireWorkspaceSession } from '@/lib/auth/route-session'
 import { getView } from '@/lib/database/view'
 import { queryRows } from '@/lib/database/query'
 import { createRow } from '@/lib/database/row'
+import { createRowFromTemplate } from '@/lib/database/template'
 import {
   failureResponse,
   parseCells,
   rowFailureStatus,
   rowJson,
+  templateFailureStatus,
 } from '@/lib/database/http'
 
 type Ctx = RouteContext<'/api/workspaces/[workspaceId]/views/[viewId]/rows'>
@@ -87,13 +89,33 @@ export async function POST(request: Request, ctx: Ctx): Promise<Response> {
   if (!isUuid(viewId)) return notFound()
 
   // 본문은 선택이다 — 빈 행 추가("+ 새로 만들기")가 가장 흔한 요청이다.
-  const body = (await request.json().catch(() => ({}))) as { cells?: unknown }
+  const body = (await request.json().catch(() => ({}))) as { cells?: unknown; templateId?: unknown }
   const cells = parseCells(body?.cells)
   if (cells === null) return Response.json({ error: 'invalid_value' }, { status: 400 })
+  if (body?.templateId !== undefined && typeof body.templateId !== 'string') {
+    return Response.json({ error: 'invalid_value' }, { status: 400 })
+  }
 
   const view = await getView(session.ctx, viewId)
   if (!view.ok) {
     return Response.json({ error: view.reason }, { status: view.reason === 'forbidden' ? 403 : 404 })
+  }
+
+  // 템플릿을 주면 그 행을 복제한다(F-08-02). 안 주면 빈 행이다 — 같은 주소인 이유는 **같은 동작**이어서다:
+  // `New ▾` 의 목록에서 무엇을 고르든 사용자에게는 "여기에 새 항목"이고, 응답도 표가 그대로 끼워 넣는 행 하나다.
+  if (typeof body.templateId === 'string') {
+    const made = await createRowFromTemplate(session.ctx, view.value.dataSourceId, body.templateId, { cells })
+    if (!made.ok) return failureResponse(templateFailureStatus(made.reason), made)
+    // 빠진 것은 **말한다**(§3.3-174) — 조용히 성공하면 사용자는 본문에 무엇이 없는지 모른다.
+    return Response.json(
+      {
+        ok: true,
+        row: rowJson(made.value.row),
+        skippedPages: made.value.skippedPages,
+        skippedLinks: made.value.skippedLinks,
+      },
+      { status: 201 },
+    )
   }
 
   const created = await createRow(session.ctx, view.value.dataSourceId, { cells })
