@@ -70,6 +70,15 @@ function messageOf(status: number, body: ErrorBody): string {
       return '지원하지 않는 뷰 종류입니다.'
     case 'invalid_value':
       return '요청 값을 확인하세요.'
+    // ── 템플릿 (6c) ──
+    case 'too_many':
+      return '템플릿을 더 만들 수 없습니다.'
+    case 'too_large':
+      return '템플릿이 한 번에 복제할 수 있는 크기를 넘습니다.'
+    case 'too_deep':
+      return '템플릿의 하위 페이지가 깊이 상한을 넘습니다.'
+    case 'invalid_template':
+      return '기본 템플릿으로 지정할 수 없습니다. 그사이 지워졌을 수 있습니다.'
   }
   return status >= 500 ? '서버에서 처리하지 못했습니다.' : '처리하지 못했습니다.'
 }
@@ -417,4 +426,35 @@ export function renameDatabase(workspaceId: string, databaseId: string, name: st
     { method: 'PATCH', headers: JSON_HEADERS, body: JSON.stringify({ name }) },
     () => null,
   )
+}
+
+// ── 템플릿 (6c-3 · F-08-02) ───────────────────────────────────────────
+
+export type TemplateJson = { id: string; title: string; lastEditedAt: string }
+
+/** 이 표의 템플릿. `view` 만 있으면 읽는다 — 고를 수 있어야 `New ▾` 가 쓸모 있다. */
+export function listTemplates(workspaceId: string, dataSourceId: string): Promise<ApiResult<TemplateJson[]>> {
+  return call(
+    `${base(workspaceId)}/data-sources/${dataSourceId}/templates`,
+    { method: 'GET' },
+    (body) => body.templates as TemplateJson[],
+  )
+}
+
+/** 빈 템플릿을 만든다. 채우는 것은 템플릿 편집 화면이다. */
+export function createTemplate(
+  workspaceId: string,
+  dataSourceId: string,
+  title: string,
+): Promise<ApiResult<TemplateJson>> {
+  return call(
+    `${base(workspaceId)}/data-sources/${dataSourceId}/templates`,
+    { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ title }) },
+    (body) => body.template as TemplateJson,
+  )
+}
+
+/** 템플릿을 휴지통으로. 행 라우트로는 버릴 수 없다 — 템플릿의 길은 하나다. */
+export function deleteTemplate(workspaceId: string, templateId: string): Promise<ApiResult<null>> {
+  return call(`${base(workspaceId)}/templates/${templateId}`, { method: 'DELETE' }, () => null)
 }

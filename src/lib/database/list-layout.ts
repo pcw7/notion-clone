@@ -27,24 +27,44 @@
 import { isEmptyValue, type CellValue, type MvpPropertyType, type RelationValue } from './property-types.ts'
 import { rollupIsEmpty, type RollupCell } from './rollup-functions.ts'
 
-export type TableVariant = 'table' | 'list'
+export type TableVariant = 'table' | 'list' | 'record'
 
-/** 뷰 종류 → 표 컴포넌트의 모양. `board` 는 다른 컴포넌트가 그린다(`database-board.tsx`). */
+/**
+ * 뷰 종류 → 표 컴포넌트의 모양. `board` 는 다른 컴포넌트가 그린다(`database-board.tsx`).
+ *
+ * `record` 는 뷰 종류가 아니다 — **한 행을 세로로 펼친 모양**이고 템플릿 편집 화면이 쓴다(6c-3 · F-08-02).
+ * 화면이 직접 고르므로 여기서 나오지 않는다.
+ */
 export function variantOf(viewType: string): TableVariant {
   return viewType === 'list' ? 'list' : 'table'
 }
 
-/** List 의 컬럼 순서 — 제목이 맨 앞, 나머지는 뷰 순서 그대로. 표는 건드리지 않는다. */
+/**
+ * 이 모양이 그리는 컬럼 — 순서까지.
+ *
+ *   table   뷰 순서 그대로
+ *   list    제목이 맨 앞, 나머지는 뷰 순서
+ *   record  **제목과 rollup 을 뺀다**(아래), 나머지는 뷰 순서
+ *
+ * `record` 에서 제목을 빼는 이유: 그 화면은 제목을 `<h1>` 으로 세운다(페이지 화면과 같은 모양) — 속성 목록에 한 번
+ * 더 세우면 같은 값을 고치는 자리가 둘이 된다.
+ *
+ * rollup 을 빼는 이유: rollup 은 **미리 채울 수 있는 값이 아니다.** 어디에도 저장하지 않고 읽을 때 계산하며
+ * (§3.3-167) 서버는 템플릿 행의 rollup 을 아예 계산하지 않는다(집계는 `is_template = false` 만 본다). 남겨 두면
+ * 영영 빈 칸이 서서 "값이 없다"로 읽힌다 — 그 속성이 템플릿의 일이 아니라고 말하는 쪽이 사실이다.
+ */
 export function listColumns<C extends { readonly type: string }>(
   variant: TableVariant,
   columns: readonly C[],
 ): C[] {
+  if (variant === 'record') return columns.filter((c) => c.type !== 'title' && c.type !== 'rollup')
   if (variant !== 'list') return [...columns]
   return [...columns.filter((c) => c.type === 'title'), ...columns.filter((c) => c.type !== 'title')]
 }
 
 /**
- * 이 칸을 접는가(자리를 차지하지 않게 그린다). 표에서는 접지 않는다.
+ * 이 칸을 접는가(자리를 차지하지 않게 그린다). 표 · `record` 에서는 접지 않는다 — `record` 는 **채우는 화면**이라
+ * 빈 속성이 보이지 않으면 채울 곳이 없다(List 가 선택된 칸만 세우는 것과 반대 방향이다).
  *
  * @param active 선택됐거나 편집 중인 칸인가.
  */
