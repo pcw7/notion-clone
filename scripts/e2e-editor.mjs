@@ -2949,6 +2949,80 @@ async function main() {
         check('★ 다시 고르면 **바뀐다** — 둘이 되지 않는다',
           await chipsAre('0:2', ['다른 곳']), JSON.stringify(await chipsIn('0:2')))
       }
+
+      section('데이터베이스 rollup — 서버 (rollup 5c-1 · F-03-11)')
+      // 집계 함수 · 권한 · 끊긴 설정의 규칙은 `rollup-functions.test.ts` · `rollup.db.test.ts` 가 본다. 화면은 5c-2 가 붙인다 —
+      // 여기서는 빌드된 앱에서 라우트 둘이 실제로 답하는지, 그리고 **rollup 속성이 있어도 표가 열리는지**를 본다.
+      // ⚠ 익스포트 절 **뒤**에 있다(표를 둘 더 만든다).
+      {
+        const { textRun } = await import(new URL('../src/lib/contracts/rich-text.ts', import.meta.url).href)
+        const api = async (method, path, body) => {
+          const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+            method,
+            headers: authed,
+            ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+          })
+          return { status: r.status, body: await r.json().catch(() => null) }
+        }
+        const stamp = Date.now()
+        const projects = (await api('POST', '/databases', { name: `롤업 프로젝트 ${stamp}` })).body.database
+        const tasks = (await api('POST', '/databases', { name: `롤업 작업 ${stamp}` })).body.database
+        const hours = (await api('POST', `/data-sources/${tasks.dataSourceId}/properties`, { name: '시간', type: 'number' })).body.property.id
+        const made = (await api('POST', `/data-sources/${tasks.dataSourceId}/relations`, {
+          name: '프로젝트', targetDataSourceId: projects.dataSourceId, twoWay: { name: '작업들' },
+        })).body
+        const titleOf = async (db) => (await api('GET', `/views/${db.defaultViewId}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+        const projectTitle = await titleOf(projects)
+        const taskTitle = await titleOf(tasks)
+        const rowIn = async (db, cells) => (await api('POST', `/views/${db.defaultViewId}/rows`, { cells })).body.row.id
+        const titled = (propertyId, title) => ({ propertyId, value: { type: 'title', title: [textRun(title)] } })
+        const p1 = await rowIn(projects, [titled(projectTitle, '프로젝트 하나')])
+        const p2 = await rowIn(projects, [titled(projectTitle, '빈 프로젝트')])
+        const t1 = await rowIn(tasks, [titled(taskTitle, '설계'), { propertyId: hours, value: { type: 'number', number: 3 } }])
+        const t2 = await rowIn(tasks, [titled(taskTitle, '구현'), { propertyId: hours, value: { type: 'number', number: 4.5 } }])
+        const t3 = await rowIn(tasks, [titled(taskTitle, '시간 없음')])
+        await api('POST', `/rows/${p1}/relations/${made.syncedPropertyId}`, { add: [t1, t2, t3] })
+
+        const rollupOf = (name, fn, extra = {}) =>
+          api('POST', `/data-sources/${projects.dataSourceId}/rollups`, {
+            name, relationPropertyId: made.syncedPropertyId, targetPropertyId: hours, function: fn, ...extra,
+          })
+        // 거부되는 것을 먼저 보낸다 — 그 뒤에 성공한 요청의 스키마에 그 이름들이 없어야 한다.
+        const mismatch = await rollupOf('틀린 함수', 'percent_checked')
+        const foreign = await rollupOf('남의 relation', 'sum', { relationPropertyId: made.property.id })
+        const sum = await rollupOf('총 시간', 'sum')
+        const average = await rollupOf('평균 시간', 'average')
+        check('★ rollup 속성을 만든다 — 스키마에 `rollup` 타입으로 서고 config 는 relation · 대상 · 함수다',
+          sum.status === 201 && sum.body?.property?.type === 'rollup'
+            && sum.body.property.config.relation_property_id === made.syncedPropertyId
+            && sum.body.property.config.target_property_id === hours && sum.body.property.config.function === 'sum',
+          JSON.stringify(sum.body?.property ?? sum.body))
+
+        check('★ 맞지 않는 함수 · 이 표의 것이 아닌 relation 은 거부한다 — 아무것도 생기지 않는다',
+          mismatch.status === 400 && mismatch.body?.error === 'invalid_config'
+            && foreign.status === 400 && foreign.body?.error === 'invalid_target'
+            && average.body?.schema?.properties?.map((p) => p.name).join() === ['이름', '작업들', '총 시간', '평균 시간'].join(),
+          `${mismatch.status} ${JSON.stringify(mismatch.body)} · ${foreign.status} ${JSON.stringify(foreign.body)} · ${average.body?.schema?.properties?.map((p) => p.name).join()}`)
+
+        const values = await api('POST', `/data-sources/${projects.dataSourceId}/rollup-values`, { rowIds: [p1, p2] })
+        const cellOf = (rowId, property) => values.body?.values?.[rowId]?.[property.body.property.id]
+        check('★ 값은 읽을 때 계산된다 — 합 7.5 · 평균 3.75(시간이 없는 작업은 분모에 들지 않는다)',
+          values.status === 200 && cellOf(p1, sum)?.result?.number === 7.5 && cellOf(p1, average)?.result?.number === 3.75
+            && cellOf(p1, sum)?.hidden === 0,
+          JSON.stringify(values.body?.values?.[p1]))
+        check('★ 연결이 없는 행 — 합은 0 이고 평균은 **없음**이다(0 이 아니다)',
+          cellOf(p2, sum)?.result?.number === 0 && cellOf(p2, average)?.result?.number === null,
+          JSON.stringify(values.body?.values?.[p2]))
+
+        const written = await api('PATCH', `/rows/${p1}`, { cells: [{ propertyId: sum.body.property.id, value: { type: 'number', number: 99 } }] })
+        check('rollup 칸에는 쓸 수 없다 — 읽기 전용이다', written.status >= 400 && written.status < 500, `${written.status} ${JSON.stringify(written.body)}`)
+
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${projects.id}` })
+        check('★ rollup 속성이 있는 표도 열린다 — 컬럼은 아직 서지 않는다(화면은 5c-2)',
+          (await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === 2`, 15000))
+            && (await evaluate(`[...document.querySelectorAll('[data-testid="db-table"] thead th[data-property-id]')].map((th) => th.textContent).every((t) => !t.includes('총 시간'))`))
+            && !(await evaluate(`!!document.querySelector('[data-testid="db-error"]')`)))
+      }
     }
 
     section('볼 수 없는 하위 페이지의 참조 (HANDOFF §3.2-22)')

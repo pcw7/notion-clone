@@ -494,6 +494,10 @@ export async function updateProperty(
     )
     if (target === null) return fail('not_found')
 
+    // relation · rollup 의 config 는 불변식이 걸린 설정이다(대상 표 · 짝 · 함수와 대상 타입). 통째로 덮어쓰는 이 길로는
+    // 받지 않는다 — 그 모듈의 명령(`relation.ts` · `rollup.ts`)이 검사하며 쓴다.
+    if (input.config !== undefined && !isMvpPropertyType(target.type)) return fail('invalid_config')
+
     if (target.type === 'status' && input.config !== undefined) {
       if (!(await isValidStatusConfig(tx, propertyId, input.config))) return fail('invalid_config')
     }

@@ -89,8 +89,18 @@ export function isMvpPropertyType(t: unknown): t is MvpPropertyType {
 export const EDGE_PROPERTY_TYPES = ['relation'] as const
 export type EdgePropertyType = (typeof EDGE_PROPERTY_TYPES)[number]
 
-/** 앱이 만드는 프로퍼티 타입 전부 — 셀 타입 + 엣지 타입. 스키마(`PropertySummary.type`)가 이것이다. */
-export const APP_PROPERTY_TYPES = [...MVP_PROPERTY_TYPES, ...EDGE_PROPERTY_TYPES] as const
+/**
+ * **파생 타입** — 값이 어디에도 저장되지 않고 읽을 때 계산되는 타입 (rollup 5c-1 · 정본 §3.5 [보강] rollup v1).
+ *
+ * relation 과 같은 이유로 `MVP_PROPERTY_TYPES` 밖에 둔다(§3.3-159): 셀 값 계약이 없고, `prepareCells` 가 거부해야 한다 —
+ * 읽기 전용 칸이다. relation 과도 다르다: `properties_cache` 에 투영되지 않는다(결과가 보는 사람마다 다르다 — 볼 수 없는
+ * 행을 집계에서 뺀다). 규칙은 `rollup.ts` · `rollup-functions.ts`.
+ */
+export const DERIVED_PROPERTY_TYPES = ['rollup'] as const
+export type DerivedPropertyType = (typeof DERIVED_PROPERTY_TYPES)[number]
+
+/** 앱이 만드는 프로퍼티 타입 전부 — 셀 타입 + 엣지 타입 + 파생 타입. 스키마(`PropertySummary.type`)가 이것이다. */
+export const APP_PROPERTY_TYPES = [...MVP_PROPERTY_TYPES, ...EDGE_PROPERTY_TYPES, ...DERIVED_PROPERTY_TYPES] as const
 export type AppPropertyType = (typeof APP_PROPERTY_TYPES)[number]
 
 export function isAppPropertyType(t: unknown): t is AppPropertyType {

@@ -226,6 +226,8 @@ export function defaultColumnWidth(type: AppPropertyType): number {
     case 'select':
     case 'status':
     case 'date':
+    // rollup 은 대개 숫자 하나다(합 · 개수 · 비율). `show_original` 은 넘치면 말줄임한다.
+    case 'rollup':
       return 160
     case 'checkbox':
       return 90

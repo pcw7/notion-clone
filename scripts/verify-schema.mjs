@@ -1352,6 +1352,33 @@ try {
       }
       await client.query('SET CONSTRAINTS tg_relation_edge_mirror DEFERRED')
       await client.query('RELEASE SAVEPOINT pair')
+
+      // ── ⑯ 셀을 갖지 않는 타입 (0025 / §3.5 C1 · C2 · [보강] rollup v1 · rollup 5c-1조각) ──
+      // relation 의 정본은 엣지이고 rollup 은 읽을 때 계산한다 — 그 프로퍼티들에 셀 행이 생기면 캐시에 걸러지지 않은
+      // 값이 실린다. `from` 은 위에서 만든 이 표의 행, `oneWay` 는 이 표의 relation 프로퍼티다.
+      const cell = `INSERT INTO page_property_value (page_id, property_id, value, updated_at) VALUES ($1, $2, $3::jsonb, now())`
+      const typed = async (n, type, key) => {
+        await client.query(
+          `INSERT INTO property (id, data_source_id, name, type, config, order_idx, created_at, updated_at)
+           VALUES ($1, $2, $3, $4::property_type, '{}'::jsonb, $5, now(), now())`,
+          [pid(n), dsId, `셀 없는 ${type}`, type, key],
+        )
+        return pid(n)
+      }
+      await mustReject('C2: relation 프로퍼티에 셀 행', cell, [from, oneWay, '{"type":"relation","relation":[]}'])
+      await mustReject('C1: rollup 프로퍼티에 셀 행', cell, [from, await typed(97, 'rollup', 'q1'), '{"type":"number","number":1}'])
+      await mustReject('C1: formula 프로퍼티에 셀 행', cell, [from, await typed(98, 'formula', 'q2'), '{"type":"number","number":1}'])
+      await mustReject('C1: 자동 메타(created_time) 프로퍼티에 셀 행', cell, [from, await typed(99, 'created_time', 'q3'), '{"type":"date","date":null}'])
+      {
+        await client.query('SAVEPOINT plain')
+        try {
+          await client.query(cell, [from, await typed(100, 'number', 'q4'), '{"type":"number","number":1}'])
+          ok('셀 타입(number) 프로퍼티의 셀 행은 통과한다 — 막는 것은 셀 없는 타입뿐이다')
+        } catch (e) {
+          fail(`셀 타입의 셀 행이 거부됐다 (${e.code} ${e.message})`)
+        }
+        await client.query('ROLLBACK TO SAVEPOINT plain')
+      }
     }
 
     // ── 부정 요구사항 — 없어야 하는 컬럼 ──
