@@ -55,6 +55,7 @@ import { isGroupableType, normalizeGroupBy, validateGroupBy, type GroupBy } from
 import { isMvpPropertyType, isOptionType } from './property-types.ts'
 import { relationOf, rollupOf, type ViewColumn } from './view-columns.ts'
 import { readOptionsOf } from './options.ts'
+import { readLiveTemplate } from './template.ts'
 import type { ValidationIssue } from '../contracts/rich-text.ts'
 
 /** MVP 가 만드는 뷰 타입. 정본의 `type` 은 10종이지만 Table 하나로 제품이 성립한다. */
@@ -91,6 +92,12 @@ export type ViewDetail = {
    * "그룹 속성을 고르라"는 상태다.
    */
   readonly groupBy: GroupBy | null
+  /**
+   * 이 뷰의 `New` 가 쓸 기본 템플릿(F-08-03). **살아 있는 템플릿을 가리킬 때만** 값이 있다 — 템플릿을 휴지통에
+   * 보내면 저장된 값은 그대로 두고 여기서 null 로 준다(`liveDefaultTemplate`). `groupBy` 와 같은 규칙이다:
+   * 복원하면 지정이 돌아온다. 화면이 null 을 받으면 `New` 는 빈 행을 만든다.
+   */
+  readonly defaultTemplateId: string | null
   /** 스키마 순서가 아니라 **뷰 순서**다. 숨긴 컬럼도 들어 있다(화면이 거른다). */
   readonly columns: readonly ViewColumn[]
 }
@@ -116,6 +123,8 @@ export type ViewFailure =
   | 'invalid_group'
   /** 보드는 그룹이 필수인데 고를 수 있는 프로퍼티가 없다(F-04-03). */
   | 'group_required'
+  /** 기본 템플릿으로 준 id 가 이 표의 살아 있는 템플릿이 아니다(F-08-03 · 0026 의 트리거와 같은 조건). */
+  | 'invalid_template'
 
 export type ViewResult<T> =
   | { readonly ok: true; readonly value: T }
@@ -210,6 +219,7 @@ type ViewRow = {
   sorts: unknown
   group_by: unknown
   load_limit: number
+  default_template_page_id: string | null
 }
 
 /**
@@ -279,7 +289,13 @@ async function readColumns(tx: Tx, viewId: string): Promise<ViewColumn[]> {
 async function readView(tx: Tx, viewId: string): Promise<ViewDetail | null> {
   const row = await tx.queryMaybe<ViewRow>(
     `SELECT v.id, v.database_id, v.data_source_id, v.name, v.type, v.order_idx,
-            v.filter, v.sorts, v.group_by, v.load_limit
+            v.filter, v.sorts, v.group_by, v.load_limit,
+            -- 살아 있는 템플릿을 가리킬 때만 준다(ViewDetail.defaultTemplateId). 0026 의 트리거가 "이 표의
+            -- 템플릿 행"까지는 지키지만 휴지통은 보지 못한다 — 행이 남아 있기 때문이다(X-3).
+            (SELECT v.default_template_page_id
+               FROM page p JOIN block b ON b.id = p.id
+              WHERE p.id = v.default_template_page_id AND p.is_template AND b.lifecycle = 'live')
+              AS default_template_page_id
        FROM view v WHERE v.id = $1`,
     [viewId],
   )
@@ -298,6 +314,7 @@ async function readView(tx: Tx, viewId: string): Promise<ViewDetail | null> {
     sorts: Array.isArray(row.sorts) ? (row.sorts as SortKey[]) : [],
     loadLimit: row.load_limit,
     groupBy: liveGroupBy(row.group_by, columns),
+    defaultTemplateId: row.default_template_page_id,
     columns,
   }
 }
@@ -490,6 +507,13 @@ export type UpdateViewInput = {
   readonly loadLimit?: number
   /** `null` 을 주면 그룹을 없앤다(보드는 거부 — `group_required`). 생략하면 그대로 둔다. */
   readonly groupBy?: GroupBy | null
+  /**
+   * 이 뷰의 `New` 가 쓸 기본 템플릿(F-08-03). `null` 이 "빈 페이지로 돌려라"이고, 생략하면 그대로 둔다.
+   *
+   * 값은 **이 뷰가 보는 표의 살아 있는 템플릿**이어야 한다 — 아니면 `invalid_template`. 0026 의 트리거가 같은
+   * 것을 DB 에서 막지만, 거기까지 가면 예외가 되어 화면이 받을 말이 없다. 애플리케이션이 먼저 답한다.
+   */
+  readonly defaultTemplateId?: string | null
 }
 
 /**
@@ -576,6 +600,13 @@ export async function updateView(
       : null
     if (isFailure(grouped)) return grouped
 
+    // 기본 템플릿(F-08-03). 0026 의 트리거와 **같은 조건**을 먼저 묻는다 — 트리거까지 가면 예외라 화면이 받을
+    // 말이 없다. 휴지통은 트리거가 보지 못하므로 그것까지 여기서 본다(`readLiveTemplate`).
+    if (input.defaultTemplateId !== undefined && input.defaultTemplateId !== null) {
+      const template = await readLiveTemplate(tx, ctx, gate.dataSourceId, input.defaultTemplateId)
+      if (template === null) return fail('invalid_template')
+    }
+
     await tx.query(
       `UPDATE view
           SET name = coalesce($2, name),
@@ -586,6 +617,8 @@ export async function updateView(
               load_limit = coalesce($7, load_limit),
               type = coalesce($8, type),
               group_by = CASE WHEN $9::boolean THEN $10::jsonb ELSE group_by END,
+              default_template_page_id =
+                CASE WHEN $11::boolean THEN $12::uuid ELSE default_template_page_id END,
               updated_at = now()
         WHERE id = $1`,
       [
@@ -599,6 +632,8 @@ export async function updateView(
         input.type ?? null,
         touchesGroup,
         grouped === null ? null : JSON.stringify(grouped),
+        input.defaultTemplateId !== undefined,
+        input.defaultTemplateId ?? null,
       ],
     )
 
