@@ -502,6 +502,16 @@ export async function readRelation(
   })
 }
 
+/**
+ * LIKE 의 와일드카드를 글자로 만든다 — `%` · `_` · 그리고 이스케이프 문자 자신(`\`).
+ *
+ * 안 하면 `100%` 를 찾을 때 `%` 가 "아무 글자"가 되어 전부가 나오고, `_` 는 아무 한 글자와 맞는다. 값은 파라미터로
+ * 바인딩하므로 주입은 아니다 — **결과가 틀리는** 문제다.
+ */
+export function escapeLike(text: string): string {
+  return text.replace(/[\\%_]/g, (ch) => '\\' + ch)
+}
+
 /** `block.properties.title`(투영된 제목)의 평문. `row.ts` `toRowSummary` 와 같은 규칙이다. */
 function plainTitle(raw: unknown): string {
   return Array.isArray(raw)
@@ -568,4 +578,54 @@ export function relationIdsIn(
     }
   }
   return [...ids]
+}
+
+// ── 고를 후보 — 행 고르기 팝오버가 읽는다 (relation 5b-2) ─────────────────
+
+/** 후보 목록의 상한. 넘으면 검색어를 더 치게 한다 — 팝오버는 스크롤해서 고르는 곳이 아니다. */
+export const MAX_RELATION_CANDIDATES = 20
+
+/**
+ * 이 칸에 **더할 수 있는** 행을 제목으로 찾는다.
+ *
+ * 주소가 행이다(`rows/{id}/relations/{propertyId}/candidates`) — 대상 표를 클라이언트가 말하지 않는다. 서버가 프로퍼티의
+ * config 에서 읽으므로 "이 프로퍼티의 대상이 아닌 표"를 뒤질 수 없고, **이미 연결된 행은 여기서 뺀다**(상한 20 안에서
+ * 클라이언트가 빼면 후보가 전부 연결된 것일 때 빈 목록이 된다).
+ *
+ * `linkRows` 가 받는 것과 같은 집합이다 — 대상 표의 · 살아 있는 · 템플릿이 아닌 행. 대상 표를 못 보면 빈 목록이다
+ * (그 표에 무엇이 있는지 알려 주지 않는다). 제목은 title 프로퍼티의 사이드카(`text_value`)로 찾는다 — 필터의
+ * `contains` 와 같은 축이고 대소문자를 가리지 않는다. 순서는 표의 순서(`block.order_key`)다.
+ */
+export async function searchCandidates(
+  ctx: SessionContext,
+  rowId: string,
+  propertyId: string,
+  query: string,
+): Promise<RelationResult<{ readonly items: readonly RelatedRow[] }>> {
+  if (!isUuid(rowId)) return fail('not_found')
+  const q = query.trim().slice(0, 200)
+  return withReadTransaction(async (tx) => {
+    const open = await openRelation(tx, ctx, rowId, propertyId, 'view')
+    if (isFailure(open)) return open
+    if (!open.canViewTarget) return { ok: true, value: { items: [] } } as const
+
+    const target = open.config.target_data_source_id
+    const rows = await tx.query<{ id: string; title: unknown }>(
+      `SELECT p.id, b.properties->'title' AS title
+         FROM page p
+         JOIN block b ON b.id = p.id
+         LEFT JOIN property tp ON tp.data_source_id = p.data_source_id AND tp.type = 'title' AND tp.deleted_at IS NULL
+         LEFT JOIN page_property_value tv ON tv.page_id = p.id AND tv.property_id = tp.id
+        WHERE p.data_source_id = $1 AND p.is_template = false
+          AND b.workspace_id = $2 AND b.lifecycle = 'live'
+          AND ($3 = '' OR tv.text_value ILIKE '%' || $4 || '%')
+          AND NOT EXISTS (SELECT 1 FROM relation_edge e
+                           WHERE e.property_id = $5 AND e.from_page_id = $6 AND e.to_page_id = p.id)
+        ORDER BY b.order_key COLLATE "C", p.id
+        LIMIT $7`,
+      // LIKE 의 와일드카드(% · _ · \)를 글자로 만든다 — "100%" 를 찾으면 전부가 아니라 그 글자가 든 행이 나와야 한다.
+      [target, ctx.workspaceId, q, escapeLike(q), propertyId, rowId, MAX_RELATION_CANDIDATES],
+    )
+    return { ok: true, value: { items: rows.map((r) => ({ id: r.id, title: plainTitle(r.title) })) } } as const
+  })
 }

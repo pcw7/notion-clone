@@ -411,7 +411,7 @@ export function DatabaseBoard(props: {
 
   // ── 그리기 ──────────────────────────────────────────────────────────
 
-  const labels = useRelationLabels(
+  const { labels } = useRelationLabels(
     workspaceId,
     props.relationLabels,
     groups.flatMap((g) => g.rows),

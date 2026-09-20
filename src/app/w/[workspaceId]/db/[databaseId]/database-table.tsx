@@ -67,7 +67,7 @@ import type { DatabaseAccess } from '@/lib/database/database'
 import type { SortKey } from '@/lib/database/filter'
 import { sortFirst } from '@/lib/database/filter-draft'
 import type { RowJson } from '@/lib/database/http'
-import { isCellColumn, type CellColumn, type ViewColumn } from '@/lib/database/view-columns'
+import { isCellColumn, relationOf, type CellColumn, type ViewColumn } from '@/lib/database/view-columns'
 import { MAX_QUERY_PAGINATION } from '@/lib/database/limits'
 import {
   emptyValue,
@@ -88,6 +88,7 @@ import * as api from './table-api'
 import { CellDisplay, RelationChips, TYPE_ICON, TYPE_LABEL, type RelationLabels } from './cell-view'
 import { useRelationLabels } from './use-relation-labels'
 import { SelectEditor } from './select-editor'
+import { RelationEditor } from './relation-editor'
 import { AddColumn } from './add-column'
 import { ColumnMenu } from './column-menu'
 import { isSortable } from './view-toolbar'
@@ -168,7 +169,7 @@ export function DatabaseTable(props: {
     readCell(column.type, row.properties[column.propertyId])
 
   // relation 칸의 제목 — 첫 화면은 서버가 줬고, "더 보기" · 새 행의 것은 여기서 받는다.
-  const labels = useRelationLabels(workspaceId, props.relationLabels, rows, columns)
+  const { labels, addLabels } = useRelationLabels(workspaceId, props.relationLabels, rows, columns)
 
   // ── 저장 ───────────────────────────────────────────────────────────
 
@@ -209,15 +210,15 @@ export function DatabaseTable(props: {
     const column = columns[at.col]
     if (row === undefined || column === undefined) return
 
-    // relation 칸은 아직 읽기 전용이다 — 행 고르기는 relation 5b-2 가 붙인다. 선택만 한다.
-    if (!isCellColumn(column)) {
+    // F-03-16 엣지 케이스: *"읽기 전용 프로퍼티 편집 시도 → 편집 모드 진입 차단."*
+    if (!access.canEditContent) {
       setMode({ kind: 'selected', at })
       return
     }
 
-    // F-03-16 엣지 케이스: *"읽기 전용 프로퍼티 편집 시도 → 편집 모드 진입 차단."*
-    if (!access.canEditContent) {
-      setMode({ kind: 'selected', at })
+    // relation 칸의 편집기는 초안이 없다 — 고르는 순간마다 저장된다(`relation-editor.tsx`). 여는 것이 전부다.
+    if (!isCellColumn(column)) {
+      setMode({ kind: 'editing', at })
       return
     }
 
@@ -311,7 +312,12 @@ export function DatabaseTable(props: {
   const onCellMouseDown = (at: CellPos, event: MouseEvent<HTMLTableCellElement>) => {
     const current = modeRef.current
     // 편집칸 안을 누른 것이다(캐럿 옮기기 · 옵션 목록). 표가 할 일이 없다.
-    if (current.kind === 'editing' && samePos(current.at, at)) return
+    if (current.kind === 'editing' && samePos(current.at, at)) {
+      // 입력칸이 아닌 곳(칸의 칩 · 여백)을 눌렀다면 포커스를 편집기에 둔다. 안 막으면 칸(`td`)이 포커스를 가져가고,
+      // 팝오버는 열려 있는데 ↑↓ · Enter 가 표의 규칙을 탄다 — 고르려던 Enter 가 아래 칸으로 내려간다.
+      if (!(event.target instanceof HTMLInputElement)) event.preventDefault()
+      return
+    }
 
     // 다른 칸을 누르면 편집하던 칸을 저장하고 옮긴다. 값이 틀리면 옮기지 않는다.
     if (current.kind === 'editing' && !commitEdit(current.at)) {
@@ -379,6 +385,19 @@ export function DatabaseTable(props: {
     pickOption(at, option.id)
   }
 
+  // ── relation ───────────────────────────────────────────────────────
+
+  /**
+   * 연결이 바뀌었다 — 서버가 준 행으로 갈아 끼우고, 방금 고른 행의 제목을 맵에 넣는다.
+   *
+   * 셀 쓰기와 같은 버전 거르기를 탄다(머리말). 제목을 **먼저** 넣지 않으면 칩이 한 번 "제목 없음"으로 깜빡인다 —
+   * 같은 배치라 순서는 상관없지만, 맵에 넣지 않으면 훅이 그 id 를 서버에 다시 묻는다.
+   */
+  const onRelationChange = (row: RowJson, known: Readonly<Record<string, string>>) => {
+    addLabels(known)
+    setRows((current) => current.map((r) => (r.id === row.id && notOlder(row.version, r.version) ? row : r)))
+  }
+
   // ── 행 · 컬럼 ──────────────────────────────────────────────────────
 
   const addRow = async () => {
@@ -404,7 +423,7 @@ export function DatabaseTable(props: {
     const result = await api.addColumn(workspaceId, dataSourceId, name, type)
     if (!result.ok) return result.message
     const property = result.value
-    // 표가 그리는 것은 셀 타입뿐이다. 엣지 타입(relation)의 칸은 relation 5b 가 그린다 — 이 폼은 그것을 만들지 않는다.
+    // 이 명령은 셀 타입만 만든다. relation 은 `addRelationColumn` 이 다른 명령으로 만든다.
     const cellType = property.type
     if (!isMvpPropertyType(cellType)) return null
     // 다시 읽지 않고 붙인다. 이미 불러온 행들을 버리면 "더 보기"로 모은 것이 사라진다.
@@ -423,6 +442,33 @@ export function DatabaseTable(props: {
         options: property.options ?? [],
       },
     ])
+    return null
+  }
+
+  /** relation 컬럼을 만든다. 같은 표에 양방향이면 컬럼이 **둘** 생긴다 — 서버가 짚어 준 것을 전부 붙인다. */
+  const addRelationColumn = async (input: api.AddRelationInput): Promise<string | null> => {
+    const result = await api.addRelation(workspaceId, dataSourceId, input)
+    if (!result.ok) return result.message
+    const added = result.value.flatMap((property): ViewColumn[] => {
+      // 서버(`readColumns`)와 같은 함수로 읽는다 — 방금 만든 컬럼과 새로고침한 컬럼이 같게 동작하도록.
+      const relation = relationOf(property.config)
+      if (relation === null) return []
+      return [
+        {
+          propertyId: property.id,
+          name: property.name,
+          type: 'relation',
+          visible: true,
+          orderKey: property.orderKey,
+          width: null,
+          wrap: false,
+          options: [],
+          relation,
+        },
+      ]
+    })
+    // 기존 행에는 이 컬럼의 값이 없다 — `readRelationValue` 가 빈 연결로 읽는다.
+    setColumns((current) => [...current, ...added])
     return null
   }
 
@@ -538,7 +584,13 @@ export function DatabaseTable(props: {
               ))}
               {access.canEditStructure && !isList && (
                 <th className="w-11 border border-neutral-200 p-0 dark:border-neutral-800">
-                  <AddColumn onAdd={addColumn} />
+                  <AddColumn
+                    workspaceId={workspaceId}
+                    dataSourceId={dataSourceId}
+                    tableName={tableName}
+                    onAdd={addColumn}
+                    onAddRelation={addRelationColumn}
+                  />
                 </th>
               )}
             </tr>
@@ -594,7 +646,7 @@ export function DatabaseTable(props: {
                       role="gridcell"
                       tabIndex={focusTarget !== null && samePos(focusTarget, at) ? 0 : -1}
                       aria-selected={isSelected}
-                      aria-readonly={!access.canEditContent || cell.kind === 'relation' || undefined}
+                      aria-readonly={!access.canEditContent || undefined}
                       data-cell={keyOf(at)}
                       data-property-id={column.propertyId}
                       data-editing={isEditing || undefined}
@@ -627,6 +679,22 @@ export function DatabaseTable(props: {
                             canCreate={access.canEditStructure}
                             onPick={(optionId) => pickOption(at, optionId)}
                             onCreate={(name) => void createOption(at, name)}
+                          />
+                        </>
+                      ) : isEditing && cell.kind === 'relation' ? (
+                        <>
+                          {isList ? <div className="min-w-0 flex-1">{display}</div> : display}
+                          <RelationEditor
+                            // 칸이 바뀌면 새로 마운트한다 — 편집기는 열 때 한 번 읽는다.
+                            key={`${row.id}:${column.propertyId}`}
+                            workspaceId={workspaceId}
+                            rowId={row.id}
+                            propertyId={column.propertyId}
+                            propertyName={column.name}
+                            limit={cell.column.relation.limit}
+                            align={isList ? 'right' : 'left'}
+                            onChange={onRelationChange}
+                            onDone={() => setMode({ kind: 'selected', at })}
                           />
                         </>
                       ) : isEditing ? (

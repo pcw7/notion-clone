@@ -9,7 +9,7 @@
  */
 
 import { requireWorkspaceSession } from '@/lib/auth/route-session'
-import { createDatabase } from '@/lib/database/database'
+import { createDatabase, listDatabases } from '@/lib/database/database'
 
 export async function POST(
   request: Request,
@@ -28,4 +28,18 @@ export async function POST(
     return Response.json({ error: created.reason }, { status: created.reason === 'forbidden' ? 403 : 400 })
   }
   return Response.json({ ok: true, database: created.value }, { status: 201 })
+}
+
+/**
+ * 볼 수 있는 데이터베이스 목록 — relation 프로퍼티의 대상을 고를 때 읽는다(relation 5b-2 · F-03-10 시나리오 1).
+ * 볼 수 없는 표는 목록에 없다(`listDatabases` — 권한이 쿼리 안에 있다).
+ */
+export async function GET(
+  _request: Request,
+  ctx: RouteContext<'/api/workspaces/[workspaceId]/databases'>,
+): Promise<Response> {
+  const { workspaceId } = await ctx.params
+  const session = await requireWorkspaceSession(workspaceId)
+  if (!session.ok) return session.response
+  return Response.json({ ok: true, databases: await listDatabases(session.ctx) })
 }

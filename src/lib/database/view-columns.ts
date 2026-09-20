@@ -7,7 +7,7 @@
  * 멀쩡했다). `testing/client-bundle.test.ts` 가 이 경계를 지킨다.
  */
 
-import type { MvpPropertyType, RelationLimit, SelectOption } from './property-types.ts'
+import { readRelationConfig, type MvpPropertyType, type RelationLimit, type SelectOption } from './property-types.ts'
 
 type ColumnBase = {
   readonly propertyId: string
@@ -47,6 +47,22 @@ export type RelationColumn = ColumnBase & {
 }
 
 export type ViewColumn = CellColumn | RelationColumn
+
+/**
+ * 저장된 config → 컬럼의 relation 부분. relation 의 모양이 아니면(손상) null — 그 컬럼은 그리지 않는다.
+ *
+ * 서버(`view.ts` `readColumns`)와 화면(방금 만든 relation 컬럼을 새로고침 없이 붙일 때)이 **같은 함수**로 읽는다. 두 벌이면
+ * 방금 만든 컬럼과 새로고침한 컬럼이 다르게 동작한다(`limit` 을 한쪽만 읽는 식으로).
+ */
+export function relationOf(config: unknown): RelationColumn['relation'] | null {
+  const parsed = readRelationConfig(config)
+  if (parsed === null) return null
+  return {
+    targetDataSourceId: parsed.target_data_source_id,
+    limit: parsed.limit ?? 'none',
+    synced: parsed.synced_property_id !== undefined,
+  }
+}
 
 export function isCellColumn(column: ViewColumn): column is CellColumn {
   return column.type !== 'relation'

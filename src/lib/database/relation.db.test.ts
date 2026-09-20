@@ -11,6 +11,7 @@
  *   ⑥ 더할 수 있는 것은 **대상 표의 · 살아 있는 · 볼 수 있는** 행뿐이고, 아니면 전부 같은 답이다
  *   ⑦ 읽기가 거른다 — 휴지통의 행은 빠지고(복원하면 돌아온다), 대상 표를 못 보면 개수만 받는다
  *   ⑧ DB 가 지킨다 — 거울상 없는 엣지는 커밋되지 않는다(E1 의 지연 제약 트리거)
+ *   ⑩ 고르는 화면이 읽을 것(5b-2) — 후보 검색(이미 연결된 행 · 휴지통 · 볼 수 없는 표는 없다 · `%` 는 글자다) · 볼 수 있는 표 목록
  *   ⑨ 화면이 그릴 것(5b-1) — 뷰의 컬럼에 relation 이 서고, 제목 맵은 제목 · null(볼 수 없다) · 키 없음(휴지통)으로 갈린다
  *
  * 반사실(HANDOFF §3.3-159~161): 거울상을 안 쓰면 ④ ⑤ 가 **커밋에서** 죽고, 빼기의 거울상을 안 지우면 ④ 의 빼기가,
@@ -27,18 +28,21 @@ import { probeDatabase, makeFixture, createUser, joinAs, type Actor, type Fixtur
 import { withReadTransaction, withTransaction } from '../db/tx.ts'
 import { grantAccess, revokeAccess, stopInheriting } from '../permissions/acl.ts'
 import { textRun } from '../contracts/rich-text.ts'
-import { createDatabase } from './database.ts'
+import { createDatabase, listDatabases } from './database.ts'
 import { getSchema } from './property.ts'
 import { readRelationValue } from './property-types.ts'
 import { createRow, trashRow, updateCells } from './row.ts'
 import {
   addRelationProperty,
+  escapeLike,
   linkRows,
   loadRelationLabels,
   readRelation,
   readRelationConfig,
   relationIdsIn,
+  searchCandidates,
   MAX_LINKS_PER_REQUEST,
+  MAX_RELATION_CANDIDATES,
 } from './relation.ts'
 import { createView, getView } from './view.ts'
 import { queryRows } from './query.ts'
@@ -546,5 +550,86 @@ describe('⑨ 화면이 그릴 것 (relation 5b-1)', () => {
     const labels = await loadRelationLabels(fx.owner.ctx, [row, randomUUID(), 'nope', tasks.databaseId])
     assert.deepEqual(labels, { [row]: '행' })
     assert.deepEqual(await loadRelationLabels(fx.owner.ctx, []), {})
+  })
+})
+
+describe('⑩ 고르는 화면이 읽을 것 (relation 5b-2)', () => {
+  const titlesOf = (r: { items: readonly { title: string }[] }) => r.items.map((i) => i.title)
+
+  test('★ 후보 — 제목으로 찾고(대소문자 무시) 표의 순서로 준다 · 이미 연결된 행과 휴지통의 행은 없다', async (ctx) => {
+    if (skipReason) return ctx.skip(skipReason)
+    const { tasks, projects, relId } = await tasksAndProjects()
+    const task = await tasks.row('T')
+    const alpha = await projects.row('Alpha 프로젝트')
+    await projects.row('beta 프로젝트')
+    const gone = await projects.row('alpha 버릴 것')
+    await projects.row('감마')
+
+    assert.deepEqual(titlesOf(unwrap(await searchCandidates(fx.owner.ctx, task, relId, ''))), [
+      'Alpha 프로젝트', 'beta 프로젝트', 'alpha 버릴 것', '감마',
+    ])
+    assert.deepEqual(titlesOf(unwrap(await searchCandidates(fx.owner.ctx, task, relId, 'ALPHA'))), ['Alpha 프로젝트', 'alpha 버릴 것'])
+
+    unwrap(await linkRows(fx.owner.ctx, task, relId, { add: [alpha] }))
+    unwrap(await trashRow(fx.owner.ctx, gone))
+    assert.deepEqual(titlesOf(unwrap(await searchCandidates(fx.owner.ctx, task, relId, 'alpha'))), [], '하나는 이미 연결됐고 하나는 휴지통이다')
+    assert.deepEqual(titlesOf(unwrap(await searchCandidates(fx.owner.ctx, task, relId, '  프로젝트 '))), ['beta 프로젝트'], '앞뒤 공백은 뗀다')
+  })
+
+  test('★ `%` · `_` 는 와일드카드가 아니라 글자다 — "100%" 를 찾으면 전부가 아니라 그 행이 나온다', async (ctx) => {
+    if (skipReason) return ctx.skip(skipReason)
+    const { tasks, projects, relId } = await tasksAndProjects()
+    const task = await tasks.row('T')
+    await projects.row('달성률 100%')
+    await projects.row('달성률 1000')
+    await projects.row('a_b')
+    await projects.row('axb')
+    assert.deepEqual(titlesOf(unwrap(await searchCandidates(fx.owner.ctx, task, relId, '100%'))), ['달성률 100%'])
+    assert.deepEqual(titlesOf(unwrap(await searchCandidates(fx.owner.ctx, task, relId, 'a_b'))), ['a_b'])
+    // `%` · `_` · 이스케이프 문자 자신(백슬래시) 앞에 백슬래시가 하나씩 붙는다.
+    assert.equal(escapeLike('100%_' + String.fromCharCode(92)), ['100', '%', '_', ''].join(String.fromCharCode(92)) + String.fromCharCode(92))
+  })
+
+  test(`후보는 ${MAX_RELATION_CANDIDATES}개까지다 — 넘으면 검색어를 더 친다`, async (ctx) => {
+    if (skipReason) return ctx.skip(skipReason)
+    const { tasks, projects, relId } = await tasksAndProjects()
+    const task = await tasks.row('T')
+    for (let i = 0; i < MAX_RELATION_CANDIDATES + 3; i += 1) await projects.row(`P${String(i).padStart(2, '0')}`)
+    const found = unwrap(await searchCandidates(fx.owner.ctx, task, relId, 'P'))
+    assert.equal(found.items.length, MAX_RELATION_CANDIDATES)
+    assert.equal(found.items[0].title, 'P00')
+  })
+
+  test('★ 대상 표를 못 보면 후보가 없다 · 이 행을 못 보면 not_found · relation 이 아니면 unknown_property', async (ctx) => {
+    if (skipReason) return ctx.skip(skipReason)
+    const { tasks, projects, relId } = await tasksAndProjects()
+    const task = await tasks.row('T')
+    await projects.row('비밀 프로젝트')
+    await makePrivate(projects.databaseId)
+    const blind = unwrap(await searchCandidates(other.ctx, task, relId, ''))
+    assert.deepEqual(blind.items, [])
+
+    const notRelation = await searchCandidates(fx.owner.ctx, task, tasks.titleId, '')
+    assert.equal(notRelation.ok === false && notRelation.reason, 'unknown_property')
+    await makePrivate(tasks.databaseId)
+    const unseen = await searchCandidates(other.ctx, task, relId, '')
+    assert.equal(unseen.ok === false && unseen.reason, 'not_found')
+  })
+
+  test('★ 표 목록 — 볼 수 있는 표만, 이름순으로. 볼 수 없는 표는 목록에 없다', async (ctx) => {
+    if (skipReason) return ctx.skip(skipReason)
+    const tag = randomUUID().slice(0, 8)
+    const open = await newTable(`나 열린 표 ${tag}`)
+    const first = await newTable(`가 열린 표 ${tag}`)
+    const secret = await newTable(`비밀 표 ${tag}`)
+    await makePrivate(secret.databaseId)
+
+    const mine = (await listDatabases(fx.owner.ctx)).filter((d) => d.name.endsWith(tag))
+    assert.deepEqual(mine.map((d) => d.name), [`가 열린 표 ${tag}`, `나 열린 표 ${tag}`, `비밀 표 ${tag}`])
+    assert.deepEqual(mine.map((d) => d.dataSourceId), [first.dataSourceId, open.dataSourceId, secret.dataSourceId])
+
+    const theirs = (await listDatabases(other.ctx)).filter((d) => d.name.endsWith(tag))
+    assert.deepEqual(theirs.map((d) => d.name), [`가 열린 표 ${tag}`, `나 열린 표 ${tag}`])
+    assert.ok(!JSON.stringify(await listDatabases(other.ctx)).includes(`비밀 표 ${tag}`))
   })
 })

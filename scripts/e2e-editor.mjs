@@ -2736,9 +2736,14 @@ async function main() {
 
         await clickOn('td[data-cell="0:1"]')
         await clickOn('td[data-cell="0:1"]')
-        check('relation 칸은 아직 읽기 전용이다 — 두 번 눌러도 편집기가 열리지 않는다(행 고르기는 5b-2)',
-          await evaluate(`document.querySelector('td[data-cell="0:1"]')?.getAttribute('aria-readonly') === 'true'
-            && !document.querySelector('td[data-editing]') && !document.querySelector('[data-testid="db-select-editor"]')`))
+        check('★ relation 칸을 한 번 더 누르면 행 고르기가 열린다 — 위에는 지금 연결(휴지통에 간 것은 없다), 포커스는 검색칸',
+          (await waitFor(`document.querySelectorAll('[data-testid="db-relation-linked"]').length === 2`, 8000))
+            && (await evaluate(`document.querySelector('td[data-editing]')?.dataset.cell === '0:1'
+              && document.activeElement?.matches('[data-testid="db-relation-input"]')
+              && !document.querySelector('[data-testid="db-relation-editor"]').textContent.includes('버릴 것')`)))
+        await key('Escape')
+        check('Esc 는 고르기를 닫고 칸에 선택을 남긴다',
+          await waitFor(`!document.querySelector('[data-testid="db-relation-editor"]') && document.activeElement?.dataset?.cell === '0:1'`, 3000))
 
         await clickOn('[data-testid="db-filter-button"]')
         await waitFor(`!!document.querySelector('[data-testid="db-filter-panel"]')`, 3000)
@@ -2786,6 +2791,163 @@ async function main() {
         check('★ 보드 카드의 배지에도 제목 칩이 선다',
           same(await evaluate(`[...document.querySelectorAll('[data-row-id="${t1}"] [data-testid="db-relation-chip"]')].map((e) => e.textContent.replace('↗', '').trim())`), ['알파', '베타'])
             && (await evaluate(`document.querySelectorAll('[data-row-id="${t3}"] [data-testid="db-relation-chip"]').length`)) === 0)
+      }
+
+      section('데이터베이스 relation 고르기 (relation 5b-2 · F-03-10)')
+      // 후보 검색의 규칙(이미 연결된 행 제외 · LIKE 글자 그대로 · 권한)은 `relation.db.test.ts` ⑩ 이 본다. 여기서는 사람이
+      // 하는 순서를 본다 — 속성 추가 폼에서 관계형을 만들고, 칸에서 찾아 고르고, × 로 빼고, 반대쪽 표에서 본다.
+      // ⚠ 익스포트 절 **뒤**에 있다(표를 둘 더 만든다).
+      {
+        const { textRun } = await import(new URL('../src/lib/contracts/rich-text.ts', import.meta.url).href)
+        const api = async (method, path, body) => {
+          const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+            method,
+            headers: authed,
+            ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+          })
+          return { status: r.status, body: await r.json().catch(() => null) }
+        }
+        const stamp = Date.now()
+        const customers = (await api('POST', '/databases', { name: `고객 ${stamp}` })).body.database
+        const orders = (await api('POST', '/databases', { name: `주문 ${stamp}` })).body.database
+        const titleOf = async (db) => (await api('GET', `/views/${db.defaultViewId}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+        const rowIn = async (db, titleProp, title) =>
+          (await api('POST', `/views/${db.defaultViewId}/rows`, { cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } }] })).body.row.id
+        const customerTitle = await titleOf(customers)
+        const orderTitle = await titleOf(orders)
+        for (const name of ['가나상사', '가나다라', '100%_할인', '다른 곳']) await rowIn(customers, customerTitle, name)
+        const o1 = await rowIn(orders, orderTitle, '주문 1')
+        await rowIn(orders, orderTitle, '주문 2')
+
+        const chipsIn = (cell) => evaluate(`[...document.querySelectorAll('td[data-cell="${cell}"] [data-testid="db-relation-chip"]')].map((e) => e.textContent.replace('↗', '').trim())`)
+        const candidates = () => evaluate(`[...document.querySelectorAll('[data-testid="db-relation-candidate"]')].map((e) => e.textContent.trim())`)
+        const linked = () => evaluate(`[...document.querySelectorAll('[data-testid="db-relation-linked"] > span')].map((e) => e.textContent.replace('↗', '').trim())`)
+        const candidatesAre = (expected, ms = 8000) =>
+          waitFor(`JSON.stringify([...document.querySelectorAll('[data-testid="db-relation-candidate"]')].map((e) => e.textContent.trim())) === ${JSON.stringify(JSON.stringify(expected))}`, ms)
+        const chipsAre = (cell, expected, ms = 8000) =>
+          waitFor(`JSON.stringify([...document.querySelectorAll('td[data-cell="${cell}"] [data-testid="db-relation-chip"]')].map((e) => e.textContent.replace('↗', '').trim())) === ${JSON.stringify(JSON.stringify(expected))}`, ms)
+        const openEditor = async (cell) => {
+          await clickOn(`td[data-cell="${cell}"]`)
+          await clickOn(`td[data-cell="${cell}"]`)
+          return waitFor(`document.activeElement?.matches('[data-testid="db-relation-input"]')`, 8000)
+        }
+        const search = async (text) => {
+          await evaluate(`document.querySelector('[data-testid="db-relation-input"]').select()`)
+          await typeText(text)
+        }
+
+        // ── 속성 추가 폼에서 관계형을 만든다 ──
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${orders.id}` })
+        await waitFor(`!!document.querySelector('[data-testid="db-table"] tbody tr')`, 15000)
+        await clickOn('[data-testid="db-add-column"]')
+        await waitFor(`document.activeElement?.getAttribute('aria-label') === '속성 이름'`, 3000)
+        await typeText('고객')
+        await setSelect('select[aria-label="속성 유형"]', 'relation')
+        check('★ 유형에서 "관계형"을 고르면 볼 수 있는 데이터베이스가 대상 목록에 선다 — 이 표는 "(이 표)"로 짚는다',
+          await waitFor(`(() => { const s = document.querySelector('[data-testid="db-relation-target"]')
+            if (!s || s.disabled) return false
+            const texts = [...s.options].map((o) => o.textContent)
+            return texts.includes(${JSON.stringify(`고객 ${stamp}`)}) && texts.includes(${JSON.stringify(`주문 ${stamp} (이 표)`)}) })()`, 8000))
+        await setSelect('[data-testid="db-relation-target"]', customers.dataSourceId)
+        await clickOn('[data-testid="db-relation-twoway"]')
+        check('"반대쪽에도 표시"를 켜면 역방향 이름을 받는다 — 기본값은 이 표의 이름이다',
+          await waitFor(`document.querySelector('[data-testid="db-relation-inverse-name"]')?.value === ${JSON.stringify(`주문 ${stamp}`)}`, 3000))
+        const clip = await unclipped('[data-testid="db-add-column-form"]')
+        check('관계형 폼(칸이 셋 더 있다)이 잘리지 않는다', clip.ok, clip.detail)
+        await clickOn('[data-testid="db-add-column-form"] button[type="submit"]')
+        check('★ 만들면 새로고침 없이 relation 컬럼이 머리에 선다',
+          (await waitFor(`!document.querySelector('[data-testid="db-add-column-form"]')`, 8000))
+            && (await waitFor(`[...document.querySelectorAll('[data-testid="db-table"] thead th[data-property-id]')].map((th) => th.textContent).some((t) => t.includes('고객') && t.includes('관계형'))`, 5000)))
+        const relId = await evaluate(`[...document.querySelectorAll('[data-testid="db-table"] thead th[data-property-id]')][1]?.dataset.propertyId ?? null`)
+
+        // ── 찾아서 고른다 ──
+        check('★ 방금 만든 컬럼의 칸을 바로 열 수 있다 — 후보는 대상 표의 행 전부, 표의 순서대로',
+          (await openEditor('0:1')) && (await candidatesAre(['가나상사', '가나다라', '100%_할인', '다른 곳'])),
+          JSON.stringify(await candidates()))
+        const popClip = await unclipped('[data-testid="db-relation-editor"]')
+        check('행 고르기 팝오버가 잘리지 않는다', popClip.ok, popClip.detail)
+        await clickOn('td[data-cell="0:1"]')
+        check('★ 열린 채로 칸을 또 눌러도 포커스는 검색칸에 남는다 — 칸이 가져가면 고르려던 Enter 가 아래 칸으로 내려간다',
+          await evaluate(`document.activeElement?.matches('[data-testid="db-relation-input"]') && !!document.querySelector('[data-testid="db-relation-editor"]')`))
+
+        await search('가나')
+        check('★ 글자를 치면 제목으로 좁혀진다', await candidatesAre(['가나상사', '가나다라']), JSON.stringify(await candidates()))
+        await key('ArrowDown')
+        await key('Enter')
+        check('★ ↓ · Enter 로 고르면 그 자리에서 저장되고 칩이 선다 — 표의 Enter(아래 칸으로)가 아니다',
+          (await chipsAre('0:1', ['가나다라']))
+            && (await evaluate(`document.querySelector('td[data-editing]')?.dataset.cell === '0:1'`)),
+          JSON.stringify(await chipsIn('0:1')))
+        check('★ 고른 행은 위(지금 연결)로 가고 후보에서 빠진다 — 팝오버는 열려 있다(여러 개를 고른다)',
+          same(await linked(), ['가나다라']) && (await candidatesAre(['가나상사']))
+            && (await evaluate(`document.activeElement?.matches('[data-testid="db-relation-input"]')`)),
+          `${JSON.stringify(await linked())} · ${JSON.stringify(await candidates())}`)
+
+        await clickOn('[data-testid="db-relation-candidate"]')
+        check('★ 눌러서 고른다 — 팝오버가 닫히지 않는다(mousedown 이 포커스를 빼앗지 않는다)',
+          (await chipsAre('0:1', ['가나다라', '가나상사']))
+            && (await evaluate(`!!document.querySelector('[data-testid="db-relation-editor"]')`)),
+          JSON.stringify(await chipsIn('0:1')))
+        const stored = (await api('GET', `/rows/${o1}/relations/${relId}`)).body
+        check('서버에 엣지 둘이 있다', stored?.items?.length === 2, JSON.stringify(stored?.items?.map((i) => i.title)))
+
+        await search('%')
+        check('★ "%" 는 글자다 — 전부가 아니라 "100%_할인" 하나만 나온다', await candidatesAre(['100%_할인']), JSON.stringify(await candidates()))
+
+        // ── × 로 뺀다 ──
+        await search('가나')
+        await candidatesAre([])
+        await clickOn('[data-testid="db-relation-unlink"]')
+        check('★ × 는 그 연결 하나만 뺀다 — 칩이 줄고, 뺀 행은 다시 후보다',
+          (await chipsAre('0:1', ['가나상사'])) && (await candidatesAre(['가나다라'])) && same(await linked(), ['가나상사']),
+          `${JSON.stringify(await chipsIn('0:1'))} · ${JSON.stringify(await candidates())}`)
+        await key('Escape')
+        check('Esc 로 닫으면 칸에 선택이 남는다',
+          await waitFor(`!document.querySelector('[data-testid="db-relation-editor"]') && document.activeElement?.dataset?.cell === '0:1'`, 3000))
+
+        // ── 반대쪽 표 ──
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${customers.id}` })
+        await waitFor(`!!document.querySelector('[data-testid="db-table"] tbody tr')`, 15000)
+        check('★ 양방향 — 고객 표에 역방향 컬럼이 생겼고, "가나상사" 칸에 그 주문이 보인다',
+          (await evaluate(`[...document.querySelectorAll('[data-testid="db-table"] thead th[data-property-id]')][1]?.textContent.includes(${JSON.stringify(`주문 ${stamp}`)})`))
+            && same(await chipsIn('0:1'), ['주문 1']) && same(await chipsIn('1:1'), []),
+          `${JSON.stringify(await chipsIn('0:1'))} · ${JSON.stringify(await chipsIn('1:1'))}`)
+        await openEditor('1:1')
+        await candidatesAre(['주문 1', '주문 2'])
+        await search('주문 2')
+        await candidatesAre(['주문 2'])
+        await key('Enter')
+        await chipsAre('1:1', ['주문 2'])
+        await key('Escape')
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${orders.id}` })
+        await waitFor(`!!document.querySelector('[data-testid="db-table"] tbody tr')`, 15000)
+        check('★ 반대쪽에서 고른 연결이 이쪽 칸에 선다 — "주문 2" 의 고객이 "가나다라"',
+          same(await chipsIn('1:1'), ['가나다라']) && same(await chipsIn('0:1'), ['가나상사']),
+          `${JSON.stringify(await chipsIn('0:1'))} · ${JSON.stringify(await chipsIn('1:1'))}`)
+
+        // ── 하나만 연결 ──
+        await clickOn('[data-testid="db-add-column"]')
+        await waitFor(`document.activeElement?.getAttribute('aria-label') === '속성 이름'`, 3000)
+        await typeText('담당 고객')
+        await setSelect('select[aria-label="속성 유형"]', 'relation')
+        await waitFor(`document.querySelector('[data-testid="db-relation-target"]')?.disabled === false`, 8000)
+        await setSelect('[data-testid="db-relation-target"]', customers.dataSourceId)
+        await clickOn('[data-testid="db-relation-limit-one"]')
+        await clickOn('[data-testid="db-add-column-form"] button[type="submit"]')
+        await waitFor(`document.querySelectorAll('[data-testid="db-table"] thead th[data-property-id]').length === 3`, 8000)
+        await openEditor('0:2')
+        await candidatesAre(['가나상사', '가나다라', '100%_할인', '다른 곳'])
+        await clickOn('[data-testid="db-relation-candidate"]')
+        check('★ "하나만 연결" 칸은 고르는 즉시 닫힌다 — 더 고를 것이 없다',
+          (await chipsAre('0:2', ['가나상사']))
+            && (await waitFor(`!document.querySelector('[data-testid="db-relation-editor"]') && document.activeElement?.dataset?.cell === '0:2'`, 3000)),
+          JSON.stringify(await chipsIn('0:2')))
+        await openEditor('0:2')
+        await search('다른')
+        await candidatesAre(['다른 곳'])
+        await key('Enter')
+        check('★ 다시 고르면 **바뀐다** — 둘이 되지 않는다',
+          await chipsAre('0:2', ['다른 곳']), JSON.stringify(await chipsIn('0:2')))
       }
     }
 

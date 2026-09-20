@@ -52,8 +52,8 @@ import {
 } from './filter.ts'
 import { readPropertyTypes } from './query.ts'
 import { isGroupableType, normalizeGroupBy, validateGroupBy, type GroupBy } from './group.ts'
-import { isMvpPropertyType, isOptionType, readRelationConfig } from './property-types.ts'
-import type { ViewColumn } from './view-columns.ts'
+import { isMvpPropertyType, isOptionType } from './property-types.ts'
+import { relationOf, type ViewColumn } from './view-columns.ts'
 import { readOptionsOf } from './options.ts'
 import type { ValidationIssue } from '../contracts/rich-text.ts'
 
@@ -261,17 +261,9 @@ async function readColumns(tx: Tx, viewId: string): Promise<ViewColumn[]> {
       continue
     }
     // 엣지 타입. config 가 relation 의 모양이 아니면(손상) 그리지 않는다 — 모르는 타입과 같은 취급이다.
-    const config = r.type === 'relation' ? readRelationConfig(r.config) : null
-    if (config === null) continue
-    columns.push({
-      ...base,
-      type: 'relation',
-      relation: {
-        targetDataSourceId: config.target_data_source_id,
-        limit: config.limit ?? 'none',
-        synced: config.synced_property_id !== undefined,
-      },
-    })
+    const relation = r.type === 'relation' ? relationOf(r.config) : null
+    if (relation === null) continue
+    columns.push({ ...base, type: 'relation', relation })
   }
   return columns
 }
