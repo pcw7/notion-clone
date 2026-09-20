@@ -32,6 +32,7 @@ import { MovePageControl } from './move-page-control'
 import { SharePanel } from './share-panel'
 import { CommentPanel } from './comment-panel'
 import { FavoriteButton } from './favorite-button'
+import { DuplicatePageButton } from './duplicate-page-button'
 import { DeletePageButton } from './delete-page-button'
 
 /** 제목 없는 페이지의 표시 문구. 저장된 값은 빈 배열이다. */
@@ -124,6 +125,8 @@ export default async function PageView({ params }: PageProps<'/w/[workspaceId]/[
             }))}
           />
           <ExportButton workspaceId={workspaceId} rootId={page.id} />
+          {/* 복제는 원본을 고치지 않는다 — 볼 수만 있는 사람도 누를 수 있다(자리가 없으면 서버가 거부한다). */}
+          <DuplicatePageButton workspaceId={workspaceId} pageId={page.id} />
           <DeletePageButton
             workspaceId={workspaceId}
             pageId={page.id}
