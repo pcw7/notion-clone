@@ -1,11 +1,12 @@
 /**
- * List 뷰의 배치 규칙 — 보드 4c-2조각 (F-04-04, DOM 없음)
+ * 표 컴포넌트의 배치 규칙 — 보드 4c-2조각(List · F-04-04) · 템플릿 6c-3조각(record · F-08-02), DOM 없음
  *
  * 이 파일이 지키는 것.
  *
  *   ① List 는 제목이 맨 앞이다 — 뷰의 컬럼 순서와 무관하게. 표는 건드리지 않는다
  *   ② **빈 칸은 접는다**(F-04-04 "빈 배지 렌더 금지") — 단 선택 · 편집 중인 칸은 비어 있어도 보인다
  *   ③ 제목은 비어도, 체크박스는 `false` 여도 접지 않는다
+ *   ④ **`record` 는 반대다** — 제목과 rollup 을 빼고, 남은 것은 비어 있어도 **접지 않는다**(채우는 화면이다)
  *
  * 반사실(HANDOFF §3.3-157): `active` 예외를 빼면 ② 의 "선택된 빈 칸" 이, 체크박스를 빈 값으로 보면 ③ 이 실패한다.
  */
@@ -115,5 +116,45 @@ describe('isRollupCollapsed (rollup 5c-2)', () => {
 
   test('0 은 값이다 — 접지 않는다', () => {
     assert.equal(isRollupCollapsed('list', { state: 'ok', result: { kind: 'number', number: 0 }, hidden: 0 }, false), false)
+  })
+})
+
+// ── record — 한 행을 세로로 펼친 모양 (템플릿 6c-3 · F-08-02) ──────────
+
+describe('record — 템플릿 편집 화면의 모양', () => {
+  const columns: { id: string; type: string }[] = [
+    { id: 'a', type: 'number' },
+    { id: 't', type: 'title' },
+    { id: 'r', type: 'rollup' },
+    { id: 'b', type: 'status' },
+    { id: 'rel', type: 'relation' },
+  ]
+
+  test('★ 제목과 rollup 을 뺀다 — 나머지는 뷰 순서 그대로', () => {
+    assert.deepEqual(listColumns('record', columns).map((c) => c.id), ['a', 'b', 'rel'])
+  })
+
+  test('제목을 빼는 것은 record 뿐이다 — 표 · List 는 그대로 들고 있다', () => {
+    assert.ok(listColumns('table', columns).some((c) => c.type === 'title'))
+    assert.ok(listColumns('list', columns).some((c) => c.type === 'title'))
+    assert.ok(listColumns('table', columns).some((c) => c.type === 'rollup'))
+  })
+
+  test('★ 빈 칸을 접지 않는다 — 채우는 화면이라 보이지 않으면 채울 곳이 없다', () => {
+    // List 는 같은 값을 접는다. 그 대비가 이 규칙의 전부다.
+    assert.equal(isCollapsed('list', 'number', emptyValue('number'), false), true)
+    assert.equal(isCollapsed('record', 'number', emptyValue('number'), false), false)
+
+    assert.equal(isRelationCollapsed('list', { type: 'relation', relation: [], count: 0 }, false), true)
+    assert.equal(isRelationCollapsed('record', { type: 'relation', relation: [], count: 0 }, false), false)
+
+    assert.equal(isRollupCollapsed('list', undefined, false), true)
+    assert.equal(isRollupCollapsed('record', undefined, false), false)
+  })
+
+  test('뷰 종류에서는 나오지 않는다 — 화면이 직접 고른다', () => {
+    for (const type of ['table', 'list', 'board', 'calendar', '']) {
+      assert.notEqual(variantOf(type), 'record', type)
+    }
   })
 })

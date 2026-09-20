@@ -60,7 +60,7 @@
  *   오류 문구가 뜬다 — 조용히 사라지지 않고 **저장되지 않았다고 말한다.**
  */
 
-import { useEffect, useRef, useState, type FocusEvent, type KeyboardEvent, type MouseEvent } from 'react'
+import { useEffect, useRef, useState, type FocusEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react'
 import { useRouter } from 'next/navigation'
 
 import type { DatabaseAccess } from '@/lib/database/database'
@@ -98,6 +98,17 @@ import { isSortable } from './view-toolbar'
 const keyOf = (at: CellPos): string => `${at.row}:${at.col}`
 const samePos = (a: CellPos, b: CellPos): boolean => a.row === b.row && a.col === b.col
 
+/**
+ * `record` 에서 **값이 놓이는 자리**. 켜지면 값만 감싸고, 꺼지면 아무것도 감싸지 않는다.
+ *
+ * 편집칸은 `absolute inset-0` 이라 가장 가까운 `relative` 조상을 채운다. 표 · List 에서는 칸(`td`)이 그것이고,
+ * `record` 에서는 칸이 [속성 이름 | 값] 둘로 나뉘므로 **값 쪽**이 그것이어야 한다 — 칸을 덮으면 이름이 가려진다.
+ */
+function CellSlot({ active, children }: { active: boolean; children: ReactNode }) {
+  if (!active) return <>{children}</>
+  return <span className="relative flex h-9 min-w-0 flex-1 items-center">{children}</span>
+}
+
 /** 표시 순서가 뒤에 오는 응답인가. 버전은 bigint 문자열이다. */
 const notOlder = (incoming: string, current: string): boolean => BigInt(incoming) >= BigInt(current)
 
@@ -124,6 +135,10 @@ export function DatabaseTable(props: {
   const { workspaceId, viewId, dataSourceId, tableName, access } = props
   const variant: TableVariant = props.variant ?? 'table'
   const isList = variant === 'list'
+  /** 한 행을 세로로 펼친 모양 — 템플릿 편집 화면(6c-3 · F-08-02). 칸마다 속성 이름이 왼쪽에 선다. */
+  const isRecord = variant === 'record'
+  /** 머리 행 · 머리 메뉴 · 속성 추가 · 꼬리 칸이 있는 모양은 표 하나뿐이다. */
+  const isGrid = variant === 'table'
   const router = useRouter()
 
   const [columns, setColumns] = useState<ViewColumn[]>(props.columns)
@@ -599,7 +614,7 @@ export function DatabaseTable(props: {
           className={isList ? 'block w-full text-sm' : 'table-fixed border-collapse text-sm'}
         >
           {/* List 는 머리 행을 화면에서 감춘다. 컬럼 이름은 스크린 리더에 남는다. */}
-          <thead role="rowgroup" className={isList ? 'sr-only' : undefined}>
+          <thead role="rowgroup" className={isGrid ? undefined : 'sr-only'}>
             <tr role="row">
               {columns.map((column) => (
                 <th
@@ -622,7 +637,7 @@ export function DatabaseTable(props: {
                       <span className="sr-only"> ({TYPE_LABEL[column.type]})</span>
                     </span>
                     {/* 감춘 머리 안의 버튼은 Tab 으로는 닿는데 보이지 않는다 — List 에는 두지 않는다. */}
-                    {access.canEditStructure && !isList && (
+                    {access.canEditStructure && isGrid && (
                       <ColumnMenu
                         name={column.name}
                         isTitle={column.type === 'title'}
@@ -633,7 +648,7 @@ export function DatabaseTable(props: {
                   </div>
                 </th>
               ))}
-              {access.canEditStructure && !isList && (
+              {access.canEditStructure && isGrid && (
                 <th className="w-11 border border-neutral-200 p-0 dark:border-neutral-800">
                   <AddColumn
                     workspaceId={workspaceId}
@@ -653,7 +668,7 @@ export function DatabaseTable(props: {
             </tr>
           </thead>
 
-          <tbody role="rowgroup" className={isList ? 'block' : undefined}>
+          <tbody role="rowgroup" className={isGrid ? undefined : 'block'}>
             {rows.map((row, r) => (
               <tr
                 key={row.id}
@@ -662,7 +677,9 @@ export function DatabaseTable(props: {
                 className={
                   isList
                     ? 'flex items-center gap-1 border-b border-neutral-100 hover:bg-neutral-50 dark:border-neutral-900 dark:hover:bg-neutral-900/60'
-                    : undefined
+                    : isRecord
+                      ? 'flex flex-col'
+                      : undefined
                 }
               >
                 {columns.map((column, c) => {
@@ -730,11 +747,29 @@ export function DatabaseTable(props: {
                             } ${isEditing && column.type !== 'title' ? 'min-w-[11rem]' : ''} ${
                               isSelected ? 'shadow-[inset_0_0_0_2px_theme(colors.blue.500)]' : ''
                             }`
-                          : `relative h-9 border border-neutral-200 px-2 align-middle outline-none dark:border-neutral-800 ${
-                              isSelected ? 'shadow-[inset_0_0_0_2px_theme(colors.blue.500)]' : ''
-                            }`
+                          : isRecord
+                            ? `flex h-9 items-center gap-2 rounded outline-none ${
+                                isSelected ? 'shadow-[inset_0_0_0_2px_theme(colors.blue.500)]' : ''
+                              }`
+                            : `relative h-9 border border-neutral-200 px-2 align-middle outline-none dark:border-neutral-800 ${
+                                isSelected ? 'shadow-[inset_0_0_0_2px_theme(colors.blue.500)]' : ''
+                              }`
                       }
                     >
+                      {/*
+                        `record` 는 속성 이름을 **칸 안 왼쪽**에 세운다(머리 행이 없는 모양이다). 값은 `relative` 한
+                        칸 안에 따로 감싼다 — 편집칸은 `absolute inset-0` 이라 그 자리를 정확히 덮어야 한다.
+                      */}
+                      {isRecord && (
+                        <span className="flex w-40 flex-none items-center gap-1.5 truncate px-1 text-xs text-neutral-500">
+                          <span aria-hidden className="text-neutral-400">
+                            {TYPE_ICON[column.type]}
+                          </span>
+                          {column.name}
+                          <span className="sr-only"> ({TYPE_LABEL[column.type]})</span>
+                        </span>
+                      )}
+                      <CellSlot active={isRecord}>
                       {isEditing && cell.kind === 'cell' && isOptionType(cell.column.type) ? (
                         <>
                           {display}
@@ -785,10 +820,11 @@ export function DatabaseTable(props: {
                       ) : (
                         display
                       )}
+                      </CellSlot>
                     </td>
                   )
                 })}
-                {access.canEditStructure && !isList && (
+                {access.canEditStructure && isGrid && (
                   <td aria-hidden className="border border-neutral-200 dark:border-neutral-800" />
                 )}
               </tr>
@@ -810,6 +846,12 @@ export function DatabaseTable(props: {
         </p>
       )}
 
+      {/*
+        `record` 에는 꼬리줄이 **없다** — 행이 하나뿐이고 그것이 화면의 주제다(템플릿). "+ 새로 만들기"는 그 표에
+        새 **행**을 만드는 버튼이라 여기 있으면 안 되고, "더 보기" · 개수도 말할 것이 없다. 감추지 않고 그리지
+        않는다 — F-04-01 의 *"비활성 표시보다 미노출이 안전"* 과 같은 규칙이다.
+      */}
+      {!isRecord && (
       <div className="flex flex-wrap items-center gap-3 text-sm">
         {access.canCreateRows && (
           <button
@@ -845,6 +887,7 @@ export function DatabaseTable(props: {
           {hasMore ? `${rows.length}개 불러옴 · 더 있음` : `${rows.length}개`}
         </span>
       </div>
+      )}
     </section>
   )
 }

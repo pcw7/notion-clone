@@ -59,6 +59,7 @@ import { DatabaseTable } from './database-table'
 import { DatabaseBoard, type BoardGroupJson, type GroupProperty } from './database-board'
 import { ViewTabs } from './view-tabs'
 import { ViewToolbar, type BoardSettings } from './view-toolbar'
+import { TemplatePanel } from './template-panel'
 
 const UNTITLED = '제목 없음'
 
@@ -192,16 +193,27 @@ export default async function DatabasePage({
         canEdit={access.canEditStructure}
       />
 
-      <ViewToolbar
-        workspaceId={workspaceId}
-        viewId={view.value.id}
-        columns={[...columns]}
-        filter={view.value.filter}
-        sorts={sorts}
-        catalog={catalog}
-        canEdit={access.canEditStructure}
-        board={boardSettings}
-      />
+      <div className="flex flex-wrap items-start gap-2">
+        <div className="min-w-0 flex-1">
+          <ViewToolbar
+            workspaceId={workspaceId}
+            viewId={view.value.id}
+            columns={[...columns]}
+            filter={view.value.filter}
+            sorts={sorts}
+            catalog={catalog}
+            canEdit={access.canEditStructure}
+            board={boardSettings}
+          />
+        </div>
+        {/* 템플릿은 뷰가 아니라 **표**의 것이다(`page.data_source_id`) — 뷰 설정 옆에 두되 같은 패널에 넣지 않는다. */}
+        <TemplatePanel
+          workspaceId={workspaceId}
+          databaseId={databaseId}
+          dataSourceId={view.value.dataSourceId}
+          canEdit={access.canEditStructure}
+        />
+      </div>
 
       {isBoard ? (
         groupBy !== null && groupProperty !== null && board !== null && board.ok ? (

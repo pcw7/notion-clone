@@ -3215,6 +3215,112 @@ async function main() {
         check('행 라우트로는 템플릿을 버릴 수 없다 — 템플릿의 길은 하나다',
           asRow.status === 404, `${asRow.status} ${JSON.stringify(asRow.body)}`)
       }
+
+      section('데이터베이스 템플릿 — 화면 (템플릿 6c-3 · F-08-02)')
+      // 만드는 · 채우는 · 버리는 길이 실제 브라우저에서 이어지는지 본다. 속성 목록은 표의 세 번째 모양
+      // (`variant="record"`)이라 배치 규칙 자체는 `list-layout.test.ts` 가 DOM 없이 본다.
+      // ⚠ 익스포트 절 **뒤**에 있다(표를 하나 더 만든다).
+      {
+        const api = async (method, path, body) => {
+          const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+            method,
+            headers: authed,
+            ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+          })
+          return { status: r.status, body: await r.json().catch(() => null) }
+        }
+        const templatesOf = async (dataSourceId) => (await api('GET', `/data-sources/${dataSourceId}/templates`)).body?.templates ?? []
+        /** 서버가 그 값이 될 때까지 기다린다 — 화면의 저장은 blur · Enter 뒤 한 왕복이다. */
+        const untilTitle = async (dataSourceId, title) => {
+          for (let i = 0; i < 40; i += 1) {
+            if ((await templatesOf(dataSourceId))[0]?.title === title) return true
+            await sleep(200)
+          }
+          return false
+        }
+
+        const stamp = Date.now()
+        const db = (await api('POST', '/databases', { name: `템플릿 화면 ${stamp}` })).body.database
+        const memo = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '메모', type: 'rich_text' })).body.property.id
+
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+        await waitFor(`!!document.querySelector('[data-testid="db-templates-button"]')`, 15000)
+
+        await clickOn('[data-testid="db-templates-button"]')
+        check('★ 도구줄의 "템플릿" 이 패널을 연다 — 처음에는 비어 있다고 말한다',
+          await waitFor(`!!document.querySelector('[data-testid="db-templates-empty"]')`, 8000),
+          await evaluate(`document.querySelector('[data-testid="db-templates-panel"]')?.textContent ?? '패널 없음'`))
+
+        await clickOn('[data-testid="db-template-new"]')
+        check('★ "+ 새 템플릿" 을 누르면 목록에 선다',
+          await waitFor(`document.querySelectorAll('[data-testid="db-template-open"]').length === 1`, 8000),
+          await evaluate(`document.querySelector('[data-testid="db-templates-list"]')?.textContent ?? '목록 없음'`))
+
+        await clickOn('[data-testid="db-template-open"]')
+        check('★ 템플릿 편집 화면이 열린다 — 배너 · 이름 · 속성 목록 · 본문이 함께 선다',
+          await waitFor(`/\\/templates\\/[0-9a-f-]{36}$/.test(location.pathname)
+            && !!document.querySelector('[data-testid="template-banner"]')
+            && !!document.querySelector('input[aria-label="템플릿 이름"]')
+            && !!document.querySelector('[data-testid="db-table"] td[data-property-id="${memo}"]')
+            && !!document.querySelector('.blk-editor')`, 15000),
+          await evaluate('location.pathname'))
+        const templateId = (await evaluate('location.pathname')).split('/').pop()
+
+        check('★ 속성 목록에는 제목 칸도 "+ 새로 만들기" 도 없다 — 이름은 `h1` 이, 행 만들기는 표가 쥔다',
+          await evaluate(`[...document.querySelectorAll('[data-testid="db-table"] td[data-property-id]')].length === 1
+            && !document.querySelector('[data-testid="db-add-row"]')
+            && !document.querySelector('[data-testid="db-add-column"]')`),
+          await evaluate(`[...document.querySelectorAll('[data-testid="db-table"] td[data-property-id]')]
+            .map((td) => td.getAttribute('data-property-id')).join()`))
+
+        // ── 이름 · 속성 · 본문을 채운다 ──
+        await clickOn('input[aria-label="템플릿 이름"]')
+        // 이름이 이미 "새 템플릿"이다 — 전체 선택 뒤에 친다(`Input.insertText` 가 선택을 대체한다).
+        // 안 그러면 뒤에 이어 붙어 "새 템플릿주간 회의"가 된다(처음 돌렸을 때 그랬다).
+        await evaluate(`document.querySelector('input[aria-label="템플릿 이름"]').select()`)
+        await typeText('주간 회의')
+        await key('Enter')
+        check('★ 템플릿 이름을 고치면 title 셀에 저장된다 — 행은 `renamePage` 가 거부한다',
+          await untilTitle(db.dataSourceId, '주간 회의'),
+          JSON.stringify(await templatesOf(db.dataSourceId)))
+
+        await clickOn(`[data-testid="db-table"] td[data-property-id="${memo}"]`)
+        await key('Enter')
+        await waitFor(`document.activeElement?.matches('[data-testid="db-cell-input"]')`, 8000)
+        await typeText('지난 주 회고부터')
+        await key('Enter')
+        check('★ 속성 칸을 고치면 템플릿 행에 저장된다 — 표와 같은 셀 편집기다',
+          await waitFor(`document.querySelector('[data-testid="db-table"] td[data-property-id="${memo}"]')?.textContent.includes('지난 주 회고부터')`, 8000),
+          await evaluate(`document.querySelector('[data-testid="db-table"] td[data-property-id="${memo}"]')?.textContent`))
+
+        await clickOn('.blk-editor [data-block-id]')
+        await typeText('안건을 적는다')
+        check('★ 템플릿 본문도 협업 편집기다 — 친 글이 남는다',
+          await waitFor(`document.querySelector('.blk-editor')?.textContent.includes('안건을 적는다')`, 8000),
+          await evaluate(`document.querySelector('.blk-editor')?.textContent ?? ''`))
+
+        // ── 표로 돌아온다 — 템플릿은 표에 없다(R1) ──
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+        await waitFor(`!!document.querySelector('[data-testid="db-table"]')`, 15000)
+        check('★ 다 채운 뒤에도 템플릿은 표에 섞이지 않는다',
+          await evaluate(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === 0`),
+          await evaluate(`document.querySelector('[data-testid="db-table"] tbody')?.textContent ?? ''`))
+
+        // ── 화면에서 채운 것이 실제로 새 행에 실리는가(6c-2 의 서버와 이어 본다) ──
+        const made = await api('POST', `/views/${db.defaultViewId}/rows`, { templateId })
+        check('★ 화면에서 채운 이름 · 속성 · 본문이 새 행으로 간다',
+          made.status === 201 && made.body?.row?.title === '주간 회의'
+            && String(made.body.row.properties?.[memo]?.rich_text?.[0]?.plain_text ?? '').includes('지난 주 회고부터'),
+          `${made.status} ${JSON.stringify(made.body?.row)}`)
+
+        // ── 버리기 ──
+        await clickOn('[data-testid="db-templates-button"]')
+        await waitFor(`!!document.querySelector('[data-testid="db-template-delete"]')`, 8000)
+        await clickOn('[data-testid="db-template-delete"]')
+        check('★ "버리기" 를 누르면 목록에서 빠진다',
+          await waitFor(`!!document.querySelector('[data-testid="db-templates-empty"]')`, 8000),
+          await evaluate(`document.querySelector('[data-testid="db-templates-panel"]')?.textContent ?? '패널 없음'`))
+      }
     }
 
     section('페이지 복제 (복제 6a · 6b · F-02-09 · F-08-01)')
