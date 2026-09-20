@@ -834,6 +834,38 @@ CREATE INDEX ON derived_value (property_id, num_value) WHERE NOT stale AND num_v
 - 거울상 엣지는 **시스템이 유지하는 투영**이다. 연결 명령은 대상 표의 `edit_content` 를 요구하지 않고(대상 행을 **볼 수
   있어야** 한다), 대상 행의 `block.version` · `last_edited_*` 를 올리지 않는다 — 그 행을 고친 사람이 없다.
 
+**[보강] rollup v1 — 읽을 때 계산한다. `derived_value` · `property_dependency` 는 아직 만들지 않는다** ⟨rollup 5c-1조각 / 마이그레이션 없음⟩
+
+위 DDL 의 `property_dependency` · `derived_value` 는 **정본으로 남는다** — 다만 v1 은 그 두 표를 만들지 않는다. 마스터 문서
+§5.2-5: *"rollup 은 v1 에서 **on-read 계산**(1,000행까지 충분)"*, 03 F-03-11 의 현실적 대안도 같다. 읽는 쪽이 없는 표를
+미리 만들면 맞는지 확인할 길이 없는 채로 동기화 코드만 는다(삭제 · 복원 · 설정 변경마다). 의존 그래프는 **config 에서
+언제든 다시 만들 수 있다**(`INSERT … SELECT` 한 번) — 캐시를 들이는 조각이 표와 함께 채운다.
+
+- `property.type = 'rollup'`(ENUM 에 이미 있다). `property.config`:
+
+  ```json
+  {"relation_property_id":"<이 표의 relation 프로퍼티>","target_property_id":"<그 relation 의 대상 표의 프로퍼티>","function":"sum"}
+  ```
+
+- **값은 어디에도 저장하지 않는다** — `page_property_value`(C1) 에도 `properties_cache` 에도 없다. 캐시에 넣을 수 없는
+  이유는 relation 의 제목과 같다: **결과가 보는 사람마다 다르다**(아래 권한 규칙).
+- **불변식 D1 의 귀결**: 필터 · 정렬은 `derived_value` 의 사이드카로만 컴파일되므로, 그 표가 없는 v1 에서 **rollup 은 거를
+  수도 정렬할 수도 없다.** 읽을 때 계산한 값으로 정렬하면 페이지네이션(keyset 커서)이 성립하지 않는다.
+- **대상 프로퍼티는 셀 타입이어야 한다**(relation · rollup 은 안 된다). 03: *"rollup 의 rollup 은 불가."* formula 가 없는
+  동안은 이것만으로 참조 체인이 깊이 1 이고 순환이 없다. formula(F-03-12)가 들어오는 조각이 저장 시점 DFS 와 깊이 15
+  제한을 함께 들여야 한다(rollup → formula → rollup 우회로가 그때 열린다).
+- **권한 · 휴지통은 집계 *안*에서 거른다.** 볼 수 없는 연결 행과 휴지통의 행은 집계에서 **뺀다**(03 엣지 케이스 표 ·
+  마스터 §7-6 ⑧). 볼 수 없어서 뺀 개수는 `hidden` 으로 함께 준다("N개 항목 접근 불가"). 값을 가린 채 집계에 넣으면
+  `min` · `max` · `show_original` 이 원본을 역산하게 해 준다. 빼고 나면 집계는 **묻는 사람이 어차피 읽을 수 있는 값만의
+  함수**라 새는 것이 없다 — `hidden` 은 relation 칸이 이미 보여 주는 개수다.
+- relation 프로퍼티나 대상 프로퍼티가 지워지면(soft delete) rollup 은 **그대로 두고** 읽을 때 "설정이 끊겼다"고 답한다
+  (`relation_missing` · `target_missing`). 복원하면 되살아난다 — 함께 지우면 복원이 rollup 을 되살리지 못한다.
+- 한 칸의 연결이 **1,000개를 넘으면 계산하지 않고 그렇다고 답한다**(`too_many`). 앞 1,000개만 더한 합은 틀린 숫자이고,
+  틀린 숫자는 빈칸보다 나쁘다. 이 상한이 `derived_value` 캐시를 들일 시점의 신호다.
+- 함수는 11종(03 의 현실적 대안): `show_original` · `count` · `count_values`(모든 타입) / `sum` · `average` · `min` ·
+  `max`(number) / `checked` · `percent_checked`(checkbox) / `earliest_date` · `latest_date`(date — 시작일만 본다).
+  대상 타입에 맞지 않는 함수는 만들 때 거부하고, 읽을 때(타입이 나중에 바뀌었다면) `show_original` 로 접는다.
+
 **[보강] `status_group` — `select_option.group_id` 가 가리키는 표** ⟨보드 4c-1조각 / 마이그레이션 0023⟩
 
 초판은 `select_option.group_id uuid NULL` 자리만 두고 **그것이 가리킬 표를 정의하지 않았다.** 03 F-03-05 가 권고한

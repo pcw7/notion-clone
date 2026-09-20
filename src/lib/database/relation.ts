@@ -204,8 +204,8 @@ export async function addRelationProperty(
   })
 }
 
-/** 이 data_source 를 담은 데이터베이스를 볼 수 있는가. 없거나 다른 워크스페이스면 false. */
-async function canViewDataSource(tx: Tx, ctx: SessionContext, dataSourceId: string): Promise<boolean> {
+/** 이 data_source 를 담은 데이터베이스를 볼 수 있는가. 없거나 다른 워크스페이스면 false. (`rollup.ts` 가 같은 질문을 한다.) */
+export async function canViewDataSource(tx: Tx, ctx: SessionContext, dataSourceId: string): Promise<boolean> {
   const ds = await tx.queryMaybe<{ container_id: string }>(
     `SELECT ds.owner_database_id AS container_id
        FROM data_source ds
