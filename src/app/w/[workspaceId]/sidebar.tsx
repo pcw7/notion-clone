@@ -32,6 +32,7 @@ import { usePathname, useRouter } from 'next/navigation'
 import { TrashPanel, type TrashRow } from './trash-panel'
 import { getSidebarStore } from './sidebar-state'
 import { openSearchOverlay } from './search-overlay'
+import { requestDuplicate } from './duplicate-page'
 
 export type SidebarNode = {
   id: string
@@ -91,6 +92,8 @@ export function Sidebar({
   }, [pathname])
 
   const [busy, setBusy] = useState(false)
+  /** 복제가 할 말 한 줄 — 빠진 하위 페이지 · 실패. 트리 아래에 선다. */
+  const [note, setNote] = useState<{ readonly text: string; readonly tone: 'status' | 'error' } | null>(null)
 
   // 펼침·접힘은 React 밖(localStorage)에 산다. useSyncExternalStore 가 서버·
   // 클라이언트 스냅샷을 따로 주므로 하이드레이션 불일치도, effect 안 setState 도 없다.
@@ -144,6 +147,31 @@ export function Sidebar({
       }
     },
     [workspaceId, router, store],
+  )
+
+  /**
+   * 페이지를 복제한다 — 6b. 빠진 것이 없으면 사본으로 옮겨 가고, 있으면 **멈춰서 말한다**(`duplicate-page.ts`).
+   *
+   * 트리는 어느 쪽이든 새로 받는다 — 사본이 원본 바로 뒤에 서야 한다.
+   */
+  const duplicate = useCallback(
+    async (pageId: string) => {
+      setBusy(true)
+      setNote(null)
+      try {
+        const result = await requestDuplicate(workspaceId, pageId)
+        router.refresh()
+        if (!result.ok) {
+          setNote({ text: result.message, tone: 'error' })
+          return
+        }
+        if (result.note.navigate) router.push(`/w/${workspaceId}/${result.pageId}`)
+        else if (result.note.text !== null) setNote({ text: result.note.text, tone: 'status' })
+      } finally {
+        setBusy(false)
+      }
+    },
+    [workspaceId, router],
   )
 
   // 풀페이지 데이터베이스를 만들고 연다(F-04-14). "새 페이지"와 같은 규칙 — 이름을
@@ -256,12 +284,23 @@ export function Sidebar({
             busy={busy}
             onToggle={toggle}
             onAddChild={addChild}
+            onDuplicate={duplicate}
           />
         ))}
         {tree.length === 0 && (
           <li className="px-2 py-3 text-sm text-neutral-400">페이지가 없습니다</li>
         )}
       </ul>
+
+      {note && (
+        <p
+          role={note.tone === 'error' ? 'alert' : 'status'}
+          data-testid="sidebar-note"
+          className={`px-2 text-xs ${note.tone === 'error' ? 'text-red-600' : 'text-neutral-500'}`}
+        >
+          {note.text}
+        </p>
+      )}
 
       <div className="flex flex-col">
         <button
@@ -298,6 +337,7 @@ function TreeItem({
   busy,
   onToggle,
   onAddChild,
+  onDuplicate,
 }: {
   node: SidebarNode
   depth: number
@@ -307,6 +347,7 @@ function TreeItem({
   busy: boolean
   onToggle: (id: string) => void
   onAddChild: (parentPageId: string) => void
+  onDuplicate: (pageId: string) => void
 }) {
   const isOpen = expanded.has(node.id)
   const isCurrent = node.id === currentPageId
@@ -359,6 +400,21 @@ function TreeItem({
             +
           </button>
         )}
+
+        {/* 데이터베이스는 이 엔진이 복제하지 못한다 — 표의 스키마 · 행 · 엣지는 다른 조각이다(§7). */}
+        {node.kind === 'page' && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => onDuplicate(node.id)}
+            aria-label={`${node.title || UNTITLED} 복제`}
+            title="복제"
+            data-testid="sidebar-duplicate"
+            className="flex-none px-1 text-xs text-neutral-400 opacity-0 group-hover:opacity-100 focus:opacity-100 disabled:opacity-30"
+          >
+            ⧉
+          </button>
+        )}
       </div>
 
       {isOpen && node.children.length > 0 && (
@@ -374,6 +430,7 @@ function TreeItem({
               busy={busy}
               onToggle={onToggle}
               onAddChild={onAddChild}
+              onDuplicate={onDuplicate}
             />
           ))}
         </ul>

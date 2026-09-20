@@ -3122,7 +3122,7 @@ async function main() {
       }
     }
 
-    section('페이지 복제 (복제 6a · F-02-09 · F-08-01)')
+    section('페이지 복제 (복제 6a · 6b · F-02-09 · F-08-01)')
     // 재매핑 · 권한 · 상한의 규칙은 `duplicate-remap.test.ts` · `duplicate.db.test.ts` 가 본다. 여기서는 빌드된 앱에서
     // 라우트가 실제로 답하는지, 그리고 **사본이 열리는 진짜 페이지인지**를 본다.
     {
@@ -3141,6 +3141,18 @@ async function main() {
           body: JSON.stringify(body),
         })
         return { status: res.status, body: await res.json().catch(() => null) }
+      }
+      // `clickOn` 은 데이터베이스 절의 블록 안에만 있다 — 여기서도 쓰려고 같은 것을 둔다(좌표로 진짜 클릭한다).
+      const clickOn = async (selector) => {
+        const p = await evaluate(`(() => {
+          const e = document.querySelector(${JSON.stringify(selector)})
+          if (!e) return null
+          e.scrollIntoView({ block: 'center' })
+          const r = e.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (p) await click(p.x, p.y)
+        return p !== null
       }
       const stamp = Date.now()
       const outside = await newPage(`바깥 문서 ${stamp}`)
@@ -3184,6 +3196,50 @@ async function main() {
         await evaluate(`[...document.querySelectorAll('.blk-editor .blk-page-link')].map((e) => e.textContent).join() || '(참조 없음)'`))
       check('사이드바에도 사본이 선다',
         await waitFor(`!!document.querySelector('nav[aria-label="페이지 트리"] a[href$="/${copyId}"]')`, 8000))
+
+      // ── 화면 (6b) ──
+      const pageCount = () => evaluate(`document.querySelectorAll('nav[aria-label="페이지 트리"] a').length`)
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${source}` })
+      await waitFor(`!!document.querySelector('[data-testid="page-duplicate"]')`, 15000)
+      const before = await pageCount()
+      await clickOn('[data-testid="page-duplicate"]')
+      check('★ 페이지의 "복제"를 누르면 사본으로 옮겨 간다 — 본문이 따라와 있다',
+        (await waitFor(`!location.pathname.endsWith('/${source}') && document.body.textContent.includes(${JSON.stringify(marker)})`, 15000))
+          && (await pageCount()) > before,
+        `${await evaluate('location.pathname')} · 트리 ${before} → ${await pageCount()}`)
+
+      // 사이드바의 ⧉ — 원본 옆에 하나 더.
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
+      await waitFor(`!!document.querySelector('nav[aria-label="페이지 트리"] a[href$="/${source}"]')`, 15000)
+      const beforeSide = await pageCount()
+      await clickOn(`[aria-label=${JSON.stringify(`복제 원본 ${stamp} 복제`)}]`)
+      check('★ 사이드바의 ⧉ 로도 복제한다 — 사본으로 옮겨 간다',
+        (await waitFor(`document.body.textContent.includes(${JSON.stringify(marker)})`, 15000))
+          && (await pageCount()) > beforeSide,
+        `트리 ${beforeSide} → ${await pageCount()}`)
+
+      // ── 빠진 것이 있으면 멈춰서 말한다 ──
+      // 볼 수 없는 하위 페이지를 만든다(`볼 수 없는 하위 페이지의 참조` 절과 같은 방법). 따로 만든 페이지에서 한다 —
+      // 소유자도 못 보는 페이지를 앞 절의 트리에 남기지 않는다.
+      const partial = await newPage(`일부만 복제 ${stamp}`)
+      const hidden = await newPage('숨길 하위', partial)
+      const access = (body) =>
+        fetch(`${BASE}/api/workspaces/${workspaceId}/pages/${hidden}/access`, { method: 'POST', headers: authed, body: JSON.stringify(body) })
+      await access({ action: 'restrict' })
+      await access({ action: 'grant', principal: { type: 'user', id: randomUUID() }, level: 'full_access' })
+      await access({ action: 'revoke', principal: { type: 'workspace_everyone' } })
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${partial}` })
+      await waitFor(`!!document.querySelector('[data-testid="page-duplicate"]')`, 15000)
+      await clickOn('[data-testid="page-duplicate"]')
+      check('★ 볼 수 없는 하위 페이지가 빠지면 **멈춰서 말한다** — 옮겨 가면 그 말이 사라진다',
+        (await waitFor(`!!document.querySelector('[data-testid="page-duplicate-note"]')`, 15000))
+          && (await evaluate(`document.querySelector('[data-testid="page-duplicate-note"]').textContent.includes('1개')`))
+          && (await evaluate(`location.pathname.endsWith('/${partial}')`)),
+        await evaluate(`document.querySelector('[data-testid="page-duplicate-note"]')?.textContent ?? '(말이 없다)'`))
+      await clickOn('[data-testid="page-duplicate-open"]')
+      check('"사본 열기"로 그때 옮겨 간다',
+        await waitFor(`!location.pathname.endsWith('/${partial}') && !!document.querySelector('[data-testid="page-duplicate"]')`, 15000))
     }
 
     section('볼 수 없는 하위 페이지의 참조 (HANDOFF §3.2-22)')
