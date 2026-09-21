@@ -119,6 +119,39 @@ export function createRow(workspaceId: string, viewId: string, cells: readonly R
   )
 }
 
+/** 만든 행과, 템플릿에서 옮기지 못한 것의 개수. 빈 행이면 둘 다 0 이다. */
+export type CreatedRow = { row: RowJson; skippedPages: number; skippedLinks: number }
+
+/**
+ * 행을 만든다 — **빈 행이든 템플릿 행이든 같은 요청이다**(`templateId` 한 칸만 다르다 · 서버 라우트가 그렇다).
+ *
+ * `New ▾` 가 부른다. 템플릿을 주면 서버가 그 행을 복제해 만들고(6c-2) `cells` 는 템플릿의 값을 **덮는다** —
+ * 보드 열에서 만들면 그 열의 값이 이긴다(08 F-08-03 의 엣지 케이스).
+ */
+export function createRowFrom(
+  workspaceId: string,
+  viewId: string,
+  input: { readonly templateId: string | null; readonly cells?: readonly RowCell[] },
+): Promise<ApiResult<CreatedRow>> {
+  return call(
+    `${base(workspaceId)}/views/${viewId}/rows`,
+    {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({
+        cells: input.cells ?? [],
+        ...(input.templateId === null ? {} : { templateId: input.templateId }),
+      }),
+    },
+    (body) => ({
+      row: body.row as RowJson,
+      // 빈 행의 응답에는 이 둘이 없다. 숫자가 아니면 0 으로 읽는다 — 문구 쪽도 `> 0` 으로만 묻는다(`new-row.ts`).
+      skippedPages: Number(body.skippedPages ?? 0),
+      skippedLinks: Number(body.skippedLinks ?? 0),
+    }),
+  )
+}
+
 export type RowPage = { rows: RowJson[]; hasMore: boolean; nextCursor: string | null }
 
 export function loadRows(workspaceId: string, viewId: string, cursor: string): Promise<ApiResult<RowPage>> {
@@ -375,6 +408,8 @@ export function updateView(
     readonly filter?: FilterNode | null
     readonly sorts?: readonly SortKey[]
     readonly groupBy?: GroupBy | null
+    /** 이 뷰의 기본 템플릿(F-08-03). `null` 이 "빈 항목으로 돌려라"다. */
+    readonly defaultTemplateId?: string | null
   },
 ): Promise<ApiResult<null>> {
   return call(
