@@ -14,8 +14,10 @@ import Link from 'next/link'
 import { requirePageSession } from '@/lib/auth/page-session'
 import { listChildPages } from '@/lib/block/page'
 import { canExportWorkspace } from '@/lib/export/download'
+import { canManageGroups, canSeeGroups, listGroups } from '@/lib/workspace/group'
 import { listMembers, listPendingInvites } from '@/lib/workspace/list'
 import { ExportButton } from './export-button'
+import { GroupPanel } from './group-panel'
 import { InviteForm } from './invite-form'
 import { NewPageButton } from './new-page-button'
 
@@ -32,10 +34,12 @@ export default async function WorkspacePage({ params }: PageProps<'/w/[workspace
   // 표시 전용 — 판정은 내보내기 라우트가 `prepareExport` 로 다시 한다.
   const canExport = canExportWorkspace(ctx)
 
-  const [rootPages, members, invites] = await Promise.all([
+  const [rootPages, members, invites, groups] = await Promise.all([
     listChildPages(ctx, null),
     listMembers(ctx.workspaceId),
     canInvite ? listPendingInvites(ctx.workspaceId) : Promise.resolve([]),
+    // 게스트는 그룹을 보지 않는다(F-06-09) — 절 자체를 그리지 않는다. 판정은 `listGroups` 가 다시 한다.
+    canSeeGroups(ctx.role) ? listGroups(ctx) : Promise.resolve(null),
   ])
 
   return (
@@ -95,6 +99,21 @@ export default async function WorkspacePage({ params }: PageProps<'/w/[workspace
           ))}
         </ul>
       </section>
+
+      {groups?.ok && (
+        <section>
+          <h2 className="text-sm font-medium text-neutral-500">그룹 {groups.value.length}개</h2>
+          <p className="mt-1 text-xs text-neutral-500">
+            사람을 묶어 두면 페이지 공유에서 한 번에 줄 수 있습니다. 나중에 그룹에 들어온 사람도 곧바로 봅니다.
+          </p>
+          <GroupPanel
+            workspaceId={ctx.workspaceId}
+            canManage={canManageGroups(ctx.role)}
+            initialGroups={[...groups.value]}
+            members={members.map((m) => ({ userId: m.userId, name: m.name, email: m.email, role: m.role, status: m.status }))}
+          />
+        </section>
+      )}
 
       {canInvite && (
         <section>

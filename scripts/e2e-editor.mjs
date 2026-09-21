@@ -1371,6 +1371,136 @@ async function main() {
         (await postJson(accessUrl, authed, { action: 'grant', principal: { type: 'group', id: firstGroup }, level: 'view' })).status === 400)
     }
 
+    section('그룹 화면 (7b · F-06-03)')
+    {
+      // 워크스페이스 홈의 "그룹" 절. 넣을 후보(멤버 · 게스트)는 서버 렌더가 싣으므로 화면을 열기 전에 만든다.
+      const screenMate = await joinAs(workspaceId, await createUser('화면 동료'), 'member')
+      const screenGuest = await joinAs(workspaceId, await createUser('화면 손님'), 'guest')
+      const groupsUrl = `${BASE}/api/workspaces/${workspaceId}/groups`
+      const serverGroups = async () => (await (await fetch(groupsUrl, { headers: authed })).json()).groups
+      const row = (id) => `[data-testid="group-row"][data-group-id="${id}"]`
+      const panelMessage = () => evaluate(`document.querySelector('[data-testid="group-panel"] [role="alert"], [data-testid="group-panel"] [role="status"]')?.textContent ?? ''`)
+      const clickOnSel = async (sel) => {
+        const box = await evaluate(`(() => {
+          const el = document.querySelector(${JSON.stringify(sel)})
+          if (!el || el.disabled) return null
+          el.scrollIntoView({ block: 'center' })
+          const r = el.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (!box) return false
+        await click(box.x, box.y)
+        await sleep(120)
+        return true
+      }
+      const typeInto = async (sel, text) => {
+        await clickOnSel(sel)
+        await evaluate(`document.querySelector(${JSON.stringify(sel)})?.select()`)
+        await send('Input.insertText', { text })
+      }
+      const chooseValue = (sel, value) => evaluate(`(() => {
+        const s = document.querySelector(${JSON.stringify(sel)})
+        if (!s) return false
+        Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(s, ${JSON.stringify(value)})
+        s.dispatchEvent(new Event('change', { bubbles: true }))
+        return true
+      })()`)
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
+      await waitFor(`!!document.querySelector('[data-testid="group-panel"]')`, 15000)
+      check('워크스페이스 홈에 그룹 절이 있고 소유자에게는 만들기 칸이 있다',
+        await evaluate(`!!document.querySelector('[data-testid="group-create-name"]')`))
+
+      // ① 만들기
+      const planName = `기획팀 ${Date.now()}`
+      await typeInto('[data-testid="group-create-name"]', planName)
+      await clickOnSel('[data-testid="group-create"]')
+      check('★ 만든 그룹이 목록에 선다 — 0명',
+        await waitFor(`[...document.querySelectorAll('[data-testid="group-row"]')].some((r) => r.querySelector('[data-testid="group-name"]')?.textContent === ${JSON.stringify(planName)} && r.querySelector('[data-testid="group-count"]')?.textContent === '0명')`, 5000))
+      const plan = (await serverGroups()).find((g) => g.name === planName)
+      check('서버에도 그 그룹이 있다', plan !== undefined)
+
+      await typeInto('[data-testid="group-create-name"]', planName.toLowerCase())
+      await clickOnSel('[data-testid="group-create"]')
+      check('같은 이름이면 말한다',
+        await waitFor(`(document.querySelector('[data-testid="group-error"]')?.textContent ?? '') === '같은 이름의 그룹이 이미 있습니다.'`, 5000),
+        await panelMessage())
+
+      // ② 펼쳐서 넣기
+      await clickOnSel(`${row(plan.id)} [data-testid="group-toggle"]`)
+      await waitFor(`!!document.querySelector('${row(plan.id)} [data-testid="group-member-add"]')`, 5000)
+      const options = await evaluate(`[...document.querySelectorAll('${row(plan.id)} [data-testid="group-member-add"] option')].map((o) => o.value)`)
+      check('★ 게스트는 넣을 사람 고르개에 없다 — 멤버는 있다',
+        options.includes(screenMate.userId) && !options.includes(screenGuest.userId), JSON.stringify(options))
+      await chooseValue(`${row(plan.id)} [data-testid="group-member-add"]`, screenMate.userId)
+      await clickOnSel(`${row(plan.id)} [data-testid="group-member-add-button"]`)
+      check('★ 넣은 사람이 그룹에 서고 인원이 1이 된다',
+        await waitFor(`!!document.querySelector('${row(plan.id)} [data-testid="group-member"][data-user-id="${screenMate.userId}"]') && document.querySelector('${row(plan.id)} [data-testid="group-count"]')?.textContent === '1명'`, 5000))
+      check('넣은 사람은 고르개에서 빠진다',
+        !(await evaluate(`[...document.querySelectorAll('${row(plan.id)} [data-testid="group-member-add"] option')].some((o) => o.value === ${JSON.stringify(screenMate.userId)})`)))
+
+      // ③ 이름 바꾸기
+      const renamedName = `${planName} (새 이름)`
+      await clickOnSel(`${row(plan.id)} [data-testid="group-rename"]`)
+      await waitFor(`!!document.querySelector('${row(plan.id)} [data-testid="group-rename-input"]')`, 3000)
+      await typeInto(`${row(plan.id)} [data-testid="group-rename-input"]`, renamedName)
+      await clickOnSel(`${row(plan.id)} [data-testid="group-rename-save"]`)
+      check('★ 이름을 바꾸면 목록과 서버가 함께 바뀐다',
+        (await waitFor(`document.querySelector('${row(plan.id)} [data-testid="group-name"]')?.textContent === ${JSON.stringify(renamedName)}`, 5000)) &&
+          (await serverGroups()).some((g) => g.id === plan.id && g.name === renamedName))
+
+      // ④ 빼기
+      await clickOnSel(`${row(plan.id)} [data-testid="group-member"][data-user-id="${screenMate.userId}"] [data-testid="group-member-remove"]`)
+      check('빼면 그룹에서 사라지고 인원이 0이 된다',
+        await waitFor(`!document.querySelector('${row(plan.id)} [data-testid="group-member"]') && document.querySelector('${row(plan.id)} [data-testid="group-count"]')?.textContent === '0명'`, 5000))
+
+      // ⑤ 지우기 — 두 번 누른다
+      await clickOnSel(`${row(plan.id)} [data-testid="group-delete"]`)
+      check('지우기는 한 번 더 묻는다 — 공유가 함께 사라진다고 말한다',
+        (await evaluate(`!!document.querySelector('${row(plan.id)} [data-testid="group-delete-confirm"]')`)) &&
+          (await evaluate(`document.querySelector('${row(plan.id)}')?.textContent ?? ''`)).includes('공유도 함께 사라집니다'))
+      check('아직 서버에는 그대로다', (await serverGroups()).some((g) => g.id === plan.id))
+      await clickOnSel(`${row(plan.id)} [data-testid="group-delete-confirm"]`)
+      check('★ 두 번째에 지워진다 — 목록에서도 서버에서도',
+        (await waitFor(`!document.querySelector('${row(plan.id)}')`, 5000)) && !(await serverGroups()).some((g) => g.id === plan.id))
+      check('지웠다고 말한다', (await panelMessage()).includes('그룹을 지웠습니다'), await panelMessage())
+
+      // ⑥ 지우면 관리자가 남지 않는 페이지가 생기면 — 거부하고 몇 페이지인지 말한다
+      const keeperName = `관리자 그룹 ${Date.now()}`
+      const keeper = (await (await fetch(groupsUrl, { method: 'POST', headers: authed, body: JSON.stringify({ name: keeperName }) })).json()).group.id
+      await fetch(`${groupsUrl}/${keeper}/members`, { method: 'POST', headers: authed, body: JSON.stringify({ userId: ctx.userId }) })
+      const kept = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: '{}' })).json()).page.id
+      const keptAccess = `${BASE}/api/workspaces/${workspaceId}/pages/${kept}/access`
+      for (const body of [
+        { action: 'restrict' },
+        { action: 'grant', principal: { type: 'group', id: keeper }, level: 'full_access' },
+        { action: 'revoke', principal: { type: 'workspace_everyone' } },
+      ]) {
+        await fetch(keptAccess, { method: 'POST', headers: authed, body: JSON.stringify(body) })
+      }
+      const keptEntries = (await (await fetch(keptAccess, { headers: authed })).json()).entries
+      check('전제: 그 페이지를 관리하는 것은 그룹 하나다',
+        keptEntries.length === 1 && keptEntries[0].principalType === 'group', JSON.stringify(keptEntries))
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
+      await waitFor(`!!document.querySelector('${row(keeper)}')`, 15000)
+      await clickOnSel(`${row(keeper)} [data-testid="group-delete"]`)
+      await clickOnSel(`${row(keeper)} [data-testid="group-delete-confirm"]`)
+      check('★ 관리자가 남지 않는 페이지가 생기는 지우기는 거부되고 그 수를 말한다',
+        await waitFor(`(document.querySelector('[data-testid="group-error"]')?.textContent ?? '').includes('아무도 남지 않는 페이지 1개')`, 5000),
+        await panelMessage())
+      check('거부됐으니 그룹은 그대로다', (await evaluate(`!!document.querySelector('${row(keeper)}')`)) && (await serverGroups()).some((g) => g.id === keeper))
+
+      // ⑦ 누가 무엇을 보는가 — 서버 렌더를 그 사람의 세션으로 받는다
+      const homeAs = async (actor) =>
+        (await fetch(`${BASE}/w/${workspaceId}`, { headers: { cookie: `nc_session=${actor.token}` } })).text()
+      const asMember = await homeAs(screenMate)
+      check('★ 멤버는 그룹을 보지만 만들기 · 지우기 버튼은 없다',
+        asMember.includes('data-testid="group-panel"') && asMember.includes(keeperName) &&
+          !asMember.includes('data-testid="group-create-name"') && !asMember.includes('data-testid="group-delete"'))
+      const asGuest = await homeAs(screenGuest)
+      check('★ 게스트에게는 그룹 절이 없다', !asGuest.includes('data-testid="group-panel"') && !asGuest.includes(keeperName))
+    }
+
     section('코멘트 패널 · 인박스 (F-05-08 · F-11-07)')
     {
       const commentPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
