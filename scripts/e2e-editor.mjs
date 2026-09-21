@@ -1501,6 +1501,65 @@ async function main() {
       check('★ 게스트에게는 그룹 절이 없다', !asGuest.includes('data-testid="group-panel"') && !asGuest.includes(keeperName))
     }
 
+    section('teamspace — 라우트 · 공유 패널 (7c-1 · F-06-04)')
+    {
+      // 화면(사이드바 섹션 · 설정)은 7c-2 다. 여기서는 라우트로 만들고, teamspace 의 페이지가 실제 화면에서 열리고 공유 패널이
+      // teamspace 노드의 부여를 "상위에서 상속됨"으로 그리는지 본다.
+      const teamMate = await joinAs(workspaceId, await createUser('팀 동료'), 'member')
+      const teamGuest = await joinAs(workspaceId, await createUser('팀 손님'), 'guest')
+      const asTeamMate = { ...json, cookie: `nc_session=${teamMate.token}` }
+      const asTeamGuest = { ...json, cookie: `nc_session=${teamGuest.token}` }
+      const tsUrl = `${BASE}/api/workspaces/${workspaceId}/teamspaces`
+      const postJ = (url, headers, body) => fetch(url, { method: 'POST', headers, body: JSON.stringify(body) })
+
+      const teamName = `제품팀 ${Date.now()}`
+      const madeRes = await postJ(tsUrl, authed, { name: teamName })
+      const made = await madeRes.json()
+      check('teamspace 를 만든다 (201) — 만든 사람이 owner', madeRes.status === 201 && made.teamspace?.role === 'owner', JSON.stringify(made))
+      const team = made.teamspace.id
+      check('게스트는 teamspace 를 못 만든다 (403)', (await postJ(tsUrl, asTeamGuest, { name: '몰래' })).status === 403)
+
+      const pageRes = await postJ(`${BASE}/api/workspaces/${workspaceId}/pages`, authed, { teamspaceId: team, title: '로드맵' })
+      const teamPage = (await pageRes.json()).page
+      check('teamspace 의 최상위에 페이지를 만든다', pageRes.status === 200 && teamPage?.teamspaceId === team, JSON.stringify(teamPage))
+      const teamAccess = `${BASE}/api/workspaces/${workspaceId}/pages/${teamPage.id}/access`
+      check('★ teamspace 멤버가 아닌 워크스페이스 멤버는 그 페이지를 못 본다 (404)',
+        (await fetch(teamAccess, { headers: asTeamMate })).status === 404)
+      check('멤버가 아니면 페이지를 둘 수도 없다 (404)',
+        (await postJ(`${BASE}/api/workspaces/${workspaceId}/pages`, asTeamMate, { teamspaceId: team })).status === 404)
+
+      const addRes = await postJ(`${tsUrl}/${team}/members`, authed, { principal: { type: 'user', id: teamMate.userId } })
+      check('동료를 멤버로 넣는다', addRes.status === 200, await addRes.text())
+      check('★ 멤버가 되면 본다 — 최상위 목록에도 선다',
+        (await fetch(teamAccess, { headers: asTeamMate })).status === 200 &&
+          (await (await fetch(`${tsUrl}/${team}/pages`, { headers: asTeamMate })).json()).pages.some((p) => p.id === teamPage.id))
+      const mine = (await (await fetch(tsUrl, { headers: asTeamMate })).json()).teamspaces
+      check('동료의 teamspace 목록에 member 로 선다', mine.some((s) => s.id === team && s.role === 'member'), JSON.stringify(mine))
+      check('게스트는 멤버로 넣을 수 없다 (400)',
+        (await postJ(`${tsUrl}/${team}/members`, authed, { principal: { type: 'user', id: teamGuest.userId } })).status === 400)
+
+      // 화면 — 페이지가 열리고, 공유 패널이 teamspace 의 부여를 이름으로 그린다.
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${teamPage.id}` })
+      await waitFor(`!!document.querySelector('.blk-editor')`, 15000)
+      check('teamspace 의 페이지가 화면에서 열린다', await evaluate(`!!document.querySelector('.blk-editor')`))
+      await waitFor(`[...document.querySelectorAll('button')].some((b) => b.textContent.trim() === '공유')`, 15000)
+      await clickText('공유')
+      const teamLabel = `teamspace · ${teamName} 멤버`
+      check('★ 공유 패널이 teamspace 의 부여를 이름으로 · "상위에서 상속됨"으로 그린다',
+        await waitFor(`[...document.querySelectorAll('[role="dialog"][aria-label="공유 설정"] li')].some((li) => li.textContent.includes(${JSON.stringify(teamLabel)}) && li.textContent.includes('상위에서 상속됨'))`, 5000),
+        await panelText())
+      await clickText('공유')
+
+      // 역할 · 빼기
+      const memberUrl = (userId) => `${tsUrl}/${team}/members/user/${userId}`
+      check('마지막 owner 는 나갈 수 없다 (409)',
+        (await fetch(memberUrl(ctx.userId), { method: 'DELETE', headers: authed })).status === 409)
+      check('멤버는 역할을 못 바꾼다 (403)',
+        (await fetch(memberUrl(teamMate.userId), { method: 'PATCH', headers: asTeamMate, body: JSON.stringify({ role: 'owner' }) })).status === 403)
+      check('동료가 스스로 나간다', (await fetch(memberUrl(teamMate.userId), { method: 'DELETE', headers: asTeamMate })).status === 200)
+      check('★ 나가면 곧바로 못 본다 (404)', (await fetch(teamAccess, { headers: asTeamMate })).status === 404)
+    }
+
     section('코멘트 패널 · 인박스 (F-05-08 · F-11-07)')
     {
       const commentPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {

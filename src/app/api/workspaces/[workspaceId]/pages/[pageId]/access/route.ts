@@ -31,6 +31,7 @@ import { effectiveCaps } from '@/lib/permissions/effective'
 import { can, LEVELS, type Level } from '@/lib/permissions/levels'
 import { listMembers } from '@/lib/workspace/list'
 import { listGroups } from '@/lib/workspace/group'
+import { teamspaceNames } from '@/lib/workspace/teamspace'
 import { withReadTransaction } from '@/lib/db/tx'
 
 type Ctx = RouteContext<'/api/workspaces/[workspaceId]/pages/[pageId]/access'>
@@ -48,7 +49,7 @@ const MESSAGE: Readonly<Record<AclFailure, string>> = {
   forbidden: '이 페이지의 공유 설정을 바꿀 권한이 없습니다.',
   would_orphan:
     '이 페이지를 관리할 수 있는 사람이 아무도 남지 않습니다. 먼저 다른 사람에게 전체 권한을 주세요.',
-  invalid_principal: '그룹을 찾을 수 없습니다. 지워졌을 수 있습니다.',
+  invalid_principal: '그룹 · teamspace 를 찾을 수 없습니다. 지워졌거나 보관됐을 수 있습니다.',
 }
 
 /** 화면이 보내온 주체를 우리 타입으로. 모양이 아니면 null. */
@@ -65,6 +66,9 @@ function readPrincipal(raw: unknown): PrincipalRef | null {
   // 모양이 틀린 id 를 DB 까지 보내면 uuid 캐스팅이 500 을 낸다.
   if (value?.type === 'group' && typeof value.id === 'string' && isUuid(value.id)) {
     return { type: 'group', id: value.id }
+  }
+  if (value?.type === 'teamspace' && typeof value.id === 'string' && isUuid(value.id)) {
+    return { type: 'teamspace', id: value.id }
   }
   return null
 }
@@ -99,6 +103,9 @@ export async function GET(_request: Request, ctx: Ctx): Promise<Response> {
   // 그룹 이름도 같다. 게스트는 그룹 목록을 받지 않는다(`listGroups` 가 거절한다 — F-06-09) — 빈 목록이면 화면은
   // 그룹 행을 이름 없이 "그룹"으로 그린다.
   const groups = await listGroups(session.ctx)
+  // teamspace 이름 — 이 페이지의 행이 가리키는 것만(7c-1). 행을 볼 수 있는 사람은 그 주체가 있다는 것을 이미 안다.
+  const teamspaceIds = [...new Set(access.value.filter((e) => e.principalType === 'teamspace').map((e) => e.principalId as string))]
+  const teamspaces = await teamspaceNames(session.ctx, teamspaceIds)
 
   return Response.json({
     ok: true,
@@ -108,6 +115,7 @@ export async function GET(_request: Request, ctx: Ctx): Promise<Response> {
       .filter((m) => m.status !== 'removed')
       .map((m) => ({ userId: m.userId, name: m.name, email: m.email })),
     groups: groups.ok ? groups.value.map((g) => ({ groupId: g.id, name: g.name, memberCount: g.memberCount })) : [],
+    teamspaces,
   })
 }
 

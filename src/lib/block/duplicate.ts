@@ -178,6 +178,9 @@ export async function duplicatePage(
         ? await ownerPageOf(tx, ctx, source.parent_id)
         : null
       : options.parentPageId
+    // teamspace 의 최상위 페이지를 같은 자리에 복제하면 사본도 그 teamspace 의 최상위다(7c-1). 전에는 부모가 블록이
+    // 아니면 워크스페이스 직속으로 보냈다 — teamspace 가 없던 때는 그것이 같은 자리였다.
+    const targetTeamspaceId = sameParent && source.parent_type === 'teamspace' ? source.parent_id : null
 
     // 깊이는 **만들기 전에** 잰다 — 대상 부모가 없으면 여기서 걸린다.
     let rootDepth = 0
@@ -198,6 +201,7 @@ export async function duplicatePage(
       create: async (title) => {
         const created = await createPageIn(tx, ctx, {
           parentPageId: targetParentId === null ? null : asBlockId(targetParentId),
+          teamspaceId: targetTeamspaceId,
           title,
           // 사본은 원본 **바로 뒤**에 선다 — 같은 자리에 복제할 때만(F-02-09). 자식은 본문이 자리를 정하므로 맨 뒤여도 된다.
           ...(sameParent && targetParentId !== null ? { at: pageId } : {}),

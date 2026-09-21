@@ -32,7 +32,7 @@ import { query } from '../db/pool.ts'
 import { orderKeyBetween } from './order-key.ts'
 import { can } from '../permissions/levels.ts'
 import { inheritFromWorkspace } from '../permissions/acl.ts'
-import { canViewPage, effectiveCaps, readableScopes } from '../permissions/effective.ts'
+import { canViewPage, effectiveCaps, readableScopes, teamspaceCaps } from '../permissions/effective.ts'
 import { MAX_TREE_DEPTH } from './types.ts'
 import { indexPageTitle } from '../search/index-page.ts'
 import { autoSubscribe } from '../notification/subscription.ts'
@@ -83,6 +83,8 @@ export type PageSummary = {
   readonly plainTitle: string
   /** 루트 페이지면 null. */
   readonly parentPageId: BlockId | null
+  /** teamspace 의 **최상위** 페이지면 그 teamspace(7c-1). 하위 페이지 · 워크스페이스 직속 페이지는 null 이다. */
+  readonly teamspaceId: string | null
   readonly orderKey: string
   readonly createdAt: Date
   readonly lastEditedAt: Date
@@ -119,6 +121,7 @@ function toSummary(row: PageRow): PageSummary {
     title,
     plainTitle: toPlainText(title),
     parentPageId: row.parent_type === 'block' ? asBlockId(row.parent_id) : null,
+    teamspaceId: row.parent_type === 'teamspace' ? row.parent_id : null,
     orderKey: row.order_key,
     createdAt: row.created_at,
     lastEditedAt: row.last_edited_at,
@@ -193,8 +196,13 @@ function assertValidTitle(title: readonly RichTextRun[]): RichTextRun[] {
 // ── 생성 ──────────────────────────────────────────────────────────────
 
 export type CreatePageInput = {
-  /** 자식 페이지로 만들 부모. 생략하면 워크스페이스 루트 페이지가 된다. */
+  /** 자식 페이지로 만들 부모. 생략하면 워크스페이스 루트 페이지가 된다(`teamspaceId` 가 있으면 그 teamspace 의 최상위). */
   readonly parentPageId?: BlockId | null
+  /**
+   * teamspace 의 **최상위**에 만든다(7c-1 · `parent_type='teamspace'`). `parentPageId` 와 함께 주지 않는다 — 하위 페이지의
+   * teamspace 는 부모가 정한다(루트 블록의 부모 · 판결문 C-9).
+   */
+  readonly teamspaceId?: string | null
   readonly title?: readonly RichTextRun[]
   /**
    * 부모 본문에서 참조를 넣을 자리 — 편집기의 캐럿이 있던 블록(`page-refs.ts` `placePageRefAt`: 비었으면 대체 · 아니면 바로 뒤 ·
@@ -204,7 +212,7 @@ export type CreatePageInput = {
 }
 
 type ParentPlacement = {
-  parentType: 'workspace' | 'block'
+  parentType: 'workspace' | 'teamspace' | 'block'
   parentId: string
   ancestorPath: string[]
   permScopeId: string | null // null = 자기 자신이 스코프 루트가 된다
@@ -222,11 +230,30 @@ async function lockParent(
   tx: Tx,
   ctx: SessionContext,
   parentPageId: BlockId | null | undefined,
+  teamspaceId: string | null | undefined,
 ): Promise<ParentPlacement> {
+  if (parentPageId && teamspaceId) {
+    throw new PageError('parent_not_found', '부모 페이지와 teamspace 를 함께 줄 수 없습니다.')
+  }
+
+  if (teamspaceId) {
+    // teamspace 의 최상위(7c-1). 그 teamspace 행을 잠가 형제 삽입을 직렬화한다(아래 워크스페이스 루트와 같은 이유).
+    // 스코프는 teamspace 다 — 정본 §3.11 *"없으면 teamspace 루트 id"*. 행을 넣지 않는다: 권한은 teamspace 노드의 부여를
+    // 물려받는다(`effective.ts` 가 사슬 끝에 붙인다).
+    const teamspace = await tx.queryMaybe<{ id: string }>(
+      `SELECT id FROM teamspace WHERE id = $1 AND workspace_id = $2 AND archived_at IS NULL FOR UPDATE`,
+      [teamspaceId, ctx.workspaceId],
+    )
+    // 없음 · 보관됨 · 다른 워크스페이스 · 둘 수 없음 — 전부 같은 오류다(부모 페이지와 같은 규칙).
+    if (teamspace === null || !can(await teamspaceCaps(tx, ctx, teamspace.id), 'create_child')) {
+      throw new PageError('parent_not_found', 'teamspace 를 찾을 수 없습니다.')
+    }
+    return { parentType: 'teamspace', parentId: teamspace.id, ancestorPath: [], permScopeId: teamspace.id }
+  }
+
   if (!parentPageId) {
-    // 워크스페이스 루트. MVP 에는 teamspace 가 없으므로 루트 페이지가 곧
-    // 권한 스코프 루트다(정본 §3.11: "없으면 teamspace 루트(또는 Private 루트) id").
-    // teamspace 를 도입하면 이 자리에 teamspace id 가 들어간다.
+    // 워크스페이스 직속 페이지(판결문 C-9 — `workspace` 부모는 Private 루트와 워크스페이스 직속 페이지). 경계가 되어
+    // 자기가 스코프 루트다 — `inheritFromWorkspace` 가 모든 멤버의 행을 넣는다(W6-b).
     await tx.query(`SELECT id FROM workspace WHERE id = $1 FOR UPDATE`, [ctx.workspaceId])
     return {
       parentType: 'workspace',
@@ -321,7 +348,7 @@ export async function createPageIn(
   const title = assertValidTitle(input.title ?? [])
 
   {
-    const placement = await lockParent(tx, ctx, input.parentPageId)
+    const placement = await lockParent(tx, ctx, input.parentPageId, input.teamspaceId)
     // 하위 페이지의 자리는 부모 본문의 참조 노드다(CRDT 4b · 판결 X-1). 행을 넣기 **전에** 부모 본문을 연다 —
     // 명령이 자기가 바꾼 것을 자기가 쓰는 순서다(`body-write.ts` 머리말).
     const parentBody = placement.parentType === 'block' ? await openPageBody(tx, ctx, placement.parentId) : null
@@ -475,6 +502,27 @@ export async function listChildPages(
         )
   })
 
+  return rows.map(toSummary)
+}
+
+/**
+ * teamspace 의 최상위 페이지 — 볼 수 있는 것만(`listChildPages` 와 같은 규칙 · 스코프로 거른다). teamspace 를 볼 수 없으면
+ * 비어 있다 — 없는 teamspace 와 같은 답이다.
+ */
+export async function listTeamspacePages(ctx: SessionContext, teamspaceId: string): Promise<PageSummary[]> {
+  const rows = await withReadTransaction(async (tx) => {
+    const scopes = await readableScopes(tx, ctx)
+    if (scopes.length === 0) return []
+    return tx.query<PageRow>(
+      `SELECT ${PAGE_COLUMNS}
+         FROM live_block
+        WHERE parent_type = 'teamspace' AND parent_id = $1
+          AND workspace_id = $2 AND type = 'page'
+          AND perm_scope_id = ANY($3::uuid[])
+        ORDER BY order_key, id`,
+      [teamspaceId, ctx.workspaceId, scopes],
+    )
+  })
   return rows.map(toSummary)
 }
 

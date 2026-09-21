@@ -30,9 +30,13 @@ describe('principalOfEntry', () => {
     })
   })
 
+  test('teamspace 행은 teamspace 주체다(7c-1)', () => {
+    assert.deepEqual(principalOfEntry({ principalType: 'teamspace', principalId: GROUP }), { type: 'teamspace', id: GROUP })
+  })
+
   test('★ 모르는 종류 · id 없는 행은 null — 고치지 못한다', () => {
-    assert.equal(principalOfEntry({ principalType: 'teamspace', principalId: GROUP }), null)
     assert.equal(principalOfEntry({ principalType: 'public', principalId: null }), null)
+    assert.equal(principalOfEntry({ principalType: 'agent', principalId: GROUP }), null)
     assert.equal(principalOfEntry({ principalType: 'group', principalId: null }), null)
   })
 })
@@ -49,7 +53,15 @@ describe('entryLabel', () => {
   test('사람 · 모든 멤버 · 모르는 것', () => {
     assert.equal(entryLabel({ principalType: 'user', principalId: USER }, members, groups), '앨리스 (a@example.com)')
     assert.equal(entryLabel({ principalType: 'workspace_everyone', principalId: null }, members, groups), '워크스페이스 모든 멤버')
-    assert.equal(entryLabel({ principalType: 'teamspace', principalId: GROUP }, members, groups), '알 수 없는 주체')
+    assert.equal(entryLabel({ principalType: 'public', principalId: null }, members, groups), '알 수 없는 주체')
+  })
+})
+
+describe('entryLabel — teamspace (7c-1)', () => {
+  test('teamspace 행은 그 멤버 전원이라고 말한다 · 이름을 모르면 종류만', () => {
+    const teamspaces = [{ teamspaceId: GROUP, name: '제품팀' }]
+    assert.equal(entryLabel({ principalType: 'teamspace', principalId: GROUP }, [], [], teamspaces), 'teamspace · 제품팀 멤버')
+    assert.equal(entryLabel({ principalType: 'teamspace', principalId: GROUP }, [], []), 'teamspace 멤버')
   })
 })
 

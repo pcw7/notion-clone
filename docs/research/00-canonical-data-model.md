@@ -509,6 +509,26 @@ CREATE TABLE access_request (
 > 전부 캐스케이드 삭제, 개인 직접 부여는 유지"*). 행 삭제이므로 §3.11 의 재계산 트리거 ② 가 그대로 걸리고,
 > 지우면 관리할 사람이 남지 않는 노드가 생기면 지우기를 거부한다.
 
+**[보강] teamspace 노드의 `acl_entry` 가 뜻하는 것 · 누가 쓰는가** ⟨Teamspace · 게스트 · 그룹 7c-1 / 마이그레이션 0028⟩
+
+> 초판은 `node_kind='teamspace'` · `principal_type='teamspace'` · `level_capability.target_kind='teamspace'` 를 열어 두기만
+> 하고 그 행이 무엇을 주는지, 누가 쓰는지 적지 않았다(target_kind 'teamspace' 의 행도 없다).
+>
+> ① **teamspace 노드의 행은 그 아래 페이지가 물려받는 부여다** — `effective()` 는 페이지의 조상 사슬 끝에 teamspace 노드를
+> 붙여 그 행을 함께 읽는다(루트 페이지가 상속을 끊었으면 거기서 멈춘다). 그래서 level 은 **page 매트릭스로 읽는다**.
+> teamspace 자체의 관리(설정 · 멤버)는 ACL 이 아니라 `teamspace_member.role` 이 정한다 — `target_kind='teamspace'` 의 행은
+> 여전히 필요 없다.
+> ② teamspace 를 만들면 두 종류의 행이 선다: `('teamspace', T) → 멤버 기본 레벨`(멤버 전원) · owner 마다
+> `('user' | 'group', id) → full_access`(06 F-06-04 *"owner 는 모든 페이지에 기본 full access"*). **이 행들은 teamspace 명령만
+> 쓴다** — 공유 명령은 블록 노드만 받는다. owner 행은 멤버의 역할과 같은 트랜잭션에서 맞춘다.
+> ③ 멤버의 기본 레벨은 `full_access` 다 — 워크스페이스 직속 페이지가 모든 멤버에게 주던 것과 같다. `default_member_level`
+> 컬럼은 **쓰지 않는다**([확인필요] 6-5 를 위 첫 행의 level 로 푼다 — 같은 사실을 두 곳에 두지 않는다).
+> ④ teamspace 는 `ancestor_path` 에 **들어가지 않는다** — 판결문 C-9 의 정의 *"루트(비block parent 직하)→parent 까지의
+> block id 배열"* 그대로다. B8 의 *"ancestor_path 상의 teamspace 노드로 해석"* 은 그 배열의 **루트 블록의 부모**로 읽는다.
+> ⑤ 멤버는 이 워크스페이스의 게스트 아닌 사람 · 살아 있는 그룹이고(F-06-04), `parent_type='teamspace'` 인 블록은 같은
+> 워크스페이스의 teamspace 를 가리키는 페이지 · 데이터베이스다 — 둘 다 다형 참조라 트리거로 건다. 게스트가 된 사람의
+> 남은 멤버 행은 P(U) 가 무시한다(G2 와 같은 모양).
+
 ---
 
 ### 3.4 블록 트리 ⟨C-1/V-4 · C-3/V-6 · C-9/V-9 · C-10 · X-1 · X-3 · X-7⟩

@@ -51,6 +51,8 @@ const EXPECTED_TABLES = [
   'row_position',
   // 보드 4c-1조각 — status 의 세 범주 (0023)
   'status_group',
+  // Teamspace · 게스트 · 그룹 7c-1조각 (0028)
+  'teamspace', 'teamspace_member',
   'schema_migration', 'scim_token', 'session_policy', 'sso_config',
   'user', 'user_email', 'user_session',
   'workspace', 'workspace_invite', 'workspace_member',
@@ -1468,6 +1470,10 @@ try {
       ['group_member', 'tg_collab_access_group_member'],
       ['group_member', 'tg_collab_access_group_member_update'],
       ['group', 'tg_collab_access_group'],
+      // 7c-1조각 — teamspace 멤버십 · 보관이 판정의 입력이 됐다(0028 ③)
+      ['teamspace_member', 'tg_collab_access_teamspace_member'],
+      ['teamspace_member', 'tg_collab_access_teamspace_member_update'],
+      ['teamspace', 'tg_collab_access_teamspace'],
     ]
     const { rows } = await client.query(
       `SELECT c.relname AS tbl, t.tgname AS name, t.tgenabled AS enabled
@@ -1801,6 +1807,58 @@ try {
       fail(`지운 그룹이 이름을 붙잡았다 (${e.code})`)
     }
     await client.query('ROLLBACK TO SAVEPOINT reuse')
+  }
+
+  console.log('\n[15] teamspace (0028 / §3.3 · §3.4 parent_type · F-06-04 · 7c-1조각)')
+  {
+    // teamspace 는 트리 노드다(C-9). 멤버는 이 워크스페이스의 게스트 아닌 사람 · 살아 있는 그룹이고, 그 아래 블록은 같은
+    // 워크스페이스의 teamspace 를 가리키는 페이지 · 데이터베이스다. 둘 다 다형 참조라 FK 대신 트리거가 막는다.
+    const teamspaceId = randomUUID()
+    const addTeamspace = `INSERT INTO teamspace (id, workspace_id, name, visibility) VALUES ($1, $2, $3, $4)`
+    await client.query(addTeamspace, [teamspaceId, wsId, '제품팀', 'closed'])
+    ok('teamspace 생성')
+    await mustReject('보이는 범위는 open · closed · private 셋뿐이다', addTeamspace, [randomUUID(), wsId, '팀', 'secret'])
+
+    const person = async (name, role) => {
+      const id = randomUUID()
+      const eid = randomUUID()
+      await client.query(`INSERT INTO "user" (id, name, primary_email_id, created_at) VALUES ($1,$2,$3, now())`, [id, name, eid])
+      await client.query(
+        `INSERT INTO user_email (id, user_id, email, verified_at, is_primary, added_at) VALUES ($1,$2,$3, now(), true, now())`,
+        [eid, id, `${name}@example.com`],
+      )
+      if (role) {
+        await client.query(`INSERT INTO workspace_member (workspace_id, user_id, role, status) VALUES ($1,$2,$3,'active')`, [wsId, id, role])
+      }
+      return id
+    }
+    const memberId = await person('ts_member1', 'member')
+    const guestId = await person('ts_guest1', 'guest')
+    const outsiderId = await person('ts_outsider1', null)
+    const addMember = `INSERT INTO teamspace_member (teamspace_id, principal_type, principal_id, role) VALUES ($1, $2, $3, 'member')`
+    await client.query(addMember, [teamspaceId, 'user', memberId])
+    ok('멤버를 teamspace 에 넣기')
+    await mustReject('게스트를 teamspace 에', addMember, [teamspaceId, 'user', guestId])
+    await mustReject('이 워크스페이스 멤버가 아닌 사람을 teamspace 에', addMember, [teamspaceId, 'user', outsiderId])
+    await mustReject('없는 그룹을 teamspace 에', addMember, [teamspaceId, 'group', randomUUID()])
+    await mustReject('역할은 owner · member 둘뿐이다',
+      `INSERT INTO teamspace_member (teamspace_id, principal_type, principal_id, role) VALUES ($1, 'user', $2, 'admin')`,
+      [teamspaceId, memberId])
+
+    const addBlock = `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key,
+                                         ancestor_path, perm_scope_id, properties, format, created_at, last_edited_at)
+                      VALUES ($1, $2, $3, 'teamspace', $4, $5, '{}', $4, '{}'::jsonb, '{}'::jsonb, now(), now())`
+    await client.query(addBlock, [randomUUID(), wsId, 'page', teamspaceId, 't0'])
+    ok('teamspace 의 최상위 페이지 (parent_type=teamspace)')
+    await mustReject('teamspace 바로 아래에 문단', addBlock, [randomUUID(), wsId, 'paragraph', teamspaceId, 't1'])
+    await mustReject('없는 teamspace 를 부모로', addBlock, [randomUUID(), wsId, 'page', randomUUID(), 't2'])
+    {
+      const otherWs = randomUUID()
+      const otherTeamspace = randomUUID()
+      await client.query(`INSERT INTO workspace (id, name, region_id, created_at) VALUES ($1,'다른 곳','local', now())`, [otherWs])
+      await client.query(addTeamspace, [otherTeamspace, otherWs, '남의 팀', 'open'])
+      await mustReject('다른 워크스페이스의 teamspace 를 부모로', addBlock, [randomUUID(), wsId, 'page', otherTeamspace, 't3'])
+    }
   }
 
   await client.query('ROLLBACK')

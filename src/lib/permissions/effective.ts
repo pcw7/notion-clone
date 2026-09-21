@@ -69,7 +69,7 @@ export type Principal = { readonly type: string; readonly id: string | null }
  *        + {('workspace_everyone',NULL) : U 가 role in (owner, membership_admin, member)}
  *        + {('public',NULL)}
  *
- * **teamspace 는 아직 없다**(표 자체가 없다 — §7). 없는 것을 넣는 척하지 않는다.
+ * teamspace(7c-1)는 그 teamspace 의 멤버에게 — 사람으로 받았든 그룹을 거쳐 받았든 — `('teamspace', t)` 로 들어온다.
  *
  * `guest` 와 `restricted_member` 는 `workspace_everyone` 에 **들어가지 않는다**.
  * 그들이 보는 것은 자기에게 직접 준 것뿐이다 — 손님을 초대했더니 워크스페이스
@@ -80,10 +80,17 @@ export type Principal = { readonly type: string; readonly id: string | null }
  *   멤버가 떠났다 게스트로 돌아오면 M1 이 남겨 둔 그룹 행이 살아 있는 채로 남는다 — 그 행을 믿으면 게스트가
  *   그룹이 받은 페이지를 전부 본다. 판정은 행이 틀려도 틀리지 않아야 한다.
  */
-export function principalsOf(ctx: SessionContext, groupIds: readonly string[] = []): Principal[] {
+export function principalsOf(
+  ctx: SessionContext,
+  groupIds: readonly string[] = [],
+  teamspaceIds: readonly string[] = [],
+): Principal[] {
   const principals: Principal[] = [{ type: 'user', id: ctx.userId }]
   if (ctx.role !== 'guest') {
     for (const id of groupIds) principals.push({ type: 'group', id })
+    // 게스트는 teamspace 멤버가 될 수 없다(F-06-04). 넣는 쪽은 DB 가 막고(0028 ①), 멤버였다 게스트가 된 사람의 남은
+    // 행은 여기서 무시한다 — 그룹과 같은 이유다.
+    for (const id of teamspaceIds) principals.push({ type: 'teamspace', id })
   }
   if (ctx.role === 'owner' || ctx.role === 'membership_admin' || ctx.role === 'member') {
     principals.push({ type: 'workspace_everyone', id: null })
@@ -109,7 +116,19 @@ export async function principalsFor(tx: Tx, ctx: SessionContext): Promise<Princi
         AND g.workspace_id = $2 AND g.deleted_at IS NULL`,
     [ctx.userId, ctx.workspaceId],
   )
-  return principalsOf(ctx, groups.map((g) => g.id))
+  const groupIds = groups.map((g) => g.id)
+  // teamspace 는 사람으로도, 그룹을 거쳐서도 멤버가 된다(정본 §3.3 `teamspace_member.principal_type`). 보관된
+  // teamspace 는 주체가 아니다 — F-06-04 *"archive 시 모든 멤버의 사이드바에서 제거"*.
+  const teamspaces = await tx.query<{ id: string }>(
+    `SELECT DISTINCT t.id
+       FROM teamspace_member tm
+       JOIN teamspace t ON t.id = tm.teamspace_id
+      WHERE t.workspace_id = $2 AND t.archived_at IS NULL AND tm.removed_at IS NULL
+        AND ((tm.principal_type = 'user' AND tm.principal_id = $1)
+          OR (tm.principal_type = 'group' AND tm.principal_id = ANY($3::uuid[])))`,
+    [ctx.userId, ctx.workspaceId, groupIds],
+  )
+  return principalsOf(ctx, groupIds, teamspaces.map((t) => t.id))
 }
 
 function matches(row: AclRow, principals: readonly Principal[]): boolean {
@@ -154,6 +173,9 @@ export function resolveCaps(input: ResolveInput): CapSet {
       //
       //   고치려면 `node_kind` 를 `acl_entry` 에서 읽어 여기까지 흘려야 하고,
       //   그건 별개 변경이다(HANDOFF §7).
+      //
+      //   teamspace 노드의 행(7c-1)도 page 매트릭스로 읽는다 — 그 행은 **그 아래 페이지가 물려받는 부여**다
+      //   (정본 §3.3 [보강]). teamspace 자체의 관리(설정 · 멤버)는 ACL 이 아니라 `teamspace_member.role` 이 정한다.
       .map((row) => ({ targetKind: 'page' as const, level: row.level as Level }))
       // ★ 페이지에 정의되지 않은 레벨(`create`·`edit_content` 는 database 전용)은
       //   **없는 grant 로 본다.** `capabilitiesOf` 는 그런 조합에 던지는데, 권한
@@ -174,13 +196,36 @@ export function resolveCaps(input: ResolveInput): CapSet {
 
 // ── DB 경로 ───────────────────────────────────────────────────────────
 
-type ChainRow = { id: string; ancestor_path: string[] }
+/**
+ * 사슬을 세울 행 — 노드 · 조상 배열 · **루트 블록의 부모**.
+ *
+ * teamspace 는 트리 노드지만 `ancestor_path` 에 들어가지 않는다 — 판결문(C-9)의 `ancestor_path` 는 *"루트(비block parent
+ * 직하)→parent 까지의 block id 배열"* 이다. 그래서 어느 노드의 teamspace 는 **루트 블록(`ancestor_path[1]`, 없으면 자기)의
+ * 부모**로 읽는다(B8). 같은 질의에서 루트를 붙여 읽으므로 질의 수는 늘지 않는다.
+ */
+type ChainRow = {
+  id: string
+  ancestor_path: string[]
+  root_parent_type: string
+  root_parent_id: string
+}
+
+const CHAIN_COLUMNS = `b.id, b.ancestor_path, r.parent_type AS root_parent_type, r.parent_id AS root_parent_id`
+const CHAIN_FROM = `block b JOIN block r ON r.id = COALESCE(b.ancestor_path[1], b.id)`
+
+/** 자신부터 위로 — `[node, parent, …, root]`, 루트가 teamspace 아래면 그 teamspace 가 끝이다. */
+function chainOf(row: ChainRow): { chain: string[]; teamspaceId: string | null } {
+  const teamspaceId = row.root_parent_type === 'teamspace' ? row.root_parent_id : null
+  // `ancestor_path` 는 루트부터 부모까지다. 우리는 자신부터 위로 훑으므로 뒤집는다.
+  const blocks = [row.id, ...[...row.ancestor_path].reverse()]
+  return { chain: teamspaceId === null ? blocks : [...blocks, teamspaceId], teamspaceId }
+}
 
 /**
  * 노드 하나의 유효 권한.
  *
- * 질의는 셋이다 — 노드의 조상 배열 · 그 사슬의 ACL · 그 사슬의 절단 플래그.
- * 깊이와 무관하게 셋이다.
+ * 질의는 셋이다 — 노드의 조상 배열(+ 루트의 부모) · 그 사슬의 ACL · 그 사슬의 절단 플래그. 깊이와 무관하게 셋이다
+ * (주체 집합을 읽는 질의는 따로다).
  */
 export async function effectiveCaps(
   tx: Tx,
@@ -188,23 +233,42 @@ export async function effectiveCaps(
   nodeId: string,
 ): Promise<CapSet> {
   const node = await tx.queryMaybe<ChainRow>(
-    `SELECT id, ancestor_path FROM block WHERE id = $1 AND workspace_id = $2`,
+    `SELECT ${CHAIN_COLUMNS} FROM ${CHAIN_FROM} WHERE b.id = $1 AND b.workspace_id = $2`,
     [nodeId, ctx.workspaceId],
   )
   if (node === null) return NO_CAPABILITIES
-
-  // `ancestor_path` 는 루트부터 부모까지다. 우리는 자신부터 위로 훑으므로 뒤집는다.
-  const chain = [node.id, ...[...node.ancestor_path].reverse()]
-  return resolveChain(tx, await principalsFor(tx, ctx), chain)
+  const { chain, teamspaceId } = chainOf(node)
+  return resolveChain(tx, await principalsFor(tx, ctx), chain, teamspaceId)
 }
 
-async function resolveChain(tx: Tx, principals: readonly Principal[], chain: string[]): Promise<CapSet> {
+/**
+ * teamspace **자체**의 권한 — 그 최상위에 페이지를 둘 수 있는가(`create_child`) 같은 물음. 사슬은 teamspace 하나다.
+ *
+ * 이 워크스페이스의 보관되지 않은 teamspace 가 아니면 아무 권한도 없다(`NO_CAPABILITIES`) — 없는 것과 같다.
+ */
+export async function teamspaceCaps(tx: Tx, ctx: SessionContext, teamspaceId: string): Promise<CapSet> {
+  const live = await tx.queryMaybe<{ id: string }>(
+    `SELECT id FROM teamspace WHERE id = $1 AND workspace_id = $2 AND archived_at IS NULL`,
+    [teamspaceId, ctx.workspaceId],
+  )
+  if (live === null) return NO_CAPABILITIES
+  return resolveChain(tx, await principalsFor(tx, ctx), [teamspaceId], teamspaceId)
+}
+
+async function resolveChain(
+  tx: Tx,
+  principals: readonly Principal[],
+  chain: string[],
+  teamspaceId: string | null,
+): Promise<CapSet> {
   const [entries, cuts] = await Promise.all([
+    // teamspace 노드의 행은 `node_kind` 가 다르다 — 블록 id 와 겹칠 일은 없지만 종류까지 맞춰 읽는다.
     tx.query<AclRow>(
       `SELECT node_id, principal_type, principal_id, level
          FROM acl_entry
-        WHERE node_kind = 'block' AND node_id = ANY($1::uuid[])`,
-      [chain],
+        WHERE (node_kind = 'block' AND node_id = ANY($1::uuid[]))
+           OR (node_kind = 'teamspace' AND node_id = $2)`,
+      [chain, teamspaceId],
     ),
     tx.query<{ node_id: string }>(
       `SELECT node_id FROM block_acl_meta
@@ -241,31 +305,44 @@ export async function readableScopes(tx: Tx, ctx: SessionContext): Promise<strin
  *
  * 같은 스코프의 노드는 정의상 권한이 같으므로(위 머리말) "볼 수 있는 곳"뿐 아니라 "하위 페이지를 둘 수 있는 곳"도
  * 스코프로 거른다 — 이동 대상 목록(`listMovableTargets`)이 쓴다.
+ *
+ * 스코프 후보는 둘이다 — 경계인 블록(행이 있거나 끊겼다), 그리고 **teamspace**. 정본 §3.11 이 경계가 없는 노드의
+ * 스코프를 *"teamspace 루트"* 로 정했으므로 teamspace 최상위의 페이지는 따로 행이 없으면 `perm_scope_id` 가 그
+ * teamspace id 다(블록 id 가 아니다).
  */
 export async function scopesWith(
   tx: Tx,
   ctx: SessionContext,
   required: readonly Capability[],
 ): Promise<string[]> {
-  const scopes = await tx.query<ChainRow>(
-    `SELECT DISTINCT b.id, b.ancestor_path
-       FROM block b
-      WHERE b.workspace_id = $1
-        AND (EXISTS (SELECT 1 FROM acl_entry a
-                      WHERE a.node_kind = 'block' AND a.node_id = b.id)
-          OR EXISTS (SELECT 1 FROM block_acl_meta m
-                      WHERE m.node_id = b.id AND m.inherits_from_parent = false))`,
-    [ctx.workspaceId],
-  )
+  const [scopes, teamspaces] = await Promise.all([
+    tx.query<ChainRow>(
+      `SELECT DISTINCT ${CHAIN_COLUMNS}
+         FROM ${CHAIN_FROM}
+        WHERE b.workspace_id = $1
+          AND (EXISTS (SELECT 1 FROM acl_entry a
+                        WHERE a.node_kind = 'block' AND a.node_id = b.id)
+            OR EXISTS (SELECT 1 FROM block_acl_meta m
+                        WHERE m.node_id = b.id AND m.inherits_from_parent = false))`,
+      [ctx.workspaceId],
+    ),
+    tx.query<{ id: string }>(`SELECT id FROM teamspace WHERE workspace_id = $1 AND archived_at IS NULL`, [
+      ctx.workspaceId,
+    ]),
+  ])
 
   // 주체 집합은 한 번만 읽는다 — 스코프마다 읽으면 스코프 수만큼 질의가 는다.
   const principals = await principalsFor(tx, ctx)
   const readable: string[] = []
-  for (const scope of scopes) {
-    const chain = [scope.id, ...[...scope.ancestor_path].reverse()]
-    const caps = await resolveChain(tx, principals, chain)
-    if (required.every((capability) => can(caps, capability))) readable.push(scope.id)
+  const admit = async (id: string, chain: string[], teamspaceId: string | null) => {
+    const caps = await resolveChain(tx, principals, chain, teamspaceId)
+    if (required.every((capability) => can(caps, capability))) readable.push(id)
   }
+  for (const scope of scopes) {
+    const { chain, teamspaceId } = chainOf(scope)
+    await admit(scope.id, chain, teamspaceId)
+  }
+  for (const teamspace of teamspaces) await admit(teamspace.id, [teamspace.id], teamspace.id)
   return readable
 }
 

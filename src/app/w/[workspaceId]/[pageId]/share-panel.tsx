@@ -32,6 +32,7 @@ import {
   principalOfEntry,
   type ShareGroup,
   type ShareMember,
+  type ShareTeamspace,
 } from './share-principals'
 
 type AccessEntry = {
@@ -46,6 +47,7 @@ type AccessState = {
   entries: AccessEntry[]
   members: ShareMember[]
   groups: ShareGroup[]
+  teamspaces: ShareTeamspace[]
 }
 
 /** 페이지에 줄 수 있는 레벨. `create`·`edit_content` 는 database 전용이다. */
@@ -84,7 +86,13 @@ export function SharePanel({ workspaceId, pageId }: { workspaceId: string; pageI
         return
       }
       const data = await res.json()
-      setState({ canManage: data.canManage, entries: data.entries, members: data.members, groups: data.groups ?? [] })
+      setState({
+        canManage: data.canManage,
+        entries: data.entries,
+        members: data.members,
+        groups: data.groups ?? [],
+        teamspaces: data.teamspaces ?? [],
+      })
     } catch {
       setError('연결에 실패했습니다.')
     }
@@ -132,7 +140,8 @@ export function SharePanel({ workspaceId, pageId }: { workspaceId: string; pageI
     [url, load, router],
   )
 
-  const nameOf = (entry: AccessEntry): string => entryLabel(entry, state?.members ?? [], state?.groups ?? [])
+  const nameOf = (entry: AccessEntry): string =>
+    entryLabel(entry, state?.members ?? [], state?.groups ?? [], state?.teamspaces ?? [])
 
   const inheriting = state?.entries.some((e) => e.inherited) ?? false
   const listed = new Set(

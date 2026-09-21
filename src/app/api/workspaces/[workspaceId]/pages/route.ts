@@ -1,11 +1,12 @@
 /**
- * POST /api/workspaces/[workspaceId]/pages — 페이지 생성 (`{ parentPageId?, title?, at? }` — `at` 은 부모 본문에서 참조를 넣을 자리)
+ * POST /api/workspaces/[workspaceId]/pages — 페이지 생성 (`{ parentPageId?, teamspaceId?, title?, at? }` — `at` 은 부모 본문에서 참조를 넣을 자리,
+ *   `teamspaceId` 는 그 teamspace 의 최상위에 만든다 · 7c-1)
  * GET  /api/workspaces/[workspaceId]/pages?parent=<pageId> — 자식 페이지 목록
  *
  * 정본: 00-canonical-data-model.md §3.4 (페이지는 `type='page'` 블록이다 — C-3)
  */
 
-import { asBlockId } from '@/lib/ids'
+import { asBlockId, isUuid } from '@/lib/ids'
 import { readJsonBody, requireWorkspaceSession } from '@/lib/auth/route-session'
 import {
   createPage,
@@ -30,7 +31,7 @@ export async function POST(
 
   const parsed = await readJsonBody(request)
   if (!parsed.ok) return parsed.response
-  const body = (parsed.body ?? {}) as { parentPageId?: unknown; title?: unknown; at?: unknown }
+  const body = (parsed.body ?? {}) as { parentPageId?: unknown; teamspaceId?: unknown; title?: unknown; at?: unknown }
 
   let parentPageId = null
   if (body.parentPageId != null) {
@@ -40,6 +41,15 @@ export async function POST(
       // uuid 가 아니면 "그런 부모는 없다"와 구분할 이유가 없다.
       return Response.json({ error: 'parent_not_found' }, { status: 404 })
     }
+  }
+
+  // teamspace 의 최상위(7c-1). 부모 페이지와 같은 규칙 — uuid 가 아니면 "그런 teamspace 는 없다"와 같다.
+  let teamspaceId: string | null = null
+  if (body.teamspaceId != null) {
+    if (typeof body.teamspaceId !== 'string' || !isUuid(body.teamspaceId)) {
+      return Response.json({ error: 'parent_not_found' }, { status: 404 })
+    }
+    teamspaceId = body.teamspaceId
   }
 
   // 부모 본문에서 참조를 넣을 자리 — 편집기의 캐럿이 있던 블록(`createPage` 의 `at`). 본문에 없는 블록이면 맨 뒤라
@@ -56,12 +66,13 @@ export async function POST(
   try {
     const page = await createPage(session.ctx, {
       parentPageId,
+      teamspaceId,
       title: titleFromPlainText(body.title),
       at,
     })
     return Response.json({
       ok: true,
-      page: { id: page.id, title: page.plainTitle, parentPageId: page.parentPageId },
+      page: { id: page.id, title: page.plainTitle, parentPageId: page.parentPageId, teamspaceId: page.teamspaceId },
     })
   } catch (e) {
     if (e instanceof PageError) return errorResponse(e)
