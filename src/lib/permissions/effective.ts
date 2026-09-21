@@ -62,28 +62,54 @@ export type AclRow = {
 export type Principal = { readonly type: string; readonly id: string | null }
 
 /**
- * 이 세션이 가진 주체 집합 `P(U)`.
+ * 이 세션이 가진 주체 집합 `P(U)`. 순수 함수다 — 그룹은 부르는 쪽이 읽어서 넘긴다(`principalsFor`).
  *
  * 정본:
  *   P(U) = {('user',U)} + {('group',g)} + {('teamspace',t)}
  *        + {('workspace_everyone',NULL) : U 가 role in (owner, membership_admin, member)}
  *        + {('public',NULL)}
  *
- * **group · teamspace 는 MVP 에 없다**(표 자체가 없다 — §7). 없는 것을 넣는 척하지
- * 않는다. 생기면 여기 두 줄이 늘어난다.
+ * **teamspace 는 아직 없다**(표 자체가 없다 — §7). 없는 것을 넣는 척하지 않는다.
  *
  * `guest` 와 `restricted_member` 는 `workspace_everyone` 에 **들어가지 않는다**.
  * 그들이 보는 것은 자기에게 직접 준 것뿐이다 — 손님을 초대했더니 워크스페이스
- * 전체가 보이는 사고가 정확히 이 한 줄에서 난다.
+ * 전체가 보이는 사고가 정확히 이 한 줄에서 난다. `restricted_member` 는 그룹으로는
+ * 받는다(G3 — 그것이 그들의 유일한 대량 부여 수단이다).
+ *
+ * ★ **게스트에게는 그룹 주체를 주지 않는다**(G2). 넣는 쪽은 DB 가 막지만(0027 `tg_group_member_guard`),
+ *   멤버가 떠났다 게스트로 돌아오면 M1 이 남겨 둔 그룹 행이 살아 있는 채로 남는다 — 그 행을 믿으면 게스트가
+ *   그룹이 받은 페이지를 전부 본다. 판정은 행이 틀려도 틀리지 않아야 한다.
  */
-export function principalsOf(ctx: SessionContext): Principal[] {
+export function principalsOf(ctx: SessionContext, groupIds: readonly string[] = []): Principal[] {
   const principals: Principal[] = [{ type: 'user', id: ctx.userId }]
+  if (ctx.role !== 'guest') {
+    for (const id of groupIds) principals.push({ type: 'group', id })
+  }
   if (ctx.role === 'owner' || ctx.role === 'membership_admin' || ctx.role === 'member') {
     principals.push({ type: 'workspace_everyone', id: null })
   }
   // public 은 공개 링크(F-06-06)가 생길 때 온다. 지금 넣으면 아무도 만들지 않은
   // grant 를 기다리는 코드가 된다.
   return principals
+}
+
+/**
+ * 판정하는 트랜잭션 안에서 `P(U)` 를 읽는다 — 이 워크스페이스의 **살아 있는** 그룹 중 이 사람이 빠지지 않은 것.
+ *
+ * 세션을 발급할 때(`resolveSessionContext`) 읽어 두지 않는 이유: 협업 서버는 연결을 오래 들고 신호가 올 때마다
+ * 다시 판정한다. 그룹이 컨텍스트에 박혀 있으면 그룹에서 빠진 사람의 연결이 **옛 그룹으로** 다시 판정된다.
+ * 판정과 같은 스냅샷에서 읽으면 ACL 과 멤버십이 같은 시점의 사실이다.
+ */
+export async function principalsFor(tx: Tx, ctx: SessionContext): Promise<Principal[]> {
+  const groups = await tx.query<{ id: string }>(
+    `SELECT g.id
+       FROM group_member gm
+       JOIN "group" g ON g.id = gm.group_id
+      WHERE gm.user_id = $1 AND gm.removed_at IS NULL
+        AND g.workspace_id = $2 AND g.deleted_at IS NULL`,
+    [ctx.userId, ctx.workspaceId],
+  )
+  return principalsOf(ctx, groups.map((g) => g.id))
 }
 
 function matches(row: AclRow, principals: readonly Principal[]): boolean {
@@ -169,10 +195,10 @@ export async function effectiveCaps(
 
   // `ancestor_path` 는 루트부터 부모까지다. 우리는 자신부터 위로 훑으므로 뒤집는다.
   const chain = [node.id, ...[...node.ancestor_path].reverse()]
-  return resolveChain(tx, ctx, chain)
+  return resolveChain(tx, await principalsFor(tx, ctx), chain)
 }
 
-async function resolveChain(tx: Tx, ctx: SessionContext, chain: string[]): Promise<CapSet> {
+async function resolveChain(tx: Tx, principals: readonly Principal[], chain: string[]): Promise<CapSet> {
   const [entries, cuts] = await Promise.all([
     tx.query<AclRow>(
       `SELECT node_id, principal_type, principal_id, level
@@ -191,7 +217,7 @@ async function resolveChain(tx: Tx, ctx: SessionContext, chain: string[]): Promi
     chain,
     cutAt: new Set(cuts.map((c) => c.node_id)),
     entries,
-    principals: principalsOf(ctx),
+    principals,
   })
 }
 
@@ -232,10 +258,12 @@ export async function scopesWith(
     [ctx.workspaceId],
   )
 
+  // 주체 집합은 한 번만 읽는다 — 스코프마다 읽으면 스코프 수만큼 질의가 는다.
+  const principals = await principalsFor(tx, ctx)
   const readable: string[] = []
   for (const scope of scopes) {
     const chain = [scope.id, ...[...scope.ancestor_path].reverse()]
-    const caps = await resolveChain(tx, ctx, chain)
+    const caps = await resolveChain(tx, principals, chain)
     if (required.every((capability) => can(caps, capability))) readable.push(scope.id)
   }
   return readable

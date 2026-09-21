@@ -283,6 +283,44 @@ describe('★ 쓰기 권한', () => {
     assert.ok(result.ok === false && result.reason === 'forbidden')
   })
 
+  test('★ 못 보는 사람에게는 공유 설정도 not_found 다 — 목록 · 부여 · 회수 · 끊기 · 되받기 전부 (7a 에서 찾았다)', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const page = await newPage('공유 설정이 숨은 페이지')
+    await restrictToOwner(page)
+
+    const results = [
+      await listAccess(other.ctx, page),
+      await grantAccess(other.ctx, page, { type: 'user', id: other.userId }, 'view'),
+      await revokeAccess(other.ctx, page, { type: 'user', id: fx.owner.userId }),
+      await stopInheriting(other.ctx, page),
+      await resumeInheriting(other.ctx, page),
+    ]
+    assert.deepEqual(
+      results.map((r) => (r.ok ? 'ok' : r.reason)),
+      ['not_found', 'not_found', 'not_found', 'not_found', 'not_found'],
+      '403 이면 "그 페이지가 있다"를 알려 준다',
+    )
+  })
+
+  test('볼 수만 있는 사람의 부여 · 회수 · 끊기 · 되받기는 forbidden — 목록은 읽는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const page = await newPage('보기만 하는 공유 설정')
+    await restrictToOwner(page)
+    await assertOk(grantAccess(fx.owner.ctx, page, { type: 'user', id: other.userId }, 'view'))
+
+    const results = [
+      await listAccess(other.ctx, page),
+      await grantAccess(other.ctx, page, { type: 'user', id: other.userId }, 'full_access'),
+      await revokeAccess(other.ctx, page, { type: 'user', id: fx.owner.userId }),
+      await stopInheriting(other.ctx, page),
+      await resumeInheriting(other.ctx, page),
+    ]
+    assert.deepEqual(
+      results.map((r) => (r.ok ? 'ok' : r.reason)),
+      ['ok', 'forbidden', 'forbidden', 'forbidden', 'forbidden'],
+    )
+  })
+
   test('★ 마지막 관리자는 지울 수 없다 — 되돌릴 수 없는 상태를 만들지 않는다', async (t) => {
     if (skipReason) return t.skip(skipReason)
     const page = await newPage('마지막 관리자')

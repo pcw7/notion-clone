@@ -41,6 +41,7 @@ import { effectiveCaps, principalsOf, resolveCaps, type AclRow } from './effecti
 
 export type PrincipalRef =
   | { readonly type: 'user'; readonly id: string }
+  | { readonly type: 'group'; readonly id: string }
   | { readonly type: 'workspace_everyone' }
 
 export type AclFailure =
@@ -49,6 +50,8 @@ export type AclFailure =
   | 'forbidden'
   /** 마지막 관리자를 지우면 아무도 이 페이지를 고칠 수 없게 된다. */
   | 'would_orphan'
+  /** 이 워크스페이스의 살아 있는 그룹이 아니다 — 지운 그룹에 주면 아무에게도 닿지 않는 행이 남는다. */
+  | 'invalid_principal'
 
 export type AclResult<T = void> =
   | ({ readonly ok: true } & (T extends void ? object : { readonly value: T }))
@@ -72,10 +75,38 @@ async function loadNode(tx: Tx, ctx: SessionContext, nodeId: string): Promise<No
   )
 }
 
+/**
+ * 공유 설정의 게이트 — **볼 수 없으면 `not_found`, 볼 수만 있으면 `forbidden`**(HANDOFF §3.2-18).
+ *
+ * 볼 수 없는 페이지에 403 을 주면 "그 id 의 페이지가 있다"를 알려 준다. W6-b 에서 만든 이 파일은 그 규칙(#75 에서 휴지통 ·
+ * 이동에 세웠다)보다 먼저 생겨 줄곧 `forbidden` 하나로 답했다 — 7a 의 e2e 가 "그룹에서 빠진 사람은 404"를 기대하다 찾았다.
+ */
+async function gate(tx: Tx, ctx: SessionContext, nodeId: string, need: 'view' | 'manage_perm'): Promise<AclFailure | null> {
+  const caps = await effectiveCaps(tx, ctx, nodeId)
+  if (!can(caps, 'view')) return 'not_found'
+  if (!can(caps, need)) return 'forbidden'
+  return null
+}
+
 function principalColumns(principal: PrincipalRef): { type: string; id: string | null } {
-  return principal.type === 'user'
-    ? { type: 'user', id: principal.id }
-    : { type: 'workspace_everyone', id: null }
+  return principal.type === 'workspace_everyone'
+    ? { type: 'workspace_everyone', id: null }
+    : { type: principal.type, id: principal.id }
+}
+
+/**
+ * 이 워크스페이스의 살아 있는 그룹인가. **`FOR SHARE` 로 잠근다** — 그룹 지우기(`dropGrantsOf`)가 그룹 행을
+ * `FOR UPDATE` 로 잡은 뒤 그 그룹의 ACL 행을 모으므로, 부여가 먼저 끝나면 지우기가 그 행까지 보고 지우기가 먼저
+ * 끝나면 부여가 지워진 그룹을 본다. 잠그지 않으면 지우기가 모은 **뒤에** 부여가 끼어들어 지운 그룹의 행이 남는다.
+ */
+async function lockLiveGroup(tx: Tx, ctx: SessionContext, groupId: string): Promise<boolean> {
+  const row = await tx.queryMaybe<{ one: number }>(
+    `SELECT 1 AS one FROM "group"
+      WHERE id = $1 AND workspace_id = $2 AND deleted_at IS NULL
+      FOR SHARE`,
+    [groupId, ctx.workspaceId],
+  )
+  return row !== null
 }
 
 /**
@@ -141,8 +172,10 @@ export async function grantAccess(
   return withTransaction(async (tx) => {
     const node = await loadNode(tx, ctx, pageId)
     if (node === null) return { ok: false, reason: 'not_found' } as const
-    if (!can(await effectiveCaps(tx, ctx, pageId), 'manage_perm')) {
-      return { ok: false, reason: 'forbidden' } as const
+    const denied = await gate(tx, ctx, pageId, 'manage_perm')
+    if (denied !== null) return { ok: false, reason: denied } as const
+    if (principal.type === 'group' && !(await lockLiveGroup(tx, ctx, principal.id))) {
+      return { ok: false, reason: 'invalid_principal' } as const
     }
 
     const had = await hasEntries(tx, pageId)
@@ -178,9 +211,8 @@ export async function revokeAccess(
   return withTransaction(async (tx) => {
     const node = await loadNode(tx, ctx, pageId)
     if (node === null) return { ok: false, reason: 'not_found' } as const
-    if (!can(await effectiveCaps(tx, ctx, pageId), 'manage_perm')) {
-      return { ok: false, reason: 'forbidden' } as const
-    }
+    const denied = await gate(tx, ctx, pageId, 'manage_perm')
+    if (denied !== null) return { ok: false, reason: denied } as const
 
     const p = principalColumns(principal)
     const cut = await isCut(tx, pageId)
@@ -244,9 +276,8 @@ export async function stopInheriting(ctx: SessionContext, pageId: string): Promi
   return withTransaction(async (tx) => {
     const node = await loadNode(tx, ctx, pageId)
     if (node === null) return { ok: false, reason: 'not_found' } as const
-    if (!can(await effectiveCaps(tx, ctx, pageId), 'manage_perm')) {
-      return { ok: false, reason: 'forbidden' } as const
-    }
+    const denied = await gate(tx, ctx, pageId, 'manage_perm')
+    if (denied !== null) return { ok: false, reason: denied } as const
     if (await isCut(tx, pageId)) return { ok: true } as const
 
     // 조상(자기 자신 제외)의 모든 grant. 절단된 조상을 만나면 거기서 멈춘다.
@@ -344,9 +375,8 @@ export async function resumeInheriting(ctx: SessionContext, pageId: string): Pro
   return withTransaction(async (tx) => {
     const node = await loadNode(tx, ctx, pageId)
     if (node === null) return { ok: false, reason: 'not_found' } as const
-    if (!can(await effectiveCaps(tx, ctx, pageId), 'manage_perm')) {
-      return { ok: false, reason: 'forbidden' } as const
-    }
+    const denied = await gate(tx, ctx, pageId, 'manage_perm')
+    if (denied !== null) return { ok: false, reason: denied } as const
 
     await tx.query(
       `UPDATE block_acl_meta
@@ -361,6 +391,68 @@ export async function resumeInheriting(ctx: SessionContext, pageId: string): Pro
     }
     return { ok: true } as const
   })
+}
+
+// ── 주체가 사라질 때 ──────────────────────────────────────────────────
+
+export type DropResult =
+  | { readonly ok: true; readonly nodes: number }
+  | { readonly ok: false; readonly reason: 'would_orphan'; readonly nodes: number }
+
+/**
+ * 한 주체의 부여를 워크스페이스 전체에서 거둔다 — 그룹을 지울 때(F-06-03 *"그 group principal 의 ACL 전부 캐스케이드
+ * 삭제, 개인 직접 부여는 유지"*). 호출자의 트랜잭션에서 돈다.
+ *
+ * 노드의 권한(`manage_perm`)은 묻지 않는다 — 부르는 쪽이 워크스페이스 역할로 이미 물었다. 그룹을 지우는 사람은 그
+ * 그룹이 받은 페이지를 볼 수 없어도 된다.
+ *
+ * 행을 지우는 것은 `revokeAccess` 와 같은 쓰기라 같은 두 규칙을 지킨다:
+ *   - **관리할 사람이 남지 않는 노드가 하나라도 생기면 아무것도 지우지 않는다**(`would_orphan` · `nodes` 는 그런 노드의
+ *     수). 상속을 끊은 노드의 유일한 관리자가 이 그룹이면, 지우는 순간 그 페이지의 권한을 아무도 못 고친다
+ *   - 마지막 행이 사라진 노드는 경계가 아니게 된다(재계산 트리거 ②) — 부모의 스코프로 돌아간다. 안 돌려보내면 목록
+ *     (스코프)과 판정(조상 사슬)은 여전히 같게 답하지만, 경계가 아닌 노드가 경계로 남는다
+ *
+ * @returns 행을 지운 노드의 수
+ */
+export async function dropGrantsOf(
+  tx: Tx,
+  ctx: SessionContext,
+  principal: { readonly type: 'group'; readonly id: string },
+): Promise<DropResult> {
+  const p = principalColumns(principal)
+  const rows = await tx.query<{ node_id: string }>(
+    `SELECT a.node_id
+       FROM acl_entry a
+       JOIN block b ON b.id = a.node_id
+      WHERE a.node_kind = 'block' AND a.principal_type = $1 AND a.principal_id = $2
+        AND b.workspace_id = $3
+      ORDER BY a.node_id
+      FOR UPDATE OF a`,
+    [p.type, p.id, ctx.workspaceId],
+  )
+  const nodeIds = rows.map((r) => r.node_id)
+
+  let orphaned = 0
+  for (const nodeId of nodeIds) {
+    if ((await isCut(tx, nodeId)) && (await wouldOrphan(tx, nodeId, p))) orphaned += 1
+  }
+  if (orphaned > 0) return { ok: false, reason: 'would_orphan', nodes: orphaned }
+  if (nodeIds.length === 0) return { ok: true, nodes: 0 }
+
+  await tx.query(
+    `DELETE FROM acl_entry
+      WHERE node_kind = 'block' AND principal_type = $1 AND principal_id = $2 AND node_id = ANY($3::uuid[])`,
+    [p.type, p.id, nodeIds],
+  )
+
+  // 트리거 ②. 순서는 상관없다 — `rescope` 는 "옛 스코프를 따르던 노드"만 옮기므로 조상과 자손이 함께 경계에서 풀려도
+  // 어느 쪽을 먼저 옮기든 결과가 같다(자손을 먼저 옮기면 조상의 스코프로 갔다가 조상과 함께 한 번 더 간다).
+  for (const nodeId of nodeIds) {
+    if ((await hasEntries(tx, nodeId)) || (await isCut(tx, nodeId))) continue
+    const node = await loadNode(tx, ctx, nodeId)
+    if (node !== null) await rescope(tx, ctx, node, node.id, await parentScope(tx, ctx, node))
+  }
+  return { ok: true, nodes: nodeIds.length }
 }
 
 // ── 트리의 자리가 정하는 것 ──────────────────────────────────────────
@@ -435,9 +527,8 @@ export async function listAccess(
   return withTransaction(async (tx) => {
     const node = await loadNode(tx, ctx, pageId)
     if (node === null) return { ok: false, reason: 'not_found' } as const
-    if (!can(await effectiveCaps(tx, ctx, pageId), 'view')) {
-      return { ok: false, reason: 'forbidden' } as const
-    }
+    const denied = await gate(tx, ctx, pageId, 'view')
+    if (denied !== null) return { ok: false, reason: denied } as const
 
     const direct = await tx.query<AclRow>(
       `SELECT node_id, principal_type, principal_id, level

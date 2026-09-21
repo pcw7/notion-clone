@@ -156,4 +156,24 @@ describe('★ 주체 집합 P(U)', () => {
   test('public 은 아직 주체가 아니다 — 공개 링크가 없다', () => {
     assert.equal(principalsOf(ctxWith('owner')).some((p) => p.type === 'public'), false)
   })
+
+  test('그룹은 멤버 · restricted_member 의 주체가 된다(G3)', () => {
+    for (const role of ['owner', 'membership_admin', 'member', 'restricted_member'] as const) {
+      const groups = principalsOf(ctxWith(role), ['g1', 'g2']).filter((p) => p.type === 'group')
+      assert.deepEqual(
+        groups.map((p) => p.id),
+        ['g1', 'g2'],
+        role,
+      )
+    }
+  })
+
+  test('★ 게스트는 그룹 행이 있어도 그룹 주체를 받지 않는다(G2) — 판정은 행이 틀려도 틀리지 않는다', () => {
+    const types = principalsOf(ctxWith('guest'), ['g1']).map((p) => p.type)
+    assert.deepEqual(types, ['user'])
+
+    const shared = [entry('root', 'edit', { principal_type: 'group', principal_id: 'g1' })]
+    assert.equal(can(resolve(['root'], shared, [], principalsOf(ctxWith('guest'), ['g1'])), 'view'), false)
+    assert.equal(can(resolve(['root'], shared, [], principalsOf(ctxWith('restricted_member'), ['g1'])), 'edit_content'), true)
+  })
 })

@@ -58,6 +58,7 @@ import { docToPm } from '../editor/pm-adapter.ts'
 import { blockSchema } from '../editor/schema.ts'
 import type { Level } from '../permissions/levels.ts'
 import { grantAccess, revokeAccess, stopInheriting } from '../permissions/acl.ts'
+import { addGroupMember, createGroup, removeGroupMember } from '../workspace/group.ts'
 import { assertBodyMatchesYDoc } from '../testing/body-invariant.ts'
 import { edit, findBlock } from '../testing/collab-peers.ts'
 import { createBareWorkspace, createUser, joinAs, probeDatabase, type Actor } from '../testing/db-fixtures.ts'
@@ -416,13 +417,19 @@ describe('⑧ 명령이 쓴 것', () => {
 // ── ⑨ 권한이 줄면 ────────────────────────────────────────────────────
 
 describe('⑨ 권한이 줄면', () => {
-  test('★ 아무도 쓰지 않아도 서버가 먼저 닫는다 — 강등 forbidden · 회수 · 멤버 제외 · 휴지통 not_found · 세션 폐기 unauthenticated, 그대로인 연결은 계속 받는다', async (t) => {
+  test('★ 아무도 쓰지 않아도 서버가 먼저 닫는다 — 강등 forbidden · 회수 · 멤버 제외 · 그룹에서 빼기 · 휴지통 not_found · 세션 폐기 unauthenticated, 그대로인 연결은 계속 받는다', async (t) => {
     if (skipReason) return t.skip(skipReason)
     const { workspaceId, owner, member: demoted, pageId, ids, name } = await pageFixture(['원문'])
     const revoked = await joinAs(workspaceId, await createUser('회수될 사람'), 'member')
     const loggedOut = await joinAs(workspaceId, await createUser('로그아웃할 사람'), 'member')
     const removed = await joinAs(workspaceId, await createUser('내보낼 사람'), 'member')
+    const ungrouped = await joinAs(workspaceId, await createUser('그룹에서 뺄 사람'), 'member')
     await restrict(owner, pageId, [[demoted, 'edit'], [revoked, 'view'], [loggedOut, 'edit'], [removed, 'edit']])
+    // 그룹으로만 받은 사람(7a) — 그룹 멤버십은 판정이 읽는 새 표다. 0027 이 그 표에도 신호를 건다.
+    const group = await createGroup(owner.ctx, '편집자들')
+    assert.ok(group.ok)
+    assert.equal((await addGroupMember(owner.ctx, group.value.id, ungrouped.userId)).ok, true)
+    assert.equal((await grantAccess(owner.ctx, pageId, { type: 'group', id: group.value.id }, 'edit')).ok, true)
     const doomed = await createPage(owner.ctx, { parentPageId: null as never, title: titleFromPlainText('버릴 페이지') })
 
     const server = await startServer(t)
@@ -432,6 +439,7 @@ describe('⑨ 권한이 줄면', () => {
       revoked: join(t, server.url, name, cookieOf(revoked)),
       loggedOut: join(t, server.url, name, cookieOf(loggedOut)),
       removed: join(t, server.url, name, cookieOf(removed)),
+      ungrouped: join(t, server.url, name, cookieOf(ungrouped)),
       trashed: join(t, server.url, collabDocumentName(workspaceId, doomed.id), cookieOf(owner)),
     }
     await ready(writer, watcher, ...Object.values(victims))
@@ -452,6 +460,7 @@ describe('⑨ 권한이 줄면', () => {
         () => query(`UPDATE workspace_member SET status = 'removed' WHERE workspace_id = $1 AND user_id = $2`, [workspaceId, removed.userId]),
         'not_found',
       ],
+      ['ungrouped', () => removeGroupMember(owner.ctx, group.value.id, ungrouped.userId), 'not_found'],
       ['trashed', () => trashPage(owner.ctx, doomed.id as never), 'not_found'],
     ]
     for (const [who, write, reason] of steps) {
