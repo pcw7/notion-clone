@@ -3321,6 +3321,119 @@ async function main() {
           await waitFor(`!!document.querySelector('[data-testid="db-templates-empty"]')`, 8000),
           await evaluate(`document.querySelector('[data-testid="db-templates-panel"]')?.textContent ?? '패널 없음'`))
       }
+
+      section('데이터베이스 New ▾ — 템플릿으로 만들기 · 기본 템플릿 (템플릿 6c-4 · F-08-02 · F-08-03)')
+      // 문구 규칙은 `new-row.test.ts` 가, 복제 · 덮기 · 빠진 것의 개수는 `template.db.test.ts` 가 본다. 여기서는 표와 보드의
+      // 버튼이 실제로 그 길을 타는지, 그리고 **기본 템플릿이 버튼의 글자와 동작을 함께 바꾸는지**를 본다.
+      // ⚠ 익스포트 절 **뒤**에 있다(표를 하나 더 만든다).
+      {
+        const api = async (method, path, body) => {
+          const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+            method,
+            headers: authed,
+            ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+          })
+          return { status: r.status, body: await r.json().catch(() => null) }
+        }
+        const stamp = Date.now()
+        const db = (await api('POST', '/databases', { name: `New 메뉴 ${stamp}` })).body.database
+        const done = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '완료', type: 'checkbox' })).body.property.id
+        const template = (await api('POST', `/data-sources/${db.dataSourceId}/templates`, { title: '주간 회의' })).body.template
+        // 템플릿은 "완료" 를 켜 둔다 — 보드의 "체크 안 됨" 열에서 만들면 그 열의 값이 이겨야 한다.
+        await api('PATCH', `/rows/${template.id}`, { cells: [{ propertyId: done, value: { type: 'checkbox', checkbox: true } }] })
+        const rowsNow = async () => (await api('GET', `/views/${db.defaultViewId}/rows`)).body?.rows ?? []
+
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+        await waitFor(`!!document.querySelector('[data-testid="db-add-row-menu"]')`, 15000)
+        check('기본 템플릿이 없으면 버튼은 빈 항목을 만든다고 말한다',
+          (await evaluate(`document.querySelector('[data-testid="db-add-row"]')?.textContent.trim()`)) === '+ 새로 만들기',
+          await evaluate(`document.querySelector('[data-testid="db-add-row"]')?.textContent`))
+
+        // ── ▾ 에서 고른다 ──
+        await clickOn('[data-testid="db-add-row-menu"]')
+        check('★ ▾ 가 빈 항목과 템플릿을 늘어놓는다',
+          await waitFor(`!!document.querySelector('[data-testid="db-new-blank"]')
+            && [...document.querySelectorAll('[data-testid="db-new-template"]')].map((b) => b.textContent.trim()).join() === '주간 회의'`, 8000),
+          await evaluate(`document.querySelector('[data-testid="db-new-menu"]')?.textContent ?? '메뉴 없음'`))
+        await clickOn(`[data-testid="db-new-template"][data-template-id="${template.id}"]`)
+        check('★ 템플릿을 고르면 그 제목으로 행이 서고 제목 칸이 **그 제목을 담은 채로** 열린다 — 빈 글자로 덮지 않는다',
+          await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === 1
+            && document.activeElement?.matches('[data-testid="db-cell-input"]')
+            && document.activeElement.value === '주간 회의'`, 8000),
+          await evaluate(`document.activeElement?.value ?? document.activeElement?.tagName`))
+        // ★ Enter(= 저장)로 빠져나간다. Esc 는 초안을 **버리므로** 초안이 빈 글자여도 통과한다 — 위험한 길은 저장이다.
+        await key('Enter')
+        await sleep(600)
+        const firstRows = await rowsNow()
+        check('★ 저장하며 빠져나가도 제목이 지워지지 않고 템플릿의 셀이 실려 있다',
+          firstRows.length === 1 && firstRows[0].title === '주간 회의' && firstRows[0].properties?.[done]?.checkbox === true,
+          JSON.stringify(firstRows.map((r) => ({ title: r.title, done: r.properties?.[done] }))))
+
+        // ── 기본으로 지정 → 버튼이 그 이름을 말하고, 그냥 누르면 그것으로 만든다 ──
+        await clickOn('[data-testid="db-add-row-menu"]')
+        await waitFor(`!!document.querySelector('[data-testid="db-new-set-default"]')`, 8000)
+        await clickOn(`[data-testid="db-new-set-default"][data-template-id="${template.id}"]`)
+        check('★ "기본으로" 를 누르면 버튼이 "+ 새 주간 회의" 가 된다',
+          await waitFor(`document.querySelector('[data-testid="db-add-row"]')?.textContent.trim() === '+ 새 주간 회의'`, 8000),
+          await evaluate(`document.querySelector('[data-testid="db-add-row"]')?.textContent`))
+        const viewAfter = await api('GET', `/views/${db.defaultViewId}`)
+        check('기본 지정은 서버의 뷰에 저장된다',
+          viewAfter.body?.view?.defaultTemplateId === template.id, JSON.stringify(viewAfter.body?.view?.defaultTemplateId))
+
+        await key('Escape')
+        await clickOn('[data-testid="db-add-row"]')
+        await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === 2`, 8000)
+        await key('Enter')
+        await sleep(600)
+        const secondRows = await rowsNow()
+        check('★ 그냥 누르면 메뉴 없이 기본 템플릿으로 만든다',
+          secondRows.length === 2 && secondRows[1].title === '주간 회의' && secondRows[1].properties?.[done]?.checkbox === true,
+          JSON.stringify(secondRows.map((r) => r.title)))
+
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+        check('★ 다시 열어도 버튼이 기본 템플릿의 이름을 말한다 — 서버 렌더가 이름까지 읽는다',
+          await waitFor(`document.querySelector('[data-testid="db-add-row"]')?.textContent.trim() === '+ 새 주간 회의'`, 15000),
+          await evaluate(`document.querySelector('[data-testid="db-add-row"]')?.textContent`))
+
+        // ── 보드 — 열의 값이 템플릿의 값을 이긴다 ──
+        const board = (await api('POST', `/databases/${db.id}/views`, { type: 'board', groupBy: { property_id: done } })).body.view
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}?v=${board.id}` })
+        await waitFor(`!!document.querySelector('[data-testid="db-board-column"][data-group-key="false"] [data-testid="db-board-add-menu"]')`, 15000)
+        await clickOn('[data-testid="db-board-column"][data-group-key="false"] [data-testid="db-board-add-menu"]')
+        await waitFor(`!!document.querySelector('[data-testid="db-new-template"]')`, 8000)
+        await clickOn(`[data-testid="db-new-template"][data-template-id="${template.id}"]`)
+        check('★ 보드 열의 ▾ 로 템플릿을 고르면 카드가 **그 열에** 선다 — 템플릿은 "완료" 를 켰지만 열의 값이 이긴다',
+          await waitFor(`document.querySelectorAll('[data-testid="db-board-column"][data-group-key="false"] [data-testid="db-board-card"]').length === 1
+            && document.querySelectorAll('[data-testid="db-board-column"][data-group-key="true"] [data-testid="db-board-card"]').length === 2`, 8000),
+          await evaluate(`[...document.querySelectorAll('[data-testid="db-board-column"]')].map((c) => c.dataset.groupKey + ':' + c.querySelectorAll('[data-testid="db-board-card"]').length).join(' ')`))
+        check('보드의 제목 입력도 템플릿이 준 제목을 담고 열린다',
+          (await evaluate(`document.querySelector('[data-testid="db-board-title-input"]')?.value ?? null`)) === '주간 회의',
+          await evaluate(`document.querySelector('[data-testid="db-board-title-input"]')?.value ?? '입력 없음'`))
+        await key('Enter')
+        await sleep(600)
+        const boardRows = await rowsNow()
+        const fromBoard = boardRows.find((r) => !firstRows.concat(secondRows).some((o) => o.id === r.id))
+        check('★ 서버에도 그 열의 값으로 저장됐다(완료 = false) · 제목은 템플릿의 것',
+          fromBoard?.properties?.[done]?.checkbox === false && fromBoard?.title === '주간 회의',
+          JSON.stringify(fromBoard ?? boardRows.map((r) => r.title)))
+
+        // ── 기본 지정은 뷰마다 따로다 ──
+        check('보드 뷰는 표 뷰의 기본 지정을 물려받지 않는다 — 기본은 뷰의 것이다',
+          (await evaluate(`document.querySelector('[data-testid="db-board-add"]')?.getAttribute('aria-label') ?? ''`)).endsWith('에 새로 만들기')
+            && !(await evaluate(`document.querySelector('[data-testid="db-board-add"]')?.getAttribute('aria-label') ?? ''`)).includes('템플릿'),
+          await evaluate(`document.querySelector('[data-testid="db-board-add"]')?.getAttribute('aria-label')`))
+
+        // ── 해제 ──
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+        await waitFor(`!!document.querySelector('[data-testid="db-add-row-menu"]')`, 15000)
+        await clickOn('[data-testid="db-add-row-menu"]')
+        await waitFor(`!!document.querySelector('[data-testid="db-new-unset-default"]')`, 8000)
+        await clickOn('[data-testid="db-new-unset-default"]')
+        check('★ 기본을 해제하면 버튼이 다시 빈 항목을 말한다',
+          await waitFor(`document.querySelector('[data-testid="db-add-row"]')?.textContent.trim() === '+ 새로 만들기'`, 8000),
+          await evaluate(`document.querySelector('[data-testid="db-add-row"]')?.textContent`))
+        await key('Escape')
+      }
     }
 
     section('페이지 복제 (복제 6a · 6b · F-02-09 · F-08-01)')

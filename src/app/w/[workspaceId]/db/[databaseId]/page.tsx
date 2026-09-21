@@ -53,6 +53,8 @@ import { isGroupableType } from '@/lib/database/property-types'
 import { rowJson } from '@/lib/database/http'
 import { readOperatorCatalog } from '@/lib/database/operator-catalog'
 import { liveSorts } from '@/lib/database/filter-draft'
+import { readLiveTemplate } from '@/lib/database/template'
+import { withReadTransaction } from '@/lib/db/tx'
 import { ExportButton } from '../../export-button'
 import { DatabaseTitle } from './database-title'
 import { DatabaseTable } from './database-table'
@@ -164,6 +166,16 @@ export default async function DatabasePage({
       : await computeRollups(ctx, view.value.dataSourceId, firstRows.map((row) => row.id))
   const rollupValues = computed !== null && computed.ok ? computed.value : EMPTY_ROLLUP_PAGE
 
+  // ── 기본 템플릿(F-08-03) ──
+  // 뷰는 **살아 있는 템플릿일 때만** id 를 준다(`readView` · §3.3-176). 버튼이 그 이름을 말하므로 이름까지 읽는다 —
+  // "이 표의 살아 있는 템플릿인가"를 묻는 곳은 한 함수다(`readLiveTemplate`).
+  const defaultTemplateId = view.value.defaultTemplateId
+  const defaultRow =
+    defaultTemplateId === null
+      ? null
+      : await withReadTransaction((tx) => readLiveTemplate(tx, ctx, view.value.dataSourceId, defaultTemplateId))
+  const defaultTemplate = defaultRow === null ? null : { id: defaultRow.id, title: defaultRow.title }
+
   return (
     <main className="flex min-h-screen min-w-0 flex-col gap-6 px-10 py-12">
       <div className="flex items-start justify-between gap-3">
@@ -221,6 +233,7 @@ export default async function DatabasePage({
             key={contentKey}
             workspaceId={workspaceId}
             viewId={view.value.id}
+            dataSourceId={view.value.dataSourceId}
             tableName={name}
             columns={visibleColumns}
             property={groupProperty}
@@ -229,6 +242,7 @@ export default async function DatabasePage({
             groups={groups}
             relationLabels={relationLabels}
             access={access}
+            defaultTemplate={defaultTemplate}
           />
         ) : (
           <p className="px-2 text-sm text-neutral-500" data-testid="db-board-needs-group">
@@ -257,6 +271,7 @@ export default async function DatabasePage({
             rollupValues={rollupValues}
             access={access}
             sorts={sorts}
+            defaultTemplate={defaultTemplate}
           />
         )
       )}

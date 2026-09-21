@@ -85,8 +85,10 @@ import { cellText, defaultColumnWidth, draftOf, parseDraft, readCell, sameValue 
 import { handleGridKey, type CellPos, type GridMode, type KeyResult } from '@/lib/database/grid-nav'
 import { isCollapsed, isRelationCollapsed, isRollupCollapsed, type TableVariant } from '@/lib/database/list-layout'
 import { rollupIsEmpty, type RollupPage } from '@/lib/database/rollup-functions'
+import { newRowLabel, templateRowNote, type DefaultTemplate } from '@/lib/database/new-row'
 import * as api from './table-api'
 import { CellDisplay, RelationChips, RollupDisplay, TYPE_ICON, TYPE_LABEL, type RelationLabels } from './cell-view'
+import { NewRowMenu } from './new-row-menu'
 import { useRelationLabels } from './use-relation-labels'
 import { useRollupValues } from './use-rollup-values'
 import { SelectEditor } from './select-editor'
@@ -131,6 +133,8 @@ export function DatabaseTable(props: {
   relationLabels: RelationLabels
   /** 첫 화면의 rollup 값(서버 렌더가 계산해 준다). 그 뒤에 온 행의 것은 `useRollupValues` 가 받는다. */
   rollupValues: RollupPage
+  /** 이 뷰의 기본 템플릿(F-08-03). `New` 를 그냥 누르면 이것으로 만든다. 없으면 빈 항목이다. */
+  defaultTemplate?: DefaultTemplate | null
 }) {
   const { workspaceId, viewId, dataSourceId, tableName, access } = props
   const variant: TableVariant = props.variant ?? 'table'
@@ -150,6 +154,10 @@ export function DatabaseTable(props: {
   const [error, setError] = useState<string | null>(null)
   const [loadingMore, setLoadingMore] = useState(false)
   const [addingRow, setAddingRow] = useState(false)
+  /** 알릴 것 — 템플릿으로 만들었는데 빠진 것이 있을 때(`templateRowNote`). 오류가 아니므로 `error` 와 따로 둔다. */
+  const [notice, setNotice] = useState<string | null>(null)
+  /** 기본 템플릿은 `New ▾` 에서 바뀐다 — 서버 렌더를 다시 부르지 않고 이 화면이 들고 있는다. */
+  const [defaultTemplate, setDefaultTemplate] = useState<DefaultTemplate | null>(props.defaultTemplate ?? null)
 
   /**
    * 지금 상태를 **동기적으로** 들고 있는 사본.
@@ -436,21 +444,29 @@ export function DatabaseTable(props: {
 
   // ── 행 · 컬럼 ──────────────────────────────────────────────────────
 
-  const addRow = async () => {
+  /** `templateId` 가 `null` 이면 빈 항목이다. 무엇으로 만들지는 `New ▾` 가 정한다(`new-row-menu.tsx`). */
+  const addRow = async (templateId: string | null) => {
     setAddingRow(true)
     setError(null)
-    const result = await api.createRow(workspaceId, viewId)
+    setNotice(null)
+    const result = await api.createRowFrom(workspaceId, viewId, { templateId })
     setAddingRow(false)
     if (!result.ok) {
       setError(result.message)
       return
     }
+    const { row } = result.value
     const index = rows.length
-    setRows((current) => [...current, result.value])
+    setRows((current) => [...current, row])
+    // 템플릿에서 빠진 것이 있으면 말한다(§3.3-174). 없으면 아무 말도 하지 않는다.
+    setNotice(templateRowNote(result.value.skippedPages, result.value.skippedLinks))
     // 새 행의 제목 칸을 바로 편집한다 — 빈 행이 이름 없이 쌓이지 않게.
+    // ★ 초안은 **그 행의 지금 제목**이다. 빈 글자로 열면 템플릿이 준 제목("주간 회의")이 화면에서 사라지고, 그대로
+    //   빠져나가면 빈 제목이 **저장된다**(초안과 값이 다르므로). 빈 행이면 어차피 빈 글자다.
     const titleCol = columns.findIndex((c) => c.type === 'title')
-    if (titleCol >= 0 && access.canEditContent) {
-      setDraft('')
+    const column = columns[titleCol]
+    if (titleCol >= 0 && column !== undefined && isCellColumn(column) && access.canEditContent) {
+      setDraft(draftOf(valueAt(row, column)))
       setMode({ kind: 'editing', at: { row: index, col: titleCol } })
     }
   }
@@ -845,6 +861,11 @@ export function DatabaseTable(props: {
           {error}
         </p>
       )}
+      {notice && (
+        <p role="status" data-testid="db-notice" className="text-sm text-amber-700 dark:text-amber-300">
+          {notice}
+        </p>
+      )}
 
       {/*
         `record` 에는 꼬리줄이 **없다** — 행이 하나뿐이고 그것이 화면의 주제다(템플릿). "+ 새로 만들기"는 그 표에
@@ -854,15 +875,18 @@ export function DatabaseTable(props: {
       {!isRecord && (
       <div className="flex flex-wrap items-center gap-3 text-sm">
         {access.canCreateRows && (
-          <button
-            type="button"
-            data-testid="db-add-row"
-            disabled={addingRow}
-            onClick={() => void addRow()}
-            className="rounded-md px-2 py-1 text-neutral-500 hover:bg-neutral-100 disabled:opacity-40 dark:hover:bg-neutral-800"
-          >
-            {addingRow ? '만드는 중…' : '+ 새로 만들기'}
-          </button>
+          <NewRowMenu
+            workspaceId={workspaceId}
+            viewId={viewId}
+            dataSourceId={dataSourceId}
+            defaultTemplate={defaultTemplate}
+            canSetDefault={access.canEditStructure}
+            busy={addingRow}
+            onCreate={(templateId) => void addRow(templateId)}
+            onDefaultChange={setDefaultTemplate}
+            label={addingRow ? '만드는 중…' : newRowLabel(defaultTemplate)}
+            testId="db-add-row"
+          />
         )}
 
         {hasMore && !reachedCap && (

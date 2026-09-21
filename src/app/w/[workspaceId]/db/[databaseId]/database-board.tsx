@@ -68,8 +68,10 @@ import {
   type ColumnBox,
   type DropTarget,
 } from '@/lib/database/board-drag'
+import { templateRowNote, UNTITLED_TEMPLATE, type DefaultTemplate } from '@/lib/database/new-row'
 import * as api from './table-api'
 import { CellDisplay, OptionChip, RelationChips, type RelationLabels } from './cell-view'
+import { NewRowMenu } from './new-row-menu'
 import { useRelationLabels } from './use-relation-labels'
 
 /** `GET /groups` 의 그룹 하나 — 행은 `rowJson`. 서버 렌더(`page.tsx`)도 같은 모양으로 내려준다. */
@@ -114,6 +116,8 @@ const sameTarget = (a: DropTarget | null, b: DropTarget | null): boolean =>
 export function DatabaseBoard(props: {
   workspaceId: string
   viewId: string
+  /** 템플릿 목록을 묻는 데 쓴다(`New ▾` · 템플릿은 표의 것이다). */
+  dataSourceId: string
   tableName: string
   /** 보이는 컬럼만, 뷰 순서로. 카드의 배지가 이 순서다. */
   columns: ViewColumn[]
@@ -124,8 +128,10 @@ export function DatabaseBoard(props: {
   access: DatabaseAccess
   /** 첫 화면의 relation 제목(서버 렌더가 준다). 그 뒤에 온 카드의 것은 `useRelationLabels` 가 받는다. */
   relationLabels: RelationLabels
+  /** 이 뷰의 기본 템플릿(F-08-03). 열의 `+` 를 그냥 누르면 이것으로 만든다 — 그 열의 값이 템플릿의 값을 덮는다. */
+  defaultTemplate?: DefaultTemplate | null
 }) {
-  const { workspaceId, viewId, tableName, columns, property, groupBy, manualOrder, access } = props
+  const { workspaceId, viewId, dataSourceId, tableName, columns, property, groupBy, manualOrder, access } = props
   const router = useRouter()
 
   const [groups, setGroupsState] = useState<readonly BoardGroupJson[]>(props.groups)
@@ -135,6 +141,10 @@ export function DatabaseBoard(props: {
   const [editing, setEditingState] = useState<Editing | null>(null)
   const [busyKey, setBusyKey] = useState<string | null>(null)
   const [loadingKey, setLoadingKey] = useState<string | null>(null)
+  /** 템플릿으로 만들었는데 빠진 것이 있으면(`templateRowNote`). 오류가 아니다. */
+  const [notice, setNotice] = useState<string | null>(null)
+  /** 기본 템플릿 — 어느 열의 `▾` 에서 바꿔도 **모든 열**의 `+` 가 따른다. 그래서 열이 아니라 보드가 들고 있다. */
+  const [defaultTemplate, setDefaultTemplate] = useState<DefaultTemplate | null>(props.defaultTemplate ?? null)
 
   /**
    * 지금 상태의 동기 사본. 드롭 → 낙관적 갱신 → 응답 → 갈아 끼우기가 한 상태에서 이어지도록 모든 갱신이 여기를 거친다
@@ -335,22 +345,33 @@ export function DatabaseBoard(props: {
 
   // ── 새 카드 · 제목 ──────────────────────────────────────────────────
 
-  const addCard = async (group: BoardGroupJson) => {
+  /** `templateId` 가 `null` 이면 빈 카드다. 무엇으로 만들지는 열의 `New ▾` 가 정한다(`new-row-menu.tsx`). */
+  const addCard = async (group: BoardGroupJson, templateId: string | null) => {
     if (busyKey !== null) return
     setBusyKey(group.key)
     setError(null)
+    setNotice(null)
     // F-04-03: 그 그룹 값이 미리 채워진 새 카드. 값이 곧 그룹이라 열에서 사라지지 않는다.
-    const result = await api.createRow(workspaceId, viewId, prefillCells(property.type, property.id, group.key))
+    // 템플릿으로 만들어도 이 값이 **템플릿의 값을 덮는다**(08 F-08-03 — 서버가 호출자의 셀을 나중에 쓴다).
+    const result = await api.createRowFrom(workspaceId, viewId, {
+      templateId,
+      cells: prefillCells(property.type, property.id, group.key),
+    })
     setBusyKey(null)
     if (!result.ok) {
       setError(result.message)
       return
     }
+    const { row } = result.value
     update((current) =>
-      current.map((g) => (g.key === group.key ? { ...g, rows: [...g.rows, result.value], count: g.count + 1 } : g)),
+      current.map((g) => (g.key === group.key ? { ...g, rows: [...g.rows, row], count: g.count + 1 } : g)),
     )
+    setNotice(templateRowNote(result.value.skippedPages, result.value.skippedLinks))
     // 새 카드의 제목을 바로 받는다 — 이름 없는 카드가 쌓이지 않게(표와 같은 규칙).
-    if (access.canEditContent && titleColumn !== null) setEditing({ rowId: result.value.id, draft: '' })
+    // ★ 초안은 그 카드의 **지금 제목**이다 — 템플릿이 준 제목을 빈 글자로 덮지 않는다(표의 `addRow` 와 같은 이유).
+    if (access.canEditContent && titleColumn !== null) {
+      setEditing({ rowId: row.id, draft: cellText(readCell('title', row.properties[titleColumn.propertyId])) })
+    }
   }
 
   const commitTitle = async () => {
@@ -454,16 +475,25 @@ export function DatabaseBoard(props: {
                 </span>
                 <span className="ml-auto flex items-center">
                   {access.canCreateRows && (
-                    <button
-                      type="button"
-                      aria-label={`${label}에 새로 만들기`}
-                      data-testid="db-board-add"
-                      disabled={busyKey !== null}
-                      onClick={() => void addCard(group)}
-                      className="rounded px-1.5 text-neutral-500 hover:bg-neutral-200 disabled:opacity-40 dark:hover:bg-neutral-800"
-                    >
-                      +
-                    </button>
+                    <NewRowMenu
+                      workspaceId={workspaceId}
+                      viewId={viewId}
+                      dataSourceId={dataSourceId}
+                      defaultTemplate={defaultTemplate}
+                      canSetDefault={access.canEditStructure}
+                      busy={busyKey !== null}
+                      onCreate={(templateId) => void addCard(group, templateId)}
+                      onDefaultChange={setDefaultTemplate}
+                      label="+"
+                      ariaLabel={
+                        defaultTemplate === null
+                          ? `${label}에 새로 만들기`
+                          : `${label}에 ${defaultTemplate.title || UNTITLED_TEMPLATE} 템플릿으로 새로 만들기`
+                      }
+                      // 오른쪽 열에서 왼쪽 기준으로 열면 목록이 화면 밖으로 나간다.
+                      align="right"
+                      testId="db-board-add"
+                    />
                   )}
                   {access.canEditStructure && (
                     <button
@@ -563,6 +593,11 @@ export function DatabaseBoard(props: {
       {error && (
         <p role="alert" data-testid="db-error" className="text-sm text-red-600 dark:text-red-400">
           {error}
+        </p>
+      )}
+      {notice && (
+        <p role="status" data-testid="db-notice" className="text-sm text-amber-700 dark:text-amber-300">
+          {notice}
         </p>
       )}
     </section>
