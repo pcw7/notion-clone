@@ -42,6 +42,8 @@ import { effectiveCaps, principalsOf, resolveCaps, type AclRow } from './effecti
 export type PrincipalRef =
   | { readonly type: 'user'; readonly id: string }
   | { readonly type: 'group'; readonly id: string }
+  /** 그 teamspace 의 멤버 전원(7c-1) — 사람으로 받았든 그룹을 거쳐 받았든. */
+  | { readonly type: 'teamspace'; readonly id: string }
   | { readonly type: 'workspace_everyone' }
 
 export type AclFailure =
@@ -50,14 +52,14 @@ export type AclFailure =
   | 'forbidden'
   /** 마지막 관리자를 지우면 아무도 이 페이지를 고칠 수 없게 된다. */
   | 'would_orphan'
-  /** 이 워크스페이스의 살아 있는 그룹이 아니다 — 지운 그룹에 주면 아무에게도 닿지 않는 행이 남는다. */
+  /** 이 워크스페이스의 살아 있는 그룹 · teamspace 가 아니다 — 주면 아무에게도 닿지 않는 행이 남는다. */
   | 'invalid_principal'
 
 export type AclResult<T = void> =
   | ({ readonly ok: true } & (T extends void ? object : { readonly value: T }))
   | { readonly ok: false; readonly reason: AclFailure }
 
-type NodeRow = { id: string; ancestor_path: string[]; perm_scope_id: string; parent_id: string }
+type NodeRow = { id: string; ancestor_path: string[]; perm_scope_id: string; parent_type: string; parent_id: string }
 
 async function loadNode(tx: Tx, ctx: SessionContext, nodeId: string): Promise<NodeRow | null> {
   return tx.queryMaybe<NodeRow>(
@@ -69,7 +71,7 @@ async function loadNode(tx: Tx, ctx: SessionContext, nodeId: string): Promise<No
     // 본문 블록(paragraph 등)은 여전히 제외한다 — 권한 경계는 페이지·데이터베이스
     // 단위이고, 문단마다 ACL 을 걸 수 있게 두면 `perm_scope_id` 재계산이
     // 본문 편집마다 일어난다.
-    `SELECT id, ancestor_path, perm_scope_id, parent_id
+    `SELECT id, ancestor_path, perm_scope_id, parent_type, parent_id
        FROM block WHERE id = $1 AND workspace_id = $2 AND type IN ('page', 'database')`,
     [nodeId, ctx.workspaceId],
   )
@@ -92,6 +94,35 @@ function principalColumns(principal: PrincipalRef): { type: string; id: string |
   return principal.type === 'workspace_everyone'
     ? { type: 'workspace_everyone', id: null }
     : { type: principal.type, id: principal.id }
+}
+
+/**
+ * 이 워크스페이스의 보관되지 않은 teamspace 인가. `FOR SHARE` 로 잡는다 — 그룹과 같은 이유(보관 · 지우기와 겹치지 않게).
+ */
+async function lockLiveTeamspace(tx: Tx, ctx: SessionContext, teamspaceId: string): Promise<boolean> {
+  const row = await tx.queryMaybe<{ one: number }>(
+    `SELECT 1 AS one FROM teamspace
+      WHERE id = $1 AND workspace_id = $2 AND archived_at IS NULL
+      FOR SHARE`,
+    [teamspaceId, ctx.workspaceId],
+  )
+  return row !== null
+}
+
+/**
+ * 이 노드가 속한 teamspace — 루트 블록(`ancestor_path[1]`, 없으면 자기)의 부모가 teamspace 면 그 id, 아니면 null.
+ *
+ * teamspace 는 `ancestor_path` 에 들어가지 않는다(판결문 C-9 · `effective.ts` `ChainRow`). 상속을 복사하거나 상속된
+ * 것을 보여줄 때 조상 사슬의 끝에 이 노드를 붙인다 — 빠뜨리면 teamspace 페이지의 상속을 끊는 순간 **멤버 전원이
+ * 접근을 잃는다**(불변식 P1).
+ */
+async function teamspaceOf(tx: Tx, node: NodeRow): Promise<string | null> {
+  if (node.ancestor_path.length === 0) return node.parent_type === 'teamspace' ? node.parent_id : null
+  const root = await tx.queryMaybe<{ parent_type: string; parent_id: string }>(
+    `SELECT parent_type, parent_id FROM block WHERE id = $1`,
+    [node.ancestor_path[0]],
+  )
+  return root?.parent_type === 'teamspace' ? root.parent_id : null
 }
 
 /**
@@ -148,11 +179,14 @@ async function isCut(tx: Tx, nodeId: string): Promise<boolean> {
 
 /** 부모가 따르는 스코프. 상속을 다시 시작할 때 돌아갈 자리다. */
 async function parentScope(tx: Tx, ctx: SessionContext, node: NodeRow): Promise<string> {
+  // teamspace 최상위의 부모는 그 teamspace 다 — 정본 §3.11 이 경계가 없는 노드의 스코프를 *"teamspace 루트"* 로 정했다.
+  // 자기 자신으로 돌아가면 행이 하나도 없는 노드가 경계로 남아 목록(스코프)이 그 페이지를 잃는다.
+  if (node.parent_type === 'teamspace') return node.parent_id
   const parent = await tx.queryMaybe<{ perm_scope_id: string }>(
     `SELECT perm_scope_id FROM block WHERE id = $1 AND workspace_id = $2`,
     [node.parent_id, ctx.workspaceId],
   )
-  // 루트 페이지는 부모가 워크스페이스다 — 돌아갈 상위 스코프가 없으므로 자기 자신이다.
+  // 워크스페이스 직속 페이지는 돌아갈 상위 스코프가 없다 — 자기 자신이다.
   return parent?.perm_scope_id ?? node.id
 }
 
@@ -175,6 +209,9 @@ export async function grantAccess(
     const denied = await gate(tx, ctx, pageId, 'manage_perm')
     if (denied !== null) return { ok: false, reason: denied } as const
     if (principal.type === 'group' && !(await lockLiveGroup(tx, ctx, principal.id))) {
+      return { ok: false, reason: 'invalid_principal' } as const
+    }
+    if (principal.type === 'teamspace' && !(await lockLiveTeamspace(tx, ctx, principal.id))) {
       return { ok: false, reason: 'invalid_principal' } as const
     }
 
@@ -282,7 +319,7 @@ export async function stopInheriting(ctx: SessionContext, pageId: string): Promi
 
     // 조상(자기 자신 제외)의 모든 grant. 절단된 조상을 만나면 거기서 멈춘다.
     const ancestors = [...node.ancestor_path].reverse()
-    const inherited = await inheritedGrants(tx, ancestors)
+    const inherited = await inheritedGrants(tx, ancestors, await teamspaceOf(tx, node))
 
     for (const [key, level] of inherited) {
       const [type, id] = key.split(' ')
@@ -315,15 +352,23 @@ export async function stopInheriting(ctx: SessionContext, pageId: string): Promi
  * 표현하는 레벨이 없을 수 있어서(A2: 전순서가 아니다) 표현 가능한 값 중 고르는
  * 쪽이 정직하다 — 없는 레벨을 지어내지 않는다.
  */
-async function inheritedGrants(tx: Tx, ancestors: string[]): Promise<Map<string, Level>> {
+async function inheritedGrants(
+  tx: Tx,
+  ancestors: string[],
+  teamspaceId: string | null = null,
+): Promise<Map<string, Level>> {
   const result = new Map<string, Level>()
-  if (ancestors.length === 0) return result
+  // teamspace 노드는 사슬의 맨 끝이다 — 끊긴 조상을 만나면 거기서 멈추므로 닿지 않는다.
+  const chain = teamspaceId === null ? ancestors : [...ancestors, teamspaceId]
+  if (chain.length === 0) return result
 
   const [entries, cuts] = await Promise.all([
     tx.query<AclRow>(
       `SELECT node_id, principal_type, principal_id, level
-         FROM acl_entry WHERE node_kind = 'block' AND node_id = ANY($1::uuid[])`,
-      [ancestors],
+         FROM acl_entry
+        WHERE (node_kind = 'block' AND node_id = ANY($1::uuid[]))
+           OR (node_kind = 'teamspace' AND node_id = $2)`,
+      [ancestors, teamspaceId],
     ),
     tx.query<{ node_id: string }>(
       `SELECT node_id FROM block_acl_meta
@@ -333,7 +378,7 @@ async function inheritedGrants(tx: Tx, ancestors: string[]): Promise<Map<string,
   ])
   const cutSet = new Set(cuts.map((c) => c.node_id))
 
-  for (const nodeId of ancestors) {
+  for (const nodeId of chain) {
     for (const row of entries.filter((e) => e.node_id === nodeId)) {
       const key = `${row.principal_type} ${row.principal_id ?? ''}`
       const current = result.get(key)
@@ -544,7 +589,7 @@ export async function listAccess(
     }))
 
     if (!(await isCut(tx, pageId))) {
-      const inherited = await inheritedGrants(tx, [...node.ancestor_path].reverse())
+      const inherited = await inheritedGrants(tx, [...node.ancestor_path].reverse(), await teamspaceOf(tx, node))
       for (const [key, level] of inherited) {
         const [type, id] = key.split(' ')
         const principalId = id === '' ? null : id
