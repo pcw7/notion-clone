@@ -1464,6 +1464,10 @@ try {
       ['sso_config', 'tg_collab_access_sso_config'],
       ['user_session', 'tg_collab_access_user_session'],
       ['user_session', 'tg_collab_access_user_session_delete'],
+      // 7a조각 — 그룹 멤버십이 판정의 입력이 됐다(0027 ③)
+      ['group_member', 'tg_collab_access_group_member'],
+      ['group_member', 'tg_collab_access_group_member_update'],
+      ['group', 'tg_collab_access_group'],
     ]
     const { rows } = await client.query(
       `SELECT c.relname AS tbl, t.tgname AS name, t.tgenabled AS enabled
@@ -1742,6 +1746,61 @@ try {
         fail(`link_edge 에 걸면 안 되는 FK 가 있다: ${rows.map((r) => `${r.conname}(${r.cols})`).join(', ')}`)
       }
     }
+  }
+
+  console.log('\n[14] 그룹 (0027 / §3.3 G2 · 이름 · F-06-03 · 7a조각)')
+  {
+    // 그룹은 판정의 입력이다(P(U)). 게스트가 살아 있는 그룹 행을 가지면 판정은 무시하지만(principalsOf), 넣는 쪽은 DB 가 막는다.
+    const person = async (name, role) => {
+      const id = randomUUID()
+      const eid = randomUUID()
+      await client.query(`INSERT INTO "user" (id, name, primary_email_id, created_at) VALUES ($1,$2,$3, now())`, [id, name, eid])
+      await client.query(
+        `INSERT INTO user_email (id, user_id, email, verified_at, is_primary, added_at) VALUES ($1,$2,$3, now(), true, now())`,
+        [eid, id, `${name}@example.com`],
+      )
+      if (role) {
+        await client.query(`INSERT INTO workspace_member (workspace_id, user_id, role, status) VALUES ($1,$2,$3,'active')`, [
+          wsId,
+          id,
+          role,
+        ])
+      }
+      return id
+    }
+    const memberId = await person('group_member1', 'member')
+    const restrictedId = await person('group_restricted1', 'restricted_member')
+    const guestId = await person('group_guest1', 'guest')
+    const outsiderId = await person('group_outsider1', null)
+    const groupId = randomUUID()
+    await client.query(`INSERT INTO "group" (id, workspace_id, name) VALUES ($1,$2,'Design')`, [groupId, wsId])
+    await client.query(`INSERT INTO group_member (group_id, user_id) VALUES ($1,$2), ($1,$3)`, [groupId, memberId, restrictedId])
+    ok('멤버 · restricted_member 를 그룹에 넣기 (G3)')
+
+    const addMember = `INSERT INTO group_member (group_id, user_id) VALUES ($1,$2)`
+    await mustReject('G2: 게스트를 그룹에', addMember, [groupId, guestId])
+    await mustReject('G2: 이 워크스페이스 멤버가 아닌 사람을 그룹에', addMember, [groupId, outsiderId])
+
+    // 빠진 행은 누구의 것이든 남을 수 있다(M1 의 복원 창) — 되살리는 쪽을 막는다.
+    await client.query(`INSERT INTO group_member (group_id, user_id, removed_at) VALUES ($1,$2, now())`, [groupId, guestId])
+    ok('빠진 게스트 행(removed_at)은 남을 수 있다 — M1')
+    await mustReject(
+      'G2: 빠진 게스트 행을 UPDATE 로 되살리기',
+      `UPDATE group_member SET removed_at = NULL WHERE group_id = $1 AND user_id = $2`,
+      [groupId, guestId],
+    )
+
+    const addGroup = `INSERT INTO "group" (id, workspace_id, name) VALUES ($1,$2,$3)`
+    await mustReject('이름: 대소문자만 다른 살아 있는 그룹', addGroup, [randomUUID(), wsId, 'DESIGN'])
+    await client.query(`UPDATE "group" SET deleted_at = now() WHERE id = $1`, [groupId])
+    await client.query('SAVEPOINT reuse')
+    try {
+      await client.query(addGroup, [randomUUID(), wsId, 'design'])
+      ok('이름: 지운 그룹의 이름은 다시 쓸 수 있다 (부분 UNIQUE — §3.1-2n)')
+    } catch (e) {
+      fail(`지운 그룹이 이름을 붙잡았다 (${e.code})`)
+    }
+    await client.query('ROLLBACK TO SAVEPOINT reuse')
   }
 
   await client.query('ROLLBACK')

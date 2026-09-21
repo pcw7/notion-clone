@@ -23,7 +23,16 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 
-type Principal = { type: 'user'; id: string } | { type: 'workspace_everyone' }
+import {
+  choiceValue,
+  entryLabel,
+  groupLabel,
+  memberLabel,
+  parseChoice,
+  principalOfEntry,
+  type ShareGroup,
+  type ShareMember,
+} from './share-principals'
 
 type AccessEntry = {
   principalType: string
@@ -32,12 +41,11 @@ type AccessEntry = {
   inherited: boolean
 }
 
-type Member = { userId: string; name: string; email: string | null }
-
 type AccessState = {
   canManage: boolean
   entries: AccessEntry[]
-  members: Member[]
+  members: ShareMember[]
+  groups: ShareGroup[]
 }
 
 /** 페이지에 줄 수 있는 레벨. `create`·`edit_content` 는 database 전용이다. */
@@ -47,8 +55,6 @@ const PAGE_LEVELS: readonly { value: string; label: string }[] = [
   { value: 'edit', label: '편집' },
   { value: 'full_access', label: '전체 권한' },
 ]
-
-const EVERYONE = '워크스페이스 모든 멤버'
 
 export function SharePanel({ workspaceId, pageId }: { workspaceId: string; pageId: string }) {
   const router = useRouter()
@@ -78,7 +84,7 @@ export function SharePanel({ workspaceId, pageId }: { workspaceId: string; pageI
         return
       }
       const data = await res.json()
-      setState({ canManage: data.canManage, entries: data.entries, members: data.members })
+      setState({ canManage: data.canManage, entries: data.entries, members: data.members, groups: data.groups ?? [] })
     } catch {
       setError('연결에 실패했습니다.')
     }
@@ -126,20 +132,14 @@ export function SharePanel({ workspaceId, pageId }: { workspaceId: string; pageI
     [url, load, router],
   )
 
-  const principalOf = (entry: AccessEntry): Principal =>
-    entry.principalType === 'user'
-      ? { type: 'user', id: String(entry.principalId) }
-      : { type: 'workspace_everyone' }
-
-  const nameOf = (entry: AccessEntry): string => {
-    if (entry.principalType === 'workspace_everyone') return EVERYONE
-    const member = state?.members.find((m) => m.userId === entry.principalId)
-    return member ? (member.email ? `${member.name} (${member.email})` : member.name) : '알 수 없는 사용자'
-  }
+  const nameOf = (entry: AccessEntry): string => entryLabel(entry, state?.members ?? [], state?.groups ?? [])
 
   const inheriting = state?.entries.some((e) => e.inherited) ?? false
-  const listed = new Set(state?.entries.map((e) => e.principalId).filter(Boolean) ?? [])
-  const addable = (state?.members ?? []).filter((m) => !listed.has(m.userId))
+  const listed = new Set(
+    (state?.entries ?? []).map((e) => principalOfEntry(e)).flatMap((p) => (p && p.type !== 'workspace_everyone' ? [choiceValue(p)] : [])),
+  )
+  const addableMembers = (state?.members ?? []).filter((m) => !listed.has(choiceValue({ type: 'user', id: m.userId })))
+  const addableGroups = (state?.groups ?? []).filter((g) => !listed.has(choiceValue({ type: 'group', id: g.groupId })))
 
   return (
     <div className="relative">
@@ -173,7 +173,10 @@ export function SharePanel({ workspaceId, pageId }: { workspaceId: string; pageI
           {state !== null && (
             <>
               <ul className="flex flex-col gap-2">
-                {state.entries.map((entry) => (
+                {state.entries.map((entry) => {
+                  // 모르는 종류의 주체는 null — 그 행은 고치지 못하게 읽기 전용으로 그린다(`share-principals.ts`).
+                  const principal = principalOfEntry(entry)
+                  return (
                   <li
                     key={`${entry.principalType}:${entry.principalId ?? ''}`}
                     className="flex items-center justify-between gap-2 text-sm"
@@ -185,7 +188,7 @@ export function SharePanel({ workspaceId, pageId }: { workspaceId: string; pageI
                       {entry.inherited && <span className="ml-1 text-xs">(상위에서 상속됨)</span>}
                     </span>
 
-                    {state.canManage ? (
+                    {state.canManage && principal !== null ? (
                       <span className="flex flex-none items-center gap-1">
                         <select
                           aria-label={`${nameOf(entry)} 권한`}
@@ -195,8 +198,8 @@ export function SharePanel({ workspaceId, pageId }: { workspaceId: string; pageI
                             void run(
                               // 상속된 줄의 레벨을 바꾸는 것도 이 노드에 부여하는 일이다.
                               entry.inherited
-                                ? [{ action: 'restrict' }, { action: 'grant', principal: principalOf(entry), level: e.target.value }]
-                                : [{ action: 'grant', principal: principalOf(entry), level: e.target.value }],
+                                ? [{ action: 'restrict' }, { action: 'grant', principal, level: e.target.value }]
+                                : [{ action: 'grant', principal, level: e.target.value }],
                             )
                           }
                           className="rounded border border-neutral-300 bg-transparent px-1 py-0.5 text-xs dark:border-neutral-700"
@@ -214,8 +217,8 @@ export function SharePanel({ workspaceId, pageId }: { workspaceId: string; pageI
                             void run(
                               // ★ 상속된 주체를 지우려면 먼저 끊어야 한다(머리말).
                               entry.inherited
-                                ? [{ action: 'restrict' }, { action: 'revoke', principal: principalOf(entry) }]
-                                : [{ action: 'revoke', principal: principalOf(entry) }],
+                                ? [{ action: 'restrict' }, { action: 'revoke', principal }]
+                                : [{ action: 'revoke', principal }],
                               entry.inherited ? '이제 이 페이지는 따로 관리됩니다.' : undefined,
                             )
                           }
@@ -230,7 +233,8 @@ export function SharePanel({ workspaceId, pageId }: { workspaceId: string; pageI
                       </span>
                     )}
                   </li>
-                ))}
+                  )
+                })}
               </ul>
 
               {state.canManage && (
@@ -239,10 +243,9 @@ export function SharePanel({ workspaceId, pageId }: { workspaceId: string; pageI
                     className="mt-3 flex items-center gap-1 border-t border-neutral-200 pt-3 dark:border-neutral-800"
                     onSubmit={(e) => {
                       e.preventDefault()
-                      if (addUser === '') return
-                      void run([
-                        { action: 'grant', principal: { type: 'user', id: addUser }, level: addLevel },
-                      ])
+                      const principal = parseChoice(addUser)
+                      if (principal === null) return
+                      void run([{ action: 'grant', principal, level: addLevel }])
                       setAddUser('')
                     }}
                   >
@@ -252,12 +255,25 @@ export function SharePanel({ workspaceId, pageId }: { workspaceId: string; pageI
                       onChange={(e) => setAddUser(e.target.value)}
                       className="min-w-0 flex-1 rounded border border-neutral-300 bg-transparent px-1 py-0.5 text-xs dark:border-neutral-700"
                     >
-                      <option value="">사람 선택…</option>
-                      {addable.map((m) => (
-                        <option key={m.userId} value={m.userId}>
-                          {m.email ? `${m.name} (${m.email})` : m.name}
-                        </option>
-                      ))}
+                      <option value="">사람 · 그룹 선택…</option>
+                      {addableMembers.length > 0 && (
+                        <optgroup label="사람">
+                          {addableMembers.map((m) => (
+                            <option key={m.userId} value={choiceValue({ type: 'user', id: m.userId })}>
+                              {memberLabel(m)}
+                            </option>
+                          ))}
+                        </optgroup>
+                      )}
+                      {addableGroups.length > 0 && (
+                        <optgroup label="그룹">
+                          {addableGroups.map((g) => (
+                            <option key={g.groupId} value={choiceValue({ type: 'group', id: g.groupId })}>
+                              {groupLabel(g)}
+                            </option>
+                          ))}
+                        </optgroup>
+                      )}
                     </select>
                     <select
                       aria-label="줄 권한"

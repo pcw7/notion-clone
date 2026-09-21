@@ -1245,6 +1245,132 @@ async function main() {
       await panelText())
     check('막힌 뒤에도 권한은 그대로다', (await panelText()).includes('워크스페이스 모든 멤버'))
 
+    section('그룹 — 라우트 · 공유 패널 (7a · F-06-03)')
+    {
+      // 그룹은 권한의 주체다. 라우트로 만들고 넣고, 공유 패널에서 그룹 행이 **그룹으로** 다뤄지는지 본다 — 사용자가 아니면
+      // 모든 멤버로 읽던 옛 규칙이 남아 있으면 그룹 행의 레벨 바꾸기 · 제거가 모든 멤버의 행을 건드린다.
+      const groupMate = await joinAs(workspaceId, await createUser('그룹 동료'), 'member')
+      const asGroupMate = { ...json, cookie: `nc_session=${groupMate.token}` }
+      const groupsUrl = `${BASE}/api/workspaces/${workspaceId}/groups`
+      const postJson = (url, headers, body) => fetch(url, { method: 'POST', headers, body: JSON.stringify(body) })
+
+      const firstName = `디자인팀 ${Date.now()}`
+      const madeRes = await postJson(groupsUrl, authed, { name: firstName })
+      const made = await madeRes.json()
+      check('owner 가 그룹을 만든다 (201)', madeRes.status === 201 && made.group?.name === firstName, JSON.stringify(made))
+      const firstGroup = made.group.id
+      check('같은 이름(대소문자 무시)은 409 duplicate_name',
+        (await postJson(groupsUrl, authed, { name: firstName.toUpperCase() })).status === 409)
+      check('member 는 그룹을 못 만든다 (403)', (await postJson(groupsUrl, asGroupMate, { name: `몰래 ${Date.now()}` })).status === 403)
+
+      const addRes = await postJson(`${groupsUrl}/${firstGroup}/members`, authed, { userId: groupMate.userId })
+      check('owner 가 동료를 그룹에 넣는다', addRes.status === 200, await addRes.text())
+      const seenByMate = await (await fetch(groupsUrl, { headers: asGroupMate })).json()
+      check('member 도 그룹 목록을 본다 — 인원이 1이다',
+        seenByMate.groups?.some((g) => g.id === firstGroup && g.memberCount === 1), JSON.stringify(seenByMate))
+
+      // 소유자만 보는 페이지를 그룹에 준다.
+      const groupPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: '{}' })).json()).page.id
+      const accessUrl = `${BASE}/api/workspaces/${workspaceId}/pages/${groupPage}/access`
+      const ownerId = ctx.userId
+      for (const body of [
+        { action: 'grant', principal: { type: 'user', id: ownerId }, level: 'full_access' },
+        { action: 'revoke', principal: { type: 'workspace_everyone' } },
+      ]) {
+        await postJson(accessUrl, authed, body)
+      }
+      check('전제: 그룹에 주기 전에는 동료가 못 본다 (404)', (await fetch(accessUrl, { headers: asGroupMate })).status === 404)
+      const grantRes = await postJson(accessUrl, authed, { action: 'grant', principal: { type: 'group', id: firstGroup }, level: 'view' })
+      check('그룹에 읽기를 준다', grantRes.status === 200, await grantRes.text())
+      check('★ 동료는 그룹으로 그 페이지를 본다', (await fetch(accessUrl, { headers: asGroupMate })).status === 200)
+
+      // 공유 패널 — 그룹 행이 이름으로 보인다.
+      const firstLabel = `그룹 · ${firstName} (1명)`
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${groupPage}` })
+      await waitFor(`[...document.querySelectorAll('button')].some((b) => b.textContent.trim() === '공유')`, 15000)
+      await clickText('공유')
+      check('★ 공유 패널이 그룹을 이름과 인원으로 보여 준다',
+        await waitFor(`(document.querySelector('[role="dialog"][aria-label="공유 설정"]')?.textContent ?? '').includes(${JSON.stringify(firstLabel)})`, 5000),
+        await panelText())
+
+      // 그룹 행의 레벨 바꾸기 — 그 그룹의 레벨이 바뀌고 모든 멤버의 행은 생기지 않는다.
+      const serverEntries = async () => (await (await fetch(accessUrl, { headers: authed })).json()).entries
+      const chooseIn = (selector, value) => evaluate(`(() => {
+        const s = document.querySelector(${JSON.stringify(selector)})
+        if (!s) return false
+        const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set
+        setter.call(s, ${JSON.stringify(value)})
+        s.dispatchEvent(new Event('change', { bubbles: true }))
+        return true
+      })()`)
+      check('그룹 행의 권한을 "편집"으로 바꾼다', await chooseIn(`select[aria-label=${JSON.stringify(`${firstLabel} 권한`)}]`, 'edit'))
+      const afterLevel = await (async () => {
+        for (let i = 0; i < 40; i += 1) {
+          const entries = await serverEntries()
+          if (entries.some((e) => e.principalType === 'group' && e.level === 'edit')) return entries
+          await sleep(100)
+        }
+        return serverEntries()
+      })()
+      check('★ 그룹 행의 레벨을 바꾸면 그 그룹이 바뀐다 — 모든 멤버에게 새로 주지 않는다',
+        afterLevel.some((e) => e.principalType === 'group' && e.principalId === firstGroup && e.level === 'edit') &&
+          !afterLevel.some((e) => e.principalType === 'workspace_everyone'),
+        JSON.stringify(afterLevel))
+
+      // 추가 고르개 — 사람과 그룹이 한 목록이다. 두 번째 그룹을 골라 넣는다.
+      const secondName = `운영팀 ${Date.now()}`
+      const second = (await (await postJson(groupsUrl, authed, { name: secondName })).json()).group.id
+      await clickText('공유') // 닫고
+      await clickText('공유') // 다시 열어 새 그룹 목록을 받는다
+      await waitFor(`!!document.querySelector('select[aria-label="추가할 사람"] option[value="group:${second}"]')`, 5000)
+      check('추가 고르개에 그룹이 있다 — 사람과 한 목록',
+        await evaluate(`!!document.querySelector('select[aria-label="추가할 사람"] optgroup[label="그룹"] option[value="group:${second}"]')`))
+      await chooseIn('select[aria-label="추가할 사람"]', `group:${second}`)
+      await chooseIn('select[aria-label="줄 권한"]', 'view')
+      check('"추가"를 누른다', await clickText('추가', '[role="dialog"][aria-label="공유 설정"] button'))
+      const secondLabel = `그룹 · ${secondName} (0명)`
+      check('★ 고른 그룹이 그룹 주체로 추가된다',
+        await waitFor(`(document.querySelector('[role="dialog"][aria-label="공유 설정"]')?.textContent ?? '').includes(${JSON.stringify(secondLabel)})`, 5000) &&
+          (await serverEntries()).some((e) => e.principalType === 'group' && e.principalId === second && e.level === 'view'),
+        await panelText())
+
+      // 그룹 행의 "제거" — 그 그룹만 지운다.
+      const removeBox = await evaluate(`(() => {
+        const li = [...document.querySelectorAll('[role="dialog"][aria-label="공유 설정"] li')].find((l) => l.textContent.includes(${JSON.stringify(secondLabel)}))
+        const btn = li && [...li.querySelectorAll('button')].find((b) => b.textContent.trim() === '제거')
+        if (!btn) return null
+        const r = btn.getBoundingClientRect()
+        return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+      })()`)
+      if (removeBox) await click(removeBox.x, removeBox.y)
+      const afterRemove = await (async () => {
+        for (let i = 0; i < 40; i += 1) {
+          const entries = await serverEntries()
+          if (!entries.some((e) => e.principalId === second)) return entries
+          await sleep(100)
+        }
+        return serverEntries()
+      })()
+      check('★ 그룹 행의 "제거"는 그 그룹만 지운다',
+        removeBox !== null &&
+          !afterRemove.some((e) => e.principalId === second) &&
+          afterRemove.some((e) => e.principalId === firstGroup) &&
+          afterRemove.some((e) => e.principalType === 'user' && e.principalId === ownerId),
+        JSON.stringify(afterRemove))
+      // 패널의 조작은 끝에 `router.refresh()` 를 부르고 그 응답은 스트림이다. 서버의 행은 이미 바뀌었어도 새로고침은 아직
+      // 흐르는 중일 수 있다 — 그 사이 다음 절이 페이지를 옮기면 서버가 "destination stream closed early" 를 남겨 아래
+      // "서버에서 오류가 나지 않았다"가 실패했다(한 번 · 원인은 이것으로 보인다). 흐름이 끝나게 둔다.
+      await sleep(1500)
+
+      // 그룹을 지우면 그 그룹의 부여가 사라진다.
+      const delRes = await fetch(`${groupsUrl}/${firstGroup}`, { method: 'DELETE', headers: authed })
+      const deleted = await delRes.json()
+      check('그룹을 지운다 — 부여를 거둔 페이지 수를 돌려준다', delRes.status === 200 && deleted.nodes === 1, JSON.stringify(deleted))
+      check('★ 지운 그룹으로 보던 동료는 이제 못 본다 (404)', (await fetch(accessUrl, { headers: asGroupMate })).status === 404)
+      check('지운 그룹에는 줄 수 없다 (400)',
+        (await postJson(accessUrl, authed, { action: 'grant', principal: { type: 'group', id: firstGroup }, level: 'view' })).status === 400)
+    }
+
     section('코멘트 패널 · 인박스 (F-05-08 · F-11-07)')
     {
       const commentPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {

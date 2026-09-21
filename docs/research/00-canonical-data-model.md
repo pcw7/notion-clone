@@ -333,9 +333,11 @@ CREATE TABLE "group" (
   name text NOT NULL, icon text NULL,
   external_id text NULL,                                     -- SCIM IdP 그룹 id. 멱등성 키
   deleted_at timestamptz NULL,
-  UNIQUE (workspace_id, lower(name)),
+  -- [정정] 전체 UNIQUE → **부분 UNIQUE**. 근거는 이 블록 다음.
+  -- UNIQUE (workspace_id, lower(name)),
   UNIQUE (workspace_id, external_id)
 );
+CREATE UNIQUE INDEX ON "group" (workspace_id, lower(name)) WHERE deleted_at IS NULL;  -- [정정]
 CREATE TABLE group_member (
   group_id uuid NOT NULL REFERENCES "group"(id),
   user_id  uuid NOT NULL REFERENCES "user"(id),
@@ -346,6 +348,7 @@ CREATE TABLE group_member (
 CREATE INDEX ON group_member (user_id) WHERE removed_at IS NULL;
 -- 불변식 G1: 중첩 그룹 금지. group 은 user 만 담는다.
 -- 불변식 G2: role='guest' 인 멤버는 group_member 가 될 수 없다(앱 가드 + 야간 정합성 검사).
+--            [보강] 넣는 쪽은 트리거로 승격했고, 읽는 쪽 P(U) 가 guest 의 그룹을 무시한다 — 아래 참조.
 -- 불변식 G3: role='restricted_member' 는 group_member 가 될 수 있다. 그것이 유일한 대량 부여 수단이다.
 
 CREATE TABLE teamspace (
@@ -485,6 +488,26 @@ CREATE TABLE access_request (
 );
 -- 불변식: pending 은 만료되지 않는다(1차 출처는 accept/ignore 2택만 서술).
 ```
+
+**[정정] `"group"` 의 `UNIQUE (workspace_id, lower(name))` → 살아있는 그룹에만 거는 부분 UNIQUE** ⟨Teamspace · 게스트 · 그룹 7a / 마이그레이션 0027⟩
+
+> `property` 의 이름 UNIQUE 를 고친 것(§3.5)과 같은 사정이다. 이 표도 `deleted_at` 으로 지우므로(soft delete),
+> 전체 UNIQUE 면 "디자인팀"을 지운 뒤 같은 이름으로 다시 만들 수 없다 — 지운 그룹은 어디에도 보이지 않으니
+> 사용자는 **보이지 않는 것과 이름이 겹친다**는 답을 받는다. 동명 금지(대소문자 무시)는 살아있는 그룹 사이의
+> 규칙으로 남는다. 0003 은 원안대로 만들었고 0027 이 부분 인덱스로 바꿨다.
+
+**[보강] G2 의 집행 — 넣는 쪽은 DB, 반대쪽은 P(U)** ⟨7a / 마이그레이션 0027⟩
+
+> 초판은 *"앱 가드 + 야간 정합성 검사"* 라고만 적었다. ① **넣는 쪽**은 트리거로 승격했다 — 살아있는
+> `group_member` 행(`removed_at IS NULL`)은 그룹의 워크스페이스에 게스트가 아닌 멤버 행이 있는 사용자만 가질 수
+> 있다(다른 워크스페이스 사람도 함께 막힌다). ② **반대쪽** — 이미 그룹에 있는 멤버가 게스트가 되는 것 — 은
+> 막을 수 없다: M1 이 떠난 멤버의 그룹 멤버십을 30일 **남겨 두라**고 하므로, 떠났다 게스트로 다시 초대받은 사람은
+> 살아있는 그룹 행을 가진 게스트가 되고 그 수락을 거부할 수 없다. 그래서 §3.11 의 **P(U) 가 guest 에게는 그룹
+> 주체를 주지 않는다** — 야간 검사보다 강하다(틀린 행이 있어도 판정이 틀리지 않는다).
+>
+> 그룹을 지우면(`deleted_at`) 그 그룹이 받은 `acl_entry` 행은 **지운다**(06 F-06-03 *"그 group principal 의 ACL
+> 전부 캐스케이드 삭제, 개인 직접 부여는 유지"*). 행 삭제이므로 §3.11 의 재계산 트리거 ② 가 그대로 걸리고,
+> 지우면 관리할 사람이 남지 않는 노드가 생기면 지우기를 거부한다.
 
 ---
 
