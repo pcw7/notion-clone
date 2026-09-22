@@ -1721,6 +1721,89 @@ async function main() {
       await sleep(1500)
     }
 
+    section('옮기기 — teamspace 로 · 밖으로 (7c-3 · F-06-20)')
+    {
+      // 페이지의 "이동" 피커가 teamspace 최상위와 워크스페이스 최상위를 자리로 준다. 옮기면 누가 보는지가 바뀐다 — 워크스페이스
+      // 최상위의 "모든 멤버" 상속 행을 거두고 teamspace 노드에서 물려받는다. 멤버가 아닌 동료의 접근으로 확인한다.
+      const moveMate = await joinAs(workspaceId, await createUser('이동 동료'), 'member')
+      const asMoveMate = { ...json, cookie: `nc_session=${moveMate.token}` }
+      const tsUrl = `${BASE}/api/workspaces/${workspaceId}/teamspaces`
+      const moveName = `이동팀 ${Date.now()}`
+      const moveTeam = (await (await fetch(tsUrl, { method: 'POST', headers: authed, body: JSON.stringify({ name: moveName }) })).json()).teamspace.id
+      const docTitle = `옮길 문서 ${Date.now()}`
+      const doc = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
+        method: 'POST', headers: authed, body: JSON.stringify({ title: docTitle }),
+      })).json()).page.id
+      const docAccess = `${BASE}/api/workspaces/${workspaceId}/pages/${doc}/access`
+      const tsRow = `[data-testid="sidebar-teamspace"][data-teamspace-id="${moveTeam}"]`
+      const clickOnSel = async (sel) => {
+        const box = await evaluate(`(() => {
+          const el = document.querySelector(${JSON.stringify(sel)})
+          if (!el || el.disabled) return null
+          el.scrollIntoView({ block: 'center' })
+          const r = el.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (!box) return false
+        await click(box.x, box.y)
+        await sleep(120)
+        return true
+      }
+      const openPicker = async () => {
+        await clickOnSel('[data-testid="move-open"]')
+        return waitFor(`!!document.querySelector('[data-testid="move-picker"]')`, 5000)
+      }
+      check('전제: 워크스페이스 최상위 문서는 동료도 본다', (await fetch(docAccess, { headers: asMoveMate })).status === 200)
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${doc}` })
+      await waitFor(`!!document.querySelector('[data-testid="move-open"]')`, 15000)
+      await openPicker()
+      const option = `[data-testid="move-to-teamspace"][data-teamspace-id="${moveTeam}"]`
+      check('★ 이동 피커에 teamspace 가 자리로 서고 · 누가 보게 되는지 말한다 · 이미 최상위라 "워크스페이스 최상위"는 없다',
+        await evaluate(`(document.querySelector('${option}')?.textContent ?? '').includes(${JSON.stringify(`${moveName} 멤버가 봅니다`)})
+          && !document.querySelector('[data-testid="move-to-workspace"]')`))
+      await clickOnSel(option)
+      check('★ teamspace 로 옮기면 사이드바의 그 teamspace 아래에 서고 breadcrumb 에 이름이 선다',
+        await waitFor(`!!document.querySelector('${tsRow} a[href$="/${doc}"]')
+          && document.querySelector('[data-testid="breadcrumb-teamspace"]')?.textContent === ${JSON.stringify(moveName)}`, 15000),
+        await evaluate(`document.querySelector('[data-testid="move-error"]')?.textContent ?? '(오류 없음)'`))
+      check('서버도 그 teamspace 의 최상위로 안다',
+        (await (await fetch(`${tsUrl}/${moveTeam}/pages`, { headers: authed })).json()).pages.some((pg) => pg.id === doc))
+      check('★ 멤버가 아닌 동료는 이제 못 본다 (404) — 모두에게 준 상속 행을 거뒀다',
+        (await fetch(docAccess, { headers: asMoveMate })).status === 404)
+
+      await openPicker()
+      check('옮긴 teamspace 는 "현재 위치" 로 서고 · "워크스페이스 최상위" 가 생긴다',
+        await evaluate(`document.querySelector('${option}')?.disabled === true
+          && (document.querySelector('${option}')?.textContent ?? '').includes('현재 위치')
+          && !!document.querySelector('[data-testid="move-to-workspace"]')`))
+      await clickOnSel('[data-testid="move-to-workspace"]')
+      check('★ 워크스페이스 최상위로 꺼내면 teamspace 에서 빠지고 동료가 다시 본다',
+        (await waitFor(`!document.querySelector('${tsRow} a[href$="/${doc}"]')
+          && !!document.querySelector('section[aria-label="워크스페이스 페이지"] a[href$="/${doc}"]')
+          && !document.querySelector('[data-testid="breadcrumb-teamspace"]')`, 15000))
+          && (await fetch(docAccess, { headers: asMoveMate })).status === 200)
+
+      // 뿌리를 바꾸는 이동은 전체 권한이 있어야 한다 — 고치기만 받은 동료가 옮기려 하면 까닭과 함께 거부한다. 위 흐름과 따로
+      // 새 페이지로 본다(위 흐름이 실패해도 이 검사가 따로 선다).
+      await fetch(`${tsUrl}/${moveTeam}/members`, { method: 'POST', headers: authed, body: JSON.stringify({ principal: { type: 'user', id: moveMate.userId } }) })
+      const locked = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
+        method: 'POST', headers: authed, body: JSON.stringify({ title: `고치기만 준 문서 ${Date.now()}` }),
+      })).json()).page.id
+      const shareDoc = (body) =>
+        fetch(`${BASE}/api/workspaces/${workspaceId}/pages/${locked}/access`, { method: 'POST', headers: authed, body: JSON.stringify(body) })
+      await shareDoc({ action: 'grant', principal: { type: 'user', id: ctx.userId }, level: 'full_access' })
+      await shareDoc({ action: 'revoke', principal: { type: 'workspace_everyone' } })
+      await shareDoc({ action: 'grant', principal: { type: 'user', id: moveMate.userId }, level: 'edit' })
+      const denied = await fetch(`${BASE}/api/workspaces/${workspaceId}/pages/${locked}/move`, {
+        method: 'POST', headers: asMoveMate, body: JSON.stringify({ targetTeamspaceId: moveTeam }),
+      })
+      check('★ 고치기만 받은 사람이 teamspace 로 옮기면 403 needs_full_access',
+        denied.status === 403 && (await denied.json()).error === 'needs_full_access', String(denied.status))
+      // 마지막 이동의 refresh 가 끝나기 전에 다음 절이 화면을 옮기지 않게 한다(§6).
+      await sleep(1500)
+    }
+
     section('코멘트 패널 · 인박스 (F-05-08 · F-11-07)')
     {
       const commentPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
