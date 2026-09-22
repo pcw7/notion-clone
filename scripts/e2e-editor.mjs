@@ -1804,6 +1804,58 @@ async function main() {
       await sleep(1500)
     }
 
+    section('데이터베이스를 teamspace 에 (7c-4 · F-04-14 · F-06-04)')
+    {
+      // 사이드바의 teamspace 줄에 "▦"(새 데이터베이스), teamspace 화면에 "+ 새 데이터베이스". 멤버만 보는지는 멤버가 아닌 동료의
+      // 세션으로 표 화면을 받아 본다.
+      const dbMate = await joinAs(workspaceId, await createUser('표 동료'), 'member')
+      const tsUrl = `${BASE}/api/workspaces/${workspaceId}/teamspaces`
+      const dbTeamName = `표팀 ${Date.now()}`
+      const dbTeam = (await (await fetch(tsUrl, { method: 'POST', headers: authed, body: JSON.stringify({ name: dbTeamName }) })).json()).teamspace.id
+      const tsRow = `[data-testid="sidebar-teamspace"][data-teamspace-id="${dbTeam}"]`
+      const dbPageAs = (actor, id) => fetch(`${BASE}/w/${workspaceId}/db/${id}`, { headers: { cookie: `nc_session=${actor.token}` } })
+      const clickOnSel = async (sel) => {
+        const box = await evaluate(`(() => {
+          const el = document.querySelector(${JSON.stringify(sel)})
+          if (!el || el.disabled) return null
+          el.scrollIntoView({ block: 'center' })
+          const r = el.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (!box) return false
+        await click(box.x, box.y)
+        await sleep(120)
+        return true
+      }
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
+      await waitFor(`!!document.querySelector('${tsRow} [data-testid="sidebar-teamspace-add-database"]')`, 15000)
+      await clickOnSel(`${tsRow} [data-testid="sidebar-teamspace-add-database"]`)
+      check('★ 사이드바의 teamspace ▦ 로 새 데이터베이스 — 표가 열리고 그 teamspace 아래에 선다',
+        await waitFor(`location.pathname.includes('/db/') && !!document.querySelector('${tsRow} a[href="' + location.pathname + '"]')`, 15000),
+        await evaluate('location.pathname'))
+      const firstDb = await evaluate(`location.pathname.split('/db/')[1]?.split('/')[0] ?? ''`)
+      check('★ 멤버가 아닌 동료는 그 표를 못 연다 (404) — 만든 사람은 연다',
+        (await dbPageAs(dbMate, firstDb)).status === 404 && (await fetch(`${BASE}/w/${workspaceId}/db/${firstDb}`, { headers: authed })).status === 200)
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/teamspaces/${dbTeam}` })
+      await waitFor(`!!document.querySelector('[data-testid="new-database"]')`, 15000)
+      check('teamspace 화면의 데이터베이스 목록에 선다',
+        await evaluate(`!!document.querySelector('[data-testid="teamspace-databases"] a[href$="/db/${firstDb}"]')`))
+      await clickOnSel('[data-testid="new-database"]')
+      check('teamspace 화면의 "+ 새 데이터베이스" 로도 만든다 — 그 teamspace 아래에 선다',
+        await waitFor(`location.pathname.includes('/db/') && !location.pathname.includes(${JSON.stringify(firstDb)})
+          && !!document.querySelector('${tsRow} a[href="' + location.pathname + '"]')`, 15000),
+        await evaluate('location.pathname'))
+
+      const denied = await fetch(`${BASE}/api/workspaces/${workspaceId}/databases`, {
+        method: 'POST', headers: { ...json, cookie: `nc_session=${dbMate.token}` }, body: JSON.stringify({ teamspaceId: dbTeam }),
+      })
+      check('멤버가 아니면 그 teamspace 에 표를 못 둔다 (404)', denied.status === 404, String(denied.status))
+      // 마지막 만들기의 refresh 가 끝나기 전에 다음 절이 화면을 옮기지 않게 한다(§6).
+      await sleep(1500)
+    }
+
     section('코멘트 패널 · 인박스 (F-05-08 · F-11-07)')
     {
       const commentPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
@@ -2818,7 +2870,9 @@ async function main() {
         check('소유자의 워크스페이스 홈에 전체 내보내기가 있다',
           await waitFor(`document.querySelector('[data-testid="export-button"]')?.textContent === '워크스페이스 내보내기'`, 15000))
         await clickOn('[data-testid="export-button"]')
-        check('★ 워크스페이스 요약은 표와 그 행까지 센다', await summaryMatches('/데이터베이스 1 · 행 \\d+ ·/'), await exportPanelText())
+        // 표의 수는 앞 절들이 만든 것에 따라 달라진다(7c-4 가 teamspace 에 표를 만든다) — 소유자가 볼 수 있는 표의 수로 묻는다.
+        const visibleTables = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/databases`, { headers: authed })).json()).databases.length
+        check('★ 워크스페이스 요약은 표와 그 행까지 센다', await summaryMatches(`/데이터베이스 ${visibleTables} · 행 \\d+ ·/`), await exportPanelText())
         await clickOn('[data-testid="export-download"]')
         const workspaceZip = await downloaded((name) => /^워크스페이스 \d{4}-\d{2}-\d{2}\.zip$/.test(name))
         check('★ 워크스페이스 전체 ZIP 을 받는다', workspaceZip !== null, readdirSync(downloads).join(', '))

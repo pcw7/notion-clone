@@ -9,6 +9,8 @@
  *
  * 멤버 목록 · 넣기 · 역할 · 빼기 · 나가기는 클라이언트 컴포넌트가 라우트로 한다(`teamspace-members.tsx`). 넣을 후보는 여기서
  * 싣는다 — 워크스페이스 멤버와 그룹.
+ *
+ * 최상위의 데이터베이스(7c-4)는 페이지 목록 아래 따로 선다 — 여는 길이 다르다(`/db/{id}`).
  */
 
 import Link from 'next/link'
@@ -16,10 +18,12 @@ import { notFound } from 'next/navigation'
 
 import { requirePageSession } from '@/lib/auth/page-session'
 import { listTeamspacePages } from '@/lib/block/page'
+import { listTeamspaceDatabases } from '@/lib/database/database'
 import { isUuid } from '@/lib/ids'
 import { listGroups } from '@/lib/workspace/group'
 import { listMembers } from '@/lib/workspace/list'
 import { getTeamspace, listTeamspaceMembers } from '@/lib/workspace/teamspace'
+import { NewDatabaseButton } from '../../new-database-button'
 import { NewPageButton } from '../../new-page-button'
 import { TeamspaceMembers } from './teamspace-members'
 
@@ -33,9 +37,10 @@ export default async function TeamspacePage({ params }: PageProps<'/w/[workspace
   const teamspace = await getTeamspace(ctx, teamspaceId)
   if (!teamspace.ok) notFound()
 
-  const [members, pages, people, groups] = await Promise.all([
+  const [members, pages, databases, people, groups] = await Promise.all([
     listTeamspaceMembers(ctx, teamspaceId),
     listTeamspacePages(ctx, teamspaceId),
+    listTeamspaceDatabases(ctx, teamspaceId),
     listMembers(ctx.workspaceId),
     listGroups(ctx),
   ])
@@ -74,10 +79,34 @@ export default async function TeamspacePage({ params }: PageProps<'/w/[workspace
               </li>
             ))}
           </ul>
-        ) : (
+        ) : databases.length === 0 ? (
           <p className="text-sm text-neutral-400">아직 페이지가 없습니다. 여기에 만든 페이지는 이 teamspace 의 멤버가 봅니다.</p>
+        ) : null}
+        {databases.length > 0 && (
+          <ul
+            data-testid="teamspace-databases"
+            aria-label="데이터베이스"
+            className="divide-y divide-neutral-200 rounded-lg border border-neutral-200 dark:divide-neutral-800 dark:border-neutral-800"
+          >
+            {databases.map((d) => (
+              <li key={d.id}>
+                <Link
+                  href={`/w/${workspaceId}/db/${d.id}`}
+                  className="block px-4 py-3 text-sm hover:bg-neutral-50 dark:hover:bg-neutral-900"
+                >
+                  <span aria-hidden className="mr-1 text-neutral-400">
+                    ▦
+                  </span>
+                  {d.name || UNTITLED}
+                </Link>
+              </li>
+            ))}
+          </ul>
         )}
-        <NewPageButton workspaceId={workspaceId} teamspaceId={teamspaceId} />
+        <div className="flex gap-2">
+          <NewPageButton workspaceId={workspaceId} teamspaceId={teamspaceId} />
+          <NewDatabaseButton workspaceId={workspaceId} teamspaceId={teamspaceId} />
+        </div>
       </section>
 
       <section>
