@@ -20,7 +20,7 @@
  * 그 구간에 읽기가 들어오면 제목 없는 표가 화면에 나온다.
  *
  * ──────────────────────────────────────────────────────────────────────
- * 지금 만드는 것은 **풀페이지 데이터베이스**다 (워크스페이스 직속)
+ * 지금 만드는 것은 **풀페이지 데이터베이스**다 (워크스페이스 · teamspace 최상위)
  * ──────────────────────────────────────────────────────────────────────
  *
  * 인라인 데이터베이스(페이지 본문 안)를 만들지 않는 이유가 프로젝터다.
@@ -45,7 +45,7 @@ import type { SessionContext } from '../auth/session-context.ts'
 import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
 import { can } from '../permissions/levels.ts'
 import { inheritFromWorkspace } from '../permissions/acl.ts'
-import { effectiveCaps, readableScopes } from '../permissions/effective.ts'
+import { effectiveCaps, readableScopes, teamspaceCaps } from '../permissions/effective.ts'
 import { orderKeyBetween } from '../block/order-key.ts'
 import { nextSiblingKey, titleFromPlainText, plainTitleOf } from '../block/page.ts'
 import { newPropertyId } from './property.ts'
@@ -94,6 +94,11 @@ export type DatabaseResult<T> =
 export type CreateDatabaseInput = {
   /** 표 이름. 비면 빈 제목으로 만든다(페이지와 같은 규칙). */
   readonly name?: string
+  /**
+   * 그 teamspace 의 최상위에 만든다(7c-4 · `createPage` 의 teamspace 자리와 같다). 멤버여야 한다 — 아니면 `not_found`.
+   * 생략하면 워크스페이스 최상위다.
+   */
+  readonly teamspaceId?: string | null
 }
 
 function normalizeName(raw: unknown): string {
@@ -104,24 +109,39 @@ function normalizeName(raw: unknown): string {
 /**
  * 풀페이지 데이터베이스를 만든다.
  *
- * 워크스페이스 최상위에 놓는다. `teamspace` 표가 없어서 루트가 곧 권한 스코프
- * 루트이고(HANDOFF §7), 그래서 **자기 자신이 `perm_scope_id`** 이며 ACL 을 갖고
- * 태어난다 — `createPage` 의 루트 페이지와 같은 규칙이다. `effective()` 가 켜진
- * 뒤로 ACL 없는 노드는 아무도 못 보는 노드이기 때문이다.
+ * 자리는 둘이다 — `createPage` 의 최상위와 같은 규칙이다.
+ *
+ *   - 워크스페이스 최상위: **자기 자신이 `perm_scope_id`** 이며 ACL 을 갖고 태어난다(`inheritFromWorkspace`). `effective()` 가
+ *     켜진 뒤로 ACL 없는 노드는 아무도 못 보는 노드이기 때문이다
+ *   - teamspace 최상위(7c-4): 그 teamspace 행을 잠그고, 거기에 둘 수 있어야 한다(`teamspaceCaps` 의 `create_child` — 멤버).
+ *     행을 넣지 않는다 — teamspace 노드의 부여를 물려받고 스코프는 teamspace id 다(정본 §3.11 *"없으면 teamspace 루트 id"*).
+ *     없는 · 보관된 · 남의 · 멤버가 아닌 teamspace 는 전부 `not_found` 다(구분하면 존재를 알려 준다)
  */
 export async function createDatabase(
   ctx: SessionContext,
   input: CreateDatabaseInput = {},
 ): Promise<DatabaseResult<DatabaseDetail>> {
   const name = normalizeName(input.name)
+  const teamspaceId = input.teamspaceId ?? null
 
   return withCommandTransaction(async (tx) => {
     const id = randomUUID()
     const dataSourceId = randomUUID()
 
-    // 워크스페이스 직속 형제들 사이의 자리. 페이지와 같은 축을 쓴다 —
-    // 사이드바가 둘을 한 목록으로 보여주게 될 것이므로 순서가 같아야 한다.
-    const orderKey = await nextSiblingKey(tx, ctx.workspaceId)
+    if (teamspaceId !== null) {
+      const teamspace = await tx.queryMaybe<{ id: string }>(
+        `SELECT id FROM teamspace WHERE id = $1 AND workspace_id = $2 AND archived_at IS NULL FOR UPDATE`,
+        [teamspaceId, ctx.workspaceId],
+      )
+      if (teamspace === null || !can(await teamspaceCaps(tx, ctx, teamspace.id), 'create_child')) {
+        return { ok: false, reason: 'not_found' } as const
+      }
+    }
+    const parentType = teamspaceId === null ? 'workspace' : 'teamspace'
+    const parentId = teamspaceId ?? ctx.workspaceId
+
+    // 최상위 형제들 사이의 자리. 페이지와 같은 축을 쓴다 — 사이드바가 둘을 한 목록으로 보여주므로 순서가 같아야 한다.
+    const orderKey = await nextSiblingKey(tx, parentId)
 
     await tx.query(
       `INSERT INTO block (
@@ -130,14 +150,24 @@ export async function createDatabase(
          properties, format, created_by, created_at, last_edited_by, last_edited_at
        ) VALUES (
          $1, $2, 'database',
-         'workspace', $2, $3, '{}', $1,
+         $6, $7, $3, '{}', $8,
          $4::jsonb, '{}'::jsonb, $5, now(), $5, now()
        )`,
-      [id, ctx.workspaceId, orderKey, JSON.stringify({ title: titleFromPlainText(name) }), ctx.userId],
+      [
+        id,
+        ctx.workspaceId,
+        orderKey,
+        JSON.stringify({ title: titleFromPlainText(name) }),
+        ctx.userId,
+        parentType,
+        parentId,
+        teamspaceId ?? id,
+      ],
     )
 
-    // 루트 노드는 ACL 을 갖고 태어난다(W6-b 의 규칙) — 최상위 페이지와 같은 함수다.
-    await inheritFromWorkspace(tx, ctx, id)
+    // 워크스페이스 최상위 노드는 ACL 을 갖고 태어난다(W6-b 의 규칙) — 최상위 페이지와 같은 함수다. teamspace 최상위는
+    // teamspace 노드에서 물려받는다.
+    if (teamspaceId === null) await inheritFromWorkspace(tx, ctx, id)
 
     await tx.query(
       `INSERT INTO database (id, title_rich, is_inline, created_at, updated_at)
@@ -332,6 +362,25 @@ export async function listDatabases(ctx: SessionContext): Promise<DatabaseListIt
     return rows
       .map((row) => ({ id: row.id, name: plainTitleOf(row.properties), dataSourceId: row.data_source_id }))
       .sort((a, b) => a.name.localeCompare(b.name, 'ko'))
+  })
+}
+
+/**
+ * teamspace 최상위의 데이터베이스 — 볼 수 있는 것만(스코프로 거른다 · `listTeamspacePages` 와 같은 규칙). teamspace 를 볼 수
+ * 없으면 비어 있다 — 없는 teamspace 와 같은 답이다. 형제 순서(`order_key`)대로 준다(7c-4).
+ */
+export async function listTeamspaceDatabases(ctx: SessionContext, teamspaceId: string): Promise<{ id: string; name: string }[]> {
+  return withReadTransaction(async (tx) => {
+    const scopes = await readableScopes(tx, ctx)
+    if (scopes.length === 0) return []
+    const rows = await tx.query<{ id: string; properties: { title?: unknown } | null }>(
+      `SELECT id, properties FROM live_block
+        WHERE parent_type = 'teamspace' AND parent_id = $1 AND workspace_id = $2 AND type = 'database'
+          AND perm_scope_id = ANY($3::uuid[])
+        ORDER BY order_key, id`,
+      [teamspaceId, ctx.workspaceId, scopes],
+    )
+    return rows.map((row) => ({ id: row.id, name: plainTitleOf(row.properties) }))
   })
 }
 
