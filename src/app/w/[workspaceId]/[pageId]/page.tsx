@@ -17,7 +17,7 @@ import { getPage, listAncestors, listChildPages } from '@/lib/block/page'
 import { loadPageRefTitles } from '@/lib/block/save-page-body'
 import { loadDocState, pageAccess } from '@/lib/collab/doc-store'
 import { collabServerUrl } from '@/lib/collab/collab-url'
-import { listMovableTargets } from '@/lib/block/move-page'
+import { listMovableTargets, listTeamspaceDestinations } from '@/lib/block/move-page'
 import { listDiscussions } from '@/lib/comment/discussion'
 import { listBacklinks } from '@/lib/block/link-edges'
 import { loadMentionLabels, mentionIdsOf } from '@/lib/block/mention-candidates'
@@ -58,13 +58,14 @@ export default async function PageView({ params }: PageProps<'/w/[workspaceId]/[
 
   // 본문은 Y.Doc 이 정본이다(판결 X-1 · CRDT 6d) — 협업 편집기가 그 상태로 시작하고 협업 서버에 붙는다. 행으로 만든 문서는
   // 더 이상 화면이 읽지 않고, 참조 제목만 따로 받는다(참조 노드는 제목을 싣지 않는다 — §3.2-22).
-  const [ancestors, children, state, pageRefTitles, access, moveTargets, favorite, openThreads] = await Promise.all([
+  const [ancestors, children, state, pageRefTitles, access, moveTargets, moveTeamspaces, favorite, openThreads] = await Promise.all([
     listAncestors(ctx, page),
     listChildPages(ctx, page.id),
     loadDocState(ctx, page.id),
     loadPageRefTitles(ctx, page.id),
     pageAccess(ctx, page.id),
     listMovableTargets(ctx, page.id),
+    listTeamspaceDestinations(ctx),
     isFavorite(ctx, page.id),
     // 버튼에 띄울 수만 먼저 읽는다 — 패널을 열기 전에 목록을 한 번 더 부르지 않으려고.
     listDiscussions(ctx, page.id, { resolved: false }),
@@ -135,11 +136,13 @@ export default async function PageView({ params }: PageProps<'/w/[workspaceId]/[
             workspaceId={workspaceId}
             pageId={page.id}
             currentParentId={page.parentPageId}
+            currentTeamspaceId={page.teamspaceId}
             targets={moveTargets.map((t) => ({
               id: t.id,
               title: t.title,
               path: [...t.path],
             }))}
+            teamspaces={moveTeamspaces}
           />
           <ExportButton workspaceId={workspaceId} rootId={page.id} />
           {/* 복제는 원본을 고치지 않는다 — 볼 수만 있는 사람도 누를 수 있다(자리가 없으면 서버가 거부한다). */}

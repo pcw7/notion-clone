@@ -1,7 +1,8 @@
 /**
  * POST /api/workspaces/[workspaceId]/pages/[pageId]/move — 페이지 이동 (F-02-08)
  *
- * `{ "targetParentId": "<uuid>" | null }`. `null` 이면 워크스페이스 최상위로.
+ * `{ "targetParentId": "<uuid>" | null }`. `null` 이면 워크스페이스 최상위로. `{ "targetTeamspaceId": "<uuid>" }` 면 그 teamspace 의
+ * 최상위로(7c-3) — 둘을 함께 주면 400 이다(`POST pages` 의 `parentPageId` · `teamspaceId` 와 같은 모양).
  *
  * PATCH 가 아니라 POST 인 이유: 이동은 필드 하나를 고치는 것이 아니라
  * **서브트리 전체의 경로와 권한 스코프를 다시 쓰는 연산**이다(X-7 / §3.11).
@@ -9,7 +10,7 @@
  * 생기고, 그건 트리를 조용히 깨뜨린다.
  */
 
-import { asBlockId } from '@/lib/ids'
+import { asBlockId, isUuid } from '@/lib/ids'
 import { readJsonBody, requireWorkspaceSession } from '@/lib/auth/route-session'
 import { movePage, MoveError } from '@/lib/block/move-page'
 
@@ -23,6 +24,8 @@ function statusFor(code: MoveError['code']): number {
       return 404
     // 볼 수는 있는데 옮길 수 없다. 볼 수 없으면 not_found 다(§3.3-31).
     case 'forbidden':
+    // 뿌리가 바뀌는 이동에 페이지의 전체 권한이 없다(7c-3).
+    case 'needs_full_access':
       return 403
     case 'cycle':
     case 'too_deep':
@@ -44,7 +47,7 @@ export async function POST(request: Request, ctx: Ctx): Promise<Response> {
 
   const parsed = await readJsonBody(request)
   if (!parsed.ok) return parsed.response
-  const body = (parsed.body ?? {}) as { targetParentId?: unknown }
+  const body = (parsed.body ?? {}) as { targetParentId?: unknown; targetTeamspaceId?: unknown }
 
   let targetParentId = null
   if (body.targetParentId != null) {
@@ -56,14 +59,26 @@ export async function POST(request: Request, ctx: Ctx): Promise<Response> {
     }
   }
 
+  let destination: Parameters<typeof movePage>[2] = targetParentId
+  if (body.targetTeamspaceId != null) {
+    if (targetParentId !== null) {
+      return Response.json({ error: 'invalid_target', message: '부모 페이지와 teamspace 를 함께 줄 수 없습니다.' }, { status: 400 })
+    }
+    if (typeof body.targetTeamspaceId !== 'string' || !isUuid(body.targetTeamspaceId)) {
+      return Response.json({ error: 'target_not_found' }, { status: 404 })
+    }
+    destination = { teamspaceId: body.targetTeamspaceId }
+  }
+
   try {
-    const result = await movePage(session.ctx, pageId, targetParentId)
+    const result = await movePage(session.ctx, pageId, destination)
     return Response.json({
       ok: true,
       noop: result.noop,
       page: {
         id: result.pageId,
         parentPageId: result.parentBlockId,
+        teamspaceId: result.teamspaceId,
         ancestors: result.ancestors,
         version: result.version,
       },
