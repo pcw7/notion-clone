@@ -11,14 +11,18 @@
  */
 
 import { requirePageSession } from '@/lib/auth/page-session'
-import { listPageTree } from '@/lib/block/page-tree'
+import { groupRootsByTeamspace, listPageTree } from '@/lib/block/page-tree'
 import { listTrash } from '@/lib/block/trash'
 import { listFavorites, listRecent } from '@/lib/nav/recent'
 import { unreadCount } from '@/lib/notification/inbox'
+import { canCreateTeamspace, listMyTeamspaces } from '@/lib/workspace/teamspace'
 import { Sidebar, type SidebarNode } from './sidebar'
 import { SearchOverlay } from './search-overlay'
 
-/** 서버 타입에서 클라이언트로 넘길 최소 모양만 남긴다. */
+/**
+ * 서버 타입에서 클라이언트로 넘길 최소 모양만 남긴다. `teamspaceId` 는 넘기지 않는다 — 섹션은 여기서 이미 갈랐고, 멤버가
+ * 아닌 teamspace 에서 공유받은 페이지의 그 id 를 화면에 줄 까닭이 없다(7c-2).
+ */
 function toSidebarNode(node: Awaited<ReturnType<typeof listPageTree>>[number]): SidebarNode {
   return {
     id: node.id,
@@ -36,19 +40,28 @@ export default async function WorkspaceLayout({
   const { workspaceId } = await params
   const ctx = await requirePageSession(workspaceId)
 
-  const [tree, trash, recent, favorites, inboxUnread] = await Promise.all([
+  const [tree, teamspaces, trash, recent, favorites, inboxUnread] = await Promise.all([
     listPageTree(ctx),
+    listMyTeamspaces(ctx),
     listTrash(ctx),
     listRecent(ctx),
     listFavorites(ctx),
     unreadCount(ctx),
   ])
+  // 루트를 내 teamspace 별로 가른다(F-07-16 의 파생 섹션 · `groupRootsByTeamspace`).
+  const sections = groupRootsByTeamspace(tree, teamspaces)
 
   return (
     <div className="flex min-h-screen">
       <Sidebar
         workspaceId={workspaceId}
-        tree={tree.map(toSidebarNode)}
+        tree={sections.rest.map(toSidebarNode)}
+        teamspaces={sections.teamspaces.map(({ teamspace, pages }) => ({
+          id: teamspace.id,
+          name: teamspace.name,
+          pages: pages.map(toSidebarNode),
+        }))}
+        canCreateTeamspace={canCreateTeamspace(ctx.role)}
         trash={trash.map((e) => ({
           id: e.id,
           title: e.title,

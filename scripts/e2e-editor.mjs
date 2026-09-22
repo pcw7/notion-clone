@@ -1503,8 +1503,8 @@ async function main() {
 
     section('teamspace — 라우트 · 공유 패널 (7c-1 · F-06-04)')
     {
-      // 화면(사이드바 섹션 · 설정)은 7c-2 다. 여기서는 라우트로 만들고, teamspace 의 페이지가 실제 화면에서 열리고 공유 패널이
-      // teamspace 노드의 부여를 "상위에서 상속됨"으로 그리는지 본다.
+      // 화면(사이드바 섹션 · 설정)은 다음 절(7c-2)이 본다. 여기서는 라우트로 만들고, teamspace 의 페이지가 실제 화면에서 열리고
+      // 공유 패널이 teamspace 노드의 부여를 "상위에서 상속됨"으로 그리는지 본다.
       const teamMate = await joinAs(workspaceId, await createUser('팀 동료'), 'member')
       const teamGuest = await joinAs(workspaceId, await createUser('팀 손님'), 'guest')
       const asTeamMate = { ...json, cookie: `nc_session=${teamMate.token}` }
@@ -1558,6 +1558,167 @@ async function main() {
         (await fetch(memberUrl(teamMate.userId), { method: 'PATCH', headers: asTeamMate, body: JSON.stringify({ role: 'owner' }) })).status === 403)
       check('동료가 스스로 나간다', (await fetch(memberUrl(teamMate.userId), { method: 'DELETE', headers: asTeamMate })).status === 200)
       check('★ 나가면 곧바로 못 본다 (404)', (await fetch(teamAccess, { headers: asTeamMate })).status === 404)
+    }
+
+    section('teamspace 화면 (7c-2 · F-06-04)')
+    {
+      // 사이드바의 Teamspaces 섹션 · 만들기 폼 · teamspace 화면(멤버 · 역할 · 나가기) · breadcrumb. 넣을 후보는 서버 렌더가
+      // 싣으므로 화면을 열기 전에 만든다.
+      const uiMate = await joinAs(workspaceId, await createUser('화면 팀원'), 'member')
+      const uiGuest = await joinAs(workspaceId, await createUser('화면 팀 손님'), 'guest')
+      const uiOutsider = await joinAs(workspaceId, await createUser('화면 바깥 사람'), 'member')
+      const uiGroup = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/groups`, {
+        method: 'POST', headers: authed, body: JSON.stringify({ name: `디자인 그룹 ${Date.now()}` }),
+      })).json()).group
+      const tsUrl = `${BASE}/api/workspaces/${workspaceId}/teamspaces`
+      const pageAs = (actor, path) => fetch(`${BASE}${path}`, { headers: { cookie: `nc_session=${actor.token}` } })
+      const tsMessage = () => evaluate(`document.querySelector('[data-testid="teamspace-error"]')?.textContent ?? ''`)
+      const clickOnSel = async (sel) => {
+        const box = await evaluate(`(() => {
+          const el = document.querySelector(${JSON.stringify(sel)})
+          if (!el || el.disabled) return null
+          el.scrollIntoView({ block: 'center' })
+          const r = el.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (!box) return false
+        await click(box.x, box.y)
+        await sleep(120)
+        return true
+      }
+      const typeInto = async (sel, text) => {
+        await clickOnSel(sel)
+        await evaluate(`document.querySelector(${JSON.stringify(sel)})?.select()`)
+        await send('Input.insertText', { text })
+      }
+      const chooseValue = (sel, value) => evaluate(`(() => {
+        const s = document.querySelector(${JSON.stringify(sel)})
+        if (!s) return false
+        Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(s, ${JSON.stringify(value)})
+        s.dispatchEvent(new Event('change', { bubbles: true }))
+        return true
+      })()`)
+
+      // ① 만들기 — 사이드바 머리의 +
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
+      await waitFor(`!!document.querySelector('[data-testid="sidebar-teamspaces"]')`, 15000)
+      check('사이드바에 Teamspaces 섹션과 만들기 버튼이 있고 · 나머지는 "워크스페이스 페이지" 머리 아래다',
+        await evaluate(`!!document.querySelector('[data-testid="teamspace-create-open"]') && document.querySelector('section[aria-label="워크스페이스 페이지"] h2')?.textContent === '워크스페이스 페이지'`))
+      const designName = `디자인팀 ${Date.now()}`
+      await clickOnSel('[data-testid="teamspace-create-open"]')
+      await waitFor(`!!document.querySelector('[data-testid="teamspace-create-name"]')`, 5000)
+      await typeInto('[data-testid="teamspace-create-name"]', designName)
+      await clickOnSel('[data-testid="teamspace-create"]')
+      check('★ 만들면 그 teamspace 화면으로 옮겨 가고 사이드바에 선다 — 만든 사람은 소유자',
+        await waitFor(`location.pathname.includes('/teamspaces/')
+          && document.querySelector('[data-testid="teamspace-name"]')?.textContent === ${JSON.stringify(designName)}
+          && [...document.querySelectorAll('[data-testid="sidebar-teamspace-link"]')].some((a) => a.textContent === ${JSON.stringify(designName)})
+          && document.querySelector('[data-testid="teamspace-my-role"]')?.textContent === '소유자'`, 15000),
+        await evaluate('location.pathname'))
+      const design = await evaluate(`location.pathname.split('/teamspaces/')[1]`)
+      const tsRow = `[data-testid="sidebar-teamspace"][data-teamspace-id="${design}"]`
+      check('사이드바의 그 teamspace 줄이 강조되고 · 페이지가 없다고 말한다',
+        await evaluate(`document.querySelector('${tsRow} [data-testid="sidebar-teamspace-link"]')?.getAttribute('aria-current') === 'page'
+          && document.querySelector('${tsRow}').textContent.includes('페이지 없음')`))
+
+      // ② 페이지 — 사이드바의 teamspace +
+      await clickOnSel(`${tsRow} [data-testid="sidebar-teamspace-add"]`)
+      check('★ teamspace 의 + 로 새 페이지 — 그 페이지로 옮겨 가고 사이드바의 그 teamspace 아래에 선다',
+        await waitFor(`!location.pathname.includes('/teamspaces/') && !!document.querySelector('.blk-editor')
+          && !!document.querySelector('${tsRow} a[href="' + location.pathname + '"]')`, 15000),
+        await evaluate('location.pathname'))
+      const designPage = await evaluate(`location.pathname.split('/').pop()`)
+      check('"워크스페이스 페이지" 에는 없다 — 서버도 그 teamspace 의 최상위로 안다',
+        !(await evaluate(`!!document.querySelector('section[aria-label="워크스페이스 페이지"] a[href$="/${designPage}"]')`)) &&
+          (await (await fetch(`${tsUrl}/${design}/pages`, { headers: authed })).json()).pages.some((p) => p.id === designPage))
+      check('★ breadcrumb 에 teamspace 이름이 서고 그 화면으로 간다',
+        await waitFor(`document.querySelector('[data-testid="breadcrumb-teamspace"]')?.textContent === ${JSON.stringify(designName)}
+          && document.querySelector('[data-testid="breadcrumb-teamspace"]').getAttribute('href') === '/w/${workspaceId}/teamspaces/${design}'`, 5000))
+
+      // ③ 멤버 — teamspace 화면
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/teamspaces/${design}` })
+      await waitFor(`!!document.querySelector('[data-testid="teamspace-add-choice"]')`, 15000)
+      check('teamspace 화면의 페이지 목록에 그 페이지가 선다',
+        await evaluate(`!!document.querySelector('[data-testid="teamspace-pages"] a[href$="/${designPage}"]')`))
+      const choices = await evaluate(`[...document.querySelectorAll('[data-testid="teamspace-add-choice"] option')].map((o) => o.value)`)
+      check('★ 고르개에 사람과 그룹이 있고 · 게스트와 이미 멤버인 나는 없다',
+        choices.includes(`user:${uiMate.userId}`) && choices.includes(`group:${uiGroup.id}`) &&
+          !choices.includes(`user:${uiGuest.userId}`) && !choices.includes(`user:${ctx.userId}`), JSON.stringify(choices))
+      const memberRow = (type, id) => `[data-testid="teamspace-member"][data-principal="${type}:${id}"]`
+      const roleOf = (type, id) => evaluate(`document.querySelector('${memberRow(type, id)} [data-testid="teamspace-member-role"]')?.value ?? null`)
+      await chooseValue('[data-testid="teamspace-add-choice"]', `user:${uiMate.userId}`)
+      await clickOnSel('[data-testid="teamspace-add"]')
+      check('★ 넣은 사람이 멤버로 선다 · 고르개에서 빠진다',
+        await waitFor(`document.querySelector('${memberRow('user', uiMate.userId)} [data-testid="teamspace-member-role"]')?.value === 'member'
+          && ![...document.querySelectorAll('[data-testid="teamspace-add-choice"] option')].some((o) => o.value === 'user:${uiMate.userId}')`, 5000),
+        await tsMessage())
+      check('넣은 사람은 곧바로 그 페이지를 본다',
+        (await pageAs(uiMate, `/api/workspaces/${workspaceId}/pages/${designPage}/access`)).status === 200)
+
+      // ④ 역할 — 마지막 소유자 · 올리기 · 그룹 · 빼기 · 스스로 내려놓기
+      await chooseValue(`${memberRow('user', ctx.userId)} [data-testid="teamspace-member-role"]`, 'member')
+      check('★ 마지막 소유자는 내려갈 수 없다 — 까닭을 말하고 역할은 그대로다',
+        await waitFor(`(document.querySelector('[data-testid="teamspace-error"]')?.textContent ?? '').includes('마지막 소유자')`, 5000)
+          && (await roleOf('user', ctx.userId)) === 'owner',
+        await tsMessage())
+      await chooseValue(`${memberRow('user', uiMate.userId)} [data-testid="teamspace-member-role"]`, 'owner')
+      check('역할을 소유자로 올린다 — 서버에도',
+        (await waitFor(`document.querySelector('${memberRow('user', uiMate.userId)} [data-testid="teamspace-member-role"]')?.value === 'owner'`, 5000)) &&
+          (await (await fetch(`${tsUrl}/${design}`, { headers: authed })).json()).members.some((m) => m.principal.id === uiMate.userId && m.role === 'owner'))
+      await chooseValue('[data-testid="teamspace-add-choice"]', `group:${uiGroup.id}`)
+      await clickOnSel('[data-testid="teamspace-add"]')
+      check('그룹도 넣는다 — "그룹 · 이름" 으로 선다',
+        await waitFor(`document.querySelector('${memberRow('group', uiGroup.id)}')?.textContent.includes(${JSON.stringify(`그룹 · ${uiGroup.name}`)})`, 5000),
+        await tsMessage())
+      await clickOnSel(`${memberRow('group', uiGroup.id)} [data-testid="teamspace-member-remove"]`)
+      check('소유자는 다른 멤버를 뺀다', await waitFor(`!document.querySelector('${memberRow('group', uiGroup.id)}')`, 5000))
+      await chooseValue(`${memberRow('user', ctx.userId)} [data-testid="teamspace-member-role"]`, 'member')
+      check('★ 스스로 소유자를 내려놓으면 그 자리에서 바뀐다 — 역할 고르개 · 빼기 · 소유자로 넣기가 사라진다',
+        await waitFor(`document.querySelector('[data-testid="teamspace-my-role"]')?.textContent === '멤버'
+          && !document.querySelector('[data-testid="teamspace-member-role"]') && !document.querySelector('[data-testid="teamspace-member-remove"]')
+          && !document.querySelector('[data-testid="teamspace-add-role"]') && !!document.querySelector('[data-testid="teamspace-add-choice"]')`, 5000),
+        await tsMessage())
+
+      // ⑤ 누가 무엇을 보는가 — 서버 렌더를 그 사람의 세션으로 받는다
+      const mateHome = await (await pageAs(uiMate, `/w/${workspaceId}`)).text()
+      check('★ 멤버의 사이드바에는 그 teamspace 와 페이지가 선다',
+        mateHome.includes(`data-teamspace-id="${design}"`) && mateHome.includes(designPage))
+      const outsiderHome = await (await pageAs(uiOutsider, `/w/${workspaceId}`)).text()
+      check('★ 멤버가 아닌 사람의 사이드바에는 없다 — id 도 이름도 페이지도',
+        outsiderHome.includes('data-testid="sidebar-teamspaces"') &&
+          !outsiderHome.includes(design) && !outsiderHome.includes(designName) && !outsiderHome.includes(designPage))
+      check('멤버가 아닌 사람에게 teamspace 화면은 404 다',
+        (await pageAs(uiOutsider, `/w/${workspaceId}/teamspaces/${design}`)).status === 404)
+      const guestHome = await (await pageAs(uiGuest, `/w/${workspaceId}`)).text()
+      check('★ 게스트의 사이드바에는 Teamspaces 섹션이 없다',
+        guestHome.includes('aria-label="페이지 트리"') && !guestHome.includes('data-testid="sidebar-teamspaces"'))
+      // 멤버가 아닌 사람에게 그 페이지만 따로 공유하면 — Shared 섹션이 아직 없으니 "워크스페이스 페이지" 에 선다.
+      const shared = await fetch(`${BASE}/api/workspaces/${workspaceId}/pages/${designPage}/access`, {
+        method: 'POST', headers: authed,
+        body: JSON.stringify({ action: 'grant', principal: { type: 'user', id: uiOutsider.userId }, level: 'view' }),
+      })
+      const outsiderShared = await (await pageAs(uiOutsider, `/w/${workspaceId}`)).text()
+      const outsiderPage = await pageAs(uiOutsider, `/w/${workspaceId}/${designPage}`)
+      const outsiderPageHtml = await outsiderPage.text()
+      check('★ 따로 공유받은 teamspace 페이지는 "워크스페이스 페이지" 에 선다 — 사이드바에 그 teamspace 의 id 가 가지 않는다',
+        shared.ok && outsiderShared.includes(designPage) && !outsiderShared.includes(design), `공유 ${shared.status}`)
+      check('★ 그 페이지의 breadcrumb 에도 teamspace 가 없다 — 멤버가 아니다',
+        outsiderPage.status === 200 && !outsiderPageHtml.includes('data-testid="breadcrumb-teamspace"') && !outsiderPageHtml.includes(designName),
+        `페이지 ${outsiderPage.status}`)
+
+      // ⑥ 나가기 — 두 번 누른다
+      await clickOnSel(`${memberRow('user', ctx.userId)} [data-testid="teamspace-leave"]`)
+      check('나가기는 한 번 더 묻는다 — 무엇을 잃는지 말한다',
+        await waitFor(`!!document.querySelector('[data-testid="teamspace-leave-confirm"]')
+          && document.querySelector('${memberRow('user', ctx.userId)}').textContent.includes('곧바로 못 봅니다')`, 5000))
+      await clickOnSel('[data-testid="teamspace-leave-confirm"]')
+      check('★ 나가면 홈으로 가고 사이드바에서 그 teamspace 가 사라진다',
+        await waitFor(`location.pathname === '/w/${workspaceId}' && !!document.querySelector('[data-testid="sidebar-teamspaces"]')
+          && !document.querySelector('${tsRow}')`, 15000),
+        await evaluate('location.pathname'))
+      check('나간 teamspace 의 화면은 404 다', (await fetch(`${BASE}/w/${workspaceId}/teamspaces/${design}`, { headers: authed })).status === 404)
+      // 나가기의 refresh 가 끝나기 전에 다음 절이 화면을 옮기면 서버가 "destination stream closed early" 를 남긴다(§6).
+      await sleep(1500)
     }
 
     section('코멘트 패널 · 인박스 (F-05-08 · F-11-07)')

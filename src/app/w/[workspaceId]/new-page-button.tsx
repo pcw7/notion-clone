@@ -8,14 +8,18 @@ import { useRouter } from 'next/navigation'
  *
  * 노션도 그렇게 동작한다 — "새 페이지"는 목록에 항목을 추가하는 것이 아니라
  * 빈 페이지를 열어 제목 입력에 캐럿을 두는 것이다. 제목을 미리 묻지 않는다.
+ *
+ * 자리는 부모 페이지(`parentPageId`) · teamspace 의 최상위(`teamspaceId` — 7c-2) · 워크스페이스 직속(둘 다 없음) 중 하나다.
  */
 export function NewPageButton({
   workspaceId,
   parentPageId = null,
+  teamspaceId = null,
   label = '새 페이지',
 }: {
   workspaceId: string
   parentPageId?: string | null
+  teamspaceId?: string | null
   label?: string
 }) {
   const router = useRouter()
@@ -30,7 +34,7 @@ export function NewPageButton({
       const res = await fetch(`/api/workspaces/${workspaceId}/pages`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ parentPageId }),
+        body: JSON.stringify(teamspaceId !== null ? { teamspaceId } : { parentPageId }),
       })
       const data = await res.json()
       if (!res.ok) {
