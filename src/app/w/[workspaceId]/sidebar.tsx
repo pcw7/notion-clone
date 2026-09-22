@@ -24,7 +24,7 @@
  * 서버가 한 벌로 엮고 레이아웃이 루트를 **내 teamspace 별로** 갈라 준다
  * (`groupRootsByTeamspace`). 여기서는 그 모양대로 그린다 — 가르는 규칙을 화면에
  * 두 벌 두지 않는다. teamspace 는 이름(→ 그 teamspace 의 화면) · `+`(그 최상위에
- * 새 페이지) · 그 아래 트리다. 나머지 루트는 "워크스페이스 페이지"다 — 워크스페이스
+ * 새 페이지) · `▦`(새 데이터베이스 — 7c-4) · 그 아래 트리다. 나머지 루트는 "워크스페이스 페이지"다 — 워크스페이스
  * 직속, 그리고 멤버가 아닌 teamspace 에서 따로 공유받은 페이지(Shared 섹션은 아직
  * 없다 · §7). teamspace 를 만들 수도 가질 수도 없는 사람(게스트)의 사이드바는 전과
  * 같다 — 섹션 머리도 없다.
@@ -204,13 +204,14 @@ export function Sidebar({
 
   // 풀페이지 데이터베이스를 만들고 연다(F-04-14). "새 페이지"와 같은 규칙 — 이름을
   // 먼저 묻지 않고 빈 표를 연다. 표·제목 컬럼·기본 뷰는 서버가 한 트랜잭션에서 만든다.
-  const addDatabase = useCallback(async () => {
+  // teamspace 를 주면 그 최상위에 만든다(7c-4) — 워크스페이스 최상위 "+ 새 데이터베이스"는 teamspace 없이 부른다.
+  const addDatabase = useCallback(async (teamspaceId: string | null = null) => {
     setBusy(true)
     try {
       const res = await fetch(`/api/workspaces/${workspaceId}/databases`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: '{}',
+        body: JSON.stringify(teamspaceId === null ? {} : { teamspaceId }),
       })
       const data = await res.json()
       if (!res.ok) return
@@ -356,6 +357,17 @@ export function Sidebar({
                       className="flex-none px-1 text-sm text-neutral-400 opacity-0 group-hover:opacity-100 focus:opacity-100 disabled:opacity-30"
                     >
                       +
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      data-testid="sidebar-teamspace-add-database"
+                      onClick={() => void addDatabase(teamspace.id)}
+                      aria-label={`${teamspace.name}에 데이터베이스 추가`}
+                      title="이 teamspace 에 데이터베이스 추가"
+                      className="flex-none px-1 text-xs text-neutral-400 opacity-0 group-hover:opacity-100 focus:opacity-100 disabled:opacity-30"
+                    >
+                      ▦
                     </button>
                   </div>
                   {teamspace.pages.length > 0 ? (
