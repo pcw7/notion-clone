@@ -33,9 +33,19 @@
  * 필요한 것은 `hasChildren` 를 SQL 에서 계산하는 것뿐이고, 지금은 전체를
  * 들고 있으므로 트리에서 파생한다.
  *
- * Favorites / Teamspaces / Shared / Private 섹션은 만들지 않는다 — teamspace 도
- * `acl_entry` 도 아직 없어서 그 구분이 **파생될 근거가 없다**(F-07-16: "섹션 =
- * 권한 상태의 파생 뷰이지 저장된 분류가 아니다"). W6 에서 권한이 들어오면 생긴다.
+ * ──────────────────────────────────────────────────────────────────────
+ * 노드는 자기 teamspace 를 싣는다 (7c-2)
+ * ──────────────────────────────────────────────────────────────────────
+ *
+ * 사이드바의 Teamspaces 섹션은 **파생 뷰**다(F-07-16: "섹션 = 권한 상태의 파생 뷰이지
+ * 저장된 분류가 아니다"). 트리는 여기서 한 벌로 엮고, 레이아웃이 루트를 teamspace 별로
+ * 가른다(`groupRootsByTeamspace`). 그러려면 루트가 어느 teamspace 의 것인지 알아야 한다.
+ * 가르기는 서버에서 한다 — 화면에는 내가 멤버인 teamspace 의 id 만 간다.
+ *
+ * teamspace 는 `ancestor_path` 에 없다(판결문 C-9 · HANDOFF §3.3-189) — 어느 노드의
+ * teamspace 는 **루트 블록의 부모**다. 판정(`effective.ts` 의 `ChainRow`)과 같은 방법으로
+ * 같은 질의에서 루트를 붙여 읽는다. 한 서브트리의 노드는 루트가 같으므로 teamspace 도 같다.
+ * Shared · Private 섹션은 아직 없다(§7).
  */
 
 import type { SessionContext } from '../auth/session-context.ts'
@@ -60,12 +70,16 @@ export type PageTreeRow = {
   /** 루트→부모까지의 **블록** id. 본문 블록도 들어 있다 [X-7]. */
   readonly ancestorPath: readonly string[]
   readonly orderKey: string
+  /** 루트 블록의 부모가 teamspace 면 그 id, 워크스페이스 직속이면 null. */
+  readonly teamspaceId: string | null
 }
 
 export type PageTreeNode = {
   readonly id: BlockId
   readonly title: string
   readonly kind: PageTreeKind
+  /** 이 노드가 속한 teamspace — 루트 블록의 부모. 워크스페이스 직속 서브트리면 null. */
+  readonly teamspaceId: string | null
   /** 트리상의 부모(가장 가까운 페이지 조상). 최상위면 null. */
   readonly parentId: BlockId | null
   readonly hasChildren: boolean
@@ -101,6 +115,7 @@ export function buildPageTree(rows: readonly PageTreeRow[]): PageTreeNode[] {
     id: BlockId
     title: string
     kind: PageTreeKind
+    teamspaceId: string | null
     parentId: BlockId | null
     hasChildren: boolean
     children: Building[]
@@ -117,6 +132,7 @@ export function buildPageTree(rows: readonly PageTreeRow[]): PageTreeNode[] {
         id: asBlockId(row.id),
         title: row.title,
         kind: row.kind,
+        teamspaceId: row.teamspaceId,
         parentId: null,
         hasChildren: false,
         children: [],
@@ -157,6 +173,28 @@ export function buildPageTree(rows: readonly PageTreeRow[]): PageTreeNode[] {
 }
 
 /**
+ * 루트를 teamspace 별로 가른다 — 사이드바의 Teamspaces 섹션(7c-2 · F-07-16). **순수 함수.**
+ *
+ * `teamspaces` 는 **내가 멤버인** teamspace 다(`listMyTeamspaces` — 그 순서 그대로 선다). 페이지가 없어도 선다 — 그 자리의
+ * `+` 가 첫 페이지를 만든다. 나머지 루트는 `rest` 로 간다: 워크스페이스 직속 페이지, 그리고 **멤버가 아닌 teamspace 에서
+ * 따로 공유받은 페이지**. 뒤의 것은 Shared 섹션의 몫인데 그 섹션이 아직 없다(§7). 멤버가 아닌 teamspace 로 묶어 세우면
+ * 그 teamspace 의 존재가 드러나므로 섞어 두는 편이 맞다.
+ */
+export function groupRootsByTeamspace<T extends { readonly id: string }>(
+  roots: readonly PageTreeNode[],
+  teamspaces: readonly T[],
+): { teamspaces: { teamspace: T; pages: PageTreeNode[] }[]; rest: PageTreeNode[] } {
+  const byId = new Map(teamspaces.map((t) => [t.id, [] as PageTreeNode[]]))
+  const rest: PageTreeNode[] = []
+  for (const root of roots) {
+    const bucket = root.teamspaceId === null ? undefined : byId.get(root.teamspaceId)
+    if (bucket) bucket.push(root)
+    else rest.push(root)
+  }
+  return { teamspaces: teamspaces.map((t) => ({ teamspace: t, pages: byId.get(t.id) ?? [] })), rest }
+}
+
+/**
  * 워크스페이스의 살아 있는 페이지 전부. **제목과 위치만.**
  *
  * `live_block` 뷰를 쓴다 — 휴지통·영구삭제 페이지가 사이드바에 나타나면
@@ -183,17 +221,21 @@ export async function listPageTree(ctx: SessionContext): Promise<PageTreeNode[]>
       properties: { title?: unknown } | null
       ancestor_path: string[]
       order_key: string
+      teamspace_id: string | null
     }>(
       // ★ W8: 풀페이지 데이터베이스를 넣고, DB 행은 뺀다.
       //   행도 `type='page'` 블록이라(C-3) 타입만 보면 섞이고, 행의 조상인
       //   컨테이너가 이 집합에 없던 동안에는 행이 전부 **최상위 노드**가 됐다.
       //   컨테이너를 넣은 지금도 행은 빼야 한다 — 표 하나가 사이드바를 행 수만큼
       //   늘린다. 행은 표가 보여준다.
-      `SELECT id, type, properties, ancestor_path, order_key
-         FROM live_block
-        WHERE workspace_id = $1 AND type IN ('page', 'database') AND parent_type <> 'data_source'
-          AND perm_scope_id = ANY($2::uuid[])
-        ORDER BY order_key, id`,
+      // ★ 7c-2: 루트 블록(`r`)을 붙여 teamspace 를 읽는다(머리말).
+      `SELECT b.id, b.type, b.properties, b.ancestor_path, b.order_key,
+              CASE WHEN r.parent_type = 'teamspace' THEN r.parent_id END AS teamspace_id
+         FROM live_block b
+         JOIN block r ON r.id = COALESCE(b.ancestor_path[1], b.id)
+        WHERE b.workspace_id = $1 AND b.type IN ('page', 'database') AND b.parent_type <> 'data_source'
+          AND b.perm_scope_id = ANY($2::uuid[])
+        ORDER BY b.order_key, b.id`,
       [ctx.workspaceId, scopes],
     )
   })
@@ -209,6 +251,7 @@ export async function listPageTree(ctx: SessionContext): Promise<PageTreeNode[]>
         title: Array.isArray(raw) ? toPlainText(raw as RichTextRun[]) : '',
         ancestorPath: row.ancestor_path,
         orderKey: row.order_key,
+        teamspaceId: row.teamspace_id,
       }
     }),
   )

@@ -9,7 +9,7 @@
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { buildPageTree, type PageTreeNode, type PageTreeRow } from './page-tree.ts'
+import { buildPageTree, groupRootsByTeamspace, type PageTreeNode, type PageTreeRow } from './page-tree.ts'
 
 let counter = 0
 const nextId = () => `00000000-0000-4000-8000-${String(++counter).padStart(12, '0')}`
@@ -20,7 +20,7 @@ function row(
   ancestorPath: string[] = [],
   orderKey = 'a0',
 ): PageTreeRow {
-  return { id, title, kind: 'page', ancestorPath, orderKey }
+  return { id, title, kind: 'page', ancestorPath, orderKey, teamspaceId: null }
 }
 
 /** [제목, [자식…]] 로 납작하게. */
@@ -166,6 +166,54 @@ describe('buildPageTree — 데이터베이스 (W8)', () => {
         ['할 일', 'database'],
       ],
     )
+  })
+})
+
+describe('buildPageTree — teamspace (7c-2)', () => {
+  test('노드가 자기 teamspace 를 싣는다 — 화면이 루트를 teamspace 별로 가른다', () => {
+    const team = nextId()
+    const top = nextId()
+    const tree = buildPageTree([
+      row(nextId(), '워크스페이스 페이지'),
+      { ...row(top, '로드맵', [], 'a1'), teamspaceId: team },
+      { ...row(nextId(), '분기 계획', [top]), teamspaceId: team },
+    ])
+    assert.deepEqual(
+      tree.map((n) => [n.title, n.teamspaceId, n.children.map((c) => c.teamspaceId)]),
+      [
+        ['워크스페이스 페이지', null, []],
+        ['로드맵', team, [team]],
+      ],
+    )
+  })
+
+  test('루트를 내 teamspace 별로 가른다 — 그 순서대로 · 페이지가 없어도 선다 · 나머지는 rest', () => {
+    const [mine, empty, notMine] = [nextId(), nextId(), nextId()]
+    const tree = buildPageTree([
+      row(nextId(), '직속'),
+      { ...row(nextId(), '로드맵', [], 'a1'), teamspaceId: mine },
+      { ...row(nextId(), '남의 팀에서 공유받은 것', [], 'a2'), teamspaceId: notMine },
+      { ...row(nextId(), '회의록', [], 'a3'), teamspaceId: mine },
+    ])
+    const split = groupRootsByTeamspace(tree, [
+      { id: empty, name: '가' },
+      { id: mine, name: '나' },
+    ])
+    assert.deepEqual(
+      split.teamspaces.map((s) => [s.teamspace.name, s.pages.map((p) => p.title)]),
+      [
+        ['가', []],
+        ['나', ['로드맵', '회의록']],
+      ],
+    )
+    // 멤버가 아닌 teamspace 로 묶지 않는다 — 묶으면 그 teamspace 가 있다는 것이 드러난다.
+    assert.deepEqual(split.rest.map((p) => p.title), ['직속', '남의 팀에서 공유받은 것'])
+  })
+
+  test('teamspace 가 하나도 없으면 전부 rest 다 — 게스트의 사이드바는 그대로다', () => {
+    const tree = buildPageTree([{ ...row(nextId(), '공유받은 것'), teamspaceId: nextId() }, row(nextId(), '직속', [], 'a1')])
+    const split = groupRootsByTeamspace(tree, [])
+    assert.deepEqual(split, { teamspaces: [], rest: tree })
   })
 })
 

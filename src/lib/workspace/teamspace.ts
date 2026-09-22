@@ -79,6 +79,11 @@ export type TeamspaceSummary = {
   readonly role: TeamspaceRole
 }
 
+export type TeamspaceWhoCanInvite = 'owners' | 'all_members'
+
+/** teamspace 하나 — 설정 화면의 머리와 내 역할. 초대 규칙을 함께 싣는다(누구에게 "넣기"를 보일지). */
+export type TeamspaceDetail = TeamspaceSummary & { readonly whoCanInvite: TeamspaceWhoCanInvite }
+
 export type TeamspaceMemberRow = {
   readonly principal: TeamspacePrincipal
   readonly role: TeamspaceRole
@@ -253,6 +258,33 @@ export async function listMyTeamspaces(ctx: SessionContext): Promise<TeamspaceSu
       visibility: r.visibility,
       role: r.is_owner ? ('owner' as const) : ('member' as const),
     }))
+  })
+}
+
+/**
+ * teamspace 하나 — 멤버만 본다(아니면 not_found — 없는 teamspace 와 같은 답이다). 내 역할은 `roleIn` 이 사람 행과 그룹을
+ * 거친 행을 함께 보고 정한다(`listMyTeamspaces` 와 같은 규칙).
+ */
+export async function getTeamspace(ctx: SessionContext, teamspaceId: string): Promise<TeamspaceResult<TeamspaceDetail>> {
+  return withReadTransaction(async (tx) => {
+    const row = await tx.queryMaybe<{
+      id: string
+      name: string
+      icon: string | null
+      visibility: TeamspaceVisibility
+      who_can_invite: TeamspaceWhoCanInvite
+    }>(
+      `SELECT id, name, icon, visibility, who_can_invite FROM teamspace
+        WHERE id = $1 AND workspace_id = $2 AND archived_at IS NULL`,
+      [teamspaceId, ctx.workspaceId],
+    )
+    if (row === null) return fail('not_found')
+    const role = await roleIn(tx, ctx, teamspaceId)
+    if (role === null) return fail('not_found')
+    return {
+      ok: true,
+      value: { id: row.id, name: row.name, icon: row.icon, visibility: row.visibility, role, whoCanInvite: row.who_can_invite },
+    } as const
   })
 }
 
