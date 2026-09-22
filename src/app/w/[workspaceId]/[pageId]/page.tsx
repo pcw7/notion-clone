@@ -24,6 +24,7 @@ import { loadMentionLabels, mentionIdsOf } from '@/lib/block/mention-candidates'
 import { readBodyYDoc } from '@/lib/collab/ydoc'
 import { withReadTransaction } from '@/lib/db/tx'
 import { isFavorite, recordVisit } from '@/lib/nav/recent'
+import { getTeamspace } from '@/lib/workspace/teamspace'
 import { NewPageButton } from '../new-page-button'
 import { ExportButton } from '../export-button'
 import { PageTitle } from './page-title'
@@ -79,9 +80,13 @@ export default async function PageView({ params }: PageProps<'/w/[workspaceId]/[
 
   // 멘션 노드에는 id 뿐이다 — 이름 · 제목은 권한으로 거른 맵으로 준다(참조 제목과 같은 규칙 · §3.2-22). 백링크는
   // 역인덱스(`link_edge`)에서, 볼 수 있는 페이지만(F-07-09).
-  const [mentionLabels, backlinks] = await Promise.all([
+  // breadcrumb 의 teamspace(7c-2) — 루트 페이지의 부모다. 루트가 보이지 않으면(따로 공유받은 하위 페이지) 모른다. 이름은
+  // **멤버에게만** 세운다 — 그 링크(teamspace 화면)는 멤버가 아니면 404 다(`getTeamspace`).
+  const rootTeamspaceId = page.teamspaceId ?? ancestors[0]?.teamspaceId ?? null
+  const [mentionLabels, backlinks, teamspace] = await Promise.all([
     loadMentionLabels(ctx, mentionIdsOf(readBodyYDoc(state.value.ydoc, page.id).doc)),
     withReadTransaction((tx) => listBacklinks(tx, ctx, page.id)),
+    rootTeamspaceId === null ? null : getTeamspace(ctx, rootTeamspaceId),
   ])
 
   return (
@@ -94,6 +99,18 @@ export default async function PageView({ params }: PageProps<'/w/[workspaceId]/[
           <Link href={`/w/${workspaceId}`} className="hover:underline underline-offset-4">
             워크스페이스
           </Link>
+          {teamspace?.ok && (
+            <span className="flex items-center gap-1">
+              <span aria-hidden>/</span>
+              <Link
+                href={`/w/${workspaceId}/teamspaces/${teamspace.value.id}`}
+                data-testid="breadcrumb-teamspace"
+                className="hover:underline underline-offset-4"
+              >
+                {teamspace.value.name}
+              </Link>
+            </span>
+          )}
           {ancestors.map((a) => (
             <span key={a.id} className="flex items-center gap-1">
               <span aria-hidden>/</span>

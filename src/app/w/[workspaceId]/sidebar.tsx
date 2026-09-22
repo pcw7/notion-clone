@@ -17,18 +17,26 @@
  * 로 간다. 서버 동기화가 필요해지면 그때 정본에 테이블을 추가한다.
  *
  * ──────────────────────────────────────────────────────────────────────
- * 섹션을 만들지 않는다
+ * 섹션 — 즐겨찾기 · Teamspaces · 워크스페이스 페이지 (7c-2)
  * ──────────────────────────────────────────────────────────────────────
  *
- * Favorites / Teamspaces / Shared / Private 는 F-07-16 이 *"섹션 = 권한 상태의
- * **파생 뷰**이지 저장된 분류가 아니다"* 라고 못박는다. teamspace 도 `acl_entry`
- * 도 없는 지금은 **파생될 근거가 없다.** 하나의 페이지 트리로 둔다.
+ * F-07-16: *"섹션 = 권한 상태의 **파생 뷰**이지 저장된 분류가 아니다."* 트리는
+ * 서버가 한 벌로 엮고 레이아웃이 루트를 **내 teamspace 별로** 갈라 준다
+ * (`groupRootsByTeamspace`). 여기서는 그 모양대로 그린다 — 가르는 규칙을 화면에
+ * 두 벌 두지 않는다. teamspace 는 이름(→ 그 teamspace 의 화면) · `+`(그 최상위에
+ * 새 페이지) · 그 아래 트리다. 나머지 루트는 "워크스페이스 페이지"다 — 워크스페이스
+ * 직속, 그리고 멤버가 아닌 teamspace 에서 따로 공유받은 페이지(Shared 섹션은 아직
+ * 없다 · §7). teamspace 를 만들 수도 가질 수도 없는 사람(게스트)의 사이드바는 전과
+ * 같다 — 섹션 머리도 없다.
+ *
+ * 섹션 머리를 눌러 접는 것(F-07-16)은 아직 없다 — teamspace 는 늘 펼쳐져 있다.
  */
 
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 
+import { TeamspaceCreateForm } from './teamspace-create'
 import { TrashPanel, type TrashRow } from './trash-panel'
 import { getSidebarStore } from './sidebar-state'
 import { openSearchOverlay } from './search-overlay'
@@ -42,6 +50,9 @@ export type SidebarNode = {
   hasChildren: boolean
   children: SidebarNode[]
 }
+
+/** 사이드바의 teamspace 하나 — 내가 멤버인 것만 온다. `pages` 는 그 최상위부터의 트리다. */
+export type SidebarTeamspace = { id: string; name: string; pages: SidebarNode[] }
 
 const UNTITLED = '제목 없음'
 
@@ -63,13 +74,20 @@ export type NavRow = { id: string; title: string }
 export function Sidebar({
   workspaceId,
   tree,
+  teamspaces,
+  canCreateTeamspace,
   trash,
   recent,
   favorites,
   inboxUnread,
 }: {
   workspaceId: string
+  /** teamspace 에 들지 않은 루트 — 워크스페이스 직속 · 멤버가 아닌 teamspace 에서 공유받은 페이지. */
   tree: SidebarNode[]
+  /** 내가 멤버인 teamspace 와 그 트리(7c-2). 서버가 갈라 준다. */
+  teamspaces: SidebarTeamspace[]
+  /** teamspace 를 만들 수 있는 역할인가 — 표시 전용(서버가 다시 묻는다). */
+  canCreateTeamspace: boolean
   trash: TrashRow[]
   /** 안 읽은 알림 수(F-11-07). 서버가 권한으로 걸러서 센다 — 볼 수 없게 된 페이지의 알림은 빠진다(§3.3-131). */
   inboxUnread: number
@@ -91,6 +109,13 @@ export function Sidebar({
     return match ? match[1] : null
   }, [pathname])
 
+  /** `/w/{ws}/teamspaces/{id}` — 그 teamspace 의 줄을 강조한다. */
+  const currentTeamspaceId = useMemo(() => pathname.match(/^\/w\/[^/]+\/teamspaces\/([^/]+)/)?.[1] ?? null, [pathname])
+
+  /** 펼칠 조상을 찾을 트리 — 섹션이 갈라져 있어도 현재 페이지는 어느 섹션에든 있다. */
+  const allNodes = useMemo(() => [...tree, ...teamspaces.flatMap((t) => t.pages)], [tree, teamspaces])
+  const [creatingTeamspace, setCreatingTeamspace] = useState(false)
+
   const [busy, setBusy] = useState(false)
   /** 복제가 할 말 한 줄 — 빠진 하위 페이지 · 실패. 트리 아래에 선다. */
   const [note, setNote] = useState<{ readonly text: string; readonly tone: 'status' | 'error' } | null>(null)
@@ -109,9 +134,9 @@ export function Sidebar({
   // 바뀐 게 없으면 알림을 보내지 않아 연쇄 렌더가 없다.
   useEffect(() => {
     if (currentPageId === null) return
-    const path = ancestorsOf(tree, currentPageId)
+    const path = ancestorsOf(allNodes, currentPageId)
     if (path.length > 0) store.expandAll(path)
-  }, [currentPageId, tree, store])
+  }, [currentPageId, allNodes, store])
 
   const toggle = useCallback((id: string) => store.toggleExpanded(id), [store])
   const toggleSidebar = useCallback(() => store.toggleCollapsed(), [store])
@@ -128,18 +153,19 @@ export function Sidebar({
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [toggleSidebar])
 
-  const addChild = useCallback(
-    async (parentPageId: string | null) => {
+  /** 새 페이지를 만들고 연다 — 자리는 부모 페이지 · 워크스페이스 직속(`parentPageId: null`) · teamspace 의 최상위 중 하나다. */
+  const openNewPage = useCallback(
+    async (at: { parentPageId: string | null } | { teamspaceId: string }) => {
       setBusy(true)
       try {
         const res = await fetch(`/api/workspaces/${workspaceId}/pages`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ parentPageId }),
+          body: JSON.stringify(at),
         })
         const data = await res.json()
         if (!res.ok) return
-        if (parentPageId !== null) store.expandAll([parentPageId])
+        if ('parentPageId' in at && at.parentPageId !== null) store.expandAll([at.parentPageId])
         router.push(`/w/${workspaceId}/${data.page.id}`)
         router.refresh()
       } finally {
@@ -148,6 +174,8 @@ export function Sidebar({
     },
     [workspaceId, router, store],
   )
+  const addChild = useCallback((parentPageId: string | null) => openNewPage({ parentPageId }), [openNewPage])
+  const addTeamspacePage = useCallback((teamspaceId: string) => openNewPage({ teamspaceId }), [openNewPage])
 
   /**
    * 페이지를 복제한다 — 6b. 빠진 것이 없으면 사본으로 옮겨 가고, 있으면 **멈춰서 말한다**(`duplicate-page.ts`).
@@ -192,6 +220,9 @@ export function Sidebar({
       setBusy(false)
     }
   }, [workspaceId, router])
+
+  // teamspace 를 가졌거나 만들 수 있으면 섹션을 세운다. 둘 다 아니면(게스트) 사이드바는 전과 같다.
+  const showTeamspaces = teamspaces.length > 0 || canCreateTeamspace
 
   if (collapsed) {
     return (
@@ -272,25 +303,113 @@ export function Sidebar({
       */}
       <NavSection label="즐겨찾기" rows={favorites} workspaceId={workspaceId} currentPageId={currentPageId} />
 
-      <ul className="flex-1 overflow-auto">
-        {tree.map((node) => (
-          <TreeItem
-            key={node.id}
-            node={node}
-            depth={0}
-            workspaceId={workspaceId}
-            currentPageId={currentPageId}
-            expanded={expanded}
-            busy={busy}
-            onToggle={toggle}
-            onAddChild={addChild}
-            onDuplicate={duplicate}
-          />
-        ))}
-        {tree.length === 0 && (
-          <li className="px-2 py-3 text-sm text-neutral-400">페이지가 없습니다</li>
+      <div className="flex flex-1 flex-col gap-2 overflow-auto">
+        {showTeamspaces && (
+          <section aria-label="Teamspaces" data-testid="sidebar-teamspaces" className="flex flex-col gap-0.5">
+            <div className="flex items-center justify-between px-2">
+              <h2 className="text-xs font-medium text-neutral-400">Teamspaces</h2>
+              {canCreateTeamspace && (
+                <button
+                  type="button"
+                  data-testid="teamspace-create-open"
+                  aria-label="teamspace 만들기"
+                  aria-expanded={creatingTeamspace}
+                  title="teamspace 만들기"
+                  onClick={() => setCreatingTeamspace((open) => !open)}
+                  className="rounded px-1 text-sm text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+                >
+                  +
+                </button>
+              )}
+            </div>
+            {creatingTeamspace && (
+              <TeamspaceCreateForm workspaceId={workspaceId} onClose={() => setCreatingTeamspace(false)} />
+            )}
+            <ul>
+              {teamspaces.map((teamspace) => (
+                <li key={teamspace.id} data-testid="sidebar-teamspace" data-teamspace-id={teamspace.id}>
+                  <div
+                    className={`group flex items-center gap-0.5 rounded px-1 ${
+                      teamspace.id === currentTeamspaceId
+                        ? 'bg-neutral-100 dark:bg-neutral-800'
+                        : 'hover:bg-neutral-100 dark:hover:bg-neutral-800'
+                    }`}
+                  >
+                    <span aria-hidden className="w-4 flex-none text-xs text-neutral-400">
+                      ▣
+                    </span>
+                    <Link
+                      href={`/w/${workspaceId}/teamspaces/${teamspace.id}`}
+                      data-testid="sidebar-teamspace-link"
+                      aria-current={teamspace.id === currentTeamspaceId ? 'page' : undefined}
+                      className="min-w-0 flex-1 truncate py-1 text-sm font-medium"
+                    >
+                      {teamspace.name}
+                    </Link>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      data-testid="sidebar-teamspace-add"
+                      onClick={() => void addTeamspacePage(teamspace.id)}
+                      aria-label={`${teamspace.name}에 페이지 추가`}
+                      title="이 teamspace 에 페이지 추가"
+                      className="flex-none px-1 text-sm text-neutral-400 opacity-0 group-hover:opacity-100 focus:opacity-100 disabled:opacity-30"
+                    >
+                      +
+                    </button>
+                  </div>
+                  {teamspace.pages.length > 0 ? (
+                    <ul>
+                      {teamspace.pages.map((node) => (
+                        <TreeItem
+                          key={node.id}
+                          node={node}
+                          depth={1}
+                          workspaceId={workspaceId}
+                          currentPageId={currentPageId}
+                          expanded={expanded}
+                          busy={busy}
+                          onToggle={toggle}
+                          onAddChild={addChild}
+                          onDuplicate={duplicate}
+                        />
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="py-0.5 pl-9 text-xs text-neutral-400">페이지 없음</p>
+                  )}
+                </li>
+              ))}
+            </ul>
+            {teamspaces.length === 0 && !creatingTeamspace && (
+              <p className="px-2 text-xs text-neutral-400">아직 teamspace 가 없습니다</p>
+            )}
+          </section>
         )}
-      </ul>
+
+        <section aria-label="워크스페이스 페이지" className="flex flex-col gap-0.5">
+          {showTeamspaces && <h2 className="px-2 text-xs font-medium text-neutral-400">워크스페이스 페이지</h2>}
+          <ul>
+            {tree.map((node) => (
+              <TreeItem
+                key={node.id}
+                node={node}
+                depth={0}
+                workspaceId={workspaceId}
+                currentPageId={currentPageId}
+                expanded={expanded}
+                busy={busy}
+                onToggle={toggle}
+                onAddChild={addChild}
+                onDuplicate={duplicate}
+              />
+            ))}
+            {tree.length === 0 && (
+              <li className="px-2 py-3 text-sm text-neutral-400">페이지가 없습니다</li>
+            )}
+          </ul>
+        </section>
+      </div>
 
       {note && (
         <p

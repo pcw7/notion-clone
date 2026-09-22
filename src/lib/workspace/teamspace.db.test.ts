@@ -1,5 +1,5 @@
 /**
- * teamspace — Teamspace · 게스트 · 그룹 7c-1조각 (F-06-04 · F-02-12 · DB · 마이그레이션 0028)
+ * teamspace — Teamspace · 게스트 · 그룹 7c-1 · 7c-2조각 (F-06-04 · F-02-12 · DB · 마이그레이션 0028)
  *
  * 이 파일이 지키는 것. 판정(`canViewPage`)과 목록(`listTeamspacePages` · 사이드바 `listPageTree` — 스코프로 거른다)을
  * **나란히** 묻는다(HANDOFF §3.3-107).
@@ -15,6 +15,7 @@
  *   ⑨ 만들기 · 최상위 페이지 — 제한 멤버 · 게스트는 못 만든다 · 멤버가 아니면 페이지를 못 둔다 · 보관된 teamspace
  *   ⑩ 복제 · 공유 — 최상위 페이지의 사본은 같은 teamspace · ('teamspace', T) 에 준 페이지는 멤버가 본다
  *   ⑪ 세대 · 신호 — 멤버십 · 역할(teamspace 노드의 행) · 보관이 협업 서버에 간다
+ *   ⑫ 화면이 읽는 것(7c-2) — 사이드바 노드의 teamspace · 섹션 가르기 · getTeamspace(멤버만 · 그룹을 거친 역할)
  *
  * 열린 협업 연결이 멤버에서 빠질 때 닫히는지는 `collab/collab-server.db.test.ts` ⑨ 가 본다.
  */
@@ -24,7 +25,7 @@ import assert from 'node:assert/strict'
 
 import { duplicatePage } from '../block/duplicate.ts'
 import { createPage, getPage, listTeamspacePages, PageError, titleFromPlainText } from '../block/page.ts'
-import { listPageTree, type PageTreeNode } from '../block/page-tree.ts'
+import { groupRootsByTeamspace, listPageTree, type PageTreeNode } from '../block/page-tree.ts'
 import { openChangeFeed, type CollabSignal } from '../collab/change-feed.ts'
 import { query, queryOne } from '../db/pool.ts'
 import { withReadTransaction } from '../db/tx.ts'
@@ -45,6 +46,7 @@ import { addGroupMember, createGroup, deleteGroup, removeGroupMember } from './g
 import {
   addTeamspaceMember,
   createTeamspace,
+  getTeamspace,
   listMyTeamspaces,
   listTeamspaceMembers,
   removeTeamspaceMember,
@@ -539,5 +541,94 @@ describe('⑪ 세대 · 신호', () => {
 
     await query(`UPDATE teamspace SET archived_at = now() WHERE id = $1`, [teamspace])
     await waitFor('보관의 신호', () => heard() >= 6)
+  })
+})
+
+// ── ⑫ ─────────────────────────────────────────────────────────────────
+
+describe('⑫ 화면이 읽는 것 (7c-2)', () => {
+  const find = (nodes: readonly PageTreeNode[], id: string): PageTreeNode | undefined => {
+    for (const node of nodes) {
+      if (node.id === id) return node
+      const hit = find(node.children, id)
+      if (hit) return hit
+    }
+    return undefined
+  }
+
+  test('★ 사이드바 트리의 노드가 자기 teamspace 를 싣고 · 루트가 내 teamspace 섹션으로 간다 — 직속은 rest', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const teamspace = await newTeamspace()
+    const page = await topPage(teamspace, '팀 최상위')
+    const child = (await createPage(fx.owner.ctx, { parentPageId: page, title: titleFromPlainText('팀 하위') })).id
+    const direct = (await createPage(fx.owner.ctx, { title: titleFromPlainText('직속') })).id
+
+    const tree = await listPageTree(fx.owner.ctx)
+    assert.deepEqual(
+      [find(tree, page)?.teamspaceId, find(tree, child)?.teamspaceId, find(tree, direct)?.teamspaceId],
+      [teamspace, teamspace, null],
+    )
+    const split = groupRootsByTeamspace(tree, await listMyTeamspaces(fx.owner.ctx))
+    const section = split.teamspaces.find((s) => s.teamspace.id === teamspace)
+    assert.deepEqual(section?.pages.map((p) => p.id), [page])
+    assert.ok(split.rest.some((p) => p.id === direct))
+    assert.ok(!split.rest.some((p) => p.id === page), '팀 최상위가 직속 페이지와 섞였다')
+  })
+
+  test('팀 밖에서 공유받은 하위 페이지 — 루트를 못 봐도 teamspace 를 싣지만 · 멤버가 아니니 rest 로 간다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const sam = await member('샘')
+    const teamspace = await newTeamspace()
+    const page = await topPage(teamspace)
+    const child = (await createPage(fx.owner.ctx, { parentPageId: page, title: titleFromPlainText('따로 공유') })).id
+    assert.ok((await grantAccess(fx.owner.ctx, child, user(sam), 'view')).ok)
+
+    const tree = await listPageTree(sam.ctx)
+    assert.equal(find(tree, page), undefined, '전제 — 루트는 못 본다')
+    assert.equal(find(tree, child)?.teamspaceId, teamspace)
+    const split = groupRootsByTeamspace(tree, await listMyTeamspaces(sam.ctx))
+    assert.deepEqual(split.teamspaces, [])
+    assert.ok(split.rest.some((p) => p.id === child))
+  })
+
+  test('getTeamspace — 멤버는 머리와 내 역할 · 초대 규칙을 받는다 · 그룹을 거친 owner 도 owner 다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const tess = await member('테스')
+    const uma = await member('우마')
+    const teamspace = await newTeamspace()
+    await join(teamspace, tess)
+    const group = await createGroup(fx.owner.ctx, unique('owner 그룹'))
+    assert.ok(group.ok)
+    assert.ok((await addGroupMember(fx.owner.ctx, group.value.id, uma.userId)).ok)
+    assert.ok((await addTeamspaceMember(fx.owner.ctx, teamspace, { type: 'group', id: group.value.id }, 'owner')).ok)
+
+    const seen = await getTeamspace(tess.ctx, teamspace)
+    assert.ok(seen.ok)
+    assert.deepEqual(
+      { role: seen.value.role, whoCanInvite: seen.value.whoCanInvite, visibility: seen.value.visibility },
+      { role: 'member', whoCanInvite: 'all_members', visibility: 'closed' },
+    )
+    const viaGroup = await getTeamspace(uma.ctx, teamspace)
+    assert.ok(viaGroup.ok && viaGroup.value.role === 'owner', JSON.stringify(viaGroup))
+  })
+
+  test('getTeamspace — 멤버가 아닌 사람 · 게스트 · 남의 워크스페이스 · 보관된 teamspace 는 not_found', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const stranger = await member('낯선 사람')
+    const guest = await member('손님', 'guest')
+    const teamspace = await newTeamspace()
+    const other = await makeFixture()
+
+    const results = [
+      await getTeamspace(stranger.ctx, teamspace),
+      await getTeamspace(guest.ctx, teamspace),
+      await getTeamspace(other.owner.ctx, teamspace),
+    ]
+    await query(`UPDATE teamspace SET archived_at = now() WHERE id = $1`, [teamspace])
+    results.push(await getTeamspace(fx.owner.ctx, teamspace))
+    assert.deepEqual(
+      results.map((r) => (r.ok ? 'ok' : r.reason)),
+      ['not_found', 'not_found', 'not_found', 'not_found'],
+    )
   })
 })
