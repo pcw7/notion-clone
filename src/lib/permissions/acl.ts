@@ -522,7 +522,8 @@ export async function isScopeBoundary(tx: Tx, nodeId: string): Promise<boolean> 
  *   - 상속을 끊은 노드는 받지 않는다 — 상속하지 않기로 한 노드다
  *   - 이미 `workspace_everyone` 행이 있으면 `full_access` 로 올린다. `full_access` 는 capability 전부라 상속분과 명시 부여의
  *     합집합이 곧 `full_access` 다
- *   - 옮겨 가 워크스페이스 밖(다른 페이지 밑)으로 갈 때 이 행을 지우지 않는다 — 명시 부여와 가를 출처 열이 없다(§7 "ACL provenance")
+ *   - 최상위를 **떠날 때** 이 행을 지운다(`leaveWorkspaceRoot` — 7c-3). 최상위에서는 이 행이 곧 그 자리의 상속이다 — 올 때 이미
+ *     있던 행을 `full_access` 로 올리는 것이 그 뜻이다
  */
 export async function inheritFromWorkspace(tx: Tx, ctx: SessionContext, nodeId: string): Promise<void> {
   if (await isCut(tx, nodeId)) return
@@ -532,6 +533,27 @@ export async function inheritFromWorkspace(tx: Tx, ctx: SessionContext, nodeId: 
      ON CONFLICT (node_kind, node_id, principal_type, principal_id)
      DO UPDATE SET level = EXCLUDED.level WHERE acl_entry.level <> EXCLUDED.level`,
     [randomUUID(), nodeId, ctx.userId],
+  )
+}
+
+/**
+ * 최상위 노드가 워크스페이스 밖으로 간다 — `workspace_everyone` 행을 지운다(7c-3 · 06 F-06-20 *"이전 부모 기반 접근은 소멸"*).
+ *
+ * `inheritFromWorkspace` 의 짝이다. 최상위에서는 그 행이 워크스페이스에서 받는 상속이므로(올 때 이미 있던 행도 `full_access` 로
+ * 올린다) 떠나면 거둔다 — 다른 페이지 밑으로 가면 그 부모에게서, teamspace 로 가면 그 teamspace 노드에게서 새로 물려받는다. 한때
+ * 지우지 않아(명시 부여와 가를 출처 열이 없다며) 최상위 페이지를 비공개 페이지 밑으로 옮겨도 모두에게 열려 있었다(HANDOFF §7).
+ *
+ *   - 상속을 끊은 노드는 건드리지 않는다 — 그 행은 절단 시점의 자기 부여다(P2). `inheritFromWorkspace` 가 끊은 노드에 넣지 않는
+ *     것과 같은 규칙이다
+ *   - 다른 주체의 행(사람 · 그룹 · teamspace)은 명시 부여다 — 그대로 둔다(F-06-20 *"명시 ACL 은 유지"*)
+ *   - 호출자가 최상위 노드인지 확인한다(`relocateSubtree` — `parent_type = 'workspace'` 인 노드가 떠날 때만 부른다)
+ */
+export async function leaveWorkspaceRoot(tx: Tx, nodeId: string): Promise<void> {
+  if (await isCut(tx, nodeId)) return
+  await tx.query(
+    `DELETE FROM acl_entry
+      WHERE node_kind = 'block' AND node_id = $1 AND principal_type = 'workspace_everyone'`,
+    [nodeId],
   )
 }
 

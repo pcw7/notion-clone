@@ -51,15 +51,29 @@
  *   - 옮기기: 워크스페이스에서 상속한다(`inheritFromWorkspace` — 최상위에 만들 때와 같은 행). 06 F-06-20 "이동 즉시 새 부모의
  *     권한이 상속된다". 상속을 끊은 페이지는 받지 않는다
  *   - 부모가 사라져 되살리기(B4): 되살린 사람만(`grantToRestorer`) — 정본 "복원 실행자의 Private 루트"
+ *   - **떠날 때는 그 행을 거둔다**(`leaveWorkspaceRoot` — 7c-3). 06 F-06-20 *"이전 부모 기반 접근은 소멸"*. 상속을 끊은 페이지와
+ *     다른 주체의 명시 부여는 그대로다
+ *
+ * ──────────────────────────────────────────────────────────────────────
+ * teamspace — 세 번째 자리 (7c-3 · F-06-20)
+ * ──────────────────────────────────────────────────────────────────────
+ *
+ * 옮길 곳은 페이지(블록) · 워크스페이스 최상위 · **teamspace 최상위**다(`MoveDestination`). teamspace 최상위는 행을 넣지 않는다 —
+ * teamspace 노드의 부여를 물려받는다(`createPage` 의 teamspace 자리와 같다 · 스코프는 경계가 아니면 teamspace id).
+ *
+ * **뿌리가 바뀌는 이동은 페이지의 전체 권한(`manage_perm`)이 있어야 한다** — 워크스페이스 ↔ teamspace, teamspace A ↔ B. 페이지를
+ * 볼 수 있는 사람들이 통째로 바뀌므로 공유를 바꾸는 것과 같다(`edit` 은 공유를 바꾸지 못한다). 같은 뿌리 안의 이동은 전과 같이
+ * `edit_content` 다. 뿌리는 루트 블록의 부모로 읽는다(teamspace 는 `ancestor_path` 에 없다 — HANDOFF §3.3-189).
  */
 
 import type { SessionContext } from '../auth/session-context.ts'
 import type { BlockId } from '../ids.ts'
 import { asBlockId } from '../ids.ts'
 import { withReadTransaction, withTransaction, type Tx } from '../db/tx.ts'
-import { grantToRestorer, inheritFromWorkspace, isScopeBoundary } from '../permissions/acl.ts'
-import { effectiveCaps, readableScopes, scopesWith } from '../permissions/effective.ts'
+import { grantToRestorer, inheritFromWorkspace, isScopeBoundary, leaveWorkspaceRoot } from '../permissions/acl.ts'
+import { effectiveCaps, readableScopes, scopesWith, teamspaceCaps } from '../permissions/effective.ts'
 import { can } from '../permissions/levels.ts'
+import { listMyTeamspaces } from '../workspace/teamspace.ts'
 import { specOf, isKnownBlockType, MAX_TREE_DEPTH } from './types.ts'
 import { nextSiblingKey } from './page.ts'
 import { finishOrThrow, openPageBody, ownerPageOf, type PageBodyWrite } from './body-write.ts'
@@ -77,6 +91,8 @@ export type MoveErrorCode =
   | 'cycle'
   /** 옮기면 서브트리가 더 깊어져 어딘가가 MAX_TREE_DEPTH 를 넘는다. */
   | 'too_deep'
+  /** 뿌리가 바뀌는 이동(워크스페이스 ↔ teamspace · teamspace 사이)인데 페이지의 전체 권한이 없다(머리말 "teamspace"). */
+  | 'needs_full_access'
 
 export class MoveError extends Error {
   readonly code: MoveErrorCode
@@ -88,10 +104,21 @@ export class MoveError extends Error {
   }
 }
 
+/** teamspace 의 최상위 — 옮길 곳의 세 번째 종류(7c-3). */
+export type TeamspaceTarget = { readonly teamspaceId: string }
+
+/** 옮길 곳 — 블록(페이지 · 본문 블록) · `null`(워크스페이스 최상위) · teamspace 최상위. */
+export type MoveDestination = BlockId | null | TeamspaceTarget
+
+const isTeamspaceTarget = (value: unknown): value is TeamspaceTarget =>
+  typeof value === 'object' && value !== null && 'teamspaceId' in value
+
 export type MoveResult = {
   readonly pageId: BlockId
-  /** 새 부모. 워크스페이스 루트로 갔으면 null. */
+  /** 새 부모 블록. 워크스페이스 · teamspace 최상위로 갔으면 null. */
   readonly parentBlockId: BlockId | null
+  /** teamspace 최상위로 갔으면 그 teamspace. */
+  readonly teamspaceId: string | null
   readonly ancestors: readonly BlockId[]
   readonly permScopeId: string
   readonly orderKey: string
@@ -120,20 +147,33 @@ export type TargetRow = {
 /**
  * 대상 부모를 확정하고 잠근다.
  *
- * `null` 이면 워크스페이스 루트다. 그 외에는 **같은 워크스페이스의 살아 있는
- * 블록**이어야 한다 — 페이지가 아니어도 된다(토글 안의 하위 페이지처럼).
- * 다만 자식을 가질 수 없는 타입(heading·divider·image)은 거부한다.
+ * `null` 이면 워크스페이스 루트다. teamspace 면 그 최상위다 — 이 워크스페이스의 보관되지 않은 teamspace 이고 거기에 페이지를
+ * 둘 수 있어야 한다(`teamspaceCaps` 의 `create_child` — `createPage` 의 teamspace 자리와 같은 규칙 · 아니면 `target_not_found`).
+ * 그 외에는 **같은 워크스페이스의 살아 있는 블록**이어야 한다 — 페이지가 아니어도 된다(토글 안의 하위 페이지처럼). 다만 자식을
+ * 가질 수 없는 타입(heading·divider·image)은 거부한다.
  */
 async function lockTarget(
   tx: Tx,
   ctx: SessionContext,
-  targetId: BlockId | null,
-): Promise<TargetRow | null> {
-  if (targetId === null) {
+  destination: MoveDestination,
+): Promise<TargetRow | TeamspaceTarget | null> {
+  if (destination === null) {
     // 형제 삽입 직렬화. `page.ts` 의 lockParent 와 같은 이유다.
     await tx.query(`SELECT id FROM workspace WHERE id = $1 FOR UPDATE`, [ctx.workspaceId])
     return null
   }
+
+  if (isTeamspaceTarget(destination)) {
+    const teamspace = await tx.queryMaybe<{ id: string }>(
+      `SELECT id FROM teamspace WHERE id = $1 AND workspace_id = $2 AND archived_at IS NULL FOR UPDATE`,
+      [destination.teamspaceId, ctx.workspaceId],
+    )
+    if (teamspace === null || !can(await teamspaceCaps(tx, ctx, teamspace.id), 'create_child')) {
+      throw new MoveError('target_not_found', '옮길 위치를 찾을 수 없습니다.')
+    }
+    return { teamspaceId: teamspace.id }
+  }
+  const targetId = destination
 
   const target = await tx.queryMaybe<TargetRow>(
     `SELECT id, type, ancestor_path, perm_scope_id
@@ -163,9 +203,21 @@ async function lockTarget(
 }
 
 /**
+ * 이 루트 블록의 뿌리 — 부모가 teamspace 면 그 id, 워크스페이스면 null. 판정(`effective.ts` 의 `ChainRow`)과 같은 규칙이다.
+ * 노드의 루트 블록은 `ancestor_path[1]`(없으면 자기)이다.
+ */
+async function rootTeamspaceOf(tx: Tx, rootBlockId: string): Promise<string | null> {
+  const root = await tx.queryOne<{ parent_type: string; parent_id: string }>(
+    `SELECT parent_type, parent_id FROM block WHERE id = $1`,
+    [rootBlockId],
+  )
+  return root.parent_type === 'teamspace' ? root.parent_id : null
+}
+
+/**
  * 페이지를 서브트리째 옮긴다.
  *
- * @param targetParentId 새 부모 블록. `null` 이면 워크스페이스 최상위로.
+ * @param destination 새 부모 블록 · `null`(워크스페이스 최상위) · `{ teamspaceId }`(그 teamspace 의 최상위).
  *
  * 순서는 **맨 뒤**에 붙는다. 형제 사이의 정확한 위치 지정은 드래그 앤 드롭
  * (F-01-08 / W5-b)과 함께 온다 — 노션의 "Move to" 도 맨 뒤에 붙인다.
@@ -173,8 +225,9 @@ async function lockTarget(
 export async function movePage(
   ctx: SessionContext,
   pageId: BlockId,
-  targetParentId: BlockId | null,
+  destination: MoveDestination,
 ): Promise<MoveResult> {
+  const targetParentId = isTeamspaceTarget(destination) ? null : destination
   return withTransaction(async (tx) => {
     const peek = await tx.queryMaybe<{ parent_type: string; parent_id: string; properties: { title?: unknown } | null }>(
       `SELECT parent_type, parent_id, properties FROM block
@@ -197,6 +250,7 @@ export async function movePage(
     // 페이지의 자리는 부모 본문의 참조 노드다. 옮기면 옛 자리의 본문에서 빼고 새 자리의 본문에 넣는다. 대상이 어느
     // 페이지 본문에도 속하지 않으면(워크스페이스 직속 데이터베이스 같은 것) 참조를 둘 곳이 없다 — 옮길 위치가 아니다.
     // 두 본문 페이지를 옮길 행 · 대상보다 먼저, id 순으로 잡는다(잠금 순서: 본문 페이지 행 → 옮길 행 · 대상 → 스냅샷).
+    // 워크스페이스 · teamspace 최상위에는 본문이 없다 — 새 자리의 본문은 블록 대상일 때만이다.
     const oldOwner = peek.parent_type === 'block' ? await ownerPageOf(tx, ctx, peek.parent_id) : null
     const newOwner = targetParentId === null ? null : await ownerPageOf(tx, ctx, targetParentId)
     if (targetParentId !== null && newOwner === null) {
@@ -220,21 +274,40 @@ export async function movePage(
     if (!can(caps, 'view')) throw new MoveError('not_found', '페이지를 찾을 수 없습니다.')
     if (!can(caps, 'edit_content')) throw new MoveError('forbidden', '이 페이지를 옮길 권한이 없습니다.')
 
-    const target = await lockTarget(tx, ctx, targetParentId)
+    const target = await lockTarget(tx, ctx, destination)
+    const blockTarget = target === null || isTeamspaceTarget(target) ? null : target
 
-    if (target !== null && target.ancestor_path.includes(moving.id)) {
+    if (blockTarget !== null && blockTarget.ancestor_path.includes(moving.id)) {
       throw new MoveError('cycle', '페이지를 자기 하위 페이지 안으로 옮길 수 없습니다.')
+    }
+
+    // ── 뿌리가 바뀌는가 (머리말 "teamspace") ────────────────────────
+    const fromRoot = await rootTeamspaceOf(tx, moving.ancestor_path[0] ?? moving.id)
+    const toRoot =
+      target === null
+        ? null
+        : isTeamspaceTarget(target)
+          ? target.teamspaceId
+          : await rootTeamspaceOf(tx, target.ancestor_path[0] ?? target.id)
+    if (fromRoot !== toRoot && !can(caps, 'manage_perm')) {
+      throw new MoveError(
+        'needs_full_access',
+        '다른 teamspace 나 워크스페이스 최상위로 옮기려면 이 페이지의 전체 권한이 필요합니다.',
+      )
     }
 
     // ── 이미 그 자리인가 ────────────────────────────────────────────
     const alreadyThere =
       target === null
         ? moving.parent_type === 'workspace'
-        : moving.parent_type === 'block' && moving.parent_id === target.id
+        : isTeamspaceTarget(target)
+          ? moving.parent_type === 'teamspace' && moving.parent_id === target.teamspaceId
+          : moving.parent_type === 'block' && moving.parent_id === target.id
     if (alreadyThere) {
       return {
         pageId: asBlockId(moving.id),
-        parentBlockId: target === null ? null : asBlockId(target.id),
+        parentBlockId: blockTarget === null ? null : asBlockId(blockTarget.id),
+        teamspaceId: isTeamspaceTarget(target) ? target.teamspaceId : null,
         ancestors: moving.ancestor_path.map(asBlockId),
         permScopeId: moving.perm_scope_id,
         orderKey: '',
@@ -251,9 +324,9 @@ export async function movePage(
     const placed = await relocateSubtree(tx, ctx, moving, target)
 
     if (oldOwner !== null) bodies.get(oldOwner)?.change(removePageRef(moving.id))
-    if (newOwner !== null && target !== null) {
+    if (newOwner !== null && blockTarget !== null) {
       // 대상이 그 본문을 가진 페이지 자신이면 본문 최상위, 본문 안의 블록이면 그 블록의 자식 끝이다.
-      const parentBlockId = target.id === newOwner ? null : target.id
+      const parentBlockId = blockTarget.id === newOwner ? null : blockTarget.id
       bodies.get(newOwner)?.change(appendPageRef(parentBlockId, moving.id))
     }
     for (const owner of owners) {
@@ -269,7 +342,8 @@ export async function movePage(
 
     return {
       pageId: asBlockId(moving.id),
-      parentBlockId: target === null ? null : asBlockId(target.id),
+      parentBlockId: blockTarget === null ? null : asBlockId(blockTarget.id),
+      teamspaceId: isTeamspaceTarget(target) ? target.teamspaceId : null,
       ancestors: placed.ancestors.map(asBlockId),
       permScopeId: placed.permScopeId,
       orderKey: final.order_key,
@@ -319,19 +393,30 @@ export async function relocateSubtree(
   tx: Tx,
   ctx: SessionContext,
   moving: MovingRow,
-  target: TargetRow | null,
+  target: TargetRow | TeamspaceTarget | null,
   options: RelocateOptions = {},
 ): Promise<RelocateResult> {
   {
+    // 새 자리 — 부모의 종류 · id, 경로, 경계가 아닐 때 받을 스코프(워크스페이스 최상위는 없다 — 늘 자기가 경계다).
+    const place =
+      target === null
+        ? { type: 'workspace', id: ctx.workspaceId, path: [] as string[], scope: null }
+        : isTeamspaceTarget(target)
+          ? // 정본 §3.11 "없으면 teamspace 루트 id"
+            { type: 'teamspace', id: target.teamspaceId, path: [] as string[], scope: target.teamspaceId }
+          : { type: 'block', id: target.id, path: [...target.ancestor_path, target.id], scope: target.perm_scope_id }
+
     // 최상위로 가는 경우 형제 삽입을 직렬화한다. `movePage` 는 `lockTarget` 에서
     // 이미 잡았지만 같은 트랜잭션 안이라 재진입이 무해하고, `restorePage` 처럼
-    // `lockTarget` 을 거치지 않는 호출자도 안전해진다.
-    if (target === null) {
+    // `lockTarget` 을 거치지 않는 호출자도 안전해진다. teamspace 최상위는 그 teamspace 행이다(`createPage` 와 같다).
+    if (place.type === 'workspace') {
       await tx.query(`SELECT id FROM workspace WHERE id = $1 FOR UPDATE`, [ctx.workspaceId])
+    } else if (place.type === 'teamspace') {
+      await tx.query(`SELECT id FROM teamspace WHERE id = $1 FOR UPDATE`, [place.id])
     }
 
     const oldPath = moving.ancestor_path
-    const newPath = target === null ? [] : [...target.ancestor_path, target.id]
+    const newPath = place.path
 
     // ── 깊이 ────────────────────────────────────────────────────────
     //
@@ -364,17 +449,18 @@ export async function relocateSubtree(
     // 한때 여기는 "지금은 acl_entry 가 없으므로 경계는 워크스페이스 최상위뿐"(W5-a)이라며 늘 대상의 스코프를 썼고 W6-b 뒤에도 그대로
     // 남았다. 상속을 끊은 비공개 페이지를 공개 페이지 밑으로 옮기면 목록 · 사이드바 · 검색이 그 제목을 내줬다(HANDOFF §3.2-21).
     //
-    // 최상위로 오면 먼저 상속 원천을 행으로 둔다(머리말 "최상위") — 그 뒤로는 늘 경계다.
-    if (target === null) {
+    // 최상위로 오면 먼저 상속 원천을 행으로 둔다(머리말 "최상위") — 그 뒤로는 늘 경계다. 최상위를 **떠나면** 그 행을 거둔다 —
+    // 경계인지는 거둔 뒤에 묻는다(다른 명시 부여가 없으면 경계가 풀려 새 자리의 스코프를 받는다).
+    if (place.type === 'workspace') {
       if (options.atTopLevel === 'restorer_only') await grantToRestorer(tx, ctx, moving.id)
       else await inheritFromWorkspace(tx, ctx, moving.id)
+    } else if (moving.parent_type === 'workspace') {
+      await leaveWorkspaceRoot(tx, moving.id)
     }
     const oldScope = moving.perm_scope_id
-    const newScope = target === null || (await isScopeBoundary(tx, moving.id)) ? moving.id : target.perm_scope_id
+    const newScope = place.scope === null || (await isScopeBoundary(tx, moving.id)) ? moving.id : place.scope
 
-    const orderKey =
-      options.orderKey ??
-      (await nextSiblingKey(tx, target === null ? ctx.workspaceId : target.id))
+    const orderKey = options.orderKey ?? (await nextSiblingKey(tx, place.id))
 
     // ── ① 이동한 페이지 ────────────────────────────────────────────
     const updated = await tx.queryOne<{ order_key: string; version: string }>(
@@ -387,8 +473,8 @@ export async function relocateSubtree(
       [
         moving.id,
         ctx.workspaceId,
-        target === null ? 'workspace' : 'block',
-        target === null ? ctx.workspaceId : target.id,
+        place.type,
+        place.id,
         orderKey,
         newPath,
         newScope,
@@ -493,6 +579,23 @@ export async function listMovableTargets(
         return title === undefined ? [] : [title]
       }),
     }))
+  })
+}
+
+/**
+ * 옮길 수 있는 teamspace 최상위 — 내가 멤버이고 거기에 페이지를 둘 수 있는 것(`lockTarget` 의 teamspace 규칙과 같다 · 7c-3).
+ * 이름순은 `listMyTeamspaces` 를 따른다. 페이지의 전체 권한은 여기서 묻지 않는다 — 없으면 `movePage` 가 `needs_full_access` 로
+ * 거부하고 화면이 그 말을 한다(자리마다 다르지 않다).
+ */
+export async function listTeamspaceDestinations(ctx: SessionContext): Promise<{ id: string; name: string }[]> {
+  const mine = await listMyTeamspaces(ctx)
+  if (mine.length === 0) return []
+  return withReadTransaction(async (tx) => {
+    const out: { id: string; name: string }[] = []
+    for (const teamspace of mine) {
+      if (can(await teamspaceCaps(tx, ctx, teamspace.id), 'create_child')) out.push({ id: teamspace.id, name: teamspace.name })
+    }
+    return out
   })
 }
 

@@ -1484,6 +1484,23 @@ try {
     const missing = expected.filter(([tbl, name]) => got.get(`${tbl}.${name}`) !== 'O')
     if (missing.length === 0) ok(`신호 트리거 ${expected.length}개가 있고 켜져 있다`)
     else fail(`신호 트리거가 없거나 꺼져 있다: ${missing.map(([tbl, name]) => `${tbl}.${name}`).join(', ')}`)
+
+    // 7c-3조각(0029) — 최상위 페이지는 부모만 바뀌고 경로 · 스코프가 그대로일 수 있다(teamspace 사이 이동). 트리거가 그 두 열을
+    // 보는지 정의에서 본다. 실제로 신호가 오는지는 src/lib/block/move-teamspace.db.test.ts 가 본다.
+    const block = await client.query(
+      `SELECT pg_get_triggerdef(t.oid) AS def FROM pg_trigger t
+         JOIN pg_class c ON c.oid = t.tgrelid
+        WHERE c.relname = 'block' AND t.tgname = 'tg_collab_access_block'`,
+    )
+    const def = block.rows[0]?.def ?? ''
+    const watches = (col) =>
+      new RegExp(`UPDATE OF [^\\n]*\\b${col}\\b[^\\n]* ON `, 'i').test(def) &&
+      new RegExp(`old\\.${col} IS DISTINCT FROM new\\.${col}`, 'i').test(def)
+    if (watches('parent_type') && watches('parent_id')) {
+      ok('block 의 신호가 부모 이동(parent_type · parent_id)도 본다 (0029)')
+    } else {
+      fail(`block 의 신호가 부모 이동을 보지 않는다 — ${def}`)
+    }
   }
 
   console.log('\n[11] 코멘트 (0018 · 0019 / §3.9 · F-05-08 · F-05-07)')

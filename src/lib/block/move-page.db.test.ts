@@ -330,8 +330,12 @@ describe('movePage — perm_scope_id (§3.11 트리거 ④)', () => {
 
     const privateTarget = await page('소유자만의 대상')
     await restrictToOwner(privateTarget.id)
-    const moving = await page('모두에게 열린 루트') // 최상위 페이지는 workspace_everyone ACL 을 갖고 태어난다 — 경계다
-    const child = await page('열린 루트의 자식', moving.id)
+    // 경계는 **명시 부여**로 만든다. 한때 최상위 페이지(모두에게 준 행을 갖고 태어난다)로 만들었다 — 그 행은 7c-3 부터 최상위를
+    // 떠날 때 거둔다(아래 검사).
+    const box = await page('상자')
+    const moving = await page('멤버에게 준 페이지', box.id)
+    assert.equal((await grantAccess(fx.owner.ctx, moving.id, { type: 'user', id: member.userId }, 'view')).ok, true)
+    const child = await page('그 페이지의 자식', moving.id)
 
     await movePage(fx.owner.ctx, moving.id, privateTarget.id)
 
@@ -342,6 +346,29 @@ describe('movePage — perm_scope_id (§3.11 트리거 ④)', () => {
     )
     assert.deepEqual(await seenBy(member, moving.id), { view: true, sidebar: true })
     assert.deepEqual(await seenBy(member, child.id), { view: true, sidebar: true })
+  })
+
+  test('★ 최상위를 떠나면 모두에게 준 상속 행을 거둔다 — 비공개 페이지 밑으로 옮긴 최상위 페이지는 더 이상 모두에게 열려 있지 않다 (F-06-20 · 7c-3)', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const member = await joinAs(fx.workspaceId, await createUser('멤버'), 'member')
+
+    const privateTarget = await page('소유자만의 대상')
+    await restrictToOwner(privateTarget.id)
+    const moving = await page('모두에게 열린 루트')
+    const child = await page('열린 루트의 자식', moving.id)
+    assert.deepEqual(await aclOf(moving.id), [['workspace_everyone', null, 'full_access']], '전제: 최상위의 상속 행')
+
+    await movePage(fx.owner.ctx, moving.id, privateTarget.id)
+
+    assert.deepEqual(await aclOf(moving.id), [], '최상위의 상속 행이 남았다 — 옮겨도 모두에게 열려 있다')
+    assert.deepEqual(
+      [(await rowOf(moving.id)).perm_scope_id, (await rowOf(child.id)).perm_scope_id],
+      [privateTarget.id, privateTarget.id],
+      '경계가 풀렸으니 새 부모의 스코프를 받는다',
+    )
+    assert.deepEqual(await seenBy(member, moving.id), { view: false, sidebar: false })
+    assert.deepEqual(await seenBy(member, child.id), { view: false, sidebar: false })
+    assert.deepEqual(await seenBy(fx.owner, moving.id), { view: true, sidebar: true }, '옮긴 사람은 새 부모에게서 받는다')
   })
 
   test('★ 상속을 끊은 비공개 페이지를 공개 페이지 밑으로 옮겨도 멤버의 사이드바 · 하위 목록 · 검색에 제목이 나가지 않는다', async (t) => {
