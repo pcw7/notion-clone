@@ -1595,13 +1595,18 @@ async function main() {
       const INBOX_FILTER = '[role="group"][aria-label="인박스 필터"]'
       // `li` 로 잡으면 사이드바 트리의 첫 `li` 가 걸린다 — 목록에 이름을 붙여 거기서만 찾는다.
       const INBOX_LIST = 'ul[aria-label="알림 목록"]'
-      const commentPanel = () =>
-        evaluate(`document.querySelector('[role="dialog"][aria-label="코멘트"]')?.textContent ?? '(패널 없음)'`)
-      const panelHas = (text, ms = 8000) =>
-        waitFor(
-          `(document.querySelector('[role="dialog"][aria-label="코멘트"]')?.textContent ?? '').includes(${JSON.stringify(text)})`,
-          ms,
-        )
+      // ⚠ 패널의 글은 **입력칸을 빼고** 읽는다. React 는 제어되는 `<textarea>` 의 값을 `defaultValue` 에도 써서 친 글이
+      //   `textContent` 에 들어간다 — 그대로 읽으면 "남기기"를 누른 직후(요청이 가는 동안) 입력칸의 글이 스레드로 보인 것처럼
+      //   통과하고, 곧바로 누른 "답글"이 아직 없는 스레드를 찾다 실패한다. 서버가 느릴 때만 난다(7c-2 에서 겪었다).
+      const PANEL_TEXT = `(() => {
+        const d = document.querySelector('[role="dialog"][aria-label="코멘트"]')
+        if (!d) return null
+        const c = d.cloneNode(true)
+        c.querySelectorAll('textarea').forEach((t) => t.remove())
+        return c.textContent
+      })()`
+      const commentPanel = async () => (await evaluate(PANEL_TEXT)) ?? '(패널 없음)'
+      const panelHas = (text, ms = 8000) => waitFor(`(${PANEL_TEXT} ?? '').includes(${JSON.stringify(text)})`, ms)
 
       await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${commentPage}` })
       await waitFor(`[...document.querySelectorAll('button')].some((b) => b.textContent.trim().startsWith('코멘트'))`, 15000)
