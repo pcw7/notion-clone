@@ -2818,7 +2818,9 @@ async function main() {
         check('소유자의 워크스페이스 홈에 전체 내보내기가 있다',
           await waitFor(`document.querySelector('[data-testid="export-button"]')?.textContent === '워크스페이스 내보내기'`, 15000))
         await clickOn('[data-testid="export-button"]')
-        check('★ 워크스페이스 요약은 표와 그 행까지 센다', await summaryMatches('/데이터베이스 1 · 행 \\d+ ·/'), await exportPanelText())
+        // 표의 수는 앞 절들이 만든 것에 따라 달라진다(7c-4 가 teamspace 에 표를 만든다) — 소유자가 볼 수 있는 표의 수로 묻는다.
+        const visibleTables = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/databases`, { headers: authed })).json()).databases.length
+        check('★ 워크스페이스 요약은 표와 그 행까지 센다', await summaryMatches(`/데이터베이스 ${visibleTables} · 행 \\d+ ·/`), await exportPanelText())
         await clickOn('[data-testid="export-download"]')
         const workspaceZip = await downloaded((name) => /^워크스페이스 \d{4}-\d{2}-\d{2}\.zip$/.test(name))
         check('★ 워크스페이스 전체 ZIP 을 받는다', workspaceZip !== null, readdirSync(downloads).join(', '))
