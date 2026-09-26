@@ -33,6 +33,28 @@
  *   · **마지막 owner 는 내려가거나 빠질 수 없다**(`last_owner`) — F-06-04 가 적은 대로 워크스페이스 관리자의 역할은
  *     콘텐츠 접근을 주지 않으므로, owner 가 없는 teamspace 는 설정을 고칠 사람이 없는 고아가 된다
  *
+ * ──────────────────────────────────────────────────────────────────────
+ * 공개 범위(visibility)는 **존재와 참여**만 정한다 — 판정에는 들어가지 않는다(7c-5)
+ * ──────────────────────────────────────────────────────────────────────
+ *
+ *   | visibility | 둘러보기에 보이는가 | 스스로 참여 | 멤버가 아닌 사람의 콘텐츠 열람 |
+ *   |---|---|---|---|
+ *   | open    | 보인다   | O(`joinTeamspace`) | X |
+ *   | closed  | 보인다   | X(초대 — `needs_invite`) | X |
+ *   | private | 안 보인다 | X(없는 것과 같다 — `not_found`) | X |
+ *
+ * F-06-04 의 표는 open 의 "콘텐츠 열람"을 O 로 적었다(공식 문구 *"Anyone can join and view the content"*). 우리는 v1 에서
+ * **참여해야 본다**로 좁힌다 — 까닭은 셋이다. ① 우리 모델에서 "워크스페이스 전원이 읽는다"는 teamspace 노드의
+ * `workspace_everyone` 행 하나인데, 그 행을 두면 open teamspace 의 최상위 페이지가 **전원의 사이드바**("워크스페이스 페이지")로
+ * 쏟아진다 — 그 페이지들이 설 자리(Shared 섹션)가 아직 없다(§7). ② 참여가 한 번 누르기이므로 "참여하면 본다"도 그 문장을
+ * 만족한다. ③ 열람을 주면 open → closed 로 되돌릴 때 이미 내려간 접근을 어떻게 할지 또 정해야 한다. 좁은 쪽이 되돌리기 싸다.
+ *
+ * 그래서 **visibility 를 바꾸는 것은 권한 변화가 아니다** — `perm_gen` · `acl_epoch` · 협업 신호가 필요 없다(0028 의
+ * `tg_collab_access_teamspace` 가 `archived_at` 만 보는 것이 맞다). 참여는 멤버십이므로 그 신호를 탄다.
+ *
+ * 둘러보기 · 참여를 할 수 있는 워크스페이스 역할은 `canBrowseTeamspaces` 다 — `restricted_member` 와 게스트는 멤버가 아닌
+ * teamspace 를 **보지도 못한다**(F-06-04 *"추가 전에는 이 사람에게 teamspace 자체가 존재하지 않는 것과 같음"*).
+ *
  * 역할은 사람으로도, 그룹을 거쳐서도 받는다(`teamspace_member.principal_type`). 둘 중 하나라도 owner 면 owner 다.
  * 게스트는 어느 쪽으로도 멤버가 아니다(`principalsOf` 와 같은 규칙).
  */
@@ -65,6 +87,10 @@ export type TeamspaceFailure =
   | 'invalid_member'
   /** 마지막 owner 를 내리거나 뺄 수 없다. */
   | 'last_owner'
+  /** 존재는 보이지만(closed) 스스로 참여할 수 없다 — 멤버가 넣어 줘야 한다. */
+  | 'needs_invite'
+  /** 고칠 것을 하나도 주지 않았다. */
+  | 'invalid_settings'
 
 export type TeamspaceResult<T = void> =
   | ({ readonly ok: true } & (T extends void ? object : { readonly value: T }))
@@ -84,6 +110,19 @@ export type TeamspaceWhoCanInvite = 'owners' | 'all_members'
 /** teamspace 하나 — 설정 화면의 머리와 내 역할. 초대 규칙을 함께 싣는다(누구에게 "넣기"를 보일지). */
 export type TeamspaceDetail = TeamspaceSummary & { readonly whoCanInvite: TeamspaceWhoCanInvite }
 
+/**
+ * 둘러보기 목록의 한 줄 — 내가 멤버가 아닌 것도 온다. 그래서 `role` 이 null 일 수 있다(`TeamspaceSummary` 와 다른 점).
+ * `memberCount` 는 **사람 수**다(그룹으로 들어온 사람까지 센 distinct) — 주체 수가 아니다.
+ */
+export type BrowsableTeamspace = {
+  readonly id: string
+  readonly name: string
+  readonly icon: string | null
+  readonly visibility: TeamspaceVisibility
+  readonly memberCount: number
+  readonly role: TeamspaceRole | null
+}
+
 export type TeamspaceMemberRow = {
   readonly principal: TeamspacePrincipal
   readonly role: TeamspaceRole
@@ -95,6 +134,16 @@ const fail = (reason: TeamspaceFailure) => ({ ok: false, reason }) as const
 
 /** teamspace 를 만들 수 있는 워크스페이스 역할인가 — 역할 **이름**을 묻는다(CLAUDE.md). */
 export function canCreateTeamspace(role: WorkspaceRole): boolean {
+  return role === 'owner' || role === 'membership_admin' || role === 'member'
+}
+
+/**
+ * 멤버가 아닌 teamspace 를 둘러보고 참여할 수 있는 워크스페이스 역할인가 — 역할 **이름**을 묻는다(CLAUDE.md).
+ *
+ * 지금은 `canCreateTeamspace` 와 같은 집합이지만 묻는 것이 다르므로 함수를 따로 둔다(`canManageGroups` 와 같은 규칙).
+ * `restricted_member` 와 게스트가 빠지는 까닭은 머리말에 있다 — 그들에게는 멤버가 아닌 teamspace 가 없는 것과 같다.
+ */
+export function canBrowseTeamspaces(role: WorkspaceRole): boolean {
   return role === 'owner' || role === 'membership_admin' || role === 'member'
 }
 
@@ -138,9 +187,9 @@ async function lockTeamspace(
   tx: Tx,
   ctx: SessionContext,
   teamspaceId: string,
-): Promise<{ id: string; who_can_invite: string } | null> {
-  return tx.queryMaybe<{ id: string; who_can_invite: string }>(
-    `SELECT id, who_can_invite FROM teamspace
+): Promise<{ id: string; who_can_invite: string; visibility: TeamspaceVisibility } | null> {
+  return tx.queryMaybe<{ id: string; who_can_invite: string; visibility: TeamspaceVisibility }>(
+    `SELECT id, who_can_invite, visibility FROM teamspace
       WHERE id = $1 AND workspace_id = $2 AND archived_at IS NULL
       FOR UPDATE`,
     [teamspaceId, ctx.workspaceId],
@@ -262,6 +311,77 @@ export async function listMyTeamspaces(ctx: SessionContext): Promise<TeamspaceSu
 }
 
 /**
+ * 둘러보기 — 내가 볼 수 있는 이 워크스페이스의 teamspace 전부(이름순). 멤버인 것도 함께 온다(줄마다 `role`) — 목록에서
+ * 빠지면 "내 teamspace 는 어디 갔나"가 된다.
+ *
+ * 보이는 것은 **open · closed, 그리고 내가 멤버인 것**이다. private 는 멤버가 아니면 목록에 없다 — 존재를 숨기는 것이
+ * private 의 뜻이다(머리말). 둘러볼 수 없는 역할(`restricted_member` · 게스트)에게는 빈 목록이다.
+ */
+export async function listBrowsableTeamspaces(ctx: SessionContext): Promise<BrowsableTeamspace[]> {
+  if (!canBrowseTeamspaces(ctx.role)) return []
+  return withReadTransaction(async (tx) => {
+    const rows = await tx.query<{
+      id: string
+      name: string
+      icon: string | null
+      visibility: TeamspaceVisibility
+      member_count: number
+      role: TeamspaceRole | null
+    }>(
+      `WITH mine AS (
+           SELECT tm.teamspace_id, bool_or(tm.role = 'owner') AS is_owner
+             FROM teamspace_member tm
+             JOIN teamspace t ON t.id = tm.teamspace_id AND t.workspace_id = $2
+            WHERE tm.removed_at IS NULL
+              AND ((tm.principal_type = 'user' AND tm.principal_id = $1)
+                OR (tm.principal_type = 'group' AND tm.principal_id IN (
+                      SELECT g.id FROM group_member gm JOIN "group" g ON g.id = gm.group_id
+                       WHERE gm.user_id = $1 AND gm.removed_at IS NULL AND g.deleted_at IS NULL AND g.workspace_id = $2)))
+            GROUP BY tm.teamspace_id
+         ),
+         -- 사람 수 — 사람으로 들어온 멤버와 그룹을 거쳐 들어온 사람을 합쳐 distinct. 워크스페이스를 떠난 사람은 빼고
+         -- 센다(listTeamspaceMembers 가 목록에서 빼는 것과 같은 규칙).
+         people AS (
+           SELECT teamspace_id, count(DISTINCT user_id)::int AS n FROM (
+             SELECT tm.teamspace_id, tm.principal_id AS user_id
+               FROM teamspace_member tm
+               JOIN teamspace t ON t.id = tm.teamspace_id AND t.workspace_id = $2
+               JOIN workspace_member m ON m.workspace_id = $2 AND m.user_id = tm.principal_id AND m.status = 'active'
+              WHERE tm.removed_at IS NULL AND tm.principal_type = 'user'
+             UNION
+             SELECT tm.teamspace_id, gm.user_id
+               FROM teamspace_member tm
+               JOIN teamspace t ON t.id = tm.teamspace_id AND t.workspace_id = $2
+               JOIN "group" g ON g.id = tm.principal_id AND g.deleted_at IS NULL
+               JOIN group_member gm ON gm.group_id = g.id AND gm.removed_at IS NULL
+               JOIN workspace_member m ON m.workspace_id = $2 AND m.user_id = gm.user_id AND m.status = 'active'
+              WHERE tm.removed_at IS NULL AND tm.principal_type = 'group'
+           ) s GROUP BY teamspace_id
+         )
+       SELECT t.id, t.name, t.icon, t.visibility,
+              coalesce(p.n, 0) AS member_count,
+              CASE WHEN mine.teamspace_id IS NULL THEN NULL
+                   WHEN mine.is_owner THEN 'owner' ELSE 'member' END AS role
+         FROM teamspace t
+         LEFT JOIN mine ON mine.teamspace_id = t.id
+         LEFT JOIN people p ON p.teamspace_id = t.id
+        WHERE t.workspace_id = $2 AND t.archived_at IS NULL
+          AND (t.visibility <> 'private' OR mine.teamspace_id IS NOT NULL)
+        ORDER BY lower(t.name), t.id`,
+      [ctx.userId, ctx.workspaceId],
+    )
+    return rows.map((r) => ({
+      id: r.id,
+      name: r.name,
+      icon: r.icon,
+      visibility: r.visibility,
+      memberCount: r.member_count,
+      role: r.role,
+    }))
+  })
+}
+
+/**
  * teamspace 하나 — 멤버만 본다(아니면 not_found — 없는 teamspace 와 같은 답이다). 내 역할은 `roleIn` 이 사람 행과 그룹을
  * 거친 행을 함께 보고 정한다(`listMyTeamspaces` 와 같은 규칙).
  */
@@ -329,6 +449,59 @@ export async function listTeamspaceMembers(
         email: r.email,
       })),
     } as const
+  })
+}
+
+// ── 설정 ──────────────────────────────────────────────────────────────
+
+/**
+ * 설정을 고친다 — 이름 · 공개 범위 · 초대 규칙. **owner 만**(멤버는 `forbidden` · 멤버가 아니면 `not_found`).
+ *
+ * 주지 않은 칸은 건드리지 않는다. 알아볼 수 있는 칸이 하나도 없으면 `invalid_settings` 다 — 오타 난 요청이 "고쳤다"로
+ * 보이면 안 된다. 이름의 중복은 막지 않는다(정본에 UNIQUE 가 없다 · §7).
+ *
+ * 공개 범위를 좁혀도(open → closed · private) **이미 들어온 멤버는 그대로다** — F-06-04 의 권고다. 좁히는 것이 막는 것은
+ * 앞으로의 참여뿐이다. 공개 범위는 판정에 들어가지 않으므로 이 명령은 권한 신호를 보내지 않는다(머리말).
+ */
+export async function updateTeamspace(
+  ctx: SessionContext,
+  teamspaceId: string,
+  input: { readonly name?: unknown; readonly visibility?: unknown; readonly whoCanInvite?: unknown },
+): Promise<TeamspaceResult> {
+  const set: string[] = []
+  const values: unknown[] = []
+  const column = (sql: string, value: unknown): void => {
+    values.push(value)
+    set.push(`${sql} = $${values.length + 2}`)
+  }
+  if (input.name !== undefined) {
+    const name = normalizeTeamspaceName(input.name)
+    if (name === null) return fail('invalid_name')
+    column('name', name)
+  }
+  if (input.visibility !== undefined) {
+    if (!isVisibility(input.visibility)) return fail('invalid_visibility')
+    column('visibility', input.visibility)
+  }
+  if (input.whoCanInvite !== undefined) {
+    if (input.whoCanInvite !== 'owners' && input.whoCanInvite !== 'all_members') return fail('invalid_settings')
+    column('who_can_invite', input.whoCanInvite)
+  }
+  if (set.length === 0) return fail('invalid_settings')
+
+  return withCommandTransaction(async (tx) => {
+    const teamspace = await lockTeamspace(tx, ctx, teamspaceId)
+    if (teamspace === null) return fail('not_found')
+    const mine = await roleIn(tx, ctx, teamspaceId)
+    if (mine === null) return fail('not_found')
+    if (mine !== 'owner') return fail('forbidden')
+
+    await tx.query(`UPDATE teamspace SET ${set.join(', ')} WHERE id = $1 AND workspace_id = $2`, [
+      teamspaceId,
+      ctx.workspaceId,
+      ...values,
+    ])
+    return { ok: true } as const
   })
 }
 
@@ -428,6 +601,36 @@ export async function removeTeamspaceMember(
       [teamspaceId, principal.type, principal.id],
     )
     await syncOwnerGrant(tx, ctx, teamspaceId, principal, false)
+    return { ok: true } as const
+  })
+}
+
+/**
+ * 스스로 참여한다 — **open 만**. 초대(`addTeamspaceMember`)와 갈라 둔 까닭은 묻는 것이 다르기 때문이다: 초대는 "넣는
+ * 사람이 그럴 역할인가", 참여는 "이 teamspace 가 나를 받는가"다. 역할은 늘 `member` 다(참여로 owner 가 되지 않는다).
+ *
+ *   · 둘러볼 수 없는 역할(`restricted_member` · 게스트) → `not_found`(목록에도 없으니 답이 같아야 한다)
+ *   · private → `not_found` — 존재를 숨긴다
+ *   · closed → `needs_invite` — 존재는 이미 둘러보기에 보이므로 까닭을 말해 준다
+ *   · 이미 멤버 → 아무것도 바꾸지 않고 성공(두 번 눌렸을 뿐이다)
+ */
+export async function joinTeamspace(ctx: SessionContext, teamspaceId: string): Promise<TeamspaceResult> {
+  if (!canBrowseTeamspaces(ctx.role)) return fail('not_found')
+  return withCommandTransaction(async (tx) => {
+    const teamspace = await lockTeamspace(tx, ctx, teamspaceId)
+    if (teamspace === null) return fail('not_found')
+    if ((await roleIn(tx, ctx, teamspaceId)) !== null) return { ok: true } as const
+    if (teamspace.visibility === 'private') return fail('not_found')
+    if (teamspace.visibility !== 'open') return fail('needs_invite')
+
+    await tx.query(
+      `INSERT INTO teamspace_member (teamspace_id, principal_type, principal_id, role)
+       VALUES ($1, 'user', $2, 'member')
+       ON CONFLICT (teamspace_id, principal_type, principal_id)
+       DO UPDATE SET removed_at = NULL, role = 'member'
+        WHERE teamspace_member.removed_at IS NOT NULL`,
+      [teamspaceId, ctx.userId],
+    )
     return { ok: true } as const
   })
 }

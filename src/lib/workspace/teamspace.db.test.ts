@@ -1,5 +1,5 @@
 /**
- * teamspace — Teamspace · 게스트 · 그룹 7c-1 · 7c-2조각 (F-06-04 · F-02-12 · DB · 마이그레이션 0028)
+ * teamspace — Teamspace · 게스트 · 그룹 7c-1 · 7c-2 · 7c-5조각 (F-06-04 · F-02-12 · DB · 마이그레이션 0028)
  *
  * 이 파일이 지키는 것. 판정(`canViewPage`)과 목록(`listTeamspacePages` · 사이드바 `listPageTree` — 스코프로 거른다)을
  * **나란히** 묻는다(HANDOFF §3.3-107).
@@ -16,6 +16,7 @@
  *   ⑩ 복제 · 공유 — 최상위 페이지의 사본은 같은 teamspace · ('teamspace', T) 에 준 페이지는 멤버가 본다
  *   ⑪ 세대 · 신호 — 멤버십 · 역할(teamspace 노드의 행) · 보관이 협업 서버에 간다
  *   ⑫ 화면이 읽는 것(7c-2) — 사이드바 노드의 teamspace · 섹션 가르기 · getTeamspace(멤버만 · 그룹을 거친 역할)
+ *   ⑬ 공개 범위 · 둘러보기 · 참여(7c-5) — 목록에 무엇이 오는가 · open 만 참여 · 참여 전에는 못 본다 · 설정은 owner 만
  *
  * 열린 협업 연결이 멤버에서 빠질 때 닫히는지는 `collab/collab-server.db.test.ts` ⑨ 가 본다.
  */
@@ -47,10 +48,13 @@ import {
   addTeamspaceMember,
   createTeamspace,
   getTeamspace,
+  joinTeamspace,
+  listBrowsableTeamspaces,
   listMyTeamspaces,
   listTeamspaceMembers,
   removeTeamspaceMember,
   setTeamspaceMemberRole,
+  updateTeamspace,
 } from './teamspace.ts'
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'
@@ -629,6 +633,241 @@ describe('⑫ 화면이 읽는 것 (7c-2)', () => {
     assert.deepEqual(
       results.map((r) => (r.ok ? 'ok' : r.reason)),
       ['not_found', 'not_found', 'not_found', 'not_found'],
+    )
+  })
+})
+
+// ── ⑬ ─────────────────────────────────────────────────────────────────
+
+/**
+ * 7c-5. **공개 범위는 존재와 참여만 정한다** — 판정에는 들어가지 않는다(`teamspace.ts` 머리말). 그래서 여기서 나란히 묻는
+ * 것은 "목록에 오는가"와 "보이는가"다: open teamspace 여도 참여하기 전에는 페이지를 못 본다.
+ */
+
+/** 이 검사가 만든 teamspace 만 골라 본다 — 픽스처 워크스페이스에는 앞 절들이 만든 teamspace 가 쌓여 있다. */
+const browseOf = async (actor: Actor, ids: readonly string[]) =>
+  (await listBrowsableTeamspaces(actor.ctx)).filter((t) => ids.includes(t.id))
+
+async function teamspaceOfVisibility(visibility: 'open' | 'closed' | 'private'): Promise<string> {
+  const created = await createTeamspace(fx.owner.ctx, { name: unique('범위 팀'), visibility })
+  assert.ok(created.ok, JSON.stringify(created))
+  return created.value.id
+}
+
+const memberRows = async (teamspaceId: string, actor: Actor) =>
+  query<{ role: string; removed_at: string | null }>(
+    `SELECT role, removed_at FROM teamspace_member
+      WHERE teamspace_id = $1 AND principal_type = 'user' AND principal_id = $2`,
+    [teamspaceId, actor.userId],
+  )
+
+describe('⑬ 공개 범위 · 둘러보기 (7c-5)', () => {
+  test('★ 둘러보기 — open · closed 는 멤버가 아니어도 보이고 private 는 안 보인다 · 내 것은 범위와 무관하게 온다 · 사람 수를 센다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const stranger = await member('둘러보는 사람')
+    const alice = await member('공개팀 앨리스')
+    const bob = await member('그룹 밥')
+    const carol = await member('그룹 캐럴')
+    const open = await teamspaceOfVisibility('open')
+    const closed = await teamspaceOfVisibility('closed')
+    const secret = await teamspaceOfVisibility('private')
+    const ids = [open, closed, secret]
+
+    // open 의 사람 수 — 소유자 + 사람으로 넣은 한 명 + 그룹을 거친 두 명 = 4(주체 수가 아니라 사람 수다).
+    const group = await createGroup(fx.owner.ctx, unique('공개팀 그룹'))
+    assert.ok(group.ok)
+    for (const who of [bob, carol]) assert.ok((await addGroupMember(fx.owner.ctx, group.value.id, who.userId)).ok)
+    await join(open, alice)
+    assert.ok((await addTeamspaceMember(fx.owner.ctx, open, { type: 'group', id: group.value.id })).ok)
+
+    const seen = await browseOf(stranger, ids)
+    assert.deepEqual(new Set(seen.map((t) => t.id)), new Set([open, closed]), 'private 가 남의 눈에 보인다')
+    assert.deepEqual(seen.map((t) => t.role), [null, null], '멤버가 아닌데 역할이 왔다')
+    assert.equal(seen.find((t) => t.id === open)?.memberCount, 4)
+
+    const mine = await browseOf(fx.owner, ids)
+    assert.deepEqual(new Set(mine.map((t) => t.id)), new Set(ids), '내가 소유자인 private 가 내 목록에 없다')
+    assert.deepEqual(new Set(mine.map((t) => t.role)), new Set(['owner']))
+    // 멤버로 들어온 사람의 줄에는 member 가 온다.
+    assert.equal((await browseOf(alice, [open]))[0]?.role, 'member')
+    assert.equal((await browseOf(bob, [open]))[0]?.role, 'member', '그룹을 거친 멤버의 역할이 비었다')
+  })
+
+  test('보관된 · 남의 워크스페이스 teamspace 는 둘러보기에 없다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const stranger = await member('보관 둘러보기')
+    const archived = await teamspaceOfVisibility('open')
+    await query(`UPDATE teamspace SET archived_at = now() WHERE id = $1`, [archived])
+    const elsewhere = await makeFixture()
+    const theirs = await createTeamspace(elsewhere.owner.ctx, { name: unique('남의 공개팀'), visibility: 'open' })
+    assert.ok(theirs.ok)
+
+    assert.deepEqual(await browseOf(stranger, [archived, theirs.value.id]), [])
+    assert.deepEqual(await browseOf(fx.owner, [archived]), [], '보관한 것이 소유자 목록에 남았다')
+  })
+
+  test('게스트 · 제한 멤버는 둘러보지도 참여하지도 못한다 — 목록은 비고 참여는 not_found · 아무 행도 남지 않는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const guest = await member('둘러보는 손님', 'guest')
+    const restricted = await member('둘러보는 제한 멤버', 'restricted_member')
+    const open = await teamspaceOfVisibility('open')
+
+    for (const who of [guest, restricted]) {
+      assert.deepEqual(await browseOf(who, [open]), [], '둘러볼 수 없는 역할에게 목록이 갔다')
+      assert.deepEqual(await joinTeamspace(who.ctx, open), { ok: false, reason: 'not_found' })
+      assert.deepEqual(await memberRows(open, who), [], '거부됐는데 멤버 행이 생겼다')
+    }
+  })
+})
+
+describe('⑬ 참여 (7c-5)', () => {
+  test('★ 참여는 open 만 — closed 는 needs_invite · private 는 not_found · 거부는 아무것도 바꾸지 않는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const joiner = await member('참여하는 사람')
+    const open = await teamspaceOfVisibility('open')
+    const closed = await teamspaceOfVisibility('closed')
+    const secret = await teamspaceOfVisibility('private')
+    const openPage = await topPage(open, '공개팀 문서')
+
+    assert.deepEqual(await joinTeamspace(joiner.ctx, closed), { ok: false, reason: 'needs_invite' })
+    assert.deepEqual(await joinTeamspace(joiner.ctx, secret), { ok: false, reason: 'not_found' })
+    for (const id of [closed, secret]) assert.deepEqual(await memberRows(id, joiner), [], id)
+
+    const before = await permGen(joiner.userId)
+    assert.deepEqual(await joinTeamspace(joiner.ctx, open), { ok: true })
+    assert.deepEqual(
+      (await memberRows(open, joiner)).map((r) => [r.role, r.removed_at]),
+      [['member', null]],
+      '참여로 owner 가 됐거나 행이 없다',
+    )
+    assert.ok((await permGen(joiner.userId)) > before, '참여가 perm_gen 을 올리지 않았다 — 협업 서버가 모른다')
+    assert.deepEqual(await sees(joiner, openPage, open), SEES, '참여했는데 페이지를 못 본다')
+    assert.ok((await listMyTeamspaces(joiner.ctx)).some((t) => t.id === open))
+    assert.equal((await browseOf(joiner, [open]))[0]?.role, 'member', '참여했는데 둘러보기가 남으로 본다')
+  })
+
+  test('★ 공개 범위는 판정에 들어가지 않는다 — open 이어도 참여하기 전에는 못 본다 · 노드에 "모두" 행이 없다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const stranger = await member('참여 안 한 사람')
+    const open = await teamspaceOfVisibility('open')
+    const page = await topPage(open, '참여 전 문서')
+
+    assert.deepEqual(await sees(stranger, page, open), BLIND, 'open teamspace 의 페이지가 멤버 아닌 사람에게 보인다')
+    assert.deepEqual(
+      await query(
+        `SELECT principal_type FROM acl_entry WHERE node_kind = 'teamspace' AND node_id = $1 AND principal_type = 'workspace_everyone'`,
+        [open],
+      ),
+      [],
+      'open 이 노드에 workspace_everyone 행을 뒀다 — 사이드바가 전원에게 이 페이지를 싣는다',
+    )
+  })
+
+  test('두 번 눌러도 멤버는 하나다 · 나갔다 다시 참여하면 같은 행이 살아나고 역할은 member 다(owner 부여는 돌아오지 않는다)', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const twice = await member('두 번 누르는 사람')
+    const open = await teamspaceOfVisibility('open')
+
+    assert.deepEqual(await joinTeamspace(twice.ctx, open), { ok: true })
+    assert.deepEqual(await joinTeamspace(twice.ctx, open), { ok: true })
+    assert.equal((await memberRows(open, twice)).length, 1)
+
+    // 소유자로 올려 둔 다음 스스로 나간다 — 마지막 소유자가 아니므로 나갈 수 있다.
+    assert.ok((await setTeamspaceMemberRole(fx.owner.ctx, open, user(twice), 'owner')).ok)
+    assert.ok((await ownerRows(open)).some((r) => r.principal_id === twice.userId), '소유자 부여가 없다')
+    assert.ok((await removeTeamspaceMember(twice.ctx, open, user(twice))).ok)
+
+    assert.deepEqual(await joinTeamspace(twice.ctx, open), { ok: true })
+    assert.deepEqual(
+      (await memberRows(open, twice)).map((r) => [r.role, r.removed_at]),
+      [['member', null]],
+      '다시 참여했는데 행이 둘이거나 owner 로 살아났다',
+    )
+    assert.ok(!(await ownerRows(open)).some((r) => r.principal_id === twice.userId), '나간 소유자의 부여가 돌아왔다')
+  })
+
+  test('★ 범위를 좁혀도 이미 들어온 멤버는 그대로다 — 앞으로의 참여만 막힌다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const early = await member('먼저 들어온 사람')
+    const late = await member('늦게 온 사람')
+    const open = await teamspaceOfVisibility('open')
+    const page = await topPage(open, '좁히기 문서')
+
+    assert.deepEqual(await joinTeamspace(early.ctx, open), { ok: true })
+    assert.ok((await updateTeamspace(fx.owner.ctx, open, { visibility: 'closed' })).ok)
+
+    assert.deepEqual(await sees(early, page, open), SEES, '범위를 좁히자 이미 들어온 멤버가 잃었다')
+    assert.deepEqual(await joinTeamspace(late.ctx, open), { ok: false, reason: 'needs_invite' })
+    assert.deepEqual(new Set((await browseOf(late, [open])).map((t) => t.visibility)), new Set(['closed']))
+  })
+})
+
+describe('⑬ 설정 (7c-5)', () => {
+  test('★ 설정은 owner 만 고친다 — 멤버는 forbidden · 멤버가 아니면 not_found · 거부는 아무것도 바꾸지 않는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const plain = await member('설정 보는 멤버')
+    const stranger = await member('설정 낯선 사람')
+    const teamspace = await teamspaceOfVisibility('closed')
+    await join(teamspace, plain)
+    const now = async () => {
+      const read = await getTeamspace(fx.owner.ctx, teamspace)
+      assert.ok(read.ok)
+      return { name: read.value.name, visibility: read.value.visibility, whoCanInvite: read.value.whoCanInvite }
+    }
+    const was = await now()
+
+    assert.deepEqual(await updateTeamspace(plain.ctx, teamspace, { visibility: 'open' }), { ok: false, reason: 'forbidden' })
+    assert.deepEqual(await updateTeamspace(stranger.ctx, teamspace, { visibility: 'open' }), { ok: false, reason: 'not_found' })
+    assert.deepEqual(await now(), was, '거부됐는데 설정이 바뀌었다')
+
+    const renamed = unique('고친 이름')
+    assert.deepEqual(await updateTeamspace(fx.owner.ctx, teamspace, { name: renamed, visibility: 'open', whoCanInvite: 'owners' }), {
+      ok: true,
+    })
+    assert.deepEqual(await now(), { name: renamed, visibility: 'open', whoCanInvite: 'owners' })
+  })
+
+  test('주지 않은 칸은 건드리지 않는다 · 모양이 틀리면 거부하고 아무것도 바꾸지 않는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const teamspace = await teamspaceOfVisibility('closed')
+    const read = async () => {
+      const got = await getTeamspace(fx.owner.ctx, teamspace)
+      assert.ok(got.ok)
+      return { name: got.value.name, visibility: got.value.visibility, whoCanInvite: got.value.whoCanInvite }
+    }
+    const was = await read()
+
+    assert.ok((await updateTeamspace(fx.owner.ctx, teamspace, { whoCanInvite: 'owners' })).ok)
+    assert.deepEqual(await read(), { ...was, whoCanInvite: 'owners' }, '초대 규칙만 줬는데 다른 칸이 바뀌었다')
+
+    const refusals = [
+      [{}, 'invalid_settings'],
+      [{ nothing: 1 }, 'invalid_settings'],
+      [{ name: '   ' }, 'invalid_name'],
+      [{ name: 'x'.repeat(101) }, 'invalid_name'],
+      [{ visibility: 'public' }, 'invalid_visibility'],
+      [{ whoCanInvite: 'nobody' }, 'invalid_settings'],
+    ] as const
+    for (const [input, reason] of refusals) {
+      assert.deepEqual(await updateTeamspace(fx.owner.ctx, teamspace, input), { ok: false, reason }, JSON.stringify(input))
+    }
+    assert.deepEqual(await read(), { ...was, whoCanInvite: 'owners' }, '거부됐는데 설정이 바뀌었다')
+  })
+
+  test('보관된 · 남의 워크스페이스 teamspace 의 설정은 고칠 수 없다(not_found)', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const archived = await teamspaceOfVisibility('closed')
+    await query(`UPDATE teamspace SET archived_at = now() WHERE id = $1`, [archived])
+    const elsewhere = await makeFixture()
+    const theirs = await createTeamspace(elsewhere.owner.ctx, { name: unique('남의 팀') })
+    assert.ok(theirs.ok)
+
+    assert.deepEqual(await updateTeamspace(fx.owner.ctx, archived, { visibility: 'open' }), { ok: false, reason: 'not_found' })
+    assert.deepEqual(await updateTeamspace(fx.owner.ctx, theirs.value.id, { visibility: 'open' }), { ok: false, reason: 'not_found' })
+    assert.equal(
+      (await queryOne<{ visibility: string }>(`SELECT visibility FROM teamspace WHERE id = $1`, [theirs.value.id])).visibility,
+      'closed',
+      '남의 워크스페이스 teamspace 가 바뀌었다',
     )
   })
 })

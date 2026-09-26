@@ -1856,6 +1856,124 @@ async function main() {
       await sleep(1500)
     }
 
+    section('공개 범위 · 둘러보기 · 참여 (7c-5 · F-06-04)')
+    {
+      // 만들기 폼의 공개 범위 · 사이드바의 ⌕ · 둘러보기 화면(참여 · 초대 필요 · private 는 없음) · 소유자만 보는 설정.
+      // **내가 멤버가 아닌** open teamspace 가 있어야 참여를 눌러볼 수 있으므로 동료의 세션으로 셋을 만든다.
+      const browseMate = await joinAs(workspaceId, await createUser('둘러보는 동료'), 'member')
+      const mateHeaders = { ...json, cookie: `nc_session=${browseMate.token}` }
+      const tsUrl = `${BASE}/api/workspaces/${workspaceId}/teamspaces`
+      const stamp = Date.now()
+      const makeTeamspace = async (headers, name, visibility) =>
+        (await (await fetch(tsUrl, { method: 'POST', headers, body: JSON.stringify({ name, visibility }) })).json()).teamspace.id
+      const openName = `열린팀 ${stamp}`
+      const closedName = `닫힌팀 ${stamp}`
+      const secretName = `숨은팀 ${stamp}`
+      const mateOpen = await makeTeamspace(mateHeaders, openName, 'open')
+      const mateClosed = await makeTeamspace(mateHeaders, closedName, 'closed')
+      const mateSecret = await makeTeamspace(mateHeaders, secretName, 'private')
+      const row = (id) => `[data-testid="teamspace-browse-row"][data-teamspace-id="${id}"]`
+      const clickOnSel = async (sel) => {
+        const box = await evaluate(`(() => {
+          const el = document.querySelector(${JSON.stringify(sel)})
+          if (!el || el.disabled) return null
+          el.scrollIntoView({ block: 'center' })
+          const r = el.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (!box) return false
+        await click(box.x, box.y)
+        await sleep(120)
+        return true
+      }
+      const typeInto = async (sel, text) => {
+        await clickOnSel(sel)
+        await evaluate(`document.querySelector(${JSON.stringify(sel)})?.select()`)
+        await send('Input.insertText', { text })
+      }
+
+      // ① 참여하기 전에는 그 teamspace 의 화면을 못 연다 — 열려 있다는 것이 들어와 있다는 뜻이 아니다.
+      check('★ open teamspace 여도 참여하기 전에는 그 화면이 404 다',
+        (await fetch(`${BASE}/w/${workspaceId}/teamspaces/${mateOpen}`, { headers: authed })).status === 404)
+
+      // ② 사이드바의 ⌕ → 둘러보기
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
+      await waitFor(`!!document.querySelector('[data-testid="teamspace-browse-open"]')`, 15000)
+      await clickOnSel('[data-testid="teamspace-browse-open"]')
+      check('★ 사이드바의 ⌕ 가 둘러보기 화면을 연다 — open 은 참여 · closed 는 초대 필요 · private 는 목록에 없다',
+        await waitFor(`!!document.querySelector('[data-testid="teamspace-browse-page"]')
+          && document.querySelector('${row(mateOpen)}')?.dataset.action === 'join'
+          && !!document.querySelector('${row(mateOpen)} [data-testid="teamspace-join"]')
+          && document.querySelector('${row(mateClosed)}')?.dataset.action === 'needs_invite'
+          && !!document.querySelector('${row(mateClosed)} [data-testid="teamspace-needs-invite"]')
+          && !document.querySelector('${row(mateSecret)}')`, 15000),
+        await evaluate(`document.querySelector('[data-testid="teamspace-browse-list"]')?.textContent?.slice(0, 200) ?? location.pathname`))
+      check('공개 범위 이름과 사람 수를 함께 말한다',
+        await evaluate(`document.querySelector('${row(mateOpen)} [data-testid="teamspace-browse-visibility"]')?.textContent === '공개'
+          && document.querySelector('${row(mateOpen)}').textContent.includes('멤버 1명')`))
+
+      // ③ 참여
+      await clickOnSel(`${row(mateOpen)} [data-testid="teamspace-join"]`)
+      check('★ 참여를 누르면 그 줄이 "이미 멤버" 로 바뀌고 사이드바에 그 teamspace 가 선다',
+        await waitFor(`document.querySelector('${row(mateOpen)}')?.dataset.action === 'member'
+          && !!document.querySelector('${row(mateOpen)} [data-testid="teamspace-joined"]')
+          && [...document.querySelectorAll('[data-testid="sidebar-teamspace-link"]')].some((a) => a.textContent === ${JSON.stringify(openName)})`, 15000),
+        await evaluate(`document.querySelector('${row(mateOpen)}')?.dataset.action ?? '없음'`))
+      check('★ 참여한 뒤에는 그 teamspace 화면이 열린다 — 닫힌 팀은 여전히 못 연다',
+        (await fetch(`${BASE}/w/${workspaceId}/teamspaces/${mateOpen}`, { headers: authed })).status === 200 &&
+          (await fetch(`${BASE}/w/${workspaceId}/teamspaces/${mateClosed}`, { headers: authed })).status === 404)
+
+      // ④ 라우트의 거부
+      const joinReq = (id) => fetch(`${tsUrl}/${id}/join`, { method: 'POST', headers: authed })
+      const closedJoin = await joinReq(mateClosed)
+      const secretJoin = await joinReq(mateSecret)
+      check('참여 라우트 — closed 는 403 needs_invite · private 는 404',
+        closedJoin.status === 403 && (await closedJoin.json()).error === 'needs_invite' && secretJoin.status === 404,
+        `${closedJoin.status} · ${secretJoin.status}`)
+
+      // ⑤ 만들기 폼의 공개 범위 — 7c-2 에서는 고르게 하지 않았다(§3.3-193 ⑦)
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
+      await waitFor(`!!document.querySelector('[data-testid="teamspace-create-open"]')`, 15000)
+      await clickOnSel('[data-testid="teamspace-create-open"]')
+      await waitFor(`!!document.querySelector('[data-testid="teamspace-create-visibility"]')`, 5000)
+      check('만들기 폼이 공개 범위 셋을 고르게 하고 기본은 초대(closed) 다',
+        await evaluate(`document.querySelector('[data-testid="teamspace-visibility-closed"]')?.checked === true
+          && !!document.querySelector('[data-testid="teamspace-visibility-open"]')
+          && !!document.querySelector('[data-testid="teamspace-visibility-private"]')`))
+      const myOpenName = `내가 만든 열린팀 ${stamp}`
+      await typeInto('[data-testid="teamspace-create-name"]', myOpenName)
+      await clickOnSel('[data-testid="teamspace-visibility-open"]')
+      await clickOnSel('[data-testid="teamspace-create"]')
+      check('공개로 만들면 그 teamspace 화면으로 옮겨 간다',
+        await waitFor(`location.pathname.includes('/teamspaces/')
+          && document.querySelector('[data-testid="teamspace-name"]')?.textContent === ${JSON.stringify(myOpenName)}`, 15000),
+        await evaluate('location.pathname'))
+      const myOpen = await evaluate(`location.pathname.split('/teamspaces/')[1]`)
+      const mateSees = async () =>
+        (await (await fetch(`${tsUrl}?scope=browse`, { headers: mateHeaders })).json()).teamspaces.find((t) => t.id === myOpen)
+      // 공개 범위를 실제로 지키는 검사는 이것이다 — 위의 옮겨 가기는 범위를 싣지 않아도 통과한다(반사실 E3).
+      check('★ 공개로 만든 teamspace 가 동료의 둘러보기에 참여할 수 있는 것으로 선다',
+        (await mateSees())?.visibility === 'open' && (await mateSees())?.role === null,
+        JSON.stringify(await mateSees()))
+
+      // ⑥ 설정 — 소유자만
+      await waitFor(`!!document.querySelector('[data-testid="teamspace-settings-save"]')`, 10000)
+      const renamed = `이름 고친 팀 ${stamp}`
+      await typeInto('[data-testid="teamspace-settings-name"]', renamed)
+      await clickOnSel('[data-testid="teamspace-settings-visibility-private"]')
+      await clickOnSel('[data-testid="teamspace-settings-save"]')
+      check('★ 설정을 저장하면 그 자리에서 말하고 · 이름이 사이드바에도 바뀐다',
+        await waitFor(`!!document.querySelector('[data-testid="teamspace-settings-saved"]')
+          && [...document.querySelectorAll('[data-testid="sidebar-teamspace-link"]')].some((a) => a.textContent === ${JSON.stringify(renamed)})`, 15000),
+        await evaluate(`document.querySelector('[data-testid="teamspace-settings-error"]')?.textContent ?? ''`))
+      check('★ 비공개로 좁히면 동료의 둘러보기에서 사라진다', (await mateSees()) === undefined, JSON.stringify(await mateSees()))
+
+      const mateEdit = await fetch(`${tsUrl}/${myOpen}`, { method: 'PATCH', headers: mateHeaders, body: JSON.stringify({ visibility: 'open' }) })
+      check('멤버가 아니면 설정을 못 고친다 (404)', mateEdit.status === 404, String(mateEdit.status))
+      // 저장의 refresh 가 끝나기 전에 다음 절이 화면을 옮기지 않게 한다(§6).
+      await sleep(1500)
+    }
+
     section('코멘트 패널 · 인박스 (F-05-08 · F-11-07)')
     {
       const commentPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {

@@ -30,6 +30,9 @@
  * 같다 — 섹션 머리도 없다.
  *
  * 섹션 머리를 눌러 접는 것(F-07-16)은 아직 없다 — teamspace 는 늘 펼쳐져 있다.
+ *
+ * 머리의 `⌕` 는 **둘러보기**(7c-5) 다 — 내가 멤버가 아닌 open · closed teamspace 를 보는 화면으로 간다. 멤버가 아닌 것은
+ * 사이드바에 세울 수 없으니(그러면 "내 teamspace" 의 뜻이 흐려진다) 화면을 따로 둔다.
  */
 
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react'
@@ -75,6 +78,7 @@ export function Sidebar({
   workspaceId,
   tree,
   teamspaces,
+  canBrowseTeamspaces = false,
   canCreateTeamspace,
   trash,
   recent,
@@ -86,6 +90,8 @@ export function Sidebar({
   tree: SidebarNode[]
   /** 내가 멤버인 teamspace 와 그 트리(7c-2). 서버가 갈라 준다. */
   teamspaces: SidebarTeamspace[]
+  /** 멤버가 아닌 teamspace 를 둘러볼 수 있는 역할인가 — 표시 전용(7c-5). 주지 않으면 둘러보기 버튼이 없다. */
+  canBrowseTeamspaces?: boolean
   /** teamspace 를 만들 수 있는 역할인가 — 표시 전용(서버가 다시 묻는다). */
   canCreateTeamspace: boolean
   trash: TrashRow[]
@@ -223,7 +229,7 @@ export function Sidebar({
   }, [workspaceId, router])
 
   // teamspace 를 가졌거나 만들 수 있으면 섹션을 세운다. 둘 다 아니면(게스트) 사이드바는 전과 같다.
-  const showTeamspaces = teamspaces.length > 0 || canCreateTeamspace
+  const showTeamspaces = teamspaces.length > 0 || canCreateTeamspace || canBrowseTeamspaces
 
   if (collapsed) {
     return (
@@ -309,6 +315,18 @@ export function Sidebar({
           <section aria-label="Teamspaces" data-testid="sidebar-teamspaces" className="flex flex-col gap-0.5">
             <div className="flex items-center justify-between px-2">
               <h2 className="text-xs font-medium text-neutral-400">Teamspaces</h2>
+              <span className="flex items-center">
+              {canBrowseTeamspaces && (
+                <Link
+                  href={`/w/${workspaceId}/teamspaces`}
+                  data-testid="teamspace-browse-open"
+                  aria-label="teamspace 둘러보기"
+                  title="teamspace 둘러보기 — 참여할 수 있는 공간"
+                  className="rounded px-1 text-sm text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+                >
+                  ⌕
+                </Link>
+              )}
               {canCreateTeamspace && (
                 <button
                   type="button"
@@ -322,6 +340,7 @@ export function Sidebar({
                   +
                 </button>
               )}
+              </span>
             </div>
             {creatingTeamspace && (
               <TeamspaceCreateForm workspaceId={workspaceId} onClose={() => setCreatingTeamspace(false)} />

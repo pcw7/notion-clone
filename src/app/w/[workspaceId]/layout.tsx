@@ -15,7 +15,7 @@ import { groupRootsByTeamspace, listPageTree } from '@/lib/block/page-tree'
 import { listTrash } from '@/lib/block/trash'
 import { listFavorites, listRecent } from '@/lib/nav/recent'
 import { unreadCount } from '@/lib/notification/inbox'
-import { canCreateTeamspace, listMyTeamspaces } from '@/lib/workspace/teamspace'
+import { canBrowseTeamspaces, canCreateTeamspace, listMyTeamspaces } from '@/lib/workspace/teamspace'
 import { Sidebar, type SidebarNode } from './sidebar'
 import { SearchOverlay } from './search-overlay'
 
@@ -62,6 +62,7 @@ export default async function WorkspaceLayout({
           pages: pages.map(toSidebarNode),
         }))}
         canCreateTeamspace={canCreateTeamspace(ctx.role)}
+        canBrowseTeamspaces={canBrowseTeamspaces(ctx.role)}
         trash={trash.map((e) => ({
           id: e.id,
           title: e.title,
