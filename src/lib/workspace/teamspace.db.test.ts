@@ -1,5 +1,5 @@
 /**
- * teamspace — Teamspace · 게스트 · 그룹 7c-1 · 7c-2 · 7c-5조각 (F-06-04 · F-02-12 · DB · 마이그레이션 0028)
+ * teamspace — Teamspace · 게스트 · 그룹 7c-1 · 7c-2 · 7c-5 · 7c-6조각 (F-06-04 · F-02-12 · DB · 마이그레이션 0028)
  *
  * 이 파일이 지키는 것. 판정(`canViewPage`)과 목록(`listTeamspacePages` · 사이드바 `listPageTree` — 스코프로 거른다)을
  * **나란히** 묻는다(HANDOFF §3.3-107).
@@ -17,6 +17,7 @@
  *   ⑪ 세대 · 신호 — 멤버십 · 역할(teamspace 노드의 행) · 보관이 협업 서버에 간다
  *   ⑫ 화면이 읽는 것(7c-2) — 사이드바 노드의 teamspace · 섹션 가르기 · getTeamspace(멤버만 · 그룹을 거친 역할)
  *   ⑬ 공개 범위 · 둘러보기 · 참여(7c-5) — 목록에 무엇이 오는가 · open 만 참여 · 참여 전에는 못 본다 · 설정은 owner 만
+ *   ⑭ 보관 · 복원(7c-6) — ★ 보관하면 owner 까지 못 본다(판정 = 목록) · 따로 준 부여는 남는다 · owner 만 되살린다
  *
  * 열린 협업 연결이 멤버에서 빠질 때 닫히는지는 `collab/collab-server.db.test.ts` ⑨ 가 본다.
  */
@@ -46,13 +47,16 @@ import {
 import { addGroupMember, createGroup, deleteGroup, removeGroupMember } from './group.ts'
 import {
   addTeamspaceMember,
+  archiveTeamspace,
   createTeamspace,
   getTeamspace,
   joinTeamspace,
+  listArchivedTeamspaces,
   listBrowsableTeamspaces,
   listMyTeamspaces,
   listTeamspaceMembers,
   removeTeamspaceMember,
+  restoreTeamspace,
   setTeamspaceMemberRole,
   updateTeamspace,
 } from './teamspace.ts'
@@ -869,5 +873,161 @@ describe('⑬ 설정 (7c-5)', () => {
       'closed',
       '남의 워크스페이스 teamspace 가 바뀌었다',
     )
+  })
+})
+
+// ── ⑭ ─────────────────────────────────────────────────────────────────
+
+/**
+ * 7c-6. **보관은 지우기를 대신한다** — 아무도 못 보고(owner 까지), 되살릴 사람만 그 존재를 본다.
+ *
+ * 여기서 나란히 묻는 것은 `sees`(판정 · teamspace 목록 · 사이드바) 셋이다. 보관 전에는 SEES, 보관 뒤에는 BLIND 여야
+ * 한다 — **owner 도** 그렇다. 판정만 막고 목록을 안 막거나(또는 그 반대) 하면 주소를 아는 사람만 들어갈 수 있다.
+ */
+
+const archivedIds = async (actor: Actor) => (await listArchivedTeamspaces(actor.ctx)).map((t) => t.id)
+
+const archivedAtOf = async (teamspaceId: string): Promise<string | null> => {
+  // pg 는 timestamptz 를 Date 로 준다 — Date 두 개는 같은 시각이어도 === 가 아니므로 문자열로 비교한다.
+  const row = await queryOne<{ archived_at: Date | null }>(`SELECT archived_at FROM teamspace WHERE id = $1`, [teamspaceId])
+  return row.archived_at === null ? null : new Date(row.archived_at).toISOString()
+}
+
+describe('⑭ 보관 (7c-6)', () => {
+  test('★ 보관하면 owner 까지 그 teamspace 의 페이지를 못 본다 — 판정과 목록이 나란히 · 행은 그대로 남는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const mate = await member('보관 동료')
+    const teamspace = await newTeamspace()
+    await join(teamspace, mate)
+    const page = await topPage(teamspace, '보관될 문서')
+    assert.deepEqual(await sees(fx.owner, page, teamspace), SEES)
+    assert.deepEqual(await sees(mate, page, teamspace), SEES)
+
+    assert.deepEqual(await archiveTeamspace(fx.owner.ctx, teamspace), { ok: true })
+
+    assert.deepEqual(await sees(mate, page, teamspace), BLIND, '보관했는데 멤버가 아직 본다')
+    assert.deepEqual(await sees(fx.owner, page, teamspace), BLIND, '보관했는데 소유자가 아직 본다 — 주소를 알면 들어간다')
+    assert.equal(can(await capsOf(fx.owner, page), 'view_content'), false, '소유자의 판정이 아직 열려 있다')
+    // 행은 건드리지 않았다 — 복원이 정확해야 한다.
+    assert.equal(
+      (await query(`SELECT id FROM acl_entry WHERE node_kind = 'teamspace' AND node_id = $1`, [teamspace])).length,
+      2,
+      '보관이 teamspace 노드의 행을 지웠다',
+    )
+    assert.equal(
+      (await query(`SELECT 1 FROM teamspace_member WHERE teamspace_id = $1 AND removed_at IS NULL`, [teamspace])).length,
+      2,
+      '보관이 멤버 행을 지웠다',
+    )
+  })
+
+  test('★ 페이지에 따로 준 부여는 보관을 넘긴다 — teamspace 에서 오지 않은 접근이다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const guestish = await member('따로 받은 사람')
+    const teamspace = await newTeamspace()
+    const page = await topPage(teamspace, '따로 공유한 문서')
+    assert.ok((await grantAccess(fx.owner.ctx, page, { type: 'user', id: guestish.userId }, 'edit')).ok)
+    assert.equal(await canViewPage(guestish.ctx, page), true)
+
+    assert.deepEqual(await archiveTeamspace(fx.owner.ctx, teamspace), { ok: true })
+
+    assert.equal(await canViewPage(guestish.ctx, page), true, '따로 준 부여가 보관으로 사라졌다')
+    assert.ok(flatten(await listPageTree(guestish.ctx)).includes(page), '따로 받은 사람의 사이드바에서 빠졌다')
+    assert.equal(await canViewPage(fx.owner.ctx, page), false, '소유자는 teamspace 를 통해서만 봤으므로 잃어야 한다')
+  })
+
+  test('보관은 owner 만 — 멤버는 forbidden · 멤버가 아니면 not_found · 거부는 아무것도 바꾸지 않는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const plain = await member('보관 못 하는 멤버')
+    const stranger = await member('보관 낯선 사람')
+    const teamspace = await newTeamspace()
+    await join(teamspace, plain)
+
+    assert.deepEqual(await archiveTeamspace(plain.ctx, teamspace), { ok: false, reason: 'forbidden' })
+    assert.deepEqual(await archiveTeamspace(stranger.ctx, teamspace), { ok: false, reason: 'not_found' })
+    assert.equal(await archivedAtOf(teamspace), null, '거부됐는데 보관됐다')
+  })
+
+  test('이미 보관된 것을 또 보관하려 하면 not_found — 살아 있는 것만 잠근다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const teamspace = await newTeamspace()
+    assert.deepEqual(await archiveTeamspace(fx.owner.ctx, teamspace), { ok: true })
+    const at = await archivedAtOf(teamspace)
+    assert.deepEqual(await archiveTeamspace(fx.owner.ctx, teamspace), { ok: false, reason: 'not_found' })
+    assert.equal(await archivedAtOf(teamspace), at, '두 번째 보관이 시각을 덮었다')
+  })
+
+  test('보관된 teamspace 에는 아무것도 못 한다 — 만들기 · 넣기 · 설정 · 둘러보기 · 참여가 전부 not_found', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const outsider = await member('보관 밖 사람')
+    const created = await createTeamspace(fx.owner.ctx, { name: unique('보관될 팀'), visibility: 'open' })
+    assert.ok(created.ok)
+    const teamspace = created.value.id
+    assert.deepEqual(await archiveTeamspace(fx.owner.ctx, teamspace), { ok: true })
+
+    const made = await createPage(fx.owner.ctx, { teamspaceId: teamspace }).then(
+      () => 'ok',
+      (e: unknown) => (e instanceof PageError ? e.code : String(e)),
+    )
+    assert.equal(made, 'parent_not_found')
+    assert.deepEqual(await addTeamspaceMember(fx.owner.ctx, teamspace, user(outsider)), { ok: false, reason: 'not_found' })
+    assert.deepEqual(await updateTeamspace(fx.owner.ctx, teamspace, { visibility: 'closed' }), { ok: false, reason: 'not_found' })
+    assert.deepEqual(await getTeamspace(fx.owner.ctx, teamspace), { ok: false, reason: 'not_found' })
+    assert.deepEqual(await listBrowsableTeamspaces(outsider.ctx).then((ts) => ts.filter((x) => x.id === teamspace)), [])
+    assert.deepEqual(await joinTeamspace(outsider.ctx, teamspace), { ok: false, reason: 'not_found' })
+    assert.deepEqual((await listMyTeamspaces(fx.owner.ctx)).filter((x) => x.id === teamspace), [])
+  })
+})
+
+describe('⑭ 복원 (7c-6)', () => {
+  test('★ 되살리면 멤버와 소유자가 그대로 돌아온다 — 보관 목록은 owner 에게만 보인다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const mate = await member('되살릴 동료')
+    const teamspace = await newTeamspace()
+    await join(teamspace, mate)
+    const page = await topPage(teamspace, '되살릴 문서')
+    assert.deepEqual(await archiveTeamspace(fx.owner.ctx, teamspace), { ok: true })
+
+    assert.ok((await archivedIds(fx.owner)).includes(teamspace), '소유자의 보관 목록에 없다')
+    assert.ok(!(await archivedIds(mate)).includes(teamspace), '소유자가 아닌 멤버에게 보관 목록이 갔다')
+
+    assert.deepEqual(await restoreTeamspace(fx.owner.ctx, teamspace), { ok: true })
+    assert.equal(await archivedAtOf(teamspace), null)
+    assert.deepEqual(await sees(fx.owner, page, teamspace), SEES, '되살렸는데 소유자가 못 본다')
+    assert.deepEqual(await sees(mate, page, teamspace), SEES, '되살렸는데 멤버가 못 본다')
+    assert.ok(!(await archivedIds(fx.owner)).includes(teamspace), '되살린 것이 보관 목록에 남았다')
+  })
+
+  test('복원은 owner 만 — 멤버는 forbidden · 멤버가 아니면 not_found · 살아 있는 것은 not_found', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const plain = await member('되살리지 못하는 멤버')
+    const stranger = await member('되살리는 낯선 사람')
+    const teamspace = await newTeamspace()
+    await join(teamspace, plain)
+    const live = await newTeamspace()
+    assert.deepEqual(await archiveTeamspace(fx.owner.ctx, teamspace), { ok: true })
+
+    assert.deepEqual(await restoreTeamspace(plain.ctx, teamspace), { ok: false, reason: 'forbidden' })
+    assert.deepEqual(await restoreTeamspace(stranger.ctx, teamspace), { ok: false, reason: 'not_found' })
+    assert.deepEqual(await restoreTeamspace(fx.owner.ctx, live), { ok: false, reason: 'not_found' })
+    assert.notEqual(await archivedAtOf(teamspace), null, '거부됐는데 되살아났다')
+  })
+
+  test('그룹을 거쳐 소유자인 사람도 보관 목록을 보고 되살린다 · 게스트와 남의 워크스페이스는 빈 목록', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const viaGroup = await member('그룹 소유자')
+    const guest = await member('보관 손님', 'guest')
+    const teamspace = await newTeamspace()
+    const group = await createGroup(fx.owner.ctx, unique('보관 그룹'))
+    assert.ok(group.ok)
+    assert.ok((await addGroupMember(fx.owner.ctx, group.value.id, viaGroup.userId)).ok)
+    assert.ok((await addTeamspaceMember(fx.owner.ctx, teamspace, { type: 'group', id: group.value.id }, 'owner')).ok)
+    assert.deepEqual(await archiveTeamspace(fx.owner.ctx, teamspace), { ok: true })
+
+    assert.ok((await archivedIds(viaGroup)).includes(teamspace), '그룹을 거친 소유자에게 안 보인다')
+    assert.deepEqual(await archivedIds(guest), [])
+    const elsewhere = await makeFixture()
+    assert.ok(!(await archivedIds(elsewhere.owner)).includes(teamspace), '남의 워크스페이스에 보였다')
+    assert.deepEqual(await restoreTeamspace(viaGroup.ctx, teamspace), { ok: true })
   })
 })

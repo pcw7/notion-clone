@@ -52,6 +52,23 @@
  * 그래서 **visibility 를 바꾸는 것은 권한 변화가 아니다** — `perm_gen` · `acl_epoch` · 협업 신호가 필요 없다(0028 의
  * `tg_collab_access_teamspace` 가 `archived_at` 만 보는 것이 맞다). 참여는 멤버십이므로 그 신호를 탄다.
  *
+ * ──────────────────────────────────────────────────────────────────────
+ * 보관(archive)은 지우기를 대신한다 — 아무도 못 보고, 소유자만 되살린다(7c-6)
+ * ──────────────────────────────────────────────────────────────────────
+ *
+ * F-06-04: *"Teamspace는 삭제되지 않고 archive만 된다. archive 시 모든 멤버의 사이드바에서 제거된다."* 우리의 뜻은 이렇다.
+ *
+ *   · **아무도 못 본다.** 멤버는 `principalsFor` 가 보관된 teamspace 를 주체로 주지 않아 잃고, **owner 도 잃는다** —
+ *     판정이 보관된 teamspace 노드의 행을 읽지 않는다(`effective.ts` `resolveChain`). 그렇지 않으면 목록(보관된 것을
+ *     스코프 후보에서 뺀다)과 판정이 어긋나 owner 만 주소로 들어갈 수 있다
+ *   · **행은 그대로 둔다.** `acl_entry` · `teamspace_member` 를 건드리지 않으므로 복원하면 정확히 되돌아온다.
+ *     페이지에 따로 준 부여(블록 노드의 행)는 보관과 무관하게 살아 있다 — 그 페이지는 자기 자신이 경계다
+ *   · **보관하고 되살리는 것은 owner 다.** F-06-04 은 복원을 *"workspace owner이면서 teamspace owner"* 로 적었는데,
+ *     우리는 **teamspace owner** 로 둔다 — 워크스페이스 owner 가 아닌 사람이 만든 teamspace 를 보관하면 아무도 되살릴 수
+ *     없게 되기 때문이다(워크스페이스 owner 는 멤버가 아닌 teamspace 에 손댈 길이 아직 없다 — §7 의 "관리 경로")
+ *   · 보관된 teamspace 는 이름도 새 자리도 주지 않는다 — 만들기 · 넣기 · 옮기기 · 설정이 모두 `not_found` 다
+ *     (`lockTeamspace` 가 보관된 행을 잠그지 않는다). 되살릴 사람만 `listArchivedTeamspaces` 로 그 존재를 본다
+ *
  * 둘러보기 · 참여를 할 수 있는 워크스페이스 역할은 `canBrowseTeamspaces` 다 — `restricted_member` 와 게스트는 멤버가 아닌
  * teamspace 를 **보지도 못한다**(F-06-04 *"추가 전에는 이 사람에게 teamspace 자체가 존재하지 않는 것과 같음"*).
  *
@@ -121,6 +138,15 @@ export type BrowsableTeamspace = {
   readonly visibility: TeamspaceVisibility
   readonly memberCount: number
   readonly role: TeamspaceRole | null
+}
+
+/** 보관된 teamspace 한 줄 — 되살릴 수 있는 사람(그 teamspace 의 owner)만 본다. 콘텐츠는 주지 않는다. */
+export type ArchivedTeamspace = {
+  readonly id: string
+  readonly name: string
+  readonly icon: string | null
+  readonly visibility: TeamspaceVisibility
+  readonly archivedAt: string
 }
 
 export type TeamspaceMemberRow = {
@@ -502,6 +528,95 @@ export async function updateTeamspace(
       ...values,
     ])
     return { ok: true } as const
+  })
+}
+
+/**
+ * 보관한다 — **owner 만**. 지우기가 없는 대신이다(F-06-04).
+ *
+ * 행을 건드리지 않는다 — `archived_at` 하나로 아무도 못 보게 된다(머리말). 0028 의 트리거가 이 갱신을 보고 협업 서버에
+ * 알리므로 열어 둔 편집기는 서버가 먼저 닫는다.
+ *
+ * 이미 보관된 것은 `not_found` 다 — `lockTeamspace` 가 살아 있는 것만 잠근다(다른 명령과 같은 답).
+ */
+export async function archiveTeamspace(ctx: SessionContext, teamspaceId: string): Promise<TeamspaceResult> {
+  return withCommandTransaction(async (tx) => {
+    const teamspace = await lockTeamspace(tx, ctx, teamspaceId)
+    if (teamspace === null) return fail('not_found')
+    const mine = await roleIn(tx, ctx, teamspaceId)
+    if (mine === null) return fail('not_found')
+    if (mine !== 'owner') return fail('forbidden')
+
+    await tx.query(`UPDATE teamspace SET archived_at = now() WHERE id = $1 AND workspace_id = $2`, [
+      teamspaceId,
+      ctx.workspaceId,
+    ])
+    return { ok: true } as const
+  })
+}
+
+/**
+ * 되살린다 — 보관된 것을 **그 teamspace 의 owner** 가. 살아 있는 것을 되살리려 하면 `not_found` 다(보관된 것들 중에
+ * 없다).
+ *
+ * `roleIn` 은 `teamspace_member` 만 읽으므로 보관된 teamspace 에서도 역할을 말해 준다 — 보관이 행을 건드리지 않는
+ * 까닭이다. 그래서 여기서만 보관된 행을 일부러 잠근다(`lockTeamspace` 는 살아 있는 것만 잠근다).
+ */
+export async function restoreTeamspace(ctx: SessionContext, teamspaceId: string): Promise<TeamspaceResult> {
+  return withCommandTransaction(async (tx) => {
+    const archived = await tx.queryMaybe<{ id: string }>(
+      `SELECT id FROM teamspace
+        WHERE id = $1 AND workspace_id = $2 AND archived_at IS NOT NULL
+        FOR UPDATE`,
+      [teamspaceId, ctx.workspaceId],
+    )
+    if (archived === null) return fail('not_found')
+    const mine = await roleIn(tx, ctx, teamspaceId)
+    if (mine === null) return fail('not_found')
+    if (mine !== 'owner') return fail('forbidden')
+
+    await tx.query(`UPDATE teamspace SET archived_at = NULL WHERE id = $1 AND workspace_id = $2`, [
+      teamspaceId,
+      ctx.workspaceId,
+    ])
+    return { ok: true } as const
+  })
+}
+
+/**
+ * 보관된 teamspace — **내가 owner 인 것만**(되살릴 수 있는 사람만 그 존재를 본다). 이름순이 아니라 **보관한 순서의
+ * 역순**이다 — 방금 보관한 것을 되살리는 일이 흔하다.
+ *
+ * 다른 목록 함수(`listMyTeamspaces` · `listBrowsableTeamspaces` · `roleIn`)가 보관된 것을 빼는 것과 **일부러** 반대다.
+ */
+export async function listArchivedTeamspaces(ctx: SessionContext): Promise<ArchivedTeamspace[]> {
+  if (ctx.role === 'guest') return []
+  return withReadTransaction(async (tx) => {
+    const rows = await tx.query<{
+      id: string
+      name: string
+      icon: string | null
+      visibility: TeamspaceVisibility
+      archived_at: string
+    }>(
+      `SELECT DISTINCT t.id, t.name, t.icon, t.visibility, t.archived_at
+         FROM teamspace t
+         JOIN teamspace_member tm ON tm.teamspace_id = t.id AND tm.removed_at IS NULL AND tm.role = 'owner'
+        WHERE t.workspace_id = $2 AND t.archived_at IS NOT NULL
+          AND ((tm.principal_type = 'user' AND tm.principal_id = $1)
+            OR (tm.principal_type = 'group' AND tm.principal_id IN (
+                  SELECT g.id FROM group_member gm JOIN "group" g ON g.id = gm.group_id
+                   WHERE gm.user_id = $1 AND gm.removed_at IS NULL AND g.deleted_at IS NULL AND g.workspace_id = $2)))
+        ORDER BY t.archived_at DESC, t.id`,
+      [ctx.userId, ctx.workspaceId],
+    )
+    return rows.map((r) => ({
+      id: r.id,
+      name: r.name,
+      icon: r.icon,
+      visibility: r.visibility,
+      archivedAt: new Date(r.archived_at).toISOString(),
+    }))
   })
 }
 

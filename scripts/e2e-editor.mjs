@@ -1974,6 +1974,90 @@ async function main() {
       await sleep(1500)
     }
 
+    section('보관 · 복원 (7c-6 · F-06-04)')
+    {
+      // teamspace 는 지워지지 않고 보관된다. 보관하면 **소유자까지** 못 보고, 되살릴 사람만 둘러보기 화면에서 그 존재를 본다.
+      const archiveMate = await joinAs(workspaceId, await createUser('보관 동료'), 'member')
+      const mateHeaders = { ...json, cookie: `nc_session=${archiveMate.token}` }
+      const tsUrl = `${BASE}/api/workspaces/${workspaceId}/teamspaces`
+      const stamp = Date.now()
+      const archiveName = `보관할팀 ${stamp}`
+      const created = await (await fetch(tsUrl, {
+        method: 'POST', headers: authed, body: JSON.stringify({ name: archiveName, visibility: 'closed' }),
+      })).json()
+      const doomed = created.teamspace.id
+      await fetch(`${tsUrl}/${doomed}/members`, {
+        method: 'POST', headers: authed, body: JSON.stringify({ principal: { type: 'user', id: archiveMate.userId } }),
+      })
+      const clickOnSel = async (sel) => {
+        const box = await evaluate(`(() => {
+          const el = document.querySelector(${JSON.stringify(sel)})
+          if (!el || el.disabled) return null
+          el.scrollIntoView({ block: 'center' })
+          const r = el.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (!box) return false
+        await click(box.x, box.y)
+        await sleep(120)
+        return true
+      }
+
+      // ① 그 teamspace 에 페이지를 하나 두고, 보관 전에 둘 다 볼 수 있음을 확인한다(만들기는 라우트로 — 이 절이
+      //    보려는 것은 보관이다).
+      const doomedPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
+        method: 'POST', headers: authed, body: JSON.stringify({ teamspaceId: doomed }),
+      })).json()).page.id
+      const pageAs = (actor, path) => fetch(`${BASE}${path}`, { headers: { cookie: `nc_session=${actor.token}` } })
+      check('보관하기 전에는 소유자와 멤버가 그 페이지를 본다',
+        (await fetch(`${BASE}/w/${workspaceId}/${doomedPage}`, { headers: authed })).status === 200 &&
+          (await pageAs(archiveMate, `/w/${workspaceId}/${doomedPage}`)).status === 200)
+
+      // ② 설정 절의 보관 — 두 번 누른다
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/teamspaces/${doomed}` })
+      await waitFor(`!!document.querySelector('[data-testid="teamspace-archive"]')`, 15000)
+      check('보관은 한 번에 되지 않는다 — 먼저 무엇이 일어나는지 말한다',
+        await evaluate(`!document.querySelector('[data-testid="teamspace-archive-confirm"]')
+          && document.querySelector('[data-testid="teamspace-settings"]').textContent.includes('지워지지 않고')`))
+      await clickOnSel('[data-testid="teamspace-archive"]')
+      check('한 번 누르면 확인 버튼이 선다', await waitFor(`!!document.querySelector('[data-testid="teamspace-archive-confirm"]')`, 5000))
+      await clickOnSel('[data-testid="teamspace-archive-confirm"]')
+      check('★ 보관하면 워크스페이스 홈으로 옮겨 가고 사이드바에서 그 teamspace 가 사라진다',
+        await waitFor(`location.pathname === '/w/${workspaceId}'
+          && ![...document.querySelectorAll('[data-testid="sidebar-teamspace-link"]')].some((a) => a.textContent === ${JSON.stringify(archiveName)})`, 15000),
+        await evaluate('location.pathname'))
+      check('★ 보관하면 소유자까지 그 페이지를 못 본다 — 멤버도 못 본다',
+        (await fetch(`${BASE}/w/${workspaceId}/${doomedPage}`, { headers: authed })).status === 404 &&
+          (await pageAs(archiveMate, `/w/${workspaceId}/${doomedPage}`)).status === 404)
+      check('보관된 teamspace 의 화면도 소유자에게 404 다',
+        (await fetch(`${BASE}/w/${workspaceId}/teamspaces/${doomed}`, { headers: authed })).status === 404)
+
+      // ③ 둘러보기 화면의 보관된 절 — 소유자만
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/teamspaces` })
+      const archivedRow = `[data-testid="teamspace-archived-row"][data-teamspace-id="${doomed}"]`
+      check('★ 둘러보기 화면의 "보관된 teamspace" 에 서고 · 보관한 때를 말한다',
+        await waitFor(`!!document.querySelector('${archivedRow} [data-testid="teamspace-restore"]')
+          && document.querySelector('${archivedRow}').textContent.includes('오늘 보관')`, 15000),
+        await evaluate(`document.querySelector('[data-testid="teamspace-archived-list"]')?.textContent?.slice(0, 160) ?? '목록 없음'`))
+      const mateArchived = await (await fetch(`${tsUrl}?scope=archived`, { headers: mateHeaders })).json()
+      check('소유자가 아닌 멤버에게는 보관된 목록이 비어 있다', !mateArchived.teamspaces.some((t) => t.id === doomed),
+        JSON.stringify(mateArchived.teamspaces.map((t) => t.id)))
+      const mateRestore = await fetch(`${tsUrl}/${doomed}/restore`, { method: 'POST', headers: mateHeaders })
+      check('멤버는 되살리지 못한다 (403)', mateRestore.status === 403, String(mateRestore.status))
+
+      // ④ 되살리기
+      await clickOnSel(`${archivedRow} [data-testid="teamspace-restore"]`)
+      check('★ 되살리면 그 줄이 목록에서 빠지고 사이드바에 teamspace 가 다시 선다',
+        await waitFor(`!document.querySelector('${archivedRow}')
+          && [...document.querySelectorAll('[data-testid="sidebar-teamspace-link"]')].some((a) => a.textContent === ${JSON.stringify(archiveName)})`, 15000),
+        await evaluate(`document.querySelector('[data-testid="teamspace-archived-error"]')?.textContent ?? ''`))
+      check('★ 되살리면 소유자와 멤버가 그 페이지를 다시 본다',
+        (await fetch(`${BASE}/w/${workspaceId}/${doomedPage}`, { headers: authed })).status === 200 &&
+          (await pageAs(archiveMate, `/w/${workspaceId}/${doomedPage}`)).status === 200)
+      // 되살리기의 refresh 가 끝나기 전에 다음 절이 화면을 옮기지 않게 한다(§6).
+      await sleep(1500)
+    }
+
     section('코멘트 패널 · 인박스 (F-05-08 · F-11-07)')
     {
       const commentPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {

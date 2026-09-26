@@ -1,7 +1,7 @@
 'use client'
 
 /**
- * teamspace 설정 — 이름 · 공개 범위 · 초대 규칙 (7c-5조각 · F-06-04)
+ * teamspace 설정 — 이름 · 공개 범위 · 초대 규칙 · 보관 (7c-5 · 7c-6조각 · F-06-04)
  *
  * **소유자에게만** 보인다(서버가 다시 묻는다 — `updateTeamspace` 는 소유자가 아니면 `forbidden`). 셋을 한 폼에 두고 한 번에
  * 보낸다: 세 칸이 모두 "이 teamspace 를 어떻게 쓰는가" 한 가지를 정하고, 따로 저장하면 어느 것이 저장됐는지 사용자가
@@ -15,6 +15,10 @@
  * "넣기" 칸은 초대 규칙과 무관하게 늘 선다(`canInviteHere`). 규칙을 바꾸면 그 가정을 다시 본다.
  *
  * 공개 범위를 좁혀도 이미 들어온 멤버는 그대로다 — 그 말을 바꾸기 전에 한 줄로 해 둔다(서버의 규칙과 같다).
+ *
+ * **보관은 두 번 누른다**(그룹 지우기 · 나가기와 같은 규칙 · §3.3-188). teamspace 는 지워지지 않는 대신 보관되고, 보관하면
+ * **나까지** 그 페이지들을 못 본다 — 되살릴 수 있다는 말을 함께 한다. 보관한 뒤에는 이 화면이 404 가 되므로 워크스페이스
+ * 홈으로 옮겨 간다.
  */
 
 import { useState } from 'react'
@@ -47,6 +51,7 @@ export function TeamspaceSettings({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [saved, setSaved] = useState(false)
+  const [archiving, setArchiving] = useState(false)
 
   async function save(): Promise<void> {
     setBusy(true)
@@ -70,6 +75,27 @@ export function TeamspaceSettings({
       setError('연결에 실패했습니다.')
     } finally {
       setBusy(false)
+    }
+  }
+
+  async function archive(): Promise<void> {
+    setBusy(true)
+    setError(null)
+    try {
+      const res = await fetch(`/api/workspaces/${workspaceId}/teamspaces/${teamspaceId}/archive`, { method: 'POST' })
+      const data = (await res.json().catch(() => ({}))) as { error?: unknown }
+      if (!res.ok) {
+        setError(teamspaceFailureMessage(data.error))
+        return
+      }
+      // 보관하면 이 화면은 404 다 — 사이드바에서도 빠져야 하므로 홈으로 옮겨 가며 서버 렌더를 다시 받는다.
+      router.push(`/w/${workspaceId}`)
+      router.refresh()
+    } catch {
+      setError('연결에 실패했습니다.')
+    } finally {
+      setBusy(false)
+      setArchiving(false)
     }
   }
 
@@ -151,6 +177,44 @@ export function TeamspaceSettings({
           {error}
         </p>
       )}
+
+      <div className="mt-2 flex flex-col gap-1 border-t border-neutral-200 pt-3 dark:border-neutral-800">
+        <p className="text-xs text-neutral-500">
+          teamspace 는 지워지지 않고 <b>보관</b>됩니다. 보관하면 소유자인 나까지 이 teamspace 의 페이지를 못 보게 되고,
+          되살리면 그대로 돌아옵니다.
+        </p>
+        {archiving ? (
+          <span className="flex items-center gap-1">
+            <button
+              type="button"
+              data-testid="teamspace-archive-confirm"
+              disabled={busy}
+              onClick={() => void archive()}
+              className="rounded border border-red-300 px-2 py-0.5 text-xs text-red-600 disabled:opacity-40 dark:border-red-800"
+            >
+              정말 보관하기
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => setArchiving(false)}
+              className="rounded border border-neutral-300 px-2 py-0.5 text-xs disabled:opacity-40 dark:border-neutral-700"
+            >
+              취소
+            </button>
+          </span>
+        ) : (
+          <button
+            type="button"
+            data-testid="teamspace-archive"
+            disabled={busy}
+            onClick={() => setArchiving(true)}
+            className="self-start rounded border border-neutral-300 px-2 py-0.5 text-xs disabled:opacity-40 dark:border-neutral-700"
+          >
+            보관하기
+          </button>
+        )}
+      </div>
     </form>
   )
 }
