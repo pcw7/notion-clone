@@ -263,11 +263,18 @@ async function resolveChain(
 ): Promise<CapSet> {
   const [entries, cuts] = await Promise.all([
     // teamspace 노드의 행은 `node_kind` 가 다르다 — 블록 id 와 겹칠 일은 없지만 종류까지 맞춰 읽는다.
+    //
+    // **보관된 teamspace 의 행은 읽지 않는다**(7c-6). 멤버는 이미 잃는다 — `principalsFor` 가 보관된 teamspace 를 주체로
+    // 주지 않는다. 그러나 owner 의 행은 `('user', id)` 라 주체가 늘 있어서, 여기서 걸러 주지 않으면 **owner 만 보관된
+    // teamspace 의 페이지를 계속 본다.** 그러면 목록과 판정이 어긋난다 — 목록(`scopesWith`)은 보관된 teamspace 를
+    // 스코프 후보에서 빼므로 사이드바 · 검색 · 멘션에는 안 나오는데 주소를 알면 열린다. 판정과 목록은 나란히 간다
+    // (§3.3-107). 행은 그대로 두므로 복원하면 정확히 되돌아온다.
     tx.query<AclRow>(
       `SELECT node_id, principal_type, principal_id, level
          FROM acl_entry
         WHERE (node_kind = 'block' AND node_id = ANY($1::uuid[]))
-           OR (node_kind = 'teamspace' AND node_id = $2)`,
+           OR (node_kind = 'teamspace' AND node_id = $2
+               AND EXISTS (SELECT 1 FROM teamspace t WHERE t.id = $2 AND t.archived_at IS NULL))`,
       [chain, teamspaceId],
     ),
     tx.query<{ node_id: string }>(

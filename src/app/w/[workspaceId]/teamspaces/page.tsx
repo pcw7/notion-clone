@@ -1,21 +1,24 @@
 /**
- * 둘러보기 화면 — `/w/{ws}/teamspaces` (7c-5조각 · F-06-04)
+ * 둘러보기 화면 — `/w/{ws}/teamspaces` (7c-5 · 7c-6조각 · F-06-04)
  *
  * 사이드바 Teamspaces 머리의 `⌕` 가 여기로 온다. 목록은 **서버가 권한으로 거른 것**이다(`listBrowsableTeamspaces`) — 멤버가
  * 아닌 private teamspace 는 이 화면에 오지 않는다. 둘러볼 수 없는 역할(`restricted_member` · 게스트)에게는 빈 목록이므로
  * 화면이 그렇게 말한다(404 로 막지 않는다 — 주소를 아는 것이 권한 정보가 아니다).
+ *
+ * **보관된 teamspace** 절(7c-6)은 내가 owner 인 것만 싣고, 없으면 그리지 않는다 — 되살릴 수 있는 사람만 그 존재를 본다.
  */
 
 import Link from 'next/link'
 
 import { requirePageSession } from '@/lib/auth/page-session'
-import { listBrowsableTeamspaces } from '@/lib/workspace/teamspace'
+import { listArchivedTeamspaces, listBrowsableTeamspaces } from '@/lib/workspace/teamspace'
+import { TeamspaceArchived } from './teamspace-archived'
 import { TeamspaceBrowser } from './teamspace-browser'
 
 export default async function TeamspaceBrowsePage({ params }: PageProps<'/w/[workspaceId]/teamspaces'>) {
   const { workspaceId } = await params
   const ctx = await requirePageSession(workspaceId)
-  const rows = await listBrowsableTeamspaces(ctx)
+  const [rows, archived] = await Promise.all([listBrowsableTeamspaces(ctx), listArchivedTeamspaces(ctx)])
 
   return (
     <main data-testid="teamspace-browse-page" className="mx-auto flex min-h-screen max-w-3xl flex-col gap-6 px-6 py-12">
@@ -41,6 +44,16 @@ export default async function TeamspaceBrowsePage({ params }: PageProps<'/w/[wor
           visibility: r.visibility,
           memberCount: r.memberCount,
           role: r.role,
+        }))}
+      />
+
+      <TeamspaceArchived
+        workspaceId={workspaceId}
+        initialRows={archived.map((r) => ({
+          id: r.id,
+          name: r.name,
+          visibility: r.visibility,
+          archivedAt: r.archivedAt,
         }))}
       />
     </main>

@@ -11,6 +11,7 @@ import assert from 'node:assert/strict'
 import { TEAMSPACE_VISIBILITIES } from '../../../lib/workspace/teamspace.ts'
 import {
   TEAMSPACE_VISIBILITY_ORDER,
+  archivedAtLabel,
   canInviteAsOwner,
   canInviteHere,
   teamspaceCandidates,
@@ -68,6 +69,23 @@ describe('공개 범위 (7c-5)', () => {
     for (const [visibility, role, want] of rows) {
       assert.equal(teamspaceJoinAction({ visibility, role }), want, `${visibility} · ${role}`)
     }
+  })
+})
+
+describe('보관한 때 (7c-6)', () => {
+  test('오늘 · 어제 · 며칠 전 · 오래된 것은 날짜로 · 모양이 아니면 "보관됨"', () => {
+    const now = new Date('2026-09-27T12:00:00Z')
+    const at = (iso: string) => archivedAtLabel(iso, now)
+    assert.equal(at('2026-09-27T01:00:00Z'), '오늘 보관')
+    assert.equal(at('2026-09-26T11:00:00Z'), '어제 보관')
+    assert.equal(at('2026-09-20T12:00:00Z'), '7일 전 보관')
+    assert.match(at('2026-01-02T12:00:00Z'), /2026\. 1\. 2\. 보관/)
+    assert.equal(at('내일'), '보관됨')
+  })
+
+  test('앞선 시각(시계가 어긋난 경우)도 "오늘 보관" 으로 둔다 — 음수 날짜를 보이지 않는다', () => {
+    const now = new Date('2026-09-27T12:00:00Z')
+    assert.equal(archivedAtLabel('2026-09-28T12:00:00Z', now), '오늘 보관')
   })
 })
 

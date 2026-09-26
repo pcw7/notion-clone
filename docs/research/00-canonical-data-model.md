@@ -561,6 +561,31 @@ CREATE TABLE access_request (
 > `restricted_member` 와 `guest` 에게는 멤버가 아닌 teamspace 가 **없는 것과 같다**(F-06-04 *"추가 전에는 이 사람에게
 > teamspace 자체가 존재하지 않는 것과 같음"*) — 목록이 비고, 참여는 `private` 와 같은 답을 받는다.
 
+**[보강] `teamspace.archived_at` 이 뜻하는 것 — 아무도 못 보고, 되살릴 사람만 존재를 본다** ⟨Teamspace · 게스트 · 그룹 7c-6 / 마이그레이션 없음⟩
+
+> 초판은 `archived_at` 컬럼과 0028 의 신호 트리거만 두고, 보관이 판정에 무엇을 하는지 적지 않았다. 06 F-06-04 는
+> *"Teamspace는 삭제되지 않고 archive만 된다. archive 시 모든 멤버의 사이드바에서 제거된다"* 와 복원 경로만 적었다.
+>
+> ① **보관된 teamspace 노드의 `acl_entry` 는 판정에서 읽지 않는다.** 멤버는 이미 잃는다 — P(U) 가 보관된 teamspace 를
+> 주체로 주지 않는다. 그러나 owner 의 행은 `('user', id) → full_access` 라 주체가 늘 있으므로, 사슬에서 그 노드를 빼지
+> 않으면 **owner 만** 보관된 teamspace 의 페이지를 계속 본다. 그러면 목록과 판정이 어긋난다 — `user_accessible_scopes` 는
+> 보관된 teamspace 를 스코프 후보에서 빼므로 사이드바 · 검색 · 멘션에는 안 나오는데 주소를 알면 열린다. 판정과 목록은
+> 나란히 간다.
+>
+> ② **행은 건드리지 않는다.** `acl_entry` · `teamspace_member` 를 그대로 두므로 복원은 정확하다(멤버 · 역할 · owner 부여가
+> 그대로 돌아온다). 페이지에 따로 준 부여(블록 노드의 행)는 보관과 무관하게 살아 있다 — 그 페이지는 자기 자신이 경계다.
+>
+> ③ **보관된 teamspace 는 이름도 새 자리도 주지 않는다** — 만들기 · 넣기 · 옮기기 · 설정 · 참여 · 둘러보기가 모두
+> `not_found` 다(이미 그랬다: 그 명령들은 `archived_at IS NULL` 인 행만 잠근다). 되살릴 사람만 **보관된 목록**으로 그
+> 존재를 본다.
+>
+> ④ 보관 · 복원은 **그 teamspace 의 owner** 다. F-06-04 은 복원을 *"workspace owner이면서 teamspace owner"* 로 적었지만
+> 좁히지 않는다 — 워크스페이스 owner 가 아닌 사람이 만든 teamspace 를 보관하면 아무도 되살릴 수 없게 되기 때문이다
+> (워크스페이스 owner 가 멤버가 아닌 teamspace 에 손대는 경로는 아직 없다). 그 경로가 생기면 "워크스페이스 owner 도
+> 되살릴 수 있다"를 **더한다** — 조건을 빼는 쪽이 아니다.
+>
+> ⑤ 신호는 0028 의 `tg_collab_access_teamspace`(`archived_at` 변경) 그대로다 — 보관도 복원도 그 트리거를 탄다.
+
 ---
 
 ### 3.4 블록 트리 ⟨C-1/V-4 · C-3/V-6 · C-9/V-9 · C-10 · X-1 · X-3 · X-7⟩

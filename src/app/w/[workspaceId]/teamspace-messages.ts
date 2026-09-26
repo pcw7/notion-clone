@@ -30,6 +30,17 @@ export function teamspaceVisibilityLabel(visibility: TeamspaceVisibilityName): s
   }
 }
 
+/** 보관한 때를 사람이 읽는 말로 — 목록의 한 줄에 쓴다. 날짜만(시각은 되살릴 때 도움이 되지 않는다). */
+export function archivedAtLabel(iso: string, now: Date = new Date()): string {
+  const at = new Date(iso)
+  if (Number.isNaN(at.getTime())) return '보관됨'
+  const days = Math.floor((now.getTime() - at.getTime()) / 86400000)
+  if (days <= 0) return '오늘 보관'
+  if (days === 1) return '어제 보관'
+  if (days < 30) return `${days}일 전 보관`
+  return `${at.getFullYear()}. ${at.getMonth() + 1}. ${at.getDate()}. 보관`
+}
+
 /** 고르개 옆의 한 줄 — 무엇이 달라지는지 말한다. 셋의 차이는 **존재와 참여**뿐이다(콘텐츠는 멤버만 본다 · 7c-5). */
 export function teamspaceVisibilityHint(visibility: TeamspaceVisibilityName): string {
   switch (visibility) {
