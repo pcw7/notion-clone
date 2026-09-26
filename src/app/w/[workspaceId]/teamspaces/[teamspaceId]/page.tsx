@@ -1,11 +1,13 @@
 /**
- * teamspace 화면 — 최상위 페이지 · 멤버 · 역할 · 나가기 (7c-2조각 · F-06-04)
+ * teamspace 화면 — 최상위 페이지 · 멤버 · 역할 · 나가기 · 설정 (7c-2 · 7c-5조각 · F-06-04)
  *
  * 사이드바의 teamspace 이름이 여기로 온다. 노션의 teamspace 홈과 설정(`Settings → Teamspaces`)을 한 화면에 둔다 —
  * 설정 화면이 따로 없는 것은 그룹(7b — 워크스페이스 홈의 한 절)과 같다.
  *
- * **멤버만 연다.** 멤버가 아니면 없는 teamspace 와 같은 404 다(`getTeamspace` — 서버 명령과 같은 규칙). 둘러보기 · 참여
- * (open · closed)는 아직 없다(§7).
+ * **멤버만 연다.** 멤버가 아니면 없는 teamspace 와 같은 404 다(`getTeamspace` — 서버 명령과 같은 규칙). 멤버가 아닌 사람이
+ * 이 teamspace 를 만나는 자리는 둘러보기(`/w/{ws}/teamspaces` · 7c-5)이고, 거기서는 이름과 공개 범위만 본다.
+ *
+ * 설정(이름 · 공개 범위 · 초대 규칙)은 **소유자에게만** 그린다(`teamspace-settings.tsx` · 7c-5). 서버가 다시 묻는다.
  *
  * 멤버 목록 · 넣기 · 역할 · 빼기 · 나가기는 클라이언트 컴포넌트가 라우트로 한다(`teamspace-members.tsx`). 넣을 후보는 여기서
  * 싣는다 — 워크스페이스 멤버와 그룹.
@@ -26,6 +28,7 @@ import { getTeamspace, listTeamspaceMembers } from '@/lib/workspace/teamspace'
 import { NewDatabaseButton } from '../../new-database-button'
 import { NewPageButton } from '../../new-page-button'
 import { TeamspaceMembers } from './teamspace-members'
+import { TeamspaceSettings } from './teamspace-settings'
 
 const UNTITLED = '제목 없음'
 
@@ -124,6 +127,22 @@ export default async function TeamspacePage({ params }: PageProps<'/w/[workspace
           groups={groups.ok ? groups.value.map((g) => ({ id: g.id, name: g.name, memberCount: g.memberCount })) : []}
         />
       </section>
+
+      {teamspace.value.role === 'owner' && (
+        <section>
+          <h2 className="text-sm font-medium text-neutral-500">설정</h2>
+          <p className="mt-1 text-xs text-neutral-500">소유자만 고칩니다.</p>
+          <TeamspaceSettings
+            workspaceId={workspaceId}
+            teamspaceId={teamspaceId}
+            initial={{
+              name: teamspace.value.name,
+              visibility: teamspace.value.visibility,
+              whoCanInvite: teamspace.value.whoCanInvite,
+            }}
+          />
+        </section>
+      )}
     </main>
   )
 }

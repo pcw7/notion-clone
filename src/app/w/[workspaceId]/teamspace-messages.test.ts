@@ -1,24 +1,35 @@
 /**
- * teamspace 화면의 문구 · 고르기 — 7c-2조각 (DOM · DB 없음)
+ * teamspace 화면의 문구 · 고르기 — 7c-2 · 7c-5조각 (DOM · DB 없음)
+ *
+ * 공개 범위의 목록이 서버 모듈의 것과 어긋나지 않는지도 여기서 막는다 — **검사만** 두 모듈을 함께 읽는다(화면은 서버
+ * 모듈을 import 하면 `pg` 가 번들에 끌려온다 · §3.3-163).
  */
 
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 
+import { TEAMSPACE_VISIBILITIES } from '../../../lib/workspace/teamspace.ts'
 import {
+  TEAMSPACE_VISIBILITY_ORDER,
   canInviteAsOwner,
   canInviteHere,
   teamspaceCandidates,
   teamspaceFailureMessage,
+  teamspaceJoinAction,
   teamspaceRoleLabel,
+  teamspaceVisibilityHint,
+  teamspaceVisibilityLabel,
   type TeamspaceMemberView,
+  type TeamspaceVisibilityName,
 } from './teamspace-messages.ts'
 
 const person = (userId: string, role = 'member', status = 'active') => ({ userId, name: userId, email: null, role, status })
 
 describe('teamspace 화면의 문구', () => {
   test('거부 코드마다 할 말이 있다 · 마지막 소유자는 무엇을 먼저 할지 말한다 · 모르는 코드는 일반 문구', () => {
-    for (const code of ['not_found', 'forbidden', 'invalid_name', 'invalid_role', 'invalid_member', 'last_owner']) {
+    const codes = ['not_found', 'forbidden', 'invalid_name', 'invalid_role', 'invalid_member', 'last_owner',
+      'needs_invite', 'invalid_visibility', 'invalid_settings']
+    for (const code of codes) {
       assert.notEqual(teamspaceFailureMessage(code), '처리하지 못했습니다.', code)
     }
     assert.match(teamspaceFailureMessage('last_owner'), /다른 사람을 소유자로/)
@@ -28,6 +39,35 @@ describe('teamspace 화면의 문구', () => {
 
   test('역할 이름', () => {
     assert.deepEqual([teamspaceRoleLabel('owner'), teamspaceRoleLabel('member')], ['소유자', '멤버'])
+  })
+})
+
+describe('공개 범위 (7c-5)', () => {
+  test('목록이 서버의 것과 같다 — 순서만 우리가 정한다(넓은 것부터)', () => {
+    assert.deepEqual([...TEAMSPACE_VISIBILITY_ORDER].sort(), [...TEAMSPACE_VISIBILITIES].sort())
+    assert.deepEqual(TEAMSPACE_VISIBILITY_ORDER, ['open', 'closed', 'private'])
+  })
+
+  test('셋 다 이름과 한 줄 설명이 있고 · 서로 다르다', () => {
+    const labels = TEAMSPACE_VISIBILITY_ORDER.map(teamspaceVisibilityLabel)
+    const hints = TEAMSPACE_VISIBILITY_ORDER.map(teamspaceVisibilityHint)
+    assert.equal(new Set(labels).size, 3, labels.join(' · '))
+    assert.equal(new Set(hints).size, 3)
+    assert.ok(hints.every((h) => h.length > 10))
+  })
+
+  test('★ 줄마다 무엇을 두는가 — 멤버면 공개 범위와 무관하게 멤버 · open 만 참여 · closed 는 초대 · private 는 그리지 않는다', () => {
+    const rows: [TeamspaceVisibilityName, 'owner' | 'member' | null, string][] = [
+      ['open', null, 'join'],
+      ['closed', null, 'needs_invite'],
+      ['private', null, 'hidden'],
+      ['open', 'member', 'member'],
+      ['closed', 'member', 'member'],
+      ['private', 'owner', 'member'],
+    ]
+    for (const [visibility, role, want] of rows) {
+      assert.equal(teamspaceJoinAction({ visibility, role }), want, `${visibility} · ${role}`)
+    }
   })
 })
 
