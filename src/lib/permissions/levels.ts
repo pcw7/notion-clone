@@ -124,7 +124,11 @@ export function unionCaps(...sets: readonly CapSet[]): CapSet {
 
 /** 권한 판정의 유일한 물음. */
 export function can(caps: CapSet, capability: Capability): boolean {
-  return (caps & BIT[capability]) !== 0
+  const bit = BIT[capability]
+  // 검사 파일은 타입 검사 밖이다(tsconfig 의 exclude). 없는 이름은 undefined 비트가 되어 **늘 false** 를 내므로 "못 한다"는
+  // 검사가 조용히 헛돈다 — 7c-9 에서 'view_content' 로 실제로 그랬다(#125 의 검사 한 줄이 무엇도 확인하지 않고 있었다).
+  if (bit === undefined) throw new Error(`알 수 없는 capability: ${String(capability)}`)
+  return (caps & bit) !== 0
 }
 
 /** 디버깅·감사 로그용. 판정에 쓰지 말 것. */

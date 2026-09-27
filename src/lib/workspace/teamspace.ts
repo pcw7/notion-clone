@@ -37,20 +37,23 @@
  * 공개 범위(visibility)는 **존재와 참여**만 정한다 — 판정에는 들어가지 않는다(7c-5)
  * ──────────────────────────────────────────────────────────────────────
  *
- *   | visibility | 둘러보기에 보이는가 | 스스로 참여 | 멤버가 아닌 사람의 콘텐츠 열람 |
+ *   | visibility | 둘러보기에 보이는가 | 스스로 참여 | 멤버가 아닌 사람의 콘텐츠 |
  *   |---|---|---|---|
- *   | open    | 보인다   | O(`joinTeamspace`) | X |
- *   | closed  | 보인다   | X(초대 — `needs_invite`) | X |
- *   | private | 안 보인다 | X(없는 것과 같다 — `not_found`) | X |
+ *   | open    | 보인다   | O(`joinTeamspace`) | **본다(view · 7c-9)** — 고치려면 참여한다 |
+ *   | closed  | 보인다   | X(초대 — `needs_invite`) | 못 본다 |
+ *   | private | 안 보인다 | X(없는 것과 같다 — `not_found`) | 못 본다 |
  *
- * F-06-04 의 표는 open 의 "콘텐츠 열람"을 O 로 적었다(공식 문구 *"Anyone can join and view the content"*). 우리는 v1 에서
- * **참여해야 본다**로 좁힌다 — 까닭은 셋이다. ① 우리 모델에서 "워크스페이스 전원이 읽는다"는 teamspace 노드의
- * `workspace_everyone` 행 하나인데, 그 행을 두면 open teamspace 의 최상위 페이지가 **전원의 사이드바**("워크스페이스 페이지")로
- * 쏟아진다 — 그 페이지들이 설 자리(Shared 섹션)가 아직 없다(§7). ② 참여가 한 번 누르기이므로 "참여하면 본다"도 그 문장을
- * 만족한다. ③ 열람을 주면 open → closed 로 되돌릴 때 이미 내려간 접근을 어떻게 할지 또 정해야 한다. 좁은 쪽이 되돌리기 싸다.
+ * open 의 열람은 F-06-04 의 표(공식 문구 *"Anyone can join and view the content"*) 그대로다. 7c-5 는 이것을 "참여해야
+ * 본다"로 좁혀 두었다 — 열람 행을 두면 그 페이지들이 전원의 사이드바로 쏟아지는데 설 자리가 없었기 때문이다. 공유됨
+ * 섹션이 서고(7c-7) 사이드바가 뿌리를 가릴 수 있게 되어 7c-9 가 되돌렸다(§3.2-45 의 재검토 조건 그대로).
  *
- * 그래서 **visibility 를 바꾸는 것은 권한 변화가 아니다** — `perm_gen` · `acl_epoch` · 협업 신호가 필요 없다(0028 의
- * `tg_collab_access_teamspace` 가 `archived_at` 만 보는 것이 맞다). 참여는 멤버십이므로 그 신호를 탄다.
+ * 구현은 행 하나다 — open 인 teamspace 노드에 `('workspace_everyone') → 'view'`(`syncOpenGrant`). 판정 기계는 그대로다:
+ * 게스트 · restricted_member 는 `workspace_everyone` 주체를 받지 않으므로(P(U)) 자동으로 빠지고, 보관되면 노드의 행을
+ * 판정이 읽지 않으므로(7c-6) 열람도 함께 닫힌다. **사이드바에는 세우지 않는다** — 멤버가 아닌 open teamspace 의 뿌리는
+ * `groupSidebarRoots` 가 가린다(참여하면 선다). 검색 · 링크로는 닿는다 — 스코프가 읽을 수 있는 곳이 됐기 때문이다.
+ *
+ * 그래서 **open ↔ closed·private 전환은 권한 변화다** — 그 변화는 `syncOpenGrant` 의 acl_entry 쓰기가 나르고, 0016 의
+ * 노드 신호 트리거가 협업 서버에 알린다(0028 을 고칠 것이 없다). 참여는 전과 같이 멤버십 신호를 탄다.
  *
  * ──────────────────────────────────────────────────────────────────────
  * 보관(archive)은 지우기를 대신한다 — 아무도 못 보고, 소유자만 되살린다(7c-6)
@@ -222,6 +225,30 @@ async function lockTeamspace(
   )
 }
 
+/**
+ * open 의 열람 부여를 teamspace 노드에 맞춘다(7c-9) — open 이면 `('workspace_everyone') → 'view'` 행, 아니면 없다.
+ *
+ * 왜 view 인가: F-06-04 가 open 의 축을 "열람"으로 적었다. 고치고 싶으면 참여가 한 번 누르기다(멤버가 되면
+ * `MEMBER_DEFAULT_LEVEL`). 레벨을 고르게 하는 설정(멤버 기본 레벨 · §7)이 생기면 이 값도 그 옆으로 간다.
+ */
+async function syncOpenGrant(tx: Tx, ctx: SessionContext, teamspaceId: string, open: boolean): Promise<void> {
+  if (open) {
+    await tx.query(
+      `INSERT INTO acl_entry (id, node_kind, node_id, principal_type, principal_id, level, granted_by)
+       VALUES ($1, 'teamspace', $2, 'workspace_everyone', NULL, 'view', $3)
+       ON CONFLICT (node_kind, node_id, principal_type, principal_id)
+       DO UPDATE SET level = EXCLUDED.level WHERE acl_entry.level <> EXCLUDED.level`,
+      [randomUUID(), teamspaceId, ctx.userId],
+    )
+  } else {
+    await tx.query(
+      `DELETE FROM acl_entry
+        WHERE node_kind = 'teamspace' AND node_id = $1 AND principal_type = 'workspace_everyone'`,
+      [teamspaceId],
+    )
+  }
+}
+
 /** owner 의 부여를 teamspace 노드에 맞춘다 — 역할이 owner 면 full_access 행, 아니면 없다. */
 async function syncOwnerGrant(
   tx: Tx,
@@ -305,6 +332,7 @@ export async function createTeamspace(
       [randomUUID(), id, MEMBER_DEFAULT_LEVEL, ctx.userId],
     )
     await syncOwnerGrant(tx, ctx, id, { type: 'user', id: ctx.userId }, true)
+    await syncOpenGrant(tx, ctx, id, visibility === 'open')
     return { ok: true, value: { id, name, icon: null, visibility, role: 'owner' as const } } as const
   })
 }
@@ -527,6 +555,11 @@ export async function updateTeamspace(
       ctx.workspaceId,
       ...values,
     ])
+    // open ↔ closed·private 전환은 열람 행을 나른다(7c-9 · 머리말). 좁힐 때 이미 들어온 **멤버**는 그대로지만(§3.2-45 의
+    // 규칙 그대로 — 멤버십은 행과 무관하다), 참여하지 않고 읽던 사람은 잃는다 — 그것이 좁힘의 뜻이다.
+    if (input.visibility !== undefined && input.visibility !== teamspace.visibility) {
+      await syncOpenGrant(tx, ctx, teamspaceId, input.visibility === 'open')
+    }
     return { ok: true } as const
   })
 }
