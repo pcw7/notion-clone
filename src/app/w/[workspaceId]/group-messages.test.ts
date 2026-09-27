@@ -32,6 +32,12 @@ describe('groupFailureMessage', () => {
     assert.equal(groupFailureMessage('would_orphan', '3'), plain)
   })
 
+  test('★ teamspace 의 마지막 소유자인 그룹 — 몇 개인지와 무엇을 먼저 할지 말한다 (7c-10)', () => {
+    assert.match(groupFailureMessage('last_teamspace_owner', 2), /teamspace 2개의 마지막 소유자/)
+    assert.match(groupFailureMessage('last_teamspace_owner', 2), /다른 사람을 소유자로 먼저/)
+    assert.doesNotMatch(groupFailureMessage('last_teamspace_owner'), /undefined|NaN/)
+  })
+
   test('나머지 코드와 모르는 코드', () => {
     assert.equal(groupFailureMessage('duplicate_name'), '같은 이름의 그룹이 이미 있습니다.')
     assert.equal(

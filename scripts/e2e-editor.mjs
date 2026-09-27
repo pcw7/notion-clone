@@ -2283,6 +2283,85 @@ async function main() {
         reopen.ok && (await fetch(`${BASE}/w/${workspaceId}/${openPage}`, { headers: authed })).status === 200)
     }
 
+    if (sectionIf('고아 teamspace — 막고 되살린다 (7c-10 · F-06-04)')) {
+      // 그룹 삭제가 teamspace 의 마지막 owner 를 없애면 거부하고, 워크스페이스 owner(브라우저 세션)는 모든 teamspace 를 보고
+      // 소유자로 들어가 고아를 되살린다. 이 절은 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
+      const orphanMaker = await joinAs(workspaceId, await createUser('고아 만들 사람'), 'member')
+      const makerHeaders = { ...json, cookie: `nc_session=${orphanMaker.token}` }
+      const tsUrl = `${BASE}/api/workspaces/${workspaceId}/teamspaces`
+      const groupsUrl = `${BASE}/api/workspaces/${workspaceId}/groups`
+      const stamp = Date.now()
+      const clickOnSel = async (sel) => {
+        const box = await evaluate(`(() => {
+          const el = document.querySelector(${JSON.stringify(sel)})
+          if (!el || el.disabled) return null
+          el.scrollIntoView({ block: 'center' })
+          const r = el.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (!box) return false
+        await click(box.x, box.y)
+        await sleep(120)
+        return true
+      }
+
+      // ① 막기 — 그룹이 마지막 owner 면 그 그룹을 지우지 못한다
+      const ownedBy = (await (await fetch(tsUrl, {
+        method: 'POST', headers: makerHeaders, body: JSON.stringify({ name: `그룹소유팀 ${stamp}`, visibility: 'private' }),
+      })).json()).teamspace.id
+      const ownerGroup = (await (await fetch(groupsUrl, {
+        method: 'POST', headers: authed, body: JSON.stringify({ name: `소유그룹 ${stamp}` }),
+      })).json()).group.id
+      await fetch(`${tsUrl}/${ownedBy}/members`, {
+        method: 'POST', headers: makerHeaders, body: JSON.stringify({ principal: { type: 'group', id: ownerGroup }, role: 'owner' }),
+      })
+      const leave = await fetch(`${tsUrl}/${ownedBy}/members/user/${orphanMaker.userId}`, { method: 'DELETE', headers: makerHeaders })
+      const delGroup = await fetch(`${groupsUrl}/${ownerGroup}`, { method: 'DELETE', headers: authed })
+      const delBody = await delGroup.json().catch(() => ({}))
+      check('★ 그룹이 teamspace 의 마지막 소유자면 그 그룹을 지우지 못한다 (409 last_teamspace_owner · 몇 개인지)',
+        leave.ok && delGroup.status === 409 && delBody.error === 'last_teamspace_owner' && delBody.nodes === 1,
+        `나가기 ${leave.status} · 지우기 ${delGroup.status} ${JSON.stringify(delBody)}`)
+
+      // ② 되살리기 — 워크스페이스 owner 의 관리 절
+      const orphanTeam = (await (await fetch(tsUrl, {
+        method: 'POST', headers: makerHeaders, body: JSON.stringify({ name: `고아팀 ${stamp}`, visibility: 'private' }),
+      })).json()).teamspace.id
+      const orphanPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
+        method: 'POST', headers: makerHeaders, body: JSON.stringify({ teamspaceId: orphanTeam, title: '고아의 문서' }),
+      })).json()).page.id
+      // 유일한 소유자가 워크스페이스를 떠난다 — 그 명령은 아직 없어 행으로 만든다(DB 검사 ⑮ 와 같다).
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      await dbQuery(`UPDATE workspace_member SET status = 'removed' WHERE workspace_id = $1 AND user_id = $2`, [workspaceId, orphanMaker.userId])
+      check('전제 — 비공개 고아 teamspace 의 페이지를 워크스페이스 owner 도 못 연다',
+        (await fetch(`${BASE}/w/${workspaceId}/${orphanPage}`, { headers: authed })).status === 404)
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/teamspaces` })
+      const adminRow = `[data-testid="teamspace-admin-row"][data-teamspace-id="${orphanTeam}"]`
+      check('★ 둘러보기 화면의 "모든 teamspace" 에 비공개 고아가 서고 · 소유자가 없다고 경고한다',
+        await waitFor(`document.querySelector('${adminRow}')?.dataset.orphan === 'true'
+          && !!document.querySelector('${adminRow} [data-testid="teamspace-admin-orphan"]')`, 15000),
+        await evaluate(`document.querySelector('[data-testid="teamspace-admin"]')?.textContent?.slice(0, 160) ?? '관리 절 없음'`))
+      await clickOnSel(`${adminRow} [data-testid="teamspace-claim"]`)
+      check('★ 소유자로 들어가면 그 줄이 "소유자" 가 되고 · 사이드바의 Teamspaces 에 선다',
+        await waitFor(`!!document.querySelector('${adminRow} [data-testid="teamspace-admin-owned"]')
+          && document.querySelector('${adminRow}')?.dataset.orphan === 'false'
+          && !!document.querySelector('[data-testid="sidebar-teamspace"][data-teamspace-id="${orphanTeam}"]')`, 15000),
+        await evaluate(`document.querySelector('[data-testid="teamspace-admin-error"]')?.textContent ?? ''`))
+      check('★ 들어간 뒤에는 그 페이지를 연다',
+        (await fetch(`${BASE}/w/${workspaceId}/${orphanPage}`, { headers: authed })).status === 200)
+
+      // ③ 다른 역할에게는 관리 절이 없다
+      const plainMate = await joinAs(workspaceId, await createUser('관리 없는 멤버'), 'member')
+      const plainHtml = await (await fetch(`${BASE}/w/${workspaceId}/teamspaces`, { headers: { cookie: `nc_session=${plainMate.token}` } })).text()
+      const plainClaim = await fetch(`${tsUrl}/${orphanTeam}/claim`, {
+        method: 'POST', headers: { ...json, cookie: `nc_session=${plainMate.token}` },
+      })
+      check('일반 멤버에게는 관리 절이 없고 들어가기는 404 다',
+        !plainHtml.includes('teamspace-admin') && plainClaim.status === 404, String(plainClaim.status))
+      // 들어가기의 refresh 가 끝나기 전에 다음 절이 화면을 옮기지 않게 한다(§6).
+      await sleep(1500)
+    }
+
     if (sectionIf('코멘트 패널 · 인박스 (F-05-08 · F-11-07)')) {
       const commentPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
         method: 'POST',

@@ -6,19 +6,26 @@
  * 화면이 그렇게 말한다(404 로 막지 않는다 — 주소를 아는 것이 권한 정보가 아니다).
  *
  * **보관된 teamspace** 절(7c-6)은 내가 owner 인 것만 싣고, 없으면 그리지 않는다 — 되살릴 수 있는 사람만 그 존재를 본다.
+ *
+ * **모든 teamspace** 절(7c-10)은 워크스페이스 owner 에게만 선다 — 비공개 · 보관 · 고아까지 보고 소유자로 들어간다.
  */
 
 import Link from 'next/link'
 
 import { requirePageSession } from '@/lib/auth/page-session'
-import { listArchivedTeamspaces, listBrowsableTeamspaces } from '@/lib/workspace/teamspace'
+import { listAllTeamspaces, listArchivedTeamspaces, listBrowsableTeamspaces } from '@/lib/workspace/teamspace'
+import { TeamspaceAdmin } from './teamspace-admin'
 import { TeamspaceArchived } from './teamspace-archived'
 import { TeamspaceBrowser } from './teamspace-browser'
 
 export default async function TeamspaceBrowsePage({ params }: PageProps<'/w/[workspaceId]/teamspaces'>) {
   const { workspaceId } = await params
   const ctx = await requirePageSession(workspaceId)
-  const [rows, archived] = await Promise.all([listBrowsableTeamspaces(ctx), listArchivedTeamspaces(ctx)])
+  const [rows, archived, all] = await Promise.all([
+    listBrowsableTeamspaces(ctx),
+    listArchivedTeamspaces(ctx),
+    listAllTeamspaces(ctx),
+  ])
 
   return (
     <main data-testid="teamspace-browse-page" className="mx-auto flex min-h-screen max-w-3xl flex-col gap-6 px-6 py-12">
@@ -54,6 +61,18 @@ export default async function TeamspaceBrowsePage({ params }: PageProps<'/w/[wor
           name: r.name,
           visibility: r.visibility,
           archivedAt: r.archivedAt,
+        }))}
+      />
+
+      <TeamspaceAdmin
+        workspaceId={workspaceId}
+        initialRows={all.map((r) => ({
+          id: r.id,
+          name: r.name,
+          visibility: r.visibility,
+          archivedAt: r.archivedAt,
+          ownerCount: r.ownerCount,
+          role: r.role,
         }))}
       />
     </main>

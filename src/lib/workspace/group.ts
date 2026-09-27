@@ -42,6 +42,7 @@ import { randomUUID } from 'node:crypto'
 import type { SessionContext, WorkspaceRole } from '../auth/session-context.ts'
 import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
 import { dropGrantsOf } from '../permissions/acl.ts'
+import { dropGroupFromTeamspaces } from './teamspace.ts'
 
 export const MAX_GROUP_NAME_LENGTH = 100
 
@@ -57,6 +58,8 @@ export type UserGroupFailure =
   | 'invalid_member'
   /** 지우면 관리할 사람이 아무도 남지 않는 페이지가 생긴다. `nodes` 가 그 수다. */
   | 'would_orphan'
+  /** 이 그룹이 마지막 owner 인 teamspace 가 있다 — 지우면 그 teamspace 를 고칠 사람이 없다(7c-10). `nodes` 가 그 수다. */
+  | 'last_teamspace_owner'
 
 export type UserGroupResult<T = void> =
   | ({ readonly ok: true } & (T extends void ? object : { readonly value: T }))
@@ -227,6 +230,11 @@ export async function deleteGroup(ctx: SessionContext, groupId: string): Promise
   return withCommandTransaction(async (tx) => {
     const group = await lockGroup(tx, ctx, groupId)
     if (group === null) return fail('not_found')
+
+    // teamspace 에서 먼저 뺀다 — 마지막 owner 면 거부하고, 아니면 멤버 행 · owner 부여를 정리한다(7c-10 · teamspace.ts).
+    // 거부를 값으로 돌려주면 withCommandTransaction 이 롤백하므로 순서가 결과를 바꾸지 않는다.
+    const left = await dropGroupFromTeamspaces(tx, ctx, groupId)
+    if (!left.ok) return fail('last_teamspace_owner', left.teamspaces)
 
     const dropped = await dropGrantsOf(tx, ctx, { type: 'group', id: groupId })
     if (!dropped.ok) return fail('would_orphan', dropped.nodes)

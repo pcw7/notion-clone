@@ -19,6 +19,8 @@
  *   ⑬ 공개 범위 · 둘러보기 · 참여(7c-5 · 7c-9) — 목록에 무엇이 오는가 · open 만 참여 · open 은 참여 전에도 **읽는다** ·
  *      설정은 owner 만
  *   ⑭ 보관 · 복원(7c-6) — ★ 보관하면 owner 까지 못 본다(판정 = 목록) · 따로 준 부여는 남는다 · owner 만 되살린다
+ *   ⑮ 고아 teamspace(7c-10) — ★ 마지막 owner 인 그룹은 지우지 못한다 · 워크스페이스 owner 는 모든 teamspace 를 보고
+ *      owner 로 들어간다(비공개 · 보관 포함) — 막고, 되살린다
  *
  * 열린 협업 연결이 멤버에서 빠질 때 닫히는지는 `collab/collab-server.db.test.ts` ⑨ 가 본다.
  */
@@ -49,9 +51,11 @@ import { addGroupMember, createGroup, deleteGroup, removeGroupMember } from './g
 import {
   addTeamspaceMember,
   archiveTeamspace,
+  claimTeamspaceOwnership,
   createTeamspace,
   getTeamspace,
   joinTeamspace,
+  listAllTeamspaces,
   listArchivedTeamspaces,
   listBrowsableTeamspaces,
   listMyTeamspaces,
@@ -1078,5 +1082,186 @@ describe('⑭ 복원 (7c-6)', () => {
     const elsewhere = await makeFixture()
     assert.ok(!(await archivedIds(elsewhere.owner)).includes(teamspace), '남의 워크스페이스에 보였다')
     assert.deepEqual(await restoreTeamspace(viaGroup.ctx, teamspace), { ok: true })
+  })
+})
+
+// ── ⑮ ─────────────────────────────────────────────────────────────────
+
+/**
+ * 7c-10. **고아 teamspace — owner 가 아무도 없어 설정을 고칠 수 없는 teamspace.** F-06-04 가 필수로 적었다: *"클론은
+ * '마지막 owner 이탈 차단' 또는 'workspace owner 의 강제 owner 지정' 중 하나를 필수 구현"*. 7c-1 이 앞의 것을 teamspace
+ * 명령 안에서 했는데, **그룹 삭제**가 그 밖으로 새고 있었다 — 그룹이 유일한 owner 면 지우는 순간 고아가 된다.
+ */
+
+/** 이 teamspace 를 고칠 수 있는 owner 가 한 명이라도 있는가 — 역할 이름으로 묻고, 실제로 명령을 불러 본다. */
+const someoneCanManage = async (teamspaceId: string, candidates: readonly Actor[]) => {
+  for (const who of candidates) {
+    const got = await getTeamspace(who.ctx, teamspaceId)
+    if (got.ok && got.value.role === 'owner') return true
+  }
+  return false
+}
+
+describe('⑮ 고아 teamspace — 막기 (7c-10)', () => {
+  test('★ 마지막 owner 인 그룹은 지우지 못한다 — 지우면 teamspace 를 고칠 사람이 아무도 없다 · 거부는 아무것도 바꾸지 않는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const creator = await member('그룹에 넘긴 사람')
+    const inGroup = await member('소유 그룹원')
+    const created = await createTeamspace(creator.ctx, { name: unique('그룹이 소유한 팀') })
+    assert.ok(created.ok)
+    const teamspace = created.value.id
+    const group = await createGroup(fx.owner.ctx, unique('소유 그룹'))
+    assert.ok(group.ok)
+    assert.ok((await addGroupMember(fx.owner.ctx, group.value.id, inGroup.userId)).ok)
+    assert.ok((await addTeamspaceMember(creator.ctx, teamspace, { type: 'group', id: group.value.id }, 'owner')).ok)
+    // 만든 사람이 나간다 — 그룹이 남은 owner 이므로 last_owner 에 걸리지 않는다.
+    assert.deepEqual(await removeTeamspaceMember(creator.ctx, teamspace, user(creator)), { ok: true })
+    assert.equal(await someoneCanManage(teamspace, [inGroup]), true, '전제 — 그룹원이 owner 다')
+
+    const refused = await deleteGroup(fx.owner.ctx, group.value.id)
+    assert.equal(refused.ok, false, '마지막 owner 인 그룹이 지워졌다 — teamspace 가 고아가 된다')
+    assert.equal(refused.ok ? null : refused.reason, 'last_teamspace_owner')
+    assert.equal(refused.ok ? null : refused.nodes, 1, '몇 teamspace 인지 말해야 한다')
+    assert.equal(await someoneCanManage(teamspace, [inGroup]), true, '거부됐는데 그룹원이 owner 를 잃었다')
+  })
+
+  test('★ 관리 경로가 헛 owner 를 셈 — 떠난 사람이 유일한 다른 owner 면 그룹을 지우지 못한다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    // "다른 owner" 를 행으로만 세면, 워크스페이스를 떠난 사람의 owner 행이 남아 있을 때 그룹을 지워도 된다고 답한다 —
+    // 그 사람은 행동할 수 없으니 같은 고아가 다른 모양으로 남는다.
+    const leaver = await member('떠날 공동 소유자')
+    const created = await createTeamspace(leaver.ctx, { name: unique('헛 owner 팀') })
+    assert.ok(created.ok)
+    const group = await createGroup(fx.owner.ctx, unique('남는 소유 그룹'))
+    assert.ok(group.ok)
+    assert.ok((await addTeamspaceMember(leaver.ctx, created.value.id, { type: 'group', id: group.value.id }, 'owner')).ok)
+    await query(`UPDATE workspace_member SET status = 'removed' WHERE workspace_id = $1 AND user_id = $2`, [
+      fx.workspaceId,
+      leaver.userId,
+    ])
+
+    const refused = await deleteGroup(fx.owner.ctx, group.value.id)
+    assert.equal(refused.ok ? null : refused.reason, 'last_teamspace_owner', '떠난 사람을 owner 로 세어 그룹을 지웠다')
+  })
+
+  test('보관된 teamspace 의 마지막 owner 여도 지우지 못한다 — 되살릴 사람이 사라진다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const creator = await member('보관 그룹에 넘긴 사람')
+    const created = await createTeamspace(creator.ctx, { name: unique('보관될 그룹 팀') })
+    assert.ok(created.ok)
+    const group = await createGroup(fx.owner.ctx, unique('보관 소유 그룹'))
+    assert.ok(group.ok)
+    assert.ok((await addTeamspaceMember(creator.ctx, created.value.id, { type: 'group', id: group.value.id }, 'owner')).ok)
+    assert.deepEqual(await archiveTeamspace(creator.ctx, created.value.id), { ok: true })
+    assert.deepEqual(await removeTeamspaceMember(creator.ctx, created.value.id, user(creator)), { ok: false, reason: 'not_found' },
+      '전제 — 보관된 teamspace 에서는 나가지도 못한다(살아 있는 것만 잠근다)')
+    // 만든 사람이 여전히 owner 라 그룹은 마지막이 아니다 — 지울 수 있고, 지우면 그 그룹의 행이 정리된다.
+    assert.deepEqual(await deleteGroup(fx.owner.ctx, group.value.id), { ok: true, value: { nodes: 0 } })
+    assert.deepEqual(
+      await query(
+        `SELECT 1 FROM teamspace_member WHERE teamspace_id = $1 AND principal_type = 'group' AND removed_at IS NULL`,
+        [created.value.id],
+      ),
+      [],
+      '지운 그룹의 멤버 행이 살아 있다 — 마지막 owner 를 셀 때 헛것이 된다',
+    )
+    assert.deepEqual(
+      await query(
+        `SELECT 1 FROM acl_entry WHERE node_kind = 'teamspace' AND node_id = $1 AND principal_type = 'group'`,
+        [created.value.id],
+      ),
+      [],
+      '지운 그룹의 owner 부여가 teamspace 노드에 남았다',
+    )
+  })
+})
+
+describe('⑮ 고아 teamspace — 되살리기 (7c-10)', () => {
+  /** owner 가 워크스페이스를 떠난 teamspace — 명령으로는 아직 못 만드니(워크스페이스 멤버 제거가 없다) 행으로 만든다. */
+  async function orphan(): Promise<{ teamspace: string; page: string; leaver: Actor }> {
+    const leaver = await member('떠날 소유자')
+    const created = await createTeamspace(leaver.ctx, { name: unique('고아 될 팀'), visibility: 'private' })
+    assert.ok(created.ok)
+    const page = await topPage(created.value.id, '고아의 문서', leaver)
+    await query(`UPDATE workspace_member SET status = 'removed' WHERE workspace_id = $1 AND user_id = $2`, [
+      fx.workspaceId,
+      leaver.userId,
+    ])
+    return { teamspace: created.value.id, page, leaver }
+  }
+
+  const rowOf = async (actor: Actor, id: string) => (await listAllTeamspaces(actor.ctx)).find((t) => t.id === id)
+
+  test('★ 워크스페이스 owner 는 비공개 · 보관 · 고아까지 모든 teamspace 를 본다 — 내용은 아니다 · 다른 역할은 빈 목록', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { teamspace, page } = await orphan()
+    const archived = await newTeamspace()
+    assert.deepEqual(await archiveTeamspace(fx.owner.ctx, archived), { ok: true })
+
+    const seen = await rowOf(fx.owner, teamspace)
+    assert.deepEqual(
+      seen && { visibility: seen.visibility, ownerCount: seen.ownerCount, role: seen.role, archived: seen.archivedAt !== null },
+      { visibility: 'private', ownerCount: 0, role: null, archived: false },
+      '비공개 고아가 목록에 없거나 owner 수를 헛것으로 셌다',
+    )
+    assert.ok((await rowOf(fx.owner, archived))?.archivedAt, '보관된 것이 목록에 없다')
+    // 목록은 콘텐츠를 열지 않는다 — 역할이 볼 수 있는 것을 바꾸지 않는다(F-06-02).
+    assert.equal(await canViewPage(fx.owner.ctx, page), false, '관리 목록을 본 것만으로 비공개 페이지가 열렸다')
+
+    for (const role of ['membership_admin', 'member', 'restricted_member', 'guest'] as const) {
+      const who = await member(`관리 목록 ${role}`, role)
+      assert.deepEqual(await listAllTeamspaces(who.ctx), [], `${role} 에게 관리 목록이 갔다`)
+    }
+  })
+
+  test('★ 소유자로 들어가면 고아가 되살아난다 — 멤버 목록에 이름이 서고 · 설정을 고치고 · 페이지를 본다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { teamspace, page } = await orphan()
+    assert.deepEqual(await claimTeamspaceOwnership(fx.owner.ctx, teamspace), { ok: true })
+
+    assert.equal((await rowOf(fx.owner, teamspace))?.ownerCount, 1)
+    const members = await listTeamspaceMembers(fx.owner.ctx, teamspace)
+    assert.ok(members.ok && members.value.some((m) => m.principal.id === fx.owner.userId && m.role === 'owner'),
+      '들어간 사람이 멤버 목록에 없다 — 몰래 여는 문이 된다')
+    assert.equal(await canViewPage(fx.owner.ctx, page), true)
+    assert.deepEqual(await updateTeamspace(fx.owner.ctx, teamspace, { visibility: 'closed' }), { ok: true }, '되살렸는데 설정을 못 고친다')
+    // 7c-1 의 불변식 — owner 역할이면 노드에 owner 부여 행이 있다. 위 두 검사는 이것을 못 가린다: 멤버 기본 레벨이 지금
+    // full_access 라 멤버 행만으로도 열리고 고쳐진다(반사실 r6 이 통과해 알았다). 기본 레벨이 바뀌면 이 행이 차이를 만든다.
+    assert.ok(
+      (await ownerRows(teamspace)).some((r) => r.principal_id === fx.owner.userId && r.level === 'full_access'),
+      '들어간 owner 에게 노드의 owner 부여가 없다 — 다른 owner 와 모양이 다르다',
+    )
+    // 두 번 들어가도 한 줄이다.
+    assert.deepEqual(await claimTeamspaceOwnership(fx.owner.ctx, teamspace), { ok: true })
+    assert.equal((await memberRows(teamspace, fx.owner)).length, 1)
+  })
+
+  test('보관된 고아 — 들어가고 되살린다(§3.2-46 ③ 의 "워크스페이스 owner 도 되살린다") · member 였으면 owner 로 올린다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const creator = await member('보관하고 떠날 사람')
+    const created = await createTeamspace(creator.ctx, { name: unique('보관된 고아') })
+    assert.ok(created.ok)
+    assert.ok((await addTeamspaceMember(creator.ctx, created.value.id, user(fx.owner))).ok)
+    assert.deepEqual(await archiveTeamspace(creator.ctx, created.value.id), { ok: true })
+    await query(`UPDATE workspace_member SET status = 'removed' WHERE workspace_id = $1 AND user_id = $2`, [
+      fx.workspaceId,
+      creator.userId,
+    ])
+    // 전제 — 워크스페이스 owner 는 member 라 되살리지 못한다.
+    assert.deepEqual(await restoreTeamspace(fx.owner.ctx, created.value.id), { ok: false, reason: 'forbidden' })
+
+    assert.deepEqual(await claimTeamspaceOwnership(fx.owner.ctx, created.value.id), { ok: true })
+    assert.equal((await memberRows(created.value.id, fx.owner))[0]?.role, 'owner', 'member 에서 owner 로 오르지 않았다')
+    assert.deepEqual(await restoreTeamspace(fx.owner.ctx, created.value.id), { ok: true })
+  })
+
+  test('워크스페이스 owner 가 아니면 들어가지 못한다(not_found — 경로가 있다는 것도 알리지 않는다) · 남의 워크스페이스도', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { teamspace } = await orphan()
+    const admin = await member('멤버십 관리자', 'membership_admin')
+    assert.deepEqual(await claimTeamspaceOwnership(admin.ctx, teamspace), { ok: false, reason: 'not_found' })
+    const elsewhere = await makeFixture()
+    assert.deepEqual(await claimTeamspaceOwnership(elsewhere.owner.ctx, teamspace), { ok: false, reason: 'not_found' })
+    assert.equal((await rowOf(fx.owner, teamspace))?.ownerCount, 0, '거부됐는데 owner 가 생겼다')
   })
 })

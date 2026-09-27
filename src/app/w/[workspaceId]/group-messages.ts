@@ -35,6 +35,11 @@ export function groupFailureMessage(error: unknown, nodes?: unknown): string {
       const count = typeof nodes === 'number' && nodes > 0 ? `${nodes}개` : ''
       return `이 그룹을 지우면 관리할 수 있는 사람이 아무도 남지 않는 페이지${count ? ` ${count}` : ''}가 생깁니다. 그 페이지에 다른 사람의 전체 권한을 먼저 주세요.`
     }
+    case 'last_teamspace_owner': {
+      // 7c-10 — 이 그룹이 마지막 owner 인 teamspace 가 있다. 무엇을 먼저 할지 말한다.
+      const count = typeof nodes === 'number' && nodes > 0 ? ` ${nodes}개` : ''
+      return `이 그룹이 teamspace${count}의 마지막 소유자입니다. 지우면 그 teamspace 를 고칠 사람이 없어집니다. 다른 사람을 소유자로 먼저 넣어 주세요.`
+    }
     default:
       return '바꾸지 못했습니다.'
   }
