@@ -26,7 +26,7 @@ export async function GET(_request: Request, ctx: Ctx): Promise<Response> {
   return Response.json({ teamspace: teamspace.value, members: members.value })
 }
 
-/** 설정 — 이름 · 공개 범위 · 초대 규칙. owner 만(7c-5). 고친 뒤에는 화면이 GET 하나를 다시 읽는다. */
+/** 설정 — 이름 · 공개 범위 · 초대 규칙 · 멤버 기본 레벨(7c-12). owner 만(7c-5). 고친 뒤에는 화면이 GET 하나를 다시 읽는다. */
 export async function PATCH(request: Request, ctx: Ctx): Promise<Response> {
   const { workspaceId, teamspaceId } = await ctx.params
   const session = await requireWorkspaceSession(workspaceId)
@@ -35,7 +35,7 @@ export async function PATCH(request: Request, ctx: Ctx): Promise<Response> {
 
   const parsed = await readJsonBody(request)
   if (!parsed.ok) return parsed.response
-  const body = (parsed.body ?? {}) as { name?: unknown; visibility?: unknown; whoCanInvite?: unknown }
+  const body = (parsed.body ?? {}) as { name?: unknown; visibility?: unknown; whoCanInvite?: unknown; memberLevel?: unknown }
 
   const updated = await updateTeamspace(session.ctx, teamspaceId, body)
   if (!updated.ok) return teamspaceFailureResponse(updated)

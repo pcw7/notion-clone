@@ -1893,6 +1893,19 @@ try {
     await mustReject('보관된 teamspace 를 기본으로', `UPDATE teamspace SET is_default = true WHERE id = $1`, [id])
   }
 
+  console.log('\n[17] teamspace 노드의 부여는 page 매트릭스의 네 레벨만 (0031 / §3.3 [보강] 멤버 기본 레벨 ① · 7c-12조각)')
+  {
+    // 판정은 teamspace 노드의 행을 page 매트릭스로 읽는다 — database 전용 레벨(edit_content · create)은 그 아래 페이지에서 뜻이 없다.
+    const id = randomUUID()
+    await client.query(`INSERT INTO teamspace (id, workspace_id, name, visibility) VALUES ($1, $2, '레벨', 'closed')`, [id, wsId])
+    const grant = `INSERT INTO acl_entry (id, node_kind, node_id, principal_type, principal_id, level)
+                   VALUES ($1, 'teamspace', $2, 'teamspace', $2, $3)`
+    await client.query(grant, [randomUUID(), id, 'comment'])
+    ok('멤버 레벨 comment')
+    await mustReject('teamspace 노드에 edit_content', `UPDATE acl_entry SET level = 'edit_content' WHERE node_kind = 'teamspace' AND node_id = $1`, [id])
+    await mustReject('teamspace 노드에 create', `UPDATE acl_entry SET level = 'create' WHERE node_kind = 'teamspace' AND node_id = $1`, [id])
+  }
+
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
 } catch (e) {

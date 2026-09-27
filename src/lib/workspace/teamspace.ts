@@ -18,8 +18,10 @@
  * 이 행들을 쓰는 곳은 **이 파일 하나**다. 공유 명령(`acl.ts`)은 블록 노드만 받으므로 teamspace 노드에 손대지 못한다.
  * owner 행은 멤버의 역할과 같은 트랜잭션에서 맞춘다 — 역할이 owner 면 행이 있고, 아니면 없다.
  *
- * 멤버의 기본 레벨은 **full_access** 다. 워크스페이스 직속 페이지가 모든 멤버에게 주던 것(`inheritFromWorkspace`)과
- * 같다 — teamspace 는 그 "모두"를 멤버로 좁힌 것이다. 바꾸는 설정은 뒤의 조각이다(§7).
+ * 멤버의 기본 레벨은 만들 때 **full_access** 다. 워크스페이스 직속 페이지가 모든 멤버에게 주던 것(`inheritFromWorkspace`)과
+ * 같다 — teamspace 는 그 "모두"를 멤버로 좁힌 것이다. **owner 가 바꾼다**(7c-12 · `updateTeamspace` 의 `memberLevel`) — 값은
+ * page 매트릭스의 넷(`TEAMSPACE_MEMBER_LEVELS` · DB 의 CHECK 0031)이고, 바꾸는 것은 `('teamspace', T)` 행 하나의 level 이다.
+ * 낮춰도 owner 는 자기 행으로 full_access 이고, 상속을 끊은 페이지는 끊을 때 복사한 레벨을 지킨다(P2).
  *
  * ──────────────────────────────────────────────────────────────────────
  * 누가 무엇을 하는가 — 워크스페이스 역할과 teamspace 역할
@@ -97,15 +99,24 @@ import { randomUUID } from 'node:crypto'
 
 import type { SessionContext, WorkspaceRole } from '../auth/session-context.ts'
 import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
-import type { Level } from '../permissions/levels.ts'
+import { teamspaceCaps } from '../permissions/effective.ts'
+import { can } from '../permissions/levels.ts'
 
 export const MAX_TEAMSPACE_NAME_LENGTH = 100
 export const TEAMSPACE_VISIBILITIES = ['open', 'closed', 'private'] as const
 export type TeamspaceVisibility = (typeof TEAMSPACE_VISIBILITIES)[number]
 export type TeamspaceRole = 'owner' | 'member'
 
-/** 멤버 전원이 teamspace 의 페이지를 받는 레벨(머리말). */
-export const MEMBER_DEFAULT_LEVEL: Level = 'full_access'
+/**
+ * 멤버 전원이 받는 레벨로 고를 수 있는 값(7c-12) — **page 매트릭스의 넷**이다. teamspace 노드의 행은 그 아래 페이지가
+ * 물려받으므로 page 매트릭스로 읽힌다. `edit_content` · `create` 는 database 전용이라 뺀다(DB 의 CHECK 0031 이 같은 넷).
+ * 넓은 것부터.
+ */
+export const TEAMSPACE_MEMBER_LEVELS = ['full_access', 'edit', 'comment', 'view'] as const
+export type TeamspaceMemberLevel = (typeof TEAMSPACE_MEMBER_LEVELS)[number]
+
+/** 만들 때 멤버 전원이 받는 레벨(머리말). owner 가 바꾼다. */
+export const MEMBER_DEFAULT_LEVEL: TeamspaceMemberLevel = 'full_access'
 
 export type TeamspacePrincipal = { readonly type: 'user' | 'group'; readonly id: string }
 
@@ -125,6 +136,8 @@ export type TeamspaceFailure =
   | 'needs_invite'
   /** 고칠 것을 하나도 주지 않았다. */
   | 'invalid_settings'
+  /** 멤버 기본 레벨로 고를 수 없는 값이다(`TEAMSPACE_MEMBER_LEVELS` 밖 — 7c-12). */
+  | 'invalid_level'
   /** 기본 teamspace 는 보관할 수 없다 — 먼저 기본을 끈다(7c-11). */
   | 'default_teamspace'
 
@@ -139,6 +152,11 @@ export type TeamspaceSummary = {
   readonly visibility: TeamspaceVisibility
   /** 내 역할 — 사람으로 받은 것과 그룹을 거쳐 받은 것 중 넓은 쪽. */
   readonly role: TeamspaceRole
+  /**
+   * 그 최상위에 페이지 · 데이터베이스를 둘 수 있는가 — `teamspaceCaps` 의 `create_child`(만들기 명령과 같은 판정 · 7c-12).
+   * 멤버 기본 레벨이 comment · view 면 멤버는 못 둔다. 사이드바의 `+` · 옮기기 피커 · teamspace 화면이 이것을 본다.
+   */
+  readonly canCreatePages: boolean
 }
 
 export type TeamspaceWhoCanInvite = 'owners' | 'all_members'
@@ -147,6 +165,8 @@ export type TeamspaceWhoCanInvite = 'owners' | 'all_members'
 export type TeamspaceDetail = TeamspaceSummary & {
   readonly whoCanInvite: TeamspaceWhoCanInvite
   readonly isDefault: boolean
+  /** 멤버 전원이 받는 레벨 — `('teamspace', T)` 행의 level(7c-12). */
+  readonly memberLevel: TeamspaceMemberLevel
 }
 
 /**
@@ -229,6 +249,10 @@ export function normalizeTeamspaceName(raw: unknown): string | null {
 
 function isVisibility(raw: unknown): raw is TeamspaceVisibility {
   return typeof raw === 'string' && (TEAMSPACE_VISIBILITIES as readonly string[]).includes(raw)
+}
+
+function isMemberLevel(raw: unknown): raw is TeamspaceMemberLevel {
+  return typeof raw === 'string' && (TEAMSPACE_MEMBER_LEVELS as readonly string[]).includes(raw)
 }
 
 function isRole(raw: unknown): raw is TeamspaceRole {
@@ -345,6 +369,20 @@ async function wouldLoseLastOwner(tx: Tx, teamspaceId: string, principal: Teamsp
   return others.n === 0
 }
 
+/**
+ * 멤버 전원이 받는 레벨 — `('teamspace', T)` 행. 만들기가 세우고 지우는 길이 없으므로(`dropGroupFromTeamspaces` 등은 다른 주체의
+ * 행만 지운다) 없으면 불변식이 깨진 것이다 — 조용히 기본값으로 보이면 화면이 거짓을 말하므로 던진다.
+ */
+async function memberLevelOf(tx: Tx, teamspaceId: string): Promise<TeamspaceMemberLevel> {
+  const row = await tx.queryMaybe<{ level: TeamspaceMemberLevel }>(
+    `SELECT level FROM acl_entry
+      WHERE node_kind = 'teamspace' AND node_id = $1 AND principal_type = 'teamspace' AND principal_id = $1`,
+    [teamspaceId],
+  )
+  if (row === null) throw new Error(`teamspace ${teamspaceId} 에 멤버 전원의 행이 없다`)
+  return row.level
+}
+
 // ── 만들기 · 조회 ─────────────────────────────────────────────────────
 
 export async function createTeamspace(
@@ -377,7 +415,7 @@ export async function createTeamspace(
     )
     await syncOwnerGrant(tx, ctx, id, { type: 'user', id: ctx.userId }, true)
     await syncOpenGrant(tx, ctx, id, visibility === 'open')
-    return { ok: true, value: { id, name, icon: null, visibility, role: 'owner' as const } } as const
+    return { ok: true, value: { id, name, icon: null, visibility, role: 'owner' as const, canCreatePages: true } } as const
   })
 }
 
@@ -398,13 +436,19 @@ export async function listMyTeamspaces(ctx: SessionContext): Promise<TeamspaceSu
         ORDER BY lower(t.name), t.id`,
       [ctx.userId, ctx.workspaceId],
     )
-    return rows.map((r) => ({
-      id: r.id,
-      name: r.name,
-      icon: r.icon,
-      visibility: r.visibility,
-      role: r.is_owner ? ('owner' as const) : ('member' as const),
-    }))
+    // 만들 수 있는가는 만들기 명령과 **같은 판정**으로 묻는다(`teamspaceCaps`) — 역할이나 레벨을 여기서 다시 해석하지 않는다.
+    const out: TeamspaceSummary[] = []
+    for (const r of rows) {
+      out.push({
+        id: r.id,
+        name: r.name,
+        icon: r.icon,
+        visibility: r.visibility,
+        role: r.is_owner ? ('owner' as const) : ('member' as const),
+        canCreatePages: can(await teamspaceCaps(tx, ctx, r.id), 'create_child'),
+      })
+    }
+    return out
   })
 }
 
@@ -510,8 +554,10 @@ export async function getTeamspace(ctx: SessionContext, teamspaceId: string): Pr
         icon: row.icon,
         visibility: row.visibility,
         role,
+        canCreatePages: can(await teamspaceCaps(tx, ctx, teamspaceId), 'create_child'),
         whoCanInvite: row.who_can_invite,
         isDefault: row.is_default,
+        memberLevel: await memberLevelOf(tx, teamspaceId),
       },
     } as const
   })
@@ -564,18 +610,26 @@ export async function listTeamspaceMembers(
 // ── 설정 ──────────────────────────────────────────────────────────────
 
 /**
- * 설정을 고친다 — 이름 · 공개 범위 · 초대 규칙. **owner 만**(멤버는 `forbidden` · 멤버가 아니면 `not_found`).
+ * 설정을 고친다 — 이름 · 공개 범위 · 초대 규칙 · 멤버 기본 레벨. **owner 만**(멤버는 `forbidden` · 멤버가 아니면 `not_found`).
  *
  * 주지 않은 칸은 건드리지 않는다. 알아볼 수 있는 칸이 하나도 없으면 `invalid_settings` 다 — 오타 난 요청이 "고쳤다"로
  * 보이면 안 된다. 이름의 중복은 막지 않는다(정본에 UNIQUE 가 없다 · §7).
  *
  * 공개 범위를 좁혀도(open → closed · private) **이미 들어온 멤버는 그대로다** — F-06-04 의 권고다. 좁히는 것이 막는 것은
  * 앞으로의 참여뿐이다. 공개 범위는 판정에 들어가지 않으므로 이 명령은 권한 신호를 보내지 않는다(머리말).
+ *
+ * 멤버 기본 레벨(7c-12)은 `('teamspace', T)` 행의 level 을 바꾼다 — **권한 변화다.** 0016 의 노드 신호가 협업 서버에 알린다.
+ * 같은 값이면 쓰지 않는다(폼이 저장마다 모든 칸을 보내므로, 쓰면 이름만 고쳐도 신호가 간다). 넷 밖의 값은 `invalid_level`.
  */
 export async function updateTeamspace(
   ctx: SessionContext,
   teamspaceId: string,
-  input: { readonly name?: unknown; readonly visibility?: unknown; readonly whoCanInvite?: unknown },
+  input: {
+    readonly name?: unknown
+    readonly visibility?: unknown
+    readonly whoCanInvite?: unknown
+    readonly memberLevel?: unknown
+  },
 ): Promise<TeamspaceResult> {
   const set: string[] = []
   const values: unknown[] = []
@@ -596,7 +650,9 @@ export async function updateTeamspace(
     if (input.whoCanInvite !== 'owners' && input.whoCanInvite !== 'all_members') return fail('invalid_settings')
     column('who_can_invite', input.whoCanInvite)
   }
-  if (set.length === 0) return fail('invalid_settings')
+  if (input.memberLevel !== undefined && !isMemberLevel(input.memberLevel)) return fail('invalid_level')
+  const memberLevel = input.memberLevel
+  if (set.length === 0 && memberLevel === undefined) return fail('invalid_settings')
 
   return withCommandTransaction(async (tx) => {
     const teamspace = await lockTeamspace(tx, ctx, teamspaceId)
@@ -605,11 +661,21 @@ export async function updateTeamspace(
     if (mine === null) return fail('not_found')
     if (mine !== 'owner') return fail('forbidden')
 
-    await tx.query(`UPDATE teamspace SET ${set.join(', ')} WHERE id = $1 AND workspace_id = $2`, [
-      teamspaceId,
-      ctx.workspaceId,
-      ...values,
-    ])
+    if (set.length > 0) {
+      await tx.query(`UPDATE teamspace SET ${set.join(', ')} WHERE id = $1 AND workspace_id = $2`, [
+        teamspaceId,
+        ctx.workspaceId,
+        ...values,
+      ])
+    }
+    if (memberLevel !== undefined) {
+      await tx.query(
+        `UPDATE acl_entry SET level = $2
+          WHERE node_kind = 'teamspace' AND node_id = $1 AND principal_type = 'teamspace' AND principal_id = $1
+            AND level <> $2`,
+        [teamspaceId, memberLevel],
+      )
+    }
     // open ↔ closed·private 전환은 열람 행을 나른다(7c-9 · 머리말). 좁힐 때 이미 들어온 **멤버**는 그대로지만(§3.2-45 의
     // 규칙 그대로 — 멤버십은 행과 무관하다), 참여하지 않고 읽던 사람은 잃는다 — 그것이 좁힘의 뜻이다.
     if (input.visibility !== undefined && input.visibility !== teamspace.visibility) {
