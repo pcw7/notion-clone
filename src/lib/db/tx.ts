@@ -130,6 +130,34 @@ export async function withCommandTransaction<T extends { readonly ok: boolean }>
   }
 }
 
+/** `withRolledBackTransaction` 이 롤백을 일으키려고 안에서 던지는 표식. 밖으로 나가지 않는다. */
+class RolledBack<T> extends Error {
+  readonly value: T
+  constructor(value: T) {
+    super('rolled back')
+    this.value = value
+  }
+}
+
+/**
+ * **해 보고 되돌리는** 트랜잭션 — 콜백의 쓰기를 늘 ROLLBACK 하고 콜백이 돌려준 값만 돌려준다.
+ *
+ * 미리보기(이동 · 7c-13)가 쓴다: 실제 명령을 트랜잭션 안에서 돌린 뒤 그 결과를 읽고 버린다. 같은 코드로 미리 보므로
+ * 미리보기와 명령이 어긋날 수 없다. 커밋하지 않으므로 트리거의 `pg_notify` 도 나가지 않는다. 쓰기 잠금은 잡는다 —
+ * 같은 행을 건드리는 명령은 그동안 기다린다.
+ */
+export async function withRolledBackTransaction<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
+  try {
+    await withTransaction(async (tx) => {
+      throw new RolledBack(await fn(tx))
+    })
+  } catch (e) {
+    if (e instanceof RolledBack) return e.value as T
+    throw e
+  }
+  throw new Error('withRolledBackTransaction: 콜백이 돌아오지 않았다')
+}
+
 /**
  * 읽기 전용 트랜잭션. 스냅샷 일관성이 필요한 조회에 쓴다
  * (예: 권한 판정과 그 결과로 읽는 데이터가 같은 시점이어야 할 때).

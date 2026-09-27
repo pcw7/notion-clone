@@ -69,10 +69,10 @@
 import type { SessionContext } from '../auth/session-context.ts'
 import type { BlockId } from '../ids.ts'
 import { asBlockId } from '../ids.ts'
-import { withReadTransaction, withTransaction, type Tx } from '../db/tx.ts'
+import { withReadTransaction, withRolledBackTransaction, withTransaction, type Tx } from '../db/tx.ts'
 import { enterPrivateRoot, grantToRestorer, inheritFromWorkspace, isScopeBoundary, leavePrivateRoot, leaveWorkspaceRoot } from '../permissions/acl.ts'
-import { effectiveCaps, readableScopes, scopesWith, teamspaceCaps } from '../permissions/effective.ts'
-import { can } from '../permissions/levels.ts'
+import { effectiveCaps, readableScopes, scopesWith, teamspaceCaps, viewersOf } from '../permissions/effective.ts'
+import { can, type CapSet } from '../permissions/levels.ts'
 import { listMyTeamspaces } from '../workspace/teamspace.ts'
 import { specOf, isKnownBlockType, MAX_TREE_DEPTH } from './types.ts'
 import { nextSiblingKey } from './page.ts'
@@ -242,20 +242,27 @@ async function rootKeyOf(tx: Tx, rootBlockId: string): Promise<string> {
 }
 
 /**
- * 페이지를 서브트리째 옮긴다.
- *
- * @param destination 새 부모 블록 · `null`(워크스페이스 최상위) · `{ teamspaceId }`(그 teamspace 의 최상위).
- *
- * 순서는 **맨 뒤**에 붙는다. 형제 사이의 정확한 위치 지정은 드래그 앤 드롭
- * (F-01-08 / W5-b)과 함께 온다 — 노션의 "Move to" 도 맨 뒤에 붙인다.
+ * 옮기기의 **검사와 잠금** — 쓰기 전의 모든 것. `movePage`(옮기기)와 `previewMove`(미리보기 · 7c-13)가 같이 쓴다: 미리보기가
+ * 거부하는 곳은 옮기기도 거부하고, 그 까닭(`MoveError`)도 같다.
  */
-export async function movePage(
-  ctx: SessionContext,
-  pageId: BlockId,
-  destination: MoveDestination,
-): Promise<MoveResult> {
+type MovePlan =
+  | { readonly noop: true; readonly result: MoveResult }
+  | {
+      readonly noop: false
+      readonly moving: MovingRow
+      readonly target: TargetRow | TeamspaceTarget | PrivateTarget | null
+      readonly blockTarget: TargetRow | null
+      /** 참조를 빼고 넣을 두 본문 페이지(id 순 · 잠갔다). */
+      readonly owners: readonly string[]
+      readonly oldOwner: string | null
+      readonly newOwner: string | null
+      /** 옮기는 사람이 옮길 페이지에 가진 권한. */
+      readonly caps: CapSet
+    }
+
+async function planMove(tx: Tx, ctx: SessionContext, pageId: BlockId, destination: MoveDestination): Promise<MovePlan> {
   const targetParentId = isTeamspaceTarget(destination) || isPrivateTarget(destination) ? null : destination
-  return withTransaction(async (tx) => {
+  {
     const peek = await tx.queryMaybe<{ type: string; parent_type: string; parent_id: string; properties: { title?: unknown } | null }>(
       `SELECT type, parent_type, parent_id, properties FROM block
         WHERE id = $1 AND workspace_id = $2 AND type IN ('page', 'database') AND lifecycle = 'live'`,
@@ -352,18 +359,42 @@ export async function movePage(
             : moving.parent_type === 'block' && moving.parent_id === target.id
     if (alreadyThere) {
       return {
-        pageId: asBlockId(moving.id),
-        parentBlockId: blockTarget === null ? null : asBlockId(blockTarget.id),
-        teamspaceId: isTeamspaceTarget(target) ? target.teamspaceId : null,
-        privateTop: isPrivateTarget(target),
-        ancestors: moving.ancestor_path.map(asBlockId),
-        permScopeId: moving.perm_scope_id,
-        orderKey: '',
-        version: '',
-        movedDescendants: 0,
         noop: true,
-      } satisfies MoveResult
+        result: {
+          pageId: asBlockId(moving.id),
+          parentBlockId: blockTarget === null ? null : asBlockId(blockTarget.id),
+          teamspaceId: isTeamspaceTarget(target) ? target.teamspaceId : null,
+          privateTop: isPrivateTarget(target),
+          ancestors: moving.ancestor_path.map(asBlockId),
+          permScopeId: moving.perm_scope_id,
+          orderKey: '',
+          version: '',
+          movedDescendants: 0,
+          noop: true,
+        } satisfies MoveResult,
+      }
     }
+    return { noop: false, moving, target, blockTarget, owners, oldOwner, newOwner, caps }
+  }
+}
+
+/**
+ * 페이지를 서브트리째 옮긴다.
+ *
+ * @param destination 새 부모 블록 · `null`(워크스페이스 최상위) · `{ teamspaceId }`(그 teamspace 의 최상위).
+ *
+ * 순서는 **맨 뒤**에 붙는다. 형제 사이의 정확한 위치 지정은 드래그 앤 드롭
+ * (F-01-08 / W5-b)과 함께 온다 — 노션의 "Move to" 도 맨 뒤에 붙인다.
+ */
+export async function movePage(
+  ctx: SessionContext,
+  pageId: BlockId,
+  destination: MoveDestination,
+): Promise<MoveResult> {
+  return withTransaction(async (tx) => {
+    const plan = await planMove(tx, ctx, pageId, destination)
+    if (plan.noop) return plan.result
+    const { moving, target, blockTarget, owners, oldOwner, newOwner } = plan
 
     // 본문을 행을 쓰기 전에 연다(`body-write.ts` 머리말).
     const bodies = new Map<string, PageBodyWrite>()
@@ -400,6 +431,104 @@ export async function movePage(
       movedDescendants: placed.movedDescendants,
       noop: false,
     } satisfies MoveResult
+  })
+}
+
+// ── 미리보기 (7c-13 · F-06-20) ──────────────────────────────────────
+
+/** 미리보기의 한쪽 — 몇 명이고, 볼 수 있으면 앞의 몇 명의 이름. `names` 가 null 이면 이름을 보여 줄 수 없는 사람이다. */
+export type MovePreviewSide = { readonly count: number; readonly names: readonly string[] | null }
+
+export type MovePreview = {
+  /** 이미 그 자리다 — 아무것도 바뀌지 않는다. */
+  readonly noop: boolean
+  /** 이 페이지를 **잃는** 사람. */
+  readonly lose: MovePreviewSide
+  /** 이 페이지를 **새로 보는** 사람. */
+  readonly gain: MovePreviewSide
+  /** 옮긴 뒤에도 그대로 보는 사람 수. */
+  readonly keep: number
+  /**
+   * 옮긴 뒤 **이 페이지는 못 보는데 하위 페이지는 보는** 사람 — 하위에 따로 준 공유는 이동을 넘는다(F-06-20 *"하위 N개 페이지는
+   * 여전히 M명이 접근 가능"*). 개인으로 옮길 때 가장 중요하다: 이 페이지는 나만 보게 돼도 하위는 그대로 열려 있다.
+   */
+  readonly keptBelow: { readonly pages: number; readonly people: number }
+}
+
+/** 미리보기가 싣는 이름의 수(쪽마다). 나머지는 수로만 말한다. */
+export const MOVE_PREVIEW_NAMES = 5
+
+const NOOP_PREVIEW: MovePreview = {
+  noop: true,
+  lose: { count: 0, names: [] },
+  gain: { count: 0, names: [] },
+  keep: 0,
+  keptBelow: { pages: 0, people: 0 },
+}
+
+/**
+ * 옮기면 **누가 잃고 누가 얻는가** — 06 F-06-20 *"이동 전 영향 프리뷰(접근 얻는 사람 / 잃는 사람 / 여전히 접근 가능한 하위)"*.
+ *
+ * **실제로 옮겨 보고 되돌린다**(`withRolledBackTransaction`). 검사 · 잠금은 `planMove`, 자리 옮기기는 `relocateSubtree` —
+ * `movePage` 와 같은 코드다. 그래서 미리보기가 거부하는 곳은 옮기기도 거부하고(같은 `MoveError`), 미리보기가 말하는 결과는
+ * 옮긴 뒤의 결과다(최상위의 상속 행 · 개인으로 갈 때 걷히는 공유까지). 본문의 참조는 옮기지 않는다 — 누가 보는지와 무관하다.
+ *
+ * 누가 보는지는 `viewersOf` 가 판정을 멤버마다 돌려 센다. **이름은 이 페이지를 공유할 수 있는 사람**(`share`)에게만 싣는다 —
+ * 공유 패널을 볼 수 있는 사람이다. 그 밖의 사람에게는 수만 준다(그룹 · teamspace 의 사람 이름이 새지 않게).
+ *
+ * 옮기는 나는 잃지 않는다 — 옮길 곳에 `create_child` 가 있어야 하고 page 매트릭스에서 그것은 늘 `view` 를 품는다(teamspace
+ * 노드도 넷뿐이다 · 0031). 그래서 "나도 잃는다"는 경고를 두지 않는다.
+ */
+export async function previewMove(ctx: SessionContext, pageId: BlockId, destination: MoveDestination): Promise<MovePreview> {
+  return withRolledBackTransaction(async (tx) => {
+    const plan = await planMove(tx, ctx, pageId, destination)
+    if (plan.noop) return NOOP_PREVIEW
+    const pageKey = plan.moving.id
+
+    const before = (await viewersOf(tx, ctx.workspaceId, [pageKey])).get(pageKey) ?? new Set<string>()
+    const placed = await relocateSubtree(tx, ctx, plan.moving, plan.target)
+
+    // 하위의 **다른 스코프** — 따로 공유했거나 상속을 끊은 하위 페이지. 같은 스코프는 정의상 이 페이지와 권한이 같다.
+    const below = await tx.query<{ scope: string; pages: number }>(
+      `SELECT perm_scope_id AS scope, count(*)::int AS pages
+         FROM block
+        WHERE ancestor_path @> ARRAY[$1::uuid] AND workspace_id = $2
+          AND type IN ('page', 'database') AND lifecycle = 'live' AND perm_scope_id <> $3
+        GROUP BY perm_scope_id`,
+      [pageKey, ctx.workspaceId, placed.permScopeId],
+    )
+    const after = await viewersOf(tx, ctx.workspaceId, [pageKey, ...below.map((b) => b.scope)])
+    const now = after.get(pageKey) ?? new Set<string>()
+
+    const lose = [...before].filter((u) => !now.has(u))
+    const gain = [...now].filter((u) => !before.has(u))
+    let pagesBelow = 0
+    const peopleBelow = new Set<string>()
+    for (const b of below) {
+      const extra = [...(after.get(b.scope) ?? [])].filter((u) => !now.has(u))
+      if (extra.length === 0) continue
+      pagesBelow += b.pages
+      for (const u of extra) peopleBelow.add(u)
+    }
+
+    const showNames = can(plan.caps, 'share')
+    const side = async (ids: string[]): Promise<MovePreviewSide> => {
+      if (!showNames) return { count: ids.length, names: null }
+      if (ids.length === 0) return { count: 0, names: [] }
+      const rows = await tx.query<{ name: string }>(
+        `SELECT name FROM "user" WHERE id = ANY($1::uuid[]) ORDER BY lower(name), id LIMIT $2`,
+        [ids, MOVE_PREVIEW_NAMES],
+      )
+      return { count: ids.length, names: rows.map((r) => r.name) }
+    }
+
+    return {
+      noop: false,
+      lose: await side(lose),
+      gain: await side(gain),
+      keep: [...now].filter((u) => before.has(u)).length,
+      keptBelow: { pages: pagesBelow, people: peopleBelow.size },
+    } satisfies MovePreview
   })
 }
 

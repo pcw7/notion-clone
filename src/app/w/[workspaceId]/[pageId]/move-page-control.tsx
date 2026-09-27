@@ -13,12 +13,18 @@
  *
  * 7c-3: 자리는 페이지 · **워크스페이스 최상위 · teamspace 최상위** 셋이다. 뒤의 둘에는 옮기면 누가 보는지를 한 줄로 붙인다
  * (06 F-06-20 — 이동은 권한 전이다). 뿌리가 바뀌는 이동에 전체 권한이 없으면 서버가 거부하고 그 까닭을 말한다(`move-messages.ts`).
+ *
+ * 7c-13: 자리를 누르면 **먼저 미리보기를 받는다**(`…/move/preview` — 서버가 실제로 옮겨 보고 되돌린 결과). 볼 수 있는 사람이
+ * 바뀌면 누가 못 보게 되고 누가 새로 보는지, 따로 공유된 하위 페이지가 여전히 열려 있는지를 보이고 **한 번 더 묻는다**. 바뀌지
+ * 않으면 곧바로 옮긴다(`moveNeedsConfirm`). 미리보기가 거부하면 그 까닭을 말한다 — 옮기기와 같은 거부다.
  */
 
 import { useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 
-import { moveFailureMessage } from './move-messages'
+import { moveFailureMessage, moveNeedsConfirm, movePreviewLines, type MovePreviewView } from './move-messages'
+
+type MoveBody = { targetParentId: string | null } | { targetTeamspaceId: string } | { targetPrivate: true }
 
 export type MoveTargetOption = {
   id: string
@@ -58,6 +64,8 @@ export function MovePageControl({
   const [filter, setFilter] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  /** 확인을 기다리는 이동 — 미리보기가 볼 수 있는 사람이 바뀐다고 했다. */
+  const [pending, setPending] = useState<{ body: MoveBody; preview: MovePreviewView } | null>(null)
 
   // ⚠ 개인 최상위도 부모는 워크스페이스다(판결문 C-9) — 주인까지 봐야 "현재 위치"가 맞는다(7c-7).
   const atWorkspaceRoot = currentParentId === null && currentTeamspaceId === null && !currentPrivate
@@ -75,23 +83,26 @@ export function MovePageControl({
 
   const teamspaceRows = q === '' ? teamspaces : teamspaces.filter((t) => t.name.toLowerCase().includes(q))
 
-  async function move(body: { targetParentId: string | null } | { targetTeamspaceId: string } | { targetPrivate: true }) {
+  /** 요청 하나 — 거부되면 문구를 세우고 null. */
+  async function post(path: string, body: MoveBody): Promise<Record<string, unknown> | null> {
+    const res = await fetch(`/api/workspaces/${workspaceId}/pages/${pageId}/${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    const data = (await res.json().catch(() => ({}))) as Record<string, unknown>
+    if (!res.ok) {
+      setError(moveFailureMessage(data.error))
+      return null
+    }
+    return data
+  }
+
+  async function act(run: () => Promise<void>): Promise<void> {
     setBusy(true)
     setError(null)
     try {
-      const res = await fetch(`/api/workspaces/${workspaceId}/pages/${pageId}/move`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(body),
-      })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok) {
-        setError(moveFailureMessage(data.error))
-        return
-      }
-      setOpen(false)
-      setFilter('')
-      router.refresh()
+      await run()
     } catch {
       setError('연결에 실패했습니다.')
     } finally {
@@ -99,11 +110,32 @@ export function MovePageControl({
     }
   }
 
+  const commit = async (body: MoveBody) => {
+    if ((await post('move', body)) === null) return
+    setPending(null)
+    setOpen(false)
+    setFilter('')
+    router.refresh()
+  }
+
+  /** 자리를 골랐다 — 미리보기를 받고, 볼 수 있는 사람이 바뀌면 묻고, 아니면 곧바로 옮긴다. */
+  const choose = (body: MoveBody) =>
+    act(async () => {
+      const data = await post('move/preview', body)
+      if (data === null) return
+      const preview = data.preview as MovePreviewView
+      if (moveNeedsConfirm(preview)) setPending({ body, preview })
+      else await commit(body)
+    })
+
   return (
     <div className="relative">
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => {
+          setOpen((v) => !v)
+          setPending(null)
+        }}
         aria-expanded={open}
         data-testid="move-open"
         className="rounded-md border border-neutral-300 px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
@@ -116,103 +148,138 @@ export function MovePageControl({
           data-testid="move-picker"
           className="absolute right-0 z-10 mt-1 w-72 rounded-lg border border-neutral-200 bg-white p-2 shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
         >
-          <input
-            autoFocus
-            value={filter}
-            onChange={(e) => setFilter(e.target.value)}
-            placeholder="페이지 · teamspace 검색"
-            aria-label="이동할 위치 검색"
-            className="mb-1 w-full rounded border border-neutral-300 px-2 py-1 text-sm outline-none focus:border-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:focus:border-neutral-300"
-          />
-
-          <ul className="max-h-64 overflow-auto">
-            {!atWorkspaceRoot && (
-              <li>
+          {pending !== null ? (
+            <div data-testid="move-preview" className="flex flex-col gap-2 p-1">
+              <p className="text-sm font-medium">옮기면 이 페이지를 볼 수 있는 사람이 바뀝니다</p>
+              <ul className="flex flex-col gap-1 text-xs text-neutral-600 dark:text-neutral-300">
+                {movePreviewLines(pending.preview).map((line) => (
+                  <li key={line.key} data-testid={`move-preview-${line.key}`}>
+                    {line.text}
+                  </li>
+                ))}
+              </ul>
+              <span className="flex items-center gap-1">
                 <button
                   type="button"
+                  data-testid="move-preview-confirm"
                   disabled={busy}
-                  data-testid="move-to-workspace"
-                  onClick={() => void move({ targetParentId: null })}
-                  className={OPTION}
+                  onClick={() => void act(() => commit(pending.body))}
+                  className="rounded border border-neutral-900 px-2 py-0.5 text-xs disabled:opacity-40 dark:border-neutral-100"
                 >
-                  워크스페이스 최상위
-                  <span className="block text-xs text-neutral-400">워크스페이스 모든 멤버가 봅니다</span>
+                  옮기기
                 </button>
-              </li>
-            )}
-
-            {(q === '' || '개인 페이지'.includes(q)) && (
-              <li>
                 <button
                   type="button"
-                  disabled={busy || currentPrivate}
-                  data-testid="move-to-private"
-                  onClick={() => void move({ targetPrivate: true })}
-                  className={OPTION}
+                  data-testid="move-preview-cancel"
+                  disabled={busy}
+                  onClick={() => setPending(null)}
+                  className="rounded border border-neutral-300 px-2 py-0.5 text-xs disabled:opacity-40 dark:border-neutral-700"
                 >
-                  <span aria-hidden className="mr-1 text-neutral-400">
-                    ⚿
-                  </span>
-                  개인 페이지
-                  {currentPrivate ? (
-                    <span className="ml-2 text-xs text-neutral-400">현재 위치</span>
-                  ) : (
-                    <span className="block text-xs text-neutral-400">나만 봅니다 — 이 페이지에 따로 준 공유가 걷힙니다</span>
-                  )}
+                  다른 곳 고르기
                 </button>
-              </li>
-            )}
+              </span>
+            </div>
+          ) : (
+            <>
+              <input
+                autoFocus
+                value={filter}
+                onChange={(e) => setFilter(e.target.value)}
+                placeholder="페이지 · teamspace 검색"
+                aria-label="이동할 위치 검색"
+                className="mb-1 w-full rounded border border-neutral-300 px-2 py-1 text-sm outline-none focus:border-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:focus:border-neutral-300"
+              />
 
-            {teamspaceRows.map((t) => (
-              <li key={`teamspace:${t.id}`}>
-                <button
-                  type="button"
-                  disabled={busy || t.id === currentTeamspaceId}
-                  data-testid="move-to-teamspace"
-                  data-teamspace-id={t.id}
-                  onClick={() => void move({ targetTeamspaceId: t.id })}
-                  className={OPTION}
-                >
-                  <span aria-hidden className="mr-1 text-neutral-400">
-                    ▣
-                  </span>
-                  {t.name}
-                  {t.id === currentTeamspaceId ? (
-                    <span className="ml-2 text-xs text-neutral-400">현재 위치</span>
-                  ) : (
-                    <span className="block text-xs text-neutral-400">{t.name} 멤버가 봅니다</span>
-                  )}
-                </button>
-              </li>
-            ))}
+              <ul className="max-h-64 overflow-auto">
+                {!atWorkspaceRoot && (
+                  <li>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      data-testid="move-to-workspace"
+                      onClick={() => void choose({ targetParentId: null })}
+                      className={OPTION}
+                    >
+                      워크스페이스 최상위
+                      <span className="block text-xs text-neutral-400">워크스페이스 모든 멤버가 봅니다</span>
+                    </button>
+                  </li>
+                )}
 
-            {rows.map((t) => (
-              <li key={t.id}>
-                <button
-                  type="button"
-                  disabled={busy || t.id === currentParentId}
-                  data-testid="move-to-page"
-                  data-page-id={t.id}
-                  onClick={() => void move({ targetParentId: t.id })}
-                  className={OPTION}
-                >
-                  {t.label}
-                  {t.id === currentParentId && (
-                    <span className="ml-2 text-xs text-neutral-400">현재 위치</span>
-                  )}
-                  {t.path !== '' && (
-                    <span className="block truncate text-xs text-neutral-400">{t.path}</span>
-                  )}
-                </button>
-              </li>
-            ))}
+                {(q === '' || '개인 페이지'.includes(q)) && (
+                  <li>
+                    <button
+                      type="button"
+                      disabled={busy || currentPrivate}
+                      data-testid="move-to-private"
+                      onClick={() => void choose({ targetPrivate: true })}
+                      className={OPTION}
+                    >
+                      <span aria-hidden className="mr-1 text-neutral-400">
+                        ⚿
+                      </span>
+                      개인 페이지
+                      {currentPrivate ? (
+                        <span className="ml-2 text-xs text-neutral-400">현재 위치</span>
+                      ) : (
+                        <span className="block text-xs text-neutral-400">나만 봅니다 — 이 페이지에 따로 준 공유가 걷힙니다</span>
+                      )}
+                    </button>
+                  </li>
+                )}
 
-            {rows.length === 0 && teamspaceRows.length === 0 && (
-              <li className="px-2 py-3 text-center text-sm text-neutral-400">
-                옮길 수 있는 곳이 없습니다
-              </li>
-            )}
-          </ul>
+                {teamspaceRows.map((t) => (
+                  <li key={`teamspace:${t.id}`}>
+                    <button
+                      type="button"
+                      disabled={busy || t.id === currentTeamspaceId}
+                      data-testid="move-to-teamspace"
+                      data-teamspace-id={t.id}
+                      onClick={() => void choose({ targetTeamspaceId: t.id })}
+                      className={OPTION}
+                    >
+                      <span aria-hidden className="mr-1 text-neutral-400">
+                        ▣
+                      </span>
+                      {t.name}
+                      {t.id === currentTeamspaceId ? (
+                        <span className="ml-2 text-xs text-neutral-400">현재 위치</span>
+                      ) : (
+                        <span className="block text-xs text-neutral-400">{t.name} 멤버가 봅니다</span>
+                      )}
+                    </button>
+                  </li>
+                ))}
+
+                {rows.map((t) => (
+                  <li key={t.id}>
+                    <button
+                      type="button"
+                      disabled={busy || t.id === currentParentId}
+                      data-testid="move-to-page"
+                      data-page-id={t.id}
+                      onClick={() => void choose({ targetParentId: t.id })}
+                      className={OPTION}
+                    >
+                      {t.label}
+                      {t.id === currentParentId && (
+                        <span className="ml-2 text-xs text-neutral-400">현재 위치</span>
+                      )}
+                      {t.path !== '' && (
+                        <span className="block truncate text-xs text-neutral-400">{t.path}</span>
+                      )}
+                    </button>
+                  </li>
+                ))}
+
+                {rows.length === 0 && teamspaceRows.length === 0 && (
+                  <li className="px-2 py-3 text-center text-sm text-neutral-400">
+                    옮길 수 있는 곳이 없습니다
+                  </li>
+                )}
+              </ul>
+            </>
+          )}
 
           {error && (
             <p role="alert" data-testid="move-error" className="mt-1 px-2 text-sm text-red-600">

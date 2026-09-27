@@ -623,6 +623,18 @@ async function main() {
       await sleep(120)
       return true
     }
+    /**
+     * 옮길 자리를 누른 뒤 — 미리보기가 한 번 더 물으면(볼 수 있는 사람이 바뀐다 · 7c-13) "옮기기"를 누른다. 묻지 않으면(곧바로
+     * 옮겼거나 거부됐으면) 아무것도 하지 않는다. 뿌리를 바꾸는 이동을 누르는 절은 모두 이것을 거친다.
+     */
+    const confirmMoveIfAsked = async () => {
+      await waitFor(`!!document.querySelector('[data-testid="move-preview-confirm"]')
+        || !!document.querySelector('[data-testid="move-error"]')
+        || !document.querySelector('[data-testid="move-picker"]')`, 10000)
+      if (await evaluate(`!!document.querySelector('[data-testid="move-preview-confirm"]')`)) {
+        await clickSelector('[data-testid="move-preview-confirm"]')
+      }
+    }
 
     // ── 에디터 코어(로드 ~ 두 탭) — 상태를 공유하는 흩어진 절들이라 통째로 게이트다(안의 section 은 제목만 찍는다) ──
     if (sectionIf('에디터 코어 — 로드 · 핸들 · 드래그 · 키보드 이동 · 접힘 · 블록 메뉴 · 복사 · 붙여넣기 · + 버튼 · 이미지 · 오프라인 보존 · 두 탭 동시 편집 (F-01-* · F-05-*)')) {
@@ -1796,6 +1808,7 @@ async function main() {
         await evaluate(`(document.querySelector('${option}')?.textContent ?? '').includes(${JSON.stringify(`${moveName} 멤버가 봅니다`)})
           && !document.querySelector('[data-testid="move-to-workspace"]')`))
       await clickOnSel(option)
+      await confirmMoveIfAsked()
       check('★ teamspace 로 옮기면 사이드바의 그 teamspace 아래에 서고 breadcrumb 에 이름이 선다',
         await waitFor(`!!document.querySelector('${tsRow} a[href$="/${doc}"]')
           && document.querySelector('[data-testid="breadcrumb-teamspace"]')?.textContent === ${JSON.stringify(moveName)}`, 15000),
@@ -1811,6 +1824,7 @@ async function main() {
           && (document.querySelector('${option}')?.textContent ?? '').includes('현재 위치')
           && !!document.querySelector('[data-testid="move-to-workspace"]')`))
       await clickOnSel('[data-testid="move-to-workspace"]')
+      await confirmMoveIfAsked()
       check('★ 워크스페이스 최상위로 꺼내면 teamspace 에서 빠지고 동료가 다시 본다',
         (await waitFor(`!document.querySelector('${tsRow} a[href$="/${doc}"]')
           && !!document.querySelector('section[aria-label="워크스페이스 페이지"] a[href$="/${doc}"]')
@@ -2131,6 +2145,7 @@ async function main() {
           && document.querySelector('[data-testid="move-to-private"]')?.disabled === true
           && !!document.querySelector('[data-testid="move-to-workspace"]')`, 5000))
       await clickOnSel('[data-testid="move-to-workspace"]')
+      await confirmMoveIfAsked()
       check('★ 워크스페이스 최상위로 열면 동료가 보고 · 워크스페이스 페이지 섹션으로 옮겨 간다',
         await waitFor(`!document.querySelector('[data-testid="sidebar-private"] a[href="/w/${workspaceId}/${myPrivate}"]')
           && !!document.querySelector('section[aria-label="워크스페이스 페이지"] a[href="/w/${workspaceId}/${myPrivate}"]')`, 15000) &&
@@ -2138,6 +2153,7 @@ async function main() {
       await clickOnSel('[data-testid="move-open"]')
       await waitFor(`!!document.querySelector('[data-testid="move-to-private"]')`, 5000)
       await clickOnSel('[data-testid="move-to-private"]')
+      await confirmMoveIfAsked()
       check('★ 다시 개인 페이지로 — 동료는 곧바로 못 보고 섹션이 돌아온다',
         await waitFor(`!!document.querySelector('[data-testid="sidebar-private"] a[href="/w/${workspaceId}/${myPrivate}"]')`, 15000) &&
           (await pageAs(privateMate, `/w/${workspaceId}/${myPrivate}`)).status === 404)
@@ -2215,6 +2231,7 @@ async function main() {
           && !document.querySelector('[data-testid="move-to-page"]')
           && !!document.querySelector('[data-testid="move-to-teamspace"][data-teamspace-id="${placeTeam}"]')`, 5000))
       await clickOnSel(`[data-testid="move-to-teamspace"][data-teamspace-id="${placeTeam}"]`)
+      await confirmMoveIfAsked()
       check('★ teamspace 로 옮기면 사이드바의 그 teamspace 아래로 옮겨 간다',
         await waitFor(`!document.querySelector('[data-testid="sidebar-private"] a[href="/w/${workspaceId}/db/${privateDb}"]')
           && !!document.querySelector('[data-testid="sidebar-teamspace"][data-teamspace-id="${placeTeam}"] a[href="/w/${workspaceId}/db/${privateDb}"]')`, 15000))
@@ -2224,6 +2241,7 @@ async function main() {
       check('피커를 다시 연다', await openPicker())
       await waitFor(`!!document.querySelector('[data-testid="move-to-workspace"]')`, 5000)
       await clickOnSel('[data-testid="move-to-workspace"]')
+      await confirmMoveIfAsked()
       check('★ 워크스페이스 최상위로 열면 동료가 열고 · 워크스페이스 페이지 섹션에 선다',
         await waitFor(`!!document.querySelector('section[aria-label="워크스페이스 페이지"] a[href="/w/${workspaceId}/db/${privateDb}"]')`, 15000) &&
           (await dbPageAs(placeMate, privateDb)).status === 200)
@@ -2534,6 +2552,85 @@ async function main() {
       check('전체 권한으로 되돌리면 멤버의 + 가 돌아온다',
         back.ok && (await readerHtml()).includes('sidebar-teamspace-add'))
       // 저장의 refresh 가 끝나기 전에 다음 절이 화면을 옮기지 않게 한다(§6).
+      await sleep(1500)
+    }
+
+    if (sectionIf('이동 전 영향 미리보기 (7c-13 · F-06-20)')) {
+      // 소유자(브라우저 세션)가 teamspace 의 페이지를 개인으로 옮기려 한다 → 미리보기가 누가 못 보게 되는지와, 따로 공유된 하위
+      // 페이지가 여전히 열려 있다는 것을 말하고 한 번 더 묻는다. 볼 수 있는 사람이 그대로인 이동은 묻지 않는다. 자기 데이터를
+      // 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
+      const tsUrl = `${BASE}/api/workspaces/${workspaceId}/teamspaces`
+      const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
+      const stamp = Date.now()
+      const mateName = `미리보기 동료 ${stamp}`
+      const mate = await joinAs(workspaceId, await createUser(mateName), 'member')
+      const outsider = await joinAs(workspaceId, await createUser(`하위 손님 ${stamp}`), 'restricted_member')
+      const cookieOf = (actor) => ({ cookie: `nc_session=${actor.token}` })
+      const team = (await (await fetch(tsUrl, {
+        method: 'POST', headers: authed, body: JSON.stringify({ name: `미리보기팀 ${stamp}`, visibility: 'closed' }),
+      })).json()).teamspace.id
+      await fetch(`${tsUrl}/${team}/members`, {
+        method: 'POST', headers: authed, body: JSON.stringify({ principal: { type: 'user', id: mate.userId }, role: 'member' }),
+      })
+      const doc = (await (await fetch(pagesUrl, {
+        method: 'POST', headers: authed, body: JSON.stringify({ teamspaceId: team, title: '옮길 팀 문서' }),
+      })).json()).page.id
+      const child = (await (await fetch(pagesUrl, {
+        method: 'POST', headers: authed, body: JSON.stringify({ parentPageId: doc, title: '따로 공유한 하위' }),
+      })).json()).page.id
+      await fetch(`${pagesUrl}/${child}/access`, {
+        method: 'POST', headers: authed,
+        body: JSON.stringify({ action: 'grant', principal: { type: 'user', id: outsider.userId }, level: 'view' }),
+      })
+      const openPicker = async () => {
+        for (let i = 0; i < 5; i += 1) {
+          await clickSelector('[data-testid="move-open"]')
+          if (await waitFor(`!!document.querySelector('[data-testid="move-picker"]')`, 3000)) return true
+        }
+        return false
+      }
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${doc}` })
+      await waitFor(`!!document.querySelector('[data-testid="move-open"]')`, 15000)
+      await openPicker()
+      await waitFor(`!!document.querySelector('[data-testid="move-to-private"]')`, 5000)
+      await clickSelector('[data-testid="move-to-private"]')
+      const loseLine = `document.querySelector('[data-testid="move-preview-lose"]')?.textContent ?? ''`
+      check('★ 볼 수 있는 사람이 바뀌면 옮기기 전에 묻는다 — 누가 못 보게 되는지 이름으로',
+        await waitFor(`(${loseLine}).includes(${JSON.stringify(mateName)})`, 10000),
+        await evaluate(`document.querySelector('[data-testid="move-preview"]')?.textContent ?? document.querySelector('[data-testid="move-error"]')?.textContent ?? '미리보기 없음'`))
+      check('★ 따로 공유된 하위 페이지는 옮겨도 여전히 열려 있다고 말한다',
+        await evaluate(`(document.querySelector('[data-testid="move-preview-below"]')?.textContent ?? '').includes('하위 페이지 1개')`))
+      check('묻는 동안에는 아직 옮기지 않았다 — 동료가 연다',
+        (await fetch(`${BASE}/w/${workspaceId}/${doc}`, { headers: cookieOf(mate) })).status === 200)
+
+      await clickSelector('[data-testid="move-preview-cancel"]')
+      check('"다른 곳 고르기" 는 목록으로 돌아간다',
+        await waitFor(`!document.querySelector('[data-testid="move-preview"]') && !!document.querySelector('[data-testid="move-to-private"]')`, 5000))
+
+      await clickSelector('[data-testid="move-to-private"]')
+      await waitFor(`!!document.querySelector('[data-testid="move-preview-confirm"]')`, 10000)
+      await clickSelector('[data-testid="move-preview-confirm"]')
+      check('★ 확인하면 옮긴다 — 동료는 못 보고 · 하위의 손님은 미리보기가 말한 대로 여전히 본다',
+        (await waitFor(`!document.querySelector('[data-testid="move-picker"]')`, 15000))
+          && (await fetch(`${BASE}/w/${workspaceId}/${doc}`, { headers: cookieOf(mate) })).status === 404
+          && (await fetch(`${BASE}/w/${workspaceId}/${child}`, { headers: cookieOf(outsider) })).status === 200)
+
+      // 볼 수 있는 사람이 그대로인 이동은 묻지 않는다 — 워크스페이스 최상위의 한 페이지를 다른 최상위 페이지 밑으로.
+      const lone = (await (await fetch(pagesUrl, { method: 'POST', headers: authed, body: JSON.stringify({ title: `혼자 옮길 문서 ${stamp}` }) })).json()).page.id
+      const home = (await (await fetch(pagesUrl, { method: 'POST', headers: authed, body: JSON.stringify({ title: `받을 문서 ${stamp}` }) })).json()).page.id
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${lone}` })
+      await waitFor(`!!document.querySelector('[data-testid="move-open"]')`, 15000)
+      await openPicker()
+      const homeOption = `[data-testid="move-to-page"][data-page-id="${home}"]`
+      await waitFor(`!!document.querySelector('${homeOption}')`, 5000)
+      await clickSelector(homeOption)
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const settled = await waitFor(`!document.querySelector('[data-testid="move-picker"]') || !!document.querySelector('[data-testid="move-preview"]')`, 15000)
+      check('볼 수 있는 사람이 그대로인 이동은 묻지 않고 곧바로 옮긴다',
+        settled && !(await evaluate(`!!document.querySelector('[data-testid="move-preview"]')`))
+          && (await dbQuery(`SELECT parent_id FROM block WHERE id = $1`, [lone]))[0]?.parent_id === home)
+      // 옮기기의 refresh 가 끝나기 전에 다음 절이 화면을 옮기지 않게 한다(§6).
       await sleep(1500)
     }
 

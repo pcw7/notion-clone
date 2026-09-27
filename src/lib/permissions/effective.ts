@@ -37,7 +37,7 @@
  * 절단(`inherits_from_parent = false`)을 만나면 **그 노드까지만** 센다.
  */
 
-import type { SessionContext } from '../auth/session-context.ts'
+import type { SessionContext, WorkspaceRole } from '../auth/session-context.ts'
 import { withReadTransaction, type Tx } from '../db/tx.ts'
 import {
   can,
@@ -85,14 +85,28 @@ export function principalsOf(
   groupIds: readonly string[] = [],
   teamspaceIds: readonly string[] = [],
 ): Principal[] {
-  const principals: Principal[] = [{ type: 'user', id: ctx.userId }]
-  if (ctx.role !== 'guest') {
+  return principalsOfMember(ctx, groupIds, teamspaceIds)
+}
+
+/**
+ * `principalsOf` 의 몸 — 세션이 아니라 **멤버 한 사람**(id · 역할)으로 계산한다. 모듈 밖으로 내보내지 않는다.
+ *
+ * 판정(`principalsOf`)은 세션으로만 부른다(불변식 A9). 이 도우미를 따로 둔 까닭은 `viewersOf`(이동 미리보기 · 7c-13)가
+ * **다른 사람들의** 주체 집합을 같은 규칙으로 세워야 해서다 — 규칙을 두 벌 두면 미리보기와 판정이 어긋난다.
+ */
+function principalsOfMember(
+  member: { readonly userId: string; readonly role: WorkspaceRole },
+  groupIds: readonly string[],
+  teamspaceIds: readonly string[],
+): Principal[] {
+  const principals: Principal[] = [{ type: 'user', id: member.userId }]
+  if (member.role !== 'guest') {
     for (const id of groupIds) principals.push({ type: 'group', id })
     // 게스트는 teamspace 멤버가 될 수 없다(F-06-04). 넣는 쪽은 DB 가 막고(0028 ①), 멤버였다 게스트가 된 사람의 남은
     // 행은 여기서 무시한다 — 그룹과 같은 이유다.
     for (const id of teamspaceIds) principals.push({ type: 'teamspace', id })
   }
-  if (ctx.role === 'owner' || ctx.role === 'membership_admin' || ctx.role === 'member') {
+  if (member.role === 'owner' || member.role === 'membership_admin' || member.role === 'member') {
     principals.push({ type: 'workspace_everyone', id: null })
   }
   // public 은 공개 링크(F-06-06)가 생길 때 온다. 지금 넣으면 아무도 만들지 않은
@@ -261,6 +275,15 @@ async function resolveChain(
   chain: string[],
   teamspaceId: string | null,
 ): Promise<CapSet> {
+  return resolveCaps({ ...(await chainInputs(tx, chain, teamspaceId)), principals })
+}
+
+/** 사슬의 판정 입력 — 그 사슬의 ACL 행과 절단 플래그. 주체와 무관하므로 여러 사람을 한 번에 판정할 때 한 번만 읽는다. */
+async function chainInputs(
+  tx: Tx,
+  chain: string[],
+  teamspaceId: string | null,
+): Promise<{ chain: string[]; cutAt: ReadonlySet<string>; entries: AclRow[] }> {
   const [entries, cuts] = await Promise.all([
     // teamspace 노드의 행은 `node_kind` 가 다르다 — 블록 id 와 겹칠 일은 없지만 종류까지 맞춰 읽는다.
     //
@@ -284,12 +307,7 @@ async function resolveChain(
     ),
   ])
 
-  return resolveCaps({
-    chain,
-    cutAt: new Set(cuts.map((c) => c.node_id)),
-    entries,
-    principals,
-  })
+  return { chain, cutAt: new Set(cuts.map((c) => c.node_id)), entries }
 }
 
 /**
@@ -356,4 +374,72 @@ export async function scopesWith(
 /** 트랜잭션 밖에서 쓰는 편의 함수. 읽기 전용이다. */
 export async function canViewPage(ctx: SessionContext, pageId: string): Promise<boolean> {
   return withReadTransaction(async (tx) => can(await effectiveCaps(tx, ctx, pageId), 'view'))
+}
+
+/**
+ * **이 노드들을 볼 수 있는 워크스페이스 멤버**(user id) — 노드마다. 이동 미리보기(7c-13 · F-06-20)만 쓴다.
+ *
+ * 판정이 아니다 — 누가 무엇을 할 수 있는지 **정하는** 곳은 여전히 세션을 받는 `effectiveCaps` 다(A9). 이것은 "옮기면 누가
+ * 잃고 얻는가"를 보여 주려고 **같은 판정을 멤버마다 돌린** 것이다: 주체 집합은 `principalsOf` 와 같은 도우미로
+ * (`principalsOfMember`), 결정은 같은 순수 함수로(`resolveCaps`) 한다. 규칙을 거꾸로 펼치는 코드(주체 → 사람)를 따로 두지
+ * 않는 까닭은 그것이 판정과 어긋나기 때문이다 — `effective.db.test.ts` 가 세션으로 판정한 답과 같은지 본다.
+ *
+ * 세는 사람은 이 워크스페이스의 **활성** 멤버다(세션을 받을 수 있는 사람). 그룹 · teamspace 는 `principalsFor` 와 같은
+ * 조건으로 읽는다(살아 있는 그룹 · 빠지지 않은 행 · 보관되지 않은 teamspace). 없는 노드는 빈 집합이다.
+ */
+export async function viewersOf(
+  tx: Tx,
+  workspaceId: string,
+  nodeIds: readonly string[],
+): Promise<Map<string, Set<string>>> {
+  const out = new Map<string, Set<string>>(nodeIds.map((id) => [id, new Set<string>()]))
+  if (nodeIds.length === 0) return out
+
+  const [members, groupRows, teamspaceRows, nodes] = await Promise.all([
+    tx.query<{ user_id: string; role: WorkspaceRole }>(
+      `SELECT user_id, role FROM workspace_member WHERE workspace_id = $1 AND status = 'active'`,
+      [workspaceId],
+    ),
+    tx.query<{ user_id: string; group_id: string }>(
+      `SELECT gm.user_id, g.id AS group_id
+         FROM group_member gm
+         JOIN "group" g ON g.id = gm.group_id
+        WHERE g.workspace_id = $1 AND g.deleted_at IS NULL AND gm.removed_at IS NULL`,
+      [workspaceId],
+    ),
+    tx.query<{ principal_type: 'user' | 'group'; principal_id: string; teamspace_id: string }>(
+      `SELECT tm.principal_type, tm.principal_id, t.id AS teamspace_id
+         FROM teamspace_member tm
+         JOIN teamspace t ON t.id = tm.teamspace_id
+        WHERE t.workspace_id = $1 AND t.archived_at IS NULL AND tm.removed_at IS NULL`,
+      [workspaceId],
+    ),
+    tx.query<ChainRow>(`SELECT ${CHAIN_COLUMNS} FROM ${CHAIN_FROM} WHERE b.id = ANY($1::uuid[]) AND b.workspace_id = $2`, [
+      nodeIds,
+      workspaceId,
+    ]),
+  ])
+
+  // 사람마다의 주체 집합 — `principalsFor` 와 같은 조건(그룹을 거친 teamspace 는 그 사람의 살아 있는 그룹으로).
+  const groupsOf = new Map<string, string[]>()
+  for (const r of groupRows) groupsOf.set(r.user_id, [...(groupsOf.get(r.user_id) ?? []), r.group_id])
+  const principalsByUser = members.map((m) => {
+    const groups = groupsOf.get(m.user_id) ?? []
+    const teamspaces = new Set(
+      teamspaceRows
+        .filter((t) => (t.principal_type === 'user' ? t.principal_id === m.user_id : groups.includes(t.principal_id)))
+        .map((t) => t.teamspace_id),
+    )
+    return { userId: m.user_id, principals: principalsOfMember({ userId: m.user_id, role: m.role }, groups, [...teamspaces]) }
+  })
+
+  for (const node of nodes) {
+    const { chain, teamspaceId } = chainOf(node)
+    const inputs = await chainInputs(tx, chain, teamspaceId)
+    const seen = out.get(node.id) as Set<string>
+    for (const { userId, principals } of principalsByUser) {
+      if (can(resolveCaps({ ...inputs, principals }), 'view')) seen.add(userId)
+    }
+  }
+  return out
 }

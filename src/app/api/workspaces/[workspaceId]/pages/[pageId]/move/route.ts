@@ -11,30 +11,12 @@
  * 생기고, 그건 트리를 조용히 깨뜨린다.
  */
 
-import { asBlockId, isUuid } from '@/lib/ids'
+import { asBlockId } from '@/lib/ids'
 import { readJsonBody, requireWorkspaceSession } from '@/lib/auth/route-session'
 import { movePage, MoveError } from '@/lib/block/move-page'
+import { moveErrorResponse, readMoveDestination } from '@/lib/block/move-http'
 
 type Ctx = RouteContext<'/api/workspaces/[workspaceId]/pages/[pageId]/move'>
-
-/** MoveError 를 HTTP 로. 존재를 유출하지 않는 쪽으로 고른다. */
-function statusFor(code: MoveError['code']): number {
-  switch (code) {
-    case 'not_found':
-    case 'target_not_found':
-      return 404
-    // 볼 수는 있는데 옮길 수 없다. 볼 수 없으면 not_found 다(§3.3-31).
-    case 'forbidden':
-    // 뿌리가 바뀌는 이동에 페이지의 전체 권한이 없다(7c-3).
-    case 'needs_full_access':
-      return 403
-    case 'cycle':
-    case 'too_deep':
-    // 그 대상 종류가 이 노드에 맞지 않는다 — 데이터베이스를 페이지 밑으로(7c-8).
-    case 'invalid_target':
-      return 400
-  }
-}
 
 export async function POST(request: Request, ctx: Ctx): Promise<Response> {
   const { workspaceId, pageId: rawPageId } = await ctx.params
@@ -50,37 +32,10 @@ export async function POST(request: Request, ctx: Ctx): Promise<Response> {
 
   const parsed = await readJsonBody(request)
   if (!parsed.ok) return parsed.response
-  const body = (parsed.body ?? {}) as { targetParentId?: unknown; targetTeamspaceId?: unknown; targetPrivate?: unknown }
-
-  let targetParentId = null
-  if (body.targetParentId != null) {
-    try {
-      targetParentId = asBlockId(body.targetParentId)
-    } catch {
-      // uuid 가 아니면 "그런 대상은 없다"와 구분할 이유가 없다.
-      return Response.json({ error: 'target_not_found' }, { status: 404 })
-    }
-  }
-
-  let destination: Parameters<typeof movePage>[2] = targetParentId
-  if (body.targetTeamspaceId != null) {
-    if (targetParentId !== null) {
-      return Response.json({ error: 'invalid_target', message: '부모 페이지와 teamspace 를 함께 줄 수 없습니다.' }, { status: 400 })
-    }
-    if (typeof body.targetTeamspaceId !== 'string' || !isUuid(body.targetTeamspaceId)) {
-      return Response.json({ error: 'target_not_found' }, { status: 404 })
-    }
-    destination = { teamspaceId: body.targetTeamspaceId }
-  }
-  if (body.targetPrivate != null) {
-    if (body.targetPrivate !== true) {
-      return Response.json({ error: 'target_not_found' }, { status: 404 })
-    }
-    if (targetParentId !== null || body.targetTeamspaceId != null) {
-      return Response.json({ error: 'invalid_target', message: '자리 지정은 하나만 줄 수 있습니다.' }, { status: 400 })
-    }
-    destination = { privateTop: true }
-  }
+  // 몸체의 모양은 미리보기(`…/move/preview`)와 같은 함수가 읽는다(`move-http.ts`).
+  const read = readMoveDestination(parsed.body)
+  if (!read.ok) return read.response
+  const destination = read.destination
 
   try {
     const result = await movePage(session.ctx, pageId, destination)
@@ -98,9 +53,7 @@ export async function POST(request: Request, ctx: Ctx): Promise<Response> {
       movedDescendants: result.movedDescendants,
     })
   } catch (e) {
-    if (e instanceof MoveError) {
-      return Response.json({ error: e.code, message: e.message }, { status: statusFor(e.code) })
-    }
+    if (e instanceof MoveError) return moveErrorResponse(e)
     throw e
   }
 }
