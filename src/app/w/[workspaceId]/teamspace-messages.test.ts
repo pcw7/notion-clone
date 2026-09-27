@@ -8,12 +8,16 @@
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { TEAMSPACE_VISIBILITIES } from '../../../lib/workspace/teamspace.ts'
+import { can, capabilitiesOf } from '../../../lib/permissions/levels.ts'
+import { TEAMSPACE_MEMBER_LEVELS, TEAMSPACE_VISIBILITIES } from '../../../lib/workspace/teamspace.ts'
 import {
+  TEAMSPACE_MEMBER_LEVEL_ORDER,
   TEAMSPACE_VISIBILITY_ORDER,
   archivedAtLabel,
   canInviteAsOwner,
   defaultTeamspaceAddedMessage,
+  memberLevelHint,
+  memberLevelLabel,
   canInviteHere,
   teamspaceCandidates,
   teamspaceFailureMessage,
@@ -30,7 +34,7 @@ const person = (userId: string, role = 'member', status = 'active') => ({ userId
 describe('teamspace 화면의 문구', () => {
   test('거부 코드마다 할 말이 있다 · 마지막 소유자는 무엇을 먼저 할지 말한다 · 모르는 코드는 일반 문구', () => {
     const codes = ['not_found', 'forbidden', 'invalid_name', 'invalid_role', 'invalid_member', 'last_owner',
-      'needs_invite', 'invalid_visibility', 'invalid_settings', 'default_teamspace']
+      'needs_invite', 'invalid_visibility', 'invalid_settings', 'default_teamspace', 'invalid_level']
     for (const code of codes) {
       assert.notEqual(teamspaceFailureMessage(code), '처리하지 못했습니다.', code)
     }
@@ -88,6 +92,23 @@ describe('보관한 때 (7c-6)', () => {
   test('앞선 시각(시계가 어긋난 경우)도 "오늘 보관" 으로 둔다 — 음수 날짜를 보이지 않는다', () => {
     const now = new Date('2026-09-27T12:00:00Z')
     assert.equal(archivedAtLabel('2026-09-28T12:00:00Z', now), '오늘 보관')
+  })
+})
+
+describe('멤버 기본 레벨 (7c-12)', () => {
+  test('목록이 서버의 것과 같다 — 넓은 것부터 · 넷 다 이름과 한 줄 설명이 있고 서로 다르다', () => {
+    assert.deepEqual([...TEAMSPACE_MEMBER_LEVEL_ORDER], [...TEAMSPACE_MEMBER_LEVELS])
+    const labels = TEAMSPACE_MEMBER_LEVEL_ORDER.map(memberLevelLabel)
+    const hints = TEAMSPACE_MEMBER_LEVEL_ORDER.map(memberLevelHint)
+    assert.deepEqual(labels, ['전체 권한', '편집', '댓글', '읽기'])
+    assert.equal(new Set(hints).size, 4)
+  })
+
+  test('만들 수 없게 되는 레벨은 그렇다고 말한다 — 권한 매트릭스(page 의 create_child)가 정하는 그대로', () => {
+    for (const level of TEAMSPACE_MEMBER_LEVEL_ORDER) {
+      const creates = can(capabilitiesOf('page', level), 'create_child')
+      assert.equal(memberLevelHint(level).includes('만들 수 없습니다'), !creates, level)
+    }
   })
 })
 

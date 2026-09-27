@@ -2470,6 +2470,73 @@ async function main() {
       await sleep(1500)
     }
 
+    if (sectionIf('멤버 기본 권한 (7c-12 · F-06-04)')) {
+      // 소유자(브라우저 세션)가 설정 절에서 멤버 기본 권한을 "읽기"로 낮춘다 → 멤버는 여전히 보지만 최상위에 만들지 못하고,
+      // 사이드바의 `+` · teamspace 화면의 만들기가 사라진다. 끝에 전체 권한으로 되돌린다. 이 절은 자기 데이터를 스스로 만든다.
+      const tsUrl = `${BASE}/api/workspaces/${workspaceId}/teamspaces`
+      const stamp = Date.now()
+      const team = (await (await fetch(tsUrl, {
+        method: 'POST', headers: authed, body: JSON.stringify({ name: `읽기팀 ${stamp}`, visibility: 'closed' }),
+      })).json()).teamspace.id
+      const teamPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
+        method: 'POST', headers: authed, body: JSON.stringify({ teamspaceId: team, title: '읽기팀 공지' }),
+      })).json()).page.id
+      const reader = await joinAs(workspaceId, await createUser('읽기 멤버'), 'member')
+      const readerCookie = { cookie: `nc_session=${reader.token}` }
+      await fetch(`${tsUrl}/${team}/members`, {
+        method: 'POST', headers: authed, body: JSON.stringify({ principal: { type: 'user', id: reader.userId }, role: 'member' }),
+      })
+      // 이 멤버는 이 teamspace 하나에만 속한다 — 사이드바의 teamspace `+` 가 있다면 이 teamspace 의 것이다.
+      const readerHtml = async () =>
+        (await (await fetch(`${BASE}/w/${workspaceId}/teamspaces/${team}`, { headers: readerCookie })).text())
+      const before = await readerHtml()
+      check('전제 — 전체 권한일 때 멤버에게 사이드바의 + 와 teamspace 화면의 만들기가 있다',
+        before.includes('sidebar-teamspace-add') && before.includes('data-testid="teamspace-create"'))
+
+      // ① 화면 — 고르개와 한 줄 설명, 저장
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/teamspaces/${team}` })
+      const LEVEL = '[data-testid="teamspace-settings-member-level"]'
+      await waitFor(`document.querySelector('${LEVEL}')?.value === 'full_access'`, 15000)
+      // 서버 렌더가 먼저 서고 React 가 나중에 붙는다 — 붙기 전에 보낸 change 는 사라지므로 설명 줄이 바뀔 때까지 다시 보낸다.
+      const hintSaysView = `(document.querySelector('[data-testid="teamspace-settings-member-level-hint"]')?.textContent ?? '').includes('읽기만')`
+      let chose = false
+      for (let i = 0; i < 20 && !chose; i += 1) {
+        await evaluate(`(() => {
+          const s = document.querySelector('${LEVEL}')
+          Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(s, 'view')
+          s.dispatchEvent(new Event('change', { bubbles: true }))
+        })()`)
+        chose = await waitFor(hintSaysView, 500)
+      }
+      check('읽기를 고르면 그 자리에서 멤버가 무엇을 하게 되는지 말한다', chose)
+      await clickSelector('[data-testid="teamspace-settings-save"]')
+      check('★ 저장한다',
+        await waitFor(`!!document.querySelector('[data-testid="teamspace-settings-saved"]')`, 15000),
+        await evaluate(`document.querySelector('[data-testid="teamspace-settings-error"]')?.textContent ?? ''`))
+
+      // ② 멤버에게 일어난 일
+      const after = await readerHtml()
+      check('★ 멤버는 여전히 그 페이지를 연다',
+        (await fetch(`${BASE}/w/${workspaceId}/${teamPage}`, { headers: readerCookie })).status === 200)
+      const sneak = await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
+        method: 'POST', headers: { ...json, ...readerCookie }, body: JSON.stringify({ teamspaceId: team, title: '몰래' }),
+      })
+      check('★ 멤버는 최상위에 페이지를 두지 못한다 (404)', sneak.status === 404, String(sneak.status))
+      check('★ 멤버에게 사이드바의 teamspace + 가 사라진다', !after.includes('sidebar-teamspace-add'))
+      check('★ 멤버에게 teamspace 화면의 만들기가 사라진다', !after.includes('data-testid="teamspace-create"'))
+      check('소유자에게는 만들기가 그대로다',
+        await waitFor(`!!document.querySelector('[data-testid="teamspace-create"]')`, 15000))
+
+      // ③ 되돌린다 — 넷 밖의 값은 400
+      const bad = await fetch(`${tsUrl}/${team}`, { method: 'PATCH', headers: authed, body: JSON.stringify({ memberLevel: 'edit_content' }) })
+      check('넷 밖의 값은 거부한다 (400 invalid_level)', bad.status === 400 && (await bad.json()).error === 'invalid_level')
+      const back = await fetch(`${tsUrl}/${team}`, { method: 'PATCH', headers: authed, body: JSON.stringify({ memberLevel: 'full_access' }) })
+      check('전체 권한으로 되돌리면 멤버의 + 가 돌아온다',
+        back.ok && (await readerHtml()).includes('sidebar-teamspace-add'))
+      // 저장의 refresh 가 끝나기 전에 다음 절이 화면을 옮기지 않게 한다(§6).
+      await sleep(1500)
+    }
+
     if (sectionIf('코멘트 패널 · 인박스 (F-05-08 · F-11-07)')) {
       const commentPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
         method: 'POST',

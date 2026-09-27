@@ -61,6 +61,7 @@ export default async function WorkspaceLayout({
         teamspaces={sections.teamspaces.map(({ teamspace, pages }) => ({
           id: teamspace.id,
           name: teamspace.name,
+          canCreatePages: teamspace.canCreatePages,
           pages: pages.map(toSidebarNode),
         }))}
         canCreateTeamspace={canCreateTeamspace(ctx.role)}

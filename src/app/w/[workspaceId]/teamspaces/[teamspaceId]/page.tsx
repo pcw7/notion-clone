@@ -107,10 +107,13 @@ export default async function TeamspacePage({ params }: PageProps<'/w/[workspace
             ))}
           </ul>
         )}
-        <div className="flex gap-2">
-          <NewPageButton workspaceId={workspaceId} teamspaceId={teamspaceId} />
-          <NewDatabaseButton workspaceId={workspaceId} teamspaceId={teamspaceId} />
-        </div>
+        {/* 최상위에 둘 수 없는 멤버(멤버 기본 권한이 댓글 · 읽기 — 7c-12)에게는 만들기를 세우지 않는다. 서버가 다시 묻는다. */}
+        {teamspace.value.canCreatePages && (
+          <div data-testid="teamspace-create" className="flex gap-2">
+            <NewPageButton workspaceId={workspaceId} teamspaceId={teamspaceId} />
+            <NewDatabaseButton workspaceId={workspaceId} teamspaceId={teamspaceId} />
+          </div>
+        )}
       </section>
 
       <section>
@@ -143,6 +146,7 @@ export default async function TeamspacePage({ params }: PageProps<'/w/[workspace
               visibility: teamspace.value.visibility,
               whoCanInvite: teamspace.value.whoCanInvite,
               isDefault: teamspace.value.isDefault,
+              memberLevel: teamspace.value.memberLevel,
             }}
             canSetDefault={canAdministerTeamspaces(ctx.role)}
           />

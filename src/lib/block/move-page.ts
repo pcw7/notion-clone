@@ -647,19 +647,12 @@ export async function listMovableTargets(
 
 /**
  * 옮길 수 있는 teamspace 최상위 — 내가 멤버이고 거기에 페이지를 둘 수 있는 것(`lockTarget` 의 teamspace 규칙과 같다 · 7c-3).
- * 이름순은 `listMyTeamspaces` 를 따른다. 페이지의 전체 권한은 여기서 묻지 않는다 — 없으면 `movePage` 가 `needs_full_access` 로
- * 거부하고 화면이 그 말을 한다(자리마다 다르지 않다).
+ * "둘 수 있는가"는 `listMyTeamspaces` 가 `teamspaceCaps` 로 이미 물었다(`canCreatePages` · 7c-12 — 사이드바의 `+` 와 같은 답).
+ * 이름순도 그것을 따른다. 페이지의 전체 권한은 여기서 묻지 않는다 — 없으면 `movePage` 가 `needs_full_access` 로 거부하고
+ * 화면이 그 말을 한다(자리마다 다르지 않다).
  */
 export async function listTeamspaceDestinations(ctx: SessionContext): Promise<{ id: string; name: string }[]> {
-  const mine = await listMyTeamspaces(ctx)
-  if (mine.length === 0) return []
-  return withReadTransaction(async (tx) => {
-    const out: { id: string; name: string }[] = []
-    for (const teamspace of mine) {
-      if (can(await teamspaceCaps(tx, ctx, teamspace.id), 'create_child')) out.push({ id: teamspace.id, name: teamspace.name })
-    }
-    return out
-  })
+  return (await listMyTeamspaces(ctx)).filter((t) => t.canCreatePages).map((t) => ({ id: t.id, name: t.name }))
 }
 
 /** 읽기는 관대하게 — 제목 하나가 망가졌다고 이동 자체를 막지 않는다. */

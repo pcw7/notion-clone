@@ -54,8 +54,12 @@ export type SidebarNode = {
   children: SidebarNode[]
 }
 
-/** 사이드바의 teamspace 하나 — 내가 멤버인 것만 온다. `pages` 는 그 최상위부터의 트리다. */
-export type SidebarTeamspace = { id: string; name: string; pages: SidebarNode[] }
+/**
+ * 사이드바의 teamspace 하나 — 내가 멤버인 것만 온다. `pages` 는 그 최상위부터의 트리다. `canCreatePages` 는 그 최상위에 둘 수
+ * 있는가(`listMyTeamspaces` 가 만들기 명령과 같은 판정으로 물었다 · 7c-12) — 아니면 `+` · `▦` 를 세우지 않는다(멤버 기본
+ * 권한이 댓글 · 읽기인 멤버).
+ */
+export type SidebarTeamspace = { id: string; name: string; canCreatePages: boolean; pages: SidebarNode[] }
 
 const UNTITLED = '제목 없음'
 
@@ -379,28 +383,32 @@ export function Sidebar({
                     >
                       {teamspace.name}
                     </Link>
-                    <button
-                      type="button"
-                      disabled={busy}
-                      data-testid="sidebar-teamspace-add"
-                      onClick={() => void addTeamspacePage(teamspace.id)}
-                      aria-label={`${teamspace.name}에 페이지 추가`}
-                      title="이 teamspace 에 페이지 추가"
-                      className="flex-none px-1 text-sm text-neutral-400 opacity-0 group-hover:opacity-100 focus:opacity-100 disabled:opacity-30"
-                    >
-                      +
-                    </button>
-                    <button
-                      type="button"
-                      disabled={busy}
-                      data-testid="sidebar-teamspace-add-database"
-                      onClick={() => void addDatabase({ teamspaceId: teamspace.id })}
-                      aria-label={`${teamspace.name}에 데이터베이스 추가`}
-                      title="이 teamspace 에 데이터베이스 추가"
-                      className="flex-none px-1 text-xs text-neutral-400 opacity-0 group-hover:opacity-100 focus:opacity-100 disabled:opacity-30"
-                    >
-                      ▦
-                    </button>
+                    {teamspace.canCreatePages && (
+                      <>
+                        <button
+                          type="button"
+                          disabled={busy}
+                          data-testid="sidebar-teamspace-add"
+                          onClick={() => void addTeamspacePage(teamspace.id)}
+                          aria-label={`${teamspace.name}에 페이지 추가`}
+                          title="이 teamspace 에 페이지 추가"
+                          className="flex-none px-1 text-sm text-neutral-400 opacity-0 group-hover:opacity-100 focus:opacity-100 disabled:opacity-30"
+                        >
+                          +
+                        </button>
+                        <button
+                          type="button"
+                          disabled={busy}
+                          data-testid="sidebar-teamspace-add-database"
+                          onClick={() => void addDatabase({ teamspaceId: teamspace.id })}
+                          aria-label={`${teamspace.name}에 데이터베이스 추가`}
+                          title="이 teamspace 에 데이터베이스 추가"
+                          className="flex-none px-1 text-xs text-neutral-400 opacity-0 group-hover:opacity-100 focus:opacity-100 disabled:opacity-30"
+                        >
+                          ▦
+                        </button>
+                      </>
+                    )}
                   </div>
                   {teamspace.pages.length > 0 ? (
                     <ul>

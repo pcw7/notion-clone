@@ -384,7 +384,8 @@ CREATE TABLE acl_entry (                                     -- <C-7> 권한의 
   granted_by uuid NULL, granted_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (node_kind, node_id, principal_type, principal_id),
   CHECK ((principal_type IN ('workspace_everyone','public')) = (principal_id IS NULL)),
-  CHECK (NOT hidden_from_search OR principal_type = 'workspace_everyone')
+  CHECK (NOT hidden_from_search OR principal_type = 'workspace_everyone'),
+  CHECK (node_kind <> 'teamspace' OR level IN ('full_access','edit','comment','view'))  -- [보강] 7c-12
 );
 CREATE INDEX ON acl_entry (node_kind, node_id);
 CREATE INDEX ON acl_entry (principal_type, principal_id);
@@ -524,6 +525,7 @@ CREATE TABLE access_request (
 > 쓴다** — 공유 명령은 블록 노드만 받는다. owner 행은 멤버의 역할과 같은 트랜잭션에서 맞춘다.
 > ③ 멤버의 기본 레벨은 `full_access` 다 — 워크스페이스 직속 페이지가 모든 멤버에게 주던 것과 같다. `default_member_level`
 > 컬럼은 **쓰지 않는다**([확인필요] 6-5 를 위 첫 행의 level 로 푼다 — 같은 사실을 두 곳에 두지 않는다).
+> **[7c-12]** 만들 때의 값이 `full_access` 이고 owner 가 바꾼다 — 아래 [보강] "멤버 기본 레벨을 바꾸는 것" 참조.
 > ④ teamspace 는 `ancestor_path` 에 **들어가지 않는다** — 판결문 C-9 의 정의 *"루트(비block parent 직하)→parent 까지의
 > block id 배열"* 그대로다. B8 의 *"ancestor_path 상의 teamspace 노드로 해석"* 은 그 배열의 **루트 블록의 부모**로 읽는다.
 > ⑤ 멤버는 이 워크스페이스의 게스트 아닌 사람 · 살아 있는 그룹이고(F-06-04), `parent_type='teamspace'` 인 블록은 같은
@@ -636,6 +638,29 @@ CREATE TABLE access_request (
 > "마지막 하나"를 붙들면 기본을 바꾸는 순서까지 강제하게 된다.
 >
 > ⑦ `visibility` 와는 직교 그대로다. 비공개도 기본일 수 있다 — 그러면 존재를 모르는 사람은 게스트 · `restricted_member` 뿐이다.
+
+**[보강] 멤버 기본 레벨을 바꾸는 것 — 행 하나의 level 이다** ⟨Teamspace · 게스트 · 그룹 7c-12 / 마이그레이션 0031⟩
+
+> 06 F-06-04 는 *"member — will receive access to pages within the teamspace as determined by teamspace owners"* 와
+> `default_member_access`([추정] · UI 값 미확인)를 적었다. 이 절 teamspace 노드 [보강] ③ 이 그 값을 `('teamspace', T)` 행의
+> level 로 두었으므로, 바꾸는 것은 **그 행 하나의 `UPDATE`** 다.
+>
+> ① **값은 넷 — `full_access` · `edit` · `comment` · `view`.** teamspace 노드의 행은 page 매트릭스로 읽는다(위 ①).
+> `edit_content` · `create` 는 database 전용 레벨이라 그 아래 페이지에서 뜻이 없다. **teamspace 노드의 모든 행**(멤버 · owner ·
+> open 의 열람)에 `CHECK (node_kind <> 'teamspace' OR level IN (넷))` 를 건다(0031) — 판정이 page 매트릭스에 없는 레벨을
+> 만나지 않게.
+>
+> ② **바꾸는 사람은 그 teamspace 의 owner** 다(설정과 같다). owner 는 자기 owner 행으로 늘 `full_access` 다 — 멤버 레벨을
+> 낮춰도 owner 는 잃지 않는다. open 의 열람 행(`workspace_everyone → view`)은 그대로다.
+>
+> ③ **권한 변화다** — 행의 `UPDATE` 이므로 0016 의 노드 신호가 협업 서버에 알린다(낮추면 열린 편집기가 닫힌다).
+>
+> ④ **상속을 끊은 페이지는 바뀌지 않는다** — 끊을 때 복사한 행(P1)이 그 순간의 레벨을 지니고, P2 *"절단된 노드는 이후 조상
+> ACL 변경을 받지 않는다"* 그대로다. 화면이 바꾸기 전에 그 말을 한다.
+>
+> ⑤ 낮추면 최상위에 **만들기**가 함께 바뀐다 — `comment` · `view` 는 `create_child` 가 없어 멤버가 최상위에 페이지 ·
+> 데이터베이스를 두지 못한다(`teamspaceCaps`). 옮기기 피커 · 사이드바의 `+` 가 같은 판정을 쓴다. `edit` 는 만들고 고치지만
+> 공유(`share` · `manage_perm`)는 못 한다 — 뿌리가 바뀌는 이동(7c-3 · `manage_perm`)도 못 한다.
 
 ---
 
@@ -2197,7 +2222,7 @@ C-4 가 `property.id text` 를 확정했으나, permission 판결문의 `page_ac
 | 2 | `purged` 상태에서 Enterprise owner 가 무엇을 볼 수 있는가 | UI 노출 없음(GC 지연으로만 존재) | Enterprise 에서 영구 삭제 → owner 의 데이터 보존 화면에 남는지 확인 | ENUM 3값은 유지, **조회 권한 조건만 추가** |
 | 3 | `page_access_rule` 로만 접근 가능한 행이 검색에 나와야 하는가 | **제외.** 스코프 필터에 걸리지 않으므로 | person property 로만 공유된 행을 그 사용자 계정으로 전역 검색 | 나와야 한다면 `search_document` 에 `access_rule_ds_id` 보조 축 추가 + 쿼리에 OR 절 |
 | 4 | 행을 데이터베이스 밖으로 이동시켰을 때 셀 값의 운명 | `parent_type: data_source → block` 전이 시 `page_property_value` **보존**(page 확장 행 유지) | 행을 일반 페이지 하위로 Move to → 되돌렸을 때 값 복구 여부 | 삭제로 밝혀지면 이동 시 `page` 확장 행 캐스케이드 + 되돌리기 불가 고지 |
-| 5 | teamspace 기본 권한 값 집합 (`default_member_level`) | `[확인필요]` NULL 허용 | Business 이상에서 teamspace 설정 드롭다운 관찰 | CHECK 제약 1줄 |
+| 5 | teamspace 기본 권한 값 집합 (`default_member_level`) | `[확인필요]` NULL 허용 → **[해결 · 7c-12]** 컬럼이 아니라 teamspace 노드의 `('teamspace', T)` 행의 level 이고, 값은 page 매트릭스의 넷(`full_access` · `edit` · `comment` · `view`) — 0031 의 CHECK | Business 이상에서 teamspace 설정 드롭다운 관찰 | CHECK 제약 1줄 |
 | 6 | `acl_entry.hidden_from_search` 실재 여부 | 컬럼 유지, 기본 false | 워크스페이스 전체 공유 페이지의 Share 패널에 검색 노출 토글 존재 확인 | 없으면 컬럼 삭제 |
 | 7 | `restricted_member` 가 `workspace_everyone` grant 를 받는가 | **받지 않는다**(P(U) 에서 제외) | restricted member 계정으로 workspace 전체 공유 페이지 접근 시도 | `P(U)` 정의 1줄 + 검색 스코프 계산 |
 | 8 | DB 잠금이 하위 row 페이지로 상속되는가 | **상속 안 됨**(노드 단독 판정) | DB 잠금 후 row 페이지 본문 편집 시도 | 상속이면 `node_lock` 판정이 조상 체인 조회가 되고 `ancestor_path` 조인 추가 |

@@ -1,7 +1,7 @@
 'use client'
 
 /**
- * teamspace 설정 — 이름 · 공개 범위 · 초대 규칙 · 보관 (7c-5 · 7c-6조각 · F-06-04)
+ * teamspace 설정 — 이름 · 공개 범위 · 초대 규칙 · 멤버 기본 권한 · 기본 teamspace · 보관 (7c-5 · 7c-6 · 7c-11 · 7c-12조각 · F-06-04)
  *
  * **소유자에게만** 보인다(서버가 다시 묻는다 — `updateTeamspace` 는 소유자가 아니면 `forbidden`). 셋을 한 폼에 두고 한 번에
  * 보낸다: 세 칸이 모두 "이 teamspace 를 어떻게 쓰는가" 한 가지를 정하고, 따로 저장하면 어느 것이 저장됐는지 사용자가
@@ -15,6 +15,10 @@
  * "넣기" 칸은 초대 규칙과 무관하게 늘 선다(`canInviteHere`). 규칙을 바꾸면 그 가정을 다시 본다.
  *
  * 공개 범위를 좁혀도 이미 들어온 멤버는 그대로다 — 그 말을 바꾸기 전에 한 줄로 해 둔다(서버의 규칙과 같다).
+ *
+ * **멤버 기본 권한**(7c-12)도 같은 폼이다 — 멤버 전원이 이 teamspace 의 페이지를 받는 레벨. 고르개 옆에 그 레벨로 멤버가
+ * 무엇을 하게 되는지 말하고, 바꾸기 전에 두 가지를 먼저 말한다: 소유자는 늘 전체 권한이고, 상속을 끊은(따로 관리하는)
+ * 페이지는 바뀌지 않는다(P2). 낮추면 사이드바의 `+` 도 바뀌므로 저장 뒤의 `router.refresh()` 가 그것까지 나른다.
  *
  * **보관은 두 번 누른다**(그룹 지우기 · 나가기와 같은 규칙 · §3.3-188). teamspace 는 지워지지 않는 대신 보관되고, 보관하면
  * **나까지** 그 페이지들을 못 본다 — 되살릴 수 있다는 말을 함께 한다. 보관한 뒤에는 이 화면이 404 가 되므로 워크스페이스
@@ -30,11 +34,15 @@ import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 
 import {
+  TEAMSPACE_MEMBER_LEVEL_ORDER,
   TEAMSPACE_VISIBILITY_ORDER,
   defaultTeamspaceAddedMessage,
+  memberLevelHint,
+  memberLevelLabel,
   teamspaceFailureMessage,
   teamspaceVisibilityHint,
   teamspaceVisibilityLabel,
+  type TeamspaceMemberLevelName,
   type TeamspaceVisibilityName,
 } from '../../teamspace-messages'
 
@@ -54,6 +62,7 @@ export function TeamspaceSettings({
     visibility: TeamspaceVisibilityName
     whoCanInvite: 'owners' | 'all_members'
     isDefault: boolean
+    memberLevel: TeamspaceMemberLevelName
   }
   /** 워크스페이스 owner 인가 — 기본 teamspace 버튼을 세울지(표시 전용 · 서버가 다시 묻는다). */
   canSetDefault: boolean
@@ -62,6 +71,7 @@ export function TeamspaceSettings({
   const [name, setName] = useState(initial.name)
   const [visibility, setVisibility] = useState<TeamspaceVisibilityName>(initial.visibility)
   const [whoCanInvite, setWhoCanInvite] = useState(initial.whoCanInvite)
+  const [memberLevel, setMemberLevel] = useState<TeamspaceMemberLevelName>(initial.memberLevel)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [saved, setSaved] = useState(false)
@@ -103,7 +113,7 @@ export function TeamspaceSettings({
       const res = await fetch(`/api/workspaces/${workspaceId}/teamspaces/${teamspaceId}`, {
         method: 'PATCH',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ name, visibility, whoCanInvite }),
+        body: JSON.stringify({ name, visibility, whoCanInvite, memberLevel }),
       })
       const data = (await res.json().catch(() => ({}))) as { error?: unknown }
       if (!res.ok) {
@@ -198,6 +208,28 @@ export function TeamspaceSettings({
         </select>
       </label>
 
+      <label className="flex flex-col gap-1 text-xs text-neutral-500">
+        멤버 기본 권한
+        <select
+          data-testid="teamspace-settings-member-level"
+          aria-label="멤버 기본 권한"
+          value={memberLevel}
+          onChange={(e) => {
+            const next = TEAMSPACE_MEMBER_LEVEL_ORDER.find((l) => l === e.target.value)
+            if (next) setMemberLevel(next)
+          }}
+          className={INPUT}
+        >
+          {TEAMSPACE_MEMBER_LEVEL_ORDER.map((level) => (
+            <option key={level} value={level}>
+              {memberLevelLabel(level)}
+            </option>
+          ))}
+        </select>
+        <span data-testid="teamspace-settings-member-level-hint">{memberLevelHint(memberLevel)}</span>
+        <span>소유자는 늘 전체 권한입니다. 상속을 끊고 따로 관리하는 페이지는 바뀌지 않습니다.</span>
+      </label>
+
       <span className="flex items-center gap-2">
         <button
           type="submit"
@@ -222,76 +254,76 @@ export function TeamspaceSettings({
 
       {/* 켤 수 없는 사람에게는 기본일 때만 그 사실을 말한다 — 누를 수 없는 설명을 세우지 않는다. */}
       {(canSetDefault || isDefault) && (
-      <div
-        data-testid="teamspace-default"
-        data-default={isDefault ? 'true' : 'false'}
-        className="mt-2 flex flex-col gap-1 border-t border-neutral-200 pt-3 dark:border-neutral-800"
-      >
-        <p className="text-xs text-neutral-500">
-          {isDefault ? (
-            <>
-              <b>기본 teamspace</b> 입니다. 워크스페이스에 새로 들어오는 멤버가 저절로 들어옵니다.
-            </>
-          ) : (
-            <>
-              <b>기본 teamspace</b> 로 만들면 워크스페이스 멤버 전원이 곧바로 들어오고, 새로 들어오는 멤버도 저절로
-              들어옵니다.
-            </>
-          )}
-        </p>
-        {canSetDefault &&
-          (isDefault ? (
-            <button
-              type="button"
-              data-testid="teamspace-default-off"
-              disabled={busy}
-              onClick={() => void setDefault(false)}
-              className="self-start rounded border border-neutral-300 px-2 py-0.5 text-xs disabled:opacity-40 dark:border-neutral-700"
-            >
-              기본 해제
-            </button>
-          ) : confirmingDefault ? (
-            <span className="flex flex-col gap-1">
-              <span className="text-xs text-neutral-500">
-                제한 멤버와 게스트는 들어오지 않습니다. 나중에 해제해도 이미 들어온 멤버는 남습니다.
-              </span>
-              <span className="flex items-center gap-1">
-                <button
-                  type="button"
-                  data-testid="teamspace-default-confirm"
-                  disabled={busy}
-                  onClick={() => void setDefault(true)}
-                  className="rounded border border-neutral-900 px-2 py-0.5 text-xs disabled:opacity-40 dark:border-neutral-100"
-                >
-                  전원을 넣고 기본으로
-                </button>
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => setConfirmingDefault(false)}
-                  className="rounded border border-neutral-300 px-2 py-0.5 text-xs disabled:opacity-40 dark:border-neutral-700"
-                >
-                  취소
-                </button>
-              </span>
-            </span>
-          ) : (
-            <button
-              type="button"
-              data-testid="teamspace-default-on"
-              disabled={busy}
-              onClick={() => setConfirmingDefault(true)}
-              className="self-start rounded border border-neutral-300 px-2 py-0.5 text-xs disabled:opacity-40 dark:border-neutral-700"
-            >
-              기본으로 만들기
-            </button>
-          ))}
-        {defaultNote && (
-          <p data-testid="teamspace-default-note" className="text-xs text-neutral-500">
-            {defaultNote}
+        <div
+          data-testid="teamspace-default"
+          data-default={isDefault ? 'true' : 'false'}
+          className="mt-2 flex flex-col gap-1 border-t border-neutral-200 pt-3 dark:border-neutral-800"
+        >
+          <p className="text-xs text-neutral-500">
+            {isDefault ? (
+              <>
+                <b>기본 teamspace</b> 입니다. 워크스페이스에 새로 들어오는 멤버가 저절로 들어옵니다.
+              </>
+            ) : (
+              <>
+                <b>기본 teamspace</b> 로 만들면 워크스페이스 멤버 전원이 곧바로 들어오고, 새로 들어오는 멤버도 저절로
+                들어옵니다.
+              </>
+            )}
           </p>
-        )}
-      </div>
+          {canSetDefault &&
+            (isDefault ? (
+              <button
+                type="button"
+                data-testid="teamspace-default-off"
+                disabled={busy}
+                onClick={() => void setDefault(false)}
+                className="self-start rounded border border-neutral-300 px-2 py-0.5 text-xs disabled:opacity-40 dark:border-neutral-700"
+              >
+                기본 해제
+              </button>
+            ) : confirmingDefault ? (
+              <span className="flex flex-col gap-1">
+                <span className="text-xs text-neutral-500">
+                  제한 멤버와 게스트는 들어오지 않습니다. 나중에 해제해도 이미 들어온 멤버는 남습니다.
+                </span>
+                <span className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    data-testid="teamspace-default-confirm"
+                    disabled={busy}
+                    onClick={() => void setDefault(true)}
+                    className="rounded border border-neutral-900 px-2 py-0.5 text-xs disabled:opacity-40 dark:border-neutral-100"
+                  >
+                    전원을 넣고 기본으로
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => setConfirmingDefault(false)}
+                    className="rounded border border-neutral-300 px-2 py-0.5 text-xs disabled:opacity-40 dark:border-neutral-700"
+                  >
+                    취소
+                  </button>
+                </span>
+              </span>
+            ) : (
+              <button
+                type="button"
+                data-testid="teamspace-default-on"
+                disabled={busy}
+                onClick={() => setConfirmingDefault(true)}
+                className="self-start rounded border border-neutral-300 px-2 py-0.5 text-xs disabled:opacity-40 dark:border-neutral-700"
+              >
+                기본으로 만들기
+              </button>
+            ))}
+          {defaultNote && (
+            <p data-testid="teamspace-default-note" className="text-xs text-neutral-500">
+              {defaultNote}
+            </p>
+          )}
+        </div>
       )}
 
       <div className="mt-2 flex flex-col gap-1 border-t border-neutral-200 pt-3 dark:border-neutral-800">

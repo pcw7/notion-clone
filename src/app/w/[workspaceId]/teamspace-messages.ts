@@ -30,6 +30,42 @@ export function teamspaceVisibilityLabel(visibility: TeamspaceVisibilityName): s
   }
 }
 
+export type TeamspaceMemberLevelName = 'full_access' | 'edit' | 'comment' | 'view'
+
+/**
+ * 멤버 기본 레벨을 고르개에 세우는 순서 — 넓은 것부터(7c-12). 서버의 `TEAMSPACE_MEMBER_LEVELS` 와 어긋나지 않는 것은
+ * `teamspace-messages.test.ts` 가 막는다(공개 범위와 같은 규칙 — 이 모듈은 클라이언트에서 import 된다).
+ */
+export const TEAMSPACE_MEMBER_LEVEL_ORDER: readonly TeamspaceMemberLevelName[] = ['full_access', 'edit', 'comment', 'view']
+
+/** 이름은 공유 패널(`share-panel.tsx` 의 `PAGE_LEVELS`)과 같다 — 같은 레벨을 두 이름으로 부르지 않는다. */
+export function memberLevelLabel(level: TeamspaceMemberLevelName): string {
+  switch (level) {
+    case 'full_access':
+      return '전체 권한'
+    case 'edit':
+      return '편집'
+    case 'comment':
+      return '댓글'
+    case 'view':
+      return '읽기'
+  }
+}
+
+/** 고르개 옆의 한 줄 — 멤버가 이 teamspace 에서 무엇을 할 수 있게 되는지. */
+export function memberLevelHint(level: TeamspaceMemberLevelName): string {
+  switch (level) {
+    case 'full_access':
+      return '멤버가 페이지를 만들고 고치고, 공유와 이동까지 합니다.'
+    case 'edit':
+      return '멤버가 페이지를 만들고 고칩니다. 공유와 다른 곳으로의 이동은 소유자만 합니다.'
+    case 'comment':
+      return '멤버는 읽고 댓글만 답니다. 페이지를 만들 수 없습니다.'
+    case 'view':
+      return '멤버는 읽기만 합니다. 페이지를 만들 수 없습니다.'
+  }
+}
+
 /** 보관한 때를 사람이 읽는 말로 — 목록의 한 줄에 쓴다. 날짜만(시각은 되살릴 때 도움이 되지 않는다). */
 export function archivedAtLabel(iso: string, now: Date = new Date()): string {
   const at = new Date(iso)
@@ -114,6 +150,8 @@ export function teamspaceFailureMessage(error: unknown): string {
       return '고칠 것을 하나는 골라 주세요.'
     case 'default_teamspace':
       return '기본 teamspace 는 보관할 수 없습니다. 먼저 기본을 끄세요.'
+    case 'invalid_level':
+      return '멤버 기본 권한을 다시 고르세요.'
     default:
       return '처리하지 못했습니다.'
   }

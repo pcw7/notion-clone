@@ -23,6 +23,8 @@
  *      owner 로 들어간다(비공개 · 보관 포함) — 막고, 되살린다
  *   ⑯ 기본 teamspace(7c-11) — ★ 켜면 전원(제한 멤버 · 게스트 제외)이 member 로 · ★ 이후 가입자도(초대 수락) · ★ 켜는
  *      명령과 엇갈려도 빠지지 않는다 · 워크스페이스 owner 이면서 teamspace owner 만 · ★ 기본은 보관하지 못한다
+ *   ⑰ 멤버 기본 레벨(7c-12) — ★ 낮추면 멤버의 판정 · 만들기 · 목록이 함께 바뀌고 소유자는 그대로 · ★ 끊긴 페이지는 옛 레벨(P2)
+ *      · 소유자만 · 넷 밖은 invalid_level · ★ 바꾸면 신호, 같은 값이면 없음
  *
  * 열린 협업 연결이 멤버에서 빠질 때 닫히는지는 `collab/collab-server.db.test.ts` ⑨ 가 본다.
  */
@@ -31,6 +33,7 @@ import { test, describe, before, after, type TestContext } from 'node:test'
 import assert from 'node:assert/strict'
 
 import { duplicatePage } from '../block/duplicate.ts'
+import { listTeamspaceDestinations } from '../block/move-page.ts'
 import { createPage, getPage, listTeamspacePages, PageError, titleFromPlainText } from '../block/page.ts'
 import { groupSidebarRoots, listPageTree, type PageTreeNode } from '../block/page-tree.ts'
 import { openChangeFeed, type CollabSignal } from '../collab/change-feed.ts'
@@ -1489,3 +1492,99 @@ async function pollUntil(check: () => Promise<boolean>, ms = 5000): Promise<void
     await new Promise((resolve) => setTimeout(resolve, 25))
   }
 }
+
+// ── ⑰ 멤버 기본 레벨 (7c-12) ──────────────────────────────────────────
+
+describe('⑰ 멤버 기본 레벨 (7c-12)', () => {
+  const level = (teamspaceId: string, memberLevel: unknown, by: Actor = fx.owner) =>
+    updateTeamspace(by.ctx, teamspaceId, { memberLevel })
+  const canCreateIn = async (actor: Actor, teamspaceId: string) => ({
+    listed: (await listMyTeamspaces(actor.ctx)).find((t) => t.id === teamspaceId)?.canCreatePages,
+    destination: (await listTeamspaceDestinations(actor.ctx)).some((d) => d.id === teamspaceId),
+  })
+
+  test('★ 읽기로 낮추면 멤버는 보기만 한다 — 못 고치고 최상위에 못 둔다(만들기 · 사이드바 · 옮기기 피커) · 소유자는 그대로 · 올리면 돌아온다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const teamspace = await newTeamspace()
+    const page = await topPage(teamspace)
+    const alice = await member('레벨 앨리스')
+    await join(teamspace, alice)
+    const bob = await member('레벨 그룹원 밥')
+    const group = await createGroup(fx.owner.ctx, unique('레벨 그룹'))
+    assert.ok(group.ok)
+    assert.ok((await addGroupMember(fx.owner.ctx, group.value.id, bob.userId)).ok)
+    assert.ok((await addTeamspaceMember(fx.owner.ctx, teamspace, { type: 'group', id: group.value.id })).ok)
+    assert.ok(can(await capsOf(alice, page), 'edit_content'), '전제 — 만들 때는 full_access 다')
+
+    assert.deepEqual(await level(teamspace, 'view'), { ok: true })
+    for (const who of [alice, bob]) {
+      const caps = await capsOf(who, page)
+      assert.ok(can(caps, 'view') && !can(caps, 'edit_content') && !can(caps, 'comment'), '읽기로 낮췄는데 고치거나 댓글을 단다')
+      assert.deepEqual(await sees(who, page, teamspace), SEES, '읽기로 낮추자 목록에서 사라졌다 — 판정과 목록이 어긋난다')
+    }
+    await assert.rejects(createPage(alice.ctx, { teamspaceId: teamspace, title: titleFromPlainText('몰래') }), PageError)
+    assert.deepEqual(await canCreateIn(alice, teamspace), { listed: false, destination: false })
+    const detail = await getTeamspace(alice.ctx, teamspace)
+    assert.ok(detail.ok && detail.value.memberLevel === 'view' && !detail.value.canCreatePages)
+
+    // 소유자는 자기 owner 행으로 늘 full_access 다 — 멤버 레벨과 무관하다(7c-10 의 반사실 r6 이 예고한 차이가 여기서 난다).
+    assert.ok(can(await capsOf(fx.owner, page), 'manage_perm'), '멤버 레벨을 낮추자 소유자까지 잃었다')
+    assert.deepEqual(await canCreateIn(fx.owner, teamspace), { listed: true, destination: true })
+
+    // 편집 — 만들고 고치지만 공유는 못 한다.
+    assert.deepEqual(await level(teamspace, 'edit'), { ok: true })
+    const edit = await capsOf(alice, page)
+    assert.ok(can(edit, 'edit_content') && can(edit, 'create_child') && !can(edit, 'share') && !can(edit, 'manage_perm'))
+    assert.deepEqual(await canCreateIn(alice, teamspace), { listed: true, destination: true })
+    assert.ok((await createPage(alice.ctx, { teamspaceId: teamspace, title: titleFromPlainText('편집자의 문서') })).id)
+
+    assert.deepEqual(await level(teamspace, 'full_access'), { ok: true })
+    assert.ok(can(await capsOf(alice, page), 'manage_perm'), '다시 올렸는데 돌아오지 않았다')
+  })
+
+  test('★ 상속을 끊은 페이지는 끊을 때의 레벨을 지킨다(P2) — 끊지 않은 형제는 바뀐다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const teamspace = await newTeamspace()
+    const kept = await topPage(teamspace, '따로 관리하는 문서')
+    const follows = await topPage(teamspace, '따르는 문서')
+    const alice = await member('끊긴 페이지의 앨리스')
+    await join(teamspace, alice)
+    assert.ok((await stopInheriting(fx.owner.ctx, kept)).ok)
+
+    assert.deepEqual(await level(teamspace, 'comment'), { ok: true })
+    assert.ok(can(await capsOf(alice, kept), 'edit_content'), '끊긴 페이지가 멤버 레벨 변경을 받았다 — P2 가 깨졌다')
+    const followed = await capsOf(alice, follows)
+    assert.ok(can(followed, 'comment') && !can(followed, 'edit_content'), '끊지 않은 페이지가 멤버 레벨을 따르지 않았다')
+  })
+
+  test('누가 · 무엇으로 — 소유자만(멤버 forbidden · 멤버가 아니면 not_found) · 넷 밖의 값은 invalid_level · 레벨만 줘도 된다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const teamspace = await newTeamspace()
+    const alice = await member('레벨 못 바꾸는 앨리스')
+    await join(teamspace, alice)
+    const stranger = await member('레벨 모르는 사람')
+
+    assert.deepEqual(await level(teamspace, 'view', alice), { ok: false, reason: 'forbidden' })
+    assert.deepEqual(await level(teamspace, 'view', stranger), { ok: false, reason: 'not_found' })
+    for (const bad of ['edit_content', 'create', 'owner', '', null]) {
+      assert.deepEqual(await level(teamspace, bad), { ok: false, reason: 'invalid_level' }, String(bad))
+    }
+    const still = await getTeamspace(fx.owner.ctx, teamspace)
+    assert.ok(still.ok && still.value.memberLevel === 'full_access', '거부됐는데 레벨이 바뀌었다')
+  })
+
+  test('★ 레벨을 바꾸면 협업 서버에 알린다 — 같은 값을 다시 보내면(이름만 고친 저장) 알리지 않는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const teamspace = await newTeamspace()
+    const heard = await listenTo(t, fx.workspaceId)
+
+    assert.deepEqual(await level(teamspace, 'view'), { ok: true })
+    await waitFor('낮춘 레벨의 신호', () => heard() >= 1)
+    // 폼은 저장마다 모든 칸을 보낸다 — 이름만 고쳐도 같은 레벨이 온다. 그 저장이 권한 신호를 내면 열린 편집기가 헛되이 흔들린다.
+    assert.deepEqual(await updateTeamspace(fx.owner.ctx, teamspace, { name: unique('이름만'), memberLevel: 'view' }), { ok: true })
+    assert.deepEqual(await level(teamspace, 'full_access'), { ok: true })
+    await waitFor('올린 레벨의 신호', () => heard() >= 2)
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    assert.equal(heard(), 2, '같은 레벨을 다시 쓴 저장이 권한 신호를 냈다')
+  })
+})
