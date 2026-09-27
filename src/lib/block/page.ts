@@ -31,7 +31,7 @@ import { withReadTransaction, withTransaction, type Tx } from '../db/tx.ts'
 import { query } from '../db/pool.ts'
 import { orderKeyBetween } from './order-key.ts'
 import { can } from '../permissions/levels.ts'
-import { inheritFromWorkspace } from '../permissions/acl.ts'
+import { enterPrivateRoot, inheritFromWorkspace } from '../permissions/acl.ts'
 import { canViewPage, effectiveCaps, readableScopes, teamspaceCaps } from '../permissions/effective.ts'
 import { MAX_TREE_DEPTH } from './types.ts'
 import { indexPageTitle } from '../search/index-page.ts'
@@ -85,6 +85,11 @@ export type PageSummary = {
   readonly parentPageId: BlockId | null
   /** teamspace 의 **최상위** 페이지면 그 teamspace(7c-1). 하위 페이지 · 워크스페이스 직속 페이지는 null 이다. */
   readonly teamspaceId: string | null
+  /**
+   * 개인 최상위(Private 루트 페이지)면 그 주인(7c-7). 서버 렌더가 "내 개인 페이지인가"를 판별하는 용도다 —
+   * **라우트의 JSON 에 싣지 않는다**(주인의 id 는 화면 계약이 아니다).
+   */
+  readonly ownerUserId: string | null
   readonly orderKey: string
   readonly createdAt: Date
   readonly lastEditedAt: Date
@@ -99,7 +104,7 @@ export type PageDetail = PageSummary & {
 
 /** 모든 페이지 조회가 같은 열 집합을 읽는다. 어긋나면 toSummary 가 조용히 undefined 를 본다. */
 const PAGE_COLUMNS = `id, properties, parent_type, parent_id, order_key,
-                      ancestor_path, perm_scope_id, created_at, last_edited_at, version`
+                      ancestor_path, perm_scope_id, owner_user_id, created_at, last_edited_at, version`
 
 type PageRow = {
   id: string
@@ -109,6 +114,7 @@ type PageRow = {
   order_key: string
   ancestor_path: string[]
   perm_scope_id: string
+  owner_user_id: string | null
   created_at: Date
   last_edited_at: Date
   version: string
@@ -122,6 +128,7 @@ function toSummary(row: PageRow): PageSummary {
     plainTitle: toPlainText(title),
     parentPageId: row.parent_type === 'block' ? asBlockId(row.parent_id) : null,
     teamspaceId: row.parent_type === 'teamspace' ? row.parent_id : null,
+    ownerUserId: row.parent_type === 'workspace' ? row.owner_user_id : null,
     orderKey: row.order_key,
     createdAt: row.created_at,
     lastEditedAt: row.last_edited_at,
@@ -203,6 +210,12 @@ export type CreatePageInput = {
    * teamspace 는 부모가 정한다(루트 블록의 부모 · 판결문 C-9).
    */
   readonly teamspaceId?: string | null
+  /**
+   * **내 개인 최상위**(Private 루트 페이지 · 판결문 C-9 — `parent_type='workspace'` + `owner_user_id`)에 만든다(7c-7).
+   * 나만 본다 — 행은 내 full_access 하나다. `parentPageId` · `teamspaceId` 와 함께 주지 않는다. 게스트는 못 만든다
+   * (개인 섹션이 없다 — 게스트는 받은 페이지로만 산다 · F-06-09).
+   */
+  readonly privateTop?: boolean
   readonly title?: readonly RichTextRun[]
   /**
    * 부모 본문에서 참조를 넣을 자리 — 편집기의 캐럿이 있던 블록(`page-refs.ts` `placePageRefAt`: 비었으면 대체 · 아니면 바로 뒤 ·
@@ -212,6 +225,9 @@ export type CreatePageInput = {
 }
 
 type ParentPlacement = {
+  /** 개인 최상위면 그 주인(= 만드는 사람). 그 외에는 없다 — `ck_private_root` 가 워크스페이스 부모에서만 허락한다. */
+  readonly ownerUserId?: string
+
   parentType: 'workspace' | 'teamspace' | 'block'
   parentId: string
   ancestorPath: string[]
@@ -231,9 +247,26 @@ async function lockParent(
   ctx: SessionContext,
   parentPageId: BlockId | null | undefined,
   teamspaceId: string | null | undefined,
+  privateTop = false,
 ): Promise<ParentPlacement> {
-  if (parentPageId && teamspaceId) {
-    throw new PageError('parent_not_found', '부모 페이지와 teamspace 를 함께 줄 수 없습니다.')
+  if ((parentPageId && teamspaceId) || (privateTop && (parentPageId || teamspaceId))) {
+    throw new PageError('parent_not_found', '부모 페이지 · teamspace · 개인 최상위는 함께 줄 수 없습니다.')
+  }
+
+  if (privateTop) {
+    // 내 개인 최상위(7c-7). 자리는 워크스페이스 부모 그대로이고 `owner_user_id` 가 나다 — 판결문 C-9 가 Private 를
+    // `parent_type` + `owner_user_id` 로 정의했다. 행은 enterPrivateRoot 가 내 full_access 하나를 둔다(아래 ★).
+    if (ctx.role === 'guest') {
+      throw new PageError('parent_not_found', '게스트는 개인 페이지를 만들 수 없습니다.')
+    }
+    await tx.query(`SELECT id FROM workspace WHERE id = $1 FOR UPDATE`, [ctx.workspaceId])
+    return {
+      parentType: 'workspace',
+      parentId: ctx.workspaceId,
+      ancestorPath: [],
+      permScopeId: null,
+      ownerUserId: ctx.userId,
+    }
   }
 
   if (teamspaceId) {
@@ -348,7 +381,7 @@ export async function createPageIn(
   const title = assertValidTitle(input.title ?? [])
 
   {
-    const placement = await lockParent(tx, ctx, input.parentPageId, input.teamspaceId)
+    const placement = await lockParent(tx, ctx, input.parentPageId, input.teamspaceId, input.privateTop === true)
     // 하위 페이지의 자리는 부모 본문의 참조 노드다(CRDT 4b · 판결 X-1). 행을 넣기 **전에** 부모 본문을 연다 —
     // 명령이 자기가 바꾼 것을 자기가 쓰는 순서다(`body-write.ts` 머리말).
     const parentBody = placement.parentType === 'block' ? await openPageBody(tx, ctx, placement.parentId) : null
@@ -363,12 +396,12 @@ export async function createPageIn(
     const row = await tx.queryOne<PageRow>(
       `INSERT INTO block (
          id, workspace_id, type,
-         parent_type, parent_id, order_key, ancestor_path, perm_scope_id,
+         parent_type, parent_id, order_key, ancestor_path, perm_scope_id, owner_user_id,
          properties, format,
          created_by, created_at, last_edited_by, last_edited_at
        ) VALUES (
          $1, $2, 'page',
-         $3, $4, $5, $6, $7,
+         $3, $4, $5, $6, $7, $10,
          $8::jsonb, '{}'::jsonb,
          $9, now(), $9, now()
        )
@@ -383,6 +416,7 @@ export async function createPageIn(
         placement.permScopeId ?? id,
         JSON.stringify({ title }),
         ctx.userId,
+        placement.ownerUserId ?? null,
       ],
     )
 
@@ -398,7 +432,9 @@ export async function createPageIn(
     //
     // 최상위로 **옮길 때**도 같은 행이 필요해 한 함수로 모았다(`inheritFromWorkspace`, HANDOFF §3.2-21).
     if (placement.parentType === 'workspace') {
-      await inheritFromWorkspace(tx, ctx, id)
+      // ★ 개인 최상위는 내 행 하나(나만 본다 · 7c-7), 공용 최상위는 모두의 행(W6-b).
+      if (placement.ownerUserId !== undefined) await enterPrivateRoot(tx, ctx, id)
+      else await inheritFromWorkspace(tx, ctx, id)
     }
 
     // 검색 색인 — W7 (F-07-06). 행 자체는 위 INSERT 가 트리거를 돌려 이미

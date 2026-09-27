@@ -1,6 +1,6 @@
 /**
- * POST /api/workspaces/[workspaceId]/pages — 페이지 생성 (`{ parentPageId?, teamspaceId?, title?, at? }` — `at` 은 부모 본문에서 참조를 넣을 자리,
- *   `teamspaceId` 는 그 teamspace 의 최상위에 만든다 · 7c-1)
+ * POST /api/workspaces/[workspaceId]/pages — 페이지 생성 (`{ parentPageId?, teamspaceId?, privateTop?, title?, at? }` — `at` 은 부모 본문에서 참조를 넣을
+ *   자리, `teamspaceId` 는 그 teamspace 의 최상위(7c-1), `privateTop: true` 는 **내 개인 최상위**(나만 본다 · 7c-7))
  * GET  /api/workspaces/[workspaceId]/pages?parent=<pageId> — 자식 페이지 목록
  *
  * 정본: 00-canonical-data-model.md §3.4 (페이지는 `type='page'` 블록이다 — C-3)
@@ -31,7 +31,7 @@ export async function POST(
 
   const parsed = await readJsonBody(request)
   if (!parsed.ok) return parsed.response
-  const body = (parsed.body ?? {}) as { parentPageId?: unknown; teamspaceId?: unknown; title?: unknown; at?: unknown }
+  const body = (parsed.body ?? {}) as { parentPageId?: unknown; teamspaceId?: unknown; privateTop?: unknown; title?: unknown; at?: unknown }
 
   let parentPageId = null
   if (body.parentPageId != null) {
@@ -67,6 +67,8 @@ export async function POST(
     const page = await createPage(session.ctx, {
       parentPageId,
       teamspaceId,
+      // true 만 개인 최상위다 — 다른 모양(1 · "true")을 넓게 읽어 주면 오타가 "나만 보는 페이지"를 만든다.
+      privateTop: body.privateTop === true,
       title: titleFromPlainText(body.title),
       at,
     })

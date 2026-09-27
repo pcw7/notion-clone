@@ -38,6 +38,7 @@ export function MovePageControl({
   pageId,
   currentParentId,
   currentTeamspaceId,
+  currentPrivate = false,
   targets,
   teamspaces,
 }: {
@@ -46,6 +47,8 @@ export function MovePageControl({
   currentParentId: string | null
   /** 지금 teamspace 의 최상위에 있으면 그 teamspace. */
   currentTeamspaceId: string | null
+  /** 지금 **내 개인 최상위**에 있는가(7c-7). 워크스페이스 최상위와 부모가 같아서(`workspace`) 따로 받는다. */
+  currentPrivate?: boolean
   targets: MoveTargetOption[]
   /** 옮길 수 있는 teamspace 최상위(내가 둘 수 있는 것만). */
   teamspaces: MoveTeamspaceOption[]
@@ -56,7 +59,8 @@ export function MovePageControl({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const atWorkspaceRoot = currentParentId === null && currentTeamspaceId === null
+  // ⚠ 개인 최상위도 부모는 워크스페이스다(판결문 C-9) — 주인까지 봐야 "현재 위치"가 맞는다(7c-7).
+  const atWorkspaceRoot = currentParentId === null && currentTeamspaceId === null && !currentPrivate
   const q = filter.trim().toLowerCase()
 
   const rows = useMemo(() => {
@@ -71,7 +75,7 @@ export function MovePageControl({
 
   const teamspaceRows = q === '' ? teamspaces : teamspaces.filter((t) => t.name.toLowerCase().includes(q))
 
-  async function move(body: { targetParentId: string | null } | { targetTeamspaceId: string }) {
+  async function move(body: { targetParentId: string | null } | { targetTeamspaceId: string } | { targetPrivate: true }) {
     setBusy(true)
     setError(null)
     try {
@@ -133,6 +137,28 @@ export function MovePageControl({
                 >
                   워크스페이스 최상위
                   <span className="block text-xs text-neutral-400">워크스페이스 모든 멤버가 봅니다</span>
+                </button>
+              </li>
+            )}
+
+            {(q === '' || '개인 페이지'.includes(q)) && (
+              <li>
+                <button
+                  type="button"
+                  disabled={busy || currentPrivate}
+                  data-testid="move-to-private"
+                  onClick={() => void move({ targetPrivate: true })}
+                  className={OPTION}
+                >
+                  <span aria-hidden className="mr-1 text-neutral-400">
+                    ⚿
+                  </span>
+                  개인 페이지
+                  {currentPrivate ? (
+                    <span className="ml-2 text-xs text-neutral-400">현재 위치</span>
+                  ) : (
+                    <span className="block text-xs text-neutral-400">나만 봅니다 — 이 페이지에 따로 준 공유가 걷힙니다</span>
+                  )}
                 </button>
               </li>
             )}

@@ -592,6 +592,8 @@ async function projectRows(
           parent_id: row.parent_id,
           ancestor_path: row.ancestor_path,
           perm_scope_id: row.perm_scope_id,
+          // 본문 안 이동의 출발지는 늘 블록 부모다 — 개인 최상위(owner_user_id)는 워크스페이스 부모에만 있다(7c-7).
+          owner_user_id: null,
         },
         {
           id: b.parentId,

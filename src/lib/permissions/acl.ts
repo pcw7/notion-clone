@@ -558,6 +558,48 @@ export async function leaveWorkspaceRoot(tx: Tx, nodeId: string): Promise<void> 
 }
 
 /**
+ * 노드를 **개인 최상위(Private 루트 페이지)** 로 만든다 — 정본 §3.11 `move_to_private` 의 ACL 부분(7c-7).
+ *
+ * 노드 로컬의 행을 나 아닌 주체 전부 지우고, 나에게 full_access 를 둔다. "개인 페이지로" 는 **나만 보게 됩니다**라는
+ * 뜻이므로 이 페이지에 따로 준 공유가 함께 걷힌다 — 정본 의사코드 그대로다. **하위의 명시 부여는 그대로 산다**(노드
+ * 로컬만 지운다 · 상속 플래그도 건드리지 않는다).
+ *
+ * `isCut` 을 건너뛰지 않는 까닭: 끊은 노드의 행도 노드 로컬 부여이고, 정본이 "노드 로컬 ACL 재설정"이라고 적었다.
+ */
+export async function enterPrivateRoot(tx: Tx, ctx: SessionContext, nodeId: string): Promise<void> {
+  await tx.query(
+    `DELETE FROM acl_entry
+      WHERE node_kind = 'block' AND node_id = $1
+        AND NOT (principal_type = 'user' AND principal_id = $2)`,
+    [nodeId, ctx.userId],
+  )
+  await tx.query(
+    `INSERT INTO acl_entry (id, node_kind, node_id, principal_type, principal_id, level, granted_by)
+     VALUES ($1, 'block', $2, 'user', $3, 'full_access', $3)
+     ON CONFLICT (node_kind, node_id, principal_type, principal_id)
+     DO UPDATE SET level = EXCLUDED.level WHERE acl_entry.level <> EXCLUDED.level`,
+    [randomUUID(), nodeId, ctx.userId],
+  )
+}
+
+/**
+ * 개인 최상위를 떠난다 — `enterPrivateRoot` 의 짝(`leaveWorkspaceRoot` 와 같은 규칙 · §3.2-43).
+ *
+ * 개인 최상위에서 **주인의 full_access 행은 그 자리의 상속분**이다(만들 때 `enterPrivateRoot` 가 두고, 판정은 그 행
+ * 하나로 "나만 본다"가 된다). 떠나면 거둔다 — 두면 상속분이 명시 부여로 둔갑해, 주인이 teamspace 에서 빠져도 그
+ * 페이지를 계속 본다. 끊은 노드는 그대로 둔다(그 행은 절단 시점의 자기 부여다 — P2). **주인이 아닌** 주체의 행(따로
+ * 준 공유)은 명시 부여이므로 건드리지 않는다.
+ */
+export async function leavePrivateRoot(tx: Tx, nodeId: string, ownerUserId: string): Promise<void> {
+  if (await isCut(tx, nodeId)) return
+  await tx.query(
+    `DELETE FROM acl_entry
+      WHERE node_kind = 'block' AND node_id = $1 AND principal_type = 'user' AND principal_id = $2`,
+    [nodeId, ownerUserId],
+  )
+}
+
+/**
  * 부모가 사라져 최상위로 되살린 노드는 되살린 사람만 본다 — 정본 B4 "복원 실행자의 Private 루트로 재부모화".
  *
  * MVP 에는 Private 루트가 없어 최상위에 두고, 정본 `move_to_private` 처럼 되살린 사람에게 `full_access` 를 준다. 워크스페이스에서

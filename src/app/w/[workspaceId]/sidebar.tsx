@@ -17,12 +17,12 @@
  * 로 간다. 서버 동기화가 필요해지면 그때 정본에 테이블을 추가한다.
  *
  * ──────────────────────────────────────────────────────────────────────
- * 섹션 — 즐겨찾기 · Teamspaces · 워크스페이스 페이지 (7c-2)
+ * 섹션 — 즐겨찾기 · Teamspaces · 공유됨 · 개인 페이지 · 워크스페이스 페이지 (7c-2 · 7c-7)
  * ──────────────────────────────────────────────────────────────────────
  *
  * F-07-16: *"섹션 = 권한 상태의 **파생 뷰**이지 저장된 분류가 아니다."* 트리는
  * 서버가 한 벌로 엮고 레이아웃이 루트를 **내 teamspace 별로** 갈라 준다
- * (`groupRootsByTeamspace`). 여기서는 그 모양대로 그린다 — 가르는 규칙을 화면에
+ * (`groupSidebarRoots`). 여기서는 그 모양대로 그린다 — 가르는 규칙을 화면에
  * 두 벌 두지 않는다. teamspace 는 이름(→ 그 teamspace 의 화면) · `+`(그 최상위에
  * 새 페이지) · `▦`(새 데이터베이스 — 7c-4) · 그 아래 트리다. 나머지 루트는 "워크스페이스 페이지"다 — 워크스페이스
  * 직속, 그리고 멤버가 아닌 teamspace 에서 따로 공유받은 페이지(Shared 섹션은 아직
@@ -77,6 +77,9 @@ export type NavRow = { id: string; title: string }
 export function Sidebar({
   workspaceId,
   tree,
+  privatePages = [],
+  shared = [],
+  canCreatePrivatePage = false,
   teamspaces,
   canBrowseTeamspaces = false,
   canCreateTeamspace,
@@ -86,8 +89,14 @@ export function Sidebar({
   inboxUnread,
 }: {
   workspaceId: string
-  /** teamspace 에 들지 않은 루트 — 워크스페이스 직속 · 멤버가 아닌 teamspace 에서 공유받은 페이지. */
+  /** 워크스페이스 페이지 — 주인 없는 진짜 최상위(판결문 C-9 · 7c-7). */
   tree: SidebarNode[]
+  /** 개인 페이지 — 내 개인 최상위(나만 본다). 빈 배열이어도 섹션은 선다 — `+` 가 첫 페이지를 만든다. */
+  privatePages?: SidebarNode[]
+  /** 공유됨 — 남의 개인 페이지 · 멤버가 아닌 teamspace 의 페이지 · 따로 공유받은 하위 페이지. 비면 그리지 않는다. */
+  shared?: SidebarNode[]
+  /** 개인 페이지를 만들 수 있는가 — 게스트만 아니다(표시 전용 · 서버가 다시 묻는다 · 7c-7). 섹션 자체가 이것으로 선다. */
+  canCreatePrivatePage?: boolean
   /** 내가 멤버인 teamspace 와 그 트리(7c-2). 서버가 갈라 준다. */
   teamspaces: SidebarTeamspace[]
   /** 멤버가 아닌 teamspace 를 둘러볼 수 있는 역할인가 — 표시 전용(7c-5). 주지 않으면 둘러보기 버튼이 없다. */
@@ -119,7 +128,10 @@ export function Sidebar({
   const currentTeamspaceId = useMemo(() => pathname.match(/^\/w\/[^/]+\/teamspaces\/([^/]+)/)?.[1] ?? null, [pathname])
 
   /** 펼칠 조상을 찾을 트리 — 섹션이 갈라져 있어도 현재 페이지는 어느 섹션에든 있다. */
-  const allNodes = useMemo(() => [...tree, ...teamspaces.flatMap((t) => t.pages)], [tree, teamspaces])
+  const allNodes = useMemo(
+    () => [...tree, ...privatePages, ...shared, ...teamspaces.flatMap((t) => t.pages)],
+    [tree, privatePages, shared, teamspaces],
+  )
   const [creatingTeamspace, setCreatingTeamspace] = useState(false)
 
   const [busy, setBusy] = useState(false)
@@ -159,9 +171,9 @@ export function Sidebar({
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [toggleSidebar])
 
-  /** 새 페이지를 만들고 연다 — 자리는 부모 페이지 · 워크스페이스 직속(`parentPageId: null`) · teamspace 의 최상위 중 하나다. */
+  /** 새 페이지를 만들고 연다 — 자리는 부모 페이지 · 워크스페이스 직속(`parentPageId: null`) · teamspace 의 최상위 · 내 개인 최상위다. */
   const openNewPage = useCallback(
-    async (at: { parentPageId: string | null } | { teamspaceId: string }) => {
+    async (at: { parentPageId: string | null } | { teamspaceId: string } | { privateTop: true }) => {
       setBusy(true)
       try {
         const res = await fetch(`/api/workspaces/${workspaceId}/pages`, {
@@ -182,6 +194,7 @@ export function Sidebar({
   )
   const addChild = useCallback((parentPageId: string | null) => openNewPage({ parentPageId }), [openNewPage])
   const addTeamspacePage = useCallback((teamspaceId: string) => openNewPage({ teamspaceId }), [openNewPage])
+  const addPrivatePage = useCallback(() => openNewPage({ privateTop: true }), [openNewPage])
 
   /**
    * 페이지를 복제한다 — 6b. 빠진 것이 없으면 사본으로 옮겨 가고, 있으면 **멈춰서 말한다**(`duplicate-page.ts`).
@@ -418,8 +431,68 @@ export function Sidebar({
           </section>
         )}
 
+        {shared.length > 0 && (
+          <section aria-label="공유됨" data-testid="sidebar-shared" className="flex flex-col gap-0.5">
+            <h2 className="px-2 text-xs font-medium text-neutral-400">공유됨</h2>
+            <ul>
+              {shared.map((node) => (
+                <TreeItem
+                  key={node.id}
+                  node={node}
+                  depth={0}
+                  workspaceId={workspaceId}
+                  currentPageId={currentPageId}
+                  expanded={expanded}
+                  busy={busy}
+                  onToggle={toggle}
+                  onAddChild={addChild}
+                  onDuplicate={duplicate}
+                />
+              ))}
+            </ul>
+          </section>
+        )}
+
+        {canCreatePrivatePage && (
+          <section aria-label="개인 페이지" data-testid="sidebar-private" className="flex flex-col gap-0.5">
+            <div className="flex items-center justify-between px-2">
+              <h2 className="text-xs font-medium text-neutral-400">개인 페이지</h2>
+              <button
+                type="button"
+                disabled={busy}
+                data-testid="sidebar-private-add"
+                onClick={() => void addPrivatePage()}
+                aria-label="새 개인 페이지"
+                title="새 개인 페이지 — 나만 봅니다"
+                className="rounded px-1 text-sm text-neutral-400 hover:bg-neutral-100 disabled:opacity-30 dark:hover:bg-neutral-800"
+              >
+                +
+              </button>
+            </div>
+            <ul>
+              {privatePages.map((node) => (
+                <TreeItem
+                  key={node.id}
+                  node={node}
+                  depth={0}
+                  workspaceId={workspaceId}
+                  currentPageId={currentPageId}
+                  expanded={expanded}
+                  busy={busy}
+                  onToggle={toggle}
+                  onAddChild={addChild}
+                  onDuplicate={duplicate}
+                />
+              ))}
+              {privatePages.length === 0 && <li className="px-2 text-xs text-neutral-400">나만 보는 페이지가 없습니다</li>}
+            </ul>
+          </section>
+        )}
+
         <section aria-label="워크스페이스 페이지" className="flex flex-col gap-0.5">
-          {showTeamspaces && <h2 className="px-2 text-xs font-medium text-neutral-400">워크스페이스 페이지</h2>}
+          {(showTeamspaces || shared.length > 0 || canCreatePrivatePage) && (
+            <h2 className="px-2 text-xs font-medium text-neutral-400">워크스페이스 페이지</h2>
+          )}
           <ul>
             {tree.map((node) => (
               <TreeItem

@@ -1692,7 +1692,7 @@ async function main() {
       const guestHome = await (await pageAs(uiGuest, `/w/${workspaceId}`)).text()
       check('★ 게스트의 사이드바에는 Teamspaces 섹션이 없다',
         guestHome.includes('aria-label="페이지 트리"') && !guestHome.includes('data-testid="sidebar-teamspaces"'))
-      // 멤버가 아닌 사람에게 그 페이지만 따로 공유하면 — Shared 섹션이 아직 없으니 "워크스페이스 페이지" 에 선다.
+      // 멤버가 아닌 사람에게 그 페이지만 따로 공유하면 — 공유됨 섹션에 선다(7c-7).
       const shared = await fetch(`${BASE}/api/workspaces/${workspaceId}/pages/${designPage}/access`, {
         method: 'POST', headers: authed,
         body: JSON.stringify({ action: 'grant', principal: { type: 'user', id: uiOutsider.userId }, level: 'view' }),
@@ -1700,8 +1700,9 @@ async function main() {
       const outsiderShared = await (await pageAs(uiOutsider, `/w/${workspaceId}`)).text()
       const outsiderPage = await pageAs(uiOutsider, `/w/${workspaceId}/${designPage}`)
       const outsiderPageHtml = await outsiderPage.text()
-      check('★ 따로 공유받은 teamspace 페이지는 "워크스페이스 페이지" 에 선다 — 사이드바에 그 teamspace 의 id 가 가지 않는다',
-        shared.ok && outsiderShared.includes(designPage) && !outsiderShared.includes(design), `공유 ${shared.status}`)
+      check('★ 따로 공유받은 teamspace 페이지는 "공유됨" 에 선다(7c-7) — 사이드바에 그 teamspace 의 id 가 가지 않는다',
+        shared.ok && outsiderShared.includes('data-testid="sidebar-shared"') && outsiderShared.includes(designPage) &&
+          !outsiderShared.includes(design), `공유 ${shared.status}`)
       check('★ 그 페이지의 breadcrumb 에도 teamspace 가 없다 — 멤버가 아니다',
         outsiderPage.status === 200 && !outsiderPageHtml.includes('data-testid="breadcrumb-teamspace"') && !outsiderPageHtml.includes(designName),
         `페이지 ${outsiderPage.status}`)
@@ -2056,6 +2057,82 @@ async function main() {
           (await pageAs(archiveMate, `/w/${workspaceId}/${doomedPage}`)).status === 200)
       // 되살리기의 refresh 가 끝나기 전에 다음 절이 화면을 옮기지 않게 한다(§6).
       await sleep(1500)
+    }
+
+    section('개인 페이지 · 공유됨 섹션 (7c-7 · F-02-12 · F-07-16)')
+    {
+      // 사이드바의 개인 페이지 섹션(+ 로 만들기 · 나만 본다) · 이동 피커의 "개인 페이지" · 공유됨 섹션(따로 공유받은 것).
+      const privateMate = await joinAs(workspaceId, await createUser('개인 동료'), 'member')
+      const mateHeaders = { ...json, cookie: `nc_session=${privateMate.token}` }
+      const pageAs = (actor, path) => fetch(`${BASE}${path}`, { headers: { cookie: `nc_session=${actor.token}` } })
+      const clickOnSel = async (sel) => {
+        const box = await evaluate(`(() => {
+          const el = document.querySelector(${JSON.stringify(sel)})
+          if (!el || el.disabled) return null
+          el.scrollIntoView({ block: 'center' })
+          const r = el.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (!box) return false
+        await click(box.x, box.y)
+        await sleep(120)
+        return true
+      }
+
+      // ① 새 개인 페이지 — 사이드바의 +
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
+      await waitFor(`!!document.querySelector('[data-testid="sidebar-private-add"]')`, 15000)
+      check('사이드바에 개인 페이지 섹션이 있다 — 비어 있다고 말한다',
+        await evaluate(`document.querySelector('[data-testid="sidebar-private"]')?.textContent.includes('나만 보는 페이지가 없습니다')
+          ?? false`))
+      await clickOnSel('[data-testid="sidebar-private-add"]')
+      check('★ + 로 새 개인 페이지 — 편집기가 열리고 개인 페이지 섹션 아래에 선다',
+        await waitFor(`!!document.querySelector('.blk-editor')
+          && !!document.querySelector('[data-testid="sidebar-private"] a[href="' + location.pathname + '"]')`, 15000),
+        await evaluate('location.pathname'))
+      const myPrivate = await evaluate(`location.pathname.split('/').pop()`)
+      check('★ 나만 본다 — 동료에게는 그 페이지가 404 다',
+        (await pageAs(privateMate, `/w/${workspaceId}/${myPrivate}`)).status === 404 &&
+          (await fetch(`${BASE}/w/${workspaceId}/${myPrivate}`, { headers: authed })).status === 200)
+
+      // ② 이동 피커 — 개인 → 워크스페이스 최상위 → 개인
+      await waitFor(`!!document.querySelector('[data-testid="move-open"]')`, 10000)
+      await clickOnSel('[data-testid="move-open"]')
+      check('개인 페이지의 피커 — "개인 페이지"는 현재 위치고 "워크스페이스 최상위"가 선다',
+        await waitFor(`!!document.querySelector('[data-testid="move-picker"]')
+          && document.querySelector('[data-testid="move-to-private"]')?.disabled === true
+          && !!document.querySelector('[data-testid="move-to-workspace"]')`, 5000))
+      await clickOnSel('[data-testid="move-to-workspace"]')
+      check('★ 워크스페이스 최상위로 열면 동료가 보고 · 워크스페이스 페이지 섹션으로 옮겨 간다',
+        await waitFor(`!document.querySelector('[data-testid="sidebar-private"] a[href="/w/${workspaceId}/${myPrivate}"]')
+          && !!document.querySelector('section[aria-label="워크스페이스 페이지"] a[href="/w/${workspaceId}/${myPrivate}"]')`, 15000) &&
+          (await pageAs(privateMate, `/w/${workspaceId}/${myPrivate}`)).status === 200)
+      await clickOnSel('[data-testid="move-open"]')
+      await waitFor(`!!document.querySelector('[data-testid="move-to-private"]')`, 5000)
+      await clickOnSel('[data-testid="move-to-private"]')
+      check('★ 다시 개인 페이지로 — 동료는 곧바로 못 보고 섹션이 돌아온다',
+        await waitFor(`!!document.querySelector('[data-testid="sidebar-private"] a[href="/w/${workspaceId}/${myPrivate}"]')`, 15000) &&
+          (await pageAs(privateMate, `/w/${workspaceId}/${myPrivate}`)).status === 404)
+
+      // ③ 공유됨 — 동료의 개인 페이지 하나를 따로 공유받는다
+      const matePage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
+        method: 'POST', headers: mateHeaders, body: JSON.stringify({ privateTop: true, title: '동료의 개인 메모' }),
+      })).json()).page
+      check('전제 — 동료의 개인 페이지는 내 사이드바 어디에도 없다',
+        await evaluate(`!document.querySelector('a[href="/w/${workspaceId}/${matePage.id}"]')`))
+      const shareRes = await fetch(`${BASE}/api/workspaces/${workspaceId}/pages/${matePage.id}/access`, {
+        method: 'POST', headers: mateHeaders,
+        body: JSON.stringify({ action: 'grant', principal: { type: 'user', id: ctx.userId }, level: 'edit' }),
+      })
+      check('동료가 자기 개인 페이지를 나에게 공유할 수 있다 (201/200)', shareRes.ok, String(shareRes.status))
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
+      check('★ 공유받은 남의 개인 페이지는 "공유됨" 섹션에 선다',
+        await waitFor(`!!document.querySelector('[data-testid="sidebar-shared"] a[href="/w/${workspaceId}/${matePage.id}"]')`, 15000),
+        await evaluate(`document.querySelector('[data-testid="sidebar-shared"]')?.textContent ?? '섹션 없음'`))
+      // 게스트에게는 개인 섹션이 없다.
+      const guestNoPrivate = await joinAs(workspaceId, await createUser('개인 없는 손님'), 'guest')
+      const guestHome = await (await pageAs(guestNoPrivate, `/w/${workspaceId}`)).text()
+      check('게스트의 사이드바에는 개인 페이지 섹션이 없다', !guestHome.includes('sidebar-private'))
     }
 
     section('코멘트 패널 · 인박스 (F-05-08 · F-11-07)')
@@ -4339,7 +4416,8 @@ async function main() {
       await clickOn('[data-testid="page-duplicate"]')
       check('★ 페이지의 "복제"를 누르면 사본으로 옮겨 간다 — 본문이 따라와 있다',
         (await waitFor(`!location.pathname.endsWith('/${source}') && document.body.textContent.includes(${JSON.stringify(marker)})`, 15000))
-          && (await pageCount()) > before,
+          // 개수는 한 번만 세면 refresh 와 경주한다(7c-7 반사실 빌드에서 한 번 걸렸다) — 자랄 때까지 기다린다.
+          && (await waitFor(`document.querySelectorAll('nav[aria-label="페이지 트리"] a').length > ${before}`, 8000)),
         `${await evaluate('location.pathname')} · 트리 ${before} → ${await pageCount()}`)
 
       // 사이드바의 ⧉ — 원본 옆에 하나 더.

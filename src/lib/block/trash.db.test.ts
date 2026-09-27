@@ -502,6 +502,11 @@ describe('restorePage — 부모가 사라진 경우 (B4)', () => {
       [child.id],
     )
     assert.deepEqual(acl.map((r) => [r.principal_type, r.principal_id, r.level]), [['user', restorer.userId, 'full_access']])
+    // 7c-7: 이제 문자 그대로 "복원 실행자의 Private 루트"다 — owner_user_id 가 되살린 사람이고, 그 사람의 개인 페이지
+    // 섹션에 선다(전에는 행만 흉내 냈다).
+    const { queryOne: q1 } = await import('../db/pool.ts')
+    const restored = await q1<{ owner_user_id: string | null }>(`SELECT owner_user_id FROM block WHERE id = $1`, [child.id])
+    assert.equal(restored.owner_user_id, restorer.userId, 'B4 가 개인 최상위로 오지 않았다')
     for (const id of [child.id, grandchild.id]) {
       assert.deepEqual(
         [await canViewPage(restorer.ctx, id), await canViewPage(bystander.ctx, id), await canViewPage(fx.owner.ctx, id)],

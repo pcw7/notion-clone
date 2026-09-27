@@ -70,7 +70,7 @@ import type { SessionContext } from '../auth/session-context.ts'
 import type { BlockId } from '../ids.ts'
 import { asBlockId } from '../ids.ts'
 import { withReadTransaction, withTransaction, type Tx } from '../db/tx.ts'
-import { grantToRestorer, inheritFromWorkspace, isScopeBoundary, leaveWorkspaceRoot } from '../permissions/acl.ts'
+import { enterPrivateRoot, grantToRestorer, inheritFromWorkspace, isScopeBoundary, leavePrivateRoot, leaveWorkspaceRoot } from '../permissions/acl.ts'
 import { effectiveCaps, readableScopes, scopesWith, teamspaceCaps } from '../permissions/effective.ts'
 import { can } from '../permissions/levels.ts'
 import { listMyTeamspaces } from '../workspace/teamspace.ts'
@@ -107,11 +107,17 @@ export class MoveError extends Error {
 /** teamspace 의 최상위 — 옮길 곳의 세 번째 종류(7c-3). */
 export type TeamspaceTarget = { readonly teamspaceId: string }
 
-/** 옮길 곳 — 블록(페이지 · 본문 블록) · `null`(워크스페이스 최상위) · teamspace 최상위. */
-export type MoveDestination = BlockId | null | TeamspaceTarget
+/** **내 개인 최상위** — 옮길 곳의 네 번째 종류(7c-7). 정본 §3.11 `move_to_private`: 나만 보게 된다. */
+export type PrivateTarget = { readonly privateTop: true }
+
+/** 옮길 곳 — 블록(페이지 · 본문 블록) · `null`(워크스페이스 최상위) · teamspace 최상위 · 내 개인 최상위. */
+export type MoveDestination = BlockId | null | TeamspaceTarget | PrivateTarget
 
 const isTeamspaceTarget = (value: unknown): value is TeamspaceTarget =>
   typeof value === 'object' && value !== null && 'teamspaceId' in value
+
+const isPrivateTarget = (value: unknown): value is PrivateTarget =>
+  typeof value === 'object' && value !== null && 'privateTop' in value
 
 export type MoveResult = {
   readonly pageId: BlockId
@@ -119,6 +125,8 @@ export type MoveResult = {
   readonly parentBlockId: BlockId | null
   /** teamspace 최상위로 갔으면 그 teamspace. */
   readonly teamspaceId: string | null
+  /** 내 개인 최상위로 갔는가(7c-7). */
+  readonly privateTop: boolean
   readonly ancestors: readonly BlockId[]
   readonly permScopeId: string
   readonly orderKey: string
@@ -135,6 +143,8 @@ export type MovingRow = {
   parent_id: string
   ancestor_path: string[]
   perm_scope_id: string
+  /** 개인 최상위(Private 루트 페이지)면 그 주인. `parent_type='workspace'` 를 공용 최상위로 읽기 전에 이것을 본다(7c-7). */
+  owner_user_id: string | null
 }
 
 export type TargetRow = {
@@ -156,11 +166,18 @@ async function lockTarget(
   tx: Tx,
   ctx: SessionContext,
   destination: MoveDestination,
-): Promise<TargetRow | TeamspaceTarget | null> {
+): Promise<TargetRow | TeamspaceTarget | PrivateTarget | null> {
   if (destination === null) {
     // 형제 삽입 직렬화. `page.ts` 의 lockParent 와 같은 이유다.
     await tx.query(`SELECT id FROM workspace WHERE id = $1 FOR UPDATE`, [ctx.workspaceId])
     return null
+  }
+
+  if (isPrivateTarget(destination)) {
+    // 내 개인 최상위(7c-7). 게스트에게는 개인 섹션이 없다(`createPage` 의 개인 자리와 같은 규칙).
+    if (ctx.role === 'guest') throw new MoveError('target_not_found', '옮길 위치를 찾을 수 없습니다.')
+    await tx.query(`SELECT id FROM workspace WHERE id = $1 FOR UPDATE`, [ctx.workspaceId])
+    return destination
   }
 
   if (isTeamspaceTarget(destination)) {
@@ -203,15 +220,21 @@ async function lockTarget(
 }
 
 /**
- * 이 루트 블록의 뿌리 — 부모가 teamspace 면 그 id, 워크스페이스면 null. 판정(`effective.ts` 의 `ChainRow`)과 같은 규칙이다.
- * 노드의 루트 블록은 `ancestor_path[1]`(없으면 자기)이다.
+ * 이 루트 블록의 **뿌리 열쇠** — 누가 보는지를 정하는 원천이다(7c-3 · 7c-7). teamspace 면 `ts:{id}`, 개인 최상위면
+ * `private:{주인}`, 공용 최상위면 `'workspace'`. 판정(`effective.ts` 의 `ChainRow`)과 같은 규칙으로 루트 블록
+ * (`ancestor_path[1]`, 없으면 자기)의 부모와 주인을 읽는다.
+ *
+ * `parent_type='workspace'` 만 보고 공용 최상위로 읽으면 안 된다 — 개인 최상위도 워크스페이스 부모다(판결문 C-9 —
+ * Private 는 `parent_type` + `owner_user_id`).
  */
-async function rootTeamspaceOf(tx: Tx, rootBlockId: string): Promise<string | null> {
-  const root = await tx.queryOne<{ parent_type: string; parent_id: string }>(
-    `SELECT parent_type, parent_id FROM block WHERE id = $1`,
+async function rootKeyOf(tx: Tx, rootBlockId: string): Promise<string> {
+  const root = await tx.queryOne<{ parent_type: string; parent_id: string; owner_user_id: string | null }>(
+    `SELECT parent_type, parent_id, owner_user_id FROM block WHERE id = $1`,
     [rootBlockId],
   )
-  return root.parent_type === 'teamspace' ? root.parent_id : null
+  if (root.parent_type === 'teamspace') return `ts:${root.parent_id}`
+  if (root.owner_user_id !== null) return `private:${root.owner_user_id}`
+  return 'workspace'
 }
 
 /**
@@ -227,7 +250,7 @@ export async function movePage(
   pageId: BlockId,
   destination: MoveDestination,
 ): Promise<MoveResult> {
-  const targetParentId = isTeamspaceTarget(destination) ? null : destination
+  const targetParentId = isTeamspaceTarget(destination) || isPrivateTarget(destination) ? null : destination
   return withTransaction(async (tx) => {
     const peek = await tx.queryMaybe<{ parent_type: string; parent_id: string; properties: { title?: unknown } | null }>(
       `SELECT parent_type, parent_id, properties FROM block
@@ -260,7 +283,7 @@ export async function movePage(
     for (const owner of owners) await tx.query(`SELECT id FROM block WHERE id = $1 FOR UPDATE`, [owner])
 
     const moving = await tx.queryMaybe<MovingRow>(
-      `SELECT id, parent_type, parent_id, ancestor_path, perm_scope_id
+      `SELECT id, parent_type, parent_id, ancestor_path, perm_scope_id, owner_user_id
          FROM block
         WHERE id = $1 AND workspace_id = $2 AND type = 'page' AND lifecycle = 'live'
         FOR UPDATE`,
@@ -275,39 +298,47 @@ export async function movePage(
     if (!can(caps, 'edit_content')) throw new MoveError('forbidden', '이 페이지를 옮길 권한이 없습니다.')
 
     const target = await lockTarget(tx, ctx, destination)
-    const blockTarget = target === null || isTeamspaceTarget(target) ? null : target
+    const blockTarget = target === null || isTeamspaceTarget(target) || isPrivateTarget(target) ? null : target
 
     if (blockTarget !== null && blockTarget.ancestor_path.includes(moving.id)) {
       throw new MoveError('cycle', '페이지를 자기 하위 페이지 안으로 옮길 수 없습니다.')
     }
 
-    // ── 뿌리가 바뀌는가 (머리말 "teamspace") ────────────────────────
-    const fromRoot = await rootTeamspaceOf(tx, moving.ancestor_path[0] ?? moving.id)
+    // ── 뿌리가 바뀌는가 (머리말 "teamspace" · 7c-7 의 개인 최상위) ──
+    const fromRoot = await rootKeyOf(tx, moving.ancestor_path[0] ?? moving.id)
     const toRoot =
       target === null
-        ? null
+        ? 'workspace'
         : isTeamspaceTarget(target)
-          ? target.teamspaceId
-          : await rootTeamspaceOf(tx, target.ancestor_path[0] ?? target.id)
+          ? `ts:${target.teamspaceId}`
+          : isPrivateTarget(target)
+            ? `private:${ctx.userId}`
+            : await rootKeyOf(tx, target.ancestor_path[0] ?? target.id)
     if (fromRoot !== toRoot && !can(caps, 'manage_perm')) {
       throw new MoveError(
         'needs_full_access',
-        '다른 teamspace 나 워크스페이스 최상위로 옮기려면 이 페이지의 전체 권한이 필요합니다.',
+        '다른 teamspace · 개인 페이지 · 워크스페이스 최상위로 옮기려면 이 페이지의 전체 권한이 필요합니다.',
       )
     }
 
     // ── 이미 그 자리인가 ────────────────────────────────────────────
+    //
+    // ⚠ 워크스페이스 부모라고 공용 최상위가 아니다(7c-7) — 개인 최상위도 `parent_type='workspace'` 다. 주인까지
+    // 봐야 "개인 페이지 → 워크스페이스 최상위"가 noop 으로 잘못 통과하지 않는다(그 이동은 모두에게 여는 것이다).
     const alreadyThere =
       target === null
-        ? moving.parent_type === 'workspace'
+        ? moving.parent_type === 'workspace' && moving.owner_user_id === null
         : isTeamspaceTarget(target)
           ? moving.parent_type === 'teamspace' && moving.parent_id === target.teamspaceId
-          : moving.parent_type === 'block' && moving.parent_id === target.id
+          : isPrivateTarget(target)
+            ? moving.parent_type === 'workspace' && moving.owner_user_id === ctx.userId
+            : moving.parent_type === 'block' && moving.parent_id === target.id
     if (alreadyThere) {
       return {
         pageId: asBlockId(moving.id),
         parentBlockId: blockTarget === null ? null : asBlockId(blockTarget.id),
         teamspaceId: isTeamspaceTarget(target) ? target.teamspaceId : null,
+        privateTop: isPrivateTarget(target),
         ancestors: moving.ancestor_path.map(asBlockId),
         permScopeId: moving.perm_scope_id,
         orderKey: '',
@@ -344,6 +375,7 @@ export async function movePage(
       pageId: asBlockId(moving.id),
       parentBlockId: blockTarget === null ? null : asBlockId(blockTarget.id),
       teamspaceId: isTeamspaceTarget(target) ? target.teamspaceId : null,
+      privateTop: isPrivateTarget(target),
       ancestors: placed.ancestors.map(asBlockId),
       permScopeId: placed.permScopeId,
       orderKey: final.order_key,
@@ -393,18 +425,20 @@ export async function relocateSubtree(
   tx: Tx,
   ctx: SessionContext,
   moving: MovingRow,
-  target: TargetRow | TeamspaceTarget | null,
+  target: TargetRow | TeamspaceTarget | PrivateTarget | null,
   options: RelocateOptions = {},
 ): Promise<RelocateResult> {
   {
-    // 새 자리 — 부모의 종류 · id, 경로, 경계가 아닐 때 받을 스코프(워크스페이스 최상위는 없다 — 늘 자기가 경계다).
+    // 새 자리 — 부모의 종류 · id, 경로, 경계가 아닐 때 받을 스코프(워크스페이스 최상위는 없다 — 늘 자기가 경계다),
+    // 그리고 개인 최상위의 주인(7c-7). B4 복원(restorer_only)도 개인 최상위다 — 정본 B4 "복원 실행자의 Private 루트".
+    const owner = isPrivateTarget(target) || options.atTopLevel === 'restorer_only' ? ctx.userId : null
     const place =
-      target === null
-        ? { type: 'workspace', id: ctx.workspaceId, path: [] as string[], scope: null }
+      target === null || isPrivateTarget(target)
+        ? { type: 'workspace', id: ctx.workspaceId, path: [] as string[], scope: null, owner }
         : isTeamspaceTarget(target)
           ? // 정본 §3.11 "없으면 teamspace 루트 id"
-            { type: 'teamspace', id: target.teamspaceId, path: [] as string[], scope: target.teamspaceId }
-          : { type: 'block', id: target.id, path: [...target.ancestor_path, target.id], scope: target.perm_scope_id }
+            { type: 'teamspace', id: target.teamspaceId, path: [] as string[], scope: target.teamspaceId, owner: null }
+          : { type: 'block', id: target.id, path: [...target.ancestor_path, target.id], scope: target.perm_scope_id, owner: null }
 
     // 최상위로 가는 경우 형제 삽입을 직렬화한다. `movePage` 는 `lockTarget` 에서
     // 이미 잡았지만 같은 트랜잭션 안이라 재진입이 무해하고, `restorePage` 처럼
@@ -453,9 +487,20 @@ export async function relocateSubtree(
     // 경계인지는 거둔 뒤에 묻는다(다른 명시 부여가 없으면 경계가 풀려 새 자리의 스코프를 받는다).
     if (place.type === 'workspace') {
       if (options.atTopLevel === 'restorer_only') await grantToRestorer(tx, ctx, moving.id)
+      else if (place.owner !== null) await enterPrivateRoot(tx, ctx, moving.id) // 나만 — 따로 준 공유도 걷는다(정본 move_to_private)
       else await inheritFromWorkspace(tx, ctx, moving.id)
-    } else if (moving.parent_type === 'workspace') {
-      await leaveWorkspaceRoot(tx, moving.id)
+    }
+    // 옛 자리가 최상위(공용 · 개인)였고 그 자리를 떠나면, 그 자리의 상속분을 거둔다(§3.2-43 · 7c-7).
+    // 공용 ↔ 개인도 "떠나기"다 — 개인으로 갈 때는 enterPrivateRoot 가 이미 모두 걷었고, 개인에서 나올 때는 주인의
+    // 행을 거둬야 상속분이 명시 부여로 둔갑하지 않는다.
+    if (moving.parent_type === 'workspace') {
+      const wasPrivate = moving.owner_user_id !== null
+      const staysSame =
+        place.type === 'workspace' && (place.owner !== null) === wasPrivate && (!wasPrivate || place.owner === moving.owner_user_id)
+      if (!staysSame) {
+        if (wasPrivate) await leavePrivateRoot(tx, moving.id, moving.owner_user_id as string)
+        else await leaveWorkspaceRoot(tx, moving.id)
+      }
     }
     const oldScope = moving.perm_scope_id
     const newScope = place.scope === null || (await isScopeBoundary(tx, moving.id)) ? moving.id : place.scope
@@ -466,7 +511,7 @@ export async function relocateSubtree(
     const updated = await tx.queryOne<{ order_key: string; version: string }>(
       `UPDATE block
           SET parent_type = $3, parent_id = $4, order_key = $5,
-              ancestor_path = $6::uuid[], perm_scope_id = $7,
+              ancestor_path = $6::uuid[], perm_scope_id = $7, owner_user_id = $9,
               last_edited_by = $8, last_edited_at = now(), version = version + 1
         WHERE id = $1 AND workspace_id = $2
         RETURNING order_key, version`,
@@ -479,6 +524,7 @@ export async function relocateSubtree(
         newPath,
         newScope,
         ctx.userId,
+        place.owner,
       ],
     )
 
