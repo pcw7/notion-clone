@@ -9,7 +9,7 @@
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { buildPageTree, groupRootsByTeamspace, type PageTreeNode, type PageTreeRow } from './page-tree.ts'
+import { buildPageTree, groupSidebarRoots, type PageTreeNode, type PageTreeRow } from './page-tree.ts'
 
 let counter = 0
 const nextId = () => `00000000-0000-4000-8000-${String(++counter).padStart(12, '0')}`
@@ -20,7 +20,8 @@ function row(
   ancestorPath: string[] = [],
   orderKey = 'a0',
 ): PageTreeRow {
-  return { id, title, kind: 'page', ancestorPath, orderKey, teamspaceId: null }
+  // 픽스처의 기본은 공용 최상위다 — 개인 · 남의 개인은 검사에서 rootKind 를 덮는다(7c-7).
+  return { id, title, kind: 'page', ancestorPath, orderKey, teamspaceId: null, rootKind: 'workspace' as const }
 }
 
 /** [제목, [자식…]] 로 납작하게. */
@@ -187,7 +188,7 @@ describe('buildPageTree — teamspace (7c-2)', () => {
     )
   })
 
-  test('루트를 내 teamspace 별로 가른다 — 그 순서대로 · 페이지가 없어도 선다 · 나머지는 rest', () => {
+  test('루트를 내 teamspace 별로 가른다 — 그 순서대로 · 페이지가 없어도 선다 · 남의 팀 것은 공유됨', () => {
     const [mine, empty, notMine] = [nextId(), nextId(), nextId()]
     const tree = buildPageTree([
       row(nextId(), '직속'),
@@ -195,7 +196,7 @@ describe('buildPageTree — teamspace (7c-2)', () => {
       { ...row(nextId(), '남의 팀에서 공유받은 것', [], 'a2'), teamspaceId: notMine },
       { ...row(nextId(), '회의록', [], 'a3'), teamspaceId: mine },
     ])
-    const split = groupRootsByTeamspace(tree, [
+    const split = groupSidebarRoots(tree, [
       { id: empty, name: '가' },
       { id: mine, name: '나' },
     ])
@@ -206,14 +207,33 @@ describe('buildPageTree — teamspace (7c-2)', () => {
         ['나', ['로드맵', '회의록']],
       ],
     )
-    // 멤버가 아닌 teamspace 로 묶지 않는다 — 묶으면 그 teamspace 가 있다는 것이 드러난다.
-    assert.deepEqual(split.rest.map((p) => p.title), ['직속', '남의 팀에서 공유받은 것'])
+    // 멤버가 아닌 teamspace 로 묶지 않는다 — 묶으면 그 teamspace 가 있다는 것이 드러난다. 낱개로 공유됨에 선다.
+    assert.deepEqual(split.workspacePages.map((p) => p.title), ['직속'])
+    assert.deepEqual(split.shared.map((p) => p.title), ['남의 팀에서 공유받은 것'])
   })
 
-  test('teamspace 가 하나도 없으면 전부 rest 다 — 게스트의 사이드바는 그대로다', () => {
+  test('teamspace 가 하나도 없으면 공용 최상위는 워크스페이스 페이지 · 남의 팀 것은 공유됨이다', () => {
     const tree = buildPageTree([{ ...row(nextId(), '공유받은 것'), teamspaceId: nextId() }, row(nextId(), '직속', [], 'a1')])
-    const split = groupRootsByTeamspace(tree, [])
-    assert.deepEqual(split, { teamspaces: [], rest: tree })
+    const split = groupSidebarRoots(tree, [])
+    assert.deepEqual(
+      [split.teamspaces, split.shared.map((p) => p.title), split.workspacePages.map((p) => p.title), split.privatePages],
+      [[], ['공유받은 것'], ['직속'], []],
+    )
+  })
+
+  test('★ 개인 · 남의 개인 · 조각 — 내 것은 개인 페이지 · 남의 것과 트리 중간 루트는 공유됨 (7c-7)', () => {
+    const tree = buildPageTree([
+      row(nextId(), '공용'),
+      { ...row(nextId(), '내 개인', [], 'a1'), rootKind: 'private_mine' as const },
+      { ...row(nextId(), '남의 개인인데 나에게 공유', [], 'a2'), rootKind: 'private_other' as const },
+      // 조상이 보이지 않아 트리 중간에서 루트가 된 노드 — 진짜 루트는 공용이어도 내 눈에는 조각이다.
+      { ...row(nextId(), '따로 공유받은 하위', [nextId()], 'a3'), rootKind: 'workspace' as const },
+    ])
+    const split = groupSidebarRoots(tree, [])
+    assert.deepEqual(
+      [split.privatePages.map((p) => p.title), split.shared.map((p) => p.title), split.workspacePages.map((p) => p.title)],
+      [['내 개인'], ['남의 개인인데 나에게 공유', '따로 공유받은 하위'], ['공용']],
+    )
   })
 })
 

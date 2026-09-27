@@ -45,7 +45,12 @@
  * teamspace 는 `ancestor_path` 에 없다(판결문 C-9 · HANDOFF §3.3-189) — 어느 노드의
  * teamspace 는 **루트 블록의 부모**다. 판정(`effective.ts` 의 `ChainRow`)과 같은 방법으로
  * 같은 질의에서 루트를 붙여 읽는다. 한 서브트리의 노드는 루트가 같으므로 teamspace 도 같다.
- * Shared · Private 섹션은 아직 없다(§7).
+ *
+ * Shared · Private 섹션(7c-7)도 같은 자리에서 가른다 — 판결문 C-9: *"Private/Teamspace/Shared 를 `parent_type` +
+ * `owner_user_id` 로"*. 루트 블록이 워크스페이스 부모이고 주인이 나면 **개인 페이지**, 주인이 남이면 **공유됨**(그
+ * 사람이 따로 줬을 때만 보인다), 주인이 없으면 **워크스페이스 페이지**다. 그리고 트리를 엮고 나서야 아는 종류가
+ * 하나 있다 — 조상이 보이지 않아 **트리 중간에서 루트가 된 노드**(따로 공유받은 하위 페이지)도 공유됨이다. 화면에는
+ * 주인의 id 를 보내지 않는다(`rootKind` 는 세 값뿐이다 — `SidebarNode` 의 규칙과 같다 · §3.3-192).
  */
 
 import type { SessionContext } from '../auth/session-context.ts'
@@ -72,7 +77,12 @@ export type PageTreeRow = {
   readonly orderKey: string
   /** 루트 블록의 부모가 teamspace 면 그 id, 워크스페이스 직속이면 null. */
   readonly teamspaceId: string | null
+  /** 루트 블록이 워크스페이스 부모일 때 — 공용 · 내 개인 · 남의 개인(7c-7). teamspace 면 null. */
+  readonly rootKind: RootKind | null
 }
+
+/** 워크스페이스 부모 루트의 세 종류. 주인의 id 는 화면에 보내지 않는다 — 종류만 싣는다. */
+export type RootKind = 'workspace' | 'private_mine' | 'private_other'
 
 export type PageTreeNode = {
   readonly id: BlockId
@@ -80,6 +90,10 @@ export type PageTreeNode = {
   readonly kind: PageTreeKind
   /** 이 노드가 속한 teamspace — 루트 블록의 부모. 워크스페이스 직속 서브트리면 null. */
   readonly teamspaceId: string | null
+  /** 루트 블록이 워크스페이스 부모일 때의 종류(7c-7). teamspace 서브트리면 null. */
+  readonly rootKind: RootKind | null
+  /** 진짜 최상위인가 — `ancestor_path` 가 비어 있다. 트리 중간에서 루트가 된 노드(공유받은 하위 페이지)를 가른다. */
+  readonly trueRoot: boolean
   /** 트리상의 부모(가장 가까운 페이지 조상). 최상위면 null. */
   readonly parentId: BlockId | null
   readonly hasChildren: boolean
@@ -116,6 +130,8 @@ export function buildPageTree(rows: readonly PageTreeRow[]): PageTreeNode[] {
     title: string
     kind: PageTreeKind
     teamspaceId: string | null
+    rootKind: RootKind | null
+    trueRoot: boolean
     parentId: BlockId | null
     hasChildren: boolean
     children: Building[]
@@ -133,6 +149,8 @@ export function buildPageTree(rows: readonly PageTreeRow[]): PageTreeNode[] {
         title: row.title,
         kind: row.kind,
         teamspaceId: row.teamspaceId,
+        rootKind: row.rootKind,
+        trueRoot: row.ancestorPath.length === 0,
         parentId: null,
         hasChildren: false,
         children: [],
@@ -173,25 +191,45 @@ export function buildPageTree(rows: readonly PageTreeRow[]): PageTreeNode[] {
 }
 
 /**
- * 루트를 teamspace 별로 가른다 — 사이드바의 Teamspaces 섹션(7c-2 · F-07-16). **순수 함수.**
+ * 루트를 사이드바의 섹션으로 가른다 — Teamspaces · 공유됨 · 개인 페이지 · 워크스페이스 페이지(7c-2 · 7c-7 · F-07-16).
+ * **순수 함수.**
  *
  * `teamspaces` 는 **내가 멤버인** teamspace 다(`listMyTeamspaces` — 그 순서 그대로 선다). 페이지가 없어도 선다 — 그 자리의
- * `+` 가 첫 페이지를 만든다. 나머지 루트는 `rest` 로 간다: 워크스페이스 직속 페이지, 그리고 **멤버가 아닌 teamspace 에서
- * 따로 공유받은 페이지**. 뒤의 것은 Shared 섹션의 몫인데 그 섹션이 아직 없다(§7). 멤버가 아닌 teamspace 로 묶어 세우면
- * 그 teamspace 의 존재가 드러나므로 섞어 두는 편이 맞다.
+ * `+` 가 첫 페이지를 만든다. 나머지는 판결문 C-9 의 정의대로 간다:
+ *
+ *   · **개인 페이지** — 루트가 내 개인 최상위(`private_mine`)
+ *   · **공유됨** — 남의 개인 최상위(`private_other`), 멤버가 아닌 teamspace 의 페이지(묶어 세우면 그 teamspace 의
+ *     존재가 드러난다 — 낱개로 선다 · §3.3-192), 그리고 조상이 보이지 않아 **트리 중간에서 루트가 된** 페이지(따로
+ *     공유받은 하위 페이지 — 진짜 루트는 공용이어도 내 눈에는 조각이다)
+ *   · **워크스페이스 페이지** — 진짜 최상위이고 주인이 없는 루트
  */
-export function groupRootsByTeamspace<T extends { readonly id: string }>(
+export function groupSidebarRoots<T extends { readonly id: string }>(
   roots: readonly PageTreeNode[],
   teamspaces: readonly T[],
-): { teamspaces: { teamspace: T; pages: PageTreeNode[] }[]; rest: PageTreeNode[] } {
+): {
+  teamspaces: { teamspace: T; pages: PageTreeNode[] }[]
+  privatePages: PageTreeNode[]
+  shared: PageTreeNode[]
+  workspacePages: PageTreeNode[]
+} {
   const byId = new Map(teamspaces.map((t) => [t.id, [] as PageTreeNode[]]))
-  const rest: PageTreeNode[] = []
+  const privatePages: PageTreeNode[] = []
+  const shared: PageTreeNode[] = []
+  const workspacePages: PageTreeNode[] = []
   for (const root of roots) {
-    const bucket = root.teamspaceId === null ? undefined : byId.get(root.teamspaceId)
-    if (bucket) bucket.push(root)
-    else rest.push(root)
+    if (root.teamspaceId !== null) {
+      const bucket = byId.get(root.teamspaceId)
+      if (bucket) bucket.push(root)
+      else shared.push(root)
+    } else if (root.rootKind === 'private_mine') {
+      privatePages.push(root)
+    } else if (root.rootKind === 'private_other' || !root.trueRoot) {
+      shared.push(root)
+    } else {
+      workspacePages.push(root)
+    }
   }
-  return { teamspaces: teamspaces.map((t) => ({ teamspace: t, pages: byId.get(t.id) ?? [] })), rest }
+  return { teamspaces: teamspaces.map((t) => ({ teamspace: t, pages: byId.get(t.id) ?? [] })), privatePages, shared, workspacePages }
 }
 
 /**
@@ -222,6 +260,7 @@ export async function listPageTree(ctx: SessionContext): Promise<PageTreeNode[]>
       ancestor_path: string[]
       order_key: string
       teamspace_id: string | null
+      root_kind: RootKind | null
     }>(
       // ★ W8: 풀페이지 데이터베이스를 넣고, DB 행은 뺀다.
       //   행도 `type='page'` 블록이라(C-3) 타입만 보면 섞이고, 행의 조상인
@@ -229,14 +268,19 @@ export async function listPageTree(ctx: SessionContext): Promise<PageTreeNode[]>
       //   컨테이너를 넣은 지금도 행은 빼야 한다 — 표 하나가 사이드바를 행 수만큼
       //   늘린다. 행은 표가 보여준다.
       // ★ 7c-2: 루트 블록(`r`)을 붙여 teamspace 를 읽는다(머리말).
+      // ★ 7c-7: 워크스페이스 부모 루트의 종류(공용 · 내 개인 · 남의 개인)도 함께 읽는다 — 주인의 id 는 내보내지 않는다.
       `SELECT b.id, b.type, b.properties, b.ancestor_path, b.order_key,
-              CASE WHEN r.parent_type = 'teamspace' THEN r.parent_id END AS teamspace_id
+              CASE WHEN r.parent_type = 'teamspace' THEN r.parent_id END AS teamspace_id,
+              CASE WHEN r.parent_type <> 'workspace' THEN NULL
+                   WHEN r.owner_user_id IS NULL THEN 'workspace'
+                   WHEN r.owner_user_id = $3 THEN 'private_mine'
+                   ELSE 'private_other' END AS root_kind
          FROM live_block b
          JOIN block r ON r.id = COALESCE(b.ancestor_path[1], b.id)
         WHERE b.workspace_id = $1 AND b.type IN ('page', 'database') AND b.parent_type <> 'data_source'
           AND b.perm_scope_id = ANY($2::uuid[])
         ORDER BY b.order_key, b.id`,
-      [ctx.workspaceId, scopes],
+      [ctx.workspaceId, scopes, ctx.userId],
     )
   })
 
@@ -252,6 +296,7 @@ export async function listPageTree(ctx: SessionContext): Promise<PageTreeNode[]>
         ancestorPath: row.ancestor_path,
         orderKey: row.order_key,
         teamspaceId: row.teamspace_id,
+        rootKind: row.root_kind,
       }
     }),
   )

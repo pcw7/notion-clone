@@ -14,7 +14,7 @@ export function moveFailureMessage(error: unknown): string {
     case 'forbidden':
       return '이 페이지를 옮길 권한이 없습니다.'
     case 'needs_full_access':
-      return '다른 teamspace 나 워크스페이스 최상위로 옮기려면 이 페이지의 전체 권한이 필요합니다 — 볼 수 있는 사람이 바뀝니다.'
+      return '다른 teamspace · 개인 페이지 · 워크스페이스 최상위로 옮기려면 이 페이지의 전체 권한이 필요합니다 — 볼 수 있는 사람이 바뀝니다.'
     case 'target_not_found':
       return '그 위치로 옮길 수 없습니다.'
     default:

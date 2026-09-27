@@ -27,7 +27,7 @@ import assert from 'node:assert/strict'
 
 import { duplicatePage } from '../block/duplicate.ts'
 import { createPage, getPage, listTeamspacePages, PageError, titleFromPlainText } from '../block/page.ts'
-import { groupRootsByTeamspace, listPageTree, type PageTreeNode } from '../block/page-tree.ts'
+import { groupSidebarRoots, listPageTree, type PageTreeNode } from '../block/page-tree.ts'
 import { openChangeFeed, type CollabSignal } from '../collab/change-feed.ts'
 import { query, queryOne } from '../db/pool.ts'
 import { withReadTransaction } from '../db/tx.ts'
@@ -576,14 +576,14 @@ describe('⑫ 화면이 읽는 것 (7c-2)', () => {
       [find(tree, page)?.teamspaceId, find(tree, child)?.teamspaceId, find(tree, direct)?.teamspaceId],
       [teamspace, teamspace, null],
     )
-    const split = groupRootsByTeamspace(tree, await listMyTeamspaces(fx.owner.ctx))
+    const split = groupSidebarRoots(tree, await listMyTeamspaces(fx.owner.ctx))
     const section = split.teamspaces.find((s) => s.teamspace.id === teamspace)
     assert.deepEqual(section?.pages.map((p) => p.id), [page])
-    assert.ok(split.rest.some((p) => p.id === direct))
-    assert.ok(!split.rest.some((p) => p.id === page), '팀 최상위가 직속 페이지와 섞였다')
+    assert.ok(split.workspacePages.some((p) => p.id === direct))
+    assert.ok(!split.workspacePages.some((p) => p.id === page), '팀 최상위가 직속 페이지와 섞였다')
   })
 
-  test('팀 밖에서 공유받은 하위 페이지 — 루트를 못 봐도 teamspace 를 싣지만 · 멤버가 아니니 rest 로 간다', async (t) => {
+  test('팀 밖에서 공유받은 하위 페이지 — 루트를 못 봐도 teamspace 를 싣지만 · 멤버가 아니니 공유됨으로 간다', async (t) => {
     if (skipReason) return t.skip(skipReason)
     const sam = await member('샘')
     const teamspace = await newTeamspace()
@@ -594,9 +594,9 @@ describe('⑫ 화면이 읽는 것 (7c-2)', () => {
     const tree = await listPageTree(sam.ctx)
     assert.equal(find(tree, page), undefined, '전제 — 루트는 못 본다')
     assert.equal(find(tree, child)?.teamspaceId, teamspace)
-    const split = groupRootsByTeamspace(tree, await listMyTeamspaces(sam.ctx))
+    const split = groupSidebarRoots(tree, await listMyTeamspaces(sam.ctx))
     assert.deepEqual(split.teamspaces, [])
-    assert.ok(split.rest.some((p) => p.id === child))
+    assert.ok(split.shared.some((p) => p.id === child), '따로 공유받은 팀 페이지가 공유됨에 없다')
   })
 
   test('getTeamspace — 멤버는 머리와 내 역할 · 초대 규칙을 받는다 · 그룹을 거친 owner 도 owner 다', async (t) => {

@@ -11,7 +11,7 @@
  */
 
 import { requirePageSession } from '@/lib/auth/page-session'
-import { groupRootsByTeamspace, listPageTree } from '@/lib/block/page-tree'
+import { groupSidebarRoots, listPageTree } from '@/lib/block/page-tree'
 import { listTrash } from '@/lib/block/trash'
 import { listFavorites, listRecent } from '@/lib/nav/recent'
 import { unreadCount } from '@/lib/notification/inbox'
@@ -48,14 +48,16 @@ export default async function WorkspaceLayout({
     listFavorites(ctx),
     unreadCount(ctx),
   ])
-  // 루트를 내 teamspace 별로 가른다(F-07-16 의 파생 섹션 · `groupRootsByTeamspace`).
-  const sections = groupRootsByTeamspace(tree, teamspaces)
+  // 루트를 섹션으로 가른다(F-07-16 의 파생 섹션 · 판결문 C-9 — Teamspaces · 공유됨 · 개인 · 워크스페이스 · 7c-7).
+  const sections = groupSidebarRoots(tree, teamspaces)
 
   return (
     <div className="flex min-h-screen">
       <Sidebar
         workspaceId={workspaceId}
-        tree={sections.rest.map(toSidebarNode)}
+        tree={sections.workspacePages.map(toSidebarNode)}
+        privatePages={sections.privatePages.map(toSidebarNode)}
+        shared={sections.shared.map(toSidebarNode)}
         teamspaces={sections.teamspaces.map(({ teamspace, pages }) => ({
           id: teamspace.id,
           name: teamspace.name,
@@ -63,6 +65,7 @@ export default async function WorkspaceLayout({
         }))}
         canCreateTeamspace={canCreateTeamspace(ctx.role)}
         canBrowseTeamspaces={canBrowseTeamspaces(ctx.role)}
+        canCreatePrivatePage={ctx.role !== 'guest'}
         trash={trash.map((e) => ({
           id: e.id,
           title: e.title,

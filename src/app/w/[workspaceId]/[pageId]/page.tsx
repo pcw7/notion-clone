@@ -137,6 +137,7 @@ export default async function PageView({ params }: PageProps<'/w/[workspaceId]/[
             pageId={page.id}
             currentParentId={page.parentPageId}
             currentTeamspaceId={page.teamspaceId}
+            currentPrivate={page.ownerUserId !== null && page.ownerUserId === ctx.userId}
             targets={moveTargets.map((t) => ({
               id: t.id,
               title: t.title,

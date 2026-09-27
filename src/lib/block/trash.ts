@@ -192,7 +192,7 @@ export async function restorePage(ctx: SessionContext, pageId: BlockId): Promise
     const target = await tx.queryMaybe<
       MovingRow & { trash_root_id: string | null; order_key: string; properties: { title?: unknown } | null }
     >(
-      `SELECT id, parent_type, parent_id, ancestor_path, perm_scope_id, trash_root_id, order_key, properties
+      `SELECT id, parent_type, parent_id, ancestor_path, perm_scope_id, owner_user_id, trash_root_id, order_key, properties
          FROM block
         WHERE id = $1 AND workspace_id = $2 AND type = 'page' AND lifecycle = 'trashed'
         FOR UPDATE`,

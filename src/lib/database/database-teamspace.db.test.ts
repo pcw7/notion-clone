@@ -13,7 +13,7 @@
 import { test, describe, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { groupRootsByTeamspace, listPageTree, type PageTreeNode } from '../block/page-tree.ts'
+import { groupSidebarRoots, listPageTree, type PageTreeNode } from '../block/page-tree.ts'
 import { query, queryOne } from '../db/pool.ts'
 import { createUser, joinAs, makeFixture, probeDatabase, type Actor, type Fixture } from '../testing/db-fixtures.ts'
 import { addTeamspaceMember, createTeamspace, listMyTeamspaces } from '../workspace/teamspace.ts'
@@ -96,7 +96,7 @@ describe('① teamspace 최상위의 데이터베이스', () => {
     assert.ok(seen.ok && seen.value.access.canCreateRows, JSON.stringify(seen))
     assert.deepEqual(await getDatabase(outsider.ctx, table.id), { ok: false, reason: 'not_found' })
 
-    const split = groupRootsByTeamspace(await listPageTree(alice.ctx), await listMyTeamspaces(alice.ctx))
+    const split = groupSidebarRoots(await listPageTree(alice.ctx), await listMyTeamspaces(alice.ctx))
     const section = split.teamspaces.find((s) => s.teamspace.id === team)
     assert.deepEqual(section?.pages.map((p) => [p.id, p.kind]), [[table.id, 'database']])
     assert.ok(!flatten(await listPageTree(outsider.ctx)).includes(table.id), '멤버가 아닌 사람의 사이드바에 나왔다')
