@@ -2241,6 +2241,48 @@ async function main() {
       await sleep(1500)
     }
 
+    if (sectionIf('공개 팀 공간의 열람 (7c-9 · F-06-04)')) {
+      // open teamspace 는 참여 전에도 **읽는다**(view) — 링크 · 검색으로 닿고, 사이드바에는 서지 않고, 고치지는 못한다.
+      // 좁히면(closed) 참여 안 한 사람이 잃는다. 이 절은 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
+      const openMate = await joinAs(workspaceId, await createUser('열람 동료'), 'member')
+      const openGuest = await joinAs(workspaceId, await createUser('열람 손님'), 'guest')
+      const mateHeaders = { ...json, cookie: `nc_session=${openMate.token}` }
+      const pageAs = (actor, path) => fetch(`${BASE}${path}`, { headers: { cookie: `nc_session=${actor.token}` } })
+      const tsUrl = `${BASE}/api/workspaces/${workspaceId}/teamspaces`
+      const stamp = Date.now()
+      const openTeam = (await (await fetch(tsUrl, {
+        method: 'POST', headers: mateHeaders, body: JSON.stringify({ name: `열람팀 ${stamp}`, visibility: 'open' }),
+      })).json()).teamspace.id
+      const marker = `열람표지${stamp}`
+      const openPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
+        method: 'POST', headers: mateHeaders, body: JSON.stringify({ teamspaceId: openTeam, title: marker }),
+      })).json()).page.id
+
+      // ① 참여하지 않은 나(브라우저 세션)도 링크로 연다 — 사이드바에는 없다
+      check('★ 참여하지 않아도 open teamspace 의 페이지를 링크로 연다',
+        (await fetch(`${BASE}/w/${workspaceId}/${openPage}`, { headers: authed })).status === 200)
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
+      await waitFor(`!!document.querySelector('nav[aria-label="페이지 트리"]')`, 15000)
+      // 트리 섹션만 본다 — 위에서 링크로 열었으니 "최근" 섹션에는 서는 것이 옳다(방문 기록).
+      check('★ 그러나 사이드바의 트리 섹션에는 서지 않는다 — 모두의 사이드바가 남의 팀 문서로 덮이지 않게',
+        await evaluate(`![...document.querySelectorAll('nav[aria-label="페이지 트리"] section')]
+          .filter((sec) => !['최근', '즐겨찾기'].includes(sec.getAttribute('aria-label')))
+          .some((sec) => sec.querySelector('a[href="/w/${workspaceId}/${openPage}"]'))`))
+      const found = await (await fetch(`${BASE}/api/workspaces/${workspaceId}/search?q=${encodeURIComponent(marker)}`, { headers: authed })).json()
+      check('검색으로는 찾힌다 — 읽을 수 있는 곳이 됐다', found.results?.some((r) => r.pageId === openPage) ?? false,
+        JSON.stringify(found.results?.map((r) => r.pageId) ?? found))
+      check('게스트는 못 연다 (404) — workspace_everyone 에 들지 않는다',
+        (await pageAs(openGuest, `/w/${workspaceId}/${openPage}`)).status === 404)
+
+      // ② 좁히면 참여 안 한 사람이 잃는다
+      const narrow = await fetch(`${tsUrl}/${openTeam}`, { method: 'PATCH', headers: mateHeaders, body: JSON.stringify({ visibility: 'closed' }) })
+      check('★ closed 로 좁히면 참여하지 않은 나는 못 연다 (404)',
+        narrow.ok && (await fetch(`${BASE}/w/${workspaceId}/${openPage}`, { headers: authed })).status === 404, String(narrow.status))
+      const reopen = await fetch(`${tsUrl}/${openTeam}`, { method: 'PATCH', headers: mateHeaders, body: JSON.stringify({ visibility: 'open' }) })
+      check('다시 열면 다시 연다',
+        reopen.ok && (await fetch(`${BASE}/w/${workspaceId}/${openPage}`, { headers: authed })).status === 200)
+    }
+
     if (sectionIf('코멘트 패널 · 인박스 (F-05-08 · F-11-07)')) {
       const commentPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
         method: 'POST',

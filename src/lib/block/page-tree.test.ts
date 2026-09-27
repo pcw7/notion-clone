@@ -21,7 +21,7 @@ function row(
   orderKey = 'a0',
 ): PageTreeRow {
   // 픽스처의 기본은 공용 최상위다 — 개인 · 남의 개인은 검사에서 rootKind 를 덮는다(7c-7).
-  return { id, title, kind: 'page', ancestorPath, orderKey, teamspaceId: null, rootKind: 'workspace' as const }
+  return { id, title, kind: 'page', ancestorPath, orderKey, teamspaceId: null, teamspaceOpen: false, rootKind: 'workspace' as const }
 }
 
 /** [제목, [자식…]] 로 납작하게. */
@@ -219,6 +219,20 @@ describe('buildPageTree — teamspace (7c-2)', () => {
       [split.teamspaces, split.shared.map((p) => p.title), split.workspacePages.map((p) => p.title), split.privatePages],
       [[], ['공유받은 것'], ['직속'], []],
     )
+  })
+
+  test('★ 멤버가 아닌 open teamspace 의 뿌리는 세우지 않는다 · closed 는 공유됨 · 내 open 은 그 섹션 (7c-9)', () => {
+    const [mineOpen, otherOpen, otherClosed] = [nextId(), nextId(), nextId()]
+    const tree = buildPageTree([
+      { ...row(nextId(), '내 공개팀 문서', [], 'a1'), teamspaceId: mineOpen, teamspaceOpen: true },
+      { ...row(nextId(), '남의 공개팀 문서', [], 'a2'), teamspaceId: otherOpen, teamspaceOpen: true },
+      { ...row(nextId(), '남의 닫힌팀에서 받은 것', [], 'a3'), teamspaceId: otherClosed, teamspaceOpen: false },
+    ])
+    const split = groupSidebarRoots(tree, [{ id: mineOpen, name: '내 팀' }])
+    assert.deepEqual(split.teamspaces[0]?.pages.map((p) => p.title), ['내 공개팀 문서'])
+    assert.deepEqual(split.shared.map((p) => p.title), ['남의 닫힌팀에서 받은 것'])
+    const everywhere = [...split.workspacePages, ...split.privatePages, ...split.shared, ...split.teamspaces.flatMap((t) => t.pages)]
+    assert.ok(!everywhere.some((p) => p.title === '남의 공개팀 문서'), '멤버가 아닌 open 뿌리가 어딘가에 섰다')
   })
 
   test('★ 개인 · 남의 개인 · 조각 — 내 것은 개인 페이지 · 남의 것과 트리 중간 루트는 공유됨 (7c-7)', () => {

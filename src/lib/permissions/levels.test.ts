@@ -164,3 +164,12 @@ describe('displayLevel — 표시 전용, 절대 올림하지 않는다', () => 
     }
   })
 })
+
+describe('can — 없는 이름은 조용히 false 가 아니다', () => {
+  test('알 수 없는 capability 는 던진다 — 검사 파일은 타입 검사 밖이라 오타가 "못 한다"로 둔갑한다(7c-9)', () => {
+    const all = capabilitiesOf('page', 'full_access')
+    assert.equal(can(all, 'view'), true)
+    // 타입이 막는 값이지만 검사 파일에서는 막히지 않는다 — 런타임이 막아야 한다.
+    assert.throws(() => can(all, 'view_content' as Parameters<typeof can>[1]), /알 수 없는 capability: view_content/)
+  })
+})

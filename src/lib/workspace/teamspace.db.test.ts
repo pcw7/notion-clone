@@ -16,7 +16,8 @@
  *   ⑩ 복제 · 공유 — 최상위 페이지의 사본은 같은 teamspace · ('teamspace', T) 에 준 페이지는 멤버가 본다
  *   ⑪ 세대 · 신호 — 멤버십 · 역할(teamspace 노드의 행) · 보관이 협업 서버에 간다
  *   ⑫ 화면이 읽는 것(7c-2) — 사이드바 노드의 teamspace · 섹션 가르기 · getTeamspace(멤버만 · 그룹을 거친 역할)
- *   ⑬ 공개 범위 · 둘러보기 · 참여(7c-5) — 목록에 무엇이 오는가 · open 만 참여 · 참여 전에는 못 본다 · 설정은 owner 만
+ *   ⑬ 공개 범위 · 둘러보기 · 참여(7c-5 · 7c-9) — 목록에 무엇이 오는가 · open 만 참여 · open 은 참여 전에도 **읽는다** ·
+ *      설정은 owner 만
  *   ⑭ 보관 · 복원(7c-6) — ★ 보관하면 owner 까지 못 본다(판정 = 목록) · 따로 준 부여는 남는다 · owner 만 되살린다
  *
  * 열린 협업 연결이 멤버에서 빠질 때 닫히는지는 `collab/collab-server.db.test.ts` ⑨ 가 본다.
@@ -750,21 +751,69 @@ describe('⑬ 참여 (7c-5)', () => {
     assert.equal((await browseOf(joiner, [open]))[0]?.role, 'member', '참여했는데 둘러보기가 남으로 본다')
   })
 
-  test('★ 공개 범위는 판정에 들어가지 않는다 — open 이어도 참여하기 전에는 못 본다 · 노드에 "모두" 행이 없다', async (t) => {
+  test('★ open 은 참여 전에도 읽는다(view) — 고치지는 못하고 · 사이드바에는 서지 않고 · 게스트 · 제한 멤버는 못 본다 (7c-9)', async (t) => {
     if (skipReason) return t.skip(skipReason)
+    // 7c-5 는 이 검사를 "open 이어도 못 본다"로 고정했었다 — 열람 행을 두면 그 페이지들이 전원의 사이드바로 쏟아지는데
+    // 설 자리가 없었다(§3.2-45). 공유됨 섹션과 뿌리 가리기가 생겨 7c-9 가 되돌렸다: 노드의 행은 view 하나, 판정 기계는
+    // 그대로, 사이드바는 멤버가 아닌 open 뿌리를 세우지 않는다.
     const stranger = await member('참여 안 한 사람')
+    const guest = await member('열람 손님', 'guest')
+    const restricted = await member('열람 제한 멤버', 'restricted_member')
     const open = await teamspaceOfVisibility('open')
     const page = await topPage(open, '참여 전 문서')
 
-    assert.deepEqual(await sees(stranger, page, open), BLIND, 'open teamspace 의 페이지가 멤버 아닌 사람에게 보인다')
     assert.deepEqual(
-      await query(
-        `SELECT principal_type FROM acl_entry WHERE node_kind = 'teamspace' AND node_id = $1 AND principal_type = 'workspace_everyone'`,
+      await query<{ level: string }>(
+        `SELECT level FROM acl_entry WHERE node_kind = 'teamspace' AND node_id = $1 AND principal_type = 'workspace_everyone'`,
         [open],
       ),
-      [],
-      'open 이 노드에 workspace_everyone 행을 뒀다 — 사이드바가 전원에게 이 페이지를 싣는다',
+      [{ level: 'view' }],
+      'open 노드의 열람 행이 없거나 레벨이 다르다',
     )
+    // 판정 · teamspace 목록 · 트리는 열리고 — **화면에 가는 섹션**에는 없다(의도된 비대칭 · 세우면 전원의 사이드바가 남의
+    // 팀 문서로 덮인다). \`sees().sidebar\` 는 가르기 **전** 트리라 true 다 — 가리는 것은 groupSidebarRoots 다.
+    assert.deepEqual(await sees(stranger, page, open), SEES)
+    const sections = groupSidebarRoots(await listPageTree(stranger.ctx), await listMyTeamspaces(stranger.ctx))
+    const shown = [
+      ...sections.workspacePages, ...sections.shared, ...sections.privatePages, ...sections.teamspaces.flatMap((x) => x.pages),
+    ].flatMap((n) => [n.id, ...flatten(n.children)])
+    assert.ok(!shown.includes(page), '멤버가 아닌 open teamspace 의 페이지가 사이드바 섹션에 섰다')
+    const caps = await capsOf(stranger, page)
+    assert.equal(can(caps, 'view'), true)
+    assert.equal(can(caps, 'edit_content'), false, '참여하지 않았는데 고칠 수 있다')
+    // 게스트 · 제한 멤버는 workspace_everyone 주체를 받지 않는다(P(U)) — F-06-04 의 제약이 자동으로 지켜진다.
+    assert.deepEqual(await sees(guest, page, open), BLIND)
+    assert.deepEqual(await sees(restricted, page, open), BLIND)
+    // 참여하면 멤버 레벨로 올라서고 사이드바의 그 teamspace 섹션에 선다.
+    assert.deepEqual(await joinTeamspace(stranger.ctx, open), { ok: true })
+    const joined = groupSidebarRoots(await listPageTree(stranger.ctx), await listMyTeamspaces(stranger.ctx))
+    assert.ok(joined.teamspaces.find((x) => x.teamspace.id === open)?.pages.some((n) => n.id === page), '참여했는데 섹션에 안 선다')
+    assert.equal(can(await capsOf(stranger, page), 'edit_content'), true)
+  })
+
+  test('★ open ↔ closed 전환이 열람 행을 나른다 — 좁히면 참여 안 한 사람이 잃고 · 따로 준 공유와 멤버는 남는다 (7c-9)', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const reader = await member('읽기만 하던 사람')
+    const grantee = await member('따로 받은 사람')
+    const mate = await member('들어온 멤버')
+    const open = await teamspaceOfVisibility('open')
+    await join(open, mate)
+    const page = await topPage(open, '좁혀질 문서')
+    assert.ok((await grantAccess(fx.owner.ctx, page, { type: 'user', id: grantee.userId }, 'view')).ok)
+    assert.equal(await canViewPage(reader.ctx, page), true, '전제 — open 이라 읽는다')
+
+    assert.ok((await updateTeamspace(fx.owner.ctx, open, { visibility: 'closed' })).ok)
+    assert.deepEqual(await sees(reader, page, open), BLIND, '좁혔는데 참여 안 한 사람이 아직 읽는다')
+    assert.equal(await canViewPage(grantee.ctx, page), true, '좁히자 따로 준 공유까지 걷혔다')
+    assert.deepEqual(await sees(mate, page, open), SEES, '좁히자 멤버가 잃었다')
+    // 좁혔다 다시 열면 행이 돌아온다 — 다른 설정만 고치는 것은 행을 건드리지 않는다.
+    assert.ok((await updateTeamspace(fx.owner.ctx, open, { name: unique('이름만') })).ok)
+    assert.deepEqual(await sees(reader, page, open), BLIND)
+    assert.ok((await updateTeamspace(fx.owner.ctx, open, { visibility: 'open' })).ok)
+    assert.equal(await canViewPage(reader.ctx, page), true, '다시 열었는데 안 돌아온다')
+    // 보관하면 open 이어도 닫힌다 — 판정이 보관된 노드의 행을 읽지 않는다(7c-6).
+    assert.ok((await archiveTeamspace(fx.owner.ctx, open)).ok)
+    assert.equal(await canViewPage(reader.ctx, page), false, '보관됐는데 열람이 남았다')
   })
 
   test('두 번 눌러도 멤버는 하나다 · 나갔다 다시 참여하면 같은 행이 살아나고 역할은 member 다(owner 부여는 돌아오지 않는다)', async (t) => {
@@ -907,7 +956,7 @@ describe('⑭ 보관 (7c-6)', () => {
 
     assert.deepEqual(await sees(mate, page, teamspace), BLIND, '보관했는데 멤버가 아직 본다')
     assert.deepEqual(await sees(fx.owner, page, teamspace), BLIND, '보관했는데 소유자가 아직 본다 — 주소를 알면 들어간다')
-    assert.equal(can(await capsOf(fx.owner, page), 'view_content'), false, '소유자의 판정이 아직 열려 있다')
+    assert.equal(can(await capsOf(fx.owner, page), 'view'), false, '소유자의 판정이 아직 열려 있다')
     // 행은 건드리지 않았다 — 복원이 정확해야 한다.
     assert.equal(
       (await query(`SELECT id FROM acl_entry WHERE node_kind = 'teamspace' AND node_id = $1`, [teamspace])).length,
