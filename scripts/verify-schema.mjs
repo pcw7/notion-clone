@@ -1906,6 +1906,22 @@ try {
     await mustReject('teamspace 노드에 create', `UPDATE acl_entry SET level = 'create' WHERE node_kind = 'teamspace' AND node_id = $1`, [id])
   }
 
+  console.log('\n[18] teamspace 아이콘의 모양 (0032 / §3.3 [보강] teamspace.icon ② · 7c-14조각)')
+  {
+    // "이모지 한 글자"는 명령이 보고, DB 는 표현할 수 있는 부분(비지 않음 · 16 코드포인트 이하 · 공백 없음)만 막는다.
+    const id = randomUUID()
+    await client.query(`INSERT INTO teamspace (id, workspace_id, name, visibility, icon) VALUES ($1, $2, '아이콘', 'closed', $3)`, [
+      id,
+      wsId,
+      '👨‍👩‍👧‍👦',
+    ])
+    ok('ZWJ 가족 이모지(코드포인트 7개)')
+    const setIcon = `UPDATE teamspace SET icon = $2 WHERE id = $1`
+    await mustReject('빈 아이콘', setIcon, [id, ''])
+    await mustReject('공백이 든 아이콘', setIcon, [id, '🚀 '])
+    await mustReject('16 코드포인트를 넘는 아이콘', setIcon, [id, 'x'.repeat(17)])
+  }
+
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
 } catch (e) {

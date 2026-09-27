@@ -25,6 +25,7 @@
  *      명령과 엇갈려도 빠지지 않는다 · 워크스페이스 owner 이면서 teamspace owner 만 · ★ 기본은 보관하지 못한다
  *   ⑰ 멤버 기본 레벨(7c-12) — ★ 낮추면 멤버의 판정 · 만들기 · 목록이 함께 바뀌고 소유자는 그대로 · ★ 끊긴 페이지는 옛 레벨(P2)
  *      · 소유자만 · 넷 밖은 invalid_level · ★ 바꾸면 신호, 같은 값이면 없음
+ *   ⑱ 아이콘(7c-14) — ★ 만들 때 · 고칠 때 · 지울 때 목록마다 같은 값 · 모양이 아니면 invalid_icon · owner 만
  *
  * 열린 협업 연결이 멤버에서 빠질 때 닫히는지는 `collab/collab-server.db.test.ts` ⑨ 가 본다.
  */
@@ -1586,5 +1587,53 @@ describe('⑰ 멤버 기본 레벨 (7c-12)', () => {
     await waitFor('올린 레벨의 신호', () => heard() >= 2)
     await new Promise((resolve) => setTimeout(resolve, 300))
     assert.equal(heard(), 2, '같은 레벨을 다시 쓴 저장이 권한 신호를 냈다')
+  })
+})
+
+// ── ⑱ 아이콘 (7c-14) ──────────────────────────────────────────────────
+
+describe('⑱ 아이콘 (7c-14)', () => {
+  test('★ 만들 때 · 고칠 때 · 지울 때 — 목록마다 같은 아이콘이 실린다(내 목록 · 머리 · 둘러보기 · 관리 · 옮기기 피커 · 보관)', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const created = await createTeamspace(fx.owner.ctx, { name: unique('아이콘 팀'), icon: '🚀' })
+    assert.ok(created.ok && created.value.icon === '🚀', JSON.stringify(created))
+    const id = created.value.id
+    const everywhere = async () => {
+      const detail = await getTeamspace(fx.owner.ctx, id)
+      return [
+        (await listMyTeamspaces(fx.owner.ctx)).find((r) => r.id === id)?.icon,
+        detail.ok ? detail.value.icon : 'x',
+        (await listBrowsableTeamspaces(fx.owner.ctx)).find((r) => r.id === id)?.icon,
+        (await listAllTeamspaces(fx.owner.ctx)).find((r) => r.id === id)?.icon,
+        (await listTeamspaceDestinations(fx.owner.ctx)).find((r) => r.id === id)?.icon,
+      ]
+    }
+    assert.deepEqual(await everywhere(), Array(5).fill('🚀'))
+
+    assert.deepEqual(await updateTeamspace(fx.owner.ctx, id, { icon: '👨‍👩‍👧‍👦' }), { ok: true })
+    assert.deepEqual(await everywhere(), Array(5).fill('👨‍👩‍👧‍👦'))
+    assert.deepEqual(await updateTeamspace(fx.owner.ctx, id, { icon: null }), { ok: true })
+    assert.deepEqual(await everywhere(), Array(5).fill(null), '지웠는데 남았다')
+
+    assert.deepEqual(await updateTeamspace(fx.owner.ctx, id, { icon: '🌱' }), { ok: true })
+    assert.deepEqual(await archiveTeamspace(fx.owner.ctx, id), { ok: true })
+    assert.equal((await listArchivedTeamspaces(fx.owner.ctx)).find((r) => r.id === id)?.icon, '🌱')
+  })
+
+  test('모양이 아니면 invalid_icon — 만들기도 고치기도 · 아이콘은 owner 만 바꾼다 · 거부는 아무것도 바꾸지 않는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    for (const bad of ['🚀🚀', 'ab', 7]) {
+      assert.deepEqual(await createTeamspace(fx.owner.ctx, { name: unique('나쁜 아이콘'), icon: bad }), {
+        ok: false,
+        reason: 'invalid_icon',
+      })
+    }
+    const id = await newTeamspace()
+    assert.deepEqual(await updateTeamspace(fx.owner.ctx, id, { icon: '팀' }), { ok: false, reason: 'invalid_icon' })
+    const alice = await member('아이콘 못 바꾸는 앨리스')
+    await join(id, alice)
+    assert.deepEqual(await updateTeamspace(alice.ctx, id, { icon: '🔒' }), { ok: false, reason: 'forbidden' })
+    const detail = await getTeamspace(fx.owner.ctx, id)
+    assert.ok(detail.ok && detail.value.icon === null, '거부됐는데 아이콘이 바뀌었다')
   })
 })

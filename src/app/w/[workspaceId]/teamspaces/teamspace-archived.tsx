@@ -13,11 +13,18 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 
-import { archivedAtLabel, teamspaceFailureMessage, teamspaceVisibilityLabel, type TeamspaceVisibilityName } from '../teamspace-messages'
+import {
+  archivedAtLabel,
+  teamspaceFailureMessage,
+  teamspaceIcon,
+  teamspaceVisibilityLabel,
+  type TeamspaceVisibilityName,
+} from '../teamspace-messages'
 
 export type ArchivedRow = {
   readonly id: string
   readonly name: string
+  readonly icon: string | null
   readonly visibility: TeamspaceVisibilityName
   readonly archivedAt: string
 }
@@ -68,6 +75,7 @@ export function TeamspaceArchived({ workspaceId, initialRows }: { workspaceId: s
           >
             <span className="min-w-0">
               <span className="flex items-center gap-2">
+                <span aria-hidden data-testid="teamspace-archived-icon" className="flex-none">{teamspaceIcon(row.icon)}</span>
                 <span className="truncate text-sm font-medium">{row.name}</span>
                 <span className="flex-none rounded border border-neutral-300 px-1 text-xs text-neutral-500 dark:border-neutral-700">
                   {teamspaceVisibilityLabel(row.visibility)}

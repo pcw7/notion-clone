@@ -48,6 +48,7 @@ export default async function TeamspaceBrowsePage({ params }: PageProps<'/w/[wor
         initialRows={rows.map((r) => ({
           id: r.id,
           name: r.name,
+          icon: r.icon,
           visibility: r.visibility,
           isDefault: r.isDefault,
           memberCount: r.memberCount,
@@ -60,6 +61,7 @@ export default async function TeamspaceBrowsePage({ params }: PageProps<'/w/[wor
         initialRows={archived.map((r) => ({
           id: r.id,
           name: r.name,
+          icon: r.icon,
           visibility: r.visibility,
           archivedAt: r.archivedAt,
         }))}
@@ -70,6 +72,7 @@ export default async function TeamspaceBrowsePage({ params }: PageProps<'/w/[wor
         initialRows={all.map((r) => ({
           id: r.id,
           name: r.name,
+          icon: r.icon,
           visibility: r.visibility,
           isDefault: r.isDefault,
           archivedAt: r.archivedAt,

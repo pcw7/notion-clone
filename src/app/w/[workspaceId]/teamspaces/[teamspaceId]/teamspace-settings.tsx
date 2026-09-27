@@ -1,7 +1,7 @@
 'use client'
 
 /**
- * teamspace 설정 — 이름 · 공개 범위 · 초대 규칙 · 멤버 기본 권한 · 기본 teamspace · 보관 (7c-5 · 7c-6 · 7c-11 · 7c-12조각 · F-06-04)
+ * teamspace 설정 — 이름 · 아이콘 · 공개 범위 · 초대 규칙 · 멤버 기본 권한 · 기본 teamspace · 보관 (7c-5 · 7c-6 · 7c-11 · 7c-12조각 · F-06-04)
  *
  * **소유자에게만** 보인다(서버가 다시 묻는다 — `updateTeamspace` 는 소유자가 아니면 `forbidden`). 셋을 한 폼에 두고 한 번에
  * 보낸다: 세 칸이 모두 "이 teamspace 를 어떻게 쓰는가" 한 가지를 정하고, 따로 저장하면 어느 것이 저장됐는지 사용자가
@@ -33,6 +33,7 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 
+import { TeamspaceIconPicker } from '../../teamspace-icon-picker'
 import {
   TEAMSPACE_MEMBER_LEVEL_ORDER,
   TEAMSPACE_VISIBILITY_ORDER,
@@ -59,6 +60,7 @@ export function TeamspaceSettings({
   teamspaceId: string
   initial: {
     name: string
+    icon: string | null
     visibility: TeamspaceVisibilityName
     whoCanInvite: 'owners' | 'all_members'
     isDefault: boolean
@@ -69,6 +71,7 @@ export function TeamspaceSettings({
 }) {
   const router = useRouter()
   const [name, setName] = useState(initial.name)
+  const [icon, setIcon] = useState<string | null>(initial.icon)
   const [visibility, setVisibility] = useState<TeamspaceVisibilityName>(initial.visibility)
   const [whoCanInvite, setWhoCanInvite] = useState(initial.whoCanInvite)
   const [memberLevel, setMemberLevel] = useState<TeamspaceMemberLevelName>(initial.memberLevel)
@@ -113,7 +116,7 @@ export function TeamspaceSettings({
       const res = await fetch(`/api/workspaces/${workspaceId}/teamspaces/${teamspaceId}`, {
         method: 'PATCH',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ name, visibility, whoCanInvite, memberLevel }),
+        body: JSON.stringify({ name, icon, visibility, whoCanInvite, memberLevel }),
       })
       const data = (await res.json().catch(() => ({}))) as { error?: unknown }
       if (!res.ok) {
@@ -171,6 +174,11 @@ export function TeamspaceSettings({
           className={INPUT}
         />
       </label>
+
+      <div className="flex flex-col gap-1 text-xs text-neutral-500">
+        아이콘
+        <TeamspaceIconPicker value={icon} onChange={setIcon} disabled={busy} />
+      </div>
 
       <fieldset data-testid="teamspace-settings-visibility" className="flex flex-col gap-1">
         <legend className="text-xs text-neutral-500">공개 범위</legend>

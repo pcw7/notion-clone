@@ -2634,6 +2634,73 @@ async function main() {
       await sleep(1500)
     }
 
+    if (sectionIf('teamspace 아이콘 (7c-14 · F-06-04)')) {
+      // 만들 때 아이콘을 고르고, 설정에서 바꾸고 지운다 — 머리 · 사이드바 · 둘러보기가 함께 바뀐다. 자기 데이터를 스스로 만든다.
+      const stamp = Date.now()
+      const typeInto = async (sel, text) => {
+        await clickSelector(sel)
+        await evaluate(`document.querySelector(${JSON.stringify(sel)})?.select()`)
+        await send('Input.insertText', { text })
+      }
+      /** 아이콘 칸을 누른다 — 눌렸다고(aria-pressed) 할 때까지. 서버 렌더 뒤 React 가 붙기 전의 클릭은 사라진다(§6). */
+      const pick = async (scope, icon) => {
+        const sel = icon === null
+          ? `${scope} [data-testid="teamspace-icon-none"]`
+          : `${scope} [data-testid="teamspace-icon-choice"][data-icon="${icon}"]`
+        for (let i = 0; i < 10; i += 1) {
+          await clickSelector(sel)
+          if (await waitFor(`document.querySelector(${JSON.stringify(sel)})?.getAttribute('aria-pressed') === 'true'`, 500)) return true
+        }
+        return false
+      }
+      const header = `document.querySelector('[data-testid="teamspace-icon"]')?.textContent`
+      const sidebarIcon = (id) =>
+        `document.querySelector('[data-testid="sidebar-teamspace"][data-teamspace-id="${id}"] [data-testid="sidebar-teamspace-icon"]')?.textContent`
+
+      // ① 만들 때 고른다
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
+      await waitFor(`!!document.querySelector('[data-testid="teamspace-create-open"]')`, 15000)
+      await clickSelector('[data-testid="teamspace-create-open"]')
+      await waitFor(`!!document.querySelector('[data-testid="teamspace-create-name"]')`, 5000)
+      await typeInto('[data-testid="teamspace-create-name"]', `아이콘팀 ${stamp}`)
+      check('만들기 폼에 아이콘 고르개가 있고 · 고르면 눌린다', await pick('[data-testid="teamspace-create-form"]', '🚀'))
+      await clickSelector('[data-testid="teamspace-create"]')
+      await waitFor(`location.pathname.includes('/teamspaces/')`, 15000)
+      const team = await evaluate(`location.pathname.split('/teamspaces/')[1]`)
+      check('★ 만들 때 고른 아이콘이 teamspace 화면 머리와 사이드바 줄에 선다',
+        await waitFor(`${header} === '🚀' && ${sidebarIcon(team)} === '🚀'`, 15000),
+        await evaluate(`JSON.stringify([${header}, ${sidebarIcon(team)}])`))
+
+      // ② 설정에서 바꾼다
+      const SETTINGS = '[data-testid="teamspace-settings"]'
+      await waitFor(`!!document.querySelector('${SETTINGS} [data-testid="teamspace-icon-picker"]')`, 15000)
+      check('설정의 고르개가 지금 아이콘을 눌린 채로 보인다',
+        await evaluate(`document.querySelector('${SETTINGS} [data-testid="teamspace-icon-choice"][data-icon="🚀"]')?.getAttribute('aria-pressed') === 'true'`))
+      await pick(SETTINGS, '🌱')
+      await clickSelector('[data-testid="teamspace-settings-save"]')
+      check('★ 설정에서 바꾸면 머리와 사이드바가 함께 바뀐다',
+        await waitFor(`${header} === '🌱' && ${sidebarIcon(team)} === '🌱'`, 15000),
+        await evaluate(`JSON.stringify([${header}, ${sidebarIcon(team)}])`))
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/teamspaces` })
+      check('둘러보기의 줄에도 선다',
+        await waitFor(`document.querySelector('[data-testid="teamspace-browse-row"][data-teamspace-id="${team}"] [data-testid="teamspace-browse-icon"]')?.textContent === '🌱'`, 15000))
+
+      // ③ 지운다 — 기본 표시로 돌아간다
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/teamspaces/${team}` })
+      await waitFor(`!!document.querySelector('${SETTINGS} [data-testid="teamspace-icon-none"]')`, 15000)
+      await pick(SETTINGS, null)
+      await clickSelector('[data-testid="teamspace-settings-save"]')
+      check('아이콘을 지우면 기본 표시(▣)로 돌아간다',
+        await waitFor(`${header} === '▣' && ${sidebarIcon(team)} === '▣'`, 15000))
+
+      const bad = await fetch(`${BASE}/api/workspaces/${workspaceId}/teamspaces/${team}`, {
+        method: 'PATCH', headers: authed, body: JSON.stringify({ icon: '팀팀' }),
+      })
+      check('이모지 한 글자가 아니면 거부한다 (400 invalid_icon)', bad.status === 400 && (await bad.json()).error === 'invalid_icon')
+      // 저장의 refresh 가 끝나기 전에 다음 절이 화면을 옮기지 않게 한다(§6).
+      await sleep(1500)
+    }
+
     if (sectionIf('코멘트 패널 · 인박스 (F-05-08 · F-11-07)')) {
       const commentPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
         method: 'POST',

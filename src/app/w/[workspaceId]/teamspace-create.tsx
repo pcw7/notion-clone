@@ -8,11 +8,14 @@
  * 아무것도 고르지 않았을 때 워크스페이스 전원이 들어올 수 있게 되는 쪽이 놀랍다.
  *
  * 만들면 그 teamspace 의 화면으로 옮겨 간다 — 첫 페이지를 만들고 멤버를 넣는 자리가 거기다.
+ *
+ * 아이콘(7c-14)은 고르지 않아도 된다 — 없으면 기본 표시(▣)다. F-06-04 의 만들기 순서 *"이름/아이콘 입력"* 그대로 이름 아래에 둔다.
  */
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 
+import { TeamspaceIconPicker } from './teamspace-icon-picker'
 import {
   TEAMSPACE_VISIBILITY_ORDER,
   teamspaceFailureMessage,
@@ -25,6 +28,7 @@ export function TeamspaceCreateForm({ workspaceId, onClose }: { workspaceId: str
   const router = useRouter()
   const [name, setName] = useState('')
   const [visibility, setVisibility] = useState<TeamspaceVisibilityName>('closed')
+  const [icon, setIcon] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -35,7 +39,7 @@ export function TeamspaceCreateForm({ workspaceId, onClose }: { workspaceId: str
       const res = await fetch(`/api/workspaces/${workspaceId}/teamspaces`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ name, visibility }),
+        body: JSON.stringify({ name, visibility, icon }),
       })
       const data = (await res.json().catch(() => ({}))) as { error?: unknown; teamspace?: { id: string } }
       if (!res.ok || !data.teamspace) {
@@ -74,6 +78,7 @@ export function TeamspaceCreateForm({ workspaceId, onClose }: { workspaceId: str
         autoFocus
         className="rounded border border-neutral-300 px-2 py-1 text-sm outline-none focus:border-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:focus:border-neutral-300"
       />
+      <TeamspaceIconPicker value={icon} onChange={setIcon} disabled={busy} />
       <fieldset data-testid="teamspace-create-visibility" className="flex flex-col gap-0.5">
         <legend className="sr-only">공개 범위</legend>
         {TEAMSPACE_VISIBILITY_ORDER.map((v) => (

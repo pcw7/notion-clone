@@ -14,11 +14,12 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 
-import { teamspaceFailureMessage, teamspaceVisibilityLabel, type TeamspaceVisibilityName } from '../teamspace-messages'
+import { teamspaceFailureMessage, teamspaceIcon, teamspaceVisibilityLabel, type TeamspaceVisibilityName } from '../teamspace-messages'
 
 export type AdminRow = {
   readonly id: string
   readonly name: string
+  readonly icon: string | null
   readonly visibility: TeamspaceVisibilityName
   readonly isDefault: boolean
   readonly archivedAt: string | null
@@ -73,6 +74,7 @@ export function TeamspaceAdmin({ workspaceId, initialRows }: { workspaceId: stri
           >
             <span className="min-w-0">
               <span className="flex items-center gap-2">
+                <span aria-hidden data-testid="teamspace-admin-icon" className="flex-none">{teamspaceIcon(row.icon)}</span>
                 <span className="truncate text-sm font-medium">{row.name}</span>
                 <span className="flex-none rounded border border-neutral-300 px-1 text-xs text-neutral-500 dark:border-neutral-700">
                   {teamspaceVisibilityLabel(row.visibility)}

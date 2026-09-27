@@ -28,6 +28,7 @@ import { listMembers } from '@/lib/workspace/list'
 import { canAdministerTeamspaces, getTeamspace, listTeamspaceMembers } from '@/lib/workspace/teamspace'
 import { NewDatabaseButton } from '../../new-database-button'
 import { NewPageButton } from '../../new-page-button'
+import { teamspaceIcon } from '../../teamspace-messages'
 import { TeamspaceMembers } from './teamspace-members'
 import { TeamspaceSettings } from './teamspace-settings'
 
@@ -60,8 +61,11 @@ export default async function TeamspacePage({ params }: PageProps<'/w/[workspace
           </Link>{' '}
           / teamspace
         </p>
-        <h1 data-testid="teamspace-name" className="mt-1 text-2xl font-semibold tracking-tight">
-          {teamspace.value.name}
+        <h1 className="mt-1 flex items-center gap-2 text-2xl font-semibold tracking-tight">
+          <span aria-hidden data-testid="teamspace-icon">
+            {teamspaceIcon(teamspace.value.icon)}
+          </span>
+          <span data-testid="teamspace-name">{teamspace.value.name}</span>
         </h1>
       </header>
 
@@ -143,6 +147,7 @@ export default async function TeamspacePage({ params }: PageProps<'/w/[workspace
             teamspaceId={teamspaceId}
             initial={{
               name: teamspace.value.name,
+              icon: teamspace.value.icon,
               visibility: teamspace.value.visibility,
               whoCanInvite: teamspace.value.whoCanInvite,
               isDefault: teamspace.value.isDefault,
