@@ -86,6 +86,37 @@ function check(name, ok, detail = '') {
   results.push({ name, ok })
   console.log(`${ok ? '  o' : '  X'} ${name}${!ok && detail ? `\n      ${detail}` : ''}`)
 }
+/**
+ * 골라 돌리기(E2E_ONLY) — 쉼표로 나눈 조각을 **게이트 제목**에 부분 일치시킨다(대소문자 무시).
+ *
+ *   E2E_ONLY="7c-7" npm run e2e            # 그 절과 늘 도는 것(로그인 · 시드 · [전체])만
+ *   E2E_ONLY="보관,개인 페이지" npm run e2e   # 여러 절
+ *
+ * 반복 루프(개발 · 반사실 빌드)용이다 — **머지 전 마지막 판은 필터 없이 전체를 돌린다**(문서에 적는 숫자도 전체
+ * 판의 것이다 · HANDOFF §4). 데이터베이스 안쪽 절들은 우산 게이트('데이터베이스 표 …') 하나로 묶여 있어 그
+ * 제목으로 켠다. 게이트 안의 section() 은 제목만 찍는다 — 필터는 sectionIf 가 달린 게이트에만 있다.
+ *
+ * ⚠ 골라 돌릴 절은 **자기 데이터를 스스로 만들어야** 한다(7a 이후 절들이 그렇다). 앞 절이 만든 것에 기대는 절을
+ * 홀로 켜면 깨진다 — 그런 절은 기대는 절과 함께 켠다.
+ */
+const E2E_ONLY = (process.env.E2E_ONLY ?? '')
+  .split(',')
+  .map((s) => s.trim().toLowerCase())
+  .filter((s) => s !== '')
+let gatesRun = 0
+let gatesSkipped = 0
+function sectionIf(title) {
+  const on = E2E_ONLY.length === 0 || E2E_ONLY.some((q) => title.toLowerCase().includes(q))
+  if (on) {
+    gatesRun += 1
+    console.log(`\n[${title}]`)
+  } else {
+    gatesSkipped += 1
+    console.log(`\n[${title}] — 건너뜀 (E2E_ONLY)`)
+  }
+  return on
+}
+
 function section(title) {
   console.log(`\n[${title}]`)
 }
@@ -559,6 +590,42 @@ async function main() {
     await send('Network.setCookie', { name: 'nc_session', value: session, domain: 'localhost', path: '/', httpOnly: true })
     await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${pageId}` })
 
+    // ── 여러 절이 함께 쓰는 도우미 — 게이트(절) 안에 두면 블록 스코프에 갇혀 뒤 절이 못 본다(E2E_ONLY · #127) ──
+    const typeText = async (text) => {
+      await send('Input.insertText', { text })
+      await sleep(60)
+    }
+    const clickText = async (text, selector = 'button') => {
+      const box = await evaluate(`(() => {
+        const el = [...document.querySelectorAll(${JSON.stringify(selector)})].find((e) => e.textContent.trim().includes(${JSON.stringify(text)}))
+        if (!el) return null
+        el.scrollIntoView({ block: 'center' })
+        const r = el.getBoundingClientRect()
+        return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+      })()`)
+      if (!box) return false
+      await click(box.x, box.y)
+      await sleep(150)
+      return true
+    }
+    const panelText = () => evaluate(`document.querySelector('[role="dialog"][aria-label="공유 설정"]')?.textContent ?? '(패널 없음)'`)
+    /** 화면에 있는 요소를 셀렉터로 누른다 — aria-label 로 고른다. */
+    const clickSelector = async (sel) => {
+      const box = await evaluate(`(() => {
+        const el = document.querySelector(${JSON.stringify(sel)})
+        if (!el) return null
+        el.scrollIntoView({ block: 'center' })
+        const r = el.getBoundingClientRect()
+        return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+      })()`)
+      if (!box) return false
+      await click(box.x, box.y)
+      await sleep(120)
+      return true
+    }
+
+    // ── 에디터 코어(로드 ~ 두 탭) — 상태를 공유하는 흩어진 절들이라 통째로 게이트다(안의 section 은 제목만 찍는다) ──
+    if (sectionIf('에디터 코어 — 로드 · 핸들 · 드래그 · 키보드 이동 · 접힘 · 블록 메뉴 · 복사 · 붙여넣기 · + 버튼 · 이미지 · 오프라인 보존 · 두 탭 동시 편집 (F-01-* · F-05-*)')) {
     section('로드')
     check('에디터가 뜬다', await waitFor(`document.querySelectorAll('.blk-editor [data-block-id]').length === 6`, 15000))
     check('처음 순서', same(await order(), ['A', 'B', 'C', 'T', 't1', 'D']), JSON.stringify(await order()))
@@ -1059,10 +1126,6 @@ async function main() {
         await sleep(200)
       }
     }
-    const typeText = async (text) => {
-      await send('Input.insertText', { text })
-      await sleep(60)
-    }
 
     await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${syncPage}` })
     await waitFor(`!!document.querySelector('.blk-editor [data-block-id]')`, 15000)
@@ -1172,40 +1235,13 @@ async function main() {
         await other.evaluate(`document.querySelector('.blk-editor').textContent`))
     }
 
-    section('공유 패널 (F-06-05)')
+    }
+    if (sectionIf('공유 패널 (F-06-05)')) {
     // 새 페이지 + 하위 페이지에서 본다 — 상속 표시와 "따로 관리하기"가 핵심이다.
     const shareParent = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: '{}' })).json()).page.id
     const shareChild = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: JSON.stringify({ parentPageId: shareParent }) })).json()).page.id
 
-    const clickText = async (text, selector = 'button') => {
-      const box = await evaluate(`(() => {
-        const el = [...document.querySelectorAll(${JSON.stringify(selector)})].find((e) => e.textContent.trim().includes(${JSON.stringify(text)}))
-        if (!el) return null
-        el.scrollIntoView({ block: 'center' })
-        const r = el.getBoundingClientRect()
-        return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
-      })()`)
-      if (!box) return false
-      await click(box.x, box.y)
-      await sleep(150)
-      return true
-    }
-    const panelText = () => evaluate(`document.querySelector('[role="dialog"][aria-label="공유 설정"]')?.textContent ?? '(패널 없음)'`)
 
-    /** 화면에 있는 요소를 셀렉터로 누른다 — aria-label 로 고른다. */
-    const clickSelector = async (sel) => {
-      const box = await evaluate(`(() => {
-        const el = document.querySelector(${JSON.stringify(sel)})
-        if (!el) return null
-        el.scrollIntoView({ block: 'center' })
-        const r = el.getBoundingClientRect()
-        return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
-      })()`)
-      if (!box) return false
-      await click(box.x, box.y)
-      await sleep(120)
-      return true
-    }
 
     // ① 루트 페이지 — 모두에게 전체 권한이 직접 부여돼 있다.
     await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${shareParent}` })
@@ -1245,8 +1281,8 @@ async function main() {
       await panelText())
     check('막힌 뒤에도 권한은 그대로다', (await panelText()).includes('워크스페이스 모든 멤버'))
 
-    section('그룹 — 라우트 · 공유 패널 (7a · F-06-03)')
-    {
+    }
+    if (sectionIf('그룹 — 라우트 · 공유 패널 (7a · F-06-03)')) {
       // 그룹은 권한의 주체다. 라우트로 만들고 넣고, 공유 패널에서 그룹 행이 **그룹으로** 다뤄지는지 본다 — 사용자가 아니면
       // 모든 멤버로 읽던 옛 규칙이 남아 있으면 그룹 행의 레벨 바꾸기 · 제거가 모든 멤버의 행을 건드린다.
       const groupMate = await joinAs(workspaceId, await createUser('그룹 동료'), 'member')
@@ -1371,8 +1407,7 @@ async function main() {
         (await postJson(accessUrl, authed, { action: 'grant', principal: { type: 'group', id: firstGroup }, level: 'view' })).status === 400)
     }
 
-    section('그룹 화면 (7b · F-06-03)')
-    {
+    if (sectionIf('그룹 화면 (7b · F-06-03)')) {
       // 워크스페이스 홈의 "그룹" 절. 넣을 후보(멤버 · 게스트)는 서버 렌더가 싣으므로 화면을 열기 전에 만든다.
       const screenMate = await joinAs(workspaceId, await createUser('화면 동료'), 'member')
       const screenGuest = await joinAs(workspaceId, await createUser('화면 손님'), 'guest')
@@ -1501,8 +1536,7 @@ async function main() {
       check('★ 게스트에게는 그룹 절이 없다', !asGuest.includes('data-testid="group-panel"') && !asGuest.includes(keeperName))
     }
 
-    section('teamspace — 라우트 · 공유 패널 (7c-1 · F-06-04)')
-    {
+    if (sectionIf('teamspace — 라우트 · 공유 패널 (7c-1 · F-06-04)')) {
       // 화면(사이드바 섹션 · 설정)은 다음 절(7c-2)이 본다. 여기서는 라우트로 만들고, teamspace 의 페이지가 실제 화면에서 열리고
       // 공유 패널이 teamspace 노드의 부여를 "상위에서 상속됨"으로 그리는지 본다.
       const teamMate = await joinAs(workspaceId, await createUser('팀 동료'), 'member')
@@ -1560,8 +1594,7 @@ async function main() {
       check('★ 나가면 곧바로 못 본다 (404)', (await fetch(teamAccess, { headers: asTeamMate })).status === 404)
     }
 
-    section('teamspace 화면 (7c-2 · F-06-04)')
-    {
+    if (sectionIf('teamspace 화면 (7c-2 · F-06-04)')) {
       // 사이드바의 Teamspaces 섹션 · 만들기 폼 · teamspace 화면(멤버 · 역할 · 나가기) · breadcrumb. 넣을 후보는 서버 렌더가
       // 싣으므로 화면을 열기 전에 만든다.
       const uiMate = await joinAs(workspaceId, await createUser('화면 팀원'), 'member')
@@ -1722,8 +1755,7 @@ async function main() {
       await sleep(1500)
     }
 
-    section('옮기기 — teamspace 로 · 밖으로 (7c-3 · F-06-20)')
-    {
+    if (sectionIf('옮기기 — teamspace 로 · 밖으로 (7c-3 · F-06-20)')) {
       // 페이지의 "이동" 피커가 teamspace 최상위와 워크스페이스 최상위를 자리로 준다. 옮기면 누가 보는지가 바뀐다 — 워크스페이스
       // 최상위의 "모든 멤버" 상속 행을 거두고 teamspace 노드에서 물려받는다. 멤버가 아닌 동료의 접근으로 확인한다.
       const moveMate = await joinAs(workspaceId, await createUser('이동 동료'), 'member')
@@ -1805,8 +1837,7 @@ async function main() {
       await sleep(1500)
     }
 
-    section('데이터베이스를 teamspace 에 (7c-4 · F-04-14 · F-06-04)')
-    {
+    if (sectionIf('데이터베이스를 teamspace 에 (7c-4 · F-04-14 · F-06-04)')) {
       // 사이드바의 teamspace 줄에 "▦"(새 데이터베이스), teamspace 화면에 "+ 새 데이터베이스". 멤버만 보는지는 멤버가 아닌 동료의
       // 세션으로 표 화면을 받아 본다.
       const dbMate = await joinAs(workspaceId, await createUser('표 동료'), 'member')
@@ -1857,8 +1888,7 @@ async function main() {
       await sleep(1500)
     }
 
-    section('공개 범위 · 둘러보기 · 참여 (7c-5 · F-06-04)')
-    {
+    if (sectionIf('공개 범위 · 둘러보기 · 참여 (7c-5 · F-06-04)')) {
       // 만들기 폼의 공개 범위 · 사이드바의 ⌕ · 둘러보기 화면(참여 · 초대 필요 · private 는 없음) · 소유자만 보는 설정.
       // **내가 멤버가 아닌** open teamspace 가 있어야 참여를 눌러볼 수 있으므로 동료의 세션으로 셋을 만든다.
       const browseMate = await joinAs(workspaceId, await createUser('둘러보는 동료'), 'member')
@@ -1975,8 +2005,7 @@ async function main() {
       await sleep(1500)
     }
 
-    section('보관 · 복원 (7c-6 · F-06-04)')
-    {
+    if (sectionIf('보관 · 복원 (7c-6 · F-06-04)')) {
       // teamspace 는 지워지지 않고 보관된다. 보관하면 **소유자까지** 못 보고, 되살릴 사람만 둘러보기 화면에서 그 존재를 본다.
       const archiveMate = await joinAs(workspaceId, await createUser('보관 동료'), 'member')
       const mateHeaders = { ...json, cookie: `nc_session=${archiveMate.token}` }
@@ -2059,8 +2088,7 @@ async function main() {
       await sleep(1500)
     }
 
-    section('개인 페이지 · 공유됨 섹션 (7c-7 · F-02-12 · F-07-16)')
-    {
+    if (sectionIf('개인 페이지 · 공유됨 섹션 (7c-7 · F-02-12 · F-07-16)')) {
       // 사이드바의 개인 페이지 섹션(+ 로 만들기 · 나만 본다) · 이동 피커의 "개인 페이지" · 공유됨 섹션(따로 공유받은 것).
       const privateMate = await joinAs(workspaceId, await createUser('개인 동료'), 'member')
       const mateHeaders = { ...json, cookie: `nc_session=${privateMate.token}` }
@@ -2135,8 +2163,7 @@ async function main() {
       check('게스트의 사이드바에는 개인 페이지 섹션이 없다', !guestHome.includes('sidebar-private'))
     }
 
-    section('코멘트 패널 · 인박스 (F-05-08 · F-11-07)')
-    {
+    if (sectionIf('코멘트 패널 · 인박스 (F-05-08 · F-11-07)')) {
       const commentPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
         method: 'POST',
         headers: authed,
@@ -2255,8 +2282,7 @@ async function main() {
         await inboxText())
     }
 
-    section('본문 글자에 단 코멘트 (F-05-07)')
-    {
+    if (sectionIf('본문 글자에 단 코멘트 (F-05-07)')) {
       const anchorBlock = randomUUID()
       const anchorPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
         method: 'POST',
@@ -2349,8 +2375,7 @@ async function main() {
       await key('Escape')
     }
 
-    section('@ 멘션 (F-07-08 · F-07-09 · F-05-09)')
-    {
+    if (sectionIf('@ 멘션 (F-07-08 · F-07-09 · F-05-09)')) {
       const mentionBlock = randomUUID()
       const targetTitle = `멘션대상문서${Date.now() % 100000}`
       const targetPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
@@ -2430,7 +2455,7 @@ async function main() {
         await evaluate(`document.querySelector('details[aria-label="백링크"]')?.textContent ?? '(없음)'`))
     }
 
-    section('내비게이션 — 최근 · 즐겨찾기 (W6-a)')
+    if (sectionIf('내비게이션 — 최근 · 즐겨찾기 (W6-a)')) {
     // 방금까지 여러 페이지를 오갔으므로 사이드바에 "최근"이 있어야 한다.
     await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${pageId}` })
     await waitFor(`!!document.querySelector('nav[aria-label="페이지 트리"]')`, 15000)
@@ -2490,10 +2515,10 @@ async function main() {
       await waitFor(`document.querySelector('section[aria-label="최근"]')?.textContent.includes(${JSON.stringify(renamed)})`, 5000),
       await evaluate(`document.querySelector('section[aria-label="최근"]')?.textContent ?? '(없음)'`))
 
-    section('검색 오버레이 (W7 · F-07-01)')
+    }
+    if (sectionIf('검색 오버레이 (W7 · F-07-01)')) {
     // 이 절이 헤드리스로는 절대 안 보이는 것을 본다: 단축키가 에디터까지 새지
     // 않는가 · 포커스가 돌아오는가 · ↑↓/Enter 가 본문을 건드리지 않는가.
-    {
       // 찾을 대상 — 제목에 고유 토큰을 넣은 페이지를 API 로 만든다.
       const token = `검색대상${Date.now()}`
       const found = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
@@ -2642,11 +2667,10 @@ async function main() {
       }
     }
 
-    section('데이터베이스 표 (W8-b · F-04-14 · F-03-16)')
+    if (sectionIf('데이터베이스 표 (W8-b · F-04-14 · F-03-16)')) {
     // 이 절이 헤드리스로는 볼 수 없는 것을 본다: 포커스가 칸을 따라 움직이는가 ·
     // 편집기가 쓴 Enter 가 표의 규칙을 한 번 더 타지 않는가 · 표 끝의 Tab 이 표 밖으로
     // 나가는가. 규칙 자체는 `grid-nav.test.ts` · `cell-format.test.ts` 가 본다.
-    {
       const poll = async (fn, tries = 50) => {
         for (let i = 0; i < tries; i += 1) {
           if (await fn()) return true
@@ -3175,11 +3199,10 @@ async function main() {
           /* 임시 폴더 */
         }
       }
-      section('데이터베이스 보드 (보드 4b · F-04-03 · F-04-11)')
+      if (sectionIf('데이터베이스 보드 (보드 4b · F-04-03 · F-04-11)')) {
       // 규칙(드롭 자리 · 상태 · 되돌리기)은 `board-drag.test.ts` 가, 서버(셀 값 + 자리 한 트랜잭션 · 그룹 질의 · 커서)는
       // `group.db.test.ts` 가 본다. 여기서는 **실제 포인터로** 카드를 끌어 놓는 길과, 그 결과가 서버에 남는지를 본다.
       // ⚠ 익스포트 절 **뒤**에 있다 — 그 절의 워크스페이스 요약이 표 개수(1)를 센다. 이 절은 표를 둘 더 만든다.
-      {
         const { textRun } = await import(new URL('../src/lib/contracts/rich-text.ts', import.meta.url).href)
         const api = async (method, path, body) => {
           const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
@@ -3412,11 +3435,10 @@ async function main() {
           JSON.stringify(await labelsOf()))
         await clickOn('[data-testid="db-group-button"]')
       }
-      section('데이터베이스 상태 속성 (보드 4c-1 · F-03-05)')
+      if (sectionIf('데이터베이스 상태 속성 (보드 4c-1 · F-03-05)')) {
       // 값 계약 · 그룹 불변식 · 기본 옵션 · 옵션 순서는 `status.db.test.ts` · `verify-schema` ⑭ 가 본다. 여기서는 화면이
       // 그것을 **보여 주는지**를 본다 — 색 점 칩 · 그룹 머리로 구획된 편집기 · 새 옵션의 자리 · 보드의 자동 선택.
       // ⚠ 익스포트 절 **뒤**에 있다(표를 하나 더 만든다 — 보드 절 머리말과 같은 이유).
-      {
         const created = await (await fetch(`${BASE}/api/workspaces/${workspaceId}/databases`, {
           method: 'POST', headers: authed, body: JSON.stringify({ name: `상태 ${Date.now()}` }),
         })).json()
@@ -3492,12 +3514,11 @@ async function main() {
           JSON.stringify(await boardColumns()) === JSON.stringify(['진행 없음:1', '시작 전:0', '검토:1', '진행 중:0', '완료:0']),
           JSON.stringify(await boardColumns()))
       }
-      section('데이터베이스 List 뷰 (보드 4c-2 · F-04-04)')
+      if (sectionIf('데이터베이스 List 뷰 (보드 4c-2 · F-04-04)')) {
       // 어느 칸을 접는지 · 제목이 앞인지는 `list-layout.test.ts` 가, 서버(그룹 없이 만들어진다 · 모양만 바뀐다)는
       // `view.db.test.ts` 가 본다. 여기서는 **같은 격자가 목록 모양으로 그려지는지**와, 표의 키보드 · 편집이 그 모양에서도
       // 그대로 도는지를 본다 — List 는 별도 컴포넌트가 아니다(F-04-04).
       // ⚠ 익스포트 절 **뒤**에 있다(표를 하나 더 만든다).
-      {
         const { textRun } = await import(new URL('../src/lib/contracts/rich-text.ts', import.meta.url).href)
         const api = async (method, path, body) => {
           const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
@@ -3580,11 +3601,10 @@ async function main() {
             && !!document.querySelector('[data-testid="db-column-menu"]')
             && document.querySelector('td[data-cell="1:1"]')?.textContent === '7'`, 10000))
       }
-      section('데이터베이스 relation 칸 (relation 5b-1 · F-03-10)')
+      if (sectionIf('데이터베이스 relation 칸 (relation 5b-1 · F-03-10)')) {
       // 엣지 · 거울상 · 권한 · 제목 맵의 규칙은 `relation.db.test.ts` · `verify-schema` ⑮ 가 본다. 여기서는 화면이 그것을
       // **그리는지**를 본다 — 제목 칩 · 휴지통에 간 연결 · "더 보기"로 온 행의 제목 · 목록과 보드의 배지.
       // ⚠ 익스포트 절 **뒤**에 있다(표를 둘 더 만든다).
-      {
         const { textRun } = await import(new URL('../src/lib/contracts/rich-text.ts', import.meta.url).href)
         const api = async (method, path, body) => {
           const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
@@ -3690,11 +3710,10 @@ async function main() {
             && (await evaluate(`document.querySelectorAll('[data-row-id="${t3}"] [data-testid="db-relation-chip"]').length`)) === 0)
       }
 
-      section('데이터베이스 relation 고르기 (relation 5b-2 · F-03-10)')
+      if (sectionIf('데이터베이스 relation 고르기 (relation 5b-2 · F-03-10)')) {
       // 후보 검색의 규칙(이미 연결된 행 제외 · LIKE 글자 그대로 · 권한)은 `relation.db.test.ts` ⑩ 이 본다. 여기서는 사람이
       // 하는 순서를 본다 — 속성 추가 폼에서 관계형을 만들고, 칸에서 찾아 고르고, × 로 빼고, 반대쪽 표에서 본다.
       // ⚠ 익스포트 절 **뒤**에 있다(표를 둘 더 만든다).
-      {
         const { textRun } = await import(new URL('../src/lib/contracts/rich-text.ts', import.meta.url).href)
         const api = async (method, path, body) => {
           const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
@@ -3847,11 +3866,10 @@ async function main() {
           await chipsAre('0:2', ['다른 곳']), JSON.stringify(await chipsIn('0:2')))
       }
 
-      section('데이터베이스 rollup — 서버 (rollup 5c-1 · F-03-11)')
+      if (sectionIf('데이터베이스 rollup — 서버 (rollup 5c-1 · F-03-11)')) {
       // 집계 함수 · 권한 · 끊긴 설정의 규칙은 `rollup-functions.test.ts` · `rollup.db.test.ts` 가 본다. 화면은 5c-2 가 붙인다 —
       // 여기서는 빌드된 앱에서 라우트 둘이 실제로 답하는지, 그리고 **rollup 속성이 있어도 표가 열리는지**를 본다.
       // ⚠ 익스포트 절 **뒤**에 있다(표를 둘 더 만든다).
-      {
         const { textRun } = await import(new URL('../src/lib/contracts/rich-text.ts', import.meta.url).href)
         const api = async (method, path, body) => {
           const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
@@ -4018,11 +4036,10 @@ async function main() {
         await key('Escape')
       }
 
-      section('데이터베이스 템플릿 — 서버 (템플릿 6c-1 · 6c-2 · F-08-02 · F-08-03)')
+      if (sectionIf('데이터베이스 템플릿 — 서버 (템플릿 6c-1 · 6c-2 · F-08-02 · F-08-03)')) {
       // 권한 · 상한 · 기본 지정의 규칙은 `template.db.test.ts` 가 본다. 여기서는 빌드된 앱에서 라우트가 실제로 답하는지,
       // 그리고 **불변식 R1 이 화면까지 지켜지는지** — 템플릿을 만들어도 표에 행이 늘지 않는지 — 를 본다.
       // ⚠ 익스포트 절 **뒤**에 있다(표를 하나 더 만든다).
-      {
         const { textRun } = await import(new URL('../src/lib/contracts/rich-text.ts', import.meta.url).href)
         const api = async (method, path, body) => {
           const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
@@ -4113,11 +4130,10 @@ async function main() {
           asRow.status === 404, `${asRow.status} ${JSON.stringify(asRow.body)}`)
       }
 
-      section('데이터베이스 템플릿 — 화면 (템플릿 6c-3 · F-08-02)')
+      if (sectionIf('데이터베이스 템플릿 — 화면 (템플릿 6c-3 · F-08-02)')) {
       // 만드는 · 채우는 · 버리는 길이 실제 브라우저에서 이어지는지 본다. 속성 목록은 표의 세 번째 모양
       // (`variant="record"`)이라 배치 규칙 자체는 `list-layout.test.ts` 가 DOM 없이 본다.
       // ⚠ 익스포트 절 **뒤**에 있다(표를 하나 더 만든다).
-      {
         const api = async (method, path, body) => {
           const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
             method,
@@ -4219,11 +4235,10 @@ async function main() {
           await evaluate(`document.querySelector('[data-testid="db-templates-panel"]')?.textContent ?? '패널 없음'`))
       }
 
-      section('데이터베이스 New ▾ — 템플릿으로 만들기 · 기본 템플릿 (템플릿 6c-4 · F-08-02 · F-08-03)')
+      if (sectionIf('데이터베이스 New ▾ — 템플릿으로 만들기 · 기본 템플릿 (템플릿 6c-4 · F-08-02 · F-08-03)')) {
       // 문구 규칙은 `new-row.test.ts` 가, 복제 · 덮기 · 빠진 것의 개수는 `template.db.test.ts` 가 본다. 여기서는 표와 보드의
       // 버튼이 실제로 그 길을 타는지, 그리고 **기본 템플릿이 버튼의 글자와 동작을 함께 바꾸는지**를 본다.
       // ⚠ 익스포트 절 **뒤**에 있다(표를 하나 더 만든다).
-      {
         const api = async (method, path, body) => {
           const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
             method,
@@ -4333,10 +4348,9 @@ async function main() {
       }
     }
 
-    section('페이지 복제 (복제 6a · 6b · F-02-09 · F-08-01)')
+    if (sectionIf('페이지 복제 (복제 6a · 6b · F-02-09 · F-08-01)')) {
     // 재매핑 · 권한 · 상한의 규칙은 `duplicate-remap.test.ts` · `duplicate.db.test.ts` 가 본다. 여기서는 빌드된 앱에서
     // 라우트가 실제로 답하는지, 그리고 **사본이 열리는 진짜 페이지인지**를 본다.
-    {
       const newPage = async (title, parent) => {
         const res = await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
           method: 'POST',
@@ -4454,8 +4468,7 @@ async function main() {
         await waitFor(`!location.pathname.endsWith('/${partial}') && !!document.querySelector('[data-testid="page-duplicate"]')`, 15000))
     }
 
-    section('볼 수 없는 하위 페이지의 참조 (HANDOFF §3.2-22)')
-    {
+    if (sectionIf('볼 수 없는 하위 페이지의 참조 (HANDOFF §3.2-22)')) {
       // 새 페이지에서 따로 본다 — 앞 절의 페이지에 "소유자도 못 보는 하위 페이지"를 남기지 않는다.
       const createAt = async (parentPageId) =>
         (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: JSON.stringify(parentPageId ? { parentPageId } : {}) })).json()).page.id
@@ -4511,5 +4524,12 @@ try {
 }
 
 const failed = results.filter((r) => !r.ok).length
+if (E2E_ONLY.length > 0) {
+  console.log(`\n⚠ E2E_ONLY=${process.env.E2E_ONLY} — 게이트 ${gatesRun}개 실행 · ${gatesSkipped}개 건너뜀. 전체 판이 아니다 — 문서에 적는 숫자는 필터 없는 판의 것이다.`)
+  if (gatesRun === 0) {
+    console.log('E2E_ONLY 가 아무 게이트와도 맞지 않았다 — 제목 조각을 다시 보라.')
+    process.exit(1)
+  }
+}
 console.log(`\n${results.length - failed} / ${results.length} 통과`)
 process.exit(failed === 0 ? 0 : 1)
