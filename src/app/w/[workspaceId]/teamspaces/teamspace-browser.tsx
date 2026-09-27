@@ -27,6 +27,7 @@ export type BrowseRow = {
   readonly id: string
   readonly name: string
   readonly visibility: TeamspaceVisibilityName
+  readonly isDefault: boolean
   readonly memberCount: number
   readonly role: TeamspaceRoleName | null
 }
@@ -107,6 +108,11 @@ export function TeamspaceBrowser({ workspaceId, initialRows }: { workspaceId: st
                   >
                     {teamspaceVisibilityLabel(row.visibility)}
                   </span>
+                  {row.isDefault && (
+                    <span data-testid="teamspace-browse-default" className="flex-none text-xs text-neutral-500">
+                      기본
+                    </span>
+                  )}
                   <span className="flex-none text-xs text-neutral-500">멤버 {row.memberCount}명</span>
                 </span>
                 <span className="mt-0.5 block text-xs text-neutral-500">{teamspaceVisibilityHint(row.visibility)}</span>

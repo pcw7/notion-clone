@@ -1878,6 +1878,21 @@ try {
     }
   }
 
+  console.log('\n[16] 기본 teamspace 는 보관하지 않는다 (0030 / §3.3 [보강] is_default ⑥ · F-06-04 · 7c-11조각)')
+  {
+    // 보관된 teamspace 로의 자동 추가는 헛돌고, 되살리는 순간 보관 중에 들어온 사람들에게 한꺼번에 열린다. 두 방향 다 막는다.
+    const id = randomUUID()
+    await client.query(`INSERT INTO teamspace (id, workspace_id, name, visibility, is_default) VALUES ($1, $2, '전사', 'open', true)`, [
+      id,
+      wsId,
+    ])
+    ok('기본 teamspace 생성')
+    await mustReject('기본 teamspace 를 보관', `UPDATE teamspace SET archived_at = now() WHERE id = $1`, [id])
+    await client.query(`UPDATE teamspace SET is_default = false, archived_at = now() WHERE id = $1`, [id])
+    ok('기본을 끄면 보관된다')
+    await mustReject('보관된 teamspace 를 기본으로', `UPDATE teamspace SET is_default = true WHERE id = $1`, [id])
+  }
+
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
 } catch (e) {

@@ -17,6 +17,7 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 
 import { queryMaybe } from '../db/pool.ts'
 import { withTransaction, type Tx } from '../db/tx.ts'
+import { joinDefaultTeamspaces } from './teamspace.ts'
 
 /** 초대에 부여할 수 있는 역할. guest 는 페이지 단위라 워크스페이스 초대 대상이 아니다. */
 export const INVITABLE_ROLES = ['owner', 'membership_admin', 'member'] as const
@@ -295,6 +296,10 @@ export async function acceptInvite(
         WHERE id = $1`,
       [invite.id, userId],
     )
+
+    // 기본 teamspace 에 함께 들어간다(7c-11 · F-06-04 *"이후 가입자도 자동 추가"*). 멤버 행을 세운 뒤여야 한다 —
+    // teamspace 멤버 가드(0028 ①)가 이 워크스페이스의 멤버인지 묻는다.
+    await joinDefaultTeamspaces(tx, invite.workspace_id, userId, role)
 
     // 멤버십이 바뀌면 권한 캐시 세대를 올린다 (정본 §3.11 캐시 키 규약).
     // Redis 미러는 W6 에서 붙인다. 지금은 DB 쪽만 올려둔다.

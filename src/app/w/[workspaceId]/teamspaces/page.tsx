@@ -49,6 +49,7 @@ export default async function TeamspaceBrowsePage({ params }: PageProps<'/w/[wor
           id: r.id,
           name: r.name,
           visibility: r.visibility,
+          isDefault: r.isDefault,
           memberCount: r.memberCount,
           role: r.role,
         }))}
@@ -70,6 +71,7 @@ export default async function TeamspaceBrowsePage({ params }: PageProps<'/w/[wor
           id: r.id,
           name: r.name,
           visibility: r.visibility,
+          isDefault: r.isDefault,
           archivedAt: r.archivedAt,
           ownerCount: r.ownerCount,
           role: r.role,

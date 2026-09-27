@@ -359,7 +359,8 @@ CREATE TABLE teamspace (
   who_can_invite text NOT NULL DEFAULT 'all_members'
                  CHECK (who_can_invite IN ('owners','all_members')),
   default_member_level text NULL,                            -- [확인필요] 6-5
-  archived_at timestamptz NULL
+  archived_at timestamptz NULL,
+  CHECK (NOT is_default OR archived_at IS NULL)               -- [보강] 7c-11 · 기본 teamspace 는 보관하지 않는다
 );
 CREATE TABLE teamspace_member (
   teamspace_id uuid NOT NULL REFERENCES teamspace(id),
@@ -595,6 +596,46 @@ CREATE TABLE access_request (
 > 되살릴 수 있다"를 **더한다** — 조건을 빼는 쪽이 아니다.
 >
 > ⑤ 신호는 0028 의 `tg_collab_access_teamspace`(`archived_at` 변경) 그대로다 — 보관도 복원도 그 트리거를 탄다.
+
+**[보강] `teamspace.is_default` 가 하는 일 — 들여보내기만 한다** ⟨Teamspace · 게스트 · 그룹 7c-11 / 마이그레이션 0030⟩
+
+> 초판은 `is_default boolean -- visibility 와 직교` 만 적었다. 06 F-06-04 는 *"켜면 기존 멤버 전원이 즉시 추가되고, 이후
+> 가입자도 자동 추가"* · *"동기 처리 금지, 배치 삽입"* · *"마지막 default 는 archive 불가"* `[추정]` 을 적었고, 공식 문서는
+> *"Workspace owners can designate default teamspaces"* 를 더한다. 나가기 · 공개 범위와의 관계는 어디에도 없다.
+>
+> ① **`is_default` 는 판정의 입력이 아니다 — 멤버 행을 넣는 규칙일 뿐이다.** 켜는 순간과 사람이 워크스페이스에 들어오는
+> 순간에 `teamspace_member` 행이 서고, 그 뒤의 일은 보통 멤버와 같다(판정 · 목록 · 나가기 · 빼기). 그래서 협업 신호도
+> 멤버 행의 트리거(0028 ③)가 나른다 — `is_default` 컬럼에는 신호 트리거가 필요 없다.
+>
+> ② **켜고 끄는 사람은 워크스페이스 `owner` 이면서 그 teamspace 의 owner 다.** 공식 문서는 워크스페이스 owner 만 적었지만,
+> 켜면 그 teamspace 의 콘텐츠가 워크스페이스 전원에게 열린다 — 누구에게 여는지는 teamspace owner 가 정할 일이다(F-06-04
+> *"owner … will also have access to teamspace settings"*). 멤버가 아닌 워크스페이스 owner 는 먼저 **드러나게 들어간다**
+> (§3.11 [보강] 고아 teamspace ② — 역할로 여는 분기를 두지 않는 규칙 그대로).
+>
+> ③ **들어오는 사람은 활성 `owner` · `membership_admin` · `member` 다** — 역할은 늘 `member`. 게스트는 멤버가 될 수 없고,
+> `restricted_member` 는 넣지 않는다: 초대받기 전에는 teamspace 가 존재하지 않는 것과 같다는 것(F-06-04)이 그 역할의 뜻이라
+> 자동 추가는 그것을 지운다. 그룹은 넣지 않는다 — 사람마다 한 행이다. 이미 살아 있는 행(owner 포함)은 그대로 두고, 빠졌던
+> 행은 `member` 로 되살린다(M1 · 스스로 참여와 같은 규칙).
+>
+> ④ **배치 삽입은 한 문장이다** — `INSERT … SELECT` 하나가 켜는 명령과 같은 트랜잭션에서 전원을 넣는다. 한 사람씩 명령을
+> 부르지 않는다는 것이 F-06-04 의 *"동기 처리 금지"* 를 지키는 방식이다. 비동기 큐로 미루지 않는 까닭: 지금은 잡 인프라가
+> 없고, 미루면 "켰는데 아직 안 들어왔다"는 중간 상태를 판정 · 화면이 모두 알아야 한다. 잰 값: 멤버 5,000명에 372ms
+> (행마다 도는 0028 의 트리거 포함 · 개발 PC). 규모가 문제가 되면 옮긴다.
+>
+> 들어오는 순간(초대 수락)은 켜는 명령과 엇갈릴 수 있다 — 서로 상대의 커밋 전 쓰기를 못 봐 그 사람이 빠진다. 들어오는 쪽이
+> 그 워크스페이스의 teamspace 행을 **`FOR SHARE` 로 잠근 뒤** `is_default` 를 읽어 순서를 세운다(켜는 쪽은 `FOR UPDATE`).
+>
+> ⑤ **끄면 앞으로의 자동 추가만 멈춘다** — 이미 들어온 멤버는 그대로다(공개 범위를 좁힐 때와 같은 규칙 · 이 절 visibility
+> [보강] ④). **나가기도 막지 않는다** — 기본 teamspace 의 멤버도 스스로 나간다. 막는 규칙은 어느 출처에도 없고, 나중에
+> 더하는 쪽이 싸다 `[추정]`.
+>
+> ⑥ **기본 teamspace 는 보관하지 않는다 — `CHECK (NOT is_default OR archived_at IS NULL)`.** F-06-04 의 *"마지막 default 는
+> archive 불가"* 보다 넓다. 보관된 teamspace 는 판정이 읽지 않으므로 그리로의 자동 추가는 헛돌고, 되살리는 순간 보관 중에
+> 들어온 사람들이 한꺼번에 열린다 — 보관 중에도 뜻이 있는 상태를 만들지 않는다(이 절 archived_at [보강] ② — 행을 건드리지
+> 않아야 복원이 정확하다). 보관하려면 먼저 끈다. 기본이 **하나도 없어도 된다** — 워크스페이스는 teamspace 없이 시작하고,
+> "마지막 하나"를 붙들면 기본을 바꾸는 순서까지 강제하게 된다.
+>
+> ⑦ `visibility` 와는 직교 그대로다. 비공개도 기본일 수 있다 — 그러면 존재를 모르는 사람은 게스트 · `restricted_member` 뿐이다.
 
 ---
 
