@@ -93,6 +93,8 @@ export type MoveErrorCode =
   | 'too_deep'
   /** 뿌리가 바뀌는 이동(워크스페이스 ↔ teamspace · teamspace 사이)인데 페이지의 전체 권한이 없다(머리말 "teamspace"). */
   | 'needs_full_access'
+  /** 그 대상 종류가 이 노드에 맞지 않는다 — 데이터베이스를 페이지 밑으로(7c-8). */
+  | 'invalid_target'
 
 export class MoveError extends Error {
   readonly code: MoveErrorCode
@@ -139,6 +141,8 @@ export type MoveResult = {
 
 export type MovingRow = {
   id: string
+  /** 'page' 또는 'database'(7c-8) — 데이터베이스는 최상위 사이에서만 옮긴다. */
+  type: string
   parent_type: string
   parent_id: string
   ancestor_path: string[]
@@ -252,12 +256,20 @@ export async function movePage(
 ): Promise<MoveResult> {
   const targetParentId = isTeamspaceTarget(destination) || isPrivateTarget(destination) ? null : destination
   return withTransaction(async (tx) => {
-    const peek = await tx.queryMaybe<{ parent_type: string; parent_id: string; properties: { title?: unknown } | null }>(
-      `SELECT parent_type, parent_id, properties FROM block
-        WHERE id = $1 AND workspace_id = $2 AND type = 'page' AND lifecycle = 'live'`,
+    const peek = await tx.queryMaybe<{ type: string; parent_type: string; parent_id: string; properties: { title?: unknown } | null }>(
+      `SELECT type, parent_type, parent_id, properties FROM block
+        WHERE id = $1 AND workspace_id = $2 AND type IN ('page', 'database') AND lifecycle = 'live'`,
       [pageId, ctx.workspaceId],
     )
     if (!peek) throw new MoveError('not_found', '페이지를 찾을 수 없습니다.')
+
+    // ── 풀페이지 데이터베이스는 최상위 사이에서만 옮긴다(7c-8) ─────
+    //
+    // 페이지 밑으로 넣는 것은 부모 본문에 참조 노드를 두는 일이고, 그 참조를 그릴 수 있는 블록이 아직 없다(인라인
+    // DB · §7). 자리 셋(워크스페이스 · teamspace · 개인)은 본문이 없어 행 이동만으로 끝난다. 옮기는 사람은 이미 view
+    // 를 통과했으므로(아래) 타입을 말해 줘도 새는 것이 없다 — 아니, view 검사가 **뒤**라 여기서는 아직 말하면 안 된다.
+    // 그래서 대상 검사는 view 검사 뒤에서 한다(placeOnly).
+    const placeOnly = peek.type === 'database' && targetParentId !== null
 
     // ── I5: 자기 자신 / 자손으로는 못 간다 ──────────────────────────
     //
@@ -274,6 +286,7 @@ export async function movePage(
     // 페이지 본문에도 속하지 않으면(워크스페이스 직속 데이터베이스 같은 것) 참조를 둘 곳이 없다 — 옮길 위치가 아니다.
     // 두 본문 페이지를 옮길 행 · 대상보다 먼저, id 순으로 잡는다(잠금 순서: 본문 페이지 행 → 옮길 행 · 대상 → 스냅샷).
     // 워크스페이스 · teamspace 최상위에는 본문이 없다 — 새 자리의 본문은 블록 대상일 때만이다.
+    // 풀페이지 데이터베이스의 부모는 늘 최상위(workspace · teamspace)다 — 본문 참조가 없다(7c-4 · 7c-8).
     const oldOwner = peek.parent_type === 'block' ? await ownerPageOf(tx, ctx, peek.parent_id) : null
     const newOwner = targetParentId === null ? null : await ownerPageOf(tx, ctx, targetParentId)
     if (targetParentId !== null && newOwner === null) {
@@ -283,9 +296,9 @@ export async function movePage(
     for (const owner of owners) await tx.query(`SELECT id FROM block WHERE id = $1 FOR UPDATE`, [owner])
 
     const moving = await tx.queryMaybe<MovingRow>(
-      `SELECT id, parent_type, parent_id, ancestor_path, perm_scope_id, owner_user_id
+      `SELECT id, type, parent_type, parent_id, ancestor_path, perm_scope_id, owner_user_id
          FROM block
-        WHERE id = $1 AND workspace_id = $2 AND type = 'page' AND lifecycle = 'live'
+        WHERE id = $1 AND workspace_id = $2 AND type IN ('page', 'database') AND lifecycle = 'live'
         FOR UPDATE`,
       [pageId, ctx.workspaceId],
     )
@@ -296,6 +309,10 @@ export async function movePage(
     const caps = await effectiveCaps(tx, ctx, moving.id)
     if (!can(caps, 'view')) throw new MoveError('not_found', '페이지를 찾을 수 없습니다.')
     if (!can(caps, 'edit_content')) throw new MoveError('forbidden', '이 페이지를 옮길 권한이 없습니다.')
+    if (placeOnly) {
+      // 볼 수 있는 사람에게만 타입을 말한다(위 주석).
+      throw new MoveError('invalid_target', '풀페이지 데이터베이스는 워크스페이스 · teamspace · 개인 최상위로만 옮길 수 있습니다.')
+    }
 
     const target = await lockTarget(tx, ctx, destination)
     const blockTarget = target === null || isTeamspaceTarget(target) || isPrivateTarget(target) ? null : target

@@ -59,6 +59,8 @@ import { ExportButton } from '../../export-button'
 import { DatabaseTitle } from './database-title'
 import { DatabaseTable } from './database-table'
 import { DatabaseBoard, type BoardGroupJson, type GroupProperty } from './database-board'
+import { listTeamspaceDestinations } from '@/lib/block/move-page'
+import { MovePageControl } from '../../[pageId]/move-page-control'
 import { ViewTabs } from './view-tabs'
 import { ViewToolbar, type BoardSettings } from './view-toolbar'
 import { TemplatePanel } from './template-panel'
@@ -79,6 +81,10 @@ export default async function DatabasePage({
   // 볼 수 없는 표는 없는 표와 같다(HANDOFF §3.3-31).
   const database = await getDatabase(ctx, databaseId)
   if (!database.ok) notFound()
+
+  // 옮길 수 있는 teamspace 최상위(7c-8) — 페이지 화면과 같은 목록이다. 페이지 대상은 주지 않는다: 풀페이지 표는
+  // 최상위 사이에서만 옮긴다(본문 참조가 없다 · move-page.ts).
+  const moveTeamspaces = await listTeamspaceDestinations(ctx)
 
   const views = await listViews(ctx, databaseId)
   if (!views.ok || views.value.length === 0) notFound()
@@ -186,8 +192,19 @@ export default async function DatabasePage({
           <span aria-hidden>/</span>
           <span className="text-neutral-400">{name || UNTITLED}</span>
         </nav>
-        {/* 풀페이지 표는 워크스페이스 직속이라 페이지 내보내기로는 닿지 않는다(`lib/export/download.ts`). */}
-        <ExportButton workspaceId={workspaceId} rootId={databaseId} />
+        <div className="flex items-center gap-2">
+          <MovePageControl
+            workspaceId={workspaceId}
+            pageId={databaseId}
+            currentParentId={null}
+            currentTeamspaceId={database.value.teamspaceId}
+            currentPrivate={database.value.ownerUserId !== null && database.value.ownerUserId === ctx.userId}
+            targets={[]}
+            teamspaces={moveTeamspaces}
+          />
+          {/* 풀페이지 표는 워크스페이스 직속이라 페이지 내보내기로는 닿지 않는다(`lib/export/download.ts`). */}
+          <ExportButton workspaceId={workspaceId} rootId={databaseId} />
+        </div>
       </div>
 
       <DatabaseTitle

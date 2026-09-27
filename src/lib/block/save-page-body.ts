@@ -588,6 +588,7 @@ async function projectRows(
         ctx,
         {
           id: row.id,
+          type: 'page', // 본문 참조 이동의 대상은 하위 페이지뿐이다(데이터베이스는 본문에 참조가 없다 · 7c-8)
           parent_type: 'block',
           parent_id: row.parent_id,
           ancestor_path: row.ancestor_path,

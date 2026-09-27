@@ -44,7 +44,7 @@ import { randomUUID } from 'node:crypto'
 import type { SessionContext } from '../auth/session-context.ts'
 import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
 import { can } from '../permissions/levels.ts'
-import { inheritFromWorkspace } from '../permissions/acl.ts'
+import { enterPrivateRoot, inheritFromWorkspace } from '../permissions/acl.ts'
 import { effectiveCaps, readableScopes, teamspaceCaps } from '../permissions/effective.ts'
 import { orderKeyBetween } from '../block/order-key.ts'
 import { nextSiblingKey, titleFromPlainText, plainTitleOf } from '../block/page.ts'
@@ -64,6 +64,10 @@ export type DatabaseDetail = {
   readonly dataSourceId: string
   readonly schemaVersion: string
   readonly isInline: boolean
+  /** teamspace 최상위면 그 teamspace(7c-8 — 화면의 "이동"이 현재 자리를 안다). */
+  readonly teamspaceId: string | null
+  /** 개인 최상위면 그 주인(7c-8). `PageSummary.ownerUserId` 와 같은 규칙 — 서버 렌더 판별용, 라우트 JSON 에 싣지 않는다. */
+  readonly ownerUserId: string | null
   /** 기본 뷰. 표를 만들면 항상 하나가 함께 생긴다. */
   readonly defaultViewId?: string
 }
@@ -99,6 +103,11 @@ export type CreateDatabaseInput = {
    * 생략하면 워크스페이스 최상위다.
    */
   readonly teamspaceId?: string | null
+  /**
+   * **내 개인 최상위**에 만든다(7c-8 · `createPage` 의 `privateTop` 과 같은 규칙 — 7c-4 가 정한 "최상위 자리를 받는 생성은
+   * 둘이고 같은 규칙"). 나만 본다. `teamspaceId` 와 함께 주지 않는다. 게스트는 못 만든다.
+   */
+  readonly privateTop?: boolean
 }
 
 function normalizeName(raw: unknown): string {
@@ -116,6 +125,8 @@ function normalizeName(raw: unknown): string {
  *   - teamspace 최상위(7c-4): 그 teamspace 행을 잠그고, 거기에 둘 수 있어야 한다(`teamspaceCaps` 의 `create_child` — 멤버).
  *     행을 넣지 않는다 — teamspace 노드의 부여를 물려받고 스코프는 teamspace id 다(정본 §3.11 *"없으면 teamspace 루트 id"*).
  *     없는 · 보관된 · 남의 · 멤버가 아닌 teamspace 는 전부 `not_found` 다(구분하면 존재를 알려 준다)
+ *   - 내 개인 최상위(7c-8): 워크스페이스 부모 + `owner_user_id` = 나(판결문 C-9). 행은 내 full_access 하나
+ *     (`enterPrivateRoot`)이고 표의 행(row)도 그 스코프를 따른다 — 나만 본다. 게스트는 `not_found`
  */
 export async function createDatabase(
   ctx: SessionContext,
@@ -123,11 +134,19 @@ export async function createDatabase(
 ): Promise<DatabaseResult<DatabaseDetail>> {
   const name = normalizeName(input.name)
   const teamspaceId = input.teamspaceId ?? null
+  const privateTop = input.privateTop === true
 
   return withCommandTransaction(async (tx) => {
     const id = randomUUID()
     const dataSourceId = randomUUID()
 
+    if (privateTop && (teamspaceId !== null || ctx.role === 'guest')) {
+      // 자리 지정은 하나만 · 게스트에게는 개인 섹션이 없다(createPage 의 개인 자리와 같은 답).
+      return { ok: false, reason: 'not_found' } as const
+    }
+    if (privateTop) {
+      await tx.query(`SELECT id FROM workspace WHERE id = $1 FOR UPDATE`, [ctx.workspaceId])
+    }
     if (teamspaceId !== null) {
       const teamspace = await tx.queryMaybe<{ id: string }>(
         `SELECT id FROM teamspace WHERE id = $1 AND workspace_id = $2 AND archived_at IS NULL FOR UPDATE`,
@@ -139,6 +158,7 @@ export async function createDatabase(
     }
     const parentType = teamspaceId === null ? 'workspace' : 'teamspace'
     const parentId = teamspaceId ?? ctx.workspaceId
+    const ownerUserId = privateTop ? ctx.userId : null
 
     // 최상위 형제들 사이의 자리. 페이지와 같은 축을 쓴다 — 사이드바가 둘을 한 목록으로 보여주므로 순서가 같아야 한다.
     const orderKey = await nextSiblingKey(tx, parentId)
@@ -146,11 +166,11 @@ export async function createDatabase(
     await tx.query(
       `INSERT INTO block (
          id, workspace_id, type,
-         parent_type, parent_id, order_key, ancestor_path, perm_scope_id,
+         parent_type, parent_id, order_key, ancestor_path, perm_scope_id, owner_user_id,
          properties, format, created_by, created_at, last_edited_by, last_edited_at
        ) VALUES (
          $1, $2, 'database',
-         $6, $7, $3, '{}', $8,
+         $6, $7, $3, '{}', $8, $9,
          $4::jsonb, '{}'::jsonb, $5, now(), $5, now()
        )`,
       [
@@ -162,12 +182,14 @@ export async function createDatabase(
         parentType,
         parentId,
         teamspaceId ?? id,
+        ownerUserId,
       ],
     )
 
     // 워크스페이스 최상위 노드는 ACL 을 갖고 태어난다(W6-b 의 규칙) — 최상위 페이지와 같은 함수다. teamspace 최상위는
-    // teamspace 노드에서 물려받는다.
-    if (teamspaceId === null) await inheritFromWorkspace(tx, ctx, id)
+    // teamspace 노드에서 물려받고, 개인 최상위는 내 행 하나다(7c-8 — createPage 와 같은 갈림).
+    if (privateTop) await enterPrivateRoot(tx, ctx, id)
+    else if (teamspaceId === null) await inheritFromWorkspace(tx, ctx, id)
 
     await tx.query(
       `INSERT INTO database (id, title_rich, is_inline, created_at, updated_at)
@@ -226,6 +248,8 @@ export async function createDatabase(
         dataSourceId,
         schemaVersion: '1',
         isInline: false,
+        teamspaceId,
+        ownerUserId,
         defaultViewId: viewId,
       },
     } as const
@@ -281,12 +305,17 @@ export async function renameDatabase(
         dataSourceId: row.data_source_id,
         schemaVersion: row.schema_version,
         isInline: row.is_inline,
+        teamspaceId: row.parent_type === 'teamspace' ? row.parent_id : null,
+        ownerUserId: row.parent_type === 'workspace' ? row.owner_user_id : null,
       },
     } as const
   })
 }
 
 type DatabaseRow = {
+  parent_type: string
+  parent_id: string
+  owner_user_id: string | null
   id: string
   properties: { title?: unknown } | null
   is_inline: boolean
@@ -319,6 +348,8 @@ export async function getDatabase(
         dataSourceId: row.data_source_id,
         schemaVersion: row.schema_version,
         isInline: row.is_inline,
+        teamspaceId: row.parent_type === 'teamspace' ? row.parent_id : null,
+        ownerUserId: row.parent_type === 'workspace' ? row.owner_user_id : null,
         access: {
           canEditContent: can(caps, 'edit_content'),
           canCreateRows: can(caps, 'create_child'),
@@ -390,7 +421,7 @@ async function loadDatabase(
   databaseId: string,
 ): Promise<DatabaseRow | null> {
   return tx.queryMaybe<DatabaseRow>(
-    `SELECT b.id, b.properties, d.is_inline, ds.id AS data_source_id, ds.schema_version
+    `SELECT b.id, b.properties, b.parent_type, b.parent_id, b.owner_user_id, d.is_inline, ds.id AS data_source_id, ds.schema_version
        FROM block b
        JOIN database d ON d.id = b.id
        JOIN data_source ds ON ds.owner_database_id = d.id
