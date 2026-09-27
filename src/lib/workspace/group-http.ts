@@ -6,7 +6,7 @@
  *
  *   not_found                      → 404   없는 · 지운 · 다른 워크스페이스의 그룹
  *   forbidden                      → 403   그룹을 고칠 역할이 아니다 · 게스트
- *   duplicate_name · would_orphan  → 409   입력은 맞는데 지금 상태가 허락하지 않는다
+ *   duplicate_name · would_orphan · last_teamspace_owner → 409   입력은 맞는데 지금 상태가 허락하지 않는다
  *   invalid_name · invalid_member  → 400
  */
 
@@ -20,6 +20,7 @@ export function userGroupFailureStatus(reason: UserGroupFailure): number {
       return 403
     case 'duplicate_name':
     case 'would_orphan':
+    case 'last_teamspace_owner':
       return 409
     case 'invalid_name':
     case 'invalid_member':

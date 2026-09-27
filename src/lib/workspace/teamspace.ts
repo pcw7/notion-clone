@@ -152,6 +152,20 @@ export type ArchivedTeamspace = {
   readonly archivedAt: string
 }
 
+/**
+ * 워크스페이스 owner 의 관리 목록 한 줄(7c-10) — **비공개 · 보관된 것까지** 온다. 콘텐츠는 없다(이름 · 상태 · owner 수뿐).
+ * `ownerCount` 는 **실제로 행동할 수 있는** owner 수다(활성 · 게스트 아닌 사람 · 지워지지 않은 그룹) — 0 이면 고아다.
+ */
+export type AdminTeamspaceRow = {
+  readonly id: string
+  readonly name: string
+  readonly visibility: TeamspaceVisibility
+  readonly archivedAt: string | null
+  readonly ownerCount: number
+  /** 내 역할 — 멤버가 아니면 null. 보관된 teamspace 에서도 `teamspace_member` 로 읽는다. */
+  readonly role: TeamspaceRole | null
+}
+
 export type TeamspaceMemberRow = {
   readonly principal: TeamspacePrincipal
   readonly role: TeamspaceRole
@@ -781,6 +795,163 @@ export async function joinTeamspace(ctx: SessionContext, teamspaceId: string): P
     )
     return { ok: true } as const
   })
+}
+
+// ── 워크스페이스 owner 의 관리 경로 (7c-10) ─────────────────────────
+
+/**
+ * 워크스페이스 owner 인가 — 관리 경로를 여는 유일한 역할이다(역할 **이름**으로 묻는다 · CLAUDE.md).
+ *
+ * membership_admin 을 넣지 않은 까닭: 이 경로는 비공개 teamspace 의 존재를 보여 주고 그 안으로 들어가게 한다 — 가장 넓은
+ * 문을 가장 좁은 역할에 둔다. 넓힐 까닭이 생기면 여기 하나를 고친다.
+ */
+export function canAdministerTeamspaces(role: WorkspaceRole): boolean {
+  return role === 'owner'
+}
+
+/**
+ * 이 워크스페이스의 **모든** teamspace — 비공개 · 보관된 것까지(7c-10). 워크스페이스 owner 에게만(다른 역할은 빈 목록).
+ *
+ * F-06-04: *"클론은 '마지막 owner 이탈 차단' 또는 'workspace owner 의 강제 owner 지정' 중 하나를 필수 구현"*. 7c-1 이
+ * 앞의 것을 했지만 owner 가 워크스페이스를 떠나거나 게스트가 되는 길(아직 명령은 없다)로는 막을 수 없다. 이 목록이 그
+ * 고아(`ownerCount === 0`)를 보여 주고, `claimTeamspaceOwnership` 이 되살린다.
+ *
+ * **콘텐츠는 주지 않는다** — 이름 · 공개 범위 · 보관 여부 · owner 수뿐이다. 워크스페이스 owner 의 역할 자체는 무엇을 볼 수
+ * 있는지 바꾸지 않는다(F-06-02 *"Admin roles don't change what someone can see"*). 보려면 들어가야 한다(아래).
+ */
+export async function listAllTeamspaces(ctx: SessionContext): Promise<AdminTeamspaceRow[]> {
+  if (!canAdministerTeamspaces(ctx.role)) return []
+  return withReadTransaction(async (tx) => {
+    const rows = await tx.query<{
+      id: string
+      name: string
+      visibility: TeamspaceVisibility
+      archived_at: Date | null
+      owner_count: number
+    }>(
+      `SELECT t.id, t.name, t.visibility, t.archived_at,
+              (SELECT count(*)::int FROM teamspace_member o
+                WHERE o.teamspace_id = t.id AND o.role = 'owner' AND o.removed_at IS NULL
+                  AND ((o.principal_type = 'user' AND EXISTS (
+                          SELECT 1 FROM workspace_member m
+                           WHERE m.workspace_id = $1 AND m.user_id = o.principal_id
+                             AND m.status = 'active' AND m.role <> 'guest'))
+                    OR (o.principal_type = 'group' AND EXISTS (
+                          SELECT 1 FROM "group" g WHERE g.id = o.principal_id AND g.deleted_at IS NULL)))
+              ) AS owner_count
+         FROM teamspace t
+        WHERE t.workspace_id = $1
+        ORDER BY (t.archived_at IS NOT NULL), lower(t.name), t.id`,
+      [ctx.workspaceId],
+    )
+    const out: AdminTeamspaceRow[] = []
+    for (const r of rows) {
+      out.push({
+        id: r.id,
+        name: r.name,
+        visibility: r.visibility,
+        archivedAt: r.archived_at === null ? null : new Date(r.archived_at).toISOString(),
+        ownerCount: r.owner_count,
+        role: await roleIn(tx, ctx, r.id),
+      })
+    }
+    return out
+  })
+}
+
+/**
+ * 워크스페이스 owner 가 스스로 그 teamspace 의 **owner 로 들어간다**(7c-10 · F-06-04 의 "강제 owner 지정").
+ *
+ * 몰래 여는 문이 아니다 — 멤버 행을 넣으므로 **멤버 목록에 이름이 선다.** 그 teamspace 의 사람들은 누가 들어왔는지 본다.
+ * 워크스페이스 owner 의 역할이 볼 수 있는 것을 바꾸지 않는다는 원칙(F-06-02)을 지키는 방법이 이것이다 — 역할이 아니라
+ * **드러나는 멤버십**이 접근을 준다.
+ *
+ * 보관된 teamspace 에도 들어간다 — 그래야 되살릴 수 있다(§3.2-46 ③ 이 예고한 "워크스페이스 owner 도 되살릴 수 있다"가
+ * 이 두 걸음이다: 들어가고, 되살린다). 이미 owner 면 아무것도 바꾸지 않는다. member 면 owner 로 올린다.
+ */
+export async function claimTeamspaceOwnership(ctx: SessionContext, teamspaceId: string): Promise<TeamspaceResult> {
+  if (!canAdministerTeamspaces(ctx.role)) return fail('not_found')
+  return withCommandTransaction(async (tx) => {
+    // 보관된 것도 잠근다 — lockTeamspace 는 살아 있는 것만 잠그므로 여기서만 일부러 넓다(restoreTeamspace 와 같은 결).
+    const teamspace = await tx.queryMaybe<{ id: string }>(
+      `SELECT id FROM teamspace WHERE id = $1 AND workspace_id = $2 FOR UPDATE`,
+      [teamspaceId, ctx.workspaceId],
+    )
+    if (teamspace === null) return fail('not_found')
+
+    const me = { type: 'user' as const, id: ctx.userId }
+    await tx.query(
+      `INSERT INTO teamspace_member (teamspace_id, principal_type, principal_id, role)
+       VALUES ($1, 'user', $2, 'owner')
+       ON CONFLICT (teamspace_id, principal_type, principal_id)
+       DO UPDATE SET removed_at = NULL, role = 'owner'
+        WHERE teamspace_member.removed_at IS NOT NULL OR teamspace_member.role <> 'owner'`,
+      [teamspaceId, ctx.userId],
+    )
+    await syncOwnerGrant(tx, ctx, teamspaceId, me, true)
+    return { ok: true } as const
+  })
+}
+
+// ── 그룹이 사라질 때 ──────────────────────────────────────────────────
+
+/**
+ * 지워지는 그룹을 모든 teamspace 에서 뺀다 — `deleteGroup` 이 같은 트랜잭션에서 부른다(7c-10).
+ *
+ * 전에는 그룹 삭제가 블록 노드의 부여만 거뒀다(`dropGrantsOf`). teamspace 멤버 행과 teamspace 노드의 owner 부여는
+ * 남았고, **그 그룹이 유일한 owner 면 teamspace 는 고아가 됐다** — 행은 "owner 가 있다"고 세는데 그 그룹은 지워져
+ * P(U) 가 무시하므로 아무도 설정을 고치지 못한다. F-06-04 가 필수로 적은 "마지막 owner 이탈 차단"이 이 길로 샜다.
+ *
+ * 그래서 먼저 묻는다 — 이 그룹이 **마지막 owner** 인 teamspace 가 하나라도 있으면(보관된 것 포함 — 되살릴 사람이
+ * 사라진다) 아무것도 바꾸지 않고 그 수를 돌려준다. 없으면 그 그룹의 멤버 행을 빼고(`removed_at` — 트리거가 세대와
+ * 협업 신호를 나른다) teamspace 노드의 owner 부여를 거둔다.
+ *
+ * "다른 owner" 는 **실제로 행동할 수 있는** 주체만 센다 — 이 워크스페이스의 활성 · 게스트 아닌 사람, 또는 지워지지 않은
+ * 그룹. 지워진 그룹 · 떠난 사람의 헛 행을 owner 로 세면 같은 고아가 다른 모양으로 남는다.
+ */
+export async function dropGroupFromTeamspaces(
+  tx: Tx,
+  ctx: SessionContext,
+  groupId: string,
+): Promise<{ readonly ok: true } | { readonly ok: false; readonly teamspaces: number }> {
+  const orphaned = await tx.queryOne<{ n: number }>(
+    `SELECT count(*)::int AS n
+       FROM teamspace_member mine
+       JOIN teamspace t ON t.id = mine.teamspace_id AND t.workspace_id = $2
+      WHERE mine.principal_type = 'group' AND mine.principal_id = $1
+        AND mine.role = 'owner' AND mine.removed_at IS NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM teamspace_member other
+           WHERE other.teamspace_id = mine.teamspace_id AND other.role = 'owner' AND other.removed_at IS NULL
+             AND NOT (other.principal_type = 'group' AND other.principal_id = $1)
+             AND (
+               (other.principal_type = 'user' AND EXISTS (
+                  SELECT 1 FROM workspace_member m
+                   WHERE m.workspace_id = $2 AND m.user_id = other.principal_id
+                     AND m.status = 'active' AND m.role <> 'guest'))
+               OR (other.principal_type = 'group' AND EXISTS (
+                  SELECT 1 FROM "group" g WHERE g.id = other.principal_id AND g.deleted_at IS NULL))
+             )
+        )`,
+    [groupId, ctx.workspaceId],
+  )
+  if (orphaned.n > 0) return { ok: false, teamspaces: orphaned.n }
+
+  await tx.query(
+    `UPDATE teamspace_member tm SET removed_at = now()
+       FROM teamspace t
+      WHERE t.id = tm.teamspace_id AND t.workspace_id = $2
+        AND tm.principal_type = 'group' AND tm.principal_id = $1 AND tm.removed_at IS NULL`,
+    [groupId, ctx.workspaceId],
+  )
+  await tx.query(
+    `DELETE FROM acl_entry a
+      USING teamspace t
+      WHERE a.node_kind = 'teamspace' AND a.node_id = t.id AND t.workspace_id = $2
+        AND a.principal_type = 'group' AND a.principal_id = $1`,
+    [groupId, ctx.workspaceId],
+  )
+  return { ok: true }
 }
 
 // ── 이름 ──────────────────────────────────────────────────────────────
