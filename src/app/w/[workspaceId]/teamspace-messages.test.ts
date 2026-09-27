@@ -9,8 +9,10 @@ import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 
 import { can, capabilitiesOf } from '../../../lib/permissions/levels.ts'
-import { TEAMSPACE_MEMBER_LEVELS, TEAMSPACE_VISIBILITIES } from '../../../lib/workspace/teamspace.ts'
+import { normalizeTeamspaceIcon, TEAMSPACE_MEMBER_LEVELS, TEAMSPACE_VISIBILITIES } from '../../../lib/workspace/teamspace.ts'
 import {
+  DEFAULT_TEAMSPACE_ICON,
+  TEAMSPACE_ICON_CHOICES,
   TEAMSPACE_MEMBER_LEVEL_ORDER,
   TEAMSPACE_VISIBILITY_ORDER,
   archivedAtLabel,
@@ -18,6 +20,7 @@ import {
   defaultTeamspaceAddedMessage,
   memberLevelHint,
   memberLevelLabel,
+  teamspaceIcon,
   canInviteHere,
   teamspaceCandidates,
   teamspaceFailureMessage,
@@ -34,7 +37,7 @@ const person = (userId: string, role = 'member', status = 'active') => ({ userId
 describe('teamspace 화면의 문구', () => {
   test('거부 코드마다 할 말이 있다 · 마지막 소유자는 무엇을 먼저 할지 말한다 · 모르는 코드는 일반 문구', () => {
     const codes = ['not_found', 'forbidden', 'invalid_name', 'invalid_role', 'invalid_member', 'last_owner',
-      'needs_invite', 'invalid_visibility', 'invalid_settings', 'default_teamspace', 'invalid_level']
+      'needs_invite', 'invalid_visibility', 'invalid_settings', 'default_teamspace', 'invalid_level', 'invalid_icon']
     for (const code of codes) {
       assert.notEqual(teamspaceFailureMessage(code), '처리하지 못했습니다.', code)
     }
@@ -92,6 +95,15 @@ describe('보관한 때 (7c-6)', () => {
   test('앞선 시각(시계가 어긋난 경우)도 "오늘 보관" 으로 둔다 — 음수 날짜를 보이지 않는다', () => {
     const now = new Date('2026-09-27T12:00:00Z')
     assert.equal(archivedAtLabel('2026-09-28T12:00:00Z', now), '오늘 보관')
+  })
+})
+
+describe('아이콘 (7c-14)', () => {
+  test('★ 고르개의 아이콘은 모두 서버가 받는다 · 서로 다르다 · 없으면 기본 표시', () => {
+    for (const icon of TEAMSPACE_ICON_CHOICES) assert.equal(normalizeTeamspaceIcon(icon), icon, icon)
+    assert.equal(new Set(TEAMSPACE_ICON_CHOICES).size, TEAMSPACE_ICON_CHOICES.length)
+    assert.equal(teamspaceIcon(null), DEFAULT_TEAMSPACE_ICON)
+    assert.equal(teamspaceIcon('🚀'), '🚀')
   })
 })
 

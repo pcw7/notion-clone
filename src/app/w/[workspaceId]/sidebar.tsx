@@ -40,6 +40,7 @@ import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 
 import { TeamspaceCreateForm } from './teamspace-create'
+import { teamspaceIcon } from './teamspace-messages'
 import { TrashPanel, type TrashRow } from './trash-panel'
 import { getSidebarStore } from './sidebar-state'
 import { openSearchOverlay } from './search-overlay'
@@ -59,7 +60,7 @@ export type SidebarNode = {
  * 있는가(`listMyTeamspaces` 가 만들기 명령과 같은 판정으로 물었다 · 7c-12) — 아니면 `+` · `▦` 를 세우지 않는다(멤버 기본
  * 권한이 댓글 · 읽기인 멤버).
  */
-export type SidebarTeamspace = { id: string; name: string; canCreatePages: boolean; pages: SidebarNode[] }
+export type SidebarTeamspace = { id: string; name: string; icon: string | null; canCreatePages: boolean; pages: SidebarNode[] }
 
 const UNTITLED = '제목 없음'
 
@@ -372,8 +373,8 @@ export function Sidebar({
                         : 'hover:bg-neutral-100 dark:hover:bg-neutral-800'
                     }`}
                   >
-                    <span aria-hidden className="w-4 flex-none text-xs text-neutral-400">
-                      ▣
+                    <span aria-hidden data-testid="sidebar-teamspace-icon" className="w-4 flex-none text-center text-xs text-neutral-400">
+                      {teamspaceIcon(teamspace.icon)}
                     </span>
                     <Link
                       href={`/w/${workspaceId}/teamspaces/${teamspace.id}`}

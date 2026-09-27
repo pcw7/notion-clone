@@ -780,8 +780,12 @@ export async function listMovableTargets(
  * 이름순도 그것을 따른다. 페이지의 전체 권한은 여기서 묻지 않는다 — 없으면 `movePage` 가 `needs_full_access` 로 거부하고
  * 화면이 그 말을 한다(자리마다 다르지 않다).
  */
-export async function listTeamspaceDestinations(ctx: SessionContext): Promise<{ id: string; name: string }[]> {
-  return (await listMyTeamspaces(ctx)).filter((t) => t.canCreatePages).map((t) => ({ id: t.id, name: t.name }))
+export async function listTeamspaceDestinations(
+  ctx: SessionContext,
+): Promise<{ id: string; name: string; icon: string | null }[]> {
+  return (await listMyTeamspaces(ctx))
+    .filter((t) => t.canCreatePages)
+    .map((t) => ({ id: t.id, name: t.name, icon: t.icon }))
 }
 
 /** 읽기는 관대하게 — 제목 하나가 망가졌다고 이동 자체를 막지 않는다. */

@@ -16,6 +16,7 @@ import Link from 'next/link'
 
 import {
   teamspaceFailureMessage,
+  teamspaceIcon,
   teamspaceJoinAction,
   teamspaceVisibilityHint,
   teamspaceVisibilityLabel,
@@ -26,6 +27,7 @@ import {
 export type BrowseRow = {
   readonly id: string
   readonly name: string
+  readonly icon: string | null
   readonly visibility: TeamspaceVisibilityName
   readonly isDefault: boolean
   readonly memberCount: number
@@ -92,6 +94,9 @@ export function TeamspaceBrowser({ workspaceId, initialRows }: { workspaceId: st
             >
               <span className="min-w-0">
                 <span className="flex items-center gap-2">
+                  <span aria-hidden data-testid="teamspace-browse-icon" className="flex-none">
+                    {teamspaceIcon(row.icon)}
+                  </span>
                   {action === 'member' ? (
                     <Link
                       href={`/w/${workspaceId}/teamspaces/${row.id}`}

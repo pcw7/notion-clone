@@ -353,7 +353,7 @@ CREATE INDEX ON group_member (user_id) WHERE removed_at IS NULL;
 
 CREATE TABLE teamspace (
   id uuid PRIMARY KEY, workspace_id uuid NOT NULL REFERENCES workspace(id),
-  name text NOT NULL, icon text NULL,
+  name text NOT NULL, icon text NULL,                        -- [보강] 7c-14 · 이모지 한 글자 · CHECK 길이(0032)
   visibility text NOT NULL CHECK (visibility IN ('open','closed','private')),
   is_default boolean NOT NULL DEFAULT false,                 -- visibility 와 직교
   who_can_invite text NOT NULL DEFAULT 'all_members'
@@ -661,6 +661,20 @@ CREATE TABLE access_request (
 > ⑤ 낮추면 최상위에 **만들기**가 함께 바뀐다 — `comment` · `view` 는 `create_child` 가 없어 멤버가 최상위에 페이지 ·
 > 데이터베이스를 두지 못한다(`teamspaceCaps`). 옮기기 피커 · 사이드바의 `+` 가 같은 판정을 쓴다. `edit` 는 만들고 고치지만
 > 공유(`share` · `manage_perm`)는 못 한다 — 뿌리가 바뀌는 이동(7c-3 · `manage_perm`)도 못 한다.
+
+**[보강] `teamspace.icon` — 이모지 한 글자** ⟨Teamspace · 게스트 · 그룹 7c-14 / 마이그레이션 0032⟩
+
+> 초판은 `icon text NULL` 만 두었다(페이지의 `icon jsonb` 와 달리 text 다). 06 F-06-04 는 만들기에 *"이름/아이콘 입력"* 만 적었다.
+>
+> ① **값은 이모지 한 글자(grapheme 하나)다** — 없으면 NULL 이고 화면은 기본 표시(▣)를 쓴다. 이미지 업로드는 아직 없다 — 페이지
+> 아이콘(`icon jsonb`)이 생길 때 그 모양(이모지 | 파일)을 따라 넓힌다. text 로 두었으므로 그때는 새 컬럼이 아니라 이 칸의 뜻을
+> 넓히는 [보강]이 필요하다.
+>
+> ② "한 글자 · 이모지"는 명령이 검사한다(grapheme 수는 SQL 로 셀 수 없다). DB 는 **표현할 수 있는 부분만** 막는다 —
+> `CHECK (icon IS NULL OR (char_length(icon) BETWEEN 1 AND 16 AND icon !~ '[[:space:]]'))`(0032). 16 은 가장 긴 표준 이모지
+> 시퀀스(ZWJ 가족 · 깃발 하위 구역 — 코드포인트 10개 안팎)를 넉넉히 받는 상한이다.
+>
+> ③ 바꾸는 사람은 owner 다(설정 · 만든 사람). 권한과 무관하므로 신호는 없다(이름과 같다).
 
 ---
 

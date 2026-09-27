@@ -42,9 +42,9 @@ export async function POST(request: Request, ctx: Ctx): Promise<Response> {
 
   const parsed = await readJsonBody(request)
   if (!parsed.ok) return parsed.response
-  const body = (parsed.body ?? {}) as { name?: unknown; visibility?: unknown }
+  const body = (parsed.body ?? {}) as { name?: unknown; visibility?: unknown; icon?: unknown }
 
-  const created = await createTeamspace(session.ctx, { name: body.name, visibility: body.visibility })
+  const created = await createTeamspace(session.ctx, { name: body.name, visibility: body.visibility, icon: body.icon })
   if (!created.ok) return teamspaceFailureResponse(created)
   return Response.json({ teamspace: created.value }, { status: 201 })
 }

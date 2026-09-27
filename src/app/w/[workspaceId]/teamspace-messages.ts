@@ -30,6 +30,21 @@ export function teamspaceVisibilityLabel(visibility: TeamspaceVisibilityName): s
   }
 }
 
+/**
+ * 고를 수 있는 아이콘 — 이모지 한 글자씩(7c-14). 서버(`normalizeTeamspaceIcon`)가 모두 받는지는 `teamspace-messages.test.ts` 가
+ * 본다. API 로는 목록 밖의 이모지도 둘 수 있다 — 화면은 그 값도 그대로 그린다.
+ */
+export const TEAMSPACE_ICON_CHOICES: readonly string[] = [
+  '🚀', '📚', '💡', '🎨', '🛠️', '📈', '🧪', '🏠', '🌱', '🎯', '📣', '🤝', '💼', '🧭', '🔒', '⭐',
+]
+
+/** 아이콘이 없을 때의 표시 — 7c-2 부터 사이드바가 쓰던 그 글자. */
+export const DEFAULT_TEAMSPACE_ICON = '▣'
+
+export function teamspaceIcon(icon: string | null | undefined): string {
+  return icon ?? DEFAULT_TEAMSPACE_ICON
+}
+
 export type TeamspaceMemberLevelName = 'full_access' | 'edit' | 'comment' | 'view'
 
 /**
@@ -152,6 +167,8 @@ export function teamspaceFailureMessage(error: unknown): string {
       return '기본 teamspace 는 보관할 수 없습니다. 먼저 기본을 끄세요.'
     case 'invalid_level':
       return '멤버 기본 권한을 다시 고르세요.'
+    case 'invalid_icon':
+      return '아이콘은 이모지 한 글자만 고를 수 있습니다.'
     default:
       return '처리하지 못했습니다.'
   }

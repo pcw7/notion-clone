@@ -5,7 +5,7 @@
  *   forbidden                                   → 403   멤버이지만 그 역할이 아니다
  *   needs_invite                                → 403   존재는 보이지만(closed) 스스로 참여할 수 없다 (7c-5)
  *   last_owner · default_teamspace              → 409   입력은 맞는데 지금 상태가 허락하지 않는다
- *   invalid_name · invalid_visibility · invalid_role · invalid_member · invalid_settings · invalid_level → 400
+ *   invalid_name · invalid_visibility · invalid_role · invalid_member · invalid_settings · invalid_level · invalid_icon → 400
  */
 
 import { isUuid } from '../ids.ts'
@@ -27,6 +27,7 @@ export function teamspaceFailureStatus(reason: TeamspaceFailure): number {
     case 'invalid_member':
     case 'invalid_settings':
     case 'invalid_level':
+    case 'invalid_icon':
       return 400
   }
 }

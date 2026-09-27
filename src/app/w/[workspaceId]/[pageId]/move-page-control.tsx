@@ -22,6 +22,7 @@
 import { useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 
+import { teamspaceIcon } from '../teamspace-messages'
 import { moveFailureMessage, moveNeedsConfirm, movePreviewLines, type MovePreviewView } from './move-messages'
 
 type MoveBody = { targetParentId: string | null } | { targetTeamspaceId: string } | { targetPrivate: true }
@@ -33,7 +34,7 @@ export type MoveTargetOption = {
   path: string[]
 }
 
-export type MoveTeamspaceOption = { id: string; name: string }
+export type MoveTeamspaceOption = { id: string; name: string; icon: string | null }
 
 const UNTITLED = '제목 없음'
 const OPTION =
@@ -239,7 +240,7 @@ export function MovePageControl({
                       className={OPTION}
                     >
                       <span aria-hidden className="mr-1 text-neutral-400">
-                        ▣
+                        {teamspaceIcon(t.icon)}
                       </span>
                       {t.name}
                       {t.id === currentTeamspaceId ? (

@@ -138,6 +138,8 @@ export type TeamspaceFailure =
   | 'invalid_settings'
   /** 멤버 기본 레벨로 고를 수 없는 값이다(`TEAMSPACE_MEMBER_LEVELS` 밖 — 7c-12). */
   | 'invalid_level'
+  /** 아이콘이 이모지 한 글자가 아니다(7c-14). */
+  | 'invalid_icon'
   /** 기본 teamspace 는 보관할 수 없다 — 먼저 기본을 끈다(7c-11). */
   | 'default_teamspace'
 
@@ -199,6 +201,7 @@ export type ArchivedTeamspace = {
 export type AdminTeamspaceRow = {
   readonly id: string
   readonly name: string
+  readonly icon: string | null
   readonly visibility: TeamspaceVisibility
   readonly isDefault: boolean
   readonly archivedAt: string | null
@@ -239,6 +242,30 @@ export function canBrowseTeamspaces(role: WorkspaceRole): boolean {
  * 가 빠지는 까닭은 머리말에 있다.
  */
 export const DEFAULT_TEAMSPACE_ROLES: readonly WorkspaceRole[] = ['owner', 'membership_admin', 'member']
+
+/** 아이콘의 코드포인트 상한 — DB 의 CHECK(0032)와 같은 값이다. */
+export const MAX_TEAMSPACE_ICON_CODE_POINTS = 16
+
+const graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
+const EMOJI = /\p{Extended_Pictographic}|\p{Regional_Indicator}/u
+
+/**
+ * 아이콘 — **이모지 한 글자**(grapheme 하나 · 7c-14). `null` · 빈 글은 "아이콘 없음"이다(화면은 기본 표시를 쓴다). 모양이
+ * 아니면 `undefined`(→ `invalid_icon`).
+ *
+ * "한 글자"는 grapheme 으로 센다 — ZWJ 로 이은 가족 이모지 · 피부색 · 깃발은 코드포인트가 여럿이어도 한 글자다. 글자
+ * 하나가 이모지인지는 Unicode 속성(`Extended_Pictographic` · 깃발의 `Regional_Indicator`)으로 본다. DB 는 이 검사를 못
+ * 하므로 길이 · 공백만 CHECK 로 막는다(0032) — 코드포인트 상한을 같은 값으로 여기서도 본다.
+ */
+export function normalizeTeamspaceIcon(raw: unknown): string | null | undefined {
+  if (raw === null) return null
+  if (typeof raw !== 'string') return undefined
+  const icon = raw.trim()
+  if (icon === '') return null
+  if ([...icon].length > MAX_TEAMSPACE_ICON_CODE_POINTS) return undefined
+  if ([...graphemes.segment(icon)].length !== 1 || !EMOJI.test(icon)) return undefined
+  return icon
+}
 
 export function normalizeTeamspaceName(raw: unknown): string | null {
   if (typeof raw !== 'string') return null
@@ -387,22 +414,25 @@ async function memberLevelOf(tx: Tx, teamspaceId: string): Promise<TeamspaceMemb
 
 export async function createTeamspace(
   ctx: SessionContext,
-  input: { readonly name: unknown; readonly visibility?: unknown },
+  input: { readonly name: unknown; readonly visibility?: unknown; readonly icon?: unknown },
 ): Promise<TeamspaceResult<TeamspaceSummary>> {
   if (!canCreateTeamspace(ctx.role)) return fail('forbidden')
   const name = normalizeTeamspaceName(input.name)
   if (name === null) return fail('invalid_name')
+  const icon = input.icon === undefined ? null : normalizeTeamspaceIcon(input.icon)
+  if (icon === undefined) return fail('invalid_icon')
   // 둘러보기 · 참여가 아직 없어 보이는 범위는 저장만 한다(§7). 기본은 closed — 존재는 보이되 초대로만 들어온다.
   const visibility = input.visibility === undefined ? 'closed' : input.visibility
   if (!isVisibility(visibility)) return fail('invalid_visibility')
 
   return withCommandTransaction(async (tx) => {
     const id = randomUUID()
-    await tx.query(`INSERT INTO teamspace (id, workspace_id, name, visibility) VALUES ($1, $2, $3, $4)`, [
+    await tx.query(`INSERT INTO teamspace (id, workspace_id, name, visibility, icon) VALUES ($1, $2, $3, $4, $5)`, [
       id,
       ctx.workspaceId,
       name,
       visibility,
+      icon,
     ])
     await tx.query(
       `INSERT INTO teamspace_member (teamspace_id, principal_type, principal_id, role) VALUES ($1, 'user', $2, 'owner')`,
@@ -415,7 +445,7 @@ export async function createTeamspace(
     )
     await syncOwnerGrant(tx, ctx, id, { type: 'user', id: ctx.userId }, true)
     await syncOpenGrant(tx, ctx, id, visibility === 'open')
-    return { ok: true, value: { id, name, icon: null, visibility, role: 'owner' as const, canCreatePages: true } } as const
+    return { ok: true, value: { id, name, icon, visibility, role: 'owner' as const, canCreatePages: true } } as const
   })
 }
 
@@ -610,7 +640,7 @@ export async function listTeamspaceMembers(
 // ── 설정 ──────────────────────────────────────────────────────────────
 
 /**
- * 설정을 고친다 — 이름 · 공개 범위 · 초대 규칙 · 멤버 기본 레벨. **owner 만**(멤버는 `forbidden` · 멤버가 아니면 `not_found`).
+ * 설정을 고친다 — 이름 · 아이콘 · 공개 범위 · 초대 규칙 · 멤버 기본 레벨. **owner 만**(멤버는 `forbidden` · 멤버가 아니면 `not_found`).
  *
  * 주지 않은 칸은 건드리지 않는다. 알아볼 수 있는 칸이 하나도 없으면 `invalid_settings` 다 — 오타 난 요청이 "고쳤다"로
  * 보이면 안 된다. 이름의 중복은 막지 않는다(정본에 UNIQUE 가 없다 · §7).
@@ -629,6 +659,7 @@ export async function updateTeamspace(
     readonly visibility?: unknown
     readonly whoCanInvite?: unknown
     readonly memberLevel?: unknown
+    readonly icon?: unknown
   },
 ): Promise<TeamspaceResult> {
   const set: string[] = []
@@ -649,6 +680,12 @@ export async function updateTeamspace(
   if (input.whoCanInvite !== undefined) {
     if (input.whoCanInvite !== 'owners' && input.whoCanInvite !== 'all_members') return fail('invalid_settings')
     column('who_can_invite', input.whoCanInvite)
+  }
+  if (input.icon !== undefined) {
+    // null · 빈 글은 아이콘을 지운다(7c-14).
+    const icon = normalizeTeamspaceIcon(input.icon)
+    if (icon === undefined) return fail('invalid_icon')
+    column('icon', icon)
   }
   if (input.memberLevel !== undefined && !isMemberLevel(input.memberLevel)) return fail('invalid_level')
   const memberLevel = input.memberLevel
@@ -935,12 +972,13 @@ export async function listAllTeamspaces(ctx: SessionContext): Promise<AdminTeams
     const rows = await tx.query<{
       id: string
       name: string
+      icon: string | null
       visibility: TeamspaceVisibility
       is_default: boolean
       archived_at: Date | null
       owner_count: number
     }>(
-      `SELECT t.id, t.name, t.visibility, t.is_default, t.archived_at,
+      `SELECT t.id, t.name, t.icon, t.visibility, t.is_default, t.archived_at,
               (SELECT count(*)::int FROM teamspace_member o
                 WHERE o.teamspace_id = t.id AND o.role = 'owner' AND o.removed_at IS NULL
                   AND ((o.principal_type = 'user' AND EXISTS (
@@ -960,6 +998,7 @@ export async function listAllTeamspaces(ctx: SessionContext): Promise<AdminTeams
       out.push({
         id: r.id,
         name: r.name,
+        icon: r.icon,
         visibility: r.visibility,
         isDefault: r.is_default,
         archivedAt: r.archived_at === null ? null : new Date(r.archived_at).toISOString(),
