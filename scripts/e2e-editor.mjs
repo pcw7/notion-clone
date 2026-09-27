@@ -2163,6 +2163,84 @@ async function main() {
       check('게스트의 사이드바에는 개인 페이지 섹션이 없다', !guestHome.includes('sidebar-private'))
     }
 
+    if (sectionIf('데이터베이스의 자리 — 개인 표 · 옮기기 (7c-8 · F-04-14 · F-06-20)')) {
+      // 사이드바 개인 섹션의 ▦(개인 표) · 표 화면의 "이동"(워크스페이스 ↔ teamspace ↔ 개인). 이 절은 자기 데이터를
+      // 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
+      const placeMate = await joinAs(workspaceId, await createUser('표 자리 동료'), 'member')
+      const dbPageAs = (actor, id) => fetch(`${BASE}/w/${workspaceId}/db/${id}`, { headers: { cookie: `nc_session=${actor.token}` } })
+      const clickOnSel = async (sel) => {
+        const box = await evaluate(`(() => {
+          const el = document.querySelector(${JSON.stringify(sel)})
+          if (!el || el.disabled) return null
+          el.scrollIntoView({ block: 'center' })
+          const r = el.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (!box) return false
+        await click(box.x, box.y)
+        await sleep(120)
+        return true
+      }
+      const tsUrl = `${BASE}/api/workspaces/${workspaceId}/teamspaces`
+      const placeTeam = (await (await fetch(tsUrl, {
+        method: 'POST', headers: authed, body: JSON.stringify({ name: `표자리팀 ${Date.now()}` }),
+      })).json()).teamspace.id
+
+      // ① 개인 표 — 사이드바 개인 섹션의 ▦
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
+      await waitFor(`!!document.querySelector('[data-testid="sidebar-private-add-database"]')`, 15000)
+      await clickOnSel('[data-testid="sidebar-private-add-database"]')
+      check('★ 개인 섹션의 ▦ 로 새 표 — 표가 열리고 개인 페이지 섹션 아래에 선다',
+        await waitFor(`location.pathname.includes('/db/')
+          && !!document.querySelector('[data-testid="sidebar-private"] a[href="' + location.pathname + '"]')`, 15000),
+        await evaluate('location.pathname'))
+      const privateDb = await evaluate(`location.pathname.split('/db/')[1]?.split('/')[0] ?? ''`)
+      check('★ 개인 표는 나만 본다 — 동료에게는 404 다',
+        (await dbPageAs(placeMate, privateDb)).status === 404 &&
+          (await fetch(`${BASE}/w/${workspaceId}/db/${privateDb}`, { headers: authed })).status === 200)
+
+      // ② 표 화면의 "이동" — 개인 → teamspace
+      // 전체 판에서는 사이드바가 커서 하이드레이션이 늦다 — 버튼이 붙기 전에 눌리면 피커가 안 열린다(§6). 열릴 때까지 다시 누른다.
+      const openPicker = async () => {
+        for (let tries = 0; tries < 5; tries += 1) {
+          await clickOnSel('[data-testid="move-open"]')
+          if (await waitFor(`!!document.querySelector('[data-testid="move-picker"]')`, 3000)) return true
+        }
+        return false
+      }
+      await waitFor(`!!document.querySelector('[data-testid="move-open"]')`, 10000)
+      check('표의 피커가 열린다', await openPicker())
+      check('표의 피커 — 개인 페이지는 현재 위치 · 페이지 대상은 없다 · teamspace 가 선다',
+        await waitFor(`document.querySelector('[data-testid="move-to-private"]')?.disabled === true
+          && !document.querySelector('[data-testid="move-to-page"]')
+          && !!document.querySelector('[data-testid="move-to-teamspace"][data-teamspace-id="${placeTeam}"]')`, 5000))
+      await clickOnSel(`[data-testid="move-to-teamspace"][data-teamspace-id="${placeTeam}"]`)
+      check('★ teamspace 로 옮기면 사이드바의 그 teamspace 아래로 옮겨 간다',
+        await waitFor(`!document.querySelector('[data-testid="sidebar-private"] a[href="/w/${workspaceId}/db/${privateDb}"]')
+          && !!document.querySelector('[data-testid="sidebar-teamspace"][data-teamspace-id="${placeTeam}"] a[href="/w/${workspaceId}/db/${privateDb}"]')`, 15000))
+      check('멤버가 아닌 동료는 여전히 못 연다 (404)', (await dbPageAs(placeMate, privateDb)).status === 404)
+
+      // ③ 워크스페이스 최상위로 열기 — 이제 모두가 본다
+      check('피커를 다시 연다', await openPicker())
+      await waitFor(`!!document.querySelector('[data-testid="move-to-workspace"]')`, 5000)
+      await clickOnSel('[data-testid="move-to-workspace"]')
+      check('★ 워크스페이스 최상위로 열면 동료가 열고 · 워크스페이스 페이지 섹션에 선다',
+        await waitFor(`!!document.querySelector('section[aria-label="워크스페이스 페이지"] a[href="/w/${workspaceId}/db/${privateDb}"]')`, 15000) &&
+          (await dbPageAs(placeMate, privateDb)).status === 200)
+
+      // ④ 라우트의 거부 — 페이지 밑으로는 못 간다
+      const hostPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
+        method: 'POST', headers: authed, body: JSON.stringify({ title: '표를 받을 페이지' }),
+      })).json()).page.id
+      const intoPage = await fetch(`${BASE}/api/workspaces/${workspaceId}/pages/${privateDb}/move`, {
+        method: 'POST', headers: authed, body: JSON.stringify({ targetParentId: hostPage }),
+      })
+      check('표를 페이지 밑으로 옮기면 400 invalid_target 이다',
+        intoPage.status === 400 && (await intoPage.json()).error === 'invalid_target', String(intoPage.status))
+      // 이동의 refresh 가 끝나기 전에 다음 절이 화면을 옮기지 않게 한다(§6).
+      await sleep(1500)
+    }
+
     if (sectionIf('코멘트 패널 · 인박스 (F-05-08 · F-11-07)')) {
       const commentPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
         method: 'POST',

@@ -223,14 +223,14 @@ export function Sidebar({
 
   // 풀페이지 데이터베이스를 만들고 연다(F-04-14). "새 페이지"와 같은 규칙 — 이름을
   // 먼저 묻지 않고 빈 표를 연다. 표·제목 컬럼·기본 뷰는 서버가 한 트랜잭션에서 만든다.
-  // teamspace 를 주면 그 최상위에 만든다(7c-4) — 워크스페이스 최상위 "+ 새 데이터베이스"는 teamspace 없이 부른다.
-  const addDatabase = useCallback(async (teamspaceId: string | null = null) => {
+  // 자리를 주면 그 최상위에 만든다(7c-4 · 7c-8) — 워크스페이스 최상위 "+ 새 데이터베이스"는 자리 없이 부른다.
+  const addDatabase = useCallback(async (at: { teamspaceId: string } | { privateTop: true } | null = null) => {
     setBusy(true)
     try {
       const res = await fetch(`/api/workspaces/${workspaceId}/databases`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(teamspaceId === null ? {} : { teamspaceId }),
+        body: JSON.stringify(at ?? {}),
       })
       const data = await res.json()
       if (!res.ok) return
@@ -394,7 +394,7 @@ export function Sidebar({
                       type="button"
                       disabled={busy}
                       data-testid="sidebar-teamspace-add-database"
-                      onClick={() => void addDatabase(teamspace.id)}
+                      onClick={() => void addDatabase({ teamspaceId: teamspace.id })}
                       aria-label={`${teamspace.name}에 데이터베이스 추가`}
                       title="이 teamspace 에 데이터베이스 추가"
                       className="flex-none px-1 text-xs text-neutral-400 opacity-0 group-hover:opacity-100 focus:opacity-100 disabled:opacity-30"
@@ -457,17 +457,30 @@ export function Sidebar({
           <section aria-label="개인 페이지" data-testid="sidebar-private" className="flex flex-col gap-0.5">
             <div className="flex items-center justify-between px-2">
               <h2 className="text-xs font-medium text-neutral-400">개인 페이지</h2>
-              <button
-                type="button"
-                disabled={busy}
-                data-testid="sidebar-private-add"
-                onClick={() => void addPrivatePage()}
-                aria-label="새 개인 페이지"
-                title="새 개인 페이지 — 나만 봅니다"
-                className="rounded px-1 text-sm text-neutral-400 hover:bg-neutral-100 disabled:opacity-30 dark:hover:bg-neutral-800"
-              >
-                +
-              </button>
+              <span className="flex items-center">
+                <button
+                  type="button"
+                  disabled={busy}
+                  data-testid="sidebar-private-add"
+                  onClick={() => void addPrivatePage()}
+                  aria-label="새 개인 페이지"
+                  title="새 개인 페이지 — 나만 봅니다"
+                  className="rounded px-1 text-sm text-neutral-400 hover:bg-neutral-100 disabled:opacity-30 dark:hover:bg-neutral-800"
+                >
+                  +
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  data-testid="sidebar-private-add-database"
+                  onClick={() => void addDatabase({ privateTop: true })}
+                  aria-label="새 개인 데이터베이스"
+                  title="새 개인 데이터베이스 — 나만 봅니다"
+                  className="rounded px-1 text-xs text-neutral-400 hover:bg-neutral-100 disabled:opacity-30 dark:hover:bg-neutral-800"
+                >
+                  ▦
+                </button>
+              </span>
             </div>
             <ul>
               {privatePages.map((node) => (

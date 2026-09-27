@@ -30,6 +30,8 @@ function statusFor(code: MoveError['code']): number {
       return 403
     case 'cycle':
     case 'too_deep':
+    // 그 대상 종류가 이 노드에 맞지 않는다 — 데이터베이스를 페이지 밑으로(7c-8).
+    case 'invalid_target':
       return 400
   }
 }

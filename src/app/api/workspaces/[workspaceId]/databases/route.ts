@@ -7,7 +7,8 @@
  * 트랜잭션에서** 함께 생긴다(`createDatabase`). 그중 하나라도 빠진 상태를 화면이
  * 보게 두지 않는 것이 그 함수의 일이다.
  *
- * `{ name?, teamspaceId? }` — `teamspaceId` 면 그 teamspace 의 최상위에 만든다(7c-4). 멤버가 아니면 없는 teamspace 와 같은 404 다.
+ * `{ name?, teamspaceId?, privateTop? }` — `teamspaceId` 면 그 teamspace 의 최상위에 만든다(7c-4). 멤버가 아니면 없는
+ * teamspace 와 같은 404 다. `privateTop: true` 면 **내 개인 최상위**다(7c-8 — 나만 본다 · 게스트는 404).
  */
 
 import { isUuid } from '@/lib/ids'
@@ -22,13 +23,15 @@ export async function POST(
   const session = await requireWorkspaceSession(workspaceId)
   if (!session.ok) return session.response
 
-  const body = (await request.json().catch(() => ({}))) as { name?: unknown; teamspaceId?: unknown }
+  const body = (await request.json().catch(() => ({}))) as { name?: unknown; teamspaceId?: unknown; privateTop?: unknown }
   if (body.teamspaceId != null && (typeof body.teamspaceId !== 'string' || !isUuid(body.teamspaceId))) {
     return Response.json({ error: 'not_found' }, { status: 404 })
   }
   const created = await createDatabase(session.ctx, {
     ...(typeof body.name === 'string' ? { name: body.name } : {}),
     ...(typeof body.teamspaceId === 'string' ? { teamspaceId: body.teamspaceId } : {}),
+    // true 만 개인 최상위다(pages 라우트와 같은 규칙 — 오타를 넓게 읽어 주지 않는다).
+    privateTop: body.privateTop === true,
   })
 
   if (!created.ok) {
