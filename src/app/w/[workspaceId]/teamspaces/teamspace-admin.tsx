@@ -20,6 +20,7 @@ export type AdminRow = {
   readonly id: string
   readonly name: string
   readonly visibility: TeamspaceVisibilityName
+  readonly isDefault: boolean
   readonly archivedAt: string | null
   readonly ownerCount: number
   readonly role: 'owner' | 'member' | null
@@ -76,6 +77,11 @@ export function TeamspaceAdmin({ workspaceId, initialRows }: { workspaceId: stri
                 <span className="flex-none rounded border border-neutral-300 px-1 text-xs text-neutral-500 dark:border-neutral-700">
                   {teamspaceVisibilityLabel(row.visibility)}
                 </span>
+                {row.isDefault && (
+                  <span data-testid="teamspace-admin-default" className="flex-none text-xs text-neutral-500">
+                    기본
+                  </span>
+                )}
                 {row.archivedAt !== null && <span className="flex-none text-xs text-neutral-500">보관됨</span>}
               </span>
               {row.ownerCount === 0 ? (

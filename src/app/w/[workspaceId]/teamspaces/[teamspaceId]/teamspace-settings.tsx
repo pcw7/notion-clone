@@ -19,6 +19,11 @@
  * **보관은 두 번 누른다**(그룹 지우기 · 나가기와 같은 규칙 · §3.3-188). teamspace 는 지워지지 않는 대신 보관되고, 보관하면
  * **나까지** 그 페이지들을 못 본다 — 되살릴 수 있다는 말을 함께 한다. 보관한 뒤에는 이 화면이 404 가 되므로 워크스페이스
  * 홈으로 옮겨 간다.
+ *
+ * **기본 teamspace**(7c-11)는 폼과 따로 누른다 — 켜면 워크스페이스 전원이 멤버로 들어오는 큰 일이고, 끄더라도 들어온
+ * 사람은 남는다. 그래서 켜기는 **두 번 누르고** 그 말을 먼저 한다. 끄기는 앞으로의 자동 추가만 멈추므로 한 번이다.
+ * 버튼은 워크스페이스 owner 에게만 선다(`canSetDefault` — 서버가 다시 묻는다). 기본인 동안 보관 버튼은 서지 않고 까닭을
+ * 말한다(서버도 `default_teamspace` 로 거부한다). 바꾼 뒤에는 서버 렌더를 다시 받는다 — 멤버 절이 새 멤버를 받아야 한다.
  */
 
 import { useState } from 'react'
@@ -26,6 +31,7 @@ import { useRouter } from 'next/navigation'
 
 import {
   TEAMSPACE_VISIBILITY_ORDER,
+  defaultTeamspaceAddedMessage,
   teamspaceFailureMessage,
   teamspaceVisibilityHint,
   teamspaceVisibilityLabel,
@@ -39,10 +45,18 @@ export function TeamspaceSettings({
   workspaceId,
   teamspaceId,
   initial,
+  canSetDefault,
 }: {
   workspaceId: string
   teamspaceId: string
-  initial: { name: string; visibility: TeamspaceVisibilityName; whoCanInvite: 'owners' | 'all_members' }
+  initial: {
+    name: string
+    visibility: TeamspaceVisibilityName
+    whoCanInvite: 'owners' | 'all_members'
+    isDefault: boolean
+  }
+  /** 워크스페이스 owner 인가 — 기본 teamspace 버튼을 세울지(표시 전용 · 서버가 다시 묻는다). */
+  canSetDefault: boolean
 }) {
   const router = useRouter()
   const [name, setName] = useState(initial.name)
@@ -52,6 +66,34 @@ export function TeamspaceSettings({
   const [error, setError] = useState<string | null>(null)
   const [saved, setSaved] = useState(false)
   const [archiving, setArchiving] = useState(false)
+  const [isDefault, setIsDefault] = useState(initial.isDefault)
+  const [confirmingDefault, setConfirmingDefault] = useState(false)
+  const [defaultNote, setDefaultNote] = useState<string | null>(null)
+
+  async function setDefault(on: boolean): Promise<void> {
+    setBusy(true)
+    setError(null)
+    setDefaultNote(null)
+    try {
+      const res = await fetch(`/api/workspaces/${workspaceId}/teamspaces/${teamspaceId}/default`, {
+        method: on ? 'PUT' : 'DELETE',
+      })
+      const data = (await res.json().catch(() => ({}))) as { error?: unknown; added?: unknown }
+      if (!res.ok) {
+        setError(teamspaceFailureMessage(data.error))
+        return
+      }
+      setIsDefault(on)
+      if (on) setDefaultNote(defaultTeamspaceAddedMessage(typeof data.added === 'number' ? data.added : 0))
+      // 멤버 절이 새로 들어온 사람들을 받아야 한다 — 서버 렌더를 다시 받는다(부모가 기본 여부로 그 절을 새로 세운다).
+      router.refresh()
+    } catch {
+      setError('연결에 실패했습니다.')
+    } finally {
+      setBusy(false)
+      setConfirmingDefault(false)
+    }
+  }
 
   async function save(): Promise<void> {
     setBusy(true)
@@ -178,12 +220,90 @@ export function TeamspaceSettings({
         </p>
       )}
 
+      {/* 켤 수 없는 사람에게는 기본일 때만 그 사실을 말한다 — 누를 수 없는 설명을 세우지 않는다. */}
+      {(canSetDefault || isDefault) && (
+      <div
+        data-testid="teamspace-default"
+        data-default={isDefault ? 'true' : 'false'}
+        className="mt-2 flex flex-col gap-1 border-t border-neutral-200 pt-3 dark:border-neutral-800"
+      >
+        <p className="text-xs text-neutral-500">
+          {isDefault ? (
+            <>
+              <b>기본 teamspace</b> 입니다. 워크스페이스에 새로 들어오는 멤버가 저절로 들어옵니다.
+            </>
+          ) : (
+            <>
+              <b>기본 teamspace</b> 로 만들면 워크스페이스 멤버 전원이 곧바로 들어오고, 새로 들어오는 멤버도 저절로
+              들어옵니다.
+            </>
+          )}
+        </p>
+        {canSetDefault &&
+          (isDefault ? (
+            <button
+              type="button"
+              data-testid="teamspace-default-off"
+              disabled={busy}
+              onClick={() => void setDefault(false)}
+              className="self-start rounded border border-neutral-300 px-2 py-0.5 text-xs disabled:opacity-40 dark:border-neutral-700"
+            >
+              기본 해제
+            </button>
+          ) : confirmingDefault ? (
+            <span className="flex flex-col gap-1">
+              <span className="text-xs text-neutral-500">
+                제한 멤버와 게스트는 들어오지 않습니다. 나중에 해제해도 이미 들어온 멤버는 남습니다.
+              </span>
+              <span className="flex items-center gap-1">
+                <button
+                  type="button"
+                  data-testid="teamspace-default-confirm"
+                  disabled={busy}
+                  onClick={() => void setDefault(true)}
+                  className="rounded border border-neutral-900 px-2 py-0.5 text-xs disabled:opacity-40 dark:border-neutral-100"
+                >
+                  전원을 넣고 기본으로
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => setConfirmingDefault(false)}
+                  className="rounded border border-neutral-300 px-2 py-0.5 text-xs disabled:opacity-40 dark:border-neutral-700"
+                >
+                  취소
+                </button>
+              </span>
+            </span>
+          ) : (
+            <button
+              type="button"
+              data-testid="teamspace-default-on"
+              disabled={busy}
+              onClick={() => setConfirmingDefault(true)}
+              className="self-start rounded border border-neutral-300 px-2 py-0.5 text-xs disabled:opacity-40 dark:border-neutral-700"
+            >
+              기본으로 만들기
+            </button>
+          ))}
+        {defaultNote && (
+          <p data-testid="teamspace-default-note" className="text-xs text-neutral-500">
+            {defaultNote}
+          </p>
+        )}
+      </div>
+      )}
+
       <div className="mt-2 flex flex-col gap-1 border-t border-neutral-200 pt-3 dark:border-neutral-800">
         <p className="text-xs text-neutral-500">
           teamspace 는 지워지지 않고 <b>보관</b>됩니다. 보관하면 소유자인 나까지 이 teamspace 의 페이지를 못 보게 되고,
           되살리면 그대로 돌아옵니다.
         </p>
-        {archiving ? (
+        {isDefault ? (
+          <p data-testid="teamspace-archive-blocked" className="text-xs text-neutral-500">
+            기본 teamspace 는 보관할 수 없습니다. 먼저 기본을 해제하세요.
+          </p>
+        ) : archiving ? (
           <span className="flex items-center gap-1">
             <button
               type="button"

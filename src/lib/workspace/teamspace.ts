@@ -72,6 +72,20 @@
  *   · 보관된 teamspace 는 이름도 새 자리도 주지 않는다 — 만들기 · 넣기 · 옮기기 · 설정이 모두 `not_found` 다
  *     (`lockTeamspace` 가 보관된 행을 잠그지 않는다). 되살릴 사람만 `listArchivedTeamspaces` 로 그 존재를 본다
  *
+ * ──────────────────────────────────────────────────────────────────────
+ * 기본 teamspace(`is_default`)는 **들여보내기만 한다**(7c-11)
+ * ──────────────────────────────────────────────────────────────────────
+ *
+ * F-06-04: *"켜면 기존 멤버 전원이 즉시 추가되고, 이후 가입자도 자동 추가"*. 판정의 입력이 아니다 — 멤버 행을 넣는 두
+ * 순간(켤 때 `setDefaultTeamspace` · 워크스페이스에 들어올 때 `joinDefaultTeamspaces`)이 있을 뿐이고, 그 뒤는 보통 멤버다.
+ *
+ *   · 켜고 끄는 사람: 워크스페이스 owner **이면서** 그 teamspace 의 owner — 켜면 콘텐츠가 전원에게 열리므로 누구에게 여는지를
+ *     정하는 teamspace owner 의 결정이기도 하다. 멤버가 아닌 워크스페이스 owner 는 먼저 드러나게 들어간다(7c-10)
+ *   · 들어오는 사람: 활성 owner · membership_admin · member(`DEFAULT_TEAMSPACE_ROLES`) — 늘 `member` 로. 제한 멤버는 넣지
+ *     않는다(초대받기 전에는 teamspace 가 없는 것과 같다는 것이 그 역할의 뜻이다)
+ *   · 끄면 앞으로의 자동 추가만 멈춘다. 나가기도 막지 않는다
+ *   · **기본 teamspace 는 보관하지 않는다**(`default_teamspace` · DB 의 CHECK 0030) — 먼저 끈다
+ *
  * 둘러보기 · 참여를 할 수 있는 워크스페이스 역할은 `canBrowseTeamspaces` 다 — `restricted_member` 와 게스트는 멤버가 아닌
  * teamspace 를 **보지도 못한다**(F-06-04 *"추가 전에는 이 사람에게 teamspace 자체가 존재하지 않는 것과 같음"*).
  *
@@ -111,6 +125,8 @@ export type TeamspaceFailure =
   | 'needs_invite'
   /** 고칠 것을 하나도 주지 않았다. */
   | 'invalid_settings'
+  /** 기본 teamspace 는 보관할 수 없다 — 먼저 기본을 끈다(7c-11). */
+  | 'default_teamspace'
 
 export type TeamspaceResult<T = void> =
   | ({ readonly ok: true } & (T extends void ? object : { readonly value: T }))
@@ -128,7 +144,10 @@ export type TeamspaceSummary = {
 export type TeamspaceWhoCanInvite = 'owners' | 'all_members'
 
 /** teamspace 하나 — 설정 화면의 머리와 내 역할. 초대 규칙을 함께 싣는다(누구에게 "넣기"를 보일지). */
-export type TeamspaceDetail = TeamspaceSummary & { readonly whoCanInvite: TeamspaceWhoCanInvite }
+export type TeamspaceDetail = TeamspaceSummary & {
+  readonly whoCanInvite: TeamspaceWhoCanInvite
+  readonly isDefault: boolean
+}
 
 /**
  * 둘러보기 목록의 한 줄 — 내가 멤버가 아닌 것도 온다. 그래서 `role` 이 null 일 수 있다(`TeamspaceSummary` 와 다른 점).
@@ -139,6 +158,7 @@ export type BrowsableTeamspace = {
   readonly name: string
   readonly icon: string | null
   readonly visibility: TeamspaceVisibility
+  readonly isDefault: boolean
   readonly memberCount: number
   readonly role: TeamspaceRole | null
 }
@@ -160,6 +180,7 @@ export type AdminTeamspaceRow = {
   readonly id: string
   readonly name: string
   readonly visibility: TeamspaceVisibility
+  readonly isDefault: boolean
   readonly archivedAt: string | null
   readonly ownerCount: number
   /** 내 역할 — 멤버가 아니면 null. 보관된 teamspace 에서도 `teamspace_member` 로 읽는다. */
@@ -189,6 +210,15 @@ export function canCreateTeamspace(role: WorkspaceRole): boolean {
 export function canBrowseTeamspaces(role: WorkspaceRole): boolean {
   return role === 'owner' || role === 'membership_admin' || role === 'member'
 }
+
+/**
+ * 기본 teamspace 에 저절로 들어가는 워크스페이스 역할(7c-11) — 역할 **이름**의 목록이다(CLAUDE.md). 켤 때의 배치 삽입과
+ * 워크스페이스에 들어올 때의 추가가 같은 목록을 SQL 에 넘긴다.
+ *
+ * `canBrowseTeamspaces` 와 지금 같은 집합이지만 묻는 것이 다르다 — 이것은 "초대 없이 넣어도 되는가"다. `restricted_member`
+ * 가 빠지는 까닭은 머리말에 있다.
+ */
+export const DEFAULT_TEAMSPACE_ROLES: readonly WorkspaceRole[] = ['owner', 'membership_admin', 'member']
 
 export function normalizeTeamspaceName(raw: unknown): string | null {
   if (typeof raw !== 'string') return null
@@ -230,9 +260,9 @@ async function lockTeamspace(
   tx: Tx,
   ctx: SessionContext,
   teamspaceId: string,
-): Promise<{ id: string; who_can_invite: string; visibility: TeamspaceVisibility } | null> {
-  return tx.queryMaybe<{ id: string; who_can_invite: string; visibility: TeamspaceVisibility }>(
-    `SELECT id, who_can_invite, visibility FROM teamspace
+): Promise<{ id: string; who_can_invite: string; visibility: TeamspaceVisibility; is_default: boolean } | null> {
+  return tx.queryMaybe<{ id: string; who_can_invite: string; visibility: TeamspaceVisibility; is_default: boolean }>(
+    `SELECT id, who_can_invite, visibility, is_default FROM teamspace
       WHERE id = $1 AND workspace_id = $2 AND archived_at IS NULL
       FOR UPDATE`,
     [teamspaceId, ctx.workspaceId],
@@ -393,6 +423,7 @@ export async function listBrowsableTeamspaces(ctx: SessionContext): Promise<Brow
       name: string
       icon: string | null
       visibility: TeamspaceVisibility
+      is_default: boolean
       member_count: number
       role: TeamspaceRole | null
     }>(
@@ -426,7 +457,7 @@ export async function listBrowsableTeamspaces(ctx: SessionContext): Promise<Brow
               WHERE tm.removed_at IS NULL AND tm.principal_type = 'group'
            ) s GROUP BY teamspace_id
          )
-       SELECT t.id, t.name, t.icon, t.visibility,
+       SELECT t.id, t.name, t.icon, t.visibility, t.is_default,
               coalesce(p.n, 0) AS member_count,
               CASE WHEN mine.teamspace_id IS NULL THEN NULL
                    WHEN mine.is_owner THEN 'owner' ELSE 'member' END AS role
@@ -443,6 +474,7 @@ export async function listBrowsableTeamspaces(ctx: SessionContext): Promise<Brow
       name: r.name,
       icon: r.icon,
       visibility: r.visibility,
+      isDefault: r.is_default,
       memberCount: r.member_count,
       role: r.role,
     }))
@@ -461,8 +493,9 @@ export async function getTeamspace(ctx: SessionContext, teamspaceId: string): Pr
       icon: string | null
       visibility: TeamspaceVisibility
       who_can_invite: TeamspaceWhoCanInvite
+      is_default: boolean
     }>(
-      `SELECT id, name, icon, visibility, who_can_invite FROM teamspace
+      `SELECT id, name, icon, visibility, who_can_invite, is_default FROM teamspace
         WHERE id = $1 AND workspace_id = $2 AND archived_at IS NULL`,
       [teamspaceId, ctx.workspaceId],
     )
@@ -471,7 +504,15 @@ export async function getTeamspace(ctx: SessionContext, teamspaceId: string): Pr
     if (role === null) return fail('not_found')
     return {
       ok: true,
-      value: { id: row.id, name: row.name, icon: row.icon, visibility: row.visibility, role, whoCanInvite: row.who_can_invite },
+      value: {
+        id: row.id,
+        name: row.name,
+        icon: row.icon,
+        visibility: row.visibility,
+        role,
+        whoCanInvite: row.who_can_invite,
+        isDefault: row.is_default,
+      },
     } as const
   })
 }
@@ -585,6 +626,8 @@ export async function updateTeamspace(
  * 알리므로 열어 둔 편집기는 서버가 먼저 닫는다.
  *
  * 이미 보관된 것은 `not_found` 다 — `lockTeamspace` 가 살아 있는 것만 잠근다(다른 명령과 같은 답).
+ *
+ * 기본 teamspace 는 `default_teamspace` 다(7c-11) — 먼저 끈다. DB 의 CHECK(0030)도 막지만 그 전에 까닭을 말해 준다.
  */
 export async function archiveTeamspace(ctx: SessionContext, teamspaceId: string): Promise<TeamspaceResult> {
   return withCommandTransaction(async (tx) => {
@@ -593,6 +636,7 @@ export async function archiveTeamspace(ctx: SessionContext, teamspaceId: string)
     const mine = await roleIn(tx, ctx, teamspaceId)
     if (mine === null) return fail('not_found')
     if (mine !== 'owner') return fail('forbidden')
+    if (teamspace.is_default) return fail('default_teamspace')
 
     await tx.query(`UPDATE teamspace SET archived_at = now() WHERE id = $1 AND workspace_id = $2`, [
       teamspaceId,
@@ -826,10 +870,11 @@ export async function listAllTeamspaces(ctx: SessionContext): Promise<AdminTeams
       id: string
       name: string
       visibility: TeamspaceVisibility
+      is_default: boolean
       archived_at: Date | null
       owner_count: number
     }>(
-      `SELECT t.id, t.name, t.visibility, t.archived_at,
+      `SELECT t.id, t.name, t.visibility, t.is_default, t.archived_at,
               (SELECT count(*)::int FROM teamspace_member o
                 WHERE o.teamspace_id = t.id AND o.role = 'owner' AND o.removed_at IS NULL
                   AND ((o.principal_type = 'user' AND EXISTS (
@@ -850,6 +895,7 @@ export async function listAllTeamspaces(ctx: SessionContext): Promise<AdminTeams
         id: r.id,
         name: r.name,
         visibility: r.visibility,
+        isDefault: r.is_default,
         archivedAt: r.archived_at === null ? null : new Date(r.archived_at).toISOString(),
         ownerCount: r.owner_count,
         role: await roleIn(tx, ctx, r.id),
@@ -891,6 +937,97 @@ export async function claimTeamspaceOwnership(ctx: SessionContext, teamspaceId: 
     await syncOwnerGrant(tx, ctx, teamspaceId, me, true)
     return { ok: true } as const
   })
+}
+
+// ── 기본 teamspace (7c-11) ───────────────────────────────────────────
+
+/**
+ * 기본 teamspace 를 켜고 끈다 — **워크스페이스 owner 이면서 그 teamspace 의 owner** 만(멤버가 아니면 `not_found`, 둘 중
+ * 하나라도 아니면 `forbidden`).
+ *
+ * 켜면 이 워크스페이스의 활성 owner · membership_admin · member 전원이 `member` 로 들어온다 — **한 문장**의 배치 삽입이다
+ * (F-06-04 *"동기 처리 금지 · 배치 삽입"* — 한 사람씩 명령을 부르지 않는다). 이미 살아 있는 행은 그대로(owner 도), 빠졌던
+ * 행은 `member` 로 되살린다. 행마다 0028 의 트리거가 세대와 협업 신호를 나른다. 사람 id 순으로 넣는다 — 트리거가 사람 행을
+ * 잠그는 순서를 정해 두면 같은 사람들을 건드리는 다른 명령과 교착하지 않는다.
+ *
+ * 끄면 앞으로의 자동 추가만 멈춘다 — 이미 들어온 멤버는 그대로다. 같은 값이면 아무것도 바꾸지 않는다.
+ *
+ * `added` 는 이번에 들어온(되살아난) 사람 수다 — 화면이 "N명이 들어왔습니다"로 말한다.
+ */
+export async function setDefaultTeamspace(
+  ctx: SessionContext,
+  teamspaceId: string,
+  on: unknown,
+): Promise<TeamspaceResult<{ readonly added: number }>> {
+  if (typeof on !== 'boolean') return fail('invalid_settings')
+  return withCommandTransaction(async (tx) => {
+    const teamspace = await lockTeamspace(tx, ctx, teamspaceId)
+    if (teamspace === null) return fail('not_found')
+    const mine = await roleIn(tx, ctx, teamspaceId)
+    if (mine === null) return fail('not_found')
+    if (mine !== 'owner' || !canAdministerTeamspaces(ctx.role)) return fail('forbidden')
+    if (teamspace.is_default === on) return { ok: true, value: { added: 0 } } as const
+
+    await tx.query(`UPDATE teamspace SET is_default = $3 WHERE id = $1 AND workspace_id = $2`, [
+      teamspaceId,
+      ctx.workspaceId,
+      on,
+    ])
+    if (!on) return { ok: true, value: { added: 0 } } as const
+
+    const added = await tx.queryOne<{ n: number }>(
+      `WITH added AS (
+         INSERT INTO teamspace_member (teamspace_id, principal_type, principal_id, role)
+         SELECT $1, 'user', m.user_id, 'member'
+           FROM workspace_member m
+          WHERE m.workspace_id = $2 AND m.status = 'active' AND m.role = ANY($3::text[])
+          ORDER BY m.user_id
+         ON CONFLICT (teamspace_id, principal_type, principal_id)
+         DO UPDATE SET removed_at = NULL, role = 'member'
+          WHERE teamspace_member.removed_at IS NOT NULL
+         RETURNING 1
+       )
+       SELECT count(*)::int AS n FROM added`,
+      [teamspaceId, ctx.workspaceId, DEFAULT_TEAMSPACE_ROLES],
+    )
+    return { ok: true, value: { added: added.n } } as const
+  })
+}
+
+/**
+ * 워크스페이스에 들어온 사람을 기본 teamspace 에 넣는다 — 초대 수락(`acceptInvite`)이 멤버 행을 세운 **같은 트랜잭션**에서
+ * 부른다(7c-11). 권한을 묻는 함수가 아니다 — 방금 들어온 사람에게는 아직 세션이 없고, 묻는 것은 "이 역할이 저절로
+ * 들어가는가"뿐이다(`DEFAULT_TEAMSPACE_ROLES`). 넣은 teamspace 수를 돌려준다.
+ *
+ * **이 워크스페이스의 teamspace 를 전부 `FOR SHARE` 로 잠그고 그 뒤에 `is_default` 를 읽는다.** 기본을 켜는 명령
+ * (`setDefaultTeamspace`)과 엇갈리면 둘 다 상대의 쓰기를 못 봐 이 사람이 빠진다 — 켜는 쪽의 배치 삽입은 아직 커밋되지
+ * 않은 이 멤버 행을 못 보고, 이쪽은 아직 커밋되지 않은 `is_default` 를 못 본다. 잠그면 순서가 선다: 켜는 쪽이 먼저면
+ * 이쪽은 그 커밋을 기다려 켜진 값을 읽고, 이쪽이 먼저면 켜는 쪽이 이 커밋을 기다린 뒤의 문장에서 이 사람을 본다.
+ * `is_default` 로 거르고 잠그면 안 된다 — 아직 꺼져 있는 행은 기다리지 않고 건너뛴다.
+ *
+ * 보관된 teamspace 는 기본일 수 없다(CHECK 0030) — 따로 거르지 않는다.
+ */
+export async function joinDefaultTeamspaces(tx: Tx, workspaceId: string, userId: string, role: string): Promise<number> {
+  if (!(DEFAULT_TEAMSPACE_ROLES as readonly string[]).includes(role)) return 0
+  const locked = await tx.query<{ id: string; is_default: boolean }>(
+    `SELECT id, is_default FROM teamspace WHERE workspace_id = $1 ORDER BY id FOR SHARE`,
+    [workspaceId],
+  )
+  const defaults = locked.filter((t) => t.is_default).map((t) => t.id)
+  if (defaults.length === 0) return 0
+  const added = await tx.queryOne<{ n: number }>(
+    `WITH added AS (
+       INSERT INTO teamspace_member (teamspace_id, principal_type, principal_id, role)
+       SELECT t, 'user', $2, 'member' FROM unnest($1::uuid[]) AS t
+       ON CONFLICT (teamspace_id, principal_type, principal_id)
+       DO UPDATE SET removed_at = NULL, role = 'member'
+        WHERE teamspace_member.removed_at IS NOT NULL
+       RETURNING 1
+     )
+     SELECT count(*)::int AS n FROM added`,
+    [defaults, userId],
+  )
+  return added.n
 }
 
 // ── 그룹이 사라질 때 ──────────────────────────────────────────────────

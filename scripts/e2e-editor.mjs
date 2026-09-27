@@ -2362,6 +2362,114 @@ async function main() {
       await sleep(1500)
     }
 
+    if (sectionIf('기본 teamspace (7c-11 · F-06-04)')) {
+      // 워크스페이스 owner(브라우저 세션)가 자기 teamspace 를 기본으로 켠다 → 기존 멤버가 들어오고, 초대를 받아들인 사람도
+      // 들어온다. 이 절은 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다. 켜면 이 워크스페이스의 사람 전원이 그 멤버가
+      // 되므로 끝에 끈다(들어온 사람은 남지만, 뒤 절이 새로 만드는 사람은 들어오지 않는다).
+      const tsUrl = `${BASE}/api/workspaces/${workspaceId}/teamspaces`
+      const stamp = Date.now()
+      const cookieOf = (actor) => ({ cookie: `nc_session=${actor.token}` })
+      const clickOnSel = async (sel) => {
+        const box = await evaluate(`(() => {
+          const el = document.querySelector(${JSON.stringify(sel)})
+          if (!el || el.disabled) return null
+          el.scrollIntoView({ block: 'center' })
+          const r = el.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (!box) return false
+        await click(box.x, box.y)
+        await sleep(120)
+        return true
+      }
+
+      const team = (await (await fetch(tsUrl, {
+        method: 'POST', headers: authed, body: JSON.stringify({ name: `전사 ${stamp}`, visibility: 'closed' }),
+      })).json()).teamspace.id
+      const teamPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
+        method: 'POST', headers: authed, body: JSON.stringify({ teamspaceId: team, title: '전사 공지' }),
+      })).json()).page.id
+      const staffName = `기본 전 직원 ${stamp}`
+      const staff = await joinAs(workspaceId, await createUser(staffName), 'member')
+      check('전제 — 켜기 전에는 closed 라 멤버가 아닌 직원이 그 페이지를 못 연다 (404)',
+        (await fetch(`${BASE}/w/${workspaceId}/${teamPage}`, { headers: cookieOf(staff) })).status === 404)
+
+      // ① 문 — 워크스페이스 owner 가 아닌 teamspace owner 는 켜지 못하고, 버튼도 받지 않는다
+      const lead = await joinAs(workspaceId, await createUser('기본 못 켜는 팀장'), 'member')
+      const leadTeam = (await (await fetch(tsUrl, {
+        method: 'POST', headers: { ...json, ...cookieOf(lead) }, body: JSON.stringify({ name: `팀장의 팀 ${stamp}` }),
+      })).json()).teamspace.id
+      const leadPut = await fetch(`${tsUrl}/${leadTeam}/default`, { method: 'PUT', headers: { ...json, ...cookieOf(lead) } })
+      const leadHtml = await (await fetch(`${BASE}/w/${workspaceId}/teamspaces/${leadTeam}`, { headers: cookieOf(lead) })).text()
+      check('워크스페이스 owner 가 아닌 teamspace 소유자는 켜지 못하고 (403) · 설정 절에 기본 버튼이 없다',
+        leadPut.status === 403 && leadHtml.includes('teamspace-settings') && !leadHtml.includes('teamspace-default-on'),
+        String(leadPut.status))
+
+      // ② 화면 — 켠다(두 번 누른다)
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/teamspaces/${team}` })
+      const DEFAULT = '[data-testid="teamspace-default"]'
+      await waitFor(`document.querySelector('${DEFAULT}')?.dataset.default === 'false'`, 15000)
+      // 멤버 **줄**에서 찾는다 — 절 전체의 글에는 "넣기" 고르개의 후보(아직 멤버가 아닌 사람)도 들어 있어, 켜기 전에도
+      // 직원의 이름이 보인다(처음 쓴 검사가 그래서 `key` 를 빼도 통과했다 — 반사실 E1).
+      const staffRow = `[...document.querySelectorAll('[data-testid="teamspace-member"]')].some((li) => li.textContent.includes(${JSON.stringify(staffName)}))`
+      check('전제 — 켜기 전에는 직원이 멤버 줄에 없다', (await evaluate(staffRow)) === false)
+      await clickOnSel('[data-testid="teamspace-default-on"]')
+      check('한 번 누르면 무엇이 일어나는지 말하고 묻는다 — 아직 켜지지 않았다',
+        await waitFor(`!!document.querySelector('[data-testid="teamspace-default-confirm"]')
+          && document.querySelector('${DEFAULT}')?.dataset.default === 'false'`, 5000))
+      await clickOnSel('[data-testid="teamspace-default-confirm"]')
+      check('★ 확인하면 켜지고 몇 명이 들어왔는지 말한다 · 보관 버튼 대신 까닭이 선다',
+        await waitFor(`document.querySelector('${DEFAULT}')?.dataset.default === 'true'
+          && (document.querySelector('[data-testid="teamspace-default-note"]')?.textContent ?? '').includes('명이 들어왔습니다')
+          && !!document.querySelector('[data-testid="teamspace-archive-blocked"]')
+          && !document.querySelector('[data-testid="teamspace-archive"]')`, 15000),
+        await evaluate(`document.querySelector('${DEFAULT}')?.textContent ?? '기본 절 없음'`))
+      check('★ 멤버 절이 새로 들어온 사람을 받는다 — 직원의 이름이 선다',
+        await waitFor(staffRow, 15000))
+      check('★ 직원이 그 페이지를 연다',
+        (await fetch(`${BASE}/w/${workspaceId}/${teamPage}`, { headers: cookieOf(staff) })).status === 200)
+
+      // ③ 이후 가입자 — 진짜 수락 라우트로 들어온다
+      const { createEmailInvite } = await import(new URL('../src/lib/workspace/invite.ts', import.meta.url).href)
+      const { createSession } = await import(new URL('../src/lib/auth/session.ts', import.meta.url).href)
+      const { withTransaction } = await import(new URL('../src/lib/db/tx.ts', import.meta.url).href)
+      const arrival = await createUser('기본 뒤 가입자')
+      const invited = await createEmailInvite({
+        workspaceId, inviterUserId: ctx.userId, inviterRole: 'owner', email: arrival.email, role: 'member',
+      })
+      const arrivalSession = await withTransaction((tx) => createSession(tx, {
+        userId: arrival.userId, authMethod: 'login_code', mfaSatisfied: false, ip: null, userAgent: 'e2e',
+      }))
+      const accepted = await fetch(`${BASE}/api/invites/accept`, {
+        method: 'POST', headers: { ...json, cookie: `nc_session=${arrivalSession.token}` }, body: JSON.stringify({ token: invited.token }),
+      })
+      check('★ 초대를 받아들인 사람은 기본 teamspace 에 들어와 그 화면을 연다',
+        accepted.ok && (await fetch(`${BASE}/w/${workspaceId}/teamspaces/${team}`, {
+          headers: { cookie: `nc_session=${arrivalSession.token}` },
+        })).status === 200, String(accepted.status))
+
+      // ④ 목록의 표시 · 보관의 거부
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/teamspaces` })
+      check('둘러보기와 관리 절이 "기본" 을 단다',
+        await waitFor(`!!document.querySelector('[data-testid="teamspace-browse-row"][data-teamspace-id="${team}"] [data-testid="teamspace-browse-default"]')
+          && !!document.querySelector('[data-testid="teamspace-admin-row"][data-teamspace-id="${team}"] [data-testid="teamspace-admin-default"]')`, 15000))
+      const archiveRes = await fetch(`${tsUrl}/${team}/archive`, { method: 'POST', headers: authed })
+      check('★ 기본 teamspace 는 보관하지 못한다 (409 default_teamspace)',
+        archiveRes.status === 409 && (await archiveRes.json()).error === 'default_teamspace', String(archiveRes.status))
+
+      // ⑤ 끈다 — 한 번 · 보관 버튼이 돌아오고 · 들어온 사람은 남는다
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/teamspaces/${team}` })
+      await waitFor(`document.querySelector('${DEFAULT}')?.dataset.default === 'true'`, 15000)
+      await clickOnSel('[data-testid="teamspace-default-off"]')
+      check('해제하면 보관 버튼이 돌아온다',
+        await waitFor(`document.querySelector('${DEFAULT}')?.dataset.default === 'false'
+          && !!document.querySelector('[data-testid="teamspace-archive"]')`, 15000))
+      check('해제해도 들어온 직원은 그 페이지를 연다',
+        (await fetch(`${BASE}/w/${workspaceId}/${teamPage}`, { headers: cookieOf(staff) })).status === 200)
+      // 해제의 refresh 가 끝나기 전에 다음 절이 화면을 옮기지 않게 한다(§6).
+      await sleep(1500)
+    }
+
     if (sectionIf('코멘트 패널 · 인박스 (F-05-08 · F-11-07)')) {
       const commentPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
         method: 'POST',

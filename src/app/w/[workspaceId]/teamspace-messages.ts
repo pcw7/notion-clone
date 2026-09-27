@@ -83,6 +83,14 @@ export function teamspaceRoleLabel(role: TeamspaceRoleName): string {
   return role === 'owner' ? '소유자' : '멤버'
 }
 
+/**
+ * 기본 teamspace 를 켠 뒤의 한 줄(7c-11) — 몇 명이 들어왔는지와 앞으로 무엇이 달라지는지. 0 명이면 이미 모두 멤버였다.
+ */
+export function defaultTeamspaceAddedMessage(added: number): string {
+  const future = '이제 워크스페이스에 새로 들어오는 멤버도 저절로 들어옵니다.'
+  return added > 0 ? `워크스페이스 멤버 ${added}명이 들어왔습니다. ${future}` : `이미 모두 멤버입니다. ${future}`
+}
+
 /** 서버의 거부 코드 → 문구. 모르는 코드면 일반 문구. */
 export function teamspaceFailureMessage(error: unknown): string {
   switch (error) {
@@ -104,6 +112,8 @@ export function teamspaceFailureMessage(error: unknown): string {
       return '공개 범위를 다시 고르세요.'
     case 'invalid_settings':
       return '고칠 것을 하나는 골라 주세요.'
+    case 'default_teamspace':
+      return '기본 teamspace 는 보관할 수 없습니다. 먼저 기본을 끄세요.'
     default:
       return '처리하지 못했습니다.'
   }

@@ -21,6 +21,8 @@
  *   ⑭ 보관 · 복원(7c-6) — ★ 보관하면 owner 까지 못 본다(판정 = 목록) · 따로 준 부여는 남는다 · owner 만 되살린다
  *   ⑮ 고아 teamspace(7c-10) — ★ 마지막 owner 인 그룹은 지우지 못한다 · 워크스페이스 owner 는 모든 teamspace 를 보고
  *      owner 로 들어간다(비공개 · 보관 포함) — 막고, 되살린다
+ *   ⑯ 기본 teamspace(7c-11) — ★ 켜면 전원(제한 멤버 · 게스트 제외)이 member 로 · ★ 이후 가입자도(초대 수락) · ★ 켜는
+ *      명령과 엇갈려도 빠지지 않는다 · 워크스페이스 owner 이면서 teamspace owner 만 · ★ 기본은 보관하지 못한다
  *
  * 열린 협업 연결이 멤버에서 빠질 때 닫히는지는 `collab/collab-server.db.test.ts` ⑨ 가 본다.
  */
@@ -32,8 +34,8 @@ import { duplicatePage } from '../block/duplicate.ts'
 import { createPage, getPage, listTeamspacePages, PageError, titleFromPlainText } from '../block/page.ts'
 import { groupSidebarRoots, listPageTree, type PageTreeNode } from '../block/page-tree.ts'
 import { openChangeFeed, type CollabSignal } from '../collab/change-feed.ts'
-import { query, queryOne } from '../db/pool.ts'
-import { withReadTransaction } from '../db/tx.ts'
+import { getPool, query, queryOne } from '../db/pool.ts'
+import { withReadTransaction, withTransaction } from '../db/tx.ts'
 import type { BlockId } from '../ids.ts'
 import { grantAccess, listAccess, revokeAccess, stopInheriting } from '../permissions/acl.ts'
 import { canViewPage, effectiveCaps } from '../permissions/effective.ts'
@@ -48,6 +50,7 @@ import {
   type Fixture,
 } from '../testing/db-fixtures.ts'
 import { addGroupMember, createGroup, deleteGroup, removeGroupMember } from './group.ts'
+import { acceptInvite, createEmailInvite } from './invite.ts'
 import {
   addTeamspaceMember,
   archiveTeamspace,
@@ -62,6 +65,8 @@ import {
   listTeamspaceMembers,
   removeTeamspaceMember,
   restoreTeamspace,
+  joinDefaultTeamspaces,
+  setDefaultTeamspace,
   setTeamspaceMemberRole,
   updateTeamspace,
 } from './teamspace.ts'
@@ -1265,3 +1270,222 @@ describe('⑮ 고아 teamspace — 되살리기 (7c-10)', () => {
     assert.equal((await rowOf(fx.owner, teamspace))?.ownerCount, 0, '거부됐는데 owner 가 생겼다')
   })
 })
+
+// ── ⑯ 기본 teamspace (7c-11) ──────────────────────────────────────────
+
+describe('⑯ 기본 teamspace (7c-11)', () => {
+  /** 기본 teamspace 는 워크스페이스 전원을 건드린다 — 다른 검사의 워크스페이스(fx)와 섞이지 않게 검사마다 새로 만든다. */
+  async function office() {
+    const ws = await createBareWorkspace('기본 teamspace')
+    const boss = await joinAs(ws, await createUser('대표'), 'owner')
+    const person = async (name: string, role: Parameters<typeof joinAs>[2] = 'member') =>
+      joinAs(ws, await createUser(name), role)
+    const created = await createTeamspace(boss.ctx, { name: unique('전사'), visibility: 'closed' })
+    assert.ok(created.ok, JSON.stringify(created))
+    return { ws, boss, person, teamspace: created.value.id }
+  }
+
+  /** 살아 있는 멤버 행의 역할 — 없거나 빠졌으면 null. */
+  const liveRole = async (teamspaceId: string, userId: string): Promise<string | null> => {
+    const rows = await query<{ role: string }>(
+      `SELECT role FROM teamspace_member
+        WHERE teamspace_id = $1 AND principal_type = 'user' AND principal_id = $2 AND removed_at IS NULL`,
+      [teamspaceId, userId],
+    )
+    return rows[0]?.role ?? null
+  }
+
+  /** 초대하고 받아들인다 — 앱의 가입 경로 그대로(`acceptInvite`). */
+  async function arrive(ws: string, boss: Actor, name: string) {
+    const newcomer = await createUser(name)
+    const invited = await createEmailInvite({
+      workspaceId: ws,
+      inviterUserId: boss.userId,
+      inviterRole: 'owner',
+      email: newcomer.email,
+      role: 'member',
+    })
+    assert.ok(invited.ok, JSON.stringify(invited))
+    const accepted = await acceptInvite(invited.token, newcomer.userId)
+    assert.ok(accepted.ok, JSON.stringify(accepted))
+    return newcomer
+  }
+
+  test('★ 켜면 워크스페이스 멤버 전원이 member 로 들어와 페이지를 본다 — 제한 멤버 · 게스트 · 초대만 받은 · 떠난 사람은 빠지고 owner 는 owner 로 남는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { ws, boss, person, teamspace } = await office()
+    const page = await topPage(teamspace, '전사 공지', boss)
+    const admin = await person('관리자', 'membership_admin')
+    const alice = await person('앨리스')
+    const restricted = await person('제한 멤버', 'restricted_member')
+    const guest = await person('게스트', 'guest')
+    const invitedOnly = await createUser('초대만 받은 사람')
+    await query(`INSERT INTO workspace_member (workspace_id, user_id, role, status) VALUES ($1, $2, 'member', 'invited')`, [
+      ws,
+      invitedOnly.userId,
+    ])
+    const leaver = await person('떠난 사람')
+    await query(`UPDATE workspace_member SET status = 'removed' WHERE workspace_id = $1 AND user_id = $2`, [ws, leaver.userId])
+    const returning = await person('돌아올 사람')
+    assert.ok((await addTeamspaceMember(boss.ctx, teamspace, user(returning))).ok)
+    assert.ok((await removeTeamspaceMember(returning.ctx, teamspace, user(returning))).ok)
+    const coOwner = await person('공동 소유자')
+    assert.ok((await addTeamspaceMember(boss.ctx, teamspace, user(coOwner), 'owner')).ok)
+    assert.deepEqual(await sees(alice, page, teamspace), BLIND, '전제 — 켜기 전에는 closed 라 못 본다')
+
+    // 들어오는 것은 관리자 · 앨리스 · 돌아올 사람(빠졌던 행이 되살아난다) — 대표와 공동 소유자는 이미 있다.
+    assert.deepEqual(await setDefaultTeamspace(boss.ctx, teamspace, true), { ok: true, value: { added: 3 } })
+    for (const who of [admin, alice, returning]) assert.equal(await liveRole(teamspace, who.userId), 'member')
+    assert.equal(await liveRole(teamspace, coOwner.userId), 'owner', '켜기가 owner 를 member 로 내렸다')
+    assert.equal(await liveRole(teamspace, boss.userId), 'owner')
+    for (const who of [restricted.userId, guest.userId, invitedOnly.userId, leaver.userId]) {
+      assert.equal(await liveRole(teamspace, who), null, '들어오지 말아야 할 사람이 들어왔다')
+    }
+    assert.deepEqual(await sees(alice, page, teamspace), SEES)
+    assert.deepEqual(await sees(restricted, page, teamspace), BLIND)
+    assert.ok((await listMyTeamspaces(alice.ctx)).some((ts) => ts.id === teamspace))
+
+    // 들어오는 순간의 규칙도 같은 역할 목록이다 — 지금 수락 경로는 제한 멤버를 넘기지 않지만(초대 역할에 없다), 게스트 ·
+    // 제한 멤버를 들이는 길이 생기면 이 함수가 거른다.
+    assert.equal(await withTransaction((tx) => joinDefaultTeamspaces(tx, ws, restricted.userId, 'restricted_member')), 0)
+    assert.equal(await liveRole(teamspace, restricted.userId), null, '제한 멤버가 들어오는 순간 기본 teamspace 에 들어갔다')
+  })
+
+  test('★ 이후 가입자 — 초대를 받아들이면 기본 teamspace 에 들어간다(기본이 아닌 곳에는 아니다) · 끄면 멈추고 들어온 사람은 남는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { ws, boss, teamspace } = await office()
+    const plain = await createTeamspace(boss.ctx, { name: unique('보통 팀') })
+    assert.ok(plain.ok)
+    assert.deepEqual(await setDefaultTeamspace(boss.ctx, teamspace, true), { ok: true, value: { added: 0 } })
+
+    const newcomer = await arrive(ws, boss, '새로 온 사람')
+    assert.equal(await liveRole(teamspace, newcomer.userId), 'member', '가입자가 기본 teamspace 에 들어가지 않았다')
+    assert.equal(await liveRole(plain.value.id, newcomer.userId), null, '기본이 아닌 teamspace 에 들어갔다')
+    const session = await joinAs(ws, newcomer, 'member')
+    assert.ok((await listMyTeamspaces(session.ctx)).some((ts) => ts.id === teamspace))
+
+    assert.deepEqual(await setDefaultTeamspace(boss.ctx, teamspace, false), { ok: true, value: { added: 0 } })
+    assert.equal(await liveRole(teamspace, newcomer.userId), 'member', '끄기가 이미 들어온 사람을 뺐다')
+    const late = await arrive(ws, boss, '끈 뒤에 온 사람')
+    assert.equal(await liveRole(teamspace, late.userId), null, '끈 뒤에도 가입자가 들어갔다')
+  })
+
+  test('★ 엇갈려도 빠지지 않는다 — 켜는 명령이 커밋하기 전에 받아들인 사람은 그 커밋을 기다렸다가 들어간다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { ws, boss, teamspace } = await office()
+    const newcomer = await createUser('엇갈린 사람')
+    const invited = await createEmailInvite({
+      workspaceId: ws,
+      inviterUserId: boss.userId,
+      inviterRole: 'owner',
+      email: newcomer.email,
+      role: 'member',
+    })
+    assert.ok(invited.ok)
+
+    // 켜는 명령의 앞 절반을 붙들어 둔다 — 행을 잠그고 `is_default` 를 바꿨지만 아직 커밋하지 않았다. 그 명령의 배치 삽입은
+    // 아직 커밋되지 않은 이 사람의 멤버 행을 못 보므로, 이 사람을 넣는 것은 수락 쪽의 몫이다.
+    const holder = await getPool().connect()
+    await holder.query('BEGIN')
+    await holder.query(`SELECT id FROM teamspace WHERE id = $1 FOR UPDATE`, [teamspace])
+    await holder.query(`UPDATE teamspace SET is_default = true WHERE id = $1`, [teamspace])
+    let settled = false
+    const accepting = acceptInvite(invited.token, newcomer.userId).finally(() => {
+      settled = true
+    })
+    let blocked = false
+    try {
+      await pollUntil(async () => {
+        blocked = await waitingOnDefaultLock()
+        return blocked || settled
+      })
+    } finally {
+      // 무엇이 실패해도 잠금은 푼다 — 남으면 다음 검사가 멈춘다.
+      await holder.query('COMMIT')
+      holder.release()
+    }
+    assert.ok((await accepting).ok)
+    assert.ok(blocked, '수락이 기본 teamspace 의 잠금 앞에서 기다리지 않았다 — 엇갈림이 일어나지 않은 검사다')
+    assert.equal(await liveRole(teamspace, newcomer.userId), 'member', '켜는 명령과 엇갈린 가입자가 빠졌다')
+  })
+
+  test('누가 켜는가 — 워크스페이스 owner 이면서 그 teamspace 의 owner 만 · 멤버가 아니면 not_found · 모양이 아니면 invalid_settings', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { boss, person, teamspace } = await office()
+    const lead = await person('팀장') // teamspace 의 owner 이지만 워크스페이스 member
+    const theirs = await createTeamspace(lead.ctx, { name: unique('팀장의 팀') })
+    assert.ok(theirs.ok)
+    const admin = await person('관리자', 'membership_admin')
+    const adminTeam = await createTeamspace(admin.ctx, { name: unique('관리자의 팀') })
+    assert.ok(adminTeam.ok)
+
+    assert.deepEqual(await setDefaultTeamspace(lead.ctx, theirs.value.id, true), { ok: false, reason: 'forbidden' })
+    assert.deepEqual(await setDefaultTeamspace(admin.ctx, adminTeam.value.id, true), { ok: false, reason: 'forbidden' })
+    assert.deepEqual(await setDefaultTeamspace(boss.ctx, theirs.value.id, true), { ok: false, reason: 'not_found' })
+    assert.ok((await addTeamspaceMember(lead.ctx, theirs.value.id, user(boss))).ok)
+    assert.deepEqual(
+      await setDefaultTeamspace(boss.ctx, theirs.value.id, true),
+      { ok: false, reason: 'forbidden' },
+      '멤버일 뿐인 워크스페이스 owner 가 켰다 — 먼저 드러나게 owner 로 들어가야 한다',
+    )
+    const still = await getTeamspace(lead.ctx, theirs.value.id)
+    assert.ok(still.ok && still.value.isDefault === false, '거부됐는데 기본이 켜졌다')
+
+    assert.deepEqual(await claimTeamspaceOwnership(boss.ctx, theirs.value.id), { ok: true })
+    assert.ok((await setDefaultTeamspace(boss.ctx, theirs.value.id, true)).ok)
+    assert.deepEqual(await setDefaultTeamspace(boss.ctx, teamspace, 'yes'), { ok: false, reason: 'invalid_settings' })
+  })
+
+  test('★ 기본 teamspace 는 보관하지 못한다(default_teamspace) — 끄면 보관된다 · 같은 값은 아무것도 바꾸지 않는다 · 목록이 기본을 싣는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { boss, teamspace } = await office()
+    const isDefault = async () => {
+      const detail = await getTeamspace(boss.ctx, teamspace)
+      const browse = (await listBrowsableTeamspaces(boss.ctx)).find((r) => r.id === teamspace)
+      const admin = (await listAllTeamspaces(boss.ctx)).find((r) => r.id === teamspace)
+      return [detail.ok && detail.value.isDefault, browse?.isDefault, admin?.isDefault]
+    }
+    assert.deepEqual(await isDefault(), [false, false, false])
+    assert.ok((await setDefaultTeamspace(boss.ctx, teamspace, true)).ok)
+    assert.deepEqual(await isDefault(), [true, true, true])
+
+    assert.deepEqual(await archiveTeamspace(boss.ctx, teamspace), { ok: false, reason: 'default_teamspace' })
+    assert.ok((await getTeamspace(boss.ctx, teamspace)).ok, '거부됐는데 보관됐다')
+    assert.deepEqual(await setDefaultTeamspace(boss.ctx, teamspace, true), { ok: true, value: { added: 0 } })
+
+    assert.ok((await setDefaultTeamspace(boss.ctx, teamspace, false)).ok)
+    assert.deepEqual(await archiveTeamspace(boss.ctx, teamspace), { ok: true })
+    assert.deepEqual(
+      await setDefaultTeamspace(boss.ctx, teamspace, true),
+      { ok: false, reason: 'not_found' },
+      '보관된 teamspace 를 기본으로 켰다',
+    )
+  })
+
+  test('기본 teamspace 에서도 스스로 나간다 — 나가기는 막지 않는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { boss, person, teamspace } = await office()
+    const alice = await person('나갈 앨리스')
+    assert.ok((await setDefaultTeamspace(boss.ctx, teamspace, true)).ok)
+    assert.deepEqual(await removeTeamspaceMember(alice.ctx, teamspace, user(alice)), { ok: true })
+    assert.equal(await liveRole(teamspace, alice.userId), null)
+  })
+})
+
+/** `joinDefaultTeamspaces` 의 잠금 앞에서 기다리는 연결이 있는가 — 그 문장만 찾는다(다른 검사 파일의 잠금과 섞이지 않게). */
+async function waitingOnDefaultLock(): Promise<boolean> {
+  const row = await queryOne<{ n: number }>(
+    `SELECT count(*)::int AS n FROM pg_stat_activity
+      WHERE wait_event_type = 'Lock' AND datname = current_database()
+        AND query LIKE '%FROM teamspace WHERE workspace_id = $1 ORDER BY id FOR SHARE%'`,
+  )
+  return row.n > 0
+}
+
+async function pollUntil(check: () => Promise<boolean>, ms = 5000): Promise<void> {
+  const end = Date.now() + ms
+  while (Date.now() < end) {
+    if (await check()) return
+    await new Promise((resolve) => setTimeout(resolve, 25))
+  }
+}

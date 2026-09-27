@@ -13,6 +13,7 @@ import {
   TEAMSPACE_VISIBILITY_ORDER,
   archivedAtLabel,
   canInviteAsOwner,
+  defaultTeamspaceAddedMessage,
   canInviteHere,
   teamspaceCandidates,
   teamspaceFailureMessage,
@@ -29,11 +30,12 @@ const person = (userId: string, role = 'member', status = 'active') => ({ userId
 describe('teamspace 화면의 문구', () => {
   test('거부 코드마다 할 말이 있다 · 마지막 소유자는 무엇을 먼저 할지 말한다 · 모르는 코드는 일반 문구', () => {
     const codes = ['not_found', 'forbidden', 'invalid_name', 'invalid_role', 'invalid_member', 'last_owner',
-      'needs_invite', 'invalid_visibility', 'invalid_settings']
+      'needs_invite', 'invalid_visibility', 'invalid_settings', 'default_teamspace']
     for (const code of codes) {
       assert.notEqual(teamspaceFailureMessage(code), '처리하지 못했습니다.', code)
     }
     assert.match(teamspaceFailureMessage('last_owner'), /다른 사람을 소유자로/)
+    assert.match(teamspaceFailureMessage('default_teamspace'), /먼저 기본을/)
     assert.equal(teamspaceFailureMessage('something_new'), '처리하지 못했습니다.')
     assert.equal(teamspaceFailureMessage(undefined), '처리하지 못했습니다.')
   })
@@ -86,6 +88,14 @@ describe('보관한 때 (7c-6)', () => {
   test('앞선 시각(시계가 어긋난 경우)도 "오늘 보관" 으로 둔다 — 음수 날짜를 보이지 않는다', () => {
     const now = new Date('2026-09-27T12:00:00Z')
     assert.equal(archivedAtLabel('2026-09-28T12:00:00Z', now), '오늘 보관')
+  })
+})
+
+describe('기본 teamspace (7c-11)', () => {
+  test('켠 뒤의 한 줄 — 몇 명이 들어왔는지 · 0 명이면 이미 모두 멤버였다 · 둘 다 앞으로 무엇이 달라지는지 말한다', () => {
+    assert.match(defaultTeamspaceAddedMessage(12), /12명이 들어왔습니다/)
+    assert.match(defaultTeamspaceAddedMessage(0), /이미 모두 멤버/)
+    for (const n of [0, 1]) assert.match(defaultTeamspaceAddedMessage(n), /새로 들어오는 멤버도 저절로/)
   })
 })
 
