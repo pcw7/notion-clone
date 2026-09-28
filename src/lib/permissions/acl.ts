@@ -525,7 +525,8 @@ export type DropResult =
 export async function dropGrantsOf(
   tx: Tx,
   ctx: SessionContext,
-  principal: { readonly type: 'group'; readonly id: string },
+  // 그룹을 지울 때(7a)와 게스트를 뺄 때(7d-3 · `workspace/guest.ts` `removeGuest`) — 둘 다 "주체가 사라진다"이다.
+  principal: { readonly type: 'group' | 'user'; readonly id: string },
 ): Promise<DropResult> {
   const p = principalColumns(principal)
   const rows = await tx.query<{ node_id: string }>(

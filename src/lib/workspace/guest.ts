@@ -24,9 +24,10 @@
  * 정책(`security_policy`)은 그 표가 생길 때 여기에 건다(HANDOFF §7).
  */
 
-import type { SessionContext } from '../auth/session-context.ts'
-import { withCommandTransaction } from '../db/tx.ts'
-import { grantAccessIn, shareGateIn, type AclFailure } from '../permissions/acl.ts'
+import type { SessionContext, WorkspaceRole } from '../auth/session-context.ts'
+import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
+import { dropGrantsOf, grantAccessIn, shareGateIn, type AclFailure } from '../permissions/acl.ts'
+import { joinDefaultTeamspaces } from './teamspace.ts'
 
 /** 게스트에게 줄 수 있는 레벨 — 편집까지(머리말). 좁은 것부터. */
 export const GUEST_LEVELS = ['view', 'comment', 'edit'] as const
@@ -134,8 +135,121 @@ export async function inviteGuestToPage(
               invited_by = EXCLUDED.invited_by, invited_at = now(), accepted_at = now()`,
       [ctx.workspaceId, target, ctx.userId],
     )
-    await tx.query(`UPDATE "user" SET perm_gen = perm_gen + 1 WHERE id = $1`, [target])
-    await tx.query(`UPDATE workspace SET acl_epoch = acl_epoch + 1 WHERE id = $1`, [ctx.workspaceId])
+    await membershipChanged(tx, ctx, target)
     return (await give()) ?? ({ ok: true, value: { userId: target, as: 'guest', joined: true } } as const)
+  })
+}
+
+// ── owner 의 게스트 관리 (7d-3) ──────────────────────────────────────
+
+/**
+ * 게스트를 보고 · 멤버로 올리고 · 뺄 수 있는 워크스페이스 역할인가 — 역할 **이름**으로 묻는다(CLAUDE.md). 워크스페이스 초대를
+ * 보낼 수 있는 역할(`invite.ts` 의 owner · membership_admin)과 같다 — 사람을 들이고 내보내는 일이다.
+ */
+export function canManageGuests(role: WorkspaceRole): boolean {
+  return role === 'owner' || role === 'membership_admin'
+}
+
+export type GuestManageFailure =
+  /** 게스트를 다룰 역할이 아니다. */
+  | 'forbidden'
+  /** 이 워크스페이스의 (들어와 있는) 게스트가 아니다 — 멤버 · 떠난 사람 · 모르는 사람. */
+  | 'not_found'
+  /** 빼면 관리할 사람이 남지 않는 페이지가 생긴다(`dropGrantsOf` 의 규칙). 게스트는 편집까지라 정상 경로에서는 없다. */
+  | 'would_orphan'
+
+export type GuestManageResult<T> =
+  | { readonly ok: true; readonly value: T }
+  | { readonly ok: false; readonly reason: GuestManageFailure }
+
+/** 게스트 한 사람 — 이름 · 이메일 · **받은 페이지 수**(휴지통이 아닌 페이지 · 데이터베이스에 준 부여의 수). */
+export type GuestRow = {
+  readonly userId: string
+  readonly name: string
+  readonly email: string | null
+  readonly pages: number
+}
+
+const refuse = (reason: GuestManageFailure) => ({ ok: false, reason }) as const
+
+/** 게스트 목록 — 이름순. 게스트를 다룰 역할이 아니면 `forbidden`(멤버 목록과 달리 누구에게나 주는 목록이 아니다). */
+export async function listGuests(ctx: SessionContext): Promise<GuestManageResult<GuestRow[]>> {
+  if (!canManageGuests(ctx.role)) return refuse('forbidden')
+  return withReadTransaction(async (tx) => {
+    const rows = await tx.query<{ user_id: string; name: string; email: string | null; pages: number }>(
+      `SELECT m.user_id, u.name, ue.email::text AS email,
+              (SELECT count(DISTINCT a.node_id)::int
+                 FROM acl_entry a
+                 JOIN block b ON b.id = a.node_id AND b.workspace_id = m.workspace_id
+                WHERE a.node_kind = 'block' AND a.principal_type = 'user' AND a.principal_id = m.user_id
+                  AND b.type IN ('page', 'database') AND b.lifecycle = 'live') AS pages
+         FROM workspace_member m
+         JOIN "user" u ON u.id = m.user_id
+         LEFT JOIN user_email ue ON ue.id = u.primary_email_id
+        WHERE m.workspace_id = $1 AND m.role = 'guest' AND m.status = 'active'
+        ORDER BY lower(u.name), m.user_id`,
+      [ctx.workspaceId],
+    )
+    return { ok: true, value: rows.map((r) => ({ userId: r.user_id, name: r.name, email: r.email, pages: r.pages })) } as const
+  })
+}
+
+/** 이 워크스페이스의 들어와 있는 게스트를 잠근다 — 아니면 null. 올리기 · 빼기가 같은 사람을 겹쳐 다루지 않게. */
+async function lockGuest(tx: Tx, ctx: SessionContext, userId: string): Promise<boolean> {
+  const row = await tx.queryMaybe<{ one: number }>(
+    `SELECT 1 AS one FROM workspace_member
+      WHERE workspace_id = $1 AND user_id = $2 AND role = 'guest' AND status = 'active'
+      FOR UPDATE`,
+    [ctx.workspaceId, userId],
+  )
+  return row !== null
+}
+
+/** 멤버십이 바뀌었다 — 그 사람의 권한 세대와 워크스페이스의 `acl_epoch` 를 올린다(`acceptInvite` · 게스트 초대와 같다). */
+async function membershipChanged(tx: Tx, ctx: SessionContext, userId: string): Promise<void> {
+  await tx.query(`UPDATE "user" SET perm_gen = perm_gen + 1 WHERE id = $1`, [userId])
+  await tx.query(`UPDATE workspace SET acl_epoch = acl_epoch + 1 WHERE id = $1`, [ctx.workspaceId])
+}
+
+/**
+ * 게스트를 **멤버로 올린다**(정본 [보강] 게스트를 들이는 길 ⑧) — 받은 부여는 그대로, 워크스페이스 전체 접근이 얹힌다(모든
+ * 멤버에게 준 페이지 · 공개 teamspace 의 열람). 좌석을 쓰기 시작한다(M2 — `workspace_seat_count` 가 역할로 센다).
+ *
+ * 멤버가 되는 길이므로 **기본 teamspace 에 함께 들어간다**(`joinDefaultTeamspaces` — 7c-11 이 정한 것). `teamspaces` 는 그렇게
+ * 들어간 수다.
+ */
+export async function promoteGuest(ctx: SessionContext, userId: string): Promise<GuestManageResult<{ teamspaces: number }>> {
+  if (!canManageGuests(ctx.role)) return refuse('forbidden')
+  return withCommandTransaction(async (tx) => {
+    if (!(await lockGuest(tx, ctx, userId))) return refuse('not_found')
+    await tx.query(
+      `UPDATE workspace_member SET role = 'member', join_method = 'guest_upgrade'
+        WHERE workspace_id = $1 AND user_id = $2`,
+      [ctx.workspaceId, userId],
+    )
+    const teamspaces = await joinDefaultTeamspaces(tx, ctx.workspaceId, userId, 'member')
+    await membershipChanged(tx, ctx, userId)
+    return { ok: true, value: { teamspaces } } as const
+  })
+}
+
+/**
+ * 게스트를 **워크스페이스에서 뺀다**(⑧) — `status='removed'` 와 함께 **받은 부여를 모두 거둔다**(`dropGrantsOf` — 그룹을 지울 때와
+ * 같은 규칙). 거두지 않으면 M1 의 멤버십 행이 남아, 다시 초대받는 순간 옛 페이지들이 한꺼번에 돌아온다. `pages` 는 부여를 거둔
+ * 페이지 수다. 열어 둔 편집기는 멤버십 행의 트리거(0016)가 협업 서버에 알려 닫힌다.
+ */
+export async function removeGuest(ctx: SessionContext, userId: string): Promise<GuestManageResult<{ pages: number }>> {
+  if (!canManageGuests(ctx.role)) return refuse('forbidden')
+  return withCommandTransaction(async (tx) => {
+    if (!(await lockGuest(tx, ctx, userId))) return refuse('not_found')
+    const dropped = await dropGrantsOf(tx, ctx, { type: 'user', id: userId })
+    if (!dropped.ok) return refuse('would_orphan')
+    await tx.query(
+      `UPDATE workspace_member SET status = 'removed', removed_at = now()
+        WHERE workspace_id = $1 AND user_id = $2`,
+      [ctx.workspaceId, userId],
+    )
+    await membershipChanged(tx, ctx, userId)
+    return { ok: true, value: { pages: dropped.nodes } } as const
   })
 }
