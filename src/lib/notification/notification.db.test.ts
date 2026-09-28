@@ -8,6 +8,7 @@
  *   ③ **불변식 N2** — 저장은 알림 하나에 행 하나, 병합은 **조회 시점**이다(`group_key`)
  *   ④ **불변식 N3** — 알림도 이벤트도 사람이 쓴 글을 복제하지 않는다. 지운 코멘트는 인박스에서도 사라진다(D3)
  *   ⑤ **배달 파이프라인 ②** — 권한 재검사가 조회 쿼리 안에 있다. 볼 수 없게 되면 이미 만든 알림도 목록에서 빠진다
+ *   ⑥ (7e-1) 이벤트 종류 · 알림 종류의 TS 목록이 DB 의 CHECK 과 같다 — 늘릴 때 한쪽만 고치면 쓰기가 500 이 된다
  */
 
 import { test, describe, before, after } from 'node:test'
@@ -23,11 +24,13 @@ import {
   replyToDiscussion,
 } from '../comment/discussion.ts'
 import { textRun } from '../contracts/rich-text.ts'
-import { query } from '../db/pool.ts'
+import { query, queryOne } from '../db/pool.ts'
 import type { EditorBlock } from '../editor/document.ts'
 import { grantAccess, revokeAccess, stopInheriting } from '../permissions/acl.ts'
 import type { Level } from '../permissions/levels.ts'
 import { createBareWorkspace, createUser, joinAs, probeDatabase, type Actor } from '../testing/db-fixtures.ts'
+import { ACTIVITY_TYPES } from './activity.ts'
+import { NOTIFICATION_KINDS } from './fanout.ts'
 import { listInbox, markNotifications, unreadCount } from './inbox.ts'
 import { setSubscription, subscriptionOf } from './subscription.ts'
 
@@ -344,5 +347,20 @@ describe('활동 이벤트', () => {
     )
     assert.deepEqual(events.map((e) => e.type), ['comment.created'])
     assert.equal(events[0].actor_id, owner.userId)
+  })
+})
+
+describe('종류의 목록 (7e-1)', () => {
+  test('이벤트 종류 · 알림 종류의 TS 목록이 DB 의 CHECK 과 같다 — 늘릴 때 한쪽만 고치면 쓰기가 500 이 된다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const valuesOf = async (table: string, constraint: string) => {
+      const row = await queryOne<{ def: string }>(
+        `SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conrelid = $1::regclass AND conname = $2`,
+        [table, constraint],
+      )
+      return [...row.def.matchAll(/'([^']+)'::text/g)].map((m) => m[1]).sort()
+    }
+    assert.deepEqual(await valuesOf('activity_event', 'activity_event_type_check'), [...ACTIVITY_TYPES].sort())
+    assert.deepEqual(await valuesOf('notification', 'notification_kind_check'), [...NOTIFICATION_KINDS].sort())
   })
 })

@@ -23,6 +23,8 @@
 import { useCallback, useState } from 'react'
 import Link from 'next/link'
 
+import { accessInboxLine, inboxHref } from '../access-request-messages'
+
 export type InboxRow = {
   groupKey: string
   kind: string
@@ -34,6 +36,8 @@ export type InboxRow = {
   lastAt: string
   preview: string | null
   deleted: boolean
+  /** 접근 요청(7e-1)의 지금 상태 — 서버가 요청 행에서 읽어 준다. 다른 알림은 null. */
+  access: { requesterName: string | null; status: string } | null
 }
 
 const FILTERS: readonly { value: string; label: string }[] = [
@@ -48,6 +52,8 @@ const KIND_LABEL: Readonly<Record<string, string>> = {
   comment_reply: '답글',
   mention: '멘션',
   page_update: '페이지 변경',
+  access_requested: '접근 요청',
+  access_granted: '접근 허락',
 }
 
 const UNTITLED = '제목 없음'
@@ -170,7 +176,7 @@ export function InboxList({
             <li key={item.groupKey} className="flex flex-col gap-1 px-4 py-3">
               <div className="flex items-center justify-between gap-2">
                 <Link
-                  href={`/w/${workspaceId}/${item.pageId}`}
+                  href={inboxHref(workspaceId, item.pageId, item.kind)}
                   className="text-sm font-medium hover:underline underline-offset-4"
                 >
                   {item.pageTitle || UNTITLED}
@@ -183,7 +189,8 @@ export function InboxList({
               </div>
 
               <p className="text-sm text-neutral-600 dark:text-neutral-400">
-                {item.deleted ? <span className="text-neutral-400">삭제된 코멘트</span> : (item.preview ?? '')}
+                {accessInboxLine(item.kind, item.access) ??
+                  (item.deleted ? <span className="text-neutral-400">삭제된 코멘트</span> : (item.preview ?? ''))}
               </p>
 
               <div className="flex items-center gap-2">

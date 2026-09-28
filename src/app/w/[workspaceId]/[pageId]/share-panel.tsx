@@ -37,6 +37,13 @@ import {
   type ShareMember,
   type ShareTeamspace,
 } from './share-principals'
+import {
+  accessRequestFailureMessage,
+  approveLevelOptions,
+  approvedNotice,
+  ignoredNotice,
+  requesterLabel,
+} from '../access-request-messages'
 
 type AccessEntry = {
   principalType: string
@@ -51,6 +58,35 @@ type AccessState = {
   members: ShareMember[]
   groups: ShareGroup[]
   teamspaces: ShareTeamspace[]
+  /** 대기 중인 접근 요청(7e-1) — 공유할 수 있는 사람에게만 온다. */
+  requests: AccessRequestView[]
+}
+
+type AccessRequestView = {
+  id: string
+  requesterId: string
+  name: string
+  email: string | null
+  guest: boolean
+}
+
+/** 공유 설정을 읽는다 — 목록이거나, 못 읽었으면 보여 줄 문구. 상태를 모른다(클릭과 효과가 나눠 쓴다). */
+async function readAccess(url: string): Promise<AccessState | string> {
+  try {
+    const res = await fetch(url)
+    if (!res.ok) return '공유 설정을 불러오지 못했습니다.'
+    const data = await res.json()
+    return {
+      canManage: data.canManage,
+      entries: data.entries,
+      members: data.members,
+      groups: data.groups ?? [],
+      teamspaces: data.teamspaces ?? [],
+      requests: data.requests ?? [],
+    }
+  } catch {
+    return '연결에 실패했습니다.'
+  }
 }
 
 /** 페이지에 줄 수 있는 레벨. `create`·`edit_content` 는 database 전용이다. */
@@ -61,9 +97,18 @@ const PAGE_LEVELS: readonly { value: string; label: string }[] = [
   { value: 'full_access', label: '전체 권한' },
 ]
 
-export function SharePanel({ workspaceId, pageId }: { workspaceId: string; pageId: string }) {
+export function SharePanel({
+  workspaceId,
+  pageId,
+  initialOpen = false,
+}: {
+  workspaceId: string
+  pageId: string
+  /** 연 채로 시작한다 — 인박스의 접근 요청 줄이 `?share=1` 로 데려올 때(7e-1). */
+  initialOpen?: boolean
+}) {
   const router = useRouter()
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(initialOpen)
   const [state, setState] = useState<AccessState | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -72,6 +117,8 @@ export function SharePanel({ workspaceId, pageId }: { workspaceId: string; pageI
   const [addLevel, setAddLevel] = useState('edit')
   const [inviteEmail, setInviteEmail] = useState('')
   const [inviteLevel, setInviteLevel] = useState('comment')
+  /** 요청마다 고른 레벨 — 고르지 않았으면 그 요청의 첫 선택지(읽기). */
+  const [requestLevels, setRequestLevels] = useState<Record<string, string>>({})
 
   const url = `/api/workspaces/${workspaceId}/pages/${pageId}/access`
   const guestsUrl = `/api/workspaces/${workspaceId}/pages/${pageId}/guests`
@@ -85,24 +132,25 @@ export function SharePanel({ workspaceId, pageId }: { workspaceId: string; pageI
    * 실제로 그렇게 짰다가 e2e 가 잡았다.
    */
   const load = useCallback(async () => {
-    try {
-      const res = await fetch(url)
-      if (!res.ok) {
-        setError('공유 설정을 불러오지 못했습니다.')
-        return
-      }
-      const data = await res.json()
-      setState({
-        canManage: data.canManage,
-        entries: data.entries,
-        members: data.members,
-        groups: data.groups ?? [],
-        teamspaces: data.teamspaces ?? [],
-      })
-    } catch {
-      setError('연결에 실패했습니다.')
-    }
+    const read = await readAccess(url)
+    if (typeof read === 'string') setError(read)
+    else setState(read)
   }, [url])
+
+  // 연 채로 왔으면(인박스 → `?share=1`) 첫 목록은 효과가 읽는다 — 클릭이 없었으므로. 그 뒤는 여느 때처럼 클릭이 읽는다.
+  // 상태는 응답이 온 뒤에만 바꾼다(효과 안의 동기 setState 는 렌더를 연쇄시킨다 — `react-hooks/set-state-in-effect`).
+  useEffect(() => {
+    if (!initialOpen) return
+    let cancelled = false
+    void readAccess(url).then((read) => {
+      if (cancelled) return
+      if (typeof read === 'string') setError(read)
+      else setState(read)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [initialOpen, url])
 
   useEffect(() => {
     if (!open) return
@@ -184,6 +232,36 @@ export function SharePanel({ workspaceId, pageId }: { workspaceId: string; pageI
     }
   }
 
+  /**
+   * 접근 요청을 허락하거나 무시한다(7e-1). 허락의 레벨 규칙(게스트는 편집까지 · 낮추지 않는다)은 서버가 한다 — 여기서는 고를 수
+   * 없는 것을 보여 주지 않을 뿐이다. 끝나면 목록을 다시 읽는다(허락한 사람이 공유 행에 선다).
+   */
+  async function decide(request: AccessRequestView, action: 'approve' | 'ignore', level: string): Promise<void> {
+    setBusy(true)
+    setError(null)
+    setNotice(null)
+    try {
+      const res = await fetch(`/api/workspaces/${workspaceId}/access-requests/${request.id}/${action}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(action === 'approve' ? { level } : {}),
+      })
+      const data = (await res.json().catch(() => ({}))) as { error?: unknown }
+      if (!res.ok) {
+        setError(accessRequestFailureMessage(data.error))
+        await load()
+        return
+      }
+      setNotice(action === 'approve' ? approvedNotice(request.name, level) : ignoredNotice(request.name))
+      await load()
+      router.refresh()
+    } catch {
+      setError('연결에 실패했습니다.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   return (
     <div className="relative">
       <button
@@ -215,6 +293,70 @@ export function SharePanel({ workspaceId, pageId }: { workspaceId: string; pageI
 
           {state !== null && (
             <>
+              {/* 접근 요청(7e-1) — 공유할 수 있는 사람에게만 온다. 목록 맨 위에 둔다: 인박스가 이것을 처리하라고 데려왔다. */}
+              {state.canManage && state.requests.length > 0 && (
+                <section
+                  data-testid="access-requests"
+                  aria-label="접근 요청"
+                  className="mb-3 flex flex-col gap-2 border-b border-neutral-200 pb-3 dark:border-neutral-800"
+                >
+                  <h3 className="text-xs font-medium text-neutral-500">접근 요청 {state.requests.length}</h3>
+                  <ul className="flex flex-col gap-2">
+                    {state.requests.map((r) => {
+                      const options = approveLevelOptions(r.guest)
+                      const level = requestLevels[r.id] ?? options[0]?.value ?? 'view'
+                      return (
+                        <li
+                          key={r.id}
+                          data-testid="access-request-row"
+                          data-request-id={r.id}
+                          className="flex items-center justify-between gap-2 text-sm"
+                        >
+                          <span className="min-w-0 truncate">{requesterLabel(r)}</span>
+                          <span className="flex flex-none items-center gap-1">
+                            <select
+                              aria-label={`${r.name} 님에게 줄 권한`}
+                              data-testid="access-request-level"
+                              value={level}
+                              disabled={busy}
+                              onChange={(e) => {
+                                const value = e.target.value
+                                setRequestLevels((prev) => ({ ...prev, [r.id]: value }))
+                              }}
+                              className="rounded border border-neutral-300 bg-transparent px-1 py-0.5 text-xs dark:border-neutral-700"
+                            >
+                              {options.map((o) => (
+                                <option key={o.value} value={o.value}>
+                                  {o.label}
+                                </option>
+                              ))}
+                            </select>
+                            <button
+                              type="button"
+                              data-testid="access-request-approve"
+                              disabled={busy}
+                              onClick={() => void decide(r, 'approve', level)}
+                              className="rounded border border-neutral-300 px-1.5 py-0.5 text-xs dark:border-neutral-700"
+                            >
+                              허락
+                            </button>
+                            <button
+                              type="button"
+                              data-testid="access-request-ignore"
+                              disabled={busy}
+                              onClick={() => void decide(r, 'ignore', level)}
+                              className="rounded border border-neutral-300 px-1.5 py-0.5 text-xs text-neutral-500 dark:border-neutral-700"
+                            >
+                              무시
+                            </button>
+                          </span>
+                        </li>
+                      )
+                    })}
+                  </ul>
+                </section>
+              )}
+
               <ul className="flex flex-col gap-2">
                 {state.entries.map((entry) => {
                   // 모르는 종류의 주체는 null — 그 행은 고치지 못하게 읽기 전용으로 그린다(`share-principals.ts`).

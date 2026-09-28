@@ -53,6 +53,8 @@ const EXPECTED_TABLES = [
   'status_group',
   // Teamspace · 게스트 · 그룹 7c-1조각 (0028)
   'teamspace', 'teamspace_member',
+  // 접근 요청 7e-1조각 (0033)
+  'access_request',
   'schema_migration', 'scim_token', 'session_policy', 'sso_config',
   'user', 'user_email', 'user_session',
   'workspace', 'workspace_invite', 'workspace_member',
@@ -1920,6 +1922,52 @@ try {
     await mustReject('빈 아이콘', setIcon, [id, ''])
     await mustReject('공백이 든 아이콘', setIcon, [id, '🚀 '])
     await mustReject('16 코드포인트를 넘는 아이콘', setIcon, [id, 'x'.repeat(17)])
+  }
+
+  console.log('\n[19] 접근 요청 (0033 / §3.3 access_request · [보강] 접근 요청의 길 · §3.8 [보강] 접근 요청의 알림 · 7e-1조각)')
+  {
+    const pageId = randomUUID()
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key,
+                          ancestor_path, perm_scope_id, properties, format, created_at, last_edited_at)
+       VALUES ($1, $2, 'page', 'workspace', $2, 'r0', '{}', $1, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      [pageId, wsId],
+    )
+    const add = `INSERT INTO access_request (id, workspace_id, kind, node_id, requester_id, requested_level, status, decided_by, decided_at)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`
+    const first = randomUUID()
+    await client.query(add, [first, wsId, 'page_access', pageId, userId, null, 'pending', null, null])
+    ok('대기 중인 페이지 접근 요청')
+    await mustReject('같은 (페이지, 사람, 종류)의 두 번째 대기 요청', add, [randomUUID(), wsId, 'page_access', pageId, userId, null, 'pending', null, null])
+    await client.query(`UPDATE access_request SET status = 'ignored', decided_by = $2, decided_at = now() WHERE id = $1`, [first, userId])
+    await client.query(add, [randomUUID(), wsId, 'page_access', pageId, userId, null, 'pending', null, null])
+    ok('무시된 요청 뒤의 새 대기 요청 (부분 UNIQUE 는 pending 만 센다)')
+    await mustReject('페이지가 없는 페이지 접근 요청', add, [randomUUID(), wsId, 'page_access', null, userId, null, 'pending', null, null])
+    await mustReject('요청한 사람이 없는 편집 권한 요청', add, [randomUUID(), wsId, 'edit_access', pageId, null, 'edit', 'pending', null, null])
+    await mustReject('결정 시각이 있는 대기 요청', add, [randomUUID(), wsId, 'edit_access', pageId, userId, 'edit', 'pending', null, new Date()])
+    await mustReject('결정한 사람이 있는 대기 요청', add, [randomUUID(), wsId, 'edit_access', pageId, userId, 'edit', 'pending', userId, null])
+    await mustReject('결정 시각이 없는 허락', add, [randomUUID(), wsId, 'edit_access', pageId, userId, 'edit', 'approved', userId, null])
+    await mustReject('모르는 요청 종류', add, [randomUUID(), wsId, 'bribe', pageId, userId, null, 'pending', null, null])
+    await mustReject('모르는 요청 레벨', add, [randomUUID(), wsId, 'edit_access', pageId, userId, 'owner', 'pending', null, null])
+
+    const eventId = randomUUID()
+    await client.query(
+      `INSERT INTO activity_event (id, workspace_id, page_id, actor_id, type, payload, created_at)
+       VALUES ($1, $2, $3, $4, 'access.requested', '{}'::jsonb, now())`,
+      [eventId, wsId, pageId, userId],
+    )
+    await client.query(
+      `INSERT INTO notification (id, recipient_id, workspace_id, page_id, event_ids, kind, group_key, created_at)
+       VALUES ($1, $2, $3, $4, ARRAY[$5::uuid], 'access_requested', 'access_request:x', now())`,
+      [randomUUID(), userId, wsId, pageId, eventId],
+    )
+    ok('접근 요청의 이벤트 · 알림 종류 (access.requested · access_requested)')
+
+    // 페이지가 물리적으로 지워지면 요청도 간다 — 06 F-06-15 *"삭제 시 요청 자동 취소"*.
+    await client.query(`DELETE FROM block WHERE id = $1`, [pageId])
+    const { rows } = await client.query(`SELECT count(*)::int AS n FROM access_request WHERE node_id = $1`, [pageId])
+    if (rows[0].n === 0) ok('페이지를 지우면 그 페이지의 요청도 간다 (ON DELETE CASCADE)')
+    else fail(`페이지를 지웠는데 요청 ${rows[0].n}건이 남았다`)
   }
 
   await client.query('ROLLBACK')
