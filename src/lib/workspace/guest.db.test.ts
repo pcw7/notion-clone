@@ -10,6 +10,8 @@
  *   ⑤ ★ 게스트의 레벨은 편집까지 — 초대도 공유 패널의 부여도 · 게스트는 다른 게스트를 들이지 못한다
  *   ⑥ (7d-2) ★ 공유의 사용자 주체는 이 워크스페이스의 사람이다 · ★ 게스트는 `@` 의 사람 후보를 받지 않는다
  *      (공유 패널 · 코멘트 · 홈의 목록은 라우트가 좁힌다 — e2e 가 본다)
+ *   ⑦ (7d-3) ★ 목록(받은 페이지 수) · ★ 멤버로 올리기(공유 그대로 · 전체 · 기본 teamspace · 좌석) · ★ 빼기(공유를 모두 걷는다)
+ *      · owner · membership_admin 만
  *
  * 워크스페이스마다 새로 만든다 — 좌석 · 멤버 수를 정확히 센다.
  */
@@ -20,13 +22,14 @@ import { randomUUID } from 'node:crypto'
 
 import { searchMentionCandidates } from '../block/mention-candidates.ts'
 import { createPage, titleFromPlainText } from '../block/page.ts'
+import { trashPage } from '../block/trash.ts'
 import { listPageTree, type PageTreeNode } from '../block/page-tree.ts'
 import { query, queryOne } from '../db/pool.ts'
 import type { BlockId } from '../ids.ts'
 import { grantAccess } from '../permissions/acl.ts'
 import { canViewPage } from '../permissions/effective.ts'
 import { createBareWorkspace, createUser, joinAs, probeDatabase, type Actor } from '../testing/db-fixtures.ts'
-import { inviteGuestToPage } from './guest.ts'
+import { inviteGuestToPage, listGuests, promoteGuest, removeGuest } from './guest.ts'
 import { createTeamspace, setDefaultTeamspace } from './teamspace.ts'
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'
@@ -286,5 +289,105 @@ describe('⑥ 공유의 사용자 주체는 이 워크스페이스의 사람이�
     assert.ok(forGuest.some((c) => c.kind === 'page' && c.id === shared), '게스트가 받은 페이지가 후보에 없다')
     const forBoss = await searchMentionCandidates(boss.ctx, '')
     assert.ok(forBoss.some((c) => c.kind === 'user'), '멤버에게서 사람 후보까지 사라졌다')
+  })
+})
+
+// ── ⑦ 7d-3 — owner 의 게스트 관리 ──────────────────────────────────────
+
+describe('⑦ 게스트 관리 — 목록 · 멤버로 올리기 · 빼기 (7d-3)', () => {
+  /** 사무실 하나에 게스트 하나 — 페이지 둘을 받았다. */
+  async function withGuest() {
+    const o = await office()
+    const first = await page(o.boss)
+    const second = await page(o.boss)
+    const outsider = await createUser('관리될 손님')
+    assert.ok((await inviteGuestToPage(o.boss.ctx, first, outsider.email, 'view')).ok)
+    assert.ok((await inviteGuestToPage(o.boss.ctx, second, outsider.email, 'comment')).ok)
+    const guest = await joinAs(o.ws, outsider, 'guest')
+    return { ...o, first, second, outsider, guest }
+  }
+
+  test('★ 목록 — 들어와 있는 게스트만 · 받은 페이지 수(휴지통은 빼고) · owner · membership_admin 만', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { ws, boss, person, second, outsider, guest } = await withGuest()
+    const mate = await person('멤버는 목록에 없다')
+    const gone = await createUser('떠난 손님')
+    assert.ok((await inviteGuestToPage(boss.ctx, second, gone.email, 'view')).ok)
+    await query(`UPDATE workspace_member SET status = 'removed' WHERE workspace_id = $1 AND user_id = $2`, [ws, gone.userId])
+
+    const listed = await listGuests(boss.ctx)
+    assert.ok(listed.ok)
+    assert.deepEqual(
+      listed.value.map((g) => [g.userId, g.pages]),
+      [[outsider.userId, 2]],
+    )
+    assert.ok(!listed.value.some((g) => g.userId === mate.userId))
+
+    assert.ok((await trashPage(boss.ctx, second)).ok !== false)
+    const afterTrash = await listGuests(boss.ctx)
+    assert.ok(afterTrash.ok && afterTrash.value[0]?.pages === 1, '휴지통 페이지까지 셌다')
+
+    const admin = await person('멤버십 관리자', 'membership_admin')
+    assert.ok((await listGuests(admin.ctx)).ok)
+    for (const who of [mate, guest]) assert.deepEqual(await listGuests(who.ctx), { ok: false, reason: 'forbidden' })
+  })
+
+  test('★ 멤버로 올리면 받은 공유는 그대로 · 워크스페이스 전체를 본다 · 기본 teamspace 에 들어간다 · 좌석을 쓴다 · 전체 권한을 받을 수 있다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { ws, boss, first, outsider, guest } = await withGuest()
+    const everyonePage = await page(boss) // 워크스페이스 최상위 — 모든 멤버가 본다
+    const everyone = await createTeamspace(boss.ctx, { name: unique('전사') })
+    assert.ok(everyone.ok)
+    assert.ok((await setDefaultTeamspace(boss.ctx, everyone.value.id, true)).ok)
+    assert.equal(await canViewPage(guest.ctx, everyonePage), false, '전제 — 게스트는 모든 멤버의 페이지를 못 본다')
+    const seatsBefore = await seats(ws)
+
+    assert.deepEqual(await promoteGuest(boss.ctx, outsider.userId), { ok: true, value: { teamspaces: 1 } })
+    const row = await queryOne<{ role: string; join_method: string }>(
+      `SELECT role, join_method FROM workspace_member WHERE workspace_id = $1 AND user_id = $2`,
+      [ws, outsider.userId],
+    )
+    assert.deepEqual(row, { role: 'member', join_method: 'guest_upgrade' })
+    const member = await joinAs(ws, outsider, 'member')
+    assert.equal(await canViewPage(member.ctx, first), true, '받은 공유가 사라졌다')
+    assert.equal(await canViewPage(member.ctx, everyonePage), true, '올렸는데 워크스페이스 전체를 못 본다')
+    assert.equal(await seats(ws), seatsBefore + 1, '멤버가 됐는데 좌석을 안 쓴다(M2)')
+    assert.deepEqual(await grantAccess(boss.ctx, first, { type: 'user', id: outsider.userId }, 'full_access'), { ok: true })
+
+    // 이미 멤버 · 처음 보는 사람은 게스트가 아니다.
+    assert.deepEqual(await promoteGuest(boss.ctx, outsider.userId), { ok: false, reason: 'not_found' })
+    assert.deepEqual(await promoteGuest(boss.ctx, randomUUID()), { ok: false, reason: 'not_found' })
+  })
+
+  test('★ 빼면 받은 공유가 모두 걷힌다 — 다시 초대해도 옛 페이지는 돌아오지 않는다 · 권한 세대가 오른다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { ws, boss, first, second, outsider } = await withGuest()
+    const gen = async () => (await queryOne<{ perm_gen: string }>(`SELECT perm_gen FROM "user" WHERE id = $1`, [outsider.userId])).perm_gen
+    const genBefore = await gen()
+
+    assert.deepEqual(await removeGuest(boss.ctx, outsider.userId), { ok: true, value: { pages: 2 } })
+    assert.deepEqual(await membershipOf(ws, outsider.userId), { role: 'guest', status: 'removed' })
+    const rows = await query(`SELECT 1 FROM acl_entry WHERE principal_type = 'user' AND principal_id = $1`, [outsider.userId])
+    assert.equal(rows.length, 0, '뺐는데 공유 행이 남았다')
+    assert.notEqual(await gen(), genBefore, '멤버십이 바뀌었는데 권한 세대가 그대로다')
+
+    const third = await page(boss)
+    assert.ok((await inviteGuestToPage(boss.ctx, third, outsider.email, 'view')).ok)
+    const back = await joinAs(ws, outsider, 'guest')
+    assert.equal(await canViewPage(back.ctx, third), true)
+    for (const old of [first, second]) {
+      assert.equal(await canViewPage(back.ctx, old), false, '다시 초대받자 옛 페이지가 돌아왔다')
+    }
+  })
+
+  test('게스트 관리는 owner · membership_admin 만 — 멤버와 게스트는 forbidden · 게스트가 아닌 사람은 not_found', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { boss, person, outsider, guest } = await withGuest()
+    const mate = await person('못 다루는 멤버')
+    for (const who of [mate, guest]) {
+      assert.deepEqual(await promoteGuest(who.ctx, outsider.userId), { ok: false, reason: 'forbidden' })
+      assert.deepEqual(await removeGuest(who.ctx, outsider.userId), { ok: false, reason: 'forbidden' })
+    }
+    assert.deepEqual(await removeGuest(boss.ctx, mate.userId), { ok: false, reason: 'not_found' }, '멤버를 게스트 빼기로 뺐다')
   })
 })

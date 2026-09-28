@@ -2826,6 +2826,75 @@ async function main() {
         toStranger.status === 400 && (await toStranger.json()).error === 'invalid_principal', String(toStranger.status))
     }
 
+    if (sectionIf('게스트 관리 — 멤버로 올리기 · 빼기 (7d-3 · F-06-09)')) {
+      // 소유자(브라우저 세션)가 홈의 "게스트" 절에서 한 사람은 멤버로 올리고, 한 사람은 뺀다. 둘 다 두 번 누른다. 자기 데이터를
+      // 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
+      const stamp = Date.now()
+      const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
+      const doc = (await (await fetch(pagesUrl, { method: 'POST', headers: authed, body: JSON.stringify({ title: `게스트 관리 문서 ${stamp}` }) })).json()).page.id
+      const riseName = `올라갈 손님 ${stamp}`
+      const leaveName = `나갈 손님 ${stamp}`
+      const rise = await createUser(riseName)
+      const leave = await createUser(leaveName)
+      for (const who of [rise, leave]) {
+        await fetch(`${pagesUrl}/${doc}/guests`, { method: 'POST', headers: authed, body: JSON.stringify({ email: who.email, level: 'view' }) })
+      }
+      const { createSession } = await import(new URL('../src/lib/auth/session.ts', import.meta.url).href)
+      const { withTransaction } = await import(new URL('../src/lib/db/tx.ts', import.meta.url).href)
+      const leaveSession = await withTransaction((tx) => createSession(tx, {
+        userId: leave.userId, authMethod: 'login_code', mfaSatisfied: false, ip: null, userAgent: 'e2e',
+      }))
+      const asLeaver = (path) => fetch(`${BASE}${path}`, { headers: { cookie: `nc_session=${leaveSession.token}` } })
+      check('전제 — 나갈 손님은 그 페이지를 연다', (await asLeaver(`/w/${workspaceId}/${doc}`)).status === 200)
+
+      const row = (id) => `[data-testid="guest-row"][data-user-id="${id}"]`
+      /** 두 번 누르는 버튼 — 확인 줄이 뜰 때까지 첫 버튼을 다시 누른다(서버 렌더 뒤 붙기 전의 클릭은 사라진다 · §6). */
+      const ask = async (id, first, confirm) => {
+        for (let i = 0; i < 10; i += 1) {
+          await clickSelector(`${row(id)} [data-testid="${first}"]`)
+          if (await waitFor(`!!document.querySelector('${row(id)} [data-testid="${confirm}"]')`, 500)) return true
+        }
+        return false
+      }
+
+      // 멤버 절은 게스트도 싣는다(역할을 함께 적는다) — "멤버 절에 선다"가 아니라 **그 줄의 역할이 바뀐다**로 본다. 처음 쓴
+      // 검사는 이름만 봐서 서버 렌더를 다시 받지 않아도 통과했다(반사실 E1).
+      const memberRole = (name) => `([...document.querySelectorAll('[data-testid="workspace-members"] li')]
+        .find((li) => li.textContent.includes(${JSON.stringify(name)}))?.textContent ?? '')`
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
+      check('★ 홈의 "게스트" 절에 두 손님이 받은 페이지 수와 함께 선다',
+        await waitFor(`(document.querySelector('${row(rise.userId)} [data-testid="guest-pages"]')?.textContent ?? '') === '페이지 1개'
+          && !!document.querySelector('${row(leave.userId)}')`, 15000))
+
+      check('전제 — 멤버 절의 그 줄은 아직 guest 다', (await evaluate(memberRole(riseName))).includes('guest'))
+      check('멤버로 올리기는 한 번 더 묻는다 — 좌석을 쓴다고 말한다',
+        (await ask(rise.userId, 'guest-promote', 'guest-promote-confirm'))
+          && (await evaluate(`(document.querySelector('${row(rise.userId)}')?.textContent ?? '').includes('좌석')`)))
+      await clickSelector(`${row(rise.userId)} [data-testid="guest-promote-confirm"]`)
+      check('★ 확인하면 게스트 절에서 빠지고 · 멤버 절의 그 줄이 guest 에서 member 로 바뀐다',
+        await waitFor(`!document.querySelector('${row(rise.userId)}')
+          && (document.querySelector('[data-testid="guest-notice"]')?.textContent ?? '').includes('멤버로 올렸습니다')
+          && ${memberRole(riseName)}.includes('member') && !${memberRole(riseName)}.includes('guest')`, 15000),
+        await evaluate(`document.querySelector('[data-testid="guest-error"]')?.textContent ?? ''`))
+
+      check('빼기는 한 번 더 묻는다 — 공유가 모두 걷힌다고 말한다',
+        (await ask(leave.userId, 'guest-remove', 'guest-remove-confirm'))
+          && (await evaluate(`(document.querySelector('${row(leave.userId)}')?.textContent ?? '').includes('모두 걷힙니다')`)))
+      await clickSelector(`${row(leave.userId)} [data-testid="guest-remove-confirm"]`)
+      check('★ 확인하면 빠지고 · 걷은 공유 수를 말하고 · 그 손님은 이제 그 페이지를 못 연다',
+        (await waitFor(`!document.querySelector('${row(leave.userId)}')
+          && (document.querySelector('[data-testid="guest-notice"]')?.textContent ?? '').includes('공유 1건')`, 15000))
+          && (await asLeaver(`/w/${workspaceId}/${doc}`)).status === 404)
+
+      const mate = await joinAs(workspaceId, await createUser(`게스트를 못 보는 멤버 ${stamp}`), 'member')
+      const mateHome = await (await fetch(`${BASE}/w/${workspaceId}`, { headers: { cookie: `nc_session=${mate.token}` } })).text()
+      const mateList = await fetch(`${BASE}/api/workspaces/${workspaceId}/guests`, { headers: { cookie: `nc_session=${mate.token}` } })
+      check('멤버에게는 게스트 절이 없고 목록 API 는 403 이다',
+        !mateHome.includes('data-testid="workspace-guests"') && mateList.status === 403, String(mateList.status))
+      // 올리기 · 빼기의 refresh 가 끝나기 전에 다음 절이 화면을 옮기지 않게 한다(§6).
+      await sleep(1500)
+    }
+
     if (sectionIf('코멘트 패널 · 인박스 (F-05-08 · F-11-07)')) {
       const commentPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
         method: 'POST',

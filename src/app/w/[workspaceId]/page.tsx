@@ -15,8 +15,10 @@ import { requirePageSession } from '@/lib/auth/page-session'
 import { listChildPages } from '@/lib/block/page'
 import { canExportWorkspace } from '@/lib/export/download'
 import { canManageGroups, canSeeGroups, listGroups } from '@/lib/workspace/group'
+import { canManageGuests, listGuests } from '@/lib/workspace/guest'
 import { canListMembers, listMembers, listPendingInvites } from '@/lib/workspace/list'
 import { ExportButton } from './export-button'
+import { GuestPanel } from './guest-panel'
 import { GroupPanel } from './group-panel'
 import { InviteForm } from './invite-form'
 import { NewPageButton } from './new-page-button'
@@ -34,13 +36,15 @@ export default async function WorkspacePage({ params }: PageProps<'/w/[workspace
   // 표시 전용 — 판정은 내보내기 라우트가 `prepareExport` 로 다시 한다.
   const canExport = canExportWorkspace(ctx)
 
-  const [rootPages, members, invites, groups] = await Promise.all([
+  const [rootPages, members, invites, groups, guests] = await Promise.all([
     listChildPages(ctx, null),
     // 게스트는 멤버 목록을 받지 않는다(7d-2 · F-06-09) — 절 자체를 그리지 않는다.
     canListMembers(ctx.role) ? listMembers(ctx.workspaceId) : Promise.resolve(null),
     canInvite ? listPendingInvites(ctx.workspaceId) : Promise.resolve([]),
     // 게스트는 그룹을 보지 않는다(F-06-09) — 절 자체를 그리지 않는다. 판정은 `listGroups` 가 다시 한다.
     canSeeGroups(ctx.role) ? listGroups(ctx) : Promise.resolve(null),
+    // 게스트 관리(7d-3)는 owner · membership_admin 에게만 — 판정은 `listGuests` 가 다시 한다.
+    canManageGuests(ctx.role) ? listGuests(ctx) : Promise.resolve(null),
   ])
 
   return (
@@ -100,6 +104,16 @@ export default async function WorkspacePage({ params }: PageProps<'/w/[workspace
               </li>
             ))}
           </ul>
+        </section>
+      )}
+
+      {guests?.ok && (
+        <section data-testid="workspace-guests">
+          <h2 className="text-sm font-medium text-neutral-500">게스트 {guests.value.length}명</h2>
+          <p className="mt-1 text-xs text-neutral-500">
+            게스트는 받은 페이지와 그 아래만 봅니다. 멤버로 올리거나 워크스페이스에서 뺄 수 있습니다.
+          </p>
+          <GuestPanel workspaceId={ctx.workspaceId} initialGuests={[...guests.value]} />
         </section>
       )}
 
