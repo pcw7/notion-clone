@@ -591,6 +591,15 @@ async function main() {
     await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${pageId}` })
 
     // ── 여러 절이 함께 쓰는 도우미 — 게이트(절) 안에 두면 블록 스코프에 갇혀 뒤 절이 못 본다(E2E_ONLY · #127) ──
+    /**
+     * 볼 수 없는 페이지를 연 답 — 7e-1 부터 404 가 아니라 **접근 요청 화면**이다(이 워크스페이스의 사람이 연 살아 있는 페이지 ·
+     * F-06-15). 그 화면에 제목이 없는지도 본다 — 존재만 알린다(정본 §3.3 [보강] 접근 요청 ②).
+     */
+    const shownNoAccess = async (res, title = null) => {
+      if (res.status !== 200) return false
+      const html = await res.text()
+      return html.includes('data-testid="no-access"') && (title === null || !html.includes(title))
+    }
     const typeText = async (text) => {
       await send('Input.insertText', { text })
       await sleep(60)
@@ -2133,8 +2142,8 @@ async function main() {
           && !!document.querySelector('[data-testid="sidebar-private"] a[href="' + location.pathname + '"]')`, 15000),
         await evaluate('location.pathname'))
       const myPrivate = await evaluate(`location.pathname.split('/').pop()`)
-      check('★ 나만 본다 — 동료에게는 그 페이지가 404 다',
-        (await pageAs(privateMate, `/w/${workspaceId}/${myPrivate}`)).status === 404 &&
+      check('★ 나만 본다 — 동료에게는 그 페이지가 접근 요청 화면이다(7e-1 전에는 404)',
+        (await shownNoAccess(await pageAs(privateMate, `/w/${workspaceId}/${myPrivate}`))) &&
           (await fetch(`${BASE}/w/${workspaceId}/${myPrivate}`, { headers: authed })).status === 200)
 
       // ② 이동 피커 — 개인 → 워크스페이스 최상위 → 개인
@@ -2154,9 +2163,9 @@ async function main() {
       await waitFor(`!!document.querySelector('[data-testid="move-to-private"]')`, 5000)
       await clickOnSel('[data-testid="move-to-private"]')
       await confirmMoveIfAsked()
-      check('★ 다시 개인 페이지로 — 동료는 곧바로 못 보고 섹션이 돌아온다',
+      check('★ 다시 개인 페이지로 — 동료는 곧바로 못 보고(접근 요청 화면) 섹션이 돌아온다',
         await waitFor(`!!document.querySelector('[data-testid="sidebar-private"] a[href="/w/${workspaceId}/${myPrivate}"]')`, 15000) &&
-          (await pageAs(privateMate, `/w/${workspaceId}/${myPrivate}`)).status === 404)
+          (await shownNoAccess(await pageAs(privateMate, `/w/${workspaceId}/${myPrivate}`))))
 
       // ③ 공유됨 — 동료의 개인 페이지 하나를 따로 공유받는다
       const matePage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
@@ -2289,13 +2298,13 @@ async function main() {
       const found = await (await fetch(`${BASE}/api/workspaces/${workspaceId}/search?q=${encodeURIComponent(marker)}`, { headers: authed })).json()
       check('검색으로는 찾힌다 — 읽을 수 있는 곳이 됐다', found.results?.some((r) => r.pageId === openPage) ?? false,
         JSON.stringify(found.results?.map((r) => r.pageId) ?? found))
-      check('게스트는 못 연다 (404) — workspace_everyone 에 들지 않는다',
-        (await pageAs(openGuest, `/w/${workspaceId}/${openPage}`)).status === 404)
+      check('게스트는 못 연다 (접근 요청 화면) — workspace_everyone 에 들지 않는다',
+        await shownNoAccess(await pageAs(openGuest, `/w/${workspaceId}/${openPage}`)))
 
       // ② 좁히면 참여 안 한 사람이 잃는다
       const narrow = await fetch(`${tsUrl}/${openTeam}`, { method: 'PATCH', headers: mateHeaders, body: JSON.stringify({ visibility: 'closed' }) })
-      check('★ closed 로 좁히면 참여하지 않은 나는 못 연다 (404)',
-        narrow.ok && (await fetch(`${BASE}/w/${workspaceId}/${openPage}`, { headers: authed })).status === 404, String(narrow.status))
+      check('★ closed 로 좁히면 참여하지 않은 나는 못 연다 (접근 요청 화면)',
+        narrow.ok && (await shownNoAccess(await fetch(`${BASE}/w/${workspaceId}/${openPage}`, { headers: authed }))), String(narrow.status))
       const reopen = await fetch(`${tsUrl}/${openTeam}`, { method: 'PATCH', headers: mateHeaders, body: JSON.stringify({ visibility: 'open' }) })
       check('다시 열면 다시 연다',
         reopen.ok && (await fetch(`${BASE}/w/${workspaceId}/${openPage}`, { headers: authed })).status === 200)
@@ -2350,8 +2359,8 @@ async function main() {
       // 유일한 소유자가 워크스페이스를 떠난다 — 그 명령은 아직 없어 행으로 만든다(DB 검사 ⑮ 와 같다).
       const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
       await dbQuery(`UPDATE workspace_member SET status = 'removed' WHERE workspace_id = $1 AND user_id = $2`, [workspaceId, orphanMaker.userId])
-      check('전제 — 비공개 고아 teamspace 의 페이지를 워크스페이스 owner 도 못 연다',
-        (await fetch(`${BASE}/w/${workspaceId}/${orphanPage}`, { headers: authed })).status === 404)
+      check('전제 — 비공개 고아 teamspace 의 페이지를 워크스페이스 owner 도 못 연다 (접근 요청 화면)',
+        await shownNoAccess(await fetch(`${BASE}/w/${workspaceId}/${orphanPage}`, { headers: authed })))
 
       await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/teamspaces` })
       const adminRow = `[data-testid="teamspace-admin-row"][data-teamspace-id="${orphanTeam}"]`
@@ -2409,8 +2418,8 @@ async function main() {
       })).json()).page.id
       const staffName = `기본 전 직원 ${stamp}`
       const staff = await joinAs(workspaceId, await createUser(staffName), 'member')
-      check('전제 — 켜기 전에는 closed 라 멤버가 아닌 직원이 그 페이지를 못 연다 (404)',
-        (await fetch(`${BASE}/w/${workspaceId}/${teamPage}`, { headers: cookieOf(staff) })).status === 404)
+      check('전제 — 켜기 전에는 closed 라 멤버가 아닌 직원이 그 페이지를 못 연다 (접근 요청 화면)',
+        await shownNoAccess(await fetch(`${BASE}/w/${workspaceId}/${teamPage}`, { headers: cookieOf(staff) })))
 
       // ① 문 — 워크스페이스 owner 가 아닌 teamspace owner 는 켜지 못하고, 버튼도 받지 않는다
       const lead = await joinAs(workspaceId, await createUser('기본 못 켜는 팀장'), 'member')
@@ -2613,7 +2622,7 @@ async function main() {
       await clickSelector('[data-testid="move-preview-confirm"]')
       check('★ 확인하면 옮긴다 — 동료는 못 보고 · 하위의 손님은 미리보기가 말한 대로 여전히 본다',
         (await waitFor(`!document.querySelector('[data-testid="move-picker"]')`, 15000))
-          && (await fetch(`${BASE}/w/${workspaceId}/${doc}`, { headers: cookieOf(mate) })).status === 404
+          && (await shownNoAccess(await fetch(`${BASE}/w/${workspaceId}/${doc}`, { headers: cookieOf(mate) })))
           && (await fetch(`${BASE}/w/${workspaceId}/${child}`, { headers: cookieOf(outsider) })).status === 200)
 
       // 볼 수 있는 사람이 그대로인 이동은 묻지 않는다 — 워크스페이스 최상위의 한 페이지를 다른 최상위 페이지 밑으로.
@@ -2744,8 +2753,9 @@ async function main() {
         userId: outsider.userId, authMethod: 'login_code', mfaSatisfied: false, ip: null, userAgent: 'e2e',
       }))
       const asGuest = (path) => fetch(`${BASE}${path}`, { headers: { cookie: `nc_session=${guestSession.token}` } })
-      check('★ 게스트는 그 페이지를 열고 · 공유받지 않은 페이지는 못 연다',
-        (await asGuest(`/w/${workspaceId}/${doc}`)).status === 200 && (await asGuest(`/w/${workspaceId}/${other}`)).status === 404)
+      check('★ 게스트는 그 페이지를 열고 · 공유받지 않은 페이지는 못 연다(접근 요청 화면 · 제목 없이)',
+        (await asGuest(`/w/${workspaceId}/${doc}`)).status === 200
+          && (await shownNoAccess(await asGuest(`/w/${workspaceId}/${other}`), `손님은 못 볼 문서 ${stamp}`)))
 
       // 이미 멤버인 사람은 멤버로 공유된다 · 계정이 없으면 가입하라고 말한다
       const memberName = `이메일로 받는 동료 ${stamp}`
@@ -2892,6 +2902,130 @@ async function main() {
       check('멤버에게는 게스트 절이 없고 목록 API 는 403 이다',
         !mateHome.includes('data-testid="workspace-guests"') && mateList.status === 403, String(mateList.status))
       // 올리기 · 빼기의 refresh 가 끝나기 전에 다음 절이 화면을 옮기지 않게 한다(§6).
+      await sleep(1500)
+    }
+
+    if (sectionIf('접근 요청 (7e-1 · F-06-15)')) {
+      // 동료가(브라우저 세션을 동료로 바꾼다) 볼 수 없는 페이지를 열어 요청하고 → 소유자가 인박스의 그 줄을 눌러 공유 패널에서
+      // 허락한다. 둘째 페이지는 무시한다 — 요청한 사람에게는 여전히 "요청했습니다"다. 자기 데이터를 스스로 만든다 — E2E_ONLY 로
+      // 홀로 돈다. 브라우저 세션은 끝에 반드시 소유자로 되돌린다(뒤 절이 소유자로 돈다).
+      const stamp = Date.now()
+      const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
+      const askerName = `요청하는 동료 ${stamp}`
+      const asker = await joinAs(workspaceId, await createUser(askerName), 'member')
+      const asAsker = { ...json, cookie: `nc_session=${asker.token}` }
+      const makePrivate = async (title) =>
+        (await (await fetch(pagesUrl, { method: 'POST', headers: authed, body: JSON.stringify({ title, privateTop: true }) })).json()).page.id
+      const secretTitle = `요청받을 문서 ${stamp}`
+      const quietTitle = `무시할 문서 ${stamp}`
+      const secret = await makePrivate(secretTitle)
+      const quiet = await makePrivate(quietTitle)
+      const browseAs = (token) => send('Network.setCookie', { name: 'nc_session', value: token, domain: 'localhost', path: '/', httpOnly: true })
+      const REQ_ROW = '[data-testid="access-requests"] [data-testid="access-request-row"]'
+      const noticeSays = (text) =>
+        waitFor(`(document.querySelector('[role="dialog"][aria-label="공유 설정"] [role="status"]')?.textContent ?? '').includes(${JSON.stringify(text)})`, 10000)
+      const clickUntilGone = async (button, row) => {
+        for (let i = 0; i < 10; i += 1) {
+          await clickSelector(button)
+          if (await waitFor(`!document.querySelector('${row}')`, 1500)) return true
+        }
+        return false
+      }
+
+      try {
+        // ① 요청하는 쪽
+        await browseAs(asker.token)
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${secret}` })
+        check('★ 볼 수 없는 페이지를 열면 "권한이 없습니다"와 요청 버튼 — 제목은 없다',
+          (await waitFor(`!!document.querySelector('[data-testid="access-request"]')`, 15000))
+            && !(await evaluate(`document.body.innerText.includes(${JSON.stringify(secretTitle)})`)),
+          await evaluate(`document.body.innerText.slice(0, 200)`))
+        // 서버 렌더 뒤 React 가 붙기 전의 클릭은 사라진다(§6) — "요청했습니다"가 뜰 때까지 다시 누른다(두 번 가도 요청은 하나다).
+        let sent = false
+        for (let i = 0; i < 10 && !sent; i += 1) {
+          await clickSelector('[data-testid="access-request"]')
+          sent = await waitFor(`!!document.querySelector('[data-testid="access-requested"]')`, 800)
+        }
+        check('★ 누르면 "요청했습니다"로 바뀐다', sent)
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${secret}` })
+        check('다시 열어도 "요청했습니다"다 — 버튼이 없다',
+          (await waitFor(`!!document.querySelector('[data-testid="access-requested"]')`, 15000))
+            && !(await evaluate(`!!document.querySelector('[data-testid="access-request"]')`)))
+        const again = await fetch(`${pagesUrl}/${secret}/access-requests`, { method: 'POST', headers: asAsker })
+        check('다시 보내도 새 요청이 아니다 (sent: false)', again.ok && (await again.json()).sent === false, String(again.status))
+
+        // ② 허락하는 쪽 — 인박스의 줄을 누르면 공유 패널이 열린 채로 온다
+        await browseAs(session)
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/inbox` })
+        const inboxLine = `([...document.querySelectorAll('ul[aria-label="알림 목록"] li')].find((li) => li.textContent.includes(${JSON.stringify(secretTitle)}))?.textContent ?? '')`
+        check('★ 소유자의 인박스에 "접근 요청" 줄 — 누가 요청했는지와 함께',
+          await waitFor(`${inboxLine}.includes('접근 요청') && ${inboxLine}.includes(${JSON.stringify(`${askerName} 님이 접근을 요청했습니다`)})`, 15000),
+          await evaluate(inboxLine))
+        await clickSelector(`ul[aria-label="알림 목록"] a[href="/w/${workspaceId}/${secret}?share=1"]`)
+        check('★ 그 줄을 누르면 공유 패널이 열린 채로 페이지가 열리고 요청 줄이 선다 · 줄 권한은 읽기부터',
+          (await waitFor(`!!document.querySelector('${REQ_ROW}')`, 15000))
+            && (await evaluate(`(document.querySelector('${REQ_ROW}')?.textContent ?? '').includes(${JSON.stringify(askerName)})
+              && document.querySelector('${REQ_ROW} [data-testid="access-request-level"]')?.value === 'view'`)),
+          await evaluate(`location.href`))
+
+        let chose = false
+        for (let i = 0; i < 10 && !chose; i += 1) {
+          await evaluate(`(() => {
+            const s = document.querySelector('${REQ_ROW} [data-testid="access-request-level"]')
+            if (!s) return
+            Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(s, 'edit')
+            s.dispatchEvent(new Event('change', { bubbles: true }))
+          })()`)
+          chose = await waitFor(`document.querySelector('${REQ_ROW} [data-testid="access-request-level"]')?.value === 'edit'`, 500)
+        }
+        // 막 열린 페이지는 편집기가 붙으며 자리가 움직여 클릭이 빗나갈 수 있다 — 줄이 사라질 때까지 다시 누른다. 요청이 가는 동안
+        // 버튼은 비활성이라(busy) 두 번 허락하지 않는다.
+        await clickUntilGone(`${REQ_ROW} [data-testid="access-request-approve"]`, REQ_ROW)
+        check('★ 편집으로 허락하면 요청 줄이 사라지고 · 준 권한을 말하고 · 공유 목록에 그 사람이 선다',
+          chose && (await noticeSays(`${askerName} 님에게 편집 권한을 줬습니다`))
+            && !(await evaluate(`!!document.querySelector('${REQ_ROW}')`))
+            && (await waitFor(`[...document.querySelectorAll('[role="dialog"][aria-label="공유 설정"] li')].some((li) => li.textContent.includes(${JSON.stringify(askerName)}) && li.querySelector('select')?.value === 'edit')`, 10000)),
+          `골랐나 ${chose} · ${await evaluate(`document.querySelector('[role="dialog"][aria-label="공유 설정"]')?.textContent?.slice(0, 300) ?? '(패널 없음)'`)}`)
+
+        const opened = await fetch(`${BASE}/w/${workspaceId}/${secret}`, { headers: asAsker })
+        check('★ 요청한 사람이 이제 그 페이지를 연다 — 제목과 함께',
+          opened.status === 200 && (await opened.text()).includes(secretTitle), String(opened.status))
+        const askerInbox = await (await fetch(`${BASE}/api/workspaces/${workspaceId}/inbox`, { headers: asAsker })).json()
+        check('요청한 사람의 인박스에 "접근 허락"이 온다',
+          (askerInbox.items ?? []).some((i) => i.pageId === secret && i.kind === 'access_granted'), JSON.stringify(askerInbox.items?.map((i) => i.kind)))
+        const ownerInbox = await (await fetch(`${BASE}/api/workspaces/${workspaceId}/inbox`, { headers: authed })).json()
+        check('소유자의 인박스 줄은 요청의 지금 상태(허락됨)를 읽는다',
+          (ownerInbox.items ?? []).some((i) => i.pageId === secret && i.kind === 'access_requested' && i.access?.status === 'approved'))
+
+        // ③ 무시 — 요청한 사람에게 알리지 않는다
+        const quietAsk = await fetch(`${pagesUrl}/${quiet}/access-requests`, { method: 'POST', headers: asAsker })
+        check('전제 — 둘째 페이지를 요청한다', quietAsk.ok && (await quietAsk.json()).sent === true, String(quietAsk.status))
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${quiet}?share=1` })
+        await waitFor(`!!document.querySelector('${REQ_ROW}')`, 15000)
+        await clickUntilGone(`${REQ_ROW} [data-testid="access-request-ignore"]`, REQ_ROW)
+        check('★ 무시하면 요청 줄이 사라지고 · 요청한 사람에게 알리지 않는다고 말한다',
+          (await noticeSays('알리지 않습니다')) && !(await evaluate(`!!document.querySelector('${REQ_ROW}')`)),
+          await evaluate(`document.querySelector('[role="dialog"][aria-label="공유 설정"]')?.textContent?.slice(0, 300) ?? '(패널 없음)'`))
+        const quietHtml = await (await fetch(`${BASE}/w/${workspaceId}/${quiet}`, { headers: asAsker })).text()
+        const quietAgain = await fetch(`${pagesUrl}/${quiet}/access-requests`, { method: 'POST', headers: asAsker })
+        const askerInboxAfter = await (await fetch(`${BASE}/api/workspaces/${workspaceId}/inbox`, { headers: asAsker })).json()
+        check('★ 요청한 사람에게는 여전히 "요청했습니다"다 — 다시 보내도 새 요청이 아니고 · 인박스에 아무것도 없다',
+          quietHtml.includes('data-testid="access-requested"') && !quietHtml.includes('data-testid="access-request"')
+            && quietAgain.ok && (await quietAgain.json()).sent === false
+            && !(askerInboxAfter.items ?? []).some((i) => i.pageId === quiet))
+      } finally {
+        await browseAs(session)
+        // 소유자의 인박스에 남긴 요청 알림을 보관한다 — 뒤의 인박스 절은 안 읽은 알림 수를 센다(전체 판에서 배지가 1 이 아니라
+        // 3 이 되어 떨어졌다). 절은 자기가 만든 것을 치운다.
+        const mine = await (await fetch(`${BASE}/api/workspaces/${workspaceId}/inbox`, { headers: authed })).json()
+        const ids = (mine.items ?? []).filter((i) => i.pageId === secret || i.pageId === quiet).flatMap((i) => i.notificationIds)
+        if (ids.length > 0) {
+          await fetch(`${BASE}/api/workspaces/${workspaceId}/inbox`, {
+            method: 'PATCH', headers: authed, body: JSON.stringify({ ids, read: true, archived: true }),
+          })
+        }
+      }
+      // 허락 · 무시의 refresh 가 끝나기 전에 다음 절이 화면을 옮기지 않게 한다(§6).
       await sleep(1500)
     }
 

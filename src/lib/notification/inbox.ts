@@ -35,6 +35,7 @@ import { plainTitleOf } from '../block/page.ts'
 import { toPlainText, type RichTextRun } from '../contracts/rich-text.ts'
 import { withReadTransaction, withTransaction, type Tx } from '../db/tx.ts'
 import { readableScopes } from '../permissions/effective.ts'
+import { canListMembers } from '../workspace/list.ts'
 import { readEvents } from './activity.ts'
 import type { NotificationKind } from './fanout.ts'
 
@@ -64,6 +65,11 @@ export type InboxItem = {
   /** 지금 글. 지워졌거나 찾을 수 없으면 null(머리말). */
   readonly preview: string | null
   readonly deleted: boolean
+  /**
+   * 접근 요청(7e-1 · `access_requested`)의 **지금** 상태 — 마지막 요청의 요청한 사람 · 상태. 이름은 멤버 목록을 받을 수 있는
+   * 역할일 때만(정본 §3.8 [보강] 접근 요청의 알림 ③). 다른 알림은 null.
+   */
+  readonly access: { readonly requesterName: string | null; readonly status: string } | null
 }
 
 type GroupRow = {
@@ -132,6 +138,14 @@ export async function listInbox(ctx: SessionContext, options: ListInboxOptions =
       .filter((id): id is string => typeof id === 'string')
     const blocks = await readBlockTexts(tx, ctx, blockIds)
     const titles = await readTitles(tx, ctx, groups.map((g) => g.page_id))
+    const requests = await readAccessRequests(
+      tx,
+      ctx,
+      groups
+        .filter((g) => g.kind === 'access_requested' && g.latest_event !== null)
+        .map((g) => events.get(g.latest_event as string)?.payload.request_id)
+        .filter((id): id is string => typeof id === 'string'),
+    )
 
     return groups.map((g): InboxItem => {
       const event = g.latest_event === null ? undefined : events.get(g.latest_event)
@@ -139,6 +153,7 @@ export async function listInbox(ctx: SessionContext, options: ListInboxOptions =
       const comment = commentId === null ? undefined : comments.get(commentId)
       const blockId = typeof event?.payload.block_id === 'string' ? event.payload.block_id : null
       const blockText = commentId === null && blockId !== null ? (blocks.get(blockId) ?? null) : null
+      const requestId = g.kind === 'access_requested' && typeof event?.payload.request_id === 'string' ? event.payload.request_id : null
       return {
         groupKey: g.group_key,
         kind: g.kind as NotificationKind,
@@ -159,9 +174,28 @@ export async function listInbox(ctx: SessionContext, options: ListInboxOptions =
               ? null
               : blockText.slice(0, MAX_PREVIEW),
         deleted: comment?.deleted ?? false,
+        access: requestId === null ? null : (requests.get(requestId) ?? null),
       }
     })
   })
+}
+
+/** 접근 요청의 지금 상태(N3 — 알림은 요청을 복제하지 않는다). 이름은 멤버 목록을 받을 수 있는 역할에게만. */
+async function readAccessRequests(
+  tx: Tx,
+  ctx: SessionContext,
+  ids: readonly string[],
+): Promise<Map<string, { requesterName: string | null; status: string }>> {
+  if (ids.length === 0) return new Map()
+  const rows = await tx.query<{ id: string; status: string; name: string | null }>(
+    `SELECT r.id, r.status, u.name
+       FROM access_request r
+       LEFT JOIN "user" u ON u.id = r.requester_id
+      WHERE r.id = ANY($1::uuid[]) AND r.workspace_id = $2`,
+    [[...new Set(ids)], ctx.workspaceId],
+  )
+  const named = canListMembers(ctx.role)
+  return new Map(rows.map((r) => [r.id, { requesterName: named ? r.name : null, status: r.status }]))
 }
 
 async function readComments(tx: Tx, ids: readonly string[]): Promise<Map<string, { text: string; deleted: boolean }>> {

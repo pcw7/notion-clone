@@ -27,6 +27,7 @@ import {
   type AclFailure,
   type PrincipalRef,
 } from '@/lib/permissions/acl'
+import { listAccessRequests } from '@/lib/permissions/access-request'
 import { effectiveCaps } from '@/lib/permissions/effective'
 import { can, LEVELS, type Level } from '@/lib/permissions/levels'
 import { canListMembers, listMembers, onlyPeople } from '@/lib/workspace/list'
@@ -112,16 +113,29 @@ export async function GET(_request: Request, ctx: Ctx): Promise<Response> {
   // teamspace 이름 — 이 페이지의 행이 가리키는 것만(7c-1). 행을 볼 수 있는 사람은 그 주체가 있다는 것을 이미 안다.
   const teamspaceIds = [...new Set(access.value.filter((e) => e.principalType === 'teamspace').map((e) => e.principalId as string))]
   const teamspaces = await teamspaceNames(session.ctx, teamspaceIds)
+  // 접근 요청(7e-1) — 공유할 수 있는 사람에게만. 게스트 여부를 함께 준다(화면이 허락할 레벨을 고른다 · 서버가 다시 거른다).
+  const canManage = can(caps, 'manage_perm')
+  const requests = canManage ? await listAccessRequests(session.ctx, pageId) : null
 
   return Response.json({
     ok: true,
-    canManage: can(caps, 'manage_perm'),
+    canManage,
     entries: access.value,
     members: members
       .filter((m) => m.status !== 'removed')
       .map((m) => ({ userId: m.userId, name: m.name, email: m.email, guest: m.role === 'guest' })),
     groups: groups.ok ? groups.value.map((g) => ({ groupId: g.id, name: g.name, memberCount: g.memberCount })) : [],
     teamspaces,
+    requests: requests?.ok
+      ? requests.value.map((r) => ({
+          id: r.id,
+          requesterId: r.requesterId,
+          name: r.name,
+          email: r.email,
+          guest: r.guest,
+          createdAt: r.createdAt.toISOString(),
+        }))
+      : [],
   })
 }
 

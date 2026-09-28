@@ -36,7 +36,7 @@ import type { Tx } from '../db/tx.ts'
 import { recordActivity } from './activity.ts'
 import { subscribersOf } from './subscription.ts'
 
-/** 정본 §3.8 `notification.kind` 의 목록. 0020 의 CHECK 과 같다. */
+/** 정본 §3.8 `notification.kind` 의 목록. 0020 · 0033 의 CHECK 과 같다(`notification.db.test.ts` 가 대조한다). */
 export const NOTIFICATION_KINDS = [
   'mention',
   'comment',
@@ -46,6 +46,9 @@ export const NOTIFICATION_KINDS = [
   'reminder',
   'person_property_assigned',
   'suggestion',
+  // 접근 요청(7e-1) — 관리자에게 온 요청 · 요청한 사람에게 온 허락.
+  'access_requested',
+  'access_granted',
 ] as const
 export type NotificationKind = (typeof NOTIFICATION_KINDS)[number]
 
@@ -159,4 +162,69 @@ export async function notifyMentions(tx: Tx, ctx: SessionContext, event: Mention
     )
   }
   return recipients.length
+}
+
+// ── 접근 요청 (7e-1 · F-06-15) ─────────────────────────────────────────
+
+/** 한 페이지에 온 접근 요청들을 조회 시점에 한 줄로 접는 열쇠 — 관리자의 인박스. */
+export const accessRequestGroupKey = (pageId: string): string => `access_request:${pageId}`
+/** 요청한 사람에게 온 허락의 열쇠. */
+export const accessGrantedGroupKey = (pageId: string): string => `access_granted:${pageId}`
+
+export type AccessRequestEvent = {
+  readonly pageId: string
+  readonly requestId: string
+  /** 알림을 받을 관리자들 — 고르는 곳은 `permissions/access-request.ts` 다(정본 §3.3 [보강] 접근 요청 ⑤). */
+  readonly recipients: readonly string[]
+}
+
+/**
+ * 접근 요청이 왔다 — 관리자들의 인박스로. 요청과 같은 트랜잭션에서.
+ *
+ * **구독과 무관하다**(정본 §3.8 [보강] 접근 요청의 알림 ①) — 요청은 페이지의 변경이 아니라 그 사람들에게 온 일이다. 뮤트한
+ * 페이지의 요청도 간다. 요청한 사람 자신은 받지 않는다(관리자가 스스로 요청할 일은 없지만 명령이 막는 것과 별개로 빼 둔다).
+ *
+ * @returns 만든 알림 수. 받을 사람이 없어도 이벤트는 남는다.
+ */
+export async function notifyAccessRequested(tx: Tx, ctx: SessionContext, event: AccessRequestEvent): Promise<number> {
+  const activity = await recordActivity(tx, ctx, {
+    pageId: event.pageId,
+    type: 'access.requested',
+    payload: { request_id: event.requestId },
+  })
+  const recipients = [...new Set(event.recipients)].filter((id) => id !== ctx.userId)
+  await insertNotifications(tx, ctx, event.pageId, activity.id, 'access_requested', accessRequestGroupKey(event.pageId), recipients)
+  return recipients.length
+}
+
+/** 요청이 허락됐다 — 요청한 사람의 인박스로. 허락과 같은 트랜잭션에서. 무시에는 알림이 없다(요청한 사람에게 알리지 않는다). */
+export async function notifyAccessGranted(
+  tx: Tx,
+  ctx: SessionContext,
+  event: { readonly pageId: string; readonly requestId: string; readonly requesterId: string },
+): Promise<void> {
+  const activity = await recordActivity(tx, ctx, {
+    pageId: event.pageId,
+    type: 'access.granted',
+    payload: { request_id: event.requestId },
+  })
+  await insertNotifications(tx, ctx, event.pageId, activity.id, 'access_granted', accessGrantedGroupKey(event.pageId), [event.requesterId])
+}
+
+async function insertNotifications(
+  tx: Tx,
+  ctx: SessionContext,
+  pageId: string,
+  eventId: string,
+  kind: NotificationKind,
+  groupKey: string,
+  recipients: readonly string[],
+): Promise<void> {
+  for (const userId of recipients) {
+    await tx.query(
+      `INSERT INTO notification (id, recipient_id, workspace_id, page_id, event_ids, kind, group_key, created_at)
+       VALUES ($1, $2, $3, $4, ARRAY[$5::uuid], $6, $7, now())`,
+      [randomUUID(), userId, ctx.workspaceId, pageId, eventId, kind, groupKey],
+    )
+  }
 }

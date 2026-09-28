@@ -489,6 +489,7 @@ CREATE TABLE access_request (
   decided_by uuid NULL, decided_at timestamptz NULL, created_at timestamptz NOT NULL
 );
 -- 불변식: pending 은 만료되지 않는다(1차 출처는 accept/ignore 2택만 서술).
+-- 대기 중인 요청은 (node_id, requester_id, kind)마다 하나 · 페이지 요청은 node_id · requester_id 가 있다 [보강 7e-1 / 0033]
 ```
 
 **[정정] `"group"` 의 `UNIQUE (workspace_id, lower(name))` → 살아있는 그룹에만 거는 부분 UNIQUE** ⟨Teamspace · 게스트 · 그룹 7a / 마이그레이션 0027⟩
@@ -715,6 +716,52 @@ CREATE TABLE access_request (
 > 풀고, 관리할 사람이 남지 않는 노드가 생기면 거부한다). 거두지 않으면 M1 의 멤버십 행이 남아 있으므로 **다시 초대받는 순간 옛
 > 페이지들이 한꺼번에 돌아온다** — 빼기는 "모든 공유를 걷는다"로 읽혀야 한다. 멤버 제거는 이 명령이 아니다(teamspace 의 마지막
 > owner 를 물어야 한다 — §3.11 [보강] 고아 teamspace).
+
+**[보강] 접근 요청의 길 — 볼 수 없는 페이지에서, 공유할 수 있는 사람에게** ⟨Teamspace · 게스트 · 그룹 7e-1 / 마이그레이션 0033⟩
+
+> 초판은 표와 상태 넷만 두었다. 06 F-06-15: *"권한 없는 사용자가 페이지 URL 을 연다 → `No access` 화면 → 요청 전송 → 페이지의
+> creator/editor 가 Inbox 에서 승인/거부"*.
+>
+> ① **7e-1 은 `page_access` 하나다** — 이 워크스페이스의 사람(멤버 · 게스트 — 세션을 받는 사람)이 볼 수 없는 **살아 있는 페이지**의
+> 주소를 열면 "접근 권한이 없습니다"와 요청 버튼을 본다. 워크스페이스 밖의 사람(가입했지만 멤버가 아닌 사람)의 요청은 게스트의
+> 대기 초대와 함께 뒤의 조각이다(그때 `security_policy.allow_nonmember_page_access_request` 를 건다). 편집 권한 요청
+> (`edit_access`)도 뒤의 조각이다.
+>
+> ② **그 화면은 페이지가 있다는 것을 알려 준다 — 제목은 아니다.** 02 F-02-03 *"접근 권한 없는 페이지는 존재도 노출 금지"* 를
+> 06 F-06-15 가 좁힌다(1차 출처: *"If you open a page that you don't have access to, you can select `No access` on the page to
+> send a request"*). 좁히는 범위: 이 워크스페이스의 사람에게만(세션이 0단계를 지났다), 그 주소를 가진 사람에게만이다(id 는 추측할
+> 수 없는 uuid). 다른 워크스페이스의 페이지 · 휴지통의 페이지 · 없는 id · **보관된 teamspace 의 페이지**(아무도 못 보고 되살릴
+> 사람만 존재를 본다 — `teamspace.archived_at` [보강] · 허락할 사람도 없다)는 여전히 404 이고, **API 는 그대로다** — 볼 수 없는
+> 페이지의 공유 · 이동 · 휴지통 요청은 여전히 없는 페이지와 같은 답(`not_found`)을 받는다. 페이지 화면 하나만 요청을 받는다.
+> 06 엣지 *"요청 UI 자체 미노출 + 권한 없음만 표시(존재 여부 노출 최소화)"* 는 정책이 요청을 끈 경우의 말이다 — 그 정책은
+> `security_policy` 가 생길 때 건다.
+>
+> ③ **대기 중인 요청은 (페이지, 사람, 종류)마다 하나** — 다시 눌러도 새 행 · 새 알림이 없다(부분 UNIQUE · 동시에 눌러도 같다).
+> **무시(`ignored`)는 요청한 사람에게 알리지 않는다**(06 *"accept or ignore"* — 무시가 정식 결말이다). 무시된 뒤 **하루** 동안은
+> 요청한 사람에게 "보냈습니다"로 보이고 새 요청을 받지 않는다 — 06 엣지의 *"쿨다운"*(스팸 억제)과 무시를 드러내지 않는 것이 같은
+> 규칙이다. 하루가 지나면 다시 보낼 수 있다. `denied` 는 쓰지 않는다.
+>
+> ④ **승인할 수 있는 사람 = 그 페이지를 공유할 수 있는 사람**(`manage_perm` — 공유 설정의 게이트 그대로 · 볼 수 없으면 없는
+> 요청과 같다). 06 은 *"creator/editor"* 라 적고 엣지에서 *"creator 단일 지정은 취약 → 가장 가까운 full access 보유자"* 라 했다 —
+> 판정은 공유 권한 하나로 하고, **알림을 받는 사람**만 좁힌다(⑤).
+>
+> ⑤ **알림은 이름이 걸린 관리자에게** — 사슬(절단까지 · teamspace 노드 포함)에서 **사람에게 직접** 공유를 품은 레벨을 준 행의 그
+> 사람들과 페이지를 만든 사람 중, 지금 그 페이지를 공유할 수 있는 사람. 아무도 없으면 워크스페이스 owner 중 공유할 수 있는
+> 사람. 그룹 · teamspace 멤버 전원 · `workspace_everyone` 으로 공유 권한을 받은 사람들 전원에게는 보내지 않는다 — 그러면 워크스페이스
+> 최상위 페이지(모두가 전체 권한)에 온 요청 하나가 멤버 전원의 인박스로 간다. 알림을 받지 못한 공유 가능자도 공유 패널에서 요청을
+> 보고 처리한다.
+>
+> ⑥ **승인은 공유 설정의 부여를 거친다**(`grantAccessIn`) — 게스트의 레벨 상한(편집까지) · 사용자 주체 규칙(떠난 사람에게 주지
+> 않는다)이 같은 한 곳에서 걸린다. 레벨은 승인하는 사람이 고른다(요청한 사람은 고르지 않는다 — `page_access` 의 `requested_level`
+> 은 NULL). **승인은 권한을 낮추지 않는다** — 그 사람에게 이 페이지에 직접 준 행이 이미 고른 레벨을 품으면(capability 부분집합
+> — 정수 비교가 아니다 · A2) 쓰지 않는다. 요청 행을 잠그므로 두 사람이 동시에 처리하면 나중 사람은 "이미 처리됨"을 받는다.
+>
+> ⑦ **이미 볼 수 있게 된 사람의 요청은 목록에 세우지 않는다** — 06 엣지는 다른 길로 권한이 생기면 *"자동 close(`superseded`)"*
+> 라 했지만 상태를 늘리지 않는다: 목록이 읽을 때 거른다(판정과 같은 규칙 — `resolveCaps` 를 그 사람들로 돌린다). 다시 못 보게
+> 되면 그 요청이 다시 선다. 요청한 사람이 워크스페이스를 떠나도 세우지 않는다(허락하면 ⑥ 이 거부한다).
+>
+> ⑧ 페이지가 지워지면(물리 삭제) 요청도 간다(`ON DELETE CASCADE` — 06 엣지 *"삭제 시 요청 자동 취소"*). 휴지통의 페이지는 없는
+> 페이지와 같다 — 요청도 승인도 없고, 복원하면 대기 중이던 요청이 돌아온다.
 
 ---
 
@@ -1422,7 +1469,8 @@ CREATE TABLE activity_event (                  -- 알림·피드·웹훅의 단�
   block_id uuid NULL, actor_id uuid NULL,      -- <17> 익명/시스템 허용
   type text NOT NULL,                          -- 'block.updated'|'property.updated'|'comment.created'
                                                -- |'user.mentioned'|'page.created'|'page.moved'|'page.trashed'
-                                               -- |'suggestion.created'|'suggestion.accepted'|...
+                                               -- |'suggestion.created'|'suggestion.accepted'
+                                               -- |'access.requested'|'access.granted' [보강 7e-1]|...
   payload jsonb NOT NULL, created_at timestamptz NOT NULL
 ) PARTITION BY RANGE (created_at);             -- <17> (workspace_id, occurred_at) 파티션 요구
 CREATE INDEX ON activity_event (page_id, created_at DESC);
@@ -1448,6 +1496,7 @@ CREATE TABLE notification (
   event_ids uuid[] NOT NULL,                   -- 묶인 activity_event 들
   kind text NOT NULL,                          -- 'mention'|'comment'|'comment_reply'|'page_update'
                                                -- |'invite'|'reminder'|'person_property_assigned'|'suggestion'
+                                               -- |'access_requested'|'access_granted' [보강 7e-1]
   group_key text NOT NULL,                     -- 조회 시점 병합 키
   read_at timestamptz NULL, archived_at timestamptz NULL,   -- 반드시 별도 컬럼(인박스 필터 4종)
   created_at timestamptz NOT NULL
@@ -1513,6 +1562,21 @@ CREATE INDEX ON reminder (target_at) WHERE fired_at IS NULL;
 >
 > ③(활성 뷰어 억제)은 presence(F-05-03)가 없어 **아직 없다.** 순서는 그대로 지킨다 —
 > presence 가 생기면 ② 다음에 들어간다.
+
+**[보강] 접근 요청의 알림 — `access_requested` · `access_granted`** ⟨Teamspace · 게스트 · 그룹 7e-1 / 마이그레이션 0033⟩
+
+> 06 F-06-15 의 데이터 모델 함의(*"`notification(type='access_requested'|'access_granted', …)`"*)를 받아 `notification.kind` 에 둘,
+> 그것이 가리키는 `activity_event.type` 에 둘(`access.requested` · `access.granted`)을 더했다. payload 는 요청 id 만 담는다.
+>
+> ① 요청은 §3.3 [보강] 접근 요청 ⑤ 의 관리자들에게 간다 — 대상자 산출(파이프라인 ①)의 "직접 트리거"다. 구독(`subscription`)과
+> 무관하다(뮤트한 페이지의 요청도 간다 — 요청은 페이지의 변경이 아니라 그 사람에게 온 일이다). 묶음 열쇠는 `access_request:{page}`
+> — 한 페이지에 온 요청 여럿이 한 줄로 접힌다.
+>
+> ② 허락은 요청한 사람에게 `access_granted:{page}` 로 간다. **무시는 알림이 없다**(§3.3 [보강] 접근 요청 ③).
+>
+> ③ 인박스의 ②(권한 재검사)는 그대로다 — 페이지를 볼 수 있어야 보인다. 허락 알림은 허락된 뒤라 보이고, 관리자의 알림은 공유할
+> 수 있는 사람이라 보인다(공유 권한을 잃어도 볼 수 있으면 남는다 — 처리하려 하면 게이트가 거부한다). 줄에 서는 요청한 사람의
+> 이름 · 요청의 지금 상태는 **지금 행**에서 읽는다(N3). 이름은 받는 사람이 멤버 목록을 받을 수 있는 역할일 때만(§3.3 게스트 ⑦).
 
 **배달 파이프라인 (3단 필터, 순서 고정)**
 `activity_event` → ① 대상자 산출(`subscription.level` + 직접 트리거) → ② **배달 시점 권한 재검사** → ③ presence 조회로 활성 뷰어 억제 → `notification_delivery` 스케줄.

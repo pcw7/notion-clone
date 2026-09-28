@@ -24,6 +24,7 @@ import { loadMentionLabels, mentionIdsOf } from '@/lib/block/mention-candidates'
 import { readBodyYDoc } from '@/lib/collab/ydoc'
 import { withReadTransaction } from '@/lib/db/tx'
 import { isFavorite, recordVisit } from '@/lib/nav/recent'
+import { noAccessState } from '@/lib/permissions/access-request'
 import { getTeamspace } from '@/lib/workspace/teamspace'
 import { NewPageButton } from '../new-page-button'
 import { ExportButton } from '../export-button'
@@ -35,12 +36,15 @@ import { CommentPanel } from './comment-panel'
 import { FavoriteButton } from './favorite-button'
 import { DuplicatePageButton } from './duplicate-page-button'
 import { DeletePageButton } from './delete-page-button'
+import { NoAccess } from './no-access'
 
 /** 제목 없는 페이지의 표시 문구. 저장된 값은 빈 배열이다. */
 const UNTITLED = '제목 없음'
 
-export default async function PageView({ params }: PageProps<'/w/[workspaceId]/[pageId]'>) {
+export default async function PageView({ params, searchParams }: PageProps<'/w/[workspaceId]/[pageId]'>) {
   const { workspaceId, pageId: rawPageId } = await params
+  // 인박스의 접근 요청 줄은 공유 패널을 연 채로 온다(`?share=1` · 7e-1).
+  const { share } = await searchParams
 
   const ctx = await requirePageSession(workspaceId)
 
@@ -52,9 +56,14 @@ export default async function PageView({ params }: PageProps<'/w/[workspaceId]/[
   }
 
   const page = await getPage(ctx, pageId)
-  // 다른 워크스페이스의 페이지도 여기로 온다 — getPage 가 workspace_id 를
-  // 술어에 넣으므로 null 이 되고, 404 는 "없다"와 "볼 수 없다"를 구분하지 않는다.
-  if (!page) notFound()
+  if (!page) {
+    // 볼 수 없는 **살아 있는** 페이지면 접근 요청 화면이다(7e-1 · F-06-15) — 그 주소의 페이지가 있다는 것만 알리고 제목은
+    // 싣지 않는다(정본 §3.3 [보강] 접근 요청 ②). 없는 페이지 · 휴지통 · 다른 워크스페이스는 여전히 404 다 — getPage 가
+    // workspace_id 를 술어에 넣으므로 다른 워크스페이스의 페이지도 여기로 온다.
+    const noAccess = await noAccessState(ctx, pageId)
+    if (noAccess === null) notFound()
+    return <NoAccess workspaceId={workspaceId} pageId={pageId} requested={noAccess.requested} />
+  }
 
   // 본문은 Y.Doc 이 정본이다(판결 X-1 · CRDT 6d) — 협업 편집기가 그 상태로 시작하고 협업 서버에 붙는다. 행으로 만든 문서는
   // 더 이상 화면이 읽지 않고, 참조 제목만 따로 받는다(참조 노드는 제목을 싣지 않는다 — §3.2-22).
@@ -131,7 +140,7 @@ export default async function PageView({ params }: PageProps<'/w/[workspaceId]/[
             pageId={page.id}
             initialOpenCount={openThreads.ok ? openThreads.discussions.length : 0}
           />
-          <SharePanel workspaceId={workspaceId} pageId={page.id} />
+          <SharePanel workspaceId={workspaceId} pageId={page.id} initialOpen={share === '1'} />
           <MovePageControl
             workspaceId={workspaceId}
             pageId={page.id}

@@ -42,5 +42,6 @@ function toRow(item: Awaited<ReturnType<typeof listInbox>>[number]): InboxRow {
     lastAt: item.lastAt.toISOString(),
     preview: item.preview,
     deleted: item.deleted,
+    access: item.access,
   }
 }

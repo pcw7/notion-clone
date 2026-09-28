@@ -41,6 +41,7 @@ import type { SessionContext, WorkspaceRole } from '../auth/session-context.ts'
 import { withReadTransaction, type Tx } from '../db/tx.ts'
 import {
   can,
+  capabilitiesOf,
   isDefinedLevel,
   maxByCap,
   unionCaps,
@@ -377,28 +378,46 @@ export async function canViewPage(ctx: SessionContext, pageId: string): Promise<
 }
 
 /**
- * **이 노드들을 볼 수 있는 워크스페이스 멤버**(user id) — 노드마다. 이동 미리보기(7c-13 · F-06-20)만 쓴다.
- *
- * 판정이 아니다 — 누가 무엇을 할 수 있는지 **정하는** 곳은 여전히 세션을 받는 `effectiveCaps` 다(A9). 이것은 "옮기면 누가
- * 잃고 얻는가"를 보여 주려고 **같은 판정을 멤버마다 돌린** 것이다: 주체 집합은 `principalsOf` 와 같은 도우미로
- * (`principalsOfMember`), 결정은 같은 순수 함수로(`resolveCaps`) 한다. 규칙을 거꾸로 펼치는 코드(주체 → 사람)를 따로 두지
- * 않는 까닭은 그것이 판정과 어긋나기 때문이다 — `effective.db.test.ts` 가 세션으로 판정한 답과 같은지 본다.
- *
- * 세는 사람은 이 워크스페이스의 **활성** 멤버다(세션을 받을 수 있는 사람). 그룹 · teamspace 는 `principalsFor` 와 같은
- * 조건으로 읽는다(살아 있는 그룹 · 빠지지 않은 행 · 보관되지 않은 teamspace). 없는 노드는 빈 집합이다.
+ * **이 노드들을 볼 수 있는 워크스페이스 멤버**(user id) — 노드마다. 이동 미리보기(7c-13 · F-06-20)가 쓴다. `membersWith` 의
+ * `view` 판이다.
  */
 export async function viewersOf(
   tx: Tx,
   workspaceId: string,
   nodeIds: readonly string[],
 ): Promise<Map<string, Set<string>>> {
+  return membersWith(tx, workspaceId, nodeIds, 'view')
+}
+
+/**
+ * **이 노드들에서 `capability` 를 가진 워크스페이스 멤버**(user id) — 노드마다. `only` 를 주면 그 사람들만 센다.
+ *
+ * 쓰는 곳: 이동 미리보기(`viewersOf` · 7c-13) — 옮기면 누가 잃고 얻는가 · 접근 요청(7e-1) — 알림을 받을 관리자(`manage_perm`)와
+ * 이미 볼 수 있게 된 요청한 사람(`view` — 목록에 세우지 않는다).
+ *
+ * 판정이 아니다 — 누가 무엇을 할 수 있는지 **정하는** 곳은 여전히 세션을 받는 `effectiveCaps` 다(A9). 이것은 보여 주거나 받을
+ * 사람을 고르려고 **같은 판정을 멤버마다 돌린** 것이다: 주체 집합은 `principalsOf` 와 같은 도우미로(`principalsOfMember`),
+ * 결정은 같은 순수 함수로(`resolveCaps`) 한다. 규칙을 거꾸로 펼치는 코드(주체 → 사람)를 따로 두지 않는 까닭은 그것이 판정과
+ * 어긋나기 때문이다 — `move-preview.db.test.ts` 가 세션으로 판정한 답과 같은지 본다.
+ *
+ * 세는 사람은 이 워크스페이스의 **활성** 멤버다(세션을 받을 수 있는 사람). 그룹 · teamspace 는 `principalsFor` 와 같은
+ * 조건으로 읽는다(살아 있는 그룹 · 빠지지 않은 행 · 보관되지 않은 teamspace). 없는 노드는 빈 집합이다.
+ */
+export async function membersWith(
+  tx: Tx,
+  workspaceId: string,
+  nodeIds: readonly string[],
+  capability: Capability,
+  only?: readonly string[],
+): Promise<Map<string, Set<string>>> {
   const out = new Map<string, Set<string>>(nodeIds.map((id) => [id, new Set<string>()]))
-  if (nodeIds.length === 0) return out
+  if (nodeIds.length === 0 || only?.length === 0) return out
 
   const [members, groupRows, teamspaceRows, nodes] = await Promise.all([
     tx.query<{ user_id: string; role: WorkspaceRole }>(
-      `SELECT user_id, role FROM workspace_member WHERE workspace_id = $1 AND status = 'active'`,
-      [workspaceId],
+      `SELECT user_id, role FROM workspace_member
+        WHERE workspace_id = $1 AND status = 'active' AND ($2::uuid[] IS NULL OR user_id = ANY($2::uuid[]))`,
+      [workspaceId, only ?? null],
     ),
     tx.query<{ user_id: string; group_id: string }>(
       `SELECT gm.user_id, g.id AS group_id
@@ -438,8 +457,35 @@ export async function viewersOf(
     const inputs = await chainInputs(tx, chain, teamspaceId)
     const seen = out.get(node.id) as Set<string>
     for (const { userId, principals } of principalsByUser) {
-      if (can(resolveCaps({ ...inputs, principals }), 'view')) seen.add(userId)
+      if (can(resolveCaps({ ...inputs, principals }), capability)) seen.add(userId)
     }
   }
   return out
+}
+
+/**
+ * 이 노드의 **이름이 걸린 관리자 후보** — 사슬(자신부터 위로 · 절단까지 · teamspace 노드 포함)에서 **사람에게 직접** 준 행 중
+ * 공유(`manage_perm`)를 품은 레벨의 그 사람들. 접근 요청(7e-1)의 알림을 받을 사람을 고른다(정본 §3.3 [보강] 접근 요청 ⑤).
+ *
+ * 판정이 아니다 — 행이 있다고 지금 공유할 수 있는 것은 아니다(그 위에서 끊겼다 · 떠났다 …). 부르는 쪽이 `membersWith` 로
+ * 지금 가진 사람만 남긴다. 그룹 · teamspace 멤버 전원 · `workspace_everyone` 행은 사람 이름이 아니므로 세지 않는다.
+ */
+export async function namedManagersOf(tx: Tx, workspaceId: string, nodeId: string): Promise<string[]> {
+  const node = await tx.queryMaybe<ChainRow>(
+    `SELECT ${CHAIN_COLUMNS} FROM ${CHAIN_FROM} WHERE b.id = $1 AND b.workspace_id = $2`,
+    [nodeId, workspaceId],
+  )
+  if (node === null) return []
+  const { chain, teamspaceId } = chainOf(node)
+  const { cutAt, entries } = await chainInputs(tx, chain, teamspaceId)
+  const named = new Set<string>()
+  for (const id of chain) {
+    for (const row of entries) {
+      if (row.node_id !== id || row.principal_type !== 'user' || row.principal_id === null) continue
+      const level = row.level as Level
+      if (isDefinedLevel('page', level) && can(capabilitiesOf('page', level), 'manage_perm')) named.add(row.principal_id)
+    }
+    if (cutAt.has(id)) break
+  }
+  return [...named]
 }

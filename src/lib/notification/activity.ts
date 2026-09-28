@@ -32,6 +32,9 @@ export const ACTIVITY_TYPES = [
   'page.trashed',
   'suggestion.created',
   'suggestion.accepted',
+  // 접근 요청(7e-1 · 0033) — payload 는 요청 id 만.
+  'access.requested',
+  'access.granted',
 ] as const
 export type ActivityType = (typeof ACTIVITY_TYPES)[number]
 
