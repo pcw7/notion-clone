@@ -2701,6 +2701,73 @@ async function main() {
       await sleep(1500)
     }
 
+    if (sectionIf('게스트를 들인다 (7d-1 · F-06-09)')) {
+      // 소유자(브라우저 세션)가 공유 패널에서 외부 사람의 이메일을 넣는다 → 게스트로 들어와 그 페이지만 본다. 이미 멤버인 사람은
+      // 멤버로 공유되고, 계정이 없으면 먼저 가입하라고 말한다. 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
+      const stamp = Date.now()
+      const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
+      const guestName = `바깥 손님 ${stamp}`
+      const outsider = await createUser(guestName)
+      const doc = (await (await fetch(pagesUrl, { method: 'POST', headers: authed, body: JSON.stringify({ title: `손님과 볼 문서 ${stamp}` }) })).json()).page.id
+      const other = (await (await fetch(pagesUrl, { method: 'POST', headers: authed, body: JSON.stringify({ title: `손님은 못 볼 문서 ${stamp}` }) })).json()).page.id
+      const DIALOG = '[role="dialog"][aria-label="공유 설정"]'
+      const EMAIL = `${DIALOG} input[aria-label="초대할 이메일"]`
+      const invite = async (email) => {
+        await clickSelector(EMAIL)
+        await evaluate(`document.querySelector(${JSON.stringify(EMAIL)})?.select()`)
+        await send('Input.insertText', { text: email })
+        await clickSelector('[data-testid="share-invite-guest-submit"]')
+      }
+      const panelSays = (text) => waitFor(`(document.querySelector('${DIALOG}')?.textContent ?? '').includes(${JSON.stringify(text)})`, 10000)
+      // 목록의 **줄**에서 찾는다 — 패널 전체의 글에는 "추가" 고르개의 <option> 도 들어 있다(§6).
+      const rowSays = (text) => waitFor(`[...document.querySelectorAll('${DIALOG} li')].some((li) => li.textContent.includes(${JSON.stringify(text)}))`, 10000)
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${doc}` })
+      await waitFor(`[...document.querySelectorAll('button')].some((b) => b.textContent.trim() === '공유')`, 15000)
+      await clickText('공유')
+      await waitFor(`!!document.querySelector(${JSON.stringify(EMAIL)})`, 10000)
+      check('공유 패널에 "이메일로 초대" 줄이 있고 · 게스트에게 줄 권한은 편집까지다',
+        await evaluate(`(() => {
+          const s = document.querySelector('${DIALOG} select[aria-label="게스트에게 줄 권한"]')
+          const values = s ? [...s.options].map((o) => o.value) : []
+          return values.join(',') === 'view,comment,edit'
+        })()`))
+
+      await invite(outsider.email)
+      check('★ 이메일로 초대하면 게스트로 들어왔다고 말하고 · 목록에 "게스트"로 선다',
+        (await panelSays('게스트로 초대했습니다')) && (await rowSays(`${guestName} (${outsider.email}) · 게스트`)),
+        await panelText())
+
+      const { createSession } = await import(new URL('../src/lib/auth/session.ts', import.meta.url).href)
+      const { withTransaction } = await import(new URL('../src/lib/db/tx.ts', import.meta.url).href)
+      const guestSession = await withTransaction((tx) => createSession(tx, {
+        userId: outsider.userId, authMethod: 'login_code', mfaSatisfied: false, ip: null, userAgent: 'e2e',
+      }))
+      const asGuest = (path) => fetch(`${BASE}${path}`, { headers: { cookie: `nc_session=${guestSession.token}` } })
+      check('★ 게스트는 그 페이지를 열고 · 공유받지 않은 페이지는 못 연다',
+        (await asGuest(`/w/${workspaceId}/${doc}`)).status === 200 && (await asGuest(`/w/${workspaceId}/${other}`)).status === 404)
+
+      // 이미 멤버인 사람은 멤버로 공유된다 · 계정이 없으면 가입하라고 말한다
+      const memberName = `이메일로 받는 동료 ${stamp}`
+      const mate = await joinAs(workspaceId, await createUser(memberName), 'member')
+      await invite(mate.email)
+      check('이미 멤버인 사람은 멤버로 공유했다고 말한다 — 게스트가 되지 않는다',
+        (await panelSays('멤버로 공유했습니다')) && !(await evaluate(`[...document.querySelectorAll('${DIALOG} li')].some((li) => li.textContent.includes(${JSON.stringify(`${memberName} (${mate.email}) · 게스트`)}))`)))
+      await invite(`nobody-${stamp}@example.com`) // ASCII — type="email" 칸은 한글 주소를 브라우저가 먼저 막는다
+      check('계정이 없는 이메일은 먼저 가입하라고 말한다', await panelSays('먼저 가입한 뒤에'))
+
+      // 게스트에게 전체 권한은 줄 수 없다 — 사람 고르개로 줘도
+      const grantFull = await fetch(`${pagesUrl}/${doc}/access`, {
+        method: 'POST', headers: authed,
+        body: JSON.stringify({ action: 'grant', principal: { type: 'user', id: outsider.userId }, level: 'full_access' }),
+      })
+      check('게스트에게 전체 권한을 주면 거부한다 (400 guest_level)',
+        grantFull.status === 400 && (await grantFull.json()).error === 'guest_level', String(grantFull.status))
+      await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+      await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+      await sleep(500)
+    }
+
     if (sectionIf('코멘트 패널 · 인박스 (F-05-08 · F-11-07)')) {
       const commentPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
         method: 'POST',

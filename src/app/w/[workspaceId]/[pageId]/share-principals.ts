@@ -21,7 +21,13 @@ export type ShareEntry = {
   readonly principalId: string | null
 }
 
-export type ShareMember = { readonly userId: string; readonly name: string; readonly email: string | null }
+/** 공유 패널의 사람 — `guest` 면 이름 뒤에 "게스트"를 붙인다(7d-1 · 게스트는 편집까지만 받는다). */
+export type ShareMember = {
+  readonly userId: string
+  readonly name: string
+  readonly email: string | null
+  readonly guest?: boolean
+}
 export type ShareGroup = { readonly groupId: string; readonly name: string; readonly memberCount: number }
 export type ShareTeamspace = { readonly teamspaceId: string; readonly name: string }
 
@@ -42,7 +48,8 @@ export function principalOfEntry(entry: ShareEntry): SharePrincipal | null {
 }
 
 export function memberLabel(member: ShareMember): string {
-  return member.email ? `${member.name} (${member.email})` : member.name
+  const base = member.email ? `${member.name} (${member.email})` : member.name
+  return member.guest ? `${base} · 게스트` : base
 }
 
 export function groupLabel(group: ShareGroup): string {
@@ -92,4 +99,44 @@ export function parseChoice(value: string): { readonly type: 'user' | 'group'; r
   const id = value.slice(at + 1)
   if ((type !== 'user' && type !== 'group') || id === '') return null
   return { type, id }
+}
+
+// ── 이메일로 초대 · 게스트 (7d-1) ─────────────────────────────────────
+
+/**
+ * 게스트에게 줄 수 있는 레벨 — 편집까지(전체 권한은 공유를 품는다). 서버의 `GUEST_LEVELS` 와 같은 값이어야 한다 —
+ * `share-principals.test.ts` 가 두 목록을 대조한다(이 모듈은 클라이언트에서 import 되므로 서버 모듈을 끌어오지 않는다).
+ */
+export const GUEST_LEVEL_OPTIONS: readonly { value: string; label: string }[] = [
+  { value: 'view', label: '읽기' },
+  { value: 'comment', label: '댓글' },
+  { value: 'edit', label: '편집' },
+]
+
+/** 이메일로 초대한 뒤의 한 줄 — 멤버에게 공유했는지, 게스트로 들였는지. */
+export function guestInvitedNotice(as: unknown, email: string): string {
+  return as === 'member'
+    ? `${email} 은(는) 이미 이 워크스페이스의 멤버라 멤버로 공유했습니다.`
+    : `${email} 을(를) 게스트로 초대했습니다 — 이 페이지와 그 아래만 봅니다.`
+}
+
+/** 이메일 초대의 거부 코드 → 문구. */
+export function guestInviteMessage(error: unknown): string {
+  switch (error) {
+    case 'no_account':
+      return '그 이메일로 가입한 사람이 없습니다. 먼저 가입한 뒤에 초대할 수 있습니다.'
+    case 'invalid_email':
+      return '이메일 주소를 다시 확인하세요.'
+    case 'invalid_level':
+    case 'guest_level':
+      return '게스트에게는 편집까지 줄 수 있습니다.'
+    case 'unavailable':
+      return '그 사람은 지금 이 워크스페이스에 들어올 수 없습니다.'
+    case 'forbidden':
+      return '이 페이지의 공유 설정을 바꿀 권한이 없습니다.'
+    case 'not_found':
+      return '페이지를 찾을 수 없습니다.'
+    default:
+      return '초대하지 못했습니다.'
+  }
 }

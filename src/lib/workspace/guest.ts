@@ -1,0 +1,134 @@
+/**
+ * 게스트 — Teamspace · 게스트 · 그룹 7d-1조각 (F-06-09)
+ *
+ * 정본: 00-canonical-data-model.md §3.3 [보강] 게스트를 들이는 길 · `workspace_member.role='guest'` · 불변식 M2 · G2
+ *       06-permissions-sharing.md F-06-09 *"페이지 Share 에서 외부 이메일 입력 → 게스트로 추가"*
+ *
+ * ──────────────────────────────────────────────────────────────────────
+ * 게스트는 페이지에서 생긴다
+ * ──────────────────────────────────────────────────────────────────────
+ *
+ * 워크스페이스 초대(`invite.ts`)는 워크스페이스 역할 셋만 받는다 — 게스트는 워크스페이스에 들어오는 사람이 아니라 **페이지를
+ * 받는 사람**이기 때문이다. 그래서 게스트를 들이는 길은 페이지의 공유다: 그 페이지를 공유할 수 있는 사람(`manage_perm`)이
+ * 이메일과 레벨을 주면, 한 트랜잭션에서 **페이지 부여와 멤버십을 함께** 쓴다. 부여가 거부되면(권한 · 레벨) 멤버십도 남지 않는다
+ * — 부여를 먼저 하고 멤버십을 뒤에 쓴다.
+ *
+ *   · **이미 있는 계정만, 수락 없이 곧바로.** 이메일은 **검증된** 주소로 찾는다(미검증 주소는 누구나 등록할 수 있다 — 워크스페이스
+ *     초대의 수락과 같은 규칙). 없으면 `no_account` — 먼저 가입하라고 말한다. 가입 뒤에 적용되는 대기 초대는 뒤의 조각이다
+ *   · 그 사람이 **이미 멤버**면 역할을 건드리지 않고 부여만 한다(`as: 'member'`). 이미 게스트면 부여만, 떠났던 사람은 게스트로
+ *     돌아온다(M1 의 행을 되살린다). 멈춘 사람은 들이지 않는다(`unavailable`)
+ *   · **레벨은 편집까지**(`GUEST_LEVELS`) — 전체 권한은 공유를 품는다. 공유 패널의 사람 부여도 같은 규칙(`acl.ts` `guest_level`)
+ *
+ * 게스트는 좌석을 소비하지 않고(M2) 기본 teamspace 에 들어가지 않는다(`DEFAULT_TEAMSPACE_ROLES`). 한도(`plan_entitlement`)와
+ * 정책(`security_policy`)은 그 표가 생길 때 여기에 건다(HANDOFF §7).
+ */
+
+import type { SessionContext } from '../auth/session-context.ts'
+import { withCommandTransaction } from '../db/tx.ts'
+import { grantAccessIn, shareGateIn, type AclFailure } from '../permissions/acl.ts'
+
+/** 게스트에게 줄 수 있는 레벨 — 편집까지(머리말). 좁은 것부터. */
+export const GUEST_LEVELS = ['view', 'comment', 'edit'] as const
+export type GuestLevel = (typeof GUEST_LEVELS)[number]
+
+export type GuestInviteFailure =
+  | Exclude<AclFailure, 'would_orphan' | 'invalid_principal'>
+  /** 이메일의 모양이 아니다. */
+  | 'invalid_email'
+  /** 게스트에게 줄 수 없는 레벨이다(편집까지). */
+  | 'invalid_level'
+  /** 그 이메일로 가입한(검증된) 계정이 없다 — 먼저 가입해야 한다. */
+  | 'no_account'
+  /** 그 사람의 멤버십이 멈춰 있다(`suspended`). */
+  | 'unavailable'
+
+export type GuestInviteResult =
+  | {
+      readonly ok: true
+      readonly value: {
+        readonly userId: string
+        /** 받은 사람이 무엇으로 받았는가 — 이미 멤버면 `member`(역할을 건드리지 않았다), 아니면 `guest`. */
+        readonly as: 'member' | 'guest'
+        /** 이번에 워크스페이스에 들어왔는가(새 게스트 · 떠났다 돌아온 사람). */
+        readonly joined: boolean
+      }
+    }
+  | { readonly ok: false; readonly reason: GuestInviteFailure }
+
+const fail = (reason: GuestInviteFailure) => ({ ok: false, reason }) as const
+
+function isGuestLevel(raw: unknown): raw is GuestLevel {
+  return typeof raw === 'string' && (GUEST_LEVELS as readonly string[]).includes(raw)
+}
+
+/** 이메일의 모양 — 공백 없는 `x@y`. 나머지(있는 주소인가)는 계정을 찾으며 안다. 비교는 citext 가 대소문자를 무시한다. */
+export function normalizeGuestEmail(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null
+  const email = raw.trim()
+  if (email.length === 0 || email.length > 320 || !/^[^\s@]+@[^\s@]+$/.test(email)) return null
+  return email
+}
+
+/**
+ * 이메일로 페이지를 준다 — 그 사람이 이 워크스페이스에 없으면 **게스트로 들인다**(머리말).
+ *
+ * 순서: 모양 → 계정 → **부여**(판정 게이트 `manage_perm` · 게스트 레벨 규칙이 여기서 걸린다) → 멤버십. 부여가 거부되면
+ * `withCommandTransaction` 이 되돌리므로 멤버십이 남지 않는다. 멤버십이 바뀌면 그 사람의 권한 세대와 워크스페이스의
+ * `acl_epoch` 를 올린다(`acceptInvite` 와 같다) — 협업 신호는 `workspace_member` 의 트리거가 나른다(0016).
+ */
+export async function inviteGuestToPage(
+  ctx: SessionContext,
+  pageId: string,
+  rawEmail: unknown,
+  rawLevel: unknown,
+): Promise<GuestInviteResult> {
+  const email = normalizeGuestEmail(rawEmail)
+  if (email === null) return fail('invalid_email')
+  if (!isGuestLevel(rawLevel)) return fail('invalid_level')
+  const level = rawLevel
+
+  return withCommandTransaction(async (tx) => {
+    const account = await tx.queryMaybe<{ user_id: string }>(
+      `SELECT ue.user_id
+         FROM user_email ue
+         JOIN "user" u ON u.id = ue.user_id AND u.deleted_at IS NULL
+        WHERE ue.email = $1 AND ue.verified_at IS NOT NULL`,
+      [email],
+    )
+    const target = account?.user_id ?? null
+    const membership =
+      target === null
+        ? null
+        : await tx.queryMaybe<{ role: string; status: string }>(
+            `SELECT role, status FROM workspace_member WHERE workspace_id = $1 AND user_id = $2 FOR UPDATE`,
+            [ctx.workspaceId, target],
+          )
+
+    // 줄 사람이 없거나(계정 없음) 줄 수 없으면(멈춤) 쓰지 않는다 — 그래도 **이 페이지를 공유할 수 없는 사람에게는 그 말부터**
+    // 한다. 공유할 수 없는 사람이 이메일을 넣어 보며 계정이 있는지 알아내면 안 된다.
+    if (target === null || membership?.status === 'suspended') {
+      const denied = await shareGateIn(tx, ctx, pageId)
+      return fail(denied ?? (target === null ? 'no_account' : 'unavailable'))
+    }
+
+    const active = membership !== null && membership.status === 'active'
+    const alreadyMember = active && membership.role !== 'guest'
+
+    const granted = await grantAccessIn(tx, ctx, pageId, { type: 'user', id: target }, level)
+    if (!granted.ok) return fail(granted.reason as GuestInviteFailure)
+    if (active) return { ok: true, value: { userId: target, as: alreadyMember ? 'member' : 'guest', joined: false } } as const
+
+    // 새로 들어오거나(행 없음) 돌아온다(removed · invited) — 게스트로. 멤버를 게스트로 내리는 일은 위에서 걸렀다(active).
+    await tx.query(
+      `INSERT INTO workspace_member (workspace_id, user_id, role, status, join_method, invited_by, invited_at, accepted_at)
+       VALUES ($1, $2, 'guest', 'active', 'invite_email', $3, now(), now())
+       ON CONFLICT (workspace_id, user_id) DO UPDATE
+          SET role = 'guest', status = 'active', removed_at = NULL, join_method = 'invite_email',
+              invited_by = EXCLUDED.invited_by, invited_at = now(), accepted_at = now()`,
+      [ctx.workspaceId, target, ctx.userId],
+    )
+    await tx.query(`UPDATE "user" SET perm_gen = perm_gen + 1 WHERE id = $1`, [target])
+    await tx.query(`UPDATE workspace SET acl_epoch = acl_epoch + 1 WHERE id = $1`, [ctx.workspaceId])
+    return { ok: true, value: { userId: target, as: 'guest', joined: true } } as const
+  })
+}
