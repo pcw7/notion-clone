@@ -52,7 +52,10 @@ export type AclFailure =
   | 'forbidden'
   /** 마지막 관리자를 지우면 아무도 이 페이지를 고칠 수 없게 된다. */
   | 'would_orphan'
-  /** 이 워크스페이스의 살아 있는 그룹 · teamspace 가 아니다 — 주면 아무에게도 닿지 않는 행이 남는다. */
+  /**
+   * 이 워크스페이스의 사람(멤버 · 게스트) · 살아 있는 그룹 · teamspace 가 아니다 — 주면 아무에게도 닿지 않는 행이 남는다.
+   * 사람은 7d-2 부터 묻는다: 워크스페이스 밖의 사람은 게스트 초대(`workspace/guest.ts`)로 들어온다.
+   */
   | 'invalid_principal'
   /** 게스트에게 전체 권한을 주려 했다 — 게스트의 레벨은 편집까지다(7d-1 · 공유를 품으면 게스트가 게스트를 초대한다). */
   | 'guest_level'
@@ -218,6 +221,21 @@ export async function shareGateIn(tx: Tx, ctx: SessionContext, pageId: string): 
   return (await gate(tx, ctx, pageId, 'manage_perm')) as 'not_found' | 'forbidden' | null
 }
 
+/**
+ * 이 사람이 이 워크스페이스의 사람인가(7d-2) — 멤버든 게스트든, 들어와 있거나(`active`) 잠시 멈춘(`suspended`) 사람. 초대만 받은
+ * 사람 · 떠난 사람 · 처음 보는 사람은 아니다. 공유의 사용자 주체는 여기서 걸러진다 — 워크스페이스 밖의 사람에게 주는 길은
+ * 게스트 초대 하나다(부여와 멤버십을 함께 쓴다).
+ */
+async function isPerson(tx: Tx, workspaceId: string, userId: string): Promise<boolean> {
+  const row = await tx.queryMaybe<{ one: number }>(
+    `SELECT 1 AS one FROM workspace_member
+      WHERE workspace_id = $1 AND user_id = $2 AND status IN ('active', 'suspended')
+      FOR SHARE`,
+    [workspaceId, userId],
+  )
+  return row !== null
+}
+
 /** 이 사람이 이 워크스페이스의 게스트인가(떠난 행은 게스트가 아니다 — 다시 들어오면 그때 역할이 정해진다). */
 async function isGuest(tx: Tx, workspaceId: string, userId: string): Promise<boolean> {
   const row = await tx.queryMaybe<{ one: number }>(
@@ -251,6 +269,9 @@ export async function grantAccessIn(
       return { ok: false, reason: 'invalid_principal' } as const
     }
     if (principal.type === 'teamspace' && !(await lockLiveTeamspace(tx, ctx, principal.id))) {
+      return { ok: false, reason: 'invalid_principal' } as const
+    }
+    if (principal.type === 'user' && !(await isPerson(tx, ctx.workspaceId, principal.id))) {
       return { ok: false, reason: 'invalid_principal' } as const
     }
     if (principal.type === 'user' && level === 'full_access' && (await isGuest(tx, ctx.workspaceId, principal.id))) {

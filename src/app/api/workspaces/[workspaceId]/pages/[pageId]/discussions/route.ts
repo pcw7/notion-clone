@@ -19,6 +19,7 @@ import { readJsonBody, requireWorkspaceSession } from '@/lib/auth/route-session'
 import {
   createDiscussion,
   listDiscussions,
+  peopleIn,
   type CommentFailure,
   type CommentResult,
 } from '@/lib/comment/discussion'
@@ -27,7 +28,7 @@ import { asBlockId } from '@/lib/ids'
 import { PAGE_LEVELS, setSubscription, subscriptionOf, type PageSubscriptionLevel } from '@/lib/notification/subscription'
 import { effectiveCaps } from '@/lib/permissions/effective'
 import { can } from '@/lib/permissions/levels'
-import { listMembers } from '@/lib/workspace/list'
+import { canListMembers, listMembers, onlyPeople } from '@/lib/workspace/list'
 
 type Ctx = RouteContext<'/api/workspaces/[workspaceId]/pages/[pageId]/discussions'>
 
@@ -71,7 +72,11 @@ export async function GET(request: Request, ctx: Ctx): Promise<Response> {
 
   const caps = await withReadTransaction((tx) => effectiveCaps(tx, session.ctx, pageId))
   // 이름은 알림 · 코멘트가 복사해 두지 않는다(§3.3-133) — 화면이 그릴 때 워크스페이스 멤버 목록과 맞춘다.
-  const members = await listMembers(workspaceId)
+  // 게스트는 멤버 목록을 받지 않는다(7d-2) — 이 스레드들에 나오는 사람(쓴 사람 · 해결한 사람 · 반응한 사람)과 나만.
+  const everyone = await listMembers(workspaceId)
+  const members = canListMembers(session.ctx.role)
+    ? everyone
+    : onlyPeople(everyone, [session.ctx.userId, ...peopleIn(listed.discussions)])
   return Response.json({
     ok: true,
     discussions: listed.discussions,
