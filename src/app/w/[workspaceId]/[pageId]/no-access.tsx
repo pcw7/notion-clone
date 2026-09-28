@@ -32,7 +32,11 @@ export function NoAccess({
     setBusy(true)
     setError(null)
     try {
-      const res = await fetch(`/api/workspaces/${workspaceId}/pages/${pageId}/access-requests`, { method: 'POST' })
+      const res = await fetch(`/api/workspaces/${workspaceId}/pages/${pageId}/access-requests`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ kind: 'page_access' }),
+      })
       const data = (await res.json().catch(() => ({}))) as { error?: unknown }
       if (res.ok) {
         setSent(true)

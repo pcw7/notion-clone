@@ -1,8 +1,8 @@
 /**
- * 접근 요청의 문구 — 7e-1조각 (F-06-15 · DOM · DB 없음)
+ * 접근 요청의 문구 — 7e-1 · 7e-2조각 (F-06-15 · DOM · DB 없음)
  *
- * 세 화면이 쓴다: 볼 수 없는 페이지의 화면(`[pageId]/no-access.tsx`) · 공유 패널의 "접근 요청" 절(`[pageId]/share-panel.tsx`) ·
- * 인박스 줄(`inbox/inbox-list.tsx`). 판정은 서버가 한다(`lib/permissions/access-request.ts`) — 여기서 정하는 것은 무엇을 보여 주고
+ * 세 화면이 쓴다: 볼 수 없는 페이지의 화면(`[pageId]/no-access.tsx`) · 공유 패널의 "접근 요청" 절과 편집 권한 요청 줄
+ * (`[pageId]/share-panel.tsx`) · 인박스 줄(`inbox/inbox-list.tsx`). 판정은 서버가 한다(`lib/permissions/access-request.ts`) — 여기서 정하는 것은 무엇을 보여 주고
  * 무엇을 말할지뿐이다.
  */
 
@@ -10,6 +10,16 @@ export const NO_ACCESS_TITLE = '이 페이지를 볼 권한이 없습니다'
 export const NO_ACCESS_HINT = '이 페이지를 공유할 수 있는 사람에게 접근을 요청할 수 있습니다.'
 /** 요청을 보낸 뒤 — 무시된 요청도 요청한 사람에게는 이렇게 보인다(무시를 알리지 않는다 · 정본 [보강] 접근 요청 ③). */
 export const REQUEST_SENT = '접근을 요청했습니다. 허락되면 인박스로 알려 드립니다.'
+
+/** 공유 패널 — 볼 수는 있지만 고칠 수 없는 사람에게(7e-2). */
+export const EDIT_REQUEST_HINT = '이 페이지를 고칠 수 없습니다.'
+/** 편집 권한을 요청한 뒤 — 무시된 요청도 하루 동안은 이렇게 보인다(접근 요청과 같은 규칙). */
+export const EDIT_REQUEST_SENT = '편집 권한을 요청했습니다. 허락되면 인박스로 알려 드립니다.'
+
+/** 요청 줄의 종류 표시 — 무엇을 달라는 요청인가. */
+export function requestKindLabel(kind: string): string {
+  return kind === 'edit_access' ? '편집 요청' : '접근 요청'
+}
 
 const LEVEL_LABEL: Readonly<Record<string, string>> = {
   view: '읽기',
@@ -27,6 +37,14 @@ export type ApproveLevelOption = { readonly value: string; readonly label: strin
 export function approveLevelOptions(guest: boolean): ApproveLevelOption[] {
   const values = guest ? ['view', 'comment', 'edit'] : ['view', 'comment', 'edit', 'full_access']
   return values.map((value) => ({ value, label: LEVEL_LABEL[value] as string }))
+}
+
+/**
+ * 허락할 레벨의 기본값 — 요청한 레벨이 고를 수 있는 것이면 그것(편집 요청 → 편집), 아니면 가장 좁은 것(접근 요청 → 읽기).
+ */
+export function defaultApproveLevel(options: readonly ApproveLevelOption[], requestedLevel: string | null): string {
+  const requested = options.find((o) => o.value === requestedLevel)
+  return requested?.value ?? options[0]?.value ?? 'view'
 }
 
 /** 요청 줄의 사람 — 이름 · 이메일 · 게스트면 그렇게. */
@@ -71,11 +89,14 @@ export function accessRequestFailureMessage(error: unknown): string {
  */
 export function accessInboxLine(
   kind: string,
-  access: { readonly requesterName: string | null; readonly status: string } | null,
+  access: { readonly requesterName: string | null; readonly status: string; readonly kind?: string } | null,
 ): string | null {
-  if (kind === 'access_granted') return '이 페이지를 볼 수 있게 됐습니다.'
+  if (kind === 'access_granted') return '요청한 권한을 받았습니다.'
   if (kind !== 'access_requested') return null
-  const who = access?.requesterName ? `${access.requesterName} 님이 접근을 요청했습니다` : '접근 요청이 왔습니다'
+  const edit = access?.kind === 'edit_access'
+  const who = access?.requesterName
+    ? `${access.requesterName} 님이 ${edit ? '편집 권한' : '접근'}을 요청했습니다`
+    : `${edit ? '편집 권한' : '접근'} 요청이 왔습니다`
   switch (access?.status) {
     case 'approved':
       return `${who} — 허락됨`

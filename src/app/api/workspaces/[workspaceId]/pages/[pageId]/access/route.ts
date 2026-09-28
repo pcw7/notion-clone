@@ -27,7 +27,7 @@ import {
   type AclFailure,
   type PrincipalRef,
 } from '@/lib/permissions/acl'
-import { listAccessRequests } from '@/lib/permissions/access-request'
+import { editRequestState, listAccessRequests } from '@/lib/permissions/access-request'
 import { effectiveCaps } from '@/lib/permissions/effective'
 import { can, LEVELS, type Level } from '@/lib/permissions/levels'
 import { canListMembers, listMembers, onlyPeople } from '@/lib/workspace/list'
@@ -116,6 +116,8 @@ export async function GET(_request: Request, ctx: Ctx): Promise<Response> {
   // 접근 요청(7e-1) — 공유할 수 있는 사람에게만. 게스트 여부를 함께 준다(화면이 허락할 레벨을 고른다 · 서버가 다시 거른다).
   const canManage = can(caps, 'manage_perm')
   const requests = canManage ? await listAccessRequests(session.ctx, pageId) : null
+  // 편집 권한 요청(7e-2) — 볼 수는 있지만 고칠 수 없는 사람에게만(아니면 null · 관리자는 늘 고칠 수 있다).
+  const editRequest = can(caps, 'edit_content') ? null : await editRequestState(session.ctx, pageId)
 
   return Response.json({
     ok: true,
@@ -133,9 +135,12 @@ export async function GET(_request: Request, ctx: Ctx): Promise<Response> {
           name: r.name,
           email: r.email,
           guest: r.guest,
+          kind: r.kind,
+          requestedLevel: r.requestedLevel,
           createdAt: r.createdAt.toISOString(),
         }))
       : [],
+    editRequest,
   })
 }
 

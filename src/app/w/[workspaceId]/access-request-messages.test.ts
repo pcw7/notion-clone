@@ -6,13 +6,16 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  EDIT_REQUEST_SENT,
   REQUEST_SENT,
   accessInboxLine,
   accessRequestFailureMessage,
   approveLevelOptions,
   approvedNotice,
+  defaultApproveLevel,
   ignoredNotice,
   inboxHref,
+  requestKindLabel,
   requesterLabel,
 } from './access-request-messages.ts'
 
@@ -35,8 +38,23 @@ test('★ 인박스 줄 — 요청의 지금 상태 · 이름이 없으면 누�
   assert.match(accessInboxLine('access_requested', { requesterName: '앤', status: 'approved' }) ?? '', /허락됨$/)
   assert.match(accessInboxLine('access_requested', { requesterName: '앤', status: 'ignored' }) ?? '', /무시함$/)
   assert.equal(accessInboxLine('access_requested', { requesterName: null, status: 'pending' }), '접근 요청이 왔습니다 — 공유에서 처리하세요')
-  assert.equal(accessInboxLine('access_granted', null), '이 페이지를 볼 수 있게 됐습니다.')
+  assert.equal(accessInboxLine('access_granted', null), '요청한 권한을 받았습니다.')
   assert.equal(accessInboxLine('comment', null), null)
+})
+
+test('★ (7e-2) 편집 요청 — 인박스 줄 · 요청 줄의 종류 · 허락의 기본 레벨은 요청한 레벨(게스트도 편집까지는 고른다)', () => {
+  assert.equal(
+    accessInboxLine('access_requested', { requesterName: '앤', status: 'pending', kind: 'edit_access' }),
+    '앤 님이 편집 권한을 요청했습니다 — 공유에서 처리하세요',
+  )
+  assert.equal(accessInboxLine('access_requested', { requesterName: null, status: 'pending', kind: 'edit_access' }), '편집 권한 요청이 왔습니다 — 공유에서 처리하세요')
+  assert.equal(requestKindLabel('edit_access'), '편집 요청')
+  assert.equal(requestKindLabel('page_access'), '접근 요청')
+  assert.equal(defaultApproveLevel(approveLevelOptions(false), 'edit'), 'edit')
+  assert.equal(defaultApproveLevel(approveLevelOptions(true), 'edit'), 'edit')
+  assert.equal(defaultApproveLevel(approveLevelOptions(false), null), 'view')
+  assert.equal(defaultApproveLevel(approveLevelOptions(true), 'full_access'), 'view', '고를 수 없는 레벨이면 가장 좁은 것')
+  assert.match(EDIT_REQUEST_SENT, /편집 권한을 요청했습니다/)
 })
 
 test('인박스에서 요청을 누르면 공유 패널을 연 채로 · 나머지는 페이지로', () => {

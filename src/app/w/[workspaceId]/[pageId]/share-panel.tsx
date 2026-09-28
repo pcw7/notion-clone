@@ -38,10 +38,14 @@ import {
   type ShareTeamspace,
 } from './share-principals'
 import {
+  EDIT_REQUEST_HINT,
+  EDIT_REQUEST_SENT,
   accessRequestFailureMessage,
   approveLevelOptions,
   approvedNotice,
+  defaultApproveLevel,
   ignoredNotice,
+  requestKindLabel,
   requesterLabel,
 } from '../access-request-messages'
 
@@ -58,8 +62,10 @@ type AccessState = {
   members: ShareMember[]
   groups: ShareGroup[]
   teamspaces: ShareTeamspace[]
-  /** 대기 중인 접근 요청(7e-1) — 공유할 수 있는 사람에게만 온다. */
+  /** 대기 중인 접근 · 편집 요청(7e-1 · 7e-2) — 공유할 수 있는 사람에게만 온다. */
   requests: AccessRequestView[]
+  /** 편집 권한 요청(7e-2) — 볼 수는 있지만 고칠 수 없는 사람에게만 온다(아니면 null). */
+  editRequest: { requested: boolean } | null
 }
 
 type AccessRequestView = {
@@ -68,6 +74,8 @@ type AccessRequestView = {
   name: string
   email: string | null
   guest: boolean
+  kind: string
+  requestedLevel: string | null
 }
 
 /** 공유 설정을 읽는다 — 목록이거나, 못 읽었으면 보여 줄 문구. 상태를 모른다(클릭과 효과가 나눠 쓴다). */
@@ -83,6 +91,7 @@ async function readAccess(url: string): Promise<AccessState | string> {
       groups: data.groups ?? [],
       teamspaces: data.teamspaces ?? [],
       requests: data.requests ?? [],
+      editRequest: data.editRequest ?? null,
     }
   } catch {
     return '연결에 실패했습니다.'
@@ -262,6 +271,31 @@ export function SharePanel({
     }
   }
 
+  /**
+   * 편집 권한을 요청한다(7e-2). 끝나면 목록을 다시 읽는다 — "요청했습니다"는 서버가 아는 상태로 선다(이미 열린 요청 · 하루 안에
+   * 무시된 요청도 같다). 그 사이에 고칠 수 있게 됐으면(`has_access`) 페이지를 다시 그린다.
+   */
+  async function requestEdit(): Promise<void> {
+    setBusy(true)
+    setError(null)
+    setNotice(null)
+    try {
+      const res = await fetch(`/api/workspaces/${workspaceId}/pages/${pageId}/access-requests`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ kind: 'edit_access' }),
+      })
+      const data = (await res.json().catch(() => ({}))) as { error?: unknown }
+      if (!res.ok && data.error !== 'has_access') setError(accessRequestFailureMessage(data.error))
+      await load()
+      if (data.error === 'has_access') router.refresh()
+    } catch {
+      setError('연결에 실패했습니다.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   return (
     <div className="relative">
       <button
@@ -304,7 +338,7 @@ export function SharePanel({
                   <ul className="flex flex-col gap-2">
                     {state.requests.map((r) => {
                       const options = approveLevelOptions(r.guest)
-                      const level = requestLevels[r.id] ?? options[0]?.value ?? 'view'
+                      const level = requestLevels[r.id] ?? defaultApproveLevel(options, r.requestedLevel)
                       return (
                         <li
                           key={r.id}
@@ -312,7 +346,12 @@ export function SharePanel({
                           data-request-id={r.id}
                           className="flex items-center justify-between gap-2 text-sm"
                         >
-                          <span className="min-w-0 truncate">{requesterLabel(r)}</span>
+                          <span className="min-w-0 truncate">
+                            {requesterLabel(r)}
+                            <span data-testid="access-request-kind" className="ml-1 text-xs text-neutral-400">
+                              {requestKindLabel(r.kind)}
+                            </span>
+                          </span>
                           <span className="flex flex-none items-center gap-1">
                             <select
                               aria-label={`${r.name} 님에게 줄 권한`}
@@ -548,6 +587,31 @@ export function SharePanel({
                     )}
                   </p>
                 </>
+              )}
+
+              {/* 편집 권한 요청(7e-2) — 볼 수는 있지만 고칠 수 없는 사람에게만 서버가 준다. 관리자에게는 오지 않는다. */}
+              {state.editRequest !== null && (
+                <p
+                  data-testid="edit-request"
+                  className="mt-3 border-t border-neutral-200 pt-3 text-xs text-neutral-500 dark:border-neutral-800"
+                >
+                  {state.editRequest.requested ? (
+                    <span data-testid="edit-requested">{EDIT_REQUEST_SENT}</span>
+                  ) : (
+                    <>
+                      {EDIT_REQUEST_HINT}{' '}
+                      <button
+                        type="button"
+                        data-testid="edit-request-send"
+                        disabled={busy}
+                        onClick={() => void requestEdit()}
+                        className="underline underline-offset-2"
+                      >
+                        편집 권한 요청
+                      </button>
+                    </>
+                  )}
+                </p>
               )}
             </>
           )}
