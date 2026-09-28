@@ -13,7 +13,17 @@
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { choiceValue, entryLabel, parseChoice, principalOfEntry } from './share-principals.ts'
+import { GUEST_LEVELS } from '../../../../lib/workspace/guest.ts'
+import {
+  GUEST_LEVEL_OPTIONS,
+  choiceValue,
+  entryLabel,
+  guestInviteMessage,
+  guestInvitedNotice,
+  memberLabel,
+  parseChoice,
+  principalOfEntry,
+} from './share-principals.ts'
 
 const USER = '00000000-0000-4000-8000-000000000001'
 const GROUP = '00000000-0000-4000-8000-000000000002'
@@ -78,5 +88,31 @@ describe('choiceValue · parseChoice', () => {
     assert.equal(parseChoice('workspace_everyone:'), null)
     assert.equal(parseChoice('teamspace:x'), null)
     assert.equal(parseChoice('group:'), null)
+  })
+})
+
+describe('이메일로 초대 · 게스트 (7d-1)', () => {
+  test('★ 게스트 레벨 고르개는 서버의 목록과 같다 — 편집까지(전체 권한이 없다)', () => {
+    assert.deepEqual(
+      GUEST_LEVEL_OPTIONS.map((l) => l.value),
+      [...GUEST_LEVELS],
+    )
+    assert.ok(!GUEST_LEVEL_OPTIONS.some((l) => l.value === 'full_access'))
+  })
+
+  test('게스트는 이름 뒤에 "게스트" — 공유 목록의 행도 같다', () => {
+    const guest = { userId: 'g', name: '손님', email: 'g@example.com', guest: true }
+    assert.equal(memberLabel(guest), '손님 (g@example.com) · 게스트')
+    assert.equal(memberLabel({ ...guest, guest: false }), '손님 (g@example.com)')
+    assert.equal(entryLabel({ principalType: 'user', principalId: 'g', level: 'view', inherited: false }, [guest], []), memberLabel(guest))
+  })
+
+  test('거부 코드마다 할 말이 있다 · 계정이 없으면 먼저 가입하라고 · 멤버에게 준 것과 게스트로 들인 것을 구분해 말한다', () => {
+    for (const code of ['no_account', 'invalid_email', 'invalid_level', 'guest_level', 'unavailable', 'forbidden', 'not_found']) {
+      assert.notEqual(guestInviteMessage(code), '초대하지 못했습니다.', code)
+    }
+    assert.match(guestInviteMessage('no_account'), /먼저 가입/)
+    assert.match(guestInvitedNotice('member', 'a@x.io'), /멤버로 공유/)
+    assert.match(guestInvitedNotice('guest', 'a@x.io'), /게스트로 초대/)
   })
 })

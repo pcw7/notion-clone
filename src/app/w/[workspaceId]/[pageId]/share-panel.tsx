@@ -24,9 +24,12 @@ import { useCallback, useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 
 import {
+  GUEST_LEVEL_OPTIONS,
   choiceValue,
   entryLabel,
   groupLabel,
+  guestInviteMessage,
+  guestInvitedNotice,
   memberLabel,
   parseChoice,
   principalOfEntry,
@@ -67,8 +70,11 @@ export function SharePanel({ workspaceId, pageId }: { workspaceId: string; pageI
   const [notice, setNotice] = useState<string | null>(null)
   const [addUser, setAddUser] = useState('')
   const [addLevel, setAddLevel] = useState('edit')
+  const [inviteEmail, setInviteEmail] = useState('')
+  const [inviteLevel, setInviteLevel] = useState('comment')
 
   const url = `/api/workspaces/${workspaceId}/pages/${pageId}/access`
+  const guestsUrl = `/api/workspaces/${workspaceId}/pages/${pageId}/guests`
 
   /**
    * 목록을 다시 읽는다.
@@ -149,6 +155,34 @@ export function SharePanel({ workspaceId, pageId }: { workspaceId: string; pageI
   )
   const addableMembers = (state?.members ?? []).filter((m) => !listed.has(choiceValue({ type: 'user', id: m.userId })))
   const addableGroups = (state?.groups ?? []).filter((g) => !listed.has(choiceValue({ type: 'group', id: g.groupId })))
+
+  /** 이메일로 초대 — 없는 사람은 게스트로 들인다(7d-1). 성공하면 목록을 다시 읽는다(새 게스트의 이름이 서야 한다). */
+  async function inviteGuest(): Promise<void> {
+    const email = inviteEmail.trim()
+    setBusy(true)
+    setError(null)
+    setNotice(null)
+    try {
+      const res = await fetch(guestsUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ email, level: inviteLevel }),
+      })
+      const data = (await res.json().catch(() => ({}))) as { error?: unknown; as?: unknown }
+      if (!res.ok) {
+        setError(guestInviteMessage(data.error))
+        return
+      }
+      setNotice(guestInvitedNotice(data.as, email))
+      setInviteEmail('')
+      await load()
+      router.refresh()
+    } catch {
+      setError('연결에 실패했습니다.')
+    } finally {
+      setBusy(false)
+    }
+  }
 
   return (
     <div className="relative">
@@ -302,6 +336,45 @@ export function SharePanel({ workspaceId, pageId }: { workspaceId: string; pageI
                       className="rounded border border-neutral-300 px-2 py-0.5 text-xs disabled:opacity-40 dark:border-neutral-700"
                     >
                       추가
+                    </button>
+                  </form>
+
+                  {/* 이메일로 초대(7d-1) — 이 워크스페이스에 없는 사람은 게스트가 된다. 게스트는 편집까지만 받는다. */}
+                  <form
+                    data-testid="share-invite-guest"
+                    className="mt-2 flex items-center gap-1"
+                    onSubmit={(e) => {
+                      e.preventDefault()
+                      void inviteGuest()
+                    }}
+                  >
+                    <input
+                      type="email"
+                      aria-label="초대할 이메일"
+                      placeholder="이메일로 초대(게스트)"
+                      value={inviteEmail}
+                      onChange={(e) => setInviteEmail(e.target.value)}
+                      className="min-w-0 flex-1 rounded border border-neutral-300 bg-transparent px-1 py-0.5 text-xs dark:border-neutral-700"
+                    />
+                    <select
+                      aria-label="게스트에게 줄 권한"
+                      value={inviteLevel}
+                      onChange={(e) => setInviteLevel(e.target.value)}
+                      className="rounded border border-neutral-300 bg-transparent px-1 py-0.5 text-xs dark:border-neutral-700"
+                    >
+                      {GUEST_LEVEL_OPTIONS.map((l) => (
+                        <option key={l.value} value={l.value}>
+                          {l.label}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="submit"
+                      data-testid="share-invite-guest-submit"
+                      disabled={busy || inviteEmail.trim() === ''}
+                      className="rounded border border-neutral-300 px-2 py-0.5 text-xs disabled:opacity-40 dark:border-neutral-700"
+                    >
+                      초대
                     </button>
                   </form>
 

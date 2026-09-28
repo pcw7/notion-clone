@@ -54,6 +54,8 @@ export type AclFailure =
   | 'would_orphan'
   /** 이 워크스페이스의 살아 있는 그룹 · teamspace 가 아니다 — 주면 아무에게도 닿지 않는 행이 남는다. */
   | 'invalid_principal'
+  /** 게스트에게 전체 권한을 주려 했다 — 게스트의 레벨은 편집까지다(7d-1 · 공유를 품으면 게스트가 게스트를 초대한다). */
+  | 'guest_level'
 
 export type AclResult<T = void> =
   | ({ readonly ok: true } & (T extends void ? object : { readonly value: T }))
@@ -203,7 +205,44 @@ export async function grantAccess(
   principal: PrincipalRef,
   level: Level,
 ): Promise<AclResult> {
-  return withTransaction(async (tx) => {
+  return withTransaction((tx) => grantAccessIn(tx, ctx, pageId, principal, level))
+}
+
+/**
+ * 이 페이지의 공유를 바꿀 수 있는가 — **쓰지 않고 게이트만**(7d-1). 볼 수 없거나 없는 페이지면 `not_found`, 볼 수만 있으면
+ * `forbidden`, 되면 null. 게스트 초대가 줄 사람이 없을 때(계정 없음) 부여를 쓰지 않고 이 답을 먼저 주려고 쓴다 — 공유할 수 없는
+ * 사람이 이메일을 넣어 보며 계정이 있는지 알아내면 안 된다.
+ */
+export async function shareGateIn(tx: Tx, ctx: SessionContext, pageId: string): Promise<'not_found' | 'forbidden' | null> {
+  if ((await loadNode(tx, ctx, pageId)) === null) return 'not_found'
+  return (await gate(tx, ctx, pageId, 'manage_perm')) as 'not_found' | 'forbidden' | null
+}
+
+/** 이 사람이 이 워크스페이스의 게스트인가(떠난 행은 게스트가 아니다 — 다시 들어오면 그때 역할이 정해진다). */
+async function isGuest(tx: Tx, workspaceId: string, userId: string): Promise<boolean> {
+  const row = await tx.queryMaybe<{ one: number }>(
+    `SELECT 1 AS one FROM workspace_member
+      WHERE workspace_id = $1 AND user_id = $2 AND role = 'guest' AND status <> 'removed'`,
+    [workspaceId, userId],
+  )
+  return row !== null
+}
+
+/**
+ * `grantAccess` 의 몸 — 부르는 쪽의 트랜잭션에서. 게스트 초대(`workspace/guest.ts` · 7d-1)가 부여와 멤버십을 한 트랜잭션에
+ * 쓰려고 부른다. 판정 게이트(`manage_perm`)는 여기 있으므로 부르는 쪽이 따로 묻지 않는다.
+ *
+ * **게스트에게는 전체 권한을 주지 않는다**(`guest_level`) — 전체 권한은 공유를 품어 게스트가 다른 게스트를 초대하게 된다.
+ * 사람을 고르는 공유 패널과 이메일로 들이는 게스트 초대가 같은 규칙을 이 한 곳에서 받는다.
+ */
+export async function grantAccessIn(
+  tx: Tx,
+  ctx: SessionContext,
+  pageId: string,
+  principal: PrincipalRef,
+  level: Level,
+): Promise<AclResult> {
+  {
     const node = await loadNode(tx, ctx, pageId)
     if (node === null) return { ok: false, reason: 'not_found' } as const
     const denied = await gate(tx, ctx, pageId, 'manage_perm')
@@ -213,6 +252,9 @@ export async function grantAccess(
     }
     if (principal.type === 'teamspace' && !(await lockLiveTeamspace(tx, ctx, principal.id))) {
       return { ok: false, reason: 'invalid_principal' } as const
+    }
+    if (principal.type === 'user' && level === 'full_access' && (await isGuest(tx, ctx.workspaceId, principal.id))) {
+      return { ok: false, reason: 'guest_level' } as const
     }
 
     const had = await hasEntries(tx, pageId)
@@ -230,7 +272,7 @@ export async function grantAccess(
     if (!had) await rescope(tx, ctx, node, node.perm_scope_id, node.id)
 
     return { ok: true } as const
-  })
+  }
 }
 
 /**
