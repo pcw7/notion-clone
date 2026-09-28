@@ -2768,6 +2768,64 @@ async function main() {
       await sleep(500)
     }
 
+    if (sectionIf('게스트에게 새는 목록 · 공유 주체 (7d-2 · F-06-09)')) {
+      // 게스트는 워크스페이스 멤버 목록을 받지 않는다 — 공유 패널 · 코멘트 · `@` · 홈 네 곳. 그리고 워크스페이스 밖의 사람에게는
+      // 공유 API 로 줄 수 없다(게스트 초대가 유일한 길). 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
+      const stamp = Date.now()
+      const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
+      const bystanderName = `목록에 없어야 할 동료 ${stamp}`
+      const bystander = await joinAs(workspaceId, await createUser(bystanderName), 'member')
+      const outsider = await createUser(`목록을 받지 않는 손님 ${stamp}`)
+      const doc = (await (await fetch(pagesUrl, { method: 'POST', headers: authed, body: JSON.stringify({ title: `손님 목록 문서 ${stamp}` }) })).json()).page.id
+      const invited = await fetch(`${pagesUrl}/${doc}/guests`, {
+        method: 'POST', headers: authed, body: JSON.stringify({ email: outsider.email, level: 'comment' }),
+      })
+      await fetch(`${pagesUrl}/${doc}/discussions`, {
+        method: 'POST', headers: authed, body: JSON.stringify({ action: 'open', richText: [textRun('손님도 보는 코멘트')] }),
+      })
+      const { createSession } = await import(new URL('../src/lib/auth/session.ts', import.meta.url).href)
+      const { withTransaction } = await import(new URL('../src/lib/db/tx.ts', import.meta.url).href)
+      const guestSession = await withTransaction((tx) => createSession(tx, {
+        userId: outsider.userId, authMethod: 'login_code', mfaSatisfied: false, ip: null, userAgent: 'e2e',
+      }))
+      const asGuest = (path) => fetch(`${BASE}${path}`, { headers: { cookie: `nc_session=${guestSession.token}` } })
+      check('전제 — 손님이 게스트로 들어왔다', invited.ok, String(invited.status))
+
+      const access = await (await asGuest(`/api/workspaces/${workspaceId}/pages/${doc}/access`)).json()
+      const entryUsers = new Set((access.entries ?? []).filter((e) => e.principalType === 'user').map((e) => e.principalId))
+      check('★ 공유 패널 — 게스트는 이 페이지의 행에 나오는 사람의 이름만 받는다(다른 멤버는 없다)',
+        Array.isArray(access.members) && access.members.length > 0
+          && access.members.every((m) => entryUsers.has(m.userId))
+          && !access.members.some((m) => m.userId === bystander.userId),
+        JSON.stringify(access.members?.map((m) => m.name)))
+
+      const threads = await (await asGuest(`/api/workspaces/${workspaceId}/pages/${doc}/discussions`)).json()
+      check('★ 코멘트 — 게스트는 스레드에 나오는 사람(쓴 사람)과 자기만 받는다',
+        Array.isArray(threads.members) && threads.members.some((m) => m.userId === ctx.userId)
+          && !threads.members.some((m) => m.userId === bystander.userId),
+        JSON.stringify(threads.members?.map((m) => m.name)))
+
+      const guestCandidates = await (await asGuest(`/api/workspaces/${workspaceId}/mention-candidates?q=`)).json()
+      const ownerCandidates = await (await fetch(`${BASE}/api/workspaces/${workspaceId}/mention-candidates?q=`, { headers: authed })).json()
+      const users = (body) => (body.candidates ?? body.results ?? body).filter?.((c) => c.kind === 'user') ?? []
+      check('★ `@` — 게스트는 사람 후보를 받지 않고 · 멤버는 받는다',
+        users(guestCandidates).length === 0 && users(ownerCandidates).length > 0,
+        `${JSON.stringify(guestCandidates).slice(0, 120)} · 멤버 ${users(ownerCandidates).length}`)
+
+      const guestHome = await (await asGuest(`/w/${workspaceId}`)).text()
+      const ownerHome = await (await fetch(`${BASE}/w/${workspaceId}`, { headers: authed })).text()
+      check('★ 홈 — 게스트에게는 멤버 절이 없고 동료의 이름도 없다 · 멤버에게는 있다',
+        !guestHome.includes('data-testid="workspace-members"') && !guestHome.includes(bystanderName)
+          && ownerHome.includes('data-testid="workspace-members"'))
+
+      const toStranger = await fetch(`${pagesUrl}/${doc}/access`, {
+        method: 'POST', headers: authed,
+        body: JSON.stringify({ action: 'grant', principal: { type: 'user', id: (await createUser('밖의 사람')).userId }, level: 'view' }),
+      })
+      check('★ 공유 API 는 워크스페이스 밖의 사람에게 주지 않는다 (400 invalid_principal) — 밖의 사람은 이메일로 초대한다',
+        toStranger.status === 400 && (await toStranger.json()).error === 'invalid_principal', String(toStranger.status))
+    }
+
     if (sectionIf('코멘트 패널 · 인박스 (F-05-08 · F-11-07)')) {
       const commentPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
         method: 'POST',
@@ -5057,7 +5115,9 @@ async function main() {
       const access = (body) =>
         fetch(`${BASE}/api/workspaces/${workspaceId}/pages/${hidden}/access`, { method: 'POST', headers: authed, body: JSON.stringify(body) })
       await access({ action: 'restrict' })
-      await access({ action: 'grant', principal: { type: 'user', id: randomUUID() }, level: 'full_access' })
+      // 이 세션이 아닌 **이 워크스페이스의 사람** 하나에게만 남긴다 — 워크스페이스 밖의 id 에는 이제 줄 수 없다(7d-2).
+      const keeper = await joinAs(workspaceId, await createUser('숨긴 하위의 관리자'), 'member')
+      await access({ action: 'grant', principal: { type: 'user', id: keeper.userId }, level: 'full_access' })
       await access({ action: 'revoke', principal: { type: 'workspace_everyone' } })
 
       await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${partial}` })
@@ -5083,9 +5143,11 @@ async function main() {
       const access = (body) =>
         fetch(`${BASE}/api/workspaces/${workspaceId}/pages/${hiddenChild}/access`, { method: 'POST', headers: authed, body: JSON.stringify(body) })
       await fetch(`${BASE}/api/workspaces/${workspaceId}/pages/${hiddenChild}`, { method: 'PATCH', headers: authed, body: JSON.stringify({ title: hiddenTitle }) })
-      // 상속을 끊고, 워크스페이스에 없는 사용자 하나에게만 남긴다 — 이 세션(소유자)도 그 페이지를 볼 수 없다.
+      // 상속을 끊고, 다른 멤버 하나에게만 남긴다 — 이 세션(소유자)도 그 페이지를 볼 수 없다. 워크스페이스 밖의 id 에는
+      // 이제 줄 수 없다(7d-2 — 전에는 임의의 uuid 에 주던 자리다).
       await access({ action: 'restrict' })
-      await access({ action: 'grant', principal: { type: 'user', id: randomUUID() }, level: 'full_access' })
+      const keeper = await joinAs(workspaceId, await createUser('숨긴 참조의 관리자'), 'member')
+      await access({ action: 'grant', principal: { type: 'user', id: keeper.userId }, level: 'full_access' })
       const revoked = await access({ action: 'revoke', principal: { type: 'workspace_everyone' } })
       // 페이지 라우트에는 GET 이 없다(PATCH 뿐 — 처음에 그것으로 재서 405 로 실패했다). 권한을 거치는 제목 맵 라우트로 본다.
       const hiddenTitles = await fetch(`${BASE}/api/workspaces/${workspaceId}/pages/${hiddenChild}/page-ref-titles`, { headers: authed })

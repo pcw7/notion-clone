@@ -29,7 +29,7 @@ import {
 } from '@/lib/permissions/acl'
 import { effectiveCaps } from '@/lib/permissions/effective'
 import { can, LEVELS, type Level } from '@/lib/permissions/levels'
-import { listMembers } from '@/lib/workspace/list'
+import { canListMembers, listMembers, onlyPeople } from '@/lib/workspace/list'
 import { listGroups } from '@/lib/workspace/group'
 import { teamspaceNames } from '@/lib/workspace/teamspace'
 import { withReadTransaction } from '@/lib/db/tx'
@@ -50,7 +50,7 @@ const MESSAGE: Readonly<Record<AclFailure, string>> = {
   forbidden: '이 페이지의 공유 설정을 바꿀 권한이 없습니다.',
   would_orphan:
     '이 페이지를 관리할 수 있는 사람이 아무도 남지 않습니다. 먼저 다른 사람에게 전체 권한을 주세요.',
-  invalid_principal: '그룹 · teamspace 를 찾을 수 없습니다. 지워졌거나 보관됐을 수 있습니다.',
+  invalid_principal: '그 사람 · 그룹 · teamspace 를 찾을 수 없습니다. 워크스페이스를 떠났거나 지워졌을 수 있습니다 — 밖의 사람은 이메일로 초대하세요.',
   guest_level: '게스트에게는 전체 권한을 줄 수 없습니다 — 편집까지 줄 수 있습니다.',
 }
 
@@ -101,7 +101,11 @@ export async function GET(_request: Request, ctx: Ctx): Promise<Response> {
   const caps = await withReadTransaction((tx) => effectiveCaps(tx, session.ctx, pageId))
   // 사람 이름은 ACL 에 없다. 목록을 함께 보내 화면이 id 를 이름으로 바꾸게 한다.
   // (권한이 없는 사람에게는 애초에 이 응답이 가지 않는다 — 위에서 걸렀다.)
-  const members = await listMembers(workspaceId)
+  // 게스트는 멤버 목록을 받지 않는다(7d-2 · F-06-09) — 이 페이지의 행에 나오는 사람의 이름만 준다(행을 그릴 이름).
+  const everyone = await listMembers(workspaceId)
+  const members = canListMembers(session.ctx.role)
+    ? everyone
+    : onlyPeople(everyone, access.value.filter((e) => e.principalType === 'user').map((e) => e.principalId as string))
   // 그룹 이름도 같다. 게스트는 그룹 목록을 받지 않는다(`listGroups` 가 거절한다 — F-06-09) — 빈 목록이면 화면은
   // 그룹 행을 이름 없이 "그룹"으로 그린다.
   const groups = await listGroups(session.ctx)

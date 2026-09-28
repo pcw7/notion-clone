@@ -15,7 +15,7 @@ import { requirePageSession } from '@/lib/auth/page-session'
 import { listChildPages } from '@/lib/block/page'
 import { canExportWorkspace } from '@/lib/export/download'
 import { canManageGroups, canSeeGroups, listGroups } from '@/lib/workspace/group'
-import { listMembers, listPendingInvites } from '@/lib/workspace/list'
+import { canListMembers, listMembers, listPendingInvites } from '@/lib/workspace/list'
 import { ExportButton } from './export-button'
 import { GroupPanel } from './group-panel'
 import { InviteForm } from './invite-form'
@@ -36,7 +36,8 @@ export default async function WorkspacePage({ params }: PageProps<'/w/[workspace
 
   const [rootPages, members, invites, groups] = await Promise.all([
     listChildPages(ctx, null),
-    listMembers(ctx.workspaceId),
+    // 게스트는 멤버 목록을 받지 않는다(7d-2 · F-06-09) — 절 자체를 그리지 않는다.
+    canListMembers(ctx.role) ? listMembers(ctx.workspaceId) : Promise.resolve(null),
     canInvite ? listPendingInvites(ctx.workspaceId) : Promise.resolve([]),
     // 게스트는 그룹을 보지 않는다(F-06-09) — 절 자체를 그리지 않는다. 판정은 `listGroups` 가 다시 한다.
     canSeeGroups(ctx.role) ? listGroups(ctx) : Promise.resolve(null),
@@ -82,23 +83,25 @@ export default async function WorkspacePage({ params }: PageProps<'/w/[workspace
         <NewPageButton workspaceId={workspaceId} />
       </section>
 
-      <section>
-        <h2 className="text-sm font-medium text-neutral-500">멤버 {members.length}명</h2>
-        <ul className="mt-3 divide-y divide-neutral-200 rounded-lg border border-neutral-200 dark:divide-neutral-800 dark:border-neutral-800">
-          {members.map((m) => (
-            <li key={m.userId} className="flex items-center justify-between px-4 py-3">
-              <div>
-                <p className="text-sm font-medium">{m.name}</p>
-                <p className="text-xs text-neutral-500">{m.email}</p>
-              </div>
-              <span className="text-xs text-neutral-500">
-                {m.role}
-                {m.status !== 'active' && ` · ${m.status}`}
-              </span>
-            </li>
-          ))}
-        </ul>
-      </section>
+      {members !== null && (
+        <section data-testid="workspace-members">
+          <h2 className="text-sm font-medium text-neutral-500">멤버 {members.length}명</h2>
+          <ul className="mt-3 divide-y divide-neutral-200 rounded-lg border border-neutral-200 dark:divide-neutral-800 dark:border-neutral-800">
+            {members.map((m) => (
+              <li key={m.userId} className="flex items-center justify-between px-4 py-3">
+                <div>
+                  <p className="text-sm font-medium">{m.name}</p>
+                  <p className="text-xs text-neutral-500">{m.email}</p>
+                </div>
+                <span className="text-xs text-neutral-500">
+                  {m.role}
+                  {m.status !== 'active' && ` · ${m.status}`}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       {groups?.ok && (
         <section>
@@ -110,7 +113,7 @@ export default async function WorkspacePage({ params }: PageProps<'/w/[workspace
             workspaceId={ctx.workspaceId}
             canManage={canManageGroups(ctx.role)}
             initialGroups={[...groups.value]}
-            members={members.map((m) => ({ userId: m.userId, name: m.name, email: m.email, role: m.role, status: m.status }))}
+            members={(members ?? []).map((m) => ({ userId: m.userId, name: m.name, email: m.email, role: m.role, status: m.status }))}
           />
         </section>
       )}

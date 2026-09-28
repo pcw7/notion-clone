@@ -33,7 +33,7 @@ import { withReadTransaction, type Tx } from '../db/tx.ts'
 import type { EditorBlock, EditorDoc } from '../editor/document.ts'
 import { isUuid } from '../ids.ts'
 import { readableScopes } from '../permissions/effective.ts'
-import { listMembers } from '../workspace/list.ts'
+import { canListMembers, listMembers } from '../workspace/list.ts'
 import { plainTitleOf } from './page.ts'
 
 /** 07 F-07-08: "후보 조회는 반드시 상한(예: 20건)". */
@@ -63,7 +63,9 @@ export async function searchMentionCandidates(
   const query = rawQuery.trim().toLowerCase()
   const cap = Math.min(Math.max(limit, 1), MENTION_CANDIDATE_LIMIT)
 
-  const members = (await listMembers(ctx.workspaceId))
+  // 게스트는 사람 후보를 받지 않는다(7d-2) — 멤버 목록을 받을 수 없는 사람에게 `@` 가 그 목록을 흘리면 안 된다. 페이지 후보는
+  // 원래 권한으로 거른다(아래).
+  const members = (canListMembers(ctx.role) ? await listMembers(ctx.workspaceId) : [])
     .filter((m) => query === '' || m.name.toLowerCase().includes(query) || (m.email ?? '').toLowerCase().includes(query))
     .slice(0, cap)
     .map((m): MentionCandidate => ({ kind: 'user', id: m.userId, label: m.name }))

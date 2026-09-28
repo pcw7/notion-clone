@@ -6,6 +6,7 @@
  * 그 함수가 SSO 게이트(정본 §3.11 0단계)까지 통과시킨다.
  */
 
+import type { WorkspaceRole } from '../auth/session-context.ts'
 import { query } from '../db/pool.ts'
 
 export type WorkspaceSummary = {
@@ -34,6 +35,23 @@ export type WorkspaceMember = {
   readonly email: string | null
   readonly role: string
   readonly status: string
+}
+
+/**
+ * 워크스페이스 멤버 목록을 받을 수 있는 역할인가(7d-2) — 역할 **이름**으로 묻는다(CLAUDE.md). 게스트는 아니다 — F-06-09
+ * *"게스트는 … 멤버 목록에 접근하지 못한다"*. 게스트는 워크스페이스에 들어온 사람이 아니라 페이지를 받은 사람이다.
+ *
+ * 게스트가 이름을 보는 사람은 **자기가 받은 페이지에 이미 나오는 사람**뿐이다 — 그 페이지의 공유 행 · 코멘트를 쓴 사람 ·
+ * 본문의 멘션(`loadMentionLabels` 는 원래 id 로 이름을 찾는다). 그래서 목록을 주는 곳은 게스트에게 `onlyPeople` 로 좁힌다.
+ */
+export function canListMembers(role: WorkspaceRole): boolean {
+  return role !== 'guest'
+}
+
+/** 멤버 목록을 이 사람들로 좁힌다 — 게스트에게 이름을 줄 때(위). 순서는 원래 목록을 따른다. */
+export function onlyPeople<T extends { readonly userId: string }>(members: readonly T[], ids: Iterable<string>): T[] {
+  const keep = new Set(ids)
+  return members.filter((m) => keep.has(m.userId))
 }
 
 /** People 설정 화면용. 호출 전에 SessionContext 로 접근을 확인해야 한다. */

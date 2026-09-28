@@ -541,6 +541,24 @@ export type DiscussionView = {
   readonly reactions: readonly ReactionView[]
 }
 
+/**
+ * 이 스레드들에 나오는 사람 — 연 사람 · 해결한 사람 · 코멘트를 쓴 사람 · 반응한 사람(7d-2). 멤버 목록을 받을 수 없는 게스트에게
+ * 이름을 줄 때 이만큼으로 좁힌다(`workspace/list.ts` `onlyPeople`) — 그 페이지를 볼 수 있는 사람은 이미 이들을 본다.
+ */
+export function peopleIn(discussions: readonly DiscussionView[]): Set<string> {
+  const people = new Set<string>()
+  for (const d of discussions) {
+    people.add(d.createdBy)
+    if (d.resolvedBy !== null) people.add(d.resolvedBy)
+    for (const r of d.reactions) for (const u of r.userIds) people.add(u)
+    for (const c of d.comments) {
+      people.add(c.authorId)
+      for (const r of c.reactions) for (const u of r.userIds) people.add(u)
+    }
+  }
+  return people
+}
+
 export type ListDiscussionsOptions = {
   /** 생략하면 열린 것과 해결된 것을 모두 준다. 05 F-05-08 의 'Open'/'Resolved' 필터가 이 축이다. */
   readonly resolved?: boolean

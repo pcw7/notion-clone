@@ -11,7 +11,8 @@
  * 워크스페이스 초대(`invite.ts`)는 워크스페이스 역할 셋만 받는다 — 게스트는 워크스페이스에 들어오는 사람이 아니라 **페이지를
  * 받는 사람**이기 때문이다. 그래서 게스트를 들이는 길은 페이지의 공유다: 그 페이지를 공유할 수 있는 사람(`manage_perm`)이
  * 이메일과 레벨을 주면, 한 트랜잭션에서 **페이지 부여와 멤버십을 함께** 쓴다. 부여가 거부되면(권한 · 레벨) 멤버십도 남지 않는다
- * — 부여를 먼저 하고 멤버십을 뒤에 쓴다.
+ * — 공유 게이트를 먼저 묻고(멤버십을 쓰기 전), 그 뒤의 거부는 트랜잭션이 되돌린다. 멤버십이 부여보다 앞서는 까닭: 공유의 사용자
+ * 주체는 이 워크스페이스의 사람이어야 한다(`acl.ts` `isPerson` · 7d-2).
  *
  *   · **이미 있는 계정만, 수락 없이 곧바로.** 이메일은 **검증된** 주소로 찾는다(미검증 주소는 누구나 등록할 수 있다 — 워크스페이스
  *     초대의 수락과 같은 규칙). 없으면 `no_account` — 먼저 가입하라고 말한다. 가입 뒤에 적용되는 대기 초대는 뒤의 조각이다
@@ -72,8 +73,8 @@ export function normalizeGuestEmail(raw: unknown): string | null {
 /**
  * 이메일로 페이지를 준다 — 그 사람이 이 워크스페이스에 없으면 **게스트로 들인다**(머리말).
  *
- * 순서: 모양 → 계정 → **부여**(판정 게이트 `manage_perm` · 게스트 레벨 규칙이 여기서 걸린다) → 멤버십. 부여가 거부되면
- * `withCommandTransaction` 이 되돌리므로 멤버십이 남지 않는다. 멤버십이 바뀌면 그 사람의 권한 세대와 워크스페이스의
+ * 순서: 모양 → 계정 → **공유 게이트**(`manage_perm` — 쓰지 않는다) → 멤버십 → 부여(게스트 레벨 규칙이 여기서 걸린다). 부여가
+ * 거부되면 `withCommandTransaction` 이 되돌리므로 멤버십이 남지 않는다 — 게이트가 먼저라 권한 없는 사람의 거부는 쓰기 전에 난다. 멤버십이 바뀌면 그 사람의 권한 세대와 워크스페이스의
  * `acl_epoch` 를 올린다(`acceptInvite` 와 같다) — 협업 신호는 `workspace_member` 의 트리거가 나른다(0016).
  */
 export async function inviteGuestToPage(
@@ -111,12 +112,18 @@ export async function inviteGuestToPage(
       return fail(denied ?? (target === null ? 'no_account' : 'unavailable'))
     }
 
+    const denied = await shareGateIn(tx, ctx, pageId)
+    if (denied !== null) return fail(denied)
+
     const active = membership !== null && membership.status === 'active'
     const alreadyMember = active && membership.role !== 'guest'
-
-    const granted = await grantAccessIn(tx, ctx, pageId, { type: 'user', id: target }, level)
-    if (!granted.ok) return fail(granted.reason as GuestInviteFailure)
-    if (active) return { ok: true, value: { userId: target, as: alreadyMember ? 'member' : 'guest', joined: false } } as const
+    const give = async () => {
+      const granted = await grantAccessIn(tx, ctx, pageId, { type: 'user', id: target }, level)
+      return granted.ok ? null : fail(granted.reason as GuestInviteFailure)
+    }
+    if (active) {
+      return (await give()) ?? ({ ok: true, value: { userId: target, as: alreadyMember ? 'member' : 'guest', joined: false } } as const)
+    }
 
     // 새로 들어오거나(행 없음) 돌아온다(removed · invited) — 게스트로. 멤버를 게스트로 내리는 일은 위에서 걸렀다(active).
     await tx.query(
@@ -129,6 +136,6 @@ export async function inviteGuestToPage(
     )
     await tx.query(`UPDATE "user" SET perm_gen = perm_gen + 1 WHERE id = $1`, [target])
     await tx.query(`UPDATE workspace SET acl_epoch = acl_epoch + 1 WHERE id = $1`, [ctx.workspaceId])
-    return { ok: true, value: { userId: target, as: 'guest', joined: true } } as const
+    return (await give()) ?? ({ ok: true, value: { userId: target, as: 'guest', joined: true } } as const)
   })
 }
