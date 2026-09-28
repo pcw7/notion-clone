@@ -3029,6 +3029,85 @@ async function main() {
       await sleep(1500)
     }
 
+    if (sectionIf('편집 권한 요청 (7e-2 · F-06-15)')) {
+      // 읽기만 받은 동료가(브라우저 세션을 동료로 바꾼다) 공유 패널에서 편집 권한을 요청하고 → 소유자가 인박스의 그 줄로 공유 패널을
+      // 열어 허락한다(기본 레벨은 요청한 편집). 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다. 브라우저 세션과 소유자의
+      // 인박스는 끝에 되돌린다(뒤 절이 소유자로 돌고, 인박스 절은 안 읽은 수를 센다).
+      const stamp = Date.now()
+      const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
+      const readerName = `읽기만 받은 동료 ${stamp}`
+      const reader = await joinAs(workspaceId, await createUser(readerName), 'member')
+      const asReader = { ...json, cookie: `nc_session=${reader.token}` }
+      const docTitle = `고치고 싶은 문서 ${stamp}`
+      const doc = (await (await fetch(pagesUrl, { method: 'POST', headers: authed, body: JSON.stringify({ title: docTitle, privateTop: true }) })).json()).page.id
+      const shared = await fetch(`${pagesUrl}/${doc}/access`, {
+        method: 'POST', headers: authed,
+        body: JSON.stringify({ action: 'grant', principal: { type: 'user', id: reader.userId }, level: 'view' }),
+      })
+      const browseAs = (token) => send('Network.setCookie', { name: 'nc_session', value: token, domain: 'localhost', path: '/', httpOnly: true })
+      const DIALOG = '[role="dialog"][aria-label="공유 설정"]'
+      const REQ_ROW = '[data-testid="access-requests"] [data-testid="access-request-row"]'
+      const accessAs = async (headers) => (await fetch(`${pagesUrl}/${doc}/access`, { headers })).json()
+
+      try {
+        check('전제 — 동료는 그 문서를 읽기로 받았다', shared.ok, String(shared.status))
+        const ownerView = await accessAs(authed)
+        check('고칠 수 있는 사람(소유자)에게는 편집 요청 줄이 오지 않는다', ownerView.editRequest === null, JSON.stringify(ownerView.editRequest))
+
+        // ① 요청하는 쪽 — 공유 패널을 연다(서버 렌더 뒤 붙기 전의 클릭은 사라진다 — 패널이 뜰 때까지 다시 누른다 · §6)
+        await browseAs(reader.token)
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${doc}` })
+        await waitFor(`[...document.querySelectorAll('button')].some((b) => b.textContent.trim() === '공유')`, 15000)
+        let opened = false
+        for (let i = 0; i < 10 && !opened; i += 1) {
+          await clickText('공유')
+          opened = await waitFor(`!!document.querySelector('${DIALOG} [data-testid="edit-request-send"]')`, 1500)
+        }
+        check('★ 읽기만 받은 사람의 공유 패널에 "고칠 수 없습니다 · 편집 권한 요청"이 선다', opened,
+          await evaluate(`document.querySelector('${DIALOG}')?.textContent?.slice(0, 200) ?? '(패널 없음)'`))
+        await clickSelector(`${DIALOG} [data-testid="edit-request-send"]`)
+        check('★ 누르면 "편집 권한을 요청했습니다"로 바뀐다',
+          await waitFor(`(document.querySelector('${DIALOG} [data-testid="edit-requested"]')?.textContent ?? '').includes('편집 권한을 요청했습니다')`, 10000))
+        const readerView = await accessAs(asReader)
+        check('서버도 요청했다고 안다 — 다시 열어도 같다', readerView.editRequest?.requested === true, JSON.stringify(readerView.editRequest))
+
+        // ② 허락하는 쪽 — 인박스의 줄에서 공유 패널로
+        await browseAs(session)
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/inbox` })
+        const inboxLine = `([...document.querySelectorAll('ul[aria-label="알림 목록"] li')].find((li) => li.textContent.includes(${JSON.stringify(docTitle)}))?.textContent ?? '')`
+        check('★ 소유자의 인박스에 "편집 권한을 요청했습니다" 줄',
+          await waitFor(`${inboxLine}.includes(${JSON.stringify(`${readerName} 님이 편집 권한을 요청했습니다`)})`, 15000),
+          await evaluate(inboxLine))
+        await clickSelector(`ul[aria-label="알림 목록"] a[href="/w/${workspaceId}/${doc}?share=1"]`)
+        check('★ 요청 줄이 "편집 요청"으로 서고 · 허락할 레벨은 요청한 편집이 기본이다',
+          (await waitFor(`!!document.querySelector('${REQ_ROW}')`, 15000))
+            && (await evaluate(`(document.querySelector('${REQ_ROW} [data-testid="access-request-kind"]')?.textContent ?? '') === '편집 요청'
+              && document.querySelector('${REQ_ROW} [data-testid="access-request-level"]')?.value === 'edit'`)),
+          await evaluate(`document.querySelector('${REQ_ROW}')?.textContent ?? '(줄 없음)'`))
+        for (let i = 0; i < 10; i += 1) {
+          await clickSelector(`${REQ_ROW} [data-testid="access-request-approve"]`)
+          if (await waitFor(`!document.querySelector('${REQ_ROW}')`, 1500)) break
+        }
+        check('★ 허락하면 편집을 줬다고 말한다',
+          await waitFor(`(document.querySelector('${DIALOG} [role="status"]')?.textContent ?? '').includes(${JSON.stringify(`${readerName} 님에게 편집 권한을 줬습니다`)})`, 10000))
+
+        const after = await accessAs(asReader)
+        const mine = (after.entries ?? []).find((e) => e.principalType === 'user' && e.principalId === reader.userId)
+        check('★ 동료는 이제 편집 권한을 갖고 · 편집 요청 줄이 사라진다',
+          mine?.level === 'edit' && after.editRequest === null, JSON.stringify({ level: mine?.level, editRequest: after.editRequest }))
+      } finally {
+        await browseAs(session)
+        const inbox = await (await fetch(`${BASE}/api/workspaces/${workspaceId}/inbox`, { headers: authed })).json()
+        const ids = (inbox.items ?? []).filter((i) => i.pageId === doc).flatMap((i) => i.notificationIds)
+        if (ids.length > 0) {
+          await fetch(`${BASE}/api/workspaces/${workspaceId}/inbox`, {
+            method: 'PATCH', headers: authed, body: JSON.stringify({ ids, read: true, archived: true }),
+          })
+        }
+      }
+      await sleep(1500)
+    }
+
     if (sectionIf('코멘트 패널 · 인박스 (F-05-08 · F-11-07)')) {
       const commentPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
         method: 'POST',

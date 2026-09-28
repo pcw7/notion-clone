@@ -36,8 +36,8 @@ export type InboxRow = {
   lastAt: string
   preview: string | null
   deleted: boolean
-  /** 접근 요청(7e-1)의 지금 상태 — 서버가 요청 행에서 읽어 준다. 다른 알림은 null. */
-  access: { requesterName: string | null; status: string } | null
+  /** 접근 · 편집 요청(7e-1 · 7e-2)의 지금 상태 — 서버가 요청 행에서 읽어 준다. 다른 알림은 null. */
+  access: { requesterName: string | null; status: string; kind: string } | null
 }
 
 const FILTERS: readonly { value: string; label: string }[] = [
@@ -53,7 +53,7 @@ const KIND_LABEL: Readonly<Record<string, string>> = {
   mention: '멘션',
   page_update: '페이지 변경',
   access_requested: '접근 요청',
-  access_granted: '접근 허락',
+  access_granted: '요청 허락',
 }
 
 const UNTITLED = '제목 없음'

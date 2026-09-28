@@ -66,10 +66,10 @@ export type InboxItem = {
   readonly preview: string | null
   readonly deleted: boolean
   /**
-   * 접근 요청(7e-1 · `access_requested`)의 **지금** 상태 — 마지막 요청의 요청한 사람 · 상태. 이름은 멤버 목록을 받을 수 있는
-   * 역할일 때만(정본 §3.8 [보강] 접근 요청의 알림 ③). 다른 알림은 null.
+   * 접근 요청(7e-1 · `access_requested`)의 **지금** 상태 — 마지막 요청의 요청한 사람 · 상태 · 종류(접근 · 편집 — 7e-2). 이름은
+   * 멤버 목록을 받을 수 있는 역할일 때만(정본 §3.8 [보강] 접근 요청의 알림 ③). 다른 알림은 null.
    */
-  readonly access: { readonly requesterName: string | null; readonly status: string } | null
+  readonly access: { readonly requesterName: string | null; readonly status: string; readonly kind: string } | null
 }
 
 type GroupRow = {
@@ -185,17 +185,17 @@ async function readAccessRequests(
   tx: Tx,
   ctx: SessionContext,
   ids: readonly string[],
-): Promise<Map<string, { requesterName: string | null; status: string }>> {
+): Promise<Map<string, { requesterName: string | null; status: string; kind: string }>> {
   if (ids.length === 0) return new Map()
-  const rows = await tx.query<{ id: string; status: string; name: string | null }>(
-    `SELECT r.id, r.status, u.name
+  const rows = await tx.query<{ id: string; status: string; kind: string; name: string | null }>(
+    `SELECT r.id, r.status, r.kind, u.name
        FROM access_request r
        LEFT JOIN "user" u ON u.id = r.requester_id
       WHERE r.id = ANY($1::uuid[]) AND r.workspace_id = $2`,
     [[...new Set(ids)], ctx.workspaceId],
   )
   const named = canListMembers(ctx.role)
-  return new Map(rows.map((r) => [r.id, { requesterName: named ? r.name : null, status: r.status }]))
+  return new Map(rows.map((r) => [r.id, { requesterName: named ? r.name : null, status: r.status, kind: r.kind }]))
 }
 
 async function readComments(tx: Tx, ids: readonly string[]): Promise<Map<string, { text: string; deleted: boolean }>> {

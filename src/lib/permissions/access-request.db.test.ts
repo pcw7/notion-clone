@@ -1,5 +1,5 @@
 /**
- * 접근 요청 — Teamspace · 게스트 · 그룹 7e-1조각 (F-06-15 · DB)
+ * 접근 요청 — Teamspace · 게스트 · 그룹 7e-1 · 7e-2조각 (F-06-15 · DB)
  *
  * 이 파일이 지키는 것.
  *
@@ -13,6 +13,8 @@
  *   ⑧ ★ 알림은 이름이 걸린 관리자에게 — 공유 권한을 가진 전원이 아니다 · 없으면 owner
  *   ⑨ 인박스 — 관리자는 요청한 사람의 이름과 **지금** 상태를 · 한 페이지의 요청은 한 줄 · 허락은 요청한 사람에게
  *   ⑩ 휴지통 · 영구 삭제된 페이지의 요청은 처리할 수 없다 · 휴지통에서 돌아오면 대기 중이던 요청도 돌아온다
+ *   ⑪ (7e-2) ★ 편집 권한 요청 — 볼 수는 있지만 고칠 수 없는 사람만 · 요청 레벨은 편집 · 허락하면 고친다 · 이미 고칠 수 있게 된
+ *      사람의 요청은 세우지 않는다 · 종류는 따로 센다
  */
 
 import { test, describe, before, after } from 'node:test'
@@ -30,9 +32,11 @@ import { archiveTeamspace, createTeamspace } from '../workspace/teamspace.ts'
 import { grantAccess, revokeAccess } from './acl.ts'
 import {
   approveAccessRequest,
+  editRequestState,
   ignoreAccessRequest,
   listAccessRequests,
   noAccessState,
+  requestEditAccess,
   requestPageAccess,
 } from './access-request.ts'
 import { canViewPage, effectiveCaps } from './effective.ts'
@@ -425,11 +429,15 @@ describe('⑨ 인박스', () => {
     const before = await line()
     assert.ok(before, '관리자의 인박스에 요청이 없다')
     assert.equal(before.count, 2, '한 페이지의 요청이 한 줄로 접히지 않았다')
-    assert.deepEqual(before.access, { requesterName: '둘째 요청자', status: 'pending' })
+    assert.deepEqual(before.access, { requesterName: '둘째 요청자', status: 'pending', kind: 'page_access' })
     assert.deepEqual(await listInbox(second.ctx), [], '허락 전에 요청한 사람의 인박스에 무언가 있다')
 
     assert.ok((await approveAccessRequest(boss.ctx, id, 'comment')).ok)
-    assert.deepEqual((await line())?.access, { requesterName: '둘째 요청자', status: 'approved' }, '지금 상태를 읽지 않는다')
+    assert.deepEqual(
+      (await line())?.access,
+      { requesterName: '둘째 요청자', status: 'approved', kind: 'page_access' },
+      '지금 상태를 읽지 않는다',
+    )
     const mine = await listInbox(second.ctx)
     assert.deepEqual(
       mine.map((i) => [i.pageId, i.kind]),
@@ -462,5 +470,106 @@ describe('⑩ 페이지의 삶과 죽음', () => {
     await purgePage(boss.ctx, doc as BlockId)
     assert.deepEqual(await ignoreAccessRequest(boss.ctx, id), { ok: false, reason: 'not_found' })
     assert.equal((await queryOne<{ status: string }>(`SELECT status FROM access_request WHERE id = $1`, [id])).status, 'pending')
+  })
+})
+
+// ── ⑪ ─────────────────────────────────────────────────────────────────
+
+describe('⑪ 편집 권한 요청 (7e-2)', () => {
+  const kindsOf = async (pageId: string) =>
+    (
+      await query<{ kind: string; requested_level: string | null; requester_id: string; status: string }>(
+        `SELECT kind, requested_level, requester_id, status FROM access_request WHERE node_id = $1 ORDER BY created_at, id`,
+        [pageId],
+      )
+    ).map((r) => [r.kind, r.requested_level, r.requester_id, r.status])
+
+  test('★ 볼 수는 있지만 고칠 수 없는 사람만 요청한다 — 요청 레벨은 편집 · 관리자에게 알림 · 다시 눌러도 하나', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { boss, person } = await office()
+    const reader = await person('읽기만')
+    const commenter = await person('댓글까지')
+    const editor = await person('편집자')
+    const stranger = await person('못 보는 사람')
+    const doc = await page(boss, { privateTop: true })
+    assert.ok((await grantAccess(boss.ctx, doc, { type: 'user', id: reader.userId }, 'view')).ok)
+    assert.ok((await grantAccess(boss.ctx, doc, { type: 'user', id: commenter.userId }, 'comment')).ok)
+    assert.ok((await grantAccess(boss.ctx, doc, { type: 'user', id: editor.userId }, 'edit')).ok)
+
+    assert.deepEqual(await editRequestState(reader.ctx, doc), { requested: false })
+    assert.deepEqual(await editRequestState(commenter.ctx, doc), { requested: false })
+    for (const who of [editor, boss, stranger]) assert.equal(await editRequestState(who.ctx, doc), null)
+    assert.deepEqual(await requestEditAccess(editor.ctx, doc), { ok: false, reason: 'has_access' })
+    assert.deepEqual(await requestEditAccess(boss.ctx, doc), { ok: false, reason: 'has_access' })
+    assert.deepEqual(
+      await requestEditAccess(stranger.ctx, doc),
+      { ok: false, reason: 'not_found' },
+      '볼 수 없는 사람이 편집 요청으로 페이지가 있는지 알아낸다 — 그 사람의 길은 요청 화면이다',
+    )
+
+    assert.deepEqual(await requestEditAccess(reader.ctx, doc), { ok: true, value: { sent: true } })
+    assert.deepEqual(await requestEditAccess(reader.ctx, doc), { ok: true, value: { sent: false } })
+    assert.deepEqual(await kindsOf(doc), [['edit_access', 'edit', reader.userId, 'pending']])
+    assert.deepEqual(await notified(doc, 'access_requested'), [boss.userId])
+    assert.deepEqual(await editRequestState(reader.ctx, doc), { requested: true })
+    assert.equal(await noAccessState(reader.ctx, doc), null, '볼 수 있는 사람에게 요청 화면은 없다')
+
+    const line = (await listInbox(boss.ctx)).find((i) => i.pageId === doc && i.kind === 'access_requested')
+    assert.deepEqual(line?.access, { requesterName: '읽기만', status: 'pending', kind: 'edit_access' })
+  })
+
+  test('★ 목록에 종류 · 요청 레벨이 서고 · 허락하면 고친다 · 이미 고칠 수 있게 된 사람의 요청은 세우지 않는다(다시 잃으면 선다)', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { boss, person } = await office()
+    const first = await person('첫 독자')
+    const second = await person('둘째 독자')
+    const doc = await page(boss, { privateTop: true })
+    for (const who of [first, second]) {
+      assert.ok((await grantAccess(boss.ctx, doc, { type: 'user', id: who.userId }, 'view')).ok)
+      assert.deepEqual(await requestEditAccess(who.ctx, doc), { ok: true, value: { sent: true } })
+    }
+
+    const listed = async () => {
+      const result = await listAccessRequests(boss.ctx, doc)
+      assert.ok(result.ok)
+      return result.value.map((r) => [r.requesterId, r.kind, r.requestedLevel])
+    }
+    assert.deepEqual(await listed(), [
+      [first.userId, 'edit_access', 'edit'],
+      [second.userId, 'edit_access', 'edit'],
+    ])
+
+    const pending = await listAccessRequests(boss.ctx, doc)
+    assert.ok(pending.ok)
+    const firstId = pending.value[0]?.id
+    assert.ok(firstId)
+    assert.deepEqual(await approveAccessRequest(boss.ctx, firstId, 'edit'), { ok: true, value: { granted: true } })
+    const caps = await withReadTransaction((tx) => effectiveCaps(tx, first.ctx, doc))
+    assert.ok(can(caps, 'edit_content'), '허락받았는데 고치지 못한다')
+    assert.deepEqual(await editRequestState(first.ctx, doc), null)
+
+    assert.ok((await grantAccess(boss.ctx, doc, { type: 'user', id: second.userId }, 'edit')).ok)
+    assert.deepEqual(await listed(), [], '이미 고칠 수 있게 된 사람의 편집 요청이 선다')
+    assert.ok((await grantAccess(boss.ctx, doc, { type: 'user', id: second.userId }, 'view')).ok)
+    assert.deepEqual(await listed(), [[second.userId, 'edit_access', 'edit']], '다시 고칠 수 없게 됐는데 요청이 서지 않는다')
+  })
+
+  test('종류는 따로 센다 — 대기 중인 접근 요청이 편집 요청을 막지 않는다 · 볼 수 있게 되면 접근 요청만 목록에서 빠진다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { boss, person } = await office()
+    const asker = await person('처음엔 못 보던 사람')
+    const doc = await page(boss, { privateTop: true })
+    assert.deepEqual(await requestPageAccess(asker.ctx, doc), { ok: true, value: { sent: true } })
+    // 다른 길(공유 패널)로 읽기를 받았다 — 접근 요청은 대기 중인 채로 남는다.
+    assert.ok((await grantAccess(boss.ctx, doc, { type: 'user', id: asker.userId }, 'view')).ok)
+
+    assert.deepEqual(await requestEditAccess(asker.ctx, doc), { ok: true, value: { sent: true } })
+    assert.deepEqual(
+      (await kindsOf(doc)).map((r) => r[0]),
+      ['page_access', 'edit_access'],
+    )
+    const listed = await listAccessRequests(boss.ctx, doc)
+    assert.ok(listed.ok)
+    assert.deepEqual(listed.value.map((r) => r.kind), ['edit_access'])
   })
 })
