@@ -243,6 +243,30 @@
 }
 
 /*
+ * 코드 블록(F-01-14 · 8a-1) — `<pre class="blk-code"><code>`. 위의 인라인 코드 모양(`.blk-editor code`)이 안쪽 `<code>` 에도
+ * 걸리므로 되돌린다. 공백은 그대로(`pre`), 긴 줄은 가로로 스크롤한다(줄바꿈 토글은 8a-2). 탭 폭은 둘.
+ */
+.blk-editor pre.blk-code {
+  margin: 0.25rem 0;
+  border-radius: 0.375rem;
+  background: #f7f6f3;
+  padding: 0.75rem 1rem;
+  overflow-x: auto;
+  white-space: pre;
+  tab-size: 2;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+
+.blk-editor pre.blk-code code {
+  background: none;
+  padding: 0;
+  font-size: inherit;
+  white-space: inherit;
+}
+
+/*
  * 블록 선택 (F-01-09).
  *
  * 하이라이트는 **최상위 컨테이너에만** 걸린다. 자손은 그 안에 들어 있으므로
@@ -466,6 +490,8 @@
   .blk-image-failure, .blk-image-error { color: #fca5a5; }
   .blk-image-error { border-color: #7f1d1d; }
   .blk-mention, .blk-equation, .blk-editor code { background: #262626; }
+  .blk-editor pre.blk-code { background: #1f1f1f; }
+  .blk-editor pre.blk-code code { background: none; }
   .blk-to_do .blk-checkbox { accent-color: #ededed; }
 
   .blk-color[data-color='gray_background'],   [data-color='gray_background']   { background: #2f2f2f; }

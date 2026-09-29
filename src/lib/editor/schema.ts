@@ -45,9 +45,12 @@ import { Schema, type MarkSpec, type NodeSpec } from '@tiptap/pm/model'
 
 import {
   BLOCK_TYPES,
-  MVP_BLOCK_TYPES,
+  BODY_BLOCK_TYPES,
+  PAGE_TYPE,
   UNSUPPORTED_TYPE,
-  type MvpBlockType,
+  isKnownBlockType,
+  type BlockType,
+  type BodyBlockType,
 } from '../block/types.ts'
 import { COLORS } from '../contracts/rich-text.ts'
 
@@ -83,7 +86,7 @@ const blockAttrSpec = {
  * 우리 트리는 리스트 항목이 임의 블록의 자식이 될 수 있어서 래퍼가 성립하지
  * 않는다. 대신 `role="listitem"` 과 CSS 카운터로 표현한다.
  */
-const RENDER_TAG: Readonly<Record<MvpBlockType, string>> = {
+const RENDER_TAG: Readonly<Record<BodyBlockType, string>> = {
   paragraph: 'p',
   heading_1: 'h1',
   heading_2: 'h2',
@@ -96,12 +99,55 @@ const RENDER_TAG: Readonly<Record<MvpBlockType, string>> = {
   callout: 'aside',
   divider: 'hr',
   image: 'figure',
+  // 코드 블록은 `<pre><code>` — 공백을 그대로 보인다(`code: true` 가 `whitespace: 'pre'` 를 뜻한다).
+  code: 'pre',
+}
+
+/**
+ * 블록 타입 → ProseMirror 노드(= Y.Doc 요소) 이름. `page` 는 참조 노드, 레지스트리가 `nodeName` 을 준 타입(`code` →
+ * `code_block`)은 그 이름, 나머지는 타입 이름 그대로. **노드 이름을 타입으로 쓰는 곳은 이것과 `blockTypeOfNode` 를 거친다** —
+ * `content.type.name` 을 그대로 `specOf` 에 넣으면 `code_block` 에서 undefined 가 되어 읽기 · 저장이 통째로 깨진다(8a-1).
+ */
+export function nodeNameOf(type: BlockType): string {
+  if (type === PAGE_TYPE) return PAGE_REF_NODE
+  return BLOCK_TYPES[type].nodeName ?? type
+}
+
+/** 노드 이름(`nodeName` 으로 바꾼 것) → 블록 타입. */
+const TYPE_OF_RENAMED_NODE: ReadonlyMap<string, BlockType> = new Map(
+  (Object.keys(BLOCK_TYPES) as BlockType[])
+    .filter((t) => BLOCK_TYPES[t].nodeName !== undefined)
+    .map((t) => [BLOCK_TYPES[t].nodeName as string, t]),
+)
+
+/** ProseMirror 노드(= Y.Doc 요소) 이름 → 블록 타입. 모르는 이름은 `unsupported`. `nodeNameOf` 의 역이다. */
+export function blockTypeOfNode(name: string): BlockType {
+  if (name === PAGE_REF_NODE) return PAGE_TYPE
+  const renamed = TYPE_OF_RENAMED_NODE.get(name)
+  if (renamed !== undefined) return renamed
+  // 이름을 바꾼 타입의 원래 이름(`code`)은 노드가 아니다 — 그 이름의 노드는 없으므로 여기 오지 않지만, 오면 모르는 것이다.
+  return isKnownBlockType(name) && BLOCK_TYPES[name].nodeName === undefined ? name : UNSUPPORTED_TYPE
 }
 
 /** 레지스트리 한 항목을 노드 스펙으로. */
-function blockContentSpec(type: MvpBlockType): NodeSpec {
+function blockContentSpec(type: BodyBlockType): NodeSpec {
   const spec = BLOCK_TYPES[type]
   const tag = RENDER_TAG[type]
+
+  if (spec.plainText) {
+    // 평문 본문(F-01-14 코드 블록) — 글자만 · 서식 없음 · `code: true`. ProseMirror 가 이 칸 하나로 입력 규칙을 건너뛰고
+    // (prosemirror-inputrules) 붙여넣기를 평문으로 받는다(prosemirror-view) — 우리 쪽 분기도 같은 칸을 본다(`isPlainTextNode`).
+    return {
+      group: 'blockContent',
+      attrs: blockAttrSpec,
+      content: 'text*',
+      marks: '',
+      code: true,
+      defining: true,
+      parseDOM: [{ tag: `${tag}[data-block-type="${type}"]`, preserveWhitespace: 'full' }],
+      toDOM: () => [tag, { 'data-block-type': type, class: `blk blk-${type}`, spellcheck: 'false' }, ['code', 0]],
+    } as NodeSpec
+  }
 
   return {
     group: 'blockContent',
@@ -203,10 +249,10 @@ const nodes: Record<string, NodeSpec> = {
 // 새 블록의 기본형이 문단이 된다 — `page_ref` 나 `unsupported` 를 먼저 등록하면
 // Enter 를 누를 때마다 자식 페이지 참조 노드가 생긴다.
 //
-// 그래서 레지스트리(`MVP_BLOCK_TYPES`, 첫 항목이 `paragraph`)를 먼저 넣고
+// 그래서 레지스트리(`BODY_BLOCK_TYPES`, 첫 항목이 `paragraph`)를 먼저 넣고
 // 특수 노드를 뒤에 붙인다.
-for (const type of MVP_BLOCK_TYPES) {
-  nodes[type] = blockContentSpec(type)
+for (const type of BODY_BLOCK_TYPES) {
+  nodes[nodeNameOf(type)] = blockContentSpec(type)
 }
 
 // 자식 페이지 참조. 본문에 보이지만 내용은 그 페이지의 것이다.
@@ -276,6 +322,11 @@ for (const name of BOOLEAN_MARKS) {
 }
 
 export const blockSchema = new Schema({ nodes, marks })
+
+/** 평문 본문 노드인가(코드 블록) — 편집기의 컨텍스트 분기(메뉴 · 키 · 붙여넣기)가 묻는 한 곳. 레지스트리의 `plainText` 가 만든 칸이다. */
+export function isPlainTextNode(node: { readonly type: { readonly spec: { readonly code?: boolean } } }): boolean {
+  return node.type.spec.code === true
+}
 
 export const BOOLEAN_MARK_NAMES: readonly BooleanMark[] = BOOLEAN_MARKS
 

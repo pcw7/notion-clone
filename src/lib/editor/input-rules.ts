@@ -41,15 +41,15 @@ import type { Command } from '@tiptap/pm/state'
 
 import {
   BLOCK_TYPES,
-  MVP_BLOCK_TYPES,
+  BODY_BLOCK_TYPES,
   normalizeFormat,
   specOf,
   type BlockFormat,
   type BlockType,
 } from '../block/types.ts'
-import { blockSchema } from './schema.ts'
-import { containerAt } from './pm-blocks.ts'
-import { newBlockId } from './pm-adapter.ts'
+import { blockSchema, nodeNameOf } from './schema.ts'
+import { blockTypeOf, containerAt } from './pm-blocks.ts'
+import { inlineForType, inlineToRuns, newBlockId } from './pm-adapter.ts'
 
 /** 정규식 특수문자 이스케이프. 접두사에 `*`, `+`, `[`, `.` 가 들어 있다. */
 function escapeRegExp(value: string): string {
@@ -80,18 +80,26 @@ function blockTypeRule(type: BlockType, prefix: string): InputRule {
     const info = containerAt(state.selection.$from)
     if (!info) return null
 
-    // 이미 그 타입이면 접두사를 텍스트로 남긴다 — "- - 항목" 을 쓰려는 경우다.
-    const currentType = info.contentNode.type.name
-    if (currentType === type) return null
+    // 이미 그 타입이면 접두사를 텍스트로 남긴다 — "- - 항목" 을 쓰려는 경우다. 노드 이름이 아니라 타입으로 비교한다(`code_block`).
+    if (blockTypeOf(info.contentNode) === type) return null
     // 텍스트를 담지 않는 블록 안에서는 입력 규칙이 돌 일이 없다.
     if (!info.contentNode.isTextblock) return null
 
     const format = normalizeFormat(type, info.contentNode.attrs.format as BlockFormat)
     const tr = state.tr
 
+    const nodeType = blockSchema.nodes[nodeNameOf(type)]
     if (specOf(type).hasRichText) {
       tr.delete(start, end)
-      tr.setNodeMarkup(info.contentPos, blockSchema.nodes[type], {
+      if (specOf(type).plainText) {
+        // 평문 본문(```` ``` ```` → 코드 블록) — 남은 글자의 서식 · 멘션을 먼저 편다. 그대로 바꾸면 스키마가 받지 않아 던진다.
+        const content = tr.doc.nodeAt(info.contentPos)
+        if (content !== null && content.content.size > 0) {
+          const from = info.contentPos + 1
+          tr.replaceWith(from, from + content.content.size, inlineForType(type, inlineToRuns(content.content)))
+        }
+      }
+      tr.setNodeMarkup(info.contentPos, nodeType, {
         props: propertiesForPrefix(type, prefix),
         format,
       })
@@ -105,7 +113,7 @@ function blockTypeRule(type: BlockType, prefix: string): InputRule {
     tr.replaceWith(
       info.contentPos,
       info.contentPos + info.contentNode.nodeSize,
-      blockSchema.nodes[type].create({ props: {}, format }),
+      nodeType.create({ props: {}, format }),
     )
     const container = tr.doc.nodeAt(info.pos)
     if (container) {
@@ -123,7 +131,7 @@ function blockTypeRule(type: BlockType, prefix: string): InputRule {
 /** 레지스트리의 `markdownPrefix` 를 전부 규칙으로. */
 export function blockInputRules(): InputRule[] {
   const rules: InputRule[] = []
-  for (const type of MVP_BLOCK_TYPES) {
+  for (const type of BODY_BLOCK_TYPES) {
     for (const prefix of BLOCK_TYPES[type].markdownPrefix ?? []) {
       rules.push(blockTypeRule(type, prefix))
     }

@@ -54,10 +54,9 @@
  * ──────────────────────────────────────────────────────────────────────
  * 범위 밖
  * ──────────────────────────────────────────────────────────────────────
- * `code` 블록의 Enter/Backspace 예외(F-01-14)는 여기 없다. **MVP 12종에
- * `code` 가 없기 때문이다**(`block/types.ts`). 추가할 때는 레지스트리에
- * `splitsOnEnter: false` 같은 항목을 넣어 이 파일이 타입 표만 보고 분기하게
- * 한다 — 여기에 `if (type === 'code')` 를 심지 않는다.
+ * `code` 블록의 Enter 예외(F-01-14 · 8a-1)는 레지스트리의 `plainText` 한 칸으로 가른다 — 평문 본문의 Enter 는 블록을
+ * 쪼개지 않고 줄바꿈 글자를 넣는다(`insert_newline`). 여기에 `if (type === 'code')` 를 심지 않는다. Backspace 는 다른
+ * 텍스트 블록과 같다(빈 코드 블록은 문단으로 되돌아간다 · 앞 블록과 합칠 수 있다).
  */
 
 import {
@@ -65,7 +64,7 @@ import {
   normalizeFormat,
   type BlockFormat,
   type BlockType,
-  type MvpBlockType,
+  type BodyBlockType,
 } from '../block/types.ts'
 import type { RichTextRun } from '../contracts/rich-text.ts'
 import { concatRuns, splitRunsAt, unitLength } from './rich-text-ops.ts'
@@ -129,6 +128,8 @@ export type SplitPlan =
   | { readonly kind: 'escape_to_paragraph' }
   /** 텍스트를 담지 않는 블록(divider·image)에서 Enter — 뒤에 빈 문단을 넣는다. */
   | { readonly kind: 'insert_paragraph_after' }
+  /** 평문 본문(코드 블록 · 8a-1)에서 Enter — 블록을 쪼개지 않고 캐럿 자리에 줄바꿈 글자를 넣는다. */
+  | { readonly kind: 'insert_newline' }
   /** 실제 분할. */
   | {
       readonly kind: 'split'
@@ -136,7 +137,7 @@ export type SplitPlan =
       readonly head: RichTextRun[]
       /** 새 블록으로 가는 텍스트. */
       readonly tail: RichTextRun[]
-      readonly newType: MvpBlockType
+      readonly newType: BodyBlockType
       readonly newPlacement: NewBlockPlacement
       readonly newProperties: Record<string, unknown>
       readonly newFormat: BlockFormat
@@ -160,6 +161,8 @@ export function planSplit(block: RuleBlock, offset: number): SplitPlan {
 
   // divider·image 는 텍스트가 없어 쪼갤 것이 없다.
   if (!spec.hasRichText) return { kind: 'insert_paragraph_after' }
+  // 평문 본문은 줄이 글자다 — 쪼개지 않는다(F-01-14 *"코드 안에서 Enter → 새 블록이 아니라 줄바꿈"*).
+  if (spec.plainText) return { kind: 'insert_newline' }
 
   const total = unitLength(block.title)
 
@@ -172,7 +175,7 @@ export function planSplit(block: RuleBlock, offset: number): SplitPlan {
   const { head, tail } = splitRunsAt(block.title, offset)
   const newType = (
     SPLITS_INTO_PARAGRAPH.has(block.type) ? 'paragraph' : block.type
-  ) as MvpBlockType
+  ) as BodyBlockType
 
   return {
     kind: 'split',
@@ -205,13 +208,13 @@ function placementFor(block: RuleBlock): NewBlockPlacement {
  * 원본의 properties 를 통째로 복사하지 않고 **필요한 것만 새로 만든다** —
  * 복사 후 지우는 방식은 나중에 타입이 늘어날 때 지우는 것을 빠뜨린다.
  */
-function newPropertiesFor(newType: MvpBlockType): Record<string, unknown> {
+function newPropertiesFor(newType: BodyBlockType): Record<string, unknown> {
   if (newType === 'to_do') return { checked: false }
   return {}
 }
 
 /** `block_color` 만 상속한다. 지원하지 않는 타입이면 normalizeFormat 이 버린다. */
-function inheritedFormat(newType: MvpBlockType, format: BlockFormat | undefined): BlockFormat {
+function inheritedFormat(newType: BodyBlockType, format: BlockFormat | undefined): BlockFormat {
   return normalizeFormat(newType, { block_color: format?.block_color })
 }
 

@@ -3509,6 +3509,84 @@ async function main() {
       await sleep(1500)
     }
 
+    if (sectionIf('코드 블록 (8a-1 · F-01-14)')) {
+      // 새 페이지의 빈 줄에서 ``` 을 쳐 코드 블록을 만들고, Enter(줄바꿈) · Tab(들여쓰기 글자) · `/`(메뉴 없음)를 친 뒤 Mod+Enter 로
+      // 빠져나와 문단을 쓴다. 서버에 저장된 본문(협업 서버 → 투영)이 코드 블록 하나 + 문단 하나인지 본다. 자기 데이터를 스스로
+      // 만든다 — E2E_ONLY 로 홀로 돈다.
+      const stamp = Date.now()
+      const codePage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
+        method: 'POST', headers: authed, body: JSON.stringify({ title: `코드 블록 ${stamp}` }),
+      })).json()).page.id
+      const firstLine = randomUUID()
+      const expected = 'if ok:\n\trun("# x") /P1\nP2'
+      await saveBody(codePage, { blocks: [{ id: firstLine, type: 'paragraph', title: [], properties: {}, format: {}, children: [] }] })
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${codePage}` })
+      await waitFor(`!!document.querySelector('[data-block-id="${firstLine}"] p')`, 15000)
+      // 편집기가 붙기 전의 클릭은 캐럿을 두지 않는다 — 캐럿이 그 줄에 설 때까지 다시 누른다.
+      let focused = false
+      for (let i = 0; i < 20 && !focused; i += 1) {
+        await clickSelector(`[data-block-id="${firstLine}"] p`)
+        focused = await waitFor(`document.activeElement?.classList.contains('ProseMirror') && !!window.getSelection()?.anchorNode && document.querySelector('[data-block-id="${firstLine}"]')?.contains(window.getSelection().anchorNode)`, 500)
+      }
+      check('전제 — 빈 줄에 캐럿이 섰다', focused)
+
+      for (const ch of '```') await typeText(ch)
+      check('★ 줄 머리에 ``` 을 치면 코드 블록이 된다', await waitFor(`!!document.querySelector('[data-block-id="${firstLine}"] pre.blk-code')`, 3000),
+        await evaluate(`document.querySelector('[data-block-id="${firstLine}"]')?.innerHTML ?? '(없음)'`))
+
+      await typeText('if ok:')
+      await key('Enter')
+      await key('Tab')
+      await typeText('run("# x")')
+      await typeText(' /')
+      const slashOpened = await waitFor(`!!document.querySelector('[role="listbox"][aria-label="블록 삽입"]')`, 800)
+      check('★ Enter 는 줄바꿈 · Tab 은 들여쓰기 글자 — 블록이 하나로 남고 · 코드 안의 / 는 메뉴를 열지 않는다',
+        !slashOpened && (await evaluate(`document.querySelectorAll('.blk-editor [data-block-id]').length === 1
+          && document.querySelector('[data-block-id="${firstLine}"] pre.blk-code')?.textContent === ${JSON.stringify(expected.slice(0, expected.indexOf('P1')))}`)),
+        JSON.stringify(await evaluate(`[...document.querySelectorAll('.blk-editor [data-block-id]')].map((c) => c.textContent)`)))
+
+      // 코드 블록 안에 블록 묶음을 붙여넣으면 평문이다(F-01-14 · F-01-10) — 합성 붙여넣기 이벤트에 우리 블록 묶음과 그 평문을 싣는다.
+      // 붙여넣기 처리가 블록 묶음을 풀면 문단 둘이 코드 블록 뒤에 선다.
+      const pastedBlocks = ['P1', 'P2'].map((t) => ({ id: randomUUID(), type: 'paragraph', title: [textRun(t)], properties: {}, format: {}, children: [] }))
+      await evaluate(`(() => {
+        const dt = new DataTransfer()
+        dt.setData('application/x-notion-clone-blocks+json', ${JSON.stringify(JSON.stringify({ version: 1, blocks: pastedBlocks }))})
+        dt.setData('text/plain', ${JSON.stringify('P1\nP2')})
+        document.querySelector('.ProseMirror').dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }))
+      })()`)
+      check('★ 코드 블록 안에 블록 묶음을 붙여넣으면 평문으로 들어간다 — 블록이 늘지 않는다',
+        await waitFor(`document.querySelectorAll('.blk-editor [data-block-id]').length === 1
+          && document.querySelector('[data-block-id="${firstLine}"] pre.blk-code')?.textContent === ${JSON.stringify(expected)}`, 3000),
+        JSON.stringify(await evaluate(`[...document.querySelectorAll('.blk-editor [data-block-id]')].map((c) => c.textContent)`)))
+
+      await key('Enter', MOD)
+      await typeText('after')
+      check('★ Mod+Enter 는 코드 블록을 빠져나와 아래 문단에 쓴다',
+        await waitFor(`(() => {
+          const rows = [...document.querySelectorAll('.blk-editor [data-block-id]')]
+          return rows.length === 2 && rows[1].querySelector('p')?.textContent === 'after'
+        })()`, 3000),
+        JSON.stringify(await evaluate(`[...document.querySelectorAll('.blk-editor [data-block-id]')].map((c) => c.firstElementChild?.tagName + ':' + c.textContent)`)))
+
+      // 서버 — 협업 서버가 받은 편집이 투영된 본문(행). 투영 창(1s)만큼 늦으니 기다린다.
+      let saved = null
+      for (let i = 0; i < 60; i += 1) {
+        const blocks = (await readBody(codePage)).doc.blocks
+        const text = (b) => (b?.title ?? []).map((r) => r.plain_text ?? r.text?.content ?? '').join('')
+        saved = blocks.map((b) => [b.type, text(b)])
+        if (JSON.stringify(saved) === JSON.stringify([['code', expected], ['paragraph', 'after']])) break
+        await sleep(150)
+      }
+      check("★ 서버에 코드 블록(type='code') 하나 — 줄바꿈 · 탭 · 마크다운 글자가 그대로 — 와 문단이 저장됐다",
+        JSON.stringify(saved) === JSON.stringify([['code', expected], ['paragraph', 'after']]), JSON.stringify(saved))
+
+      // 다시 열어도 코드 블록으로 그린다(Y.Doc 의 `code_block` 을 읽는다).
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${codePage}` })
+      check('다시 열어도 코드 블록이다 — 줄바꿈 · 탭 그대로',
+        await waitFor(`document.querySelector('[data-block-id="${firstLine}"] pre.blk-code')?.textContent === ${JSON.stringify(expected)}`, 15000))
+      await sleep(1500)
+    }
+
     if (sectionIf('코멘트 패널 · 인박스 (F-05-08 · F-11-07)')) {
       const commentPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
         method: 'POST',
@@ -4272,11 +4350,14 @@ async function main() {
       await send('Page.reload')
       await waitFor(`!!document.querySelector('[data-testid="db-load-more"]')`, 15000)
       check('★ 첫 화면은 50행이고 "더 보기" 가 있다 — 무한 스크롤이 아니다', (await rowCount()) === 50, `${await rowCount()}행`)
-      await clickOn('[data-testid="db-load-more"]')
-      check('★ "더 보기" 가 나머지를 이어 붙이고 사라진다 — 57행',
-        await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === 57
-          && !document.querySelector('[data-testid="db-load-more"]')`, 8000),
-        `${await rowCount()}행`)
+      // 다시 불러온 직후의 클릭은 React 가 붙기 전이면 사라진다(§6) — 행이 늘 때까지 다시 누른다(두 판 연속 흔들렸다 · 8a-1).
+      let loadedMore = false
+      for (let i = 0; i < 10 && !loadedMore; i += 1) {
+        if (await evaluate(`!!document.querySelector('[data-testid="db-load-more"]')`)) await clickOn('[data-testid="db-load-more"]')
+        loadedMore = await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === 57
+          && !document.querySelector('[data-testid="db-load-more"]')`, 1500)
+      }
+      check('★ "더 보기" 가 나머지를 이어 붙이고 사라진다 — 57행', loadedMore, `${await rowCount()}행`)
       check('이어 붙인 행에 같은 행이 두 번 없다',
         await evaluate(`(() => {
           const ids = [...document.querySelectorAll('[data-testid="db-table"] tbody tr')].map((tr) => tr.dataset.rowId)

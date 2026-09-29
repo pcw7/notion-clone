@@ -30,7 +30,7 @@
 
 import { Plugin, PluginKey, type EditorState, type Transaction } from '@tiptap/pm/state'
 
-import { MENTION_NODE } from './schema.ts'
+import { isPlainTextNode, MENTION_NODE } from './schema.ts'
 
 export type MentionMenuState = {
   readonly active: boolean
@@ -54,7 +54,8 @@ export function closeMentionMenu(tr: Transaction): Transaction {
 
 function isTriggerPosition(state: EditorState, atPos: number): boolean {
   const $at = state.doc.resolve(atPos)
-  if (!$at.parent.isTextblock) return false
+  // 코드 블록(평문 본문) 안의 `@` 는 글자다 — 멘션을 담을 수 없다(8a-1).
+  if (!$at.parent.isTextblock || isPlainTextNode($at.parent)) return false
   if ($at.parentOffset === 0) return true
   const before = $at.parent.textBetween($at.parentOffset - 1, $at.parentOffset)
   return /\s/.test(before)
@@ -76,7 +77,7 @@ function computeState(prev: MentionMenuState, tr: Transaction, next: EditorState
   if (meta?.close) return INACTIVE
 
   const { $from, empty } = next.selection
-  if (!empty || !$from.parent.isTextblock) return INACTIVE
+  if (!empty || !$from.parent.isTextblock || isPlainTextNode($from.parent)) return INACTIVE
 
   if (prev.active) {
     const from = tr.mapping.map(prev.from)

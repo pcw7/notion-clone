@@ -32,7 +32,7 @@
 
 import type { Command, EditorState } from '@tiptap/pm/state'
 
-import { normalizeFormat, PAGE_TYPE, specOf, type BlockFormat, type MvpBlockType } from '../block/types.ts'
+import { normalizeFormat, PAGE_TYPE, specOf, type BlockFormat, type BodyBlockType } from '../block/types.ts'
 import { COLORS, type Color } from '../contracts/rich-text.ts'
 import { isUuid } from '../ids.ts'
 import { BlockSelection, isBlockSelection, selectionHasPageRef } from './block-selection.ts'
@@ -47,7 +47,7 @@ import { blockTypeLabel } from './slash-menu.ts'
  * 두지 않는다. 텍스트가 있는 블록을 구분선으로 바꾸면 텍스트가 사라지고,
  * `applyTurnInto` 는 그것을 거부한다(빈 블록만 허용).
  */
-export const TURN_INTO_TYPES: readonly MvpBlockType[] = [
+export const TURN_INTO_TYPES: readonly BodyBlockType[] = [
   'paragraph',
   'heading_1',
   'heading_2',
@@ -58,6 +58,7 @@ export const TURN_INTO_TYPES: readonly MvpBlockType[] = [
   'toggle',
   'quote',
   'callout',
+  'code',
 ]
 
 const COLOR_NAMES: Readonly<Record<string, string>> = {
@@ -80,7 +81,7 @@ export function colorLabel(color: Color): string {
 }
 
 export type BlockMenuAction =
-  | { readonly kind: 'turn_into'; readonly type: MvpBlockType }
+  | { readonly kind: 'turn_into'; readonly type: BodyBlockType }
   | { readonly kind: 'color'; readonly color: Color }
   | { readonly kind: 'duplicate' }
   | { readonly kind: 'copy_link' }

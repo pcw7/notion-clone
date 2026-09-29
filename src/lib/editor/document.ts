@@ -54,6 +54,7 @@ import {
   type BlockType,
 } from '../block/types.ts'
 import { IMAGE_TYPE, validateImageProperties } from '../block/image.ts'
+import { CODE_TYPE, validateCodeProperties } from '../block/code.ts'
 import { isUuid } from '../ids.ts'
 import { orderKeysBetween } from '../block/order-key.ts'
 import { validateRichText, type RichTextRun } from '../contracts/rich-text.ts'
@@ -134,6 +135,10 @@ export function validateDoc(doc: EditorDoc): DocIssue[] {
       // 들어간다. 화면에서만 막으면 API 로 직접 저장하는 경로가 열려 있다.
       if (block.type === IMAGE_TYPE) {
         issues.push(...validateImageProperties(block.properties, `${p}.properties`))
+      }
+      // 코드 블록의 언어 · 캡션(8a-1) — 같은 까닭(API 로 직접 저장하는 경로).
+      if (block.type === CODE_TYPE) {
+        issues.push(...validateCodeProperties(block.properties, `${p}.properties`))
       }
 
       const children = block.children ?? []
