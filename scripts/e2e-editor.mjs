@@ -227,6 +227,17 @@ async function loginCodeFor(email) {
   throw new Error('서버 출력에서 로그인 코드를 찾지 못했다')
 }
 
+/** 콘솔 메일러가 찍은 초대 메일의 수락 링크(7g-1) — 운영 모드의 응답에는 개발 링크가 없다. 없으면 null. */
+async function inviteLinkFor(email) {
+  for (let i = 0; i < 50; i += 1) {
+    const at = serverOutput.lastIndexOf(`받는 사람 : ${email}`)
+    const link = at >= 0 ? serverOutput.slice(at).match(/수락 링크\s*:\s*(\S+)/)?.[1] : undefined
+    if (link) return link
+    await sleep(100)
+  }
+  return null
+}
+
 // ── CDP ───────────────────────────────────────────────────────────────
 
 function connect(url) {
@@ -2764,7 +2775,7 @@ async function main() {
       check('이미 멤버인 사람은 멤버로 공유했다고 말한다 — 게스트가 되지 않는다',
         (await panelSays('멤버로 공유했습니다')) && !(await evaluate(`[...document.querySelectorAll('${DIALOG} li')].some((li) => li.textContent.includes(${JSON.stringify(`${memberName} (${mate.email}) · 게스트`)}))`)))
       await invite(`nobody-${stamp}@example.com`) // ASCII — type="email" 칸은 한글 주소를 브라우저가 먼저 막는다
-      check('계정이 없는 이메일은 먼저 가입하라고 말한다', await panelSays('먼저 가입한 뒤에'))
+      check('계정이 없는 이메일에는 초대 메일을 보냈다고 말한다 (7g-1 전에는 "먼저 가입하라")', await panelSays('초대 메일을 보냈습니다'))
 
       // 게스트에게 전체 권한은 줄 수 없다 — 사람 고르개로 줘도
       const grantFull = await fetch(`${pagesUrl}/${doc}/access`, {
@@ -3236,6 +3247,60 @@ async function main() {
       check('★ "잠금 풀기"를 누르면 구조 화면이 돌아온다', unlocked && (await waitFor(STRUCTURE, 10000)))
       const afterUnlock = await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '풀린 뒤의 속성', type: 'number' })
       check('풀린 뒤에는 속성을 더한다', afterUnlock.status === 200 || afterUnlock.status === 201, String(afterUnlock.status))
+      await sleep(1500)
+    }
+
+    if (sectionIf('게스트의 대기 초대 (7g-1 · F-06-09)')) {
+      // 소유자가 가입하지 않은 이메일을 페이지에 초대한다 → 대기 초대 · 메일(개발 링크). 그 사람이 진짜 로그인 흐름으로 가입하고
+      // 브라우저로 링크를 열어 받아들이면 그 페이지로 간다 — 그 페이지만 본다. 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
+      const stamp = Date.now()
+      const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
+      const docTitle = `가입 전에 초대한 문서 ${stamp}`
+      const doc = (await (await fetch(pagesUrl, { method: 'POST', headers: authed, body: JSON.stringify({ title: docTitle, privateTop: true }) })).json()).page.id
+      const other = (await (await fetch(pagesUrl, { method: 'POST', headers: authed, body: JSON.stringify({ title: `초대 안 한 문서 ${stamp}`, privateTop: true }) })).json()).page.id
+      const email = `pending-${stamp}@example.com`
+      const invited = await fetch(`${pagesUrl}/${doc}/guests`, { method: 'POST', headers: authed, body: JSON.stringify({ email, level: 'comment' }) })
+      const body = await invited.json()
+      const link = await inviteLinkFor(email)
+      check('★ 계정이 없는 이메일을 초대하면 대기 초대가 된다 — 초대 메일이 나가고 토큰은 응답에 없다',
+        invited.ok && body.as === 'pending' && typeof link === 'string' && body.token === undefined && !JSON.stringify(body).includes('/invite/'),
+        `${JSON.stringify(body)} · ${link}`)
+      const ownerHome = await (await fetch(`${BASE}/w/${workspaceId}`, { headers: authed })).text()
+      check('홈의 대기 중인 초대에 "게스트 · 페이지 하나"로 선다 — 페이지 제목은 없다',
+        ownerHome.includes(email) && ownerHome.includes('게스트 · 페이지 하나'))
+
+      // 그 사람이 가입한다 — 진짜 로그인 흐름(코드 요청 → 콘솔 메일러의 코드 → 확인)
+      const requested = await fetch(`${BASE}/api/auth/request-code`, { method: 'POST', headers: json, body: JSON.stringify({ email }) })
+      const code = await loginCodeFor(email)
+      const verified = await fetch(`${BASE}/api/auth/verify-code`, { method: 'POST', headers: json, body: JSON.stringify({ email, code }) })
+      const newcomer = verified.headers.getSetCookie().find((c) => c.startsWith('nc_session='))?.split(';')[0].slice('nc_session='.length)
+      check('전제 — 그 이메일로 가입했다', requested.ok && verified.ok && typeof newcomer === 'string', String(verified.status))
+
+      try {
+        await send('Network.setCookie', { name: 'nc_session', value: newcomer, domain: 'localhost', path: '/', httpOnly: true })
+        // 메일의 링크는 앱의 공개 주소(`NEXT_PUBLIC_APP_URL` — .env 의 개발 서버)를 가리킨다. e2e 서버는 다른 포트라 경로만 옮긴다.
+        await send('Page.navigate', { url: `${BASE}${new URL(link).pathname}` })
+        check('★ 링크를 열면 "페이지 하나에 게스트로" 초대됐다고 말한다 — 페이지 제목은 없다',
+          (await waitFor(`(document.querySelector('[data-testid="invite-summary"]')?.textContent ?? '').includes('페이지 하나에 게스트로')`, 15000))
+            && !(await evaluate(`document.body.innerText.includes(${JSON.stringify(docTitle)})`)))
+        let arrived = false
+        for (let i = 0; i < 10 && !arrived; i += 1) {
+          await clickText('초대 받아들이기')
+          arrived = await waitFor(`location.pathname === ${JSON.stringify(`/w/${workspaceId}/${doc}`)}`, 1500)
+        }
+        check('★ 받아들이면 그 페이지로 가고 제목이 보인다',
+          arrived && (await waitFor(`(document.querySelector('input[aria-label="페이지 제목"]')?.value ?? '') === ${JSON.stringify(docTitle)}`, 15000)),
+          await evaluate('location.pathname'))
+        const asNewcomer = { cookie: `nc_session=${newcomer}` }
+        check('★ 초대하지 않은 페이지는 못 연다(접근 요청 화면) — 게스트다',
+          await shownNoAccess(await fetch(`${BASE}/w/${workspaceId}/${other}`, { headers: asNewcomer })))
+        const again = await fetch(`${BASE}/api/invites/accept`, {
+          method: 'POST', headers: { ...json, cookie: `nc_session=${newcomer}` }, body: JSON.stringify({ token: decodeURIComponent(new URL(link).pathname.split('/').pop()) }),
+        })
+        check('같은 링크로 다시 받아들이지 못한다 (404)', again.status === 404, String(again.status))
+      } finally {
+        await send('Network.setCookie', { name: 'nc_session', value: session, domain: 'localhost', path: '/', httpOnly: true })
+      }
       await sleep(1500)
     }
 

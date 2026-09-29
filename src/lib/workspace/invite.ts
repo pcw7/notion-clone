@@ -16,7 +16,10 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 
 import { queryMaybe } from '../db/pool.ts'
-import { withTransaction, type Tx } from '../db/tx.ts'
+import { withCommandTransaction, withTransaction, type Tx } from '../db/tx.ts'
+import { grantFromInviteIn } from '../permissions/acl.ts'
+import { membersWith } from '../permissions/effective.ts'
+import type { Level } from '../permissions/levels.ts'
 import { joinDefaultTeamspaces } from './teamspace.ts'
 
 /** 초대에 부여할 수 있는 역할. guest 는 페이지 단위라 워크스페이스 초대 대상이 아니다. */
@@ -90,9 +93,10 @@ export async function createEmailInvite(
 
     // 대기 중인 초대가 이미 있으면 역할만 갱신한다.
     // (F-14-10: "초대 수락 전 관리자가 역할 변경 → pending 초대의 role 을 갱신")
+    // 게스트의 대기 초대(7g-1)는 다른 초대다 — 페이지 하나를 받는 초대를 워크스페이스 멤버 초대로 바꾸지 않는다.
     const pending = await tx.queryMaybe<{ id: string }>(
       `SELECT id FROM workspace_invite
-        WHERE workspace_id = $1 AND email = $2
+        WHERE workspace_id = $1 AND email = $2 AND role <> 'guest'
           AND revoked_at IS NULL AND accepted_at IS NULL
           AND (expires_at IS NULL OR expires_at > now())`,
       [input.workspaceId, email],
@@ -140,7 +144,8 @@ export type InvitePreview = {
   readonly workspaceId: string
   readonly workspaceName: string
   readonly email: string
-  readonly role: InvitableRole
+  /** 게스트 초대면 `guest`(7g-1) — 페이지 하나를 받는다. 수락 화면은 페이지 제목을 싣지 않는다(받기 전에는 볼 수 없다). */
+  readonly role: InvitableRole | 'guest'
 }
 
 /** 수락 화면에 보여줄 정보. 토큰이 유효할 때만 돌려준다. */
@@ -172,17 +177,32 @@ export async function previewInvite(token: string): Promise<InvitePreview | null
     workspaceId: row.workspace_id,
     workspaceName: row.workspace_name,
     email: row.email,
-    role: row.role as InvitableRole,
+    role: row.role as InvitableRole | 'guest',
   }
 }
 
 // ── 수락 ──────────────────────────────────────────────────────────────
 
 export type AcceptInviteOutcome =
-  | { readonly ok: true; readonly workspaceId: string; readonly role: InvitableRole }
+  | {
+      readonly ok: true
+      readonly workspaceId: string
+      /** 이 워크스페이스에서의 역할 — 게스트 초대를 받은 기존 멤버는 원래 역할 그대로다. */
+      readonly role: InvitableRole | 'guest'
+      /** 게스트 초대면 받은 페이지 — 화면이 그리로 간다(7g-1). */
+      readonly pageId?: string
+    }
   | {
       readonly ok: false
-      readonly reason: 'invalid' | 'email_mismatch' | 'seat_limit' | 'already_member'
+      readonly reason:
+        | 'invalid'
+        | 'email_mismatch'
+        | 'seat_limit'
+        | 'already_member'
+        /** 게스트 초대인데 페이지가 살아 있지 않거나, 초대한 사람이 이제 그 페이지를 공유할 수 없다(7g-1 · 정본 게스트 ⑨ (c)). */
+        | 'page_unavailable'
+        /** 받는 사람의 멤버십이 멈춰 있다. */
+        | 'unavailable'
     }
 
 /**
@@ -225,16 +245,12 @@ export async function acceptInvite(
   token: string,
   userId: string,
 ): Promise<AcceptInviteOutcome> {
-  return withTransaction(async (tx) => {
+  // 거부는 아무것도 바꾸지 않는다(§3.3-158) — 게스트 초대는 멤버십을 쓴 뒤에 부여를 쓰므로 그 사이의 거부가 되돌아가야 한다.
+  return withCommandTransaction(async (tx) => {
     // FOR UPDATE 로 잠근다. 같은 초대를 동시에 수락하면 좌석이 두 번 소비된다.
-    const invite = await tx.queryMaybe<{
-      id: string
-      workspace_id: string
-      email: string
-      role: string
-      token_hash: string
-    }>(
-      `SELECT i.id, i.workspace_id, i.email::text AS email, i.role, i.token_hash
+    const invite = await tx.queryMaybe<GuestInviteRow>(
+      `SELECT i.id, i.workspace_id, i.email::text AS email, i.role, i.token_hash,
+              i.page_id, i.page_level, i.created_by, i.created_at
          FROM workspace_invite i
          JOIN workspace w ON w.id = i.workspace_id
         WHERE i.token_hash = $1
@@ -260,6 +276,8 @@ export async function acceptInvite(
     if (!owns) {
       return { ok: false, reason: 'email_mismatch' } as const
     }
+
+    if (invite.role === 'guest') return acceptGuestInvite(tx, invite, userId)
 
     const existing = await tx.queryMaybe<{ status: string }>(
       `SELECT status FROM workspace_member WHERE workspace_id = $1 AND user_id = $2`,
@@ -310,6 +328,75 @@ export async function acceptInvite(
 
     return { ok: true, workspaceId: invite.workspace_id, role } as const
   })
+}
+
+type GuestInviteRow = {
+  id: string
+  workspace_id: string
+  email: string
+  role: string
+  token_hash: string
+  page_id: string | null
+  page_level: string | null
+  created_by: string
+  created_at: Date
+}
+
+/**
+ * 게스트의 대기 초대를 받아들인다(7g-1 · 정본 §3.3 게스트 ⑨) — 이메일 소유는 부르는 쪽이 이미 확인했다.
+ *
+ *   ① 초대한 사람이 **지금도** 그 페이지를 공유할 수 있는가 — 세션이 없으므로 판정과 같은 규칙을 그 사람으로 센다(`membersWith` ·
+ *      활성 멤버 · `manage_perm`). 부여를 정한 것은 초대할 때 그 사람의 세션이었고, 이것은 그 결정을 좁히기만 한다
+ *   ② 멤버십 — 이미 들어와 있으면 역할을 건드리지 않고, 멈췄으면 받지 않고, 아니면 게스트로(떠났던 사람은 돌아온다 · M1)
+ *   ③ 부여 — `grantFromInviteIn`(살아 있는 페이지 · 이 워크스페이스의 사람 · 게스트는 편집까지 · 낮추지 않는다)
+ *
+ * 멤버십을 부여보다 먼저 쓴다(공유의 사용자 주체는 이 워크스페이스의 사람 · 7d-2) — 그 사이의 거부는 트랜잭션이 되돌린다.
+ */
+async function acceptGuestInvite(tx: Tx, invite: GuestInviteRow, userId: string): Promise<AcceptInviteOutcome> {
+  const pageId = invite.page_id as string
+  const sharers = (await membersWith(tx, invite.workspace_id, [pageId], 'manage_perm', [invite.created_by])).get(pageId)
+  const page = await tx.queryMaybe<{ id: string }>(
+    `SELECT id FROM block WHERE id = $1 AND workspace_id = $2 AND lifecycle = 'live' FOR SHARE`,
+    [pageId, invite.workspace_id],
+  )
+  if (page === null || !sharers?.has(invite.created_by)) return { ok: false, reason: 'page_unavailable' } as const
+
+  const existing = await tx.queryMaybe<{ role: string; status: string }>(
+    `SELECT role, status FROM workspace_member WHERE workspace_id = $1 AND user_id = $2 FOR UPDATE`,
+    [invite.workspace_id, userId],
+  )
+  if (existing?.status === 'suspended') return { ok: false, reason: 'unavailable' } as const
+  const active = existing?.status === 'active'
+  if (!active) {
+    await tx.query(
+      `INSERT INTO workspace_member (workspace_id, user_id, role, status, join_method, invited_by, invited_at, accepted_at)
+       VALUES ($1, $2, 'guest', 'active', 'invite_email', $3, $4, now())
+       ON CONFLICT (workspace_id, user_id) DO UPDATE
+          SET role = 'guest', status = 'active', removed_at = NULL, join_method = 'invite_email',
+              invited_by = EXCLUDED.invited_by, invited_at = EXCLUDED.invited_at, accepted_at = now()`,
+      [invite.workspace_id, userId, invite.created_by, invite.created_at],
+    )
+    await tx.query(`UPDATE "user" SET perm_gen = perm_gen + 1 WHERE id = $1`, [userId])
+    await tx.query(`UPDATE workspace SET acl_epoch = acl_epoch + 1 WHERE id = $1`, [invite.workspace_id])
+  }
+
+  const granted = await grantFromInviteIn(
+    tx,
+    invite.workspace_id,
+    pageId,
+    userId,
+    invite.page_level as Level,
+    invite.created_by,
+  )
+  if (granted !== 'granted' && granted !== 'covered') return { ok: false, reason: 'page_unavailable' } as const
+
+  await tx.query(`UPDATE workspace_invite SET accepted_at = now(), accepted_by_user_id = $2 WHERE id = $1`, [invite.id, userId])
+  return {
+    ok: true,
+    workspaceId: invite.workspace_id,
+    role: active ? (existing.role as InvitableRole | 'guest') : 'guest',
+    pageId,
+  } as const
 }
 
 /** 초대를 취소한다. 링크는 즉시 무효가 된다. */

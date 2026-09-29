@@ -11,6 +11,9 @@
  *   ⑥ (7d-2) ★ 공유의 사용자 주체는 이 워크스페이스의 사람이다 · ★ 게스트는 `@` 의 사람 후보를 받지 않는다
  *      (공유 패널 · 코멘트 · 홈의 목록은 라우트가 좁힌다 — e2e 가 본다)
  *   ⑦ (7d-3) ★ 목록(받은 페이지 수) · ★ 멤버로 올리기(공유 그대로 · 전체 · 기본 teamspace · 좌석) · ★ 빼기(공유를 모두 걷는다)
+ *   ⑧ (7g-1) ★ 계정이 없으면 대기 초대 — (페이지, 이메일)마다 하나 · 다시 초대하면 레벨 · 토큰을 새로 쓴다 · 멤버 초대가 건드리지
+ *      않는다 · ★ 가입해 받아들이면 멤버십 → 부여를 한 번에 · ★ 초대한 사람이 이제 공유할 수 없거나 페이지가 휴지통이면 받지 못하고
+ *      아무것도 안 바뀐다 · 이미 멤버면 역할 그대로 · 멈춘 사람 · 다른 이메일 · 권한을 낮추지 않는다
  *      · owner · membership_admin 만
  *
  * 워크스페이스마다 새로 만든다 — 좌석 · 멤버 수를 정확히 센다.
@@ -26,10 +29,11 @@ import { trashPage } from '../block/trash.ts'
 import { listPageTree, type PageTreeNode } from '../block/page-tree.ts'
 import { query, queryOne } from '../db/pool.ts'
 import type { BlockId } from '../ids.ts'
-import { grantAccess } from '../permissions/acl.ts'
+import { grantAccess, revokeAccess } from '../permissions/acl.ts'
 import { canViewPage } from '../permissions/effective.ts'
 import { createBareWorkspace, createUser, joinAs, probeDatabase, type Actor } from '../testing/db-fixtures.ts'
 import { inviteGuestToPage, listGuests, promoteGuest, removeGuest } from './guest.ts'
+import { acceptInvite, createEmailInvite, previewInvite } from './invite.ts'
 import { createTeamspace, setDefaultTeamspace } from './teamspace.ts'
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'
@@ -142,7 +146,9 @@ describe('② 거부 — 멤버십이 남지 않는다 · 계정 유무를 흘�
 
     assert.deepEqual(await inviteGuestToPage(viewer.ctx, doc, nobody, 'view'), { ok: false, reason: 'forbidden' })
     assert.deepEqual(await inviteGuestToPage(stranger.ctx, doc, nobody, 'view'), { ok: false, reason: 'not_found' })
-    assert.deepEqual(await inviteGuestToPage(boss.ctx, doc, nobody, 'view'), { ok: false, reason: 'no_account' })
+    // 계정이 없으면 대기 초대를 남긴다(7g-1) — 게이트를 지난 사람에게만(위 둘은 계정 유무를 모른 채 거부됐다).
+    const pending = await inviteGuestToPage(boss.ctx, doc, nobody, 'view')
+    assert.ok(pending.ok && pending.value.as === 'pending', JSON.stringify(pending))
   })
 })
 
@@ -202,7 +208,8 @@ describe('④ 이메일', () => {
       [randomUUID(), alias, owner.userId, randomUUID(), unverified],
     )
 
-    assert.deepEqual(await inviteGuestToPage(boss.ctx, doc, unverified, 'view'), { ok: false, reason: 'no_account' })
+    const toUnverified = await inviteGuestToPage(boss.ctx, doc, unverified, 'view')
+    assert.ok(toUnverified.ok && toUnverified.value.as === 'pending', '미검증 주소를 계정으로 쳤다 — 대기 초대여야 한다')
     const byAlias = await inviteGuestToPage(boss.ctx, doc, `  ${alias.toUpperCase()} `, 'view')
     assert.ok(byAlias.ok && byAlias.value.userId === owner.userId, JSON.stringify(byAlias))
     for (const bad of ['', '이메일', 'a b@c.d', 42]) {
@@ -389,5 +396,135 @@ describe('⑦ 게스트 관리 — 목록 · 멤버로 올리기 · 빼기 (7d-3
       assert.deepEqual(await removeGuest(who.ctx, outsider.userId), { ok: false, reason: 'forbidden' })
     }
     assert.deepEqual(await removeGuest(boss.ctx, mate.userId), { ok: false, reason: 'not_found' }, '멤버를 게스트 빼기로 뺐다')
+  })
+})
+
+// ── ⑧ 게스트의 대기 초대 (7g-1) ───────────────────────────────────────
+
+describe('⑧ 계정이 없는 이메일 — 대기 초대', () => {
+  const newEmail = () => `가입-전-${randomUUID().slice(0, 8)}@example.com`
+
+  /** 그 이메일로 가입한 사람 — 계정을 만들고 대표 주소를 그 이메일로(검증됨) 바꾼다. */
+  async function signUp(email: string, name = '새로 가입한 사람') {
+    const user = await createUser(name)
+    await query(`UPDATE user_email SET email = $2 WHERE user_id = $1 AND is_primary`, [user.userId, email])
+    return { ...user, email }
+  }
+
+  async function pend(by: Actor, doc: string, email: string, level: 'view' | 'comment' | 'edit') {
+    const result = await inviteGuestToPage(by.ctx, doc, email, level)
+    assert.ok(result.ok && result.value.as === 'pending', JSON.stringify(result))
+    if (!result.ok || result.value.as !== 'pending') throw new Error('unreachable')
+    return result.value.token
+  }
+
+  const invitesOf = (doc: string) =>
+    query<{ role: string; page_level: string; kind: string; accepted_at: Date | null }>(
+      `SELECT role, page_level, kind, accepted_at FROM workspace_invite WHERE page_id = $1 ORDER BY created_at`,
+      [doc],
+    )
+
+  const directLevel = async (doc: string, userId: string) =>
+    (
+      await query<{ level: string }>(
+        `SELECT level FROM acl_entry WHERE node_kind = 'block' AND node_id = $1 AND principal_type = 'user' AND principal_id = $2`,
+        [doc, userId],
+      )
+    )[0]?.level ?? null
+
+  test('★ 대기 초대는 (페이지, 이메일)마다 하나 — 다시 초대하면 레벨 · 토큰을 새로 쓰고 옛 링크는 죽는다 · 멤버 초대가 건드리지 않는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { ws, boss } = await office()
+    const doc = await page(boss, { privateTop: true })
+    const email = newEmail()
+
+    const first = await pend(boss, doc, email, 'view')
+    const second = await pend(boss, doc, email, 'comment')
+    assert.deepEqual(
+      (await invitesOf(doc)).map((r) => [r.role, r.page_level, r.kind]),
+      [['guest', 'comment', 'email']],
+    )
+    assert.equal(await previewInvite(first), null, '다시 초대했는데 옛 링크가 산다')
+    assert.equal((await previewInvite(second))?.role, 'guest')
+
+    const member = await createEmailInvite({ workspaceId: ws, inviterUserId: boss.userId, inviterRole: 'owner', email, role: 'member' })
+    assert.ok(member.ok)
+    assert.deepEqual(
+      (await invitesOf(doc)).map((r) => [r.role, r.page_level]),
+      [['guest', 'comment']],
+      '멤버 초대가 게스트 초대를 멤버 초대로 바꿨다',
+    )
+  })
+
+  test('★ 가입해 받아들이면 게스트로 들어와 그 페이지만 본다 — 멤버십과 부여를 한 번에 · 다시 받아들이지 못한다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { ws, boss } = await office()
+    const doc = await page(boss, { privateTop: true })
+    const other = await page(boss, { privateTop: true })
+    const email = newEmail()
+    const token = await pend(boss, doc, email, 'comment')
+    const newcomer = await signUp(email)
+
+    assert.deepEqual(await acceptInvite(token, newcomer.userId), { ok: true, workspaceId: ws, role: 'guest', pageId: doc })
+    assert.deepEqual(await membershipOf(ws, newcomer.userId), { role: 'guest', status: 'active' })
+    assert.equal(await directLevel(doc, newcomer.userId), 'comment')
+    const guest = await joinAs(ws, newcomer, 'guest')
+    assert.equal(await canViewPage(guest.ctx, doc), true)
+    assert.equal(await canViewPage(guest.ctx, other), false, '초대받지 않은 페이지가 보인다')
+    assert.ok((await invitesOf(doc))[0]?.accepted_at, '받아들였는데 초대가 열려 있다')
+    assert.deepEqual(await acceptInvite(token, newcomer.userId), { ok: false, reason: 'invalid' })
+  })
+
+  test('★ 초대한 사람이 이제 공유할 수 없으면 · 페이지가 휴지통이면 받지 못한다 — 멤버십도 부여도 남지 않고 초대는 열려 있다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { ws, boss, person } = await office()
+    const helper = await person('공동 관리자')
+    const doc = await page(boss, { privateTop: true })
+    assert.ok((await grantAccess(boss.ctx, doc, { type: 'user', id: helper.userId }, 'full_access')).ok)
+    const email = newEmail()
+    const token = await pend(helper, doc, email, 'view')
+    const newcomer = await signUp(email)
+    assert.ok((await revokeAccess(boss.ctx, doc, { type: 'user', id: helper.userId })).ok)
+
+    assert.deepEqual(await acceptInvite(token, newcomer.userId), { ok: false, reason: 'page_unavailable' })
+    assert.equal(await membershipOf(ws, newcomer.userId), null, '받지 못했는데 멤버십이 남았다')
+    assert.equal(await directLevel(doc, newcomer.userId), null)
+    assert.equal((await invitesOf(doc))[0]?.accepted_at, null)
+
+    const trashed = await page(boss, { privateTop: true })
+    const email2 = newEmail()
+    const token2 = await pend(boss, trashed, email2, 'view')
+    const newcomer2 = await signUp(email2, '둘째 가입자')
+    await trashPage(boss.ctx, trashed as BlockId)
+    assert.deepEqual(await acceptInvite(token2, newcomer2.userId), { ok: false, reason: 'page_unavailable' })
+    assert.equal(await membershipOf(ws, newcomer2.userId), null)
+  })
+
+  test('이미 멤버면 역할 그대로 부여만 · 권한을 낮추지 않는다 · 멈춘 사람은 받지 못한다 · 다른 이메일의 계정은 받지 못한다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { ws, boss, person } = await office()
+    const doc = await page(boss, { privateTop: true })
+
+    // 초대할 때는 계정이 없었고, 그 뒤에 다른 길로 멤버가 됐다.
+    const email = newEmail()
+    const token = await pend(boss, doc, email, 'view')
+    const signed = await signUp(email, '나중에 멤버가 된 사람')
+    await joinAs(ws, signed, 'member')
+    assert.ok((await grantAccess(boss.ctx, doc, { type: 'user', id: signed.userId }, 'edit')).ok)
+    assert.deepEqual(await acceptInvite(token, signed.userId), { ok: true, workspaceId: ws, role: 'member', pageId: doc })
+    assert.deepEqual(await membershipOf(ws, signed.userId), { role: 'member', status: 'active' }, '멤버를 게스트로 내렸다')
+    assert.equal(await directLevel(doc, signed.userId), 'edit', '초대의 읽기가 편집을 낮췄다')
+
+    const email2 = newEmail()
+    const token2 = await pend(boss, doc, email2, 'view')
+    const paused = await signUp(email2, '멈춘 사람')
+    await joinAs(ws, paused, 'member')
+    await query(`UPDATE workspace_member SET status = 'suspended' WHERE workspace_id = $1 AND user_id = $2`, [ws, paused.userId])
+    assert.deepEqual(await acceptInvite(token2, paused.userId), { ok: false, reason: 'unavailable' })
+    assert.equal(await directLevel(doc, paused.userId), null)
+
+    const token3 = await pend(boss, doc, newEmail(), 'view')
+    const stranger = await person('다른 이메일')
+    assert.deepEqual(await acceptInvite(token3, stranger.userId), { ok: false, reason: 'email_mismatch' })
   })
 })

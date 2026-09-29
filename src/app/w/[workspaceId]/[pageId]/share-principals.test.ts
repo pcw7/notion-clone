@@ -107,11 +107,11 @@ describe('이메일로 초대 · 게스트 (7d-1)', () => {
     assert.equal(entryLabel({ principalType: 'user', principalId: 'g', level: 'view', inherited: false }, [guest], []), memberLabel(guest))
   })
 
-  test('거부 코드마다 할 말이 있다 · 계정이 없으면 먼저 가입하라고 · 멤버에게 준 것과 게스트로 들인 것을 구분해 말한다', () => {
-    for (const code of ['no_account', 'invalid_email', 'invalid_level', 'guest_level', 'unavailable', 'forbidden', 'not_found']) {
+  test('거부 코드마다 할 말이 있다 · 멤버에게 준 것 · 게스트로 들인 것 · 대기 초대(초대 메일)를 구분해 말한다', () => {
+    for (const code of ['invalid_email', 'invalid_level', 'guest_level', 'unavailable', 'forbidden', 'not_found']) {
       assert.notEqual(guestInviteMessage(code), '초대하지 못했습니다.', code)
     }
-    assert.match(guestInviteMessage('no_account'), /먼저 가입/)
+    assert.match(guestInvitedNotice('pending', 'a@x.io'), /초대 메일을 보냈습니다/)
     assert.match(guestInvitedNotice('member', 'a@x.io'), /멤버로 공유/)
     assert.match(guestInvitedNotice('guest', 'a@x.io'), /게스트로 초대/)
   })
