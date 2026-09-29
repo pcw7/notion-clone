@@ -314,7 +314,8 @@ CREATE TABLE workspace_member (                              -- <C-14>
   status text NOT NULL DEFAULT 'invited'
     CHECK (status IN ('invited','active','suspended','removed')),
   join_method text NULL                                      -- <14 R-5>
-    CHECK (join_method IN ('invite_email','invite_link','allowed_domain','saml_jit','scim','guest_upgrade')),
+    CHECK (join_method IN ('invite_email','invite_link','allowed_domain','saml_jit','scim','guest_upgrade',
+                           'access_request')),                -- 접근 요청을 허락받아 게스트로 [보강 7g-2 / 0036]
   invited_by uuid NULL, invited_at timestamptz,
   accepted_at timestamptz NULL,
   removed_at timestamptz NULL,                               -- 30일 복원 창의 기준점
@@ -481,6 +482,8 @@ CREATE TABLE security_policy (
   require_mfa_for_guests boolean NOT NULL DEFAULT false,
   who_can_add_restricted_members text NOT NULL DEFAULT 'owners'
 );
+-- 행이 없으면 모든 칸이 기본값이다(행은 처음 바꿀 때 생긴다) · 바꾸는 사람은 워크스페이스 owner [보강 7g-2 / 0036]
+-- 지금 읽는 칸은 allow_nonmember_page_access_request 하나다(접근 요청 ⑩) — 나머지는 그 기능이 생길 때 건다
 CREATE TABLE org_security_policy (
   org_id uuid REFERENCES organization(id), policy_key text,
   mode text CHECK (mode IN ('workspace_managed','enabled_for_everyone','disabled_for_everyone')),
@@ -745,9 +748,8 @@ CREATE TABLE access_request (
 > creator/editor 가 Inbox 에서 승인/거부"*.
 >
 > ① **7e-1 은 `page_access` 하나다** — 이 워크스페이스의 사람(멤버 · 게스트 — 세션을 받는 사람)이 볼 수 없는 **살아 있는 페이지**의
-> 주소를 열면 "접근 권한이 없습니다"와 요청 버튼을 본다. 워크스페이스 밖의 사람(가입했지만 멤버가 아닌 사람)의 요청은 게스트의
-> 대기 초대와 함께 뒤의 조각이다(그때 `security_policy.allow_nonmember_page_access_request` 를 건다). 편집 권한 요청
-> (`edit_access`)은 7e-2 가 더했다(⑨).
+> 주소를 열면 "접근 권한이 없습니다"와 요청 버튼을 본다. 워크스페이스 밖의 사람(가입했지만 멤버가 아닌 사람)의 요청은 7g-2 가
+> 더했다(⑩ — `security_policy.allow_nonmember_page_access_request`). 편집 권한 요청(`edit_access`)은 7e-2 가 더했다(⑨).
 >
 > ② **그 화면은 페이지가 있다는 것을 알려 준다 — 제목은 아니다.** 02 F-02-03 *"접근 권한 없는 페이지는 존재도 노출 금지"* 를
 > 06 F-06-15 가 좁힌다(1차 출처: *"If you open a page that you don't have access to, you can select `No access` on the page to
@@ -780,7 +782,9 @@ CREATE TABLE access_request (
 >
 > ⑦ **이미 볼 수 있게 된 사람의 요청은 목록에 세우지 않는다** — 06 엣지는 다른 길로 권한이 생기면 *"자동 close(`superseded`)"*
 > 라 했지만 상태를 늘리지 않는다: 목록이 읽을 때 거른다(판정과 같은 규칙 — `resolveCaps` 를 그 사람들로 돌린다). 다시 못 보게
-> 되면 그 요청이 다시 선다. 요청한 사람이 워크스페이스를 떠나도 세우지 않는다(허락하면 ⑥ 이 거부한다).
+> 되면 그 요청이 다시 선다. ~~요청한 사람이 워크스페이스를 떠나도 세우지 않는다(허락하면 ⑥ 이 거부한다).~~ **[7g-2]** 떠난 사람은
+> 워크스페이스 밖의 사람이다 — 그 사람의 접근 요청은 ⑩ 의 요청으로 선다(정책이 허락할 때 · 허락하면 게스트로 들어온다). 떠난
+> 사람의 편집 요청은 세우지 않는다(밖의 사람은 볼 수 없다 — 다시 들어오면 선다).
 >
 > ⑧ 페이지가 지워지면(물리 삭제) 요청도 간다(`ON DELETE CASCADE` — 06 엣지 *"삭제 시 요청 자동 취소"*). 휴지통의 페이지는 없는
 > 페이지와 같다 — 요청도 승인도 없고, 복원하면 대기 중이던 요청이 돌아온다.
@@ -793,6 +797,27 @@ CREATE TABLE access_request (
 > 요청하지 못한다**(`not_found`) — 그 사람의 길은 ① 의 요청 화면이고, 공유 패널의 요청 API 가 요청 화면과 다른 말을 하지 않는다
 > (볼 수 없는 페이지를 편집 요청으로 두드려 존재를 알아내지 못한다). 06 은 승인 주체를 *"페이지 creator"* 로 적었지만 ④ ⑤ 를
 > 그대로 쓴다 — 접근 요청과 편집 요청의 승인 주체를 가를 출처가 없다.
+>
+> ⑩ **[7g-2] 워크스페이스 밖의 사람의 접근 요청 — 허락하면 게스트로 들어온다.** 06 F-06-15 의 흐름(*"권한 없는 사용자가 페이지
+> URL 을 연다 → No access 화면 → 요청 전송"*)은 멤버에 한정되지 않고, 정본의 `security_policy.allow_nonmember_page_access_request`
+> (기본 true)가 그 길을 전제한다.
+> (a) **밖의 사람** = 로그인했지만 이 워크스페이스에 멤버십이 없거나 떠난(`removed`) 사람. 멈춘(`suspended`) · 초대만 받은
+> (`invited`) 사람은 아니다 — 멈춘 사람을 요청으로 돌아오게 하면 멈춤을 우회한다.
+> (b) **② 를 넓힌다 — 페이지 화면 하나만.** 정책이 허락하면 밖의 사람도 살아 있는 페이지(보관된 teamspace 밖)의 주소에서 요청
+> 화면을 본다. 제목 · 워크스페이스 이름은 싣지 않는다. 그 밖의 모든 주소(홈 · 인박스 · 데이터베이스 · teamspace)와 API, 정책이 끈
+> 경우는 여전히 404 다 — **없는 워크스페이스와 구별되지 않는다**(없는 워크스페이스에도 멤버십이 없다). 주소를 가진 사람에게만
+> 이라는 좁힘(추측할 수 없는 uuid)은 그대로다.
+> (c) **요청은 판정이 아니다.** 밖의 사람은 이 워크스페이스에서 아무것도 보지 못하므로 `SessionContext` 가 없다(A9 그대로 —
+> 0단계를 지나지 않았다). 요청 명령은 세션 토큰에서 "이 워크스페이스의 사람이 아니다"를 확인한 **신원**(`OutsiderContext` —
+> 브랜디드 · 그 확인만 발급한다)으로 요청 행과 알림을 쓴다. 권한을 묻는 함수에는 넣지 않는다. 종류는 `page_access` 하나다.
+> (d) 목록 · 알림 받는 사람 · 쿨다운 · 처리의 문은 ③~⑧ 그대로. 공유 패널은 그 줄에 "워크스페이스 밖"과 이메일을 싣는다(허락하는
+> 사람이 누군지 알아야 한다 · 멤버 목록으로는 찾을 수 없다).
+> (e) **허락하면 게스트로 들어온다** — 멤버십(`role='guest'` · `join_method='access_request'`) → 부여를 한 트랜잭션에(게스트
+> 초대 [보강] ① 의 순서 · 같은 도우미). 레벨은 편집까지(④) — 전체 권한을 고르면 `guest_level` 로 거부하고 멤버십도 남지 않는다.
+> 게스트 한도(`plan_entitlement`) · `allow_member_invite_guests` 는 그 도우미에 건다(뒤의 조각).
+> (f) **정책을 끄면** 새 요청을 받지 않고(요청 화면이 404 가 된다) 대기 중인 밖의 요청은 목록에서 빠지며 허락 · 무시할 수 없다
+> (`not_found`). 상태는 바꾸지 않는다 — 다시 켜면 돌아온다(⑦ 과 같은 방식).
+> (g) 정책을 바꾸는 사람은 워크스페이스 owner 다(§3.2 `security_policy` [보강]).
 
 **[보강] 잠금이 막는 것 — 판정이 아니라 게이트 · 페이지는 본문과 제목** ⟨Teamspace · 게스트 · 그룹 7f-1 / 마이그레이션 0034⟩
 

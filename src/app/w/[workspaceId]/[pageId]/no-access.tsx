@@ -7,21 +7,34 @@
  * 알려 주는 것은 "그 주소의 페이지가 있다"뿐이다(정본 §3.3 [보강] 접근 요청 ②).
  *
  * 이미 요청했으면(대기 중 · 하루 안에 무시됨) 버튼 대신 "보냈습니다"다 — 무시를 드러내지 않는다(같은 [보강] ③).
+ *
+ * 워크스페이스 밖의 사람(`outsider` · 7g-2)도 같은 화면 · 같은 요청 라우트다 — 말만 다르다(허락되면 게스트로 들어온다). 이 화면은
+ * 레이아웃의 사이드바 없이 선다(그 사람에게는 워크스페이스의 아무것도 싣지 않는다 · `layout.tsx`).
  */
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 
-import { NO_ACCESS_HINT, NO_ACCESS_TITLE, REQUEST_SENT, accessRequestFailureMessage } from '../access-request-messages'
+import {
+  NO_ACCESS_HINT,
+  NO_ACCESS_TITLE,
+  OUTSIDER_NO_ACCESS_HINT,
+  OUTSIDER_REQUEST_SENT,
+  REQUEST_SENT,
+  accessRequestFailureMessage,
+} from '../access-request-messages'
 
 export function NoAccess({
   workspaceId,
   pageId,
   requested,
+  outsider = false,
 }: {
   workspaceId: string
   pageId: string
   requested: boolean
+  /** 워크스페이스 밖의 사람인가(7g-2) — 문구만 바뀐다. */
+  outsider?: boolean
 }) {
   const router = useRouter()
   const [sent, setSent] = useState(requested)
@@ -63,11 +76,11 @@ export function NoAccess({
       <h1 className="text-lg font-semibold">{NO_ACCESS_TITLE}</h1>
       {sent ? (
         <p data-testid="access-requested" role="status" className="text-sm text-neutral-500">
-          {REQUEST_SENT}
+          {outsider ? OUTSIDER_REQUEST_SENT : REQUEST_SENT}
         </p>
       ) : (
         <>
-          <p className="text-sm text-neutral-500">{NO_ACCESS_HINT}</p>
+          <p className="text-sm text-neutral-500">{outsider ? OUTSIDER_NO_ACCESS_HINT : NO_ACCESS_HINT}</p>
           <button
             type="button"
             data-testid="access-request"

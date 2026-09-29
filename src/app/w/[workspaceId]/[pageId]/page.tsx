@@ -12,7 +12,7 @@ import { notFound } from 'next/navigation'
 import * as Y from 'yjs'
 
 import { asBlockId } from '@/lib/ids'
-import { requirePageSession } from '@/lib/auth/page-session'
+import { requirePageVisitor } from '@/lib/auth/page-session'
 import { getPage, listAncestors, listChildPages } from '@/lib/block/page'
 import { loadPageRefTitles } from '@/lib/block/save-page-body'
 import { loadDocState, pageAccess } from '@/lib/collab/doc-store'
@@ -24,7 +24,7 @@ import { loadMentionLabels, mentionIdsOf } from '@/lib/block/mention-candidates'
 import { readBodyYDoc } from '@/lib/collab/ydoc'
 import { withReadTransaction } from '@/lib/db/tx'
 import { isFavorite, recordVisit } from '@/lib/nav/recent'
-import { noAccessState } from '@/lib/permissions/access-request'
+import { noAccessState, outsiderNoAccessState } from '@/lib/permissions/access-request'
 import { pageLockState } from '@/lib/permissions/lock'
 import { getTeamspace } from '@/lib/workspace/teamspace'
 import { NewPageButton } from '../new-page-button'
@@ -48,7 +48,7 @@ export default async function PageView({ params, searchParams }: PageProps<'/w/[
   // 인박스의 접근 요청 줄은 공유 패널을 연 채로 온다(`?share=1` · 7e-1).
   const { share } = await searchParams
 
-  const ctx = await requirePageSession(workspaceId)
+  const visitor = await requirePageVisitor(workspaceId)
 
   let pageId
   try {
@@ -56,6 +56,15 @@ export default async function PageView({ params, searchParams }: PageProps<'/w/[
   } catch {
     notFound()
   }
+
+  // 워크스페이스 밖의 사람(7g-2) — 요청할 수 있는 페이지면(정책이 허락하고 · 살아 있는 페이지) 요청 화면, 아니면 404. 그 사람에게는
+  // 이 워크스페이스의 아무것도 읽지 않는다(정본 §3.3 [보강] 접근 요청 ⑩ (b)).
+  if ('outsider' in visitor) {
+    const outsiderState = await outsiderNoAccessState(visitor.outsider, pageId)
+    if (outsiderState === null) notFound()
+    return <NoAccess workspaceId={workspaceId} pageId={pageId} requested={outsiderState.requested} outsider />
+  }
+  const ctx = visitor.member
 
   const page = await getPage(ctx, pageId)
   if (!page) {

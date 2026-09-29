@@ -15,6 +15,7 @@
  */
 
 import { asWorkspaceId } from '../ids.ts'
+import { resolveOutsiderContext, type OutsiderContext } from './outsider-context.ts'
 import { readSessionToken } from './session-cookie.ts'
 import { resolveSessionContext, type SessionContext } from './session-context.ts'
 
@@ -45,6 +46,29 @@ export async function requireWorkspaceSession(rawWorkspaceId: string): Promise<R
     return { ok: false, response: Response.json({ error: 'sso_required' }, { status: 403 }) }
   }
   return { ok: false, response: Response.json({ error: 'unauthenticated' }, { status: 401 }) }
+}
+
+export type RouteVisitor =
+  | { readonly ok: true; readonly ctx: SessionContext; readonly outsider?: undefined }
+  | { readonly ok: true; readonly ctx?: undefined; readonly outsider: OutsiderContext }
+  | { readonly ok: false; readonly response: Response }
+
+/**
+ * `requireWorkspaceSession` 과 같지만 **밖의 사람**(로그인했지만 멤버십이 없거나 떠난 사람 · 7g-2)을 404 로 끝내지 않고 `outsider`
+ * 로 준다. 그 사람이 할 수 있는 일은 접근 요청 하나다 — 이것을 부르는 라우트는 그 하나여야 한다. 밖의 사람이 아니면 거부 매핑은
+ * `requireWorkspaceSession` 그대로다.
+ */
+export async function requireWorkspaceVisitor(rawWorkspaceId: string): Promise<RouteVisitor> {
+  const session = await requireWorkspaceSession(rawWorkspaceId)
+  if (session.ok || session.response.status !== 404) return session
+  let workspaceId
+  try {
+    workspaceId = asWorkspaceId(rawWorkspaceId)
+  } catch {
+    return session
+  }
+  const outsider = await resolveOutsiderContext(await readSessionToken(), workspaceId)
+  return outsider === null ? session : { ok: true, outsider }
 }
 
 /** 요청 본문을 JSON 으로 읽는다. 실패하면 400 응답을 돌려준다. */

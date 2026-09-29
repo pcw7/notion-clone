@@ -70,7 +70,7 @@ const { resolveSessionContext } = await import(new URL('../src/lib/auth/session-
 const { savePageBody, loadPageBody } = await import(new URL('../src/lib/block/save-page-body.ts', import.meta.url).href)
 const { closePool } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
 // 알림은 자기 글에는 오지 않는다 — 인박스를 보려면 동료가 하나 필요하다(코멘트 4조각).
-const { createUser, joinAs } = await import(new URL('../src/lib/testing/db-fixtures.ts', import.meta.url).href)
+const { createUser, joinAs, visitAsOutsider } = await import(new URL('../src/lib/testing/db-fixtures.ts', import.meta.url).href)
 const { createDiscussion } = await import(new URL('../src/lib/comment/discussion.ts', import.meta.url).href)
 
 const PORT = Number(process.env.E2E_PORT ?? 3100)
@@ -2902,10 +2902,12 @@ async function main() {
         (await ask(leave.userId, 'guest-remove', 'guest-remove-confirm'))
           && (await evaluate(`(document.querySelector('${row(leave.userId)}')?.textContent ?? '').includes('모두 걷힙니다')`)))
       await clickSelector(`${row(leave.userId)} [data-testid="guest-remove-confirm"]`)
-      check('★ 확인하면 빠지고 · 걷은 공유 수를 말하고 · 그 손님은 이제 그 페이지를 못 연다',
+      // 뺀 손님은 워크스페이스 밖의 사람이다 — 그 주소에서는 요청 화면(제목 없이)을 보고 홈은 404 다(7g-2).
+      check('★ 확인하면 빠지고 · 걷은 공유 수를 말하고 · 그 손님은 이제 그 페이지를 못 연다(밖의 사람의 요청 화면 · 홈은 404)',
         (await waitFor(`!document.querySelector('${row(leave.userId)}')
           && (document.querySelector('[data-testid="guest-notice"]')?.textContent ?? '').includes('공유 1건')`, 15000))
-          && (await asLeaver(`/w/${workspaceId}/${doc}`)).status === 404)
+          && (await shownNoAccess(await asLeaver(`/w/${workspaceId}/${doc}`), `게스트 관리 문서 ${stamp}`))
+          && (await asLeaver(`/w/${workspaceId}`)).status === 404)
 
       const mate = await joinAs(workspaceId, await createUser(`게스트를 못 보는 멤버 ${stamp}`), 'member')
       const mateHome = await (await fetch(`${BASE}/w/${workspaceId}`, { headers: { cookie: `nc_session=${mate.token}` } })).text()
@@ -3301,6 +3303,131 @@ async function main() {
       } finally {
         await send('Network.setCookie', { name: 'nc_session', value: session, domain: 'localhost', path: '/', httpOnly: true })
       }
+      await sleep(1500)
+    }
+
+    if (sectionIf('워크스페이스 밖의 사람의 접근 요청 (7g-2 · F-06-15)')) {
+      // 이 워크스페이스에 멤버십이 없는 사람이(브라우저 세션을 그 사람으로 바꾼다) 페이지 주소를 열어 요청하고 → 소유자가 공유 패널의
+      // "워크스페이스 밖" 줄을 허락하면 게스트로 들어와 그 페이지를 연다. 소유자가 정책을 끄면 밖의 사람에게 그 주소는 없는 페이지다 —
+      // 홈의 정책 절에서 다시 켠다. 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다. 브라우저 세션 · 정책 · 소유자의 인박스는
+      // 끝에 되돌린다(뒤 절이 소유자로 돌고, 인박스 절은 안 읽은 수를 센다).
+      const stamp = Date.now()
+      const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
+      const policyUrl = `${BASE}/api/workspaces/${workspaceId}/security-policy`
+      const outsiderName = `밖의 사람 ${stamp}`
+      const outside = await visitAsOutsider(workspaceId, await createUser(outsiderName))
+      const asOutsider = { ...json, cookie: `nc_session=${outside.token}` }
+      const makePrivate = async (title) =>
+        (await (await fetch(pagesUrl, { method: 'POST', headers: authed, body: JSON.stringify({ title, privateTop: true }) })).json()).page.id
+      const docTitle = `밖에서 요청받을 문서 ${stamp}`
+      const shutTitle = `정책을 끈 뒤의 문서 ${stamp}`
+      const doc = await makePrivate(docTitle)
+      const shut = await makePrivate(shutTitle)
+      const other = await makePrivate(`요청 안 한 문서 ${stamp}`)
+      const browseAs = (token) => send('Network.setCookie', { name: 'nc_session', value: token, domain: 'localhost', path: '/', httpOnly: true })
+      const REQ_ROW = '[data-testid="access-requests"] [data-testid="access-request-row"]'
+      const noticeSays = (text) =>
+        waitFor(`(document.querySelector('[role="dialog"][aria-label="공유 설정"] [role="status"]')?.textContent ?? '').includes(${JSON.stringify(text)})`, 10000)
+
+      try {
+        // ① 밖의 사람에게 이 워크스페이스는 페이지 주소 하나 말고는 없다
+        const outsiderHome = await fetch(`${BASE}/w/${workspaceId}`, { headers: asOutsider })
+        const outsiderInbox = await fetch(`${BASE}/w/${workspaceId}/inbox`, { headers: asOutsider })
+        const outsiderApi = await fetch(`${BASE}/api/workspaces/${workspaceId}/inbox`, { headers: asOutsider })
+        check('★ 밖의 사람에게 홈 · 인박스 화면 · API 는 여전히 404 다',
+          outsiderHome.status === 404 && outsiderInbox.status === 404 && outsiderApi.status === 404,
+          `${outsiderHome.status} · ${outsiderInbox.status} · ${outsiderApi.status}`)
+        const elsewhere = await fetch(`${BASE}/w/${randomUUID()}/${doc}`, { headers: asOutsider })
+        const editAsk = await fetch(`${pagesUrl}/${doc}/access-requests`, { method: 'POST', headers: asOutsider, body: JSON.stringify({ kind: 'edit_access' }) })
+        check('없는 워크스페이스 주소로 그 페이지를 열면 404 · 편집 권한 요청은 404 — 밖의 사람은 접근 요청 하나만',
+          elsewhere.status === 404 && editAsk.status === 404, `${elsewhere.status} · ${editAsk.status}`)
+
+        // ② 요청하는 쪽 — 브라우저
+        await browseAs(outside.token)
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${doc}` })
+        check('★ 밖의 사람이 페이지 주소를 열면 요청 화면 — 제목도 사이드바도 없이 · 허락되면 게스트로 본다고',
+          (await waitFor(`!!document.querySelector('[data-testid="access-request"]')`, 15000))
+            && (await evaluate(`document.body.innerText.includes('게스트로 이 페이지를 봅니다')
+              && !document.body.innerText.includes(${JSON.stringify(docTitle)})
+              && !document.querySelector('[aria-label="페이지 트리"]')`)),
+          await evaluate(`document.body.innerText.slice(0, 200)`))
+        let sent = false
+        for (let i = 0; i < 10 && !sent; i += 1) {
+          await clickSelector('[data-testid="access-request"]')
+          sent = await waitFor(`!!document.querySelector('[data-testid="access-requested"]')`, 800)
+        }
+        check('★ 누르면 "요청했습니다" — 허락되면 이 주소에서 열린다고',
+          sent && (await evaluate(`(document.querySelector('[data-testid="access-requested"]')?.textContent ?? '').includes('이 주소에서 페이지가 열립니다')`)))
+
+        // ③ 허락하는 쪽 — 인박스 · 공유 패널
+        await browseAs(session)
+        const ownerInbox = await (await fetch(`${BASE}/api/workspaces/${workspaceId}/inbox`, { headers: authed })).json()
+        check('소유자의 인박스에 밖의 사람의 요청이 이름과 함께 온다',
+          (ownerInbox.items ?? []).some((i) => i.pageId === doc && i.kind === 'access_requested' && i.access?.requesterName === outsiderName),
+          JSON.stringify((ownerInbox.items ?? []).filter((i) => i.pageId === doc).map((i) => i.access)))
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${doc}?share=1` })
+        check('★ 공유 패널의 요청 줄에 "워크스페이스 밖"과 이메일 — 줄 권한에 전체 권한이 없다',
+          (await waitFor(`(document.querySelector('${REQ_ROW} [data-testid="access-request-outsider"]')?.textContent ?? '').includes('워크스페이스 밖')`, 15000))
+            && (await evaluate(`(document.querySelector('${REQ_ROW}')?.textContent ?? '').includes(${JSON.stringify(outsiderName)})
+              && (document.querySelector('${REQ_ROW}')?.textContent ?? '').includes('@example.com')
+              && ![...document.querySelectorAll('${REQ_ROW} [data-testid="access-request-level"] option')].some((o) => o.value === 'full_access')`)),
+          await evaluate(`document.querySelector('${REQ_ROW}')?.textContent ?? '(줄 없음)'`))
+        for (let i = 0; i < 10; i += 1) {
+          await clickSelector(`${REQ_ROW} [data-testid="access-request-approve"]`)
+          if (await waitFor(`!document.querySelector('${REQ_ROW}')`, 1500)) break
+        }
+        check('★ 허락하면 게스트로 들어왔다고 말하고 · 공유 목록에 게스트로 선다',
+          (await noticeSays(`${outsiderName} 님이 게스트로 들어와 읽기 권한을 받았습니다`))
+            && (await waitFor(`[...document.querySelectorAll('[role="dialog"][aria-label="공유 설정"] li')].some((li) => li.textContent.includes(${JSON.stringify(outsiderName)}) && li.textContent.includes('게스트'))`, 10000)),
+          await evaluate(`document.querySelector('[role="dialog"][aria-label="공유 설정"]')?.textContent?.slice(0, 300) ?? '(패널 없음)'`))
+
+        const opened = await fetch(`${BASE}/w/${workspaceId}/${doc}`, { headers: asOutsider })
+        check('★ 요청한 사람이 이제 그 페이지를 연다 — 제목과 함께', opened.status === 200 && (await opened.text()).includes(docTitle), String(opened.status))
+        const guests = await (await fetch(`${BASE}/api/workspaces/${workspaceId}/guests`, { headers: authed })).json()
+        check('게스트로 들어왔다 — 게스트 목록에 서고 · 받지 않은 페이지는 게스트의 요청 화면이다',
+          (guests.guests ?? []).some((g) => g.userId === outside.userId)
+            && (await shownNoAccess(await fetch(`${BASE}/w/${workspaceId}/${other}`, { headers: asOutsider }))))
+
+        // ④ 정책 — 끄면 밖의 사람에게 그 주소는 없는 페이지다 · 홈의 정책 절에서 다시 켠다
+        const second = await visitAsOutsider(workspaceId, await createUser(`두 번째 밖의 사람 ${stamp}`))
+        const asSecond = { ...json, cookie: `nc_session=${second.token}` }
+        const off = await fetch(policyUrl, { method: 'PUT', headers: authed, body: JSON.stringify({ allowNonmemberPageAccessRequest: false }) })
+        const shutPage = await fetch(`${BASE}/w/${workspaceId}/${shut}`, { headers: asSecond })
+        const shutAsk = await fetch(`${pagesUrl}/${shut}/access-requests`, { method: 'POST', headers: asSecond })
+        check('★ 소유자가 정책을 끄면 밖의 사람에게 그 주소는 없는 페이지다 — 화면도 요청도 404',
+          off.ok && shutPage.status === 404 && shutAsk.status === 404, `${off.status} · ${shutPage.status} · ${shutAsk.status}`)
+
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
+        check('홈의 정책 절 — 꺼져 있다고 보인다',
+          await waitFor(`document.querySelector('[data-testid="policy-nonmember-requests"]')?.checked === false`, 15000))
+        let saved = false
+        for (let i = 0; i < 10 && !saved; i += 1) {
+          await clickSelector('[data-testid="policy-nonmember-requests"]')
+          saved = await waitFor(`(document.querySelector('[data-testid="policy-saved"]')?.textContent ?? '').includes('요청할 수 있습니다')`, 1500)
+        }
+        check('★ 정책 절에서 다시 켜면 저장했다고 말하고 · 그 사람이 요청 화면을 본다 — 제목 없이',
+          saved && (await evaluate(`document.querySelector('[data-testid="policy-nonmember-requests"]')?.checked === true`))
+            && (await shownNoAccess(await fetch(`${BASE}/w/${workspaceId}/${shut}`, { headers: asSecond }), shutTitle)))
+
+        const mate = await joinAs(workspaceId, await createUser(`정책을 못 고치는 멤버 ${stamp}`), 'member')
+        const asMate = { ...json, cookie: `nc_session=${mate.token}` }
+        const mateHome = await (await fetch(`${BASE}/w/${workspaceId}`, { headers: asMate })).text()
+        const mateSet = await fetch(policyUrl, { method: 'PUT', headers: asMate, body: JSON.stringify({ allowNonmemberPageAccessRequest: false }) })
+        check('멤버에게는 정책 절이 없고 바꾸는 API 는 403 이다',
+          !mateHome.includes('data-testid="security-policy"') && mateSet.status === 403, String(mateSet.status))
+      } finally {
+        await browseAs(session)
+        await fetch(policyUrl, { method: 'PUT', headers: authed, body: JSON.stringify({ allowNonmemberPageAccessRequest: true }) })
+        // 소유자의 인박스에 남긴 요청 알림을 보관한다 — 뒤의 인박스 절은 안 읽은 알림 수를 센다(7e-1 과 같다).
+        const mine = await (await fetch(`${BASE}/api/workspaces/${workspaceId}/inbox`, { headers: authed })).json()
+        const ids = (mine.items ?? []).filter((i) => i.pageId === doc || i.pageId === shut).flatMap((i) => i.notificationIds)
+        if (ids.length > 0) {
+          await fetch(`${BASE}/api/workspaces/${workspaceId}/inbox`, {
+            method: 'PATCH', headers: authed, body: JSON.stringify({ ids, read: true, archived: true }),
+          })
+        }
+      }
+      // 허락 · 정책 저장의 refresh 가 끝나기 전에 다음 절이 화면을 옮기지 않게 한다(§6).
       await sleep(1500)
     }
 

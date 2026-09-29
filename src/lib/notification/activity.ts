@@ -52,8 +52,14 @@ export type ActivityEvent = {
   readonly createdAt: Date
 }
 
+/**
+ * 일을 한 사람 — 어느 워크스페이스의 누구. 보통은 `SessionContext` 이고, 워크스페이스 밖의 사람의 접근 요청(7g-2)은
+ * `OutsiderContext` 다. 이벤트를 남기는 데는 이 둘만 필요하다 — 판정이 아니다.
+ */
+export type ActivityActor = Pick<SessionContext, 'workspaceId' | 'userId'>
+
 /** 이벤트를 남긴다. 호출자의 트랜잭션 안에서 — 일어난 일과 그 기록이 함께 커밋돼야 한다. */
-export async function recordActivity(tx: Tx, ctx: SessionContext, input: ActivityInput): Promise<ActivityEvent> {
+export async function recordActivity(tx: Tx, ctx: ActivityActor, input: ActivityInput): Promise<ActivityEvent> {
   const row = await tx.queryOne<{ id: string; created_at: Date }>(
     `INSERT INTO activity_event (id, workspace_id, page_id, block_id, actor_id, type, payload, created_at)
      VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, now())

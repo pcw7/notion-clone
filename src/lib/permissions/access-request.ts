@@ -35,14 +35,30 @@
  * 둘은 같은 문을 지난다 — 열린 요청(종류마다) · 알림 받는 사람 · 목록 · 처리 · 쿨다운. 갈라지는 곳은 `SATISFIED_BY`(무엇을
  * 가졌으면 요청이 필요 없는가)와 `REQUESTED_LEVEL` 둘뿐이다.
  *
- * 워크스페이스 밖의 사람의 요청은 뒤의 조각이다.
+ * ──────────────────────────────────────────────────────────────────────
+ * 워크스페이스 밖의 사람 (7g-2)
+ * ──────────────────────────────────────────────────────────────────────
+ *
+ * 로그인했지만 이 워크스페이스에 멤버십이 없거나 떠난 사람도 페이지 주소에서 접근을 요청한다 — 정책
+ * (`security_policy.allow_nonmember_page_access_request`)이 허락할 때만(정본 [보강] ⑩). 그 사람에게는 세션이 없으므로 요청은
+ * 신원(`OutsiderContext`)으로 쓴다 — 판정이 아니다(볼 수 있는지는 물을 것도 없다 · 아무것도 못 본다). 종류는 `page_access` 하나.
+ *
+ *   · 목록 · 알림 · 쿨다운 · 처리의 문은 위와 같다. 목록은 그 줄에 "워크스페이스 밖"(`outsider`)을 싣는다
+ *   · **허락하면 게스트로 들어온다** — 멤버십 → 부여를 한 트랜잭션에(`admitGuestIn` — 이메일로 게스트를 들이는 길과 같은 도우미).
+ *     레벨은 편집까지 — 전체 권한은 `guest_level` 이고 멤버십도 남지 않는다
+ *   · 정책을 끄면 새 요청을 받지 않고, 대기 중인 밖의 요청은 목록에서 빠지며 처리할 수 없다(`not_found`). 상태는 그대로다
+ *   · 떠난 사람도 밖의 사람이다 — 멤버일 때 보낸 접근 요청은 이제 밖의 요청으로 선다. 떠난 사람의 편집 요청은 세우지 않는다
  */
 
 import { randomUUID } from 'node:crypto'
 
+import type { OutsiderContext } from '../auth/outsider-context.ts'
 import type { SessionContext } from '../auth/session-context.ts'
 import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
+import type { ActivityActor } from '../notification/activity.ts'
 import { notifyAccessGranted, notifyAccessRequested } from '../notification/fanout.ts'
+import { admitGuestIn } from '../workspace/guest.ts'
+import { readSecurityPolicyIn } from '../workspace/security-policy.ts'
 import { directGrantCovers, grantAccessIn, shareGateIn } from './acl.ts'
 import { effectiveCaps, membersWith, namedManagersOf } from './effective.ts'
 import { can, type Capability, type Level } from './levels.ts'
@@ -84,7 +100,7 @@ function isApproveLevel(raw: unknown): raw is ApproveLevel {
  * `teamspace.archived_at` · 7c-6). 요청 화면이 그 존재를 알리면 안 되고, 허락할 사람도 없다. 데이터베이스는 아직 아니다 — 그
  * 화면(`/db/…`)은 이 조각이 건드리지 않는다.
  */
-async function livePage(tx: Tx, ctx: SessionContext, pageId: string): Promise<boolean> {
+async function livePage(tx: Tx, workspaceId: string, pageId: string): Promise<boolean> {
   const row = await tx.queryMaybe<{ one: number }>(
     `SELECT 1 AS one
        FROM block b
@@ -92,7 +108,7 @@ async function livePage(tx: Tx, ctx: SessionContext, pageId: string): Promise<bo
       WHERE b.id = $1 AND b.workspace_id = $2 AND b.type = 'page' AND b.lifecycle = 'live'
         AND NOT EXISTS (SELECT 1 FROM teamspace t
                          WHERE r.parent_type = 'teamspace' AND t.id = r.parent_id AND t.archived_at IS NOT NULL)`,
-    [pageId, ctx.workspaceId],
+    [pageId, workspaceId],
   )
   return row !== null
 }
@@ -101,14 +117,14 @@ async function livePage(tx: Tx, ctx: SessionContext, pageId: string): Promise<bo
  * 이 사람의 이 페이지 요청(그 종류)이 열려 있는가 — 대기 중이거나, **하루 안에 무시됐거나**. 둘 다 요청한 사람에게는
  * "보냈습니다"다(무시를 드러내지 않는다 · 머리말).
  */
-async function hasOpenRequest(tx: Tx, ctx: SessionContext, pageId: string, kind: AccessRequestKind): Promise<boolean> {
+async function hasOpenRequest(tx: Tx, who: ActivityActor, pageId: string, kind: AccessRequestKind): Promise<boolean> {
   const row = await tx.queryMaybe<{ one: number }>(
     `SELECT 1 AS one FROM access_request
       WHERE workspace_id = $1 AND node_id = $2 AND requester_id = $3 AND kind = $5
         AND (status = 'pending'
           OR (status = 'ignored' AND decided_at > now() - make_interval(hours => $4)))
       LIMIT 1`,
-    [ctx.workspaceId, pageId, ctx.userId, REREQUEST_AFTER_IGNORE_HOURS, kind],
+    [who.workspaceId, pageId, who.userId, REREQUEST_AFTER_IGNORE_HOURS, kind],
   )
   return row !== null
 }
@@ -154,7 +170,7 @@ export async function editRequestState(ctx: SessionContext, pageId: string): Pro
 
 async function requestState(ctx: SessionContext, pageId: string, kind: AccessRequestKind): Promise<NoAccessState | null> {
   return withReadTransaction(async (tx) => {
-    if (!(await livePage(tx, ctx, pageId))) return null
+    if (!(await livePage(tx, ctx.workspaceId, pageId))) return null
     if ((await requestGate(tx, ctx, pageId, kind)) !== null) return null
     return { requested: await hasOpenRequest(tx, ctx, pageId, kind) }
   })
@@ -196,27 +212,80 @@ export async function requestAccess(
   kind: AccessRequestKind,
 ): Promise<AccessRequestResult> {
   return withCommandTransaction(async (tx) => {
-    if (!(await livePage(tx, ctx, pageId))) return { ok: false, reason: 'not_found' } as const
+    if (!(await livePage(tx, ctx.workspaceId, pageId))) return { ok: false, reason: 'not_found' } as const
     const refused = await requestGate(tx, ctx, pageId, kind)
     if (refused !== null) return { ok: false, reason: refused } as const
-    if (await hasOpenRequest(tx, ctx, pageId, kind)) return { ok: true, value: { sent: false } } as const
-
-    const row = await tx.queryMaybe<{ id: string }>(
-      `INSERT INTO access_request (id, workspace_id, kind, node_id, requester_id, requested_level, status, created_at)
-       VALUES ($1, $2, $5, $3, $4, $6, 'pending', now())
-       ON CONFLICT (node_id, requester_id, kind) WHERE status = 'pending' DO NOTHING
-       RETURNING id`,
-      [randomUUID(), ctx.workspaceId, pageId, ctx.userId, kind, REQUESTED_LEVEL[kind]],
-    )
-    if (row === null) return { ok: true, value: { sent: false } } as const
-
-    await notifyAccessRequested(tx, ctx, {
-      pageId,
-      requestId: row.id,
-      recipients: await approversOf(tx, ctx.workspaceId, pageId),
-    })
-    return { ok: true, value: { sent: true } } as const
+    return openRequest(tx, ctx, pageId, kind)
   })
+}
+
+/** 요청 행과 알림을 쓴다 — 게이트는 부르는 쪽이 지났다. 이미 열린 요청이 있으면 쓰지 않는다(`sent: false`). */
+async function openRequest(tx: Tx, who: ActivityActor, pageId: string, kind: AccessRequestKind): Promise<AccessRequestResult> {
+  if (await hasOpenRequest(tx, who, pageId, kind)) return { ok: true, value: { sent: false } }
+
+  const row = await tx.queryMaybe<{ id: string }>(
+    `INSERT INTO access_request (id, workspace_id, kind, node_id, requester_id, requested_level, status, created_at)
+     VALUES ($1, $2, $5, $3, $4, $6, 'pending', now())
+     ON CONFLICT (node_id, requester_id, kind) WHERE status = 'pending' DO NOTHING
+     RETURNING id`,
+    [randomUUID(), who.workspaceId, pageId, who.userId, kind, REQUESTED_LEVEL[kind]],
+  )
+  if (row === null) return { ok: true, value: { sent: false } }
+
+  await notifyAccessRequested(tx, who, {
+    pageId,
+    requestId: row.id,
+    recipients: await approversOf(tx, who.workspaceId, pageId),
+  })
+  return { ok: true, value: { sent: true } }
+}
+
+// ── 워크스페이스 밖의 사람 (7g-2) ─────────────────────────────────────
+
+/** 이 워크스페이스가 밖의 사람의 요청을 받는가 — 정책(행이 없으면 받는다 · 정본 기본값). */
+async function outsidersMayRequest(tx: Tx, workspaceId: string): Promise<boolean> {
+  return (await readSecurityPolicyIn(tx, workspaceId)).allowNonmemberPageAccessRequest
+}
+
+/**
+ * 밖의 사람이 페이지 주소를 열었을 때의 화면 상태 — **요청할 수 없으면 null**(그 화면은 404 다): 정책이 껐거나, 이 워크스페이스의
+ * 살아 있는 페이지가 아니다(없는 워크스페이스도 여기서 null 이다 — 둘을 가르지 않는다 · `OutsiderContext` 머리말).
+ */
+export async function outsiderNoAccessState(outsider: OutsiderContext, pageId: string): Promise<NoAccessState | null> {
+  return withReadTransaction(async (tx) => {
+    if (!(await outsidersMayRequest(tx, outsider.workspaceId))) return null
+    if (!(await livePage(tx, outsider.workspaceId, pageId))) return null
+    return { requested: await hasOpenRequest(tx, outsider, pageId, 'page_access') }
+  })
+}
+
+/**
+ * 밖의 사람이 이 페이지의 접근을 요청한다 — 요청 화면의 버튼. 요청할 수 없으면 `not_found`(화면이 404 인 것과 같은 말). 알림 받는
+ * 사람 · 열린 요청 · 쿨다운은 멤버의 요청과 같다(`openRequest`).
+ */
+export async function requestAccessAsOutsider(outsider: OutsiderContext, pageId: string): Promise<AccessRequestResult> {
+  return withCommandTransaction(async (tx) => {
+    if (!(await outsidersMayRequest(tx, outsider.workspaceId))) return { ok: false, reason: 'not_found' } as const
+    if (!(await livePage(tx, outsider.workspaceId, pageId))) return { ok: false, reason: 'not_found' } as const
+    return openRequest(tx, outsider, pageId, 'page_access')
+  })
+}
+
+/** `u`(요청한 사람)가 워크스페이스 `$1` 의 밖에 있다 — 목록과 처리가 같은 술어를 쓴다. 멈춘 · 초대만 받은 사람은 밖이 아니다. */
+const OUTSIDER_SQL = `u.status = 'active' AND u.deleted_at IS NULL
+            AND NOT EXISTS (SELECT 1 FROM workspace_member om
+                             WHERE om.workspace_id = $1 AND om.user_id = u.id AND om.status <> 'removed')`
+
+/**
+ * 요청한 사람이 지금 이 워크스페이스의 **밖**에 있는가 — 멤버십이 없거나 떠났고(`removed`) 계정이 살아 있다(`OUTSIDER_SQL` ·
+ * `OutsiderContext` 와 같은 규칙).
+ */
+async function isOutsider(tx: Tx, workspaceId: string, userId: string): Promise<boolean> {
+  const row = await tx.queryMaybe<{ one: number }>(`SELECT 1 AS one FROM "user" u WHERE u.id = $2 AND ${OUTSIDER_SQL}`, [
+    workspaceId,
+    userId,
+  ])
+  return row !== null
 }
 
 /**
@@ -250,8 +319,10 @@ export type PendingAccessRequest = {
   readonly requesterId: string
   readonly name: string
   readonly email: string | null
-  /** 요청한 사람이 게스트인가 — 화면이 전체 권한을 고를 수 없게 한다(서버는 `grantAccessIn` 이 거부한다). */
+  /** 요청한 사람이 게스트인가(게스트로 들어올 밖의 사람도) — 화면이 전체 권한을 고를 수 없게 한다(서버는 `grantAccessIn` 이 거부한다). */
   readonly guest: boolean
+  /** 워크스페이스 밖의 사람인가(7g-2) — 허락하면 게스트로 들어온다. 화면이 "워크스페이스 밖"과 이메일을 싣는다. */
+  readonly outsider: boolean
   readonly kind: AccessRequestKind
   /** 요청한 레벨 — 편집 요청은 `edit`, 접근 요청은 null. 화면이 허락할 레벨의 기본값으로 쓴다. */
   readonly requestedLevel: Level | null
@@ -266,12 +337,14 @@ export type AccessRequestListResult =
  * 이 페이지의 대기 중인 요청 — 그 페이지를 공유할 수 있는 사람에게만(공유 설정의 게이트 그대로). 오래된 것부터.
  *
  * **세우지 않는 것**(정본 [보강] ⑦): 이미 가진 사람의 요청 — 볼 수 있게 된 사람의 접근 요청 · 고칠 수 있게 된 사람의 편집 요청
- * (판정과 같은 규칙으로 센다 — `membersWith`) · 워크스페이스를 떠난 사람의 요청. 상태를 바꾸지 않고 읽을 때 거른다 — 다시 잃으면
- * 그 요청이 다시 선다.
+ * (판정과 같은 규칙으로 센다 — `membersWith`). 상태를 바꾸지 않고 읽을 때 거른다 — 다시 잃으면 그 요청이 다시 선다.
+ *
+ * **밖의 사람의 요청**(7g-2 — 멤버십이 없거나 떠난 사람)은 접근 요청만, 정책이 허락할 때만 선다. 초대만 받은 · 계정이 죽은
+ * 사람의 요청은 세우지 않는다.
  */
 export async function listAccessRequests(ctx: SessionContext, pageId: string): Promise<AccessRequestListResult> {
   return withReadTransaction(async (tx) => {
-    if (!(await livePage(tx, ctx, pageId))) return { ok: false, reason: 'not_found' } as const
+    if (!(await livePage(tx, ctx.workspaceId, pageId))) return { ok: false, reason: 'not_found' } as const
     const denied = await shareGateIn(tx, ctx, pageId)
     if (denied !== null) return { ok: false, reason: denied } as const
 
@@ -280,20 +353,22 @@ export async function listAccessRequests(ctx: SessionContext, pageId: string): P
       requester_id: string
       name: string
       email: string | null
-      role: string
+      role: string | null
       kind: AccessRequestKind
       requested_level: Level | null
       created_at: Date
     }>(
       `SELECT r.id, r.requester_id, u.name, ue.email::text AS email, m.role, r.kind, r.requested_level, r.created_at
          FROM access_request r
-         JOIN workspace_member m
-           ON m.workspace_id = r.workspace_id AND m.user_id = r.requester_id AND m.status IN ('active', 'suspended')
          JOIN "user" u ON u.id = r.requester_id
+         LEFT JOIN workspace_member m
+           ON m.workspace_id = r.workspace_id AND m.user_id = r.requester_id AND m.status IN ('active', 'suspended')
          LEFT JOIN user_email ue ON ue.id = u.primary_email_id
         WHERE r.workspace_id = $1 AND r.node_id = $2 AND r.kind = ANY($3::text[]) AND r.status = 'pending'
+          AND (m.user_id IS NOT NULL
+            OR ($4::boolean AND r.kind = 'page_access' AND ${OUTSIDER_SQL}))
         ORDER BY r.created_at, r.id`,
-      [ctx.workspaceId, pageId, ACCESS_REQUEST_KINDS],
+      [ctx.workspaceId, pageId, ACCESS_REQUEST_KINDS, await outsidersMayRequest(tx, ctx.workspaceId)],
     )
     if (rows.length === 0) return { ok: true, value: [] } as const
 
@@ -314,7 +389,8 @@ export async function listAccessRequests(ctx: SessionContext, pageId: string): P
           requesterId: r.requester_id,
           name: r.name,
           email: r.email,
-          guest: r.role === 'guest',
+          guest: r.role === null || r.role === 'guest',
+          outsider: r.role === null,
           kind: r.kind,
           requestedLevel: r.requested_level,
           createdAt: r.created_at,
@@ -324,7 +400,10 @@ export async function listAccessRequests(ctx: SessionContext, pageId: string): P
 }
 
 export type AccessDecisionFailure =
-  /** 그런 요청이 없다 — 또는 그 페이지를 볼 수 없다(없는 요청과 같다) · 휴지통이다. */
+  /**
+   * 그런 요청이 없다 — 또는 그 페이지를 볼 수 없다(없는 요청과 같다) · 휴지통이다 · 목록에 서지 않는 밖의 요청이다(정책이 껐다 ·
+   * 떠난 사람의 편집 요청 — 7g-2).
+   */
   | 'not_found'
   /** 그 페이지를 볼 수는 있지만 공유할 수 없다. */
   | 'forbidden'
@@ -341,28 +420,36 @@ export type AccessDecisionResult<T> =
   | { readonly ok: true; readonly value: T }
   | { readonly ok: false; readonly reason: AccessDecisionFailure }
 
-type LockedRequest = { id: string; node_id: string; requester_id: string; status: string }
+type LockedRequest = { id: string; node_id: string; requester_id: string; kind: AccessRequestKind; status: string }
 
 /**
- * 처리할 요청을 잠그고 게이트를 묻는다 — 순서는 **요청 → 페이지가 살아 있나 → 공유 게이트 → 상태**. 게이트가 상태보다 먼저다:
- * 공유할 수 없는 사람에게 "이미 처리됨"을 말하면 그 요청의 사정을 알려 준다. 잠금은 두 사람이 동시에 처리할 때 줄을 세운다.
+ * 처리할 요청을 잠그고 게이트를 묻는다 — 순서는 **요청 → 페이지가 살아 있나 → 공유 게이트 → 목록에 서는 요청인가 → 상태**.
+ * 게이트가 상태보다 먼저다: 공유할 수 없는 사람에게 "이미 처리됨"을 말하면 그 요청의 사정을 알려 준다. 잠금은 두 사람이 동시에
+ * 처리할 때 줄을 세운다.
+ *
+ * 밖의 사람의 요청(7g-2)은 목록과 같은 규칙으로 가린다 — 접근 요청이고 정책이 허락할 때만 처리한다. `outsider` 면 허락이 그
+ * 사람을 게스트로 들인다.
  */
 async function openDecision(
   tx: Tx,
   ctx: SessionContext,
   requestId: string,
-): Promise<{ ok: true; request: LockedRequest } | { ok: false; reason: AccessDecisionFailure }> {
+): Promise<{ ok: true; request: LockedRequest; outsider: boolean } | { ok: false; reason: AccessDecisionFailure }> {
   const request = await tx.queryMaybe<LockedRequest>(
-    `SELECT id, node_id, requester_id, status FROM access_request
+    `SELECT id, node_id, requester_id, kind, status FROM access_request
       WHERE id = $1 AND workspace_id = $2 AND kind = ANY($3::text[])
       FOR UPDATE`,
     [requestId, ctx.workspaceId, ACCESS_REQUEST_KINDS],
   )
-  if (request === null || !(await livePage(tx, ctx, request.node_id))) return { ok: false, reason: 'not_found' }
+  if (request === null || !(await livePage(tx, ctx.workspaceId, request.node_id))) return { ok: false, reason: 'not_found' }
   const denied = await shareGateIn(tx, ctx, request.node_id)
   if (denied !== null) return { ok: false, reason: denied }
+  const outsider = await isOutsider(tx, ctx.workspaceId, request.requester_id)
+  if (outsider && !(request.kind === 'page_access' && (await outsidersMayRequest(tx, ctx.workspaceId)))) {
+    return { ok: false, reason: 'not_found' }
+  }
   if (request.status !== 'pending') return { ok: false, reason: 'decided' }
-  return { ok: true, request }
+  return { ok: true, request, outsider }
 }
 
 async function decide(tx: Tx, ctx: SessionContext, requestId: string, status: 'approved' | 'ignored'): Promise<void> {
@@ -377,8 +464,11 @@ async function decide(tx: Tx, ctx: SessionContext, requestId: string, status: 'a
  * 요청을 허락한다 — 고른 레벨을 그 사람에게 준다(공유 설정의 부여를 거친다). 요청한 사람의 인박스로 알림이 간다.
  *
  * **허락은 권한을 낮추지 않는다**(정본 [보강] ⑥): 그 사람에게 이 페이지에 직접 준 행이 이미 고른 레벨을 품으면(capability
- * 부분집합 — 레벨을 정수로 비교하지 않는다 · A2) 쓰지 않는다. 부여가 거부되면(게스트의 전체 권한 · 떠난 사람) 아무것도 바뀌지
- * 않는다 — 요청은 대기 중으로 남는다.
+ * 부분집합 — 레벨을 정수로 비교하지 않는다 · A2) 쓰지 않는다. 부여가 거부되면(게스트의 전체 권한 · 초대만 받은 사람) 아무것도
+ * 바뀌지 않는다 — 요청은 대기 중으로 남는다.
+ *
+ * **밖의 사람의 요청**(7g-2)이면 그 사람을 먼저 게스트로 들인다(`admitGuestIn` — 멤버십 → 부여 · 정본 [보강] ⑩ (e)). 전체 권한을
+ * 고르면 부여가 `guest_level` 로 거부되고 멤버십도 함께 되돌아간다.
  *
  * @returns `granted` — 이번에 부여를 썼는가(이미 품고 있었으면 false).
  */
@@ -395,6 +485,7 @@ export async function approveAccessRequest(
     if (!opened.ok) return opened
     const { request } = opened
 
+    if (opened.outsider) await admitGuestIn(tx, ctx, request.requester_id, 'access_request')
     const covered = await directGrantCovers(tx, request.node_id, request.requester_id, level)
 
     if (!covered) {

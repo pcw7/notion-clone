@@ -57,6 +57,8 @@ const EXPECTED_TABLES = [
   'access_request',
   // 잠금 7f-1조각 (0034)
   'node_lock',
+  // 정책 7g-2조각 (0036)
+  'security_policy',
   'schema_migration', 'scim_token', 'session_policy', 'sso_config',
   'user', 'user_email', 'user_session',
   'workspace', 'workspace_invite', 'workspace_member',
@@ -2025,6 +2027,41 @@ try {
     const { rows } = await client.query(`SELECT count(*)::int AS n FROM workspace_invite WHERE page_id = $1`, [pageId])
     if (rows[0].n === 0) ok('페이지를 지우면 그 페이지의 게스트 초대도 간다 (ON DELETE CASCADE)')
     else fail(`페이지를 지웠는데 게스트 초대 ${rows[0].n}건이 남았다`)
+  }
+
+  console.log('\n[22] 정책 · 접근 요청으로 들어온 게스트 (0036 / §3.2 security_policy · workspace_member.join_method · 7g-2조각)')
+  {
+    const policyWs = randomUUID()
+    await client.query(`INSERT INTO workspace (id, name, region_id, created_at) VALUES ($1, '정책', 'local', now())`, [policyWs])
+    await client.query(`INSERT INTO security_policy (workspace_id) VALUES ($1)`, [policyWs])
+    const { rows } = await client.query(
+      `SELECT allow_nonmember_page_access_request AS nonmember, allow_member_invite_guests AS invite_guests,
+              require_mfa_for_guests AS mfa, who_can_add_restricted_members AS restricted
+         FROM security_policy WHERE workspace_id = $1`,
+      [policyWs],
+    )
+    const d = rows[0]
+    if (d?.nonmember === true && d.invite_guests === true && d.mfa === false && d.restricted === 'owners') {
+      ok('칸을 적지 않은 행은 정본의 기본값 (밖의 요청 받음 · 게스트 MFA 요구 안 함)')
+    } else fail(`정책의 기본값이 정본과 다르다: ${JSON.stringify(d)}`)
+    await mustReject('한 워크스페이스에 정책 행 둘', `INSERT INTO security_policy (workspace_id) VALUES ($1)`, [policyWs])
+    await mustReject('없는 워크스페이스의 정책', `INSERT INTO security_policy (workspace_id) VALUES ($1)`, [randomUUID()])
+    await mustReject(
+      '밖의 요청 정책이 NULL',
+      `UPDATE security_policy SET allow_nonmember_page_access_request = NULL WHERE workspace_id = $1`,
+      [policyWs],
+    )
+
+    await client.query(
+      `INSERT INTO workspace_member (workspace_id, user_id, role, status, join_method) VALUES ($1, $2, 'guest', 'active', 'access_request')`,
+      [policyWs, userId],
+    )
+    ok('접근 요청을 허락받아 들어온 게스트 (join_method=access_request)')
+    await mustReject(
+      '모르는 들어온 길',
+      `UPDATE workspace_member SET join_method = 'backdoor' WHERE workspace_id = $1 AND user_id = $2`,
+      [policyWs, userId],
+    )
   }
 
   await client.query('ROLLBACK')

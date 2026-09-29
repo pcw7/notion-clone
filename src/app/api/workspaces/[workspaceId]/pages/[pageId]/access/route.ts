@@ -135,6 +135,8 @@ export async function GET(_request: Request, ctx: Ctx): Promise<Response> {
           name: r.name,
           email: r.email,
           guest: r.guest,
+          // 워크스페이스 밖의 사람(7g-2) — 패널이 "워크스페이스 밖"을 싣고, 허락하면 게스트로 들어왔다고 말한다.
+          outsider: r.outsider,
           kind: r.kind,
           requestedLevel: r.requestedLevel,
           createdAt: r.createdAt.toISOString(),
