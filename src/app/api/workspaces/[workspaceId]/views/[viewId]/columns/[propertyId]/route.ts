@@ -14,15 +14,11 @@
  */
 
 import { requireWorkspaceSession } from '@/lib/auth/route-session'
-import { moveViewColumn, setViewColumn, type ViewFailure } from '@/lib/database/view'
+import { moveViewColumn, setViewColumn } from '@/lib/database/view'
+import { viewFailureStatus } from '@/lib/database/http'
 
 type Ctx = RouteContext<'/api/workspaces/[workspaceId]/views/[viewId]/columns/[propertyId]'>
 
-function statusOf(reason: ViewFailure): number {
-  if (reason === 'not_found') return 404
-  if (reason === 'forbidden') return 403
-  return 400
-}
 
 export async function PATCH(request: Request, ctx: Ctx): Promise<Response> {
   const { workspaceId, viewId, propertyId } = await ctx.params
@@ -50,7 +46,7 @@ export async function PATCH(request: Request, ctx: Ctx): Promise<Response> {
   if (result !== null && !result.ok) {
     return Response.json(
       { error: result.reason, ...(result.issues ? { issues: result.issues } : {}) },
-      { status: statusOf(result.reason) },
+      { status: viewFailureStatus(result.reason) },
     )
   }
 
@@ -61,7 +57,7 @@ export async function PATCH(request: Request, ctx: Ctx): Promise<Response> {
     }
     result = await moveViewColumn(session.ctx, viewId, propertyId, before)
     if (!result.ok) {
-      return Response.json({ error: result.reason }, { status: statusOf(result.reason) })
+      return Response.json({ error: result.reason }, { status: viewFailureStatus(result.reason) })
     }
   }
 

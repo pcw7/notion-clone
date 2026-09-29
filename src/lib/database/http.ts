@@ -6,7 +6,7 @@
  *
  *   not_found  → 404   못 보는 경우를 포함한다(라이브러리가 이미 그렇게 돌려준다)
  *   forbidden  → 403   볼 수는 있다 — 그러니 존재는 이미 알고 있다
- *   상태 충돌  → 409   입력은 맞는데 지금 상태가 허락하지 않는다. 다시 읽으면 풀린다
+ *   상태 충돌  → 409   입력은 맞는데 지금 상태가 허락하지 않는다. 다시 읽으면 풀린다 · 잠겼다(`locked` — 7f-2 · 풀면 풀린다)
  *   입력 오류  → 400
  */
 
@@ -15,6 +15,7 @@ import type { PropertyFailure } from './property.ts'
 import type { RowCell, RowFailure } from './row.ts'
 import type { GroupFailure } from './group.ts'
 import type { TemplateFailure } from './template.ts'
+import type { ViewFailure } from './view.ts'
 
 export function rowFailureStatus(reason: RowFailure): number {
   switch (reason) {
@@ -24,6 +25,7 @@ export function rowFailureStatus(reason: RowFailure): number {
       return 403
     case 'schema_conflict':
     case 'version_conflict':
+    case 'locked':
       return 409
     case 'unknown_property':
     case 'readonly_property':
@@ -47,6 +49,7 @@ export function propertyFailureStatus(reason: PropertyFailure): number {
     case 'duplicate_name':
     case 'schema_conflict':
     case 'too_many_properties':
+    case 'locked':
       return 409
     case 'invalid_name':
     case 'invalid_color':
@@ -70,6 +73,7 @@ export function templateFailureStatus(reason: TemplateFailure): number {
     case 'too_many':
     case 'too_large':
     case 'too_deep':
+    case 'locked':
       return 409
     case 'invalid_value':
       return 400
@@ -82,7 +86,35 @@ export function databaseFailureStatus(reason: DatabaseFailure): number {
       return 404
     case 'forbidden':
       return 403
+    case 'locked':
+      return 409
     case 'invalid_name':
+      return 400
+  }
+}
+
+/**
+ * 뷰 명령의 거부 — 빠짐없는 switch 다(7f-2). 전에는 뷰 라우트 셋이 저마다 `default: 400` 으로 매핑해, 새 거부(`locked`)가
+ * **조용히 400 이 되었다** — 한 곳에 두고 새 코드가 생기면 컴파일이 멈추게 한다.
+ */
+export function viewFailureStatus(reason: ViewFailure): number {
+  switch (reason) {
+    case 'not_found':
+      return 404
+    case 'forbidden':
+      return 403
+    // 규칙상 불가능한 요청(마지막 뷰) · 잠긴 데이터베이스 — 입력이 틀린 것이 아니라 지금 상태가 허락하지 않는다.
+    case 'last_view':
+    case 'locked':
+      return 409
+    case 'invalid_name':
+    case 'unsupported_type':
+    case 'invalid_filter':
+    case 'invalid_sorts':
+    case 'title_required':
+    case 'invalid_group':
+    case 'group_required':
+    case 'invalid_template':
       return 400
   }
 }

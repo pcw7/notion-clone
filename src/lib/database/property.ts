@@ -45,6 +45,7 @@ import type { SessionContext } from '../auth/session-context.ts'
 import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
 import { can } from '../permissions/levels.ts'
 import { effectiveCaps } from '../permissions/effective.ts'
+import { isLocked } from '../permissions/lock.ts'
 import { orderKeyBetween, orderKeysBetween } from '../block/order-key.ts'
 import { isUuid } from '../ids.ts'
 import {
@@ -151,6 +152,8 @@ export type PropertyFailure =
   | 'invalid_config'
   /** relation 의 대상 data_source 가 없거나 볼 수 없다 — 둘을 구분하지 않는다(존재가 샌다). */
   | 'invalid_target'
+  /** 데이터베이스(구조) · 행 페이지가 잠겼다(7f-2 · F-06-16) — 풀어야 고친다. */
+  | 'locked'
 
 export type PropertyResult<T = SchemaSnapshot> =
   | { readonly ok: true; readonly value: T }
@@ -209,6 +212,9 @@ export async function lockSchema(
   // 못 보는 사람에게는 존재를 알리지 않는다.
   if (!can(caps, 'view')) return fail('not_found')
   if (!can(caps, 'edit_structure')) return fail('forbidden')
+  // 데이터베이스 잠금은 구조를 막는다(7f-2) — capability 뒤의 게이트다(`permissions/lock.ts`). 양방향 relation 은 대상 쪽 스키마도
+  // 이 문으로 잠그므로 대상 데이터베이스의 잠금도 여기서 걸린다.
+  if (await isLocked(tx, ds.container_id)) return fail('locked')
 
   if (expectedVersion !== undefined && expectedVersion !== ds.schema_version) {
     return fail('schema_conflict', ds.schema_version)

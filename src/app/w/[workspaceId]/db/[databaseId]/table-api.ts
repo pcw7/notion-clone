@@ -31,6 +31,9 @@ function messageOf(status: number, body: ErrorBody): string {
   switch (body?.error) {
     case 'forbidden':
       return '이 표를 고칠 권한이 없습니다.'
+    // 잠금(7f-2) — 데이터베이스가 잠겼으면 구조를, 행 페이지가 잠겼으면 그 행의 값을 고칠 수 없다.
+    case 'locked':
+      return '잠겨 있어 고칠 수 없습니다. 잠금을 풀어야 합니다.'
     case 'not_found':
       return '찾을 수 없습니다. 그사이 지워졌을 수 있습니다.'
     case 'duplicate_name':

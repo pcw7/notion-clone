@@ -10,24 +10,12 @@
 
 import { isUuid } from '@/lib/ids'
 import { readJsonBody, requireWorkspaceSession } from '@/lib/auth/route-session'
-import { createView, listViews, type MvpViewType, type ViewFailure } from '@/lib/database/view'
+import { createView, listViews, type MvpViewType } from '@/lib/database/view'
+import { viewFailureStatus } from '@/lib/database/http'
 import type { GroupBy } from '@/lib/database/group'
 
 type Ctx = RouteContext<'/api/workspaces/[workspaceId]/databases/[databaseId]/views'>
 
-/** `views/[viewId]` 라우트와 같은 매핑. */
-function statusOf(reason: ViewFailure): number {
-  switch (reason) {
-    case 'not_found':
-      return 404
-    case 'forbidden':
-      return 403
-    case 'last_view':
-      return 409
-    default:
-      return 400
-  }
-}
 
 export async function GET(_request: Request, ctx: Ctx): Promise<Response> {
   const { workspaceId, databaseId } = await ctx.params
@@ -36,7 +24,7 @@ export async function GET(_request: Request, ctx: Ctx): Promise<Response> {
   if (!isUuid(databaseId)) return Response.json({ error: 'not_found' }, { status: 404 })
 
   const views = await listViews(session.ctx, databaseId)
-  if (!views.ok) return Response.json({ error: views.reason }, { status: statusOf(views.reason) })
+  if (!views.ok) return Response.json({ error: views.reason }, { status: viewFailureStatus(views.reason) })
   return Response.json({ ok: true, views: views.value })
 }
 
@@ -58,7 +46,7 @@ export async function POST(request: Request, ctx: Ctx): Promise<Response> {
   if (!created.ok) {
     return Response.json(
       { error: created.reason, ...(created.issues ? { issues: created.issues } : {}) },
-      { status: statusOf(created.reason) },
+      { status: viewFailureStatus(created.reason) },
     )
   }
   return Response.json({ ok: true, view: created.value }, { status: 201 })

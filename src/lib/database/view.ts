@@ -42,6 +42,7 @@ import type { SessionContext } from '../auth/session-context.ts'
 import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
 import { can } from '../permissions/levels.ts'
 import { effectiveCaps } from '../permissions/effective.ts'
+import { isLocked } from '../permissions/lock.ts'
 import { orderKeyBetween } from '../block/order-key.ts'
 import {
   MAX_SORT_KEYS,
@@ -125,6 +126,8 @@ export type ViewFailure =
   | 'group_required'
   /** 기본 템플릿으로 준 id 가 이 표의 살아 있는 템플릿이 아니다(F-08-03 · 0026 의 트리거와 같은 조건). */
   | 'invalid_template'
+  /** 데이터베이스(구조) · 행 페이지가 잠겼다(7f-2 · F-06-16) — 풀어야 고친다. */
+  | 'locked'
 
 export type ViewResult<T> =
   | { readonly ok: true; readonly value: T }
@@ -172,6 +175,8 @@ async function openDatabase(
   const caps = await effectiveCaps(tx, ctx, databaseId)
   if (!can(caps, 'view')) return fail('not_found')
   if (need === 'edit_structure' && !can(caps, 'edit_structure')) return fail('forbidden')
+  // 뷰를 고치는 것은 구조다 — 잠긴 데이터베이스는 거부한다(7f-2). 읽기(`view`)는 묻지 않는다.
+  if (need === 'edit_structure' && (await isLocked(tx, databaseId))) return fail('locked')
 
   return { databaseId, dataSourceId: row.data_source_id }
 }

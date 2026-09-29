@@ -3180,6 +3180,65 @@ async function main() {
       await sleep(1500)
     }
 
+    if (sectionIf('데이터베이스 잠금 (7f-2 · F-06-16)')) {
+      // 소유자(브라우저)가 표를 잠그면 구조 화면(뷰 더하기 · 열 더하기)이 사라지고 구조 요청은 409 `locked` 다. 행과 값은 그대로
+      // 고친다. 행 페이지를 잠그면 그 행의 셀만 막힌다. 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
+      const stamp = Date.now()
+      const api = async (method, path, body, headers = authed) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `잠글 표 ${stamp}` })).body.database
+      const titleProp = (await api('GET', `/views/${db.defaultViewId}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const titleCell = (text) => ({ propertyId: titleProp, value: { type: 'title', title: [textRun(text)] } })
+      const rowId = (await api('POST', `/views/${db.defaultViewId}/rows`, { cells: [titleCell(`첫 행 ${stamp}`)] })).body.row.id
+      const otherRowId = (await api('POST', `/views/${db.defaultViewId}/rows`, { cells: [titleCell(`둘째 행 ${stamp}`)] })).body.row.id
+      const STRUCTURE = `!!document.querySelector('[data-testid="db-view-add"]') && !!document.querySelector('[data-testid="db-add-column"]')`
+      const NO_STRUCTURE = `!document.querySelector('[data-testid="db-view-add"]') && !document.querySelector('[data-testid="db-add-column"]')`
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      check('전제 — 잠그기 전에는 뷰 더하기 · 열 더하기가 있고 "잠그기" 버튼이 있다',
+        await waitFor(`${STRUCTURE} && (document.querySelector('[data-testid="page-lock-toggle"]')?.textContent ?? '') === '잠그기'`, 15000))
+
+      let locked = false
+      for (let i = 0; i < 10 && !locked; i += 1) {
+        await clickSelector('[data-testid="page-lock-toggle"]')
+        locked = await waitFor(`!!document.querySelector('[data-testid="page-locked"]')`, 1500)
+      }
+      check('★ "잠그기"를 누르면 "잠김"이 서고 구조 화면(뷰 더하기 · 열 더하기)이 사라진다 — 행 더하기는 남는다',
+        locked && (await waitFor(`${NO_STRUCTURE} && !!document.querySelector('[data-testid="db-add-row"]')`, 10000)))
+
+      const addProp = await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '잠긴 뒤의 속성', type: 'number' })
+      const addView = await api('POST', `/databases/${db.id}/views`, { name: '잠긴 뒤의 뷰' })
+      const rename = await api('PATCH', `/databases/${db.id}`, { name: '잠긴 뒤의 이름' })
+      check('★ 구조 요청은 409 locked 다 — 속성 · 뷰 · 이름',
+        [addProp, addView, rename].every((r) => r.status === 409 && r.body?.error === 'locked'),
+        JSON.stringify([addProp, addView, rename].map((r) => [r.status, r.body?.error])))
+      const newRow = await api('POST', `/views/${db.defaultViewId}/rows`, { cells: [titleCell('잠긴 표의 새 행')] })
+      const edit = await api('PATCH', `/rows/${rowId}`, { cells: [titleCell('잠긴 표에서 고친 제목')] })
+      check('★ 행과 값은 그대로 고친다 — 행 만들기(201) · 셀 고치기', newRow.status === 201 && edit.status === 200,
+        JSON.stringify([newRow.status, edit.status]))
+
+      const rowLock = await api('PUT', `/pages/${rowId}/lock`)
+      const lockedCell = await api('PATCH', `/rows/${rowId}`, { cells: [titleCell('잠긴 행을 고친 제목')] })
+      const otherCell = await api('PATCH', `/rows/${otherRowId}`, { cells: [titleCell('다른 행은 고친다')] })
+      check('★ 행 페이지를 잠그면 그 행의 셀만 409 locked — 다른 행은 고친다',
+        rowLock.status === 200 && lockedCell.status === 409 && lockedCell.body?.error === 'locked' && otherCell.status === 200,
+        JSON.stringify([rowLock.status, lockedCell.status, otherCell.status]))
+
+      let unlocked = false
+      for (let i = 0; i < 10 && !unlocked; i += 1) {
+        await clickSelector('[data-testid="page-lock-toggle"]')
+        unlocked = await waitFor(`!document.querySelector('[data-testid="page-locked"]')`, 1500)
+      }
+      check('★ "잠금 풀기"를 누르면 구조 화면이 돌아온다', unlocked && (await waitFor(STRUCTURE, 10000)))
+      const afterUnlock = await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '풀린 뒤의 속성', type: 'number' })
+      check('풀린 뒤에는 속성을 더한다', afterUnlock.status === 200 || afterUnlock.status === 201, String(afterUnlock.status))
+      await sleep(1500)
+    }
+
     if (sectionIf('코멘트 패널 · 인박스 (F-05-08 · F-11-07)')) {
       const commentPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
         method: 'POST',

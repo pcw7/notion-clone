@@ -52,6 +52,7 @@ import type { SessionContext } from '../auth/session-context.ts'
 import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
 import { can } from '../permissions/levels.ts'
 import { effectiveCaps } from '../permissions/effective.ts'
+import { isLocked } from '../permissions/lock.ts'
 import { orderKeyBetween } from '../block/order-key.ts'
 import { titleFromPlainText } from '../block/page.ts'
 import { toPlainText, type ValidationIssue } from '../contracts/rich-text.ts'
@@ -96,6 +97,8 @@ export type RowFailure =
   | 'readonly_property'
   | 'invalid_value'
   | 'version_conflict'
+  /** 데이터베이스(구조) · 행 페이지가 잠겼다(7f-2 · F-06-16) — 풀어야 고친다. */
+  | 'locked'
 
 export type RowResult<T> =
   | { readonly ok: true; readonly value: T }
@@ -143,6 +146,8 @@ export async function openDataSource(
   const caps = await effectiveCaps(tx, ctx, ds.container_id)
   if (!can(caps, 'view')) return { ok: false, reason: 'not_found' } as const
   if (need !== 'view' && !can(caps, need)) return { ok: false, reason: 'forbidden' } as const
+  // 이 문은 행(데이터)과 템플릿(구조)이 함께 쓴다 — 데이터베이스 잠금은 **구조를 여는 쪽만** 막는다(7f-2). 행 · 셀은 그대로다.
+  if (need === 'edit_structure' && (await isLocked(tx, ds.container_id))) return { ok: false, reason: 'locked' } as const
 
   const rows = await tx.query<PropertyMeta>(
     `SELECT id, type, writable, order_idx, config FROM property
@@ -473,6 +478,9 @@ export async function updateCellsIn(
 
     const gate = await openDataSource(tx, ctx, row.data_source_id, 'edit_content')
     if (isRowFailure(gate)) return gate
+    // 잠긴 **행 페이지**의 셀(행 제목 포함)은 막는다(7f-2) — 페이지 잠금이 제목을 막는 것과 같다. 데이터베이스 잠금은 셀을 막지
+    // 않는다(구조가 아니다). 행을 이미 잠갔으므로 잠그는 명령과 줄을 선다.
+    if (await isLocked(tx, rowId)) return { ok: false, reason: 'locked' } as const
 
     if (
       input.expectedSchemaVersion !== undefined &&

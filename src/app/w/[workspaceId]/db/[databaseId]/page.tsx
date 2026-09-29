@@ -41,6 +41,7 @@ import { notFound } from 'next/navigation'
 import { isUuid } from '@/lib/ids'
 import { requirePageSession } from '@/lib/auth/page-session'
 import { getDatabase } from '@/lib/database/database'
+import { databaseLockState } from '@/lib/permissions/lock'
 import { getView, listViews } from '@/lib/database/view'
 import { isCellColumn } from '@/lib/database/view-columns'
 import { queryRows } from '@/lib/database/query'
@@ -61,6 +62,7 @@ import { DatabaseTable } from './database-table'
 import { DatabaseBoard, type BoardGroupJson, type GroupProperty } from './database-board'
 import { listTeamspaceDestinations } from '@/lib/block/move-page'
 import { MovePageControl } from '../../[pageId]/move-page-control'
+import { LockButton } from '../../[pageId]/lock-button'
 import { ViewTabs } from './view-tabs'
 import { ViewToolbar, type BoardSettings } from './view-toolbar'
 import { TemplatePanel } from './template-panel'
@@ -110,7 +112,11 @@ export default async function DatabasePage({
   // 그룹 프로퍼티가 지워진 보드(`not_grouped`)는 아래에서 "그룹 기준을 고르라"로 그린다. 다른 실패는 못 보는 것과 같다.
   if (board !== null && !board.ok && board.reason !== 'not_grouped') notFound()
 
-  const { name, access } = database.value
+  const { name, access: granted } = database.value
+  // 데이터베이스 잠금(7f-2) — 구조를 고칠 수 있어도 잠겨 있으면 구조 화면(속성 · 뷰 · 템플릿 · 이름)을 닫는다. 서버도 `locked` 로
+  // 거부한다. 행 · 셀은 그대로다(`canEditContent` · `canCreateRows` 는 건드리지 않는다).
+  const lock = await databaseLockState(ctx, databaseId)
+  const access = lock?.locked ? { ...granted, canEditStructure: false } : granted
   const columns = view.value.columns
   // 지워진 속성의 정렬 키를 뺀다. 그대로 두면 다른 키를 고친 저장까지 서버가 거부한다
   // (`filter-draft.ts` 머리말).
@@ -193,6 +199,13 @@ export default async function DatabasePage({
           <span className="text-neutral-400">{name || UNTITLED}</span>
         </nav>
         <div className="flex items-center gap-2">
+          <LockButton
+            lockUrl={`/api/workspaces/${workspaceId}/databases/${databaseId}/lock`}
+            locked={lock?.locked ?? false}
+            canToggle={lock?.canToggle ?? false}
+            reloadOnUnlock={false}
+            hint="잠긴 데이터베이스 — 속성 · 뷰 · 템플릿 · 이름을 고칠 수 없습니다(행과 값은 고칩니다)"
+          />
           <MovePageControl
             workspaceId={workspaceId}
             pageId={databaseId}
