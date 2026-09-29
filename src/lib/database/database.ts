@@ -46,6 +46,7 @@ import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.t
 import { can } from '../permissions/levels.ts'
 import { enterPrivateRoot, inheritFromWorkspace } from '../permissions/acl.ts'
 import { effectiveCaps, readableScopes, teamspaceCaps } from '../permissions/effective.ts'
+import { isLocked } from '../permissions/lock.ts'
 import { orderKeyBetween } from '../block/order-key.ts'
 import { nextSiblingKey, titleFromPlainText, plainTitleOf } from '../block/page.ts'
 import { newPropertyId } from './property.ts'
@@ -89,7 +90,12 @@ export type DatabaseAccess = {
   readonly canEditStructure: boolean
 }
 
-export type DatabaseFailure = 'not_found' | 'forbidden' | 'invalid_name'
+export type DatabaseFailure =
+  | 'not_found'
+  | 'forbidden'
+  | 'invalid_name'
+  /** 데이터베이스(구조) · 행 페이지가 잠겼다(7f-2 · F-06-16) — 풀어야 고친다. */
+  | 'locked'
 
 export type DatabaseResult<T> =
   | { readonly ok: true; readonly value: T }
@@ -283,6 +289,8 @@ export async function renameDatabase(
     const caps = await effectiveCaps(tx, ctx, databaseId)
     if (!can(caps, 'view')) return { ok: false, reason: 'not_found' } as const
     if (!can(caps, 'edit_structure')) return { ok: false, reason: 'forbidden' } as const
+    // 이름은 구조다 — 잠긴 데이터베이스는 거부한다(7f-2).
+    if (await isLocked(tx, databaseId)) return { ok: false, reason: 'locked' } as const
 
     const title = JSON.stringify(titleFromPlainText(name))
     await tx.query(

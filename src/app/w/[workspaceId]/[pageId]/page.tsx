@@ -139,10 +139,11 @@ export default async function PageView({ params, searchParams }: PageProps<'/w/[
 
         <div className="flex flex-none items-start gap-2">
           <LockButton
-            workspaceId={workspaceId}
-            pageId={page.id}
+            lockUrl={`/api/workspaces/${workspaceId}/pages/${page.id}/lock`}
             locked={lock?.locked ?? false}
             canToggle={lock?.canToggle ?? false}
+            reloadOnUnlock
+            hint="잠긴 페이지 — 본문과 제목을 고칠 수 없습니다"
           />
           <FavoriteButton workspaceId={workspaceId} pageId={page.id} initial={favorite} />
           <CommentPanel

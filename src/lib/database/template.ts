@@ -100,6 +100,8 @@ export type TemplateFailure =
   | 'too_large'
   /** 템플릿의 하위 페이지가 깊이 상한을 넘는다 — `duplicate.ts` 의 `too_deep`. */
   | 'too_deep'
+  /** 데이터베이스(구조) · 행 페이지가 잠겼다(7f-2 · F-06-16) — 풀어야 고친다. */
+  | 'locked'
 
 export type TemplateResult<T> =
   | { readonly ok: true; readonly value: T }
@@ -117,7 +119,8 @@ const fail = (reason: TemplateFailure): TemplateResult<never> => ({ ok: false, r
 function fromRowFailure(v: RowResult<never>): TemplateResult<never> {
   // `RowResult<never>` 의 성공 쪽은 `value: never` 라 있을 수 없다. 타입을 좁히려고 둔 가지다.
   if (v.ok) return fail('invalid_value')
-  if (v.reason === 'not_found' || v.reason === 'forbidden') return fail(v.reason)
+  // 잠금(7f-2)도 그대로 싣는다 — `invalid_value` 로 접으면 "값을 확인하세요"가 되어 풀면 되는 일을 입력 탓으로 말한다.
+  if (v.reason === 'not_found' || v.reason === 'forbidden' || v.reason === 'locked') return fail(v.reason)
   return fail('invalid_value')
 }
 

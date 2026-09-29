@@ -23,6 +23,9 @@ function statusOf(reason: RelationFailure): number {
       return 404
     case 'forbidden':
       return 403
+    // 잠긴 행 페이지(7f-2) — 입력은 맞는데 지금 상태가 허락하지 않는다.
+    case 'locked':
+      return 409
     case 'unknown_property':
     case 'readonly_property':
     case 'invalid_value':

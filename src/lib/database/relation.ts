@@ -71,6 +71,7 @@ import type { SessionContext } from '../auth/session-context.ts'
 import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
 import { can } from '../permissions/levels.ts'
 import { effectiveCaps, readableScopes } from '../permissions/effective.ts'
+import { isLocked } from '../permissions/lock.ts'
 import { orderKeysBetween } from '../block/order-key.ts'
 import { isUuid } from '../ids.ts'
 import type { ValidationIssue } from '../contracts/rich-text.ts'
@@ -152,8 +153,11 @@ export async function addRelationProperty(
     if (isSchemaFailure(own)) return own
     if (lockTargetToo) {
       const target = locks.get(targetId)
-      // 대상 표를 못 보면 "없는 대상"과 같은 답이다. 볼 수는 있는데 못 고치면 그때만 forbidden.
-      if (isSchemaFailure(target)) return !target.ok && target.reason === 'forbidden' ? target : propertyFail('invalid_target')
+      // 대상 표를 못 보면 "없는 대상"과 같은 답이다. 볼 수는 있는데 못 고치면 그때만 forbidden, 잠겼으면 locked(7f-2 — 잠금은
+      // 볼 수 있는 사람에게만 나오는 답이라 존재가 새지 않는다).
+      if (isSchemaFailure(target)) {
+        return !target.ok && (target.reason === 'forbidden' || target.reason === 'locked') ? target : propertyFail('invalid_target')
+      }
     } else if (!self && !(await canViewDataSource(tx, ctx, targetId))) {
       return propertyFail('invalid_target')
     }
@@ -225,6 +229,8 @@ export type RelationFailure =
   | 'unknown_property'
   | 'readonly_property'
   | 'invalid_value'
+  /** 데이터베이스(구조) · 행 페이지가 잠겼다(7f-2 · F-06-16) — 풀어야 고친다. */
+  | 'locked'
 
 export type RelationResult<T> =
   | { readonly ok: true; readonly value: T }
@@ -280,6 +286,9 @@ async function openRelation(
   const caps = await effectiveCaps(tx, ctx, row.container_id)
   if (!can(caps, 'view')) return fail('not_found')
   if (need === 'edit_content' && !can(caps, 'edit_content')) return fail('forbidden')
+  // 잠긴 행 페이지의 연결 칸은 막는다(7f-2 — 셀과 같다). 양방향의 거울상은 대상 행이 잠겨 있어도 따라간다 — 이 행의 연결이
+  // 바뀐 결과이지 대상 행을 고치는 것이 아니다(하위 페이지 참조가 트리를 따라가는 것과 같다).
+  if (need === 'edit_content' && (await isLocked(tx, rowId))) return fail('locked')
 
   const property = await tx.queryMaybe<{ type: string; config: unknown; writable: string }>(
     `SELECT type, config, writable FROM property

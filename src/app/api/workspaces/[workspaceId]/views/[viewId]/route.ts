@@ -15,26 +15,13 @@
  */
 
 import { requireWorkspaceSession } from '@/lib/auth/route-session'
-import { deleteView, getView, updateView, type MvpViewType, type ViewFailure } from '@/lib/database/view'
+import { deleteView, getView, updateView, type MvpViewType } from '@/lib/database/view'
+import { viewFailureStatus } from '@/lib/database/http'
 import type { FilterNode, SortKey } from '@/lib/database/filter'
 import type { GroupBy } from '@/lib/database/group'
 
 type Ctx = RouteContext<'/api/workspaces/[workspaceId]/views/[viewId]'>
 
-/** 실패 이유 → HTTP 상태. 한 곳에만 둔다. */
-function statusOf(reason: ViewFailure): number {
-  switch (reason) {
-    case 'not_found':
-      return 404
-    case 'forbidden':
-      return 403
-    case 'last_view':
-      // 규칙상 불가능한 요청이다. 입력이 틀린 것이 아니라 상태가 허락하지 않는다.
-      return 409
-    default:
-      return 400
-  }
-}
 
 export async function GET(_request: Request, ctx: Ctx): Promise<Response> {
   const { workspaceId, viewId } = await ctx.params
@@ -42,7 +29,7 @@ export async function GET(_request: Request, ctx: Ctx): Promise<Response> {
   if (!session.ok) return session.response
 
   const got = await getView(session.ctx, viewId)
-  if (!got.ok) return Response.json({ error: got.reason }, { status: statusOf(got.reason) })
+  if (!got.ok) return Response.json({ error: got.reason }, { status: viewFailureStatus(got.reason) })
   return Response.json({ ok: true, view: got.value })
 }
 
@@ -77,7 +64,7 @@ export async function PATCH(request: Request, ctx: Ctx): Promise<Response> {
   if (!updated.ok) {
     return Response.json(
       { error: updated.reason, ...(updated.issues ? { issues: updated.issues } : {}) },
-      { status: statusOf(updated.reason) },
+      { status: viewFailureStatus(updated.reason) },
     )
   }
   return Response.json({ ok: true, view: updated.value })
@@ -90,7 +77,7 @@ export async function DELETE(_request: Request, ctx: Ctx): Promise<Response> {
 
   const removed = await deleteView(session.ctx, viewId)
   if (!removed.ok) {
-    return Response.json({ error: removed.reason }, { status: statusOf(removed.reason) })
+    return Response.json({ error: removed.reason }, { status: viewFailureStatus(removed.reason) })
   }
   return Response.json({ ok: true })
 }
