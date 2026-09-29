@@ -12,7 +12,7 @@
  * **F-01-02 의 블록 타입 레지스트리에서 자동 생성**하는 것이 유지보수에 유리."*
  *
  * 라벨과 별칭은 레지스트리에 없으므로 여기 표가 필요하다. 다만 그 표를
- * `Record<MvpBlockType, …>` 로 선언해 **레지스트리에 타입을 추가하면 이 파일이
+ * `Record<BodyBlockType, …>` 로 선언해 **레지스트리에 타입을 추가하면 이 파일이
  * 컴파일되지 않게** 했다. 목록이 조용히 어긋나는 것을 타입 검사가 막는다.
  *
  * ──────────────────────────────────────────────────────────────────────
@@ -39,9 +39,10 @@
 
 import { Plugin, PluginKey, type EditorState, type Transaction } from '@tiptap/pm/state'
 
-import { MVP_BLOCK_TYPES, specOf, type MvpBlockType } from '../block/types.ts'
+import { BODY_BLOCK_TYPES, specOf, type BodyBlockType } from '../block/types.ts'
 import { applyTurnInto, type CommandDeps } from './commands.ts'
 import { containerAt } from './pm-blocks.ts'
+import { isPlainTextNode } from './schema.ts'
 
 type SlashCommandBase = {
   readonly label: string
@@ -53,7 +54,7 @@ type SlashCommandBase = {
 /** 블록 타입 변환. 트랜잭션 하나로 끝난다. */
 export type BlockSlashCommand = SlashCommandBase & {
   readonly kind: 'block'
-  readonly id: MvpBlockType
+  readonly id: BodyBlockType
 }
 
 /**
@@ -73,10 +74,10 @@ export type SlashCommand = BlockSlashCommand | PageSlashCommand
 /**
  * 타입별 라벨·별칭.
  *
- * `Record<MvpBlockType, …>` 이므로 레지스트리에 타입을 추가하면 **여기가
+ * `Record<BodyBlockType, …>` 이므로 레지스트리에 타입을 추가하면 **여기가
  * 컴파일 에러**가 된다. "슬래시 메뉴에만 없는 타입"이 생기지 않는다.
  */
-const CATALOG: Readonly<Record<MvpBlockType, SlashCommandBase>> = {
+const CATALOG: Readonly<Record<BodyBlockType, SlashCommandBase>> = {
   paragraph: { label: '텍스트', aliases: ['텍스트', 'text', 'p', '문단'], group: '기본 블록' },
   heading_1: { label: '제목 1', aliases: ['제목1', 'h1', 'heading1', '헤딩1'], group: '기본 블록' },
   heading_2: { label: '제목 2', aliases: ['제목2', 'h2', 'heading2', '헤딩2'], group: '기본 블록' },
@@ -97,6 +98,7 @@ const CATALOG: Readonly<Record<MvpBlockType, SlashCommandBase>> = {
   callout: { label: '콜아웃', aliases: ['콜아웃', 'callout'], group: '기본 블록' },
   divider: { label: '구분선', aliases: ['구분선', 'divider', 'div', 'hr'], group: '기본 블록' },
   image: { label: '이미지', aliases: ['이미지', 'image', 'img', '사진'], group: '미디어' },
+  code: { label: '코드', aliases: ['코드', 'code', 'codeblock', '```'], group: '기본 블록' },
 }
 
 /**
@@ -104,7 +106,7 @@ const CATALOG: Readonly<Record<MvpBlockType, SlashCommandBase>> = {
  * 쓴다 — 두 벌로 두면 슬래시 메뉴에서는 "할 일 목록"인데 핸들 메뉴에서는
  * "체크리스트"가 되는 식으로 어긋난다.
  */
-export function blockTypeLabel(type: MvpBlockType): string {
+export function blockTypeLabel(type: BodyBlockType): string {
   return CATALOG[type].label
 }
 
@@ -117,7 +119,7 @@ const PAGE_COMMAND: PageSlashCommand = {
   group: '페이지',
 }
 
-const BLOCK_COMMANDS: readonly BlockSlashCommand[] = MVP_BLOCK_TYPES.map((id) => ({
+const BLOCK_COMMANDS: readonly BlockSlashCommand[] = BODY_BLOCK_TYPES.map((id) => ({
   kind: 'block',
   id,
   ...CATALOG[id],
@@ -177,8 +179,8 @@ export function closeSlashMenu(tr: Transaction): Transaction {
  */
 function isTriggerPosition(state: EditorState, slashPos: number): boolean {
   const $slash = state.doc.resolve(slashPos)
-  // 텍스트블록 안이 아니면 트리거하지 않는다.
-  if (!$slash.parent.isTextblock) return false
+  // 텍스트블록 안이 아니면 트리거하지 않는다. 코드 블록(평문 본문) 안의 `/` 는 글자다(F-01-14 · F-01-04).
+  if (!$slash.parent.isTextblock || isPlainTextNode($slash.parent)) return false
   if ($slash.parentOffset === 0) return true
   const before = $slash.parent.textBetween($slash.parentOffset - 1, $slash.parentOffset)
   return /\s/.test(before)
@@ -189,7 +191,7 @@ function computeState(prev: SlashMenuState, tr: Transaction, next: EditorState):
   if (meta?.close) return INACTIVE
 
   const { $from, empty } = next.selection
-  if (!empty || !$from.parent.isTextblock) return INACTIVE
+  if (!empty || !$from.parent.isTextblock || isPlainTextNode($from.parent)) return INACTIVE
 
   if (prev.active) {
     const from = tr.mapping.map(prev.from)

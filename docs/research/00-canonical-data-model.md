@@ -958,6 +958,21 @@ CREATE VIEW live_block AS SELECT * FROM block WHERE lifecycle = 'live';
 | B9 | 외부 origin 행의 **본문 블록은 언제나 native** 다. block 에 `origin` 컬럼을 두지 않는다(negative requirement) | 15 R4 |
 | B10 | `is_alive`/`alive`/`archived`/`deleted_at`/`position`/`order_idx`(형제 순서 용도)/`path` 컬럼은 존재하지 않는다 | C-1, C-10, X-7 |
 
+**[보강] 코드 블록(`type='code'`)의 저장 모양** ⟨잔여 묶음 8a-1 · F-01-14⟩
+
+> 초판은 `properties` 주석에 `language`, `format` 주석에 `code_wrap` 만 적었다. 01 F-01-14 *"공개 API 페이로드: `rich_text[]`(코드
+> 본문), `language`, `caption[]`. 자식 블록 불가"* · 데이터 모델 함의 *"`language` 는 enum 이 아니라 문자열로 저장"*.
+>
+> ① `properties.title` = 코드 본문 — **서식 · 멘션 · 수식이 없는 평문 런**이다(줄바꿈은 글자 `\n`). 다른 블록에서 코드로 바꾸면
+> 서식을 버리고 멘션 · 수식은 보이는 글자로 편다. `properties.language` = 문자열(없으면 plain text) — 지원 목록 밖의 값도 **그대로
+> 보존**한다(표시만 plain text). `properties.caption` = RichText[](8a-2). `format.code_wrap` = boolean(8a-2). 색(`block_color`)은
+> 없다 · 자식은 없다.
+> ② **Y.Doc 의 요소 이름은 `code_block` 이다** — 블록 타입 이름(`code`)이 인라인 서식 마크 `code` 와 겹쳐 ProseMirror 스키마가 같은
+> 이름의 노드를 받지 않는다. 블록 타입 `page` ↔ 노드 `page_ref` 와 같은 사상이다. 요소 이름은 저장 포맷이므로(§3.7 · `ydoc.ts`)
+> 바꾸려면 마이그레이션이다. `block.type` 은 `code` 다(공개 API 와 같은 이름).
+> ③ 편집 규칙은 레지스트리 항목(`plainText`)이 끈다 — Enter 는 줄바꿈, Tab 은 들여쓰기 글자, 마크다운 입력 규칙 · `/` · `@` · 서식은
+> 꺼진다, 붙여넣기는 평문. 블록 타입 이름으로 분기하지 않는다(01 F-01-14 *"컨텍스트 분기가 4개 기능에 침투"* — 분기를 한 곳에 둔다).
+
 **상태 전이 (type='page' 블록만)**
 
 | From → To | 트리거 | 부수효과 |

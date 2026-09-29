@@ -43,13 +43,15 @@
  */
 
 import type { Node as PmNode, NodeType } from '@tiptap/pm/model'
-import { NodeSelection, TextSelection, type Command, type Transaction } from '@tiptap/pm/state'
+import { chainCommands } from '@tiptap/pm/commands'
+import { NodeSelection, TextSelection, type Command, type EditorState, type Transaction } from '@tiptap/pm/state'
 import { liftTarget } from '@tiptap/pm/transform'
 
 import { normalizeFormat, specOf, type BlockFormat, type BlockType } from '../block/types.ts'
 import { planMerge, planSplit, type MergePlan } from './block-rules.ts'
-import { newBlockId, runsToInline } from './pm-adapter.ts'
+import { inlineForType, inlineToRuns, newBlockId } from './pm-adapter.ts'
 import {
+  blockTypeOf,
   canNestUnder,
   containerAt,
   findContainerById,
@@ -57,7 +59,7 @@ import {
   visibleNeighbors,
   type ContainerInfo,
 } from './pm-blocks.ts'
-import { blockSchema, PAGE_REF_NODE } from './schema.ts'
+import { blockSchema, isPlainTextNode, nodeNameOf, PAGE_REF_NODE } from './schema.ts'
 import type { RichTextRun } from '../contracts/rich-text.ts'
 
 /**
@@ -88,7 +90,8 @@ const NO_COLLAPSE: CommandDeps = { isCollapsed: () => false }
 // ── 노드 조립 ─────────────────────────────────────────────────────────
 
 function contentNodeType(type: BlockType): NodeType {
-  return blockSchema.nodes[type === 'page' ? PAGE_REF_NODE : type]
+  // 노드 이름은 타입 이름이 아닐 수 있다(`page` → `page_ref` · `code` → `code_block`).
+  return blockSchema.nodes[nodeNameOf(type)]
 }
 
 function makeContentNode(
@@ -100,7 +103,7 @@ function makeContentNode(
   const nodeType = contentNodeType(type)
   const attrs = { props: properties, format }
   return specOf(type).hasRichText
-    ? nodeType.create(attrs, runsToInline(title))
+    ? nodeType.create(attrs, inlineForType(type, title))
     : nodeType.create(attrs)
 }
 
@@ -145,7 +148,8 @@ function replaceTitle(tr: Transaction, blockId: string, title: readonly RichText
   if (!info || !info.contentNode.isTextblock) return
   const from = info.contentPos + 1
   const to = from + info.contentNode.content.size
-  tr.replaceWith(from, to, runsToInline(title))
+  // 평문 본문(코드 블록)에는 서식 없는 글자로 — 합치기가 서식 든 런을 넘겨도(앞 블록이 코드) 스키마가 받는 모양으로 편다.
+  tr.replaceWith(from, to, inlineForType(blockTypeOf(info.contentNode), title))
 }
 
 /** 내용 노드의 타입·attrs 를 바꾼다. 인라인 내용은 유지된다. */
@@ -158,7 +162,15 @@ function setContentType(
 ): void {
   const info = findContainerById(tr.doc, blockId)
   if (!info) return
-  tr.setNodeMarkup(info.contentPos, contentNodeType(type), { props: properties, format })
+  const nodeType = contentNodeType(type)
+  if (specOf(type).plainText && info.contentNode.isTextblock) {
+    // 평문 본문(코드 블록)으로 — 서식 · 멘션 · 수식을 먼저 편다. 그대로 `setNodeMarkup` 하면 스키마(`text*` · 마크 없음)가 받지 않아
+    // 던진다(바꾸기 메뉴가 사용 가능 여부를 셈하는 것만으로도 — `block-menu.ts`).
+    const from = info.contentPos + 1
+    const flat = inlineForType(type, inlineToRuns(info.contentNode.content))
+    tr.replaceWith(from, from + info.contentNode.content.size, flat)
+  }
+  tr.setNodeMarkup(info.contentPos, nodeType, { props: properties, format })
 }
 
 // ── Enter ─────────────────────────────────────────────────────────────
@@ -180,6 +192,12 @@ export function splitBlockCommand(deps: CommandDeps = NO_COLLAPSE): Command {
     const newId = (deps.newId ?? newBlockId)()
 
     switch (plan.kind) {
+      case 'insert_newline': {
+        // 평문 본문(코드 블록) — 쪼개지 않고 줄바꿈 글자(F-01-14). 선택은 위에서 지웠다.
+        tr.insertText('\n')
+        break
+      }
+
       case 'escape_to_paragraph': {
         // 리스트 탈출. 블록을 만들지 않고 타입만 되돌린다.
         // properties 는 비운다 — to_do 의 checked 가 문단에 남으면 안 된다.
@@ -555,8 +573,83 @@ export function createBlockKeymap(deps: CommandDeps = NO_COLLAPSE): KeyBindings 
     'Shift-Enter': softBreakCommand(),
     Backspace: mergeBackwardCommand(deps),
     Delete: mergeForwardCommand(deps),
-    Tab: indentCommand(deps),
-    'Shift-Tab': outdentCommand(),
+    // 평문 본문(코드 블록) 안의 Tab 은 블록 중첩이 아니라 들여쓰기 글자다(F-01-14) — 먼저 묻고, 아니면 블록 들여쓰기.
+    Tab: chainCommands(plainTextIndentCommand(), indentCommand(deps)),
+    'Shift-Tab': chainCommands(plainTextOutdentCommand(), outdentCommand()),
+    // 코드 블록 탈출(F-01-14 *"Cmd/Ctrl+Enter"*) — 뒤에 빈 문단을 만들고 옮긴다. 코드 블록이 아니면 아무것도 하지 않는다.
+    'Mod-Enter': exitPlainTextCommand(deps),
+  }
+}
+
+/** 캐럿이 평문 본문(코드 블록) 안에 있는가 — 선택이 한 노드 안일 때만. */
+function inPlainText(state: EditorState): boolean {
+  const { $from, $to } = state.selection
+  return $from.sameParent($to) && isPlainTextNode($from.parent)
+}
+
+/** 코드 블록의 들여쓰기 글자. 탭 하나 — 보이는 폭은 CSS `tab-size` 가 정한다. */
+export const CODE_INDENT = '\t'
+
+/**
+ * 코드 블록 안의 Tab — 캐럿 자리에 들여쓰기 글자, 여러 줄을 골랐으면 **고른 줄마다 줄머리에** 넣는다. 코드 블록 밖이면 false
+ * (블록 들여쓰기로 넘어간다).
+ */
+export function plainTextIndentCommand(): Command {
+  return (state, dispatch) => {
+    if (!inPlainText(state)) return false
+    const { $from, from, to } = state.selection
+    const text = $from.parent.textContent
+    const base = $from.start()
+    const starts = lineStartsBetween(text, from - base, to - base)
+    const tr = state.tr
+    if (starts.length <= 1 && from === to) {
+      tr.insertText(CODE_INDENT)
+    } else {
+      // 뒤에서부터 넣어 앞쪽 위치가 밀리지 않게 한다.
+      for (const at of [...starts].reverse()) tr.insertText(CODE_INDENT, base + at)
+    }
+    if (dispatch) dispatch(tr.scrollIntoView())
+    return true
+  }
+}
+
+/** 코드 블록 안의 Shift+Tab — 캐럿이 걸친 줄마다 줄머리의 들여쓰기(탭 하나 또는 공백 둘까지)를 뗀다. 뗄 것이 없어도 소비한다. */
+export function plainTextOutdentCommand(): Command {
+  return (state, dispatch) => {
+    if (!inPlainText(state)) return false
+    const { $from, from, to } = state.selection
+    const text = $from.parent.textContent
+    const base = $from.start()
+    const tr = state.tr
+    for (const at of [...lineStartsBetween(text, from - base, to - base)].reverse()) {
+      const width = text.startsWith(CODE_INDENT, at) ? 1 : text.startsWith('  ', at) ? 2 : text.startsWith(' ', at) ? 1 : 0
+      if (width > 0) tr.delete(base + at, base + at + width)
+    }
+    if (dispatch && tr.docChanged) dispatch(tr.scrollIntoView())
+    return true
+  }
+}
+
+/** `[from, to]` 이 걸친 줄들의 줄머리 오프셋(글자 단위 · 오름차순). */
+function lineStartsBetween(text: string, from: number, to: number): number[] {
+  const first = text.lastIndexOf('\n', from - 1) + 1
+  const starts = [first]
+  for (let i = text.indexOf('\n', first); i !== -1 && i < to; i = text.indexOf('\n', i + 1)) starts.push(i + 1)
+  return starts
+}
+
+/** Mod+Enter — 코드 블록을 빠져나온다: 뒤에 빈 문단을 만들고 캐럿을 옮긴다. 코드 블록 밖이면 false. */
+export function exitPlainTextCommand(deps: CommandDeps = NO_COLLAPSE): Command {
+  return (state, dispatch) => {
+    if (!inPlainText(state)) return false
+    const info = containerAt(state.selection.$from)
+    if (!info || info.id === '') return false
+    const newId = (deps.newId ?? newBlockId)()
+    const tr = state.tr
+    tr.insert(info.pos + info.node.nodeSize, makeContainer(newId, 'paragraph', [], {}, {}))
+    placeCaret(tr, newId, 0)
+    if (dispatch) dispatch(tr.scrollIntoView())
+    return true
   }
 }
 

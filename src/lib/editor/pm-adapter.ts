@@ -46,6 +46,7 @@ import {
 } from '../contracts/rich-text.ts'
 import {
   isKnownBlockType,
+  normalizeFormat,
   specOf,
   PAGE_TYPE,
   UNSUPPORTED_TYPE,
@@ -56,9 +57,11 @@ import { createInlineAtom } from './atom-marks.ts'
 import { canonicalizeRuns } from './rich-text-ops.ts'
 import {
   blockSchema,
+  blockTypeOfNode,
   BOOLEAN_MARK_NAMES,
   EQUATION_NODE,
   MENTION_NODE,
+  nodeNameOf,
   PAGE_REF_NODE,
 } from './schema.ts'
 import type { EditorBlock, EditorDoc } from './document.ts'
@@ -191,7 +194,9 @@ export function inlineToRuns(fragment: Fragment): RichTextRun[] {
 
 function contentNodeFor(block: EditorBlock): PmNode {
   const props = { ...(block.properties ?? {}) }
-  const format = { ...(block.format ?? {}) }
+  // 타입이 받지 않는 색은 뺀다 — 투영(`projectDocument`)이 행에서 빼는 것과 같은 규칙(`normalizeFormat`). Y.Doc 에만 남으면 행과
+  // Y.Doc 이 다른 본문이 된다(8a-1 이 코드 블록으로 찾았다 · 구분선 · 이미지도 같았다).
+  const format = normalizeFormat(isKnownBlockType(block.type) ? block.type : UNSUPPORTED_TYPE, block.format)
 
   if (block.type === PAGE_TYPE) {
     // 참조 노드는 제목을 싣지 않는다(`schema.ts` · HANDOFF §3.2-22). 받은 문서에 제목이 있어도(옛 클라이언트 · 저장 큐) 버린다 —
@@ -204,11 +209,27 @@ function contentNodeFor(block: EditorBlock): PmNode {
     return blockSchema.nodes[UNSUPPORTED_TYPE].create({ props, format })
   }
 
-  const nodeType = blockSchema.nodes[type]
+  const nodeType = blockSchema.nodes[nodeNameOf(type)]
   if (specOf(type).hasRichText) {
-    return nodeType.create({ props, format }, runsToInline(block.title))
+    return nodeType.create({ props, format }, inlineForType(type, block.title))
   }
   return nodeType.create({ props, format })
+}
+
+/**
+ * 이 타입의 내용 노드에 넣을 인라인 — 보통은 런 그대로(`runsToInline`), **평문 본문(코드 블록 · 8a-1)은 서식 · 멘션 · 수식을
+ * 버린 글자 하나**다(스키마가 `text*` · 마크 없음이다 — 서식이 든 인라인을 넣으면 ProseMirror 가 던진다). 내용 노드를 만들거나
+ * 글자를 갈아 끼우는 곳은 이것을 거친다(`contentNodeFor` · `commands.ts`).
+ */
+export function inlineForType(type: BlockType, runs: readonly RichTextRun[] | undefined): PmNode[] {
+  if (!specOf(type).plainText) return runsToInline(runs ?? [])
+  const text = plainTextOfRuns(runs)
+  return text === '' ? [] : [blockSchema.text(text)]
+}
+
+/** 런을 보이는 글자로 — 글자 · 수식의 식. 멘션은 보이는 글자를 저장하지 않으므로(정본 §3.9) 빈 글자다. */
+export function plainTextOfRuns(runs: readonly RichTextRun[] | undefined): string {
+  return (runs ?? []).map((r) => (r.type === 'text' ? (r.text?.content ?? '') : r.type === 'equation' ? (r.equation?.expression ?? '') : '')).join('')
 }
 
 export function containerFor(block: EditorBlock): PmNode {
@@ -271,9 +292,8 @@ export function blockFromContainer(container: PmNode): EditorBlock {
     return { id: blockId, type: PAGE_TYPE, title: [], properties: props, format }
   }
 
-  const type = (
-    content.type.name === UNSUPPORTED_TYPE ? UNSUPPORTED_TYPE : content.type.name
-  ) as BlockType
+  // 노드 이름 → 타입(`code_block` → `code` · 8a-1). 이름을 그대로 쓰면 `specOf` 가 undefined 가 되어 저장이 깨진다.
+  const type: BlockType = blockTypeOfNode(content.type.name)
 
   return {
     id: blockId,

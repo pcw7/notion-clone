@@ -11,7 +11,7 @@ import assert from 'node:assert/strict'
 import { EditorState, TextSelection, type Transaction } from '@tiptap/pm/state'
 
 import { textRun } from '../contracts/rich-text.ts'
-import { MVP_BLOCK_TYPES } from '../block/types.ts'
+import { BODY_BLOCK_TYPES, MVP_BLOCK_TYPES } from '../block/types.ts'
 import { blockSchema } from './schema.ts'
 import { docToPm } from './pm-adapter.ts'
 import { findContainerById } from './pm-blocks.ts'
@@ -74,11 +74,13 @@ function firstContent(state: EditorState) {
 // ── 카탈로그 ──────────────────────────────────────────────────────────
 
 describe('커맨드 카탈로그', () => {
-  test('레지스트리의 MVP 12종이 모두 있다', () => {
-    // 카탈로그가 Record<MvpBlockType, …> 이라 타입 검사도 강제하지만,
+  test('레지스트리의 본문 블록 타입이 모두 있다 — MVP 12종 + 코드(8a-1)', () => {
+    // 카탈로그가 Record<BodyBlockType, …> 이라 타입 검사도 강제하지만,
     // 목록이 실제로 생성되는지 런타임에서도 본다.
     const blockIds = SLASH_COMMANDS.filter((c) => c.kind === 'block').map((c) => c.id)
-    assert.deepEqual(blockIds.slice().sort(), [...MVP_BLOCK_TYPES].sort())
+    assert.deepEqual(blockIds.slice().sort(), [...BODY_BLOCK_TYPES].sort())
+    for (const t of MVP_BLOCK_TYPES) assert.ok(blockIds.includes(t), t)
+    assert.ok(blockIds.includes('code'))
   })
 
   test('하위 페이지 커맨드가 있고 블록 타입이 아니다 (F-02-13)', () => {

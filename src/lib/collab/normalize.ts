@@ -42,9 +42,9 @@
 
 import type { Node as PmNode } from '@tiptap/pm/model'
 
-import { MAX_TREE_DEPTH, PAGE_TYPE, specOf, type BlockType } from '../block/types.ts'
+import { MAX_TREE_DEPTH, PAGE_TYPE, specOf } from '../block/types.ts'
 import { isUuid } from '../ids.ts'
-import { blockSchema, PAGE_REF_NODE } from '../editor/schema.ts'
+import { blockSchema, blockTypeOfNode, isPlainTextNode, PAGE_REF_NODE } from '../editor/schema.ts'
 
 export type NormalizeFix =
   /** 루트에 그룹이 없다. */
@@ -73,6 +73,11 @@ export type NormalizeFix =
   | 'invalid_content_dropped'
   /** `props` · `format` 이 객체가 아니어서 빈 객체로 바꿨다. */
   | 'invalid_attrs_reset'
+  /**
+   * 평문 본문(코드 블록 · 8a-1)에 서식 · 인라인 원자가 섞였다 — 서식을 떼고 수식은 식의 글자로 폈다(멘션은 보이는 글자를
+   * 저장하지 않으므로 뺐다). 동시 편집(한 사람이 굵게 · 다른 사람이 코드로 바꾸기)에서 생긴다.
+   */
+  | 'plain_text_flattened'
   /** blockId 가 비었거나 uuid 가 아니다 — 새 id. */
   | 'blank_id'
   /** blockId 가 문서에 두 번 이상 나온다 — 첫째 뒤의 것은 새 id. */
@@ -131,7 +136,9 @@ function isPlainObject(value: unknown): boolean {
 /** 내용 노드가 자식 블록을 가질 수 있는가. 하위 페이지 참조 밑은 그 페이지의 문서라 안 된다. */
 function canNest(content: PmNode): boolean {
   if (content.type.name === PAGE_REF_NODE) return false
-  return specOf(content.type.name as BlockType).canHaveChildren && content.type.name !== PAGE_TYPE
+  // 노드 이름은 타입 이름이 아닐 수 있다(`code_block` → `code`) — 이름을 그대로 `specOf` 에 넣으면 undefined 다(8a-1).
+  const type = blockTypeOfNode(content.type.name)
+  return specOf(type).canHaveChildren && type !== PAGE_TYPE
 }
 
 export function normalizeBody(input: PmNode, options: NormalizeOptions): NormalizeResult {
@@ -175,7 +182,25 @@ export function normalizeBody(input: PmNode, options: NormalizeOptions): Normali
       }
     }
     const inline: PmNode[] = []
-    if (content.type.isTextblock) {
+    if (isPlainTextNode(content)) {
+      // 평문 본문은 글자만 — 서식을 떼고, 수식은 식의 글자로 편다(멘션은 보이는 글자가 없으니 뺀다). 스키마(`text*` · 마크 없음)가
+      // 받지 않는 것을 남기면 편집기의 다음 변환(`createChecked`)이 그 요소를 지운다(`ydoc.ts` 머리말).
+      let flattened = false
+      content.forEach((child) => {
+        if (!child.isInline) {
+          changed = true
+          fixes.push('invalid_content_dropped')
+          return
+        }
+        const text = child.isText ? (child.text ?? '') : String(child.attrs.expression ?? '')
+        if (!child.isText || child.marks.length > 0) flattened = true
+        if (text !== '') inline.push(blockSchema.text(text))
+      })
+      if (flattened) {
+        changed = true
+        fixes.push('plain_text_flattened')
+      }
+    } else if (content.type.isTextblock) {
       content.forEach((child) => {
         if (child.isInline) inline.push(child)
         else {

@@ -14,10 +14,10 @@
 
 import type { Node as PmNode, ResolvedPos } from '@tiptap/pm/model'
 
-import { isKnownBlockType, specOf, PAGE_TYPE, type BlockFormat, type BlockType } from '../block/types.ts'
+import { specOf, PAGE_TYPE, type BlockFormat, type BlockType } from '../block/types.ts'
 import type { RuleBlock } from './block-rules.ts'
 import { inlineToRuns } from './pm-adapter.ts'
-import { PAGE_REF_NODE } from './schema.ts'
+import { blockTypeOfNode } from './schema.ts'
 import { flattenVisible, type TreeNodeLike, type VisibleIndex } from './tree.ts'
 
 export type ContainerInfo = {
@@ -91,9 +91,7 @@ export function findContainerById(doc: PmNode, id: string): ContainerInfo | null
 
 /** 내용 노드의 타입 이름을 우리 블록 타입으로. */
 export function blockTypeOf(contentNode: PmNode): BlockType {
-  const name = contentNode.type.name
-  if (name === PAGE_REF_NODE) return PAGE_TYPE
-  return isKnownBlockType(name) ? name : 'unsupported'
+  return blockTypeOfNode(contentNode.type.name)
 }
 
 /**

@@ -45,13 +45,22 @@ export const MVP_BLOCK_TYPES = [
 ] as const
 export type MvpBlockType = (typeof MVP_BLOCK_TYPES)[number]
 
+/**
+ * 본문 편집기가 만드는 블록 타입 — MVP 12종 + 그 뒤에 더한 것(잔여 묶음 8a-1 의 `code`). 편집기(스키마 · `/` 메뉴 · 입력 규칙 ·
+ * 바꾸기)는 이 목록을 읽는다. `MVP_BLOCK_TYPES` 는 §5.1 의 범위 기록으로 남긴다.
+ *
+ * ⚠ 순서가 뜻을 갖는다 — 첫 항목(`paragraph`)이 새 블록의 기본형이다(`editor/schema.ts`). 더하는 것은 뒤에 붙인다.
+ */
+export const BODY_BLOCK_TYPES = [...MVP_BLOCK_TYPES, 'code'] as const
+export type BodyBlockType = (typeof BODY_BLOCK_TYPES)[number]
+
 /** 페이지도 블록이다(C-3). 레지스트리에는 있지만 `/` 메뉴에는 없다. */
 export const PAGE_TYPE = 'page' as const
 
 /** 모르는 타입의 보존용 폴백. */
 export const UNSUPPORTED_TYPE = 'unsupported' as const
 
-export type BlockType = MvpBlockType | typeof PAGE_TYPE | typeof UNSUPPORTED_TYPE
+export type BlockType = BodyBlockType | typeof PAGE_TYPE | typeof UNSUPPORTED_TYPE
 
 const MVP_SET: ReadonlySet<string> = new Set(MVP_BLOCK_TYPES)
 
@@ -70,6 +79,19 @@ export type BlockTypeSpec = {
   readonly supportsColor: boolean
   /** 마크다운 입력 규칙 접두사. 없으면 `/` 메뉴로만 만든다. */
   readonly markdownPrefix?: readonly string[]
+  /**
+   * **본문이 평문이다**(F-01-14 코드 블록) — 서식 · 멘션 · 수식이 없고 줄바꿈이 글자다. 이 한 칸이 편집기의 컨텍스트 분기를 모두
+   * 켠다: Enter 는 줄바꿈(블록을 쪼개지 않는다), Tab 은 들여쓰기 글자(블록을 중첩하지 않는다), 마크다운 입력 규칙 · `/` · `@` ·
+   * 서식 끔, 붙여넣기는 평문, 다른 타입에서 바꾸면 서식을 버린다. **블록 타입 이름으로 분기하지 않는다**(HANDOFF §7 의 옛 지침
+   * — "`if (type === 'code')` 를 심지 말고 레지스트리 항목으로 끈다").
+   */
+  readonly plainText?: boolean
+  /**
+   * ProseMirror 노드(= Y.Doc 요소) 이름이 타입 이름과 다를 때. `code` 는 인라인 마크 `code` 와 이름이 겹쳐 스키마가 같은 이름의
+   * 노드를 받지 않는다 — 노드는 `code_block` 이다(정본 §3.4 [보강] 코드 블록 ②). **저장 포맷이라 바꾸면 마이그레이션이다.**
+   * 노드 이름 ↔ 타입은 `editor/schema.ts` 의 `nodeNameOf` · `blockTypeOfNode` 두 곳만 옮긴다.
+   */
+  readonly nodeName?: string
 }
 
 export const BLOCK_TYPES: Readonly<Record<BlockType, BlockTypeSpec>> = Object.freeze({
@@ -98,6 +120,12 @@ export const BLOCK_TYPES: Readonly<Record<BlockType, BlockTypeSpec>> = Object.fr
   divider: { hasRichText: false, canHaveChildren: false, supportsColor: false, markdownPrefix: ['---'] },
   image: { hasRichText: false, canHaveChildren: false, supportsColor: false },
 
+  // 코드 블록(F-01-14 · 8a-1) — 본문은 평문 · 색 없음(F-01-02 GAP: `code` 에는 color 필드가 없다) · 자식 없음.
+  code: {
+    hasRichText: true, canHaveChildren: false, supportsColor: false,
+    markdownPrefix: ['```'], plainText: true, nodeName: 'code_block',
+  },
+
   // 폴백. 렌더는 회색 박스, 저장은 원본 그대로.
   unsupported: { hasRichText: false, canHaveChildren: false, supportsColor: false },
 })
@@ -113,6 +141,13 @@ export const BLOCK_TYPES: Readonly<Record<BlockType, BlockTypeSpec>> = Object.fr
 
 export function isMvpBlockType(t: unknown): t is MvpBlockType {
   return typeof t === 'string' && MVP_SET.has(t)
+}
+
+const BODY_SET: ReadonlySet<string> = new Set(BODY_BLOCK_TYPES)
+
+/** 본문 편집기가 만드는 타입인가(`BODY_BLOCK_TYPES`). `page` · `unsupported` 는 아니다. */
+export function isBodyBlockType(t: unknown): t is BodyBlockType {
+  return typeof t === 'string' && BODY_SET.has(t)
 }
 
 export function isKnownBlockType(t: unknown): t is BlockType {

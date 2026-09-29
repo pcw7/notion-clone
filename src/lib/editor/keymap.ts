@@ -73,7 +73,7 @@ export function chain(...commands: readonly Command[]): Command {
  * "Mac 은 `cmd + option + <숫자>`, Windows/Linux 는 `ctrl + shift + <숫자>`" 라고
  * 정본이 적었지만, `prosemirror-keymap` 의 `Mod-Alt-` 가 두 플랫폼을 함께
  * 처리하므로 하나만 선언한다. 0=텍스트, 1/2/3=H1/H2/H3, 4=to-do, 5=불릿,
- * 6=번호, 7=토글. 8(코드)·9(새 페이지)는 MVP 밖이라 비어 있다.
+ * 6=번호, 7=토글, 8=코드(8a-1). 9(새 페이지)는 비어 있다.
  */
 const NUMBER_SHORTCUTS: Readonly<Record<string, BlockType>> = {
   '0': 'paragraph',
@@ -84,6 +84,7 @@ const NUMBER_SHORTCUTS: Readonly<Record<string, BlockType>> = {
   '5': 'bulleted_list_item',
   '6': 'numbered_list_item',
   '7': 'toggle',
+  '8': 'code',
 }
 
 export type EditorKeymapDeps = CommandDeps & {

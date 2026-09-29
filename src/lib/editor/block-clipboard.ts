@@ -53,6 +53,7 @@ import { Fragment, Slice, type Node as PmNode } from '@tiptap/pm/model'
 import { Plugin, PluginKey, type Command } from '@tiptap/pm/state'
 import type { EditorView } from '@tiptap/pm/view'
 
+import { codeLanguageOf, fencedCode } from '../block/code.ts'
 import { isKnownBlockType, specOf, PAGE_TYPE } from '../block/types.ts'
 import { textRun, toPlainText } from '../contracts/rich-text.ts'
 import {
@@ -64,6 +65,7 @@ import type { CommandDeps } from './commands.ts'
 import { validateDoc, type EditorBlock } from './document.ts'
 import { blockFromContainer, containerFor, newBlockId } from './pm-adapter.ts'
 import { containerAt } from './pm-blocks.ts'
+import { isPlainTextNode } from './schema.ts'
 
 /** 정본의 `application/x-{app}-blocks+json`. */
 export const BLOCKS_MIME = 'application/x-notion-clone-blocks+json'
@@ -146,6 +148,10 @@ export function plainTextForBlocks(blocks: readonly EditorBlock[]): string {
           break
         case 'image':
           lines.push(`${indent}![](${url})`)
+          break
+        case 'code':
+          // 코드 블록(8a-1) — 울타리 · 언어. 첫 줄만 들여 쓰면 둘째 줄부터 목록 밖으로 나간다.
+          lines.push(...fencedCode(text, codeLanguageOf(block.properties), indent))
           break
         default:
           lines.push(`${indent}${text}`)
@@ -362,6 +368,9 @@ export function clipboardPlugin(deps: CommandDeps, toHtml: ClipboardHtml): Plugi
       },
 
       handlePaste: (view, event) => {
+        // 코드 블록(평문 본문) 안에 붙여넣기는 늘 평문이다(F-01-14 · F-01-10) — 블록 묶음을 풀어 넣지 않는다. ProseMirror 가
+        // `spec.code` 노드 안의 붙여넣기를 글자 하나로 읽는다(블록 묶음의 `text/plain` 은 `plainTextForBlocks` 다).
+        if (isPlainTextNode(view.state.selection.$from.parent)) return false
         const parsed = parseClipboardBlocks(event.clipboardData?.getData(BLOCKS_MIME))
         if (!parsed.ok) {
           if (parsed.reason === 'too_many') {
