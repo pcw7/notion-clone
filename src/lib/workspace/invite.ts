@@ -15,6 +15,8 @@
 
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 
+import type { SessionContext, WorkspaceRole } from '../auth/session-context.ts'
+import { isUuid } from '../ids.ts'
 import { queryMaybe } from '../db/pool.ts'
 import { withCommandTransaction, withTransaction, type Tx } from '../db/tx.ts'
 import { grantFromInviteIn } from '../permissions/acl.ts'
@@ -28,6 +30,14 @@ export type InvitableRole = (typeof INVITABLE_ROLES)[number]
 
 /** 초대를 보낼 수 있는 역할. 정본 §3.3 의 역할 체계 기준. */
 const CAN_INVITE: ReadonlySet<string> = new Set(['owner', 'membership_admin'])
+
+/**
+ * 초대를 보내고 · 대기 중인 초대를 보고 · 취소할 수 있는 역할인가 — owner · membership_admin. 역할 **이름**으로 묻는다(CLAUDE.md).
+ * 화면(홈의 "멤버 초대" 절)과 명령이 같은 답을 쓴다.
+ */
+export function canInvite(role: WorkspaceRole): boolean {
+  return CAN_INVITE.has(role)
+}
 
 export const INVITE_TTL_DAYS = 7
 
@@ -399,19 +409,35 @@ async function acceptGuestInvite(tx: Tx, invite: GuestInviteRow, userId: string)
   } as const
 }
 
-/** 초대를 취소한다. 링크는 즉시 무효가 된다. */
-export async function revokeInvite(
-  inviteId: string,
-  workspaceId: string,
-  actorRole: string,
-): Promise<boolean> {
-  if (!CAN_INVITE.has(actorRole)) return false
-  const row = await queryMaybe<{ id: string }>(
+export type RevokeInviteFailure =
+  /** 초대를 다룰 역할이 아니다(owner · membership_admin 만). */
+  | 'forbidden'
+  /** 그런 대기 중인 초대가 없다 — 없는 id · 다른 워크스페이스 · 이미 받아들였거나 취소했다. */
+  | 'not_found'
+
+export type RevokeInviteResult =
+  /** `email` — 취소한 초대의 주소(화면이 "누구의 초대를 취소했다"고 말한다). 링크 초대는 없다(null). */
+  | { readonly ok: true; readonly value: { readonly email: string | null } }
+  | { readonly ok: false; readonly reason: RevokeInviteFailure }
+
+/**
+ * 대기 중인 초대를 취소한다 — 보낸 링크는 곧바로 무효가 된다(수락 화면이 "유효하지 않은 초대"). 멤버 초대와 게스트의 대기
+ * 초대(7g-1) 모두 — 게스트 초대를 보낸 공유자라도 초대를 다룰 역할이 아니면 못 한다(정본 §3.3 [보강] 게스트 ⑨ (g) — 목록 · 취소는
+ * 홈 · owner · membership_admin).
+ *
+ * 권한을 묻는 함수라 `SessionContext` 를 받는다(A9 — 7g-3 전에는 역할 문자열과 워크스페이스 id 를 따로 받았다). 역할이 먼저다 —
+ * 다룰 수 없는 사람에게는 그 초대가 있는지 말하지 않는다. 만료된 초대도 취소한다(받아들일 수는 없지만 목록에서 사라지게 두는 것과
+ * 같다).
+ */
+export async function revokeInvite(ctx: SessionContext, inviteId: string): Promise<RevokeInviteResult> {
+  if (!canInvite(ctx.role)) return { ok: false, reason: 'forbidden' }
+  if (!isUuid(inviteId)) return { ok: false, reason: 'not_found' }
+  const row = await queryMaybe<{ email: string | null }>(
     `UPDATE workspace_invite
         SET revoked_at = now()
       WHERE id = $1 AND workspace_id = $2 AND revoked_at IS NULL AND accepted_at IS NULL
-      RETURNING id`,
-    [inviteId, workspaceId],
+      RETURNING email::text AS email`,
+    [inviteId, ctx.workspaceId],
   )
-  return row !== null
+  return row === null ? { ok: false, reason: 'not_found' } : { ok: true, value: { email: row.email } }
 }
