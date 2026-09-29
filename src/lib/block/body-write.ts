@@ -50,6 +50,7 @@ import { withTransaction, type Tx } from '../db/tx.ts'
 import type { EditorBlock, EditorDoc } from '../editor/document.ts'
 import { isUuid } from '../ids.ts'
 import { effectiveCaps } from '../permissions/effective.ts'
+import { isLocked } from '../permissions/lock.ts'
 import { can } from '../permissions/levels.ts'
 import { MAX_TREE_DEPTH, PAGE_TYPE } from './types.ts'
 import {
@@ -333,6 +334,8 @@ export type AppendFailure =
   | 'not_found'
   /** 볼 수는 있지만 고칠 수 없다(`edit_content` 없음). */
   | 'forbidden'
+  /** 고칠 수 있지만 페이지가 잠겼다(7f-1 · F-06-16) — 풀어야 고친다. */
+  | 'locked'
   | 'too_large'
   /** Yjs update 로 읽히지 않는다. */
   | 'invalid_update'
@@ -415,6 +418,9 @@ export async function appendDocUpdate(
     const caps = await effectiveCaps(tx, ctx, pageId)
     if (!can(caps, 'view')) return { ok: false, reason: 'not_found' } as const
     if (!can(caps, 'edit_content')) return { ok: false, reason: 'forbidden' } as const
+    // 잠금은 capability 뒤의 게이트다(`permissions/lock.ts`) — 접속 판정이 이미 읽기 전용으로 받지만, 잠기기 전에 붙은 연결이
+    // 신호가 닿기 전에 보낸 update 는 여기서 거부된다(페이지 행을 잠갔으므로 잠그는 명령과 줄을 선다).
+    if (await isLocked(tx, pageId)) return { ok: false, reason: 'locked' } as const
 
     const body = await openPageBody(tx, ctx, pageId, options.origin)
     const applied = body.applyUpdate(update)

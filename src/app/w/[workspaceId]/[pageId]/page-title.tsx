@@ -11,6 +11,8 @@ import { useRouter } from 'next/navigation'
  * 서버에서 `titleFromPlainText()` 로 감싼다 — 저장 포맷은 처음부터 RichText[] 다.
  * 나중에 제목에 서식이 필요해지면 화면만 바꾸면 되고 데이터는 그대로다.
  *
+ * 고칠 수 없으면(권한 · 잠금 — 7f-1) 읽기 전용이다. 서버도 거부한다(`renamePage` — `forbidden` · `locked`).
+ *
  * 저장은 **blur 와 Enter** 에서만 한다. 타이핑마다 PATCH 를 보내면 `version` 이
  * 글자 수만큼 올라가고(X-6: 검색 인덱스의 external version) 인덱서가 같은
  * 페이지를 수십 번 다시 읽는다.
@@ -19,10 +21,13 @@ export function PageTitle({
   workspaceId,
   pageId,
   initialTitle,
+  readOnly = false,
 }: {
   workspaceId: string
   pageId: string
   initialTitle: string
+  /** 고칠 수 없다 — 볼 수만 있거나 잠긴 페이지. */
+  readOnly?: boolean
 }) {
   const router = useRouter()
   const [title, setTitle] = useState(initialTitle)
@@ -41,7 +46,7 @@ export function PageTitle({
 
   async function save() {
     const next = title.trim()
-    if (next === saved.current) return
+    if (readOnly || next === saved.current) return
     setError(null)
     try {
       const res = await fetch(`/api/workspaces/${workspaceId}/pages/${pageId}`, {
@@ -50,7 +55,9 @@ export function PageTitle({
         body: JSON.stringify({ title: next }),
       })
       if (!res.ok) {
-        setError('제목을 저장하지 못했습니다.')
+        const data = (await res.json().catch(() => ({}))) as { error?: unknown }
+        setError(data.error === 'locked' ? '잠긴 페이지입니다 — 잠금을 풀어야 제목을 바꿀 수 있습니다.' : '제목을 저장하지 못했습니다.')
+        setTitle(saved.current)
         return
       }
       saved.current = next
@@ -81,6 +88,7 @@ export function PageTitle({
           }
         }}
         placeholder="제목 없음"
+        readOnly={readOnly}
         maxLength={2000}
         aria-label="페이지 제목"
         className="w-full bg-transparent text-4xl font-bold tracking-tight outline-none placeholder:text-neutral-300 dark:placeholder:text-neutral-700"

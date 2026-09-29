@@ -3108,6 +3108,78 @@ async function main() {
       await sleep(1500)
     }
 
+    if (sectionIf('페이지 잠금 (7f-1 · F-06-16)')) {
+      // 소유자(브라우저)가 본문을 열어 둔 채로 편집자 동료가 잠근다 → 열린 편집기가 곧바로 읽기 전용이 된다(협업 신호). 다시 열면
+      // "잠김" · 풀기 버튼 · 제목도 읽기 전용이고, 풀면 다시 고친다. 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
+      const stamp = Date.now()
+      const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
+      const docTitle = `잠글 문서 ${stamp}`
+      const doc = (await (await fetch(pagesUrl, { method: 'POST', headers: authed, body: JSON.stringify({ title: docTitle, privateTop: true }) })).json()).page.id
+      await saveBody(doc, { blocks: [block(randomUUID(), 'paragraph', '잠그기 전의 본문')] })
+      const mate = await joinAs(workspaceId, await createUser(`잠그는 동료 ${stamp}`), 'member')
+      const viewer = await joinAs(workspaceId, await createUser(`읽기만 하는 동료 ${stamp}`), 'member')
+      for (const [who, level] of [[mate, 'edit'], [viewer, 'view']]) {
+        await fetch(`${pagesUrl}/${doc}/access`, {
+          method: 'POST', headers: authed,
+          body: JSON.stringify({ action: 'grant', principal: { type: 'user', id: who.userId }, level }),
+        })
+      }
+      const as = (who) => ({ ...json, cookie: `nc_session=${who.token}` })
+      const EDITABLE = `document.querySelector('.blk-editor')?.getAttribute('contenteditable') === 'true'`
+      const BANNER = `(document.querySelector('section[aria-label="본문"] > p[role="status"]')?.textContent ?? '')`
+      const renameAs = (headers, title) => fetch(`${pagesUrl}/${doc}`, { method: 'PATCH', headers, body: JSON.stringify({ title }) })
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${doc}` })
+      check('전제 — 소유자가 연 본문은 고칠 수 있고 "잠그기" 버튼이 있다',
+        (await waitFor(EDITABLE, 15000)) && (await waitFor(`!!document.querySelector('[data-testid="page-lock-toggle"]')`, 5000)))
+
+      const locked = await fetch(`${pagesUrl}/${doc}/lock`, { method: 'PUT', headers: as(mate) })
+      check('편집자 동료가 잠근다 (PUT lock)', locked.ok && (await locked.json()).changed === true, String(locked.status))
+      check('★ 열어 둔 편집기가 곧바로 읽기 전용이 된다 — 서버가 연결을 다시 연다(협업 신호)',
+        await waitFor(`!(${EDITABLE}) && ${BANNER}.includes('읽기 전용')`, 15000),
+        await evaluate(BANNER))
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${doc}` })
+      check('★ 다시 열면 "잠김" · "잠금 풀기" · 잠긴 페이지라는 말 · 제목도 읽기 전용',
+        (await waitFor(`!!document.querySelector('[data-testid="page-locked"]')
+          && (document.querySelector('[data-testid="page-lock-toggle"]')?.textContent ?? '') === '잠금 풀기'
+          && ${BANNER}.includes('잠긴 페이지입니다')
+          && document.querySelector('input[aria-label="페이지 제목"]')?.readOnly === true`, 15000))
+          && !(await evaluate(EDITABLE)))
+      const ownerRename = await renameAs(authed, '잠겼는데 바꾼 제목')
+      check('잠긴 페이지의 제목은 소유자도 못 바꾼다 (409 locked)',
+        ownerRename.status === 409 && (await ownerRename.json()).error === 'locked', String(ownerRename.status))
+
+      const viewerHtml = await (await fetch(`${BASE}/w/${workspaceId}/${doc}`, { headers: as(viewer) })).text()
+      check('읽기만 하는 사람은 "잠김"만 본다 — 풀기 버튼이 없다',
+        viewerHtml.includes('data-testid="page-locked"') && !viewerHtml.includes('data-testid="page-lock-toggle"'))
+      const viewerUnlock = await fetch(`${pagesUrl}/${doc}/lock`, { method: 'DELETE', headers: as(viewer) })
+      check('읽기만 하는 사람은 풀지 못한다 (403)', viewerUnlock.status === 403, String(viewerUnlock.status))
+
+      // 풀면 페이지를 다시 연다 — 서버 렌더 뒤 붙기 전의 클릭은 사라지므로 "잠김"이 사라질 때까지 다시 누른다(§6).
+      let unlocked = false
+      for (let i = 0; i < 10 && !unlocked; i += 1) {
+        await clickSelector('[data-testid="page-lock-toggle"]')
+        unlocked = await waitFor(`!document.querySelector('[data-testid="page-locked"]')`, 1500)
+      }
+      check('★ "잠금 풀기"를 누르면 다시 열려 곧바로 고칠 수 있다', unlocked && (await waitFor(EDITABLE, 15000)),
+        await evaluate(BANNER))
+
+      let relocked = false
+      for (let i = 0; i < 10 && !relocked; i += 1) {
+        await clickSelector('[data-testid="page-lock-toggle"]')
+        relocked = await waitFor(`!!document.querySelector('[data-testid="page-locked"]')`, 1500)
+      }
+      check('★ "잠그기"를 누르면 "잠김"이 서고 그 편집기도 읽기 전용이 된다', relocked && (await waitFor(`!(${EDITABLE})`, 15000)))
+
+      // 풀어 둔 페이지에서 본다 — 잠긴 채면 권한이 아니라 잠금 때문에 거부될 수 있다.
+      await fetch(`${pagesUrl}/${doc}/lock`, { method: 'DELETE', headers: authed })
+      const readerRename = await renameAs(as(viewer), '읽기만 하는 사람이 바꾼 제목')
+      check('★ 읽기만 받은 사람은 제목을 못 바꾼다 (403) — 7f-1 전에는 권한을 묻지 않았다',
+        readerRename.status === 403, String(readerRename.status))
+      await sleep(1500)
+    }
+
     if (sectionIf('코멘트 패널 · 인박스 (F-05-08 · F-11-07)')) {
       const commentPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
         method: 'POST',

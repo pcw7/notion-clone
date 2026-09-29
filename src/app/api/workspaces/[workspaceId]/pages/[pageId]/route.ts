@@ -38,7 +38,8 @@ export async function PATCH(
     return Response.json({ ok: true, page: { id: page.id, title: page.plainTitle, version: page.version } })
   } catch (e) {
     if (e instanceof PageError) {
-      const status = e.code === 'not_found' ? 404 : 400
+      // 볼 수 없으면 없는 페이지와 같다(404) · 볼 수만 있으면 403 · 잠겼으면 409(입력은 맞는데 지금 상태가 허락하지 않는다).
+      const status = e.code === 'not_found' ? 404 : e.code === 'forbidden' ? 403 : e.code === 'locked' ? 409 : 400
       return Response.json({ error: e.code, message: e.message }, { status })
     }
     throw e

@@ -69,6 +69,7 @@ import { projectLinkEdges } from './link-edges.ts'
 import { countFileReferences, fileReferenceDelta } from './image.ts'
 import { can } from '../permissions/levels.ts'
 import { effectiveCaps, readableScopes } from '../permissions/effective.ts'
+import { isLocked } from '../permissions/lock.ts'
 import { orderKeyBetween } from './order-key.ts'
 import { relocateSubtree, MoveError } from './move-page.ts'
 import { pageChangeAccess, trashSubtreeRows } from './trash-rows.ts'
@@ -104,6 +105,8 @@ export type SaveBodyResult =
   | { readonly ok: false; readonly reason: 'not_found' }
   /** 볼 수는 있지만 고칠 수 없다(F-06-01 `edit_content`). */
   | { readonly ok: false; readonly reason: 'forbidden' }
+  /** 고칠 수 있지만 페이지가 잠겼다(7f-1 · F-06-16). */
+  | { readonly ok: false; readonly reason: 'locked' }
   | { readonly ok: false; readonly reason: 'invalid_document'; readonly issues: DocIssue[] }
   | {
       readonly ok: false
@@ -278,6 +281,7 @@ export async function savePageBody(
     const caps = await effectiveCaps(tx, ctx, pageId)
     if (!can(caps, 'view')) return { ok: false, reason: 'not_found' } as const
     if (!can(caps, 'edit_content')) return { ok: false, reason: 'forbidden' } as const
+    if (await isLocked(tx, pageId)) return { ok: false, reason: 'locked' } as const
 
     if (options.expectedVersion !== undefined && options.expectedVersion !== page.version) {
       return { ok: false, reason: 'version_conflict', currentVersion: page.version } as const
