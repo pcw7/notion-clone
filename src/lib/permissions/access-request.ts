@@ -43,9 +43,9 @@ import { randomUUID } from 'node:crypto'
 import type { SessionContext } from '../auth/session-context.ts'
 import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
 import { notifyAccessGranted, notifyAccessRequested } from '../notification/fanout.ts'
-import { grantAccessIn, shareGateIn } from './acl.ts'
+import { directGrantCovers, grantAccessIn, shareGateIn } from './acl.ts'
 import { effectiveCaps, membersWith, namedManagersOf } from './effective.ts'
-import { can, capabilitiesOf, isDefinedLevel, unionCaps, type Capability, type Level } from './levels.ts'
+import { can, type Capability, type Level } from './levels.ts'
 
 /** 무시된 요청 뒤 새 요청을 받지 않는 시간(정본 [보강] 접근 요청 ③). */
 export const REREQUEST_AFTER_IGNORE_HOURS = 24
@@ -395,15 +395,7 @@ export async function approveAccessRequest(
     if (!opened.ok) return opened
     const { request } = opened
 
-    const direct = await tx.queryMaybe<{ level: string }>(
-      `SELECT level FROM acl_entry
-        WHERE node_kind = 'block' AND node_id = $1 AND principal_type = 'user' AND principal_id = $2`,
-      [request.node_id, request.requester_id],
-    )
-    const want = capabilitiesOf('page', level)
-    const have =
-      direct !== null && isDefinedLevel('page', direct.level as Level) ? capabilitiesOf('page', direct.level as Level) : null
-    const covered = have !== null && unionCaps(have, want) === have
+    const covered = await directGrantCovers(tx, request.node_id, request.requester_id, level)
 
     if (!covered) {
       const granted = await grantAccessIn(tx, ctx, request.node_id, { type: 'user', id: request.requester_id }, level)

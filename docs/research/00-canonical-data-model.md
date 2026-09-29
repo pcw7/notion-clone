@@ -259,8 +259,14 @@ CREATE TABLE workspace_invite (                              -- <14 R-7>
   created_by uuid NOT NULL, created_at timestamptz NOT NULL,
   expires_at timestamptz NULL, revoked_at timestamptz NULL,
   accepted_by_user_id uuid NULL, accepted_at timestamptz NULL,
-  CHECK ((kind = 'email') = (email IS NOT NULL))             -- 암묵 규약을 CHECK 로 승격
+  page_id uuid NULL REFERENCES block(id) ON DELETE CASCADE,  -- [보강 7g-1] 게스트의 대기 초대 — 받을 페이지
+  page_level text NULL CHECK (page_level IN ('view','comment','edit')),  -- 게스트의 레벨은 편집까지
+  CHECK ((kind = 'email') = (email IS NOT NULL)),            -- 암묵 규약을 CHECK 로 승격
+  CHECK (role IN ('owner','membership_admin','member','guest')),
+  CHECK ((role = 'guest') = (page_id IS NOT NULL AND page_level IS NOT NULL)),
+  CHECK (role <> 'guest' OR kind = 'email')
 );
+-- 대기 중인 게스트 초대는 (page_id, email)마다 하나 — 부분 UNIQUE [보강 7g-1 / 0035 · §3.3 게스트 ⑨]
 -- [정정 2026-09-09] token text -> token_hash text.
 --   초대 토큰은 세션 토큰과 같은 bearer 자격증명이다. 링크를 가진 사람이 곧
 --   워크스페이스 멤버가 된다. 그런데 이 표만 평문으로 저장하고 있었다 —
@@ -689,7 +695,7 @@ CREATE TABLE access_request (
 >
 > ② **이미 있는 계정만, 수락 없이 곧바로** — 이메일은 **검증된** `user_email` 로 찾는다(미검증 주소는 누구나 등록할 수 있어
 > 남의 초대를 가로챈다 — 워크스페이스 초대와 같은 규칙). 계정이 없으면 거부하고 먼저 가입하라고 말한다. 가입 뒤에 적용되는
-> 대기 초대(`workspace_invite` 에 페이지 · 레벨을 싣는 것)는 뒤의 조각이다 — 그때 이 [보강]을 넓힌다.
+> 대기 초대(`workspace_invite` 에 페이지 · 레벨을 싣는 것)는 ⑨(7g-1)다 — 거부하지 않고 대기 초대를 남긴다.
 >
 > ③ 그 이메일이 **이미 이 워크스페이스의 멤버**면 역할을 바꾸지 않고 부여만 한다(멤버를 게스트로 내리지 않는다). 이미 게스트면
 > 부여만, 떠났던 사람(`removed`)은 게스트로 돌아온다(M1 의 행을 되살린다). 멈춘 사람(`suspended`)은 들이지 않는다.
@@ -717,6 +723,21 @@ CREATE TABLE access_request (
 > 풀고, 관리할 사람이 남지 않는 노드가 생기면 거부한다). 거두지 않으면 M1 의 멤버십 행이 남아 있으므로 **다시 초대받는 순간 옛
 > 페이지들이 한꺼번에 돌아온다** — 빼기는 "모든 공유를 걷는다"로 읽혀야 한다. 멤버 제거는 이 명령이 아니다(teamspace 의 마지막
 > owner 를 물어야 한다 — §3.11 [보강] 고아 teamspace).
+>
+> ⑨ **[7g-1] 계정이 없는 이메일에게는 대기 초대를 남긴다** — ② 의 "먼저 가입하라"를 넓혔다. `workspace_invite` 의 한 종류
+> (`role='guest'` + `page_id` · `page_level`)이고, 멤버 초대와 **같은 메일 · 같은 수락 화면 · 같은 이메일 소유 검사**(검증된
+> 주소 — 링크만으로는 받지 못한다)를 지난다. 받는 사람은 링크로 가입(첫 로그인)하고 받아들인다.
+> (a) 초대할 때의 게이트는 그대로 — 공유할 수 있는 사람만, 계정 유무를 말하기 전에 게이트(7d-1 의 순서).
+> (b) 받아들이는 순간 **멤버십 → 부여**를 한 트랜잭션에 쓴다 — 부여 없이 들어온 게스트가 생기지 않는다(① 의 순서).
+> (c) 받아들일 때 **초대한 사람이 지금도 그 페이지를 공유할 수 있는지** 다시 센다 — 받는 쪽에는 초대한 사람의 세션이 없으므로
+> 판정과 같은 규칙을 그 사람으로 돌린다(활성 멤버 · `manage_perm`). 부여를 **정한** 것은 초대할 때 그 사람의 세션이었고(A9),
+> 이 재확인은 그 결정을 **좁히기만** 한다 — 공유 권한을 잃었거나 떠났거나 페이지가 살아 있지 않으면 초대는 쓸모가 없다.
+> (d) 받는 사람이 이미 이 워크스페이스의 사람이면 역할을 건드리지 않고 부여만 한다(③) · 멈춘 사람은 받지 못한다.
+> (e) 부여는 권한을 낮추지 않는다(접근 요청 ⑥ 과 같다 — 이미 직접 받은 행이 품으면 쓰지 않는다).
+> (f) 대기 중인 게스트 초대는 (페이지, 이메일)마다 하나 — 다시 초대하면 레벨 · 토큰 · 만료를 새로 쓴다(옛 링크는 죽는다).
+> 멤버 초대의 "대기 중이면 역할을 바꾼다"(F-14-10)는 게스트 초대를 건드리지 않는다 — 둘은 다른 초대다.
+> (g) 목록 · 취소는 워크스페이스 초대와 같은 곳(홈 · owner · membership_admin)이다. 목록은 **페이지 제목을 싣지 않는다** — 보는
+> 사람이 그 페이지를 볼 수 없을 수 있다. 수락 화면도 제목을 싣지 않는다(받기 전에는 볼 수 없는 사람이다).
 
 **[보강] 접근 요청의 길 — 볼 수 없는 페이지에서, 공유할 수 있는 사람에게** ⟨Teamspace · 게스트 · 그룹 7e-1 / 마이그레이션 0033⟩
 

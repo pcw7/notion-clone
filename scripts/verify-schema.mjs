@@ -1996,6 +1996,37 @@ try {
     else fail('블록을 지웠는데 잠금이 남았다')
   }
 
+  console.log('\n[21] 게스트의 대기 초대 (0035 / §3.2 workspace_invite · §3.3 [보강] 게스트 ⑨ · 7g-1조각)')
+  {
+    const pageId = randomUUID()
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key,
+                          ancestor_path, perm_scope_id, properties, format, created_at, last_edited_at)
+       VALUES ($1, $2, 'page', 'workspace', $2, $3, '{}', $1, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      [pageId, wsId, `invite-${pageId}`],
+    )
+    const invite = `INSERT INTO workspace_invite (id, workspace_id, kind, email, token_hash, role, created_by, created_at, page_id, page_level)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, now(), $8, $9)`
+    const email = `guest-${pageId}@example.com`
+    const first = randomUUID()
+    await client.query(invite, [first, wsId, 'email', email, randomUUID(), 'guest', userId, pageId, 'view'])
+    ok('게스트 대기 초대(페이지 · 레벨)')
+    await mustReject('같은 (페이지, 이메일)의 두 번째 대기 게스트 초대', invite, [randomUUID(), wsId, 'email', email, randomUUID(), 'guest', userId, pageId, 'comment'])
+    await mustReject('페이지가 없는 게스트 초대', invite, [randomUUID(), wsId, 'email', `a-${email}`, randomUUID(), 'guest', userId, null, null])
+    await mustReject('페이지가 있는 멤버 초대', invite, [randomUUID(), wsId, 'email', `b-${email}`, randomUUID(), 'member', userId, pageId, 'view'])
+    await mustReject('게스트에게 전체 권한', invite, [randomUUID(), wsId, 'email', `c-${email}`, randomUUID(), 'guest', userId, pageId, 'full_access'])
+    await mustReject('링크로 하는 게스트 초대', invite, [randomUUID(), wsId, 'link', null, randomUUID(), 'guest', userId, pageId, 'view'])
+    await mustReject('모르는 초대 역할', invite, [randomUUID(), wsId, 'email', `d-${email}`, randomUUID(), 'emperor', userId, null, null])
+    await client.query(`UPDATE workspace_invite SET accepted_at = now(), accepted_by_user_id = $2 WHERE id = $1`, [first, userId])
+    await client.query(invite, [randomUUID(), wsId, 'email', email, randomUUID(), 'guest', userId, pageId, 'edit'])
+    ok('받아들인 초대 뒤의 새 대기 게스트 초대 (부분 UNIQUE 는 열린 것만 센다)')
+
+    await client.query(`DELETE FROM block WHERE id = $1`, [pageId])
+    const { rows } = await client.query(`SELECT count(*)::int AS n FROM workspace_invite WHERE page_id = $1`, [pageId])
+    if (rows[0].n === 0) ok('페이지를 지우면 그 페이지의 게스트 초대도 간다 (ON DELETE CASCADE)')
+    else fail(`페이지를 지웠는데 게스트 초대 ${rows[0].n}건이 남았다`)
+  }
+
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
 } catch (e) {

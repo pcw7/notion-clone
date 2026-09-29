@@ -12,6 +12,7 @@ import { redirect } from 'next/navigation'
 import { getCurrentUser } from '@/lib/auth/current-user'
 import { previewInvite } from '@/lib/workspace/invite'
 import { AcceptInviteButton } from './accept-button'
+import { inviteSummary } from './invite-messages'
 
 export default async function InvitePage({
   params,
@@ -50,13 +51,13 @@ export default async function InvitePage({
         <h1 className="text-xl font-semibold">
           <span className="font-bold">{invite.workspaceName}</span> 워크스페이스 초대
         </h1>
-        <p className="mt-2 text-sm text-neutral-500">
-          {invite.email} 로 초대되었습니다 · 역할 {invite.role}
+        <p className="mt-2 text-sm text-neutral-500" data-testid="invite-summary">
+          {inviteSummary(invite.email, invite.role)}
         </p>
       </div>
 
       {emailMatches ? (
-        <AcceptInviteButton token={token} />
+        <AcceptInviteButton token={token} role={invite.role} />
       ) : (
         <div className="rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm dark:border-amber-800 dark:bg-amber-950">
           <p className="font-medium">다른 계정으로 로그인되어 있습니다</p>

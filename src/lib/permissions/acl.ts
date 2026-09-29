@@ -36,7 +36,7 @@ import { randomUUID } from 'node:crypto'
 
 import type { SessionContext } from '../auth/session-context.ts'
 import { withTransaction, type Tx } from '../db/tx.ts'
-import { can, type Level } from './levels.ts'
+import { can, capabilitiesOf, isDefinedLevel, unionCaps, type Level } from './levels.ts'
 import { effectiveCaps, principalsOf, resolveCaps, type AclRow } from './effective.ts'
 
 export type PrincipalRef =
@@ -151,7 +151,7 @@ async function lockLiveGroup(tx: Tx, ctx: SessionContext, groupId: string): Prom
  * @param from 지금 이 서브트리가 따르고 있는 스코프
  * @param to   앞으로 따라야 할 스코프
  */
-async function rescope(tx: Tx, ctx: SessionContext, node: NodeRow, from: string, to: string): Promise<void> {
+async function rescope(tx: Tx, workspaceId: string, node: NodeRow, from: string, to: string): Promise<void> {
   if (from === to) return
   await tx.query(
     `UPDATE block
@@ -161,7 +161,7 @@ async function rescope(tx: Tx, ctx: SessionContext, node: NodeRow, from: string,
         -- ★ 옛 스코프를 따르던 노드만. 아래쪽에 따로 권한을 준 페이지가 있으면
         --   그 스코프는 그대로 둔다.
         AND perm_scope_id = $4`,
-    [node.id, ctx.workspaceId, to, from],
+    [node.id, workspaceId, to, from],
   )
 }
 
@@ -278,22 +278,80 @@ export async function grantAccessIn(
       return { ok: false, reason: 'guest_level' } as const
     }
 
-    const had = await hasEntries(tx, pageId)
-    const p = principalColumns(principal)
-
-    await tx.query(
-      `INSERT INTO acl_entry (id, node_kind, node_id, principal_type, principal_id, level, granted_by)
-       VALUES ($1, 'block', $2, $3, $4, $5, $6)
-       ON CONFLICT (node_kind, node_id, principal_type, principal_id)
-       DO UPDATE SET level = EXCLUDED.level, granted_by = EXCLUDED.granted_by, granted_at = now()`,
-      [randomUUID(), pageId, p.type, p.id, level, ctx.userId],
-    )
-
-    // 트리거 ①: 첫 ACL 삽입 → 이 노드가 스코프 경계가 된다.
-    if (!had) await rescope(tx, ctx, node, node.perm_scope_id, node.id)
-
+    await writeGrant(tx, ctx.workspaceId, node, principal, level, ctx.userId)
     return { ok: true } as const
   }
+}
+
+/** 부여를 쓴다 — 행(있으면 레벨만) + 첫 행이면 스코프 경계. 게이트는 부르는 쪽이 지났다. */
+async function writeGrant(
+  tx: Tx,
+  workspaceId: string,
+  node: NodeRow,
+  principal: PrincipalRef,
+  level: Level,
+  grantedBy: string,
+): Promise<void> {
+  const had = await hasEntries(tx, node.id)
+  const p = principalColumns(principal)
+
+  await tx.query(
+    `INSERT INTO acl_entry (id, node_kind, node_id, principal_type, principal_id, level, granted_by)
+     VALUES ($1, 'block', $2, $3, $4, $5, $6)
+     ON CONFLICT (node_kind, node_id, principal_type, principal_id)
+     DO UPDATE SET level = EXCLUDED.level, granted_by = EXCLUDED.granted_by, granted_at = now()`,
+    [randomUUID(), node.id, p.type, p.id, level, grantedBy],
+  )
+
+  // 트리거 ①: 첫 ACL 삽입 → 이 노드가 스코프 경계가 된다.
+  if (!had) await rescope(tx, workspaceId, node, node.perm_scope_id, node.id)
+}
+
+/**
+ * 이 사람에게 이 노드에 **직접** 준 행이 이미 `level` 을 품는가 — capability 부분집합으로 묻는다(레벨을 정수로 비교하지 않는다 ·
+ * A2). 부여를 대신 쓰는 길(접근 요청의 허락 · 대기 초대의 수락)이 **권한을 낮추지 않으려고** 묻는다.
+ */
+export async function directGrantCovers(tx: Tx, nodeId: string, userId: string, level: Level): Promise<boolean> {
+  const direct = await tx.queryMaybe<{ level: string }>(
+    `SELECT level FROM acl_entry
+      WHERE node_kind = 'block' AND node_id = $1 AND principal_type = 'user' AND principal_id = $2`,
+    [nodeId, userId],
+  )
+  if (direct === null || !isDefinedLevel('page', direct.level as Level)) return false
+  const have = capabilitiesOf('page', direct.level as Level)
+  return unionCaps(have, capabilitiesOf('page', level)) === have
+}
+
+export type InviteGrantOutcome = 'granted' | 'covered' | 'not_found' | 'invalid_principal' | 'guest_level'
+
+/**
+ * 대기 초대를 받아들일 때의 부여(7g-1 · 정본 §3.3 게스트 ⑨) — **세션이 없다.** 받는 사람은 아직 이 워크스페이스의 세션이 없고,
+ * 초대한 사람의 세션도 없다. 공유 게이트(`manage_perm`)는 초대할 때 초대한 사람의 세션으로 이미 지났고(A9), 그 사람이 **지금도**
+ * 공유할 수 있는지는 부르는 쪽(`workspace/invite.ts`)이 다시 셌다 — 이 함수는 `grantAccessIn` 과 같은 쓰기만 한다.
+ *
+ * 같은 규칙을 지킨다: 살아 있는 페이지 · 데이터베이스만 · 받는 사람은 이 워크스페이스의 사람(`isPerson` — 부르는 쪽이 멤버십을
+ * 먼저 쓴다) · 게스트에게 전체 권한은 없다(`guest_level` — 초대 표의 CHECK 이 이미 막았지만 이 한 곳의 규칙이다) · **권한을
+ * 낮추지 않는다**(`directGrantCovers` 면 쓰지 않고 `covered`).
+ */
+export async function grantFromInviteIn(
+  tx: Tx,
+  workspaceId: string,
+  pageId: string,
+  userId: string,
+  level: Level,
+  grantedBy: string,
+): Promise<InviteGrantOutcome> {
+  const node = await tx.queryMaybe<NodeRow>(
+    `SELECT id, ancestor_path, perm_scope_id, parent_type, parent_id
+       FROM block WHERE id = $1 AND workspace_id = $2 AND type IN ('page', 'database') AND lifecycle = 'live'`,
+    [pageId, workspaceId],
+  )
+  if (node === null) return 'not_found'
+  if (!(await isPerson(tx, workspaceId, userId))) return 'invalid_principal'
+  if (level === 'full_access' && (await isGuest(tx, workspaceId, userId))) return 'guest_level'
+  if (await directGrantCovers(tx, pageId, userId, level)) return 'covered'
+  await writeGrant(tx, workspaceId, node, { type: 'user', id: userId }, level, grantedBy)
+  return 'granted'
 }
 
 /**
@@ -330,7 +388,7 @@ export async function revokeAccess(
 
     // 트리거 ②: 마지막 ACL 삭제 → 경계가 아니게 된다(절단돼 있으면 여전히 경계다).
     if (!(await hasEntries(tx, pageId)) && !cut) {
-      await rescope(tx, ctx, node, node.id, await parentScope(tx, ctx, node))
+      await rescope(tx, ctx.workspaceId, node, node.id, await parentScope(tx, ctx, node))
     }
 
     return { ok: true } as const
@@ -403,7 +461,7 @@ export async function stopInheriting(ctx: SessionContext, pageId: string): Promi
     )
 
     // 트리거 ③: 절단 → 경계가 된다.
-    await rescope(tx, ctx, node, node.perm_scope_id, node.id)
+    await rescope(tx, ctx.workspaceId, node, node.perm_scope_id, node.id)
     return { ok: true } as const
   })
 }
@@ -495,7 +553,7 @@ export async function resumeInheriting(ctx: SessionContext, pageId: string): Pro
 
     // 트리거 ③의 반대. 남은 ACL 이 없으면 경계가 아니게 된다.
     if (!(await hasEntries(tx, pageId))) {
-      await rescope(tx, ctx, node, node.id, await parentScope(tx, ctx, node))
+      await rescope(tx, ctx.workspaceId, node, node.id, await parentScope(tx, ctx, node))
     }
     return { ok: true } as const
   })
@@ -559,7 +617,7 @@ export async function dropGrantsOf(
   for (const nodeId of nodeIds) {
     if ((await hasEntries(tx, nodeId)) || (await isCut(tx, nodeId))) continue
     const node = await loadNode(tx, ctx, nodeId)
-    if (node !== null) await rescope(tx, ctx, node, node.id, await parentScope(tx, ctx, node))
+    if (node !== null) await rescope(tx, ctx.workspaceId, node, node.id, await parentScope(tx, ctx, node))
   }
   return { ok: true, nodes: nodeIds.length }
 }

@@ -113,18 +113,16 @@ export const GUEST_LEVEL_OPTIONS: readonly { value: string; label: string }[] = 
   { value: 'edit', label: '편집' },
 ]
 
-/** 이메일로 초대한 뒤의 한 줄 — 멤버에게 공유했는지, 게스트로 들였는지. */
+/** 이메일로 초대한 뒤의 한 줄 — 멤버에게 공유했는지, 게스트로 들였는지, 계정이 없어 초대 메일을 보냈는지(7g-1). */
 export function guestInvitedNotice(as: unknown, email: string): string {
-  return as === 'member'
-    ? `${email} 은(는) 이미 이 워크스페이스의 멤버라 멤버로 공유했습니다.`
-    : `${email} 을(를) 게스트로 초대했습니다 — 이 페이지와 그 아래만 봅니다.`
+  if (as === 'member') return `${email} 은(는) 이미 이 워크스페이스의 멤버라 멤버로 공유했습니다.`
+  if (as === 'pending') return `${email} 에게 초대 메일을 보냈습니다 — 가입해 받아들이면 이 페이지와 그 아래를 봅니다.`
+  return `${email} 을(를) 게스트로 초대했습니다 — 이 페이지와 그 아래만 봅니다.`
 }
 
 /** 이메일 초대의 거부 코드 → 문구. */
 export function guestInviteMessage(error: unknown): string {
   switch (error) {
-    case 'no_account':
-      return '그 이메일로 가입한 사람이 없습니다. 먼저 가입한 뒤에 초대할 수 있습니다.'
     case 'invalid_email':
       return '이메일 주소를 다시 확인하세요.'
     case 'invalid_level':

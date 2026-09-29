@@ -145,7 +145,8 @@ export default async function WorkspacePage({ params }: PageProps<'/w/[workspace
               <ul className="mt-2 flex flex-col gap-1 text-sm">
                 {invites.map((i) => (
                   <li key={i.inviteId} className="text-neutral-500">
-                    {i.email} — {i.role}
+                    {/* 게스트 초대(7g-1)는 페이지 하나를 받는다 — 제목은 싣지 않는다(보는 사람이 그 페이지를 볼 수 없을 수 있다). */}
+                    {i.email} — {i.role === 'guest' ? '게스트 · 페이지 하나' : i.role}
                   </li>
                 ))}
               </ul>

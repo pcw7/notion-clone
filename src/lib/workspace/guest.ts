@@ -14,8 +14,9 @@
  * — 공유 게이트를 먼저 묻고(멤버십을 쓰기 전), 그 뒤의 거부는 트랜잭션이 되돌린다. 멤버십이 부여보다 앞서는 까닭: 공유의 사용자
  * 주체는 이 워크스페이스의 사람이어야 한다(`acl.ts` `isPerson` · 7d-2).
  *
- *   · **이미 있는 계정만, 수락 없이 곧바로.** 이메일은 **검증된** 주소로 찾는다(미검증 주소는 누구나 등록할 수 있다 — 워크스페이스
- *     초대의 수락과 같은 규칙). 없으면 `no_account` — 먼저 가입하라고 말한다. 가입 뒤에 적용되는 대기 초대는 뒤의 조각이다
+ *   · **있는 계정은 수락 없이 곧바로.** 이메일은 **검증된** 주소로 찾는다(미검증 주소는 누구나 등록할 수 있다 — 워크스페이스
+ *     초대의 수락과 같은 규칙). **없으면 대기 초대를 남긴다**(7g-1 · `as: 'pending'`) — 워크스페이스 초대의 한 종류(`role='guest'`
+ *     + 페이지 · 레벨)로, 받는 사람이 메일의 링크로 가입해 받아들이면 그때 멤버십과 부여를 쓴다(`invite.ts` `acceptInvite`)
  *   · 그 사람이 **이미 멤버**면 역할을 건드리지 않고 부여만 한다(`as: 'member'`). 이미 게스트면 부여만, 떠났던 사람은 게스트로
  *     돌아온다(M1 의 행을 되살린다). 멈춘 사람은 들이지 않는다(`unavailable`)
  *   · **레벨은 편집까지**(`GUEST_LEVELS`) — 전체 권한은 공유를 품는다. 공유 패널의 사람 부여도 같은 규칙(`acl.ts` `guest_level`)
@@ -24,9 +25,12 @@
  * 정책(`security_policy`)은 그 표가 생길 때 여기에 건다(HANDOFF §7).
  */
 
+import { randomBytes } from 'node:crypto'
+
 import type { SessionContext, WorkspaceRole } from '../auth/session-context.ts'
 import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
 import { dropGrantsOf, grantAccessIn, shareGateIn, type AclFailure } from '../permissions/acl.ts'
+import { hashInviteToken, INVITE_TTL_DAYS } from './invite.ts'
 import { joinDefaultTeamspaces } from './teamspace.ts'
 
 /** 게스트에게 줄 수 있는 레벨 — 편집까지(머리말). 좁은 것부터. */
@@ -39,21 +43,27 @@ export type GuestInviteFailure =
   | 'invalid_email'
   /** 게스트에게 줄 수 없는 레벨이다(편집까지). */
   | 'invalid_level'
-  /** 그 이메일로 가입한(검증된) 계정이 없다 — 먼저 가입해야 한다. */
-  | 'no_account'
   /** 그 사람의 멤버십이 멈춰 있다(`suspended`). */
   | 'unavailable'
 
 export type GuestInviteResult =
   | {
       readonly ok: true
-      readonly value: {
-        readonly userId: string
-        /** 받은 사람이 무엇으로 받았는가 — 이미 멤버면 `member`(역할을 건드리지 않았다), 아니면 `guest`. */
-        readonly as: 'member' | 'guest'
-        /** 이번에 워크스페이스에 들어왔는가(새 게스트 · 떠났다 돌아온 사람). */
-        readonly joined: boolean
-      }
+      readonly value:
+        | {
+            readonly userId: string
+            /** 받은 사람이 무엇으로 받았는가 — 이미 멤버면 `member`(역할을 건드리지 않았다), 아니면 `guest`. */
+            readonly as: 'member' | 'guest'
+            /** 이번에 워크스페이스에 들어왔는가(새 게스트 · 떠났다 돌아온 사람). */
+            readonly joined: boolean
+          }
+        | {
+            /** 계정이 없다 — 대기 초대를 남겼다(7g-1). 받아들이면 그때 들어온다. */
+            readonly as: 'pending'
+            readonly email: string
+            /** 메일에 실을 수락 토큰 — 원문은 여기와 메일에만 있다(DB 에는 해시). 라우트가 메일로 보내고 응답에 싣지 않는다. */
+            readonly token: string
+          }
     }
   | { readonly ok: false; readonly reason: GuestInviteFailure }
 
@@ -106,11 +116,15 @@ export async function inviteGuestToPage(
             [ctx.workspaceId, target],
           )
 
-    // 줄 사람이 없거나(계정 없음) 줄 수 없으면(멈춤) 쓰지 않는다 — 그래도 **이 페이지를 공유할 수 없는 사람에게는 그 말부터**
+    // 줄 사람이 없거나(계정 없음) 줄 수 없으면(멈춤) 부여를 쓰지 않는다 — 그래도 **이 페이지를 공유할 수 없는 사람에게는 그 말부터**
     // 한다. 공유할 수 없는 사람이 이메일을 넣어 보며 계정이 있는지 알아내면 안 된다.
     if (target === null || membership?.status === 'suspended') {
       const denied = await shareGateIn(tx, ctx, pageId)
-      return fail(denied ?? (target === null ? 'no_account' : 'unavailable'))
+      if (denied !== null) return fail(denied)
+      if (target !== null) return fail('unavailable')
+      // 계정이 없다 — 대기 초대를 남긴다(7g-1). 받아들일 때 멤버십 → 부여를 한 트랜잭션에 쓴다(`acceptInvite`).
+      const token = await pendGuestInvite(tx, ctx, pageId, email, level)
+      return { ok: true, value: { as: 'pending', email, token } } as const
     }
 
     const denied = await shareGateIn(tx, ctx, pageId)
@@ -138,6 +152,26 @@ export async function inviteGuestToPage(
     await membershipChanged(tx, ctx, target)
     return (await give()) ?? ({ ok: true, value: { userId: target, as: 'guest', joined: true } } as const)
   })
+}
+
+/**
+ * 게스트의 대기 초대를 남긴다(7g-1) — (페이지, 이메일)마다 하나. 이미 있으면(만료된 것도) 레벨 · 토큰 · 만료를 새로 쓴다 — 옛 메일의
+ * 링크는 죽는다(워크스페이스 초대가 역할을 바꿀 때와 같다). 동시에 두 번 초대해도 부분 UNIQUE(0035)에 기대는 한 문장이라 하나다.
+ *
+ * @returns 수락 토큰의 원문 — DB 에는 해시만 남는다(`hashInviteToken`).
+ */
+async function pendGuestInvite(tx: Tx, ctx: SessionContext, pageId: string, email: string, level: GuestLevel): Promise<string> {
+  const token = randomBytes(32).toString('base64url')
+  await tx.query(
+    `INSERT INTO workspace_invite
+       (id, workspace_id, kind, email, token_hash, role, created_by, created_at, expires_at, page_id, page_level)
+     VALUES (gen_random_uuid(), $1, 'email', $2, $3, 'guest', $4, now(), now() + ($5 || ' days')::interval, $6, $7)
+     ON CONFLICT (page_id, email) WHERE role = 'guest' AND revoked_at IS NULL AND accepted_at IS NULL
+     DO UPDATE SET page_level = EXCLUDED.page_level, token_hash = EXCLUDED.token_hash, created_by = EXCLUDED.created_by,
+                   created_at = now(), expires_at = EXCLUDED.expires_at`,
+    [ctx.workspaceId, email, hashInviteToken(token), ctx.userId, String(INVITE_TTL_DAYS), pageId, level],
+  )
+  return token
 }
 
 // ── owner 의 게스트 관리 (7d-3) ──────────────────────────────────────
