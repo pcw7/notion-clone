@@ -131,6 +131,7 @@ export function BodyEditor({
   collabUrl,
   initialState,
   canEdit,
+  locked = false,
   initialPageRefTitles,
   initialMentionLabels,
 }: {
@@ -142,8 +143,10 @@ export function BodyEditor({
   collabUrl: string
   /** 서버가 준 본문 Y 상태(base64) — 첫 동기화 전에도 본문이 보인다. */
   initialState: string
-  /** 이 사람이 이 페이지를 고칠 수 있는가 — 연결이 읽기 전용으로 받으면 그쪽이 이긴다. */
+  /** 이 사람이 이 페이지를 고칠 수 있는가 — 연결이 읽기 전용으로 받으면 그쪽이 이긴다. 잠긴 페이지면 false 다. */
   canEdit: boolean
+  /** 페이지가 잠겼다(7f-1) — 읽기 전용의 까닭을 말할 때만 쓴다(편집 여부는 `canEdit` 이 이미 담는다). */
+  locked?: boolean
   /** 하위 페이지 참조의 제목 — 볼 수 있는 것만, 볼 수 없으면 null. 참조 노드는 제목을 싣지 않는다. */
   initialPageRefTitles: Readonly<Record<string, string | null>>
   /** 멘션 노드가 그릴 이름 — 서버가 권한으로 거른 맵(`loadMentionLabels`). 노드에는 id 뿐이다. */
@@ -830,7 +833,10 @@ export function BodyEditor({
     if (link.closed === 'login') return '로그인이 풀렸습니다. 다시 로그인하면 이어서 편집할 수 있습니다.'
     if (link.closed === 'misconfigured') return '협업 서버에 연결할 수 없습니다. 설정을 확인해 주세요.'
     if (link.reopening) return '다른 곳의 변경과 맞추는 중입니다. 잠시 편집할 수 없습니다.'
-    if (canEdit && link.readOnly === true) return '이 페이지를 고칠 권한이 사라져 읽기 전용입니다.'
+    if (locked) return '잠긴 페이지입니다 — 잠금을 풀어야 고칠 수 있습니다.'
+    // 열어 둔 사이에 권한이 줄었거나 누가 잠갔다 — 서버가 연결을 읽기 전용으로 다시 열었다. 풀리거나 권한이 돌아와도 연결은
+    // 올라가지 않는다(다시 열면 지금 상태로 연다).
+    if (canEdit && link.readOnly === true) return '이 페이지를 고칠 수 없게 되어 읽기 전용입니다 — 권한이 바뀌었거나 페이지가 잠겼습니다.'
     if (!canEdit) return '읽기 전용입니다 — 이 페이지를 고칠 권한이 없습니다.'
     if (!link.online) return '오프라인입니다. 계속 편집할 수 있고, 변경 사항은 연결이 돌아오면 저장됩니다.'
     return null

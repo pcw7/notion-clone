@@ -55,6 +55,8 @@ const EXPECTED_TABLES = [
   'teamspace', 'teamspace_member',
   // 접근 요청 7e-1조각 (0033)
   'access_request',
+  // 잠금 7f-1조각 (0034)
+  'node_lock',
   'schema_migration', 'scim_token', 'session_policy', 'sso_config',
   'user', 'user_email', 'user_session',
   'workspace', 'workspace_invite', 'workspace_member',
@@ -1476,6 +1478,8 @@ try {
       ['teamspace_member', 'tg_collab_access_teamspace_member'],
       ['teamspace_member', 'tg_collab_access_teamspace_member_update'],
       ['teamspace', 'tg_collab_access_teamspace'],
+      // 7f-1조각 — 잠금이 협업 접속 판정의 입력이 됐다(0034)
+      ['node_lock', 'tg_collab_access_node_lock'],
     ]
     const { rows } = await client.query(
       `SELECT c.relname AS tbl, t.tgname AS name, t.tgenabled AS enabled
@@ -1968,6 +1972,28 @@ try {
     const { rows } = await client.query(`SELECT count(*)::int AS n FROM access_request WHERE node_id = $1`, [pageId])
     if (rows[0].n === 0) ok('페이지를 지우면 그 페이지의 요청도 간다 (ON DELETE CASCADE)')
     else fail(`페이지를 지웠는데 요청 ${rows[0].n}건이 남았다`)
+  }
+
+  console.log('\n[20] 잠금 (0034 / §3.3 node_lock · [보강] 잠금이 막는 것 ⑦ · X-9 · 7f-1조각)')
+  {
+    const addBlock = `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key,
+                                         ancestor_path, perm_scope_id, properties, format, created_at, last_edited_at)
+                      VALUES ($1, $2, $3, 'workspace', $2, $4, '{}', $1, '{}'::jsonb, '{}'::jsonb, now(), now())`
+    const pageId = randomUUID()
+    await client.query(addBlock, [pageId, wsId, 'page', `lock-${pageId}`])
+    const lock = `INSERT INTO node_lock (node_id, kind, locked_by) VALUES ($1, $2, $3)`
+    await mustReject('페이지에 데이터베이스 잠금', lock, [pageId, 'database', userId])
+    await mustReject('모르는 잠금 종류', lock, [pageId, 'everything', userId])
+    await client.query(lock, [pageId, 'page', userId])
+    ok('페이지 잠금 (행이 곧 잠금이다)')
+    await mustReject('같은 노드를 두 번 잠금', lock, [pageId, 'page', userId])
+    await mustReject('잠금을 데이터베이스로 바꿈', `UPDATE node_lock SET kind = 'database' WHERE node_id = $1`, [pageId])
+    await mustReject('모르는 잠금 범위', `UPDATE node_lock SET scope = 'everything' WHERE node_id = $1`, [pageId])
+
+    await client.query(`DELETE FROM block WHERE id = $1`, [pageId])
+    const { rows } = await client.query(`SELECT count(*)::int AS n FROM node_lock WHERE node_id = $1`, [pageId])
+    if (rows[0].n === 0) ok('블록을 지우면 잠금도 간다 (ON DELETE CASCADE)')
+    else fail('블록을 지웠는데 잠금이 남았다')
   }
 
   await client.query('ROLLBACK')

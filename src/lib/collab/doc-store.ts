@@ -98,6 +98,7 @@ import { query } from '../db/pool.ts'
 import { withReadTransaction, withTransaction, type Tx } from '../db/tx.ts'
 import { isUuid } from '../ids.ts'
 import { effectiveCaps } from '../permissions/effective.ts'
+import { isLocked } from '../permissions/lock.ts'
 import { can } from '../permissions/levels.ts'
 import { MENTION_NODE, PAGE_REF_NODE } from '../editor/schema.ts'
 import { writeEditorChange, type EditorChange } from './body-edit.ts'
@@ -133,7 +134,10 @@ export type LoadDocResult =
   /** 없거나 볼 수 없거나 휴지통에 있는 페이지 — 구분하지 않는다(HANDOFF §3.3-31). */
   | { readonly ok: false; readonly reason: 'not_found' }
 
-/** 살아 있는 페이지에 대한 이 세션의 권한. 볼 수 없으면 없는 것과 같다(`none`). */
+/**
+ * 살아 있는 페이지에 대한 이 세션의 권한. 볼 수 없으면 없는 것과 같다(`none`). **잠긴 페이지는 `view`** 다(7f-1) — 고칠 수 있는
+ * 사람도 잠금을 풀기 전에는 본문을 고치지 못한다. 잠금은 capability 가 아니라 이 판정의 뒤에 붙는 게이트다(`permissions/lock.ts`).
+ */
 export type PageAccess = 'none' | 'view' | 'edit'
 
 export type CommitOptions = BodyReadOptions & {
@@ -383,7 +387,7 @@ async function accessOf(tx: Tx, ctx: SessionContext, pageId: string): Promise<Pa
   if (page === null) return 'none'
   const caps = await effectiveCaps(tx, ctx, pageId)
   if (!can(caps, 'view')) return 'none'
-  return can(caps, 'edit_content') ? 'edit' : 'view'
+  return can(caps, 'edit_content') && !(await isLocked(tx, pageId)) ? 'edit' : 'view'
 }
 
 /**

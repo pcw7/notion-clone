@@ -25,6 +25,7 @@ import { readBodyYDoc } from '@/lib/collab/ydoc'
 import { withReadTransaction } from '@/lib/db/tx'
 import { isFavorite, recordVisit } from '@/lib/nav/recent'
 import { noAccessState } from '@/lib/permissions/access-request'
+import { pageLockState } from '@/lib/permissions/lock'
 import { getTeamspace } from '@/lib/workspace/teamspace'
 import { NewPageButton } from '../new-page-button'
 import { ExportButton } from '../export-button'
@@ -37,6 +38,7 @@ import { FavoriteButton } from './favorite-button'
 import { DuplicatePageButton } from './duplicate-page-button'
 import { DeletePageButton } from './delete-page-button'
 import { NoAccess } from './no-access'
+import { LockButton } from './lock-button'
 
 /** 제목 없는 페이지의 표시 문구. 저장된 값은 빈 배열이다. */
 const UNTITLED = '제목 없음'
@@ -67,7 +69,7 @@ export default async function PageView({ params, searchParams }: PageProps<'/w/[
 
   // 본문은 Y.Doc 이 정본이다(판결 X-1 · CRDT 6d) — 협업 편집기가 그 상태로 시작하고 협업 서버에 붙는다. 행으로 만든 문서는
   // 더 이상 화면이 읽지 않고, 참조 제목만 따로 받는다(참조 노드는 제목을 싣지 않는다 — §3.2-22).
-  const [ancestors, children, state, pageRefTitles, access, moveTargets, moveTeamspaces, favorite, openThreads] = await Promise.all([
+  const [ancestors, children, state, pageRefTitles, access, moveTargets, moveTeamspaces, favorite, openThreads, lock] = await Promise.all([
     listAncestors(ctx, page),
     listChildPages(ctx, page.id),
     loadDocState(ctx, page.id),
@@ -78,6 +80,8 @@ export default async function PageView({ params, searchParams }: PageProps<'/w/[
     isFavorite(ctx, page.id),
     // 버튼에 띄울 수만 먼저 읽는다 — 패널을 열기 전에 목록을 한 번 더 부르지 않으려고.
     listDiscussions(ctx, page.id, { resolved: false }),
+    // 잠금(7f-1) — 본문 · 제목의 편집 여부는 `access` 가 이미 담는다(잠긴 페이지는 view). 이것은 "잠김" 표시와 버튼용이다.
+    pageLockState(ctx, page.id),
   ])
 
   // 방문 기록(F-07-04). **`getPage` 를 통과한 뒤**에 남긴다 — 볼 수 없는 페이지를
@@ -134,6 +138,12 @@ export default async function PageView({ params, searchParams }: PageProps<'/w/[
         </nav>
 
         <div className="flex flex-none items-start gap-2">
+          <LockButton
+            workspaceId={workspaceId}
+            pageId={page.id}
+            locked={lock?.locked ?? false}
+            canToggle={lock?.canToggle ?? false}
+          />
           <FavoriteButton workspaceId={workspaceId} pageId={page.id} initial={favorite} />
           <CommentPanel
             workspaceId={workspaceId}
@@ -166,7 +176,7 @@ export default async function PageView({ params, searchParams }: PageProps<'/w/[
         </div>
       </div>
 
-      <PageTitle workspaceId={workspaceId} pageId={page.id} initialTitle={page.plainTitle} />
+      <PageTitle workspaceId={workspaceId} pageId={page.id} initialTitle={page.plainTitle} readOnly={access !== 'edit'} />
 
       {/* 백링크 — F-07-09 "제목 아래 `{#} backlinks`, 접힌 채로". 볼 수 없는 페이지는 개수에도 없다. */}
       {backlinks.length > 0 && (
@@ -191,6 +201,7 @@ export default async function PageView({ params, searchParams }: PageProps<'/w/[
         collabUrl={collabServerUrl()}
         initialState={Buffer.from(Y.encodeStateAsUpdate(state.value.ydoc)).toString('base64')}
         canEdit={access === 'edit'}
+        locked={lock?.locked ?? false}
         initialPageRefTitles={pageRefTitles}
         initialMentionLabels={mentionLabels}
       />

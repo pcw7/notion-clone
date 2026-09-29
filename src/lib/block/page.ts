@@ -33,6 +33,7 @@ import { orderKeyBetween } from './order-key.ts'
 import { can } from '../permissions/levels.ts'
 import { enterPrivateRoot, inheritFromWorkspace } from '../permissions/acl.ts'
 import { canViewPage, effectiveCaps, readableScopes, teamspaceCaps } from '../permissions/effective.ts'
+import { isLocked } from '../permissions/lock.ts'
 import { MAX_TREE_DEPTH } from './types.ts'
 import { indexPageTitle } from '../search/index-page.ts'
 import { autoSubscribe } from '../notification/subscription.ts'
@@ -60,7 +61,9 @@ export type PageErrorCode =
   | 'parent_not_found' // 부모가 없거나 다른 워크스페이스거나 페이지가 아님
   | 'too_deep' // MAX_TREE_DEPTH 초과
   | 'invalid_title' // RichText[] 계약 위반
-  | 'not_found' // 대상 페이지 없음 / 다른 워크스페이스
+  | 'not_found' // 대상 페이지 없음 / 다른 워크스페이스 / 볼 수 없음
+  | 'forbidden' // 볼 수는 있지만 고칠 수 없음(`edit_content` 없음)
+  | 'locked' // 고칠 수 있지만 페이지가 잠겼다(7f-1)
 
 export class PageError extends Error {
   // 파라미터 프로퍼티(`constructor(readonly code: ...)`)를 쓰지 않는다 —
@@ -596,6 +599,10 @@ export async function listAncestors(
 /**
  * 제목만 갱신한다.
  *
+ * **고칠 수 있는 사람만**(`edit_content`) — 볼 수 없으면 `not_found`, 볼 수만 있으면 `forbidden`, 잠겼으면 `locked`(7f-1). 7f-1
+ * 전에는 워크스페이스 경계만 보고 **페이지 권한을 묻지 않았다** — 읽기만 받은 사람도, 볼 수 없는 페이지도 id 만 알면 이름을
+ * 바꿀 수 있었다(잠금이 제목을 막으려고 이 명령을 보다 찾았다).
+ *
  * `version` 을 올린다 [X-6]. 이 컬럼은 프로젝터 배치·셀 쓰기·구조 변경이 함께
  * 올리는 페이지 단위 변경 카운터이고, 검색 인덱스의 external version 이 된다.
  * 제목 변경은 검색 결과에 직접 보이므로 여기서 올리지 않으면 인덱스가 낡는다.
@@ -611,6 +618,19 @@ export async function renamePage(
   // 커넥션으로 쓰면 "제목은 바뀌었는데 검색은 옛 제목으로만 찾히는" 상태가
   // 남는다. 같은 트랜잭션이면 그 틈이 없다.
   return withTransaction(async (tx) => {
+    // 대상 행을 먼저 잠그고 권한 · 잠금을 묻는다 — 잠그는 명령(`setPageLock`)과 같은 행에 줄을 선다.
+    const target = await tx.queryMaybe<{ id: string }>(
+      `SELECT id FROM block
+        WHERE id = $1 AND workspace_id = $2 AND type = 'page' AND lifecycle = 'live' AND parent_type <> 'data_source'
+        FOR UPDATE`,
+      [pageId, ctx.workspaceId],
+    )
+    if (target === null) throw new PageError('not_found', '페이지를 찾을 수 없습니다.')
+    const caps = await effectiveCaps(tx, ctx, pageId)
+    if (!can(caps, 'view')) throw new PageError('not_found', '페이지를 찾을 수 없습니다.')
+    if (!can(caps, 'edit_content')) throw new PageError('forbidden', '이 페이지를 고칠 권한이 없습니다.')
+    if (await isLocked(tx, pageId)) throw new PageError('locked', '잠긴 페이지입니다. 잠금을 풀어야 제목을 바꿀 수 있습니다.')
+
     const rows = await tx.query<PageRow>(
       `UPDATE block
           SET properties = jsonb_set(properties, '{title}', $3::jsonb, true),
