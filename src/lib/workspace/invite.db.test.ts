@@ -255,7 +255,10 @@ describe('acceptInvite — 실패 경로', () => {
     })
     assert.ok(invited.ok)
 
-    assert.equal(await inv.revokeInvite(invited.inviteId, w.workspaceId, 'owner'), true)
+    // 취소는 세션으로 묻는다(7g-3 · A9) — 역할 문자열을 받던 옛 모양이 아니다. 자세한 검사는 invite-revoke.db.test.ts.
+    const { joinAs } = await import('../testing/db-fixtures.ts')
+    const boss = await joinAs(w.workspaceId as never, { userId: owner.userId as never }, 'owner')
+    assert.deepEqual(await inv.revokeInvite(boss.ctx, invited.inviteId), { ok: true, value: { email: target.email } })
     const r = await inv.acceptInvite(invited.token, target.userId)
     assert.equal((r as { reason: string }).reason, 'invalid')
   })

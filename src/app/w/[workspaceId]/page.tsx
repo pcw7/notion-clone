@@ -16,6 +16,7 @@ import { listChildPages } from '@/lib/block/page'
 import { canExportWorkspace } from '@/lib/export/download'
 import { canManageGroups, canSeeGroups, listGroups } from '@/lib/workspace/group'
 import { canManageGuests, listGuests } from '@/lib/workspace/guest'
+import { canInvite as canInviteRole } from '@/lib/workspace/invite'
 import { canListMembers, listMembers, listPendingInvites } from '@/lib/workspace/list'
 import { canManageSecurityPolicy, getSecurityPolicy } from '@/lib/workspace/security-policy'
 import { ExportButton } from './export-button'
@@ -23,6 +24,7 @@ import { GuestPanel } from './guest-panel'
 import { GroupPanel } from './group-panel'
 import { InviteForm } from './invite-form'
 import { NewPageButton } from './new-page-button'
+import { PendingInviteList } from './pending-invite-list'
 import { SecurityPolicyForm } from './security-policy-form'
 
 /** 제목 없는 페이지의 표시 문구. 저장된 값은 빈 배열이다. */
@@ -34,7 +36,8 @@ export default async function WorkspacePage({ params }: PageProps<'/w/[workspace
   // 진입 게이트는 page-session.ts 가 소유한다. 거부 코드 매핑
   // (멤버 아님 → 404) 을 화면마다 복사하면 한 곳만 틀려도 존재가 유출된다.
   const ctx = await requirePageSession(workspaceId)
-  const canInvite = ctx.role === 'owner' || ctx.role === 'membership_admin'
+  // 초대를 보내고 · 대기 중인 초대를 보고 · 취소하는 역할(7g-3) — 취소 판정은 라우트가 같은 함수로 다시 한다.
+  const canInvite = canInviteRole(ctx.role)
   // 표시 전용 — 판정은 내보내기 라우트가 `prepareExport` 로 다시 한다.
   const canExport = canExportWorkspace(ctx)
 
@@ -140,22 +143,8 @@ export default async function WorkspacePage({ params }: PageProps<'/w/[workspace
         <section>
           <h2 className="text-sm font-medium text-neutral-500">멤버 초대</h2>
           <InviteForm workspaceId={ctx.workspaceId} />
-
-          {invites.length > 0 && (
-            <>
-              <h3 className="mt-6 text-xs font-medium text-neutral-500">
-                대기 중인 초대 {invites.length}건
-              </h3>
-              <ul className="mt-2 flex flex-col gap-1 text-sm">
-                {invites.map((i) => (
-                  <li key={i.inviteId} className="text-neutral-500">
-                    {/* 게스트 초대(7g-1)는 페이지 하나를 받는다 — 제목은 싣지 않는다(보는 사람이 그 페이지를 볼 수 없을 수 있다). */}
-                    {i.email} — {i.role === 'guest' ? '게스트 · 페이지 하나' : i.role}
-                  </li>
-                ))}
-              </ul>
-            </>
-          )}
+          {/* 대기 중인 초대와 취소(7g-3) — 게스트의 대기 초대(7g-1)는 제목 없이 "게스트 · 페이지 하나"로 선다. */}
+          <PendingInviteList workspaceId={ctx.workspaceId} initialInvites={[...invites]} />
         </section>
       )}
 

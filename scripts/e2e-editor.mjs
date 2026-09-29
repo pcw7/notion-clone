@@ -3431,6 +3431,84 @@ async function main() {
       await sleep(1500)
     }
 
+    if (sectionIf('대기 초대 취소 (7g-3 · F-14-10)')) {
+      // 소유자(브라우저 세션)가 멤버 초대와 게스트의 대기 초대를 보내고, 홈의 "대기 중인 초대"에서 게스트 초대를 취소한다 — 그 링크는
+      // "유효하지 않은 초대"가 되고 멤버 초대의 링크는 그대로 열린다. 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다. 남은
+      // 멤버 초대는 끝에 취소한다.
+      const stamp = Date.now()
+      const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
+      const invitesUrl = `${BASE}/api/workspaces/${workspaceId}/invites`
+      const memberEmail = `revoke-member-${stamp}@example.com`
+      const guestEmail = `revoke-guest-${stamp}@example.com`
+      const doc = (await (await fetch(pagesUrl, { method: 'POST', headers: authed, body: JSON.stringify({ title: `취소할 초대의 문서 ${stamp}`, privateTop: true }) })).json()).page.id
+      const memberSent = await fetch(invitesUrl, { method: 'POST', headers: authed, body: JSON.stringify({ email: memberEmail, role: 'member' }) })
+      const memberInviteId = memberSent.ok ? (await memberSent.json()).inviteId : null
+      const guestSent = await fetch(`${pagesUrl}/${doc}/guests`, { method: 'POST', headers: authed, body: JSON.stringify({ email: guestEmail, level: 'view' }) })
+      const memberLink = await inviteLinkFor(memberEmail)
+      const guestLink = await inviteLinkFor(guestEmail)
+      // 메일의 링크는 앱의 공개 주소를 가리킨다 — 경로만 떼어 e2e 서버에 붙인다(7g-1 · §6).
+      const openLink = async (link) => (await fetch(`${BASE}${new URL(link).pathname}`)).text()
+      check('전제 — 멤버 초대와 게스트의 대기 초대를 보냈다 · 두 링크 모두 유효하다',
+        typeof memberInviteId === 'string' && guestSent.ok && typeof memberLink === 'string' && typeof guestLink === 'string'
+          && !(await openLink(memberLink)).includes('유효하지 않은 초대입니다') && !(await openLink(guestLink)).includes('유효하지 않은 초대입니다'),
+        `${memberSent.status} · ${guestSent.status} · ${memberLink} · ${guestLink}`)
+
+      const ROW = '[data-testid="pending-invite-row"]'
+      const rowOf = (email) => `[...document.querySelectorAll('${ROW}')].find((li) => li.textContent.includes(${JSON.stringify(email)}))`
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
+      check('★ 홈의 대기 중인 초대에 두 줄이 취소 버튼과 함께 선다 — 게스트 초대는 "게스트 · 페이지 하나"',
+        await waitFor(`!!${rowOf(memberEmail)}?.querySelector('[data-testid="pending-invite-revoke"]')
+          && (${rowOf(guestEmail)}?.textContent ?? '').includes('게스트 · 페이지 하나')
+          && !!${rowOf(guestEmail)}?.querySelector('[data-testid="pending-invite-revoke"]')`, 15000))
+      const guestInviteId = await evaluate(`${rowOf(guestEmail)}?.dataset.inviteId ?? null`)
+      // 서버 렌더 뒤 React 가 붙기 전의 클릭은 사라진다(§6) — 줄이 빠질 때까지 다시 누른다(두 번 가도 둘째는 404 로 줄만 뺀다).
+      let gone = false
+      for (let i = 0; i < 10 && !gone; i += 1) {
+        await clickSelector(`${ROW}[data-invite-id="${guestInviteId}"] [data-testid="pending-invite-revoke"]`)
+        gone = await waitFor(`!${rowOf(guestEmail)}`, 1500)
+      }
+      check('★ 게스트 초대를 취소하면 그 줄이 빠지고 · 보낸 링크가 이제 열리지 않는다고 말한다 · 멤버 초대는 남는다',
+        gone && (await waitFor(`(document.querySelector('[data-testid="pending-invite-notice"]')?.textContent ?? '').includes(${JSON.stringify(`${guestEmail} 의 초대를 취소했습니다`)})`, 10000))
+          && (await evaluate(`!!${rowOf(memberEmail)}`)),
+        await evaluate(`document.querySelector('[data-testid="pending-invites"]')?.textContent ?? '(목록 없음)'`))
+      check('★ 취소한 링크를 열면 "유효하지 않은 초대입니다" — 멤버 초대의 링크는 그대로 열린다',
+        (await openLink(guestLink)).includes('유효하지 않은 초대입니다') && !(await openLink(memberLink)).includes('유효하지 않은 초대입니다'))
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
+      check('다시 열어도 취소한 초대는 없다 — 서버가 지운 것이다',
+        (await waitFor(`!!${rowOf(memberEmail)}`, 15000)) && !(await evaluate(`!!${rowOf(guestEmail)}`)))
+
+      // 목록은 서버 렌더가 정본이다 — 홈의 초대 폼으로 보낸 새 초대가 곧바로 목록에 선다(목록을 상태로 복사하면 서지 않는다).
+      const formEmail = `revoke-form-${stamp}@example.com`
+      let formRow = false
+      for (let i = 0; i < 10 && !formRow; i += 1) {
+        await clickSelector('[data-testid="invite-form"] input[type="email"]')
+        await evaluate(`(() => {
+          const el = document.querySelector('[data-testid="invite-form"] input[type="email"]')
+          Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, ${JSON.stringify(formEmail)})
+          el.dispatchEvent(new Event('input', { bubbles: true }))
+        })()`)
+        await clickSelector('[data-testid="invite-form"] button[type="submit"]')
+        formRow = await waitFor(`!!${rowOf(formEmail)}?.querySelector('[data-testid="pending-invite-revoke"]')`, 3000)
+      }
+      check('★ 홈의 초대 폼으로 보낸 새 초대가 곧바로 목록에 선다 — 취소 버튼과 함께', formRow,
+        await evaluate(`document.querySelector('[data-testid="pending-invites"]')?.textContent ?? '(목록 없음)'`))
+      const formInviteId = await evaluate(`${rowOf(formEmail)}?.dataset.inviteId ?? null`)
+      if (formInviteId) await fetch(`${invitesUrl}/${formInviteId}`, { method: 'DELETE', headers: authed })
+
+      const mate = await joinAs(workspaceId, await createUser(`초대를 못 다루는 멤버 ${stamp}`), 'member')
+      const mateRevoke = await fetch(`${invitesUrl}/${memberInviteId}`, { method: 'DELETE', headers: { cookie: `nc_session=${mate.token}` } })
+      const twice = await fetch(`${invitesUrl}/${guestInviteId}`, { method: 'DELETE', headers: authed })
+      const mateHome = await (await fetch(`${BASE}/w/${workspaceId}`, { headers: { cookie: `nc_session=${mate.token}` } })).text()
+      check('멤버는 취소하지 못하고(403) 목록도 없다 · 이미 취소한 초대는 404',
+        mateRevoke.status === 403 && twice.status === 404 && !mateHome.includes('data-testid="pending-invites"'),
+        `${mateRevoke.status} · ${twice.status}`)
+      const cleanup = await fetch(`${invitesUrl}/${memberInviteId}`, { method: 'DELETE', headers: authed })
+      check('API 로도 취소한다 — 취소한 주소를 돌려준다', cleanup.ok && (await cleanup.json()).email === memberEmail, String(cleanup.status))
+      // 취소의 refresh 가 끝나기 전에 다음 절이 화면을 옮기지 않게 한다(§6).
+      await sleep(1500)
+    }
+
     if (sectionIf('코멘트 패널 · 인박스 (F-05-08 · F-11-07)')) {
       const commentPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
         method: 'POST',

@@ -50,7 +50,7 @@ export function InviteForm({ workspaceId }: { workspaceId: string }) {
   }
 
   return (
-    <form onSubmit={submit} className="mt-3 flex flex-col gap-2">
+    <form onSubmit={submit} data-testid="invite-form" className="mt-3 flex flex-col gap-2">
       <div className="flex gap-2">
         <input
           type="email"
