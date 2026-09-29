@@ -7,6 +7,8 @@ import assert from 'node:assert/strict'
 
 import {
   EDIT_REQUEST_SENT,
+  OUTSIDER_NO_ACCESS_HINT,
+  OUTSIDER_REQUEST_SENT,
   REQUEST_SENT,
   accessInboxLine,
   accessRequestFailureMessage,
@@ -68,4 +70,15 @@ test('거부 코드마다 할 말 · 모르는 코드는 일반 문구', () => {
     assert.notEqual(accessRequestFailureMessage(code), '처리하지 못했습니다.', code)
   }
   assert.equal(accessRequestFailureMessage('something_new'), '처리하지 못했습니다.')
+})
+
+test('★ (7g-2) 워크스페이스 밖의 사람 — 요청 줄은 "워크스페이스 밖" · 허락하면 게스트로 들어왔다고 · 그 사람의 화면은 게스트가 된다고', () => {
+  const outsider = { name: '앤', email: 'ann@x.io', guest: true, outsider: true }
+  assert.equal(requesterLabel(outsider), '앤 (ann@x.io) · 워크스페이스 밖')
+  assert.equal(requesterLabel({ ...outsider, outsider: false }), '앤 (ann@x.io) · 게스트')
+  assert.equal(approvedNotice('앤', 'comment', true), '앤 님이 게스트로 들어와 댓글 권한을 받았습니다.')
+  assert.equal(approvedNotice('앤', 'comment'), '앤 님에게 댓글 권한을 줬습니다.')
+  assert.match(OUTSIDER_NO_ACCESS_HINT, /게스트로/)
+  assert.notEqual(OUTSIDER_REQUEST_SENT, REQUEST_SENT, '밖의 사람에게는 아직 이 워크스페이스의 인박스가 없다')
+  assert.doesNotMatch(OUTSIDER_REQUEST_SENT, /인박스/)
 })

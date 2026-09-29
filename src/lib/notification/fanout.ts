@@ -33,7 +33,7 @@ import { randomUUID } from 'node:crypto'
 
 import type { SessionContext } from '../auth/session-context.ts'
 import type { Tx } from '../db/tx.ts'
-import { recordActivity } from './activity.ts'
+import { recordActivity, type ActivityActor } from './activity.ts'
 import { subscribersOf } from './subscription.ts'
 
 /** 정본 §3.8 `notification.kind` 의 목록. 0020 · 0033 의 CHECK 과 같다(`notification.db.test.ts` 가 대조한다). */
@@ -183,10 +183,11 @@ export type AccessRequestEvent = {
  *
  * **구독과 무관하다**(정본 §3.8 [보강] 접근 요청의 알림 ①) — 요청은 페이지의 변경이 아니라 그 사람들에게 온 일이다. 뮤트한
  * 페이지의 요청도 간다. 요청한 사람 자신은 받지 않는다(관리자가 스스로 요청할 일은 없지만 명령이 막는 것과 별개로 빼 둔다).
+ * 요청한 사람은 워크스페이스 밖의 사람일 수 있다(7g-2) — 그래서 세션이 아니라 행위자(`ActivityActor`)를 받는다.
  *
  * @returns 만든 알림 수. 받을 사람이 없어도 이벤트는 남는다.
  */
-export async function notifyAccessRequested(tx: Tx, ctx: SessionContext, event: AccessRequestEvent): Promise<number> {
+export async function notifyAccessRequested(tx: Tx, ctx: ActivityActor, event: AccessRequestEvent): Promise<number> {
   const activity = await recordActivity(tx, ctx, {
     pageId: event.pageId,
     type: 'access.requested',
@@ -213,7 +214,7 @@ export async function notifyAccessGranted(
 
 async function insertNotifications(
   tx: Tx,
-  ctx: SessionContext,
+  ctx: ActivityActor,
   pageId: string,
   eventId: string,
   kind: NotificationKind,

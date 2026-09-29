@@ -17,11 +17,13 @@ import { canExportWorkspace } from '@/lib/export/download'
 import { canManageGroups, canSeeGroups, listGroups } from '@/lib/workspace/group'
 import { canManageGuests, listGuests } from '@/lib/workspace/guest'
 import { canListMembers, listMembers, listPendingInvites } from '@/lib/workspace/list'
+import { canManageSecurityPolicy, getSecurityPolicy } from '@/lib/workspace/security-policy'
 import { ExportButton } from './export-button'
 import { GuestPanel } from './guest-panel'
 import { GroupPanel } from './group-panel'
 import { InviteForm } from './invite-form'
 import { NewPageButton } from './new-page-button'
+import { SecurityPolicyForm } from './security-policy-form'
 
 /** 제목 없는 페이지의 표시 문구. 저장된 값은 빈 배열이다. */
 const UNTITLED = '제목 없음'
@@ -36,7 +38,7 @@ export default async function WorkspacePage({ params }: PageProps<'/w/[workspace
   // 표시 전용 — 판정은 내보내기 라우트가 `prepareExport` 로 다시 한다.
   const canExport = canExportWorkspace(ctx)
 
-  const [rootPages, members, invites, groups, guests] = await Promise.all([
+  const [rootPages, members, invites, groups, guests, policy] = await Promise.all([
     listChildPages(ctx, null),
     // 게스트는 멤버 목록을 받지 않는다(7d-2 · F-06-09) — 절 자체를 그리지 않는다.
     canListMembers(ctx.role) ? listMembers(ctx.workspaceId) : Promise.resolve(null),
@@ -45,6 +47,8 @@ export default async function WorkspacePage({ params }: PageProps<'/w/[workspace
     canSeeGroups(ctx.role) ? listGroups(ctx) : Promise.resolve(null),
     // 게스트 관리(7d-3)는 owner · membership_admin 에게만 — 판정은 `listGuests` 가 다시 한다.
     canManageGuests(ctx.role) ? listGuests(ctx) : Promise.resolve(null),
+    // 정책(7g-2)은 owner 에게만 — 판정은 `getSecurityPolicy` 와 저장 라우트가 다시 한다.
+    canManageSecurityPolicy(ctx.role) ? getSecurityPolicy(ctx) : Promise.resolve(null),
   ])
 
   return (
@@ -152,6 +156,16 @@ export default async function WorkspacePage({ params }: PageProps<'/w/[workspace
               </ul>
             </>
           )}
+        </section>
+      )}
+
+      {policy?.ok && (
+        <section>
+          <h2 className="text-sm font-medium text-neutral-500">정책</h2>
+          <SecurityPolicyForm
+            workspaceId={ctx.workspaceId}
+            initialAllowNonmemberRequests={policy.value.allowNonmemberPageAccessRequest}
+          />
         </section>
       )}
 

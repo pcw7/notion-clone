@@ -141,17 +141,36 @@ export async function inviteGuestToPage(
     }
 
     // 새로 들어오거나(행 없음) 돌아온다(removed · invited) — 게스트로. 멤버를 게스트로 내리는 일은 위에서 걸렀다(active).
-    await tx.query(
-      `INSERT INTO workspace_member (workspace_id, user_id, role, status, join_method, invited_by, invited_at, accepted_at)
-       VALUES ($1, $2, 'guest', 'active', 'invite_email', $3, now(), now())
-       ON CONFLICT (workspace_id, user_id) DO UPDATE
-          SET role = 'guest', status = 'active', removed_at = NULL, join_method = 'invite_email',
-              invited_by = EXCLUDED.invited_by, invited_at = now(), accepted_at = now()`,
-      [ctx.workspaceId, target, ctx.userId],
-    )
-    await membershipChanged(tx, ctx, target)
+    await admitGuestIn(tx, ctx, target, 'invite_email')
     return (await give()) ?? ({ ok: true, value: { userId: target, as: 'guest', joined: true } } as const)
   })
+}
+
+/** 게스트로 들어온 길 — 이메일로 공유받았다(7d-1) · 접근 요청을 허락받았다(7g-2). */
+export type GuestJoinMethod = 'invite_email' | 'access_request'
+
+/**
+ * 이 워크스페이스의 사람이 아닌 사람을 **게스트로 들인다** — 멤버십 행을 쓰거나(처음) 되살린다(떠났던 · 초대만 받은 사람). 들어온
+ * 길을 남기고 권한 세대를 올린다. 게스트를 들이는 길(이메일 공유 · 접근 요청의 허락)이 모두 이것을 지난다 — 게스트 한도
+ * (`plan_entitlement`) · 정책(`allow_member_invite_guests`)은 여기에 건다(뒤의 조각).
+ *
+ * **부여는 부르는 쪽이 곧바로 같은 트랜잭션에서 쓴다** — 부여 없이 들어온 게스트가 생기지 않게(정본 [보강] 게스트 ①). 부여가
+ * 거부되면 `withCommandTransaction` 이 이 멤버십도 되돌린다. 이미 이 워크스페이스의 사람(active · suspended)은 부르는 쪽이 걸렀다
+ * — 여기서도 그런 행은 건드리지 않고 던진다(멤버를 게스트로 내리지 않는다 · 멈춘 사람을 되살리지 않는다).
+ */
+export async function admitGuestIn(tx: Tx, ctx: SessionContext, userId: string, joinMethod: GuestJoinMethod): Promise<void> {
+  const row = await tx.queryMaybe<{ user_id: string }>(
+    `INSERT INTO workspace_member (workspace_id, user_id, role, status, join_method, invited_by, invited_at, accepted_at)
+     VALUES ($1, $2, 'guest', 'active', $4, $3, now(), now())
+     ON CONFLICT (workspace_id, user_id) DO UPDATE
+        SET role = 'guest', status = 'active', removed_at = NULL, join_method = EXCLUDED.join_method,
+            invited_by = EXCLUDED.invited_by, invited_at = now(), accepted_at = now()
+      WHERE workspace_member.status IN ('invited', 'removed')
+     RETURNING user_id`,
+    [ctx.workspaceId, userId, ctx.userId, joinMethod],
+  )
+  if (row === null) throw new Error('이미 이 워크스페이스의 사람이다 — 게스트로 들이지 않는다')
+  await membershipChanged(tx, ctx, userId)
 }
 
 /**

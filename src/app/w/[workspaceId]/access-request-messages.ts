@@ -11,6 +11,13 @@ export const NO_ACCESS_HINT = '이 페이지를 공유할 수 있는 사람에�
 /** 요청을 보낸 뒤 — 무시된 요청도 요청한 사람에게는 이렇게 보인다(무시를 알리지 않는다 · 정본 [보강] 접근 요청 ③). */
 export const REQUEST_SENT = '접근을 요청했습니다. 허락되면 인박스로 알려 드립니다.'
 
+/**
+ * 워크스페이스 밖의 사람에게(7g-2) — 허락되면 게스트로 들어온다는 것을 먼저 말한다. 그 사람에게는 아직 이 워크스페이스의 인박스가
+ * 없으므로 "허락되면 이 주소에서 열린다"고 말한다.
+ */
+export const OUTSIDER_NO_ACCESS_HINT = '이 워크스페이스의 멤버가 아닙니다. 접근을 요청하면, 허락될 때 게스트로 이 페이지를 봅니다.'
+export const OUTSIDER_REQUEST_SENT = '접근을 요청했습니다. 허락되면 이 주소에서 페이지가 열립니다.'
+
 /** 공유 패널 — 볼 수는 있지만 고칠 수 없는 사람에게(7e-2). */
 export const EDIT_REQUEST_HINT = '이 페이지를 고칠 수 없습니다.'
 /** 편집 권한을 요청한 뒤 — 무시된 요청도 하루 동안은 이렇게 보인다(접근 요청과 같은 규칙). */
@@ -47,14 +54,22 @@ export function defaultApproveLevel(options: readonly ApproveLevelOption[], requ
   return requested?.value ?? options[0]?.value ?? 'view'
 }
 
-/** 요청 줄의 사람 — 이름 · 이메일 · 게스트면 그렇게. */
-export function requesterLabel(r: { readonly name: string; readonly email: string | null; readonly guest: boolean }): string {
+/** 요청 줄의 사람 — 이름 · 이메일 · 게스트면 그렇게 · 워크스페이스 밖의 사람이면 그렇게(7g-2 — 허락하면 게스트로 들어온다). */
+export function requesterLabel(r: {
+  readonly name: string
+  readonly email: string | null
+  readonly guest: boolean
+  readonly outsider?: boolean
+}): string {
   const who = r.email ? `${r.name} (${r.email})` : r.name
+  if (r.outsider) return `${who} · 워크스페이스 밖`
   return r.guest ? `${who} · 게스트` : who
 }
 
-export function approvedNotice(name: string, level: string): string {
-  return `${name} 님에게 ${LEVEL_LABEL[level] ?? level} 권한을 줬습니다.`
+/** 허락한 뒤 — 밖의 사람이면 게스트로 들어왔다는 것까지(7g-2). */
+export function approvedNotice(name: string, level: string, outsider = false): string {
+  const label = LEVEL_LABEL[level] ?? level
+  return outsider ? `${name} 님이 게스트로 들어와 ${label} 권한을 받았습니다.` : `${name} 님에게 ${label} 권한을 줬습니다.`
 }
 
 export function ignoredNotice(name: string): string {

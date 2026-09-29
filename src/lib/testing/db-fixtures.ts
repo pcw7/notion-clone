@@ -17,6 +17,7 @@ import { randomUUID } from 'node:crypto'
 import { query, queryOne } from '../db/pool.ts'
 import { withTransaction } from '../db/tx.ts'
 import { createSession } from '../auth/session.ts'
+import { resolveOutsiderContext, type OutsiderContext } from '../auth/outsider-context.ts'
 import { resolveSessionContext, type SessionContext, type WorkspaceRole } from '../auth/session-context.ts'
 import { asWorkspaceId, type UserId, type WorkspaceId } from '../ids.ts'
 
@@ -118,6 +119,22 @@ export async function joinAs(
   )
 
   return { userId: user.userId, email: email.email, token: issued.token, ctx: resolved.context }
+}
+
+/**
+ * 이 워크스페이스의 사람이 **아닌** 사람의 세션(7g-2) — 멤버십 행을 쓰지 않는다. 신원은 `SessionContext` 처럼
+ * `resolveOutsiderContext()` 로 발급받는다(캐스팅하지 않는다 · 머리말). 이미 이 워크스페이스의 사람이면 던진다.
+ */
+export async function visitAsOutsider(
+  workspaceId: WorkspaceId,
+  user: { userId: UserId },
+): Promise<{ userId: UserId; token: string; outsider: OutsiderContext }> {
+  const issued = await withTransaction((tx) =>
+    createSession(tx, { userId: user.userId, authMethod: 'login_code', mfaSatisfied: false, ip: null, userAgent: 'node:test' }),
+  )
+  const outsider = await resolveOutsiderContext(issued.token, workspaceId)
+  if (outsider === null) throw new Error('픽스처가 밖의 사람 신원을 얻지 못했습니다 — 이미 이 워크스페이스의 사람인가')
+  return { userId: user.userId, token: issued.token, outsider }
 }
 
 /** 워크스페이스 + owner 한 명. 대부분의 테스트가 필요로 하는 최소 조합. */

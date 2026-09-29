@@ -74,6 +74,8 @@ type AccessRequestView = {
   name: string
   email: string | null
   guest: boolean
+  /** 워크스페이스 밖의 사람(7g-2) — 허락하면 게스트로 들어온다. */
+  outsider: boolean
   kind: string
   requestedLevel: string | null
 }
@@ -261,7 +263,7 @@ export function SharePanel({
         await load()
         return
       }
-      setNotice(action === 'approve' ? approvedNotice(request.name, level) : ignoredNotice(request.name))
+      setNotice(action === 'approve' ? approvedNotice(request.name, level, request.outsider) : ignoredNotice(request.name))
       await load()
       router.refresh()
     } catch {
@@ -347,7 +349,7 @@ export function SharePanel({
                           className="flex items-center justify-between gap-2 text-sm"
                         >
                           <span className="min-w-0 truncate">
-                            {requesterLabel(r)}
+                            <span data-testid={r.outsider ? 'access-request-outsider' : undefined}>{requesterLabel(r)}</span>
                             <span data-testid="access-request-kind" className="ml-1 text-xs text-neutral-400">
                               {requestKindLabel(r.kind)}
                             </span>

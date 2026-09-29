@@ -6,9 +6,10 @@
  *   ① ★ 볼 수 없는 사람이 요청하면 대기 중인 요청 하나 · 관리자에게 알림 · 다시 눌러도 새 행 · 새 알림이 없다
  *   ② 요청할 수 없는 것 — 이미 볼 수 있다 · 휴지통 · 다른 워크스페이스 · 없는 id (아무것도 쓰지 않는다) · 보관된 teamspace 의 페이지
  *   ③ 동시에 두 번 눌러도 요청은 하나 · 알림도 한 번
- *   ④ ★ 목록은 공유할 수 있는 사람에게만 · 이미 볼 수 있게 된 사람 · 떠난 사람의 요청은 세우지 않는다(다시 못 보면 다시 선다)
+ *   ④ ★ 목록은 공유할 수 있는 사람에게만 · 이미 볼 수 있게 된 사람의 요청은 세우지 않는다(다시 못 보면 다시 선다) · 떠난 사람의
+ *      요청은 워크스페이스 밖의 요청으로 선다(7g-2 — 그쪽 검사는 outsider-request.db.test.ts)
  *   ⑤ ★ 허락 — 고른 레벨을 준다 · 요청한 사람에게 알림 · 이미 처리됨 · 공유할 수 없는 사람은 못 한다(아무것도 안 바뀐다)
- *   ⑥ ★ 허락은 권한을 낮추지 않는다 · 게스트에게 전체 권한은 거부하고 요청은 대기로 남는다 · 떠난 사람에게 주지 않는다
+ *   ⑥ ★ 허락은 권한을 낮추지 않는다 · 게스트에게 전체 권한은 거부하고 요청은 대기로 남는다 · 떠난 사람은 게스트로 돌아온다(7g-2)
  *   ⑦ ★ 무시는 알리지 않는다 · 하루 동안 요청한 사람에게 "보냈습니다" · 하루가 지나면 다시 보낼 수 있다
  *   ⑧ ★ 알림은 이름이 걸린 관리자에게 — 공유 권한을 가진 전원이 아니다 · 없으면 owner
  *   ⑨ 인박스 — 관리자는 요청한 사람의 이름과 **지금** 상태를 · 한 페이지의 요청은 한 줄 · 허락은 요청한 사람에게
@@ -201,7 +202,7 @@ describe('③ 동시에', () => {
 // ── ④ ─────────────────────────────────────────────────────────────────
 
 describe('④ 목록', () => {
-  test('★ 공유할 수 있는 사람에게만 · 이미 볼 수 있게 된 사람 · 떠난 사람의 요청은 세우지 않는다 · 다시 못 보면 다시 선다', async (t) => {
+  test('★ 공유할 수 있는 사람에게만 · 이미 볼 수 있게 된 사람의 요청은 세우지 않는다 · 떠난 사람은 밖의 요청으로 · 다시 못 보면 다시 선다', async (t) => {
     if (skipReason) return t.skip(skipReason)
     const { ws, boss, person } = await office()
     const asker = await person('요청하는 사람')
@@ -218,6 +219,11 @@ describe('④ 목록', () => {
       assert.ok(listed.ok)
       return listed.value.map((r) => r.requesterId)
     }
+    const outsiders = async () => {
+      const listed = await listAccessRequests(boss.ctx, doc)
+      assert.ok(listed.ok)
+      return listed.value.filter((r) => r.outsider).map((r) => r.requesterId)
+    }
     assert.deepEqual(await names(), [asker.userId, leaver.userId])
     assert.deepEqual(await listAccessRequests(viewer.ctx, doc), { ok: false, reason: 'forbidden' })
     assert.deepEqual(await listAccessRequests(stranger.ctx, doc), { ok: false, reason: 'not_found' })
@@ -228,9 +234,10 @@ describe('④ 목록', () => {
       ws,
       leaver.userId,
     ])
-    assert.deepEqual(await names(), [], '떠난 사람의 요청이 선다')
+    // 떠난 사람은 워크스페이스 밖의 사람이다(7g-2) — 그 사람의 접근 요청은 밖의 요청으로 선다(허락하면 게스트로 돌아온다).
+    assert.deepEqual(await outsiders(), [leaver.userId], '떠난 사람의 요청이 밖의 요청으로 서지 않는다')
     assert.ok((await revokeAccess(boss.ctx, doc, { type: 'user', id: asker.userId })).ok)
-    assert.deepEqual(await names(), [asker.userId], '다시 못 보게 됐는데 요청이 서지 않는다')
+    assert.deepEqual(await names(), [asker.userId, leaver.userId], '다시 못 보게 됐는데 요청이 서지 않는다')
   })
 })
 
@@ -304,7 +311,7 @@ describe('⑥ 허락의 한계', () => {
     assert.equal(await directLevel(doc, guest.userId), 'edit')
   })
 
-  test('떠난 사람의 요청은 허락해도 주지 않는다(invalid_principal) — 요청은 대기로 남는다', async (t) => {
+  test('떠난 사람의 요청을 허락하면 게스트로 돌아온다(7g-2) — 초대만 받은 사람에게는 주지 않는다(invalid_principal)', async (t) => {
     if (skipReason) return t.skip(skipReason)
     const { ws, boss, person } = await office()
     const leaver = await person('떠날 사람')
@@ -315,9 +322,22 @@ describe('⑥ 허락의 한계', () => {
       leaver.userId,
     ])
 
-    assert.deepEqual(await approveAccessRequest(boss.ctx, id, 'view'), { ok: false, reason: 'invalid_principal' })
-    assert.equal((await requestsOf(doc))[0]?.status, 'pending')
-    assert.equal(await directLevel(doc, leaver.userId), null)
+    assert.deepEqual(await approveAccessRequest(boss.ctx, id, 'view'), { ok: true, value: { granted: true } })
+    const back = await queryOne<{ role: string; status: string }>(
+      `SELECT role, status FROM workspace_member WHERE workspace_id = $1 AND user_id = $2`,
+      [ws, leaver.userId],
+    )
+    assert.deepEqual([back.role, back.status], ['guest', 'active'], '떠난 멤버는 게스트로 돌아온다(멤버로 돌아오지 않는다)')
+    assert.equal(await directLevel(doc, leaver.userId), 'view')
+
+    // 초대만 받은 사람(`invited`)은 밖의 사람도, 이 워크스페이스의 사람도 아니다 — 부여가 거부되고 요청은 대기로 남는다.
+    const pending = await person('초대만 받은 사람')
+    const other = await page(boss, { privateTop: true })
+    const pendingId = await asked(pending, other)
+    await query(`UPDATE workspace_member SET status = 'invited' WHERE workspace_id = $1 AND user_id = $2`, [ws, pending.userId])
+    assert.deepEqual(await approveAccessRequest(boss.ctx, pendingId, 'view'), { ok: false, reason: 'invalid_principal' })
+    assert.equal((await requestsOf(other))[0]?.status, 'pending')
+    assert.equal(await directLevel(other, pending.userId), null)
   })
 })
 

@@ -8,9 +8,14 @@
  * 진입 게이트가 레이아웃과 페이지 양쪽에서 돈다. 중복 조회로 보이지만
  * **레이아웃만 검사하고 페이지가 믿는 구조는 위험하다** — 나중에 이 레이아웃
  * 밖에 라우트가 하나 생기면 그 라우트만 통째로 무방비가 된다. 각자 확인한다.
+ *
+ * **워크스페이스 밖의 사람**(로그인했지만 멤버십이 없거나 떠난 사람 · 7g-2)에게는 404 로 끝내지 않고 **빈 틀**만 준다 — 사이드바도
+ * 검색도 없이 자식만. 그 사람이 볼 수 있는 자식은 페이지 화면의 접근 요청 하나이고(`[pageId]/page.tsx`), 나머지 화면은 각자의
+ * 게이트(`requirePageSession`)가 404 로 끝낸다 — 위의 "각자 확인한다"가 여기서 지켜야 할 규칙이 된다. 없는 워크스페이스에도 같은
+ * 틀이 선다(존재를 가르지 않는다).
  */
 
-import { requirePageSession } from '@/lib/auth/page-session'
+import { requirePageVisitor } from '@/lib/auth/page-session'
 import { groupSidebarRoots, listPageTree } from '@/lib/block/page-tree'
 import { listTrash } from '@/lib/block/trash'
 import { listFavorites, listRecent } from '@/lib/nav/recent'
@@ -38,7 +43,9 @@ export default async function WorkspaceLayout({
   children,
 }: LayoutProps<'/w/[workspaceId]'>) {
   const { workspaceId } = await params
-  const ctx = await requirePageSession(workspaceId)
+  const visitor = await requirePageVisitor(workspaceId)
+  if ('outsider' in visitor) return <div className="min-h-screen">{children}</div>
+  const ctx = visitor.member
 
   const [tree, teamspaces, trash, recent, favorites, inboxUnread] = await Promise.all([
     listPageTree(ctx),
