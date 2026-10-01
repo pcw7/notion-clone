@@ -28,14 +28,16 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { NodeSelection } from '@tiptap/pm/state'
+import { NodeSelection, TextSelection } from '@tiptap/pm/state'
 import type { EditorView } from '@tiptap/pm/view'
 import type * as Y from 'yjs'
 
 import { textRun } from '@/lib/contracts/rich-text'
 import { blockIdFromHash, revealBlockCommand } from '@/lib/editor/block-menu'
 import { plainTextForBlocks } from '@/lib/editor/block-clipboard'
-import { selectedBlockCount } from '@/lib/editor/block-selection'
+import { BlockSelection, selectedBlockCount } from '@/lib/editor/block-selection'
+import { codeBlockInfo, setCodeCaptionCommand, setCodeLanguageCommand } from '@/lib/editor/code-block'
+import { syncCodeCopyTabStops } from '@/lib/editor/code-view'
 import type { CommandDeps } from '@/lib/editor/commands'
 import { createEditor, type EditorDeps } from '@/lib/editor/create-editor'
 import { createNodeViews } from '@/lib/editor/node-views'
@@ -57,6 +59,8 @@ import { acceptAnchor, textRangeAnchor } from '@/lib/comment/anchor'
 import { commentHighlightPlugin, setCommentThreads, type AnchoredThread } from '@/lib/comment/highlight'
 import { uploadImageFile } from '@/lib/file/upload-client'
 import { BlockGutter } from './block-gutter'
+import { CodeCaptionEditor } from './code-caption-editor'
+import { CodeLanguageMenu } from './code-language-menu'
 import { openCommentThread } from './comment-panel'
 import { closeMentionMenu, insertMention, mentionMenuState, type MentionPick } from '@/lib/editor/mention-menu'
 import { MENTION_NODE } from '@/lib/editor/schema'
@@ -104,6 +108,65 @@ function mentionIdsIn(view: EditorView): { users: string[]; pages: string[] } {
   })
   return { users, pages }
 }
+
+/**
+ * 코드 블록의 오버레이(8a-2) — 언어 목록 · 캡션 입력. **편집기 밖**(프레임 안)에 그린다(`code-language-menu.tsx` 머리말). 블록은
+ * id 로 들고, 쓸 때마다 지금 문서에서 다시 찾는다 — 편집기가 다시 만들어져도(`bind()`) 붙잡은 위치가 낡지 않게. 여는 순간의 값
+ * (언어 · 캡션)을 함께 담는다 — 그리면서 ref 를 읽지 않게. 자리(프레임 좌표)는 트랜잭션 · 크기 변화마다 다시 잰다 — 다른 참여자가
+ * 코드를 늘리거나 위에 블록을 넣으면 블록이 움직인다.
+ */
+type CodeUi = CodeUiGeometry & {
+  kind: 'language' | 'caption'
+  blockId: string
+  language: string | null
+  caption: string
+  captionFormatted: boolean
+  /** 열 때 편집기에 포커스가 있었는가 — 있었으면 닫을 때 그 선택(친 자리)을 그대로 돌려준다. */
+  hadFocus: boolean
+}
+
+/** 오버레이의 자리 — 프레임 기준. `minHeight` 는 캡션 입력이 가려야 할 지금 캡션의 높이. */
+type CodeUiGeometry = { top: number; left: number; width: number; minHeight: number }
+
+/** 언어 목록의 폭(`code-language-menu.tsx` 의 w-64). */
+const CODE_MENU_WIDTH = 256
+
+/**
+ * 이 오버레이를 연 트리거인가 — 같은 블록의 같은 종류(`data-code-ui` · `code-view.ts`). 오버레이의 바깥 누르기는 트리거를 건너뛴다 —
+ * 먼저 닫으면 이어지는 click 이 다시 열어, 트리거로는 닫을 수 없었다(8a-2 리뷰). 트리거의 click 이 `openCodeUi` 에서 닫는다.
+ */
+function isCodeUiTrigger(target: EventTarget | null, ui: Pick<CodeUi, 'kind' | 'blockId'>): boolean {
+  if (!(target instanceof Element)) return false
+  const trigger = target.closest<HTMLElement>('[data-code-ui]')
+  return trigger?.dataset.codeUi === ui.kind && trigger.closest<HTMLElement>('[data-block-id]')?.dataset.blockId === ui.blockId
+}
+
+/** 코드 블록 오버레이의 자리를 잰다 — 그 블록의 노드 뷰가 없으면 null. */
+function measureCodeUi(view: EditorView, frame: HTMLElement, kind: CodeUi['kind'], contentPos: number): CodeUiGeometry | null {
+  const box = view.nodeDOM(contentPos)
+  if (!(box instanceof HTMLElement)) return null
+  const pre = box.querySelector<HTMLElement>('pre.blk-code')
+  if (!pre) return null
+  const f = frame.getBoundingClientRect()
+  if (kind === 'language') {
+    // 오른쪽 위의 언어 버튼 밑 — 목록 폭만큼 왼쪽으로. 프레임 밖으로 나가지 않게.
+    const b = box.getBoundingClientRect()
+    const left = Math.max(0, Math.min(b.right - f.left - CODE_MENU_WIDTH, f.width - CODE_MENU_WIDTH))
+    return { top: b.top - f.top + 32, left, width: CODE_MENU_WIDTH, minHeight: 0 }
+  }
+  // 캡션 자리 — 코드 상자 바로 아래, 같은 폭. 캡션이 있으면 그 글자를 다 가린다.
+  const p = pre.getBoundingClientRect()
+  const caption = box.querySelector<HTMLElement>('.blk-code-caption')
+  const shown = caption !== null && !caption.hidden
+  const c = shown ? caption.getBoundingClientRect() : null
+  return { top: (c?.top ?? p.bottom + 4) - f.top, left: p.left - f.left, width: p.width, minHeight: c?.height ?? 0 }
+}
+
+const sameGeometry = (a: CodeUiGeometry, b: CodeUiGeometry): boolean =>
+  Math.abs(a.top - b.top) < 0.5 &&
+  Math.abs(a.left - b.left) < 0.5 &&
+  Math.abs(a.width - b.width) < 0.5 &&
+  Math.abs(a.minHeight - b.minHeight) < 0.5
 
 /** 고른 글자에 코멘트를 달 수 있는 자리 — 편집기 기준 좌표까지 들고 있다. */
 type CommentTarget = { blockId: string; start: number; end: number; left: number; top: number }
@@ -206,6 +269,11 @@ export function BodyEditor({
 
   /** 지금 고른 글자에 코멘트를 달 수 있는가 — 있으면 그 자리에 버튼을 띄운다. */
   const [commentTarget, setCommentTarget] = useState<CommentTarget | null>(null)
+  // 코드 블록의 오버레이(8a-2). ref 는 트랜잭션 콜백(편집기를 만들 때 한 번 묶인다)이 읽는다.
+  const [codeUi, setCodeUi] = useState<CodeUi | null>(null)
+  const codeUiRef = useRef<CodeUi | null>(null)
+  /** 열린 오버레이가 스스로 닫는 길 — 캡션은 쓰던 글자를 저장하고 닫는다. 트리거를 다시 누르면 부른다. */
+  const codeUiCloseRef = useRef<((restoreFocus: boolean) => void) | null>(null)
   /** 코멘트를 쓰는 중 — 앵커는 **여는 순간** 만든다(아래). */
   const [composing, setComposing] = useState<{
     blockId: string
@@ -225,7 +293,11 @@ export function BodyEditor({
   editableRef.current = editable
 
   useEffect(() => {
-    viewRef.current?.setProps({ editable: () => editableRef.current })
+    const view = viewRef.current
+    if (!view) return
+    view.setProps({ editable: () => editableRef.current })
+    // 코드 블록의 복사 버튼은 읽기 전용에서만 탭 순서에 선다 — 노드 뷰는 편집 가능 여부가 바뀌어도 다시 만들어지지 않는다(8a-2).
+    syncCodeCopyTabStops(view)
   }, [editable])
 
   // ── 제목 맵 ─────────────────────────────────────────────────────────
@@ -602,6 +674,101 @@ export function BodyEditor({
     [createSubpage],
   )
 
+  // ── 코드 블록의 오버레이 (8a-2) ─────────────────────────────────────
+
+  /**
+   * 언어 목록 · 캡션 입력을 연다 — 노드 뷰의 버튼(deps)과 블록 메뉴의 코드 항목이 부른다. 편집할 수 없거나 코드 블록이 아니면 열지
+   * 않는다. 슬래시 · 멘션 메뉴가 열려 있으면 닫는다 — 그 메뉴의 window 키 리스너가 오버레이의 키를 가로채지 않게(리스너 가드와 두 겹).
+   */
+  const openCodeUi = useCallback((kind: 'language' | 'caption', blockId: string) => {
+    // 같은 트리거를 다시 눌렀다 — 닫는다(쓰던 캡션은 저장한다 · 오버레이가 스스로 닫는다).
+    const open = codeUiRef.current
+    if (open !== null && open.kind === kind && open.blockId === blockId) {
+      codeUiCloseRef.current?.(true)
+      return
+    }
+    const view = viewRef.current
+    const frame = frameRef.current
+    if (!view || !frame || !view.editable) return
+    const info = codeBlockInfo(view.state, blockId)
+    if (info === null) return
+    const geometry = measureCodeUi(view, frame, kind, info.pos)
+    if (geometry === null) return
+    // 크롬 버튼은 mousedown 을 막으므로, 친 자리에 캐럿을 두고 누르면 편집기가 포커스를 그대로 갖고 있다.
+    const hadFocus = view.hasFocus()
+    view.dispatch(closeMentionMenu(closeSlashMenu(view.state.tr)))
+    const next: CodeUi = {
+      ...geometry,
+      kind,
+      blockId,
+      language: info.language,
+      caption: info.caption,
+      captionFormatted: info.captionFormatted,
+      hadFocus,
+    }
+    codeUiRef.current = next
+    setCodeUi(next)
+  }, [])
+
+  /**
+   * 오버레이를 닫는다. `restoreFocus` 거나 편집기 안을 눌러 닫았으면(`outside`) 편집기로 포커스를 돌려준다 — **캐럿을 옮기지
+   * 않는다.** PM 이 들고 있던 선택(친 자리 · 블록 메뉴의 블록 선택)이 그대로 돌아온다(8a-2 설계 비평 — 전에는 코드 블록 끝으로
+   * 옮겨, 친 자리와 블록 메뉴의 블록 선택을 잃고 화면 밖 캐럿에 다음 글자가 들어갔다). 편집기에 포커스가 없던 채로 열었고 선택이 그
+   * 블록에 있지 않으면 그 선택은 낡았을 수 있으니 코드 블록 처음에 캐럿을 둔다 — 누른 버튼 옆이라 화면 안이다. 스크롤하지 않는다.
+   */
+  const closeCodeUi = useCallback((restoreFocus: boolean, outside?: EventTarget | null) => {
+    const current = codeUiRef.current
+    codeUiRef.current = null
+    setCodeUi(null)
+    const view = viewRef.current
+    if (!view || current === null || !view.editable) return
+    if (!restoreFocus && !(outside instanceof Node && view.dom.contains(outside))) return
+    view.focus()
+    const info = codeBlockInfo(view.state, current.blockId)
+    if (info === null || current.hadFocus) return
+    const { selection } = view.state
+    const inside = selection.from > info.pos && selection.to <= info.pos + info.node.nodeSize
+    if (selection instanceof BlockSelection || inside) return
+    view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, info.pos + 1)))
+  }, [])
+
+  /** 오버레이의 자리를 다시 잰다 — 달라졌을 때만 다시 그린다. 블록이 사라졌으면 닫는다. */
+  const remeasureCodeUi = useCallback((view: EditorView) => {
+    const current = codeUiRef.current
+    const frame = frameRef.current
+    if (current === null || !frame) return
+    const info = codeBlockInfo(view.state, current.blockId)
+    const geometry = info === null ? null : measureCodeUi(view, frame, current.kind, info.pos)
+    if (info === null || geometry === null) {
+      codeUiRef.current = null
+      setCodeUi(null)
+      return
+    }
+    if (sameGeometry(current, geometry) && current.captionFormatted === info.captionFormatted) return
+    const next: CodeUi = { ...current, ...geometry, captionFormatted: info.captionFormatted }
+    codeUiRef.current = next
+    setCodeUi(next)
+  }, [])
+
+  // 열려 있는 동안 크기 변화에도 다시 잰다 — 창 · 옆 패널 폭, 위쪽 이미지가 다 불러와져 블록이 밀린 것.
+  const codeUiOpen = codeUi !== null
+  useEffect(() => {
+    if (!codeUiOpen) return
+    const view = viewRef.current
+    if (!view) return
+    const remeasure = (): void => {
+      const current = viewRef.current
+      if (current) remeasureCodeUi(current)
+    }
+    const observer = new ResizeObserver(remeasure)
+    observer.observe(view.dom)
+    window.addEventListener('resize', remeasure)
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('resize', remeasure)
+    }
+  }, [codeUiOpen, remeasureCodeUi])
+
   // ── 편집기 · 연결 ───────────────────────────────────────────────────
 
   useEffect(() => {
@@ -626,6 +793,9 @@ export function BodyEditor({
       onBlocked: (plan) => setStatus({ kind: 'error', message: plan.detail }),
       onRefused: (detail) => setStatus({ kind: 'error', message: detail }),
       openBlockMenu: () => openMenuRef.current?.(),
+      // 코드 블록의 크롬 버튼(8a-2) — 목록 · 입력칸은 편집기 밖의 오버레이다.
+      openCodeLanguageMenu: (id) => openCodeUi('language', id),
+      openCodeCaption: (id) => openCodeUi('caption', id),
     }
 
     /** `#{blockId}` 로 들어왔으면 그 블록을 보여준다(F-01-08 의 받는 쪽). */
@@ -639,6 +809,9 @@ export function BodyEditor({
     /** 이 Y.Doc 에 편집기를 붙인다 — 연결이 문서를 버리고 다시 열면 다시 부른다. */
     const bind = (ydoc: Y.Doc): void => {
       viewRef.current?.destroy()
+      // 코드 블록의 오버레이는 옛 편집기의 화면 좌표로 떠 있다 — 닫는다(쓰는 중이던 캡션은 사라진다 · 드문 경우).
+      codeUiRef.current = null
+      setCodeUi(null)
       // 하이라이트 플러그인은 **이 Y.Doc** 으로 앵커를 푼다 — 연결이 문서를 버리고 다시 열면 여기서 새 문서로 다시 붙는다.
       const collab = createCollabEditorState(ydoc.getXmlFragment(BODY_FRAGMENT), deps, [
         commentHighlightPlugin({ ydoc, onOpen: openCommentThread }),
@@ -655,6 +828,7 @@ export function BodyEditor({
           syncMenu(v)
           syncMentionMenu(v)
           syncCommentTarget(v)
+          remeasureCodeUi(v)
           checkUnknownMentions(v)
           // 같은 값이면 리렌더하지 않는다 — 트랜잭션마다 불리는 자리다.
           const count = selectedBlockCount(v.state)
@@ -769,6 +943,10 @@ export function BodyEditor({
   useEffect(() => {
     if (!menu.open) return
     const onKeyDown = (event: KeyboardEvent) => {
+      // 편집기 자체가 포커스를 가진 키만 — 다른 입력칸(편집기 밖의 코드 언어 목록 · 캡션 · 검색, 편집기 안의 이미지 주소칸 · 8a-2)의
+      // ↑↓ · Enter 를 가로채면 그 Enter 가 다른 블록에 슬래시 명령을 실행한다(8a-2 조사 · 설계 비평). 편집기에 포커스가 있으면 키의
+      // 대상은 편집 호스트(`view.dom`) 자신이다.
+      if (event.target !== viewRef.current?.dom) return
       // IME 조합 중에는 메뉴가 키를 가로채지 않는다 — 한글 입력이 깨진다.
       if (event.isComposing) return
       // ★ 메뉴가 먹은 키는 에디터까지 가면 안 된다. `preventDefault()` 는
@@ -802,6 +980,8 @@ export function BodyEditor({
   useEffect(() => {
     if (!mentionUi.open) return
     const onKeyDown = (event: KeyboardEvent) => {
+      // 편집기 자체가 포커스를 가진 키만(슬래시 메뉴와 같은 까닭 · 8a-2).
+      if (event.target !== viewRef.current?.dom) return
       if (event.isComposing) return
       if (['ArrowDown', 'ArrowUp', 'Enter', 'Tab', 'Escape'].includes(event.key)) event.stopPropagation()
       const count = Math.max(mentionCandidates.length, 1)
@@ -908,7 +1088,42 @@ export function BodyEditor({
           pageId={pageId}
           openMenuRef={openMenuRef}
           onNotice={(message) => setStatus({ kind: 'notice', message })}
+          onCodeMenu={openCodeUi}
         />
+
+        {/* 코드 블록의 오버레이(8a-2) — 편집기 밖 · 프레임 좌표. 읽기 전용이 되면 그리지 않는다(다시 열면 새로 연다). */}
+        {editable && codeUi?.kind === 'language' && (
+          <CodeLanguageMenu
+            current={codeUi.language}
+            top={codeUi.top}
+            left={codeUi.left}
+            onPick={(language) => {
+              const view = viewRef.current
+              if (view?.editable) setCodeLanguageCommand(codeUi.blockId, language)(view.state, view.dispatch.bind(view))
+              closeCodeUi(true)
+            }}
+            onClose={closeCodeUi}
+            closeRef={codeUiCloseRef}
+            isTrigger={(target) => isCodeUiTrigger(target, codeUi)}
+          />
+        )}
+        {editable && codeUi?.kind === 'caption' && (
+          <CodeCaptionEditor
+            initial={codeUi.caption}
+            formatted={codeUi.captionFormatted}
+            top={codeUi.top}
+            left={codeUi.left}
+            width={codeUi.width}
+            minHeight={codeUi.minHeight}
+            onSave={(text) => {
+              const view = viewRef.current
+              if (view?.editable) setCodeCaptionCommand(codeUi.blockId, text)(view.state, view.dispatch.bind(view))
+            }}
+            onClose={closeCodeUi}
+            closeRef={codeUiCloseRef}
+            isTrigger={(target) => isCodeUiTrigger(target, codeUi)}
+          />
+        )}
       </div>
 
       {/*

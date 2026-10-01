@@ -3587,6 +3587,718 @@ async function main() {
       await sleep(1500)
     }
 
+    if (sectionIf('코드 블록 크롬 (8a-2 · F-01-14)')) {
+      // 코드 블록의 버튼 줄(언어 · 줄바꿈 · 복사 · 캡션)과 편집기 밖의 두 오버레이(언어 목록 · 캡션 입력)를 진짜 키 · 마우스로 쓴다.
+      // 방어 하나마다 그것만 떨어뜨리는 장면을 둔다(8a-2 설계 비평 — 반사실이 겨냥한 검사를 뒤집어야 한다). 읽기 전용은 열어 둔 채로
+      // 잠가 만든다 — 편집 가능 여부만 바뀐다. 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
+      const stamp = Date.now()
+      const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
+      const chromePage = (await (await fetch(pagesUrl, {
+        method: 'POST', headers: authed, body: JSON.stringify({ title: `코드 크롬 ${stamp}` }),
+      })).json()).page.id
+      // 멘션 후보가 둘 이상이게 — "코드"로 찾으면 이 페이지와 저 페이지가 나온다(멘션 메뉴의 ↓ 가 움직일 수 있게).
+      await fetch(pagesUrl, { method: 'POST', headers: authed, body: JSON.stringify({ title: `코드 멘션 대상 ${stamp}` }) })
+      const cb = { top: randomUUID(), code: randomUUID(), empty: randomUUID(), fmt: randomUUID(), multi: randomUUID(), img: randomUUID(), todo: randomUUID(), bottom: randomUUID() }
+      const CODE_TEXT = 'print(1)\nprint(2)'
+      const MULTI_TEXT = 'yyyy zzzz'
+      const MULTI_CAPTION = '첫 줄\n둘째 줄'
+      const codeBlock = (id, text, properties = {}) => ({ id, type: 'code', title: text === '' ? [] : [textRun(text)], properties, format: {}, children: [] })
+      await saveBody(chromePage, {
+        blocks: [
+          block(cb.top, 'paragraph', '맨 위 문단'),
+          // 코드 블록이 화면에 올 때 맨 위 문단은 화면 밖이게 — 크롬 버튼이 화면을 옛 캐럿으로 튀게 하는지 본다.
+          ...Array.from({ length: 30 }, (_, i) => block(randomUUID(), 'paragraph', `사이 ${i + 1}`)),
+          codeBlock(cb.code, CODE_TEXT, { language: 'python' }),
+          codeBlock(cb.empty, ''),
+          codeBlock(cb.fmt, 'x', { caption: [textRun('굵은 캡션', { bold: true })] }),
+          codeBlock(cb.multi, MULTI_TEXT, { caption: [textRun(MULTI_CAPTION, { italic: true })] }),
+          // 빈 이미지 — 편집기 **안**의 진짜 입력칸(주소칸)이 있다(리스너 가드 장면).
+          { id: cb.img, type: 'image', title: [], properties: {}, format: {}, children: [] },
+          { ...block(cb.todo, 'to_do', '할 일'), properties: { checked: false } },
+          block(cb.bottom, 'paragraph', '끝 문단'),
+        ],
+      })
+
+      const CB = (id) => `[data-block-id="${id}"] .blk-code-block`
+      const PART = (id, testid) => `${CB(id)} [data-testid="${testid}"]`
+      const EDITABLE = `document.querySelector('.blk-editor')?.getAttribute('contenteditable') === 'true'`
+      const FOCUS_IN_EDITOR = `document.activeElement === document.querySelector('.blk-editor')`
+      const LANG_MENU = '[data-testid="code-language-menu"]'
+      const LANG_SEARCH = '[data-testid="code-language-search"]'
+      const CAPTION_INPUT = '[data-testid="code-caption-input"]'
+      const SLASH = '[role="listbox"][aria-label="블록 삽입"]'
+      // 복사는 클립보드 대신 이것에 싣는다 — 이 PC 의 헤드리스 클립보드는 믿을 수 없다(§6). 페이지를 열 때마다 다시 단다.
+      const STUB_CLIPBOARD = `(() => { window.__copied = null; navigator.clipboard.writeText = async (t) => { window.__copied = t } })()`
+      const codeText = (id) => evaluate(`document.querySelector('${CB(id)} pre.blk-code')?.textContent ?? null`)
+      const blockCount = () => evaluate(`document.querySelectorAll('.blk-editor [data-block-id]').length`)
+
+      /** 서버(투영된 행)의 그 블록. */
+      const serverBlock = async (id) => {
+        const find = (blocks) => {
+          for (const b of blocks) {
+            if (b.id === id) return b
+            const inner = find(b.children ?? [])
+            if (inner) return inner
+          }
+          return null
+        }
+        return find((await readBody(chromePage)).doc.blocks)
+      }
+      /** 서버의 그 블록이 조건을 맞출 때까지 — 투영 창(1s)만큼 늦다. */
+      const settledBlock = async (id, pred, ms = 10000) => {
+        const end = Date.now() + ms
+        let last = null
+        while (Date.now() < end) {
+          last = await serverBlock(id)
+          if (last !== null && pred(last)) return { ok: true, last }
+          await sleep(150)
+        }
+        return { ok: false, last }
+      }
+      const captionOf = (b) => (b?.properties?.caption ?? []).map((r) => r.plain_text).join('')
+      const { loadDocState } = await import(new URL('../src/lib/collab/doc-store.ts', import.meta.url).href)
+      const { appendDocUpdate } = await import(new URL('../src/lib/block/body-write.ts', import.meta.url).href)
+      const { peer, edit, findBlock, changesSince, contentElementOf } = await import(new URL('../src/lib/testing/collab-peers.ts', import.meta.url).href)
+      let remoteClient = 9000
+      /** 다른 참여자의 편집 — 쌓으면 협업 서버가 열린 편집기에 퍼뜨린다(커밋 신호). */
+      const remoteEdit = async (change) => {
+        const state = await loadDocState(ctx, chromePage)
+        if (!state.ok) throw new Error('본문을 읽지 못했다')
+        remoteClient += 1
+        const client = peer(state.value.ydoc, remoteClient)
+        change(client)
+        const result = await appendDocUpdate(ctx, chromePage, changesSince(client, state.value.ydoc), { origin: 'editor' })
+        if (!result.ok) throw new Error(`원격 편집을 받지 않았다: ${JSON.stringify(result)}`)
+      }
+      /**
+       * 순서 표지 — 같은 편집기가 뒤이어 친 글자가 서버에 닿았으면 그 앞의 쓰기도 닿았다(한 연결 · 순서대로 쌓는다). "그대로다"를 고정된
+       * 기다림 뒤에 보면 느린 쓰기가 기다림보다 늦게 와 헛통과한다(8a-2 리뷰).
+       */
+      let barrierCount = 0
+      const barrier = async () => {
+        barrierCount += 1
+        const mark = `·${barrierCount}`
+        if (!(await caretAtEnd(cb.bottom))) return false
+        await typeText(mark)
+        return (await settledBlock(cb.bottom, (b) => (b.title ?? []).map((r) => r.plain_text).join('').endsWith(mark))).ok
+      }
+      const serverCaption = async (id) => JSON.stringify((await serverBlock(id))?.properties?.caption ?? null)
+
+      /** 코드 블록을 화면 가운데로 · 그 글자 위의 한 점. */
+      const codePoint = (id, { scroll = true } = {}) => evaluate(`(() => {
+        const pre = document.querySelector('${CB(id)} pre.blk-code')
+        if (!pre) return null
+        if (${scroll}) pre.scrollIntoView({ block: 'center' })
+        const r = pre.getBoundingClientRect()
+        return { x: r.x + r.width / 2, y: r.y + Math.min(r.height / 2, 12) }
+      })()`)
+      /**
+       * 코드 블록에 마우스를 올리고(버튼 줄은 올렸을 때만 보이고 누를 수 있다) 그 버튼의 가운데를 누른다. 그 자리의 맨 위 요소가 그
+       * 버튼일 때만 누른다 — 아니면 false. `scroll: false` 면 화면을 옮기지 않는다(스크롤 검사).
+       */
+      const clickChrome = async (id, testid, { scroll = true } = {}) => {
+        const at = await codePoint(id, { scroll })
+        if (!at) return false
+        await move(at.x, at.y)
+        const end = Date.now() + 2000
+        let box = null
+        while (box === null && Date.now() < end) {
+          box = await evaluate(`(() => {
+            const el = document.querySelector('${PART(id, testid)}')
+            if (!el) return null
+            const r = el.getBoundingClientRect()
+            const x = r.x + r.width / 2, y = r.y + r.height / 2
+            const top = document.elementFromPoint(x, y)
+            return r.width > 0 && top !== null && (top === el || el.contains(top)) ? { x, y } : null
+          })()`)
+          if (box === null) await sleep(40)
+        }
+        if (box === null) return false
+        await click(box.x, box.y)
+        await sleep(150)
+        return true
+      }
+      /** 코드 블록 글자의 offset 자리에 캐럿을 둔다 — DOM 선택을 옮기면 편집기가 selectionchange 로 따라온다. */
+      const caretInCode = async (id, offset) => {
+        await evaluate(`(() => {
+          document.querySelector('.blk-editor').focus()
+          const pre = document.querySelector('${CB(id)} pre.blk-code')
+          const walker = document.createTreeWalker(pre, NodeFilter.SHOW_TEXT)
+          let left = ${offset}
+          let node
+          while ((node = walker.nextNode())) {
+            if (node.data.length >= left) { window.getSelection().collapse(node, left); return }
+            left -= node.data.length
+          }
+          window.getSelection().collapse(pre, 0)
+        })()`)
+        await sleep(150)
+      }
+      /**
+       * 그 문단의 끝에 캐럿을 둔다 — 캐럿이 그 블록에 섰는지 보고 아니면 다시 누른다. 창 크기 · 스크롤이 막 바뀐 뒤에는 잰 자리가 낡아
+       * 클릭이 다른 블록(코드)에 떨어져, 이어 친 글자가 코드에 들어갔다(한 번 겪었다).
+       */
+      const caretAtEnd = async (id) => {
+        for (let i = 0; i < 6; i += 1) {
+          await clickSelector(`[data-block-id="${id}"] p`)
+          await key('End')
+          const inside = await evaluate(`(() => {
+            const n = window.getSelection()?.anchorNode
+            const el = n?.nodeType === 1 ? n : n?.parentElement
+            return document.activeElement === document.querySelector('.blk-editor') && el?.closest('[data-block-id]')?.getAttribute('data-block-id') === '${id}'
+          })()`)
+          if (inside) return true
+          await sleep(200)
+        }
+        return false
+      }
+      /** 캐럿이 그 코드 블록 글자의 몇째 자리인가 — 밖이면 -1. */
+      const caretOffset = (id) => evaluate(`(() => {
+        const pre = document.querySelector('${CB(id)} pre.blk-code')
+        const sel = window.getSelection()
+        if (!pre || !sel || sel.rangeCount === 0 || !pre.contains(sel.anchorNode)) return -1
+        const range = document.createRange()
+        range.setStart(pre, 0)
+        range.setEnd(sel.anchorNode, sel.anchorOffset)
+        return range.toString().length
+      })()`)
+      /** 한글 조합을 흉내낸다 — 조합 중인 글자 · 조합 중의 Enter(keyCode 229). */
+      const composing = async (text) => {
+        await send('Input.imeSetComposition', { text, selectionStart: text.length, selectionEnd: text.length })
+        await send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 229, nativeVirtualKeyCode: 229 })
+        await sleep(300)
+      }
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${chromePage}` })
+      check('전제 — 코드 블록의 버튼 줄이 그려졌고 편집할 수 있다',
+        await waitFor(`!!document.querySelector('${PART(cb.code, 'code-language')}') && ${EDITABLE}`, 15000))
+      await evaluate(STUB_CLIPBOARD)
+
+      // ① 모양 — 언어 이름 · 받은 캡션 · 빈 블록 · 숨은 버튼 줄은 누를 수 없다
+      await codePoint(cb.code)
+      await move(2, 2)
+      await sleep(200)
+      const shape = await evaluate(`(() => {
+        const q = (s) => document.querySelector(s)
+        const wrap = q('${PART(cb.code, 'code-wrap-toggle')}')
+        const r = wrap.getBoundingClientRect()
+        const top = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)
+        return {
+          label: q('${PART(cb.code, 'code-language')}').textContent,
+          pointer: getComputedStyle(q('${CB(cb.code)} .blk-code-bar')).pointerEvents,
+          hitWrap: top === wrap || wrap.contains(top),
+          fmtCaption: q('${PART(cb.fmt, 'code-caption')}').textContent,
+          emptyCopyDisabled: q('${PART(cb.empty, 'code-copy')}').disabled,
+        }
+      })()`)
+      check('★ 크롬 — 언어는 저장값의 이름(Python) · 받은 캡션이 보인다 · 빈 코드 블록의 복사는 꺼져 있다',
+        shape.label === 'Python' && shape.fmtCaption === '굵은 캡션' && shape.emptyCopyDisabled === true, JSON.stringify(shape))
+      check('★ 마우스를 올리기 전의 버튼 줄은 누를 수 없다 — 보이지 않는 버튼이 클릭 · 터치를 먹지 않는다(pointer-events)',
+        shape.pointer === 'none' && shape.hitWrap === false, JSON.stringify(shape))
+
+      // ② 언어 — 마우스로 열고 진짜 키로 고른다
+      await caretInCode(cb.code, 6)
+      check('전제 — 코드 블록의 6째 자리에 캐럿', (await caretOffset(cb.code)) === 6, String(await caretOffset(cb.code)))
+      check('★ 언어 버튼을 누르면 편집기 밖에 검색 목록이 열리고 검색칸이 포커스를 갖는다',
+        (await clickChrome(cb.code, 'code-language'))
+          && (await waitFor(`!!document.querySelector('${LANG_MENU}') && document.activeElement === document.querySelector('${LANG_SEARCH}')`, 3000)))
+      await typeText('x')
+      await key('Backspace')
+      await typeText('java')
+      await key('ArrowDown')
+      const active = await evaluate(`document.getElementById(document.querySelector('${LANG_SEARCH}')?.getAttribute('aria-activedescendant') ?? '')?.textContent ?? ''`)
+      check('↓ 는 다음 후보로 — 검색어 java 의 둘째(JavaScript)', active.startsWith('JavaScript'), active)
+      await key('Enter')
+      const pickedJs = await settledBlock(cb.code, (b) => b.properties?.language === 'javascript')
+      check('★ Enter 로 고르면 목록이 닫히고 라벨 · 서버의 언어가 바뀐다 — 저장값은 API 이름(javascript)',
+        pickedJs.ok && (await waitFor(`!document.querySelector('${LANG_MENU}') && document.querySelector('${PART(cb.code, 'code-language')}')?.textContent === 'JavaScript'`, 3000)),
+        JSON.stringify(pickedJs.last?.properties ?? null))
+      check('★ 검색칸의 키(글자 · Backspace · ↓ · Enter)가 코드로 새지 않는다 — 코드 글자 · 블록 수 그대로',
+        (await codeText(cb.code)) === CODE_TEXT && (await blockCount()) === 38, JSON.stringify([await codeText(cb.code), await blockCount()]))
+      check('★ 닫으면 편집기로 포커스가 돌아오고 캐럿은 친 자리 그대로다(블록 끝으로 옮기지 않는다)',
+        (await waitFor(FOCUS_IN_EDITOR, 2000)) && (await caretOffset(cb.code)) === 6, String(await caretOffset(cb.code)))
+
+      // ③ 한글 조합 — 조합 중의 Enter 는 조합의 것이다(isComposing · 229)
+      await clickChrome(cb.code, 'code-language')
+      await waitFor(`document.activeElement === document.querySelector('${LANG_SEARCH}')`, 3000)
+      await composing('ty')
+      check('★ 조합 중의 Enter(229)는 고르지 않는다 — 목록이 열린 채', await evaluate(`!!document.querySelector('${LANG_MENU}')`))
+      await send('Input.insertText', { text: 'ty' })
+      await key('Enter')
+      const pickedTs = await settledBlock(cb.code, (b) => b.properties?.language === 'typescript')
+      check('★ 조합을 끝낸 뒤의 Enter 는 고른다 — ty → TypeScript', pickedTs.ok, JSON.stringify(pickedTs.last?.properties ?? null))
+
+      // ④ Esc — 목록만 닫고 편집기로 · 블록 선택이 되지 않는다
+      await caretInCode(cb.code, 6)
+      await clickChrome(cb.code, 'code-language')
+      await waitFor(`!!document.querySelector('${LANG_MENU}')`, 3000)
+      await key('Escape')
+      check('★ Esc 는 목록만 닫는다 — 편집기로 포커스 · 캐럿 그대로 · 블록 선택이 되지 않는다(편집기의 Esc 까지 가지 않는다)',
+        (await waitFor(`!document.querySelector('${LANG_MENU}') && ${FOCUS_IN_EDITOR}`, 2000))
+          && (await caretOffset(cb.code)) === 6 && (await selected()).length === 0,
+        JSON.stringify({ caret: await caretOffset(cb.code), selected: await selected() }))
+
+      // ④-2 목록 위에 포인터가 있어도 ↓ 가 되돌려지지 않는다 — 활성 항목을 보이려고 목록이 구르면 가만히 있는 포인터 밑으로 다른 항목이
+      // 들어온다(경계 이벤트로 활성화하면 키보드의 자리를 되돌린다 · 8a-2 리뷰)
+      const activeIndex = `[...document.querySelectorAll('${LANG_MENU} [role="option"]')].findIndex((o) => o.getAttribute('aria-selected') === 'true')`
+      await clickChrome(cb.code, 'code-language')
+      await waitFor(`!!document.querySelector('${LANG_MENU}')`, 3000)
+      // 검색어를 치면 첫 후보로 돌아가 목록이 맨 위다 — 연 순간은 지금 언어(목록 아래쪽)가 보이게 굴러가 있다.
+      await typeText('a')
+      await waitFor(`${activeIndex} === 0`, 2000)
+      const third = await evaluate(`(() => { const r = document.querySelectorAll('${LANG_MENU} [role="option"]')[2].getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 } })()`)
+      await move(third.x, third.y)
+      await move(third.x + 1, third.y)
+      await sleep(100)
+      const startIndex = await evaluate(activeIndex)
+      for (let i = 0; i < 10; i += 1) await key('ArrowDown')
+      await sleep(150)
+      const endIndex = await evaluate(activeIndex)
+      check('★ 목록 위에 포인터가 있어도 ↓ 열 번은 열 칸이다(목록이 굴러도 포인터 밑 항목이 자리를 되돌리지 않는다)',
+        startIndex === 2 && endIndex === 12, `${startIndex} → ${endIndex}`)
+      // 빈 결과 줄 — 포커스를 받지 않는 자리를 눌러도 검색칸이 포커스를 지킨다(잃으면 키가 죽는다)
+      await typeText('zzzz')
+      await waitFor(`(document.querySelector('${LANG_MENU}')?.textContent ?? '').includes('맞는 언어가 없습니다')`, 2000)
+      await clickSelector(`${LANG_MENU} ul li`)
+      check('목록 안의 빈 결과 줄을 눌러도 검색칸이 포커스를 지킨다', await evaluate(`document.activeElement === document.querySelector('${LANG_SEARCH}')`),
+        await evaluate(`document.activeElement?.tagName ?? ''`))
+      // 트리거로 닫기 — 바깥 누르기가 먼저 닫고 click 이 다시 열면 트리거로는 닫을 수 없다
+      await clickChrome(cb.code, 'code-language')
+      await sleep(300)
+      check('★ 열린 언어 목록은 그 언어 버튼을 다시 누르면 닫힌다(다시 열리지 않는다)',
+        (await evaluate(`!document.querySelector('${LANG_MENU}')`)) && (await waitFor(FOCUS_IN_EDITOR, 2000)))
+
+      // ④-3 편집 모드의 Tab — 들여쓸 수 없는 자리(첫 블록)의 Tab 이 포커스를 코드 블록의 복사 버튼으로 옮기지 않는다(복사 버튼은 읽기
+      // 전용에서만 탭 순서에 선다 · 8a-2 리뷰)
+      await clickSelector(`[data-block-id="${cb.top}"] p`)
+      await waitFor(FOCUS_IN_EDITOR, 2000)
+      await key('Tab')
+      await sleep(150)
+      check('★ 편집 모드 첫 블록의 Tab 은 포커스를 코드 블록의 복사 버튼으로 옮기지 않는다',
+        await evaluate(`document.activeElement?.getAttribute('data-testid') !== 'code-copy'`),
+        await evaluate(`document.activeElement?.outerHTML?.slice(0, 100) ?? ''`))
+      await caretInCode(cb.code, 6)
+
+      // ⑤ 키보드 경로 — Mod+/ → 코드 ▸ 언어 바꾸기… → Esc. 블록 메뉴가 고른 블록 선택은 그대로다
+      await key('/', MOD)
+      await waitFor(`!!document.querySelector('[role="menu"][aria-label="블록 메뉴"]')`, 3000)
+      // 코드 블록은 색을 받지 않아 '색'이 꺼져 있다 — ↓ 는 꺼진 항목을 건너뛴다. '코드'에 설 때까지 누른다.
+      let codeItem = ''
+      for (let i = 0; i < 6 && !codeItem.startsWith('코드'); i += 1) {
+        await key('ArrowDown')
+        codeItem = await evaluate(`document.activeElement?.textContent ?? ''`)
+      }
+      await key('ArrowRight')
+      await sleep(60)
+      const firstChild = await evaluate(`document.activeElement?.textContent ?? ''`)
+      const firstRole = await evaluate(`document.activeElement?.getAttribute('role') ?? ''`)
+      check('블록 메뉴의 "코드" · 하위 메뉴의 첫 항목은 "언어 바꾸기…" — 고르는 항목(라디오)이 아니라 동작 항목(menuitem)이다',
+        codeItem.startsWith('코드') && firstChild.startsWith('언어 바꾸기') && firstRole === 'menuitem', `${codeItem} · ${firstChild} · ${firstRole}`)
+      await key('Enter')
+      check('★ 블록 메뉴에서 언어 목록이 열린다 — 검색칸이 포커스를 갖는다',
+        await waitFor(`!!document.querySelector('${LANG_MENU}') && document.activeElement === document.querySelector('${LANG_SEARCH}')`, 3000))
+      await key('Escape')
+      check('★ 닫으면 블록 선택이 그대로다 — 이어서 블록을 옮길 수 있다(블록 메뉴의 약속)',
+        (await waitFor(`!document.querySelector('${LANG_MENU}')`, 2000)) && same(await selected(), [cb.code]), JSON.stringify(await selected()))
+      await key('Escape')
+
+      // ⑥ 줄바꿈 — 캐럿을 화면 밖(맨 위 문단)에 두고 코드 블록이 보이게 내려와 누른다. 화면이 옛 캐럿으로 튀지 않아야 한다
+      // ProseMirror 가 그 자리를 자기 선택으로 받았는지는 글자를 쳐 보면 안다(친 뒤 지운다). 클릭만 하면 선택을 받기 전에 다음 단계로
+      // 가는 때가 있어, 옛 선택(화면에 보이는 코드 블록) 쪽 "스크롤"은 화면을 움직이지 않아 반사실이 헛통과했다.
+      await caretAtEnd(cb.top)
+      await typeText('·')
+      check('전제 — 캐럿이 맨 위 문단에 섰다(친 글자가 그 문단에 들어갔다)',
+        await waitFor(`document.querySelector('[data-block-id="${cb.top}"] p')?.textContent === '맨 위 문단·'`, 2000),
+        await evaluate(`document.querySelector('[data-block-id="${cb.top}"] p')?.textContent ?? ''`))
+      await key('Backspace')
+      const SCROLL = `(() => {
+        let e = document.querySelector('.blk-editor')
+        while (e && e !== document.body) {
+          const s = getComputedStyle(e)
+          if (/(auto|scroll)/.test(s.overflowY) && e.scrollHeight > e.clientHeight) return e.scrollTop
+          e = e.parentElement
+        }
+        return document.scrollingElement.scrollTop
+      })()`
+      await codePoint(cb.code)
+      await sleep(200)
+      const topOnScreen = await evaluate(`(() => { const r = document.querySelector('[data-block-id="${cb.top}"]').getBoundingClientRect(); return r.bottom > 0 && r.top < innerHeight })()`)
+      check('전제 — 캐럿이 있는 맨 위 문단은 화면 밖이다', topOnScreen === false)
+      const scrollBefore = await evaluate(SCROLL)
+      const wrapClicked = await clickChrome(cb.code, 'code-wrap-toggle', { scroll: false })
+      // 클릭이 처리된 뒤에 잰다 — 부하 아래에서는 클릭 처리가 늦어 재는 것이 먼저 오면 헛통과한다(반사실에서 한 번 겪었다).
+      await waitFor(`document.querySelector('${PART(cb.code, 'code-wrap-toggle')}')?.getAttribute('aria-pressed') === 'true'`, 3000)
+      const scrollAfter = await evaluate(SCROLL)
+      const wrapped = await settledBlock(cb.code, (b) => b.format?.code_wrap === true)
+      check('★ 줄바꿈을 켜면 코드가 접히고(white-space: pre-wrap) 서버에 code_wrap: true',
+        wrapClicked && wrapped.ok && (await evaluate(`getComputedStyle(document.querySelector('${CB(cb.code)} pre.blk-code')).whiteSpace === 'pre-wrap'
+          && document.querySelector('${PART(cb.code, 'code-wrap-toggle')}').getAttribute('aria-pressed') === 'true'`)),
+        JSON.stringify(wrapped.last?.format ?? null))
+      check('★ 크롬 버튼은 화면을 옛 캐럿(맨 위 문단)으로 튀게 하지 않는다', Math.abs(scrollAfter - scrollBefore) <= 1, `${scrollBefore} → ${scrollAfter}`)
+      await clickChrome(cb.code, 'code-wrap-toggle', { scroll: false })
+      const unwrapped = await settledBlock(cb.code, (b) => b.format?.code_wrap === undefined)
+      check('다시 누르면 끈다 — 끈 상태는 키가 없다',
+        unwrapped.ok && (await evaluate(`getComputedStyle(document.querySelector('${CB(cb.code)} pre.blk-code')).whiteSpace !== 'pre-wrap'`)),
+        JSON.stringify(unwrapped.last?.format ?? null))
+
+      // ⑥-2 버튼 줄의 틈 — 버튼 사이를 눌러도 편집기가 포커스를 받지 않는다(받으면 PM 이 들고 있던 옛 캐럿이 되살아나 이어 친 글자가
+      // 화면 밖으로 간다 · 8a-2 리뷰)
+      await evaluate(`document.querySelector('input[aria-label="페이지 제목"]').focus()`)
+      const gapAt = await codePoint(cb.code)
+      await move(gapAt.x, gapAt.y)
+      await sleep(250)
+      const gap = await evaluate(`(() => {
+        const w = document.querySelector('${PART(cb.code, 'code-wrap-toggle')}').getBoundingClientRect()
+        const c = document.querySelector('${PART(cb.code, 'code-copy')}').getBoundingClientRect()
+        const x = (w.right + c.left) / 2, y = w.y + w.height / 2
+        const top = document.elementFromPoint(x, y)
+        return { x, y, onBar: !!top?.classList.contains('blk-code-bar') }
+      })()`)
+      await click(gap.x, gap.y)
+      await sleep(150)
+      check('★ 버튼 줄의 틈을 눌러도 편집기가 포커스를 가져가지 않는다(제목칸이 그대로)',
+        gap.onBar && (await evaluate(`document.activeElement === document.querySelector('input[aria-label="페이지 제목"]')`)),
+        JSON.stringify({ gap, active: await evaluate(`document.activeElement?.tagName ?? ''`) }))
+
+      // ⑦ 복사 — 크롬의 글자가 바뀌어도(복사됨 → 복사) 노드 뷰를 다시 만들지 않는다(ignoreMutation)
+      await evaluate(STUB_CLIPBOARD)
+      await evaluate(`document.querySelector('${CB(cb.code)} pre.blk-code').__e2e = 1`)
+      await clickChrome(cb.code, 'code-copy')
+      check('★ 복사 — 문서의 코드 글자가 클립보드로 · 버튼이 "복사됨"을 보이고 읽어 준다',
+        await waitFor(`window.__copied === ${JSON.stringify(CODE_TEXT)}
+          && document.querySelector('${PART(cb.code, 'code-copy')}')?.textContent === '복사됨'
+          && (document.querySelector('${CB(cb.code)} [role="status"]')?.textContent ?? '') === '코드를 복사했습니다.'`, 3000),
+        JSON.stringify(await evaluate(`[window.__copied, document.querySelector('${PART(cb.code, 'code-copy')}')?.textContent]`)))
+      check('★ "복사됨"이 "복사"로 돌아와도 노드 뷰가 다시 만들어지지 않는다(크롬의 변화는 문서가 아니다)',
+        await waitFor(`document.querySelector('${PART(cb.code, 'code-copy')}')?.textContent === '복사' && document.querySelector('${CB(cb.code)} pre.blk-code')?.__e2e === 1`, 4000),
+        JSON.stringify(await evaluate(`[document.querySelector('${PART(cb.code, 'code-copy')}')?.textContent, document.querySelector('${CB(cb.code)} pre.blk-code')?.__e2e]`)))
+
+      // ⑧ 포커스된 크롬 버튼의 키는 편집기의 것이 아니다(stopEvent) — 캐럿을 코드에 두고 복사 버튼에 포커스한 뒤 Enter
+      await caretInCode(cb.code, 3)
+      await evaluate(`document.querySelector('${PART(cb.code, 'code-copy')}').focus()`)
+      check('전제 — 복사 버튼이 포커스를 가졌다', await evaluate(`document.activeElement === document.querySelector('${PART(cb.code, 'code-copy')}')`))
+      await key('Enter')
+      await sleep(300)
+      check('★ 포커스된 복사 버튼의 Enter 는 코드에 줄을 넣지 않는다(stopEvent)',
+        (await codeText(cb.code)) === CODE_TEXT && (await blockCount()) === 38, JSON.stringify([await codeText(cb.code), await blockCount()]))
+
+      // ⑨ 캡션 — 더하기 · 한글 조합 · Shift+Enter · 저장
+      check('★ 캡션 버튼을 누르면 캡션 자리에 입력칸이 열리고 포커스를 갖는다',
+        (await clickChrome(cb.code, 'code-caption-add'))
+          && (await waitFor(`document.activeElement === document.querySelector('${CAPTION_INPUT}')`, 3000)))
+      await composing('설명')
+      check('★ 조합 중의 Enter(229)는 저장하지 않는다 — 입력칸이 열린 채', await evaluate(`!!document.querySelector('${CAPTION_INPUT}')`))
+      await send('Input.insertText', { text: '설명' })
+      await typeText(' 캡션')
+      await key('Enter', SHIFT)
+      await sleep(150)
+      check('Shift+Enter 는 저장하지 않는다 — 줄바꿈 자리다', await evaluate(`!!document.querySelector('${CAPTION_INPUT}')`))
+      await typeText('\n둘째 줄')
+      await key('Enter')
+      const captionText = '설명 캡션\n둘째 줄'
+      const captioned = await settledBlock(cb.code, (b) => captionOf(b) === captionText)
+      check('★ Enter 로 저장한다 — 여러 줄 캡션이 서버와 노드 뷰에 · 캡션 버튼은 숨는다',
+        captioned.ok && (await waitFor(`document.querySelector('${PART(cb.code, 'code-caption')}')?.textContent === ${JSON.stringify(captionText)}
+          && document.querySelector('${PART(cb.code, 'code-caption-add')}')?.hidden === true`, 3000)),
+        JSON.stringify(captioned.last?.properties?.caption ?? null))
+
+      // ⑩ 고친 것만 쓴다 — 받은 캡션(기울임 · 줄바꿈)을 열고 닫기만 · 고치다가 Esc
+      const multiBefore = await serverCaption(cb.multi)
+      await clickSelector(PART(cb.multi, 'code-caption'))
+      check('받은 여러 줄 캡션을 열면 줄바꿈까지 그대로 입력칸에 선다',
+        await waitFor(`document.querySelector('${CAPTION_INPUT}')?.value === ${JSON.stringify(MULTI_CAPTION)}`, 3000),
+        JSON.stringify(await evaluate(`document.querySelector('${CAPTION_INPUT}')?.value ?? null`)))
+      await clickSelector(`[data-block-id="${cb.bottom}"] p`)
+      check('바깥(편집기)을 누르면 닫히고 편집기가 포커스를 갖는다',
+        await waitFor(`!document.querySelector('${CAPTION_INPUT}') && ${FOCUS_IN_EDITOR}`, 2000))
+      await clickSelector(PART(cb.multi, 'code-caption'))
+      await waitFor(`document.activeElement === document.querySelector('${CAPTION_INPUT}')`, 3000)
+      await typeText('바뀜')
+      await key('Escape')
+      check('Esc 는 저장하지 않고 닫는다 — 편집기로 포커스', await waitFor(`!document.querySelector('${CAPTION_INPUT}') && ${FOCUS_IN_EDITOR}`, 2000))
+      // 크롬 버튼으로 닫아도 편집기가 포커스를 되찾는다 — 그 버튼은 mousedown 을 막아 포커스를 가져가지 않으므로, 입력칸이 사라지면
+      // 포커스가 body 에 떨어져 친 글자가 갈 곳이 없다(8a-2 설계 비평)
+      await clickSelector(PART(cb.multi, 'code-caption'))
+      await waitFor(`document.activeElement === document.querySelector('${CAPTION_INPUT}')`, 3000)
+      await clickChrome(cb.code, 'code-copy')
+      check('★ 캡션 입력을 열어 둔 채 다른 블록의 크롬 버튼(복사)을 누르면 입력칸이 닫히고 편집기가 포커스를 되찾는다',
+        await waitFor(`!document.querySelector('${CAPTION_INPUT}') && ${FOCUS_IN_EDITOR}`, 2000),
+        await evaluate(`document.activeElement?.tagName ?? ''`))
+      check('전제 — 순서 표지가 서버에 닿았다', await barrier())
+      check('★ 열고 닫기만 · 고치다가 Esc — 받은 캡션(기울임 · 줄바꿈)이 서버에 그대로',
+        (await serverCaption(cb.multi)) === multiBefore, `${multiBefore} → ${await serverCaption(cb.multi)}`)
+
+      // 연 뒤에 다른 참여자가 캡션을 바꿨다 — 열고 닫기만 한 사람이 그것을 되돌리지 않는다(연 순간의 글자와 비교 · 정본 ⑤)
+      await clickSelector(PART(cb.multi, 'code-caption'))
+      await waitFor(`document.activeElement === document.querySelector('${CAPTION_INPUT}')`, 3000)
+      await remoteEdit((client) => contentElementOf(client, cb.multi).setAttribute('props', { caption: [textRun('원격 캡션')] }))
+      check('전제 — 다른 참여자가 바꾼 캡션이 열린 편집기에 닿았다',
+        await waitFor(`document.querySelector('${PART(cb.multi, 'code-caption')}')?.textContent === '원격 캡션'`, 8000))
+      await clickSelector(`[data-block-id="${cb.bottom}"] p`)
+      await waitFor(`!document.querySelector('${CAPTION_INPUT}')`, 2000)
+      check('전제 — 순서 표지가 서버에 닿았다(둘째)', await barrier())
+      check('★ 연 뒤에 다른 참여자가 바꾼 캡션을 열고 닫기만 해서 되돌리지 않는다',
+        captionOf(await serverBlock(cb.multi)) === '원격 캡션', captionOf(await serverBlock(cb.multi)))
+
+      // ⑪ 서식이 있는 받은 캡션 — 고치면 평문이 된다고 먼저 말한다
+      await clickSelector(PART(cb.fmt, 'code-caption'))
+      check('★ 서식이 있는 받은 캡션을 열면 "평문이 된다"고 먼저 말한다 — 입력칸의 설명으로 이어진다',
+        await waitFor(`(() => {
+          const input = document.querySelector('${CAPTION_INPUT}')
+          const note = document.querySelector('[data-testid="code-caption-formatted"]')
+          return !!input && !!note && note.textContent.includes('평문이 됩니다') && input.getAttribute('aria-describedby') === note.id
+        })()`, 3000))
+      // 안의 포커스를 받지 않는 자리(안내문)를 눌러도 입력칸이 포커스를 지킨다 — 잃으면 blur 가 저장하고 닫았다
+      await clickSelector('[data-testid="code-caption-formatted"]')
+      check('캡션 입력 안의 안내문을 눌러도 닫히지 않고 입력칸이 포커스를 지킨다',
+        await evaluate(`document.activeElement === document.querySelector('${CAPTION_INPUT}')`),
+        await evaluate(`document.activeElement?.tagName ?? ''`))
+      await key('Escape')
+
+      // ⑫ 비우기
+      await clickSelector(PART(cb.code, 'code-caption'))
+      await waitFor(`document.activeElement === document.querySelector('${CAPTION_INPUT}')`, 3000)
+      await evaluate(`document.querySelector('${CAPTION_INPUT}').select()`)
+      await key('Backspace')
+      await key('Enter')
+      const cleared = await settledBlock(cb.code, (b) => !('caption' in (b.properties ?? {})))
+      check('★ 비우고 저장하면 캡션 키가 지워지고 캡션 버튼이 돌아온다',
+        cleared.ok && (await waitFor(`document.querySelector('${PART(cb.code, 'code-caption-add')}')?.hidden === false`, 3000)),
+        JSON.stringify(cleared.last?.properties ?? null))
+
+      // ⑬ 빈 코드 블록의 자리 표시 — 글자가 아니다
+      const placeholder = await evaluate(`getComputedStyle(document.querySelector('${CB(cb.empty)} pre.blk-code'), '::before').content`)
+      check('★ 빈 코드 블록에는 자리 표시 "코드"가 보인다 — pre 의 글자는 비었다',
+        placeholder.includes('코드') && (await codeText(cb.empty)) === '', `${placeholder} · ${JSON.stringify(await codeText(cb.empty))}`)
+      check('자리 표시는 화면 읽기 프로그램에 빈 대체 글자를 준다(`/ ""`) — 블록의 글자처럼 읽히지 않게', placeholder.includes('/'), placeholder)
+      await caretInCode(cb.empty, 0)
+      await typeText('z')
+      check('치면 자리 표시가 사라지고 복사가 켜진다',
+        await waitFor(`getComputedStyle(document.querySelector('${CB(cb.empty)} pre.blk-code'), '::before').content === 'none'
+          && document.querySelector('${PART(cb.empty, 'code-copy')}').disabled === false`, 2000))
+
+      // ⑭ 리스너 가드 — 슬래시 메뉴가 열린 채 편집기 밖 입력칸(검색)으로 간 키는 슬래시 메뉴의 것이 아니다. 코드 오버레이를 거치지
+      // 않는 장면이라 "열 때 슬래시 메뉴를 닫는" 방어가 가리지 않는다
+      check('전제 — 끝 문단 끝에 캐럿(슬래시)', await caretAtEnd(cb.bottom))
+      await typeText(' /')
+      check('전제 — 슬래시 메뉴가 열렸다', await waitFor(`!!document.querySelector('${SLASH}')`, 3000))
+      const slashActive = `document.querySelector('${SLASH} [aria-selected="true"]')?.textContent ?? null`
+      const slashBefore = await evaluate(slashActive)
+      await key('k', MOD)
+      check('전제 — 검색 입력칸이 포커스를 가졌다', await waitFor(`document.activeElement === document.querySelector('[data-testid="search-input"]')`, 3000))
+      await key('ArrowDown')
+      await sleep(150)
+      const slashAfter = await evaluate(slashActive)
+      // 고른 항목이 있어야 한다 — 메뉴가 닫혀 둘 다 null 이면 헛통과한다(가드가 없으면 검색을 닫는 Esc 도 슬래시 메뉴를 닫는다).
+      check('★ 편집기 밖 입력칸의 ↓ 는 슬래시 메뉴를 움직이지 않는다(리스너 가드)',
+        slashBefore !== null && slashAfter === slashBefore, `${slashBefore} → ${slashAfter}`)
+      await key('Escape')
+      await waitFor(`!document.querySelector('[data-testid="search-overlay"]')`, 3000)
+      // 편집기 **안**의 입력칸(빈 이미지의 주소칸)도 다른 입력칸이다 — 키의 대상이 편집 호스트(view.dom) 자신일 때만 슬래시 메뉴의
+      // 것이다. `view.dom.contains` 로 거르면 이 칸의 ↓ · Enter 를 가로채 다른 블록에 슬래시 명령을 실행한다(8a-2 설계 비평).
+      check('전제 — 슬래시 메뉴가 열린 채 이미지 주소칸이 포커스를 가졌다',
+        (await clickSelector(`[data-block-id="${cb.img}"] input.blk-image-url-input`))
+          && (await waitFor(`!!document.querySelector('${SLASH}') && document.activeElement === document.querySelector('[data-block-id="${cb.img}"] input.blk-image-url-input')`, 2000)))
+      const slashBeforeInner = await evaluate(slashActive)
+      await key('ArrowDown')
+      await sleep(150)
+      const slashAfterInner = await evaluate(slashActive)
+      check('★ 편집기 안 입력칸(이미지 주소)의 ↓ 도 슬래시 메뉴를 움직이지 않는다 — 대상이 편집 호스트일 때만',
+        slashBeforeInner !== null && slashAfterInner === slashBeforeInner, `${slashBeforeInner} → ${slashAfterInner}`)
+      // 메뉴 닫기 — 따로 본다: 슬래시 메뉴가 열린 채 언어 목록을 열면 슬래시 메뉴가 닫힌다(오버레이의 키를 가로채지 않게)
+      check('전제 — 슬래시 메뉴가 아직 열려 있다', await waitFor(`!!document.querySelector('${SLASH}')`, 2000))
+      await clickChrome(cb.code, 'code-language')
+      check('★ 언어 목록을 열면 슬래시 메뉴가 닫힌다',
+        await waitFor(`!!document.querySelector('${LANG_MENU}') && !document.querySelector('${SLASH}')`, 3000))
+
+      // ⑮ 자리 — 창 폭이 바뀌면 오버레이가 블록을 따라간다
+      const edges = `(() => {
+        const m = document.querySelector('${LANG_MENU}')?.getBoundingClientRect()
+        const b = document.querySelector('${CB(cb.code)}').getBoundingClientRect()
+        return m ? { gap: Math.round(b.right - m.right), right: Math.round(b.right) } : null
+      })()`
+      const edgeBefore = await evaluate(edges)
+      await send('Emulation.setDeviceMetricsOverride', { width: 720, height: 900, deviceScaleFactor: 1, mobile: false })
+      await waitFor(`(() => { const e = ${edges}; return e !== null && Math.abs(e.gap) <= 1 && e.right !== ${edgeBefore?.right ?? -1} })()`, 3000)
+      const edgeAfter = await evaluate(edges)
+      await send('Emulation.clearDeviceMetricsOverride')
+      await sleep(400)
+      check('★ 창 폭이 바뀌어 블록이 움직여도 언어 목록이 그 오른쪽 끝을 따라간다(자리를 다시 잰다)',
+        edgeBefore !== null && edgeAfter !== null && Math.abs(edgeBefore.gap) <= 1 && Math.abs(edgeAfter.gap) <= 1 && edgeBefore.right !== edgeAfter.right,
+        JSON.stringify([edgeBefore, edgeAfter]))
+      await key('Escape')
+      await waitFor(`!document.querySelector('${LANG_MENU}')`, 2000)
+
+      // ⑮-2 멘션 메뉴도 같은 두 겹이다 — 리스너 가드(편집기 밖 입력칸의 ↓) · 오버레이를 열면 닫힌다
+      const MENTION = '[role="listbox"][aria-label="멘션"]'
+      const mentionActive = `[...document.querySelectorAll('${MENTION} [role="option"]')].findIndex((o) => o.getAttribute('aria-selected') === 'true')`
+      check('전제 — 끝 문단 끝에 캐럿', await caretAtEnd(cb.bottom))
+      for (const ch of ' @코드') await typeText(ch)
+      check('전제 — 멘션 후보가 둘 이상 떴다', await waitFor(`document.querySelectorAll('${MENTION} [role="option"]').length >= 2`, 8000),
+        await evaluate(`document.querySelector('${MENTION}')?.textContent ?? '(없음)'`))
+      const mentionBefore = await evaluate(mentionActive)
+      await key('k', MOD)
+      await waitFor(`document.activeElement === document.querySelector('[data-testid="search-input"]')`, 3000)
+      await key('ArrowDown')
+      await sleep(150)
+      const mentionAfter = await evaluate(mentionActive)
+      check('★ 편집기 밖 입력칸의 ↓ 는 멘션 메뉴를 움직이지 않는다(리스너 가드)', mentionBefore >= 0 && mentionAfter === mentionBefore,
+        `${mentionBefore} → ${mentionAfter}`)
+      await key('Escape')
+      await waitFor(`!document.querySelector('[data-testid="search-overlay"]')`, 3000)
+      check('전제 — 멘션 메뉴가 아직 열려 있다', await waitFor(`!!document.querySelector('${MENTION}')`, 2000))
+      await clickChrome(cb.code, 'code-language')
+      check('★ 언어 목록을 열면 멘션 메뉴가 닫힌다', await waitFor(`!!document.querySelector('${LANG_MENU}') && !document.querySelector('${MENTION}')`, 3000))
+      await key('Escape')
+      await waitFor(`!document.querySelector('${LANG_MENU}')`, 2000)
+      await sleep(1500)
+
+      // ⑯ 읽기 전용 — 열어 둔 채로 잠근다. 모양은 루트 속성으로 CSS 가 가르고, 쓰는 버튼은 누르는 순간 묻는다
+      const locked = await fetch(`${pagesUrl}/${chromePage}/lock`, { method: 'PUT', headers: authed })
+      check('전제 — 잠갔고 열어 둔 편집기가 읽기 전용이 됐다', locked.ok && (await waitFor(`!(${EDITABLE})`, 15000)), String(locked.status))
+      await evaluate(STUB_CLIPBOARD)
+      // 마우스를 올려 둔 채로 본다 — 올리지 않으면 버튼 줄이 숨어 "없다"가 헛통과한다. 먼저 보여야 할 것이 보이는지(양성 대조).
+      const roAt = await codePoint(cb.code)
+      await move(roAt.x, roAt.y)
+      await sleep(300)
+      const ro = await evaluate(`(() => {
+        const q = (t) => document.querySelector('${CB(cb.code)} [data-testid="' + t + '"]')
+        const hit = (el) => {
+          const r = el.getBoundingClientRect()
+          if (r.width === 0) return false
+          const top = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)
+          return top === el || el.contains(top)
+        }
+        return {
+          label: q('code-language-label').textContent,
+          labelHit: hit(q('code-language-label')),
+          copyHit: hit(q('code-copy')),
+          hidden: ['code-language', 'code-wrap-toggle', 'code-caption-add'].map((t) => getComputedStyle(q(t)).display),
+        }
+      })()`)
+      check('★ 읽기 전용 — 언어는 글자(TypeScript)로 보이고 복사는 누를 수 있다', ro.label === 'TypeScript' && ro.labelHit && ro.copyHit, JSON.stringify(ro))
+      check('★ 읽기 전용 — 언어 바꾸기 · 줄바꿈 · 캡션 버튼이 없다(display: none)', ro.hidden.every((d) => d === 'none'), JSON.stringify(ro.hidden))
+      await clickChrome(cb.code, 'code-copy')
+      check('★ 읽기 전용에서도 복사한다', await waitFor(`window.__copied === ${JSON.stringify(CODE_TEXT)}`, 3000), JSON.stringify(await evaluate('window.__copied')))
+
+      // 키보드 — 제목에서 Tab 으로 복사 버튼에 닿는다(블록 메뉴가 열리지 않는 읽기 전용의 유일한 길)
+      await move(2, 2)
+      await evaluate(`document.querySelector('input[aria-label="페이지 제목"]').focus()`)
+      let tabbed = false
+      for (let i = 0; i < 20 && !tabbed; i += 1) {
+        await key('Tab')
+        tabbed = await evaluate(`document.activeElement === document.querySelector('${PART(cb.code, 'code-copy')}')`)
+      }
+      check('★ 읽기 전용 — Tab 으로 복사 버튼에 닿고, 포커스가 서면 버튼 줄이 보인다',
+        tabbed && (await waitFor(`getComputedStyle(document.querySelector('${CB(cb.code)} .blk-code-bar')).opacity === '1'`, 2000)),
+        await evaluate(`document.activeElement?.outerHTML?.slice(0, 120) ?? ''`))
+
+      // 억지로 누르기 — 숨은 버튼 · 캡션 · 할 일 체크박스. 쓰면 서버가 거부하고 편집기가 본문을 버린다(배너) — 배너가 없어야 한다
+      const formatBefore = JSON.stringify((await serverBlock(cb.code))?.format ?? {})
+      await evaluate(`(() => {
+        for (const t of ['code-wrap-toggle', 'code-caption-add', 'code-language']) document.querySelector('${CB(cb.code)} [data-testid="' + t + '"]').click()
+        document.querySelector('${PART(cb.fmt, 'code-caption')}').click()
+        document.querySelector('[data-block-id="${cb.todo}"] input.blk-checkbox').click()
+        const url = document.querySelector('[data-block-id="${cb.img}"] input.blk-image-url-input')
+        url.value = 'https://example.com/forced.png'
+        url.form.requestSubmit()
+      })()`)
+      await sleep(3000)
+      const forced = await evaluate(`({
+        discarded: document.body.textContent.includes('서버가 받지 못한 편집'),
+        overlay: !!document.querySelector('${LANG_MENU}') || !!document.querySelector('${CAPTION_INPUT}'),
+        checked: document.querySelector('[data-block-id="${cb.todo}"] input.blk-checkbox').checked,
+        wrap: document.querySelector('${CB(cb.code)}').dataset.wrap,
+        image: !!document.querySelector('[data-block-id="${cb.img}"] img'),
+        imageNotice: document.querySelector('[data-block-id="${cb.img}"] .blk-image-failure')?.textContent ?? '',
+      })`)
+      check('★ 읽기 전용 — 숨은 버튼 · 캡션 · 체크박스 · 이미지 주소를 억지로 눌러도 편집이 생기지 않는다(버려진 편집이 없다 · 체크 그대로)',
+        !forced.discarded && !forced.overlay && forced.checked === false && forced.wrap === 'false' && !forced.image, JSON.stringify(forced))
+      check('읽기 전용이라 넣지 못한 이미지는 그렇다고 말한다 — 조용히 멈춘 채 남지 않는다', forced.imageNotice.includes('읽기 전용이라'), forced.imageNotice)
+      check('서버의 format 도 그대로', JSON.stringify((await serverBlock(cb.code))?.format ?? {}) === formatBefore)
+
+      // 선택 — 코드와 캡션에 걸친 선택을 PM 이 놓치면 복사(읽기 전용에서도 PM 이 받는다)가 낡은 선택(맨 위 문단)을 싣는다
+      await evaluate(`(() => {
+        const r = document.createRange()
+        r.selectNodeContents(document.querySelector('[data-block-id="${cb.top}"] p'))
+        const s = window.getSelection()
+        s.removeAllRanges()
+        s.addRange(r)
+      })()`)
+      await sleep(300)
+      await evaluate(`(() => {
+        const caption = document.querySelector('${PART(cb.multi, 'code-caption')}').firstChild
+        const code = document.querySelector('${CB(cb.multi)} pre.blk-code').firstChild
+        window.getSelection().setBaseAndExtent(caption, 2, code, 4)
+      })()`)
+      await sleep(300)
+      const copiedSel = await evaluate(`(() => {
+        const dt = new DataTransfer()
+        document.querySelector('.blk-editor').dispatchEvent(new ClipboardEvent('copy', { clipboardData: dt, bubbles: true, cancelable: true }))
+        return dt.getData('text/plain')
+      })()`)
+      check('★ 읽기 전용 — 캡션에서 코드로 걸친 선택을 복사하면 코드 조각이 나온다(선택 기록을 무시하지 않는다)',
+        copiedSel !== '' && MULTI_TEXT.includes(copiedSel) && copiedSel !== '맨 위 문단', JSON.stringify(copiedSel))
+
+      // 잠긴 채로 다시 연다 — 처음부터 읽기 전용인 노드 뷰도 같은 모양이다
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${chromePage}` })
+      await waitFor(`!!document.querySelector('${PART(cb.code, 'code-language-label')}') && !(${EDITABLE})`, 15000)
+      const reAt = await codePoint(cb.code)
+      await move(reAt.x, reAt.y)
+      await sleep(300)
+      check('잠긴 페이지를 다시 열어도 — 언어는 글자 · 줄바꿈 버튼은 없다',
+        await evaluate(`document.querySelector('${PART(cb.code, 'code-language-label')}').textContent === 'TypeScript'
+          && getComputedStyle(document.querySelector('${PART(cb.code, 'code-wrap-toggle')}')).display === 'none'`))
+
+      // ⑰ 풀고 다시 연다 — 저장된 것이 그대로 그려진다
+      await fetch(`${pagesUrl}/${chromePage}/lock`, { method: 'DELETE', headers: authed })
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${chromePage}` })
+      check('★ 다시 열면 저장된 언어(TypeScript) · 비운 캡션 · 받은 캡션 · 쳐 넣은 코드가 그대로 · 다시 고칠 수 있다',
+        await waitFor(`${EDITABLE}
+          && document.querySelector('${PART(cb.code, 'code-language')}')?.textContent === 'TypeScript'
+          && document.querySelector('${PART(cb.code, 'code-caption')}')?.hidden === true
+          && document.querySelector('${PART(cb.multi, 'code-caption')}')?.textContent === '원격 캡션'
+          && document.querySelector('${CB(cb.empty)} pre.blk-code')?.textContent === 'z'`, 15000))
+
+      // ⑱ 다른 참여자의 편집 — 위에 블록이 들어오면 언어 목록이 블록을 따라 내려가고, 그 블록이 사라지면 닫힌다(트랜잭션마다 다시 잰다)
+      await clickChrome(cb.fmt, 'code-language')
+      await waitFor(`!!document.querySelector('${LANG_MENU}')`, 3000)
+      const menuToBlock = `(() => {
+        const m = document.querySelector('${LANG_MENU}')?.getBoundingClientRect()
+        const b = document.querySelector('${CB(cb.fmt)}')?.getBoundingClientRect()
+        return m && b ? { gap: Math.round(m.top - b.top), top: Math.round(b.top) } : null
+      })()`
+      const before = await evaluate(menuToBlock)
+      const insertedId = randomUUID()
+      await remoteEdit((client) => edit(client, (tr, doc) => {
+        const { pos } = findBlock(doc, cb.fmt)
+        const schema = doc.type.schema
+        tr.insert(pos, schema.nodes.blockContainer.create({ blockId: insertedId }, [
+          schema.nodes.paragraph.create({ props: {}, format: {} }, schema.text('원격으로 들어온 문단')),
+        ]))
+      }))
+      check('★ 다른 참여자가 위에 블록을 넣으면 열린 언어 목록이 블록을 따라 내려간다',
+        before !== null && (await waitFor(`(() => { const now = ${menuToBlock}; return now !== null && now.top > ${before?.top ?? 0} && Math.abs(now.gap - ${before?.gap ?? 0}) <= 1 })()`, 8000)),
+        JSON.stringify([before, await evaluate(menuToBlock)]))
+      // 그 문단을 블록 아래로 옮긴다 — 편집기의 높이는 그대로라 크기 변화(ResizeObserver)가 아니라 트랜잭션이 다시 재야 따라간다.
+      const moved = await evaluate(menuToBlock)
+      await remoteEdit((client) => edit(client, (tr, doc) => {
+        const { pos, node } = findBlock(doc, insertedId)
+        tr.delete(pos, pos + node.nodeSize)
+        const target = findBlock(tr.doc, cb.fmt)
+        tr.insert(target.pos + target.node.nodeSize, node)
+      }))
+      check('★ 위의 블록이 아래로 옮겨 가면(편집기 높이는 그대로) 열린 언어 목록이 블록을 따라 올라간다 — 트랜잭션마다 다시 잰다',
+        moved !== null && (await waitFor(`(() => { const now = ${menuToBlock}; return now !== null && now.top < ${moved?.top ?? 0} && Math.abs(now.gap - ${moved?.gap ?? 0}) <= 1 })()`, 8000)),
+        JSON.stringify([moved, await evaluate(menuToBlock)]))
+      await remoteEdit((client) => edit(client, (tr, doc) => {
+        const { pos, node } = findBlock(doc, cb.fmt)
+        tr.delete(pos, pos + node.nodeSize)
+      }))
+      check('★ 그 블록이 사라지면 열린 언어 목록이 닫힌다', await waitFor(`!document.querySelector('${LANG_MENU}')`, 8000))
+      await sleep(1500)
+    }
+
     if (sectionIf('코멘트 패널 · 인박스 (F-05-08 · F-11-07)')) {
       const commentPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
         method: 'POST',

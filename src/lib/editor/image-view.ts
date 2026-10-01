@@ -86,13 +86,26 @@ export function imageNodeView(
 
   // ── 문서에 쓰기 ─────────────────────────────────────────────────────
 
-  const setSource = (source: ImageSource | null): void => {
+  /**
+   * 이미지 주소를 문서에 쓴다 — 썼으면 true. 쓰지 못했으면(읽기 전용 · 블록이 사라졌다) 부르는 쪽이 그렇다고 그린다 — 쓰지 않으면
+   * 트랜잭션이 없어 `update` 가 다시 그리지 않으므로 "올리는 중"이 그대로 남았다(8a-2 리뷰).
+   */
+  const setSource = (source: ImageSource | null): boolean => {
+    // 읽기 전용이면 쓰지 않는다 — 서버가 거부하고 편집기가 본문을 버린다(8a-2 가 찾은 옛 구멍 · `node-views.ts` to_do 와 같다).
+    if (!view.editable) return false
     const pos = getPos()
-    if (pos === undefined) return
+    if (pos === undefined) return false
     const node = view.state.doc.nodeAt(pos)
-    if (!node || node.type.name !== IMAGE_TYPE) return
+    if (!node || node.type.name !== IMAGE_TYPE) return false
     const props = withImageSource(node.attrs.props as Record<string, unknown>, source)
     view.dispatch(view.state.tr.setNodeMarkup(pos, undefined, { ...node.attrs, props }))
+    return true
+  }
+
+  /** 넣지 못했다고 그린다. */
+  const notWritten = (): void => {
+    failure = view.editable ? '이미지를 넣지 못했습니다 — 블록이 바뀌었습니다.' : '읽기 전용이라 이미지를 넣지 못했습니다.'
+    render()
   }
 
   // ── 업로드 ──────────────────────────────────────────────────────────
@@ -120,8 +133,8 @@ export function imageNodeView(
 
     uploading = false
     if (result.ok) {
-      setSource({ kind: 'file', fileId: result.fileId })
-      // `setSource` 가 트랜잭션을 일으키면 `update` 가 다시 그린다.
+      // 썼으면 트랜잭션이 `update` 를 불러 다시 그린다. 못 썼으면 여기서 그린다.
+      if (!setSource({ kind: 'file', fileId: result.fileId })) notWritten()
       return
     }
     failure = result.message
@@ -153,7 +166,10 @@ export function imageNodeView(
   const renderEmpty = (): void => {
     const pick = element('button', 'blk-image-pick', '이미지 추가')
     pick.type = 'button'
-    pick.addEventListener('click', () => picker.click())
+    pick.addEventListener('click', () => {
+      // 읽기 전용이면 올리지 않는다 — 올려도 쓸 수 없다.
+      if (view.editable) picker.click()
+    })
 
     const form = element('form', 'blk-image-url')
     const input = element('input', 'blk-image-url-input')
@@ -172,7 +188,7 @@ export function imageNodeView(
         render()
         return
       }
-      setSource({ kind: 'external', url })
+      if (!setSource({ kind: 'external', url })) notWritten()
     })
 
     form.append(input, add)

@@ -33,7 +33,7 @@
  */
 
 import { isUuid } from '../ids.ts'
-import { textRun, toPlainText, type RichTextRun } from '../contracts/rich-text.ts'
+import { textRun, toPlainText, validateRichText, type RichTextRun } from '../contracts/rich-text.ts'
 
 export const IMAGE_TYPE = 'image' as const
 
@@ -218,9 +218,8 @@ export function validateImageProperties(
     }
   }
 
-  if (raw.caption !== undefined && !Array.isArray(raw.caption)) {
-    issues.push({ path: `${path}.caption`, message: 'RichText 배열이어야 합니다' })
-  }
+  // 캡션은 런마다 계약을 지나야 한다(8a-2) — 배열인지만 보던 때에는 `[null]` 이 저장돼 투영을 멈췄다(정본 §3.4 [보강] 코드 블록 ⑧).
+  if (raw.caption !== undefined) issues.push(...validateRichText(raw.caption, `${path}.caption`))
 
   return issues
 }

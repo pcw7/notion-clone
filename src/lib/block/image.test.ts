@@ -26,6 +26,7 @@ import {
   validateImageProperties,
   withImageSource,
 } from './image.ts'
+import { textRun } from '../contracts/rich-text.ts'
 
 const FILE_A = '11111111-1111-4111-8111-111111111111'
 const FILE_B = '22222222-2222-4222-8222-222222222222'
@@ -127,6 +128,11 @@ describe('캡션 — 화면은 평문, 저장은 계약대로', () => {
 
   test('배열이 아닌 caption 은 거부한다', () => {
     assert.equal(validateImageProperties({ caption: '평문' }, 'p').length, 1)
+  })
+
+  test('★ 캡션의 런마다 계약을 본다 — [null] 은 거부한다(8a-2 · 배열인지만 보던 때에는 저장돼 투영을 멈췄다)', () => {
+    assert.deepEqual(validateImageProperties({ caption: [null] }, 'p').map((i) => i.path), ['p.caption[0]'])
+    assert.deepEqual(validateImageProperties({ caption: [textRun('설명')] }, 'p'), [])
   })
 })
 

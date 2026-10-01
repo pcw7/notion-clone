@@ -34,6 +34,7 @@ import {
   MAX_RICH_TEXT_RUNS,
   MAX_RUN_CONTENT,
   normalizeRichText,
+  splitText,
   type RichTextRun,
 } from '../contracts/rich-text.ts'
 
@@ -155,9 +156,8 @@ export function canonicalizeRuns(runs: readonly RichTextRun[]): RichTextRun[] {
       out.push(run)
       continue
     }
-    for (let i = 0; i < content.length; i += MAX_RUN_CONTENT) {
-      out.push(withContent(run, content.slice(i, i + MAX_RUN_CONTENT)))
-    }
+    // 서로게이트 쌍(이모지)을 가르지 않는다 — 가르면 짝 없는 서로게이트가 남고 jsonb 가 거부해 투영이 멈췄다(8a-2 가 찾은 옛 구멍).
+    for (const part of splitText(content, MAX_RUN_CONTENT)) out.push(withContent(run, part))
   }
 
   return out

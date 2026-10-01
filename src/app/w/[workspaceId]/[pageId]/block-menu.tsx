@@ -31,10 +31,13 @@ import {
   firstEnabled,
   navigateMenu,
   setBlockColorCommand,
+  setCodeWrapSelectionCommand,
   type BlockMenuAction,
   type MenuCursor,
   type MenuItem,
 } from '@/lib/editor/block-menu'
+import { codeBlockInfo } from '@/lib/editor/code-block'
+import { copyText } from '@/lib/editor/copy-text'
 import {
   deleteBlockSelectionCommand,
   duplicateBlockSelectionCommand,
@@ -42,40 +45,6 @@ import {
   turnSelectionIntoCommand,
 } from '@/lib/editor/block-selection'
 import type { CommandDeps } from '@/lib/editor/commands'
-
-/**
- * 클립보드에 쓴다.
- *
- * `navigator.clipboard` 는 **보안 컨텍스트**(https · localhost)에만 있다. 같은 네트워크의
- * 다른 기기에서 `http://192.168.…:3000` 으로 열면 없다 — 그때는 예전 방식
- * (`execCommand('copy')`)으로 한 번 더 시도한다. 둘 다 실패하면 false 를 돌려주고,
- * 부르는 쪽이 링크를 화면에 보여준다(손으로 복사할 수 있게).
- */
-async function copyText(text: string): Promise<boolean> {
-  if (navigator.clipboard && window.isSecureContext) {
-    try {
-      await navigator.clipboard.writeText(text)
-      return true
-    } catch {
-      // 권한 거부 — 아래 방식으로 한 번 더.
-    }
-  }
-  const area = document.createElement('textarea')
-  area.value = text
-  area.setAttribute('readonly', '')
-  area.style.position = 'fixed'
-  area.style.opacity = '0'
-  document.body.append(area)
-  area.select()
-  let ok = false
-  try {
-    ok = document.execCommand('copy')
-  } catch {
-    ok = false
-  }
-  area.remove()
-  return ok
-}
 
 export type BlockMenuProps = {
   view: EditorView
@@ -88,9 +57,11 @@ export type BlockMenuProps = {
   /** `restoreFocus`: 에디터로 포커스를 돌려줄 것인가. */
   onClose: (restoreFocus: boolean) => void
   onNotice: (message: string) => void
+  /** 코드 블록의 언어 목록 · 캡션 입력을 연다(8a-2) — 둘 다 편집기 밖의 오버레이다(`body-editor.tsx`). */
+  onCodeMenu?: (kind: 'language' | 'caption', blockId: string) => void
 }
 
-export function BlockMenu({ view, deps, top, left, workspaceId, pageId, onClose, onNotice }: BlockMenuProps) {
+export function BlockMenu({ view, deps, top, left, workspaceId, pageId, onClose, onNotice, onCodeMenu }: BlockMenuProps) {
   // 여는 순간의 선택으로 계산한다. 메뉴가 열려 있는 동안 문서는 바뀌지 않는다.
   const [items] = useState(() => blockMenuItems(view.state, deps))
   const [cursor, setCursor] = useState<MenuCursor>(() => ({ index: firstEnabled(items), sub: null }))
@@ -131,6 +102,25 @@ export function BlockMenu({ view, deps, top, left, workspaceId, pageId, onClose,
       case 'delete':
         deleteBlockSelectionCommand(deps)(view.state, dispatch)
         break
+      case 'code_wrap':
+        setCodeWrapSelectionCommand(action.wrap)(view.state, dispatch)
+        break
+      case 'code_language':
+      case 'code_caption': {
+        const sel = view.state.selection
+        if (isBlockSelection(sel)) onCodeMenu?.(action.kind === 'code_language' ? 'language' : 'caption', sel.blockIds[0])
+        break
+      }
+      case 'code_copy': {
+        const sel = view.state.selection
+        const info = isBlockSelection(sel) ? codeBlockInfo(view.state, sel.blockIds[0]) : null
+        if (info === null) break
+        void copyText(info.text).then((ok) => {
+          onNotice(ok ? '코드를 복사했습니다.' : '코드를 복사하지 못했습니다. 코드 블록에서 직접 골라 복사하세요.')
+          view.focus()
+        })
+        break
+      }
       case 'copy_link': {
         const sel = view.state.selection
         if (!isBlockSelection(sel)) break
@@ -213,8 +203,9 @@ export function BlockMenu({ view, deps, top, left, workspaceId, pageId, onClose,
                     key={child.id}
                     ref={register(child.id)}
                     type="button"
-                    role="menuitemradio"
-                    aria-checked={child.checked ?? false}
+                    // 동작 항목(언어 바꾸기… · 캡션… · 코드 복사 — 8a-2)은 고르는 항목이 아니다 — 라디오로 읽히지 않게.
+                    role={child.toggle ? 'menuitemcheckbox' : child.checked === undefined ? 'menuitem' : 'menuitemradio'}
+                    aria-checked={child.toggle || child.checked !== undefined ? (child.checked ?? false) : undefined}
                     aria-disabled={!child.enabled}
                     tabIndex={cursor.index === i && cursor.sub === j ? 0 : -1}
                     className="blk-menu-item"

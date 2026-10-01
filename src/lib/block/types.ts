@@ -92,6 +92,11 @@ export type BlockTypeSpec = {
    * 노드 이름 ↔ 타입은 `editor/schema.ts` 의 `nodeNameOf` · `blockTypeOfNode` 두 곳만 옮긴다.
    */
   readonly nodeName?: string
+  /**
+   * `properties.caption`(RichText[])을 담는가 — 이미지 · 코드(8a-2). 본문을 읽을 때 이 칸의 모양을 정화한다(`block/props.ts` ·
+   * 정본 §3.4 [보강] 코드 블록 ⑧) — 모양이 틀린 캡션 하나가 투영 · 색인 · 복제를 멈췄다.
+   */
+  readonly hasCaption?: boolean
 }
 
 export const BLOCK_TYPES: Readonly<Record<BlockType, BlockTypeSpec>> = Object.freeze({
@@ -118,12 +123,12 @@ export const BLOCK_TYPES: Readonly<Record<BlockType, BlockTypeSpec>> = Object.fr
   callout: { hasRichText: true, canHaveChildren: true, supportsColor: true },
   // divider 와 image 는 텍스트를 담지 않고 색도 없다.
   divider: { hasRichText: false, canHaveChildren: false, supportsColor: false, markdownPrefix: ['---'] },
-  image: { hasRichText: false, canHaveChildren: false, supportsColor: false },
+  image: { hasRichText: false, canHaveChildren: false, supportsColor: false, hasCaption: true },
 
   // 코드 블록(F-01-14 · 8a-1) — 본문은 평문 · 색 없음(F-01-02 GAP: `code` 에는 color 필드가 없다) · 자식 없음.
   code: {
     hasRichText: true, canHaveChildren: false, supportsColor: false,
-    markdownPrefix: ['```'], plainText: true, nodeName: 'code_block',
+    markdownPrefix: ['```'], plainText: true, nodeName: 'code_block', hasCaption: true,
   },
 
   // 폴백. 렌더는 회색 박스, 저장은 원본 그대로.
@@ -236,6 +241,11 @@ export function normalizeFormat(type: BlockType, format: unknown): BlockFormat {
 
   if (!specOf(type).supportsColor || !isColor(out.block_color)) {
     delete out.block_color
+  }
+  // 줄바꿈(8a-2) — 평문 본문 타입(코드)의 `true` 만 남는다. 끈 상태는 키가 없다 · 코드를 문단으로 바꾸면 사라진다(정본 §3.4
+  // [보강] 코드 블록 ⑥ — 전에는 모든 타입에 남아 바꾸기가 문단에 `code_wrap` 을 남겼다).
+  if ('code_wrap' in out && !(specOf(type).plainText && out.code_wrap === true)) {
+    delete out.code_wrap
   }
   return out
 }

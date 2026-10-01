@@ -13,6 +13,7 @@
  */
 
 import { isUuid } from '../ids.ts'
+import { jsonSafe } from './json-safe.ts'
 
 // ── 색 ────────────────────────────────────────────────────────────────
 //
@@ -115,12 +116,93 @@ export function textRun(content: string, annotations: Partial<Annotations> = {})
 
 /** RichText[] 에서 검색·인덱싱용 평문을 뽑는다. */
 export function toPlainText(runs: readonly RichTextRun[]): string {
-  return runs.map((r) => r.plain_text ?? '').join('')
+  // 관대하게 — 모양이 틀린 런(객체가 아니다 · plain_text 가 문자열이 아니다)은 빈 글자다. 협업 참여자가 검증 없이 쓴 값 하나가
+  // 색인 · 복제 · 화면을 던지게 하던 길이다(8a-2 · 정본 §3.4 [보강] 코드 블록 ⑧). 정화는 읽기가 하고 이것은 마지막 방어다.
+  return runs.map((r) => (typeof r === 'object' && r !== null && typeof r.plain_text === 'string' ? r.plain_text : '')).join('')
+}
+
+/**
+ * 글자를 `max` 자(UTF-16 단위) 이하의 조각으로 — 서로게이트 쌍(이모지 등)을 가르지 않는다. 가르면 두 조각에 짝 없는 서로게이트가
+ * 남고 PostgreSQL 의 jsonb 가 그 값을 거부한다(저장이 멈춘다). 빈 글자는 조각이 없다.
+ */
+export function splitText(text: string, max: number = MAX_RUN_CONTENT): string[] {
+  const out: string[] = []
+  let start = 0
+  while (text.length - start > max) {
+    let end = start + max
+    const last = text.charCodeAt(end - 1)
+    if (last >= 0xd800 && last <= 0xdbff && end - 1 > start) end -= 1
+    out.push(text.slice(start, end))
+    start = end
+  }
+  if (start < text.length) out.push(text.slice(start))
+  return out
+}
+
+/**
+ * 받은 RichText 를 정화한다 — 배열이 아니면 null. 런마다:
+ *
+ *   · JSON 으로 나타낼 수 없는 값(bigint …)은 뺀다(`jsonSafe` — 투영의 직렬화가 던진다)
+ *   · 계약(`validateRichText`)을 지키면 남기고 `plain_text` 를 다시 계산한다(응답 전용 파생값이다 — 글자 · 수식은 그 글자, 멘션은
+ *     받은 문자열이나 빈 글자)
+ *   · 어겼으면 **글자를 살린다** — 글자 런의 content 나 받은 plain_text 가 문자열이면 서식 없는 글자 런으로(2000자 단위로 쪼갠다).
+ *     살릴 글자가 없으면 뺀다. 정규화의 "가능하면 잃지 않는다"(`collab/normalize.ts`) · 제목 · 코멘트 읽기와 같은 쪽이다
+ *
+ * 바뀐 것이 없으면 **같은 배열**을, 바뀌지 않은 런은 같은 객체를 둔다 — 본문 정규화가 읽을 때마다 부른다. **던지지 않는다.**
+ *
+ * 쓰는 곳: 본문의 캡션 정화(`block/props.ts` — 정본 §3.4 [보강] 코드 블록 ⑧) · 캡션 읽기(`block/code.ts`) · 복제(`duplicate-remap.ts`).
+ */
+export function sanitizeRichText(raw: unknown): RichTextRun[] | null {
+  if (!Array.isArray(raw)) return null
+  let out: RichTextRun[] | null = null
+  for (let i = 0; i < raw.length; i += 1) {
+    const item: unknown = raw[i]
+    const kept = sanitizeRun(item)
+    if (out === null && kept.length === 1 && kept[0] === item) continue
+    out ??= raw.slice(0, i) as RichTextRun[]
+    out.push(...kept)
+  }
+  return out ?? (raw as RichTextRun[])
+}
+
+function sanitizeRun(item: unknown): RichTextRun[] {
+  const safe = jsonSafe(item)
+  if (safe !== undefined && validateRichText([safe]).length === 0) {
+    const run = safe as RichTextRun
+    const plain =
+      run.type === 'text'
+        ? (run.text?.content ?? '')
+        : run.type === 'equation'
+          ? (run.equation?.expression ?? '')
+          : typeof run.plain_text === 'string'
+            ? run.plain_text
+            : ''
+    return [run.plain_text === plain ? run : { ...run, plain_text: plain }]
+  }
+  return splitText(salvagedText(safe)).map((chunk) => textRun(chunk))
+}
+
+/** 계약을 어긴 런에서 살릴 글자 — 글자 런의 content, 아니면 받은 plain_text. */
+function salvagedText(item: unknown): string {
+  if (typeof item !== 'object' || item === null) return ''
+  const run = item as { type?: unknown; text?: unknown; plain_text?: unknown }
+  const content = typeof run.text === 'object' && run.text !== null ? (run.text as { content?: unknown }).content : undefined
+  if (run.type === 'text' && typeof content === 'string') return content
+  return typeof run.plain_text === 'string' ? run.plain_text : ''
 }
 
 // ── 검증 ──────────────────────────────────────────────────────────────
 
 export type ValidationIssue = { path: string; message: string }
+
+/** 안내문에 넣을 값의 모양 — 던지지 않는다(bigint 는 `JSON.stringify` 에서 던진다 · 정화가 이 검증을 부른다). */
+function shown(value: unknown): string {
+  try {
+    return JSON.stringify(value) ?? String(value)
+  } catch {
+    return typeof value
+  }
+}
 
 function validateAnnotations(a: unknown, path: string, out: ValidationIssue[]): void {
   if (typeof a !== 'object' || a === null) {
@@ -136,7 +218,7 @@ function validateAnnotations(a: unknown, path: string, out: ValidationIssue[]): 
   if (!isColor(ann.color)) {
     out.push({
       path: `${path}.color`,
-      message: `19개 색 값 중 하나여야 합니다 (default_background 는 존재하지 않습니다): ${JSON.stringify(ann.color)}`,
+      message: `19개 색 값 중 하나여야 합니다 (default_background 는 존재하지 않습니다): ${shown(ann.color)}`,
     })
   }
 }

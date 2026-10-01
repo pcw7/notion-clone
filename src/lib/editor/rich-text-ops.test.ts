@@ -207,6 +207,14 @@ describe('canonicalizeRuns', () => {
     const runs = canonicalizeRuns([mention('@a'), mention('@b')])
     assert.equal(runs.length, 2)
   })
+
+  test('★ 2000자 경계에 걸린 이모지(서로게이트 쌍)를 가르지 않는다 — 짝 없는 서로게이트는 jsonb 가 거부한다(8a-2)', () => {
+    const text = 'a'.repeat(MAX_RUN_CONTENT - 1) + '😀' + 'b'
+    const runs = canonicalizeRuns([textRun(text)])
+    const lone = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/
+    for (const r of runs) assert.equal(lone.test(r.text?.content ?? ''), false, `짝 없는 서로게이트가 남았다: 길이 ${r.text?.content.length}`)
+    assert.equal(toPlainText(runs), text)
+  })
 })
 
 describe('concatRuns — 블록 병합의 텍스트 계층', () => {

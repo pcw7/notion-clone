@@ -71,7 +71,8 @@ describe('blockMenuItems — 무엇이 켜져 있는가', () => {
     const [a, p] = [nextId(), nextId()]
     const plain = blockMenuItems(select(stateOf([blk(a, 'paragraph', 'A')]), a), deps()).map((i) => i.id)
     const page = blockMenuItems(select(stateOf([blk(p, 'page', '하위')]), p), deps()).map((i) => i.id)
-    assert.deepEqual(plain, ['turn_into', 'color', 'duplicate', 'copy_link', 'delete'])
+    // '코드'(8a-2)도 늘 있다 — 코드 블록이 아니면 꺼질 뿐이다(`code-chrome.test.ts` ②).
+    assert.deepEqual(plain, ['turn_into', 'color', 'code', 'duplicate', 'copy_link', 'delete'])
     assert.deepEqual(page, plain, '손이 기억한 위치가 선택에 따라 틀어지면 안 된다')
   })
 

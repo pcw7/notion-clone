@@ -46,6 +46,27 @@ export function findBlock(doc: PmNode, blockId: string): FoundBlock {
   return hits[0]
 }
 
+/**
+ * blockId 의 내용 요소(컨테이너의 첫 자식) — 참여자가 Y attr 에 **직접** 쓰는 검사가 쓴다(8a-2). `edit` 은 y-prosemirror 의 쓰기라
+ * null 만 다른 attr(빈 props 위의 `caption: [null]` 같은 것)을 같은 값으로 보고 싣지 않는다 — 검증 없는 참여자는 그런 값도 쓸 수 있다.
+ */
+export function contentElementOf(ydoc: Y.Doc, blockId: string): Y.XmlElement {
+  const found: Y.XmlElement[] = []
+  const walk = (parent: Y.XmlFragment | Y.XmlElement): void => {
+    for (const child of parent.toArray()) {
+      if (!(child instanceof Y.XmlElement)) continue
+      if (child.nodeName === 'blockContainer' && child.getAttribute('blockId') === blockId) {
+        const content = child.get(0)
+        if (content instanceof Y.XmlElement) found.push(content)
+      }
+      walk(child)
+    }
+  }
+  walk(ydoc.getXmlFragment(BODY_FRAGMENT))
+  if (found.length !== 1) throw new Error(`블록이 없다: ${blockId}`)
+  return found[0]
+}
+
 /** 두 참여자가 서로의 update 를 받는다. */
 export function exchange(a: Y.Doc, b: Y.Doc): void {
   const toB = Y.encodeStateAsUpdate(a, Y.encodeStateVector(b))
