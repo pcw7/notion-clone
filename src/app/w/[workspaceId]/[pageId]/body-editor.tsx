@@ -37,7 +37,7 @@ import { blockIdFromHash, revealBlockCommand } from '@/lib/editor/block-menu'
 import { plainTextForBlocks } from '@/lib/editor/block-clipboard'
 import { BlockSelection, selectedBlockCount } from '@/lib/editor/block-selection'
 import { codeBlockInfo, setCodeCaptionCommand, setCodeLanguageCommand } from '@/lib/editor/code-block'
-import { syncCodeCopyTabStops } from '@/lib/editor/code-view'
+import { syncReadOnlyTabStops } from '@/lib/editor/node-views'
 import type { CommandDeps } from '@/lib/editor/commands'
 import { createEditor, type EditorDeps } from '@/lib/editor/create-editor'
 import { createNodeViews } from '@/lib/editor/node-views'
@@ -296,8 +296,9 @@ export function BodyEditor({
     const view = viewRef.current
     if (!view) return
     view.setProps({ editable: () => editableRef.current })
-    // 코드 블록의 복사 버튼은 읽기 전용에서만 탭 순서에 선다 — 노드 뷰는 편집 가능 여부가 바뀌어도 다시 만들어지지 않는다(8a-2).
-    syncCodeCopyTabStops(view)
+    // 코드 블록의 복사 버튼 · 목차의 링크는 읽기 전용에서만 탭 순서에 선다 — 노드 뷰는 편집 가능 여부가 바뀌어도 다시 만들어지지
+    // 않는다(8a-2 · 8b-1).
+    syncReadOnlyTabStops(view)
   }, [editable])
 
   // ── 제목 맵 ─────────────────────────────────────────────────────────
@@ -796,6 +797,14 @@ export function BodyEditor({
       // 코드 블록의 크롬 버튼(8a-2) — 목록 · 입력칸은 편집기 밖의 오버레이다.
       openCodeLanguageMenu: (id) => openCodeUi('language', id),
       openCodeCaption: (id) => openCodeUi('caption', id),
+      // 목차의 항목(8b-1) — 그 블록을 보여 주고(접힌 조상을 펼친다) 화면 위쪽으로 굴린다. 주소의 해시도 그 블록으로 —
+      // `replaceState` 라 `hashchange` 가 나지 않고(두 번 보이지 않는다) 뒤로 가기에 쌓이지 않는다.
+      revealBlock: (id) => {
+        const current = viewRef.current
+        if (!current) return
+        window.history.replaceState(window.history.state, '', `#${id}`)
+        revealBlockCommand(id, gutterDeps, { align: 'start' })(current.state, current.dispatch.bind(current), current)
+      },
     }
 
     /** `#{blockId}` 로 들어왔으면 그 블록을 보여준다(F-01-08 의 받는 쪽). */

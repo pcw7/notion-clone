@@ -46,6 +46,7 @@ import { containerFor, docToPm } from './pm-adapter.ts'
 import { blockSchema } from './schema.ts'
 import type { EditorBlock } from './document.ts'
 import { slashMenuPlugin } from './slash-menu.ts'
+import { tocPlugin } from './toc-plugin.ts'
 import { mentionMenuPlugin } from './mention-menu.ts'
 import type { EditorDoc } from './document.ts'
 
@@ -121,6 +122,8 @@ export function editingPlugins(deps: EditorDeps): Plugin[] {
     collapsePlugin(deps.isCollapsed),
     // 코드 블록의 문법 강조(F-01-14 · 8a-3) — 데코레이션이다. 문서에 쓰지 않는다(`code-highlight.ts` 머리말).
     codeHighlightPlugin(),
+    // 목차(F-01-16 · 8b-1) — 헤딩을 모아 목차 노드의 데코레이션에 싣는다. 문서에 쓰지 않는다(`toc-plugin.ts` 머리말).
+    tocPlugin(),
     // 멘션 · 수식의 서식을 attr 에 비춘다 — 협업 바인딩이 Y.Doc 에 싣는 것은 attr 뿐이다(`atom-marks.ts`).
     atomMarksPlugin(),
     // id 스탬프는 마지막이다. 다른 플러그인이 만든 노드까지 훑어야 한다.

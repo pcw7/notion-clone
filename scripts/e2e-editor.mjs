@@ -4601,6 +4601,219 @@ async function main() {
       await sleep(1500)
     }
 
+    if (sectionIf('목차 (8b-1 · F-01-16)')) {
+      // 목차는 내용을 저장하지 않고 그릴 때 헤딩에서 계산한다. 헤딩을 고치면 · 다른 참여자가 넣으면 따라가고, 항목을 누르면 그
+      // 헤딩으로 간다(접힌 토글은 펼친다 · 같은 항목을 두 번 눌러도 · 읽기 전용에서도 키보드로). 자기 데이터를 스스로 만든다.
+      const stamp = Date.now()
+      const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
+      const newPage = async (title) => (await (await fetch(pagesUrl, { method: 'POST', headers: authed, body: JSON.stringify({ title }) })).json()).page.id
+      const tocPage = await newPage(`목차 ${stamp}`)
+      const tb = { top: randomUUID(), toc: randomUUID(), h1: randomUUID(), toggle: randomUUID(), inner: randomUUID(), h3: randomUUID(), last: randomUUID(), bottom: randomUUID() }
+      const heading = (id, level, text) => block(id, `heading_${level}`, text)
+      const filler = (n, tag) => Array.from({ length: n }, (_, i) => block(randomUUID(), 'paragraph', `${tag} ${i + 1}`))
+      await saveBody(tocPage, {
+        blocks: [
+          block(tb.top, 'paragraph', '맨 위'),
+          { id: tb.toc, type: 'table_of_contents', title: [], properties: {}, format: { block_color: 'blue' }, children: [] },
+          heading(tb.h1, 1, '개요'),
+          ...filler(25, '앞 문단'),
+          block(tb.toggle, 'toggle', '접히는 토글', [heading(tb.inner, 2, '토글 안 제목')]),
+          heading(tb.h3, 3, '셋째'),
+          ...filler(25, '뒤 문단'),
+          heading(tb.last, 2, '끝 제목'),
+          // 끝 제목 아래에도 굴릴 자리가 있어야 그 제목이 화면 위쪽에 온다.
+          ...filler(30, '꼬리 문단'),
+          block(tb.bottom, 'paragraph', '끝 문단'),
+        ],
+      })
+
+      const NAV = `[data-block-id="${tb.toc}"] nav.blk-table_of_contents`
+      const EDITABLE = `document.querySelector('.blk-editor')?.getAttribute('contenteditable') === 'true'`
+      /** 목차의 줄 — (깊이, 글자). */
+      const tocLines = () => evaluate(`[...document.querySelectorAll('${NAV} .blk-toc-item')].map((li) => [Number(li.style.getPropertyValue('--toc-depth')), li.textContent])`)
+      const sameLines = (expected) => `JSON.stringify([...document.querySelectorAll('${NAV} .blk-toc-item')].map((li) => [Number(li.style.getPropertyValue('--toc-depth')), li.textContent])) === ${JSON.stringify(JSON.stringify(expected))}`
+      /** 그 헤딩이 화면 위쪽(0 ~ 160px)에 있는가 · 골라졌는가 · 주소의 해시. */
+      const landed = (id) => `(() => {
+        const c = document.querySelector('[data-block-id="${id}"]')
+        if (!c) return false
+        const top = c.getBoundingClientRect().top
+        return top >= 0 && top < 160 && c.classList.contains('blk-selected') && window.location.hash === '#${id}'
+      })()`
+      const landedInfo = (id) => evaluate(`(() => {
+        const c = document.querySelector('[data-block-id="${id}"]')
+        return { top: c?.getBoundingClientRect().top ?? null, selected: c?.classList.contains('blk-selected') ?? null, hash: window.location.hash }
+      })()`)
+      /** 목차의 그 줄을 누른다 — 목차를 화면 가운데로 굴린 뒤. */
+      const clickEntry = async (text) => {
+        const box = await evaluate(`(() => {
+          document.querySelector('${NAV}')?.scrollIntoView({ block: 'center' })
+          const link = [...document.querySelectorAll('${NAV} a.blk-toc-link')].find((a) => a.textContent === ${JSON.stringify(text)})
+          if (!link) return null
+          const r = link.getBoundingClientRect()
+          return { x: r.x + Math.min(r.width / 2, 40), y: r.y + r.height / 2 }
+        })()`)
+        if (!box) return false
+        await click(box.x, box.y)
+        return true
+      }
+      /** 그 블록의 글자 끝에 캐럿 — 캐럿이 그 블록에 섰는지 보고 아니면 다시 누른다. */
+      const caretAtEnd = async (id) => {
+        for (let i = 0; i < 6; i += 1) {
+          await clickSelector(`[data-block-id="${id}"] > *:first-child`)
+          await key('End')
+          const inside = await evaluate(`(() => {
+            const n = window.getSelection()?.anchorNode
+            const el = n?.nodeType === 1 ? n : n?.parentElement
+            return document.activeElement === document.querySelector('.blk-editor') && el?.closest('[data-block-id]')?.getAttribute('data-block-id') === '${id}'
+          })()`)
+          if (inside) return true
+          await sleep(200)
+        }
+        return false
+      }
+      const { loadDocState } = await import(new URL('../src/lib/collab/doc-store.ts', import.meta.url).href)
+      const { appendDocUpdate } = await import(new URL('../src/lib/block/body-write.ts', import.meta.url).href)
+      const { peer, edit, findBlock, changesSince } = await import(new URL('../src/lib/testing/collab-peers.ts', import.meta.url).href)
+      let remoteClient = 9700
+      const remoteEdit = async (change) => {
+        const state = await loadDocState(ctx, tocPage)
+        if (!state.ok) throw new Error('본문을 읽지 못했다')
+        remoteClient += 1
+        const client = peer(state.value.ydoc, remoteClient)
+        change(client)
+        const result = await appendDocUpdate(ctx, tocPage, changesSince(client, state.value.ydoc), { origin: 'editor' })
+        if (!result.ok) throw new Error(`원격 편집을 받지 않았다: ${JSON.stringify(result)}`)
+      }
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${tocPage}` })
+      check('전제 — 목차가 그려졌고 편집할 수 있다', await waitFor(`!!document.querySelector('${NAV} .blk-toc-item') && ${EDITABLE}`, 15000))
+
+      // ① 그리기 — 문서 순서 · 수준의 순위 · 블록 색
+      check('★ 목차가 헤딩을 문서 순서로 그린다 — 토글 안까지 · 쓰인 수준의 순위로 들여 쓴다',
+        await waitFor(sameLines([[0, '개요'], [1, '토글 안 제목'], [2, '셋째'], [1, '끝 제목']]), 3000), JSON.stringify(await tocLines()))
+      const look = await evaluate(`(() => {
+        const nav = document.querySelector('${NAV}')
+        const links = [...nav.querySelectorAll('a.blk-toc-link')]
+        const plain = document.querySelector('[data-block-id="${tb.top}"] p')
+        return {
+          color: nav.dataset.color ?? null, navColor: getComputedStyle(nav).color, plainColor: getComputedStyle(plain).color,
+          lefts: links.map((a) => Math.round(a.getBoundingClientRect().left)), hrefs: links.map((a) => a.getAttribute('href')),
+          tabIndexes: links.map((a) => a.tabIndex),
+        }
+      })()`)
+      check('★ 줄이 실제로 들여 써진다(CSS) · 항목은 그 블록으로 가는 링크(#id)',
+        look.lefts[1] > look.lefts[0] && look.lefts[2] > look.lefts[1] && look.lefts[3] === look.lefts[1]
+          && JSON.stringify(look.hrefs) === JSON.stringify([`#${tb.h1}`, `#${tb.inner}`, `#${tb.h3}`, `#${tb.last}`]), JSON.stringify(look))
+      check('★ 블록 색이 목차에 보인다(노드 뷰가 data-color 를 단다)', look.color === 'blue' && look.navColor !== look.plainColor, JSON.stringify(look))
+      check('★ 편집 중에는 목차의 링크가 탭 순서에 없다 — Tab 은 들여쓰기다', look.tabIndexes.every((t) => t === -1), JSON.stringify(look.tabIndexes))
+
+      // ② 누르면 그 헤딩으로 — 화면 위쪽 · 블록 선택 · 주소의 해시
+      await clickEntry('끝 제목')
+      check('★ 항목을 누르면 그 헤딩이 화면 위쪽에 오고 · 골라지고 · 주소의 해시가 그 블록이다',
+        await waitFor(landed(tb.last), 4000), JSON.stringify(await landedInfo(tb.last)))
+      await sleep(300)
+      await clickEntry('끝 제목')
+      check('★ 같은 항목을 두 번 눌러도 간다 — 해시가 같아 hashchange 가 나지 않아도',
+        await waitFor(landed(tb.last), 4000), JSON.stringify(await landedInfo(tb.last)))
+
+      // ③ 접힌 토글 안의 헤딩 — 누르면 펼친다
+      // 화살표를 화면에 들인 뒤 누른다 — 앞 장면이 끝 제목으로 굴려 화살표가 화면 밖이다.
+      await evaluate(`document.querySelector('[data-block-id="${tb.toggle}"] .blk-toggle-arrow').scrollIntoView({ block: 'center' })`)
+      const arrow = await rect(`[data-block-id="${tb.toggle}"] .blk-toggle-arrow`)
+      await click(arrow.x + arrow.w / 2, arrow.y + arrow.h / 2)
+      const folded = await waitFor(`document.querySelector('[data-block-id="${tb.toggle}"]').getAttribute('data-collapsed') === 'true'
+        && document.querySelector('[data-block-id="${tb.inner}"]').getBoundingClientRect().height === 0`, 3000)
+      check('전제 — 토글을 접었고 안의 제목이 숨었다', folded)
+      check('★ 접혀도 목차에 남는다 — 접힘은 보는 사람의 상태다', (await tocLines()).some(([, t]) => t === '토글 안 제목'), JSON.stringify(await tocLines()))
+      await clickEntry('토글 안 제목')
+      check('★ 접힌 토글 안의 헤딩을 누르면 토글을 펼치고 그 헤딩으로 간다',
+        await waitFor(`document.querySelector('[data-block-id="${tb.toggle}"]').getAttribute('data-collapsed') !== 'true' && ${landed(tb.inner)}`, 4000),
+        JSON.stringify(await landedInfo(tb.inner)))
+
+      // ④ 따라간다 — 헤딩의 글자 · 마크다운으로 만든 새 제목 · 다른 참여자의 제목
+      check('전제 — 셋째 제목 끝에 캐럿', await caretAtEnd(tb.h3))
+      await typeText('!!')
+      check('★ 헤딩의 글자를 고치면 목차의 줄이 따라간다', await waitFor(sameLines([[0, '개요'], [1, '토글 안 제목'], [2, '셋째!!'], [1, '끝 제목']]), 3000),
+        JSON.stringify(await tocLines()))
+      check('전제 — 끝 문단 끝에 캐럿', await caretAtEnd(tb.bottom))
+      await key('Enter')
+      for (const ch of '## ') await typeText(ch)
+      await typeText('새 제목')
+      check('★ 마크다운으로 만든 새 제목이 목차의 끝에 선다', await waitFor(sameLines([[0, '개요'], [1, '토글 안 제목'], [2, '셋째!!'], [1, '끝 제목'], [1, '새 제목']]), 3000),
+        JSON.stringify(await tocLines()))
+      const remoteId = randomUUID()
+      await remoteEdit((client) => edit(client, (tr, doc) => {
+        const { pos, node } = findBlock(doc, tb.top)
+        const schema = doc.type.schema
+        tr.insert(pos + node.nodeSize, schema.nodes.blockContainer.create({ blockId: remoteId }, [
+          schema.nodes.heading_1.create({ props: {}, format: {} }, schema.text('원격 제목')),
+        ]))
+      }))
+      check('★ 다른 참여자가 넣은 제목이 목차에 선다(문서 순서 그대로)',
+        await waitFor(sameLines([[0, '원격 제목'], [0, '개요'], [1, '토글 안 제목'], [2, '셋째!!'], [1, '끝 제목'], [1, '새 제목']]), 8000),
+        JSON.stringify(await tocLines()))
+
+      // ⑤ 서버 — 목차는 내용을 저장하지 않는다
+      let saved = null
+      for (let i = 0; i < 60; i += 1) {
+        const blocks = (await readBody(tocPage)).doc.blocks
+        saved = blocks.find((b) => b.id === tb.toc) ?? null
+        if (blocks.some((b) => (b.title ?? []).map((r) => r.plain_text).join('') === '새 제목')) break
+        await sleep(150)
+      }
+      check("★ 서버 — 목차는 type='table_of_contents' · 색만 · 내용(글자)이 없다",
+        saved?.type === 'table_of_contents' && saved?.format?.block_color === 'blue' && (saved?.title ?? []).length === 0,
+        JSON.stringify(saved))
+
+      // ⑥ /목차 — 헤딩이 없는 새 페이지에서 만들고, 제목을 쓰면 안내가 목록으로 바뀐다
+      const emptyPage = await newPage(`목차 빈 ${stamp}`)
+      const first = randomUUID()
+      await saveBody(emptyPage, { blocks: [block(first, 'paragraph', '')] })
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${emptyPage}` })
+      await waitFor(`!!document.querySelector('[data-block-id="${first}"] p') && ${EDITABLE}`, 15000)
+      check('전제 — 빈 줄에 캐럿', await caretAtEnd(first))
+      await typeText('/')
+      await typeText('목차')
+      await waitFor(`!!document.querySelector('[role="listbox"][aria-label="블록 삽입"]')`, 2000)
+      await key('Enter')
+      check('★ /목차 로 만들면 헤딩이 없다는 안내가 선다',
+        await waitFor(`document.querySelector('[data-block-id="${first}"] nav.blk-table_of_contents .blk-toc-empty')?.textContent?.includes('목차가 생깁니다') === true`, 3000),
+        await evaluate(`document.querySelector('[data-block-id="${first}"]')?.innerHTML?.slice(0, 200) ?? '(없음)'`))
+      // 텍스트 없는 블록으로 바꾸면 뒤에 빈 문단이 생기고 캐럿이 그리로 간다(8b-1 이 고친 옛 틈 — 전에는 이어 쓸 길이 없었다).
+      for (const ch of '# ') await typeText(ch)
+      await typeText('첫 제목')
+      check('★ /목차 뒤에는 빈 줄이 생기고 캐럿이 그리로 — 이어 친 글자가 그 줄에 들어간다',
+        await evaluate(`(() => {
+          const rows = [...document.querySelectorAll('.blk-editor [data-block-id]')]
+          return rows.length === 2 && rows[0].getAttribute('data-block-id') === '${first}' && rows[1].querySelector('h1')?.textContent === '첫 제목'
+        })()`),
+        JSON.stringify(await evaluate(`[...document.querySelectorAll('.blk-editor [data-block-id]')].map((c) => c.firstElementChild?.tagName + ':' + c.textContent.slice(0, 40))`)))
+      check('★ 제목을 쓰면 안내가 목록으로 바뀐다',
+        await waitFor(`[...document.querySelectorAll('[data-block-id="${first}"] nav .blk-toc-item')].map((li) => li.textContent).join('|') === '첫 제목'`, 3000),
+        await evaluate(`document.querySelector('[data-block-id="${first}"] nav')?.textContent ?? '(없음)'`))
+
+      // ⑦ 읽기 전용 — 열어 둔 채 잠근다. 링크가 탭 순서에 서고 Enter 로 그 헤딩으로 간다
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${tocPage}` })
+      await waitFor(`!!document.querySelector('${NAV} .blk-toc-item') && ${EDITABLE}`, 15000)
+      const locked = await fetch(`${pagesUrl}/${tocPage}/lock`, { method: 'PUT', headers: authed })
+      check('전제 — 잠갔고 열어 둔 편집기가 읽기 전용이 됐다', locked.ok && (await waitFor(`document.querySelector('.blk-editor')?.getAttribute('contenteditable') === 'false'`, 15000)),
+        String(locked.status))
+      check('★ 읽기 전용에서도 목차를 그린다', await waitFor(`document.querySelectorAll('${NAV} .blk-toc-item').length === 6`, 5000), JSON.stringify(await tocLines()))
+      await evaluate(`document.querySelector('input[aria-label="페이지 제목"]')?.focus()`)
+      let tabbed = false
+      for (let i = 0; i < 20 && !tabbed; i += 1) {
+        await key('Tab')
+        tabbed = await evaluate(`document.activeElement?.matches?.('${NAV} a.blk-toc-link') === true`)
+      }
+      check('★ 읽기 전용 — Tab 으로 목차의 링크에 닿는다', tabbed, await evaluate(`document.activeElement?.outerHTML?.slice(0, 120) ?? ''`))
+      const target = await evaluate(`document.activeElement?.dataset?.tocTarget ?? ''`)
+      await key('Enter')
+      check('★ 읽기 전용 — Enter 로 그 헤딩으로 간다(문서를 바꾸지 않으므로 읽기 전용에서도)', target !== '' && (await waitFor(landed(target), 4000)),
+        JSON.stringify(await landedInfo(target)))
+      await fetch(`${pagesUrl}/${tocPage}/lock`, { method: 'DELETE', headers: authed })
+      await sleep(1500)
+    }
+
     if (sectionIf('코멘트 패널 · 인박스 (F-05-08 · F-11-07)')) {
       const commentPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
         method: 'POST',

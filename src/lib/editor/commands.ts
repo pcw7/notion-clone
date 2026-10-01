@@ -142,6 +142,18 @@ function placeCaret(tr: Transaction, blockId: string, offset: number): void {
   tr.setSelection(NodeSelection.create(tr.doc, info.contentPos))
 }
 
+/**
+ * 그 블록 바로 뒤에 빈 문단을 넣고 캐럿을 그리로 — 텍스트를 담지 않는 블록(구분선 · 이미지 · 목차)에는 캐럿을 둘 자리가 없다.
+ * 원자 블록에서의 Enter · `/` 로 원자 타입으로 바꾸기(8b-1)가 쓴다. 입력 규칙 `---` 도 같은 모양을 만든다(`input-rules.ts`).
+ */
+export function insertParagraphAfter(tr: Transaction, blockId: string, newId: string = newBlockId()): boolean {
+  const info = findContainerById(tr.doc, blockId)
+  if (!info) return false
+  tr.insert(info.pos + info.node.nodeSize, makeContainer(newId, 'paragraph', [], {}, {}))
+  placeCaret(tr, newId, 0)
+  return true
+}
+
 /** 내용 노드의 인라인 내용만 바꾼다. 노드 자체는 유지 — CRDT 위치 유실을 줄인다. */
 function replaceTitle(tr: Transaction, blockId: string, title: readonly RichTextRun[]): void {
   const info = findContainerById(tr.doc, blockId)
@@ -208,8 +220,7 @@ export function splitBlockCommand(deps: CommandDeps = NO_COLLAPSE): Command {
 
       case 'insert_paragraph_after': {
         // divider·image 뒤에 빈 문단. 원자 뒤에 캐럿을 둘 자리를 만든다.
-        tr.insert(info.pos + info.node.nodeSize, makeContainer(newId, 'paragraph', [], {}, {}))
-        placeCaret(tr, newId, 0)
+        insertParagraphAfter(tr, info.id, newId)
         break
       }
 

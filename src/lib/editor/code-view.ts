@@ -35,7 +35,7 @@
  * 복사만 탭 순서에 선다** — 블록 메뉴가 열리지 않으므로(키 입력은 편집 처리기다) 그것이 유일한 경로다. 편집 중에는 두지 않는다 —
  * 들여쓸 수 없는 자리(첫 블록 · 제목 뒤)의 Tab 은 키맵이 먹지 않아 브라우저가 다음 탭 정지로 포커스를 옮기는데, 그것이 멀리 있는
  * 코드 블록의 복사 버튼이면 그리로 스크롤하고 Enter 가 클립보드를 덮어썼다(8a-2 리뷰). 편집 가능 여부가 바뀌어도 노드 뷰는 다시
- * 만들어지지 않으므로 편집기가 맞춘다(`syncCodeCopyTabStops`). 포커스가 서면 `:focus-within` 이 버튼 줄을 보인다
+ * 만들어지지 않으므로 편집기가 맞춘다(`node-views.ts` `syncReadOnlyTabStops` — 목차의 링크와 함께). 포커스가 서면 `:focus-within` 이 버튼 줄을 보인다
  *
  * ──────────────────────────────────────────────────────────────────────
  * 읽기 전용 — 누르는 순간에 묻는다
@@ -113,7 +113,8 @@ export function codeNodeView(
   wrap.textContent = '줄바꿈'
   const copy = el('button', 'blk-code-copy', 'code-copy')
   copy.type = 'button'
-  // 읽기 전용에서만 탭 순서에 선다 — 그때의 유일한 키보드 경로다(머리말).
+  // 읽기 전용에서만 탭 순서에 선다 — 그때의 유일한 키보드 경로다(머리말 · 편집 가능 여부가 바뀌면 `syncReadOnlyTabStops`).
+  copy.dataset.readonlyTab = ''
   copy.tabIndex = view.editable ? -1 : 0
   copy.setAttribute('aria-label', '코드 복사')
   copy.textContent = '복사'
@@ -237,14 +238,3 @@ export function codeNodeView(
   }
 }
 
-/**
- * 복사 버튼의 탭 정지를 편집 가능 여부에 맞춘다 — 편집기가 편집 가능 여부를 바꾼 뒤 부른다(머리말 "키보드"). 노드 뷰는 그때 다시
- * 만들어지지 않는다(다시 여는 중 · 닫힌 동안 편집기를 새로 만들면 그때의 읽기 전용 탭 정지를 들고 태어나, 열린 뒤에 이것이 고친다).
- * 크롬의 속성 변화는 `ignoreMutation` 이 거른다.
- *
- * ⚠ **증명하지 못한 방어** — e2e 의 잠금 장면은 연결을 다시 열며 편집기를 새로 만들어 이 길을 지나지 않는다(빼는 반사실에서 통과했다 ·
- * 8a-2). 다시 여는 중에 편집기가 만들어지는 장면을 e2e 로 세우지 못했다.
- */
-export function syncCodeCopyTabStops(view: EditorView): void {
-  for (const button of view.dom.querySelectorAll<HTMLButtonElement>('.blk-code-copy')) button.tabIndex = view.editable ? -1 : 0
-}

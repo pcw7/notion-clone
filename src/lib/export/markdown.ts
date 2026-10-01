@@ -47,6 +47,7 @@
 
 import { codeCaptionRuns, codeLanguageOf, fencedCode } from '../block/code.ts'
 import { readCaption, readImageSource, type ImageSource } from '../block/image.ts'
+import { TOC_TYPE, headingsOfBlocks, tocEntries, type TocEntry } from '../block/toc.ts'
 import { PAGE_TYPE, UNSUPPORTED_TYPE } from '../block/types.ts'
 import {
   DEFAULT_ANNOTATIONS,
@@ -117,7 +118,8 @@ export function pageToMarkdown(
   options: { readonly untitled: string },
 ): MarkdownResult {
   const losses = emptyLosses() as Counters
-  const ctx: Ctx = { links, losses }
+  let toc: readonly TocEntry[] | null = null
+  const ctx: Ctx = { links, losses, toc: () => (toc ??= tocEntries(headingsOfBlocks(page.doc.blocks))) }
 
   const title = toPlainText(page.title).trim() === '' ? [textRun(options.untitled)] : page.title
   const body = renderSiblings(page.doc.blocks, ctx).lines
@@ -432,7 +434,12 @@ export function richTextToHtml(
 
 // ── 블록 ──────────────────────────────────────────────────────────────
 
-type Ctx = { readonly links: MarkdownLinks; readonly losses: Counters }
+type Ctx = {
+  readonly links: MarkdownLinks
+  readonly losses: Counters
+  /** 이 페이지의 목차 줄(8b-1) — 목차 블록이 있을 때만 한 번 센다. 편집기와 같은 규칙이다(`block/toc.ts`). */
+  readonly toc: () => readonly TocEntry[]
+}
 
 /** 같은 목록으로 이어지는 표지. 할 일과 글머리표는 둘 다 `-` 라 한 목록이 된다. */
 const LIST_FAMILY: Readonly<Record<string, '-' | '.'>> = {
@@ -608,6 +615,21 @@ function renderBlock(block: EditorBlock, ctx: Ctx, number: number): string[] {
 
     case 'divider':
       return ['---']
+
+    case TOC_TYPE: {
+      // 목차(8b-1 · F-01-16 *"내보내기 시점에 동일 계산을 수행해 정적 목차 생성"*) — 헤딩의 글자를 목록으로. 링크는 달지 않는다
+      // (헤딩의 앵커 규칙은 렌더러마다 다르다). 표지는 `*` — 글머리표 목록(`-`)이 바로 앞에 있어도 한 목록으로 합쳐지지 않는다.
+      // 들여쓰기는 한 칸씩만 들어간다(제목 1 다음 곧바로 제목 3 이어도 목록이 끊기지 않게). 글자의 손실은 헤딩 줄이 이미 셌다.
+      const lines: string[] = []
+      let previous = -1
+      for (const entry of ctx.toc()) {
+        const depth = Math.min(entry.depth, previous + 1)
+        previous = depth
+        const inline = richTextToMarkdown(entry.title, emptyLosses()).replace(/\\\n/g, ' ').trim()
+        lines.push(`${'  '.repeat(depth)}* ${escapeLineStart(inline)}`)
+      }
+      return lines
+    }
 
     case 'code': {
       // 코드 블록(8a-1) — 울타리 · 언어. 글자는 이스케이프하지 않는다(코드 안은 마크다운이 아니다). 울타리는 코드 안의 가장
