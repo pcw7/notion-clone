@@ -437,6 +437,51 @@
 .blk-editor pre.blk-code .hljs-addition { color: var(--code-addition); background: var(--code-addition-bg); }
 .blk-editor pre.blk-code .hljs-deletion { color: var(--code-deletion); background: var(--code-deletion-bg); }
 
+/*
+ * 목차(8b-1 · F-01-16) — 노드 뷰가 그리는 `nav.blk-table_of_contents`(`toc-view.ts`). 줄은 쓰인 헤딩 수준의 순위만큼 들여 쓴다
+ * (`--toc-depth`). 링크는 글자 색을 이어받아(블록 색이 있으면 그 색) 흐린 밑줄, 올리면 배경. 헤딩이 없으면 흐린 안내 한 줄.
+ * 목차의 항목으로 간 블록이 화면 맨 위에 붙지 않게 조금 띄운다(`scroll-margin-top` — `revealBlockCommand` 의 'start').
+ */
+.blk-editor [data-block-id] {
+  scroll-margin-top: 1.5rem;
+}
+
+.blk-editor .blk-table_of_contents {
+  margin: 0.25rem 0;
+  padding: 0.125rem 0;
+}
+
+.blk-editor .blk-toc-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.blk-editor .blk-toc-item {
+  padding-inline-start: calc(var(--toc-depth, 0) * 1.5rem);
+}
+
+.blk-editor a.blk-toc-link {
+  display: block;
+  padding: 0.125rem 0.375rem;
+  border-radius: 0.25rem;
+  color: inherit;
+  text-decoration-color: rgba(55, 53, 47, 0.3);
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+.blk-editor a.blk-toc-link:hover {
+  background: rgba(55, 53, 47, 0.08);
+}
+
+.blk-editor .blk-toc-empty {
+  margin: 0;
+  padding: 0.125rem 0.375rem;
+  font-size: 0.875rem;
+  color: #9ca3af;
+}
+
 /* 블록 선택의 하이라이트가 코드 상자의 불투명한 배경에 가리지 않게(8a-1 부터의 틈) — 상자 위에 같은 색을 한 겹 더 칠한다. */
 .blk-editor .blk-selected pre.blk-code {
   box-shadow: inset 0 0 0 100vmax rgba(35, 131, 226, 0.14);
@@ -673,6 +718,9 @@
   .blk-editor .blk-code-bar button:hover:not(:disabled) { background: rgba(255, 255, 255, 0.08); color: #e5e5e5; }
   .blk-editor .blk-code-caption { color: #a3a3a3; }
   .blk-editor[contenteditable='true'] .blk-code-block[data-empty='true'] pre.blk-code::before { color: #6b7280; }
+  .blk-editor a.blk-toc-link { text-decoration-color: rgba(255, 255, 255, 0.3); }
+  .blk-editor a.blk-toc-link:hover { background: rgba(255, 255, 255, 0.08); }
+  .blk-editor .blk-toc-empty { color: #6b7280; }
   .blk-editor {
     --code-keyword: #ff7b72;
     --code-title: #d2a8ff;

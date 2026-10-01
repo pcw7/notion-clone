@@ -40,7 +40,7 @@
 import { Plugin, PluginKey, type EditorState, type Transaction } from '@tiptap/pm/state'
 
 import { BODY_BLOCK_TYPES, specOf, type BodyBlockType } from '../block/types.ts'
-import { applyTurnInto, type CommandDeps } from './commands.ts'
+import { applyTurnInto, insertParagraphAfter, type CommandDeps } from './commands.ts'
 import { containerAt } from './pm-blocks.ts'
 import { isPlainTextNode } from './schema.ts'
 
@@ -48,7 +48,7 @@ type SlashCommandBase = {
   readonly label: string
   /** 검색 대상. 한글·영문을 함께 둔다. */
   readonly aliases: readonly string[]
-  readonly group: '기본 블록' | '페이지' | '미디어'
+  readonly group: '기본 블록' | '페이지' | '미디어' | '고급 블록'
 }
 
 /** 블록 타입 변환. 트랜잭션 하나로 끝난다. */
@@ -99,6 +99,8 @@ const CATALOG: Readonly<Record<BodyBlockType, SlashCommandBase>> = {
   divider: { label: '구분선', aliases: ['구분선', 'divider', 'div', 'hr'], group: '기본 블록' },
   image: { label: '이미지', aliases: ['이미지', 'image', 'img', '사진'], group: '미디어' },
   code: { label: '코드', aliases: ['코드', 'code', 'codeblock', '```'], group: '기본 블록' },
+  // 목차(8b-1) — 노션의 'Advanced blocks' 자리.
+  table_of_contents: { label: '목차', aliases: ['목차', '차례', 'toc', 'table of contents', 'contents'], group: '고급 블록' },
 }
 
 /**
@@ -128,13 +130,14 @@ const BLOCK_COMMANDS: readonly BlockSlashCommand[] = BODY_BLOCK_TYPES.map((id) =
 /**
  * 메뉴에 나오는 커맨드 전부. 순서가 곧 노출 순서다.
  *
- * 기본 블록 → 페이지 → 미디어. 그룹으로 갈라 조립하므로 레지스트리에 타입이
+ * 기본 블록 → 페이지 → 미디어 → 고급 블록. 그룹으로 갈라 조립하므로 레지스트리에 타입이
  * 늘어나도 자기 그룹 안에 알아서 들어간다.
  */
 export const SLASH_COMMANDS: readonly SlashCommand[] = [
   ...BLOCK_COMMANDS.filter((c) => c.group === '기본 블록'),
   PAGE_COMMAND,
   ...BLOCK_COMMANDS.filter((c) => c.group === '미디어'),
+  ...BLOCK_COMMANDS.filter((c) => c.group === '고급 블록'),
 ]
 
 /**
@@ -274,7 +277,10 @@ export function runSlashCommand(
   const tr = state.tr.delete(menu.from, head)
   closeSlashMenu(tr)
   // 이미 그 타입이면 applyTurnInto 가 false 를 돌려준다 — 지우기만으로 충분하다.
-  applyTurnInto(tr, info.id, command.id, deps, 0)
+  const turned = applyTurnInto(tr, info.id, command.id, deps, 0)
+  // 텍스트를 담지 않는 타입(구분선 · 이미지 · 목차)으로 바꾸면 캐럿을 둘 자리가 없다 — 뒤에 빈 문단을 만들고 캐럿을 그리로(입력 규칙
+  // `---` 와 같은 모양 · 8b-1). 전에는 그 블록이 노드 선택으로 남아 Enter 도 글자도 받지 않았다 — 페이지의 마지막 줄이면 이어 쓸 길이 없었다.
+  if (turned && !specOf(command.id).hasRichText) insertParagraphAfter(tr, info.id, deps.newId?.())
 
   dispatch(tr.scrollIntoView())
   return true

@@ -14,14 +14,17 @@
  */
 
 import type { Node as PmNode } from '@tiptap/pm/model'
-import type { EditorView, NodeView } from '@tiptap/pm/view'
+import type { Decoration, EditorView, NodeView } from '@tiptap/pm/view'
 
 import { CODE_TYPE } from '../block/code.ts'
+import { TOC_TYPE } from '../block/toc.ts'
 import { codeNodeView, type CodeViewDeps } from './code-view.ts'
 import { imageNodeView, type ImageViewDeps } from './image-view.ts'
+import { mentionDisplay, mentionTargetOf } from './mention-label.ts'
 import { nodeNameOf } from './schema.ts'
+import { tocNodeView, type TocViewDeps } from './toc-view.ts'
 
-export type NodeViewDeps = ImageViewDeps & CodeViewDeps & {
+export type NodeViewDeps = ImageViewDeps & CodeViewDeps & TocViewDeps & {
   isCollapsed: (blockId: string) => boolean
   toggleCollapsed: (blockId: string) => void
   /** 하위 페이지로 이동. */
@@ -191,14 +194,6 @@ function pageRefNodeView(
   return { dom, stopEvent: () => true }
 }
 
-/** 멘션 attr 이 가리키는 대상 — 노션 공개 API 모양(`mention.user.id` · `mention.page.id`). 그 밖의 멘션이면 null. */
-function mentionTargetOf(attrs: unknown): { kind: 'user' | 'page'; id: string } | null {
-  const m = attrs as { type?: unknown; user?: { id?: unknown }; page?: { id?: unknown } } | null
-  if (m?.type === 'user' && typeof m.user?.id === 'string') return { kind: 'user', id: m.user.id }
-  if (m?.type === 'page' && typeof m.page?.id === 'string') return { kind: 'page', id: m.page.id }
-  return null
-}
-
 /**
  * mention — 사람 · 페이지 칩. 이름은 노드에 없다(`schema.ts` — `plainText` 는 비어 있다). 권한으로 거른 맵에서 읽고,
  * 볼 수 없는 페이지는 자리만 보이고 열리지 않는다(하위 페이지 참조와 같은 규칙 · §3.2-22).
@@ -215,19 +210,18 @@ function mentionNodeView(node: PmNode, _view: EditorView, _getPos: () => number 
   }
   dom.dataset.mentionKind = target.kind
   dom.dataset.mentionId = target.id
-  const label = deps.mentionLabel(target.kind, target.id)
+  // 글자는 목차의 줄과 같은 규칙이다(`mention-label.ts`).
+  const shown = mentionDisplay(target.kind, deps.mentionLabel(target.kind, target.id))
+  dom.textContent = shown.text
   if (target.kind === 'user') {
     dom.classList.add('blk-mention-user')
-    dom.textContent = `@${label ?? (label === null ? '알 수 없는 사용자' : '…')}`
     return { dom, stopEvent: () => true }
   }
   dom.classList.add('blk-mention-page')
-  if (label === null) {
-    dom.textContent = '볼 수 없는 페이지'
+  if (shown.denied) {
     dom.classList.add('blk-mention-denied')
     return { dom, stopEvent: () => true }
   }
-  dom.textContent = label === undefined ? '페이지' : label || '제목 없음'
   dom.setAttribute('role', 'link')
   dom.addEventListener('mousedown', (event) => event.preventDefault())
   dom.addEventListener('click', () => {
@@ -238,7 +232,7 @@ function mentionNodeView(node: PmNode, _view: EditorView, _getPos: () => number 
 
 export function createNodeViews(deps: NodeViewDeps): Record<
   string,
-  (node: PmNode, view: EditorView, getPos: () => number | undefined) => NodeView
+  (node: PmNode, view: EditorView, getPos: () => number | undefined, decorations: readonly Decoration[]) => NodeView
 > {
   return {
     to_do: (node, view, getPos) => todoNodeView(node, view, getPos),
@@ -247,6 +241,20 @@ export function createNodeViews(deps: NodeViewDeps): Record<
     // 키는 노드 이름이다 — 코드 블록의 노드는 `code_block`(8a-1).
     [nodeNameOf(CODE_TYPE)]: (node, view, getPos) => codeNodeView(node, view, getPos, deps),
     page_ref: (node, view, getPos) => pageRefNodeView(node, view, getPos, deps),
+    // 목차(8b-1) — 목록은 `toc-plugin.ts` 가 단 노드 데코레이션에서 읽는다.
+    [nodeNameOf(TOC_TYPE)]: (node, view, _getPos, decorations) => tocNodeView(node, view, decorations, deps),
     mention: (node, view, getPos) => mentionNodeView(node, view, getPos, deps),
   }
+}
+
+/**
+ * 읽기 전용에서만 탭 순서에 서는 것(코드 블록의 복사 버튼 · 목차의 링크 — `data-readonly-tab`)의 탭 정지를 편집 가능 여부에 맞춘다 —
+ * 편집기가 편집 가능 여부를 바꾼 뒤 부른다. 노드 뷰는 그때 다시 만들어지지 않는다(8a-2). 편집 중에는 Tab 이 들여쓰기라, 들여쓸 수
+ * 없는 자리의 Tab 이 멀리 있는 그것으로 포커스를 옮겨 그리로 굴렀다. 크롬의 속성 변화는 노드 뷰의 `ignoreMutation` 이 거른다.
+ *
+ * ⚠ **증명하지 못한 방어** — e2e 의 잠금 장면은 연결을 다시 열며 편집기를 새로 만들어 이 길을 지나지 않는다(빼는 반사실에서 통과했다 ·
+ * 8a-2). 다시 여는 중에 편집기가 만들어지는 장면을 e2e 로 세우지 못했다.
+ */
+export function syncReadOnlyTabStops(view: EditorView): void {
+  for (const el of view.dom.querySelectorAll<HTMLElement>('[data-readonly-tab]')) el.tabIndex = view.editable ? -1 : 0
 }

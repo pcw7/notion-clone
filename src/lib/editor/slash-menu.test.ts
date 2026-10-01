@@ -92,12 +92,12 @@ describe('커맨드 카탈로그', () => {
     assert.equal((MVP_BLOCK_TYPES as readonly string[]).includes('page'), false)
   })
 
-  test('그룹 순서는 기본 블록 → 페이지 → 미디어다', () => {
+  test('그룹 순서는 기본 블록 → 페이지 → 미디어 → 고급 블록이다', () => {
     const groups: string[] = []
     for (const c of SLASH_COMMANDS) {
       if (groups[groups.length - 1] !== c.group) groups.push(c.group)
     }
-    assert.deepEqual(groups, ['기본 블록', '페이지', '미디어'])
+    assert.deepEqual(groups, ['기본 블록', '페이지', '미디어', '고급 블록'])
   })
 
   test('모든 커맨드에 한글 별칭이 있다', () => {
@@ -304,6 +304,36 @@ describe('실행', () => {
     const a = nextId()
     const state = type(caretAt(stateWith([blk(a)]), a, 0), '지울 수 없는 글 /구분선')
     assert.equal(execute(state, 'divider'), null)
+  })
+
+  test('★ 텍스트 없는 타입(구분선 · 목차)으로 바꾸면 뒤에 빈 문단이 생기고 캐럿이 그리로 — 이어 쓸 수 있다(8b-1 이 찾은 옛 틈)', () => {
+    for (const [query, id] of [['/구분선', 'divider'], ['/목차', 'table_of_contents']] as const) {
+      const a = nextId()
+      const next = execute(type(caretAt(stateWith([blk(a)]), a, 0), query), id)
+      assert.ok(next, query)
+      const group = next.doc.child(0)
+      assert.equal(group.childCount, 2, `${query} — 뒤에 빈 문단이 없다`)
+      assert.equal(group.child(0).child(0).type.name, id)
+      const after = group.child(1)
+      assert.equal(after.child(0).type.name, 'paragraph')
+      assert.equal(after.child(0).content.size, 0)
+      assert.ok(next.selection.empty && next.selection.$from.parent === after.child(0), `${query} — 캐럿이 새 문단에 없다`)
+      // 이어 친 글자가 새 문단에 들어간다(전에는 원자의 노드 선택이라 아무 데도 가지 않았다).
+      const typed = next.apply(next.tr.insertText('다음'))
+      assert.equal(typed.doc.child(0).child(1).child(0).textContent, '다음')
+    }
+  })
+
+  test('★ /목차 · /toc 로 목차를 찾고, 빈 블록을 목차로 바꾼다 — 글이 남아 있으면 바꾸지 않는다(8b-1)', () => {
+    for (const query of ['목차', 'toc', 'table', '차례']) {
+      assert.equal(filterSlashCommands(query)[0]?.id, 'table_of_contents', query)
+    }
+    const a = nextId()
+    const next = execute(type(caretAt(stateWith([blk(a)]), a, 0), '/목차'), 'table_of_contents')
+    assert.ok(next)
+    assert.equal(firstContent(next).type.name, 'table_of_contents')
+    const b = nextId()
+    assert.equal(execute(type(caretAt(stateWith([blk(b)]), b, 0), '남는 글 /목차'), 'table_of_contents'), null)
   })
 
   test('실행 후 메뉴가 닫힌다', () => {

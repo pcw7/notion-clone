@@ -379,8 +379,8 @@ export function blockIdFromHash(hash: string): string | null {
  * 펼침은 dispatch **뒤에**(`dropBlocksCommand` 와 같은 이유: 펼침이 빈 트랜잭션으로
  * 다시 그리게 하므로, 앞에서 부르면 우리 트랜잭션이 낡은 state 위에 얹힌다).
  */
-export function revealBlockCommand(blockId: string, deps: CommandDeps): Command {
-  return (state, dispatch) => {
+export function revealBlockCommand(blockId: string, deps: CommandDeps, options: { readonly align?: 'nearest' | 'start' } = {}): Command {
+  return (state, dispatch, view) => {
     const info = findContainerById(state.doc, blockId)
     if (!info) return false
 
@@ -394,8 +394,16 @@ export function revealBlockCommand(blockId: string, deps: CommandDeps): Command 
     }
 
     if (dispatch) {
-      dispatch(state.tr.setSelection(BlockSelection.create(state.doc, info.pos)).scrollIntoView())
+      const tr = state.tr.setSelection(BlockSelection.create(state.doc, info.pos))
+      // 'start' — 목차의 항목(8b-1): 그 블록을 화면 위쪽으로 부드럽게 굴린다. PM 의 scrollIntoView 는 겨우 보이게만 굴려 헤딩이
+      // 화면 아래 끝에 걸린다. 펼친 **뒤에** 잰다 — 접힌 토글 안의 블록은 펼치기 전에는 그려지지 않았다.
+      dispatch(options.align === 'start' ? tr : tr.scrollIntoView())
       for (const id of collapsedAncestors) deps.expand?.(id)
+      if (options.align === 'start' && view) {
+        const at = findContainerById(view.state.doc, blockId)
+        const el = at === null ? null : view.nodeDOM(at.pos)
+        if (el instanceof HTMLElement) el.scrollIntoView({ block: 'start', behavior: 'smooth' })
+      }
     }
     return true
   }
