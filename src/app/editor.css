@@ -377,6 +377,66 @@
   cursor: text;
 }
 
+/*
+ * 코드 블록의 문법 강조(8a-3) — `code-highlight.ts` 가 데코레이션으로 단 highlight.js 의 클래스. 글자 조각 하나가 감싸는 범위의
+ * 클래스를 **바깥부터 모두** 진다(`hljs-string hljs-subst hljs-number` — `code-grammars.ts` `flattenTokens`). 그래서 안쪽이 이기는
+ * 것은 **이 규칙들의 순서**다 — 특정도가 같으면 뒤의 것이 이긴다. 감싸는 범위(메타 · 문자열 · 문자열 안의 식)를 앞에, 글자의 범위
+ * (키워드 · 숫자 · 이름 …)를 뒤에 둔다. 알려진 틈: 문자열 안의 식 안의 문자열(`${"x"}`)은 식의 색(본문 색)이 된다.
+ * 색은 변수다 — 테마(F-12-03)가 바꾼다. 값은 highlight.js 의 github · github-dark 테마(BSD-3)의 색을 옮겼다.
+ */
+.blk-editor {
+  --code-keyword: #cf222e;
+  --code-title: #8250df;
+  --code-constant: #0550ae;
+  --code-string: #0a3069;
+  --code-builtin: #953800;
+  --code-comment: #6e7781;
+  --code-tag: #116329;
+  --code-bullet: #6a4f00;
+  --code-addition: #116329;
+  --code-addition-bg: #dafbe1;
+  --code-deletion: #82071e;
+  --code-deletion-bg: #ffebe9;
+}
+
+.blk-editor pre.blk-code .hljs-meta { color: var(--code-constant); }
+.blk-editor pre.blk-code .hljs-section { color: var(--code-constant); font-weight: 600; }
+.blk-editor pre.blk-code .hljs-string,
+.blk-editor pre.blk-code .hljs-regexp { color: var(--code-string); }
+/* 문자열 안의 식(템플릿 · f-string) — 본문 색으로 되돌린다. 그 안의 키워드 · 숫자는 아래 규칙이 다시 칠한다. */
+.blk-editor pre.blk-code .hljs-subst { color: inherit; }
+.blk-editor pre.blk-code .hljs-comment,
+.blk-editor pre.blk-code .hljs-code,
+.blk-editor pre.blk-code .hljs-formula { color: var(--code-comment); }
+.blk-editor pre.blk-code .hljs-attr,
+.blk-editor pre.blk-code .hljs-attribute,
+.blk-editor pre.blk-code .hljs-literal,
+.blk-editor pre.blk-code .hljs-number,
+.blk-editor pre.blk-code .hljs-operator,
+.blk-editor pre.blk-code .hljs-variable,
+.blk-editor pre.blk-code .hljs-selector-attr,
+.blk-editor pre.blk-code .hljs-selector-class,
+.blk-editor pre.blk-code .hljs-selector-id { color: var(--code-constant); }
+.blk-editor pre.blk-code .hljs-keyword,
+.blk-editor pre.blk-code .hljs-doctag,
+.blk-editor pre.blk-code .hljs-template-tag,
+.blk-editor pre.blk-code .hljs-template-variable,
+.blk-editor pre.blk-code .hljs-type,
+.blk-editor pre.blk-code .hljs-variable.language_ { color: var(--code-keyword); }
+.blk-editor pre.blk-code .hljs-title { color: var(--code-title); }
+.blk-editor pre.blk-code .hljs-built_in,
+.blk-editor pre.blk-code .hljs-symbol { color: var(--code-builtin); }
+.blk-editor pre.blk-code .hljs-name,
+.blk-editor pre.blk-code .hljs-quote,
+.blk-editor pre.blk-code .hljs-selector-tag,
+.blk-editor pre.blk-code .hljs-selector-pseudo { color: var(--code-tag); }
+.blk-editor pre.blk-code .hljs-bullet { color: var(--code-bullet); }
+.blk-editor pre.blk-code .hljs-emphasis { font-style: italic; }
+.blk-editor pre.blk-code .hljs-strong { font-weight: 600; }
+.blk-editor pre.blk-code .hljs-link { text-decoration: underline; }
+.blk-editor pre.blk-code .hljs-addition { color: var(--code-addition); background: var(--code-addition-bg); }
+.blk-editor pre.blk-code .hljs-deletion { color: var(--code-deletion); background: var(--code-deletion-bg); }
+
 /* 블록 선택의 하이라이트가 코드 상자의 불투명한 배경에 가리지 않게(8a-1 부터의 틈) — 상자 위에 같은 색을 한 겹 더 칠한다. */
 .blk-editor .blk-selected pre.blk-code {
   box-shadow: inset 0 0 0 100vmax rgba(35, 131, 226, 0.14);
@@ -613,6 +673,20 @@
   .blk-editor .blk-code-bar button:hover:not(:disabled) { background: rgba(255, 255, 255, 0.08); color: #e5e5e5; }
   .blk-editor .blk-code-caption { color: #a3a3a3; }
   .blk-editor[contenteditable='true'] .blk-code-block[data-empty='true'] pre.blk-code::before { color: #6b7280; }
+  .blk-editor {
+    --code-keyword: #ff7b72;
+    --code-title: #d2a8ff;
+    --code-constant: #79c0ff;
+    --code-string: #a5d6ff;
+    --code-builtin: #ffa657;
+    --code-comment: #8b949e;
+    --code-tag: #7ee787;
+    --code-bullet: #f2cc60;
+    --code-addition: #aff5b4;
+    --code-addition-bg: #033a16;
+    --code-deletion: #ffdcd7;
+    --code-deletion-bg: #67060c;
+  }
   .blk-to_do .blk-checkbox { accent-color: #ededed; }
 
   .blk-color[data-color='gray_background'],   [data-color='gray_background']   { background: #2f2f2f; }

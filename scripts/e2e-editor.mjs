@@ -4299,6 +4299,308 @@ async function main() {
       await sleep(1500)
     }
 
+    if (sectionIf('코드 블록 강조 (8a-3 · F-01-14)')) {
+      // 문법 강조는 데코레이션이다 — 화면의 span 을 보고, 글자 · 클립보드에는 섞이지 않는지 본다. 문법은 지연 로드라 처음 보는 언어를
+      // 고르면 글자를 더 치지 않아도 들어온 뒤에 칠해야 한다. 1만 줄 붙여넣기는 보이는 줄만 칠한다(가상화). 자기 데이터를 스스로
+      // 만든다 — E2E_ONLY 로 홀로 돈다.
+      const stamp = Date.now()
+      const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
+      const hlPage = (await (await fetch(pagesUrl, {
+        method: 'POST', headers: authed, body: JSON.stringify({ title: `코드 강조 ${stamp}` }),
+      })).json()).page.id
+      const hb = { top: randomUUID(), py: randomUUID(), plain: randomUUID(), js: randomUUID(), big: randomUUID(), bottom: randomUUID() }
+      const PY_TEXT = 'def f(x):\n    return "hi"  # c'
+      const RUST_TEXT = 'fn main() { let x = 1; }'
+      // 템플릿 문자열 안의 식 — 칠하는 CSS 의 순서(감싸는 범위 → 글자 범위)를 색으로 본다.
+      const JS_TEXT = 'const s = `a${b + 1}`'
+      const codeBlock = (id, text, properties = {}) => ({ id, type: 'code', title: text === '' ? [] : [textRun(text)], properties, format: {}, children: [] })
+      await saveBody(hlPage, {
+        blocks: [
+          block(hb.top, 'paragraph', '맨 위'),
+          codeBlock(hb.py, PY_TEXT, { language: 'python' }),
+          codeBlock(hb.plain, RUST_TEXT),
+          codeBlock(hb.js, JS_TEXT, { language: 'javascript' }),
+          codeBlock(hb.big, '', { language: 'javascript' }),
+          block(hb.bottom, 'paragraph', '끝'),
+        ],
+      })
+
+      const CB = (id) => `[data-block-id="${id}"] .blk-code-block`
+      const PRE = (id) => `${CB(id)} pre.blk-code`
+      const HL = '[class*="hljs-"]'
+      const LANG_MENU = '[data-testid="code-language-menu"]'
+      const LANG_SEARCH = '[data-testid="code-language-search"]'
+      /** 그 블록에 칠한 (글자, 클래스). */
+      const paintedIn = (id) => evaluate(`[...document.querySelectorAll('${PRE(id)} ${HL}')].map((s) => [s.textContent, s.className])`)
+      /** 그 블록에 그 글자 · 그 클래스의 span 이 있는가 — 식(문자열)이다. */
+      const hasPaint = (id, text, cls) =>
+        `[...document.querySelectorAll('${PRE(id)} ${HL}')].some((s) => s.textContent === ${JSON.stringify(text)} && s.classList.contains(${JSON.stringify(cls)}))`
+      const codeText = (id) => evaluate(`document.querySelector('${PRE(id)}')?.textContent ?? null`)
+      /** 코드 블록 글자의 offset 자리에 캐럿을 둔다 — DOM 선택을 옮기면 편집기가 selectionchange 로 따라온다. */
+      const caretInCode = async (id, offset) => {
+        await evaluate(`(() => {
+          document.querySelector('.blk-editor').focus()
+          const pre = document.querySelector('${PRE(id)}')
+          const walker = document.createTreeWalker(pre, NodeFilter.SHOW_TEXT)
+          let left = ${offset}
+          let node
+          let lastNode = null
+          while ((node = walker.nextNode())) {
+            lastNode = node
+            if (node.data.length >= left) { window.getSelection().collapse(node, left); return }
+            left -= node.data.length
+          }
+          if (lastNode) window.getSelection().collapse(lastNode, lastNode.data.length)
+          else window.getSelection().collapse(pre, 0)
+        })()`)
+        await sleep(150)
+      }
+      /** 캐럿이 그 코드 블록 글자의 몇째 자리인가 — 밖이면 -1. */
+      const caretOffset = (id) => evaluate(`(() => {
+        const pre = document.querySelector('${PRE(id)}')
+        const sel = window.getSelection()
+        if (!pre || !sel || sel.rangeCount === 0 || !pre.contains(sel.anchorNode)) return -1
+        const range = document.createRange()
+        range.setStart(pre, 0)
+        range.setEnd(sel.anchorNode, sel.anchorOffset)
+        return range.toString().length
+      })()`)
+      /** 코드 블록에 마우스를 올리고 그 크롬 버튼을 누른다 — 그 자리의 맨 위 요소가 그 버튼일 때만. */
+      const clickChrome = async (id, testid) => {
+        const at = await evaluate(`(() => {
+          const pre = document.querySelector('${PRE(id)}')
+          if (!pre) return null
+          pre.scrollIntoView({ block: 'center' })
+          const r = pre.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + Math.min(r.height / 2, 12) }
+        })()`)
+        if (!at) return false
+        await move(at.x, at.y)
+        const end = Date.now() + 2000
+        let box = null
+        while (box === null && Date.now() < end) {
+          box = await evaluate(`(() => {
+            const el = document.querySelector('${CB(id)} [data-testid="${testid}"]')
+            if (!el) return null
+            const r = el.getBoundingClientRect()
+            const x = r.x + r.width / 2, y = r.y + r.height / 2
+            const top = document.elementFromPoint(x, y)
+            return r.width > 0 && top !== null && (top === el || el.contains(top)) ? { x, y } : null
+          })()`)
+          if (box === null) await sleep(40)
+        }
+        if (box === null) return false
+        await click(box.x, box.y)
+        await sleep(150)
+        return true
+      }
+      const { loadDocState } = await import(new URL('../src/lib/collab/doc-store.ts', import.meta.url).href)
+      const { appendDocUpdate } = await import(new URL('../src/lib/block/body-write.ts', import.meta.url).href)
+      const { peer, edit, findBlock, changesSince } = await import(new URL('../src/lib/testing/collab-peers.ts', import.meta.url).href)
+      let remoteClient = 9500
+      /** 다른 참여자의 편집 — 쌓으면 협업 서버가 열린 편집기에 퍼뜨린다(커밋 신호). */
+      const remoteEdit = async (change) => {
+        const state = await loadDocState(ctx, hlPage)
+        if (!state.ok) throw new Error('본문을 읽지 못했다')
+        remoteClient += 1
+        const client = peer(state.value.ydoc, remoteClient)
+        change(client)
+        const result = await appendDocUpdate(ctx, hlPage, changesSince(client, state.value.ydoc), { origin: 'editor' })
+        if (!result.ok) throw new Error(`원격 편집을 받지 않았다: ${JSON.stringify(result)}`)
+      }
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${hlPage}` })
+      check('전제 — 코드 블록이 그려졌고 편집할 수 있다',
+        await waitFor(`!!document.querySelector('${PRE(hb.py)}') && document.querySelector('.blk-editor')?.getAttribute('contenteditable') === 'true'`, 15000))
+
+      // ① 열면 칠한다 — 문법은 지연 로드라 들어온 뒤에
+      check('★ 언어가 python 인 코드 블록이 칠해진다 — 키워드 · 문자열 · 주석이 각자의 클래스',
+        await waitFor(`${hasPaint(hb.py, 'def', 'hljs-keyword')} && ${hasPaint(hb.py, '"hi"', 'hljs-string')} && ${hasPaint(hb.py, '# c', 'hljs-comment')}`, 8000),
+        JSON.stringify(await paintedIn(hb.py)))
+      const colors = await evaluate(`(() => {
+        const pre = document.querySelector('${PRE(hb.py)}')
+        const kw = pre.querySelector('.hljs-keyword')
+        const str = pre.querySelector('.hljs-string')
+        return { pre: getComputedStyle(pre).color, kw: kw && getComputedStyle(kw).color, str: str && getComputedStyle(str).color }
+      })()`)
+      check('★ 색이 실제로 다르다 — 키워드 · 문자열 · 본문이 서로 다른 색(CSS 가 붙었다)',
+        !!colors.kw && !!colors.str && colors.kw !== colors.pre && colors.str !== colors.pre && colors.kw !== colors.str, JSON.stringify(colors))
+      check('★ 언어가 없는 코드 블록은 칠하지 않는다', (await paintedIn(hb.plain)).length === 0, JSON.stringify(await paintedIn(hb.plain)))
+      check('칠해도 글자는 그대로다', (await codeText(hb.py)) === PY_TEXT, JSON.stringify(await codeText(hb.py)))
+
+      // ② 처음 보는 언어를 고르면 — 문법을 불러온 뒤, 글자를 더 치지 않아도 칠한다(문법이 들어왔다는 메타)
+      check('전제 — 언어 목록이 열리고 검색칸이 포커스를 가졌다',
+        (await clickChrome(hb.plain, 'code-language')) && (await waitFor(`document.activeElement === document.querySelector('${LANG_SEARCH}')`, 3000)))
+      await typeText('rust')
+      await key('Enter')
+      check('★ 처음 보는 언어(Rust)를 고르면 문법을 불러와 칠한다 — 글자를 더 치지 않아도',
+        (await waitFor(`!document.querySelector('${LANG_MENU}')`, 3000))
+          && (await waitFor(`${hasPaint(hb.plain, 'fn', 'hljs-keyword')} && ${hasPaint(hb.plain, '1', 'hljs-number')}`, 8000)),
+        JSON.stringify(await paintedIn(hb.plain)))
+
+      // ③ 복사는 글자만 — 클립보드 HTML 은 문서에서 만든다(화면의 span 이 아니다)
+      await evaluate(`(() => {
+        document.querySelector('.blk-editor').focus()
+        const range = document.createRange()
+        range.selectNodeContents(document.querySelector('${PRE(hb.py)}'))
+        const sel = window.getSelection()
+        sel.removeAllRanges()
+        sel.addRange(range)
+      })()`)
+      await sleep(200)
+      const copied = await evaluate(`(() => {
+        const dt = new DataTransfer()
+        document.querySelector('.blk-editor').dispatchEvent(new ClipboardEvent('copy', { clipboardData: dt, bubbles: true, cancelable: true }))
+        return { text: dt.getData('text/plain'), html: dt.getData('text/html') }
+      })()`)
+      check('★ 칠한 코드를 복사하면 글자만 — 클립보드의 HTML 에 강조 클래스가 없다',
+        copied.text.includes('return "hi"') && copied.html.includes('return') && !copied.html.includes('hljs'), JSON.stringify(copied).slice(0, 400))
+
+      // ④ 고치면 다시 칠한다 — 작은 블록은 곧바로
+      await caretInCode(hb.js, JS_TEXT.length)
+      check('전제 — js 블록 끝에 캐럿', (await caretOffset(hb.js)) === JS_TEXT.length, String(await caretOffset(hb.js)))
+      await typeText(' + 42')
+      check('★ 친 글자가 곧바로 칠해진다 — 숫자 42', await waitFor(hasPaint(hb.js, '42', 'hljs-number'), 3000), JSON.stringify(await paintedIn(hb.js)))
+      // 글자 조각은 감싸는 범위의 클래스를 모두 진다 — 안쪽이 이기는 것은 editor.css 의 규칙 순서다.
+      const nested = await evaluate(`(() => {
+        const pre = document.querySelector('${PRE(hb.js)}')
+        const color = (text) => {
+          const span = [...pre.querySelectorAll('${HL}')].find((s) => s.textContent === text)
+          return span ? getComputedStyle(span).color : null
+        }
+        return { pre: getComputedStyle(pre).color, string: color('\u0060a'), subst: color('\u0024{b + '), inner: color('1'), number: color('42') }
+      })()`)
+      check('★ 문자열 안의 식은 본문 색 · 그 안의 숫자는 숫자 색 — 안쪽 범위가 이긴다(CSS 의 순서)',
+        nested.string !== null && nested.string !== nested.pre && nested.subst === nested.pre && nested.inner !== null && nested.inner === nested.number,
+        JSON.stringify(nested))
+
+      // ⑤ 한글 조합 — 조합하는 동안 그 글자 둘레의 DOM 을 다시 그리지 않고, 끝나면 칠한다
+      await typeText(' // ')
+      await waitFor(hasPaint(hb.js, '//', 'hljs-comment'), 3000)
+      await send('Input.imeSetComposition', { text: 'ㅎ', selectionStart: 1, selectionEnd: 1 })
+      await sleep(100)
+      // 조합이 시작된 뒤의 코드 DOM 을 지켜본다 — 조합하는 글자는 브라우저가 텍스트 노드 안에서 바꾼다(characterData). 요소를 넣고 빼는
+      // 변화(childList)는 PM 이 데코레이션을 다시 그린 것이다.
+      await evaluate(`(() => {
+        window.__composeNode = window.getSelection()?.anchorNode ?? null
+        window.__composeRedraws = []
+        window.__composeObserver = new MutationObserver((records) => {
+          for (const r of records) {
+            if (r.type === 'childList') window.__composeRedraws.push(r.target.nodeName + ' +' + r.addedNodes.length + ' -' + r.removedNodes.length)
+          }
+        })
+        window.__composeObserver.observe(document.querySelector('${PRE(hb.js)}'), { childList: true, subtree: true })
+      })()`)
+      await send('Input.imeSetComposition', { text: '하', selectionStart: 1, selectionEnd: 1 })
+      await send('Input.imeSetComposition', { text: '한', selectionStart: 1, selectionEnd: 1 })
+      // 미룬 다시 읽기의 기다림(150ms)보다 오래 조합한다 — 그 사이에 다시 칠하면 조합하는 글자 둘레의 span 이 바뀐다.
+      await sleep(500)
+      const during = await evaluate(`(() => {
+        window.__composeObserver.disconnect()
+        const n = window.getSelection()?.anchorNode ?? null
+        return { same: n !== null && n === window.__composeNode && n.isConnected, text: n?.textContent ?? null, redraws: window.__composeRedraws }
+      })()`)
+      await send('Input.insertText', { text: '한' })
+      await typeText('글')
+      // 둘 다 ProseMirror 의 조합 보호가 지키는 것이다 — 강조의 미루기(apply · 뷰)를 빼도 통과했다(8a-3 반사실 e4 · e5 · 증명하지 못한
+      // 방어). 강조가 그 보호를 깨지 않는지 본다.
+      check('조합하는 동안 강조가 코드의 DOM 을 다시 그리지 않는다', during.redraws.length === 0, JSON.stringify(during))
+      check('조합하는 동안 조합 중인 글자의 텍스트 노드가 그대로다', during.same, JSON.stringify(during))
+      check('★ 조합이 끝나면 글자가 그대로 들어가고 주석으로 칠한다',
+        await waitFor(`document.querySelector('${PRE(hb.js)}').textContent === ${JSON.stringify(`${JS_TEXT} + 42 // 한글`)} && ${hasPaint(hb.js, '// 한글', 'hljs-comment')}`, 3000),
+        JSON.stringify([await codeText(hb.js), await paintedIn(hb.js)]))
+
+      // ⑥ 다른 참여자가 언어를 바꾸면 내 화면도 그 문법으로 다시 칠한다
+      await remoteEdit((client) => edit(client, (tr, doc) => {
+        const { pos, node } = findBlock(doc, hb.py)
+        const content = node.firstChild
+        tr.setNodeMarkup(pos + 1, undefined, { ...content.attrs, props: { ...content.attrs.props, language: 'javascript' } })
+      }))
+      check('★ 다른 참여자가 언어를 javascript 로 바꾸면 다시 칠한다 — def 는 더 이상 키워드가 아니고 return 은 키워드다',
+        await waitFor(`!${hasPaint(hb.py, 'def', 'hljs-keyword')} && ${hasPaint(hb.py, 'return', 'hljs-keyword')}`, 8000),
+        JSON.stringify(await paintedIn(hb.py)))
+
+      // ⑦ 1만 줄 붙여넣기 — 보이는 줄 ± 여백만 칠한다(가상화)
+      const BIG_LINES = 10_000
+      const bigText = Array.from({ length: BIG_LINES }, (_, i) => `const v${i} = ${i} // c${i}`).join('\n')
+      await caretInCode(hb.big, 0)
+      check('전제 — 빈 js 블록에 캐럿', (await caretOffset(hb.big)) === 0, String(await caretOffset(hb.big)))
+      const pasteAt = Date.now()
+      await evaluate(`(() => {
+        const dt = new DataTransfer()
+        dt.setData('text/plain', ${JSON.stringify(bigText)})
+        document.querySelector('.ProseMirror').dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }))
+      })()`)
+      const pasted = await waitFor(`document.querySelector('${PRE(hb.big)}')?.textContent.length === ${bigText.length}`, 30000)
+      const pasteMs = Date.now() - pasteAt
+      check('전제 — 1만 줄을 코드 블록에 붙여넣었다', pasted, `${pasteMs}ms`)
+      const LAST = `// c${BIG_LINES - 1}`
+      check('★ 1만 줄 — 붙여넣은 끝(보이는 줄)이 칠해진다', await waitFor(hasPaint(hb.big, LAST, 'hljs-comment'), 8000),
+        JSON.stringify((await paintedIn(hb.big)).slice(-3)))
+      const spanCount = () => evaluate(`document.querySelectorAll('${PRE(hb.big)} ${HL}').length`)
+      const atEnd = await spanCount()
+      // 다 칠하면 줄마다 셋(const · 숫자 · 주석) — 3만 개다. 보이는 줄 ± 여백 80줄이면 수백 개.
+      check('★ 1만 줄 — 칠한 span 이 블록 크기와 상관없이 묶인다(다 칠하면 3만 개)', atEnd > 0 && atEnd < 3000, String(atEnd))
+      check('★ 1만 줄 — 보이지 않는 첫 줄은 칠하지 않는다', !(await evaluate(hasPaint(hb.big, '// c0', 'hljs-comment'))))
+
+      // 굴린다 — 맨 위로 · 가운데로. 보이게 된 줄을 칠하고 멀어진 줄은 놓는다.
+      await evaluate(`document.querySelector('${PRE(hb.big)}').scrollIntoView({ block: 'start' })`)
+      check('★ 1만 줄 — 맨 위로 굴리면 첫 줄을 칠하고 끝 줄은 놓는다',
+        await waitFor(`${hasPaint(hb.big, '// c0', 'hljs-comment')} && !${hasPaint(hb.big, LAST, 'hljs-comment')}`, 5000),
+        String(await spanCount()))
+      await evaluate(`(() => {
+        const pre = document.querySelector('${PRE(hb.big)}')
+        // 5000째 줄의 글자 위치 — 그 줄이 화면 가운데에 오게 굴린다(편집기를 품은 스크롤 상자 · 없으면 문서).
+        const walker = document.createTreeWalker(pre, NodeFilter.SHOW_TEXT)
+        const target = ${JSON.stringify('const v5000 =')}
+        let node
+        while ((node = walker.nextNode())) {
+          const at = node.data.indexOf(target)
+          if (at === -1) continue
+          const range = document.createRange()
+          range.setStart(node, at)
+          range.setEnd(node, at + target.length)
+          let box = pre.parentElement
+          while (box && box !== document.body) {
+            const style = getComputedStyle(box).overflowY
+            if ((style === 'auto' || style === 'scroll') && box.scrollHeight > box.clientHeight) break
+            box = box.parentElement
+          }
+          const scroller = box && box !== document.body ? box : document.scrollingElement
+          scroller.scrollTop += range.getBoundingClientRect().top - window.innerHeight / 2
+          return
+        }
+      })()`)
+      check('★ 1만 줄 — 가운데로 굴리면 그 줄을 칠하고 첫 줄 · 끝 줄은 칠하지 않는다',
+        await waitFor(`${hasPaint(hb.big, '// c5000', 'hljs-comment')} && !${hasPaint(hb.big, '// c0', 'hljs-comment')} && !${hasPaint(hb.big, LAST, 'hljs-comment')}`, 5000),
+        String(await spanCount()))
+
+      // 끝에서 글자를 친다 — 칠 때마다 1만 줄을 다시 읽지 않는다(미뤘다가 손을 멈추면 그 창만)
+      await caretInCode(hb.big, bigText.length)
+      check('전제 — 1만 줄 블록 끝에 캐럿', (await caretOffset(hb.big)) === bigText.length, String(await caretOffset(hb.big)))
+      const times = []
+      for (let i = 0; i < 5; i += 1) {
+        const t0 = Date.now()
+        await send('Input.insertText', { text: 'x' })
+        await evaluate('0')
+        times.push(Date.now() - t0)
+      }
+      const median = [...times].sort((a, b) => a - b)[2]
+      check('★ 1만 줄 — 끝에서 글자를 쳐도 멈추지 않는다(한 글자 중앙값 200ms 미만)', median < 200, times.join(','))
+      console.log(`      (붙여넣기 ${pasteMs}ms · 끝에서 칠한 span ${atEnd}개 · 한 글자 ${times.join(', ')}ms)`)
+      check('★ 1만 줄 — 손을 멈추면 친 글자까지 다시 칠한다', await waitFor(hasPaint(hb.big, `${LAST}xxxxx`, 'hljs-comment'), 5000),
+        JSON.stringify((await paintedIn(hb.big)).slice(-2)))
+
+      // ⑧ 읽기 전용에서도 칠한다 — 열어 둔 채로 잠근다(편집기를 다시 만든다)
+      const locked = await fetch(`${pagesUrl}/${hlPage}/lock`, { method: 'PUT', headers: authed })
+      check('전제 — 잠갔고 열어 둔 편집기가 읽기 전용이 됐다',
+        locked.ok && (await waitFor(`document.querySelector('.blk-editor')?.getAttribute('contenteditable') === 'false'`, 15000)), String(locked.status))
+      check('★ 읽기 전용 편집기도 칠한다', await waitFor(`${hasPaint(hb.py, '"hi"', 'hljs-string')} && ${hasPaint(hb.plain, 'fn', 'hljs-keyword')}`, 8000),
+        JSON.stringify(await paintedIn(hb.py)))
+      await fetch(`${pagesUrl}/${hlPage}/lock`, { method: 'DELETE', headers: authed })
+      await sleep(1500)
+    }
+
     if (sectionIf('코멘트 패널 · 인박스 (F-05-08 · F-11-07)')) {
       const commentPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
         method: 'POST',
