@@ -958,7 +958,7 @@ CREATE VIEW live_block AS SELECT * FROM block WHERE lifecycle = 'live';
 | B9 | 외부 origin 행의 **본문 블록은 언제나 native** 다. block 에 `origin` 컬럼을 두지 않는다(negative requirement) | 15 R4 |
 | B10 | `is_alive`/`alive`/`archived`/`deleted_at`/`position`/`order_idx`(형제 순서 용도)/`path` 컬럼은 존재하지 않는다 | C-1, C-10, X-7 |
 
-**[보강] 코드 블록(`type='code'`)의 저장 모양** ⟨잔여 묶음 8a-1 ①~③ · 8a-2 ④~⑧ · F-01-14⟩
+**[보강] 코드 블록(`type='code'`)의 저장 모양** ⟨잔여 묶음 8a-1 ①~③ · 8a-2 ④~⑧ · 8a-3 ⑨ · F-01-14⟩
 
 > 초판은 `properties` 주석에 `language`, `format` 주석에 `code_wrap` 만 적었다. 01 F-01-14 *"공개 API 페이로드: `rich_text[]`(코드
 > 본문), `language`, `caption[]`. 자식 블록 불가"* · 데이터 모델 함의 *"`language` 는 enum 이 아니라 문자열로 저장"*.
@@ -1005,6 +1005,11 @@ CREATE VIEW live_block AS SELECT * FROM block WHERE lifecycle = 'live';
 > 않는다** — 계약을 어긴 값은 거부하고(④ · 캡션은 런마다 계약 · 읽기가 잘라 낼 만큼 깊은(32단계) 속성), 계약 안의 값은 쓰기 전에 같은
 > 정규형으로 고친다(요청 모양 런의 `plain_text` 를 다시 계산 · U+0000). 그러지 않으면 같은 본문을 저장할 때마다 수선이 고쳐 써 로그가
 > 자랐다.
+> ⑨ **[8a-3] 문법 강조는 저장하지 않는다** — 보는 사람의 화면에만 있다(편집기의 데코레이션). `properties.title` 은 ① 그대로 서식 없는
+> 평문 런이고, Y.Doc · `doc_update` · 행 · 색인 · 내보내기 어디에도 색이 들어가지 않는다. 저장값(④ 의 이름) → 칠할 문법의 표는 코드에
+> 둔다(`editor/code-grammars.ts` — 01 F-01-14 *"지원 목록은 코드 레지스트리에"*): 하이라이터를 바꾸거나 문법을 더해도 마이그레이션이
+> 없다. **목록 밖의 값 · plain text · 문법이 없는 언어는 칠하지 않는다**(보존한 값은 라벨처럼 원문 그대로 둔다 — 별칭으로 어림하지
+> 않는다).
 
 **상태 전이 (type='page' 블록만)**
 
