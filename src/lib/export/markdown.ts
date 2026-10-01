@@ -45,7 +45,7 @@
  * 같은 페이지가 ZIP 안에서는 상대 경로, 범위 밖에서는 웹 주소가 되기 때문이다.
  */
 
-import { codeLanguageOf, fencedCode } from '../block/code.ts'
+import { codeCaptionRuns, codeLanguageOf, fencedCode } from '../block/code.ts'
 import { readCaption, readImageSource, type ImageSource } from '../block/image.ts'
 import { PAGE_TYPE, UNSUPPORTED_TYPE } from '../block/types.ts'
 import {
@@ -609,10 +609,13 @@ function renderBlock(block: EditorBlock, ctx: Ctx, number: number): string[] {
     case 'divider':
       return ['---']
 
-    case 'code':
+    case 'code': {
       // 코드 블록(8a-1) — 울타리 · 언어. 글자는 이스케이프하지 않는다(코드 안은 마크다운이 아니다). 울타리는 코드 안의 가장
-      // 긴 백틱 줄보다 길다(`markdownFence`).
-      return fencedCode(toPlainText(block.title ?? []), codeLanguageOf(block.properties))
+      // 긴 백틱 줄보다 길다(`markdownFence`). 캡션(8a-2)은 울타리 뒤의 문단이다 — 이스케이프를 지난다(버리면 losses 없이 잃는다).
+      const fence = fencedCode(toPlainText(block.title ?? []), codeLanguageOf(block.properties))
+      const caption = trimBreaks(richTextToMarkdown(codeCaptionRuns(block.properties), ctx.losses))
+      return caption === '' ? fence : [...fence, '', ...escapeLineStarts(caption).split('\n')]
+    }
 
     case 'image': {
       const source = readImageSource(block.properties)

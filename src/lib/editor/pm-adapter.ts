@@ -37,6 +37,8 @@
 
 import { Fragment, Node as PmNode, Mark } from '@tiptap/pm/model'
 
+import { sanitizeBlockAttrs } from '../block/props.ts'
+import { isPlainRecord, jsonSafe, withoutNul } from '../contracts/json-safe.ts'
 import {
   DEFAULT_ANNOTATIONS,
   isColor,
@@ -96,8 +98,9 @@ export function runsToInline(runs: readonly RichTextRun[]): PmNode[] {
     const link = run.text?.link?.url ?? null
     const marks = marksFor(annotations, link)
 
+    // 글자는 읽기(정규화)와 같은 모양으로 쓴다 — U+0000 은 jsonb 가 받지 않아 읽을 때마다 고쳐 쓰게 된다(8a-2 · `nul_replaced`).
     if (run.type === 'text') {
-      const content = run.text?.content ?? ''
+      const content = withoutNul(run.text?.content ?? '')
       if (content === '') continue
       out.push(blockSchema.text(content, marks))
       continue
@@ -105,12 +108,17 @@ export function runsToInline(runs: readonly RichTextRun[]): PmNode[] {
 
     // 원자의 서식은 attr 에도 비춘다 — 협업 바인딩이 Y.Doc 에 싣는 것은 attr 뿐이다(`atom-marks.ts`).
     if (run.type === 'equation') {
-      out.push(createInlineAtom(blockSchema.nodes[EQUATION_NODE], { expression: run.equation?.expression ?? '' }, marks))
+      out.push(createInlineAtom(blockSchema.nodes[EQUATION_NODE], { expression: withoutNul(run.equation?.expression ?? '') }, marks))
       continue
     }
 
+    const mention = jsonSafe(run.mention ?? {})
     out.push(
-      createInlineAtom(blockSchema.nodes[MENTION_NODE], { mention: run.mention ?? {}, plainText: run.plain_text ?? '' }, marks),
+      createInlineAtom(
+        blockSchema.nodes[MENTION_NODE],
+        { mention: isPlainRecord(mention) ? mention : {}, plainText: withoutNul(run.plain_text ?? '') },
+        marks,
+      ),
     )
   }
 
@@ -163,8 +171,10 @@ export function inlineToRuns(fragment: Fragment): RichTextRun[] {
       return
     }
 
+    // 원자의 attr 은 협업 참여자가 무엇이든 쓸 수 있다 — 문자열일 때만 읽는다(`String()` 은 던질 수 있다 · 8a-2). 서버의 읽기는 정규화가
+    // 이미 고쳤다(`invalid_inline_fixed`) — 이것은 편집기 쪽 읽기(복사 · 내보내기)의 방어다.
     if (node.type.name === EQUATION_NODE) {
-      const expression = String(node.attrs.expression ?? '')
+      const expression = typeof node.attrs.expression === 'string' ? node.attrs.expression : ''
       runs.push({
         type: 'equation',
         annotations,
@@ -176,11 +186,12 @@ export function inlineToRuns(fragment: Fragment): RichTextRun[] {
     }
 
     if (node.type.name === MENTION_NODE) {
-      const mention = (node.attrs.mention ?? {}) as { type?: MentionType }
+      const safe = jsonSafe(node.attrs.mention)
+      const mention = (isPlainRecord(safe) ? safe : {}) as { type?: MentionType }
       runs.push({
         type: 'mention',
         annotations,
-        plain_text: String(node.attrs.plainText ?? ''),
+        plain_text: typeof node.attrs.plainText === 'string' ? node.attrs.plainText : '',
         href: null,
         mention: { type: mention.type ?? 'page', ...mention },
       })
@@ -193,10 +204,16 @@ export function inlineToRuns(fragment: Fragment): RichTextRun[] {
 // ── EditorDoc → ProseMirror doc ───────────────────────────────────────
 
 function contentNodeFor(block: EditorBlock): PmNode {
-  const props = { ...(block.properties ?? {}) }
   // 타입이 받지 않는 색은 뺀다 — 투영(`projectDocument`)이 행에서 빼는 것과 같은 규칙(`normalizeFormat`). Y.Doc 에만 남으면 행과
-  // Y.Doc 이 다른 본문이 된다(8a-1 이 코드 블록으로 찾았다 · 구분선 · 이미지도 같았다).
-  const format = normalizeFormat(isKnownBlockType(block.type) ? block.type : UNSUPPORTED_TYPE, block.format)
+  // Y.Doc 이 다른 본문이 된다(8a-1 이 코드 블록으로 찾았다 · 구분선 · 이미지도 같았다). 속성도 읽기의 정화(`sanitizeBlockAttrs`)를
+  // 거친 모양으로 쓴다 — 받은 캡션의 `plain_text` 가 없거나 낡으면 읽기가 다시 계산해 **저장할 때마다 수선이 고쳐 썼다**(8a-2 리뷰 ·
+  // 정본 ⑧ — 로그가 저장마다 한 줄씩 자랐다).
+  const known: BlockType = isKnownBlockType(block.type) ? block.type : UNSUPPORTED_TYPE
+  const { props, format } = sanitizeBlockAttrs(
+    block.type === PAGE_TYPE ? PAGE_TYPE : known,
+    { ...(block.properties ?? {}) },
+    normalizeFormat(known, block.format),
+  )
 
   if (block.type === PAGE_TYPE) {
     // 참조 노드는 제목을 싣지 않는다(`schema.ts` · HANDOFF §3.2-22). 받은 문서에 제목이 있어도(옛 클라이언트 · 저장 큐) 버린다 —
@@ -223,7 +240,7 @@ function contentNodeFor(block: EditorBlock): PmNode {
  */
 export function inlineForType(type: BlockType, runs: readonly RichTextRun[] | undefined): PmNode[] {
   if (!specOf(type).plainText) return runsToInline(runs ?? [])
-  const text = plainTextOfRuns(runs)
+  const text = withoutNul(plainTextOfRuns(runs))
   return text === '' ? [] : [blockSchema.text(text)]
 }
 

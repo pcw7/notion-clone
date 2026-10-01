@@ -42,9 +42,12 @@
 
 import type { Node as PmNode } from '@tiptap/pm/model'
 
-import { MAX_TREE_DEPTH, PAGE_TYPE, specOf } from '../block/types.ts'
+import { sanitizeBlockAttrs } from '../block/props.ts'
+import { MAX_TREE_DEPTH, PAGE_TYPE, specOf, type BlockFormat } from '../block/types.ts'
+import { isPlainRecord, jsonSafe, sameJsonValue, withoutNul } from '../contracts/json-safe.ts'
 import { isUuid } from '../ids.ts'
-import { blockSchema, blockTypeOfNode, isPlainTextNode, PAGE_REF_NODE } from '../editor/schema.ts'
+import { ATOM_MARKS_ATTR, atomMarksAttr, INLINE_ATOM_NODES } from '../editor/atom-marks.ts'
+import { blockSchema, blockTypeOfNode, EQUATION_NODE, isPlainTextNode, PAGE_REF_NODE } from '../editor/schema.ts'
 
 export type NormalizeFix =
   /** 루트에 그룹이 없다. */
@@ -71,13 +74,27 @@ export type NormalizeFix =
   | 'page_ref_dropped'
   /** 텍스트 블록 안의 블록 노드 · 원자 블록 안의 자식을 버렸다. */
   | 'invalid_content_dropped'
-  /** `props` · `format` 이 객체가 아니어서 빈 객체로 바꿨다. */
+  /** `props` · `format` 이 평범한 객체가 아니어서(배열 · 공유 타입 · 바이트 배열 …) 빈 객체로 바꿨다. */
   | 'invalid_attrs_reset'
   /**
    * 평문 본문(코드 블록 · 8a-1)에 서식 · 인라인 원자가 섞였다 — 서식을 떼고 수식은 식의 글자로 폈다(멘션은 보이는 글자를
    * 저장하지 않으므로 뺐다). 동시 편집(한 사람이 굵게 · 다른 사람이 코드로 바꾸기)에서 생긴다.
    */
   | 'plain_text_flattened'
+  /**
+   * 속성 모양이 틀렸다 — JSON 으로 나타낼 수 없는 값(bigint …)이 있다 · 캡션의 런이 계약을 어겼거나 배열이 아니다 · 코드의 언어가
+   * 문자열이 아니거나 64자를 넘는다 · format 에 타입이 받지 않는 값(색 · `code_wrap`)이 있다. 고쳐서 남긴다(`block/props.ts` · 8a-2 ·
+   * 정본 §3.4 [보강] 코드 블록 ⑧ — 모양이 틀린 캡션 하나가 그 페이지의 투영 · 색인 · 복제를 영구히 멈췄다).
+   */
+  | 'invalid_props_dropped'
+  /**
+   * 인라인 원자의 속성 모양이 틀렸다 — 식이 문자열이 아닌 수식 · 대상이 평범한 객체가 아닌 멘션은 뺐고, 멘션의 보이는 글자가
+   * 문자열이 아니면 비웠고, JSON 으로 나타낼 수 없는 값은 뺐고, 서식의 거울(`marks`)을 되살린 마크에서 다시 만들었다(8a-2 · 정본 ⑧
+   * — 어댑터의 `String()` · 투영의 직렬화 · 편집기의 마크 비교가 던졌고, 공유 타입이 든 `marks` 는 수선의 비교가 스택을 넘겼다).
+   */
+  | 'invalid_inline_fixed'
+  /** 글자의 U+0000 을 U+FFFD 로 바꿨다 — jsonb 가 받지 않아 투영이 영구히 멈췄다(8a-2 리뷰 · 정본 ⑧). */
+  | 'nul_replaced'
   /** blockId 가 비었거나 uuid 가 아니다 — 새 id. */
   | 'blank_id'
   /** blockId 가 문서에 두 번 이상 나온다 — 첫째 뒤의 것은 새 id. */
@@ -129,8 +146,40 @@ function isBlockContent(node: PmNode): boolean {
   return (node.type.spec.group ?? '').split(' ').includes('blockContent')
 }
 
-function isPlainObject(value: unknown): boolean {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
+/**
+ * 텍스트 블록 안의 인라인 노드 하나 — 고칠 것이 없으면 같은 노드, 뺄 것이면 null(8a-2 · 정본 §3.4 [보강] 코드 블록 ⑧).
+ *
+ *   · 글자: U+0000 을 U+FFFD 로(jsonb 가 받지 않는다). 글자의 마크 attr 은 어댑터가 모양을 확인하고 읽으므로(색 · 링크) 보지 않는다
+ *   · 원자(수식 · 멘션): 투영이 읽는 attr(식 · 대상 · 보이는 글자)과 서식의 거울(`marks`). 거울은 **되살린 마크에서 다시 만든다** —
+ *     읽기(`ydoc.ts`)가 원본 Y 의 값을 그대로 싣기 때문이다(공유 타입 · 하위 문서 · bigint). 멀쩡한 원자의 거울은 그대로다
+ *     (`createInlineAtom` 이 쓴 모양이 곧 정규형이다)
+ */
+function cleanInline(child: PmNode): PmNode | null {
+  if (child.isText) {
+    const text = child.text ?? ''
+    const safe = withoutNul(text)
+    return safe === text ? child : blockSchema.text(safe, child.marks)
+  }
+  if (!INLINE_ATOM_NODES.has(child.type.name)) return child
+  let attrs: Record<string, unknown> = child.attrs
+  const set = (key: string, value: unknown): void => {
+    if (attrs === child.attrs) attrs = { ...child.attrs }
+    attrs[key] = value
+  }
+  const marks = atomMarksAttr(child.marks)
+  if (!sameJsonValue(child.attrs[ATOM_MARKS_ATTR] ?? null, marks)) set(ATOM_MARKS_ATTR, marks)
+  if (child.type.name === EQUATION_NODE) {
+    const expression: unknown = child.attrs.expression
+    if (typeof expression !== 'string') return null
+    if (withoutNul(expression) !== expression) set('expression', withoutNul(expression))
+  } else {
+    const mention = jsonSafe(child.attrs.mention)
+    if (!isPlainRecord(mention)) return null
+    if (mention !== child.attrs.mention) set('mention', mention)
+    const plainText = typeof child.attrs.plainText === 'string' ? withoutNul(child.attrs.plainText) : ''
+    if (plainText !== child.attrs.plainText) set('plainText', plainText)
+  }
+  return attrs === child.attrs ? child : child.type.create(attrs, null, child.marks)
 }
 
 /** 내용 노드가 자식 블록을 가질 수 있는가. 하위 페이지 참조 밑은 그 페이지의 문서라 안 된다. */
@@ -175,11 +224,23 @@ export function normalizeBody(input: PmNode, options: NormalizeOptions): Normali
     let changed = false
     const attrs: Record<string, unknown> = { ...content.attrs }
     for (const key of ['props', 'format']) {
-      if (key in attrs && !isPlainObject(attrs[key])) {
+      if (key in attrs && !isPlainRecord(attrs[key])) {
         attrs[key] = {}
         changed = true
         fixes.push('invalid_attrs_reset')
       }
+    }
+    // 알려진 타입의 속성을 정화한다(8a-2) — 모양이 틀린 캡션 · 언어 · format. 하위 페이지 참조 · unsupported 는 건드리지 않는다.
+    const sanitized = sanitizeBlockAttrs(
+      blockTypeOfNode(content.type.name),
+      (attrs.props ?? {}) as Record<string, unknown>,
+      (attrs.format ?? {}) as BlockFormat,
+    )
+    if (sanitized.changed) {
+      attrs.props = sanitized.props
+      attrs.format = sanitized.format
+      changed = true
+      fixes.push('invalid_props_dropped')
     }
     const inline: PmNode[] = []
     if (isPlainTextNode(content)) {
@@ -192,8 +253,16 @@ export function normalizeBody(input: PmNode, options: NormalizeOptions): Normali
           fixes.push('invalid_content_dropped')
           return
         }
-        const text = child.isText ? (child.text ?? '') : String(child.attrs.expression ?? '')
+        // 수식 원자의 식은 attr 이다 — 협업 참여자가 무엇이든 쓸 수 있으므로 문자열일 때만 읽는다(String() 은 던질 수 있다).
+        const expression = child.attrs.expression
+        const raw = child.isText ? (child.text ?? '') : typeof expression === 'string' ? expression : ''
         if (!child.isText || child.marks.length > 0) flattened = true
+        // jsonb 가 받지 않는 U+0000 은 바꾼다(8a-2 · `nul_replaced`).
+        const text = withoutNul(raw)
+        if (text !== raw) {
+          changed = true
+          fixes.push('nul_replaced')
+        }
         if (text !== '') inline.push(blockSchema.text(text))
       })
       if (flattened) {
@@ -202,11 +271,17 @@ export function normalizeBody(input: PmNode, options: NormalizeOptions): Normali
       }
     } else if (content.type.isTextblock) {
       content.forEach((child) => {
-        if (child.isInline) inline.push(child)
-        else {
+        if (!child.isInline) {
           changed = true
           fixes.push('invalid_content_dropped')
+          return
         }
+        const clean = cleanInline(child)
+        if (clean !== child) {
+          changed = true
+          fixes.push(child.isText ? 'nul_replaced' : 'invalid_inline_fixed')
+        }
+        if (clean !== null) inline.push(clean)
       })
     } else if (content.childCount > 0) {
       changed = true

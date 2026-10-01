@@ -53,7 +53,7 @@ import { Fragment, Slice, type Node as PmNode } from '@tiptap/pm/model'
 import { Plugin, PluginKey, type Command } from '@tiptap/pm/state'
 import type { EditorView } from '@tiptap/pm/view'
 
-import { codeLanguageOf, fencedCode } from '../block/code.ts'
+import { codeCaptionText, codeLanguageOf, fencedCode } from '../block/code.ts'
 import { isKnownBlockType, specOf, PAGE_TYPE } from '../block/types.ts'
 import { textRun, toPlainText } from '../contracts/rich-text.ts'
 import {
@@ -152,6 +152,8 @@ export function plainTextForBlocks(blocks: readonly EditorBlock[]): string {
         case 'code':
           // 코드 블록(8a-1) — 울타리 · 언어. 첫 줄만 들여 쓰면 둘째 줄부터 목록 밖으로 나간다.
           lines.push(...fencedCode(text, codeLanguageOf(block.properties), indent))
+          // 캡션(8a-2)은 울타리 뒤 한 줄.
+          if (codeCaptionText(block.properties) !== '') lines.push(`${indent}${codeCaptionText(block.properties)}`)
           break
         default:
           lines.push(`${indent}${text}`)

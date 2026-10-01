@@ -36,7 +36,7 @@
  * 참조(볼 수 없어서 · 상한에 걸려서)는 **뺀다**: 사본이 남의 페이지를 자기 본문에 매달 수는 없다.
  */
 
-import { mentionTarget, pageMentionRun, type RichTextRun } from '../contracts/rich-text.ts'
+import { mentionTarget, pageMentionRun, sanitizeRichText, type RichTextRun } from '../contracts/rich-text.ts'
 import type { EditorBlock, EditorDoc } from '../editor/document.ts'
 import { PAGE_TYPE } from './types.ts'
 
@@ -70,7 +70,10 @@ function remapProperties(
     const value = properties[key]
     if (!Array.isArray(value)) continue
     next ??= { ...properties }
-    next[key] = remapRuns(value as RichTextRun[], pages)
+    // 모양이 틀린 런은 사본에 옮기지 않는다 — 멘션 대상을 찾다 던지면 복제 전체가 멈춘다. 복제는 정규화한 본문(`openPageBody` 의
+    // `read`)을 읽으므로 여기 오는 캡션은 이미 정화됐다(정본 §3.4 [보강] 코드 블록 ⑧) — 한 겹 더 두는 방어이고, 닿는 입력을 찾지
+    // 못해 이것을 떨어뜨리는 검사가 없다(8a-2 리뷰).
+    next[key] = remapRuns(sanitizeRichText(value) ?? [], pages)
   }
   return next ?? properties
 }

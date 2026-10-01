@@ -43,6 +43,7 @@
 import { Mark, type MarkType, type Node as PmNode, type NodeType } from '@tiptap/pm/model'
 import { Plugin, PluginKey, type EditorState, type Transaction } from '@tiptap/pm/state'
 
+import { isPlainRecord, jsonSafe, sameJsonValue } from '../contracts/json-safe.ts'
 import { blockSchema, EQUATION_NODE, MENTION_NODE } from './schema.ts'
 
 /** 서식을 비추는 attr 의 이름. 저장 포맷이다. */
@@ -58,18 +59,21 @@ export function atomMarksAttr(marks: readonly Mark[]): MarkJson[] | null {
   return marks.length === 0 ? null : marks.map((mark) => mark.toJSON() as MarkJson)
 }
 
-/** attr 값 → 마크. 던지지 않는다 — 모르는 마크 · 만들 수 없는 마크 · 모양이 틀린 항목은 서식만 뺀다. */
+/**
+ * attr 값 → 마크. 던지지 않는다 — 모르는 마크 · 만들 수 없는 마크 · 모양이 틀린 항목은 서식만 뺀다. 협업 참여자는 이 attr 에
+ * 무엇이든 쓸 수 있다(8a-2 — 이름이 문자열이 아닌 항목 · JSON 으로 나타낼 수 없는 attrs 는 뺀다 · `String()` 은 던질 수 있다).
+ */
 export function marksFromAttr(value: unknown): readonly Mark[] {
   if (!Array.isArray(value)) return []
   const marks: Mark[] = []
   for (const item of value) {
-    if (item === null || typeof item !== 'object') continue
-    const type: MarkType | undefined = blockSchema.marks[String((item as MarkJson).type)]
-    if (type === undefined) continue
+    if (!isPlainRecord(item) || typeof item.type !== 'string' || !Object.hasOwn(blockSchema.marks, item.type)) continue
+    const type: MarkType = blockSchema.marks[item.type]
+    const attrs = jsonSafe(item.attrs ?? {})
     try {
       // `null` 이 아니라 `{}` 를 넘긴다 — ProseMirror 는 attrs 가 null 이면 필수 attr 검사를 건너뛰어
       // `href: null` 인 링크를 만든다(검사가 잡았다). 빈 객체면 "값이 없다"로 던진다.
-      marks.push(type.create((item as MarkJson).attrs ?? {}))
+      marks.push(type.create(isPlainRecord(attrs) ? attrs : {}))
     } catch {
       // 필수 attr 이 없는 마크(주소 없는 링크 같은 것)
     }
@@ -83,15 +87,16 @@ export function createInlineAtom(type: NodeType, attrs: Record<string, unknown>,
   return type.create({ ...attrs, [ATOM_MARKS_ATTR]: atomMarksAttr(sorted) }, null, sorted)
 }
 
-const inSync = (node: PmNode): boolean =>
-  JSON.stringify(node.attrs[ATOM_MARKS_ATTR] ?? null) === JSON.stringify(atomMarksAttr(node.marks))
+/** attr 이 마크의 거울과 같은가 — 던지지 않는다(참여자가 쓴 bigint 에 `JSON.stringify` 는 던진다 · 8a-2). */
+export const atomMarksInSync = (node: PmNode): boolean =>
+  sameJsonValue(node.attrs[ATOM_MARKS_ATTR] ?? null, atomMarksAttr(node.marks))
 
 /** attr 이 마크와 어긋난 인라인 원자를 맞추는 트랜잭션. 맞출 것이 없으면 null. */
 export function syncAtomMarks(state: EditorState): Transaction | null {
   const stale: { pos: number; node: PmNode }[] = []
   state.doc.descendants((node, pos) => {
     if (!INLINE_ATOM_NODES.has(node.type.name)) return true
-    if (!inSync(node)) stale.push({ pos, node })
+    if (!atomMarksInSync(node)) stale.push({ pos, node })
     return false
   })
   if (stale.length === 0) return null

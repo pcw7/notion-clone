@@ -32,10 +32,12 @@
 
 import type { Command, EditorState } from '@tiptap/pm/state'
 
+import { CODE_TYPE } from '../block/code.ts'
 import { normalizeFormat, PAGE_TYPE, specOf, type BlockFormat, type BodyBlockType } from '../block/types.ts'
 import { COLORS, type Color } from '../contracts/rich-text.ts'
 import { isUuid } from '../ids.ts'
 import { BlockSelection, isBlockSelection, selectionHasPageRef } from './block-selection.ts'
+import { separateUndoStep } from './code-block.ts'
 import { applyTurnInto, type CommandDeps } from './commands.ts'
 import { blockTypeOf, containerAt, findContainerById } from './pm-blocks.ts'
 import { blockTypeLabel } from './slash-menu.ts'
@@ -86,6 +88,11 @@ export type BlockMenuAction =
   | { readonly kind: 'duplicate' }
   | { readonly kind: 'copy_link' }
   | { readonly kind: 'delete' }
+  // 코드 블록(8a-2 · F-01-14) — 크롬 버튼(편집기 안 · 탭 순서 밖)의 키보드 경로다.
+  | { readonly kind: 'code_language' }
+  | { readonly kind: 'code_wrap'; readonly wrap: boolean }
+  | { readonly kind: 'code_caption' }
+  | { readonly kind: 'code_copy' }
 
 export type MenuItem = {
   readonly id: string
@@ -93,6 +100,8 @@ export type MenuItem = {
   readonly enabled: boolean
   /** 라디오 항목이면 현재 값인지. 아니면 없다. */
   readonly checked?: boolean
+  /** 켜고 끄는 항목인가(`menuitemcheckbox`) — 없으면 고르는 항목(`menuitemradio`)이다. */
+  readonly toggle?: boolean
   /** 화면에 보여줄 단축키. */
   readonly shortcut?: string
   /** 하위 메뉴가 있으면 이 항목은 동작이 아니라 열기다. */
@@ -156,6 +165,18 @@ export function blockMenuItems(state: EditorState, deps: CommandDeps): MenuItem[
     action: { kind: 'color', color: c },
   }))
 
+  // 코드 블록(8a-2) — 고른 블록이 모두 코드일 때 켠다. 항목은 늘 둔다(메뉴 모양이 선택에 따라 바뀌지 않게 — 머리말).
+  const codeBlocks = blocks.filter((b) => b.type === CODE_TYPE)
+  const allCode = blocks.length > 0 && codeBlocks.length === blocks.length
+  const single = allCode && blocks.length === 1
+  const wrapped = allCode && codeBlocks.every((b) => (b.content.attrs.format as BlockFormat | undefined)?.code_wrap === true)
+  const code: MenuItem[] = [
+    { id: 'code:language', label: '언어 바꾸기…', enabled: single, action: { kind: 'code_language' } },
+    { id: 'code:wrap', label: '줄바꿈', enabled: allCode, toggle: true, checked: wrapped, action: { kind: 'code_wrap', wrap: !wrapped } },
+    { id: 'code:caption', label: '캡션…', enabled: single, action: { kind: 'code_caption' } },
+    { id: 'code:copy', label: '코드 복사', enabled: single, action: { kind: 'code_copy' } },
+  ]
+
   return [
     {
       id: 'turn_into',
@@ -165,6 +186,7 @@ export function blockMenuItems(state: EditorState, deps: CommandDeps): MenuItem[
       children: turnInto,
     },
     { id: 'color', label: '색', enabled: paintable.length > 0, children: color },
+    { id: 'code', label: '코드', enabled: allCode, children: code },
     {
       id: 'duplicate',
       label: '복제',
@@ -308,6 +330,31 @@ export function setBlockColorCommand(color: Color): Command {
     }
     // 바뀐 것이 없어도 true — 메뉴에서 불렀으면 닫히기만 하면 된다.
     if (dispatch && tr.docChanged) dispatch(tr)
+    return true
+  }
+}
+
+/**
+ * 고른 코드 블록들의 줄바꿈을 켜거나 끈다(블록 메뉴 · 8a-2). 한 트랜잭션이다(되돌리기 1회 · 타이핑과 따로). 코드가 아닌 블록은
+ * 건너뛴다. 바뀐 것이 없어도 true — 메뉴에서 불렀으면 닫히기만 하면 된다.
+ */
+export function setCodeWrapSelectionCommand(wrap: boolean): Command {
+  return (state, dispatch) => {
+    if (!isBlockSelection(state.selection)) return false
+    const tr = state.tr
+    for (const b of selectedBlocks(state)) {
+      if (b.type !== CODE_TYPE) continue
+      const format = { ...((b.content.attrs.format ?? {}) as BlockFormat) }
+      if ((format.code_wrap === true) === wrap) continue
+      if (wrap) format.code_wrap = true
+      else delete format.code_wrap
+      tr.setNodeMarkup(b.pos + 1, undefined, { ...b.content.attrs, format: normalizeFormat(b.type, format) })
+    }
+    if (dispatch && tr.docChanged) {
+      separateUndoStep(state)
+      dispatch(tr)
+      separateUndoStep(state)
+    }
     return true
   }
 }

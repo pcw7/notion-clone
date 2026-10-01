@@ -339,9 +339,16 @@ describe('normalizeFormat', () => {
     )
   })
 
-  test('다른 format 키는 보존한다', () => {
-    const out = normalizeFormat('paragraph', { block_color: 'red', code_wrap: true })
-    assert.equal(out.code_wrap, true)
+  test('다른 format 키는 보존한다 — 모르는 키(앞으로 붙을 것)도', () => {
+    const out = normalizeFormat('paragraph', { block_color: 'red', column_ratio: 0.5, future_key: { a: 1 } })
+    assert.deepEqual(out, { block_color: 'red', column_ratio: 0.5, future_key: { a: 1 } })
+  })
+
+  test('★ code_wrap 은 코드 블록의 true 만 남는다 — 문단으로 바꾸면 사라지고 · 끈 상태는 키가 없다 (8a-2)', () => {
+    assert.equal(normalizeFormat('paragraph', { code_wrap: true }).code_wrap, undefined, '코드가 아닌 타입에 줄바꿈이 남았다')
+    assert.equal(normalizeFormat('code', { code_wrap: true }).code_wrap, true)
+    assert.equal('code_wrap' in normalizeFormat('code', { code_wrap: false }), false)
+    assert.equal('code_wrap' in normalizeFormat('code', { code_wrap: 'yes' }), false)
   })
 
   test('format 이 없어도 안전하다', () => {

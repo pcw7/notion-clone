@@ -145,6 +145,7 @@ export function BlockGutter({
   pageId,
   openMenuRef,
   onNotice,
+  onCodeMenu,
 }: {
   viewRef: RefObject<EditorView | null>
   /** 에디터를 감싼 프레임. 좌표의 기준이고, 드래그 중 흐림 표시를 다는 곳이다. */
@@ -158,6 +159,8 @@ export function BlockGutter({
    */
   openMenuRef: MutableRefObject<(() => void) | null>
   onNotice: (message: string) => void
+  /** 코드 블록의 언어 목록 · 캡션 입력을 연다(8a-2 · 블록 메뉴의 코드 항목). */
+  onCodeMenu?: (kind: 'language' | 'caption', blockId: string) => void
 }) {
   const [hover, setHover] = useState<Hover | null>(null)
   const [guide, setGuide] = useState<Guide | null>(null)
@@ -400,6 +403,7 @@ export function BlockGutter({
           pageId={pageId}
           onClose={closeMenu}
           onNotice={onNotice}
+          onCodeMenu={onCodeMenu}
         />
       )}
 

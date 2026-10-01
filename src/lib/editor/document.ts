@@ -58,6 +58,7 @@ import { CODE_TYPE, validateCodeProperties } from '../block/code.ts'
 import { isUuid } from '../ids.ts'
 import { orderKeysBetween } from '../block/order-key.ts'
 import { validateRichText, type RichTextRun } from '../contracts/rich-text.ts'
+import { exceedsJsonDepth, MAX_JSON_DEPTH } from '../contracts/json-safe.ts'
 import { canonicalizeRuns } from './rich-text-ops.ts'
 
 // ── 계약 ──────────────────────────────────────────────────────────────
@@ -139,6 +140,10 @@ export function validateDoc(doc: EditorDoc): DocIssue[] {
       // 코드 블록의 언어 · 캡션(8a-1) — 같은 까닭(API 로 직접 저장하는 경로).
       if (block.type === CODE_TYPE) {
         issues.push(...validateCodeProperties(block.properties, `${p}.properties`))
+      }
+      // 속성은 행(jsonb)에 쓰려고 JSON 으로 옮긴다 — 읽기(정규화)가 잘라 낼 만큼 깊은 값은 받지 않는다(8a-2 · `json-safe.ts`).
+      for (const [key, value] of [['properties', block.properties], ['format', block.format]] as const) {
+        if (exceedsJsonDepth(value)) issues.push({ path: `${p}.${key}`, message: `${MAX_JSON_DEPTH}단계보다 깊습니다` })
       }
 
       const children = block.children ?? []

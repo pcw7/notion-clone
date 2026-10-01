@@ -16,9 +16,12 @@
 import type { Node as PmNode } from '@tiptap/pm/model'
 import type { EditorView, NodeView } from '@tiptap/pm/view'
 
+import { CODE_TYPE } from '../block/code.ts'
+import { codeNodeView, type CodeViewDeps } from './code-view.ts'
 import { imageNodeView, type ImageViewDeps } from './image-view.ts'
+import { nodeNameOf } from './schema.ts'
 
-export type NodeViewDeps = ImageViewDeps & {
+export type NodeViewDeps = ImageViewDeps & CodeViewDeps & {
   isCollapsed: (blockId: string) => boolean
   toggleCollapsed: (blockId: string) => void
   /** 하위 페이지로 이동. */
@@ -73,6 +76,9 @@ function todoNodeView(node: PmNode, view: EditorView, getPos: () => number | und
   })
   box.addEventListener('click', (event) => {
     event.preventDefault()
+    // 읽기 전용이면 쓰지 않는다 — 읽기 전용 연결의 편집은 서버가 거부하고 편집기가 본문을 버리고 다시 연다(오류 배너). 노드 뷰는
+    // 편집 가능 여부가 바뀌어도 다시 만들어지지 않으므로 누르는 순간에 묻는다(8a-2 가 찾은 옛 구멍).
+    if (!view.editable) return
     const pos = getPos()
     if (pos === undefined) return
     const current = view.state.doc.nodeAt(pos)
@@ -238,6 +244,8 @@ export function createNodeViews(deps: NodeViewDeps): Record<
     to_do: (node, view, getPos) => todoNodeView(node, view, getPos),
     toggle: (node, view, getPos) => toggleNodeView(node, view, getPos, deps),
     image: (node, view, getPos) => imageNodeView(node, view, getPos, deps),
+    // 키는 노드 이름이다 — 코드 블록의 노드는 `code_block`(8a-1).
+    [nodeNameOf(CODE_TYPE)]: (node, view, getPos) => codeNodeView(node, view, getPos, deps),
     page_ref: (node, view, getPos) => pageRefNodeView(node, view, getPos, deps),
     mention: (node, view, getPos) => mentionNodeView(node, view, getPos, deps),
   }
