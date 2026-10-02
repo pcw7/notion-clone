@@ -5,6 +5,7 @@
  *
  *   nav.blk.blk-breadcrumb[data-block-type][aria-label=이동 경로]
  *     ol.blk-breadcrumb-list > li.blk-breadcrumb-item[data-kind] > a.blk-breadcrumb-link[href] | span(지금 페이지 · aria-current)
+ *       (아이콘이 있으면 링크 · 글자 앞에 span.blk-breadcrumb-icon[aria-hidden] — 8c-1)
  *
  * 경로는 노드에 없다 — `breadcrumb-plugin.ts` 가 이 노드에 단 데코레이션의 `spec` 에서 읽는다(머리의 breadcrumb 과 같은
  * `block/breadcrumb.ts` 의 줄). 경로가 같으면(객체가 같다) 다시 그리지 않는다.
@@ -17,7 +18,7 @@
 import type { Node as PmNode } from '@tiptap/pm/model'
 import type { Decoration, EditorView, NodeView } from '@tiptap/pm/view'
 
-import type { BreadcrumbTrail } from '../block/breadcrumb.ts'
+import type { BreadcrumbItem, BreadcrumbTrail } from '../block/breadcrumb.ts'
 import { breadcrumbFrom } from './breadcrumb-plugin.ts'
 
 export type BreadcrumbViewDeps = {
@@ -28,6 +29,18 @@ export type BreadcrumbViewDeps = {
 /** 이벤트 대상이 경로의 링크 안이면 그 링크. */
 function linkOf(target: EventTarget | null): HTMLAnchorElement | null {
   return target instanceof Element ? target.closest<HTMLAnchorElement>('a.blk-breadcrumb-link') : null
+}
+
+/** 줄 하나의 글자 — 아이콘(있으면 · 읽는 이에게는 숨긴다)과 이름. */
+function fillItem(target: HTMLElement, item: BreadcrumbItem): void {
+  if (item.icon !== null) {
+    const icon = document.createElement('span')
+    icon.className = 'blk-breadcrumb-icon'
+    icon.setAttribute('aria-hidden', 'true')
+    icon.textContent = item.icon.emoji
+    target.append(icon)
+  }
+  target.append(item.label)
 }
 
 export function breadcrumbNodeView(
@@ -58,7 +71,7 @@ export function breadcrumbNodeView(
         const here = document.createElement('span')
         here.className = 'blk-breadcrumb-current'
         here.setAttribute('aria-current', 'page')
-        here.textContent = item.label
+        fillItem(here, item)
         li.append(here)
       } else {
         const link = document.createElement('a')
@@ -66,7 +79,7 @@ export function breadcrumbNodeView(
         link.href = item.href
         link.dataset.readonlyTab = ''
         link.tabIndex = view.editable ? -1 : 0
-        link.textContent = item.label
+        fillItem(link, item)
         li.append(link)
       }
       list.append(li)

@@ -39,6 +39,7 @@ import { indexPageTitle } from '../search/index-page.ts'
 import { autoSubscribe } from '../notification/subscription.ts'
 import { openPageBody } from './body-write.ts'
 import { appendPageRef, placePageRefAt } from './page-refs.ts'
+import { PAGE_ICON_KEY, pageIconJson, pageIconOfFormat, parsePageIconInput, samePageIcon, type PageIcon } from './page-icon.ts'
 import {
   normalizeRichText,
   toPlainText,
@@ -64,6 +65,7 @@ export type PageErrorCode =
   | 'not_found' // 대상 페이지 없음 / 다른 워크스페이스 / 볼 수 없음
   | 'forbidden' // 볼 수는 있지만 고칠 수 없음(`edit_content` 없음)
   | 'locked' // 고칠 수 있지만 페이지가 잠겼다(7f-1)
+  | 'invalid_icon' // 아이콘이 이모지 한 글자가 아니다(8c-1)
 
 export class PageError extends Error {
   // 파라미터 프로퍼티(`constructor(readonly code: ...)`)를 쓰지 않는다 —
@@ -84,6 +86,8 @@ export type PageSummary = {
   readonly title: RichTextRun[]
   /** 사이드바·탭 제목용 평문. 빈 제목이면 빈 문자열이다(호출자가 대체 문구를 고른다). */
   readonly plainTitle: string
+  /** 페이지 아이콘(8c-1 · `format.page_icon`). 없거나 모양이 아니면 null — 화면이 기본 표시를 고른다. */
+  readonly icon: PageIcon | null
   /** 루트 페이지면 null. */
   readonly parentPageId: BlockId | null
   /** teamspace 의 **최상위** 페이지면 그 teamspace(7c-1). 하위 페이지 · 워크스페이스 직속 페이지는 null 이다. */
@@ -105,13 +109,17 @@ export type PageDetail = PageSummary & {
   readonly version: string
 }
 
-/** 모든 페이지 조회가 같은 열 집합을 읽는다. 어긋나면 toSummary 가 조용히 undefined 를 본다. */
-const PAGE_COLUMNS = `id, properties, parent_type, parent_id, order_key,
+/**
+ * 모든 페이지 조회가 같은 열 집합을 읽는다. 어긋나면 toSummary 가 조용히 undefined 를 본다. `format` 은 아이콘(8c-1)을 읽으려고
+ * 싣는다 — 페이지 행의 `format` 에는 모습(아이콘)만 있다(본문은 행이 아니라 Y.Doc 이다).
+ */
+const PAGE_COLUMNS = `id, properties, format, parent_type, parent_id, order_key,
                       ancestor_path, perm_scope_id, owner_user_id, created_at, last_edited_at, version`
 
 type PageRow = {
   id: string
   properties: { title?: unknown } | null
+  format: Record<string, unknown> | null
   parent_type: string
   parent_id: string
   order_key: string
@@ -129,6 +137,7 @@ function toSummary(row: PageRow): PageSummary {
     id: asBlockId(row.id),
     title,
     plainTitle: toPlainText(title),
+    icon: pageIconOfFormat(row.format),
     parentPageId: row.parent_type === 'block' ? asBlockId(row.parent_id) : null,
     teamspaceId: row.parent_type === 'teamspace' ? row.parent_id : null,
     ownerUserId: row.parent_type === 'workspace' ? row.owner_user_id : null,
@@ -660,5 +669,51 @@ export async function renamePage(
       permScopeId: row.perm_scope_id,
       version: row.version,
     }
+  })
+}
+
+// ── 아이콘 ────────────────────────────────────────────────────────────
+
+/**
+ * 페이지 아이콘을 바꾼다 — `null` 이면 지운다(8c-1 · F-02-05). 돌려주는 것은 저장된 아이콘이다.
+ *
+ * 권한 · 잠금은 제목과 같다 — 볼 수 없으면 `not_found`, 볼 수만 있으면 `forbidden`, 잠겼으면 `locked`. 제목과 다른 점 하나: **DB 행도
+ * 받는다.** 행의 제목은 셀이 정본이라(`renamePage` 머리말) 여기로 고칠 수 없지만, 아이콘은 셀이 아니라 그 페이지의 모습이다(노션의 행
+ * 페이지도 아이콘을 갖는다). 행의 권한은 셀과 같은 축이다 — 행 페이지의 `edit_content`(데이터베이스에서 상속) · 행 페이지 잠금(7f-2).
+ *
+ * 받은 값은 다시 검사한다(`parsePageIconInput` — 라우트만 믿지 않는다). 같은 아이콘이면 쓰지 않는다(`version` 을 올리지 않는다).
+ * 바뀌면 `last_edited_*` 와 `version` 을 올린다 — 페이지가 바뀐 것이다(X-6 의 페이지 단위 변경 카운터). 검색 색인은 다시 쓰지 않는다
+ * (아이콘은 찾는 글자가 아니다).
+ */
+export async function setPageIcon(ctx: SessionContext, pageId: BlockId, icon: PageIcon | null): Promise<PageIcon | null> {
+  const parsed = parsePageIconInput(icon)
+  if (parsed === undefined) throw new PageError('invalid_icon', '아이콘은 이모지 한 글자여야 합니다.')
+
+  return withTransaction(async (tx) => {
+    // 대상 행을 먼저 잠그고 권한 · 잠금을 묻는다 — 잠그는 명령(`setPageLock`)과 같은 행에 줄을 선다.
+    const target = await tx.queryMaybe<{ format: Record<string, unknown> | null }>(
+      `SELECT format FROM block
+        WHERE id = $1 AND workspace_id = $2 AND type = 'page' AND lifecycle = 'live'
+        FOR UPDATE`,
+      [pageId, ctx.workspaceId],
+    )
+    if (target === null) throw new PageError('not_found', '페이지를 찾을 수 없습니다.')
+    const caps = await effectiveCaps(tx, ctx, pageId)
+    if (!can(caps, 'view')) throw new PageError('not_found', '페이지를 찾을 수 없습니다.')
+    if (!can(caps, 'edit_content')) throw new PageError('forbidden', '이 페이지를 고칠 권한이 없습니다.')
+    if (await isLocked(tx, pageId)) throw new PageError('locked', '잠긴 페이지입니다. 잠금을 풀어야 아이콘을 바꿀 수 있습니다.')
+
+    if (samePageIcon(pageIconOfFormat(target.format), parsed)) return parsed
+    await tx.query(
+      `UPDATE block
+          SET format = CASE WHEN $3::jsonb IS NULL THEN format - '${PAGE_ICON_KEY}'
+                            ELSE jsonb_set(format, '{${PAGE_ICON_KEY}}', $3::jsonb, true) END,
+              last_edited_by = $4,
+              last_edited_at = now(),
+              version = version + 1
+        WHERE id = $1 AND workspace_id = $2`,
+      [pageId, ctx.workspaceId, parsed === null ? null : JSON.stringify(pageIconJson(parsed)), ctx.userId],
+    )
+    return parsed
   })
 }

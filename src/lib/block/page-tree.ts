@@ -9,7 +9,8 @@
  *
  * F-02-03 데이터 모델 함의: *"아이콘·제목·`has_children` 만 반환하고 본문은
  * 절대 싣지 않는다(**사이드바가 페이지 본문을 끌고 오면 즉시 성능이 무너진다**)."*
- * 그래서 `properties` 에서 제목만 꺼내고 나머지는 버린다.
+ * 그래서 `properties` 에서 제목만 꺼내고 나머지는 버린다. 아이콘(8c-1)은 `format` 에서
+ * 그 키 하나만 읽는다(`format->'page_icon'` — F-02-05 *"트리 조회 쿼리에 함께 실려야 한다(N+1 금지)"*).
  *
  * ──────────────────────────────────────────────────────────────────────
  * 트리의 부모는 `parent_id` 가 아니다
@@ -59,6 +60,7 @@ import { asBlockId } from '../ids.ts'
 import { withReadTransaction } from '../db/tx.ts'
 import { readableScopes } from '../permissions/effective.ts'
 import { toPlainText, type RichTextRun } from '../contracts/rich-text.ts'
+import { readPageIcon, type PageIcon } from './page-icon.ts'
 
 /**
  * 트리에 서는 블록의 종류. 풀페이지 데이터베이스도 사이드바의 한 줄이다(F-04-14:
@@ -71,6 +73,8 @@ export type PageTreeKind = 'page' | 'database'
 export type PageTreeRow = {
   readonly id: string
   readonly title: string
+  /** 페이지 아이콘(8c-1). 데이터베이스는 아직 없다(그 아이콘은 `database.icon` — 다음 조각). */
+  readonly icon?: PageIcon | null
   readonly kind: PageTreeKind
   /** 루트→부모까지의 **블록** id. 본문 블록도 들어 있다 [X-7]. */
   readonly ancestorPath: readonly string[]
@@ -89,6 +93,8 @@ export type RootKind = 'workspace' | 'private_mine' | 'private_other'
 export type PageTreeNode = {
   readonly id: BlockId
   readonly title: string
+  /** 페이지 아이콘(8c-1) — 없으면 null(화면이 기본 표시를 고른다). */
+  readonly icon: PageIcon | null
   readonly kind: PageTreeKind
   /** 이 노드가 속한 teamspace — 루트 블록의 부모. 워크스페이스 직속 서브트리면 null. */
   readonly teamspaceId: string | null
@@ -132,6 +138,7 @@ export function buildPageTree(rows: readonly PageTreeRow[]): PageTreeNode[] {
   type Building = {
     id: BlockId
     title: string
+    icon: PageIcon | null
     kind: PageTreeKind
     teamspaceId: string | null
     teamspaceOpen: boolean
@@ -152,6 +159,7 @@ export function buildPageTree(rows: readonly PageTreeRow[]): PageTreeNode[] {
       {
         id: asBlockId(row.id),
         title: row.title,
+        icon: row.icon ?? null,
         kind: row.kind,
         teamspaceId: row.teamspaceId,
         teamspaceOpen: row.teamspaceOpen,
@@ -267,6 +275,7 @@ export async function listPageTree(ctx: SessionContext): Promise<PageTreeNode[]>
       id: string
       type: string
       properties: { title?: unknown } | null
+      page_icon: unknown
       ancestor_path: string[]
       order_key: string
       teamspace_id: string | null
@@ -280,7 +289,7 @@ export async function listPageTree(ctx: SessionContext): Promise<PageTreeNode[]>
       //   늘린다. 행은 표가 보여준다.
       // ★ 7c-2: 루트 블록(`r`)을 붙여 teamspace 를 읽는다(머리말).
       // ★ 7c-7: 워크스페이스 부모 루트의 종류(공용 · 내 개인 · 남의 개인)도 함께 읽는다 — 주인의 id 는 내보내지 않는다.
-      `SELECT b.id, b.type, b.properties, b.ancestor_path, b.order_key,
+      `SELECT b.id, b.type, b.properties, b.format -> 'page_icon' AS page_icon, b.ancestor_path, b.order_key,
               CASE WHEN r.parent_type = 'teamspace' THEN r.parent_id END AS teamspace_id,
               coalesce(t.visibility = 'open', false) AS teamspace_open,
               CASE WHEN r.parent_type <> 'workspace' THEN NULL
@@ -306,6 +315,7 @@ export async function listPageTree(ctx: SessionContext): Promise<PageTreeNode[]>
         // 읽기는 관대하게 — 제목 하나가 망가졌다고 사이드바 전체가 500 이 되면
         // 사용자가 어디로도 이동할 수 없다.
         title: Array.isArray(raw) ? toPlainText(raw as RichTextRun[]) : '',
+        icon: readPageIcon(row.page_icon),
         ancestorPath: row.ancestor_path,
         orderKey: row.order_key,
         teamspaceId: row.teamspace_id,

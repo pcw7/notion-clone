@@ -32,6 +32,7 @@ function toSidebarNode(node: Awaited<ReturnType<typeof listPageTree>>[number]): 
   return {
     id: node.id,
     title: node.title,
+    icon: node.icon,
     kind: node.kind,
     hasChildren: node.hasChildren,
     children: node.children.map(toSidebarNode),
@@ -82,8 +83,8 @@ export default async function WorkspaceLayout({
           purgeAfter: e.purgeAfter?.toISOString() ?? null,
           descendantCount: e.descendantCount,
         }))}
-        recent={recent.map((e) => ({ id: e.id, title: e.title }))}
-        favorites={favorites.map((e) => ({ id: e.id, title: e.title }))}
+        recent={recent.map((e) => ({ id: e.id, title: e.title, icon: e.icon }))}
+        favorites={favorites.map((e) => ({ id: e.id, title: e.title, icon: e.icon }))}
         inboxUnread={inboxUnread}
       />
       <div className="min-w-0 flex-1">{children}</div>

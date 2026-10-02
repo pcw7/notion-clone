@@ -226,7 +226,9 @@ export function rowsToDoc(pageId: string, rows: readonly BodyRow[]): EditorDoc {
         // 사람이 하위 페이지를 볼 수 있다는 보장이 없다(HANDOFF §3.2-22). 화면은 `loadPageBody` 의 `pageRefTitles` 를 쓴다.
         title: type !== PAGE_TYPE && Array.isArray(title) ? (title as RichTextRun[]) : [],
         properties: rest,
-        format: (row.format ?? {}) as BlockFormat,
+        // 하위 페이지 참조는 그 페이지 행의 모습(아이콘 · 8c-1)도 싣지 않는다 — 제목과 같은 까닭이다. 본문의 규칙(`normalizeFormat`)으로
+        // 거른다(편집기 · Y.Doc 으로 가는 길도 같은 함수가 한 번 더 거른다 — `contentNodeFor`).
+        format: (type === PAGE_TYPE ? normalizeFormat(PAGE_TYPE, row.format) : (row.format ?? {})) as BlockFormat,
         // 자식 페이지의 본문은 따라가지 않는다.
         children: type === PAGE_TYPE ? [] : build(row.id),
       }

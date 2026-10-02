@@ -35,6 +35,8 @@
     "@hocuspocus/provider": "^4.7.0",
     "@hocuspocus/server": "^4.7.0",
     "@tiptap/pm": "^3.31.3",
+    "emojibase": "~17.0.0",
+    "emojibase-data": "~17.0.0",
     "fractional-indexing": "^4.0.0",
     "highlight.js": "~11.11.2",
     "ioredis": "^6.0.0",

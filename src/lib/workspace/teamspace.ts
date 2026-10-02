@@ -98,6 +98,7 @@
 import { randomUUID } from 'node:crypto'
 
 import type { SessionContext, WorkspaceRole } from '../auth/session-context.ts'
+import { isSingleEmoji, MAX_EMOJI_CODE_POINTS } from '../contracts/emoji.ts'
 import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
 import { teamspaceCaps } from '../permissions/effective.ts'
 import { can } from '../permissions/levels.ts'
@@ -243,28 +244,22 @@ export function canBrowseTeamspaces(role: WorkspaceRole): boolean {
  */
 export const DEFAULT_TEAMSPACE_ROLES: readonly WorkspaceRole[] = ['owner', 'membership_admin', 'member']
 
-/** 아이콘의 코드포인트 상한 — DB 의 CHECK(0032)와 같은 값이다. */
-export const MAX_TEAMSPACE_ICON_CODE_POINTS = 16
-
-const graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
-const EMOJI = /\p{Extended_Pictographic}|\p{Regional_Indicator}/u
+/** 아이콘의 코드포인트 상한 — DB 의 CHECK(0032)와 같은 값이다(페이지 아이콘과 한 규칙 — `contracts/emoji.ts`). */
+export const MAX_TEAMSPACE_ICON_CODE_POINTS = MAX_EMOJI_CODE_POINTS
 
 /**
  * 아이콘 — **이모지 한 글자**(grapheme 하나 · 7c-14). `null` · 빈 글은 "아이콘 없음"이다(화면은 기본 표시를 쓴다). 모양이
  * 아니면 `undefined`(→ `invalid_icon`).
  *
- * "한 글자"는 grapheme 으로 센다 — ZWJ 로 이은 가족 이모지 · 피부색 · 깃발은 코드포인트가 여럿이어도 한 글자다. 글자
- * 하나가 이모지인지는 Unicode 속성(`Extended_Pictographic` · 깃발의 `Regional_Indicator`)으로 본다. DB 는 이 검사를 못
- * 하므로 길이 · 공백만 CHECK 로 막는다(0032) — 코드포인트 상한을 같은 값으로 여기서도 본다.
+ * "한 글자 · 이모지"의 규칙은 페이지 아이콘(8c-1)과 같은 `isSingleEmoji` 다. DB 는 이 검사를 못 하므로 길이 · 공백만 CHECK 로
+ * 막는다(0032).
  */
 export function normalizeTeamspaceIcon(raw: unknown): string | null | undefined {
   if (raw === null) return null
   if (typeof raw !== 'string') return undefined
   const icon = raw.trim()
   if (icon === '') return null
-  if ([...icon].length > MAX_TEAMSPACE_ICON_CODE_POINTS) return undefined
-  if ([...graphemes.segment(icon)].length !== 1 || !EMOJI.test(icon)) return undefined
-  return icon
+  return isSingleEmoji(icon) ? icon : undefined
 }
 
 export function normalizeTeamspaceName(raw: unknown): string | null {

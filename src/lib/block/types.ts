@@ -14,6 +14,7 @@
  */
 
 import { isColor, type Color } from '../contracts/rich-text.ts'
+import { PAGE_ICON_KEY } from './page-icon.ts'
 
 /**
  * 최대 트리 깊이.
@@ -255,5 +256,9 @@ export function normalizeFormat(type: BlockType, format: unknown): BlockFormat {
   if ('code_wrap' in out && !(specOf(type).plainText && out.code_wrap === true)) {
     delete out.code_wrap
   }
+  // 페이지 아이콘(8c-1)은 **페이지 행의 것**이다 — 본문(Y.Doc · 편집기 · 투영)의 format 에는 없다. 하위 페이지 참조도 타입이 `page` 라
+  // 타입으로 가르지 않고 늘 버린다: 행에서 본문을 지을 때(`rowsToDoc` → `docToPm`) 참조 노드가 자식 행의 format 을 받아 와, 볼 수
+  // 없는 하위 페이지의 아이콘이 부모 본문을 타고 퍼졌을 것이다(제목이 그랬다 — §3.2-22 · 정본 §3.4 [보강] 페이지 아이콘 ③).
+  delete out[PAGE_ICON_KEY]
   return out
 }
