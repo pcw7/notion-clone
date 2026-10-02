@@ -103,6 +103,8 @@ const RENDER_TAG: Readonly<Record<BodyBlockType, string>> = {
   code: 'pre',
   // 목차(8b-1) — 페이지 안의 길잡이. 항목은 노드 뷰가 그린다(`toc-view.ts`) — 여기 toDOM 은 클립보드용 빈 껍데기다.
   table_of_contents: 'nav',
+  // breadcrumb(8b-2) — 경로는 노드 뷰가 그린다(`breadcrumb-view.ts`).
+  breadcrumb: 'nav',
 }
 
 /**

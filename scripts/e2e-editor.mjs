@@ -910,7 +910,9 @@ async function main() {
     await move(subLine.x + 30, subLine.y + subLine.h / 2)
     await waitFor(`!!document.querySelector('.blk-gutter-grip')`)
     const subGrip = await rect('.blk-gutter-grip')
-    await click(subGrip.x + subGrip.w / 2, subGrip.y + subGrip.h / 2)
+    // 핸들이 늦게 뜨면 null — 그대로 읽으면 스크립트가 통째로 죽어 뒤의 절이 모두 사라진다(8b-2 의 전체 판에서 한 번). 검사로 떨어뜨린다.
+    check('전제 — 하위 페이지 줄에 핸들이 떴다', subGrip !== null)
+    if (subGrip) await click(subGrip.x + subGrip.w / 2, subGrip.y + subGrip.h / 2)
     await key('Escape')
     await sleep(60)
     const subPayload = await evaluate(`(() => {
@@ -4812,6 +4814,134 @@ async function main() {
         JSON.stringify(await landedInfo(target)))
       await fetch(`${pagesUrl}/${tocPage}/lock`, { method: 'DELETE', headers: authed })
       await sleep(1500)
+    }
+
+    if (sectionIf('이동 경로 블록 (8b-2 · F-01-16)')) {
+      // breadcrumb 블록은 내용을 저장하지 않고 머리의 경로와 같은 줄을 그린다(볼 수 있는 조상만 · teamspace 는 멤버에게만). 링크는
+      // 앱 안에서 옮겨 가고, 제목을 고치면(서버가 다시 그린다) 따라간다. 볼 수 없는 조상은 공유받은 동료의 경로에 없다(브라우저
+      // 세션을 동료로 바꾼다 — 끝에 되돌린다). 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
+      const stamp = Date.now()
+      const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
+      const post = async (body) => (await (await fetch(pagesUrl, { method: 'POST', headers: authed, body: JSON.stringify(body) })).json()).page.id
+      const topTitle = `기밀 상위 ${stamp}`
+      const midTitle = `기밀 중간 ${stamp}`
+      const leafTitle = `경로 페이지 ${stamp}`
+      const top = await post({ title: topTitle, privateTop: true })
+      const mid = await post({ title: midTitle, parentPageId: top })
+      const leaf = await post({ title: leafTitle, parentPageId: mid })
+      const crumbId = randomUUID()
+      const after = randomUUID()
+      await saveBody(leaf, {
+        blocks: [
+          block(randomUUID(), 'paragraph', '맨 위'),
+          { id: crumbId, type: 'breadcrumb', title: [], properties: {}, format: {}, children: [] },
+          block(after, 'paragraph', '아래 문단'),
+        ],
+      })
+      const NAV = `[data-block-id="${crumbId}"] nav.blk-breadcrumb`
+      const EDITABLE = `document.querySelector('.blk-editor')?.getAttribute('contenteditable') === 'true'`
+      /** 블록의 줄 — (종류, 글자, 링크인가). */
+      const crumbs = () => evaluate(`[...document.querySelectorAll('${NAV} .blk-breadcrumb-item')].map((li) => [li.dataset.kind, li.textContent, !!li.querySelector('a')])`)
+      const crumbLabels = (sel = NAV) => `JSON.stringify([...document.querySelectorAll('${sel} .blk-breadcrumb-item')].map((li) => li.textContent))`
+      /** 머리의 경로 — 글자만(구분자 '/' 는 뺀다). */
+      const headerLabels = () => evaluate(`[...document.querySelectorAll('nav[aria-label="상위 경로"] a, nav[aria-label="상위 경로"] span.text-neutral-400')].map((e) => e.textContent)`)
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${leaf}` })
+      check('전제 — breadcrumb 블록이 그려졌고 편집할 수 있다', await waitFor(`!!document.querySelector('${NAV} .blk-breadcrumb-item') && ${EDITABLE}`, 15000))
+
+      // ① 그리기 — 머리와 같은 줄 · 지금 페이지는 링크가 아니다
+      check('★ 블록이 이 페이지의 경로를 그린다 — 워크스페이스 · 조상 · 지금 페이지(링크 아님)',
+        JSON.stringify(await crumbs()) === JSON.stringify([['workspace', '워크스페이스', true], ['page', topTitle, true], ['page', midTitle, true], ['current', leafTitle, false]]),
+        JSON.stringify(await crumbs()))
+      check('★ 머리의 경로와 같은 줄이다(같은 함수를 지난다)',
+        JSON.stringify((await crumbs()).map(([, t]) => t)) === JSON.stringify(await headerLabels()), JSON.stringify([await crumbs(), await headerLabels()]))
+      const look = await evaluate(`(() => {
+        const links = [...document.querySelectorAll('${NAV} a.blk-breadcrumb-link')]
+        return { hrefs: links.map((a) => a.getAttribute('href')), tabs: links.map((a) => a.tabIndex), separator: getComputedStyle(document.querySelectorAll('${NAV} .blk-breadcrumb-item')[1], '::before').content }
+      })()`)
+      check('★ 링크는 그 페이지의 주소 · 편집 중에는 탭 순서에 없다 · 구분자는 CSS 가 그린다',
+        JSON.stringify(look.hrefs) === JSON.stringify([`/w/${workspaceId}`, `/w/${workspaceId}/${top}`, `/w/${workspaceId}/${mid}`])
+          && look.tabs.every((t) => t === -1) && look.separator.includes('/'), JSON.stringify(look))
+
+      // ② 제목을 고치면 따라간다 — 서버가 다시 그린 경로가 메타 트랜잭션으로 들어온다
+      await clickSelector('input[aria-label="페이지 제목"]')
+      await key('End')
+      await typeText(' 고침')
+      await key('Enter')
+      check('★ 이 페이지의 제목을 고치면 경로의 끝이 따라간다(서버가 다시 그린 경로)',
+        await waitFor(`${crumbLabels()} === ${JSON.stringify(JSON.stringify(['워크스페이스', topTitle, midTitle, `${leafTitle} 고침`]))}`, 8000),
+        JSON.stringify(await crumbs()))
+
+      // ③ 누르면 그 페이지로 — 앱 안에서
+      const midBox = await evaluate(`(() => {
+        const a = [...document.querySelectorAll('${NAV} a.blk-breadcrumb-link')].find((x) => x.textContent === ${JSON.stringify(midTitle)})
+        if (!a) return null
+        a.scrollIntoView({ block: 'center' })
+        const r = a.getBoundingClientRect()
+        return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+      })()`)
+      // 표지 — 앱 안에서 옮겨 가면(클라이언트 라우터) 창이 그대로라 남고, 문서를 다시 불러오면 사라진다.
+      await evaluate(`window.__crumbMarker = ${stamp}`)
+      if (midBox) await click(midBox.x, midBox.y)
+      check('★ 경로의 링크를 누르면 그 페이지로 간다', !!midBox && (await waitFor(`window.location.pathname === '/w/${workspaceId}/${mid}'
+        && document.querySelector('input[aria-label="페이지 제목"]')?.value === ${JSON.stringify(midTitle)}`, 8000)),
+        await evaluate('window.location.pathname'))
+      check('★ 앱 안에서 옮겨 간다 — 문서를 다시 불러오지 않는다(창의 표지가 남는다)', (await evaluate('window.__crumbMarker')) === stamp,
+        String(await evaluate('window.__crumbMarker')))
+
+      // ④ /이동 경로 — 빈 줄을 breadcrumb 으로 · 뒤의 빈 줄로 이어 쓴다
+      const fresh = await post({ title: `경로 새 페이지 ${stamp}`, parentPageId: mid })
+      const first = randomUUID()
+      await saveBody(fresh, { blocks: [block(first, 'paragraph', '')] })
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${fresh}` })
+      await waitFor(`!!document.querySelector('[data-block-id="${first}"] p') && ${EDITABLE}`, 15000)
+      let focused = false
+      for (let i = 0; i < 10 && !focused; i += 1) {
+        await clickSelector(`[data-block-id="${first}"] p`)
+        focused = await evaluate(`document.activeElement === document.querySelector('.blk-editor')`)
+        if (!focused) await sleep(200)
+      }
+      await typeText('/')
+      await typeText('경로')
+      await waitFor(`!!document.querySelector('[role="listbox"][aria-label="블록 삽입"]')`, 2000)
+      await key('Enter')
+      await typeText('이어 쓴 글')
+      check('★ /경로 로 만든 블록이 이 페이지의 경로를 그리고 · 이어 친 글자는 뒤의 새 줄에 들어간다',
+        await waitFor(`${crumbLabels(`[data-block-id="${first}"] nav.blk-breadcrumb`)} === ${JSON.stringify(JSON.stringify(['워크스페이스', topTitle, midTitle, `경로 새 페이지 ${stamp}`]))}
+          && [...document.querySelectorAll('.blk-editor [data-block-id]')][1]?.textContent === '이어 쓴 글'`, 4000),
+        JSON.stringify(await evaluate(`[...document.querySelectorAll('.blk-editor [data-block-id]')].map((c) => c.textContent.slice(0, 60))`)))
+      let savedType = null
+      for (let i = 0; i < 60 && savedType !== 'breadcrumb'; i += 1) {
+        savedType = (await readBody(fresh)).doc.blocks.find((b) => b.id === first)?.type ?? null
+        if (savedType !== 'breadcrumb') await sleep(150)
+      }
+      check("★ 서버 — type='breadcrumb' 행으로 저장됐다", savedType === 'breadcrumb', String(savedType))
+
+      // ⑤ 볼 수 없는 조상은 없다 — 이 페이지만 공유받은 동료(조상은 소유자의 개인 페이지 아래)
+      const reader = await joinAs(workspaceId, await createUser(`경로 동료 ${stamp}`), 'member')
+      const granted = await fetch(`${pagesUrl}/${leaf}/access`, {
+        method: 'POST', headers: authed, body: JSON.stringify({ action: 'grant', principal: { type: 'user', id: reader.userId }, level: 'view' }),
+      })
+      const browseAs = (token) => send('Network.setCookie', { name: 'nc_session', value: token, domain: 'localhost', path: '/', httpOnly: true })
+      try {
+        check('전제 — 동료는 이 페이지만 읽기로 받았다', granted.ok, String(granted.status))
+        await browseAs(reader.token)
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${leaf}` })
+        check('전제 — 동료의 화면에 breadcrumb 블록이 그려졌고 읽기 전용이다',
+          await waitFor(`!!document.querySelector('${NAV} .blk-breadcrumb-item') && document.querySelector('.blk-editor')?.getAttribute('contenteditable') === 'false'`, 15000))
+        const seen = await crumbs()
+        const html = await evaluate(`document.querySelector('${NAV}').outerHTML`)
+        check('★ 볼 수 없는 조상은 동료의 경로에 없다 — 제목도 자리도(머리와 같은 줄)',
+          JSON.stringify(seen) === JSON.stringify([['workspace', '워크스페이스', true], ['current', `${leafTitle} 고침`, false]])
+            && !html.includes('기밀')
+            && JSON.stringify(seen.map(([, t]) => t)) === JSON.stringify(await headerLabels()),
+          JSON.stringify([seen, await headerLabels()]))
+        check('★ 읽기 전용에서는 경로의 링크가 탭 순서에 선다',
+          await evaluate(`[...document.querySelectorAll('${NAV} a.blk-breadcrumb-link')].every((a) => a.tabIndex === 0)`))
+      } finally {
+        await browseAs(session)
+      }
+      await sleep(1000)
     }
 
     if (sectionIf('코멘트 패널 · 인박스 (F-05-08 · F-11-07)')) {

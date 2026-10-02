@@ -32,7 +32,9 @@ import { DOMSerializer, Fragment } from '@tiptap/pm/model'
 import { EditorState, type Command, type Plugin, type Transaction } from '@tiptap/pm/state'
 import { EditorView } from '@tiptap/pm/view'
 
+import type { BreadcrumbTrail } from '../block/breadcrumb.ts'
 import { atomMarksPlugin } from './atom-marks.ts'
+import { breadcrumbPlugin } from './breadcrumb-plugin.ts'
 import { blockIdPlugin } from './block-id-plugin.ts'
 import { clipboardPlugin } from './block-clipboard.ts'
 import { imageDropPlugin } from './image-drop.ts'
@@ -50,7 +52,13 @@ import { tocPlugin } from './toc-plugin.ts'
 import { mentionMenuPlugin } from './mention-menu.ts'
 import type { EditorDoc } from './document.ts'
 
-export type EditorDeps = EditorKeymapDeps & NodeViewDeps
+export type EditorDeps = EditorKeymapDeps & NodeViewDeps & {
+  /**
+   * 편집기를 만들 때의 이 페이지 경로(breadcrumb 블록 · 8b-2) — 머리의 breadcrumb 과 같은 줄(`block/breadcrumb.ts`). 바뀌면 화면이
+   * 메타 트랜잭션으로 넣는다(`setBreadcrumbTrail`). 없으면 경로 없이 그린다(검사).
+   */
+  readonly breadcrumbTrail?: () => BreadcrumbTrail | null
+}
 
 export type CreateEditorOptions = {
   readonly mount: HTMLElement
@@ -124,6 +132,8 @@ export function editingPlugins(deps: EditorDeps): Plugin[] {
     codeHighlightPlugin(),
     // 목차(F-01-16 · 8b-1) — 헤딩을 모아 목차 노드의 데코레이션에 싣는다. 문서에 쓰지 않는다(`toc-plugin.ts` 머리말).
     tocPlugin(),
+    // breadcrumb(F-01-16 · 8b-2) — 서버가 준 이 페이지의 경로를 breadcrumb 노드의 데코레이션에 싣는다(`breadcrumb-plugin.ts`).
+    breadcrumbPlugin(() => deps.breadcrumbTrail?.() ?? null),
     // 멘션 · 수식의 서식을 attr 에 비춘다 — 협업 바인딩이 Y.Doc 에 싣는 것은 attr 뿐이다(`atom-marks.ts`).
     atomMarksPlugin(),
     // id 스탬프는 마지막이다. 다른 플러그인이 만든 노드까지 훑어야 한다.

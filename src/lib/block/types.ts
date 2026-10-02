@@ -51,7 +51,7 @@ export type MvpBlockType = (typeof MVP_BLOCK_TYPES)[number]
  *
  * ⚠ 순서가 뜻을 갖는다 — 첫 항목(`paragraph`)이 새 블록의 기본형이다(`editor/schema.ts`). 더하는 것은 뒤에 붙인다.
  */
-export const BODY_BLOCK_TYPES = [...MVP_BLOCK_TYPES, 'code', 'table_of_contents'] as const
+export const BODY_BLOCK_TYPES = [...MVP_BLOCK_TYPES, 'code', 'table_of_contents', 'breadcrumb'] as const
 export type BodyBlockType = (typeof BODY_BLOCK_TYPES)[number]
 
 /** 페이지도 블록이다(C-3). 레지스트리에는 있지만 `/` 메뉴에는 없다. */
@@ -134,6 +134,10 @@ export const BLOCK_TYPES: Readonly<Record<BlockType, BlockTypeSpec>> = Object.fr
   // 목차(F-01-16 · 8b-1) — **내용을 저장하지 않는다**(공개 API 의 페이로드가 `color` 뿐이다). 같은 페이지의 헤딩에서 그릴 때
   // 계산한다(`block/toc.ts`). 텍스트가 없어 원자다 · 색은 있다 · 자식 없음.
   table_of_contents: { hasRichText: false, canHaveChildren: false, supportsColor: true },
+
+  // breadcrumb(F-01-16 · 8b-2) — 이 페이지의 조상 경로. 목차처럼 내용을 저장하지 않는다(공개 API 의 페이로드가 `{}` 다 — 색도
+  // 없다). 경로는 그릴 때 머리의 breadcrumb 과 같은 데이터로(`block/breadcrumb.ts`).
+  breadcrumb: { hasRichText: false, canHaveChildren: false, supportsColor: false },
 
   // 폴백. 렌더는 회색 박스, 저장은 원본 그대로.
   unsupported: { hasRichText: false, canHaveChildren: false, supportsColor: false },

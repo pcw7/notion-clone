@@ -16,15 +16,17 @@
 import type { Node as PmNode } from '@tiptap/pm/model'
 import type { Decoration, EditorView, NodeView } from '@tiptap/pm/view'
 
+import { BREADCRUMB_TYPE } from '../block/breadcrumb.ts'
 import { CODE_TYPE } from '../block/code.ts'
 import { TOC_TYPE } from '../block/toc.ts'
+import { breadcrumbNodeView, type BreadcrumbViewDeps } from './breadcrumb-view.ts'
 import { codeNodeView, type CodeViewDeps } from './code-view.ts'
 import { imageNodeView, type ImageViewDeps } from './image-view.ts'
 import { mentionDisplay, mentionTargetOf } from './mention-label.ts'
 import { nodeNameOf } from './schema.ts'
 import { tocNodeView, type TocViewDeps } from './toc-view.ts'
 
-export type NodeViewDeps = ImageViewDeps & CodeViewDeps & TocViewDeps & {
+export type NodeViewDeps = ImageViewDeps & CodeViewDeps & TocViewDeps & BreadcrumbViewDeps & {
   isCollapsed: (blockId: string) => boolean
   toggleCollapsed: (blockId: string) => void
   /** 하위 페이지로 이동. */
@@ -243,12 +245,14 @@ export function createNodeViews(deps: NodeViewDeps): Record<
     page_ref: (node, view, getPos) => pageRefNodeView(node, view, getPos, deps),
     // 목차(8b-1) — 목록은 `toc-plugin.ts` 가 단 노드 데코레이션에서 읽는다.
     [nodeNameOf(TOC_TYPE)]: (node, view, _getPos, decorations) => tocNodeView(node, view, decorations, deps),
+    // breadcrumb(8b-2) — 경로는 `breadcrumb-plugin.ts` 가 단 노드 데코레이션에서 읽는다.
+    [nodeNameOf(BREADCRUMB_TYPE)]: (node, view, _getPos, decorations) => breadcrumbNodeView(node, view, decorations, deps),
     mention: (node, view, getPos) => mentionNodeView(node, view, getPos, deps),
   }
 }
 
 /**
- * 읽기 전용에서만 탭 순서에 서는 것(코드 블록의 복사 버튼 · 목차의 링크 — `data-readonly-tab`)의 탭 정지를 편집 가능 여부에 맞춘다 —
+ * 읽기 전용에서만 탭 순서에 서는 것(코드 블록의 복사 버튼 · 목차 · breadcrumb 의 링크 — `data-readonly-tab`)의 탭 정지를 편집 가능 여부에 맞춘다 —
  * 편집기가 편집 가능 여부를 바꾼 뒤 부른다. 노드 뷰는 그때 다시 만들어지지 않는다(8a-2). 편집 중에는 Tab 이 들여쓰기라, 들여쓸 수
  * 없는 자리의 Tab 이 멀리 있는 그것으로 포커스를 옮겨 그리로 굴렀다. 크롬의 속성 변화는 노드 뷰의 `ignoreMutation` 이 거른다.
  *

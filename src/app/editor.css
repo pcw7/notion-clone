@@ -482,6 +482,50 @@
   color: #9ca3af;
 }
 
+/*
+ * breadcrumb(8b-2 · F-01-16) — 노드 뷰가 그리는 `nav.blk-breadcrumb`(`breadcrumb-view.ts`). 머리의 경로와 같은 모양 — 작은 회색 글자 ·
+ * `/` 로 가른다(구분자는 CSS 가 그린다 — 화면 읽기 프로그램이 읽지 않는다) · 지금 페이지는 링크가 아니다.
+ */
+.blk-editor .blk-breadcrumb {
+  margin: 0.25rem 0;
+  padding: 0.125rem 0;
+  font-size: 0.875rem;
+  color: #6b7280;
+}
+
+.blk-editor .blk-breadcrumb-list {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.blk-editor .blk-breadcrumb-item + .blk-breadcrumb-item::before {
+  content: '/';
+  content: '/' / '';
+  margin-inline-end: 0.25rem;
+  color: #9ca3af;
+}
+
+.blk-editor a.blk-breadcrumb-link {
+  color: inherit;
+  text-decoration: none;
+  border-radius: 0.25rem;
+  padding: 0 0.125rem;
+  cursor: pointer;
+}
+
+.blk-editor a.blk-breadcrumb-link:hover {
+  text-decoration: underline;
+}
+
+.blk-editor .blk-breadcrumb-current {
+  color: #9ca3af;
+}
+
 /* 블록 선택의 하이라이트가 코드 상자의 불투명한 배경에 가리지 않게(8a-1 부터의 틈) — 상자 위에 같은 색을 한 겹 더 칠한다. */
 .blk-editor .blk-selected pre.blk-code {
   box-shadow: inset 0 0 0 100vmax rgba(35, 131, 226, 0.14);
@@ -721,6 +765,9 @@
   .blk-editor a.blk-toc-link { text-decoration-color: rgba(255, 255, 255, 0.3); }
   .blk-editor a.blk-toc-link:hover { background: rgba(255, 255, 255, 0.08); }
   .blk-editor .blk-toc-empty { color: #6b7280; }
+  .blk-editor .blk-breadcrumb { color: #a3a3a3; }
+  .blk-editor .blk-breadcrumb-current,
+  .blk-editor .blk-breadcrumb-item + .blk-breadcrumb-item::before { color: #737373; }
   .blk-editor {
     --code-keyword: #ff7b72;
     --code-title: #d2a8ff;
