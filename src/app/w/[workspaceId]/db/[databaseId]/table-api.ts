@@ -11,6 +11,7 @@
 import type { FilterNode, SortKey } from '@/lib/database/filter'
 import type { GroupBy } from '@/lib/database/group'
 import type { RowJson } from '@/lib/database/http'
+import type { PageIcon } from '@/lib/block/page-icon'
 import type { DatabaseListItem } from '@/lib/database/database'
 import type { PropertySummary, SchemaSnapshot } from '@/lib/database/property'
 import type { CellValue, MvpPropertyType, SelectOption } from '@/lib/database/property-types'
@@ -211,19 +212,22 @@ export function moveCard(
 
 // ── relation (5b-1) ────────────────────────────────────────────────────
 
-/** 연결된 행들의 제목. 첫 화면의 것은 서버 렌더가 준다 — 이것은 그 뒤에 온 행("더 보기" · 새 행)의 몫이다. */
+/** 연결된 행들의 제목 · 아이콘(8c-3a). 첫 화면의 것은 서버 렌더가 준다 — 이것은 그 뒤에 온 행("더 보기" · 새 행)의 몫이다. */
 export function loadRelationLabels(
   workspaceId: string,
   ids: readonly string[],
-): Promise<ApiResult<Record<string, string | null>>> {
+): Promise<ApiResult<{ labels: Record<string, string | null>; icons: Record<string, PageIcon> }>> {
   return call(
     `${base(workspaceId)}/relation-labels`,
     { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ ids }) },
-    (body) => (body.labels ?? {}) as Record<string, string | null>,
+    (body) => ({
+      labels: (body.labels ?? {}) as Record<string, string | null>,
+      icons: (body.icons ?? {}) as Record<string, PageIcon>,
+    }),
   )
 }
 
-export type RelatedRow = { readonly id: string; readonly title: string }
+export type RelatedRow = { readonly id: string; readonly title: string; readonly icon: PageIcon | null }
 
 export type RelationPage = {
   readonly items: readonly RelatedRow[]
@@ -468,7 +472,7 @@ export function renameDatabase(workspaceId: string, databaseId: string, name: st
 
 // ── 템플릿 (6c-3 · F-08-02) ───────────────────────────────────────────
 
-export type TemplateJson = { id: string; title: string; lastEditedAt: string }
+export type TemplateJson = { id: string; title: string; icon: PageIcon | null; lastEditedAt: string }
 
 /** 이 표의 템플릿. `view` 만 있으면 읽는다 — 고를 수 있어야 `New ▾` 가 쓸모 있다. */
 export function listTemplates(workspaceId: string, dataSourceId: string): Promise<ApiResult<TemplateJson[]>> {

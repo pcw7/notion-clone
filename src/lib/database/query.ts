@@ -36,6 +36,7 @@ import { withReadTransaction, type Tx } from '../db/tx.ts'
 import { can } from '../permissions/levels.ts'
 import { effectiveCaps } from '../permissions/effective.ts'
 import { plainTitleOf } from '../block/page.ts'
+import { readPageIcon, type PageIcon } from '../block/page-icon.ts'
 import {
   compileCursor,
   compileFilter,
@@ -53,6 +54,8 @@ export { DEFAULT_QUERY_LIMIT, MAX_QUERY_LIMIT, MAX_QUERY_PAGINATION }
 export type QueriedRow = {
   readonly id: string
   readonly title: string
+  /** 행 페이지의 아이콘(8c-3a · `format.page_icon`) — 셀이 아니다. 없으면 null. */
+  readonly icon: PageIcon | null
   readonly orderKey: string
   readonly properties: Readonly<Record<string, unknown>>
   readonly createdAt: Date
@@ -92,6 +95,7 @@ export type RowRow = {
   order_key: string
   properties_cache: Record<string, unknown> | null
   properties: { title?: unknown } | null
+  page_icon: unknown
   created_at: Date
   last_edited_at: Date
   version: string
@@ -176,7 +180,7 @@ export async function queryRows(
     const limitParam = params.bind(limit + 1)
 
     const rows = await tx.query<RowRow>(
-      `SELECT b.id, b.order_key, p.properties_cache, b.properties,
+      `SELECT b.id, b.order_key, p.properties_cache, b.properties, b.format -> 'page_icon' AS page_icon,
               b.created_at, b.last_edited_at, b.version${sortColumns}
          FROM page p
          JOIN block b ON b.id = p.id
@@ -215,6 +219,7 @@ export function toQueriedRow(row: RowRow): QueriedRow {
   return {
     id: row.id,
     title: plainTitleOf(row.properties),
+    icon: readPageIcon(row.page_icon),
     orderKey: row.order_key,
     properties: row.properties_cache ?? {},
     createdAt: row.created_at,

@@ -5262,6 +5262,169 @@ async function main() {
       await sleep(500)
     }
 
+    if (sectionIf('데이터베이스 행의 아이콘 (8c-3a · F-02-05)')) {
+      // 행은 페이지라 아이콘의 자리가 같다(`format.page_icon` · `setPageIcon` 이 행을 받는다). 표의 제목 칸 · 보드 카드 · 관계형 칩과
+      // 고르개 · 템플릿 목록 · 새 행 메뉴 · 템플릿 편집 화면이 그것을 앞에 단다. 셀을 고친 응답(화면이 그 행으로 갈아 끼운다)도 아이콘을
+      // 싣는다. 준비는 서버 명령으로 한다 — 자기 데이터를 스스로 만든다(E2E_ONLY 로 홀로 돈다).
+      const stamp = Date.now()
+      const src = (p) => new URL(`../src/lib/${p}`, import.meta.url).href
+      const dbMod = await import(src('database/database.ts'))
+      const propMod = await import(src('database/property.ts'))
+      const rowMod = await import(src('database/row.ts'))
+      const relMod = await import(src('database/relation.ts'))
+      const tplMod = await import(src('database/template.ts'))
+      const viewMod = await import(src('database/view.ts'))
+      const pageMod = await import(src('block/page.ts'))
+      const { withReadTransaction } = await import(src('db/tx.ts'))
+      const must = (r, what) => {
+        if (!r.ok) throw new Error(`${what} 준비 실패: ${r.reason}`)
+        return r.value
+      }
+      const emoji = (e) => ({ type: 'emoji', emoji: e })
+      const tasks = must(await dbMod.createDatabase(ctx, { name: `행아이콘작업${stamp}` }), '표')
+      const projects = must(await dbMod.createDatabase(ctx, { name: `행아이콘프로젝트${stamp}` }), '표')
+      const titleIdOf = async (ds) => must(await propMod.getSchema(ctx, ds), '스키마').properties.find((p) => p.type === 'title').id
+      const taskTitle = await titleIdOf(tasks.dataSourceId)
+      const projectTitle = await titleIdOf(projects.dataSourceId)
+      const mkRow = async (ds, titleId, title, icon) => {
+        const id = must(await rowMod.createRow(ctx, ds, { cells: [{ propertyId: titleId, value: { type: 'title', title: [textRun(title)] } }] }), '행').id
+        if (icon !== undefined) await pageMod.setPageIcon(ctx, id, emoji(icon))
+        return id
+      }
+      const relation = must(await relMod.addRelationProperty(ctx, tasks.dataSourceId, { name: '프로젝트', targetDataSourceId: projects.dataSourceId }), '관계형')
+      const rocketTitle = `로켓${stamp}`
+      const plainProjectTitle = `그냥프로젝트${stamp}`
+      const cactusTitle = `선인장${stamp}`
+      const foxTitle = `여우작업${stamp}`
+      const plainTaskTitle = `그냥작업${stamp}`
+      const rocket = await mkRow(projects.dataSourceId, projectTitle, rocketTitle, '🚀')
+      const plainProject = await mkRow(projects.dataSourceId, projectTitle, plainProjectTitle)
+      const cactus = await mkRow(projects.dataSourceId, projectTitle, cactusTitle, '🌵')
+      const fox = await mkRow(tasks.dataSourceId, taskTitle, foxTitle, '🦊')
+      await mkRow(tasks.dataSourceId, taskTitle, plainTaskTitle)
+      must(await relMod.linkRows(ctx, fox, relation.propertyId, { add: [rocket, plainProject] }), '연결')
+      const templateTitle = `회의록틀${stamp}`
+      const template = must(await tplMod.createTemplate(ctx, tasks.dataSourceId, { title: templateTitle }), '템플릿')
+      await pageMod.setPageIcon(ctx, template.id, emoji('📝'))
+      // 템플릿만 잇는 프로젝트(☄️) — 템플릿으로 만든 행이 화면에 처음 보는 id 를 가져온다. 그 제목 · 아이콘은 첫 화면이 아니라
+      // 화면이 나중에 묻는 길(`POST /relation-labels` · `useRelationLabels`)로 온다.
+      const cometTitle = `혜성${stamp}`
+      const comet = await mkRow(projects.dataSourceId, projectTitle, cometTitle, '☄️')
+      must(await relMod.linkRows(ctx, template.id, relation.propertyId, { add: [comet] }), '템플릿 연결')
+      must(await propMod.addProperty(ctx, tasks.dataSourceId, { name: '끝', type: 'checkbox' }), '체크박스')
+      const doneId = must(await propMod.getSchema(ctx, tasks.dataSourceId), '스키마').properties.find((p) => p.name === '끝').id
+      const board = must(await viewMod.createView(ctx, tasks.id, { type: 'board', name: '보드', groupBy: { property_id: doneId } }), '보드')
+
+      const clickOn = async (selector) => {
+        const p = await evaluate(`(() => {
+          const e = document.querySelector(${JSON.stringify(selector)})
+          if (!e) return null
+          e.scrollIntoView({ block: 'center' })
+          const r = e.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (p) await click(p.x, p.y)
+        return p !== null
+      }
+      const iconIn = (sel) => `(document.querySelector(${JSON.stringify(sel)})?.querySelector('[data-page-icon]')?.getAttribute('data-page-icon') ?? null)`
+      const textOf = (sel) => `(document.querySelector(${JSON.stringify(sel)})?.textContent ?? null)`
+      /** 그 칸의 관계형 칩 — (글자, 아이콘). */
+      const chipsIn = (cell) => `[...document.querySelectorAll('td[data-cell="${cell}"] [data-testid="db-relation-chip"]')].map((c) => [c.textContent, c.querySelector('[data-page-icon]')?.getAttribute('data-page-icon') ?? null])`
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${tasks.id}` })
+      check('전제 — 표가 그려졌다', await waitFor(`!!document.querySelector('td[data-cell="0:0"] [data-testid="db-row-title"]')`, 15000))
+
+      // ① 제목 칸
+      check('★ 표의 제목 칸이 그 행의 아이콘을 앞에 단다 — 글자는 아이콘 + 제목',
+        (await evaluate(iconIn('td[data-cell="0:0"]'))) === '🦊' && (await evaluate(textOf('td[data-cell="0:0"]'))) === `🦊${foxTitle}`,
+        JSON.stringify([await evaluate(iconIn('td[data-cell="0:0"]')), await evaluate(textOf('td[data-cell="0:0"]'))]))
+      check('★ 아이콘 없는 행은 기본 글리프 — 칸의 글자는 제목뿐',
+        (await evaluate(iconIn('td[data-cell="1:0"]'))) === '' && (await evaluate(textOf('td[data-cell="1:0"]'))) === plainTaskTitle,
+        JSON.stringify([await evaluate(iconIn('td[data-cell="1:0"]')), await evaluate(textOf('td[data-cell="1:0"]'))]))
+
+      // ② 관계형 칩 — 아이콘이 있으면 그것, 없으면 ↗
+      check('★ 관계형 칩이 연결된 행의 아이콘을 단다 — 없으면 ↗',
+        await waitFor(`JSON.stringify(${chipsIn('0:1')}) === ${JSON.stringify(JSON.stringify([[`🚀${rocketTitle}`, '🚀'], [`↗${plainProjectTitle}`, null]]))}`, 5000),
+        JSON.stringify(await evaluate(chipsIn('0:1'))))
+
+      // ③ 셀을 고친 응답도 아이콘을 싣는다 — 서버가 받은 뒤에도 그대로(화면이 응답의 행으로 갈아 끼운다)
+      const renamed = `${foxTitle}고침`
+      await clickOn('td[data-cell="0:0"]')
+      await key('Enter')
+      const editing = await waitFor(`document.activeElement?.matches('[data-testid="db-cell-input"]')`, 5000)
+      if (editing) {
+        await evaluate(`document.querySelector('[data-testid="db-cell-input"]').select()`)
+        await typeText(renamed)
+        await key('Enter')
+      }
+      let serverTitle = null
+      for (let i = 0; i < 40 && serverTitle !== renamed; i += 1) {
+        serverTitle = (await withReadTransaction((tx) => rowMod.readRow(tx, fox)))?.title ?? null
+        if (serverTitle !== renamed) await sleep(150)
+      }
+      // 응답이 화면에 닿을 때까지 — 서버가 받은 뒤 1초 동안 칸이 아이콘과 새 제목을 계속 지키는지 본다.
+      let held = serverTitle === renamed
+      for (let i = 0; i < 10 && held; i += 1) {
+        held = (await evaluate(iconIn('td[data-cell="0:0"]'))) === '🦊' && (await evaluate(textOf('td[data-cell="0:0"]'))) === `🦊${renamed}`
+        await sleep(100)
+      }
+      check('★ 제목을 고친 뒤에도(서버의 응답으로 갈아 끼운 행) 아이콘이 남는다', editing && held,
+        JSON.stringify([editing, serverTitle, await evaluate(iconIn('td[data-cell="0:0"]')), await evaluate(textOf('td[data-cell="0:0"]'))]))
+
+      // ④ 관계형 고르개 — 지금 연결 · 후보, 고른 칩은 곧바로 아이콘을 단다
+      await clickOn('td[data-cell="0:1"]')
+      await clickOn('td[data-cell="0:1"]')
+      const opened = await waitFor(`document.activeElement?.matches('[data-testid="db-relation-input"]')`, 8000)
+      check('★ 고르개의 지금 연결이 아이콘을 단다 — 없으면 ↗',
+        opened && (await waitFor(`JSON.stringify([...document.querySelectorAll('[data-testid="db-relation-linked"]')].map((li) => li.querySelector('[data-page-icon]')?.getAttribute('data-page-icon') ?? null)) === ${JSON.stringify(JSON.stringify(['🚀', null]))}`, 5000)),
+        String(await evaluate(`document.querySelector('[data-testid="db-relation-editor"]')?.innerHTML?.slice(0, 300) ?? '(없음)'`)))
+      const CANDIDATE = `[data-testid="db-relation-candidate"][data-row-id="${cactus}"]`
+      check('★ 고르개의 후보가 아이콘을 단다', await waitFor(`${iconIn(CANDIDATE)} === '🌵'`, 5000),
+        String(await evaluate(`[...document.querySelectorAll('[data-testid="db-relation-candidate"]')].map((e) => e.textContent).join('|')`)))
+      await clickOn(CANDIDATE)
+      check('★ 고른 행의 칩은 곧바로 아이콘을 단다(고르개가 넘긴 아이콘 — 다시 묻지 않는다)',
+        await waitFor(`${chipsIn('0:1')}.some(([t, i]) => t === ${JSON.stringify(`🌵${cactusTitle}`)} && i === '🌵')`, 5000),
+        JSON.stringify(await evaluate(chipsIn('0:1'))))
+      await key('Escape')
+      await waitFor(`!document.querySelector('[data-testid="db-relation-editor"]')`, 3000)
+
+      // ⑤ 템플릿 — 목록 · 새 행 메뉴가 아이콘을 달고, 템플릿으로 만든 행이 물려받는다
+      await clickOn('[data-testid="db-templates-button"]')
+      const TEMPLATE_OPEN = `[data-testid="db-template-open"][data-template-id="${template.id}"]`
+      check('★ 템플릿 목록이 템플릿의 아이콘을 단다', await waitFor(`${iconIn(TEMPLATE_OPEN)} === '📝'`, 8000),
+        String(await evaluate(`document.querySelector('[data-testid="db-templates-panel"]')?.textContent ?? '(없음)'`)))
+      await clickOn('[data-testid="db-templates-button"]')
+      await clickOn('[data-testid="db-add-row-menu"]')
+      const NEW_FROM = `[data-testid="db-new-template"][data-template-id="${template.id}"]`
+      check('★ 새 행 메뉴의 템플릿이 아이콘을 단다', await waitFor(`${iconIn(NEW_FROM)} === '📝'`, 8000),
+        String(await evaluate(`document.querySelector('[data-testid="db-add-row-menu-menu"]')?.textContent ?? '(없음)'`)))
+      await clickOn(NEW_FROM)
+      // 새 행은 제목 칸을 편집 상태로 연다 — 편집칸이 제목 자리(아이콘 포함)를 덮으므로 끝낸 뒤 본다.
+      if (await waitFor(`document.querySelectorAll('td[data-cell$=":0"]').length === 3 && !!document.querySelector('[data-testid="db-cell-input"]')`, 8000)) {
+        await key('Escape')
+      }
+      check('★ 템플릿으로 만든 행이 그 아이콘을 물려받는다(만든 응답의 행)',
+        await waitFor(`[...document.querySelectorAll('td[data-cell$=":0"] [data-testid="db-row-title"]')].some((t) => t.textContent === ${JSON.stringify(`📝${templateTitle}`)} && t.querySelector('[data-page-icon]')?.getAttribute('data-page-icon') === '📝')`, 8000),
+        String(await evaluate(`[...document.querySelectorAll('td[data-cell$=":0"]')].map((t) => t.textContent).join('|')`)))
+      check('★ 나중에 온 행의 관계형 칩도 아이콘을 단다(화면이 다시 물은 제목 · 아이콘)',
+        await waitFor(`${chipsIn('2:1')}.some(([t, i]) => t === ${JSON.stringify(`☄️${cometTitle}`)} && i === '☄️')`, 8000),
+        JSON.stringify(await evaluate(chipsIn('2:1'))))
+
+      // ⑥ 보드 카드
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${tasks.id}?v=${board.id}` })
+      const CARD = `[...document.querySelectorAll('[data-testid="db-board-card-title"]')].find((c) => c.textContent.includes(${JSON.stringify(renamed)}))`
+      check('★ 보드 카드의 제목이 그 행의 아이콘을 앞에 단다',
+        await waitFor(`${CARD}?.querySelector('[data-page-icon]')?.getAttribute('data-page-icon') === '🦊'`, 15000),
+        String(await evaluate(`[...document.querySelectorAll('[data-testid="db-board-card-title"]')].map((c) => c.textContent).join('|')`)))
+
+      // ⑦ 템플릿 편집 화면 — 머리의 아이콘(고칠 수 있으면 단추)
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${tasks.id}/templates/${template.id}` })
+      check('★ 템플릿 편집 화면의 머리에 아이콘이 서고 고를 수 있다(단추)',
+        await waitFor(`document.querySelector('[data-testid="page-icon"]')?.textContent === '📝' && document.querySelector('[data-testid="page-icon"]').tagName === 'BUTTON'`, 15000),
+        String(await evaluate(`document.querySelector('[data-testid="page-icon"]')?.outerHTML ?? '(없음)'`)))
+      await sleep(500)
+    }
+
     if (sectionIf('코멘트 패널 · 인박스 (F-05-08 · F-11-07)')) {
       const commentPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
         method: 'POST',

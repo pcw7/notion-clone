@@ -30,6 +30,7 @@ import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 
 import * as api from './table-api'
+import { PageIconView } from '../../page-icon-view'
 
 const UNTITLED = '제목 없음'
 
@@ -136,6 +137,7 @@ export function TemplatePanel(props: {
                     data-template-id={t.id}
                     className="min-w-0 flex-1 truncate px-1 py-1.5 hover:underline underline-offset-4"
                   >
+                    <PageIconView icon={t.icon} fallback className="mr-1.5 align-[-0.125em]" />
                     {t.title || UNTITLED}
                   </Link>
                   {canEdit && (

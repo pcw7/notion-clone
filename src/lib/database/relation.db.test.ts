@@ -532,7 +532,7 @@ describe('⑨ 화면이 그릴 것 (relation 5b-1)', () => {
     const ids = relationIdsIn(page.rows, [relId, secretRel])
     assert.deepEqual([...ids].sort(), [seen, untitled, gone, secret].sort(), '캐시의 id 는 걸러지지 않았다')
 
-    const labels = await loadRelationLabels(other.ctx, ids)
+    const { labels } = await loadRelationLabels(other.ctx, ids)
     assert.equal(labels[seen], '보이는 것')
     assert.equal(labels[untitled], '', '제목이 빈 행은 빈 문자열이다 — 화면이 "제목 없음"을 고른다')
     assert.equal(labels[secret], null, '살아 있지만 볼 수 없다')
@@ -540,16 +540,16 @@ describe('⑨ 화면이 그릴 것 (relation 5b-1)', () => {
     assert.ok(!JSON.stringify(labels).includes('비밀 제목'))
 
     // 소유자는 비밀 표의 제목도 본다.
-    assert.equal((await loadRelationLabels(fx.owner.ctx, ids))[secret], '비밀 제목')
+    assert.equal((await loadRelationLabels(fx.owner.ctx, ids)).labels[secret], '비밀 제목')
   })
 
   test('제목 맵은 이 워크스페이스의 **행**만 답한다 — 없는 id · uuid 가 아닌 값 · 일반 페이지는 키가 없다', async (ctx) => {
     if (skipReason) return ctx.skip(skipReason)
     const tasks = await newTable('작업')
     const row = await tasks.row('행')
-    const labels = await loadRelationLabels(fx.owner.ctx, [row, randomUUID(), 'nope', tasks.databaseId])
+    const { labels } = await loadRelationLabels(fx.owner.ctx, [row, randomUUID(), 'nope', tasks.databaseId])
     assert.deepEqual(labels, { [row]: '행' })
-    assert.deepEqual(await loadRelationLabels(fx.owner.ctx, []), {})
+    assert.deepEqual(await loadRelationLabels(fx.owner.ctx, []), { labels: {}, icons: {} })
   })
 })
 

@@ -5,6 +5,8 @@
  */
 
 import { cellText } from '@/lib/database/cell-format'
+import type { PageIcon } from '@/lib/block/page-icon'
+import { PageIconView } from '../../page-icon-view'
 import { optionIdOf } from '@/lib/database/property-types'
 import type { RollupCell, RollupColumnInfo } from '@/lib/database/rollup-functions'
 import type { AppPropertyType, CellValue, OptionColor, RelationValue, SelectOption } from '@/lib/database/property-types'
@@ -127,6 +129,9 @@ export function CellDisplay({ value, options }: { value: CellValue; options: rea
 /** 연결된 행의 제목 맵 — `relation.ts` `loadRelationLabels` 의 답. 제목 · `null`(볼 수 없다) · 키 없음(휴지통). */
 export type RelationLabels = Readonly<Record<string, string | null>>
 
+/** 연결된 행의 아이콘 맵(8c-3a) — 볼 수 있고 아이콘이 있는 행만. 없으면 칩은 `↗` 를 그린다. */
+export type RelationIcons = Readonly<Record<string, PageIcon>>
+
 /**
  * relation 칸 (relation 5b-1) — 캐시의 id(`RelationValue`)에 제목 맵을 입혀 그린다.
  *
@@ -137,7 +142,7 @@ export type RelationLabels = Readonly<Record<string, string | null>>
  *
  * ★ 캐시의 id 로 제목을 **직접** 읽는 경로를 만들지 않는다 — 권한과 휴지통을 거르는 곳은 서버의 제목 맵 하나다.
  */
-export function RelationChips({ value, labels }: { value: RelationValue; labels: RelationLabels }) {
+export function RelationChips({ value, labels, icons = {} }: { value: RelationValue; labels: RelationLabels; icons?: RelationIcons }) {
   const titled = value.relation.filter((ref) => typeof labels[ref.id] === 'string')
   const hidden = value.relation.filter((ref) => labels[ref.id] === null).length
   const beyond = Math.max(0, value.count - value.relation.length)
@@ -150,9 +155,14 @@ export function RelationChips({ value, labels }: { value: RelationValue; labels:
           data-testid="db-relation-chip"
           className="max-w-[10rem] flex-none truncate rounded bg-neutral-100 px-1.5 py-0.5 text-xs text-neutral-800 dark:bg-neutral-800 dark:text-neutral-200"
         >
-          <span aria-hidden className="mr-1 text-neutral-400">
-            ↗
-          </span>
+          {/* 그 행의 아이콘이 있으면 그것을, 없으면 "연결"의 표시(↗)를 — 칩은 이미 다른 행을 가리키는 꼴이라 문서 글리프를 겹쳐 세우지 않는다. */}
+          {icons[ref.id] !== undefined ? (
+            <PageIconView icon={icons[ref.id]} className="mr-1" />
+          ) : (
+            <span aria-hidden className="mr-1 text-neutral-400">
+              ↗
+            </span>
+          )}
           {labels[ref.id] || '제목 없음'}
         </span>
       ))}

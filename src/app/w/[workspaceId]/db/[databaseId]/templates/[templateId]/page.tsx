@@ -57,6 +57,7 @@ import { templateTrail } from '@/lib/block/breadcrumb'
 import { BodyEditor } from '../../../../[pageId]/body-editor'
 import { DatabaseTable } from '../../database-table'
 import { TemplateTitle } from './template-title'
+import { PageIconControl } from '../../../../[pageId]/page-icon-control'
 
 export default async function TemplatePage({
   params,
@@ -92,9 +93,9 @@ export default async function TemplatePage({
   if (!state.ok || pageRefs === null) notFound()
 
   const relationPropertyIds = columns.filter((c) => c.type === 'relation').map((c) => c.propertyId)
-  const [relationLabels, mentionLabels] = await Promise.all([
+  const [relation, mentionLabels] = await Promise.all([
     relationPropertyIds.length === 0
-      ? Promise.resolve({})
+      ? Promise.resolve({ labels: {}, icons: {} })
       : loadRelationLabels(ctx, relationIdsIn([template], relationPropertyIds)),
     loadMentionLabels(ctx, mentionIdsOf(readBodyYDoc(state.value.ydoc, template.id).doc)),
   ])
@@ -134,6 +135,14 @@ export default async function TemplatePage({
         만드는 <em>새 항목</em>에 실립니다. 이미 만든 항목은 바뀌지 않습니다.
       </p>
 
+      {/* 템플릿의 아이콘(8c-3a) — 이 템플릿으로 만드는 새 항목이 물려받는다(복제가 `format` 을 옮긴다). 제목 위에 선다. */}
+      <div className="group/header flex flex-col gap-2">
+        <PageIconControl
+          workspaceId={workspaceId}
+          pageId={template.id}
+          initialIcon={template.icon}
+          readOnly={!database.value.access.canEditContent}
+        />
       <TemplateTitle
         workspaceId={workspaceId}
         templateId={template.id}
@@ -141,6 +150,7 @@ export default async function TemplatePage({
         initialTitle={template.title}
         canEdit={database.value.access.canEditContent}
       />
+      </div>
 
       <section className="flex flex-col gap-2" aria-label="템플릿 속성">
         {columns.length === 0 ? (
@@ -158,7 +168,8 @@ export default async function TemplatePage({
             rows={[row]}
             hasMore={false}
             nextCursor={null}
-            relationLabels={relationLabels}
+            relationLabels={relation.labels}
+            relationIcons={relation.icons}
             // 템플릿 행의 rollup 은 서버가 계산하지 않는다 — `listColumns('record', …)` 가 그 컬럼을 아예 뺀다.
             rollupValues={EMPTY_ROLLUP_PAGE}
             access={database.value.access}

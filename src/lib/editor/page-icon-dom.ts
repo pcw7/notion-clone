@@ -13,8 +13,12 @@ import { PAGE_GLYPH, type PageIcon } from '../block/page-icon.ts'
 
 const SVG_NS = 'http://www.w3.org/2000/svg'
 
-export function pageIconElement(icon: PageIcon | null, options: { readonly fallback: boolean; readonly className: string }): Element | null {
-  if (icon !== null) {
+export function pageIconElement(
+  icon: PageIcon | null | undefined,
+  options: { readonly fallback: boolean; readonly className: string },
+): Element | null {
+  // `undefined` 도 없는 것이다(`page-icon-view.tsx` 와 같은 규칙).
+  if (icon !== null && icon !== undefined) {
     const span = document.createElement('span')
     span.className = options.className
     span.setAttribute('aria-hidden', 'true')

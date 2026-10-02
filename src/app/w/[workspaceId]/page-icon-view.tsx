@@ -18,12 +18,16 @@ export function PageIconView({
   fallback = false,
   className = '',
 }: {
-  icon: PageIcon | null
+  /**
+   * 없으면 null. `undefined` 도 없는 것으로 다룬다 — 서버 JSON 의 한 응답이 이 칸을 빠뜨려도(8c-3a 의 템플릿 POST 가 그랬다) 목록
+   * 전체가 던지지 않게.
+   */
+  icon: PageIcon | null | undefined
   /** 없을 때 기본 문서 글리프를 세운다 — 줄의 자리를 맞추는 곳(사이드바). */
   fallback?: boolean
   className?: string
 }) {
-  if (icon !== null) {
+  if (icon !== null && icon !== undefined) {
     return (
       <span aria-hidden data-page-icon={icon.emoji} className={`inline-block flex-none leading-none ${className}`}>
         {icon.emoji}
