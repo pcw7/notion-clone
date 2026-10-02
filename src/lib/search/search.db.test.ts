@@ -390,6 +390,27 @@ describe('스니펫 · breadcrumb', () => {
     }
   })
 
+  test('★ 볼 수 없는 조상은 결과의 경로에 없다 — 따로 공유받은 하위 페이지를 찾은 사람(머리의 경로와 같은 규칙 · §3.3-100)', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    // 8c-2 가 찾았다 — #76 은 머리의 경로(`listAncestors`)만 막았고, 검색 결과의 경로는 조상의 제목을 권한 없이 읽었다.
+    const token = `숨은조상${randomUUID().slice(0, 8)}`
+    const root = (await createPage(fx.owner.ctx, { title: titleFromPlainText('기밀 조상 제목'), privateTop: true })).id
+    const mid = await pageWith('기밀 중간 제목', [], root)
+    const leaf = await pageWith(`${token} 공유한 잎`, [], mid)
+    const granted = await grantAccess(fx.owner.ctx, leaf, { type: 'user', id: other.userId }, 'view')
+    assert.equal(granted.ok, true, `grantAccess 실패: ${granted.ok === false ? granted.reason : ''}`)
+
+    const seen = await searchPages(other.ctx, { query: token })
+    assert.equal(seen.ok, true)
+    if (seen.ok) {
+      assert.deepEqual(seen.results.results.map((r) => r.pageId), [leaf], '전제 — 공유받은 잎은 찾힌다')
+      assert.deepEqual(seen.results.results[0]?.breadcrumb, [], `볼 수 없는 조상이 경로에 실렸다: ${JSON.stringify(seen.results.results[0]?.breadcrumb)}`)
+    }
+    const owner = await searchPages(fx.owner.ctx, { query: token })
+    assert.equal(owner.ok, true)
+    if (owner.ok) assert.deepEqual(owner.results.results[0]?.breadcrumb.map((b) => b.title), ['기밀 조상 제목', '기밀 중간 제목'])
+  })
+
   test('루트 페이지의 breadcrumb 은 빈 배열이다', async (t) => {
     if (skipReason) return t.skip(skipReason)
     const token = `루트토큰${randomUUID().slice(0, 8)}`

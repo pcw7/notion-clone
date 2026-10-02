@@ -36,6 +36,7 @@ function toRow(item: Awaited<ReturnType<typeof listInbox>>[number]): InboxRow {
     kind: item.kind,
     pageId: item.pageId,
     pageTitle: item.pageTitle,
+    pageIcon: item.pageIcon,
     notificationIds: [...item.notificationIds],
     count: item.count,
     unreadCount: item.unreadCount,

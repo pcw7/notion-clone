@@ -21,6 +21,7 @@ export async function GET(
     entries: entries.map((e) => ({
       id: e.id,
       title: e.title,
+      icon: e.icon,
       trashedAt: e.trashedAt.toISOString(),
       purgeAfter: e.purgeAfter?.toISOString() ?? null,
       descendantCount: e.descendantCount,

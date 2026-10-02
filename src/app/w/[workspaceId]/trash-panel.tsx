@@ -13,9 +13,14 @@
 import { useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 
+import type { PageIcon } from '@/lib/block/page-icon'
+import { PageIconView } from './page-icon-view'
+
 export type TrashRow = {
   id: string
   title: string
+  /** 그 페이지의 아이콘(8c-2) — 없으면 null(기본 글리프). */
+  icon: PageIcon | null
   trashedAt: string
   purgeAfter: string | null
   descendantCount: number
@@ -121,7 +126,10 @@ export function TrashPanel({
                 return (
                   <li key={e.id} className="flex items-center justify-between gap-2 px-1 py-2">
                     <div className="min-w-0">
-                      <p className="truncate text-sm">{e.title || UNTITLED}</p>
+                      <p className="truncate text-sm">
+                        <PageIconView icon={e.icon} fallback className="mr-1.5 align-[-0.125em]" />
+                        {e.title || UNTITLED}
+                      </p>
                       <p className="text-xs text-neutral-400">
                         {e.descendantCount > 0 && `하위 ${e.descendantCount}개 포함 · `}
                         {left === null ? '보관 기한 없음' : `${left}일 남음`}

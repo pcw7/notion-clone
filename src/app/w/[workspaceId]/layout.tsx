@@ -79,6 +79,7 @@ export default async function WorkspaceLayout({
         trash={trash.map((e) => ({
           id: e.id,
           title: e.title,
+          icon: e.icon,
           trashedAt: e.trashedAt.toISOString(),
           purgeAfter: e.purgeAfter?.toISOString() ?? null,
           descendantCount: e.descendantCount,
@@ -99,7 +100,7 @@ export default async function WorkspaceLayout({
       */}
       <SearchOverlay
         workspaceId={workspaceId}
-        recent={recent.map((e) => ({ id: e.id, title: e.title }))}
+        recent={recent.map((e) => ({ id: e.id, title: e.title, icon: e.icon }))}
       />
     </div>
   )

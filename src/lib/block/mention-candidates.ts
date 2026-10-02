@@ -35,6 +35,7 @@ import { isUuid } from '../ids.ts'
 import { readableScopes } from '../permissions/effective.ts'
 import { canListMembers, listMembers } from '../workspace/list.ts'
 import { plainTitleOf } from './page.ts'
+import { readPageIcon, type PageIcon } from './page-icon.ts'
 
 /** 07 F-07-08: "후보 조회는 반드시 상한(예: 20건)". */
 export const MENTION_CANDIDATE_LIMIT = 20
@@ -45,6 +46,8 @@ export type MentionCandidate = {
   readonly kind: 'user' | 'page'
   readonly id: string
   readonly label: string
+  /** 페이지 후보의 아이콘(8c-2) — 후보는 이미 권한으로 걸렀다. 사람 · 아이콘 없는 페이지는 null. */
+  readonly icon: PageIcon | null
 }
 
 /** `%` · `_` · `\` 를 이스케이프한 부분 일치 패턴. 사용자 입력이 패턴 문법으로 읽히지 않게 한다. */
@@ -68,13 +71,14 @@ export async function searchMentionCandidates(
   const members = (canListMembers(ctx.role) ? await listMembers(ctx.workspaceId) : [])
     .filter((m) => query === '' || m.name.toLowerCase().includes(query) || (m.email ?? '').toLowerCase().includes(query))
     .slice(0, cap)
-    .map((m): MentionCandidate => ({ kind: 'user', id: m.userId, label: m.name }))
+    .map((m): MentionCandidate => ({ kind: 'user', id: m.userId, label: m.name, icon: null }))
 
   const pages = await withReadTransaction(async (tx) => {
     const scopes = await readableScopes(tx, ctx)
     if (scopes.length === 0) return []
-    const rows = await tx.query<{ doc_id: string; title_text: string | null }>(
-      `SELECT s.doc_id, s.title_text
+    const rows = await tx.query<{ doc_id: string; title_text: string | null; page_icon: unknown }>(
+      `SELECT s.doc_id, s.title_text,
+              (SELECT b.format -> 'page_icon' FROM block b WHERE b.id = s.doc_id) AS page_icon
          FROM search_document s
         WHERE s.workspace_id = $1
           AND s.perm_scope_id = ANY($2::uuid[])   -- ★ 권한. 후처리가 아니다
@@ -84,7 +88,7 @@ export async function searchMentionCandidates(
         LIMIT $5`,
       [ctx.workspaceId, scopes, query, containsPattern(query), cap],
     )
-    return rows.map((r): MentionCandidate => ({ kind: 'page', id: r.doc_id, label: r.title_text ?? '' }))
+    return rows.map((r): MentionCandidate => ({ kind: 'page', id: r.doc_id, label: r.title_text ?? '', icon: readPageIcon(r.page_icon) }))
   })
 
   // 07: `@` 는 사람 우선이다("사람, 페이지, 날짜 … `@`는 사람 우선").
@@ -96,6 +100,8 @@ export type MentionLabels = {
   readonly users: Readonly<Record<string, string | null>>
   /** 페이지 id → 제목. 볼 수 없거나 없거나 휴지통이면 null(가르지 않는다). */
   readonly pages: Readonly<Record<string, string | null>>
+  /** 페이지 id → 아이콘(8c-2) — **볼 수 있고 아이콘이 있는 것만**(제목과 같은 필터). */
+  readonly pageIcons: Readonly<Record<string, PageIcon>>
 }
 
 /** 본문에 나오는 사람 · 페이지 멘션의 id — 그릴 이름을 물을 때 쓴다. */
@@ -122,10 +128,10 @@ export async function loadMentionLabels(
 ): Promise<MentionLabels> {
   const userIds = [...new Set(ids.userIds.filter(isUuid))].slice(0, MENTION_LABEL_LIMIT)
   const pageIds = [...new Set(ids.pageIds.filter(isUuid))].slice(0, MENTION_LABEL_LIMIT)
-  return withReadTransaction(async (tx) => ({
-    users: await userLabels(tx, ctx, userIds),
-    pages: await pageLabels(tx, ctx, pageIds),
-  }))
+  return withReadTransaction(async (tx) => {
+    const pages = await pageLabels(tx, ctx, pageIds)
+    return { users: await userLabels(tx, ctx, userIds), pages: pages.titles, pageIcons: pages.icons }
+  })
 }
 
 async function userLabels(tx: Tx, ctx: SessionContext, ids: readonly string[]): Promise<Record<string, string | null>> {
@@ -141,17 +147,26 @@ async function userLabels(tx: Tx, ctx: SessionContext, ids: readonly string[]): 
   return out
 }
 
-async function pageLabels(tx: Tx, ctx: SessionContext, ids: readonly string[]): Promise<Record<string, string | null>> {
-  const out: Record<string, string | null> = Object.fromEntries(ids.map((id) => [id, null]))
-  if (ids.length === 0) return out
+async function pageLabels(
+  tx: Tx,
+  ctx: SessionContext,
+  ids: readonly string[],
+): Promise<{ titles: Record<string, string | null>; icons: Record<string, PageIcon> }> {
+  const titles: Record<string, string | null> = Object.fromEntries(ids.map((id) => [id, null]))
+  const icons: Record<string, PageIcon> = {}
+  if (ids.length === 0) return { titles, icons }
   const scopes = await readableScopes(tx, ctx)
-  if (scopes.length === 0) return out
-  const rows = await tx.query<{ id: string; properties: { title?: unknown } }>(
-    `SELECT id, properties FROM block
+  if (scopes.length === 0) return { titles, icons }
+  const rows = await tx.query<{ id: string; properties: { title?: unknown }; page_icon: unknown }>(
+    `SELECT id, properties, format -> 'page_icon' AS page_icon FROM block
       WHERE id = ANY($1::uuid[]) AND workspace_id = $2 AND type IN ('page', 'database')
         AND lifecycle = 'live' AND perm_scope_id = ANY($3::uuid[])`,
     [ids, ctx.workspaceId, scopes],
   )
-  for (const r of rows) out[r.id] = plainTitleOf(r.properties)
-  return out
+  for (const r of rows) {
+    titles[r.id] = plainTitleOf(r.properties)
+    const icon = readPageIcon(r.page_icon)
+    if (icon !== null) icons[r.id] = icon
+  }
+  return { titles, icons }
 }

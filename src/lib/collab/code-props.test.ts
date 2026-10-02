@@ -37,6 +37,7 @@ const DEPS = {
   toggleCollapsed: () => undefined,
   openPage: () => undefined,
   pageRefTitle: () => undefined,
+  pageIcon: () => null,
   mentionLabel: () => undefined,
   openCodeLanguageMenu: () => undefined,
   openCodeCaption: () => undefined,

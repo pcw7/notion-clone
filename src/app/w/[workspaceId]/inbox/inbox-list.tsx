@@ -23,13 +23,17 @@
 import { useCallback, useState } from 'react'
 import Link from 'next/link'
 
+import type { PageIcon } from '@/lib/block/page-icon'
 import { accessInboxLine, inboxHref } from '../access-request-messages'
+import { PageIconView } from '../page-icon-view'
 
 export type InboxRow = {
   groupKey: string
   kind: string
   pageId: string
   pageTitle: string
+  /** 그 페이지의 아이콘(8c-2) — 없으면 null(기본 글리프). */
+  pageIcon: PageIcon | null
   notificationIds: string[]
   count: number
   unreadCount: number
@@ -179,6 +183,7 @@ export function InboxList({
                   href={inboxHref(workspaceId, item.pageId, item.kind)}
                   className="text-sm font-medium hover:underline underline-offset-4"
                 >
+                  <PageIconView icon={item.pageIcon} fallback className="mr-1.5 align-[-0.125em]" />
                   {item.pageTitle || UNTITLED}
                 </Link>
                 <span className="flex-none text-xs text-neutral-500">

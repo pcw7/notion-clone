@@ -48,7 +48,7 @@ import { EMPTY_ROLLUP_PAGE } from '@/lib/database/rollup'
 import { rowJson } from '@/lib/database/http'
 import { readLiveTemplate } from '@/lib/database/template'
 import { withReadTransaction } from '@/lib/db/tx'
-import { loadPageRefTitles } from '@/lib/block/save-page-body'
+import { loadPageRefLabels } from '@/lib/block/save-page-body'
 import { loadDocState, pageAccess } from '@/lib/collab/doc-store'
 import { collabServerUrl } from '@/lib/collab/collab-url'
 import { loadMentionLabels, mentionIdsOf } from '@/lib/block/mention-candidates'
@@ -84,12 +84,12 @@ export default async function TemplatePage({
   const columns = listColumns('record', view.value.columns)
   const row = rowJson(template)
 
-  const [state, pageRefTitles, access] = await Promise.all([
+  const [state, pageRefs, access] = await Promise.all([
     loadDocState(ctx, template.id),
-    loadPageRefTitles(ctx, asBlockId(template.id)),
+    loadPageRefLabels(ctx, asBlockId(template.id)),
     pageAccess(ctx, template.id),
   ])
-  if (!state.ok || pageRefTitles === null) notFound()
+  if (!state.ok || pageRefs === null) notFound()
 
   const relationPropertyIds = columns.filter((c) => c.type === 'relation').map((c) => c.propertyId)
   const [relationLabels, mentionLabels] = await Promise.all([
@@ -174,8 +174,9 @@ export default async function TemplatePage({
         collabUrl={collabServerUrl()}
         initialState={Buffer.from(Y.encodeStateAsUpdate(state.value.ydoc)).toString('base64')}
         canEdit={access === 'edit'}
-        initialPageRefTitles={pageRefTitles}
+        initialPageRefTitles={pageRefs.titles}
         initialMentionLabels={mentionLabels}
+        initialPageIcons={{ ...pageRefs.icons, ...mentionLabels.pageIcons }}
         breadcrumb={trail}
       />
     </main>

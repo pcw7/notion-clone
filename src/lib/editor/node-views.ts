@@ -23,6 +23,8 @@ import { breadcrumbNodeView, type BreadcrumbViewDeps } from './breadcrumb-view.t
 import { codeNodeView, type CodeViewDeps } from './code-view.ts'
 import { imageNodeView, type ImageViewDeps } from './image-view.ts'
 import { mentionDisplay, mentionTargetOf } from './mention-label.ts'
+import { pageIconElement } from './page-icon-dom.ts'
+import type { PageIcon } from '../block/page-icon.ts'
 import { nodeNameOf } from './schema.ts'
 import { tocNodeView, type TocViewDeps } from './toc-view.ts'
 
@@ -41,6 +43,11 @@ export type NodeViewDeps = ImageViewDeps & CodeViewDeps & TocViewDeps & Breadcru
    * (정본 §3.9 `link_edge` 절) — 서버가 권한으로 거른 맵에서 읽는다(`block/mention-candidates.ts` `loadMentionLabels`).
    */
   mentionLabel: (kind: 'user' | 'page', id: string) => string | null | undefined
+  /**
+   * 하위 페이지 참조 · 페이지 멘션이 그릴 아이콘(8c-2) — 없거나 모르면 null(기본 글리프). 노드에는 없다(정본 §3.4 [보강] 페이지 아이콘
+   * ③) — 서버가 제목과 같은 권한 필터로 준 맵에서 읽는다(볼 수 있고 아이콘이 있는 것만).
+   */
+  pageIcon: (pageId: string) => PageIcon | null
 }
 
 /** 컨테이너의 blockId 를 찾는다. 노드 뷰는 내용 노드만 받으므로 위로 올라간다. */
@@ -178,13 +185,18 @@ function pageRefNodeView(
   link.type = 'button'
   link.className = 'blk-page-link'
   // 제목은 노드에 없다 — 권한으로 거른 맵에서 읽는다. 볼 수 없는 페이지는 자리만 보이고 열리지 않는다(열어도 404 다).
-  const title = deps.pageRefTitle(containerIdAt(view, getPos))
+  const id = containerIdAt(view, getPos)
+  const title = deps.pageRefTitle(id)
   if (title === null) {
+    // 볼 수 없는 페이지 — 아이콘도 없다(서버가 주지 않는다 · 자리만).
     link.textContent = '접근 권한 없음'
     link.disabled = true
     link.classList.add('blk-page-link-denied')
   } else {
-    link.textContent = title === undefined ? '하위 페이지' : title || '제목 없음'
+    // 아이콘(8c-2) — 없으면 기본 글리프(페이지로 가는 줄). 아직 모르는 참조(`undefined`)도 글리프로 자리를 지킨다.
+    const icon = pageIconElement(title === undefined ? null : deps.pageIcon(id), { fallback: true, className: 'blk-page-icon' })
+    if (icon !== null) link.append(icon)
+    link.append(title === undefined ? '하위 페이지' : title || '제목 없음')
   }
   link.addEventListener('mousedown', (event) => event.preventDefault())
   link.addEventListener('click', () => {
@@ -212,9 +224,14 @@ function mentionNodeView(node: PmNode, _view: EditorView, _getPos: () => number 
   }
   dom.dataset.mentionKind = target.kind
   dom.dataset.mentionId = target.id
-  // 글자는 목차의 줄과 같은 규칙이다(`mention-label.ts`).
-  const shown = mentionDisplay(target.kind, deps.mentionLabel(target.kind, target.id))
-  dom.textContent = shown.text
+  // 글자는 목차의 줄과 같은 규칙이다(`mention-label.ts`). 페이지 칩은 그 앞에 아이콘(8c-2 — 볼 수 없으면 없다).
+  const label = deps.mentionLabel(target.kind, target.id)
+  const shown = mentionDisplay(target.kind, label)
+  if (target.kind === 'page' && !shown.denied) {
+    const icon = pageIconElement(label === undefined ? null : deps.pageIcon(target.id), { fallback: true, className: 'blk-page-icon' })
+    if (icon !== null) dom.append(icon)
+  }
+  dom.append(shown.text)
   if (target.kind === 'user') {
     dom.classList.add('blk-mention-user')
     return { dom, stopEvent: () => true }

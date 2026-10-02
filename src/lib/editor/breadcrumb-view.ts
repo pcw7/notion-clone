@@ -20,6 +20,7 @@ import type { Decoration, EditorView, NodeView } from '@tiptap/pm/view'
 
 import type { BreadcrumbItem, BreadcrumbTrail } from '../block/breadcrumb.ts'
 import { breadcrumbFrom } from './breadcrumb-plugin.ts'
+import { pageIconElement } from './page-icon-dom.ts'
 
 export type BreadcrumbViewDeps = {
   /** 앱 안의 주소로 옮겨 간다 — 클라이언트 라우터. */
@@ -31,15 +32,10 @@ function linkOf(target: EventTarget | null): HTMLAnchorElement | null {
   return target instanceof Element ? target.closest<HTMLAnchorElement>('a.blk-breadcrumb-link') : null
 }
 
-/** 줄 하나의 글자 — 아이콘(있으면 · 읽는 이에게는 숨긴다)과 이름. */
+/** 줄 하나의 글자 — 아이콘(있을 때만 — 글자 속의 경로 · 읽는 이에게는 숨긴다)과 이름. */
 function fillItem(target: HTMLElement, item: BreadcrumbItem): void {
-  if (item.icon !== null) {
-    const icon = document.createElement('span')
-    icon.className = 'blk-breadcrumb-icon'
-    icon.setAttribute('aria-hidden', 'true')
-    icon.textContent = item.icon.emoji
-    target.append(icon)
-  }
+  const icon = pageIconElement(item.icon, { fallback: false, className: 'blk-breadcrumb-icon' })
+  if (icon !== null) target.append(icon)
   target.append(item.label)
 }
 

@@ -64,7 +64,7 @@ function loadEnv(file = join(ROOT, '.env')) {
 }
 for (const [key, value] of Object.entries(loadEnv())) process.env[key] ??= value
 
-const { textRun, pageMentionRun, mentionTarget } = await import(new URL('../src/lib/contracts/rich-text.ts', import.meta.url).href)
+const { textRun, pageMentionRun, userMentionRun, mentionTarget } = await import(new URL('../src/lib/contracts/rich-text.ts', import.meta.url).href)
 // 본문 준비 · 확인은 **서버 명령 경로**로 한다(CRDT 6e). 본문 저장 API(PUT)는 걷어냈다 — 편집은 협업 서버로만 간다.
 const { resolveSessionContext } = await import(new URL('../src/lib/auth/session-context.ts', import.meta.url).href)
 const { savePageBody, loadPageBody } = await import(new URL('../src/lib/block/save-page-body.ts', import.meta.url).href)
@@ -5104,6 +5104,161 @@ async function main() {
       }
       await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${secret}` })
       check('거부한 뒤에도 아이콘은 그대로다', await waitFor(`document.querySelector('${ICON}')?.textContent === '📕'`, 15000), String(await headerIcon()))
+      await sleep(500)
+    }
+
+    if (sectionIf('페이지 아이콘이 서는 나머지 자리 (8c-2 · F-02-05)')) {
+      // 본문의 하위 페이지 블록 · 멘션 칩 · `@` 후보, 검색 결과, 백링크, 옮기기 후보, 휴지통, 인박스가 그 페이지의 아이콘을 앞에 단다.
+      // 아이콘이 없으면 기본 문서 글리프(그림이라 줄의 글자가 제목 그대로다). 다른 사람이 옮겨 온 하위 페이지의 아이콘은 제목과 함께
+      // 다시 읽은 맵에서 온다. 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
+      const stamp = Date.now()
+      const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
+      const post = async (body) => (await (await fetch(pagesUrl, { method: 'POST', headers: authed, body: JSON.stringify(body) })).json()).page.id
+      const setIcon = async (page, emoji) =>
+        (await fetch(`${pagesUrl}/${page}`, { method: 'PATCH', headers: authed, body: JSON.stringify({ icon: { type: 'emoji', emoji } }) })).ok
+      const parentTitle = `아이콘본문${stamp}`
+      const foxTitle = `아이콘여우${stamp}`
+      const plainTitle = `아이콘없음${stamp}`
+      const movedTitle = `옮겨온하위${stamp}`
+      const fadingTitle = `지울아이콘${stamp}`
+      const octoTitle = `문어멘션${stamp}`
+      const parent = await post({ title: parentTitle })
+      const fox = await post({ title: foxTitle, parentPageId: parent })
+      const plain = await post({ title: plainTitle, parentPageId: parent })
+      const fading = await post({ title: fadingTitle, parentPageId: parent })
+      const elsewhere = await post({ title: `옮겨올곳${stamp}` })
+      const moved = await post({ title: movedTitle, parentPageId: elsewhere })
+      // 본문 어디에도 없는 페이지 — `@` 로 고르면 칩의 아이콘은 후보에서만 온다(맵을 다시 묻지 않는다).
+      const octo = await post({ title: octoTitle })
+      const iconsSet = (await setIcon(parent, '🌳')) && (await setIcon(fox, '🦊')) && (await setIcon(moved, '🚚'))
+        && (await setIcon(fading, '🍂')) && (await setIcon(octo, '🐙'))
+      // 부모의 본문 — 하위 페이지 참조 둘(만들 때 들어갔다) 뒤에 여우를 멘션한 문단. 참조를 지우지 않게 읽은 본문에 더한다.
+      const mentionBlock = randomUUID()
+      const before = (await readBody(parent)).doc
+      await saveBody(parent, {
+        blocks: [...before.blocks, { id: mentionBlock, type: 'paragraph', title: [textRun('참고 '), pageMentionRun(fox)], properties: {}, format: {}, children: [] }],
+      })
+
+      const iconIn = (sel) => `(document.querySelector(${JSON.stringify(sel)})?.querySelector('[data-page-icon]')?.getAttribute('data-page-icon') ?? null)`
+      const textOf = (sel) => `(document.querySelector(${JSON.stringify(sel)})?.textContent ?? null)`
+      const REF = (id) => `[data-block-id="${id}"] .blk-page-link`
+      const CHIP = `[data-block-id="${mentionBlock}"] .blk-mention-page[data-mention-id="${fox}"]`
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${parent}` })
+      check('전제 — 아이콘을 달았고 부모의 본문이 그려졌다',
+        iconsSet && (await waitFor(`!!document.querySelector(${JSON.stringify(REF(fox))}) && !!document.querySelector(${JSON.stringify(CHIP)})`, 15000)))
+
+      // ① 본문 — 하위 페이지 블록 · 멘션 칩
+      check('★ 하위 페이지 블록이 그 페이지의 아이콘을 앞에 단다',
+        (await evaluate(iconIn(REF(fox)))) === '🦊' && (await evaluate(textOf(REF(fox)))) === `🦊${foxTitle}`,
+        JSON.stringify([await evaluate(iconIn(REF(fox))), await evaluate(textOf(REF(fox)))]))
+      check('★ 아이콘 없는 하위 페이지는 기본 글리프 — 글자는 제목뿐',
+        (await evaluate(iconIn(REF(plain)))) === '' && (await evaluate(textOf(REF(plain)))) === plainTitle,
+        JSON.stringify([await evaluate(iconIn(REF(plain))), await evaluate(textOf(REF(plain)))]))
+      check('전제 — 지울 아이콘(🍂)도 처음에는 선다', (await evaluate(iconIn(REF(fading)))) === '🍂', String(await evaluate(iconIn(REF(fading)))))
+      check('★ 페이지 멘션 칩이 그 아이콘을 앞에 단다',
+        (await evaluate(iconIn(CHIP))) === '🦊' && (await evaluate(textOf(CHIP))) === `🦊${foxTitle}`,
+        JSON.stringify([await evaluate(iconIn(CHIP)), await evaluate(textOf(CHIP))]))
+
+      // ② 다른 사람이 옮겨 온 하위 페이지 — 참조가 협업으로 도착하고, 다시 읽은 맵이 제목과 아이콘을 함께 준다. 그사이 아이콘을 지운
+      //    하위 페이지(🍂)는 다시 읽은 뒤 기본 글리프로 돌아간다(맵이 옛 아이콘을 남기지 않는다 — `mergePageIcons`).
+      const unset = (await fetch(`${pagesUrl}/${fading}`, { method: 'PATCH', headers: authed, body: JSON.stringify({ icon: null }) })).ok
+      const movedOk = (await fetch(`${pagesUrl}/${moved}/move`, { method: 'POST', headers: authed, body: JSON.stringify({ targetParentId: parent }) })).ok
+      check('★ 옮겨 온 하위 페이지의 블록도 아이콘을 단다(참조가 도착한 뒤 다시 읽은 맵)',
+        movedOk && (await waitFor(`${iconIn(REF(moved))} === '🚚' && ${textOf(REF(moved))} === ${JSON.stringify(`🚚${movedTitle}`)}`, 12000)),
+        JSON.stringify([movedOk, await evaluate(iconIn(REF(moved))), await evaluate(textOf(REF(moved)))]))
+      check('★ 다시 읽은 맵에서 아이콘을 지운 하위 페이지는 기본 글리프로 돌아간다(옛 아이콘이 남지 않는다)',
+        unset && (await waitFor(`${iconIn(REF(fading))} === '' && ${textOf(REF(fading))} === ${JSON.stringify(fadingTitle)}`, 5000)),
+        JSON.stringify([unset, await evaluate(iconIn(REF(fading))), await evaluate(textOf(REF(fading)))]))
+
+      // ③ `@` 후보 — 페이지 후보가 아이콘을 싣고, 고르면 칩도 곧바로 아이콘을 단다. 본문에 없던 페이지(🐙)라 아이콘은 후보에서만 온다
+      //    (맵을 다시 묻지 않는다 — 이름과 함께 넣는다).
+      const mentionLine = await line(mentionBlock)
+      if (mentionLine) await click(mentionLine.x + mentionLine.w - 4, mentionLine.y + mentionLine.h / 2)
+      await key('End')
+      for (const ch of ' @문어멘션') await typeText(ch)
+      const CANDIDATE = `[role="listbox"][aria-label="멘션"] li`
+      check('★ `@` 의 페이지 후보가 아이콘을 앞에 단다',
+        await waitFor(`[...document.querySelectorAll('${CANDIDATE}')].some((li) => li.textContent.includes(${JSON.stringify(octoTitle)}) && li.querySelector('[data-page-icon]')?.getAttribute('data-page-icon') === '🐙')`, 8000),
+        String(await evaluate(`document.querySelector('[role="listbox"][aria-label="멘션"]')?.innerHTML?.slice(0, 300) ?? '(없음)'`)))
+      await key('Enter')
+      const OCTO_CHIP = `[data-block-id="${mentionBlock}"] .blk-mention-page[data-mention-id="${octo}"]`
+      check('★ 고른 멘션 칩도 곧바로 아이콘을 단다(후보의 아이콘)',
+        await waitFor(`${iconIn(OCTO_CHIP)} === '🐙' && ${textOf(OCTO_CHIP)} === ${JSON.stringify(`🐙${octoTitle}`)}`, 5000),
+        String(await evaluate(`[...document.querySelectorAll('.blk-mention')].map((e) => e.textContent).join('|')`)))
+
+      // ④ 검색 — 결과 줄이 아이콘을 앞에 단다. 사이드바의 단추로 연다 — 편집기에서 Esc 를 누르면 블록 선택이 되고, 그 상태의 Mod+K 는
+      //   검색을 열지 않아 친 검색어가 고른 블록을 덮어쓴다(이 절의 첫 판이 그렇게 멘션 문단을 지웠다).
+      await clickSelector('nav[aria-label="페이지 트리"] button[title^="검색"]')
+      check('전제 — 검색 입력칸이 포커스를 가졌다', await waitFor(`document.activeElement === document.querySelector('[data-testid="search-input"]')`, 5000))
+      await typeText(foxTitle)
+      const HIT = `[data-testid="search-hit"][data-page-id="${fox}"]`
+      check('★ 검색 결과가 그 페이지의 아이콘을 앞에 단다', await waitFor(`${iconIn(HIT)} === '🦊'`, 8000),
+        String(await evaluate(`document.querySelector('[data-testid="search-results"]')?.textContent?.slice(0, 200) ?? '(없음)'`)))
+      await key('Escape')
+      await waitFor(`!document.querySelector('[data-testid="search-overlay"]')`, 3000)
+
+      // ⑤ 백링크 · 옮기기 후보 — 여우의 페이지에서
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${fox}` })
+      await waitFor(`!!document.querySelector('details[aria-label="백링크"]') && !!document.querySelector('[data-testid="move-open"]')`, 15000)
+      check('★ 백링크가 멘션한 페이지의 아이콘을 앞에 단다',
+        (await evaluate(`[...document.querySelectorAll('details[aria-label="백링크"] a')].find((a) => a.getAttribute('href') === '/w/${workspaceId}/${parent}')?.querySelector('[data-page-icon]')?.getAttribute('data-page-icon') ?? null`)) === '🌳',
+        String(await evaluate(`document.querySelector('details[aria-label="백링크"]')?.innerHTML?.slice(0, 300)`)))
+      await clickSelector('[data-testid="move-open"]')
+      const OPTION = (id) => `[data-testid="move-to-page"][data-page-id="${id}"]`
+      check('★ 옮기기 후보가 그 페이지의 아이콘을 앞에 단다 — 없으면 기본 글리프',
+        await waitFor(`${iconIn(OPTION(parent))} === '🌳' && ${iconIn(OPTION(elsewhere))} === ''`, 5000),
+        JSON.stringify([await evaluate(iconIn(OPTION(parent))), await evaluate(iconIn(OPTION(elsewhere)))]))
+      await key('Escape')
+
+      // ⑥ 휴지통 — 버린 페이지의 아이콘. 전체 판에서는 앞 절들이 버린 페이지가 많다 — 패널의 검색칸으로 이 줄만 남긴다.
+      const trashRes = await fetch(`${pagesUrl}/${moved}/trash`, { method: 'POST', headers: authed, body: '{}' })
+      const trashed = trashRes.ok
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${parent}` })
+      await waitFor(`!!document.querySelector('nav[aria-label="페이지 트리"]')`, 15000)
+      // 패널이 열릴 때까지 다시 누른다 — 전체 판은 사이드바가 길어 hydration 이 늦고, 그 전의 클릭은 버려진다(§6 의 hydration 함정 ·
+      // 전체 판의 첫 실행이 "패널 닫힘"으로 떨어졌다).
+      const TRASH_BUTTON = `[...document.querySelectorAll('nav[aria-label="페이지 트리"] button[aria-expanded]')].find((x) => x.textContent.trim().startsWith('휴지통'))`
+      let trashButton = null
+      for (let i = 0; i < 10 && (await evaluate(`${TRASH_BUTTON}?.getAttribute('aria-expanded') ?? null`)) !== 'true'; i += 1) {
+        trashButton = await evaluate(`(() => {
+          const b = ${TRASH_BUTTON}
+          if (!b) return null
+          b.scrollIntoView({ block: 'center' })
+          const r = b.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (trashButton) await click(trashButton.x, trashButton.y)
+        await waitFor(`${TRASH_BUTTON}?.getAttribute('aria-expanded') === 'true'`, 500)
+      }
+      if (await waitFor(`!!document.querySelector('input[aria-label="휴지통 검색"]')`, 5000)) {
+        await clickSelector('input[aria-label="휴지통 검색"]')
+        await typeText(movedTitle)
+      }
+      const trashEntry = `[...document.querySelectorAll('nav[aria-label="페이지 트리"] li')].find((li) => li.textContent.includes(${JSON.stringify(movedTitle)}))`
+      check('★ 휴지통의 줄이 버린 페이지의 아이콘을 앞에 단다',
+        trashed && (await waitFor(`${trashEntry}?.querySelector('[data-page-icon]')?.getAttribute('data-page-icon') === '🚚'`, 5000)),
+        JSON.stringify([trashRes.status, !!trashButton, await evaluate(`${trashEntry}?.innerHTML?.slice(0, 200) ?? '(줄 없음)'`),
+          await evaluate(`document.querySelector('input[aria-label="휴지통 검색"]')?.value ?? '(패널 닫힘)'`)]))
+
+      // ⑦ 인박스 — 동료가 멘션한 사람의 인박스에서. 멘션당하는 사람은 따로 만들고 그 사람으로 본다 — 브라우저의 주인을 멘션하면 뒤의
+      //    인박스 절이 보는 안 읽음 목록에 이 알림이 끼어든다(전체 판의 첫 실행이 그렇게 세 검사를 떨어뜨렸다).
+      const pal = await joinAs(workspaceId, await createUser(`아이콘 멘션 동료 ${stamp}`), 'member')
+      const mentioned = await joinAs(workspaceId, await createUser(`아이콘 멘션 받는 이 ${stamp}`), 'member')
+      const palBody = (await readBody(fox)).doc
+      const palSaved = await savePageBody(pal.ctx, fox, {
+        blocks: [...palBody.blocks, { id: randomUUID(), type: 'paragraph', title: [textRun('확인 부탁 '), userMentionRun(mentioned.userId)], properties: {}, format: {}, children: [] }],
+      })
+      const browseAs = (token) => send('Network.setCookie', { name: 'nc_session', value: token, domain: 'localhost', path: '/', httpOnly: true })
+      try {
+        await browseAs(mentioned.token)
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/inbox` })
+        const INBOX_LINK = `ul[aria-label="알림 목록"] a[href^="/w/${workspaceId}/${fox}"]`
+        check('★ 인박스의 줄이 그 페이지의 아이콘을 앞에 단다', palSaved.ok && (await waitFor(`${iconIn(INBOX_LINK)} === '🦊'`, 15000)),
+          String(await evaluate(`document.querySelector('ul[aria-label="알림 목록"]')?.textContent?.slice(0, 200) ?? '(없음)'`)))
+      } finally {
+        await browseAs(session)
+      }
       await sleep(500)
     }
 

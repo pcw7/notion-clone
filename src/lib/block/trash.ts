@@ -65,6 +65,7 @@ import { asBlockId } from '../ids.ts'
 import { withReadTransaction, withTransaction, type Tx } from '../db/tx.ts'
 import { readableScopes } from '../permissions/effective.ts'
 import { toPlainText, type RichTextRun } from '../contracts/rich-text.ts'
+import { readPageIcon, type PageIcon } from './page-icon.ts'
 import { relocateSubtree, type MovingRow } from './move-page.ts'
 import { finishOrThrow, openPageBody, ownerPageOf } from './body-write.ts'
 import { insertPageRefAfter, removePageRef } from './page-refs.ts'
@@ -350,6 +351,8 @@ export async function purgePage(ctx: SessionContext, pageId: BlockId): Promise<P
 export type TrashEntry = {
   readonly id: BlockId
   readonly title: string
+  /** 그 페이지의 아이콘(8c-2) — 휴지통도 볼 수 있는 스코프로 거른 목록이다. */
+  readonly icon: PageIcon | null
   readonly trashedAt: Date
   readonly purgeAfter: Date | null
   /** 함께 들어간 하위 페이지 수. "하위 3개 포함"을 보여주기 위한 값. */
@@ -373,11 +376,12 @@ export async function listTrash(ctx: SessionContext): Promise<TrashEntry[]> {
     return tx.query<{
       id: string
       properties: { title?: unknown } | null
+      page_icon: unknown
       trashed_at: Date
       purge_after: Date | null
       descendant_count: string
     }>(
-      `SELECT t.id, t.properties, t.trashed_at, t.purge_after,
+      `SELECT t.id, t.properties, t.format -> 'page_icon' AS page_icon, t.trashed_at, t.purge_after,
               (SELECT count(*) FROM block d
                 WHERE d.trash_root_id = t.id AND d.id <> t.id
                   AND d.workspace_id = t.workspace_id) AS descendant_count
@@ -396,6 +400,7 @@ export async function listTrash(ctx: SessionContext): Promise<TrashEntry[]> {
       id: asBlockId(row.id),
       // 읽기는 관대하게 — 제목이 망가졌다고 휴지통 전체가 500 이 되면 복구 경로가 없다.
       title: Array.isArray(raw) ? toPlainText(raw as RichTextRun[]) : '',
+      icon: readPageIcon(row.page_icon),
       trashedAt: row.trashed_at,
       purgeAfter: row.purge_after,
       descendantCount: Number(row.descendant_count),
