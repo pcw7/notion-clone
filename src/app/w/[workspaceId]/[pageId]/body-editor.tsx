@@ -38,6 +38,8 @@ import { plainTextForBlocks } from '@/lib/editor/block-clipboard'
 import { BlockSelection, selectedBlockCount } from '@/lib/editor/block-selection'
 import { codeBlockInfo, setCodeCaptionCommand, setCodeLanguageCommand } from '@/lib/editor/code-block'
 import { syncReadOnlyTabStops } from '@/lib/editor/node-views'
+import { setBreadcrumbTrail } from '@/lib/editor/breadcrumb-plugin'
+import { sameTrail, type BreadcrumbTrail } from '@/lib/block/breadcrumb'
 import type { CommandDeps } from '@/lib/editor/commands'
 import { createEditor, type EditorDeps } from '@/lib/editor/create-editor'
 import { createNodeViews } from '@/lib/editor/node-views'
@@ -197,6 +199,7 @@ export function BodyEditor({
   locked = false,
   initialPageRefTitles,
   initialMentionLabels,
+  breadcrumb,
 }: {
   workspaceId: string
   pageId: string
@@ -214,6 +217,8 @@ export function BodyEditor({
   initialPageRefTitles: Readonly<Record<string, string | null>>
   /** 멘션 노드가 그릴 이름 — 서버가 권한으로 거른 맵(`loadMentionLabels`). 노드에는 id 뿐이다. */
   initialMentionLabels: MentionLabelMap
+  /** 이 페이지의 경로 — 머리의 breadcrumb 과 같은 줄(`block/breadcrumb.ts`). breadcrumb 블록이 그린다(8b-2). */
+  breadcrumb: BreadcrumbTrail
 }) {
   const router = useRouter()
   const mountRef = useRef<HTMLDivElement | null>(null)
@@ -230,6 +235,18 @@ export function BodyEditor({
 
   /** 접힘 상태 — 문서에 없다(F-01-13). */
   const collapsedRef = useRef<Set<string>>(new Set())
+  /**
+   * 이 페이지의 경로(8b-2) — 편집기를 만들 때 넣고, 서버가 다시 그려 새 경로가 오면(제목 · 이동 뒤의 refresh) 메타 트랜잭션으로
+   * 넣는다. 같은 경로면 플러그인이 지난 객체를 둔다(`sameTrail`).
+   */
+  const breadcrumbRef = useRef<BreadcrumbTrail>(breadcrumb)
+  useEffect(() => {
+    // 서버가 다시 그릴 때마다 새 배열이 온다 — 같은 경로면 트랜잭션을 보내지 않는다(트랜잭션마다 도는 화면 처리를 깨우지 않게).
+    if (sameTrail(breadcrumbRef.current, breadcrumb)) return
+    breadcrumbRef.current = breadcrumb
+    const view = viewRef.current
+    if (view) view.dispatch(setBreadcrumbTrail(view.state.tr, breadcrumb))
+  }, [breadcrumb])
   /** 하위 페이지 참조의 제목 — 문서에 없다. 서버가 권한으로 거른 것에서 시작하고, 모르는 참조를 받으면 다시 읽는다. */
   const pageRefTitlesRef = useRef<Map<string, string | null>>(new Map(Object.entries(initialPageRefTitles)))
   /** 제목을 다시 읽는 중인가 — 한 번에 하나만. */
@@ -799,6 +816,9 @@ export function BodyEditor({
       openCodeCaption: (id) => openCodeUi('caption', id),
       // 목차의 항목(8b-1) — 그 블록을 보여 주고(접힌 조상을 펼친다) 화면 위쪽으로 굴린다. 주소의 해시도 그 블록으로 —
       // `replaceState` 라 `hashchange` 가 나지 않고(두 번 보이지 않는다) 뒤로 가기에 쌓이지 않는다.
+      // breadcrumb 블록의 링크(8b-2) — 앱 안에서 옮겨 간다.
+      navigate: (href) => router.push(href),
+      breadcrumbTrail: () => breadcrumbRef.current,
       revealBlock: (id) => {
         const current = viewRef.current
         if (!current) return

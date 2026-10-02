@@ -101,6 +101,7 @@ const CATALOG: Readonly<Record<BodyBlockType, SlashCommandBase>> = {
   code: { label: '코드', aliases: ['코드', 'code', 'codeblock', '```'], group: '기본 블록' },
   // 목차(8b-1) — 노션의 'Advanced blocks' 자리.
   table_of_contents: { label: '목차', aliases: ['목차', '차례', 'toc', 'table of contents', 'contents'], group: '고급 블록' },
+  breadcrumb: { label: '이동 경로', aliases: ['이동 경로', '경로', '이동경로', 'breadcrumb', 'bread'], group: '고급 블록' },
 }
 
 /**

@@ -53,11 +53,10 @@ import { loadDocState, pageAccess } from '@/lib/collab/doc-store'
 import { collabServerUrl } from '@/lib/collab/collab-url'
 import { loadMentionLabels, mentionIdsOf } from '@/lib/block/mention-candidates'
 import { readBodyYDoc } from '@/lib/collab/ydoc'
+import { templateTrail } from '@/lib/block/breadcrumb'
 import { BodyEditor } from '../../../../[pageId]/body-editor'
 import { DatabaseTable } from '../../database-table'
 import { TemplateTitle } from './template-title'
-
-const UNTITLED = '제목 없음'
 
 export default async function TemplatePage({
   params,
@@ -102,18 +101,24 @@ export default async function TemplatePage({
 
   const titlePropertyId = view.value.columns.find((c) => c.type === 'title')?.propertyId ?? null
 
+  // 경로 — 머리와 본문의 breadcrumb 블록(8b-2)이 같은 줄을 그린다(`block/breadcrumb.ts`).
+  const trail = templateTrail({ workspaceId, database: { id: databaseId, name: database.value.name }, templateId: template.id })
+
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-3xl flex-col gap-6 px-6 py-12">
       <nav aria-label="상위 경로" className="flex flex-wrap items-center gap-1 text-sm text-neutral-500">
-        <Link href={`/w/${workspaceId}`} className="hover:underline underline-offset-4">
-          워크스페이스
-        </Link>
-        <span aria-hidden>/</span>
-        <Link href={`/w/${workspaceId}/db/${databaseId}`} className="hover:underline underline-offset-4">
-          {database.value.name || UNTITLED}
-        </Link>
-        <span aria-hidden>/</span>
-        <span className="text-neutral-400">템플릿</span>
+        {trail.map((item, i) => (
+          <span key={`${item.kind}:${item.id}`} className="flex items-center gap-1">
+            {i > 0 && <span aria-hidden>/</span>}
+            {item.href === null ? (
+              <span className="text-neutral-400">{item.label}</span>
+            ) : (
+              <Link href={item.href} className="hover:underline underline-offset-4">
+                {item.label}
+              </Link>
+            )}
+          </span>
+        ))}
       </nav>
 
       {/*
@@ -171,6 +176,7 @@ export default async function TemplatePage({
         canEdit={access === 'edit'}
         initialPageRefTitles={pageRefTitles}
         initialMentionLabels={mentionLabels}
+        breadcrumb={trail}
       />
     </main>
   )

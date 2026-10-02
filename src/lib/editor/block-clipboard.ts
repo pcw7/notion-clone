@@ -147,7 +147,8 @@ export function plainTextForBlocks(blocks: readonly EditorBlock[]): string {
           lines.push(`${indent}---`)
           break
         case 'table_of_contents':
-          // 목차(8b-1)는 내용을 저장하지 않는다 — 고른 블록만으로는 페이지의 헤딩을 모를 수 있다. 줄을 남기지 않는다.
+        case 'breadcrumb':
+          // 목차(8b-1) · breadcrumb(8b-2)은 내용을 저장하지 않는다 — 고른 블록만으로는 페이지의 헤딩 · 경로를 모른다. 줄을 남기지 않는다.
           break
         case 'image':
           lines.push(`${indent}![](${url})`)

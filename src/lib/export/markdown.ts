@@ -48,6 +48,7 @@
 import { codeCaptionRuns, codeLanguageOf, fencedCode } from '../block/code.ts'
 import { readCaption, readImageSource, type ImageSource } from '../block/image.ts'
 import { TOC_TYPE, headingsOfBlocks, tocEntries, type TocEntry } from '../block/toc.ts'
+import { BREADCRUMB_TYPE } from '../block/breadcrumb.ts'
 import { PAGE_TYPE, UNSUPPORTED_TYPE } from '../block/types.ts'
 import {
   DEFAULT_ANNOTATIONS,
@@ -615,6 +616,11 @@ function renderBlock(block: EditorBlock, ctx: Ctx, number: number): string[] {
 
     case 'divider':
       return ['---']
+
+    case BREADCRUMB_TYPE:
+      // breadcrumb(8b-2)은 쓰지 않는다 — ZIP 의 폴더 구조가 곧 경로이고, 이 렌더러는 조상의 제목을 모른다(권한으로 거른 조상은
+      // 보는 사람의 것이다). 잃은 것으로 세지 않는다 — 저장된 내용이 없다.
+      return []
 
     case TOC_TYPE: {
       // 목차(8b-1 · F-01-16 *"내보내기 시점에 동일 계산을 수행해 정적 목차 생성"*) — 헤딩의 글자를 목록으로. 링크는 달지 않는다

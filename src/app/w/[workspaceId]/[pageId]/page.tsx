@@ -14,6 +14,7 @@ import * as Y from 'yjs'
 import { asBlockId } from '@/lib/ids'
 import { requirePageVisitor } from '@/lib/auth/page-session'
 import { getPage, listAncestors, listChildPages } from '@/lib/block/page'
+import { breadcrumbTrail } from '@/lib/block/breadcrumb'
 import { loadPageRefTitles } from '@/lib/block/save-page-body'
 import { loadDocState, pageAccess } from '@/lib/collab/doc-store'
 import { collabServerUrl } from '@/lib/collab/collab-url'
@@ -112,6 +113,14 @@ export default async function PageView({ params, searchParams }: PageProps<'/w/[
     rootTeamspaceId === null ? null : getTeamspace(ctx, rootTeamspaceId),
   ])
 
+  // 경로 — 머리와 본문의 breadcrumb 블록(8b-2)이 같은 줄을 그린다(`block/breadcrumb.ts` — 볼 수 있는 조상만 · teamspace 는 멤버에게만).
+  const trail = breadcrumbTrail({
+    workspaceId,
+    teamspace: teamspace?.ok ? { id: teamspace.value.id, name: teamspace.value.name } : null,
+    ancestors,
+    page,
+  })
+
   return (
     <main className="mx-auto flex min-h-screen max-w-3xl flex-col gap-6 px-6 py-12">
       <div className="flex items-start justify-between gap-3">
@@ -119,31 +128,22 @@ export default async function PageView({ params, searchParams }: PageProps<'/w/[
           aria-label="상위 경로"
           className="flex flex-wrap items-center gap-1 text-sm text-neutral-500"
         >
-          <Link href={`/w/${workspaceId}`} className="hover:underline underline-offset-4">
-            워크스페이스
-          </Link>
-          {teamspace?.ok && (
-            <span className="flex items-center gap-1">
-              <span aria-hidden>/</span>
-              <Link
-                href={`/w/${workspaceId}/teamspaces/${teamspace.value.id}`}
-                data-testid="breadcrumb-teamspace"
-                className="hover:underline underline-offset-4"
-              >
-                {teamspace.value.name}
-              </Link>
-            </span>
-          )}
-          {ancestors.map((a) => (
-            <span key={a.id} className="flex items-center gap-1">
-              <span aria-hidden>/</span>
-              <Link href={`/w/${workspaceId}/${a.id}`} className="hover:underline underline-offset-4">
-                {a.plainTitle || UNTITLED}
-              </Link>
+          {trail.map((item, i) => (
+            <span key={`${item.kind}:${item.id}`} className="flex items-center gap-1">
+              {i > 0 && <span aria-hidden>/</span>}
+              {item.href === null ? (
+                <span className="text-neutral-400">{item.label}</span>
+              ) : (
+                <Link
+                  href={item.href}
+                  data-testid={item.kind === 'teamspace' ? 'breadcrumb-teamspace' : undefined}
+                  className="hover:underline underline-offset-4"
+                >
+                  {item.label}
+                </Link>
+              )}
             </span>
           ))}
-          <span aria-hidden>/</span>
-          <span className="text-neutral-400">{page.plainTitle || UNTITLED}</span>
         </nav>
 
         <div className="flex flex-none items-start gap-2">
@@ -214,6 +214,7 @@ export default async function PageView({ params, searchParams }: PageProps<'/w/[
         locked={lock?.locked ?? false}
         initialPageRefTitles={pageRefTitles}
         initialMentionLabels={mentionLabels}
+        breadcrumb={trail}
       />
 
       <section className="flex flex-col gap-3">
