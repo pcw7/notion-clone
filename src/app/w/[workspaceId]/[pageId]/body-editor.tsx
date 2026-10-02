@@ -60,10 +60,12 @@ import { BODY_FRAGMENT, readBodyYDoc } from '@/lib/collab/ydoc'
 import { acceptAnchor, textRangeAnchor } from '@/lib/comment/anchor'
 import { commentHighlightPlugin, setCommentThreads, type AnchoredThread } from '@/lib/comment/highlight'
 import { uploadImageFile } from '@/lib/file/upload-client'
+import type { PageIcon } from '@/lib/block/page-icon'
 import { BlockGutter } from './block-gutter'
 import { CodeCaptionEditor } from './code-caption-editor'
 import { CodeLanguageMenu } from './code-language-menu'
 import { openCommentThread } from './comment-panel'
+import { PageIconView } from '../page-icon-view'
 import { closeMentionMenu, insertMention, mentionMenuState, type MentionPick } from '@/lib/editor/mention-menu'
 import { MENTION_NODE } from '@/lib/editor/schema'
 
@@ -88,7 +90,16 @@ type MentionLabelMap = {
   readonly pages: Readonly<Record<string, string | null>>
 }
 
-type MentionCandidate = { kind: 'user' | 'page'; id: string; label: string }
+type MentionCandidate = { kind: 'user' | 'page'; id: string; label: string; icon: PageIcon | null }
+
+/**
+ * 맵에 서버가 준 아이콘을 넣는다(8c-2) — `asked` 의 id 는 먼저 지운다. 서버는 **볼 수 있고 아이콘이 있는 것만** 주므로, 그사이 아이콘을
+ * 지웠거나 볼 수 없게 된 페이지의 옛 아이콘이 남지 않게 한다.
+ */
+function mergePageIcons(map: Map<string, PageIcon>, asked: Iterable<string>, icons: Readonly<Record<string, PageIcon>> | undefined): void {
+  for (const id of asked) map.delete(id)
+  for (const [id, icon] of Object.entries(icons ?? {})) map.set(id, icon)
+}
 
 type MentionUi = { open: boolean; query: string; index: number; left: number; top: number }
 
@@ -199,6 +210,7 @@ export function BodyEditor({
   locked = false,
   initialPageRefTitles,
   initialMentionLabels,
+  initialPageIcons,
   breadcrumb,
 }: {
   workspaceId: string
@@ -217,6 +229,8 @@ export function BodyEditor({
   initialPageRefTitles: Readonly<Record<string, string | null>>
   /** 멘션 노드가 그릴 이름 — 서버가 권한으로 거른 맵(`loadMentionLabels`). 노드에는 id 뿐이다. */
   initialMentionLabels: MentionLabelMap
+  /** 하위 페이지 참조 · 멘션이 그릴 아이콘(8c-2) — 두 맵과 같은 권한 필터를 지났다(볼 수 있고 아이콘이 있는 것만). 노드에는 없다. */
+  initialPageIcons: Readonly<Record<string, PageIcon>>
   /** 이 페이지의 경로 — 머리의 breadcrumb 과 같은 줄(`block/breadcrumb.ts`). breadcrumb 블록이 그린다(8b-2). */
   breadcrumb: BreadcrumbTrail
 }) {
@@ -257,6 +271,8 @@ export function BodyEditor({
     pages: new Map(Object.entries(initialMentionLabels.pages)),
   })
   const refreshingLabelsRef = useRef(false)
+  /** 하위 페이지 참조 · 멘션의 아이콘 — 문서에 없다(8c-2). 두 맵을 다시 읽을 때 함께 고친다(`mergePageIcons`). */
+  const pageIconsRef = useRef<Map<string, PageIcon>>(new Map(Object.entries(initialPageIcons)))
   /** 한글 IME 조합 중인가 — 조합 중에는 후보를 묻지 않는다(07 F-07-08: "조합 중 문자열로 질의하면 후보가 요동침"). */
   const composingIme = useRef(false)
   const candidateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -327,8 +343,9 @@ export function BodyEditor({
     try {
       const res = await fetch(`/api/workspaces/${workspaceId}/pages/${pageId}/page-ref-titles`)
       if (!res.ok) return
-      const data = (await res.json()) as { pageRefTitles?: Record<string, string | null> }
+      const data = (await res.json()) as { pageRefTitles?: Record<string, string | null>; pageIcons?: Record<string, PageIcon> }
       pageRefTitlesRef.current = new Map(Object.entries(data.pageRefTitles ?? {}))
+      mergePageIcons(pageIconsRef.current, Object.keys(data.pageRefTitles ?? {}), data.pageIcons)
       const view = viewRef.current
       const deps = editorDepsRef.current
       if (view && deps) view.setProps({ nodeViews: createNodeViews(deps) })
@@ -491,9 +508,14 @@ export function BodyEditor({
         const params = new URLSearchParams({ users: users.join(','), pages: pages.join(',') })
         const res = await fetch(`/api/workspaces/${workspaceId}/mention-labels?${params.toString()}`)
         if (!res.ok) return
-        const data = (await res.json()) as { users?: Record<string, string | null>; pages?: Record<string, string | null> }
+        const data = (await res.json()) as {
+          users?: Record<string, string | null>
+          pages?: Record<string, string | null>
+          pageIcons?: Record<string, PageIcon>
+        }
         for (const [id, label] of Object.entries(data.users ?? {})) mentionLabelsRef.current.users.set(id, label)
         for (const [id, label] of Object.entries(data.pages ?? {})) mentionLabelsRef.current.pages.set(id, label)
+        mergePageIcons(pageIconsRef.current, pages, data.pageIcons)
         const view = viewRef.current
         const deps = editorDepsRef.current
         if (view && deps) view.setProps({ nodeViews: createNodeViews(deps) })
@@ -577,6 +599,8 @@ export function BodyEditor({
     if (!view) return
     const map = candidate.kind === 'user' ? mentionLabelsRef.current.users : mentionLabelsRef.current.pages
     map.set(candidate.id, candidate.label)
+    // 아이콘도 — 후보는 서버가 권한으로 거른 것이다(8c-2).
+    if (candidate.kind === 'page') mergePageIcons(pageIconsRef.current, [candidate.id], candidate.icon === null ? {} : { [candidate.id]: candidate.icon })
     const pick: MentionPick = { kind: candidate.kind, id: candidate.id }
     insertMention(view.state, view.dispatch.bind(view), pick)
     view.focus()
@@ -807,6 +831,7 @@ export function BodyEditor({
       },
       openPage: (id) => router.push(`/w/${workspaceId}/${id}`),
       pageRefTitle: (id) => pageRefTitlesRef.current.get(id),
+      pageIcon: (id) => pageIconsRef.current.get(id) ?? null,
       mentionLabel: (kind, id) => (kind === 'user' ? mentionLabelsRef.current.users : mentionLabelsRef.current.pages).get(id),
       onBlocked: (plan) => setStatus({ kind: 'error', message: plan.detail }),
       onRefused: (detail) => setStatus({ kind: 'error', message: detail }),
@@ -1240,7 +1265,9 @@ export function BodyEditor({
                   i === mentionUi.index ? 'bg-neutral-100 dark:bg-neutral-800' : ''
                 }`}
               >
-                <span className="text-xs text-neutral-400">{candidate.kind === 'user' ? '사람' : '페이지'}</span>
+                {/* 꼬리표 · 아이콘은 줄어들지 않는다 — 긴 제목이 꼬리표를 "페이 / 지"로 꺾었다(8c-2 화면 확인). */}
+                <span className="flex-none whitespace-nowrap text-xs text-neutral-400">{candidate.kind === 'user' ? '사람' : '페이지'}</span>
+                {candidate.kind === 'page' && <PageIconView icon={candidate.icon} fallback />}
                 <span>{candidate.kind === 'user' ? `@${candidate.label}` : candidate.label || '제목 없음'}</span>
               </button>
             </li>

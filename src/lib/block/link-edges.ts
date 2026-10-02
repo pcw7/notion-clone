@@ -29,6 +29,7 @@ import { mentionTarget, type MentionTarget } from '../contracts/rich-text.ts'
 import type { Tx } from '../db/tx.ts'
 import { readableScopes } from '../permissions/effective.ts'
 import { plainTitleOf, readTitle } from './page.ts'
+import { readPageIcon, type PageIcon } from './page-icon.ts'
 
 export type LinkEdgeDelta = {
   readonly inserted: number
@@ -114,7 +115,12 @@ export async function projectLinkEdges(
   return { inserted: toInsert.length, deleted: toDelete.length, newUserIds, firstBlockId }
 }
 
-export type Backlink = { readonly pageId: string; readonly title: string }
+export type Backlink = {
+  readonly pageId: string
+  readonly title: string
+  /** 페이지 아이콘(8c-2) — 볼 수 있는 페이지만 오므로 그대로 싣는다. */
+  readonly icon: PageIcon | null
+}
 
 /**
  * 이 페이지를 멘션한 페이지들(F-07-09) — **볼 수 있는 것만**, 제목은 지금 것.
@@ -126,8 +132,8 @@ export type Backlink = { readonly pageId: string; readonly title: string }
 export async function listBacklinks(tx: Tx, ctx: SessionContext, pageId: string): Promise<Backlink[]> {
   const scopes = await readableScopes(tx, ctx)
   if (scopes.length === 0) return []
-  const rows = await tx.query<{ id: string; properties: { title?: unknown } }>(
-    `SELECT DISTINCT b.id, b.properties, b.last_edited_at
+  const rows = await tx.query<{ id: string; properties: { title?: unknown }; page_icon: unknown }>(
+    `SELECT DISTINCT b.id, b.properties, b.format -> 'page_icon' AS page_icon, b.last_edited_at
        FROM link_edge e
        JOIN block b ON b.id = e.source_page_id
       WHERE e.target_kind = 'page' AND e.target_id = $1 AND e.source_page_id <> $1
@@ -136,5 +142,5 @@ export async function listBacklinks(tx: Tx, ctx: SessionContext, pageId: string)
       ORDER BY b.last_edited_at DESC, b.id`,
     [pageId, ctx.workspaceId, scopes],
   )
-  return rows.map((r) => ({ pageId: r.id, title: plainTitleOf(r.properties) }))
+  return rows.map((r) => ({ pageId: r.id, title: plainTitleOf(r.properties), icon: readPageIcon(r.page_icon) }))
 }

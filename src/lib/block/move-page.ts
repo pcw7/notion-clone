@@ -79,6 +79,7 @@ import { nextSiblingKey } from './page.ts'
 import { finishOrThrow, openPageBody, ownerPageOf, type PageBodyWrite } from './body-write.ts'
 import { appendPageRef, removePageRef } from './page-refs.ts'
 import { toPlainText, type RichTextRun } from '../contracts/rich-text.ts'
+import { readPageIcon, type PageIcon } from './page-icon.ts'
 
 export type MoveErrorCode =
   /** 옮길 페이지가 없거나 다른 워크스페이스거나 휴지통에 있거나 볼 수 없다. */
@@ -710,6 +711,8 @@ export async function relocateSubtree(
 export type MoveTarget = {
   readonly id: BlockId
   readonly title: string
+  /** 후보 페이지의 아이콘(8c-2) — 후보는 이미 볼 수 있는 페이지다. 경로(조상)에는 싣지 않는다(글자 속의 경로). */
+  readonly icon: PageIcon | null
   /**
    * 루트→부모 순서의 조상 페이지 제목 — **볼 수 있는 조상만.** 화면이 경로 라벨을 그린다. 볼 수 없는 조상은 제목도
    * id 도 싣지 않는다(F-02-03 "존재도 노출 금지").
@@ -738,8 +741,8 @@ export async function listMovableTargets(
     const creatable = await scopesWith(tx, ctx, ['view', 'create_child'])
     if (creatable.length === 0) return []
 
-    const rows = await tx.query<{ id: string; properties: { title?: unknown } | null; ancestor_path: string[] }>(
-      `SELECT id, properties, ancestor_path
+    const rows = await tx.query<{ id: string; properties: { title?: unknown } | null; page_icon: unknown; ancestor_path: string[] }>(
+      `SELECT id, properties, format -> 'page_icon' AS page_icon, ancestor_path
          FROM live_block
         WHERE workspace_id = $1 AND type = 'page'
           AND id <> $2
@@ -766,6 +769,7 @@ export async function listMovableTargets(
     return rows.map((row) => ({
       id: asBlockId(row.id),
       title: titleText(row.properties),
+      icon: readPageIcon(row.page_icon),
       path: row.ancestor_path.flatMap((id) => {
         const title = titleOf.get(id)
         return title === undefined ? [] : [title]

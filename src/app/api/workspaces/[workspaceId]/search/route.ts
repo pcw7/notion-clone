@@ -68,6 +68,7 @@ export async function GET(
     results: results.results.map((hit) => ({
       pageId: hit.pageId,
       title: hit.title,
+      icon: hit.icon,
       snippet: hit.snippet,
       breadcrumb: hit.breadcrumb,
       lastEditedAt: hit.lastEditedAt.toISOString(),

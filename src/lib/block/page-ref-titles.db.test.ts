@@ -30,7 +30,7 @@ import { createBareWorkspace, createUser, joinAs, probeDatabase, type Actor } fr
 import { appendDocUpdate } from './body-write.ts'
 import { movePage } from './move-page.ts'
 import { createPage, titleFromPlainText } from './page.ts'
-import { loadPageBody, loadPageRefTitles, savePageBody } from './save-page-body.ts'
+import { loadPageBody, loadPageRefLabels, savePageBody } from './save-page-body.ts'
 import { restorePage, trashPage } from './trash.ts'
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'
@@ -145,17 +145,17 @@ describe('① 본문을 읽으면', () => {
     // 편집기를 연 뒤에 다른 사람이 만든 참조 — 협업 편집기는 Y.Doc 으로 받고 제목을 모른다.
     const later = await page('나중 하위', parent.id)
 
-    const memberTitles = await loadPageRefTitles(member.ctx, parent.id)
+    const memberTitles = (await loadPageRefLabels(member.ctx, parent.id))?.titles
     assert.deepEqual(memberTitles, { [visible.id]: '보이는 하위', [secret.id]: null, [later.id]: '나중 하위' })
     assert.deepEqual(memberTitles, (await loadPageBody(member.ctx, parent.id))?.pageRefTitles, '본문 읽기의 맵과 다르다')
     assert.ok(!JSON.stringify(memberTitles).includes(secretTitle), '볼 수 없는 하위 페이지의 제목이 맵에 있다')
-    assert.deepEqual(await loadPageRefTitles(owner.ctx, parent.id), (await loadPageBody(owner.ctx, parent.id))?.pageRefTitles)
+    assert.deepEqual((await loadPageRefLabels(owner.ctx, parent.id))?.titles, (await loadPageBody(owner.ctx, parent.id))?.pageRefTitles)
 
-    assert.equal(await loadPageRefTitles(member.ctx, secret.id), null, '볼 수 없는 페이지의 맵을 줬다')
+    assert.equal(await loadPageRefLabels(member.ctx, secret.id), null, '볼 수 없는 페이지의 맵을 줬다')
     await trashPage(owner.ctx, later.id as never)
-    assert.equal(await loadPageRefTitles(owner.ctx, later.id), null, '휴지통 페이지의 맵을 줬다')
-    assert.deepEqual(Object.keys((await loadPageRefTitles(owner.ctx, parent.id)) ?? {}).sort(), [visible.id, secret.id].sort())
-    assert.equal(await loadPageRefTitles(owner.ctx, randomUUID() as never), null)
+    assert.equal(await loadPageRefLabels(owner.ctx, later.id), null, '휴지통 페이지의 맵을 줬다')
+    assert.deepEqual(Object.keys((await loadPageRefLabels(owner.ctx, parent.id))?.titles ?? {}).sort(), [visible.id, secret.id].sort())
+    assert.equal(await loadPageRefLabels(owner.ctx, randomUUID() as never), null)
   })
 })
 

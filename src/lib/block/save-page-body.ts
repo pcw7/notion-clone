@@ -63,6 +63,7 @@ import type { BlockId } from '../ids.ts'
 import { withReadTransaction, withTransaction, type Tx } from '../db/tx.ts'
 import { PAGE_TYPE } from './types.ts'
 import { plainTitleOf } from './page.ts'
+import { pageIconOfFormat, type PageIcon } from './page-icon.ts'
 import { indexPageText } from '../search/index-page.ts'
 import { notifyMentions } from '../notification/fanout.ts'
 import { projectLinkEdges } from './link-edges.ts'
@@ -769,7 +770,15 @@ export type LoadedBody = {
    * HANDOFF §3.3-32). 볼 수 없는 참조도 키는 있다 — 참조의 자리는 이미 본문에 보이고(§3.3-74), 화면이 "접근 권한 없음"을 그린다.
    */
   readonly pageRefTitles: Readonly<Record<string, string | null>>
+  /**
+   * 그 하위 페이지들의 아이콘(8c-2) — **볼 수 있고 아이콘이 있는 것만**(제목과 같은 필터). 참조 노드는 아이콘도 싣지 않는다(정본 §3.4
+   * [보강] 페이지 아이콘 ③) — 화면이 이 맵에서 읽는다.
+   */
+  readonly pageRefIcons: Readonly<Record<string, PageIcon>>
 }
+
+/** 하위 페이지 참조가 그릴 것 — 제목(볼 수 없으면 null)과 아이콘(볼 수 있고 있는 것만). */
+export type PageRefLabels = { readonly titles: LoadedBody['pageRefTitles']; readonly icons: LoadedBody['pageRefIcons'] }
 
 /**
  * 페이지 본문을 문서로 읽는다.
@@ -786,25 +795,23 @@ export async function loadPageBody(
     const page = await readableLivePage(tx, ctx, pageId)
     if (!page) return null
     const live = (await readScope(tx, ctx, pageId)).filter((r) => r.lifecycle === 'live')
-    return { doc: rowsToDoc(pageId, live), version: page.version, pageRefTitles: await pageRefTitlesOf(tx, ctx, live) }
+    const refs = await pageRefLabelsOf(tx, ctx, live)
+    return { doc: rowsToDoc(pageId, live), version: page.version, pageRefTitles: refs.titles, pageRefIcons: refs.icons }
   })
 }
 
 /**
- * 본문의 하위 페이지 참조 제목만 — `LoadedBody.pageRefTitles` 와 같은 맵(CRDT 6b조각).
+ * 본문의 하위 페이지 참조 제목 · 아이콘만 — `LoadedBody.pageRefTitles` · `pageRefIcons` 와 같은 맵(CRDT 6b조각 · 아이콘은 8c-2).
  *
  * 협업 편집기는 본문을 Y.Doc 으로 받으므로 행으로 만든 문서가 필요 없고, 다른 참여자가 만든 · 되살린 · 옮겨 온 참조를 받으면
  * 그 제목을 모른다(`NodeViewDeps.pageRefTitle` 이 `undefined`). 그때 이것을 다시 읽는다. 참조는 넣거나 지운 update 가 곧바로
  * 투영되므로(§3.2-25) 행에 이미 있다. 볼 수 없는 페이지 · 없는 페이지는 null 이다(`loadPageBody` 와 같다).
  */
-export async function loadPageRefTitles(
-  ctx: SessionContext,
-  pageId: BlockId,
-): Promise<LoadedBody['pageRefTitles'] | null> {
+export async function loadPageRefLabels(ctx: SessionContext, pageId: BlockId): Promise<PageRefLabels | null> {
   return withReadTransaction(async (tx) => {
     if (!(await readableLivePage(tx, ctx, pageId))) return null
     const live = (await readScope(tx, ctx, pageId)).filter((r) => r.lifecycle === 'live')
-    return pageRefTitlesOf(tx, ctx, live)
+    return pageRefLabelsOf(tx, ctx, live)
   })
 }
 
@@ -819,11 +826,23 @@ async function readableLivePage(tx: Tx, ctx: SessionContext, pageId: BlockId): P
   return can(await effectiveCaps(tx, ctx, pageId), 'view') ? page : null
 }
 
-/** 범위의 살아 있는 하위 페이지 → 제목(볼 수 없으면 null). 목록과 같은 규칙이다(`LoadedBody.pageRefTitles`). */
-async function pageRefTitlesOf(tx: Tx, ctx: SessionContext, live: readonly ScopeRow[]): Promise<LoadedBody['pageRefTitles']> {
+/**
+ * 범위의 살아 있는 하위 페이지 → 제목(볼 수 없으면 null) · 아이콘(볼 수 있고 있는 것만). 목록과 같은 규칙이다
+ * (`LoadedBody.pageRefTitles`). 아이콘은 그 페이지 **행의** `format` 에서 읽는다 — 본문(Y.Doc)의 참조 노드에는 없다.
+ */
+async function pageRefLabelsOf(tx: Tx, ctx: SessionContext, live: readonly ScopeRow[]): Promise<PageRefLabels> {
   const refs = live.filter((r) => r.type === PAGE_TYPE)
   const readable = new Set(refs.length === 0 ? [] : await readableScopes(tx, ctx))
-  return Object.fromEntries(
-    refs.map((r) => [r.id, readable.has(r.perm_scope_id) ? plainTitleOf(r.properties as { title?: unknown } | null) : null]),
-  )
+  const titles: Record<string, string | null> = {}
+  const icons: Record<string, PageIcon> = {}
+  for (const r of refs) {
+    if (!readable.has(r.perm_scope_id)) {
+      titles[r.id] = null
+      continue
+    }
+    titles[r.id] = plainTitleOf(r.properties as { title?: unknown } | null)
+    const icon = pageIconOfFormat(r.format)
+    if (icon !== null) icons[r.id] = icon
+  }
+  return { titles, icons }
 }

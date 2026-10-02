@@ -72,6 +72,7 @@ import type { SessionContext } from '../auth/session-context.ts'
 import { withReadTransaction, type Tx } from '../db/tx.ts'
 import { readableScopes } from '../permissions/effective.ts'
 import { plainTitleOf } from '../block/page.ts'
+import { readPageIcon, type PageIcon } from '../block/page-icon.ts'
 import {
   listEnvelope,
   encodeCursor,
@@ -107,6 +108,8 @@ export type BreadcrumbEntry = {
 export type SearchHit = {
   readonly pageId: string
   readonly title: string
+  /** 페이지 아이콘(8c-2) — 없으면 null. 결과는 이미 볼 수 있는 페이지뿐이다. */
+  readonly icon: PageIcon | null
   /** 본문에서 뽑은 1~2줄. 일치 지점이 없으면 본문 앞부분. */
   readonly snippet: string
   /** 루트→부모 순. 루트 페이지면 빈 배열. */
@@ -166,6 +169,7 @@ const AXIS: Readonly<Record<Script, { readonly match: string; readonly titleHit:
 type HitRow = {
   doc_id: string
   title_text: string | null
+  page_icon: unknown
   ancestor_ids: string[]
   edited_at: Date
   title_hit: boolean
@@ -194,6 +198,7 @@ function buildSql(script: Script): string {
         FROM matched m
     )
     SELECT k.doc_id, k.title_text, k.ancestor_ids, k.edited_at, k.title_hit, k.sort_key,
+           (SELECT b.format -> 'page_icon' FROM block b WHERE b.id = k.doc_id) AS page_icon,
            CASE
              WHEN k.body_text IS NULL OR k.body_text = '' THEN ''
              -- 일치 지점 주변을 자른다. 라틴 축은 토큰 매칭이라 쿼리 문자열이
@@ -220,14 +225,15 @@ function buildSql(script: Script): string {
  * `recent_visit` 에 대해 경고한 함정과 같다). 결과가 25건이라 조상 전체를
  * 한 번의 `= ANY` 로 읽으면 끝난다.
  *
- * **제목을 못 읽는 조상은 건너뛴다.** 권한 때문이 아니라 경로를 보여주기 위한
- * 것이고, 조상 하나가 없다고 검색 결과를 숨기면 사용자가 자기가 볼 수 있는
- * 페이지를 못 찾는다.
+ * **볼 수 없는 조상은 건너뛴다** — 머리의 경로(`listAncestors`)와 같은 규칙이다(HANDOFF §3.3-100 · 검색 자체와 같은 스코프
+ * 필터). 8c-2 전에는 권한을 묻지 않아, 개인 페이지 아래에서 따로 공유받은 페이지를 찾은 사람에게 **조상의 제목이 경로로
+ * 샜다**(#76 은 머리의 경로만 막았다). 조상 하나가 빠진다고 결과를 숨기지는 않는다 — 결과는 그 사람이 볼 수 있는 페이지다.
  */
 async function loadBreadcrumbs(
   tx: Tx,
   ctx: SessionContext,
   rows: readonly HitRow[],
+  scopes: readonly string[],
 ): Promise<Map<string, BreadcrumbEntry[]>> {
   const ids = new Set<string>()
   for (const row of rows) for (const id of row.ancestor_ids) ids.add(id)
@@ -235,8 +241,9 @@ async function loadBreadcrumbs(
 
   const titles = await tx.query<{ id: string; properties: { title?: unknown } | null }>(
     `SELECT id, properties FROM live_block
-      WHERE id = ANY($1::uuid[]) AND workspace_id = $2 AND type = 'page'`,
-    [[...ids], ctx.workspaceId],
+      WHERE id = ANY($1::uuid[]) AND workspace_id = $2 AND type = 'page'
+        AND perm_scope_id = ANY($3::uuid[])   -- ★ 권한(8c-2) — 머리의 경로와 같은 규칙`,
+    [[...ids], ctx.workspaceId, scopes],
   )
   const byId = new Map(titles.map((t) => [t.id, plainTitleOf(t.properties)]))
 
@@ -307,11 +314,12 @@ export async function searchPages(
 
     const hasMore = rows.length > limit
     const page = hasMore ? rows.slice(0, limit) : rows
-    const breadcrumbs = await loadBreadcrumbs(tx, ctx, page)
+    const breadcrumbs = await loadBreadcrumbs(tx, ctx, page, scopes)
 
     const results: SearchHit[] = page.map((row) => ({
       pageId: row.doc_id,
       title: row.title_text ?? '',
+      icon: readPageIcon(row.page_icon),
       snippet: row.snippet,
       breadcrumb: breadcrumbs.get(row.doc_id) ?? [],
       lastEditedAt: row.edited_at,

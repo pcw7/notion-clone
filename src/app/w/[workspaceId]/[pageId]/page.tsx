@@ -15,7 +15,7 @@ import { asBlockId } from '@/lib/ids'
 import { requirePageVisitor } from '@/lib/auth/page-session'
 import { getPage, listAncestors, listChildPages } from '@/lib/block/page'
 import { breadcrumbTrail } from '@/lib/block/breadcrumb'
-import { loadPageRefTitles } from '@/lib/block/save-page-body'
+import { loadPageRefLabels } from '@/lib/block/save-page-body'
 import { loadDocState, pageAccess } from '@/lib/collab/doc-store'
 import { collabServerUrl } from '@/lib/collab/collab-url'
 import { listMovableTargets, listTeamspaceDestinations } from '@/lib/block/move-page'
@@ -81,11 +81,11 @@ export default async function PageView({ params, searchParams }: PageProps<'/w/[
 
   // 본문은 Y.Doc 이 정본이다(판결 X-1 · CRDT 6d) — 협업 편집기가 그 상태로 시작하고 협업 서버에 붙는다. 행으로 만든 문서는
   // 더 이상 화면이 읽지 않고, 참조 제목만 따로 받는다(참조 노드는 제목을 싣지 않는다 — §3.2-22).
-  const [ancestors, children, state, pageRefTitles, access, moveTargets, moveTeamspaces, favorite, openThreads, lock] = await Promise.all([
+  const [ancestors, children, state, pageRefs, access, moveTargets, moveTeamspaces, favorite, openThreads, lock] = await Promise.all([
     listAncestors(ctx, page),
     listChildPages(ctx, page.id),
     loadDocState(ctx, page.id),
-    loadPageRefTitles(ctx, page.id),
+    loadPageRefLabels(ctx, page.id),
     pageAccess(ctx, page.id),
     listMovableTargets(ctx, page.id),
     listTeamspaceDestinations(ctx),
@@ -102,7 +102,7 @@ export default async function PageView({ params, searchParams }: PageProps<'/w/[
   // 안 열리는 것보다 낫다.
   await recordVisit(ctx, page.id)
   // getPage 가 통과했으므로 여기서 실패하면 그 사이에 지워진 것이다.
-  if (!state.ok || pageRefTitles === null) notFound()
+  if (!state.ok || pageRefs === null) notFound()
 
   // 멘션 노드에는 id 뿐이다 — 이름 · 제목은 권한으로 거른 맵으로 준다(참조 제목과 같은 규칙 · §3.2-22). 백링크는
   // 역인덱스(`link_edge`)에서, 볼 수 있는 페이지만(F-07-09).
@@ -176,6 +176,7 @@ export default async function PageView({ params, searchParams }: PageProps<'/w/[
             targets={moveTargets.map((t) => ({
               id: t.id,
               title: t.title,
+              icon: t.icon,
               path: [...t.path],
             }))}
             teamspaces={moveTeamspaces}
@@ -206,6 +207,7 @@ export default async function PageView({ params, searchParams }: PageProps<'/w/[
             {backlinks.map((b) => (
               <li key={b.pageId}>
                 <Link href={`/w/${workspaceId}/${b.pageId}`} className="hover:underline underline-offset-4">
+                  <PageIconView icon={b.icon} fallback className="mr-1.5 align-[-0.125em]" />
                   {b.title || UNTITLED}
                 </Link>
               </li>
@@ -222,8 +224,10 @@ export default async function PageView({ params, searchParams }: PageProps<'/w/[
         initialState={Buffer.from(Y.encodeStateAsUpdate(state.value.ydoc)).toString('base64')}
         canEdit={access === 'edit'}
         locked={lock?.locked ?? false}
-        initialPageRefTitles={pageRefTitles}
+        initialPageRefTitles={pageRefs.titles}
         initialMentionLabels={mentionLabels}
+        // 하위 페이지 참조 · 멘션의 아이콘(8c-2) — 둘 다 권한으로 거른 맵에서 왔다(볼 수 있고 아이콘이 있는 것만).
+        initialPageIcons={{ ...pageRefs.icons, ...mentionLabels.pageIcons }}
         breadcrumb={trail}
       />
 

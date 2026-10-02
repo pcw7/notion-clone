@@ -59,6 +59,15 @@ export function samePageIcon(a: PageIcon | null, b: PageIcon | null): boolean {
   return a.type === b.type && a.emoji === b.emoji
 }
 
+/**
+ * 아이콘이 없는 페이지의 기본 표시 — 회색 문서 글리프(F-02-05). **그림(SVG)이다** — 줄의 글자(`textContent`)에 섞이지 않는다
+ * (8c-1 · §3.3-232). React(`page-icon-view.tsx`)와 노드 뷰의 DOM(`editor/page-icon-dom.ts`)이 이 모양 하나를 그린다.
+ */
+export const PAGE_GLYPH = {
+  viewBox: '0 0 16 16',
+  paths: ['M4 1.75h5.25L12.5 5v9.25H4z', 'M9.25 1.75V5h3.25'],
+} as const
+
 /** 저장할 모양 — 받은 객체의 다른 키는 싣지 않는다. */
 export function pageIconJson(icon: PageIcon): { type: 'emoji'; emoji: string } {
   return { type: 'emoji', emoji: icon.emoji }

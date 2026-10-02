@@ -32,6 +32,7 @@
 
 import type { SessionContext } from '../auth/session-context.ts'
 import { plainTitleOf } from '../block/page.ts'
+import { readPageIcon, type PageIcon } from '../block/page-icon.ts'
 import { toPlainText, type RichTextRun } from '../contracts/rich-text.ts'
 import { withReadTransaction, withTransaction, type Tx } from '../db/tx.ts'
 import { readableScopes } from '../permissions/effective.ts'
@@ -54,6 +55,8 @@ export type InboxItem = {
   readonly kind: NotificationKind
   readonly pageId: string
   readonly pageTitle: string
+  /** 그 페이지의 아이콘(8c-2) — 목록의 페이지는 이미 권한으로 걸렀다. 없으면 null. */
+  readonly pageIcon: PageIcon | null
   /** 이 묶음에 접힌 알림들 — 읽음 · 보관은 이 전부에 건다. */
   readonly notificationIds: readonly string[]
   readonly count: number
@@ -158,7 +161,8 @@ export async function listInbox(ctx: SessionContext, options: ListInboxOptions =
         groupKey: g.group_key,
         kind: g.kind as NotificationKind,
         pageId: g.page_id,
-        pageTitle: titles.get(g.page_id) ?? '',
+        pageTitle: titles.get(g.page_id)?.title ?? '',
+        pageIcon: titles.get(g.page_id)?.icon ?? null,
         notificationIds: g.ids,
         count: g.total,
         unreadCount: g.unread,
@@ -225,14 +229,21 @@ async function readBlockTexts(tx: Tx, ctx: SessionContext, ids: readonly string[
   return new Map(rows.map((r) => [r.id, plainTitleOf(r.properties)]))
 }
 
-/** 제목은 **복사해 두지 않는다** — 바뀐 제목을 보여줘야 한다(정본 §3.9 의 내비게이션 규칙과 같다). */
-async function readTitles(tx: Tx, ctx: SessionContext, ids: readonly string[]): Promise<Map<string, string>> {
+/**
+ * 제목 · 아이콘은 **복사해 두지 않는다** — 바뀐 것을 보여줘야 한다(정본 §3.9 의 내비게이션 규칙과 같다). 부르는 쪽(`listInbox`)이
+ * 이미 권한으로 거른 페이지만 넘긴다.
+ */
+async function readTitles(
+  tx: Tx,
+  ctx: SessionContext,
+  ids: readonly string[],
+): Promise<Map<string, { title: string; icon: PageIcon | null }>> {
   if (ids.length === 0) return new Map()
-  const rows = await tx.query<{ id: string; properties: { title?: unknown } }>(
-    `SELECT id, properties FROM block WHERE id = ANY($1::uuid[]) AND workspace_id = $2`,
+  const rows = await tx.query<{ id: string; properties: { title?: unknown }; page_icon: unknown }>(
+    `SELECT id, properties, format -> 'page_icon' AS page_icon FROM block WHERE id = ANY($1::uuid[]) AND workspace_id = $2`,
     [[...new Set(ids)], ctx.workspaceId],
   )
-  return new Map(rows.map((r) => [r.id, plainTitleOf(r.properties)]))
+  return new Map(rows.map((r) => [r.id, { title: plainTitleOf(r.properties), icon: readPageIcon(r.page_icon) }]))
 }
 
 /** 배지에 쓰는 수 — 보관하지 않은 안 읽은 알림. 권한 필터는 목록과 같다. */

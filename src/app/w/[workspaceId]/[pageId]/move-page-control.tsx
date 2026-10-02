@@ -22,7 +22,9 @@
 import { useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 
+import type { PageIcon } from '@/lib/block/page-icon'
 import { teamspaceIcon } from '../teamspace-messages'
+import { PageIconView } from '../page-icon-view'
 import { moveFailureMessage, moveNeedsConfirm, movePreviewLines, type MovePreviewView } from './move-messages'
 
 type MoveBody = { targetParentId: string | null } | { targetTeamspaceId: string } | { targetPrivate: true }
@@ -30,6 +32,8 @@ type MoveBody = { targetParentId: string | null } | { targetTeamspaceId: string 
 export type MoveTargetOption = {
   id: string
   title: string
+  /** 후보의 아이콘(8c-2) — 없으면 null(기본 글리프). */
+  icon: PageIcon | null
   /** 루트→부모 순서의 볼 수 있는 조상 제목. */
   path: string[]
 }
@@ -262,6 +266,7 @@ export function MovePageControl({
                       onClick={() => void choose({ targetParentId: t.id })}
                       className={OPTION}
                     >
+                      <PageIconView icon={t.icon} fallback className="mr-1.5 align-[-0.125em]" />
                       {t.label}
                       {t.id === currentParentId && (
                         <span className="ml-2 text-xs text-neutral-400">현재 위치</span>

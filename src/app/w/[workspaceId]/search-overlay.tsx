@@ -56,6 +56,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 
 import { splitHighlight } from '@/lib/search/highlight'
+import type { PageIcon } from '@/lib/block/page-icon'
+import { PageIconView } from './page-icon-view'
 
 /** 사이드바 버튼처럼 오버레이 밖에서 여는 경로. */
 const OPEN_EVENT = 'nc:open-search'
@@ -73,13 +75,15 @@ export function openSearchOverlay(): void {
 export type SearchHitRow = {
   pageId: string
   title: string
+  /** 페이지 아이콘(8c-2) — 없으면 null(기본 글리프). */
+  icon: PageIcon | null
   snippet: string
   breadcrumb: { id: string; title: string }[]
   lastEditedAt: string
   titleHit: boolean
 }
 
-export type RecentRow = { id: string; title: string }
+export type RecentRow = { id: string; title: string; icon: PageIcon | null }
 
 const UNTITLED = '제목 없음'
 
@@ -146,6 +150,7 @@ export function SearchOverlay({
       return recent.map((r) => ({
         pageId: r.id,
         title: r.title,
+        icon: r.icon,
         snippet: '',
         breadcrumb: [],
         lastEditedAt: '',
@@ -377,6 +382,7 @@ export function SearchOverlay({
                     }`}
                   >
                     <span className="block truncate text-sm">
+                      <PageIconView icon={row.icon} fallback className="mr-1.5 align-[-0.125em]" />
                       <Highlighted text={row.title || UNTITLED} query={searching ? query : ''} />
                     </span>
 
