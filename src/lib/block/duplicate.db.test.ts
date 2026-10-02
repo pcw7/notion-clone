@@ -222,11 +222,11 @@ describe('④ 본문은 Y.Doc 으로 쓴다', () => {
   test('아이콘 · 커버(format)도 따라온다 — 사본은 원본과 같은 모습이다', async (ctx) => {
     if (skipReason) return ctx.skip(skipReason)
     const page = await newPage('꾸민 것')
-    await query(`UPDATE block SET format = '{"page_icon":"🌱"}'::jsonb WHERE id = $1`, [page.id])
+    await query(`UPDATE block SET format = '{"page_icon":{"type":"emoji","emoji":"🌱"},"page_full_width":true}'::jsonb WHERE id = $1`, [page.id])
 
     const copy = await duplicatePage(fx.owner.ctx, page.id)
     const rows = await query<{ format: Record<string, unknown> }>(`SELECT format FROM block WHERE id = $1`, [copy.page.id])
-    assert.deepEqual(rows[0].format, { page_icon: '🌱' })
+    assert.deepEqual(rows[0].format, { page_icon: { type: 'emoji', emoji: '🌱' }, page_full_width: true })
   })
 })
 

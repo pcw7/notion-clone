@@ -29,6 +29,7 @@ import { canAdministerTeamspaces, getTeamspace, listTeamspaceMembers } from '@/l
 import { NewDatabaseButton } from '../../new-database-button'
 import { NewPageButton } from '../../new-page-button'
 import { teamspaceIcon } from '../../teamspace-messages'
+import { PageIconView } from '../../page-icon-view'
 import { TeamspaceMembers } from './teamspace-members'
 import { TeamspaceSettings } from './teamspace-settings'
 
@@ -80,8 +81,9 @@ export default async function TeamspacePage({ params }: PageProps<'/w/[workspace
               <li key={p.id}>
                 <Link
                   href={`/w/${workspaceId}/${p.id}`}
-                  className="block px-4 py-3 text-sm hover:bg-neutral-50 dark:hover:bg-neutral-900"
+                  className="flex items-center gap-2 px-4 py-3 text-sm hover:bg-neutral-50 dark:hover:bg-neutral-900"
                 >
+                  <PageIconView icon={p.icon} fallback />
                   {p.plainTitle || UNTITLED}
                 </Link>
               </li>

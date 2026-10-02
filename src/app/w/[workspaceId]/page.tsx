@@ -26,6 +26,7 @@ import { InviteForm } from './invite-form'
 import { NewPageButton } from './new-page-button'
 import { PendingInviteList } from './pending-invite-list'
 import { SecurityPolicyForm } from './security-policy-form'
+import { PageIconView } from './page-icon-view'
 
 /** 제목 없는 페이지의 표시 문구. 저장된 값은 빈 배열이다. */
 const UNTITLED = '제목 없음'
@@ -79,8 +80,9 @@ export default async function WorkspacePage({ params }: PageProps<'/w/[workspace
               <li key={p.id}>
                 <Link
                   href={`/w/${workspaceId}/${p.id}`}
-                  className="block px-4 py-3 text-sm hover:bg-neutral-50 dark:hover:bg-neutral-900"
+                  className="flex items-center gap-2 px-4 py-3 text-sm hover:bg-neutral-50 dark:hover:bg-neutral-900"
                 >
+                  <PageIconView icon={p.icon} fallback />
                   {p.plainTitle || UNTITLED}
                 </Link>
               </li>

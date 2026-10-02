@@ -31,6 +31,8 @@ import { getTeamspace } from '@/lib/workspace/teamspace'
 import { NewPageButton } from '../new-page-button'
 import { ExportButton } from '../export-button'
 import { PageTitle } from './page-title'
+import { PageIconControl } from './page-icon-control'
+import { PageIconView } from '../page-icon-view'
 import { BodyEditor } from './body-editor'
 import { MovePageControl } from './move-page-control'
 import { SharePanel } from './share-panel'
@@ -116,7 +118,7 @@ export default async function PageView({ params, searchParams }: PageProps<'/w/[
   // 경로 — 머리와 본문의 breadcrumb 블록(8b-2)이 같은 줄을 그린다(`block/breadcrumb.ts` — 볼 수 있는 조상만 · teamspace 는 멤버에게만).
   const trail = breadcrumbTrail({
     workspaceId,
-    teamspace: teamspace?.ok ? { id: teamspace.value.id, name: teamspace.value.name } : null,
+    teamspace: teamspace?.ok ? { id: teamspace.value.id, name: teamspace.value.name, icon: teamspace.value.icon } : null,
     ancestors,
     page,
   })
@@ -132,13 +134,17 @@ export default async function PageView({ params, searchParams }: PageProps<'/w/[
             <span key={`${item.kind}:${item.id}`} className="flex items-center gap-1">
               {i > 0 && <span aria-hidden>/</span>}
               {item.href === null ? (
-                <span className="text-neutral-400">{item.label}</span>
+                <span className="text-neutral-400">
+                  <PageIconView icon={item.icon} className="mr-1" />
+                  {item.label}
+                </span>
               ) : (
                 <Link
                   href={item.href}
                   data-testid={item.kind === 'teamspace' ? 'breadcrumb-teamspace' : undefined}
                   className="hover:underline underline-offset-4"
                 >
+                  <PageIconView icon={item.icon} className="mr-1" />
                   {item.label}
                 </Link>
               )}
@@ -186,7 +192,11 @@ export default async function PageView({ params, searchParams }: PageProps<'/w/[
         </div>
       </div>
 
-      <PageTitle workspaceId={workspaceId} pageId={page.id} initialTitle={page.plainTitle} readOnly={access !== 'edit'} />
+      {/* 아이콘(8c-1)은 제목 위에 선다 — "아이콘 추가"는 이 머리에 마우스를 올리면 보인다(`group/header`). */}
+      <div className="group/header flex flex-col gap-2">
+        <PageIconControl workspaceId={workspaceId} pageId={page.id} initialIcon={page.icon} readOnly={access !== 'edit'} />
+        <PageTitle workspaceId={workspaceId} pageId={page.id} initialTitle={page.plainTitle} readOnly={access !== 'edit'} />
+      </div>
 
       {/* 백링크 — F-07-09 "제목 아래 `{#} backlinks`, 접힌 채로". 볼 수 없는 페이지는 개수에도 없다. */}
       {backlinks.length > 0 && (
@@ -227,8 +237,9 @@ export default async function PageView({ params, searchParams }: PageProps<'/w/[
               <li key={c.id}>
                 <Link
                   href={`/w/${workspaceId}/${c.id}`}
-                  className="block px-4 py-3 text-sm hover:bg-neutral-50 dark:hover:bg-neutral-900"
+                  className="flex items-center gap-2 px-4 py-3 text-sm hover:bg-neutral-50 dark:hover:bg-neutral-900"
                 >
+                  <PageIconView icon={c.icon} fallback />
                   {c.plainTitle || UNTITLED}
                 </Link>
               </li>

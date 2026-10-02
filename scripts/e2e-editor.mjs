@@ -4944,6 +4944,169 @@ async function main() {
       await sleep(1000)
     }
 
+    if (sectionIf('페이지 아이콘 (8c-1 · F-02-05)')) {
+      // 머리의 "아이콘 추가"는 무작위 이모지를 곧바로 단다 · 아이콘을 누르면 고르개(검색 · 키보드 · 무작위 · 제거) · 고른 아이콘이
+      // 사이드바 · 경로(머리와 블록)에 선다 · 새로고침해도 남는다 · 읽기만 받은 사람은 보기만 한다(브라우저 세션을 동료로 바꾼다 — 끝에
+      // 되돌린다). 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
+      const stamp = Date.now()
+      const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
+      const post = async (body) => (await (await fetch(pagesUrl, { method: 'POST', headers: authed, body: JSON.stringify(body) })).json()).page.id
+      const patchIcon = (page, icon, headers = authed) =>
+        fetch(`${pagesUrl}/${page}`, { method: 'PATCH', headers, body: JSON.stringify({ icon }) })
+      const parentTitle = `아이콘 부모 ${stamp}`
+      const childTitle = `아이콘 자식 ${stamp}`
+      const parent = await post({ title: parentTitle })
+      const child = await post({ title: childTitle, parentPageId: parent })
+      const crumbId = randomUUID()
+      await saveBody(child, {
+        blocks: [{ id: crumbId, type: 'breadcrumb', title: [], properties: {}, format: {}, children: [] }, block(randomUUID(), 'paragraph', '본문')],
+      })
+
+      const ICON = '[data-testid="page-icon"]'
+      const ADD = '[data-testid="page-icon-add"]'
+      const PICKER = '[data-testid="emoji-picker"]'
+      const SEARCH = '[data-testid="emoji-search"]'
+      const ACTIVE_OPTION = `${PICKER} [role="option"][aria-selected="true"]`
+      const headerIcon = () => evaluate(`document.querySelector('${ICON}')?.textContent ?? null`)
+      const treeLink = (page) => `nav[aria-label="페이지 트리"] li > div > a[href="/w/${workspaceId}/${page}"]`
+      /** 사이드바 트리에서 그 페이지 줄의 아이콘 — 이모지 · 기본 글리프면 '' · 줄이 없으면 null. */
+      const treeIconExpr = (page) => `(document.querySelector(${JSON.stringify(treeLink(page))})?.querySelector('[data-page-icon]')?.getAttribute('data-page-icon') ?? null)`
+      const treeIcon = (page) => evaluate(treeIconExpr(page))
+      const focusedOn = (sel) => `document.activeElement === document.querySelector(${JSON.stringify(sel)})`
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${parent}` })
+      check('전제 — 아이콘 없는 페이지 · "아이콘 추가"가 있다', await waitFor(`!!document.querySelector('${ADD}') && !document.querySelector('${ICON}')`, 15000))
+      check('★ 사이드바 — 아이콘 없는 페이지는 기본 문서 글리프 · 줄의 글자는 제목뿐(글리프는 글자가 아니다)',
+        (await treeIcon(parent)) === '' && (await evaluate(`document.querySelector(${JSON.stringify(treeLink(parent))})?.textContent`)) === parentTitle,
+        JSON.stringify([await treeIcon(parent), await evaluate(`document.querySelector(${JSON.stringify(treeLink(parent))})?.textContent`)]))
+
+      // ① "아이콘 추가" — 머리에 마우스를 올리면 보이고, 누르면 무작위 이모지를 곧바로 단다
+      const hiddenBefore = await evaluate(`getComputedStyle(document.querySelector('${ADD}')).opacity`)
+      const titleBox = await rect('input[aria-label="페이지 제목"]')
+      if (titleBox) await move(titleBox.x + 20, titleBox.y + titleBox.h / 2)
+      check('★ "아이콘 추가"는 머리에 마우스를 올려야 보인다',
+        hiddenBefore === '0' && (await waitFor(`getComputedStyle(document.querySelector('${ADD}')).opacity === '1'`, 2000)),
+        `${hiddenBefore} → ${await evaluate(`getComputedStyle(document.querySelector('${ADD}')).opacity`)}`)
+      await clickSelector(ADD)
+      check('★ "아이콘 추가"를 누르면 무작위 이모지가 곧바로 선다 — 고르개는 열리지 않는다',
+        await waitFor(`!!document.querySelector('${ICON}') && !document.querySelector('${PICKER}')`, 8000), String(await headerIcon()))
+      const added = await headerIcon()
+      check('★ 사이드바의 그 줄도 같은 아이콘이다(서버가 다시 그렸다)', await waitFor(`${treeIconExpr(parent)} === ${JSON.stringify(added)}`, 8000),
+        JSON.stringify([added, await treeIcon(parent)]))
+
+      // ② 고르개 — 검색칸이 포커스 · 한국어로 찾고 Enter
+      await clickSelector(ICON)
+      check('★ 아이콘을 누르면 고르개가 열리고 검색칸이 포커스를 갖는다',
+        await waitFor(`!!document.querySelector('${PICKER} [role="option"]') && ${focusedOn(SEARCH)}`, 8000))
+      await typeText('새싹')
+      check('검색 — 맨 앞 후보 🌱 을 가리킨다', await waitFor(`document.querySelector('${ACTIVE_OPTION}')?.dataset.emoji === '🌱'`, 3000),
+        String(await evaluate(`document.querySelector('${ACTIVE_OPTION}')?.dataset.emoji`)))
+      await key('Enter')
+      check('★ Enter 로 고르면 닫히고 아이콘이 바뀐다 · 포커스는 아이콘으로',
+        await waitFor(`!document.querySelector('${PICKER}') && document.querySelector('${ICON}')?.textContent === '🌱' && ${focusedOn(ICON)}`, 5000),
+        JSON.stringify([await headerIcon(), await evaluate('document.activeElement?.outerHTML?.slice(0, 80)')]))
+      check('★ 사이드바도 따라간다', await waitFor(`${treeIconExpr(parent)} === '🌱'`, 8000), String(await treeIcon(parent)))
+
+      // ③ 키보드 — → 로 다음 후보 · 검색칸이 포커스를 지킨다(목록의 빈 곳 · 그룹 제목을 눌러도)
+      await clickSelector(ICON)
+      await waitFor(`!!document.querySelector('${PICKER} [role="option"]') && ${focusedOn(SEARCH)}`, 8000)
+      await clickSelector(`${PICKER} [role="group"] > div:first-child`)
+      await typeText('고양이')
+      check('★ 목록의 그룹 제목을 눌러도 검색칸이 포커스를 지킨다 — 친 글자가 검색어가 된다',
+        (await evaluate(`document.querySelector('${SEARCH}')?.value`)) === '고양이' && (await evaluate(focusedOn(SEARCH))),
+        JSON.stringify([await evaluate(`document.querySelector('${SEARCH}')?.value`), await evaluate('document.activeElement?.tagName')]))
+      await waitFor(`document.querySelectorAll('${PICKER} [role="option"]').length > 2`, 3000)
+      const second = await evaluate(`document.querySelectorAll('${PICKER} [role="option"]')[1]?.dataset.emoji ?? null`)
+      await key('ArrowRight')
+      check('★ → 로 다음 후보를 가리킨다 — 포커스는 검색칸에 남는다',
+        second !== null && (await waitFor(`document.querySelector('${ACTIVE_OPTION}')?.dataset.emoji === ${JSON.stringify(second)} && ${focusedOn(SEARCH)}`, 2000)),
+        JSON.stringify([second, await evaluate(`document.querySelector('${ACTIVE_OPTION}')?.dataset.emoji`)]))
+      await key('Enter')
+      check('★ 그 후보가 아이콘이 된다', await waitFor(`document.querySelector('${ICON}')?.textContent === ${JSON.stringify(second)}`, 5000), String(await headerIcon()))
+
+      // ④ 무작위 — 연 채로 바뀐다 · Esc 로 닫으면 아이콘으로
+      await clickSelector(ICON)
+      await waitFor(`!!document.querySelector('${PICKER} [role="option"]')`, 8000)
+      await clickSelector('[data-testid="emoji-random"]')
+      check('★ 무작위 — 아이콘이 바뀌고 고르개는 열려 있다',
+        await waitFor(`document.querySelector('${ICON}')?.textContent !== ${JSON.stringify(second)} && !!document.querySelector('${PICKER}')`, 5000),
+        String(await headerIcon()))
+      const randomIcon = await headerIcon()
+      await key('Escape')
+      check('★ Esc 로 닫고 포커스는 아이콘으로', await waitFor(`!document.querySelector('${PICKER}') && ${focusedOn(ICON)}`, 3000))
+      check('무작위로 단 아이콘도 저장됐다(사이드바)', await waitFor(`${treeIconExpr(parent)} === ${JSON.stringify(randomIcon)}`, 8000),
+        JSON.stringify([randomIcon, await treeIcon(parent)]))
+
+      // ⑤ 하위 페이지의 경로 — 부모 줄이 그 아이콘을 앞에 단다 · 머리와 블록이 같은 줄 · 아이콘만 바뀌어도 블록이 따라간다
+      const CRUMB_ITEMS = `[data-block-id="${crumbId}"] .blk-breadcrumb-item`
+      const crumbTexts = () => evaluate(`[...document.querySelectorAll('${CRUMB_ITEMS}')].map((li) => li.textContent)`)
+      const headerTexts = () =>
+        evaluate(`[...document.querySelectorAll('nav[aria-label="상위 경로"] a, nav[aria-label="상위 경로"] span.text-neutral-400')].map((e) => e.textContent)`)
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${child}` })
+      await waitFor(`!!document.querySelector('${CRUMB_ITEMS}') && document.querySelector('.blk-editor')?.getAttribute('contenteditable') === 'true'`, 15000)
+      const crumbs = await crumbTexts()
+      check('★ 경로의 부모 줄이 그 아이콘을 앞에 단다 — 머리와 블록이 같은 줄',
+        JSON.stringify(crumbs) === JSON.stringify(['워크스페이스', `${randomIcon}${parentTitle}`, childTitle])
+          && JSON.stringify(await headerTexts()) === JSON.stringify(crumbs),
+        JSON.stringify([crumbs, await headerTexts()]))
+      check('★ 사이드바 — 펼쳐진 부모 아래의 자식은 기본 글리프', (await treeIcon(child)) === '', String(await treeIcon(child)))
+      // 아이콘만 바뀐 경로 — 부모의 아이콘을 바꾸고(API), 이 페이지에 아이콘을 단다(화면 — 저장이 서버 렌더를 다시 그린다). 제목은 그대로라
+      // 같은 경로의 판단이 아이콘을 보지 않으면 새 경로를 버린다(8c-1 반사실 s9 — 처음 쓴 장면은 제목도 함께 바꿔 그것을 가리지 못했다).
+      const swapped = await patchIcon(parent, { type: 'emoji', emoji: '🚀' })
+      await clickSelector(ADD)
+      await waitFor(`!!document.querySelector('${ICON}')`, 8000)
+      const childIcon = await headerIcon()
+      check('★ 아이콘만 바뀌어도 경로 블록이 따라간다 — 부모(🚀) · 이 페이지(제목은 그대로)',
+        swapped.ok && childIcon !== null && (await waitFor(`JSON.stringify([...document.querySelectorAll('${CRUMB_ITEMS}')].map((li) => li.textContent)) === ${JSON.stringify(JSON.stringify(['워크스페이스', `🚀${parentTitle}`, `${childIcon}${childTitle}`]))}`, 8000)),
+        JSON.stringify([childIcon, await crumbTexts()]))
+
+      // ⑥ 제거 — "아이콘 추가"로 돌아온다 · 사이드바는 기본 글리프 · 새로고침해도 없다
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${parent}` })
+      check('★ 새로고침해도 아이콘이 남는다(서버의 값)', await waitFor(`document.querySelector('${ICON}')?.textContent === '🚀'`, 15000), String(await headerIcon()))
+      await clickSelector(ICON)
+      await waitFor(`!!document.querySelector('[data-testid="page-icon-remove"]')`, 8000)
+      await clickSelector('[data-testid="page-icon-remove"]')
+      check('★ 제거하면 "아이콘 추가"로 돌아오고 포커스가 그리로 간다',
+        await waitFor(`!document.querySelector('${ICON}') && !document.querySelector('${PICKER}') && ${focusedOn(ADD)}`, 5000),
+        String(await evaluate('document.activeElement?.outerHTML?.slice(0, 80)')))
+      check('★ 사이드바는 기본 글리프로 돌아온다', await waitFor(`${treeIconExpr(parent)} === ''`, 8000), String(await treeIcon(parent)))
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${parent}` })
+      check('★ 새로고침해도 아이콘이 없다', await waitFor(`!!document.querySelector('${ADD}') && !document.querySelector('${ICON}')`, 15000))
+
+      // ⑦ 라우트 — 모양이 아니면 400 · type 은 생략할 수 있다
+      const bad = await patchIcon(parent, { type: 'emoji', emoji: '🚀🚀' })
+      const badBody = await bad.json().catch(() => ({}))
+      const loose = await patchIcon(parent, { emoji: '🌵' })
+      const looseBody = await loose.json().catch(() => ({}))
+      check('★ 라우트 — 두 글자는 400 invalid_icon · type 을 빼도 받는다',
+        bad.status === 400 && badBody.error === 'invalid_icon' && loose.status === 200 && looseBody.page?.icon?.emoji === '🌵',
+        JSON.stringify([bad.status, badBody, loose.status, looseBody]))
+
+      // ⑧ 읽기만 받은 사람 — 아이콘은 보이고 버튼이 아니다 · 라우트는 403 · 아이콘은 그대로
+      const secret = await post({ title: `아이콘 읽기 ${stamp}`, privateTop: true })
+      const marked = await patchIcon(secret, { type: 'emoji', emoji: '📕' })
+      const reader = await joinAs(workspaceId, await createUser(`아이콘 동료 ${stamp}`), 'member')
+      const granted = await fetch(`${pagesUrl}/${secret}/access`, {
+        method: 'POST', headers: authed, body: JSON.stringify({ action: 'grant', principal: { type: 'user', id: reader.userId }, level: 'view' }),
+      })
+      const browseAs = (token) => send('Network.setCookie', { name: 'nc_session', value: token, domain: 'localhost', path: '/', httpOnly: true })
+      try {
+        check('전제 — 아이콘을 달았고 동료는 이 페이지를 읽기로 받았다', marked.ok && granted.ok, `${marked.status} ${granted.status}`)
+        await browseAs(reader.token)
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${secret}` })
+        check('★ 읽기만 받은 사람 — 아이콘은 보이고 버튼이 아니다 · "아이콘 추가"가 없다',
+          await waitFor(`document.querySelector('${ICON}')?.textContent === '📕' && document.querySelector('${ICON}').tagName !== 'BUTTON' && !document.querySelector('${ADD}')`, 15000),
+          String(await evaluate(`document.querySelector('${ICON}')?.outerHTML ?? '(없음)'`)))
+        const denied = await patchIcon(secret, { type: 'emoji', emoji: '😈' }, { ...json, cookie: `nc_session=${reader.token}` })
+        check('★ 라우트 — 읽기만 받은 사람의 아이콘 바꾸기는 403', denied.status === 403, String(denied.status))
+      } finally {
+        await browseAs(session)
+      }
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${secret}` })
+      check('거부한 뒤에도 아이콘은 그대로다', await waitFor(`document.querySelector('${ICON}')?.textContent === '📕'`, 15000), String(await headerIcon()))
+      await sleep(500)
+    }
+
     if (sectionIf('코멘트 패널 · 인박스 (F-05-08 · F-11-07)')) {
       const commentPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
         method: 'POST',

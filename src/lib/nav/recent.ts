@@ -32,6 +32,7 @@ import { withReadTransaction, withTransaction } from '../db/tx.ts'
 import { readableScopes } from '../permissions/effective.ts'
 import { toPlainText, type RichTextRun } from '../contracts/rich-text.ts'
 import { orderKeyBetween } from '../block/order-key.ts'
+import { readPageIcon, type PageIcon } from '../block/page-icon.ts'
 
 /** 목록 기본 길이. 정본은 "사용자 설정값"이라고 했다 — 설정 표가 생기면 여기서 읽는다. */
 export const DEFAULT_RECENT_LIMIT = 7
@@ -39,10 +40,12 @@ export const DEFAULT_RECENT_LIMIT = 7
 export type NavEntry = {
   readonly id: string
   readonly title: string
+  /** 페이지 아이콘(8c-1) — 사이드바의 다른 줄(트리)과 같은 표시. */
+  readonly icon: PageIcon | null
   readonly visitedAt?: Date
 }
 
-type NavRow = { id: string; properties: { title?: unknown } | null; last_visited_at?: Date }
+type NavRow = { id: string; properties: { title?: unknown } | null; page_icon: unknown; last_visited_at?: Date }
 
 function toEntry(row: NavRow): NavEntry {
   const raw = row.properties?.title
@@ -51,6 +54,7 @@ function toEntry(row: NavRow): NavEntry {
     // 읽기는 관대하게 — 제목 하나가 망가졌다고 사이드바 전체가 500 이 되면
     // 사용자가 어디로도 이동할 수 없다.
     title: Array.isArray(raw) ? toPlainText(raw as RichTextRun[]) : '',
+    icon: readPageIcon(row.page_icon),
     ...(row.last_visited_at ? { visitedAt: row.last_visited_at } : {}),
   }
 }
@@ -93,7 +97,7 @@ export async function listRecent(
     if (scopes.length === 0) return []
 
     const rows = await tx.query<NavRow>(
-      `SELECT b.id, b.properties, r.last_visited_at
+      `SELECT b.id, b.properties, b.format -> 'page_icon' AS page_icon, r.last_visited_at
          FROM recent_visit r
          JOIN live_block b ON b.id = r.block_id
         WHERE r.user_id = $1 AND r.workspace_id = $2
@@ -114,7 +118,7 @@ export async function listFavorites(ctx: SessionContext): Promise<NavEntry[]> {
     if (scopes.length === 0) return []
 
     const rows = await tx.query<NavRow>(
-      `SELECT b.id, b.properties
+      `SELECT b.id, b.properties, b.format -> 'page_icon' AS page_icon
          FROM favorite f
          JOIN live_block b ON b.id = f.block_id
         WHERE f.user_id = $1 AND f.workspace_id = $2

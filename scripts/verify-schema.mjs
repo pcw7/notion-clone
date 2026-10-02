@@ -2064,6 +2064,32 @@ try {
     )
   }
 
+  console.log('\n[23] 페이지 아이콘의 모양 (0037 / §3.4 [보강] 페이지 아이콘 ② · 8c-1조각)')
+  {
+    // "grapheme 하나 · 이모지"는 명령이 보고(`block/page-icon.ts`), DB 는 표현할 수 있는 부분만 막는다 — 페이지 행만 · 객체 ·
+    // type=emoji · 비지 않은 16 코드포인트 이하의 공백 없는 글 · 다른 키 없음.
+    const addBlock = `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key,
+                                         ancestor_path, perm_scope_id, properties, format, created_at, last_edited_at)
+                      VALUES ($1, $2, $3, $4, $5, $6, $7::uuid[], $8, '{}'::jsonb, $9::jsonb, now(), now())`
+    const pageId = randomUUID()
+    await client.query(addBlock, [pageId, wsId, 'page', 'workspace', wsId, `icon-${pageId}`, [], pageId, JSON.stringify({ page_icon: { type: 'emoji', emoji: '👨‍👩‍👧‍👦' } })])
+    ok('페이지에 ZWJ 가족 이모지 아이콘(코드포인트 7개)')
+    const setFormat = `UPDATE block SET format = $2::jsonb WHERE id = $1`
+    await client.query(setFormat, [pageId, JSON.stringify({ page_icon: { type: 'emoji', emoji: '1️⃣' }, block_color: 'red' })])
+    ok('키캡 아이콘 · 다른 format 키와 함께')
+    await mustReject('문자열 아이콘(노션 내부 모양)', setFormat, [pageId, JSON.stringify({ page_icon: '🌱' })])
+    await mustReject('null 아이콘(지우기는 키를 뺀다)', setFormat, [pageId, JSON.stringify({ page_icon: null })])
+    await mustReject('모르는 아이콘 종류', setFormat, [pageId, JSON.stringify({ page_icon: { type: 'external', url: 'https://example.com/a.png' } })])
+    await mustReject('글자가 아닌 이모지', setFormat, [pageId, JSON.stringify({ page_icon: { type: 'emoji', emoji: 7 } })])
+    await mustReject('빈 이모지', setFormat, [pageId, JSON.stringify({ page_icon: { type: 'emoji', emoji: '' } })])
+    await mustReject('공백이 든 이모지', setFormat, [pageId, JSON.stringify({ page_icon: { type: 'emoji', emoji: '🚀 ' } })])
+    await mustReject('16 코드포인트를 넘는 이모지', setFormat, [pageId, JSON.stringify({ page_icon: { type: 'emoji', emoji: 'x'.repeat(17) } })])
+    await mustReject('다른 키가 붙은 아이콘', setFormat, [pageId, JSON.stringify({ page_icon: { type: 'emoji', emoji: '🌱', url: 'https://example.com' } })])
+    await mustReject('본문 블록(문단)의 아이콘', addBlock, [
+      randomUUID(), wsId, 'paragraph', 'block', pageId, 'a0', [pageId], pageId, JSON.stringify({ page_icon: { type: 'emoji', emoji: '🌱' } }),
+    ])
+  }
+
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
 } catch (e) {

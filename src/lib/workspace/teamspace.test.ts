@@ -10,8 +10,9 @@ import assert from 'node:assert/strict'
 
 import { MAX_TEAMSPACE_ICON_CODE_POINTS, normalizeTeamspaceIcon } from './teamspace.ts'
 
-test('★ 이모지 한 글자는 받는다 — 여러 코드포인트로 된 한 글자(가족 · 피부색 · 깃발 · 변이 선택자)도', () => {
-  for (const icon of ['🚀', '⭐', '👨‍👩‍👧‍👦', '👍🏽', '🇰🇷', '🛠️', '❤']) {
+test('★ 이모지 한 글자는 받는다 — 여러 코드포인트로 된 한 글자(가족 · 피부색 · 깃발 · 변이 선택자 · 키캡)도', () => {
+  // 키캡(`1️⃣` · `#️⃣`)은 그림 문자 속성이 없다 — 7c-14 의 규칙은 거부했다(8c-1 이 페이지 아이콘과 한 규칙으로 고쳤다).
+  for (const icon of ['🚀', '⭐', '👨‍👩‍👧‍👦', '👍🏽', '🇰🇷', '🛠️', '❤', '1️⃣', '#️⃣', '*️⃣']) {
     assert.equal(normalizeTeamspaceIcon(icon), icon, icon)
   }
   assert.equal(normalizeTeamspaceIcon('  🚀 '), '🚀', '앞뒤 공백은 벗긴다')

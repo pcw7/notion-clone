@@ -124,9 +124,10 @@ describe('listPageTree', () => {
     const tree = await listPageTree(actor.ctx)
     // F-02-03: "사이드바가 페이지 본문을 끌고 오면 즉시 성능이 무너진다."
     // teamspaceId(7c-2) · rootKind · trueRoot(7c-7)는 섹션을 가르는 표지다 — 레이아웃이 쓰고 화면에는 넘기지
-    // 않는다(layout.tsx `toSidebarNode`). 주인의 **id** 는 여기에도 없다(rootKind 는 세 값뿐이다).
+    // 않는다(layout.tsx `toSidebarNode`). 주인의 **id** 는 여기에도 없다(rootKind 는 세 값뿐이다). 아이콘(8c-1)은 F-02-03 이 적은
+    // 그대로 싣는다 — `format` 통째가 아니라 그 키 하나다.
     assert.deepEqual(Object.keys(tree[0]).sort(), [
-      'children', 'hasChildren', 'id', 'kind', 'parentId', 'rootKind', 'teamspaceId', 'teamspaceOpen', 'title', 'trueRoot',
+      'children', 'hasChildren', 'icon', 'id', 'kind', 'parentId', 'rootKind', 'teamspaceId', 'teamspaceOpen', 'title', 'trueRoot',
     ])
     assert.equal(JSON.stringify(tree).includes('본문 텍스트'), false, '본문이 실려 나왔다')
   })
