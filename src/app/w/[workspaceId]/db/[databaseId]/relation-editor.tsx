@@ -32,7 +32,9 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 
 import type { RowJson } from '@/lib/database/http'
+import type { PageIcon } from '@/lib/block/page-icon'
 import * as api from './table-api'
+import { PageIconView } from '../../page-icon-view'
 
 const SEARCH_DEBOUNCE_MS = 150
 const UNTITLED = '제목 없음'
@@ -55,7 +57,8 @@ export function RelationEditor({
   /** 팝오버를 칸의 어느 쪽에 맞춰 여는가. List 의 속성 칸은 오른쪽에 붙어 있다. */
   align: 'left' | 'right'
   /** 연결이 바뀌었다 — 서버가 준 행과, 새로 알게 된 제목들. */
-  onChange: (row: RowJson, labels: Readonly<Record<string, string>>) => void
+  /** 셋째 인자는 방금 고른 행의 아이콘(8c-3a) — 칩이 다시 묻지 않고 곧바로 그린다. */
+  onChange: (row: RowJson, labels: Readonly<Record<string, string>>, icons: Readonly<Record<string, PageIcon>>) => void
   /** 더 고를 것이 없다(`limit: 'one'`) — 편집을 닫는다. */
   onDone: () => void
 }) {
@@ -125,7 +128,7 @@ export function RelationEditor({
       setError(result.message)
       return
     }
-    onChange(result.value, { [candidate.id]: candidate.title })
+    onChange(result.value, { [candidate.id]: candidate.title }, candidate.icon === null ? {} : { [candidate.id]: candidate.icon })
     if (limit === 'one') {
       onDone()
       return
@@ -145,7 +148,7 @@ export function RelationEditor({
       setError(result.message)
       return
     }
-    onChange(result.value, {})
+    onChange(result.value, {}, {})
     setLinked((current) => (current ?? []).filter((l) => l.id !== item.id))
     // 뺀 행은 다시 고를 수 있는 후보다.
     void search(query)
@@ -186,9 +189,14 @@ export function RelationEditor({
               className="flex items-center justify-between gap-2 rounded px-1.5 py-0.5 text-sm"
             >
               <span className="min-w-0 truncate">
-                <span aria-hidden className="mr-1 text-neutral-400">
-                  ↗
-                </span>
+                {/* 칩과 같은 규칙 — 그 행의 아이콘, 없으면 연결의 표시(↗) · 8c-3a. */}
+                {item.icon !== null ? (
+                  <PageIconView icon={item.icon} className="mr-1" />
+                ) : (
+                  <span aria-hidden className="mr-1 text-neutral-400">
+                    ↗
+                  </span>
+                )}
                 {item.title || UNTITLED}
               </span>
               <button
@@ -246,6 +254,8 @@ export function RelationEditor({
               i === active ? 'bg-neutral-100 dark:bg-neutral-800' : ''
             }`}
           >
+            {/* 후보는 고를 페이지의 줄이다 — 아이콘, 없으면 기본 글리프(8c-3a). */}
+            <PageIconView icon={candidate.icon} fallback className="mr-1.5 align-[-0.125em]" />
             {candidate.title || UNTITLED}
           </li>
         ))}

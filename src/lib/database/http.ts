@@ -10,6 +10,7 @@
  *   입력 오류  → 400
  */
 
+import type { PageIcon } from '../block/page-icon.ts'
 import type { DatabaseFailure } from './database.ts'
 import type { PropertyFailure } from './property.ts'
 import type { RowCell, RowFailure } from './row.ts'
@@ -162,6 +163,8 @@ export function parseCells(raw: unknown): RowCell[] | null {
 export type RowJson = {
   readonly id: string
   readonly title: string
+  /** 행 페이지의 아이콘(8c-3a) — 없으면 null(화면이 기본 글리프를 고른다). */
+  readonly icon: PageIcon | null
   readonly properties: Readonly<Record<string, unknown>>
   readonly lastEditedAt: string
   readonly version: string
@@ -171,6 +174,7 @@ export type RowJson = {
 export function rowJson(row: {
   readonly id: string
   readonly title: string
+  readonly icon: PageIcon | null
   readonly properties: Readonly<Record<string, unknown>>
   readonly lastEditedAt: Date
   readonly version: string
@@ -178,6 +182,7 @@ export function rowJson(row: {
   return {
     id: row.id,
     title: row.title,
+    icon: row.icon,
     properties: row.properties,
     lastEditedAt: row.lastEditedAt.toISOString(),
     version: row.version,

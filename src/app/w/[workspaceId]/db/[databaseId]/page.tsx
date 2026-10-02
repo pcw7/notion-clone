@@ -165,8 +165,10 @@ export default async function DatabasePage({
   // 화면이 `POST /relation-labels` 로 받는다.
   const relationPropertyIds = visibleColumns.filter((c) => c.type === 'relation').map((c) => c.propertyId)
   const firstRows = tablePage !== null ? tablePage.value.rows : groups.flatMap((g) => g.rows)
-  const relationLabels =
-    relationPropertyIds.length === 0 ? {} : await loadRelationLabels(ctx, relationIdsIn(firstRows, relationPropertyIds))
+  const relation =
+    relationPropertyIds.length === 0
+      ? { labels: {}, icons: {} }
+      : await loadRelationLabels(ctx, relationIdsIn(firstRows, relationPropertyIds))
 
   // ── rollup 칸의 값 ──
   // 값은 행에 없다 — 어디에도 저장하지 않고 **읽을 때 계산한다**(정본 §3.5 [보강] rollup v1 · 보는 사람마다 다르다).
@@ -270,7 +272,8 @@ export default async function DatabasePage({
             groupBy={groupBy}
             manualOrder={board.value.manualOrder}
             groups={groups}
-            relationLabels={relationLabels}
+            relationLabels={relation.labels}
+            relationIcons={relation.icons}
             access={access}
             defaultTemplate={defaultTemplate}
           />
@@ -297,7 +300,8 @@ export default async function DatabasePage({
             rows={tablePage.value.rows.map(rowJson)}
             hasMore={tablePage.value.hasMore}
             nextCursor={tablePage.value.nextCursor}
-            relationLabels={relationLabels}
+            relationLabels={relation.labels}
+            relationIcons={relation.icons}
             rollupValues={rollupValues}
             access={access}
             sorts={sorts}

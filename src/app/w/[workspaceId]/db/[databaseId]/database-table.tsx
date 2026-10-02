@@ -67,6 +67,7 @@ import type { DatabaseAccess } from '@/lib/database/database'
 import type { SortKey } from '@/lib/database/filter'
 import { sortFirst } from '@/lib/database/filter-draft'
 import type { RowJson } from '@/lib/database/http'
+import { PageIconView } from '../../page-icon-view'
 import { isCellColumn, relationOf, rollupOf, type CellColumn, type ViewColumn } from '@/lib/database/view-columns'
 import { MAX_QUERY_PAGINATION } from '@/lib/database/limits'
 import {
@@ -87,7 +88,7 @@ import { isCollapsed, isRelationCollapsed, isRollupCollapsed, type TableVariant 
 import { rollupIsEmpty, type RollupPage } from '@/lib/database/rollup-functions'
 import { newRowLabel, templateRowNote, type DefaultTemplate } from '@/lib/database/new-row'
 import * as api from './table-api'
-import { CellDisplay, RelationChips, RollupDisplay, TYPE_ICON, TYPE_LABEL, type RelationLabels } from './cell-view'
+import { CellDisplay, RelationChips, RollupDisplay, TYPE_ICON, TYPE_LABEL, type RelationIcons, type RelationLabels } from './cell-view'
 import { NewRowMenu } from './new-row-menu'
 import { useRelationLabels } from './use-relation-labels'
 import { useRollupValues } from './use-rollup-values'
@@ -131,6 +132,8 @@ export function DatabaseTable(props: {
   variant?: TableVariant
   /** 첫 화면의 relation 제목(서버 렌더가 준다). 그 뒤에 온 행의 것은 `useRelationLabels` 가 받는다. */
   relationLabels: RelationLabels
+  /** 그 행들의 아이콘(8c-3a) — 제목 맵과 같은 답에서 왔다. */
+  relationIcons: RelationIcons
   /** 첫 화면의 rollup 값(서버 렌더가 계산해 준다). 그 뒤에 온 행의 것은 `useRollupValues` 가 받는다. */
   rollupValues: RollupPage
   /** 이 뷰의 기본 템플릿(F-08-03). `New` 를 그냥 누르면 이것으로 만든다. 없으면 빈 항목이다. */
@@ -196,7 +199,7 @@ export function DatabaseTable(props: {
     readCell(column.type, row.properties[column.propertyId])
 
   // relation 칸의 제목 — 첫 화면은 서버가 줬고, "더 보기" · 새 행의 것은 여기서 받는다.
-  const { labels, addLabels } = useRelationLabels(workspaceId, props.relationLabels, rows, columns)
+  const { labels, icons: relationIcons, addLabels } = useRelationLabels(workspaceId, props.relationLabels, props.relationIcons, rows, columns)
 
   // rollup 칸의 값 — 행에 없다. 읽을 때 계산하고, 첫 화면의 것은 서버가 함께 준다(`use-rollup-values.ts`).
   const { page: rollups, refresh: refreshRollups } = useRollupValues(
@@ -435,8 +438,8 @@ export function DatabaseTable(props: {
    * 셀 쓰기와 같은 버전 거르기를 탄다(머리말). 제목을 **먼저** 넣지 않으면 칩이 한 번 "제목 없음"으로 깜빡인다 —
    * 같은 배치라 순서는 상관없지만, 맵에 넣지 않으면 훅이 그 id 를 서버에 다시 묻는다.
    */
-  const onRelationChange = (row: RowJson, known: Readonly<Record<string, string>>) => {
-    addLabels(known)
+  const onRelationChange = (row: RowJson, known: Readonly<Record<string, string>>, knownIcons: RelationIcons) => {
+    addLabels(known, knownIcons)
     setRows((current) => current.map((r) => (r.id === row.id && notOlder(row.version, r.version) ? row : r)))
     // ★ 이 행이 **무엇을 모으는지**가 바뀌었다 — rollup 은 연결을 타고 계산한다. 그 행만 다시 묻는다.
     refreshRollups([row.id])
@@ -722,7 +725,7 @@ export function DatabaseTable(props: {
                       : cell.kind === 'relation'
                         ? cell.value.count === 0
                         : rollupIsEmpty(cell.value)
-                  const display =
+                  const content =
                     // rollup 은 **채우는 자리가 아니다** — 빈 칸에 속성 이름을 세우면 "여기를 채우라"로 읽힌다.
                     isList && empty && cell.kind !== 'rollup' ? (
                       // 제목은 "제목 없음", 선택된 빈 속성 칸은 그 속성의 이름 — 무엇을 채우는 자리인지 말한다.
@@ -732,9 +735,20 @@ export function DatabaseTable(props: {
                     ) : cell.kind === 'cell' ? (
                       <CellDisplay value={cell.value} options={column.options} />
                     ) : cell.kind === 'relation' ? (
-                      <RelationChips value={cell.value} labels={labels} />
+                      <RelationChips value={cell.value} labels={labels} icons={relationIcons} />
                     ) : (
                       <RollupDisplay cell={cell.value} info={rollups.columns[column.propertyId]} />
+                    )
+                  // 제목 칸은 그 행 페이지의 아이콘을 앞에 단다(8c-3a — 아이콘은 셀이 아니라 행의 것이다 · 없으면 기본 글리프). 편집칸은
+                  // 이 자리를 덮으므로(`absolute inset-0`) 고치는 동안에는 보이지 않는다.
+                  const display =
+                    column.type === 'title' ? (
+                      <span className="flex min-w-0 items-center gap-1.5" data-testid="db-row-title">
+                        <PageIconView icon={row.icon} fallback />
+                        <span className="min-w-0 flex-1">{content}</span>
+                      </span>
+                    ) : (
+                      content
                     )
                   return (
                     <td

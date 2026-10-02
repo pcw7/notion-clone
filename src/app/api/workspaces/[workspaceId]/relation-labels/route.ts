@@ -3,8 +3,8 @@
  *
  * 정본: 00-canonical-data-model.md §3.5 [보강] (캐시의 id 는 걸러지지 않았다) / 03-database-core.md F-03-10
  *
- * 본문 `{ ids: string[] }` → `{ labels: { [id]: string | null } }`. 제목 · `null`(볼 수 없다) · 키 없음(휴지통 · 없는 행)
- * 셋으로 갈린다 — 규칙은 `lib/database/relation.ts` `loadRelationLabels`.
+ * 본문 `{ ids: string[] }` → `{ labels: { [id]: string | null }, icons: { [id]: PageIcon } }`. 제목 · `null`(볼 수 없다) · 키
+ * 없음(휴지통 · 없는 행) 셋으로 갈린다 — 아이콘은 볼 수 있고 있는 것만(8c-3a). 규칙은 `lib/database/relation.ts` `loadRelationLabels`.
  *
  * GET 이 아니라 POST 다: 표 한 화면의 id 가 수백 개라 쿼리 문자열에 실을 수 없다. 아무것도 바꾸지 않는다.
  *
@@ -28,5 +28,6 @@ export async function POST(request: Request, ctx: Ctx): Promise<Response> {
   if (!Array.isArray(ids) || ids.length > MAX_RELATION_LABELS || ids.some((id) => typeof id !== 'string')) {
     return Response.json({ error: 'invalid_value' }, { status: 400 })
   }
-  return Response.json({ ok: true, labels: await loadRelationLabels(session.ctx, ids as string[]) })
+  const set = await loadRelationLabels(session.ctx, ids as string[])
+  return Response.json({ ok: true, labels: set.labels, icons: set.icons })
 }

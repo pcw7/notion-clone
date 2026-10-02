@@ -19,16 +19,23 @@ import { useEffect, useRef, useState } from 'react'
 import type { RowJson } from '@/lib/database/http'
 import type { ViewColumn } from '@/lib/database/view'
 import { readRelationValue } from '@/lib/database/property-types'
-import type { RelationLabels } from './cell-view'
+import type { RelationIcons, RelationLabels } from './cell-view'
 import * as api from './table-api'
 
 export function useRelationLabels(
   workspaceId: string,
   initial: RelationLabels,
+  initialIcons: RelationIcons,
   rows: readonly RowJson[],
   columns: readonly ViewColumn[],
-): { readonly labels: RelationLabels; readonly addLabels: (known: RelationLabels) => void } {
+): {
+  readonly labels: RelationLabels
+  readonly icons: RelationIcons
+  readonly addLabels: (known: RelationLabels, knownIcons?: RelationIcons) => void
+} {
   const [labels, setLabels] = useState<RelationLabels>(initial)
+  // 아이콘(8c-3a)은 제목과 같은 답에 실려 온다 — 묻는 것도 함께다(id 마다 한 번).
+  const [icons, setIcons] = useState<RelationIcons>(initialIcons)
   const asked = useRef<Set<string> | null>(null)
   const propertyKey = columns
     .filter((c) => c.type === 'relation')
@@ -61,7 +68,8 @@ export function useRelationLabels(
         for (const id of missing) known.delete(id)
         return
       }
-      setLabels((current) => ({ ...current, ...result.value }))
+      setLabels((current) => ({ ...current, ...result.value.labels }))
+      setIcons((current) => ({ ...current, ...result.value.icons }))
     })
   }, [rows, propertyKey, workspaceId])
 
@@ -69,11 +77,12 @@ export function useRelationLabels(
    * 이미 아는 제목을 바로 넣는다 — 행 고르기에서 방금 고른 행의 제목은 후보 목록이 갖고 있었다. 다시 묻지 않는다
    * ("물은 id"에도 적는다 — 안 그러면 다음 effect 가 그 id 를 또 묻는다).
    */
-  const addLabels = (known: RelationLabels) => {
+  const addLabels = (known: RelationLabels, knownIcons: RelationIcons = {}) => {
     asked.current ??= new Set()
     for (const id of Object.keys(known)) asked.current.add(id)
     setLabels((current) => ({ ...current, ...known }))
+    setIcons((current) => ({ ...current, ...knownIcons }))
   }
 
-  return { labels, addLabels }
+  return { labels, icons, addLabels }
 }

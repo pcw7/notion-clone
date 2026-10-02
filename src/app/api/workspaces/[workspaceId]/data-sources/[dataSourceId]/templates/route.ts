@@ -29,7 +29,7 @@ export async function GET(_request: Request, ctx: Ctx): Promise<Response> {
   if (!listed.ok) return failureResponse(templateFailureStatus(listed.reason), listed)
 
   return Response.json({
-    templates: listed.value.map((t) => ({ id: t.id, title: t.title, lastEditedAt: t.lastEditedAt.toISOString() })),
+    templates: listed.value.map((t) => ({ id: t.id, title: t.title, icon: t.icon, lastEditedAt: t.lastEditedAt.toISOString() })),
   })
 }
 
@@ -52,5 +52,9 @@ export async function POST(request: Request, ctx: Ctx): Promise<Response> {
   if (!created.ok) return failureResponse(templateFailureStatus(created.reason), created)
 
   const row = created.value
-  return Response.json({ template: { id: row.id, title: row.title, lastEditedAt: row.lastEditedAt.toISOString() } }, { status: 201 })
+  // 목록(GET)과 같은 모양 — 화면이 이 응답을 목록에 그대로 넣는다(8c-3a 의 전체 판이 `icon` 이 빠진 이 응답에서 패널이 던지는 것을 찾았다).
+  return Response.json(
+    { template: { id: row.id, title: row.title, icon: row.icon, lastEditedAt: row.lastEditedAt.toISOString() } },
+    { status: 201 },
+  )
 }

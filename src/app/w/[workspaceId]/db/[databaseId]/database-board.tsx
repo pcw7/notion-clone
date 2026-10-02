@@ -55,6 +55,7 @@ import { useRouter } from 'next/navigation'
 
 import type { DatabaseAccess } from '@/lib/database/database'
 import type { RowJson } from '@/lib/database/http'
+import { PageIconView } from '../../page-icon-view'
 import type { GroupBy } from '@/lib/database/group'
 import type { ViewColumn } from '@/lib/database/view'
 import type { GroupableType, SelectOption } from '@/lib/database/property-types'
@@ -70,7 +71,7 @@ import {
 } from '@/lib/database/board-drag'
 import { templateRowNote, UNTITLED_TEMPLATE, type DefaultTemplate } from '@/lib/database/new-row'
 import * as api from './table-api'
-import { CellDisplay, OptionChip, RelationChips, type RelationLabels } from './cell-view'
+import { CellDisplay, OptionChip, RelationChips, type RelationIcons, type RelationLabels } from './cell-view'
 import { NewRowMenu } from './new-row-menu'
 import { useRelationLabels } from './use-relation-labels'
 
@@ -128,6 +129,8 @@ export function DatabaseBoard(props: {
   access: DatabaseAccess
   /** 첫 화면의 relation 제목(서버 렌더가 준다). 그 뒤에 온 카드의 것은 `useRelationLabels` 가 받는다. */
   relationLabels: RelationLabels
+  /** 그 행들의 아이콘(8c-3a) — 제목 맵과 같은 답에서 왔다. */
+  relationIcons: RelationIcons
   /** 이 뷰의 기본 템플릿(F-08-03). 열의 `+` 를 그냥 누르면 이것으로 만든다 — 그 열의 값이 템플릿의 값을 덮는다. */
   defaultTemplate?: DefaultTemplate | null
 }) {
@@ -432,9 +435,10 @@ export function DatabaseBoard(props: {
 
   // ── 그리기 ──────────────────────────────────────────────────────────
 
-  const { labels } = useRelationLabels(
+  const { labels, icons: relationIcons } = useRelationLabels(
     workspaceId,
     props.relationLabels,
+    props.relationIcons,
     groups.flatMap((g) => g.rows),
     columns,
   )
@@ -517,6 +521,7 @@ export function DatabaseBoard(props: {
                     groupKey={group.key}
                     badgeColumns={badgeColumns}
                     relationLabels={labels}
+                    relationIcons={relationIcons}
                     dragging={draggingId === row.id}
                     dropBefore={isTarget && drop.beforeRowId === row.id}
                     editing={editing?.rowId === row.id ? editing : null}
@@ -613,6 +618,7 @@ function BoardCard({
   groupKey,
   badgeColumns,
   relationLabels,
+  relationIcons,
   dragging,
   dropBefore,
   editing,
@@ -630,6 +636,7 @@ function BoardCard({
   groupKey: string
   badgeColumns: readonly ViewColumn[]
   relationLabels: RelationLabels
+  relationIcons: RelationIcons
   dragging: boolean
   dropBefore: boolean
   editing: Editing | null
@@ -673,8 +680,10 @@ function BoardCard({
             className="w-full bg-transparent outline-none"
           />
         ) : (
-          <div data-testid="db-board-card-title" className={row.title ? 'break-words' : 'text-neutral-400'}>
-            {row.title || UNTITLED}
+          // 카드 제목은 그 행 페이지의 아이콘을 앞에 단다(8c-3a — 없으면 기본 글리프).
+          <div data-testid="db-board-card-title" className={`flex items-start gap-1.5 ${row.title ? 'break-words' : 'text-neutral-400'}`}>
+            <PageIconView icon={row.icon} fallback className="mt-[0.2em]" />
+            <span className="min-w-0">{row.title || UNTITLED}</span>
           </div>
         )}
         {badgeColumns.map((column) => {
@@ -683,7 +692,7 @@ function BoardCard({
             if (related.count === 0) return null
             return (
               <span key={column.propertyId} title={column.name} data-testid="db-board-badge" className="max-w-full">
-                <RelationChips value={related} labels={relationLabels} />
+                <RelationChips value={related} labels={relationLabels} icons={relationIcons} />
               </span>
             )
           }

@@ -34,6 +34,7 @@ import { useEffect, useRef, useState } from 'react'
 
 import { UNTITLED_TEMPLATE, type DefaultTemplate } from '@/lib/database/new-row'
 import * as api from './table-api'
+import { PageIconView } from '../../page-icon-view'
 
 export function NewRowMenu(props: {
   workspaceId: string
@@ -181,6 +182,7 @@ export function NewRowMenu(props: {
                       onClick={() => pick(t.id)}
                       className="min-w-0 flex-1 truncate px-2 py-1.5 text-left"
                     >
+                      <PageIconView icon={t.icon} fallback className="mr-1.5 align-[-0.125em]" />
                       {name}
                     </button>
                     {isDefault ? (

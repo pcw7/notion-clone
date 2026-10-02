@@ -67,6 +67,7 @@
 import type { SessionContext } from '../auth/session-context.ts'
 import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
 import { titleFromPlainText } from '../block/page.ts'
+import { readPageIcon, type PageIcon } from '../block/page-icon.ts'
 import { orderKeysBetween } from '../block/order-key.ts'
 import { DuplicateError, duplicateSubtree, type SubtreeRow } from '../block/duplicate.ts'
 import { readableScopes } from '../permissions/effective.ts'
@@ -176,6 +177,8 @@ export type TemplateSummary = {
   readonly id: string
   /** title 셀의 평문. 비어 있으면 화면이 "제목 없음"을 고른다. */
   readonly title: string
+  /** 템플릿 행 페이지의 아이콘(8c-3a) — 이 템플릿으로 만든 행이 물려받는다(복제가 `format` 을 옮긴다). 없으면 null. */
+  readonly icon: PageIcon | null
   readonly lastEditedAt: Date
 }
 
@@ -196,8 +199,8 @@ export async function listTemplates(
     const gate = await openDataSource(tx, ctx, dataSourceId, 'view')
     if (isRowFailure(gate)) return fromRowFailure(gate)
 
-    const rows = await tx.query<{ id: string; properties: { title?: unknown } | null; last_edited_at: Date }>(
-      `SELECT b.id, b.properties, b.last_edited_at
+    const rows = await tx.query<{ id: string; properties: { title?: unknown } | null; page_icon: unknown; last_edited_at: Date }>(
+      `SELECT b.id, b.properties, b.format -> 'page_icon' AS page_icon, b.last_edited_at
          FROM page p JOIN block b ON b.id = p.id
         WHERE p.data_source_id = $1 AND p.is_template AND b.lifecycle = 'live'
         ORDER BY b.order_key COLLATE "C", b.id
@@ -206,7 +209,12 @@ export async function listTemplates(
     )
     return {
       ok: true,
-      value: rows.map((row) => ({ id: row.id, title: plainTitle(row.properties), lastEditedAt: row.last_edited_at })),
+      value: rows.map((row) => ({
+        id: row.id,
+        title: plainTitle(row.properties),
+        icon: readPageIcon(row.page_icon),
+        lastEditedAt: row.last_edited_at,
+      })),
     } as const
   })
 }

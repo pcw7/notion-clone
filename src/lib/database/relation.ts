@@ -73,6 +73,7 @@ import { can } from '../permissions/levels.ts'
 import { effectiveCaps, readableScopes } from '../permissions/effective.ts'
 import { isLocked } from '../permissions/lock.ts'
 import { orderKeysBetween } from '../block/order-key.ts'
+import { readPageIcon, type PageIcon } from '../block/page-icon.ts'
 import { isUuid } from '../ids.ts'
 import type { ValidationIssue } from '../contracts/rich-text.ts'
 import {
@@ -444,7 +445,21 @@ export async function linkRows(
 
 // ── 읽기 ──────────────────────────────────────────────────────────────
 
-export type RelatedRow = { readonly id: string; readonly title: string }
+export type RelatedRow = {
+  readonly id: string
+  readonly title: string
+  /** 그 행 페이지의 아이콘(8c-3a) — 볼 수 있는 행만 오므로 그대로 싣는다. 없으면 null. */
+  readonly icon: PageIcon | null
+}
+
+/**
+ * 연결된 행의 제목 맵과 아이콘 맵(8c-3a) — `labels` 는 제목 · `null`(볼 수 없다) · 키 없음(휴지통)의 셋이고, `icons` 는 **볼 수 있고
+ * 아이콘이 있는 행만**이다(본문의 `pageIcons` 와 같은 규칙 · §3.3-234).
+ */
+export type RelationLabelSet = {
+  readonly labels: Readonly<Record<string, string | null>>
+  readonly icons: Readonly<Record<string, PageIcon>>
+}
 
 export type RelationPage = {
   /** 볼 수 있고 살아 있는 연결. 칸의 순서(`order_idx`)대로. */
@@ -493,8 +508,8 @@ export async function readRelation(
       return { ok: true, value: { items: [], total: counts.total, hidden: counts.live, hasMore: false, nextCursor: null } } as const
     }
 
-    const rows = await tx.query<{ id: string; order_idx: string; title: unknown }>(
-      `SELECT p.id, e.order_idx, b.properties->'title' AS title
+    const rows = await tx.query<{ id: string; order_idx: string; title: unknown; page_icon: unknown }>(
+      `SELECT p.id, e.order_idx, b.properties->'title' AS title, b.format -> 'page_icon' AS page_icon
          FROM relation_edge e
          JOIN page p ON p.id = e.to_page_id
          JOIN block b ON b.id = p.id
@@ -511,7 +526,7 @@ export async function readRelation(
     return {
       ok: true,
       value: {
-        items: page.map((r) => ({ id: r.id, title: plainTitle(r.title) })),
+        items: page.map((r) => ({ id: r.id, title: plainTitle(r.title), icon: readPageIcon(r.page_icon) })),
         total: counts.total,
         hidden: 0,
         hasMore,
@@ -563,25 +578,29 @@ export const MAX_RELATION_LABELS = 2000
  *
  * 권한은 목록 필터와 같은 축이다(`readableScopes` — 행은 표의 스코프를 물려받는다).
  */
-export async function loadRelationLabels(
-  ctx: SessionContext,
-  ids: readonly string[],
-): Promise<Record<string, string | null>> {
+export async function loadRelationLabels(ctx: SessionContext, ids: readonly string[]): Promise<RelationLabelSet> {
   const wanted = [...new Set(ids.filter((id) => typeof id === 'string' && isUuid(id)))].slice(0, MAX_RELATION_LABELS)
-  if (wanted.length === 0) return {}
+  if (wanted.length === 0) return { labels: {}, icons: {} }
   return withReadTransaction(async (tx) => {
     const scopes = await readableScopes(tx, ctx)
-    const rows = await tx.query<{ id: string; title: unknown; readable: boolean }>(
-      `SELECT b.id, b.properties->'title' AS title, (b.perm_scope_id = ANY($3::uuid[])) AS readable
+    const rows = await tx.query<{ id: string; title: unknown; page_icon: unknown; readable: boolean }>(
+      `SELECT b.id, b.properties->'title' AS title, b.format -> 'page_icon' AS page_icon,
+              (b.perm_scope_id = ANY($3::uuid[])) AS readable
          FROM page p
          JOIN block b ON b.id = p.id
         WHERE p.id = ANY($1::uuid[]) AND b.workspace_id = $2
           AND b.lifecycle = 'live' AND p.is_template = false`,
       [wanted, ctx.workspaceId, scopes],
     )
-    const out: Record<string, string | null> = {}
-    for (const row of rows) out[row.id] = row.readable ? plainTitle(row.title) : null
-    return out
+    const labels: Record<string, string | null> = {}
+    const icons: Record<string, PageIcon> = {}
+    for (const row of rows) {
+      labels[row.id] = row.readable ? plainTitle(row.title) : null
+      // 볼 수 없는 행의 아이콘은 싣지 않는다 — 제목과 같은 이유다(그 행이 무엇인지 알려 준다).
+      const icon = row.readable ? readPageIcon(row.page_icon) : null
+      if (icon !== null) icons[row.id] = icon
+    }
+    return { labels, icons }
   })
 }
 
@@ -629,8 +648,8 @@ export async function searchCandidates(
     if (!open.canViewTarget) return { ok: true, value: { items: [] } } as const
 
     const target = open.config.target_data_source_id
-    const rows = await tx.query<{ id: string; title: unknown }>(
-      `SELECT p.id, b.properties->'title' AS title
+    const rows = await tx.query<{ id: string; title: unknown; page_icon: unknown }>(
+      `SELECT p.id, b.properties->'title' AS title, b.format -> 'page_icon' AS page_icon
          FROM page p
          JOIN block b ON b.id = p.id
          LEFT JOIN property tp ON tp.data_source_id = p.data_source_id AND tp.type = 'title' AND tp.deleted_at IS NULL
@@ -645,6 +664,9 @@ export async function searchCandidates(
       // LIKE 의 와일드카드(% · _ · \)를 글자로 만든다 — "100%" 를 찾으면 전부가 아니라 그 글자가 든 행이 나와야 한다.
       [target, ctx.workspaceId, q, escapeLike(q), propertyId, rowId, MAX_RELATION_CANDIDATES],
     )
-    return { ok: true, value: { items: rows.map((r) => ({ id: r.id, title: plainTitle(r.title) })) } } as const
+    return {
+      ok: true,
+      value: { items: rows.map((r) => ({ id: r.id, title: plainTitle(r.title), icon: readPageIcon(r.page_icon) })) },
+    } as const
   })
 }

@@ -55,6 +55,7 @@ import { effectiveCaps } from '../permissions/effective.ts'
 import { isLocked } from '../permissions/lock.ts'
 import { orderKeyBetween } from '../block/order-key.ts'
 import { titleFromPlainText } from '../block/page.ts'
+import { readPageIcon, type PageIcon } from '../block/page-icon.ts'
 import { toPlainText, type ValidationIssue } from '../contracts/rich-text.ts'
 import {
   deriveSidecars,
@@ -79,6 +80,8 @@ export type RowSummary = {
   readonly id: string
   /** `title` 프로퍼티 셀의 평문. 없으면 빈 문자열(화면이 "제목 없음"을 고른다). */
   readonly title: string
+  /** 행 페이지의 아이콘(8c-3a · `format.page_icon` — 셀이 아니다). 없으면 null. 쓰기 응답도 이 모양이라 셀을 고쳐도 아이콘이 남는다. */
+  readonly icon: PageIcon | null
   readonly orderKey: string
   /** `properties_cache` 를 그대로 준다 — 트리거가 유지하는 읽기 모델이다. */
   readonly properties: Readonly<Record<string, unknown>>
@@ -547,6 +550,7 @@ type RowRow = {
   order_key: string
   properties_cache: Record<string, unknown> | null
   properties: { title?: unknown } | null
+  page_icon: unknown
   created_at: Date
   last_edited_at: Date
   version: string
@@ -567,6 +571,7 @@ function toRowSummary(row: RowRow): RowSummary {
           )
           .join('')
       : '',
+    icon: readPageIcon(row.page_icon),
     orderKey: row.order_key,
     properties: row.properties_cache ?? {},
     createdAt: row.created_at,
@@ -577,7 +582,7 @@ function toRowSummary(row: RowRow): RowSummary {
 
 export async function readRow(tx: Tx, rowId: string): Promise<RowSummary | null> {
   const row = await tx.queryMaybe<RowRow>(
-    `SELECT b.id, b.order_key, p.properties_cache, b.properties,
+    `SELECT b.id, b.order_key, p.properties_cache, b.properties, b.format -> 'page_icon' AS page_icon,
             b.created_at, b.last_edited_at, b.version
        FROM page p JOIN block b ON b.id = p.id
       WHERE p.id = $1`,
@@ -615,7 +620,7 @@ export async function listRows(
     if (isRowFailure(gate)) return gate
 
     const rows = await tx.query<RowRow>(
-      `SELECT b.id, b.order_key, p.properties_cache, b.properties,
+      `SELECT b.id, b.order_key, p.properties_cache, b.properties, b.format -> 'page_icon' AS page_icon,
               b.created_at, b.last_edited_at, b.version
          FROM page p
          JOIN block b ON b.id = p.id
