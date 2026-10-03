@@ -68,6 +68,7 @@ import { PageIconView } from '../../page-icon-view'
 import { ViewTabs } from './view-tabs'
 import { ViewToolbar, type BoardSettings } from './view-toolbar'
 import { TemplatePanel } from './template-panel'
+import { DataSourcePanel } from './data-source-panel'
 
 const UNTITLED = '제목 없음'
 
@@ -115,6 +116,14 @@ export default async function DatabasePage({
   if (board !== null && !board.ok && board.reason !== 'not_grouped') notFound()
 
   const { name, icon, access: granted } = database.value
+
+  // ── 데이터 소스(8e-2 · F-04-23) ──
+  // 이 뷰가 보는 소스. 소스가 둘 이상이면 그 이름이 탭 줄 위에 서고(노션: *"you'll see the data source's name above the horizontal bar of
+  // views"*), 표의 이름(관계형의 반대쪽 이름 기본값 · 표의 접근성 이름)도 소스의 것이다. 하나면 데이터베이스 이름이 그 자리다(정본 ③).
+  const sources = database.value.dataSources
+  const multiSource = sources.length > 1
+  const currentSource = sources.find((source) => source.id === view.value.dataSourceId) ?? null
+  const tableName = multiSource && currentSource !== null ? currentSource.name : name
   // 데이터베이스 잠금(7f-2) — 구조를 고칠 수 있어도 잠겨 있으면 구조 화면(속성 · 뷰 · 템플릿 · 이름)을 닫는다. 서버도 `locked` 로
   // 거부한다. 행 · 셀은 그대로다(`canEditContent` · `canCreateRows` 는 건드리지 않는다).
   const lock = await databaseLockState(ctx, databaseId)
@@ -244,13 +253,21 @@ export default async function DatabasePage({
         />
       </div>
 
-      <ViewTabs
-        workspaceId={workspaceId}
-        databaseId={databaseId}
-        views={views.value}
-        currentId={current.id}
-        canEdit={access.canEditStructure}
-      />
+      <div className="flex flex-col gap-1">
+        {multiSource && currentSource !== null && (
+          <p className="px-1 text-sm font-medium text-neutral-600 dark:text-neutral-300" data-testid="db-source-name">
+            {currentSource.name}
+          </p>
+        )}
+        <ViewTabs
+          workspaceId={workspaceId}
+          databaseId={databaseId}
+          views={views.value}
+          currentId={current.id}
+          canEdit={access.canEditStructure}
+          sources={sources.map((source) => ({ id: source.id, name: source.name }))}
+        />
+      </div>
 
       <div className="flex flex-wrap items-start gap-2">
         <div className="min-w-0 flex-1">
@@ -265,6 +282,20 @@ export default async function DatabasePage({
             board={boardSettings}
           />
         </div>
+        {/* 데이터 소스(8e-2)는 데이터베이스의 구조다 — 고칠 수 있는 사람에게만 선다(잠기면 `access` 가 이미 닫는다). */}
+        {access.canEditStructure && (
+          <DataSourcePanel
+            workspaceId={workspaceId}
+            databaseId={databaseId}
+            databaseName={name}
+            sources={sources.map((source) => ({
+              id: source.id,
+              name: source.name,
+              firstViewId: views.value.find((v) => v.dataSourceId === source.id)?.id ?? null,
+            }))}
+            currentSourceId={view.value.dataSourceId}
+          />
+        )}
         {/* 템플릿은 뷰가 아니라 **표**의 것이다(`page.data_source_id`) — 뷰 설정 옆에 두되 같은 패널에 넣지 않는다. */}
         <TemplatePanel
           workspaceId={workspaceId}
@@ -281,7 +312,7 @@ export default async function DatabasePage({
             workspaceId={workspaceId}
             viewId={view.value.id}
             dataSourceId={view.value.dataSourceId}
-            tableName={name}
+            tableName={tableName}
             columns={visibleColumns}
             property={groupProperty}
             groupBy={groupBy}
@@ -309,7 +340,7 @@ export default async function DatabasePage({
             workspaceId={workspaceId}
             viewId={view.value.id}
             dataSourceId={view.value.dataSourceId}
-            tableName={name}
+            tableName={tableName}
             variant={variant}
             columns={listColumns(variant, visibleColumns)}
             rows={tablePage.value.rows.map(rowJson)}

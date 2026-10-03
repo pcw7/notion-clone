@@ -11,6 +11,9 @@
  *
  * 만든 뷰로는 `?v=` 로 옮긴다(`router.push`). 종류를 바꾸면 같은 주소에서 서버 렌더를 다시 받는다(`router.refresh`) —
  * `page.tsx` 가 종류에 따라 표 · 보드를 고른다. 이름 바꾸기 · 삭제는 아직 없다.
+ *
+ * 데이터베이스가 소스를 둘 이상 가지면(8e-2 · F-04-23 *"뷰 생성 시 어떤 data source 를 볼지 선택"*) "뷰 추가" 창이 볼 소스를 묻는다 —
+ * 처음 값은 지금 뷰의 소스다. 소스가 하나면 묻지 않는다(서버가 그것을 고른다).
  */
 
 import { useState, type KeyboardEvent } from 'react'
@@ -35,12 +38,15 @@ export function ViewTabs({
   views,
   currentId,
   canEdit,
+  sources,
 }: {
   workspaceId: string
   databaseId: string
   views: readonly ViewSummary[]
   currentId: string
   canEdit: boolean
+  /** 이 데이터베이스의 소스들(부착 순서). 둘 이상이면 뷰를 만들 때 고른다. */
+  sources: readonly { readonly id: string; readonly name: string }[]
 }) {
   const router = useRouter()
   const [menu, setMenu] = useState<'add' | 'current' | null>(null)
@@ -48,16 +54,23 @@ export function ViewTabs({
   const [error, setError] = useState<string | null>(null)
 
   const current = views.find((view) => view.id === currentId) ?? null
+  const [addSource, setAddSource] = useState(current?.dataSourceId ?? sources[0]?.id ?? '')
 
   const toggle = (next: 'add' | 'current') => {
     setError(null)
+    // 여는 순간 지금 뷰의 소스로 맞춘다 — 다른 탭에서 열었던 고르기가 남지 않게.
+    if (next === 'add' && menu !== 'add') setAddSource(current?.dataSourceId ?? sources[0]?.id ?? '')
     setMenu((open) => (open === next ? null : next))
   }
 
   const create = async (type: MvpViewType) => {
     setBusy(true)
     setError(null)
-    const result = await api.createView(workspaceId, databaseId, { type, name: VIEW_TYPE_LABEL[type] })
+    const result = await api.createView(workspaceId, databaseId, {
+      type,
+      name: VIEW_TYPE_LABEL[type],
+      ...(sources.length > 1 && addSource !== '' ? { dataSourceId: addSource } : {}),
+    })
     setBusy(false)
     if (!result.ok) {
       setError(result.message)
@@ -169,8 +182,26 @@ export function ViewTabs({
                 aria-label="뷰 추가"
                 data-testid="db-view-add-panel"
                 onKeyDown={onMenuKeyDown}
-                className="absolute left-0 top-full z-30 mt-1 w-44 rounded-md border border-neutral-200 bg-white p-1 shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
+                className="absolute left-0 top-full z-30 mt-1 w-56 rounded-md border border-neutral-200 bg-white p-1 shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
               >
+                {sources.length > 1 && (
+                  <label className="flex flex-col gap-1 px-2 pb-1.5 pt-1 text-xs text-neutral-500">
+                    볼 데이터 소스
+                    <select
+                      value={addSource}
+                      onChange={(e) => setAddSource(e.target.value)}
+                      aria-label="볼 데이터 소스"
+                      data-testid="db-view-add-source"
+                      className="rounded border border-neutral-200 bg-transparent px-1.5 py-1 text-sm text-neutral-800 dark:border-neutral-700 dark:text-neutral-100"
+                    >
+                      {sources.map((source) => (
+                        <option key={source.id} value={source.id}>
+                          {source.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
                 {CREATABLE.map((type) => (
                   <button
                     key={type}

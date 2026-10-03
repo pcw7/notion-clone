@@ -8446,6 +8446,136 @@ async function main() {
         JSON.stringify([renamed, blank.status]))
     }
 
+    if (sectionIf('여러 data source — 화면 (8e-2 · F-04-23)')) {
+      // 데이터베이스 머리의 "데이터 소스" 창에서 소스를 더하고 이름을 바꾸고 옮겨 다닌다. 소스가 둘 이상이면 탭 줄 위에 지금 뷰의 소스
+      // 이름이 서고, "뷰 추가"가 볼 소스를 묻는다. 하나일 때는 소스 이름이 어디에도 없다. 자기 데이터를 스스로 만든다.
+      const stamp = Date.now()
+      const dbName = `소스화면${stamp}`
+      const api = `${BASE}/api/workspaces/${workspaceId}`
+      const readRes = async (res) => ({ status: res.status, body: await res.json().catch(() => null) })
+      const created = (await readRes(await fetch(`${api}/databases`, { method: 'POST', headers: authed, body: JSON.stringify({ name: dbName, privateTop: true }) }))).body?.database
+      const dbId = created?.id
+      const firstSource = created?.dataSourceId
+      const LABEL = '[data-testid="db-source-name"]'
+      const labelText = () => evaluate(`document.querySelector('${LABEL}')?.textContent ?? null`)
+      const itemsExpr = `[...document.querySelectorAll('[data-testid="db-source-item"]')].map((li) => ({
+          id: li.getAttribute('data-source-id'),
+          name: li.querySelector('[data-testid="db-source-name-input"]')?.value ?? li.querySelector('[data-testid="db-source-label"]')?.textContent ?? null,
+          current: !!li.querySelector('[data-testid="db-source-current"]'),
+        }))`
+      // 서버가 그린 단추는 하이드레이션 전에 눌러도 아무 일이 없다 — 열릴 때까지 몇 번 누른다.
+      const openPanel = async () => {
+        for (let i = 0; i < 6; i += 1) {
+          if (await evaluate(`!!document.querySelector('[data-testid="db-sources-panel"]')`)) return true
+          await clickSelector('[data-testid="db-sources-button"]')
+          if (await waitFor(`!!document.querySelector('[data-testid="db-sources-panel"]')`, 1500)) return true
+        }
+        return false
+      }
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${dbId}` })
+      await waitFor(`!!document.querySelector('[data-testid="db-sources-button"]')`, 15000)
+      check('소스가 하나면 탭 줄 위에 소스 이름이 없다', (await labelText()) === null, String(await labelText()))
+      await openPanel()
+      check('★ 하나일 때 창은 데이터베이스 이름을 글자로만 보여 준다 — 고치는 칸이 없다(둘째를 더할 때 덮이는 이름이다)',
+        await waitFor(`(() => { const items = ${itemsExpr}
+          return items.length === 1 && items[0].name === ${JSON.stringify(dbName)} && items[0].current
+            && !document.querySelector('[data-testid="db-source-name-input"]') })()`, 5000),
+        JSON.stringify(await evaluate(itemsExpr)))
+
+      // 더하기 — 새 소스의 뷰로 옮긴다
+      await clickSelector('[data-testid="db-source-add"]')
+      check('★ 데이터 소스를 더하면 새 소스의 뷰로 옮기고 탭 줄 위에 그 이름이 선다',
+        await waitFor(`location.search.startsWith('?v=') && document.querySelector('${LABEL}')?.textContent === '새 데이터 소스'
+          && document.querySelectorAll('[data-testid="db-view-tab"]').length === 2`, 15000),
+        JSON.stringify([await evaluate('location.search'), await labelText()]))
+      const sourcesNow = (await readRes(await fetch(`${api}/databases/${dbId}/data-sources`, { headers: authed }))).body?.dataSources ?? []
+      const secondSource = sourcesNow[1]?.id
+      check('창의 단추가 소스 수를 말한다', (await evaluate(`document.querySelector('[data-testid="db-sources-button"]')?.textContent`)) === '데이터 소스 2',
+        String(await evaluate(`document.querySelector('[data-testid="db-sources-button"]')?.textContent`)))
+
+      // 이름 바꾸기 — 창 안의 칸
+      await openPanel()
+      check('둘이 되면 첫째는 데이터베이스 이름을 받았고 둘 다 고치는 칸이다',
+        await waitFor(`(() => { const items = ${itemsExpr}
+          return items.length === 2 && items[0].name === ${JSON.stringify(dbName)} && items[1].name === '새 데이터 소스' && items[1].current
+            && document.querySelectorAll('[data-testid="db-source-name-input"]').length === 2 })()`, 5000),
+        JSON.stringify(await evaluate(itemsExpr)))
+      const secondInput = `[data-testid="db-source-item"][data-source-id="${secondSource}"] [data-testid="db-source-name-input"]`
+      await clickSelector(secondInput)
+      await evaluate(`document.querySelector(${JSON.stringify(secondInput)})?.select()`)
+      await typeText('임시 이름')
+      await send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+      await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+      check('Esc 는 고치던 이름만 되돌린다 — 창은 열려 있다',
+        await waitFor(`document.querySelector(${JSON.stringify(secondInput)})?.value === '새 데이터 소스' && !!document.querySelector('[data-testid="db-sources-panel"]')`, 3000),
+        String(await evaluate(`document.querySelector(${JSON.stringify(secondInput)})?.value`)))
+      await evaluate(`document.querySelector(${JSON.stringify(secondInput)})?.select()`)
+      await typeText('회사')
+      await send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 })
+      await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 })
+      check('★ Enter 로 이름을 바꾸면 탭 줄 위의 이름이 따라온다',
+        await waitFor(`document.querySelector('${LABEL}')?.textContent === '회사'`, 10000), String(await labelText()))
+      const listedAfter = (await readRes(await fetch(`${api}/databases/${dbId}/data-sources`, { headers: authed }))).body?.dataSources ?? []
+      check('서버에도 그 이름이다', listedAfter[1]?.name === '회사', JSON.stringify(listedAfter.map((d) => d.name)))
+
+      // 관계형의 반대쪽 이름 기본값 — 소스가 여럿이면 소스 이름
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${dbId}?v=${(await evaluate(`new URLSearchParams(location.search).get('v')`))}` })
+      await waitFor(`!!document.querySelector('[data-testid="db-add-column"]')`, 15000)
+      await clickSelector('[data-testid="db-add-column"]')
+      await waitFor(`document.activeElement?.getAttribute('aria-label') === '속성 이름'`, 3000)
+      await evaluate(`(() => { const s = document.querySelector('select[aria-label="속성 유형"]'); s.value = 'relation'
+        s.dispatchEvent(new Event('change', { bubbles: true })) })()`)
+      await waitFor(`!!document.querySelector('[data-testid="db-relation-twoway"]')`, 5000)
+      await evaluate(`(() => { const c = document.querySelector('[data-testid="db-relation-twoway"]'); if (!c.checked) c.click() })()`)
+      check('★ 양방향 관계형의 반대쪽 이름 기본값이 소스 이름이다(데이터베이스 이름이 아니라)',
+        await waitFor(`document.querySelector('[data-testid="db-relation-inverse-name"]')?.value === '회사'`, 5000),
+        String(await evaluate(`document.querySelector('[data-testid="db-relation-inverse-name"]')?.value ?? null`)))
+      await send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+      await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+
+      // 열기 — 다른 소스의 첫 뷰로
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${dbId}?v=${(await evaluate(`new URLSearchParams(location.search).get('v')`))}` })
+      await waitFor(`!!document.querySelector('[data-testid="db-sources-button"]')`, 15000)
+      await openPanel()
+      await clickSelector(`[data-testid="db-source-item"][data-source-id="${firstSource}"] [data-testid="db-source-open"]`)
+      check('★ 창의 "열기"는 그 소스의 첫 뷰로 옮긴다',
+        await waitFor(`document.querySelector('${LABEL}')?.textContent === ${JSON.stringify(dbName)} && location.search === ${JSON.stringify(`?v=${created?.defaultViewId}`)}`, 15000),
+        JSON.stringify([await evaluate('location.search'), await labelText()]))
+
+      // 뷰 추가 — 볼 소스를 고른다(처음 값은 지금 뷰의 소스)
+      await clickSelector('[data-testid="db-view-add"]')
+      check('★ 소스가 둘이면 "뷰 추가"가 볼 소스를 묻는다 — 처음 값은 지금 뷰의 소스',
+        await waitFor(`document.querySelector('[data-testid="db-view-add-source"]')?.value === ${JSON.stringify(firstSource)}`, 5000),
+        String(await evaluate(`document.querySelector('[data-testid="db-view-add-source"]')?.value ?? null`)))
+      await evaluate(`(() => { const s = document.querySelector('[data-testid="db-view-add-source"]'); if (!s) return
+        s.value = ${JSON.stringify(secondSource)}
+        s.dispatchEvent(new Event('change', { bubbles: true })) })()`)
+      await clickSelector('[data-testid="db-view-add-list"]')
+      await waitFor(`document.querySelectorAll('[data-testid="db-view-tab"]').length === 3`, 15000)
+      const views = (await readRes(await fetch(`${api}/databases/${dbId}/views`, { headers: authed }))).body?.views ?? []
+      const made = views.find((v) => v.type === 'list')
+      check('★ 고른 소스로 뷰가 생기고 그 탭으로 옮긴다',
+        made?.dataSourceId === secondSource && (await waitFor(`location.search === ${JSON.stringify(`?v=${made?.id}`)} && document.querySelector('${LABEL}')?.textContent === '회사'`, 10000)),
+        JSON.stringify([made?.dataSourceId === secondSource, await evaluate('location.search'), await labelText()]))
+
+      // 볼 수만 있는 사람 — 소스 이름은 보이고 창은 없다 · 잠기면 고치는 사람에게도 창이 없다
+      const aclMod = await import(new URL('../src/lib/permissions/acl.ts', import.meta.url).href)
+      const reader = await joinAs(workspaceId, await createUser(`소스 독자 ${stamp}`), 'member')
+      const shared = await aclMod.grantAccess(ctx, dbId, { type: 'user', id: reader.userId }, 'view')
+      const readerHtml = await (await fetch(`${BASE}/w/${workspaceId}/db/${dbId}?v=${made?.id}`, { headers: { cookie: `nc_session=${reader.token}` } })).text()
+      check('★ 볼 수만 있는 사람 — 탭 줄 위의 소스 이름은 보이고 "데이터 소스" 창 · 뷰의 소스 고르개가 없다',
+        shared.ok && readerHtml.includes('data-testid="db-source-name"') && readerHtml.includes('>회사<')
+          && !readerHtml.includes('data-testid="db-sources-button"') && !readerHtml.includes('data-testid="db-view-add"'),
+        JSON.stringify([shared.ok, readerHtml.includes('data-testid="db-source-name"'), readerHtml.includes('data-testid="db-sources-button"')]))
+      const locked = await fetch(`${api}/databases/${dbId}/lock`, { method: 'PUT', headers: authed })
+      const lockedHtml = await (await fetch(`${BASE}/w/${workspaceId}/db/${dbId}`, { headers: { cookie: authed.cookie } })).text()
+      check('잠긴 데이터베이스 — 고칠 수 있는 사람에게도 "데이터 소스" 창이 없다',
+        locked.ok && !lockedHtml.includes('data-testid="db-sources-button"') && lockedHtml.includes('data-testid="db-source-name"'),
+        JSON.stringify([locked.status, lockedHtml.includes('data-testid="db-sources-button"')]))
+      await fetch(`${api}/databases/${dbId}/lock`, { method: 'DELETE', headers: authed })
+    }
+
     section('전체')
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))
     const serverErrors = serverOutput.split('\n').filter((l) => l.includes('⨯'))
