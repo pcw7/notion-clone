@@ -1047,7 +1047,7 @@ CREATE VIEW live_block AS SELECT * FROM block WHERE lifecycle = 'live';
 > ④ Markdown 내보내기 · 블록 복사의 평문은 **아무것도 쓰지 않는다** — 내보내기는 ZIP 의 폴더 구조가 곧 경로이고 렌더러는 조상의 제목을
 > 모른다. 저장된 내용이 없으므로 잃은 것으로 세지 않는다.
 
-**[보강] 페이지 아이콘(`block.format.page_icon`)** ⟨잔여 묶음 8c-1 · F-02-05 / 마이그레이션 0037⟩
+**[보강] 페이지 아이콘(`block.format.page_icon`)** ⟨잔여 묶음 8c-1 · 8c-4 · F-02-05 / 마이그레이션 0037 · 0039⟩
 
 > 초판의 `block` 에는 아이콘 자리가 없다(`database` 에는 `icon jsonb` 가 있다 — 데이터베이스 자신의 아이콘은 그 칸이다 · §3.5 [보강]
 > 데이터베이스 아이콘 · 8c-3b). 02 F-02-05 의 데이터 모델 함의 *"`page_meta.icon_type` +
@@ -1061,8 +1061,8 @@ CREATE VIEW live_block AS SELECT * FROM block WHERE lifecycle = 'live';
 > ② "이모지 한 글자"(grapheme 하나 — 가족 · 피부색 · 깃발 · 키캡도 한 글자)는 명령이 검사한다 — teamspace 아이콘(§3.3 [보강]
 > `teamspace.icon` ②)과 **같은 규칙**이다(`contracts/emoji.ts`). 7c-14 의 규칙이 키캡(`1️⃣`)을 거부하던 틈은 함께 고쳤다(키캡은 그림 문자
 > 속성이 없다). DB 는 표현할 수 있는 부분을 CHECK 으로 막는다(0037): **페이지 행만** · 객체 · `type='emoji'` · `emoji` 는 1~16 코드포인트의
-> 공백 없는 문자열 · 다른 키 없음. 이미지(업로드 · 외부 URL)는 다음 조각이 이미지 블록의 `source` 와 같은 모양(`{type:'file', file_id}` ·
-> `{type:'external', url}`)으로 넓힌다 — 그때 이 CHECK 도(데이터베이스 아이콘의 0038 과 함께) 넓힌다.
+> 공백 없는 문자열 · 다른 키 없음. 이미지(업로드 · 외부 URL)는 8c-4 가 이미지 블록의 `source` 와 같은 모양(`{type:'file', file_id}` ·
+> `{type:'external', url}`)으로 넓혔다 — 이 CHECK 과 데이터베이스 아이콘의 0038 을 함께(0039 · ⑤).
 > ③ **본문(Y.Doc)은 아이콘을 싣지 않는다** — 하위 페이지 참조 노드는 행에서 본문을 지을 때(옮기지 않은 페이지 · 복제) 자식 행의 `format`
 > 을 받아 왔다(`rowsToDoc` → `docToPm`). 그대로면 **볼 수 없는 하위 페이지의 아이콘**이 부모 본문을 타고 협업 참여자에게 퍼진다(제목이
 > 그랬다 — HANDOFF §3.2-22). 세 층이 각자 버린다 — 행에서 문서를 지을 때 · 문서에서 편집기 · Y.Doc 노드를 지을 때(본문의 format 규칙
@@ -1071,6 +1071,23 @@ CREATE VIEW live_block AS SELECT * FROM block WHERE lifecycle = 'live';
 > ④ 바꾸는 사람은 그 페이지를 고칠 수 있는 사람(`edit_content`)이고 잠기면 막는다(제목과 같다). **DB 행도 받는다** — 행의 제목은 셀이
 > 정본이라 셀로만 고치지만 아이콘은 셀이 아니다(행의 권한은 셀과 같은 축 — 데이터베이스에서 상속한 `edit_content` · 행 페이지 잠금).
 > 같은 아이콘이면 쓰지 않고, 바뀌면 `last_edited_*` · `version` 을 올린다. 검색 색인은 다시 쓰지 않는다(찾는 글자가 아니다).
+> ⑤ **[8c-4 · 마이그레이션 0039] 이미지 아이콘** — 모양은 **이미지 블록의 `source` 와 같다**: `{"type":"file","file_id":"…"}`(우리가
+> 호스팅하는 파일 — 주소는 파생값이고 서명 URL 을 저장하지 않는다 · FS2) · `{"type":"external","url":"https://…"}`(값 자체가 주소).
+> 노션 API 의 중첩 모양(`{type:'external', external:{url}}`)은 받지 않는다 — 공개 API 투영이 생기면 그때 바꿔 낸다.
+>   · DB 는 두 자리(페이지 행의 `format.page_icon` · `database.icon`)를 **한 판정 함수** `icon_shape_ok(jsonb)` 로 막는다(0039 — 둘을 따로
+>     적으면 한쪽만 넓히는 날이 온다): 객체 · `type` 셋 중 하나 · 그 종류의 키 하나 말고 다른 키 없음 · emoji 는 0037 과 같다 · `file_id` 는
+>     소문자 uuid · `url` 은 http · https 로 시작하는 1~2048자 · 공백 없음. 받기(`parsePageIconInput`)는 같은 규칙에 앞뒤 공백을 벗기고
+>     id 를 소문자로 한다
+>   · **올린 파일은 이 워크스페이스의 이미지여야 한다** — 명령이 `file` 표에 묻는다(jsonb 안의 id 에 FK 를 걸 수 없다). 다른
+>     워크스페이스의 파일 · 없는 id · 이미지가 아닌 파일은 `invalid_icon` 이다. 파일 내용은 워크스페이스로 한정되어 읽히므로(파일 경로가
+>     세션으로 인증한다) 같은 워크스페이스의 파일을 가리키는 것은 새로 열어 주는 것이 없다 — 파일 id 는 그것을 볼 수 있는 곳에서만 알게 된다
+>   · **파일 아이콘은 그 파일의 참조다** — `file.ref_count` 에 센다(§3.10 · FS1). 이미지 블록은 본문 프로젝터가 세지만 아이콘은 블록의
+>     `properties` 가 아니므로 **아이콘을 쓰는 명령이 같은 트랜잭션에서** 센다 — 바꾸기(옛 파일 −1 · 새 파일 +1 · 같은 파일이면 그대로)와
+>     복제(사본이 같은 파일을 가리킨다 — 다시 올리지 않는다 · 템플릿으로 만든 행도 이 길). 내릴 때 바닥은 0. 휴지통 · 영구 삭제는 내리지
+>     않는다(이미지 블록과 같다 — 물리 삭제는 GC 의 몫)
+>   · 화면은 `<img>` 다 — 올린 파일은 세션으로 인증되는 워크스페이스의 파일 경로, 외부 주소는 그대로 · **referrer 를 보내지 않는다**
+>     (사이드바 · 목록은 아이콘을 보는 모든 사람의 브라우저가 그 주소를 부른다). 불러오지 못하면 깨진 그림 대신 없을 때의 표시로 바꾼다
+>     (페이지로 가는 줄은 기본 글리프 · 글자 속의 경로는 없음)
 
 **상태 전이 (type='page' 블록만)**
 
@@ -1414,7 +1431,8 @@ ALTER TABLE select_option ADD FOREIGN KEY (property_id, group_id)
 > 칸을 같은 쿼리에서 조인해 읽는다(N+1 없음). 없으면 **SQL NULL** 이다(컬럼이므로 — 페이지는 키가 없다).
 > ② 값의 모양은 페이지 아이콘과 **같다** — 노션 API icon 객체, 지금은 `{"type":"emoji","emoji":"📚"}` 하나 · 이모지 한 글자
 > (`isSingleEmoji` · 받기는 `parsePageIconInput`). DB 는 0037 과 같은 값을 CHECK 으로 막는다(0038 — 객체 · `type='emoji'` · 1~16 코드포인트 ·
-> 공백 없음 · 다른 키 없음 · JSON `null` 도 거부한다 — 없음은 SQL NULL 하나다). 이미지(8c-4)로 넓힐 때 두 CHECK 을 함께 넓힌다.
+> 공백 없음 · 다른 키 없음 · JSON `null` 도 거부한다 — 없음은 SQL NULL 하나다). 이미지(8c-4)는 두 CHECK 을 함께 넓혔다(0039 — 판정 함수
+> `icon_shape_ok` 하나 · §3.4 [보강] 페이지 아이콘 ⑤) — 올린 파일 아이콘의 참조 수도 페이지와 같은 명령의 규칙으로 센다.
 > ③ **바꾸는 사람은 이름을 바꾸는 사람이다** — `edit_structure` 이고 데이터베이스가 잠기면 막는다(7f-2 — 잠금이 막는 구조에 이름이 있다).
 > 아이콘은 이름 옆에 서는 표의 모습이고 모두가 보는 사이드바 · teamspace 화면에 선다 — 행 · 셀을 고치는 사람(`edit_content`)이 바꾸는
 > 것이 아니다. 페이지 아이콘이 `edit_content` 인 것도 그 페이지의 이름이 그렇기 때문이다 — 둘 다 각자의 이름을 따른다. 같으면 쓰지 않고,
@@ -2103,7 +2121,7 @@ CREATE TABLE file (
   id uuid PRIMARY KEY, workspace_id uuid NOT NULL, region_id text NOT NULL REFERENCES region(id),
   storage_key text NOT NULL, mime text, size_bytes bigint,
   original_name text, checksum text,
-  ref_count int NOT NULL DEFAULT 0,            -- block + page_version 참조를 모두 포함 <S5>
+  ref_count int NOT NULL DEFAULT 0,            -- block + page_version 참조를 모두 포함 <S5> · 페이지 · 데이터베이스의 이미지 아이콘도 [8c-4]
   uploaded_by uuid NULL, created_at timestamptz NOT NULL
 );
 -- 서명 URL 은 저장하지 않고 조회 시점에 생성한다(저장하면 만료 관리가 불가능).

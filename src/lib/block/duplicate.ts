@@ -63,6 +63,8 @@ import { wrapUnknownTypes, type EditorDoc } from '../editor/document.ts'
 import { createPageIn, readTitle, type PageDetail } from './page.ts'
 import { openPageBody, ownerPageOf } from './body-write.ts'
 import { duplicateTitle, remapBody } from './duplicate-remap.ts'
+import { pageIconOfFormat } from './page-icon.ts'
+import { addIconFileReference } from '../file/icon-reference.ts'
 import { MAX_TREE_DEPTH, PAGE_TYPE } from './types.ts'
 import type { RichTextRun } from '../contracts/rich-text.ts'
 
@@ -282,9 +284,11 @@ export async function duplicateSubtree(
     // 사본의 id 는 만든 쪽이 정한다 — 미리 잡아 둔 자리를 그것으로 바꾼다.
     copies.set(row.id, created)
     if (isRoot) rootId = created
-    // 아이콘 · 커버는 제목과 달리 `format` 에 있다. 사본은 원본과 같은 모습이어야 한다.
+    // 아이콘 · 커버는 제목과 달리 `format` 에 있다. 사본은 원본과 같은 모습이어야 한다. 올린 이미지 아이콘은 같은 파일을 가리키는
+    // **참조가 하나 더** 생긴 것이다 — 그 파일의 참조 수를 올린다(8c-4 · 이미지 블록의 복제와 같다 — 재업로드하지 않는다).
     if (row.format !== null && Object.keys(row.format).length > 0) {
       await tx.query(`UPDATE block SET format = $2::jsonb WHERE id = $1`, [created, JSON.stringify(row.format)])
+      await addIconFileReference(tx, ctx, pageIconOfFormat(row.format))
     }
   }
   if (rootId === null) throw new Error(`복제할 원본이 서브트리에 없다: ${source.id}`)

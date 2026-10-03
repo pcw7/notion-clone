@@ -3,7 +3,8 @@
  *
  * 본문(블록) 저장은 여기가 아니다 — 본문을 쓰는 길은 협업 서버 하나다(CRDT 6e).
  *
- * 몸체: `{ title?: string, icon?: { type: 'emoji', emoji } | null }` — 하나는 있어야 한다. 아이콘(8c-1)은 제목과 따로 쓴다 — DB 행은
+ * 몸체: `{ title?: string, icon?: { type: 'emoji', emoji } | { type: 'file', file_id } | { type: 'external', url } | null }` — 하나는
+ * 있어야 한다(이미지 아이콘은 8c-4 — 올린 파일은 먼저 `POST …/files` 로 올린 id). 아이콘(8c-1)은 제목과 따로 쓴다 — DB 행은
  * 아이콘만 이 길로 고친다(행의 제목은 셀이다 · `renamePage`). 둘 다 오면 아이콘을 먼저 쓰고 제목을 쓴다(각자 트랜잭션 — 제목이 거부되면
  * 아이콘은 이미 바뀌었다. 화면은 둘을 함께 보내지 않는다).
  */
@@ -45,7 +46,13 @@ export async function PATCH(
   if ('icon' in body) {
     icon = parsePageIconInput(body.icon)
     if (icon === undefined) {
-      return Response.json({ error: 'invalid_icon', message: 'icon 은 이모지 한 글자({ type: "emoji", emoji }) 이거나 null 이어야 합니다' }, { status: 400 })
+      return Response.json(
+        {
+          error: 'invalid_icon',
+          message: 'icon 은 이모지 한 글자({ type: "emoji", emoji }) · 올린 이미지({ type: "file", file_id }) · 이미지 주소({ type: "external", url }) 이거나 null 이어야 합니다',
+        },
+        { status: 400 },
+      )
     }
   }
 

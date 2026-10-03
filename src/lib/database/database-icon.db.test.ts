@@ -93,7 +93,7 @@ describe('① 바꾸기 · 지우기', () => {
     assert.equal((await stored(db.id)).version, once.version)
 
     // 받지 않는 것 — 아무것도 쓰지 않는다.
-    for (const bad of ['📚', { type: 'emoji', emoji: '📚📖' }, { type: 'external', url: 'https://example.com/a.png' }, { type: 'emoji', emoji: 'ab' }]) {
+    for (const bad of ['📚', { type: 'emoji', emoji: '📚📖' }, { type: 'external', url: 'javascript:alert(1)' }, { type: 'emoji', emoji: 'ab' }]) {
       assert.deepEqual(await setDatabaseIcon(fx.owner.ctx, db.id, bad), { ok: false, reason: 'invalid_icon' }, JSON.stringify(bad))
     }
     assert.deepEqual((await stored(db.id)).icon, emoji('📚'))

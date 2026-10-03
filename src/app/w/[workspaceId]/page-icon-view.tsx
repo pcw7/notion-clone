@@ -1,7 +1,8 @@
 /**
- * 페이지 아이콘의 표시 — 사이드바 · 목록 · 머리가 함께 쓴다 (잔여 묶음 8c-1 · F-02-05)
+ * 페이지 아이콘의 표시 — 사이드바 · 목록 · 머리가 함께 쓴다 (잔여 묶음 8c-1 · 8c-4 · F-02-05)
  *
- * ⚠ `'use client'` 를 달지 않는다 — 훅이 없어 서버 화면(목록)과 클라이언트 화면(사이드바)이 그대로 함께 쓴다.
+ * ⚠ `'use client'` 를 달지 않는다 — 훅이 없어 서버 화면(목록)과 클라이언트 화면(사이드바)이 그대로 함께 쓴다. 이미지 아이콘(8c-4)만
+ * 클라이언트 부품(`page-icon-image.tsx`)으로 넘긴다 — 주소에 워크스페이스가 필요하고 불러오기 실패를 알아야 한다.
  *
  * 아이콘은 이름 앞의 장식이다 — 읽는 이에게는 숨긴다(`aria-hidden`, 이름이 링크의 이름이다). 없을 때의 표시는 둘 중 하나다
  * (teamspace 의 `teamspaceIcon()` 처럼 한 곳에서 — 이 파일과 같은 모양을 DOM 으로 그리는 `editor/page-icon-dom.ts`):
@@ -10,9 +11,11 @@
  *     줄의 글자(`textContent`)에 섞이지 않아, 이름을 글자로 읽는 곳(검사 · 복사)이 아이콘이 없는 페이지에서 그대로다. 데이터베이스의
  *     줄(사이드바 · teamspace 화면)은 같은 규칙의 표 글리프다(`glyph` · `DATABASE_GLYPH` · 8c-3b — 전에는 글자 `▦` 였다)
  *   · 아니면 아무것도 그리지 않는다 — **글자 속의 경로**(머리의 경로 · 경로 블록 · 검색 결과의 조상 줄)
+ * 이미지 아이콘을 불러오지 못하면 같은 규칙으로 바꾼다 — 깨진 그림을 그리지 않는다.
  */
 
 import { PAGE_GLYPH, type IconGlyph, type PageIcon } from '@/lib/block/page-icon'
+import { PageIconImage } from './page-icon-image'
 
 export function PageIconView({
   icon,
@@ -32,6 +35,9 @@ export function PageIconView({
   className?: string
 }) {
   if (icon !== null && icon !== undefined) {
+    if (icon.type !== 'emoji') {
+      return <PageIconImage icon={icon} className={className} fallback={fallback ? <GlyphSvg glyph={glyph} className={className} /> : null} />
+    }
     return (
       <span aria-hidden data-page-icon={icon.emoji} className={`inline-block flex-none leading-none ${className}`}>
         {icon.emoji}
@@ -39,6 +45,10 @@ export function PageIconView({
     )
   }
   if (!fallback) return null
+  return <GlyphSvg glyph={glyph} className={className} />
+}
+
+function GlyphSvg({ glyph, className }: { glyph: IconGlyph; className: string }) {
   return (
     <svg
       aria-hidden

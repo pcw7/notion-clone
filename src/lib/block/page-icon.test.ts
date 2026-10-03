@@ -9,13 +9,24 @@
  *        행에서 문서를 지을 때(`rowsToDoc`) · 문서에서 편집기 · Y.Doc 노드를 지을 때(`normalizeFormat` — `contentNodeFor`) ·
  *        Y.Doc 을 읽을 때(정규화 — 참여자가 attr 에 직접 넣은 것)
  *   ④ ★ 경로의 줄이 아이콘을 싣는다 — 페이지 · teamspace · 같은 경로의 판단이 아이콘을 본다
+ *   ⑤ ★ 이미지 아이콘(8c-4) — 올린 파일(`file_id`) · 외부 주소(`url` — http · https · 공백 없음 · 2048자)를 읽고 받는다 · 같은가 ·
+ *      보여줄 주소(올린 파일은 워크스페이스의 파일 경로)
  */
 
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 import * as Y from 'yjs'
 
-import { PAGE_ICON_KEY, pageIconOfFormat, parsePageIconInput, readPageIcon, samePageIcon } from './page-icon.ts'
+import {
+  MAX_ICON_URL_LENGTH,
+  PAGE_ICON_KEY,
+  pageIconKey,
+  pageIconOfFormat,
+  pageIconSrc,
+  parsePageIconInput,
+  readPageIcon,
+  samePageIcon,
+} from './page-icon.ts'
 import { normalizeFormat, PAGE_TYPE, type BlockType } from './types.ts'
 import { breadcrumbTrail, sameTrail } from './breadcrumb.ts'
 import { rowsToDoc, type EditorBlock } from '../editor/document.ts'
@@ -31,7 +42,7 @@ describe('① 읽기', () => {
   test('모양이 아니면 null — 문자열(노션 내부 모양) · 두 글자 · 다른 종류 · 객체가 아닌 것', () => {
     assert.deepEqual(readPageIcon(ICON), ICON)
     assert.deepEqual(readPageIcon({ ...ICON, extra: 1 }), ICON, '다른 키는 싣지 않는다')
-    for (const raw of ['🌱', null, undefined, [], { type: 'emoji', emoji: '🌱🌱' }, { type: 'emoji', emoji: 1 }, { type: 'external', url: 'https://x' }]) {
+    for (const raw of ['🌱', null, undefined, [], { type: 'emoji', emoji: '🌱🌱' }, { type: 'emoji', emoji: 1 }, { type: 'icon', icon: {} }]) {
       assert.equal(readPageIcon(raw), null, JSON.stringify(raw))
     }
     assert.deepEqual(pageIconOfFormat({ [PAGE_ICON_KEY]: ICON, block_color: 'red' }), ICON)
@@ -49,11 +60,11 @@ describe('② 받기', () => {
     assert.deepEqual(parsePageIconInput({ emoji: ' 🚀 ' }), { type: 'emoji', emoji: '🚀' })
   })
 
-  test('★ 거부 — 빈 글(지우기는 null 이다) · 글자 · 숫자 · 두 글자 · 다른 종류 · 객체가 아닌 것', () => {
+  test('★ 거부 — 빈 글(지우기는 null 이다) · 글자 · 숫자 · 두 글자 · 모르는 종류 · 객체가 아닌 것', () => {
     for (const raw of [
       undefined, '🌱', 7, [], {}, { type: 'emoji' }, { type: 'emoji', emoji: '' }, { type: 'emoji', emoji: '   ' },
       { type: 'emoji', emoji: 'a' }, { type: 'emoji', emoji: '1' }, { type: 'emoji', emoji: '🚀🚀' }, { type: 'emoji', emoji: '🚀 x' },
-      { type: 'emoji', emoji: '👨‍👩‍👧‍👦'.repeat(3) }, { type: 'external', url: 'https://example.com/a.png' }, { type: 'file', file_id: nextId() },
+      { type: 'emoji', emoji: '👨‍👩‍👧‍👦'.repeat(3) }, { type: 'custom_emoji', id: 'x' }, { type: 'icon', icon: { name: 'pizza' } },
     ]) {
       assert.equal(parsePageIconInput(raw), undefined, JSON.stringify(raw))
     }
@@ -136,5 +147,58 @@ describe('④ 경로', () => {
     assert.ok(sameTrail(a, breadcrumbTrail(input)))
     assert.ok(!sameTrail(a, breadcrumbTrail({ ...input, ancestors: [{ ...input.ancestors[0], icon: { type: 'emoji', emoji: '🚀' } }] })))
     assert.ok(!sameTrail(a, breadcrumbTrail({ ...input, page: { ...input.page, icon: ICON } })))
+  })
+})
+
+describe('⑤ 이미지 아이콘', () => {
+  const FILE = '0a1b2c3d-0000-4000-8000-00000000abcd'
+
+  test('★ 읽기 — 올린 파일 · 외부 주소 · 모양이 아니면 null', () => {
+    assert.deepEqual(readPageIcon({ type: 'file', file_id: FILE }), { type: 'file', file_id: FILE })
+    assert.deepEqual(readPageIcon({ type: 'file', file_id: FILE.toUpperCase() }), { type: 'file', file_id: FILE }, '소문자로 읽는다')
+    assert.deepEqual(readPageIcon({ type: 'external', url: 'https://example.com/a.png', extra: 1 }), { type: 'external', url: 'https://example.com/a.png' })
+    for (const raw of [
+      { type: 'file', file_id: 'nope' },
+      { type: 'file' },
+      { type: 'external', url: 'javascript:alert(1)' },
+      { type: 'external', url: '/relative.png' },
+      { type: 'external', url: `https://example.com/${'a'.repeat(MAX_ICON_URL_LENGTH)}` },
+    ]) {
+      assert.equal(readPageIcon(raw), null, JSON.stringify(raw).slice(0, 80))
+    }
+  })
+
+  test('★ 받기 — 앞뒤 공백을 벗기고 다른 키는 버린다 · 안전하지 않은 주소 · 공백 · 긴 주소 · uuid 가 아닌 id 는 거부', () => {
+    assert.deepEqual(parsePageIconInput({ type: 'file', file_id: ` ${FILE.toUpperCase()} `, url: 'https://x.y' }), { type: 'file', file_id: FILE })
+    assert.deepEqual(parsePageIconInput({ type: 'external', url: ' http://example.com/a.gif ' }), { type: 'external', url: 'http://example.com/a.gif' })
+    const longest = `https://example.com/${'a'.repeat(MAX_ICON_URL_LENGTH - 'https://example.com/'.length)}`
+    assert.deepEqual(parsePageIconInput({ type: 'external', url: longest }), { type: 'external', url: longest }, '상한까지는 받는다')
+    for (const raw of [
+      { type: 'file', file_id: 'nope' },
+      { type: 'file', file_id: 7 },
+      { type: 'external', url: 'javascript:alert(1)' },
+      { type: 'external', url: 'data:image/png;base64,AAAA' },
+      { type: 'external', url: '/api/workspaces/x/files/y/content' },
+      { type: 'external', url: 'https://example.com/a b.png' },
+      { type: 'external', url: `${longest}a` },
+      { type: 'external' },
+      // 노션 API 의 중첩 모양은 받지 않는다 — 저장 모양은 이미지 블록의 `source` 다.
+      { type: 'external', external: { url: 'https://example.com/a.png' } },
+    ]) {
+      assert.equal(parsePageIconInput(raw), undefined, JSON.stringify(raw).slice(0, 80))
+    }
+  })
+
+  test('같은가 · 가리키는 글자 · 보여줄 주소', () => {
+    const file = { type: 'file', file_id: FILE } as const
+    const link = { type: 'external', url: 'https://example.com/a.png' } as const
+    assert.ok(samePageIcon(file, { type: 'file', file_id: FILE }))
+    assert.ok(!samePageIcon(file, link))
+    assert.ok(!samePageIcon(file, { type: 'emoji', emoji: '🌱' }))
+    assert.equal(pageIconKey(file), `file:${FILE}`)
+    assert.equal(pageIconKey(link), 'external:https://example.com/a.png')
+    assert.equal(pageIconSrc(file, 'ws-1'), `/api/workspaces/ws-1/files/${FILE}/content`)
+    assert.equal(pageIconSrc(file, null), null, '워크스페이스를 모르면 주소가 없다')
+    assert.equal(pageIconSrc(link, null), 'https://example.com/a.png')
   })
 })

@@ -268,8 +268,8 @@ export function AddColumn({
                 {databases !== null && databases.length === 0 && <option value="">연결할 데이터베이스가 없습니다</option>}
                 {(databases ?? []).map((d) => (
                   <option key={d.dataSourceId} value={d.dataSourceId}>
-                    {/* `<option>` 은 글자만 담는다 — 표의 아이콘(8c-3b)은 이름 앞의 글자다. 없으면 이름만(기본 글리프는 그림이라 못 싣는다). */}
-                    {d.icon !== null ? `${d.icon.emoji} ` : ''}
+                    {/* `<option>` 은 글자만 담는다 — 표의 아이콘(8c-3b)이 이모지면 이름 앞의 글자다. 이미지 · 없으면 이름만(그림은 못 싣는다). */}
+                    {d.icon?.type === 'emoji' ? `${d.icon.emoji} ` : ''}
                     {d.name}
                     {d.dataSourceId === dataSourceId ? ' (이 표)' : ''}
                   </option>
