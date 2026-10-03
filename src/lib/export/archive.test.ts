@@ -71,11 +71,17 @@ const database: ExportDatabaseNode = {
   kind: 'database',
   id: randomUUID(),
   name: '할 일 #1',
-  columns: [
-    { propertyId: 'n', name: '수량', type: 'number' },
-    { propertyId: 't', name: '이름', type: 'title' },
+  sources: [
+    {
+      id: randomUUID(),
+      name: '할 일 #1',
+      columns: [
+        { propertyId: 'n', name: '수량', type: 'number' },
+        { propertyId: 't', name: '이름', type: 'title' },
+      ],
+      rowIds: [rowPage.id],
+    },
   ],
-  rowIds: [rowPage.id],
 }
 
 const nodes: ExportNode[] = [root, twinA, twinB, middle, deep, database, rowPage]

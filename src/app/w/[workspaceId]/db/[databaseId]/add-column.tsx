@@ -271,6 +271,8 @@ export function AddColumn({
                     {/* `<option>` 은 글자만 담는다 — 표의 아이콘(8c-3b)이 이모지면 이름 앞의 글자다. 이미지 · 없으면 이름만(그림은 못 싣는다). */}
                     {d.icon?.type === 'emoji' ? `${d.icon.emoji} ` : ''}
                     {d.name}
+                    {/* 데이터베이스가 data source 를 여럿 가지면 항목은 소스마다 하나다(8e-1) — 소스 이름으로 가른다. */}
+                    {d.sourceName !== null ? ` · ${d.sourceName}` : ''}
                     {d.dataSourceId === dataSourceId ? ' (이 표)' : ''}
                   </option>
                 ))}

@@ -6,6 +6,8 @@
  * W8 은 뷰를 **고르기만** 했다(뷰 타입이 table 하나라 두 번째 뷰를 만들 이유가 약했다). 보드가 들어오며
  * 만들 이유가 생겼다. 보드는 그룹이 필수라 `groupBy` 를 함께 받고, 없으면 서버가 고른다(F-04-03 의 규칙 —
  * `view.ts` `resolveGroupBy`). 고를 것이 없으면 `group_required` 다 — 화면이 select 프로퍼티를 먼저 만든다.
+ *
+ * `dataSourceId` 로 볼 data source 를 고른다(8e-1 · F-04-23). 이 데이터베이스에 붙은 것이 아니면 404 · 없으면 부착 순서의 첫째다.
  */
 
 import { isUuid } from '@/lib/ids'
@@ -36,12 +38,16 @@ export async function POST(request: Request, ctx: Ctx): Promise<Response> {
 
   const parsed = await readJsonBody(request)
   if (!parsed.ok) return parsed.response
-  const body = (parsed.body ?? {}) as { name?: unknown; type?: unknown; groupBy?: unknown }
+  const body = (parsed.body ?? {}) as { name?: unknown; type?: unknown; groupBy?: unknown; dataSourceId?: unknown }
+  if (body.dataSourceId !== undefined && (typeof body.dataSourceId !== 'string' || !isUuid(body.dataSourceId))) {
+    return Response.json({ error: 'not_found' }, { status: 404 })
+  }
 
   const created = await createView(session.ctx, databaseId, {
     ...(typeof body.name === 'string' ? { name: body.name } : {}),
     ...(typeof body.type === 'string' ? { type: body.type as MvpViewType } : {}),
     ...(typeof body.groupBy === 'object' && body.groupBy !== null ? { groupBy: body.groupBy as GroupBy } : {}),
+    ...(typeof body.dataSourceId === 'string' ? { dataSourceId: body.dataSourceId } : {}),
   })
   if (!created.ok) {
     return Response.json(

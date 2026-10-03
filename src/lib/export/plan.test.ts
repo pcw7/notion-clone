@@ -200,7 +200,12 @@ describe('데이터베이스', () => {
       },
     })
     const formula = pageNode('=수식', [], [], { cells: { title: { type: 'title', title: [textRun('=수식')] } } })
-    const database: ExportDatabaseNode = { kind: 'database', id: randomUUID(), name: '할 일', columns, rowIds: [first.id, formula.id] }
+    const database: ExportDatabaseNode = {
+      kind: 'database',
+      id: randomUUID(),
+      name: '할 일',
+      sources: [{ id: randomUUID(), name: '할 일', columns, rowIds: [first.id, formula.id] }],
+    }
 
     const p = plan(snapshot([database.id], [database, first, formula, rowChild]))
     assert.deepEqual(paths(p), ['할 일.csv', '할 일/첫 행.md', '할 일/첫 행/행의 하위.md', '할 일/=수식.md'])
@@ -217,10 +222,49 @@ describe('데이터베이스', () => {
   })
 
   test('행이 없어도 헤더만 있는 CSV 가 생긴다', () => {
-    const database: ExportDatabaseNode = { kind: 'database', id: randomUUID(), name: '빈 표', columns, rowIds: [] }
+    const database: ExportDatabaseNode = {
+      kind: 'database',
+      id: randomUUID(),
+      name: '빈 표',
+      sources: [{ id: randomUUID(), name: '표', columns, rowIds: [] }],
+    }
     const p = plan(snapshot([database.id], [database]))
     assert.deepEqual(paths(p), ['빈 표.csv'])
     assert.equal(textAt(p, '빈 표.csv').slice(1), '이름,상태,완료\r\n')
+  })
+
+  test('★ data source 가 여럿이면 데이터베이스 폴더 안에 소스마다 CSV 한 벌 — 행은 자기 소스 밑에 (8e-1)', () => {
+    const task = pageNode('할 일 행', [], [], { cells: { title: { type: 'title', title: [textRun('할 일 행')] } } })
+    const person = pageNode('사람 행', [], [], { cells: { title: { type: 'title', title: [textRun('사람 행')] } } })
+    const titleOnly = [{ propertyId: 'title', name: '이름', type: 'title' as const }]
+    const database: ExportDatabaseNode = {
+      kind: 'database',
+      id: randomUUID(),
+      name: 'CRM',
+      sources: [
+        { id: randomUUID(), name: '할 일', columns: titleOnly, rowIds: [task.id] },
+        // 금지 글자는 바꾸고 같은 이름은 가른다 — 페이지 이름과 같은 규칙.
+        { id: randomUUID(), name: '사람/연락처', columns: titleOnly, rowIds: [person.id] },
+        { id: randomUUID(), name: '할 일', columns: titleOnly, rowIds: [] },
+      ],
+    }
+    const p = plan(snapshot([database.id], [database, task, person]))
+    const all = paths(p)
+    const listing = all.join(' | ')
+    assert.ok(!all.includes('CRM.csv'), '소스가 여럿인데 데이터베이스 CSV 를 하나로 냈다')
+    const csvs = all.filter((path) => path.endsWith('.csv'))
+    assert.equal(csvs.length, 3, `같은 이름의 소스가 한 파일로 겹쳤다: ${listing}`)
+    assert.ok(csvs.every((path) => path.startsWith('CRM/') && !path.slice('CRM/'.length).includes('/')), listing)
+    // 행은 자기 소스의 CSV 와 같은 이름의 폴더 밑에 놓인다.
+    const csvOf = (row: string) => csvs.find((path) => textAt(p, path).includes(row))
+    for (const row of ['할 일 행', '사람 행']) {
+      const csv = csvOf(row)
+      assert.ok(csv !== undefined, `${row} 을 담은 CSV 가 없다: ${listing}`)
+      assert.ok(all.includes(`${csv.slice(0, -'.csv'.length)}/${row}.md`), `${row} 이 자기 소스 밑에 없다: ${listing}`)
+      assert.equal(textAt(p, csv).slice(1), `이름\r\n${row}\r\n`)
+    }
+    assert.ok(!csvOf('사람 행')!.includes('/연락처'), `소스 이름의 / 가 폴더를 만들었다: ${listing}`)
+    assert.deepEqual(p.report.counts, { pages: 0, databases: 1, rows: 2, attachments: 0 })
   })
 })
 

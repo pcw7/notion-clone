@@ -65,6 +65,18 @@ export type ExportDatabaseNode = {
   readonly kind: 'database'
   readonly id: string
   readonly name: string
+  /**
+   * 이 데이터베이스가 소유한 data source 들 — 부착 순서대로(8e-1 · F-04-23). 적어도 하나다. 하나뿐이면 `이름.csv` + `이름/` 이고(전과 같다),
+   * 둘 이상이면 `이름/` 폴더 안에 소스마다 `소스.csv` + `소스/` 다.
+   */
+  readonly sources: readonly ExportTable[]
+}
+
+/** data source 하나의 표 — CSV 한 벌과 그 행들. */
+export type ExportTable = {
+  /** data source id. */
+  readonly id: string
+  readonly name: string
   /** 살아 있는 프로퍼티 전부. 제목 열은 조립이 맨 앞으로 옮긴다. */
   readonly columns: readonly CsvColumn[]
   /** 살아 있는 행 전부(뷰 필터 없음). 순서대로. 각 행은 `kind: 'page'` 노드다. */
@@ -257,9 +269,33 @@ export function planExport(snapshot: ExportSnapshot, options: { readonly untitle
     enter(database.id)
     counts.databases += 1
 
+    const only = database.sources.length === 1 ? database.sources[0] : undefined
+    if (only !== undefined) {
+      emitTable(only, folder, base)
+      return
+    }
+    // 소스가 여럿이면 데이터베이스 이름의 폴더 안에 소스마다 한 벌 — 이름은 그 폴더 안에서 짓는다(같은 이름 · 금지 글자 규칙이 같다).
     const path = joinPath(folder, base)
-    const columns = titleFirst(database.columns)
-    const rows = database.rowIds.map((id) => {
+    const names = resolveNames(
+      database.sources.map((source) => ({
+        key: `source:${source.id}`,
+        id: source.id,
+        base: safeFileName(source.name.trim(), untitled),
+        extensions: ['.csv', ''],
+      })),
+      [],
+    )
+    for (const source of database.sources) {
+      const name = nameIn(names, `source:${source.id}`)
+      if (source.name.trim().normalize('NFC') !== name) renamedFiles += 1
+      emitTable(source, path, name)
+    }
+  }
+
+  const emitTable = (source: ExportTable, folder: string, base: string): void => {
+    const path = joinPath(folder, base)
+    const columns = titleFirst(source.columns)
+    const rows = source.rowIds.map((id) => {
       const row = nodeOf(id)
       if (row.kind !== 'page') throw new Error(`데이터베이스의 행이 페이지가 아니다: ${id}`)
       return row

@@ -72,16 +72,26 @@ export default async function TemplatePage({
   const database = await getDatabase(ctx, databaseId)
   if (!database.ok) notFound()
 
-  const views = await listViews(ctx, databaseId)
-  if (!views.ok || views.value.length === 0) notFound()
-  // 컬럼 · 옵션은 뷰가 들고 있다. 템플릿은 뷰에 속하지 않으므로 **기본 뷰**의 컬럼으로 그린다 —
-  // 속성을 숨긴 뷰를 따라가면 그 뷰에서 숨긴 속성을 템플릿에서 채울 길이 없어진다.
-  const view = await getView(ctx, views.value[0].id)
-  if (!view.ok) notFound()
+  // 템플릿은 **data source** 의 것이다(`page.data_source_id`). 데이터베이스가 data source 를 여럿 가지면(8e-1) 첫 뷰의 것이 아닐 수 있다 —
+  // 템플릿 자신의 data source 를 읽고, 그것이 이 데이터베이스에 붙어 있어야 한다(다른 표의 템플릿 id 를 이 주소에 넣어도 열리지 않는다).
+  const source = await withReadTransaction((tx) =>
+    tx.queryMaybe<{ data_source_id: string }>(`SELECT data_source_id FROM page WHERE id = $1`, [templateId]),
+  )
+  if (source === null || !database.value.dataSources.some((ds) => ds.id === source.data_source_id)) notFound()
+  const dataSourceId = source.data_source_id
 
   // "이 표의 살아 있는 템플릿인가"를 묻는 곳은 한 함수다(`template.ts`) — 권한은 위에서 이미 봤다.
-  const template = await withReadTransaction((tx) => readLiveTemplate(tx, ctx, view.value.dataSourceId, templateId))
+  const template = await withReadTransaction((tx) => readLiveTemplate(tx, ctx, dataSourceId, templateId))
   if (template === null) notFound()
+
+  const views = await listViews(ctx, databaseId)
+  if (!views.ok) notFound()
+  // 컬럼 · 옵션은 뷰가 들고 있다. 템플릿은 뷰에 속하지 않으므로 **그 data source 의 첫 뷰**의 컬럼으로 그린다 —
+  // 속성을 숨긴 뷰를 따라가면 그 뷰에서 숨긴 속성을 템플릿에서 채울 길이 없어진다. data source 마다 뷰가 적어도 하나다(`deleteView`).
+  const first = views.value.find((v) => v.dataSourceId === dataSourceId)
+  if (first === undefined) notFound()
+  const view = await getView(ctx, first.id)
+  if (!view.ok) notFound()
 
   const columns = listColumns('record', view.value.columns)
   const row = rowJson(template)
