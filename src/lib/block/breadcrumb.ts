@@ -34,7 +34,7 @@ export type BreadcrumbItem = {
   readonly kind: 'workspace' | 'teamspace' | 'database' | 'page' | 'current'
   readonly id: string
   readonly label: string
-  /** 아이콘 — 없으면 null(그리지 않는다). 페이지 · teamspace 만 갖는다. */
+  /** 아이콘 — 없으면 null(그리지 않는다). 페이지 · teamspace · 데이터베이스(8c-3b — 템플릿 화면의 경로)가 갖는다. */
   readonly icon: PageIcon | null
   /** 누르면 갈 곳 — 지금 페이지(`current`)는 링크가 아니다. */
   readonly href: string | null
@@ -86,13 +86,19 @@ export function breadcrumbTrail(input: BreadcrumbInput): BreadcrumbTrail {
 /** 데이터베이스 템플릿 편집 화면의 경로 — 워크스페이스 · 그 표 · 템플릿(행은 페이지 트리에 서지 않는다 · §3.3-179). */
 export function templateTrail(input: {
   readonly workspaceId: string
-  readonly database: { readonly id: string; readonly name: string }
+  readonly database: { readonly id: string; readonly name: string; readonly icon: PageIcon | null }
   readonly templateId: string
 }): BreadcrumbTrail {
   const { workspaceId } = input
   return [
     { kind: 'workspace', id: workspaceId, label: WORKSPACE_LABEL, icon: null, href: `/w/${workspaceId}` },
-    { kind: 'database', id: input.database.id, label: input.database.name || UNTITLED_PAGE, icon: null, href: `/w/${workspaceId}/db/${input.database.id}` },
+    {
+      kind: 'database',
+      id: input.database.id,
+      label: input.database.name || UNTITLED_PAGE,
+      icon: input.database.icon,
+      href: `/w/${workspaceId}/db/${input.database.id}`,
+    },
     { kind: 'current', id: input.templateId, label: '템플릿', icon: null, href: null },
   ]
 }

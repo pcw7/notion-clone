@@ -2090,6 +2090,39 @@ try {
     ])
   }
 
+  console.log('\n[24] 데이터베이스 아이콘의 모양 (0038 / §3.5 [보강] 데이터베이스 아이콘 ② · 8c-3b조각)')
+  {
+    // 자리는 `database.icon` 이다(블록의 `format.page_icon` 은 페이지 행만 — [23]). 모양은 페이지 아이콘과 같고, 없으면 SQL NULL.
+    const dbId = randomUUID()
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key,
+                          ancestor_path, perm_scope_id, properties, format, created_at, last_edited_at)
+       VALUES ($1, $2, 'database', 'workspace', $2, $3, '{}', $1, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      [dbId, wsId, `dbicon-${dbId}`],
+    )
+    await client.query(
+      `INSERT INTO database (id, icon, created_at, updated_at) VALUES ($1, $2::jsonb, now(), now())`,
+      [dbId, JSON.stringify({ type: 'emoji', emoji: '👨‍👩‍👧‍👦' })],
+    )
+    ok('데이터베이스에 ZWJ 가족 이모지 아이콘(코드포인트 7개)')
+    const setIcon = `UPDATE database SET icon = $2::jsonb WHERE id = $1`
+    await client.query(setIcon, [dbId, null])
+    ok('아이콘 없음은 SQL NULL')
+    await client.query(setIcon, [dbId, JSON.stringify({ type: 'emoji', emoji: '1️⃣' })])
+    ok('키캡 아이콘')
+    await mustReject('JSON null 아이콘(없음은 SQL NULL 하나다)', setIcon, [dbId, 'null'])
+    await mustReject('문자열 아이콘', setIcon, [dbId, JSON.stringify('📚')])
+    await mustReject('모르는 아이콘 종류', setIcon, [dbId, JSON.stringify({ type: 'external', url: 'https://example.com/a.png' })])
+    await mustReject('글자가 아닌 이모지', setIcon, [dbId, JSON.stringify({ type: 'emoji', emoji: 7 })])
+    await mustReject('빈 이모지', setIcon, [dbId, JSON.stringify({ type: 'emoji', emoji: '' })])
+    await mustReject('공백이 든 이모지', setIcon, [dbId, JSON.stringify({ type: 'emoji', emoji: '📚 ' })])
+    await mustReject('16 코드포인트를 넘는 이모지', setIcon, [dbId, JSON.stringify({ type: 'emoji', emoji: 'x'.repeat(17) })])
+    await mustReject('다른 키가 붙은 아이콘', setIcon, [dbId, JSON.stringify({ type: 'emoji', emoji: '📚', url: 'https://example.com' })])
+    await mustReject('데이터베이스 블록의 format.page_icon(자리는 database.icon)', `UPDATE block SET format = $2::jsonb WHERE id = $1`, [
+      dbId, JSON.stringify({ page_icon: { type: 'emoji', emoji: '📚' } }),
+    ])
+  }
+
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
 } catch (e) {

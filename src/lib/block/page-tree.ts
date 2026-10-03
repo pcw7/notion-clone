@@ -11,6 +11,7 @@
  * 절대 싣지 않는다(**사이드바가 페이지 본문을 끌고 오면 즉시 성능이 무너진다**)."*
  * 그래서 `properties` 에서 제목만 꺼내고 나머지는 버린다. 아이콘(8c-1)은 `format` 에서
  * 그 키 하나만 읽는다(`format->'page_icon'` — F-02-05 *"트리 조회 쿼리에 함께 실려야 한다(N+1 금지)"*).
+ * 데이터베이스의 아이콘은 `database.icon` 이다(8c-3b) — 같은 쿼리가 조인해 읽는다.
  *
  * ──────────────────────────────────────────────────────────────────────
  * 트리의 부모는 `parent_id` 가 아니다
@@ -73,7 +74,7 @@ export type PageTreeKind = 'page' | 'database'
 export type PageTreeRow = {
   readonly id: string
   readonly title: string
-  /** 페이지 아이콘(8c-1). 데이터베이스는 아직 없다(그 아이콘은 `database.icon` — 다음 조각). */
+  /** 아이콘 — 페이지는 `format.page_icon`(8c-1), 데이터베이스는 `database.icon`(8c-3b). 없으면 null. */
   readonly icon?: PageIcon | null
   readonly kind: PageTreeKind
   /** 루트→부모까지의 **블록** id. 본문 블록도 들어 있다 [X-7]. */
@@ -289,7 +290,10 @@ export async function listPageTree(ctx: SessionContext): Promise<PageTreeNode[]>
       //   늘린다. 행은 표가 보여준다.
       // ★ 7c-2: 루트 블록(`r`)을 붙여 teamspace 를 읽는다(머리말).
       // ★ 7c-7: 워크스페이스 부모 루트의 종류(공용 · 내 개인 · 남의 개인)도 함께 읽는다 — 주인의 id 는 내보내지 않는다.
-      `SELECT b.id, b.type, b.properties, b.format -> 'page_icon' AS page_icon, b.ancestor_path, b.order_key,
+      // ★ 8c-3b: 데이터베이스의 아이콘은 블록의 `format` 이 아니라 `database.icon` 이다(0037 이 그 키를 페이지 행만 갖게 한다).
+      `SELECT b.id, b.type, b.properties,
+              CASE WHEN b.type = 'database' THEN d.icon ELSE b.format -> 'page_icon' END AS page_icon,
+              b.ancestor_path, b.order_key,
               CASE WHEN r.parent_type = 'teamspace' THEN r.parent_id END AS teamspace_id,
               coalesce(t.visibility = 'open', false) AS teamspace_open,
               CASE WHEN r.parent_type <> 'workspace' THEN NULL
@@ -299,6 +303,7 @@ export async function listPageTree(ctx: SessionContext): Promise<PageTreeNode[]>
          FROM live_block b
          JOIN block r ON r.id = COALESCE(b.ancestor_path[1], b.id)
          LEFT JOIN teamspace t ON r.parent_type = 'teamspace' AND t.id = r.parent_id
+         LEFT JOIN database d ON b.type = 'database' AND d.id = b.id
         WHERE b.workspace_id = $1 AND b.type IN ('page', 'database') AND b.parent_type <> 'data_source'
           AND b.perm_scope_id = ANY($2::uuid[])
         ORDER BY b.order_key, b.id`,

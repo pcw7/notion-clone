@@ -5425,6 +5425,168 @@ async function main() {
       await sleep(500)
     }
 
+    if (sectionIf('데이터베이스 자신의 아이콘 (8c-3b · F-02-05)')) {
+      // 데이터베이스의 아이콘은 정본의 `database.icon` 이다(페이지 아이콘과 같은 모양 · 같은 고르개). 머리의 고르개가 그것을 바꾸고 사이드바 ·
+      // 머리의 경로 · 템플릿 화면의 경로 · 관계형의 대상 고르개 · teamspace 화면이 그것을 단다. 아이콘이 없으면 사이드바 · teamspace 화면은
+      // 표 글리프(그림 — 전에는 글자 `▦` 였다). 고치는 사람은 이름과 같다(구조 · 데이터베이스 잠금). 자기 데이터를 스스로 만든다 —
+      // E2E_ONLY 로 홀로 돈다.
+      const stamp = Date.now()
+      const src = (p) => new URL(`../src/lib/${p}`, import.meta.url).href
+      const dbMod = await import(src('database/database.ts'))
+      const tplMod = await import(src('database/template.ts'))
+      const aclMod = await import(src('permissions/acl.ts'))
+      const { DATABASE_GLYPH } = await import(src('block/page-icon.ts'))
+      const must = (r, what) => {
+        if (!r.ok) throw new Error(`${what} 준비 실패: ${r.reason}`)
+        return r.value
+      }
+      const shelfName = `서가${stamp}`
+      const pickerName = `대상고르기${stamp}`
+      const shelf = must(await dbMod.createDatabase(ctx, { name: shelfName }), '표')
+      const picker = must(await dbMod.createDatabase(ctx, { name: pickerName }), '표')
+      const template = must(await tplMod.createTemplate(ctx, shelf.dataSourceId, { title: `서가틀${stamp}` }), '템플릿')
+      const dbApi = (id) => `${BASE}/api/workspaces/${workspaceId}/databases/${id}`
+      const patchDb = (id, body, headers = authed) => fetch(dbApi(id), { method: 'PATCH', headers, body: JSON.stringify(body) })
+
+      const ICON = '[data-testid="page-icon"]'
+      const ADD = '[data-testid="page-icon-add"]'
+      const PICKER = '[data-testid="emoji-picker"]'
+      const ACTIVE_OPTION = `${PICKER} [role="option"][aria-selected="true"]`
+      const headerIcon = () => evaluate(`document.querySelector('${ICON}')?.textContent ?? null`)
+      /** 그 줄의 [아이콘(이모지 · 글리프면 '' · 없으면 null), 글리프의 첫 선, 줄의 글자]. */
+      const rowExpr = (sel) => `(() => { const a = document.querySelector(${JSON.stringify(sel)}); const i = a?.querySelector('[data-page-icon]')
+        return a ? [i?.getAttribute('data-page-icon') ?? null, i?.querySelector('path')?.getAttribute('d') ?? null, a.textContent] : null })()`
+      const TREE_ROW = `nav[aria-label="페이지 트리"] a[href="/w/${workspaceId}/db/${shelf.id}"]`
+      const treeRow = () => evaluate(rowExpr(TREE_ROW))
+      const glyphRow = (name) => JSON.stringify(['', DATABASE_GLYPH.paths[0], name])
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${shelf.id}` })
+      check('전제 — 아이콘 없는 표 · "아이콘 추가"가 있다',
+        await waitFor(`!!document.querySelector('${ADD}') && !document.querySelector('${ICON}') && !!document.querySelector(${JSON.stringify(TREE_ROW)})`, 15000))
+      check('★ 사이드바 — 아이콘 없는 표는 표 글리프(문서 글리프가 아니다) · 줄의 글자는 이름뿐(글리프는 글자가 아니다)',
+        JSON.stringify(await treeRow()) === glyphRow(shelfName), JSON.stringify(await treeRow()))
+
+      // ① "아이콘 추가" — 머리에 마우스를 올리면 보이고, 누르면 무작위 이모지를 곧바로 단다
+      const nameBox = await rect('input[aria-label="데이터베이스 이름"]')
+      if (nameBox) await move(nameBox.x + 20, nameBox.y + nameBox.h / 2)
+      check('★ "아이콘 추가"는 표의 머리에 마우스를 올리면 보인다',
+        await waitFor(`getComputedStyle(document.querySelector('${ADD}')).opacity === '1'`, 2000))
+      await clickSelector(ADD)
+      check('★ "아이콘 추가"를 누르면 무작위 이모지가 곧바로 선다 — 고르개는 열리지 않는다',
+        await waitFor(`!!document.querySelector('${ICON}') && !document.querySelector('${PICKER}')`, 8000), String(await headerIcon()))
+      const added = await headerIcon()
+      check('★ 사이드바의 그 표 줄도 같은 아이콘이다(서버가 다시 그렸다)',
+        await waitFor(`${rowExpr(TREE_ROW)}?.[0] === ${JSON.stringify(added)}`, 8000), JSON.stringify([added, await treeRow()]))
+
+      // ② 고르개 — 한국어로 찾고 Enter. 머리의 경로도 그 아이콘을 단다
+      await clickSelector(ICON)
+      await waitFor(`!!document.querySelector('${PICKER} [role="option"]')`, 8000)
+      await typeText('책')
+      await waitFor(`document.querySelector('${ACTIVE_OPTION}')?.dataset.emoji?.codePointAt(0) === 0x1f4da`, 3000)
+      const picked = await evaluate(`document.querySelector('${ACTIVE_OPTION}')?.dataset.emoji ?? null`)
+      await key('Enter')
+      check('★ 고르면 닫히고 표의 아이콘이 바뀐다(📚)',
+        picked !== null && picked.codePointAt(0) === 0x1f4da
+          && (await waitFor(`!document.querySelector('${PICKER}') && document.querySelector('${ICON}')?.textContent === ${JSON.stringify(picked)}`, 5000)),
+        JSON.stringify([picked, await headerIcon()]))
+      check('★ 사이드바 · 머리의 경로가 따라간다',
+        await waitFor(`${rowExpr(TREE_ROW)}?.[0] === ${JSON.stringify(picked)}
+          && document.querySelector('nav[aria-label="상위 경로"] span.text-neutral-400')?.textContent === ${JSON.stringify(`${picked}${shelfName}`)}`, 8000),
+        JSON.stringify([await treeRow(), await evaluate(`document.querySelector('nav[aria-label="상위 경로"] span.text-neutral-400')?.textContent ?? null`)]))
+
+      // ③ 템플릿 편집 화면의 경로 — 표의 줄이 그 아이콘을 앞에 단다(새로 그린 화면 — 서버의 값)
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${shelf.id}/templates/${template.id}` })
+      const CRUMB = `nav[aria-label="상위 경로"] a[href="/w/${workspaceId}/db/${shelf.id}"]`
+      check('★ 템플릿 화면의 경로 — 표의 줄이 그 아이콘을 앞에 단다',
+        await waitFor(`JSON.stringify(${rowExpr(CRUMB)}?.filter((_, i) => i !== 1)) === ${JSON.stringify(JSON.stringify([picked, `${picked}${shelfName}`]))}`, 15000),
+        JSON.stringify(await evaluate(rowExpr(CRUMB))))
+
+      // ④ 관계형의 대상 고르개 — `<option>` 은 글자만 담는다: 아이콘이 있으면 이름 앞의 글자, 없으면 이름만
+      const setSelect = (selector, value) => evaluate(`(() => {
+        const s = document.querySelector(${JSON.stringify(selector)})
+        if (!s) return false
+        s.value = ${JSON.stringify(value)}
+        s.dispatchEvent(new Event('change', { bubbles: true }))
+        return true
+      })()`)
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${picker.id}` })
+      await waitFor(`!!document.querySelector('[data-testid="db-add-column"]')`, 15000)
+      await clickSelector('[data-testid="db-add-column"]')
+      await waitFor(`document.activeElement?.getAttribute('aria-label') === '속성 이름'`, 3000)
+      await setSelect('select[aria-label="속성 유형"]', 'relation')
+      const optionTexts = `[...(document.querySelector('[data-testid="db-relation-target"]')?.options ?? [])].map((o) => o.textContent)`
+      check('★ 관계형의 대상 고르개 — 표의 아이콘이 이름 앞에 · 아이콘 없는 표는 이름만',
+        await waitFor(`(() => { const t = ${optionTexts}
+          return t.includes(${JSON.stringify(`${picked} ${shelfName}`)}) && t.includes(${JSON.stringify(`${pickerName} (이 표)`)}) })()`, 8000),
+        JSON.stringify((await evaluate(optionTexts)).filter((t) => t.includes(String(stamp)))))
+
+      // ⑤ teamspace 화면 — 데이터베이스 목록이 그 아이콘을 단다 · 없으면 표 글리프. 아이콘은 라우트로 단다
+      const tsUrl = `${BASE}/api/workspaces/${workspaceId}/teamspaces`
+      const team = (await (await fetch(tsUrl, { method: 'POST', headers: authed, body: JSON.stringify({ name: `표아이콘팀${stamp}` }) })).json()).teamspace.id
+      const compassName = `나침반표${stamp}`
+      const bareName = `맨표${stamp}`
+      const compass = must(await dbMod.createDatabase(ctx, { name: compassName, teamspaceId: team }), '팀 표')
+      const bare = must(await dbMod.createDatabase(ctx, { name: bareName, teamspaceId: team }), '팀 표')
+      const viaRoute = await patchDb(compass.id, { icon: { type: 'emoji', emoji: '🧭' } })
+      const viaRouteBody = await viaRoute.json().catch(() => ({}))
+      check('라우트 — 아이콘만 보내면 바꾸고 그 아이콘을 돌려준다',
+        viaRoute.status === 200 && viaRouteBody.database?.icon?.emoji === '🧭', JSON.stringify([viaRoute.status, viaRouteBody]))
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/teamspaces/${team}` })
+      const teamRow = (id) => `[data-testid="teamspace-databases"] a[href="/w/${workspaceId}/db/${id}"]`
+      check('★ teamspace 화면의 데이터베이스 목록 — 아이콘을 단다 · 없으면 표 글리프(글자가 아니다)',
+        await waitFor(`JSON.stringify(${rowExpr(teamRow(compass.id))}?.filter((_, i) => i !== 1)) === ${JSON.stringify(JSON.stringify(['🧭', `🧭${compassName}`]))}
+          && JSON.stringify(${rowExpr(teamRow(bare.id))}) === ${JSON.stringify(glyphRow(bareName))}`, 15000),
+        JSON.stringify([await evaluate(rowExpr(teamRow(compass.id))), await evaluate(rowExpr(teamRow(bare.id)))]))
+
+      // ⑥ 잠근 표 — 아이콘은 보이고 버튼이 아니다(구조를 고칠 수 있어도) · 라우트는 409
+      const lockUrl = `${dbApi(shelf.id)}/lock`
+      const locked = await fetch(lockUrl, { method: 'PUT', headers: authed })
+      try {
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${shelf.id}` })
+        check('★ 잠근 표 — 아이콘은 보이고 버튼이 아니다 · "아이콘 추가"가 없다',
+          locked.ok && (await waitFor(`document.querySelector('${ICON}')?.textContent === ${JSON.stringify(picked)}
+            && document.querySelector('${ICON}').tagName !== 'BUTTON'
+            && document.querySelector('${ICON}').getAttribute('aria-label') === ${JSON.stringify(`데이터베이스 아이콘 ${picked}`)}
+            && !document.querySelector('${ADD}')`, 15000)),
+          String(await evaluate(`document.querySelector('${ICON}')?.outerHTML ?? '(없음)'`)))
+        const refused = await patchDb(shelf.id, { icon: { type: 'emoji', emoji: '🔥' } })
+        check('★ 라우트 — 잠근 표의 아이콘 바꾸기는 409 locked', refused.status === 409 && (await refused.json()).error === 'locked', String(refused.status))
+      } finally {
+        await fetch(lockUrl, { method: 'DELETE', headers: authed })
+      }
+
+      // ⑦ 볼 수만 있는 사람 — 화면은 아이콘만(버튼 · "아이콘 추가" 없음) · 라우트는 403 · 모양이 아니면 400
+      const secretName = `열쇠표${stamp}`
+      const secret = must(await dbMod.createDatabase(ctx, { name: secretName, privateTop: true }), '개인 표')
+      const reader = await joinAs(workspaceId, await createUser(`표 아이콘 독자 ${stamp}`), 'member')
+      const marked = await patchDb(secret.id, { icon: { type: 'emoji', emoji: '🗝️' } })
+      const shared = await aclMod.grantAccess(ctx, secret.id, { type: 'user', id: reader.userId }, 'view')
+      const asReader = { ...json, cookie: `nc_session=${reader.token}` }
+      const readerHtml = await (await fetch(`${BASE}/w/${workspaceId}/db/${secret.id}`, { headers: asReader })).text()
+      check('★ 볼 수만 있는 사람의 표 화면 — 아이콘은 보이고 버튼 · "아이콘 추가"가 없다',
+        marked.ok && shared.ok && readerHtml.includes('aria-label="데이터베이스 아이콘 🗝️"') && !readerHtml.includes('data-testid="page-icon-add"')
+          && !readerHtml.includes('aria-label="아이콘 바꾸기'),
+        JSON.stringify([marked.status, shared.ok, readerHtml.length]))
+      const denied = await patchDb(secret.id, { icon: { type: 'emoji', emoji: '😈' } }, asReader)
+      const bad = await patchDb(shelf.id, { icon: { type: 'emoji', emoji: '📚📖' } })
+      const badBody = await bad.json().catch(() => ({}))
+      check('★ 라우트 — 볼 수만 있으면 403 · 두 글자는 400 invalid_icon',
+        denied.status === 403 && bad.status === 400 && badBody.error === 'invalid_icon', JSON.stringify([denied.status, bad.status, badBody]))
+
+      // ⑧ 제거 — "아이콘 추가"로 돌아오고 사이드바는 표 글리프로
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${shelf.id}` })
+      check('거부한 뒤에도 아이콘은 그대로다 · 잠금을 풀면 다시 단추다',
+        await waitFor(`document.querySelector('${ICON}')?.textContent === ${JSON.stringify(picked)} && document.querySelector('${ICON}').tagName === 'BUTTON'`, 15000),
+        String(await headerIcon()))
+      await clickSelector(ICON)
+      await waitFor(`!!document.querySelector('[data-testid="page-icon-remove"]')`, 8000)
+      await clickSelector('[data-testid="page-icon-remove"]')
+      check('★ 제거하면 "아이콘 추가"로 돌아온다', await waitFor(`!document.querySelector('${ICON}') && !!document.querySelector('${ADD}')`, 5000))
+      check('★ 사이드바는 표 글리프로 돌아온다', await waitFor(`JSON.stringify(${rowExpr(TREE_ROW)}) === ${JSON.stringify(glyphRow(shelfName))}`, 8000),
+        JSON.stringify(await treeRow()))
+      await sleep(500)
+    }
+
     if (sectionIf('코멘트 패널 · 인박스 (F-05-08 · F-11-07)')) {
       const commentPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
         method: 'POST',

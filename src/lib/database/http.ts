@@ -90,6 +90,7 @@ export function databaseFailureStatus(reason: DatabaseFailure): number {
     case 'locked':
       return 409
     case 'invalid_name':
+    case 'invalid_icon':
       return 400
   }
 }

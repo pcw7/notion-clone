@@ -39,7 +39,7 @@ import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 
-import type { PageIcon } from '@/lib/block/page-icon'
+import { DATABASE_GLYPH, type PageIcon } from '@/lib/block/page-icon'
 import { TeamspaceCreateForm } from './teamspace-create'
 import { teamspaceIcon } from './teamspace-messages'
 import { TrashPanel, type TrashRow } from './trash-panel'
@@ -51,7 +51,7 @@ import { requestDuplicate } from './duplicate-page'
 export type SidebarNode = {
   id: string
   title: string
-  /** 페이지 아이콘(8c-1) — 없으면 null(기본 문서 글리프). 데이터베이스는 아직 `▦` 다. */
+  /** 아이콘 — 없으면 null(기본 글리프: 페이지는 문서(8c-1), 데이터베이스는 표(8c-3b)). */
   icon: PageIcon | null
   /** 풀페이지 데이터베이스는 페이지 라우트로 열리지 않는다 — 링크를 고르는 근거다. */
   kind: 'page' | 'database'
@@ -628,13 +628,12 @@ function TreeItem({
           aria-current={isCurrent ? 'page' : undefined}
           className="min-w-0 flex-1 truncate py-1 text-sm"
         >
-          {node.kind === 'database' ? (
-            <span aria-hidden className="mr-1 text-neutral-400">
-              ▦
-            </span>
-          ) : (
-            <PageIconView icon={node.icon} fallback className="mr-1 align-[-0.125em]" />
-          )}
+          <PageIconView
+            icon={node.icon}
+            fallback
+            glyph={node.kind === 'database' ? DATABASE_GLYPH : undefined}
+            className="mr-1 align-[-0.125em]"
+          />
           {node.title || UNTITLED}
         </Link>
 

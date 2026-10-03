@@ -1049,7 +1049,8 @@ CREATE VIEW live_block AS SELECT * FROM block WHERE lifecycle = 'live';
 
 **[보강] 페이지 아이콘(`block.format.page_icon`)** ⟨잔여 묶음 8c-1 · F-02-05 / 마이그레이션 0037⟩
 
-> 초판의 `block` 에는 아이콘 자리가 없다(`database` 에는 `icon jsonb` 가 있다). 02 F-02-05 의 데이터 모델 함의 *"`page_meta.icon_type` +
+> 초판의 `block` 에는 아이콘 자리가 없다(`database` 에는 `icon jsonb` 가 있다 — 데이터베이스 자신의 아이콘은 그 칸이다 · §3.5 [보강]
+> 데이터베이스 아이콘 · 8c-3b). 02 F-02-05 의 데이터 모델 함의 *"`page_meta.icon_type` +
 > `icon_value`"* 는 폐기된 `page_meta` 표의 것이다(페이지는 블록이다 — C-3). 노션 API 의 page 객체는 `icon` 을 `emoji` · `external` · `file`
 > (· `custom_emoji` · `icon`) 중 하나의 모양으로 준다. F-02-05 클론 대안: *"1단계는 이모지 전용 … 이미지 업로드와 내장 아이콘 세트는 v1 로 미룸"*.
 >
@@ -1061,7 +1062,7 @@ CREATE VIEW live_block AS SELECT * FROM block WHERE lifecycle = 'live';
 > `teamspace.icon` ②)과 **같은 규칙**이다(`contracts/emoji.ts`). 7c-14 의 규칙이 키캡(`1️⃣`)을 거부하던 틈은 함께 고쳤다(키캡은 그림 문자
 > 속성이 없다). DB 는 표현할 수 있는 부분을 CHECK 으로 막는다(0037): **페이지 행만** · 객체 · `type='emoji'` · `emoji` 는 1~16 코드포인트의
 > 공백 없는 문자열 · 다른 키 없음. 이미지(업로드 · 외부 URL)는 다음 조각이 이미지 블록의 `source` 와 같은 모양(`{type:'file', file_id}` ·
-> `{type:'external', url}`)으로 넓힌다 — 그때 이 CHECK 도 넓힌다.
+> `{type:'external', url}`)으로 넓힌다 — 그때 이 CHECK 도(데이터베이스 아이콘의 0038 과 함께) 넓힌다.
 > ③ **본문(Y.Doc)은 아이콘을 싣지 않는다** — 하위 페이지 참조 노드는 행에서 본문을 지을 때(옮기지 않은 페이지 · 복제) 자식 행의 `format`
 > 을 받아 왔다(`rowsToDoc` → `docToPm`). 그대로면 **볼 수 없는 하위 페이지의 아이콘**이 부모 본문을 타고 협업 참여자에게 퍼진다(제목이
 > 그랬다 — HANDOFF §3.2-22). 세 층이 각자 버린다 — 행에서 문서를 지을 때 · 문서에서 편집기 · Y.Doc 노드를 지을 때(본문의 format 규칙
@@ -1106,7 +1107,7 @@ CREATE VIEW live_block AS SELECT * FROM block WHERE lifecycle = 'live';
 ```sql
 CREATE TABLE database (                       -- 컨테이너. block(type='database') 의 1:1 확장
   id            uuid PRIMARY KEY REFERENCES block(id) ON DELETE CASCADE,   -- [X-2]
-  title_rich    jsonb, icon jsonb, cover jsonb,
+  title_rich    jsonb, icon jsonb, cover jsonb,  -- [보강] icon: 페이지 아이콘과 같은 모양 · 없으면 NULL · CHECK(0038) · 8c-3b
   is_inline     boolean NOT NULL DEFAULT true,
   is_full_width boolean NOT NULL DEFAULT false,
   -- is_locked 컬럼 없음 -> node_lock 테이블 [X-9]
@@ -1399,6 +1400,30 @@ ALTER TABLE select_option ADD FOREIGN KEY (property_id, group_id)
   올려야 한다. 반만 지키는 불변식은 두지 않는다. 호출자가 그 셀을 **보냈으면 그것이 이긴다 — 빈 값이어도**(보드의
   "값 없음" 열에서 만든 카드가 그 열에 남는다).
 - 옵션을 **다른 그룹으로 옮기기** · 그룹 단위 필터("To-do 전체") · 보드의 그룹(범주) 단위 열은 아직 없다.
+
+**[보강] 데이터베이스 아이콘(`database.icon`)** ⟨잔여 묶음 8c-3b · F-02-05 / 마이그레이션 0038⟩
+
+> 초판의 `database` 는 `title_rich` · `icon` · `cover` 를 갖는다 — 노션 API 의 database 객체는 `icon` 을 page 객체와 같은 모양으로 준다.
+> 0013 이 이 칸을 만들었지만 아무도 읽고 쓰지 않았다. 8c-1 이 페이지 아이콘을 블록의 `format.page_icon` 에 두면서(§3.4 [보강] 페이지
+> 아이콘 ①) 데이터베이스의 자리를 다시 물어야 했다. 02 F-02-05 는 데이터베이스를 따로 적지 않았다 — F-04-14 는 풀페이지 데이터베이스가
+> *"페이지 아이콘·커버·제목을 그대로 사용한다"* 고 적었다.
+>
+> ① **자리는 이 칸이다** — 데이터베이스 블록(`type='database'`)의 `format.page_icon` 이 아니다. 0037 의 CHECK 이 그 키를 **페이지 행만**
+> 갖게 했고, 정본이 이미 데이터베이스의 모습(`title_rich` · `icon` · `cover`)을 이 표에 두었다. 두 곳에 쓰는 이름(`block.properties.title` ·
+> `title_rich` — `renameDatabase`)과 달리 **한 곳**이다 — 블록 트리를 읽는 쪽(사이드바 트리 · 멘션의 이름 맵)은 데이터베이스 행이면 이
+> 칸을 같은 쿼리에서 조인해 읽는다(N+1 없음). 없으면 **SQL NULL** 이다(컬럼이므로 — 페이지는 키가 없다).
+> ② 값의 모양은 페이지 아이콘과 **같다** — 노션 API icon 객체, 지금은 `{"type":"emoji","emoji":"📚"}` 하나 · 이모지 한 글자
+> (`isSingleEmoji` · 받기는 `parsePageIconInput`). DB 는 0037 과 같은 값을 CHECK 으로 막는다(0038 — 객체 · `type='emoji'` · 1~16 코드포인트 ·
+> 공백 없음 · 다른 키 없음 · JSON `null` 도 거부한다 — 없음은 SQL NULL 하나다). 이미지(8c-4)로 넓힐 때 두 CHECK 을 함께 넓힌다.
+> ③ **바꾸는 사람은 이름을 바꾸는 사람이다** — `edit_structure` 이고 데이터베이스가 잠기면 막는다(7f-2 — 잠금이 막는 구조에 이름이 있다).
+> 아이콘은 이름 옆에 서는 표의 모습이고 모두가 보는 사이드바 · teamspace 화면에 선다 — 행 · 셀을 고치는 사람(`edit_content`)이 바꾸는
+> 것이 아니다. 페이지 아이콘이 `edit_content` 인 것도 그 페이지의 이름이 그렇기 때문이다 — 둘 다 각자의 이름을 따른다. 같으면 쓰지 않고,
+> 바뀌면 블록의 `last_edited_*` · `version` 을 올린다(이름과 같다). ⚠ `edit_content` 와 `edit_structure` 의 구분은 **오늘 관찰되지 않는다**
+> — `resolveCaps` 가 대상 종류를 `'page'` 로 고정해 데이터베이스 노드에 `edit_content` 레벨을 줄 수 없다(템플릿의 권한과 같은 부채).
+> ④ 서는 자리 — 데이터베이스 머리(고르개 · 경로) · 사이드바 · teamspace 화면 · 템플릿 화면의 경로 · 관계형의 대상 고르개(`<option>` 은
+> 글자만 담는다 — 이름 앞의 글자로) · 데이터베이스를 가리키는 멘션(이름 맵의 아이콘 — 볼 수 있을 때만). 아이콘이 없는 데이터베이스의
+> 줄(사이드바 · teamspace 화면)은 **표 글리프**다 — 페이지의 문서 글리프와 같은 규칙으로 그림(SVG)이라 줄의 글자가 이름 그대로다(전에는
+> 글자 `▦` 였다).
 
 **DB 상수**
 

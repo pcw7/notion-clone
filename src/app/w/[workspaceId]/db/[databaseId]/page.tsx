@@ -63,6 +63,8 @@ import { DatabaseBoard, type BoardGroupJson, type GroupProperty } from './databa
 import { listTeamspaceDestinations } from '@/lib/block/move-page'
 import { MovePageControl } from '../../[pageId]/move-page-control'
 import { LockButton } from '../../[pageId]/lock-button'
+import { PageIconControl } from '../../[pageId]/page-icon-control'
+import { PageIconView } from '../../page-icon-view'
 import { ViewTabs } from './view-tabs'
 import { ViewToolbar, type BoardSettings } from './view-toolbar'
 import { TemplatePanel } from './template-panel'
@@ -112,7 +114,7 @@ export default async function DatabasePage({
   // 그룹 프로퍼티가 지워진 보드(`not_grouped`)는 아래에서 "그룹 기준을 고르라"로 그린다. 다른 실패는 못 보는 것과 같다.
   if (board !== null && !board.ok && board.reason !== 'not_grouped') notFound()
 
-  const { name, access: granted } = database.value
+  const { name, icon, access: granted } = database.value
   // 데이터베이스 잠금(7f-2) — 구조를 고칠 수 있어도 잠겨 있으면 구조 화면(속성 · 뷰 · 템플릿 · 이름)을 닫는다. 서버도 `locked` 로
   // 거부한다. 행 · 셀은 그대로다(`canEditContent` · `canCreateRows` 는 건드리지 않는다).
   const lock = await databaseLockState(ctx, databaseId)
@@ -198,7 +200,10 @@ export default async function DatabasePage({
             워크스페이스
           </Link>
           <span aria-hidden>/</span>
-          <span className="text-neutral-400">{name || UNTITLED}</span>
+          <span className="text-neutral-400">
+            <PageIconView icon={icon} className="mr-1" />
+            {name || UNTITLED}
+          </span>
         </nav>
         <div className="flex items-center gap-2">
           <LockButton
@@ -222,12 +227,22 @@ export default async function DatabasePage({
         </div>
       </div>
 
-      <DatabaseTitle
-        workspaceId={workspaceId}
-        databaseId={databaseId}
-        initialName={name}
-        canEdit={access.canEditStructure}
-      />
+      {/* 아이콘(8c-3b)은 이름 위에 선다 — 페이지 머리와 같다. 고치는 사람은 이름과 같다(구조 · 잠금이면 닫힌다 — `access` 가 이미 담는다). */}
+      <div className="group/header flex flex-col gap-2">
+        <PageIconControl
+          workspaceId={workspaceId}
+          pageId={databaseId}
+          kind="database"
+          initialIcon={icon}
+          readOnly={!access.canEditStructure}
+        />
+        <DatabaseTitle
+          workspaceId={workspaceId}
+          databaseId={databaseId}
+          initialName={name}
+          canEdit={access.canEditStructure}
+        />
+      </div>
 
       <ViewTabs
         workspaceId={workspaceId}

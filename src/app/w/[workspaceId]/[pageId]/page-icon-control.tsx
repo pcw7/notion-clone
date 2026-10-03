@@ -3,6 +3,9 @@
 /**
  * 페이지 머리의 아이콘 — 보이기 · 추가 · 바꾸기 · 제거 (잔여 묶음 8c-1 · F-02-05)
  *
+ * 데이터베이스 머리도 이것을 쓴다(8c-3b · `kind="database"`) — 저장하는 길(`databases/{id}` 의 `PATCH`)과 거부의 말만 다르다. 권한은
+ * 이름과 같다(`edit_structure` · 데이터베이스 잠금 — `setDatabaseIcon`).
+ *
  * 노션과 같은 흐름이다(F-02-05 시나리오):
  *   · 아이콘이 없으면 제목 위에 **"아이콘 추가"** — 마우스를 올리거나 포커스가 있을 때 보인다. 누르면 **무작위 이모지를 곧바로**
  *     단다(고르개를 열지 않는다 — 노션의 Add icon)
@@ -21,22 +24,36 @@ import { randomEmoji } from '@/lib/emoji/catalog'
 import { EmojiPicker } from './emoji-picker'
 import { loadEmojiCatalog } from './emoji-catalog-loader'
 
-const MESSAGES: Record<string, string> = {
-  locked: '잠긴 페이지입니다 — 잠금을 풀어야 아이콘을 바꿀 수 있습니다.',
-  forbidden: '이 페이지를 고칠 권한이 없습니다.',
-  invalid_icon: '아이콘은 이모지 한 글자여야 합니다.',
+type IconOwner = 'page' | 'database'
+
+const MESSAGES: Record<IconOwner, Record<string, string>> = {
+  page: {
+    locked: '잠긴 페이지입니다 — 잠금을 풀어야 아이콘을 바꿀 수 있습니다.',
+    forbidden: '이 페이지를 고칠 권한이 없습니다.',
+    invalid_icon: '아이콘은 이모지 한 글자여야 합니다.',
+  },
+  database: {
+    locked: '잠긴 데이터베이스입니다 — 잠금을 풀어야 아이콘을 바꿀 수 있습니다.',
+    forbidden: '이 데이터베이스의 구조를 고칠 권한이 없습니다.',
+    invalid_icon: '아이콘은 이모지 한 글자여야 합니다.',
+  },
 }
+
+const OWNER_LABEL: Record<IconOwner, string> = { page: '페이지', database: '데이터베이스' }
 
 export function PageIconControl({
   workspaceId,
   pageId,
+  kind = 'page',
   initialIcon,
   readOnly = false,
 }: {
   workspaceId: string
+  /** 아이콘의 주인 — 페이지(행 · 템플릿 포함) 또는 데이터베이스의 id. */
   pageId: string
+  kind?: IconOwner
   initialIcon: PageIcon | null
-  /** 고칠 수 없다 — 볼 수만 있거나 잠긴 페이지. */
+  /** 고칠 수 없다 — 볼 수만 있거나 잠긴 페이지 · 데이터베이스. */
   readOnly?: boolean
 }) {
   const router = useRouter()
@@ -70,14 +87,14 @@ export function PageIconControl({
       setError(null)
       setIcon(next)
       try {
-        const res = await fetch(`/api/workspaces/${workspaceId}/pages/${pageId}`, {
+        const res = await fetch(`/api/workspaces/${workspaceId}/${kind === 'database' ? 'databases' : 'pages'}/${pageId}`, {
           method: 'PATCH',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ icon: next }),
         })
         if (!res.ok) {
           const data = (await res.json().catch(() => ({}))) as { error?: unknown }
-          setError(MESSAGES[String(data.error)] ?? '아이콘을 저장하지 못했습니다.')
+          setError(MESSAGES[kind][String(data.error)] ?? '아이콘을 저장하지 못했습니다.')
           setIcon(saved.current)
           return
         }
@@ -89,7 +106,7 @@ export function PageIconControl({
         setIcon(saved.current)
       }
     },
-    [pageId, readOnly, router, workspaceId],
+    [kind, pageId, readOnly, router, workspaceId],
   )
 
   /** 무작위 이모지 — 목록을 처음 쓰면 받아 온다. 지금 아이콘은 고르지 않는다. */
@@ -117,7 +134,7 @@ export function PageIconControl({
   if (readOnly) {
     if (icon === null) return null
     return (
-      <div data-testid="page-icon" role="img" aria-label={`페이지 아이콘 ${icon.emoji}`} className="w-fit text-6xl leading-none">
+      <div data-testid="page-icon" role="img" aria-label={`${OWNER_LABEL[kind]} 아이콘 ${icon.emoji}`} className="w-fit text-6xl leading-none">
         {icon.emoji}
       </div>
     )

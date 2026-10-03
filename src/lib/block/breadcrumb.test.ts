@@ -45,12 +45,18 @@ describe('① ② 페이지의 경로', () => {
 
 describe('③ 템플릿', () => {
   test('템플릿 편집 화면 — 워크스페이스 · 표 · 템플릿', () => {
-    const trail = templateTrail({ workspaceId: WS, database: { id: A, name: '' }, templateId: C })
+    const trail = templateTrail({ workspaceId: WS, database: { id: A, name: '', icon: null }, templateId: C })
     assert.deepEqual(trail.map((i) => [i.kind, i.label, i.href]), [
       ['workspace', '워크스페이스', `/w/${WS}`],
       ['database', '제목 없음', `/w/${WS}/db/${A}`],
       ['current', '템플릿', null],
     ])
+  })
+
+  test('표의 아이콘(8c-3b)을 그 줄에 싣는다 — 없으면 null', () => {
+    const books = { type: 'emoji', emoji: '📚' } as const
+    const trail = templateTrail({ workspaceId: WS, database: { id: A, name: '서가', icon: books }, templateId: C })
+    assert.deepEqual(trail.map((i) => [i.kind, i.icon]), [['workspace', null], ['database', books], ['current', null]])
   })
 })
 
