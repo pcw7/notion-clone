@@ -8534,30 +8534,52 @@ async function main() {
       await send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
       await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
 
-      // 열기 — 다른 소스의 첫 뷰로
+      // 뷰 추가 ① — 둘째 소스를 보는 중이면 처음 값이 둘째다(첫째로 두면 서버의 기본값과 같아 고르기를 가를 수 없다)
       await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${dbId}?v=${(await evaluate(`new URLSearchParams(location.search).get('v')`))}` })
-      await waitFor(`!!document.querySelector('[data-testid="db-sources-button"]')`, 15000)
+      await waitFor(`!!document.querySelector('[data-testid="db-view-add"]')`, 15000)
+      // 하이드레이션 전에 누른 단추는 아무 일이 없다 — 열릴 때까지 몇 번 누른다.
+      const openAdd = async () => {
+        for (let i = 0; i < 6; i += 1) {
+          if (await evaluate(`!!document.querySelector('[data-testid="db-view-add-panel"]')`)) return true
+          await clickSelector('[data-testid="db-view-add"]')
+          if (await waitFor(`!!document.querySelector('[data-testid="db-view-add-panel"]')`, 1500)) return true
+        }
+        return false
+      }
+      const viewsNow = async () => (await readRes(await fetch(`${api}/databases/${dbId}/views`, { headers: authed }))).body?.views ?? []
+      await openAdd()
+      check('★ 소스가 둘이면 "뷰 추가"가 볼 소스를 묻는다 — 처음 값은 지금 뷰의 소스(둘째)',
+        await waitFor(`document.querySelector('[data-testid="db-view-add-source"]')?.value === ${JSON.stringify(secondSource)}`, 5000),
+        String(await evaluate(`document.querySelector('[data-testid="db-view-add-source"]')?.value ?? null`)))
+      await clickSelector('[data-testid="db-view-add-list"]')
+      await waitFor(`document.querySelectorAll('[data-testid="db-view-tab"]').length === 3`, 15000)
+      const made = (await viewsNow()).find((v) => v.type === 'list')
+      check('★ 처음 값 그대로 만들면 그 소스의 뷰가 생기고 그 탭으로 옮긴다',
+        made?.dataSourceId === secondSource && (await waitFor(`location.search === ${JSON.stringify(`?v=${made?.id}`)} && document.querySelector('${LABEL}')?.textContent === '회사'`, 10000)),
+        JSON.stringify([made?.dataSourceId === secondSource, await evaluate('location.search'), await labelText()]))
+
+      // 열기 — 다른 소스의 첫 뷰로
       await openPanel()
       await clickSelector(`[data-testid="db-source-item"][data-source-id="${firstSource}"] [data-testid="db-source-open"]`)
       check('★ 창의 "열기"는 그 소스의 첫 뷰로 옮긴다',
         await waitFor(`document.querySelector('${LABEL}')?.textContent === ${JSON.stringify(dbName)} && location.search === ${JSON.stringify(`?v=${created?.defaultViewId}`)}`, 15000),
         JSON.stringify([await evaluate('location.search'), await labelText()]))
 
-      // 뷰 추가 — 볼 소스를 고른다(처음 값은 지금 뷰의 소스)
-      await clickSelector('[data-testid="db-view-add"]')
-      check('★ 소스가 둘이면 "뷰 추가"가 볼 소스를 묻는다 — 처음 값은 지금 뷰의 소스',
-        await waitFor(`document.querySelector('[data-testid="db-view-add-source"]')?.value === ${JSON.stringify(firstSource)}`, 5000),
+      // 뷰 추가 ② — 첫째를 보는 중에 둘째를 고른다
+      await openAdd()
+      check('처음 값은 지금 뷰의 소스(첫째)', await waitFor(`document.querySelector('[data-testid="db-view-add-source"]')?.value === ${JSON.stringify(firstSource)}`, 5000),
         String(await evaluate(`document.querySelector('[data-testid="db-view-add-source"]')?.value ?? null`)))
       await evaluate(`(() => { const s = document.querySelector('[data-testid="db-view-add-source"]'); if (!s) return
-        s.value = ${JSON.stringify(secondSource)}
+        const set = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set
+        set.call(s, ${JSON.stringify(secondSource)})
         s.dispatchEvent(new Event('change', { bubbles: true })) })()`)
-      await clickSelector('[data-testid="db-view-add-list"]')
-      await waitFor(`document.querySelectorAll('[data-testid="db-view-tab"]').length === 3`, 15000)
-      const views = (await readRes(await fetch(`${api}/databases/${dbId}/views`, { headers: authed }))).body?.views ?? []
-      const made = views.find((v) => v.type === 'list')
-      check('★ 고른 소스로 뷰가 생기고 그 탭으로 옮긴다',
-        made?.dataSourceId === secondSource && (await waitFor(`location.search === ${JSON.stringify(`?v=${made?.id}`)} && document.querySelector('${LABEL}')?.textContent === '회사'`, 10000)),
-        JSON.stringify([made?.dataSourceId === secondSource, await evaluate('location.search'), await labelText()]))
+      await clickSelector('[data-testid="db-view-add-table"]')
+      await waitFor(`document.querySelectorAll('[data-testid="db-view-tab"]').length === 4`, 15000)
+      // 탭 순서의 끝이 방금 만든 뷰다(listViews 는 order_idx 순).
+      const picked = (await viewsNow()).at(-1)
+      check('★ 고른 소스로 뷰가 생긴다 — 지금 뷰의 소스가 아니라',
+        picked?.dataSourceId === secondSource && (await waitFor(`document.querySelector('${LABEL}')?.textContent === '회사'`, 10000)),
+        JSON.stringify([picked?.dataSourceId === secondSource, await labelText()]))
 
       // 볼 수만 있는 사람 — 소스 이름은 보이고 창은 없다 · 잠기면 고치는 사람에게도 창이 없다
       const aclMod = await import(new URL('../src/lib/permissions/acl.ts', import.meta.url).href)
