@@ -42,6 +42,8 @@ import { DuplicatePageButton } from './duplicate-page-button'
 import { DeletePageButton } from './delete-page-button'
 import { NoAccess } from './no-access'
 import { LockButton } from './lock-button'
+import { PageHistoryButton } from './page-history'
+import { canViewPageHistory } from '@/lib/history/version'
 
 /** 제목 없는 페이지의 표시 문구. 저장된 값은 빈 배열이다. */
 const UNTITLED = '제목 없음'
@@ -81,7 +83,7 @@ export default async function PageView({ params, searchParams }: PageProps<'/w/[
 
   // 본문은 Y.Doc 이 정본이다(판결 X-1 · CRDT 6d) — 협업 편집기가 그 상태로 시작하고 협업 서버에 붙는다. 행으로 만든 문서는
   // 더 이상 화면이 읽지 않고, 참조 제목만 따로 받는다(참조 노드는 제목을 싣지 않는다 — §3.2-22).
-  const [ancestors, children, state, pageRefs, access, moveTargets, moveTeamspaces, favorite, openThreads, lock] = await Promise.all([
+  const [ancestors, children, state, pageRefs, access, moveTargets, moveTeamspaces, favorite, openThreads, lock, history] = await Promise.all([
     listAncestors(ctx, page),
     listChildPages(ctx, page.id),
     loadDocState(ctx, page.id),
@@ -94,6 +96,8 @@ export default async function PageView({ params, searchParams }: PageProps<'/w/[
     listDiscussions(ctx, page.id, { resolved: false }),
     // 잠금(7f-1) — 본문 · 제목의 편집 여부는 `access` 가 이미 담는다(잠긴 페이지는 view). 이것은 "잠김" 표시와 버튼용이다.
     pageLockState(ctx, page.id),
+    // 기록(8d-2) — 고칠 수 있는 사람에게만 단추를 세운다(잠긴 페이지도 기록은 본다 · 라우트가 다시 묻는다).
+    canViewPageHistory(ctx, page.id),
   ])
 
   // 방문 기록(F-07-04). **`getPage` 를 통과한 뒤**에 남긴다 — 볼 수 없는 페이지를
@@ -181,6 +185,7 @@ export default async function PageView({ params, searchParams }: PageProps<'/w/[
             }))}
             teamspaces={moveTeamspaces}
           />
+          {history && <PageHistoryButton workspaceId={workspaceId} pageId={page.id} />}
           <ExportButton workspaceId={workspaceId} rootId={page.id} />
           {/* 복제는 원본을 고치지 않는다 — 볼 수만 있는 사람도 누를 수 있다(자리가 없으면 서버가 거부한다). */}
           <DuplicatePageButton workspaceId={workspaceId} pageId={page.id} />
