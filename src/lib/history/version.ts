@@ -19,6 +19,7 @@ import type { SessionContext } from '../auth/session-context.ts'
 import { withReadTransaction, withTransaction, type Tx } from '../db/tx.ts'
 import { can } from '../permissions/levels.ts'
 import { effectiveCaps } from '../permissions/effective.ts'
+import { isLocked } from '../permissions/lock.ts'
 import { openBodyDoc } from '../collab/doc-store.ts'
 import { readBodyYDoc } from '../collab/ydoc.ts'
 import { loadMentionLabels, mentionIdsOf, type MentionLabels } from '../block/mention-candidates.ts'
@@ -44,6 +45,12 @@ export type VersionSummary = {
 }
 
 export type VersionFailure = 'not_found' | 'forbidden' | 'expired'
+
+export type VersionList = {
+  readonly versions: readonly VersionSummary[]
+  /** 이 사람이 지금 되돌릴 수 있는가 — 고칠 수 있고 잠기지 않았다(8d-3 · 표시 전용 · 복원이 다시 묻는다). */
+  readonly canRestore: boolean
+}
 
 export type VersionResult<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly reason: VersionFailure }
 
@@ -101,7 +108,7 @@ export async function canViewPageHistory(ctx: SessionContext, pageId: string): P
 }
 
 /** 이 페이지의 버전 — 최신순 · 보관 기간 안의 것만. 열 때 버전 판정을 한 번 한다(머리말). */
-export async function listVersions(ctx: SessionContext, pageId: string): Promise<VersionResult<VersionSummary[]>> {
+export async function listVersions(ctx: SessionContext, pageId: string): Promise<VersionResult<VersionList>> {
   return withTransaction(async (tx) => {
     const refused = await gate(tx, ctx, pageId)
     if (refused !== null) return { ok: false, reason: refused } as const
@@ -114,7 +121,8 @@ export async function listVersions(ctx: SessionContext, pageId: string): Promise
         LIMIT $2`,
       [pageId, MAX_VERSION_LIST],
     )
-    return { ok: true, value: await summaries(tx, rows) } as const
+    // 기록은 잠긴 페이지도 보지만(머리말) 되돌리기는 잠금을 묻는다(`restore.ts`).
+    return { ok: true, value: { versions: await summaries(tx, rows), canRestore: !(await isLocked(tx, pageId)) } } as const
   })
 }
 

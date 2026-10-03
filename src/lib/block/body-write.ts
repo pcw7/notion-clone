@@ -35,6 +35,8 @@
  *   - 밀린 투영은 이미 쌓인 것을 행에 옮길 뿐이라 권한을 다시 보지 않는다 — 쌓을 때 봤다
  */
 
+import type * as Y from 'yjs'
+
 import type { SessionContext } from '../auth/session-context.ts'
 import type { EditorChange } from '../collab/body-edit.ts'
 import {
@@ -85,6 +87,8 @@ export type FinishOptions = {
   readonly deepPageRefs?: 'refuse' | 'lift'
   /** 수선을 쌓게 되면 남길 출처. 없으면 세션을 열 때의 출처. 밀린 투영은 `'api'` — 참여자가 보낸 변경이 아니다. */
   readonly origin?: DocOrigin
+  /** 처음 멘션된 사람에게 알림을 보내지 않는다 — 복원(`history/restore.ts` · `ProjectOptions.quietMentions`). */
+  readonly quietMentions?: boolean
 }
 
 export type PageBodyWrite = {
@@ -99,6 +103,11 @@ export type PageBodyWrite = {
   readonly touchedPageRefs: boolean
   /** 적용한 참여자 update 가 멘션 요소를 넣거나 지웠는가 — 미루면 알림의 행위자가 창의 마지막 사람으로 바뀐다. */
   readonly touchedMentions: boolean
+  /**
+   * 잠근 뒤 읽은 본문 + 이 단위의 변경 — **읽기만 한다**(버전이 상태를 담는다 · `history/restore.ts`). 쓰기는 `change` · `applyUpdate` 다 —
+   * 여기에 직접 쓰면 세션이 모으는 변경 밖이라 쌓이지 않는다.
+   */
+  readonly ydoc: Y.Doc
   /** 지금 본문(이 단위의 변경까지). */
   read(): EditorDoc
   change(change: EditorChange): void
@@ -128,6 +137,7 @@ export async function openPageBody(
   const session = await openBodyDoc(tx, ctx, pageId)
   return {
     pageId,
+    ydoc: session.ydoc,
     seq: session.seq,
     get changed() {
       return session.changed
@@ -175,6 +185,7 @@ export async function openPageBody(
       const doc = pageRefDepth === undefined ? first.doc : session.read({ pageRefs, pageRefDepth }).doc
       const result = await projectBodyRows(tx, ctx, page, doc, scope, {
         missingPageRefs: options.missingPageRefs,
+        quietMentions: options.quietMentions,
       })
       if (!result.ok) return result
       // 수선은 투영이 읽은 것과 같은 것으로 고친다 — 그래야 올리거나 뺀 참조가 행과 Y.Doc 에서 같다. 이 단위가 바꾼 것이 없어도

@@ -159,20 +159,21 @@ describe('③ 목록', () => {
     const fresh = await listVersions(fx.owner.ctx, page)
     assert.equal(fresh.ok, true)
     if (!fresh.ok) return
-    assert.equal(fresh.value.length, 1, '마지막 편집이 방금이다 — 그 세션은 아직 버전이 아니다')
+    assert.equal(fresh.value.versions.length, 1, '마지막 편집이 방금이다 — 그 세션은 아직 버전이 아니다')
 
     await age(page, '3 minutes')
     const listed = await listVersions(fx.owner.ctx, page)
     assert.equal(listed.ok, true)
     if (!listed.ok) return
-    assert.deepEqual(listed.value.map((v) => v.reason), ['idle', 'idle'], '최신순 — 쓰지 않았지만 끝난 세션이 섰다')
-    assert.deepEqual(listed.value[0].editors.map((e) => e.id), [mate.userId])
-    assert.equal(listed.value[0].editors[0].name, '버전 동료')
-    assert.equal(listed.value[0].restoredFrom, null)
-    assert.deepEqual(await textsOf(page, listed.value[0].id), ['처음', '다음'])
+    assert.deepEqual(listed.value.versions.map((v) => v.reason), ['idle', 'idle'], '최신순 — 쓰지 않았지만 끝난 세션이 섰다')
+    assert.deepEqual(listed.value.versions[0].editors.map((e) => e.id), [mate.userId])
+    assert.equal(listed.value.versions[0].editors[0].name, '버전 동료')
+    assert.equal(listed.value.versions[0].restoredFrom, null)
+    assert.equal(listed.value.canRestore, true)
+    assert.deepEqual(await textsOf(page, listed.value.versions[0].id), ['처음', '다음'])
 
     const again = await listVersions(fx.owner.ctx, page)
-    assert.equal(again.ok && again.value.length, 2, '두 번 열어도 하나다(한 위치에 버전 하나)')
+    assert.equal(again.ok && again.value.versions.length, 2, '두 번 열어도 하나다(한 위치에 버전 하나)')
   })
 })
 
@@ -185,7 +186,7 @@ describe('④ 옮긴 내용', () => {
     for (const table of ['doc_update', 'doc_snapshot', 'page_version']) await query(`DELETE FROM ${table} WHERE page_id = $1`, [old])
 
     const listed = await listVersions(fx.owner.ctx, old)
-    assert.equal(listed.ok && listed.value.length, 0, '목록 열기는 옮긴 내용을 남기지 않는다(편집이 아니다)')
+    assert.equal(listed.ok && listed.value.versions.length, 0, '목록 열기는 옮긴 내용을 남기지 않는다(편집이 아니다)')
     await write(old, [])
     const [baseline] = await versionsOf(old)
     assert.deepEqual([baseline?.reason, baseline?.through_seq, baseline?.editor_ids], ['idle', '1', []])
@@ -218,7 +219,8 @@ describe('⑤ 권한', () => {
 
     assert.ok((await setPageLock(fx.owner.ctx, page, true)).ok)
     const locked = await listVersions(fx.owner.ctx, page)
-    assert.equal(locked.ok && locked.value.length, 1, '잠긴 페이지도 기록은 본다')
+    assert.equal(locked.ok && locked.value.versions.length, 1, '잠긴 페이지도 기록은 본다')
+    assert.equal(locked.ok && locked.value.canRestore, false, '잠긴 페이지는 되돌릴 수 없다(8d-3)')
 
     const other = await newPage('다른 페이지')
     assert.deepEqual(await readVersion(fx.owner.ctx, other, version.id), { ok: false, reason: 'not_found' })
@@ -251,7 +253,7 @@ describe('⑥ 보관', () => {
 
     await query(`UPDATE page_version SET expires_at = now() - interval '1 second' WHERE id = $1`, [free.id])
     const listed = await listVersions(fx.owner.ctx, page)
-    assert.ok(listed.ok && !listed.value.some((v) => v.id === free.id), '지난 버전은 목록에 없다')
+    assert.ok(listed.ok && !listed.value.versions.some((v) => v.id === free.id), '지난 버전은 목록에 없다')
     assert.deepEqual(await readVersion(fx.owner.ctx, page, free.id), { ok: false, reason: 'expired' })
   })
 })

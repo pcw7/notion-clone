@@ -26,3 +26,20 @@ export function formatEditors(editors: readonly { readonly name: string }[]): st
   if (names.length <= MAX_EDITOR_NAMES) return names.join(' · ')
   return `${names.slice(0, MAX_EDITOR_NAMES).join(' · ')} 외 ${names.length - MAX_EDITOR_NAMES}명`
 }
+
+/**
+ * 버전이 생긴 까닭 — 복원이 남긴 것만 말한다(8d-3): "되돌리기 전" · "○○ 버전에서 되돌림". 출처는 **한 단계만** 말한다 — 출처의 출처를
+ * 따라가지 않는다(F-11-02 *"표시는 1단계(v7 에서 복원됨)까지만"*). 출처가 목록에 없으면(보관 기간이 지났다) "지난 버전에서 되돌림".
+ * 쉼 · 주기는 null — 목록의 보통 항목이다.
+ */
+export function formatVersionReason(
+  version: { readonly reason: string; readonly restoredFrom: string | null },
+  all: readonly { readonly id: string; readonly createdAt: string }[],
+  now: Date = new Date(),
+  timeZone?: string,
+): string | null {
+  if (version.reason === 'pre_restore') return '되돌리기 전'
+  if (version.reason !== 'restore') return null
+  const from = all.find((v) => v.id === version.restoredFrom)
+  return from === undefined ? '지난 버전에서 되돌림' : `${formatVersionTime(from.createdAt, now, timeZone)} 버전에서 되돌림`
+}

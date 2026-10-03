@@ -48,7 +48,10 @@ export const VERSION_INTERVAL = '10 minutes'
 /** 판정을 부르는 자리 — 쓰기 세션이면 옮긴 내용도 남긴다(머리말). */
 export type VersionIntent = 'write' | 'list'
 
-export type RecordedVersion = { readonly id: string; readonly reason: 'idle' | 'interval'; readonly throughSeq: string }
+/** 버전을 남기는 이유 — 판정(쉼 · 주기)과 복원(되돌리기 전 · 되돌린 뒤 — `restore.ts`). */
+export type RecordReason = 'idle' | 'interval' | 'pre_restore' | 'restore'
+
+export type RecordedVersion = { readonly id: string; readonly reason: RecordReason; readonly throughSeq: string }
 
 /** 버전의 바이트를 둘 저장소 키 — 워크스페이스 · 페이지 아래(올린 파일과 같은 저장소의 다른 가지). */
 export function versionStorageKey(workspaceId: string, pageId: string, versionId: string): string {
@@ -97,7 +100,30 @@ export async function recordVersionIfDue(
     reason = due.idle ? 'idle' : due.interval ? 'interval' : null
   }
   if (reason === null) return null
+  return recordVersion(tx, { workspaceId: input.workspaceId, pageId, ydoc: input.ydoc, seq, reason, restoredFrom: null })
+}
 
+/**
+ * 지금 상태(`ydoc` — `seq` 까지의 본문)를 버전으로 남긴다 — 판정을 지난 쉼 · 주기, 그리고 복원(`restore.ts`)이 부른다. 호출자가 그 페이지의
+ * 스냅샷 행을 잠갔고, 그 위치(`seq`)를 담은 버전이 아직 없다(한 위치에 하나 — 0040).
+ *
+ *   · 바이트는 파일 저장소에(`versionStorageKey`) · `created_at` 은 **그 위치의 update 시각**(담은 내용의 시각 — 정본 ③)
+ *   · 고친 사람은 앞 버전의 `through_seq` 뒤부터 `seq` 까지의 `actor_id`
+ *   · 보관 기한은 지금 요금제로 고정(`retention.ts`) · S5 — 담은 이미지의 파일 참조를 올린다
+ *   · `restoredFrom` 은 `restore` 버전에만(0041 의 CHECK)
+ */
+export async function recordVersion(
+  tx: Tx,
+  input: {
+    readonly workspaceId: string
+    readonly pageId: string
+    readonly ydoc: Y.Doc
+    readonly seq: string
+    readonly reason: RecordReason
+    readonly restoredFrom: string | null
+  },
+): Promise<RecordedVersion> {
+  const { pageId, seq, reason } = input
   const id = randomUUID()
   const bytes = Y.encodeStateAsUpdate(input.ydoc)
   const stateRef = versionStorageKey(input.workspaceId, pageId, id)
@@ -105,16 +131,22 @@ export async function recordVersionIfDue(
 
   const workspace = await tx.queryOne<{ plan_code: string }>(`SELECT plan_code FROM workspace WHERE id = $1`, [input.workspaceId])
   const days = versionRetentionDays(workspace.plan_code)
+  const previous = await tx.queryMaybe<{ through_seq: string }>(
+    `SELECT through_seq FROM page_version WHERE page_id = $1 AND through_seq < $2 ORDER BY through_seq DESC LIMIT 1`,
+    [pageId, seq],
+  )
   // 앞 버전 뒤부터 여기까지 고친 사람 — 시스템 · 옮기기(actor 없음)는 빠진다.
   const editors = await tx.query<{ actor_id: string }>(
     `SELECT DISTINCT actor_id FROM doc_update
       WHERE page_id = $1 AND seq > $2 AND seq <= $3 AND actor_id IS NOT NULL`,
-    [pageId, due.through_seq ?? '0', seq],
+    [pageId, previous?.through_seq ?? '0', seq],
   )
   await tx.query(
-    `INSERT INTO page_version (id, page_id, state_ref, state_vector, byte_size, editor_ids, reason, through_seq, created_at, expires_at)
-     VALUES ($1, $2, $3, $4, $5, $6::uuid[], $7, $8, $9::timestamptz,
-             CASE WHEN $10::int IS NULL THEN 'infinity'::timestamptz ELSE $9::timestamptz + make_interval(days => $10::int) END)`,
+    `INSERT INTO page_version (id, page_id, state_ref, state_vector, byte_size, editor_ids, reason, restored_from, through_seq,
+                               created_at, expires_at)
+     SELECT $1, $2, $3, $4, $5, $6::uuid[], $7, $8, $9, u.created_at,
+            CASE WHEN $10::int IS NULL THEN 'infinity'::timestamptz ELSE u.created_at + make_interval(days => $10::int) END
+       FROM doc_update u WHERE u.page_id = $2 AND u.seq = $9`,
     [
       id,
       pageId,
@@ -123,8 +155,8 @@ export async function recordVersionIfDue(
       bytes.byteLength,
       editors.map((e) => e.actor_id).sort(),
       reason,
+      input.restoredFrom,
       seq,
-      due.last_at,
       days,
     ],
   )

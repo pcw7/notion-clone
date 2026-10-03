@@ -329,6 +329,11 @@ export type MissingPageRefs =
 export type ProjectOptions = {
   /** 없으면 `refuse`. */
   readonly missingPageRefs?: MissingPageRefs
+  /**
+   * 처음 멘션된 사람에게 알림을 보내지 않는다 — 복원(8d-3 · 정본 §3.7 [보강] 복원 ⑤): 옛 내용을 되살린 것이지 새로 부른 것이 아니다.
+   * 멘션 역인덱스(백링크)는 그대로 바뀐다(행의 투영이다).
+   */
+  readonly quietMentions?: boolean
 }
 
 export type ProjectBodyResult =
@@ -375,7 +380,7 @@ export async function projectBodyRows(
 ): Promise<ProjectBodyResult> {
   try {
     return await tx.savepoint('project_body', async () => {
-      const result = await projectRows(tx, ctx, page, doc, scope, options.missingPageRefs ?? 'refuse')
+      const result = await projectRows(tx, ctx, page, doc, scope, options.missingPageRefs ?? 'refuse', options.quietMentions === true)
       if (!result.ok) throw new ProjectionRefused(result)
       return result
     })
@@ -392,6 +397,7 @@ async function projectRows(
   doc: EditorDoc,
   scope: readonly ScopeRow[],
   missingPageRefs: MissingPageRefs,
+  quietMentions: boolean,
 ): Promise<ProjectBodyResult> {
   const pageId = page.id
   const projection = projectDocument(pageId, page.ancestor_path, doc)
@@ -705,7 +711,7 @@ async function projectRows(
   // 상태가 없다. 차분이 낸 "처음 멘션된 사람"이 곧 알림 대상이다(L3). 행위자는 `ctx` — 멘션을 넣은 update 는
   // 미루지 않으므로 그 참여자의 세션이 여기까지 온다(`body-write.ts`).
   const edges = await projectLinkEdges(tx, pageId, projection.blocks)
-  if (edges.newUserIds.length > 0) {
+  if (edges.newUserIds.length > 0 && !quietMentions) {
     await notifyMentions(tx, ctx, { pageId, blockId: edges.firstBlockId, userIds: edges.newUserIds })
   }
 
