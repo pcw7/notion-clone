@@ -364,16 +364,38 @@ export function rollupValues(
   )
 }
 
-/** 뷰를 만든다. 보드인데 `groupBy` 가 없으면 서버가 첫 select 를 고르고, 고를 것이 없으면 `group_required` 다. */
+/**
+ * 뷰를 만든다. 보드인데 `groupBy` 가 없으면 서버가 첫 select 를 고르고, 고를 것이 없으면 `group_required` 다.
+ * `dataSourceId` 는 볼 소스다(8e-2) — 없으면 서버가 부착 순서의 첫째를 고른다.
+ */
 export function createView(
   workspaceId: string,
   databaseId: string,
-  input: { readonly name?: string; readonly type: MvpViewType; readonly groupBy?: GroupBy },
+  input: { readonly name?: string; readonly type: MvpViewType; readonly groupBy?: GroupBy; readonly dataSourceId?: string },
 ): Promise<ApiResult<ViewSummary>> {
   return call(
     `${base(workspaceId)}/databases/${databaseId}/views`,
     { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify(input) },
     (body) => body.view as ViewSummary,
+  )
+}
+
+// ── 데이터 소스 (8e-2 · F-04-23) ──────────────────────────────────────
+
+/** 데이터 소스를 더한다 — 함께 태어난 뷰의 id 를 준다(화면이 그 탭으로 옮긴다). 이름은 서버의 기본값이다. */
+export function addDataSource(workspaceId: string, databaseId: string): Promise<ApiResult<{ dataSourceId: string; viewId: string }>> {
+  return call(
+    `${base(workspaceId)}/databases/${databaseId}/data-sources`,
+    { method: 'POST', headers: JSON_HEADERS, body: '{}' },
+    (body) => ({ dataSourceId: (body.dataSource as { id: string }).id, viewId: body.viewId as string }),
+  )
+}
+
+export function renameDataSource(workspaceId: string, dataSourceId: string, name: string): Promise<ApiResult<null>> {
+  return call(
+    `${base(workspaceId)}/data-sources/${dataSourceId}`,
+    { method: 'PATCH', headers: JSON_HEADERS, body: JSON.stringify({ name }) },
+    () => null,
   )
 }
 

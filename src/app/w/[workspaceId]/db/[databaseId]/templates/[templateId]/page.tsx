@@ -94,6 +94,10 @@ export default async function TemplatePage({
   if (!view.ok) notFound()
 
   const columns = listColumns('record', view.value.columns)
+  // 표의 이름 — 소스가 둘 이상이면 이 템플릿의 소스 이름이다(8e-2 · 데이터베이스 화면과 같은 규칙).
+  const sources = database.value.dataSources
+  const tableName =
+    sources.length > 1 ? (sources.find((ds) => ds.id === dataSourceId)?.name ?? database.value.name) : database.value.name
   const row = rowJson(template)
 
   const [state, pageRefs, access] = await Promise.all([
@@ -179,7 +183,7 @@ export default async function TemplatePage({
             workspaceId={workspaceId}
             viewId={view.value.id}
             dataSourceId={view.value.dataSourceId}
-            tableName={database.value.name}
+            tableName={tableName}
             variant="record"
             columns={columns}
             rows={[row]}
