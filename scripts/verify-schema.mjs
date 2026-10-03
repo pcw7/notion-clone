@@ -2176,6 +2176,22 @@ try {
     await mustReject('배열 아이콘(객체가 아니면 오류가 아니라 거부)', setDb, [dbId, JSON.stringify([fileIcon])])
   }
 
+  console.log('\n[26] 버전이 담은 로그 위치 (0040 / §3.7 [보강] 버전 기록 ① · 8d-1조각)')
+  {
+    // 한 위치에 버전은 하나 · 위치는 1 이상 · 이유값은 정본의 다섯(0007).
+    const pageId = randomUUID()
+    const addVersion = `INSERT INTO page_version (id, page_id, state_ref, state_vector, byte_size, editor_ids, reason, through_seq, created_at, expires_at)
+                        VALUES ($1, $2, $3, '\\x00'::bytea, 1, '{}', $4, $5, now(), now() + interval '7 days')`
+    await client.query(addVersion, [randomUUID(), pageId, 'versions/x/y/a.yjs', 'idle', 3])
+    ok('버전 하나(through_seq 3)')
+    await client.query(addVersion, [randomUUID(), pageId, 'versions/x/y/b.yjs', 'interval', 5])
+    ok('같은 페이지의 다른 위치')
+    await mustReject('같은 페이지 · 같은 위치의 두 번째 버전', addVersion, [randomUUID(), pageId, 'versions/x/y/c.yjs', 'manual', 3])
+    await mustReject('위치 0', addVersion, [randomUUID(), randomUUID(), 'versions/x/y/d.yjs', 'idle', 0])
+    await mustReject('위치가 없다(NULL)', addVersion, [randomUUID(), randomUUID(), 'versions/x/y/e.yjs', 'idle', null])
+    await mustReject('정본에 없는 이유값', addVersion, [randomUUID(), randomUUID(), 'versions/x/y/f.yjs', 'autosave', 1])
+  }
+
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
 } catch (e) {

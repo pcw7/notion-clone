@@ -5757,6 +5757,81 @@ async function main() {
       await sleep(500)
     }
 
+    if (sectionIf('버전 기록 (8d-1 · F-11-01)')) {
+      // 본문을 고치는 길은 협업 서버다 — 그 쓰기도 본문 세션을 지나므로 버전 판정이 그 페이지의 잠금 안에서 돈다(`history/record.ts`).
+      // 2분 쉰 뒤의 첫 쓰기 · 목록 열기가 그 세션의 버전을 남긴다. 시각은 로그의 created_at 을 뒤로 밀어 흉내 낸다. 기록 화면은 다음
+      // 조각(8d-2)이다 — 여기서는 라우트를 본다. 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
+      const stamp = Date.now()
+      const src = (p) => new URL(`../src/lib/${p}`, import.meta.url).href
+      const { query: dbQuery } = await import(src('db/pool.ts'))
+      const aclMod = await import(src('permissions/acl.ts'))
+      const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
+      const page = (await (await fetch(pagesUrl, { method: 'POST', headers: authed, body: JSON.stringify({ title: `버전기록${stamp}`, privateTop: true }) })).json()).page.id
+      const versionsUrl = `${pagesUrl}/${page}/versions`
+      const getJson = async (url, headers = authed) => {
+        const res = await fetch(url, { headers })
+        return { status: res.status, body: await res.json().catch(() => ({})) }
+      }
+      const age = (by) => dbQuery(`UPDATE doc_update SET created_at = created_at - $2::interval WHERE page_id = $1`, [page, by])
+      const textOf = (doc) => (doc?.blocks ?? []).map((b) => (b.title ?? []).map((r) => r.plain_text ?? r.text?.content ?? '').join('')).join('|')
+      /** 친 글이 모두 서버에 닿을 때까지 — 행 투영(1s 창)에 그 글이 들어오면 그 앞의 update 는 모두 로그에 있다. */
+      const storedHas = async (text, ms = 15000) => {
+        const end = Date.now() + ms
+        for (;;) {
+          if (textOf((await readBody(page)).doc).includes(text)) return true
+          if (Date.now() > end) return false
+          await sleep(200)
+        }
+      }
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+      await waitFor(`document.querySelector('.blk-editor')?.getAttribute('contenteditable') === 'true'`, 15000)
+      await click((await rect('.blk-editor')).x + 40, (await rect('.blk-editor')).y + 10)
+      await typeText('첫 세션의 글')
+      check('전제 — 친 글이 협업 서버를 지나 서버에 닿았다', await storedHas('첫 세션의 글'))
+      const fresh = await getJson(versionsUrl)
+      check('★ 방금 고친 세션은 아직 버전이 아니다(2분 쉬지 않았다)', fresh.status === 200 && fresh.body.versions?.length === 0, JSON.stringify(fresh))
+
+      // ① 2분 쉰 것처럼 — 다음에 친 글(협업 서버의 쓰기)이 쓰기 전의 상태를 남긴다.
+      await age('3 minutes')
+      await typeText(' 쉰 뒤')
+      check('전제 — 쉰 뒤에 친 글도 서버에 닿았다', await storedHas('쉰 뒤'))
+      const listed = await getJson(versionsUrl)
+      const first = listed.body.versions?.[0]
+      check('★ 쉰 뒤의 첫 쓰기(협업 서버의 길)가 쓰기 전의 상태를 버전으로 남긴다 — 고친 사람은 나',
+        listed.body.versions?.length === 1 && first.reason === 'idle' && first.editors?.length === 1 && first.editors[0].id === ctx.userId,
+        JSON.stringify(listed.body))
+      const preview = first ? await getJson(`${versionsUrl}/${first.id}`) : null
+      check('★ 미리보기는 그 버전의 본문이다 — 쉰 뒤에 친 글은 없다', textOf(preview?.body?.doc) === '첫 세션의 글',
+        JSON.stringify([preview?.status, textOf(preview?.body?.doc)]))
+
+      // ② 목록 열기도 판정한다 — 아무도 쓰지 않아도 끝난 세션이 선다.
+      await age('3 minutes')
+      const opened = await getJson(versionsUrl)
+      const latest = opened.body.versions?.[0]
+      const latestPreview = latest ? await getJson(`${versionsUrl}/${latest.id}`) : null
+      check('★ 목록을 열면 끝난 세션이 버전으로 선다(쓰지 않아도) — 최신순',
+        opened.body.versions?.length === 2 && opened.body.versions[1].id === first?.id && textOf(latestPreview?.body?.doc) === '첫 세션의 글 쉰 뒤',
+        JSON.stringify([opened.body.versions?.map((v) => v.reason), textOf(latestPreview?.body?.doc)]))
+
+      // ③ 누가 — 볼 수만 있으면 403 · 볼 수 없으면 404 · 지난 버전은 410
+      const viewer = await joinAs(workspaceId, await createUser(`버전 보기만 ${stamp}`), 'member')
+      const stranger = await joinAs(workspaceId, await createUser(`버전 못 봄 ${stamp}`), 'member')
+      const shared = await aclMod.grantAccess(ctx, page, { type: 'user', id: viewer.userId }, 'view')
+      const asViewer = await getJson(versionsUrl, { ...json, cookie: `nc_session=${viewer.token}` })
+      const asStranger = await getJson(versionsUrl, { ...json, cookie: `nc_session=${stranger.token}` })
+      check('★ 라우트 — 볼 수만 있으면 403 · 볼 수 없으면 404',
+        shared.ok && asViewer.status === 403 && asViewer.body.error === 'forbidden' && asStranger.status === 404,
+        JSON.stringify([asViewer.status, asStranger.status]))
+      await dbQuery(`UPDATE page_version SET expires_at = now() - interval '1 second' WHERE id = $1`, [first?.id])
+      const gone = first ? await getJson(`${versionsUrl}/${first.id}`) : null
+      const afterGone = await getJson(versionsUrl)
+      check('★ 보관 기간이 지난 버전은 목록에 없고 열면 410',
+        gone?.status === 410 && gone.body.error === 'expired' && afterGone.body.versions?.length === 1,
+        JSON.stringify([gone?.status, afterGone.body.versions?.length]))
+      await sleep(300)
+    }
+
     if (sectionIf('코멘트 패널 · 인박스 (F-05-08 · F-11-07)')) {
       const commentPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
         method: 'POST',
