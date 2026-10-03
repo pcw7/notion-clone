@@ -95,6 +95,11 @@ async function summaries(tx: Tx, rows: readonly VersionRow[]): Promise<VersionSu
   }))
 }
 
+/** 이 사람이 이 페이지의 기록을 볼 수 있는가 — 화면이 "기록" 단추를 세울지 정한다(표시 전용 · 라우트가 다시 묻는다). */
+export async function canViewPageHistory(ctx: SessionContext, pageId: string): Promise<boolean> {
+  return withReadTransaction(async (tx) => (await gate(tx, ctx, pageId)) === null)
+}
+
 /** 이 페이지의 버전 — 최신순 · 보관 기간 안의 것만. 열 때 버전 판정을 한 번 한다(머리말). */
 export async function listVersions(ctx: SessionContext, pageId: string): Promise<VersionResult<VersionSummary[]>> {
   return withTransaction(async (tx) => {

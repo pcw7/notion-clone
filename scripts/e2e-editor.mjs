@@ -5832,6 +5832,98 @@ async function main() {
       await sleep(300)
     }
 
+    if (sectionIf('기록 화면 (8d-2 · F-11-01)')) {
+      // 머리의 "기록" — 버전 목록(최신순 · 시각 · 고친 사람)과 고른 버전의 읽기 전용 미리보기. 준비는 서버 명령으로 한다: 본문을 세 번
+      // 저장하며 로그의 시각을 밀어 버전 둘을 만든다(2분 쉰 뒤의 첫 쓰기가 쓰기 전의 상태를 남긴다 — 8d-1). 둘째 버전은 다른 페이지를
+      // 멘션한다 — 미리보기가 그 이름 · 아이콘을 지금의 권한으로 거른 맵에서 그리는지 본다. 자기 데이터를 스스로 만든다.
+      const stamp = Date.now()
+      const src = (p) => new URL(`../src/lib/${p}`, import.meta.url).href
+      const { query: dbQuery } = await import(src('db/pool.ts'))
+      const aclMod = await import(src('permissions/acl.ts'))
+      const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
+      const post = async (body) => (await (await fetch(pagesUrl, { method: 'POST', headers: authed, body: JSON.stringify(body) })).json()).page.id
+      const page = await post({ title: `기록화면${stamp}`, privateTop: true })
+      const targetTitle = `멘션된곳${stamp}`
+      const target = await post({ title: targetTitle })
+      await fetch(`${pagesUrl}/${target}`, { method: 'PATCH', headers: authed, body: JSON.stringify({ icon: { type: 'emoji', emoji: '🧭' } }) })
+      const age = () => dbQuery(`UPDATE doc_update SET created_at = created_at - interval '3 minutes' WHERE page_id = $1`, [page])
+      await saveBody(page, { blocks: [block(randomUUID(), 'paragraph', '첫 버전 글')] })
+      await age()
+      await saveBody(page, {
+        blocks: [
+          block(randomUUID(), 'paragraph', '둘째 버전 글'),
+          { id: randomUUID(), type: 'paragraph', title: [textRun('참고 '), pageMentionRun(target)], properties: {}, format: {}, children: [] },
+        ],
+      })
+      await age()
+      await saveBody(page, { blocks: [block(randomUUID(), 'paragraph', '지금 글')] })
+      const made = (await dbQuery(`SELECT count(*)::int AS n FROM page_version WHERE page_id = $1`, [page]))[0].n
+
+      const DIALOG = '[data-testid="page-history"]'
+      const ITEMS = `${DIALOG} [data-testid="page-history-item"]`
+      const PREVIEW = `${DIALOG} [data-testid="version-preview"] .blk-editor`
+      const previewText = () => evaluate(`document.querySelector('${PREVIEW}')?.textContent ?? null`)
+      // 하이드레이션 전의 클릭은 사라진다(§6) — 창이 설 때까지 다시 누른다.
+      const openHistory = async () => {
+        for (let tries = 0; tries < 6; tries += 1) {
+          await clickSelector('[data-testid="page-history-open"]')
+          if (await waitFor(`!!document.querySelector('${DIALOG}')`, 2000)) return true
+        }
+        return false
+      }
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+      await waitFor(`!!document.querySelector('[data-testid="page-history-open"]')`, 15000)
+      check('전제 — 버전 둘을 만들었다', made === 2, String(made))
+      check('★ 머리의 "기록"을 누르면 기록 창이 열린다', await openHistory())
+      const newestFirst = (await dbQuery(`SELECT id FROM page_version WHERE page_id = $1 ORDER BY through_seq DESC`, [page])).map((r) => r.id)
+      const ownerName = (await dbQuery(`SELECT name FROM "user" WHERE id = $1`, [ctx.userId]))[0]?.name ?? ''
+      check('★ 목록은 최신순 · 시각(오늘) · 고친 사람의 이름 — 가장 최근 것을 골라 둔다',
+        ownerName !== '' && (await waitFor(`(() => { const items = [...document.querySelectorAll('${ITEMS}')]
+          return JSON.stringify(items.map((b) => b.dataset.versionId)) === ${JSON.stringify(JSON.stringify(newestFirst))}
+            && items.every((b) => b.textContent.startsWith('오늘 ') && b.textContent.includes(${JSON.stringify(ownerName)}))
+            && items[0].getAttribute('aria-current') === 'true' })()`, 8000)),
+        String(await evaluate(`[...document.querySelectorAll('${ITEMS}')].map((b) => b.textContent).join(' | ')`)))
+      check('★ 처음에는 가장 최근 버전을 보여 준다 — 그 시점의 본문(지금 글은 없다) · 읽기 전용',
+        await waitFor(`(document.querySelector('${PREVIEW}')?.textContent ?? '').includes('둘째 버전 글')
+          && !document.querySelector('${PREVIEW}').textContent.includes('지금 글')
+          && document.querySelector('${PREVIEW}').getAttribute('contenteditable') === 'false'`, 8000),
+        String(await previewText()))
+      const chip = `${PREVIEW} .blk-mention-page`
+      check('★ 미리보기의 멘션은 지금의 권한으로 거른 이름 · 아이콘을 그린다',
+        await waitFor(`(document.querySelector('${chip}')?.textContent ?? '').includes(${JSON.stringify(targetTitle)})
+          && document.querySelector('${chip} [data-page-icon]')?.getAttribute('data-page-icon') === '🧭'`, 5000),
+        String(await evaluate(`document.querySelector('${chip}')?.outerHTML?.slice(0, 200) ?? '(없음)'`)))
+      await clickSelector(`${DIALOG} li:nth-child(2) [data-testid="page-history-item"]`)
+      check('★ 다른 버전을 고르면 그 본문으로 바뀐다',
+        await waitFor(`(document.querySelector('${PREVIEW}')?.textContent ?? '') === '첫 버전 글'
+          && document.querySelectorAll('${ITEMS}')[1].getAttribute('aria-current') === 'true'`, 8000),
+        String(await previewText()))
+      await key('Escape')
+      check('★ Esc 로 닫고 포커스는 "기록" 단추로 돌아간다 · 본문은 그대로다',
+        await waitFor(`!document.querySelector('${DIALOG}') && document.activeElement?.getAttribute('data-testid') === 'page-history-open'
+          && (document.querySelector('.blk-editor')?.textContent ?? '').includes('지금 글')`, 5000),
+        JSON.stringify([await evaluate(`!!document.querySelector('${DIALOG}')`), await evaluate('document.activeElement?.outerHTML?.slice(0, 80) ?? null')]))
+
+      // 버전이 없는 페이지 — 빈 상태를 말한다.
+      const blank = await post({ title: `기록없음${stamp}` })
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${blank}` })
+      await waitFor(`!!document.querySelector('[data-testid="page-history-open"]')`, 15000)
+      await openHistory()
+      check('★ 버전이 없으면 "아직 기록된 버전이 없습니다"', await waitFor(`!!document.querySelector('[data-testid="page-history-empty"]')`, 8000))
+      await clickSelector('[data-testid="page-history-close"]')
+      check('닫기 단추로도 닫는다', await waitFor(`!document.querySelector('${DIALOG}')`, 3000))
+
+      // 볼 수만 있는 사람 — 단추가 없다(서버도 403 — 8d-1).
+      const viewer = await joinAs(workspaceId, await createUser(`기록 보기만 ${stamp}`), 'member')
+      const shared = await aclMod.grantAccess(ctx, page, { type: 'user', id: viewer.userId }, 'view')
+      const viewerHtml = await (await fetch(`${BASE}/w/${workspaceId}/${page}`, { headers: { ...json, cookie: `nc_session=${viewer.token}` } })).text()
+      check('★ 볼 수만 있는 사람에게는 "기록" 단추가 없다',
+        shared.ok && viewerHtml.includes('기록화면') && !viewerHtml.includes('data-testid="page-history-open"'),
+        JSON.stringify([shared.ok, viewerHtml.length]))
+      await sleep(300)
+    }
+
     if (sectionIf('코멘트 패널 · 인박스 (F-05-08 · F-11-07)')) {
       const commentPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
         method: 'POST',
