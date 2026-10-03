@@ -49,6 +49,7 @@ import { effectiveCaps, readableScopes, teamspaceCaps } from '../permissions/eff
 import { isLocked } from '../permissions/lock.ts'
 import { orderKeyBetween } from '../block/order-key.ts'
 import { nextSiblingKey, titleFromPlainText, plainTitleOf } from '../block/page.ts'
+import { pageIconJson, parsePageIconInput, readPageIcon, samePageIcon, type PageIcon } from '../block/page-icon.ts'
 import { newPropertyId } from './property.ts'
 import { DEFAULT_VIEW_NAME } from './view.ts'
 
@@ -61,6 +62,11 @@ export type DatabaseDetail = {
   /** `block.id` 와 같다 [X-2]. */
   readonly id: string
   readonly name: string
+  /**
+   * 데이터베이스 자신의 아이콘(8c-3b) — 정본의 `database.icon`. 없으면 null. 모양은 페이지 아이콘과 같다(`block/page-icon.ts`) —
+   * 블록의 `format.page_icon` 은 페이지 행만 갖는다(0037).
+   */
+  readonly icon: PageIcon | null
   /** 이 데이터베이스가 **소유한** data_source. MVP 는 하나다. */
   readonly dataSourceId: string
   readonly schemaVersion: string
@@ -94,6 +100,8 @@ export type DatabaseFailure =
   | 'not_found'
   | 'forbidden'
   | 'invalid_name'
+  /** 아이콘이 이모지 한 글자가 아니다(8c-3b — 페이지 아이콘과 같은 규칙). */
+  | 'invalid_icon'
   /** 데이터베이스(구조) · 행 페이지가 잠겼다(7f-2 · F-06-16) — 풀어야 고친다. */
   | 'locked'
 
@@ -251,6 +259,7 @@ export async function createDatabase(
       value: {
         id,
         name,
+        icon: null,
         dataSourceId,
         schemaVersion: '1',
         isInline: false,
@@ -310,6 +319,7 @@ export async function renameDatabase(
       value: {
         id: row.id,
         name,
+        icon: readPageIcon(row.icon),
         dataSourceId: row.data_source_id,
         schemaVersion: row.schema_version,
         isInline: row.is_inline,
@@ -320,12 +330,60 @@ export async function renameDatabase(
   })
 }
 
+/**
+ * 데이터베이스 자신의 아이콘을 바꾼다 — 잔여 묶음 8c-3b (F-02-05). `null` 은 지우기.
+ *
+ * 자리는 정본의 `database.icon` 이다(0038 — 블록의 `format.page_icon` 은 페이지 행만 갖는다). 모양 · 받기 규칙은 페이지 아이콘과
+ * 같은 함수다(`parsePageIconInput` — 이모지 한 글자).
+ *
+ * **이름과 같은 권한이다** — `edit_structure` 이고, 데이터베이스가 잠기면 막는다(7f-2 — 잠금 안내가 이미 "이름"을 구조로 센다). 아이콘은
+ * 이름 옆에 서는 표의 모습이고, 모두가 보는 사이드바 · teamspace 화면에 선다. 행 · 셀(`edit_content`)을 고치는 사람이 바꾸는 것이
+ * 아니다. 페이지 아이콘이 `edit_content` 인 것도 그 페이지의 이름이 그렇기 때문이다 — 둘 다 각자의 이름을 따른다.
+ *
+ * 블록 행을 먼저 잠근다 — 잠그는 명령(`setDatabaseLock`)이 같은 행에 줄을 선다. 같은 아이콘이면 쓰지 않는다. 바뀌면 블록의
+ * `last_edited_*` · `version` 을 올린다(이름과 같다).
+ */
+export async function setDatabaseIcon(
+  ctx: SessionContext,
+  databaseId: string,
+  rawIcon: unknown,
+): Promise<DatabaseResult<PageIcon | null>> {
+  const icon = parsePageIconInput(rawIcon)
+  if (icon === undefined) return { ok: false, reason: 'invalid_icon' } as const
+
+  return withCommandTransaction(async (tx) => {
+    const row = await tx.queryMaybe<{ icon: unknown }>(
+      `SELECT d.icon FROM block b JOIN database d ON d.id = b.id
+        WHERE b.id = $1 AND b.workspace_id = $2 AND b.type = 'database' AND b.lifecycle = 'live'
+        FOR UPDATE OF b`,
+      [databaseId, ctx.workspaceId],
+    )
+    if (row === null) return { ok: false, reason: 'not_found' } as const
+    const caps = await effectiveCaps(tx, ctx, databaseId)
+    if (!can(caps, 'view')) return { ok: false, reason: 'not_found' } as const
+    if (!can(caps, 'edit_structure')) return { ok: false, reason: 'forbidden' } as const
+    if (await isLocked(tx, databaseId)) return { ok: false, reason: 'locked' } as const
+
+    if (samePageIcon(readPageIcon(row.icon), icon)) return { ok: true, value: icon } as const
+    await tx.query(`UPDATE database SET icon = $2::jsonb, updated_at = now() WHERE id = $1`, [
+      databaseId,
+      icon === null ? null : JSON.stringify(pageIconJson(icon)),
+    ])
+    await tx.query(
+      `UPDATE block SET last_edited_by = $2, last_edited_at = now(), version = version + 1 WHERE id = $1`,
+      [databaseId, ctx.userId],
+    )
+    return { ok: true, value: icon } as const
+  })
+}
+
 type DatabaseRow = {
   parent_type: string
   parent_id: string
   owner_user_id: string | null
   id: string
   properties: { title?: unknown } | null
+  icon: unknown
   is_inline: boolean
   data_source_id: string
   schema_version: string
@@ -353,6 +411,7 @@ export async function getDatabase(
       value: {
         id: row.id,
         name: plainTitleOf(row.properties),
+        icon: readPageIcon(row.icon),
         dataSourceId: row.data_source_id,
         schemaVersion: row.schema_version,
         isInline: row.is_inline,
@@ -371,6 +430,8 @@ export async function getDatabase(
 export type DatabaseListItem = {
   readonly id: string
   readonly name: string
+  /** 아이콘(8c-3b) — 없으면 null. 관계형의 대상 고르개(`<select>`)가 이름 앞에 싣는다. */
+  readonly icon: PageIcon | null
   readonly dataSourceId: string
 }
 
@@ -387,8 +448,8 @@ export async function listDatabases(ctx: SessionContext): Promise<DatabaseListIt
   return withReadTransaction(async (tx) => {
     const scopes = await readableScopes(tx, ctx)
     if (scopes.length === 0) return []
-    const rows = await tx.query<{ id: string; properties: { title?: unknown } | null; data_source_id: string }>(
-      `SELECT b.id, b.properties, ds.id AS data_source_id
+    const rows = await tx.query<{ id: string; properties: { title?: unknown } | null; icon: unknown; data_source_id: string }>(
+      `SELECT b.id, b.properties, d.icon, ds.id AS data_source_id
          FROM block b
          JOIN database d ON d.id = b.id
          JOIN data_source ds ON ds.owner_database_id = d.id
@@ -399,7 +460,7 @@ export async function listDatabases(ctx: SessionContext): Promise<DatabaseListIt
       [ctx.workspaceId, scopes, MAX_DATABASE_LIST],
     )
     return rows
-      .map((row) => ({ id: row.id, name: plainTitleOf(row.properties), dataSourceId: row.data_source_id }))
+      .map((row) => ({ id: row.id, name: plainTitleOf(row.properties), icon: readPageIcon(row.icon), dataSourceId: row.data_source_id }))
       .sort((a, b) => a.name.localeCompare(b.name, 'ko'))
   })
 }
@@ -408,18 +469,21 @@ export async function listDatabases(ctx: SessionContext): Promise<DatabaseListIt
  * teamspace 최상위의 데이터베이스 — 볼 수 있는 것만(스코프로 거른다 · `listTeamspacePages` 와 같은 규칙). teamspace 를 볼 수
  * 없으면 비어 있다 — 없는 teamspace 와 같은 답이다. 형제 순서(`order_key`)대로 준다(7c-4).
  */
-export async function listTeamspaceDatabases(ctx: SessionContext, teamspaceId: string): Promise<{ id: string; name: string }[]> {
+export async function listTeamspaceDatabases(
+  ctx: SessionContext,
+  teamspaceId: string,
+): Promise<{ id: string; name: string; icon: PageIcon | null }[]> {
   return withReadTransaction(async (tx) => {
     const scopes = await readableScopes(tx, ctx)
     if (scopes.length === 0) return []
-    const rows = await tx.query<{ id: string; properties: { title?: unknown } | null }>(
-      `SELECT id, properties FROM live_block
-        WHERE parent_type = 'teamspace' AND parent_id = $1 AND workspace_id = $2 AND type = 'database'
-          AND perm_scope_id = ANY($3::uuid[])
-        ORDER BY order_key, id`,
+    const rows = await tx.query<{ id: string; properties: { title?: unknown } | null; icon: unknown }>(
+      `SELECT b.id, b.properties, d.icon FROM live_block b JOIN database d ON d.id = b.id
+        WHERE b.parent_type = 'teamspace' AND b.parent_id = $1 AND b.workspace_id = $2 AND b.type = 'database'
+          AND b.perm_scope_id = ANY($3::uuid[])
+        ORDER BY b.order_key, b.id`,
       [teamspaceId, ctx.workspaceId, scopes],
     )
-    return rows.map((row) => ({ id: row.id, name: plainTitleOf(row.properties) }))
+    return rows.map((row) => ({ id: row.id, name: plainTitleOf(row.properties), icon: readPageIcon(row.icon) }))
   })
 }
 
@@ -429,7 +493,7 @@ async function loadDatabase(
   databaseId: string,
 ): Promise<DatabaseRow | null> {
   return tx.queryMaybe<DatabaseRow>(
-    `SELECT b.id, b.properties, b.parent_type, b.parent_id, b.owner_user_id, d.is_inline, ds.id AS data_source_id, ds.schema_version
+    `SELECT b.id, b.properties, b.parent_type, b.parent_id, b.owner_user_id, d.icon, d.is_inline, ds.id AS data_source_id, ds.schema_version
        FROM block b
        JOIN database d ON d.id = b.id
        JOIN data_source ds ON ds.owner_database_id = d.id

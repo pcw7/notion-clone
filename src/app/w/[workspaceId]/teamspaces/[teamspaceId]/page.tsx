@@ -21,6 +21,7 @@ import { notFound } from 'next/navigation'
 
 import { requirePageSession } from '@/lib/auth/page-session'
 import { listTeamspacePages } from '@/lib/block/page'
+import { DATABASE_GLYPH } from '@/lib/block/page-icon'
 import { listTeamspaceDatabases } from '@/lib/database/database'
 import { isUuid } from '@/lib/ids'
 import { listGroups } from '@/lib/workspace/group'
@@ -102,11 +103,9 @@ export default async function TeamspacePage({ params }: PageProps<'/w/[workspace
               <li key={d.id}>
                 <Link
                   href={`/w/${workspaceId}/db/${d.id}`}
-                  className="block px-4 py-3 text-sm hover:bg-neutral-50 dark:hover:bg-neutral-900"
+                  className="flex items-center gap-2 px-4 py-3 text-sm hover:bg-neutral-50 dark:hover:bg-neutral-900"
                 >
-                  <span aria-hidden className="mr-1 text-neutral-400">
-                    ▦
-                  </span>
+                  <PageIconView icon={d.icon} fallback glyph={DATABASE_GLYPH} />
                   {d.name || UNTITLED}
                 </Link>
               </li>

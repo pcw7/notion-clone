@@ -58,6 +58,7 @@ import { BodyEditor } from '../../../../[pageId]/body-editor'
 import { DatabaseTable } from '../../database-table'
 import { TemplateTitle } from './template-title'
 import { PageIconControl } from '../../../../[pageId]/page-icon-control'
+import { PageIconView } from '../../../../page-icon-view'
 
 export default async function TemplatePage({
   params,
@@ -103,7 +104,11 @@ export default async function TemplatePage({
   const titlePropertyId = view.value.columns.find((c) => c.type === 'title')?.propertyId ?? null
 
   // 경로 — 머리와 본문의 breadcrumb 블록(8b-2)이 같은 줄을 그린다(`block/breadcrumb.ts`).
-  const trail = templateTrail({ workspaceId, database: { id: databaseId, name: database.value.name }, templateId: template.id })
+  const trail = templateTrail({
+    workspaceId,
+    database: { id: databaseId, name: database.value.name, icon: database.value.icon },
+    templateId: template.id,
+  })
 
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-3xl flex-col gap-6 px-6 py-12">
@@ -115,6 +120,8 @@ export default async function TemplatePage({
               <span className="text-neutral-400">{item.label}</span>
             ) : (
               <Link href={item.href} className="hover:underline underline-offset-4">
+                {/* 표의 아이콘(8c-3b) — 경로는 글자의 줄이라 있을 때만 그린다(머리의 경로와 같다). */}
+                <PageIconView icon={item.icon} className="mr-1" />
                 {item.label}
               </Link>
             )}

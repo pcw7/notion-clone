@@ -157,10 +157,14 @@ async function pageLabels(
   if (ids.length === 0) return { titles, icons }
   const scopes = await readableScopes(tx, ctx)
   if (scopes.length === 0) return { titles, icons }
+  // 데이터베이스를 가리키는 멘션도 이름을 받는다 — 그 아이콘은 `database.icon` 이다(8c-3b · 블록의 `format` 은 페이지 행만 갖는다).
   const rows = await tx.query<{ id: string; properties: { title?: unknown }; page_icon: unknown }>(
-    `SELECT id, properties, format -> 'page_icon' AS page_icon FROM block
-      WHERE id = ANY($1::uuid[]) AND workspace_id = $2 AND type IN ('page', 'database')
-        AND lifecycle = 'live' AND perm_scope_id = ANY($3::uuid[])`,
+    `SELECT b.id, b.properties,
+            CASE WHEN b.type = 'database' THEN d.icon ELSE b.format -> 'page_icon' END AS page_icon
+       FROM block b
+       LEFT JOIN database d ON b.type = 'database' AND d.id = b.id
+      WHERE b.id = ANY($1::uuid[]) AND b.workspace_id = $2 AND b.type IN ('page', 'database')
+        AND b.lifecycle = 'live' AND b.perm_scope_id = ANY($3::uuid[])`,
     [ids, ctx.workspaceId, scopes],
   )
   for (const r of rows) {
