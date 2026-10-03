@@ -194,7 +194,7 @@ function pageRefNodeView(
     link.classList.add('blk-page-link-denied')
   } else {
     // 아이콘(8c-2) — 없으면 기본 글리프(페이지로 가는 줄). 아직 모르는 참조(`undefined`)도 글리프로 자리를 지킨다.
-    const icon = pageIconElement(title === undefined ? null : deps.pageIcon(id), { fallback: true, className: 'blk-page-icon' })
+    const icon = pageIconElement(title === undefined ? null : deps.pageIcon(id), { fallback: true, className: 'blk-page-icon', workspaceId: deps.workspaceId })
     if (icon !== null) link.append(icon)
     link.append(title === undefined ? '하위 페이지' : title || '제목 없음')
   }
@@ -228,7 +228,7 @@ function mentionNodeView(node: PmNode, _view: EditorView, _getPos: () => number 
   const label = deps.mentionLabel(target.kind, target.id)
   const shown = mentionDisplay(target.kind, label)
   if (target.kind === 'page' && !shown.denied) {
-    const icon = pageIconElement(label === undefined ? null : deps.pageIcon(target.id), { fallback: true, className: 'blk-page-icon' })
+    const icon = pageIconElement(label === undefined ? null : deps.pageIcon(target.id), { fallback: true, className: 'blk-page-icon', workspaceId: deps.workspaceId })
     if (icon !== null) dom.append(icon)
   }
   dom.append(shown.text)

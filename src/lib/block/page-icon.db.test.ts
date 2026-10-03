@@ -137,7 +137,8 @@ describe('② 거부는 아무것도 바꾸지 않는다', () => {
     for (const bad of ['', 'a', '🚀🚀', '🚀 x', 'x'.repeat(17)]) {
       await rejects(() => setPageIcon(fx.owner.ctx, page.id, emoji(bad)), 'invalid_icon')
     }
-    await rejects(() => setPageIcon(fx.owner.ctx, page.id, { type: 'external', url: 'https://example.com/a.png' } as unknown as PageIcon), 'invalid_icon')
+    // 이미지 아이콘은 8c-4 부터 받는다 — 안전하지 않은 주소는 여전히 거부한다(`icon-reference.db.test.ts` ②).
+    await rejects(() => setPageIcon(fx.owner.ctx, page.id, { type: 'external', url: 'javascript:alert(1)' } as unknown as PageIcon), 'invalid_icon')
 
     assert.ok((await setPageLock(fx.owner.ctx, page.id, true)).ok)
     await rejects(() => setPageIcon(fx.owner.ctx, page.id, emoji('🔓')), 'locked')

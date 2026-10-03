@@ -2079,7 +2079,8 @@ try {
     ok('키캡 아이콘 · 다른 format 키와 함께')
     await mustReject('문자열 아이콘(노션 내부 모양)', setFormat, [pageId, JSON.stringify({ page_icon: '🌱' })])
     await mustReject('null 아이콘(지우기는 키를 뺀다)', setFormat, [pageId, JSON.stringify({ page_icon: null })])
-    await mustReject('모르는 아이콘 종류', setFormat, [pageId, JSON.stringify({ page_icon: { type: 'external', url: 'https://example.com/a.png' } })])
+    // 이미지(file · external)는 0039 가 넓혔다 — [25]. 노션의 내장 아이콘 세트(`custom_emoji`)는 받지 않는다(§3.2-66).
+    await mustReject('모르는 아이콘 종류', setFormat, [pageId, JSON.stringify({ page_icon: { type: 'custom_emoji', id: 'x' } })])
     await mustReject('글자가 아닌 이모지', setFormat, [pageId, JSON.stringify({ page_icon: { type: 'emoji', emoji: 7 } })])
     await mustReject('빈 이모지', setFormat, [pageId, JSON.stringify({ page_icon: { type: 'emoji', emoji: '' } })])
     await mustReject('공백이 든 이모지', setFormat, [pageId, JSON.stringify({ page_icon: { type: 'emoji', emoji: '🚀 ' } })])
@@ -2112,7 +2113,7 @@ try {
     ok('키캡 아이콘')
     await mustReject('JSON null 아이콘(없음은 SQL NULL 하나다)', setIcon, [dbId, 'null'])
     await mustReject('문자열 아이콘', setIcon, [dbId, JSON.stringify('📚')])
-    await mustReject('모르는 아이콘 종류', setIcon, [dbId, JSON.stringify({ type: 'external', url: 'https://example.com/a.png' })])
+    await mustReject('모르는 아이콘 종류', setIcon, [dbId, JSON.stringify({ type: 'custom_emoji', id: 'x' })])
     await mustReject('글자가 아닌 이모지', setIcon, [dbId, JSON.stringify({ type: 'emoji', emoji: 7 })])
     await mustReject('빈 이모지', setIcon, [dbId, JSON.stringify({ type: 'emoji', emoji: '' })])
     await mustReject('공백이 든 이모지', setIcon, [dbId, JSON.stringify({ type: 'emoji', emoji: '📚 ' })])
@@ -2121,6 +2122,58 @@ try {
     await mustReject('데이터베이스 블록의 format.page_icon(자리는 database.icon)', `UPDATE block SET format = $2::jsonb WHERE id = $1`, [
       dbId, JSON.stringify({ page_icon: { type: 'emoji', emoji: '📚' } }),
     ])
+  }
+
+  console.log('\n[25] 이미지 아이콘의 모양 (0039 / §3.4 [보강] 페이지 아이콘 ② · §3.5 [보강] 데이터베이스 아이콘 ② · 8c-4조각)')
+  {
+    // 두 자리가 같은 판정 함수(`icon_shape_ok`)를 지난다 — emoji | file(file_id) | external(url). 파일이 이 워크스페이스의
+    // 이미지인지는 명령이 본다(jsonb 안의 id 에 FK 를 걸 수 없다).
+    const pageId = randomUUID()
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key,
+                          ancestor_path, perm_scope_id, properties, format, created_at, last_edited_at)
+       VALUES ($1, $2, 'page', 'workspace', $2, $3, '{}', $1, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      [pageId, wsId, `imgicon-${pageId}`],
+    )
+    const dbId = randomUUID()
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key,
+                          ancestor_path, perm_scope_id, properties, format, created_at, last_edited_at)
+       VALUES ($1, $2, 'database', 'workspace', $2, $3, '{}', $1, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      [dbId, wsId, `imgicon-db-${dbId}`],
+    )
+    await client.query(`INSERT INTO database (id, created_at, updated_at) VALUES ($1, now(), now())`, [dbId])
+    const fileIcon = { type: 'file', file_id: randomUUID() }
+    const externalIcon = { type: 'external', url: 'https://example.com/icon.png?size=64' }
+    const setPage = `UPDATE block SET format = $2::jsonb WHERE id = $1`
+    const setDb = `UPDATE database SET icon = $2::jsonb WHERE id = $1`
+    await client.query(setPage, [pageId, JSON.stringify({ page_icon: fileIcon })])
+    ok('페이지에 올린 파일 아이콘')
+    await client.query(setPage, [pageId, JSON.stringify({ page_icon: externalIcon, block_color: 'red' })])
+    ok('페이지에 외부 이미지 아이콘 · 다른 format 키와 함께')
+    await client.query(setDb, [dbId, JSON.stringify(fileIcon)])
+    await client.query(setDb, [dbId, JSON.stringify(externalIcon)])
+    ok('데이터베이스에 올린 파일 · 외부 이미지 아이콘')
+    await client.query(setPage, [pageId, JSON.stringify({ page_icon: { type: 'emoji', emoji: '🌱' } })])
+    ok('이모지는 그대로 받는다')
+
+    const both = [
+      ['file_id 가 uuid 가 아니다', { type: 'file', file_id: 'not-a-uuid' }],
+      ['file_id 가 대문자 uuid(명령은 소문자로 쓴다)', { type: 'file', file_id: randomUUID().toUpperCase() }],
+      ['file_id 가 글이 아니다', { type: 'file', file_id: 7 }],
+      ['파일 아이콘에 다른 키', { ...fileIcon, url: 'https://example.com/a.png' }],
+      ['javascript: 주소', { type: 'external', url: 'javascript:alert(1)' }],
+      ['상대 주소', { type: 'external', url: '/api/workspaces/x/files/y/content' }],
+      ['공백이 든 주소', { type: 'external', url: 'https://example.com/a b.png' }],
+      ['2048자를 넘는 주소', { type: 'external', url: `https://example.com/${'a'.repeat(2048)}` }],
+      ['외부 아이콘에 다른 키', { ...externalIcon, file_id: fileIcon.file_id }],
+      ['노션 API 의 중첩 모양({external:{url}})', { type: 'external', external: { url: 'https://example.com/a.png' } }],
+    ]
+    for (const [label, icon] of both) {
+      await mustReject(`페이지 — ${label}`, setPage, [pageId, JSON.stringify({ page_icon: icon })])
+      await mustReject(`데이터베이스 — ${label}`, setDb, [dbId, JSON.stringify(icon)])
+    }
+    await mustReject('배열 아이콘(객체가 아니면 오류가 아니라 거부)', setDb, [dbId, JSON.stringify([fileIcon])])
   }
 
   await client.query('ROLLBACK')

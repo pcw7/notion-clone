@@ -545,6 +545,16 @@
   margin-inline-end: 0.25rem;
 }
 
+/* 이미지 아이콘(8c-4) — 글자 한 칸의 정사각형으로 자른다(이모지와 같은 자리). */
+.blk-editor img.page-icon-image {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  object-fit: cover;
+  border-radius: 0.15em;
+  vertical-align: -0.125em;
+}
+
 /* 블록 선택의 하이라이트가 코드 상자의 불투명한 배경에 가리지 않게(8a-1 부터의 틈) — 상자 위에 같은 색을 한 겹 더 칠한다. */
 .blk-editor .blk-selected pre.blk-code {
   box-shadow: inset 0 0 0 100vmax rgba(35, 131, 226, 0.14);

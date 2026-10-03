@@ -5587,6 +5587,176 @@ async function main() {
       await sleep(500)
     }
 
+    if (sectionIf('이미지 아이콘 (8c-4 · F-02-05)')) {
+      // 고르개의 "이미지" 탭 — 파일을 올리거나(이미지 블록과 같은 업로드 길) 이미지 주소를 넣는다. 고른 이미지가 머리 · 사이드바 · 부모 본문의
+      // 하위 페이지 블록(노드 뷰의 DOM)에 선다. 올린 파일은 그 파일의 참조다(`ref_count`). 불러오지 못한 이미지는 기본 글리프로 바뀐다.
+      // 데이터베이스 아이콘도 같다. 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
+      const stamp = Date.now()
+      const src = (p) => new URL(`../src/lib/${p}`, import.meta.url).href
+      const { query: dbQuery } = await import(src('db/pool.ts'))
+      const dbMod = await import(src('database/database.ts'))
+      const aclMod = await import(src('permissions/acl.ts'))
+      const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
+      const post = async (body) => (await (await fetch(pagesUrl, { method: 'POST', headers: authed, body: JSON.stringify(body) })).json()).page.id
+      const patchIcon = (page, icon, headers = authed) => fetch(`${pagesUrl}/${page}`, { method: 'PATCH', headers, body: JSON.stringify({ icon }) })
+      const parentTitle = `이미지아이콘부모${stamp}`
+      const pageTitle = `이미지아이콘${stamp}`
+      const parent = await post({ title: parentTitle })
+      const page = await post({ title: pageTitle, parentPageId: parent })
+      const seeded = await patchIcon(page, { type: 'emoji', emoji: '🌱' })
+      const iconPng = join(profile, 'e2e-icon.png')
+      writeFileSync(iconPng, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64'))
+      // 외부 주소 — 앱이 내놓는 정적 파일을 절대 주소로(이 PC 의 헤드리스 브라우저는 바깥 망을 믿지 않는다). 받는 쪽에서는 그냥 http 주소다.
+      const linkUrl = `${BASE}/globe.svg`
+      // id 가 uuid 가 아니면(앞 장면이 떨어져 아이콘이 파일이 아니다) 던지지 않고 -1 — 한 장면이 떨어져도 뒤의 검사가 돈다.
+      const refCountOf = async (fileId) =>
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(fileId)
+          ? Number((await dbQuery(`SELECT ref_count FROM file WHERE id = $1`, [fileId]))[0]?.ref_count ?? -1)
+          : -1
+
+      const ICON = '[data-testid="page-icon"]'
+      const ADD = '[data-testid="page-icon-add"]'
+      const PICKER = '[data-testid="emoji-picker"]'
+      /** 머리 아이콘이 가리키는 것 — 이미지면 `data-page-icon`, 이모지면 그 글자. */
+      const headerKey = () =>
+        evaluate(`(() => { const b = document.querySelector('${ICON}'); if (!b) return null
+          const i = b.querySelector('[data-page-icon]'); return i ? i.getAttribute('data-page-icon') : b.textContent })()`)
+      const treeLink = (id, prefix = '') => `nav[aria-label="페이지 트리"] a[href="/w/${workspaceId}/${prefix}${id}"]`
+      const keyIn = (sel) => `(document.querySelector(${JSON.stringify(sel)})?.querySelector('[data-page-icon]')?.getAttribute('data-page-icon') ?? null)`
+      /** 그 자리의 아이콘이 이미지이고 실제로 디코드됐는가. */
+      const decodedIn = (sel) => `(() => { const i = document.querySelector(${JSON.stringify(sel)})?.querySelector('img[data-page-icon]')
+        return !!i && i.complete && i.naturalWidth > 0 })()`
+      // 하이드레이션 전의 클릭은 사라진다(§6 — 서버가 그린 머리의 단추) — 고르개가 설 때까지 다시 누른다.
+      const openPicker = async () => {
+        for (let tries = 0; tries < 6; tries += 1) {
+          await clickSelector(ICON)
+          if (await waitFor(`!!document.querySelector('${PICKER}')`, 2000)) return true
+        }
+        return false
+      }
+      const openImageTab = async () => {
+        await openPicker()
+        await waitFor(`!!document.querySelector('${PICKER} [data-testid="icon-tab-image"]')`, 8000)
+        await clickSelector('[data-testid="icon-tab-image"]')
+        return waitFor(`!!document.querySelector('[data-testid="icon-image-panel"]')`, 3000)
+      }
+
+      // ① 파일 올리기 — 머리 · 사이드바가 그 이미지를 그리고, 파일의 참조가 하나다
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+      check('전제 — 이모지 아이콘인 페이지', seeded.ok && (await waitFor(`document.querySelector('${ICON}')?.textContent === '🌱'`, 15000)))
+      check('★ 고르개의 "이미지" 탭 — 파일 올리기 · 이미지 주소', await openImageTab(),
+        String(await evaluate(`document.querySelector('${PICKER}')?.textContent ?? '(없음)'`)))
+      await send('DOM.enable')
+      const docRoot = (await send('DOM.getDocument', { depth: -1 })).root.nodeId
+      const uploadNode = (await send('DOM.querySelector', { nodeId: docRoot, selector: '[data-testid="icon-upload-input"]' })).nodeId
+      await send('DOM.setFileInputFiles', { files: [iconPng], nodeId: uploadNode })
+      check('★ 파일을 고르면 올라가고 머리의 아이콘이 그 이미지가 된다 — 고르개는 닫힌다',
+        await waitFor(`!document.querySelector('${PICKER}') && (document.querySelector('${ICON} img[data-page-icon]')?.getAttribute('data-page-icon') ?? '').startsWith('file:')`, 15000),
+        String(await headerKey()))
+      const uploadedKey = String(await headerKey())
+      const fileId = uploadedKey.slice('file:'.length)
+      check('★ 머리의 이미지가 실제로 디코드된다(세션으로 인증되는 파일 경로)', await waitFor(decodedIn(ICON), 8000),
+        String(await evaluate(`document.querySelector('${ICON} img')?.src ?? '(없음)'`)))
+      // 화면은 아이콘을 먼저 바꾸고 저장한다 — 서버가 받을 때까지 기다린다.
+      let held = -1
+      for (let i = 0; i < 30 && held !== 1; i += 1) {
+        held = await refCountOf(fileId)
+        if (held !== 1) await sleep(150)
+      }
+      check('★ 올린 파일의 참조가 하나다(아이콘이 그 파일을 가리킨다)', held === 1, String(held))
+      check('★ 사이드바의 그 줄도 같은 이미지를 그린다',
+        await waitFor(`${keyIn(treeLink(page))} === ${JSON.stringify(uploadedKey)} && ${decodedIn(treeLink(page))}`, 8000),
+        String(await evaluate(keyIn(treeLink(page)))))
+
+      // ② 부모 본문의 하위 페이지 블록 — 노드 뷰(DOM)가 같은 이미지를 그린다
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${parent}` })
+      const REF = `.blk-editor [data-block-id="${page}"] .blk-page-link`
+      const refKey = `(document.querySelector(${JSON.stringify(REF)})?.querySelector('[data-page-icon]')?.getAttribute('data-page-icon') ?? null)`
+      check('★ 부모 본문의 하위 페이지 블록이 그 이미지를 그린다(노드 뷰 — 파일 경로)',
+        await waitFor(`${refKey} === ${JSON.stringify(uploadedKey)} && ${decodedIn(REF)}`, 15000),
+        String(await evaluate(refKey)))
+
+      // ③ 이미지 주소 — 안전하지 않은 주소는 말하고 그대로 · http 주소는 아이콘이 된다(남의 서버에 우리 주소를 알리지 않는다)
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+      await waitFor(`!!document.querySelector('${ICON} img')`, 15000)
+      await openImageTab()
+      await clickSelector('[data-testid="icon-link-input"]')
+      // 고르개는 검색칸의 포커스를 지키려고 바깥 누르기를 막는다 — 주소 칸은 막으면 안 된다(누르고 곧바로 쓴다).
+      check('★ 이미지 주소 칸을 누르면 그 칸에 쓴다(고르개가 포커스를 막지 않는다)',
+        await waitFor(`document.activeElement === document.querySelector('[data-testid="icon-link-input"]')`, 2000),
+        String(await evaluate('document.activeElement?.outerHTML?.slice(0, 80) ?? null')))
+      await typeText('javascript:alert(1)')
+      await clickSelector('[data-testid="icon-link-submit"]')
+      check('★ 안전하지 않은 주소는 거절을 말하고 아이콘은 그대로다',
+        (await waitFor(`!!document.querySelector('[data-testid="icon-image-error"]')`, 3000)) && (await headerKey()) === uploadedKey,
+        JSON.stringify([await evaluate(`document.querySelector('[data-testid="icon-image-error"]')?.textContent ?? null`), await headerKey()]))
+      // 거절한 뒤의 포커스는 "넣기" 단추에 있다 — 입력칸을 다시 누르고 고친다(`select()` 는 포커스를 옮기지 않는다).
+      await clickSelector('[data-testid="icon-link-input"]')
+      await evaluate(`document.querySelector('[data-testid="icon-link-input"]')?.select()`)
+      await typeText(linkUrl)
+      await key('Enter')
+      check('★ 이미지 주소를 넣으면 그 주소가 아이콘이 된다 — referrer 를 보내지 않는다',
+        await waitFor(`(async () => { const i = document.querySelector('${ICON} img'); return !!i && i.getAttribute('src') === ${JSON.stringify(linkUrl)}
+          && i.referrerPolicy === 'no-referrer' && (await i.decode().then(() => true, () => false)) })()`, 10000),
+        String(await evaluate(`document.querySelector('${ICON}')?.innerHTML?.slice(0, 200) ?? '(없음)'`)))
+      let released = -1
+      for (let i = 0; i < 30 && released !== 0; i += 1) {
+        released = await refCountOf(fileId)
+        if (released !== 0) await sleep(150)
+      }
+      check('★ 올린 파일 아이콘을 바꾸면 그 파일의 참조가 내려간다', released === 0, String(released))
+
+      // ④ 불러오지 못한 이미지 — 깨진 그림 대신 기본 글리프(사이드바) · 머리의 단추가 비지 않는다
+      const broken = await patchIcon(page, { type: 'external', url: 'http://127.0.0.1:9/broken-icon.png' })
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+      check('★ 불러오지 못한 이미지는 기본 글리프로 바뀐다 — 사이드바 · 머리',
+        broken.ok && (await waitFor(`${keyIn(treeLink(page))} === '' && !!document.querySelector('${ICON} svg[data-page-icon=""]')`, 15000)),
+        JSON.stringify([await evaluate(keyIn(treeLink(page))), await evaluate(`document.querySelector('${ICON}')?.innerHTML?.slice(0, 120) ?? null`)]))
+
+      // ⑤ 데이터베이스 아이콘 — 같은 파일을 라우트로 · 머리 · 사이드바
+      const table = await dbMod.createDatabase(ctx, { name: `이미지아이콘표${stamp}` })
+      const dbPatched = table.ok
+        ? await fetch(`${BASE}/api/workspaces/${workspaceId}/databases/${table.value.id}`, {
+            method: 'PATCH', headers: authed, body: JSON.stringify({ icon: { type: 'file', file_id: fileId } }),
+          })
+        : null
+      check('데이터베이스 아이콘도 올린 파일을 받고 참조를 센다', dbPatched?.ok === true && (await refCountOf(fileId)) === 1,
+        JSON.stringify([dbPatched?.status, await refCountOf(fileId)]))
+      if (table.ok) {
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${table.value.id}` })
+        check('★ 데이터베이스 머리 · 사이드바가 그 이미지를 그린다',
+          await waitFor(`${decodedIn(ICON)} && ${keyIn(treeLink(table.value.id, 'db/'))} === ${JSON.stringify(uploadedKey)} && ${decodedIn(treeLink(table.value.id, 'db/'))}`, 15000),
+          JSON.stringify([await headerKey(), await evaluate(keyIn(treeLink(table.value.id, 'db/')))]))
+      }
+
+      // ⑥ 라우트 — 이 워크스페이스에 없는 파일은 400 · 볼 수만 있는 사람은 보기만 한다
+      const missing = await patchIcon(page, { type: 'file', file_id: randomUUID() })
+      const missingBody = await missing.json().catch(() => ({}))
+      check('★ 라우트 — 없는 파일 아이콘은 400 invalid_icon', missing.status === 400 && missingBody.error === 'invalid_icon',
+        JSON.stringify([missing.status, missingBody]))
+      const secret = await post({ title: `이미지아이콘읽기${stamp}`, privateTop: true })
+      const marked = await patchIcon(secret, { type: 'file', file_id: fileId })
+      const reader = await joinAs(workspaceId, await createUser(`이미지 아이콘 독자 ${stamp}`), 'member')
+      const shared = await aclMod.grantAccess(ctx, secret, { type: 'user', id: reader.userId }, 'view')
+      const readerHtml = await (await fetch(`${BASE}/w/${workspaceId}/${secret}`, { headers: { ...json, cookie: `nc_session=${reader.token}` } })).text()
+      const readerImg = await fetch(`${BASE}/api/workspaces/${workspaceId}/files/${fileId}/content`, { headers: { cookie: `nc_session=${reader.token}` } })
+      check('★ 볼 수만 있는 사람 — 아이콘(이미지)은 보이고 단추가 아니다 · 그 파일을 받는다',
+        marked.ok && shared.ok && readerHtml.includes('aria-label="페이지 아이콘 올린 이미지"') && readerHtml.includes(`/files/${fileId}/content`)
+          && !readerHtml.includes('data-testid="page-icon-add"') && readerImg.status === 200,
+        JSON.stringify([marked.status, shared.ok, readerHtml.includes('올린 이미지'), readerImg.status]))
+
+      // ⑦ 제거 — 이미지 아이콘도 고르개에서 지운다
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+      await waitFor(`!!document.querySelector('${ICON}')`, 15000)
+      await openPicker()
+      await waitFor(`!!document.querySelector('[data-testid="page-icon-remove"]')`, 8000)
+      await clickSelector('[data-testid="page-icon-remove"]')
+      check('★ 이미지 아이콘도 제거하면 "아이콘 추가"로 돌아온다', await waitFor(`!document.querySelector('${ICON}') && !!document.querySelector('${ADD}')`, 5000),
+        JSON.stringify([await evaluate(`document.querySelector('${ICON}')?.outerHTML?.slice(0, 160) ?? null`), await evaluate(`!!document.querySelector('${PICKER}')`),
+          await evaluate(`document.querySelector('[role="alert"]')?.textContent ?? null`)]))
+      await sleep(500)
+    }
+
     if (sectionIf('코멘트 패널 · 인박스 (F-05-08 · F-11-07)')) {
       const commentPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
         method: 'POST',

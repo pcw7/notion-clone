@@ -12,6 +12,8 @@
  *   · 아이콘을 누르면 고르개(`emoji-picker.tsx`) — 고르면 닫고, 무작위는 연 채로 바꾸고, 제거하면 닫는다
  *   · 고칠 수 없으면(권한 · 잠금) 아이콘만 보인다 — 버튼이 아니다. 서버도 거부한다(`setPageIcon`)
  *
+ * 이미지 아이콘(8c-4)도 같은 고르개의 "이미지" 탭에서 고른다 — 파일을 올리거나(먼저 올리고 그 파일 id 를 아이콘으로) 이미지 주소를 넣는다.
+ *
  * 저장은 고를 때마다 곧바로(`PATCH` 의 `icon`) — 화면은 먼저 바꾸고, 거부되면 마지막으로 저장된 값으로 되돌리고 까닭을 말한다. 저장되면
  * 서버 렌더(사이드바 · 경로)를 다시 그린다(`router.refresh` — 제목과 같다). 다른 곳에서 바뀌어 서버가 새 값을 주면 따라간다.
  */
@@ -19,10 +21,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 
-import { samePageIcon, type PageIcon } from '@/lib/block/page-icon'
+import { DATABASE_GLYPH, PAGE_GLYPH, pageIconLabel, samePageIcon, type PageIcon } from '@/lib/block/page-icon'
 import { randomEmoji } from '@/lib/emoji/catalog'
 import { EmojiPicker } from './emoji-picker'
 import { loadEmojiCatalog } from './emoji-catalog-loader'
+import { PageIconView } from '../page-icon-view'
 
 type IconOwner = 'page' | 'database'
 
@@ -30,12 +33,12 @@ const MESSAGES: Record<IconOwner, Record<string, string>> = {
   page: {
     locked: '잠긴 페이지입니다 — 잠금을 풀어야 아이콘을 바꿀 수 있습니다.',
     forbidden: '이 페이지를 고칠 권한이 없습니다.',
-    invalid_icon: '아이콘은 이모지 한 글자여야 합니다.',
+    invalid_icon: '아이콘은 이모지 한 글자 · 이 워크스페이스에 올린 이미지 · 이미지 주소여야 합니다.',
   },
   database: {
     locked: '잠긴 데이터베이스입니다 — 잠금을 풀어야 아이콘을 바꿀 수 있습니다.',
     forbidden: '이 데이터베이스의 구조를 고칠 권한이 없습니다.',
-    invalid_icon: '아이콘은 이모지 한 글자여야 합니다.',
+    invalid_icon: '아이콘은 이모지 한 글자 · 이 워크스페이스에 올린 이미지 · 이미지 주소여야 합니다.',
   },
 }
 
@@ -131,11 +134,15 @@ export function PageIconControl({
   }, [])
   const isTrigger = useCallback((target: EventTarget | null) => target instanceof Node && !!triggerRef.current?.contains(target), [])
 
+  // 이미지 아이콘은 글자 한 칸의 정사각형으로 그린다(머리의 글자 크기 — 이모지와 같은 자리). 불러오지 못하면 기본 글리프로(단추가 비지 않게).
+  const glyph = kind === 'database' ? DATABASE_GLYPH : PAGE_GLYPH
+  const face = (shown: PageIcon) => (shown.type === 'emoji' ? shown.emoji : <PageIconView icon={shown} fallback glyph={glyph} />)
+
   if (readOnly) {
     if (icon === null) return null
     return (
-      <div data-testid="page-icon" role="img" aria-label={`${OWNER_LABEL[kind]} 아이콘 ${icon.emoji}`} className="w-fit text-6xl leading-none">
-        {icon.emoji}
+      <div data-testid="page-icon" role="img" aria-label={`${OWNER_LABEL[kind]} 아이콘 ${pageIconLabel(icon)}`} className="w-fit text-6xl leading-none">
+        {face(icon)}
       </div>
     )
   }
@@ -158,23 +165,29 @@ export function PageIconControl({
           ref={triggerRef}
           type="button"
           data-testid="page-icon"
-          aria-label={`아이콘 바꾸기 — 지금 ${icon.emoji}`}
+          aria-label={`아이콘 바꾸기 — 지금 ${pageIconLabel(icon)}`}
           aria-haspopup="dialog"
           aria-expanded={open}
           onClick={() => setOpen((v) => !v)}
           className="rounded text-6xl leading-none hover:bg-neutral-100 dark:hover:bg-neutral-800"
         >
-          {icon.emoji}
+          {face(icon)}
         </button>
       )}
       {open && icon !== null && (
         <EmojiPicker
-          current={icon.emoji}
+          current={icon.type === 'emoji' ? icon.emoji : null}
+          removable
           onPick={(emoji) => {
             close(true)
             void save({ type: 'emoji', emoji })
           }}
-          onRandom={() => void saveRandom(icon.emoji)}
+          workspaceId={workspaceId}
+          onPickImage={(image) => {
+            close(true)
+            void save(image)
+          }}
+          onRandom={() => void saveRandom(icon.type === 'emoji' ? icon.emoji : null)}
           onRemove={() => {
             setOpen(false)
             focusAfterRender.current = true

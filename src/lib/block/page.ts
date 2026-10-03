@@ -40,6 +40,7 @@ import { autoSubscribe } from '../notification/subscription.ts'
 import { openPageBody } from './body-write.ts'
 import { appendPageRef, placePageRefAt } from './page-refs.ts'
 import { PAGE_ICON_KEY, pageIconJson, pageIconOfFormat, parsePageIconInput, samePageIcon, type PageIcon } from './page-icon.ts'
+import { isIconFile, moveIconFileReference } from '../file/icon-reference.ts'
 import {
   normalizeRichText,
   toPlainText,
@@ -684,10 +685,13 @@ export async function renamePage(
  * 받은 값은 다시 검사한다(`parsePageIconInput` — 라우트만 믿지 않는다). 같은 아이콘이면 쓰지 않는다(`version` 을 올리지 않는다).
  * 바뀌면 `last_edited_*` 와 `version` 을 올린다 — 페이지가 바뀐 것이다(X-6 의 페이지 단위 변경 카운터). 검색 색인은 다시 쓰지 않는다
  * (아이콘은 찾는 글자가 아니다).
+ *
+ * 이미지 아이콘(8c-4): 올린 파일이면 **이 워크스페이스의 이미지**여야 하고(아니면 `invalid_icon`), 그 파일의 참조 수를 같은 트랜잭션에서
+ * 옮긴다(`icon-reference.ts` — 옛 파일은 하나 내리고 새 파일은 하나 올린다).
  */
 export async function setPageIcon(ctx: SessionContext, pageId: BlockId, icon: PageIcon | null): Promise<PageIcon | null> {
   const parsed = parsePageIconInput(icon)
-  if (parsed === undefined) throw new PageError('invalid_icon', '아이콘은 이모지 한 글자여야 합니다.')
+  if (parsed === undefined) throw new PageError('invalid_icon', '아이콘은 이모지 한 글자 · 올린 이미지 · http(s) 이미지 주소여야 합니다.')
 
   return withTransaction(async (tx) => {
     // 대상 행을 먼저 잠그고 권한 · 잠금을 묻는다 — 잠그는 명령(`setPageLock`)과 같은 행에 줄을 선다.
@@ -703,7 +707,11 @@ export async function setPageIcon(ctx: SessionContext, pageId: BlockId, icon: Pa
     if (!can(caps, 'edit_content')) throw new PageError('forbidden', '이 페이지를 고칠 권한이 없습니다.')
     if (await isLocked(tx, pageId)) throw new PageError('locked', '잠긴 페이지입니다. 잠금을 풀어야 아이콘을 바꿀 수 있습니다.')
 
-    if (samePageIcon(pageIconOfFormat(target.format), parsed)) return parsed
+    const current = pageIconOfFormat(target.format)
+    if (samePageIcon(current, parsed)) return parsed
+    if (parsed !== null && parsed.type === 'file' && !(await isIconFile(tx, ctx, parsed.file_id))) {
+      throw new PageError('invalid_icon', '이 워크스페이스에 올린 이미지가 아닙니다.')
+    }
     await tx.query(
       `UPDATE block
           SET format = CASE WHEN $3::jsonb IS NULL THEN format - '${PAGE_ICON_KEY}'
@@ -714,6 +722,7 @@ export async function setPageIcon(ctx: SessionContext, pageId: BlockId, icon: Pa
         WHERE id = $1 AND workspace_id = $2`,
       [pageId, ctx.workspaceId, parsed === null ? null : JSON.stringify(pageIconJson(parsed)), ctx.userId],
     )
+    await moveIconFileReference(tx, ctx, current, parsed)
     return parsed
   })
 }

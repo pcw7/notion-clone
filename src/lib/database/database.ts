@@ -50,6 +50,7 @@ import { isLocked } from '../permissions/lock.ts'
 import { orderKeyBetween } from '../block/order-key.ts'
 import { nextSiblingKey, titleFromPlainText, plainTitleOf } from '../block/page.ts'
 import { pageIconJson, parsePageIconInput, readPageIcon, samePageIcon, type PageIcon } from '../block/page-icon.ts'
+import { isIconFile, moveIconFileReference } from '../file/icon-reference.ts'
 import { newPropertyId } from './property.ts'
 import { DEFAULT_VIEW_NAME } from './view.ts'
 
@@ -100,7 +101,7 @@ export type DatabaseFailure =
   | 'not_found'
   | 'forbidden'
   | 'invalid_name'
-  /** 아이콘이 이모지 한 글자가 아니다(8c-3b — 페이지 아이콘과 같은 규칙). */
+  /** 아이콘의 모양이 아니다 — 이모지 한 글자 · 이 워크스페이스에 올린 이미지 · http(s) 이미지 주소(8c-3b · 8c-4 — 페이지 아이콘과 같은 규칙). */
   | 'invalid_icon'
   /** 데이터베이스(구조) · 행 페이지가 잠겼다(7f-2 · F-06-16) — 풀어야 고친다. */
   | 'locked'
@@ -342,6 +343,8 @@ export async function renameDatabase(
  *
  * 블록 행을 먼저 잠근다 — 잠그는 명령(`setDatabaseLock`)이 같은 행에 줄을 선다. 같은 아이콘이면 쓰지 않는다. 바뀌면 블록의
  * `last_edited_*` · `version` 을 올린다(이름과 같다).
+ *
+ * 이미지 아이콘(8c-4)은 페이지와 같다 — 올린 파일은 이 워크스페이스의 이미지여야 하고(`invalid_icon`), 참조 수를 같은 트랜잭션에서 옮긴다.
  */
 export async function setDatabaseIcon(
   ctx: SessionContext,
@@ -364,7 +367,11 @@ export async function setDatabaseIcon(
     if (!can(caps, 'edit_structure')) return { ok: false, reason: 'forbidden' } as const
     if (await isLocked(tx, databaseId)) return { ok: false, reason: 'locked' } as const
 
-    if (samePageIcon(readPageIcon(row.icon), icon)) return { ok: true, value: icon } as const
+    const current = readPageIcon(row.icon)
+    if (samePageIcon(current, icon)) return { ok: true, value: icon } as const
+    if (icon !== null && icon.type === 'file' && !(await isIconFile(tx, ctx, icon.file_id))) {
+      return { ok: false, reason: 'invalid_icon' } as const
+    }
     await tx.query(`UPDATE database SET icon = $2::jsonb, updated_at = now() WHERE id = $1`, [
       databaseId,
       icon === null ? null : JSON.stringify(pageIconJson(icon)),
@@ -373,6 +380,7 @@ export async function setDatabaseIcon(
       `UPDATE block SET last_edited_by = $2, last_edited_at = now(), version = version + 1 WHERE id = $1`,
       [databaseId, ctx.userId],
     )
+    await moveIconFileReference(tx, ctx, current, icon)
     return { ok: true, value: icon } as const
   })
 }

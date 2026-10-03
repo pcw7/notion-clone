@@ -25,6 +25,8 @@ import { pageIconElement } from './page-icon-dom.ts'
 export type BreadcrumbViewDeps = {
   /** 앱 안의 주소로 옮겨 간다 — 클라이언트 라우터. */
   navigate: (href: string) => void
+  /** 올린 이미지 아이콘의 주소를 만든다(8c-4 — 워크스페이스의 파일 경로). */
+  workspaceId: string
 }
 
 /** 이벤트 대상이 경로의 링크 안이면 그 링크. */
@@ -33,8 +35,8 @@ function linkOf(target: EventTarget | null): HTMLAnchorElement | null {
 }
 
 /** 줄 하나의 글자 — 아이콘(있을 때만 — 글자 속의 경로 · 읽는 이에게는 숨긴다)과 이름. */
-function fillItem(target: HTMLElement, item: BreadcrumbItem): void {
-  const icon = pageIconElement(item.icon, { fallback: false, className: 'blk-breadcrumb-icon' })
+function fillItem(target: HTMLElement, item: BreadcrumbItem, workspaceId: string): void {
+  const icon = pageIconElement(item.icon, { fallback: false, className: 'blk-breadcrumb-icon', workspaceId })
   if (icon !== null) target.append(icon)
   target.append(item.label)
 }
@@ -67,7 +69,7 @@ export function breadcrumbNodeView(
         const here = document.createElement('span')
         here.className = 'blk-breadcrumb-current'
         here.setAttribute('aria-current', 'page')
-        fillItem(here, item)
+        fillItem(here, item, deps.workspaceId)
         li.append(here)
       } else {
         const link = document.createElement('a')
@@ -75,7 +77,7 @@ export function breadcrumbNodeView(
         link.href = item.href
         link.dataset.readonlyTab = ''
         link.tabIndex = view.editable ? -1 : 0
-        fillItem(link, item)
+        fillItem(link, item, deps.workspaceId)
         li.append(link)
       }
       list.append(li)
