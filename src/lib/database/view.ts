@@ -108,6 +108,8 @@ export type ViewSummary = {
   readonly name: string
   readonly type: string
   readonly orderKey: string
+  /** 이 뷰가 보는 data source(8e-1 · F-04-23) — 데이터베이스가 여럿을 가지면 탭마다 다를 수 있다. */
+  readonly dataSourceId: string
 }
 
 export type ViewFailure =
@@ -146,13 +148,15 @@ function isFailure<T>(v: T | ViewResult<never>): v is ViewResult<never> {
 
 // ── 게이트 ────────────────────────────────────────────────────────────
 
-type DatabaseGate = { databaseId: string; dataSourceId: string }
+type DatabaseGate = { databaseId: string }
 
 /**
  * 데이터베이스를 열고 권한을 본다.
  *
  * ACL 은 **컨테이너 블록**에 걸린다(`database.id` = `block.id`, X-2). `data_source`
  * 에는 ACL 이 없다 — 같은 표의 행은 전부 같은 권한이라는 전제가 거기서 온다.
+ *
+ * data source 를 고르지 않는다(8e-1) — 데이터베이스는 여럿을 가질 수 있고, 어느 것인지는 뷰가 안다(`openView`).
  */
 async function openDatabase(
   tx: Tx,
@@ -160,14 +164,11 @@ async function openDatabase(
   databaseId: string,
   need: 'view' | 'edit_structure',
 ): Promise<DatabaseGate | ViewResult<never>> {
-  const row = await tx.queryMaybe<{ data_source_id: string }>(
-    `SELECT ds.id AS data_source_id
+  const row = await tx.queryMaybe<{ id: string }>(
+    `SELECT d.id
        FROM database d
        JOIN block b ON b.id = d.id
-       JOIN data_source ds ON ds.owner_database_id = d.id
-      WHERE d.id = $1 AND b.workspace_id = $2 AND b.lifecycle = 'live'
-      ORDER BY ds.created_at
-      LIMIT 1`,
+      WHERE d.id = $1 AND b.workspace_id = $2 AND b.lifecycle = 'live'`,
     [databaseId, ctx.workspaceId],
   )
   if (row === null) return fail('not_found')
@@ -178,18 +179,21 @@ async function openDatabase(
   // 뷰를 고치는 것은 구조다 — 잠긴 데이터베이스는 거부한다(7f-2). 읽기(`view`)는 묻지 않는다.
   if (need === 'edit_structure' && (await isLocked(tx, databaseId))) return fail('locked')
 
-  return { databaseId, dataSourceId: row.data_source_id }
+  return { databaseId }
 }
 
-/** 뷰 id 로 열고 권한을 본다. 뷰가 어느 DB 의 것인지는 뷰 행이 안다. */
+/**
+ * 뷰 id 로 열고 권한을 본다. 뷰가 어느 DB 의 것이고 **어느 data source 를 보는지**는 뷰 행이 안다 — 필터 · 정렬 · 그룹 · 기본 템플릿을 그
+ * data source 의 스키마로 검사한다(8e-1 전에는 데이터베이스의 첫 data source 를 골랐다 — 둘째 소스의 뷰가 남의 스키마로 검사됐을 것이다).
+ */
 async function openView(
   tx: Tx,
   ctx: SessionContext,
   viewId: string,
   need: 'view' | 'edit_structure',
-): Promise<(DatabaseGate & { viewId: string }) | ViewResult<never>> {
-  const row = await tx.queryMaybe<{ database_id: string }>(
-    `SELECT v.database_id
+): Promise<(DatabaseGate & { dataSourceId: string; viewId: string }) | ViewResult<never>> {
+  const row = await tx.queryMaybe<{ database_id: string; data_source_id: string }>(
+    `SELECT v.database_id, v.data_source_id
        FROM view v
        JOIN block b ON b.id = v.database_id
       WHERE v.id = $1 AND b.workspace_id = $2 AND b.lifecycle = 'live'
@@ -200,7 +204,7 @@ async function openView(
 
   const gate = await openDatabase(tx, ctx, row.database_id, need)
   if (isFailure(gate)) return gate
-  return { ...gate, viewId }
+  return { ...gate, dataSourceId: row.data_source_id, viewId }
 }
 
 function normalizeName(raw: unknown, fallback: string): string | null {
@@ -373,8 +377,8 @@ export async function listViews(
     const gate = await openDatabase(tx, ctx, databaseId, 'view')
     if (isFailure(gate)) return gate
 
-    const rows = await tx.query<{ id: string; name: string | null; type: string; order_idx: string }>(
-      `SELECT id, name, type, order_idx FROM view
+    const rows = await tx.query<{ id: string; name: string | null; type: string; order_idx: string; data_source_id: string }>(
+      `SELECT id, name, type, order_idx, data_source_id FROM view
         WHERE database_id = $1 AND owner_kind = 'database_view'
         ORDER BY order_idx, id`,
       [databaseId],
@@ -386,6 +390,7 @@ export async function listViews(
         name: r.name ?? DEFAULT_VIEW_NAME,
         type: r.type,
         orderKey: r.order_idx,
+        dataSourceId: r.data_source_id,
       })),
     } as const
   })
@@ -398,6 +403,11 @@ export type CreateViewInput = {
   readonly type?: MvpViewType
   /** 보드가 아니어도 둘 수 있다(F-04-11: "table view 도 group 을 가질 수 있다"). 보드인데 없으면 자동으로 고른다. */
   readonly groupBy?: GroupBy
+  /**
+   * 이 뷰가 볼 data source(8e-1 · F-04-23 *"뷰 생성 시 어떤 data source 를 볼지 선택"*). 이 데이터베이스에 붙은 것이어야 한다 — 아니면
+   * `not_found`(남의 표의 소스가 있는지 알려 주지 않는다). 생략하면 부착 순서의 첫째다.
+   */
+  readonly dataSourceId?: string
 }
 
 /**
@@ -420,7 +430,17 @@ export async function createView(
     const gate = await openDatabase(tx, ctx, databaseId, 'edit_structure')
     if (isFailure(gate)) return gate
 
-    const grouped = await resolveGroupBy(tx, gate.dataSourceId, type, input.groupBy, null)
+    // 0042 의 복합 FK 가 같은 것을 막지만, 거기까지 가면 예외라 화면이 받을 말이 없다 — 먼저 묻는다.
+    const source = await tx.queryMaybe<{ data_source_id: string }>(
+      `SELECT data_source_id FROM database_data_source
+        WHERE database_id = $1 AND ($2::uuid IS NULL OR data_source_id = $2::uuid)
+        ORDER BY order_idx, data_source_id LIMIT 1`,
+      [databaseId, input.dataSourceId ?? null],
+    )
+    if (source === null) return fail('not_found')
+    const dataSourceId = source.data_source_id
+
+    const grouped = await resolveGroupBy(tx, dataSourceId, type, input.groupBy, null)
     if (isFailure(grouped)) return grouped
 
     const last = await tx.queryMaybe<{ order_idx: string }>(
@@ -438,7 +458,7 @@ export async function createView(
       [
         viewId,
         databaseId,
-        gate.dataSourceId,
+        dataSourceId,
         name,
         type,
         orderKeyBetween(last?.order_idx ?? null, null),
@@ -446,7 +466,7 @@ export async function createView(
       ],
     )
 
-    await seedViewProperties(tx, viewId, gate.dataSourceId)
+    await seedViewProperties(tx, viewId, dataSourceId)
 
     const view = await readView(tx, viewId)
     return view === null ? fail('not_found') : ({ ok: true, value: view } as const)
@@ -758,8 +778,9 @@ export async function moveViewColumn(
 /**
  * 뷰를 지운다. `view_property` 는 CASCADE 로 함께 사라진다.
  *
- * **마지막 뷰는 지울 수 없다.** 뷰가 없는 데이터베이스는 화면에 그릴 것이 없고,
- * 그 상태를 만들면 사용자가 표를 되살릴 방법이 없다. 노션도 마지막 뷰 삭제를 막는다.
+ * **data source 의 마지막 뷰는 지울 수 없다**(8e-1 — 그 전에는 데이터베이스의 마지막 뷰). 뷰가 없는 data source 는 어느 탭에서도 열 수
+ * 없고, 그 행 · 속성 · 템플릿에 닿을 길이 사라진다. 데이터베이스의 마지막 뷰도 그 소스의 마지막 뷰이므로 함께 막힌다. 노션은 이때
+ * "뷰만 지울지, data source 까지 지울지"를 묻는다 — data source 를 지우는 길이 생기면 그 물음이 이 거부를 대신한다(HANDOFF §7).
  */
 export async function deleteView(ctx: SessionContext, viewId: string): Promise<ViewResult<null>> {
   return withCommandTransaction(async (tx) => {
@@ -768,8 +789,8 @@ export async function deleteView(ctx: SessionContext, viewId: string): Promise<V
 
     const count = await tx.queryOne<{ n: string }>(
       `SELECT count(*) AS n FROM view
-        WHERE database_id = $1 AND owner_kind = 'database_view'`,
-      [gate.databaseId],
+        WHERE database_id = $1 AND data_source_id = $2 AND owner_kind = 'database_view'`,
+      [gate.databaseId, gate.dataSourceId],
     )
     if (Number(count.n) <= 1) return fail('last_view')
 

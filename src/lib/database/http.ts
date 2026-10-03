@@ -12,6 +12,7 @@
 
 import type { PageIcon } from '../block/page-icon.ts'
 import type { DatabaseFailure } from './database.ts'
+import type { DataSourceFailure } from './data-source.ts'
 import type { PropertyFailure } from './property.ts'
 import type { RowCell, RowFailure } from './row.ts'
 import type { GroupFailure } from './group.ts'
@@ -77,6 +78,20 @@ export function templateFailureStatus(reason: TemplateFailure): number {
     case 'locked':
       return 409
     case 'invalid_value':
+      return 400
+  }
+}
+
+/** data source 명령의 거부(8e-1) — 빠짐없는 switch 다. */
+export function dataSourceFailureStatus(reason: DataSourceFailure): number {
+  switch (reason) {
+    case 'not_found':
+      return 404
+    case 'forbidden':
+      return 403
+    case 'locked':
+      return 409
+    case 'invalid_name':
       return 400
   }
 }

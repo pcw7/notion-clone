@@ -128,7 +128,7 @@ describe('createDatabase — 불변식의 "적어도 1개"를 지킨다', () => 
     const got = await getDatabase(fx.owner.ctx, databaseId)
     assert.equal(got.ok, true)
     if (got.ok) {
-      assert.equal(got.value.dataSourceId, dataSourceId)
+      assert.deepEqual(got.value.dataSources.map((ds) => [ds.id, ds.owned]), [[dataSourceId, true]])
       assert.equal(got.value.name, '읽을 표')
       assert.equal(got.value.isInline, false)
       assert.deepEqual(got.value.access, {

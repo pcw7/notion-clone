@@ -165,9 +165,12 @@ describe('① 트리 · 본문 · 순서', () => {
     const snapshot = await snap(owner, { kind: 'workspace' })
     assert.deepEqual(snapshot.rootIds, [page.id, databaseId])
 
-    const table = snapshot.nodes.get(databaseId) as ExportDatabaseNode
-    assert.equal(table.kind, 'database')
-    assert.equal(table.name, '할 일')
+    const database = snapshot.nodes.get(databaseId) as ExportDatabaseNode
+    assert.equal(database.kind, 'database')
+    assert.equal(database.name, '할 일')
+    assert.equal(database.sources.length, 1)
+    const table = database.sources[0]
+    assert.equal(table.id, dataSourceId)
     assert.deepEqual(table.columns.map((c) => [c.name, c.type]), [['이름', 'title'], ['상태', 'select']])
     assert.deepEqual(table.columns[1].options?.map((o) => o.name), ['진행 중'])
     assert.deepEqual(table.rowIds, [rowA.value.id, rowB.value.id])

@@ -1158,6 +1158,7 @@ CREATE TABLE database_data_source (           -- 부착. 소유와 다른 축 <C
 --            is_linked(row) := (row.database_id <> data_source.owner_database_id)
 -- 불변식 DS3: 소유 행(database_id = owner_database_id) DELETE 금지.
 --            linked 행 제거는 부착 해제(원본 무손상), 소유 행 제거는 data_source 삭제여야 한다.
+-- [보강] DS1 의 "적어도 1개" · DS3 은 지연 제약 트리거가 커밋 때 본다(0042 · 8e-1) — 아래 [보강] 다중 data source ⑥.
 
 CREATE TABLE property (                       -- <C-4> id 는 전역 유니크 text
   id             text PRIMARY KEY,            -- nanoid(21, base62). 이름 변경에 불변
@@ -1443,6 +1444,44 @@ ALTER TABLE select_option ADD FOREIGN KEY (property_id, group_id)
 > 줄(사이드바 · teamspace 화면)은 **표 글리프**다 — 페이지의 문서 글리프와 같은 규칙으로 그림(SVG)이라 줄의 글자가 이름 그대로다(전에는
 > 글자 `▦` 였다).
 
+**[보강] 다중 data source — 데이터베이스 하나에 소스 여럿** ⟨잔여 묶음 8e-1 · F-04-23 / 마이그레이션 0042⟩
+
+> 초판은 `database` 1 : N `data_source` 를 처음부터 두었다(C-5 · 04 F-04-23 *"FK 방향 결정은 MVP 시점에 반드시 내려야 한다"*). 속성 · 행 ·
+> 템플릿이 data source 에 매달려 있으므로 남은 것은 **만드는 길**과, 그 길이 열리면 깨질 수 있는 주석 불변식을 표로 올리는 일이었다.
+> 노션: *"A database can now act as a container for multiple data sources, each of which contains a unique set of pages and defines its own
+> set of properties"* · 뷰는 그중 하나를 본다.
+>
+> ① **소스마다인 것과 데이터베이스에 하나인 것.** 소스마다 — 속성(스키마 · P1) · 행 · 템플릿 · 행의 레이아웃(§3.6 `page_layout`). 데이터베이스에
+> 하나 — 권한(규칙 A4 — data source 에 ACL 이 없다) · 잠금 · 이름 · 아이콘 · 자리(사이드바 · 옮기기). 그래서 소스를 고치는 모든 명령이
+> **주인 데이터베이스**의 capability 를 묻는다.
+> ② **더하기는 한 벌이다** — `data_source` + 소유 부착 행(부착 순서의 끝) + 제목 속성(P1) + 표 뷰 하나(탭의 끝). 노션: *"When you create a
+> data source, a new view will automatically be created and attached to it."* 뷰가 없는 소스는 어느 탭에서도 열 수 없다. 데이터베이스를 만들
+> 때와 같은 함수다(`insertOwnedDataSource`). 묻는 것은 `edit_structure` 이고 잠긴 데이터베이스는 막는다(뷰 · 속성과 같은 줄) — 데이터베이스
+> 블록 행을 먼저 잠그고 끝 키를 읽는다(두 사람이 동시에 더해도 같은 키가 나오지 않는다).
+> ③ **이름 — 하나일 때는 데이터베이스 이름이 곧 그 이름이다.** 소스가 하나뿐이면 화면은 소스 이름을 따로 보여 주지 않는다. 그래서
+> `data_source.name` 은 만들 때의 이름(비었으면 "표")에 머문다. **둘째를 더하는 순간** 첫째가 처음으로 화면에 나오므로 그때 데이터베이스의
+> 지금 이름을 받는다(비었으면 그대로) — 이름 바꾸기를 매번 양쪽에 맞추는 대신 보이기 시작하는 한 순간에 맞춘다. 셋째부터는 건드리지 않는다
+> (이미 보이는 이름이다). 이름 없이 더하면 "새 데이터 소스"다(`ck_data_source_name` — 비울 수 없다). 노션의 *"Databases get a default name
+> that is a simple concatenation of all their data sources"* 는 따르지 않는다 — 우리 데이터베이스는 처음부터 제 이름(`block.properties.title`)을
+> 갖는다. 이름 바꾸기는 주인의 `edit_structure` · 잠금이고, 붙인 곳에서 바꿔도 원본의 이름이 바뀐다(F-04-23 *"원본 data source 의 제목 …
+> 변경은 연결된 모든 곳에 전파"*).
+> ④ **뷰는 자기 데이터베이스에 붙은 소스만 본다** — `view (database_id, data_source_id)` → `database_data_source` 복합 FK(0042 · ON DELETE
+> CASCADE — 부착이 풀리면 그 위의 뷰도 사라진다 · F-04-23 *"그 소스를 보던 뷰도 함께 제거"*). `database_id` 가 NULL 이면 FK 가 보지 않으므로
+> DB 뷰는 데이터베이스를 가져야 한다(CHECK). 뷰를 만들 때 소스를 고르고(붙은 것이 아니면 `not_found` — 남의 표의 소스가 있는지 알리지
+> 않는다), 생략하면 부착 순서의 첫째다. 필터 · 정렬 · 그룹 · 기본 템플릿은 **그 뷰의 소스** 스키마로 검사한다(전에는 데이터베이스의 첫
+> 소스를 골랐다).
+> ⑤ **소스의 마지막 뷰는 지울 수 없다**(데이터베이스의 마지막 뷰 → 소스의 마지막 뷰). 데이터베이스의 마지막 뷰도 그 소스의 마지막 뷰라 함께
+> 막힌다. 노션은 이때 *"Delete the view and the data source"* 를 묻는다 — 소스를 지우는 길이 생기면 그 물음이 이 거부를 대신한다.
+> ⑥ **DS1 · DS3 의 집행 — 커밋 때 묻는다.** 0013 은 DS3 을 트리거로 막지 않았다 — BEFORE DELETE 트리거는 그 삭제가 data source 삭제의
+> CASCADE 인지 직접 DELETE 인지 가를 수 없다. 0042 는 **지연 제약 트리거**로 커밋 때 같은 질문을 한다: "이 data source 가 아직 있고 그 주인도
+> 그대로인데 소유 부착 행이 없는가". CASCADE 로 사라진 소스는 그때 이미 없으므로 가를 필요가 없다. DS1 의 "적어도 1개"(만든 트랜잭션이 끝날
+> 때 부착 행이 있다) · 주인 바꾸기(새 주인의 부착 행)가 같은 질문이라 두 표의 트리거가 한 함수를 부른다.
+> ⑦ **소스마다 하나씩 나오는 곳.** relation 의 대상 목록은 항목이 소스 하나다(소유한 것만 — 붙인 것은 원본 쪽에서 한 번) · 데이터베이스가
+> 소스를 여럿 가지면 소스 이름으로 가른다. 내보내기는 소유한 소스마다 표 한 벌이다 — 하나면 전과 같이 `이름.csv` + `이름/`, 여럿이면
+> `이름/` 안에 `소스.csv` + `소스/`(이름 규칙은 페이지와 같다). 템플릿 화면은 템플릿 자신의 소스(`page.data_source_id`)의 첫 뷰로 그린다.
+> ⑧ **아직 아닌 것** — 화면(소스 관리 · 탭 위의 소스 이름 · 뷰를 만들 때 고르기 — 8e-2) · 소스 지우기 · 휴지통 · "뷰만/소스까지"(8e-3) ·
+> 다른 데이터베이스의 소스 붙이기(linked · F-04-13) · 소스를 다른 데이터베이스로 옮기기 · 소스의 아이콘 · `ds:{data_source_id}` 실시간 채널.
+
 **DB 상수**
 
 ```ts
@@ -1465,6 +1504,9 @@ CREATE TABLE view (
     CHECK (owner_kind IN ('database_view','layout_tab','dashboard_widget')),
   database_id    uuid NULL REFERENCES database(id) ON DELETE CASCADE,
   data_source_id uuid NULL REFERENCES data_source(id) ON DELETE CASCADE,-- 대시보드 위젯이면 NULL
+  -- [보강] FOREIGN KEY (database_id, data_source_id) REFERENCES database_data_source ON DELETE CASCADE —
+  --        뷰는 자기 데이터베이스에 붙은 소스만 본다 · CHECK (owner_kind <> 'database_view' OR database_id IS NOT NULL)
+  --        (0042 · 8e-1 — §3.5 [보강] 다중 data source ④)
   name text, type text NOT NULL,           -- table|board|list|calendar|timeline|gallery|chart|form|map|dashboard
   order_idx text NOT NULL,                 -- 뷰 탭 순서
   filter jsonb,                            -- FilterNode 트리. MAX_FILTER_DEPTH=3 <C-15>

@@ -835,6 +835,10 @@ try {
          VALUES ($1, $2, '다른 표', now(), now())`,
         [otherDs, dbBlockId],
       )
+      await client.query(
+        `INSERT INTO database_data_source (database_id, data_source_id, order_idx) VALUES ($1, $2, 'b0')`,
+        [dbBlockId, otherDs],
+      )
       await mustReject(
         '★ R3: page.data_source_id 가 block.parent_id 와 어긋날 수 없다',
         `UPDATE page SET data_source_id = $2 WHERE id = $1`,
@@ -1270,6 +1274,10 @@ try {
       await client.query(
         `INSERT INTO data_source (id, owner_database_id, name, created_at, updated_at) VALUES ($1, $2, '대상', now(), now())`,
         [otherDs, otherDb],
+      )
+      await client.query(
+        `INSERT INTO database_data_source (database_id, data_source_id, order_idx) VALUES ($1, $2, 'a0')`,
+        [otherDb, otherDs],
       )
       const rowIn = async (ds, container, key) => {
         const id = randomUUID()
@@ -2209,6 +2217,124 @@ try {
     await mustReject('출처가 있는 쉼 버전', addVersion, [randomUUID(), pageId, 'idle', target, 5])
     await mustReject('출처가 있는 되돌리기 전 버전', addVersion, [randomUUID(), pageId, 'pre_restore', target, 6])
     await mustReject('없는 버전을 출처로', addVersion, [randomUUID(), pageId, 'restore', randomUUID(), 7])
+  }
+
+  console.log('\n[28] 데이터베이스 하나에 data source 여럿 (0042 / §3.5 DS1 · DS3 · [보강] 다중 data source · 8e-1조각)')
+  {
+    // 데이터베이스 둘 — A 는 소스 둘, B 는 소스 하나. 뷰는 붙은 소스만 · DB 뷰는 데이터베이스가 있어야 · 소유 부착 행은 있어야 하고 지울 수 없다.
+    const root = randomUUID()
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key,
+                          ancestor_path, perm_scope_id, properties, format, created_at, last_edited_at)
+       VALUES ($1, $2, 'page', 'workspace', $2, 'q0', '{}', $1, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      [root, wsId],
+    )
+    const database = async (key) => {
+      const id = randomUUID()
+      await client.query(
+        `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key,
+                            ancestor_path, perm_scope_id, properties, format, created_at, last_edited_at)
+         VALUES ($1, $2, 'database', 'block', $3, $4, $5, $3, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+        [id, wsId, root, key, [root]],
+      )
+      await client.query(`INSERT INTO database (id, created_at, updated_at) VALUES ($1, now(), now())`, [id])
+      return id
+    }
+    const source = async (databaseId, key) => {
+      const id = randomUUID()
+      await client.query(
+        `INSERT INTO data_source (id, owner_database_id, name, created_at, updated_at) VALUES ($1, $2, '소스', now(), now())`,
+        [id, databaseId],
+      )
+      await client.query(`INSERT INTO database_data_source (database_id, data_source_id, order_idx) VALUES ($1, $2, $3)`, [
+        databaseId,
+        id,
+        key,
+      ])
+      return id
+    }
+    const dbA = await database('a0')
+    const dbB = await database('a1')
+    const a1 = await source(dbA, 'a0')
+    const a2 = await source(dbA, 'a1')
+    const b1 = await source(dbB, 'a0')
+    const checks = ['tg_data_source_owner_attachment', 'tg_data_source_owner_detach']
+    const immediate = async () => {
+      for (const name of checks) await client.query(`SET CONSTRAINTS ${name} IMMEDIATE`)
+    }
+    const deferred = async () => {
+      for (const name of checks) await client.query(`SET CONSTRAINTS ${name} DEFERRED`)
+    }
+    try {
+      await immediate()
+      ok('소스 둘을 가진 데이터베이스 — 소유 부착 행과 함께 넣으면 통과한다')
+    } catch (e) {
+      fail(`정상 경로가 DS1 에 걸렸다 (${e.code})`)
+    }
+    await deferred()
+
+    const addView = `INSERT INTO view (id, owner_kind, database_id, data_source_id, type, order_idx, configuration, created_at, updated_at)
+                     VALUES ($1, $2, $3, $4, 'table', 'a0', '{}'::jsonb, now(), now())`
+    await client.query(addView, [randomUUID(), 'database_view', dbA, a2])
+    ok('뷰가 자기 데이터베이스의 둘째 소스를 본다')
+    await mustReject('★ 뷰가 다른 데이터베이스의 소스를 본다', addView, [randomUUID(), 'database_view', dbA, b1])
+    await mustReject('★ 이미 있는 뷰를 다른 데이터베이스의 소스로 옮긴다', `UPDATE view SET data_source_id = $2 WHERE database_id = $1`, [dbA, b1])
+    await mustReject('DB 뷰인데 데이터베이스가 없다', addView, [randomUUID(), 'database_view', null, a1])
+
+    // DS1 · DS3 — 지연 제약. 그 자리에서 돌려 본다.
+    const mustRejectDeferred = async (label, statements) => {
+      await client.query('SAVEPOINT probe')
+      try {
+        for (const [sql, params] of statements) await client.query(sql, params)
+        await immediate()
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        fail(`${label} — 거부되어야 하는데 통과했다`)
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        ok(`${label} — 거부됨 (${e.code})`)
+      }
+      await deferred()
+    }
+    await mustRejectDeferred('★ DS1: 소유 부착 행 없이 data source 를 만든다', [
+      [`INSERT INTO data_source (id, owner_database_id, name, created_at, updated_at) VALUES ($1, $2, '맨몸', now(), now())`, [randomUUID(), dbA]],
+    ])
+    await mustRejectDeferred('★ DS1: 남의 데이터베이스에만 붙인 data source', [
+      [`INSERT INTO data_source (id, owner_database_id, name, created_at, updated_at) VALUES ('00000000-0000-4000-8000-0000000000a1', $1, '엇갈림', now(), now())`, [dbA]],
+      [`INSERT INTO database_data_source (database_id, data_source_id, order_idx) VALUES ($1, '00000000-0000-4000-8000-0000000000a1', 'z0')`, [dbB]],
+    ])
+    await mustRejectDeferred('★ DS3: 소유 부착 행을 지운다(소스는 남는다)', [
+      [`DELETE FROM database_data_source WHERE database_id = $1 AND data_source_id = $2`, [dbA, a2]],
+    ])
+    await mustRejectDeferred('★ DS3: 소유 부착 행을 다른 데이터베이스로 바꾼다(뷰가 없는 소스 — FK 가 아니라 이 검사가 막는다)', [
+      [`UPDATE database_data_source SET database_id = $2 WHERE data_source_id = $1`, [a1, dbB]],
+    ])
+    await mustRejectDeferred('★ DS1: 주인을 바꾸고 새 주인에 붙이지 않는다', [
+      [`UPDATE data_source SET owner_database_id = $2 WHERE id = $1`, [a2, dbB]],
+    ])
+
+    // 정당한 삭제는 지나간다 — data source 를 지우면 CASCADE 가 부착 행을 지우지만 커밋 때 그 소스가 없다(0013 이 BEFORE 트리거로 막지 못한 것).
+    await client.query('SAVEPOINT drop')
+    try {
+      await client.query(`DELETE FROM data_source WHERE id = $1`, [a2])
+      await immediate()
+      const { rows } = await client.query(`SELECT count(*)::int AS n FROM view WHERE data_source_id = $1`, [a2])
+      if (rows[0].n === 0) ok('data source 를 지우면 부착 행 · 그 위의 뷰가 CASCADE 되고 DS3 에 걸리지 않는다')
+      else fail(`data source 를 지웠는데 뷰가 ${rows[0].n}개 남았다`)
+    } catch (e) {
+      fail(`data source 삭제가 DS3 에 걸렸다 (${e.code})`)
+    }
+    await client.query('ROLLBACK TO SAVEPOINT drop')
+    await deferred()
+    await client.query('SAVEPOINT dropdb')
+    try {
+      await client.query(`DELETE FROM block WHERE id = $1`, [dbA])
+      await immediate()
+      ok('데이터베이스를 지우면 소스 · 부착 행이 함께 CASCADE 되고 DS1 · DS3 에 걸리지 않는다')
+    } catch (e) {
+      fail(`데이터베이스 삭제가 DS1 · DS3 에 걸렸다 (${e.code})`)
+    }
+    await client.query('ROLLBACK TO SAVEPOINT dropdb')
+    await deferred()
   }
 
   await client.query('ROLLBACK')

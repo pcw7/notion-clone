@@ -208,14 +208,18 @@ export async function readExportSnapshot(
     const databaseIds = nodeRows.filter((b) => b.type === 'database').map((b) => b.id)
     const tables = await readTables(tx, databaseIds)
     for (const database of nodeRows.filter((b) => b.type === 'database')) {
-      const table = tables.get(database.id)
-      const rows = (rowsOf.get(database.id) ?? []).filter((row) => row.parent_id === table?.dataSourceId).sort(byOrder)
+      // 행은 자기 data source 의 표에 놓인다(8e-1) — 소스가 여럿이면 표도 여럿이다. 어느 소스에도 들지 않는 행은 없다(R3 · DS1).
+      const rows = rowsOf.get(database.id) ?? []
       nodes.set(database.id, {
         kind: 'database',
         id: database.id,
         name: plainTitleOf(database.properties),
-        columns: table?.columns ?? [],
-        rowIds: rows.map((row) => row.id),
+        sources: (tables.get(database.id) ?? []).map((table) => ({
+          id: table.dataSourceId,
+          name: table.name,
+          columns: table.columns,
+          rowIds: rows.filter((row) => row.parent_id === table.dataSourceId).sort(byOrder).map((row) => row.id),
+        })),
       })
     }
 
@@ -265,17 +269,21 @@ function inDocumentOrder(children: readonly BlockRow[], doc: EditorDoc): string[
     .map((child) => child.id)
 }
 
-type Table = { readonly dataSourceId: string; readonly columns: CsvColumn[] }
+type Table = { readonly dataSourceId: string; readonly name: string; readonly columns: CsvColumn[] }
 
-/** 표마다 **소유한** data_source 하나(`getDatabase` 와 같은 규칙)의 살아 있는 프로퍼티 · 옵션. */
-async function readTables(tx: Tx, databaseIds: readonly string[]): Promise<Map<string, Table>> {
+/**
+ * 표마다 **소유한** data source 들(부착 순서 · 8e-1)의 살아 있는 프로퍼티 · 옵션. 붙인 것(linked)은 넣지 않는다 — 그 행은 원본 데이터베이스의
+ * 표로 나간다(두 번 내보내지 않는다).
+ */
+async function readTables(tx: Tx, databaseIds: readonly string[]): Promise<Map<string, Table[]>> {
   if (databaseIds.length === 0) return new Map()
 
-  const sources = await tx.query<{ id: string; owner_database_id: string }>(
-    `SELECT DISTINCT ON (owner_database_id) id, owner_database_id
-       FROM data_source
-      WHERE owner_database_id = ANY($1::uuid[])
-      ORDER BY owner_database_id, created_at, id`,
+  const sources = await tx.query<{ id: string; owner_database_id: string; name: string }>(
+    `SELECT ds.id, ds.owner_database_id, ds.name
+       FROM data_source ds
+       JOIN database_data_source dds ON dds.database_id = ds.owner_database_id AND dds.data_source_id = ds.id
+      WHERE ds.owner_database_id = ANY($1::uuid[])
+      ORDER BY ds.owner_database_id, dds.order_idx, ds.id`,
     [databaseIds],
   )
   const sourceIds = sources.map((s) => s.id)
@@ -289,10 +297,11 @@ async function readTables(tx: Tx, databaseIds: readonly string[]): Promise<Map<s
   // 옵션을 읽는 곳은 `database/options.ts` 하나다 — status 옵션의 그룹 순서가 표 · 보드 · 익스포트에서 같다.
   const optionsOf = await readOptionsOf(tx, properties.filter((p) => isOptionType(p.type)).map((p) => p.id))
 
-  const tables = new Map<string, Table>()
+  const tables = new Map<string, Table[]>()
   for (const source of sources) {
-    tables.set(source.owner_database_id, {
+    push(tables, source.owner_database_id, {
       dataSourceId: source.id,
+      name: source.name,
       columns: properties
         .filter((p) => p.data_source_id === source.id)
         .map((p) => ({

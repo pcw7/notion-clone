@@ -9,10 +9,10 @@
  * 세 표를 한 트랜잭션에서 만든다 — 불변식이 그것을 요구한다
  * ──────────────────────────────────────────────────────────────────────
  *
- * 스키마로 표현할 수 없는 "적어도 1개" 쪽 불변식이 둘 있고, 둘 다 여기서 지킨다:
+ * "적어도 1개" 쪽 불변식이 둘 있고, 둘 다 같은 트랜잭션에서 지킨다(`insertOwnedDataSource` — data source 를 더할 때도 같은 함수다):
  *
  *   DS1: 모든 `data_source` 는 `(owner_database_id, id)` 부착 행을 **정확히 1개**
- *        갖는다. PK 가 "1개 이하"를, 이 함수가 "적어도 1개"를 지킨다.
+ *        갖는다. PK 가 "1개 이하"를, 0042 의 지연 트리거가 커밋 때 "적어도 1개"를 본다(8e-1).
  *   P1:  `data_source` 당 살아있는 `title` 프로퍼티가 **정확히 1개**. 부분 UNIQUE
  *        인덱스가 "1개 이하"를, 이 함수가 "적어도 1개"를 지킨다.
  *
@@ -51,11 +51,9 @@ import { orderKeyBetween } from '../block/order-key.ts'
 import { nextSiblingKey, titleFromPlainText, plainTitleOf } from '../block/page.ts'
 import { pageIconJson, parsePageIconInput, readPageIcon, samePageIcon, type PageIcon } from '../block/page-icon.ts'
 import { isIconFile, moveIconFileReference } from '../file/icon-reference.ts'
-import { newPropertyId } from './property.ts'
-import { DEFAULT_VIEW_NAME } from './view.ts'
+import { insertOwnedDataSource, readDataSources, type DataSourceSummary } from './data-source.ts'
 
-/** 제목 프로퍼티의 기본 이름. 노션은 "Name" 이고 우리는 한국어 UI 다. */
-export const DEFAULT_TITLE_PROPERTY_NAME = '이름'
+export { DEFAULT_TITLE_PROPERTY_NAME } from './data-source.ts'
 
 export const MAX_DATABASE_NAME_LENGTH = 200
 
@@ -68,16 +66,24 @@ export type DatabaseDetail = {
    * 블록의 `format.page_icon` 은 페이지 행만 갖는다(0037).
    */
   readonly icon: PageIcon | null
-  /** 이 데이터베이스가 **소유한** data_source. MVP 는 하나다. */
-  readonly dataSourceId: string
-  readonly schemaVersion: string
+  /**
+   * 이 데이터베이스에 붙은 data source 들 — 부착 순서대로(8e-1 · F-04-23). 적어도 하나다(DS1). 뷰마다 그중 하나를 본다 —
+   * "이 표의 data source" 를 물을 때는 뷰의 것을 쓴다(`ViewDetail.dataSourceId`). 첫째를 대표로 고르지 않는다.
+   */
+  readonly dataSources: readonly DataSourceSummary[]
   readonly isInline: boolean
   /** teamspace 최상위면 그 teamspace(7c-8 — 화면의 "이동"이 현재 자리를 안다). */
   readonly teamspaceId: string | null
   /** 개인 최상위면 그 주인(7c-8). `PageSummary.ownerUserId` 와 같은 규칙 — 서버 렌더 판별용, 라우트 JSON 에 싣지 않는다. */
   readonly ownerUserId: string | null
+}
+
+/** 방금 만든 데이터베이스 — data source 는 하나이고, 기본 뷰가 함께 생긴다. */
+export type CreatedDatabase = DatabaseDetail & {
+  /** 함께 만든 data source(첫째이자 유일한 것). */
+  readonly dataSourceId: string
   /** 기본 뷰. 표를 만들면 항상 하나가 함께 생긴다. */
-  readonly defaultViewId?: string
+  readonly defaultViewId: string
 }
 
 /**
@@ -146,14 +152,13 @@ function normalizeName(raw: unknown): string {
 export async function createDatabase(
   ctx: SessionContext,
   input: CreateDatabaseInput = {},
-): Promise<DatabaseResult<DatabaseDetail>> {
+): Promise<DatabaseResult<CreatedDatabase>> {
   const name = normalizeName(input.name)
   const teamspaceId = input.teamspaceId ?? null
   const privateTop = input.privateTop === true
 
   return withCommandTransaction(async (tx) => {
     const id = randomUUID()
-    const dataSourceId = randomUUID()
 
     if (privateTop && (teamspaceId !== null || ctx.role === 'guest')) {
       // 자리 지정은 하나만 · 게스트에게는 개인 섹션이 없다(createPage 의 개인 자리와 같은 답).
@@ -212,48 +217,18 @@ export async function createDatabase(
       [id, JSON.stringify(titleFromPlainText(name))],
     )
 
-    await tx.query(
-      `INSERT INTO data_source (id, owner_database_id, name, created_at, updated_at)
-       VALUES ($1, $2, $3, now(), now())`,
-      [dataSourceId, id, name === '' ? '표' : name],
-    )
-
-    // DS1 의 "적어도 1개". 소유 부착 행이다(`database_id = owner_database_id`).
-    await tx.query(
-      `INSERT INTO database_data_source (database_id, data_source_id, order_idx)
-       VALUES ($1, $2, $3)`,
-      [id, dataSourceId, orderKeyBetween(null, null)],
-    )
-
-    // P1 의 "적어도 1개". 제목 프로퍼티는 삭제도 타입 변경도 안 되므로
-    // 여기서 만들어지는 것이 그 data_source 의 제목 컬럼 전부다.
-    const titlePropertyId = newPropertyId()
-    const titleOrder = orderKeyBetween(null, null)
-    await tx.query(
-      `INSERT INTO property (id, data_source_id, name, type, order_idx, created_at, updated_at)
-       VALUES ($1, $2, $3, 'title', $4, now(), now())`,
-      [titlePropertyId, dataSourceId, DEFAULT_TITLE_PROPERTY_NAME, titleOrder],
-    )
-
-    // ★ 기본 뷰. **뷰가 없는 데이터베이스는 화면에 그릴 것이 없다** — `deleteView`
-    //   가 마지막 뷰 삭제를 막는 이유와 같다. 여기서 만들지 않으면 표를 만든
-    //   사람이 뷰를 먼저 만들어야 하는 상태가 된다.
+    // data source 하나와 그 최소 한 벌(소유 부착 행 · 제목 속성 · 기본 뷰) — 더하기(`addDataSource`)와 같은 함수다.
     //
-    //   `view.ts` 의 `createView` 를 부르지 않는다 — 그 함수는 자기 트랜잭션을
-    //   열고 권한을 다시 보는데, 여기는 방금 만들어지는 중인 밖에 ACL 행이 아직
-    //   보이지 않을 수 있는 같은 트랜잭션 어딘가다.
-    const viewId = randomUUID()
-    await tx.query(
-      `INSERT INTO view (id, owner_kind, database_id, data_source_id, name, type, order_idx,
-                         configuration, created_at, updated_at)
-       VALUES ($1, 'database_view', $2, $3, $4, 'table', $5, '{}'::jsonb, now(), now())`,
-      [viewId, id, dataSourceId, DEFAULT_VIEW_NAME, orderKeyBetween(null, null)],
-    )
-    await tx.query(
-      `INSERT INTO view_property (view_id, property_id, visible, order_idx)
-       VALUES ($1, $2, true, $3)`,
-      [viewId, titlePropertyId, titleOrder],
-    )
+    // ★ 기본 뷰. **뷰가 없는 데이터베이스는 화면에 그릴 것이 없다** — `deleteView` 가 마지막 뷰 삭제를 막는 이유와 같다. 여기서
+    //   만들지 않으면 표를 만든 사람이 뷰를 먼저 만들어야 하는 상태가 된다.
+    const sourceName = name === '' ? '표' : name
+    const sourceOrder = orderKeyBetween(null, null)
+    const { dataSourceId, viewId } = await insertOwnedDataSource(tx, {
+      databaseId: id,
+      name: sourceName,
+      sourceOrder,
+      viewOrder: orderKeyBetween(null, null),
+    })
 
     return {
       ok: true,
@@ -261,8 +236,8 @@ export async function createDatabase(
         id,
         name,
         icon: null,
+        dataSources: [{ id: dataSourceId, name: sourceName, owned: true, orderKey: sourceOrder }],
         dataSourceId,
-        schemaVersion: '1',
         isInline: false,
         teamspaceId,
         ownerUserId,
@@ -321,8 +296,7 @@ export async function renameDatabase(
         id: row.id,
         name,
         icon: readPageIcon(row.icon),
-        dataSourceId: row.data_source_id,
-        schemaVersion: row.schema_version,
+        dataSources: await readDataSources(tx, databaseId),
         isInline: row.is_inline,
         teamspaceId: row.parent_type === 'teamspace' ? row.parent_id : null,
         ownerUserId: row.parent_type === 'workspace' ? row.owner_user_id : null,
@@ -393,15 +367,11 @@ type DatabaseRow = {
   properties: { title?: unknown } | null
   icon: unknown
   is_inline: boolean
-  data_source_id: string
-  schema_version: string
 }
 
 /**
- * 데이터베이스 하나를 읽는다.
- *
- * **소유한** data_source 를 돌려준다(`owner_database_id` 기준). 부착된 것까지
- * 세면 linked database 의 원본이 섞인다 — 그 구분이 C-5 의 요점이다.
+ * 데이터베이스 하나를 읽는다 — 붙은 data source 들을 부착 순서대로 함께 준다(8e-1). 소유와 부착은 다른 축이다(C-5) — 붙인 것(linked)인지는
+ * 각 항목의 `owned` 가 말한다.
  */
 export async function getDatabase(
   ctx: SessionContext,
@@ -420,8 +390,7 @@ export async function getDatabase(
         id: row.id,
         name: plainTitleOf(row.properties),
         icon: readPageIcon(row.icon),
-        dataSourceId: row.data_source_id,
-        schemaVersion: row.schema_version,
+        dataSources: await readDataSources(tx, databaseId),
         isInline: row.is_inline,
         teamspaceId: row.parent_type === 'teamspace' ? row.parent_id : null,
         ownerUserId: row.parent_type === 'workspace' ? row.owner_user_id : null,
@@ -440,14 +409,22 @@ export type DatabaseListItem = {
   readonly name: string
   /** 아이콘(8c-3b) — 없으면 null. 관계형의 대상 고르개(`<select>`)가 이름 앞에 싣는다. */
   readonly icon: PageIcon | null
+  /** relation 이 가리키는 것은 데이터베이스가 아니라 이 data source 다(`config.target_data_source_id`). */
   readonly dataSourceId: string
+  /**
+   * 데이터베이스가 data source 를 둘 이상 가지면 그 이름 — 고르개가 "데이터베이스 · 소스"로 가른다(8e-1). 하나뿐이면 null 이다 —
+   * 그 이름은 화면에 나오지 않는다(`data-source.ts` 머리말 "이름").
+   */
+  readonly sourceName: string | null
 }
 
 /** 목록의 상한. relation 의 대상 고르기가 읽는다 — 워크스페이스에 표가 이보다 많으면 검색이 있어야 한다(HANDOFF §7). */
 export const MAX_DATABASE_LIST = 200
 
 /**
- * 이 사람이 **볼 수 있는** 데이터베이스들 — relation 프로퍼티의 대상을 고를 때 읽는다(relation 5b-2 · F-03-10 시나리오 1).
+ * 이 사람이 **볼 수 있는** 데이터베이스의 data source 들 — relation 프로퍼티의 대상을 고를 때 읽는다(relation 5b-2 · F-03-10 시나리오 1).
+ * 항목은 data source 하나다(8e-1) — 소유한 것만이고(붙인 것은 원본 데이터베이스 쪽에서 한 번 나온다), 한 데이터베이스의 것은 부착 순서대로
+ * 붙어 나온다. 상한도 data source 로 센다.
  *
  * 권한은 목록 필터와 같은 축이다(`readableScopes` — 사이드바 · 검색 · 제목 맵과 같다): 볼 수 없는 표는 **쿼리 밖으로 나오지
  * 않는다.** 뽑아서 거르지 않는다 — 거르기를 빠뜨려 이름이 새는 경로를 만들지 않는다. 이름순으로 준다(같은 이름은 만든 순서).
@@ -456,19 +433,35 @@ export async function listDatabases(ctx: SessionContext): Promise<DatabaseListIt
   return withReadTransaction(async (tx) => {
     const scopes = await readableScopes(tx, ctx)
     if (scopes.length === 0) return []
-    const rows = await tx.query<{ id: string; properties: { title?: unknown } | null; icon: unknown; data_source_id: string }>(
-      `SELECT b.id, b.properties, d.icon, ds.id AS data_source_id
+    const rows = await tx.query<{
+      id: string
+      properties: { title?: unknown } | null
+      icon: unknown
+      data_source_id: string
+      source_name: string
+      sources: string
+    }>(
+      `SELECT b.id, b.properties, d.icon, ds.id AS data_source_id, ds.name AS source_name,
+              count(*) OVER (PARTITION BY d.id) AS sources
          FROM block b
          JOIN database d ON d.id = b.id
          JOIN data_source ds ON ds.owner_database_id = d.id
+         JOIN database_data_source dds ON dds.database_id = d.id AND dds.data_source_id = ds.id
         WHERE b.workspace_id = $1 AND b.type = 'database' AND b.lifecycle = 'live'
           AND b.perm_scope_id = ANY($2::uuid[])
-        ORDER BY b.created_at, b.id
+        ORDER BY b.created_at, b.id, dds.order_idx, ds.id
         LIMIT $3`,
       [ctx.workspaceId, scopes, MAX_DATABASE_LIST],
     )
+    // 이름순은 안정 정렬이다 — 같은 데이터베이스의 소스들이 부착 순서를 지킨다.
     return rows
-      .map((row) => ({ id: row.id, name: plainTitleOf(row.properties), icon: readPageIcon(row.icon), dataSourceId: row.data_source_id }))
+      .map((row) => ({
+        id: row.id,
+        name: plainTitleOf(row.properties),
+        icon: readPageIcon(row.icon),
+        dataSourceId: row.data_source_id,
+        sourceName: Number(row.sources) > 1 ? row.source_name : null,
+      }))
       .sort((a, b) => a.name.localeCompare(b.name, 'ko'))
   })
 }
@@ -501,13 +494,10 @@ async function loadDatabase(
   databaseId: string,
 ): Promise<DatabaseRow | null> {
   return tx.queryMaybe<DatabaseRow>(
-    `SELECT b.id, b.properties, b.parent_type, b.parent_id, b.owner_user_id, d.icon, d.is_inline, ds.id AS data_source_id, ds.schema_version
+    `SELECT b.id, b.properties, b.parent_type, b.parent_id, b.owner_user_id, d.icon, d.is_inline
        FROM block b
        JOIN database d ON d.id = b.id
-       JOIN data_source ds ON ds.owner_database_id = d.id
-      WHERE b.id = $1 AND b.workspace_id = $2 AND b.lifecycle = 'live'
-      ORDER BY ds.created_at
-      LIMIT 1`,
+      WHERE b.id = $1 AND b.workspace_id = $2 AND b.lifecycle = 'live'`,
     [databaseId, ctx.workspaceId],
   )
 }

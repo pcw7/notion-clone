@@ -8355,6 +8355,97 @@ async function main() {
       check('★ 그 제목은 페이지 어디에도 없다', !(await evaluate(`document.documentElement.outerHTML.includes(${JSON.stringify(hiddenTitle)})`)))
     }
 
+    if (sectionIf('여러 data source — 서버 (8e-1 · F-04-23)')) {
+      // 데이터베이스 하나에 data source 둘. 소스를 더하는 화면은 8e-2 다 — 여기서는 라우트로 더하고, 둘째 소스의 탭이 **그 소스의** 표 ·
+      // 새 행 · 템플릿 화면 · 관계형 고르개로 서는지 본다(8e-1 전에는 모두 데이터베이스의 첫 소스를 골랐다). 자기 데이터를 스스로 만든다.
+      const stamp = Date.now()
+      const dbName = `여러소스${stamp}`
+      const api = `${BASE}/api/workspaces/${workspaceId}`
+      const readRes = async (res) => ({ status: res.status, body: await res.json().catch(() => null) })
+      const created = (await readRes(await fetch(`${api}/databases`, { method: 'POST', headers: authed, body: JSON.stringify({ name: dbName }) }))).body?.database
+      const dbId = created?.id
+      const firstSource = created?.dataSourceId
+      const firstView = created?.defaultViewId
+      const added = await readRes(await fetch(`${api}/databases/${dbId}/data-sources`, { method: 'POST', headers: authed, body: JSON.stringify({ name: '회사' }) }))
+      const secondSource = added.body?.dataSource?.id
+      const secondView = added.body?.viewId
+      check('data source 를 더하면 201 · 함께 생긴 뷰를 준다', added.status === 201 && !!secondSource && !!secondView, JSON.stringify(added))
+
+      const listed = await readRes(await fetch(`${api}/databases/${dbId}/data-sources`, { headers: authed }))
+      check('★ 목록 — 부착 순서 · 첫째는 데이터베이스 이름을 받았다(둘째를 더한 순간)',
+        JSON.stringify(listed.body?.dataSources?.map((d) => [d.id, d.name])) === JSON.stringify([[firstSource, dbName], [secondSource, '회사']]),
+        JSON.stringify(listed.body))
+
+      // 첫째 소스에만 속성 하나 — 둘째 소스의 탭에 나오면 남의 스키마를 그린 것이다.
+      const scoreName = `점수${stamp}`
+      await fetch(`${api}/data-sources/${firstSource}/properties`, { method: 'POST', headers: authed, body: JSON.stringify({ name: scoreName, type: 'number' }) })
+      const headers = `[...document.querySelectorAll('[data-testid="db-table"] th[data-property-id]')].map((th) => th.textContent)`
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${dbId}?v=${secondView}` })
+      await waitFor(`!!document.querySelector('[data-testid="db-table"]')`, 15000)
+      check('탭이 둘 — 소스마다 하나', (await evaluate(`document.querySelectorAll('[data-testid="db-view-tab"]').length`)) === 2,
+        String(await evaluate(`document.querySelectorAll('[data-testid="db-view-tab"]').length`)))
+      check('★ 둘째 소스의 탭은 그 소스의 속성만 그린다', await waitFor(`(() => { const h = ${headers}
+          return h.length === 1 && !h.some((t) => t.includes(${JSON.stringify(scoreName)})) })()`, 5000),
+        JSON.stringify(await evaluate(headers)))
+
+      // 새 행 — 이 탭의 소스에 생긴다.
+      await clickSelector('[data-testid="db-add-row"]')
+      await waitFor(`document.querySelectorAll('[data-testid="db-table"] [data-row-id]').length === 1`, 8000)
+      const rowsOf = async (view) => (await readRes(await fetch(`${api}/views/${view}/rows`, { headers: authed }))).body?.rows?.map((r) => r.id) ?? null
+      const inSecond = await rowsOf(secondView)
+      const inFirst = await rowsOf(firstView)
+      check('★ 둘째 소스의 탭에서 만든 새 행은 둘째 소스에 있다 — 첫째 소스에는 없다',
+        inSecond?.length === 1 && Array.isArray(inFirst) && inFirst.length === 0, JSON.stringify({ inSecond, inFirst }))
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${dbId}?v=${firstView}` })
+      await waitFor(`!!document.querySelector('[data-testid="db-table"]')`, 15000)
+      check('첫째 소스의 탭은 그 소스의 속성 · 행이다', await waitFor(`(() => { const h = ${headers}
+          return h.some((t) => t.includes(${JSON.stringify(scoreName)})) && !document.querySelector('[data-testid="db-table"] [data-row-id]') })()`, 5000),
+        JSON.stringify(await evaluate(headers)))
+
+      // 관계형의 대상 고르개 — 소스마다 한 항목 · "데이터베이스 · 소스"
+      const setSelect = (selector, value) => evaluate(`(() => {
+        const s = document.querySelector(${JSON.stringify(selector)})
+        if (!s) return false
+        s.value = ${JSON.stringify(value)}
+        s.dispatchEvent(new Event('change', { bubbles: true }))
+        return true
+      })()`)
+      await clickSelector('[data-testid="db-add-column"]')
+      await waitFor(`document.activeElement?.getAttribute('aria-label') === '속성 이름'`, 3000)
+      await setSelect('select[aria-label="속성 유형"]', 'relation')
+      const optionTexts = `[...(document.querySelector('[data-testid="db-relation-target"]')?.options ?? [])].map((o) => o.textContent)`
+      check('★ 관계형의 대상 고르개 — 소스마다 한 항목이고 소스 이름으로 가른다',
+        await waitFor(`(() => { const t = ${optionTexts}
+          return t.includes(${JSON.stringify(`${dbName} · ${dbName} (이 표)`)}) && t.includes(${JSON.stringify(`${dbName} · 회사`)}) })()`, 8000),
+        JSON.stringify((await evaluate(optionTexts)).filter((t) => t.includes(String(stamp)))))
+      await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+      await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+
+      // 템플릿 화면 — 템플릿 자신의 소스로 그린다(전에는 첫 뷰의 소스였다 — 둘째 소스의 템플릿은 열리지 않았다)
+      const template = (await readRes(await fetch(`${api}/data-sources/${secondSource}/templates`, { method: 'POST', headers: authed, body: JSON.stringify({ title: `회사 템플릿 ${stamp}` }) }))).body?.template
+      const templatePage = await fetch(`${BASE}/w/${workspaceId}/db/${dbId}/templates/${template?.id}`, { headers: { cookie: authed.cookie } })
+      const templateHtml = await templatePage.text()
+      check('★ 둘째 소스의 템플릿 화면이 열린다 — 그 소스의 속성으로',
+        templatePage.status === 200 && templateHtml.includes(`회사 템플릿 ${stamp}`) && !templateHtml.includes(scoreName),
+        `status ${templatePage.status} · 점수 속성 ${templateHtml.includes(scoreName)}`)
+      const elsewhere = (await readRes(await fetch(`${api}/databases`, { method: 'POST', headers: authed, body: JSON.stringify({ name: `다른곳${stamp}` }) }))).body?.database
+      const crossed = await fetch(`${BASE}/w/${workspaceId}/db/${elsewhere?.id}/templates/${template?.id}`, { headers: { cookie: authed.cookie } })
+      check('다른 데이터베이스의 주소로는 그 템플릿이 열리지 않는다', crossed.status === 404, String(crossed.status))
+
+      // 뷰 만들기 · 이름 바꾸기 라우트
+      const viewOnSecond = await readRes(await fetch(`${api}/databases/${dbId}/views`, { method: 'POST', headers: authed, body: JSON.stringify({ name: '회사 목록', type: 'list', dataSourceId: secondSource }) }))
+      const viewElsewhere = await readRes(await fetch(`${api}/databases/${dbId}/views`, { method: 'POST', headers: authed, body: JSON.stringify({ dataSourceId: elsewhere?.dataSourceId }) }))
+      check('뷰를 만들 때 소스를 고른다 — 남의 데이터베이스의 소스는 404',
+        viewOnSecond.status === 201 && viewOnSecond.body?.view?.dataSourceId === secondSource && viewElsewhere.status === 404,
+        JSON.stringify([viewOnSecond.status, viewOnSecond.body?.view?.dataSourceId === secondSource, viewElsewhere.status]))
+      const renamed = await readRes(await fetch(`${api}/data-sources/${secondSource}`, { method: 'PATCH', headers: authed, body: JSON.stringify({ name: '  거래처  ' }) }))
+      const blank = await fetch(`${api}/data-sources/${secondSource}`, { method: 'PATCH', headers: authed, body: JSON.stringify({ name: ' ' }) })
+      check('소스 이름 바꾸기 — 공백을 접는다 · 빈 이름은 400', renamed.status === 200 && renamed.body?.dataSource?.name === '거래처' && blank.status === 400,
+        JSON.stringify([renamed, blank.status]))
+    }
+
     section('전체')
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))
     const serverErrors = serverOutput.split('\n').filter((l) => l.includes('⨯'))
