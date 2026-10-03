@@ -8,7 +8,11 @@
  *
  * 단추는 **고칠 수 있는 사람에게만** 선다(`canViewPageHistory` — F-11-01 *"Can view / Can comment 에게는 항목 자체를 숨긴다"*). 서버가
  * 다시 묻는다(403). 목록을 여는 것이 곧 버전 판정이다 — 마지막 편집 뒤 2분이 지났으면 그 세션의 버전이 이때 선다(`history/version.ts`).
- * 되돌리기(복원)는 다음 조각(8d-3)이다.
+ *
+ * **되돌리기**(8d-3 · F-11-02) — 되돌릴 수 있을 때만(목록의 `canRestore` — 고칠 수 있고 잠기지 않았다) 미리보기 머리에 "이 버전으로
+ * 되돌리기"가 선다. 누르면 창 안에서 한 번 더 묻는다(빈 버전이면 지금 본문이 모두 지워진다고 · 하위 페이지는 그대로라고). 되돌리면 목록을
+ * 다시 읽고 되돌린 버전을 고른다 — 되돌리기 전의 상태도 목록에 있어 그것을 다시 되돌리면 취소다(정본 [보강] 복원 ⑦). 열린 본문 편집기는
+ * 협업 서버가 퍼뜨린 update 로 따라온다.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -16,13 +20,20 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { VersionSummary } from '@/lib/history/version'
 import type { EditorDoc } from '@/lib/editor/document'
 import type { PreviewLabels } from '@/lib/editor/read-only-deps'
-import { formatEditors, formatVersionTime } from '@/lib/history/format'
+import { formatEditors, formatVersionReason, formatVersionTime } from '@/lib/history/format'
 import { VersionPreview } from './version-preview'
 
 const MESSAGES: Record<string, string> = {
   forbidden: '이 페이지를 고칠 수 있는 사람만 기록을 볼 수 있습니다.',
   not_found: '찾을 수 없습니다.',
   expired: '이 버전은 보관 기간이 지나 더 이상 볼 수 없습니다.',
+}
+
+const RESTORE_MESSAGES: Record<string, string> = {
+  ...MESSAGES,
+  forbidden: '이 페이지를 고칠 수 있는 사람만 되돌릴 수 있습니다.',
+  locked: '잠긴 페이지입니다 — 잠금을 풀어야 되돌릴 수 있습니다.',
+  conflict: '이 버전은 지금 되돌릴 수 없습니다 — 하위 페이지가 깊이 상한을 넘는 자리에 있습니다.',
 }
 
 type Preview = { readonly id: string; readonly doc: EditorDoc; readonly labels: PreviewLabels }
@@ -64,6 +75,12 @@ function PageHistoryDialog({ workspaceId, pageId, onClose }: { workspaceId: stri
   const [selected, setSelected] = useState<string | null>(null)
   const [preview, setPreview] = useState<Preview | null>(null)
   const [previewError, setPreviewError] = useState<string | null>(null)
+  const [canRestore, setCanRestore] = useState(false)
+  const [confirming, setConfirming] = useState(false)
+  const [restoring, setRestoring] = useState(false)
+  const [notice, setNotice] = useState<string | null>(null)
+  /** 목록을 다시 읽는 열쇠 — 되돌린 뒤에 올린다. 되돌린 버전은 언제나 가장 최근이라 다시 읽은 목록의 맨 위를 고르면 그것이다. */
+  const [reloadKey, setReloadKey] = useState(0)
   const listRef = useRef<HTMLUListElement | null>(null)
   const closeRef = useRef<HTMLButtonElement | null>(null)
 
@@ -79,6 +96,7 @@ function PageHistoryDialog({ workspaceId, pageId, onClose }: { workspaceId: stri
         }
         const list = (body.versions ?? []) as VersionSummary[]
         setVersions(list)
+        setCanRestore(body.canRestore === true)
         setSelected(list[0]?.id ?? null)
       },
       () => {
@@ -88,7 +106,7 @@ function PageHistoryDialog({ workspaceId, pageId, onClose }: { workspaceId: stri
     return () => {
       alive = false
     }
-  }, [base])
+  }, [base, reloadKey])
 
   // 고른 버전의 본문.
   useEffect(() => {
@@ -146,6 +164,31 @@ function PageHistoryDialog({ workspaceId, pageId, onClose }: { workspaceId: stri
 
   const shown = versions?.find((v) => v.id === preview?.id) ?? null
 
+  const restore = async (): Promise<void> => {
+    if (preview === null) return
+    setRestoring(true)
+    setNotice(null)
+    try {
+      const res = await fetch(`${base}/${preview.id}/restore`, { method: 'POST' })
+      const body = (await res.json().catch(() => ({}))) as { error?: unknown; noop?: unknown }
+      setConfirming(false)
+      if (!res.ok) {
+        setNotice(RESTORE_MESSAGES[String(body.error)] ?? '되돌리지 못했습니다.')
+        return
+      }
+      if (body.noop === true) {
+        setNotice('지금 본문과 같습니다 — 바꾼 것이 없습니다.')
+        return
+      }
+      setNotice('되돌렸습니다. 되돌리기 전의 본문도 목록에 남아 있어 다시 돌아갈 수 있습니다.')
+      setReloadKey((k) => k + 1)
+    } catch {
+      setNotice('연결에 실패했습니다.')
+    } finally {
+      setRestoring(false)
+    }
+  }
+
   return (
     <div
       // 배경을 누르면 닫는다 — 키보드 사용자에게는 Esc 가 같은 일을 한다.
@@ -168,9 +211,65 @@ function PageHistoryDialog({ workspaceId, pageId, onClose }: { workspaceId: stri
             </p>
           ) : preview !== null ? (
             <>
-              <p data-testid="version-preview-caption" className="mb-6 text-xs text-neutral-500">
-                {shown !== null ? `${formatVersionTime(shown.createdAt)}의 본문 — 읽기 전용` : '읽기 전용'}
-              </p>
+              <div className="mb-6 flex items-start justify-between gap-4">
+                <p data-testid="version-preview-caption" className="text-xs text-neutral-500">
+                  {shown !== null ? `${formatVersionTime(shown.createdAt)}의 본문 — 읽기 전용` : '읽기 전용'}
+                </p>
+                {canRestore && !confirming && (
+                  <button
+                    type="button"
+                    data-testid="version-restore"
+                    disabled={restoring}
+                    onClick={() => {
+                      setNotice(null)
+                      setConfirming(true)
+                    }}
+                    className="flex-none rounded-md border border-neutral-300 px-2 py-1 text-xs hover:bg-neutral-100 disabled:opacity-50 dark:border-neutral-700 dark:hover:bg-neutral-800"
+                  >
+                    이 버전으로 되돌리기
+                  </button>
+                )}
+              </div>
+              {confirming && (
+                <div
+                  role="group"
+                  aria-label="되돌리기 확인"
+                  data-testid="version-restore-ask"
+                  className="mb-6 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm dark:border-amber-700 dark:bg-amber-950"
+                >
+                  <p>이 버전으로 되돌릴까요? 지금 본문은 기록에 남아, 되돌린 뒤에도 다시 돌아올 수 있습니다. 제목과 하위 페이지는 그대로 둡니다.</p>
+                  {preview.doc.blocks.length === 0 && (
+                    <p data-testid="version-restore-empty" className="mt-1 font-medium text-red-700 dark:text-red-400">
+                      이 버전은 비어 있습니다 — 되돌리면 지금 본문이 모두 지워집니다.
+                    </p>
+                  )}
+                  <div className="mt-2 flex gap-2">
+                    <button
+                      type="button"
+                      data-testid="version-restore-confirm"
+                      autoFocus
+                      disabled={restoring}
+                      onClick={() => void restore()}
+                      className="rounded-md bg-neutral-900 px-3 py-1 text-xs text-white disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900"
+                    >
+                      {restoring ? '되돌리는 중…' : '되돌리기'}
+                    </button>
+                    <button
+                      type="button"
+                      data-testid="version-restore-cancel"
+                      onClick={() => setConfirming(false)}
+                      className="rounded-md px-3 py-1 text-xs hover:bg-neutral-100 dark:hover:bg-neutral-800"
+                    >
+                      취소
+                    </button>
+                  </div>
+                </div>
+              )}
+              {notice !== null && (
+                <p role="status" data-testid="version-restore-notice" className="mb-6 text-sm text-neutral-600 dark:text-neutral-300">
+                  {notice}
+                </p>
+              )}
               <VersionPreview key={preview.id} workspaceId={workspaceId} doc={preview.doc} labels={preview.labels} />
             </>
           ) : versions !== null && versions.length === 0 ? null : (
@@ -207,6 +306,7 @@ function PageHistoryDialog({ workspaceId, pageId, onClose }: { workspaceId: stri
             <ul ref={listRef} aria-label="버전" className="min-h-0 flex-1 overflow-auto px-2 pb-3">
               {versions.map((v) => {
                 const editors = formatEditors(v.editors)
+                const reason = formatVersionReason(v, versions)
                 return (
                   <li key={v.id}>
                     <button
@@ -216,6 +316,7 @@ function PageHistoryDialog({ workspaceId, pageId, onClose }: { workspaceId: stri
                       aria-current={v.id === selected ? 'true' : undefined}
                       onClick={() => {
                         setPreviewError(null)
+                        setConfirming(false)
                         setSelected(v.id)
                       }}
                       className={`w-full rounded px-3 py-2 text-left ${
@@ -223,6 +324,11 @@ function PageHistoryDialog({ workspaceId, pageId, onClose }: { workspaceId: stri
                       }`}
                     >
                       <span className="block text-sm">{formatVersionTime(v.createdAt)}</span>
+                      {reason !== null && (
+                        <span data-testid="page-history-reason" className="block truncate text-xs text-amber-700 dark:text-amber-400">
+                          {reason}
+                        </span>
+                      )}
                       {editors !== '' && <span className="block truncate text-xs text-neutral-500">{editors}</span>}
                     </button>
                   </li>

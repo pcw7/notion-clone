@@ -20,5 +20,5 @@ export async function GET(_request: Request, ctx: Ctx): Promise<Response> {
 
   const listed = await listVersions(session.ctx, pageId)
   if (!listed.ok) return Response.json({ error: listed.reason }, { status: versionFailureStatus(listed.reason) })
-  return Response.json({ ok: true, versions: listed.value })
+  return Response.json({ ok: true, versions: listed.value.versions, canRestore: listed.value.canRestore })
 }

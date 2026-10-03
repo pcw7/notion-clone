@@ -1629,8 +1629,8 @@ CREATE TABLE page_version (                    -- 사용자 노출 버전 <C-12>
   state_vector bytea NOT NULL, byte_size int NOT NULL,
   editor_ids   uuid[] NOT NULL,                -- 구간 내 doc_update.actor_id DISTINCT
   reason text NOT NULL
-    CHECK (reason IN ('interval','idle','pre_restore','manual','external_sync')),  -- <15 R14>
-  restored_from uuid NULL,
+    CHECK (reason IN ('interval','idle','pre_restore','restore','manual','external_sync')),  -- <15 R14> · [보강 8d-3] restore
+  restored_from uuid NULL,                      -- [보강 8d-3] restore 버전에만 — CHECK ((reason='restore') = (restored_from IS NOT NULL))
   through_seq  bigint NOT NULL,                -- [보강 8d-1] 이 버전이 담은 마지막 doc_update.seq · UNIQUE (page_id, through_seq)
   created_at timestamptz NOT NULL,             -- [보강 8d-1] 담은 내용의 시각(마지막 update 의 created_at)
   expires_at timestamptz NOT NULL              -- 생성 시점 플랜으로 고정. 조회 시 재계산 금지
@@ -1683,6 +1683,31 @@ CREATE TABLE device_offline_manifest (         -- 오프라인 권한 회수 축
 > ⑤ **누가 보는가** — 그 페이지를 고칠 수 있는 사람(`edit_content`)이다(F-11-01 *"`Can edit` 이상"*). 볼 수만 있으면 `forbidden`(403),
 >    볼 수 없으면 `not_found`(404). 잠긴 페이지도 기록은 본다(읽기다 — 복원이 잠금을 묻는다). 미리보기의 하위 페이지 · 멘션의 이름과
 >    아이콘은 **지금의 권한으로 거른 맵**으로 준다(본문과 같은 규칙 — 옛 버전이 지금 볼 수 없는 페이지를 가리킬 수 있다).
+
+**[보강] 복원 — 앞으로 쓰는 되돌리기** ⟨잔여 묶음 8d-3 · F-11-02 / 마이그레이션 0041⟩
+
+> 초판은 불변식 S4(*"복원은 비파괴적이다 — (1) pre_restore 버전 (2) 대상 state 를 origin='restore' 인 doc_update 로 append (3) 새 버전에
+> restored_from"*)만 적었다. 11 F-11-02 는 *"`page_version.reason` 에 'pre_restore', 'restore' 값 필요"* 라고 적었지만 초판의 CHECK 에는
+> `restore` 가 없다.
+>
+> ① **순서 — 한 트랜잭션.** 그 페이지 행을 잠그고(본문 저장과 같은 잠금) 본문 세션을 `origin='restore'` 로 연다 — 여는 순간의 버전
+>    판정(쉼 · 주기 — [보강] 버전 기록 ②)이 먼저 돈다. 대상 버전의 본문(③ 으로 고친 것)으로 갈아 끼워 **바뀐 것이 없으면 아무것도 쓰지
+>    않는다**(새 버전도 없다 — F-11-02 *"복원 대상이 현재와 동일 → no-op"*). 바뀌면 ⓐ 지금 상태를 담은 버전이 없을 때만 `pre_restore` 로
+>    남기고(방금 쉼 버전이 담았으면 그것이 되돌리기 전의 상태다 — 한 위치에 하나) ⓑ 갈아 끼운 본문을 쌓고 투영한다(행위자는 되돌린
+>    사람 · `last_edited_*` 도 그 사람) ⓒ 그 상태를 `reason='restore'` · `restored_from` = 대상 버전으로 남긴다.
+> ② **`reason` 에 `restore` 를 더한다**(0041). `restored_from` 은 `restore` 버전에만 있다 — `CHECK ((reason = 'restore') = (restored_from IS NOT
+>    NULL))`. 목록은 출처를 **한 단계만** 말한다(F-11-02 *"v7 에서 복원됨 — 체인을 끝까지 따라가는 UI 를 만들지 말 것"*).
+> ③ **하위 페이지는 복원 대상이 아니다**(F-11-02 *"복원 후에도 자식 페이지는 현재 상태 그대로"*) — 대상 버전의 하위 페이지 참조 중
+>    **지금 이 본문의 살아 있는 자식이 아닌 것은 뺀다**(휴지통 · 다른 곳으로 옮긴 페이지를 되살리거나 끌어오지 않는다 — 투영도 그런
+>    참조를 두지 않는다 · §3.2-24), **지금의 자식인데 그 버전에 없는 참조는 본문 끝에 붙인다**(복원이 자식을 휴지통으로 보내지 않는다 —
+>    본문 저장처럼 "빠진 자식"으로 거부하지도 않는다).
+> ④ **제목은 되돌리지 않는다** — 버전에 없다(제목은 행의 속성이다 · [보강] 버전 기록 · HANDOFF §7).
+> ⑤ **멘션 알림을 보내지 않는다** — 옛 내용을 되살린 것이지 새로 부른 것이 아니다. 멘션 역인덱스(`link_edge` · 백링크)는 본문을 따라
+>    바뀐다(L1 — 행의 투영).
+> ⑥ **누가** — `edit_content`. 잠긴 페이지는 `locked`(F-11-02 *"잠금 해제 전 복원 차단"*) · 볼 수만 있으면 `forbidden` · 볼 수 없으면
+>    `not_found` · 보관 기간이 지난 버전은 `expired`(410) · 바이트가 없는 버전은 `not_found`(빈 본문으로 되돌리지 않는다).
+> ⑦ **되돌리기 취소**는 따로 두지 않는다 — 되돌리기 전의 상태가 버전으로 남으므로 그것을 골라 다시 되돌린다(F-11-02 *"복원 자체를
+>    되돌릴 수 있다"*). 버전이 담은 이미지의 파일은 버전의 참조라(S5) 되살린 이미지가 깨지지 않는다.
 
 **런타임 구독 레지스트리 (영속 아님 — Redis / 프로세스 메모리)**
 

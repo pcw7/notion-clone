@@ -5924,6 +5924,100 @@ async function main() {
       await sleep(300)
     }
 
+    if (sectionIf('되돌리기 (8d-3 · F-11-02)')) {
+      // 기록 창에서 고른 버전으로 되돌린다 — 한 번 더 묻고, 되돌리면 **열린 본문 편집기가 협업 서버가 퍼뜨린 update 로 따라온다**. 되돌리기
+      // 전의 상태도 버전으로 남아 그것을 다시 되돌리면 취소다. 하위 페이지는 지금 그대로다(버전 뒤에 만든 자식이 남는다). 잠긴 페이지는
+      // 되돌리기가 없다. 준비는 서버 명령으로 한다(로그의 시각을 밀어 버전을 만든다). 자기 데이터를 스스로 만든다.
+      const stamp = Date.now()
+      const src = (p) => new URL(`../src/lib/${p}`, import.meta.url).href
+      const { query: dbQuery } = await import(src('db/pool.ts'))
+      const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
+      const post = async (body) => (await (await fetch(pagesUrl, { method: 'POST', headers: authed, body: JSON.stringify(body) })).json()).page.id
+      const page = await post({ title: `되돌리기${stamp}`, privateTop: true })
+      const age = () => dbQuery(`UPDATE doc_update SET created_at = created_at - interval '3 minutes' WHERE page_id = $1`, [page])
+      await saveBody(page, { blocks: [block(randomUUID(), 'paragraph', '옛 글')] })
+      await age()
+      // 버전 뒤에 만든 자식 — 그 쓰기(부모 본문에 참조)가 여는 순간의 판정으로 '옛 글' 버전을 남긴다.
+      const childTitle = `되돌리기자식${stamp}`
+      const child = await post({ title: childTitle, parentPageId: page })
+      const refBlock = { id: child, type: 'page', title: [], properties: {}, format: {}, children: [] }
+      await saveBody(page, { blocks: [block(randomUUID(), 'paragraph', '지금 글'), refBlock] })
+      const versionCount = async () => (await dbQuery(`SELECT count(*)::int AS n FROM page_version WHERE page_id = $1`, [page]))[0].n
+
+      const DIALOG = '[data-testid="page-history"]'
+      const ITEMS = `${DIALOG} [data-testid="page-history-item"]`
+      const PREVIEW = `${DIALOG} [data-testid="version-preview"] .blk-editor`
+      const LIVE = '.blk-editor[aria-label="페이지 본문"]'
+      const liveText = () => evaluate(`document.querySelector('${LIVE}')?.textContent ?? null`)
+      const openHistory = async () => {
+        for (let tries = 0; tries < 6; tries += 1) {
+          await clickSelector('[data-testid="page-history-open"]')
+          if (await waitFor(`!!document.querySelector('${DIALOG}')`, 2000)) return true
+        }
+        return false
+      }
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+      await waitFor(`(document.querySelector('${LIVE}')?.textContent ?? '').includes('지금 글') && document.querySelector('${LIVE}').getAttribute('contenteditable') === 'true'`, 15000)
+      check('전제 — 버전 하나(옛 글) · 지금 본문은 지금 글 + 자식', (await versionCount()) === 1 && String(await liveText()).includes(childTitle),
+        JSON.stringify([await versionCount(), await liveText()]))
+      await openHistory()
+      await waitFor(`(document.querySelector('${PREVIEW}')?.textContent ?? '') === '옛 글'`, 8000)
+      check('★ 고칠 수 있으면 미리보기에 "이 버전으로 되돌리기"가 선다', await waitFor(`!!document.querySelector('[data-testid="version-restore"]')`, 5000))
+      await clickSelector('[data-testid="version-restore"]')
+      check('★ 누르면 한 번 더 묻는다 — 되돌리기 단추에 포커스', await waitFor(`!!document.querySelector('[data-testid="version-restore-ask"]')
+        && document.activeElement?.getAttribute('data-testid') === 'version-restore-confirm'`, 3000))
+      await clickSelector('[data-testid="version-restore-confirm"]')
+      check('★ 되돌리면 열린 본문 편집기가 그 버전으로 바뀐다(협업 서버가 퍼뜨린 update) — 버전 뒤에 만든 자식은 남는다',
+        await waitFor(`(() => { const t = document.querySelector('${LIVE}')?.textContent ?? ''
+          return t.startsWith('옛 글') && !t.includes('지금 글') && t.includes(${JSON.stringify(childTitle)}) })()`, 15000),
+        String(await liveText()))
+      check('★ 목록을 다시 읽어 되돌린 버전을 고른다 — 그 위에 "○○ 버전에서 되돌림", 다음이 "되돌리기 전"',
+        await waitFor(`(() => { const items = [...document.querySelectorAll('${ITEMS}')]
+          const reasons = items.map((b) => b.querySelector('[data-testid="page-history-reason"]')?.textContent ?? '')
+          return items.length === 3 && items[0].getAttribute('aria-current') === 'true' && reasons[0].endsWith('버전에서 되돌림') && reasons[1] === '되돌리기 전' && reasons[2] === '' })()`, 8000),
+        String(await evaluate(`[...document.querySelectorAll('${ITEMS}')].map((b) => b.textContent).join(' | ')`)))
+      check('되돌렸다고 말한다', await waitFor(`(document.querySelector('[data-testid="version-restore-notice"]')?.textContent ?? '').startsWith('되돌렸습니다')`, 3000))
+
+      // 같은 내용 — 지금과 같은 버전(방금 되돌린 버전)을 다시 되돌리면 아무것도 쓰지 않는다.
+      const before = await versionCount()
+      await clickSelector('[data-testid="version-restore"]')
+      await waitFor(`!!document.querySelector('[data-testid="version-restore-confirm"]')`, 3000)
+      await clickSelector('[data-testid="version-restore-confirm"]')
+      check('★ 지금과 같은 버전으로 되돌리면 "바꾼 것이 없다"고 말하고 아무것도 쓰지 않는다',
+        (await waitFor(`(document.querySelector('[data-testid="version-restore-notice"]')?.textContent ?? '').startsWith('지금 본문과 같습니다')`, 8000))
+          && (await versionCount()) === before,
+        JSON.stringify([await evaluate(`document.querySelector('[data-testid="version-restore-notice"]')?.textContent ?? null`), before, await versionCount()]))
+
+      // 되돌리기 취소 — "되돌리기 전"을 다시 되돌린다.
+      await clickSelector(`${DIALOG} li:nth-child(2) [data-testid="page-history-item"]`)
+      await waitFor(`(document.querySelector('${PREVIEW}')?.textContent ?? '').startsWith('지금 글')`, 8000)
+      await clickSelector('[data-testid="version-restore"]')
+      await waitFor(`!!document.querySelector('[data-testid="version-restore-confirm"]')`, 3000)
+      await clickSelector('[data-testid="version-restore-confirm"]')
+      check('★ "되돌리기 전"을 되돌리면 원래대로 — 열린 본문도 따라온다',
+        await waitFor(`(() => { const t = document.querySelector('${LIVE}')?.textContent ?? ''
+          return t.startsWith('지금 글') && !t.includes('옛 글') && t.includes(${JSON.stringify(childTitle)}) })()`, 15000),
+        String(await liveText()))
+      await key('Escape')
+      await waitFor(`!document.querySelector('${DIALOG}')`, 3000)
+
+      // 잠긴 페이지 — 기록은 보지만 되돌리기는 없다.
+      const locked = await fetch(`${pagesUrl}/${page}/lock`, { method: 'PUT', headers: authed })
+      try {
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+        await waitFor(`!!document.querySelector('[data-testid="page-history-open"]')`, 15000)
+        await openHistory()
+        check('★ 잠긴 페이지 — 기록은 보이고 "되돌리기"는 없다',
+          locked.ok && (await waitFor(`!!document.querySelector('${PREVIEW}')`, 8000)) && !(await evaluate(`!!document.querySelector('[data-testid="version-restore"]')`)),
+          String(locked.status))
+        await key('Escape')
+      } finally {
+        await fetch(`${pagesUrl}/${page}/lock`, { method: 'DELETE', headers: authed })
+      }
+      await sleep(300)
+    }
+
     if (sectionIf('코멘트 패널 · 인박스 (F-05-08 · F-11-07)')) {
       const commentPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
         method: 'POST',

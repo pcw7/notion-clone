@@ -2192,6 +2192,25 @@ try {
     await mustReject('정본에 없는 이유값', addVersion, [randomUUID(), randomUUID(), 'versions/x/y/f.yjs', 'autosave', 1])
   }
 
+  console.log('\n[27] 복원으로 만든 버전 (0041 / §3.7 [보강] 복원 ② · 8d-3조각)')
+  {
+    // 이유값에 restore 가 있다 · restored_from 은 restore 버전에만.
+    const pageId = randomUUID()
+    const addVersion = `INSERT INTO page_version (id, page_id, state_ref, state_vector, byte_size, editor_ids, reason, restored_from, through_seq, created_at, expires_at)
+                        VALUES ($1, $2, 'versions/x/y/z.yjs', '\\x00'::bytea, 1, '{}', $3, $4, $5, now(), now() + interval '7 days')`
+    const target = randomUUID()
+    await client.query(addVersion, [target, pageId, 'idle', null, 1])
+    ok('쉼 버전 — 출처 없음')
+    await client.query(addVersion, [randomUUID(), pageId, 'pre_restore', null, 2])
+    ok('되돌리기 전 버전 — 출처 없음')
+    await client.query(addVersion, [randomUUID(), pageId, 'restore', target, 3])
+    ok('복원 버전 — 출처가 있다')
+    await mustReject('출처 없는 복원 버전', addVersion, [randomUUID(), pageId, 'restore', null, 4])
+    await mustReject('출처가 있는 쉼 버전', addVersion, [randomUUID(), pageId, 'idle', target, 5])
+    await mustReject('출처가 있는 되돌리기 전 버전', addVersion, [randomUUID(), pageId, 'pre_restore', target, 6])
+    await mustReject('없는 버전을 출처로', addVersion, [randomUUID(), pageId, 'restore', randomUUID(), 7])
+  }
+
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
 } catch (e) {
