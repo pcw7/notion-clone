@@ -101,6 +101,7 @@ import { effectiveCaps } from '../permissions/effective.ts'
 import { isLocked } from '../permissions/lock.ts'
 import { can } from '../permissions/levels.ts'
 import { MENTION_NODE, PAGE_REF_NODE } from '../editor/schema.ts'
+import { recordVersionIfDue, type VersionIntent } from '../history/record.ts'
 import { writeEditorChange, type EditorChange } from './body-edit.ts'
 import { repairBodyYDoc } from './repair.ts'
 import { createBodyYDoc, readBodyYDoc, type BodyRead, type BodyReadOptions } from './ydoc.ts'
@@ -231,7 +232,12 @@ export async function readDocUpdatesAfter(
  *
  * 이 페이지의 쓰기 · 압축이 여기서 한 줄로 선다. 잠근 뒤에 읽으므로 잠그기 전에 커밋된 쓰기까지 전부 보인다.
  */
-export async function openBodyDoc(tx: Tx, ctx: SessionContext, pageId: string): Promise<BodyDocSession> {
+export async function openBodyDoc(
+  tx: Tx,
+  ctx: SessionContext,
+  pageId: string,
+  options: { readonly versionIntent?: VersionIntent } = {},
+): Promise<BodyDocSession> {
   let locked = await lockSnapshot(tx, pageId)
   if (locked === null) {
     await bootstrap(tx, ctx, pageId)
@@ -243,6 +249,9 @@ export async function openBodyDoc(tx: Tx, ctx: SessionContext, pageId: string): 
   const state = await readState(tx, pageId)
   if (state === null) throw new Error(`잠근 스냅샷을 읽지 못했다: ${pageId}`)
   const { ydoc } = state
+  // 버전 기록(8d-1) — 이번 변경을 적용하기 **전에**, 아직 버전이 담지 않은 편집이 있고 남길 때가 되었으면 지금 상태를 남긴다. 판정이
+  // 이 잠금 안이라 쓰기가 몇 프로세스에서 오든 버전이 둘 생기지 않는다(`history/record.ts` 머리말).
+  await recordVersionIfDue(tx, { workspaceId: ctx.workspaceId, pageId, ydoc, seq: state.seq, intent: options.versionIntent ?? 'write' })
 
   const changes: Uint8Array[] = []
   const collect = (change: Uint8Array): void => void changes.push(change)

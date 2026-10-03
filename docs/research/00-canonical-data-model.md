@@ -1631,7 +1631,8 @@ CREATE TABLE page_version (                    -- 사용자 노출 버전 <C-12>
   reason text NOT NULL
     CHECK (reason IN ('interval','idle','pre_restore','manual','external_sync')),  -- <15 R14>
   restored_from uuid NULL,
-  created_at timestamptz NOT NULL,
+  through_seq  bigint NOT NULL,                -- [보강 8d-1] 이 버전이 담은 마지막 doc_update.seq · UNIQUE (page_id, through_seq)
+  created_at timestamptz NOT NULL,             -- [보강 8d-1] 담은 내용의 시각(마지막 update 의 created_at)
   expires_at timestamptz NOT NULL              -- 생성 시점 플랜으로 고정. 조회 시 재계산 금지
 );
 CREATE INDEX ON page_version (page_id, created_at DESC);   -- 목록 조회는 state_ref 를 SELECT 하지 않는다
@@ -1651,6 +1652,37 @@ CREATE TABLE device_offline_manifest (         -- 오프라인 권한 회수 축
 -- page_channel / subscription(device_id,page_id) 테이블은 존재하지 않는다.
 -- 실시간 구독은 연결 수명과 같아야 하므로 영속 테이블이면 안 된다. <C-11>
 ```
+
+**[보강] 버전 기록 — 언제 · 무엇을 · 누가 보는가(`page_version`)** ⟨잔여 묶음 8d-1 · F-11-01 / 마이그레이션 0040⟩
+
+> 초판은 표만 두었다(0007). 11 F-11-01 의 규칙은 *"활발히 편집하는 동안 10분마다 1개, 그리고 마지막 편집 후 2분 뒤에 1개"* ·
+> *"스냅샷 단위 = 페이지 1개(자식 페이지 제외)"* · *"편집이 없으면 스냅샷도 생기지 않는다"* · *"`Can edit` 이상만 접근"* 이다.
+>
+> ① **`through_seq bigint NOT NULL` 을 더한다** — 이 버전이 담은 마지막 `doc_update.seq`. 초판의 `editor_ids` 는 *"구간 내
+> `doc_update.actor_id` DISTINCT"* 인데 구간의 끝을 적는 칸이 없었다 — 시각(`created_at`)으로 자르면 같은 시각의 update 를 가르지 못하고
+> 로그의 차례(seq)와 어긋날 수 있다. seq 는 로그의 위치라 구간이 정확하다(S2 의 재동기 축과 같은 값을 읽기만 한다). **한 위치에 버전은
+> 하나**다(`UNIQUE (page_id, through_seq)`) — 같은 상태를 두 번 남기지 않는다(F-11-01 엣지 케이스 *"클라이언트별 중복 생성 금지"*).
+> ② **언제 — 타이머가 아니라 그 페이지를 쓰는 순간에 판정한다.** 쓰기는 모두 본문 세션(그 페이지의 스냅샷 행을 잠근다)을 지나므로
+>    세션을 여는 순간 — 이번 변경을 적용하기 **전에** — 아직 버전이 담지 않은 편집이 있는지 보고, 있으면 지금 상태를 남긴다:
+>    · **쉼(`idle`)** — 마지막 update 에서 2분이 지났다(그 편집 세션이 끝났다)
+>    · **주기(`interval`)** — 버전이 담지 않은 첫 update 에서 10분이 지났다(쉬지 않고 고치는 중)
+>    기록 목록을 열 때도 같은 판정을 한다 — 마지막 편집 뒤에 아무도 쓰지 않아도 끝난 세션이 목록에 선다. 타이머를 두지 않는 까닭: 쓰기가
+>    두 프로세스(협업 서버 · 앱)에서 오고, 판정을 그 페이지의 잠금 안에 두면 버전이 둘 생길 수 없으며(①), 시각을 DB 의 `now()` 하나로
+>    잰다. 대가 — 쉼 버전은 2분이 지난 **뒤의 첫 쓰기 · 목록 열기**에 만들어진다(내용은 마지막 편집 때의 것이다).
+> ③ **무엇을** — 그 순간의 Y.Doc 전체(`encodeStateAsUpdate` · F-11-01 클론 대안 *"그 시점 state 의 full encode 를 별도 blob"*)를
+>    파일 저장소에 둔다(`state_ref` — `versions/{workspace}/{page}/{version}.yjs`). `created_at` 은 **그 내용의 시각** — 담은 마지막
+>    update 의 `created_at` 이다(만든 시각이 아니다). `editor_ids` 는 앞 버전의 `through_seq` 뒤부터 이 버전의 `through_seq` 까지의
+>    `actor_id`(시스템 · 옮기기는 빠진다).
+>    · **옮기기(seq 1 · `import`)만 있는 상태는 버전이 아니다** — 새 페이지는 빈 본문으로 옮겨지므로 그대로면 빈 버전이 선다. 다만
+>      **옮긴 내용이 비어 있지 않으면 첫 쓰기 때 그것을 남긴다**(Phase 0 의 행에서 옮긴 페이지 — 처음 고친 사람이 다 지워도 되돌릴 수
+>      있게). 이유값은 `idle` 이다(쉬던 상태다)
+>    · **S5** — 버전이 담은 이미지 블록의 파일만큼 `file.ref_count` 를 올린다. 지금은 버전을 지우는 GC 가 없어 내리지 않는다
+> ④ **보관 기간** — `expires_at` 은 만들 때 그 워크스페이스의 요금제로 정해 고정한다(초판의 주석). Free 7일 · Plus 30일 · Business 90일 ·
+>    Enterprise 무제한(`'infinity'`) — F-11-01 *"플랜 차이는 보관 기간뿐"*. 엔타이틀먼트 표(PE1)가 아직 없어 그 값은 한 함수에 둔다
+>    (파일 크기 상한과 같은 처지 — 8k). 지난 버전은 목록에 서지 않고, 열면 `expired`(410)다. 지우는 GC 는 아직 없다.
+> ⑤ **누가 보는가** — 그 페이지를 고칠 수 있는 사람(`edit_content`)이다(F-11-01 *"`Can edit` 이상"*). 볼 수만 있으면 `forbidden`(403),
+>    볼 수 없으면 `not_found`(404). 잠긴 페이지도 기록은 본다(읽기다 — 복원이 잠금을 묻는다). 미리보기의 하위 페이지 · 멘션의 이름과
+>    아이콘은 **지금의 권한으로 거른 맵**으로 준다(본문과 같은 규칙 — 옛 버전이 지금 볼 수 없는 페이지를 가리킬 수 있다).
 
 **런타임 구독 레지스트리 (영속 아님 — Redis / 프로세스 메모리)**
 
