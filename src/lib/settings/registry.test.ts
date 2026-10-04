@@ -68,9 +68,10 @@ describe('② · ③ 누가', () => {
 })
 
 describe('④ 내비', () => {
-  const sectionsOf = (role: (typeof WORKSPACE_ROLES)[number]) => visibleSettingGroups(role).map((g) => [g.scope, g.sections.map((s) => s.id)])
+  const sectionsOf = (role: (typeof WORKSPACE_ROLES)[number], panelSections: readonly string[] = []) =>
+    visibleSettingGroups(role, panelSections).map((g) => [g.scope, g.sections.map((s) => s.id)])
 
-  test('★ 보이는 항목이 있는 절만 · 절이 있는 묶음만', () => {
+  test('★ 보이는 항목이 있는 절만 · 절이 있는 묶음만 — 항목이 없는 사람 절은 패널 없이는 서지 않는다', () => {
     assert.deepEqual(sectionsOf('owner'), [
       ['account', ['account.profile']],
       ['workspace', ['workspace.general', 'workspace.security']],
@@ -81,6 +82,17 @@ describe('④ 내비', () => {
       ['workspace', ['workspace.general']],
     ])
     assert.deepEqual(sectionsOf('guest'), [['account', ['account.profile']]], '게스트에게 워크스페이스 묶음이 섰다')
+  })
+
+  test('★ 패널이 선 절은 항목이 없어도 선다 — 선언의 순서로(8g-2)', () => {
+    assert.deepEqual(sectionsOf('owner', ['workspace.people', 'workspace.general']), [
+      ['account', ['account.profile']],
+      ['workspace', ['workspace.general', 'workspace.people', 'workspace.security']],
+    ])
+    assert.deepEqual(sectionsOf('member', ['workspace.people']), [
+      ['account', ['account.profile']],
+      ['workspace', ['workspace.general', 'workspace.people']],
+    ])
   })
 })
 

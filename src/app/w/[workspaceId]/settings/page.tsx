@@ -5,16 +5,19 @@
  *       17-ops-governance.md F-17-12 *"좌측 네비가 3개 그룹으로 나뉜다: 내 계정 / 이 워크스페이스 / 조직(해당 시)"* · *"각 항목 행은
  *       [라벨 / 설명 / 컨트롤 / 상태 배지]"*
  *
- * 화면의 모든 것이 레지스트리에서 나온다 — 왼쪽 내비(`visibleSettingGroups` — 보이는 항목이 있는 절만), 오른쪽 항목(`readSettings` —
- * 보이는 것만 · 값 · 고칠 수 있는가), 읽기 전용의 안내(`editorsNote`). 이 파일에 항목의 이름이나 역할 판정을 적지 않는다.
- * 지금은 내 계정 · 워크스페이스 두 묶음이다(조직은 조직 기능이 생길 때 — 정본 ③). 절은 `?s=` 로 고른다.
+ * 화면의 모든 것이 레지스트리에서 나온다 — 왼쪽 내비(`visibleSettingGroups` — 보이는 항목이나 패널이 있는 절만), 오른쪽 항목
+ * (`readSettings` — 보이는 것만 · 값 · 고칠 수 있는가), 읽기 전용의 안내(`editorsNote`), 항목 뒤의 패널(`visiblePanels` — 사람 ·
+ * 내보내기 · 8g-2). 이 파일에 항목의 이름이나 역할 판정을 적지 않는다. 지금은 내 계정 · 워크스페이스 두 묶음이다(조직은 조직 기능이
+ * 생길 때 — 정본 ③). 절은 `?s=` 로 고른다.
  */
 
 import Link from 'next/link'
 
 import { requirePageSession } from '@/lib/auth/page-session'
 import { editorsNote, settingDefinition, visibleSettingGroups } from '@/lib/settings/registry'
+import { visiblePanels } from '@/lib/settings/panels'
 import { readSettings } from '@/lib/settings/settings'
+import { SettingPanelView } from './setting-panel'
 import { SettingRow } from './setting-row'
 
 export default async function SettingsPage({ params, searchParams }: PageProps<'/w/[workspaceId]/settings'>) {
@@ -22,11 +25,16 @@ export default async function SettingsPage({ params, searchParams }: PageProps<'
   const ctx = await requirePageSession(workspaceId)
   const { s } = await searchParams
 
-  const groups = visibleSettingGroups(ctx.role)
+  const panels = visiblePanels(ctx)
+  const groups = visibleSettingGroups(
+    ctx.role,
+    panels.map((panel) => panel.section),
+  )
   const sections = groups.flatMap((group) => group.sections)
   // 계정의 절은 누구에게나 보이므로 첫 절이 늘 있다. 모르거나 볼 수 없는 절이면 첫 절이다.
   const current = sections.find((section) => section.id === s) ?? sections[0]!
   const items = (await readSettings(ctx)).filter((item) => item.section === current.id)
+  const sectionPanels = panels.filter((panel) => panel.section === current.id)
 
   return (
     <main className="mx-auto flex min-h-screen max-w-4xl gap-10 px-6 py-12">
@@ -75,6 +83,9 @@ export default async function SettingsPage({ params, searchParams }: PageProps<'
             />
           )
         })}
+        {sectionPanels.map((panel) => (
+          <SettingPanelView key={panel.id} id={panel.id} ctx={ctx} />
+        ))}
       </section>
     </main>
   )
