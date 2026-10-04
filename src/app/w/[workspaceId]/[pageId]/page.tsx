@@ -1,9 +1,14 @@
 /**
  * 페이지 화면 — `/w/{workspaceId}/{pageId}`
  *
- * W4 1단계. **본문 에디터는 아직 없다** — 여기에 Tiptap 이 들어온다.
- * 지금 있는 것은 breadcrumb · 제목 · 하위 페이지 목록이고, 이것들은
- * 에디터가 붙은 뒤에도 그대로 남는다(에디터는 본문 영역만 차지한다).
+ * 경로 · 머리 단추 · 아이콘 · 제목 · 백링크 · 본문(협업 편집기) · 하위 페이지 목록.
+ *
+ * **데이터베이스 행도 여기서 연다**(8f-1 · F-16-07) — 행은 페이지다(C-3). 다른 것은 셋이다:
+ *   · 경로는 조상 대신 그 행의 데이터베이스(`rowTrail`)
+ *   · 제목의 정본은 제목 **셀**이다(`RowTitle` — `renamePage` 는 행을 거부한다)
+ *   · 본문 위에 **속성 묶음** — 스키마 순서의 모든 속성을 세로로(`DatabaseTable variant="record"` — 템플릿 화면과 같은 모양 · 같은 함수).
+ *     모듈 배치(어떤 속성을 어디에)는 데이터 소스의 것이고 본문은 행의 것이다(F-16-07). 숨기기 · 순서는 레이아웃(8f-2)
+ * 행에 맞지 않는 머리 단추(공유 · 옮기기 · 내보내기 · 복제)는 세우지 않는다 — 행의 권한 · 자리는 데이터베이스가 정한다(§7).
  */
 
 import Link from 'next/link'
@@ -14,7 +19,7 @@ import * as Y from 'yjs'
 import { asBlockId } from '@/lib/ids'
 import { requirePageVisitor } from '@/lib/auth/page-session'
 import { getPage, listAncestors, listChildPages } from '@/lib/block/page'
-import { breadcrumbTrail } from '@/lib/block/breadcrumb'
+import { breadcrumbTrail, rowTrail } from '@/lib/block/breadcrumb'
 import { loadPageRefLabels } from '@/lib/block/save-page-body'
 import { loadDocState, pageAccess } from '@/lib/collab/doc-store'
 import { collabServerUrl } from '@/lib/collab/collab-url'
@@ -44,6 +49,13 @@ import { NoAccess } from './no-access'
 import { LockButton } from './lock-button'
 import { PageHistoryButton } from './page-history'
 import { canViewPageHistory } from '@/lib/history/version'
+import { readRowPage } from '@/lib/database/row-page'
+import { listColumns } from '@/lib/database/list-layout'
+import { loadRelationLabels, relationIdsIn } from '@/lib/database/relation'
+import { EMPTY_ROLLUP_PAGE } from '@/lib/database/rollup'
+import { rowJson } from '@/lib/database/http'
+import { RowTitle } from '../db/[databaseId]/row-title'
+import { RowProperties } from './row-properties'
 
 /** 제목 없는 페이지의 표시 문구. 저장된 값은 빈 배열이다. */
 const UNTITLED = '제목 없음'
@@ -83,7 +95,7 @@ export default async function PageView({ params, searchParams }: PageProps<'/w/[
 
   // 본문은 Y.Doc 이 정본이다(판결 X-1 · CRDT 6d) — 협업 편집기가 그 상태로 시작하고 협업 서버에 붙는다. 행으로 만든 문서는
   // 더 이상 화면이 읽지 않고, 참조 제목만 따로 받는다(참조 노드는 제목을 싣지 않는다 — §3.2-22).
-  const [ancestors, children, state, pageRefs, access, moveTargets, moveTeamspaces, favorite, openThreads, lock, history] = await Promise.all([
+  const [ancestors, children, state, pageRefs, access, moveTargets, moveTeamspaces, favorite, openThreads, lock, history, rowPage] = await Promise.all([
     listAncestors(ctx, page),
     listChildPages(ctx, page.id),
     loadDocState(ctx, page.id),
@@ -98,6 +110,8 @@ export default async function PageView({ params, searchParams }: PageProps<'/w/[
     pageLockState(ctx, page.id),
     // 기록(8d-2) — 고칠 수 있는 사람에게만 단추를 세운다(잠긴 페이지도 기록은 본다 · 라우트가 다시 묻는다).
     canViewPageHistory(ctx, page.id),
+    // 데이터베이스 행이면 속성 묶음 · 제목 셀 · 그 데이터베이스(8f-1). 보통 페이지면 null.
+    readRowPage(ctx, page.id),
   ])
 
   // 방문 기록(F-07-04). **`getPage` 를 통과한 뒤**에 남긴다 — 볼 수 없는 페이지를
@@ -120,12 +134,31 @@ export default async function PageView({ params, searchParams }: PageProps<'/w/[
   ])
 
   // 경로 — 머리와 본문의 breadcrumb 블록(8b-2)이 같은 줄을 그린다(`block/breadcrumb.ts` — 볼 수 있는 조상만 · teamspace 는 멤버에게만).
-  const trail = breadcrumbTrail({
-    workspaceId,
-    teamspace: teamspace?.ok ? { id: teamspace.value.id, name: teamspace.value.name, icon: teamspace.value.icon } : null,
-    ancestors,
-    page,
-  })
+  // 행이면 조상 대신 그 행의 데이터베이스다(8f-1).
+  const trail =
+    rowPage !== null
+      ? rowTrail({
+          workspaceId,
+          database: { id: rowPage.databaseId, name: rowPage.databaseName, icon: rowPage.databaseIcon },
+          row: { id: page.id, title: rowPage.row.title, icon: page.icon },
+        })
+      : breadcrumbTrail({
+          workspaceId,
+          teamspace: teamspace?.ok ? { id: teamspace.value.id, name: teamspace.value.name, icon: teamspace.value.icon } : null,
+          ancestors,
+          page,
+        })
+
+  // ── 행의 속성 묶음(8f-1) ──
+  // 셀을 고칠 수 있는가 — 데이터베이스의 `edit_content` 이고 **이 행 페이지가 잠기지 않았다**(7f-2 — 행의 값을 쓰는 길은 그 행의 잠금을
+  // 묻는다 · `access` 가 잠김을 이미 담는다). 서버가 다시 묻는다.
+  const rowColumns = rowPage === null ? [] : listColumns('record', rowPage.columns)
+  const rowAccess = rowPage === null ? null : { ...rowPage.access, canEditContent: rowPage.access.canEditContent && access === 'edit' }
+  const rowRelationIds = rowColumns.filter((c) => c.type === 'relation').map((c) => c.propertyId)
+  const rowRelation =
+    rowPage === null || rowRelationIds.length === 0
+      ? { labels: {}, icons: {} }
+      : await loadRelationLabels(ctx, relationIdsIn([rowPage.row], rowRelationIds))
 
   return (
     <main className="mx-auto flex min-h-screen max-w-3xl flex-col gap-6 px-6 py-12">
@@ -170,7 +203,9 @@ export default async function PageView({ params, searchParams }: PageProps<'/w/[
             pageId={page.id}
             initialOpenCount={openThreads.ok ? openThreads.discussions.length : 0}
           />
-          <SharePanel workspaceId={workspaceId} pageId={page.id} initialOpen={share === '1'} />
+          {/* 행의 권한 · 자리는 데이터베이스가 정한다 — 공유 · 옮기기 · 내보내기 · 복제는 행에 세우지 않는다(8f-1 · §7). */}
+          {rowPage === null && <SharePanel workspaceId={workspaceId} pageId={page.id} initialOpen={share === '1'} />}
+          {rowPage === null && (
           <MovePageControl
             workspaceId={workspaceId}
             pageId={page.id}
@@ -185,15 +220,18 @@ export default async function PageView({ params, searchParams }: PageProps<'/w/[
             }))}
             teamspaces={moveTeamspaces}
           />
+          )}
           {history && <PageHistoryButton workspaceId={workspaceId} pageId={page.id} />}
-          <ExportButton workspaceId={workspaceId} rootId={page.id} />
+          {rowPage === null && <ExportButton workspaceId={workspaceId} rootId={page.id} />}
           {/* 복제는 원본을 고치지 않는다 — 볼 수만 있는 사람도 누를 수 있다(자리가 없으면 서버가 거부한다). */}
-          <DuplicatePageButton workspaceId={workspaceId} pageId={page.id} />
+          {rowPage === null && <DuplicatePageButton workspaceId={workspaceId} pageId={page.id} />}
           <DeletePageButton
             workspaceId={workspaceId}
             pageId={page.id}
             childCount={children.length}
             parentPageId={page.parentPageId}
+            // 행을 지우면 그 표로 돌아간다(행에는 부모 페이지가 없다).
+            returnHref={rowPage === null ? undefined : `/w/${workspaceId}/db/${rowPage.databaseId}`}
           />
         </div>
       </div>
@@ -201,8 +239,46 @@ export default async function PageView({ params, searchParams }: PageProps<'/w/[
       {/* 아이콘(8c-1)은 제목 위에 선다 — "아이콘 추가"는 이 머리에 마우스를 올리면 보인다(`group/header`). */}
       <div className="group/header flex flex-col gap-2">
         <PageIconControl workspaceId={workspaceId} pageId={page.id} initialIcon={page.icon} readOnly={access !== 'edit'} />
-        <PageTitle workspaceId={workspaceId} pageId={page.id} initialTitle={page.plainTitle} readOnly={access !== 'edit'} />
+        {rowPage !== null && rowAccess !== null ? (
+          <RowTitle
+            workspaceId={workspaceId}
+            rowId={page.id}
+            titlePropertyId={rowPage.titlePropertyId}
+            initialTitle={rowPage.row.title}
+            canEdit={rowAccess.canEditContent}
+            label="제목"
+            testId="row-title"
+          />
+        ) : (
+          <PageTitle workspaceId={workspaceId} pageId={page.id} initialTitle={page.plainTitle} readOnly={access !== 'edit'} />
+        )}
       </div>
+
+      {/*
+        행의 속성 묶음(8f-1 · F-16-03) — 본문 위에 선다(F-16-07 *"제목 아래 … 모듈들 → 자유 본문 블록 순"*). 제목은 위의 제목 칸이라
+        여기서 뺀다. 남는 속성이 없으면 그리지 않는다(F-16-03 *"잔여 0개 … 읽기 모드에서는 렌더 생략"*).
+      */}
+      {rowPage !== null && rowAccess !== null && rowColumns.length > 0 && (
+        <section aria-label="속성" data-testid="row-properties" className="flex flex-col gap-2">
+          <RowProperties
+            workspaceId={workspaceId}
+            viewId={rowPage.viewId}
+            dataSourceId={rowPage.dataSourceId}
+            tableName={rowPage.tableName}
+            variant="record"
+            columns={rowColumns}
+            rows={[rowJson(rowPage.row)]}
+            hasMore={false}
+            nextCursor={null}
+            relationLabels={rowRelation.labels}
+            relationIcons={rowRelation.icons}
+            // rollup 은 레코드 모양에서 빠진다(`listColumns('record', …)` — 템플릿 화면과 같다 · §7).
+            rollupValues={EMPTY_ROLLUP_PAGE}
+            access={rowAccess}
+            sorts={[]}
+          />
+        </section>
+      )}
 
       {/* 백링크 — F-07-09 "제목 아래 `{#} backlinks`, 접힌 채로". 볼 수 없는 페이지는 개수에도 없다. */}
       {backlinks.length > 0 && (

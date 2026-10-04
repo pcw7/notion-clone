@@ -103,6 +103,29 @@ export function templateTrail(input: {
   ]
 }
 
+/**
+ * 데이터베이스 행 페이지의 경로 — 워크스페이스 · 그 표 · 이 행(8f-1). 행은 페이지 트리에 서지 않으므로(사이드바에 없다 · §3.3-179) 조상
+ * 대신 그 행이 속한 데이터베이스가 부모 자리다. 템플릿 화면의 경로와 같은 모양이다.
+ */
+export function rowTrail(input: {
+  readonly workspaceId: string
+  readonly database: { readonly id: string; readonly name: string; readonly icon: PageIcon | null }
+  readonly row: { readonly id: string; readonly title: string; readonly icon: PageIcon | null }
+}): BreadcrumbTrail {
+  const { workspaceId } = input
+  return [
+    { kind: 'workspace', id: workspaceId, label: WORKSPACE_LABEL, icon: null, href: `/w/${workspaceId}` },
+    {
+      kind: 'database',
+      id: input.database.id,
+      label: input.database.name || UNTITLED_PAGE,
+      icon: input.database.icon,
+      href: `/w/${workspaceId}/db/${input.database.id}`,
+    },
+    { kind: 'current', id: input.row.id, label: input.row.title || UNTITLED_PAGE, icon: input.row.icon, href: null },
+  ]
+}
+
 /** 같은 경로인가 — 서버가 다시 그릴 때마다 새 배열이 온다. 같으면 지난 객체를 쓴다(노드 뷰가 다시 그리지 않게). */
 export function sameTrail(a: BreadcrumbTrail | null, b: BreadcrumbTrail | null): boolean {
   if (a === b) return true

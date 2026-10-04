@@ -43,6 +43,7 @@
  * 보드 밖에서 연다. 새 카드의 제목 편집은 카드 안의 입력칸이다.
  */
 
+import Link from 'next/link'
 import {
   useEffect,
   useRef,
@@ -518,6 +519,7 @@ export function DatabaseBoard(props: {
                   <BoardCard
                     key={row.id}
                     row={row}
+                    openHref={`/w/${workspaceId}/${row.id}`}
                     groupKey={group.key}
                     badgeColumns={badgeColumns}
                     relationLabels={labels}
@@ -615,6 +617,7 @@ function DropLine() {
 
 function BoardCard({
   row,
+  openHref,
   groupKey,
   badgeColumns,
   relationLabels,
@@ -633,6 +636,8 @@ function BoardCard({
   onPointerCancel,
 }: {
   row: RowJson
+  /** 그 행 페이지(8f-1). */
+  openHref: string
   groupKey: string
   badgeColumns: readonly ViewColumn[]
   relationLabels: RelationLabels
@@ -681,9 +686,23 @@ function BoardCard({
           />
         ) : (
           // 카드 제목은 그 행 페이지의 아이콘을 앞에 단다(8c-3a — 없으면 기본 글리프).
-          <div data-testid="db-board-card-title" className={`flex items-start gap-1.5 ${row.title ? 'break-words' : 'text-neutral-400'}`}>
-            <PageIconView icon={row.icon} fallback className="mt-[0.2em]" />
-            <span className="min-w-0">{row.title || UNTITLED}</span>
+          <div className="group/title flex items-start gap-1.5">
+            <div
+              data-testid="db-board-card-title"
+              className={`flex min-w-0 flex-1 items-start gap-1.5 ${row.title ? 'break-words' : 'text-neutral-400'}`}
+            >
+              <PageIconView icon={row.icon} fallback className="mt-[0.2em]" />
+              <span className="min-w-0">{row.title || UNTITLED}</span>
+            </div>
+            {/* 그 행 페이지를 연다(8f-1) — 카드를 끄는 누르기로 번지지 않게 막는다. 제목 옆에 둔다(제목의 글자에 섞이지 않게). */}
+            <Link
+              href={openHref}
+              data-testid="db-row-open"
+              aria-label={`${row.title || UNTITLED} 열기`}
+              tabIndex={-1}
+              onPointerDown={(e) => e.stopPropagation()}
+              className="shrink-0 rounded border border-neutral-200 bg-white px-1.5 text-xs text-neutral-500 opacity-0 after:content-['열기'] hover:bg-neutral-50 group-hover/title:opacity-100 dark:border-neutral-700 dark:bg-neutral-900"
+            />
           </div>
         )}
         {badgeColumns.map((column) => {

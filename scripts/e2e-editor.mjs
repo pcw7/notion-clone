@@ -8762,6 +8762,128 @@ async function main() {
       check('되살리면 그 뷰도 돌아온다 — 지우지 않고 숨겼다', restored.ok && viewsBack.includes(added?.viewId), JSON.stringify([restored.status, viewsBack]))
     }
 
+    if (sectionIf('행 페이지 (8f-1 · F-16-07 · F-16-03)')) {
+      // 표의 제목 칸 · 보드 카드의 "열기"로 행 페이지를 연다. 경로는 그 데이터베이스, 제목은 제목 셀, 본문 위에 속성 묶음(스키마 순서 ·
+      // 뷰에서 숨긴 것도). 행에 맞지 않는 머리 단추는 서지 않고, 지우면 그 표로 돌아간다. 자기 데이터를 스스로 만든다.
+      const stamp = Date.now()
+      const dbName = `행페이지${stamp}`
+      const api = `${BASE}/api/workspaces/${workspaceId}`
+      const readRes = async (res) => ({ status: res.status, body: await res.json().catch(() => null) })
+      const created = (await readRes(await fetch(`${api}/databases`, { method: 'POST', headers: authed, body: JSON.stringify({ name: dbName, privateTop: true }) }))).body?.database
+      const dbId = created?.id
+      const ds = created?.dataSourceId
+      const viewId = created?.defaultViewId
+      const addProp = async (name, type) => (await readRes(await fetch(`${api}/data-sources/${ds}/properties`, { method: 'POST', headers: authed, body: JSON.stringify({ name, type }) }))).body
+      await addProp('수량', 'number')
+      const schema = await addProp('메모', 'rich_text')
+      const props = schema?.schema?.properties ?? []
+      const idOf = (name) => props.find((p) => p.name === name)?.id
+      // 뷰에서 "메모"를 숨긴다 — 행 페이지의 속성 묶음에는 그래도 있어야 한다(뷰가 아니라 스키마의 것).
+      await fetch(`${api}/views/${viewId}/columns/${idOf('메모')}`, { method: 'PATCH', headers: authed, body: JSON.stringify({ visible: false }) })
+      const row = (await readRes(await fetch(`${api}/views/${viewId}/rows`, { method: 'POST', headers: authed, body: JSON.stringify({ cells: [{ propertyId: idOf('이름'), value: { type: 'title', title: [textRun('첫 행')] } }] }) }))).body?.row
+      const rowId = row?.id
+      const ROW_URL = `${BASE}/w/${workspaceId}/${rowId}`
+
+      // 표의 제목 칸 — "열기"
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${dbId}` })
+      await waitFor(`!!document.querySelector('[data-testid="db-row-open"]')`, 15000)
+      check('제목 칸의 "열기"는 제목의 글자에 섞이지 않는다', (await evaluate(`document.querySelector('[data-testid="db-row-title"]')?.textContent`)) === '첫 행',
+        String(await evaluate(`document.querySelector('[data-testid="db-row-title"]')?.textContent`)))
+      for (let i = 0; i < 6 && !(await evaluate(`location.pathname === ${JSON.stringify(`/w/${workspaceId}/${rowId}`)}`)); i += 1) {
+        await clickSelector('[data-testid="db-row-open"]')
+        await waitFor(`location.pathname === ${JSON.stringify(`/w/${workspaceId}/${rowId}`)}`, 2000)
+      }
+      check('★ 표의 제목 칸에서 "열기"를 누르면 행 페이지가 열린다',
+        await waitFor(`location.pathname === ${JSON.stringify(`/w/${workspaceId}/${rowId}`)} && !!document.querySelector('[data-testid="row-properties"]')`, 15000),
+        String(await evaluate('location.pathname')))
+
+      const crumbs = `[...document.querySelectorAll('nav[aria-label="상위 경로"] > span')].map((s) => s.textContent.trim())`
+      check('★ 경로는 워크스페이스 · 그 데이터베이스 · 이 행',
+        JSON.stringify(await evaluate(crumbs)) === JSON.stringify(['워크스페이스', `/${dbName}`, '/첫 행'])
+          && (await evaluate(`!!document.querySelector('nav[aria-label="상위 경로"] a[href="/w/${workspaceId}/db/${dbId}"]')`)),
+        JSON.stringify(await evaluate(crumbs)))
+      const propNames = `[...document.querySelectorAll('[data-testid="row-properties"] td[data-property-id]')].map((td) => td.getAttribute('data-property-id'))`
+      check('★ 본문 위에 속성 묶음 — 스키마 순서 · 뷰에서 숨긴 속성도 · 제목은 빠진다',
+        JSON.stringify(await evaluate(propNames)) === JSON.stringify([idOf('수량'), idOf('메모')]),
+        JSON.stringify(await evaluate(propNames)))
+      check('속성 묶음은 본문 편집기보다 위에 선다',
+        await evaluate(`(() => { const p = document.querySelector('[data-testid="row-properties"]'); const e = document.querySelector('.blk-editor[aria-label="페이지 본문"]')
+          return !!p && !!e && (p.compareDocumentPosition(e) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0 })()`))
+      // 머리 단추 — 보통 페이지에는 서는 것(대조)이 행 페이지에는 없다. 공유 단추는 testid 가 없어 글자로 고른다.
+      const headTestIds = ['move-open', 'export-button', 'page-duplicate']
+      const plainHtml = await (await fetch(`${BASE}/w/${workspaceId}/${pageId}`, { headers: { cookie: authed.cookie } })).text()
+      const plainHas = headTestIds.every((id) => plainHtml.includes(`data-testid="${id}"`)) && plainHtml.includes('>공유</button>')
+      const rowHeads = `(() => ({ testIds: ${JSON.stringify(headTestIds)}.filter((id) => !!document.querySelector('[data-testid="' + id + '"]')),
+          share: [...document.querySelectorAll('button')].some((b) => b.textContent.trim() === '공유') }))()`
+      const rowHas = await evaluate(rowHeads)
+      check('행에 맞지 않는 머리 단추(공유 · 옮기기 · 내보내기 · 복제)가 서지 않는다 — 보통 페이지에는 선다',
+        plainHas && rowHas.testIds.length === 0 && rowHas.share === false, JSON.stringify({ plainHas, rowHas }))
+
+      // 셀 편집 — 숫자
+      const qtyCell = `[data-testid="row-properties"] td[data-property-id="${idOf('수량')}"]`
+      await clickSelector(qtyCell)
+      await send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 })
+      await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 })
+      await waitFor(`!!document.querySelector('[data-testid="db-cell-input"]')`, 3000)
+      await typeText('42')
+      await send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 })
+      await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 })
+      const savedQty = async () => {
+        const rows = (await readRes(await fetch(`${api}/views/${viewId}/rows`, { headers: authed }))).body?.rows ?? []
+        return rows.find((r) => r.id === rowId)?.properties?.[idOf('수량')]?.number ?? null
+      }
+      let qty = null
+      for (let i = 0; i < 20 && qty !== 42; i += 1) { await sleep(250); qty = await savedQty() }
+      check('★ 행 페이지의 속성 묶음에서 셀을 고치면 저장된다', qty === 42, String(qty))
+
+      // 제목 — 제목 셀로
+      const titleInput = '[data-testid="row-title"]'
+      await clickSelector(titleInput)
+      await evaluate(`(() => { const el = document.querySelector('${titleInput}'); if (el && typeof el.select === 'function') el.select() })()`)
+      await typeText('고친 행')
+      await send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 })
+      await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 })
+      const titleOf = async () => {
+        const rows = (await readRes(await fetch(`${api}/views/${viewId}/rows`, { headers: authed }))).body?.rows ?? []
+        return rows.find((r) => r.id === rowId)?.title ?? null
+      }
+      let title = null
+      for (let i = 0; i < 20 && title !== '고친 행'; i += 1) { await sleep(250); title = await titleOf() }
+      check('★ 제목을 고치면 제목 셀에 저장되고 경로가 따라온다',
+        title === '고친 행' && (await waitFor(`${crumbs}.at(-1) === '/고친 행'`, 8000)),
+        JSON.stringify([title, await evaluate(crumbs)]))
+
+      // 잠긴 행 페이지 — 제목 · 셀을 고칠 수 없다(셀 저장은 그 행의 잠금을 묻는다)
+      const locked = await fetch(`${api}/pages/${rowId}/lock`, { method: 'PUT', headers: authed })
+      const lockedHtml = await (await fetch(ROW_URL, { headers: { cookie: authed.cookie } })).text()
+      check('잠긴 행 페이지 — 제목은 글자로 · 셀은 읽기 전용이다',
+        locked.ok && !lockedHtml.includes('aria-label="제목"') && lockedHtml.includes('data-testid="row-title"') && lockedHtml.includes('aria-readonly="true"'),
+        JSON.stringify([locked.status, lockedHtml.includes('aria-label="제목"'), lockedHtml.includes('aria-readonly="true"')]))
+      await fetch(`${api}/pages/${rowId}/lock`, { method: 'DELETE', headers: authed })
+
+      // 보드 카드 — "열기"
+      const board = (await readRes(await fetch(`${api}/databases/${dbId}/views`, { method: 'POST', headers: authed, body: JSON.stringify({ type: 'board' }) }))).body?.view
+      await addProp('단계', 'select')
+      const boardView = board?.id ?? (await readRes(await fetch(`${api}/databases/${dbId}/views`, { method: 'POST', headers: authed, body: JSON.stringify({ type: 'board' }) }))).body?.view?.id
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${dbId}?v=${boardView}` })
+      await waitFor(`!!document.querySelector('[data-testid="db-board-card"] [data-testid="db-row-open"]')`, 15000)
+      check('카드의 "열기"도 제목의 글자에 섞이지 않는다', (await evaluate(`document.querySelector('[data-testid="db-board-card-title"]')?.textContent`)) === '고친 행',
+        String(await evaluate(`document.querySelector('[data-testid="db-board-card-title"]')?.textContent`)))
+      for (let i = 0; i < 6 && !(await evaluate(`location.pathname === ${JSON.stringify(`/w/${workspaceId}/${rowId}`)}`)); i += 1) {
+        await clickSelector('[data-testid="db-board-card"] [data-testid="db-row-open"]')
+        await waitFor(`location.pathname === ${JSON.stringify(`/w/${workspaceId}/${rowId}`)}`, 2000)
+      }
+      check('★ 보드 카드의 "열기"로도 행 페이지가 열린다', await waitFor(`location.pathname === ${JSON.stringify(`/w/${workspaceId}/${rowId}`)} && !!document.querySelector('[data-testid="row-title"]')`, 15000),
+        String(await evaluate('location.pathname')))
+
+      // 지우기 — 그 표로 돌아간다
+      await evaluate(`window.confirm = () => true`)
+      await clickText('삭제')
+      check('★ 행 페이지에서 지우면 그 데이터베이스로 돌아간다',
+        await waitFor(`location.pathname === ${JSON.stringify(`/w/${workspaceId}/db/${dbId}`)}`, 15000),
+        String(await evaluate('location.pathname')))
+    }
+
     section('전체')
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))
     const serverErrors = serverOutput.split('\n').filter((l) => l.includes('⨯'))
