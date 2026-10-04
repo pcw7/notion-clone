@@ -9075,7 +9075,11 @@ async function main() {
           && (await has('[data-testid="row-layout-editor"]')) && (await layoutVersion()) === '2'
           && JSON.stringify((await dbQuery(`SELECT property_id FROM layout_module WHERE data_source_id = $1 AND kind = 'property' ORDER BY property_id`, [ds])).map((r) => r.property_id))
             === JSON.stringify([idOf('수량'), idOf('메모')].sort()),
-        JSON.stringify([other.status, await evaluate(`document.querySelector('[data-testid="row-layout-error"]')?.textContent ?? null`), await layoutVersion()]))
+        // 상세에 조건 넷을 모두 싣는다 — 전체 판(부하)에서 한 번 떨어졌는데 무엇이었는지 알 수 없었다(§3.3-286 ⑥).
+        JSON.stringify([other.status, await evaluate(`document.querySelector('[data-testid="row-layout-error"]')?.textContent ?? null`), await layoutVersion(),
+          await has('[data-testid="row-layout-editor"]'),
+          (await dbQuery(`SELECT property_id FROM layout_module WHERE data_source_id = $1 AND kind = 'property' ORDER BY property_id`, [ds])).map((r) => r.property_id),
+          [idOf('수량'), idOf('메모')].sort()]))
       await clickSelector('[data-testid="row-layout-cancel"]')
 
       // 잠긴 데이터베이스 — 단추가 없고 서버도 거부한다
@@ -10044,11 +10048,6 @@ async function main() {
         }
         return false
       }
-      const typeInto = async (sel, text) => {
-        await clickSelector(sel)
-        await evaluate(`(() => { const el = document.querySelector(${JSON.stringify(sel)}); el?.focus(); el?.select() })()`)
-        await typeText(text)
-      }
       const DIALOG = '[role="dialog"][aria-label="공유 설정"]'
       const EMAIL = `${DIALOG} input[aria-label="초대할 이메일"]`
       const panelSays = (text) => waitFor(`(document.querySelector('${DIALOG}')?.textContent ?? '').includes(${JSON.stringify(text)})`, 10000)
@@ -10143,7 +10142,7 @@ async function main() {
         const secret = await mk(`비밀 ${stamp}`, 'private')
         const closed = await mk(`닫힌 ${stamp}`, 'closed')
         await setWorkspacePlan(ws, 'free')
-        const radio = (id) => evaluate(`(() => { const r = document.querySelector('[data-testid="teamspace-settings-visibility-private"]'); return r ? { disabled: r.disabled, checked: r.checked, badge: !!document.querySelector('[data-testid="teamspace-settings-visibility-private-plan"]') } : null })()`)
+        const radio = () => evaluate(`(() => { const r = document.querySelector('[data-testid="teamspace-settings-visibility-private"]'); return r ? { disabled: r.disabled, checked: r.checked, badge: !!document.querySelector('[data-testid="teamspace-settings-visibility-private-plan"]') } : null })()`)
         await send('Page.navigate', { url: `${BASE}/w/${ws}/teamspaces/${secret}` })
         await waitFor(`!!document.querySelector('[data-testid="teamspace-settings-visibility-private"]')`, 15000)
         const secretRadio = await radio()
@@ -10242,6 +10241,63 @@ async function main() {
       })()`)
       check('★ 만든 때 — 오래된 순으로 바꾸면 단계를 보지 않고 만든 순서로', await orderIs([second, third, exact]), JSON.stringify(await hitIds()))
       await key('Escape')
+    }
+
+    if (sectionIf('가져오기 — 마크다운 · 텍스트 (8m-1 · F-09-12)')) {
+      // 사이드바의 "가져오기" → 창 → 파일 둘(마크다운 · 텍스트) → 가져온 페이지의 링크와 옮기지 못한 것(표) → 링크로 연 페이지의 제목과 본문.
+      // 받지 않는 형식은 무엇이 왜인지 말하고 아무것도 남기지 않는다. 파일은 임시 폴더에 쓴다.
+      const x = String(Date.now()).slice(-7)
+      const dir = mkdtempSync(join(tmpdir(), 'nc-e2e-import-'))
+      const md = join(dir, `회의록-${x}.md`)
+      const txt = join(dir, `메모-${x}.txt`)
+      const docx = join(dir, `문서-${x}.docx`)
+      writeFileSync(md, `# 가져온 회의록 ${x}\n\n- [x] 끝난 일 ${x}\n\n| 칸 | 값 |\n|---|---|\n| 가 | 나 |\n`)
+      writeFileSync(txt, `메모 첫 문단 ${x}\n\n메모 둘째 문단`)
+      writeFileSync(docx, 'not really a docx')
+      const DIALOG = '[data-testid="import-dialog"]'
+      const setFiles = async (paths) => {
+        await send('DOM.enable')
+        const rootId = (await send('DOM.getDocument', { depth: -1 })).root.nodeId
+        const node = (await send('DOM.querySelector', { nodeId: rootId, selector: '[data-testid="import-files"]' })).nodeId
+        await send('DOM.setFileInputFiles', { files: paths, nodeId: node })
+      }
+      const openDialog = async () => {
+        for (let i = 0; i < 6 && !(await evaluate(`!!document.querySelector('${DIALOG}')`)); i += 1) {
+          await clickSelector('[data-testid="sidebar-import"]')
+          await waitFor(`!!document.querySelector('${DIALOG}')`, 1500)
+        }
+      }
+
+      try {
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
+        await waitFor(`!!document.querySelector('[data-testid="sidebar-import"]')`, 15000)
+        await openDialog()
+        await setFiles([docx])
+        await waitFor(`document.querySelector('[data-testid="import-submit"]')?.disabled === false`, 5000)
+        await clickSelector('[data-testid="import-submit"]')
+        check('★ 받지 않는 형식은 무엇이 왜인지 말한다(서버가 거른다 — 고르개의 accept 를 건너뛰어도)',
+          await waitFor(`(document.querySelector('[data-testid="import-error"]')?.textContent ?? '').includes('문서-${x}.docx')`, 10000),
+          String(await evaluate(`document.querySelector('[data-testid="import-error"]')?.textContent ?? null`)))
+
+        await setFiles([md, txt])
+        await waitFor(`(document.querySelector('[data-testid="import-submit"]')?.textContent ?? '').includes('2개')`, 5000)
+        await clickSelector('[data-testid="import-submit"]')
+        const titles = () => evaluate(`[...document.querySelectorAll('[data-testid="import-page-link"]')].map((a) => a.textContent)`)
+        check('★ 두 파일 → 두 페이지 — 제목은 # 제목 · 파일 이름',
+          (await waitFor(`document.querySelectorAll('[data-testid="import-page-link"]').length === 2`, 15000))
+            && JSON.stringify(await titles()) === JSON.stringify([`가져온 회의록 ${x}`, `메모-${x}`]),
+          JSON.stringify(await titles()))
+        check('옮기지 못한 것(표)을 말한다', String(await evaluate(`document.querySelector('[data-testid="import-losses"]')?.textContent ?? ''`)).includes('표'))
+
+        await clickSelector('[data-testid="import-page-link"]')
+        check('★ 링크로 연 페이지 — 제목과 본문(할 일 · 표는 문단으로)',
+          await waitFor(`document.querySelector('input[aria-label="페이지 제목"]')?.value === ${JSON.stringify(`가져온 회의록 ${x}`)}
+            && (document.querySelector('.blk-editor')?.textContent ?? '').includes('끝난 일 ${x}')
+            && (document.querySelector('.blk-editor')?.textContent ?? '').includes('가 | 나')`, 15000),
+          String(await evaluate(`document.querySelector('.blk-editor')?.textContent?.slice(0, 120) ?? null`)))
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
     }
 
     section('전체')

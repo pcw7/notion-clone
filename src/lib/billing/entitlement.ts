@@ -27,6 +27,8 @@ export const ENTITLEMENTS = {
   'guests.max': 'limit',
   /** private teamspace 를 만들거나 바꿀 수 있는가(F-06-04 · 8k-2) — Business · Enterprise. */
   'teamspace.private': 'boolean',
+  /** 가져오기의 파일 크기 상한(F-09-12 · 8m-1) — Free 5 MiB · 유료 50 MiB(바이트). */
+  'import.max_bytes': 'limit',
 } as const
 
 export type EntitlementKey = keyof typeof ENTITLEMENTS

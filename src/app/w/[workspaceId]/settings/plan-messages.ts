@@ -16,6 +16,8 @@ export function entitlementLabel(key: EntitlementKey | string): string {
       return '게스트'
     case 'teamspace.private':
       return 'private teamspace'
+    case 'import.max_bytes':
+      return '가져오기 파일 크기'
     default:
       return key
   }
@@ -28,6 +30,7 @@ export function formatEntitlement(key: EntitlementKey | string, value: unknown):
   if (typeof value === 'number') {
     if (key === 'history.days') return `${value}일`
     if (key === 'guests.max') return `${value}명`
+    if (key === 'import.max_bytes') return `${Math.round(value / 1024 / 1024)} MB`
     return String(value)
   }
   return JSON.stringify(value)

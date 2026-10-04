@@ -13,7 +13,7 @@ import assert from 'node:assert/strict'
 import { entitlementLabel, formatEntitlement, formatPrice, guestUsageLine } from './plan-messages.ts'
 
 test('① 줄 이름', () => {
-  const keys = ['history.days', 'guests.max', 'teamspace.private']
+  const keys = ['history.days', 'guests.max', 'teamspace.private', 'import.max_bytes']
   assert.equal(new Set(keys.map(entitlementLabel)).size, keys.length)
   assert.ok(keys.every((k) => entitlementLabel(k) !== k))
   assert.equal(entitlementLabel('charts.max'), 'charts.max')
@@ -25,6 +25,7 @@ test('★ ② 값 — 참거짓 · 무제한 · 일 · 명', () => {
   assert.equal(formatEntitlement('history.days', null), '무제한')
   assert.equal(formatEntitlement('history.days', 7), '7일')
   assert.equal(formatEntitlement('guests.max', 10), '10명')
+  assert.equal(formatEntitlement('import.max_bytes', 5242880), '5 MB')
   assert.equal(formatEntitlement('charts.max', 1), '1')
   assert.equal(formatEntitlement('ai.credits', { monthly: 100 }), '{"monthly":100}')
 })

@@ -42,6 +42,7 @@ import { usePathname, useRouter } from 'next/navigation'
 import { DATABASE_GLYPH, type PageIcon } from '@/lib/block/page-icon'
 import { TeamspaceCreateForm } from './teamspace-create'
 import { WorkspaceSwitcher, type SwitcherOtherAccount, type SwitcherWorkspace } from './workspace-switcher'
+import { ImportButton } from './import-dialog'
 import { teamspaceIcon } from './teamspace-messages'
 import { TrashPanel, type TrashRow } from './trash-panel'
 import { getSidebarStore } from './sidebar-state'
@@ -362,6 +363,9 @@ export function Sidebar({
         <span aria-hidden>⚙</span>
         <span>설정</span>
       </Link>
+
+      {/* 가져오기(8m-1 · F-09-12) — 마크다운 · 텍스트 파일을 내 개인 페이지로. 개인 페이지를 만들 수 있는 사람만(게스트는 아니다). */}
+      {canCreatePrivatePage && <ImportButton workspaceId={workspaceId} />}
 
       {/*
         F-07-16 의 사이드바는 트리 하나가 아니라 **섹션들**이다. 즐겨찾기는 위,
