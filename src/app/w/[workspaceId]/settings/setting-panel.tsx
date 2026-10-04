@@ -6,6 +6,7 @@
  * 기능의 라우트로 보내고, 끝나면 서버가 이 화면을 다시 그린다(멤버 목록이 함께 바뀐다).
  */
 
+import { passwordStatus } from '@/lib/auth/password'
 import type { SessionContext } from '@/lib/auth/session-context'
 import type { SettingPanelId } from '@/lib/settings/panels'
 import { canManageGroups, listGroups } from '@/lib/workspace/group'
@@ -16,12 +17,18 @@ import { GroupPanel } from '../group-panel'
 import { GuestPanel } from '../guest-panel'
 import { InviteForm } from '../invite-form'
 import { PendingInviteList } from '../pending-invite-list'
+import { PasswordPanel } from './password-panel'
 
 const HEADING = 'text-sm font-medium'
 const NOTE = 'mt-1 text-xs text-neutral-500'
 
 export async function SettingPanelView({ id, ctx }: { id: SettingPanelId; ctx: SessionContext }) {
   switch (id) {
+    case 'password': {
+      // 자기 계정의 비밀번호(8i-1b) — 있는가 · 지금 비밀번호를 묻는가는 서버가 판정한다.
+      const status = await passwordStatus(ctx)
+      return <PasswordPanel workspaceId={ctx.workspaceId} hasPassword={status.hasPassword} currentRequired={status.currentRequired} />
+    }
     case 'members': {
       const members = await listMembers(ctx.workspaceId)
       return (

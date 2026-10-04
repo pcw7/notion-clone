@@ -9085,8 +9085,8 @@ async function main() {
       check('★ 사이드바의 "설정"으로 연다 — 첫 절은 내 계정의 프로필',
         await waitFor(`location.pathname === ${JSON.stringify(`/w/${workspaceId}/settings`)} && document.querySelector('[data-testid="settings-title"]')?.textContent === '프로필'`, 15000),
         JSON.stringify([await evaluate('location.pathname'), await title()]))
-      check('★ 소유자의 내비 — 내 계정(프로필 · 환경설정) · 워크스페이스(일반 · 사람 · 보안)',
-        JSON.stringify(await navSections()) === JSON.stringify(['account.profile', 'account.preferences', 'workspace.general', 'workspace.people', 'workspace.security']),
+      check('★ 소유자의 내비 — 내 계정(프로필 · 환경설정 · 보안) · 워크스페이스(일반 · 사람 · 보안)',
+        JSON.stringify(await navSections()) === JSON.stringify(['account.profile', 'account.preferences', 'account.security', 'workspace.general', 'workspace.people', 'workspace.security']),
         JSON.stringify(await navSections()))
 
       // 내 이름 — Enter 로 저장 · 공백을 정리한 값이 남는다
@@ -9180,7 +9180,7 @@ async function main() {
       const adminGeneral = await htmlAs(GENERAL, admin.token)
       check('★ 멤버 관리자 — 사람 절의 패널 넷 · 내보내기와 보안 절은 없다',
         JSON.stringify(panelsIn(adminPeople)) === JSON.stringify(PANELS) && !adminGeneral.includes('data-testid="export-button"')
-          && JSON.stringify(navIn(adminPeople)) === JSON.stringify(['account.profile', 'account.preferences', 'workspace.general', 'workspace.people']),
+          && JSON.stringify(navIn(adminPeople)) === JSON.stringify(['account.profile', 'account.preferences', 'account.security', 'workspace.general', 'workspace.people']),
         JSON.stringify([panelsIn(adminPeople), navIn(adminPeople)]))
 
       const mate = await joinAs(workspaceId, await createUser(`사람 절의 멤버 ${stamp}`), 'member')
@@ -9345,6 +9345,115 @@ async function main() {
       const removed = await readRes(await fetch(pwUrl, { method: 'DELETE', headers: asWho, body: JSON.stringify({ currentPassword: NEXT }) }))
       check('지우면 비밀번호로 못 들어온다(로그인 코드로는 들어온다)',
         removed.status === 200 && (await loginWith(who.email, NEXT)).status === 401, JSON.stringify(removed))
+    }
+
+    if (sectionIf('비밀번호 — 화면 (8i-1b · F-14-03)')) {
+      // 설정 → 내 계정 → 보안의 비밀번호 패널(정하기 · 체크리스트 · 바꾸기 · 지우기)과 로그인 화면의 "비밀번호로 로그인". 브라우저 세션을 새
+      // 멤버로 바꿔 진행하고 끝에 소유자로 되돌린다(뒤 절이 소유자의 세션을 쓴다). 자기 데이터를 스스로 만든다.
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const stamp = Date.now()
+      const browseAs = (token) => send('Network.setCookie', { name: 'nc_session', value: token, domain: 'localhost', path: '/', httpOnly: true })
+      const mate = await joinAs(workspaceId, await createUser(`비밀번호 화면의 사람 ${stamp}`), 'member')
+      const SECURITY = `${BASE}/w/${workspaceId}/settings?s=account.security`
+      const GOOD = `correct horse ${stamp}`
+      const NEXT = `battery staple ${stamp}`
+      const has = (sel) => evaluate(`!!document.querySelector(${JSON.stringify(sel)})`)
+      const textOf = (sel) => evaluate(`document.querySelector(${JSON.stringify(sel)})?.textContent ?? null`)
+      const ruleStates = () => evaluate(`[...document.querySelectorAll('[data-testid="password-rules"] li')].map((li) => li.dataset.rule + ':' + li.dataset.state).join(' ')`)
+      const typeInto = async (sel, text) => {
+        await clickSelector(sel)
+        await evaluate(`(() => { const el = document.querySelector(${JSON.stringify(sel)}); el?.focus(); el?.select() })()`)
+        await typeText(text)
+      }
+      // 하이드레이션 전의 클릭은 아무 일이 없다 — 열릴 때까지 다시 누른다.
+      const openUntil = async (button, target) => {
+        for (let i = 0; i < 6; i += 1) {
+          if (await has(target)) return true
+          await clickSelector(button)
+          if (await waitFor(`!!document.querySelector(${JSON.stringify(target)})`, 1500)) return true
+        }
+        return false
+      }
+
+      try {
+        await browseAs(mate.token)
+        await send('Page.navigate', { url: SECURITY })
+        await waitFor(`!!document.querySelector('[data-testid="password-panel"]')`, 15000)
+        check('설정 → 보안 — 비밀번호가 없다고 말하고 "정하기"만 선다',
+          (await evaluate(`document.querySelector('[data-testid="password-panel"]')?.dataset.hasPassword`)) === 'false'
+            && (await has('[data-testid="password-set-open"]')) && !(await has('[data-testid="password-remove-open"]')),
+          String(await textOf('[data-testid="password-state"]')))
+
+        check('★ 정하기 — 체크리스트가 쓰는 대로 따라온다(15자부터 "글자와 숫자"는 지운 줄)',
+          (await openUntil('[data-testid="password-set-open"]', '[data-testid="password-form"]'))
+            && (await ruleStates()) === 'length:unmet unique:unmet letter_and_digit:unmet'
+            && (await typeInto('[data-testid="password-new"]', 'abcdefghijklmno'), await waitFor(`document.querySelector('[data-testid="password-rules"] li[data-rule="letter_and_digit"]')?.dataset.state === 'waived'`, 3000)),
+          String(await ruleStates()))
+        await typeInto('[data-testid="password-new"]', 'abc')
+        check('★ 규칙을 지키기 전에는 저장할 수 없다',
+          await waitFor(`document.querySelector('[data-testid="password-save"]')?.disabled === true`, 3000))
+        await typeInto('[data-testid="password-new"]', GOOD)
+        await clickSelector('[data-testid="password-save"]')
+        check('★ 저장하면 "정했습니다" · 패널이 "있다"로 바뀐다 · 서버에 argon2id 한 줄',
+          (await waitFor(`(document.querySelector('[data-testid="password-status"]')?.textContent ?? '').includes('비밀번호를 정했습니다')
+            && document.querySelector('[data-testid="password-panel"]')?.dataset.hasPassword === 'true'`, 10000))
+            && /^\$argon2id\$/.test((await dbQuery(`SELECT password_hash FROM credential WHERE user_id = $1 AND kind = 'password'`, [mate.userId]))[0]?.password_hash ?? ''),
+          String(await textOf('[data-testid="password-status"]')))
+
+        // 방금 로그인 코드로 들어온 세션 — 지금 비밀번호 없이 바꾼다(재설정)
+        check('10분 안의 코드 세션 — "지금 비밀번호 없이 바꿀 수 있다"고 말하고 바꾸기 폼에 지금 비밀번호 칸이 없다',
+          (await has('[data-testid="password-fresh-note"]'))
+            && (await openUntil('[data-testid="password-change-open"]', '[data-testid="password-form"]')) && !(await has('[data-testid="password-current"]')))
+        await clickSelector('[data-testid="password-cancel"]')
+
+        // 오래된 세션 — 지금 비밀번호를 묻는다
+        await dbQuery(`UPDATE user_session SET created_at = now() - interval '1 hour' WHERE user_id = $1`, [mate.userId])
+        await send('Page.navigate', { url: SECURITY })
+        await waitFor(`document.querySelector('[data-testid="password-panel"]')?.dataset.hasPassword === 'true'`, 15000)
+        await openUntil('[data-testid="password-change-open"]', '[data-testid="password-form"]')
+        await typeInto('[data-testid="password-current"]', `wrong ${stamp}`)
+        await typeInto('[data-testid="password-new"]', NEXT)
+        await clickSelector('[data-testid="password-save"]')
+        check('★ 오래된 세션 — 지금 비밀번호를 묻고, 틀리면 그렇다고 말한다',
+          await waitFor(`(document.querySelector('[data-testid="password-status"]')?.textContent ?? '').includes('지금 비밀번호가 맞지 않습니다')`, 8000),
+          String(await textOf('[data-testid="password-status"]')))
+        await typeInto('[data-testid="password-current"]', GOOD)
+        await clickSelector('[data-testid="password-save"]')
+        check('★ 맞으면 바뀐다', await waitFor(`(document.querySelector('[data-testid="password-status"]')?.textContent ?? '').includes('비밀번호를 바꿨습니다')`, 10000),
+          String(await textOf('[data-testid="password-status"]')))
+
+        // 로그인 화면 — 쿠키 없이
+        await send('Network.deleteCookies', { name: 'nc_session', domain: 'localhost' })
+        await send('Page.navigate', { url: `${BASE}/login` })
+        await waitFor(`!!document.querySelector('#email')`, 15000)
+        await typeInto('#email', mate.email)
+        check('로그인 화면 — 이메일 다음 "비밀번호로 로그인"이 비밀번호 칸을 연다',
+          await openUntil('[data-testid="login-password-open"]', '[data-testid="login-password-form"]'))
+        await typeInto('[data-testid="login-password"]', `wrong ${stamp}`)
+        await clickSelector('[data-testid="login-password-submit"]')
+        check('★ 틀리면 무엇이 틀렸는지 말하지 않는다 — "이메일 또는 비밀번호가 맞지 않습니다"',
+          await waitFor(`(document.querySelector('[role="alert"]')?.textContent ?? '').includes('이메일 또는 비밀번호가 맞지 않습니다')`, 8000),
+          String(await textOf('[role="alert"]')))
+        await typeInto('[data-testid="login-password"]', NEXT)
+        await clickSelector('[data-testid="login-password-submit"]')
+        check('★ 맞으면 들어온다 — 처음 화면으로 · 그 세션은 비밀번호 세션',
+          (await waitFor(`location.pathname === '/'`, 10000))
+            && (await dbQuery(`SELECT auth_method FROM user_session WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1`, [mate.userId]))[0]?.auth_method === 'password',
+          String(await evaluate('location.pathname')))
+
+        // 지우기 — 비밀번호 세션이라 지금 비밀번호를 묻는다
+        await send('Page.navigate', { url: SECURITY })
+        await waitFor(`document.querySelector('[data-testid="password-panel"]')?.dataset.hasPassword === 'true'`, 15000)
+        await openUntil('[data-testid="password-remove-open"]', '[data-testid="password-remove-form"]')
+        await typeInto('[data-testid="password-current"]', NEXT)
+        await clickSelector('[data-testid="password-remove-confirm"]')
+        check('★ 지우면 "로그인 코드로 들어온다"고 말하고 패널이 "없다"로 돌아간다',
+          await waitFor(`(document.querySelector('[data-testid="password-status"]')?.textContent ?? '').includes('비밀번호를 지웠습니다')
+            && document.querySelector('[data-testid="password-panel"]')?.dataset.hasPassword === 'false'`, 10000),
+          String(await textOf('[data-testid="password-status"]')))
+      } finally {
+        await browseAs(session)
+      }
     }
 
     section('전체')

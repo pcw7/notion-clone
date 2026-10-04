@@ -66,6 +66,7 @@ export const SETTING_GROUPS = [
     sections: [
       { id: 'account.profile', label: '프로필' },
       { id: 'account.preferences', label: '환경설정' },
+      { id: 'account.security', label: '보안' },
     ],
   },
   {
