@@ -88,7 +88,7 @@
 | `plan` / `plan_entitlement` / `billing_subscription` | MISC(13) | 플랜 → 기능/한도 매핑. **코드가 아니라 데이터** | 13, 15, 17 |
 | `external_sync_source` | XS | 외부 커넥션 + 범위 → data_source 바인딩 (구 `external_binding`) | 15 |
 | `external_connection` / `external_field_map` / `external_row_link` / `sync_run` / `sync_issue` / `user_external_identity` / `external_write_back` | XS | 외부 동기화 부속 | 15 |
-| `region` / `analytics_rollup` / `moderation_case` / `setting_definition` / `setting_value` / `setting_lock` / `admin_role*` | OG | 리전·분석·모더레이션·설정 IA | 17 |
+| `region` / `analytics_rollup` / `moderation_case` / `setting_definition` / `setting_value` / `setting_lock` / `admin_role*` | OG | 리전·분석·모더레이션·설정 IA. `setting_definition` 은 표가 아니라 코드 상수 · `setting_value` 는 전용 칸이 없는 첫 설정과 함께(§3.1 [보강] 설정 정보구조 · 8g-1) | 17 |
 
 ---
 
@@ -151,6 +151,30 @@ CREATE INDEX ON workspace (organization_id) WHERE organization_id IS NOT NULL;
 --            절대 합치지 않는다. 전자는 자동가입, 후자는 계정 소유권. <14 R-6>
 -- 불변식 W3: 단독 owner 의 계정 삭제는 워크스페이스 삭제를 연쇄시킨다. <14 R-15>
 ```
+
+**[보강] 설정 정보구조 — 정의는 코드 · 값은 제자리** ⟨잔여 묶음 8g-1 / 마이그레이션 없음⟩
+
+> 17 F-17-12 는 설정 항목을 **데이터로 선언**하고 화면 · 권한 · 감사를 그 선언에서 만들라고 했다(*"설정이 5개 시스템으로 흩어진 뒤 통합은
+> 4곳 동시 리팩터"*). 같은 절의 클론 대안: *"`setting_definition` 은 DB 테이블 대신 타입 안전한 TS 상수 객체 1개로 시작해도 좋다 … 중요한
+> 것은 테이블이냐 상수냐가 아니라 선언이 한 곳에 모여 있고 화면이 거기서 생성된다는 것이다."*
+>
+> ① **`setting_definition` 은 표가 아니라 코드의 상수 하나다**(`src/lib/settings/registry.ts`). 정의가 바뀌는 것은 배포이고 런타임에
+> 바뀌지 않는다. 표로 두면 코드(컨트롤 · 검사)와 표가 둘 다 진실이 된다 — `level_capability` 는 판정 SQL 이 읽으므로 표가 필요했지만 설정
+> 정의는 SQL 이 읽지 않는다. §2 목록의 `setting_definition` 은 이 상수를 가리킨다.
+> ② **값은 그 설정이 이미 사는 칸에 그대로 둔다** — 워크스페이스 이름은 `workspace.name`, 내 이름은 `"user".name`, 정책은 `security_policy`
+> 의 칸. 레지스트리가 키마다 읽고 쓰는 자리를 가리킨다(`src/lib/settings/settings.ts` — 키마다 하나). 화면 · 권한 · 값 검사가 한 선언에서
+> 나온다는 F-17-12 의 요점은 이것으로 선다. **`setting_value` 표는 전용 칸이 없는 첫 설정**(account · workspace 범위)이 생길 때 만든다 —
+> 지금 그런 설정이 없다. 12 의 `user_setting` 은 만들지 않는다(F-17-12 *"이 테이블의 부분집합이 되어야 한다"*).
+> ③ **범위는 넷**(`device` · `account` · `workspace` · `organization`)이고 지금 쓰는 것은 account · workspace 둘이다. `device`(테마 · 고대비 —
+> 12)는 서버에 저장하지 않는다. `organization` 과 그 잠금(`setting_lock` · F-17-13)은 조직 기능이 생길 때 — 그때 정의에 `lockable` 이 붙는다.
+> ④ **누가 보고 누가 고치는가는 정의의 칸이다** — 워크스페이스 **역할 이름**으로 묻는다(권한 레벨이 아니다 — 설정은 노드가 아니다).
+> 보이지 않는 설정은 화면에 없고 쓰기는 `forbidden`, 보이지만 고칠 수 없으면 읽기 전용으로 선다. 계정 범위는 누구나(게스트 포함 — 자기
+> 계정이다), 워크스페이스 범위는 게스트에게 보이지 않는다.
+> ⑤ **"내 이름"은 `"user".name` 을 고친다** — 화면 전체(멤버 · 코멘트 · 멘션 · 공유 목록 · 기록)가 그것을 그때그때 읽는다(이름을 복사해 둔
+> 칸이 없다). `preferred_name`(14 R-4)은 관리형 계정(F-14-12)이 들어올 때 쓴다 — 조직이 `name` 을 채우면 사용자가 고치는 이름이 그것이고,
+> R-4 의 다툼은 관리형 계정에서만 생긴다. 이름의 규칙은 워크스페이스 이름과 같다(앞뒤 공백 · 연속 공백 접기 · 1~100자).
+> ⑥ **플랜 게이트**(F-13-18 `plan_entitlement`)와 **감사 이벤트**(F-11-12 `audit_event`)는 그 표가 생길 때 정의의 칸(`requiredPlan` ·
+> `auditEvent`)으로 더한다 — 지금 걸 곳이 없는 칸을 미리 두지 않는다. 설정은 CRDT 대상이 아니다(마지막 쓰기가 이긴다).
 
 ---
 

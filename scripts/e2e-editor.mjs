@@ -3311,11 +3311,12 @@ async function main() {
     if (sectionIf('워크스페이스 밖의 사람의 접근 요청 (7g-2 · F-06-15)')) {
       // 이 워크스페이스에 멤버십이 없는 사람이(브라우저 세션을 그 사람으로 바꾼다) 페이지 주소를 열어 요청하고 → 소유자가 공유 패널의
       // "워크스페이스 밖" 줄을 허락하면 게스트로 들어와 그 페이지를 연다. 소유자가 정책을 끄면 밖의 사람에게 그 주소는 없는 페이지다 —
-      // 홈의 정책 절에서 다시 켠다. 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다. 브라우저 세션 · 정책 · 소유자의 인박스는
+      // 설정의 보안 절에서 다시 켠다(8g-1 — 정책은 설정이다). 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다. 브라우저 세션 · 정책 · 소유자의 인박스는
       // 끝에 되돌린다(뒤 절이 소유자로 돌고, 인박스 절은 안 읽은 수를 센다).
       const stamp = Date.now()
       const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
-      const policyUrl = `${BASE}/api/workspaces/${workspaceId}/security-policy`
+      const policyUrl = `${BASE}/api/workspaces/${workspaceId}/settings/workspace.allow_nonmember_page_access_request`
+      const POLICY_CONTROL = '[data-testid="setting-row"][data-setting-key="workspace.allow_nonmember_page_access_request"] [data-testid="setting-control"]'
       const outsiderName = `밖의 사람 ${stamp}`
       const outside = await visitAsOutsider(workspaceId, await createUser(outsiderName))
       const asOutsider = { ...json, cookie: `nc_session=${outside.token}` }
@@ -3390,36 +3391,37 @@ async function main() {
           (guests.guests ?? []).some((g) => g.userId === outside.userId)
             && (await shownNoAccess(await fetch(`${BASE}/w/${workspaceId}/${other}`, { headers: asOutsider }))))
 
-        // ④ 정책 — 끄면 밖의 사람에게 그 주소는 없는 페이지다 · 홈의 정책 절에서 다시 켠다
+        // ④ 정책 — 끄면 밖의 사람에게 그 주소는 없는 페이지다 · 설정의 보안 절에서 다시 켠다
         const second = await visitAsOutsider(workspaceId, await createUser(`두 번째 밖의 사람 ${stamp}`))
         const asSecond = { ...json, cookie: `nc_session=${second.token}` }
-        const off = await fetch(policyUrl, { method: 'PUT', headers: authed, body: JSON.stringify({ allowNonmemberPageAccessRequest: false }) })
+        const off = await fetch(policyUrl, { method: 'PUT', headers: authed, body: JSON.stringify({ value: false }) })
         const shutPage = await fetch(`${BASE}/w/${workspaceId}/${shut}`, { headers: asSecond })
         const shutAsk = await fetch(`${pagesUrl}/${shut}/access-requests`, { method: 'POST', headers: asSecond })
         check('★ 소유자가 정책을 끄면 밖의 사람에게 그 주소는 없는 페이지다 — 화면도 요청도 404',
           off.ok && shutPage.status === 404 && shutAsk.status === 404, `${off.status} · ${shutPage.status} · ${shutAsk.status}`)
 
-        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
-        check('홈의 정책 절 — 꺼져 있다고 보인다',
-          await waitFor(`document.querySelector('[data-testid="policy-nonmember-requests"]')?.checked === false`, 15000))
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/settings?s=workspace.security` })
+        check('설정의 보안 절 — 꺼져 있다고 보인다',
+          await waitFor(`document.querySelector(${JSON.stringify(POLICY_CONTROL)})?.checked === false`, 15000))
         let saved = false
         for (let i = 0; i < 10 && !saved; i += 1) {
-          await clickSelector('[data-testid="policy-nonmember-requests"]')
-          saved = await waitFor(`(document.querySelector('[data-testid="policy-saved"]')?.textContent ?? '').includes('요청할 수 있습니다')`, 1500)
+          await clickSelector(POLICY_CONTROL)
+          saved = await waitFor(`(document.querySelector('[data-testid="setting-status"]')?.textContent ?? '').includes('저장했습니다')`, 1500)
         }
-        check('★ 정책 절에서 다시 켜면 저장했다고 말하고 · 그 사람이 요청 화면을 본다 — 제목 없이',
-          saved && (await evaluate(`document.querySelector('[data-testid="policy-nonmember-requests"]')?.checked === true`))
+        check('★ 보안 절에서 다시 켜면 저장했다고 말하고 · 그 사람이 요청 화면을 본다 — 제목 없이',
+          saved && (await evaluate(`document.querySelector(${JSON.stringify(POLICY_CONTROL)})?.checked === true`))
             && (await shownNoAccess(await fetch(`${BASE}/w/${workspaceId}/${shut}`, { headers: asSecond }), shutTitle)))
 
         const mate = await joinAs(workspaceId, await createUser(`정책을 못 고치는 멤버 ${stamp}`), 'member')
         const asMate = { ...json, cookie: `nc_session=${mate.token}` }
-        const mateHome = await (await fetch(`${BASE}/w/${workspaceId}`, { headers: asMate })).text()
-        const mateSet = await fetch(policyUrl, { method: 'PUT', headers: asMate, body: JSON.stringify({ allowNonmemberPageAccessRequest: false }) })
-        check('멤버에게는 정책 절이 없고 바꾸는 API 는 403 이다',
-          !mateHome.includes('data-testid="security-policy"') && mateSet.status === 403, String(mateSet.status))
+        const mateSettings = await (await fetch(`${BASE}/w/${workspaceId}/settings?s=workspace.security`, { headers: asMate })).text()
+        const mateSet = await fetch(policyUrl, { method: 'PUT', headers: asMate, body: JSON.stringify({ value: false }) })
+        check('멤버에게는 정책이 보이지 않고(보안 절도 없다) 바꾸는 API 는 403 이다',
+          mateSettings.includes('data-testid="settings-nav"') && !mateSettings.includes('data-setting-key="workspace.allow_nonmember_page_access_request"')
+            && !mateSettings.includes('data-section="workspace.security"') && mateSet.status === 403, String(mateSet.status))
       } finally {
         await browseAs(session)
-        await fetch(policyUrl, { method: 'PUT', headers: authed, body: JSON.stringify({ allowNonmemberPageAccessRequest: true }) })
+        await fetch(policyUrl, { method: 'PUT', headers: authed, body: JSON.stringify({ value: true }) })
         // 소유자의 인박스에 남긴 요청 알림을 보관한다 — 뒤의 인박스 절은 안 읽은 알림 수를 센다(7e-1 과 같다).
         const mine = await (await fetch(`${BASE}/api/workspaces/${workspaceId}/inbox`, { headers: authed })).json()
         const ids = (mine.items ?? []).filter((i) => i.pageId === doc || i.pageId === shut).flatMap((i) => i.notificationIds)
@@ -9033,6 +9035,107 @@ async function main() {
         locked.ok && !lockedHtml.includes('data-testid="row-layout-edit"') && lockedHtml.includes('data-testid="row-hidden-toggle"') && lockedPut.status === 409,
         JSON.stringify([locked.status, lockedHtml.includes('data-testid="row-layout-edit"'), lockedPut.status]))
       await fetch(`${api}/databases/${dbId}/lock`, { method: 'DELETE', headers: authed })
+    }
+
+    if (sectionIf('설정 화면 (8g-1 · F-17-12)')) {
+      // 사이드바의 "설정"으로 연다. 왼쪽 내비와 항목은 레지스트리에서 나온다 — 소유자는 내 계정(프로필) · 워크스페이스(일반 · 보안), 멤버는
+      // 보안 절이 없고 워크스페이스 이름이 읽기 전용, 게스트는 내 계정만. 내 이름 · 워크스페이스 이름을 고치면 사이드바 · 홈이 따라온다.
+      // 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다. 끝에 두 이름을 되돌린다.
+      const stamp = Date.now()
+      const settingsApi = (key) => `${BASE}/api/workspaces/${workspaceId}/settings/${key}`
+      const row = (key) => `[data-testid="setting-row"][data-setting-key="${key}"]`
+      const control = (key) => `${row(key)} [data-testid="setting-control"]`
+      const statusOf = (key) => evaluate(`document.querySelector(${JSON.stringify(`${row(key)} [data-testid="setting-status"]`)})?.textContent ?? null`)
+      const valueOf = (key) => evaluate(`document.querySelector(${JSON.stringify(control(key))})?.value ?? null`)
+      const navSections = () => evaluate(`[...document.querySelectorAll('[data-testid="settings-nav-link"]')].map((a) => a.getAttribute('data-section'))`)
+      const title = () => evaluate(`document.querySelector('[data-testid="settings-title"]')?.textContent ?? null`)
+      const key = (name, code, vk) => async () => {
+        await send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: name, code, windowsVirtualKeyCode: vk })
+        await send('Input.dispatchKeyEvent', { type: 'keyUp', key: name, code, windowsVirtualKeyCode: vk })
+      }
+      const enter = key('Enter', 'Enter', 13)
+      const backspace = key('Backspace', 'Backspace', 8)
+      const escape = key('Escape', 'Escape', 27)
+      // 글자를 통째로 바꾸고 Enter(또는 포커스를 옮겨) 저장한다. 하이드레이션 전에 쓴 글자는 저장되지 않는다 — 상태 줄이 설 때까지 다시 한다.
+      const setText = async (settingKey, text, commit = enter) => {
+        for (let i = 0; i < 6; i += 1) {
+          await clickSelector(control(settingKey))
+          await evaluate(`(() => { const el = document.querySelector(${JSON.stringify(control(settingKey))}); el?.focus(); el?.select() })()`)
+          if (text === '') await backspace()
+          else await typeText(text)
+          await commit()
+          if (await waitFor(`!!document.querySelector(${JSON.stringify(`${row(settingKey)} [data-testid="setting-status"]`)})`, 2000)) return true
+        }
+        return false
+      }
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
+      await waitFor(`!!document.querySelector('[data-testid="sidebar-settings"]')`, 15000)
+      const originalWorkspace = await evaluate(`document.querySelector('[data-testid="sidebar-workspace-name"]')?.textContent ?? null`)
+      await clickSelector('[data-testid="sidebar-settings"]')
+      check('★ 사이드바의 "설정"으로 연다 — 첫 절은 내 계정의 프로필',
+        await waitFor(`location.pathname === ${JSON.stringify(`/w/${workspaceId}/settings`)} && document.querySelector('[data-testid="settings-title"]')?.textContent === '프로필'`, 15000),
+        JSON.stringify([await evaluate('location.pathname'), await title()]))
+      check('★ 소유자의 내비 — 내 계정(프로필) · 워크스페이스(일반 · 보안)',
+        JSON.stringify(await navSections()) === JSON.stringify(['account.profile', 'workspace.general', 'workspace.security']),
+        JSON.stringify(await navSections()))
+
+      // 내 이름 — Enter 로 저장 · 공백을 정리한 값이 남는다
+      const originalName = await valueOf('account.name')
+      const myName = `설정 이름 ${stamp}`
+      await setText('account.name', `  설정   이름 ${stamp}  `)
+      check('★ 내 이름 — Enter 로 저장하면 "저장했습니다" · 공백을 정리한 값이 칸에 남는다',
+        (await waitFor(`(document.querySelector(${JSON.stringify(`${row('account.name')} [data-testid="setting-status"]`)})?.textContent ?? '') === '저장했습니다.'
+          && document.querySelector(${JSON.stringify(control('account.name'))})?.value === ${JSON.stringify(myName)}`, 8000)),
+        JSON.stringify([await statusOf('account.name'), await valueOf('account.name')]))
+
+      // 비우면 거부되고 · Esc 는 저장된 값으로 되돌린다 · 서버는 그대로
+      await setText('account.name', '')
+      check('★ 비우면 거부되고 이유를 말한다 — 쓴 글자(빈 칸)는 남는다',
+        (await waitFor(`(document.querySelector(${JSON.stringify(`${row('account.name')} [role="alert"]`)})?.textContent ?? '').includes('비워 둘 수 없고')`, 8000))
+          && (await valueOf('account.name')) === '',
+        JSON.stringify([await statusOf('account.name'), await valueOf('account.name')]))
+      await escape()
+      check('Esc 는 저장된 값으로 되돌린다', (await valueOf('account.name')) === myName, String(await valueOf('account.name')))
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/settings` })
+      check('새로 열어도 저장된 이름이다 — 거부된 빈 이름은 쓰이지 않았다',
+        await waitFor(`document.querySelector(${JSON.stringify(control('account.name'))})?.value === ${JSON.stringify(myName)}`, 15000),
+        String(await valueOf('account.name')))
+
+      // 워크스페이스 이름 — 포커스를 옮기면 저장 · 사이드바 머리와 홈이 따라온다
+      const wsName = `설정 워크스페이스 ${stamp}`
+      await clickSelector('[data-testid="settings-nav-link"][data-section="workspace.general"]')
+      await waitFor(`document.querySelector('[data-testid="settings-title"]')?.textContent === '일반'`, 15000)
+      await setText('workspace.name', wsName, () => clickSelector('[data-testid="settings-title"]'))
+      check('★ 워크스페이스 이름 — 포커스를 옮기면 저장되고 사이드바 머리가 따라온다',
+        await waitFor(`document.querySelector('[data-testid="sidebar-workspace-name"]')?.textContent === ${JSON.stringify(wsName)}`, 10000),
+        JSON.stringify([await statusOf('workspace.name'), await evaluate(`document.querySelector('[data-testid="sidebar-workspace-name"]')?.textContent ?? null`)]))
+      const homeHtml = await (await fetch(`${BASE}/w/${workspaceId}`, { headers: { cookie: authed.cookie } })).text()
+      check('홈의 제목도 그 이름이다', homeHtml.includes(`data-testid="workspace-title">${wsName}<`), String(homeHtml.includes(wsName)))
+
+      // 멤버 — 보안 절이 없고 워크스페이스 이름은 읽기 전용 · 바꾸는 API 는 403 · 자기 이름은 고친다
+      const mate = await joinAs(workspaceId, await createUser(`설정의 멤버 ${stamp}`), 'member')
+      const asMate = { ...json, cookie: `nc_session=${mate.token}` }
+      const mateHtml = await (await fetch(`${BASE}/w/${workspaceId}/settings?s=workspace.general`, { headers: asMate })).text()
+      const mateRename = await fetch(settingsApi('workspace.name'), { method: 'PUT', headers: asMate, body: JSON.stringify({ value: '몰래' }) })
+      const mateSelf = await fetch(settingsApi('account.name'), { method: 'PUT', headers: asMate, body: JSON.stringify({ value: `고친 멤버 ${stamp}` }) })
+      check('★ 멤버 — 보안 절이 없고 워크스페이스 이름은 읽기 전용("소유자만") · 바꾸는 API 는 403 · 자기 이름은 고친다',
+        !mateHtml.includes('data-section="workspace.security"') && mateHtml.includes('data-testid="setting-readonly-note"')
+          && mateHtml.includes('소유자만 바꿀 수 있습니다') && !mateHtml.includes(`value="${wsName}"`) && mateHtml.includes(wsName)
+          && mateRename.status === 403 && mateSelf.ok,
+        JSON.stringify([mateHtml.includes('data-section="workspace.security"'), mateHtml.includes('setting-readonly-note'), mateRename.status, mateSelf.status]))
+
+      // 게스트 — 내 계정만 · 워크스페이스 절을 주소로 열어도 프로필이다
+      const visitor = await joinAs(workspaceId, await createUser(`설정의 게스트 ${stamp}`), 'guest')
+      const guestHtml = await (await fetch(`${BASE}/w/${workspaceId}/settings?s=workspace.general`, { headers: { ...json, cookie: `nc_session=${visitor.token}` } })).text()
+      check('게스트에게는 내 계정만 선다 — 워크스페이스 절을 주소로 열어도 프로필이다',
+        guestHtml.includes('data-section="account.profile"') && !guestHtml.includes('data-section="workspace.general"')
+          && /data-testid="settings-title"[^>]*>프로필</.test(guestHtml) && !guestHtml.includes('data-setting-key="workspace.name"'),
+        String(guestHtml.includes('data-section="workspace.general"')))
+
+      // 되돌린다 — 뒤 절이 이름을 보지 않지만 다음 판을 위해
+      await fetch(settingsApi('account.name'), { method: 'PUT', headers: authed, body: JSON.stringify({ value: originalName }) })
+      await fetch(settingsApi('workspace.name'), { method: 'PUT', headers: authed, body: JSON.stringify({ value: originalWorkspace }) })
     }
 
     section('전체')

@@ -6,7 +6,7 @@
  * 그 함수가 SSO 게이트(정본 §3.11 0단계)까지 통과시킨다.
  */
 
-import type { WorkspaceRole } from '../auth/session-context.ts'
+import type { SessionContext, WorkspaceRole } from '../auth/session-context.ts'
 import { query } from '../db/pool.ts'
 
 export type WorkspaceSummary = {
@@ -27,6 +27,15 @@ export async function listWorkspacesForUser(userId: string): Promise<WorkspaceSu
     [userId],
   )
   return rows.map((r) => ({ workspaceId: r.id, name: r.name, role: r.role }))
+}
+
+/**
+ * 이 워크스페이스의 이름 — 사이드바 머리 · 홈의 제목(8g-1 — 설정에서 바꿀 수 있게 되면서 화면에 선다). `SessionContext` 가 들어온
+ * 사람이라는 증명이다(게스트도 자기가 들어온 워크스페이스의 이름은 본다).
+ */
+export async function workspaceNameOf(ctx: SessionContext): Promise<string> {
+  const rows = await query<{ name: string }>(`SELECT name FROM workspace WHERE id = $1`, [ctx.workspaceId])
+  return rows[0]?.name ?? ''
 }
 
 export type WorkspaceMember = {
