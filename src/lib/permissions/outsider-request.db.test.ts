@@ -37,7 +37,7 @@ import {
   type Actor,
 } from '../testing/db-fixtures.ts'
 import { admitGuestIn, inviteGuestToPage, removeGuest } from '../workspace/guest.ts'
-import { getSecurityPolicy, updateSecurityPolicy } from '../workspace/security-policy.ts'
+import { readSettings, updateSetting } from '../settings/settings.ts'
 import { archiveTeamspace, createTeamspace } from '../workspace/teamspace.ts'
 import {
   approveAccessRequest,
@@ -117,9 +117,12 @@ const membershipOf = async (ws: string, userId: string) =>
     )
   )[0] ?? null
 
+/** 정책은 설정이다(8g-1 — 설정 레지스트리의 한 줄). */
+const POLICY = 'workspace.allow_nonmember_page_access_request'
+const policyOf = async (who: Actor) => (await readSettings(who.ctx)).find((item) => item.key === POLICY)?.value
+
 const setPolicy = async (boss: Actor, allow: boolean) => {
-  const saved = await updateSecurityPolicy(boss.ctx, { allowNonmemberPageAccessRequest: allow })
-  assert.ok(saved.ok && saved.value.allowNonmemberPageAccessRequest === allow)
+  assert.deepEqual(await updateSetting(boss.ctx, POLICY, allow), { ok: true, value: allow })
 }
 
 const removeFrom = (ws: string, userId: string) =>
@@ -416,25 +419,25 @@ describe('⑨ 무시', () => {
 // ── ⑩ ─────────────────────────────────────────────────────────────────
 
 describe('⑩ 정책', () => {
-  test('owner 만 읽고 바꾼다 · 행이 없으면 켜짐 · 모양이 아니면 invalid_policy', async (t) => {
+  test('owner 만 보고 바꾼다(설정 · 8g-1) · 행이 없으면 켜짐 · 켜고 끄기가 아니면 invalid_value', async (t) => {
     if (skipReason) return t.skip(skipReason)
     const { ws, boss, person } = await office()
     const admin = await person('관리자', 'membership_admin')
     const member = await person('멤버')
 
-    assert.deepEqual(await getSecurityPolicy(boss.ctx), { ok: true, value: { allowNonmemberPageAccessRequest: true } })
+    assert.equal(await policyOf(boss), true)
     assert.equal((await query(`SELECT 1 FROM security_policy WHERE workspace_id = $1`, [ws])).length, 0, '읽기만 했는데 행이 생겼다')
     for (const who of [admin, member]) {
-      assert.deepEqual(await getSecurityPolicy(who.ctx), { ok: false, reason: 'forbidden' })
-      assert.deepEqual(await updateSecurityPolicy(who.ctx, { allowNonmemberPageAccessRequest: false }), { ok: false, reason: 'forbidden' })
+      assert.equal(await policyOf(who), undefined, `${who.ctx.role} 에게 정책이 보인다`)
+      assert.deepEqual(await updateSetting(who.ctx, POLICY, false), { ok: false, reason: 'forbidden' })
     }
-    for (const bad of [null, {}, { allowNonmemberPageAccessRequest: 'false' }, { allowNonmemberPageAccessRequest: 0 }]) {
-      assert.deepEqual(await updateSecurityPolicy(boss.ctx, bad), { ok: false, reason: 'invalid_policy' }, JSON.stringify(bad))
+    for (const bad of [null, undefined, 'false', 0, { allow: false }]) {
+      assert.deepEqual(await updateSetting(boss.ctx, POLICY, bad), { ok: false, reason: 'invalid_value' }, JSON.stringify(bad))
     }
     assert.equal((await query(`SELECT 1 FROM security_policy WHERE workspace_id = $1`, [ws])).length, 0)
 
     await setPolicy(boss, false)
-    assert.deepEqual(await getSecurityPolicy(boss.ctx), { ok: true, value: { allowNonmemberPageAccessRequest: false } })
+    assert.equal(await policyOf(boss), false)
     const row = await queryOne<{ allow_export: boolean; allow_member_invite_guests: boolean }>(
       `SELECT allow_export, allow_member_invite_guests FROM security_policy WHERE workspace_id = $1`,
       [ws],

@@ -20,6 +20,7 @@ import { groupSidebarRoots, listPageTree } from '@/lib/block/page-tree'
 import { listTrash } from '@/lib/block/trash'
 import { listFavorites, listRecent } from '@/lib/nav/recent'
 import { unreadCount } from '@/lib/notification/inbox'
+import { workspaceNameOf } from '@/lib/workspace/list'
 import { canBrowseTeamspaces, canCreateTeamspace, listMyTeamspaces } from '@/lib/workspace/teamspace'
 import { Sidebar, type SidebarNode } from './sidebar'
 import { SearchOverlay } from './search-overlay'
@@ -48,13 +49,14 @@ export default async function WorkspaceLayout({
   if ('outsider' in visitor) return <div className="min-h-screen">{children}</div>
   const ctx = visitor.member
 
-  const [tree, teamspaces, trash, recent, favorites, inboxUnread] = await Promise.all([
+  const [tree, teamspaces, trash, recent, favorites, inboxUnread, workspaceName] = await Promise.all([
     listPageTree(ctx),
     listMyTeamspaces(ctx),
     listTrash(ctx),
     listRecent(ctx),
     listFavorites(ctx),
     unreadCount(ctx),
+    workspaceNameOf(ctx),
   ])
   // 루트를 섹션으로 가른다(F-07-16 의 파생 섹션 · 판결문 C-9 — Teamspaces · 공유됨 · 개인 · 워크스페이스 · 7c-7).
   const sections = groupSidebarRoots(tree, teamspaces)
@@ -63,6 +65,7 @@ export default async function WorkspaceLayout({
     <div className="flex min-h-screen">
       <Sidebar
         workspaceId={workspaceId}
+        workspaceName={workspaceName}
         tree={sections.workspacePages.map(toSidebarNode)}
         privatePages={sections.privatePages.map(toSidebarNode)}
         shared={sections.shared.map(toSidebarNode)}

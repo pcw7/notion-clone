@@ -85,6 +85,7 @@ export type NavRow = { id: string; title: string; icon: PageIcon | null }
 
 export function Sidebar({
   workspaceId,
+  workspaceName = '',
   tree,
   privatePages = [],
   shared = [],
@@ -98,6 +99,8 @@ export function Sidebar({
   inboxUnread,
 }: {
   workspaceId: string
+  /** 머리에 서는 워크스페이스 이름(설정에서 바꾼다 · 8g-1). 비면 "워크스페이스". */
+  workspaceName?: string
   /** 워크스페이스 페이지 — 주인 없는 진짜 최상위(판결문 C-9 · 7c-7). */
   tree: SidebarNode[]
   /** 개인 페이지 — 내 개인 최상위(나만 본다). 빈 배열이어도 섹션은 선다 — `+` 가 첫 페이지를 만든다. */
@@ -277,9 +280,10 @@ export function Sidebar({
       <div className="flex items-center justify-between">
         <Link
           href={`/w/${workspaceId}`}
+          data-testid="sidebar-workspace-name"
           className="truncate text-sm font-medium hover:underline underline-offset-4"
         >
-          워크스페이스
+          {workspaceName || '워크스페이스'}
         </Link>
         <button
           type="button"
@@ -323,6 +327,16 @@ export function Sidebar({
             {inboxUnread}
           </span>
         )}
+      </Link>
+
+      {/* 설정 — F-17-12. 내 계정 · 이 워크스페이스의 설정이 한 화면에 있다(게스트에게는 내 계정만 선다). */}
+      <Link
+        href={`/w/${workspaceId}/settings`}
+        data-testid="sidebar-settings"
+        className="flex items-center gap-1.5 rounded-md px-2 py-1 text-left text-sm text-neutral-500 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+      >
+        <span aria-hidden>⚙</span>
+        <span>설정</span>
       </Link>
 
       {/*

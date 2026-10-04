@@ -17,15 +17,13 @@ import { canExportWorkspace } from '@/lib/export/download'
 import { canManageGroups, canSeeGroups, listGroups } from '@/lib/workspace/group'
 import { canManageGuests, listGuests } from '@/lib/workspace/guest'
 import { canInvite as canInviteRole } from '@/lib/workspace/invite'
-import { canListMembers, listMembers, listPendingInvites } from '@/lib/workspace/list'
-import { canManageSecurityPolicy, getSecurityPolicy } from '@/lib/workspace/security-policy'
+import { canListMembers, listMembers, listPendingInvites, workspaceNameOf } from '@/lib/workspace/list'
 import { ExportButton } from './export-button'
 import { GuestPanel } from './guest-panel'
 import { GroupPanel } from './group-panel'
 import { InviteForm } from './invite-form'
 import { NewPageButton } from './new-page-button'
 import { PendingInviteList } from './pending-invite-list'
-import { SecurityPolicyForm } from './security-policy-form'
 import { PageIconView } from './page-icon-view'
 
 /** 제목 없는 페이지의 표시 문구. 저장된 값은 빈 배열이다. */
@@ -42,7 +40,7 @@ export default async function WorkspacePage({ params }: PageProps<'/w/[workspace
   // 표시 전용 — 판정은 내보내기 라우트가 `prepareExport` 로 다시 한다.
   const canExport = canExportWorkspace(ctx)
 
-  const [rootPages, members, invites, groups, guests, policy] = await Promise.all([
+  const [rootPages, members, invites, groups, guests, workspaceName] = await Promise.all([
     listChildPages(ctx, null),
     // 게스트는 멤버 목록을 받지 않는다(7d-2 · F-06-09) — 절 자체를 그리지 않는다.
     canListMembers(ctx.role) ? listMembers(ctx.workspaceId) : Promise.resolve(null),
@@ -51,23 +49,30 @@ export default async function WorkspacePage({ params }: PageProps<'/w/[workspace
     canSeeGroups(ctx.role) ? listGroups(ctx) : Promise.resolve(null),
     // 게스트 관리(7d-3)는 owner · membership_admin 에게만 — 판정은 `listGuests` 가 다시 한다.
     canManageGuests(ctx.role) ? listGuests(ctx) : Promise.resolve(null),
-    // 정책(7g-2)은 owner 에게만 — 판정은 `getSecurityPolicy` 와 저장 라우트가 다시 한다.
-    canManageSecurityPolicy(ctx.role) ? getSecurityPolicy(ctx) : Promise.resolve(null),
+    workspaceNameOf(ctx),
   ])
 
   return (
     <main className="mx-auto flex min-h-screen max-w-3xl flex-col gap-8 px-6 py-12">
       <header className="flex items-baseline justify-between">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">워크스페이스</h1>
+          <h1 className="text-2xl font-semibold tracking-tight" data-testid="workspace-title">
+            {workspaceName || '워크스페이스'}
+          </h1>
           <p className="mt-1 text-sm text-neutral-500">
             내 역할: <span className="font-medium">{ctx.role}</span> · 로그인 방식:{' '}
             {ctx.authMethod}
           </p>
         </div>
-        <Link href="/" className="text-sm text-neutral-500 underline underline-offset-4">
-          전체 목록
-        </Link>
+        <div className="flex gap-3 text-sm text-neutral-500">
+          {/* 정책 · 이름은 설정 화면으로 옮겼다(8g-1 · F-17-12). */}
+          <Link href={`/w/${workspaceId}/settings`} className="underline underline-offset-4">
+            설정
+          </Link>
+          <Link href="/" className="underline underline-offset-4">
+            전체 목록
+          </Link>
+        </div>
       </header>
 
       <section className="flex flex-col gap-3">
@@ -147,16 +152,6 @@ export default async function WorkspacePage({ params }: PageProps<'/w/[workspace
           <InviteForm workspaceId={ctx.workspaceId} />
           {/* 대기 중인 초대와 취소(7g-3) — 게스트의 대기 초대(7g-1)는 제목 없이 "게스트 · 페이지 하나"로 선다. */}
           <PendingInviteList workspaceId={ctx.workspaceId} initialInvites={[...invites]} />
-        </section>
-      )}
-
-      {policy?.ok && (
-        <section>
-          <h2 className="text-sm font-medium text-neutral-500">정책</h2>
-          <SecurityPolicyForm
-            workspaceId={ctx.workspaceId}
-            initialAllowNonmemberRequests={policy.value.allowNonmemberPageAccessRequest}
-          />
         </section>
       )}
 
