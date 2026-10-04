@@ -169,6 +169,8 @@ export function teamspaceFailureMessage(error: unknown): string {
       return '멤버 기본 권한을 다시 고르세요.'
     case 'invalid_icon':
       return '아이콘은 이모지 한 글자만 고를 수 있습니다.'
+    case 'plan_required':
+      return '지금 요금제에서는 private teamspace 를 만들 수 없습니다. 요금제를 올리면 쓸 수 있습니다.'
     default:
       return '처리하지 못했습니다.'
   }

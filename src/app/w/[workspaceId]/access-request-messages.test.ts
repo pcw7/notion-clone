@@ -66,7 +66,7 @@ test('인박스에서 요청을 누르면 공유 패널을 연 채로 · 나머�
 })
 
 test('거부 코드마다 할 말 · 모르는 코드는 일반 문구', () => {
-  for (const code of ['not_found', 'forbidden', 'decided', 'invalid_level', 'guest_level', 'invalid_principal', 'has_access']) {
+  for (const code of ['not_found', 'forbidden', 'decided', 'invalid_level', 'guest_level', 'invalid_principal', 'has_access', 'guest_limit']) {
     assert.notEqual(accessRequestFailureMessage(code), '처리하지 못했습니다.', code)
   }
   assert.equal(accessRequestFailureMessage('something_new'), '처리하지 못했습니다.')

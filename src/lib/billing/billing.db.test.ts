@@ -62,15 +62,21 @@ test('★ ① 시드 — 요금제 넷 · 모든 요금제가 코드의 모든 �
   assert.deepEqual([...new Set(rows.map((r) => r.key))].sort(), Object.keys(ENTITLEMENTS).sort())
 })
 
-test('★ ② 조회 — 요금제의 값 · 버전 보존 7 · 30 · 90 · 무제한 · 트랜잭션으로도', async (t) => {
+test('★ ② 조회 — 요금제의 값(버전 보존 · 게스트 한도 · private teamspace) · 트랜잭션으로도', async (t) => {
   if (skipReason) return t.skip(skipReason)
   const ws = await createBareWorkspace('엔타이틀먼트')
-  const seen: Array<number | null> = []
+  const seen: Array<[number | null, number | null, boolean]> = []
   for (const plan of PLAN_CODES) {
     await setWorkspacePlan(ws, plan)
-    seen.push(await entitlement(ws, 'history.days'))
+    seen.push([await entitlement(ws, 'history.days'), await entitlement(ws, 'guests.max'), await entitlement(ws, 'teamspace.private')])
   }
-  assert.deepEqual(seen, [7, 30, 90, null])
+  // 버전 보존 7 · 30 · 90 · 무제한 / 게스트 10 · 무제한 / private teamspace 는 Business 부터(8k-2)
+  assert.deepEqual(seen, [
+    [7, 10, false],
+    [30, null, false],
+    [90, null, true],
+    [null, null, true],
+  ])
   await setWorkspacePlan(ws, 'plus')
   assert.equal(await withTransaction((tx) => entitlement(ws, 'history.days', tx)), 30)
 })

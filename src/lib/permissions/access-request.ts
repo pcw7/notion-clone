@@ -415,6 +415,8 @@ export type AccessDecisionFailure =
   | 'guest_level'
   /** 요청한 사람이 이제 이 워크스페이스에 없다(`grantAccessIn` — 떠난 사람에게 주지 않는다). */
   | 'invalid_principal'
+  /** 밖의 사람을 게스트로 들여야 하는데 요금제의 게스트 한도에 닿았다(`admitGuestIn` · 8k-2) — 요청은 대기 중으로 남는다. */
+  | 'guest_limit'
 
 export type AccessDecisionResult<T> =
   | { readonly ok: true; readonly value: T }
@@ -485,7 +487,10 @@ export async function approveAccessRequest(
     if (!opened.ok) return opened
     const { request } = opened
 
-    if (opened.outsider) await admitGuestIn(tx, ctx, request.requester_id, 'access_request')
+    if (opened.outsider) {
+      const admitted = await admitGuestIn(tx, ctx, request.requester_id, 'access_request')
+      if (admitted !== null) return { ok: false, reason: admitted } as const
+    }
     const covered = await directGrantCovers(tx, request.node_id, request.requester_id, level)
 
     if (!covered) {

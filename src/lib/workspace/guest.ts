@@ -28,6 +28,7 @@
 import { randomBytes } from 'node:crypto'
 
 import type { SessionContext, WorkspaceRole } from '../auth/session-context.ts'
+import { entitlement } from '../billing/entitlement.ts'
 import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
 import { dropGrantsOf, grantAccessIn, shareGateIn, type AclFailure } from '../permissions/acl.ts'
 import { hashInviteToken, INVITE_TTL_DAYS } from './invite.ts'
@@ -45,6 +46,8 @@ export type GuestInviteFailure =
   | 'invalid_level'
   /** 그 사람의 멤버십이 멈춰 있다(`suspended`). */
   | 'unavailable'
+  /** 요금제의 게스트 한도에 닿았다(`guests.max` · 8k-2) — 새 게스트만 막는다. 이미 게스트인 사람에게 페이지를 더 주는 것은 된다. */
+  | 'guest_limit'
 
 export type GuestInviteResult =
   | {
@@ -122,7 +125,9 @@ export async function inviteGuestToPage(
       const denied = await shareGateIn(tx, ctx, pageId)
       if (denied !== null) return fail(denied)
       if (target !== null) return fail('unavailable')
-      // 계정이 없다 — 대기 초대를 남긴다(7g-1). 받아들일 때 멤버십 → 부여를 한 트랜잭션에 쓴다(`acceptInvite`).
+      // 계정이 없다 — 대기 초대를 남긴다(7g-1). 받아들일 때 멤버십 → 부여를 한 트랜잭션에 쓴다(`acceptInvite`). 대기 초대는 게스트
+      // 한도의 자리를 미리 잡는다 — 받아들일 때는 다시 묻지 않는다(8k-2).
+      if (!(await guestRoomIn(tx, ctx.workspaceId, { email }))) return fail('guest_limit')
       const token = await pendGuestInvite(tx, ctx, pageId, email, level)
       return { ok: true, value: { as: 'pending', email, token } } as const
     }
@@ -141,7 +146,8 @@ export async function inviteGuestToPage(
     }
 
     // 새로 들어오거나(행 없음) 돌아온다(removed · invited) — 게스트로. 멤버를 게스트로 내리는 일은 위에서 걸렀다(active).
-    await admitGuestIn(tx, ctx, target, 'invite_email')
+    const admitted = await admitGuestIn(tx, ctx, target, 'invite_email')
+    if (admitted !== null) return fail(admitted)
     return (await give()) ?? ({ ok: true, value: { userId: target, as: 'guest', joined: true } } as const)
   })
 }
@@ -151,14 +157,20 @@ export type GuestJoinMethod = 'invite_email' | 'access_request'
 
 /**
  * 이 워크스페이스의 사람이 아닌 사람을 **게스트로 들인다** — 멤버십 행을 쓰거나(처음) 되살린다(떠났던 · 초대만 받은 사람). 들어온
- * 길을 남기고 권한 세대를 올린다. 게스트를 들이는 길(이메일 공유 · 접근 요청의 허락)이 모두 이것을 지난다 — 게스트 한도
- * (`plan_entitlement`) · 정책(`allow_member_invite_guests`)은 여기에 건다(뒤의 조각).
+ * 길을 남기고 권한 세대를 올린다. 게스트를 들이는 길(이메일 공유 · 접근 요청의 허락)이 모두 이것을 지난다 — **게스트 한도**
+ * (`guests.max` · 8k-2)를 여기서 묻는다(넘으면 아무것도 쓰지 않고 `guest_limit`). 정책(`allow_member_invite_guests`)도 여기에 건다(뒤의 조각).
  *
  * **부여는 부르는 쪽이 곧바로 같은 트랜잭션에서 쓴다** — 부여 없이 들어온 게스트가 생기지 않게(정본 [보강] 게스트 ①). 부여가
  * 거부되면 `withCommandTransaction` 이 이 멤버십도 되돌린다. 이미 이 워크스페이스의 사람(active · suspended)은 부르는 쪽이 걸렀다
  * — 여기서도 그런 행은 건드리지 않고 던진다(멤버를 게스트로 내리지 않는다 · 멈춘 사람을 되살리지 않는다).
  */
-export async function admitGuestIn(tx: Tx, ctx: SessionContext, userId: string, joinMethod: GuestJoinMethod): Promise<void> {
+export async function admitGuestIn(
+  tx: Tx,
+  ctx: SessionContext,
+  userId: string,
+  joinMethod: GuestJoinMethod,
+): Promise<'guest_limit' | null> {
+  if (!(await guestRoomIn(tx, ctx.workspaceId, { userId }))) return 'guest_limit'
   const row = await tx.queryMaybe<{ user_id: string }>(
     `INSERT INTO workspace_member (workspace_id, user_id, role, status, join_method, invited_by, invited_at, accepted_at)
      VALUES ($1, $2, 'guest', 'active', $4, $3, now(), now())
@@ -171,6 +183,40 @@ export async function admitGuestIn(tx: Tx, ctx: SessionContext, userId: string, 
   )
   if (row === null) throw new Error('이미 이 워크스페이스의 사람이다 — 게스트로 들이지 않는다')
   await membershipChanged(tx, ctx, userId)
+  return null
+}
+
+/**
+ * 게스트 한도의 자리가 있는가(8k-2 · `guests.max`) — 이 사람(또는 이메일)을 새로 세어도 한도 안인가. 무제한이면 늘 있다.
+ *
+ * 세는 것은 **활성 게스트 + 받아들이지 않은 게스트 초대의 이메일**이다 — 대기 초대는 자리를 미리 잡는다(받아들일 때 다시 묻지 않아,
+ * 초대받은 사람이 링크를 열었는데 막히는 일이 없다). 같은 이메일의 대기 초대가 여럿이어도(페이지마다) 한 사람이다. 이미 세어진
+ * 사람(활성 게스트 · 대기 중인 그 이메일)을 다시 들이는 것은 자리를 더 쓰지 않는다.
+ *
+ * 워크스페이스마다 advisory 잠금으로 줄을 세운다 — 한도 바로 밑에서 두 초대가 함께 통과하지 않게. 내려도 이미 있는 게스트는 그대로다
+ * (13 *"이미 초대된 게스트를 쫓아낼 수는 없다 → 신규 초대만 차단"*).
+ */
+export async function guestRoomIn(
+  tx: Tx,
+  workspaceId: string,
+  who: { readonly userId?: string; readonly email?: string },
+): Promise<boolean> {
+  const limit = await entitlement(workspaceId, 'guests.max', tx)
+  if (limit === null) return true
+  await tx.query(`SELECT pg_advisory_xact_lock(hashtextextended('guest-seats:' || $1, 0))`, [workspaceId])
+  const row = await tx.queryOne<{ used: number; counted: boolean }>(
+    `WITH guests AS (
+       SELECT m.user_id FROM workspace_member m WHERE m.workspace_id = $1 AND m.role = 'guest' AND m.status = 'active'
+     ), pending AS (
+       SELECT DISTINCT lower(i.email) AS email FROM workspace_invite i
+        WHERE i.workspace_id = $1 AND i.role = 'guest' AND i.revoked_at IS NULL AND i.accepted_at IS NULL AND i.expires_at > now()
+     )
+     SELECT (SELECT count(*) FROM guests)::int + (SELECT count(*) FROM pending)::int AS used,
+            (EXISTS (SELECT 1 FROM guests WHERE user_id = $2::uuid)
+              OR EXISTS (SELECT 1 FROM pending WHERE email = lower($3::text))) AS counted`,
+    [workspaceId, who.userId ?? null, who.email ?? null],
+  )
+  return row.counted || row.used < limit
 }
 
 /**

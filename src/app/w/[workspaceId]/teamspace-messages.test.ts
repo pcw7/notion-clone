@@ -37,7 +37,7 @@ const person = (userId: string, role = 'member', status = 'active') => ({ userId
 describe('teamspace 화면의 문구', () => {
   test('거부 코드마다 할 말이 있다 · 마지막 소유자는 무엇을 먼저 할지 말한다 · 모르는 코드는 일반 문구', () => {
     const codes = ['not_found', 'forbidden', 'invalid_name', 'invalid_role', 'invalid_member', 'last_owner',
-      'needs_invite', 'invalid_visibility', 'invalid_settings', 'default_teamspace', 'invalid_level', 'invalid_icon']
+      'needs_invite', 'invalid_visibility', 'invalid_settings', 'default_teamspace', 'invalid_level', 'invalid_icon', 'plan_required']
     for (const code of codes) {
       assert.notEqual(teamspaceFailureMessage(code), '처리하지 못했습니다.', code)
     }
