@@ -24,6 +24,7 @@ import { workspaceNameOf } from '@/lib/workspace/list'
 import { canBrowseTeamspaces, canCreateTeamspace, listMyTeamspaces } from '@/lib/workspace/teamspace'
 import { Sidebar, type SidebarNode } from './sidebar'
 import { SearchOverlay } from './search-overlay'
+import { ThemeShortcut } from './theme-shortcut'
 
 /**
  * 서버 타입에서 클라이언트로 넘길 최소 모양만 남긴다. `teamspaceId` 는 넘기지 않는다 — 섹션은 여기서 이미 갈랐고, 멤버가
@@ -103,6 +104,8 @@ export default async function WorkspaceLayout({
         빈 상태의 데이터는 **이미 읽은 `recent` 를 그대로 쓴다**(F-07-01:
         "입력 0자 = 이동 모드(최근 방문)"). 같은 것을 두 번 질의하지 않는다.
       */}
+      {/* 테마 단축키(8h · F-12-03) — 어디서든 Ctrl/Cmd + Shift + L. 계정의 설정이라 워크스페이스 안이면 어디서나 같다. */}
+      <ThemeShortcut workspaceId={workspaceId} />
       <SearchOverlay
         workspaceId={workspaceId}
         recent={recent.map((e) => ({ id: e.id, title: e.title, icon: e.icon }))}

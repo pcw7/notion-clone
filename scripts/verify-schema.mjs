@@ -61,6 +61,8 @@ const EXPECTED_TABLES = [
   'security_policy',
   // 행의 레이아웃 8f-2조각 (0044)
   'page_layout', 'layout_tab', 'layout_module',
+  // 설정 값 표 8h조각 (0045)
+  'setting_value',
   'schema_migration', 'scim_token', 'session_policy', 'sso_config',
   'user', 'user_email', 'user_session',
   'workspace', 'workspace_invite', 'workspace_member',
@@ -2545,6 +2547,37 @@ try {
     if (afterProperty === 2 && Number(afterSource) === 0 && otherSource === 2) ok('속성을 지우면 그 모듈만 · 소스를 지우면 레이아웃 한 벌이 CASCADE 된다 — 다른 소스는 그대로')
     else fail(`CASCADE 가 어긋났다 — 속성 뒤 모듈 ${afterProperty} · 소스 뒤 ${afterSource} · 다른 소스 모듈 ${otherSource}`)
     await client.query('ROLLBACK TO SAVEPOINT cascade')
+  }
+
+  console.log('\n[31] 설정 값 표 (0045 / §3.1 [보강] 설정 값 표 · 테마 ① · SV1 ~ SV4 · 8h조각)')
+  {
+    const put = `INSERT INTO setting_value (scope, user_id, workspace_id, key, value) VALUES ($1, $2, $3, $4, $5::jsonb)`
+    await client.query(put, ['account', userId, null, 'account.theme', '"dark"'])
+    await client.query(put, ['workspace', null, wsId, 'workspace.sample', 'true'])
+    ok('계정의 값 · 워크스페이스의 값 — 정상 경로가 통과한다')
+
+    const mustRejectBy = async (label, constraint, params) => {
+      await client.query('SAVEPOINT probe')
+      try {
+        await client.query(put, params)
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        fail(`${label} — 거부되어야 하는데 통과했다`)
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        if (e.constraint === constraint) ok(`${label} — ${constraint} 가 거부함 (${e.code})`)
+        else fail(`${label} — ${constraint} 가 아니라 ${e.constraint ?? e.code} 에 걸렸다`)
+      }
+    }
+    await mustRejectBy('모르는 범위', 'ck_setting_value_scope', ['device', null, null, 'device.contrast', '"high"'])
+    await mustRejectBy('★ SV1: 계정의 값인데 주인이 없다', 'ck_setting_value_account_owner', ['account', null, null, 'account.theme', '"dark"'])
+    await mustRejectBy('★ SV1: 계정의 값에 워크스페이스가 붙었다', 'ck_setting_value_workspace_owner', ['account', userId, wsId, 'account.other', '"x"'])
+    await mustRejectBy('★ SV1: 워크스페이스의 값에 사람이 붙었다', 'ck_setting_value_account_owner', ['workspace', userId, wsId, 'workspace.other', '1'])
+    await mustRejectBy('★ SV2: 키가 범위로 시작하지 않는다', 'ck_setting_value_key', ['account', userId, null, 'workspace.theme', '"dark"'])
+    await mustRejectBy('SV2: 범위만 있고 이름이 없는 키', 'ck_setting_value_key', ['account', userId, null, 'account.', '"dark"'])
+    await mustRejectBy('★ SV3: 값이 스칼라가 아니다', 'ck_setting_value_scalar', ['account', userId, null, 'account.other', '{"a":1}'])
+    await mustRejectBy('★ SV4: 같은 사람의 같은 키가 둘', 'ux_setting_value_account', ['account', userId, null, 'account.theme', '"light"'])
+    await mustRejectBy('★ SV4: 같은 워크스페이스의 같은 키가 둘', 'ux_setting_value_workspace', ['workspace', null, wsId, 'workspace.sample', 'false'])
+    await mustRejectBy('없는 사람의 값', 'setting_value_user_id_fkey', ['account', randomUUID(), null, 'account.theme', '"dark"'])
   }
 
   await client.query('ROLLBACK')

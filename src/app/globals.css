@@ -1,9 +1,35 @@
 @import "tailwindcss";
 @import "./editor.css";
 
+/*
+ * 테마 — 잔여 묶음 8h (F-12-03 · 정본 §3.1 [보강] 설정 값 표 · 테마 ③)
+ *
+ * `<html data-theme>` 가 system · light · dark 중 하나다 — 루트 레이아웃이 계정의 값으로 첫 HTML 에 싣는다. Tailwind 의 `dark:` 와 CSS 의
+ * `@variant dark` 는 미디어 쿼리가 아니라 이 속성을 본다: **dark 이거나, system 인데 OS 가 어두울 때.** 서버는 OS 를 모르므로 system 의
+ * 판정은 여기(미디어 쿼리)서 한다.
+ */
+@custom-variant dark {
+  &:where([data-theme="dark"], [data-theme="dark"] *) {
+    @slot;
+  }
+  @media (prefers-color-scheme: dark) {
+    &:where([data-theme="system"], [data-theme="system"] *) {
+      @slot;
+    }
+  }
+}
+
 :root {
   --background: #ffffff;
   --foreground: #171717;
+  /* 스크롤바 · 입력칸 같은 브라우저의 기본 모양도 테마를 따른다. */
+  color-scheme: light;
+
+  @variant dark {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+    color-scheme: dark;
+  }
 }
 
 @theme inline {
@@ -11,13 +37,6 @@
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
 }
 
 body {

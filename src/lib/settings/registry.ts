@@ -30,6 +30,24 @@ export type SettingControl =
   | { readonly kind: 'text'; readonly maxLength: number }
   /** 켜고 끄기. */
   | { readonly kind: 'toggle' }
+  /** 몇 가지 중 하나 고르기(8h) — 값은 `options` 의 `value` 중 하나. */
+  | { readonly kind: 'choice'; readonly options: readonly { readonly value: string; readonly label: string }[] }
+
+/** 테마 — `system` 은 OS 를 따른다(기본 · 정본 [보강] 설정 값 표 · 테마 ③). 루트 레이아웃 · 단축키가 이 값을 쓴다. */
+export const THEMES = ['system', 'light', 'dark'] as const
+export type Theme = (typeof THEMES)[number]
+export const DEFAULT_THEME: Theme = 'system'
+export const isTheme = (value: unknown): value is Theme => typeof value === 'string' && (THEMES as readonly string[]).includes(value)
+const THEME_LABEL: Readonly<Record<Theme, string>> = { system: '시스템 설정 따르기', light: '밝게', dark: '어둡게' }
+
+/**
+ * 단축키(Ctrl/Cmd + Shift + L)가 고를 테마 — **지금 보이는 것의 반대**다(정본 [보강] 설정 값 표 · 테마 ④). `system` 이면 OS 가 고른 것의
+ * 반대다. 결과는 늘 밝게 · 어둡게 중 하나 — 단축키로 `system` 에 돌아가지 않는다(설정 화면에서 고른다).
+ */
+export function toggledTheme(current: Theme, osPrefersDark: boolean): Exclude<Theme, 'system'> {
+  const showing = current === 'system' ? (osPrefersDark ? 'dark' : 'light') : current
+  return showing === 'dark' ? 'light' : 'dark'
+}
 
 export type SettingValue = string | boolean
 
@@ -42,7 +60,14 @@ const OWNER = ['owner'] as const satisfies readonly WorkspaceRole[]
 
 /** 설정 화면의 왼쪽 내비 — 범위마다 묶음 하나 · 그 안의 절. 항목이 하나도 보이지 않는 절 · 묶음은 서지 않는다. */
 export const SETTING_GROUPS = [
-  { scope: 'account', label: '내 계정', sections: [{ id: 'account.profile', label: '프로필' }] },
+  {
+    scope: 'account',
+    label: '내 계정',
+    sections: [
+      { id: 'account.profile', label: '프로필' },
+      { id: 'account.preferences', label: '환경설정' },
+    ],
+  },
   {
     scope: 'workspace',
     label: '워크스페이스',
@@ -86,6 +111,16 @@ export const SETTINGS = [
     editors: 'everyone',
   },
   {
+    key: 'account.theme',
+    scope: 'account',
+    section: 'account.preferences',
+    label: '테마',
+    description: '모든 워크스페이스에서 같습니다. 어디서든 Ctrl/Cmd + Shift + L 로 밝게와 어둡게를 바꿀 수 있습니다.',
+    control: { kind: 'choice', options: THEMES.map((value) => ({ value, label: THEME_LABEL[value] })) },
+    viewers: 'everyone',
+    editors: 'everyone',
+  },
+  {
     key: 'workspace.name',
     scope: 'workspace',
     section: 'workspace.general',
@@ -112,8 +147,12 @@ export const SETTINGS = [
 export type SettingKey = (typeof SETTINGS)[number]['key']
 
 type DefinitionOf<K extends SettingKey> = Extract<(typeof SETTINGS)[number], { readonly key: K }>
-/** 키의 값 모양 — 컨트롤이 정한다. */
-export type SettingValueOf<K extends SettingKey> = DefinitionOf<K>['control'] extends { readonly kind: 'toggle' } ? boolean : string
+/** 키의 값 모양 — 컨트롤이 정한다(고르기는 그 선택지의 값 중 하나). */
+export type SettingValueOf<K extends SettingKey> = DefinitionOf<K>['control'] extends { readonly kind: 'toggle' }
+  ? boolean
+  : DefinitionOf<K>['control'] extends { readonly kind: 'choice'; readonly options: readonly (infer O)[] }
+    ? O extends { readonly value: infer V } ? V : never
+    : string
 
 const reaches = (audience: Audience, role: WorkspaceRole): boolean => audience === 'everyone' || audience.includes(role)
 
@@ -133,6 +172,7 @@ export function normalizeSettingValue(definition: SettingDefinition, raw: unknow
   const control = definition.control
   if (control.kind === 'toggle') return typeof raw === 'boolean' ? raw : null
   if (typeof raw !== 'string') return null
+  if (control.kind === 'choice') return control.options.some((option) => option.value === raw) ? raw : null
   const text = raw.trim().replace(/\s+/g, ' ')
   return text.length === 0 || text.length > control.maxLength ? null : text
 }

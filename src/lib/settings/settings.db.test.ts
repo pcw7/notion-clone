@@ -8,6 +8,7 @@
  *   ③ 워크스페이스 이름은 소유자만 — 멤버는 보지만 못 고친다 · 목록 · 머리가 따라온다
  *   ④ 거부는 아무것도 쓰지 않는다 — 모르는 키 · 권한 · 값
  *   ⑤ 패널(8g-2) — 그 기능의 판정 그대로 역할마다 선다(소유자 다섯 · 멤버 관리자 넷 · 멤버 둘 · 게스트 없음)
+ *   ⑥ 테마(8h) — 행이 없으면 system · 고르면 setting_value 한 줄 · 모든 워크스페이스에서 같다 · 세션 토큰으로 읽는다
  *
  * 정책(`workspace.allow_nonmember_page_access_request`)의 판정은 `permissions/outsider-request.db.test.ts` ⑩ 이 본다.
  */
@@ -20,6 +21,7 @@ import { query } from '../db/pool.ts'
 import { listWorkspacesForUser, workspaceNameOf } from '../workspace/list.ts'
 import { visiblePanels } from './panels.ts'
 import { readSettings, updateSetting } from './settings.ts'
+import { themeOfSessionToken } from './theme.ts'
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'
 
@@ -51,18 +53,23 @@ const userName = async (userId: string) => (await query<{ name: string }>(`SELEC
 const rows = async (who: Actor) => (await readSettings(who.ctx)).map((item) => [item.key, item.editable])
 
 describe('① 읽기', () => {
-  test('★ 역할마다 보이는 항목과 고칠 수 있는가 — 소유자 셋 · 멤버 둘(이름은 읽기 전용) · 게스트 하나', async (t) => {
+  test('★ 역할마다 보이는 항목과 고칠 수 있는가 — 소유자 넷 · 멤버 셋(워크스페이스 이름은 읽기 전용) · 게스트 둘(내 계정만)', async (t) => {
     if (skipReason) return t.skip(skipReason)
     assert.deepEqual(await rows(fx.owner), [
       ['account.name', true],
+      ['account.theme', true],
       ['workspace.name', true],
       ['workspace.allow_nonmember_page_access_request', true],
     ])
     assert.deepEqual(await rows(member), [
       ['account.name', true],
+      ['account.theme', true],
       ['workspace.name', false],
     ])
-    assert.deepEqual(await rows(guest), [['account.name', true]])
+    assert.deepEqual(await rows(guest), [
+      ['account.name', true],
+      ['account.theme', true],
+    ])
   })
 
   test('값은 그 설정이 사는 칸의 것이다 — 정책은 행이 없으면 켜짐', async (t) => {
@@ -129,5 +136,44 @@ describe('⑤ 패널', () => {
     assert.deepEqual(ids(admin), ['members', 'invites', 'guests', 'groups'])
     assert.deepEqual(ids(member), ['members', 'groups'])
     assert.deepEqual(ids(guest), [])
+  })
+})
+
+describe('⑥ 테마', () => {
+  test('★ 행이 없으면 system · 고르면 setting_value 한 줄 · 다른 워크스페이스 · 세션 토큰에서도 같다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const user = await createUser('테마를 고르는 사람')
+    const here = await joinAs(fx.workspaceId, user, 'member')
+    const elsewhere = await joinAs(await createBareWorkspace('테마의 다른 곳'), user, 'guest')
+    const themeOf = async (who: Actor) => (await readSettings(who.ctx)).find((item) => item.key === 'account.theme')?.value
+    const stored = () => query<{ value: unknown }>(`SELECT value FROM setting_value WHERE scope = 'account' AND user_id = $1 AND key = 'account.theme'`, [user.userId])
+
+    assert.equal(await themeOf(here), 'system')
+    assert.equal(await themeOfSessionToken(here.token), 'system')
+    assert.equal((await stored()).length, 0, '읽기만 했는데 행이 생겼다')
+
+    assert.deepEqual(await updateSetting(here.ctx, 'account.theme', 'dark'), { ok: true, value: 'dark' })
+    assert.deepEqual(await stored(), [{ value: 'dark' }])
+    assert.equal(await themeOf(elsewhere), 'dark', '다른 워크스페이스에서 다른 테마 — 계정의 것이다')
+    assert.equal(await themeOfSessionToken(elsewhere.token), 'dark')
+    assert.equal(await themeOfSessionToken(fx.owner.token), 'system', '다른 사람의 테마가 따라왔다')
+    assert.equal(await themeOfSessionToken(null), 'system')
+    assert.equal(await themeOfSessionToken('없는 토큰'), 'system')
+
+    // 기본으로 되돌려도 행은 남는다 — 사용자가 고른 값이다(정본 ②)
+    assert.deepEqual(await updateSetting(here.ctx, 'account.theme', 'system'), { ok: true, value: 'system' })
+    assert.deepEqual(await stored(), [{ value: 'system' }])
+
+    assert.deepEqual(await updateSetting(here.ctx, 'account.theme', 'blue'), { ok: false, reason: 'invalid_value' })
+    assert.deepEqual(await stored(), [{ value: 'system' }], '거부된 값이 쓰였다')
+  })
+
+  test('표에 모양이 맞지 않는 값이 있으면 기본으로 읽는다 — 행은 그대로 둔다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const user = await createUser('옛 테마 값을 가진 사람')
+    const who = await joinAs(fx.workspaceId, user, 'member')
+    await query(`INSERT INTO setting_value (scope, user_id, key, value) VALUES ('account', $1, 'account.theme', '"sepia"'::jsonb)`, [user.userId])
+    assert.equal((await readSettings(who.ctx)).find((item) => item.key === 'account.theme')?.value, 'system')
+    assert.equal(await themeOfSessionToken(who.token), 'system')
   })
 })

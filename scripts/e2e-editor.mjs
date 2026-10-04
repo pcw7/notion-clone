@@ -6573,7 +6573,7 @@ async function main() {
       // ── 사이드바에서 만든다 ──
       await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
       await waitFor(`!!document.querySelector('nav[aria-label="페이지 트리"]')`, 15000)
-      const newDb = await evaluate(`(() => {
+      const newDbBox = () => evaluate(`(() => {
         const b = [...document.querySelectorAll('nav[aria-label="페이지 트리"] button')]
           .find((e) => e.textContent.includes('새 데이터베이스'))
         if (!b) return null
@@ -6581,8 +6581,16 @@ async function main() {
         const r = b.getBoundingClientRect()
         return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
       })()`)
-      check('사이드바에 "+ 새 데이터베이스" 가 있다', newDb !== null)
-      if (newDb) await click(newDb.x, newDb.y)
+      check('사이드바에 "+ 새 데이터베이스" 가 있다', (await newDbBox()) !== null)
+      // 하이드레이션 전의 클릭은 아무 일이 없고, 하이드레이션 뒤 사이드바의 펼침 상태가 돌아오며 줄이 움직인다(§6 — 앞 절들이 사이드바를
+      // 길게 만든 전체 판에서 그 사이의 클릭이 팀 공간 링크에 떨어졌다). 누를 때마다 단추를 다시 재고, 표가 열릴 때까지 다시 누른다.
+      // 주소가 /db/ 로 바뀌면 멈춘다(두 번 만들지 않게).
+      for (let i = 0; i < 6 && !(await evaluate(`/\\/db\\//.test(location.pathname)`)); i += 1) {
+        const box = await newDbBox()
+        if (box === null) break
+        await click(box.x, box.y)
+        await waitFor(`/\\/db\\/[0-9a-f-]{36}$/.test(location.pathname)`, 5000)
+      }
       check('★ 누르면 풀페이지 데이터베이스 화면이 열린다',
         await waitFor(`/\\/db\\/[0-9a-f-]{36}$/.test(location.pathname) && !!document.querySelector('[data-testid="db-table"]')`, 15000),
         await evaluate('location.pathname'))
@@ -9077,8 +9085,8 @@ async function main() {
       check('★ 사이드바의 "설정"으로 연다 — 첫 절은 내 계정의 프로필',
         await waitFor(`location.pathname === ${JSON.stringify(`/w/${workspaceId}/settings`)} && document.querySelector('[data-testid="settings-title"]')?.textContent === '프로필'`, 15000),
         JSON.stringify([await evaluate('location.pathname'), await title()]))
-      check('★ 소유자의 내비 — 내 계정(프로필) · 워크스페이스(일반 · 사람 · 보안)',
-        JSON.stringify(await navSections()) === JSON.stringify(['account.profile', 'workspace.general', 'workspace.people', 'workspace.security']),
+      check('★ 소유자의 내비 — 내 계정(프로필 · 환경설정) · 워크스페이스(일반 · 사람 · 보안)',
+        JSON.stringify(await navSections()) === JSON.stringify(['account.profile', 'account.preferences', 'workspace.general', 'workspace.people', 'workspace.security']),
         JSON.stringify(await navSections()))
 
       // 내 이름 — Enter 로 저장 · 공백을 정리한 값이 남는다
@@ -9172,7 +9180,7 @@ async function main() {
       const adminGeneral = await htmlAs(GENERAL, admin.token)
       check('★ 멤버 관리자 — 사람 절의 패널 넷 · 내보내기와 보안 절은 없다',
         JSON.stringify(panelsIn(adminPeople)) === JSON.stringify(PANELS) && !adminGeneral.includes('data-testid="export-button"')
-          && JSON.stringify(navIn(adminPeople)) === JSON.stringify(['account.profile', 'workspace.general', 'workspace.people']),
+          && JSON.stringify(navIn(adminPeople)) === JSON.stringify(['account.profile', 'account.preferences', 'workspace.general', 'workspace.people']),
         JSON.stringify([panelsIn(adminPeople), navIn(adminPeople)]))
 
       const mate = await joinAs(workspaceId, await createUser(`사람 절의 멤버 ${stamp}`), 'member')
@@ -9186,6 +9194,109 @@ async function main() {
       check('게스트 — 사람 절을 주소로 열어도 내 계정의 프로필 · 홈에 "설정 → 사람" 안내도 없다',
         panelsIn(guestPeople).length === 0 && /data-testid="settings-title"[^>]*>프로필</.test(guestPeople) && !guestHome.includes('settings?s=workspace.people'),
         JSON.stringify(panelsIn(guestPeople)))
+    }
+
+    if (sectionIf('테마 (8h · F-12-03)')) {
+      // 설정 → 환경설정의 "테마"(시스템 · 밝게 · 어둡게)는 계정의 값이다 — 서버가 첫 HTML 의 `<html data-theme>` 에 싣고(다른 세션에도),
+      // CSS 의 dark 변형이 그 속성을 본다(system 이면 OS). Ctrl/Cmd + Shift + L 은 지금 보이는 것의 반대. OS 의 밝기는 CDP 로 정한다.
+      // 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다. 끝에 테마 · 에뮬레이션을 되돌린다.
+      // 페이지가 바뀌는 순간에는 documentElement · body 가 비어 있을 수 있다 — waitFor 는 예외를 삼키지 않으므로 식을 null 에 안전하게 쓴다
+      // (전체 판에서 그 순간에 걸려 판이 멈췄다).
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const THEME = '[data-testid="setting-row"][data-setting-key="account.theme"] [data-testid="setting-control"]'
+      const themeApi = `${BASE}/api/workspaces/${workspaceId}/settings/account.theme`
+      const os = (scheme) => send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: scheme }] })
+      const htmlTheme = () => evaluate(`document.documentElement?.dataset.theme ?? null`)
+      const bodyBg = () => evaluate(`(document.body ? getComputedStyle(document.body).backgroundColor : null)`)
+      const LIGHT_BG = 'rgb(255, 255, 255)'
+      const DARK_BG = 'rgb(10, 10, 10)'
+      const choose = (value) => evaluate(`(() => {
+        const s = document.querySelector(${JSON.stringify(THEME)})
+        if (!s) return false
+        Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(s, ${JSON.stringify(value)})
+        s.dispatchEvent(new Event('change', { bubbles: true }))
+        return true
+      })()`)
+      // 하이드레이션 전의 선택은 저장되지 않는다 — 서버의 값이 바뀔 때까지 다시 고른다.
+      const stored = async () => (await dbQuery(
+        `SELECT sv.value FROM setting_value sv JOIN user_email e ON e.user_id = sv.user_id WHERE e.email = $1 AND sv.key = 'account.theme'`, [email]))[0]?.value ?? null
+      const chooseUntil = async (value) => {
+        for (let i = 0; i < 8; i += 1) {
+          await choose(value)
+          for (let j = 0; j < 6; j += 1) { if ((await stored()) === value) return true; await sleep(250) }
+        }
+        return false
+      }
+      const serverTheme = async (cookie) => (/<html[^>]*data-theme="([a-z]+)"/.exec(await (await fetch(`${BASE}/w/${workspaceId}`, { headers: { cookie } })).text()) ?? [])[1] ?? null
+
+      try {
+        await os('light')
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/settings?s=account.preferences` })
+        await waitFor(`!!document.querySelector(${JSON.stringify(THEME)})`, 15000)
+        check('처음에는 "시스템 설정 따르기" — html 은 system 이고 OS 가 밝으니 밝다',
+          (await htmlTheme()) === 'system' && (await evaluate(`document.querySelector(${JSON.stringify(THEME)})?.value`)) === 'system' && (await bodyBg()) === LIGHT_BG,
+          JSON.stringify([await htmlTheme(), await bodyBg()]))
+
+        const saved = await chooseUntil('dark')
+        check('★ "어둡게"를 고르면 저장되고 화면이 곧바로 어두워진다',
+          saved && (await waitFor(`document.documentElement?.dataset.theme === 'dark' && (document.body ? getComputedStyle(document.body).backgroundColor : null) === ${JSON.stringify(DARK_BG)}`, 8000)),
+          JSON.stringify([await stored(), await htmlTheme(), await bodyBg()]))
+        check('★ 서버가 첫 HTML 에 싣는다 — 새로 열어도 · 다른 세션(같은 계정)에서도 dark',
+          (await serverTheme(authed.cookie)) === 'dark'
+            && (await serverTheme(`nc_session=${(await joinAs(workspaceId, { userId: (await dbQuery(`SELECT user_id FROM user_email WHERE email = $1`, [email]))[0]?.user_id }, 'owner')).token}`)) === 'dark',
+          String(await serverTheme(authed.cookie)))
+        check('로그인 전의 화면은 system 이다', /<html[^>]*data-theme="system"/.test(await (await fetch(`${BASE}/login`)).text()))
+
+        // 편집기의 색도 따른다 — editor.css 의 다크 덩어리(코드 강조 팔레트)가 미디어 쿼리가 아니라 테마를 본다. 서버와 무관하게 CSS 만
+        // 보려고 html 의 속성을 화면에서 바꿔 읽는다(서버가 싣는 것은 위 검사가 본다).
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${pageId}` })
+        await waitFor(`!!document.querySelector('.blk-editor')`, 15000)
+        const keywordAs = (theme) => evaluate(`(() => {
+          const root = document.documentElement
+          const before = root.dataset.theme
+          root.dataset.theme = ${JSON.stringify(theme)}
+          const value = getComputedStyle(document.querySelector('.blk-editor')).getPropertyValue('--code-keyword').trim()
+          root.dataset.theme = before
+          return value
+        })()`)
+        const darkKeyword = await keywordAs('dark')
+        const lightKeyword = await keywordAs('light')
+        check('★ 편집기의 색(코드 강조 팔레트)도 테마를 따른다 — OS 는 밝은 채로',
+          darkKeyword !== '' && lightKeyword === '#cf222e' && darkKeyword !== lightKeyword, JSON.stringify([darkKeyword, lightKeyword]))
+
+        // system — OS 를 따른다
+        await fetch(themeApi, { method: 'PUT', headers: authed, body: JSON.stringify({ value: 'system' }) })
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
+        await waitFor(`document.documentElement?.dataset.theme === 'system'`, 15000)
+        await os('dark')
+        const followsDark = await waitFor(`(document.body ? getComputedStyle(document.body).backgroundColor : null) === ${JSON.stringify(DARK_BG)}`, 5000)
+        await os('light')
+        check('★ system 은 OS 를 따른다 — OS 가 어두우면 어둡고 밝으면 밝다(새로고침 없이)',
+          followsDark && (await waitFor(`(document.body ? getComputedStyle(document.body).backgroundColor : null) === ${JSON.stringify(LIGHT_BG)}`, 5000)),
+          JSON.stringify([followsDark, await bodyBg()]))
+
+        // 단축키 — 지금 보이는 것(OS 밝음 → 밝게)의 반대
+        const shortcut = async () => {
+          await send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'L', code: 'KeyL', windowsVirtualKeyCode: 76, modifiers: 2 | 8 })
+          await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'L', code: 'KeyL', windowsVirtualKeyCode: 76, modifiers: 2 | 8 })
+        }
+        let toggled = false
+        for (let i = 0; i < 6 && !toggled; i += 1) {
+          await shortcut()
+          toggled = await waitFor(`document.documentElement?.dataset.theme === 'dark'`, 1500)
+        }
+        let dark = null
+        for (let i = 0; i < 20 && dark !== 'dark'; i += 1) { await sleep(250); dark = await stored() }
+        check('★ Ctrl + Shift + L — system(밝게 보임)에서 어둡게 · 같은 설정으로 저장된다',
+          toggled && dark === 'dark' && (await bodyBg()) === DARK_BG, JSON.stringify([await htmlTheme(), dark]))
+        await shortcut()
+        let light = null
+        for (let i = 0; i < 20 && light !== 'light'; i += 1) { await sleep(250); light = await stored() }
+        check('한 번 더 누르면 밝게', (await htmlTheme()) === 'light' && light === 'light', JSON.stringify([await htmlTheme(), light]))
+      } finally {
+        await fetch(themeApi, { method: 'PUT', headers: authed, body: JSON.stringify({ value: 'system' }) })
+        await send('Emulation.setEmulatedMedia', { features: [] })
+      }
     }
 
     section('전체')
