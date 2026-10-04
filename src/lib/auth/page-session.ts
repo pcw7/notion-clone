@@ -33,6 +33,8 @@ export async function requirePageSession(rawWorkspaceId: string): Promise<Sessio
   const session = await resolveSessionContext(await readSessionToken(), workspaceId)
   if (session.ok) return session.context
 
+  // 둘째 단계가 남은 세션 — 로그인 화면의 그 단계로(8i-2a).
+  if (session.reason === 'mfa_required') redirect('/login?mfa=1')
   if (
     session.reason === 'no_session' ||
     session.reason === 'expired' ||
@@ -67,6 +69,7 @@ export async function requirePageVisitor(rawWorkspaceId: string): Promise<PageVi
   const session = await resolveSessionContext(token, workspaceId)
   if (session.ok) return { member: session.context }
 
+  if (session.reason === 'mfa_required') redirect('/login?mfa=1')
   if (session.reason === 'no_session' || session.reason === 'expired' || session.reason === 'revoked') {
     redirect('/login')
   }
