@@ -54,7 +54,7 @@
 
 ## 시작하기
 
-Windows에서는 WSL2 Ubuntu 안의 Docker Engine을 씁니다(설치 방법은 [CLAUDE.md](CLAUDE.md)).
+Node.js 24.7 이상이 필요합니다(비밀번호 해시에 내장 `crypto.argon2` 를 씁니다). Windows에서는 WSL2 Ubuntu 안의 Docker Engine을 씁니다(설치 방법은 [CLAUDE.md](CLAUDE.md)).
 
 ```bash
 npm install
