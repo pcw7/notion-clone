@@ -24,6 +24,21 @@
  * data source 가 하나뿐이면 화면은 그 이름을 따로 보여 주지 않는다 — 데이터베이스 이름이 그 자리다. 그래서 그동안 `data_source.name` 은
  * 만들 때의 이름(또는 "표")에 머물러 있다. **둘째를 더하는 순간** 첫째의 이름이 처음으로 화면에 나오므로, 그때 첫째가 데이터베이스의
  * 지금 이름을 받는다(비어 있으면 그대로). 이름 바꾸기를 매번 양쪽에 맞춰 쓰는 대신, 보이기 시작하는 한 순간에 맞춘다.
+ *
+ * ──────────────────────────────────────────────────────────────────────
+ * 휴지통 — 소스와 그 행이 한 묶음으로 간다 (8e-3a · 0043)
+ * ──────────────────────────────────────────────────────────────────────
+ *
+ * data source 는 블록이 아니지만 블록과 같은 세 상태(live · trashed · purged)를 갖는다. 휴지통으로 보낼 때 그 소스의 살아 있는 행 ·
+ * 템플릿과 그 하위 페이지를 **소스 id 를 삭제 루트로**(`trash_root_id`) 함께 보낸다 — 행의 모든 읽기 경로(검색 · 관계형 칩 · 최근 방문 ·
+ * 행 주소 · 멘션)가 이미 행 블록의 lifecycle 로 거르므로 따로 막을 곳이 없다. 되살리면 그 루트의 것만 돌아온다(B3) — 그 전에 따로 지운
+ * 행은 휴지통에 남는다. 영구 삭제도 같은 묶음이다(2단계 보존 — 물리 삭제는 하지 않는다).
+ *
+ *   · **마지막 살아 있는 소스는 휴지통에 넣지 않는다**(`last_source`) — 데이터베이스가 그릴 것이 없어진다(F-04-23 *"마지막 data source 는
+ *     제거 불가로 두는 편이 단순하다"*).
+ *   · 휴지통의 소스는 이 모듈의 목록 · 이름 바꾸기 · 뷰 · 행 · 속성의 모든 문에서 **없는 것**이다(`lifecycle = 'live'`).
+ *   · 소스의 뷰는 지우지 않는다 — 숨길 뿐이다(되살리면 탭이 돌아온다).
+ *   · 권한은 더하기와 같다 — 주인 데이터베이스의 `edit_structure` · 잠기면 막는다.
  */
 
 import { randomUUID } from 'node:crypto'
@@ -57,7 +72,13 @@ export type DataSourceSummary = {
   readonly orderKey: string
 }
 
-export type DataSourceFailure = 'not_found' | 'forbidden' | 'invalid_name' | 'locked'
+export type DataSourceFailure =
+  | 'not_found'
+  | 'forbidden'
+  | 'invalid_name'
+  | 'locked'
+  /** 데이터베이스의 마지막 살아 있는 소스는 휴지통에 넣을 수 없다(8e-3a). */
+  | 'last_source'
 
 export type DataSourceResult<T> =
   | { readonly ok: true; readonly value: T }
@@ -71,13 +92,13 @@ function normalizeName(raw: unknown): string | null {
   return name === '' ? null : name
 }
 
-/** 이 데이터베이스에 붙은 data source 들 — 부착 순서대로. 권한은 부르는 쪽이 이미 봤다. */
+/** 이 데이터베이스에 붙은 **살아 있는** data source 들 — 부착 순서대로. 권한은 부르는 쪽이 이미 봤다. 휴지통의 소스는 없는 것이다(8e-3a). */
 export async function readDataSources(tx: Tx, databaseId: string): Promise<DataSourceSummary[]> {
   const rows = await tx.query<{ id: string; name: string; owned: boolean; order_idx: string }>(
     `SELECT ds.id, ds.name, ds.owner_database_id = dds.database_id AS owned, dds.order_idx
        FROM database_data_source dds
        JOIN data_source ds ON ds.id = dds.data_source_id
-      WHERE dds.database_id = $1
+      WHERE dds.database_id = $1 AND ds.lifecycle = 'live'
       ORDER BY dds.order_idx, ds.id`,
     [databaseId],
   )
@@ -196,8 +217,14 @@ export async function addDataSource(
     const gate = await openDatabase(tx, ctx, databaseId, 'edit_structure')
     if (isFailure(gate)) return gate
 
+    // 이름 받기는 **처음으로** 둘째가 생길 때뿐이다 — 부착 행(휴지통의 소스까지)이 하나인 데이터베이스. 살아 있는 것만 세면, 둘 중
+    // 하나를 휴지통에 넣은 뒤 더할 때 이미 보였던(사용자가 고쳤을 수 있는) 첫째의 이름을 덮는다(8e-3a).
+    const { attached } = await tx.queryOne<{ attached: string }>(
+      `SELECT count(*) AS attached FROM database_data_source WHERE database_id = $1`,
+      [databaseId],
+    )
     const sources = await readDataSources(tx, databaseId)
-    const only = sources.length === 1 ? sources[0] : undefined
+    const only = Number(attached) === 1 ? sources[0] : undefined
     if (only !== undefined && only.owned && gate.title !== '' && gate.title !== only.name) {
       await tx.query(`UPDATE data_source SET name = $2, updated_at = now() WHERE id = $1`, [only.id, gate.title])
     }
@@ -206,7 +233,12 @@ export async function addDataSource(
       `SELECT order_idx FROM view WHERE database_id = $1 AND owner_kind = 'database_view' ORDER BY order_idx DESC LIMIT 1`,
       [databaseId],
     )
-    const sourceOrder = orderKeyBetween(sources.at(-1)?.orderKey ?? null, null)
+    // 끝 키는 휴지통의 소스까지 센다 — 살아 있는 것만 보면 되살린 소스와 같은 키가 생길 수 있다.
+    const lastSource = await tx.queryMaybe<{ order_idx: string }>(
+      `SELECT order_idx FROM database_data_source WHERE database_id = $1 ORDER BY order_idx DESC LIMIT 1`,
+      [databaseId],
+    )
+    const sourceOrder = orderKeyBetween(lastSource?.order_idx ?? null, null)
     const { dataSourceId, viewId } = await insertOwnedDataSource(tx, {
       databaseId,
       name,
@@ -241,7 +273,7 @@ export async function renameDataSource(
   return withCommandTransaction(async (tx) => {
     const source = await tx.queryMaybe<{ owner_database_id: string; name: string }>(
       `SELECT ds.owner_database_id, ds.name FROM data_source ds JOIN block b ON b.id = ds.owner_database_id
-        WHERE ds.id = $1 AND b.workspace_id = $2 AND b.lifecycle = 'live'`,
+        WHERE ds.id = $1 AND b.workspace_id = $2 AND b.lifecycle = 'live' AND ds.lifecycle = 'live'`,
       [dataSourceId, ctx.workspaceId],
     )
     if (source === null) return fail('not_found')
@@ -256,5 +288,152 @@ export async function renameDataSource(
       )
     }
     return { ok: true, value: { id: dataSourceId, name } } as const
+  })
+}
+
+// ── 휴지통 (8e-3a) ─────────────────────────────────────────────────────
+
+type SourceState = { readonly owner_database_id: string; readonly lifecycle: string; readonly name: string }
+
+/**
+ * 소스를 찾고 주인 데이터베이스의 문을 지난다(블록 행을 잠근다) — 그 뒤에 소스 행을 잠그고 상태를 다시 읽는다. 상태가 `expect` 가
+ * 아니면 `not_found` 다(휴지통에 없는 소스를 되살리라는 것은 없는 것을 되살리라는 것과 같다).
+ */
+async function openSourceFor(
+  tx: Tx,
+  ctx: SessionContext,
+  dataSourceId: string,
+  expect: 'live' | 'trashed',
+): Promise<SourceState | ReturnType<typeof fail>> {
+  const found = await tx.queryMaybe<{ owner_database_id: string }>(
+    `SELECT ds.owner_database_id FROM data_source ds JOIN block b ON b.id = ds.owner_database_id
+      WHERE ds.id = $1 AND b.workspace_id = $2 AND b.lifecycle = 'live'`,
+    [dataSourceId, ctx.workspaceId],
+  )
+  if (found === null) return fail('not_found')
+  const gate = await openDatabase(tx, ctx, found.owner_database_id, 'edit_structure')
+  if (isFailure(gate)) return gate
+  const source = await tx.queryOne<SourceState>(
+    `SELECT owner_database_id, lifecycle::text AS lifecycle, name FROM data_source WHERE id = $1 FOR UPDATE`,
+    [dataSourceId],
+  )
+  return source.lifecycle === expect ? source : fail('not_found')
+}
+
+async function touchDatabase(tx: Tx, ctx: SessionContext, databaseId: string): Promise<void> {
+  await tx.query(
+    `UPDATE block SET last_edited_by = $2, last_edited_at = now(), version = version + 1 WHERE id = $1`,
+    [databaseId, ctx.userId],
+  )
+}
+
+export type TrashedDataSource = {
+  readonly dataSourceId: string
+  /** 함께 휴지통에 들어간 행 · 템플릿과 그 하위 페이지의 수. */
+  readonly trashedRows: number
+  readonly purgeAfter: Date
+}
+
+/**
+ * 소스를 휴지통으로 — 그 소스의 살아 있는 행 · 템플릿과 그 하위 페이지를 **소스 id 를 삭제 루트로** 함께(머리말 "휴지통").
+ * 데이터베이스의 마지막 살아 있는 소스면 `last_source` 다.
+ */
+export async function trashDataSource(
+  ctx: SessionContext,
+  dataSourceId: string,
+): Promise<DataSourceResult<TrashedDataSource>> {
+  return withCommandTransaction(async (tx) => {
+    const source = await openSourceFor(tx, ctx, dataSourceId, 'live')
+    if (isFailure(source)) return source
+    const live = await readDataSources(tx, source.owner_database_id)
+    if (live.length <= 1) return fail('last_source')
+
+    const { days } = await tx.queryOne<{ days: number }>(`SELECT trash_days AS days FROM workspace WHERE id = $1`, [
+      ctx.workspaceId,
+    ])
+    const { purge_after } = await tx.queryOne<{ purge_after: Date }>(
+      `UPDATE data_source
+          SET lifecycle = 'trashed', trashed_at = now(), trashed_by = $2,
+              purge_after = now() + make_interval(days => $3), updated_at = now()
+        WHERE id = $1
+        RETURNING purge_after`,
+      [dataSourceId, ctx.userId, days],
+    )
+
+    // 행 · 템플릿(소스의 직계)과 그 하위 페이지. 따로 먼저 지운 것은 이미 휴지통이라 걸리지 않는다 — 제 루트를 지킨다(B3).
+    const rows = await tx.query<{ id: string }>(
+      `UPDATE block
+          SET lifecycle = 'trashed', trashed_at = now(), trashed_by = $3, trash_root_id = $1, trash_reason = 'user',
+              purge_after = $4, version = version + 1
+        WHERE workspace_id = $2 AND parent_type = 'data_source' AND parent_id = $1
+          AND type = 'page' AND lifecycle = 'live'
+        RETURNING id`,
+      [dataSourceId, ctx.workspaceId, ctx.userId, purge_after],
+    )
+    const below =
+      rows.length === 0
+        ? []
+        : await tx.query<{ id: string }>(
+            `UPDATE block
+                SET lifecycle = 'trashed', trashed_at = now(), trashed_by = $3, trash_root_id = $1, trash_reason = 'user',
+                    purge_after = $4, version = version + 1
+              WHERE workspace_id = $2 AND type = 'page' AND lifecycle = 'live' AND ancestor_path && $5::uuid[]
+              RETURNING id`,
+            [dataSourceId, ctx.workspaceId, ctx.userId, purge_after, rows.map((r) => r.id)],
+          )
+    await touchDatabase(tx, ctx, source.owner_database_id)
+    return {
+      ok: true,
+      value: { dataSourceId, trashedRows: rows.length + below.length, purgeAfter: purge_after },
+    } as const
+  })
+}
+
+/** 휴지통의 소스를 되살린다 — 그 소스를 루트로 함께 들어간 것만 돌아온다(B3). 탭 · 순서는 그대로다(지우지 않았다). */
+export async function restoreDataSource(
+  ctx: SessionContext,
+  dataSourceId: string,
+): Promise<DataSourceResult<{ readonly dataSourceId: string; readonly restoredRows: number }>> {
+  return withCommandTransaction(async (tx) => {
+    const source = await openSourceFor(tx, ctx, dataSourceId, 'trashed')
+    if (isFailure(source)) return source
+    await tx.query(
+      `UPDATE data_source
+          SET lifecycle = 'live', trashed_at = NULL, trashed_by = NULL, purge_after = NULL, updated_at = now()
+        WHERE id = $1`,
+      [dataSourceId],
+    )
+    const restored = await tx.query<{ id: string }>(
+      `UPDATE block
+          SET lifecycle = 'live', trashed_at = NULL, trashed_by = NULL, trash_root_id = NULL, purge_after = NULL,
+              version = version + 1
+        WHERE workspace_id = $2 AND lifecycle = 'trashed' AND trash_root_id = $1
+        RETURNING id`,
+      [dataSourceId, ctx.workspaceId],
+    )
+    await touchDatabase(tx, ctx, source.owner_database_id)
+    return { ok: true, value: { dataSourceId, restoredRows: restored.length } } as const
+  })
+}
+
+/** 휴지통의 소스를 영구 삭제한다 — 소스와 그 묶음이 `purged` 가 된다(2단계 보존 · 물리 삭제는 하지 않는다). 되돌릴 수 없다. */
+export async function purgeDataSource(
+  ctx: SessionContext,
+  dataSourceId: string,
+): Promise<DataSourceResult<{ readonly dataSourceId: string; readonly purgedRows: number }>> {
+  return withCommandTransaction(async (tx) => {
+    const source = await openSourceFor(tx, ctx, dataSourceId, 'trashed')
+    if (isFailure(source)) return source
+    await tx.query(`UPDATE data_source SET lifecycle = 'purged', purged_at = now(), updated_at = now() WHERE id = $1`, [
+      dataSourceId,
+    ])
+    const purged = await tx.query<{ id: string }>(
+      `UPDATE block SET lifecycle = 'purged', purged_at = now()
+        WHERE workspace_id = $2 AND lifecycle = 'trashed' AND trash_root_id = $1
+        RETURNING id`,
+      [dataSourceId, ctx.workspaceId],
+    )
+    await touchDatabase(tx, ctx, source.owner_database_id)
+    return { ok: true, value: { dataSourceId, purgedRows: purged.length } } as const
   })
 }

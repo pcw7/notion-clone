@@ -8,6 +8,9 @@
  *
  * F-11-05 가 짚은 빈 상태 규칙을 지킨다: *"휴지통이 비어 있을 때와 검색 결과
  * 0건을 **구분해** 표시할 것(같은 문구를 쓰면 사용자가 검색어를 의심하지 않는다)."*
+ *
+ * 데이터베이스의 data source 도 여기 온다(8e-3a) — "데이터 소스 · 그 데이터베이스 이름"으로 적고, 되살리기 · 영구 삭제는 그 소스의
+ * 주소(`/data-sources/{id}/trash`)로 보낸다. 함께 들어간 행은 소스 한 줄로 묶여 따로 나오지 않는다(삭제 루트만).
  */
 
 import { useMemo, useState } from 'react'
@@ -18,6 +21,10 @@ import { PageIconView } from './page-icon-view'
 
 export type TrashRow = {
   id: string
+  /** 페이지(행 · 템플릿 포함)인가 data source 인가(8e-3a). */
+  kind: 'page' | 'data_source'
+  /** data source 면 그 데이터베이스의 이름. */
+  databaseName: string | null
   title: string
   /** 그 페이지의 아이콘(8c-2) — 없으면 null(기본 글리프). */
   icon: PageIcon | null
@@ -54,7 +61,8 @@ export function TrashPanel({
     return entries.filter((e) => (e.title || UNTITLED).toLowerCase().includes(q))
   }, [entries, filter])
 
-  async function act(id: string, kind: 'restore' | 'purge') {
+  async function act(entry: TrashRow, kind: 'restore' | 'purge') {
+    const id = entry.id
     if (kind === 'purge') {
       // 영구 삭제는 되돌릴 수 없다 — 여기만 확인을 받는다.
       const okToGo = window.confirm('영구 삭제하면 목록에서 사라집니다. 계속할까요?')
@@ -64,7 +72,8 @@ export function TrashPanel({
     setBusyId(id)
     setMessage(null)
     try {
-      const res = await fetch(`/api/workspaces/${workspaceId}/pages/${id}/trash`, {
+      const resource = entry.kind === 'data_source' ? 'data-sources' : 'pages'
+      const res = await fetch(`/api/workspaces/${workspaceId}/${resource}/${id}/trash`, {
         method: kind === 'restore' ? 'DELETE' : 'PUT',
       })
       const data = await res.json()
@@ -93,6 +102,7 @@ export function TrashPanel({
         type="button"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
+        data-testid="trash-toggle"
         className="self-start text-sm font-medium text-neutral-500 hover:underline underline-offset-4"
       >
         휴지통 {entries.length > 0 && `(${entries.length})`}
@@ -124,14 +134,22 @@ export function TrashPanel({
               {rows.map((e) => {
                 const left = daysLeft(e.purgeAfter)
                 return (
-                  <li key={e.id} className="flex items-center justify-between gap-2 px-1 py-2">
+                  <li
+                    key={e.id}
+                    data-testid="trash-entry"
+                    data-trash-kind={e.kind}
+                    data-trash-id={e.id}
+                    className="flex items-center justify-between gap-2 px-1 py-2"
+                  >
                     <div className="min-w-0">
                       <p className="truncate text-sm">
                         <PageIconView icon={e.icon} fallback className="mr-1.5 align-[-0.125em]" />
                         {e.title || UNTITLED}
                       </p>
                       <p className="text-xs text-neutral-400">
-                        {e.descendantCount > 0 && `하위 ${e.descendantCount}개 포함 · `}
+                        {e.kind === 'data_source' && `데이터 소스 · ${e.databaseName || UNTITLED} · `}
+                        {e.descendantCount > 0 &&
+                          (e.kind === 'data_source' ? `항목 ${e.descendantCount}개 포함 · ` : `하위 ${e.descendantCount}개 포함 · `)}
                         {left === null ? '보관 기한 없음' : `${left}일 남음`}
                       </p>
                     </div>
@@ -139,7 +157,8 @@ export function TrashPanel({
                       <button
                         type="button"
                         disabled={busyId === e.id}
-                        onClick={() => void act(e.id, 'restore')}
+                        data-testid="trash-restore"
+                        onClick={() => void act(e, 'restore')}
                         className="rounded border border-neutral-300 px-2 py-1 text-xs disabled:opacity-40 dark:border-neutral-700"
                       >
                         복원
@@ -147,7 +166,8 @@ export function TrashPanel({
                       <button
                         type="button"
                         disabled={busyId === e.id}
-                        onClick={() => void act(e.id, 'purge')}
+                        data-testid="trash-purge"
+                        onClick={() => void act(e, 'purge')}
                         className="rounded border border-red-300 px-2 py-1 text-xs text-red-600 disabled:opacity-40 dark:border-red-900"
                       >
                         영구 삭제

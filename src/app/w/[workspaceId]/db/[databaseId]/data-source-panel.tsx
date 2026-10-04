@@ -18,6 +18,10 @@
  *
  * 더하면 새 소스의 뷰(함께 태어난 표)로 옮긴다 — 노션: *"When you create a data source, a new view will automatically be created and
  * attached to it."* 이름 바꾸기는 서버 렌더를 다시 받는다(탭 위의 소스 이름 · 관계형의 반대쪽 이름 기본값이 따라온다).
+ *
+ * 휴지통으로(8e-3a · 노션 *"select ••• to Move to Trash"*) — 소스가 둘 이상일 때만 선다(마지막 소스는 서버도 `last_source` 로 막는다).
+ * 그 소스의 항목이 함께 가므로 창 안에서 한 번 더 묻는다. 지금 보고 있는 소스를 보냈으면 데이터베이스의 첫 뷰로 옮긴다(그 탭이
+ * 사라졌다). 되살리기는 사이드바의 휴지통이다.
  */
 
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
@@ -48,6 +52,8 @@ export function DataSourcePanel(props: {
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  /** 휴지통으로 보낼지 묻는 중인 소스. */
+  const [asking, setAsking] = useState<string | null>(null)
   const boxRef = useRef<HTMLDivElement>(null)
   const single = sources.length === 1
 
@@ -63,7 +69,24 @@ export function DataSourcePanel(props: {
 
   const toggle = () => {
     setError(null)
+    setAsking(null)
     setOpen((was) => !was)
+  }
+
+  const trash = async (source: DataSourceEntry) => {
+    setBusy(true)
+    setError(null)
+    const trashed = await api.trashDataSource(workspaceId, source.id)
+    setBusy(false)
+    if (!trashed.ok) {
+      setError(trashed.message)
+      return
+    }
+    setAsking(null)
+    setOpen(false)
+    // 보고 있던 소스면 그 탭이 사라졌다 — 데이터베이스의 첫 뷰로. 아니면 같은 자리에서 다시 받는다(사이드바의 휴지통도 따라온다).
+    if (source.id === currentSourceId) router.push(`/w/${workspaceId}/db/${databaseId}`)
+    else router.refresh()
   }
 
   const onKeyDown = (event: KeyboardEvent) => {
@@ -153,9 +176,31 @@ export function DataSourcePanel(props: {
                     </Link>
                   )
                 )}
+                {!single && (
+                  <button
+                    type="button"
+                    aria-label={`${source.name} 휴지통으로`}
+                    data-testid="db-source-trash"
+                    disabled={busy}
+                    onClick={() => setAsking(source.id)}
+                    className="shrink-0 rounded px-1.5 py-1 text-xs text-neutral-400 hover:bg-neutral-100 hover:text-red-600 disabled:opacity-40 dark:hover:bg-neutral-800"
+                  >
+                    휴지통
+                  </button>
+                )}
               </li>
             ))}
           </ul>
+
+          {asking !== null && (
+            <AskTrash
+              source={sources.find((s) => s.id === asking) ?? null}
+              busy={busy}
+              onConfirm={(source) => void trash(source)}
+              onCancel={() => setAsking(null)}
+            />
+          )}
+
 
           <button
             type="button"
@@ -223,5 +268,54 @@ function SourceNameField({
       }}
       className="min-w-0 flex-1 rounded bg-transparent px-1 py-1 outline-none focus:bg-neutral-100 dark:focus:bg-neutral-800"
     />
+  )
+}
+
+/** 휴지통으로 보낼지 창 안에서 한 번 더 묻는다 — 그 소스의 항목이 함께 간다(되살리기는 사이드바의 휴지통). */
+function AskTrash({
+  source,
+  busy,
+  onConfirm,
+  onCancel,
+}: {
+  source: DataSourceEntry | null
+  busy: boolean
+  onConfirm: (source: DataSourceEntry) => void
+  onCancel: () => void
+}) {
+  if (source === null) return null
+  return (
+    <div
+      role="group"
+      aria-label="데이터 소스를 휴지통으로"
+      data-testid="db-source-trash-ask"
+      className="mt-1 rounded border border-red-200 bg-red-50 p-2 text-xs text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-200"
+    >
+      <p>
+        <strong>{source.name}</strong>을(를) 휴지통으로 보냅니다. 이 소스의 항목 · 템플릿과 이 소스를 보는 뷰도 함께 사라지고, 휴지통에서
+        되살릴 수 있습니다.
+      </p>
+      <div className="mt-2 flex gap-1">
+        <button
+          type="button"
+          data-testid="db-source-trash-confirm"
+          disabled={busy}
+          // 묻는 상자가 열리면 곧바로 Enter 로 확정할 수 있게(되돌릴 수 있는 일이다).
+          autoFocus
+          onClick={() => onConfirm(source)}
+          className="rounded bg-red-600 px-2 py-1 text-white hover:bg-red-700 disabled:opacity-40"
+        >
+          휴지통으로
+        </button>
+        <button
+          type="button"
+          data-testid="db-source-trash-cancel"
+          onClick={onCancel}
+          className="rounded px-2 py-1 hover:bg-red-100 dark:hover:bg-red-900"
+        >
+          취소
+        </button>
+      </div>
+    </div>
   )
 }

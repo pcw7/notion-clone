@@ -10,6 +10,7 @@
  *   ⑤ 권한은 데이터베이스의 것 — 못 보면 없는 것, 볼 수만 있으면 못 고친다, 잠기면 못 고친다
  *   ⑥ 이름 규칙
  *   ⑦ relation 대상 목록과 내보내기가 data source 마다 하나씩이다
+ *   ⑧ 휴지통(8e-3a) — 소스와 그 행이 한 묶음으로 가고 돌아온다 · 마지막 소스는 못 보낸다 · 휴지통의 소스는 모든 문에서 없는 것이다
  */
 
 import { test, describe, before, after } from 'node:test'
@@ -22,10 +23,24 @@ import { setDatabaseLock } from '../permissions/lock.ts'
 import { withReadTransaction } from '../db/tx.ts'
 import { textRun } from '../contracts/rich-text.ts'
 import { createDatabase, getDatabase, listDatabases, renameDatabase } from './database.ts'
-import { addDataSource, DEFAULT_DATA_SOURCE_NAME, listDataSources, renameDataSource } from './data-source.ts'
+import {
+  addDataSource,
+  DEFAULT_DATA_SOURCE_NAME,
+  listDataSources,
+  purgeDataSource,
+  renameDataSource,
+  restoreDataSource,
+  trashDataSource,
+} from './data-source.ts'
 import { addProperty, getSchema } from './property.ts'
 import { createView, deleteView, getView, listViews, updateView } from './view.ts'
-import { createRow } from './row.ts'
+import { createRow, trashRow } from './row.ts'
+import { createTemplate } from './template.ts'
+import { addRelationProperty } from './relation.ts'
+import { queryGroups } from './group.ts'
+import { createPage } from '../block/page.ts'
+import { listTrash, restorePage, TrashError } from '../block/trash.ts'
+import { asBlockId } from '../ids.ts'
 import { queryRows } from './query.ts'
 import { readExportSnapshot } from '../export/snapshot.ts'
 import type { ExportDatabaseNode } from '../export/plan.ts'
@@ -346,5 +361,201 @@ describe('⑦ data source 마다 하나씩', () => {
       ],
       '둘째 소스의 행이 내보내기에서 빠졌거나 섞였다',
     )
+  })
+})
+
+describe('⑧ 휴지통 (8e-3a)', () => {
+  const lifecycleOf = (ids: readonly string[]) =>
+    withReadTransaction((tx) =>
+      tx.query<{ id: string; lifecycle: string; trash_root_id: string | null }>(
+        `SELECT id, lifecycle::text AS lifecycle, trash_root_id FROM block WHERE id = ANY($1::uuid[]) ORDER BY id`,
+        [ids],
+      ),
+    )
+  const sourceState = (id: string) =>
+    withReadTransaction((tx) =>
+      tx.queryOne<{ lifecycle: string; purge_after: Date | null }>(
+        `SELECT lifecycle::text AS lifecycle, purge_after FROM data_source WHERE id = $1`,
+        [id],
+      ),
+    )
+
+  /** 소스 둘 — 둘째에 행 둘(하나는 하위 페이지를 가진다) · 템플릿 하나 · 둘째를 보는 뷰 하나 더. */
+  const seeded = async () => {
+    const table = await newTable(`휴지통 ${randomUUID().slice(0, 6)}`)
+    const added = unwrap(await addDataSource(fx.owner.ctx, table.databaseId, { name: '회사' }))
+    const second = added.dataSource.id
+    const rowA = unwrap(await createRow(fx.owner.ctx, second))
+    const rowB = unwrap(await createRow(fx.owner.ctx, second))
+    const child = await createPage(fx.owner.ctx, { parentPageId: asBlockId(rowA.id), title: [textRun('행의 하위')] })
+    const template = unwrap(await createTemplate(fx.owner.ctx, second, { title: '회사 템플릿' }))
+    const extraView = unwrap(await createView(fx.owner.ctx, table.databaseId, { name: '회사 목록', type: 'list', dataSourceId: second }))
+    return { ...table, second, secondView: added.viewId, rowA: rowA.id, rowB: rowB.id, child: child.id, template: template.id, extraView: extraView.id }
+  }
+
+  test('★ 휴지통으로 — 소스 · 행 · 템플릿 · 하위 페이지가 소스를 루트로 함께 가고, 소스를 보는 뷰가 탭에서 빠진다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const db = await seeded()
+    const trashed = unwrap(await trashDataSource(fx.owner.ctx, db.second))
+    assert.equal(trashed.trashedRows, 4, '행 둘 · 템플릿 · 하위 페이지')
+    const state = await sourceState(db.second)
+    assert.equal(state.lifecycle, 'trashed')
+    assert.ok(state.purge_after instanceof Date)
+
+    const blocks = await lifecycleOf([db.rowA, db.rowB, db.child, db.template])
+    assert.ok(blocks.every((b) => b.lifecycle === 'trashed' && b.trash_root_id === db.second), JSON.stringify(blocks))
+
+    assert.deepEqual(unwrap(await listDataSources(fx.owner.ctx, db.databaseId)).map((s) => s.id), [db.dataSourceId])
+    assert.deepEqual(unwrap(await listViews(fx.owner.ctx, db.databaseId)).map((v) => v.id), [db.viewId], '휴지통 소스의 뷰가 탭에 남았다')
+    assert.equal(reasonOf(await getView(fx.owner.ctx, db.secondView)), 'not_found')
+    assert.deepEqual(unwrap(await getDatabase(fx.owner.ctx, db.databaseId)).dataSources.map((s) => s.id), [db.dataSourceId])
+  })
+
+  test('★ 휴지통의 소스는 모든 문에서 없는 것이다 — 행 · 속성 · 뷰 만들기 · 이름 · 관계형 대상 · 내보내기', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const db = await seeded()
+    unwrap(await trashDataSource(fx.owner.ctx, db.second))
+    assert.equal(reasonOf(await queryRows(fx.owner.ctx, db.second)), 'not_found')
+    assert.equal(reasonOf(await createRow(fx.owner.ctx, db.second)), 'not_found')
+    assert.equal(reasonOf(await getSchema(fx.owner.ctx, db.second)), 'not_found')
+    assert.equal(reasonOf(await addProperty(fx.owner.ctx, db.second, { name: '몰래', type: 'number' })), 'not_found')
+    assert.equal(reasonOf(await createView(fx.owner.ctx, db.databaseId, { dataSourceId: db.second })), 'not_found')
+    assert.equal(reasonOf(await renameDataSource(fx.owner.ctx, db.second, '몰래')), 'not_found')
+    assert.equal(reasonOf(await createTemplate(fx.owner.ctx, db.second, { title: '몰래' })), 'not_found')
+    assert.ok(!(await listDatabases(fx.owner.ctx)).some((d) => d.dataSourceId === db.second), '관계형 대상 목록에 남았다')
+    const snapshot = unwrap(await readExportSnapshot(fx.owner.ctx, { kind: 'page', rootId: db.databaseId }))
+    const node = snapshot.nodes.get(db.databaseId) as ExportDatabaseNode
+    assert.deepEqual(node.sources.map((s) => s.id), [db.dataSourceId], '내보내기에 휴지통 소스의 표가 남았다')
+    // 다른 소스에서 휴지통의 소스를 관계형 대상으로 고를 수 없다(볼 수 없는 표와 같은 답).
+    assert.equal(
+      reasonOf(await addRelationProperty(fx.owner.ctx, db.dataSourceId, { name: '몰래 관계', targetDataSourceId: db.second })),
+      'invalid_target',
+    )
+  })
+
+  test('휴지통 소스의 보드는 그룹 질의에서도 없는 것이다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const db = await seeded()
+    unwrap(await addProperty(fx.owner.ctx, db.second, { name: '단계', type: 'select' }))
+    const board = unwrap(await createView(fx.owner.ctx, db.databaseId, { name: '회사 보드', type: 'board', dataSourceId: db.second }))
+    assert.equal(reasonOf(await queryGroups(fx.owner.ctx, board.id)), true, '전제: 살아 있을 때는 그룹이 나온다')
+    unwrap(await trashDataSource(fx.owner.ctx, db.second))
+    assert.equal(reasonOf(await queryGroups(fx.owner.ctx, board.id)), 'not_found')
+  })
+
+  test('★ 마지막 살아 있는 소스는 휴지통에 넣을 수 없다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const table = await newTable()
+    assert.equal(reasonOf(await trashDataSource(fx.owner.ctx, table.dataSourceId)), 'last_source')
+    const added = unwrap(await addDataSource(fx.owner.ctx, table.databaseId, { name: '둘째' }))
+    unwrap(await trashDataSource(fx.owner.ctx, table.dataSourceId))
+    assert.equal(reasonOf(await trashDataSource(fx.owner.ctx, added.dataSource.id)), 'last_source', '첫째를 보낸 뒤 둘째는 마지막이다')
+    assert.equal(reasonOf(await trashDataSource(fx.owner.ctx, table.dataSourceId)), 'not_found', '이미 휴지통인 것을 다시 보낸다')
+  })
+
+  test('★ 되살리면 그 묶음만 돌아온다 — 먼저 따로 지운 행은 휴지통에 남는다 · 탭 · 순서도 돌아온다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const db = await seeded()
+    unwrap(await trashRow(fx.owner.ctx, db.rowB))
+    unwrap(await trashDataSource(fx.owner.ctx, db.second))
+    const restored = unwrap(await restoreDataSource(fx.owner.ctx, db.second))
+    assert.equal(restored.restoredRows, 3, '행 하나 · 템플릿 · 하위 페이지')
+    assert.equal((await sourceState(db.second)).lifecycle, 'live')
+    const blocks = new Map((await lifecycleOf([db.rowA, db.rowB, db.child, db.template])).map((b) => [b.id, b]))
+    assert.equal(blocks.get(db.rowA)?.lifecycle, 'live')
+    assert.equal(blocks.get(db.child)?.lifecycle, 'live')
+    assert.equal(blocks.get(db.template)?.lifecycle, 'live')
+    assert.equal(blocks.get(db.rowB)?.lifecycle, 'trashed')
+    assert.equal(blocks.get(db.rowB)?.trash_root_id, db.rowB, '따로 지운 행의 루트가 바뀌었다')
+
+    assert.deepEqual(unwrap(await listDataSources(fx.owner.ctx, db.databaseId)).map((s) => s.id), [db.dataSourceId, db.second])
+    assert.deepEqual(unwrap(await listViews(fx.owner.ctx, db.databaseId)).map((v) => v.id), [db.viewId, db.secondView, db.extraView])
+    const rows = await queryRows(fx.owner.ctx, db.second)
+    assert.ok(rows.ok)
+    assert.deepEqual(rows.value.rows.map((r) => r.id), [db.rowA])
+  })
+
+  test('★ 소스가 휴지통에 있는 동안 따로 지운 행을 되살리면 거부한다 — 무엇을 먼저 할지 말한다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const db = await seeded()
+    unwrap(await trashRow(fx.owner.ctx, db.rowB))
+    unwrap(await trashDataSource(fx.owner.ctx, db.second))
+    await assert.rejects(
+      restorePage(fx.owner.ctx, asBlockId(db.rowB)),
+      (e: unknown) => e instanceof TrashError && e.code === 'source_trashed',
+    )
+    assert.equal((await lifecycleOf([db.rowB]))[0]?.lifecycle, 'trashed')
+    unwrap(await restoreDataSource(fx.owner.ctx, db.second))
+    await restorePage(fx.owner.ctx, asBlockId(db.rowB))
+    assert.equal((await lifecycleOf([db.rowB]))[0]?.lifecycle, 'live', '소스를 되살린 뒤에는 돌아온다')
+  })
+
+  test('★ 휴지통 목록 — 소스는 한 줄(묶음의 수와 데이터베이스 이름)이고 함께 간 행은 따로 나오지 않는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const db = await seeded()
+    unwrap(await trashRow(fx.owner.ctx, db.rowB))
+    unwrap(await trashDataSource(fx.owner.ctx, db.second))
+    const entries = await listTrash(fx.owner.ctx)
+    const source = entries.find((e) => e.id === db.second)
+    assert.ok(source !== undefined, '소스가 휴지통 목록에 없다')
+    assert.equal(source.kind, 'data_source')
+    assert.equal(source.title, '회사')
+    assert.equal(source.descendantCount, 3)
+    assert.ok(source.databaseName?.startsWith('휴지통 '), String(source.databaseName))
+    assert.equal(entries.find((e) => e.id === db.rowB)?.kind, 'page', '따로 지운 행은 제 줄이다')
+    for (const id of [db.rowA, db.child, db.template]) assert.ok(!entries.some((e) => e.id === id), `함께 간 ${id} 가 따로 나왔다`)
+  })
+
+  test('★ 영구 삭제 — 소스와 그 묶음이 purged 가 되고 목록 · 되살리기에서 사라진다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const db = await seeded()
+    unwrap(await trashDataSource(fx.owner.ctx, db.second))
+    assert.equal(reasonOf(await purgeDataSource(fx.owner.ctx, db.dataSourceId)), 'not_found', '살아 있는 소스를 영구 삭제한다')
+    const purged = unwrap(await purgeDataSource(fx.owner.ctx, db.second))
+    assert.equal(purged.purgedRows, 4)
+    assert.equal((await sourceState(db.second)).lifecycle, 'purged')
+    assert.ok((await lifecycleOf([db.rowA, db.rowB, db.child, db.template])).every((b) => b.lifecycle === 'purged'))
+    assert.ok(!(await listTrash(fx.owner.ctx)).some((e) => e.id === db.second))
+    assert.equal(reasonOf(await restoreDataSource(fx.owner.ctx, db.second)), 'not_found')
+  })
+
+  test('★ 권한 · 잠금 — 데이터베이스의 것이다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const db = await seeded()
+    assert.equal((await stopInheriting(fx.owner.ctx, db.databaseId)).ok, true)
+    assert.equal((await grantAccess(fx.owner.ctx, db.databaseId, { type: 'user', id: fx.owner.userId }, 'full_access')).ok, true)
+    assert.equal((await revokeAccess(fx.owner.ctx, db.databaseId, { type: 'workspace_everyone', id: null })).ok, true)
+    assert.equal(reasonOf(await trashDataSource(other.ctx, db.second)), 'not_found')
+    assert.equal((await grantAccess(fx.owner.ctx, db.databaseId, { type: 'user', id: other.userId }, 'view')).ok, true)
+    assert.equal(reasonOf(await trashDataSource(other.ctx, db.second)), 'forbidden')
+
+    unwrap(await setDatabaseLock(fx.owner.ctx, db.databaseId, true))
+    assert.equal(reasonOf(await trashDataSource(fx.owner.ctx, db.second)), 'locked')
+    unwrap(await setDatabaseLock(fx.owner.ctx, db.databaseId, false))
+    unwrap(await trashDataSource(fx.owner.ctx, db.second))
+    assert.equal(reasonOf(await restoreDataSource(other.ctx, db.second)), 'forbidden')
+    unwrap(await setDatabaseLock(fx.owner.ctx, db.databaseId, true))
+    assert.equal(reasonOf(await restoreDataSource(fx.owner.ctx, db.second)), 'locked')
+    assert.equal(reasonOf(await purgeDataSource(fx.owner.ctx, db.second)), 'locked')
+    unwrap(await setDatabaseLock(fx.owner.ctx, db.databaseId, false))
+
+    // 볼 수 없는 사람의 휴지통 목록에는 그 소스가 없다(이름이 새지 않는다).
+    assert.equal((await revokeAccess(fx.owner.ctx, db.databaseId, { type: 'user', id: other.userId })).ok, true)
+    assert.ok(!(await listTrash(other.ctx)).some((e) => e.id === db.second), '볼 수 없는 데이터베이스의 소스가 휴지통 목록에 보인다')
+  })
+
+  test('★ 하나를 휴지통에 넣은 뒤 더해도 첫째의 이름을 덮지 않는다 — 이름 받기는 처음으로 둘째가 생길 때뿐이다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const table = await newTable('업무')
+    const second = unwrap(await addDataSource(fx.owner.ctx, table.databaseId, { name: '둘째' }))
+    unwrap(await renameDataSource(fx.owner.ctx, table.dataSourceId, '할 일'))
+    unwrap(await trashDataSource(fx.owner.ctx, second.dataSource.id))
+    unwrap(await addDataSource(fx.owner.ctx, table.databaseId, { name: '셋째' }))
+    assert.deepEqual(unwrap(await listDataSources(fx.owner.ctx, table.databaseId)).map((s) => s.name), ['할 일', '셋째'])
+    // 되살리면 원래 자리(부착 순서)로 — 셋째의 키가 휴지통 소스의 키와 겹치지 않았다(겹치면 순서가 id 로 갈려 흔들린다).
+    unwrap(await restoreDataSource(fx.owner.ctx, second.dataSource.id))
+    const sources = unwrap(await listDataSources(fx.owner.ctx, table.databaseId))
+    assert.deepEqual(sources.map((s) => s.name), ['할 일', '둘째', '셋째'])
+    assert.equal(new Set(sources.map((s) => s.orderKey)).size, 3, `순서 키가 겹친다: ${sources.map((s) => s.orderKey).join()}`)
   })
 })

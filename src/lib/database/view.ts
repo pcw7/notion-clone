@@ -196,7 +196,8 @@ async function openView(
     `SELECT v.database_id, v.data_source_id
        FROM view v
        JOIN block b ON b.id = v.database_id
-      WHERE v.id = $1 AND b.workspace_id = $2 AND b.lifecycle = 'live'
+       JOIN data_source ds ON ds.id = v.data_source_id
+      WHERE v.id = $1 AND b.workspace_id = $2 AND b.lifecycle = 'live' AND ds.lifecycle = 'live'
         AND v.owner_kind = 'database_view'`,
     [viewId, ctx.workspaceId],
   )
@@ -378,9 +379,11 @@ export async function listViews(
     if (isFailure(gate)) return gate
 
     const rows = await tx.query<{ id: string; name: string | null; type: string; order_idx: string; data_source_id: string }>(
-      `SELECT id, name, type, order_idx, data_source_id FROM view
-        WHERE database_id = $1 AND owner_kind = 'database_view'
-        ORDER BY order_idx, id`,
+      // 휴지통의 소스를 보는 뷰는 탭에 서지 않는다 — 지우지 않고 숨긴다(되살리면 돌아온다 · 8e-3a).
+      `SELECT v.id, v.name, v.type, v.order_idx, v.data_source_id FROM view v
+         JOIN data_source ds ON ds.id = v.data_source_id
+        WHERE v.database_id = $1 AND v.owner_kind = 'database_view' AND ds.lifecycle = 'live'
+        ORDER BY v.order_idx, v.id`,
       [databaseId],
     )
     return {
@@ -432,9 +435,10 @@ export async function createView(
 
     // 0042 의 복합 FK 가 같은 것을 막지만, 거기까지 가면 예외라 화면이 받을 말이 없다 — 먼저 묻는다.
     const source = await tx.queryMaybe<{ data_source_id: string }>(
-      `SELECT data_source_id FROM database_data_source
-        WHERE database_id = $1 AND ($2::uuid IS NULL OR data_source_id = $2::uuid)
-        ORDER BY order_idx, data_source_id LIMIT 1`,
+      `SELECT dds.data_source_id FROM database_data_source dds
+         JOIN data_source ds ON ds.id = dds.data_source_id
+        WHERE dds.database_id = $1 AND ($2::uuid IS NULL OR dds.data_source_id = $2::uuid) AND ds.lifecycle = 'live'
+        ORDER BY dds.order_idx, dds.data_source_id LIMIT 1`,
       [databaseId, input.dataSourceId ?? null],
     )
     if (source === null) return fail('not_found')

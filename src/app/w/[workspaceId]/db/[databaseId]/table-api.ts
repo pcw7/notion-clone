@@ -83,6 +83,9 @@ function messageOf(status: number, body: ErrorBody): string {
       return '템플릿의 하위 페이지가 깊이 상한을 넘습니다.'
     case 'invalid_template':
       return '기본 템플릿으로 지정할 수 없습니다. 그사이 지워졌을 수 있습니다.'
+    // ── 데이터 소스 (8e-3a) ──
+    case 'last_source':
+      return '마지막 데이터 소스는 휴지통에 넣을 수 없습니다.'
   }
   return status >= 500 ? '서버에서 처리하지 못했습니다.' : '처리하지 못했습니다.'
 }
@@ -389,6 +392,11 @@ export function addDataSource(workspaceId: string, databaseId: string): Promise<
     { method: 'POST', headers: JSON_HEADERS, body: '{}' },
     (body) => ({ dataSourceId: (body.dataSource as { id: string }).id, viewId: body.viewId as string }),
   )
+}
+
+/** 데이터 소스를 휴지통으로 — 그 소스의 항목이 함께 간다(8e-3a). 마지막 소스면 `last_source` 다. */
+export function trashDataSource(workspaceId: string, dataSourceId: string): Promise<ApiResult<null>> {
+  return call(`${base(workspaceId)}/data-sources/${dataSourceId}/trash`, { method: 'POST' }, () => null)
 }
 
 export function renameDataSource(workspaceId: string, dataSourceId: string, name: string): Promise<ApiResult<null>> {

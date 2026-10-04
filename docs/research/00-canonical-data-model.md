@@ -1144,8 +1144,14 @@ CREATE TABLE data_source (                    -- 스키마와 행 집합의 소�
   change_seq            bigint NOT NULL DEFAULT 0,              -- [X-5] ds 채널 gap 감지 축
   unique_id_counter     bigint NOT NULL DEFAULT 0,              -- UPDATE...RETURNING 으로만 발급
   unique_id_prefix      text NULL,
+  -- [보강] 수명주기(0043 · 8e-3a) — 블록과 같은 세 값 · 같은 시각 열. X-3 은 블록의 축이고 data source 는 블록이 아니다(아래 [보강] ⑩)
+  lifecycle             block_lifecycle NOT NULL DEFAULT 'live',
+  trashed_at timestamptz NULL, trashed_by uuid NULL REFERENCES "user"(id),
+  purge_after timestamptz NULL, purged_at timestamptz NULL,
+  -- CHECK (블록의 ck_lifecycle_ts 와 같은 모양 · 휴지통이면 purge_after 도 있다)
   created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL
 );
+-- [보강] 불변식 DSL1: 살아 있지 않은 data source 에는 살아 있는 행(`type='page' AND parent_type='data_source'`)이 없다 — 지연 제약 트리거(0043).
 
 CREATE TABLE database_data_source (           -- 부착. 소유와 다른 축 <C-5>
   database_id    uuid NOT NULL REFERENCES database(id) ON DELETE CASCADE,
@@ -1461,7 +1467,8 @@ ALTER TABLE select_option ADD FOREIGN KEY (property_id, group_id)
 > ③ **이름 — 하나일 때는 데이터베이스 이름이 곧 그 이름이다.** 소스가 하나뿐이면 화면은 소스 이름을 따로 보여 주지 않는다. 그래서
 > `data_source.name` 은 만들 때의 이름(비었으면 "표")에 머문다. **둘째를 더하는 순간** 첫째가 처음으로 화면에 나오므로 그때 데이터베이스의
 > 지금 이름을 받는다(비었으면 그대로) — 이름 바꾸기를 매번 양쪽에 맞추는 대신 보이기 시작하는 한 순간에 맞춘다. 셋째부터는 건드리지 않는다
-> (이미 보이는 이름이다). 이름 없이 더하면 "새 데이터 소스"다(`ck_data_source_name` — 비울 수 없다). 노션의 *"Databases get a default name
+> (이미 보이는 이름이다). [정정 8e-3a] "둘째"는 **처음으로** 둘째가 생기는 때다 — 부착 행(휴지통의 소스까지)이 하나인 데이터베이스. 살아 있는
+> 소스만 세면 둘 중 하나를 휴지통에 넣은 뒤 더할 때 이미 보였던(고쳤을 수 있는) 첫째의 이름을 덮는다. 이름 없이 더하면 "새 데이터 소스"다(`ck_data_source_name` — 비울 수 없다). 노션의 *"Databases get a default name
 > that is a simple concatenation of all their data sources"* 는 따르지 않는다 — 우리 데이터베이스는 처음부터 제 이름(`block.properties.title`)을
 > 갖는다. 이름 바꾸기는 주인의 `edit_structure` · 잠금이고, 붙인 곳에서 바꿔도 원본의 이름이 바뀐다(F-04-23 *"원본 data source 의 제목 …
 > 변경은 연결된 모든 곳에 전파"*).
@@ -1479,12 +1486,24 @@ ALTER TABLE select_option ADD FOREIGN KEY (property_id, group_id)
 > ⑦ **소스마다 하나씩 나오는 곳.** relation 의 대상 목록은 항목이 소스 하나다(소유한 것만 — 붙인 것은 원본 쪽에서 한 번) · 데이터베이스가
 > 소스를 여럿 가지면 소스 이름으로 가른다. 내보내기는 소유한 소스마다 표 한 벌이다 — 하나면 전과 같이 `이름.csv` + `이름/`, 여럿이면
 > `이름/` 안에 `소스.csv` + `소스/`(이름 규칙은 페이지와 같다). 템플릿 화면은 템플릿 자신의 소스(`page.data_source_id`)의 첫 뷰로 그린다.
-> ⑧ **아직 아닌 것** — 소스 지우기 · 휴지통 · "뷰만/소스까지"(8e-3) ·
+> ⑧ **아직 아닌 것** — 뷰 지우기 화면과 "뷰만/소스까지"(8e-3b) ·
 > 다른 데이터베이스의 소스 붙이기(linked · F-04-13) · 소스를 다른 데이터베이스로 옮기기 · 소스의 아이콘 · `ds:{data_source_id}` 실시간 채널.
 > ⑨ **화면(8e-2)** — 소스 이름은 소스가 **둘 이상일 때만** 보인다: 뷰 탭 줄 위에 지금 뷰의 소스 이름(노션 *"you'll see the data source's name
 > above the horizontal bar of views"*) · 표의 이름(양방향 관계형의 반대쪽 이름 기본값 · 접근성 이름)도 소스의 것이다. 관리하는 창은 고칠
 > 수 있는 사람에게만 서고, 소스가 하나면 이름 칸 없이 데이터베이스 이름을 보인다(③ — 둘째를 더할 때 덮일 이름이다). 더하면 새 소스의 뷰로
 > 옮긴다. "뷰 추가"는 소스가 둘 이상이면 볼 소스를 묻고, 처음 값은 지금 뷰의 소스다.
+> ⑩ **휴지통(8e-3a · 0043)** — 노션: *"For native sources, select ••• to Move to Trash"*. data source 는 블록이 아니지만 블록과 **같은 세 상태**
+> (`block_lifecycle` · 같은 시각 열 · 같은 모양의 CHECK)를 갖는다 — X-3 은 블록의 수명주기 축을 `type='page'` 로 좁힌 판결이라 부딪히지 않는다.
+> 행은 블록의 휴지통을 그대로 쓴다: 소스를 휴지통에 넣는 명령이 그 소스의 살아 있는 행 · 템플릿과 그 하위 페이지를 **소스 id 를 삭제 루트로**
+> (`trash_root_id = data_source.id`) 함께 넣는다. 그래서 행의 모든 읽기 경로(검색 · 관계형 칩 · 최근 방문 · 행 주소 · 멘션)가 이미 하는 거르기로
+> 함께 사라지고, 되살리면 그 루트의 것만 돌아온다(B3 — 먼저 따로 지운 행은 제 루트로 남는다). 영구 삭제도 같은 묶음이다(2단계 보존 —
+> 물리 삭제는 하지 않는다). 규칙: ⓐ **마지막 살아 있는 소스는 휴지통에 넣지 않는다**(F-04-23 *"마지막 data source 는 제거 불가로 두는 편이
+> 단순하다"*) ⓑ 휴지통의 소스는 모든 문(목록 · 이름 · 뷰 열기 · 뷰 만들기 · 행 · 속성 · 템플릿 · 관계형 대상 · 내보내기)에서 **없는 것**이다 —
+> 주인 문에 `ds.lifecycle = 'live'` ⓒ 소스를 보는 뷰는 지우지 않고 숨긴다(되살리면 탭이 돌아온다) ⓓ 권한은 더하기와 같다 — 주인의
+> `edit_structure` · 잠금 ⓔ 휴지통 목록에 소스 한 줄(이름 · 주인 데이터베이스 이름 · 함께 간 수)로 서고, 볼 수 있는 데이터베이스의 것만이다
+> ⓕ **불변식 DSL1** — 살아 있지 않은 소스에는 살아 있는 행이 없다. 행의 읽기 경로는 행의 lifecycle 만 보므로 이것이 깨지면 휴지통의 소스에서
+> 행이 새어 나온다(목록에서 행 하나만 되살리는 길이 그 구멍이다 — 명령이 `source_trashed` 로 먼저 답한다). 지연 제약 트리거가 커밋 때 두
+> 방향(살아 있는 행이 생기거나 옮겨질 때 · 소스가 살아 있지 않게 될 때)을 본다.
 
 **DB 상수**
 

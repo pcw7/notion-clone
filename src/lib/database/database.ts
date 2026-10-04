@@ -447,7 +447,7 @@ export async function listDatabases(ctx: SessionContext): Promise<DatabaseListIt
          JOIN database d ON d.id = b.id
          JOIN data_source ds ON ds.owner_database_id = d.id
          JOIN database_data_source dds ON dds.database_id = d.id AND dds.data_source_id = ds.id
-        WHERE b.workspace_id = $1 AND b.type = 'database' AND b.lifecycle = 'live'
+        WHERE b.workspace_id = $1 AND b.type = 'database' AND b.lifecycle = 'live' AND ds.lifecycle = 'live'
           AND b.perm_scope_id = ANY($2::uuid[])
         ORDER BY b.created_at, b.id, dds.order_idx, ds.id
         LIMIT $3`,
