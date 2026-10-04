@@ -6,6 +6,7 @@
 
 import { establishLogin } from '@/lib/auth/establish-login'
 import { verifyLoginCode } from '@/lib/auth/login-code'
+import { mfaEnabledFor } from '@/lib/auth/mfa'
 import { requestMeta } from '@/lib/auth/request-meta'
 import { setSessionCookie } from '@/lib/auth/session-cookie'
 import { withMinimumDuration } from '@/lib/auth/timing'
@@ -67,6 +68,8 @@ export async function POST(request: Request): Promise<Response> {
       ok: true,
       // 신규 가입이면 온보딩으로 보낸다.
       created: login.created,
+      // 2단계 인증을 켠 사람이면 이 세션은 둘째 단계를 거쳐야 들어온다(8i-2a) — 화면이 그 단계로 간다.
+      mfaRequired: await mfaEnabledFor(login.userId),
     })
   })
 }

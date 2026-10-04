@@ -42,6 +42,10 @@ export async function requireWorkspaceSession(rawWorkspaceId: string): Promise<R
   if (session.reason === 'not_a_member' || session.reason === 'member_inactive') {
     return { ok: false, response: Response.json({ error: 'not_found' }, { status: 404 }) }
   }
+  if (session.reason === 'mfa_required') {
+    // 둘째 단계가 남았다 — 로그인 전과 같은 401 이되, 무엇이 남았는지 말한다(화면이 그 단계로 보낸다 · 8i-2a).
+    return { ok: false, response: Response.json({ error: 'mfa_required' }, { status: 401 }) }
+  }
   if (session.reason === 'sso_required') {
     return { ok: false, response: Response.json({ error: 'sso_required' }, { status: 403 }) }
   }

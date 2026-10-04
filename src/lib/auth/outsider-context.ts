@@ -45,7 +45,9 @@ export async function resolveOutsiderContext(
        JOIN "user" u ON u.id = s.user_id AND u.status = 'active' AND u.deleted_at IS NULL
        LEFT JOIN workspace_member m ON m.user_id = s.user_id AND m.workspace_id = $2
       WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > now()
-        AND (m.user_id IS NULL OR m.status = 'removed')`,
+        AND (m.user_id IS NULL OR m.status = 'removed')
+        -- 2단계 인증을 켠 사람은 둘째 단계를 거친 세션이어야 한다(8i-2a · 정본 §3.2 [보강] 2단계 인증 ④)
+        AND (s.mfa_satisfied OR NOT EXISTS (SELECT 1 FROM mfa_method mm WHERE mm.user_id = s.user_id AND mm.confirmed_at IS NOT NULL))`,
     [hashSessionToken(token), workspaceId],
   )
   if (row === null) return null

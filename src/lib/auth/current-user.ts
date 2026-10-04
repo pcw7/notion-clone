@@ -49,7 +49,9 @@ export async function getCurrentUser(): Promise<CurrentUser | null> {
       WHERE s.token_hash = $1
         AND s.revoked_at IS NULL
         AND s.expires_at > now()
-        AND u.status = 'active'`,
+        AND u.status = 'active'
+        -- 2단계 인증을 켠 사람은 둘째 단계를 거친 세션이어야 한다(8i-2a · 정본 §3.2 [보강] 2단계 인증 ④) — 아니면 로그인 전과 같다
+        AND (s.mfa_satisfied OR NOT EXISTS (SELECT 1 FROM mfa_method mm WHERE mm.user_id = s.user_id AND mm.confirmed_at IS NOT NULL))`,
     [hashSessionToken(token)],
   )
 

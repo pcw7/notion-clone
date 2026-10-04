@@ -66,6 +66,7 @@ export type SessionDenialReason =
   | 'not_a_member' // 이 워크스페이스의 멤버가 아님
   | 'member_inactive' // invited / suspended / removed
   | 'sso_required' // <14 R-11> SSO 강제인데 saml 로 로그인하지 않음
+  | 'mfa_required' // 2단계 인증을 켠 사람의 세션이 아직 둘째 단계를 거치지 않았다(8i-2a · 정본 §3.2 [보강] 2단계 인증 ④)
 
 export type SessionResolution =
   | { readonly ok: true; readonly context: SessionContext }
@@ -114,6 +115,7 @@ type SessionRow = {
   user_id: string
   auth_method: string
   mfa_satisfied: boolean
+  mfa_enabled: boolean
   is_expired: boolean
   is_revoked: boolean
   role: string | null
@@ -139,6 +141,8 @@ export async function resolveSessionContext(
            s.user_id                     AS user_id,
            s.auth_method                 AS auth_method,
            s.mfa_satisfied               AS mfa_satisfied,
+           EXISTS (SELECT 1 FROM mfa_method mm
+                    WHERE mm.user_id = s.user_id AND mm.confirmed_at IS NOT NULL) AS mfa_enabled,
            (s.expires_at <= now())       AS is_expired,
            (s.revoked_at IS NOT NULL)    AS is_revoked,
            m.role                        AS role,
@@ -157,6 +161,9 @@ export async function resolveSessionContext(
   if (!row) return { ok: false, reason: 'no_session' }
   if (row.is_revoked) return { ok: false, reason: 'revoked' }
   if (row.is_expired) return { ok: false, reason: 'expired' }
+  // 2단계 인증 — 켠 사람의 세션은 둘째 단계를 거칠 때까지 아무 데도 들어오지 못한다(정본 ④). 멤버십보다 먼저 묻는다 — 신원이 아직
+  // 증명되지 않았다.
+  if (row.mfa_enabled && !row.mfa_satisfied) return { ok: false, reason: 'mfa_required' }
   if (row.role === null) return { ok: false, reason: 'not_a_member' }
   if (row.member_status !== 'active') return { ok: false, reason: 'member_inactive' }
 

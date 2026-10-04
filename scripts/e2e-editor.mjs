@@ -9320,7 +9320,9 @@ async function main() {
 
       const logged = await loginWith(who.email, GOOD)
       const cookie = logged.headers.getSetCookie().find((c) => c.startsWith('nc_session='))?.split(';')[0] ?? null
+      // 화면을 받을 때는 본문까지 읽는다 — 읽지 않고 버린 응답은 서버의 스트리밍 도중에 연결을 닫아 "destination stream closed early" 를 남긴다.
       const home = cookie === null ? null : await fetch(`${BASE}/w/${workspaceId}`, { headers: { cookie }, redirect: 'manual' })
+      await home?.text().catch(() => null)
       check('★ 이메일 + 비밀번호로 들어온다 — 세션 쿠키 · 그 쿠키로 홈이 열린다',
         logged.status === 200 && cookie !== null && home?.status === 200, JSON.stringify([logged.status, cookie !== null, home?.status]))
       const method = (await dbQuery(`SELECT auth_method FROM user_session WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1`, [who.userId]))[0]?.auth_method
@@ -9337,6 +9339,7 @@ async function main() {
       const noCurrent = await readRes(await fetch(pwUrl, { method: 'PUT', headers: asWho, body: JSON.stringify({ newPassword: NEXT }) }))
       const changed = await readRes(await fetch(pwUrl, { method: 'PUT', headers: asWho, body: JSON.stringify({ newPassword: NEXT, currentPassword: GOOD }) }))
       const homeAfter = await fetch(`${BASE}/w/${workspaceId}`, { headers: { cookie }, redirect: 'manual' })
+      await homeAfter.text().catch(() => null)
       check('★ 오래된 세션의 바꾸기는 지금 비밀번호를 묻고(400) · 바꾸면 다른 세션(비밀번호로 들어온 쪽)이 폐기된다',
         noCurrent.status === 400 && noCurrent.body?.error === 'current_required' && changed.status === 200 && changed.body?.revokedSessions >= 1
           && homeAfter.status !== 200 && (await loginWith(who.email, NEXT)).status === 200,
@@ -9454,6 +9457,68 @@ async function main() {
       } finally {
         await browseAs(session)
       }
+    }
+
+    if (sectionIf('2단계 인증 — 서버 (8i-2a · F-14-05)')) {
+      // 화면은 8i-2b 다 — 라우트와 진입 게이트를 실제 서버로 본다. 켜기(시작 · 확정 · 백업 코드) → 비밀번호로 새로 들어오면 둘째 단계가
+      // 남는다(화면은 /login?mfa=1 · API 는 401 mfa_required) → 백업 코드로 통과 → 끄기. 코드는 비밀값으로 직접 계산한다. 자기 데이터를 스스로.
+      const { totpAt, totpStepAt, base32Decode } = await import(new URL('../src/lib/auth/totp.ts', import.meta.url).href)
+      const stamp = Date.now()
+      const who = await joinAs(workspaceId, await createUser(`2단계 인증의 사람 ${stamp}`), 'member')
+      const asWho = { ...json, cookie: `nc_session=${who.token}` }
+      const acct = `${BASE}/api/workspaces/${workspaceId}/account`
+      const readRes = async (res) => ({ status: res.status, body: await res.json().catch(() => null) })
+      // 화면을 받을 때는 본문까지 읽는다 — 읽지 않고 버린 응답은 서버의 스트리밍 도중에 연결을 닫는다(전체 판의 "서버에서 오류" 로 떨어졌다).
+      const pageStatus = async (cookieHeader) => {
+        const res = await fetch(`${BASE}/w/${workspaceId}`, { headers: { cookie: cookieHeader }, redirect: 'manual' })
+        await res.text().catch(() => null)
+        return res.status
+      }
+      const PASSWORD = `correct horse ${stamp}`
+      await fetch(`${acct}/password`, { method: 'PUT', headers: asWho, body: JSON.stringify({ newPassword: PASSWORD }) })
+
+      const started = await readRes(await fetch(`${acct}/mfa`, { method: 'POST', headers: asWho, body: JSON.stringify({ label: '휴대폰' }) }))
+      const secret = started.body?.secret
+      const codeNow = (offset = 0) => totpAt(base32Decode(secret), totpStepAt(Date.now()) + offset)
+      const wrong = await readRes(await fetch(`${acct}/mfa/${started.body?.methodId}/confirm`, { method: 'POST', headers: asWho, body: JSON.stringify({ code: '000000' }) }))
+      const confirmed = await readRes(await fetch(`${acct}/mfa/${started.body?.methodId}/confirm`, { method: 'POST', headers: asWho, body: JSON.stringify({ code: codeNow() }) }))
+      const backup = confirmed.body?.backupCodes ?? []
+      check('★ 켜기 — 시작하면 QR 주소 · 틀린 코드는 400 · 맞으면 백업 코드 6개 · 켠 세션은 그대로 들어온다',
+        started.status === 201 && typeof secret === 'string' && String(started.body?.uri).startsWith('otpauth://totp/')
+          && wrong.status === 400 && confirmed.status === 200 && backup.length === 6
+          && (await pageStatus(asWho.cookie)) === 200,
+        JSON.stringify([started.status, wrong.status, confirmed.status, backup.length]))
+
+      const logged = await fetch(`${BASE}/api/auth/password-login`, { method: 'POST', headers: json, body: JSON.stringify({ email: who.email, password: PASSWORD }) })
+      const loggedBody = await logged.json().catch(() => null)
+      const cookie = logged.headers.getSetCookie().find((c) => c.startsWith('nc_session='))?.split(';')[0] ?? ''
+      const pendingHome = await fetch(`${BASE}/w/${workspaceId}`, { headers: { cookie }, redirect: 'manual' })
+      await pendingHome.text().catch(() => null)
+      const pendingApi = await readRes(await fetch(`${BASE}/api/workspaces/${workspaceId}/search?q=x`, { headers: { cookie } }))
+      check('★ 비밀번호로 새로 들어오면 응답이 "둘째 단계가 남았다"고 말한다', logged.status === 200 && loggedBody?.mfaRequired === true,
+        JSON.stringify([logged.status, loggedBody]))
+      check('★ 그 세션으로 워크스페이스 화면을 열면 /login?mfa=1 로 보낸다',
+        [303, 307, 308].includes(pendingHome.status) && (pendingHome.headers.get('location') ?? '').includes('/login?mfa=1'),
+        JSON.stringify([pendingHome.status, pendingHome.headers.get('location')]))
+      check('★ 그 세션의 API 는 401 mfa_required 다', pendingApi.status === 401 && pendingApi.body?.error === 'mfa_required', JSON.stringify(pendingApi))
+      const pendingRoot = await fetch(`${BASE}/`, { headers: { cookie }, redirect: 'manual' })
+      await pendingRoot.text().catch(() => null)
+      check('★ 처음 화면(워크스페이스 목록)도 로그인 전처럼 대한다 — 둘째 단계 전에는 목록이 없다',
+        [303, 307, 308].includes(pendingRoot.status) && (pendingRoot.headers.get('location') ?? '').includes('/login'),
+        JSON.stringify([pendingRoot.status, pendingRoot.headers.get('location')]))
+
+      const verify = (code) => fetch(`${BASE}/api/auth/mfa-verify`, { method: 'POST', headers: { ...json, cookie }, body: JSON.stringify({ code }) })
+      const bad = await readRes(await verify('000000'))
+      const good = await readRes(await verify(backup[0]))
+      check('★ 둘째 단계 — 틀리면 400 · 백업 코드로 통과하면 그 세션으로 들어온다',
+        bad.status === 400 && bad.body?.error === 'invalid_code' && good.status === 200 && good.body?.via === 'backup'
+          && (await pageStatus(cookie)) === 200,
+        JSON.stringify([bad, good]))
+
+      const removed = await readRes(await fetch(`${acct}/mfa/${started.body?.methodId}`, { method: 'DELETE', headers: asWho, body: JSON.stringify({ code: backup[1] }) }))
+      const again = await (await fetch(`${BASE}/api/auth/password-login`, { method: 'POST', headers: json, body: JSON.stringify({ email: who.email, password: PASSWORD }) })).json().catch(() => null)
+      check('끄기 — 지금 코드(백업 코드)로 지우면 꺼지고, 그 뒤의 로그인은 둘째 단계가 없다',
+        removed.status === 200 && removed.body?.disabled === true && again?.mfaRequired === false, JSON.stringify([removed, again]))
     }
 
     section('전체')

@@ -11,6 +11,7 @@
  */
 
 import { establishLogin } from '@/lib/auth/establish-login'
+import { mfaEnabledFor } from '@/lib/auth/mfa'
 import { findPasswordLogin } from '@/lib/auth/password'
 import { requestMeta } from '@/lib/auth/request-meta'
 import { setSessionCookie } from '@/lib/auth/session-cookie'
@@ -40,6 +41,7 @@ export async function POST(request: Request): Promise<Response> {
       userAgent: meta.userAgent,
     })
     await setSessionCookie(login.session)
-    return Response.json({ ok: true })
+    // 2단계 인증을 켠 사람이면 이 세션은 둘째 단계를 거쳐야 들어온다(8i-2a) — 화면이 그 단계로 간다.
+    return Response.json({ ok: true, mfaRequired: await mfaEnabledFor(login.userId) })
   })
 }
