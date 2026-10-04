@@ -14,6 +14,7 @@
  */
 
 import type { SessionContext } from '../auth/session-context.ts'
+import { canSeePlan } from '../billing/overview.ts'
 import { canExportWorkspace } from '../export/download.ts'
 import { canSeeGroups } from '../workspace/group.ts'
 import { canManageGuests } from '../workspace/guest.ts'
@@ -32,6 +33,8 @@ export const SETTING_PANELS = [
   { id: 'guests', section: 'workspace.people', visible: (ctx: SessionContext) => canManageGuests(ctx.role) },
   { id: 'groups', section: 'workspace.people', visible: (ctx: SessionContext) => canSeeGroups(ctx.role) },
   { id: 'export', section: 'workspace.general', visible: (ctx: SessionContext) => canExportWorkspace(ctx) },
+  // 요금제(8k-3) — 소유자 · 멤버 관리자. 읽기만 한다(바꾸는 길은 운영자 명령).
+  { id: 'plan', section: 'workspace.plan', visible: (ctx: SessionContext) => canSeePlan(ctx.role) },
 ] as const satisfies readonly {
   readonly id: string
   readonly section: SettingSectionId

@@ -36,7 +36,9 @@ import { useRouter } from 'next/navigation'
 import { TeamspaceIconPicker } from '../../teamspace-icon-picker'
 import {
   TEAMSPACE_MEMBER_LEVEL_ORDER,
+  PLAN_REQUIRED_BADGE,
   TEAMSPACE_VISIBILITY_ORDER,
+  privateLocked,
   defaultTeamspaceAddedMessage,
   memberLevelHint,
   memberLevelLabel,
@@ -55,6 +57,7 @@ export function TeamspaceSettings({
   teamspaceId,
   initial,
   canSetDefault,
+  privateAllowed,
 }: {
   workspaceId: string
   teamspaceId: string
@@ -68,6 +71,8 @@ export function TeamspaceSettings({
   }
   /** 워크스페이스 owner 인가 — 기본 teamspace 버튼을 세울지(표시 전용 · 서버가 다시 묻는다). */
   canSetDefault: boolean
+  /** 요금제가 private teamspace 를 허락하는가(8k-3 · 표시 전용). 이미 private 인 것은 막지 않는다(`privateLocked`). */
+  privateAllowed: boolean
 }) {
   const router = useRouter()
   const [name, setName] = useState(initial.name)
@@ -182,23 +187,35 @@ export function TeamspaceSettings({
 
       <fieldset data-testid="teamspace-settings-visibility" className="flex flex-col gap-1">
         <legend className="text-xs text-neutral-500">공개 범위</legend>
-        {TEAMSPACE_VISIBILITY_ORDER.map((v) => (
-          <label key={v} className="flex items-start gap-1 text-xs">
-            <input
-              type="radio"
-              name="teamspace-settings-visibility"
-              value={v}
-              data-testid={`teamspace-settings-visibility-${v}`}
-              checked={visibility === v}
-              onChange={() => setVisibility(v)}
-              className="mt-0.5 flex-none"
-            />
-            <span className="min-w-0">
-              <span className="font-medium">{teamspaceVisibilityLabel(v)}</span>
-              <span className="ml-1 text-neutral-500">{teamspaceVisibilityHint(v)}</span>
-            </span>
-          </label>
-        ))}
+        {TEAMSPACE_VISIBILITY_ORDER.map((v) => {
+          const locked = privateLocked(v, privateAllowed, initial.visibility)
+          return (
+            <label key={v} className={`flex items-start gap-1 text-xs ${locked ? 'opacity-50' : ''}`}>
+              <input
+                type="radio"
+                name="teamspace-settings-visibility"
+                value={v}
+                data-testid={`teamspace-settings-visibility-${v}`}
+                checked={visibility === v}
+                disabled={locked}
+                onChange={() => setVisibility(v)}
+                className="mt-0.5 flex-none"
+              />
+              <span className="min-w-0">
+                <span className="font-medium">{teamspaceVisibilityLabel(v)}</span>
+                {locked && (
+                  <span
+                    data-testid={`teamspace-settings-visibility-${v}-plan`}
+                    className="ml-1 rounded bg-amber-100 px-1 text-amber-800 dark:bg-amber-900 dark:text-amber-200"
+                  >
+                    {PLAN_REQUIRED_BADGE}
+                  </span>
+                )}
+                <span className="ml-1 text-neutral-500">{teamspaceVisibilityHint(v)}</span>
+              </span>
+            </label>
+          )
+        })}
         <p className="text-xs text-neutral-500">좁혀도 이미 들어온 멤버는 그대로입니다 — 앞으로의 참여만 막습니다.</p>
       </fieldset>
 

@@ -28,6 +28,7 @@ import {
   teamspaceRoleLabel,
   teamspaceVisibilityHint,
   teamspaceVisibilityLabel,
+  privateLocked,
   type TeamspaceMemberView,
   type TeamspaceVisibilityName,
 } from './teamspace-messages.ts'
@@ -170,4 +171,12 @@ describe('넣을 후보', () => {
     const picked = teamspaceCandidates([person('same')], [{ id: 'same', name: '그룹', memberCount: 0 }], members)
     assert.deepEqual([picked.people.map((p) => p.userId), picked.groups.map((g) => g.id)], [['same'], []])
   })
+})
+
+test('★ private 를 막는가(8k-3) — 요금제가 허락하지 않을 때만 · 이미 private 인 것은 막지 않는다 · 다른 범위는 늘 고른다', () => {
+  assert.equal(privateLocked('private', false, null), true, '만들기 — 허락하지 않으면 막는다')
+  assert.equal(privateLocked('private', true, null), false)
+  assert.equal(privateLocked('private', false, 'closed'), true, '좁히기 — 막는다')
+  assert.equal(privateLocked('private', false, 'private'), false, '이미 private — 그대로')
+  for (const v of ['open', 'closed'] as const) assert.equal(privateLocked(v, false, 'private'), false, v)
 })

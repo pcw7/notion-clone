@@ -97,6 +97,7 @@ export function Sidebar({
   teamspaces,
   canBrowseTeamspaces = false,
   canCreateTeamspace,
+  privateTeamspaceAllowed = false,
   trash,
   recent,
   favorites,
@@ -125,6 +126,8 @@ export function Sidebar({
   canBrowseTeamspaces?: boolean
   /** teamspace 를 만들 수 있는 역할인가 — 표시 전용(서버가 다시 묻는다). */
   canCreateTeamspace: boolean
+  /** 요금제가 private teamspace 를 허락하는가(8k-3 · `teamspace.private` · 표시 전용 — 서버가 다시 묻는다). */
+  privateTeamspaceAllowed?: boolean
   trash: TrashRow[]
   /** 안 읽은 알림 수(F-11-07). 서버가 권한으로 걸러서 센다 — 볼 수 없게 된 페이지의 알림은 빠진다(§3.3-131). */
   inboxUnread: number
@@ -400,7 +403,11 @@ export function Sidebar({
               </span>
             </div>
             {creatingTeamspace && (
-              <TeamspaceCreateForm workspaceId={workspaceId} onClose={() => setCreatingTeamspace(false)} />
+              <TeamspaceCreateForm
+                workspaceId={workspaceId}
+                onClose={() => setCreatingTeamspace(false)}
+                privateAllowed={privateTeamspaceAllowed}
+              />
             )}
             <ul>
               {teamspaces.map((teamspace) => (

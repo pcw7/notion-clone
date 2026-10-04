@@ -76,6 +76,8 @@ export const SETTING_GROUPS = [
       { id: 'workspace.general', label: '일반' },
       { id: 'workspace.people', label: '사람' },
       { id: 'workspace.security', label: '보안' },
+      // 요금제(8k-3) — 지금 요금제 · 한도와 쓴 양 · 비교. 소유자 · 멤버 관리자에게만(패널 하나로 선다).
+      { id: 'workspace.plan', label: '요금제' },
     ],
   },
 ] as const satisfies readonly {
