@@ -9,6 +9,7 @@
  *   ④ 내비 — 보이는 항목이 있는 절만 · 절이 있는 묶음만
  *   ⑤ 값의 규칙 — 글자는 공백을 정리한 뒤 1 ~ maxLength · 켜고 끄기는 참거짓만
  *   ⑥ 읽기 전용의 안내 — 누가 바꿀 수 있는지
+ *   ⑦ 테마(8h) — 고르기는 선택지의 값만 · 선택지는 THEMES 그대로 · 단축키는 지금 보이는 것의 반대
  */
 
 import { test, describe } from 'node:test'
@@ -16,13 +17,16 @@ import assert from 'node:assert/strict'
 
 import { WORKSPACE_ROLES } from '../auth/session-context.ts'
 import {
+  DEFAULT_THEME,
   SETTINGS,
   SETTING_GROUPS,
+  THEMES,
   canEditSetting,
   canSeeSetting,
   editorsNote,
   normalizeSettingValue,
   settingDefinition,
+  toggledTheme,
   visibleSettingGroups,
 } from './registry.ts'
 
@@ -73,24 +77,24 @@ describe('④ 내비', () => {
 
   test('★ 보이는 항목이 있는 절만 · 절이 있는 묶음만 — 항목이 없는 사람 절은 패널 없이는 서지 않는다', () => {
     assert.deepEqual(sectionsOf('owner'), [
-      ['account', ['account.profile']],
+      ['account', ['account.profile', 'account.preferences']],
       ['workspace', ['workspace.general', 'workspace.security']],
     ])
     // 멤버에게는 보안 절이 없다(정책은 소유자만 본다) — 일반 절은 읽기 전용으로 선다.
     assert.deepEqual(sectionsOf('member'), [
-      ['account', ['account.profile']],
+      ['account', ['account.profile', 'account.preferences']],
       ['workspace', ['workspace.general']],
     ])
-    assert.deepEqual(sectionsOf('guest'), [['account', ['account.profile']]], '게스트에게 워크스페이스 묶음이 섰다')
+    assert.deepEqual(sectionsOf('guest'), [['account', ['account.profile', 'account.preferences']]], '게스트에게 워크스페이스 묶음이 섰다')
   })
 
   test('★ 패널이 선 절은 항목이 없어도 선다 — 선언의 순서로(8g-2)', () => {
     assert.deepEqual(sectionsOf('owner', ['workspace.people', 'workspace.general']), [
-      ['account', ['account.profile']],
+      ['account', ['account.profile', 'account.preferences']],
       ['workspace', ['workspace.general', 'workspace.people', 'workspace.security']],
     ])
     assert.deepEqual(sectionsOf('member', ['workspace.people']), [
-      ['account', ['account.profile']],
+      ['account', ['account.profile', 'account.preferences']],
       ['workspace', ['workspace.general', 'workspace.people']],
     ])
   })
@@ -119,5 +123,24 @@ describe('⑥ 읽기 전용의 안내', () => {
   test('모두가 고치면 없다 · 아니면 누가 바꾸는지', () => {
     assert.equal(editorsNote(settingDefinition('account.name')!), null)
     assert.equal(editorsNote(settingDefinition('workspace.name')!), '소유자만 바꿀 수 있습니다.')
+  })
+})
+
+describe('⑦ 테마', () => {
+  const theme = settingDefinition('account.theme')!
+
+  test('★ 고르기는 선택지의 값만 — 선택지는 THEMES 그대로 · 기본은 system', () => {
+    assert.ok(theme.control.kind === 'choice')
+    assert.deepEqual(theme.control.options.map((o) => o.value), [...THEMES])
+    assert.equal(DEFAULT_THEME, 'system')
+    for (const value of THEMES) assert.equal(normalizeSettingValue(theme, value), value)
+    for (const bad of ['blue', 'Dark', '', ' dark', true, null, undefined]) assert.equal(normalizeSettingValue(theme, bad), null, JSON.stringify(bad))
+  })
+
+  test('★ 단축키는 지금 보이는 것의 반대 — system 이면 OS 가 고른 것의 반대 · system 으로는 돌아가지 않는다', () => {
+    assert.equal(toggledTheme('light', true), 'dark')
+    assert.equal(toggledTheme('dark', false), 'light')
+    assert.equal(toggledTheme('system', true), 'light')
+    assert.equal(toggledTheme('system', false), 'dark')
   })
 })

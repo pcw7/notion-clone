@@ -165,8 +165,10 @@ CREATE INDEX ON workspace (organization_id) WHERE organization_id IS NOT NULL;
 > 의 칸. 레지스트리가 키마다 읽고 쓰는 자리를 가리킨다(`src/lib/settings/settings.ts` — 키마다 하나). 화면 · 권한 · 값 검사가 한 선언에서
 > 나온다는 F-17-12 의 요점은 이것으로 선다. **`setting_value` 표는 전용 칸이 없는 첫 설정**(account · workspace 범위)이 생길 때 만든다 —
 > 지금 그런 설정이 없다. 12 의 `user_setting` 은 만들지 않는다(F-17-12 *"이 테이블의 부분집합이 되어야 한다"*).
-> ③ **범위는 넷**(`device` · `account` · `workspace` · `organization`)이고 지금 쓰는 것은 account · workspace 둘이다. `device`(테마 · 고대비 —
-> 12)는 서버에 저장하지 않는다. `organization` 과 그 잠금(`setting_lock` · F-17-13)은 조직 기능이 생길 때 — 그때 정의에 `lockable` 이 붙는다.
+> ③ **범위는 넷**(`device` · `account` · `workspace` · `organization`)이고 지금 쓰는 것은 account · workspace 둘이다. `device`(고대비 — 12)는
+> 서버에 저장하지 않는다. [정정 8h] 처음에 "`device`(테마 · 고대비)"로 적었으나 **테마는 account 다** — 12 F-12-03 *"다크모드 선택은 계정에
+> 로그인된 모든 워크스페이스에 동일 적용"* · device 는 고대비뿐이다(*"This setting is saved per device"*). `organization` 과 그 잠금
+> (`setting_lock` · F-17-13)은 조직 기능이 생길 때 — 그때 정의에 `lockable` 이 붙는다.
 > ④ **누가 보고 누가 고치는가는 정의의 칸이다** — 워크스페이스 **역할 이름**으로 묻는다(권한 레벨이 아니다 — 설정은 노드가 아니다).
 > 보이지 않는 설정은 화면에 없고 쓰기는 `forbidden`, 보이지만 고칠 수 없으면 읽기 전용으로 선다. 계정 범위는 누구나(게스트 포함 — 자기
 > 계정이다), 워크스페이스 범위는 게스트에게 보이지 않는다.
@@ -175,6 +177,37 @@ CREATE INDEX ON workspace (organization_id) WHERE organization_id IS NOT NULL;
 > R-4 의 다툼은 관리형 계정에서만 생긴다. 이름의 규칙은 워크스페이스 이름과 같다(앞뒤 공백 · 연속 공백 접기 · 1~100자).
 > ⑥ **플랜 게이트**(F-13-18 `plan_entitlement`)와 **감사 이벤트**(F-11-12 `audit_event`)는 그 표가 생길 때 정의의 칸(`requiredPlan` ·
 > `auditEvent`)으로 더한다 — 지금 걸 곳이 없는 칸을 미리 두지 않는다. 설정은 CRDT 대상이 아니다(마지막 쓰기가 이긴다).
+
+**[보강] 설정 값 표 · 테마** ⟨잔여 묶음 8h / 마이그레이션 0045⟩
+
+```sql
+CREATE TABLE setting_value (                 -- 전용 칸이 없는 설정의 값(위 [보강] ②). 17 의 (scope, scope_id, key) 를 FK 둘로 [보강 8h]
+  scope        text NOT NULL CHECK (scope IN ('account','workspace')),
+  user_id      uuid NULL REFERENCES "user"(id),                         -- account 의 주인(U1 — 사용자는 지우지 않는다)
+  workspace_id uuid NULL REFERENCES workspace(id) ON DELETE CASCADE,    -- workspace 의 주인
+  key          text NOT NULL,
+  value        jsonb NOT NULL,
+  updated_by   uuid NULL REFERENCES "user"(id),
+  updated_at   timestamptz NOT NULL DEFAULT now(),
+  CHECK ((scope = 'account')   = (user_id IS NOT NULL)),
+  CHECK ((scope = 'workspace') = (workspace_id IS NOT NULL)),
+  CHECK (split_part(key, '.', 1) = scope),                              -- 키는 범위로 시작한다(account.theme)
+  CHECK (jsonb_typeof(value) IN ('string','boolean','number'))          -- 값은 스칼라 — 모양은 레지스트리가 본다
+);
+CREATE UNIQUE INDEX ux_setting_value_account   ON setting_value (user_id, key)      WHERE scope = 'account';
+CREATE UNIQUE INDEX ux_setting_value_workspace ON setting_value (workspace_id, key) WHERE scope = 'workspace';
+```
+
+> ① **모양** — 17 은 `(scope, scope_id, key)` 를 적었다. `scope_id` 하나로는 FK 를 걸 수 없어 지워진 워크스페이스의 값이 남고 없는 사람의
+> 값이 들어온다. 그래서 주인을 **FK 둘 중 정확히 하나**로 가리킨다(범위와 맞물리는 CHECK 둘). 키는 범위로 시작해야 하고(다른 범위의 키를
+> 잘못 넣는 실수를 표가 막는다), 값은 스칼라다. 행은 주인 · 키마다 하나(부분 UNIQUE).
+> ② **행이 없으면 기본값이다** — 기본값은 키의 자리(`settings.ts`)가 쥔다. NULL 을 "꺼짐"으로 읽지 않는다(17 F-17-12 *"기본값이 true 인 설정이
+> 많다"*). 기본으로 되돌려도 행을 지우지 않는다(사용자가 고른 값이다 — 기본값이 바뀌어도 그대로 남아야 한다).
+> ③ **테마는 셋** — `system`(OS 의 `prefers-color-scheme` 을 따른다 · 기본) · `light` · `dark`. **첫 페인트 전에 정한다**: 루트 레이아웃이 세션의
+> 사람의 테마를 읽어 `<html data-theme>` 에 싣는다(요청마다 한 줄 · 로그인 전은 `system`). 쿠키 · localStorage 에 복제하지 않는다 — 정본이
+> 둘이 되고 다른 기기에서 고친 값이 늦게 온다. `system` 의 판정은 CSS 가 한다(미디어 쿼리 · 서버는 OS 를 모른다).
+> ④ 어디서든 `cmd/ctrl + shift + L` 이 밝게 ↔ 어둡게를 바꾼다(지금 보이는 것의 반대 — `system` 이면 OS 가 고른 것의 반대) — 같은 설정을 쓴다.
+> ⑤ 고대비(`device` · 베타 · P2)는 이번에 없다 — 기기마다의 값이라 서버에 두지 않는다(그때 클라이언트의 자리를 연다).
 
 ---
 

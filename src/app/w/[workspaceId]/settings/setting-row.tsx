@@ -6,7 +6,7 @@
  * 레지스트리의 컨트롤 종류로 그린다(제네릭 — 항목마다 화면을 짓지 않는다). [이름 · 설명 · 컨트롤 · 상태] 한 줄이다.
  *
  *   · 글자 — Enter 나 포커스를 잃을 때 저장 · Esc 는 저장된 값으로 되돌린다. 거부되면 쓴 글자를 남기고 이유를 말한다
- *   · 켜고 끄기 — 누르는 즉시 저장. 거부되면 되돌린다
+ *   · 켜고 끄기 · 고르기(8h) — 바꾸는 즉시 저장. 거부되면 되돌린다
  *   · 읽기 전용 — 값만 보이고 누가 바꿀 수 있는지 말한다
  *
  * 저장하면 서버가 화면을 다시 그린다(`router.refresh`) — 이름은 사이드바 · 내비에도 선다.
@@ -75,12 +75,13 @@ export function SettingRow(props: {
     void save(draft)
   }
 
-  const toggle = (next: boolean) => {
+  /** 켜고 끄기 · 고르기 — 먼저 칠하고, 거부되면 되돌린다. */
+  const choose = (next: SettingValue) => {
     if (saving) return
-    // 먼저 칠하고, 거부되면 되돌린다.
+    const before = value
     setValue(next)
     void save(next).then((saved) => {
-      if (!saved) setValue(!next)
+      if (!saved) setValue(before)
     })
   }
 
@@ -109,9 +110,26 @@ export function SettingRow(props: {
             checked={value === true}
             aria-busy={saving || undefined}
             disabled={!props.editable}
-            onChange={(e) => toggle(e.target.checked)}
+            onChange={(e) => choose(e.target.checked)}
             className="h-4 w-4 flex-none"
           />
+        ) : control.kind === 'choice' ? (
+          <select
+            id={id}
+            data-testid="setting-control"
+            aria-describedby={`${id}-description`}
+            aria-busy={saving || undefined}
+            value={String(value)}
+            disabled={!props.editable}
+            onChange={(e) => choose(e.target.value)}
+            className="w-48 flex-none rounded-md border border-neutral-300 bg-transparent px-2 py-1 text-sm dark:border-neutral-700"
+          >
+            {control.options.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
         ) : props.editable ? (
           <input
             id={id}

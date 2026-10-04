@@ -6,7 +6,8 @@
  * 무엇이 있고 누가 보고 고치는가는 레지스트리(`registry.ts`)가 선언한다. 여기에는 **키마다 값이 사는 자리 하나**(`STORES`)와, 그 선언으로
  * 판정하는 곳 하나가 있다 — 화면과 라우트는 이 결과를 그대로 쓴다(판정을 다시 짓지 않는다).
  *
- *   · 값은 그 설정이 이미 사는 칸에 그대로다(정본 ②) — `"user".name` · `workspace.name` · `security_policy` 의 칸
+ *   · 값은 그 설정이 이미 사는 칸에 그대로다(정본 ②) — `"user".name` · `workspace.name` · `security_policy` 의 칸. 전용 칸이 없는
+ *     설정은 `setting_value` 의 한 줄이다(8h — 테마 · `storedAccountSetting`)
  *   · 보이지 않는 설정은 읽기 목록에 없고 쓰기는 `forbidden` 이다. 모르는 키는 `not_found`(④)
  *   · 값은 레지스트리의 규칙으로 고친 뒤 쓴다(`normalizeSettingValue`) — 맞지 않으면 `invalid_value`
  *   · 마지막 쓰기가 이긴다 — 설정은 CRDT 대상이 아니다(⑥)
@@ -16,8 +17,10 @@ import type { SessionContext } from '../auth/session-context.ts'
 import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
 import { readSecurityPolicyIn, writeNonmemberRequestPolicyIn } from '../workspace/security-policy.ts'
 import {
+  DEFAULT_THEME,
   SETTINGS,
   canEditSetting,
+  isTheme,
   canSeeSetting,
   normalizeSettingValue,
   settingDefinition,
@@ -33,6 +36,35 @@ type Store<V extends SettingValue> = {
   readonly write: (tx: Tx, ctx: SessionContext, value: V) => Promise<void>
 }
 
+/**
+ * 전용 칸이 없는 계정 설정 — `setting_value` 의 한 줄(정본 [보강] 설정 값 표 · 테마 ① · ②). 행이 없으면 `fallback` 이다. 읽은 값이 지금의
+ * 모양에 맞지 않으면(선택지가 줄었을 때) 역시 `fallback` — 행은 그대로 둔다(되돌아오면 다시 맞는다).
+ */
+function storedAccountSetting<V extends SettingValue>(
+  key: SettingKey,
+  fallback: V,
+  accept: (raw: unknown) => raw is V,
+): Store<V> {
+  return {
+    read: async (tx, ctx) => {
+      const row = await tx.queryMaybe<{ value: unknown }>(
+        `SELECT value FROM setting_value WHERE scope = 'account' AND user_id = $1 AND key = $2`,
+        [ctx.userId, key],
+      )
+      return row !== null && accept(row.value) ? row.value : fallback
+    },
+    write: async (tx, ctx, value) => {
+      await tx.query(
+        `INSERT INTO setting_value (scope, user_id, key, value, updated_by)
+         VALUES ('account', $1, $2, $3::jsonb, $1)
+         ON CONFLICT (user_id, key) WHERE scope = 'account'
+         DO UPDATE SET value = EXCLUDED.value, updated_by = EXCLUDED.updated_by, updated_at = now()`,
+        [ctx.userId, key, JSON.stringify(value)],
+      )
+    },
+  }
+}
+
 /** 키마다 값이 사는 자리. 키를 더하면 타입이 여기를 요구한다. */
 const STORES: { readonly [K in SettingKey]: Store<SettingValueOf<K>> } = {
   'account.name': {
@@ -41,6 +73,7 @@ const STORES: { readonly [K in SettingKey]: Store<SettingValueOf<K>> } = {
       await tx.query(`UPDATE "user" SET name = $2 WHERE id = $1`, [ctx.userId, value])
     },
   },
+  'account.theme': storedAccountSetting('account.theme', DEFAULT_THEME, isTheme),
   'workspace.name': {
     read: async (tx, ctx) =>
       (await tx.queryOne<{ name: string }>(`SELECT name FROM workspace WHERE id = $1`, [ctx.workspaceId])).name,
