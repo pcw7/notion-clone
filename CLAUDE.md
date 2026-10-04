@@ -101,6 +101,7 @@ npm run dev             # http://localhost:3000
 npm run db:migrate      # 미적용 마이그레이션 실행
 npm run db:migrate:status
 npm run db:verify:schema # 스키마가 정본대로인지 + 불변식이 실제로 거부하는지
+npm run plan:set -- <workspaceId> <free|plus|business|enterprise>  # 요금제 바꾸기(운영자 — 결제 연동 없음)
 
 npm run check           # typecheck + lint + license
 npm run e2e             # 실제 브라우저(Edge·Chrome 헤드리스)로 에디터 검증. build · db:up 먼저

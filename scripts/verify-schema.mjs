@@ -63,6 +63,8 @@ const EXPECTED_TABLES = [
   'page_layout', 'layout_tab', 'layout_module',
   // 설정 값 표 8h조각 (0045)
   'setting_value',
+  // 요금제 · 엔타이틀먼트 · 결제 구독 8k-1조각 (0047)
+  'plan', 'plan_entitlement', 'billing_subscription',
   'schema_migration', 'scim_token', 'session_policy', 'sso_config',
   'user', 'user_email', 'user_session',
   'workspace', 'workspace_invite', 'workspace_member',
@@ -106,6 +108,8 @@ const FORBIDDEN_COLUMNS = [
   ['block', 'path'],
   // 불변식 M5: "pin 되었다" = area='heading' 이다. 열로 두면 고정의 진실이 둘이 된다.
   ['layout_module', 'pinned'],
+  // 불변식 PE2: 좌석은 workspace_seat_count 뷰가 유일한 원천이다. 구독에 좌석 수를 두면 진실이 둘이 된다.
+  ['billing_subscription', 'seats'],
 ]
 
 let failed = false
@@ -2605,6 +2609,51 @@ try {
     await mustRejectBy('★ 해시 없는 비밀번호 줄', 'ck_credential_password_hash', [randomUUID(), userId, 'password', null, null, null])
     await mustRejectBy('비밀번호가 아닌 줄에 해시', 'ck_credential_password_hash', [randomUUID(), userId, 'oauth', HASH, 'google', `sub-${randomUUID()}`])
     await mustRejectBy('★ argon2id 가 아닌 해시(평문)', 'ck_credential_password_argon2id', [randomUUID(), other, 'password', 'hunter2hunter2', null, null])
+  }
+
+  console.log('\n[33] 요금제 · 엔타이틀먼트 · 결제 구독 (0047 / §3.10 plan · plan_entitlement · billing_subscription · PE2 · [보강] 엔타이틀먼트 · 8k-1조각)')
+  {
+    const rejectBy = async (label, constraint, sql, params) => {
+      await client.query('SAVEPOINT probe')
+      try {
+        await client.query(sql, params)
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        fail(`${label} — 거부되어야 하는데 통과했다`)
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        if (e.constraint === constraint) ok(`${label} — ${constraint} 가 거부함 (${e.code})`)
+        else fail(`${label} — ${constraint} 가 아니라 ${e.constraint ?? e.code} 에 걸렸다`)
+      }
+    }
+    const planId = async (code) => (await client.query(`SELECT id FROM plan WHERE code = $1`, [code])).rows[0].id
+    const free = await planId('free')
+    const plus = await planId('plus')
+    const putEntitlement = `INSERT INTO plan_entitlement (plan_id, key, kind, value) VALUES ($1, $2, $3, $4::jsonb)`
+    await client.query(putEntitlement, [free, 'probe.flag', 'boolean', 'true'])
+    await client.query(putEntitlement, [free, 'probe.count', 'limit', 'null'])
+    await client.query(putEntitlement, [free, 'probe.days', 'duration', '7'])
+    await client.query(putEntitlement, [free, 'probe.credit', 'credit', '{"monthly": 1000}'])
+    ok('엔타이틀먼트 넷(참거짓 · 무제한 한도 · 일수 · 크레딧) — 정상 경로가 통과한다')
+    await rejectBy('★ 참거짓 키에 숫자', 'ck_plan_entitlement_value', putEntitlement, [free, 'probe.flag_b', 'boolean', '1'])
+    await rejectBy('★ 한도가 음수', 'ck_plan_entitlement_value', putEntitlement, [free, 'probe.count_b', 'limit', '-1'])
+    await rejectBy('한도가 정수가 아님', 'ck_plan_entitlement_value', putEntitlement, [free, 'probe.count_c', 'limit', '1.5'])
+    await rejectBy('일수가 문자열', 'ck_plan_entitlement_value', putEntitlement, [free, 'probe.days_b', 'duration', '"7"'])
+    await rejectBy('크레딧이 객체가 아님', 'ck_plan_entitlement_value', putEntitlement, [free, 'probe.credit_b', 'credit', '5'])
+    await rejectBy('키에 점이 없음', 'ck_plan_entitlement_key', putEntitlement, [free, 'probe', 'boolean', 'true'])
+    await rejectBy('키에 대문자', 'ck_plan_entitlement_key', putEntitlement, [free, 'Probe.flag', 'boolean', 'true'])
+
+    await rejectBy('★ 없는 요금제를 가리키는 워크스페이스', 'fk_workspace_plan_code', `UPDATE workspace SET plan_code = 'gold' WHERE id = $1`, [wsId])
+
+    const putSubscription = `INSERT INTO billing_subscription (workspace_id, plan_id, status, canceled_at, current_period_start, current_period_end)
+                             VALUES ($1, $2, $3, $4, $5, $6)`
+    await client.query(putSubscription, [wsId, plus, 'active', null, null, null])
+    await client.query(putSubscription, [wsId, plus, 'canceled', new Date(), null, null])
+    ok('살아 있는 구독 하나 + 취소된 구독(이력) — 정상 경로가 통과한다')
+    await rejectBy('★ 살아 있는 구독이 둘', 'ux_billing_subscription_live', putSubscription, [wsId, plus, 'grace', null, null, null])
+    await rejectBy('취소했는데 취소 시각이 없음', 'ck_billing_subscription_canceled', putSubscription, [wsId, plus, 'canceled', null, null, null])
+    await rejectBy('살아 있는데 취소 시각이 있음', 'ck_billing_subscription_canceled', putSubscription, [wsId, plus, 'active', new Date(), null, null])
+    await rejectBy('기간이 거꾸로', 'ck_billing_subscription_period', putSubscription,
+      [wsId, plus, 'canceled', new Date(), new Date('2026-02-01'), new Date('2026-01-01')])
   }
 
   await client.query('ROLLBACK')

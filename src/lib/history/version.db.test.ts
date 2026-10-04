@@ -18,6 +18,7 @@ import { randomUUID } from 'node:crypto'
 
 import { createUser, joinAs, makeFixture, probeDatabase, type Actor, type Fixture } from '../testing/db-fixtures.ts'
 import { query } from '../db/pool.ts'
+import { setWorkspacePlan } from '../billing/plan.ts'
 import { createPage, titleFromPlainText } from '../block/page.ts'
 import { savePageBody } from '../block/save-page-body.ts'
 import { textRun, toPlainText } from '../contracts/rich-text.ts'
@@ -238,7 +239,8 @@ describe('⑥ 보관', () => {
     const [free] = await versionsOf(page)
     assert.equal(free.expires_at.getTime() - free.created_at.getTime(), 7 * 24 * 60 * 60 * 1000, 'Free — 7일')
 
-    await query(`UPDATE workspace SET plan_code = 'enterprise' WHERE id = $1`, [fx.workspaceId])
+    // 요금제는 명령으로 바꾼다(8k-1 — 구독과 plan_code 를 함께 쓰는 길은 하나다)
+    await setWorkspacePlan(fx.workspaceId, 'enterprise')
     try {
       await age(page, '3 minutes')
       await write(page, ['가', '나', '다'])
@@ -248,7 +250,7 @@ describe('⑥ 보관', () => {
       )
       assert.equal(unlimited?.infinite, true, 'Enterprise — 무제한')
     } finally {
-      await query(`UPDATE workspace SET plan_code = 'free' WHERE id = $1`, [fx.workspaceId])
+      await setWorkspacePlan(fx.workspaceId, 'free')
     }
 
     await query(`UPDATE page_version SET expires_at = now() - interval '1 second' WHERE id = $1`, [free.id])

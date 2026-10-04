@@ -77,6 +77,7 @@ npm run collab           # 협업 서버 (ws://localhost:3001)
 ```bash
 npm run check                  # 타입 · 린트 · 라이선스 · 테스트
 npm run db:verify:schema       # 스키마 불변식이 실제로 거부하는지
+npm run plan:set -- <워크스페이스 id> <free|plus|business|enterprise>   # 요금제 바꾸기(운영자 · 결제 연동 없음)
 npm run build && npm run e2e   # 실제 브라우저(CDP)로 화면 검증
 ```
 
@@ -91,7 +92,7 @@ npm run build && npm run e2e   # 실제 브라우저(CDP)로 화면 검증
 | 2 | 제품화 — 팀이 쓰는 노션 | |
 | 3 | 확장 · 엔터프라이즈 | |
 
-마이그레이션 46개 · 테스트 2,568개 · 브라우저 검증 1,096개 · PR 175개 머지. 조각별 진행은 [인수인계 문서](docs/HANDOFF.md)에 있습니다.
+마이그레이션 47개 · 테스트 2,572개 · 브라우저 검증 1,096개 · PR 176개 머지. 조각별 진행은 [인수인계 문서](docs/HANDOFF.md)에 있습니다.
 
 ---
 
