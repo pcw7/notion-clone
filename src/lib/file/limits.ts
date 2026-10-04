@@ -74,6 +74,19 @@ export function validateUpload(input: {
   return null
 }
 
+/**
+ * 바이트의 머리로 이미지 형식을 가린다 — 이름도 MIME 도 없이 온 바이트(ZIP 안의 파일 · 잔여 묶음 8m-2b)를 받을 때. 받는 넷이 아니면
+ * null. **확장자를 믿지 않는다** — `.png` 라고 적힌 HTML 을 이미지로 저장하지 않는다.
+ */
+export function sniffImageMime(bytes: Uint8Array): AllowedMime | null {
+  const at = (offset: number, ...signature: number[]) => signature.every((b, k) => bytes[offset + k] === b)
+  if (at(0, 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)) return 'image/png'
+  if (at(0, 0xff, 0xd8, 0xff)) return 'image/jpeg'
+  if (at(0, 0x47, 0x49, 0x46, 0x38) && (at(4, 0x37, 0x61) || at(4, 0x39, 0x61))) return 'image/gif'
+  if (at(0, 0x52, 0x49, 0x46, 0x46) && at(8, 0x57, 0x45, 0x42, 0x50)) return 'image/webp'
+  return null
+}
+
 const EXTENSION: Readonly<Record<AllowedMime, string>> = {
   'image/png': 'png',
   'image/jpeg': 'jpg',

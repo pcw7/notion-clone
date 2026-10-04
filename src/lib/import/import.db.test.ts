@@ -9,6 +9,9 @@
  *   ⑥ ZIP(8m-2a) — 우리 내보내기의 꼴(이름.md + 폴더)이 계층으로 · 폴더만의 페이지 · 노션의 id 접미 · 제목은 # 제목
  *   ⑦ ZIP 의 부분 성공 — 안전하지 않은 경로 · 가져올 수 없는 형식 · UTF-8 아님(빈 페이지로 남기고 자식은 그대로)을 적는다
  *   ⑧ ZIP 의 통째 거부 — ZIP 아님 · 크기 · 페이지 수 · 가져올 것이 없다 · 놓을 곳의 거부는 전부를 되돌린다
+ *   ⑨ ZIP 안의 링크 · 이미지(8m-2b) — 한 줄짜리 하위 링크는 그 자리의 참조 · 언급 안 된 하위는 끝에 · 다른 페이지는 멘션(역인덱스) · 이미지는
+ *     올린 파일(같은 이미지는 파일 하나 · 참조 수는 블록 수) · 쓰지 않은 · 큰 · 가짜 이미지는 건너뛴 것
+ *   ⑩ 되돌려지면 저장한 객체를 지운다 — 저장 중의 오류 · 페이지도 파일 행도 남지 않는다
  */
 
 import { test, before, after } from 'node:test'
@@ -17,7 +20,9 @@ import assert from 'node:assert/strict'
 import { createPage, listChildPages, titleFromPlainText } from '../block/page.ts'
 import { loadPageBody } from '../block/save-page-body.ts'
 import { setWorkspacePlan } from '../billing/plan.ts'
-import { toPlainText } from '../contracts/rich-text.ts'
+import { mentionTarget, toPlainText } from '../contracts/rich-text.ts'
+import { readFile } from '../file/file.ts'
+import { setFileStorage, type FileStorage } from '../file/storage.ts'
 import { query } from '../db/pool.ts'
 import { asBlockId } from '../ids.ts'
 import { createUser, joinAs, makeFixture, probeDatabase, type Fixture } from '../testing/db-fixtures.ts'
@@ -30,6 +35,25 @@ const REQUIRE_DB = process.env.REQUIRE_DB === '1'
 let skipReason = ''
 let fx: Fixture
 
+/** 메모리 저장소 — 넣은 키 · 지운 키를 적고, `failPut` 이 참이면 그 키의 쓰기가 실패한다. */
+const objects = new Map<string, Uint8Array>()
+const removed: string[] = []
+let failPut: (key: string) => boolean = () => false
+const memoryStorage: FileStorage = {
+  kind: 'memory',
+  async put(key, bytes) {
+    if (failPut(key)) throw new Error(`저장 실패(테스트): ${key}`)
+    objects.set(key, bytes)
+  },
+  async read(key) {
+    return objects.get(key) ?? null
+  },
+  async remove(key) {
+    removed.push(key)
+    objects.delete(key)
+  },
+}
+
 before(async () => {
   const problem = await probeDatabase()
   if (problem) {
@@ -38,9 +62,11 @@ before(async () => {
     return
   }
   fx = await makeFixture()
+  setFileStorage(memoryStorage)
 })
 
 after(async () => {
+  setFileStorage(null)
   if (!skipReason) {
     const { closePool } = await import('../db/pool.ts')
     await closePool()
@@ -201,10 +227,11 @@ test('★ ⑦ ZIP 의 부분 성공 — 위험한 경로 · 가져올 수 없는
     ['깨진/자식.md', enc.encode('# 살아남은 자식')],
   ]))
   assert.ok(result.ok, JSON.stringify(result))
+  // 페이지가 아닌 파일은 본문을 다 읽은 뒤에 판정한다(8m-2b) — 그래서 마지막이다. 4바이트는 PNG 의 머리가 아니다.
   assert.deepEqual(result.value.skipped.map((s) => [s.path, s.reason]), [
     ['../밖.md', 'unsafe_path'],
-    ['그림.png', 'unsupported_type'],
     ['깨진.md', 'invalid_encoding'],
+    ['그림.png', 'unsupported_type'],
   ])
   const byTitle = new Map(result.value.pages.map((p) => [p.title, p.id]))
   assert.deepEqual([...byTitle.keys()], ['깨진', '살아남은 자식'])
@@ -225,4 +252,95 @@ test('★ ⑧ ZIP 의 통째 거부 — ZIP 아님 · 크기 · 페이지 수 ·
   const secret = await createPage(fx.owner.ctx, { title: titleFromPlainText('ZIP 의 비밀'), privateTop: true })
   assert.deepEqual(await importZip(member.ctx, zipOf([['a.md', 'x'], ['a/b.md', 'y']]), { parentPageId: secret.id }), { ok: false, reason: 'not_found' })
   assert.equal(await pageCount(), before + 1, '거부된 ZIP 이 페이지를 남겼다(비밀 페이지 하나만 늘었다)')
+})
+
+// ── ZIP 안의 링크 · 이미지 (8m-2b) ──
+const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d, 0x49, 0x48, 0x44, 0x52, 1, 2, 3])
+const bodyBlocks = async (pageId: string) => (await loadPageBody(fx.owner.ctx, asBlockId(pageId)))?.doc.blocks ?? []
+const edgesOf = async (pageId: string) =>
+  (await query<{ target_id: string }>(`SELECT target_id FROM link_edge WHERE source_page_id = $1 AND target_kind = 'page' ORDER BY target_id`, [pageId])).map(
+    (r) => r.target_id,
+  )
+
+test('★ ⑨ ZIP 안의 링크 · 이미지 — 하위 참조의 자리 · 멘션 · 올린 파일 · 건너뛴 이미지', async (t) => {
+  if (skipReason) return t.skip(skipReason)
+  const big = new Uint8Array(5 * 1024 * 1024 + 1)
+  big.set(PNG)
+  const result = await importZip(fx.owner.ctx, zipOf([
+    ['부모.md', [
+      '# 부모', '', '앞 문단', '', '[둘째](%EB%B6%80%EB%AA%A8/%EB%91%98%EC%A7%B8.md)', '', '중간에 [첫째](부모/첫째.md) 멘션', '',
+      '![그림 캡션](부모/그림.png)', '', '![](./부모/그림.png)', '', '![](부모/큰.png)', '', '![](부모/가짜.png)',
+    ].join('\n')],
+    ['부모/첫째.md', '[부모로](../부모.md)'],
+    ['부모/둘째.md', '둘째 본문'],
+    ['부모/그림.png', PNG],
+    ['부모/안쓰는.png', PNG],
+    ['부모/큰.png', big],
+    ['부모/가짜.png', '<html><script>alert(1)</script></html>'],
+  ]))
+  assert.ok(result.ok, JSON.stringify(result))
+  const byTitle = new Map(result.value.pages.map((p) => [p.title, p.id]))
+  const [parent, first, second] = [byTitle.get('부모')!, byTitle.get('첫째')!, byTitle.get('둘째')!]
+
+  // 한 줄짜리 하위 링크는 그 자리의 참조 · 멘션으로만 언급된 하위는 끝에 — 하위마다 참조가 정확히 하나
+  const blocks = await bodyBlocks(parent)
+  assert.deepEqual(blocks.map((b) => (b.type === 'page' ? ['page', b.id] : [b.type, toPlainText(b.title)])), [
+    ['paragraph', '앞 문단'],
+    ['page', second],
+    ['paragraph', '중간에  멘션'],
+    ['image', ''],
+    ['image', ''],
+    ['page', first],
+  ])
+  assert.deepEqual(blocks[2]!.title.map(mentionTarget).filter(Boolean), [{ kind: 'page', id: first }])
+  assert.equal(await parentOf(first), parent)
+  assert.equal(await parentOf(second), parent)
+  // 다른 페이지로 가는 링크는 멘션 — 역인덱스(백링크)가 선다
+  assert.deepEqual(await edgesOf(parent), [first])
+  assert.deepEqual(await edgesOf(first), [parent])
+
+  // 이미지 — 같은 파일은 하나 · 참조 수는 블록 수 · 바이트 그대로 · 이름은 경로의 끝
+  const sources = blocks.filter((b) => b.type === 'image').map((b) => b.properties?.source as { type: string; file_id: string })
+  assert.equal(sources[0]!.type, 'file')
+  assert.equal(sources[0]!.file_id, sources[1]!.file_id)
+  const [row] = await query<{ ref_count: number; mime: string; original_name: string; workspace_id: string }>(
+    `SELECT ref_count, mime, original_name, workspace_id FROM file WHERE id = $1`,
+    [sources[0]!.file_id],
+  )
+  assert.deepEqual(row, { ref_count: 2, mime: 'image/png', original_name: '그림.png', workspace_id: fx.workspaceId })
+  const read = await readFile(fx.owner.ctx, sources[0]!.file_id)
+  assert.deepEqual(read && Buffer.from(read.bytes), Buffer.from(PNG))
+  assert.equal(toPlainText(blocks[3]!.properties?.caption as never), '그림 캡션')
+
+  // 쓰지 않은 · 너무 큰 · 가짜(바이트가 이미지가 아니다) — 건너뛴 것 · 본문의 두 자리는 잃은 이미지
+  assert.deepEqual(result.value.skipped.map((s) => [s.path, s.reason]), [
+    ['부모/안쓰는.png', 'unreferenced'],
+    ['부모/큰.png', 'image_too_large'],
+    ['부모/가짜.png', 'unsupported_type'],
+  ])
+  assert.equal(result.value.losses.images, 2)
+  assert.equal(result.value.losses.links, 0)
+})
+
+test('★ ⑩ 되돌려지면 저장한 객체를 지운다 — 저장 중의 오류 · 페이지도 파일 행도 남지 않는다', async (t) => {
+  if (skipReason) return t.skip(skipReason)
+  const before = await pageCount()
+  const filesBefore = Number((await query<{ n: number }>(`SELECT count(*)::int AS n FROM file WHERE workspace_id = $1`, [fx.workspaceId]))[0]?.n)
+  const other = new Uint8Array([...PNG, 9])
+  let puts = 0
+  failPut = () => ++puts === 2
+  removed.length = 0
+  try {
+    await assert.rejects(
+      importZip(fx.owner.ctx, zipOf([['글.md', '![](글/a.png)\n\n![](글/b.png)'], ['글/a.png', PNG], ['글/b.png', other]])),
+      /저장 실패/,
+    )
+  } finally {
+    failPut = () => false
+  }
+  assert.equal(puts, 2)
+  assert.equal(removed.length, 2, '쓴 객체와 쓰다 실패한 객체의 키를 모두 지운다')
+  assert.ok(removed.every((key) => !objects.has(key)))
+  assert.equal(await pageCount(), before)
+  assert.equal(Number((await query<{ n: number }>(`SELECT count(*)::int AS n FROM file WHERE workspace_id = $1`, [fx.workspaceId]))[0]?.n), filesBefore)
 })

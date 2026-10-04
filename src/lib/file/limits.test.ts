@@ -14,6 +14,7 @@ import {
   MAX_UPLOAD_BYTES,
   extensionFor,
   isAllowedMime,
+  sniffImageMime,
   storageKeyFor,
   validateUpload,
 } from './limits.ts'
@@ -80,5 +81,26 @@ describe('저장 키 — 확장자는 MIME 에서 정한다', () => {
     const value: string = 'image/png'
     assert.equal(isAllowedMime(value), true)
     assert.equal(isAllowedMime('image/bmp'), false)
+  })
+})
+
+describe('sniffImageMime — 이름 없는 바이트의 형식(잔여 묶음 8m-2b)', () => {
+  const bytes = (...b: number[]) => new Uint8Array([...b, 0, 0, 0, 0, 0, 0, 0, 0])
+  test('★ 받는 넷은 머리로 가린다', () => {
+    assert.equal(sniffImageMime(bytes(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)), 'image/png')
+    assert.equal(sniffImageMime(bytes(0xff, 0xd8, 0xff, 0xe0)), 'image/jpeg')
+    assert.equal(sniffImageMime(bytes(...Buffer.from('GIF89a'))), 'image/gif')
+    assert.equal(sniffImageMime(bytes(...Buffer.from('GIF87a'))), 'image/gif')
+    assert.equal(sniffImageMime(bytes(...Buffer.from('RIFF\x10\x00\x00\x00WEBPVP8 '))), 'image/webp')
+  })
+
+  test('★ 이름 · 확장자가 아니라 바이트다 — HTML · SVG · 빈 바이트 · 잘린 머리는 아니다', () => {
+    assert.equal(sniffImageMime(new TextEncoder().encode('<html><script>alert(1)</script>')), null)
+    assert.equal(sniffImageMime(new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg"/>')), null)
+    assert.equal(sniffImageMime(new Uint8Array()), null)
+    assert.equal(sniffImageMime(new Uint8Array([0x89, 0x50, 0x4e, 0x47])), null)
+    // RIFF 이지만 WEBP 가 아니다(WAV)
+    assert.equal(sniffImageMime(bytes(...Buffer.from('RIFF\x10\x00\x00\x00WAVEfmt '))), null)
+    assert.equal(sniffImageMime(bytes(...Buffer.from('GIF89b'))), null)
   })
 })

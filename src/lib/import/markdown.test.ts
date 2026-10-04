@@ -8,14 +8,15 @@
  *   ⑤ 옮기지 못한 것은 센다 — 표(문단으로 남긴다) · HTML · 로컬 이미지 · 위험한 링크 · 꾸밈이 너무 많은 줄 · 주석은 세지 않는다
  *   ⑥ 평문 — 빈 줄로 나뉜 덩이가 문단
  *   ⑦ 만든 문서는 서버의 문서 검증을 지난다
+ *   ⑨ ZIP 안의 상대 주소(8m-2b) — 페이지 링크는 멘션 · 한 줄짜리 링크가 직속 하위면 참조 블록(한 번만) · 이미지는 파일 블록 · 못 풀면 잃은 것
  */
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { toPlainText, MAX_RICH_TEXT_RUNS } from '../contracts/rich-text.ts'
+import { mentionTarget, toPlainText, MAX_RICH_TEXT_RUNS } from '../contracts/rich-text.ts'
 import { validateDoc, type EditorBlock } from '../editor/document.ts'
-import { codeLanguageFromFence, markdownToDoc, textToDoc } from './markdown.ts'
+import { codeLanguageFromFence, markdownToDoc, textToDoc, type ImportLinks } from './markdown.ts'
 
 /** 블록의 모양 — 타입 · 글자 · (있으면) 자식. */
 const shape = (blocks: readonly EditorBlock[]): unknown[] =>
@@ -117,4 +118,54 @@ test('⑧ 울타리의 언어 — id · 별칭 · 공백 든 이름 · 모르는
   assert.equal(codeLanguageFromFence('klingon'), null)
   assert.equal(codeLanguageFromFence('plain text'), null)
   assert.equal(codeLanguageFromFence(''), null)
+})
+
+test('★ ⑨ ZIP 안의 상대 주소 — 멘션 · 하위 참조(한 번만) · 이미지 파일 · 못 풀면 잃은 것', () => {
+  const CHILD = '11111111-1111-4111-8111-111111111111'
+  const OTHER = '22222222-2222-4222-8222-222222222222'
+  const FILE = '33333333-3333-4333-8333-333333333333'
+  const asked: string[] = []
+  const links: ImportLinks = {
+    page: (href) => {
+      asked.push(href)
+      if (href === '%EC%9C%84/%ED%95%98%EC%9C%84.md') return { id: CHILD, child: true }
+      if (href === '옆.md') return { id: OTHER, child: false }
+      return null
+    },
+    image: (href) => (href === '위/그림.png' ? FILE : null),
+  }
+  const md = [
+    '[하위](%EC%9C%84/%ED%95%98%EC%9C%84.md)', '', '[옆](옆.md)', '', '본문 속 [옆](옆.md) 링크', '', '[하위 다시](%EC%9C%84/%ED%95%98%EC%9C%84.md)', '',
+    '![캡션](위/그림.png)', '', '![](없는.png)', '', '[없는](없는.md)', '', '[밖](https://example.com)', '',
+    '<details><summary>접기</summary>', '', '[옆](옆.md)', '', '</details>',
+  ].join('\n')
+  const result = markdownToDoc(md, links)
+  const [ref, sibling, inlineMention, again, image, missing, external, toggle] = result.doc.blocks
+  // 한 줄짜리 링크 → 직속 하위면 그 참조 블록(블록 id 가 곧 하위 페이지의 id)
+  assert.deepEqual(ref, { id: CHILD, type: 'page', title: [] })
+  assert.deepEqual(result.pageRefs, [CHILD])
+  // 하위가 아니면 멘션 · 글자 속도 멘션 · 같은 하위의 둘째 줄은 멘션(참조는 하나뿐)
+  assert.equal(sibling!.type, 'paragraph')
+  assert.deepEqual(sibling!.title.map(mentionTarget), [{ kind: 'page', id: OTHER }])
+  assert.deepEqual(inlineMention!.title.map((r) => mentionTarget(r)?.id ?? toPlainText([r])), ['본문 속 ', OTHER, ' 링크'])
+  assert.deepEqual(again!.title.map(mentionTarget), [{ kind: 'page', id: CHILD }])
+  // 이미지 → 올린 파일 · 캡션은 대체 글자
+  assert.equal(image!.type, 'image')
+  assert.deepEqual(image!.properties?.source, { type: 'file', file_id: FILE })
+  assert.equal(toPlainText(image!.properties?.caption as never), '캡션')
+  // 못 푼 것 — 이미지 블록은 없고(잃은 이미지) · 링크는 글자만(잃은 링크) · 외부 링크는 묻지 않는다
+  assert.deepEqual([missing!.type, toPlainText(missing!.title)], ['paragraph', '없는'])
+  assert.equal(missing!.title[0]!.href, null)
+  assert.equal(external!.title[0]!.href, 'https://example.com')
+  assert.ok(!asked.includes('https://example.com'))
+  // 토글 안의 링크도 푼다
+  assert.deepEqual(toggle!.children?.[0]?.title.map(mentionTarget), [{ kind: 'page', id: OTHER }])
+  assert.equal(result.doc.blocks.length, 8)
+  assert.deepEqual(result.losses, { tables: 0, html: 0, images: 1, links: 1, formatting: 0 })
+  assert.deepEqual(validateDoc(result.doc), [])
+
+  // 푸는 쪽이 없으면(낱 파일) 상대 주소는 그대로 잃은 것이다
+  const plain = markdownToDoc(md)
+  assert.deepEqual(plain.pageRefs, [])
+  assert.deepEqual(plain.losses, { tables: 0, html: 0, images: 2, links: 6, formatting: 0 })
 })

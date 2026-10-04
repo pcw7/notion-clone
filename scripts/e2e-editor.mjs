@@ -10355,6 +10355,78 @@ async function main() {
       }
     }
 
+    if (sectionIf('가져오기 — ZIP 링크 · 이미지 (8m-2b · F-09-12)')) {
+      // ZIP 안의 상대 주소가 살아난다 — 한 줄짜리 하위 링크는 **그 자리**의 하위 페이지 참조, 글 속의 링크는 페이지 멘션, 언급만 된 하위는 끝의 참조,
+      // 이미지는 올린 파일(브라우저가 실제로 그린다). 쓰지 않은 이미지는 이유와 함께 "건너뛴 것"이다. 링크는 노션 · 우리 내보내기처럼 `%20` 으로 쓴다.
+      const { createZipWriter } = await import(new URL('../src/lib/export/zip.ts', import.meta.url).href)
+      const x = String(Date.now()).slice(-7)
+      const dir = mkdtempSync(join(tmpdir(), 'nc-e2e-zip-links-'))
+      const zipPath = join(dir, `여행-${x}.zip`)
+      const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64')
+      const folder = encodeURIComponent(`여행 ${x}`)
+      const writer = createZipWriter()
+      const parts = []
+      for (const [path, data] of [
+        [`여행 ${x}.md`, [`# 여행 ${x}`, '', `앞 문단 ${x}`, '', `[준비물](${folder}/%EC%A4%80%EB%B9%84%EB%AC%BC.md)`, '', `![사진](${folder}/사진.png)`, '',
+          `뒤 문단 [일정](${folder}/일정.md) 참고`].join('\n')],
+        [`여행 ${x}/준비물.md`, `# 준비물 ${x}\n\n[여행으로](../${folder}.md)`],
+        [`여행 ${x}/일정.md`, `# 일정 ${x}\n\n일정 본문`],
+        [`여행 ${x}/사진.png`, png],
+        [`여행 ${x}/안쓰는.png`, png],
+      ]) parts.push(...writer.add(path, data))
+      parts.push(writer.finish())
+      writeFileSync(zipPath, Buffer.concat(parts))
+      const DIALOG = '[data-testid="import-dialog"]'
+
+      try {
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
+        await waitFor(`!!document.querySelector('[data-testid="sidebar-import"]')`, 15000)
+        for (let i = 0; i < 6 && !(await evaluate(`!!document.querySelector('${DIALOG}')`)); i += 1) {
+          await clickSelector('[data-testid="sidebar-import"]')
+          await waitFor(`!!document.querySelector('${DIALOG}')`, 1500)
+        }
+        await send('DOM.enable')
+        const rootId = (await send('DOM.getDocument', { depth: -1 })).root.nodeId
+        const node = (await send('DOM.querySelector', { nodeId: rootId, selector: '[data-testid="import-files"]' })).nodeId
+        await send('DOM.setFileInputFiles', { files: [zipPath], nodeId: node })
+        await waitFor(`document.querySelector('[data-testid="import-submit"]')?.disabled === false`, 5000)
+        await clickSelector('[data-testid="import-submit"]')
+        const links = () => evaluate(`[...document.querySelectorAll('[data-testid="import-page-link"]')].map((a) => [a.textContent, a.dataset.pageId])`)
+        await waitFor(`document.querySelectorAll('[data-testid="import-page-link"]').length === 3`, 20000)
+        const pages = new Map(await links())
+        check('ZIP 의 세 페이지(부모 · 하위 둘)', [`여행 ${x}`, `준비물 ${x}`, `일정 ${x}`].every((t) => pages.has(t)), JSON.stringify([...pages.keys()]))
+        const skipped = await evaluate(`[...document.querySelectorAll('[data-testid="import-skipped-item"]')].map((li) => li.dataset.reason + ':' + li.textContent)`)
+        check('★ 쓰지 않은 이미지는 이유와 함께 "건너뛴 것"(쓴 이미지는 아니다)',
+          Array.isArray(skipped) && skipped.length === 1 && skipped[0].startsWith('unreferenced:') && skipped[0].includes('안쓰는.png')
+            && skipped[0].includes('본문에서 쓰지 않은 이미지'),
+          JSON.stringify(skipped))
+
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${pages.get(`여행 ${x}`)}` })
+        const shape = `[...document.querySelectorAll('.blk-editor .blk')].map((el) =>
+          el.classList.contains('blk-page-ref') ? 'ref:' + el.textContent.trim()
+          : el.classList.contains('blk-image') ? 'img'
+          : el.querySelector('.blk-mention-page') ? 'mention:' + el.querySelector('.blk-mention-page').dataset.mentionId
+          : 'p:' + el.textContent.trim())`
+        const expected = [`p:앞 문단 ${x}`, `ref:준비물 ${x}`, 'img', `mention:${pages.get(`일정 ${x}`)}`, `ref:일정 ${x}`]
+        check('★ 하위 링크는 그 자리의 참조 · 글 속 링크는 멘션 · 언급만 된 하위는 끝의 참조',
+          await waitFor(`JSON.stringify(${shape}) === ${JSON.stringify(JSON.stringify(expected))}`, 15000),
+          JSON.stringify(await evaluate(shape)))
+        check('★ ZIP 안의 이미지는 올린 파일 — 브라우저가 실제로 그린다',
+          await waitFor(`(() => { const img = document.querySelector('.blk-editor figure.blk-image img'); return !!img && img.complete && img.naturalWidth === 1
+            && img.getAttribute('src').includes('/files/') })()`, 15000),
+          String(await evaluate(`document.querySelector('.blk-editor figure.blk-image img')?.getAttribute('src') ?? null`)))
+
+        // 하위의 "부모로" 링크(`../여행%20….md`)는 부모의 멘션 — 눌러서 부모로 간다
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${pages.get(`준비물 ${x}`)}` })
+        check('★ 상위로 가는 링크(../)는 그 페이지의 멘션',
+          await waitFor(`document.querySelector('.blk-editor .blk-mention-page')?.dataset.mentionId === ${JSON.stringify(pages.get(`여행 ${x}`))}
+            && (document.querySelector('.blk-editor .blk-mention-page')?.textContent ?? '').includes(${JSON.stringify(`여행 ${x}`)})`, 15000),
+          String(await evaluate(`document.querySelector('.blk-editor .blk-mention-page')?.outerHTML?.slice(0, 200) ?? null`)))
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    }
+
     section('전체')
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))
     const serverErrors = serverOutput.split('\n').filter((l) => l.includes('⨯'))

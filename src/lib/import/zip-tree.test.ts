@@ -3,7 +3,7 @@
  *
  *   ① `X.md` + 폴더 `X` — 폴더 안의 페이지는 X 의 자식 · 깊어도 · 처음 나온 순서
  *   ② md 가 없는 폴더는 폴더만의 페이지(계층이 평평해지지 않는다) · 나중에 그 md 가 오면 그 마디에 붙는다
- *   ③ 이름은 대소문자 · NFC 를 무시하고 맞춘다 · 같은 열쇠의 둘째 파일과 가져올 수 없는 파일은 적는다
+ *   ③ 이름은 대소문자 · NFC 를 무시하고 맞춘다 · 같은 열쇠의 둘째 파일은 적는다 · 페이지가 아닌 파일은 자산으로 모은다(8m-2b)
  *   ④ 제목 — 노션의 id 접미(32자)를 뗀다 · 우리 겹침 접미(8자)는 떼지 않는다
  */
 
@@ -34,16 +34,16 @@ test('★ ② md 가 없는 폴더는 폴더만의 페이지 · 나중에 온 md
   ])
 })
 
-test('③ 대소문자 · NFC 를 무시 · 둘째 파일 · 가져올 수 없는 파일은 적는다', () => {
+test('③ 대소문자 · NFC 를 무시 · 둘째 파일은 적는다 · 페이지가 아닌 파일은 자산', () => {
   const nfd = '한'.normalize('NFD')
   // 찾는 쪽의 이름이 저장된 쪽과 다르게 쓰였을 때도(대문자 폴더 · 뒤에 온 NFD) 같은 마디다
   const tree = buildZipTree([e('Notes.md'), e('NOTES/child.md'), e('한.md'), e(`${nfd}.txt`), e('그림.png'), e('묶음.zip')])
   assert.deepEqual(shape(tree.roots), [['Notes', 'Notes.md', [['child', 'NOTES/child.md']]], ['한', '한.md']])
-  assert.deepEqual(tree.ignored, [
-    { path: `${nfd}.txt`, reason: 'duplicate' },
-    { path: '그림.png', reason: 'unsupported_type' },
-    { path: '묶음.zip', reason: 'unsupported_type' },
-  ])
+  assert.deepEqual(tree.ignored, [{ path: `${nfd}.txt`, reason: 'duplicate' }])
+  assert.deepEqual(
+    tree.assets.map((a) => a.path),
+    ['그림.png', '묶음.zip'],
+  )
 })
 
 test('④ 제목 — 노션의 id 접미(32자)를 뗀다 · 8자 접미는 떼지 않는다', () => {
