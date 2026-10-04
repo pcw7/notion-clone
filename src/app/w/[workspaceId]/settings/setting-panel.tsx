@@ -6,6 +6,7 @@
  * 기능의 라우트로 보내고, 끝나면 서버가 이 화면을 다시 그린다(멤버 목록이 함께 바뀐다).
  */
 
+import { MAX_TOTP_METHODS, mfaStatus } from '@/lib/auth/mfa'
 import { passwordStatus } from '@/lib/auth/password'
 import type { SessionContext } from '@/lib/auth/session-context'
 import type { SettingPanelId } from '@/lib/settings/panels'
@@ -17,6 +18,7 @@ import { GroupPanel } from '../group-panel'
 import { GuestPanel } from '../guest-panel'
 import { InviteForm } from '../invite-form'
 import { PendingInviteList } from '../pending-invite-list'
+import { MfaPanel } from './mfa-panel'
 import { PasswordPanel } from './password-panel'
 
 const HEADING = 'text-sm font-medium'
@@ -28,6 +30,20 @@ export async function SettingPanelView({ id, ctx }: { id: SettingPanelId; ctx: S
       // 자기 계정의 비밀번호(8i-1b) — 있는가 · 지금 비밀번호를 묻는가는 서버가 판정한다.
       const status = await passwordStatus(ctx)
       return <PasswordPanel workspaceId={ctx.workspaceId} hasPassword={status.hasPassword} currentRequired={status.currentRequired} />
+    }
+    case 'mfa': {
+      // 2단계 인증(8i-2b) — 켜졌는가 · 수단 · 남은 백업 코드 · 비밀번호가 있는가는 서버가 판정한다.
+      const status = await mfaStatus(ctx)
+      return (
+        <MfaPanel
+          workspaceId={ctx.workspaceId}
+          enabled={status.enabled}
+          methods={[...status.methods]}
+          backupCodesLeft={status.backupCodesLeft}
+          hasPassword={status.hasPassword}
+          maxMethods={MAX_TOTP_METHODS}
+        />
+      )
     }
     case 'members': {
       const members = await listMembers(ctx.workspaceId)

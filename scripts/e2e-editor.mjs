@@ -9521,6 +9521,145 @@ async function main() {
         removed.status === 200 && removed.body?.disabled === true && again?.mfaRequired === false, JSON.stringify([removed, again]))
     }
 
+    if (sectionIf('2단계 인증 — 화면 (8i-2b · F-14-05)')) {
+      // 설정 → 내 계정 → 보안의 2단계 인증 패널(켜기 · QR · 비밀값 · 백업 코드 · 새로 받기 · 지우기)과 로그인 화면의 둘째 단계. 코드는 화면에
+      // 보인 비밀값으로 직접 계산한다. 브라우저 세션을 새 멤버로 바꿔 진행하고 끝에 소유자로 되돌린다. 자기 데이터를 스스로 만든다.
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const { totpAt, totpStepAt, base32Decode } = await import(new URL('../src/lib/auth/totp.ts', import.meta.url).href)
+      const stamp = Date.now()
+      const browseAs = (token) => send('Network.setCookie', { name: 'nc_session', value: token, domain: 'localhost', path: '/', httpOnly: true })
+      const mate = await joinAs(workspaceId, await createUser(`2단계 인증 화면의 사람 ${stamp}`), 'member')
+      const SECURITY = `${BASE}/w/${workspaceId}/settings?s=account.security`
+      const PASSWORD = `correct horse ${stamp}`
+      const has = (sel) => evaluate(`!!document.querySelector(${JSON.stringify(sel)})`)
+      const textOf = (sel) => evaluate(`document.querySelector(${JSON.stringify(sel)})?.textContent ?? null`)
+      const typeInto = async (sel, text) => {
+        await clickSelector(sel)
+        await evaluate(`(() => { const el = document.querySelector(${JSON.stringify(sel)}); el?.focus(); el?.select() })()`)
+        await typeText(text)
+      }
+      // 하이드레이션 전의 클릭은 아무 일이 없다 — 열릴 때까지 다시 누른다.
+      const openUntil = async (button, target) => {
+        for (let i = 0; i < 6; i += 1) {
+          if (await has(target)) return true
+          await clickSelector(button)
+          if (await waitFor(`!!document.querySelector(${JSON.stringify(target)})`, 1500)) return true
+        }
+        return false
+      }
+      const statusHas = (text) => waitFor(`(document.querySelector('[data-testid="mfa-status"]')?.textContent ?? '').includes(${JSON.stringify(text)})`, 10000)
+      const shownCodes = () => evaluate(`[...document.querySelectorAll('[data-testid="mfa-backup-codes"] li')].map((li) => li.textContent)`)
+      const closeCodes = async () => {
+        await clickSelector('[data-testid="mfa-codes-saved"]')
+        await waitFor(`document.querySelector('[data-testid="mfa-codes-close"]')?.disabled === false`, 3000)
+        await clickSelector('[data-testid="mfa-codes-close"]')
+      }
+
+      try {
+        await browseAs(mate.token)
+        await send('Page.navigate', { url: SECURITY })
+        await waitFor(`!!document.querySelector('[data-testid="mfa-panel"]')`, 15000)
+        check('설정 → 보안 — 비밀번호가 없으면 "먼저 비밀번호를 정하세요"라고 말하고 켜기 버튼이 없다',
+          (String(await textOf('[data-testid="mfa-state"]'))).includes('먼저 비밀번호를 정하세요') && !(await has('[data-testid="mfa-enroll-open"]')),
+          String(await textOf('[data-testid="mfa-state"]')))
+
+        // 비밀번호는 API 로 정한다(화면은 8i-1b 가 본다)
+        await fetch(`${BASE}/api/workspaces/${workspaceId}/account/password`, {
+          method: 'PUT', headers: { ...json, cookie: `nc_session=${mate.token}` }, body: JSON.stringify({ newPassword: PASSWORD }),
+        }).then((r) => r.text())
+        await send('Page.navigate', { url: SECURITY })
+        await waitFor(`!!document.querySelector('[data-testid="mfa-enroll-open"]')`, 15000)
+        check('비밀번호를 정하면 "2단계 인증 켜기"가 선다', (await textOf('[data-testid="mfa-enroll-open"]')) === '2단계 인증 켜기',
+          String(await textOf('[data-testid="mfa-enroll-open"]')))
+
+        await openUntil('[data-testid="mfa-enroll-open"]', '[data-testid="mfa-label-form"]')
+        await typeInto('[data-testid="mfa-label"]', '내 휴대폰')
+        await clickSelector('[data-testid="mfa-start"]')
+        await waitFor(`!!document.querySelector('[data-testid="mfa-secret"]')`, 10000)
+        const shown = String(await textOf('[data-testid="mfa-secret"]'))
+        const secret = shown.replace(/\s/g, '')
+        check('★ 켜기 — QR(SVG)과 넷씩 끊은 base32 비밀값(20바이트 = 32자)이 보인다',
+          (await has('[data-testid="mfa-qr"] svg path')) && /^[A-Z2-7]{4}( [A-Z2-7]{4})*$/.test(shown) && secret.length === 32, shown)
+        const codeNow = (offset = 0) => totpAt(base32Decode(secret), totpStepAt(Date.now()) + offset)
+
+        await typeInto('[data-testid="mfa-code"]', '000000')
+        await clickSelector('[data-testid="mfa-confirm"]')
+        check('틀린 코드는 그렇다고 말하고 켜지 않는다', await statusHas('코드가 맞지 않습니다'), String(await textOf('[data-testid="mfa-status"]')))
+        await typeInto('[data-testid="mfa-code"]', codeNow())
+        await clickSelector('[data-testid="mfa-confirm"]')
+        await waitFor(`document.querySelectorAll('[data-testid="mfa-backup-codes"] li').length === 6`, 10000)
+        const codes = (await shownCodes()) ?? []
+        check('★ 맞는 코드면 켜지고 백업 코드 6개를 한 번 보인다', codes.length === 6 && codes.every((c) => /^[a-z2-7]{5}-[a-z2-7]{5}$/.test(c)),
+          JSON.stringify(codes))
+        check('★ "안전한 곳에 저장했습니다"를 고르기 전에는 닫히지 않는다',
+          (await evaluate(`document.querySelector('[data-testid="mfa-codes-close"]')?.disabled ?? null`)) === true)
+        const href = String(await evaluate(`document.querySelector('[data-testid="mfa-codes-download"]')?.getAttribute('href') ?? ''`))
+        const fileLines = decodeURIComponent(href.slice(href.indexOf(',') + 1)).split('\n')
+        check('내려받기 — 코드가 한 줄에 하나씩 든 텍스트 파일', href.startsWith('data:text/plain') && codes.every((c) => fileLines.includes(c)), href.slice(0, 60))
+        await closeCodes()
+        check('★ 닫으면 패널이 "켜져 있다"로 — 이름 붙인 수단 하나 · 남은 백업 코드 6개',
+          await waitFor(`document.querySelector('[data-testid="mfa-panel"]')?.dataset.enabled === 'true'
+            && document.querySelectorAll('[data-testid="mfa-method"]').length === 1
+            && (document.querySelector('[data-testid="mfa-method"]')?.textContent ?? '').includes('내 휴대폰')
+            && (document.querySelector('[data-testid="mfa-backup-left"]')?.textContent ?? '').includes('6개')`, 10000),
+          String(await textOf('[data-testid="mfa-panel"]')))
+
+        // 로그인 — 쿠키 없이 비밀번호로 들어오면 둘째 단계가 남는다
+        await send('Network.deleteCookies', { name: 'nc_session', domain: 'localhost' })
+        await send('Page.navigate', { url: `${BASE}/login` })
+        await waitFor(`!!document.querySelector('#email')`, 15000)
+        await typeInto('#email', mate.email)
+        await openUntil('[data-testid="login-password-open"]', '[data-testid="login-password-form"]')
+        await typeInto('[data-testid="login-password"]', PASSWORD)
+        await clickSelector('[data-testid="login-password-submit"]')
+        check('★ 비밀번호가 맞으면 둘째 단계를 묻는다 — 아직 들어가지 않는다',
+          (await waitFor(`!!document.querySelector('[data-testid="login-mfa-form"]')`, 10000)) && (await evaluate('location.pathname')) === '/login',
+          String(await evaluate('location.pathname')))
+        await typeInto('[data-testid="login-mfa-code"]', '000000')
+        await clickSelector('[data-testid="login-mfa-submit"]')
+        check('★ 틀린 코드는 그렇다고 말한다',
+          await waitFor(`(document.querySelector('[role="alert"]')?.textContent ?? '').includes('코드가 맞지 않습니다')`, 8000),
+          String(await textOf('[role="alert"]')))
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
+        check('★ 둘째 단계 전에 워크스페이스를 열면 로그인 화면의 둘째 단계로 돌아온다(/login?mfa=1)',
+          await waitFor(`location.pathname === '/login' && location.search.includes('mfa=1') && !!document.querySelector('[data-testid="login-mfa-form"]')`, 15000),
+          String(await evaluate('location.href')))
+        await typeInto('[data-testid="login-mfa-code"]', (codes[0] ?? 'missing').toUpperCase())
+        await clickSelector('[data-testid="login-mfa-submit"]')
+        check('★ 백업 코드(대소문자 가리지 않음)로 통과하면 들어온다 — 처음 화면으로 · 그 코드는 쓴 것이 된다',
+          (await waitFor(`location.pathname === '/'`, 10000))
+            && Number((await dbQuery(`SELECT count(*)::int AS n FROM mfa_backup_code WHERE user_id = $1 AND used_at IS NULL`, [mate.userId]))[0]?.n) === 5,
+          String(await evaluate('location.pathname')))
+
+        // 백업 코드 새로 받기 — 인증 앱의 코드로(켤 때 쓴 창 다음 창)
+        await send('Page.navigate', { url: SECURITY })
+        await waitFor(`(document.querySelector('[data-testid="mfa-backup-left"]')?.textContent ?? '').includes('5개')`, 15000)
+        await openUntil('[data-testid="mfa-regenerate-open"]', '[data-testid="mfa-regenerate-form"]')
+        await typeInto('[data-testid="mfa-confirm-code"]', codeNow(1))
+        await clickSelector('[data-testid="mfa-confirm-action"]')
+        await waitFor(`document.querySelectorAll('[data-testid="mfa-backup-codes"] li').length === 6`, 10000)
+        const fresh = (await shownCodes()) ?? []
+        await closeCodes()
+        check('★ 새로 받기 — 새 코드 6개(앞의 것과 다르다) · 닫으면 남은 백업 코드 6개',
+          fresh.length === 6 && fresh.every((c) => !codes.includes(c))
+            && (await waitFor(`(document.querySelector('[data-testid="mfa-backup-left"]')?.textContent ?? '').includes('6개')`, 10000)),
+          JSON.stringify(fresh))
+
+        // 지우기 — 마지막 수단이라 꺼진다고 미리 말한다
+        await openUntil('[data-testid="mfa-remove-open"]', '[data-testid="mfa-remove-form"]')
+        check('마지막 인증 앱을 지우려 하면 "2단계 인증이 꺼진다"고 미리 말한다',
+          String(await textOf('[data-testid="mfa-remove-form"]')).includes('2단계 인증이 꺼지고'), String(await textOf('[data-testid="mfa-remove-form"]')))
+        await typeInto('[data-testid="mfa-confirm-code"]', fresh[0] ?? 'missing')
+        await clickSelector('[data-testid="mfa-confirm-action"]')
+        check('★ 지우면 꺼진다 — "껐습니다" · 패널이 다시 "켜기"로',
+          (await statusHas('2단계 인증을 껐습니다'))
+            && (await waitFor(`document.querySelector('[data-testid="mfa-panel"]')?.dataset.enabled === 'false' && !!document.querySelector('[data-testid="mfa-enroll-open"]')`, 10000)),
+          String(await textOf('[data-testid="mfa-status"]')))
+      } finally {
+        await browseAs(session)
+      }
+    }
+
     section('전체')
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))
     const serverErrors = serverOutput.split('\n').filter((l) => l.includes('⨯'))
