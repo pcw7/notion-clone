@@ -32,6 +32,10 @@
  * **섞인 쿼리는 CJK 로 간다**(`detectScript`). bigm 은 라틴도 부분 문자열로
  * 찾으므로 손실이 없고, 반대로 가면 한국어 부분이 조사 문제로 통째로 빠진다.
  *
+ * **두 축은 같은 문법을 같은 뜻으로 읽는다**(8l-1 · `query.ts`) — 공백은 AND · `"…"` 는 구절 · `OR` 는 대안 · `-` 는 제외. 라틴 축은
+ * `websearch_to_tsquery` 가 그대로 안다. CJK 축은 파서가 푼 절마다 LIKE 를 하나씩 건다(찾는 말은 맨 컬럼에 — bigm GIN 이 쓰인다 · 제외는
+ * `coalesce` 로 NULL 을 다룬다 — 인덱스가 필요 없다). W7 은 쿼리 전체를 부분 문자열 하나로 찾아 "회의록 2024" 가 붙어 있는 문서만 걸렸다.
+ *
  * 인덱스가 실제로 쓰이는지 실측했다(5만 행): 선택적 쿼리는 Bitmap 인덱스 스캔
  * (0.0ms), 거의 모든 행에 걸리는 쿼리는 Seq Scan 이다. 후자는 플래너가 **옳게**
  * 고른 것이다 — `enable_seqscan=off` 로 인덱스를 강제하면 오히려 느렸다.
@@ -79,6 +83,7 @@ import {
   decodeCursor,
   type ListEnvelope,
 } from '../contracts/pagination.ts'
+import { parseQuery, snippetAnchor, type ParsedQuery } from './query.ts'
 import { detectScript, minQueryLength, type Script } from './script.ts'
 
 /**
@@ -145,26 +150,48 @@ export type SearchOutcome =
 
 // ── 축별 술어 ─────────────────────────────────────────────────────────
 //
-// `$3` 이 쿼리다. **두 경로 모두 파라미터**이므로 사용자 입력이 SQL 로 들어가지
+// `$7` 부터가 쿼리다. **두 경로 모두 파라미터**이므로 사용자 입력이 SQL 로 들어가지
 // 않는다. `likequery()` 는 pg_bigm 이 주는 이스케이프 함수로 `%` · `_` 를
 // 막는다(실측: `likequery('50%')` → `%50\%%`). `websearch_to_tsquery` 는
 // 쓰레기 입력에 던지지 않고 빈 tsquery 를 돌려준다(실측) — `to_tsquery` 와
 // 다른 점이고, 그래서 이쪽을 쓴다.
 
-const AXIS: Readonly<Record<Script, { readonly match: string; readonly titleHit: string }>> =
-  Object.freeze({
-    cjk: {
-      match: `(s.title_text LIKE likequery($3) OR s.body_text LIKE likequery($3))`,
-      titleHit: `s.title_text LIKE likequery($3)`,
-    },
-    latin: {
+/** 첫 쿼리 파라미터의 번호 — $1 워크스페이스 · $2 스코프 · $3 스니펫의 닻 · $4 · $5 커서 · $6 한도. */
+const FIRST_QUERY_PARAM = 7
+
+type Axis = { readonly match: string; readonly titleHit: string; readonly params: readonly string[] }
+
+/**
+ * 축의 술어와 그 파라미터. 라틴은 쿼리 그대로 `websearch_to_tsquery` 에. CJK 는 파서가 푼 절마다 — 절은 대안 중 하나가 제목이나 본문에
+ * 있으면 되고, 제외는 제목과 본문 어디에도 없어야 한다. 제목이 걸렸다 = 모든 절이 제목에 있다.
+ */
+function axisOf(script: Script, query: string, parsed: ParsedQuery): Axis {
+  if (script === 'latin') {
+    const q = `$${FIRST_QUERY_PARAM}`
+    return {
       // GENERATED 컬럼이라 제목 weight A · 본문 weight B 가 이미 들어 있다.
-      match: `s.tsv @@ websearch_to_tsquery('simple', $3)`,
+      match: `s.tsv @@ websearch_to_tsquery('simple', ${q})`,
       // 제목만 따로 본다. `tsv` 에서 weight A 만 걸러내려면 어차피 재계산이고,
       // 여기 오는 행은 이미 매칭된 것뿐이라 건수가 작다.
-      titleHit: `to_tsvector('simple', coalesce(s.title_text, '')) @@ websearch_to_tsquery('simple', $3)`,
-    },
+      titleHit: `to_tsvector('simple', coalesce(s.title_text, '')) @@ websearch_to_tsquery('simple', ${q})`,
+      params: [query],
+    }
+  }
+  const params: string[] = []
+  const param = (term: string): string => {
+    params.push(term)
+    return `likequery($${FIRST_QUERY_PARAM + params.length - 1})`
+  }
+  const clauses = parsed.clauses.map((alternatives) => alternatives.map((term) => ({ term, p: param(term) })))
+  // 찾는 말은 맨 컬럼에 건다 — pg_bigm 의 GIN(ix_search_title_bigm · ix_search_body_bigm)이 쓰인다.
+  const match = clauses.map((alts) => `(${alts.map((a) => `s.title_text LIKE ${a.p} OR s.body_text LIKE ${a.p}`).join(' OR ')})`)
+  const excluded = parsed.exclude.map((term) => {
+    const p = param(term)
+    return `NOT (coalesce(s.title_text, '') LIKE ${p} OR coalesce(s.body_text, '') LIKE ${p})`
   })
+  const titleHit = clauses.map((alts) => `(${alts.map((a) => `coalesce(s.title_text, '') LIKE ${a.p}`).join(' OR ')})`)
+  return { match: [...match, ...excluded].join(' AND '), titleHit: titleHit.join(' AND '), params }
+}
 
 type HitRow = {
   doc_id: string
@@ -177,8 +204,7 @@ type HitRow = {
   snippet: string
 }
 
-function buildSql(script: Script): string {
-  const axis = AXIS[script]
+function buildSql(axis: Axis): string {
   return `
     WITH matched AS (
       SELECT s.doc_id, s.title_text, s.body_text, s.ancestor_ids,
@@ -201,9 +227,9 @@ function buildSql(script: Script): string {
            (SELECT b.format -> 'page_icon' FROM block b WHERE b.id = k.doc_id) AS page_icon,
            CASE
              WHEN k.body_text IS NULL OR k.body_text = '' THEN ''
-             -- 일치 지점 주변을 자른다. 라틴 축은 토큰 매칭이라 쿼리 문자열이
-             -- 본문에 그대로 없을 수 있고(예: "alpha beta" 가 떨어져 등장),
-             -- 그때는 본문 앞부분으로 떨어진다.
+             -- 일치 지점 주변을 자른다. 닻($3)은 쿼리의 첫 말이다(8l-1 — 쿼리 전체로
+             -- 찾으면 여러 말의 쿼리는 늘 본문 앞부분으로 떨어졌다). 라틴 축은 토큰
+             -- 매칭이라 그 말이 본문에 그대로 없을 수 있고, 그때는 앞부분이다.
              WHEN strpos(lower(k.body_text), lower($3)) > 0
                THEN substring(k.body_text
                       from greatest(1, strpos(lower(k.body_text), lower($3)) - ${SNIPPET_LEAD})
@@ -284,13 +310,16 @@ export async function searchPages(
   const query = normalizeQuery(input.query)
   const script = detectScript(query)
   const min = minQueryLength(script)
+  const parsed = parseQuery(query)
 
   // 길이 미달은 질의하지 않는다. 빈 문자열도 여기서 걸린다 —
   // `likequery('')` 가 NULL 을 돌려주므로(실측) SQL 까지 가면 조용히 0건이 되고,
   // 화면은 "검색 결과 없음"을 띄운다. 빈 상태는 최근 방문이어야 한다.
-  if (query.length < min) {
+  // 찾는 말이 하나도 없는 쿼리(`-초안` · `"" OR`)도 같다 — 무엇을 찾을지 없다(8l-1).
+  if (query.length < min || parsed.clauses.length === 0) {
     return { ok: false, reason: 'query_too_short', minLength: min, script }
   }
+  const axis = axisOf(script, query, parsed)
 
   const limit = normalizeLimit(input.limit)
   const cursor = input.cursor ? decodeCursor(input.cursor) : null
@@ -303,13 +332,14 @@ export async function searchPages(
 
     // 한 건 더 읽어 "다음 페이지가 있는가"를 판단한다. 전체 개수를 세지 않는다 —
     // F-07-01: *"결과 상한이 존재하고 완전 열거는 보장되지 않는다."*
-    const rows = await tx.query<HitRow>(buildSql(script), [
+    const rows = await tx.query<HitRow>(buildSql(axis), [
       ctx.workspaceId,
       scopes,
-      query,
+      snippetAnchor(parsed) ?? query,
       cursor?.sortKey ?? null,
       cursor?.id ?? null,
       limit + 1,
+      ...axis.params,
     ])
 
     const hasMore = rows.length > limit

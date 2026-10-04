@@ -10165,6 +10165,43 @@ async function main() {
       }
     }
 
+    if (sectionIf('검색 쿼리 문법 (8l-1 · F-07-02)')) {
+      // 검색 오버레이에서 한국어 축의 문법 — 공백은 AND(떨어져 있어도) · "구절" 은 붙어 있을 때만 · -제외. 구절은 한 덩이로 강조된다(서버와
+      // 같은 파서). 제목으로 찾는다 — 자기 데이터를 스스로 만든다.
+      const x = String(Date.now()).slice(-7)
+      const mk = async (title) =>
+        (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: JSON.stringify({ title }) })).json()).page.id
+      const near = await mk(`주간 보고 ${x}`)
+      const far = await mk(`주간 회의 보고 ${x}`)
+      const hitIds = () => evaluate(`[...document.querySelectorAll('[data-testid="search-hit"]')].map((e) => e.dataset.pageId)`)
+      const settled = (want) => waitFor(`(() => {
+        const ids = [...document.querySelectorAll('[data-testid="search-hit"]')].map((e) => e.dataset.pageId)
+        return ${JSON.stringify(want)}.every((id) => ids.includes(id)) && ids.length === ${want.length}
+      })()`, 8000)
+      const ask = async (query) => {
+        await evaluate(`(() => { const el = document.querySelector('[data-testid="search-input"]'); el?.focus(); el?.select() })()`)
+        await typeText(query)
+      }
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
+      await waitFor(`!!document.querySelector('[data-testid="sidebar-workspace-switcher"]')`, 15000)
+      for (let i = 0; i < 6 && !(await evaluate(`!!document.querySelector('[data-testid="search-overlay"]')`)); i += 1) {
+        await key('k', MOD)
+        await waitFor(`!!document.querySelector('[data-testid="search-overlay"]')`, 1500)
+      }
+      await ask(`주간 보고 ${x}`)
+      check('★ 공백은 AND — 떨어져 있어도 둘 다 걸린다', await settled([near, far]), JSON.stringify(await hitIds()))
+
+      await ask(`"주간 보고" ${x}`)
+      check('★ 구절은 붙어 있을 때만', await settled([near]), JSON.stringify(await hitIds()))
+      const marks = await evaluate(`[...document.querySelectorAll('[data-testid="search-hit"][data-page-id="${near}"] mark')].map((m) => m.textContent)`)
+      check('★ 구절은 한 덩이로 강조된다(서버와 같은 파서)', Array.isArray(marks) && marks.includes('주간 보고'), JSON.stringify(marks))
+
+      await ask(`주간 ${x} -회의`)
+      check('제외 — 그 말이 있는 문서는 빠진다', await settled([near]), JSON.stringify(await hitIds()))
+      await key('Escape')
+    }
+
     section('전체')
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))
     const serverErrors = serverOutput.split('\n').filter((l) => l.includes('⨯'))
