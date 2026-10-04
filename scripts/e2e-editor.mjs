@@ -1442,7 +1442,7 @@ async function main() {
     }
 
     if (sectionIf('그룹 화면 (7b · F-06-03)')) {
-      // 워크스페이스 홈의 "그룹" 절. 넣을 후보(멤버 · 게스트)는 서버 렌더가 싣으므로 화면을 열기 전에 만든다.
+      // 설정의 사람 절의 "그룹" 패널(8g-2 — 전에는 홈의 절). 넣을 후보(멤버 · 게스트)는 서버 렌더가 싣으므로 화면을 열기 전에 만든다.
       const screenMate = await joinAs(workspaceId, await createUser('화면 동료'), 'member')
       const screenGuest = await joinAs(workspaceId, await createUser('화면 손님'), 'guest')
       const groupsUrl = `${BASE}/api/workspaces/${workspaceId}/groups`
@@ -1475,9 +1475,9 @@ async function main() {
         return true
       })()`)
 
-      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/settings?s=workspace.people` })
       await waitFor(`!!document.querySelector('[data-testid="group-panel"]')`, 15000)
-      check('워크스페이스 홈에 그룹 절이 있고 소유자에게는 만들기 칸이 있다',
+      check('설정의 사람 절에 그룹 패널이 있고 소유자에게는 만들기 칸이 있다(8g-2 — 홈에서 옮겼다)',
         await evaluate(`!!document.querySelector('[data-testid="group-create-name"]')`))
 
       // ① 만들기
@@ -1550,7 +1550,7 @@ async function main() {
       const keptEntries = (await (await fetch(keptAccess, { headers: authed })).json()).entries
       check('전제: 그 페이지를 관리하는 것은 그룹 하나다',
         keptEntries.length === 1 && keptEntries[0].principalType === 'group', JSON.stringify(keptEntries))
-      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/settings?s=workspace.people` })
       await waitFor(`!!document.querySelector('${row(keeper)}')`, 15000)
       await clickOnSel(`${row(keeper)} [data-testid="group-delete"]`)
       await clickOnSel(`${row(keeper)} [data-testid="group-delete-confirm"]`)
@@ -1560,8 +1560,9 @@ async function main() {
       check('거부됐으니 그룹은 그대로다', (await evaluate(`!!document.querySelector('${row(keeper)}')`)) && (await serverGroups()).some((g) => g.id === keeper))
 
       // ⑦ 누가 무엇을 보는가 — 서버 렌더를 그 사람의 세션으로 받는다
+      // 게스트가 사람 절을 주소로 열면 볼 수 있는 첫 절(내 계정)이 선다 — 그룹 패널이 없어야 한다.
       const homeAs = async (actor) =>
-        (await fetch(`${BASE}/w/${workspaceId}`, { headers: { cookie: `nc_session=${actor.token}` } })).text()
+        (await fetch(`${BASE}/w/${workspaceId}/settings?s=workspace.people`, { headers: { cookie: `nc_session=${actor.token}` } })).text()
       const asMember = await homeAs(screenMate)
       check('★ 멤버는 그룹을 보지만 만들기 · 지우기 버튼은 없다',
         asMember.includes('data-testid="group-panel"') && asMember.includes(keeperName) &&
@@ -2835,9 +2836,9 @@ async function main() {
         users(guestCandidates).length === 0 && users(ownerCandidates).length > 0,
         `${JSON.stringify(guestCandidates).slice(0, 120)} · 멤버 ${users(ownerCandidates).length}`)
 
-      const guestHome = await (await asGuest(`/w/${workspaceId}`)).text()
-      const ownerHome = await (await fetch(`${BASE}/w/${workspaceId}`, { headers: authed })).text()
-      check('★ 홈 — 게스트에게는 멤버 절이 없고 동료의 이름도 없다 · 멤버에게는 있다',
+      const guestHome = await (await asGuest(`/w/${workspaceId}/settings?s=workspace.people`)).text()
+      const ownerHome = await (await fetch(`${BASE}/w/${workspaceId}/settings?s=workspace.people`, { headers: authed })).text()
+      check('★ 설정의 사람 절 — 게스트에게는 멤버 목록이 없고 동료의 이름도 없다 · 멤버에게는 있다',
         !guestHome.includes('data-testid="workspace-members"') && !guestHome.includes(bystanderName)
           && ownerHome.includes('data-testid="workspace-members"'))
 
@@ -2850,7 +2851,7 @@ async function main() {
     }
 
     if (sectionIf('게스트 관리 — 멤버로 올리기 · 빼기 (7d-3 · F-06-09)')) {
-      // 소유자(브라우저 세션)가 홈의 "게스트" 절에서 한 사람은 멤버로 올리고, 한 사람은 뺀다. 둘 다 두 번 누른다. 자기 데이터를
+      // 소유자(브라우저 세션)가 설정의 사람 절 "게스트" 패널(8g-2 — 전에는 홈)에서 한 사람은 멤버로 올리고, 한 사람은 뺀다. 둘 다 두 번 누른다. 자기 데이터를
       // 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
       const stamp = Date.now()
       const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
@@ -2884,8 +2885,8 @@ async function main() {
       // 검사는 이름만 봐서 서버 렌더를 다시 받지 않아도 통과했다(반사실 E1).
       const memberRole = (name) => `([...document.querySelectorAll('[data-testid="workspace-members"] li')]
         .find((li) => li.textContent.includes(${JSON.stringify(name)}))?.textContent ?? '')`
-      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
-      check('★ 홈의 "게스트" 절에 두 손님이 받은 페이지 수와 함께 선다',
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/settings?s=workspace.people` })
+      check('★ 설정의 사람 절 "게스트" 패널에 두 손님이 받은 페이지 수와 함께 선다',
         await waitFor(`(document.querySelector('${row(rise.userId)} [data-testid="guest-pages"]')?.textContent ?? '') === '페이지 1개'
           && !!document.querySelector('${row(leave.userId)}')`, 15000))
 
@@ -2912,9 +2913,9 @@ async function main() {
           && (await asLeaver(`/w/${workspaceId}`)).status === 404)
 
       const mate = await joinAs(workspaceId, await createUser(`게스트를 못 보는 멤버 ${stamp}`), 'member')
-      const mateHome = await (await fetch(`${BASE}/w/${workspaceId}`, { headers: { cookie: `nc_session=${mate.token}` } })).text()
+      const mateHome = await (await fetch(`${BASE}/w/${workspaceId}/settings?s=workspace.people`, { headers: { cookie: `nc_session=${mate.token}` } })).text()
       const mateList = await fetch(`${BASE}/api/workspaces/${workspaceId}/guests`, { headers: { cookie: `nc_session=${mate.token}` } })
-      check('멤버에게는 게스트 절이 없고 목록 API 는 403 이다',
+      check('멤버에게는 게스트 패널이 없고 목록 API 는 403 이다',
         !mateHome.includes('data-testid="workspace-guests"') && mateList.status === 403, String(mateList.status))
       // 올리기 · 빼기의 refresh 가 끝나기 전에 다음 절이 화면을 옮기지 않게 한다(§6).
       await sleep(1500)
@@ -3269,8 +3270,8 @@ async function main() {
       check('★ 계정이 없는 이메일을 초대하면 대기 초대가 된다 — 초대 메일이 나가고 토큰은 응답에 없다',
         invited.ok && body.as === 'pending' && typeof link === 'string' && body.token === undefined && !JSON.stringify(body).includes('/invite/'),
         `${JSON.stringify(body)} · ${link}`)
-      const ownerHome = await (await fetch(`${BASE}/w/${workspaceId}`, { headers: authed })).text()
-      check('홈의 대기 중인 초대에 "게스트 · 페이지 하나"로 선다 — 페이지 제목은 없다',
+      const ownerHome = await (await fetch(`${BASE}/w/${workspaceId}/settings?s=workspace.people`, { headers: authed })).text()
+      check('사람 절의 대기 중인 초대에 "게스트 · 페이지 하나"로 선다 — 페이지 제목은 없다',
         ownerHome.includes(email) && ownerHome.includes('게스트 · 페이지 하나'))
 
       // 그 사람이 가입한다 — 진짜 로그인 흐름(코드 요청 → 콘솔 메일러의 코드 → 확인)
@@ -3436,7 +3437,7 @@ async function main() {
     }
 
     if (sectionIf('대기 초대 취소 (7g-3 · F-14-10)')) {
-      // 소유자(브라우저 세션)가 멤버 초대와 게스트의 대기 초대를 보내고, 홈의 "대기 중인 초대"에서 게스트 초대를 취소한다 — 그 링크는
+      // 소유자(브라우저 세션)가 멤버 초대와 게스트의 대기 초대를 보내고, 설정의 사람 절 "대기 중인 초대"(8g-2 — 전에는 홈)에서 게스트 초대를 취소한다 — 그 링크는
       // "유효하지 않은 초대"가 되고 멤버 초대의 링크는 그대로 열린다. 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다. 남은
       // 멤버 초대는 끝에 취소한다.
       const stamp = Date.now()
@@ -3459,8 +3460,8 @@ async function main() {
 
       const ROW = '[data-testid="pending-invite-row"]'
       const rowOf = (email) => `[...document.querySelectorAll('${ROW}')].find((li) => li.textContent.includes(${JSON.stringify(email)}))`
-      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
-      check('★ 홈의 대기 중인 초대에 두 줄이 취소 버튼과 함께 선다 — 게스트 초대는 "게스트 · 페이지 하나"',
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/settings?s=workspace.people` })
+      check('★ 사람 절의 대기 중인 초대에 두 줄이 취소 버튼과 함께 선다 — 게스트 초대는 "게스트 · 페이지 하나"',
         await waitFor(`!!${rowOf(memberEmail)}?.querySelector('[data-testid="pending-invite-revoke"]')
           && (${rowOf(guestEmail)}?.textContent ?? '').includes('게스트 · 페이지 하나')
           && !!${rowOf(guestEmail)}?.querySelector('[data-testid="pending-invite-revoke"]')`, 15000))
@@ -3478,11 +3479,11 @@ async function main() {
       check('★ 취소한 링크를 열면 "유효하지 않은 초대입니다" — 멤버 초대의 링크는 그대로 열린다',
         (await openLink(guestLink)).includes('유효하지 않은 초대입니다') && !(await openLink(memberLink)).includes('유효하지 않은 초대입니다'))
 
-      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/settings?s=workspace.people` })
       check('다시 열어도 취소한 초대는 없다 — 서버가 지운 것이다',
         (await waitFor(`!!${rowOf(memberEmail)}`, 15000)) && !(await evaluate(`!!${rowOf(guestEmail)}`)))
 
-      // 목록은 서버 렌더가 정본이다 — 홈의 초대 폼으로 보낸 새 초대가 곧바로 목록에 선다(목록을 상태로 복사하면 서지 않는다).
+      // 목록은 서버 렌더가 정본이다 — 사람 절의 초대 폼으로 보낸 새 초대가 곧바로 목록에 선다(목록을 상태로 복사하면 서지 않는다).
       const formEmail = `revoke-form-${stamp}@example.com`
       let formRow = false
       for (let i = 0; i < 10 && !formRow; i += 1) {
@@ -3495,7 +3496,7 @@ async function main() {
         await clickSelector('[data-testid="invite-form"] button[type="submit"]')
         formRow = await waitFor(`!!${rowOf(formEmail)}?.querySelector('[data-testid="pending-invite-revoke"]')`, 3000)
       }
-      check('★ 홈의 초대 폼으로 보낸 새 초대가 곧바로 목록에 선다 — 취소 버튼과 함께', formRow,
+      check('★ 사람 절의 초대 폼으로 보낸 새 초대가 곧바로 목록에 선다 — 취소 버튼과 함께', formRow,
         await evaluate(`document.querySelector('[data-testid="pending-invites"]')?.textContent ?? '(목록 없음)'`))
       const formInviteId = await evaluate(`${rowOf(formEmail)}?.dataset.inviteId ?? null`)
       if (formInviteId) await fetch(`${invitesUrl}/${formInviteId}`, { method: 'DELETE', headers: authed })
@@ -3503,7 +3504,7 @@ async function main() {
       const mate = await joinAs(workspaceId, await createUser(`초대를 못 다루는 멤버 ${stamp}`), 'member')
       const mateRevoke = await fetch(`${invitesUrl}/${memberInviteId}`, { method: 'DELETE', headers: { cookie: `nc_session=${mate.token}` } })
       const twice = await fetch(`${invitesUrl}/${guestInviteId}`, { method: 'DELETE', headers: authed })
-      const mateHome = await (await fetch(`${BASE}/w/${workspaceId}`, { headers: { cookie: `nc_session=${mate.token}` } })).text()
+      const mateHome = await (await fetch(`${BASE}/w/${workspaceId}/settings?s=workspace.people`, { headers: { cookie: `nc_session=${mate.token}` } })).text()
       check('멤버는 취소하지 못하고(403) 목록도 없다 · 이미 취소한 초대는 404',
         mateRevoke.status === 403 && twice.status === 404 && !mateHome.includes('data-testid="pending-invites"'),
         `${mateRevoke.status} · ${twice.status}`)
@@ -7029,8 +7030,8 @@ async function main() {
         }
 
         // ── 워크스페이스 — 소유자만 ──
-        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
-        check('소유자의 워크스페이스 홈에 전체 내보내기가 있다',
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/settings?s=workspace.general` })
+        check('소유자의 설정 — 일반 절에 전체 내보내기가 있다(8g-2 — 홈에서 옮겼다)',
           await waitFor(`document.querySelector('[data-testid="export-button"]')?.textContent === '워크스페이스 내보내기'`, 15000))
         await clickOn('[data-testid="export-button"]')
         // 표의 수는 앞 절들이 만든 것에 따라 달라진다(7c-4 가 teamspace 에 표를 만든다) — 소유자가 볼 수 있는 표의 수로 묻는다.
@@ -9076,8 +9077,8 @@ async function main() {
       check('★ 사이드바의 "설정"으로 연다 — 첫 절은 내 계정의 프로필',
         await waitFor(`location.pathname === ${JSON.stringify(`/w/${workspaceId}/settings`)} && document.querySelector('[data-testid="settings-title"]')?.textContent === '프로필'`, 15000),
         JSON.stringify([await evaluate('location.pathname'), await title()]))
-      check('★ 소유자의 내비 — 내 계정(프로필) · 워크스페이스(일반 · 보안)',
-        JSON.stringify(await navSections()) === JSON.stringify(['account.profile', 'workspace.general', 'workspace.security']),
+      check('★ 소유자의 내비 — 내 계정(프로필) · 워크스페이스(일반 · 사람 · 보안)',
+        JSON.stringify(await navSections()) === JSON.stringify(['account.profile', 'workspace.general', 'workspace.people', 'workspace.security']),
         JSON.stringify(await navSections()))
 
       // 내 이름 — Enter 로 저장 · 공백을 정리한 값이 남는다
@@ -9136,6 +9137,55 @@ async function main() {
       // 되돌린다 — 뒤 절이 이름을 보지 않지만 다음 판을 위해
       await fetch(settingsApi('account.name'), { method: 'PUT', headers: authed, body: JSON.stringify({ value: originalName }) })
       await fetch(settingsApi('workspace.name'), { method: 'PUT', headers: authed, body: JSON.stringify({ value: originalWorkspace }) })
+    }
+
+    if (sectionIf('설정 — 사람 · 내보내기 (8g-2 · F-17-12)')) {
+      // 홈의 관리 절(멤버 · 초대 · 게스트 · 그룹 · 내보내기)이 설정으로 옮겨 갔다 — 사람 절의 패널 넷 · 일반 절의 내보내기. 패널은 그 기능의
+      // 판정 그대로 선다(멤버 관리자: 내보내기 · 보안 없음 / 멤버: 목록 · 그룹뿐 / 게스트: 내 계정만). 자기 데이터를 스스로 만든다.
+      const stamp = Date.now()
+      const PEOPLE = `${BASE}/w/${workspaceId}/settings?s=workspace.people`
+      const GENERAL = `${BASE}/w/${workspaceId}/settings?s=workspace.general`
+      const PANELS = ['workspace-members', 'invite-form', 'workspace-guests', 'group-panel']
+      const panelsIn = (html) => PANELS.filter((id) => html.includes(`data-testid="${id}"`))
+      const navIn = (html) => [...html.matchAll(/data-testid="settings-nav-link" data-section="([^"]+)"/g)].map((m) => m[1])
+      const htmlAs = async (url, token) => (await fetch(url, { headers: { cookie: `nc_session=${token}` } })).text()
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/settings` })
+      await waitFor(`!!document.querySelector('[data-testid="settings-nav-link"][data-section="workspace.people"]')`, 15000)
+      await clickSelector('[data-testid="settings-nav-link"][data-section="workspace.people"]')
+      check('★ 내비의 "사람"을 누르면 멤버 · 초대 · 게스트 · 그룹 패널이 선다',
+        await waitFor(`document.querySelector('[data-testid="settings-title"]')?.textContent === '사람'
+          && ${JSON.stringify(PANELS)}.every((id) => !!document.querySelector('[data-testid="' + id + '"]'))`, 15000),
+        JSON.stringify(await evaluate(`${JSON.stringify(PANELS)}.filter((id) => !!document.querySelector('[data-testid="' + id + '"]'))`)))
+      const ownerGeneral = await htmlAs(GENERAL, session)
+      check('★ 일반 절 — 워크스페이스 이름 뒤에 전체 내보내기 · 사람 패널은 자기 절에만 선다',
+        ownerGeneral.includes('data-setting-key="workspace.name"') && ownerGeneral.includes('data-testid="export-button"') && panelsIn(ownerGeneral).length === 0,
+        JSON.stringify(panelsIn(ownerGeneral)))
+
+      const home = await htmlAs(`${BASE}/w/${workspaceId}`, session)
+      check('★ 홈에는 관리 절이 없다 — "설정 → 사람" 안내와 설정 링크만',
+        panelsIn(home).length === 0 && !home.includes('data-testid="export-button"') && home.includes('settings?s=workspace.people') && home.includes('data-testid="home-settings"'),
+        JSON.stringify(panelsIn(home)))
+
+      const admin = await joinAs(workspaceId, await createUser(`사람 절의 멤버 관리자 ${stamp}`), 'membership_admin')
+      const adminPeople = await htmlAs(PEOPLE, admin.token)
+      const adminGeneral = await htmlAs(GENERAL, admin.token)
+      check('★ 멤버 관리자 — 사람 절의 패널 넷 · 내보내기와 보안 절은 없다',
+        JSON.stringify(panelsIn(adminPeople)) === JSON.stringify(PANELS) && !adminGeneral.includes('data-testid="export-button"')
+          && JSON.stringify(navIn(adminPeople)) === JSON.stringify(['account.profile', 'workspace.general', 'workspace.people']),
+        JSON.stringify([panelsIn(adminPeople), navIn(adminPeople)]))
+
+      const mate = await joinAs(workspaceId, await createUser(`사람 절의 멤버 ${stamp}`), 'member')
+      const matePeople = await htmlAs(PEOPLE, mate.token)
+      check('★ 멤버 — 멤버 목록과 그룹만(초대 · 게스트 없음)',
+        JSON.stringify(panelsIn(matePeople)) === JSON.stringify(['workspace-members', 'group-panel']), JSON.stringify(panelsIn(matePeople)))
+
+      const visitor = await joinAs(workspaceId, await createUser(`사람 절의 게스트 ${stamp}`), 'guest')
+      const guestPeople = await htmlAs(PEOPLE, visitor.token)
+      const guestHome = await htmlAs(`${BASE}/w/${workspaceId}`, visitor.token)
+      check('게스트 — 사람 절을 주소로 열어도 내 계정의 프로필 · 홈에 "설정 → 사람" 안내도 없다',
+        panelsIn(guestPeople).length === 0 && /data-testid="settings-title"[^>]*>프로필</.test(guestPeople) && !guestHome.includes('settings?s=workspace.people'),
+        JSON.stringify(panelsIn(guestPeople)))
     }
 
     section('전체')

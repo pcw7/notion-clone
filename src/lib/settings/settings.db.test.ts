@@ -7,6 +7,7 @@
  *   ② **내 이름은 `"user".name` 을 고친다** — 게스트도 · 공백을 정리한 값으로 · 다른 워크스페이스에서도 같은 이름
  *   ③ 워크스페이스 이름은 소유자만 — 멤버는 보지만 못 고친다 · 목록 · 머리가 따라온다
  *   ④ 거부는 아무것도 쓰지 않는다 — 모르는 키 · 권한 · 값
+ *   ⑤ 패널(8g-2) — 그 기능의 판정 그대로 역할마다 선다(소유자 다섯 · 멤버 관리자 넷 · 멤버 둘 · 게스트 없음)
  *
  * 정책(`workspace.allow_nonmember_page_access_request`)의 판정은 `permissions/outsider-request.db.test.ts` ⑩ 이 본다.
  */
@@ -17,6 +18,7 @@ import assert from 'node:assert/strict'
 import { probeDatabase, makeFixture, createBareWorkspace, createUser, joinAs, type Actor, type Fixture } from '../testing/db-fixtures.ts'
 import { query } from '../db/pool.ts'
 import { listWorkspacesForUser, workspaceNameOf } from '../workspace/list.ts'
+import { visiblePanels } from './panels.ts'
 import { readSettings, updateSetting } from './settings.ts'
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'
@@ -115,5 +117,17 @@ describe('④ 거부는 아무것도 쓰지 않는다', () => {
       assert.deepEqual(await updateSetting(fx.owner.ctx, 'account.name', bad), { ok: false, reason: 'invalid_value' }, JSON.stringify(bad))
     }
     assert.equal(await userName(fx.owner.userId), before)
+  })
+})
+
+describe('⑤ 패널', () => {
+  test('★ 그 기능의 판정 그대로 — 소유자 다섯 · 멤버 관리자 넷(내보내기 없음) · 멤버 둘(목록 · 그룹) · 게스트 없음', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const admin = await joinAs(fx.workspaceId, await createUser('설정의 멤버 관리자'), 'membership_admin')
+    const ids = (who: Actor) => visiblePanels(who.ctx).map((panel) => panel.id)
+    assert.deepEqual(ids(fx.owner), ['members', 'invites', 'guests', 'groups', 'export'])
+    assert.deepEqual(ids(admin), ['members', 'invites', 'guests', 'groups'])
+    assert.deepEqual(ids(member), ['members', 'groups'])
+    assert.deepEqual(ids(guest), [])
   })
 })

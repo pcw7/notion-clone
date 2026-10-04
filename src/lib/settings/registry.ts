@@ -15,6 +15,9 @@
  *     거부된다. 보이지만 고칠 수 없으면 읽기 전용으로 선다. 고치는 사람은 늘 보는 사람 안에 있다(검사가 본다)
  *
  * 플랜 게이트(F-13-18) · 감사 이벤트(F-11-12) · 조직 잠금(F-17-13)은 그 표가 생길 때 정의의 칸으로 더한다(⑥).
+ *
+ * 값 하나로 그릴 수 없는 관리 화면(사람 · 내보내기)은 이 표의 항목이 아니라 절 안의 **패널**이다(`panels.ts` · 8g-2) — 절은 여기에
+ * 선언하고, 패널이 선 절도 내비에 선다(`visibleSettingGroups` 의 둘째 인자).
  */
 
 import type { WorkspaceRole } from '../auth/session-context.ts'
@@ -45,6 +48,7 @@ export const SETTING_GROUPS = [
     label: '워크스페이스',
     sections: [
       { id: 'workspace.general', label: '일반' },
+      { id: 'workspace.people', label: '사람' },
       { id: 'workspace.security', label: '보안' },
     ],
   },
@@ -133,12 +137,18 @@ export function normalizeSettingValue(definition: SettingDefinition, raw: unknow
   return text.length === 0 || text.length > control.maxLength ? null : text
 }
 
-/** 이 역할에게 서는 내비 — 보이는 항목이 하나라도 있는 절만, 절이 하나라도 있는 묶음만. */
-export function visibleSettingGroups(role: WorkspaceRole) {
+/**
+ * 이 역할에게 서는 내비 — 보이는 항목이나 보이는 패널이 하나라도 있는 절만, 절이 하나라도 있는 묶음만.
+ *
+ * @param panelSections 이 사람에게 보이는 패널의 절(`panels.ts` `visiblePanels`). 패널의 판정은 그 기능의 것이라 여기서 다시 짓지 않는다.
+ */
+export function visibleSettingGroups(role: WorkspaceRole, panelSections: readonly string[] = []) {
   return SETTING_GROUPS.map((group) => ({
     scope: group.scope,
     label: group.label,
-    sections: group.sections.filter((section) => SETTINGS.some((d) => d.section === section.id && canSeeSetting(d, role))),
+    sections: group.sections.filter(
+      (section) => panelSections.includes(section.id) || SETTINGS.some((d) => d.section === section.id && canSeeSetting(d, role)),
+    ),
   })).filter((group) => group.sections.length > 0)
 }
 
