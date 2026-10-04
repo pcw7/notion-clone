@@ -59,6 +59,8 @@ const EXPECTED_TABLES = [
   'node_lock',
   // 정책 7g-2조각 (0036)
   'security_policy',
+  // 행의 레이아웃 8f-2조각 (0044)
+  'page_layout', 'layout_tab', 'layout_module',
   'schema_migration', 'scim_token', 'session_policy', 'sso_config',
   'user', 'user_email', 'user_session',
   'workspace', 'workspace_invite', 'workspace_member',
@@ -100,6 +102,8 @@ const FORBIDDEN_COLUMNS = [
   ['search_document', 'principals'],
   // [X-7] ancestor_path uuid[] 단일 유지. block.path text 는 폐기됐다.
   ['block', 'path'],
+  // 불변식 M5: "pin 되었다" = area='heading' 이다. 열로 두면 고정의 진실이 둘이 된다.
+  ['layout_module', 'pinned'],
 ]
 
 let failed = false
@@ -2449,6 +2453,98 @@ try {
     }
     await deferred()
     await client.query('ROLLBACK TO SAVEPOINT together')
+  }
+
+  console.log('\n[30] 행의 레이아웃 (0044 / §3.6 T1 · M1 · M2 · [보강] 행의 레이아웃 · 8f-2조각)')
+  {
+    // 데이터베이스 하나 · 소스 둘(A · B) · 소스마다 속성 하나 · 소스마다 레이아웃 한 벌(머리 · content 탭 · heading · 그룹).
+    const root = randomUUID()
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key,
+                          ancestor_path, perm_scope_id, properties, format, created_at, last_edited_at)
+       VALUES ($1, $2, 'page', 'workspace', $2, 's0', '{}', $1, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      [root, wsId],
+    )
+    const dbId = randomUUID()
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key,
+                          ancestor_path, perm_scope_id, properties, format, created_at, last_edited_at)
+       VALUES ($1, $2, 'database', 'block', $3, 's1', $4, $3, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      [dbId, wsId, root, [root]],
+    )
+    await client.query(`INSERT INTO database (id, created_at, updated_at) VALUES ($1, now(), now())`, [dbId])
+    const source = async (key) => {
+      const id = randomUUID()
+      await client.query(`INSERT INTO data_source (id, owner_database_id, name, created_at, updated_at) VALUES ($1, $2, '소스', now(), now())`, [id, dbId])
+      await client.query(`INSERT INTO database_data_source (database_id, data_source_id, order_idx) VALUES ($1, $2, $3)`, [dbId, id, key])
+      return id
+    }
+    const property = async (ds) => {
+      const id = randomUUID().replaceAll('-', '').slice(0, 21)
+      await client.query(`INSERT INTO property (id, data_source_id, name, type, order_idx) VALUES ($1, $2, '수량', 'number', 'a0')`, [id, ds])
+      return id
+    }
+    const layout = async (ds) => {
+      const ids = { tab: randomUUID(), heading: randomUUID(), group: randomUUID() }
+      await client.query(`INSERT INTO page_layout (data_source_id) VALUES ($1)`, [ds])
+      await client.query(`INSERT INTO layout_tab (id, data_source_id, kind, order_idx) VALUES ($1, $2, 'content', 'a0')`, [ids.tab, ds])
+      await client.query(`INSERT INTO layout_module (id, data_source_id, tab_id, kind, area, order_idx) VALUES ($1, $2, $3, 'heading', 'heading', 'a0')`, [ids.heading, ds, ids.tab])
+      await client.query(`INSERT INTO layout_module (id, data_source_id, tab_id, kind, area, order_idx) VALUES ($1, $2, $3, 'property_group', 'main', 'a0')`, [ids.group, ds, ids.tab])
+      return ids
+    }
+    const a = await source('a0')
+    const b = await source('a1')
+    const pa = await property(a)
+    const pb = await property(b)
+    const la = await layout(a)
+    const lb = await layout(b)
+    const mod = `INSERT INTO layout_module (id, data_source_id, tab_id, kind, area, parent_module_id, property_id, visible, order_idx)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`
+    // 숨김 — 그룹을 부모로 진 property 행 · 보이지 않음 · 자기 순서 없음(스키마 순서를 따른다)
+    await client.query(mod, [randomUUID(), a, la.tab, 'property', 'main', la.group, pa, false, null])
+    ok('레이아웃 한 벌과 숨긴 속성 행(순서 없음) — 정상 경로가 통과한다')
+
+    // 겨냥한 제약이 막았는지 이름으로 본다 — 다른 제약이 먼저 걸리면 그 제약을 뺀 반사실이 살아남는다(§3.3-261 ①).
+    const mustRejectBy = async (label, constraint, sql, params) => {
+      await client.query('SAVEPOINT probe')
+      try {
+        await client.query(sql, params)
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        fail(`${label} — 거부되어야 하는데 통과했다`)
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        if (e.constraint === constraint) ok(`${label} — ${constraint} 가 거부함 (${e.code})`)
+        else fail(`${label} — ${constraint} 가 아니라 ${e.constraint ?? e.code} 에 걸렸다`)
+      }
+    }
+    await mustRejectBy('★ T1: 소스의 둘째 content 탭', 'layout_tab_one_content',
+      `INSERT INTO layout_tab (id, data_source_id, kind, order_idx) VALUES ($1, $2, 'content', 'a1')`, [randomUUID(), a])
+    await mustRejectBy('linked_view 탭인데 뷰가 없다', 'ck_layout_tab_view',
+      `INSERT INTO layout_tab (id, data_source_id, kind, order_idx) VALUES ($1, $2, 'linked_view', 'a1')`, [randomUUID(), a])
+    await mustRejectBy('★ M1: 탭의 둘째 heading', 'layout_module_one_heading', mod, [randomUUID(), a, la.tab, 'heading', 'heading', null, null, true, 'a1'])
+    await mustRejectBy('★ M1: heading 을 heading 영역 밖으로', 'ck_layout_module_heading_area',
+      `UPDATE layout_module SET area = 'main' WHERE id = $1`, [la.heading])
+    await mustRejectBy('★ M2: 탭의 둘째 property_group', 'layout_module_one_group', mod, [randomUUID(), a, la.tab, 'property_group', 'main', null, null, true, 'a1'])
+    await mustRejectBy('한 탭에 같은 속성을 두 번', 'layout_module_prop_once', mod, [randomUUID(), a, la.tab, 'property', 'main', la.group, pa, true, null])
+    await mustRejectBy('property 모듈인데 속성이 없다', 'ck_layout_module_property', mod, [randomUUID(), a, la.tab, 'property', 'main', la.group, null, true, null])
+    await mustRejectBy('★ 순서 없는 모듈은 property 행뿐 — 순서 없는 섹션', 'ck_layout_module_order', mod, [randomUUID(), a, la.tab, 'section', 'main', la.group, null, true, null])
+    await mustRejectBy('★ 모듈의 탭이 다른 소스의 것', 'fk_layout_module_tab_source', mod, [randomUUID(), b, la.tab, 'section', 'main', null, null, true, 'a1'])
+    await mustRejectBy('★ 다른 소스의 속성을 숨긴다', 'fk_layout_module_property_source', mod, [randomUUID(), a, la.tab, 'property', 'main', la.group, pb, false, null])
+    await mustRejectBy('★ 부모 모듈이 다른 탭의 것', 'fk_layout_module_parent_tab', mod, [randomUUID(), b, lb.tab, 'property', 'main', la.group, pb, false, null])
+
+    // CASCADE — 속성을 영구히 지우면 그 모듈만, 소스를 영구히 지우면 레이아웃 한 벌이 사라진다.
+    const count = async (sql, params) => (await client.query(sql, params)).rows[0].n
+    await client.query('SAVEPOINT cascade')
+    await client.query(`DELETE FROM property WHERE id = $1`, [pa])
+    const afterProperty = await count(`SELECT count(*)::int AS n FROM layout_module WHERE data_source_id = $1`, [a])
+    await client.query(`DELETE FROM data_source WHERE id = $1`, [a])
+    const afterSource = await count(
+      `SELECT (SELECT count(*) FROM page_layout WHERE data_source_id = $1) + (SELECT count(*) FROM layout_tab WHERE data_source_id = $1)
+            + (SELECT count(*) FROM layout_module WHERE data_source_id = $1) AS n`, [a])
+    const otherSource = await count(`SELECT count(*)::int AS n FROM layout_module WHERE data_source_id = $1`, [b])
+    if (afterProperty === 2 && Number(afterSource) === 0 && otherSource === 2) ok('속성을 지우면 그 모듈만 · 소스를 지우면 레이아웃 한 벌이 CASCADE 된다 — 다른 소스는 그대로')
+    else fail(`CASCADE 가 어긋났다 — 속성 뒤 모듈 ${afterProperty} · 소스 뒤 ${afterSource} · 다른 소스 모듈 ${otherSource}`)
+    await client.query('ROLLBACK TO SAVEPOINT cascade')
   }
 
   await client.query('ROLLBACK')

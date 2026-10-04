@@ -13,6 +13,7 @@
 import type { PageIcon } from '../block/page-icon.ts'
 import type { DatabaseFailure } from './database.ts'
 import type { DataSourceFailure } from './data-source.ts'
+import type { LayoutFailure } from './layout.ts'
 import type { PropertyFailure } from './property.ts'
 import type { RowCell, RowFailure } from './row.ts'
 import type { GroupFailure } from './group.ts'
@@ -94,6 +95,21 @@ export function dataSourceFailureStatus(reason: DataSourceFailure): number {
     case 'last_source':
       return 409
     case 'invalid_name':
+      return 400
+  }
+}
+
+export function layoutFailureStatus(reason: LayoutFailure): number {
+  switch (reason) {
+    case 'not_found':
+      return 404
+    case 'forbidden':
+      return 403
+    // 잠김 · 남이 먼저 적용했다(8f-2) — 입력이 아니라 지금 상태가 허락하지 않는다. 다시 읽으면 풀린다.
+    case 'locked':
+    case 'layout_conflict':
+      return 409
+    case 'invalid_layout':
       return 400
   }
 }

@@ -8884,6 +8884,157 @@ async function main() {
         String(await evaluate('location.pathname')))
     }
 
+    if (sectionIf('행 페이지 레이아웃 (8f-2 · F-16-03 · F-16-01)')) {
+      // 행 페이지의 "레이아웃 편집"에서 숨기고 순서를 바꾼 뒤 "모든 행에 적용" — 같은 데이터베이스의 다른 행도 따른다. 숨긴 속성은
+      // "숨긴 속성 N개"로 펼쳐 채운다. 취소는 아무것도 바꾸지 않고, 남이 먼저 적용했으면 거부된다. 잠긴 데이터베이스에는 단추가 없다.
+      // 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const stamp = Date.now()
+      const api = `${BASE}/api/workspaces/${workspaceId}`
+      const readRes = async (res) => ({ status: res.status, body: await res.json().catch(() => null) })
+      const created = (await readRes(await fetch(`${api}/databases`, { method: 'POST', headers: authed, body: JSON.stringify({ name: `레이아웃${stamp}`, privateTop: true }) }))).body?.database
+      const dbId = created?.id
+      const ds = created?.dataSourceId
+      const viewId = created?.defaultViewId
+      const addProp = async (name, type) => (await readRes(await fetch(`${api}/data-sources/${ds}/properties`, { method: 'POST', headers: authed, body: JSON.stringify({ name, type }) }))).body
+      await addProp('수량', 'number')
+      await addProp('메모', 'rich_text')
+      const props = (await addProp('마감', 'date'))?.schema?.properties ?? []
+      const idOf = (name) => props.find((p) => p.name === name)?.id
+      const makeRow = async (title) => (await readRes(await fetch(`${api}/views/${viewId}/rows`, { method: 'POST', headers: authed,
+        body: JSON.stringify({ cells: [{ propertyId: idOf('이름'), value: { type: 'title', title: [textRun(title)] } }] }) }))).body?.row?.id
+      const rowA = await makeRow('첫 행')
+      const rowB = await makeRow('둘째 행')
+
+      const layoutVersion = async () => (await dbQuery(`SELECT version::text AS v FROM page_layout WHERE data_source_id = $1`, [ds]))[0]?.v ?? '0'
+      const schemaOrder = async () => (await dbQuery(`SELECT name FROM property WHERE data_source_id = $1 AND deleted_at IS NULL ORDER BY order_idx, id`, [ds])).map((r) => r.name)
+      const idsExpr = (testId) => `[...document.querySelectorAll('[data-testid="${testId}"] td[data-property-id]')].map((td) => td.getAttribute('data-property-id'))`
+      const idsIn = (testId) => evaluate(idsExpr(testId))
+      const editorIds = () => evaluate(`[...document.querySelectorAll('[data-testid="row-layout-item"]')].map((li) => li.getAttribute('data-property-id'))`)
+      const item = (name, testId) => `[data-testid="row-layout-item"][data-property-id="${idOf(name)}"] [data-testid="${testId}"]`
+      const ids = (...names) => JSON.stringify(names.map(idOf))
+      const has = (sel) => evaluate(`!!document.querySelector(${JSON.stringify(sel)})`)
+      // 하이드레이션 전의 클릭은 아무 일이 없다 — 열릴 때까지 몇 번 누른다.
+      const openEditor = async () => {
+        for (let i = 0; i < 6; i += 1) {
+          if (await has('[data-testid="row-layout-editor"]')) return true
+          await clickSelector('[data-testid="row-layout-edit"]')
+          if (await waitFor(`!!document.querySelector('[data-testid="row-layout-editor"]')`, 1500)) return true
+        }
+        return false
+      }
+      const openRow = async (rowId) => {
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${rowId}` })
+        return waitFor(`!!document.querySelector('[data-testid="row-layout-edit"]') && !!document.querySelector('[data-testid="row-title"]')`, 15000)
+      }
+
+      await openRow(rowA)
+      check('처음에는 스키마 순서로 모두 보인다 — "숨긴 속성" 단추가 없다',
+        JSON.stringify(await idsIn('row-visible-properties')) === ids('수량', '메모', '마감') && !(await has('[data-testid="row-hidden-toggle"]')),
+        JSON.stringify(await idsIn('row-visible-properties')))
+
+      check('★ "레이아웃 편집"을 누르면 편집 모드 — 속성이 스키마 순서로 늘어서고 표는 가려진다',
+        (await openEditor()) && JSON.stringify(await editorIds()) === ids('수량', '메모', '마감')
+          && (await evaluate(`document.querySelector('[data-testid="row-visible-properties"]')?.offsetParent === null`)),
+        JSON.stringify(await editorIds()))
+
+      // 수량을 숨기고 마감을 맨 위로
+      await clickSelector(item('수량', 'row-layout-visibility'))
+      await clickSelector(item('마감', 'row-layout-up'))
+      await clickSelector(item('마감', 'row-layout-up'))
+      check('옮긴 뒤에도 포커스가 그 속성에 남는다 — 맨 위에 닿으면 아래 단추로',
+        await evaluate(`document.activeElement === document.querySelector(${JSON.stringify(item('마감', 'row-layout-down'))})`),
+        String(await evaluate(`document.activeElement?.getAttribute('aria-label')`)))
+      check('초안은 화면에만 있다 — 목록은 바뀌고 서버는 그대로(머리도 없다)',
+        JSON.stringify(await editorIds()) === ids('마감', '수량', '메모')
+          && (await evaluate(`document.querySelector(${JSON.stringify(item('수량', 'row-layout-visibility'))})?.getAttribute('aria-pressed')`)) === 'true'
+          && (await layoutVersion()) === '0',
+        JSON.stringify([await editorIds(), await layoutVersion()]))
+
+      await clickSelector('[data-testid="row-layout-apply"]')
+      check('★ "모든 행에 적용" — 편집 모드가 닫히고 새 순서 · 숨김으로 다시 그린다',
+        await waitFor(`!document.querySelector('[data-testid="row-layout-editor"]')
+          && JSON.stringify(${idsExpr('row-visible-properties')}) === ${JSON.stringify(ids('마감', '메모'))}
+          && document.querySelector('[data-testid="row-hidden-toggle"]')?.textContent.includes('숨긴 속성 1개')`, 15000),
+        JSON.stringify([await idsIn('row-visible-properties'), await evaluate(`document.querySelector('[data-testid="row-hidden-toggle"]')?.textContent ?? null`)]))
+      check('★ 서버 — 레이아웃의 첫 버전 · 스키마 순서가 바뀌었다',
+        (await layoutVersion()) === '1' && JSON.stringify(await schemaOrder()) === JSON.stringify(['이름', '마감', '수량', '메모']),
+        JSON.stringify([await layoutVersion(), await schemaOrder()]))
+      check('편집 모드를 닫으면 포커스가 "레이아웃 편집" 단추로 돌아온다',
+        await waitFor(`document.activeElement?.getAttribute('data-testid') === 'row-layout-edit'`, 3000),
+        String(await evaluate(`document.activeElement?.outerHTML.slice(0, 80) ?? null`)))
+
+      // 숨긴 속성 — 펼쳐서 채운다
+      await clickSelector('[data-testid="row-hidden-toggle"]')
+      check('★ "숨긴 속성 1개"를 펼치면 숨긴 속성이 선다',
+        await waitFor(`document.querySelector('[data-testid="row-hidden-toggle"]')?.getAttribute('aria-expanded') === 'true'
+          && document.querySelector('[data-testid="row-hidden-properties"]')?.offsetParent !== null`, 5000)
+          && JSON.stringify(await idsIn('row-hidden-properties')) === ids('수량'),
+        JSON.stringify(await idsIn('row-hidden-properties')))
+      const qtyCell = `[data-testid="row-hidden-properties"] td[data-property-id="${idOf('수량')}"]`
+      await clickSelector(qtyCell)
+      await send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 })
+      await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 })
+      await waitFor(`!!document.querySelector('[data-testid="db-cell-input"]')`, 3000)
+      await typeText('7')
+      await send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 })
+      await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 })
+      const savedQty = async () => {
+        const rows = (await readRes(await fetch(`${api}/views/${viewId}/rows`, { headers: authed }))).body?.rows ?? []
+        return rows.find((r) => r.id === rowA)?.properties?.[idOf('수량')]?.number ?? null
+      }
+      let qty = null
+      for (let i = 0; i < 20 && qty !== 7; i += 1) { await sleep(250); qty = await savedQty() }
+      check('★ 숨긴 속성도 채울 수 있다 — 숨김은 표시 규칙이다', qty === 7, String(qty))
+
+      // 취소 — 아무것도 바꾸지 않고, 그사이 고친 값도 그대로 보인다(편집하는 동안 표를 내리지 않는다)
+      await openEditor()
+      await clickSelector(item('메모', 'row-layout-visibility'))
+      await clickSelector('[data-testid="row-layout-cancel"]')
+      check('★ 취소하면 초안을 버린다 — 서버도 화면도 그대로 · 고친 값이 옛값으로 돌아가지 않는다',
+        await waitFor(`!document.querySelector('[data-testid="row-layout-editor"]')
+          && JSON.stringify(${idsExpr('row-visible-properties')}) === ${JSON.stringify(ids('마감', '메모'))}
+          && (document.querySelector(${JSON.stringify(qtyCell)})?.textContent ?? '').includes('7')`, 5000)
+          && (await layoutVersion()) === '1',
+        JSON.stringify([await idsIn('row-visible-properties'), await evaluate(`document.querySelector(${JSON.stringify(qtyCell)})?.textContent ?? null`), await layoutVersion()]))
+      await clickSelector('[data-testid="row-hidden-toggle"]')
+      await clickSelector('[data-testid="row-hidden-toggle"]')
+      check('숨긴 속성을 접었다 펴도 고친 값이 그대로다 — 접혀도 표를 내리지 않는다',
+        await waitFor(`document.querySelector('[data-testid="row-hidden-toggle"]')?.getAttribute('aria-expanded') === 'true'
+          && (document.querySelector(${JSON.stringify(qtyCell)})?.textContent ?? '').includes('7')`, 5000),
+        String(await evaluate(`document.querySelector(${JSON.stringify(qtyCell)})?.textContent ?? null`)))
+
+      // 다른 행 — 레이아웃은 데이터베이스의 모든 행의 것이다
+      await openRow(rowB)
+      check('★ 같은 데이터베이스의 다른 행도 같은 레이아웃이다',
+        JSON.stringify(await idsIn('row-visible-properties')) === ids('마감', '메모')
+          && (await evaluate(`document.querySelector('[data-testid="row-hidden-toggle"]')?.textContent ?? ''`)).includes('숨긴 속성 1개'),
+        JSON.stringify(await idsIn('row-visible-properties')))
+
+      // 남이 먼저 적용했다 — 거부되고 초안은 남는다
+      await openEditor()
+      const other = await fetch(`${api}/data-sources/${ds}/layout`, { method: 'PUT', headers: authed,
+        body: JSON.stringify({ version: '1', order: [], hidden: [idOf('수량'), idOf('메모')] }) })
+      await clickSelector(item('마감', 'row-layout-visibility'))
+      await clickSelector('[data-testid="row-layout-apply"]')
+      check('★ 남이 먼저 적용했으면 거부된다 — 알리고 편집 모드에 남는다 · 남의 레이아웃은 그대로',
+        other.ok && (await waitFor(`(document.querySelector('[data-testid="row-layout-error"]')?.textContent ?? '').includes('다른 사람이 먼저')`, 8000))
+          && (await has('[data-testid="row-layout-editor"]')) && (await layoutVersion()) === '2'
+          && JSON.stringify((await dbQuery(`SELECT property_id FROM layout_module WHERE data_source_id = $1 AND kind = 'property' ORDER BY property_id`, [ds])).map((r) => r.property_id))
+            === JSON.stringify([idOf('수량'), idOf('메모')].sort()),
+        JSON.stringify([other.status, await evaluate(`document.querySelector('[data-testid="row-layout-error"]')?.textContent ?? null`), await layoutVersion()]))
+      await clickSelector('[data-testid="row-layout-cancel"]')
+
+      // 잠긴 데이터베이스 — 단추가 없고 서버도 거부한다
+      const locked = await fetch(`${api}/databases/${dbId}/lock`, { method: 'PUT', headers: authed })
+      const lockedHtml = await (await fetch(`${BASE}/w/${workspaceId}/${rowB}`, { headers: { cookie: authed.cookie } })).text()
+      const lockedPut = await fetch(`${api}/data-sources/${ds}/layout`, { method: 'PUT', headers: authed, body: JSON.stringify({ version: '2', order: [], hidden: [] }) })
+      check('잠긴 데이터베이스 — "레이아웃 편집"이 서지 않고 적용은 409 다(숨긴 속성은 그대로 펼칠 수 있다)',
+        locked.ok && !lockedHtml.includes('data-testid="row-layout-edit"') && lockedHtml.includes('data-testid="row-hidden-toggle"') && lockedPut.status === 409,
+        JSON.stringify([locked.status, lockedHtml.includes('data-testid="row-layout-edit"'), lockedPut.status]))
+      await fetch(`${api}/databases/${dbId}/lock`, { method: 'DELETE', headers: authed })
+    }
+
     section('전체')
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))
     const serverErrors = serverOutput.split('\n').filter((l) => l.includes('⨯'))

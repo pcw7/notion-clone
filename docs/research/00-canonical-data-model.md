@@ -64,7 +64,7 @@
 | `view_property` | DB | 뷰별 컬럼 설정 (행 단위 테이블) | 03, 04 |
 | `row_position` | DB | 뷰별·그룹별 수동 행 순서 | 04 |
 | `view_user_override` | DB | 개인 필터/정렬 | 04 |
-| `page_layout` / `layout_tab` / `layout_module` | IL | 행 페이지 화면 정의. data_source 당 1벌 | 16, 03 |
+| `page_layout` / `layout_tab` / `layout_module` | IL | 행 페이지 화면 정의. data_source 당 최대 1벌 — 없으면 기본(lazy · §3.6 [보강] 8f-2) | 16, 03 |
 | `acl_entry` | PM | **권한의 유일한 저장 지점.** deny 계층 없음 | 02, 04, 06, 07 |
 | `block_acl_meta` | PM | 상속 차단 플래그와 머티리얼라이즈 시각 | 06 |
 | `level_capability` | PM | (대상종류, 레벨) → capability 매핑. 정수 서열 비교 금지 | 06 |
@@ -1605,7 +1605,7 @@ CREATE TABLE view_user_override (
   PRIMARY KEY (view_id, user_id)
 );
 
--- L1 레이아웃. data_source 당 정확히 1행 <U-1 = 16 비준>
+-- L1 레이아웃. data_source 당 최대 1행 — 없으면 기본 레이아웃 <U-1 = 16 비준> [정정 8f-2 — "정확히 1행" → lazy · 아래 [보강]]
 CREATE TABLE page_layout (
   data_source_id uuid PRIMARY KEY REFERENCES data_source(id) ON DELETE CASCADE,
   structure text NOT NULL DEFAULT 'simple' CHECK (structure IN ('simple','tabbed')),
@@ -1629,7 +1629,7 @@ CREATE TABLE layout_tab (
   CHECK ((kind='content' AND view_id IS NULL) OR (kind='linked_view' AND view_id IS NOT NULL))
 );
 CREATE UNIQUE INDEX layout_tab_one_content ON layout_tab (data_source_id) WHERE kind='content';
--- 불변식 T1: data_source 당 kind='content' 행은 정확히 1개
+-- 불변식 T1: page_layout 이 있으면 kind='content' 행은 정확히 1개 [정정 8f-2 — "data_source 당" → 머리가 있을 때]
 -- 불변식 T2: structure='simple' 이어도 content 탭 행은 유지한다(구조 전환 시 배치 보존)
 
 CREATE TABLE layout_module (               -- page_layout_slot 대체. 그 테이블은 존재하지 않는다
@@ -1640,9 +1640,16 @@ CREATE TABLE layout_module (               -- page_layout_slot 대체. 그 테�
   area text NOT NULL CHECK (area IN ('heading','main','panel')),
   parent_module_id uuid NULL REFERENCES layout_module(id) ON DELETE CASCADE,
   property_id text NULL REFERENCES property(id) ON DELETE CASCADE,            -- text [X-12]
-  label text, visible boolean NOT NULL DEFAULT true, order_idx text NOT NULL,
-  CHECK ((kind='property') = (property_id IS NOT NULL))
+  label text, visible boolean NOT NULL DEFAULT true,
+  order_idx text NULL,                     -- [정정 8f-2] NULL = 자기 순서가 없다 — 그룹 안에서 스키마 순서(property.order_idx)
+  CHECK ((kind='property') = (property_id IS NOT NULL)),
+  CHECK (kind = 'property' OR order_idx IS NOT NULL),                               -- [보강 8f-2]
+  CHECK (kind <> 'heading' OR area = 'heading'),                                    -- [보강 8f-2] M1 의 절반
+  FOREIGN KEY (tab_id, data_source_id) REFERENCES layout_tab (id, data_source_id) ON DELETE CASCADE,     -- [보강 8f-2]
+  FOREIGN KEY (property_id, data_source_id) REFERENCES property (id, data_source_id) ON DELETE CASCADE,  -- [보강 8f-2]
+  FOREIGN KEY (parent_module_id, tab_id) REFERENCES layout_module (id, tab_id) ON DELETE CASCADE        -- [보강 8f-2]
 );
+CREATE UNIQUE INDEX layout_module_one_heading ON layout_module (tab_id) WHERE kind='heading';  -- [보강 8f-2] M1
 CREATE UNIQUE INDEX layout_module_one_group ON layout_module (tab_id) WHERE kind='property_group';
 CREATE UNIQUE INDEX layout_module_prop_once ON layout_module (tab_id, property_id)
   WHERE property_id IS NOT NULL;
@@ -1654,6 +1661,35 @@ CREATE UNIQUE INDEX layout_module_prop_once ON layout_module (tab_id, property_i
 -- 불변식 M6: property_group 은 프로퍼티를 열거하지 않는다. "모듈로 승격되지 않은 나머지"의
 --            잔여 컨테이너이며 렌더 시 계산된다. 복사해 두면 신규 프로퍼티가 안 보인다
 ```
+
+**[보강] 행의 레이아웃 — lazy 한 머리 · 속성 묶음의 순서와 숨김** ⟨잔여 묶음 8f-2 / 마이그레이션 0044⟩
+
+> 초판은 `page_layout` 을 *"data_source 당 정확히 1행"* 으로 적었고, 16 F-16-12 는 *"레코드가 없으면 기본 레이아웃으로 렌더한다. DB 생성 시 굳이
+> 레코드를 만들지 않는 lazy 생성이 마이그레이션에 유리"* 라고 적었다. 둘이 부딪힌다. **lazy 가 이긴다.**
+>
+> ① **data_source 당 최대 1행 — 없으면 기본 레이아웃이다**(모두 보임 · 스키마 순서 · version 0). 근거 셋: (a) 16 F-16-03 의 *"모듈 행은 기본
+> 동작에서의 이탈만 기록한다(sparse)"* 와 같은 말이다 — 머리 자체가 기본에서 벗어난 첫 이탈과 함께 생긴다 (b) 이미 있는 소스에 되채우기가
+> 필요 없다 (c) 소스를 만드는 길(`createDatabase` · `addDataSource` — 앞으로의 복제 · 임포트)이 레이아웃을 몰라도 된다. "정확히 1행" 을
+> 지키려면 그 길마다 네 표에 한 벌씩 써야 하고, 하나라도 빠뜨리면 읽는 쪽이 어차피 "없음"을 다뤄야 한다.
+> ② **처음 벗어날 때 한 벌을 함께 만든다** — `page_layout` + content 탭 + heading(area `heading`) + property_group(area `main`). 그래서 T1 · M1 ·
+> M2 의 "정확히 1개"는 *"머리가 있으면"* 으로 읽는다. "1개 이하"는 부분 UNIQUE 가(M1 은 이번에 승격 — 인덱스와 area CHECK), "적어도 1개"는
+> 만드는 함수 하나가 지킨다. 머리 · content 탭 · heading · 그룹을 지우는 길은 없다(소스가 영구 삭제될 때의 CASCADE 뿐이다).
+> ③ **속성 묶음 안의 순서는 `property.order_idx`(스키마 순서)다** — 16 F-16-03 의 클론 대안 *"정렬은 `property.order_idx` 를 그대로 재사용하고
+> 레이아웃 전용 순서를 따로 두지 않는다"*. 그래서 `layout_module.order_idx` 는 **property 행에서 NULL 일 수 있다**(자기 순서가 없다 = 스키마
+> 순서를 따른다). 다른 종류의 모듈은 자기 순서가 있어야 한다(CHECK). 섹션 · 승격(F-16-04) · heading 고정(F-16-02)이 들어오면 그 자리의 property
+> 행이 자기 순서를 갖는다. 순서를 바꾸는 것은 스키마를 고치는 것이라 `schema_version` 도 오른다(뷰의 컬럼 순서 `view_property.order_idx` 는
+> 따로다 — C-6).
+> ④ **숨김은 그룹을 부모로 진 property 행 하나다** — `kind='property'` · `parent_module_id = 그룹` · `area` 는 그룹의 것 · `visible=false` ·
+> `order_idx` NULL. 다시 보이면 **행을 지운다** — 기본(보임)으로 돌아간 것은 행이 없다. M6 그대로다: 그룹은 속성을 열거하지 않으므로 행이
+> 없는 속성(새로 만든 속성 포함)은 그룹에 보인다. 숨김은 표시 규칙이다(16 R12) — 값 · 검색 · 필터 · API 는 그대로이고, 행 페이지도 "숨긴 속성
+> N개"로 펼쳐 채울 수 있다. soft delete 된 속성의 행은 남는다 — 되살리면 숨김도 돌아온다(`view_property` 와 같다).
+> ⑤ **저장은 전체 교체 한 번이다**(16 F-16-01 · F-16-12 — 편집 모드의 초안 → "모든 행에 적용"). `version` 이 낙관적 잠금이고 머리가 없으면
+> 0 이다. 다르면 거부한다(부분 병합 없음). 바뀐 것이 없으면 아무것도 쓰지 않는다(version 도 그대로). 묻는 것은 주인 데이터베이스의
+> `edit_structure` 이고 잠긴 데이터베이스는 막는다(16 R8 — 속성 · 뷰와 같은 구조의 문) · 소스가 살아 있어야 한다. 본문 편집은 version 을
+> 올리지 않는다(F-16-07).
+> ⑥ **같은 소스 · 같은 탭** — 복합 FK 셋: 모듈의 탭 · 모듈의 속성이 모듈과 같은 소스이고, 부모 모듈이 같은 탭이다. 초판은 `data_source_id` 를
+> 모듈 · 탭에 따로 적어 두고 그 둘이 맞는지를 말하지 않았다 — 어긋나면 한 소스의 레이아웃에 남의 속성이 서거나 지워지지 않고 남는다.
+> ⑦ **템플릿 화면은 숨김을 따르지 않는다** — 기본값을 채우는 화면이다(6c-3 · F-08-02). 순서는 같은 스키마 순서라 저절로 따른다.
 
 ---
 

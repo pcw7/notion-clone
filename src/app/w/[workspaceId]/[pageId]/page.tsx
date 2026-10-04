@@ -149,9 +149,10 @@ export default async function PageView({ params, searchParams }: PageProps<'/w/[
           page,
         })
 
-  // ── 행의 속성 묶음(8f-1) ──
+  // ── 행의 속성 묶음(8f-1 · 8f-2) ──
   // 셀을 고칠 수 있는가 — 데이터베이스의 `edit_content` 이고 **이 행 페이지가 잠기지 않았다**(7f-2 — 행의 값을 쓰는 길은 그 행의 잠금을
-  // 묻는다 · `access` 가 잠김을 이미 담는다). 서버가 다시 묻는다.
+  // 묻는다 · `access` 가 잠김을 이미 담는다). 구조(옵션 만들기 · 레이아웃)는 데이터베이스의 것이다 — 데이터베이스가 잠기면
+  // `readRowPage` 가 닫아서 준다. 행 페이지의 잠금은 레이아웃을 막지 않는다(레이아웃은 모든 행의 것이다). 서버가 다시 묻는다.
   const rowColumns = rowPage === null ? [] : listColumns('record', rowPage.columns)
   const rowAccess = rowPage === null ? null : { ...rowPage.access, canEditContent: rowPage.access.canEditContent && access === 'edit' }
   const rowRelationIds = rowColumns.filter((c) => c.type === 'relation').map((c) => c.propertyId)
@@ -256,7 +257,8 @@ export default async function PageView({ params, searchParams }: PageProps<'/w/[
 
       {/*
         행의 속성 묶음(8f-1 · F-16-03) — 본문 위에 선다(F-16-07 *"제목 아래 … 모듈들 → 자유 본문 블록 순"*). 제목은 위의 제목 칸이라
-        여기서 뺀다. 남는 속성이 없으면 그리지 않는다(F-16-03 *"잔여 0개 … 읽기 모드에서는 렌더 생략"*).
+        여기서 뺀다. 남는 속성이 없으면 그리지 않는다(F-16-03 *"잔여 0개 … 읽기 모드에서는 렌더 생략"*). 숨긴 속성 · 레이아웃 편집은
+        묶음 안에서 갈린다(8f-2 · `row-property-group.tsx`).
       */}
       {rowPage !== null && rowAccess !== null && rowColumns.length > 0 && (
         <section aria-label="속성" data-testid="row-properties" className="flex flex-col gap-2">
@@ -267,6 +269,8 @@ export default async function PageView({ params, searchParams }: PageProps<'/w/[
             tableName={rowPage.tableName}
             variant="record"
             columns={rowColumns}
+            layoutVersion={rowPage.layoutVersion}
+            canEditLayout={rowAccess.canEditStructure}
             rows={[rowJson(rowPage.row)]}
             hasMore={false}
             nextCursor={null}
