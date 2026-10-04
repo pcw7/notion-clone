@@ -2,13 +2,16 @@
  * POST /api/auth/verify-code — 코드 검증 · 계정 생성 · 세션 발급
  *
  * 정본: F-14-02(검증), F-14-01(계정 생성), §3.2(user_session)
+ *
+ * `addAccount: true` 면 다른 계정 더하기다(8j-2 · F-14-09) — 앞의 활성 세션이 다른 사람의 살아 있는 세션이면 로그아웃하지 않고 목록으로
+ * 옮긴다(`finishLogin` · 정본 §3.2 [보강] 다중 계정 ②).
  */
 
+import { finishLogin, readAccounts } from '@/lib/auth/accounts-cookie'
 import { establishLogin } from '@/lib/auth/establish-login'
 import { verifyLoginCode } from '@/lib/auth/login-code'
 import { mfaEnabledFor } from '@/lib/auth/mfa'
 import { requestMeta } from '@/lib/auth/request-meta'
-import { setSessionCookie } from '@/lib/auth/session-cookie'
 import { withMinimumDuration } from '@/lib/auth/timing'
 
 function parseEmail(value: unknown): string | null {
@@ -45,6 +48,8 @@ export async function POST(request: Request): Promise<Response> {
     }
 
     const meta = requestMeta(request)
+    // 세션 쿠키를 쓰기 전에 읽어 둔다 — 더하기면 앞의 활성 세션이 목록으로 간다.
+    const before = await readAccounts()
     const verified = await verifyLoginCode(email, code, meta)
 
     if (!verified.ok) {
@@ -62,7 +67,7 @@ export async function POST(request: Request): Promise<Response> {
       userAgent: meta.userAgent,
     })
 
-    await setSessionCookie(login.session)
+    await finishLogin(before, login.session, login.userId, (body as { addAccount?: unknown })?.addAccount === true)
 
     return Response.json({
       ok: true,

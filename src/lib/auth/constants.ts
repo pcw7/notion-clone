@@ -42,6 +42,12 @@ export const SESSION_MAX_LIFETIME_DAYS = 90
  */
 export const SESSION_COOKIE = 'nc_session'
 
+/**
+ * 함께 로그인한 다른 계정의 세션들(잔여 묶음 8j-2 · F-14-09) — 토큰 원문을 `.` 으로 이은 것 · httpOnly. 게이트는 읽지 않는다(지금 계정은
+ * `SESSION_COOKIE` 하나다). 모양 · 바꾸는 규칙은 `account-set.ts`.
+ */
+export const ACCOUNTS_COOKIE = 'nc_accounts'
+
 // ── 레이트리밋 (F-14-16) ──────────────────────────────────────────────
 //
 // 전부 클론의 설계 결정이다. Notion 은 이 영역을 공개하지 않는다.

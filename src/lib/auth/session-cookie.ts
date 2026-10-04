@@ -9,7 +9,8 @@
  */
 
 import { cookies } from 'next/headers'
-import { SESSION_COOKIE } from './constants.ts'
+import { ACCOUNTS_COOKIE, SESSION_COOKIE, SESSION_MAX_LIFETIME_DAYS } from './constants.ts'
+import { parseAccountTokens, serializeAccountTokens } from './account-set.ts'
 import type { IssuedSession } from './session.ts'
 
 export { SESSION_COOKIE }
@@ -34,4 +35,26 @@ export async function clearSessionCookie(): Promise<void> {
 export async function readSessionToken(): Promise<string | null> {
   const jar = await cookies()
   return jar.get(SESSION_COOKIE)?.value ?? null
+}
+
+/** 함께 로그인한 다른 계정의 세션들(8j-2) — 모양이 맞는 토큰만 · 겹치면 한 번. */
+export async function readAccountTokens(): Promise<string[]> {
+  const jar = await cookies()
+  return parseAccountTokens(jar.get(ACCOUNTS_COOKIE)?.value)
+}
+
+/** 비면 지운다. 만료는 세션의 최대 수명 — 안의 세션이 먼저 끝나면 그 토큰은 "다시 로그인"으로 보인다. */
+export async function setAccountTokens(tokens: readonly string[]): Promise<void> {
+  const jar = await cookies()
+  if (tokens.length === 0) {
+    jar.delete(ACCOUNTS_COOKIE)
+    return
+  }
+  jar.set(ACCOUNTS_COOKIE, serializeAccountTokens(tokens), {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: process.env.NODE_ENV === 'production',
+    path: '/',
+    expires: new Date(Date.now() + SESSION_MAX_LIFETIME_DAYS * 24 * 60 * 60 * 1000),
+  })
 }

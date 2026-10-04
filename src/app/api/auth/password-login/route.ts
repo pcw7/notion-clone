@@ -8,13 +8,15 @@
  *
  *   invalid_credentials  401  없는 이메일 · 비밀번호 없는 계정 · 틀린 비밀번호 — 구분하지 않는다
  *   too_many_attempts    429  로그인 코드로는 들어올 수 있다
+ *
+ * `addAccount: true` 면 다른 계정 더하기다(8j-2 — 로그인 코드와 같다 · `finishLogin`).
  */
 
+import { finishLogin, readAccounts } from '@/lib/auth/accounts-cookie'
 import { establishLogin } from '@/lib/auth/establish-login'
 import { mfaEnabledFor } from '@/lib/auth/mfa'
 import { findPasswordLogin } from '@/lib/auth/password'
 import { requestMeta } from '@/lib/auth/request-meta'
-import { setSessionCookie } from '@/lib/auth/session-cookie'
 import { withMinimumDuration } from '@/lib/auth/timing'
 
 export async function POST(request: Request): Promise<Response> {
@@ -25,9 +27,15 @@ export async function POST(request: Request): Promise<Response> {
     } catch {
       return Response.json({ error: 'invalid_credentials' }, { status: 401 })
     }
-    const { email, password } = (typeof body === 'object' && body !== null ? body : {}) as { email?: unknown; password?: unknown }
+    const { email, password, addAccount } = (typeof body === 'object' && body !== null ? body : {}) as {
+      email?: unknown
+      password?: unknown
+      addAccount?: unknown
+    }
 
     const meta = requestMeta(request)
+    // 세션 쿠키를 쓰기 전에 읽어 둔다 — 더하기면 앞의 활성 세션이 목록으로 간다.
+    const before = await readAccounts()
     const found = await findPasswordLogin({ email, password, ip: meta.ip, userAgent: meta.userAgent })
     if (!found.ok) {
       return Response.json({ error: found.reason }, { status: found.reason === 'too_many_attempts' ? 429 : 401 })
@@ -40,7 +48,7 @@ export async function POST(request: Request): Promise<Response> {
       ip: meta.ip,
       userAgent: meta.userAgent,
     })
-    await setSessionCookie(login.session)
+    await finishLogin(before, login.session, login.userId, addAccount === true)
     // 2단계 인증을 켠 사람이면 이 세션은 둘째 단계를 거쳐야 들어온다(8i-2a) — 화면이 그 단계로 간다.
     return Response.json({ ok: true, mfaRequired: await mfaEnabledFor(login.userId) })
   })

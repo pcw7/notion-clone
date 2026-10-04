@@ -9794,6 +9794,107 @@ async function main() {
       }
     }
 
+    if (sectionIf('다중 계정 — 서버 (8j-2 · F-14-09)')) {
+      // 화면은 8j-3 이다 — 라우트를 실제 서버로 본다. 세 사람이 한 "브라우저"(손으로 나르는 쿠키 상자)에 차례로 로그인한다: A 는 코드로,
+      // B 는 코드 + 더하기, C 는 비밀번호 + 더하기 → 목록 · 바꾸기 · 지금 계정 로그아웃(다음 계정이 활성) · 끝난 세션은 "다시 로그인" ·
+      // 한 계정만 로그아웃 · 모두 로그아웃. 자기 데이터를 스스로 만든다.
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const stamp = Date.now()
+      const jar = new Map()
+      const cookieHeader = () => [...jar].map(([k, v]) => `${k}=${v}`).join('; ')
+      // 지우는 Set-Cookie 는 값이 비었거나 만료가 지난 것이다
+      const absorb = (res) => {
+        for (const line of res.headers.getSetCookie()) {
+          const [pair, ...attrs] = line.split(';')
+          const at = pair.indexOf('=')
+          const name = pair.slice(0, at).trim()
+          const value = pair.slice(at + 1)
+          const gone = value === '' || attrs.some((a) => /^\s*max-age=0\s*$/i.test(a) || /expires=.*1970/i.test(a))
+          if (gone) jar.delete(name)
+          else jar.set(name, value)
+        }
+      }
+      const call = async (path, init = {}) => {
+        const res = await fetch(`${BASE}${path}`, { ...init, headers: { ...json, ...(init.headers ?? {}), cookie: cookieHeader() }, redirect: 'manual' })
+        absorb(res)
+        return { status: res.status, body: await res.json().catch(() => null) }
+      }
+      const codeLogin = async (email, addAccount) => {
+        await call('/api/auth/request-code', { method: 'POST', body: JSON.stringify({ email }) })
+        return call('/api/auth/verify-code', { method: 'POST', body: JSON.stringify({ email, code: await loginCodeFor(email), addAccount }) })
+      }
+      const list = async () => {
+        const got = (await call('/api/auth/accounts')).body
+        return { current: got?.current ? `${got.current.email}:${got.current.state}` : null, others: (got?.others ?? []).map((a) => `${a.email}:${a.state}`) }
+      }
+      const userOf = async (email) => (await dbQuery(`SELECT user_id FROM user_email WHERE email = $1`, [email]))[0]?.user_id ?? 'missing'
+      const liveSessions = async (userId) =>
+        Number((await dbQuery(`SELECT count(*)::int AS n FROM user_session WHERE user_id = $1 AND revoked_at IS NULL`, [userId]))[0]?.n)
+
+      const A = `e2e-acct-a+${stamp}@example.com`
+      const B = `e2e-acct-b+${stamp}@example.com`
+      await codeLogin(A, false)
+      const firstToken = jar.get('nc_session')
+      const addedB = await codeLogin(B, true)
+      check('★ 더하기 — 둘째 계정이 지금 계정이 되고 첫째는 로그아웃 없이 목록에 남는다',
+        addedB.status === 200 && jar.get('nc_accounts') === firstToken
+          && JSON.stringify(await list()) === JSON.stringify({ current: `${B}:signed_in`, others: [`${A}:signed_in`] }),
+        JSON.stringify([addedB.status, await list()]))
+
+      // C — 비밀번호로 더한다(비밀번호는 C 의 다른 세션으로 정해 둔다)
+      const cUser = await createUser(`다중 계정의 C ${stamp}`)
+      const cSide = await joinAs(workspaceId, cUser, 'member')
+      const PASSWORD = `correct horse ${stamp}`
+      await fetch(`${BASE}/api/workspaces/${workspaceId}/account/password`, {
+        method: 'PUT', headers: { ...json, cookie: `nc_session=${cSide.token}` }, body: JSON.stringify({ newPassword: PASSWORD }),
+      })
+      const C = cUser.email
+      const addedC = await call('/api/auth/password-login', { method: 'POST', body: JSON.stringify({ email: C, password: PASSWORD, addAccount: true }) })
+      check('비밀번호 로그인도 더한다 — 앞의 계정이 목록의 맨 앞으로',
+        addedC.status === 200 && JSON.stringify(await list()) === JSON.stringify({ current: `${C}:signed_in`, others: [`${B}:signed_in`, `${A}:signed_in`] }),
+        JSON.stringify([addedC.status, await list()]))
+
+      const toA = await call('/api/auth/switch-account', { method: 'POST', body: JSON.stringify({ userId: await userOf(A) }) })
+      const home = await fetch(`${BASE}/`, { headers: { cookie: cookieHeader() }, redirect: 'manual' })
+      const homeHtml = await home.text()
+      check('★ 바꾸기 — 지금 계정이 A 가 되고 C 는 목록의 맨 앞 · 처음 화면이 A 의 것이다',
+        toA.status === 200 && toA.body?.mfaRequired === false
+          && JSON.stringify(await list()) === JSON.stringify({ current: `${A}:signed_in`, others: [`${C}:signed_in`, `${B}:signed_in`] })
+          && home.status === 200 && homeHtml.includes(A) && !homeHtml.includes(B),
+        JSON.stringify([toA, await list(), home.status]))
+      const nobody = await call('/api/auth/switch-account', { method: 'POST', body: JSON.stringify({ userId: randomUUID() }) })
+      check('이 브라우저에 없는 계정으로는 못 바꾼다 — 404', nobody.status === 404 && nobody.body?.error === 'not_found', JSON.stringify(nobody))
+
+      const outA = await call('/api/auth/logout', { method: 'POST', headers: { accept: 'application/json' }, body: '{}' })
+      check('★ 지금 계정만 로그아웃 — A 의 세션이 폐기되고 목록의 살아 있는 첫째(C)가 지금 계정이 된다',
+        outA.status === 200 && outA.body?.signedIn === true && (await liveSessions(await userOf(A))) === 0
+          && JSON.stringify(await list()) === JSON.stringify({ current: `${C}:signed_in`, others: [`${B}:signed_in`] }),
+        JSON.stringify([outA, await list()]))
+
+      await dbQuery(`UPDATE user_session SET revoked_at = now(), revoked_reason = 'e2e' WHERE user_id = $1 AND revoked_at IS NULL`, [await userOf(B)])
+      const toB = await call('/api/auth/switch-account', { method: 'POST', body: JSON.stringify({ userId: await userOf(B) }) })
+      check('★ 끝난 세션 — 목록에 "다시 로그인"으로 남고, 그 계정으로는 못 바꾼다(409) · 지금 계정은 그대로',
+        toB.status === 409 && toB.body?.error === 'signed_out'
+          && JSON.stringify(await list()) === JSON.stringify({ current: `${C}:signed_in`, others: [`${B}:signed_out`] }),
+        JSON.stringify([toB, await list()]))
+
+      const outB = await call('/api/auth/logout', { method: 'POST', headers: { accept: 'application/json' }, body: JSON.stringify({ userId: await userOf(B) }) })
+      check('한 계정만 로그아웃 — 목록에서 빠지고 지금 계정은 그대로',
+        outB.status === 200 && !jar.has('nc_accounts') && JSON.stringify(await list()) === JSON.stringify({ current: `${C}:signed_in`, others: [] }),
+        JSON.stringify([outB, await list()]))
+
+      await codeLogin(A, true)
+      const outAll = await call('/api/auth/logout', { method: 'POST', headers: { accept: 'application/json' }, body: JSON.stringify({ scope: 'all' }) })
+      check('★ 모두 로그아웃 — 두 쿠키가 지워지고 두 세션이 모두 폐기된다(C 의 다른 기기 세션은 그대로)',
+        outAll.status === 200 && outAll.body?.signedIn === false && !jar.has('nc_session') && !jar.has('nc_accounts')
+          && (await liveSessions(await userOf(A))) === 0 && (await liveSessions(cUser.userId)) === 1,
+        JSON.stringify([outAll, [...jar.keys()], await liveSessions(cUser.userId)]))
+
+      const form = await fetch(`${BASE}/api/auth/logout`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: 'scope=all', redirect: 'manual' })
+      check('폼으로 보낸 로그아웃은 화면으로 보낸다 — 아무도 남지 않으면 /login',
+        form.status === 303 && new URL(form.headers.get('location') ?? '', BASE).pathname === '/login', JSON.stringify([form.status, form.headers.get('location')]))
+    }
+
     section('전체')
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))
     const serverErrors = serverOutput.split('\n').filter((l) => l.includes('⨯'))
