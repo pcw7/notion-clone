@@ -84,8 +84,9 @@ describe('연산자는 강조 대상이 아니다', () => {
     assert.deepEqual(hits('알파 베타', '알파 -베타'), ['알파'])
   })
 
-  test('따옴표를 벗기고 안의 말을 강조한다', () => {
-    assert.deepEqual(hits('my projects here', '"my projects"'), ['my', 'projects'])
+  test('따옴표는 구절째 강조한다 — 서버가 그 구절이 붙어 있는 문서를 찾았다(8l-1 · 같은 파서)', () => {
+    assert.deepEqual(hits('my projects here', '"my projects"'), ['my projects'])
+    assert.deepEqual(hits('projects of mine', '"my projects"'), [], '떨어진 말은 구절이 아니다')
   })
 
   test('연산자만 있는 쿼리면 강조가 없다', () => {

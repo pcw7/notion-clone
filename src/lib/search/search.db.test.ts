@@ -497,6 +497,69 @@ describe('★ 페이지네이션 — 권한 때문에 깨지지 않는다 (F-07-
   })
 })
 
+describe('★ 쿼리 문법 — 두 축이 같은 뜻으로 읽는다 (8l-1 · F-07-02)', () => {
+  const tag = () => randomUUID().slice(0, 6)
+
+  test('★ 공백은 AND — 떨어져 있어도 둘 다 있으면 걸리고 하나만 있으면 아니다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const a = `가람${tag()}`
+    const b = `나래${tag()}`
+    const both = await pageWith('둘 다', [`${a} 그리고 한참 뒤에 ${b}`])
+    await pageWith('하나만', [`${a} 만 있다`])
+    assert.deepEqual(await idsOf(fx.owner, `${a} ${b}`), [both])
+  })
+
+  test('★ 구절은 붙어 있을 때만 · 제외는 그 말이 있는 문서를 뺀다 · OR 는 대안', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const x = tag()
+    const near = await pageWith('붙음', [`주간${x} 보고${x} 를 쓴다`])
+    const far = await pageWith('떨어짐', [`주간${x} 회의와 보고${x}`])
+    assert.deepEqual(await idsOf(fx.owner, `"주간${x} 보고${x}"`), [near])
+    assert.deepEqual((await idsOf(fx.owner, `주간${x} 보고${x}`)).sort(), [near, far].sort(), '따옴표가 없으면 둘 다')
+    assert.deepEqual(await idsOf(fx.owner, `주간${x} -회의`), [near], '제외')
+    const titleOnly = await pageWith(`초안${x} 제목뿐`)
+    assert.deepEqual(await idsOf(fx.owner, `초안${x} -없는말${x}`), [titleOnly], '본문이 없는 문서가 제외 때문에 사라지지 않는다')
+    const third = await pageWith('대안', [`다른말${x} 이 있다`])
+    assert.deepEqual((await idsOf(fx.owner, `보고${x} OR 다른말${x}`)).sort(), [near, far, third].sort())
+  })
+
+  test('찾는 말이 없는 쿼리(제외만)는 질의하지 않는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const out = await searchPages(fx.owner.ctx, { query: '-초안 -메모' })
+    assert.equal(out.ok, false)
+    assert.equal(out.ok === false && out.reason, 'query_too_short')
+  })
+
+  test('★ 제목이 걸렸다 = 모든 절이 제목에 있다 · 스니펫은 첫 말 주변', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const x = tag()
+    const titled = await pageWith(`설계${x} 검토${x}`)
+    const mixed = await pageWith(`설계${x} 만 제목`, [`${'앞'.repeat(80)} 검토${x} 는 본문에`])
+    const out = await searchPages(fx.owner.ctx, { query: `설계${x} 검토${x}` })
+    assert.ok(out.ok)
+    const hits = out.results.results
+    assert.deepEqual(hits.map((h) => [h.pageId, h.titleHit]), [[titled, true], [mixed, false]])
+
+    // 앞부분(160자)보다 길게 — 닻이 없으면 스니펫은 앞부분이라 첫 말이 들어갈 수 없다(반사실이 처음엔 살아남았다)
+    const body = await pageWith('닻', [`${'앞'.repeat(200)} 닻말${x} 그리고 둘째${x}`])
+    const anchored = await searchPages(fx.owner.ctx, { query: `닻말${x} 둘째${x}` })
+    assert.ok(anchored.ok)
+    const snippet = anchored.results.results.find((h) => h.pageId === body)?.snippet ?? ''
+    assert.ok(snippet.includes(`닻말${x}`), `스니펫이 첫 말 주변이 아니다: ${snippet.slice(0, 40)}`)
+  })
+
+  test('라틴 축도 같은 뜻 — 공백 AND · 제외(websearch_to_tsquery)', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const w = (n: string) => `${n}${randomUUID().slice(0, 6).replace(/[^a-z]/g, 'q')}`
+    const alpha = w('alpha')
+    const beta = w('beta')
+    const both = await pageWith('Latin both', [`${alpha} lorem ipsum ${beta}`])
+    const one = await pageWith('Latin one', [`${alpha} only`])
+    assert.deepEqual(await idsOf(fx.owner, `${alpha} ${beta}`), [both])
+    assert.deepEqual(await idsOf(fx.owner, `${alpha} -${beta}`), [one])
+  })
+})
+
 describe('normalizeQuery', () => {
   test('공백을 접고 다듬는다', () => {
     assert.equal(normalizeQuery('  여러   공백  '), '여러 공백')

@@ -24,28 +24,23 @@
  * 이 필요 없다.
  */
 
+import { parseQuery, positiveTerms } from './query.ts'
+
 export type HighlightPart = {
   readonly text: string
   /** 이 조각이 쿼리에 걸렸는가. */
   readonly hit: boolean
 }
 
-/** 쿼리를 강조 대상 토큰으로 쪼갠다. */
+/**
+ * 쿼리를 강조 대상 토큰으로 쪼갠다 — 서버와 같은 파서(`query.ts` · 8l-1)로. 구절(`"…"`)은 구절째 칠한다 — 서버가 그 구절이 붙어 있는
+ * 문서만 찾았으므로. `-제외` 의 말은 **강조하지 않는다** — 그 말이 없는 문서만 걸렸으므로 강조할 대상이 애초에 없고, 강조하면 있는 것처럼
+ * 보인다. `OR` 는 연산자이고 찾는 말이 아니다(대문자일 때 — 소문자 or 는 말이다).
+ *
+ * 긴 토큰을 먼저 본다. `['검색', '검색엔진']` 순서면 '검색엔진' 안의 '검색'만 강조되고 뒤쪽 '엔진' 이 평문으로 남아 조각이 쪼개져 보인다.
+ */
 function tokensOf(query: string): string[] {
-  // 따옴표는 서버의 구문 검색 문법이고(F-07-02 — `websearch_to_tsquery`),
-  // 강조 대상은 그 안의 말이다. 여기서는 따옴표를 벗겨 토큰으로만 본다.
-  // `-제외` 의 제외 토큰은 **강조하지 않는다** — 그 말이 없는 문서만 걸렸으므로
-  // 강조할 대상이 애초에 없고, 강조하면 있는 것처럼 보인다.
-  const raw = query
-    .replace(/["']/g, ' ')
-    .split(/\s+/)
-    .filter((t) => t.length > 0 && !t.startsWith('-'))
-    // `OR` 는 연산자이고 찾는 말이 아니다.
-    .filter((t) => t.toUpperCase() !== 'OR')
-
-  // 긴 토큰을 먼저 본다. `['검색', '검색엔진']` 순서면 '검색엔진' 안의 '검색'만
-  // 강조되고 뒤쪽 '엔진' 이 평문으로 남아 조각이 쪼개져 보인다.
-  return [...new Set(raw)].sort((a, b) => b.length - a.length)
+  return positiveTerms(parseQuery(query))
 }
 
 /**
