@@ -2580,6 +2580,33 @@ try {
     await mustRejectBy('없는 사람의 값', 'setting_value_user_id_fkey', ['account', randomUUID(), null, 'account.theme', '"dark"'])
   }
 
+  console.log('\n[32] 비밀번호 자격증명 (0046 / §3.2 credential · A5 · [보강] 비밀번호 ② · 8i-1a조각)')
+  {
+    const HASH = '$argon2id$v=19$m=19456,t=2,p=1$c2FsdHNhbHRzYWx0c2FsdA$aGFzaGhhc2hoYXNoaGFzaGhhc2hoYXNoaGFzaGhhc2g'
+    const put = `INSERT INTO credential (id, user_id, kind, password_hash, provider, provider_sub, created_at) VALUES ($1, $2, $3, $4, $5, $6, now())`
+    await client.query(put, [randomUUID(), userId, 'password', HASH, null, null])
+    ok('비밀번호 줄 하나(argon2id) — 정상 경로가 통과한다')
+
+    const mustRejectBy = async (label, constraint, params) => {
+      await client.query('SAVEPOINT probe')
+      try {
+        await client.query(put, params)
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        fail(`${label} — 거부되어야 하는데 통과했다`)
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        if (e.constraint === constraint) ok(`${label} — ${constraint} 가 거부함 (${e.code})`)
+        else fail(`${label} — ${constraint} 가 아니라 ${e.constraint ?? e.code} 에 걸렸다`)
+      }
+    }
+    const other = randomUUID()
+    await client.query(`INSERT INTO "user" (id, name, created_at) VALUES ($1, '비밀번호 둘째', now())`, [other])
+    await mustRejectBy('★ A5: 같은 사람의 둘째 비밀번호', 'ux_credential_one_password', [randomUUID(), userId, 'password', HASH, null, null])
+    await mustRejectBy('★ 해시 없는 비밀번호 줄', 'ck_credential_password_hash', [randomUUID(), userId, 'password', null, null, null])
+    await mustRejectBy('비밀번호가 아닌 줄에 해시', 'ck_credential_password_hash', [randomUUID(), userId, 'oauth', HASH, 'google', `sub-${randomUUID()}`])
+    await mustRejectBy('★ argon2id 가 아닌 해시(평문)', 'ck_credential_password_argon2id', [randomUUID(), other, 'password', 'hunter2hunter2', null, null])
+  }
+
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
 } catch (e) {
