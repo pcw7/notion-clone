@@ -10,6 +10,10 @@
  *   - 붙여넣기 시 자동 분배
  *   - 6자리가 차면 자동 제출
  *   - autocomplete="one-time-code" 로 iOS/Android 자동 채움
+ *
+ * **비밀번호로도 들어올 수 있다**(8i-1b · F-14-03) — 이메일 단계의 "비밀번호로 로그인". 비밀번호는 선택이라 기본은 코드다. 실패는 무엇이
+ * 틀렸는지 말하지 않는다(서버가 같은 말을 준다 — 이메일이 있는지 · 비밀번호가 있는지를 흘리지 않는다). 잊었으면 로그인 코드로 들어와
+ * 10분 안에 설정 → 보안에서 새로 정한다(정본 §3.2 [보강] 비밀번호 ⑥ — 그것이 재설정이다).
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -18,12 +22,13 @@ import { useRouter } from 'next/navigation'
 const CODE_LENGTH = 6
 const RESEND_COOLDOWN_SECONDS = 60
 
-type Step = 'email' | 'code'
+type Step = 'email' | 'code' | 'password'
 
 export default function LoginPage() {
   const router = useRouter()
   const [step, setStep] = useState<Step>('email')
   const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
   const [digits, setDigits] = useState<string[]>(Array(CODE_LENGTH).fill(''))
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -84,6 +89,44 @@ export default function LoginPage() {
     }
   }
 
+  /** 들어온 뒤 — 초대 링크에서 왔으면 그리로(같은 출처의 절대경로만), 아니면 처음으로. */
+  const goNext = useCallback(() => {
+    // useSearchParams() 대신 window.location 을 읽는다 — 전자는 정적 렌더 시 Suspense 경계를 요구해서 이 화면을 동적으로 만들어버린다.
+    // 이 코드는 하이드레이션 이후 클릭 시점에만 돈다.
+    const next = new URLSearchParams(window.location.search).get('next')
+    // 오픈 리다이렉트 방지: "//evil.com" 도 브라우저는 외부로 해석하므로 함께 막는다.
+    const safe = next && next.startsWith('/') && !next.startsWith('//') ? next : '/'
+    router.push(safe)
+    router.refresh()
+  }, [router])
+
+  async function submitPassword() {
+    setBusy(true)
+    setError(null)
+    setNotice(null)
+    try {
+      const res = await fetch('/api/auth/password-login', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ email, password }),
+      })
+      if (res.ok) {
+        goNext()
+        return
+      }
+      setError(
+        res.status === 429
+          ? '여러 번 틀려 잠시 비밀번호로 들어올 수 없습니다. 로그인 코드로 들어오세요.'
+          : '이메일 또는 비밀번호가 맞지 않습니다.',
+      )
+      setPassword('')
+    } catch {
+      setError('연결에 실패했습니다. 잠시 후 다시 시도해주세요.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const submitCode = useCallback(
     async (code: string) => {
       if (submittedFor.current === code) return
@@ -100,17 +143,8 @@ export default function LoginPage() {
         const data = await res.json()
 
         if (res.ok) {
-          // 초대 링크에서 왔으면 그리로 돌려보낸다.
-          //
-          // useSearchParams() 대신 window.location 을 읽는다 — 전자는 정적
-          // 렌더 시 Suspense 경계를 요구해서 이 화면을 동적으로 만들어버린다.
-          // 이 코드는 하이드레이션 이후 클릭 시점에만 돈다.
-          const next = new URLSearchParams(window.location.search).get('next')
-          // 오픈 리다이렉트 방지: 같은 출처의 절대경로만 허용한다.
-          // "//evil.com" 도 브라우저는 외부로 해석하므로 함께 막는다.
-          const safe = next && next.startsWith('/') && !next.startsWith('//') ? next : '/'
-          router.push(safe)
-          router.refresh()
+          // 초대 링크에서 왔으면 그리로 돌려보낸다(`goNext`).
+          goNext()
           return
         }
 
@@ -132,7 +166,7 @@ export default function LoginPage() {
         setBusy(false)
       }
     },
-    [email, router],
+    [email, goNext],
   )
 
   /**
@@ -191,7 +225,9 @@ export default function LoginPage() {
       <p className="mt-2 text-sm text-neutral-500">
         {step === 'email'
           ? '이메일로 계속하기'
-          : `${email} 으로 6자리 코드를 보냈습니다.`}
+          : step === 'password'
+            ? `${email} 의 비밀번호`
+            : `${email} 으로 6자리 코드를 보냈습니다.`}
       </p>
 
       {step === 'email' ? (
@@ -223,6 +259,79 @@ export default function LoginPage() {
           >
             {busy ? '보내는 중…' : '계속하기'}
           </button>
+          <button
+            type="button"
+            data-testid="login-password-open"
+            disabled={busy || email.trim().length === 0}
+            onClick={() => {
+              setStep('password')
+              setError(null)
+              setNotice(null)
+            }}
+            className="text-sm text-neutral-500 underline underline-offset-4 disabled:no-underline disabled:opacity-40"
+          >
+            비밀번호로 로그인
+          </button>
+        </form>
+      ) : step === 'password' ? (
+        <form
+          className="mt-8 flex flex-col gap-3"
+          data-testid="login-password-form"
+          onSubmit={(e) => {
+            e.preventDefault()
+            void submitPassword()
+          }}
+        >
+          <label htmlFor="password" className="text-sm font-medium">
+            비밀번호
+          </label>
+          <input
+            id="password"
+            type="password"
+            required
+            autoComplete="current-password"
+            autoFocus
+            data-testid="login-password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            className="rounded-md border border-neutral-300 px-3 py-2 outline-none focus:border-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:focus:border-neutral-300"
+          />
+          <button
+            type="submit"
+            data-testid="login-password-submit"
+            disabled={busy || password.length === 0}
+            className="mt-2 rounded-md bg-neutral-900 px-3 py-2 text-white disabled:opacity-40 dark:bg-neutral-100 dark:text-neutral-900"
+          >
+            {busy ? '확인하는 중…' : '로그인'}
+          </button>
+          <div className="flex items-center justify-between text-sm">
+            <button
+              type="button"
+              onClick={() => {
+                setStep('email')
+                setPassword('')
+                setError(null)
+              }}
+              className="text-neutral-500 underline underline-offset-4"
+            >
+              이메일 변경
+            </button>
+            <button
+              type="button"
+              data-testid="login-code-instead"
+              disabled={busy}
+              onClick={() => {
+                setPassword('')
+                void requestCode()
+              }}
+              className="text-neutral-500 underline underline-offset-4 disabled:opacity-40"
+            >
+              로그인 코드로 받기
+            </button>
+          </div>
+          <p className="text-xs text-neutral-400">
+            비밀번호를 잊었다면 로그인 코드로 들어와 10분 안에 설정 → 내 계정 → 보안에서 새로 정하세요.
+          </p>
         </form>
       ) : (
         <div className="mt-8 flex flex-col gap-4">

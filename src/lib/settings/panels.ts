@@ -3,6 +3,7 @@
  *
  * 정본: 00-canonical-data-model.md §3.1 [보강] 설정 정보구조 ④ · 17-ops-governance.md F-17-12 의 워크스페이스 계층
  *       *"General … Export all workspace content"* · 노션 설정의 People 탭(멤버 · 게스트 · 그룹 · 초대)
+ *       14-auth-accounts.md F-14-03 *"Settings → {내 이름} → Set a password"*(8i-1b — 계정의 보안 절)
  *
  * 레지스트리(`registry.ts`)의 항목은 값 하나다. 사람(멤버 · 초대 · 게스트 · 그룹)과 워크스페이스 내보내기는 목록과 명령이 있는 화면이라
  * 그 한 줄로 그릴 수 없다 — 그래서 절 안의 **패널**로 선다. 전에는 워크스페이스 홈의 절들이었다.
@@ -22,6 +23,8 @@ import type { SettingSectionId } from './registry.ts'
 
 /** 모든 패널 — 절 안의 순서이기도 하다(값 항목들 뒤에 선다). */
 export const SETTING_PANELS = [
+  // 자기 계정의 비밀번호 — 누구나(게스트 포함). 판정 · 쓰기는 `auth/password.ts` 가 한다.
+  { id: 'password', section: 'account.security', visible: () => true },
   { id: 'members', section: 'workspace.people', visible: (ctx: SessionContext) => canListMembers(ctx.role) },
   { id: 'invites', section: 'workspace.people', visible: (ctx: SessionContext) => canInvite(ctx.role) },
   { id: 'guests', section: 'workspace.people', visible: (ctx: SessionContext) => canManageGuests(ctx.role) },
