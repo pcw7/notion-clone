@@ -8690,6 +8690,78 @@ async function main() {
         JSON.stringify(await purgedTrash()).slice(0, 200))
     }
 
+    if (sectionIf('뷰 지우기 (8e-3b · F-04-01 · F-04-23)')) {
+      // 뷰 메뉴의 "뷰 지우기" — 메뉴 안에서 한 번 더 묻고, 지우면 첫 뷰로 옮긴다. 데이터베이스의 마지막 뷰에는 서지 않는다. 그 소스를 보는
+      // 마지막 뷰면 "뷰와 소스를 함께 휴지통으로"를 묻는다(되살리면 그 뷰도 돌아온다). 자기 데이터를 스스로 만든다.
+      const stamp = Date.now()
+      const api = `${BASE}/api/workspaces/${workspaceId}`
+      const readRes = async (res) => ({ status: res.status, body: await res.json().catch(() => null) })
+      const created = (await readRes(await fetch(`${api}/databases`, { method: 'POST', headers: authed, body: JSON.stringify({ name: `뷰지우기${stamp}`, privateTop: true }) }))).body?.database
+      const dbId = created?.id
+      const viewsOf = async () => (await readRes(await fetch(`${api}/databases/${dbId}/views`, { headers: authed }))).body?.views ?? []
+      const tabCount = () => evaluate(`document.querySelectorAll('[data-testid="db-view-tab"]').length`)
+      // 하이드레이션 전의 클릭은 아무 일이 없다 — 열릴 때까지 몇 번 누른다.
+      const openMenu = async () => {
+        for (let i = 0; i < 6; i += 1) {
+          if (await evaluate(`!!document.querySelector('[data-testid="db-view-menu-panel"]')`)) return true
+          await clickSelector('[data-testid="db-view-menu"]')
+          if (await waitFor(`!!document.querySelector('[data-testid="db-view-menu-panel"]')`, 1500)) return true
+        }
+        return false
+      }
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${dbId}` })
+      await waitFor(`!!document.querySelector('[data-testid="db-view-menu"]')`, 15000)
+      await openMenu()
+      check('데이터베이스의 마지막 뷰에는 "뷰 지우기"가 없다', !(await evaluate(`!!document.querySelector('[data-testid="db-view-delete"]')`)))
+
+      // 뷰가 둘 — 같은 소스
+      const listView = (await readRes(await fetch(`${api}/databases/${dbId}/views`, { method: 'POST', headers: authed, body: JSON.stringify({ name: '목록', type: 'list' }) }))).body?.view
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${dbId}?v=${listView?.id}` })
+      await waitFor(`document.querySelectorAll('[data-testid="db-view-tab"]').length === 2`, 15000)
+      await openMenu()
+      await clickSelector('[data-testid="db-view-delete"]')
+      check('★ "뷰 지우기"는 메뉴 안에서 한 번 더 묻는다 — 확정 단추가 포커스를 갖고, 같은 소스의 뷰가 더 있으면 뷰만 지운다고 말한다',
+        await waitFor(`!!document.querySelector('[data-testid="db-view-delete-ask"]')
+          && document.activeElement?.getAttribute('data-testid') === 'db-view-delete-confirm'
+          && !document.querySelector('[data-testid="db-view-delete-with-source-note"]')
+          && document.querySelector('[data-testid="db-view-delete-confirm"]')?.textContent === '지우기'`, 5000))
+      await clickSelector('[data-testid="db-view-delete-cancel"]')
+      check('취소하면 묻는 상자가 닫히고 뷰는 그대로다',
+        (await waitFor(`!document.querySelector('[data-testid="db-view-delete-ask"]') && !!document.querySelector('[data-testid="db-view-delete"]')`, 3000))
+          && (await viewsOf()).length === 2)
+      await clickSelector('[data-testid="db-view-delete"]')
+      await waitFor(`!!document.querySelector('[data-testid="db-view-delete-confirm"]')`, 3000)
+      await clickSelector('[data-testid="db-view-delete-confirm"]')
+      const afterDelete = async () => (await viewsOf()).map((v) => v.id)
+      check('★ 지우면 그 뷰가 사라지고 데이터베이스의 첫 뷰로 옮긴다',
+        (await waitFor(`location.search === '' && document.querySelectorAll('[data-testid="db-view-tab"]').length === 1`, 15000))
+          && JSON.stringify(await afterDelete()) === JSON.stringify([created?.defaultViewId]),
+        JSON.stringify([await evaluate('location.search'), await tabCount(), await afterDelete()]))
+
+      // 소스의 마지막 뷰 — 뷰와 소스를 함께 휴지통으로
+      const added = (await readRes(await fetch(`${api}/databases/${dbId}/data-sources`, { method: 'POST', headers: authed, body: JSON.stringify({ name: '협력사' }) }))).body
+      const secondSource = added?.dataSource?.id
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${dbId}?v=${added?.viewId}` })
+      await waitFor(`document.querySelectorAll('[data-testid="db-view-tab"]').length === 2`, 15000)
+      await openMenu()
+      await clickSelector('[data-testid="db-view-delete"]')
+      check('★ 소스를 보는 마지막 뷰면 "뷰와 데이터 소스를 함께 휴지통으로"를 묻는다 — 그 소스의 이름과 함께',
+        await waitFor(`(() => { const note = document.querySelector('[data-testid="db-view-delete-with-source-note"]')
+          return !!note && note.textContent.includes('협력사') && document.querySelector('[data-testid="db-view-delete-confirm"]')?.textContent === '뷰와 소스를 함께 휴지통으로' })()`, 5000),
+        String(await evaluate(`document.querySelector('[data-testid="db-view-delete-ask"]')?.textContent ?? null`)))
+      await clickSelector('[data-testid="db-view-delete-confirm"]')
+      const sourcesNow = async () => (await readRes(await fetch(`${api}/databases/${dbId}/data-sources`, { headers: authed }))).body?.dataSources?.map((d) => d.id) ?? []
+      const inTrash = async () => ((await readRes(await fetch(`${api}/trash`, { headers: authed }))).body?.entries ?? []).some((e) => e.id === secondSource && e.kind === 'data_source')
+      check('★ 확정하면 소스가 휴지통으로 가고 데이터베이스의 첫 뷰로 옮긴다',
+        (await waitFor(`location.search === '' && document.querySelectorAll('[data-testid="db-view-tab"]').length === 1`, 15000))
+          && JSON.stringify(await sourcesNow()) === JSON.stringify([created?.dataSourceId]) && (await inTrash()),
+        JSON.stringify([await evaluate('location.search'), await tabCount(), await sourcesNow(), await inTrash()]))
+      const restored = await fetch(`${api}/data-sources/${secondSource}/trash`, { method: 'DELETE', headers: authed })
+      const viewsBack = (await viewsOf()).map((v) => v.id)
+      check('되살리면 그 뷰도 돌아온다 — 지우지 않고 숨겼다', restored.ok && viewsBack.includes(added?.viewId), JSON.stringify([restored.status, viewsBack]))
+    }
+
     section('전체')
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))
     const serverErrors = serverOutput.split('\n').filter((l) => l.includes('⨯'))

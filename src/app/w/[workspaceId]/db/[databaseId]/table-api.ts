@@ -83,9 +83,11 @@ function messageOf(status: number, body: ErrorBody): string {
       return '템플릿의 하위 페이지가 깊이 상한을 넘습니다.'
     case 'invalid_template':
       return '기본 템플릿으로 지정할 수 없습니다. 그사이 지워졌을 수 있습니다.'
-    // ── 데이터 소스 (8e-3a) ──
+    // ── 데이터 소스 (8e-3a) · 뷰 지우기 (8e-3b) ──
     case 'last_source':
       return '마지막 데이터 소스는 휴지통에 넣을 수 없습니다.'
+    case 'last_view':
+      return '이 데이터 소스를 보는 마지막 뷰입니다. 소스와 함께 휴지통으로 보내야 합니다.'
   }
   return status >= 500 ? '서버에서 처리하지 못했습니다.' : '처리하지 못했습니다.'
 }
@@ -381,6 +383,11 @@ export function createView(
     { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify(input) },
     (body) => body.view as ViewSummary,
   )
+}
+
+/** 뷰를 지운다(8e-3b). 그 소스의 마지막 뷰면 서버가 `last_view` 로 거부한다 — 그때는 소스와 함께 휴지통으로 보낸다(`trashDataSource`). */
+export function deleteView(workspaceId: string, viewId: string): Promise<ApiResult<null>> {
+  return call(`${base(workspaceId)}/views/${viewId}`, { method: 'DELETE' }, () => null)
 }
 
 // ── 데이터 소스 (8e-2 · F-04-23) ──────────────────────────────────────
