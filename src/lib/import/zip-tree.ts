@@ -10,8 +10,9 @@
  *   · 폴더 `X` 의 주인은 같은 자리의 `X.md` — 있으면 그 페이지가 폴더 안 페이지들의 부모다. **없으면 폴더만의 페이지**(제목은 폴더 이름)를
  *     만들어 계층을 지킨다(평평해지지 않게)
  *   · 이름은 대소문자 · 정규화(NFC)를 무시하고 맞춘다 — 풀리는 파일 시스템이 그렇게 보고, 내보내기의 겹침 규칙(`collisionKey`)과 같다
- *   · 같은 열쇠의 둘째 파일(`a.md` 와 `a.txt`)은 건너뛰고 적는다(`duplicate`) · 가져올 수 없는 파일(이미지 · PDF …)도 적는다
- *     (`unsupported_type` — 이미지는 8m-2b)
+ *   · 같은 열쇠의 둘째 파일(`a.md` 와 `a.txt`)은 건너뛰고 적는다(`duplicate`)
+ *   · 페이지가 아닌 파일(이미지 · PDF …)은 **자산**(`assets`)으로 모은다 — 본문이 이미지로 쓰면 올리고, 아니면 부르는 쪽이 건너뛴 것으로
+ *     적는다(8m-2b)
  *   · 순서는 ZIP 에 처음 나온 순서(내보내기는 본문의 순서로 쓴다)
  */
 
@@ -29,12 +30,18 @@ export type TreeNode = {
   readonly children: TreeNode[]
 }
 
-export type TreeIgnoreReason = 'unsupported_type' | 'duplicate'
-export type ZipTree = { readonly roots: readonly TreeNode[]; readonly ignored: readonly { path: string; reason: TreeIgnoreReason }[] }
+export type TreeIgnoreReason = 'duplicate'
+export type ZipTree = {
+  readonly roots: readonly TreeNode[]
+  /** 페이지가 아닌 파일 — ZIP 에 나온 순서. */
+  readonly assets: readonly ZipEntry[]
+  readonly ignored: readonly { path: string; reason: TreeIgnoreReason }[]
+}
 
 export function buildZipTree(entries: readonly ZipEntry[]): ZipTree {
   const roots: TreeNode[] = []
   const byKey = new Map<string, TreeNode>()
+  const assets: ZipEntry[] = []
   const ignored: { path: string; reason: TreeIgnoreReason }[] = []
 
   /** 이 열쇠의 마디 — 없으면 만들고(조상까지) 부모에 단다. */
@@ -52,7 +59,7 @@ export function buildZipTree(entries: readonly ZipEntry[]): ZipTree {
   for (const entry of entries) {
     const kind = importKindOf(entry.path)
     if (kind === null || kind === 'zip') {
-      ignored.push({ path: entry.path, reason: 'unsupported_type' })
+      assets.push(entry)
       continue
     }
     const key = entry.path.replace(/\.[^./]+$/, '')
@@ -63,7 +70,7 @@ export function buildZipTree(entries: readonly ZipEntry[]): ZipTree {
     }
     node.file = entry
   }
-  return { roots, ignored }
+  return { roots, assets, ignored }
 }
 
 /** 나무의 마디 수. */

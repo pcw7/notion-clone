@@ -235,6 +235,11 @@ export type CreatePageInput = {
    * 본문에 없으면 맨 뒤). 생략하면 본문 맨 뒤다. 최상위 페이지는 넣을 본문이 없어 보지 않는다.
    */
   readonly at?: BlockId | null
+  /**
+   * 미리 정한 id — 가져오기(8m-2b)가 페이지를 만들기 **전에** 본문의 링크 · 하위 참조를 그 id 로 옮긴다(파일마다 한 번만 읽는다).
+   * 생략하면 여기서 만든다. 요청의 입력에서 받지 않는다(라우트는 필드를 골라 넘긴다).
+   */
+  readonly id?: BlockId
 }
 
 type ParentPlacement = {
@@ -404,7 +409,7 @@ export async function createPageIn(
     // 적은 그대로다. 루트 페이지의 `perm_scope_id` 가 자기 자신이어야 하는데,
     // INSERT 문 안에서는 생성될 id 를 참조할 수 없다. 미리 만들면 자리표시자를
     // 넣었다가 UPDATE 로 고치는 과도 상태가 사라진다.
-    const id = randomUUID()
+    const id = input.id ?? randomUUID()
 
     const row = await tx.queryOne<PageRow>(
       `INSERT INTO block (

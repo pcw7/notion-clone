@@ -41,6 +41,8 @@ const SKIP_LABELS: Readonly<Record<string, string>> = {
   unsupported_type: '가져올 수 없는 형식',
   duplicate: '같은 이름',
   invalid_encoding: 'UTF-8 이 아님(빈 페이지로 남김)',
+  image_too_large: '이미지가 5 MB 를 넘음',
+  unreferenced: '본문에서 쓰지 않은 이미지',
 }
 
 /** 건너뛴 항목의 이유(ZIP 의 부분 성공 · 8m-2a). */

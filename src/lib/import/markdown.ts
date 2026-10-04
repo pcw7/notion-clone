@@ -14,6 +14,9 @@
  *   · **옮기지 못한 것은 세어 돌려준다**(`ImportLosses`) — 표(행마다 문단으로 남긴다) · 그 밖의 HTML · 로컬 이미지 · 글자 안의 이미지 ·
  *     위험한 링크 · 꾸밈이 너무 많은 줄(앞 99 조각만 꾸밈을 지킨다). 조용히 버리지 않는다
  *   · 주석(`<!-- … -->`)과 링크 정의는 내용이 아니다 — 세지 않고 지나간다
+ *   · **ZIP 안의 상대 주소**(8m-2b · `ImportLinks`) — 다른 페이지의 `.md` 링크는 페이지 멘션, 한 줄짜리 링크 문단이 직속 하위 페이지를 가리키면
+ *     그 하위의 **참조 블록**(우리 · 노션의 내보내기가 하위 페이지를 그렇게 쓴다 — 왕복이 닫힌다), 한 줄짜리 이미지는 올린 파일의 이미지 블록.
+ *     주소를 푸는 일(경로 · 이름 맞추기)은 부르는 쪽이 한다 — 이 모듈은 주소 문자열만 넘긴다
  */
 
 import { randomUUID } from 'node:crypto'
@@ -21,7 +24,15 @@ import { randomUUID } from 'node:crypto'
 import { Lexer, type Token, type Tokens } from 'marked'
 
 import { CODE_LANGUAGES, PLAIN_TEXT_LANGUAGE } from '../block/code.ts'
-import { DEFAULT_ANNOTATIONS, MAX_RICH_TEXT_RUNS, sameAnnotations, splitText, type Annotations, type RichTextRun } from '../contracts/rich-text.ts'
+import {
+  DEFAULT_ANNOTATIONS,
+  MAX_RICH_TEXT_RUNS,
+  pageMentionRun,
+  sameAnnotations,
+  splitText,
+  type Annotations,
+  type RichTextRun,
+} from '../contracts/rich-text.ts'
 import type { EditorBlock, EditorDoc } from '../editor/document.ts'
 
 export type ImportLosses = {
@@ -44,7 +55,23 @@ export type MarkdownImport = {
   readonly title: string | null
   readonly doc: EditorDoc
   readonly losses: ImportLosses
+  /** 본문에 참조 블록으로 세운 하위 페이지(문서 순서) — 부르는 쪽이 나머지 하위를 끝에 단다. */
+  readonly pageRefs: readonly string[]
 }
+
+/**
+ * 상대 주소를 푸는 쪽 — ZIP 가져오기(8m-2b)만 준다. 낱 파일 가져오기에는 상대 주소가 가리킬 것이 없다(잃은 링크 · 이미지로 센다).
+ * http · https · mailto 는 묻지 않는다.
+ */
+export type ImportLinks = {
+  /** 링크 → 페이지. `child` 면 이 페이지의 직속 하위다 — 한 줄짜리 링크 문단이 그 참조 블록이 된다. 모르면 null. */
+  readonly page: (href: string) => { readonly id: string; readonly child: boolean } | null
+  /** 이미지 → 올릴 파일의 id. 모르는 · 받지 않는 파일이면 null. */
+  readonly image: (href: string) => string | null
+}
+
+/** 변환 한 번의 문맥 — 잃은 것을 세고, 주소를 풀고, 세운 참조를 적는다(같은 하위를 두 번 세우지 않는다). */
+type Convert = { readonly losses: ImportLosses; readonly links: ImportLinks | null; readonly placed: string[] }
 
 type Marks = Partial<Pick<Annotations, 'bold' | 'italic' | 'strikethrough' | 'code'>>
 
@@ -65,7 +92,7 @@ const stripTags = (html: string): string => decodeEntities(html.replace(/<[^>]*>
 
 // ── 글자 ──────────────────────────────────────────────────────────────
 
-function runsOf(tokens: readonly Token[] | undefined, marks: Marks, losses: ImportLosses, link: string | null = null): RichTextRun[] {
+function runsOf(tokens: readonly Token[] | undefined, marks: Marks, cx: Convert, link: string | null = null): RichTextRun[] {
   const out: RichTextRun[] = []
   const push = (content: string, extra: Marks = {}, href: string | null = link) => {
     if (content === '') return
@@ -79,18 +106,18 @@ function runsOf(tokens: readonly Token[] | undefined, marks: Marks, losses: Impo
       case 'text':
       case 'escape': {
         const t = token as Tokens.Text
-        if (t.tokens !== undefined && t.tokens.length > 0) out.push(...runsOf(t.tokens, marks, losses, link))
+        if (t.tokens !== undefined && t.tokens.length > 0) out.push(...runsOf(t.tokens, marks, cx, link))
         else push(t.text)
         break
       }
       case 'strong':
-        out.push(...runsOf((token as Tokens.Strong).tokens, { ...marks, bold: true }, losses, link))
+        out.push(...runsOf((token as Tokens.Strong).tokens, { ...marks, bold: true }, cx, link))
         break
       case 'em':
-        out.push(...runsOf((token as Tokens.Em).tokens, { ...marks, italic: true }, losses, link))
+        out.push(...runsOf((token as Tokens.Em).tokens, { ...marks, italic: true }, cx, link))
         break
       case 'del':
-        out.push(...runsOf((token as Tokens.Del).tokens, { ...marks, strikethrough: true }, losses, link))
+        out.push(...runsOf((token as Tokens.Del).tokens, { ...marks, strikethrough: true }, cx, link))
         break
       case 'codespan':
         push((token as Tokens.Codespan).text, { code: true })
@@ -100,14 +127,23 @@ function runsOf(tokens: readonly Token[] | undefined, marks: Marks, losses: Impo
         break
       case 'link': {
         const l = token as Tokens.Link
-        const safe = SAFE_LINK.test(l.href) ? l.href : null
-        if (safe === null) losses.links += 1
-        out.push(...runsOf(l.tokens, marks, losses, safe))
+        if (SAFE_LINK.test(l.href)) {
+          out.push(...runsOf(l.tokens, marks, cx, l.href))
+          break
+        }
+        // ZIP 안의 다른 페이지 — 멘션이 된다(링크 글자 대신 그 페이지의 제목이 보인다).
+        const page = cx.links?.page(l.href) ?? null
+        if (page !== null) {
+          out.push(pageMentionRun(page.id, marks))
+          break
+        }
+        cx.losses.links += 1
+        out.push(...runsOf(l.tokens, marks, cx, null))
         break
       }
       case 'image':
         // 글자 안의 이미지 — 블록이 될 수 없다. 대체 글자를 남긴다.
-        losses.images += 1
+        cx.losses.images += 1
         push((token as Tokens.Image).text)
         break
       case 'html':
@@ -128,8 +164,11 @@ function compact(runs: readonly RichTextRun[], losses: ImportLosses): RichTextRu
     const last = merged[merged.length - 1]
     const content = run.text?.content ?? ''
     const lastContent = last?.text?.content ?? ''
+    // 글자 조각끼리만 합친다 — 멘션(8m-2b)은 글자가 없어 합치면 사라진다.
     if (
       last !== undefined &&
+      last.type === 'text' &&
+      run.type === 'text' &&
       sameAnnotations(last.annotations, run.annotations) &&
       (last.text?.link?.url ?? null) === (run.text?.link?.url ?? null) &&
       lastContent.length + content.length <= 2000
@@ -148,8 +187,8 @@ function compact(runs: readonly RichTextRun[], losses: ImportLosses): RichTextRu
   return [...head, { type: 'text', annotations: { ...DEFAULT_ANNOTATIONS }, plain_text: plain, href: null, text: { content: plain, link: null } } as RichTextRun]
 }
 
-const inline = (tokens: readonly Token[] | undefined, losses: ImportLosses): RichTextRun[] => compact(runsOf(tokens, {}, losses), losses)
-const plainRuns = (text: string, losses: ImportLosses): RichTextRun[] => inline([{ type: 'text', raw: text, text } as Tokens.Text], losses)
+const inline = (tokens: readonly Token[] | undefined, cx: Convert): RichTextRun[] => compact(runsOf(tokens, {}, cx), cx.losses)
+const plainRuns = (text: string, cx: Convert): RichTextRun[] => inline([{ type: 'text', raw: text, text } as Tokens.Text], cx)
 
 // ── 블록 ──────────────────────────────────────────────────────────────
 
@@ -173,18 +212,18 @@ const block = (type: EditorBlock['type'], title: RichTextRun[], extra: Partial<E
 })
 
 /** 목록 항목 · 인용의 안 — 첫 글자 토큰이 제목, 나머지가 자식. */
-function splitHead(tokens: readonly Token[], losses: ImportLosses): { title: RichTextRun[]; rest: Token[] } {
+function splitHead(tokens: readonly Token[], cx: Convert): { title: RichTextRun[]; rest: Token[] } {
   const items = tokens.filter((t) => t.type !== 'checkbox' && t.type !== 'space')
   const first = items[0]
   if (first !== undefined && (first.type === 'text' || first.type === 'paragraph')) {
     const t = first as Tokens.Text | Tokens.Paragraph
-    return { title: inline(t.tokens ?? [{ type: 'text', raw: t.text, text: t.text } as Tokens.Text], losses), rest: items.slice(1) }
+    return { title: inline(t.tokens ?? [{ type: 'text', raw: t.text, text: t.text } as Tokens.Text], cx), rest: items.slice(1) }
   }
   return { title: [], rest: items }
 }
 
 /** 한 무리의 토큰 → 블록들. `<details>` · `<aside>` 는 짝이 맞는 닫는 토큰까지를 자식으로 묶는다. */
-function blocksOf(tokens: readonly Token[], losses: ImportLosses): EditorBlock[] {
+function blocksOf(tokens: readonly Token[], cx: Convert): EditorBlock[] {
   const out: EditorBlock[] = []
   for (let i = 0; i < tokens.length; i += 1) {
     const token = tokens[i]!
@@ -195,7 +234,7 @@ function blocksOf(tokens: readonly Token[], losses: ImportLosses): EditorBlock[]
       case 'heading': {
         const h = token as Tokens.Heading
         const type = h.depth <= 1 ? 'heading_1' : h.depth === 2 ? 'heading_2' : 'heading_3'
-        out.push(block(type, inline(h.tokens, losses)))
+        out.push(block(type, inline(h.tokens, cx)))
         break
       }
       case 'paragraph': {
@@ -203,26 +242,35 @@ function blocksOf(tokens: readonly Token[], losses: ImportLosses): EditorBlock[]
         const only = p.tokens.filter((t) => !(t.type === 'text' && (t as Tokens.Text).text.trim() === ''))
         if (only.length === 1 && only[0]!.type === 'image') {
           const image = only[0] as Tokens.Image
+          const caption = image.text ? { caption: plainRuns(image.text, cx) } : {}
           if (/^https?:\/\//i.test(image.href)) {
-            out.push(
-              block('image', [], {
-                properties: { source: { type: 'external', url: image.href }, ...(image.text ? { caption: plainRuns(image.text, losses) } : {}) },
-              }),
-            )
-          } else {
-            losses.images += 1
+            out.push(block('image', [], { properties: { source: { type: 'external', url: image.href }, ...caption } }))
+            break
           }
+          // ZIP 안의 이미지 — 부르는 쪽이 올릴 파일의 id 를 준다.
+          const fileId = cx.links?.image(image.href) ?? null
+          if (fileId !== null) out.push(block('image', [], { properties: { source: { type: 'file', file_id: fileId }, ...caption } }))
+          else cx.losses.images += 1
           break
         }
-        out.push(block('paragraph', inline(p.tokens, losses)))
+        // 한 줄짜리 링크가 직속 하위 페이지를 가리킨다 — 그 하위의 참조 블록이 된다(블록 id 가 곧 하위 페이지의 id). 둘째부터는 멘션이다.
+        if (only.length === 1 && only[0]!.type === 'link' && cx.links !== null && !SAFE_LINK.test((only[0] as Tokens.Link).href)) {
+          const target = cx.links.page((only[0] as Tokens.Link).href)
+          if (target !== null && target.child && !cx.placed.includes(target.id)) {
+            cx.placed.push(target.id)
+            out.push({ id: target.id, type: 'page', title: [] })
+            break
+          }
+        }
+        out.push(block('paragraph', inline(p.tokens, cx)))
         break
       }
       case 'list': {
         const list = token as Tokens.List
         for (const item of list.items) {
-          const { title, rest } = splitHead(item.tokens, losses)
+          const { title, rest } = splitHead(item.tokens, cx)
           const type = item.task ? 'to_do' : list.ordered ? 'numbered_list_item' : 'bulleted_list_item'
-          const children = blocksOf(rest, losses)
+          const children = blocksOf(rest, cx)
           out.push(
             block(type, title, {
               ...(item.task ? { properties: { checked: item.checked === true } } : {}),
@@ -235,12 +283,12 @@ function blocksOf(tokens: readonly Token[], losses: ImportLosses): EditorBlock[]
       case 'code': {
         const c = token as Tokens.Code
         const language = codeLanguageFromFence(c.lang)
-        out.push(block('code', plainRuns(c.text, losses), language === null ? {} : { properties: { language } }))
+        out.push(block('code', plainRuns(c.text, cx), language === null ? {} : { properties: { language } }))
         break
       }
       case 'blockquote': {
-        const { title, rest } = splitHead((token as Tokens.Blockquote).tokens, losses)
-        const children = blocksOf(rest, losses)
+        const { title, rest } = splitHead((token as Tokens.Blockquote).tokens, cx)
+        const children = blocksOf(rest, cx)
         out.push(block('quote', title, children.length > 0 ? { children } : {}))
         break
       }
@@ -249,10 +297,10 @@ function blocksOf(tokens: readonly Token[], losses: ImportLosses): EditorBlock[]
         break
       case 'table': {
         // 표는 블록이 없다 — 행마다 문단(칸은 " | ")으로 남긴다. 내용은 잃지 않는다.
-        losses.tables += 1
+        cx.losses.tables += 1
         const t = token as Tokens.Table
         const row = (cells: readonly Tokens.TableCell[]) =>
-          block('paragraph', compact(cells.flatMap((cell, k) => [...(k > 0 ? plainRuns(' | ', losses) : []), ...runsOf(cell.tokens, {}, losses)]), losses))
+          block('paragraph', compact(cells.flatMap((cell, k) => [...(k > 0 ? plainRuns(' | ', cx) : []), ...runsOf(cell.tokens, {}, cx)]), cx.losses))
         out.push(row(t.header), ...t.rows.map(row))
         break
       }
@@ -279,11 +327,11 @@ function blocksOf(tokens: readonly Token[], losses: ImportLosses): EditorBlock[]
           const inner = selfClosed ? [] : tokens.slice(i + 1, j)
           if (tag === 'details') {
             const summary = /<summary>([\s\S]*?)<\/summary>/i.exec(html)?.[1] ?? ''
-            const children = blocksOf(inner, losses)
-            out.push(block('toggle', plainRuns(stripTags(summary).trim(), losses), children.length > 0 ? { children } : {}))
+            const children = blocksOf(inner, cx)
+            out.push(block('toggle', plainRuns(stripTags(summary).trim(), cx), children.length > 0 ? { children } : {}))
           } else {
-            const { title, rest } = splitHead(inner, losses)
-            const children = blocksOf(rest, losses)
+            const { title, rest } = splitHead(inner, cx)
+            const children = blocksOf(rest, cx)
             out.push(block('callout', title, children.length > 0 ? { children } : {}))
           }
           i = selfClosed ? i : j
@@ -291,19 +339,19 @@ function blocksOf(tokens: readonly Token[], losses: ImportLosses): EditorBlock[]
         }
         // 짝 없이 남은 닫는 태그 — 지나간다(위의 묶기가 먹지 못한 경우).
         if (/^<\/(details|aside)>$/i.test(html)) break
-        losses.html += 1
+        cx.losses.html += 1
         break
       }
       default:
-        losses.html += 1
+        cx.losses.html += 1
     }
   }
   return out
 }
 
-/** 마크다운 → 본문. 첫 블록이 `# 제목` 이면 제목으로 뺀다. */
-export function markdownToDoc(source: string): MarkdownImport {
-  const losses = emptyImportLosses()
+/** 마크다운 → 본문. 첫 블록이 `# 제목` 이면 제목으로 뺀다. `links` 는 ZIP 안의 상대 주소를 푼다(8m-2b). */
+export function markdownToDoc(source: string, links: ImportLinks | null = null): MarkdownImport {
+  const cx: Convert = { losses: emptyImportLosses(), links, placed: [] }
   const tokens = Lexer.lex(source.replace(/^﻿/, ''), { gfm: true })
   const first = tokens.find((t) => t.type !== 'space')
   let title: string | null = null
@@ -312,17 +360,18 @@ export function markdownToDoc(source: string): MarkdownImport {
     title = (first as Tokens.Heading).text.trim()
     rest = tokens.slice(tokens.indexOf(first) + 1)
   }
-  return { title: title === '' ? null : title, doc: { blocks: blocksOf(rest, losses) }, losses }
+  const blocks = blocksOf(rest, cx)
+  return { title: title === '' ? null : title, doc: { blocks }, losses: cx.losses, pageRefs: cx.placed }
 }
 
 /** 평문 → 본문. 빈 줄로 나뉜 덩이가 문단 하나다(덩이 안의 줄바꿈은 그대로). */
 export function textToDoc(source: string): MarkdownImport {
-  const losses = emptyImportLosses()
+  const cx: Convert = { losses: emptyImportLosses(), links: null, placed: [] }
   const paragraphs = source
     .replace(/^﻿/, '')
     .replace(/\r\n?/g, '\n')
     .split(/\n\s*\n/)
     .map((p) => p.replace(/^\n+|\n+$/g, ''))
     .filter((p) => p.trim() !== '')
-  return { title: null, doc: { blocks: paragraphs.map((p) => block('paragraph', plainRuns(p, losses))) }, losses }
+  return { title: null, doc: { blocks: paragraphs.map((p) => block('paragraph', plainRuns(p, cx))) }, losses: cx.losses, pageRefs: [] }
 }
