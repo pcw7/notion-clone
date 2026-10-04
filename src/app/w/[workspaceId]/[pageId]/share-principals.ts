@@ -120,6 +120,9 @@ export function guestInvitedNotice(as: unknown, email: string): string {
   return `${email} 을(를) 게스트로 초대했습니다 — 이 페이지와 그 아래만 봅니다.`
 }
 
+/** 요금제의 게스트 한도(8k-2) — 이메일 초대 · 접근 요청의 허락이 같은 말을 한다. */
+export const GUEST_LIMIT_MESSAGE = '이 요금제의 게스트 한도에 닿았습니다. 게스트를 정리하거나 요금제를 올리면 더 들일 수 있습니다.'
+
 /** 이메일 초대의 거부 코드 → 문구. */
 export function guestInviteMessage(error: unknown): string {
   switch (error) {
@@ -130,6 +133,8 @@ export function guestInviteMessage(error: unknown): string {
       return '게스트에게는 편집까지 줄 수 있습니다.'
     case 'unavailable':
       return '그 사람은 지금 이 워크스페이스에 들어올 수 없습니다.'
+    case 'guest_limit':
+      return GUEST_LIMIT_MESSAGE
     case 'forbidden':
       return '이 페이지의 공유 설정을 바꿀 권한이 없습니다.'
     case 'not_found':

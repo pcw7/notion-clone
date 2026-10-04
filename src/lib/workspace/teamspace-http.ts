@@ -17,6 +17,7 @@ export function teamspaceFailureStatus(reason: TeamspaceFailure): number {
       return 404
     case 'forbidden':
     case 'needs_invite':
+    case 'plan_required':
       return 403
     case 'last_owner':
     case 'default_teamspace':

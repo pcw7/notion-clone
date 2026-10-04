@@ -33,6 +33,7 @@
 import { test, describe, before, after, type TestContext } from 'node:test'
 import assert from 'node:assert/strict'
 
+import { setWorkspacePlan } from '../billing/plan.ts'
 import { duplicatePage } from '../block/duplicate.ts'
 import { listTeamspaceDestinations } from '../block/move-page.ts'
 import { createPage, getPage, listTeamspacePages, PageError, titleFromPlainText } from '../block/page.ts'
@@ -88,6 +89,9 @@ before(async () => {
     return
   }
   fx = await makeFixture()
+  // private teamspace 는 요금제 게이트다(8k-2 · teamspace.private — Business 부터). 이 파일은 공개 범위의 뜻을 보므로 그 게이트 밖에서 —
+  // 게이트 자체는 billing/plan-gates.db.test.ts ④ 가 본다.
+  await setWorkspacePlan(fx.workspaceId, 'business')
 })
 
 after(async () => {

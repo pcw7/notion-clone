@@ -23,6 +23,10 @@ import type { Tx } from '../db/tx.ts'
 export const ENTITLEMENTS = {
   /** 버전 보존 일수(F-11-01) — Free 7 · Plus 30 · Business 90 · Enterprise 무제한. */
   'history.days': 'duration',
+  /** 게스트 수(F-06-09 · 8k-2) — Free 10 · 나머지 무제한. 활성 게스트 + 받아들이지 않은 게스트 초대의 이메일을 센다. */
+  'guests.max': 'limit',
+  /** private teamspace 를 만들거나 바꿀 수 있는가(F-06-04 · 8k-2) — Business · Enterprise. */
+  'teamspace.private': 'boolean',
 } as const
 
 export type EntitlementKey = keyof typeof ENTITLEMENTS

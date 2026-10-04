@@ -9,6 +9,7 @@
  *   not_found · forbidden               → 404 · 403   (공유 설정과 같다 — 볼 수 없으면 없는 페이지와 같다)
  *   invalid_email · invalid_level · guest_level → 400
  *   unavailable                         → 409         (입력은 맞는데 지금 상태가 허락하지 않는다 — 멈춘 사람)
+ *   guest_limit                         → 403         (요금제의 게스트 한도 — 8k-2 · 권한 거부와 코드로 가른다)
  */
 
 import { asBlockId } from '@/lib/ids'
@@ -25,6 +26,7 @@ const STATUS: Readonly<Record<GuestInviteFailure, number>> = {
   invalid_level: 400,
   guest_level: 400,
   unavailable: 409,
+  guest_limit: 403,
 }
 
 export async function POST(request: Request, ctx: Ctx): Promise<Response> {

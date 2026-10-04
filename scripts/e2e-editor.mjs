@@ -406,6 +406,10 @@ async function main() {
 
     res = await fetch(`${BASE}/api/workspaces`, { method: 'POST', headers: authed, body: JSON.stringify({ name: 'E2E' }) })
     const { workspaceId } = await res.json()
+    // 주 워크스페이스는 Business 다(8k-2) — 여러 절이 private teamspace 를 만들고 게스트를 들인다(Free 의 게이트 밖에서 그 기능을 본다).
+    // 게이트 자체는 "요금제 게이트" 절이 자기 Free 워크스페이스에서 본다. 요금제는 명령으로만 바꾼다(8k-1).
+    const { setWorkspacePlan } = await import(new URL('../src/lib/billing/plan.ts', import.meta.url).href)
+    await setWorkspacePlan(workspaceId, 'business')
 
     // 본문을 준비하고 확인하는 길 — 명령 경로를 그대로 부른다(앱과 같은 DB).
     const resolved = await resolveSessionContext(session, workspaceId)
@@ -10010,6 +10014,78 @@ async function main() {
           JSON.stringify([await evaluate('location.pathname'), await browserCookies()]))
       } finally {
         await send('Network.deleteCookies', { name: 'nc_accounts', domain: 'localhost' })
+        await browseAs(session)
+      }
+    }
+
+    if (sectionIf('요금제 게이트 (8k-2 · F-13-18)')) {
+      // 이 절이 만든 **Free** 워크스페이스에서(주 워크스페이스는 Business 다): private teamspace 를 만들려 하면 요금제의 말이 서고 만들어지지
+      // 않는다 · 게스트 한도(10 — 계정 없는 이메일의 대기 초대 열 개로 채운다)에서 이메일 초대가 한도의 말을 하고 초대가 남지 않는다 · 요금제를
+      // 올리면(운영자 명령) 같은 초대가 된다. 브라우저 세션을 그 워크스페이스의 소유자로 바꿔 진행하고 끝에 되돌린다.
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const stamp = Date.now()
+      const browseAs = (token) => send('Network.setCookie', { name: 'nc_session', value: token, domain: 'localhost', path: '/', httpOnly: true })
+      const bossSide = await joinAs(workspaceId, await createUser(`요금제의 대표 ${stamp}`), 'member')
+      const asBoss = { ...json, cookie: `nc_session=${bossSide.token}` }
+      const freeWs = (await (await fetch(`${BASE}/api/workspaces`, { method: 'POST', headers: asBoss, body: JSON.stringify({ name: `무료 ${stamp}` }) })).json()).workspaceId
+      const doc = (await (await fetch(`${BASE}/api/workspaces/${freeWs}/pages`, { method: 'POST', headers: asBoss, body: JSON.stringify({ title: `한도의 문서 ${stamp}` }) })).json()).page.id
+      const guestsUrl = `${BASE}/api/workspaces/${freeWs}/pages/${doc}/guests`
+      for (let i = 0; i < 10; i += 1) {
+        await fetch(guestsUrl, { method: 'POST', headers: asBoss, body: JSON.stringify({ email: `seat-${i}-${stamp}@example.com`, level: 'view' }) })
+      }
+      const pending = async () => Number((await dbQuery(`SELECT count(*)::int AS n FROM workspace_invite WHERE workspace_id = $1 AND role = 'guest' AND accepted_at IS NULL AND revoked_at IS NULL`, [freeWs]))[0]?.n)
+      const teamspaces = async () => Number((await dbQuery(`SELECT count(*)::int AS n FROM teamspace WHERE workspace_id = $1`, [freeWs]))[0]?.n)
+      const has = (sel) => evaluate(`!!document.querySelector(${JSON.stringify(sel)})`)
+      const openUntil = async (button, target) => {
+        for (let i = 0; i < 6; i += 1) {
+          if (await has(target)) return true
+          await clickSelector(button)
+          if (await waitFor(`!!document.querySelector(${JSON.stringify(target)})`, 1500)) return true
+        }
+        return false
+      }
+      const typeInto = async (sel, text) => {
+        await clickSelector(sel)
+        await evaluate(`(() => { const el = document.querySelector(${JSON.stringify(sel)}); el?.focus(); el?.select() })()`)
+        await typeText(text)
+      }
+      const DIALOG = '[role="dialog"][aria-label="공유 설정"]'
+      const EMAIL = `${DIALOG} input[aria-label="초대할 이메일"]`
+      const panelSays = (text) => waitFor(`(document.querySelector('${DIALOG}')?.textContent ?? '').includes(${JSON.stringify(text)})`, 10000)
+      const inviteInPanel = async (email) => {
+        await clickSelector(EMAIL)
+        await evaluate(`document.querySelector(${JSON.stringify(EMAIL)})?.select()`)
+        await send('Input.insertText', { text: email })
+        await clickSelector('[data-testid="share-invite-guest-submit"]')
+      }
+
+      try {
+        check('준비 — Free 워크스페이스에 대기 초대 열 개(게스트 한도)', (await pending()) === 10, String(await pending()))
+        await browseAs(bossSide.token)
+        await send('Page.navigate', { url: `${BASE}/w/${freeWs}` })
+        await waitFor(`!!document.querySelector('[data-testid="teamspace-create-open"]')`, 15000)
+        await openUntil('[data-testid="teamspace-create-open"]', '[data-testid="teamspace-create-visibility"]')
+        await typeInto('[data-testid="teamspace-create-name"]', `비밀 ${stamp}`)
+        await clickSelector('[data-testid="teamspace-visibility-private"]')
+        await clickSelector('[data-testid="teamspace-create"]')
+        check('★ Free 에서 private teamspace 를 만들려 하면 요금제의 말이 서고 만들어지지 않는다',
+          (await waitFor(`(document.querySelector('[data-testid="teamspace-create-error"]')?.textContent ?? '').includes('지금 요금제에서는 private teamspace')`, 10000))
+            && (await teamspaces()) === 0,
+          JSON.stringify([await evaluate(`document.querySelector('[data-testid="teamspace-create-error"]')?.textContent ?? null`), await teamspaces()]))
+
+        await send('Page.navigate', { url: `${BASE}/w/${freeWs}/${doc}` })
+        await waitFor(`[...document.querySelectorAll('button')].some((b) => b.textContent.trim() === '공유')`, 15000)
+        await clickText('공유')
+        await waitFor(`!!document.querySelector(${JSON.stringify(EMAIL)})`, 10000)
+        const newcomer = `newcomer-${stamp}@example.com`
+        await inviteInPanel(newcomer)
+        check('★ 게스트 한도에서 이메일 초대가 한도의 말을 하고 초대는 남지 않는다',
+          (await panelSays('게스트 한도에 닿았습니다')) && (await pending()) === 10, String(await pending()))
+
+        await setWorkspacePlan(freeWs, 'business')
+        await inviteInPanel(newcomer)
+        check('요금제를 올리면(운영자 명령) 같은 초대가 된다', (await panelSays('초대 메일을 보냈습니다')) && (await pending()) === 11, String(await pending()))
+      } finally {
         await browseAs(session)
       }
     }

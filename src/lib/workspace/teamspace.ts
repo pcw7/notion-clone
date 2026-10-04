@@ -99,6 +99,7 @@ import { randomUUID } from 'node:crypto'
 
 import type { SessionContext, WorkspaceRole } from '../auth/session-context.ts'
 import { isSingleEmoji, MAX_EMOJI_CODE_POINTS } from '../contracts/emoji.ts'
+import { entitlement } from '../billing/entitlement.ts'
 import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
 import { teamspaceCaps } from '../permissions/effective.ts'
 import { can } from '../permissions/levels.ts'
@@ -143,6 +144,8 @@ export type TeamspaceFailure =
   | 'invalid_icon'
   /** 기본 teamspace 는 보관할 수 없다 — 먼저 기본을 끈다(7c-11). */
   | 'default_teamspace'
+  /** 지금 요금제로는 그렇게 할 수 없다 — private teamspace(`teamspace.private` · 8k-2). 이미 private 인 것은 그대로다. */
+  | 'plan_required'
 
 export type TeamspaceResult<T = void> =
   | ({ readonly ok: true } & (T extends void ? object : { readonly value: T }))
@@ -421,6 +424,8 @@ export async function createTeamspace(
   if (!isVisibility(visibility)) return fail('invalid_visibility')
 
   return withCommandTransaction(async (tx) => {
+    // private 는 요금제가 허락할 때만(8k-2 · 정본 [보강] 요금제 게이트 ③).
+    if (visibility === 'private' && !(await entitlement(ctx.workspaceId, 'teamspace.private', tx))) return fail('plan_required')
     const id = randomUUID()
     await tx.query(`INSERT INTO teamspace (id, workspace_id, name, visibility, icon) VALUES ($1, $2, $3, $4, $5)`, [
       id,
@@ -692,6 +697,14 @@ export async function updateTeamspace(
     const mine = await roleIn(tx, ctx, teamspaceId)
     if (mine === null) return fail('not_found')
     if (mine !== 'owner') return fail('forbidden')
+    // private 로 **바꿀** 때만 요금제를 묻는다 — 이미 private 인 것(요금제를 내린 뒤)은 이름 · 아이콘을 고칠 수 있고 넓힐 수도 있다(8k-2).
+    if (
+      input.visibility === 'private' &&
+      teamspace.visibility !== 'private' &&
+      !(await entitlement(ctx.workspaceId, 'teamspace.private', tx))
+    ) {
+      return fail('plan_required')
+    }
 
     if (set.length > 0) {
       await tx.query(`UPDATE teamspace SET ${set.join(', ')} WHERE id = $1 AND workspace_id = $2`, [
