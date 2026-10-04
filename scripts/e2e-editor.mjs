@@ -10202,6 +10202,48 @@ async function main() {
       await key('Escape')
     }
 
+    if (sectionIf('검색 랭킹 · 정렬 (8l-2 · F-07-02)')) {
+      // 검색 오버레이 — 가장 잘 맞는 순(제목이 정확히 같은 것이 먼저 — 더 최근에 고친 것보다)과 정렬 고르개(찾는 동안만 · 만든 때 오름).
+      // 색인의 시각은 SQL 로 정한다(검사만의 지름길). 자기 데이터를 스스로 만든다.
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const x = String(Date.now()).slice(-7)
+      const mk = async (title) =>
+        (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: JSON.stringify({ title }) })).json()).page.id
+      const exact = await mk(`정렬${x}`)
+      const second = await mk(`정렬${x} 회의`)
+      const third = await mk(`정렬${x} 셋`)
+      const setTimes = (page, created, edited) =>
+        dbQuery(`UPDATE search_document SET created_at = $2::timestamptz, last_edited_at = $3::timestamptz WHERE doc_id = $1`, [page, created, edited])
+      // 만든 순서 second · third · exact / 편집은 exact 가 가장 오래됐다
+      await setTimes(second, '2026-01-01', '2026-03-03')
+      await setTimes(third, '2026-01-02', '2026-03-02')
+      await setTimes(exact, '2026-01-03', '2026-03-01')
+      const hitIds = () => evaluate(`[...document.querySelectorAll('[data-testid="search-hit"]')].map((e) => e.dataset.pageId)`)
+      const orderIs = (want) => waitFor(`JSON.stringify([...document.querySelectorAll('[data-testid="search-hit"]')].map((e) => e.dataset.pageId)) === ${JSON.stringify(JSON.stringify(want))}`, 8000)
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
+      await waitFor(`!!document.querySelector('[data-testid="sidebar-workspace-switcher"]')`, 15000)
+      for (let i = 0; i < 6 && !(await evaluate(`!!document.querySelector('[data-testid="search-overlay"]')`)); i += 1) {
+        await key('k', MOD)
+        await waitFor(`!!document.querySelector('[data-testid="search-overlay"]')`, 1500)
+      }
+      check('빈 입력(최근 방문)에서는 정렬 고르개가 없다', !(await evaluate(`!!document.querySelector('[data-testid="search-sort"]')`)))
+      await evaluate(`document.querySelector('[data-testid="search-input"]')?.focus()`)
+      await typeText(`정렬${x}`)
+      check('★ 가장 잘 맞는 순 — 제목이 정확히 같은 것이 먼저(더 최근에 고친 것보다) · 그다음 최근 편집',
+        await orderIs([exact, second, third]), JSON.stringify(await hitIds()))
+      check('찾는 동안 정렬 고르개가 서고 기본은 가장 잘 맞는 순',
+        (await evaluate(`document.querySelector('[data-testid="search-sort"]')?.value ?? null`)) === 'best')
+
+      await evaluate(`(() => {
+        const s = document.querySelector('[data-testid="search-sort"]')
+        Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(s, 'created_asc')
+        s.dispatchEvent(new Event('change', { bubbles: true }))
+      })()`)
+      check('★ 만든 때 — 오래된 순으로 바꾸면 단계를 보지 않고 만든 순서로', await orderIs([second, third, exact]), JSON.stringify(await hitIds()))
+      await key('Escape')
+    }
+
     section('전체')
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))
     const serverErrors = serverOutput.split('\n').filter((l) => l.includes('⨯'))

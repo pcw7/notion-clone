@@ -1,7 +1,7 @@
 /**
  * GET /api/workspaces/[workspaceId]/search — 전문 검색 (F-07-01 · F-07-07)
  *
- * 쿼리 파라미터: `q` (필수) · `limit` · `cursor`
+ * 쿼리 파라미터: `q` (필수) · `limit` · `cursor` · `sort`(8l-2 — best · edited_desc · edited_asc · created_desc · created_asc · 모르는 값은 best)
  *
  * ──────────────────────────────────────────────────────────────────────
  * 짧은 쿼리는 200 + `tooShort` 로 돌려준다. 400 이 아니다
@@ -46,6 +46,7 @@ export async function GET(
       ? { limit: parsedLimit }
       : {}),
     cursor: params.get('cursor'),
+    sort: params.get('sort'),
   })
 
   if (!outcome.ok) {

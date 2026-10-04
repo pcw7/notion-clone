@@ -92,3 +92,13 @@ export function positiveTerms(parsed: ParsedQuery): string[] {
 export function snippetAnchor(parsed: ParsedQuery): string | null {
   return parsed.clauses[0]?.[0] ?? null
 }
+
+/**
+ * 제목이 **정확히** 같아야 할 말 — 대안 · 제외가 없는 쿼리의 말을 공백 하나로 이은 것("주간 보고" · `"주간 보고"` 둘 다). 대안이나 제외가
+ * 있으면 "정확히"가 뜻이 없다 — null.
+ */
+export function exactTitleTarget(parsed: ParsedQuery): string | null {
+  if (parsed.exclude.length > 0 || parsed.clauses.some((c) => c.length !== 1)) return null
+  const text = parsed.clauses.map((c) => c[0]).join(' ').trim()
+  return text === '' ? null : text
+}

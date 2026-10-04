@@ -6,12 +6,13 @@
  *   ③ OR 는 바로 앞뒤를 대안으로 — 앞이나 뒤가 없으면 버린다 · 소문자 or 는 말이다
  *   ④ `-` 는 제외 — 말 · 구절 · `-` 홀로와 말 사이의 `-` 는 그대로
  *   ⑤ 찾는 말(긴 것부터) · 스니펫의 닻(첫 말)
+ *   ⑥ 제목이 정확히 같아야 할 말(8l-2) — 대안 · 제외가 있으면 없다
  */
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { parseQuery, positiveTerms, snippetAnchor } from './query.ts'
+import { exactTitleTarget, parseQuery, positiveTerms, snippetAnchor } from './query.ts'
 
 test('★ ① 공백은 AND', () => {
   assert.deepEqual(parseQuery('회의록 2024'), { clauses: [['회의록'], ['2024']], exclude: [] })
@@ -48,4 +49,12 @@ test('⑤ 찾는 말 · 스니펫의 닻', () => {
   assert.deepEqual(positiveTerms(parsed), ['주간 보고서', '보고', '회의'])
   assert.equal(snippetAnchor(parsed), '보고')
   assert.equal(snippetAnchor(parseQuery('-초안')), null)
+})
+
+test('⑥ 제목이 정확히 같아야 할 말 — 대안 · 제외가 있으면 없다', () => {
+  assert.equal(exactTitleTarget(parseQuery('주간 보고')), '주간 보고')
+  assert.equal(exactTitleTarget(parseQuery('"주간 보고"')), '주간 보고')
+  assert.equal(exactTitleTarget(parseQuery('주간 OR 월간')), null)
+  assert.equal(exactTitleTarget(parseQuery('주간 -초안')), null)
+  assert.equal(exactTitleTarget(parseQuery('')), null)
 })
