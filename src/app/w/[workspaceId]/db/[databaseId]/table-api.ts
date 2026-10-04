@@ -88,6 +88,11 @@ function messageOf(status: number, body: ErrorBody): string {
       return '마지막 데이터 소스는 휴지통에 넣을 수 없습니다.'
     case 'last_view':
       return '이 데이터 소스를 보는 마지막 뷰입니다. 소스와 함께 휴지통으로 보내야 합니다.'
+    // ── 행의 레이아웃 (8f-2) ──
+    case 'layout_conflict':
+      return '다른 사람이 먼저 레이아웃을 바꿨습니다. 새로고침한 뒤 다시 하세요.'
+    case 'invalid_layout':
+      return '레이아웃을 확인하세요. 제목 속성은 숨길 수 없습니다.'
   }
   return status >= 500 ? '서버에서 처리하지 못했습니다.' : '처리하지 못했습니다.'
 }
@@ -536,4 +541,22 @@ export function createTemplate(
 /** 템플릿을 휴지통으로. 행 라우트로는 버릴 수 없다 — 템플릿의 길은 하나다. */
 export function deleteTemplate(workspaceId: string, templateId: string): Promise<ApiResult<null>> {
   return call(`${base(workspaceId)}/templates/${templateId}`, { method: 'DELETE' }, () => null)
+}
+
+// ── 행의 레이아웃 (8f-2 · F-16-03 · F-16-01) ─────────────────────────
+
+/**
+ * 편집 모드의 초안을 한 번에 적용한다 — 숨김과 순서를 함께(전체 교체). `version` 은 초안을 시작할 때 읽은 것이다(머리가 없으면 `'0'`).
+ * 남이 먼저 적용했으면 `layout_conflict` 로 거부된다(부분 병합 없음).
+ */
+export function applyLayout(
+  workspaceId: string,
+  dataSourceId: string,
+  draft: { readonly version: string; readonly order: readonly string[]; readonly hidden: readonly string[] },
+): Promise<ApiResult<{ changed: boolean }>> {
+  return call(
+    `${base(workspaceId)}/data-sources/${dataSourceId}/layout`,
+    { method: 'PUT', headers: JSON_HEADERS, body: JSON.stringify(draft) },
+    (body) => ({ changed: body.changed === true }),
+  )
 }

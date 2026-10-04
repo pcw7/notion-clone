@@ -1,21 +1,25 @@
 /**
  * 행 페이지 — 데이터베이스 행을 페이지로 열 때 필요한 것 (잔여 묶음 8f-1 · F-16-07 · F-16-03)
  *
- * 정본: 00-canonical-data-model.md §3.6 `page_layout` · `layout_tab` · `layout_module`(아직 표가 없다 — 8f-2) · 판결 C-3(행 = 블록)
+ * 정본: 00-canonical-data-model.md §3.6 `page_layout` · `layout_tab` · `layout_module` · [보강] 행의 레이아웃(8f-2) · 판결 C-3(행 = 블록)
  *       16-item-layout.md F-16-07 *"모듈 배치는 레이아웃(전 행 공통), 본문 블록은 행 소유(행마다 다름)"* · F-16-03 Property group
  *
  * 행은 페이지다(C-3) — 본문 · 코멘트 · 기록 · 잠금은 페이지 화면이 그대로 쓴다. 다른 것은 **본문 위의 속성 묶음**과 **제목의 정본**(제목 셀)
  * 이다. 이 모듈은 페이지 화면이 행을 알아보고 그 둘을 그리는 데 필요한 것을 한 번에 읽는다.
  *
  *   · 행인가 — `page` 확장 행이 있고(템플릿 제외) 그 소스가 살아 있다. 아니면 null(보통 페이지다)
- *   · 속성 묶음 — 스키마 순서 · 모두 보인다(`readRecordColumns`). 무엇을 숨기고 어떤 순서로 둘지는 레이아웃이다(8f-2)
- *   · 권한 — 볼 수 있는지는 페이지 화면이 이미 물었다(`getPage`). 셀 · 구조를 고칠 수 있는지는 데이터베이스의 것이다(`getDatabase`)
+ *   · 속성 묶음 — 스키마 순서(`readRecordColumns`) 위에 레이아웃의 숨김을 얹는다(`readRecordLayout` — 숨긴 속성은 `visible: false`).
+ *     순서는 레이아웃이 따로 갖지 않는다 — 적용이 스키마 순서를 고친다(8f-2)
+ *   · 권한 — 볼 수 있는지는 페이지 화면이 이미 물었다(`getPage`). 셀 · 구조를 고칠 수 있는지는 데이터베이스의 것이다(`getDatabase`).
+ *     데이터베이스가 잠기면 구조(옵션 만들기 · 레이아웃)는 닫는다 — 데이터베이스 화면과 같다(7f-2)
  */
 
 import type { SessionContext } from '../auth/session-context.ts'
 import { withReadTransaction } from '../db/tx.ts'
 import type { PageIcon } from '../block/page-icon.ts'
+import { isLocked } from '../permissions/lock.ts'
 import { getDatabase, type DatabaseAccess } from './database.ts'
+import { readRecordLayout } from './layout.ts'
 import { readRow, type RowSummary } from './row.ts'
 import { readRecordColumns } from './view.ts'
 import type { ViewColumn } from './view-columns.ts'
@@ -29,8 +33,10 @@ export type RowPage = {
   readonly tableName: string
   /** 그 소스의 첫 뷰 — 표(`DatabaseTable`)가 뷰 하나를 받는다(레코드 모양에서는 쓰지 않는다). */
   readonly viewId: string
-  /** 속성 묶음 — 스키마 순서 · 모두 보인다. 제목 · rollup 은 화면이 뺀다(`listColumns('record', …)`). */
+  /** 속성 묶음 — 스키마 순서 · 레이아웃이 숨긴 것은 `visible: false`. 제목 · rollup 은 화면이 뺀다(`listColumns('record', …)`). */
   readonly columns: readonly ViewColumn[]
+  /** 레이아웃의 버전 — 편집 모드가 적용할 때 낙관적 잠금으로 보낸다(머리가 없으면 `'0'`). */
+  readonly layoutVersion: string
   readonly titlePropertyId: string | null
   readonly row: RowSummary
   readonly access: DatabaseAccess
@@ -60,8 +66,20 @@ export async function readRowPage(ctx: SessionContext, pageId: string): Promise<
     )
     const summary = await readRow(tx, pageId)
     if (view === null || summary === null) return null
-    const columns = await readRecordColumns(tx, row.data_source_id)
-    return { ...row, viewId: view.id, summary, columns }
+    const [columns, layout, locked] = await Promise.all([
+      readRecordColumns(tx, row.data_source_id),
+      readRecordLayout(tx, row.data_source_id),
+      isLocked(tx, row.database_id),
+    ])
+    const hidden = new Set(layout.hidden)
+    return {
+      ...row,
+      viewId: view.id,
+      summary,
+      columns: columns.map((c) => (hidden.has(c.propertyId) ? { ...c, visible: false } : c)),
+      layoutVersion: layout.version,
+      locked,
+    }
   })
   if (found === null) return null
 
@@ -77,8 +95,9 @@ export async function readRowPage(ctx: SessionContext, pageId: string): Promise<
     tableName: sources.length > 1 && source !== undefined ? source.name : database.value.name,
     viewId: found.viewId,
     columns: found.columns,
+    layoutVersion: found.layoutVersion,
     titlePropertyId: found.columns.find((c) => c.type === 'title')?.propertyId ?? null,
     row: found.summary,
-    access: database.value.access,
+    access: found.locked ? { ...database.value.access, canEditStructure: false } : database.value.access,
   }
 }
