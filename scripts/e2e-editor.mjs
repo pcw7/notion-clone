@@ -9895,6 +9895,125 @@ async function main() {
         form.status === 303 && new URL(form.headers.get('location') ?? '', BASE).pathname === '/login', JSON.stringify([form.status, form.headers.get('location')]))
     }
 
+    if (sectionIf('다중 계정 — 화면 (8j-3 · F-14-09)')) {
+      // 스위처의 "다른 계정 더하기" → 로그인 화면의 더하기 모드(비밀번호) → 두 계정이 함께 · 스위처에 다른 계정과 그 워크스페이스 → 고르면 그
+      // 계정으로 바꿔 그리로 · 다른 계정만 로그아웃 · 끝난 세션은 "다시 로그인"(이메일을 채운 로그인 화면) · 모든 계정에서 로그아웃. 브라우저
+      // 세션을 새 사람들로 바꿔 진행하고 끝에 소유자로 되돌린다(목록 쿠키도 지운다). 자기 데이터를 스스로 만든다.
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const { hashSessionToken } = await import(new URL('../src/lib/auth/session-context.ts', import.meta.url).href)
+      const stamp = Date.now()
+      const browseAs = (token) => send('Network.setCookie', { name: 'nc_session', value: token, domain: 'localhost', path: '/', httpOnly: true })
+      const first = await joinAs(workspaceId, await createUser(`첫 계정 ${stamp}`), 'member')
+      const secondUser = await createUser(`둘째 계정 ${stamp}`)
+      const secondSide = await joinAs(workspaceId, secondUser, 'member')
+      const asSecond = { ...json, cookie: `nc_session=${secondSide.token}` }
+      const SECOND_SPACE = `둘째의 공간 ${stamp}`
+      const secondWs = (await (await fetch(`${BASE}/api/workspaces`, { method: 'POST', headers: asSecond, body: JSON.stringify({ name: SECOND_SPACE }) })).json().catch(() => null))?.workspaceId ?? 'missing'
+      const PASSWORD = `correct horse ${stamp}`
+      await fetch(`${BASE}/api/workspaces/${workspaceId}/account/password`, { method: 'PUT', headers: asSecond, body: JSON.stringify({ newPassword: PASSWORD }) })
+
+      const SWITCHER = '[data-testid="sidebar-workspace-switcher"]'
+      const MENU = '[data-testid="workspace-switcher-menu"]'
+      const has = (sel) => evaluate(`!!document.querySelector(${JSON.stringify(sel)})`)
+      const textOf = (sel) => evaluate(`document.querySelector(${JSON.stringify(sel)})?.textContent ?? null`)
+      const typeInto = async (sel, text) => {
+        await clickSelector(sel)
+        await evaluate(`(() => { const el = document.querySelector(${JSON.stringify(sel)}); el?.focus(); el?.select() })()`)
+        await typeText(text)
+      }
+      const openUntil = async (button, target) => {
+        for (let i = 0; i < 6; i += 1) {
+          if (await has(target)) return true
+          await clickSelector(button)
+          if (await waitFor(`!!document.querySelector(${JSON.stringify(target)})`, 1500)) return true
+        }
+        return false
+      }
+      const otherAccounts = () => evaluate(`[...document.querySelectorAll('[data-testid="switcher-account"]')].map((s) => s.getAttribute('aria-label') + ':' + s.dataset.state
+        + ':' + [...s.querySelectorAll('[data-testid="switcher-account-workspace"]')].map((b) => b.dataset.workspaceId).join(','))`)
+      const browserCookies = async () => (await send('Network.getCookies', { urls: [BASE] })).cookies.map((c) => c.name).filter((n) => n.startsWith('nc_')).sort()
+      const liveSession = async (token) => Number((await dbQuery(`SELECT count(*)::int AS n FROM user_session WHERE token_hash = $1 AND revoked_at IS NULL`, [hashSessionToken(token)]))[0]?.n) === 1
+
+      try {
+        await browseAs(first.token)
+        await send('Network.deleteCookies', { name: 'nc_accounts', domain: 'localhost' })
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
+        await waitFor(`!!document.querySelector(${JSON.stringify(SWITCHER)})`, 15000)
+        check('혼자일 때 — 다른 계정이 없고 "모든 계정에서 로그아웃"도 없다 · "다른 계정 더하기"가 선다',
+          (await openUntil(SWITCHER, MENU)) && JSON.stringify(await otherAccounts()) === '[]'
+            && !(await has('[data-testid="switcher-logout-all"]')) && (await has('[data-testid="switcher-add-account"]')))
+
+        await clickSelector('[data-testid="switcher-add-account"]')
+        await waitFor(`location.pathname === '/login' && !!document.querySelector('#email')`, 15000)
+        check('★ "다른 계정 더하기" — 로그인 화면이 지금 계정은 로그아웃되지 않는다고 말한다',
+          (await evaluate('location.search')).includes('add=1') && String(await textOf('main p')).includes('지금 계정은 로그아웃되지 않습니다'),
+          String(await textOf('main p')))
+        await typeInto('#email', secondUser.email)
+        await openUntil('[data-testid="login-password-open"]', '[data-testid="login-password-form"]')
+        await typeInto('[data-testid="login-password"]', PASSWORD)
+        await clickSelector('[data-testid="login-password-submit"]')
+        await waitFor(`location.pathname === '/'`, 15000)
+        check('★ 더하면 둘째가 지금 계정이 되고 첫째는 그대로 살아 있다(쿠키 둘)',
+          JSON.stringify(await browserCookies()) === JSON.stringify(['nc_accounts', 'nc_session']) && (await liveSession(first.token))
+            && String(await evaluate('document.body.innerText')).includes(secondUser.email),
+          JSON.stringify(await browserCookies()))
+
+        await send('Page.navigate', { url: `${BASE}/w/${secondWs}` })
+        await waitFor(`!!document.querySelector(${JSON.stringify(SWITCHER)})`, 15000)
+        await openUntil(SWITCHER, MENU)
+        check('★ 스위처 — 지금 계정(둘째)의 워크스페이스 아래 첫째 계정과 그 워크스페이스가 선다',
+          (await textOf('[data-testid="switcher-email"]')) === secondUser.email
+            && JSON.stringify(await otherAccounts()) === JSON.stringify([`${first.email}:signed_in:${workspaceId}`])
+            && (await has('[data-testid="switcher-logout-all"]')),
+          JSON.stringify(await otherAccounts()))
+
+        await clickSelector(`[data-testid="switcher-account-workspace"][data-workspace-id="${workspaceId}"]`)
+        await waitFor(`location.pathname === ${JSON.stringify(`/w/${workspaceId}`)}`, 15000)
+        await waitFor(`!!document.querySelector(${JSON.stringify(SWITCHER)})`, 15000)
+        await openUntil(SWITCHER, MENU)
+        check('★ 다른 계정의 워크스페이스를 고르면 그 계정으로 바뀌어 그리로 간다 — 둘째는 목록으로(그 워크스페이스 둘과 함께)',
+          (await textOf('[data-testid="switcher-email"]')) === first.email
+            && JSON.stringify(await otherAccounts()) === JSON.stringify([`${secondUser.email}:signed_in:${workspaceId},${secondWs}`]),
+          JSON.stringify([await textOf('[data-testid="switcher-email"]'), await otherAccounts()]))
+
+        const secondBrowserToken = (await send('Network.getCookies', { urls: [BASE] })).cookies.find((c) => c.name === 'nc_accounts')?.value ?? ''
+        await clickSelector(`[data-testid="switcher-account"][data-user-id="${secondUser.userId}"] [data-testid="switcher-account-logout"]`)
+        check('★ 다른 계정만 로그아웃 — 그 계정이 목록에서 빠지고 그 세션이 폐기된다 · 지금 계정과 둘째의 다른 기기 세션은 그대로',
+          (await waitFor(`!document.querySelector('[data-testid="switcher-account"]')`, 10000))
+            && !(await liveSession(secondBrowserToken)) && (await liveSession(secondSide.token)) && (await liveSession(first.token))
+            && (await textOf('[data-testid="switcher-email"]')) === first.email,
+          JSON.stringify(await otherAccounts()))
+
+        // 끝난 세션 — 셋째의 세션을 목록 쿠키에 넣고 폐기한다
+        const third = await joinAs(workspaceId, await createUser(`셋째 계정 ${stamp}`), 'member')
+        await send('Network.setCookie', { name: 'nc_accounts', value: third.token, domain: 'localhost', path: '/', httpOnly: true })
+        await dbQuery(`UPDATE user_session SET revoked_at = now(), revoked_reason = 'e2e' WHERE token_hash = $1`, [hashSessionToken(third.token)])
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
+        await waitFor(`!!document.querySelector(${JSON.stringify(SWITCHER)})`, 15000)
+        await openUntil(SWITCHER, MENU)
+        check('★ 끝난 세션 — "다시 로그인 필요"로 서고 워크스페이스는 보이지 않는다',
+          JSON.stringify(await otherAccounts()) === JSON.stringify([`${third.email}:signed_out:`])
+            && String(await textOf('[data-testid="switcher-account"]')).includes('다시 로그인 필요')
+            && (await has('[data-testid="switcher-account-relogin"]')),
+          JSON.stringify(await otherAccounts()))
+        await clickSelector('[data-testid="switcher-account-relogin"]')
+        check('"다시 로그인"은 그 이메일을 채운 더하기 모드의 로그인 화면이다',
+          await waitFor(`location.pathname === '/login' && location.search.includes('add=1') && document.querySelector('#email')?.value === ${JSON.stringify(third.email)}`, 15000),
+          String(await evaluate(`document.querySelector('#email')?.value ?? null`)))
+
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
+        await waitFor(`!!document.querySelector(${JSON.stringify(SWITCHER)})`, 15000)
+        await openUntil(SWITCHER, MENU)
+        await clickSelector('[data-testid="switcher-logout-all"]')
+        check('★ 모든 계정에서 로그아웃 — 로그인 화면으로 · 쿠키 둘이 지워지고 지금 계정의 세션도 폐기된다',
+          (await waitFor(`location.pathname === '/login'`, 15000)) && JSON.stringify(await browserCookies()) === '[]' && !(await liveSession(first.token)),
+          JSON.stringify([await evaluate('location.pathname'), await browserCookies()]))
+      } finally {
+        await send('Network.deleteCookies', { name: 'nc_accounts', domain: 'localhost' })
+        await browseAs(session)
+      }
+    }
+
     section('전체')
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))
     const serverErrors = serverOutput.split('\n').filter((l) => l.includes('⨯'))

@@ -18,6 +18,9 @@
  * **2단계 인증이 켜진 계정은 둘째 단계를 거친다**(8i-2b · F-14-05) — 첫 단계(코드 · 비밀번호)의 응답이 `mfaRequired` 이거나, 둘째 단계를
  * 안 거친 세션으로 화면을 열어 `/login?mfa=1` 로 돌아왔으면 인증 앱의 6자리 또는 백업 코드를 묻는다. 그 전까지 세션은 진입 게이트에서
  * 막혀 있다(정본 §3.2 [보강] 2단계 인증 ④). "다른 계정으로"는 그 세션을 로그아웃하고 처음으로 간다.
+ *
+ * **다른 계정 더하기**(8j-3 · F-14-09) — `/login?add=1` 이면 로그인 요청에 `addAccount: true` 를 싣는다: 지금 계정은 로그아웃되지 않고
+ * 함께 로그인한 계정이 된다(정본 §3.2 [보강] 다중 계정 ②). `?email=` 이면 이메일을 채워 둔다(스위처의 "다시 로그인" · 초대 화면).
  */
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
@@ -28,17 +31,25 @@ const RESEND_COOLDOWN_SECONDS = 60
 
 type Step = 'email' | 'code' | 'password' | 'mfa'
 
-// `?mfa=1` — 서버(정적 렌더)에서는 false, 하이드레이션 뒤에 주소를 읽는다. effect 에서 setState 하지 않으려고 외부 저장소로 읽는다.
+// 주소의 질의(`?mfa=1` · `?add=1` · `?email=`) — 서버(정적 렌더)에서는 빈 것, 하이드레이션 뒤에 주소를 읽는다. effect 에서 setState 하지
+// 않으려고 외부 저장소로 읽는다(문자열이라 스냅숏이 안정하다).
 const subscribeNothing = () => () => {}
-const urlAsksMfa = () => new URLSearchParams(window.location.search).get('mfa') === '1'
+const urlSearch = () => window.location.search
+// 렌더 안에서 가변 객체(URLSearchParams)를 들고 다니지 않는다 — React 컴파일러가 그 뒤의 메모이제이션을 추론하지 못한다.
+const paramOf = (search: string, name: string): string | null => new URLSearchParams(search).get(name)
 
 export default function LoginPage() {
   const router = useRouter()
-  const mfaFromUrl = useSyncExternalStore(subscribeNothing, urlAsksMfa, () => false)
+  const search = useSyncExternalStore(subscribeNothing, urlSearch, () => '')
+  const mfaFromUrl = paramOf(search, 'mfa') === '1'
+  // 다른 계정 더하기(8j-3) — 지금 계정을 로그아웃하지 않는다.
+  const addAccount = paramOf(search, 'add') === '1'
   // 고른 단계가 없으면 주소가 정한다 — 둘째 단계를 안 거친 세션으로 돌아왔으면 그 단계부터.
   const [chosen, setStep] = useState<Step | null>(null)
   const step: Step = chosen ?? (mfaFromUrl ? 'mfa' : 'email')
-  const [email, setEmail] = useState('')
+  // 쓴 이메일이 없으면 주소의 것(`?email=` — 다시 로그인 · 초대).
+  const [typedEmail, setEmail] = useState<string | null>(null)
+  const email = typedEmail ?? paramOf(search, 'email') ?? ''
   const [password, setPassword] = useState('')
   const [mfaCode, setMfaCode] = useState('')
   const [digits, setDigits] = useState<string[]>(Array(CODE_LENGTH).fill(''))
@@ -184,7 +195,7 @@ export default function LoginPage() {
       const res = await fetch('/api/auth/password-login', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({ email, password, addAccount }),
       })
       if (res.ok) {
         afterFirstStep(await res.json().catch(() => null))
@@ -214,7 +225,7 @@ export default function LoginPage() {
         const res = await fetch('/api/auth/verify-code', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ email, code }),
+          body: JSON.stringify({ email, code, addAccount }),
         })
         const data = await res.json()
 
@@ -242,7 +253,7 @@ export default function LoginPage() {
         setBusy(false)
       }
     },
-    [email, afterFirstStep],
+    [email, addAccount, afterFirstStep],
   )
 
   /**
@@ -300,7 +311,9 @@ export default function LoginPage() {
       <h1 className="text-2xl font-semibold tracking-tight">notion-clone</h1>
       <p className="mt-2 text-sm text-neutral-500">
         {step === 'email'
-          ? '이메일로 계속하기'
+          ? addAccount
+            ? '다른 계정 더하기 — 지금 계정은 로그아웃되지 않습니다.'
+            : '이메일로 계속하기'
           : step === 'password'
             ? `${email} 의 비밀번호`
             : step === 'mfa'

@@ -4,6 +4,8 @@
  *   ① 이 계정의 이메일과 워크스페이스 전부 — 만든 순서(단축키의 자리) · 역할 · 다른 워크스페이스에서 물어도 같다
  *   ② 떠난 워크스페이스 · 지운 워크스페이스는 없다
  *   ③ 다른 사람의 워크스페이스는 없다
+ *   ④ 다른 계정들(8j-3) — 들어와 있는 계정만 워크스페이스를 받는다 · 2단계 인증이 남았거나 끝난 세션은 빈 목록(화면이 그리지 않아도
+ *     페이로드에 이름이 실리지 않게)
  */
 
 import { test, before, after } from 'node:test'
@@ -12,7 +14,7 @@ import assert from 'node:assert/strict'
 import { probeDatabase, makeFixture, createUser, joinAs, type Actor, type Fixture } from '../testing/db-fixtures.ts'
 import { query } from '../db/pool.ts'
 import { createWorkspace } from './create.ts'
-import { switcherOf } from './list.ts'
+import { switcherOf, withWorkspaces } from './list.ts'
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'
 
@@ -79,4 +81,20 @@ test('③ 다른 사람의 워크스페이스는 없다 — 멤버는 자기 것
   const got = await switcherOf(member.ctx)
   assert.equal(got.email, member.email)
   assert.deepEqual(got.workspaces.map((w) => [w.workspaceId, w.role]), [[fx.workspaceId, 'member']])
+})
+
+test('★ ④ 다른 계정들 — 들어와 있는 계정만 워크스페이스를 받는다', async (t) => {
+  if (skipReason) return t.skip(skipReason)
+  const base = { userId: fx.owner.userId, name: '', email: fx.owner.email }
+  const got = await withWorkspaces([
+    { ...base, state: 'signed_in' },
+    { ...base, state: 'mfa_required' },
+    { ...base, state: 'signed_out' },
+  ])
+  assert.deepEqual(got.map((a) => [a.state, a.workspaces.length > 0]), [
+    ['signed_in', true],
+    ['mfa_required', false],
+    ['signed_out', false],
+  ])
+  assert.deepEqual(await withWorkspaces([]), [])
 })

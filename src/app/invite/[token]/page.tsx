@@ -9,6 +9,7 @@
 import Link from 'next/link'
 import { redirect } from 'next/navigation'
 
+import { addAccountHref } from '@/lib/auth/account-set'
 import { getCurrentUser } from '@/lib/auth/current-user'
 import { previewInvite } from '@/lib/workspace/invite'
 import { AcceptInviteButton } from './accept-button'
@@ -65,11 +66,14 @@ export default async function InvitePage({
             현재 <span className="font-mono">{user.email}</span> 로 로그인 중입니다. 이 초대는{' '}
             <span className="font-mono">{invite.email}</span> 앞으로 왔습니다.
           </p>
-          <form action="/api/auth/logout" method="post" className="mt-3">
-            <button type="submit" className="text-sm underline underline-offset-4">
-              로그아웃하고 다른 계정으로 로그인
-            </button>
-          </form>
+          {/* 다른 계정 더하기(8j-3 · F-14-09) — 지금 계정은 그대로 두고 초대받은 주소로 로그인한 뒤 이 초대로 돌아온다. */}
+          <Link
+            href={addAccountHref({ email: invite.email ?? undefined, next: `/invite/${token}` })}
+            data-testid="invite-add-account"
+            className="mt-3 inline-block text-sm underline underline-offset-4"
+          >
+            {invite.email} 로 로그인(지금 계정은 그대로)
+          </Link>
         </div>
       )}
     </main>
