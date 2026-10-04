@@ -9299,6 +9299,54 @@ async function main() {
       }
     }
 
+    if (sectionIf('비밀번호 — 서버 (8i-1a · F-14-03)')) {
+      // 화면은 8i-1b 다 — 여기서는 라우트를 실제 서버로 본다. 정하기 → 비밀번호로 로그인(세션 쿠키) → 실패는 모두 같은 말 → 오래된 세션의
+      // 바꾸기는 지금 비밀번호를 묻고, 바꾸면 다른 세션이 폐기된다 → 지우면 비밀번호로 못 들어온다. 자기 데이터를 스스로 만든다.
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const stamp = Date.now()
+      const who = await joinAs(workspaceId, await createUser(`비밀번호의 사람 ${stamp}`), 'member')
+      const asWho = { ...json, cookie: `nc_session=${who.token}` }
+      const pwUrl = `${BASE}/api/workspaces/${workspaceId}/account/password`
+      const readRes = async (res) => ({ status: res.status, body: await res.json().catch(() => null) })
+      const loginWith = (email, password) => fetch(`${BASE}/api/auth/password-login`, { method: 'POST', headers: json, body: JSON.stringify({ email, password }) })
+      const GOOD = `correct horse ${stamp}`
+      const NEXT = `battery staple ${stamp}`
+
+      const weak = await readRes(await fetch(pwUrl, { method: 'PUT', headers: asWho, body: JSON.stringify({ newPassword: 'short1' }) }))
+      const set = await readRes(await fetch(pwUrl, { method: 'PUT', headers: asWho, body: JSON.stringify({ newPassword: GOOD }) }))
+      check('★ 비밀번호를 정한다 — 정책을 지키지 않으면 400 weak_password',
+        weak.status === 400 && weak.body?.error === 'weak_password' && set.status === 200 && set.body?.revokedSessions === 0,
+        JSON.stringify([weak, set]))
+
+      const logged = await loginWith(who.email, GOOD)
+      const cookie = logged.headers.getSetCookie().find((c) => c.startsWith('nc_session='))?.split(';')[0] ?? null
+      const home = cookie === null ? null : await fetch(`${BASE}/w/${workspaceId}`, { headers: { cookie }, redirect: 'manual' })
+      check('★ 이메일 + 비밀번호로 들어온다 — 세션 쿠키 · 그 쿠키로 홈이 열린다',
+        logged.status === 200 && cookie !== null && home?.status === 200, JSON.stringify([logged.status, cookie !== null, home?.status]))
+      const method = (await dbQuery(`SELECT auth_method FROM user_session WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1`, [who.userId]))[0]?.auth_method
+      check('그 세션은 비밀번호로 들어온 세션이다', method === 'password', String(method))
+
+      const wrong = await readRes(await loginWith(who.email, `wrong ${stamp}`))
+      const nobody = await readRes(await loginWith(`nobody-${stamp}@example.com`, GOOD))
+      check('★ 실패는 모두 같은 말이다 — 틀린 비밀번호 · 없는 이메일 둘 다 401 invalid_credentials',
+        wrong.status === 401 && nobody.status === 401 && JSON.stringify(wrong.body) === JSON.stringify(nobody.body) && wrong.body?.error === 'invalid_credentials',
+        JSON.stringify([wrong, nobody]))
+
+      // 오래된 세션 — 지금 비밀번호를 묻는다
+      await dbQuery(`UPDATE user_session SET created_at = now() - interval '1 hour' WHERE token_hash IS NOT NULL AND user_id = $1 AND auth_method = 'login_code'`, [who.userId])
+      const noCurrent = await readRes(await fetch(pwUrl, { method: 'PUT', headers: asWho, body: JSON.stringify({ newPassword: NEXT }) }))
+      const changed = await readRes(await fetch(pwUrl, { method: 'PUT', headers: asWho, body: JSON.stringify({ newPassword: NEXT, currentPassword: GOOD }) }))
+      const homeAfter = await fetch(`${BASE}/w/${workspaceId}`, { headers: { cookie }, redirect: 'manual' })
+      check('★ 오래된 세션의 바꾸기는 지금 비밀번호를 묻고(400) · 바꾸면 다른 세션(비밀번호로 들어온 쪽)이 폐기된다',
+        noCurrent.status === 400 && noCurrent.body?.error === 'current_required' && changed.status === 200 && changed.body?.revokedSessions >= 1
+          && homeAfter.status !== 200 && (await loginWith(who.email, NEXT)).status === 200,
+        JSON.stringify([noCurrent, changed, homeAfter.status]))
+
+      const removed = await readRes(await fetch(pwUrl, { method: 'DELETE', headers: asWho, body: JSON.stringify({ currentPassword: NEXT }) }))
+      check('지우면 비밀번호로 못 들어온다(로그인 코드로는 들어온다)',
+        removed.status === 200 && (await loginWith(who.email, NEXT)).status === 401, JSON.stringify(removed))
+    }
+
     section('전체')
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))
     const serverErrors = serverOutput.split('\n').filter((l) => l.includes('⨯'))
