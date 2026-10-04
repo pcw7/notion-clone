@@ -5,7 +5,7 @@
   "license": "UNLICENSED",
   "description": "노션과 같은 기능을 하는 웹 앱. TypeScript + Next.js.",
   "engines": {
-    "node": ">=22"
+    "node": ">=24.7"
   },
   "scripts": {
     "dev": "next dev",
@@ -51,7 +51,7 @@
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
-    "@types/node": "^20",
+    "@types/node": "^24.19.1",
     "@types/pg": "^8.23.1",
     "@types/react": "^19",
     "@types/react-dom": "^19",
