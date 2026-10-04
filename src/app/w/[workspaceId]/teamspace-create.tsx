@@ -10,6 +10,8 @@
  * 만들면 그 teamspace 의 화면으로 옮겨 간다 — 첫 페이지를 만들고 멤버를 넣는 자리가 거기다.
  *
  * 아이콘(7c-14)은 고르지 않아도 된다 — 없으면 기본 표시(▣)다. F-06-04 의 만들기 순서 *"이름/아이콘 입력"* 그대로 이름 아래에 둔다.
+ *
+ * **요금제가 private 를 허락하지 않으면 그 고르개를 막고 "요금제 필요"를 붙인다**(8k-3 · 표시 전용 — 서버가 `plan_required` 로 다시 묻는다).
  */
 
 import { useState } from 'react'
@@ -17,14 +19,25 @@ import { useRouter } from 'next/navigation'
 
 import { TeamspaceIconPicker } from './teamspace-icon-picker'
 import {
+  PLAN_REQUIRED_BADGE,
   TEAMSPACE_VISIBILITY_ORDER,
+  privateLocked,
   teamspaceFailureMessage,
   teamspaceVisibilityHint,
   teamspaceVisibilityLabel,
   type TeamspaceVisibilityName,
 } from './teamspace-messages'
 
-export function TeamspaceCreateForm({ workspaceId, onClose }: { workspaceId: string; onClose: () => void }) {
+export function TeamspaceCreateForm({
+  workspaceId,
+  onClose,
+  privateAllowed,
+}: {
+  workspaceId: string
+  onClose: () => void
+  /** 요금제가 private teamspace 를 허락하는가(`teamspace.private` · 서버가 준다 · 표시 전용). */
+  privateAllowed: boolean
+}) {
   const router = useRouter()
   const [name, setName] = useState('')
   const [visibility, setVisibility] = useState<TeamspaceVisibilityName>('closed')
@@ -81,23 +94,32 @@ export function TeamspaceCreateForm({ workspaceId, onClose }: { workspaceId: str
       <TeamspaceIconPicker value={icon} onChange={setIcon} disabled={busy} />
       <fieldset data-testid="teamspace-create-visibility" className="flex flex-col gap-0.5">
         <legend className="sr-only">공개 범위</legend>
-        {TEAMSPACE_VISIBILITY_ORDER.map((v) => (
-          <label key={v} className="flex items-start gap-1 text-xs">
-            <input
-              type="radio"
-              name="teamspace-visibility"
-              value={v}
-              data-testid={`teamspace-visibility-${v}`}
-              checked={visibility === v}
-              onChange={() => setVisibility(v)}
-              className="mt-0.5 flex-none"
-            />
-            <span className="min-w-0">
-              <span className="font-medium">{teamspaceVisibilityLabel(v)}</span>
-              <span className="ml-1 text-neutral-500">{teamspaceVisibilityHint(v)}</span>
-            </span>
-          </label>
-        ))}
+        {TEAMSPACE_VISIBILITY_ORDER.map((v) => {
+          const locked = privateLocked(v, privateAllowed, null)
+          return (
+            <label key={v} className={`flex items-start gap-1 text-xs ${locked ? 'opacity-50' : ''}`}>
+              <input
+                type="radio"
+                name="teamspace-visibility"
+                value={v}
+                data-testid={`teamspace-visibility-${v}`}
+                checked={visibility === v}
+                disabled={locked}
+                onChange={() => setVisibility(v)}
+                className="mt-0.5 flex-none"
+              />
+              <span className="min-w-0">
+                <span className="font-medium">{teamspaceVisibilityLabel(v)}</span>
+                {locked && (
+                  <span data-testid={`teamspace-visibility-${v}-plan`} className="ml-1 rounded bg-amber-100 px-1 text-amber-800 dark:bg-amber-900 dark:text-amber-200">
+                    {PLAN_REQUIRED_BADGE}
+                  </span>
+                )}
+                <span className="ml-1 text-neutral-500">{teamspaceVisibilityHint(v)}</span>
+              </span>
+            </label>
+          )
+        })}
       </fieldset>
       <div className="flex gap-1">
         <button

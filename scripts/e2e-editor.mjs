@@ -9128,7 +9128,7 @@ async function main() {
         await waitFor(`location.pathname === ${JSON.stringify(`/w/${workspaceId}/settings`)} && document.querySelector('[data-testid="settings-title"]')?.textContent === '프로필'`, 15000),
         JSON.stringify([await evaluate('location.pathname'), await title()]))
       check('★ 소유자의 내비 — 내 계정(프로필 · 환경설정 · 보안) · 워크스페이스(일반 · 사람 · 보안)',
-        JSON.stringify(await navSections()) === JSON.stringify(['account.profile', 'account.preferences', 'account.security', 'workspace.general', 'workspace.people', 'workspace.security']),
+        JSON.stringify(await navSections()) === JSON.stringify(['account.profile', 'account.preferences', 'account.security', 'workspace.general', 'workspace.people', 'workspace.security', 'workspace.plan']),
         JSON.stringify(await navSections()))
 
       // 내 이름 — Enter 로 저장 · 공백을 정리한 값이 남는다
@@ -9222,7 +9222,7 @@ async function main() {
       const adminGeneral = await htmlAs(GENERAL, admin.token)
       check('★ 멤버 관리자 — 사람 절의 패널 넷 · 내보내기와 보안 절은 없다',
         JSON.stringify(panelsIn(adminPeople)) === JSON.stringify(PANELS) && !adminGeneral.includes('data-testid="export-button"')
-          && JSON.stringify(navIn(adminPeople)) === JSON.stringify(['account.profile', 'account.preferences', 'account.security', 'workspace.general', 'workspace.people']),
+          && JSON.stringify(navIn(adminPeople)) === JSON.stringify(['account.profile', 'account.preferences', 'account.security', 'workspace.general', 'workspace.people', 'workspace.plan']),
         JSON.stringify([panelsIn(adminPeople), navIn(adminPeople)]))
 
       const mate = await joinAs(workspaceId, await createUser(`사람 절의 멤버 ${stamp}`), 'member')
@@ -10065,13 +10065,21 @@ async function main() {
         await send('Page.navigate', { url: `${BASE}/w/${freeWs}` })
         await waitFor(`!!document.querySelector('[data-testid="teamspace-create-open"]')`, 15000)
         await openUntil('[data-testid="teamspace-create-open"]', '[data-testid="teamspace-create-visibility"]')
-        await typeInto('[data-testid="teamspace-create-name"]', `비밀 ${stamp}`)
         await clickSelector('[data-testid="teamspace-visibility-private"]')
-        await clickSelector('[data-testid="teamspace-create"]')
-        check('★ Free 에서 private teamspace 를 만들려 하면 요금제의 말이 서고 만들어지지 않는다',
-          (await waitFor(`(document.querySelector('[data-testid="teamspace-create-error"]')?.textContent ?? '').includes('지금 요금제에서는 private teamspace')`, 10000))
-            && (await teamspaces()) === 0,
-          JSON.stringify([await evaluate(`document.querySelector('[data-testid="teamspace-create-error"]')?.textContent ?? null`), await teamspaces()]))
+        // 8k-3 부터 화면이 private 를 막는다 — 눌러도 고르지 않고 "요금제 필요"가 붙는다. 서버의 거부는 화면을 건너뛰어 본다.
+        check('★ Free 에서는 만들기 폼의 private 가 막혀 있고 "요금제 필요"가 붙는다(눌러도 고르지 않는다)',
+          await evaluate(`(() => {
+            const radio = document.querySelector('[data-testid="teamspace-visibility-private"]')
+            return !!radio && radio.disabled && !radio.checked
+              && (document.querySelector('[data-testid="teamspace-visibility-private-plan"]')?.textContent ?? '') === '요금제 필요'
+          })()`))
+        const direct = await fetch(`${BASE}/api/workspaces/${freeWs}/teamspaces`, {
+          method: 'POST', headers: asBoss, body: JSON.stringify({ name: `비밀 ${stamp}`, visibility: 'private' }),
+        })
+        const directBody = await direct.json().catch(() => null)
+        check('★ 화면을 건너뛰어도 서버가 막는다 — 403 plan_required · 만들어지지 않는다',
+          direct.status === 403 && directBody?.error === 'plan_required' && (await teamspaces()) === 0,
+          JSON.stringify([direct.status, directBody, await teamspaces()]))
 
         await send('Page.navigate', { url: `${BASE}/w/${freeWs}/${doc}` })
         await waitFor(`[...document.querySelectorAll('button')].some((b) => b.textContent.trim() === '공유')`, 15000)
@@ -10085,6 +10093,73 @@ async function main() {
         await setWorkspacePlan(freeWs, 'business')
         await inviteInPanel(newcomer)
         check('요금제를 올리면(운영자 명령) 같은 초대가 된다', (await panelSays('초대 메일을 보냈습니다')) && (await pending()) === 11, String(await pending()))
+      } finally {
+        await browseAs(session)
+      }
+    }
+
+    if (sectionIf('요금제 패널 (8k-3 · F-13-18)')) {
+      // 설정 → 워크스페이스 → 요금제: 지금 요금제 · 게스트 쓴 양 · 네 요금제의 비교 표(값은 표 그대로) — 소유자 · 멤버 관리자만. 요금제를
+      // 올리면(운영자 명령) 패널이 따라온다. teamspace 설정의 private 고르개 — 이미 private 인 것은 내려도 그대로 · 닫힌 것은 막힌다. 이 절이
+      // 만든 Free 워크스페이스에서 그 소유자로 진행하고 끝에 되돌린다.
+      const stamp = Date.now()
+      const browseAs = (token) => send('Network.setCookie', { name: 'nc_session', value: token, domain: 'localhost', path: '/', httpOnly: true })
+      const bossSide = await joinAs(workspaceId, await createUser(`요금제 패널의 대표 ${stamp}`), 'member')
+      const asBoss = { ...json, cookie: `nc_session=${bossSide.token}` }
+      const ws = (await (await fetch(`${BASE}/api/workspaces`, { method: 'POST', headers: asBoss, body: JSON.stringify({ name: `요금제 패널 ${stamp}` }) })).json()).workspaceId
+      const doc = (await (await fetch(`${BASE}/api/workspaces/${ws}/pages`, { method: 'POST', headers: asBoss, body: JSON.stringify({ title: `패널의 문서 ${stamp}` }) })).json()).page.id
+      await fetch(`${BASE}/api/workspaces/${ws}/pages/${doc}/guests`, { method: 'POST', headers: asBoss, body: JSON.stringify({ email: `panel-${stamp}@example.com`, level: 'view' }) })
+      const plain = await joinAs(ws, await createUser(`요금제 패널의 멤버 ${stamp}`), 'member')
+      const PLAN = `${BASE}/w/${ws}/settings?s=workspace.plan`
+      const textOf = (sel) => evaluate(`document.querySelector(${JSON.stringify(sel)})?.textContent ?? null`)
+      const cell = (key, plan) => textOf(`[data-testid="plan-compare"] tr[data-key="${key}"] td[data-plan="${plan}"]`)
+
+      try {
+        await browseAs(bossSide.token)
+        await send('Page.navigate', { url: PLAN })
+        await waitFor(`!!document.querySelector('[data-testid="plan-panel"]')`, 15000)
+        check('★ 요금제 절 — 지금 요금제(Free) · 게스트 쓴 양(대기 초대 하나 / 10명) · 바꾸는 길은 운영자',
+          (await textOf('[data-testid="plan-current"]')) === 'Free' && (await textOf('[data-testid="plan-usage-guests"]')) === '게스트 1 / 10명'
+            && String(await textOf('[data-testid="plan-panel"]')).includes('운영자가 정합니다'),
+          JSON.stringify([await textOf('[data-testid="plan-current"]'), await textOf('[data-testid="plan-usage-guests"]')]))
+        const header = await evaluate(`[...document.querySelectorAll('[data-testid="plan-compare"] thead th[data-plan]')].map((th) => th.dataset.plan + (th.getAttribute('aria-current') === 'true' ? '*' : ''))`)
+        check('★ 비교 표 — 네 요금제(가격 순 · 지금 것 표시) · 값은 엔타이틀먼트 표 그대로',
+          JSON.stringify(header) === JSON.stringify(['free*', 'plus', 'business', 'enterprise'])
+            && (await cell('history.days', 'free')) === '7일' && (await cell('history.days', 'enterprise')) === '무제한'
+            && (await cell('guests.max', 'free')) === '10명' && (await cell('teamspace.private', 'plus')) === '—'
+            && (await cell('teamspace.private', 'business')) === '쓸 수 있음',
+          JSON.stringify([header, await cell('history.days', 'free'), await cell('guests.max', 'free'), await cell('teamspace.private', 'business')]))
+
+        await setWorkspacePlan(ws, 'business')
+        await send('Page.navigate', { url: PLAN })
+        check('요금제를 올리면(운영자 명령) 패널이 따라온다 — Business · 게스트는 무제한',
+          await waitFor(`document.querySelector('[data-testid="plan-current"]')?.textContent === 'Business'
+            && document.querySelector('[data-testid="plan-usage-guests"]')?.textContent === '게스트 1명 (무제한)'`, 15000),
+          JSON.stringify([await textOf('[data-testid="plan-current"]'), await textOf('[data-testid="plan-usage-guests"]')]))
+
+        // teamspace 설정의 private 고르개 — Business 에서 private 와 닫힌 것을 만들고 Free 로 내린다
+        const mk = async (name, visibility) =>
+          (await (await fetch(`${BASE}/api/workspaces/${ws}/teamspaces`, { method: 'POST', headers: asBoss, body: JSON.stringify({ name, visibility }) })).json()).teamspace?.id
+        const secret = await mk(`비밀 ${stamp}`, 'private')
+        const closed = await mk(`닫힌 ${stamp}`, 'closed')
+        await setWorkspacePlan(ws, 'free')
+        const radio = (id) => evaluate(`(() => { const r = document.querySelector('[data-testid="teamspace-settings-visibility-private"]'); return r ? { disabled: r.disabled, checked: r.checked, badge: !!document.querySelector('[data-testid="teamspace-settings-visibility-private-plan"]') } : null })()`)
+        await send('Page.navigate', { url: `${BASE}/w/${ws}/teamspaces/${secret}` })
+        await waitFor(`!!document.querySelector('[data-testid="teamspace-settings-visibility-private"]')`, 15000)
+        const secretRadio = await radio()
+        await send('Page.navigate', { url: `${BASE}/w/${ws}/teamspaces/${closed}` })
+        await waitFor(`!!document.querySelector('[data-testid="teamspace-settings-visibility-private"]')`, 15000)
+        const closedRadio = await radio()
+        check('★ 내린 뒤의 teamspace 설정 — 이미 private 인 것은 그대로 고를 수 있고, 닫힌 것은 private 가 막히고 "요금제 필요"',
+          secretRadio?.checked === true && secretRadio.disabled === false && secretRadio.badge === false
+            && closedRadio?.disabled === true && closedRadio.checked === false && closedRadio.badge === true,
+          JSON.stringify([secretRadio, closedRadio]))
+
+        await browseAs(plain.token)
+        await send('Page.navigate', { url: `${BASE}/w/${ws}/settings` })
+        await waitFor(`!!document.querySelector('[data-testid="settings-nav-link"][data-section="workspace.general"]')`, 15000)
+        check('멤버에게는 요금제 절이 없다(일반 절은 선다)',
+          !(await evaluate(`!!document.querySelector('[data-testid="settings-nav-link"][data-section="workspace.plan"]')`)))
       } finally {
         await browseAs(session)
       }

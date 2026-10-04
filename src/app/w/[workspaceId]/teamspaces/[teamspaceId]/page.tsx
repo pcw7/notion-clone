@@ -20,6 +20,7 @@ import Link from 'next/link'
 import { notFound } from 'next/navigation'
 
 import { requirePageSession } from '@/lib/auth/page-session'
+import { entitlement } from '@/lib/billing/entitlement'
 import { listTeamspacePages } from '@/lib/block/page'
 import { DATABASE_GLYPH } from '@/lib/block/page-icon'
 import { listTeamspaceDatabases } from '@/lib/database/database'
@@ -44,12 +45,14 @@ export default async function TeamspacePage({ params }: PageProps<'/w/[workspace
   const teamspace = await getTeamspace(ctx, teamspaceId)
   if (!teamspace.ok) notFound()
 
-  const [members, pages, databases, people, groups] = await Promise.all([
+  const [members, pages, databases, people, groups, privateAllowed] = await Promise.all([
     listTeamspaceMembers(ctx, teamspaceId),
     listTeamspacePages(ctx, teamspaceId),
     listTeamspaceDatabases(ctx, teamspaceId),
     listMembers(ctx.workspaceId),
     listGroups(ctx),
+    // 설정의 private 고르개(8k-3 · 표시 전용 — 서버가 다시 묻는다).
+    entitlement(ctx.workspaceId, 'teamspace.private'),
   ])
   // getTeamspace 가 통과했으므로 여기서 실패하면 그 사이에 빠졌거나 보관된 것이다.
   if (!members.ok) notFound()
@@ -155,6 +158,7 @@ export default async function TeamspacePage({ params }: PageProps<'/w/[workspace
               memberLevel: teamspace.value.memberLevel,
             }}
             canSetDefault={canAdministerTeamspaces(ctx.role)}
+            privateAllowed={privateAllowed}
           />
         </section>
       )}

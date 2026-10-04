@@ -18,6 +18,7 @@
 import { signedInAccounts } from '@/lib/auth/accounts'
 import { readAccounts } from '@/lib/auth/accounts-cookie'
 import { requirePageVisitor } from '@/lib/auth/page-session'
+import { entitlement } from '@/lib/billing/entitlement'
 import { groupSidebarRoots, listPageTree } from '@/lib/block/page-tree'
 import { listTrash } from '@/lib/block/trash'
 import { listFavorites, listRecent } from '@/lib/nav/recent'
@@ -53,7 +54,7 @@ export default async function WorkspaceLayout({
   if ('outsider' in visitor) return <div className="min-h-screen">{children}</div>
   const ctx = visitor.member
 
-  const [tree, teamspaces, trash, recent, favorites, inboxUnread, workspaceName, switcher, otherAccounts] = await Promise.all([
+  const [tree, teamspaces, trash, recent, favorites, inboxUnread, workspaceName, switcher, otherAccounts, privateTeamspaceAllowed] = await Promise.all([
     listPageTree(ctx),
     listMyTeamspaces(ctx),
     listTrash(ctx),
@@ -66,6 +67,8 @@ export default async function WorkspaceLayout({
     readAccounts()
       .then((accounts) => signedInAccounts(accounts.active, accounts.others))
       .then((view) => withWorkspaces(view.others)),
+    // teamspace 만들기 폼의 private 고르개(8k-3 · 표시 전용 — 서버가 다시 묻는다).
+    entitlement(ctx.workspaceId, 'teamspace.private'),
   ])
   // 루트를 섹션으로 가른다(F-07-16 의 파생 섹션 · 판결문 C-9 — Teamspaces · 공유됨 · 개인 · 워크스페이스 · 7c-7).
   const sections = groupSidebarRoots(tree, teamspaces)
@@ -89,6 +92,7 @@ export default async function WorkspaceLayout({
           pages: pages.map(toSidebarNode),
         }))}
         canCreateTeamspace={canCreateTeamspace(ctx.role)}
+        privateTeamspaceAllowed={privateTeamspaceAllowed}
         canBrowseTeamspaces={canBrowseTeamspaces(ctx.role)}
         canCreatePrivatePage={ctx.role !== 'guest'}
         trash={trash.map((e) => ({

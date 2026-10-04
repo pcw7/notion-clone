@@ -8,6 +8,7 @@
 
 import { MAX_TOTP_METHODS, mfaStatus } from '@/lib/auth/mfa'
 import { passwordStatus } from '@/lib/auth/password'
+import { planOverview } from '@/lib/billing/overview'
 import type { SessionContext } from '@/lib/auth/session-context'
 import type { SettingPanelId } from '@/lib/settings/panels'
 import { canManageGroups, listGroups } from '@/lib/workspace/group'
@@ -20,6 +21,7 @@ import { InviteForm } from '../invite-form'
 import { PendingInviteList } from '../pending-invite-list'
 import { MfaPanel } from './mfa-panel'
 import { PasswordPanel } from './password-panel'
+import { PlanPanel } from './plan-panel'
 
 const HEADING = 'text-sm font-medium'
 const NOTE = 'mt-1 text-xs text-neutral-500'
@@ -44,6 +46,11 @@ export async function SettingPanelView({ id, ctx }: { id: SettingPanelId; ctx: S
           maxMethods={MAX_TOTP_METHODS}
         />
       )
+    }
+    case 'plan': {
+      // 요금제(8k-3) — 읽기만. 볼 수 없는 역할이면 null(패널 목록이 이미 걸렀다 — 서버가 다시 묻는다).
+      const overview = await planOverview(ctx)
+      return overview === null ? null : <PlanPanel overview={overview} />
     }
     case 'members': {
       const members = await listMembers(ctx.workspaceId)

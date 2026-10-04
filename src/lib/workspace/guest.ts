@@ -29,6 +29,7 @@ import { randomBytes } from 'node:crypto'
 
 import type { SessionContext, WorkspaceRole } from '../auth/session-context.ts'
 import { entitlement } from '../billing/entitlement.ts'
+import { query } from '../db/pool.ts'
 import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
 import { dropGrantsOf, grantAccessIn, shareGateIn, type AclFailure } from '../permissions/acl.ts'
 import { hashInviteToken, INVITE_TTL_DAYS } from './invite.ts'
@@ -186,6 +187,23 @@ export async function admitGuestIn(
   return null
 }
 
+/** 게스트 한도가 세는 것(8k-2) — 활성 게스트 · 받아들이지 않은 게스트 초대의 이메일. 판정(`guestRoomIn`)과 개요(`guestSeatsUsed`)가 같이 쓴다. */
+const GUEST_SEATS = `guests AS (
+       SELECT m.user_id FROM workspace_member m WHERE m.workspace_id = $1 AND m.role = 'guest' AND m.status = 'active'
+     ), pending AS (
+       SELECT DISTINCT lower(i.email) AS email FROM workspace_invite i
+        WHERE i.workspace_id = $1 AND i.role = 'guest' AND i.revoked_at IS NULL AND i.accepted_at IS NULL AND i.expires_at > now()
+     )`
+
+/** 지금 쓴 게스트 자리(8k-3 — 설정의 요금제 절) · 한도 판정과 같은 셈. */
+export async function guestSeatsUsed(workspaceId: string): Promise<number> {
+  const rows = await query<{ used: number }>(
+    `WITH ${GUEST_SEATS} SELECT (SELECT count(*) FROM guests)::int + (SELECT count(*) FROM pending)::int AS used`,
+    [workspaceId],
+  )
+  return rows[0]?.used ?? 0
+}
+
 /**
  * 게스트 한도의 자리가 있는가(8k-2 · `guests.max`) — 이 사람(또는 이메일)을 새로 세어도 한도 안인가. 무제한이면 늘 있다.
  *
@@ -205,12 +223,7 @@ export async function guestRoomIn(
   if (limit === null) return true
   await tx.query(`SELECT pg_advisory_xact_lock(hashtextextended('guest-seats:' || $1, 0))`, [workspaceId])
   const row = await tx.queryOne<{ used: number; counted: boolean }>(
-    `WITH guests AS (
-       SELECT m.user_id FROM workspace_member m WHERE m.workspace_id = $1 AND m.role = 'guest' AND m.status = 'active'
-     ), pending AS (
-       SELECT DISTINCT lower(i.email) AS email FROM workspace_invite i
-        WHERE i.workspace_id = $1 AND i.role = 'guest' AND i.revoked_at IS NULL AND i.accepted_at IS NULL AND i.expires_at > now()
-     )
+    `WITH ${GUEST_SEATS}
      SELECT (SELECT count(*) FROM guests)::int + (SELECT count(*) FROM pending)::int AS used,
             (EXISTS (SELECT 1 FROM guests WHERE user_id = $2::uuid)
               OR EXISTS (SELECT 1 FROM pending WHERE email = lower($3::text))) AS counted`,

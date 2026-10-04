@@ -6,16 +6,20 @@
  *   ③ 표에 없는 키는 던진다(조용히 기본값으로 메우지 않는다)
  *   ④ 요금제 바꾸기 — 구독 한 줄 + plan_code 를 함께 · 바꾸면 앞의 것은 취소(이력) · 같은 요금제는 아무것도 쓰지 않는다 · free 는 구독이 없다
  *   ⑤ 거부 — 모르는 요금제 · 없는(지운) 워크스페이스
+ *   ⑥ 개요(8k-3) — 소유자 · 멤버 관리자만 · 지금 요금제 · 가격 순 · 값은 표 그대로 · 게스트 쓴 양은 한도 판정과 같은 셈
  */
 
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { probeDatabase, createBareWorkspace } from '../testing/db-fixtures.ts'
+import { probeDatabase, createBareWorkspace, createUser, joinAs, makeFixture } from '../testing/db-fixtures.ts'
 import { query } from '../db/pool.ts'
 import { withTransaction } from '../db/tx.ts'
 import { ENTITLEMENTS, entitlement, type EntitlementKey } from './entitlement.ts'
+import { planOverview } from './overview.ts'
 import { PLAN_CODES, setWorkspacePlan } from './plan.ts'
+import { createPage, titleFromPlainText } from '../block/page.ts'
+import { inviteGuestToPage } from '../workspace/guest.ts'
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'
 
@@ -123,4 +127,31 @@ test('⑤ 거부 — 모르는 요금제 · 없는(지운) 워크스페이스 ·
   assert.deepEqual(await setWorkspacePlan(ws, 'plus'), { ok: false, reason: 'not_found' })
   assert.deepEqual(await subscriptions(ws), [])
   assert.equal(await planOf(ws), 'free')
+})
+
+test('★ ⑥ 개요 — 소유자 · 멤버 관리자만 · 가격 순 · 값은 표 그대로 · 게스트 쓴 양', async (t) => {
+  if (skipReason) return t.skip(skipReason)
+  const fx = await makeFixture()
+  const admin = await joinAs(fx.workspaceId, await createUser('요금제의 관리자'), 'membership_admin')
+  const member = await joinAs(fx.workspaceId, await createUser('요금제의 멤버'), 'member')
+  const guestUser = await createUser('요금제의 게스트')
+  const doc = (await createPage(fx.owner.ctx, { privateTop: true, title: titleFromPlainText('개요') })).id
+  assert.ok((await inviteGuestToPage(fx.owner.ctx, doc, guestUser.email, 'view')).ok)
+  assert.ok((await inviteGuestToPage(fx.owner.ctx, doc, `pending-${Date.now()}@example.com`, 'view')).ok)
+
+  assert.equal(await planOverview(member.ctx), null, '멤버는 보지 않는다')
+  const overview = await planOverview(admin.ctx)
+  assert.ok(overview !== null)
+  assert.equal(overview.current, 'free')
+  assert.deepEqual(overview.plans.map((p) => [p.code, p.priceMonthly]), [['free', 0], ['plus', 14000], ['business', 30000], ['enterprise', null]])
+  const values = Object.fromEntries(overview.entitlements.map((e) => [e.key, PLAN_CODES.map((c) => e.values[c])]))
+  assert.deepEqual(values, {
+    'history.days': [7, 30, 90, null],
+    'guests.max': [10, null, null, null],
+    'teamspace.private': [false, false, true, true],
+  })
+  assert.equal(overview.usage.guests, 2, '활성 게스트 하나 + 대기 초대 하나')
+
+  await setWorkspacePlan(fx.workspaceId, 'business')
+  assert.equal((await planOverview(fx.owner.ctx))?.current, 'business')
 })

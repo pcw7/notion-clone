@@ -92,6 +92,17 @@ export function archivedAtLabel(iso: string, now: Date = new Date()): string {
   return `${at.getFullYear()}. ${at.getMonth() + 1}. ${at.getDate()}. 보관`
 }
 
+/** private 를 막을 때 그 옆에 붙는 말(8k-3) — 요금제 이름은 말하지 않는다(요금제 표가 바뀌어도 거짓이 되지 않게). */
+export const PLAN_REQUIRED_BADGE = '요금제 필요'
+
+/**
+ * 이 공개 범위를 고를 수 없는가(8k-3 · 표시 전용 — 서버가 다시 묻는다 · `plan_required`). private 만, 요금제가 허락하지 않을 때 — 단
+ * **이미 private 인 teamspace**(요금제를 내린 뒤)는 그대로 둔다(서버와 같은 규칙: 바꿀 때만 묻는다).
+ */
+export function privateLocked(visibility: TeamspaceVisibilityName, privateAllowed: boolean, current: TeamspaceVisibilityName | null): boolean {
+  return visibility === 'private' && !privateAllowed && current !== 'private'
+}
+
 /** 고르개 옆의 한 줄 — 무엇이 달라지는지 말한다. 셋의 차이는 **존재와 참여**뿐이다(콘텐츠는 멤버만 본다 · 7c-5). */
 export function teamspaceVisibilityHint(visibility: TeamspaceVisibilityName): string {
   switch (visibility) {
