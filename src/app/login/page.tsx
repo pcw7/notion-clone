@@ -14,21 +14,33 @@
  * **비밀번호로도 들어올 수 있다**(8i-1b · F-14-03) — 이메일 단계의 "비밀번호로 로그인". 비밀번호는 선택이라 기본은 코드다. 실패는 무엇이
  * 틀렸는지 말하지 않는다(서버가 같은 말을 준다 — 이메일이 있는지 · 비밀번호가 있는지를 흘리지 않는다). 잊었으면 로그인 코드로 들어와
  * 10분 안에 설정 → 보안에서 새로 정한다(정본 §3.2 [보강] 비밀번호 ⑥ — 그것이 재설정이다).
+ *
+ * **2단계 인증이 켜진 계정은 둘째 단계를 거친다**(8i-2b · F-14-05) — 첫 단계(코드 · 비밀번호)의 응답이 `mfaRequired` 이거나, 둘째 단계를
+ * 안 거친 세션으로 화면을 열어 `/login?mfa=1` 로 돌아왔으면 인증 앱의 6자리 또는 백업 코드를 묻는다. 그 전까지 세션은 진입 게이트에서
+ * 막혀 있다(정본 §3.2 [보강] 2단계 인증 ④). "다른 계정으로"는 그 세션을 로그아웃하고 처음으로 간다.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { useRouter } from 'next/navigation'
 
 const CODE_LENGTH = 6
 const RESEND_COOLDOWN_SECONDS = 60
 
-type Step = 'email' | 'code' | 'password'
+type Step = 'email' | 'code' | 'password' | 'mfa'
+
+// `?mfa=1` — 서버(정적 렌더)에서는 false, 하이드레이션 뒤에 주소를 읽는다. effect 에서 setState 하지 않으려고 외부 저장소로 읽는다.
+const subscribeNothing = () => () => {}
+const urlAsksMfa = () => new URLSearchParams(window.location.search).get('mfa') === '1'
 
 export default function LoginPage() {
   const router = useRouter()
-  const [step, setStep] = useState<Step>('email')
+  const mfaFromUrl = useSyncExternalStore(subscribeNothing, urlAsksMfa, () => false)
+  // 고른 단계가 없으면 주소가 정한다 — 둘째 단계를 안 거친 세션으로 돌아왔으면 그 단계부터.
+  const [chosen, setStep] = useState<Step | null>(null)
+  const step: Step = chosen ?? (mfaFromUrl ? 'mfa' : 'email')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [mfaCode, setMfaCode] = useState('')
   const [digits, setDigits] = useState<string[]>(Array(CODE_LENGTH).fill(''))
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -100,6 +112,70 @@ export default function LoginPage() {
     router.refresh()
   }, [router])
 
+  /** 첫 단계를 통과했다 — 2단계 인증이 켜진 계정이면 둘째 단계로, 아니면 들어간다. */
+  const afterFirstStep = useCallback(
+    (data: unknown) => {
+      if (typeof data === 'object' && data !== null && (data as { mfaRequired?: unknown }).mfaRequired === true) {
+        setStep('mfa')
+        setMfaCode('')
+        setError(null)
+        setNotice(null)
+        return
+      }
+      goNext()
+    },
+    [goNext],
+  )
+
+  async function submitMfa() {
+    setBusy(true)
+    setError(null)
+    setNotice(null)
+    try {
+      const res = await fetch('/api/auth/mfa-verify', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ code: mfaCode }),
+      })
+      await res.json().catch(() => null)
+      if (res.ok) {
+        goNext()
+        return
+      }
+      if (res.status === 401) {
+        setStep('email')
+        setError('로그인이 끝났습니다. 처음부터 다시 들어오세요.')
+        return
+      }
+      setError(
+        res.status === 429
+          ? '여러 번 틀렸습니다. "다른 계정으로"를 눌러 처음부터 다시 들어오세요.'
+          : '코드가 맞지 않습니다. 인증 앱의 지금 코드나 백업 코드를 넣어 주세요.',
+      )
+      setMfaCode('')
+    } catch {
+      setError('연결에 실패했습니다. 잠시 후 다시 시도해주세요.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  /** 둘째 단계를 그만둔다 — 첫 단계로 받은 세션을 로그아웃하고 처음으로. */
+  async function leaveMfa() {
+    setBusy(true)
+    try {
+      await fetch('/api/auth/logout', { method: 'POST', headers: { accept: 'application/json' } }).then((r) => r.text())
+    } catch {
+      // 연결이 끊겼어도 처음으로 간다 — 세션은 둘째 단계를 거치기 전에는 아무 데도 못 들어간다.
+    } finally {
+      setBusy(false)
+      setStep('email')
+      setMfaCode('')
+      setError(null)
+      setNotice(null)
+    }
+  }
+
   async function submitPassword() {
     setBusy(true)
     setError(null)
@@ -111,7 +187,7 @@ export default function LoginPage() {
         body: JSON.stringify({ email, password }),
       })
       if (res.ok) {
-        goNext()
+        afterFirstStep(await res.json().catch(() => null))
         return
       }
       setError(
@@ -143,8 +219,8 @@ export default function LoginPage() {
         const data = await res.json()
 
         if (res.ok) {
-          // 초대 링크에서 왔으면 그리로 돌려보낸다(`goNext`).
-          goNext()
+          // 2단계 인증이 켜졌으면 둘째 단계로, 아니면 초대 링크에서 왔으면 그리로 돌려보낸다(`goNext`).
+          afterFirstStep(data)
           return
         }
 
@@ -166,7 +242,7 @@ export default function LoginPage() {
         setBusy(false)
       }
     },
-    [email, goNext],
+    [email, afterFirstStep],
   )
 
   /**
@@ -227,10 +303,57 @@ export default function LoginPage() {
           ? '이메일로 계속하기'
           : step === 'password'
             ? `${email} 의 비밀번호`
-            : `${email} 으로 6자리 코드를 보냈습니다.`}
+            : step === 'mfa'
+              ? '2단계 인증 — 인증 앱의 6자리 코드나 백업 코드를 넣으세요.'
+              : `${email} 으로 6자리 코드를 보냈습니다.`}
       </p>
 
-      {step === 'email' ? (
+      {step === 'mfa' ? (
+        <form
+          className="mt-8 flex flex-col gap-3"
+          data-testid="login-mfa-form"
+          onSubmit={(e) => {
+            e.preventDefault()
+            if (!busy) void submitMfa()
+          }}
+        >
+          <label htmlFor="mfa-code" className="text-sm font-medium">
+            인증 코드
+          </label>
+          <input
+            id="mfa-code"
+            required
+            autoComplete="one-time-code"
+            autoFocus
+            spellCheck={false}
+            data-testid="login-mfa-code"
+            value={mfaCode}
+            onChange={(e) => setMfaCode(e.target.value)}
+            placeholder="123456 또는 abcde-fghij"
+            className="rounded-md border border-neutral-300 px-3 py-2 outline-none focus:border-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:focus:border-neutral-300"
+          />
+          <button
+            type="submit"
+            data-testid="login-mfa-submit"
+            disabled={busy || mfaCode.trim().length === 0}
+            className="mt-2 rounded-md bg-neutral-900 px-3 py-2 text-white disabled:opacity-40 dark:bg-neutral-100 dark:text-neutral-900"
+          >
+            {busy ? '확인하는 중…' : '확인'}
+          </button>
+          <button
+            type="button"
+            data-testid="login-mfa-leave"
+            disabled={busy}
+            onClick={() => void leaveMfa()}
+            className="text-sm text-neutral-500 underline underline-offset-4 disabled:opacity-40"
+          >
+            다른 계정으로
+          </button>
+          <p className="text-xs text-neutral-400">
+            인증 앱을 쓸 수 없으면 2단계 인증을 켤 때 받은 백업 코드 하나를 넣으세요. 백업 코드는 한 번씩만 쓸 수 있습니다.
+          </p>
+        </form>
+      ) : step === 'email' ? (
         <form
           className="mt-8 flex flex-col gap-3"
           onSubmit={(e) => {

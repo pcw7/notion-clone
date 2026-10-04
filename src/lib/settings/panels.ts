@@ -25,6 +25,8 @@ import type { SettingSectionId } from './registry.ts'
 export const SETTING_PANELS = [
   // 자기 계정의 비밀번호 — 누구나(게스트 포함). 판정 · 쓰기는 `auth/password.ts` 가 한다.
   { id: 'password', section: 'account.security', visible: () => true },
+  // 2단계 인증(8i-2b) — 누구나 본다(켜려면 비밀번호가 있어야 한다는 것은 패널이 말한다). 판정 · 쓰기는 `auth/mfa.ts`.
+  { id: 'mfa', section: 'account.security', visible: () => true },
   { id: 'members', section: 'workspace.people', visible: (ctx: SessionContext) => canListMembers(ctx.role) },
   { id: 'invites', section: 'workspace.people', visible: (ctx: SessionContext) => canInvite(ctx.role) },
   { id: 'guests', section: 'workspace.people', visible: (ctx: SessionContext) => canManageGuests(ctx.role) },
