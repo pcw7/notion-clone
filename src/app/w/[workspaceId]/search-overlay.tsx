@@ -53,6 +53,8 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+
+import { DEFAULT_SEARCH_SORT, SEARCH_SORTS, type SearchSort } from '@/lib/search/sort'
 import { useRouter } from 'next/navigation'
 
 import { splitHighlight } from '@/lib/search/highlight'
@@ -114,6 +116,15 @@ type QueryResult =
 /** 화면이 실제로 그리는 상태. `query` 와 `result` 에서 파생된다. */
 type Mode = { kind: 'recent' } | QueryResult
 
+/** 정렬의 이름(8l-2) — F-07-02 의 `Best Matches` · `Last Edited: Newest First` … 를 우리말로. */
+const SORT_LABEL: Readonly<Record<SearchSort, string>> = {
+  best: '가장 잘 맞는 순',
+  edited_desc: '편집 — 최신 순',
+  edited_asc: '편집 — 오래된 순',
+  created_desc: '만든 때 — 최신 순',
+  created_asc: '만든 때 — 오래된 순',
+}
+
 export function SearchOverlay({
   workspaceId,
   recent,
@@ -125,6 +136,8 @@ export function SearchOverlay({
   const router = useRouter()
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
+  // 정렬(8l-2 · F-07-02) — 기본은 가장 잘 맞는 순. 오버레이를 닫았다 열어도 고른 것을 기억한다(같은 세션 동안).
+  const [sort, setSort] = useState<SearchSort>(DEFAULT_SEARCH_SORT)
   const [result, setResult] = useState<QueryResult | null>(null)
   const [index, setIndex] = useState(0)
 
@@ -233,7 +246,7 @@ export function SearchOverlay({
     //   새 응답을 덮어써서, 타이핑을 멈춘 순간 결과가 한 글자 전으로 돌아간다.
     const controller = new AbortController()
     const timer = setTimeout(() => {
-      const url = `/api/workspaces/${workspaceId}/search?q=${encodeURIComponent(q)}`
+      const url = `/api/workspaces/${workspaceId}/search?q=${encodeURIComponent(q)}&sort=${sort}`
       void fetch(url, { signal: controller.signal })
         .then(async (res) => {
           if (!res.ok) {
@@ -264,7 +277,7 @@ export function SearchOverlay({
       clearTimeout(timer)
       controller.abort()
     }
-  }, [open, query, workspaceId])
+  }, [open, query, sort, workspaceId])
 
   // ── 열려 있는 동안의 키 ─────────────────────────────────────────────
   const openRow = useCallback(
@@ -352,6 +365,24 @@ export function SearchOverlay({
           autoComplete="off"
           className="w-full flex-none border-b border-neutral-200 bg-transparent px-4 py-3 text-base outline-none dark:border-neutral-700"
         />
+        {/* 정렬(8l-2) — 찾는 동안만 뜻이 있다(빈 입력은 최근 방문). F-07-02 의 다섯 그대로. */}
+        {searching && (
+          <label className="flex flex-none items-center gap-2 border-b border-neutral-100 px-4 py-1 text-xs text-neutral-500 dark:border-neutral-800">
+            정렬
+            <select
+              data-testid="search-sort"
+              value={sort}
+              onChange={(event) => setSort(event.target.value as SearchSort)}
+              className="rounded border border-neutral-200 bg-transparent px-1 py-0.5 dark:border-neutral-700"
+            >
+              {SEARCH_SORTS.map((s) => (
+                <option key={s} value={s}>
+                  {SORT_LABEL[s]}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
 
         <div className="min-h-0 flex-1 overflow-auto" data-testid="search-results">
           {!searching && rows.length > 0 && (

@@ -56,6 +56,14 @@
  * 된다. 이 프로젝트의 주 언어가 한국어이므로 일관성을 고른다. BM25 계열 관련도는
  * F-07-02 의 P0-랭킹이고 마스터 문서가 W7 밖으로 미뤘다.
  *
+ * **8l-2 — 정렬 다섯과 "가장 잘 맞는 순"의 단계**(F-07-02 *"Best Matches (default, with recently edited pages ranked
+ * higher)"*). 점수는 여전히 사전식이다(두 축이 같은 규칙으로 — 위의 이유 그대로):
+ *
+ *   단계(제목이 쿼리와 **정확히 같다** 3 · 모든 절이 제목에 2 · 본문만 0) → **내가 30일 안에 연 페이지** → 최근 편집
+ *
+ * 개인화는 F-07-02 의 클론 대안 *"최근 30일 내 본인이 방문한 페이지에 고정 보너스 점수"* 그대로 — 단계 안에서만 앞선다(본문만 걸린 페이지가
+ * 방문했다고 제목이 걸린 페이지를 넘지 않는다). 나머지 넷은 시각만 본다(편집 · 만든 때 · 오름 · 내림).
+ *
  * ──────────────────────────────────────────────────────────────────────
  * 커서는 keyset 이고, 정렬 키는 합성 텍스트다
  * ──────────────────────────────────────────────────────────────────────
@@ -70,6 +78,9 @@
  * `COLLATE "C"` 를 붙인다 — 실측으로는 ICU 와 이진 순서가 **일치하지만**(고정 폭
  * 숫자열이므로), 마이그레이션 0008 에서 형제 37개째에 터진 것이 바로 이 가정이다.
  * 계산된 키라 인덱스가 없으므로 명시 비용이 0이다.
+ *
+ * (8l-2) 정렬마다 키의 모양이 다르다 — 커서의 키에 **정렬 이름을 앞에 붙여** 실어 보내고, 다른 정렬의 커서가 오면 처음부터 읽는다(정렬을
+ * 바꾼 화면이 옛 커서를 보내도 이상한 자리에서 시작하지 않게).
  */
 
 import type { SessionContext } from '../auth/session-context.ts'
@@ -83,7 +94,8 @@ import {
   decodeCursor,
   type ListEnvelope,
 } from '../contracts/pagination.ts'
-import { parseQuery, snippetAnchor, type ParsedQuery } from './query.ts'
+import { exactTitleTarget, parseQuery, snippetAnchor, type ParsedQuery } from './query.ts'
+import { DEFAULT_SEARCH_SORT, isAscending, normalizeSearchSort, type SearchSort } from './sort.ts'
 import { detectScript, minQueryLength, type Script } from './script.ts'
 
 /**
@@ -126,6 +138,8 @@ export type SearchHit = {
 
 export type SearchInput = {
   readonly query: string
+  /** 정렬(8l-2) — 기본은 가장 잘 맞는 순. 모르는 값도 기본. */
+  readonly sort?: SearchSort | string | null
   readonly limit?: number
   /** 이전 응답의 `next_cursor`. */
   readonly cursor?: string | null
@@ -156,8 +170,34 @@ export type SearchOutcome =
 // 쓰레기 입력에 던지지 않고 빈 tsquery 를 돌려준다(실측) — `to_tsquery` 와
 // 다른 점이고, 그래서 이쪽을 쓴다.
 
-/** 첫 쿼리 파라미터의 번호 — $1 워크스페이스 · $2 스코프 · $3 스니펫의 닻 · $4 · $5 커서 · $6 한도. */
-const FIRST_QUERY_PARAM = 7
+/**
+ * 첫 쿼리 파라미터의 번호 — $1 워크스페이스 · $2 스코프 · $3 스니펫의 닻 · $4 · $5 커서 · $6 한도 · $7 찾는 사람(방문 가산 · 8l-2) ·
+ * $8 제목이 정확히 같아야 할 말(없으면 NULL · 8l-2).
+ */
+const FIRST_QUERY_PARAM = 9
+
+/** 방문 가산의 창 — F-07-02 클론 대안 *"최근 30일 내 본인이 방문한 페이지"*. */
+const VISIT_BONUS_DAYS = 30
+
+
+/** 정렬마다의 키 — 고정 폭 ASCII 숫자열(사전식 비교가 곧 그 정렬이다). */
+const SORT_KEY: Readonly<Record<SearchSort, string>> = {
+  best: `(CASE WHEN m.exact_title THEN '3' WHEN m.title_hit THEN '2' ELSE '0' END)
+         || (CASE WHEN m.visited THEN '1' ELSE '0' END)
+         || to_char(m.edited_at, 'YYYYMMDDHH24MISSUS')`,
+  edited_desc: `to_char(m.edited_at, 'YYYYMMDDHH24MISSUS')`,
+  edited_asc: `to_char(m.edited_at, 'YYYYMMDDHH24MISSUS')`,
+  created_desc: `to_char(m.created, 'YYYYMMDDHH24MISSUS')`,
+  created_asc: `to_char(m.created, 'YYYYMMDDHH24MISSUS')`,
+}
+
+/** 커서의 키에 정렬 이름을 붙인다 · 떼어 낸다(다른 정렬의 커서면 null — 처음부터). */
+const cursorKeyOf = (sort: SearchSort, key: string): string => `${sort}:${key}`
+function keyFromCursor(sort: SearchSort, cursorKey: string | undefined): string | null {
+  if (cursorKey === undefined) return null
+  const prefix = `${sort}:`
+  return cursorKey.startsWith(prefix) ? cursorKey.slice(prefix.length) : null
+}
 
 type Axis = { readonly match: string; readonly titleHit: string; readonly params: readonly string[] }
 
@@ -204,23 +244,30 @@ type HitRow = {
   snippet: string
 }
 
-function buildSql(axis: Axis): string {
+function buildSql(axis: Axis, sort: SearchSort): string {
+  const ascending = isAscending(sort)
   return `
     WITH matched AS (
       SELECT s.doc_id, s.title_text, s.body_text, s.ancestor_ids,
              -- 두 감사 컬럼이 모두 NULL 이면 정렬 키가 NULL 이 되고 그 행이
              -- 결과에서 조용히 빠진다. 바닥값을 둔다.
              coalesce(s.last_edited_at, s.created_at, 'epoch'::timestamptz) AS edited_at,
-             ${axis.titleHit} AS title_hit
+             coalesce(s.created_at, s.last_edited_at, 'epoch'::timestamptz) AS created,
+             ${axis.titleHit} AS title_hit,
+             -- 제목이 쿼리와 정확히 같다(8l-2 · 가장 잘 맞는 순의 첫 단계). 다른 정렬도 여기서 $8 을 읽는다 — 안 읽으면 그 파라미터의 타입을
+             -- 정하지 못해 질의가 던진다.
+             ($8::text IS NOT NULL AND lower(btrim(coalesce(s.title_text, ''))) = lower($8::text)) AS exact_title,
+             -- 내가 최근에 연 페이지(8l-2 · 가장 잘 맞는 순의 단계 안 가산) — 다른 사람의 방문은 세지 않는다.
+             EXISTS (SELECT 1 FROM recent_visit rv
+                      WHERE rv.user_id = $7::uuid AND rv.block_id = s.doc_id
+                        AND rv.last_visited_at > now() - interval '${VISIT_BONUS_DAYS} days') AS visited
         FROM search_document s
        WHERE s.workspace_id = $1
          AND s.perm_scope_id = ANY($2::uuid[])   -- ★ 권한. 후처리가 아니다
          AND s.in_trash = false
          AND ${axis.match}
     ), keyed AS (
-      SELECT m.*,
-             (CASE WHEN m.title_hit THEN '1' ELSE '0' END)
-               || to_char(m.edited_at, 'YYYYMMDDHH24MISSUS') AS sort_key
+      SELECT m.*, ${SORT_KEY[sort]} AS sort_key
         FROM matched m
     )
     SELECT k.doc_id, k.title_text, k.ancestor_ids, k.edited_at, k.title_hit, k.sort_key,
@@ -238,8 +285,8 @@ function buildSql(axis: Axis): string {
            END AS snippet
       FROM keyed k
      WHERE $4::text IS NULL
-        OR (k.sort_key COLLATE "C", k.doc_id) < ($4::text COLLATE "C", $5::uuid)
-     ORDER BY k.sort_key COLLATE "C" DESC, k.doc_id DESC
+        OR (k.sort_key COLLATE "C", k.doc_id) ${ascending ? '>' : '<'} ($4::text COLLATE "C", $5::uuid)
+     ORDER BY k.sort_key COLLATE "C" ${ascending ? 'ASC' : 'DESC'}, k.doc_id ${ascending ? 'ASC' : 'DESC'}
      LIMIT $6`
 }
 
@@ -320,6 +367,7 @@ export async function searchPages(
     return { ok: false, reason: 'query_too_short', minLength: min, script }
   }
   const axis = axisOf(script, query, parsed)
+  const sort = normalizeSearchSort(input.sort ?? DEFAULT_SEARCH_SORT)
 
   const limit = normalizeLimit(input.limit)
   const cursor = input.cursor ? decodeCursor(input.cursor) : null
@@ -332,13 +380,16 @@ export async function searchPages(
 
     // 한 건 더 읽어 "다음 페이지가 있는가"를 판단한다. 전체 개수를 세지 않는다 —
     // F-07-01: *"결과 상한이 존재하고 완전 열거는 보장되지 않는다."*
-    const rows = await tx.query<HitRow>(buildSql(axis), [
+    const cursorKey = keyFromCursor(sort, cursor?.sortKey)
+    const rows = await tx.query<HitRow>(buildSql(axis, sort), [
       ctx.workspaceId,
       scopes,
       snippetAnchor(parsed) ?? query,
-      cursor?.sortKey ?? null,
-      cursor?.id ?? null,
+      cursorKey,
+      cursorKey === null ? null : (cursor?.id ?? null),
       limit + 1,
+      ctx.userId,
+      exactTitleTarget(parsed),
       ...axis.params,
     ])
 
@@ -361,7 +412,7 @@ export async function searchPages(
       ok: true,
       results: listEnvelope(results, {
         nextCursor:
-          hasMore && last ? encodeCursor({ sortKey: last.sort_key, id: last.doc_id }) : null,
+          hasMore && last ? encodeCursor({ sortKey: cursorKeyOf(sort, last.sort_key), id: last.doc_id }) : null,
       }),
     }
   })

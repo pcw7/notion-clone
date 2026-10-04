@@ -28,6 +28,7 @@ import {
 import { createPage, titleFromPlainText } from '../block/page.ts'
 import { savePageBody } from '../block/save-page-body.ts'
 import { trashPage } from '../block/trash.ts'
+import { query } from '../db/pool.ts'
 import { grantAccess, revokeAccess, stopInheriting } from '../permissions/acl.ts'
 import { searchPages, DEFAULT_SEARCH_LIMIT, normalizeQuery } from './search.ts'
 import type { BlockId } from '../ids.ts'
@@ -557,6 +558,101 @@ describe('★ 쿼리 문법 — 두 축이 같은 뜻으로 읽는다 (8l-1 · F
     const one = await pageWith('Latin one', [`${alpha} only`])
     assert.deepEqual(await idsOf(fx.owner, `${alpha} ${beta}`), [both])
     assert.deepEqual(await idsOf(fx.owner, `${alpha} -${beta}`), [one])
+  })
+})
+
+describe('★ 랭킹 · 정렬 (8l-2 · F-07-02)', () => {
+  const tag = () => randomUUID().slice(0, 6)
+  const ordered = async (actor: Actor, query: string, sort?: string, limit?: number) => {
+    const out = await searchPages(actor.ctx, { query, ...(sort ? { sort } : {}), ...(limit ? { limit } : {}) })
+    assert.ok(out.ok, '검색이 거부됐다')
+    return out.results
+  }
+  /** 색인의 시각을 정한다 — 편집 · 만든 때(검사만의 지름길). */
+  const setTimes = (page: BlockId, created: string, edited: string) =>
+    query(`UPDATE search_document SET created_at = $2::timestamptz, last_edited_at = $3::timestamptz WHERE doc_id = $1`, [page, created, edited])
+  const visit = (userId: string, page: BlockId, daysAgo: number) =>
+    query(
+      `INSERT INTO recent_visit (user_id, workspace_id, block_id, last_visited_at, visit_count)
+       VALUES ($1, $2, $3, now() - ($4 || ' days')::interval, 1)
+       ON CONFLICT (user_id, block_id) DO UPDATE SET last_visited_at = EXCLUDED.last_visited_at`,
+      [userId, fx.workspaceId, page, String(daysAgo)],
+    )
+
+  test('★ 가장 잘 맞는 순 — 제목이 정확히 같다 > 모든 절이 제목에 > 본문만 · 단계가 최근 편집을 이긴다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const x = tag()
+    const exact = await pageWith(`순위${x}`)
+    const contains = await pageWith(`순위${x} 회의록`)
+    const body = await pageWith('평범', [`본문에 순위${x} 가 있다`])
+    await setTimes(exact, '2026-01-01', '2026-01-01')
+    await setTimes(contains, '2026-01-02', '2026-01-02')
+    await setTimes(body, '2026-01-03', '2026-01-03')
+    const hits = (await ordered(fx.owner, `순위${x}`)).results.map((h) => h.pageId)
+    assert.deepEqual(hits, [exact, contains, body])
+  })
+
+  test('★ 내가 30일 안에 연 페이지가 같은 단계 안에서 앞선다 — 남의 방문 · 오래된 방문은 세지 않는다 · 단계는 넘지 않는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const x = tag()
+    const older = await pageWith(`방문${x} 하나`)
+    const newer = await pageWith(`방문${x} 둘`)
+    const bodyOnly = await pageWith('본문만', [`방문${x} 은 본문에`])
+    await setTimes(older, '2026-01-01', '2026-01-01')
+    await setTimes(newer, '2026-01-02', '2026-01-02')
+    await setTimes(bodyOnly, '2026-01-03', '2026-01-03')
+    const ids = async () => (await ordered(fx.owner, `방문${x}`)).results.map((h) => h.pageId)
+    assert.deepEqual(await ids(), [newer, older, bodyOnly], '방문 전 — 최근 편집')
+
+    const other = await joinAs(fx.workspaceId, await createUser('남의 방문'), 'member')
+    await visit(other.userId, older, 1)
+    await visit(fx.owner.userId, older, 45)
+    assert.deepEqual(await ids(), [newer, older, bodyOnly], '남의 방문 · 45일 전 방문은 세지 않는다')
+
+    await visit(fx.owner.userId, older, 2)
+    await visit(fx.owner.userId, bodyOnly, 1)
+    assert.deepEqual(await ids(), [older, newer, bodyOnly], '내 최근 방문은 앞선다 — 본문만 걸린 것은 제목 단계를 넘지 않는다')
+  })
+
+  test('★ 편집 · 만든 때의 오름 · 내림 — 단계를 보지 않는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const x = tag()
+    const a = await pageWith(`시각${x}`)
+    const b = await pageWith('본문', [`시각${x}`])
+    const c = await pageWith(`시각${x} 셋`)
+    // 만든 순서 a · b · c / 편집 순서 c · a · b
+    await setTimes(a, '2026-01-01', '2026-02-02')
+    await setTimes(b, '2026-01-02', '2026-02-03')
+    await setTimes(c, '2026-01-03', '2026-02-01')
+    const ids = async (sort: string) => (await ordered(fx.owner, `시각${x}`, sort)).results.map((h) => h.pageId)
+    assert.deepEqual(await ids('created_asc'), [a, b, c])
+    assert.deepEqual(await ids('created_desc'), [c, b, a])
+    assert.deepEqual(await ids('edited_asc'), [c, a, b])
+    assert.deepEqual(await ids('edited_desc'), [b, a, c])
+    assert.deepEqual(await ids('nonsense'), await ids('best'), '모르는 정렬은 가장 잘 맞는 순')
+  })
+
+  test('★ 오름차순도 커서로 끝까지 — 중복 · 누락이 없다 · 다른 정렬의 커서는 처음부터', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const x = tag()
+    const pages = [await pageWith(`커서${x} 1`), await pageWith(`커서${x} 2`), await pageWith(`커서${x} 3`)]
+    for (const [i, p] of pages.entries()) await setTimes(p, `2026-03-0${i + 1}`, `2026-03-0${i + 1}`)
+    const seen: string[] = []
+    let cursor: string | null = null
+    for (let i = 0; i < 5; i += 1) {
+      const out = await searchPages(fx.owner.ctx, { query: `커서${x}`, sort: 'created_asc', limit: 1, cursor })
+      assert.ok(out.ok)
+      seen.push(...out.results.results.map((h) => h.pageId))
+      cursor = out.results.next_cursor
+      if (cursor === null) break
+    }
+    assert.deepEqual(seen, pages)
+
+    const first = await searchPages(fx.owner.ctx, { query: `커서${x}`, sort: 'best', limit: 1 })
+    assert.ok(first.ok && first.results.next_cursor !== null)
+    const switched = await searchPages(fx.owner.ctx, { query: `커서${x}`, sort: 'created_asc', limit: 1, cursor: first.results.next_cursor })
+    assert.ok(switched.ok)
+    assert.deepEqual(switched.results.results.map((h) => h.pageId), [pages[0]], '다른 정렬의 커서로 이상한 자리에서 시작했다')
   })
 })
 
