@@ -30,7 +30,7 @@ import { randomUUID } from 'node:crypto'
 import { createHash } from 'node:crypto'
 
 import type { SessionContext } from '../auth/session-context.ts'
-import { withReadTransaction, withTransaction } from '../db/tx.ts'
+import { withReadTransaction, withTransaction, type Tx } from '../db/tx.ts'
 import {
   isAllowedMime,
   storageKeyFor,
@@ -97,40 +97,18 @@ export async function uploadFile(
   })
   if (rejection !== null) return { ok: false, reason: rejection }
   if (!isAllowedMime(input.mime)) return { ok: false, reason: 'unsupported_type' }
+  const mime = input.mime
 
   const id = randomUUID()
-  const storageKey = storageKeyFor(ctx.workspaceId, id, input.mime)
+  const storageKey = storageKeyFor(ctx.workspaceId, id, mime)
   // 같은 바이트인지 나중에 확인할 수 있게 남긴다(정본 §3.10 `checksum`).
   const checksum = createHash('sha256').update(input.bytes).digest('hex')
 
   await fileStorage().put(storageKey, input.bytes)
 
-  const file = await withTransaction(async (tx) => {
-    // 리전은 워크스페이스에서 온다 — 불변식 RG1: 엔드포인트를 코드에 박지 않는다.
-    const workspace = await tx.queryMaybe<{ region_id: string }>(
-      `SELECT region_id FROM workspace WHERE id = $1`,
-      [ctx.workspaceId],
-    )
-    if (workspace === null) return null
-
-    return tx.queryMaybe<FileRow>(
-      `INSERT INTO file (id, workspace_id, region_id, storage_key, mime, size_bytes,
-                         original_name, checksum, ref_count, uploaded_by, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0, $9, now())
-       RETURNING id, workspace_id, storage_key, mime, size_bytes, original_name, checksum, ref_count`,
-      [
-        id,
-        ctx.workspaceId,
-        workspace.region_id,
-        storageKey,
-        input.mime,
-        input.bytes.byteLength,
-        input.originalName,
-        checksum,
-        ctx.userId,
-      ],
-    )
-  })
+  const file = await withTransaction((tx) =>
+    insertFileRow(tx, ctx, { id, storageKey, mime, size: input.bytes.byteLength, originalName: input.originalName, checksum }),
+  )
 
   if (file === null) {
     // 방금 쓴 객체는 남겨두지 않는다.
@@ -142,6 +120,56 @@ export async function uploadFile(
   }
 
   return { ok: true, file: toStoredFile(file) }
+}
+
+/** 행 하나를 넣는다 — 워크스페이스가 사라졌으면 null. 리전은 워크스페이스에서 온다(불변식 RG1: 엔드포인트를 코드에 박지 않는다). */
+async function insertFileRow(
+  tx: Tx,
+  ctx: SessionContext,
+  row: { id: string; storageKey: string; mime: AllowedMime; size: number; originalName: string | null; checksum: string },
+): Promise<FileRow | null> {
+  const workspace = await tx.queryMaybe<{ region_id: string }>(`SELECT region_id FROM workspace WHERE id = $1`, [ctx.workspaceId])
+  if (workspace === null) return null
+  return tx.queryMaybe<FileRow>(
+    `INSERT INTO file (id, workspace_id, region_id, storage_key, mime, size_bytes,
+                       original_name, checksum, ref_count, uploaded_by, created_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0, $9, now())
+     RETURNING id, workspace_id, storage_key, mime, size_bytes, original_name, checksum, ref_count`,
+    [row.id, ctx.workspaceId, workspace.region_id, row.storageKey, row.mime, row.size, row.originalName, row.checksum, ctx.userId],
+  )
+}
+
+/**
+ * **부르는 쪽의 트랜잭션에서** 파일을 만든다 — 가져오기(잔여 묶음 8m-2b)가 ZIP 안의 이미지를 페이지들과 한 트랜잭션에 묶는다.
+ *
+ * 바이트는 부르는 쪽이 이미 가렸다(`sniffImageMime` · `validateUpload`). 순서는 `uploadFile` 과 같다 — 저장소에 먼저 쓰고 행은 나중이다.
+ * 트랜잭션이 되돌려지면 행은 사라지고 **객체만 남는다** — 쓴 키를 `stored` 에 쌓으니 부르는 쪽이 `discardStoredObjects` 로 지운다.
+ * `ref_count` 는 0 으로 태어난다 — 본문의 이미지 블록이 투영될 때 같은 트랜잭션에서 오른다(`save-page-body.ts`).
+ */
+export async function storeFileIn(
+  tx: Tx,
+  ctx: SessionContext,
+  input: { id: string; bytes: Uint8Array; mime: AllowedMime; originalName: string | null },
+  stored: string[],
+): Promise<StoredFile> {
+  const storageKey = storageKeyFor(ctx.workspaceId, input.id, input.mime)
+  const checksum = createHash('sha256').update(input.bytes).digest('hex')
+  stored.push(storageKey)
+  await fileStorage().put(storageKey, input.bytes)
+  const row = await insertFileRow(tx, ctx, { id: input.id, storageKey, mime: input.mime, size: input.bytes.byteLength, originalName: input.originalName, checksum })
+  if (row === null) throw new Error('파일을 만드는 중 워크스페이스가 사라졌습니다')
+  return toStoredFile(row)
+}
+
+/** 되돌려진 트랜잭션이 남긴 객체를 지운다 — 하나가 실패해도 나머지를 지운다(남는 것은 아무도 가리키지 않는 객체 · GC 의 몫이다). */
+export async function discardStoredObjects(keys: readonly string[]): Promise<void> {
+  for (const key of keys) {
+    try {
+      await fileStorage().remove(key)
+    } catch {
+      // 원래의 실패를 가리지 않는다.
+    }
+  }
 }
 
 /**
