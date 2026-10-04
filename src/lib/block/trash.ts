@@ -78,6 +78,8 @@ export type TrashErrorCode =
   | 'forbidden'
   /** 삭제 루트가 아니다 — 복원/영구삭제는 루트 단위로만 한다. */
   | 'not_a_trash_root'
+  /** 데이터베이스 행 · 템플릿인데 그 data source 가 휴지통에 있다 — 소스를 먼저 되살린다(8e-3a · 불변식 DSL1). */
+  | 'source_trashed'
 
 export class TrashError extends Error {
   readonly code: TrashErrorCode
@@ -212,6 +214,19 @@ export async function restorePage(ctx: SessionContext, pageId: BlockId): Promise
         '이 페이지는 상위 페이지와 함께 삭제됐습니다. 그 상위 페이지를 복원하세요.',
         target.trash_root_id === null ? null : asBlockId(target.trash_root_id),
       )
+    }
+
+    // 데이터베이스 행 · 템플릿은 그 data source 가 살아 있어야 돌아올 자리가 있다(8e-3a). 소스를 휴지통에 넣기 **전에** 따로 지운 행은
+    // 제 루트를 가져 목록에 남는다 — 그것을 되살리면 휴지통의 소스에 살아 있는 행이 생긴다(DSL1 — 0043 의 지연 트리거가 커밋 때 막는다).
+    // 예외가 되기 전에 무엇을 해야 하는지 말한다.
+    if (target.parent_type === 'data_source') {
+      const source = await tx.queryMaybe<{ lifecycle: string }>(
+        `SELECT lifecycle::text AS lifecycle FROM data_source WHERE id = $1`,
+        [target.parent_id],
+      )
+      if (source !== null && source.lifecycle !== 'live') {
+        throw new TrashError('source_trashed', '이 항목의 데이터 소스가 휴지통에 있습니다. 데이터 소스를 먼저 복원하세요.')
+      }
     }
 
     // ── 부모가 아직 살아 있는가 (B4) ────────────────────────────────
@@ -349,13 +364,18 @@ export async function purgePage(ctx: SessionContext, pageId: BlockId): Promise<P
 // ── 조회 ──────────────────────────────────────────────────────────────
 
 export type TrashEntry = {
-  readonly id: BlockId
+  /** 페이지(행 · 템플릿 포함)면 블록 id, data source 면 그 소스의 id(8e-3a). */
+  readonly id: string
+  /** 무엇이 휴지통에 있는가 — 되살리기 · 영구 삭제가 가는 주소가 다르다. */
+  readonly kind: 'page' | 'data_source'
+  /** data source 면 그 주인 데이터베이스의 이름(목록이 "어느 데이터베이스의 소스인가"를 말한다). 페이지면 null. */
+  readonly databaseName: string | null
   readonly title: string
   /** 그 페이지의 아이콘(8c-2) — 휴지통도 볼 수 있는 스코프로 거른 목록이다. */
   readonly icon: PageIcon | null
   readonly trashedAt: Date
   readonly purgeAfter: Date | null
-  /** 함께 들어간 하위 페이지 수. "하위 3개 포함"을 보여주기 위한 값. */
+  /** 함께 들어간 하위 페이지 수(소스면 함께 들어간 행 · 템플릿과 그 하위 페이지). "하위 3개 포함"을 보여주기 위한 값. */
   readonly descendantCount: number
 }
 
@@ -370,10 +390,10 @@ export type TrashEntry = {
 export async function listTrash(ctx: SessionContext): Promise<TrashEntry[]> {
   // ★ W6-b: 휴지통도 권한으로 거른다. F-11-05 가 "권한 필터 누락 시 제목 유출"을
   //    못박았고, 휴지통은 **지워진 페이지의 제목이 모이는 곳**이라 더 위험하다.
-  const rows = await withReadTransaction(async (tx) => {
+  const { pages, sources } = await withReadTransaction(async (tx) => {
     const scopes = await readableScopes(tx, ctx)
-    if (scopes.length === 0) return []
-    return tx.query<{
+    if (scopes.length === 0) return { pages: [], sources: [] }
+    const pages = await tx.query<{
       id: string
       properties: { title?: unknown } | null
       page_icon: unknown
@@ -392,18 +412,60 @@ export async function listTrash(ctx: SessionContext): Promise<TrashEntry[]> {
         ORDER BY t.trashed_at DESC, t.id`,
       [ctx.workspaceId, scopes],
     )
+    // 휴지통의 data source(8e-3a) — 그 주인 데이터베이스를 볼 수 있는 사람에게만. 함께 들어간 것은 소스 id 를 루트로 가진 블록이다.
+    const sources = await tx.query<{
+      id: string
+      name: string
+      properties: { title?: unknown } | null
+      icon: unknown
+      trashed_at: Date
+      purge_after: Date | null
+      descendant_count: string
+    }>(
+      `SELECT ds.id, ds.name, b.properties, d.icon, ds.trashed_at, ds.purge_after,
+              (SELECT count(*) FROM block r
+                WHERE r.trash_root_id = ds.id AND r.workspace_id = b.workspace_id) AS descendant_count
+         FROM data_source ds
+         JOIN block b ON b.id = ds.owner_database_id
+         JOIN database d ON d.id = b.id
+        WHERE b.workspace_id = $1 AND b.lifecycle = 'live' AND ds.lifecycle = 'trashed'
+          AND b.perm_scope_id = ANY($2::uuid[])
+        ORDER BY ds.trashed_at DESC, ds.id`,
+      [ctx.workspaceId, scopes],
+    )
+    return { pages, sources }
   })
 
-  return rows.map((row) => {
-    const raw = row.properties?.title
-    return {
-      id: asBlockId(row.id),
-      // 읽기는 관대하게 — 제목이 망가졌다고 휴지통 전체가 500 이 되면 복구 경로가 없다.
-      title: Array.isArray(raw) ? toPlainText(raw as RichTextRun[]) : '',
-      icon: readPageIcon(row.page_icon),
-      trashedAt: row.trashed_at,
-      purgeAfter: row.purge_after,
-      descendantCount: Number(row.descendant_count),
-    }
-  })
+  const entries: TrashEntry[] = [
+    ...pages.map((row) => {
+      const raw = row.properties?.title
+      return {
+        id: row.id,
+        kind: 'page' as const,
+        databaseName: null,
+        // 읽기는 관대하게 — 제목이 망가졌다고 휴지통 전체가 500 이 되면 복구 경로가 없다.
+        title: Array.isArray(raw) ? toPlainText(raw as RichTextRun[]) : '',
+        icon: readPageIcon(row.page_icon),
+        trashedAt: row.trashed_at,
+        purgeAfter: row.purge_after,
+        descendantCount: Number(row.descendant_count),
+      }
+    }),
+    ...sources.map((row) => {
+      const raw = row.properties?.title
+      return {
+        id: row.id,
+        kind: 'data_source' as const,
+        databaseName: Array.isArray(raw) ? toPlainText(raw as RichTextRun[]) : '',
+        title: row.name,
+        // 소스에는 아이콘이 없다 — 주인 데이터베이스의 것을 싣는다(목록에서 어느 표인지 알아보게).
+        icon: readPageIcon(row.icon),
+        trashedAt: row.trashed_at,
+        purgeAfter: row.purge_after,
+        descendantCount: Number(row.descendant_count),
+      }
+    }),
+  ]
+  // 최근에 지운 것부터 — 페이지와 소스를 한 목록으로.
+  return entries.sort((a, b) => b.trashedAt.getTime() - a.trashedAt.getTime() || a.id.localeCompare(b.id))
 }

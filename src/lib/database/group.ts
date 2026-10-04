@@ -248,7 +248,8 @@ async function openBoard(
     `SELECT v.database_id, v.data_source_id, v.filter, v.sorts, v.group_by, v.load_limit
        FROM view v
        JOIN block b ON b.id = v.database_id
-      WHERE v.id = $1 AND b.workspace_id = $2 AND b.lifecycle = 'live'
+       JOIN data_source ds ON ds.id = v.data_source_id
+      WHERE v.id = $1 AND b.workspace_id = $2 AND b.lifecycle = 'live' AND ds.lifecycle = 'live'
         AND v.owner_kind = 'database_view'`,
     [viewId, ctx.workspaceId],
   )

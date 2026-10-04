@@ -78,6 +78,8 @@ export default async function WorkspaceLayout({
         canCreatePrivatePage={ctx.role !== 'guest'}
         trash={trash.map((e) => ({
           id: e.id,
+          kind: e.kind,
+          databaseName: e.databaseName,
           title: e.title,
           icon: e.icon,
           trashedAt: e.trashedAt.toISOString(),

@@ -8598,6 +8598,98 @@ async function main() {
       await fetch(`${api}/databases/${dbId}/lock`, { method: 'DELETE', headers: authed })
     }
 
+    if (sectionIf('data source 휴지통 (8e-3a · F-04-23)')) {
+      // "데이터 소스" 창에서 소스를 휴지통으로 보내고(한 번 더 묻는다), 사이드바의 휴지통에서 되살리고 영구 삭제한다. 그 소스의 행은 함께
+      // 가고 함께 돌아온다 — 휴지통에 있는 동안 행의 주소는 열리지 않는다. 마지막 소스에는 휴지통 단추가 없다. 자기 데이터를 스스로 만든다.
+      const stamp = Date.now()
+      const dbName = `소스휴지통${stamp}`
+      const api = `${BASE}/api/workspaces/${workspaceId}`
+      const readRes = async (res) => ({ status: res.status, body: await res.json().catch(() => null) })
+      const created = (await readRes(await fetch(`${api}/databases`, { method: 'POST', headers: authed, body: JSON.stringify({ name: dbName, privateTop: true }) }))).body?.database
+      const dbId = created?.id
+      const added = (await readRes(await fetch(`${api}/databases/${dbId}/data-sources`, { method: 'POST', headers: authed, body: JSON.stringify({ name: '거래처' }) }))).body
+      const secondSource = added?.dataSource?.id
+      const secondView = added?.viewId
+      const secondRow = (await readRes(await fetch(`${api}/views/${secondView}/rows`, { method: 'POST', headers: authed, body: '{}' }))).body?.row?.id
+      const LABEL = '[data-testid="db-source-name"]'
+      const openPanel = async () => {
+        for (let i = 0; i < 6; i += 1) {
+          if (await evaluate(`!!document.querySelector('[data-testid="db-sources-panel"]')`)) return true
+          await clickSelector('[data-testid="db-sources-button"]')
+          if (await waitFor(`!!document.querySelector('[data-testid="db-sources-panel"]')`, 1500)) return true
+        }
+        return false
+      }
+      const trashButtonOf = (id) => `[data-testid="db-source-item"][data-source-id="${id}"] [data-testid="db-source-trash"]`
+      const rowStatus = async () => (await fetch(`${BASE}/w/${workspaceId}/${secondRow}`, { headers: { cookie: authed.cookie } })).status
+      check('전제: 둘째 소스에 행이 있고 그 행의 주소가 열린다', !!secondRow && (await rowStatus()) === 200, String(secondRow))
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${dbId}?v=${secondView}` })
+      await waitFor(`!!document.querySelector('[data-testid="db-sources-button"]')`, 15000)
+      await openPanel()
+      check('소스가 둘이면 소스마다 휴지통 단추가 선다', (await evaluate(`document.querySelectorAll('[data-testid="db-source-trash"]').length`)) === 2,
+        String(await evaluate(`document.querySelectorAll('[data-testid="db-source-trash"]').length`)))
+
+      // 취소 — 아무것도 보내지 않는다
+      await clickSelector(trashButtonOf(secondSource))
+      check('★ 휴지통 단추는 창 안에서 한 번 더 묻는다 — 확정 단추가 포커스를 갖는다',
+        await waitFor(`!!document.querySelector('[data-testid="db-source-trash-ask"]') && document.activeElement?.getAttribute('data-testid') === 'db-source-trash-confirm'`, 5000))
+      await clickSelector('[data-testid="db-source-trash-cancel"]')
+      const afterCancel = (await readRes(await fetch(`${api}/databases/${dbId}/data-sources`, { headers: authed }))).body?.dataSources?.length
+      check('취소하면 묻는 상자가 닫히고 소스는 그대로다',
+        (await waitFor(`!document.querySelector('[data-testid="db-source-trash-ask"]')`, 3000)) && afterCancel === 2, String(afterCancel))
+
+      // 보내기 — 보고 있던 소스면 데이터베이스의 첫 뷰로
+      await clickSelector(trashButtonOf(secondSource))
+      await waitFor(`!!document.querySelector('[data-testid="db-source-trash-confirm"]')`, 3000)
+      await clickSelector('[data-testid="db-source-trash-confirm"]')
+      check('★ 보고 있던 소스를 휴지통으로 보내면 데이터베이스의 첫 뷰로 옮기고 탭 · 소스 이름이 사라진다',
+        await waitFor(`location.search === '' && document.querySelectorAll('[data-testid="db-view-tab"]').length === 1 && !document.querySelector('${LABEL}')`, 15000),
+        JSON.stringify([await evaluate('location.search'), await evaluate(`document.querySelectorAll('[data-testid="db-view-tab"]').length`)]))
+      check('★ 그 소스의 행도 함께 갔다 — 행의 주소가 열리지 않는다', (await rowStatus()) === 404, String(await rowStatus()))
+      await openPanel()
+      check('마지막 소스에는 휴지통 단추가 없다', await waitFor(`!document.querySelector('[data-testid="db-source-trash"]') && document.querySelectorAll('[data-testid="db-source-item"]').length === 1`, 5000))
+      const lastTry = await readRes(await fetch(`${api}/data-sources/${created?.dataSourceId}/trash`, { method: 'POST', headers: authed }))
+      check('마지막 소스를 라우트로 보내도 409 와 그 까닭', lastTry.status === 409 && lastTry.body?.error === 'last_source' && typeof lastTry.body?.message === 'string',
+        JSON.stringify(lastTry))
+
+      // 사이드바의 휴지통 — 소스 한 줄 · 되살리기
+      const entrySel = `[data-testid="trash-entry"][data-trash-id="${secondSource}"]`
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${dbId}` })
+      await waitFor(`!!document.querySelector('[data-testid="trash-toggle"]')`, 15000)
+      for (let i = 0; i < 6 && !(await evaluate(`!!document.querySelector(${JSON.stringify(entrySel)})`)); i += 1) {
+        await clickSelector('[data-testid="trash-toggle"]')
+        await waitFor(`!!document.querySelector(${JSON.stringify(entrySel)})`, 1500)
+      }
+      check('★ 사이드바의 휴지통에 소스가 한 줄로 선다 — 데이터 소스 · 데이터베이스 이름 · 함께 간 항목 수',
+        await waitFor(`(() => { const e = document.querySelector(${JSON.stringify(entrySel)})
+          return !!e && e.getAttribute('data-trash-kind') === 'data_source' && e.textContent.includes('거래처')
+            && e.textContent.includes(${JSON.stringify(`데이터 소스 · ${dbName}`)}) && e.textContent.includes('항목 1개 포함') })()`, 5000),
+        String(await evaluate(`document.querySelector(${JSON.stringify(entrySel)})?.textContent ?? null`)))
+      check('함께 간 행은 따로 줄을 갖지 않는다', !(await evaluate(`!!document.querySelector('[data-testid="trash-entry"][data-trash-id="${secondRow}"]')`)))
+      await clickSelector(`${entrySel} [data-testid="trash-restore"]`)
+      check('★ 휴지통에서 되살리면 탭 · 소스 이름이 돌아온다',
+        await waitFor(`!document.querySelector(${JSON.stringify(entrySel)}) && document.querySelectorAll('[data-testid="db-view-tab"]').length === 2`, 15000),
+        String(await evaluate(`document.querySelectorAll('[data-testid="db-view-tab"]').length`)))
+      check('★ 행도 함께 돌아왔다 — 행의 주소가 다시 열린다', (await rowStatus()) === 200, String(await rowStatus()))
+
+      // 영구 삭제 — 확인 창을 받아들이고
+      await readRes(await fetch(`${api}/data-sources/${secondSource}/trash`, { method: 'POST', headers: authed }))
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${dbId}` })
+      await waitFor(`!!document.querySelector('[data-testid="trash-toggle"]')`, 15000)
+      for (let i = 0; i < 6 && !(await evaluate(`!!document.querySelector(${JSON.stringify(entrySel)})`)); i += 1) {
+        await clickSelector('[data-testid="trash-toggle"]')
+        await waitFor(`!!document.querySelector(${JSON.stringify(entrySel)})`, 1500)
+      }
+      await evaluate(`window.confirm = () => true`)
+      await clickSelector(`${entrySel} [data-testid="trash-purge"]`)
+      const purgedTrash = async () => (await readRes(await fetch(`${api}/trash`, { headers: authed }))).body
+      check('★ 영구 삭제하면 휴지통 목록에서 사라지고 되살릴 수 없다',
+        (await waitFor(`!document.querySelector(${JSON.stringify(entrySel)})`, 15000))
+          && (await fetch(`${api}/data-sources/${secondSource}/trash`, { method: 'DELETE', headers: authed })).status === 404,
+        JSON.stringify(await purgedTrash()).slice(0, 200))
+    }
+
     section('전체')
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))
     const serverErrors = serverOutput.split('\n').filter((l) => l.includes('⨯'))

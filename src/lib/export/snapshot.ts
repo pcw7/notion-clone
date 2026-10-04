@@ -282,7 +282,7 @@ async function readTables(tx: Tx, databaseIds: readonly string[]): Promise<Map<s
     `SELECT ds.id, ds.owner_database_id, ds.name
        FROM data_source ds
        JOIN database_data_source dds ON dds.database_id = ds.owner_database_id AND dds.data_source_id = ds.id
-      WHERE ds.owner_database_id = ANY($1::uuid[])
+      WHERE ds.owner_database_id = ANY($1::uuid[]) AND ds.lifecycle = 'live'
       ORDER BY ds.owner_database_id, dds.order_idx, ds.id`,
     [databaseIds],
   )

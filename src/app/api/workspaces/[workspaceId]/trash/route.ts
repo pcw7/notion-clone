@@ -20,6 +20,9 @@ export async function GET(
     ok: true,
     entries: entries.map((e) => ({
       id: e.id,
+      // 페이지인가 data source 인가(8e-3a) — 되살리기 · 영구 삭제의 주소가 다르다.
+      kind: e.kind,
+      databaseName: e.databaseName,
       title: e.title,
       icon: e.icon,
       trashedAt: e.trashedAt.toISOString(),

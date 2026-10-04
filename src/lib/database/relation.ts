@@ -215,7 +215,7 @@ export async function canViewDataSource(tx: Tx, ctx: SessionContext, dataSourceI
     `SELECT ds.owner_database_id AS container_id
        FROM data_source ds
        JOIN block b ON b.id = ds.owner_database_id
-      WHERE ds.id = $1 AND b.workspace_id = $2 AND b.lifecycle = 'live'`,
+      WHERE ds.id = $1 AND b.workspace_id = $2 AND b.lifecycle = 'live' AND ds.lifecycle = 'live'`,
     [dataSourceId, ctx.workspaceId],
   )
   return ds !== null && can(await effectiveCaps(tx, ctx, ds.container_id), 'view')

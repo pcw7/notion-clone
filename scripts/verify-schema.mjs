@@ -2337,6 +2337,120 @@ try {
     await deferred()
   }
 
+  console.log('\n[29] data source 휴지통 (0043 / §3.5 [보강] 다중 data source ⑩ · DSL1 · 8e-3a조각)')
+  {
+    // 데이터베이스 하나 · 소스 둘(살아 있는 A · 휴지통으로 보낼 B) · B 에 행 하나. 수명주기 CHECK 과 DSL1(살아 있지 않은 소스에 살아 있는 행 없음).
+    const root = randomUUID()
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key,
+                          ancestor_path, perm_scope_id, properties, format, created_at, last_edited_at)
+       VALUES ($1, $2, 'page', 'workspace', $2, 'r0', '{}', $1, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      [root, wsId],
+    )
+    const dbId = randomUUID()
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key,
+                          ancestor_path, perm_scope_id, properties, format, created_at, last_edited_at)
+       VALUES ($1, $2, 'database', 'block', $3, 'r1', $4, $3, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      [dbId, wsId, root, [root]],
+    )
+    await client.query(`INSERT INTO database (id, created_at, updated_at) VALUES ($1, now(), now())`, [dbId])
+    const source = async (key) => {
+      const id = randomUUID()
+      await client.query(`INSERT INTO data_source (id, owner_database_id, name, created_at, updated_at) VALUES ($1, $2, '소스', now(), now())`, [id, dbId])
+      await client.query(`INSERT INTO database_data_source (database_id, data_source_id, order_idx) VALUES ($1, $2, $3)`, [dbId, id, key])
+      return id
+    }
+    const a = await source('a0')
+    const b = await source('a1')
+    const row = async (ds, key, lifecycle = 'live') => {
+      const id = randomUUID()
+      await client.query(
+        `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key, ancestor_path, perm_scope_id,
+                            properties, format, created_at, last_edited_at, lifecycle, trashed_at, trash_root_id)
+         VALUES ($1, $2, 'page', 'data_source', $3, $4, $5, $6, '{}'::jsonb, '{}'::jsonb, now(), now(), $7::block_lifecycle,
+                 CASE WHEN $7 = 'live' THEN NULL ELSE now() END, CASE WHEN $7 = 'live' THEN NULL ELSE $3::uuid END)`,
+        [id, wsId, ds, key, [root, dbId], root, lifecycle],
+      )
+      await client.query(`INSERT INTO page (id, data_source_id) VALUES ($1, $2)`, [id, ds])
+      return id
+    }
+    const rowA = await row(a, 'p0')
+    const rowB = await row(b, 'p0')
+
+    const trashSource = `UPDATE data_source SET lifecycle = 'trashed', trashed_at = now(), purge_after = now() + interval '30 days' WHERE id = $1`
+    const trashRows = `UPDATE block SET lifecycle = 'trashed', trashed_at = now(), trash_root_id = $1 WHERE parent_id = $1 AND lifecycle = 'live'`
+    const checks = ['tg_data_source_rows_follow', 'tg_data_source_rows_follow_source', 'tg_data_source_owner_attachment', 'tg_data_source_owner_detach']
+    const immediate = async () => {
+      for (const name of checks) await client.query(`SET CONSTRAINTS ${name} IMMEDIATE`)
+    }
+    const deferred = async () => {
+      for (const name of checks) await client.query(`SET CONSTRAINTS ${name} DEFERRED`)
+    }
+    const mustRejectDeferred = async (label, statements) => {
+      await client.query('SAVEPOINT probe')
+      try {
+        for (const [sql, params] of statements) await client.query(sql, params)
+        await immediate()
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        fail(`${label} — 거부되어야 하는데 통과했다`)
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        ok(`${label} — 거부됨 (${e.code})`)
+      }
+      await deferred()
+    }
+
+    // 수명주기 CHECK — 블록의 ck_lifecycle_ts 와 같은 모양
+    await mustReject('휴지통인데 trashed_at 이 없다', `UPDATE data_source SET lifecycle = 'trashed', purge_after = now() WHERE id = $1`, [a])
+    await mustReject('휴지통인데 만료 시각이 없다', `UPDATE data_source SET lifecycle = 'trashed', trashed_at = now() WHERE id = $1`, [a])
+    await mustReject('살아 있는데 만료 시각이 있다', `UPDATE data_source SET purge_after = now() WHERE id = $1`, [a])
+    await mustReject('영구 삭제인데 purged_at 이 없다', `UPDATE data_source SET lifecycle = 'purged', trashed_at = now() WHERE id = $1`, [a])
+
+    // DSL1. 앞에서 넣은 행의 지연 검사를 여기서 털어낸다 — 남겨 두면 아래 프로브에서 그 행 쪽 검사가 함께 터져, 소스 쪽 검사가
+    // 막는지 가를 수 없다(반사실이 그것을 보였다).
+    await immediate()
+    await deferred()
+    await mustRejectDeferred('★ DSL1: 살아 있는 행을 남기고 소스만 휴지통으로', [[trashSource, [b]]])
+    await client.query('SAVEPOINT together')
+    try {
+      await client.query(trashSource, [b])
+      await client.query(trashRows, [b])
+      await immediate()
+      ok('소스와 행을 한 트랜잭션에서 함께 휴지통으로 — 통과한다')
+    } catch (e) {
+      fail(`정상 경로(함께 휴지통)가 DSL1 에 걸렸다 (${e.code})`)
+    }
+    await deferred()
+    await mustRejectDeferred('★ DSL1: 휴지통 소스의 행 하나만 되살린다', [
+      [`UPDATE block SET lifecycle = 'live', trashed_at = NULL, trash_root_id = NULL WHERE id = $1`, [rowB]],
+    ])
+    await client.query('SAVEPOINT newrow')
+    try {
+      await row(b, 'p1')
+      await immediate()
+      fail('★ DSL1: 휴지통 소스에 살아 있는 행을 만든다 — 거부되어야 하는데 통과했다')
+    } catch (e) {
+      ok(`★ DSL1: 휴지통 소스에 살아 있는 행을 만든다 — 거부됨 (${e.code})`)
+    }
+    await client.query('ROLLBACK TO SAVEPOINT newrow')
+    await deferred()
+    await mustRejectDeferred('★ DSL1: 살아 있는 행을 휴지통 소스로 옮긴다', [
+      [`UPDATE block SET parent_id = $2, order_key = 'p9' WHERE id = $1`, [rowA, b]],
+    ])
+    await client.query('SAVEPOINT back')
+    try {
+      await client.query(`UPDATE data_source SET lifecycle = 'live', trashed_at = NULL, purge_after = NULL WHERE id = $1`, [b])
+      await client.query(`UPDATE block SET lifecycle = 'live', trashed_at = NULL, trash_root_id = NULL WHERE trash_root_id = $1`, [b])
+      await immediate()
+      ok('소스와 그 묶음을 함께 되살리면 통과한다')
+    } catch (e) {
+      fail(`정상 경로(함께 되살리기)가 DSL1 에 걸렸다 (${e.code})`)
+    }
+    await deferred()
+    await client.query('ROLLBACK TO SAVEPOINT together')
+  }
+
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
 } catch (e) {
