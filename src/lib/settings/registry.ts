@@ -201,6 +201,9 @@ const ROLE_LABEL: Readonly<Record<WorkspaceRole, string>> = {
   guest: '게스트',
 }
 
+/** 역할의 이름 — 화면 표시 전용(스위처 · 설정의 "누가 고치는가"). 모르는 값은 그대로. */
+export const roleLabel = (role: string): string => ROLE_LABEL[role as WorkspaceRole] ?? role
+
 /** 읽기 전용으로 설 때 누가 고칠 수 있는지 — "소유자만 바꿀 수 있습니다". 모두가 고칠 수 있으면 null. */
 export function editorsNote(definition: SettingDefinition): string | null {
   if (definition.editors === 'everyone') return null

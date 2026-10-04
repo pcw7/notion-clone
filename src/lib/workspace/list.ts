@@ -30,6 +30,21 @@ export async function listWorkspacesForUser(userId: string): Promise<WorkspaceSu
 }
 
 /**
+ * 스위처(8j-1 · F-14-09)가 그리는 것 — 이 계정의 이메일과 워크스페이스 목록(만든 순서 — 단축키의 자리). 목록은 **권한의 근거가 아니다**
+ * — 고른 워크스페이스에 들어갈 때 그 워크스페이스의 게이트를 다시 거친다(위 머리말).
+ */
+export async function switcherOf(ctx: SessionContext): Promise<{ readonly email: string; readonly workspaces: WorkspaceSummary[] }> {
+  const [rows, workspaces] = await Promise.all([
+    query<{ email: string }>(
+      `SELECT ue.email FROM "user" u JOIN user_email ue ON ue.id = u.primary_email_id WHERE u.id = $1`,
+      [ctx.userId],
+    ),
+    listWorkspacesForUser(ctx.userId),
+  ])
+  return { email: rows[0]?.email ?? '', workspaces }
+}
+
+/**
  * 이 워크스페이스의 이름 — 사이드바 머리 · 홈의 제목(8g-1 — 설정에서 바꿀 수 있게 되면서 화면에 선다). `SessionContext` 가 들어온
  * 사람이라는 증명이다(게스트도 자기가 들어온 워크스페이스의 이름은 본다).
  */

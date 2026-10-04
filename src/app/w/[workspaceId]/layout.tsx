@@ -20,11 +20,12 @@ import { groupSidebarRoots, listPageTree } from '@/lib/block/page-tree'
 import { listTrash } from '@/lib/block/trash'
 import { listFavorites, listRecent } from '@/lib/nav/recent'
 import { unreadCount } from '@/lib/notification/inbox'
-import { workspaceNameOf } from '@/lib/workspace/list'
+import { switcherOf, workspaceNameOf } from '@/lib/workspace/list'
 import { canBrowseTeamspaces, canCreateTeamspace, listMyTeamspaces } from '@/lib/workspace/teamspace'
 import { Sidebar, type SidebarNode } from './sidebar'
 import { SearchOverlay } from './search-overlay'
 import { ThemeShortcut } from './theme-shortcut'
+import { WorkspaceShortcut } from './workspace-shortcut'
 
 /**
  * 서버 타입에서 클라이언트로 넘길 최소 모양만 남긴다. `teamspaceId` 는 넘기지 않는다 — 섹션은 여기서 이미 갈랐고, 멤버가
@@ -50,7 +51,7 @@ export default async function WorkspaceLayout({
   if ('outsider' in visitor) return <div className="min-h-screen">{children}</div>
   const ctx = visitor.member
 
-  const [tree, teamspaces, trash, recent, favorites, inboxUnread, workspaceName] = await Promise.all([
+  const [tree, teamspaces, trash, recent, favorites, inboxUnread, workspaceName, switcher] = await Promise.all([
     listPageTree(ctx),
     listMyTeamspaces(ctx),
     listTrash(ctx),
@@ -58,6 +59,7 @@ export default async function WorkspaceLayout({
     listFavorites(ctx),
     unreadCount(ctx),
     workspaceNameOf(ctx),
+    switcherOf(ctx),
   ])
   // 루트를 섹션으로 가른다(F-07-16 의 파생 섹션 · 판결문 C-9 — Teamspaces · 공유됨 · 개인 · 워크스페이스 · 7c-7).
   const sections = groupSidebarRoots(tree, teamspaces)
@@ -67,6 +69,8 @@ export default async function WorkspaceLayout({
       <Sidebar
         workspaceId={workspaceId}
         workspaceName={workspaceName}
+        email={switcher.email}
+        workspaces={switcher.workspaces}
         tree={sections.workspacePages.map(toSidebarNode)}
         privatePages={sections.privatePages.map(toSidebarNode)}
         shared={sections.shared.map(toSidebarNode)}
@@ -106,6 +110,8 @@ export default async function WorkspaceLayout({
       */}
       {/* 테마 단축키(8h · F-12-03) — 어디서든 Ctrl/Cmd + Shift + L. 계정의 설정이라 워크스페이스 안이면 어디서나 같다. */}
       <ThemeShortcut workspaceId={workspaceId} />
+      {/* 워크스페이스 단축키(8j-1 · F-14-09) — Ctrl/Cmd + Shift + 1~9 가 스위처 목록의 그 자리로. 같은 이유로 사이드바 밖에 둔다. */}
+      <WorkspaceShortcut workspaceId={workspaceId} workspaceIds={switcher.workspaces.map((w) => w.workspaceId)} />
       <SearchOverlay
         workspaceId={workspaceId}
         recent={recent.map((e) => ({ id: e.id, title: e.title, icon: e.icon }))}
