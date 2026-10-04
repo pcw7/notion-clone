@@ -38,7 +38,7 @@ import { readBodyYDoc } from '../collab/ydoc.ts'
 import { countFileReferences } from '../block/image.ts'
 import type { EditorBlock } from '../editor/document.ts'
 import { fileStorage } from '../file/storage.ts'
-import { versionRetentionDays } from './retention.ts'
+import { entitlement } from '../billing/entitlement.ts'
 
 /** 마지막 편집 뒤 이만큼 쉬면 그 세션의 버전을 남긴다(F-11-01 *"마지막 편집 후 2분 뒤에 1개"*). Postgres interval. */
 export const VERSION_IDLE = '2 minutes'
@@ -109,7 +109,7 @@ export async function recordVersionIfDue(
  *
  *   · 바이트는 파일 저장소에(`versionStorageKey`) · `created_at` 은 **그 위치의 update 시각**(담은 내용의 시각 — 정본 ③)
  *   · 고친 사람은 앞 버전의 `through_seq` 뒤부터 `seq` 까지의 `actor_id`
- *   · 보관 기한은 지금 요금제로 고정(`retention.ts`) · S5 — 담은 이미지의 파일 참조를 올린다
+ *   · 보관 기한은 지금 요금제로 고정(엔타이틀먼트 `history.days` — 8k-1 · 이 트랜잭션에서 묻는다) · S5 — 담은 이미지의 파일 참조를 올린다
  *   · `restoredFrom` 은 `restore` 버전에만(0041 의 CHECK)
  */
 export async function recordVersion(
@@ -129,8 +129,7 @@ export async function recordVersion(
   const stateRef = versionStorageKey(input.workspaceId, pageId, id)
   await fileStorage().put(stateRef, bytes)
 
-  const workspace = await tx.queryOne<{ plan_code: string }>(`SELECT plan_code FROM workspace WHERE id = $1`, [input.workspaceId])
-  const days = versionRetentionDays(workspace.plan_code)
+  const days = await entitlement(input.workspaceId, 'history.days', tx)
   const previous = await tx.queryMaybe<{ through_seq: string }>(
     `SELECT through_seq FROM page_version WHERE page_id = $1 AND through_seq < $2 ORDER BY through_seq DESC LIMIT 1`,
     [pageId, seq],
