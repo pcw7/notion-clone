@@ -41,6 +41,7 @@ import { usePathname, useRouter } from 'next/navigation'
 
 import { DATABASE_GLYPH, type PageIcon } from '@/lib/block/page-icon'
 import { TeamspaceCreateForm } from './teamspace-create'
+import { WorkspaceSwitcher, type SwitcherWorkspace } from './workspace-switcher'
 import { teamspaceIcon } from './teamspace-messages'
 import { TrashPanel, type TrashRow } from './trash-panel'
 import { getSidebarStore } from './sidebar-state'
@@ -86,6 +87,8 @@ export type NavRow = { id: string; title: string; icon: PageIcon | null }
 export function Sidebar({
   workspaceId,
   workspaceName = '',
+  email = '',
+  workspaces = [],
   tree,
   privatePages = [],
   shared = [],
@@ -101,6 +104,10 @@ export function Sidebar({
   workspaceId: string
   /** 머리에 서는 워크스페이스 이름(설정에서 바꾼다 · 8g-1). 비면 "워크스페이스". */
   workspaceName?: string
+  /** 스위처(8j-1)의 머리 — 이 계정의 이메일. */
+  email?: string
+  /** 스위처(8j-1)의 목록 — 이 계정의 워크스페이스(만든 순서). 서버가 준다 · 권한의 근거가 아니다. */
+  workspaces?: readonly SwitcherWorkspace[]
   /** 워크스페이스 페이지 — 주인 없는 진짜 최상위(판결문 C-9 · 7c-7). */
   tree: SidebarNode[]
   /** 개인 페이지 — 내 개인 최상위(나만 본다). 빈 배열이어도 섹션은 선다 — `+` 가 첫 페이지를 만든다. */
@@ -278,13 +285,8 @@ export function Sidebar({
       className="flex w-64 flex-none flex-col gap-2 border-r border-neutral-200 p-3 dark:border-neutral-800"
     >
       <div className="flex items-center justify-between">
-        <Link
-          href={`/w/${workspaceId}`}
-          data-testid="sidebar-workspace-name"
-          className="truncate text-sm font-medium hover:underline underline-offset-4"
-        >
-          {workspaceName || '워크스페이스'}
-        </Link>
+        {/* 이름을 누르면 스위처가 열린다(8j-1 · F-14-09). 홈은 아래의 "홈"이다. */}
+        <WorkspaceSwitcher workspaceId={workspaceId} workspaceName={workspaceName} email={email} workspaces={workspaces} />
         <button
           type="button"
           onClick={toggleSidebar}
@@ -311,6 +313,16 @@ export function Sidebar({
         <span aria-hidden>🔍</span>
         <span>검색</span>
       </button>
+
+      {/* 홈 — 이 워크스페이스의 첫 화면(8j-1 전에는 머리의 이름이 이 링크였다 — 이름은 이제 스위처를 연다). */}
+      <Link
+        href={`/w/${workspaceId}`}
+        data-testid="sidebar-home"
+        className="flex items-center gap-1.5 rounded-md px-2 py-1 text-left text-sm text-neutral-500 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+      >
+        <span aria-hidden>🏠</span>
+        <span>홈</span>
+      </Link>
 
       {/* 인박스 — F-11-07. 배지는 "지금 안 읽은 수"이고 서버가 권한으로 걸러 센다. */}
       <Link

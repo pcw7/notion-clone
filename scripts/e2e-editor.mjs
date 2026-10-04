@@ -79,6 +79,17 @@ const BASE = `http://localhost:${PORT}`
 const COLLAB_URL = `ws://localhost:${COLLAB_PORT}`
 const HEADFUL = process.env.E2E_HEADFUL === '1'
 
+// 응답의 본문은 늘 끝까지 읽는다 — 상태만 보고 버린 화면 응답은 서버의 스트리밍 도중에 연결을 닫을 수 있다(§3.3-276 ⑤). 그런 검사가
+// 옛 절에 수십 곳이라 하나씩 `.text()` 를 붙이지 않고 여기서 한 번 — 사본(clone)을 끝까지 읽으면 원래 응답의 본문은 그대로 읽을 수
+// 있다. 스트리밍으로 읽는 검사는 없다(있으면 여기서 막힌다). 전체 판의 "서버에서 오류"는 이것이 아니라 브라우저가 refresh 도중에 떠난
+// 것이었다 — 그것은 `connect` 의 inflight 가 막는다(§3.3-278 ⑥). 이것은 해가 없어 남긴다.
+const rawFetch = globalThis.fetch
+globalThis.fetch = async (...args) => {
+  const res = await rawFetch(...args)
+  if (res.body !== null) await res.clone().arrayBuffer().catch(() => null)
+  return res
+}
+
 // ── 결과 ──────────────────────────────────────────────────────────────
 
 const results = []
@@ -105,10 +116,13 @@ const E2E_ONLY = (process.env.E2E_ONLY ?? '')
   .filter((s) => s !== '')
 let gatesRun = 0
 let gatesSkipped = 0
+// 지금 도는 절 — 서버가 오류(⨯)를 찍은 순간의 절을 함께 적는다(전체 판의 "서버에서 오류"가 어느 절에서 났는지 · §3.3-278 ⑥).
+let currentSection = '(준비)'
 function sectionIf(title) {
   const on = E2E_ONLY.length === 0 || E2E_ONLY.some((q) => title.toLowerCase().includes(q))
   if (on) {
     gatesRun += 1
+    currentSection = title
     console.log(`\n[${title}]`)
   } else {
     gatesSkipped += 1
@@ -118,6 +132,7 @@ function sectionIf(title) {
 }
 
 function section(title) {
+  currentSection = title
   console.log(`\n[${title}]`)
 }
 
@@ -149,6 +164,8 @@ function findBrowser() {
 // ── 서버 ──────────────────────────────────────────────────────────────
 
 let serverOutput = ''
+/** 서버가 찍은 오류(⨯)마다 그때 돌던 절. */
+const serverErrorSections = []
 
 function startServer() {
   if (!existsSync(join(ROOT, '.next', 'BUILD_ID'))) {
@@ -160,7 +177,11 @@ function startServer() {
     { cwd: ROOT, env: { ...process.env, MAIL_TRANSPORT: 'console', COLLAB_URL }, stdio: ['ignore', 'pipe', 'pipe'] },
   )
   const collect = (chunk) => {
-    serverOutput += chunk.toString('utf8')
+    const text = chunk.toString('utf8')
+    serverOutput += text
+    for (const line of text.split('\n')) {
+      if (line.includes('⨯')) serverErrorSections.push(`[${currentSection} · 마지막 검사: ${results.at(-1)?.name ?? '-'}] ${line.trim()}`)
+    }
   }
   server.stdout.on('data', collect)
   server.stderr.on('data', collect)
@@ -245,11 +266,19 @@ function connect(url) {
   let seq = 0
   const pending = new Map()
   const pageErrors = []
+  // 진행 중인 fetch · XHR(Network 이벤트) — 화면을 옮기기 전(`Page.navigate`)에 끝나기를 기다린다. 저장 뒤의 `router.refresh()` 가 아직
+  // 스트리밍 중인데 검사가 곧바로 다른 주소로 가면 서버는 그 렌더를 "The destination stream closed early" 로 끊고 ⨯ 를 찍는다 —
+  // 페이지가 쌓여 레이아웃이 느린 전체 판에서만 났다(§3.3-278 ⑥). 사용자는 결과가 그려진 것을 보고 떠나므로 기다리는 쪽이 사용자에 가깝다.
+  const inflight = new Set()
   ws.onmessage = (event) => {
     const msg = JSON.parse(event.data)
     if (msg.id && pending.has(msg.id)) {
       pending.get(msg.id)(msg)
       pending.delete(msg.id)
+    } else if (msg.method === 'Network.requestWillBeSent') {
+      if (msg.params.type === 'Fetch' || msg.params.type === 'XHR') inflight.add(msg.params.requestId)
+    } else if (msg.method === 'Network.loadingFinished' || msg.method === 'Network.loadingFailed') {
+      inflight.delete(msg.params.requestId)
     } else if (msg.method === 'Runtime.exceptionThrown') {
       const d = msg.params.exceptionDetails
       pageErrors.push(d?.exception?.description ?? d?.text)
@@ -257,12 +286,19 @@ function connect(url) {
       pageErrors.push(msg.params.args.map((a) => a.value ?? a.description).join(' '))
     }
   }
-  const send = (method, params = {}) =>
+  const rawSend = (method, params = {}) =>
     new Promise((resolve, reject) => {
       const id = ++seq
       pending.set(id, (msg) => (msg.error ? reject(new Error(`${method}: ${msg.error.message}`)) : resolve(msg.result)))
       ws.send(JSON.stringify({ id, method, params }))
     })
+  const send = async (method, params = {}) => {
+    if (method === 'Page.navigate') {
+      for (let waited = 0; inflight.size > 0 && waited < 3000; waited += 50) await sleep(50)
+      inflight.clear()
+    }
+    return rawSend(method, params)
+  }
   const opened = new Promise((resolve, reject) => {
     ws.onopen = resolve
     ws.onerror = reject
@@ -595,6 +631,8 @@ async function main() {
 
     await send('Page.enable')
     await send('Runtime.enable')
+    // 진행 중인 요청을 세려면 처음부터 받는다(`connect` 의 inflight). 오프라인 절이 다시 켜도 아무 일이 없다.
+    await send('Network.enable')
     // 헤드리스는 창에 포커스가 없어서 클립보드 API 가 거부된다. 포커스를 흉내내고 권한을 준다.
     await send('Emulation.setFocusEmulationEnabled', { enabled: true })
     await send('Browser.grantPermissions', { origin: BASE, permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite'] })
@@ -9660,10 +9698,106 @@ async function main() {
       }
     }
 
+    if (sectionIf('워크스페이스 스위처 (8j-1 · F-14-09)')) {
+      // 사이드바 머리의 이름 → 스위처(이 계정의 이메일 · 워크스페이스(만든 순서) · 지금 것에 ✓ · 역할) → 고르면 그리로 · Ctrl/Cmd + Shift + 숫자 ·
+      // Esc · 사이드바의 "홈". 브라우저 세션을 새 멤버로 바꿔 진행하고 끝에 소유자로 되돌린다. 그 멤버가 둘째 워크스페이스를 만든다(소유자).
+      // 자기 데이터를 스스로 만든다.
+      const stamp = Date.now()
+      const browseAs = (token) => send('Network.setCookie', { name: 'nc_session', value: token, domain: 'localhost', path: '/', httpOnly: true })
+      const mate = await joinAs(workspaceId, await createUser(`스위처의 사람 ${stamp}`), 'member')
+      const SECOND = `둘째 ${stamp}`
+      const created = await (await fetch(`${BASE}/api/workspaces`, {
+        method: 'POST', headers: { ...json, cookie: `nc_session=${mate.token}` }, body: JSON.stringify({ name: SECOND }),
+      })).json().catch(() => null)
+      const second = created?.workspaceId ?? 'missing'
+      const SWITCHER = '[data-testid="sidebar-workspace-switcher"]'
+      const MENU = '[data-testid="workspace-switcher-menu"]'
+      const has = (sel) => evaluate(`!!document.querySelector(${JSON.stringify(sel)})`)
+      const textOf = (sel) => evaluate(`document.querySelector(${JSON.stringify(sel)})?.textContent ?? null`)
+      const openUntil = async (button, target) => {
+        for (let i = 0; i < 6; i += 1) {
+          if (await has(target)) return true
+          await clickSelector(button)
+          if (await waitFor(`!!document.querySelector(${JSON.stringify(target)})`, 1500)) return true
+        }
+        return false
+      }
+      const menuRows = () => evaluate(`[...document.querySelectorAll('[data-testid="switcher-workspace"]')]
+        .map((a) => a.dataset.workspaceId + (a.getAttribute('aria-current') === 'true' ? '*' : ''))`)
+      const DIGIT_KEYS = ['', '!', '@', '#', '$', '%']
+      const digit = async (n) => {
+        const base = { key: DIGIT_KEYS[n], code: `Digit${n}`, windowsVirtualKeyCode: 48 + n, nativeVirtualKeyCode: 48 + n, modifiers: MOD | SHIFT }
+        await send('Input.dispatchKeyEvent', { type: 'rawKeyDown', ...base })
+        await send('Input.dispatchKeyEvent', { type: 'keyUp', ...base })
+      }
+      const nameNow = () => textOf('[data-testid="sidebar-workspace-name"]')
+
+      try {
+        await browseAs(mate.token)
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
+        await waitFor(`!!document.querySelector(${JSON.stringify(SWITCHER)})`, 15000)
+        const firstName = await nameNow()
+        check('★ 머리의 이름을 누르면 스위처가 열린다 — 이 계정의 이메일 · 워크스페이스 둘(만든 순서) · 지금 것에 ✓',
+          (await openUntil(SWITCHER, MENU)) && (await textOf('[data-testid="switcher-email"]')) === mate.email
+            && JSON.stringify(await menuRows()) === JSON.stringify([`${workspaceId}*`, second]),
+          JSON.stringify([await textOf('[data-testid="switcher-email"]'), await menuRows()]))
+        const roles = await evaluate(`[...document.querySelectorAll('[data-testid="switcher-workspace"]')].map((a) => a.children[1]?.textContent ?? null)`)
+        check('역할을 적는다 — 들어온 곳은 멤버 · 만든 곳은 소유자', JSON.stringify(roles) === JSON.stringify(['멤버', '소유자']), JSON.stringify(roles))
+
+        await clickSelector(`[data-testid="switcher-workspace"][data-workspace-id="${second}"]`)
+        check('★ 고르면 그 워크스페이스로 — 주소 · 머리의 이름 · 메뉴는 닫힌다',
+          await waitFor(`location.pathname === ${JSON.stringify(`/w/${second}`)}
+            && document.querySelector('[data-testid="sidebar-workspace-name"]')?.textContent === ${JSON.stringify(SECOND)}
+            && !document.querySelector(${JSON.stringify(MENU)})`, 15000),
+          JSON.stringify([await evaluate('location.pathname'), await nameNow()]))
+        // 다른 워크스페이스로 가면 레이아웃이 새로 그려져 메뉴는 어차피 닫힌다 — "고르면 닫는다"가 일하는 것은 지금 것을 고를 때다(반사실이 살아남아 더했다)
+        await openUntil(SWITCHER, MENU)
+        await clickSelector(`[data-testid="switcher-workspace"][data-workspace-id="${second}"]`)
+        check('지금 것을 고르면 닫히고 그 자리에 머문다',
+          (await waitFor(`!document.querySelector(${JSON.stringify(MENU)})`, 3000)) && (await evaluate('location.pathname')) === `/w/${second}`,
+          String(await evaluate('location.pathname')))
+
+        // 단축키 — 하이드레이션 전의 키는 아무 일이 없다 · 갈 때까지 다시 누른다
+        let back = false
+        for (let i = 0; i < 6 && !back; i += 1) {
+          await digit(1)
+          back = await waitFor(`location.pathname === ${JSON.stringify(`/w/${workspaceId}`)}`, 2000)
+        }
+        check('★ Ctrl/Cmd + Shift + 1 — 목록의 첫째로', back && (await waitFor(`document.querySelector('[data-testid="sidebar-workspace-name"]')?.textContent === ${JSON.stringify(firstName)}`, 10000)),
+          JSON.stringify([await evaluate('location.pathname'), await nameNow()]))
+        // 누르기 전 자리와 비교한다 — 앞 검사(단축키)가 떨어져도 이 검사가 따로 판정되게
+        const beforeFive = await evaluate('location.pathname')
+        await digit(5)
+        await sleep(1000)
+        check('없는 자리(5)는 아무 일도 없다', (await evaluate('location.pathname')) === beforeFive, String(await evaluate('location.pathname')))
+
+        await openUntil(SWITCHER, MENU)
+        await key('Escape')
+        check('Esc 로 닫히고 초점은 이름 버튼으로',
+          await waitFor(`!document.querySelector(${JSON.stringify(MENU)}) && document.activeElement?.dataset?.testid === 'sidebar-workspace-switcher'`, 3000))
+        // 밖 — 본문 쪽 오른쪽 아래. 사이드바의 항목은 열린 메뉴 밑에 깔려 있어 누르면 메뉴의 항목이 눌린다(첫 판이 그랬다).
+        await openUntil(SWITCHER, MENU)
+        const corner = await evaluate(`({ x: window.innerWidth - 40, y: window.innerHeight - 40 })`)
+        const beforeOutside = await evaluate('location.pathname')
+        await click(corner.x, corner.y)
+        check('밖을 누르면 닫히고 그 자리에 머문다',
+          (await waitFor(`!document.querySelector(${JSON.stringify(MENU)})`, 3000)) && (await evaluate('location.pathname')) === beforeOutside,
+          String(await evaluate('location.pathname')))
+
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/settings` })
+        await waitFor(`location.pathname.endsWith('/settings') && !!document.querySelector('[data-testid="sidebar-home"]')`, 15000)
+        await clickSelector('[data-testid="sidebar-home"]')
+        check('홈 — 사이드바의 "홈"이 이 워크스페이스의 첫 화면으로(이름은 이제 스위처를 연다)',
+          await waitFor(`location.pathname === ${JSON.stringify(`/w/${workspaceId}`)}`, 15000), String(await evaluate('location.pathname')))
+      } finally {
+        await browseAs(session)
+      }
+    }
+
     section('전체')
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))
     const serverErrors = serverOutput.split('\n').filter((l) => l.includes('⨯'))
-    check('서버에서 오류가 나지 않았다', serverErrors.length === 0, serverErrors.join('\n      '))
+    check('서버에서 오류가 나지 않았다', serverErrors.length === 0, [...serverErrorSections, ...serverErrors].join('\n      '))
   } finally {
     await closePool().catch(() => undefined)
     for (const tab of tabs) tab.ws.close()

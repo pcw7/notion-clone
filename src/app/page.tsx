@@ -2,6 +2,7 @@ import Link from 'next/link'
 import { redirect } from 'next/navigation'
 
 import { getCurrentUser } from '@/lib/auth/current-user'
+import { roleLabel } from '@/lib/settings/registry'
 import { listWorkspacesForUser } from '@/lib/workspace/list'
 import { CreateWorkspaceForm } from './create-workspace-form'
 
@@ -37,7 +38,7 @@ export default async function Home() {
                   className="flex items-center justify-between rounded-lg border border-neutral-200 px-4 py-3 hover:border-neutral-400 dark:border-neutral-800 dark:hover:border-neutral-600"
                 >
                   <span className="font-medium">{w.name}</span>
-                  <span className="text-xs text-neutral-500">{w.role}</span>
+                  <span className="text-xs text-neutral-500">{roleLabel(w.role)}</span>
                 </Link>
               </li>
             ))}
