@@ -41,7 +41,7 @@ import * as Y from 'yjs'
 import { asBlockId, isUuid } from '@/lib/ids'
 import { requirePageSession } from '@/lib/auth/page-session'
 import { getDatabase } from '@/lib/database/database'
-import { getView, listViews } from '@/lib/database/view'
+import { getView, listViews, readRecordColumns } from '@/lib/database/view'
 import { listColumns } from '@/lib/database/list-layout'
 import { loadRelationLabels, relationIdsIn } from '@/lib/database/relation'
 import { EMPTY_ROLLUP_PAGE } from '@/lib/database/rollup'
@@ -56,7 +56,7 @@ import { readBodyYDoc } from '@/lib/collab/ydoc'
 import { templateTrail } from '@/lib/block/breadcrumb'
 import { BodyEditor } from '../../../../[pageId]/body-editor'
 import { DatabaseTable } from '../../database-table'
-import { TemplateTitle } from './template-title'
+import { RowTitle } from '../../row-title'
 import { PageIconControl } from '../../../../[pageId]/page-icon-control'
 import { PageIconView } from '../../../../page-icon-view'
 
@@ -86,14 +86,15 @@ export default async function TemplatePage({
 
   const views = await listViews(ctx, databaseId)
   if (!views.ok) notFound()
-  // 컬럼 · 옵션은 뷰가 들고 있다. 템플릿은 뷰에 속하지 않으므로 **그 data source 의 첫 뷰**의 컬럼으로 그린다 —
-  // 속성을 숨긴 뷰를 따라가면 그 뷰에서 숨긴 속성을 템플릿에서 채울 길이 없어진다. data source 마다 뷰가 적어도 하나다(`deleteView`).
+  // 표(`DatabaseTable`)는 뷰 하나를 받는다 — 그 data source 의 첫 뷰다(소스마다 적어도 하나 · `deleteView`). 속성 목록은 그 뷰의 것이
+  // 아니다: 행 페이지와 같은 함수로 **스키마 순서 · 모두 보임**이다(8f-1 — 뷰에서 숨긴 속성도 템플릿에서 채울 수 있어야 한다).
   const first = views.value.find((v) => v.dataSourceId === dataSourceId)
   if (first === undefined) notFound()
   const view = await getView(ctx, first.id)
   if (!view.ok) notFound()
 
-  const columns = listColumns('record', view.value.columns)
+  const recordColumns = await withReadTransaction((tx) => readRecordColumns(tx, dataSourceId))
+  const columns = listColumns('record', recordColumns)
   // 표의 이름 — 소스가 둘 이상이면 이 템플릿의 소스 이름이다(8e-2 · 데이터베이스 화면과 같은 규칙).
   const sources = database.value.dataSources
   const tableName =
@@ -115,7 +116,7 @@ export default async function TemplatePage({
     loadMentionLabels(ctx, mentionIdsOf(readBodyYDoc(state.value.ydoc, template.id).doc)),
   ])
 
-  const titlePropertyId = view.value.columns.find((c) => c.type === 'title')?.propertyId ?? null
+  const titlePropertyId = recordColumns.find((c) => c.type === 'title')?.propertyId ?? null
 
   // 경로 — 머리와 본문의 breadcrumb 블록(8b-2)이 같은 줄을 그린다(`block/breadcrumb.ts`).
   const trail = templateTrail({
@@ -164,12 +165,14 @@ export default async function TemplatePage({
           initialIcon={template.icon}
           readOnly={!database.value.access.canEditContent}
         />
-      <TemplateTitle
+      <RowTitle
         workspaceId={workspaceId}
-        templateId={template.id}
+        rowId={template.id}
         titlePropertyId={titlePropertyId}
         initialTitle={template.title}
         canEdit={database.value.access.canEditContent}
+        label="템플릿 이름"
+        testId="template-title"
       />
       </div>
 

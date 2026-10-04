@@ -60,6 +60,7 @@
  *   오류 문구가 뜬다 — 조용히 사라지지 않고 **저장되지 않았다고 말한다.**
  */
 
+import Link from 'next/link'
 import { useEffect, useRef, useState, type FocusEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react'
 import { useRouter } from 'next/navigation'
 
@@ -741,11 +742,24 @@ export function DatabaseTable(props: {
                     )
                   // 제목 칸은 그 행 페이지의 아이콘을 앞에 단다(8c-3a — 아이콘은 셀이 아니라 행의 것이다 · 없으면 기본 글리프). 편집칸은
                   // 이 자리를 덮으므로(`absolute inset-0`) 고치는 동안에는 보이지 않는다.
+                  // 제목 칸에는 그 행 페이지를 여는 "열기"가 선다(8f-1 · 노션의 OPEN) — 마우스를 올리면 보인다. 칸을 고르는 누르기
+                  // (`onCellMouseDown`)로 번지지 않게 막는다. 키보드 이동의 정지점이 아니다(칸이 roving tabindex 를 갖는다). 제목
+                  // (`db-row-title`) **옆에** 둔다 — 그 안에 두면 제목의 글자에 "열기"가 섞인다.
                   const display =
                     column.type === 'title' ? (
-                      <span className="flex min-w-0 items-center gap-1.5" data-testid="db-row-title">
-                        <PageIconView icon={row.icon} fallback />
-                        <span className="min-w-0 flex-1">{content}</span>
+                      <span className="group/title flex min-w-0 items-center gap-1.5">
+                        <span className="flex min-w-0 flex-1 items-center gap-1.5" data-testid="db-row-title">
+                          <PageIconView icon={row.icon} fallback />
+                          <span className="min-w-0 flex-1">{content}</span>
+                        </span>
+                        <Link
+                          href={`/w/${workspaceId}/${row.id}`}
+                          data-testid="db-row-open"
+                          aria-label={`${row.title || '제목 없음'} 열기`}
+                          tabIndex={-1}
+                          onMouseDown={(e) => e.stopPropagation()}
+                          className="shrink-0 rounded border border-neutral-200 bg-white px-1.5 text-xs text-neutral-500 opacity-0 after:content-['열기'] hover:bg-neutral-50 group-hover/title:opacity-100 dark:border-neutral-700 dark:bg-neutral-900"
+                        />
                       </span>
                     ) : (
                       content

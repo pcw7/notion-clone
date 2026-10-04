@@ -12,7 +12,7 @@
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { breadcrumbTrail, sameTrail, templateTrail } from './breadcrumb.ts'
+import { breadcrumbTrail, rowTrail, sameTrail, templateTrail } from './breadcrumb.ts'
 
 const WS = '00000000-0000-4000-8000-0000000000aa'
 const TS = '00000000-0000-4000-8000-0000000000bb'
@@ -57,6 +57,23 @@ describe('③ 템플릿', () => {
     const books = { type: 'emoji', emoji: '📚' } as const
     const trail = templateTrail({ workspaceId: WS, database: { id: A, name: '서가', icon: books }, templateId: C })
     assert.deepEqual(trail.map((i) => [i.kind, i.icon]), [['workspace', null], ['database', books], ['current', null]])
+  })
+})
+
+describe('③-2 데이터베이스 행 (8f-1)', () => {
+  test('★ 행 페이지 — 워크스페이스 · 그 표 · 이 행(조상 대신 데이터베이스) · 행의 제목 · 아이콘', () => {
+    const star = { type: 'emoji', emoji: '⭐' } as const
+    const trail = rowTrail({ workspaceId: WS, database: { id: A, name: '업무', icon: null }, row: { id: C, title: '첫 일', icon: star } })
+    assert.deepEqual(trail.map((i) => [i.kind, i.label, i.href, i.icon]), [
+      ['workspace', '워크스페이스', `/w/${WS}`, null],
+      ['database', '업무', `/w/${WS}/db/${A}`, null],
+      ['current', '첫 일', null, star],
+    ])
+  })
+
+  test('이름이 비면 "제목 없음"', () => {
+    const trail = rowTrail({ workspaceId: WS, database: { id: A, name: '', icon: null }, row: { id: C, title: '', icon: null } })
+    assert.deepEqual(trail.map((i) => i.label), ['워크스페이스', '제목 없음', '제목 없음'])
   })
 })
 

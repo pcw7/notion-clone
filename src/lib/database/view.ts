@@ -243,16 +243,7 @@ type ViewRow = {
  * 스키마 순서(`property.order_idx`)와 별개라는 것이 C-6 의 요점이다.
  */
 async function readColumns(tx: Tx, viewId: string): Promise<ViewColumn[]> {
-  const rows = await tx.query<{
-    property_id: string
-    name: string
-    type: string
-    config: unknown
-    visible: boolean
-    order_idx: string
-    width: number | null
-    wrap: boolean
-  }>(
+  const rows = await tx.query<ColumnRow>(
     `SELECT vp.property_id, p.name, p.type::text AS type, p.config,
             vp.visible, vp.order_idx, vp.width, vp.wrap
        FROM view_property vp
@@ -261,7 +252,41 @@ async function readColumns(tx: Tx, viewId: string): Promise<ViewColumn[]> {
       ORDER BY vp.order_idx, vp.property_id`,
     [viewId],
   )
+  return toColumns(tx, rows)
+}
 
+/**
+ * 행 하나를 세로로 그릴 때의 속성 목록 — 행 페이지의 속성 묶음(8f-1 · F-16-03)과 템플릿 편집 화면이 읽는다.
+ *
+ * **뷰가 아니라 스키마의 순서**(`property.order_idx`)이고 모두 보인다. 행 페이지의 모양은 데이터 소스의 것이지 어느 뷰의 것이 아니다
+ * (16 *"뷰별 레이아웃도, 행별 레이아웃도 존재하지 않는다"* · F-16-03 *"정렬은 `property.order_idx` 를 그대로 재사용"*) — 뷰에서 숨긴
+ * 속성도 여기서는 채울 수 있어야 한다. 무엇을 숨길지는 레이아웃의 몫이다(8f-2).
+ */
+export async function readRecordColumns(tx: Tx, dataSourceId: string): Promise<ViewColumn[]> {
+  const rows = await tx.query<ColumnRow>(
+    `SELECT p.id AS property_id, p.name, p.type::text AS type, p.config,
+            true AS visible, p.order_idx, NULL::int AS width, false AS wrap
+       FROM property p
+      WHERE p.data_source_id = $1 AND p.deleted_at IS NULL
+      ORDER BY p.order_idx, p.id`,
+    [dataSourceId],
+  )
+  return toColumns(tx, rows)
+}
+
+type ColumnRow = {
+  property_id: string
+  name: string
+  type: string
+  config: unknown
+  visible: boolean
+  order_idx: string
+  width: number | null
+  wrap: boolean
+}
+
+/** 읽은 줄 → 컬럼. 뷰의 컬럼과 행의 속성 목록이 같은 함수로 만든다(옵션 · relation · rollup 을 읽는 곳이 한 곳). */
+async function toColumns(tx: Tx, rows: readonly ColumnRow[]): Promise<ViewColumn[]> {
   // 옵션을 읽는 곳은 `options.ts` 하나다(그쪽 머리말 — status 옵션은 그룹 순서가 먼저다).
   const optionsOf = await readOptionsOf(tx, rows.filter((r) => isOptionType(r.type)).map((r) => r.property_id))
 

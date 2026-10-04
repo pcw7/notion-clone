@@ -16,6 +16,7 @@ export function DeletePageButton({
   pageId,
   childCount,
   parentPageId,
+  returnHref,
 }: {
   workspaceId: string
   pageId: string
@@ -23,6 +24,8 @@ export function DeletePageButton({
   childCount: number
   /** 삭제 후 돌아갈 곳. 루트 페이지면 null → 워크스페이스 홈. */
   parentPageId: string | null
+  /** 돌아갈 곳을 직접 준다(8f-1 — 데이터베이스 행은 그 표로). 주면 `parentPageId` 보다 앞선다. */
+  returnHref?: string
 }) {
   const router = useRouter()
   const [busy, setBusy] = useState(false)
@@ -47,7 +50,7 @@ export function DeletePageButton({
         return
       }
       // 삭제한 페이지에 그대로 머무르면 404 가 뜬다. 부모로 돌려보낸다.
-      router.push(parentPageId ? `/w/${workspaceId}/${parentPageId}` : `/w/${workspaceId}`)
+      router.push(returnHref ?? (parentPageId ? `/w/${workspaceId}/${parentPageId}` : `/w/${workspaceId}`))
       router.refresh()
     } catch {
       setError('연결에 실패했습니다.')
