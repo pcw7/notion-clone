@@ -6,6 +6,7 @@
  * 그 함수가 SSO 게이트(정본 §3.11 0단계)까지 통과시킨다.
  */
 
+import type { SignedInAccount } from '../auth/accounts.ts'
 import type { SessionContext, WorkspaceRole } from '../auth/session-context.ts'
 import { query } from '../db/pool.ts'
 
@@ -42,6 +43,25 @@ export async function switcherOf(ctx: SessionContext): Promise<{ readonly email:
     listWorkspacesForUser(ctx.userId),
   ])
   return { email: rows[0]?.email ?? '', workspaces }
+}
+
+export type SwitcherAccount = SignedInAccount & {
+  /** 들어와 있는(`signed_in`) 계정만 — 2단계 인증이 남았거나 끝난 세션의 워크스페이스는 보이지 않는다(빈 배열). */
+  readonly workspaces: WorkspaceSummary[]
+}
+
+/**
+ * 스위처의 다른 계정들(8j-3 · F-14-09) — 이 브라우저에 함께 로그인한 계정마다 그 워크스페이스. 계정 목록은 서버가 쿠키에서 읽은 것
+ * (`signedInAccounts` — 정본 §3.2 [보강] 다중 계정 ⑤)이고, 워크스페이스는 **그 계정의 세션이 살아 있고 둘째 단계를 거쳤을 때만** 읽는다 —
+ * 첫 단계만 거친 세션은 게이트가 아무 데도 들이지 않으므로 목록도 주지 않는다. 고르면 계정을 바꾼 뒤 그 워크스페이스의 게이트를 거친다.
+ */
+export async function withWorkspaces(accounts: readonly SignedInAccount[]): Promise<SwitcherAccount[]> {
+  return Promise.all(
+    accounts.map(async (account) => ({
+      ...account,
+      workspaces: account.state === 'signed_in' ? await listWorkspacesForUser(account.userId) : [],
+    })),
+  )
 }
 
 /**

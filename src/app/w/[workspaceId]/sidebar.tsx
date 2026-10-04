@@ -41,7 +41,7 @@ import { usePathname, useRouter } from 'next/navigation'
 
 import { DATABASE_GLYPH, type PageIcon } from '@/lib/block/page-icon'
 import { TeamspaceCreateForm } from './teamspace-create'
-import { WorkspaceSwitcher, type SwitcherWorkspace } from './workspace-switcher'
+import { WorkspaceSwitcher, type SwitcherOtherAccount, type SwitcherWorkspace } from './workspace-switcher'
 import { teamspaceIcon } from './teamspace-messages'
 import { TrashPanel, type TrashRow } from './trash-panel'
 import { getSidebarStore } from './sidebar-state'
@@ -89,6 +89,7 @@ export function Sidebar({
   workspaceName = '',
   email = '',
   workspaces = [],
+  otherAccounts = [],
   tree,
   privatePages = [],
   shared = [],
@@ -108,6 +109,8 @@ export function Sidebar({
   email?: string
   /** 스위처(8j-1)의 목록 — 이 계정의 워크스페이스(만든 순서). 서버가 준다 · 권한의 근거가 아니다. */
   workspaces?: readonly SwitcherWorkspace[]
+  /** 스위처(8j-3)의 다른 계정들 — 이 브라우저에 함께 로그인한 계정과 그 워크스페이스. 토큰은 없다. */
+  otherAccounts?: readonly SwitcherOtherAccount[]
   /** 워크스페이스 페이지 — 주인 없는 진짜 최상위(판결문 C-9 · 7c-7). */
   tree: SidebarNode[]
   /** 개인 페이지 — 내 개인 최상위(나만 본다). 빈 배열이어도 섹션은 선다 — `+` 가 첫 페이지를 만든다. */
@@ -286,7 +289,13 @@ export function Sidebar({
     >
       <div className="flex items-center justify-between">
         {/* 이름을 누르면 스위처가 열린다(8j-1 · F-14-09). 홈은 아래의 "홈"이다. */}
-        <WorkspaceSwitcher workspaceId={workspaceId} workspaceName={workspaceName} email={email} workspaces={workspaces} />
+        <WorkspaceSwitcher
+          workspaceId={workspaceId}
+          workspaceName={workspaceName}
+          email={email}
+          workspaces={workspaces}
+          otherAccounts={otherAccounts}
+        />
         <button
           type="button"
           onClick={toggleSidebar}

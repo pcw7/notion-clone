@@ -15,12 +15,14 @@
  * 틀이 선다(존재를 가르지 않는다).
  */
 
+import { signedInAccounts } from '@/lib/auth/accounts'
+import { readAccounts } from '@/lib/auth/accounts-cookie'
 import { requirePageVisitor } from '@/lib/auth/page-session'
 import { groupSidebarRoots, listPageTree } from '@/lib/block/page-tree'
 import { listTrash } from '@/lib/block/trash'
 import { listFavorites, listRecent } from '@/lib/nav/recent'
 import { unreadCount } from '@/lib/notification/inbox'
-import { switcherOf, workspaceNameOf } from '@/lib/workspace/list'
+import { switcherOf, withWorkspaces, workspaceNameOf } from '@/lib/workspace/list'
 import { canBrowseTeamspaces, canCreateTeamspace, listMyTeamspaces } from '@/lib/workspace/teamspace'
 import { Sidebar, type SidebarNode } from './sidebar'
 import { SearchOverlay } from './search-overlay'
@@ -51,7 +53,7 @@ export default async function WorkspaceLayout({
   if ('outsider' in visitor) return <div className="min-h-screen">{children}</div>
   const ctx = visitor.member
 
-  const [tree, teamspaces, trash, recent, favorites, inboxUnread, workspaceName, switcher] = await Promise.all([
+  const [tree, teamspaces, trash, recent, favorites, inboxUnread, workspaceName, switcher, otherAccounts] = await Promise.all([
     listPageTree(ctx),
     listMyTeamspaces(ctx),
     listTrash(ctx),
@@ -60,6 +62,10 @@ export default async function WorkspaceLayout({
     unreadCount(ctx),
     workspaceNameOf(ctx),
     switcherOf(ctx),
+    // 이 브라우저에 함께 로그인한 다른 계정들(8j-3 · F-14-09) — 쿠키에서 읽는다. 지금 계정(이 ctx 의 세션)은 빼고 · 토큰은 싣지 않는다.
+    readAccounts()
+      .then((accounts) => signedInAccounts(accounts.active, accounts.others))
+      .then((view) => withWorkspaces(view.others)),
   ])
   // 루트를 섹션으로 가른다(F-07-16 의 파생 섹션 · 판결문 C-9 — Teamspaces · 공유됨 · 개인 · 워크스페이스 · 7c-7).
   const sections = groupSidebarRoots(tree, teamspaces)
@@ -71,6 +77,7 @@ export default async function WorkspaceLayout({
         workspaceName={workspaceName}
         email={switcher.email}
         workspaces={switcher.workspaces}
+        otherAccounts={otherAccounts}
         tree={sections.workspacePages.map(toSidebarNode)}
         privatePages={sections.privatePages.map(toSidebarNode)}
         shared={sections.shared.map(toSidebarNode)}

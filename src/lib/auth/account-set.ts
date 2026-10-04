@@ -51,6 +51,17 @@ export function parseAccountTokens(raw: string | null | undefined): string[] {
 
 export const serializeAccountTokens = (tokens: readonly string[]): string => tokens.join('.')
 
+/**
+ * 다른 계정 더하기 · 다시 로그인의 주소(8j-3) — 로그인 화면의 더하기 모드(`?add=1`). 이메일(채워 둘 것) · 돌아올 곳(`next`)을 함께 싣는다 —
+ * 스위처와 초대 화면이 같이 쓴다.
+ */
+export function addAccountHref(options: { readonly email?: string; readonly next?: string } = {}): string {
+  const params = new URLSearchParams({ add: '1' })
+  if (options.email) params.set('email', options.email)
+  if (options.next) params.set('next', options.next)
+  return `/login?${params.toString()}`
+}
+
 /** 같은 사람은 한 번 — 앞의 것을 남기고 뒤의 것은 폐기 목록으로. */
 function onePerPerson(list: readonly TokenInfo[], revoke: string[]): TokenInfo[] {
   const seen = new Set<string>()

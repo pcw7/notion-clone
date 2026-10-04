@@ -7,6 +7,7 @@
  *   ④ 다섯을 넘으면 오래된 쪽을 폐기
  *   ⑤ 바꾸기 — 살아 있는 세션만 · 죽었으면 signed_out · 없으면 not_found · 둘째 단계 전이면 알린다 · 지금 계정은 목록 맨 앞으로
  *   ⑥ 로그아웃 — 지금 계정(다음 살아 있는 계정이 활성) · 한 계정 · 모두
+ *   ⑦ 더하기 주소(8j-3) — add=1 · 이메일 · 돌아올 곳이 인코딩된다
  */
 
 import { test } from 'node:test'
@@ -14,6 +15,7 @@ import assert from 'node:assert/strict'
 
 import {
   MAX_SIGNED_IN_ACCOUNTS,
+  addAccountHref,
   parseAccountTokens,
   planLogin,
   planLogout,
@@ -104,4 +106,11 @@ test('★ ⑥ 로그아웃 — 지금 계정 · 한 계정 · 모두', () => {
     others: [],
     revoke: [tok('a'), tok('b'), tok('c'), tok('d')],
   })
+})
+
+test('★ ⑦ 더하기 주소 — add=1 · 이메일 · 돌아올 곳', () => {
+  assert.equal(addAccountHref(), '/login?add=1')
+  const href = addAccountHref({ email: 'a+b@example.com', next: '/invite/x?y=1' })
+  const params = new URL(href, 'http://x').searchParams
+  assert.deepEqual([params.get('add'), params.get('email'), params.get('next')], ['1', 'a+b@example.com', '/invite/x?y=1'])
 })
