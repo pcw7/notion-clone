@@ -10300,6 +10300,61 @@ async function main() {
       }
     }
 
+    if (sectionIf('가져오기 — ZIP (8m-2a · F-09-12)')) {
+      // 사이드바의 "가져오기"에 ZIP 하나 — 폴더 계층이 페이지 나무가 되고(이름.md + 폴더 · 폴더만의 페이지), 가져올 수 없는 항목(그림)은 이유와
+      // 함께 "건너뛴 것"으로 선다. 연 하위 페이지의 경로에 부모가 선다. ZIP 은 우리 쓰기(`export/zip.ts`)로 만들어 임시 폴더에 둔다.
+      const { createZipWriter } = await import(new URL('../src/lib/export/zip.ts', import.meta.url).href)
+      const x = String(Date.now()).slice(-7)
+      const dir = mkdtempSync(join(tmpdir(), 'nc-e2e-zip-'))
+      const zipPath = join(dir, `묶음-${x}.zip`)
+      const writer = createZipWriter()
+      const parts = []
+      for (const [path, text] of [
+        [`프로젝트 ${x}.md`, `# 프로젝트 ${x}\n\n개요 문단`],
+        [`프로젝트 ${x}/일정.md`, `# 일정 ${x}\n\n- [ ] 첫 할 일 ${x}`],
+        [`자료 ${x}/참고.txt`, `참고 ${x}`],
+        [`프로젝트 ${x}/그림.png`, 'not really png'],
+      ]) parts.push(...writer.add(path, text))
+      parts.push(writer.finish())
+      writeFileSync(zipPath, Buffer.concat(parts))
+      const DIALOG = '[data-testid="import-dialog"]'
+
+      try {
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
+        await waitFor(`!!document.querySelector('[data-testid="sidebar-import"]')`, 15000)
+        for (let i = 0; i < 6 && !(await evaluate(`!!document.querySelector('${DIALOG}')`)); i += 1) {
+          await clickSelector('[data-testid="sidebar-import"]')
+          await waitFor(`!!document.querySelector('${DIALOG}')`, 1500)
+        }
+        await send('DOM.enable')
+        const rootId = (await send('DOM.getDocument', { depth: -1 })).root.nodeId
+        const node = (await send('DOM.querySelector', { nodeId: rootId, selector: '[data-testid="import-files"]' })).nodeId
+        await send('DOM.setFileInputFiles', { files: [zipPath], nodeId: node })
+        await waitFor(`document.querySelector('[data-testid="import-submit"]')?.disabled === false`, 5000)
+        await clickSelector('[data-testid="import-submit"]')
+        const titles = () => evaluate(`[...document.querySelectorAll('[data-testid="import-page-link"]')].map((a) => a.textContent)`)
+        check('★ ZIP 하나 → 폴더 계층의 페이지들(이름.md + 폴더 · 폴더만의 페이지) — 처음 나온 순서',
+          (await waitFor(`document.querySelectorAll('[data-testid="import-page-link"]').length === 4`, 20000))
+            && JSON.stringify(await titles()) === JSON.stringify([`프로젝트 ${x}`, `일정 ${x}`, `자료 ${x}`, '참고']),
+          JSON.stringify(await titles()))
+        const skipped = await evaluate(`[...document.querySelectorAll('[data-testid="import-skipped-item"]')].map((li) => li.dataset.reason + ':' + li.textContent)`)
+        check('★ 가져올 수 없는 항목은 이유와 함께 "건너뛴 것"으로 선다(부분 성공)',
+          Array.isArray(skipped) && skipped.length === 1 && skipped[0].startsWith('unsupported_type:') && skipped[0].includes('그림.png')
+            && String(await evaluate(`document.querySelector('[data-testid="import-skipped"]')?.textContent ?? ''`)).includes('건너뛴 것 1개'),
+          JSON.stringify(skipped))
+
+        // 둘째 링크(일정)의 id 를 먼저 읽는다 — 링크를 누르면 창이 닫혀 읽을 수 없다
+        const second = await evaluate(`[...document.querySelectorAll('[data-testid="import-page-link"]')][1]?.dataset.pageId ?? null`)
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${second}` })
+        check('★ 하위 페이지를 열면 경로에 부모(프로젝트)가 서고 본문이 있다',
+          await waitFor(`(document.querySelector('nav[aria-label="상위 경로"]')?.textContent ?? '').includes(${JSON.stringify(`프로젝트 ${x}`)})
+            && (document.querySelector('.blk-editor')?.textContent ?? '').includes(${JSON.stringify(`첫 할 일 ${x}`)})`, 15000),
+          String(await evaluate(`document.querySelector('nav[aria-label="상위 경로"]')?.textContent ?? null`)))
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    }
+
     section('전체')
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))
     const serverErrors = serverOutput.split('\n').filter((l) => l.includes('⨯'))

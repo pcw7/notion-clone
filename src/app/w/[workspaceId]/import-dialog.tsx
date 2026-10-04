@@ -6,17 +6,22 @@
  * 정본: 09-api-integrations.md F-09-12 *"좌측 사이드바 하단의 Import 클릭 … 파일 다중 선택 … 완료 시 임포트된 페이지로 이동하는 링크와, 실패 항목
  *       리포트 제공"*
  *
- * 마크다운 · 텍스트 파일을 여럿 고르면 내 개인 페이지로 가져온다(판정 · 쓰기는 서버 — `importFiles`). 끝나면 가져온 페이지의 링크와
- * **옮기지 못한 것**(표 · HTML · 로컬 이미지 …)을 말한다. 거부되면 무엇이 왜인지 말하고 아무 페이지도 남지 않는다(전부이거나 아무것도).
+ * 마크다운 · 텍스트 파일을 여럿, 또는 ZIP 하나를 고르면 내 개인 페이지로 가져온다(판정 · 쓰기는 서버 — `importFiles` · `importZip`). 끝나면
+ * 가져온 페이지의 링크와 **옮기지 못한 것**(표 · HTML · 로컬 이미지 …), ZIP 이면 **건너뛴 항목과 이유**를 말한다. 낱 파일이 거부되면 무엇이
+ * 왜인지 말하고 아무 페이지도 남지 않는다(전부이거나 아무것도).
  */
 
 import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 
-import { IMPORT_ACCEPT, importFailureMessage, importedNotice, lossesSummary } from './import-messages'
+import { IMPORT_ACCEPT, importFailureMessage, importedNotice, lossesSummary, skipReasonLabel, skippedNotice } from './import-messages'
 
-type Done = { readonly pages: readonly { id: string; title: string }[]; readonly losses: string }
+type Skip = { readonly path: string; readonly reason: string }
+type Done = { readonly pages: readonly { id: string; title: string }[]; readonly losses: string; readonly skipped: readonly Skip[] }
+
+/** 건너뛴 항목은 앞의 열까지만 펼친다 — 나머지는 수로. */
+const SHOWN_SKIPS = 10
 
 export function ImportButton({ workspaceId }: { workspaceId: string }) {
   const router = useRouter()
@@ -51,13 +56,13 @@ export function ImportButton({ workspaceId }: { workspaceId: string }) {
       for (const f of files) form.append('files', f)
       const res = await fetch(`/api/workspaces/${workspaceId}/import`, { method: 'POST', body: form })
       const data = (await res.json().catch(() => null)) as
-        | { pages?: { id: string; title: string }[]; losses?: Record<string, number>; error?: unknown; file?: unknown; limit?: unknown }
+        | { pages?: { id: string; title: string }[]; losses?: Record<string, number>; skipped?: Skip[]; error?: unknown; file?: unknown; limit?: unknown }
         | null
       if (!res.ok || !data?.pages) {
         setError(importFailureMessage(data?.error, data?.file, data?.limit))
         return
       }
-      setDone({ pages: data.pages, losses: lossesSummary(data.losses) })
+      setDone({ pages: data.pages, losses: lossesSummary(data.losses), skipped: data.skipped ?? [] })
       setFiles([])
       router.refresh()
     } catch {
@@ -92,7 +97,10 @@ export function ImportButton({ workspaceId }: { workspaceId: string }) {
             className="flex w-96 flex-col gap-3 rounded-lg border border-neutral-200 bg-white p-4 shadow-xl dark:border-neutral-800 dark:bg-neutral-950"
           >
             <h2 className="text-sm font-medium">가져오기</h2>
-            <p className="text-xs text-neutral-500">마크다운(.md)과 텍스트(.txt) 파일을 내 개인 페이지로 가져옵니다. 파일 하나가 페이지 하나입니다.</p>
+            <p className="text-xs text-neutral-500">
+              마크다운(.md)과 텍스트(.txt) 파일, 또는 ZIP 하나를 내 개인 페이지로 가져옵니다. 파일 하나가 페이지 하나이고, ZIP 의 폴더는 페이지의 계층이
+              됩니다.
+            </p>
             <input
               type="file"
               multiple
@@ -150,6 +158,19 @@ export function ImportButton({ workspaceId }: { workspaceId: string }) {
                   <p data-testid="import-losses" className="text-amber-700 dark:text-amber-400">
                     {done.losses}
                   </p>
+                )}
+                {done.skipped.length > 0 && (
+                  <div data-testid="import-skipped" className="text-amber-700 dark:text-amber-400">
+                    <p>{skippedNotice(done.skipped.length)}</p>
+                    <ul className="ml-3 list-disc">
+                      {done.skipped.slice(0, SHOWN_SKIPS).map((s) => (
+                        <li key={s.path} data-testid="import-skipped-item" data-reason={s.reason} className="break-all">
+                          {s.path} — {skipReasonLabel(s.reason)}
+                        </li>
+                      ))}
+                    </ul>
+                    {done.skipped.length > SHOWN_SKIPS && <p>… 그 밖에 {done.skipped.length - SHOWN_SKIPS}개</p>}
+                  </div>
                 )}
               </div>
             )}
