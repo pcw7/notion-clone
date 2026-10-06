@@ -1339,7 +1339,12 @@ async function main() {
 
     // ③ ★ "따로 관리하기" — 끊는 순간 상속분이 복사돼야 한다(불변식 P1).
     check('"따로 관리하기"를 누른다', await clickText('따로 관리하기'))
-    await waitFor(`(document.querySelector('[role="dialog"][aria-label="공유 설정"]')?.textContent ?? '').includes('따로 관리')`, 5000)
+    // 끊은 뒤의 모습을 기다린다 — '따로 관리' 만 보면 누르기 전부터 있는 버튼("따로 관리하기")에 맞아 기다리지 않는다(부하에서 다시
+    // 그리기 전에 읽었다 · Phase 2 1a 의 전체 판).
+    await waitFor(`(() => {
+      const text = document.querySelector('[role="dialog"][aria-label="공유 설정"]')?.textContent ?? ''
+      return text.includes('따로 관리되고 있습니다') && !text.includes('상위에서 상속됨')
+    })()`, 10000)
     const afterRestrict = await panelText()
     check('★ 끊어도 접근이 사라지지 않는다 — 상속분이 이 페이지로 복사됐다 (P1)',
       afterRestrict.includes('워크스페이스 모든 멤버') && !afterRestrict.includes('상위에서 상속됨'),
