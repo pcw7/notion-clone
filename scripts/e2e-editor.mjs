@@ -10713,13 +10713,13 @@ async function main() {
       const stamp = Date.now()
       const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
       const newPage = async (title) => (await (await fetch(pagesUrl, { method: 'POST', headers: authed, body: JSON.stringify({ title }) })).json()).page.id
-      const cid = { top: randomUUID(), a: randomUUID(), b: randomUUID(), end: randomUUID(), list: randomUUID(), left: randomUUID(), right: randomUUID() }
+      const cid = { top: randomUUID(), a: randomUUID(), b: randomUUID(), b2: randomUUID(), b3: randomUUID(), end: randomUUID(), list: randomUUID(), left: randomUUID(), right: randomUUID() }
       const para = (id, text) => ({ id, type: 'paragraph', title: text === '' ? [] : [textRun(text)], properties: {}, format: {}, children: [] })
       const col = (id, children) => ({ id, type: 'column', title: [], properties: {}, format: {}, children })
       const widthPage = await newPage(`컬럼 폭 ${stamp}`)
       await saveBody(widthPage, { blocks: [
         para(cid.top, '위 블록'),
-        { id: cid.list, type: 'column_list', title: [], properties: {}, format: {}, children: [col(cid.left, [para(cid.a, '왼쪽 a')]), col(cid.right, [para(cid.b, '오른쪽 b')])] },
+        { id: cid.list, type: 'column_list', title: [], properties: {}, format: {}, children: [col(cid.left, [para(cid.a, '왼쪽 a')]), col(cid.right, [para(cid.b, '오른쪽 b'), para(cid.b2, '오른쪽 b2'), para(cid.b3, '오른쪽 b3')])] },
         para(cid.end, '끝 블록'),
       ] })
       await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${widthPage}` })
@@ -10776,16 +10776,28 @@ async function main() {
       check('★ 서버 — 컬럼마다 폭(column_ratio) · 왼쪽이 크고 합이 1',
         !!savedRatios && savedRatios[0] > 0.55 && Math.abs(savedRatios[0] + savedRatios[1] - 1) < 1e-6, JSON.stringify(savedRatios))
 
-      // ② 위 블록을 둘째 컬럼의 블록 아래로 끌어 넣는다(차선).
+      // ② 위 블록을 끈다 — 먼저 왼쪽 컬럼의 a 아래 빈자리(오른쪽 컬럼이 더 길어 가장 가까운 줄은 오른쪽의 b3)에서 가이드가 왼쪽 컬럼에
+      //    서는지 보고(차선), 둘째 컬럼의 b 아래로 옮겨 놓는다.
+      const a = await line(cid.a)
+      const b3 = await line(cid.b3)
+      const left = await colRect(cid.left)
+      await drag(cid.top, a.x + 5, b3.y + b3.h / 2, { drop: false })
+      const leftGuide = await rect('.blk-drop-guide')
+      check('★ 오른쪽 컬럼이 더 길어도 가이드는 포인터 쪽 컬럼의 줄에 선다 — 왼쪽 컬럼의 a 아래(차선)',
+        !!leftGuide && leftGuide.x >= left.x - 2 && leftGuide.x + leftGuide.w <= left.x + left.w + 2 && Math.abs(leftGuide.y + 1 - (a.y + a.h)) < 6,
+        JSON.stringify({ leftGuide, left, a }))
       const b = await line(cid.b)
-      await drag(cid.top, b.x + 5, b.y + b.h * 0.8, { drop: false })
+      for (let i = 1; i <= 5; i += 1) {
+        await move(a.x + 5 + ((b.x - a.x) * i) / 5, b3.y + b3.h / 2 + ((b.y + b.h * 0.8 - b3.y - b3.h / 2) * i) / 5, true)
+        await sleep(16)
+      }
       const guide = await rect('.blk-drop-guide')
       const right = await colRect(cid.right)
       check('★ 끄는 동안 가이드가 둘째 컬럼 안에 선다(폭도 그 컬럼만큼)',
         !!guide && guide.x >= right.x - 2 && guide.x + guide.w <= right.x + right.w + 2 && Math.abs(guide.y + 1 - (b.y + b.h)) < 6,
         JSON.stringify({ guide, right, b }))
       await release(b.x + 5, b.y + b.h * 0.8)
-      const [into, intoGot] = await serverIs(widthPage, [['column_list', [['column', ['왼쪽 a']], ['column', ['오른쪽 b', '위 블록']]]], '끝 블록'])
+      const [into, intoGot] = await serverIs(widthPage, [['column_list', [['column', ['왼쪽 a']], ['column', ['오른쪽 b', '위 블록', '오른쪽 b2', '오른쪽 b3']]]], '끝 블록'])
       check('★ 놓으면 그 컬럼에 들어간다', into, intoGot)
 
       // ③ 첫 컬럼의 마지막 블록을 끝 블록 아래로 끌어낸다 — 그 컬럼이 사라지고 하나 남은 컬럼 목록이 풀린다.
@@ -10793,12 +10805,20 @@ async function main() {
       // 직전 끌기의 핸들이 남아 있다 — 이 블록 줄에 핸들이 맞춰진 뒤에 끈다(`drag` 는 핸들이 있기만 하면 그 자리를 읽는다).
       const aLine = await line(cid.a)
       await move(aLine.x + 30, aLine.y + aLine.h / 2)
-      check('전제 — 왼쪽 컬럼의 블록에 핸들이 선다', await waitFor(`(() => {
+      // a 와 b 는 같은 높이다 — 핸들이 a 의 왼쪽(컬럼 밖)에 있는지도 본다. b 로 건너가면 틈(왼쪽 컬럼의 오른쪽)에 선다.
+      const gripOnA = `(() => {
         const g = document.querySelector('.blk-gutter-grip')?.getBoundingClientRect()
-        return !!g && Math.abs(g.y - ${aLine.y}) < 10
-      })()`, 3000))
+        return !!g && Math.abs(g.y - ${aLine.y}) < 10 && g.right <= ${aLine.x} + 2
+      })()`
+      check('전제 — 왼쪽 컬럼의 블록에 핸들이 선다', await waitFor(gripOnA, 3000))
+      // 핸들은 컬럼 밖(왼쪽 여백)에 선다 — 그 위로 옮겨도 포인터 쪽(첫) 컬럼의 블록을 고른다. 끝 쪽 컬럼으로 건너가면 엉뚱한 블록을 끈다.
+      const grip = await rect('.blk-gutter-grip')
+      if (grip) await move(grip.x + grip.w / 2, grip.y + grip.h / 2)
+      await sleep(150)
+      check('★ 핸들 위(컬럼 밖 여백)로 옮겨도 핸들은 왼쪽 컬럼의 블록에 머문다', await waitFor(gripOnA, 1000),
+        JSON.stringify({ grip: await rect('.blk-gutter-grip'), aLine }))
       await drag(cid.a, end.x + 5, end.y + end.h * 0.8)
-      const [unwrapped, unwrappedGot] = await serverIs(widthPage, ['오른쪽 b', '위 블록', '끝 블록', '왼쪽 a'])
+      const [unwrapped, unwrappedGot] = await serverIs(widthPage, ['오른쪽 b', '위 블록', '오른쪽 b2', '오른쪽 b3', '끝 블록', '왼쪽 a'])
       check('★ 마지막 블록을 끌어낸 컬럼은 사라지고 · 하나 남은 컬럼 목록은 풀린다', unwrapped, unwrappedGot)
 
       // ④ 빈 컬럼의 빈 블록에서 Backspace — 그 컬럼을 지운다.
