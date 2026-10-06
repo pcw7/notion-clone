@@ -236,6 +236,27 @@
   color: #9ca3af;
 }
 
+/*
+ * 컬럼(Phase 2 1c · F-01-12) — 틀의 내용 노드(`.blk-column_list` · `.blk-column`)는 보이지 않는 껍데기다. 컬럼 목록의 자식 그룹을
+ * 나란히(같은 폭) 세우고, 컬럼의 그룹은 들여쓰지 않는다. 좁은 화면(폰)에서는 세로로 쌓는다 — 노션과 같다(F-01-12 *"폰에서는 지원되지
+ * 않아 오른쪽 컬럼 콘텐츠가 왼쪽 컬럼 아래로"*).
+ */
+.blk-editor .blk-column_list,
+.blk-editor .blk-column { display: none; }
+.blk-editor .blk-container:has(> .blk-column_list) > .blk-group {
+  display: flex;
+  gap: 1.5rem;
+  margin-left: 0;
+}
+.blk-editor .blk-container:has(> .blk-column) {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.blk-editor .blk-container:has(> .blk-column) > .blk-group { margin-left: 0; }
+@media (max-width: 640px) {
+  .blk-editor .blk-container:has(> .blk-column_list) > .blk-group { flex-direction: column; gap: 0; }
+}
+
 /* 인라인 수식은 span 이다 — 블록 수식(`div.blk-equation` · Phase 2 1a)이 같은 클래스 이름을 쓰므로 태그로 가른다. */
 .blk-mention,
 span.blk-equation {

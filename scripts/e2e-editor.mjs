@@ -10606,6 +10606,106 @@ async function main() {
       await sleep(1000)
     }
 
+    if (sectionIf('컬럼 (Phase 2 1c · F-01-12)')) {
+      // 빈 줄에서 `/2열` → 그 줄이 첫 컬럼으로 들어가고 두 컬럼이 나란히 선다. 양쪽에 쓰면 서버에 틀(컬럼 목록 → 컬럼 → 문단)이 선다.
+      // 컬럼 안의 Enter 는 그 컬럼에 새 블록, Shift+Tab · 둘째 컬럼 맨 앞의 Backspace 는 경계를 넘지 않는다(아무것도 바뀌지 않는다).
+      // 핸들은 포인터 쪽 컬럼의 블록을 잡는다. 좁은 화면에서는 세로로 쌓인다.
+      const stamp = Date.now()
+      const colPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
+        method: 'POST', headers: authed, body: JSON.stringify({ title: `컬럼 ${stamp}` }),
+      })).json()).page.id
+      const line = randomUUID()
+      await saveBody(colPage, { blocks: [{ id: line, type: 'paragraph', title: [], properties: {}, format: {}, children: [] }] })
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${colPage}` })
+      await waitFor(`!!document.querySelector('[data-block-id="${line}"] p')`, 15000)
+      let focused = false
+      for (let i = 0; i < 20 && !focused; i += 1) {
+        await clickSelector(`[data-block-id="${line}"] p`)
+        focused = await waitFor(`document.activeElement?.classList.contains('ProseMirror') && document.querySelector('[data-block-id="${line}"]')?.contains(window.getSelection()?.anchorNode ?? null)`, 500)
+      }
+      check('전제 — 빈 줄에 캐럿이 섰다', focused)
+
+      const COLS = `.blk-editor .blk-container:has(> .blk-column_list) > .blk-group > .blk-container`
+      await typeText('/')
+      await typeText('2열')
+      await waitFor(`!!document.querySelector('[role="listbox"][aria-label="블록 삽입"]')`, 3000)
+      await key('Enter')
+      const side = async () => evaluate(`(() => {
+        const cols = [...document.querySelectorAll('${COLS}')].map((c) => c.getBoundingClientRect())
+        return cols.length === 2 ? { left: cols[0].left, leftRight: cols[0].right, right: cols[1].left, rightTop: cols[1].top, leftTop: cols[0].top, leftBottom: cols[0].bottom } : null
+      })()`)
+      check('★ /2열 — 두 컬럼이 나란히 선다 · 친 줄이 첫 컬럼 안이다',
+        await waitFor(`(() => {
+          const cols = [...document.querySelectorAll('${COLS}')]
+          if (cols.length !== 2) return false
+          const [a, b] = cols.map((c) => c.getBoundingClientRect())
+          return b.left >= a.right && Math.abs(a.top - b.top) < 2 && cols[0].contains(document.querySelector('[data-block-id="${line}"]'))
+        })()`, 5000),
+        JSON.stringify(await side()))
+
+      await typeText('왼쪽 글')
+      const rightFirst = await evaluate(`document.querySelectorAll('${COLS}')[1]?.querySelector('[data-block-id]')?.dataset.blockId ?? null`)
+      await clickSelector(`[data-block-id="${rightFirst}"] p`)
+      await typeText('오른쪽 글')
+      const treeOnServer = async () => {
+        const text = (b) => (b.title ?? []).map((r) => r.plain_text ?? '').join('')
+        const walk = (blocks) => blocks.map((b) => (b.type === 'paragraph' && !(b.children ?? []).length ? text(b) : [b.type === 'paragraph' ? text(b) : b.type, walk(b.children ?? [])]))
+        return JSON.stringify(walk((await readBody(colPage)).doc.blocks))
+      }
+      const serverIs = async (expected) => {
+        let got = null
+        for (let i = 0; i < 60; i += 1) {
+          got = await treeOnServer()
+          if (got === JSON.stringify(expected)) return [true, got]
+          await sleep(150)
+        }
+        return [false, got]
+      }
+      const twoColumns = [['column_list', [['column', ['왼쪽 글']], ['column', ['오른쪽 글']]]]]
+      const [built, builtGot] = await serverIs(twoColumns)
+      check('★ 서버 — 컬럼 목록 → 컬럼 둘 → 각자의 문단', built, builtGot)
+
+      // 컬럼 안의 Enter — 그 컬럼에 새 블록.
+      await clickSelector(`[data-block-id="${line}"] p`)
+      await key('End')
+      await key('Enter')
+      await typeText('왼쪽 둘째')
+      const [entered, enteredGot] = await serverIs([['column_list', [['column', ['왼쪽 글', '왼쪽 둘째']], ['column', ['오른쪽 글']]]]])
+      check('★ 컬럼 안의 Enter — 그 컬럼에 새 블록', entered, enteredGot)
+
+      // 경계 — Shift+Tab(컬럼의 직속 블록) · 둘째 컬럼 맨 앞의 Backspace 는 아무것도 바꾸지 않는다.
+      await key('Tab', SHIFT)
+      await clickSelector(`[data-block-id="${rightFirst}"] p`)
+      for (let i = 0; i < 12; i += 1) await key('ArrowLeft')
+      await key('Backspace')
+      await sleep(800)
+      const [kept, keptGot] = await serverIs([['column_list', [['column', ['왼쪽 글', '왼쪽 둘째']], ['column', ['오른쪽 글']]]]])
+      check('★ Shift+Tab · 둘째 컬럼 맨 앞의 Backspace — 컬럼 경계를 넘지 않는다', kept, keptGot)
+
+      // 핸들 — 왼쪽 컬럼의 블록 위에 포인터를 두면 그 블록의 핸들(오른쪽 컬럼의 블록이 아니다).
+      const leftLine = await rect(`[data-block-id="${line}"] > *:first-child`)
+      await move(leftLine.x + 20, leftLine.y + leftLine.h / 2)
+      await waitFor(`!!document.querySelector('.blk-gutter-grip')`, 3000)
+      const grip = await rect('.blk-gutter-grip')
+      check('★ 핸들은 포인터 쪽 컬럼의 블록을 잡는다', !!grip && Math.abs(grip.y - leftLine.y) < 10 && grip.x + grip.w <= leftLine.x + 2, JSON.stringify({ grip, leftLine }))
+
+      // 좁은 화면 — 세로로 쌓인다.
+      await send('Emulation.setDeviceMetricsOverride', { width: 480, height: 900, deviceScaleFactor: 1, mobile: false })
+      const stacked = await waitFor(`(() => {
+        const [a, b] = [...document.querySelectorAll('${COLS}')].map((c) => c.getBoundingClientRect())
+        return !!a && !!b && b.top >= a.bottom - 1
+      })()`, 5000)
+      await send('Emulation.clearDeviceMetricsOverride')
+      check('좁은 화면에서는 세로로 쌓인다', stacked, JSON.stringify(await side()))
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${colPage}` })
+      check('다시 열어도 두 컬럼이 나란히', await waitFor(`(() => {
+        const [a, b] = [...document.querySelectorAll('${COLS}')].map((c) => c.getBoundingClientRect())
+        return !!a && !!b && b.left >= a.right
+      })()`, 15000))
+      await sleep(1000)
+    }
+
     section('전체')
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))
     const serverErrors = serverOutput.split('\n').filter((l) => l.includes('⨯'))

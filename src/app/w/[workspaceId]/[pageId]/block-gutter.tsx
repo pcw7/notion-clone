@@ -95,12 +95,18 @@ type Drag = {
  * 있어서(p·h1·li·div 모두 블록 요소) 오른쪽 끝에서 찾으면 그 줄의 가장 안쪽
  * 블록이 잡힌다. 포인터 x 로 찾으면 핸들이 있는 왼쪽 여백에서는 아무것도 없거나,
  * 들여쓴 블록의 줄인데 부모가 잡힌다.
+ *
+ * 컬럼(Phase 2 1c)은 나란히 서므로 포인터가 있는 **컬럼의** 오른쪽 끝에서 찾는다 — 편집기 끝에서 찾으면 늘 마지막 컬럼의 블록이 잡힌다.
+ * 컬럼의 틀(컬럼 목록 · 컬럼)은 핸들을 받지 않는다 — 틀은 화면의 줄이 아니다.
  */
-function lineAt(view: EditorView, frame: HTMLElement, clientY: number): Hover | null {
+function lineAt(view: EditorView, frame: HTMLElement, clientX: number, clientY: number): Hover | null {
   const editor = view.dom.getBoundingClientRect()
-  const el = document.elementFromPoint(editor.right - 2, clientY)
+  const column = document.elementFromPoint(clientX, clientY)?.closest<HTMLElement>('.blk-container:has(> .blk-column)')
+  const right = column && view.dom.contains(column) ? column.getBoundingClientRect().right : editor.right
+  const el = document.elementFromPoint(right - 2, clientY)
   const container = el?.closest<HTMLElement>('[data-block-id]')
   if (!container || !view.dom.contains(container)) return null
+  if (container.firstElementChild?.matches('.blk-column, .blk-column_list')) return null
   const blockId = container.getAttribute('data-block-id') ?? ''
   if (blockId === '') return null
 
@@ -185,7 +191,7 @@ export function BlockGutter({
       const view = viewRef.current
       // 정본: "권한 없음 → 핸들 자체를 노출하지 않음".
       if (!view || !view.editable) return
-      const next = lineAt(view, frame, event.clientY)
+      const next = lineAt(view, frame, event.clientX, event.clientY)
       // 줄 사이 틈 — 직전 줄을 유지한다. 없애면 핸들로 가는 도중에 사라진다.
       if (next === null) return
       const cur = hoverRef.current

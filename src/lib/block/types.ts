@@ -55,13 +55,20 @@ export type MvpBlockType = (typeof MVP_BLOCK_TYPES)[number]
 export const BODY_BLOCK_TYPES = [...MVP_BLOCK_TYPES, 'code', 'table_of_contents', 'breadcrumb', 'equation'] as const
 export type BodyBlockType = (typeof BODY_BLOCK_TYPES)[number]
 
+/**
+ * 배치 블록 — 컬럼의 틀(Phase 2 1c · F-01-12). `column_list` 의 자식은 `column` 뿐이고, `column` 은 `column_list` 안에만 선다. 글이 없고
+ * `/` 메뉴 · 바꾸기 · 입력 규칙에 서지 않는다(본문 타입 목록 밖이다) — `/2열` · `/3열` 이 틀째로 만든다(`editor/columns.ts`).
+ */
+export const LAYOUT_BLOCK_TYPES = ['column_list', 'column'] as const
+export type LayoutBlockType = (typeof LAYOUT_BLOCK_TYPES)[number]
+
 /** 페이지도 블록이다(C-3). 레지스트리에는 있지만 `/` 메뉴에는 없다. */
 export const PAGE_TYPE = 'page' as const
 
 /** 모르는 타입의 보존용 폴백. */
 export const UNSUPPORTED_TYPE = 'unsupported' as const
 
-export type BlockType = BodyBlockType | typeof PAGE_TYPE | typeof UNSUPPORTED_TYPE
+export type BlockType = BodyBlockType | LayoutBlockType | typeof PAGE_TYPE | typeof UNSUPPORTED_TYPE
 
 const MVP_SET: ReadonlySet<string> = new Set(MVP_BLOCK_TYPES)
 
@@ -103,6 +110,17 @@ export type BlockTypeSpec = {
    * 문자열이 아니면 지우고 `MAX_EQUATION_LENGTH` 를 넘으면 자른다). 렌더 결과는 저장하지 않는다(정본 §3.4 [보강] 블록 수식).
    */
   readonly expression?: boolean
+  /**
+   * 배치의 틀이다(컬럼 목록 · 컬럼 — Phase 2 1c). 글 · 핸들 · 선택이 없고 화면은 자식만 그린다. 편집기의 이웃 찾기 · 블록 선택은 이
+   * 틀을 건너뛰고 그 안의 블록을 본다(`pm-blocks.ts` `visibleBlocks`).
+   */
+  readonly layout?: boolean
+  /** 자식이 될 수 있는 타입 — 없으면 아무 타입(`canHaveChildren` 일 때). 컬럼 목록 → 컬럼뿐. 정규화 · 검증 · 들여쓰기가 지킨다. */
+  readonly childTypes?: readonly BlockType[]
+  /** 설 수 있는 부모 타입 — 없으면 어디든. 컬럼 → 컬럼 목록 안에만. */
+  readonly parentTypes?: readonly BlockType[]
+  /** 직속 자식이 될 수 없는 타입 — 컬럼 바로 안의 컬럼 목록(중첩 금지 · F-01-12 권장). */
+  readonly excludedChildTypes?: readonly BlockType[]
 }
 
 export const BLOCK_TYPES: Readonly<Record<BlockType, BlockTypeSpec>> = Object.freeze({
@@ -150,6 +168,14 @@ export const BLOCK_TYPES: Readonly<Record<BlockType, BlockTypeSpec>> = Object.fr
   // (코드 ↔ `code_block` 과 같은 사상 · 저장 포맷이라 바꾸면 마이그레이션이다).
   equation: { hasRichText: false, canHaveChildren: false, supportsColor: false, nodeName: 'equation_block', expression: true },
 
+  // 컬럼(Phase 2 1c · F-01-12) — 2계층 고정의 배치 틀. 컬럼 목록의 자식은 컬럼뿐(둘 이상 — 하나면 풀린다), 컬럼의 자식은 아무 블록(컬럼
+  // 목록은 아니다 — 중첩 금지). 색 · 글이 없다. 폭(`format.column_ratio`)은 1c-2.
+  column_list: { hasRichText: false, canHaveChildren: true, supportsColor: false, layout: true, childTypes: ['column'] },
+  column: {
+    hasRichText: false, canHaveChildren: true, supportsColor: false, layout: true,
+    parentTypes: ['column_list'], excludedChildTypes: ['column_list'],
+  },
+
   // 폴백. 렌더는 회색 박스, 저장은 원본 그대로.
   unsupported: { hasRichText: false, canHaveChildren: false, supportsColor: false },
 })
@@ -181,6 +207,16 @@ export function isKnownBlockType(t: unknown): t is BlockType {
 export function specOf(t: BlockType): BlockTypeSpec {
   return BLOCK_TYPES[t]
 }
+
+const LAYOUT_SET: ReadonlySet<string> = new Set(LAYOUT_BLOCK_TYPES)
+
+/** 배치 틀인가(컬럼 목록 · 컬럼). */
+export function isLayoutBlockType(t: unknown): t is LayoutBlockType {
+  return typeof t === 'string' && LAYOUT_SET.has(t)
+}
+
+/** 최소 컬럼 수 — 하나 남은 컬럼 목록은 풀린다(F-01-12 *"컬럼이 1개만 남음 → column_list 를 해제하고 자식을 부모로 승격"*). */
+export const MIN_COLUMNS = 2
 
 // ── unsupported 폴백 ──────────────────────────────────────────────────
 

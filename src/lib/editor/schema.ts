@@ -46,6 +46,7 @@ import { Schema, type MarkSpec, type NodeSpec } from '@tiptap/pm/model'
 import {
   BLOCK_TYPES,
   BODY_BLOCK_TYPES,
+  LAYOUT_BLOCK_TYPES,
   PAGE_TYPE,
   UNSUPPORTED_TYPE,
   isKnownBlockType,
@@ -259,6 +260,20 @@ const nodes: Record<string, NodeSpec> = {
 // 특수 노드를 뒤에 붙인다.
 for (const type of BODY_BLOCK_TYPES) {
   nodes[nodeNameOf(type)] = blockContentSpec(type)
+}
+
+// 배치 틀(Phase 2 1c · 컬럼 목록 · 컬럼) — 내용 노드는 **보이지 않는 껍데기**다. 원자이고 고를 수도 끌 수도 없다 — 화살표 · 클릭이 이
+// 노드에 멈추면 사용자는 보이지 않는 것을 고른다. 화면은 컨테이너의 자식 그룹을 나란히 그린다(`editor.css` 의 `:has()`).
+for (const type of LAYOUT_BLOCK_TYPES) {
+  nodes[type] = {
+    group: 'blockContent',
+    attrs: blockAttrSpec,
+    atom: true,
+    selectable: false,
+    draggable: false,
+    parseDOM: [{ tag: `div[data-block-type="${type}"]` }],
+    toDOM: () => ['div', { 'data-block-type': type, class: `blk blk-${type}`, contenteditable: 'false' }],
+  } as NodeSpec
 }
 
 // 자식 페이지 참조. 본문에 보이지만 내용은 그 페이지의 것이다.

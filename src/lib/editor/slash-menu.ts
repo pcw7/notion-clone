@@ -69,7 +69,16 @@ export type PageSlashCommand = SlashCommandBase & {
   readonly id: 'page'
 }
 
-export type SlashCommand = BlockSlashCommand | PageSlashCommand
+/**
+ * 컬럼 만들기(Phase 2 1c · F-01-12) — 블록 타입이 아니다. 컬럼의 틀은 `/` 로 하나씩 만들지 않고 N열째로 만든다(`columns.ts`).
+ */
+export type ColumnsSlashCommand = SlashCommandBase & {
+  readonly kind: 'columns'
+  readonly id: 'columns_2' | 'columns_3'
+  readonly count: 2 | 3
+}
+
+export type SlashCommand = BlockSlashCommand | PageSlashCommand | ColumnsSlashCommand
 
 /**
  * 타입별 라벨·별칭.
@@ -124,6 +133,12 @@ const PAGE_COMMAND: PageSlashCommand = {
   group: '페이지',
 }
 
+/** 컬럼(Phase 2 1c) — 노션의 Layout 자리. "열" · "컬럼"으로 둘 다 찾는다. */
+const COLUMN_COMMANDS: readonly ColumnsSlashCommand[] = [
+  { kind: 'columns', id: 'columns_2', count: 2, label: '2열', aliases: ['2열', '2단', '2 columns', '2columns', '컬럼', 'columns', '열'], group: '고급 블록' },
+  { kind: 'columns', id: 'columns_3', count: 3, label: '3열', aliases: ['3열', '3단', '3 columns', '3columns', '컬럼', 'columns', '열'], group: '고급 블록' },
+]
+
 const BLOCK_COMMANDS: readonly BlockSlashCommand[] = BODY_BLOCK_TYPES.map((id) => ({
   kind: 'block',
   id,
@@ -141,6 +156,7 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
   PAGE_COMMAND,
   ...BLOCK_COMMANDS.filter((c) => c.group === '미디어'),
   ...BLOCK_COMMANDS.filter((c) => c.group === '고급 블록'),
+  ...COLUMN_COMMANDS,
 ]
 
 /**
