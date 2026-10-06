@@ -108,8 +108,23 @@ export function blockTypeOf(contentNode: PmNode): BlockType {
 export function canNestUnder(info: ContainerInfo): boolean {
   const type = blockTypeOf(info.contentNode)
   if (type === PAGE_TYPE) return false
+  // 컬럼의 틀(Phase 2 1c) 밑으로는 들여쓰지 않는다 — 컬럼 목록의 자식은 컬럼뿐이고, 컬럼은 블록의 형제가 아니다.
+  if (specOf(type).layout) return false
   return specOf(type).canHaveChildren
 }
+
+/** 이 위치를 감싼 가장 가까운 컬럼의 블록 id — 컬럼 밖이면 null(Phase 2 1c). 병합이 컬럼 경계를 넘지 않게 본다. */
+export function columnIdAt($pos: ResolvedPos): string | null {
+  for (let depth = $pos.depth; depth > 0; depth -= 1) {
+    const node = $pos.node(depth)
+    if (node.type.name === 'blockContainer' && node.firstChild?.type.name === 'column') return String(node.attrs.blockId ?? '')
+  }
+  return null
+}
+
+/** 컨테이너가 배치의 틀(컬럼 목록 · 컬럼)인가. */
+export const isLayoutContainer = (container: PmNode): boolean =>
+  container.firstChild !== null && specOf(blockTypeOfNode(container.firstChild.type.name)).layout === true
 
 /**
  * 규칙 함수의 입력으로 옮긴다.
@@ -149,6 +164,12 @@ function treeFromGroup(
   let pos = groupPos + 1
   group.forEach((container) => {
     const info = describeContainer(container, pos)
+    // 컬럼의 틀(Phase 2 1c)은 화면의 줄이 아니다 — 그 안의 블록을 이 자리에 세운다(이웃 · 블록 선택이 보이지 않는 틀에 멈추지 않게).
+    if (isLayoutContainer(container)) {
+      if (info.groupNode && info.groupPos !== null) out.push(...treeFromGroup(info.groupNode, info.groupPos, isCollapsed))
+      pos += container.nodeSize
+      return
+    }
     out.push({
       id: info.id,
       pos,

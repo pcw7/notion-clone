@@ -48,6 +48,7 @@ import {
   specOf,
   wrapUnsupported,
   MAX_TREE_DEPTH,
+  MIN_COLUMNS,
   PAGE_TYPE,
   UNSUPPORTED_TYPE,
   type BlockFormat,
@@ -97,12 +98,14 @@ export type DocIssue = { readonly path: string; readonly message: string }
  *   - `type='page'` 노드에 자식이 붙어 있음 — 자식 페이지의 본문은 **그 페이지의
  *     문서**에 속한다. 여기서 받아주면 두 문서가 같은 블록을 소유하게 된다
  *   - 깊이가 `MAX_TREE_DEPTH` 초과
+ *   - 컬럼의 구조(Phase 2 1c) — 컬럼 목록의 자식은 컬럼뿐 · 둘 이상, 컬럼은 컬럼 목록 안에만 · 블록이 하나 이상, 컬럼 바로 안의 컬럼
+ *     목록(레지스트리 `childTypes` · `parentTypes` · `excludedChildTypes`). 협업 경로는 정규화가 고친다(`collab/normalize.ts` ④)
  */
 export function validateDoc(doc: EditorDoc): DocIssue[] {
   const issues: DocIssue[] = []
   const seen = new Set<string>()
 
-  const walk = (blocks: readonly EditorBlock[], path: string, depth: number): void => {
+  const walk = (blocks: readonly EditorBlock[], path: string, depth: number, parent: BlockType | null): void => {
     if (depth > MAX_TREE_DEPTH) {
       issues.push({ path, message: `깊이가 상한(${MAX_TREE_DEPTH})을 넘습니다` })
       return
@@ -126,6 +129,32 @@ export function validateDoc(doc: EditorDoc): DocIssue[] {
 
       // 모르는 타입은 오류가 아니다 — unsupported 로 감싸 보존한다.
       const known = isKnownBlockType(block.type)
+
+      // 컬럼의 구조(Phase 2 1c).
+      if (known) {
+        const parents = specOf(block.type).parentTypes
+        if (parents !== undefined && (parent === null || !parents.includes(parent))) {
+          issues.push({ path: `${p}.type`, message: `${block.type} 은 ${parents.join(' · ')} 안에만 설 수 있습니다` })
+        }
+        if (parent !== null && specOf(parent).excludedChildTypes?.includes(block.type)) {
+          issues.push({ path: `${p}.type`, message: `${parent} 바로 안에는 ${block.type} 을 둘 수 없습니다` })
+        }
+        const allowed = specOf(block.type).childTypes
+        const kids = block.children ?? []
+        if (allowed !== undefined) {
+          kids.forEach((child, k) => {
+            if (!allowed.includes(child?.type as BlockType)) {
+              issues.push({ path: `${p}.children[${k}].type`, message: `${block.type} 의 자식은 ${allowed.join(' · ')} 이어야 합니다` })
+            }
+          })
+          if (allowed.includes('column') && kids.length < MIN_COLUMNS) {
+            issues.push({ path: `${p}.children`, message: `컬럼이 ${MIN_COLUMNS}개 이상이어야 합니다` })
+          }
+        }
+        if (specOf(block.type).parentTypes?.includes('column_list') && kids.length === 0) {
+          issues.push({ path: `${p}.children`, message: `${block.type} 에는 블록이 하나 이상 있어야 합니다` })
+        }
+      }
 
       if (block.title !== undefined) {
         const titleIssues = validateRichText(block.title, `${p}.title`)
@@ -163,7 +192,7 @@ export function validateDoc(doc: EditorDoc): DocIssue[] {
           })
           return
         }
-        walk(children, `${p}.children`, depth + 1)
+        walk(children, `${p}.children`, depth + 1, known ? block.type : null)
       }
     })
   }
@@ -171,7 +200,7 @@ export function validateDoc(doc: EditorDoc): DocIssue[] {
   if (!Array.isArray(doc?.blocks)) {
     return [{ path: 'blocks', message: '배열이어야 합니다' }]
   }
-  walk(doc.blocks, 'blocks', 1)
+  walk(doc.blocks, 'blocks', 1, null)
   return issues
 }
 

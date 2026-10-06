@@ -623,6 +623,18 @@ function renderBlock(block: EditorBlock, ctx: Ctx, number: number): string[] {
       // 보는 사람의 것이다). 잃은 것으로 세지 않는다 — 저장된 내용이 없다.
       return []
 
+    case 'column_list':
+      // 컬럼(Phase 2 1c · F-01-12 *"컬럼은 표현 불가 → 순차 나열로 평탄화"*) — 컬럼마다 그 블록들을 차례로. 잃은 것으로 세지 않는다
+      // (내용은 다 있고 배치만 없다 — 노션의 내보내기도 같다).
+      return (block.children ?? []).flatMap((column, k) => {
+        const lines = renderSiblings(column.children ?? [], ctx).lines
+        return k > 0 && lines.length > 0 ? ['', ...lines] : lines
+      })
+
+    case 'column':
+      // 컬럼 목록 밖의 컬럼은 정규화가 풀므로 오지 않는다 — 와도 자식을 그대로.
+      return renderSiblings(block.children ?? [], ctx).lines
+
     case EQUATION_TYPE:
       // 블록 수식(Phase 2 1a · F-01-20 *"마크다운은 `$$...$$`"*) — 울타리 줄 사이에 식. 빈 식은 쓰지 않는다(저장된 내용이 없다).
       return equationDisplayLines((block.properties ?? {}) as Record<string, unknown>)

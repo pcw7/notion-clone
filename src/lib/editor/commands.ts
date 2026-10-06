@@ -58,6 +58,8 @@ import {
   toRuleBlock,
   visibleNeighbors,
   type ContainerInfo,
+  columnIdAt,
+  isLayoutContainer,
 } from './pm-blocks.ts'
 import { blockSchema, isPlainTextNode, nodeNameOf, PAGE_REF_NODE } from './schema.ts'
 import type { RichTextRun } from '../contracts/rich-text.ts'
@@ -361,6 +363,9 @@ export function mergeBackwardCommand(deps: CommandDeps = NO_COLLAPSE): Command {
 
     const { previous } = visibleNeighbors(state.doc, info.id, deps.isCollapsed)
     const target = previous === null ? null : findContainerById(state.doc, previous)
+    // 컬럼 경계를 넘어 합치지 않는다(Phase 2 1c) — 둘째 컬럼의 첫 블록 맨 앞의 Backspace 가 첫 컬럼으로 글을 옮기면 안 된다. 키는 삼킨다
+    // (false 면 ProseMirror 의 기본 동작이 경계를 넘어 잇는다).
+    if (target !== null && columnIdAt(state.doc.resolve(info.pos)) !== columnIdAt(state.doc.resolve(target.pos))) return true
 
     const plan = planMerge(
       toRuleBlock(info, deps.isCollapsed),
@@ -395,6 +400,8 @@ export function mergeForwardCommand(deps: CommandDeps = NO_COLLAPSE): Command {
     if (next === null) return false
     const source = findContainerById(state.doc, next)
     if (!source) return false
+    // 컬럼 경계를 넘어 끌어올리지 않는다(Phase 2 1c).
+    if (columnIdAt(state.doc.resolve(info.pos)) !== columnIdAt(state.doc.resolve(source.pos))) return true
 
     const plan = planMerge(toRuleBlock(source, deps.isCollapsed), toRuleBlock(info, deps.isCollapsed))
 
@@ -485,6 +492,9 @@ export function outdentCommand(): Command {
 
     // 루트 blockGroup 은 doc 의 직속이라 올릴 곳이 없다.
     if (range.depth <= 1) return false
+    // 컬럼의 직속 블록은 내어쓰지 않는다(Phase 2 1c) — 올라가면 컬럼 목록 안의 맨 블록이 된다(컬럼 목록의 자식은 컬럼뿐). 키는 삼킨다.
+    const parentContainer = state.doc.resolve(info.pos).node(range.depth - 1)
+    if (parentContainer.type.name === 'blockContainer' && isLayoutContainer(parentContainer)) return true
 
     const target = liftTarget(range)
     if (target === null) return false

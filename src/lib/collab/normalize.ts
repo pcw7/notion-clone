@@ -23,10 +23,15 @@
  *   둘이 빈 페이지를 동시에 처음 채운다          루트 그룹 둘              합친다
  *   하위 페이지 참조를 깊은 곳으로 옮긴다 ③      그 서브트리가 상한을 넘음  들어갈 수 있는 깊이까지 뒤 형제로 올린다
  *   둘이 같은 하위 페이지 참조를 옮긴다 ③        참조 둘(둘째는 새 id)     본문에 둘 수 없는 참조를 뺀다
+ *   컬럼 경계 너머로 블록을 옮긴다 ④            컬럼 목록 안의 맨 블록 ·  이웃 컬럼으로 옮긴다 · 컬럼 하나면 푼다 ·
+ *                                              컬럼이 하나 · 빈 컬럼     빈 컬럼은 빈 문단으로 채운다
  *
  *   ① 타입은 병합할 수 없다(F-05-01 시나리오 4: "한쪽 값만 남는다"). 어느 쪽이 남는지는 Yjs 의
  *      동시 삽입 순서(client id)가 정한다 — "늦게 한 쪽이 이긴다"가 아니다
  *   ② 새 id 는 무작위가 아니다. 무작위면 프로젝터가 읽을 때마다 새 `block` 행을 만든다
+ *   ④ 컬럼(Phase 2 1c) — 컬럼 목록의 자식은 컬럼뿐(레지스트리 `childTypes`) · 컬럼은 컬럼 목록 안에만(`parentTypes`) · 컬럼 바로 안의
+ *      컬럼 목록은 없다(`excludedChildTypes` — 펼친다) · 컬럼은 둘 이상(`MIN_COLUMNS`) · 빈 컬럼은 캐럿을 둘 곳이 없어 빈 문단을 넣는다.
+ *      들여쓰기 · 내어쓰기는 경계를 넘지 않지만(`commands.ts`) 동시 편집 · 붙여넣기 · 끌기가 넘을 수 있다
  *   ③ 동시 편집이 아니어도 생긴다(휴지통 · 다른 본문으로 간 페이지를 가리키는 낡은 참조). 서브트리의 높이와 페이지가 어디
  *      사는지는 문서 밖(DB)에 있어 받았을 때만 본다(`pageRefDepth` · `pageRefs`) — 투영과 그 수선이 넘긴다(HANDOFF §3.2-23 · §3.2-24)
  *
@@ -43,7 +48,7 @@
 import type { Node as PmNode } from '@tiptap/pm/model'
 
 import { sanitizeBlockAttrs } from '../block/props.ts'
-import { MAX_TREE_DEPTH, PAGE_TYPE, specOf, type BlockFormat } from '../block/types.ts'
+import { MAX_TREE_DEPTH, MIN_COLUMNS, PAGE_TYPE, specOf, type BlockFormat, type BlockType } from '../block/types.ts'
 import { isPlainRecord, jsonSafe, sameJsonValue, withoutNul } from '../contracts/json-safe.ts'
 import { isUuid } from '../ids.ts'
 import { ATOM_MARKS_ATTR, atomMarksAttr, INLINE_ATOM_NODES } from '../editor/atom-marks.ts'
@@ -101,6 +106,16 @@ export type NormalizeFix =
   | 'duplicate_id'
   /** 남은 블록이 없다 — 빈 문단 하나를 넣었다(`ydoc.ts` 머리말). */
   | 'empty_root_filled'
+  /** 컬럼 목록 밖의 컬럼 — 풀어 자식을 그 자리에 올렸다(Phase 2 1c). */
+  | 'column_unwrapped'
+  /** 컬럼 바로 안의 컬럼 목록 — 펼쳤다(중첩 금지). */
+  | 'nested_columns_flattened'
+  /** 컬럼 목록 안의 컬럼이 아닌 블록 — 이웃 컬럼으로 옮겼다(앞 컬럼의 끝 · 앞이 없으면 뒤 컬럼의 처음). */
+  | 'column_misplaced_moved'
+  /** 컬럼이 하나뿐 — 풀어 자식을 그 자리에 올렸다. 하나도 없으면 컬럼 목록을 뺐다. */
+  | 'single_column_unwrapped'
+  /** 빈 컬럼 — 빈 문단을 넣었다(캐럿을 둘 곳). */
+  | 'empty_column_filled'
 
 export type NormalizeResult = {
   /** 스키마에 맞는 문서. 고칠 것이 없었어도 새로 조립한 노드다 — 입력과는 `eq` 로 비교한다. */
@@ -135,6 +150,13 @@ export type NormalizeOptions = {
 }
 
 const { doc: DOC, blockGroup: GROUP, blockContainer: CONTAINER, paragraph: PARAGRAPH } = blockSchema.nodes
+
+/** 컨테이너의 블록 타입. */
+const typeOfContainer = (container: PmNode): BlockType | null =>
+  container.firstChild === null ? null : blockTypeOfNode(container.firstChild.type.name)
+
+/** 컨테이너의 자식 컨테이너들. */
+const childContainers = (container: PmNode): PmNode[] => (container.childCount > 1 ? childrenOf(container.child(1)) : [])
 
 function childrenOf(node: PmNode): PmNode[] {
   const out: PmNode[] = []
@@ -290,16 +312,16 @@ export function normalizeBody(input: PmNode, options: NormalizeOptions): Normali
     return changed ? content.type.create(attrs, inline, content.marks) : content
   }
 
-  /** 그룹 자리에 온 노드들 → 올바른 컨테이너들. */
-  const containersOf = (nodes: readonly PmNode[], path: string, depth: number): PmNode[] => {
+  /** 그룹 자리에 온 노드들 → 올바른 컨테이너들. `parent` 는 그 그룹을 가진 블록의 타입(최상위면 null) — 컬럼 규칙이 본다. */
+  const containersOf = (nodes: readonly PmNode[], path: string, depth: number, parent: BlockType | null): PmNode[] => {
     const out: PmNode[] = []
     nodes.forEach((node, i) => {
       const here = `${path}.${i}`
       if (node.type === CONTAINER) {
-        out.push(...containerOf(node, here, depth))
+        out.push(...containerOf(node, here, depth, parent))
       } else if (node.type === GROUP) {
         fixes.push('nested_group_flattened')
-        out.push(...containersOf(childrenOf(node), here, depth))
+        out.push(...containersOf(childrenOf(node), here, depth, parent))
       } else if (isBlockContent(node)) {
         fixes.push('content_wrapped')
         out.push(CONTAINER.create({ blockId: newId(`wrap:${here}`) }, [cleanContent(node)]))
@@ -310,8 +332,41 @@ export function normalizeBody(input: PmNode, options: NormalizeOptions): Normali
     return out
   }
 
+  /**
+   * 컬럼 목록의 자식들 → 컬럼들. 컬럼이 아닌 블록은 앞 컬럼의 끝으로(앞이 없으면 뒤 컬럼의 처음으로) 옮긴다 — 옮긴 것이 컬럼 목록이면
+   * 펼친다(컬럼 바로 안이 된다). 컬럼이 하나도 없으면 그 블록들을 `orphans` 로 돌려준다.
+   */
+  const regroupColumns = (children: readonly PmNode[]): { columns: PmNode[]; orphans: PmNode[] } => {
+    const columns: { node: PmNode; before: PmNode[]; after: PmNode[] }[] = []
+    let pending: PmNode[] = []
+    const flattenNested = (child: PmNode): PmNode[] => {
+      if (typeOfContainer(child) !== 'column_list') return [child]
+      fixes.push('nested_columns_flattened')
+      return childContainers(child).flatMap(childContainers)
+    }
+    for (const child of children) {
+      if (typeOfContainer(child) === 'column') {
+        columns.push({ node: child, before: pending, after: [] })
+        pending = []
+      } else if (columns.length > 0) {
+        columns[columns.length - 1]!.after.push(...flattenNested(child))
+      } else {
+        pending.push(...flattenNested(child))
+      }
+    }
+    if (columns.length === 0) return { columns: [], orphans: pending }
+    return {
+      columns: columns.map(({ node, before, after }) => {
+        if (before.length === 0 && after.length === 0) return node
+        fixes.push('column_misplaced_moved')
+        return CONTAINER.create(node.attrs, [node.firstChild!, GROUP.create(null, [...before, ...childContainers(node), ...after])])
+      }),
+      orphans: [],
+    }
+  }
+
   /** 컨테이너 하나 → 0개(내용이 없어 자식을 올림) · 1개 · 여러 개(자식을 뒤 형제로 올림). */
-  const containerOf = (node: PmNode, path: string, depth: number): PmNode[] => {
+  const containerOf = (node: PmNode, path: string, depth: number, parent: BlockType | null): PmNode[] => {
     const contents: PmNode[] = []
     const inner: PmNode[] = []
     let groups = 0
@@ -326,15 +381,38 @@ export function normalizeBody(input: PmNode, options: NormalizeOptions): Normali
 
     if (contents.length === 0) {
       fixes.push('empty_container_lifted')
-      return containersOf(inner, path, depth)
+      return containersOf(inner, path, depth, parent)
     }
     if (contents.length > 1) fixes.push('type_conflict_resolved')
 
     const content = cleanContent(contents[0])
     const blockId = claimId(node.attrs.blockId, path)
+    const type = blockTypeOfNode(content.type.name)
+    // ── 컬럼(④) — 설 수 없는 자리의 틀은 풀어 자식을 그 자리에 올린다. ──
+    const allowedParents = specOf(type).parentTypes
+    if (allowedParents !== undefined && (parent === null || !allowedParents.includes(parent))) {
+      fixes.push('column_unwrapped')
+      return containersOf(inner, path, depth, parent)
+    }
+    if (parent !== null && specOf(parent).excludedChildTypes?.includes(type)) {
+      fixes.push('nested_columns_flattened')
+      return containersOf(inner, path, depth, parent)
+    }
     const nestable = canNest(content) && depth < MAX_TREE_DEPTH
-    const children = containersOf(inner, path, nestable ? depth + 1 : depth)
+    let children = containersOf(inner, path, nestable ? depth + 1 : depth, nestable ? type : parent)
     if (groups > 0 && children.length === 0) fixes.push('empty_group_removed')
+    if (nestable && specOf(type).childTypes?.includes('column')) {
+      const { columns, orphans } = regroupColumns(children)
+      if (columns.length < MIN_COLUMNS) {
+        fixes.push('single_column_unwrapped')
+        return columns.length === 0 ? orphans : childContainers(columns[0]!)
+      }
+      children = columns
+    }
+    if (nestable && type === 'column' && children.length === 0) {
+      fixes.push('empty_column_filled')
+      children = [CONTAINER.create({ blockId: newId(`column:${path}`) }, [PARAGRAPH.create({ props: {}, format: {} })])]
+    }
 
     // 둘 수 없는 참조는 컨테이너째 뺀다. 참조는 자식을 갖지 못하므로 자식은 이미 이 깊이로 올라와 있다 — 잃지 않는다.
     if (content.type.name === PAGE_REF_NODE && options.pageRefs !== undefined && !options.pageRefs.has(blockId)) {
@@ -376,7 +454,7 @@ export function normalizeBody(input: PmNode, options: NormalizeOptions): Normali
   if (rootGroups === 0) fixes.push('root_group_missing')
   else if (rootGroups > 1) fixes.push('groups_merged')
 
-  let containers = containersOf(top, 'r', 1)
+  let containers = containersOf(top, 'r', 1, null)
   if (containers.length === 0) {
     fixes.push('empty_root_filled')
     containers = [CONTAINER.create({ blockId: newId('fill') }, [PARAGRAPH.create({ props: {}, format: {} })])]

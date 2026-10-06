@@ -73,6 +73,7 @@ import { BlockGutter } from './block-gutter'
 import { CodeCaptionEditor } from './code-caption-editor'
 import { CodeLanguageMenu } from './code-language-menu'
 import { EquationEditor } from './equation-editor'
+import { runColumnsSlashCommand } from '@/lib/editor/columns'
 import { openCommentThread } from './comment-panel'
 import { PageIconView } from '../page-icon-view'
 import { closeMentionMenu, insertMention, mentionMenuState, type MentionPick } from '@/lib/editor/mention-menu'
@@ -845,6 +846,12 @@ export function BodyEditor({
 
       if (command.kind === 'page') {
         void createSubpage()
+        return
+      }
+      // 컬럼(Phase 2 1c) — 지금 블록을 첫 컬럼으로. 컬럼 안이면 아무것도 하지 않는다(중첩 금지).
+      if (command.kind === 'columns') {
+        runColumnsSlashCommand(view.state, view.dispatch.bind(view), command.count)
+        view.focus()
         return
       }
 

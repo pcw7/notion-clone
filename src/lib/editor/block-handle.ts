@@ -48,7 +48,7 @@ import { TextSelection, type Command, type EditorState } from '@tiptap/pm/state'
 import { blockDeletionRanges, BlockSelection, isBlockSelection } from './block-selection.ts'
 import type { CommandDeps } from './commands.ts'
 import { newBlockId } from './pm-adapter.ts'
-import { canNestUnder, describeContainer, findContainerById, visibleBlocks } from './pm-blocks.ts'
+import { canNestUnder, columnIdAt, describeContainer, findContainerById, visibleBlocks } from './pm-blocks.ts'
 import { blockSchema } from './schema.ts'
 
 // ── 드롭 후보 ─────────────────────────────────────────────────────────
@@ -105,6 +105,9 @@ export function dropCandidates(
   for (const entry of visibleBlocks(doc, isCollapsed).order) {
     const block = entry.node
     if (excluded.has(block.id)) continue
+    // 컬럼 안의 블록은 놓을 자리가 아니다(Phase 2 1c) — 나란한 컬럼은 줄의 위치가 문서 순서로 오르지 않아, 위치로 찾는 이진 탐색의 전제가
+    // 깨진다. 컬럼으로 끌어 넣기는 1c-2(옆에 놓아 컬럼 만들기와 함께).
+    if (columnIdAt(doc.resolve(block.pos)) !== null) continue
     const node = doc.nodeAt(block.pos)
     if (!node) continue
     const info = describeContainer(node, block.pos)

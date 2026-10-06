@@ -116,6 +116,11 @@ export function plainTextForBlocks(blocks: readonly EditorBlock[]): string {
   const lines: string[] = []
   const walk = (list: readonly EditorBlock[], depth: number): void => {
     for (const block of list) {
+      // 컬럼의 틀(Phase 2 1c)은 줄이 아니다 — 그 안의 블록을 같은 깊이로 차례로 편다(내보내기와 같다).
+      if (block.type === 'column_list' || block.type === 'column') {
+        walk(block.children ?? [], depth)
+        continue
+      }
       const indent = '  '.repeat(depth)
       const text = toPlainText(block.title ?? [])
       const checked = (block.properties as { checked?: boolean } | undefined)?.checked === true
