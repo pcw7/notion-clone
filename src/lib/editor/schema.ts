@@ -105,6 +105,8 @@ const RENDER_TAG: Readonly<Record<BodyBlockType, string>> = {
   table_of_contents: 'nav',
   // breadcrumb(8b-2) — 경로는 노드 뷰가 그린다(`breadcrumb-view.ts`).
   breadcrumb: 'nav',
+  // 블록 수식(Phase 2 1a) — 식은 노드 뷰가 KaTeX 로 그린다(`equation-view.ts`).
+  equation: 'div',
 }
 
 /**

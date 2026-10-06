@@ -54,6 +54,7 @@ import { Plugin, PluginKey, type Command } from '@tiptap/pm/state'
 import type { EditorView } from '@tiptap/pm/view'
 
 import { codeCaptionText, codeLanguageOf, fencedCode } from '../block/code.ts'
+import { equationDisplayLines } from '../block/equation.ts'
 import { isKnownBlockType, specOf, PAGE_TYPE } from '../block/types.ts'
 import { textRun, toPlainText } from '../contracts/rich-text.ts'
 import {
@@ -152,6 +153,10 @@ export function plainTextForBlocks(blocks: readonly EditorBlock[]): string {
           break
         case 'image':
           lines.push(`${indent}![](${url})`)
+          break
+        case 'equation':
+          // 블록 수식(Phase 2 1a) — 내보내기와 같은 `$$` 울타리.
+          lines.push(...equationDisplayLines((block.properties ?? {}) as Record<string, unknown>).map((line) => `${indent}${line}`))
           break
         case 'code':
           // 코드 블록(8a-1) — 울타리 · 언어. 첫 줄만 들여 쓰면 둘째 줄부터 목록 밖으로 나간다.

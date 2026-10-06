@@ -9,6 +9,7 @@
  *
  *   · 첫 블록이 `# 제목` 이면 페이지 제목이 된다(우리 · 노션의 내보내기가 그렇게 쓴다) — 본문에서 뺀다
  *   · 헤딩 1~3(4~6 은 3) · 문단 · 글머리표 · 번호 · 할 일(`- [ ]` · `- [x]`) · 코드(언어) · 인용 · 구분선 · 외부 이미지(http · https)
+ *   · 문단 하나가 통째로 `$$ … $$` 이면 블록 수식(Phase 2 1a — 우리 · 노션의 내보내기가 블록 수식을 그렇게 쓴다)
  *   · 우리 내보내기의 HTML 꼴을 되돌린다 — `<details><summary>` 는 토글, `<aside>` 는 콜아웃(왕복이 닫힌다)
  *   · 글자의 꾸밈 — 굵게 · 기울임 · 취소선 · 코드 · 링크(http · https · mailto 만) · 줄바꿈
  *   · **옮기지 못한 것은 세어 돌려준다**(`ImportLosses`) — 표(행마다 문단으로 남긴다) · 그 밖의 HTML · 로컬 이미지 · 글자 안의 이미지 ·
@@ -24,6 +25,7 @@ import { randomUUID } from 'node:crypto'
 import { Lexer, type Token, type Tokens } from 'marked'
 
 import { CODE_LANGUAGES, PLAIN_TEXT_LANGUAGE } from '../block/code.ts'
+import { clampExpression, displayMathOf } from '../block/equation.ts'
 import {
   DEFAULT_ANNOTATIONS,
   MAX_RICH_TEXT_RUNS,
@@ -239,6 +241,11 @@ function blocksOf(tokens: readonly Token[], cx: Convert): EditorBlock[] {
       }
       case 'paragraph': {
         const p = token as Tokens.Paragraph
+        const math = displayMathOf(p.text)
+        if (math !== null) {
+          out.push(block('equation', [], { properties: { expression: clampExpression(math) } }))
+          break
+        }
         const only = p.tokens.filter((t) => !(t.type === 'text' && (t as Tokens.Text).text.trim() === ''))
         if (only.length === 1 && only[0]!.type === 'image') {
           const image = only[0] as Tokens.Image

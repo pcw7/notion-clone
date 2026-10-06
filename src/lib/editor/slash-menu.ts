@@ -102,6 +102,8 @@ const CATALOG: Readonly<Record<BodyBlockType, SlashCommandBase>> = {
   // 목차(8b-1) — 노션의 'Advanced blocks' 자리.
   table_of_contents: { label: '목차', aliases: ['목차', '차례', 'toc', 'table of contents', 'contents'], group: '고급 블록' },
   breadcrumb: { label: '이동 경로', aliases: ['이동 경로', '경로', '이동경로', 'breadcrumb', 'bread'], group: '고급 블록' },
+  // 블록 수식(Phase 2 1a · F-01-20 — 노션의 `/math` · `/latex`).
+  equation: { label: '블록 수식', aliases: ['수식', '블록 수식', '방정식', 'math', 'latex', 'tex', 'equation', 'katex'], group: '고급 블록' },
 }
 
 /**

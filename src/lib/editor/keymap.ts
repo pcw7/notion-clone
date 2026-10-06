@@ -47,6 +47,7 @@ import {
   selectBlockCommand,
   turnSelectionIntoCommand,
 } from './block-selection.ts'
+import { openEquationCommand } from './equation-block.ts'
 import {
   createBlockKeymap,
   isComposingEvent,
@@ -92,6 +93,8 @@ export type EditorKeymapDeps = CommandDeps & {
   promptLink?: () => void
   /** Mod+/. 블록 메뉴를 여는 것도 UI 의 일이다(F-12-01 "블록 컨텍스트 메뉴"). */
   openBlockMenu?: () => void
+  /** 골라진 블록 수식의 Enter — 입력창을 연다(Phase 2 1a · 오버레이는 UI 의 일이다). */
+  openEquation?: (blockId: string) => void
   /**
    * 되돌리기 · 다시 하기. 없으면 ProseMirror history(Phase 0 편집기). 협업 편집기는 y-prosemirror 의 것을 넘긴다 — 내 편집만
    * 되돌린다(F-05-15 · `collab/collab-editor.ts`).
@@ -132,8 +135,12 @@ export function createEditorKeymap(deps: EditorKeymapDeps): KeyBindings {
     // ★ 순서가 동작을 정의한다 — 파일 머리말 참조.
     Backspace: chain(deleteBlockSelectionCommand(deps), undoInputRuleCommand(), block.Backspace),
     Delete: chain(deleteBlockSelectionCommand(deps), block.Delete),
-    // 블록 선택 상태의 Enter 는 "이 블록을 편집한다"이지 분할이 아니다.
-    Enter: chain(exitBlockSelectionCommand(), block.Enter),
+    // 블록 선택 상태의 Enter 는 "이 블록을 편집한다"이지 분할이 아니다. 골라진 블록 수식이면 그 입력창이 "편집"이다(Phase 2 1a).
+    Enter: chain(
+      ...(deps.openEquation ? [openEquationCommand(deps.openEquation)] : []),
+      exitBlockSelectionCommand(),
+      block.Enter,
+    ),
 
     // Esc 는 한 번 누르면 들어가고 한 번 더 누르면 나온다.
     Escape: chain(exitBlockSelectionCommand(), selectBlockCommand()),
