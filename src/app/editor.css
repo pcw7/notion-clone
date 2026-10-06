@@ -236,11 +236,52 @@
   color: #9ca3af;
 }
 
+/* 인라인 수식은 span 이다 — 블록 수식(`div.blk-equation` · Phase 2 1a)이 같은 클래스 이름을 쓰므로 태그로 가른다. */
 .blk-mention,
-.blk-equation {
+span.blk-equation {
   border-radius: 0.25rem;
   background: #f3f4f6;
   padding: 0 0.25rem;
+}
+
+/*
+ * 블록 수식(Phase 2 1a · F-01-20) — 노드 뷰가 그리는 `div.blk-equation`(`equation-view.ts`). KaTeX 의 디스플레이 출력은 가운데 ·
+ * 넘치면 가로로 굴린다. 누르면 입력창이 열린다(편집할 수 있을 때). 빈 식 · 불러 오는 동안의 원문 · 그리지 못한 식은 각자의 모양.
+ */
+.blk-editor div.blk-equation {
+  margin: 0.25rem 0;
+  padding: 0.25rem 0.5rem;
+  border-radius: 0.25rem;
+  overflow-x: auto;
+  overflow-y: hidden;
+  cursor: default;
+}
+.blk-editor[contenteditable='true'] div.blk-equation { cursor: pointer; }
+.blk-editor[contenteditable='true'] div.blk-equation:hover { background: rgba(55, 53, 47, 0.06); }
+.blk-editor div.blk-equation .katex-display { margin: 0.25rem 0; }
+.blk-editor .blk-equation-placeholder {
+  margin: 0;
+  padding: 0.5rem 0;
+  font-size: 0.875rem;
+  color: #9ca3af;
+}
+.blk-editor .blk-equation-source {
+  display: block;
+  background: none;
+  text-align: center;
+  color: #6b7280;
+}
+.blk-editor .blk-equation-error code {
+  display: block;
+  background: none;
+  color: #dc2626;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.blk-editor .blk-equation-error-message {
+  margin: 0.25rem 0 0;
+  font-size: 0.75rem;
+  color: #dc2626;
 }
 
 .blk-editor code {
@@ -785,7 +826,10 @@
     .blk-image figcaption { color: #a3a3a3; }
     .blk-image-failure, .blk-image-error { color: #fca5a5; }
     .blk-image-error { border-color: #7f1d1d; }
-    .blk-mention, .blk-equation, .blk-editor code { background: #262626; }
+    .blk-mention, span.blk-equation, .blk-editor code { background: #262626; }
+    .blk-editor[contenteditable='true'] div.blk-equation:hover { background: rgba(255, 255, 255, 0.06); }
+    .blk-editor .blk-equation-placeholder, .blk-editor .blk-equation-source { color: #737373; }
+    .blk-editor .blk-equation-error code, .blk-editor .blk-equation-error-message { color: #fca5a5; }
     .blk-editor pre.blk-code { background: #1f1f1f; }
     .blk-editor pre.blk-code code { background: none; }
     .blk-editor .blk-code-bar button,

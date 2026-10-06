@@ -36,6 +36,7 @@ export function readOnlyEditorDeps(workspaceId: string, labels: PreviewLabels): 
     navigate: nothing,
     openCodeLanguageMenu: nothing,
     openCodeCaption: nothing,
+    openEquation: nothing,
     uploadImage: async () => ({ ok: false, message: '미리보기에서는 올릴 수 없습니다.' }),
     breadcrumbTrail: () => null,
     pageRefTitle: (id) => lookup(labels.pages, id),

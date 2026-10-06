@@ -52,7 +52,7 @@ export type MvpBlockType = (typeof MVP_BLOCK_TYPES)[number]
  *
  * ⚠ 순서가 뜻을 갖는다 — 첫 항목(`paragraph`)이 새 블록의 기본형이다(`editor/schema.ts`). 더하는 것은 뒤에 붙인다.
  */
-export const BODY_BLOCK_TYPES = [...MVP_BLOCK_TYPES, 'code', 'table_of_contents', 'breadcrumb'] as const
+export const BODY_BLOCK_TYPES = [...MVP_BLOCK_TYPES, 'code', 'table_of_contents', 'breadcrumb', 'equation'] as const
 export type BodyBlockType = (typeof BODY_BLOCK_TYPES)[number]
 
 /** 페이지도 블록이다(C-3). 레지스트리에는 있지만 `/` 메뉴에는 없다. */
@@ -98,6 +98,11 @@ export type BlockTypeSpec = {
    * 정본 §3.4 [보강] 코드 블록 ⑧) — 모양이 틀린 캡션 하나가 투영 · 색인 · 복제를 멈췄다.
    */
   readonly hasCaption?: boolean
+  /**
+   * `properties.expression`(KaTeX 문자열)을 담는가 — 블록 수식(F-01-20 · Phase 2 1a). 본문을 읽을 때 이 칸을 정화한다(`block/props.ts` —
+   * 문자열이 아니면 지우고 `MAX_EQUATION_LENGTH` 를 넘으면 자른다). 렌더 결과는 저장하지 않는다(정본 §3.4 [보강] 블록 수식).
+   */
+  readonly expression?: boolean
 }
 
 export const BLOCK_TYPES: Readonly<Record<BlockType, BlockTypeSpec>> = Object.freeze({
@@ -139,6 +144,11 @@ export const BLOCK_TYPES: Readonly<Record<BlockType, BlockTypeSpec>> = Object.fr
   // breadcrumb(F-01-16 · 8b-2) — 이 페이지의 조상 경로. 목차처럼 내용을 저장하지 않는다(공개 API 의 페이로드가 `{}` 다 — 색도
   // 없다). 경로는 그릴 때 머리의 breadcrumb 과 같은 데이터로(`block/breadcrumb.ts`).
   breadcrumb: { hasRichText: false, canHaveChildren: false, supportsColor: false },
+
+  // 블록 수식(F-01-20 · Phase 2 1a) — 페이로드는 `expression`(KaTeX 문자열) 하나뿐이다(공개 API — rich text 없음 · 자식 없음 · **색 없음**).
+  // 텍스트를 담지 않아 원자다(식은 편집기 밖의 입력창에서 고친다). **노드는 `equation_block`** — 인라인 수식의 노드가 이미 `equation` 이다
+  // (코드 ↔ `code_block` 과 같은 사상 · 저장 포맷이라 바꾸면 마이그레이션이다).
+  equation: { hasRichText: false, canHaveChildren: false, supportsColor: false, nodeName: 'equation_block', expression: true },
 
   // 폴백. 렌더는 회색 박스, 저장은 원본 그대로.
   unsupported: { hasRichText: false, canHaveChildren: false, supportsColor: false },

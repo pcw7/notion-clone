@@ -15,6 +15,8 @@
  * 틀이 선다(존재를 가르지 않는다).
  */
 
+// 블록 수식(Phase 2 1a)의 글꼴 · 배치 — KaTeX 의 출력은 이 스타일시트가 있어야 수식으로 보인다. 편집기 · 읽기 전용 미리보기 모두 이 안이다.
+import 'katex/dist/katex.min.css'
 import { signedInAccounts } from '@/lib/auth/accounts'
 import { readAccounts } from '@/lib/auth/accounts-cookie'
 import { requirePageVisitor } from '@/lib/auth/page-session'

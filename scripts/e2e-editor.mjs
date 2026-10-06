@@ -10427,6 +10427,97 @@ async function main() {
       }
     }
 
+    if (sectionIf('블록 수식 (Phase 2 1a · F-01-20)')) {
+      // 빈 줄에서 `/수식` → 입력창이 곧바로 열리고 쓰는 동안 미리 그린다 → Enter 로 저장하면 블록이 KaTeX 로 그려지고(글꼴까지) 서버에
+      // `type='equation'` 행이 선다 · 캐럿은 뒤의 빈 문단. 블록을 누르면 다시 열리고 Esc 는 고치지 않는다. 틀린 식은 까닭을 붉게 보이고
+      // 그대로 저장된다. 키보드만으로도 연다(블록 선택 → Enter). 자기 데이터를 스스로 만든다.
+      const stamp = Date.now()
+      const eqPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
+        method: 'POST', headers: authed, body: JSON.stringify({ title: `블록 수식 ${stamp}` }),
+      })).json()).page.id
+      const line = randomUUID()
+      await saveBody(eqPage, { blocks: [{ id: line, type: 'paragraph', title: [], properties: {}, format: {}, children: [] }] })
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${eqPage}` })
+      await waitFor(`!!document.querySelector('[data-block-id="${line}"] p')`, 15000)
+      let focused = false
+      for (let i = 0; i < 20 && !focused; i += 1) {
+        await clickSelector(`[data-block-id="${line}"] p`)
+        focused = await waitFor(`document.activeElement?.classList.contains('ProseMirror') && document.querySelector('[data-block-id="${line}"]')?.contains(window.getSelection()?.anchorNode ?? null)`, 500)
+      }
+      check('전제 — 빈 줄에 캐럿이 섰다', focused)
+
+      const BLOCK = `[data-block-id="${line}"] div.blk-equation`
+      const EDITOR = '[data-testid="equation-editor"]'
+      await typeText('/')
+      await typeText('수식')
+      await waitFor(`!!document.querySelector('[role="listbox"][aria-label="블록 삽입"]')`, 3000)
+      await key('Enter')
+      check('★ /수식 — 그 줄이 블록 수식이 되고 입력창이 곧바로 열려 포커스를 받는다',
+        await waitFor(`!!document.querySelector('${BLOCK}') && document.activeElement?.dataset.testid === 'equation-input'`, 5000),
+        String(await evaluate(`document.querySelector('[data-block-id="${line}"]')?.innerHTML?.slice(0, 160) ?? '(없음)'`)))
+      check('빈 수식은 자리 표시를 보인다', await evaluate(`document.querySelector('${BLOCK} .blk-equation-placeholder')?.textContent === '수식을 입력하세요'`))
+
+      await typeText('\\frac{a}{b} + \\sqrt{x}')
+      check('★ 쓰는 동안 미리 그린다 — 블록은 아직 그대로(저장 전)',
+        await waitFor(`!!document.querySelector('[data-testid="equation-preview"] .mfrac') && !!document.querySelector('${BLOCK} .blk-equation-placeholder')`, 8000))
+      await key('Enter')
+      check('★ Enter 로 저장 — 입력창이 닫히고 블록이 KaTeX 로 그려진다(분수 · 근호)',
+        await waitFor(`!document.querySelector('${EDITOR}') && !!document.querySelector('${BLOCK} .blk-equation-render .katex-display .mfrac')
+          && !!document.querySelector('${BLOCK} .sqrt')`, 8000),
+        String(await evaluate(`document.querySelector('${BLOCK}')?.innerHTML?.slice(0, 200) ?? '(없음)'`)))
+      check('★ KaTeX 의 스타일시트가 붙었다 — 수식 글꼴로 그린다',
+        String(await evaluate(`getComputedStyle(document.querySelector('${BLOCK} .katex')).fontFamily`)).includes('KaTeX_Main'),
+        String(await evaluate(`getComputedStyle(document.querySelector('${BLOCK} .katex')).fontFamily`)))
+
+      // 캐럿은 뒤의 빈 문단 — 이어 쓴다.
+      await typeText('뒤 문단')
+      const shapeOnServer = async () => (await readBody(eqPage)).doc.blocks.map((b) => [b.type, b.type === 'equation' ? b.properties?.expression ?? null : (b.title ?? []).map((r) => r.plain_text ?? '').join('')])
+      let saved = null
+      for (let i = 0; i < 60; i += 1) {
+        saved = await shapeOnServer()
+        if (JSON.stringify(saved) === JSON.stringify([['equation', '\\frac{a}{b} + \\sqrt{x}'], ['paragraph', '뒤 문단']])) break
+        await sleep(150)
+      }
+      check("★ 서버 — type='equation' 행에 식 · 뒤 문단에 이어 쓴 글(포커스가 편집기로 돌아왔다)",
+        JSON.stringify(saved) === JSON.stringify([['equation', '\\frac{a}{b} + \\sqrt{x}'], ['paragraph', '뒤 문단']]), JSON.stringify(saved))
+
+      // 누르면 다시 열린다 — 연 순간의 식 · Esc 는 고치지 않는다.
+      await clickSelector(BLOCK)
+      check('★ 블록을 누르면 입력창이 지금 식으로 열린다',
+        await waitFor(`document.querySelector('[data-testid="equation-input"]')?.value === ${JSON.stringify('\\frac{a}{b} + \\sqrt{x}')}`, 5000))
+      await typeText(' + 1')
+      await key('Escape')
+      await sleep(400)
+      check('Esc 는 저장하지 않고 닫는다',
+        !(await evaluate(`!!document.querySelector('${EDITOR}')`)) && (await evaluate(`!!document.querySelector('${BLOCK} .mfrac')`))
+          && JSON.stringify((await shapeOnServer())[0]) === JSON.stringify(['equation', '\\frac{a}{b} + \\sqrt{x}']))
+
+      // 틀린 식 — 까닭을 보이고 그대로 저장한다(블록을 날리지 않는다).
+      await clickSelector(BLOCK)
+      await waitFor(`!!document.querySelector('[data-testid="equation-input"]')`, 5000)
+      await evaluate(`(() => { const i = document.querySelector('[data-testid="equation-input"]'); i.setSelectionRange(0, i.value.length) })()`)
+      await typeText('\\frac{a}{')
+      check('틀린 식은 미리보기가 까닭을 보인다', await waitFor(`!!document.querySelector('[data-testid="equation-preview-error"]')`, 5000))
+      await key('Enter')
+      check('★ 틀린 식도 저장된다 — 블록은 원문을 붉게 · 까닭을 보인다',
+        await waitFor(`document.querySelector('${BLOCK} .blk-equation-error code')?.textContent === ${JSON.stringify('\\frac{a}{')}
+          && (document.querySelector('${BLOCK} .blk-equation-error-message')?.textContent ?? '').startsWith('수식을 그릴 수 없습니다')`, 8000),
+        String(await evaluate(`document.querySelector('${BLOCK}')?.innerHTML?.slice(0, 200) ?? '(없음)'`)))
+
+      // 키보드만으로 — 뒤 문단에서 Esc(블록 선택) → ↑(수식 블록 선택) → Enter.
+      await clickSelector(`.blk-editor [data-block-id]:nth-child(2) p`)
+      await key('Escape')
+      await key('ArrowUp')
+      await key('Enter')
+      check('★ 키보드만으로 연다 — 블록 선택 → Enter',
+        await waitFor(`document.activeElement?.dataset.testid === 'equation-input' && document.activeElement.value === ${JSON.stringify('\\frac{a}{')}`, 5000))
+      await key('Escape')
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${eqPage}` })
+      check('다시 열어도 그 식이다(틀린 식 그대로)', await waitFor(`document.querySelector('${BLOCK} .blk-equation-error code')?.textContent === ${JSON.stringify('\\frac{a}{')}`, 15000))
+      await sleep(1000)
+    }
+
     section('전체')
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))
     const serverErrors = serverOutput.split('\n').filter((l) => l.includes('⨯'))

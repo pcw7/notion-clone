@@ -18,9 +18,11 @@ import type { Decoration, EditorView, NodeView } from '@tiptap/pm/view'
 
 import { BREADCRUMB_TYPE } from '../block/breadcrumb.ts'
 import { CODE_TYPE } from '../block/code.ts'
+import { EQUATION_TYPE } from '../block/equation.ts'
 import { TOC_TYPE } from '../block/toc.ts'
 import { breadcrumbNodeView, type BreadcrumbViewDeps } from './breadcrumb-view.ts'
 import { codeNodeView, type CodeViewDeps } from './code-view.ts'
+import { equationNodeView, type EquationViewDeps } from './equation-view.ts'
 import { imageNodeView, type ImageViewDeps } from './image-view.ts'
 import { mentionDisplay, mentionTargetOf } from './mention-label.ts'
 import { pageIconElement } from './page-icon-dom.ts'
@@ -28,7 +30,7 @@ import type { PageIcon } from '../block/page-icon.ts'
 import { nodeNameOf } from './schema.ts'
 import { tocNodeView, type TocViewDeps } from './toc-view.ts'
 
-export type NodeViewDeps = ImageViewDeps & CodeViewDeps & TocViewDeps & BreadcrumbViewDeps & {
+export type NodeViewDeps = ImageViewDeps & CodeViewDeps & TocViewDeps & BreadcrumbViewDeps & EquationViewDeps & {
   isCollapsed: (blockId: string) => boolean
   toggleCollapsed: (blockId: string) => void
   /** 하위 페이지로 이동. */
@@ -264,6 +266,8 @@ export function createNodeViews(deps: NodeViewDeps): Record<
     [nodeNameOf(TOC_TYPE)]: (node, view, _getPos, decorations) => tocNodeView(node, view, decorations, deps),
     // breadcrumb(8b-2) — 경로는 `breadcrumb-plugin.ts` 가 단 노드 데코레이션에서 읽는다.
     [nodeNameOf(BREADCRUMB_TYPE)]: (node, view, _getPos, decorations) => breadcrumbNodeView(node, view, decorations, deps),
+    // 블록 수식(Phase 2 1a) — 노드는 `equation_block`(인라인 수식이 `equation` 이다).
+    [nodeNameOf(EQUATION_TYPE)]: (node, view, getPos) => equationNodeView(node, view, getPos, deps),
     mention: (node, view, getPos) => mentionNodeView(node, view, getPos, deps),
   }
 }

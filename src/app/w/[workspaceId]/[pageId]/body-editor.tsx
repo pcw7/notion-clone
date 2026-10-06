@@ -37,6 +37,8 @@ import { blockIdFromHash, revealBlockCommand } from '@/lib/editor/block-menu'
 import { plainTextForBlocks } from '@/lib/editor/block-clipboard'
 import { BlockSelection, selectedBlockCount } from '@/lib/editor/block-selection'
 import { codeBlockInfo, setCodeCaptionCommand, setCodeLanguageCommand } from '@/lib/editor/code-block'
+import { equationBlockInfo, setEquationExpressionCommand } from '@/lib/editor/equation-block'
+import { EQUATION_TYPE } from '@/lib/block/equation'
 import { syncReadOnlyTabStops } from '@/lib/editor/node-views'
 import { setBreadcrumbTrail } from '@/lib/editor/breadcrumb-plugin'
 import { sameTrail, type BreadcrumbTrail } from '@/lib/block/breadcrumb'
@@ -64,6 +66,7 @@ import type { PageIcon } from '@/lib/block/page-icon'
 import { BlockGutter } from './block-gutter'
 import { CodeCaptionEditor } from './code-caption-editor'
 import { CodeLanguageMenu } from './code-language-menu'
+import { EquationEditor } from './equation-editor'
 import { openCommentThread } from './comment-panel'
 import { PageIconView } from '../page-icon-view'
 import { closeMentionMenu, insertMention, mentionMenuState, type MentionPick } from '@/lib/editor/mention-menu'
@@ -180,6 +183,27 @@ const sameGeometry = (a: CodeUiGeometry, b: CodeUiGeometry): boolean =>
   Math.abs(a.left - b.left) < 0.5 &&
   Math.abs(a.width - b.width) < 0.5 &&
   Math.abs(a.minHeight - b.minHeight) < 0.5
+
+/**
+ * 블록 수식의 입력창(Phase 2 1a) — 코드 블록의 오버레이와 같은 규칙: 블록은 id 로 들고 쓸 때마다 지금 문서에서 찾는다 · 자리는
+ * 트랜잭션 · 크기 변화마다 다시 잰다. 연 순간의 식을 담는다.
+ */
+type EquationUi = { blockId: string; initial: string; top: number; left: number; width: number; hadFocus: boolean }
+
+/** 블록 수식의 입력창 자리 — 블록 바로 아래, 같은 왼쪽. 노드 뷰가 없으면 null. */
+function measureEquationUi(view: EditorView, frame: HTMLElement, contentPos: number): Pick<EquationUi, 'top' | 'left' | 'width'> | null {
+  const box = view.nodeDOM(contentPos)
+  if (!(box instanceof HTMLElement)) return null
+  const f = frame.getBoundingClientRect()
+  const b = box.getBoundingClientRect()
+  return { top: b.bottom - f.top + 4, left: b.left - f.left, width: b.width }
+}
+
+/** 이 입력창을 연 블록을 눌렀는가 — 바깥 누르기가 건너뛴다(블록의 click 이 닫는다). */
+function isEquationTrigger(target: EventTarget | null, blockId: string): boolean {
+  if (!(target instanceof Element) || target.closest('.blk-equation') === null) return false
+  return target.closest<HTMLElement>('[data-block-id]')?.dataset.blockId === blockId
+}
 
 /** 고른 글자에 코멘트를 달 수 있는 자리 — 편집기 기준 좌표까지 들고 있다. */
 type CommentTarget = { blockId: string; start: number; end: number; left: number; top: number }
@@ -307,6 +331,10 @@ export function BodyEditor({
   const codeUiRef = useRef<CodeUi | null>(null)
   /** 열린 오버레이가 스스로 닫는 길 — 캡션은 쓰던 글자를 저장하고 닫는다. 트리거를 다시 누르면 부른다. */
   const codeUiCloseRef = useRef<((restoreFocus: boolean) => void) | null>(null)
+  // 블록 수식의 입력창(Phase 2 1a) — 코드 블록의 오버레이와 같은 짜임.
+  const [equationUi, setEquationUi] = useState<EquationUi | null>(null)
+  const equationUiRef = useRef<EquationUi | null>(null)
+  const equationCloseRef = useRef<((restoreFocus: boolean) => void) | null>(null)
   /** 코멘트를 쓰는 중 — 앵커는 **여는 순간** 만든다(아래). */
   const [composing, setComposing] = useState<{
     blockId: string
@@ -698,6 +726,65 @@ export function BodyEditor({
     }
   }, [workspaceId, pageId, router])
 
+  // ── 블록 수식의 입력창 (Phase 2 1a) ─────────────────────────────────
+
+  /**
+   * 입력창을 연다 — 노드 뷰의 click · 골라진 블록의 Enter · `/수식` 이 부른다. 편집할 수 없거나 블록 수식이 아니면 열지 않는다. 같은
+   * 블록이 이미 열려 있으면 닫는다(쓰던 식은 저장한다). 슬래시 · 멘션 메뉴는 닫는다(그 키 리스너가 입력창의 키를 가로채지 않게).
+   */
+  const openEquationUi = useCallback((blockId: string) => {
+    const open = equationUiRef.current
+    if (open !== null && open.blockId === blockId) {
+      equationCloseRef.current?.(true)
+      return
+    }
+    const view = viewRef.current
+    const frame = frameRef.current
+    if (!view || !frame || !view.editable) return
+    const info = equationBlockInfo(view.state, blockId)
+    if (info === null) return
+    const geometry = measureEquationUi(view, frame, info.pos)
+    if (geometry === null) return
+    const hadFocus = view.hasFocus()
+    view.dispatch(closeMentionMenu(closeSlashMenu(view.state.tr)))
+    const next: EquationUi = { ...geometry, blockId, initial: info.expression, hadFocus }
+    equationUiRef.current = next
+    setEquationUi(next)
+  }, [])
+
+  /** 닫는다 — 코드 오버레이와 같다: 돌려줄 때 캐럿을 옮기지 않는다. 포커스 없이 열었으면 블록 뒤에 캐럿을 둔다(화면 안이다). */
+  const closeEquationUi = useCallback((restoreFocus: boolean, outside?: EventTarget | null) => {
+    const current = equationUiRef.current
+    equationUiRef.current = null
+    setEquationUi(null)
+    const view = viewRef.current
+    if (!view || current === null || !view.editable) return
+    if (!restoreFocus && !(outside instanceof Node && view.dom.contains(outside))) return
+    view.focus()
+    if (current.hadFocus) return
+    const info = equationBlockInfo(view.state, current.blockId)
+    if (info === null) return
+    view.dispatch(view.state.tr.setSelection(NodeSelection.create(view.state.doc, info.pos)))
+  }, [])
+
+  /** 자리를 다시 잰다 — 블록이 사라졌으면(지워짐 · 타입이 바뀜) 닫는다. */
+  const remeasureEquationUi = useCallback((view: EditorView) => {
+    const current = equationUiRef.current
+    const frame = frameRef.current
+    if (current === null || !frame) return
+    const info = equationBlockInfo(view.state, current.blockId)
+    const geometry = info === null ? null : measureEquationUi(view, frame, info.pos)
+    if (geometry === null) {
+      equationUiRef.current = null
+      setEquationUi(null)
+      return
+    }
+    if (Math.abs(geometry.top - current.top) < 0.5 && Math.abs(geometry.left - current.left) < 0.5 && Math.abs(geometry.width - current.width) < 0.5) return
+    const next: EquationUi = { ...current, ...geometry }
+    equationUiRef.current = next
+    setEquationUi(next)
+  }, [])
+
   const execute = useCallback(
     (command: SlashCommand) => {
       const view = viewRef.current
@@ -708,12 +795,15 @@ export function BodyEditor({
         return
       }
 
-      runSlashCommand(view.state, view.dispatch.bind(view), command, {
+      // `/수식` 은 지금 블록을 수식으로 바꾼다(블록 id 그대로) — 바꾼 뒤 그 입력창을 연다(F-01-20 — 만들면 곧바로 식을 쓴다).
+      const target = command.id === EQUATION_TYPE ? (containerAt(view.state.selection.$from)?.id ?? null) : null
+      const ran = runSlashCommand(view.state, view.dispatch.bind(view), command, {
         isCollapsed: (id) => collapsedRef.current.has(id),
       })
       view.focus()
+      if (ran && target !== null) openEquationUi(target)
     },
-    [createSubpage],
+    [createSubpage, openEquationUi],
   )
 
   // ── 코드 블록의 오버레이 (8a-2) ─────────────────────────────────────
@@ -839,6 +929,8 @@ export function BodyEditor({
       // 코드 블록의 크롬 버튼(8a-2) — 목록 · 입력칸은 편집기 밖의 오버레이다.
       openCodeLanguageMenu: (id) => openCodeUi('language', id),
       openCodeCaption: (id) => openCodeUi('caption', id),
+      // 블록 수식(Phase 2 1a) — 누르거나 골라서 Enter 를 치면 입력창.
+      openEquation: (id) => openEquationUi(id),
       // 목차의 항목(8b-1) — 그 블록을 보여 주고(접힌 조상을 펼친다) 화면 위쪽으로 굴린다. 주소의 해시도 그 블록으로 —
       // `replaceState` 라 `hashchange` 가 나지 않고(두 번 보이지 않는다) 뒤로 가기에 쌓이지 않는다.
       // breadcrumb 블록의 링크(8b-2) — 앱 안에서 옮겨 간다.
@@ -866,6 +958,8 @@ export function BodyEditor({
       // 코드 블록의 오버레이는 옛 편집기의 화면 좌표로 떠 있다 — 닫는다(쓰는 중이던 캡션은 사라진다 · 드문 경우).
       codeUiRef.current = null
       setCodeUi(null)
+      equationUiRef.current = null
+      setEquationUi(null)
       // 하이라이트 플러그인은 **이 Y.Doc** 으로 앵커를 푼다 — 연결이 문서를 버리고 다시 열면 여기서 새 문서로 다시 붙는다.
       const collab = createCollabEditorState(ydoc.getXmlFragment(BODY_FRAGMENT), deps, [
         commentHighlightPlugin({ ydoc, onOpen: openCommentThread }),
@@ -883,6 +977,7 @@ export function BodyEditor({
           syncMentionMenu(v)
           syncCommentTarget(v)
           remeasureCodeUi(v)
+          remeasureEquationUi(v)
           checkUnknownMentions(v)
           // 같은 값이면 리렌더하지 않는다 — 트랜잭션마다 불리는 자리다.
           const count = selectedBlockCount(v.state)
@@ -1176,6 +1271,23 @@ export function BodyEditor({
             onClose={closeCodeUi}
             closeRef={codeUiCloseRef}
             isTrigger={(target) => isCodeUiTrigger(target, codeUi)}
+          />
+        )}
+        {/* 블록 수식의 입력창(Phase 2 1a) — 편집기 밖 · 프레임 좌표. 같은 블록을 다시 열면 새로 연다(key). */}
+        {editable && equationUi !== null && (
+          <EquationEditor
+            key={equationUi.blockId}
+            initial={equationUi.initial}
+            top={equationUi.top}
+            left={equationUi.left}
+            width={equationUi.width}
+            onSave={(text) => {
+              const view = viewRef.current
+              if (view?.editable) setEquationExpressionCommand(equationUi.blockId, text)(view.state, view.dispatch.bind(view))
+            }}
+            onClose={closeEquationUi}
+            closeRef={equationCloseRef}
+            isTrigger={(target) => isEquationTrigger(target, equationUi.blockId)}
           />
         )}
       </div>
