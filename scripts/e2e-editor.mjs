@@ -10951,6 +10951,110 @@ async function main() {
       await sleep(1000)
     }
 
+    if (sectionIf('심플 테이블 (Phase 2 1d-1 · F-01-18)')) {
+      // 빈 줄에서 `/표` → 그 줄이 3열 × 2행의 표가 되고 캐럿은 첫 셀. Tab 으로 셀을 건너며 쓰고, 마지막 셀의 Tab 은 행을 더한다. 마지막
+      // 행의 Enter 는 표를 나가 그 뒤의 새 문단으로. 셀 맨 앞의 Backspace 는 아무것도 바꾸지 않는다. 서버에는 표 → 행(셀) 이 선다.
+      const stamp = Date.now()
+      const tPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
+        method: 'POST', headers: authed, body: JSON.stringify({ title: `심플 테이블 ${stamp}` }),
+      })).json()).page.id
+      const ids = { above: randomUUID(), line: randomUUID(), below: randomUUID() }
+      const para = (id, text) => ({ id, type: 'paragraph', title: text === '' ? [] : [textRun(text)], properties: {}, format: {}, children: [] })
+      await saveBody(tPage, { blocks: [para(ids.above, '표 위'), para(ids.line, ''), para(ids.below, '표 아래')] })
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${tPage}` })
+      await waitFor(`!!document.querySelector('[data-block-id="${ids.below}"] p') && document.querySelector('.blk-editor')?.getAttribute('contenteditable') === 'true'`, 15000)
+      let focused = false
+      for (let i = 0; i < 20 && !focused; i += 1) {
+        await clickSelector(`[data-block-id="${ids.line}"] p`)
+        focused = await waitFor(`document.activeElement?.classList.contains('ProseMirror') && document.querySelector('[data-block-id="${ids.line}"]')?.contains(window.getSelection()?.anchorNode ?? null)`, 500)
+      }
+      check('전제 — 빈 줄에 캐럿이 섰다', focused)
+      const tableText = (b) => (b.title ?? []).map((r) => r.plain_text ?? '').join('')
+      const serverShape = async () => {
+        const walk = (blocks) => blocks.map((b) => (b.type === 'table'
+          ? ['table', (b.children ?? []).map((r) => (r.properties?.cells ?? []).map((c) => c.map((run) => run.plain_text ?? '').join('')))]
+          : tableText(b)))
+        return JSON.stringify(walk((await readBody(tPage)).doc.blocks))
+      }
+      const serverIs = async (expected) => {
+        let got = null
+        for (let i = 0; i < 60; i += 1) {
+          got = await serverShape()
+          if (got === JSON.stringify(expected)) return [true, got]
+          await sleep(150)
+        }
+        return [false, got]
+      }
+      const CELLS = `[data-block-id="${ids.line}"] .blk-table td`
+      const caretCell = () => evaluate(`(() => {
+        const cells = [...document.querySelectorAll('${CELLS}')]
+        const at = window.getSelection()?.anchorNode
+        return cells.findIndex((c) => c.contains(at ?? null))
+      })()`)
+
+      await typeText('/')
+      await typeText('표')
+      await waitFor(`!!document.querySelector('[role="listbox"][aria-label="블록 삽입"]')`, 3000)
+      await key('Enter')
+      check('★ /표 — 그 줄이 3열 × 2행의 표가 되고 캐럿은 첫 셀',
+        (await waitFor(`document.querySelectorAll('${CELLS}').length === 6 && document.querySelectorAll('[data-block-id="${ids.line}"] .blk-table tr').length === 2`, 5000))
+          && (await caretCell()) === 0,
+        String(await caretCell()))
+
+      await typeText('가1')
+      await key('Tab')
+      await typeText('나1')
+      await key('Tab')
+      await typeText('다1')
+      await key('Tab')
+      check('Tab — 행의 끝에서 다음 행의 첫 셀로', (await caretCell()) === 3, String(await caretCell()))
+      await typeText('가2')
+      const [typed, typedGot] = await serverIs(['표 위', ['table', [['가1', '나1', '다1'], ['가2', '', '']]], '표 아래'])
+      check('★ 서버 — 표 → 행 둘 · 셀마다 쓴 글자', typed, typedGot)
+
+      await key('Tab')
+      await key('Tab')
+      await key('Tab')
+      check('★ 마지막 셀의 Tab — 행이 더해지고 그 첫 셀로',
+        (await waitFor(`document.querySelectorAll('[data-block-id="${ids.line}"] .blk-table tr').length === 3`, 3000)) && (await caretCell()) === 6,
+        String(await caretCell()))
+      await typeText('가3')
+      await key('Enter')
+      check('★ 마지막 행의 Enter — 표를 나가 그 뒤의 새 줄로(셀 밖)', (await caretCell()) === -1, String(await caretCell()))
+      await typeText('표 뒤')
+      const [exited, exitedGot] = await serverIs(['표 위', ['table', [['가1', '나1', '다1'], ['가2', '', ''], ['가3', '', '']]], '표 뒤', '표 아래'])
+      check('서버 — 셋째 행 · 표 뒤의 새 문단', exited, exitedGot)
+
+      // 셀 맨 앞의 Backspace — 아무것도 바꾸지 않는다(셀 · 블록을 합치지 않는다). 누르기 전의 서버 모양과 견준다 — 앞 장면의 결과에
+      // 기대지 않는다(화면 반사실이 Enter 와 이 키를 한 판에서 가른다).
+      const beforeBackspace = await serverShape()
+      const second = await rect(`${CELLS}:nth-child(2)`)
+      let inSecond = false
+      for (let i = 0; i < 10 && !inSecond; i += 1) {
+        await click(second.x + 4, second.y + second.h / 2)
+        inSecond = await waitFor(`(() => { const s = window.getSelection(); const cell = document.querySelectorAll('${CELLS}')[1]; return !!cell && cell.contains(s?.anchorNode ?? null) })()`, 500)
+      }
+      await key('End')
+      await key('ArrowLeft')
+      await key('ArrowLeft')
+      await key('Backspace')
+      await key('Backspace')
+      let afterBackspace = beforeBackspace
+      for (let i = 0; i < 20 && afterBackspace === beforeBackspace; i += 1) {
+        await sleep(150)
+        afterBackspace = await serverShape()
+      }
+      check('★ 셀 맨 앞의 Backspace 는 아무것도 바꾸지 않는다', inSecond && afterBackspace === beforeBackspace, `${beforeBackspace} → ${afterBackspace}`)
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${tPage}` })
+      check('다시 열어도 표 — 3행 × 3열 · 쓴 글자',
+        await waitFor(`(() => {
+          const rows = [...document.querySelectorAll('[data-block-id="${ids.line}"] .blk-table tr')].map((tr) => [...tr.querySelectorAll('td')].map((td) => td.textContent))
+          return JSON.stringify(rows) === JSON.stringify([['가1', '나1', '다1'], ['가2', '', ''], ['가3', '', '']])
+        })()`, 15000), await evaluate(`JSON.stringify([...document.querySelectorAll('[data-block-id="${ids.line}"] .blk-table tr')].map((tr) => [...tr.querySelectorAll('td')].map((td) => td.innerHTML))) + ' | ' + (document.querySelector('[data-block-id="${ids.line}"]')?.outerHTML.slice(0, 300) ?? '(없음)')`))
+      await sleep(1000)
+    }
+
     section('전체')
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))
     const serverErrors = serverOutput.split('\n').filter((l) => l.includes('⨯'))

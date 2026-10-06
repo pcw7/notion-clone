@@ -58,6 +58,14 @@ import { COLORS } from '../contracts/rich-text.ts'
 /** 자식 페이지 참조 노드의 이름. 우리 모델의 `type='page'` 다. */
 export const PAGE_REF_NODE = 'page_ref'
 
+/**
+ * 심플 테이블(Phase 2 1d)의 노드 — 표의 내용 노드(`table`)가 행(`table_row`)을 담고 행이 셀(`table_cell`)을 담는다. 행은 컨테이너가
+ * 아니다(정본 §3.4 [보강] 심플 테이블 ②). **이름이 저장 포맷이다** — 바꾸면 마이그레이션이다.
+ */
+export const TABLE_NODE = 'table'
+export const TABLE_ROW_NODE = 'table_row'
+export const TABLE_CELL_NODE = 'table_cell'
+
 /** 인라인 원자 — rich text 의 `mention` / `equation` 런에 대응한다. */
 export const MENTION_NODE = 'mention'
 export const EQUATION_NODE = 'equation'
@@ -275,6 +283,42 @@ for (const type of LAYOUT_BLOCK_TYPES) {
     toDOM: () => ['div', { 'data-block-type': type, class: `blk blk-${type}`, contenteditable: 'false' }],
   } as NodeSpec
 }
+
+// 심플 테이블(Phase 2 1d · F-01-18) — 표의 내용 노드가 행을 담고 행이 셀을 담는다. 행 · 셀은 블록 내용이 아니다(그룹에 들지 않는다 —
+// 정규화가 그룹 자리에서 블록 내용만 감싼다). `tableRole` 은 prosemirror-tables 가 읽는다(셀 선택 · 행 · 열 명령 · `fixTables`).
+// 셀의 colspan · rowspan · colwidth 도 그 라이브러리가 요구하는 칸이다 — 병합은 저장 모양에 자리가 없어(P2) 늘 1 · null 이다(정규화 ⑤).
+// 행의 `rowId` 는 그 행 블록의 id(`blockContainer.blockId` 와 같은 센티널 · 같은 id 찍기 — `block-id-plugin.ts`), `props` 는 셀 밖의
+// 행 속성(모르는 키를 보존한다).
+nodes[TABLE_NODE] = {
+  group: 'blockContent',
+  content: `${TABLE_ROW_NODE}+`,
+  tableRole: 'table',
+  isolating: true,
+  attrs: blockAttrSpec,
+  parseDOM: [{ tag: `div[data-block-type="${TABLE_NODE}"]`, contentElement: 'tbody' }],
+  toDOM: (node) => {
+    const props = (node.attrs.props ?? {}) as Record<string, unknown>
+    const attrs: Record<string, string> = { 'data-block-type': TABLE_NODE, class: 'blk blk-table' }
+    if (props.has_column_header === true) attrs['data-column-header'] = 'true'
+    if (props.has_row_header === true) attrs['data-row-header'] = 'true'
+    return ['div', attrs, ['table', ['tbody', 0]]]
+  },
+} as NodeSpec
+nodes[TABLE_ROW_NODE] = {
+  content: `${TABLE_CELL_NODE}+`,
+  tableRole: 'row',
+  attrs: { rowId: { default: '' }, props: { default: {} as Record<string, unknown> } },
+  parseDOM: [{ tag: 'tr' }],
+  toDOM: () => ['tr', 0],
+} as NodeSpec
+nodes[TABLE_CELL_NODE] = {
+  content: 'inline*',
+  tableRole: 'cell',
+  isolating: true,
+  attrs: { colspan: { default: 1 }, rowspan: { default: 1 }, colwidth: { default: null } },
+  parseDOM: [{ tag: 'td' }, { tag: 'th' }],
+  toDOM: () => ['td', 0],
+} as NodeSpec
 
 // 자식 페이지 참조. 본문에 보이지만 내용은 그 페이지의 것이다.
 //

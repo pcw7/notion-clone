@@ -51,10 +51,12 @@
 
 import { Fragment, Slice, type Node as PmNode } from '@tiptap/pm/model'
 import { Plugin, PluginKey, type Command } from '@tiptap/pm/state'
+import { CellSelection } from '@tiptap/pm/tables'
 import type { EditorView } from '@tiptap/pm/view'
 
 import { codeCaptionText, codeLanguageOf, fencedCode } from '../block/code.ts'
 import { equationDisplayLines } from '../block/equation.ts'
+import { cellsOf, TABLE_TYPE } from '../block/table.ts'
 import { isKnownBlockType, specOf, PAGE_TYPE } from '../block/types.ts'
 import { textRun, toPlainText } from '../contracts/rich-text.ts'
 import {
@@ -65,7 +67,7 @@ import {
 import type { CommandDeps } from './commands.ts'
 import { validateDoc, type EditorBlock } from './document.ts'
 import { blockFromContainer, containerFor, newBlockId } from './pm-adapter.ts'
-import { containerAt } from './pm-blocks.ts'
+import { containerAt, inTableCell } from './pm-blocks.ts'
 import { isPlainTextNode } from './schema.ts'
 
 /** 정본의 `application/x-{app}-blocks+json`. */
@@ -122,6 +124,13 @@ export function plainTextForBlocks(blocks: readonly EditorBlock[]): string {
         continue
       }
       const indent = '  '.repeat(depth)
+      // 표(Phase 2 1d) — 행마다 한 줄, 셀은 탭으로(스프레드시트에 붙이면 칸이 된다). 셀 안의 줄바꿈은 공백.
+      if (block.type === TABLE_TYPE) {
+        for (const row of block.children ?? []) {
+          lines.push(indent + cellsOf(row.properties).map((cell) => toPlainText(cell).replace(/\s*\n\s*/g, ' ')).join('\t'))
+        }
+        continue
+      }
       const text = toPlainText(block.title ?? [])
       const checked = (block.properties as { checked?: boolean } | undefined)?.checked === true
       const url = (block.properties as { url?: string } | undefined)?.url ?? ''
@@ -387,6 +396,17 @@ export function clipboardPlugin(deps: CommandDeps, toHtml: ClipboardHtml): Plugi
         // 코드 블록(평문 본문) 안에 붙여넣기는 늘 평문이다(F-01-14 · F-01-10) — 블록 묶음을 풀어 넣지 않는다. ProseMirror 가
         // `spec.code` 노드 안의 붙여넣기를 글자 하나로 읽는다(블록 묶음의 `text/plain` 은 `plainTextForBlocks` 다).
         if (isPlainTextNode(view.state.selection.$from.parent)) return false
+        // 표의 셀 안(Phase 2 1d) — 셀은 글자만 담는다. 우리 블록 묶음 · 글자는 평문으로 그 셀에 넣고(블록을 풀어 넣으면 표가 쪼개진다),
+        // 표 HTML 과 셀 사각 선택은 prosemirror-tables 가 셀째 받는다.
+        if (inTableCell(view.state.selection.$from) && !(view.state.selection instanceof CellSelection)) {
+          const blocksData = event.clipboardData?.getData(BLOCKS_MIME) ?? ''
+          if (blocksData === '' && /<table[\s>]/i.test(event.clipboardData?.getData('text/html') ?? '')) return false
+          const parsedHere = parseClipboardBlocks(blocksData)
+          const text = parsedHere.ok ? plainTextForBlocks(parsedHere.blocks) : (event.clipboardData?.getData('text/plain') ?? '')
+          const clean = text.replace(/\r\n?/g, '\n').replace(/\n+$/, '')
+          if (clean !== '') view.dispatch(view.state.tr.insertText(clean).scrollIntoView())
+          return true
+        }
         const parsed = parseClipboardBlocks(event.clipboardData?.getData(BLOCKS_MIME))
         if (!parsed.ok) {
           if (parsed.reason === 'too_many') {

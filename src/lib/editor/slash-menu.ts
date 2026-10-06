@@ -42,7 +42,7 @@ import { Plugin, PluginKey, type EditorState, type Transaction } from '@tiptap/p
 import { BODY_BLOCK_TYPES, specOf, type BodyBlockType } from '../block/types.ts'
 import { applyTurnInto, insertParagraphAfter, type CommandDeps } from './commands.ts'
 import { containerAt } from './pm-blocks.ts'
-import { isPlainTextNode } from './schema.ts'
+import { isPlainTextNode, TABLE_CELL_NODE } from './schema.ts'
 
 type SlashCommandBase = {
   readonly label: string
@@ -78,7 +78,10 @@ export type ColumnsSlashCommand = SlashCommandBase & {
   readonly count: 2 | 3
 }
 
-export type SlashCommand = BlockSlashCommand | PageSlashCommand | ColumnsSlashCommand
+/** 심플 테이블(Phase 2 1d · F-01-18) — 블록 타입 목록 밖이다. 표째로 만든다(`table.ts`). */
+export type TableSlashCommand = SlashCommandBase & { readonly kind: 'table'; readonly id: 'table' }
+
+export type SlashCommand = BlockSlashCommand | PageSlashCommand | ColumnsSlashCommand | TableSlashCommand
 
 /**
  * 타입별 라벨·별칭.
@@ -139,6 +142,11 @@ const COLUMN_COMMANDS: readonly ColumnsSlashCommand[] = [
   { kind: 'columns', id: 'columns_3', count: 3, label: '3열', aliases: ['3열', '3단', '3 columns', '3columns', '컬럼', 'columns', '열'], group: '고급 블록' },
 ]
 
+/** 심플 테이블(Phase 2 1d) — 노션의 `/table` 첫 항목. "표" · "테이블"로 찾는다. */
+const TABLE_COMMAND: TableSlashCommand = {
+  kind: 'table', id: 'table', label: '표', aliases: ['표', '테이블', 'table', '심플 테이블', 'simple table'], group: '고급 블록',
+}
+
 const BLOCK_COMMANDS: readonly BlockSlashCommand[] = BODY_BLOCK_TYPES.map((id) => ({
   kind: 'block',
   id,
@@ -156,6 +164,7 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
   PAGE_COMMAND,
   ...BLOCK_COMMANDS.filter((c) => c.group === '미디어'),
   ...BLOCK_COMMANDS.filter((c) => c.group === '고급 블록'),
+  TABLE_COMMAND,
   ...COLUMN_COMMANDS,
 ]
 
@@ -201,8 +210,9 @@ export function closeSlashMenu(tr: Transaction): Transaction {
  */
 function isTriggerPosition(state: EditorState, slashPos: number): boolean {
   const $slash = state.doc.resolve(slashPos)
-  // 텍스트블록 안이 아니면 트리거하지 않는다. 코드 블록(평문 본문) 안의 `/` 는 글자다(F-01-14 · F-01-04).
-  if (!$slash.parent.isTextblock || isPlainTextNode($slash.parent)) return false
+  // 텍스트블록 안이 아니면 트리거하지 않는다. 코드 블록(평문 본문) 안의 `/` 는 글자다(F-01-14 · F-01-04). 표의 셀 안도 글자다
+  // (Phase 2 1d — 셀은 블록을 담지 않는다 · 블록 명령이 표를 통째로 바꾼다).
+  if (!$slash.parent.isTextblock || isPlainTextNode($slash.parent) || $slash.parent.type.name === TABLE_CELL_NODE) return false
   if ($slash.parentOffset === 0) return true
   const before = $slash.parent.textBetween($slash.parentOffset - 1, $slash.parentOffset)
   return /\s/.test(before)

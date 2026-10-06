@@ -14,6 +14,8 @@
  *   · 언어(레지스트리 `plainText` — 코드): 문자열이 아니거나 비었거나 64자를 넘으면 지운다
  *   · 식(레지스트리 `expression` — 블록 수식 · Phase 2 1a): 문자열이 아니거나 공백뿐이면 지우고, `MAX_EQUATION_LENGTH` 를 넘으면 자른다
  *     (지우면 쓴 식을 통째로 잃는다 — 넘는 것은 입력칸을 거치지 않은 쓰기뿐이다)
+ *   · 표의 머리 플래그(레지스트리 `childrenInContent` — 심플 테이블 · Phase 2 1d): `has_column_header` · `has_row_header` 가 참 거짓이
+ *     아니면 지운다(거짓과 같다)
  *   · format: `normalizeFormat`(타입이 받지 않는 색 · 코드가 아닌 타입의 `code_wrap` · `true` 가 아닌 `code_wrap`)
  *   · 하위 페이지 참조 · `unsupported` 는 JSON 안전만 — 앞은 다른 페이지의 것이고, 뒤는 모르는 타입의 원본 보존이다. 하나 예외:
  *     하위 페이지 참조의 `format` 에서 **페이지 아이콘**(`page_icon` · 8c-1)은 뺀다 — 아이콘은 그 페이지 행의 것이고 본문은 싣지
@@ -28,6 +30,7 @@ import { isPlainRecord, jsonSafe } from '../contracts/json-safe.ts'
 import { sanitizeRichText } from '../contracts/rich-text.ts'
 import { MAX_CODE_LANGUAGE_LENGTH } from './code.ts'
 import { clampExpression } from './equation.ts'
+import { COLUMN_HEADER_KEY, ROW_HEADER_KEY } from './table.ts'
 import { normalizeFormat, PAGE_TYPE, specOf, UNSUPPORTED_TYPE, type BlockFormat, type BlockType } from './types.ts'
 import { PAGE_ICON_KEY } from './page-icon.ts'
 
@@ -85,6 +88,12 @@ export function sanitizeBlockAttrs(type: BlockType, props: Record<string, unknow
     const expression = nextProps.expression
     if (typeof expression !== 'string' || expression.trim() === '') delete edit().expression
     else if (clampExpression(expression) !== expression) edit().expression = clampExpression(expression)
+  }
+
+  if (spec.childrenInContent) {
+    for (const key of [COLUMN_HEADER_KEY, ROW_HEADER_KEY]) {
+      if (key in nextProps && typeof nextProps[key] !== 'boolean') delete edit()[key]
+    }
   }
 
   const normalized = normalizeFormat(type, safeFormat)

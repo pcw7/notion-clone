@@ -39,10 +39,14 @@ import type { Node as PmNode } from '@tiptap/pm/model'
 import { Plugin, PluginKey } from '@tiptap/pm/state'
 
 import { newBlockId } from './pm-adapter.ts'
+import { TABLE_ROW_NODE } from './schema.ts'
 
 export const blockIdPluginKey = new PluginKey('blockId')
 
-type Fix = { pos: number; id: string }
+/** id 를 진 노드 → 그 attr. 표의 행(Phase 2 1d)은 블록이지만 컨테이너가 아니다 — 같은 이름 공간이다(행 id 와 블록 id 가 겹치면 안 된다). */
+const ID_ATTR: Readonly<Record<string, string>> = { blockContainer: 'blockId', [TABLE_ROW_NODE]: 'rowId' }
+
+type Fix = { pos: number; id: string; attr: string }
 
 /**
  * 비었거나 중복된 blockId 를 찾는다.
@@ -55,10 +59,11 @@ export function findBlockIdFixes(doc: PmNode): Fix[] {
   const seen = new Set<string>()
 
   doc.descendants((node, pos) => {
-    if (node.type.name !== 'blockContainer') return true
-    const id = String(node.attrs.blockId ?? '')
+    const attr = ID_ATTR[node.type.name]
+    if (attr === undefined) return !node.isTextblock
+    const id = String(node.attrs[attr] ?? '')
     if (id === '' || seen.has(id)) {
-      fixes.push({ pos, id: newBlockId() })
+      fixes.push({ pos, id: newBlockId(), attr })
     } else {
       seen.add(id)
     }
@@ -80,8 +85,8 @@ export function blockIdPlugin(): Plugin {
       const tr = newState.tr
       for (const fix of fixes) {
         const node = tr.doc.nodeAt(fix.pos)
-        if (!node || node.type.name !== 'blockContainer') continue
-        tr.setNodeMarkup(fix.pos, undefined, { ...node.attrs, blockId: fix.id })
+        if (!node || ID_ATTR[node.type.name] !== fix.attr) continue
+        tr.setNodeMarkup(fix.pos, undefined, { ...node.attrs, [fix.attr]: fix.id })
       }
       // attrs 만 바꾸므로 위치가 밀리지 않는다 — 매핑이 필요 없다.
       return tr

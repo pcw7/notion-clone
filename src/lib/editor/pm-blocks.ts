@@ -17,7 +17,7 @@ import type { Node as PmNode, ResolvedPos } from '@tiptap/pm/model'
 import { specOf, PAGE_TYPE, type BlockFormat, type BlockType } from '../block/types.ts'
 import type { RuleBlock } from './block-rules.ts'
 import { inlineToRuns } from './pm-adapter.ts'
-import { blockTypeOfNode } from './schema.ts'
+import { blockTypeOfNode, TABLE_CELL_NODE } from './schema.ts'
 import { flattenVisible, type TreeNodeLike, type VisibleIndex } from './tree.ts'
 
 export type ContainerInfo = {
@@ -57,6 +57,12 @@ export function describeContainer(node: PmNode, pos: number): ContainerInfo {
 export function isBlankLeaf(info: ContainerInfo): boolean {
   return info.contentNode.isTextblock && info.contentNode.content.size === 0 && (info.groupNode === null || info.groupNode.childCount === 0)
 }
+
+/**
+ * 이 위치가 표의 셀 안인가(Phase 2 1d). 셀은 블록의 내용 노드가 아니다 — `containerAt` 은 표의 컨테이너를 돌려준다. 블록을 다루는
+ * 명령(병합 · 분할 · 들여쓰기 · 바꾸기)은 셀 안에서 물러선다 — 셀 안의 키는 `table.ts` 가 받는다.
+ */
+export const inTableCell = ($pos: ResolvedPos): boolean => $pos.parent.type.name === TABLE_CELL_NODE
 
 /** 이 위치를 담고 있는 가장 가까운 `blockContainer`. */
 export function containerAt($pos: ResolvedPos): ContainerInfo | null {
@@ -110,6 +116,8 @@ export function canNestUnder(info: ContainerInfo): boolean {
   if (type === PAGE_TYPE) return false
   // 컬럼의 틀(Phase 2 1c) 밑으로는 들여쓰지 않는다 — 컬럼 목록의 자식은 컬럼뿐이고, 컬럼은 블록의 형제가 아니다.
   if (specOf(type).layout) return false
+  // 표(Phase 2 1d) — 행은 내용 노드 안에 산다. 다른 블록이 표의 자식이 될 수 없다.
+  if (specOf(type).childrenInContent) return false
   return specOf(type).canHaveChildren
 }
 

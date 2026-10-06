@@ -50,6 +50,7 @@ import { readCaption, readImageSource, type ImageSource } from '../block/image.t
 import { TOC_TYPE, headingsOfBlocks, tocEntries, type TocEntry } from '../block/toc.ts'
 import { BREADCRUMB_TYPE } from '../block/breadcrumb.ts'
 import { EQUATION_TYPE, equationDisplayLines } from '../block/equation.ts'
+import { cellsOf, TABLE_TYPE } from '../block/table.ts'
 import { PAGE_TYPE, UNSUPPORTED_TYPE } from '../block/types.ts'
 import {
   DEFAULT_ANNOTATIONS,
@@ -450,7 +451,10 @@ const LIST_FAMILY: Readonly<Record<string, '-' | '.'>> = {
   numbered_list_item: '.',
 }
 
-/** 자식을 자기 안에 둘 수 있는 블록. 나머지(문단 · 제목)의 자식은 같은 층으로 편다. */
+/**
+ * 자식을 자기 안에 둘 수 있는 블록. 나머지(문단 · 제목)의 자식은 같은 층으로 편다. 컬럼 · 표의 자식(컬럼 · 행)은 그 블록이 스스로
+ * 그린다 — 펴면 행이 표 밖의 형제가 되고 잃은 것으로 센다(컬럼 목록이 그렇게 세고 있었다 · Phase 2 1d).
+ */
 const NESTS: ReadonlySet<string> = new Set([
   'bulleted_list_item',
   'numbered_list_item',
@@ -458,7 +462,22 @@ const NESTS: ReadonlySet<string> = new Set([
   'toggle',
   'quote',
   'callout',
+  'column_list',
+  'column',
+  TABLE_TYPE,
 ])
+
+/**
+ * 표 셀 하나의 Markdown — 한 줄이어야 한다. 줄바꿈(강제 줄바꿈 포함)은 `<br>`, 이스케이프되지 않은 `|` 는 `\|`(코드 스팬 안도 —
+ * GFM 은 표 칸을 나누기 전에 `\|` 를 푼다).
+ */
+function tableCellMarkdown(runs: readonly RichTextRun[], losses: Counters): string {
+  return richTextToMarkdown(runs, losses)
+    .replace(/\\\n/g, '<br>')
+    .replace(/\n/g, '<br>')
+    .replace(/\\?\|/g, (m) => (m === '|' ? '\\|' : m))
+    .trim()
+}
 
 /**
  * 문단 밑 자식을 같은 층으로 편다.
@@ -634,6 +653,16 @@ function renderBlock(block: EditorBlock, ctx: Ctx, number: number): string[] {
     case 'column':
       // 컬럼 목록 밖의 컬럼은 정규화가 풀므로 오지 않는다 — 와도 자식을 그대로.
       return renderSiblings(block.children ?? [], ctx).lines
+
+    case TABLE_TYPE: {
+      // 심플 테이블(Phase 2 1d · F-01-18 *"호환 내보내기는 GFM"*) — GFM 파이프 표. GFM 은 머리 줄이 필수라 첫 행을 머리로 쓴다(머리
+      // 줄을 끈 표도). 머리 열은 표현할 수 없지만 내용은 다 있다 — 세지 않는다. 행이 없는 표는 검증이 막는다.
+      const rows = (block.children ?? []).map((row) => cellsOf(row.properties).map((cell) => tableCellMarkdown(cell, losses)))
+      if (rows.length === 0) return []
+      const width = Math.max(1, ...rows.map((cells) => cells.length))
+      const line = (cells: readonly string[]): string => `| ${Array.from({ length: width }, (_, i) => cells[i] ?? '').join(' | ')} |`
+      return [line(rows[0]!), line(Array.from({ length: width }, () => '---')), ...rows.slice(1).map(line)]
+    }
 
     case EQUATION_TYPE:
       // 블록 수식(Phase 2 1a · F-01-20 *"마크다운은 `$$...$$`"*) — 울타리 줄 사이에 식. 빈 식은 쓰지 않는다(저장된 내용이 없다).

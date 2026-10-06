@@ -30,6 +30,7 @@ import { history } from '@tiptap/pm/history'
 import { keydownHandler } from '@tiptap/pm/keymap'
 import { DOMSerializer, Fragment } from '@tiptap/pm/model'
 import { EditorState, type Command, type Plugin, type Transaction } from '@tiptap/pm/state'
+import { tableEditing } from '@tiptap/pm/tables'
 import { EditorView } from '@tiptap/pm/view'
 
 import type { BreadcrumbTrail } from '../block/breadcrumb.ts'
@@ -126,6 +127,9 @@ export function editingPlugins(deps: EditorDeps): Plugin[] {
     // 복사·붙여넣기(F-01-10). 클립보드 HTML 은 스키마의 `toDOM` 으로 만든다 —
     // 화면에 그리는 것과 같은 규칙이라 따로 어긋날 자리가 없다.
     clipboardPlugin(deps, clipboardHtml),
+    // 심플 테이블(Phase 2 1d) — 셀 사각 선택(끌기 · Shift+방향키) · 고른 셀 지우기 · 셀째 붙여넣기 · 모양이 틀린 표 고치기(`fixTables`).
+    // 클립보드 플러그인 뒤다 — 셀 안에 우리 블록 묶음 · 글자를 붙이면 그쪽이 평문으로 먼저 받고, 표 HTML 은 이쪽으로 넘긴다.
+    tableEditing(),
     // 접힘(F-01-13). 편집기 DOM 에 속성을 직접 달면 PM 이 다시 그리며 지운다 —
     // 데코레이션으로만 그린다(`collapse-plugin.ts` 머리말).
     collapsePlugin(deps.isCollapsed),

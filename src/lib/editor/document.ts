@@ -56,6 +56,7 @@ import {
 } from '../block/types.ts'
 import { IMAGE_TYPE, validateImageProperties } from '../block/image.ts'
 import { CODE_TYPE, validateCodeProperties } from '../block/code.ts'
+import { TABLE_CELLS_KEY, TABLE_ROW_TYPE, validateTableRow, validateTableWidths } from '../block/table.ts'
 import { isUuid } from '../ids.ts'
 import { orderKeysBetween } from '../block/order-key.ts'
 import { validateRichText, type RichTextRun } from '../contracts/rich-text.ts'
@@ -100,6 +101,8 @@ export type DocIssue = { readonly path: string; readonly message: string }
  *   - 깊이가 `MAX_TREE_DEPTH` 초과
  *   - 컬럼의 구조(Phase 2 1c) — 컬럼 목록의 자식은 컬럼뿐 · 둘 이상, 컬럼은 컬럼 목록 안에만 · 블록이 하나 이상, 컬럼 바로 안의 컬럼
  *     목록(레지스트리 `childTypes` · `parentTypes` · `excludedChildTypes`). 협업 경로는 정규화가 고친다(`collab/normalize.ts` ④)
+ *   - 표의 구조(Phase 2 1d) — 표의 자식은 행뿐 · 하나 이상 · 행마다 셀 수가 같고 하나 이상 · 셀은 RichText 계약, 행은 표 안에만
+ *     (`block/table.ts`). 협업 경로는 정규화가 고친다(⑤)
  */
 export function validateDoc(doc: EditorDoc): DocIssue[] {
   const issues: DocIssue[] = []
@@ -154,6 +157,9 @@ export function validateDoc(doc: EditorDoc): DocIssue[] {
         if (specOf(block.type).parentTypes?.includes('column_list') && kids.length === 0) {
           issues.push({ path: `${p}.children`, message: `${block.type} 에는 블록이 하나 이상 있어야 합니다` })
         }
+        // 표(Phase 2 1d) — 행 하나 이상 · 같은 셀 수. 행의 셀은 행이 본다.
+        if (specOf(block.type).childrenInContent) issues.push(...validateTableWidths(kids, `${p}.children`))
+        if (block.type === TABLE_ROW_TYPE) issues.push(...validateTableRow(block.properties, `${p}.properties`))
       }
 
       if (block.title !== undefined) {
@@ -359,6 +365,10 @@ export function projectDocument(
         properties.title = canonicalizeRuns(block.title ?? [])
       } else {
         delete properties.title
+      }
+      // 표의 셀(Phase 2 1d)도 같은 정규형으로 — 셀마다 런 배열이다.
+      if (type === TABLE_ROW_TYPE && Array.isArray(properties[TABLE_CELLS_KEY])) {
+        properties[TABLE_CELLS_KEY] = (properties[TABLE_CELLS_KEY] as RichTextRun[][]).map((cell) => canonicalizeRuns(cell))
       }
 
       const projected: ProjectedBlock = {
