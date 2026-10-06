@@ -243,6 +243,11 @@ span.blk-equation {
   background: #f3f4f6;
   padding: 0 0.25rem;
 }
+/* 인라인 수식(Phase 2 1b) — KaTeX 의 인라인 출력 · 누르면 입력창 · 그리지 못한 식은 붉은 원문 · 빈 수식은 흐린 자리 표시. */
+.blk-editor[contenteditable='true'] span.blk-equation { cursor: pointer; }
+.blk-editor span.blk-equation .katex { font-size: 1.05em; }
+.blk-editor span.blk-equation-invalid { color: #dc2626; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.blk-editor span.blk-equation-empty { color: #9ca3af; font-size: 0.875em; }
 
 /*
  * 블록 수식(Phase 2 1a · F-01-20) — 노드 뷰가 그리는 `div.blk-equation`(`equation-view.ts`). KaTeX 의 디스플레이 출력은 가운데 ·
@@ -830,6 +835,8 @@ span.blk-equation {
     .blk-editor[contenteditable='true'] div.blk-equation:hover { background: rgba(255, 255, 255, 0.06); }
     .blk-editor .blk-equation-placeholder, .blk-editor .blk-equation-source { color: #737373; }
     .blk-editor .blk-equation-error code, .blk-editor .blk-equation-error-message { color: #fca5a5; }
+    .blk-editor span.blk-equation-invalid { color: #fca5a5; }
+    .blk-editor span.blk-equation-empty { color: #737373; }
     .blk-editor pre.blk-code { background: #1f1f1f; }
     .blk-editor pre.blk-code code { background: none; }
     .blk-editor .blk-code-bar button,

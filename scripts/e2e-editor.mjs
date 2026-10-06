@@ -518,6 +518,8 @@ async function main() {
       ArrowLeft: [37, 'ArrowLeft'],
       Tab: [9, 'Tab'],
       Delete: [46, 'Delete'],
+      // 인라인 수식(Phase 2 1b) — `Mod+Shift+E`.
+      e: [69, 'KeyE'],
     }
     const SHIFT = 8
     // `Mod` 는 Mac 에서 Cmd(4), 그 외 Ctrl(2). 헤드리스 브라우저의 플랫폼을 따른다.
@@ -10520,6 +10522,87 @@ async function main() {
 
       await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${eqPage}` })
       check('다시 열어도 그 식이다(틀린 식 그대로)', await waitFor(`document.querySelector('${BLOCK} .blk-equation-error code')?.textContent === ${JSON.stringify('\\frac{a}{')}`, 15000))
+      await sleep(1000)
+    }
+
+    if (sectionIf('인라인 수식 (Phase 2 1b · F-01-20)')) {
+      // 글 속에서 `$$식$$` 을 치면 닫는 순간 수식이 되고(KaTeX 로 그린다) 이어 쓴다. 누르면 입력창 — 고쳐 저장하면 캐럿은 수식 뒤.
+      // 글자를 골라 Ctrl/Cmd+Shift+E 를 치면 그 글자가 식이 되고, 고른 것 없이 치면 빈 수식 + 입력창 — Esc 면 빈 수식은 사라진다.
+      const stamp = Date.now()
+      const iePage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
+        method: 'POST', headers: authed, body: JSON.stringify({ title: `인라인 수식 ${stamp}` }),
+      })).json()).page.id
+      const line = randomUUID()
+      await saveBody(iePage, { blocks: [{ id: line, type: 'paragraph', title: [textRun('넓이는 ')], properties: {}, format: {}, children: [] }] })
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${iePage}` })
+      await waitFor(`!!document.querySelector('[data-block-id="${line}"] p')`, 15000)
+      let focused = false
+      for (let i = 0; i < 20 && !focused; i += 1) {
+        await clickSelector(`[data-block-id="${line}"] p`)
+        await key('End')
+        focused = await waitFor(`document.activeElement?.classList.contains('ProseMirror') && document.querySelector('[data-block-id="${line}"]')?.contains(window.getSelection()?.anchorNode ?? null)`, 500)
+      }
+      check('전제 — 그 줄 끝에 캐럿이 섰다', focused)
+
+      const EQ = `[data-block-id="${line}"] span[data-inline-equation]`
+      for (const ch of '$$\\pi r^2$$') await typeText(ch)
+      check('★ $$식$$ — 닫는 순간 수식이 되고 KaTeX 로 글자 사이에 그린다',
+        await waitFor(`!!document.querySelector('${EQ} .katex') && !document.querySelector('${EQ} .katex-display')`, 8000),
+        String(await evaluate(`document.querySelector('[data-block-id="${line}"] p')?.innerHTML?.slice(0, 200) ?? '(없음)'`)))
+      await typeText(' 이다')
+
+      const runsOnServer = async () => ((await readBody(iePage)).doc.blocks[0]?.title ?? []).map((r) => (r.type === 'equation' ? `[${r.equation?.expression}]` : r.plain_text ?? ''))
+      const serverIs = async (expected) => {
+        let got = null
+        for (let i = 0; i < 60; i += 1) {
+          got = (await runsOnServer()).join('')
+          if (got === expected) return [true, got]
+          await sleep(150)
+        }
+        return [false, got]
+      }
+      const [first, firstGot] = await serverIs('넓이는 [\\pi r^2] 이다')
+      check('★ 서버 — 글 속의 수식 조각(type=equation)과 이어 쓴 글', first, firstGot)
+
+      await clickSelector(EQ)
+      check('★ 수식을 누르면 입력창이 그 식으로 열린다',
+        await waitFor(`document.activeElement?.dataset.testid === 'equation-input' && document.activeElement.value === ${JSON.stringify('\\pi r^2')}`, 5000))
+      await evaluate(`(() => { const i = document.querySelector('[data-testid="equation-input"]'); i.setSelectionRange(0, i.value.length) })()`)
+      await typeText('2\\pi r')
+      check('입력창의 미리보기는 글자 사이의 모양(디스플레이가 아니다)',
+        await waitFor(`!!document.querySelector('[data-testid="equation-preview"] .katex') && !document.querySelector('[data-testid="equation-preview"] .katex-display')`, 5000))
+      await key('Enter')
+      await typeText('!')
+      const [edited, editedGot] = await serverIs('넓이는 [2\\pi r]! 이다')
+      check('★ 고쳐 저장하면 그 수식이 바뀌고 캐럿은 수식 바로 뒤다(다음 글자가 수식을 덮지 않는다)', edited, editedGot)
+
+      // 글자를 골라 Ctrl/Cmd+Shift+E — 줄 끝에 "a+b" 를 치고 셋을 고른다.
+      await key('End')
+      await typeText(' a+b')
+      // 친 글자의 협업 왕복이 끝난 뒤에 고른다 — 그 전에 넓힌 선택은 되돌아온 문서가 다시 놓는다(첫 판에서 한 글자만 골렸다).
+      check('전제 — 친 글자가 서버에 닿았다', (await serverIs('넓이는 [2\\pi r]! 이다 a+b'))[0])
+      for (let i = 0; i < 3; i += 1) {
+        await key('ArrowLeft', SHIFT)
+        await sleep(80)
+      }
+      check('전제 — 세 글자를 골랐다', await waitFor(`window.getSelection()?.toString() === 'a+b'`, 3000), String(await evaluate(`window.getSelection()?.toString()`)))
+      await key('e', MOD | SHIFT)
+      const [converted, convertedGot] = await serverIs('넓이는 [2\\pi r]! 이다 [a+b]')
+      check('★ 글자를 골라 Ctrl/Cmd+Shift+E — 그 글자가 식이 된다', converted && (await evaluate(`document.querySelectorAll('${EQ}').length === 2`)), convertedGot)
+
+      // 고른 것 없이 — 빈 수식 + 입력창 · Esc 면 사라진다.
+      await key('e', MOD | SHIFT)
+      check('★ 고른 것 없이 Ctrl/Cmd+Shift+E — 빈 수식을 넣고 입력창이 열린다',
+        await waitFor(`document.activeElement?.dataset.testid === 'equation-input' && document.querySelectorAll('${EQ}').length === 3`, 5000))
+      await key('Escape')
+      check('★ 쓰지 않고 Esc — 빈 수식은 사라지고 캐럿은 그 자리',
+        await waitFor(`document.querySelectorAll('${EQ}').length === 2 && document.activeElement?.classList.contains('ProseMirror')`, 5000))
+      await typeText('.')
+      const [after, afterGot] = await serverIs('넓이는 [2\\pi r]! 이다 [a+b].')
+      check('서버에 빈 수식이 남지 않았다 — 그 자리에 이어 쓴 글', after, afterGot)
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${iePage}` })
+      check('다시 열어도 두 수식이 그려진다', await waitFor(`document.querySelectorAll('${EQ} .katex').length === 2`, 15000))
       await sleep(1000)
     }
 

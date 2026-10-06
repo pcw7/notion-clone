@@ -50,6 +50,7 @@ import {
 import { blockSchema, nodeNameOf } from './schema.ts'
 import { blockTypeOf, containerAt } from './pm-blocks.ts'
 import { inlineForType, inlineToRuns, newBlockId } from './pm-adapter.ts'
+import { inlineEquationInputRule } from './inline-equation.ts'
 
 /** 정규식 특수문자 이스케이프. 접두사에 `*`, `+`, `[`, `.` 가 들어 있다. */
 function escapeRegExp(value: string): string {
@@ -187,6 +188,8 @@ export function inlineInputRules(): InputRule[] {
     markRule('italic', '*'),
     markRule('strikethrough', '~~'),
     markRule('code', '`'),
+    // 인라인 수식(Phase 2 1b) — `$$식$$`. 코드 블록 안에서는 입력 규칙이 돌지 않는다(`code: true`).
+    inlineEquationInputRule(),
   ]
 }
 

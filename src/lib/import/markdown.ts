@@ -10,6 +10,9 @@
  *   · 첫 블록이 `# 제목` 이면 페이지 제목이 된다(우리 · 노션의 내보내기가 그렇게 쓴다) — 본문에서 뺀다
  *   · 헤딩 1~3(4~6 은 3) · 문단 · 글머리표 · 번호 · 할 일(`- [ ]` · `- [x]`) · 코드(언어) · 인용 · 구분선 · 외부 이미지(http · https)
  *   · 문단 하나가 통째로 `$$ … $$` 이면 블록 수식(Phase 2 1a — 우리 · 노션의 내보내기가 블록 수식을 그렇게 쓴다)
+ *   · 글자 속의 수식(Phase 2 1b) — 우리 내보내기의 `` `$식$` ``(코드 스팬)과 노션 내보내기의 `$식$` · `$$식$$`. `$` 하나짜리는 pandoc 의
+ *     규칙으로만 잡는다 — 여는 `$` 바로 뒤와 닫는 `$` 바로 앞이 공백이 아니고, 닫는 `$` 뒤가 숫자가 아니다(`$5 와 $10` 은 글자다).
+ *     식 안의 `*` · `_` 가 강조로 읽히지 않게 렉서의 확장으로 먼저 떼어 낸다
  *   · 우리 내보내기의 HTML 꼴을 되돌린다 — `<details><summary>` 는 토글, `<aside>` 는 콜아웃(왕복이 닫힌다)
  *   · 글자의 꾸밈 — 굵게 · 기울임 · 취소선 · 코드 · 링크(http · https · mailto 만) · 줄바꿈
  *   · **옮기지 못한 것은 세어 돌려준다**(`ImportLosses`) — 표(행마다 문단으로 남긴다) · 그 밖의 HTML · 로컬 이미지 · 글자 안의 이미지 ·
@@ -22,12 +25,13 @@
 
 import { randomUUID } from 'node:crypto'
 
-import { Lexer, type Token, type Tokens } from 'marked'
+import { Marked, type Token, type TokenizerExtension, type Tokens } from 'marked'
 
 import { CODE_LANGUAGES, PLAIN_TEXT_LANGUAGE } from '../block/code.ts'
 import { clampExpression, displayMathOf } from '../block/equation.ts'
 import {
   DEFAULT_ANNOTATIONS,
+  equationRun,
   MAX_RICH_TEXT_RUNS,
   pageMentionRun,
   sameAnnotations,
@@ -77,6 +81,26 @@ type Convert = { readonly losses: ImportLosses; readonly links: ImportLinks | nu
 
 type Marks = Partial<Pick<Annotations, 'bold' | 'italic' | 'strikethrough' | 'code'>>
 
+/** 글자 속의 수식 — `$$식$$` 또는 pandoc 규칙의 `$식$`(머리말). 렉서가 강조 · 코드보다 먼저 본다. */
+const INLINE_MATH: TokenizerExtension = {
+  name: 'inlineMath',
+  level: 'inline',
+  start(src) {
+    const at = src.indexOf('$')
+    return at < 0 ? undefined : at
+  },
+  tokenizer(src) {
+    const match = /^\$\$([^$\n]+?)\$\$/.exec(src) ?? /^\$(?!\$)(?=\S)([^$\n]*?[^\s\\$])\$(?!\d)/.exec(src)
+    if (match === null || (match[1] ?? '').trim() === '') return undefined
+    return { type: 'inlineMath', raw: match[0], text: match[1] ?? '' }
+  },
+}
+
+const LEXER = new Marked({ gfm: true }).use({ extensions: [INLINE_MATH] })
+
+/** 우리 내보내기의 인라인 수식 — 코드 스팬 안의 `$식$`(`export/markdown.ts`). */
+const CODE_SPAN_MATH = /^\$([^$]+)\$$/
+
 const SAFE_LINK = /^(https?:|mailto:)/i
 
 /** 기본 HTML 엔티티를 되돌린다 — `<summary>` 안처럼 HTML 로 쓴 글자. */
@@ -121,8 +145,15 @@ function runsOf(tokens: readonly Token[] | undefined, marks: Marks, cx: Convert,
       case 'del':
         out.push(...runsOf((token as Tokens.Del).tokens, { ...marks, strikethrough: true }, cx, link))
         break
-      case 'codespan':
-        push((token as Tokens.Codespan).text, { code: true })
+      case 'codespan': {
+        const text = (token as Tokens.Codespan).text
+        const math = CODE_SPAN_MATH.exec(text)?.[1]
+        if (math !== undefined && math.trim() !== '') out.push(equationRun(clampExpression(math), marks))
+        else push(text, { code: true })
+        break
+      }
+      case 'inlineMath':
+        out.push(equationRun(clampExpression((token as unknown as { text: string }).text), marks))
         break
       case 'br':
         push('\n')
@@ -359,7 +390,7 @@ function blocksOf(tokens: readonly Token[], cx: Convert): EditorBlock[] {
 /** 마크다운 → 본문. 첫 블록이 `# 제목` 이면 제목으로 뺀다. `links` 는 ZIP 안의 상대 주소를 푼다(8m-2b). */
 export function markdownToDoc(source: string, links: ImportLinks | null = null): MarkdownImport {
   const cx: Convert = { losses: emptyImportLosses(), links, placed: [] }
-  const tokens = Lexer.lex(source.replace(/^﻿/, ''), { gfm: true })
+  const tokens = LEXER.lexer(source.replace(/^﻿/, ''))
   const first = tokens.find((t) => t.type !== 'space')
   let title: string | null = null
   let rest: readonly Token[] = tokens
