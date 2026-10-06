@@ -382,6 +382,17 @@ export function userMentionRun(userId: string, annotations: Partial<Annotations>
   }
 }
 
+/** 인라인 수식 조각 — `plain_text` 는 식 그대로(노션 API 와 같다). */
+export function equationRun(expression: string, annotations: Partial<Annotations> = {}): RichTextRun {
+  return {
+    type: 'equation',
+    annotations: { ...DEFAULT_ANNOTATIONS, ...annotations },
+    plain_text: expression,
+    href: null,
+    equation: { expression },
+  }
+}
+
 export function pageMentionRun(pageId: string, annotations: Partial<Annotations> = {}): RichTextRun {
   return {
     type: 'mention',

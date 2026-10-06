@@ -48,6 +48,7 @@ import {
   turnSelectionIntoCommand,
 } from './block-selection.ts'
 import { openEquationCommand } from './equation-block.ts'
+import { insertInlineEquationCommand, openSelectedInlineEquationCommand, type InlineEquationRef } from './inline-equation.ts'
 import {
   createBlockKeymap,
   isComposingEvent,
@@ -95,6 +96,8 @@ export type EditorKeymapDeps = CommandDeps & {
   openBlockMenu?: () => void
   /** 골라진 블록 수식의 Enter — 입력창을 연다(Phase 2 1a · 오버레이는 UI 의 일이다). */
   openEquation?: (blockId: string) => void
+  /** 인라인 수식의 입력창(Phase 2 1b) — 골라진 인라인 수식의 Enter · Ctrl/Cmd+Shift+E 로 넣은 빈 수식. */
+  openInlineEquation?: (ref: InlineEquationRef) => void
   /**
    * 되돌리기 · 다시 하기. 없으면 ProseMirror history(Phase 0 편집기). 협업 편집기는 y-prosemirror 의 것을 넘긴다 — 내 편집만
    * 되돌린다(F-05-15 · `collab/collab-editor.ts`).
@@ -138,6 +141,7 @@ export function createEditorKeymap(deps: EditorKeymapDeps): KeyBindings {
     // 블록 선택 상태의 Enter 는 "이 블록을 편집한다"이지 분할이 아니다. 골라진 블록 수식이면 그 입력창이 "편집"이다(Phase 2 1a).
     Enter: chain(
       ...(deps.openEquation ? [openEquationCommand(deps.openEquation)] : []),
+      ...(deps.openInlineEquation ? [openSelectedInlineEquationCommand(deps.openInlineEquation)] : []),
       exitBlockSelectionCommand(),
       block.Enter,
     ),
@@ -184,6 +188,11 @@ export function createEditorKeymap(deps: EditorKeymapDeps): KeyBindings {
 
   if (deps.openBlockMenu) {
     bindings['Mod-/'] = openBlockMenuCommand(deps.openBlockMenu)
+  }
+
+  // 인라인 수식(Phase 2 1b · F-01-20 ②③) — 고른 글자를 수식으로, 고른 것이 없으면 빈 수식을 넣고 입력창.
+  if (deps.openInlineEquation) {
+    bindings['Mod-Shift-e'] = insertInlineEquationCommand(deps.openInlineEquation)
   }
 
   for (const [digit, type] of Object.entries(NUMBER_SHORTCUTS)) {

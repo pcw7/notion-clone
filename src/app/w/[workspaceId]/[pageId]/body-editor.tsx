@@ -38,6 +38,12 @@ import { plainTextForBlocks } from '@/lib/editor/block-clipboard'
 import { BlockSelection, selectedBlockCount } from '@/lib/editor/block-selection'
 import { codeBlockInfo, setCodeCaptionCommand, setCodeLanguageCommand } from '@/lib/editor/code-block'
 import { equationBlockInfo, setEquationExpressionCommand } from '@/lib/editor/equation-block'
+import {
+  findInlineEquation,
+  removeEmptyInlineEquationCommand,
+  setInlineEquationCommand,
+  type InlineEquationRef,
+} from '@/lib/editor/inline-equation'
 import { EQUATION_TYPE } from '@/lib/block/equation'
 import { syncReadOnlyTabStops } from '@/lib/editor/node-views'
 import { setBreadcrumbTrail } from '@/lib/editor/breadcrumb-plugin'
@@ -185,24 +191,54 @@ const sameGeometry = (a: CodeUiGeometry, b: CodeUiGeometry): boolean =>
   Math.abs(a.minHeight - b.minHeight) < 0.5
 
 /**
- * 블록 수식의 입력창(Phase 2 1a) — 코드 블록의 오버레이와 같은 규칙: 블록은 id 로 들고 쓸 때마다 지금 문서에서 찾는다 · 자리는
- * 트랜잭션 · 크기 변화마다 다시 잰다. 연 순간의 식을 담는다.
+ * 수식의 입력창 — 블록 수식(Phase 2 1a)과 인라인 수식(1b)이 한 입력창을 쓴다. 코드 블록의 오버레이와 같은 규칙: 블록은 id 로 들고
+ * 쓸 때마다 지금 문서에서 찾는다 · 자리는 트랜잭션 · 크기 변화마다 다시 잰다. 인라인 수식은 id 가 없어 **그 블록 안의 순번**으로
+ * 든다(`inline-equation.ts` 머리말). 연 순간의 식을 담는다.
  */
-type EquationUi = { blockId: string; initial: string; top: number; left: number; width: number; hadFocus: boolean }
+type EquationUi = {
+  blockId: string
+  /** 인라인 수식이면 그 블록 안의 순번 — 블록 수식이면 null. */
+  index: number | null
+  initial: string
+  top: number
+  left: number
+  width: number
+  hadFocus: boolean
+}
 
-/** 블록 수식의 입력창 자리 — 블록 바로 아래, 같은 왼쪽. 노드 뷰가 없으면 null. */
-function measureEquationUi(view: EditorView, frame: HTMLElement, contentPos: number): Pick<EquationUi, 'top' | 'left' | 'width'> | null {
-  const box = view.nodeDOM(contentPos)
+/** 지금 문서에서 그 수식의 위치 · 식 — 없으면(지워짐 · 타입이 바뀜) null. */
+function locateEquation(state: EditorView['state'], ui: Pick<EquationUi, 'blockId' | 'index'>): { pos: number; expression: string } | null {
+  if (ui.index === null) {
+    const info = equationBlockInfo(state, ui.blockId)
+    return info === null ? null : { pos: info.pos, expression: info.expression }
+  }
+  const found = findInlineEquation(state, { blockId: ui.blockId, index: ui.index })
+  return found === null ? null : { pos: found.pos, expression: found.expression }
+}
+
+/** 인라인 수식의 입력창 폭 — 글자 사이의 수식은 좁아 그 폭을 따르면 쓸 수 없다. */
+const INLINE_EQUATION_EDITOR_WIDTH = 360
+
+/** 입력창 자리 — 수식 바로 아래, 같은 왼쪽. 노드 뷰가 없으면 null. */
+function measureEquationUi(view: EditorView, frame: HTMLElement, pos: number, inline: boolean): Pick<EquationUi, 'top' | 'left' | 'width'> | null {
+  const box = view.nodeDOM(pos)
   if (!(box instanceof HTMLElement)) return null
   const f = frame.getBoundingClientRect()
   const b = box.getBoundingClientRect()
-  return { top: b.bottom - f.top + 4, left: b.left - f.left, width: b.width }
+  const left = Math.max(0, Math.min(b.left - f.left, f.width - (inline ? INLINE_EQUATION_EDITOR_WIDTH : 0)))
+  return { top: b.bottom - f.top + 4, left, width: inline ? INLINE_EQUATION_EDITOR_WIDTH : b.width }
 }
 
-/** 이 입력창을 연 블록을 눌렀는가 — 바깥 누르기가 건너뛴다(블록의 click 이 닫는다). */
-function isEquationTrigger(target: EventTarget | null, blockId: string): boolean {
-  if (!(target instanceof Element) || target.closest('.blk-equation') === null) return false
-  return target.closest<HTMLElement>('[data-block-id]')?.dataset.blockId === blockId
+/** 이 입력창을 연 수식을 눌렀는가 — 바깥 누르기가 건너뛴다(수식의 click 이 닫는다). */
+function isEquationTrigger(target: EventTarget | null, view: EditorView | null, ui: Pick<EquationUi, 'blockId' | 'index'>): boolean {
+  if (!(target instanceof Element) || view === null) return false
+  if (ui.index === null) {
+    if (target.closest('div.blk-equation') === null) return false
+    return target.closest<HTMLElement>('[data-block-id]')?.dataset.blockId === ui.blockId
+  }
+  const span = target.closest('span[data-inline-equation]')
+  const at = locateEquation(view.state, ui)
+  return span !== null && at !== null && view.nodeDOM(at.pos) === span
 }
 
 /** 고른 글자에 코멘트를 달 수 있는 자리 — 편집기 기준 좌표까지 들고 있다. */
@@ -732,48 +768,65 @@ export function BodyEditor({
    * 입력창을 연다 — 노드 뷰의 click · 골라진 블록의 Enter · `/수식` 이 부른다. 편집할 수 없거나 블록 수식이 아니면 열지 않는다. 같은
    * 블록이 이미 열려 있으면 닫는다(쓰던 식은 저장한다). 슬래시 · 멘션 메뉴는 닫는다(그 키 리스너가 입력창의 키를 가로채지 않게).
    */
-  const openEquationUi = useCallback((blockId: string) => {
+  const openEquationAt = useCallback((target: Pick<EquationUi, 'blockId' | 'index'>) => {
     const open = equationUiRef.current
-    if (open !== null && open.blockId === blockId) {
+    if (open !== null && open.blockId === target.blockId && open.index === target.index) {
       equationCloseRef.current?.(true)
       return
     }
     const view = viewRef.current
     const frame = frameRef.current
     if (!view || !frame || !view.editable) return
-    const info = equationBlockInfo(view.state, blockId)
-    if (info === null) return
-    const geometry = measureEquationUi(view, frame, info.pos)
+    const at = locateEquation(view.state, target)
+    if (at === null) return
+    const geometry = measureEquationUi(view, frame, at.pos, target.index !== null)
     if (geometry === null) return
     const hadFocus = view.hasFocus()
     view.dispatch(closeMentionMenu(closeSlashMenu(view.state.tr)))
-    const next: EquationUi = { ...geometry, blockId, initial: info.expression, hadFocus }
+    const next: EquationUi = { ...geometry, ...target, initial: at.expression, hadFocus }
     equationUiRef.current = next
     setEquationUi(next)
   }, [])
+  const openEquationUi = useCallback((blockId: string) => openEquationAt({ blockId, index: null }), [openEquationAt])
+  const openInlineEquationUi = useCallback((ref: InlineEquationRef) => openEquationAt(ref), [openEquationAt])
 
-  /** 닫는다 — 코드 오버레이와 같다: 돌려줄 때 캐럿을 옮기지 않는다. 포커스 없이 열었으면 블록 뒤에 캐럿을 둔다(화면 안이다). */
+  /**
+   * 닫는다. 블록 수식은 코드 오버레이와 같다 — 돌려줄 때 캐럿을 옮기지 않고, 포커스 없이 열었으면 그 블록을 고른다. **인라인 수식은 캐럿을
+   * 수식 바로 뒤에 둔다** — 누른 수식은 노드 선택이라 그대로 두면 다음 글자가 수식을 덮어쓴다. 새로 넣은 빈 수식을 저장하지 않고 닫았으면
+   * 지운다(F-01-20 — 빈 인라인 수식은 남기지 않는다).
+   */
   const closeEquationUi = useCallback((restoreFocus: boolean, outside?: EventTarget | null) => {
     const current = equationUiRef.current
     equationUiRef.current = null
     setEquationUi(null)
     const view = viewRef.current
     if (!view || current === null || !view.editable) return
+    const inline = current.index === null ? null : { blockId: current.blockId, index: current.index }
+    const removedAt = inline === null ? null : findInlineEquation(view.state, inline)?.pos ?? null
+    const removed = inline !== null && removeEmptyInlineEquationCommand(inline)(view.state, view.dispatch.bind(view))
     if (!restoreFocus && !(outside instanceof Node && view.dom.contains(outside))) return
     view.focus()
+    if (inline !== null) {
+      const at = removed ? removedAt : (() => {
+        const found = findInlineEquation(view.state, inline)
+        return found === null ? null : found.pos + found.node.nodeSize
+      })()
+      if (at !== null) view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, Math.min(at, view.state.doc.content.size))))
+      return
+    }
     if (current.hadFocus) return
     const info = equationBlockInfo(view.state, current.blockId)
     if (info === null) return
     view.dispatch(view.state.tr.setSelection(NodeSelection.create(view.state.doc, info.pos)))
   }, [])
 
-  /** 자리를 다시 잰다 — 블록이 사라졌으면(지워짐 · 타입이 바뀜) 닫는다. */
+  /** 자리를 다시 잰다 — 수식이 사라졌으면(지워짐 · 타입이 바뀜) 닫는다. */
   const remeasureEquationUi = useCallback((view: EditorView) => {
     const current = equationUiRef.current
     const frame = frameRef.current
     if (current === null || !frame) return
-    const info = equationBlockInfo(view.state, current.blockId)
-    const geometry = info === null ? null : measureEquationUi(view, frame, info.pos)
+    const at = locateEquation(view.state, current)
+    const geometry = at === null ? null : measureEquationUi(view, frame, at.pos, current.index !== null)
     if (geometry === null) {
       equationUiRef.current = null
       setEquationUi(null)
@@ -931,6 +984,8 @@ export function BodyEditor({
       openCodeCaption: (id) => openCodeUi('caption', id),
       // 블록 수식(Phase 2 1a) — 누르거나 골라서 Enter 를 치면 입력창.
       openEquation: (id) => openEquationUi(id),
+      // 인라인 수식(Phase 2 1b) — 누르거나 골라서 Enter · Ctrl/Cmd+Shift+E 로 넣은 빈 수식.
+      openInlineEquation: (ref) => openInlineEquationUi(ref),
       // 목차의 항목(8b-1) — 그 블록을 보여 주고(접힌 조상을 펼친다) 화면 위쪽으로 굴린다. 주소의 해시도 그 블록으로 —
       // `replaceState` 라 `hashchange` 가 나지 않고(두 번 보이지 않는다) 뒤로 가기에 쌓이지 않는다.
       // breadcrumb 블록의 링크(8b-2) — 앱 안에서 옮겨 간다.
@@ -1276,18 +1331,24 @@ export function BodyEditor({
         {/* 블록 수식의 입력창(Phase 2 1a) — 편집기 밖 · 프레임 좌표. 같은 블록을 다시 열면 새로 연다(key). */}
         {editable && equationUi !== null && (
           <EquationEditor
-            key={equationUi.blockId}
+            key={`${equationUi.blockId}:${equationUi.index ?? 'block'}`}
+            inline={equationUi.index !== null}
             initial={equationUi.initial}
             top={equationUi.top}
             left={equationUi.left}
             width={equationUi.width}
             onSave={(text) => {
               const view = viewRef.current
-              if (view?.editable) setEquationExpressionCommand(equationUi.blockId, text)(view.state, view.dispatch.bind(view))
+              if (!view?.editable) return
+              const command =
+                equationUi.index === null
+                  ? setEquationExpressionCommand(equationUi.blockId, text)
+                  : setInlineEquationCommand({ blockId: equationUi.blockId, index: equationUi.index }, text)
+              command(view.state, view.dispatch.bind(view))
             }}
             onClose={closeEquationUi}
             closeRef={equationCloseRef}
-            isTrigger={(target) => isEquationTrigger(target, equationUi.blockId)}
+            isTrigger={(target) => isEquationTrigger(target, viewRef.current, equationUi)}
           />
         )}
       </div>

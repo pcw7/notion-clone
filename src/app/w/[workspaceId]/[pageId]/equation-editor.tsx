@@ -20,6 +20,8 @@ import { MAX_EQUATION_LENGTH } from '@/lib/block/equation'
 import { loadKatex, renderEquation, type EquationRender } from '@/lib/editor/equation-render'
 
 export type EquationEditorProps = {
+  /** 인라인 수식인가(1b) — 미리보기를 글자 사이의 모양으로 그린다 · 이름이 달라진다. */
+  inline?: boolean
   /** 연 순간의 식. */
   initial: string
   /** 프레임 기준 좌표 · 폭. */
@@ -38,7 +40,7 @@ export type EquationEditorProps = {
 /** 미리보기 — 비었으면 null. */
 type Preview = EquationRender | null
 
-export function EquationEditor({ initial, top, left, width, onSave, onClose, closeRef, isTrigger }: EquationEditorProps) {
+export function EquationEditor({ inline = false, initial, top, left, width, onSave, onClose, closeRef, isTrigger }: EquationEditorProps) {
   const doneRef = useRef(false)
   const dirtyRef = useRef(false)
   const rootRef = useRef<HTMLDivElement | null>(null)
@@ -83,7 +85,7 @@ export function EquationEditor({ initial, top, left, width, onSave, onClose, clo
     }
     void loadKatex(text).then(
       (katex) => {
-        if (current) setPreview(renderEquation(katex, text))
+        if (current) setPreview(renderEquation(katex, text, !inline))
       },
       () => {
         if (current) setPreview({ ok: false, message: '미리보기를 불러 오지 못했습니다' })
@@ -92,7 +94,7 @@ export function EquationEditor({ initial, top, left, width, onSave, onClose, clo
     return () => {
       current = false
     }
-  }, [text])
+  }, [text, inline])
 
   // 바깥을 누르면 저장하고 닫는다.
   useEffect(() => {
@@ -139,7 +141,7 @@ export function EquationEditor({ initial, top, left, width, onSave, onClose, clo
         <textarea
           ref={inputRef}
           data-testid="equation-input"
-          aria-label="수식(KaTeX)"
+          aria-label={inline ? '인라인 수식(KaTeX)' : '수식(KaTeX)'}
           autoFocus
           rows={1}
           value={text}
