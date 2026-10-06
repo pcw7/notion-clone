@@ -245,16 +245,37 @@
 .blk-editor .blk-column { display: none; }
 .blk-editor .blk-container:has(> .blk-column_list) > .blk-group {
   display: flex;
-  gap: 1.5rem;
+  /* 틈은 블록 핸들(+ · 끌기 — 46px)과 폭 손잡이가 겹치지 않고 들어갈 만큼 — 오른쪽 컬럼 블록의 핸들이 틈에 선다(1c-2). */
+  gap: 3.5rem;
   margin-left: 0;
 }
 .blk-editor .blk-container:has(> .blk-column) {
+  /* flex-grow 는 폭(`format.column_ratio`)의 데코레이션이 단다(1c-2 · `column-layout.ts`). */
   flex: 1 1 0;
   min-width: 0;
+  position: relative;
 }
+/*
+ * 폭 조절 손잡이 — 둘째 컬럼부터, 틈의 **왼쪽 끝**(앞 컬럼의 오른쪽 경계). 틈의 나머지에는 오른쪽 컬럼 블록의 핸들이 선다 — 겹치면 폭을
+ * 잡으려다 블록을 끈다. 올리면 보이고 끄는 동안 따라 움직인다. 읽기 전용에는 없다.
+ */
+.blk-editor .blk-column-resize {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -3.5rem;
+  width: 6px;
+  cursor: col-resize;
+  border-radius: 3px;
+  z-index: 2;
+}
+.blk-editor .blk-column-resize:hover,
+.blk-editor .blk-column-resize[data-dragging='true'] { background: rgba(35, 131, 226, 0.45); }
+.blk-editor[contenteditable='false'] .blk-column-resize { display: none; }
 .blk-editor .blk-container:has(> .blk-column) > .blk-group { margin-left: 0; }
 @media (max-width: 640px) {
   .blk-editor .blk-container:has(> .blk-column_list) > .blk-group { flex-direction: column; gap: 0; }
+  .blk-editor .blk-column-resize { display: none; }
 }
 
 /* 인라인 수식은 span 이다 — 블록 수식(`div.blk-equation` · Phase 2 1a)이 같은 클래스 이름을 쓰므로 태그로 가른다. */

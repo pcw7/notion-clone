@@ -340,8 +340,17 @@ describe('normalizeFormat', () => {
   })
 
   test('다른 format 키는 보존한다 — 모르는 키(앞으로 붙을 것)도', () => {
-    const out = normalizeFormat('paragraph', { block_color: 'red', column_ratio: 0.5, future_key: { a: 1 } })
-    assert.deepEqual(out, { block_color: 'red', column_ratio: 0.5, future_key: { a: 1 } })
+    const out = normalizeFormat('paragraph', { block_color: 'red', width_hint: 0.5, future_key: { a: 1 } })
+    assert.deepEqual(out, { block_color: 'red', width_hint: 0.5, future_key: { a: 1 } })
+  })
+
+  test('★ column_ratio 는 컬럼의 0 초과 1 이하 수만 남는다 — 다른 타입이 되면 사라진다 (1c-2)', () => {
+    assert.equal(normalizeFormat('column', { column_ratio: 0.5 }).column_ratio, 0.5)
+    assert.equal(normalizeFormat('column', { column_ratio: 1 }).column_ratio, 1)
+    assert.equal('column_ratio' in normalizeFormat('paragraph', { column_ratio: 0.5 }), false, '컬럼이 아닌 타입에 폭이 남았다')
+    for (const bad of [0, -0.2, 1.5, Number.NaN, '0.5', null]) {
+      assert.equal('column_ratio' in normalizeFormat('column', { column_ratio: bad }), false, String(bad))
+    }
   })
 
   test('★ code_wrap 은 코드 블록의 true 만 남는다 — 문단으로 바꾸면 사라지고 · 끈 상태는 키가 없다 (8a-2)', () => {

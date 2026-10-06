@@ -40,6 +40,7 @@ import { clipboardPlugin } from './block-clipboard.ts'
 import { imageDropPlugin } from './image-drop.ts'
 import { blockSelectionPlugin } from './block-selection-plugin.ts'
 import { codeHighlightPlugin } from './code-highlight.ts'
+import { columnLayoutPlugin } from './column-layout.ts'
 import { collapsePlugin } from './collapse-plugin.ts'
 import { createKeydownHandler, type EditorKeymapDeps } from './keymap.ts'
 import { inputRulesPlugin } from './input-rules.ts'
@@ -132,6 +133,8 @@ export function editingPlugins(deps: EditorDeps): Plugin[] {
     codeHighlightPlugin(),
     // 목차(F-01-16 · 8b-1) — 헤딩을 모아 목차 노드의 데코레이션에 싣는다. 문서에 쓰지 않는다(`toc-plugin.ts` 머리말).
     tocPlugin(),
+    // 컬럼의 폭 · 폭 조절 손잡이(Phase 2 1c-2) — 데코레이션이다. 폭은 문서의 `format.column_ratio` 에서(`column-layout.ts`).
+    columnLayoutPlugin(),
     // breadcrumb(F-01-16 · 8b-2) — 서버가 준 이 페이지의 경로를 breadcrumb 노드의 데코레이션에 싣는다(`breadcrumb-plugin.ts`).
     breadcrumbPlugin(() => deps.breadcrumbTrail?.() ?? null),
     // 멘션 · 수식의 서식을 attr 에 비춘다 — 협업 바인딩이 Y.Doc 에 싣는 것은 attr 뿐이다(`atom-marks.ts`).

@@ -66,6 +66,7 @@ import type { Mappable } from '@tiptap/pm/transform'
 import type { BlockType } from '../block/types.ts'
 import { applyTurnInto, type CommandDeps } from './commands.ts'
 import { newBlockId } from './pm-adapter.ts'
+import { tidyColumns } from './column-edit.ts'
 import { containerAt, findContainerById, visibleBlocks, type VisibleBlock } from './pm-blocks.ts'
 import { blockSchema, PAGE_REF_NODE } from './schema.ts'
 import type { VisibleEntry, VisibleIndex } from './tree.ts'
@@ -569,6 +570,8 @@ export function deleteBlockSelectionCommand(deps: CommandDeps): Command {
 
     const tr = state.tr
     if (!replaceBlockSelection(tr, sel, Slice.empty, deps.newId)) return false
+    // 컬럼의 블록을 다 지웠으면 그 컬럼을 지운다(Phase 2 1c-2 · 하나 남으면 컬럼 목록을 푼다).
+    tidyColumns(tr)
     if (dispatch) dispatch(tr.scrollIntoView())
     return true
   }

@@ -687,6 +687,23 @@ async function main() {
       await sleep(120)
       return true
     }
+    // 잠금 버튼은 누를 때의 글자대로 잠그거나 푼다(PUT · DELETE — 둘 다 멱등). 붙기 전의 클릭은 사라지므로 될 때까지 다시 누르되,
+    // **글자가 바라는 쪽일 때만** 누른다 — 앞선 클릭의 새로고침이 늦게 와 글자가 막 바뀐 뒤에 누르면 거꾸로 돌린다(1c-2 의 전체 e2e
+    // 에서 겪었다 — "잠김"이 선 채로 서버는 풀려 있었다).
+    const pressLockToggle = async (label, done) => {
+      for (let i = 0; i < 10; i += 1) {
+        const box = await evaluate(`(() => {
+          const el = document.querySelector('[data-testid="page-lock-toggle"]')
+          if (!el || el.disabled || el.textContent !== ${JSON.stringify(label)}) return null
+          el.scrollIntoView({ block: 'center' })
+          const r = el.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (box) await click(box.x, box.y)
+        if (await waitFor(done, 1500)) return true
+      }
+      return false
+    }
     /**
      * 옮길 자리를 누른 뒤 — 미리보기가 한 번 더 물으면(볼 수 있는 사람이 바뀐다 · 7c-13) "옮기기"를 누른다. 묻지 않으면(곧바로
      * 옮겼거나 거부됐으면) 아무것도 하지 않는다. 뿌리를 바꾸는 이동을 누르는 절은 모두 이것을 거친다.
@@ -3222,19 +3239,11 @@ async function main() {
       check('읽기만 하는 사람은 풀지 못한다 (403)', viewerUnlock.status === 403, String(viewerUnlock.status))
 
       // 풀면 페이지를 다시 연다 — 서버 렌더 뒤 붙기 전의 클릭은 사라지므로 "잠김"이 사라질 때까지 다시 누른다(§6).
-      let unlocked = false
-      for (let i = 0; i < 10 && !unlocked; i += 1) {
-        await clickSelector('[data-testid="page-lock-toggle"]')
-        unlocked = await waitFor(`!document.querySelector('[data-testid="page-locked"]')`, 1500)
-      }
+      const unlocked = await pressLockToggle('잠금 풀기', `!document.querySelector('[data-testid="page-locked"]')`)
       check('★ "잠금 풀기"를 누르면 다시 열려 곧바로 고칠 수 있다', unlocked && (await waitFor(EDITABLE, 15000)),
         await evaluate(BANNER))
 
-      let relocked = false
-      for (let i = 0; i < 10 && !relocked; i += 1) {
-        await clickSelector('[data-testid="page-lock-toggle"]')
-        relocked = await waitFor(`!!document.querySelector('[data-testid="page-locked"]')`, 1500)
-      }
+      const relocked = await pressLockToggle('잠그기', `!!document.querySelector('[data-testid="page-locked"]')`)
       check('★ "잠그기"를 누르면 "잠김"이 서고 그 편집기도 읽기 전용이 된다', relocked && (await waitFor(`!(${EDITABLE})`, 15000)))
 
       // 풀어 둔 페이지에서 본다 — 잠긴 채면 권한이 아니라 잠금 때문에 거부될 수 있다.
@@ -3267,11 +3276,7 @@ async function main() {
       check('전제 — 잠그기 전에는 뷰 더하기 · 열 더하기가 있고 "잠그기" 버튼이 있다',
         await waitFor(`${STRUCTURE} && (document.querySelector('[data-testid="page-lock-toggle"]')?.textContent ?? '') === '잠그기'`, 15000))
 
-      let locked = false
-      for (let i = 0; i < 10 && !locked; i += 1) {
-        await clickSelector('[data-testid="page-lock-toggle"]')
-        locked = await waitFor(`!!document.querySelector('[data-testid="page-locked"]')`, 1500)
-      }
+      const locked = await pressLockToggle('잠그기', `!!document.querySelector('[data-testid="page-locked"]')`)
       check('★ "잠그기"를 누르면 "잠김"이 서고 구조 화면(뷰 더하기 · 열 더하기)이 사라진다 — 행 더하기는 남는다',
         locked && (await waitFor(`${NO_STRUCTURE} && !!document.querySelector('[data-testid="db-add-row"]')`, 10000)))
 
@@ -3293,11 +3298,7 @@ async function main() {
         rowLock.status === 200 && lockedCell.status === 409 && lockedCell.body?.error === 'locked' && otherCell.status === 200,
         JSON.stringify([rowLock.status, lockedCell.status, otherCell.status]))
 
-      let unlocked = false
-      for (let i = 0; i < 10 && !unlocked; i += 1) {
-        await clickSelector('[data-testid="page-lock-toggle"]')
-        unlocked = await waitFor(`!document.querySelector('[data-testid="page-locked"]')`, 1500)
-      }
+      const unlocked = await pressLockToggle('잠금 풀기', `!document.querySelector('[data-testid="page-locked"]')`)
       check('★ "잠금 풀기"를 누르면 구조 화면이 돌아온다', unlocked && (await waitFor(STRUCTURE, 10000)))
       const afterUnlock = await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '풀린 뒤의 속성', type: 'number' })
       check('풀린 뒤에는 속성을 더한다', afterUnlock.status === 200 || afterUnlock.status === 201, String(afterUnlock.status))
@@ -10703,6 +10704,143 @@ async function main() {
         const [a, b] = [...document.querySelectorAll('${COLS}')].map((c) => c.getBoundingClientRect())
         return !!a && !!b && b.left >= a.right
       })()`, 15000))
+      await sleep(1000)
+    }
+
+    if (sectionIf('컬럼 폭 · 끌어 넣기 (Phase 2 1c-2 · F-01-12)')) {
+      // 컬럼 사이의 손잡이를 끌면 폭이 바뀌고(놓을 때 한 번 저장 · 합 1), 위 블록을 끌어 둘째 컬럼 안에 놓으면 그 컬럼에 들어간다(차선).
+      // 첫 컬럼의 마지막 블록을 끌어내면 그 컬럼이 사라지고 하나 남은 컬럼 목록은 풀린다. 빈 컬럼의 빈 블록에서 Backspace 는 그 컬럼을 지운다.
+      const stamp = Date.now()
+      const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
+      const newPage = async (title) => (await (await fetch(pagesUrl, { method: 'POST', headers: authed, body: JSON.stringify({ title }) })).json()).page.id
+      const cid = { top: randomUUID(), a: randomUUID(), b: randomUUID(), b2: randomUUID(), b3: randomUUID(), end: randomUUID(), list: randomUUID(), left: randomUUID(), right: randomUUID() }
+      const para = (id, text) => ({ id, type: 'paragraph', title: text === '' ? [] : [textRun(text)], properties: {}, format: {}, children: [] })
+      const col = (id, children) => ({ id, type: 'column', title: [], properties: {}, format: {}, children })
+      const widthPage = await newPage(`컬럼 폭 ${stamp}`)
+      await saveBody(widthPage, { blocks: [
+        para(cid.top, '위 블록'),
+        { id: cid.list, type: 'column_list', title: [], properties: {}, format: {}, children: [col(cid.left, [para(cid.a, '왼쪽 a')]), col(cid.right, [para(cid.b, '오른쪽 b'), para(cid.b2, '오른쪽 b2'), para(cid.b3, '오른쪽 b3')])] },
+        para(cid.end, '끝 블록'),
+      ] })
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${widthPage}` })
+      await waitFor(`!!document.querySelector('[data-block-id="${cid.b}"] p') && document.querySelector('.blk-editor')?.getAttribute('contenteditable') === 'true'`, 15000)
+      const colRect = (id) => rect(`[data-block-id="${id}"]`)
+      const treeOnServer = async () => {
+        const text = (b) => (b.title ?? []).map((r) => r.plain_text ?? '').join('')
+        const walk = (blocks) => blocks.map((b) => (b.type === 'paragraph' ? text(b) : [b.type, walk(b.children ?? [])]))
+        return JSON.stringify(walk((await readBody(widthPage)).doc.blocks))
+      }
+      const serverIs = async (page, expected) => {
+        let got = null
+        for (let i = 0; i < 60; i += 1) {
+          const text = (b) => (b.title ?? []).map((r) => r.plain_text ?? '').join('')
+          const walk = (blocks) => blocks.map((b) => (b.type === 'paragraph' ? text(b) : [b.type, walk(b.children ?? [])]))
+          got = JSON.stringify(walk((await readBody(page)).doc.blocks))
+          if (got === JSON.stringify(expected)) return [true, got]
+          await sleep(150)
+        }
+        return [false, got]
+      }
+
+      // ① 폭 — 손잡이를 오른쪽으로 끈다.
+      const before = [await colRect(cid.left), await colRect(cid.right)]
+      const handle = await evaluate(`(() => {
+        const h = document.querySelector('[data-block-id="${cid.right}"] > .blk-column-resize')
+        if (!h) return null
+        const r = h.getBoundingClientRect()
+        return { x: r.x + r.width / 2, y: r.y + Math.min(r.height / 2, 12) }
+      })()`)
+      check('전제 — 둘째 컬럼의 왼쪽 경계에 폭 손잡이가 있다', handle !== null)
+      if (handle) {
+        await move(handle.x, handle.y)
+        await press(handle.x, handle.y)
+        for (let i = 1; i <= 8; i += 1) {
+          await move(handle.x + 15 * i, handle.y, true)
+          await sleep(16)
+        }
+        await release(handle.x + 120, handle.y)
+      }
+      const widened = await waitFor(`(() => {
+        const l = document.querySelector('[data-block-id="${cid.left}"]')?.getBoundingClientRect()
+        const r = document.querySelector('[data-block-id="${cid.right}"]')?.getBoundingClientRect()
+        return !!l && !!r && l.width > ${before[0].w} + 60 && r.width < ${before[1].w} - 60
+      })()`, 5000)
+      check('★ 손잡이를 끌면 왼쪽 컬럼이 넓어진다', widened, JSON.stringify({ before, after: [await colRect(cid.left), await colRect(cid.right)] }))
+      let savedRatios = null
+      for (let i = 0; i < 60; i += 1) {
+        const list = (await readBody(widthPage)).doc.blocks.find((b) => b.type === 'column_list')
+        savedRatios = list?.children?.map((c) => c.format?.column_ratio ?? null) ?? null
+        if (savedRatios?.every((r) => typeof r === 'number')) break
+        await sleep(150)
+      }
+      check('★ 서버 — 컬럼마다 폭(column_ratio) · 왼쪽이 크고 합이 1',
+        !!savedRatios && savedRatios[0] > 0.55 && Math.abs(savedRatios[0] + savedRatios[1] - 1) < 1e-6, JSON.stringify(savedRatios))
+
+      // ② 위 블록을 끈다 — 먼저 왼쪽 컬럼의 a 아래 빈자리(오른쪽 컬럼이 더 길어 가장 가까운 줄은 오른쪽의 b3)에서 가이드가 왼쪽 컬럼에
+      //    서는지 보고(차선), 둘째 컬럼의 b 아래로 옮겨 놓는다.
+      const a = await line(cid.a)
+      const b3 = await line(cid.b3)
+      const left = await colRect(cid.left)
+      await drag(cid.top, a.x + 5, b3.y + b3.h / 2, { drop: false })
+      const leftGuide = await rect('.blk-drop-guide')
+      check('★ 오른쪽 컬럼이 더 길어도 가이드는 포인터 쪽 컬럼의 줄에 선다 — 왼쪽 컬럼의 a 아래(차선)',
+        !!leftGuide && leftGuide.x >= left.x - 2 && leftGuide.x + leftGuide.w <= left.x + left.w + 2 && Math.abs(leftGuide.y + 1 - (a.y + a.h)) < 6,
+        JSON.stringify({ leftGuide, left, a }))
+      const b = await line(cid.b)
+      for (let i = 1; i <= 5; i += 1) {
+        await move(a.x + 5 + ((b.x - a.x) * i) / 5, b3.y + b3.h / 2 + ((b.y + b.h * 0.8 - b3.y - b3.h / 2) * i) / 5, true)
+        await sleep(16)
+      }
+      const guide = await rect('.blk-drop-guide')
+      const right = await colRect(cid.right)
+      check('★ 끄는 동안 가이드가 둘째 컬럼 안에 선다(폭도 그 컬럼만큼)',
+        !!guide && guide.x >= right.x - 2 && guide.x + guide.w <= right.x + right.w + 2 && Math.abs(guide.y + 1 - (b.y + b.h)) < 6,
+        JSON.stringify({ guide, right, b }))
+      await release(b.x + 5, b.y + b.h * 0.8)
+      const [into, intoGot] = await serverIs(widthPage, [['column_list', [['column', ['왼쪽 a']], ['column', ['오른쪽 b', '위 블록', '오른쪽 b2', '오른쪽 b3']]]], '끝 블록'])
+      check('★ 놓으면 그 컬럼에 들어간다', into, intoGot)
+
+      // ③ 첫 컬럼의 마지막 블록을 끝 블록 아래로 끌어낸다 — 그 컬럼이 사라지고 하나 남은 컬럼 목록이 풀린다.
+      const end = await line(cid.end)
+      // 직전 끌기의 핸들이 남아 있다 — 이 블록 줄에 핸들이 맞춰진 뒤에 끈다(`drag` 는 핸들이 있기만 하면 그 자리를 읽는다).
+      const aLine = await line(cid.a)
+      await move(aLine.x + 30, aLine.y + aLine.h / 2)
+      // a 와 b 는 같은 높이다 — 핸들이 a 의 왼쪽(컬럼 밖)에 있는지도 본다. b 로 건너가면 틈(왼쪽 컬럼의 오른쪽)에 선다.
+      const gripOnA = `(() => {
+        const g = document.querySelector('.blk-gutter-grip')?.getBoundingClientRect()
+        return !!g && Math.abs(g.y - ${aLine.y}) < 10 && g.right <= ${aLine.x} + 2
+      })()`
+      check('전제 — 왼쪽 컬럼의 블록에 핸들이 선다', await waitFor(gripOnA, 3000))
+      // 핸들은 컬럼 밖(왼쪽 여백)에 선다 — 그 위로 옮겨도 포인터 쪽(첫) 컬럼의 블록을 고른다. 끝 쪽 컬럼으로 건너가면 엉뚱한 블록을 끈다.
+      const grip = await rect('.blk-gutter-grip')
+      if (grip) await move(grip.x + grip.w / 2, grip.y + grip.h / 2)
+      await sleep(150)
+      check('★ 핸들 위(컬럼 밖 여백)로 옮겨도 핸들은 왼쪽 컬럼의 블록에 머문다', await waitFor(gripOnA, 1000),
+        JSON.stringify({ grip: await rect('.blk-gutter-grip'), aLine }))
+      await drag(cid.a, end.x + 5, end.y + end.h * 0.8)
+      const [unwrapped, unwrappedGot] = await serverIs(widthPage, ['오른쪽 b', '위 블록', '오른쪽 b2', '오른쪽 b3', '끝 블록', '왼쪽 a'])
+      check('★ 마지막 블록을 끌어낸 컬럼은 사라지고 · 하나 남은 컬럼 목록은 풀린다', unwrapped, unwrappedGot)
+
+      // ④ 빈 컬럼의 빈 블록에서 Backspace — 그 컬럼을 지운다.
+      const emptyPage = await newPage(`빈 컬럼 ${stamp}`)
+      const e = { list: randomUUID(), c1: randomUUID(), c2: randomUUID(), c3: randomUUID(), empty: randomUUID(), x: randomUUID(), y: randomUUID() }
+      await saveBody(emptyPage, { blocks: [{ id: e.list, type: 'column_list', title: [], properties: {}, format: {}, children: [
+        col(e.c1, [para(e.x, '엑스')]), col(e.c2, [para(e.empty, '')]), col(e.c3, [para(e.y, '와이')]),
+      ] }] })
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${emptyPage}` })
+      await waitFor(`!!document.querySelector('[data-block-id="${e.empty}"] p') && document.querySelector('.blk-editor')?.getAttribute('contenteditable') === 'true'`, 15000)
+      let inEmpty = false
+      for (let i = 0; i < 20 && !inEmpty; i += 1) {
+        await clickSelector(`[data-block-id="${e.empty}"] p`)
+        inEmpty = await waitFor(`document.querySelector('[data-block-id="${e.empty}"]')?.contains(window.getSelection()?.anchorNode ?? null)`, 500)
+      }
+      check('전제 — 빈 컬럼의 빈 블록에 캐럿이 섰다', inEmpty)
+      await key('Backspace')
+      const [removed, removedGot] = await serverIs(emptyPage, [['column_list', [['column', ['엑스']], ['column', ['와이']]]]])
+      check('★ 빈 컬럼의 빈 블록에서 Backspace — 그 컬럼이 사라진다', removed, removedGot)
+      await typeText('!')
+      const [caretAt, caretGot] = await serverIs(emptyPage, [['column_list', [['column', ['엑스!']], ['column', ['와이']]]]])
+      check('캐럿은 앞 컬럼의 끝이다', caretAt, caretGot)
       await sleep(1000)
     }
 

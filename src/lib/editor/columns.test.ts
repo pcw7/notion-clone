@@ -10,7 +10,7 @@
  *   ④ ★ `/2열` · `/3열` — 지금 블록(id · 캐럿 그대로)이 첫 컬럼으로 · 나머지는 빈 문단 · 컬럼 안에서는 만들지 않는다 · 메뉴에 선다
  *   ⑤ ★ 경계 — 이웃 찾기는 틀을 건너뛴다 · 들여쓰기는 컬럼 목록 밑으로 가지 않는다 · 컬럼의 직속 블록은 내어쓰지 않는다 · 병합은
  *      컬럼 경계를 넘지 않는다(키는 삼킨다)
- *   ⑥ 내보내기 · 복사의 평문은 펼친다 · 컬럼 안의 블록은 끌어 놓기 후보가 아니다
+ *   ⑥ 내보내기 · 복사의 평문은 펼친다 · 끌어 놓기 후보는 차선(컬럼 · 본문)을 싣는다(1c-2)
  */
 
 import { test, describe } from 'node:test'
@@ -248,12 +248,13 @@ describe('⑥ 내보내기 · 복사 · 끌어 놓기', () => {
     assert.equal(plainTextForBlocks(blocks), '앞\n왼쪽 1\n왼쪽 2\n오른쪽\n뒤')
   })
 
-  test('컬럼 안의 블록은 끌어 놓기 후보가 아니다', () => {
+  test('끌어 놓기 후보는 차선을 싣는다 — 컬럼 안이면 그 컬럼 · 아니면 null(1c-2)', () => {
     const inner = p('안')
     const outer = p('밖')
-    const state = stateOf([outer, columns(column(inner), column(p('b')))])
-    const ids = dropCandidates(state.doc, () => false, []).map((c) => c.blockId)
-    assert.ok(ids.includes(outer.id))
-    assert.ok(!ids.includes(inner.id))
+    const left = column(inner)
+    const state = stateOf([outer, columns(left, column(p('b')))])
+    const lanes = new Map(dropCandidates(state.doc, () => false, []).map((c) => [c.blockId, c.lane]))
+    assert.equal(lanes.get(outer.id), null)
+    assert.equal(lanes.get(inner.id), left.id)
   })
 })
