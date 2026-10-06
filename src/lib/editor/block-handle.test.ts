@@ -128,6 +128,9 @@ function lines(
     top: i * 24,
     bottom: i * 24 + 20,
     contentLeft: 48 + (s.depth ?? 0) * 24,
+    contentRight: 720,
+    lane: null,
+    canSide: false,
   }))
 }
 

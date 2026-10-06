@@ -71,7 +71,8 @@ export function balancedRatios(ratios: readonly number[]): number[] {
   return rounded
 }
 
-function writeRatios(tr: Transaction, list: ColumnListInfo, ratios: readonly number[]): void {
+/** 컬럼마다 폭을 쓴다 — `ratios` 는 컬럼 수와 같은 길이(맞추는 것은 부르는 쪽). */
+export function writeRatios(tr: Transaction, list: ColumnListInfo, ratios: readonly number[]): void {
   list.columns.forEach((column, i) => {
     const content = tr.doc.nodeAt(column.pos + 1)
     if (!content) return

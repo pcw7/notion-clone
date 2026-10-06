@@ -66,11 +66,14 @@ import { BlockMenu } from './block-menu'
 const INDENT_PX = 24
 /** 이만큼 움직여야 드래그다. 그 전에 놓으면 클릭(= 블록 선택). */
 const DRAG_THRESHOLD_PX = 4
+/** 컬럼이 세로로 쌓이는 화면 — `editor.css` 의 같은 미디어 쿼리. 여기서는 옆에 놓아 컬럼을 만들지 않는다(1c-3). */
+const STACKED_COLUMNS_QUERY = '(max-width: 640px)'
 /** `+` 와 `⋮⋮` 두 버튼의 폭 + 내용과의 간격. */
 const GUTTER_WIDTH_PX = 46
 
 type Hover = { blockId: string; top: number; left: number }
-type Guide = { top: number; left: number; width?: number }
+/** 가로 가이드(위 · 아래 · 자식 자리) — `height` 가 있으면 옆에 놓기의 세로 가이드(1c-3). */
+type Guide = { top: number; left: number; width?: number; height?: number }
 /**
  * 메뉴 자리. 핸들 바로 아래 — 노션도 핸들에서 메뉴가 떨어진다.
  * `view` 를 함께 담는다 — 렌더 중에 `viewRef.current` 를 읽지 않기 위해서다(여는
@@ -87,6 +90,8 @@ type Drag = {
   lines: BlockLine[]
   /** 컬럼 차선들의 자리(1c-2) — 끌기를 시작할 때 한 번 잰다. */
   lanes: Map<string, LaneRect>
+  /** 옆에 놓기(1c-3)를 볼 것인가 — 컬럼이 세로로 쌓이는 좁은 화면이면 아니다. */
+  side: boolean
   hit: DropHit | null
 }
 
@@ -178,6 +183,7 @@ function measureLines(
       top: rect.top - box.top,
       bottom: rect.bottom - box.top,
       contentLeft: rect.left - box.left,
+      contentRight: rect.right - box.left,
     })
   }
   return out
@@ -298,6 +304,7 @@ export function BlockGutter({
       moved: false,
       lines: [],
       lanes: new Map(),
+      side: true,
       hit: null,
     }
   }
@@ -317,6 +324,7 @@ export function BlockGutter({
       frame.setAttribute('data-dragging', 'true')
       d.lines = measureLines(view, frame, d.ids, deps.isCollapsed)
       d.lanes = measureLanes(view, frame, d.lines)
+      d.side = !window.matchMedia(STACKED_COLUMNS_QUERY).matches
     }
 
     // 포인터가 있는 차선(컬럼 · 본문)의 줄만으로 찾는다 — 나란한 컬럼은 줄의 위치가 문서 순서로 오르지 않는다(Phase 2 1c-2).
@@ -324,10 +332,11 @@ export function BlockGutter({
     const x = event.clientX - box.left
     const y = event.clientY - box.top
     const lane = laneAt(d.lanes, x, y)
-    d.hit = resolveDrop(d.lines.filter((l) => l.lane === lane), x, y, INDENT_PX)
+    d.hit = resolveDrop(d.lines.filter((l) => l.lane === lane), x, y, INDENT_PX, d.side)
     const laneRect = lane === null ? undefined : d.lanes.get(lane)
     const guide = d.hit ? dropGuide(d.hit, INDENT_PX) : null
-    setGuide(guide && laneRect ? { ...guide, width: Math.max(0, laneRect.right - guide.left) } : guide)
+    // 가로 가이드는 그 컬럼의 폭만큼 — 세로 가이드(옆 · 1c-3)는 줄의 높이만큼이라 폭을 덮어쓰지 않는다.
+    setGuide(guide && laneRect && guide.height === undefined ? { ...guide, width: Math.max(0, laneRect.right - guide.left) } : guide)
   }
 
   const onPointerUp = (): void => {
@@ -465,7 +474,14 @@ export function BlockGutter({
         <div
           aria-hidden
           className="blk-drop-guide"
-          style={guide.width === undefined ? { top: guide.top - 1, left: guide.left } : { top: guide.top - 1, left: guide.left, width: guide.width, right: 'auto' }}
+          data-orientation={guide.height === undefined ? 'horizontal' : 'vertical'}
+          style={
+            guide.height !== undefined
+              ? { top: guide.top, left: guide.left, width: 3, height: guide.height, right: 'auto' }
+              : guide.width === undefined
+                ? { top: guide.top - 1, left: guide.left }
+                : { top: guide.top - 1, left: guide.left, width: guide.width, right: 'auto' }
+          }
         />
       )}
     </>
