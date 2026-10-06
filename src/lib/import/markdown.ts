@@ -42,8 +42,6 @@ import {
 import type { EditorBlock, EditorDoc } from '../editor/document.ts'
 
 export type ImportLosses = {
-  /** 표 — 행마다 문단(칸은 ` | ` 로)으로 남겼다. */
-  tables: number
   /** 블록으로 옮길 수 없는 HTML(토글 · 콜아웃의 꼴이 아닌 것). */
   html: number
   /** 이미지 — 로컬 경로 · 글자 안의 이미지(외부 주소만 블록이 된다). */
@@ -54,7 +52,7 @@ export type ImportLosses = {
   formatting: number
 }
 
-export const emptyImportLosses = (): ImportLosses => ({ tables: 0, html: 0, images: 0, links: 0, formatting: 0 })
+export const emptyImportLosses = (): ImportLosses => ({ html: 0, images: 0, links: 0, formatting: 0 })
 
 export type MarkdownImport = {
   /** 첫 블록이 `# 제목` 이면 그 글자 — 아니면 null(부르는 쪽이 파일 이름을 쓴다). */
@@ -179,10 +177,14 @@ function runsOf(tokens: readonly Token[] | undefined, marks: Marks, cx: Convert,
         cx.losses.images += 1
         push((token as Tokens.Image).text)
         break
-      case 'html':
-        // 글자 안의 HTML(`<u>` 따위) — 태그를 벗기고 글자만.
-        push(stripTags((token as Tokens.HTML).text))
+      case 'html': {
+        // 글자 안의 HTML(`<u>` 따위) — 태그를 벗기고 글자만. `<br>` 은 줄바꿈이다 — 우리 내보내기가 표 셀 · 토글 제목의 줄바꿈을
+        // 그렇게 쓴다(Phase 2 1d-3).
+        const html = (token as Tokens.HTML).text
+        if (/^<br\s*\/?>$/i.test(html.trim())) push('\n')
+        else push(stripTags(html))
         break
+      }
       default:
         if ('text' in token && typeof token.text === 'string') push(token.text)
     }
@@ -334,12 +336,14 @@ function blocksOf(tokens: readonly Token[], cx: Convert): EditorBlock[] {
         out.push(block('divider', []))
         break
       case 'table': {
-        // 표는 블록이 없다 — 행마다 문단(칸은 " | ")으로 남긴다. 내용은 잃지 않는다.
-        cx.losses.tables += 1
+        // 심플 테이블(Phase 2 1d-3 · F-01-18) — 머리 줄이 첫 행이고 머리 표시를 켠다(GFM 은 머리 줄이 필수다 — 우리 내보내기도 첫 행을
+        // 머리로 쓴다). 행마다 칸 수는 marked 가 머리 줄에 맞춘다(모자라면 빈 칸 · 넘치면 버린다 — GFM 규칙) — 검증의 "같은 셀 수"를
+        // 그대로 지난다.
         const t = token as Tokens.Table
-        const row = (cells: readonly Tokens.TableCell[]) =>
-          block('paragraph', compact(cells.flatMap((cell, k) => [...(k > 0 ? plainRuns(' | ', cx) : []), ...runsOf(cell.tokens, {}, cx)]), cx.losses))
-        out.push(row(t.header), ...t.rows.map(row))
+        const rows = [t.header, ...t.rows].map((cells) =>
+          block('table_row', [], { properties: { cells: cells.map((cell) => compact(runsOf(cell.tokens, {}, cx), cx.losses)) } }),
+        )
+        out.push(block('table', [], { properties: { has_column_header: true }, children: rows }))
         break
       }
       case 'html': {

@@ -49,7 +49,7 @@
  * 페이지를 거부하는 것과 같은 이유다.
  */
 
-import { Fragment, Slice, type Node as PmNode } from '@tiptap/pm/model'
+import { DOMParser as PmDOMParser, Fragment, Slice, type Node as PmNode } from '@tiptap/pm/model'
 import { Plugin, PluginKey, type Command } from '@tiptap/pm/state'
 import { CellSelection } from '@tiptap/pm/tables'
 import type { EditorView } from '@tiptap/pm/view'
@@ -68,7 +68,7 @@ import type { CommandDeps } from './commands.ts'
 import { validateDoc, type EditorBlock } from './document.ts'
 import { blockFromContainer, containerFor, newBlockId } from './pm-adapter.ts'
 import { containerAt, inTableCell } from './pm-blocks.ts'
-import { isPlainTextNode } from './schema.ts'
+import { blockSchema, isPlainTextNode } from './schema.ts'
 
 /** 정본의 `application/x-{app}-blocks+json`. */
 export const BLOCKS_MIME = 'application/x-notion-clone-blocks+json'
@@ -306,6 +306,38 @@ export function textToBlocks(text: string, newId: () => string = newBlockId): Ed
  *     쪼개지 않고 **화면에서 바로 다음 줄**에 넣는다 — 펼쳐진 자식이 있으면 첫 자식,
  *     접혀 있으면 그 블록 뒤. 분할(판결 ④)·`+` 버튼과 같은 자리 규칙이다
  */
+/**
+ * 바깥 HTML → 블록들(1d-3 · 브라우저에서만). 스크립트가 돌지 않는 문서로 읽어(`DOMParser.parseFromString` — 떼어 놓은 `innerHTML` 은
+ * 이미지의 onerror 가 돈다) 스키마의 파싱 규칙으로 옮긴다 — 맨 `<table>` 은 표다(`schema.ts`). `parseSlice` 는 가장자리가 열린
+ * 조각이라 맨 위에 컨테이너 · 그룹 · **컨테이너 없는 내용 노드**(표) · 글자가 섞여 온다 — 그룹은 펴고, 내용 노드는 컨테이너로 싸고,
+ * 이어진 글자는 문단 하나로 모은다.
+ */
+function blocksFromHtml(html: string): EditorBlock[] {
+  const parsed = new globalThis.DOMParser().parseFromString(html, 'text/html')
+  const slice = PmDOMParser.fromSchema(blockSchema).parseSlice(parsed.body)
+  const { blockContainer: CONTAINER, paragraph: PARAGRAPH } = blockSchema.nodes
+  const out: EditorBlock[] = []
+  let inline: PmNode[] = []
+  const flush = (): void => {
+    if (inline.length > 0) out.push(blockFromContainer(CONTAINER!.create({ blockId: '' }, [PARAGRAPH!.create({ props: {}, format: {} }, inline)])))
+    inline = []
+  }
+  const collect = (fragment: Fragment): void =>
+    fragment.forEach((node) => {
+      if (node.isInline) {
+        inline.push(node)
+        return
+      }
+      flush()
+      if (node.type.name === 'blockContainer') out.push(blockFromContainer(node))
+      else if (node.type.name === 'blockGroup') collect(node.content)
+      else if ((node.type.spec.group ?? '').split(' ').includes('blockContent')) out.push(blockFromContainer(CONTAINER!.create({ blockId: '' }, [node])))
+    })
+  collect(slice.content)
+  flush()
+  return out
+}
+
 export function pasteBlocksCommand(blocks: readonly EditorBlock[], deps: CommandDeps): Command {
   return (state, dispatch) => {
     if (blocks.length === 0) return false
@@ -406,6 +438,13 @@ export function clipboardPlugin(deps: CommandDeps, toHtml: ClipboardHtml): Plugi
           const clean = text.replace(/\r\n?/g, '\n').replace(/\n+$/, '')
           if (clean !== '') view.dispatch(view.state.tr.insertText(clean).scrollIntoView())
           return true
+        }
+        // 바깥 HTML 의 표(Phase 2 1d-3) — ProseMirror 의 기본 붙여넣기는 글자 블록이 아닌 블록을 지금 블록의 **자식**으로 끼운다(빈
+        // 문단 밑에 표가 섰다 — e2e 가 찾았다). HTML 을 블록으로 읽어 우리 블록 붙여넣기(자리 잡기가 검사된 길)로 넘긴다.
+        const pastedHtml = event.clipboardData?.getData('text/html') ?? ''
+        if ((event.clipboardData?.getData(BLOCKS_MIME) ?? '') === '' && /<table[\s>]/i.test(pastedHtml)) {
+          const blocks = blocksFromHtml(pastedHtml)
+          if (blocks.length > 0) return pasteBlocksCommand(blocks, deps)(view.state, view.dispatch.bind(view))
         }
         const parsed = parseClipboardBlocks(event.clipboardData?.getData(BLOCKS_MIME))
         if (!parsed.ok) {

@@ -148,8 +148,8 @@ test('⑤ 옮기지 못한 것 — 파일마다 · 합계', async (t) => {
     file('b.md', '<div>html</div>\n\n| b |\n|---|\n| 2 |'),
   ])
   assert.ok(result.ok)
-  assert.deepEqual(result.value.pages.map((p) => p.losses.tables), [1, 1])
-  assert.deepEqual(result.value.losses, { tables: 2, html: 1, images: 1, links: 0, formatting: 0 })
+  assert.deepEqual(result.value.pages.map((p) => p.losses.images), [1, 0])
+  assert.deepEqual(result.value.losses, { html: 1, images: 1, links: 0, formatting: 0 })
 })
 
 // ── ZIP (8m-2a) ──

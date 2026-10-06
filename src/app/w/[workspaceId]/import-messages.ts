@@ -55,7 +55,6 @@ export const skippedNotice = (count: number): string => (count === 0 ? '' : `건
 export const importedNotice = (pages: number): string => `${pages}개 페이지를 가져왔습니다.`
 
 const LOSS_LABELS: readonly (readonly [string, string])[] = [
-  ['tables', '표(문단으로 남김)'],
   ['html', 'HTML'],
   ['images', '이미지'],
   ['links', '링크(글자만 남김)'],

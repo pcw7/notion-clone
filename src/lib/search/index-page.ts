@@ -34,6 +34,7 @@
  * 필요해진다 — v0 에서 그 비용을 지지 않는다.
  */
 
+import { cellsOf, TABLE_ROW_TYPE } from '../block/table.ts'
 import type { Tx } from '../db/tx.ts'
 import { toPlainText, type RichTextRun } from '../contracts/rich-text.ts'
 import { PAGE_TYPE, specOf, isKnownBlockType } from '../block/types.ts'
@@ -70,6 +71,8 @@ function blockText(type: string, properties: Record<string, unknown> | null): st
   // (`image.ts`). 캡션은 사용자가 쓴 글이므로 검색돼야 한다.
   const caption = properties?.caption
   if (Array.isArray(caption)) parts.push(toPlainText(caption as RichTextRun[]))
+  // 표의 셀(Phase 2 1d-3) — 사용자가 쓴 글이다. 셀은 행 블록에 산다(`properties.cells` — RichText[][]).
+  if (type === TABLE_ROW_TYPE) parts.push(...cellsOf(properties ?? undefined).map((cell) => toPlainText(cell)))
 
   return parts.filter((p) => p.length > 0).join(' ')
 }
