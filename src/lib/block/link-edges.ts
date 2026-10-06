@@ -29,6 +29,7 @@ import { mentionTarget, type MentionTarget } from '../contracts/rich-text.ts'
 import type { Tx } from '../db/tx.ts'
 import { readableScopes } from '../permissions/effective.ts'
 import { plainTitleOf, readTitle } from './page.ts'
+import { cellsOf } from './table.ts'
 import { readPageIcon, type PageIcon } from './page-icon.ts'
 
 export type LinkEdgeDelta = {
@@ -44,14 +45,15 @@ type EdgeRow = { source_block_id: string; target_kind: string; target_id: string
 
 const keyOf = (blockId: string, target: MentionTarget): string => `${blockId}|${target.kind}|${target.id}`
 
-/** 투영된 블록들의 멘션 — (블록, 대상) 쌍. 제목 런을 관대하게 읽는다(`readTitle`). */
+/** 투영된 블록들의 멘션 — (블록, 대상) 쌍. 제목 런을 관대하게 읽는다(`readTitle`). 표의 셀(Phase 2 1d-3)의 런도 — 셀은 행 블록에 산다. */
 export function mentionsOf(
   blocks: readonly { readonly id: string; readonly properties: Record<string, unknown> | null }[],
 ): { blockId: string; target: MentionTarget }[] {
   const out: { blockId: string; target: MentionTarget }[] = []
   const seen = new Set<string>()
   for (const block of blocks) {
-    for (const run of readTitle(block.properties as { title?: unknown } | null)) {
+    const cellRuns = cellsOf(block.properties ?? undefined).flat().filter((run) => typeof run === 'object' && run !== null)
+    for (const run of [...readTitle(block.properties as { title?: unknown } | null), ...cellRuns]) {
       const target = mentionTarget(run)
       if (target === null) continue
       const key = keyOf(block.id, target)

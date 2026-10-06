@@ -295,7 +295,18 @@ nodes[TABLE_NODE] = {
   tableRole: 'table',
   isolating: true,
   attrs: blockAttrSpec,
-  parseDOM: [{ tag: `div[data-block-type="${TABLE_NODE}"]`, contentElement: 'tbody' }],
+  parseDOM: [
+    { tag: `div[data-block-type="${TABLE_NODE}"]`, contentElement: 'tbody' },
+    // 바깥(스프레드시트 · 웹 페이지)의 맨 `<table>` 도 표다(1d-3) — 첫 행이 `<th>` 이거나 `<thead>` 가 있으면 머리 줄을 켠다. 행 id 는
+    // 빈 센티널로 들어와 찍기가 준다 · 칸 수가 다른 행은 `fixTables` · 정규화가 채운다.
+    {
+      tag: 'table',
+      getAttrs: (dom: HTMLElement) => ({
+        props: dom.querySelector('thead') !== null || dom.querySelector('tr')?.firstElementChild?.tagName === 'TH' ? { has_column_header: true } : {},
+        format: {},
+      }),
+    },
+  ],
   toDOM: (node) => {
     const props = (node.attrs.props ?? {}) as Record<string, unknown>
     const attrs: Record<string, string> = { 'data-block-type': TABLE_NODE, class: 'blk blk-table' }

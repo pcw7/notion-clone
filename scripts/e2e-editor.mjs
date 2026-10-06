@@ -11170,6 +11170,88 @@ async function main() {
       await sleep(1000)
     }
 
+    if (sectionIf('표 — 붙여넣기 · 검색 (Phase 2 1d-3 · F-01-18)')) {
+      // 바깥(스프레드시트 · 웹)의 HTML 표를 빈 줄에 붙이면 표가 된다(`<thead>` 면 머리 줄). 셀의 글자는 검색에 걸린다. 셀 안에 글자를
+      // 붙이면 그 셀의 글자가 된다. 진짜 클립보드 대신 합성 paste 이벤트를 쓴다 — 이 PC 의 헤드리스 브라우저는 클립보드를 못 쓴다(§6).
+      const stamp = Date.now()
+      const pPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
+        method: 'POST', headers: authed, body: JSON.stringify({ title: `표 붙여넣기 ${stamp}` }),
+      })).json()).page.id
+      const pz = { line: randomUUID(), after: randomUUID() }
+      const word = `사과${stamp}`
+      await saveBody(pPage, { blocks: [
+        { id: pz.line, type: 'paragraph', title: [], properties: {}, format: {}, children: [] },
+        { id: pz.after, type: 'paragraph', title: [textRun('뒤')], properties: {}, format: {}, children: [] },
+      ] })
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${pPage}` })
+      await waitFor(`!!document.querySelector('[data-block-id="${pz.after}"] p') && document.querySelector('.blk-editor')?.getAttribute('contenteditable') === 'true'`, 15000)
+      let focused = false
+      for (let i = 0; i < 20 && !focused; i += 1) {
+        await clickSelector(`[data-block-id="${pz.line}"] p`)
+        focused = await waitFor(`document.activeElement?.classList.contains('ProseMirror') && document.querySelector('[data-block-id="${pz.line}"]')?.contains(window.getSelection()?.anchorNode ?? null)`, 500)
+      }
+      check('전제 — 빈 줄에 캐럿이 섰다', focused)
+      const paste = (data) => evaluate(`(() => {
+        const dt = new DataTransfer()
+        for (const [type, value] of Object.entries(${JSON.stringify(data)})) dt.setData(type, value)
+        const ev = new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true })
+        document.querySelector('.blk-editor').dispatchEvent(ev)
+        return ev.defaultPrevented
+      })()`)
+      // 맨 위의 표 — `anywhere` 면 트리 어디든(셀 붙여넣기 검사는 표의 자리에 기대지 않는다 — 화면 반사실이 두 끊기를 한 판에서 가른다).
+      const tableOnServer = async (anywhere = false) => {
+        const all = (blocks) => blocks.flatMap((b) => [b, ...all(b.children ?? [])])
+        const blocks = (await readBody(pPage)).doc.blocks
+        const t = (anywhere ? all(blocks) : blocks).find((b) => b.type === 'table')
+        return t ? JSON.stringify({ props: t.properties, grid: (t.children ?? []).map((r) => (r.properties?.cells ?? []).map((c) => c.map((run) => run.plain_text ?? '').join(''))) }) : null
+      }
+      const serverTable = async (expected, anywhere = false) => {
+        let got = null
+        for (let i = 0; i < 60; i += 1) {
+          got = await tableOnServer(anywhere)
+          if (got === JSON.stringify(expected)) return [true, got]
+          await sleep(150)
+        }
+        return [false, got]
+      }
+
+      await paste({
+        'text/html': `<meta charset="utf-8"><table><thead><tr><th>품목</th><th>수량</th></tr></thead><tbody><tr><td>${word}</td><td>3</td></tr></tbody></table>`,
+        'text/plain': `품목\t수량\n${word}\t3`,
+      })
+      check('★ 바깥 HTML 표를 붙이면 표가 선다(머리 줄 표시)',
+        await waitFor(`(() => { const t = document.querySelector('.blk-editor .blk-table'); return !!t && t.getAttribute('data-column-header') === 'true' && t.querySelectorAll('td').length === 4 })()`, 5000),
+        await evaluate(`document.querySelector('.blk-editor')?.innerHTML.slice(0, 300) ?? ''`))
+      const [pasted, pastedGot] = await serverTable({ props: { has_column_header: true }, grid: [['품목', '수량'], [word, '3']] })
+      check('★ 서버 — 표 · 머리 플래그 · 셀', pasted, pastedGot ?? JSON.stringify((await readBody(pPage)).doc.blocks.map((b) => [b.type, (b.children ?? []).map((c) => c.type)])))
+
+      let hit = false
+      let found = null
+      for (let i = 0; i < 40 && !hit; i += 1) {
+        found = await (await fetch(`${BASE}/api/workspaces/${workspaceId}/search?q=${encodeURIComponent(word)}`, { headers: authed })).json()
+        hit = found.results?.some((r) => r.pageId === pPage) ?? false
+        if (!hit) await sleep(250)
+      }
+      check('★ 셀의 글자로 검색하면 그 페이지가 찾힌다', hit, JSON.stringify(found?.results?.map((r) => r.pageId) ?? found))
+
+      // 셀 안에 글자를 붙이면 그 셀의 글자다(블록을 풀어 넣지 않는다).
+      const lastCell = await rect('.blk-editor .blk-table tr:nth-child(2) td:nth-child(2)')
+      let inCell = false
+      for (let i = 0; i < 10 && !inCell && lastCell; i += 1) {
+        await click(lastCell.x + lastCell.w - 6, lastCell.y + lastCell.h / 2)
+        inCell = await waitFor(`(() => { const c = document.querySelector('.blk-editor .blk-table tr:nth-child(2) td:nth-child(2)'); return !!c && c.contains(window.getSelection()?.anchorNode ?? null) })()`, 500)
+      }
+      // 붙인 표는 블록 선택으로 남는다 — 셀을 누른 뒤 편집기가 그 선택을 놓을 때까지 기다린다(DOM 선택은 곧바로 바뀌어도 편집기는
+      // selectionchange 를 늦게 읽는다 — 기다리지 않으면 붙여넣기가 블록 선택에 간다).
+      await waitFor(`!document.querySelector('.blk-editor .blk-selected')`, 3000)
+      await sleep(200)
+      await key('End')
+      await paste({ 'text/plain': '개\n더' })
+      const [inside, insideGot] = await serverTable({ props: { has_column_header: true }, grid: [['품목', '수량'], [word, '3개\n더']] }, true)
+      check('★ 셀 안에 글자를 붙이면 그 셀의 글자 — 줄바꿈도 셀 안에', inCell && inside, insideGot)
+      await sleep(1000)
+    }
+
     section('전체')
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))
     const serverErrors = serverOutput.split('\n').filter((l) => l.includes('⨯'))

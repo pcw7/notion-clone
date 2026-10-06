@@ -81,13 +81,14 @@ test('★ ④ 우리 내보내기의 꼴 — 토글 · 콜아웃(자식과 함�
   assert.equal(losses.html, 0)
 })
 
-test('★ ⑤ 옮기지 못한 것은 센다 — 표는 문단으로 · HTML · 로컬 이미지 · 위험한 링크 · 주석은 세지 않는다', () => {
+test('★ ⑤ 옮기지 못한 것은 센다 — HTML · 로컬 이미지 · 위험한 링크 · 주석은 세지 않는다 · 표는 이제 옮긴다(1d-3)', () => {
   const md = ['| a | b |', '|---|---|', '| 1 | 2 |', '', '<div>블록 HTML</div>', '', '![로컬](./img.png)', '',
     '[나쁜](javascript:alert(1))', '', '<!-- unsupported block type="x" -->'].join('\n')
   const { doc, losses } = markdownToDoc(md)
-  assert.deepEqual(losses, { tables: 1, html: 1, images: 1, links: 1, formatting: 0 })
-  assert.deepEqual(shape(doc.blocks), [['paragraph', 'a | b'], ['paragraph', '1 | 2'], ['paragraph', '나쁜']])
-  assert.equal(doc.blocks[2]!.title[0]?.text?.link, null, '위험한 링크가 남았다')
+  assert.deepEqual(losses, { html: 1, images: 1, links: 1, formatting: 0 })
+  assert.deepEqual(doc.blocks.map((b) => b.type), ['table', 'paragraph'])
+  assert.equal(toPlainText(doc.blocks[1]!.title), '나쁜')
+  assert.equal(doc.blocks[1]!.title[0]?.text?.link, null, '위험한 링크가 남았다')
 
   const many = Array.from({ length: 150 }, (_, i) => (i % 2 === 0 ? `**${i}**` : `${i}`)).join(' ')
   const crowded = markdownToDoc(many)
@@ -161,11 +162,11 @@ test('★ ⑨ ZIP 안의 상대 주소 — 멘션 · 하위 참조(한 번만) �
   // 토글 안의 링크도 푼다
   assert.deepEqual(toggle!.children?.[0]?.title.map(mentionTarget), [{ kind: 'page', id: OTHER }])
   assert.equal(result.doc.blocks.length, 8)
-  assert.deepEqual(result.losses, { tables: 0, html: 0, images: 1, links: 1, formatting: 0 })
+  assert.deepEqual(result.losses, { html: 0, images: 1, links: 1, formatting: 0 })
   assert.deepEqual(validateDoc(result.doc), [])
 
   // 푸는 쪽이 없으면(낱 파일) 상대 주소는 그대로 잃은 것이다
   const plain = markdownToDoc(md)
   assert.deepEqual(plain.pageRefs, [])
-  assert.deepEqual(plain.losses, { tables: 0, html: 0, images: 2, links: 6, formatting: 0 })
+  assert.deepEqual(plain.losses, { html: 0, images: 2, links: 6, formatting: 0 })
 })

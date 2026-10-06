@@ -22,9 +22,11 @@ test('① 거부 코드마다 다른 말 · 파일 이름 · 상한', () => {
 })
 
 test('② 옮기지 못한 것의 요약', () => {
-  assert.equal(lossesSummary({ tables: 0, html: 0, images: 0, links: 0, formatting: 0 }), '')
+  assert.equal(lossesSummary({ html: 0, images: 0, links: 0, formatting: 0 }), '')
   assert.equal(lossesSummary(null), '')
-  assert.equal(lossesSummary({ tables: 2, html: 0, images: 1, links: 0, formatting: 0 }), '옮기지 못한 것: 표(문단으로 남김) 2개 · 이미지 1개')
+  assert.equal(lossesSummary({ html: 2, images: 1, links: 0, formatting: 0 }), '옮기지 못한 것: HTML 2개 · 이미지 1개')
+  // 표(Phase 2 1d-3)는 이제 옮긴다 — 옛 응답에 남은 키는 말하지 않는다.
+  assert.equal(lossesSummary({ tables: 3, html: 0, images: 0, links: 0, formatting: 0 }), '')
 })
 
 test('③ 건너뛴 항목(8m-2a · 8m-2b) — 이유마다 다른 말 · 모르는 이유 · 요약', () => {

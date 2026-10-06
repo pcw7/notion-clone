@@ -38,6 +38,7 @@
 
 import { mentionTarget, pageMentionRun, sanitizeRichText, type RichTextRun } from '../contracts/rich-text.ts'
 import type { EditorBlock, EditorDoc } from '../editor/document.ts'
+import { TABLE_CELLS_KEY } from './table.ts'
 import { PAGE_TYPE } from './types.ts'
 
 /** 원본 페이지 id → 사본 페이지 id. 이 맵에 있는 것이 "서브트리 안"이다. */
@@ -74,6 +75,12 @@ function remapProperties(
     // `read`)을 읽으므로 여기 오는 캡션은 이미 정화됐다(정본 §3.4 [보강] 코드 블록 ⑧) — 한 겹 더 두는 방어이고, 닿는 입력을 찾지
     // 못해 이것을 떨어뜨리는 검사가 없다(8a-2 리뷰).
     next[key] = remapRuns(sanitizeRichText(value) ?? [], pages)
+  }
+  // 표의 셀(Phase 2 1d-3) — 셀마다 런 배열이다. 셀 안의 페이지 멘션도 사본으로(캡션과 같은 규칙).
+  const cells = properties[TABLE_CELLS_KEY]
+  if (Array.isArray(cells)) {
+    next ??= { ...properties }
+    next[TABLE_CELLS_KEY] = cells.map((cell) => remapRuns(sanitizeRichText(cell) ?? [], pages))
   }
   return next ?? properties
 }
