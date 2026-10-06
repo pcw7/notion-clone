@@ -10725,11 +10725,6 @@ async function main() {
       await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${widthPage}` })
       await waitFor(`!!document.querySelector('[data-block-id="${cid.b}"] p') && document.querySelector('.blk-editor')?.getAttribute('contenteditable') === 'true'`, 15000)
       const colRect = (id) => rect(`[data-block-id="${id}"]`)
-      const treeOnServer = async () => {
-        const text = (b) => (b.title ?? []).map((r) => r.plain_text ?? '').join('')
-        const walk = (blocks) => blocks.map((b) => (b.type === 'paragraph' ? text(b) : [b.type, walk(b.children ?? [])]))
-        return JSON.stringify(walk((await readBody(widthPage)).doc.blocks))
-      }
       const serverIs = async (page, expected) => {
         let got = null
         for (let i = 0; i < 60; i += 1) {
@@ -10908,7 +10903,18 @@ async function main() {
       const [added, addedGot] = await serverIs(['위 블록', ['column_list', [['column', ['첫 블록']], ['column', ['셋째 블록']], ['column', ['둘째 블록']]]], '끝 블록'])
       check('★ 컬럼 안 블록의 옆에 놓으면 그 컬럼 오른쪽에 컬럼이 더해진다', added, addedGot)
 
-      // ③ 첫 컬럼의 블록에서 Shift+↓ — 옆 컬럼의 블록을 고른다(컬럼 틀이 아니다).
+      // ③ 첫 컬럼의 블록에서 Shift+↓ — 옆 컬럼의 블록을 고른다(컬럼 틀이 아니다). 선택은 끌어 만든 결과에 기대지 않게 같은 모양을
+      //    저장해 둔 페이지에서 본다 — 앞의 끌기가 떨어져도 이 검사는 선택만 본다.
+      const col = (children) => ({ id: randomUUID(), type: 'column', title: [], properties: {}, format: {}, children })
+      const selectPage = await newPage(`경계를 넘는 선택 ${stamp}`)
+      Object.assign(s, { top: randomUUID(), one: randomUUID(), two: randomUUID(), three: randomUUID(), end: randomUUID() })
+      await saveBody(selectPage, { blocks: [
+        para(s.top, '위 블록'),
+        { id: randomUUID(), type: 'column_list', title: [], properties: {}, format: {}, children: [col([para(s.one, '첫 블록')]), col([para(s.three, '셋째 블록')]), col([para(s.two, '둘째 블록')])] },
+        para(s.end, '끝 블록'),
+      ] })
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${selectPage}` })
+      await waitFor(`!!document.querySelector('[data-block-id="${s.end}"] p') && document.querySelector('.blk-editor')?.getAttribute('contenteditable') === 'true'`, 15000)
       let inOne = false
       for (let i = 0; i < 20 && !inOne; i += 1) {
         await clickSelector(`[data-block-id="${s.one}"] p`)
