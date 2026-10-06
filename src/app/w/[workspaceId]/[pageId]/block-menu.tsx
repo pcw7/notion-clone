@@ -45,6 +45,7 @@ import {
   turnSelectionIntoCommand,
 } from '@/lib/editor/block-selection'
 import type { CommandDeps } from '@/lib/editor/commands'
+import { editTableCommand } from '@/lib/editor/table'
 
 export type BlockMenuProps = {
   view: EditorView
@@ -104,6 +105,9 @@ export function BlockMenu({ view, deps, top, left, workspaceId, pageId, onClose,
         break
       case 'code_wrap':
         setCodeWrapSelectionCommand(action.wrap)(view.state, dispatch)
+        break
+      case 'table_edit':
+        editTableCommand(action.blockId, action.change, deps.newId)(view.state, dispatch)
         break
       case 'code_language':
       case 'code_caption': {

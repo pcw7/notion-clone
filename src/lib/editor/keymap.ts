@@ -142,8 +142,8 @@ export function createEditorKeymap(deps: EditorKeymapDeps): KeyBindings {
     Backspace: chain(deleteBlockSelectionCommand(deps), undoInputRuleCommand(), tableEdgeDeleteCommand(-1), removeEmptyColumnCommand(), block.Backspace),
     Delete: chain(deleteBlockSelectionCommand(deps), tableEdgeDeleteCommand(1), block.Delete),
     // 셀 안(Phase 2 1d) — 옆 셀 · 줄바꿈. 셀 밖이면 블록의 들여쓰기 · 줄바꿈.
-    Tab: chain(tableTabCommand(1), block.Tab),
-    'Shift-Tab': chain(tableTabCommand(-1), block['Shift-Tab']),
+    Tab: chain(tableTabCommand(1, deps.newId), block.Tab),
+    'Shift-Tab': chain(tableTabCommand(-1, deps.newId), block['Shift-Tab']),
     'Shift-Enter': chain(tableSoftBreakCommand(), block['Shift-Enter']),
     // 블록 선택 상태의 Enter 는 "이 블록을 편집한다"이지 분할이 아니다. 골라진 블록 수식이면 그 입력창이 "편집"이다(Phase 2 1a).
     Enter: chain(

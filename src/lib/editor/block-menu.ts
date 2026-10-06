@@ -33,6 +33,7 @@
 import type { Command, EditorState } from '@tiptap/pm/state'
 
 import { CODE_TYPE } from '../block/code.ts'
+import { COLUMN_HEADER_KEY, ROW_HEADER_KEY } from '../block/table.ts'
 import { normalizeFormat, PAGE_TYPE, specOf, type BlockFormat, type BodyBlockType } from '../block/types.ts'
 import { COLORS, type Color } from '../contracts/rich-text.ts'
 import { isUuid } from '../ids.ts'
@@ -41,6 +42,7 @@ import { separateUndoStep } from './code-block.ts'
 import { applyTurnInto, type CommandDeps } from './commands.ts'
 import { blockTypeOf, containerAt, findContainerById } from './pm-blocks.ts'
 import { blockTypeLabel } from './slash-menu.ts'
+import { tableShape, type TableEdit } from './table.ts'
 
 // ── 항목 ──────────────────────────────────────────────────────────────
 
@@ -93,6 +95,8 @@ export type BlockMenuAction =
   | { readonly kind: 'code_wrap'; readonly wrap: boolean }
   | { readonly kind: 'code_caption' }
   | { readonly kind: 'code_copy' }
+  // 심플 테이블(Phase 2 1d-2 · F-01-18) — 머리 줄 · 머리 열 · 행 · 열. 블록 메뉴의 '표' 와 셀 위 손잡이 메뉴가 같은 동작이다.
+  | { readonly kind: 'table_edit'; readonly blockId: string; readonly change: TableEdit }
 
 export type MenuItem = {
   readonly id: string
@@ -177,6 +181,29 @@ export function blockMenuItems(state: EditorState, deps: CommandDeps): MenuItem[
     { id: 'code:copy', label: '코드 복사', enabled: single, action: { kind: 'code_copy' } },
   ]
 
+  // 표(1d-2) — 표 하나를 골랐을 때 켠다. 머리 플래그는 켜고 끄는 항목, 행 · 열은 끝에 더한다(자리를 고르는 넣기 · 지우기는 셀 위
+  // 손잡이의 메뉴 — `tableAxisMenuItems`). 키보드만으로 닿는 길이다(F-12-13 — 손잡이는 마우스 · 터치용 보조 UI).
+  const shape = blocks.length === 1 ? tableShape(state.doc, blocks[0]!.id) : null
+  const tableId = shape !== null ? blocks[0]!.id : ''
+  const table: MenuItem[] = [
+    {
+      id: 'table:column_header', label: '머리 줄', enabled: shape !== null, toggle: true, checked: shape?.columnHeader ?? false,
+      action: { kind: 'table_edit', blockId: tableId, change: { kind: 'header', key: COLUMN_HEADER_KEY, on: !(shape?.columnHeader ?? false) } },
+    },
+    {
+      id: 'table:row_header', label: '머리 열', enabled: shape !== null, toggle: true, checked: shape?.rowHeader ?? false,
+      action: { kind: 'table_edit', blockId: tableId, change: { kind: 'header', key: ROW_HEADER_KEY, on: !(shape?.rowHeader ?? false) } },
+    },
+    {
+      id: 'table:add_row', label: '맨 아래에 행 더하기', enabled: shape !== null,
+      action: { kind: 'table_edit', blockId: tableId, change: { kind: 'add_row', at: shape?.rows ?? 0 } },
+    },
+    {
+      id: 'table:add_column', label: '맨 오른쪽에 열 더하기', enabled: shape !== null,
+      action: { kind: 'table_edit', blockId: tableId, change: { kind: 'add_column', at: shape?.columns ?? 0 } },
+    },
+  ]
+
   return [
     {
       id: 'turn_into',
@@ -187,6 +214,7 @@ export function blockMenuItems(state: EditorState, deps: CommandDeps): MenuItem[
     },
     { id: 'color', label: '색', enabled: paintable.length > 0, children: color },
     { id: 'code', label: '코드', enabled: allCode, children: code },
+    { id: 'table', label: '표', enabled: shape !== null, children: table },
     {
       id: 'duplicate',
       label: '복제',
@@ -209,6 +237,28 @@ export function blockMenuItems(state: EditorState, deps: CommandDeps): MenuItem[
       enabled: blocks.length > 0 && !hasPageRef,
       action: { kind: 'delete' },
     },
+  ]
+}
+
+/**
+ * 셀 위 손잡이의 메뉴(1d-2) — 행이면 위 · 아래에 넣기 · 지우기, 열이면 왼쪽 · 오른쪽에 넣기 · 지우기. 마지막 남은 행 · 열의 지우기는
+ * 꺼 둔다(표를 지우는 것은 블록 지우기다). 표가 아니면 빈 목록.
+ */
+export function tableAxisMenuItems(state: EditorState, blockId: string, axis: 'row' | 'column', index: number): MenuItem[] {
+  const shape = tableShape(state.doc, blockId)
+  if (shape === null) return []
+  const edit = (change: TableEdit): BlockMenuAction => ({ kind: 'table_edit', blockId, change })
+  if (axis === 'row') {
+    return [
+      { id: 'row:above', label: '위에 행 넣기', enabled: true, action: edit({ kind: 'add_row', at: index }) },
+      { id: 'row:below', label: '아래에 행 넣기', enabled: true, action: edit({ kind: 'add_row', at: index + 1 }) },
+      { id: 'row:remove', label: '행 지우기', enabled: shape.rows > 1, action: edit({ kind: 'remove_row', index }) },
+    ]
+  }
+  return [
+    { id: 'column:left', label: '왼쪽에 열 넣기', enabled: true, action: edit({ kind: 'add_column', at: index }) },
+    { id: 'column:right', label: '오른쪽에 열 넣기', enabled: true, action: edit({ kind: 'add_column', at: index + 1 }) },
+    { id: 'column:remove', label: '열 지우기', enabled: shape.columns > 1, action: edit({ kind: 'remove_column', index }) },
   ]
 }
 

@@ -11055,6 +11055,121 @@ async function main() {
       await sleep(1000)
     }
 
+    if (sectionIf('표 — 행 · 열 · 머리 (Phase 2 1d-2 · F-01-18)')) {
+      // 셀 위에 포인터를 올리면 행 · 열 손잡이와 "+" 막대가 선다. 행 손잡이의 "아래에 행 넣기" · 열 손잡이의 "열 지우기" · 아래 · 오른쪽
+      // "+" 가 표를 고친다. 블록 메뉴의 '표' → '머리 줄' 이 첫 행을 머리로 그린다. 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
+      const stamp = Date.now()
+      const gPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
+        method: 'POST', headers: authed, body: JSON.stringify({ title: `표 손잡이 ${stamp}` }),
+      })).json()).page.id
+      const g = { table: randomUUID(), r0: randomUUID(), r1: randomUUID(), after: randomUUID() }
+      const cellsRow = (id, ...texts) => ({ id, type: 'table_row', title: [], properties: { cells: texts.map((t) => (t === '' ? [] : [textRun(t)])) }, format: {}, children: [] })
+      await saveBody(gPage, { blocks: [
+        { id: g.table, type: 'table', title: [], properties: {}, format: {}, children: [cellsRow(g.r0, 'a', 'b'), cellsRow(g.r1, 'c', 'd')] },
+        { id: g.after, type: 'paragraph', title: [textRun('표 뒤')], properties: {}, format: {}, children: [] },
+      ] })
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${gPage}` })
+      await waitFor(`document.querySelectorAll('[data-block-id="${g.table}"] .blk-table td').length === 4 && document.querySelector('.blk-editor')?.getAttribute('contenteditable') === 'true'`, 15000)
+      const gridOnServer = async () => {
+        const body = await readBody(gPage)
+        const t = body.doc.blocks.find((b) => b.type === 'table')
+        return JSON.stringify({ props: t?.properties ?? null, grid: (t?.children ?? []).map((r) => (r.properties?.cells ?? []).map((c) => c.map((run) => run.plain_text ?? '').join(''))) })
+      }
+      const serverGrid = async (grid, props = {}) => {
+        let got = null
+        for (let i = 0; i < 60; i += 1) {
+          got = await gridOnServer()
+          if (got === JSON.stringify({ props, grid })) return [true, got]
+          await sleep(150)
+        }
+        return [false, got]
+      }
+      const hoverCell = async (row, column) => {
+        const r = await evaluate(`(() => {
+          const tr = document.querySelectorAll('[data-block-id="${g.table}"] .blk-table tr')[${row}]
+          const td = tr?.querySelectorAll('td')[${column}]
+          if (!td) return null
+          const b = td.getBoundingClientRect()
+          return { x: b.x + b.width / 2, y: b.y + b.height / 2 }
+        })()`)
+        if (r) {
+          await move(r.x + 1, r.y)
+          await move(r.x, r.y)
+        }
+        return r
+      }
+      const clickControl = async (selector) => {
+        const r = await rect(selector)
+        if (!r) return false
+        await move(r.x + r.w / 2, r.y + r.h / 2)
+        await click(r.x + r.w / 2, r.y + r.h / 2)
+        return true
+      }
+      const clickMenuItem = async (menuLabel, text) => {
+        await waitFor(`!!document.querySelector('[role="menu"][aria-label="${menuLabel}"]')`, 3000)
+        const r = await evaluate(`(() => {
+          const item = [...document.querySelectorAll('[role="menu"][aria-label="${menuLabel}"] [role^="menuitem"]')].find((b) => b.textContent.trim().startsWith(${JSON.stringify(text)}))
+          if (!item) return null
+          const b = item.getBoundingClientRect()
+          return { x: b.x + b.width / 2, y: b.y + b.height / 2 }
+        })()`)
+        if (r) await click(r.x, r.y)
+        return r !== null
+      }
+
+      // ① 행 손잡이 — 아래에 행 넣기.
+      await hoverCell(0, 0)
+      check('★ 셀 위에 포인터 — 행 · 열 손잡이와 "+" 막대가 선다',
+        await waitFor(`!!document.querySelector('.blk-table-handle[data-axis="row"]') && !!document.querySelector('.blk-table-handle[data-axis="column"]') && document.querySelectorAll('.blk-table-add').length === 2`, 3000))
+      await clickControl('.blk-table-handle[data-axis="row"]')
+      check('행 손잡이 — 메뉴가 열린다', await clickMenuItem('행 메뉴', '아래에 행 넣기'))
+      const [rowAdded, rowAddedGot] = await serverGrid([['a', 'b'], ['', ''], ['c', 'd']])
+      check('★ "아래에 행 넣기" — 그 행 아래에 빈 행', rowAdded, rowAddedGot)
+
+      // ② 열 손잡이 — 열 지우기.
+      await hoverCell(0, 1)
+      await waitFor(`!!document.querySelector('.blk-table-handle[data-axis="column"]')`, 3000)
+      await clickControl('.blk-table-handle[data-axis="column"]')
+      check('열 손잡이 — 메뉴가 열린다', await clickMenuItem('열 메뉴', '열 지우기'))
+      const [colRemoved, colRemovedGot] = await serverGrid([['a'], [''], ['c']])
+      check('★ "열 지우기" — 그 열이 행마다 빠진다', colRemoved, colRemovedGot)
+
+      // ③ "+" 막대 — 끝에 행 · 열.
+      await hoverCell(0, 0)
+      await waitFor(`!!document.querySelector('.blk-table-add[data-edge="bottom"]')`, 3000)
+      await clickControl('.blk-table-add[data-edge="bottom"]')
+      await hoverCell(0, 0)
+      await waitFor(`!!document.querySelector('.blk-table-add[data-edge="right"]')`, 3000)
+      await clickControl('.blk-table-add[data-edge="right"]')
+      const [grown, grownGot] = await serverGrid([['a', ''], ['', ''], ['c', ''], ['', '']])
+      check('★ 아래 · 오른쪽 "+" — 끝에 행 · 열', grown, grownGot)
+
+      // ④ 블록 메뉴의 '표' → '머리 줄'.
+      const tableLine = await line(g.table)
+      await move(tableLine.x + 30, tableLine.y + 10)
+      await waitFor(`(() => { const gr = document.querySelector('.blk-gutter-grip')?.getBoundingClientRect(); return !!gr && Math.abs(gr.y - ${tableLine.y}) < 12 })()`, 3000)
+      await clickSelector('.blk-gutter-grip')
+      await waitFor(`!!document.querySelector('[role="menu"][aria-label="블록 메뉴"]')`, 3000)
+      const tableMenu = await evaluate(`(() => {
+        const item = [...document.querySelectorAll('[role="menu"][aria-label="블록 메뉴"] > .blk-menu-row > [role="menuitem"]')].find((b) => b.textContent.trim().startsWith('표'))
+        if (!item) return null
+        const b = item.getBoundingClientRect()
+        return { x: b.x + b.width / 2, y: b.y + b.height / 2, disabled: item.getAttribute('aria-disabled') }
+      })()`)
+      check('전제 — 블록 메뉴에 켜진 \'표\'', tableMenu !== null && tableMenu.disabled === 'false', JSON.stringify(tableMenu))
+      if (tableMenu) await click(tableMenu.x, tableMenu.y)
+      check('\'표\' 하위 메뉴의 \'머리 줄\'', await clickMenuItem('표', '머리 줄'))
+      check('★ 머리 줄 — 표에 머리 표시', await waitFor(`document.querySelector('[data-block-id="${g.table}"] .blk-table')?.getAttribute('data-column-header') === 'true'`, 3000))
+      // 속성만 본다 — 앞 장면(손잡이)의 결과에 기대지 않는다(화면 반사실이 두 끊기를 한 판에서 가른다).
+      let headerGot = null
+      for (let i = 0; i < 60 && headerGot?.has_column_header !== true; i += 1) {
+        headerGot = JSON.parse(await gridOnServer()).props
+        if (headerGot?.has_column_header !== true) await sleep(150)
+      }
+      check('★ 서버 — 표의 has_column_header', headerGot?.has_column_header === true, JSON.stringify(headerGot))
+      await sleep(1000)
+    }
+
     section('전체')
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))
     const serverErrors = serverOutput.split('\n').filter((l) => l.includes('⨯'))

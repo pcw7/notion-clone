@@ -70,6 +70,7 @@ import { commentHighlightPlugin, setCommentThreads, type AnchoredThread } from '
 import { uploadImageFile } from '@/lib/file/upload-client'
 import type { PageIcon } from '@/lib/block/page-icon'
 import { BlockGutter } from './block-gutter'
+import { TableControls } from './table-controls'
 import { CodeCaptionEditor } from './code-caption-editor'
 import { CodeLanguageMenu } from './code-language-menu'
 import { EquationEditor } from './equation-editor'
@@ -1308,6 +1309,9 @@ export function BodyEditor({
           onNotice={(message) => setStatus({ kind: 'notice', message })}
           onCodeMenu={openCodeUi}
         />
+
+        {/* 표의 손잡이(Phase 2 1d-2) — 행 · 열 넣기 · 지우기 · 끝에 더하기. 읽기 전용이면 그리지 않는다(컴포넌트가 본다). */}
+        <TableControls viewRef={viewRef} frameRef={frameRef} deps={gutterDeps} />
 
         {/* 코드 블록의 오버레이(8a-2) — 편집기 밖 · 프레임 좌표. 읽기 전용이 되면 그리지 않는다(다시 열면 새로 연다). */}
         {editable && codeUi?.kind === 'language' && (
