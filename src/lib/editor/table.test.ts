@@ -15,6 +15,9 @@
  *   ⑦ 셀 안의 인라인 수식을 찾는다
  *   ⑧ ★ 내보내기 · 평문 — GFM 표(첫 행이 머리) · `|` · 줄바꿈 / 탭과 줄
  *   ⑨ ★ 동시 편집 — 다른 셀의 글자는 둘 다 남는다 · 한쪽이 열을 더하는 동안 다른 쪽이 행을 더하면 모자란 행을 채운다
+ *   ⑩ ★ 행 · 열 · 머리(1d-2) — 자리에 넣기(새 행은 곧바로 id) · 지우기(마지막 행 · 열 · 자리 밖은 아니다) · 머리 플래그(끄면 키를
+ *        지운다) · 캐럿이 있던 행을 지워도 문서가 맞다 · 고친 뒤 정규화가 고칠 것이 없다 · 마지막 셀의 Tab 이 만든 행의 id
+ *   ⑪ ★ 메뉴 — 블록 메뉴의 '표'(표 하나일 때 · 머리 플래그의 체크 · 끝에 더하기) · 손잡이 메뉴(넣기 · 지우기 — 마지막이면 꺼진다)
  */
 
 import { test, describe } from 'node:test'
@@ -34,7 +37,8 @@ import { normalizeBody } from '../collab/normalize.ts'
 import { pageToMarkdown } from '../export/markdown.ts'
 import { bind, exchange, peer } from '../testing/collab-peers.ts'
 import { findBlockIdFixes } from './block-id-plugin.ts'
-import { isBlockSelection, selectAllBlocksCommand } from './block-selection.ts'
+import { BlockSelection, isBlockSelection, selectAllBlocksCommand } from './block-selection.ts'
+import { blockMenuItems, tableAxisMenuItems } from './block-menu.ts'
 import { plainTextForBlocks } from './block-clipboard.ts'
 import { applyTurnInto, indentCommand, mergeBackwardCommand, mergeForwardCommand, splitBlockCommand } from './commands.ts'
 import { projectDocument, validateDoc, type EditorBlock } from './document.ts'
@@ -44,7 +48,7 @@ import { docToPm, pmToDoc } from './pm-adapter.ts'
 import { findContainerById } from './pm-blocks.ts'
 import { blockSchema, EQUATION_NODE, TABLE_CELL_NODE, TABLE_NODE, TABLE_ROW_NODE } from './schema.ts'
 import { slashMenuPlugin, slashMenuState } from './slash-menu.ts'
-import { runTableSlashCommand, tableEnterCommand, tableTabCommand } from './table.ts'
+import { editTableCommand, runTableSlashCommand, tableEnterCommand, tableTabCommand, type TableEdit } from './table.ts'
 
 let counter = 0
 const nextId = () => `00000000-0000-4000-8000-${String(++counter).padStart(12, '0')}`
@@ -445,5 +449,120 @@ describe('⑨ 동시 편집', () => {
     assert.ok(read.fixes.includes('table_cells_padded'), JSON.stringify(read.fixes))
     assert.deepEqual(readBodyYDoc(b, 'p').doc, read.doc)
     void Y
+  })
+})
+
+describe('⑩ 행 · 열 · 머리(1d-2)', () => {
+  const setup = () => {
+    const t = table(row('a', 'b'), row('c', 'd'))
+    return { t, state: stateOf([p('앞'), t]) }
+  }
+  const apply = (state: EditorState, id: string, change: TableEdit) => run(state, editTableCommand(id, change, nextId))
+
+  test('★ 행 넣기 — 위 · 사이 · 끝 · 새 행은 빈 셀(열 수만큼)과 곧바로 id 를 받는다', () => {
+    const { t, state } = setup()
+    for (const [at, grid] of [
+      [0, [['', ''], ['a', 'b'], ['c', 'd']]],
+      [1, [['a', 'b'], ['', ''], ['c', 'd']]],
+      [2, [['a', 'b'], ['c', 'd'], ['', '']]],
+    ] as const) {
+      const r = apply(state, t.id, { kind: 'add_row', at })
+      assert.ok(r.handled)
+      r.state.doc.check()
+      const back = tablesOf(r.state)[0]!
+      assert.deepEqual(gridOf(back), grid)
+      const fresh = back.children![at]!.id
+      assert.ok(findBlockIdFixes(r.state.doc).length === 0, '찍을 것이 없다 — 새 행이 이미 id 를 받았다')
+      assert.ok(!t.children!.some((old) => old.id === fresh))
+    }
+  })
+
+  test('★ 열 넣기 — 왼쪽 끝 · 사이 · 오른쪽 끝(행마다 그 자리에 빈 셀)', () => {
+    const { t, state } = setup()
+    assert.deepEqual(gridOf(tablesOf(apply(state, t.id, { kind: 'add_column', at: 0 }).state)[0]!), [['', 'a', 'b'], ['', 'c', 'd']])
+    assert.deepEqual(gridOf(tablesOf(apply(state, t.id, { kind: 'add_column', at: 1 }).state)[0]!), [['a', '', 'b'], ['c', '', 'd']])
+    assert.deepEqual(gridOf(tablesOf(apply(state, t.id, { kind: 'add_column', at: 2 }).state)[0]!), [['a', 'b', ''], ['c', 'd', '']])
+  })
+
+  test('★ 지우기 — 행 · 열 · 마지막 남은 행 · 열과 자리 밖은 하지 않는다', () => {
+    const { t, state } = setup()
+    assert.deepEqual(gridOf(tablesOf(apply(state, t.id, { kind: 'remove_row', index: 0 }).state)[0]!), [['c', 'd']])
+    assert.deepEqual(gridOf(tablesOf(apply(state, t.id, { kind: 'remove_column', index: 1 }).state)[0]!), [['a'], ['c']])
+    const one = apply(apply(state, t.id, { kind: 'remove_row', index: 0 }).state, t.id, { kind: 'remove_row', index: 0 })
+    assert.equal(one.handled, false, '마지막 행')
+    const narrow = apply(apply(state, t.id, { kind: 'remove_column', index: 0 }).state, t.id, { kind: 'remove_column', index: 0 })
+    assert.equal(narrow.handled, false, '마지막 열')
+    for (const change of [{ kind: 'remove_row', index: 2 }, { kind: 'add_row', at: 3 }, { kind: 'add_column', at: -1 }, { kind: 'remove_column', index: 5 }] as const) {
+      assert.equal(apply(state, t.id, change).handled, false, JSON.stringify(change))
+    }
+    const notTable = state.doc.child(0).child(0).attrs.blockId as string
+    assert.equal(apply(state, notTable, { kind: 'add_row', at: 0 }).handled, false, '표가 아닌 블록')
+  })
+
+  test('★ 머리 플래그 — 켜면 true · 끄면 키를 지운다 · 같은 값이면 하지 않는다', () => {
+    const { t, state } = setup()
+    const on = apply(state, t.id, { kind: 'header', key: 'has_column_header', on: true })
+    assert.deepEqual(tablesOf(on.state)[0]!.properties, { has_column_header: true })
+    assert.equal(apply(on.state, t.id, { kind: 'header', key: 'has_column_header', on: true }).handled, false)
+    const off = apply(on.state, t.id, { kind: 'header', key: 'has_column_header', on: false })
+    assert.deepEqual(tablesOf(off.state)[0]!.properties, {})
+    const rowHeader = apply(state, t.id, { kind: 'header', key: 'has_row_header', on: true })
+    assert.deepEqual(tablesOf(rowHeader.state)[0]!.properties, { has_row_header: true })
+  })
+
+  test('캐럿이 있던 행을 지워도 문서 · 선택이 맞다 · 고친 표는 정규화가 고칠 것이 없다', () => {
+    const { t, state } = setup()
+    const inCell = caretInCell(state, t.id, 1, 1, 1)
+    const removed = apply(inCell, t.id, { kind: 'remove_row', index: 1 })
+    removed.state.doc.check()
+    assert.ok(removed.state.selection.from <= removed.state.doc.content.size)
+    let s = removed.state
+    for (const change of [{ kind: 'add_column', at: 1 }, { kind: 'add_row', at: 0 }, { kind: 'header', key: 'has_row_header', on: true }] as const) {
+      s = apply(s, t.id, change).state
+    }
+    assert.deepEqual(readBodyYDoc(createBodyYDoc(pmToDoc(s.doc)), nextId()).fixes, [])
+    assert.deepEqual(validateDoc(pmToDoc(s.doc)), [])
+  })
+
+  test('마지막 셀의 Tab 이 만든 행도 곧바로 id 를 받는다(찍기를 기다리지 않는다)', () => {
+    const { t, state } = setup()
+    const grown = run(caretInCell(state, t.id, 1, 1), keymap.Tab!)
+    assert.deepEqual(findBlockIdFixes(grown.state.doc), [])
+    assert.equal(tablesOf(grown.state)[0]!.children!.length, 3)
+  })
+})
+
+describe('⑪ 메뉴', () => {
+  const select = (state: EditorState, id: string) => state.apply(state.tr.setSelection(BlockSelection.create(state.doc, findContainerById(state.doc, id)!.pos)))
+
+  test('★ 블록 메뉴의 \'표\' — 표 하나일 때 켜진다 · 머리 플래그의 체크 · 끝에 더하기의 자리', () => {
+    const t = { ...table(row('a', 'b'), row('c', 'd')), properties: { has_row_header: true } }
+    const other = p('글')
+    const state = stateOf([other, t])
+    const tableItem = (s: EditorState) => blockMenuItems(s, deps).find((i) => i.id === 'table')!
+    assert.equal(tableItem(select(state, other.id)).enabled, false)
+    const item = tableItem(select(state, t.id))
+    assert.equal(item.enabled, true)
+    const byId = new Map(item.children!.map((c) => [c.id, c]))
+    assert.equal(byId.get('table:column_header')!.checked, false)
+    assert.equal(byId.get('table:row_header')!.checked, true)
+    assert.deepEqual(byId.get('table:row_header')!.action, { kind: 'table_edit', blockId: t.id, change: { kind: 'header', key: 'has_row_header', on: false } })
+    assert.deepEqual(byId.get('table:add_row')!.action, { kind: 'table_edit', blockId: t.id, change: { kind: 'add_row', at: 2 } })
+    assert.deepEqual(byId.get('table:add_column')!.action, { kind: 'table_edit', blockId: t.id, change: { kind: 'add_column', at: 2 } })
+    // 둘을 고르면 꺼진다 — 어느 표인지 모른다.
+    const both = state.apply(state.tr.setSelection(BlockSelection.create(state.doc, findContainerById(state.doc, other.id)!.pos, findContainerById(state.doc, t.id)!.pos)))
+    assert.equal(tableItem(both).enabled, false)
+  })
+
+  test('★ 손잡이 메뉴 — 행은 위 · 아래 · 지우기, 열은 왼쪽 · 오른쪽 · 지우기 · 마지막이면 지우기가 꺼진다', () => {
+    const t = table(row('a', 'b'))
+    const state = stateOf([t])
+    const rows = tableAxisMenuItems(state, t.id, 'row', 0)
+    assert.deepEqual(rows.map((i) => [i.id, i.enabled]), [['row:above', true], ['row:below', true], ['row:remove', false]])
+    assert.deepEqual(rows[1]!.action, { kind: 'table_edit', blockId: t.id, change: { kind: 'add_row', at: 1 } })
+    const columns = tableAxisMenuItems(state, t.id, 'column', 1)
+    assert.deepEqual(columns.map((i) => [i.id, i.enabled]), [['column:left', true], ['column:right', true], ['column:remove', true]])
+    assert.deepEqual(columns[2]!.action, { kind: 'table_edit', blockId: t.id, change: { kind: 'remove_column', index: 1 } })
+    assert.deepEqual(tableAxisMenuItems(state, 'not-a-table', 'row', 0), [])
   })
 })

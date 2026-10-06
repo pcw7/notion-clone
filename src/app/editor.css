@@ -297,6 +297,35 @@
 .blk-editor .blk-table[data-column-header='true'] tr:first-child td,
 .blk-editor .blk-table[data-row-header='true'] td:first-child { background: #f7f6f3; font-weight: 600; }
 .blk-editor .blk-table td.selectedCell { background: rgba(35, 131, 226, 0.14); }
+/*
+ * 표의 손잡이(Phase 2 1d-2 · `table-controls.tsx`) — 프레임 기준 절대 자리. 행 손잡이는 그 행의 왼쪽 끝(셀 안쪽 여백 — 블록 핸들과 겹치지
+ * 않는다), 열 손잡이는 그 열의 위 경계, "+" 막대는 표의 아래 · 오른쪽.
+ */
+.blk-table-control { position: absolute; z-index: 6; }
+.blk-table-handle {
+  width: 20px;
+  height: 20px;
+  border: 1px solid #d4d4d4;
+  border-radius: 4px;
+  background: #ffffff;
+  cursor: pointer;
+}
+.blk-table-handle[data-axis='row'] { width: 10px; }
+.blk-table-handle[data-axis='column'] { height: 10px; }
+.blk-table-handle:hover { background: rgba(35, 131, 226, 0.2); border-color: rgba(35, 131, 226, 0.6); }
+.blk-table-add {
+  display: grid;
+  place-items: center;
+  border-radius: 4px;
+  background: transparent;
+  color: #a3a3a3;
+  font-size: 0.75rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.blk-table-add[data-edge='bottom'] { height: 14px; }
+.blk-table-add[data-edge='right'] { width: 14px; }
+.blk-table-add:hover { background: rgba(0, 0, 0, 0.05); color: #525252; }
 
 /* 인라인 수식은 span 이다 — 블록 수식(`div.blk-equation` · Phase 2 1a)이 같은 클래스 이름을 쓰므로 태그로 가른다. */
 .blk-mention,
@@ -888,6 +917,8 @@ span.blk-equation {
     .blk-editor .blk-table[data-column-header='true'] tr:first-child td,
     .blk-editor .blk-table[data-row-header='true'] td:first-child { background: #202020; }
     .blk-editor .blk-table td.selectedCell { background: rgba(35, 131, 226, 0.28); }
+    .blk-table-handle { border-color: #404040; background: #171717; }
+    .blk-table-add:hover { background: rgba(255, 255, 255, 0.08); color: #d4d4d4; }
     .blk-divider { border-top-color: #262626; }
     .blk-image[data-state='empty'] .blk-image-controls,
     .blk-image[data-state='uploading'] .blk-image-controls,
