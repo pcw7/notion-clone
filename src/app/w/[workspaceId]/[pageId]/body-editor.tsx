@@ -74,6 +74,7 @@ import { CodeCaptionEditor } from './code-caption-editor'
 import { CodeLanguageMenu } from './code-language-menu'
 import { EquationEditor } from './equation-editor'
 import { runColumnsSlashCommand } from '@/lib/editor/columns'
+import { runTableSlashCommand } from '@/lib/editor/table'
 import { openCommentThread } from './comment-panel'
 import { PageIconView } from '../page-icon-view'
 import { closeMentionMenu, insertMention, mentionMenuState, type MentionPick } from '@/lib/editor/mention-menu'
@@ -851,6 +852,12 @@ export function BodyEditor({
       // 컬럼(Phase 2 1c) — 지금 블록을 첫 컬럼으로. 컬럼 안이면 아무것도 하지 않는다(중첩 금지).
       if (command.kind === 'columns') {
         runColumnsSlashCommand(view.state, view.dispatch.bind(view), command.count)
+        view.focus()
+        return
+      }
+      // 심플 테이블(Phase 2 1d) — 빈 줄이면 그 자리를, 아니면 그 뒤에 표. 캐럿은 첫 셀.
+      if (command.kind === 'table') {
+        runTableSlashCommand(view.state, view.dispatch.bind(view))
         view.focus()
         return
       }

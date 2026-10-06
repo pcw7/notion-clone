@@ -278,6 +278,26 @@
   .blk-editor .blk-column-resize { display: none; }
 }
 
+/*
+ * 심플 테이블(Phase 2 1d · F-01-18) — 내용 노드(`div.blk-table`)가 가로로 넘치면 그 안에서 스크롤한다. 셀은 글자만 담고(줄바꿈은 글자
+ * `
+` — `pre-wrap`) 최소 폭이 있다. 머리 줄 · 머리 열은 표의 플래그(`data-column-header` · `data-row-header`)로 배경과 굵기. 셀 사각
+ * 선택은 prosemirror-tables 가 셀에 다는 `selectedCell`.
+ */
+.blk-editor .blk-table { overflow-x: auto; margin: 0.25rem 0; }
+.blk-editor .blk-table table { border-collapse: collapse; }
+.blk-editor .blk-table td {
+  min-width: 7.5rem;
+  border: 1px solid #e5e7eb;
+  padding: 0.375rem 0.5rem;
+  vertical-align: top;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.blk-editor .blk-table[data-column-header='true'] tr:first-child td,
+.blk-editor .blk-table[data-row-header='true'] td:first-child { background: #f7f6f3; font-weight: 600; }
+.blk-editor .blk-table td.selectedCell { background: rgba(35, 131, 226, 0.14); }
+
 /* 인라인 수식은 span 이다 — 블록 수식(`div.blk-equation` · Phase 2 1a)이 같은 클래스 이름을 쓰므로 태그로 가른다. */
 .blk-mention,
 span.blk-equation {
@@ -864,6 +884,10 @@ span.blk-equation {
     .blk-menu-item:focus { background: rgba(255, 255, 255, 0.08); }
     .blk-menu-swatch { border-color: #404040; }
     .blk-callout { border-color: #262626; background: #171717; }
+    .blk-editor .blk-table td { border-color: #333333; }
+    .blk-editor .blk-table[data-column-header='true'] tr:first-child td,
+    .blk-editor .blk-table[data-row-header='true'] td:first-child { background: #202020; }
+    .blk-editor .blk-table td.selectedCell { background: rgba(35, 131, 226, 0.28); }
     .blk-divider { border-top-color: #262626; }
     .blk-image[data-state='empty'] .blk-image-controls,
     .blk-image[data-state='uploading'] .blk-image-controls,

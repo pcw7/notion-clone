@@ -58,6 +58,7 @@ import {
   type KeyBindings,
 } from './commands.ts'
 import { undoInputRuleCommand } from './input-rules.ts'
+import { tableEdgeDeleteCommand, tableEnterCommand, tableSoftBreakCommand, tableTabCommand } from './table.ts'
 import { setTextColor, toggleFormat } from './marks.ts'
 
 /** 여러 커맨드를 순서대로 시도한다. 첫 성공에서 멈춘다. */
@@ -127,8 +128,8 @@ export type EditorKeymapDeps = CommandDeps & {
  * `chain(블록선택용, 편집용)` 한 줄이 곧 분기다. 판정의 진실이 selection 하나뿐이라
  * 모드가 어긋날 자리가 없다.
  *
- * 빠진 것: `/` 메뉴(별도 플러그인), 드래그 핸들과 그 메뉴(F-01-08 의 나머지),
- * 표 관련(MVP 밖).
+ * 빠진 것: `/` 메뉴(별도 플러그인), 드래그 핸들과 그 메뉴(F-01-08 의 나머지).
+ * 심플 테이블(Phase 2 1d)의 셀 안 키(Tab · Enter · Shift+Enter · 셀 끝의 지우기)는 각 사슬의 앞자리다(`table.ts`) — 셀 밖이면 물러선다.
  */
 export function createEditorKeymap(deps: EditorKeymapDeps): KeyBindings {
   const block = createBlockKeymap(deps)
@@ -138,13 +139,19 @@ export function createEditorKeymap(deps: EditorKeymapDeps): KeyBindings {
 
     // ★ 순서가 동작을 정의한다 — 파일 머리말 참조.
     // 빈 컬럼의 유일한 빈 블록 맨 앞 — 그 컬럼을 지운다(Phase 2 1c-2). 병합보다 먼저(병합은 컬럼 경계에서 키를 삼킨다).
-    Backspace: chain(deleteBlockSelectionCommand(deps), undoInputRuleCommand(), removeEmptyColumnCommand(), block.Backspace),
-    Delete: chain(deleteBlockSelectionCommand(deps), block.Delete),
+    Backspace: chain(deleteBlockSelectionCommand(deps), undoInputRuleCommand(), tableEdgeDeleteCommand(-1), removeEmptyColumnCommand(), block.Backspace),
+    Delete: chain(deleteBlockSelectionCommand(deps), tableEdgeDeleteCommand(1), block.Delete),
+    // 셀 안(Phase 2 1d) — 옆 셀 · 줄바꿈. 셀 밖이면 블록의 들여쓰기 · 줄바꿈.
+    Tab: chain(tableTabCommand(1), block.Tab),
+    'Shift-Tab': chain(tableTabCommand(-1), block['Shift-Tab']),
+    'Shift-Enter': chain(tableSoftBreakCommand(), block['Shift-Enter']),
     // 블록 선택 상태의 Enter 는 "이 블록을 편집한다"이지 분할이 아니다. 골라진 블록 수식이면 그 입력창이 "편집"이다(Phase 2 1a).
     Enter: chain(
       ...(deps.openEquation ? [openEquationCommand(deps.openEquation)] : []),
       ...(deps.openInlineEquation ? [openSelectedInlineEquationCommand(deps.openInlineEquation)] : []),
       exitBlockSelectionCommand(),
+      // 셀 안의 Enter 는 아래 셀(Phase 2 1d) — 블록을 쪼개지 않는다.
+      tableEnterCommand(deps.newId),
       block.Enter,
     ),
 

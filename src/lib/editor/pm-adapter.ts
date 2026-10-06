@@ -38,6 +38,7 @@
 import { Fragment, Node as PmNode, Mark } from '@tiptap/pm/model'
 
 import { sanitizeBlockAttrs } from '../block/props.ts'
+import { cellsOf, rowPropsWithoutCells, TABLE_CELLS_KEY, TABLE_ROW_TYPE, TABLE_TYPE } from '../block/table.ts'
 import { isPlainRecord, jsonSafe, withoutNul } from '../contracts/json-safe.ts'
 import {
   DEFAULT_ANNOTATIONS,
@@ -65,6 +66,9 @@ import {
   MENTION_NODE,
   nodeNameOf,
   PAGE_REF_NODE,
+  TABLE_CELL_NODE,
+  TABLE_NODE,
+  TABLE_ROW_NODE,
 } from './schema.ts'
 import type { EditorBlock, EditorDoc } from './document.ts'
 
@@ -226,11 +230,33 @@ function contentNodeFor(block: EditorBlock): PmNode {
     return blockSchema.nodes[UNSUPPORTED_TYPE].create({ props, format })
   }
 
+  if (specOf(type).childrenInContent) return tableNodeFor(block, props, format)
+
   const nodeType = blockSchema.nodes[nodeNameOf(type)]
   if (specOf(type).hasRichText) {
     return nodeType.create({ props, format }, inlineForType(type, block.title))
   }
   return nodeType.create({ props, format })
+}
+
+/**
+ * 표의 내용 노드(Phase 2 1d) — 자식 행 블록들을 행 노드로(`rowId` = 행의 id · 셀 = `properties.cells` · 셀 밖의 행 속성은 `props`).
+ * 셀 수가 다른 행은 가장 긴 행에 맞춰 빈 셀로 채우고, 행이 없으면 빈 셀 하나의 행 하나다(id 는 센티널 — 찍기 · 정규화가 준다). 저장
+ * API 가 이미 막는 모양이지만 노드는 스키마에 맞아야 한다 — 정규화 ⑤ 와 같은 결과다. 행이 아닌 자식은 싣지 않는다(검증이 거부한다).
+ */
+function tableNodeFor(block: EditorBlock, props: Record<string, unknown>, format: BlockFormat): PmNode {
+  const { [TABLE_NODE]: TABLE, [TABLE_ROW_NODE]: ROW, [TABLE_CELL_NODE]: CELL } = blockSchema.nodes
+  const rows = (block.children ?? []).filter((child) => child.type === TABLE_ROW_TYPE)
+  const grid = rows.map((row) => cellsOf(row.properties))
+  const width = Math.max(1, ...grid.map((cells) => cells.length))
+  const rowNode = (rowId: string, rowProps: Record<string, unknown>, cells: readonly (readonly RichTextRun[])[]): PmNode =>
+    ROW!.create({ rowId, props: rowProps }, Array.from({ length: width }, (_, i) => CELL!.create(null, runsToInline(cells[i] ?? []))))
+  const safeProps = (row: EditorBlock): Record<string, unknown> => {
+    const safe = jsonSafe(rowPropsWithoutCells(row.properties))
+    return isPlainRecord(safe) ? safe : {}
+  }
+  const nodes = rows.length > 0 ? rows.map((row, i) => rowNode(row.id, safeProps(row), grid[i]!)) : [rowNode('', {}, [])]
+  return TABLE!.create({ props, format }, nodes)
 }
 
 /**
@@ -253,9 +279,10 @@ export function containerFor(block: EditorBlock): PmNode {
   const content = contentNodeFor(block)
   const children = block.children ?? []
 
-  // 자식 페이지의 본문은 이 문서의 것이 아니다(document.ts 가 검증한다).
+  // 자식 페이지의 본문은 이 문서의 것이 아니다(document.ts 가 검증한다). 표의 행은 내용 노드 안에 이미 실었다(Phase 2 1d).
+  const inContent = isKnownBlockType(block.type) && specOf(block.type).childrenInContent === true
   const group =
-    block.type !== PAGE_TYPE && children.length > 0
+    block.type !== PAGE_TYPE && !inContent && children.length > 0
       ? [blockSchema.nodes.blockGroup.create(null, children.map(containerFor))]
       : []
 
@@ -307,6 +334,28 @@ export function blockFromContainer(container: PmNode): EditorBlock {
   if (content.type.name === PAGE_REF_NODE) {
     // 참조 노드는 순서만 의미가 있다. 제목은 프로젝터가 무시한다.
     return { id: blockId, type: PAGE_TYPE, title: [], properties: props, format }
+  }
+
+  // 표(Phase 2 1d) — 행 노드가 자식 행 블록이 된다(id = `rowId` · 셀 = 셀 노드의 런). 비었으면 찍는다(`blockId` 와 같은 방어선).
+  if (content.type.name === TABLE_NODE) {
+    const rows: EditorBlock[] = []
+    content.forEach((row) => {
+      if (row.type.name !== TABLE_ROW_NODE) return
+      const cells: RichTextRun[][] = []
+      row.forEach((cell) => {
+        if (cell.type.name === TABLE_CELL_NODE) cells.push(inlineToRuns(cell.content))
+      })
+      const rowProps = isPlainRecord(row.attrs.props) ? { ...row.attrs.props } : {}
+      rows.push({
+        id: String(row.attrs.rowId || '') || newBlockId(),
+        type: TABLE_ROW_TYPE,
+        title: [],
+        properties: { ...rowProps, [TABLE_CELLS_KEY]: cells },
+        format: {},
+        children: [],
+      })
+    })
+    return { id: blockId, type: TABLE_TYPE, title: [], properties: props, format, children: rows }
   }
 
   // 노드 이름 → 타입(`code_block` → `code` · 8a-1). 이름을 그대로 쓰면 `specOf` 가 undefined 가 되어 저장이 깨진다.

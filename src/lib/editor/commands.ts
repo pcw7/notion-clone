@@ -59,6 +59,7 @@ import {
   visibleNeighbors,
   type ContainerInfo,
   columnIdAt,
+  inTableCell,
   isLayoutContainer,
 } from './pm-blocks.ts'
 import { blockSchema, isPlainTextNode, nodeNameOf, PAGE_REF_NODE } from './schema.ts'
@@ -191,6 +192,8 @@ function setContentType(
 
 export function splitBlockCommand(deps: CommandDeps = NO_COLLAPSE): Command {
   return (state, dispatch) => {
+    // 셀 안(Phase 2 1d)은 블록을 쪼개지 않는다 — 표의 키(`table.ts`)가 받는다.
+    if (inTableCell(state.selection.$from)) return false
     const tr = state.tr
     if (!state.selection.empty) tr.deleteSelection()
 
@@ -267,6 +270,7 @@ export function splitBlockCommand(deps: CommandDeps = NO_COLLAPSE): Command {
  */
 export function softBreakCommand(): Command {
   return (state, dispatch) => {
+    if (inTableCell(state.selection.$from)) return false
     const info = containerAt(state.selection.$from)
     if (!info || !info.contentNode.isTextblock) return false
     if (dispatch) dispatch(state.tr.insertText('\n').scrollIntoView())
@@ -356,6 +360,8 @@ export function mergeBackwardCommand(deps: CommandDeps = NO_COLLAPSE): Command {
   return (state, dispatch) => {
     const sel = state.selection
     if (!sel.empty) return false
+    // 셀 안(Phase 2 1d) — 내용 노드(표)가 글자 블록이 아니라 병합이 "원자 고르기"로 가로챘다. 셀 안의 글자 지우기는 기본 동작이다.
+    if (inTableCell(sel.$from)) return false
 
     const info = containerAt(sel.$from)
     if (!info || info.id === '') return false
@@ -389,6 +395,7 @@ export function mergeForwardCommand(deps: CommandDeps = NO_COLLAPSE): Command {
   return (state, dispatch) => {
     const sel = state.selection
     if (!sel.empty) return false
+    if (inTableCell(sel.$from)) return false
 
     const info = containerAt(sel.$from)
     if (!info || info.id === '') return false
@@ -431,6 +438,7 @@ export function mergeForwardCommand(deps: CommandDeps = NO_COLLAPSE): Command {
  */
 export function indentCommand(deps: CommandDeps = NO_COLLAPSE): Command {
   return (state, dispatch) => {
+    if (inTableCell(state.selection.$from)) return false
     const info = containerAt(state.selection.$from)
     if (!info || info.id === '') return false
 
@@ -482,6 +490,7 @@ export function indentCommand(deps: CommandDeps = NO_COLLAPSE): Command {
  */
 export function outdentCommand(): Command {
   return (state, dispatch) => {
+    if (inTableCell(state.selection.$from)) return false
     const info = containerAt(state.selection.$from)
     if (!info || info.id === '') return false
 
@@ -535,6 +544,8 @@ export function applyTurnInto(
   const info = findContainerById(tr.doc, blockId)
   if (!info || info.id === '') return false
   if (info.contentNode.type.name === PAGE_REF_NODE) return false
+  // 표(Phase 2 1d)는 다른 타입으로 바꾸지 않는다 — 셀(행)이 갈 곳이 없다. 조용히 버리지 않는다.
+  if (specOf(blockTypeOf(info.contentNode)).childrenInContent) return false
 
   const rule = toRuleBlock(info, deps.isCollapsed)
   if (rule.type === type) return false

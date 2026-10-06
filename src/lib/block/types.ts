@@ -62,13 +62,21 @@ export type BodyBlockType = (typeof BODY_BLOCK_TYPES)[number]
 export const LAYOUT_BLOCK_TYPES = ['column_list', 'column'] as const
 export type LayoutBlockType = (typeof LAYOUT_BLOCK_TYPES)[number]
 
+/**
+ * 심플 테이블(Phase 2 1d · F-01-18) — `table` 의 자식은 `table_row` 뿐이고 행은 셀(`properties.cells` — RichText[][])만 담는다. 저장 트리는
+ * 표 → 행이지만 **편집기 · Y.Doc 에서는 행이 표의 내용 노드 안에 산다**(`childrenInContent` · 정본 §3.4 [보강] 심플 테이블). 본문 타입
+ * 목록 밖이다 — `/표` 가 표째로 만들고(`editor/table.ts`) 바꾸기 · 입력 규칙에 서지 않는다.
+ */
+export const TABLE_BLOCK_TYPES = ['table', 'table_row'] as const
+export type TableBlockType = (typeof TABLE_BLOCK_TYPES)[number]
+
 /** 페이지도 블록이다(C-3). 레지스트리에는 있지만 `/` 메뉴에는 없다. */
 export const PAGE_TYPE = 'page' as const
 
 /** 모르는 타입의 보존용 폴백. */
 export const UNSUPPORTED_TYPE = 'unsupported' as const
 
-export type BlockType = BodyBlockType | LayoutBlockType | typeof PAGE_TYPE | typeof UNSUPPORTED_TYPE
+export type BlockType = BodyBlockType | LayoutBlockType | TableBlockType | typeof PAGE_TYPE | typeof UNSUPPORTED_TYPE
 
 const MVP_SET: ReadonlySet<string> = new Set(MVP_BLOCK_TYPES)
 
@@ -121,6 +129,12 @@ export type BlockTypeSpec = {
   readonly parentTypes?: readonly BlockType[]
   /** 직속 자식이 될 수 없는 타입 — 컬럼 바로 안의 컬럼 목록(중첩 금지 · F-01-12 권장). */
   readonly excludedChildTypes?: readonly BlockType[]
+  /**
+   * 자식이 **내용 노드 안에** 산다(심플 테이블 — Phase 2 1d). 저장 트리(`EditorDoc` · `block` 행)에서는 보통의 자식이지만 편집기 · Y.Doc
+   * 에서는 컨테이너의 자식 그룹이 아니라 내용 노드의 자식(행 노드)이다 — 그래서 편집기에서 이 블록은 자식 없는 줄 하나다(들여쓰기 ·
+   * 끌어 넣기 · 이웃 찾기가 안으로 들어가지 않는다). 어댑터(`pm-adapter.ts`)가 둘을 옮긴다.
+   */
+  readonly childrenInContent?: boolean
 }
 
 export const BLOCK_TYPES: Readonly<Record<BlockType, BlockTypeSpec>> = Object.freeze({
@@ -175,6 +189,11 @@ export const BLOCK_TYPES: Readonly<Record<BlockType, BlockTypeSpec>> = Object.fr
     hasRichText: false, canHaveChildren: true, supportsColor: false, layout: true,
     parentTypes: ['column_list'], excludedChildTypes: ['column_list'],
   },
+
+  // 심플 테이블(Phase 2 1d · F-01-18) — 표의 자식은 행뿐(하나 이상) · 행은 셀만(같은 수 · 하나 이상 — 블록을 담지 않는다). 색이 없다
+  // (F-01-02 GAP: `table` 에는 color 필드가 없다). 머리 줄 · 머리 열은 표의 `properties`(`has_column_header` · `has_row_header`).
+  table: { hasRichText: false, canHaveChildren: true, supportsColor: false, childTypes: ['table_row'], childrenInContent: true },
+  table_row: { hasRichText: false, canHaveChildren: false, supportsColor: false, parentTypes: ['table'] },
 
   // 폴백. 렌더는 회색 박스, 저장은 원본 그대로.
   unsupported: { hasRichText: false, canHaveChildren: false, supportsColor: false },

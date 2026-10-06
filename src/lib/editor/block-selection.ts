@@ -67,7 +67,7 @@ import type { BlockType } from '../block/types.ts'
 import { applyTurnInto, type CommandDeps } from './commands.ts'
 import { newBlockId } from './pm-adapter.ts'
 import { tidyColumns } from './column-edit.ts'
-import { containerAt, findContainerById, isLayoutContainer, visibleBlocks } from './pm-blocks.ts'
+import { containerAt, findContainerById, inTableCell, isLayoutContainer, visibleBlocks } from './pm-blocks.ts'
 import { blockSchema, PAGE_REF_NODE } from './schema.ts'
 
 const CONTAINER = 'blockContainer'
@@ -733,6 +733,17 @@ export function selectAllBlocksCommand(): Command {
 
     const info = containerAt(sel.$from)
     if (!info) return false
+
+    // 표의 셀 안(Phase 2 1d) — 그 셀의 글자, 이미 다 골랐으면 표 블록.
+    if (inTableCell(sel.$from) && sel.$from.sameParent(sel.$to)) {
+      const cellFrom = sel.$from.start()
+      const cellTo = sel.$from.end()
+      const covers = sel.from <= cellFrom && sel.to >= cellTo
+      if (dispatch) {
+        dispatch(state.tr.setSelection(covers ? BlockSelection.create(doc, info.pos) : TextSelection.create(doc, cellFrom, cellTo)))
+      }
+      return true
+    }
 
     // 텍스트가 없는 블록(divider·image)은 곧바로 블록 선택이다.
     if (!info.contentNode.isTextblock) {

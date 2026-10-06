@@ -25,6 +25,8 @@
  *   둘이 같은 하위 페이지 참조를 옮긴다 ③        참조 둘(둘째는 새 id)     본문에 둘 수 없는 참조를 뺀다
  *   컬럼 경계 너머로 블록을 옮긴다 ④            컬럼 목록 안의 맨 블록 ·  이웃 컬럼으로 옮긴다 · 컬럼 하나면 푼다 ·
  *                                              컬럼이 하나 · 빈 컬럼     빈 컬럼은 빈 문단으로 채운다
+ *   한 사람이 열을 더하는 동안 다른 사람이     셀 수가 다른 행 ·          가장 긴 행에 맞춰 빈 셀로 채운다 · 행이 없으면
+ *     행을 더한다 · 마지막 행을 둘이 지운다 ⑤   행 없는 표                빈 셀 하나의 행 하나
  *
  *   ① 타입은 병합할 수 없다(F-05-01 시나리오 4: "한쪽 값만 남는다"). 어느 쪽이 남는지는 Yjs 의
  *      동시 삽입 순서(client id)가 정한다 — "늦게 한 쪽이 이긴다"가 아니다
@@ -32,6 +34,9 @@
  *   ④ 컬럼(Phase 2 1c) — 컬럼 목록의 자식은 컬럼뿐(레지스트리 `childTypes`) · 컬럼은 컬럼 목록 안에만(`parentTypes`) · 컬럼 바로 안의
  *      컬럼 목록은 없다(`excludedChildTypes` — 펼친다) · 컬럼은 둘 이상(`MIN_COLUMNS`) · 빈 컬럼은 캐럿을 둘 곳이 없어 빈 문단을 넣는다.
  *      들여쓰기 · 내어쓰기는 경계를 넘지 않지만(`commands.ts`) 동시 편집 · 붙여넣기 · 끌기가 넘을 수 있다
+ *   ⑤ 표(Phase 2 1d) — 행은 표의 내용 노드 안에 산다(컨테이너가 아니다). 행이 아닌 것 · 셀이 아닌 것은 버리고, 셀의 인라인은 텍스트
+ *      블록과 같은 청소, 셀의 병합 칸(colspan · rowspan · colwidth)은 1 · null(병합은 저장 모양에 자리가 없다), 행 id 는 블록 id 와
+ *      같은 규칙(같은 이름 공간이다). 열을 버리지 않는다 — 모자란 행을 채운다
  *   ③ 동시 편집이 아니어도 생긴다(휴지통 · 다른 본문으로 간 페이지를 가리키는 낡은 참조). 서브트리의 높이와 페이지가 어디
  *      사는지는 문서 밖(DB)에 있어 받았을 때만 본다(`pageRefDepth` · `pageRefs`) — 투영과 그 수선이 넘긴다(HANDOFF §3.2-23 · §3.2-24)
  *
@@ -52,7 +57,17 @@ import { MAX_TREE_DEPTH, MIN_COLUMNS, PAGE_TYPE, specOf, type BlockFormat, type 
 import { isPlainRecord, jsonSafe, sameJsonValue, withoutNul } from '../contracts/json-safe.ts'
 import { isUuid } from '../ids.ts'
 import { ATOM_MARKS_ATTR, atomMarksAttr, INLINE_ATOM_NODES } from '../editor/atom-marks.ts'
-import { blockSchema, blockTypeOfNode, EQUATION_NODE, isPlainTextNode, PAGE_REF_NODE } from '../editor/schema.ts'
+import {
+  blockSchema,
+  blockTypeOfNode,
+  EQUATION_NODE,
+  isPlainTextNode,
+  PAGE_REF_NODE,
+  TABLE_CELL_NODE,
+  TABLE_NODE,
+  TABLE_ROW_NODE,
+} from '../editor/schema.ts'
+import { TABLE_CELLS_KEY } from '../block/table.ts'
 
 export type NormalizeFix =
   /** 루트에 그룹이 없다. */
@@ -116,6 +131,12 @@ export type NormalizeFix =
   | 'single_column_unwrapped'
   /** 빈 컬럼 — 빈 문단을 넣었다(캐럿을 둘 곳). */
   | 'empty_column_filled'
+  /** 행이 없는 표 — 빈 셀 하나의 행 하나를 넣었다(Phase 2 1d). */
+  | 'table_filled'
+  /** 셀 수가 모자란 행 — 가장 긴 행에 맞춰 빈 셀로 채웠다. */
+  | 'table_cells_padded'
+  /** 셀의 병합 칸(colspan · rowspan · colwidth)을 1 · null 로 되돌렸다 — 병합은 저장 모양에 자리가 없다. */
+  | 'table_cell_reset'
 
 export type NormalizeResult = {
   /** 스키마에 맞는 문서. 고칠 것이 없었어도 새로 조립한 노드다 — 입력과는 `eq` 로 비교한다. */
@@ -150,6 +171,7 @@ export type NormalizeOptions = {
 }
 
 const { doc: DOC, blockGroup: GROUP, blockContainer: CONTAINER, paragraph: PARAGRAPH } = blockSchema.nodes
+const { [TABLE_ROW_NODE]: TABLE_ROW, [TABLE_CELL_NODE]: TABLE_CELL } = blockSchema.nodes
 
 /** 컨테이너의 블록 타입. */
 const typeOfContainer = (container: PmNode): BlockType | null =>
@@ -209,7 +231,8 @@ function canNest(content: PmNode): boolean {
   if (content.type.name === PAGE_REF_NODE) return false
   // 노드 이름은 타입 이름이 아닐 수 있다(`code_block` → `code`) — 이름을 그대로 `specOf` 에 넣으면 undefined 다(8a-1).
   const type = blockTypeOfNode(content.type.name)
-  return specOf(type).canHaveChildren && type !== PAGE_TYPE
+  // 표의 행은 내용 노드 안에 산다(Phase 2 1d) — 컨테이너의 자식 그룹이 아니다. 그룹에 온 자식은 뒤 형제로 올린다.
+  return specOf(type).canHaveChildren && !specOf(type).childrenInContent && type !== PAGE_TYPE
 }
 
 export function normalizeBody(input: PmNode, options: NormalizeOptions): NormalizeResult {
@@ -242,7 +265,90 @@ export function normalizeBody(input: PmNode, options: NormalizeOptions): Normali
     return newId(`${id}:${seen}`)
   }
 
-  const cleanContent = (content: PmNode): PmNode => {
+  /** 텍스트 블록(셀 포함)의 인라인 자식들 — 블록 노드는 버리고 원자 · 글자는 `cleanInline`. */
+  const cleanInlineChildren = (node: PmNode): { nodes: PmNode[]; changed: boolean } => {
+    const nodes: PmNode[] = []
+    let changed = false
+    node.forEach((child) => {
+      if (!child.isInline) {
+        changed = true
+        fixes.push('invalid_content_dropped')
+        return
+      }
+      const clean = cleanInline(child)
+      if (clean !== child) {
+        changed = true
+        fixes.push(child.isText ? 'nul_replaced' : 'invalid_inline_fixed')
+      }
+      if (clean !== null) nodes.push(clean)
+    })
+    return { nodes, changed }
+  }
+
+  /**
+   * 표의 행들(⑤ · Phase 2 1d) — 행이 아닌 것 · 셀이 아닌 것은 버리고 셀의 인라인을 청소한다 · 병합 칸은 1 · null · 행 id 는 블록 id 의
+   * 규칙 · 셀 밖의 행 속성은 평범한 객체(셀 키는 뺀다) · 모자란 행은 가장 긴 행에 맞춰 빈 셀로 · 행이 없으면 빈 셀 하나의 행 하나.
+   */
+  const cleanTableRows = (table: PmNode, path: string): { rows: PmNode[]; changed: boolean } => {
+    type Row = { id: string; props: Record<string, unknown>; cells: PmNode[]; changed: boolean; node: PmNode | null }
+    const rows: Row[] = []
+    let dropped = false
+    table.forEach((row, _offset, r) => {
+      if (row.type !== TABLE_ROW) {
+        dropped = true
+        fixes.push('invalid_content_dropped')
+        return
+      }
+      let rowChanged = false
+      const cells: PmNode[] = []
+      row.forEach((cell) => {
+        if (cell.type !== TABLE_CELL) {
+          rowChanged = true
+          fixes.push('invalid_content_dropped')
+          return
+        }
+        const inline = cleanInlineChildren(cell)
+        const spanned = cell.attrs.colspan !== 1 || cell.attrs.rowspan !== 1 || cell.attrs.colwidth !== null
+        if (spanned) fixes.push('table_cell_reset')
+        if (inline.changed || spanned) {
+          rowChanged = true
+          cells.push(TABLE_CELL!.create(null, inline.nodes))
+        } else cells.push(cell)
+      })
+      const id = claimId(row.attrs.rowId, `${path}.row${r}`)
+      if (id !== row.attrs.rowId) rowChanged = true
+      const safe = jsonSafe(row.attrs.props)
+      let props: Record<string, unknown> = isPlainRecord(safe) ? safe : {}
+      if (props !== row.attrs.props) {
+        rowChanged = true
+        fixes.push('invalid_attrs_reset')
+      }
+      if (Object.hasOwn(props, TABLE_CELLS_KEY)) {
+        props = { ...props }
+        delete props[TABLE_CELLS_KEY]
+        rowChanged = true
+        fixes.push('invalid_props_dropped')
+      }
+      rows.push({ id, props, cells, changed: rowChanged, node: row })
+    })
+    if (rows.length === 0) {
+      fixes.push('table_filled')
+      rows.push({ id: newId(`table:${path}`), props: {}, cells: [], changed: true, node: null })
+    }
+    const width = Math.max(1, ...rows.map((row) => row.cells.length))
+    for (const row of rows) {
+      if (row.cells.length >= width) continue
+      fixes.push('table_cells_padded')
+      row.cells.push(...Array.from({ length: width - row.cells.length }, () => TABLE_CELL!.create()))
+      row.changed = true
+    }
+    const nodes = rows.map((row) =>
+      row.changed || row.node === null ? TABLE_ROW!.create({ rowId: row.id, props: row.props }, row.cells) : row.node,
+    )
+    return { rows: nodes, changed: dropped || rows.some((row) => row.changed) }
+  }
+
+  const cleanContent = (content: PmNode, path: string): PmNode => {
     let changed = false
     const attrs: Record<string, unknown> = { ...content.attrs }
     for (const key of ['props', 'format']) {
@@ -292,19 +398,13 @@ export function normalizeBody(input: PmNode, options: NormalizeOptions): Normali
         fixes.push('plain_text_flattened')
       }
     } else if (content.type.isTextblock) {
-      content.forEach((child) => {
-        if (!child.isInline) {
-          changed = true
-          fixes.push('invalid_content_dropped')
-          return
-        }
-        const clean = cleanInline(child)
-        if (clean !== child) {
-          changed = true
-          fixes.push(child.isText ? 'nul_replaced' : 'invalid_inline_fixed')
-        }
-        if (clean !== null) inline.push(clean)
-      })
+      const cleaned = cleanInlineChildren(content)
+      if (cleaned.changed) changed = true
+      inline.push(...cleaned.nodes)
+    } else if (content.type.name === TABLE_NODE) {
+      const cleaned = cleanTableRows(content, path)
+      if (cleaned.changed) changed = true
+      inline.push(...cleaned.rows)
     } else if (content.childCount > 0) {
       changed = true
       fixes.push('invalid_content_dropped')
@@ -324,7 +424,8 @@ export function normalizeBody(input: PmNode, options: NormalizeOptions): Normali
         out.push(...containersOf(childrenOf(node), here, depth, parent))
       } else if (isBlockContent(node)) {
         fixes.push('content_wrapped')
-        out.push(CONTAINER.create({ blockId: newId(`wrap:${here}`) }, [cleanContent(node)]))
+        const blockId = newId(`wrap:${here}`)
+        out.push(CONTAINER.create({ blockId }, [cleanContent(node, here)]))
       } else {
         fixes.push('stray_dropped')
       }
@@ -385,8 +486,9 @@ export function normalizeBody(input: PmNode, options: NormalizeOptions): Normali
     }
     if (contents.length > 1) fixes.push('type_conflict_resolved')
 
-    const content = cleanContent(contents[0])
+    // id 를 먼저 받는다 — 표의 행 id(⑤)가 같은 규칙으로 뒤따른다(문서 순서의 첫째가 갖는다).
     const blockId = claimId(node.attrs.blockId, path)
+    const content = cleanContent(contents[0], path)
     const type = blockTypeOfNode(content.type.name)
     // ── 컬럼(④) — 설 수 없는 자리의 틀은 풀어 자식을 그 자리에 올린다. ──
     const allowedParents = specOf(type).parentTypes

@@ -31,8 +31,10 @@ export type InlineEquationRef = { readonly blockId: string; readonly index: numb
 /** 그 블록의 내용 노드 안 인라인 수식들 — (위치, 노드), 문서 순서. */
 function equationsIn(content: PmNode, contentPos: number): { pos: number; node: PmNode }[] {
   const out: { pos: number; node: PmNode }[] = []
-  content.forEach((child, offset) => {
+  // 자손까지 — 표의 셀(Phase 2 1d)은 내용 노드의 손자다. 순번은 문서 순서(셀을 가로로 · 행을 차례로).
+  content.descendants((child, offset) => {
     if (child.type.name === EQUATION_NODE) out.push({ pos: contentPos + 1 + offset, node: child })
+    return !child.isInline
   })
   return out
 }
