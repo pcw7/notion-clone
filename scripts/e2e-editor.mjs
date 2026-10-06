@@ -687,6 +687,23 @@ async function main() {
       await sleep(120)
       return true
     }
+    // 잠금 버튼은 누를 때의 글자대로 잠그거나 푼다(PUT · DELETE — 둘 다 멱등). 붙기 전의 클릭은 사라지므로 될 때까지 다시 누르되,
+    // **글자가 바라는 쪽일 때만** 누른다 — 앞선 클릭의 새로고침이 늦게 와 글자가 막 바뀐 뒤에 누르면 거꾸로 돌린다(1c-2 의 전체 e2e
+    // 에서 겪었다 — "잠김"이 선 채로 서버는 풀려 있었다).
+    const pressLockToggle = async (label, done) => {
+      for (let i = 0; i < 10; i += 1) {
+        const box = await evaluate(`(() => {
+          const el = document.querySelector('[data-testid="page-lock-toggle"]')
+          if (!el || el.disabled || el.textContent !== ${JSON.stringify(label)}) return null
+          el.scrollIntoView({ block: 'center' })
+          const r = el.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (box) await click(box.x, box.y)
+        if (await waitFor(done, 1500)) return true
+      }
+      return false
+    }
     /**
      * 옮길 자리를 누른 뒤 — 미리보기가 한 번 더 물으면(볼 수 있는 사람이 바뀐다 · 7c-13) "옮기기"를 누른다. 묻지 않으면(곧바로
      * 옮겼거나 거부됐으면) 아무것도 하지 않는다. 뿌리를 바꾸는 이동을 누르는 절은 모두 이것을 거친다.
@@ -3222,19 +3239,11 @@ async function main() {
       check('읽기만 하는 사람은 풀지 못한다 (403)', viewerUnlock.status === 403, String(viewerUnlock.status))
 
       // 풀면 페이지를 다시 연다 — 서버 렌더 뒤 붙기 전의 클릭은 사라지므로 "잠김"이 사라질 때까지 다시 누른다(§6).
-      let unlocked = false
-      for (let i = 0; i < 10 && !unlocked; i += 1) {
-        await clickSelector('[data-testid="page-lock-toggle"]')
-        unlocked = await waitFor(`!document.querySelector('[data-testid="page-locked"]')`, 1500)
-      }
+      const unlocked = await pressLockToggle('잠금 풀기', `!document.querySelector('[data-testid="page-locked"]')`)
       check('★ "잠금 풀기"를 누르면 다시 열려 곧바로 고칠 수 있다', unlocked && (await waitFor(EDITABLE, 15000)),
         await evaluate(BANNER))
 
-      let relocked = false
-      for (let i = 0; i < 10 && !relocked; i += 1) {
-        await clickSelector('[data-testid="page-lock-toggle"]')
-        relocked = await waitFor(`!!document.querySelector('[data-testid="page-locked"]')`, 1500)
-      }
+      const relocked = await pressLockToggle('잠그기', `!!document.querySelector('[data-testid="page-locked"]')`)
       check('★ "잠그기"를 누르면 "잠김"이 서고 그 편집기도 읽기 전용이 된다', relocked && (await waitFor(`!(${EDITABLE})`, 15000)))
 
       // 풀어 둔 페이지에서 본다 — 잠긴 채면 권한이 아니라 잠금 때문에 거부될 수 있다.
@@ -3267,11 +3276,7 @@ async function main() {
       check('전제 — 잠그기 전에는 뷰 더하기 · 열 더하기가 있고 "잠그기" 버튼이 있다',
         await waitFor(`${STRUCTURE} && (document.querySelector('[data-testid="page-lock-toggle"]')?.textContent ?? '') === '잠그기'`, 15000))
 
-      let locked = false
-      for (let i = 0; i < 10 && !locked; i += 1) {
-        await clickSelector('[data-testid="page-lock-toggle"]')
-        locked = await waitFor(`!!document.querySelector('[data-testid="page-locked"]')`, 1500)
-      }
+      const locked = await pressLockToggle('잠그기', `!!document.querySelector('[data-testid="page-locked"]')`)
       check('★ "잠그기"를 누르면 "잠김"이 서고 구조 화면(뷰 더하기 · 열 더하기)이 사라진다 — 행 더하기는 남는다',
         locked && (await waitFor(`${NO_STRUCTURE} && !!document.querySelector('[data-testid="db-add-row"]')`, 10000)))
 
@@ -3293,11 +3298,7 @@ async function main() {
         rowLock.status === 200 && lockedCell.status === 409 && lockedCell.body?.error === 'locked' && otherCell.status === 200,
         JSON.stringify([rowLock.status, lockedCell.status, otherCell.status]))
 
-      let unlocked = false
-      for (let i = 0; i < 10 && !unlocked; i += 1) {
-        await clickSelector('[data-testid="page-lock-toggle"]')
-        unlocked = await waitFor(`!document.querySelector('[data-testid="page-locked"]')`, 1500)
-      }
+      const unlocked = await pressLockToggle('잠금 풀기', `!document.querySelector('[data-testid="page-locked"]')`)
       check('★ "잠금 풀기"를 누르면 구조 화면이 돌아온다', unlocked && (await waitFor(STRUCTURE, 10000)))
       const afterUnlock = await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '풀린 뒤의 속성', type: 'number' })
       check('풀린 뒤에는 속성을 더한다', afterUnlock.status === 200 || afterUnlock.status === 201, String(afterUnlock.status))
