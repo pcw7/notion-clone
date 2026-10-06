@@ -218,6 +218,13 @@ export function isLayoutBlockType(t: unknown): t is LayoutBlockType {
 /** 최소 컬럼 수 — 하나 남은 컬럼 목록은 풀린다(F-01-12 *"컬럼이 1개만 남음 → column_list 를 해제하고 자식을 부모로 승격"*). */
 export const MIN_COLUMNS = 2
 
+/** 컬럼 폭의 키 — 컬럼의 `format`(Phase 2 1c-2 · 공개 API 의 `width_ratio`). 0 초과 1 이하의 수 · 한 컬럼 목록의 합이 1 이 되게 쓴다. */
+export const COLUMN_RATIO_KEY = 'column_ratio'
+
+/** 컬럼 폭이 올바른 값인가 — 0 초과 1 이하의 유한수. */
+export const isColumnRatio = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isFinite(value) && value > 0 && value <= 1
+
 // ── unsupported 폴백 ──────────────────────────────────────────────────
 
 /**
@@ -301,6 +308,10 @@ export function normalizeFormat(type: BlockType, format: unknown): BlockFormat {
   // [보강] 코드 블록 ⑥ — 전에는 모든 타입에 남아 바꾸기가 문단에 `code_wrap` 을 남겼다).
   if ('code_wrap' in out && !(specOf(type).plainText && out.code_wrap === true)) {
     delete out.code_wrap
+  }
+  // 컬럼 폭(1c-2) — 컬럼의 올바른 수만 남는다. 다른 타입으로 바뀌면(정규화가 푼 컬럼) 사라진다.
+  if (COLUMN_RATIO_KEY in out && !(type === 'column' && isColumnRatio(out[COLUMN_RATIO_KEY]))) {
+    delete out[COLUMN_RATIO_KEY]
   }
   // 페이지 아이콘(8c-1)은 **페이지 행의 것**이다 — 본문(Y.Doc · 편집기 · 투영)의 format 에는 없다. 하위 페이지 참조도 타입이 `page` 라
   // 타입으로 가르지 않고 늘 버린다: 행에서 본문을 지을 때(`rowsToDoc` → `docToPm`) 참조 노드가 자식 행의 format 을 받아 와, 볼 수

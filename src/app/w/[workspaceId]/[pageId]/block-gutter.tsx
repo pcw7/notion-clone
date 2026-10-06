@@ -70,7 +70,7 @@ const DRAG_THRESHOLD_PX = 4
 const GUTTER_WIDTH_PX = 46
 
 type Hover = { blockId: string; top: number; left: number }
-type Guide = { top: number; left: number }
+type Guide = { top: number; left: number; width?: number }
 /**
  * 메뉴 자리. 핸들 바로 아래 — 노션도 핸들에서 메뉴가 떨어진다.
  * `view` 를 함께 담는다 — 렌더 중에 `viewRef.current` 를 읽지 않기 위해서다(여는
@@ -85,6 +85,8 @@ type Drag = {
   startY: number
   moved: boolean
   lines: BlockLine[]
+  /** 컬럼 차선들의 자리(1c-2) — 끌기를 시작할 때 한 번 잰다. */
+  lanes: Map<string, LaneRect>
   hit: DropHit | null
 }
 
@@ -96,17 +98,31 @@ type Drag = {
  * 블록이 잡힌다. 포인터 x 로 찾으면 핸들이 있는 왼쪽 여백에서는 아무것도 없거나,
  * 들여쓴 블록의 줄인데 부모가 잡힌다.
  *
- * 컬럼(Phase 2 1c)은 나란히 서므로 포인터가 있는 **컬럼의** 오른쪽 끝에서 찾는다 — 편집기 끝에서 찾으면 늘 마지막 컬럼의 블록이 잡힌다.
- * 컬럼의 틀(컬럼 목록 · 컬럼)은 핸들을 받지 않는다 — 틀은 화면의 줄이 아니다.
+ * 컬럼(Phase 2 1c)은 나란히 서므로 **컬럼의** 오른쪽 끝에서 찾는다 — 편집기 끝에서 찾으면 늘 마지막 컬럼의 블록이 잡힌다. 포인터가
+ * 컬럼 밖이어도 그 높이에 컬럼 목록이 있으면(왼쪽 여백 · 컬럼 사이 틈) **포인터 자리 또는 그 오른쪽의 첫 컬럼**이다 — 블록의 핸들은 그
+ * 블록 왼쪽(여백 · 틈)에 서므로, 핸들로 가는 동안 같은 블록을 지켜야 잡을 수 있다(1c-2 의 첫 e2e 는 왼쪽 컬럼의 핸들로 가다 오른쪽
+ * 컬럼의 블록을 잡았다). 폭 손잡이 위에서는 핸들을 띄우지 않는다. 컬럼의 틀은 핸들을 받지 않는다 — 틀은 화면의 줄이 아니다.
  */
 function lineAt(view: EditorView, frame: HTMLElement, clientX: number, clientY: number): Hover | null {
   const editor = view.dom.getBoundingClientRect()
-  const column = document.elementFromPoint(clientX, clientY)?.closest<HTMLElement>('.blk-container:has(> .blk-column)')
+  const under = document.elementFromPoint(clientX, clientY)
+  // 폭 손잡이 위에서는 핸들을 띄우지 않는다(1c-2) — 손잡이를 잡으려다 블록을 끌지 않게.
+  if (under?.closest('.blk-column-resize')) return null
+  let column = under?.closest<HTMLElement>('.blk-container:has(> .blk-column)') ?? null
+  if (column === null) {
+    const list = document.elementFromPoint(editor.right - 2, clientY)?.closest<HTMLElement>('.blk-container:has(> .blk-column_list)')
+    if (list && view.dom.contains(list)) {
+      const columns = [...list.querySelectorAll<HTMLElement>(':scope > .blk-group > .blk-container')]
+      column = columns.find((c) => c.getBoundingClientRect().right >= clientX) ?? columns[columns.length - 1] ?? null
+    }
+  }
   const right = column && view.dom.contains(column) ? column.getBoundingClientRect().right : editor.right
-  const el = document.elementFromPoint(right - 2, clientY)
+  // 폭 손잡이는 건너뛴다 — 다음 컬럼의 자식이라 그 위를 찍으면 블록 대신 컬럼의 틀이 잡힌다.
+  const el = document.elementsFromPoint(right - 2, clientY).find((e) => !e.closest('.blk-column-resize'))
   const container = el?.closest<HTMLElement>('[data-block-id]')
   if (!container || !view.dom.contains(container)) return null
-  if (container.firstElementChild?.matches('.blk-column, .blk-column_list')) return null
+  // 틀의 첫 자식은 폭 손잡이(위젯)일 수 있다 — 직속 자식 중에 틀의 껍데기가 있는지 본다.
+  if (container.querySelector(':scope > .blk-column, :scope > .blk-column_list')) return null
   const blockId = container.getAttribute('data-block-id') ?? ''
   if (blockId === '') return null
 
@@ -117,6 +133,30 @@ function lineAt(view: EditorView, frame: HTMLElement, clientX: number, clientY: 
 }
 
 /** 드롭 후보 줄들의 좌표를 잰다. 문서 쪽 정보는 `dropCandidates` 가 준다. */
+/** 차선(컬럼)의 자리 — 프레임 기준. */
+type LaneRect = { left: number; right: number; top: number; bottom: number }
+
+/** 컬럼 차선들의 자리를 잰다 — 줄에 실린 차선 id 마다 그 컬럼 컨테이너의 자리. */
+function measureLanes(view: EditorView, frame: HTMLElement, lines: readonly BlockLine[]): Map<string, LaneRect> {
+  const box = frame.getBoundingClientRect()
+  const out = new Map<string, LaneRect>()
+  for (const lane of new Set(lines.map((l) => l.lane))) {
+    if (lane === null) continue
+    const info = findContainerById(view.state.doc, lane)
+    const dom = info ? view.nodeDOM(info.pos) : null
+    if (!(dom instanceof HTMLElement)) continue
+    const r = dom.getBoundingClientRect()
+    out.set(lane, { left: r.left - box.left, right: r.right - box.left, top: r.top - box.top, bottom: r.bottom - box.top })
+  }
+  return out
+}
+
+/** 포인터가 있는 차선 — 컬럼 안이면 그 컬럼, 아니면 null(본문의 흐름). */
+function laneAt(lanes: ReadonlyMap<string, LaneRect>, x: number, y: number): string | null {
+  for (const [id, r] of lanes) if (x >= r.left && x <= r.right && y >= r.top - 8 && y <= r.bottom + 8) return id
+  return null
+}
+
 function measureLines(
   view: EditorView,
   frame: HTMLElement,
@@ -257,6 +297,7 @@ export function BlockGutter({
       startY: event.clientY,
       moved: false,
       lines: [],
+      lanes: new Map(),
       hit: null,
     }
   }
@@ -275,11 +316,18 @@ export function BlockGutter({
       selectHandleTargetsCommand(d.ids)(view.state, view.dispatch.bind(view))
       frame.setAttribute('data-dragging', 'true')
       d.lines = measureLines(view, frame, d.ids, deps.isCollapsed)
+      d.lanes = measureLanes(view, frame, d.lines)
     }
 
+    // 포인터가 있는 차선(컬럼 · 본문)의 줄만으로 찾는다 — 나란한 컬럼은 줄의 위치가 문서 순서로 오르지 않는다(Phase 2 1c-2).
     const box = frame.getBoundingClientRect()
-    d.hit = resolveDrop(d.lines, event.clientX - box.left, event.clientY - box.top, INDENT_PX)
-    setGuide(d.hit ? dropGuide(d.hit, INDENT_PX) : null)
+    const x = event.clientX - box.left
+    const y = event.clientY - box.top
+    const lane = laneAt(d.lanes, x, y)
+    d.hit = resolveDrop(d.lines.filter((l) => l.lane === lane), x, y, INDENT_PX)
+    const laneRect = lane === null ? undefined : d.lanes.get(lane)
+    const guide = d.hit ? dropGuide(d.hit, INDENT_PX) : null
+    setGuide(guide && laneRect ? { ...guide, width: Math.max(0, laneRect.right - guide.left) } : guide)
   }
 
   const onPointerUp = (): void => {
@@ -417,7 +465,7 @@ export function BlockGutter({
         <div
           aria-hidden
           className="blk-drop-guide"
-          style={{ top: guide.top - 1, left: guide.left }}
+          style={guide.width === undefined ? { top: guide.top - 1, left: guide.left } : { top: guide.top - 1, left: guide.left, width: guide.width, right: 'auto' }}
         />
       )}
     </>

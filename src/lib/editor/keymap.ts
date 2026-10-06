@@ -47,6 +47,7 @@ import {
   selectBlockCommand,
   turnSelectionIntoCommand,
 } from './block-selection.ts'
+import { removeEmptyColumnCommand } from './column-edit.ts'
 import { openEquationCommand } from './equation-block.ts'
 import { insertInlineEquationCommand, openSelectedInlineEquationCommand, type InlineEquationRef } from './inline-equation.ts'
 import {
@@ -136,7 +137,8 @@ export function createEditorKeymap(deps: EditorKeymapDeps): KeyBindings {
     ...block,
 
     // ★ 순서가 동작을 정의한다 — 파일 머리말 참조.
-    Backspace: chain(deleteBlockSelectionCommand(deps), undoInputRuleCommand(), block.Backspace),
+    // 빈 컬럼의 유일한 빈 블록 맨 앞 — 그 컬럼을 지운다(Phase 2 1c-2). 병합보다 먼저(병합은 컬럼 경계에서 키를 삼킨다).
+    Backspace: chain(deleteBlockSelectionCommand(deps), undoInputRuleCommand(), removeEmptyColumnCommand(), block.Backspace),
     Delete: chain(deleteBlockSelectionCommand(deps), block.Delete),
     // 블록 선택 상태의 Enter 는 "이 블록을 편집한다"이지 분할이 아니다. 골라진 블록 수식이면 그 입력창이 "편집"이다(Phase 2 1a).
     Enter: chain(

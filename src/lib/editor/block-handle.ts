@@ -48,7 +48,19 @@ import { TextSelection, type Command, type EditorState } from '@tiptap/pm/state'
 import { blockDeletionRanges, BlockSelection, isBlockSelection } from './block-selection.ts'
 import type { CommandDeps } from './commands.ts'
 import { newBlockId } from './pm-adapter.ts'
-import { canNestUnder, columnIdAt, describeContainer, findContainerById, visibleBlocks } from './pm-blocks.ts'
+import { tidyColumns } from './column-edit.ts'
+import { canNestUnder, columnIdAt, describeContainer, findContainerById, isLayoutContainer, visibleBlocks } from './pm-blocks.ts'
+
+/** 그 블록의 부모가 배치의 틀(컬럼)인가 — 앞 · 뒤에 놓으면 그 틀의 직속 자식이 된다. */
+function isLayoutContainerAt(doc: PmNode, pos: number): boolean {
+  const $pos = doc.resolve(pos)
+  if ($pos.depth < 2) return false
+  const parent = $pos.node($pos.depth - 1)
+  return parent.type.name === 'blockContainer' && isLayoutContainer(parent)
+}
+
+/** 그 자리의 블록이 컬럼 목록인가. */
+const isColumnListAt = (doc: PmNode, pos: number): boolean => doc.nodeAt(pos)?.firstChild?.type.name === 'column_list'
 import { blockSchema } from './schema.ts'
 
 // ── 드롭 후보 ─────────────────────────────────────────────────────────
@@ -62,6 +74,11 @@ export type LineInfo = {
   readonly canNest: boolean
   /** 화면에 보이는 자식이 있는가(자식이 있고 펼쳐져 있다). */
   readonly hasVisibleChildren: boolean
+  /**
+   * 이 줄의 **차선** — 컬럼 안이면 그 컬럼의 블록 id, 아니면 null(본문의 흐름 · Phase 2 1c-2). 나란한 컬럼은 줄의 위치가 문서 순서로
+   * 오르지 않으므로 화면은 포인터가 있는 차선의 줄만으로 자리를 찾는다(`resolveDrop` 의 이진 탐색 전제).
+   */
+  readonly lane: string | null
 }
 
 /** 좌표까지 채운 한 줄. 좌표는 화면이 정한 기준(프레임) 상대값이다. */
@@ -105,9 +122,6 @@ export function dropCandidates(
   for (const entry of visibleBlocks(doc, isCollapsed).order) {
     const block = entry.node
     if (excluded.has(block.id)) continue
-    // 컬럼 안의 블록은 놓을 자리가 아니다(Phase 2 1c) — 나란한 컬럼은 줄의 위치가 문서 순서로 오르지 않아, 위치로 찾는 이진 탐색의 전제가
-    // 깨진다. 컬럼으로 끌어 넣기는 1c-2(옆에 놓아 컬럼 만들기와 함께).
-    if (columnIdAt(doc.resolve(block.pos)) !== null) continue
     const node = doc.nodeAt(block.pos)
     if (!node) continue
     const info = describeContainer(node, block.pos)
@@ -116,6 +130,7 @@ export function dropCandidates(
       pos: block.pos,
       canNest: canNestUnder(info),
       hasVisibleChildren: block.children.length > 0 && !block.collapsed,
+      lane: columnIdAt(doc.resolve(block.pos)),
     })
   }
   return out
@@ -240,6 +255,10 @@ export function planDrop(
   }
 
   if (target.kind === 'child' && !canNestUnder(dest)) return { kind: 'invalid_target' }
+  // 컬럼 바로 안에는 컬럼 목록을 두지 않는다(중첩 금지 · 정규화 ④) — 컬럼 목록을 고른 블록 선택을 컬럼 안으로 끌어 넣을 때.
+  if (target.kind !== 'child' && isLayoutContainerAt(doc, dest.pos) && sources.some((s) => isColumnListAt(doc, s.pos))) {
+    return { kind: 'invalid_target' }
+  }
 
   // 접힌 블록 안으로 들어가면 화면에서 사라진다 — 펼친다. `planMerge` 가 접힌
   // 대상으로 자식을 이관할 때 앞 블록을 펼치는 것과 같은 판결이다(HANDOFF §3.2-5).
@@ -318,6 +337,8 @@ export function dropBlocksCommand(
     const tr = state.tr
     const moved = applyDrop(tr, plan)
     if (!moved) return false
+    // 마지막 블록을 끌어낸 컬럼은 지운다(Phase 2 1c-2 · 하나 남으면 컬럼 목록을 푼다).
+    tidyColumns(tr)
     if (tr.doc.eq(state.doc)) return false
 
     const first = findContainerById(tr.doc, moved[0])

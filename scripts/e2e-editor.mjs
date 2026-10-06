@@ -10706,6 +10706,123 @@ async function main() {
       await sleep(1000)
     }
 
+    if (sectionIf('컬럼 폭 · 끌어 넣기 (Phase 2 1c-2 · F-01-12)')) {
+      // 컬럼 사이의 손잡이를 끌면 폭이 바뀌고(놓을 때 한 번 저장 · 합 1), 위 블록을 끌어 둘째 컬럼 안에 놓으면 그 컬럼에 들어간다(차선).
+      // 첫 컬럼의 마지막 블록을 끌어내면 그 컬럼이 사라지고 하나 남은 컬럼 목록은 풀린다. 빈 컬럼의 빈 블록에서 Backspace 는 그 컬럼을 지운다.
+      const stamp = Date.now()
+      const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
+      const newPage = async (title) => (await (await fetch(pagesUrl, { method: 'POST', headers: authed, body: JSON.stringify({ title }) })).json()).page.id
+      const cid = { top: randomUUID(), a: randomUUID(), b: randomUUID(), end: randomUUID(), list: randomUUID(), left: randomUUID(), right: randomUUID() }
+      const para = (id, text) => ({ id, type: 'paragraph', title: text === '' ? [] : [textRun(text)], properties: {}, format: {}, children: [] })
+      const col = (id, children) => ({ id, type: 'column', title: [], properties: {}, format: {}, children })
+      const widthPage = await newPage(`컬럼 폭 ${stamp}`)
+      await saveBody(widthPage, { blocks: [
+        para(cid.top, '위 블록'),
+        { id: cid.list, type: 'column_list', title: [], properties: {}, format: {}, children: [col(cid.left, [para(cid.a, '왼쪽 a')]), col(cid.right, [para(cid.b, '오른쪽 b')])] },
+        para(cid.end, '끝 블록'),
+      ] })
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${widthPage}` })
+      await waitFor(`!!document.querySelector('[data-block-id="${cid.b}"] p') && document.querySelector('.blk-editor')?.getAttribute('contenteditable') === 'true'`, 15000)
+      const colRect = (id) => rect(`[data-block-id="${id}"]`)
+      const treeOnServer = async () => {
+        const text = (b) => (b.title ?? []).map((r) => r.plain_text ?? '').join('')
+        const walk = (blocks) => blocks.map((b) => (b.type === 'paragraph' ? text(b) : [b.type, walk(b.children ?? [])]))
+        return JSON.stringify(walk((await readBody(widthPage)).doc.blocks))
+      }
+      const serverIs = async (page, expected) => {
+        let got = null
+        for (let i = 0; i < 60; i += 1) {
+          const text = (b) => (b.title ?? []).map((r) => r.plain_text ?? '').join('')
+          const walk = (blocks) => blocks.map((b) => (b.type === 'paragraph' ? text(b) : [b.type, walk(b.children ?? [])]))
+          got = JSON.stringify(walk((await readBody(page)).doc.blocks))
+          if (got === JSON.stringify(expected)) return [true, got]
+          await sleep(150)
+        }
+        return [false, got]
+      }
+
+      // ① 폭 — 손잡이를 오른쪽으로 끈다.
+      const before = [await colRect(cid.left), await colRect(cid.right)]
+      const handle = await evaluate(`(() => {
+        const h = document.querySelector('[data-block-id="${cid.right}"] > .blk-column-resize')
+        if (!h) return null
+        const r = h.getBoundingClientRect()
+        return { x: r.x + r.width / 2, y: r.y + Math.min(r.height / 2, 12) }
+      })()`)
+      check('전제 — 둘째 컬럼의 왼쪽 경계에 폭 손잡이가 있다', handle !== null)
+      if (handle) {
+        await move(handle.x, handle.y)
+        await press(handle.x, handle.y)
+        for (let i = 1; i <= 8; i += 1) {
+          await move(handle.x + 15 * i, handle.y, true)
+          await sleep(16)
+        }
+        await release(handle.x + 120, handle.y)
+      }
+      const widened = await waitFor(`(() => {
+        const l = document.querySelector('[data-block-id="${cid.left}"]')?.getBoundingClientRect()
+        const r = document.querySelector('[data-block-id="${cid.right}"]')?.getBoundingClientRect()
+        return !!l && !!r && l.width > ${before[0].w} + 60 && r.width < ${before[1].w} - 60
+      })()`, 5000)
+      check('★ 손잡이를 끌면 왼쪽 컬럼이 넓어진다', widened, JSON.stringify({ before, after: [await colRect(cid.left), await colRect(cid.right)] }))
+      let savedRatios = null
+      for (let i = 0; i < 60; i += 1) {
+        const list = (await readBody(widthPage)).doc.blocks.find((b) => b.type === 'column_list')
+        savedRatios = list?.children?.map((c) => c.format?.column_ratio ?? null) ?? null
+        if (savedRatios?.every((r) => typeof r === 'number')) break
+        await sleep(150)
+      }
+      check('★ 서버 — 컬럼마다 폭(column_ratio) · 왼쪽이 크고 합이 1',
+        !!savedRatios && savedRatios[0] > 0.55 && Math.abs(savedRatios[0] + savedRatios[1] - 1) < 1e-6, JSON.stringify(savedRatios))
+
+      // ② 위 블록을 둘째 컬럼의 블록 아래로 끌어 넣는다(차선).
+      const b = await line(cid.b)
+      await drag(cid.top, b.x + 5, b.y + b.h * 0.8, { drop: false })
+      const guide = await rect('.blk-drop-guide')
+      const right = await colRect(cid.right)
+      check('★ 끄는 동안 가이드가 둘째 컬럼 안에 선다(폭도 그 컬럼만큼)',
+        !!guide && guide.x >= right.x - 2 && guide.x + guide.w <= right.x + right.w + 2 && Math.abs(guide.y + 1 - (b.y + b.h)) < 6,
+        JSON.stringify({ guide, right, b }))
+      await release(b.x + 5, b.y + b.h * 0.8)
+      const [into, intoGot] = await serverIs(widthPage, [['column_list', [['column', ['왼쪽 a']], ['column', ['오른쪽 b', '위 블록']]]], '끝 블록'])
+      check('★ 놓으면 그 컬럼에 들어간다', into, intoGot)
+
+      // ③ 첫 컬럼의 마지막 블록을 끝 블록 아래로 끌어낸다 — 그 컬럼이 사라지고 하나 남은 컬럼 목록이 풀린다.
+      const end = await line(cid.end)
+      // 직전 끌기의 핸들이 남아 있다 — 이 블록 줄에 핸들이 맞춰진 뒤에 끈다(`drag` 는 핸들이 있기만 하면 그 자리를 읽는다).
+      const aLine = await line(cid.a)
+      await move(aLine.x + 30, aLine.y + aLine.h / 2)
+      check('전제 — 왼쪽 컬럼의 블록에 핸들이 선다', await waitFor(`(() => {
+        const g = document.querySelector('.blk-gutter-grip')?.getBoundingClientRect()
+        return !!g && Math.abs(g.y - ${aLine.y}) < 10
+      })()`, 3000))
+      await drag(cid.a, end.x + 5, end.y + end.h * 0.8)
+      const [unwrapped, unwrappedGot] = await serverIs(widthPage, ['오른쪽 b', '위 블록', '끝 블록', '왼쪽 a'])
+      check('★ 마지막 블록을 끌어낸 컬럼은 사라지고 · 하나 남은 컬럼 목록은 풀린다', unwrapped, unwrappedGot)
+
+      // ④ 빈 컬럼의 빈 블록에서 Backspace — 그 컬럼을 지운다.
+      const emptyPage = await newPage(`빈 컬럼 ${stamp}`)
+      const e = { list: randomUUID(), c1: randomUUID(), c2: randomUUID(), c3: randomUUID(), empty: randomUUID(), x: randomUUID(), y: randomUUID() }
+      await saveBody(emptyPage, { blocks: [{ id: e.list, type: 'column_list', title: [], properties: {}, format: {}, children: [
+        col(e.c1, [para(e.x, '엑스')]), col(e.c2, [para(e.empty, '')]), col(e.c3, [para(e.y, '와이')]),
+      ] }] })
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${emptyPage}` })
+      await waitFor(`!!document.querySelector('[data-block-id="${e.empty}"] p') && document.querySelector('.blk-editor')?.getAttribute('contenteditable') === 'true'`, 15000)
+      let inEmpty = false
+      for (let i = 0; i < 20 && !inEmpty; i += 1) {
+        await clickSelector(`[data-block-id="${e.empty}"] p`)
+        inEmpty = await waitFor(`document.querySelector('[data-block-id="${e.empty}"]')?.contains(window.getSelection()?.anchorNode ?? null)`, 500)
+      }
+      check('전제 — 빈 컬럼의 빈 블록에 캐럿이 섰다', inEmpty)
+      await key('Backspace')
+      const [removed, removedGot] = await serverIs(emptyPage, [['column_list', [['column', ['엑스']], ['column', ['와이']]]]])
+      check('★ 빈 컬럼의 빈 블록에서 Backspace — 그 컬럼이 사라진다', removed, removedGot)
+      await typeText('!')
+      const [caretAt, caretGot] = await serverIs(emptyPage, [['column_list', [['column', ['엑스!']], ['column', ['와이']]]]])
+      check('캐럿은 앞 컬럼의 끝이다', caretAt, caretGot)
+      await sleep(1000)
+    }
+
     section('전체')
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))
     const serverErrors = serverOutput.split('\n').filter((l) => l.includes('⨯'))
