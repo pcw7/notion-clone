@@ -9,13 +9,18 @@
  * 테스트할 수 없는 코드가 된다(`body-editor.tsx` 머리말과 같은 원칙).
  *
  * ──────────────────────────────────────────────────────────────────────
- * 드롭 존 — 정본의 3종 중 2종
+ * 드롭 존 — 정본의 3종
  * ──────────────────────────────────────────────────────────────────────
  *
  * 정본: *"드롭 존 3종: **형제 삽입(위/아래)**, **자식 삽입(들여쓴 위치)**,
- * **컬럼 생성(좌/우 측면)**."* 컬럼 생성은 F-01-12 이고 정본이 P1 으로 잘랐다.
+ * **컬럼 생성(좌/우 측면)**."* 컬럼 생성은 F-01-12 이고 Phase 2 1c-3 에서 들어왔다.
  *
- * 한 줄을 위아래 절반으로 나눈다.
+ * 포인터가 그 줄 안(위아래)이고 줄의 **오른쪽 끝 구역**(`SIDE_ZONE_PX`)이면 **옆**이다 — 그 블록 오른쪽에
+ * 새 컬럼(세로 가이드). 컬럼 밖의 블록은 컬럼 목록으로 감싸고(그 블록 | 끈 블록), 컬럼의 직속 블록은 그 컬럼
+ * 오른쪽에 컬럼을 더한다(컬럼 바로 안의 컬럼 목록은 없다). 왼쪽 옆은 두지 않는다 — 핸들이 왼쪽 여백에 있어
+ * 세로로 끄는 길이 늘 그곳을 지나므로 뜻하지 않은 컬럼이 생긴다.
+ *
+ * 그 밖에는 한 줄을 위아래 절반으로 나눈다.
  *   - 위 절반 → 그 블록 **앞**
  *   - 아래 절반 → 그 블록 **뒤**. 단 둘 중 하나면 **첫 자식 자리**다:
  *       ⓐ 그 블록에 **보이는 자식**이 있다 — 화면에서 바로 아랫줄이 첫 자식이므로
@@ -45,10 +50,12 @@
 import type { Node as PmNode } from '@tiptap/pm/model'
 import { TextSelection, type Command, type EditorState } from '@tiptap/pm/state'
 
+import { isColumnRatio } from '../block/types.ts'
+
 import { blockDeletionRanges, BlockSelection, isBlockSelection } from './block-selection.ts'
 import type { CommandDeps } from './commands.ts'
 import { newBlockId } from './pm-adapter.ts'
-import { tidyColumns } from './column-edit.ts'
+import { balancedRatios, columnListInfo, resolvedRatios, tidyColumns, writeRatios } from './column-edit.ts'
 import { canNestUnder, columnIdAt, describeContainer, findContainerById, isLayoutContainer, visibleBlocks } from './pm-blocks.ts'
 
 /** 그 블록의 부모가 배치의 틀(컬럼)인가 — 앞 · 뒤에 놓으면 그 틀의 직속 자식이 된다. */
@@ -61,6 +68,15 @@ function isLayoutContainerAt(doc: PmNode, pos: number): boolean {
 
 /** 그 자리의 블록이 컬럼 목록인가. */
 const isColumnListAt = (doc: PmNode, pos: number): boolean => doc.nodeAt(pos)?.firstChild?.type.name === 'column_list'
+
+/**
+ * 그 블록 옆에 놓아 컬럼을 만들 수 있는가(1c-3) — 컬럼 밖의 블록(감싼다) · 컬럼의 직속 블록(컬럼을 더한다). 컬럼 안의 더 깊은 블록은
+ * 아니다(`/2열` 과 같은 판결 — 컬럼 안에서는 컬럼을 만들지 않는다).
+ */
+const canSideAt = (doc: PmNode, pos: number): boolean => columnIdAt(doc.resolve(pos)) === null || isLayoutContainerAt(doc, pos)
+
+/** 옆 구역의 폭(px) — 줄의 오른쪽 끝에서 이만큼 안쪽부터 바깥까지가 "옆"이다(1c-3). */
+export const SIDE_ZONE_PX = 48
 import { blockSchema } from './schema.ts'
 
 // ── 드롭 후보 ─────────────────────────────────────────────────────────
@@ -79,6 +95,8 @@ export type LineInfo = {
    * 오르지 않으므로 화면은 포인터가 있는 차선의 줄만으로 자리를 찾는다(`resolveDrop` 의 이진 탐색 전제).
    */
   readonly lane: string | null
+  /** 옆에 놓아 컬럼을 만들 수 있는가(1c-3 · `canSideAt`). */
+  readonly canSide: boolean
 }
 
 /** 좌표까지 채운 한 줄. 좌표는 화면이 정한 기준(프레임) 상대값이다. */
@@ -88,6 +106,8 @@ export type BlockLine = LineInfo & {
   readonly bottom: number
   /** 내용이 시작하는 x. 들여쓰기 판정과 가이드의 시작점. */
   readonly contentLeft: number
+  /** 내용이 끝나는 x(블록 요소라 차선의 오른쪽 끝). 옆 구역과 세로 가이드의 자리(1c-3). */
+  readonly contentRight: number
 }
 
 /** 이 블록들(자손 포함)의 id. */
@@ -131,6 +151,7 @@ export function dropCandidates(
       canNest: canNestUnder(info),
       hasVisibleChildren: block.children.length > 0 && !block.collapsed,
       lane: columnIdAt(doc.resolve(block.pos)),
+      canSide: canSideAt(doc, block.pos),
     })
   }
   return out
@@ -139,8 +160,8 @@ export function dropCandidates(
 // ── 좌표 → 드롭 ───────────────────────────────────────────────────────
 
 export type DropTarget = {
-  /** 그 블록 앞 / 뒤(subtree 다음) / 첫 자식 자리. */
-  readonly kind: 'before' | 'after' | 'child'
+  /** 그 블록 앞 / 뒤(subtree 다음) / 첫 자식 자리 / 오른쪽 옆의 새 컬럼(1c-3). */
+  readonly kind: 'before' | 'after' | 'child' | 'side'
   readonly blockId: string
 }
 
@@ -158,12 +179,14 @@ export type DropHit = { readonly target: DropTarget; readonly line: BlockLine }
  * 바로 위·아래 줄이 잡히고, 결과는 제자리다.
  *
  * @param indent 한 단 들여쓰기의 폭(px). `.blk-group` 의 margin-left 와 같아야 한다.
+ * @param side 옆 구역을 볼 것인가 — 컬럼이 세로로 쌓이는 좁은 화면에서는 끈다(1c-3).
  */
 export function resolveDrop(
   lines: readonly BlockLine[],
   x: number,
   y: number,
   indent: number,
+  side = true,
 ): DropHit | null {
   if (lines.length === 0) return null
 
@@ -182,6 +205,11 @@ export function resolveDrop(
   const next = lines[lo + 1]
   if (next && distance(next) < distance(line)) line = next
 
+  // 옆 — 그 줄 안(위아래)이고 오른쪽 끝 구역이면 오른쪽 옆에 새 컬럼(1c-3). 줄 사이 틈에서는 아니다 — 위아래 자리와 헷갈린다.
+  if (side && line.canSide && y >= line.top && y <= line.bottom && x >= line.contentRight - SIDE_ZONE_PX) {
+    return { target: { kind: 'side', blockId: line.blockId }, line }
+  }
+
   if (y < (line.top + line.bottom) / 2) {
     return { target: { kind: 'before', blockId: line.blockId }, line }
   }
@@ -196,10 +224,14 @@ export function resolveDrop(
   return { target: { kind: 'after', blockId: line.blockId }, line }
 }
 
-/** 파란 가이드 라인의 자리. 항상 포인터가 있는 줄의 위 또는 아래 경계다. */
-export function dropGuide(hit: DropHit, indent: number): { top: number; left: number } {
+/**
+ * 파란 가이드 라인의 자리. 포인터가 있는 줄의 위 또는 아래 경계다 — 옆(1c-3)이면 그 줄의 오른쪽 끝에 선 **세로** 선(`height`).
+ */
+export function dropGuide(hit: DropHit, indent: number): { top: number; left: number; height?: number } {
   const { target, line } = hit
   switch (target.kind) {
+    case 'side':
+      return { top: line.top, left: line.contentRight - 2, height: line.bottom - line.top }
     case 'before':
       return { top: line.top, left: line.contentLeft }
     case 'after':
@@ -255,6 +287,10 @@ export function planDrop(
   }
 
   if (target.kind === 'child' && !canNestUnder(dest)) return { kind: 'invalid_target' }
+  // 옆(1c-3) — 컬럼 안의 깊은 블록 옆에는 만들지 않고, 컬럼 목록은 새 컬럼 안에 서지 못한다(컬럼 바로 안의 컬럼 목록 · 중첩 금지).
+  if (target.kind === 'side' && (!canSideAt(doc, dest.pos) || sources.some((s) => isColumnListAt(doc, s.pos)))) {
+    return { kind: 'invalid_target' }
+  }
   // 컬럼 바로 안에는 컬럼 목록을 두지 않는다(중첩 금지 · 정규화 ④) — 컬럼 목록을 고른 블록 선택을 컬럼 안으로 끌어 넣을 때.
   if (target.kind !== 'child' && isLayoutContainerAt(doc, dest.pos) && sources.some((s) => isColumnListAt(doc, s.pos))) {
     return { kind: 'invalid_target' }
@@ -273,11 +309,12 @@ export function planDrop(
  * ① 소스를 들어낸다 — `blockDeletionRanges` 가 빈 그룹을 그룹째 치운다
  *   (`blockGroup: blockContainer+`, 빈 채로 두면 `tr.delete()` 가 던진다)
  * ② **지운 문서에서** 목적지를 id 로 다시 찾는다
- * ③ 넣는다. 목적지에 자식 그룹이 없으면 그룹을 만들어 넣는다
+ * ③ 넣는다. 목적지에 자식 그룹이 없으면 그룹을 만들어 넣는다. 옆이면 새 컬럼에(`placeBeside`)
  */
 export function applyDrop(
   tr: EditorState['tr'],
   plan: Extract<DropPlan, { kind: 'drop' }>,
+  newId: () => string = newBlockId,
 ): string[] | null {
   const positions: number[] = []
   const moving: PmNode[] = []
@@ -313,9 +350,49 @@ export function applyDrop(
         )
       }
       break
+    case 'side':
+      placeBeside(tr, dest, moving, newId)
+      break
   }
 
   return moving.map((node) => String(node.attrs.blockId ?? ''))
+}
+
+/**
+ * 옆에 놓는다(1c-3) — 컬럼의 직속 블록이면 그 컬럼 오른쪽에 새 컬럼을 더하고, 아니면 그 블록을 컬럼 목록으로 감싼다(그 블록 | 옮긴
+ * 블록들). 틀의 id 는 새로 만든다(`/2열` 과 같다). 더할 때 폭이 다 있었으면 새 컬럼이 1/(n+1) 을 갖고 나머지는 비율대로 줄인다 —
+ * 하나라도 없었으면 쓰지 않는다(모두 같은 폭으로 읽힌다).
+ */
+function placeBeside(
+  tr: EditorState['tr'],
+  dest: { pos: number; node: PmNode },
+  moving: PmNode[],
+  newId: () => string,
+): void {
+  const { blockContainer: CONTAINER, blockGroup: GROUP, column: COLUMN, column_list: COLUMN_LIST } = blockSchema.nodes
+  const column = (children: PmNode[]): PmNode =>
+    CONTAINER!.create({ blockId: newId() }, [COLUMN!.create({ props: {}, format: {} }), GROUP!.create(null, children)])
+  const fresh = column(moving)
+
+  if (!isLayoutContainerAt(tr.doc, dest.pos)) {
+    const list = CONTAINER!.create({ blockId: newId() }, [COLUMN_LIST!.create({ props: {}, format: {} }), GROUP!.create(null, [column([dest.node]), fresh])])
+    tr.replaceWith(dest.pos, dest.pos + dest.node.nodeSize, list)
+    return
+  }
+
+  // 컬럼의 직속 블록 — 컬럼 목록 컨테이너 > 그룹 > 컬럼 컨테이너 > 그룹 > 이 블록.
+  const $dest = tr.doc.resolve(dest.pos)
+  const columnNode = $dest.node($dest.depth - 1)
+  const listId = String($dest.node($dest.depth - 3).attrs.blockId ?? '')
+  const before = columnListInfo(tr.doc, listId)
+  tr.insert($dest.before($dest.depth - 1) + columnNode.nodeSize, fresh)
+  const after = columnListInfo(tr.doc, listId)
+  if (before === null || after === null || !before.columns.every((c) => isColumnRatio(c.ratio))) return
+  const old = resolvedRatios(before.columns.map((c) => c.ratio))
+  const n = before.columns.length
+  const share = new Map(before.columns.map((c, i) => [c.id, (old[i]! * n) / (n + 1)]))
+  const freshId = String(fresh.attrs.blockId ?? '')
+  writeRatios(tr, after, balancedRatios(after.columns.map((c) => (c.id === freshId ? 1 / (n + 1) : share.get(c.id) ?? 1 / (n + 1)))))
 }
 
 /**
@@ -335,7 +412,7 @@ export function dropBlocksCommand(
     if (plan.kind !== 'drop') return false
 
     const tr = state.tr
-    const moved = applyDrop(tr, plan)
+    const moved = applyDrop(tr, plan, deps.newId ?? newBlockId)
     if (!moved) return false
     // 마지막 블록을 끌어낸 컬럼은 지운다(Phase 2 1c-2 · 하나 남으면 컬럼 목록을 푼다).
     tidyColumns(tr)

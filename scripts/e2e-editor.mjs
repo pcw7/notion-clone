@@ -10844,6 +10844,107 @@ async function main() {
       await sleep(1000)
     }
 
+    if (sectionIf('컬럼 — 옆에 놓아 만들기 · 경계를 넘는 선택 (Phase 2 1c-3 · F-01-12)')) {
+      // 블록을 다른 블록 줄의 오른쪽 끝으로 끌면 세로 가이드가 서고, 놓으면 두 블록이 나란한 컬럼이 된다. 컬럼 안 블록의 옆에 놓으면 그
+      // 목록에 컬럼이 더해진다. 첫 컬럼의 블록에서 Shift+↓ 는 옆 컬럼의 블록을 고르고(틀이 아니다), 위에서 내려오는 Shift+↓ 는 컬럼을
+      // 한 줄씩 지나 목록 뒤까지 간다. 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
+      const stamp = Date.now()
+      const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
+      const newPage = async (title) => (await (await fetch(pagesUrl, { method: 'POST', headers: authed, body: JSON.stringify({ title }) })).json()).page.id
+      const s = { top: randomUUID(), one: randomUUID(), two: randomUUID(), three: randomUUID(), end: randomUUID() }
+      const para = (id, text) => ({ id, type: 'paragraph', title: [textRun(text)], properties: {}, format: {}, children: [] })
+      const sidePage = await newPage(`옆에 놓기 ${stamp}`)
+      await saveBody(sidePage, { blocks: [para(s.top, '위 블록'), para(s.one, '첫 블록'), para(s.two, '둘째 블록'), para(s.three, '셋째 블록'), para(s.end, '끝 블록')] })
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${sidePage}` })
+      await waitFor(`!!document.querySelector('[data-block-id="${s.end}"] p') && document.querySelector('.blk-editor')?.getAttribute('contenteditable') === 'true'`, 15000)
+      const serverIs = async (expected) => {
+        let got = null
+        for (let i = 0; i < 60; i += 1) {
+          const text = (b) => (b.title ?? []).map((r) => r.plain_text ?? '').join('')
+          const walk = (blocks) => blocks.map((b) => (b.type === 'paragraph' ? text(b) : [b.type, walk(b.children ?? [])]))
+          got = JSON.stringify(walk((await readBody(sidePage)).doc.blocks))
+          if (got === JSON.stringify(expected)) return [true, got]
+          await sleep(150)
+        }
+        return [false, got]
+      }
+      // 직전 끌기의 핸들이 남아 있을 수 있다 — 그 블록 줄에 핸들이 맞춰진 뒤에 끈다(`drag` 는 핸들이 있기만 하면 그 자리를 읽는다).
+      const gripOn = async (id) => {
+        const l = await line(id)
+        await move(l.x + 30, l.y + l.h / 2)
+        return waitFor(`(() => {
+          const g = document.querySelector('.blk-gutter-grip')?.getBoundingClientRect()
+          return !!g && Math.abs(g.y - ${l.y}) < 10 && g.right <= ${l.x} + 2
+        })()`, 3000)
+      }
+      const selectedIds = () => evaluate(`[...document.querySelectorAll('.blk-selected')].map((e) => e.getAttribute('data-block-id'))`)
+
+      // ① 둘째 블록을 첫 블록 줄의 오른쪽 끝으로 — 세로 가이드 · 놓으면 나란한 두 컬럼.
+      const one = await line(s.one)
+      await gripOn(s.two)
+      await drag(s.two, one.x + one.w - 10, one.y + one.h / 2, { drop: false })
+      const guide = await evaluate(`(() => {
+        const g = document.querySelector('.blk-drop-guide')
+        if (!g) return null
+        const r = g.getBoundingClientRect()
+        return { x: r.x, y: r.y, w: r.width, h: r.height, o: g.getAttribute('data-orientation') }
+      })()`)
+      check('★ 블록 줄의 오른쪽 끝으로 끌면 세로 가이드가 그 줄의 오른쪽에 선다(줄의 높이만큼)',
+        !!guide && guide.o === 'vertical' && guide.w <= 4 && Math.abs(guide.h - one.h) < 3 && Math.abs(guide.y - one.y) < 3 && Math.abs(guide.x + 2 - (one.x + one.w)) < 4,
+        JSON.stringify({ guide, one }))
+      await release(one.x + one.w - 10, one.y + one.h / 2)
+      const [made, madeGot] = await serverIs(['위 블록', ['column_list', [['column', ['첫 블록']], ['column', ['둘째 블록']]]], '셋째 블록', '끝 블록'])
+      check('★ 놓으면 두 블록이 나란한 컬럼이 된다 — 서버', made, madeGot)
+      check('화면에서도 나란히 — 둘째 블록이 첫 블록의 오른쪽 · 같은 높이', await waitFor(`(() => {
+        const a = document.querySelector('[data-block-id="${s.one}"]')?.getBoundingClientRect()
+        const b = document.querySelector('[data-block-id="${s.two}"]')?.getBoundingClientRect()
+        return !!a && !!b && b.left > a.right && Math.abs(a.top - b.top) < 4
+      })()`, 5000))
+
+      // ② 셋째 블록을 첫 블록(첫 컬럼) 줄의 오른쪽 끝으로 — 첫 컬럼 오른쪽에 컬럼이 더해진다.
+      check('전제 — 셋째 블록에 핸들이 선다', await gripOn(s.three))
+      const one2 = await line(s.one)
+      await drag(s.three, one2.x + one2.w - 8, one2.y + one2.h / 2)
+      const [added, addedGot] = await serverIs(['위 블록', ['column_list', [['column', ['첫 블록']], ['column', ['셋째 블록']], ['column', ['둘째 블록']]]], '끝 블록'])
+      check('★ 컬럼 안 블록의 옆에 놓으면 그 컬럼 오른쪽에 컬럼이 더해진다', added, addedGot)
+
+      // ③ 첫 컬럼의 블록에서 Shift+↓ — 옆 컬럼의 블록을 고른다(컬럼 틀이 아니다).
+      let inOne = false
+      for (let i = 0; i < 20 && !inOne; i += 1) {
+        await clickSelector(`[data-block-id="${s.one}"] p`)
+        inOne = await waitFor(`document.querySelector('[data-block-id="${s.one}"]')?.contains(window.getSelection()?.anchorNode ?? null)`, 500)
+      }
+      await key('Escape')
+      check('전제 — Esc 로 첫 블록이 골라졌다', await waitFor(`(() => { const ids = [...document.querySelectorAll('.blk-selected')].map((e) => e.getAttribute('data-block-id')); return ids.length === 1 && ids[0] === '${s.one}' })()`, 3000),
+        JSON.stringify(await selectedIds()))
+      await key('ArrowDown', SHIFT)
+      await sleep(200)
+      const across = await selectedIds()
+      check('★ 첫 컬럼에서 Shift+↓ — 옆 컬럼의 블록이 골라진다(컬럼 틀이 아니다)', same(across, [s.one, s.three]), JSON.stringify(across))
+      await key('ArrowDown', SHIFT)
+      await sleep(200)
+      const across2 = await selectedIds()
+      check('한 번 더 — 셋째 컬럼의 블록까지', same(across2, [s.one, s.three, s.two]), JSON.stringify(across2))
+
+      // ④ 위 블록에서 Shift+↓ 를 네 번 — 컬럼을 한 줄씩 지나 목록 뒤의 블록까지(목록은 통째로 덮이면 목록째).
+      let inTop = false
+      for (let i = 0; i < 20 && !inTop; i += 1) {
+        await clickSelector(`[data-block-id="${s.top}"] p`)
+        inTop = await waitFor(`document.querySelector('[data-block-id="${s.top}"]')?.contains(window.getSelection()?.anchorNode ?? null)`, 500)
+      }
+      await key('Escape')
+      await waitFor(`document.querySelectorAll('.blk-selected').length === 1`, 3000)
+      for (let i = 0; i < 4; i += 1) {
+        await key('ArrowDown', SHIFT)
+        await sleep(150)
+      }
+      const down = await selectedIds()
+      check('★ 위에서 Shift+↓ 네 번 — 컬럼을 지나 목록 뒤까지(위 · 컬럼 목록 · 끝)',
+        down.length === 3 && down[0] === s.top && down[2] === s.end && !Object.values(s).includes(down[1]), JSON.stringify(down))
+      await key('Escape')
+      await sleep(1000)
+    }
+
     section('전체')
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))
     const serverErrors = serverOutput.split('\n').filter((l) => l.includes('⨯'))

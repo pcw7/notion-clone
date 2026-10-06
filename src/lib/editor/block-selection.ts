@@ -67,9 +67,8 @@ import type { BlockType } from '../block/types.ts'
 import { applyTurnInto, type CommandDeps } from './commands.ts'
 import { newBlockId } from './pm-adapter.ts'
 import { tidyColumns } from './column-edit.ts'
-import { containerAt, findContainerById, visibleBlocks, type VisibleBlock } from './pm-blocks.ts'
+import { containerAt, findContainerById, isLayoutContainer, visibleBlocks } from './pm-blocks.ts'
 import { blockSchema, PAGE_REF_NODE } from './schema.ts'
-import type { VisibleEntry, VisibleIndex } from './tree.ts'
 
 const CONTAINER = 'blockContainer'
 const GROUP = 'blockGroup'
@@ -95,6 +94,11 @@ export function pointsAtContainer($pos: ResolvedPos): boolean {
  * 경계는 **컨테이너 앞 위치**이고, 경계에서 시작하는 컨테이너는 포함된다.
  * 범위에 걸치기만 한 조상(경계보다 앞에서 시작하는 컨테이너)은 담지 않고
  * 안으로 들어간다 — 그러지 않으면 자식 하나를 고르려 할 때 부모가 통째로 잡힌다.
+ *
+ * 배치의 틀(Phase 2 1c-3)은 화면의 줄이 아니다 — **컬럼은 뿌리가 되지 않고 안으로 들어간다**(컬럼만 고르는
+ * 선택은 없다 · 핸들도 없다). **컬럼 목록은 범위가 통째로 덮을 때**(또는 경계 자신일 때)만 뿌리다 — 걸치기만
+ * 하면 안으로 들어간다. 그러지 않으면 한 컬럼의 블록에서 옆 컬럼의 블록까지 고를 때 옆 컬럼이(위에서 컬럼 안까지
+ * 고를 때 컬럼 목록이) 통째로 잡힌다. 한 점짜리 경계가 컬럼 자신이면 그 컬럼을 담는다 — 빈 선택으로 던지지 않게.
  */
 export function rootsBetween(doc: PmNode, a: number, b: number): number[] {
   const from = Math.min(a, b)
@@ -109,11 +113,18 @@ export function rootsBetween(doc: PmNode, a: number, b: number): number[] {
     // blockContent(paragraph·heading…) 안에는 컨테이너가 없다.
     if (name !== CONTAINER) return false
     if (pos < from || pos > to) return true
+    if (isLayoutContainer(node) && !(from === to) && !wholeColumnList(node, pos, from, to)) return true
     roots.push(pos)
     return false
   })
 
   return roots
+}
+
+/** 이 틀이 범위가 통째로 덮은(또는 경계 자신인) 컬럼 목록인가 — 그때만 뿌리다(`rootsBetween`). */
+function wholeColumnList(node: PmNode, pos: number, from: number, to: number): boolean {
+  if (node.firstChild?.type.name !== 'column_list') return false
+  return pos === from || pos === to || pos + node.nodeSize <= to
 }
 
 /** 이 컨테이너(자손 포함)가 하위 페이지 참조를 품고 있는가. */
@@ -419,29 +430,6 @@ export function replaceBlockSelection(
 // ── 화면 순서 위의 이동 ───────────────────────────────────────────────
 
 /**
- * 이 블록의 **화면상 자손을 건너뛴** 다음 블록.
- *
- * 선택된 블록의 자손은 이미 선택에 딸려 있다. 건너뛰지 않으면 `Shift+↓` 를
- * 눌러도 하이라이트가 그대로여서 "키가 안 먹는다"로 보인다.
- * 평탄화가 전위 순회라 자손은 바로 뒤에 더 깊은 depth 로 붙어 있다.
- */
-function afterSubtree(
-  index: VisibleIndex<VisibleBlock>,
-  id: string,
-): VisibleEntry<VisibleBlock> | null {
-  const start = index.positionOf(id)
-  if (start < 0) return null
-  const depth = index.order[start].depth
-  let i = start + 1
-  while (i < index.order.length && index.order[i].depth > depth) i += 1
-  return i < index.order.length ? index.order[i] : null
-}
-
-function idAt(doc: PmNode, pos: number): string {
-  return String(doc.nodeAt(pos)?.attrs.blockId ?? '')
-}
-
-/**
  * `Shift+↑↓` 가 head 를 옮길 자리.
  *
  * 경계 두 개(anchor·head)만으로 확장과 축소를 가른다: **head 가 anchor 보다
@@ -450,6 +438,11 @@ function idAt(doc: PmNode, pos: number): string {
  * 축소·확장 모두 head 를 **선택의 가장자리 루트** 기준으로 옮긴다(head 자신이
  * 아니라). head 는 shift+클릭으로 루트가 아닌 블록을 가리킬 수 있고, 그때
  * head 를 기준으로 한 칸 옮기면 같은 선택이 다시 나와 키가 먹지 않는다.
+ *
+ * 다음 자리는 화면 순서(전위 순회 = 문서 순서)의 줄 중에서 **위치로** 찾는다 — 아래로 넓히면 마지막 루트의
+ * subtree **끝 이후의** 첫 줄(자손은 이미 선택에 딸려 있다 — 건너뛰지 않으면 "키가 안 먹는다"), 위로 넓히면 첫
+ * 루트 **앞의** 마지막 줄. 줄의 id 로 찾지 않는 것은 루트가 화면의 줄이 아닐 수 있어서다 — 통째로 덮인 컬럼
+ * 목록(1c-3)은 줄 목록에 없어 id 로 찾으면 그 자리에서 멈췄다.
  */
 export function nextSelectionEdge(
   doc: PmNode,
@@ -458,21 +451,20 @@ export function nextSelectionEdge(
   isCollapsed: (blockId: string) => boolean,
 ): number | null {
   const roots = selection.rootPositions
-  const index = visibleBlocks(doc, isCollapsed)
-  const firstId = idAt(doc, roots[0])
-  const lastId = idAt(doc, roots[roots.length - 1])
+  const order = visibleBlocks(doc, isCollapsed).order
+  const first = roots[0]
+  const last = roots[roots.length - 1]
+  const lastEnd = last + (doc.nodeAt(last)?.nodeSize ?? 0)
 
   const shrinking =
     direction === 1
       ? selection.$headBlock.pos < selection.$anchorBlock.pos
       : selection.$headBlock.pos > selection.$anchorBlock.pos
 
-  let entry: VisibleEntry<VisibleBlock> | null
-  if (direction === 1) {
-    entry = shrinking ? index.next(firstId) : afterSubtree(index, lastId)
-  } else {
-    entry = index.previous(shrinking ? lastId : firstId)
-  }
+  const after = (pos: number, inclusive: boolean) =>
+    order.find((e) => (inclusive ? e.node.pos >= pos : e.node.pos > pos)) ?? null
+  const before = (pos: number) => order.findLast((e) => e.node.pos < pos) ?? null
+  const entry = direction === 1 ? (shrinking ? after(first, false) : after(lastEnd, true)) : before(shrinking ? last : first)
   return entry === null ? null : entry.node.pos
 }
 
