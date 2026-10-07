@@ -1419,7 +1419,7 @@ CREATE TABLE data_source (                    -- 스키마와 행 집합의 소�
   schema_version        bigint NOT NULL DEFAULT 1,              -- stale 스키마 쓰기 차단
   change_seq            bigint NOT NULL DEFAULT 0,              -- [X-5] ds 채널 gap 감지 축
   unique_id_counter     bigint NOT NULL DEFAULT 0,              -- UPDATE...RETURNING 으로만 발급
-  unique_id_prefix      text NULL,
+  unique_id_prefix      text NULL,                              -- [보강] 대문자 영숫자 2~7자 · 카운터와 함께 data source 의 것(0050 · 아래 [보강] 고유 ID)
   -- [보강] 수명주기(0043 · 8e-3a) — 블록과 같은 세 값 · 같은 시각 열. X-3 은 블록의 축이고 data source 는 블록이 아니다(아래 [보강] ⑩)
   lifecycle             block_lifecycle NOT NULL DEFAULT 'live',
   trashed_at timestamptz NULL, trashed_by uuid NULL REFERENCES "user"(id),
@@ -1519,7 +1519,7 @@ CREATE TABLE page (                           -- DB 행 전용 1:1 확장. 일�
   id             uuid PRIMARY KEY REFERENCES block(id) ON DELETE CASCADE,   -- [X-2] 확정
   data_source_id uuid NOT NULL REFERENCES data_source(id) ON DELETE CASCADE,-- block.parent_id 의 파생 캐시
   is_template    boolean NOT NULL DEFAULT false,
-  unique_seq     bigint NULL,
+  unique_seq     bigint NULL,                  -- [보강] ID 프로퍼티가 살아 있을 때 발급 · 템플릿은 NULL(U2 · 0050 · [보강] 고유 ID)
   origin         origin_kind NOT NULL DEFAULT 'native',   -- <15 R1> external -> native 승격 가능
   -- 파생 읽기 모델. 정본 아님. 애플리케이션 직접 쓰기 금지
   properties_cache jsonb NOT NULL DEFAULT '{}',           -- {"<property_id>": <typed value>}
@@ -1660,6 +1660,36 @@ CREATE INDEX ON derived_value (property_id, num_value) WHERE NOT stale AND num_v
 - 함수는 11종(03 의 현실적 대안): `show_original` · `count` · `count_values`(모든 타입) / `sum` · `average` · `min` ·
   `max`(number) / `checked` · `percent_checked`(checkbox) / `earliest_date` · `latest_date`(date — 시작일만 본다).
   대상 타입에 맞지 않는 함수는 만들 때 거부하고, 읽을 때(타입이 나중에 바뀌었다면) `show_original` 로 접는다.
+
+**[보강] 고유 ID(`unique_id`) — 번호는 행에, 접두사는 data source 에** ⟨DB 심화 2a-1조각 · F-03-09 / 마이그레이션 0050⟩
+
+0013 이 자리(`data_source.unique_id_counter` · `unique_id_prefix` · `page.unique_seq` · `ux_page_unique_seq`)만 두고 **언제
+번호를 주는지**를 정하지 않았다. 03 F-03-09 의 데이터 모델은 접두사를 `property.config` 에 두라고 했지만 이 문서가 이긴다 —
+접두사는 `data_source.unique_id_prefix` 다(번호의 카운터가 data source 에 있고, 아래 ① 로 ID 프로퍼티는 하나뿐이다).
+
+- ① **ID 프로퍼티는 data source 하나에 하나**(불변식 U1 · `ux_property_unique_id_one` — 살아 있는 것만). 번호의 주인은
+  data source 이고 프로퍼티는 그것을 **보여 주는 칸**이다 — 둘을 두면 같은 번호를 두 칸에 그릴 뿐이다.
+- ② **번호는 ID 프로퍼티가 살아 있을 때만 준다.** 행을 만드는 명령(`createRowIn` — 행을 만드는 유일한 길)이 같은 트랜잭션에서
+  `UPDATE data_source SET unique_id_counter = unique_id_counter + 1 … RETURNING` 으로 받는다(원자적 카운터 · `MAX(seq)+1` 금지).
+  ID 프로퍼티가 있는지는 **그 문장 안에서** 묻는다 — 행 삽입의 FK 검사가 data source 줄에 `FOR KEY SHARE` 를 잡고, ID
+  프로퍼티를 더하는 명령은 같은 줄을 `FOR UPDATE` 로 잡으므로 둘 중 하나가 먼저 끝난 뒤에 다른 쪽이 본다(번호가 빠진 행이
+  생기지 않는다).
+- ③ **ID 프로퍼티를 더하면(또는 되살리면) 번호가 없는 행을 채운다** — 만든 순서(`block.created_at` · 같으면 행 순서)대로, **휴지통의 행도**
+  (03: *"assigned to every page, including deleted pages"*), 카운터를 그 개수만큼 한 번에 올린다(배치 예약).
+- ④ **템플릿은 번호를 받지 않는다**(불변식 U2 · `ck_page_template_no_unique_seq`) — 템플릿은 목록에 없는 행이다(R1). 템플릿으로
+  만든 행은 보통 행이라 받는다.
+- ⑤ **번호는 바뀌지 않고 다시 쓰이지 않는다.** 행이 휴지통에 가도 · 영구 삭제돼도 카운터는 내려가지 않는다(구멍이 남는다).
+  ID 프로퍼티를 지워도 번호는 행(`page.unique_seq`)에 남는다 — 다시 더하면 **옛 번호가 그대로** 보이고 그 사이에 만든 행만
+  새 번호를 받는다(03 의 클론 권고). 같은 줄이 복원에도 맞다: 지운 ID 프로퍼티를 되살리면 ③ 이 돈다.
+- ⑥ **값은 셀이 아니다**(불변식 C1 그대로) — `page.unique_seq` 를 행의 읽기 모델에 투영한다(`uniqueSeq`). 표시는
+  `접두사-번호`, 접두사가 없으면 번호만. 쓰는 길이 없다(읽기 전용).
+- ⑦ **접두사는 영숫자 2~7자, 대문자로 저장한다**(`ck_data_source_unique_id_prefix` — 03 이 두 2차 출처로 교차 확인한 길이).
+  대소문자를 가리지 않고 받아 대문자로 바꾼다. 비울 수 있다(NULL).
+- ⑧ **필터 · 정렬은 `page.unique_seq` 에서 바로 한다** — 사이드카가 없는 첫 셀 밖 타입이다(rollup 과 달리 값이 행에 저장돼
+  있으므로 D1 에 걸리지 않는다). 연산자는 숫자의 비교 여섯이고 비어 있음 · 비어 있지 않음은 없다(번호가 없는 행이 목록에 없다 —
+  템플릿뿐이다).
+- 미룬 것: **워크스페이스 안에서 접두사 유일**(03 — 단축 주소 `TASK-123` 의 전제)과 단축 주소 라우팅은 함께 들인다(03 의 클론
+  대안이 P2 로 미뤘다). 그 전에는 접두사가 겹쳐도 깨지는 것이 없다.
 
 **[보강] `status_group` — `select_option.group_id` 가 가리키는 표** ⟨보드 4c-1조각 / 마이그레이션 0023⟩
 

@@ -70,7 +70,19 @@ export type RollupColumn = ColumnBase & {
   }
 }
 
-export type ViewColumn = CellColumn | RelationColumn | RollupColumn
+/**
+ * 고유 ID 컬럼(2a-1 · F-03-09). **값이 셀이 아니라 행에 있다** — 행의 `uniqueSeq`(`page.unique_seq`). 접두사는 표 전체에
+ * 하나라(data source 의 것 · 정본 §3.5 [보강] 고유 ID ⑦) 행마다 싣지 않고 여기 싣는다. 그리는 것은 `formatUniqueId`.
+ *
+ * 셀 컬럼이 아니므로 셀 편집 · 셀 필터 축에 넘어가지 않는다(`isCellColumn` 이 거른다) — 필터 · 정렬은 `filter.ts` 가 이 타입을
+ * 따로 안다.
+ */
+export type UniqueIdColumn = ColumnBase & {
+  readonly type: 'unique_id'
+  readonly uniqueId: { readonly prefix: string | null }
+}
+
+export type ViewColumn = CellColumn | RelationColumn | RollupColumn | UniqueIdColumn
 
 /**
  * 저장된 config → 컬럼의 relation 부분. relation 의 모양이 아니면(손상) null — 그 컬럼은 그리지 않는다.

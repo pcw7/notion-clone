@@ -11,7 +11,7 @@
  * 읽기는 관대하게, 쓰기는 서버와 같은 함수로
  * ──────────────────────────────────────────────────────────────────────
  *
- * `properties_cache` 에서 온 값은 계약을 어겼을 수 있다 — 타입 변환(F-03-09)
+ * `properties_cache` 에서 온 값은 계약을 어겼을 수 있다 — 타입 변환(F-03-14)
  * 이전의 옛 셀은 봉투의 `type` 이 프로퍼티와 다르다. 그런 셀 하나 때문에 표가
  * 그려지지 않으면 안 되므로 **빈 값으로 읽는다**(`readTitle` 과 같은 태도).
  *
@@ -231,5 +231,8 @@ export function defaultColumnWidth(type: AppPropertyType): number {
       return 160
     case 'checkbox':
       return 90
+    // 고유 ID 는 `TASK-123` 정도다(접두사 7자까지 · 2a-1).
+    case 'unique_id':
+      return 120
   }
 }

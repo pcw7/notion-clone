@@ -58,6 +58,8 @@ export type QueriedRow = {
   readonly icon: PageIcon | null
   readonly orderKey: string
   readonly properties: Readonly<Record<string, unknown>>
+  /** 고유 ID 의 번호(`page.unique_seq` · 2a-1 — `RowSummary.uniqueSeq` 와 같은 뜻). */
+  readonly uniqueSeq: number | null
   readonly createdAt: Date
   readonly lastEditedAt: Date
   readonly version: string
@@ -96,6 +98,8 @@ export type RowRow = {
   properties_cache: Record<string, unknown> | null
   properties: { title?: unknown } | null
   page_icon: unknown
+  /** bigint 라 pg 가 문자열로 준다. */
+  unique_seq: string | null
   created_at: Date
   last_edited_at: Date
   version: string
@@ -181,7 +185,7 @@ export async function queryRows(
 
     const rows = await tx.query<RowRow>(
       `SELECT b.id, b.order_key, p.properties_cache, b.properties, b.format -> 'page_icon' AS page_icon,
-              b.created_at, b.last_edited_at, b.version${sortColumns}
+              p.unique_seq, b.created_at, b.last_edited_at, b.version${sortColumns}
          FROM page p
          JOIN block b ON b.id = p.id
         WHERE ${where.join(' AND ')}
@@ -222,6 +226,7 @@ export function toQueriedRow(row: RowRow): QueriedRow {
     icon: readPageIcon(row.page_icon),
     orderKey: row.order_key,
     properties: row.properties_cache ?? {},
+    uniqueSeq: row.unique_seq === null || row.unique_seq === undefined ? null : Number(row.unique_seq),
     createdAt: row.created_at,
     lastEditedAt: row.last_edited_at,
     version: row.version,

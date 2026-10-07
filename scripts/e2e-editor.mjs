@@ -11424,6 +11424,57 @@ async function main() {
       await sleep(500)
     }
 
+    if (sectionIf('고유 ID (2a-1 · F-03-09)')) {
+      // ID 속성을 더하면 있던 행이 만든 순서대로 번호를 받고, 그 뒤의 행은 다음 번호다. 표의 칸은 `접두사-번호` 를 그리고 읽기
+      // 전용이다(Enter 로 편집이 열리지 않는다). 접두사를 바꾸면 표시가 따라온다. 자기 데이터를 스스로 만든다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `ID 표 ${stamp}` })).body.database
+      const titleProp = (await api('GET', `/views/${db.defaultViewId}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const titleCell = (text) => ({ propertyId: titleProp, value: { type: 'title', title: [textRun(text)] } })
+      await api('POST', `/views/${db.defaultViewId}/rows`, { cells: [titleCell('첫 행')] })
+      await api('POST', `/views/${db.defaultViewId}/rows`, { cells: [titleCell('둘째 행')] })
+
+      const added = await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: 'ID', type: 'unique_id', prefix: 'tk' })
+      check('★ ID 속성을 더한다 — 201 · 접두사는 대문자로', added.status === 201 && added.body?.property?.type === 'unique_id' && added.body?.property?.prefix === 'TK',
+        JSON.stringify({ status: added.status, property: added.body?.property }))
+      const idProp = added.body?.property?.id
+      const second = await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '둘째 ID', type: 'unique_id' })
+      check('ID 속성은 표에 하나뿐이다 — 409 unique_id_exists', second.status === 409 && second.body?.error === 'unique_id_exists', JSON.stringify(second))
+      const badPrefix = await api('PATCH', `/data-sources/${db.dataSourceId}/properties/${idProp}`, { prefix: 'TA-SK' })
+      check('틀린 접두사는 400 invalid_config', badPrefix.status === 400 && badPrefix.body?.error === 'invalid_config', JSON.stringify(badPrefix))
+      const third = await api('POST', `/views/${db.defaultViewId}/rows`, { cells: [titleCell('셋째 행')] })
+      check('★ 그 뒤로 만든 행은 다음 번호를 받는다 — 응답에 실린다', third.body?.row?.uniqueSeq === 3, JSON.stringify(third.body?.row))
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      const ids = () => evaluate(`[...document.querySelectorAll('[data-testid="db-unique-id"]')].map((e) => e.textContent)`)
+      await waitFor(`document.querySelectorAll('[data-testid="db-unique-id"]').length === 3`, 15000)
+      check('★ 표의 칸은 접두사-번호 — 있던 행은 만든 순서대로', JSON.stringify(await ids()) === JSON.stringify(['TK-1', 'TK-2', 'TK-3']), JSON.stringify(await ids()))
+      const cell = `td[data-property-id="${idProp}"]`
+      check('ID 칸은 읽기 전용이다(aria-readonly)', await evaluate(`document.querySelector('${cell}')?.getAttribute('aria-readonly') === 'true'`))
+      const box = await rect(cell)
+      if (box) {
+        await click(box.x + box.w / 2, box.y + box.h / 2)
+        await waitFor(`document.querySelector('${cell}')?.getAttribute('aria-selected') === 'true'`, 5000)
+        await key('Enter')
+        await sleep(300)
+        check('★ ID 칸에서 Enter 를 눌러도 편집이 열리지 않는다 — 고를 수만 있다',
+          await evaluate(`!document.querySelector('[data-testid="db-cell-input"]') && !document.querySelector('td[data-editing]') && document.querySelector('${cell}')?.getAttribute('aria-selected') === 'true'`))
+      } else check('ID 칸을 찾는다', false)
+
+      const renamed = await api('PATCH', `/data-sources/${db.dataSourceId}/properties/${idProp}`, { prefix: 'bug' })
+      check('접두사를 바꾼다 — 200', renamed.status === 200, String(renamed.status))
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      await waitFor(`document.querySelectorAll('[data-testid="db-unique-id"]').length === 3 && document.querySelector('[data-testid="db-unique-id"]')?.textContent === 'BUG-1'`, 15000)
+      check('★ 접두사를 바꾸면 표시가 따라온다 — 번호는 그대로', JSON.stringify(await ids()) === JSON.stringify(['BUG-1', 'BUG-2', 'BUG-3']), JSON.stringify(await ids()))
+      await sleep(500)
+    }
+
     section('전체')
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))
     const serverErrors = serverOutput.split('\n').filter((l) => l.includes('⨯'))

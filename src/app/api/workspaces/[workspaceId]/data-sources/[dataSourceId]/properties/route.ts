@@ -11,8 +11,7 @@
 
 import { isUuid } from '@/lib/ids'
 import { readJsonBody, requireWorkspaceSession } from '@/lib/auth/route-session'
-import { addProperty, getSchema } from '@/lib/database/property'
-import type { MvpPropertyType } from '@/lib/database/property-types'
+import { addProperty, getSchema, type AddPropertyInput } from '@/lib/database/property'
 import { failureResponse, propertyFailureStatus } from '@/lib/database/http'
 
 type Ctx = RouteContext<'/api/workspaces/[workspaceId]/data-sources/[dataSourceId]/properties'>
@@ -42,14 +41,15 @@ export async function POST(request: Request, ctx: Ctx): Promise<Response> {
 
   const parsed = await readJsonBody(request)
   if (!parsed.ok) return parsed.response
-  const body = (parsed.body ?? {}) as { name?: unknown; type?: unknown; expectedVersion?: unknown }
+  const body = (parsed.body ?? {}) as { name?: unknown; type?: unknown; prefix?: unknown; expectedVersion?: unknown }
 
   // 타입이 틀린 값은 그대로 넘긴다 — 무엇이 MVP 타입인지는 라이브러리가 판정한다
   // (`title` 은 `title_immutable`, 모르는 값은 `unsupported_type`). 여기서 거르면
-  // 판정이 두 곳이 된다.
+  // 판정이 두 곳이 된다. 고유 ID(`unique_id` · 2a-1)는 `prefix` 를 함께 받는다 — 표에 하나뿐이다(`unique_id_exists` · 409).
   const added = await addProperty(session.ctx, dataSourceId, {
     name: typeof body.name === 'string' ? body.name : '',
-    ...(body.type !== undefined ? { type: body.type as MvpPropertyType } : {}),
+    ...(body.type !== undefined ? { type: body.type as AddPropertyInput['type'] } : {}),
+    ...('prefix' in body ? { prefix: body.prefix } : {}),
     ...(typeof body.expectedVersion === 'string' ? { expectedVersion: body.expectedVersion } : {}),
   })
   if (!added.ok) return failureResponse(propertyFailureStatus(added.reason), added)

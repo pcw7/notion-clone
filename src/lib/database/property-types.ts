@@ -17,7 +17,7 @@
  * `{"type":"select","select":{"id":"opt_…"}}` 다. 즉 **봉투에 `type` 이 들어간다.**
  *
  * 페이로드만 저장하면 `property.type` 과 셀을 항상 함께 읽어야 하고, 타입 변환
- * (F-03-09)이 일어나는 순간 "프로퍼티는 number 인데 셀에는 옛 문자열이 있는"
+ * (F-03-14)이 일어나는 순간 "프로퍼티는 number 인데 셀에는 옛 문자열이 있는"
  * 상태를 구분할 수 없다. 봉투가 있으면 그 셀이 **무엇이었는지**가 남는다.
  *
  * ──────────────────────────────────────────────────────────────────────
@@ -99,8 +99,22 @@ export type EdgePropertyType = (typeof EDGE_PROPERTY_TYPES)[number]
 export const DERIVED_PROPERTY_TYPES = ['rollup'] as const
 export type DerivedPropertyType = (typeof DERIVED_PROPERTY_TYPES)[number]
 
-/** 앱이 만드는 프로퍼티 타입 전부 — 셀 타입 + 엣지 타입 + 파생 타입. 스키마(`PropertySummary.type`)가 이것이다. */
-export const APP_PROPERTY_TYPES = [...MVP_PROPERTY_TYPES, ...EDGE_PROPERTY_TYPES, ...DERIVED_PROPERTY_TYPES] as const
+/**
+ * **시스템 타입** — 값을 사람이 쓰지 않고 시스템이 행에 매기는 타입 (고유 ID 2a-1 · 정본 §3.5 [보강] 고유 ID).
+ *
+ * 값은 셀이 아니라 행(`page.unique_seq`)에 있다(불변식 C1). 그래서 셀 타입 밖에 두고 `prepareCells` 가 거부한다 — rollup 과
+ * 같다. rollup 과 다른 것: 값이 **저장돼 있어** 필터 · 정렬이 된다(`filter.ts` 가 `page.unique_seq` 를 바로 본다).
+ */
+export const SYSTEM_PROPERTY_TYPES = ['unique_id'] as const
+export type SystemPropertyType = (typeof SYSTEM_PROPERTY_TYPES)[number]
+
+/** 앱이 만드는 프로퍼티 타입 전부 — 셀 타입 + 엣지 타입 + 파생 타입 + 시스템 타입. 스키마(`PropertySummary.type`)가 이것이다. */
+export const APP_PROPERTY_TYPES = [
+  ...MVP_PROPERTY_TYPES,
+  ...EDGE_PROPERTY_TYPES,
+  ...DERIVED_PROPERTY_TYPES,
+  ...SYSTEM_PROPERTY_TYPES,
+] as const
 export type AppPropertyType = (typeof APP_PROPERTY_TYPES)[number]
 
 export function isAppPropertyType(t: unknown): t is AppPropertyType {

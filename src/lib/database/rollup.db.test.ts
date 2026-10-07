@@ -564,7 +564,7 @@ describe('⑤ 설정이 끊겨도 rollup 은 남는다', () => {
     const task = await w.tasks.row('T', { [w.hours]: num(5) })
     unwrap(await linkRows(fx.owner.ctx, project, w.back, { add: [task] }))
 
-    // 만들 때의 검사를 지나서 저장소가 어긋난 상태 — 타입 변환(F-03-09)이 들어오면 실제로 생긴다.
+    // 만들 때의 검사를 지나서 저장소가 어긋난 상태 — 타입 변환(F-03-14)이 들어오면 실제로 생긴다.
     const setConfig = (id: string, config: unknown) =>
       withTransaction((tx) => tx.query(`UPDATE property SET config = $2::jsonb WHERE id = $1`, [id, JSON.stringify(config)]))
     await setConfig(folded, { relation_property_id: w.back, target_property_id: w.tasks.titleId, function: 'sum' })

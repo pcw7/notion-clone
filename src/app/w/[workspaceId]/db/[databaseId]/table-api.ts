@@ -65,6 +65,9 @@ function messageOf(status: number, body: ErrorBody): string {
       return '그룹 설정을 확인하세요.'
     case 'invalid_config':
       return '속성 설정을 확인하세요.'
+    // ── 고유 ID (2a-1) ──
+    case 'unique_id_exists':
+      return 'ID 속성은 표에 하나만 둘 수 있습니다.'
     // ── relation (5b-2) ──
     case 'invalid_target':
       return '대상 표를 찾을 수 없습니다. 그사이 지워졌거나 볼 수 없는 표입니다.'

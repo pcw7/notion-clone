@@ -19,8 +19,7 @@ import assert from 'node:assert/strict'
 
 import { probeDatabase } from '../testing/db-fixtures.ts'
 import { withReadTransaction } from '../db/tx.ts'
-import { MVP_PROPERTY_TYPES, type MvpPropertyType } from './property-types.ts'
-import { operatorArity, operatorsFor } from './filter.ts'
+import { FILTERABLE_TYPES, operatorArity, operatorsFor } from './filter.ts'
 import { readOperatorCatalog, type OperatorCatalogEntry } from './operator-catalog.ts'
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'
@@ -60,7 +59,8 @@ const catalogFor = (type: string): OperatorCatalogEntry[] =>
   catalog.filter((r) => r.propertyType === type)
 
 describe('★ 카탈로그와 컴파일러가 같은 연산자를 안다', () => {
-  for (const type of MVP_PROPERTY_TYPES) {
+  // 셀 타입 + 고유 ID(2a-1 — 행의 열을 바로 본다). 거를 수 있는 타입이 전부 여기 걸린다.
+  for (const type of FILTERABLE_TYPES) {
     test(`${type} — 연산자 집합이 같다`, async (t) => {
       if (skipReason) return t.skip(skipReason)
       const fromDb = catalogFor(type).map((r) => r.operator).sort()
@@ -78,7 +78,7 @@ describe('★ 카탈로그와 컴파일러가 같은 연산자를 안다', () =>
       for (const row of catalogFor(type)) {
         assert.equal(
           row.arity,
-          operatorArity(type as MvpPropertyType, row.operator),
+          operatorArity(type, row.operator),
           `${type}.${row.operator} 의 arity 가 다르다`,
         )
       }
@@ -87,23 +87,23 @@ describe('★ 카탈로그와 컴파일러가 같은 연산자를 안다', () =>
 })
 
 describe('카탈로그 자체의 건강', () => {
-  test('MVP 6종이 모두 카탈로그에 있다', async (t) => {
+  test('거를 수 있는 타입이 모두 카탈로그에 있다', async (t) => {
     if (skipReason) return t.skip(skipReason)
-    for (const type of MVP_PROPERTY_TYPES) {
+    for (const type of FILTERABLE_TYPES) {
       assert.ok(catalogFor(type).length > 0, `${type} 의 연산자가 카탈로그에 없다`)
     }
   })
 
-  test('★ MVP 밖 타입은 카탈로그에 없다 — 필터 UI 가 쓸 수 없는 것을 보여주면 안 된다', async (t) => {
+  test('★ 거를 수 없는 타입은 카탈로그에 없다 — 필터 UI 가 쓸 수 없는 것을 보여주면 안 된다', async (t) => {
     if (skipReason) return t.skip(skipReason)
-    const mvp = new Set<string>(MVP_PROPERTY_TYPES)
-    const extra = rawTypes.filter((t2) => !mvp.has(t2))
-    assert.deepEqual(extra, [], `MVP 밖 타입이 카탈로그에 있다: ${extra.join(', ')}`)
+    const filterable = new Set<string>(FILTERABLE_TYPES)
+    const extra = rawTypes.filter((t2) => !filterable.has(t2))
+    assert.deepEqual(extra, [], `거를 수 없는 타입이 카탈로그에 있다: ${extra.join(', ')}`)
   })
 
   test('라벨이 비어 있지 않고 중복되지 않는다 (타입 안에서)', async (t) => {
     if (skipReason) return t.skip(skipReason)
-    for (const type of MVP_PROPERTY_TYPES) {
+    for (const type of FILTERABLE_TYPES) {
       const labels = catalogFor(type).map((r) => r.label)
       assert.ok(
         labels.every((l) => l.length > 0),

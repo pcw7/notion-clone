@@ -21,6 +21,7 @@ export const TYPE_LABEL: Readonly<Record<AppPropertyType, string>> = {
   date: '날짜',
   relation: '관계형',
   rollup: '롤업',
+  unique_id: 'ID',
 }
 
 /** 헤더의 타입 아이콘. 장식이다 — 스크린리더에는 `TYPE_LABEL` 이 간다. */
@@ -34,6 +35,7 @@ export const TYPE_ICON: Readonly<Record<AppPropertyType, string>> = {
   date: '◷',
   relation: '↗',
   rollup: '∑',
+  unique_id: '№',
 }
 
 /**
