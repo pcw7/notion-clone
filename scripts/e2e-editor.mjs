@@ -520,6 +520,8 @@ async function main() {
       Delete: [46, 'Delete'],
       // 인라인 수식(Phase 2 1b) — `Mod+Shift+E`.
       e: [69, 'KeyE'],
+      // 마지막 색 다시 쓰기(Phase 2 1e-1) — `Mod+Shift+H`.
+      h: [72, 'KeyH'],
     }
     const SHIFT = 8
     // `Mod` 는 Mac 에서 Cmd(4), 그 외 Ctrl(2). 헤드리스 브라우저의 플랫폼을 따른다.
@@ -11249,6 +11251,57 @@ async function main() {
       await paste({ 'text/plain': '개\n더' })
       const [inside, insideGot] = await serverTable({ props: { has_column_header: true }, grid: [['품목', '수량'], [word, '3개\n더']] }, true)
       check('★ 셀 안에 글자를 붙이면 그 셀의 글자 — 줄바꿈도 셀 안에', inCell && inside, insideGot)
+      await sleep(1000)
+    }
+
+    if (sectionIf('블록 색 — / 명령 · 마지막 색 (Phase 2 1e-1 · F-01-21)')) {
+      const toPlainTextOfFirst = (body) => (body.doc.blocks[0]?.title ?? []).map((r) => r.plain_text ?? '').join('')
+      // 줄 끝에서 `/빨강 배경` → 그 블록 전체가 빨강 배경. 다른 줄에서 Ctrl/Cmd+Shift+H → 마지막으로 쓴 색(빨강 배경)이 그 블록에.
+      // 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
+      const stamp = Date.now()
+      const cPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
+        method: 'POST', headers: authed, body: JSON.stringify({ title: `블록 색 ${stamp}` }),
+      })).json()).page.id
+      const cz = { first: randomUUID(), second: randomUUID() }
+      const para = (id, text) => ({ id, type: 'paragraph', title: [textRun(text)], properties: {}, format: {}, children: [] })
+      await saveBody(cPage, { blocks: [para(cz.first, '색 줄'), para(cz.second, '다른 줄')] })
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${cPage}` })
+      await waitFor(`!!document.querySelector('[data-block-id="${cz.second}"] p') && document.querySelector('.blk-editor')?.getAttribute('contenteditable') === 'true'`, 15000)
+      const colorOnServer = async (id, want) => {
+        let got = null
+        for (let i = 0; i < 60; i += 1) {
+          const block = (await readBody(cPage)).doc.blocks.find((b) => b.id === id)
+          got = block?.format?.block_color ?? null
+          if (got === want) return [true, got]
+          await sleep(150)
+        }
+        return [false, got]
+      }
+      const caretAtEnd = async (id) => {
+        let inside = false
+        for (let i = 0; i < 20 && !inside; i += 1) {
+          await clickSelector(`[data-block-id="${id}"] p`)
+          inside = await waitFor(`document.activeElement?.classList.contains('ProseMirror') && document.querySelector('[data-block-id="${id}"]')?.contains(window.getSelection()?.anchorNode ?? null)`, 500)
+        }
+        await key('End')
+        return inside
+      }
+
+      check('전제 — 첫 줄 끝에 캐럿', await caretAtEnd(cz.first))
+      // 메뉴는 쿼리의 공백에서 닫힌다(F-01-04 의 종료 조건) — 이름은 붙여 친다(`/제목1` 과 같다).
+      await typeText(' /')
+      await typeText('빨강배경')
+      await waitFor(`!!document.querySelector('[role="listbox"][aria-label="블록 삽입"]')`, 3000)
+      await key('Enter')
+      check('★ /빨강배경 — 그 블록 전체가 빨강 배경으로 그려진다',
+        await waitFor(`document.querySelector('[data-block-id="${cz.first}"] > [data-block-type]')?.getAttribute('data-color') === 'red_background'`, 3000))
+      const [painted, paintedGot] = await colorOnServer(cz.first, 'red_background')
+      check('★ 서버 — format.block_color · 쳐 둔 /쿼리는 지워졌다', painted && toPlainTextOfFirst(await readBody(cPage)) === '색 줄 ', String(paintedGot))
+
+      check('전제 — 둘째 줄 끝에 캐럿', await caretAtEnd(cz.second))
+      await key('h', MOD | SHIFT)
+      const [again, againGot] = await colorOnServer(cz.second, 'red_background')
+      check('★ Ctrl/Cmd+Shift+H — 마지막으로 쓴 색이 그 블록에', again, String(againGot))
       await sleep(1000)
     }
 

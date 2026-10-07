@@ -42,13 +42,15 @@ import { Plugin, PluginKey, type EditorState, type Transaction } from '@tiptap/p
 import { BODY_BLOCK_TYPES, specOf, type BodyBlockType } from '../block/types.ts'
 import { applyTurnInto, insertParagraphAfter, type CommandDeps } from './commands.ts'
 import { containerAt } from './pm-blocks.ts'
+import { COLORS, type Color } from '../contracts/rich-text.ts'
+import { colorAliases, colorLabel } from './color-names.ts'
 import { isPlainTextNode, TABLE_CELL_NODE } from './schema.ts'
 
 type SlashCommandBase = {
   readonly label: string
   /** 검색 대상. 한글·영문을 함께 둔다. */
   readonly aliases: readonly string[]
-  readonly group: '기본 블록' | '페이지' | '미디어' | '고급 블록'
+  readonly group: '기본 블록' | '페이지' | '미디어' | '고급 블록' | '색'
 }
 
 /** 블록 타입 변환. 트랜잭션 하나로 끝난다. */
@@ -81,7 +83,13 @@ export type ColumnsSlashCommand = SlashCommandBase & {
 /** 심플 테이블(Phase 2 1d · F-01-18) — 블록 타입 목록 밖이다. 표째로 만든다(`table.ts`). */
 export type TableSlashCommand = SlashCommandBase & { readonly kind: 'table'; readonly id: 'table' }
 
-export type SlashCommand = BlockSlashCommand | PageSlashCommand | ColumnsSlashCommand | TableSlashCommand
+/**
+ * 블록 색(Phase 2 1e-1 · F-01-21 시나리오 2 — 노션의 `/red` · `/blue background`) — 그 블록 전체의 색. 블록 타입이 아니다
+ * (`block-color.ts`). `default` 는 색을 지운다.
+ */
+export type ColorSlashCommand = SlashCommandBase & { readonly kind: 'color'; readonly id: `color:${Color}`; readonly color: Color }
+
+export type SlashCommand = BlockSlashCommand | PageSlashCommand | ColumnsSlashCommand | TableSlashCommand | ColorSlashCommand
 
 /**
  * 타입별 라벨·별칭.
@@ -147,6 +155,11 @@ const TABLE_COMMAND: TableSlashCommand = {
   kind: 'table', id: 'table', label: '표', aliases: ['표', '테이블', 'table', '심플 테이블', 'simple table'], group: '고급 블록',
 }
 
+/** 색(1e-1) — 기본 · 글자색 9 · 배경색 9. 메뉴의 맨 끝(노션과 같다). "색" · "color" 로 모두 찾는다. */
+const COLOR_COMMANDS: readonly ColorSlashCommand[] = COLORS.map((color) => ({
+  kind: 'color', id: `color:${color}`, color, label: colorLabel(color), aliases: colorAliases(color), group: '색',
+}))
+
 const BLOCK_COMMANDS: readonly BlockSlashCommand[] = BODY_BLOCK_TYPES.map((id) => ({
   kind: 'block',
   id,
@@ -166,6 +179,7 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
   ...BLOCK_COMMANDS.filter((c) => c.group === '고급 블록'),
   TABLE_COMMAND,
   ...COLUMN_COMMANDS,
+  ...COLOR_COMMANDS,
 ]
 
 /**

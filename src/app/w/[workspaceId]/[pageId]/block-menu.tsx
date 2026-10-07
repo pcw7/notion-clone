@@ -46,6 +46,7 @@ import {
 } from '@/lib/editor/block-selection'
 import type { CommandDeps } from '@/lib/editor/commands'
 import { editTableCommand } from '@/lib/editor/table'
+import { rememberColor } from '@/lib/editor/last-color'
 
 export type BlockMenuProps = {
   view: EditorView
@@ -96,6 +97,7 @@ export function BlockMenu({ view, deps, top, left, workspaceId, pageId, onClose,
         break
       case 'color':
         setBlockColorCommand(action.color)(view.state, dispatch)
+        rememberColor(action.color)
         break
       case 'duplicate':
         duplicateBlockSelectionCommand(deps)(view.state, dispatch)

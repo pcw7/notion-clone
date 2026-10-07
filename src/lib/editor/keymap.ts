@@ -35,6 +35,7 @@ import { redo, undo } from '@tiptap/pm/history'
 import type { Command, EditorState, Transaction } from '@tiptap/pm/state'
 
 import type { BlockType } from '../block/types.ts'
+import type { Color } from '../contracts/rich-text.ts'
 import { openBlockMenuCommand } from './block-menu.ts'
 import { moveBlocksCommand } from './block-move.ts'
 import {
@@ -59,7 +60,9 @@ import {
 } from './commands.ts'
 import { undoInputRuleCommand } from './input-rules.ts'
 import { tableEdgeDeleteCommand, tableEnterCommand, tableSoftBreakCommand, tableTabCommand } from './table.ts'
-import { setTextColor, toggleFormat } from './marks.ts'
+import { toggleFormat } from './marks.ts'
+import { reapplyColorCommand } from './block-color.ts'
+import { lastColor } from './last-color.ts'
 
 /** 여러 커맨드를 순서대로 시도한다. 첫 성공에서 멈춘다. */
 export function chain(...commands: readonly Command[]): Command {
@@ -100,6 +103,8 @@ export type EditorKeymapDeps = CommandDeps & {
   openEquation?: (blockId: string) => void
   /** 인라인 수식의 입력창(Phase 2 1b) — 골라진 인라인 수식의 Enter · Ctrl/Cmd+Shift+E 로 넣은 빈 수식. */
   openInlineEquation?: (ref: InlineEquationRef) => void
+  /** 마지막으로 쓴 색(Phase 2 1e-1) — 없으면 이 브라우저의 기억(`last-color.ts`). 검사가 바꿔 끼운다. */
+  lastColor?: () => Color | null
   /**
    * 되돌리기 · 다시 하기. 없으면 ProseMirror history(Phase 0 편집기). 협업 편집기는 y-prosemirror 의 것을 넘긴다 — 내 편집만
    * 되돌린다(F-05-15 · `collab/collab-editor.ts`).
@@ -182,9 +187,9 @@ export function createEditorKeymap(deps: EditorKeymapDeps): KeyBindings {
     // Windows 관례. Mac 에서도 눌러 봤을 때 되는 편이 낫다.
     'Mod-y': deps.history?.redo ?? redo,
 
-    // 마지막 색을 재적용하는 Cmd+Shift+H 는 "마지막 사용 색"을 기억해야 하므로
-    // UI 상태가 필요하다. 색 해제만 여기 둔다.
-    'Mod-Shift-h': setTextColor('default'),
+    // 마지막으로 쓴 색을 다시(F-01-21 시나리오 4 · Phase 2 1e-1) — 고른 글자면 그 글자, 아니면 블록 색. 마지막 색은 이 브라우저의
+    // 상태다(`last-color.ts`). 없으면 키를 넘긴다.
+    'Mod-Shift-h': reapplyColorCommand(deps.lastColor ?? lastColor),
   }
 
   if (deps.promptLink) {

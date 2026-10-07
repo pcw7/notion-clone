@@ -76,6 +76,8 @@ import { CodeLanguageMenu } from './code-language-menu'
 import { EquationEditor } from './equation-editor'
 import { runColumnsSlashCommand } from '@/lib/editor/columns'
 import { runTableSlashCommand } from '@/lib/editor/table'
+import { runColorSlashCommand } from '@/lib/editor/block-color'
+import { rememberColor } from '@/lib/editor/last-color'
 import { openCommentThread } from './comment-panel'
 import { PageIconView } from '../page-icon-view'
 import { closeMentionMenu, insertMention, mentionMenuState, type MentionPick } from '@/lib/editor/mention-menu'
@@ -859,6 +861,13 @@ export function BodyEditor({
       // 심플 테이블(Phase 2 1d) — 빈 줄이면 그 자리를, 아니면 그 뒤에 표. 캐럿은 첫 셀.
       if (command.kind === 'table') {
         runTableSlashCommand(view.state, view.dispatch.bind(view))
+        view.focus()
+        return
+      }
+      // 블록 색(Phase 2 1e-1) — 그 블록 전체의 색. 쓴 색은 Ctrl/Cmd+Shift+H 가 다시 쓴다.
+      if (command.kind === 'color') {
+        runColorSlashCommand(view.state, view.dispatch.bind(view), command.color)
+        rememberColor(command.color)
         view.focus()
         return
       }
