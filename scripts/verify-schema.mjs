@@ -2656,6 +2656,63 @@ try {
       [wsId, plus, 'canceled', new Date(), new Date('2026-02-01'), new Date('2026-01-01')])
   }
 
+  console.log('\n[34] 고유 ID (0050 / §3.5 [보강] 고유 ID · U1 · U2 · ⑦ · 2a-1조각)')
+  {
+    const rejectBy = async (label, constraint, sql, params) => {
+      await client.query('SAVEPOINT probe')
+      try {
+        await client.query(sql, params)
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        fail(`${label} — 거부되어야 하는데 통과했다`)
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        if (e.constraint === constraint) ok(`${label} — ${constraint} 가 거부함 (${e.code})`)
+        else fail(`${label} — ${constraint} 가 아니라 ${e.constraint ?? e.code} 에 걸렸다`)
+      }
+    }
+    const root = randomUUID()
+    const dbBlock = randomUUID()
+    const ds = randomUUID()
+    const putBlock = `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key,
+                                         ancestor_path, perm_scope_id, properties, format, created_at, last_edited_at)
+                      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, '{}'::jsonb, '{}'::jsonb, now(), now())`
+    await client.query(putBlock, [root, wsId, 'page', 'workspace', wsId, 'u0', [], root])
+    await client.query(putBlock, [dbBlock, wsId, 'database', 'block', root, 'u0', [root], root])
+    await client.query(`INSERT INTO database (id, created_at, updated_at) VALUES ($1, now(), now())`, [dbBlock])
+    await client.query(`INSERT INTO data_source (id, owner_database_id, name, created_at, updated_at) VALUES ($1, $2, 'ID 표', now(), now())`, [ds, dbBlock])
+    await client.query(`INSERT INTO database_data_source (database_id, data_source_id, order_idx) VALUES ($1, $2, 'a0')`, [dbBlock, ds])
+    const putProp = `INSERT INTO property (id, data_source_id, name, type, order_idx, deleted_at, created_at, updated_at)
+                     VALUES ($1, $2, $3, $4, $5, $6, now(), now())`
+    const uid = (n) => `u${String(n).padStart(20, '0')}`
+    await client.query(putProp, [uid(1), ds, '이름', 'title', 'a0', null])
+    await client.query(putProp, [uid(2), ds, 'ID', 'unique_id', 'a1', null])
+    await client.query(putProp, [uid(3), ds, '옛 ID', 'unique_id', 'a2', new Date()])
+    ok('살아 있는 ID 프로퍼티 하나 + 지운 ID 프로퍼티 — 정상 경로가 통과한다')
+    await rejectBy('★ U1: 살아 있는 ID 프로퍼티가 둘', 'ux_property_unique_id_one', putProp, [uid(4), ds, 'ID 둘째', 'unique_id', 'a3', null])
+
+    const setPrefix = `UPDATE data_source SET unique_id_prefix = $2 WHERE id = $1`
+    await client.query(setPrefix, [ds, 'TASK'])
+    await client.query(setPrefix, [ds, 'A1B2C3D'])
+    await client.query(setPrefix, [ds, null])
+    ok('접두사 — 대문자 영숫자 4자 · 7자 · 없음이 통과한다')
+    await rejectBy('★ ⑦: 접두사에 소문자', 'ck_data_source_unique_id_prefix', setPrefix, [ds, 'task'])
+    await rejectBy('⑦: 접두사가 한 글자', 'ck_data_source_unique_id_prefix', setPrefix, [ds, 'T'])
+    await rejectBy('⑦: 접두사가 여덟 글자', 'ck_data_source_unique_id_prefix', setPrefix, [ds, 'ABCDEFGH'])
+    await rejectBy('⑦: 접두사에 하이픈', 'ck_data_source_unique_id_prefix', setPrefix, [ds, 'TA-SK'])
+
+    const putRow = async (key, isTemplate, seq) => {
+      const id = randomUUID()
+      await client.query(putBlock, [id, wsId, 'page', 'data_source', ds, key, [root, dbBlock], root])
+      await client.query(`INSERT INTO page (id, data_source_id, is_template, unique_seq) VALUES ($1, $2, $3, $4)`, [id, ds, isTemplate, seq])
+      return id
+    }
+    await putRow('r0', false, 1)
+    const template = await putRow('r1', true, null)
+    ok('번호가 있는 행 · 번호가 없는 템플릿 — 정상 경로가 통과한다')
+    await rejectBy('★ U2: 템플릿이 번호를 가진다', 'ck_page_template_no_unique_seq', `UPDATE page SET unique_seq = 7 WHERE id = $1`, [template])
+    await rejectBy('같은 표에서 같은 번호(0013 — 동시 발급의 마지막 방어)', 'ux_page_unique_seq', `UPDATE page SET unique_seq = 1 WHERE id = $1`, [await putRow('r2', false, 2)])
+  }
+
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
 } catch (e) {

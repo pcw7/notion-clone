@@ -41,8 +41,26 @@
  * 테스트가 "셀이 없는 행이 걸리는가"를 명시적으로 확인한다.
  */
 
-import { isMvpPropertyType, type MvpPropertyType } from './property-types.ts'
+import { MVP_PROPERTY_TYPES, isMvpPropertyType, type MvpPropertyType } from './property-types.ts'
 import type { ValidationIssue } from '../contracts/rich-text.ts'
+
+/**
+ * 거르고 정렬할 수 있는 타입 — 셀 타입 + 고유 ID(2a-1).
+ *
+ * 고유 ID 는 셀이 아니지만 값이 **행에 저장돼 있다**(`page.unique_seq`) — 사이드카 대신 그 열을 바로 본다(아래
+ * `UNIQUE_ID_COLUMN`). relation · rollup 은 여기 없다: relation 은 엣지이고, rollup 은 저장된 값이 없다(정본 D1).
+ */
+export type FilterableType = MvpPropertyType | 'unique_id'
+
+export const FILTERABLE_TYPES: readonly FilterableType[] = [...MVP_PROPERTY_TYPES, 'unique_id']
+
+export function isFilterableType(t: unknown): t is FilterableType {
+  return isMvpPropertyType(t) || t === 'unique_id'
+}
+
+/** 고유 ID 가 보는 열과 캐스트. `::numeric` 인 이유: 숫자 축과 같은 바인딩(`Number(value)`)이 NaN · 소수를 주어도 질의가 죽지 않는다. */
+const UNIQUE_ID_COLUMN = 'p.unique_seq'
+const UNIQUE_ID_CAST = '::numeric'
 
 /** 정본 §3.5 DB 상수. 루트 객체를 layer 1 로 센다 <C-15>. */
 export const MAX_FILTER_DEPTH = 3
@@ -205,8 +223,21 @@ const SELECT_OPERATORS: Readonly<Record<string, OperatorSpec>> = Object.freeze({
   is_not_empty: TEXT_OPERATORS.is_not_empty,
 })
 
+/**
+ * 고유 ID 는 숫자의 비교 여섯이다 — 비어 있음 · 비어 있지 않음이 없다(정본 §3.5 [보강] 고유 ID ⑧: ID 프로퍼티가 살아 있는 동안
+ * 목록의 모든 행이 번호를 가진다). 셀이 없으므로 `negate` 는 `NOT EXISTS` 가 아니라 `IS NOT TRUE` 로 접는다(`compileFilter`).
+ */
+const UNIQUE_ID_OPERATORS: Readonly<Record<string, OperatorSpec>> = Object.freeze({
+  equals: NUMBER_OPERATORS.equals,
+  does_not_equal: NUMBER_OPERATORS.does_not_equal,
+  greater_than: NUMBER_OPERATORS.greater_than,
+  greater_than_or_equal_to: NUMBER_OPERATORS.greater_than_or_equal_to,
+  less_than: NUMBER_OPERATORS.less_than,
+  less_than_or_equal_to: NUMBER_OPERATORS.less_than_or_equal_to,
+})
+
 /** 타입별 연산자. **축이 아니라 타입에 달린다**(select 이 텍스트와 다르기 때문). */
-const BY_TYPE: Readonly<Record<MvpPropertyType, Readonly<Record<string, OperatorSpec>>>> =
+const BY_TYPE: Readonly<Record<FilterableType, Readonly<Record<string, OperatorSpec>>>> =
   Object.freeze({
     title: TEXT_OPERATORS,
     rich_text: TEXT_OPERATORS,
@@ -215,14 +246,15 @@ const BY_TYPE: Readonly<Record<MvpPropertyType, Readonly<Record<string, Operator
     status: SELECT_OPERATORS,
     checkbox: CHECKBOX_OPERATORS,
     date: DATE_OPERATORS,
+    unique_id: UNIQUE_ID_OPERATORS,
   })
 
 /** 이 타입이 노출하는 연산자 목록. 카탈로그와 같아야 한다(테스트가 확인). */
-export function operatorsFor(type: MvpPropertyType): string[] {
+export function operatorsFor(type: FilterableType): string[] {
   return Object.keys(BY_TYPE[type])
 }
 
-export function operatorArity(type: MvpPropertyType, operator: string): 0 | 1 | null {
+export function operatorArity(type: FilterableType, operator: string): 0 | 1 | null {
   return BY_TYPE[type][operator]?.arity ?? null
 }
 
@@ -282,7 +314,7 @@ export function validateFilter(
     // 쓰기 경로에서는 거부한다 — 없는 프로퍼티로 규칙을 **새로 만들** 이유가 없다.
     return [{ path: `${path}.property_id`, message: '없는 프로퍼티입니다' }]
   }
-  if (!isMvpPropertyType(rawType)) {
+  if (!isFilterableType(rawType)) {
     return [{ path: `${path}.property_id`, message: `필터할 수 없는 타입입니다: ${rawType}` }]
   }
 
@@ -352,8 +384,9 @@ export class ParamBag {
   }
 }
 
-/** 사이드카 값으로 바인딩할 모양으로 바꾼다. */
-function bindValue(type: MvpPropertyType, value: unknown): unknown {
+/** 사이드카 값으로 바인딩할 모양으로 바꾼다. 고유 ID 는 번호다(숫자 축과 같다). */
+function bindValue(type: FilterableType, value: unknown): unknown {
+  if (type === 'unique_id') return typeof value === 'number' ? value : Number(value)
   switch (AXIS[type]) {
     case 'num':
       return typeof value === 'number' ? value : Number(value)
@@ -395,14 +428,21 @@ export function compileFilter(
   const rawType = types.get(node.property_id)
   // ★ F-03-17: 지워진 프로퍼티를 참조하는 규칙은 **무시한다.** 결과 0건으로
   //   만들면 사용자가 데이터 소실로 오인한다.
-  if (rawType === undefined || !isMvpPropertyType(rawType)) return null
+  if (rawType === undefined || !isFilterableType(rawType)) return null
 
-  const axis = AXIS[rawType]
   const spec = BY_TYPE[rawType][node.operator]
   // 모르는 연산자도 무시한다. 여기서 던지면 카탈로그를 줄이는 날 기존 뷰가
   // 통째로 열리지 않는다(정본: 읽기 경로에 검증을 걸지 않는 이유와 같다).
   if (spec === undefined) return null
 
+  // 고유 ID — 값이 행에 있다. 셀이 없으니 EXISTS 로 감싸지 않고, 부정은 `IS NOT TRUE` 다(번호가 없는 행 — 템플릿뿐이지만 — 도
+  // "5 가 아니다"에 걸린다. 셀 타입의 `NOT EXISTS` 와 같은 뜻).
+  if (rawType === 'unique_id') {
+    const inner = spec.predicate(UNIQUE_ID_COLUMN, params.bind(bindValue(rawType, node.value)), UNIQUE_ID_CAST)
+    return spec.negate ? `(${inner}) IS NOT TRUE` : inner
+  }
+
+  const axis = AXIS[rawType]
   const propParam = params.bind(node.property_id)
   const valueParam = spec.arity === 1 ? params.bind(bindValue(rawType, node.value)) : ''
   const inner = spec.predicate(COLUMN[axis], valueParam, CAST[axis])
@@ -455,7 +495,12 @@ export function compileSorts(
 
   for (const sort of sorts) {
     const rawType = types.get(sort.property_id)
-    if (rawType === undefined || !isMvpPropertyType(rawType)) continue // 지워진 프로퍼티
+    if (rawType === undefined || !isFilterableType(rawType)) continue // 지워진 프로퍼티
+    // 고유 ID — 행의 열을 그대로 정렬한다(서브쿼리가 없다).
+    if (rawType === 'unique_id') {
+      keys.push({ expr: UNIQUE_ID_COLUMN, direction: sort.direction, cast: UNIQUE_ID_CAST })
+      continue
+    }
     const column = COLUMN[AXIS[rawType]].replace('v.', 'sv.')
     const param = params.bind(sort.property_id)
     keys.push({

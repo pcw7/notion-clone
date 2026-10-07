@@ -70,6 +70,7 @@ import { sortFirst } from '@/lib/database/filter-draft'
 import type { RowJson } from '@/lib/database/http'
 import { PageIconView } from '../../page-icon-view'
 import { isCellColumn, relationOf, rollupOf, type CellColumn, type ViewColumn } from '@/lib/database/view-columns'
+import { formatUniqueId } from '@/lib/database/unique-id-format'
 import { MAX_QUERY_PAGINATION } from '@/lib/database/limits'
 import {
   emptyValue,
@@ -258,7 +259,8 @@ export function DatabaseTable(props: {
 
     // rollup 칸은 **읽기 전용이다** — 값이 행에 없고 읽을 때 계산된다(정본 [보강] rollup v1). 고칠 것은 설정뿐이고
     // 그것은 속성의 일이다(칸의 일이 아니다). 선택만 한다.
-    if (column.type === 'rollup') {
+    // 고유 ID 칸도 읽기 전용이다 — 번호는 시스템이 매긴다(정본 [보강] 고유 ID ⑥ · 2a-1).
+    if (column.type === 'rollup' || column.type === 'unique_id') {
       setMode({ kind: 'selected', at })
       return
     }
@@ -706,29 +708,36 @@ export function DatabaseTable(props: {
                   const at = { row: r, col: c }
                   const isSelected = mode.kind !== 'idle' && samePos(mode.at, at)
                   const isEditing = mode.kind === 'editing' && samePos(mode.at, at)
-                  // 칸은 셋 중 하나다 — 셀(값이 EAV 에 있다) · relation(값이 엣지이고 여기에는 캐시의 id 가 있다) ·
-                  // rollup(값이 **어디에도 없다** — 읽을 때 계산해 따로 받는다).
+                  // 칸은 넷 중 하나다 — 셀(값이 EAV 에 있다) · relation(값이 엣지이고 여기에는 캐시의 id 가 있다) ·
+                  // 고유 ID(값이 행에 있다 — 번호 · 접두사는 컬럼의 것) · rollup(값이 **어디에도 없다** — 읽을 때 계산해 따로 받는다).
                   const cell = isCellColumn(column)
                     ? ({ kind: 'cell', column, value: valueAt(row, column) } as const)
                     : column.type === 'relation'
                       ? ({ kind: 'relation', column, value: readRelationValue(row.properties[column.propertyId]) } as const)
-                      : ({ kind: 'rollup', column, value: rollups.values[row.id]?.[column.propertyId] } as const)
+                      : column.type === 'unique_id'
+                        ? ({ kind: 'unique_id', column, value: formatUniqueId(column.uniqueId.prefix, row.uniqueSeq) } as const)
+                        : ({ kind: 'rollup', column, value: rollups.values[row.id]?.[column.propertyId] } as const)
                   // List: 빈 칸은 접는다. 선택 · 편집 중이면 비어 있어도 선다(`list-layout.ts`).
                   const collapsed =
                     cell.kind === 'cell'
                       ? isCollapsed(variant, cell.column.type, cell.value, isSelected)
                       : cell.kind === 'relation'
                         ? isRelationCollapsed(variant, cell.value, isSelected)
-                        : isRollupCollapsed(variant, cell.value, isSelected)
+                        : cell.kind === 'unique_id'
+                          ? isList && !isSelected && cell.value === ''
+                          : isRollupCollapsed(variant, cell.value, isSelected)
                   const empty =
                     cell.kind === 'cell'
                       ? isEmptyValue(cell.value) && cell.column.type !== 'checkbox'
                       : cell.kind === 'relation'
                         ? cell.value.count === 0
-                        : rollupIsEmpty(cell.value)
+                        : cell.kind === 'unique_id'
+                          ? cell.value === ''
+                          : rollupIsEmpty(cell.value)
+                  const readOnlyCell = cell.kind === 'rollup' || cell.kind === 'unique_id'
                   const content =
-                    // rollup 은 **채우는 자리가 아니다** — 빈 칸에 속성 이름을 세우면 "여기를 채우라"로 읽힌다.
-                    isList && empty && cell.kind !== 'rollup' ? (
+                    // rollup · 고유 ID 는 **채우는 자리가 아니다** — 빈 칸에 속성 이름을 세우면 "여기를 채우라"로 읽힌다.
+                    isList && empty && !readOnlyCell ? (
                       // 제목은 "제목 없음", 선택된 빈 속성 칸은 그 속성의 이름 — 무엇을 채우는 자리인지 말한다.
                       <span className="truncate text-neutral-400" data-testid="db-list-placeholder">
                         {column.type === 'title' ? '제목 없음' : column.name}
@@ -737,6 +746,10 @@ export function DatabaseTable(props: {
                       <CellDisplay value={cell.value} options={column.options} />
                     ) : cell.kind === 'relation' ? (
                       <RelationChips value={cell.value} labels={labels} icons={relationIcons} />
+                    ) : cell.kind === 'unique_id' ? (
+                      <span className="truncate tabular-nums text-neutral-600 dark:text-neutral-300" data-testid="db-unique-id">
+                        {cell.value}
+                      </span>
                     ) : (
                       <RollupDisplay cell={cell.value} info={rollups.columns[column.propertyId]} />
                     )
@@ -774,8 +787,8 @@ export function DatabaseTable(props: {
                       role="gridcell"
                       tabIndex={focusTarget !== null && samePos(focusTarget, at) ? 0 : -1}
                       aria-selected={isSelected}
-                      // rollup 은 누구에게나 읽기 전용이다 — 값이 행에 없고 읽을 때 계산된다.
-                      aria-readonly={!access.canEditContent || cell.kind === 'rollup' || undefined}
+                      // rollup · 고유 ID 는 누구에게나 읽기 전용이다 — 값을 사람이 쓰지 않는다.
+                      aria-readonly={!access.canEditContent || readOnlyCell || undefined}
                       data-cell={keyOf(at)}
                       data-property-id={column.propertyId}
                       data-editing={isEditing || undefined}

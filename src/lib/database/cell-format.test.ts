@@ -41,7 +41,7 @@ describe('readCell — 읽기는 관대하다', () => {
   })
 
   test('★ 봉투의 타입이 다른 옛 칸은 빈 값으로 읽는다 — 표가 그려져야 한다', () => {
-    // 타입 변환(F-03-09) 이전에 rich_text 였던 칸이 number 컬럼에 남은 경우.
+    // 타입 변환(F-03-14) 이전에 rich_text 였던 칸이 number 컬럼에 남은 경우.
     const stale = { type: 'rich_text', rich_text: [textRun('옛 값')] }
     assert.deepEqual(readCell('number', stale), { type: 'number', number: null })
   })

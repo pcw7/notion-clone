@@ -66,6 +66,8 @@ import {
 } from './property-types.ts'
 import { readOptionsOf, toSelectOption } from './options.ts'
 import { addPropertyToViews } from './view.ts'
+import { fillUniqueIds } from './unique-id.ts'
+import { normalizeUniqueIdPrefix } from './unique-id-format.ts'
 
 /**
  * data_source 당 프로퍼티 상한.
@@ -122,6 +124,13 @@ export type PropertySummary = {
    * 편집기가 새로고침 전까지 비어 있다.
    */
   readonly options?: readonly SelectOption[]
+  /**
+   * 고유 ID 의 접두사(2a-1 · 정본 §3.5 [보강] 고유 ID ⑦). `unique_id` 프로퍼티에만 있다 — 없으면 null.
+   *
+   * 저장은 프로퍼티가 아니라 **data source** 다(`data_source.unique_id_prefix` — 카운터와 같은 주인). ID 프로퍼티는 표에 하나뿐이라
+   * 스키마에서는 그 프로퍼티에 실어 준다 — 화면이 속성 편집에서 읽는 자리가 거기다.
+   */
+  readonly prefix?: string | null
 }
 
 export type SchemaSnapshot = {
@@ -154,6 +163,8 @@ export type PropertyFailure =
   | 'invalid_target'
   /** 데이터베이스(구조) · 행 페이지가 잠겼다(7f-2 · F-06-16) — 풀어야 고친다. */
   | 'locked'
+  /** 이 표에 살아 있는 ID 프로퍼티가 이미 있다(불변식 U1 · 2a-1) — 하나뿐이다. */
+  | 'unique_id_exists'
 
 export type PropertyResult<T = SchemaSnapshot> =
   | { readonly ok: true; readonly value: T }
@@ -249,7 +260,11 @@ type PropertyRow = {
   order_idx: string
 }
 
-function toSummary(row: PropertyRow, optionsOf: ReadonlyMap<string, readonly SelectOption[]>): PropertySummary {
+function toSummary(
+  row: PropertyRow,
+  optionsOf: ReadonlyMap<string, readonly SelectOption[]>,
+  uniqueIdPrefix: string | null,
+): PropertySummary {
   return {
     id: row.id,
     name: row.name,
@@ -260,13 +275,14 @@ function toSummary(row: PropertyRow, optionsOf: ReadonlyMap<string, readonly Sel
     config: row.config ?? {},
     orderKey: row.order_idx,
     ...(isOptionType(row.type) ? { options: optionsOf.get(row.id) ?? [] } : {}),
+    ...(row.type === 'unique_id' ? { prefix: uniqueIdPrefix } : {}),
   }
 }
 
 export async function readSchema(tx: Tx, dataSourceId: string): Promise<SchemaSnapshot> {
   const [ds, rows] = await Promise.all([
-    tx.queryOne<{ schema_version: string }>(
-      `SELECT schema_version FROM data_source WHERE id = $1`,
+    tx.queryOne<{ schema_version: string; unique_id_prefix: string | null }>(
+      `SELECT schema_version, unique_id_prefix FROM data_source WHERE id = $1`,
       [dataSourceId],
     ),
     tx.query<PropertyRow>(
@@ -281,7 +297,7 @@ export async function readSchema(tx: Tx, dataSourceId: string): Promise<SchemaSn
   return {
     dataSourceId,
     schemaVersion: ds.schema_version,
-    properties: rows.map((row) => toSummary(row, optionsOf)),
+    properties: rows.map((row) => toSummary(row, optionsOf, ds.unique_id_prefix)),
   }
 }
 
@@ -318,9 +334,12 @@ export async function getSchema(
 
 export type AddPropertyInput = {
   readonly name: string
-  readonly type?: MvpPropertyType
+  /** 셀 타입 · 고유 ID. relation · rollup 은 그 모듈의 명령으로 만든다(config 가 다른 프로퍼티를 가리킨다). */
+  readonly type?: MvpPropertyType | 'unique_id'
   readonly description?: string
   readonly config?: Record<string, unknown>
+  /** 고유 ID 의 접두사(`normalizeUniqueIdPrefix` 가 다듬는다). 다른 타입에 주면 `invalid_config`. */
+  readonly prefix?: unknown
   /** 주면 낙관적 잠금이 된다. */
   readonly expectedVersion?: string
 }
@@ -340,7 +359,12 @@ export async function addProperty(
   // ★ `title` 을 추가로 만들 수 없다. data_source 를 만들 때 하나가 생기고
   //   그것이 전부다(불변식 P1). DB 도 막지만 이유를 말해 주는 쪽이 낫다.
   if (type === 'title') return fail('title_immutable')
-  if (!isMvpPropertyType(type)) return fail('unsupported_type')
+  if (!isMvpPropertyType(type) && type !== 'unique_id') return fail('unsupported_type')
+  // 고유 ID 의 설정은 접두사 하나다(data source 에 저장한다 — 정본 ⑦). config 로 받지 않는다.
+  if (type === 'unique_id' && input.config !== undefined) return fail('invalid_config')
+  if (type !== 'unique_id' && input.prefix !== undefined) return fail('invalid_config')
+  const prefix = input.prefix === undefined ? null : normalizeUniqueIdPrefix(input.prefix)
+  if (prefix !== null && !prefix.ok) return fail('invalid_config')
 
   if (
     input.description !== undefined &&
@@ -353,6 +377,8 @@ export async function addProperty(
   return withCommandTransaction(async (tx) => {
     const ds = await lockSchema(tx, ctx, dataSourceId, input.expectedVersion)
     if (isFailure(ds)) return ds
+    // U1 — DB 의 부분 UNIQUE 도 막지만 그쪽은 23505 를 던질 뿐이다. 이유를 말한다.
+    if (type === 'unique_id' && (await hasLiveUniqueId(tx, dataSourceId))) return fail('unique_id_exists')
 
     const inserted = await insertPropertyIn(tx, dataSourceId, {
       name,
@@ -363,10 +389,28 @@ export async function addProperty(
     })
     if (isSchemaFailure(inserted)) return inserted
     if (type === 'status') await seedStatus(tx, inserted)
+    if (type === 'unique_id') {
+      // 접두사를 안 보냈으면 그대로 둔다 — 지웠다 다시 더한 ID 프로퍼티가 옛 접두사를 되찾는다(번호와 같은 규칙 · 정본 ⑤).
+      if (prefix !== null && prefix.ok) await setUniqueIdPrefix(tx, dataSourceId, prefix.prefix)
+      await fillUniqueIds(tx, dataSourceId)
+    }
 
     await bumpSchema(tx, dataSourceId)
     return { ok: true, value: await readSchema(tx, dataSourceId) } as const
   })
+}
+
+/** 이 표에 살아 있는 ID 프로퍼티가 있는가(불변식 U1). */
+async function hasLiveUniqueId(tx: Tx, dataSourceId: string): Promise<boolean> {
+  const row = await tx.queryMaybe<{ one: number }>(
+    `SELECT 1 AS one FROM property WHERE data_source_id = $1 AND type = 'unique_id' AND deleted_at IS NULL`,
+    [dataSourceId],
+  )
+  return row !== null
+}
+
+async function setUniqueIdPrefix(tx: Tx, dataSourceId: string, prefix: string | null): Promise<void> {
+  await tx.query(`UPDATE data_source SET unique_id_prefix = $2, updated_at = now() WHERE id = $1`, [dataSourceId, prefix])
 }
 
 /**
@@ -459,13 +503,15 @@ export type UpdatePropertyInput = {
   readonly name?: string
   readonly description?: string | null
   readonly config?: Record<string, unknown>
+  /** 고유 ID 의 접두사(2a-1). `null` · 빈 문자열이면 지운다. ID 프로퍼티가 아니면 `invalid_config`. */
+  readonly prefix?: unknown
   readonly expectedVersion?: string
 }
 
 /**
- * 이름 · 설명 · config 를 고친다.
+ * 이름 · 설명 · config · (고유 ID 의) 접두사를 고친다.
  *
- * **타입은 고칠 수 없다.** 타입 변환은 F-03-09(변환 매트릭스 + 손실 경고)이고
+ * **타입은 고칠 수 없다.** 타입 변환은 F-03-14(변환 매트릭스 + 손실 경고)이고
  * 모든 셀을 다시 쓰는 작업이라 이 함수의 일이 아니다. 여기서 `type` 을 받으면
  * "이름만 바꾸려다 데이터를 잃는" 경로가 생긴다.
  *
@@ -488,6 +534,8 @@ export async function updateProperty(
   ) {
     return fail('invalid_name')
   }
+  const prefix = input.prefix === undefined ? null : normalizeUniqueIdPrefix(input.prefix)
+  if (prefix !== null && !prefix.ok) return fail('invalid_config')
 
   return withCommandTransaction(async (tx) => {
     const ds = await lockSchema(tx, ctx, dataSourceId, input.expectedVersion)
@@ -499,6 +547,9 @@ export async function updateProperty(
       [propertyId, dataSourceId],
     )
     if (target === null) return fail('not_found')
+
+    // 접두사는 ID 프로퍼티의 설정이다 — 저장은 data source 다(정본 ⑦). 다른 프로퍼티로 보내면 어느 칸의 설정인지 모호하다.
+    if (prefix !== null && target.type !== 'unique_id') return fail('invalid_config')
 
     // relation · rollup 의 config 는 불변식이 걸린 설정이다(대상 표 · 짝 · 함수와 대상 타입). 통째로 덮어쓰는 이 길로는
     // 받지 않는다 — 그 모듈의 명령(`relation.ts` · `rollup.ts`)이 검사하며 쓴다.
@@ -517,6 +568,8 @@ export async function updateProperty(
       if (dup !== null) return fail('duplicate_name')
     }
 
+    // 검사를 다 지난 뒤에 쓴다 — 접두사는 data source 의 칸이다.
+    if (prefix !== null && prefix.ok) await setUniqueIdPrefix(tx, dataSourceId, prefix.prefix)
     await tx.query(
       `UPDATE property
           SET name = coalesce($3, name),
@@ -656,12 +709,14 @@ export async function restoreProperty(
     const ds = await lockSchema(tx, ctx, dataSourceId, expectedVersion)
     if (isFailure(ds)) return ds
 
-    const target = await tx.queryMaybe<{ name: string }>(
-      `SELECT name FROM property
+    const target = await tx.queryMaybe<{ name: string; type: string }>(
+      `SELECT name, type FROM property
         WHERE id = $1 AND data_source_id = $2 AND deleted_at IS NOT NULL`,
       [propertyId, dataSourceId],
     )
     if (target === null) return fail('not_found')
+    // U1 — 지운 사이에 새 ID 프로퍼티를 더했으면 되살릴 수 없다(번호는 이미 그쪽이 보여 준다).
+    if (target.type === 'unique_id' && (await hasLiveUniqueId(tx, dataSourceId))) return fail('unique_id_exists')
 
     const dup = await tx.queryMaybe<{ one: number }>(
       `SELECT 1 AS one FROM property
@@ -687,6 +742,8 @@ export async function restoreProperty(
     // 뷰에도 다시 넣는다. 지우는 동안 `view_property` 행은 남아 있었지만
     // (폭·숬서 설정이 돌아오라고 그러다) 그 사이 만들어진 뷰에는 행이 없다.
     await addPropertyToViews(tx, dataSourceId, propertyId)
+    // 지운 동안 만든 행은 번호가 없다(ID 프로퍼티가 살아 있을 때만 준다) — 되살리면서 채운다(정본 ③ · ⑤).
+    if (target.type === 'unique_id') await fillUniqueIds(tx, dataSourceId)
 
     await bumpSchema(tx, dataSourceId)
     return { ok: true, value: await readSchema(tx, dataSourceId) } as const

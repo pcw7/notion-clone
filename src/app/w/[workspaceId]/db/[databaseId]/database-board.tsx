@@ -62,6 +62,7 @@ import type { ViewColumn } from '@/lib/database/view'
 import type { GroupableType, SelectOption } from '@/lib/database/property-types'
 import { isEmptyValue, readRelationValue } from '@/lib/database/property-types'
 import { cellText, parseDraft, readCell, sameValue } from '@/lib/database/cell-format'
+import { formatUniqueId } from '@/lib/database/unique-id-format'
 import {
   groupLabel,
   moveCard,
@@ -717,6 +718,21 @@ function BoardCard({
           }
           // rollup 배지는 아직 없다 — 값이 행에 없어서 카드마다 따로 물어야 한다(표 · 목록은 5c-2 가 그린다 · §7).
           if (column.type === 'rollup') return null
+          // 고유 ID 는 행에 있다 — 번호를 그대로 그린다(2a-1).
+          if (column.type === 'unique_id') {
+            const id = formatUniqueId(column.uniqueId.prefix, row.uniqueSeq)
+            if (id === '') return null
+            return (
+              <span
+                key={column.propertyId}
+                title={column.name}
+                data-testid="db-board-badge"
+                className="max-w-full truncate text-xs tabular-nums text-neutral-500 dark:text-neutral-400"
+              >
+                {id}
+              </span>
+            )
+          }
           const value = readCell(column.type, row.properties[column.propertyId])
           if (value.type === 'checkbox' ? !value.checkbox : isEmptyValue(value)) return null
           return (

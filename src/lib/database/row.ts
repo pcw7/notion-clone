@@ -66,6 +66,7 @@ import {
   type CellValue,
   type MvpPropertyType,
 } from './property-types.ts'
+import { issueUniqueSeq } from './unique-id.ts'
 
 /** 한 번에 읽는 행 수. 뷰의 "더 보기"는 W8-b 다. */
 export const DEFAULT_ROW_LIMIT = 50
@@ -85,6 +86,11 @@ export type RowSummary = {
   readonly orderKey: string
   /** `properties_cache` 를 그대로 준다 — 트리거가 유지하는 읽기 모델이다. */
   readonly properties: Readonly<Record<string, unknown>>
+  /**
+   * 고유 ID 의 번호(`page.unique_seq` · 2a-1). 셀이 아니라 행에 있다(불변식 C1) — 접두사는 컬럼(`UniqueIdColumn`)이 싣는다.
+   * ID 프로퍼티가 없던 동안 만든 행 · 템플릿은 null.
+   */
+  readonly uniqueSeq: number | null
   readonly createdAt: Date
   readonly lastEditedAt: Date
   /** `block.version` [X-6]. 낙관적 잠금에 쓴다. */
@@ -419,6 +425,8 @@ export async function createRowIn(
       dataSourceId,
       isTemplate,
     ])
+    // 고유 ID — 행을 넣은 **뒤에** 묻는다(`unique-id.ts` 머리말의 잠금 순서). 템플릿은 받지 않는다(불변식 U2).
+    if (!isTemplate) await issueUniqueSeq(tx, dataSourceId, rowId)
 
     if (prepared.length > 0) {
       await writeCells(tx, rowId, prepared)
@@ -551,6 +559,8 @@ type RowRow = {
   properties_cache: Record<string, unknown> | null
   properties: { title?: unknown } | null
   page_icon: unknown
+  /** bigint 라 pg 가 문자열로 준다. */
+  unique_seq: string | null
   created_at: Date
   last_edited_at: Date
   version: string
@@ -574,6 +584,7 @@ function toRowSummary(row: RowRow): RowSummary {
     icon: readPageIcon(row.page_icon),
     orderKey: row.order_key,
     properties: row.properties_cache ?? {},
+    uniqueSeq: row.unique_seq === null ? null : Number(row.unique_seq),
     createdAt: row.created_at,
     lastEditedAt: row.last_edited_at,
     version: row.version,
@@ -583,7 +594,7 @@ function toRowSummary(row: RowRow): RowSummary {
 export async function readRow(tx: Tx, rowId: string): Promise<RowSummary | null> {
   const row = await tx.queryMaybe<RowRow>(
     `SELECT b.id, b.order_key, p.properties_cache, b.properties, b.format -> 'page_icon' AS page_icon,
-            b.created_at, b.last_edited_at, b.version
+            p.unique_seq, b.created_at, b.last_edited_at, b.version
        FROM page p JOIN block b ON b.id = p.id
       WHERE p.id = $1`,
     [rowId],
@@ -621,7 +632,7 @@ export async function listRows(
 
     const rows = await tx.query<RowRow>(
       `SELECT b.id, b.order_key, p.properties_cache, b.properties, b.format -> 'page_icon' AS page_icon,
-              b.created_at, b.last_edited_at, b.version
+              p.unique_seq, b.created_at, b.last_edited_at, b.version
          FROM page p
          JOIN block b ON b.id = p.id
         WHERE p.data_source_id = $1

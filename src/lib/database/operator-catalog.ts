@@ -17,17 +17,17 @@
  */
 
 import { withReadTransaction } from '../db/tx.ts'
-import { isMvpPropertyType, type MvpPropertyType } from './property-types.ts'
+import { isFilterableType, type FilterableType } from './filter.ts'
 
 export type OperatorCatalogEntry = {
-  readonly propertyType: MvpPropertyType
+  readonly propertyType: FilterableType
   readonly operator: string
   /** 값이 몇 개 필요한가. 0 이면 화면이 값 입력칸을 그리지 않는다. */
   readonly arity: 0 | 1
   readonly label: string
 }
 
-/** 타입별로 `order_idx` 순. MVP 밖 타입의 행은 싣지 않는다(고를 수 없는 것을 보여주지 않는다). */
+/** 타입별로 `order_idx` 순. 거를 수 없는 타입의 행은 싣지 않는다(고를 수 없는 것을 보여주지 않는다). */
 export async function readOperatorCatalog(): Promise<OperatorCatalogEntry[]> {
   const rows = await withReadTransaction((tx) =>
     tx.query<{ property_type: string; operator: string; arity: number; label_ko: string }>(
@@ -37,9 +37,9 @@ export async function readOperatorCatalog(): Promise<OperatorCatalogEntry[]> {
     ),
   )
   return rows
-    .filter((r) => isMvpPropertyType(r.property_type))
+    .filter((r) => isFilterableType(r.property_type))
     .map((r) => ({
-      propertyType: r.property_type as MvpPropertyType,
+      propertyType: r.property_type as FilterableType,
       operator: r.operator,
       arity: r.arity === 0 ? 0 : 1,
       label: r.label_ko,

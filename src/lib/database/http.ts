@@ -53,6 +53,8 @@ export function propertyFailureStatus(reason: PropertyFailure): number {
     case 'schema_conflict':
     case 'too_many_properties':
     case 'locked':
+    // ID 프로퍼티는 하나뿐이다(U1) — 입력이 아니라 지금 상태가 허락하지 않는다. 있는 것을 지우면 같은 요청이 통과한다.
+    case 'unique_id_exists':
       return 409
     case 'invalid_name':
     case 'invalid_color':
@@ -200,6 +202,8 @@ export type RowJson = {
   /** 행 페이지의 아이콘(8c-3a) — 없으면 null(화면이 기본 글리프를 고른다). */
   readonly icon: PageIcon | null
   readonly properties: Readonly<Record<string, unknown>>
+  /** 고유 ID 의 번호(2a-1 · `page.unique_seq`). 접두사는 컬럼에 있다. 없으면 null. */
+  readonly uniqueSeq: number | null
   readonly lastEditedAt: string
   readonly version: string
 }
@@ -210,6 +214,7 @@ export function rowJson(row: {
   readonly title: string
   readonly icon: PageIcon | null
   readonly properties: Readonly<Record<string, unknown>>
+  readonly uniqueSeq: number | null
   readonly lastEditedAt: Date
   readonly version: string
 }): RowJson {
@@ -218,6 +223,7 @@ export function rowJson(row: {
     title: row.title,
     icon: row.icon,
     properties: row.properties,
+    uniqueSeq: row.uniqueSeq,
     lastEditedAt: row.lastEditedAt.toISOString(),
     version: row.version,
   }

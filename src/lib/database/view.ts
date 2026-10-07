@@ -245,9 +245,10 @@ type ViewRow = {
 async function readColumns(tx: Tx, viewId: string): Promise<ViewColumn[]> {
   const rows = await tx.query<ColumnRow>(
     `SELECT vp.property_id, p.name, p.type::text AS type, p.config,
-            vp.visible, vp.order_idx, vp.width, vp.wrap
+            vp.visible, vp.order_idx, vp.width, vp.wrap, ds.unique_id_prefix
        FROM view_property vp
        JOIN property p ON p.id = vp.property_id
+       JOIN data_source ds ON ds.id = p.data_source_id
       WHERE vp.view_id = $1 AND p.deleted_at IS NULL
       ORDER BY vp.order_idx, vp.property_id`,
     [viewId],
@@ -265,8 +266,9 @@ async function readColumns(tx: Tx, viewId: string): Promise<ViewColumn[]> {
 export async function readRecordColumns(tx: Tx, dataSourceId: string): Promise<ViewColumn[]> {
   const rows = await tx.query<ColumnRow>(
     `SELECT p.id AS property_id, p.name, p.type::text AS type, p.config,
-            true AS visible, p.order_idx, NULL::int AS width, false AS wrap
+            true AS visible, p.order_idx, NULL::int AS width, false AS wrap, ds.unique_id_prefix
        FROM property p
+       JOIN data_source ds ON ds.id = p.data_source_id
       WHERE p.data_source_id = $1 AND p.deleted_at IS NULL
       ORDER BY p.order_idx, p.id`,
     [dataSourceId],
@@ -283,6 +285,8 @@ type ColumnRow = {
   order_idx: string
   width: number | null
   wrap: boolean
+  /** 표(data source)의 고유 ID 접두사 — `unique_id` 컬럼만 쓴다. */
+  unique_id_prefix: string | null
 }
 
 /** 읽은 줄 → 컬럼. 뷰의 컬럼과 행의 속성 목록이 같은 함수로 만든다(옵션 · relation · rollup 을 읽는 곳이 한 곳). */
@@ -315,6 +319,10 @@ async function toColumns(tx: Tx, rows: readonly ColumnRow[]): Promise<ViewColumn
       const rollup = rollupOf(r.config)
       // 값은 여기서 읽지 않는다 — 읽을 때 계산하고(`rollup.ts` `computeRollups`) 보는 사람마다 다르다.
       if (rollup !== null) columns.push({ ...base, type: 'rollup', rollup })
+      continue
+    }
+    if (r.type === 'unique_id') {
+      columns.push({ ...base, type: 'unique_id', uniqueId: { prefix: r.unique_id_prefix } })
       continue
     }
   }
