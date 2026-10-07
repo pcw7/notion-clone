@@ -11405,6 +11405,25 @@ async function main() {
       await sleep(1000)
     }
 
+    if (sectionIf('링크 소독 (보안 · F-01-03)')) {
+      // 저장 계약은 링크 주소의 길이만 본다 — API · 협업 참여자는 `javascript:` 링크를 쓸 수 있다. 편집기는 그런 주소에 href 를 달지
+      // 않는다(누르면 그 사람의 세션으로 스크립트가 돈다). 받는 주소는 그대로 링크다. 자기 데이터를 스스로 만든다.
+      const stamp = Date.now()
+      const lPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
+        method: 'POST', headers: authed, body: JSON.stringify({ title: `링크 소독 ${stamp}` }),
+      })).json()).page.id
+      const linkRun = (text, url) => ({ ...textRun(text), href: url, text: { content: text, link: { url } } })
+      const lid = randomUUID()
+      const saved = await saveBody(lPage, { blocks: [{ id: lid, type: 'paragraph', title: [linkRun('안전', 'https://example.com/a'), textRun(' · '), linkRun('위험', 'javascript:alert(1)')], properties: {}, format: {}, children: [] }] })
+      check('전제 — 저장 계약은 javascript: 링크를 받는다(길이만 본다)', saved?.ok !== false)
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${lPage}` })
+      await waitFor(`document.querySelectorAll('[data-block-id="${lid}"] a').length === 2`, 15000)
+      const anchors = await evaluate(`[...document.querySelectorAll('[data-block-id="${lid}"] a')].map((a) => ({ t: a.textContent, href: a.getAttribute('href'), unsafe: a.getAttribute('data-unsafe-href') }))`)
+      check('★ 받는 주소는 링크 — href 그대로', anchors[0]?.t === '안전' && anchors[0]?.href === 'https://example.com/a', JSON.stringify(anchors))
+      check('★ javascript: 링크에는 href 가 없다 — 글자는 남는다', anchors[1]?.t === '위험' && anchors[1]?.href === null && anchors[1]?.unsafe === 'true', JSON.stringify(anchors))
+      await sleep(500)
+    }
+
     section('전체')
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))
     const serverErrors = serverOutput.split('\n').filter((l) => l.includes('⨯'))
