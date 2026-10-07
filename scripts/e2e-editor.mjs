@@ -10297,13 +10297,14 @@ async function main() {
           (await waitFor(`document.querySelectorAll('[data-testid="import-page-link"]').length === 2`, 15000))
             && JSON.stringify(await titles()) === JSON.stringify([`가져온 회의록 ${x}`, `메모-${x}`]),
           JSON.stringify(await titles()))
-        check('옮기지 못한 것(표)을 말한다', String(await evaluate(`document.querySelector('[data-testid="import-losses"]')?.textContent ?? ''`)).includes('표'))
+        // 표는 이제 표로 옮긴다(Phase 2 1d-3) — 잃은 것으로 말하지 않는다.
+        check('표는 옮기지 못한 것이 아니다(1d-3)', !String(await evaluate(`document.querySelector('[data-testid="import-losses"]')?.textContent ?? ''`)).includes('표'))
 
         await clickSelector('[data-testid="import-page-link"]')
-        check('★ 링크로 연 페이지 — 제목과 본문(할 일 · 표는 문단으로)',
+        check('★ 링크로 연 페이지 — 제목과 본문(할 일 · 표는 표로 — 1d-3)',
           await waitFor(`document.querySelector('input[aria-label="페이지 제목"]')?.value === ${JSON.stringify(`가져온 회의록 ${x}`)}
             && (document.querySelector('.blk-editor')?.textContent ?? '').includes('끝난 일 ${x}')
-            && (document.querySelector('.blk-editor')?.textContent ?? '').includes('가 | 나')`, 15000),
+            && JSON.stringify([...document.querySelectorAll('.blk-editor .blk-table tr')].map((tr) => [...tr.querySelectorAll('td')].map((td) => td.textContent))) === JSON.stringify([['칸', '값'], ['가', '나']])`, 15000),
           String(await evaluate(`document.querySelector('.blk-editor')?.textContent?.slice(0, 120) ?? null`)))
       } finally {
         rmSync(dir, { recursive: true, force: true })
@@ -11086,17 +11087,32 @@ async function main() {
         }
         return [false, got]
       }
+      // 포인터를 그 셀에 — 손잡이가 그 행 · 열에 설 때까지 다시 잰다. 열린 직후 머리가 늦게 그려져 표가 밀리면, 먼저 잰 자리가
+      // 다른 행을 가리켜 엉뚱한 행에 넣는다(1e-1 의 전체 판에서 겪었다 — 첫 행 대신 둘째 행 아래에 들어갔다).
       const hoverCell = async (row, column) => {
-        const r = await evaluate(`(() => {
-          const tr = document.querySelectorAll('[data-block-id="${g.table}"] .blk-table tr')[${row}]
-          const td = tr?.querySelectorAll('td')[${column}]
-          if (!td) return null
-          const b = td.getBoundingClientRect()
-          return { x: b.x + b.width / 2, y: b.y + b.height / 2 }
-        })()`)
-        if (r) {
+        let r = null
+        for (let i = 0; i < 10; i += 1) {
+          r = await evaluate(`(() => {
+            const tr = document.querySelectorAll('[data-block-id="${g.table}"] .blk-table tr')[${row}]
+            const td = tr?.querySelectorAll('td')[${column}]
+            if (!td) return null
+            const b = td.getBoundingClientRect()
+            return { x: b.x + b.width / 2, y: b.y + b.height / 2 }
+          })()`)
+          if (!r) return null
           await move(r.x + 1, r.y)
           await move(r.x, r.y)
+          const aligned = await waitFor(`(() => {
+            const tr = document.querySelectorAll('[data-block-id="${g.table}"] .blk-table tr')[${row}]?.getBoundingClientRect()
+            const td = document.querySelectorAll('[data-block-id="${g.table}"] .blk-table tr')[${row}]?.querySelectorAll('td')[${column}]?.getBoundingClientRect()
+            const rh = document.querySelector('.blk-table-handle[data-axis="row"]')?.getBoundingClientRect()
+            const ch = document.querySelector('.blk-table-handle[data-axis="column"]')?.getBoundingClientRect()
+            if (!tr || !td || !rh || !ch) return false
+            const ry = rh.y + rh.height / 2
+            const cx = ch.x + ch.width / 2
+            return ry >= tr.top && ry <= tr.bottom && cx >= td.left && cx <= td.right
+          })()`, 1000)
+          if (aligned) return r
         }
         return r
       }
