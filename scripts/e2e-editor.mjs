@@ -11382,7 +11382,8 @@ async function main() {
       await clickInToolbar('button[aria-label="색"]')
       await waitFor(`!!document.querySelector('${TOOLBAR} [role="menu"][aria-label="색"]')`, 3000)
       await clickInToolbar('[role="menuitemradio"][aria-label="빨강"]')
-      const [red, redGot] = await serverRuns((runs) => runs.some((r) => r.t === '굵게' && r.b && r.c === 'red'))
+      // 색만 본다 — 굵게의 결과에 기대지 않는다(화면 반사실이 두 끊기를 한 판에서 가른다).
+      const [red, redGot] = await serverRuns((runs) => runs.some((r) => r.t === '굵게' && r.c === 'red'))
       check('★ 색 → 빨강 — 그 글자만(인라인 · 블록 색이 아니다)', red && (await readBody(fPage)).doc.blocks[0]?.format?.block_color === undefined, JSON.stringify(redGot))
 
       await selectText(3, 5)
