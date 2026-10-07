@@ -105,10 +105,13 @@ export function activeFormats(state: Parameters<Command>[0]): BooleanMark[] {
   return active
 }
 
-/** 이 선택에 걸린 색. 없으면 'default'. */
+/**
+ * 이 선택에 걸린 색. 없으면 'default'. 고른 범위면 **그 첫 글자**의 색이다 — `$from.marks()` 는 서식 경계에서 앞 글자의 마크를
+ * 돌려줘, 색 바로 뒤에서 시작한 선택이 색으로 보였다(1e-2 의 툴바 검사가 찾았다).
+ */
 export function activeColor(state: Parameters<Command>[0]): Color {
   const { $from, empty } = state.selection
-  const marks = empty ? (state.storedMarks ?? $from.marks()) : $from.marks()
+  const marks = empty ? (state.storedMarks ?? $from.marks()) : (state.doc.nodeAt($from.pos)?.marks ?? $from.marks())
   const found = blockSchema.marks.color.isInSet(marks)
   const value = found?.attrs.color
   return isColor(value) ? value : 'default'

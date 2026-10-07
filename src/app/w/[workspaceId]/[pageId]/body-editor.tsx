@@ -40,10 +40,12 @@ import { codeBlockInfo, setCodeCaptionCommand, setCodeLanguageCommand } from '@/
 import { equationBlockInfo, setEquationExpressionCommand } from '@/lib/editor/equation-block'
 import {
   findInlineEquation,
+  insertInlineEquationCommand,
   removeEmptyInlineEquationCommand,
   setInlineEquationCommand,
   type InlineEquationRef,
 } from '@/lib/editor/inline-equation'
+import { formatToolbarState, type FormatToolbarState } from '@/lib/editor/format-toolbar'
 import { EQUATION_TYPE } from '@/lib/block/equation'
 import { syncReadOnlyTabStops } from '@/lib/editor/node-views'
 import { setBreadcrumbTrail } from '@/lib/editor/breadcrumb-plugin'
@@ -71,6 +73,7 @@ import { uploadImageFile } from '@/lib/file/upload-client'
 import type { PageIcon } from '@/lib/block/page-icon'
 import { BlockGutter } from './block-gutter'
 import { TableControls } from './table-controls'
+import { FormatToolbar, type FormatToolbarAt } from './format-toolbar'
 import { CodeCaptionEditor } from './code-caption-editor'
 import { CodeLanguageMenu } from './code-language-menu'
 import { EquationEditor } from './equation-editor'
@@ -795,6 +798,43 @@ export function BodyEditor({
   const openEquationUi = useCallback((blockId: string) => openEquationAt({ blockId, index: null }), [openEquationAt])
   const openInlineEquationUi = useCallback((ref: InlineEquationRef) => openEquationAt(ref), [openEquationAt])
 
+  // ── 서식 툴바(Phase 2 1e-2 · F-01-03) ───────────────────────────────
+  // 고른 글자 위에 선다(`lib/editor/format-toolbar.ts` 가 "언제"를 정한다). 끄는 동안(마우스를 누른 채)은 서지 않는다 — 놓을 때 잰다.
+  // 편집기 밖으로 포커스가 나가면 접는다 — 툴바 자신(링크 입력칸)으로 가는 것은 빼고.
+  // 뷰를 함께 담는다 — 렌더 중에 `viewRef.current` 를 읽지 않는다(`block-gutter.tsx` 의 메뉴와 같다).
+  const [formatBar, setFormatBar] = useState<{
+    readonly key: string
+    readonly at: FormatToolbarAt
+    readonly state: FormatToolbarState
+    readonly view: EditorView
+  } | null>(null)
+  const [linkRequest, setLinkRequest] = useState(0)
+  const selectingRef = useRef(false)
+  const syncFormatToolbar = useCallback((view: EditorView) => {
+    const frame = frameRef.current
+    const state = view.editable && !selectingRef.current ? formatToolbarState(view.state) : null
+    if (state === null || !frame) {
+      setFormatBar((prev) => (prev === null ? prev : null))
+      return
+    }
+    const { from, to } = view.state.selection
+    const a = view.coordsAtPos(from)
+    const b = view.coordsAtPos(to)
+    const box = frame.getBoundingClientRect()
+    const sameLine = Math.abs(a.top - b.top) < 4
+    const at: FormatToolbarAt = {
+      top: Math.min(a.top, b.top) - box.top,
+      bottom: Math.max(a.bottom, b.bottom) - box.top,
+      center: (sameLine ? (a.left + b.right) / 2 : a.left) - box.left,
+    }
+    const key = `${from}-${to}`
+    setFormatBar((prev) =>
+      prev !== null && prev.view === view && prev.key === key && prev.at.top === at.top && prev.at.center === at.center && JSON.stringify(prev.state) === JSON.stringify(state)
+        ? prev
+        : { key, at, state, view },
+    )
+  }, [])
+
   /**
    * 닫는다. 블록 수식은 코드 오버레이와 같다 — 돌려줄 때 캐럿을 옮기지 않고, 포커스 없이 열었으면 그 블록을 고른다. **인라인 수식은 캐럿을
    * 수식 바로 뒤에 둔다** — 누른 수식은 노드 선택이라 그대로 두면 다음 글자가 수식을 덮어쓴다. 새로 넣은 빈 수식을 저장하지 않고 닫았으면
@@ -1010,6 +1050,8 @@ export function BodyEditor({
       openEquation: (id) => openEquationUi(id),
       // 인라인 수식(Phase 2 1b) — 누르거나 골라서 Enter · Ctrl/Cmd+Shift+E 로 넣은 빈 수식.
       openInlineEquation: (ref) => openInlineEquationUi(ref),
+      // 링크(Ctrl/Cmd+K · 1e-2) — 서식 툴바의 링크 입력칸을 연다. 고른 글자가 없으면 툴바가 없어 아무 일도 없다.
+      promptLink: () => setLinkRequest((n) => n + 1),
       // 목차의 항목(8b-1) — 그 블록을 보여 주고(접힌 조상을 펼친다) 화면 위쪽으로 굴린다. 주소의 해시도 그 블록으로 —
       // `replaceState` 라 `hashchange` 가 나지 않고(두 번 보이지 않는다) 뒤로 가기에 쌓이지 않는다.
       // breadcrumb 블록의 링크(8b-2) — 앱 안에서 옮겨 간다.
@@ -1057,6 +1099,7 @@ export function BodyEditor({
           syncCommentTarget(v)
           remeasureCodeUi(v)
           remeasureEquationUi(v)
+          syncFormatToolbar(v)
           checkUnknownMentions(v)
           // 같은 값이면 리렌더하지 않는다 — 트랜잭션마다 불리는 자리다.
           const count = selectedBlockCount(v.state)
@@ -1066,6 +1109,17 @@ export function BodyEditor({
       })
       viewRef.current = view
       // 한글 IME — 조합 중에는 후보를 묻지 않고, 조합이 끝나면 그때의 쿼리로 묻는다.
+      // 서식 툴바(1e-2) — 끄는 동안은 접고 놓을 때 잰다 · 편집기 밖으로 포커스가 나가면 접는다(툴바 자신은 빼고).
+      view.dom.addEventListener('mousedown', () => {
+        selectingRef.current = true
+        setFormatBar(null)
+      })
+      view.dom.addEventListener('focusout', (event) => {
+        const next = event.relatedTarget
+        if (next instanceof Element && next.closest('.blk-format-toolbar')) return
+        setFormatBar(null)
+      })
+      view.dom.addEventListener('focusin', () => syncFormatToolbar(view))
       view.dom.addEventListener('compositionstart', () => {
         composingIme.current = true
       })
@@ -1141,6 +1195,13 @@ export function BodyEditor({
     }
     window.addEventListener('dragover', swallowFileDrop)
     window.addEventListener('drop', swallowFileDrop)
+    // 서식 툴바(1e-2) — 끄기를 끝낸 자리(편집기 밖에서 놓아도)에서 잰다.
+    const endSelecting = (): void => {
+      if (!selectingRef.current) return
+      selectingRef.current = false
+      if (viewRef.current) syncFormatToolbar(viewRef.current)
+    }
+    window.addEventListener('mouseup', endSelecting)
 
     return () => {
       disposed = true
@@ -1148,6 +1209,7 @@ export function BodyEditor({
       window.removeEventListener('hashchange', reveal)
       window.removeEventListener('dragover', swallowFileDrop)
       window.removeEventListener('drop', swallowFileDrop)
+      window.removeEventListener('mouseup', endSelecting)
       void connectionRef.current?.destroy()
       connectionRef.current = null
       viewRef.current?.destroy()
@@ -1321,6 +1383,23 @@ export function BodyEditor({
 
         {/* 표의 손잡이(Phase 2 1d-2) — 행 · 열 넣기 · 지우기 · 끝에 더하기. 읽기 전용이면 그리지 않는다(컴포넌트가 본다). */}
         <TableControls viewRef={viewRef} frameRef={frameRef} deps={gutterDeps} />
+
+        {/* 서식 툴바(Phase 2 1e-2) — 고른 글자 위. 새 선택이면 처음 모양으로(key). */}
+        {formatBar !== null && editable && (
+          <FormatToolbar
+            key={formatBar.key}
+            view={formatBar.view}
+            at={formatBar.at}
+            state={formatBar.state}
+            linkRequest={linkRequest}
+            onEquation={() => {
+              const view = viewRef.current
+              if (!view) return
+              insertInlineEquationCommand(openInlineEquationUi)(view.state, view.dispatch.bind(view))
+              view.focus()
+            }}
+          />
+        )}
 
         {/* 코드 블록의 오버레이(8a-2) — 편집기 밖 · 프레임 좌표. 읽기 전용이 되면 그리지 않는다(다시 열면 새로 연다). */}
         {editable && codeUi?.kind === 'language' && (
