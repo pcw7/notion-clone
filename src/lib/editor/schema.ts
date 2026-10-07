@@ -53,6 +53,7 @@ import {
   type BlockType,
   type BodyBlockType,
 } from '../block/types.ts'
+import { isSafeLinkUrl } from '../contracts/link-url.ts'
 import { COLORS } from '../contracts/rich-text.ts'
 
 /** 자식 페이지 참조 노드의 이름. 우리 모델의 `type='page'` 다. */
@@ -374,7 +375,15 @@ const marks: Record<string, MarkSpec> = {
   link: {
     attrs: { href: {} },
     inclusive: false, // 링크 끝에서 타이핑하면 링크가 아니어야 한다
-    toDOM: (mark) => ['a', { href: String(mark.attrs.href) }, 0],
+    // 누를 수 없는 주소(`javascript:` · `data:` …)에는 `href` 를 달지 않는다(`contracts/link-url.ts`). 저장 계약은 길이만 보고 협업
+    // 참여자는 Y.Doc 에 무엇이든 쓸 수 있어, 그대로 그리면 읽기 전용 · 공유 화면에서 누른 사람의 세션으로 스크립트가 돈다(저장형 XSS).
+    // 글자와 마크는 남긴다 — 주소를 고치면 다시 링크가 된다. 클립보드 HTML 도 이 `toDOM` 을 거친다.
+    toDOM: (mark) => {
+      const href: unknown = mark.attrs.href
+      return typeof href === 'string' && isSafeLinkUrl(href)
+        ? ['a', { href }, 0]
+        : ['a', { 'data-unsafe-href': 'true', title: '열 수 없는 주소' }, 0]
+    },
   },
   color: {
     attrs: { color: {} },

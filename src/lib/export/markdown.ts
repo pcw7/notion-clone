@@ -51,6 +51,7 @@ import { TOC_TYPE, headingsOfBlocks, tocEntries, type TocEntry } from '../block/
 import { BREADCRUMB_TYPE } from '../block/breadcrumb.ts'
 import { EQUATION_TYPE, equationDisplayLines } from '../block/equation.ts'
 import { cellsOf, TABLE_TYPE } from '../block/table.ts'
+import { isSafeLinkUrl } from '../contracts/link-url.ts'
 import { PAGE_TYPE, UNSUPPORTED_TYPE } from '../block/types.ts'
 import {
   DEFAULT_ANNOTATIONS,
@@ -232,23 +233,13 @@ function codeSpan(content: string): string {
 
 // ── 링크 ──────────────────────────────────────────────────────────────
 
-const SAFE_LINK_SCHEMES: ReadonlySet<string> = new Set(['http', 'https', 'mailto', 'tel'])
-
 /**
- * 파일에 링크로 남겨도 되는 주소인가.
+ * 파일에 링크로 남겨도 되는 주소인가 — 편집기의 링크와 같은 규칙(`contracts/link-url.ts`).
  *
  * 익스포트 파일은 우리 앱 밖의 렌더러가 연다. `javascript:` 링크를 그대로 두면 그
  * 렌더러의 소독에 기대게 된다. 스킴이 없는 주소(상대 경로 · `#앵커`)는 받는다.
- *
- * 브라우저는 주소의 탭 · 줄바꿈을 **지우고** 해석한다(`java\tscript:`). 그래서 스킴은
- * 제어 문자와 공백을 걷어낸 모양으로 판정한다.
  */
-export function isSafeLinkUrl(url: string): boolean {
-  let probe = ''
-  for (const ch of url) if (ch.charCodeAt(0) > 0x20 && ch !== '\x7f') probe += ch
-  const scheme = /^([A-Za-z][A-Za-z0-9+.-]*):/.exec(probe)
-  return scheme === null || SAFE_LINK_SCHEMES.has(scheme[1].toLowerCase())
-}
+export { isSafeLinkUrl }
 
 /** 링크 목적지. 공백 · 괄호 · 꺾쇠 · 역슬래시 · 따옴표 · 제어 문자를 퍼센트 인코딩한다. */
 function linkDestination(url: string): string {
