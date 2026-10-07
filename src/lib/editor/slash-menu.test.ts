@@ -92,12 +92,12 @@ describe('커맨드 카탈로그', () => {
     assert.equal((MVP_BLOCK_TYPES as readonly string[]).includes('page'), false)
   })
 
-  test('그룹 순서는 기본 블록 → 페이지 → 미디어 → 고급 블록이다', () => {
+  test('그룹 순서는 기본 블록 → 페이지 → 미디어 → 고급 블록 → 색이다(색은 맨 끝 — Phase 2 1e-1)', () => {
     const groups: string[] = []
     for (const c of SLASH_COMMANDS) {
       if (groups[groups.length - 1] !== c.group) groups.push(c.group)
     }
-    assert.deepEqual(groups, ['기본 블록', '페이지', '미디어', '고급 블록'])
+    assert.deepEqual(groups, ['기본 블록', '페이지', '미디어', '고급 블록', '색'])
   })
 
   test('모든 커맨드에 한글 별칭이 있다', () => {

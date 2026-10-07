@@ -520,6 +520,8 @@ async function main() {
       Delete: [46, 'Delete'],
       // 인라인 수식(Phase 2 1b) — `Mod+Shift+E`.
       e: [69, 'KeyE'],
+      // 마지막 색 다시 쓰기(Phase 2 1e-1) — `Mod+Shift+H`.
+      h: [72, 'KeyH'],
     }
     const SHIFT = 8
     // `Mod` 는 Mac 에서 Cmd(4), 그 외 Ctrl(2). 헤드리스 브라우저의 플랫폼을 따른다.
@@ -10295,13 +10297,14 @@ async function main() {
           (await waitFor(`document.querySelectorAll('[data-testid="import-page-link"]').length === 2`, 15000))
             && JSON.stringify(await titles()) === JSON.stringify([`가져온 회의록 ${x}`, `메모-${x}`]),
           JSON.stringify(await titles()))
-        check('옮기지 못한 것(표)을 말한다', String(await evaluate(`document.querySelector('[data-testid="import-losses"]')?.textContent ?? ''`)).includes('표'))
+        // 표는 이제 표로 옮긴다(Phase 2 1d-3) — 잃은 것으로 말하지 않는다.
+        check('표는 옮기지 못한 것이 아니다(1d-3)', !String(await evaluate(`document.querySelector('[data-testid="import-losses"]')?.textContent ?? ''`)).includes('표'))
 
         await clickSelector('[data-testid="import-page-link"]')
-        check('★ 링크로 연 페이지 — 제목과 본문(할 일 · 표는 문단으로)',
+        check('★ 링크로 연 페이지 — 제목과 본문(할 일 · 표는 표로 — 1d-3)',
           await waitFor(`document.querySelector('input[aria-label="페이지 제목"]')?.value === ${JSON.stringify(`가져온 회의록 ${x}`)}
             && (document.querySelector('.blk-editor')?.textContent ?? '').includes('끝난 일 ${x}')
-            && (document.querySelector('.blk-editor')?.textContent ?? '').includes('가 | 나')`, 15000),
+            && JSON.stringify([...document.querySelectorAll('.blk-editor .blk-table tr')].map((tr) => [...tr.querySelectorAll('td')].map((td) => td.textContent))) === JSON.stringify([['칸', '값'], ['가', '나']])`, 15000),
           String(await evaluate(`document.querySelector('.blk-editor')?.textContent?.slice(0, 120) ?? null`)))
       } finally {
         rmSync(dir, { recursive: true, force: true })
@@ -11084,17 +11087,32 @@ async function main() {
         }
         return [false, got]
       }
+      // 포인터를 그 셀에 — 손잡이가 그 행 · 열에 설 때까지 다시 잰다. 열린 직후 머리가 늦게 그려져 표가 밀리면, 먼저 잰 자리가
+      // 다른 행을 가리켜 엉뚱한 행에 넣는다(1e-1 의 전체 판에서 겪었다 — 첫 행 대신 둘째 행 아래에 들어갔다).
       const hoverCell = async (row, column) => {
-        const r = await evaluate(`(() => {
-          const tr = document.querySelectorAll('[data-block-id="${g.table}"] .blk-table tr')[${row}]
-          const td = tr?.querySelectorAll('td')[${column}]
-          if (!td) return null
-          const b = td.getBoundingClientRect()
-          return { x: b.x + b.width / 2, y: b.y + b.height / 2 }
-        })()`)
-        if (r) {
+        let r = null
+        for (let i = 0; i < 10; i += 1) {
+          r = await evaluate(`(() => {
+            const tr = document.querySelectorAll('[data-block-id="${g.table}"] .blk-table tr')[${row}]
+            const td = tr?.querySelectorAll('td')[${column}]
+            if (!td) return null
+            const b = td.getBoundingClientRect()
+            return { x: b.x + b.width / 2, y: b.y + b.height / 2 }
+          })()`)
+          if (!r) return null
           await move(r.x + 1, r.y)
           await move(r.x, r.y)
+          const aligned = await waitFor(`(() => {
+            const tr = document.querySelectorAll('[data-block-id="${g.table}"] .blk-table tr')[${row}]?.getBoundingClientRect()
+            const td = document.querySelectorAll('[data-block-id="${g.table}"] .blk-table tr')[${row}]?.querySelectorAll('td')[${column}]?.getBoundingClientRect()
+            const rh = document.querySelector('.blk-table-handle[data-axis="row"]')?.getBoundingClientRect()
+            const ch = document.querySelector('.blk-table-handle[data-axis="column"]')?.getBoundingClientRect()
+            if (!tr || !td || !rh || !ch) return false
+            const ry = rh.y + rh.height / 2
+            const cx = ch.x + ch.width / 2
+            return ry >= tr.top && ry <= tr.bottom && cx >= td.left && cx <= td.right
+          })()`, 1000)
+          if (aligned) return r
         }
         return r
       }
@@ -11249,6 +11267,57 @@ async function main() {
       await paste({ 'text/plain': '개\n더' })
       const [inside, insideGot] = await serverTable({ props: { has_column_header: true }, grid: [['품목', '수량'], [word, '3개\n더']] }, true)
       check('★ 셀 안에 글자를 붙이면 그 셀의 글자 — 줄바꿈도 셀 안에', inCell && inside, insideGot)
+      await sleep(1000)
+    }
+
+    if (sectionIf('블록 색 — / 명령 · 마지막 색 (Phase 2 1e-1 · F-01-21)')) {
+      const toPlainTextOfFirst = (body) => (body.doc.blocks[0]?.title ?? []).map((r) => r.plain_text ?? '').join('')
+      // 줄 끝에서 `/빨강 배경` → 그 블록 전체가 빨강 배경. 다른 줄에서 Ctrl/Cmd+Shift+H → 마지막으로 쓴 색(빨강 배경)이 그 블록에.
+      // 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
+      const stamp = Date.now()
+      const cPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
+        method: 'POST', headers: authed, body: JSON.stringify({ title: `블록 색 ${stamp}` }),
+      })).json()).page.id
+      const cz = { first: randomUUID(), second: randomUUID() }
+      const para = (id, text) => ({ id, type: 'paragraph', title: [textRun(text)], properties: {}, format: {}, children: [] })
+      await saveBody(cPage, { blocks: [para(cz.first, '색 줄'), para(cz.second, '다른 줄')] })
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${cPage}` })
+      await waitFor(`!!document.querySelector('[data-block-id="${cz.second}"] p') && document.querySelector('.blk-editor')?.getAttribute('contenteditable') === 'true'`, 15000)
+      const colorOnServer = async (id, want) => {
+        let got = null
+        for (let i = 0; i < 60; i += 1) {
+          const block = (await readBody(cPage)).doc.blocks.find((b) => b.id === id)
+          got = block?.format?.block_color ?? null
+          if (got === want) return [true, got]
+          await sleep(150)
+        }
+        return [false, got]
+      }
+      const caretAtEnd = async (id) => {
+        let inside = false
+        for (let i = 0; i < 20 && !inside; i += 1) {
+          await clickSelector(`[data-block-id="${id}"] p`)
+          inside = await waitFor(`document.activeElement?.classList.contains('ProseMirror') && document.querySelector('[data-block-id="${id}"]')?.contains(window.getSelection()?.anchorNode ?? null)`, 500)
+        }
+        await key('End')
+        return inside
+      }
+
+      check('전제 — 첫 줄 끝에 캐럿', await caretAtEnd(cz.first))
+      // 메뉴는 쿼리의 공백에서 닫힌다(F-01-04 의 종료 조건) — 이름은 붙여 친다(`/제목1` 과 같다).
+      await typeText(' /')
+      await typeText('빨강배경')
+      await waitFor(`!!document.querySelector('[role="listbox"][aria-label="블록 삽입"]')`, 3000)
+      await key('Enter')
+      check('★ /빨강배경 — 그 블록 전체가 빨강 배경으로 그려진다',
+        await waitFor(`document.querySelector('[data-block-id="${cz.first}"] > [data-block-type]')?.getAttribute('data-color') === 'red_background'`, 3000))
+      const [painted, paintedGot] = await colorOnServer(cz.first, 'red_background')
+      check('★ 서버 — format.block_color · 쳐 둔 /쿼리는 지워졌다', painted && toPlainTextOfFirst(await readBody(cPage)) === '색 줄 ', String(paintedGot))
+
+      check('전제 — 둘째 줄 끝에 캐럿', await caretAtEnd(cz.second))
+      await key('h', MOD | SHIFT)
+      const [again, againGot] = await colorOnServer(cz.second, 'red_background')
+      check('★ Ctrl/Cmd+Shift+H — 마지막으로 쓴 색이 그 블록에', again, String(againGot))
       await sleep(1000)
     }
 

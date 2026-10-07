@@ -34,13 +34,15 @@ import type { Command, EditorState } from '@tiptap/pm/state'
 
 import { CODE_TYPE } from '../block/code.ts'
 import { COLUMN_HEADER_KEY, ROW_HEADER_KEY } from '../block/table.ts'
-import { normalizeFormat, PAGE_TYPE, specOf, type BlockFormat, type BodyBlockType } from '../block/types.ts'
+import { normalizeFormat, type BlockFormat, type BodyBlockType } from '../block/types.ts'
 import { COLORS, type Color } from '../contracts/rich-text.ts'
 import { isUuid } from '../ids.ts'
 import { BlockSelection, isBlockSelection, selectionHasPageRef } from './block-selection.ts'
 import { separateUndoStep } from './code-block.ts'
 import { applyTurnInto, type CommandDeps } from './commands.ts'
 import { blockTypeOf, containerAt, findContainerById } from './pm-blocks.ts'
+import { colorable, setBlockColorAt } from './block-color.ts'
+import { colorLabel } from './color-names.ts'
 import { blockTypeLabel } from './slash-menu.ts'
 import { tableShape, type TableEdit } from './table.ts'
 
@@ -65,24 +67,8 @@ export const TURN_INTO_TYPES: readonly BodyBlockType[] = [
   'code',
 ]
 
-const COLOR_NAMES: Readonly<Record<string, string>> = {
-  gray: '회색',
-  brown: '갈색',
-  orange: '주황',
-  yellow: '노랑',
-  green: '초록',
-  blue: '파랑',
-  purple: '보라',
-  pink: '분홍',
-  red: '빨강',
-}
-
-/** 색의 화면 이름. `default` 는 "색 없음"이다 — 계약에 `default_background` 가 없는 것과 같은 이유. */
-export function colorLabel(color: Color): string {
-  if (color === 'default') return '기본'
-  if (color.endsWith('_background')) return `${COLOR_NAMES[color.slice(0, -'_background'.length)]} 배경`
-  return COLOR_NAMES[color] ?? color
-}
+/** 색의 화면 이름 — `color-names.ts` 에 산다(`/` 의 색 명령과 함께 쓴다 · Phase 2 1e-1). */
+export { colorLabel }
 
 export type BlockMenuAction =
   | { readonly kind: 'turn_into'; readonly type: BodyBlockType }
@@ -123,18 +109,6 @@ function selectedBlocks(state: EditorState) {
     const content = container.child(0)
     return [{ pos, id: String(container.attrs.blockId ?? ''), content, type: blockTypeOf(content) }]
   })
-}
-
-/**
- * 블록 색을 지원하는 블록인가.
- *
- * 레지스트리의 `supportsColor` 에 **하위 페이지 참조를 뺀다.** `page` 는 레지스트리상
- * 색을 지원하지만(페이지 자체의 속성), 본문의 참조 노드에 칠한 색은 프로젝터가
- * 쓰지 않는다 — 자식 페이지 행은 "순서와 부모만" 건드린다(`save-page-body.ts`).
- * 칠해진 것처럼 보이다가 새로고침하면 사라진다.
- */
-function colorable(type: ReturnType<typeof blockTypeOf>): boolean {
-  return type !== PAGE_TYPE && specOf(type).supportsColor
 }
 
 /**
@@ -369,15 +343,8 @@ export function setBlockColorCommand(color: Color): Command {
     if (!isBlockSelection(state.selection)) return false
 
     const tr = state.tr
-    for (const b of selectedBlocks(state)) {
-      if (!colorable(b.type)) continue
-      const format = { ...((b.content.attrs.format ?? {}) as BlockFormat) }
-      if (color === 'default') delete format.block_color
-      else format.block_color = color
-      const next = normalizeFormat(b.type, format)
-      if ((b.content.attrs.format as BlockFormat | undefined)?.block_color === next.block_color) continue
-      tr.setNodeMarkup(b.pos + 1, undefined, { ...b.content.attrs, format: next })
-    }
+    // 칠할 수 없는 타입 · 같은 값은 건너뛴다(`setBlockColorAt` — `/` 의 색 명령 · Ctrl/Cmd+Shift+H 와 같은 쓰기).
+    for (const b of selectedBlocks(state)) setBlockColorAt(tr, b.id, color)
     // 바뀐 것이 없어도 true — 메뉴에서 불렀으면 닫히기만 하면 된다.
     if (dispatch && tr.docChanged) dispatch(tr)
     return true
