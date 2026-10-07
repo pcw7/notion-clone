@@ -327,6 +327,50 @@
 .blk-table-add[data-edge='right'] { width: 14px; }
 .blk-table-add:hover { background: rgba(0, 0, 0, 0.05); color: #525252; }
 
+/*
+ * 서식 툴바(Phase 2 1e-2 · `format-toolbar.tsx`) — 고른 글자의 위(자리가 없으면 아래) 가운데. 프레임 기준 절대 자리 · 가운데 맞춤은
+ * transform. 색 고르개는 글자색 · 배경색 두 줄(견본은 블록 메뉴의 `.blk-menu-swatch`).
+ */
+.blk-format-toolbar {
+  position: absolute;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid #e5e5e5;
+  border-radius: 6px;
+  background: #ffffff;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  transform: translate(-50%, -100%);
+  white-space: nowrap;
+}
+.blk-format-toolbar[data-placement='below'] { transform: translate(-50%, 0); }
+.blk-format-button {
+  min-width: 26px;
+  height: 26px;
+  padding: 0 6px;
+  border-radius: 4px;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  line-height: 1;
+}
+.blk-format-button[data-mark='italic'] { font-style: italic; }
+.blk-format-button[data-mark='underline'] { text-decoration: underline; }
+.blk-format-button[data-mark='strikethrough'] { text-decoration: line-through; }
+.blk-format-button[data-mark='code'] { font-family: ui-monospace, monospace; font-weight: 500; }
+.blk-format-button:hover { background: rgba(0, 0, 0, 0.06); }
+.blk-format-button[aria-pressed='true'] { color: #2383e2; background: rgba(35, 131, 226, 0.1); }
+.blk-format-sep { width: 1px; height: 18px; margin: 0 3px; background: #e5e5e5; }
+.blk-format-colors { display: flex; flex-direction: column; gap: 4px; padding: 2px; }
+.blk-format-color-group { display: flex; align-items: center; gap: 2px; }
+.blk-format-color-title { width: 3.25rem; font-size: 0.75rem; color: #737373; }
+.blk-format-color { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 4px; }
+.blk-format-color:hover, .blk-format-color[aria-checked='true'] { background: rgba(0, 0, 0, 0.06); }
+.blk-format-link { display: flex; flex-direction: column; gap: 2px; padding: 2px; }
+.blk-format-link-input { width: 18rem; padding: 3px 6px; border: 1px solid #d4d4d4; border-radius: 4px; font-size: 0.8125rem; }
+.blk-format-link-error { font-size: 0.75rem; color: #dc2626; }
+
 /* 인라인 수식은 span 이다 — 블록 수식(`div.blk-equation` · Phase 2 1a)이 같은 클래스 이름을 쓰므로 태그로 가른다. */
 .blk-mention,
 span.blk-equation {
@@ -918,6 +962,11 @@ span.blk-equation {
     .blk-editor .blk-table[data-row-header='true'] td:first-child { background: #202020; }
     .blk-editor .blk-table td.selectedCell { background: rgba(35, 131, 226, 0.28); }
     .blk-table-handle { border-color: #404040; background: #171717; }
+    .blk-format-toolbar { border-color: #262626; background: #171717; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5); }
+    .blk-format-button:hover, .blk-format-color:hover, .blk-format-color[aria-checked='true'] { background: rgba(255, 255, 255, 0.08); }
+    .blk-format-sep { background: #333333; }
+    .blk-format-link-input { border-color: #404040; background: #0a0a0a; }
+    .blk-format-link-error { color: #fca5a5; }
     .blk-table-add:hover { background: rgba(255, 255, 255, 0.08); color: #d4d4d4; }
     .blk-divider { border-top-color: #262626; }
     .blk-image[data-state='empty'] .blk-image-controls,

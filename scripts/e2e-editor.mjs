@@ -11321,6 +11321,90 @@ async function main() {
       await sleep(1000)
     }
 
+    if (sectionIf('서식 툴바 (Phase 2 1e-2 · F-01-03 · F-01-21)')) {
+      // 글자를 고르면 그 위에 툴바가 선다. 굵게 · 색(빨강)이 그 글자에만 걸리고, Ctrl/Cmd+K 로 연 입력칸에 주소를 치면 https:// 링크가
+      // 걸린다. `javascript:` 는 거부한다. 캐럿만 남으면 툴바가 접힌다. 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
+      const stamp = Date.now()
+      const fPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
+        method: 'POST', headers: authed, body: JSON.stringify({ title: `서식 툴바 ${stamp}` }),
+      })).json()).page.id
+      const fid = randomUUID()
+      await saveBody(fPage, { blocks: [{ id: fid, type: 'paragraph', title: [textRun('굵게 링크 보통')], properties: {}, format: {}, children: [] }] })
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${fPage}` })
+      await waitFor(`!!document.querySelector('[data-block-id="${fid}"] p') && document.querySelector('.blk-editor')?.getAttribute('contenteditable') === 'true'`, 15000)
+      const TOOLBAR = '[role="toolbar"][aria-label="서식"]'
+      let focused = false
+      for (let i = 0; i < 20 && !focused; i += 1) {
+        await clickSelector(`[data-block-id="${fid}"] p`)
+        focused = await waitFor(`document.activeElement?.classList.contains('ProseMirror')`, 500)
+      }
+      check('전제 — 편집기에 캐럿', focused)
+      /** 문단의 글자 [from, to) 를 고른다 — 브라우저의 선택을 바꾸면 편집기가 selectionchange 로 읽는다. */
+      const selectText = (from, to) => evaluate(`(() => {
+        const p = document.querySelector('[data-block-id="${fid}"] p')
+        const walker = document.createTreeWalker(p, NodeFilter.SHOW_TEXT)
+        let at = 0, start = null, end = null
+        for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+          const len = n.textContent.length
+          if (start === null && ${from} <= at + len) start = [n, ${from} - at]
+          if (end === null && ${to} <= at + len) end = [n, ${to} - at]
+          at += len
+        }
+        if (!start || !end) return false
+        window.getSelection().setBaseAndExtent(start[0], start[1], end[0], end[1])
+        return true
+      })()`)
+      const runsOnServer = async () => ((await readBody(fPage)).doc.blocks[0]?.title ?? [])
+        .map((r) => ({ t: r.plain_text, b: r.annotations?.bold === true, c: r.annotations?.color ?? 'default', l: r.text?.link?.url ?? null }))
+      const serverRuns = async (pred) => {
+        let got = null
+        for (let i = 0; i < 60; i += 1) {
+          got = await runsOnServer()
+          if (pred(got)) return [true, got]
+          await sleep(150)
+        }
+        return [false, got]
+      }
+      const clickInToolbar = async (selector) => {
+        const r = await rect(`${TOOLBAR} ${selector}`)
+        if (!r) return false
+        await click(r.x + r.w / 2, r.y + r.h / 2)
+        return true
+      }
+
+      await selectText(0, 2)
+      check('★ 글자를 고르면 서식 툴바가 선다', await waitFor(`!!document.querySelector('${TOOLBAR}')`, 3000))
+      await clickInToolbar('button[aria-label="굵게"]')
+      const [bold, boldGot] = await serverRuns((runs) => runs.some((r) => r.t === '굵게' && r.b))
+      check('★ 굵게 — 고른 글자만 굵다(서버)', bold && !boldGot.some((r) => r.t.includes('보통') && r.b), JSON.stringify(boldGot))
+      check('굵게 버튼이 눌린 상태로 보인다', await waitFor(`document.querySelector('${TOOLBAR} button[aria-label="굵게"]')?.getAttribute('aria-pressed') === 'true'`, 3000))
+
+      await clickInToolbar('button[aria-label="색"]')
+      await waitFor(`!!document.querySelector('${TOOLBAR} [role="menu"][aria-label="색"]')`, 3000)
+      await clickInToolbar('[role="menuitemradio"][aria-label="빨강"]')
+      // 색만 본다 — 굵게의 결과에 기대지 않는다(화면 반사실이 두 끊기를 한 판에서 가른다).
+      const [red, redGot] = await serverRuns((runs) => runs.some((r) => r.t === '굵게' && r.c === 'red'))
+      check('★ 색 → 빨강 — 그 글자만(인라인 · 블록 색이 아니다)', red && (await readBody(fPage)).doc.blocks[0]?.format?.block_color === undefined, JSON.stringify(redGot))
+
+      await selectText(3, 5)
+      await waitFor(`!!document.querySelector('${TOOLBAR}')`, 3000)
+      await key('k', MOD)
+      check('★ Ctrl/Cmd+K — 툴바의 링크 입력칸이 열린다', await waitFor(`document.activeElement?.getAttribute('aria-label') === '링크 주소'`, 3000))
+      await typeText('javascript:alert(1)')
+      await key('Enter')
+      check('★ javascript: 주소는 거부하고 이유를 말한다', await waitFor(`(document.querySelector('${TOOLBAR} [role="alert"]')?.textContent ?? '').includes('http')`, 3000))
+      await evaluate(`(() => { const i = document.activeElement; if (i instanceof HTMLInputElement) i.value = '' })()`)
+      await typeText('example.com/doc')
+      await key('Enter')
+      const [linked, linkedGot] = await serverRuns((runs) => runs.some((r) => r.t === '링크' && r.l === 'https://example.com/doc'))
+      check('★ 주소를 넣고 Enter — https:// 를 붙여 그 글자에 링크(서버)', linked && !linkedGot.some((r) => r.l?.startsWith('javascript')), JSON.stringify(linkedGot))
+
+      await clickSelector(`[data-block-id="${fid}"] p`)
+      await key('End')
+      check('캐럿만 남으면 툴바가 접힌다', await waitFor(`!document.querySelector('${TOOLBAR}')`, 3000))
+      await sleep(1000)
+    }
+
     section('전체')
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))
     const serverErrors = serverOutput.split('\n').filter((l) => l.includes('⨯'))
