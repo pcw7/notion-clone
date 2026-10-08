@@ -203,3 +203,18 @@ export function layoutWeek(
   }
   return { placed, hidden }
 }
+
+// ── 끌어 옮기기 (2g-3) ──────────────────────────────────────────────────
+
+/**
+ * 날짜 값을 며칠 옮긴다 — **날짜 글자만** 바꾸고 나머지(시각 · 시간대)는 그대로 둔다. 범위면 시작과 끝을 같은 만큼 옮겨 **길이를 지킨다**
+ * (04 *"드래그 이동 시 range 의 duration 을 유지하며 start/end 를 동시 이동"*). 칸에 놓는 기준이 날짜 글자라(`cellDays`) 옮기는 기준도
+ * 같다 — `09:30+09:00` 은 옮겨도 `09:30+09:00` 이다.
+ */
+export function shiftDateValue(
+  date: { readonly start: string; readonly end?: string | null },
+  days: number,
+): { start: string; end?: string } {
+  const shift = (s: string) => `${addDays(s.slice(0, 10), days)}${s.slice(10)}`
+  return typeof date.end === 'string' ? { start: shift(date.start), end: shift(date.end) } : { start: shift(date.start) }
+}
