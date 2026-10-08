@@ -79,7 +79,9 @@ import {
   type SelectOption,
 } from './property-types.ts'
 import { readOptionsOf } from './options.ts'
+import { readSubItemPair } from './sub-items.ts'
 import {
+  compileTree,
   decodeCursorValues,
   encodeCursorValues,
   readPropertyTypes,
@@ -223,6 +225,11 @@ type Board = {
   readonly propertyType: GroupableType
   readonly options: readonly SelectOption[]
   readonly types: PropertyTypes
+  /**
+   * 하위 항목의 상위 항목 프로퍼티(2b-2b). 있으면 보드는 **부모만**(최상위 행) 그린다 — 03 F-03-18 *"보드/캘린더/갤러리 뷰는
+   * Parents only 만 지원"*. 카드의 열 · 개수도 같은 조건을 지난다.
+   */
+  readonly subItemsParent: string | null
 }
 
 /**
@@ -277,6 +284,7 @@ async function openBoard(
     propertyType,
     options: isOptionType(propertyType) ? await readOptions(tx, groupBy.property_id) : [],
     types,
+    subItemsParent: (await readSubItemPair(tx, view.data_source_id))?.parentPropertyId ?? null,
   }
 }
 
@@ -348,13 +356,14 @@ function compileBoard(board: Board, params: ParamBag, withOrder = true): Compile
   const manual = !hasLiveSort(board)
   const order = manual ? MANUAL_ORDER : withOrder ? compileSorts(board.sorts, board.types, params) : MANUAL_ORDER
   const filterSql = compileFilter(board.filter, board.types, params)
+  const treeSql = board.subItemsParent === null ? null : compileTree({ parentPropertyId: board.subItemsParent, under: null }, params)
   return {
     keyExpr,
     from: `FROM page p
        JOIN block b ON b.id = p.id
        LEFT JOIN page_property_value gv ON gv.page_id = p.id AND gv.property_id = ${gp}
        LEFT JOIN row_position rp ON rp.view_id = ${viewParam} AND rp.row_id = p.id AND rp.group_key = ${keyExpr}`,
-    where: ['p.data_source_id = $1', 'p.is_template = false', "b.lifecycle = 'live'", filterSql]
+    where: ['p.data_source_id = $1', 'p.is_template = false', "b.lifecycle = 'live'", filterSql, treeSql]
       .filter((s): s is string => s !== null)
       .join(' AND '),
     order,

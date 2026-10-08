@@ -131,10 +131,16 @@ export function updateCell(
 }
 
 /** 행을 만든다. `cells` 는 미리 채울 값 — 보드 열의 `+` 가 그룹 값을 넣는다(F-04-03). */
-export function createRow(workspaceId: string, viewId: string, cells: readonly RowCell[] = []): Promise<ApiResult<RowJson>> {
+/** 빈 행(또는 셀을 채운 행)을 만든다. `parent` 를 주면 그 행 밑의 하위 항목이다(2b-2b — 만들기와 연결이 한 트랜잭션). */
+export function createRow(
+  workspaceId: string,
+  viewId: string,
+  cells: readonly RowCell[] = [],
+  options: { readonly parent?: string } = {},
+): Promise<ApiResult<RowJson>> {
   return call(
     `${base(workspaceId)}/views/${viewId}/rows`,
-    { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ cells }) },
+    { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ cells, ...(options.parent === undefined ? {} : { parent: options.parent }) }) },
     (body) => body.row as RowJson,
   )
 }

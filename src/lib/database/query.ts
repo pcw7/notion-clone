@@ -172,17 +172,7 @@ export async function queryRows(
     const cursorSql =
       cursorValues === null ? null : compileCursor(compiledSort, cursorValues, params)
 
-    const tree = input.tree
-    const treeSql =
-      tree === undefined
-        ? null
-        : tree.under === null
-          ? `NOT EXISTS (SELECT 1 FROM relation_edge te JOIN block tb ON tb.id = te.to_page_id
-                          WHERE te.property_id = ${params.bind(tree.parentPropertyId)} AND te.from_page_id = p.id
-                            AND tb.lifecycle = 'live')`
-          : `EXISTS (SELECT 1 FROM relation_edge te
-                      WHERE te.property_id = ${params.bind(tree.parentPropertyId)} AND te.from_page_id = p.id
-                        AND te.to_page_id = ${params.bind(tree.under)}::uuid)`
+    const treeSql = input.tree === undefined ? null : compileTree(input.tree, params)
 
     const where = [
       'p.data_source_id = $1',
@@ -235,6 +225,21 @@ export async function queryRows(
       },
     } as const
   })
+}
+
+/**
+ * 하위 항목 트리의 술어(2b-2) — 바깥 질의에 `page p` 가 있다고 전제한다. 표의 행 질의와 보드(`group.ts`)가 같은 함수를 쓴다.
+ *
+ * 최상위(`under` null)는 "살아 있는 부모가 없는 행"이다 — 부모가 휴지통이면 자식이 최상위로 보인다(정본 [보강] 하위 항목 ⑥).
+ */
+export function compileTree(tree: NonNullable<QueryRowsInput['tree']>, params: ParamBag): string {
+  const property = params.bind(tree.parentPropertyId)
+  if (tree.under === null) {
+    return `NOT EXISTS (SELECT 1 FROM relation_edge te JOIN block tb ON tb.id = te.to_page_id
+                         WHERE te.property_id = ${property} AND te.from_page_id = p.id AND tb.lifecycle = 'live')`
+  }
+  return `EXISTS (SELECT 1 FROM relation_edge te
+                   WHERE te.property_id = ${property} AND te.from_page_id = p.id AND te.to_page_id = ${params.bind(tree.under)}::uuid)`
 }
 
 export function toQueriedRow(row: RowRow): QueriedRow {

@@ -11740,6 +11740,45 @@ async function main() {
         JSON.stringify(await shown()))
     }
 
+    if (sectionIf('하위 항목 + (2b-2b · F-03-18)')) {
+      // 제목 칸에 마우스를 올리면 서는 `+` 로 부모 밑에 바로 만든다 — 접혀 있던 부모가 펴지고, 새 행이 한 단계 들여 서며 제목을 바로
+      // 편집한다. 서버에서도 그 행의 부모가 그 행이다. 자기 데이터를 스스로 만든다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `하위 항목 + ${stamp}` })).body.database
+      const titleProp = (await api('GET', `/views/${db.defaultViewId}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const parent = (await api('POST', `/views/${db.defaultViewId}/rows`, { cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun('부모')] } }] })).body.row.id
+      const on = (await api('POST', `/data-sources/${db.dataSourceId}/sub-items`)).body
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      await waitFor(`!!document.querySelector('tr[data-row-id="${parent}"] [data-testid="db-subitem-add"]')`, 15000)
+      const shown = () => evaluate(`[...document.querySelectorAll('[data-testid="db-table"] tbody tr')].map((tr) =>
+        (tr.querySelector('[data-testid="db-row-title"]')?.textContent ?? '') + ':' + (tr.dataset.depth ?? '-'))`)
+
+      const box = await rect(`tr[data-row-id="${parent}"] [data-testid="db-subitem-add"]`)
+      await move(box.x + box.w / 2, box.y + box.h / 2)
+      await click(box.x + box.w / 2, box.y + box.h / 2)
+      check('★ 하위 항목 + — 부모가 펴지고 새 행이 한 단계 들여 서며 제목을 바로 편집한다',
+        await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === 2
+          && document.querySelectorAll('[data-testid="db-table"] tbody tr')[1].dataset.depth === '1'
+          && document.activeElement?.matches('[data-testid="db-cell-input"]')`, 10000),
+        JSON.stringify(await shown()))
+      await typeText('새 자식')
+      await key('Enter')
+      check('제목이 저장되어 부모 밑에 선다', await waitFor(`JSON.stringify([...document.querySelectorAll('[data-testid="db-table"] tbody tr')].map((tr) =>
+        (tr.querySelector('[data-testid="db-row-title"]')?.textContent ?? '') + ':' + (tr.dataset.depth ?? '-'))) === ${JSON.stringify(JSON.stringify(['부모:0', '새 자식:1']))}`, 10000),
+        JSON.stringify(await shown()))
+      const childId = await evaluate(`document.querySelectorAll('[data-testid="db-table"] tbody tr')[1]?.dataset.rowId ?? null`)
+      const stored = (await api('GET', `/rows/${childId}/relations/${on.parentPropertyId}`)).body
+      check('★ 서버에서도 그 행의 부모가 그 행이다 — 만들기와 연결이 함께 저장됐다', stored?.items?.[0]?.id === parent, JSON.stringify(stored?.items))
+      await send('Page.reload')
+      check('새로 열어도 최상위는 부모 하나다', await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === 1`, 15000), JSON.stringify(await shown()))
+    }
+
     section('전체')
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))
     const serverErrors = serverOutput.split('\n').filter((l) => l.includes('⨯'))

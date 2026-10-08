@@ -340,7 +340,23 @@ export async function linkRows(
   const both = add.filter((id) => remove.includes(id))
   if (both.length > 0) return fail('invalid_value', [{ path: 'add', message: '같은 행을 더하면서 뺄 수 없습니다' }])
 
-  return withCommandTransaction(async (tx) => {
+  return withCommandTransaction((tx) => linkRowsIn(tx, ctx, rowId, propertyId, add, remove))
+}
+
+/**
+ * `linkRows` 의 트랜잭션 안쪽 — 입력 모양은 이미 검사됐다(id 목록 · 상한 · 겹침). **연결을 쓰는 다른 명령이 같은 트랜잭션에서 부른다**
+ * — 하위 항목 `+`(`sub-item-rows.ts`)가 행을 만들고 바로 부모를 둔다. 규칙(권한 · 순환 · 옮기기 · 거울상 · 잠금)을 그쪽에 복사하지
+ * 않는다(`row.ts` `updateCellsIn` 과 같은 이유).
+ */
+export async function linkRowsIn(
+  tx: Tx,
+  ctx: SessionContext,
+  rowId: string,
+  propertyId: string,
+  add: readonly string[],
+  remove: readonly string[],
+): Promise<RelationResult<RowSummary>> {
+  {
     const open = await openRelation(tx, ctx, rowId, propertyId, 'edit_content')
     if (isFailure(open)) return open
     const { config } = open
@@ -470,7 +486,7 @@ export async function linkRows(
     )
     const summary = await readRow(tx, rowId)
     return summary === null ? fail('not_found') : ({ ok: true, value: summary } as const)
-  })
+  }
 }
 
 // ── 읽기 ──────────────────────────────────────────────────────────────
