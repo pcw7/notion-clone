@@ -198,10 +198,13 @@ export function loadRows(
   viewId: string,
   cursor: string | null,
   parent?: string,
+  /** 뷰 검색어(2e-2) — 첫 페이지를 읽은 검색어를 다음 페이지에도 싣는다. */
+  search?: string | null,
 ): Promise<ApiResult<RowPage>> {
   const query = new URLSearchParams()
   if (cursor !== null) query.set('cursor', cursor)
   if (parent !== undefined) query.set('parent', parent)
+  if (search) query.set('q', search)
   return call(
     `${base(workspaceId)}/views/${viewId}/rows?${query.toString()}`,
     { method: 'GET' },
@@ -221,9 +224,11 @@ export function loadGroupRows(
   viewId: string,
   groupKey: string,
   cursor: string | null,
+  search?: string | null,
 ): Promise<ApiResult<RowPage>> {
   const query = new URLSearchParams({ group: groupKey })
   if (cursor !== null) query.set('cursor', cursor)
+  if (search) query.set('q', search)
   return call(`${base(workspaceId)}/views/${viewId}/groups?${query}`, { method: 'GET' }, (body) => ({
     rows: body.rows as RowJson[],
     hasMore: body.hasMore === true,
@@ -235,8 +240,11 @@ export function loadGroupRows(
 export function loadGroupCalculations(
   workspaceId: string,
   viewId: string,
+  search?: string | null,
 ): Promise<ApiResult<Readonly<Record<string, CalculationResult>>>> {
-  return call(`${base(workspaceId)}/views/${viewId}/groups?calculations=1`, { method: 'GET' }, (body) =>
+  const query = new URLSearchParams({ calculations: '1' })
+  if (search) query.set('q', search)
+  return call(`${base(workspaceId)}/views/${viewId}/groups?${query}`, { method: 'GET' }, (body) =>
     typeof body.values === 'object' && body.values !== null ? (body.values as Record<string, CalculationResult>) : {},
   )
 }

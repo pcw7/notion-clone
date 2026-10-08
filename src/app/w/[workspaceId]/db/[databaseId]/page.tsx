@@ -46,6 +46,7 @@ import { getView, listViews } from '@/lib/database/view'
 import { isFilterableColumn, nestsSubItems, subItemPairOf } from '@/lib/database/view-columns'
 import { queryRows } from '@/lib/database/query'
 import { computeCalculations } from '@/lib/database/calculate'
+import { normalizeSearch } from '@/lib/database/search'
 import { queryGroups } from '@/lib/database/group'
 import { loadRelationLabels, relationIdsIn } from '@/lib/database/relation'
 import { computeRollups, EMPTY_ROLLUP_PAGE } from '@/lib/database/rollup'
@@ -68,6 +69,7 @@ import { PageIconControl } from '../../[pageId]/page-icon-control'
 import { PageIconView } from '../../page-icon-view'
 import { ViewTabs } from './view-tabs'
 import { ViewToolbar, type BoardSettings } from './view-toolbar'
+import { SearchEmpty } from './view-search'
 import { TemplatePanel } from './template-panel'
 import { DataSourcePanel } from './data-source-panel'
 
@@ -78,7 +80,9 @@ export default async function DatabasePage({
   searchParams,
 }: PageProps<'/w/[workspaceId]/db/[databaseId]'>) {
   const { workspaceId, databaseId } = await params
-  const { v } = await searchParams
+  const { v, q } = await searchParams
+  // 뷰 검색어(2e · F-04-27) — 주소의 `q`. 뷰에 저장하지 않는다. 서버가 다듬는다(빈 글 · 상한).
+  const search = normalizeSearch(Array.isArray(q) ? q[0] : q)
 
   const ctx = await requirePageSession(workspaceId)
   // uuid 가 아니면 질의가 pg 형식 오류로 죽는다. "없다"와 구분할 이유가 없다.
@@ -101,7 +105,8 @@ export default async function DatabasePage({
 
   const isBoard = view.value.type === 'board'
   // 하위 항목이 켜진 표 · 목록은 최상위 행만 먼저 읽는다 — 자식은 토글을 펼 때 읽는다(2b-2 · 행 라우트와 같은 규칙).
-  const subItems = nestsSubItems(view.value.type) ? subItemPairOf(view.value.columns) : null
+  // 검색 중에는 트리를 펴지 않는다 — 맞는 행을 평평하게(2e-1 · 행 라우트와 같은 규칙).
+  const subItems = nestsSubItems(view.value.type) && search === null ? subItemPairOf(view.value.columns) : null
   const [tablePage, catalog, board] = await Promise.all([
     isBoard
       ? null
@@ -110,10 +115,11 @@ export default async function DatabasePage({
           sorts: view.value.sorts,
           limit: view.value.loadLimit,
           ...(subItems === null ? {} : { tree: { parentPropertyId: subItems.parentPropertyId, under: null } }),
+          search,
         }),
     // 필터 패널의 연산자 드롭다운이 이것을 그린다 — 코드에 박지 않는다(F-03-17).
     readOperatorCatalog(),
-    isBoard ? queryGroups(ctx, view.value.id) : null,
+    isBoard ? queryGroups(ctx, view.value.id, { search }) : null,
   ])
   if (tablePage !== null && !tablePage.ok) notFound()
   // 그룹 프로퍼티가 지워진 보드(`not_grouped`)는 아래에서 "그룹 기준을 고르라"로 그린다. 다른 실패는 못 보는 것과 같다.
@@ -188,6 +194,8 @@ export default async function DatabasePage({
     // 하위 항목을 켜고 끄면 같은 뷰가 트리 ↔ 평평한 표로 바뀐다(2b-2) — 읽은 행(최상위만 ↔ 전부)이 무효다. 이름 · 보임은 그대로라
     // 이것이 없으면 끈 뒤에도 최상위 행만 남는다(e2e 가 잡았다).
     subItems?.parentPropertyId ?? null,
+    // 검색어(2e-2) — 바뀌면 읽은 행 · 커서가 무효다(필터와 같은 이유).
+    search,
   ])
   const visibleColumns = columns.filter((column) => column.visible)
   const variant = variantOf(view.value.type)
@@ -215,7 +223,9 @@ export default async function DatabasePage({
 
   // ── 열 집계(2d-2 · F-04-16) ── 필터를 지난 행 전부로 계산한다(첫 페이지와 무관 · `calculate.ts`). 표 모양만 그린다.
   const calculations =
-    tablePage === null || variant !== 'table' ? {} : await computeCalculations(ctx, view.value.dataSourceId, view.value.filter, view.value.columns)
+    tablePage === null || variant !== 'table'
+      ? {}
+      : await computeCalculations(ctx, view.value.dataSourceId, view.value.filter, view.value.columns, search)
 
   // ── 기본 템플릿(F-08-03) ──
   // 뷰는 **살아 있는 템플릿일 때만** id 를 준다(`readView` · §3.3-176). 버튼이 그 이름을 말하므로 이름까지 읽는다 —
@@ -307,6 +317,7 @@ export default async function DatabasePage({
             catalog={catalog}
             canEdit={access.canEditStructure}
             board={boardSettings}
+            search={search}
           />
         </div>
         {/* 데이터 소스(8e-2)는 데이터베이스의 구조다 — 고칠 수 있는 사람에게만 선다(잠기면 `access` 가 이미 닫는다). */}
@@ -332,6 +343,10 @@ export default async function DatabasePage({
         />
       </div>
 
+      {/* 보드는 열을 남긴다 — 맞는 카드가 하나도 없으면 위에 안내를 둔다(2e-2 · 04 *"빈 테이블만 보이면 필터 버그로 오인"*). */}
+      {isBoard && search !== null && board !== null && board.ok && board.value.groups.every((g) => g.count === 0) && (
+        <SearchEmpty search={search} />
+      )}
       {isBoard ? (
         groupBy !== null && groupProperty !== null && board !== null && board.ok ? (
           <DatabaseBoard
@@ -350,6 +365,7 @@ export default async function DatabasePage({
             access={access}
             defaultTemplate={defaultTemplate}
             calculation={groupCalculation}
+            search={search}
           />
         ) : (
           <p className="px-2 text-sm text-neutral-500" data-testid="db-board-needs-group">
@@ -382,6 +398,7 @@ export default async function DatabasePage({
             defaultTemplate={defaultTemplate}
             subItems={subItems}
             calculations={calculations}
+            search={search}
           />
         )
       )}

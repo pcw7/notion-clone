@@ -149,6 +149,8 @@ export function DatabaseBoard(props: {
   defaultTemplate?: DefaultTemplate | null
   /** 살아 있는 그룹 머리의 계산(2d-3) — 무엇의 계산인지(머리의 `title`). 없으면 머리는 카드 수. */
   calculation?: { readonly propertyId: string; readonly propertyName: string; readonly fn: Calculation } | null
+  /** 뷰 검색어(2e-2) — 서버 렌더가 이것으로 그룹을 읽었다. 열의 "더 보기" · 머리 값 다시 받기도 같은 검색어를 싣는다. */
+  search?: string | null
 }) {
   const { workspaceId, viewId, dataSourceId, tableName, columns, property, groupBy, manualOrder, access } = props
   const router = useRouter()
@@ -186,7 +188,7 @@ export function DatabaseBoard(props: {
   const refreshCalculations = async () => {
     if (calculation === null) return
     const seq = ++calcSeq.current
-    const result = await api.loadGroupCalculations(workspaceId, viewId)
+    const result = await api.loadGroupCalculations(workspaceId, viewId, props.search)
     if (seq !== calcSeq.current) return
     if (!result.ok) {
       setError(result.message)
@@ -340,7 +342,7 @@ export function DatabaseBoard(props: {
   // ── 읽기 ────────────────────────────────────────────────────────────
 
   const reloadColumn = async (key: string) => {
-    const result = await api.loadGroupRows(workspaceId, viewId, key, null)
+    const result = await api.loadGroupRows(workspaceId, viewId, key, null, props.search)
     if (!result.ok) {
       setError(result.message)
       return
@@ -358,7 +360,7 @@ export function DatabaseBoard(props: {
     if (group.nextCursor === null || loadingKey !== null) return
     setLoadingKey(group.key)
     setError(null)
-    const result = await api.loadGroupRows(workspaceId, viewId, group.key, group.nextCursor)
+    const result = await api.loadGroupRows(workspaceId, viewId, group.key, group.nextCursor, props.search)
     setLoadingKey(null)
     if (!result.ok) {
       setError(result.message)
