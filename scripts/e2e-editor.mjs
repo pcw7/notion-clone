@@ -12530,6 +12530,92 @@ async function main() {
       check('날짜 속성이 지워지면 달력 대신 "날짜 속성을 고르라"', await waitFor(`!!document.querySelector('[data-testid="db-cal-needs-date"]')`, 15000))
     }
 
+    if (sectionIf('캘린더 — 끌어 옮기기 (2g-3 · F-04-06)')) {
+      // 막대를 끌어 다른 날짜 칸에 놓으면 그 차이만큼 날짜가 옮겨진다 — 범위는 길이를 지키고 시각은 그대로. 움직이지 않고 놓으면 링크가 열린다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `캘린더 끌기 ${stamp}` })).body.database
+      const due = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '마감', type: 'date' })).body.property.id
+      const titleProp = (await api('GET', `/views/${db.defaultViewId}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const row = async (title, date) => (await api('POST', `/views/${db.defaultViewId}/rows`, {
+        cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } }, { propertyId: due, value: { type: 'date', date } }],
+      })).body.row.id
+      const single = await row('하루 일', { start: '2026-03-10' })
+      const ranged = await row('범위 일', { start: '2026-03-06', end: '2026-03-09' })
+      const timed = await row('시각 일', { start: '2026-03-17T09:30:00+09:00' })
+      const cal = (await api('POST', `/databases/${db.id}/views`, { type: 'calendar' })).body.view
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}?v=${cal.id}&m=2026-03` })
+      await waitFor(`document.querySelectorAll('[data-testid="db-cal-event"]').length === 4`, 15000)
+
+      const center = (selector, nth = 0) => evaluate(`(() => { const e = document.querySelectorAll(${JSON.stringify(selector)})[${nth}]
+        if (!e) return null; const r = e.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 } })()`)
+      const dayCenter = (day) => center(`[data-testid="db-cal-day"][data-day="${day}"]`)
+      /** (sx, sy) 를 잡아 (tx, ty) 로 끌어 놓는다. */
+      const dragTo = async (sx, sy, tx, ty) => {
+        await move(sx, sy)
+        await press(sx, sy)
+        for (let i = 1; i <= 10; i += 1) {
+          await move(sx + ((tx - sx) * i) / 10, sy + ((ty - sy) * i) / 10, true)
+          await sleep(16)
+        }
+        await release(tx, ty)
+        await sleep(80)
+      }
+      const dateOf = async (rowId) => {
+        const rows = (await api('GET', `/views/${cal.id}/calendar?from=2026-03-01&to=2026-04-11`)).body?.rows ?? []
+        return rows.find((r) => r.id === rowId)?.properties?.[due]?.date ?? null
+      }
+      const settled = async (rowId, expected) => {
+        for (let i = 0; i < 25; i += 1) {
+          const got = await dateOf(rowId)
+          if (got !== null && got.start === expected.start && (got.end ?? undefined) === expected.end) return true
+          await sleep(200)
+        }
+        return false
+      }
+      const inDay = (rowId, day, nth = 0) => evaluate(`(() => {
+        const bar = document.querySelectorAll('[data-testid="db-cal-event"][data-row-id="${rowId}"]')[${nth}]
+        const cell = document.querySelector('[data-testid="db-cal-day"][data-day="${day}"]')
+        if (!bar || !cell) return false
+        const b = bar.getBoundingClientRect(), c = cell.getBoundingClientRect()
+        const x = b.x + Math.min(b.width, c.width) / 2, y = b.y + b.height / 2
+        return x >= c.x && x <= c.x + c.width && y >= c.y && y <= c.y + c.height
+      })()`)
+
+      // 하루 일: 3/10 → 3/12
+      const bar = await center(`[data-testid="db-cal-event"][data-row-id="${single}"]`)
+      const target = await dayCenter('2026-03-12')
+      await dragTo(bar.x, bar.y, target.x, target.y)
+      check('★ 막대를 끌어 3/12 칸에 놓으면 그 칸으로 옮겨 서고 서버에 남는다',
+        (await waitFor(`(() => { const bar = document.querySelector('[data-testid="db-cal-event"][data-row-id="${single}"]'); return !!bar && !bar.dataset.dragging })()`, 3000))
+          && (await inDay(single, '2026-03-12')) && (await settled(single, { start: '2026-03-12' })))
+
+      // 범위 일: 둘째 막대(3/8 ~ 3/9)를 3/8 자리에서 잡아 3/15 로 — 7일 · 길이를 지킨다
+      const grab = await dayCenter('2026-03-08')
+      const second = await center(`[data-testid="db-cal-event"][data-row-id="${ranged}"]`, 1)
+      const to15 = await dayCenter('2026-03-15')
+      await dragTo(grab.x, second.y, to15.x, second.y + (to15.y - grab.y))
+      check('★ 범위는 잡은 날과 놓은 날의 차이만큼 — 길이를 지킨다(3/6~3/9 → 3/13~3/16)', await settled(ranged, { start: '2026-03-13', end: '2026-03-16' }),
+        JSON.stringify(await dateOf(ranged)))
+
+      // 시각 일: 3/17 → 3/18 — 시각 · 시간대는 그대로
+      const timedBar = await center(`[data-testid="db-cal-event"][data-row-id="${timed}"]`)
+      const to18 = await dayCenter('2026-03-18')
+      await dragTo(timedBar.x, timedBar.y, to18.x, to18.y)
+      check('★ 시각이 있는 값은 날짜만 옮긴다 — 09:30+09:00 은 그대로', await settled(timed, { start: '2026-03-18T09:30:00+09:00' }),
+        JSON.stringify(await dateOf(timed)))
+
+      // 움직이지 않고 놓으면 링크가 열린다(끌기가 클릭을 막지 않는다)
+      const still = await center(`[data-testid="db-cal-event"][data-row-id="${single}"] [data-testid="db-cal-event-open"]`)
+      await click(still.x, still.y)
+      check('끌지 않고 누르면 그 행 페이지가 열린다', await waitFor(`location.pathname === ${JSON.stringify(`/w/${workspaceId}/${single}`)}`, 15000), await evaluate('location.pathname'))
+    }
+
     section('전체')
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))
     const serverErrors = serverOutput.split('\n').filter((l) => l.includes('⨯'))

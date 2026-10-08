@@ -24,6 +24,7 @@ import {
   layoutWeek,
   monthGrid,
   readCalendarLayout,
+  shiftDateValue,
   shiftMonth,
   validateCalendarPatch,
 } from './calendar.ts'
@@ -117,5 +118,14 @@ describe('⑥ 달 격자 · 막대 배치 (2g-2)', () => {
     assert.deepEqual([by.a?.lane, by.c?.lane], [1, 2])
     assert.equal(by.d, undefined, '세 줄을 넘는다')
     assert.equal(hidden[1], 1, '3/9 에 하나가 숨었다')
+  })
+})
+
+describe('⑦ 끌어 옮기기 (2g-3)', () => {
+  test('★ 날짜만 옮긴다 — 범위는 길이를 지키고 시각 · 시간대는 그대로', () => {
+    assert.deepEqual(shiftDateValue({ start: '2026-03-10' }, 2), { start: '2026-03-12' })
+    assert.deepEqual(shiftDateValue({ start: '2026-03-06', end: '2026-03-09' }, 7), { start: '2026-03-13', end: '2026-03-16' })
+    assert.deepEqual(shiftDateValue({ start: '2026-03-31T09:30:00+09:00', end: null }, 1), { start: '2026-04-01T09:30:00+09:00' })
+    assert.deepEqual(shiftDateValue({ start: '2026-03-01', end: '2026-03-02' }, -1), { start: '2026-02-28', end: '2026-03-01' })
   })
 })
