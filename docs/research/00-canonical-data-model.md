@@ -1972,9 +1972,15 @@ CREATE INDEX ON row_position (view_id, group_key, order_idx);
   그룹이 필요 없다.
 - ② 행은 표와 같은 질의다(필터 · 정렬 · 뷰 검색 · 커서). 하위 항목이 켜진 표면 **부모(최상위 행)만** — 03 F-03-18 *"보드/캘린더/갤러리
   뷰는 Parents only"*. 펴는 길(`?parent=`)이 없다.
-- ③ 카드 = 제목(행 페이지의 아이콘) + 값이 있는 보이는 속성의 배지(보드 카드와 같은 규칙). **미리보기(커버 소스)는 아직 없다** — 04 의
-  `configuration.cover`(page_cover · page_content · files 프로퍼티) 중 우리에게 있는 소스가 아직 없다(페이지 커버 F-02-06 · 파일 속성).
-  `configuration` 의 갤러리 키(`cover` · `cover_size` · `cover_aspect`)는 소스가 생길 때 정한다.
+- ③ 카드 = 미리보기(④) + 제목(행 페이지의 아이콘) + 값이 있는 보이는 속성의 배지(보드 카드와 같은 규칙).
+- ④ **레이아웃은 `view.configuration.gallery = { cover, cover_size, cover_aspect }`** ⟨2f-2조각 / 마이그레이션 0057⟩ — `configuration`
+  의 첫 손님이다. 한 키 아래에 두고(다른 종류의 키와 섞이지 않게) 세 키를 늘 함께 쓴다 · 명령은 잠근 행의 지금 값 위에 **바꿀 키만** 얹어
+  `jsonb_set` 으로 그 한 키만 쓴다(04 *"JSON 전체 교체 금지"*). `cover` = `page_content`(본문의 첫 이미지 — 기본) · `none`. 페이지 커버
+  (F-02-06) · 파일 속성은 생기면 더한다. `cover_size` = small · medium · large(카드 폭) · `cover_aspect` = cover(잘라 채움) · contain.
+  모양은 CHECK(`ck_view_gallery_layout` — 묶음 전체를 `IS TRUE`).
+- ⑤ **본문의 첫 이미지** = 행 페이지의 **최상위** 블록 중 처음 오는 `image`(토글 · 컬럼 안은 보지 않는다) · 순서는 `block.order_key`(X-1
+  파생) · 그 블록이 비어 있으면 미리보기 없음(뒤의 이미지를 찾지 않는다) · 값은 저장하지 않는 **화면 주소**(우리 파일은 내용 경로 —
+  FS2 · 외부는 그 URL). 행 질의와 함께 서버가 준다(첫 페이지 · "더 보기").
 
 **[보강] 뷰 검색 — 저장하지 않는 술어 하나** ⟨DB 심화 2e-1조각 · F-04-27 / 마이그레이션 0056⟩
 
