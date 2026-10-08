@@ -502,6 +502,7 @@ describe('⑨ 화면이 그릴 것 (relation 5b-1)', () => {
       limit: 'one',
       synced: true,
       subItems: null,
+      dependencies: null,
     })
     // 역방향 컬럼은 대상 표의 뷰에 선다 — 제한을 물려받지 않는다.
     const back = unwrap(await createView(fx.owner.ctx, projects.databaseId, { type: 'list' }))
@@ -511,6 +512,7 @@ describe('⑨ 화면이 그릴 것 (relation 5b-1)', () => {
       limit: 'none',
       synced: true,
       subItems: null,
+      dependencies: null,
     })
   })
 

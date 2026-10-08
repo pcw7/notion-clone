@@ -2786,6 +2786,76 @@ try {
     await client.query('SET CONSTRAINTS tg_relation_edge_no_cycle DEFERRED')
   }
 
+  console.log('\n[36] 종속 관계 (0052 / §3.5 [보강] 종속 관계 · DP1 · DP2 · 2b-3조각)')
+  {
+    const rejectBy = async (label, constraint, statements, deferred = null) => {
+      await client.query('SAVEPOINT probe')
+      try {
+        for (const [sql, params] of statements) await client.query(sql, params)
+        if (deferred !== null) await client.query(`SET CONSTRAINTS ${deferred} IMMEDIATE`)
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        fail(`${label} — 거부되어야 하는데 통과했다`)
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        if (e.constraint === constraint) ok(`${label} — ${constraint} 가 거부함 (${e.code})`)
+        else fail(`${label} — ${constraint} 가 아니라 ${e.constraint ?? e.code} 에 걸렸다`)
+      }
+    }
+    const root = randomUUID()
+    const dbBlock = randomUUID()
+    const ds = randomUUID()
+    const putBlock = `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key,
+                                         ancestor_path, perm_scope_id, properties, format, created_at, last_edited_at)
+                      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, '{}'::jsonb, '{}'::jsonb, now(), now())`
+    await client.query(putBlock, [root, wsId, 'page', 'workspace', wsId, 'zdep0', [], root])
+    await client.query(putBlock, [dbBlock, wsId, 'database', 'block', root, 'zdep0', [root], root])
+    await client.query(`INSERT INTO database (id, created_at, updated_at) VALUES ($1, now(), now())`, [dbBlock])
+    await client.query(`INSERT INTO data_source (id, owner_database_id, name, created_at, updated_at) VALUES ($1, $2, '종속 관계 표', now(), now())`, [ds, dbBlock])
+    await client.query(`INSERT INTO database_data_source (database_id, data_source_id, order_idx) VALUES ($1, $2, 'a0')`, [dbBlock, ds])
+    const did = (n) => `d${String(n).padStart(20, '0')}`
+    const putProp = `INSERT INTO property (id, data_source_id, name, type, config, order_idx, created_at, updated_at)
+                     VALUES ($1, $2, $3, $4, $5::jsonb, $6, now(), now())`
+    const blockedBy = did(2)
+    const blocking = did(3)
+    await client.query(putProp, [did(1), ds, '이름', 'title', '{}', 'a0'])
+    await client.query(putProp, [blockedBy, ds, '선행 작업', 'relation', JSON.stringify({ target_data_source_id: ds, synced_property_id: blocking, dependencies: 'blocked_by' }), 'a1'])
+    await client.query(putProp, [blocking, ds, '후행 작업', 'relation', JSON.stringify({ target_data_source_id: ds, synced_property_id: blockedBy, dependencies: 'blocking' }), 'a2'])
+    ok('선행 작업 · 후행 작업 짝 — 정상 경로가 통과한다')
+
+    await rejectBy('★ 표시가 다른 표를 가리키는 relation 에', 'ck_property_dependencies',
+      [[putProp, [did(4), ds, '다른 표', 'relation', JSON.stringify({ target_data_source_id: randomUUID(), dependencies: 'blocked_by' }), 'a3']]])
+    await rejectBy('★ 하위 항목과 종속 관계를 한 프로퍼티가 함께', 'ck_property_dependencies',
+      [[putProp, [did(4), ds, '둘 다', 'relation', JSON.stringify({ target_data_source_id: ds, sub_items: 'parent', dependencies: 'blocked_by' }), 'a3']]])
+    await rejectBy('표시의 값이 둘 중 하나가 아니다', 'ck_property_dependencies',
+      [[putProp, [did(4), ds, '이상한', 'relation', JSON.stringify({ target_data_source_id: ds, dependencies: 'sideways' }), 'a3']]])
+    await rejectBy('★ DP1: 살아 있는 선행 작업이 둘', 'ux_property_dependencies',
+      [[putProp, [did(4), ds, '선행 작업 둘째', 'relation', JSON.stringify({ target_data_source_id: ds, dependencies: 'blocked_by' }), 'a3']]])
+
+    const row = async (key) => {
+      const id = randomUUID()
+      await client.query(putBlock, [id, wsId, 'page', 'data_source', ds, key, [root, dbBlock], root])
+      await client.query(`INSERT INTO page (id, data_source_id) VALUES ($1, $2)`, [id, ds])
+      return id
+    }
+    const [a, b, c, d] = [await row('r0'), await row('r1'), await row('r2'), await row('r3')]
+    const edge = `INSERT INTO relation_edge (property_id, from_page_id, to_page_id, order_idx, role) VALUES ($1, $2, $3, 'a0', $4)`
+    // (막히는 행, 막는 행) — 선행 작업 엣지와 그 거울상.
+    const blocks = (blocked, blocker) => [[edge, [blockedBy, blocked, blocker, null]], [edge, [blocking, blocker, blocked, 'dependency']]]
+    for (const [sql, params] of [...blocks(a, b), ...blocks(a, c), ...blocks(b, d), ...blocks(c, d)]) await client.query(sql, params)
+    const roles = (await client.query(`SELECT property_id, role FROM relation_edge WHERE from_page_id = $1 OR to_page_id = $1`, [a])).rows
+    if (roles.every((r) => (r.property_id === blockedBy ? r.role === 'dependency' : r.role === null))) ok('★ role 은 DB 가 매긴다 — 선행 작업 엣지만 dependency · 거울상에 쓴 값은 덮인다')
+    else fail(`role 을 DB 가 매기지 않았다: ${JSON.stringify(roles)}`)
+    try {
+      await client.query('SET CONSTRAINTS tg_relation_edge_no_dependency_cycle IMMEDIATE')
+      ok('DP2: 다이아몬드(a ← b, c ← d)는 순환이 아니다 — 통과한다')
+    } catch (e) {
+      fail(`DP2: 순환이 아닌 그래프가 거부됐다 (${e.constraint ?? e.code})`)
+    }
+    await client.query('SET CONSTRAINTS tg_relation_edge_no_dependency_cycle DEFERRED')
+    await rejectBy('★ DP2: 자기 자신이 막는다', 'tg_relation_edge_no_dependency_cycle', blocks(b, b), 'tg_relation_edge_no_dependency_cycle')
+    await rejectBy('★ DP2: 사슬 끝이 처음을 막는다(d 가 a 에게 막힘)', 'tg_relation_edge_no_dependency_cycle', blocks(d, a), 'tg_relation_edge_no_dependency_cycle')
+  }
+
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
 } catch (e) {

@@ -11690,6 +11690,18 @@ async function main() {
         if (p) await click(p.x, p.y)
         return p !== null
       }
+      // 도구줄 "속성" 패널의 스위치를 원하는 상태로 — 패널이 닫혀 있으면 열고, 누른 뒤 상태가 바뀌지 않았으면(팝오버가 자리를 잡기 전에
+      // 눌러 빗나갔다) 다시 누른다. 켠 뒤에도 패널은 열려 있다 — 버튼을 다시 누르면 닫힌다.
+      const setSwitch = async (testId, want) => {
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          if (!(await evaluate(`!!document.querySelector('[data-testid="${testId}"]')`))) await clickOn('[data-testid="db-properties-button"]')
+          await waitFor(`!!document.querySelector('[data-testid="${testId}"]') && !document.querySelector('[data-testid="${testId}"]').disabled`, 3000)
+          if ((await evaluate(`document.querySelector('[data-testid="${testId}"]')?.checked === true`)) === want) return true
+          await clickOn(`[data-testid="${testId}"]`)
+          if (await waitFor(`document.querySelector('[data-testid="${testId}"]')?.checked === ${want}`, 5000)) return true
+        }
+        return false
+      }
       const shown = () => evaluate(`[...document.querySelectorAll('[data-testid="db-table"] tbody tr')].map((tr) =>
         (tr.querySelector('[data-testid="db-row-title"]')?.textContent ?? '') + ':' + (tr.dataset.depth ?? '-'))`)
       const shownIs = (expected, ms = 10000) => waitFor(`JSON.stringify([...document.querySelectorAll('[data-testid="db-table"] tbody tr')].map((tr) =>
@@ -11704,9 +11716,7 @@ async function main() {
       await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
       await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === 4`, 15000)
 
-      await clickOn('[data-testid="db-properties-button"]')
-      await waitFor(`!!document.querySelector('[data-testid="db-subitems-switch"]')`, 3000)
-      await clickOn('[data-testid="db-subitems-switch"]')
+      await setSwitch('db-subitems-switch', true)
       check('★ 도구줄의 "하위 항목"을 켜면 상위 항목 · 하위 항목 속성이 머리에 선다',
         await waitFor(`(() => { const t = [...document.querySelectorAll('[data-testid="db-table"] thead th')].map((th) => th.textContent).join('|')
           return t.includes('상위 항목') && t.includes('하위 항목') })()`, 10000))
@@ -11732,9 +11742,7 @@ async function main() {
       await clickOn(`tr[data-row-id="${ids['가']}"] [data-testid="db-subitem-toggle"]`)
       check('★ 접으면 자식 · 손자가 함께 빠진다', await shownIs(['가:0']), JSON.stringify(await shown()))
 
-      await clickOn('[data-testid="db-properties-button"]')
-      await waitFor(`!!document.querySelector('[data-testid="db-subitems-switch"]')`, 3000)
-      await clickOn('[data-testid="db-subitems-switch"]')
+      await setSwitch('db-subitems-switch', false)
       check('★ 끄면 평평한 표로 돌아온다 — 네 행 · 토글 없음',
         await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === 4 && !document.querySelector('[data-testid="db-subitem-toggle"]')`, 10000),
         JSON.stringify(await shown()))
@@ -11777,6 +11785,59 @@ async function main() {
       check('★ 서버에서도 그 행의 부모가 그 행이다 — 만들기와 연결이 함께 저장됐다', stored?.items?.[0]?.id === parent, JSON.stringify(stored?.items))
       await send('Page.reload')
       check('새로 열어도 최상위는 부모 하나다', await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === 1`, 15000), JSON.stringify(await shown()))
+    }
+
+    if (sectionIf('종속 관계 (2b-3 · F-03-18)')) {
+      // 도구줄 "속성" 패널의 스위치로 켜면 선행 작업 · 후행 작업 속성이 서고, 서로를 막는 순환은 이유와 함께 거부되며, 끄면 일반
+      // 관계형으로 남는다. 자기 데이터를 스스로 만든다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const clickOn = async (selector) => {
+        const p = await evaluate(`(() => {
+          const e = document.querySelector(${JSON.stringify(selector)})
+          if (!e) return null
+          e.scrollIntoView({ block: 'center' })
+          const r = e.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (p) await click(p.x, p.y)
+        return p !== null
+      }
+      // 도구줄 "속성" 패널의 스위치를 원하는 상태로 — 패널이 닫혀 있으면 열고, 누른 뒤 상태가 바뀌지 않았으면(팝오버가 자리를 잡기 전에
+      // 눌러 빗나갔다) 다시 누른다. 켠 뒤에도 패널은 열려 있다 — 버튼을 다시 누르면 닫힌다.
+      const setSwitch = async (testId, want) => {
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          if (!(await evaluate(`!!document.querySelector('[data-testid="${testId}"]')`))) await clickOn('[data-testid="db-properties-button"]')
+          await waitFor(`!!document.querySelector('[data-testid="${testId}"]') && !document.querySelector('[data-testid="${testId}"]').disabled`, 3000)
+          if ((await evaluate(`document.querySelector('[data-testid="${testId}"]')?.checked === true`)) === want) return true
+          await clickOn(`[data-testid="${testId}"]`)
+          if (await waitFor(`document.querySelector('[data-testid="${testId}"]')?.checked === ${want}`, 5000)) return true
+        }
+        return false
+      }
+      const heads = () => evaluate(`[...document.querySelectorAll('[data-testid="db-table"] thead th')].map((th) => th.textContent).join('|')`)
+      const db = (await api('POST', '/databases', { name: `종속 관계 ${stamp}` })).body.database
+      const [a, b] = [(await api('POST', `/views/${db.defaultViewId}/rows`, {})).body.row.id, (await api('POST', `/views/${db.defaultViewId}/rows`, {})).body.row.id]
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === 2`, 15000)
+
+      check('종속 관계 스위치가 켜진 상태로 선다', await setSwitch('db-dependencies-switch', true))
+      check('★ 도구줄의 "종속 관계"를 켜면 선행 작업 · 후행 작업 속성이 머리에 선다',
+        await waitFor(`(() => { const t = [...document.querySelectorAll('[data-testid="db-table"] thead th')].map((th) => th.textContent).join('|')
+          return t.includes('선행 작업') && t.includes('후행 작업') })()`, 10000), await heads())
+      const blockedBy = (await api('GET', `/views/${db.defaultViewId}`)).body.view.columns.find((c) => c.type === 'relation' && c.relation.dependencies === 'blocked_by')?.propertyId
+      check('선행 작업을 둔다 — 200', (await api('POST', `/rows/${a}/relations/${blockedBy}`, { add: [b] })).status === 200)
+      const cycle = await api('POST', `/rows/${b}/relations/${blockedBy}`, { add: [a] })
+      check('★ 서로를 막으면 400 — 순환이라고 말한다', cycle.status === 400 && JSON.stringify(cycle.body).includes('순환'), JSON.stringify(cycle))
+
+      check('종속 관계 스위치가 꺼진 상태로 선다', await setSwitch('db-dependencies-switch', false))
+      const off = (await api('GET', `/views/${db.defaultViewId}`)).body.view.columns.filter((c) => c.type === 'relation')
+      check('★ 끄면 일반 관계형으로 남는다 — 속성 둘은 그대로 · 표시는 없다', off.length === 2 && off.every((c) => c.relation.dependencies === null), JSON.stringify(off.map((c) => c.relation)))
     }
 
     section('전체')

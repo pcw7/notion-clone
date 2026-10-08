@@ -89,6 +89,7 @@ import {
   type SchemaSnapshot,
 } from './property.ts'
 import { wouldCreateCycle } from './sub-items.ts'
+import { wouldCreateDependencyCycle } from './dependencies.ts'
 import { decodeCursorValues, encodeCursorValues } from './query.ts'
 import { readRow, type RowSummary } from './row.ts'
 import { MAX_QUERY_LIMIT } from './limits.ts'
@@ -369,6 +370,19 @@ export async function linkRowsIn(
     // ── 하위 항목(2b-1 · `sub-items.ts` 머리말): 순환을 거부하고, 하위 항목 칸에 더하는 행은 옮겨 온다 ──
     // 상위 항목 칸이면 (자식 = 이 행, 부모 = 더할 행), 하위 항목 칸이면 (자식 = 더할 행, 부모 = 이 행). 부모 쪽 프로퍼티는 상위
     // 항목이다 — 하위 항목 칸의 짝이 그것이다.
+    // ── 종속 관계(2b-3 · `dependencies.ts` 머리말): 순환만 거부한다(막는 행은 여럿이라 옮겨 오기가 없다) ──
+    // 선행 작업 칸이면 (막히는 행 = 이 행, 막는 행 = 더할 행), 후행 작업 칸이면 (막히는 행 = 더할 행, 막는 행 = 이 행).
+    const dependency = config.dependencies ?? null
+    const blockedByProperty = dependency === 'blocked_by' ? propertyId : dependency === 'blocking' ? synced : null
+    if (blockedByProperty !== null && add.length > 0) {
+      const pairs = dependency === 'blocked_by' ? add.map((b) => ({ blocked: rowId, blocker: b })) : add.map((b) => ({ blocked: b, blocker: rowId }))
+      for (const { blocked, blocker } of pairs) {
+        if (await wouldCreateDependencyCycle(tx, blockedByProperty, blocked, blocker)) {
+          return fail('invalid_value', [{ path: 'add', message: '서로를 막는 순환이 생깁니다 — 자기 자신이나 자기를 기다리는 작업을 선행 작업으로 둘 수 없습니다' }])
+        }
+      }
+    }
+
     const hierarchy = config.sub_items ?? null
     const parentProperty = hierarchy === 'parent' ? propertyId : hierarchy === 'children' ? synced : null
     let reparented: { child: string; from: string }[] = []

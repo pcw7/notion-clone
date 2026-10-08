@@ -1653,6 +1653,22 @@ CREATE INDEX ON derived_value (property_id, num_value) WHERE NOT stale AND num_v
 - 미룬 것: 있는 relation 짝을 하위 항목으로 쓰기(옮기기 전에 부모 여럿 · 순환을 검사해야 한다) · 깊이 상한(03 의 권고 10 —
   노션 문서에 없다. 화면이 지연 로딩한다) · 뷰의 `sub_item_display` · `sub_item_filter_scope`(2b-2 의 화면과 함께).
 
+**[보강] 종속 관계(dependency) — 같은 표의 relation 짝 · `role='dependency'` · 순환 없음 · 날짜는 옮기지 않는다** ⟨DB 심화 2b-3조각 · F-03-18 / 마이그레이션 0052⟩
+
+하위 항목(위 [보강])과 같은 모양이다 — 다른 것만 적는다.
+
+- ① 켜면 같은 표의 양방향 relation 짝 — "선행 작업"(Blocked by — 이 행을 막는 행들) · "후행 작업"(Blocking — 이 행이 막는 행들).
+  `config.dependencies: "blocked_by" | "blocking"`. 개수 제한이 없다(막는 행이 여럿일 수 있다). 짝은 표에 하나(DP1 ·
+  `ux_property_dependencies`) · 표시는 같은 표를 가리키는 relation 에만(`ck_property_dependencies`) · 한 프로퍼티가 하위 항목과
+  종속 관계를 함께 맡지 않는다.
+- ② `role='dependency'` 는 **선행 작업 프로퍼티의 엣지**(막히는 행 → 막는 행)에만 붙는다 — 하위 항목과 같은 트리거가 매긴다.
+- ③ **순환은 없다**(DP2 — 03 *"순환 종속 → 클론은 저장 시 거부"*). 막는 관계는 트리가 아니라 그래프라(막는 행이 여럿) 위로 걷는 길이
+  여럿이다 — 방문한 행을 모으며 걷는다(UNION). 명령이 먼저 묻고 지연 제약 트리거(`tg_relation_edge_no_dependency_cycle`)가 커밋 때
+  다시 본다.
+- ④ **날짜는 옮기지 않는다** — `database.dependency_shift_mode` 의 `never` 만 쓴다(03 의 클론 대안 *"화살표로 표시만 하고 날짜는
+  옮기지 않는 버전으로 시작"*). 자동 이동(겹칠 때만 · 간격 유지)은 타임라인 뷰와 함께 들인다.
+- ⑤ 끄면 일반 relation 으로 남는다 · 짝의 한쪽을 따로 지울 수 없다 — 하위 항목과 같다.
+
 **[보강] rollup v1 — 읽을 때 계산한다. `derived_value` · `property_dependency` 는 아직 만들지 않는다** ⟨rollup 5c-1조각 / 마이그레이션 없음⟩
 
 위 DDL 의 `property_dependency` · `derived_value` 는 **정본으로 남는다** — 다만 v1 은 그 두 표를 만들지 않는다. 마스터 문서

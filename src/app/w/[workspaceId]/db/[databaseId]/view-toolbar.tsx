@@ -52,7 +52,7 @@ import type { FilterableType } from '@/lib/database/filter'
 import { isGroupableType } from '@/lib/database/property-types'
 import { parseUniqueIdQuery } from '@/lib/database/unique-id-format'
 import { isFilterableColumn, isSortable, subItemPairOf, type FilterableColumn, type ViewColumn } from '@/lib/database/view-columns'
-import { disableSubItems, enableSubItems, setColumnVisible, updateView, type ApiResult } from './table-api'
+import { disableSubItems, enableSubItems, setColumnVisible, setDependencies, updateView, type ApiResult } from './table-api'
 import { TYPE_ICON } from './cell-view'
 
 type Panel = 'filter' | 'sort' | 'properties' | 'group'
@@ -187,6 +187,7 @@ export function ViewToolbar({
             busy={busy}
             onToggle={(propertyId, visible) => run(() => setColumnVisible(workspaceId, viewId, propertyId, visible))}
             onSubItems={(on) => run(() => (on ? enableSubItems : disableSubItems)(workspaceId, dataSourceId))}
+            onDependencies={(on) => run(() => setDependencies(workspaceId, dataSourceId, on))}
             onClose={() => setPanel(null)}
           />
         )}
@@ -825,6 +826,7 @@ function PropertiesPanel({
   busy,
   onToggle,
   onSubItems,
+  onDependencies,
   onClose,
 }: {
   columns: ViewColumn[]
@@ -832,9 +834,12 @@ function PropertiesPanel({
   onToggle: (propertyId: string, visible: boolean) => Promise<boolean>
   /** 하위 항목 켜기 · 끄기(2b-2). 끄면 짝은 일반 relation 으로 남는다(연결은 그대로). */
   onSubItems: (on: boolean) => Promise<boolean>
+  /** 종속 관계 켜기 · 끄기(2b-3). 날짜는 옮기지 않는다. */
+  onDependencies: (on: boolean) => Promise<boolean>
   onClose: () => void
 }) {
   const subItemsOn = subItemPairOf(columns) !== null
+  const dependenciesOn = columns.some((c) => c.type === 'relation' && c.relation.dependencies === 'blocked_by')
   return (
     <Popover label="속성" testId="db-properties-panel" onClose={onClose}>
       <ul className="flex flex-col gap-1">
@@ -870,6 +875,18 @@ function PropertiesPanel({
         />
         하위 항목
         <span className="text-xs text-neutral-400">{subItemsOn ? '끄면 일반 관계형 속성으로 남습니다' : '행 안에 행을 둡니다'}</span>
+      </label>
+      {/* 종속 관계(2b-3 · F-03-18) — "선행 작업" · "후행 작업" 속성이 생긴다. 서로를 막는 순환은 거부한다. */}
+      <label className="flex items-center gap-2 text-sm">
+        <input
+          type="checkbox"
+          checked={dependenciesOn}
+          disabled={busy}
+          onChange={(e) => void onDependencies(e.target.checked)}
+          data-testid="db-dependencies-switch"
+        />
+        종속 관계
+        <span className="text-xs text-neutral-400">{dependenciesOn ? '끄면 일반 관계형 속성으로 남습니다' : '작업 사이의 선후를 둡니다'}</span>
       </label>
     </Popover>
   )
