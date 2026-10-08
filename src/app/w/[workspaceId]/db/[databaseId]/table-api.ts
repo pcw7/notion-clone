@@ -12,6 +12,7 @@ import type { FilterNode, SortKey } from '@/lib/database/filter'
 import type { GroupBy } from '@/lib/database/group'
 import type { CalculationResult } from '@/lib/database/calculations'
 import type { GalleryLayout } from '@/lib/database/gallery'
+import type { CalendarLayout } from '@/lib/database/calendar'
 import type { RowJson } from '@/lib/database/http'
 import type { PageIcon } from '@/lib/block/page-icon'
 import type { DatabaseListItem } from '@/lib/database/database'
@@ -61,6 +62,9 @@ function messageOf(status: number, body: ErrorBody): string {
     // ── 보드 (4b) ──
     case 'group_required':
       return '보드에는 그룹 기준이 필요합니다. 선택 · 상태 · 체크박스 속성을 먼저 만드세요.'
+    // ── 캘린더 (2g-2) ──
+    case 'date_required':
+      return '캘린더에는 날짜 속성이 필요합니다. 날짜 속성을 먼저 만드세요.'
     case 'not_grouped':
       return '이 보드의 그룹 속성이 지워졌습니다. 그룹 기준을 다시 고르세요.'
     case 'invalid_group':
@@ -601,6 +605,8 @@ export function updateView(
     readonly defaultTemplateId?: string | null
     /** 갤러리 레이아웃의 바꿀 키만(2f-2). */
     readonly gallery?: Partial<GalleryLayout>
+    /** 캘린더 레이아웃의 바꿀 키만(2g-2). */
+    readonly calendar?: Partial<CalendarLayout>
   },
 ): Promise<ApiResult<null>> {
   return call(

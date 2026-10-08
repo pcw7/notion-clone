@@ -12425,6 +12425,111 @@ async function main() {
         JSON.stringify(range.body?.view?.calendar))
     }
 
+    if (sectionIf('캘린더 — 화면 (2g-2 · F-04-06)')) {
+      // 뷰 추가의 "캘린더" → 이번 달 · 주소의 m 으로 달을 옮긴다 · 막대는 그 날짜 칸에 · 주를 넘는 범위는 두 막대 · 날짜 없음 칩 ·
+      // 날짜 칸의 "+" 로 그 날의 행을 만들고 제목을 받는다 · "달력" 패널로 날짜 속성을 바꾼다 · 날짜 속성이 지워지면 "고르라".
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const clickOn = async (selector) => {
+        const p = await evaluate(`(() => {
+          const e = document.querySelector(${JSON.stringify(selector)})
+          if (!e) return null
+          e.scrollIntoView({ block: 'center' })
+          const r = e.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (p) await click(p.x, p.y)
+        return p !== null
+      }
+      const setSelect = (selector, value) => evaluate(`(() => {
+        const s = document.querySelector(${JSON.stringify(selector)})
+        if (!s) return false
+        s.value = ${JSON.stringify(value)}
+        s.dispatchEvent(new Event('change', { bubbles: true }))
+        return true
+      })()`)
+      const db = (await api('POST', '/databases', { name: `캘린더 화면 ${stamp}` })).body.database
+      const ds = db.dataSourceId
+      const due = (await api('POST', `/data-sources/${ds}/properties`, { name: '마감', type: 'date' })).body.property.id
+      const begin = (await api('POST', `/data-sources/${ds}/properties`, { name: '시작', type: 'date' })).body.property.id
+      const titleProp = (await api('GET', `/views/${db.defaultViewId}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const row = async (title, cells) => (await api('POST', `/views/${db.defaultViewId}/rows`, {
+        cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } }, ...cells],
+      })).body.row.id
+      const date = (start, end) => ({ type: 'date', date: end ? { start, end } : { start } })
+      const tenth = await row('삼월 십일', [{ propertyId: due, value: date('2026-03-10') }, { propertyId: begin, value: date('2026-03-03') }])
+      const spanning = await row('걸친 일', [{ propertyId: due, value: date('2026-03-06', '2026-03-09') }])
+      await row('사월 일', [{ propertyId: due, value: date('2026-04-15') }])
+      await row('날짜 없는 일', [])
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      await waitFor(`!!document.querySelector('[data-testid="db-view-add"]')`, 15000)
+      await clickOn('[data-testid="db-view-add"]')
+      await waitFor(`!!document.querySelector('[data-testid="db-view-add-calendar"]')`, 3000)
+      await clickOn('[data-testid="db-view-add-calendar"]')
+      const thisMonth = new Date().toISOString().slice(0, 7)
+      check('★ 뷰 추가의 "캘린더" — 이번 달의 달력이 선다(6주 · 42칸)',
+        await waitFor(`document.querySelector('[data-testid="db-calendar"]')?.dataset.month === '${thisMonth}' && document.querySelectorAll('[data-testid="db-cal-day"]').length === 42`, 15000))
+      const calId = await evaluate(`new URLSearchParams(location.search).get('v')`)
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}?v=${calId}&m=2026-03` })
+      await waitFor(`document.querySelector('[data-testid="db-cal-title"]')?.textContent === '2026년 3월'`, 15000)
+      // 막대의 가운데가 그 날짜 칸 안에 있는가
+      const inDay = (rowId, day, nth = 0) => evaluate(`(() => {
+        const bars = [...document.querySelectorAll('[data-testid="db-cal-event"][data-row-id="${rowId}"]')]
+        const bar = bars[${nth}], cell = document.querySelector('[data-testid="db-cal-day"][data-day="${day}"]')
+        if (!bar || !cell) return false
+        const b = bar.getBoundingClientRect(), c = cell.getBoundingClientRect()
+        const x = b.x + Math.min(b.width, c.width) / 2, y = b.y + b.height / 2
+        return x >= c.x && x <= c.x + c.width && y >= c.y && y <= c.y + c.height
+      })()`)
+      check('★ 막대는 그 날짜 칸에 선다 — 3월 10일(화)', await inDay(tenth, '2026-03-10'))
+      check('★ 주를 넘는 범위는 두 막대로 잘라 잇는다 — 3/6 ~ 3/7 · 3/8 ~ 3/9',
+        (await evaluate(`document.querySelectorAll('[data-testid="db-cal-event"][data-row-id="${spanning}"]').length`)) === 2
+          && (await inDay(spanning, '2026-03-06', 0)) && (await inDay(spanning, '2026-03-08', 1)))
+      check('날짜 없는 행은 달력에 없고 머리에 "날짜 없음 1개"', (await evaluate(`document.querySelector('[data-testid="db-cal-undated"]')?.textContent`)) === '날짜 없음 1개')
+      await clickOn('[data-testid="db-cal-next"]')
+      check('다음 달 — 주소의 m 이 바뀌고 4월의 행이 선다',
+        await waitFor(`new URLSearchParams(location.search).get('m') === '2026-04' && [...document.querySelectorAll('[data-testid="db-cal-event-title"]')].some((e) => e.textContent === '사월 일')`, 10000))
+      await clickOn('[data-testid="db-cal-prev"]')
+      await waitFor(`document.querySelector('[data-testid="db-cal-title"]')?.textContent === '2026년 3월'`, 10000)
+
+      // 날짜 칸의 "+" — 그 날의 행 · 막대 자리에서 제목
+      await clickOn('[data-testid="db-cal-day"][data-day="2026-03-20"] [data-testid="db-cal-add"]')
+      check('날짜 칸의 "+" — 그 날에 새 막대가 서고 제목 칸에 포커스', await waitFor(`document.activeElement?.getAttribute('data-testid') === 'db-cal-title-input'`, 8000))
+      await typeText('새 일정')
+      await key('Enter')
+      const storedNew = async () => {
+        for (let i = 0; i < 25; i += 1) {
+          const rows = (await api('GET', `/views/${calId}/calendar?from=2026-03-01&to=2026-03-31`)).body?.rows ?? []
+          const found = rows.find((r) => r.title === '새 일정')
+          if (found) return found.properties[due]?.date?.start
+          await sleep(200)
+        }
+        return null
+      }
+      check('★ 제목을 치고 Enter — 그 날짜(3/20)로 서버에 남는다', (await storedNew()) === '2026-03-20')
+
+      // "달력" 패널 — 날짜 속성 바꾸기
+      await clickOn('[data-testid="db-cal-layout-button"]')
+      await waitFor(`!!document.querySelector('[data-testid="db-cal-date-select"]')`, 3000)
+      await setSelect('[data-testid="db-cal-date-select"]', begin)
+      check('★ "달력"에서 날짜 속성을 "시작"으로 — 삼월 십일이 3/3 으로 옮겨 서고 시작이 없는 행은 날짜 없음',
+        (await waitFor(`(() => { const bars = document.querySelectorAll('[data-testid="db-cal-event"]'); return bars.length === 1 })()`, 10000))
+          && (await inDay(tenth, '2026-03-03'))
+          && (await evaluate(`document.querySelector('[data-testid="db-cal-undated"]')?.textContent`)) === '날짜 없음 4개',
+        await evaluate(`document.querySelector('[data-testid="db-cal-undated"]')?.textContent ?? '(칩 없음)'`))
+
+      await api('DELETE', `/data-sources/${ds}/properties/${begin}`)
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}?v=${calId}&m=2026-03` })
+      check('날짜 속성이 지워지면 달력 대신 "날짜 속성을 고르라"', await waitFor(`!!document.querySelector('[data-testid="db-cal-needs-date"]')`, 15000))
+    }
+
     section('전체')
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))
     const serverErrors = serverOutput.split('\n').filter((l) => l.includes('⨯'))
