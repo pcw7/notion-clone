@@ -140,6 +140,11 @@ export type RelationConfig = {
    * "하위 항목"(거울상). 같은 표를 가리키는 relation 에만 있다(`ck_property_sub_items`).
    */
   readonly sub_items?: 'parent' | 'children'
+  /**
+   * 종속 관계 짝의 한쪽(2b-3 · 정본 §3.5 [보강] 종속 관계) — `blocked_by` 는 "선행 작업"(이 행을 막는 행들), `blocking` 은 "후행
+   * 작업"(거울상). 같은 표를 가리키는 relation 에만 있고 하위 항목과 함께 맡지 않는다(`ck_property_dependencies`).
+   */
+  readonly dependencies?: 'blocked_by' | 'blocking'
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -154,6 +159,7 @@ export function readRelationConfig(raw: unknown): RelationConfig | null {
     ...(typeof c.synced_property_id === 'string' ? { synced_property_id: c.synced_property_id } : {}),
     ...(c.limit === 'one' ? { limit: 'one' as const } : {}),
     ...(c.sub_items === 'parent' || c.sub_items === 'children' ? { sub_items: c.sub_items } : {}),
+    ...(c.dependencies === 'blocked_by' || c.dependencies === 'blocking' ? { dependencies: c.dependencies } : {}),
   }
 }
 

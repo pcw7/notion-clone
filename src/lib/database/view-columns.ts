@@ -54,6 +54,8 @@ export type RelationColumn = ColumnBase & {
     readonly synced: boolean
     /** 하위 항목 짝의 한쪽(2b-1) — 화면이 트리를 그릴 때 쓴다. 일반 relation 은 null. */
     readonly subItems: 'parent' | 'children' | null
+    /** 종속 관계 짝의 한쪽(2b-3) — 화면이 켜졌는지 말할 때 쓴다. 일반 relation 은 null. */
+    readonly dependencies: 'blocked_by' | 'blocking' | null
   }
 }
 
@@ -129,6 +131,7 @@ export function relationOf(config: unknown): RelationColumn['relation'] | null {
     limit: parsed.limit ?? 'none',
     synced: parsed.synced_property_id !== undefined,
     subItems: parsed.sub_items ?? null,
+    dependencies: parsed.dependencies ?? null,
   }
 }
 

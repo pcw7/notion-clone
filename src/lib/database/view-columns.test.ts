@@ -63,12 +63,14 @@ describe('② config 읽기', () => {
       limit: 'none',
       synced: false,
       subItems: null,
+      dependencies: null,
     })
     assert.deepEqual(relationOf({ target_data_source_id: ds, limit: 'one', synced_property_id: 'x' }), {
       targetDataSourceId: ds,
       limit: 'one',
       synced: true,
       subItems: null,
+      dependencies: null,
     })
     assert.equal(relationOf({}), null)
     assert.equal(relationOf({ target_data_source_id: '아무거나' }), null)
@@ -95,7 +97,7 @@ describe('③ 하위 항목 (2b-2)', () => {
   const relation = (id: string, subItems: 'parent' | 'children' | null): ViewColumn =>
     ({
       propertyId: id, name: id, visible: false, orderKey: 'a0', width: null, wrap: false, options: [], type: 'relation',
-      relation: { targetDataSourceId: 'x', limit: 'none', synced: true, subItems },
+      relation: { targetDataSourceId: 'x', limit: 'none', synced: true, subItems, dependencies: null },
     }) as ViewColumn
 
   test('짝은 컬럼(숨긴 것 포함)의 표시에서 읽는다 — 한쪽만 있으면 없는 것', () => {

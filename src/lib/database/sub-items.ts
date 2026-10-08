@@ -114,8 +114,8 @@ export async function enableSubItems(
   })
 }
 
-/** `base` · `base 2` · `base 3` … 중 아직 없는 첫 이름. */
-function freeName(base: string, taken: ReadonlySet<string>): string {
+/** `base` · `base 2` · `base 3` … 중 아직 없는 첫 이름. 종속 관계(`dependencies.ts`)가 같이 쓴다. */
+export function freeName(base: string, taken: ReadonlySet<string>): string {
   if (!taken.has(base)) return base
   for (let n = 2; ; n += 1) if (!taken.has(`${base} ${n}`)) return `${base} ${n}`
 }

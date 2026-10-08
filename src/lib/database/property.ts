@@ -165,7 +165,7 @@ export type PropertyFailure =
   | 'locked'
   /** 이 표에 살아 있는 ID 프로퍼티가 이미 있다(불변식 U1 · 2a-1) — 하나뿐이다. */
   | 'unique_id_exists'
-  /** 기능이 관리하는 속성이다(하위 항목 짝 · 2b-1) — 따로 지우지 않고 그 기능을 끈다. */
+  /** 기능이 관리하는 속성이다(하위 항목 짝 · 2b-1 · 종속 관계 짝 · 2b-3) — 따로 지우지 않고 그 기능을 끈다. */
   | 'managed_property'
 
 export type PropertyResult<T = SchemaSnapshot> =
@@ -680,7 +680,9 @@ export async function deleteProperty(
     )
     if (target === null) return fail('not_found')
     // 하위 항목 짝의 한쪽만 지우면 짝이 깨진다(2b-1) — 지우는 길은 "하위 항목 끄기"다(`sub-items.ts`).
-    if (target.type === 'relation' && target.config !== null && 'sub_items' in target.config) return fail('managed_property')
+    if (target.type === 'relation' && target.config !== null && ('sub_items' in target.config || 'dependencies' in target.config)) {
+      return fail('managed_property')
+    }
     // API 문서 명시: title 은 삭제할 수 없다. DB 의 `ck_property_title_alive` 도
     // 막지만 그쪽은 CHECK 위반을 던질 뿐이라 이유가 화면에 닿지 않는다.
     if (target.type === 'title') return fail('title_immutable')

@@ -472,6 +472,11 @@ export function disableSubItems(workspaceId: string, dataSourceId: string): Prom
   return call(`${base(workspaceId)}/data-sources/${dataSourceId}/sub-items`, { method: 'DELETE' }, () => null)
 }
 
+/** 종속 관계를 켠다 · 끈다(2b-3) — 같은 표의 "선행 작업" · "후행 작업" 짝. 끄면 일반 relation 으로 남는다. */
+export function setDependencies(workspaceId: string, dataSourceId: string, on: boolean): Promise<ApiResult<null>> {
+  return call(`${base(workspaceId)}/data-sources/${dataSourceId}/dependencies`, { method: on ? 'POST' : 'DELETE' }, () => null)
+}
+
 /** 고유 ID 의 접두사를 바꾼다(2a-2). 빈 글자는 "접두사 없음"이다. 모양은 서버가 판정한다(`normalizeUniqueIdPrefix`). */
 export function setUniqueIdPrefix(
   workspaceId: string,
