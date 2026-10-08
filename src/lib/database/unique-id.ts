@@ -15,9 +15,10 @@
  * 행을 만드는 쪽과 ID 프로퍼티를 더하는 쪽이 엇갈려도 빠지는 번호가 없다
  * ──────────────────────────────────────────────────────────────────────
  *
- * 행 생성은 ID 프로퍼티가 있는지를 **행을 넣은 뒤의 문장 안에서** 묻는다(`issueUniqueSeq`). `INSERT INTO page` 의 FK 검사가
- * data source 줄에 `FOR KEY SHARE` 를 잡고, ID 프로퍼티를 더하는 명령은 `lockSchema` 로 같은 줄을 `FOR UPDATE` 로 잡는다 —
- * 둘은 충돌하므로 한쪽이 커밋한 뒤에 다른 쪽이 진행한다:
+ * 행 생성은 ID 프로퍼티가 있는지를 **행을 넣은 뒤의 문장 안에서** 묻는다(`issueUniqueSeq`). 행 생성은 data source 줄을
+ * `FOR NO KEY UPDATE` 로 잡고(형제 순서 키를 줄 세우려고 — `row.ts` `createRowIn`) `INSERT INTO page` 의 FK 검사도 같은 줄에
+ * `FOR KEY SHARE` 를 잡는다. ID 프로퍼티를 더하는 명령은 `lockSchema` 로 같은 줄을 `FOR UPDATE` 로 잡는다 — 둘은 충돌하므로 한쪽이
+ * 커밋한 뒤에 다른 쪽이 진행한다:
  *
  *   더하기가 먼저   행의 FK 검사가 그 커밋을 기다린다 → 다음 문장(READ COMMITTED 의 새 스냅숏)이 ID 프로퍼티를 본다 → 번호
  *   행이 먼저       더하기의 `FOR UPDATE` 가 행의 커밋을 기다린다 → 채우기(`fillUniqueIds`)가 그 행을 본다 → 번호

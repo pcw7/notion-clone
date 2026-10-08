@@ -325,21 +325,22 @@ describe('⑦ 필터 · 정렬', () => {
 })
 
 describe('⑧ 엇갈려도', () => {
-  // ⚠ 행 **둘**을 동시에 만들지 않는다 — 고유 ID 와 무관하게 행의 순서 키가 부딪힌다(`ux_block_sibling_order` · HANDOFF §7).
-  //   여기서 보는 것은 행 하나와 ID 프로퍼티 더하기의 엇갈림이다. 순서는 매번 달라지므로 여러 번 돌린다.
+  // 행 여럿을 동시에 만들 수 있게 된 뒤(형제 순서 키의 잠금 · HANDOFF §3.3-301) 행 둘 + 더하기로 넓혔다. 순서는 매번 달라지므로
+  // 여러 번 돌린다.
   test('★ 행 만들기와 ID 프로퍼티 더하기를 동시에 — 번호 없는 행 · 겹치는 번호가 없다', async (t) => {
     if (skipReason) return t.skip(skipReason)
     for (let round = 0; round < 8; round += 1) {
       const table = await newTable(`동시 ${round}`)
       await table.row('먼저')
-      const [made, added] = await Promise.all([table.row('가'), table.addId()])
+      const [made, added, also] = await Promise.all([table.row('가'), table.addId(), table.row('나')])
       assert.equal(typeof made, 'string')
+      assert.equal(typeof also, 'string')
       assert.equal(added.ok, true)
       const got = [...(await seqs(table.ds)).values()]
-      assert.equal(got.length, 2)
+      assert.equal(got.length, 3)
       assert.ok(got.every((n) => n !== null), `번호 없는 행이 있다: ${JSON.stringify(got)}`)
-      assert.deepEqual([...got].sort((x, y) => x! - y!), [1, 2])
-      assert.equal(await counter(table.ds), 2)
+      assert.deepEqual([...got].sort((x, y) => x! - y!), [1, 2, 3])
+      assert.equal(await counter(table.ds), 3)
     }
   })
 })

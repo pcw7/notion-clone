@@ -192,6 +192,24 @@ describe('createRow', () => {
     if (listed.ok) assert.deepEqual(listed.value.rows.map((r) => r.id), ids)
   })
 
+  // 2a-1 의 동시성 검사를 쓰다 찾았다(HANDOFF §7) — 형제의 마지막 키를 잠금 없이 읽어 두 요청이 같은 키를 만들었고 한쪽이
+  // `ux_block_sibling_order` 23505 로 죽었다. 두 사람이 같은 표에 동시에 행을 더하는 일은 흔하다.
+  test('★ 같은 표에 행을 동시에 여럿 만들어도 모두 만들어지고 순서 키가 겹치지 않는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const table = await newTable()
+    const made = await Promise.all(
+      ['가', '나', '다', '라', '마', '바'].map((n) =>
+        createRow(fx.owner.ctx, table.dataSourceId, { cells: [{ ...titleCell(n), propertyId: table.titleId }] }),
+      ),
+    )
+    assert.deepEqual(made.map((r) => r.ok), [true, true, true, true, true, true])
+    const listed = await listRows(fx.owner.ctx, table.dataSourceId)
+    assert.equal(listed.ok, true)
+    if (!listed.ok) return
+    assert.equal(listed.value.rows.length, 6)
+    assert.equal(new Set(listed.value.rows.map((r) => r.orderKey)).size, 6)
+  })
+
   test('낡은 스키마 버전으로는 만들 수 없다', async (t) => {
     if (skipReason) return t.skip(skipReason)
     const table = await newTable()
