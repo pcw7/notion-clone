@@ -59,7 +59,17 @@ import {
 } from '@/lib/database/calculations'
 import { parseUniqueIdQuery } from '@/lib/database/unique-id-format'
 import { isFilterableColumn, isSortable, subItemPairOf, type FilterableColumn, type ViewColumn } from '@/lib/database/view-columns'
-import { disableSubItems, enableSubItems, setColumnVisible, setDependencies, updateView, type ApiResult } from './table-api'
+import {
+  disableSubItems,
+  enableSubItems,
+  publishPersonalView,
+  resetPersonalView,
+  setColumnVisible,
+  setDependencies,
+  setPersonalView,
+  updateView,
+  type ApiResult,
+} from './table-api'
 import { TYPE_ICON } from './cell-view'
 import { ViewSearch } from './view-search'
 import { GALLERY_ASPECTS, GALLERY_COVERS, GALLERY_SIZES, type GalleryLayout } from '@/lib/database/gallery'
@@ -99,6 +109,7 @@ export function ViewToolbar({
   search,
   gallery,
   calendar,
+  personal,
 }: {
   workspaceId: string
   viewId: string
@@ -119,6 +130,11 @@ export function ViewToolbar({
   gallery?: GalleryLayout
   /** 캘린더 뷰의 레이아웃(2g-2). 캘린더일 때만 온다 — "달력" 버튼과 패널이 그때만 그려진다. */
   calendar?: LiveCalendarLayout
+  /**
+   * 이 사람의 개인 필터 · 정렬(2h-2 · F-04-17) — 어느 쪽을 덮어썼는지. 있으면 "나만 보는" 표시와 초기화 · (편집자) 모두에게 저장이 선다.
+   * `filter` · `sorts` 로 받는 것은 이미 "실제로 쓰는" 것이다(서버 렌더가 개인 것을 얹었다).
+   */
+  personal?: { readonly filter: boolean; readonly sorts: boolean } | null
 }) {
   const router = useRouter()
   const [panel, setPanel] = useState<Panel | null>(null)
@@ -185,19 +201,47 @@ export function ViewToolbar({
           <ToolbarButton label="달력" count={0} active={panel === 'calendar'} testId="db-cal-layout-button" onClick={() => toggle('calendar')} />
         )}
         {busy && <span className="text-xs text-neutral-400">저장하는 중…</span>}
+        {personal && (
+          <span data-testid="db-personal" className="flex items-center gap-1 rounded-full bg-violet-50 px-2 py-0.5 text-xs text-violet-800 dark:bg-violet-950 dark:text-violet-200">
+            나만 보는 {[personal.filter && '필터', personal.sorts && '정렬'].filter(Boolean).join(' · ')}
+            <button
+              type="button"
+              data-testid="db-personal-reset"
+              disabled={busy}
+              onClick={() => void run(() => resetPersonalView(workspaceId, viewId))}
+              className="rounded px-1 underline-offset-2 hover:underline"
+            >
+              초기화
+            </button>
+            {canEdit && (
+              <button
+                type="button"
+                data-testid="db-personal-publish"
+                disabled={busy}
+                onClick={() => void run(() => publishPersonalView(workspaceId, viewId))}
+                className="rounded px-1 underline-offset-2 hover:underline"
+              >
+                모두에게 저장
+              </button>
+            )}
+          </span>
+        )}
         <span className="ml-auto">
           {/* 뷰를 바꾸면 새로 선다 — 다른 뷰의 검색 칸에 옛 글자가 남지 않게. */}
           <ViewSearch key={viewId} search={search ?? null} />
         </span>
 
+        {/* 필터 · 정렬은 누구나 고친다(2h-2) — 편집자는 지금처럼 모두의 것을, 볼 수만 있는 사람은 **자기 것**을(공유 것을 대체한다). */}
         {panel === 'filter' && (
           <FilterPanel
             columns={filterColumns}
             catalog={catalog}
             filter={filter}
             types={types}
-            canEdit={canEdit}
-            onSave={(next) => run(() => updateView(workspaceId, viewId, { filter: next }))}
+            canEdit
+            onSave={(next) =>
+              run(() => (canEdit ? updateView(workspaceId, viewId, { filter: next }) : setPersonalView(workspaceId, viewId, { filter: next })))
+            }
             onClose={() => setPanel(null)}
           />
         )}
@@ -205,8 +249,10 @@ export function ViewToolbar({
           <SortPanel
             columns={filterColumns.filter(isSortable)}
             sorts={sorts}
-            canEdit={canEdit}
-            onSave={(next) => run(() => updateView(workspaceId, viewId, { sorts: next }))}
+            canEdit
+            onSave={(next) =>
+              run(() => (canEdit ? updateView(workspaceId, viewId, { sorts: next }) : setPersonalView(workspaceId, viewId, { sorts: next })))
+            }
             onClose={() => setPanel(null)}
           />
         )}

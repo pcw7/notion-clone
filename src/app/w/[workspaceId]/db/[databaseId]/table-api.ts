@@ -501,6 +501,29 @@ export function addColumn(
   )
 }
 
+/** 나에게만 적용하는 필터 · 정렬을 건다(2h-2 · F-04-17) — 볼 수 있으면 된다. `filter: null` 은 "필터 없음"(공유 필터를 끈다). */
+export function setPersonalView(
+  workspaceId: string,
+  viewId: string,
+  patch: { readonly filter?: FilterNode | null; readonly sorts?: readonly SortKey[] },
+): Promise<ApiResult<null>> {
+  return call(
+    `${base(workspaceId)}/views/${viewId}/personal`,
+    { method: 'PATCH', headers: JSON_HEADERS, body: JSON.stringify(patch) },
+    () => null,
+  )
+}
+
+/** 나의 필터 · 정렬을 버리고 공유 것으로(2h-2). */
+export function resetPersonalView(workspaceId: string, viewId: string): Promise<ApiResult<null>> {
+  return call(`${base(workspaceId)}/views/${viewId}/personal`, { method: 'DELETE' }, () => null)
+}
+
+/** 나의 필터 · 정렬을 모두에게 저장한다(2h-2 · Save for everyone) — 구조 권한. */
+export function publishPersonalView(workspaceId: string, viewId: string): Promise<ApiResult<null>> {
+  return call(`${base(workspaceId)}/views/${viewId}/personal`, { method: 'POST' }, () => null)
+}
+
 /** 이 뷰에서 이 열의 집계 함수를 바꾼다(2d-2 · F-04-16). `null` 이면 지운다. 타입이 고를 수 없는 함수는 서버가 거부한다. */
 export function setColumnCalculation(
   workspaceId: string,
