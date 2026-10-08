@@ -12347,7 +12347,9 @@ async function main() {
       const para = (text) => ({ id: randomUUID(), type: 'paragraph', title: [textRun(text)], properties: {}, format: {}, children: [] })
       await saveBody(withImage, { blocks: [para('앞 문단'), imageBlock({ type: 'file', file_id: uploaded.file.id })] })
       await saveBody(plain, { blocks: [para('글뿐')] })
-      await saveBody(broken, { blocks: [imageBlock({ type: 'external', url: `${BASE}/no-such-image-${stamp}.png` })] })
+      // 깨진 이미지는 **즉시** 실패하는 주소(닫힌 포트)다 — 화면이 붙기(hydration) 전에 깨져야 `onError` 가 오지 않는 경우를 늘 만든다.
+      // 우리 서버의 없는 주소(404)는 응답이 늦어 붙은 뒤에 깨지기도 해서, 구간만 돌릴 땐 통과하고 전체 판에서만 떨어졌다(#219).
+      await saveBody(broken, { blocks: [imageBlock({ type: 'external', url: `http://127.0.0.1:9/broken-${stamp}.png` })] })
       await saveBody(later, { blocks: [imageBlock({ type: 'file', file_id: uploaded.file.id })] })
       const gallery = (await api('POST', `/databases/${db.id}/views`, { type: 'gallery' })).body.view
       await api('PATCH', `/views/${gallery.id}`, { loadLimit: 3 })
