@@ -17,7 +17,6 @@ import { test, describe, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 
 import { probeDatabase, makeFixture, type Fixture } from '../testing/db-fixtures.ts'
-import { textRun } from '../contracts/rich-text.ts'
 import { createDatabase } from './database.ts'
 import { addProperty, addSelectOption } from './property.ts'
 import type { CellValue } from './property-types.ts'
