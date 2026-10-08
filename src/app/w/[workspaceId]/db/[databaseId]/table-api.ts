@@ -65,6 +65,11 @@ function messageOf(status: number, body: ErrorBody): string {
       return '그룹 설정을 확인하세요.'
     case 'invalid_config':
       return '속성 설정을 확인하세요.'
+    // ── 타입 바꾸기 (2c-2) ──
+    case 'unsupported_type':
+      return '이 유형으로는 바꿀 수 없습니다.'
+    case 'too_large':
+      return '칸이 많아 한 번에 바꿀 수 없습니다.'
     // ── 고유 ID (2a-1) ──
     case 'unique_id_exists':
       return 'ID 속성은 표에 하나만 둘 수 있습니다.'
@@ -475,6 +480,38 @@ export function disableSubItems(workspaceId: string, dataSourceId: string): Prom
 /** 종속 관계를 켠다 · 끈다(2b-3) — 같은 표의 "선행 작업" · "후행 작업" 짝. 끄면 일반 relation 으로 남는다. */
 export function setDependencies(workspaceId: string, dataSourceId: string, on: boolean): Promise<ApiResult<null>> {
   return call(`${base(workspaceId)}/data-sources/${dataSourceId}/dependencies`, { method: on ? 'POST' : 'DELETE' }, () => null)
+}
+
+/** 타입 바꾸기의 답 — 바뀌었다 · 값이 사라지는 칸이 있어 확인이 필요하다(개수) · 실패(사람이 읽을 이유). */
+export type ConvertColumnResult =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly lost: number }
+  | { readonly ok: false; readonly lost?: undefined; readonly message: string }
+
+/**
+ * 속성의 타입을 바꾼다(2c-2 · 서버 2c-1). 값이 사라지는 칸이 있으면 서버가 개수와 함께 거부한다(`lossy_conversion`) — 화면은 그 개수로
+ * 묻고 `confirmLoss` 를 실어 다시 부른다. `call` 이 실패 본문을 감추므로 따로 둔다.
+ */
+export async function convertColumn(
+  workspaceId: string,
+  dataSourceId: string,
+  propertyId: string,
+  type: string,
+  confirmLoss: boolean,
+): Promise<ConvertColumnResult> {
+  try {
+    const res = await fetch(`${base(workspaceId)}/data-sources/${dataSourceId}/properties/${propertyId}/convert`, {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ type, confirmLoss }),
+    })
+    const body = (await res.json().catch(() => null)) as (ErrorBody & { lost?: unknown }) | null
+    if (res.ok) return { ok: true }
+    if (body?.error === 'lossy_conversion' && typeof body.lost === 'number') return { ok: false, lost: body.lost }
+    return { ok: false, message: messageOf(res.status, body) }
+  } catch {
+    return { ok: false, message: '연결에 실패했습니다. 바뀐 내용이 저장되지 않았습니다.' }
+  }
 }
 
 /** 고유 ID 의 접두사를 바꾼다(2a-2). 빈 글자는 "접두사 없음"이다. 모양은 서버가 판정한다(`normalizeUniqueIdPrefix`). */

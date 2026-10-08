@@ -11867,6 +11867,63 @@ async function main() {
       check('제목은 바꿀 수 없다 — 400', title.status === 400 && title.body?.error === 'title_immutable', JSON.stringify(title))
     }
 
+    if (sectionIf('속성 타입 바꾸기 — 화면 (2c-2 · F-03-14)')) {
+      // 머리 메뉴의 "유형 바꾸기" — 값이 사라지는 칸이 있으면 개수와 함께 한 번 더 묻고, 확인하면 바뀌어 칸이 새 타입으로 그려진다.
+      // 손실이 없으면 묻지 않고 바뀐다. 자기 데이터를 스스로 만든다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const clickOn = async (selector) => {
+        const p = await evaluate(`(() => {
+          const e = document.querySelector(${JSON.stringify(selector)})
+          if (!e) return null
+          e.scrollIntoView({ block: 'center' })
+          const r = e.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (p) await click(p.x, p.y)
+        return p !== null
+      }
+      const db = (await api('POST', '/databases', { name: `타입 바꾸기 화면 ${stamp}` })).body.database
+      const memo = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '수량', type: 'rich_text' })).body.property.id
+      for (const text of ['12', '약 3']) {
+        await api('POST', `/views/${db.defaultViewId}/rows`, { cells: [{ propertyId: memo, value: { type: 'rich_text', rich_text: [textRun(text)] } }] })
+      }
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === 2`, 15000)
+      const header = () => evaluate(`document.querySelector('th[data-property-id="${memo}"]')?.textContent ?? ''`)
+      const cellsOf = () => evaluate(`[...document.querySelectorAll('td[data-property-id="${memo}"]')].map((td) => td.textContent.trim())`)
+
+      await clickOn(`th[data-property-id="${memo}"] [data-testid="db-column-menu"]`)
+      await waitFor(`!!document.querySelector('[data-testid="db-column-convert"]')`, 3000)
+      await clickOn('[data-testid="db-column-convert"]')
+      check('★ "유형 바꾸기"가 바꿀 수 있는 유형을 보인다 — 지금 유형은 없다',
+        await waitFor(`!!document.querySelector('[data-testid="db-column-convert-number"]') && !document.querySelector('[data-testid="db-column-convert-rich_text"]')`, 3000))
+      await clickOn('[data-testid="db-column-convert-number"]')
+      check('★ 값이 사라지는 칸이 있으면 개수와 함께 한 번 더 묻는다 — 아직 바뀌지 않았다',
+        (await waitFor(`(document.querySelector('[data-testid="db-column-convert-confirm"]')?.textContent ?? '').includes('1개 칸의 값이 사라집니다')`, 5000))
+          && (await header()).includes('텍스트'),
+        await evaluate(`document.querySelector('[data-testid="db-column-convert-confirm"]')?.textContent ?? '(없음)'`))
+      await clickOn('[data-testid="db-column-convert-confirm-button"]')
+      check('★ 확인하면 바뀌고 칸이 숫자로 그려진다 — 읽히지 않던 칸은 빈 칸',
+        await waitFor(`(document.querySelector('th[data-property-id="${memo}"]')?.textContent ?? '').includes('숫자')
+          && JSON.stringify([...document.querySelectorAll('td[data-property-id="${memo}"]')].map((td) => td.textContent.trim())) === JSON.stringify(['12', ''])`, 10000),
+        JSON.stringify({ header: await header(), cells: await cellsOf() }))
+
+      await clickOn(`th[data-property-id="${memo}"] [data-testid="db-column-menu"]`)
+      await waitFor(`!!document.querySelector('[data-testid="db-column-convert"]')`, 3000)
+      await clickOn('[data-testid="db-column-convert"]')
+      await waitFor(`!!document.querySelector('[data-testid="db-column-convert-rich_text"]')`, 3000)
+      await clickOn('[data-testid="db-column-convert-rich_text"]')
+      check('★ 손실이 없으면 묻지 않고 바뀐다 — 숫자 → 텍스트',
+        await waitFor(`(document.querySelector('th[data-property-id="${memo}"]')?.textContent ?? '').includes('텍스트') && !document.querySelector('[data-testid="db-column-convert-confirm"]')`, 10000),
+        JSON.stringify({ header: await header(), cells: await cellsOf() }))
+    }
+
     section('전체')
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))
     const serverErrors = serverOutput.split('\n').filter((l) => l.includes('⨯'))
