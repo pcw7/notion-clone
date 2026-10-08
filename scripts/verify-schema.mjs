@@ -2904,6 +2904,46 @@ try {
       [rowId, cid(2), JSON.stringify({ type: 'number', number: 6 })])
   }
 
+  console.log('\n[38] 열 집계의 함수 이름 (0054 / §3.6 [보강] 열 집계 ① · 2d-1조각)')
+  {
+    const root = randomUUID()
+    const dbBlock = randomUUID()
+    const ds = randomUUID()
+    const viewId = randomUUID()
+    const putBlock = `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key,
+                                         ancestor_path, perm_scope_id, properties, format, created_at, last_edited_at)
+                      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, '{}'::jsonb, '{}'::jsonb, now(), now())`
+    await client.query(putBlock, [root, wsId, 'page', 'workspace', wsId, 'zcalc0', [], root])
+    await client.query(putBlock, [dbBlock, wsId, 'database', 'block', root, 'zcalc0', [root], root])
+    await client.query(`INSERT INTO database (id, created_at, updated_at) VALUES ($1, now(), now())`, [dbBlock])
+    await client.query(`INSERT INTO data_source (id, owner_database_id, name, created_at, updated_at) VALUES ($1, $2, '집계 표', now(), now())`, [ds, dbBlock])
+    await client.query(`INSERT INTO database_data_source (database_id, data_source_id, order_idx) VALUES ($1, $2, 'a0')`, [dbBlock, ds])
+    const kid = (n) => `k${String(n).padStart(20, '0')}`
+    await client.query(`INSERT INTO property (id, data_source_id, name, type, order_idx, created_at, updated_at) VALUES ($1, $2, '이름', 'title', 'a0', now(), now())`, [kid(1), ds])
+    await client.query(
+      `INSERT INTO view (id, database_id, data_source_id, type, order_idx, configuration, created_at, updated_at)
+       VALUES ($1, $2, $3, 'table', 'a0', '{}'::jsonb, now(), now())`,
+      [viewId, dbBlock, ds],
+    )
+    const putColumn = `INSERT INTO view_property (view_id, property_id, order_idx, calculation) VALUES ($1, $2, 'a0', $3)`
+    await client.query('SAVEPOINT probe')
+    try {
+      await client.query(putColumn, [viewId, kid(1), 'count_all'])
+      await client.query(`UPDATE view_property SET calculation = NULL WHERE view_id = $1`, [viewId])
+      ok('함수 이름 · 비움 — 정상 경로가 통과한다')
+    } catch (e) {
+      fail(`정상 경로가 거부됐다 (${e.constraint ?? e.code})`)
+    }
+    try {
+      await client.query(`UPDATE view_property SET calculation = 'sum_of_squares' WHERE view_id = $1`, [viewId])
+      fail('★ 목록 밖의 함수 이름 — 거부되어야 하는데 통과했다')
+    } catch (e) {
+      if (e.constraint === 'ck_view_property_calculation') ok(`★ 목록 밖의 함수 이름 — ck_view_property_calculation 가 거부함 (${e.code})`)
+      else fail(`목록 밖의 함수 이름 — ck_view_property_calculation 가 아니라 ${e.constraint ?? e.code} 에 걸렸다`)
+    }
+    await client.query('ROLLBACK TO SAVEPOINT probe')
+  }
+
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
 } catch (e) {
