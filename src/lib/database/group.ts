@@ -91,6 +91,8 @@ import {
 } from './query.ts'
 import { readRow, updateCellsIn, type RowFailure, type RowSummary } from './row.ts'
 import { MAX_QUERY_LIMIT } from './limits.ts'
+import { calculationResult, canCalculate, isCalculation, type Calculation, type CalculationResult } from './calculations.ts'
+import { columnStatsOf, EMPTY_STATS_ROW, statsJsonSql, type StatsRow } from './calculate.ts'
 
 // ── 계약 ──────────────────────────────────────────────────────────────
 
@@ -116,7 +118,15 @@ export type GroupBy = {
   readonly hidden?: readonly string[]
   /** 행이 0개인 그룹을 그리지 않는다. `''` 그룹도 포함이다. */
   readonly hide_empty?: boolean
+  /**
+   * 그룹 머리의 계산(2d-3 · F-04-16) — 없으면 카드 수(노션 보드의 기본). 모든 그룹이 같은 계산이다. 모양과 함수 이름은 CHECK
+   * (`ck_view_group_by_calculation` · 0055)이 막는다. `null` 은 저장하지 않는다(받으면 "없음"으로 접는다).
+   */
+  readonly calculation?: GroupCalculation | null
 }
+
+/** 그룹 머리의 계산 — 어느 속성의 칸으로 어느 함수를. */
+export type GroupCalculation = { readonly property_id: string; readonly function: Calculation }
 
 export function validateGroupBy(raw: unknown, types: PropertyTypes): ValidationIssue[] {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
@@ -139,17 +149,45 @@ export function validateGroupBy(raw: unknown, types: PropertyTypes): ValidationI
   if (g.hide_empty !== undefined && typeof g.hide_empty !== 'boolean') {
     issues.push({ path: 'groupBy.hide_empty', message: 'boolean 이어야 합니다' })
   }
+  // 그룹 머리의 계산(2d-3) — null 은 "없음"(카드 수). 고를 때는 살아 있고 그 함수를 고를 수 있는 타입이어야 한다.
+  if (g.calculation !== undefined && g.calculation !== null) {
+    const c = g.calculation as Record<string, unknown>
+    if (typeof c !== 'object' || Array.isArray(c) || typeof c.property_id !== 'string' || !isCalculation(c.function)) {
+      issues.push({ path: 'groupBy.calculation', message: '{ property_id, function } 이어야 합니다' })
+    } else {
+      const type = types.get(c.property_id)
+      if (type === undefined) issues.push({ path: 'groupBy.calculation.property_id', message: '없는 프로퍼티입니다' })
+      else if (!canCalculate(type, c.function)) {
+        issues.push({ path: 'groupBy.calculation.function', message: '이 속성에서 고를 수 없는 계산입니다' })
+      }
+    }
+  }
   return issues
 }
 
 /** 저장할 모양으로 정리한다 — 모르는 키를 버리고 중복 hidden 을 접는다. `validateGroupBy` 를 지난 값만. */
 export function normalizeGroupBy(raw: GroupBy): GroupBy {
   const hidden = [...new Set(raw.hidden ?? [])]
+  const calculation = raw.calculation
   return {
     property_id: raw.property_id,
     ...(hidden.length > 0 ? { hidden } : {}),
     ...(raw.hide_empty ? { hide_empty: true } : {}),
+    ...(calculation !== undefined && calculation !== null
+      ? { calculation: { property_id: calculation.property_id, function: calculation.function } }
+      : {}),
   }
+}
+
+/**
+ * 그룹 머리의 계산이 지금 살아 있는가 — 프로퍼티가 있고 그 타입이 그 함수를 고를 수 있을 때만(2d-3). 지워졌거나 타입을 바꿔 맞지
+ * 않게 됐으면 null 이다 — 머리는 카드 수로 돌아가고 저장값은 남는다(열 집계와 같은 태도 · `computeCalculations`).
+ */
+export function liveGroupCalculation(groupBy: GroupBy, types: PropertyTypes): GroupCalculation | null {
+  const c = groupBy.calculation
+  if (c === undefined || c === null) return null
+  const type = types.get(c.property_id)
+  return type !== undefined && canCalculate(type, c.function) ? c : null
 }
 
 // ── 결과 모양 ─────────────────────────────────────────────────────────
@@ -161,6 +199,8 @@ export type BoardGroup = {
   /** 필터를 지난 행 수. 숨긴 그룹도 센다(숨긴 그룹 목록에 개수를 보여 준다). */
   readonly count: number
   readonly hidden: boolean
+  /** 그룹 머리의 계산 값(2d-3) — 계산이 없거나 살아 있지 않으면 null(머리는 카드 수). 숨긴 그룹도 계산한다. */
+  readonly calculation: CalculationResult | null
   /** 숨긴 그룹은 비어 있다. */
   readonly rows: readonly QueriedRow[]
   readonly hasMore: boolean
@@ -172,7 +212,16 @@ export type GroupsPage = {
   readonly propertyType: GroupableType
   /** 정렬 키가 없어 `row_position` 이 순서를 정한다 — 화면은 이때만 열 안 이동을 허용한다. */
   readonly manualOrder: boolean
+  /** 살아 있는 그룹 머리의 계산(2d-3 · `liveGroupCalculation`). 없으면 null — 머리는 카드 수. */
+  readonly calculation: GroupCalculation | null
   readonly groups: readonly BoardGroup[]
+}
+
+/** 그룹 머리의 계산만(2d-3) — 카드를 옮긴 뒤 머리의 값을 다시 받는다. 행은 읽지 않는다. */
+export type GroupCalculationsPage = {
+  readonly calculation: GroupCalculation | null
+  /** 그룹 키 → 값. 계산이 없으면 비어 있다. */
+  readonly values: Readonly<Record<string, CalculationResult>>
 }
 
 export type GroupRowsPage = {
@@ -230,6 +279,8 @@ type Board = {
    * Parents only 만 지원"*. 카드의 열 · 개수도 같은 조건을 지난다.
    */
   readonly subItemsParent: string | null
+  /** 살아 있는 그룹 머리의 계산(2d-3). */
+  readonly calculation: GroupCalculation | null
 }
 
 /**
@@ -285,6 +336,7 @@ async function openBoard(
     options: isOptionType(propertyType) ? await readOptions(tx, groupBy.property_id) : [],
     types,
     subItemsParent: (await readSubItemPair(tx, view.data_source_id))?.parentPropertyId ?? null,
+    calculation: liveGroupCalculation(groupBy, types),
   }
 }
 
@@ -391,14 +443,9 @@ export async function queryGroups(ctx: SessionContext, viewId: string): Promise<
     const board = await openBoard(tx, ctx, viewId, 'view')
     if (isFailure(board)) return board
 
-    // ── ① 카운트 ──
-    const countParams = new ParamBag(2)
-    const c = compileBoard(board, countParams, false)
-    const counted = await tx.query<{ key: string; n: number }>(
-      `SELECT ${c.keyExpr} AS key, count(*)::int AS n ${c.from} WHERE ${c.where} GROUP BY 1`,
-      [board.dataSourceId, ...countParams.values],
-    )
-    const countOf = new Map(counted.map((r) => [r.key, r.n]))
+    // ── ① 카운트 (+ 그룹 머리의 계산) ──
+    const counted = await readGroupCounts(tx, board)
+    const countOf = new Map([...counted].map(([key, r]) => [key, r.n]))
 
     const hidden = new Set(board.groupBy.hidden ?? [])
     const catalog = catalogOf(board)
@@ -441,6 +488,7 @@ export async function queryGroups(ctx: SessionContext, viewId: string): Promise<
         option: g.option,
         count: g.count,
         hidden: g.hidden,
+        calculation: groupCalculationOf(board, counted.get(g.key)),
         rows: page.map(toQueriedRow),
         hasMore,
         nextCursor: nextCursorOf(q.order, page[page.length - 1], hasMore),
@@ -449,9 +497,61 @@ export async function queryGroups(ctx: SessionContext, viewId: string): Promise<
 
     return {
       ok: true,
-      value: { propertyId: board.groupBy.property_id, propertyType: board.propertyType, manualOrder: q.manual, groups },
+      value: {
+        propertyId: board.groupBy.property_id,
+        propertyType: board.propertyType,
+        manualOrder: q.manual,
+        calculation: board.calculation,
+        groups,
+      },
     } as const
   })
+}
+
+/**
+ * 그룹 머리의 계산만 다시 낸다(2d-3) — 카드를 옮기거나 만든 뒤 화면이 부른다. 카운트와 같은 질의 하나(`readGroupCounts`)라
+ * 머리의 값과 카드 수가 같은 행들을 본다. 그룹 목록(옵션)에 있는 키만 낸다 — 행이 없는 그룹도(빈 통계).
+ */
+export async function queryGroupCalculations(ctx: SessionContext, viewId: string): Promise<GroupResult<GroupCalculationsPage>> {
+  return withReadTransaction(async (tx) => {
+    const board = await openBoard(tx, ctx, viewId, 'view')
+    if (isFailure(board)) return board
+    if (board.calculation === null) return { ok: true, value: { calculation: null, values: {} } } as const
+    const counted = await readGroupCounts(tx, board)
+    const values: Record<string, CalculationResult> = {}
+    for (const g of catalogOf(board)) {
+      const result = groupCalculationOf(board, counted.get(g.key))
+      if (result !== null) values[g.key] = result
+    }
+    return { ok: true, value: { calculation: board.calculation, values } } as const
+  })
+}
+
+type GroupCount = { readonly n: number; readonly stats: StatsRow | null }
+
+/**
+ * 그룹마다 행 수 — 그룹 머리의 계산이 살아 있으면 같은 `GROUP BY` 에 그 속성의 칸 통계(`statsJsonSql`)를 얹는다. 행을 고르는 조건
+ * (필터 · 휴지통 · 템플릿 · 부모만)이 카운트와 **같은 한 질의**다 — 머리의 값과 카드 수가 다른 행들을 볼 길이 없다. 숨긴 그룹도
+ * 계산한다(04 F-04-16 *"필터는 반영, 그룹 숨김은 미반영"*).
+ */
+async function readGroupCounts(tx: Tx, board: Board): Promise<Map<string, GroupCount>> {
+  const params = new ParamBag(2)
+  const c = compileBoard(board, params, false)
+  const calc = board.calculation === null ? null : params.bind(board.calculation.property_id)
+  const counted = await tx.query<{ key: string; n: number; s: StatsRow | null }>(
+    `SELECT ${c.keyExpr} AS key, count(*)::int AS n${calc === null ? '' : `, ${statsJsonSql('cv')} AS s`}
+       ${c.from}${calc === null ? '' : `
+       LEFT JOIN page_property_value cv ON cv.page_id = p.id AND cv.property_id = ${calc}`}
+      WHERE ${c.where} GROUP BY 1`,
+    [board.dataSourceId, ...params.values],
+  )
+  return new Map(counted.map((r) => [r.key, { n: r.n, stats: r.s ?? null }]))
+}
+
+/** 그룹 하나의 머리 값. 행이 없는 그룹(`GROUP BY` 가 줄을 내지 않는다)은 빈 통계로 — 세기 · 합은 0, 평균은 빈 값. */
+function groupCalculationOf(board: Board, counted: GroupCount | undefined): CalculationResult | null {
+  if (board.calculation === null) return null
+  return calculationResult(board.calculation.function, columnStatsOf(counted?.n ?? 0, counted?.stats ?? EMPTY_STATS_ROW))
 }
 
 /**

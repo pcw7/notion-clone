@@ -20,7 +20,7 @@
  * 평균은 0 이 아니라 빈 값이다(SQL `AVG` 가 NULL 인 것과 같은 뜻). 비율은 행이 0개면 빈 값이다(0으로 나누지 않는다).
  */
 
-import type { MvpPropertyType } from './property-types.ts'
+import { isMvpPropertyType, type MvpPropertyType } from './property-types.ts'
 
 /** 저장되는 함수 이름(마이그레이션 0054 의 CHECK 과 같은 목록 — 순서는 화면의 목록 순서). */
 export const CALCULATIONS = [
@@ -85,6 +85,31 @@ export function calculationsFor(type: MvpPropertyType): readonly Calculation[] {
       return ['count_all', 'checked', 'unchecked', 'percent_checked', 'percent_unchecked']
     default:
       return COMMON
+  }
+}
+
+/**
+ * 이 타입의 칸으로 이 함수를 계산할 수 있는가 — 고를 때(명령)와 읽을 때(맞지 않게 된 저장값은 무시) 같은 술어다. 셀 타입이 아니면
+ * (relation · rollup · 고유 ID — 아직 · §7) 아무것도 고를 수 없다.
+ */
+export function canCalculate(type: string, fn: Calculation): boolean {
+  return isMvpPropertyType(type) && calculationsFor(type).includes(fn)
+}
+
+/**
+ * 보드 그룹 머리에서 속성을 고르면 처음 붙는 함수(2d-3). 노션 보드의 기본이 카드 수라, 속성을 골랐다면 카드 수와 다른 것을 원한 것이다 —
+ * 숫자는 합계, 날짜는 가장 늦은 날, 체크박스는 체크 비율, 그 밖은 값 세기.
+ */
+export function defaultCalculationFor(type: MvpPropertyType): Calculation {
+  switch (type) {
+    case 'number':
+      return 'sum'
+    case 'date':
+      return 'latest_date'
+    case 'checkbox':
+      return 'percent_checked'
+    default:
+      return 'count_values'
   }
 }
 

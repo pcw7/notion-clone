@@ -147,6 +147,16 @@ export default async function DatabasePage({
       : null
   const groups: BoardGroupJson[] =
     board !== null && board.ok ? board.value.groups.map((g) => ({ ...g, rows: g.rows.map(rowJson) })) : []
+  // 그룹 머리의 계산(2d-3) — 서버가 살아 있다고 본 것만(`liveGroupCalculation`). 이름은 숨긴 컬럼에서도 찾는다.
+  const liveCalculation = board !== null && board.ok ? board.value.calculation : null
+  const groupCalculation =
+    liveCalculation === null
+      ? null
+      : {
+          propertyId: liveCalculation.property_id,
+          propertyName: columns.find((c) => c.propertyId === liveCalculation.property_id)?.name ?? '',
+          fn: liveCalculation.function,
+        }
   const boardSettings: BoardSettings | undefined = isBoard
     ? {
         groupBy,
@@ -339,6 +349,7 @@ export default async function DatabasePage({
             relationIcons={relation.icons}
             access={access}
             defaultTemplate={defaultTemplate}
+            calculation={groupCalculation}
           />
         ) : (
           <p className="px-2 text-sm text-neutral-500" data-testid="db-board-needs-group">

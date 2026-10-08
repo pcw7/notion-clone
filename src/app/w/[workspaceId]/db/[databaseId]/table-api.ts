@@ -10,6 +10,7 @@
 
 import type { FilterNode, SortKey } from '@/lib/database/filter'
 import type { GroupBy } from '@/lib/database/group'
+import type { CalculationResult } from '@/lib/database/calculations'
 import type { RowJson } from '@/lib/database/http'
 import type { PageIcon } from '@/lib/block/page-icon'
 import type { DatabaseListItem } from '@/lib/database/database'
@@ -228,6 +229,16 @@ export function loadGroupRows(
     hasMore: body.hasMore === true,
     nextCursor: typeof body.nextCursor === 'string' ? body.nextCursor : null,
   }))
+}
+
+/** 보드 그룹 머리의 계산만 다시 받는다(2d-3 · F-04-16) — 카드를 옮기거나 만든 뒤. 그룹 키 → 값(계산이 없으면 비어 있다). */
+export function loadGroupCalculations(
+  workspaceId: string,
+  viewId: string,
+): Promise<ApiResult<Readonly<Record<string, CalculationResult>>>> {
+  return call(`${base(workspaceId)}/views/${viewId}/groups?calculations=1`, { method: 'GET' }, (body) =>
+    typeof body.values === 'object' && body.values !== null ? (body.values as Record<string, CalculationResult>) : {},
+  )
 }
 
 export type MoveResult = { readonly row: RowJson; readonly groupKey: string; readonly positioned: boolean }

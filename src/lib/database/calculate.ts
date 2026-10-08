@@ -15,9 +15,8 @@ import type { SessionContext } from '../auth/session-context.ts'
 import { withReadTransaction, type Tx } from '../db/tx.ts'
 import { can } from '../permissions/levels.ts'
 import { effectiveCaps } from '../permissions/effective.ts'
-import { calculationResult, calculationsFor, type Calculation, type CalculationResult, type ColumnStats } from './calculations.ts'
+import { calculationResult, canCalculate, type Calculation, type CalculationResult, type ColumnStats } from './calculations.ts'
 import { compileFilter, ParamBag, type FilterNode } from './filter.ts'
-import { isMvpPropertyType } from './property-types.ts'
 import { readPropertyTypes } from './query.ts'
 
 /** 계산을 단 열 — 컬럼의 `calculation` 과 타입. */
@@ -37,7 +36,7 @@ export async function computeCalculations(
 ): Promise<Calculations> {
   const wanted = columns.filter(
     (c): c is CalculatedColumn & { calculation: Calculation } =>
-      c.calculation !== null && c.calculation !== undefined && isMvpPropertyType(c.type) && calculationsFor(c.type).includes(c.calculation),
+      c.calculation !== null && c.calculation !== undefined && canCalculate(c.type, c.calculation),
   )
   if (wanted.length === 0) return {}
   return withReadTransaction(async (tx) => {
@@ -58,7 +57,8 @@ export async function computeCalculations(
   })
 }
 
-type StatsRow = {
+/** `statsJsonSql` 이 내는 JSON 한 줄. */
+export type StatsRow = {
   filled: number
   distinct: number
   sum: number | null
@@ -71,6 +71,46 @@ type StatsRow = {
   checked: number
 }
 
+/**
+ * 칸 묶음의 통계 한 줄을 JSON 으로 내는 **집계 식**(2d-3 에서 꺼냈다). `v` 는 `page_property_value` 의 별칭이다. 표 아래(열마다 —
+ * 행들의 칸을 JOIN)와 보드 그룹 머리(그룹마다 — 칸을 LEFT JOIN 해서 `GROUP BY`)가 같이 쓴다 — 통계의 뜻이 한 곳이다.
+ *
+ * LEFT JOIN 으로 칸이 없는 행(NULL)이 섞여도 같은 답이다 — 세기는 `FILTER` 가, 합 · 평균 · 중앙값 · 최소 · 최대는 집계 함수가 NULL 을 뺀다.
+ */
+export function statsJsonSql(v: string): string {
+  return `json_build_object(
+               'filled', count(*) FILTER (WHERE ${v}.num_value IS NOT NULL OR ${v}.text_value IS NOT NULL OR ${v}.date_start IS NOT NULL OR ${v}.bool_value),
+               'distinct', count(DISTINCT coalesce(${v}.num_value::text, ${v}.text_value, ${v}.date_start::text)),
+               'sum', sum(${v}.num_value), 'avg', avg(${v}.num_value),
+               'median', percentile_cont(0.5) WITHIN GROUP (ORDER BY ${v}.num_value),
+               'min', min(${v}.num_value), 'max', max(${v}.num_value),
+               'dmin', min(${v}.date_start), 'dmax', max(coalesce(${v}.date_end, ${v}.date_start)),
+               'checked', count(*) FILTER (WHERE ${v}.bool_value))`
+}
+
+/** 행이 하나도 없는 묶음의 통계(보드의 빈 그룹 — `GROUP BY` 가 줄을 내지 않는다). */
+export const EMPTY_STATS_ROW: StatsRow = {
+  filled: 0, distinct: 0, sum: null, avg: null, median: null, min: null, max: null, dmin: null, dmax: null, checked: 0,
+}
+
+/** `statsJsonSql` 의 JSON 한 줄 + 그 묶음의 행 수 → `ColumnStats`. */
+export function columnStatsOf(total: number, s: StatsRow): ColumnStats {
+  const num = (v: unknown): number | null => (v === null || v === undefined ? null : Number(v))
+  return {
+    total,
+    filled: Number(s.filled),
+    distinct: Number(s.distinct),
+    sum: num(s.sum),
+    avg: num(s.avg),
+    median: num(s.median),
+    min: num(s.min),
+    max: num(s.max),
+    dateMin: s.dmin === null ? null : new Date(s.dmin).toISOString(),
+    dateMax: s.dmax === null ? null : new Date(s.dmax).toISOString(),
+    checked: Number(s.checked),
+  }
+}
+
 /** 열마다 통계 한 줄 — 질의 하나. 지워진 프로퍼티를 가리키는 필터 규칙은 컴파일러가 건너뛴다(표의 행 질의와 같은 규칙). */
 async function readStats(tx: Tx, dataSourceId: string, filter: FilterNode | null, propertyIds: readonly string[]): Promise<Map<string, ColumnStats>> {
   const types = await readPropertyTypes(tx, dataSourceId)
@@ -78,14 +118,7 @@ async function readStats(tx: Tx, dataSourceId: string, filter: FilterNode | null
   const filterSql = compileFilter(filter, types, params)
   const columns = propertyIds.map((id, i) => {
     const p = params.bind(id)
-    return `(SELECT json_build_object(
-               'filled', count(*) FILTER (WHERE v.num_value IS NOT NULL OR v.text_value IS NOT NULL OR v.date_start IS NOT NULL OR v.bool_value),
-               'distinct', count(DISTINCT coalesce(v.num_value::text, v.text_value, v.date_start::text)),
-               'sum', sum(v.num_value), 'avg', avg(v.num_value),
-               'median', percentile_cont(0.5) WITHIN GROUP (ORDER BY v.num_value),
-               'min', min(v.num_value), 'max', max(v.num_value),
-               'dmin', min(v.date_start), 'dmax', max(coalesce(v.date_end, v.date_start)),
-               'checked', count(*) FILTER (WHERE v.bool_value))
+    return `(SELECT ${statsJsonSql('v')}
              FROM r JOIN page_property_value v ON v.page_id = r.id AND v.property_id = ${p}) AS c${i}`
   })
   const row = await tx.queryOne<Record<string, unknown>>(
@@ -97,23 +130,7 @@ async function readStats(tx: Tx, dataSourceId: string, filter: FilterNode | null
     [dataSourceId, ...params.values],
   )
   const total = Number(row.total)
-  const num = (v: unknown): number | null => (v === null || v === undefined ? null : Number(v))
   const out = new Map<string, ColumnStats>()
-  for (const [i, id] of propertyIds.entries()) {
-    const s = row[`c${i}`] as StatsRow
-    out.set(id, {
-      total,
-      filled: Number(s.filled),
-      distinct: Number(s.distinct),
-      sum: num(s.sum),
-      avg: num(s.avg),
-      median: num(s.median),
-      min: num(s.min),
-      max: num(s.max),
-      dateMin: s.dmin === null ? null : new Date(s.dmin).toISOString(),
-      dateMax: s.dmax === null ? null : new Date(s.dmax).toISOString(),
-      checked: Number(s.checked),
-    })
-  }
+  for (const [i, id] of propertyIds.entries()) out.set(id, columnStatsOf(total, row[`c${i}`] as StatsRow))
   return out
 }

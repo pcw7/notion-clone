@@ -7,14 +7,24 @@
  *   ② ★ 0 과 빈 값을 가른다 — 세기 · 합은 0, 평균 · 중앙값 · 최소 · 최대 · 날짜는 빈 값, 비율은 행이 0개면 빈 값
  *   ③ 비율 · 범위 · 기간 · 빈 칸 세기가 통계에서 맞게 나온다
  *   ④ 글자 — 빈 값은 `—` · 비율은 % · 기간은 일
- *   ⑤ 저장 CHECK(0054)과 같은 목록
+ *   ⑤ 저장 CHECK(0054 · 0055 의 `is_calculation_name`)과 같은 목록
+ *   ⑥ 고를 수 있는가(`canCalculate` — 셀 타입이 아니면 아무것도) · 그룹 머리에서 속성을 고르면 붙는 함수(2d-3)
  */
 
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
-import { CALCULATIONS, calculationResult, calculationsFor, formatCalculation, type ColumnStats } from './calculations.ts'
+import {
+  CALCULATIONS,
+  calculationResult,
+  calculationsFor,
+  canCalculate,
+  defaultCalculationFor,
+  formatCalculation,
+  type ColumnStats,
+} from './calculations.ts'
+import { MVP_PROPERTY_TYPES } from './property-types.ts'
 
 const stats = (over: Partial<ColumnStats>): ColumnStats => ({
   total: 0, filled: 0, distinct: 0, sum: null, avg: null, median: null, min: null, max: null, dateMin: null, dateMax: null, checked: 0,
@@ -76,5 +86,34 @@ describe('⑤ 저장 CHECK 과 같은 목록', () => {
     const sql = readFileSync(new URL('../../../db/migrations/0054_view_calculation.sql', import.meta.url), 'utf8')
     const inSql = [...sql.matchAll(/'([a-z_]+)'/g)].map((m) => m[1])
     assert.deepEqual([...inSql].sort(), [...CALCULATIONS].sort())
+  })
+
+  test('0055 의 `is_calculation_name` 의 이름들과 같다 — 지금 두 CHECK 이 보는 목록', () => {
+    const sql = readFileSync(new URL('../../../db/migrations/0055_group_calculation.sql', import.meta.url), 'utf8')
+    const body = sql.slice(sql.indexOf('CREATE FUNCTION is_calculation_name'), sql.indexOf('$$;'))
+    const inSql = [...body.matchAll(/'([a-z_]+)'/g)].map((m) => m[1])
+    assert.deepEqual([...inSql].sort(), [...CALCULATIONS].sort())
+  })
+})
+
+describe('⑥ 고를 수 있는가 · 기본 함수', () => {
+  test('canCalculate — 타입의 목록 안에서만 · 셀 타입이 아니면 아무것도', () => {
+    assert.equal(canCalculate('number', 'sum'), true)
+    assert.equal(canCalculate('select', 'sum'), false)
+    assert.equal(canCalculate('checkbox', 'count_values'), false, '체크박스에는 빈 값이 없다')
+    assert.equal(canCalculate('relation', 'count_all'), false)
+    assert.equal(canCalculate('unique_id', 'count_all'), false)
+  })
+
+  test('defaultCalculationFor — 카드 수와 다른 것 · 그 타입이 고를 수 있는 것', () => {
+    assert.equal(defaultCalculationFor('number'), 'sum')
+    assert.equal(defaultCalculationFor('date'), 'latest_date')
+    assert.equal(defaultCalculationFor('checkbox'), 'percent_checked')
+    assert.equal(defaultCalculationFor('select'), 'count_values')
+    for (const type of MVP_PROPERTY_TYPES) {
+      const fn = defaultCalculationFor(type)
+      assert.ok(canCalculate(type, fn), `${type} → ${fn}`)
+      assert.notEqual(fn, 'count_all', `${type} 의 기본이 카드 수와 같다`)
+    }
   })
 })

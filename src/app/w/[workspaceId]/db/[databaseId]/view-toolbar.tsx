@@ -49,7 +49,14 @@ import {
 import type { GroupBy } from '@/lib/database/group'
 import type { OperatorCatalogEntry } from '@/lib/database/operator-catalog'
 import type { FilterableType } from '@/lib/database/filter'
-import { isGroupableType } from '@/lib/database/property-types'
+import { isGroupableType, isMvpPropertyType } from '@/lib/database/property-types'
+import {
+  CALCULATION_LABEL,
+  calculationsFor,
+  canCalculate,
+  defaultCalculationFor,
+  type Calculation,
+} from '@/lib/database/calculations'
 import { parseUniqueIdQuery } from '@/lib/database/unique-id-format'
 import { isFilterableColumn, isSortable, subItemPairOf, type FilterableColumn, type ViewColumn } from '@/lib/database/view-columns'
 import { disableSubItems, enableSubItems, setColumnVisible, setDependencies, updateView, type ApiResult } from './table-api'
@@ -723,6 +730,10 @@ function SortPanel({
  * 고르는 즉시 저장한다(초안 없음) — 필터 패널과 달리 "값을 아직 안 넣은 규칙"이 없다. 그룹 기준을 바꾸면 숨긴 그룹
  * 목록은 버린다(키 공간이 다르다) — `hide_empty` 는 속성과 무관하므로 남긴다. 그룹 설정은 `edit_structure` 다(F-04-03
  * 의 분리) — 없는 사람에게는 잠긴 채로 보여 준다.
+ *
+ * 머리의 계산(2d-3 · F-04-16)도 여기서 고른다 — 보드 안에는 팝오버를 두지 않는다(`database-board.tsx` 머리말). "카드 수"가 기본이고,
+ * 속성을 고르면 그 타입의 기본 함수(`defaultCalculationFor`)가 붙고 함수 칸이 열린다. 그룹 기준을 바꿔도 계산은 남는다(다른 속성의
+ * 일이다). 저장값이 맞지 않게 됐으면(타입을 바꾼 뒤) 머리가 카드 수를 그리므로 여기도 "카드 수"로 보인다.
  */
 function GroupPanel({
   columns,
@@ -743,6 +754,10 @@ function GroupPanel({
   const current = board.groupBy
   const dead = current !== null && !groupable.some((c) => c.propertyId === current.property_id)
   const locked = !canEdit || busy
+  const calculable = columns.filter((c) => isMvpPropertyType(c.type))
+  const calc = current?.calculation ?? null
+  const calcColumn = calc === null ? undefined : calculable.find((c) => c.propertyId === calc.property_id)
+  const liveCalc = calc !== null && calcColumn !== undefined && canCalculate(calcColumn.type, calc.function) ? calc : null
 
   const toggleHidden = (key: string, hidden: boolean) => {
     if (current === null) return
@@ -763,7 +778,11 @@ function GroupPanel({
           disabled={locked}
           onChange={(e) => {
             if (e.target.value === '') return
-            void onSave({ property_id: e.target.value, ...(current?.hide_empty ? { hide_empty: true } : {}) })
+            void onSave({
+              property_id: e.target.value,
+              ...(current?.hide_empty ? { hide_empty: true } : {}),
+              ...(current?.calculation ? { calculation: current.calculation } : {}),
+            })
           }}
           className={FIELD}
         >
@@ -795,6 +814,49 @@ function GroupPanel({
             />
             빈 그룹 숨기기
           </label>
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            머리에
+            <select
+              aria-label="머리에 계산할 속성"
+              data-testid="db-group-calc-property"
+              value={liveCalc?.property_id ?? ''}
+              disabled={locked}
+              onChange={(e) => {
+                const column = calculable.find((c) => c.propertyId === e.target.value)
+                if (column === undefined || !isMvpPropertyType(column.type)) {
+                  void onSave({ ...current, calculation: null })
+                  return
+                }
+                void onSave({ ...current, calculation: { property_id: column.propertyId, function: defaultCalculationFor(column.type) } })
+              }}
+              className={FIELD}
+            >
+              <option value="">카드 수</option>
+              {calculable.map((c) => (
+                <option key={c.propertyId} value={c.propertyId}>
+                  {c.name}
+                </option>
+              ))}
+            </select>
+            {liveCalc !== null && calcColumn !== undefined && isMvpPropertyType(calcColumn.type) && (
+              <select
+                aria-label="머리의 계산"
+                data-testid="db-group-calc-function"
+                value={liveCalc.function}
+                disabled={locked}
+                onChange={(e) =>
+                  void onSave({ ...current, calculation: { property_id: liveCalc.property_id, function: e.target.value as Calculation } })
+                }
+                className={FIELD}
+              >
+                {calculationsFor(calcColumn.type).map((fn) => (
+                  <option key={fn} value={fn}>
+                    {CALCULATION_LABEL[fn]}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
           <ul aria-label="그룹 표시" className="flex flex-col gap-1">
             {board.groups.map((g) => (
               <li key={g.key}>

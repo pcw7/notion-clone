@@ -1926,7 +1926,7 @@ CREATE TABLE view_property (               -- <C-6> 행 단위 테이블. JSON �
   visible boolean NOT NULL DEFAULT false,
   order_idx text NOT NULL, width int NULL, wrap boolean NOT NULL DEFAULT false,
   date_format text NULL, time_format text NULL, status_show_as text NULL,
-  card_property_width_mode text NULL, calculation text NULL,   -- [보강] 함수 이름 · CHECK(0054) · 아래 [보강] 열 집계
+  card_property_width_mode text NULL, calculation text NULL,   -- [보강] 함수 이름 · CHECK(0054 · 0055 `is_calculation_name`) · 아래 [보강] 열 집계
   PRIMARY KEY (view_id, property_id)
 );
 CREATE INDEX ON view_property (view_id, order_idx);
@@ -1958,14 +1958,20 @@ CREATE INDEX ON row_position (view_id, group_key, order_idx);
   표의 트리는 보지 않는다(자식 행도 센다 — 표의 행이다).
 - ③ 0 과 빈 값을 가른다 — 세기 · 합은 0, 평균 · 중앙값 · 최소 · 최대 · 날짜는 빈 값(`—`), 비율은 행이 0개면 빈 값.
 - ④ 행 응답의 **첫 페이지**에 함께 싣는다(04 *"행 쿼리 응답에 aggregates 를 함께 담아 1회 왕복"*). 캐시는 아직 없다.
-- 미룬 것: 보드 그룹 머리의 집계(`view.group_by` 의 계산) · relation · rollup · 고유 ID 열의 집계 · 집계 캐시.
+- ⑤ **그룹 머리의 계산** ⟨2d-3조각 / 마이그레이션 0055⟩ — `view.group_by.calculation = { property_id, function }`(04 *"그룹 헤더 집계는
+  `view.group_by.calculation`"*). 없으면 카드 수(노션 보드의 기본). 보드 하나에 하나 — 모든 그룹이 같은 계산이다. 대상은 **그 그룹의
+  카드와 같은 행**(필터 · 템플릿 · 휴지통 · 하위 항목의 "부모만")이고 카운트와 **같은 `GROUP BY` 한 질의**에 통계를 얹는다. 숨긴 그룹도
+  계산한다(04 *"필터는 반영, 그룹 숨김은 미반영"*). 행이 없는 그룹은 빈 통계(합 0 · 평균 빈 값). 모양과 함수 이름은 CHECK
+  (`ck_view_group_by_calculation`)이 막고, 함수 이름의 목록은 함수 하나(`is_calculation_name`)로 모아 ①의 CHECK 도 그것을 본다.
+  프로퍼티가 살아 있는지 · 타입에 맞는지는 ①과 같다(고를 때 거부 · 읽을 때 무시).
+- 미룬 것: relation · rollup · 고유 ID 열의 집계 · 집계 캐시 · 표의 그룹(표 모양의 `group_by`).
 
 **[보강] `view.group_by` 의 모양과 `row_position.group_key` 의 뜻** ⟨보드 4a조각 / 마이그레이션 0022⟩
 
 초판은 `group_by jsonb` 와 `group_key text DEFAULT ''` 만 적고 안을 비워 두었다. 구현이 정한 것:
 
-- `group_by = { property_id, hidden?: text[], hide_empty?: boolean }` — `sorts` 와 같은 snake_case. `sub_group_by` 는 같은 모양이
-  될 것이나 아직 쓰지 않는다.
+- `group_by = { property_id, hidden?: text[], hide_empty?: boolean, calculation?: { property_id, function } }` — `sorts` 와 같은
+  snake_case. `calculation` 은 그룹 머리의 계산이다(위 [보강] 열 집계 ⑤ · 2d-3). `sub_group_by` 는 같은 모양이 될 것이나 아직 쓰지 않는다.
 - **그룹 순서는 옵션 순서(`select_option.order_idx`, 스키마 전역)다.** 뷰별 `group_order` 배열을 두지 않는다 — 04 F-04-11 의
   동시편집 엣지가 권한 트레이드오프(배열 LWW 를 없애는 대신 뷰별 그룹 순서를 포기). 숨김은 `hidden` 배열(LWW · 죽은 키는 읽기가
   무시한다 — 매 조회마다 정리하지 않는다).

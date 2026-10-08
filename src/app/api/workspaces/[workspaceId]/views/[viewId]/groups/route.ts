@@ -5,6 +5,7 @@
  *
  *   GET                       그룹 전부(카운트 · 숨김) + 보이는 그룹의 첫 페이지 행
  *   GET ?group=<key>&cursor=  한 그룹의 다음 페이지 — 그룹별 독립 커서(F-04-15)
+ *   GET ?calculations=1       그룹 머리의 계산만(2d-3 · F-04-16) — 카드를 옮기거나 만든 뒤. 행은 읽지 않는다
  *   POST { action: 'move', rowId, groupKey, beforeRowId? }
  *                             카드 이동. 셀 값 + 열 안 자리를 **한 트랜잭션**으로(마스터 문서 §5.2 4번)
  *
@@ -17,7 +18,7 @@
 
 import { isUuid } from '@/lib/ids'
 import { readJsonBody, requireWorkspaceSession } from '@/lib/auth/route-session'
-import { moveRow, queryGroupRows, queryGroups } from '@/lib/database/group'
+import { moveRow, queryGroupCalculations, queryGroupRows, queryGroups } from '@/lib/database/group'
 import { failureResponse, groupFailureStatus, rowJson } from '@/lib/database/http'
 
 type Ctx = RouteContext<'/api/workspaces/[workspaceId]/views/[viewId]/groups'>
@@ -33,6 +34,12 @@ export async function GET(request: Request, ctx: Ctx): Promise<Response> {
 
   const params = new URL(request.url).searchParams
   const group = params.get('group')
+
+  if (params.get('calculations') === '1') {
+    const calculated = await queryGroupCalculations(session.ctx, viewId)
+    if (!calculated.ok) return failureResponse(groupFailureStatus(calculated.reason), calculated)
+    return Response.json({ ok: true, calculation: calculated.value.calculation, values: calculated.value.values })
+  }
 
   if (group !== null) {
     const rawLimit = Number(params.get('limit'))
@@ -57,6 +64,7 @@ export async function GET(request: Request, ctx: Ctx): Promise<Response> {
     propertyId: value.propertyId,
     propertyType: value.propertyType,
     manualOrder: value.manualOrder,
+    calculation: value.calculation,
     groups: value.groups.map((g) => ({ ...g, rows: g.rows.map(rowJson) })),
   })
 }
