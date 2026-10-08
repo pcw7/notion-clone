@@ -43,7 +43,7 @@ import { requirePageSession } from '@/lib/auth/page-session'
 import { getDatabase } from '@/lib/database/database'
 import { databaseLockState } from '@/lib/permissions/lock'
 import { getView, listViews } from '@/lib/database/view'
-import { isFilterableColumn } from '@/lib/database/view-columns'
+import { isFilterableColumn, nestsSubItems, subItemPairOf } from '@/lib/database/view-columns'
 import { queryRows } from '@/lib/database/query'
 import { queryGroups } from '@/lib/database/group'
 import { loadRelationLabels, relationIdsIn } from '@/lib/database/relation'
@@ -99,6 +99,8 @@ export default async function DatabasePage({
   if (!view.ok) notFound()
 
   const isBoard = view.value.type === 'board'
+  // 하위 항목이 켜진 표 · 목록은 최상위 행만 먼저 읽는다 — 자식은 토글을 펼 때 읽는다(2b-2 · 행 라우트와 같은 규칙).
+  const subItems = nestsSubItems(view.value.type) ? subItemPairOf(view.value.columns) : null
   const [tablePage, catalog, board] = await Promise.all([
     isBoard
       ? null
@@ -106,6 +108,7 @@ export default async function DatabasePage({
           filter: view.value.filter,
           sorts: view.value.sorts,
           limit: view.value.loadLimit,
+          ...(subItems === null ? {} : { tree: { parentPropertyId: subItems.parentPropertyId, under: null } }),
         }),
     // 필터 패널의 연산자 드롭다운이 이것을 그린다 — 코드에 박지 않는다(F-03-17).
     readOperatorCatalog(),
@@ -169,6 +172,9 @@ export default async function DatabasePage({
     view.value.sorts,
     groupBy,
     columns.map((c) => [c.propertyId, c.name, c.visible, c.type === 'unique_id' ? c.uniqueId.prefix : null]),
+    // 하위 항목을 켜고 끄면 같은 뷰가 트리 ↔ 평평한 표로 바뀐다(2b-2) — 읽은 행(최상위만 ↔ 전부)이 무효다. 이름 · 보임은 그대로라
+    // 이것이 없으면 끈 뒤에도 최상위 행만 남는다(e2e 가 잡았다).
+    subItems?.parentPropertyId ?? null,
   ])
   const visibleColumns = columns.filter((column) => column.visible)
   const variant = variantOf(view.value.type)
@@ -277,6 +283,7 @@ export default async function DatabasePage({
           <ViewToolbar
             workspaceId={workspaceId}
             viewId={view.value.id}
+            dataSourceId={view.value.dataSourceId}
             columns={[...columns]}
             filter={view.value.filter}
             sorts={sorts}
@@ -355,6 +362,7 @@ export default async function DatabasePage({
             access={access}
             sorts={sorts}
             defaultTemplate={defaultTemplate}
+            subItems={subItems}
           />
         )
       )}

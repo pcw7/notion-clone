@@ -174,9 +174,21 @@ export function createRowFrom(
 
 export type RowPage = { rows: RowJson[]; hasMore: boolean; nextCursor: string | null }
 
-export function loadRows(workspaceId: string, viewId: string, cursor: string): Promise<ApiResult<RowPage>> {
+/**
+ * 뷰의 다음 페이지. `parent` 를 주면 그 행의 하위 항목(자식)을 읽는다(2b-2 — 하위 항목이 켜진 표 · 목록만 · 아니면 400).
+ * `cursor` 가 null 이면 첫 페이지다.
+ */
+export function loadRows(
+  workspaceId: string,
+  viewId: string,
+  cursor: string | null,
+  parent?: string,
+): Promise<ApiResult<RowPage>> {
+  const query = new URLSearchParams()
+  if (cursor !== null) query.set('cursor', cursor)
+  if (parent !== undefined) query.set('parent', parent)
   return call(
-    `${base(workspaceId)}/views/${viewId}/rows?cursor=${encodeURIComponent(cursor)}`,
+    `${base(workspaceId)}/views/${viewId}/rows?${query.toString()}`,
     { method: 'GET' },
     (body) => ({
       rows: body.rows as RowJson[],
@@ -442,6 +454,16 @@ export function addColumn(
     },
     (body) => body.property as PropertySummary,
   )
+}
+
+/** 하위 항목을 켠다(2b-2 · 이미 켜져 있으면 그대로 성공). 같은 표의 relation 짝이 생긴다. */
+export function enableSubItems(workspaceId: string, dataSourceId: string): Promise<ApiResult<null>> {
+  return call(`${base(workspaceId)}/data-sources/${dataSourceId}/sub-items`, { method: 'POST' }, () => null)
+}
+
+/** 하위 항목을 끈다 — 짝은 일반 relation 으로 남는다(연결은 그대로). */
+export function disableSubItems(workspaceId: string, dataSourceId: string): Promise<ApiResult<null>> {
+  return call(`${base(workspaceId)}/data-sources/${dataSourceId}/sub-items`, { method: 'DELETE' }, () => null)
 }
 
 /** 고유 ID 의 접두사를 바꾼다(2a-2). 빈 글자는 "접두사 없음"이다. 모양은 서버가 판정한다(`normalizeUniqueIdPrefix`). */

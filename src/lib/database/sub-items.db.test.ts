@@ -12,6 +12,7 @@
  *   ④ ★ 부모는 하나다 — 하위 항목 칸에 다른 부모의 행을 더하면 **옮겨 온다**(옛 부모의 칸에서 빠진다). 상위 항목 칸에서 바꿔도 같다
  *   ⑤ 짝의 한쪽을 따로 지울 수 없다(`managed_property`)
  *   ⑥ ★ 끄면 일반 relation 으로 남는다 — 연결은 그대로 · role 은 지워진다 · 다시 켜면 새 짝(이름은 비어 있는 것)
+ *   ⑦ ★ 트리 질의(2b-2) — 최상위만 · 이 행의 자식만. 부모가 휴지통이면 자식이 최상위로 보인다(엣지는 남는다) · 필터와 함께 걸린다
  *
  * ⚠ skip 은 테스트마다 `ctx.skip` 으로 건다(`describe` 의 skip 옵션은 등록 시점에 평가된다 — HANDOFF §5).
  */
@@ -25,7 +26,8 @@ import { textRun } from '../contracts/rich-text.ts'
 import { createDatabase } from './database.ts'
 import { deleteProperty, getSchema } from './property.ts'
 import { readRelationConfig } from './property-types.ts'
-import { createRow } from './row.ts'
+import { createRow, trashRow } from './row.ts'
+import { queryRows } from './query.ts'
 import { linkRows } from './relation.ts'
 import { disableSubItems, enableSubItems, SUB_ITEM_NAMES } from './sub-items.ts'
 
@@ -204,5 +206,32 @@ describe('⑥ 끄기', () => {
     assert.notEqual(again.parentPropertyId, parentPropertyId)
     assert.equal(again.schema.properties.find((p) => p.id === again.parentPropertyId)?.name, `${SUB_ITEM_NAMES.parent} 2`)
     assert.equal(again.schema.properties.find((p) => p.id === again.childrenPropertyId)?.name, SUB_ITEM_NAMES.children)
+  })
+})
+
+describe('⑦ 트리 질의 (2b-2)', () => {
+  test('★ 최상위만 · 이 행의 자식만 — 부모가 휴지통이면 자식이 최상위로 보인다 · 필터와 함께', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { ds, parentPropertyId, childrenPropertyId, row } = await tree('트리 질의')
+    const [a, b, c, d] = [await row('가'), await row('나'), await row('다'), await row('라')]
+    // b, c 는 a 의 자식 · d 는 b 의 자식
+    unwrap(await linkRows(fx.owner.ctx, b, parentPropertyId, { add: [a] }))
+    unwrap(await linkRows(fx.owner.ctx, c, parentPropertyId, { add: [a] }))
+    unwrap(await linkRows(fx.owner.ctx, d, parentPropertyId, { add: [b] }))
+    const titles = async (under: string | null, filter?: Parameters<typeof queryRows>[2]['filter']) =>
+      unwrap(await queryRows(fx.owner.ctx, ds, { tree: { parentPropertyId, under }, ...(filter ? { filter } : {}) })).rows.map((r) => r.title)
+
+    assert.deepEqual(await titles(null), ['가'])
+    assert.deepEqual(await titles(a), ['나', '다'])
+    assert.deepEqual(await titles(b), ['라'])
+    assert.deepEqual(await titles(d), [])
+
+    const titleId = unwrap(await getSchema(fx.owner.ctx, ds)).properties.find((p) => p.type === 'title')!.id
+    assert.deepEqual(await titles(a, { property_id: titleId, operator: 'equals', value: '다' }), ['다'])
+
+    unwrap(await trashRow(fx.owner.ctx, a))
+    assert.deepEqual(await titles(null), ['나', '다'], '부모가 휴지통이면 자식이 최상위로 보인다')
+    const kept = await edges(parentPropertyId, childrenPropertyId)
+    assert.equal(kept.parentOf.get(b), a, '엣지는 남는다 — 복원하면 돌아온다')
   })
 })

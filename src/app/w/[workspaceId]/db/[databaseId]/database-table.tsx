@@ -142,6 +142,11 @@ export function DatabaseTable(props: {
   rollupValues: RollupPage
   /** 이 뷰의 기본 템플릿(F-08-03). `New` 를 그냥 누르면 이것으로 만든다. 없으면 빈 항목이다. */
   defaultTemplate?: DefaultTemplate | null
+  /**
+   * 하위 항목 짝(2b-2) — 있으면 트리로 그린다. `rows` 는 **최상위 행**이고(서버가 거른다), 토글을 펴면 그 행의 자식을 읽어 바로
+   * 아래에 들여 끼운다. 표의 칸 이동 · 편집은 화면에 보이는 평평한 목록 위에서 그대로 돈다.
+   */
+  subItems?: { readonly parentPropertyId: string; readonly childrenPropertyId: string } | null
 }) {
   const { workspaceId, viewId, dataSourceId, tableName, access } = props
   const variant: TableVariant = props.variant ?? 'table'
@@ -165,6 +170,13 @@ export function DatabaseTable(props: {
   const [notice, setNotice] = useState<string | null>(null)
   /** 기본 템플릿은 `New ▾` 에서 바뀐다 — 서버 렌더를 다시 부르지 않고 이 화면이 들고 있는다. */
   const [defaultTemplate, setDefaultTemplate] = useState<DefaultTemplate | null>(props.defaultTemplate ?? null)
+
+  // ── 하위 항목의 트리(2b-2) ──
+  const subItems = props.subItems ?? null
+  /** 펼친 행의 자식이 화면에 들어온 깊이. 최상위 행은 없다(0). */
+  const [depthOf, setDepthOf] = useState<ReadonlyMap<string, number>>(new Map())
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set())
+  const [loadingChildren, setLoadingChildren] = useState<string | null>(null)
 
   /**
    * 지금 상태를 **동기적으로** 들고 있는 사본.
@@ -576,6 +588,52 @@ export function DatabaseTable(props: {
     return null
   }
 
+  // ── 하위 항목 펼치기 · 접기 (2b-2) ─────────────────────────────────
+  //
+  // 화면의 행 목록은 **평평하다** — 펼친 행 바로 뒤에 자식이 깊이를 달고 들어온다. 칸의 자리(행 번호)가 바뀌므로 선택은 놓는다.
+  // 자식은 펼 때마다 읽는다(접었다 펴면 그사이 바뀐 것이 보인다). 한 행의 자식이 많아도 끝까지 읽되 상한(`MAX_QUERY_PAGINATION`)에서 멈춘다.
+
+  const childCount = (row: RowJson): number =>
+    subItems === null ? 0 : readRelationValue(row.properties[subItems.childrenPropertyId]).count
+
+  const toggleSubItems = async (rowId: string) => {
+    const at = rows.findIndex((r) => r.id === rowId)
+    if (at < 0 || loadingChildren !== null) return
+    const depth = depthOf.get(rowId) ?? 0
+    setMode({ kind: 'idle' })
+    if (expanded.has(rowId)) {
+      // 접기 — 바로 뒤의 더 깊은 행들(자식 · 손자 …)을 뺀다.
+      let end = at + 1
+      while (end < rows.length && (depthOf.get(rows[end].id) ?? 0) > depth) end += 1
+      const gone = new Set(rows.slice(at + 1, end).map((r) => r.id))
+      setRows((current) => current.filter((r) => !gone.has(r.id)))
+      setExpanded((current) => new Set([...current].filter((id) => id !== rowId && !gone.has(id))))
+      return
+    }
+    setLoadingChildren(rowId)
+    const children: RowJson[] = []
+    let next: string | null = null
+    do {
+      const result = await api.loadRows(workspaceId, viewId, next, rowId)
+      if (!result.ok) {
+        setLoadingChildren(null)
+        setError(result.message)
+        return
+      }
+      children.push(...result.value.rows)
+      next = result.value.hasMore ? result.value.nextCursor : null
+    } while (next !== null && children.length < MAX_QUERY_PAGINATION)
+    setLoadingChildren(null)
+    setRows((current) => {
+      const i = current.findIndex((r) => r.id === rowId)
+      if (i < 0) return current
+      const seen = new Set(current.map((r) => r.id))
+      return [...current.slice(0, i + 1), ...children.filter((c) => !seen.has(c.id)), ...current.slice(i + 1)]
+    })
+    setDepthOf((current) => new Map([...current, ...children.map((c) => [c.id, depth + 1] as const)]))
+    setExpanded((current) => new Set([...current, rowId]))
+  }
+
   // ── 머리 메뉴 ──────────────────────────────────────────────────────
   //
   // 전부 공유 설정(뷰 · 스키마)이다. 저장한 뒤 서버 렌더를 다시 받고, 표는 `page.tsx`
@@ -724,6 +782,7 @@ export function DatabaseTable(props: {
                 key={row.id}
                 role="row"
                 data-row-id={row.id}
+                data-depth={subItems === null ? undefined : (depthOf.get(row.id) ?? 0)}
                 className={
                   isList
                     ? 'flex items-center gap-1 border-b border-neutral-100 hover:bg-neutral-50 dark:border-neutral-900 dark:hover:bg-neutral-900/60'
@@ -788,7 +847,29 @@ export function DatabaseTable(props: {
                   // (`db-row-title`) **옆에** 둔다 — 그 안에 두면 제목의 글자에 "열기"가 섞인다.
                   const display =
                     column.type === 'title' ? (
-                      <span className="group/title flex min-w-0 items-center gap-1.5">
+                      <span
+                        className="group/title flex min-w-0 items-center gap-1.5"
+                        // 하위 항목의 깊이만큼 들인다(2b-2). 토글이 없는 행도 같은 폭을 비워 제목이 줄을 맞춘다.
+                        style={subItems === null ? undefined : { paddingLeft: (depthOf.get(row.id) ?? 0) * 20 }}
+                      >
+                        {subItems !== null &&
+                          (childCount(row) > 0 || expanded.has(row.id) ? (
+                            <button
+                              type="button"
+                              data-testid="db-subitem-toggle"
+                              aria-label={`${row.title || '제목 없음'} 하위 항목 ${expanded.has(row.id) ? '접기' : '펼치기'}`}
+                              aria-expanded={expanded.has(row.id)}
+                              disabled={loadingChildren !== null}
+                              tabIndex={-1}
+                              onMouseDown={(e) => e.stopPropagation()}
+                              onClick={() => void toggleSubItems(row.id)}
+                              className="w-4 shrink-0 text-xs text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200"
+                            >
+                              {expanded.has(row.id) ? '▾' : '▸'}
+                            </button>
+                          ) : (
+                            <span aria-hidden className="w-4 shrink-0" />
+                          ))}
                         <span className="flex min-w-0 flex-1 items-center gap-1.5" data-testid="db-row-title">
                           <PageIconView icon={row.icon} fallback />
                           <span className="min-w-0 flex-1">{content}</span>

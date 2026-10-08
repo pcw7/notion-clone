@@ -15,7 +15,7 @@
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { isCellColumn, relationOf, rollupOf, type ViewColumn } from './view-columns.ts'
+import { isCellColumn, nestsSubItems, relationOf, rollupOf, subItemPairOf, type ViewColumn } from './view-columns.ts'
 import {
   APP_PROPERTY_TYPES,
   DERIVED_PROPERTY_TYPES,
@@ -88,5 +88,28 @@ describe('② config 읽기', () => {
 
   test('모르는 함수는 기본 함수로 읽힌다 — 카탈로그를 줄이는 날에도 컬럼이 선다', () => {
     assert.equal(rollupOf({ relation_property_id: 'r', target_property_id: 't', function: '없는함수' })?.function, 'show_original')
+  })
+})
+
+describe('③ 하위 항목 (2b-2)', () => {
+  const relation = (id: string, subItems: 'parent' | 'children' | null): ViewColumn =>
+    ({
+      propertyId: id, name: id, visible: false, orderKey: 'a0', width: null, wrap: false, options: [], type: 'relation',
+      relation: { targetDataSourceId: 'x', limit: 'none', synced: true, subItems },
+    }) as ViewColumn
+
+  test('짝은 컬럼(숨긴 것 포함)의 표시에서 읽는다 — 한쪽만 있으면 없는 것', () => {
+    assert.deepEqual(subItemPairOf([relation('p', 'parent'), relation('c', 'children'), relation('r', null)]), {
+      parentPropertyId: 'p',
+      childrenPropertyId: 'c',
+    })
+    assert.equal(subItemPairOf([relation('p', 'parent')]), null)
+    assert.equal(subItemPairOf([relation('r', null)]), null)
+  })
+
+  test('트리로 그리는 뷰는 표 · 목록 — 보드는 아직 아니다', () => {
+    assert.equal(nestsSubItems('table'), true)
+    assert.equal(nestsSubItems('list'), true)
+    assert.equal(nestsSubItems('board'), false)
   })
 })

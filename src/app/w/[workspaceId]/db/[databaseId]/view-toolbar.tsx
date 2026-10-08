@@ -51,8 +51,8 @@ import type { OperatorCatalogEntry } from '@/lib/database/operator-catalog'
 import type { FilterableType } from '@/lib/database/filter'
 import { isGroupableType } from '@/lib/database/property-types'
 import { parseUniqueIdQuery } from '@/lib/database/unique-id-format'
-import { isFilterableColumn, isSortable, type FilterableColumn, type ViewColumn } from '@/lib/database/view-columns'
-import { setColumnVisible, updateView, type ApiResult } from './table-api'
+import { isFilterableColumn, isSortable, subItemPairOf, type FilterableColumn, type ViewColumn } from '@/lib/database/view-columns'
+import { disableSubItems, enableSubItems, setColumnVisible, updateView, type ApiResult } from './table-api'
 import { TYPE_ICON } from './cell-view'
 
 type Panel = 'filter' | 'sort' | 'properties' | 'group'
@@ -79,6 +79,7 @@ const FIELD =
 export function ViewToolbar({
   workspaceId,
   viewId,
+  dataSourceId,
   columns,
   filter,
   sorts,
@@ -88,6 +89,8 @@ export function ViewToolbar({
 }: {
   workspaceId: string
   viewId: string
+  /** 이 뷰가 보는 데이터 소스 — 하위 항목 켜기 · 끄기(2b-2)가 그것의 설정이다. */
+  dataSourceId: string
   /** 숨긴 컬럼도 포함한 뷰의 컬럼 전부. 숨긴 컬럼으로도 거르고 정렬할 수 있다. */
   columns: ViewColumn[]
   filter: FilterNode | null
@@ -183,6 +186,7 @@ export function ViewToolbar({
             columns={columns}
             busy={busy}
             onToggle={(propertyId, visible) => run(() => setColumnVisible(workspaceId, viewId, propertyId, visible))}
+            onSubItems={(on) => run(() => (on ? enableSubItems : disableSubItems)(workspaceId, dataSourceId))}
             onClose={() => setPanel(null)}
           />
         )}
@@ -820,13 +824,17 @@ function PropertiesPanel({
   columns,
   busy,
   onToggle,
+  onSubItems,
   onClose,
 }: {
   columns: ViewColumn[]
   busy: boolean
   onToggle: (propertyId: string, visible: boolean) => Promise<boolean>
+  /** 하위 항목 켜기 · 끄기(2b-2). 끄면 짝은 일반 relation 으로 남는다(연결은 그대로). */
+  onSubItems: (on: boolean) => Promise<boolean>
   onClose: () => void
 }) {
+  const subItemsOn = subItemPairOf(columns) !== null
   return (
     <Popover label="속성" testId="db-properties-panel" onClose={onClose}>
       <ul className="flex flex-col gap-1">
@@ -851,6 +859,18 @@ function PropertiesPanel({
           </li>
         ))}
       </ul>
+      {/* 하위 항목(2b-2 · F-03-18) — 데이터베이스 설정이다. 켜면 "상위 항목" · "하위 항목" 속성이 생기고 표 · 목록이 트리가 된다. */}
+      <label className="mt-1 flex items-center gap-2 border-t border-neutral-200 pt-2 text-sm dark:border-neutral-800">
+        <input
+          type="checkbox"
+          checked={subItemsOn}
+          disabled={busy}
+          onChange={(e) => void onSubItems(e.target.checked)}
+          data-testid="db-subitems-switch"
+        />
+        하위 항목
+        <span className="text-xs text-neutral-400">{subItemsOn ? '끄면 일반 관계형 속성으로 남습니다' : '행 안에 행을 둡니다'}</span>
+      </label>
     </Popover>
   )
 }
