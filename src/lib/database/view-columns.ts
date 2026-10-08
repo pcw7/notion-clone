@@ -108,11 +108,19 @@ export function subItemPairOf(
 }
 
 /**
- * 이 뷰가 하위 항목을 **트리로** 그리는가 — 표 · 목록(2b-2). 보드는 아직 모든 행을 그린다(노션은 보드 · 캘린더 · 갤러리에서
- * "부모만"이다 — §7).
+ * 이 뷰가 하위 항목을 **트리로** 그리는가 — 표 · 목록(2b-2). 갤러리는 "부모만"이다(`showsParentsOnly`) · 보드도 부모만이지만 그룹 질의
+ * (`group.ts`)가 따로 본다.
  */
 export function nestsSubItems(viewType: string): boolean {
   return viewType === 'table' || viewType === 'list'
+}
+
+/**
+ * 이 뷰가 하위 항목이 켜진 표에서 **부모(최상위 행)만** 그리는가 — 갤러리(2f-1). 03 F-03-18 *"보드/캘린더/갤러리 뷰는 Parents only 만
+ * 지원"*. 펴지 않으므로 자식을 읽는 길(`?parent=`)이 없다. 검색 중에도 부모만이다(보드와 같다).
+ */
+export function showsParentsOnly(viewType: string): boolean {
+  return viewType === 'gallery'
 }
 
 /** 거르고 정렬할 수 있는 컬럼 — 셀 컬럼 + 고유 ID(2a-2 · `filter.ts` `FILTERABLE_TYPES` 와 같은 목록). */

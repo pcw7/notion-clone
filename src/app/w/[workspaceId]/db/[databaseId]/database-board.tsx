@@ -69,9 +69,7 @@ import { PageIconView } from '../../page-icon-view'
 import type { GroupBy } from '@/lib/database/group'
 import type { ViewColumn } from '@/lib/database/view'
 import type { GroupableType, SelectOption } from '@/lib/database/property-types'
-import { isEmptyValue, readRelationValue } from '@/lib/database/property-types'
 import { cellText, parseDraft, readCell, sameValue } from '@/lib/database/cell-format'
-import { formatUniqueId } from '@/lib/database/unique-id-format'
 import {
   groupLabel,
   moveCard,
@@ -83,8 +81,9 @@ import {
 import { templateRowNote, UNTITLED_TEMPLATE, type DefaultTemplate } from '@/lib/database/new-row'
 import { CALCULATION_LABEL, formatCalculation, type Calculation, type CalculationResult } from '@/lib/database/calculations'
 import * as api from './table-api'
-import { CellDisplay, OptionChip, RelationChips, type RelationIcons, type RelationLabels } from './cell-view'
+import { OptionChip, type RelationIcons, type RelationLabels } from './cell-view'
 import { NewRowMenu } from './new-row-menu'
+import { CardBadges } from './card-badges'
 import { useRelationLabels } from './use-relation-labels'
 
 /** `GET /groups` 의 그룹 하나 — 행은 `rowJson`. 서버 렌더(`page.tsx`)도 같은 모양으로 내려준다. */
@@ -752,52 +751,13 @@ function BoardCard({
             />
           </div>
         )}
-        {badgeColumns.map((column) => {
-          if (column.type === 'relation') {
-            const related = readRelationValue(row.properties[column.propertyId])
-            if (related.count === 0) return null
-            return (
-              <span key={column.propertyId} title={column.name} data-testid="db-board-badge" className="max-w-full">
-                <RelationChips value={related} labels={relationLabels} icons={relationIcons} />
-              </span>
-            )
-          }
-          // rollup 배지는 아직 없다 — 값이 행에 없어서 카드마다 따로 물어야 한다(표 · 목록은 5c-2 가 그린다 · §7).
-          if (column.type === 'rollup') return null
-          // 고유 ID 는 행에 있다 — 번호를 그대로 그린다(2a-1).
-          if (column.type === 'unique_id') {
-            const id = formatUniqueId(column.uniqueId.prefix, row.uniqueSeq)
-            if (id === '') return null
-            return (
-              <span
-                key={column.propertyId}
-                title={column.name}
-                data-testid="db-board-badge"
-                className="max-w-full truncate text-xs tabular-nums text-neutral-500 dark:text-neutral-400"
-              >
-                {id}
-              </span>
-            )
-          }
-          const value = readCell(column.type, row.properties[column.propertyId])
-          if (value.type === 'checkbox' ? !value.checkbox : isEmptyValue(value)) return null
-          return (
-            <span
-              key={column.propertyId}
-              title={column.name}
-              data-testid="db-board-badge"
-              className="max-w-full truncate text-xs text-neutral-600 dark:text-neutral-300"
-            >
-              {value.type === 'select' || value.type === 'status' ? (
-                <CellDisplay value={value} options={column.options} />
-              ) : value.type === 'checkbox' ? (
-                `☑ ${column.name}`
-              ) : (
-                cellText(value)
-              )}
-            </span>
-          )
-        })}
+        <CardBadges
+          row={row}
+          columns={badgeColumns}
+          relationLabels={relationLabels}
+          relationIcons={relationIcons}
+          testId="db-board-badge"
+        />
       </li>
     </>
   )

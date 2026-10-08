@@ -29,7 +29,7 @@
 import { isUuid } from '@/lib/ids'
 import { requireWorkspaceSession } from '@/lib/auth/route-session'
 import { getView } from '@/lib/database/view'
-import { nestsSubItems, subItemPairOf } from '@/lib/database/view-columns'
+import { nestsSubItems, showsParentsOnly, subItemPairOf } from '@/lib/database/view-columns'
 import { queryRows } from '@/lib/database/query'
 import { computeCalculations } from '@/lib/database/calculate'
 import { normalizeSearch } from '@/lib/database/search'
@@ -71,6 +71,8 @@ export async function GET(request: Request, ctx: Ctx): Promise<Response> {
   const search = normalizeSearch(params.get('q'))
   const pair = nestsSubItems(view.value.type) && search === null ? subItemPairOf(view.value.columns) : null
   if (parent !== null && pair === null) return Response.json({ error: 'invalid_value' }, { status: 400 })
+  // 갤러리는 부모만(2f-1) — 트리를 펴지 않고 최상위 행만 읽는다. 검색 중에도 그렇다.
+  const parentsOnly = showsParentsOnly(view.value.type) ? subItemPairOf(view.value.columns) : null
 
   const page = await queryRows(session.ctx, view.value.dataSourceId, {
     filter: view.value.filter,
@@ -80,6 +82,7 @@ export async function GET(request: Request, ctx: Ctx): Promise<Response> {
     limit: Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : view.value.loadLimit,
     cursor: params.get('cursor'),
     ...(pair === null ? {} : { tree: { parentPropertyId: pair.parentPropertyId, under: parent } }),
+    ...(parentsOnly === null ? {} : { tree: { parentPropertyId: parentsOnly.parentPropertyId, under: null } }),
     search,
   })
 

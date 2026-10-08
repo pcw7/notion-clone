@@ -43,7 +43,7 @@ import { requirePageSession } from '@/lib/auth/page-session'
 import { getDatabase } from '@/lib/database/database'
 import { databaseLockState } from '@/lib/permissions/lock'
 import { getView, listViews } from '@/lib/database/view'
-import { isFilterableColumn, nestsSubItems, subItemPairOf } from '@/lib/database/view-columns'
+import { isFilterableColumn, nestsSubItems, showsParentsOnly, subItemPairOf } from '@/lib/database/view-columns'
 import { queryRows } from '@/lib/database/query'
 import { computeCalculations } from '@/lib/database/calculate'
 import { normalizeSearch } from '@/lib/database/search'
@@ -70,6 +70,7 @@ import { PageIconView } from '../../page-icon-view'
 import { ViewTabs } from './view-tabs'
 import { ViewToolbar, type BoardSettings } from './view-toolbar'
 import { SearchEmpty } from './view-search'
+import { DatabaseGallery } from './database-gallery'
 import { TemplatePanel } from './template-panel'
 import { DataSourcePanel } from './data-source-panel'
 
@@ -104,9 +105,12 @@ export default async function DatabasePage({
   if (!view.ok) notFound()
 
   const isBoard = view.value.type === 'board'
+  const isGallery = view.value.type === 'gallery'
   // 하위 항목이 켜진 표 · 목록은 최상위 행만 먼저 읽는다 — 자식은 토글을 펼 때 읽는다(2b-2 · 행 라우트와 같은 규칙).
   // 검색 중에는 트리를 펴지 않는다 — 맞는 행을 평평하게(2e-1 · 행 라우트와 같은 규칙).
   const subItems = nestsSubItems(view.value.type) && search === null ? subItemPairOf(view.value.columns) : null
+  // 갤러리는 부모만(2f-1 · 행 라우트와 같은 규칙) — 펴지 않는다.
+  const parentsOnly = showsParentsOnly(view.value.type) ? subItemPairOf(view.value.columns) : null
   const [tablePage, catalog, board] = await Promise.all([
     isBoard
       ? null
@@ -115,6 +119,7 @@ export default async function DatabasePage({
           sorts: view.value.sorts,
           limit: view.value.loadLimit,
           ...(subItems === null ? {} : { tree: { parentPropertyId: subItems.parentPropertyId, under: null } }),
+          ...(parentsOnly === null ? {} : { tree: { parentPropertyId: parentsOnly.parentPropertyId, under: null } }),
           search,
         }),
     // 필터 패널의 연산자 드롭다운이 이것을 그린다 — 코드에 박지 않는다(F-03-17).
@@ -223,7 +228,7 @@ export default async function DatabasePage({
 
   // ── 열 집계(2d-2 · F-04-16) ── 필터를 지난 행 전부로 계산한다(첫 페이지와 무관 · `calculate.ts`). 표 모양만 그린다.
   const calculations =
-    tablePage === null || variant !== 'table'
+    tablePage === null || variant !== 'table' || isGallery
       ? {}
       : await computeCalculations(ctx, view.value.dataSourceId, view.value.filter, view.value.columns, search)
 
@@ -374,6 +379,25 @@ export default async function DatabasePage({
               ? '도구줄의 "그룹"에서 그룹 기준을 다시 고르세요.'
               : '고칠 수 있는 사람이 그룹 기준을 다시 골라야 합니다.'}
           </p>
+        )
+      ) : isGallery ? (
+        tablePage !== null && (
+          <DatabaseGallery
+            key={contentKey}
+            workspaceId={workspaceId}
+            viewId={view.value.id}
+            dataSourceId={view.value.dataSourceId}
+            tableName={tableName}
+            columns={visibleColumns}
+            rows={tablePage.value.rows.map(rowJson)}
+            hasMore={tablePage.value.hasMore}
+            nextCursor={tablePage.value.nextCursor}
+            relationLabels={relation.labels}
+            relationIcons={relation.icons}
+            access={access}
+            defaultTemplate={defaultTemplate}
+            search={search}
+          />
         )
       ) : (
         tablePage !== null && (

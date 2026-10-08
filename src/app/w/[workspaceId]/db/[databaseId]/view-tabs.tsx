@@ -29,10 +29,10 @@ import type { MvpViewType, ViewSummary } from '@/lib/database/view'
 import * as api from './table-api'
 
 /** 탭의 종류 아이콘. 장식이다 — 이름이 곧 종류를 말한다. */
-export const VIEW_TYPE_ICON: Readonly<Record<string, string>> = { table: '▦', board: '▥', list: '≡' }
-const VIEW_TYPE_LABEL: Readonly<Record<MvpViewType, string>> = { table: '표', board: '보드', list: '목록' }
+export const VIEW_TYPE_ICON: Readonly<Record<string, string>> = { table: '▦', board: '▥', list: '≡', gallery: '⊞' }
+const VIEW_TYPE_LABEL: Readonly<Record<MvpViewType, string>> = { table: '표', board: '보드', list: '목록', gallery: '갤러리' }
 /** 이 화면이 만들 수 있는 종류 — 서버가 받는 셋 전부(`MVP_VIEW_TYPES`). */
-const CREATABLE: readonly MvpViewType[] = ['table', 'board', 'list']
+const CREATABLE: readonly MvpViewType[] = ['table', 'board', 'list', 'gallery']
 
 const MENU_ITEM =
   'block w-full rounded px-2 py-1 text-left text-sm hover:bg-neutral-100 disabled:opacity-40 dark:hover:bg-neutral-800'
