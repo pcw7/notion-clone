@@ -264,6 +264,28 @@ describe('필터 — 타입별 연산자', () => {
     )
   })
 
+  test('★ 값의 % · _ · \\ 는 글자 그대로다 — 와일드카드가 아니다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const table = await newTable([{ name: '메모', type: 'rich_text' }])
+    const memo = table.prop('메모')
+    const cell = (s: string) => ({ propertyId: memo, value: { type: 'rich_text' as const, rich_text: [textRun(s)] } })
+    await addRow(table, '가', [cell('50% 할인')])
+    await addRow(table, '나', [cell('500원')])
+    await addRow(table, '다', [cell('a_b')])
+    await addRow(table, '라', [cell('axb')])
+    await addRow(table, '마', [cell('c\\d')])
+    await addRow(table, '바', [cell('cd')])
+    const by = async (operator: string, value: string) =>
+      (await titlesOf(table, { filter: { property_id: memo, operator, value } as FilterNode })).sort()
+
+    assert.deepEqual(await by('contains', '%'), ['가'], '% 는 모든 행이 아니다')
+    assert.deepEqual(await by('contains', '0%'), ['가'], '0% 는 500원에 맞지 않는다')
+    assert.deepEqual(await by('contains', '_'), ['다'], '_ 는 아무 글자 하나가 아니다')
+    assert.deepEqual(await by('starts_with', 'a_'), ['다'], 'a_ 는 axb 의 앞이 아니다')
+    assert.deepEqual(await by('ends_with', '\\d'), ['마'], '\\d 는 d 로 끝나는 모든 행이 아니다')
+    assert.deepEqual(await by('does_not_contain', '%'), ['나', '다', '라', '마', '바'])
+  })
+
   test('★ 날짜는 하루 단위로 비교한다 — 시각이 있어도 그 날로 잡힌다', async (t) => {
     if (skipReason) return t.skip(skipReason)
     const table = await newTable([{ name: '마감', type: 'date' }])

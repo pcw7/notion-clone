@@ -76,6 +76,7 @@ import { orderKeysBetween } from '../block/order-key.ts'
 import { readPageIcon, type PageIcon } from '../block/page-icon.ts'
 import { isUuid } from '../ids.ts'
 import type { ValidationIssue } from '../contracts/rich-text.ts'
+import { escapeLike } from './filter.ts'
 import {
   bumpSchema,
   checkPropertySlots,
@@ -596,15 +597,8 @@ export async function readRelation(
   })
 }
 
-/**
- * LIKE 의 와일드카드를 글자로 만든다 — `%` · `_` · 그리고 이스케이프 문자 자신(`\`).
- *
- * 안 하면 `100%` 를 찾을 때 `%` 가 "아무 글자"가 되어 전부가 나오고, `_` 는 아무 한 글자와 맞는다. 값은 파라미터로
- * 바인딩하므로 주입은 아니다 — **결과가 틀리는** 문제다.
- */
-export function escapeLike(text: string): string {
-  return text.replace(/[\\%_]/g, (ch) => '\\' + ch)
-}
+// LIKE 의 와일드카드를 글자로 만드는 함수는 필터의 글 비교와 같이 쓴다(`filter.ts` — 거기로 옮겼다). 검사가 여기서 가져간다.
+export { escapeLike }
 
 /** `block.properties.title`(투영된 제목)의 평문. `row.ts` `toRowSummary` 와 같은 규칙이다. */
 function plainTitle(raw: unknown): string {
