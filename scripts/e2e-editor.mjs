@@ -11950,6 +11950,53 @@ async function main() {
       check('타입이 고를 수 없는 함수는 400 invalid_calculation', bad.status === 400 && bad.body?.error === 'invalid_calculation', JSON.stringify(bad))
     }
 
+    if (sectionIf('열 집계 — 화면 (2d-2 · F-04-16)')) {
+      // 표 아래 집계 줄 — "계산"을 눌러 그 타입의 함수를 고르면 값이 서고(필터를 지난 행 전부), 바꾸면 바뀌고, "없음"이면 지워진다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const clickOn = async (selector) => {
+        const p = await evaluate(`(() => {
+          const e = document.querySelector(${JSON.stringify(selector)})
+          if (!e) return null
+          e.scrollIntoView({ block: 'center' })
+          const r = e.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (p) await click(p.x, p.y)
+        return p !== null
+      }
+      const db = (await api('POST', '/databases', { name: `열 집계 화면 ${stamp}` })).body.database
+      const num = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '금액', type: 'number' })).body.property.id
+      for (const n of [10, 20, 60]) {
+        await api('POST', `/views/${db.defaultViewId}/rows`, { cells: [{ propertyId: num, value: { type: 'number', number: n } }] })
+      }
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === 3`, 15000)
+      const cell = `td[data-testid="db-calc-cell"][data-property-id="${num}"]`
+      const calcText = () => evaluate(`document.querySelector('${cell} [data-testid="db-calc-button"]')?.textContent ?? '(없음)'`)
+      const pick = async (testId) => {
+        await clickOn(`${cell} [data-testid="db-calc-button"]`)
+        await waitFor(`!!document.querySelector('${cell} [data-testid="db-calc-menu"]')`, 3000)
+        await clickOn(`${cell} [data-testid="${testId}"]`)
+      }
+
+      check('계산이 없는 열은 "계산"만 있다', (await calcText()) === '계산', await calcText())
+      await clickOn(`${cell} [data-testid="db-calc-button"]`)
+      check('★ 숫자 열의 목록에 평균 · 합계가 있다 — 체크 계열은 없다',
+        await waitFor(`!!document.querySelector('${cell} [data-testid="db-calc-average"]') && !document.querySelector('${cell} [data-testid="db-calc-checked"]')`, 3000))
+      await clickOn(`${cell} [data-testid="db-calc-average"]`)
+      check('★ 평균을 고르면 아래 줄에 "평균 30" — 필터를 지난 행 전부의 값', await waitFor(`(document.querySelector('${cell} [data-testid="db-calc-button"]')?.textContent ?? '') === '평균30'`, 10000), await calcText())
+      await pick('db-calc-sum')
+      check('합계로 바꾸면 "합계 90"', await waitFor(`(document.querySelector('${cell} [data-testid="db-calc-button"]')?.textContent ?? '') === '합계90'`, 10000), await calcText())
+      await pick('db-calc-none')
+      check('"없음"이면 지워진다', await waitFor(`(document.querySelector('${cell} [data-testid="db-calc-button"]')?.textContent ?? '') === '계산'`, 10000), await calcText())
+    }
+
     section('전체')
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))
     const serverErrors = serverOutput.split('\n').filter((l) => l.includes('⨯'))

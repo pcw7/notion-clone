@@ -72,6 +72,8 @@ import { PageIconView } from '../../page-icon-view'
 import { isCellColumn, isSortable, relationOf, rollupOf, type CellColumn, type ViewColumn } from '@/lib/database/view-columns'
 import { formatUniqueId, normalizeUniqueIdPrefix } from '@/lib/database/unique-id-format'
 import { CONVERTIBLE_TYPES, isConvertibleType } from '@/lib/database/type-conversion'
+import type { Calculations } from '@/lib/database/calculate'
+import { CalculationCell } from './calculation-cell'
 import { MAX_QUERY_PAGINATION } from '@/lib/database/limits'
 import {
   emptyValue,
@@ -148,6 +150,11 @@ export function DatabaseTable(props: {
    * 아래에 들여 끼운다. 표의 칸 이동 · 편집은 화면에 보이는 평평한 목록 위에서 그대로 돈다.
    */
   subItems?: { readonly parentPropertyId: string; readonly childrenPropertyId: string } | null
+  /**
+   * 열 집계의 값(2d-2 · 서버 렌더가 필터를 지난 행 전부로 계산했다 · `calculate.ts`). 표 모양(`table`)에서만 아래 줄에 그린다. 셀을 고쳐도
+   * 다시 계산하지 않는다 — 표를 다시 열면 맞는다(§7).
+   */
+  calculations?: Calculations
 }) {
   const { workspaceId, viewId, dataSourceId, tableName, access } = props
   const variant: TableVariant = props.variant ?? 'table'
@@ -1078,6 +1085,27 @@ export function DatabaseTable(props: {
               </tr>
             ))}
           </tbody>
+          {/* 열 집계(2d-2 · F-04-16) — 표 모양에서만. 마우스를 올리면 계산이 없는 칸에 "계산"이 보인다. */}
+          {isGrid && (
+            <tfoot className="group/calc" data-testid="db-calc-row">
+              <tr>
+                {columns.map((column) => (
+                  <td key={column.propertyId} data-testid="db-calc-cell" data-property-id={column.propertyId} className="px-1 py-0.5 align-top">
+                    <CalculationCell
+                      type={column.type}
+                      calculation={column.calculation ?? null}
+                      result={props.calculations?.[column.propertyId]}
+                      canEdit={access.canEditStructure}
+                      onPick={async (calculation) =>
+                        afterStructure(await api.setColumnCalculation(workspaceId, viewId, column.propertyId, calculation))
+                      }
+                    />
+                  </td>
+                ))}
+                {access.canEditStructure && <td aria-hidden />}
+              </tr>
+            </tfoot>
+          )}
         </table>
       </div>
 
