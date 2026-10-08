@@ -2036,6 +2036,14 @@ CREATE TABLE view_user_override (
   user_id uuid NOT NULL, filter jsonb, sorts jsonb,
   PRIMARY KEY (view_id, user_id)
 );
+-- [보강] 개인 필터 · 정렬 ⟨DB 심화 2h-1조각 · F-04-17 / 마이그레이션 0059⟩
+--   ① 개인 것은 공유 것을 **대체**한다(AND 가 아니다 — 04 권고). 행을 고르는 모든 길(행 질의 · 열 집계 · 보드 · 캘린더)이 "실제로 쓰는" 필터 ·
+--      정렬(`ViewDetail.effectiveFilter` · `effectiveSorts`)을 쓴다. `view.filter` · `view.sorts` 는 늘 공유 것이다.
+--   ② NULL = "덮어쓰지 않았다"(공유 것) · 빈 묶음(`{op:'and', children: []}`) · `[]` = "나는 아무것도 걸지 않는다". 두 칸 다 NULL 인 행은
+--      CHECK 이 막는다(ck_view_user_override_some) · 모양 CHECK(ck_view_user_override_shape) · user_id 는 "user" 를 가리킨다(cascade).
+--   ③ 거는 데는 **볼 수 있으면 된다**(읽기 권한도) · 모두에게 저장(`publish`)은 `edit_structure` — 덮어쓴 쪽만 옮기고 개인 것은 지운다 ·
+--      편집자가 공유 필터 · 정렬을 바꾸면 자기 개인 것의 그 쪽을 지운다(자기가 고친 공유 것을 자기만 못 보는 일이 없게).
+--   ④ 익명(공개 링크)의 개인 필터 · 실시간 브로드캐스트의 "뷰 × 사용자" 단위는 아직이다(§7).
 
 -- L1 레이아웃. data_source 당 최대 1행 — 없으면 기본 레이아웃 <U-1 = 16 비준> [정정 8f-2 — "정확히 1행" → lazy · 아래 [보강]]
 CREATE TABLE page_layout (

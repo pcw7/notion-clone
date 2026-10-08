@@ -313,13 +313,17 @@ async function openBoard(
     group_by: unknown
     load_limit: number
   }>(
-    `SELECT v.database_id, v.data_source_id, v.filter, v.sorts, v.group_by, v.load_limit
+    // 필터 · 정렬은 이 사람이 실제로 보는 것 — 개인 것이 있으면 그것이 공유 것을 대체한다(2h-1 · F-04-17 · `view.ts` `effectiveFilter`).
+    `SELECT v.database_id, v.data_source_id,
+            coalesce(o.filter, v.filter) AS filter, coalesce(o.sorts, v.sorts) AS sorts,
+            v.group_by, v.load_limit
        FROM view v
        JOIN block b ON b.id = v.database_id
        JOIN data_source ds ON ds.id = v.data_source_id
+       LEFT JOIN view_user_override o ON o.view_id = v.id AND o.user_id = $3
       WHERE v.id = $1 AND b.workspace_id = $2 AND b.lifecycle = 'live' AND ds.lifecycle = 'live'
         AND v.owner_kind = 'database_view'`,
-    [viewId, ctx.workspaceId],
+    [viewId, ctx.workspaceId, ctx.userId],
   )
   if (view === null) return fail('not_found')
 

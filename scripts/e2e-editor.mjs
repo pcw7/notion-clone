@@ -12618,6 +12618,37 @@ async function main() {
       check('끌지 않고 누르면 그 행 페이지가 열린다', await waitFor(`location.pathname === ${JSON.stringify(`/w/${workspaceId}/${single}`)}`, 15000), await evaluate('location.pathname'))
     }
 
+    if (sectionIf('개인 필터 · 정렬 — 서버 (2h-1 · F-04-17)')) {
+      // 나에게만 적용하는 필터 · 정렬 — 걸면 행 응답이 그것으로 좁혀지고(공유 필터를 대체) · 초기화하면 공유 것 · 모두에게 저장하면 공유 것이 된다.
+      // 볼 수만 있는 사람 · 보드 · 캘린더 · 권한은 DB 검사가 본다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `개인 필터 ${stamp}` })).body.database
+      const view = db.defaultViewId
+      const score = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '점수', type: 'number' })).body.property.id
+      const titleProp = (await api('GET', `/views/${view}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      for (const [t, n] of [['가', 10], ['나', 20], ['다', 30]]) {
+        await api('POST', `/views/${view}/rows`, { cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun(t)] } }, { propertyId: score, value: { type: 'number', number: n } }] })
+      }
+      await api('PATCH', `/views/${view}`, { filter: { property_id: score, operator: 'greater_than', value: 15 } })
+      const titles = async () => ((await api('GET', `/views/${view}/rows`)).body?.rows ?? []).map((r) => r.title).join(',')
+      check('공유 필터(> 15)', (await titles()) === '나,다', await titles())
+      const set = await api('PATCH', `/views/${view}/personal`, { filter: { property_id: score, operator: 'less_than', value: 25 } })
+      check('★ 개인 필터를 걸면 행이 그것으로 — 공유 조건을 대체한다(< 25)',
+        set.status === 200 && set.body?.view?.personal?.filter === true && (await titles()) === '가,나', JSON.stringify({ status: set.status, titles: await titles() }))
+      await api('DELETE', `/views/${view}/personal`)
+      check('초기화 — 공유 것으로', (await titles()) === '나,다', await titles())
+      await api('PATCH', `/views/${view}/personal`, { filter: null })
+      const published = await api('POST', `/views/${view}/personal`)
+      check('★ "필터 없음"을 모두에게 저장 — 공유 필터가 지워진다', published.status === 200 && published.body?.view?.filter === null && (await titles()) === '가,나,다',
+        JSON.stringify({ status: published.status, filter: published.body?.view?.filter }))
+    }
+
     section('전체')
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))
     const serverErrors = serverOutput.split('\n').filter((l) => l.includes('⨯'))

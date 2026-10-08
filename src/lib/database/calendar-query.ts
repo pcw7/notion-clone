@@ -60,7 +60,8 @@ export async function queryCalendar(
   if (view.value.type !== 'calendar') return fail('not_calendar')
   const dateProperty = view.value.calendar.date_property_id
   if (dateProperty === null) return fail('no_date_property')
-  const { dataSourceId, filter, columns } = view.value
+  // 이 사람이 실제로 보는 필터(2h-1 — 개인 필터가 있으면 그것)
+  const { dataSourceId, effectiveFilter: filter, columns } = view.value
 
   return withReadTransaction(async (tx) => {
     const types = await readPropertyTypes(tx, dataSourceId)

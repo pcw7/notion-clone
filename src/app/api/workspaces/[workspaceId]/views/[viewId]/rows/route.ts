@@ -76,8 +76,9 @@ export async function GET(request: Request, ctx: Ctx): Promise<Response> {
   const parentsOnly = showsParentsOnly(view.value.type) ? subItemPairOf(view.value.columns) : null
 
   const page = await queryRows(session.ctx, view.value.dataSourceId, {
-    filter: view.value.filter,
-    sorts: view.value.sorts,
+    // 이 사람이 실제로 보는 필터 · 정렬 — 개인 것이 있으면 그것(2h-1 · F-04-17)
+    filter: view.value.effectiveFilter,
+    sorts: view.value.effectiveSorts,
     // 뷰의 `load_limit` 이 기본값이다. 요청이 더 작은 값을 주면 그것을 쓴다 —
     // F-03-17 의 권고("page_size 를 낮추면 빨라진다")와 같은 방향이다.
     limit: Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : view.value.loadLimit,
@@ -95,7 +96,7 @@ export async function GET(request: Request, ctx: Ctx): Promise<Response> {
   // 읽기에는 다시 계산하지 않는다 — 대상은 필터를 지난 행 전부라 페이지마다 같다.
   const first = params.get('cursor') === null && parent === null
   const calculations = first
-    ? await computeCalculations(session.ctx, view.value.dataSourceId, view.value.filter, view.value.columns, search)
+    ? await computeCalculations(session.ctx, view.value.dataSourceId, view.value.effectiveFilter, view.value.columns, search)
     : undefined
 
   // 갤러리의 카드 미리보기(2f-2) — 이 페이지의 행마다 본문의 첫 이미지. 미리보기를 끈 갤러리 · 다른 뷰에는 싣지 않는다.

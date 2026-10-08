@@ -65,6 +65,8 @@ const EXPECTED_TABLES = [
   'setting_value',
   // 요금제 · 엔타이틀먼트 · 결제 구독 8k-1조각 (0047)
   'plan', 'plan_entitlement', 'billing_subscription',
+  // 개인 필터 · 정렬 2h-1조각 (0059)
+  'view_user_override',
   'schema_migration', 'scim_token', 'session_policy', 'sso_config',
   'user', 'user_email', 'user_session',
   'workspace', 'workspace_invite', 'workspace_member',
@@ -3060,6 +3062,33 @@ try {
       [viewId, JSON.stringify({ calendar: { view_range: 'month' } })])
     await rejectBy('★ 모르는 보기 단위', 'ck_view_calendar_layout', setConfig, [viewId, calendar({ view_range: 'year' })])
     await rejectBy('날짜 속성이 글이 아니다', 'ck_view_calendar_layout', setConfig, [viewId, calendar({ date_property_id: 7 })])
+
+    console.log('\n[42] 개인 필터 · 정렬 (0059 / §3.6 view_user_override · 2h-1조각)')
+    const someUser = (await client.query(`SELECT id FROM "user" LIMIT 1`)).rows[0].id
+    const putOverride = `INSERT INTO view_user_override (view_id, user_id, filter, sorts) VALUES ($1, $2, $3::jsonb, $4::jsonb)`
+    await client.query('SAVEPOINT probe')
+    try {
+      await client.query(putOverride, [viewId, someUser, JSON.stringify({ op: 'and', children: [] }), null])
+      await client.query(`UPDATE view_user_override SET sorts = '[]'::jsonb WHERE view_id = $1`, [viewId])
+      ok('필터만 · 정렬도 — 정상 경로가 통과한다')
+    } catch (e) {
+      fail(`정상 경로가 거부됐다 (${e.constraint ?? e.code})`)
+    }
+    await client.query('ROLLBACK TO SAVEPOINT probe')
+    await rejectBy('★ 두 칸 다 비었다(덮어쓴 것이 없는 행)', 'ck_view_user_override_some', putOverride, [viewId, someUser, null, null])
+    await rejectBy('필터가 객체가 아니다', 'ck_view_user_override_shape', putOverride, [viewId, someUser, JSON.stringify([1]), null])
+    await rejectBy('정렬이 배열이 아니다', 'ck_view_user_override_shape', putOverride, [viewId, someUser, null, JSON.stringify({})])
+    await client.query('SAVEPOINT probe')
+    try {
+      await client.query(putOverride, [viewId, someUser, null, JSON.stringify([])])
+      await client.query(`DELETE FROM view WHERE id = $1`, [viewId])
+      const left = (await client.query(`SELECT count(*)::int AS n FROM view_user_override WHERE view_id = $1`, [viewId])).rows[0].n
+      if (left === 0) ok('★ 뷰를 지우면 그 뷰의 개인 설정도 사라진다(cascade)')
+      else fail(`뷰를 지웠는데 개인 설정 ${left}개가 남았다`)
+    } catch (e) {
+      fail(`cascade 확인 중 오류 (${e.constraint ?? e.code})`)
+    }
+    await client.query('ROLLBACK TO SAVEPOINT probe')
   }
 
   await client.query('ROLLBACK')

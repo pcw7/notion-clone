@@ -122,8 +122,9 @@ export default async function DatabasePage({
     isBoard || isCalendar
       ? null
       : queryRows(ctx, view.value.dataSourceId, {
-          filter: view.value.filter,
-          sorts: view.value.sorts,
+          // 이 사람이 실제로 보는 필터 · 정렬(2h-1 — 개인 것이 공유 것을 대체한다)
+          filter: view.value.effectiveFilter,
+          sorts: view.value.effectiveSorts,
           limit: view.value.loadLimit,
           ...(subItems === null ? {} : { tree: { parentPropertyId: subItems.parentPropertyId, under: null } }),
           ...(parentsOnly === null ? {} : { tree: { parentPropertyId: parentsOnly.parentPropertyId, under: null } }),
@@ -154,7 +155,7 @@ export default async function DatabasePage({
   // 지워진 속성의 정렬 키를 뺀다. 그대로 두면 다른 키를 고친 저장까지 서버가 거부한다
   // (`filter-draft.ts` 머리말).
   // 거를 수 있는 컬럼으로 묻는다 — 셀 컬럼으로만 물으면 고유 ID 의 정렬 키가 도구줄에서 사라진다(서버는 그 키로 정렬하는데).
-  const sorts = liveSorts(view.value.sorts, new Map(columns.filter(isFilterableColumn).map((c) => [c.propertyId, c.type])))
+  const sorts = liveSorts(view.value.effectiveSorts, new Map(columns.filter(isFilterableColumn).map((c) => [c.propertyId, c.type])))
 
   // ── 보드 ──
   const groupBy = view.value.groupBy
@@ -197,8 +198,8 @@ export default async function DatabasePage({
   const contentKey = JSON.stringify([
     view.value.id,
     view.value.type,
-    view.value.filter,
-    view.value.sorts,
+    view.value.effectiveFilter,
+    view.value.effectiveSorts,
     groupBy,
     // 타입도 넣는다(2c-2) — 표는 컬럼을 자기 상태로 들고 있어서, 타입을 바꾼 뒤에도 옛 타입으로 칸을 그린다.
     // 집계 함수도(2d-2) — 바꾸면 표가 새 값으로 다시 선다(값은 서버 렌더가 준다).
@@ -252,7 +253,7 @@ export default async function DatabasePage({
   const calculations =
     tablePage === null || variant !== 'table' || isGallery
       ? {}
-      : await computeCalculations(ctx, view.value.dataSourceId, view.value.filter, view.value.columns, search)
+      : await computeCalculations(ctx, view.value.dataSourceId, view.value.effectiveFilter, view.value.columns, search)
 
   // ── 기본 템플릿(F-08-03) ──
   // 뷰는 **살아 있는 템플릿일 때만** id 를 준다(`readView` · §3.3-176). 버튼이 그 이름을 말하므로 이름까지 읽는다 —
@@ -339,7 +340,7 @@ export default async function DatabasePage({
             viewId={view.value.id}
             dataSourceId={view.value.dataSourceId}
             columns={[...columns]}
-            filter={view.value.filter}
+            filter={view.value.effectiveFilter}
             sorts={sorts}
             catalog={catalog}
             canEdit={access.canEditStructure}
