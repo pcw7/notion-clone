@@ -62,11 +62,13 @@ describe('② config 읽기', () => {
       targetDataSourceId: ds,
       limit: 'none',
       synced: false,
+      subItems: null,
     })
     assert.deepEqual(relationOf({ target_data_source_id: ds, limit: 'one', synced_property_id: 'x' }), {
       targetDataSourceId: ds,
       limit: 'one',
       synced: true,
+      subItems: null,
     })
     assert.equal(relationOf({}), null)
     assert.equal(relationOf({ target_data_source_id: '아무거나' }), null)

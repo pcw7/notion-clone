@@ -1,0 +1,208 @@
+/**
+ * 하위 항목 — 켜기 · 연결 · 순환 · 옮기기 · 끄기 (DB 심화 2b-1조각 · F-03-18, DB 필요)
+ *
+ * 정본: 00-canonical-data-model.md §3.5 [보강] 하위 항목
+ *
+ * 이 파일이 지키는 것.
+ *
+ *   ① ★ 켜면 같은 표의 relation 짝 — "상위 항목"(하나만) · "하위 항목"(서로가 짝). 두 번 켜도 짝은 하나다
+ *   ② ★ 부모를 두면 거울상이 자식 칸에 선다 — role 은 자식 → 부모 엣지에만(DB 가 매긴다)
+ *   ③ ★ 순환을 거부한다 — 자기 자신 · 자기 자손을 부모로 둘 수 없다. 상위 항목 칸에서도 하위 항목 칸에서도 · 이유를 말한다 ·
+ *        아무것도 바뀌지 않는다
+ *   ④ ★ 부모는 하나다 — 하위 항목 칸에 다른 부모의 행을 더하면 **옮겨 온다**(옛 부모의 칸에서 빠진다). 상위 항목 칸에서 바꿔도 같다
+ *   ⑤ 짝의 한쪽을 따로 지울 수 없다(`managed_property`)
+ *   ⑥ ★ 끄면 일반 relation 으로 남는다 — 연결은 그대로 · role 은 지워진다 · 다시 켜면 새 짝(이름은 비어 있는 것)
+ *
+ * ⚠ skip 은 테스트마다 `ctx.skip` 으로 건다(`describe` 의 skip 옵션은 등록 시점에 평가된다 — HANDOFF §5).
+ */
+
+import { test, describe, before, after } from 'node:test'
+import assert from 'node:assert/strict'
+
+import { probeDatabase, makeFixture, type Fixture } from '../testing/db-fixtures.ts'
+import { withReadTransaction } from '../db/tx.ts'
+import { textRun } from '../contracts/rich-text.ts'
+import { createDatabase } from './database.ts'
+import { deleteProperty, getSchema } from './property.ts'
+import { readRelationConfig } from './property-types.ts'
+import { createRow } from './row.ts'
+import { linkRows } from './relation.ts'
+import { disableSubItems, enableSubItems, SUB_ITEM_NAMES } from './sub-items.ts'
+
+const REQUIRE_DB = process.env.REQUIRE_DB === '1'
+
+let skipReason = ''
+let fx: Fixture
+
+before(async () => {
+  const problem = await probeDatabase()
+  if (problem) {
+    skipReason = problem
+    if (REQUIRE_DB) throw new Error(`REQUIRE_DB=1 인데 ${skipReason}`)
+    return
+  }
+  fx = await makeFixture()
+})
+
+after(async () => {
+  if (!skipReason) {
+    const { closePool } = await import('../db/pool.ts')
+    await closePool()
+  }
+})
+
+const unwrap = <T>(r: { ok: true; value: T } | { ok: false; reason: string }): T => {
+  assert.equal(r.ok, true, `실패: ${r.ok === false ? r.reason : ''}`)
+  if (!r.ok) throw new Error('unreachable')
+  return r.value
+}
+
+async function tree(name: string) {
+  const created = unwrap(await createDatabase(fx.owner.ctx, { name }))
+  const ds = created.dataSourceId
+  const titleId = unwrap(await getSchema(fx.owner.ctx, ds)).properties.find((p) => p.type === 'title')!.id
+  const pair = unwrap(await enableSubItems(fx.owner.ctx, ds))
+  const row = async (title: string) =>
+    unwrap(await createRow(fx.owner.ctx, ds, { cells: [{ propertyId: titleId, value: { type: 'title', title: [textRun(title)] } }] })).id
+  return { ds, ...pair, row }
+}
+
+/** 행 → 부모 · 자식(엣지에서 바로 — 캐시가 아니다). */
+async function edges(parentPropertyId: string, childrenPropertyId: string) {
+  const rows = await withReadTransaction((tx) =>
+    tx.query<{ property_id: string; from_page_id: string; to_page_id: string; role: string | null }>(
+      `SELECT property_id, from_page_id, to_page_id, role FROM relation_edge WHERE property_id = ANY($1::text[])`,
+      [[parentPropertyId, childrenPropertyId]],
+    ),
+  )
+  const parentOf = new Map(rows.filter((r) => r.property_id === parentPropertyId).map((r) => [r.from_page_id, r.to_page_id]))
+  const childrenOf = (id: string) =>
+    rows.filter((r) => r.property_id === childrenPropertyId && r.from_page_id === id).map((r) => r.to_page_id).sort()
+  return { rows, parentOf, childrenOf }
+}
+
+describe('① 켜기', () => {
+  test('★ 같은 표의 relation 짝 — 상위 항목은 하나만 · 서로가 짝 · 두 번 켜도 하나', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { ds, parentPropertyId, childrenPropertyId } = await tree('켜기')
+    const schema = unwrap(await getSchema(fx.owner.ctx, ds))
+    const parent = schema.properties.find((p) => p.id === parentPropertyId)!
+    const children = schema.properties.find((p) => p.id === childrenPropertyId)!
+    assert.equal(parent.name, SUB_ITEM_NAMES.parent)
+    assert.equal(children.name, SUB_ITEM_NAMES.children)
+    assert.deepEqual(readRelationConfig(parent.config), {
+      target_data_source_id: ds,
+      synced_property_id: childrenPropertyId,
+      limit: 'one',
+      sub_items: 'parent',
+    })
+    assert.deepEqual(readRelationConfig(children.config), { target_data_source_id: ds, synced_property_id: parentPropertyId, sub_items: 'children' })
+
+    const again = unwrap(await enableSubItems(fx.owner.ctx, ds))
+    assert.deepEqual([again.parentPropertyId, again.childrenPropertyId], [parentPropertyId, childrenPropertyId])
+    assert.equal(again.schema.properties.filter((p) => p.type === 'relation').length, 2)
+  })
+})
+
+describe('② 부모 두기', () => {
+  test('★ 거울상이 자식 칸에 선다 — role 은 자식 → 부모 엣지에만', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { parentPropertyId, childrenPropertyId, row } = await tree('부모 두기')
+    const [a, b] = [await row('가'), await row('나')]
+    unwrap(await linkRows(fx.owner.ctx, a, parentPropertyId, { add: [b] }))
+    const e = await edges(parentPropertyId, childrenPropertyId)
+    assert.equal(e.parentOf.get(a), b)
+    assert.deepEqual(e.childrenOf(b), [a])
+    assert.deepEqual(
+      e.rows.map((r) => [r.property_id === parentPropertyId ? 'parent' : 'children', r.role]).sort(),
+      [['children', null], ['parent', 'sub_item']],
+    )
+  })
+})
+
+describe('③ 순환', () => {
+  test('★ 자기 자신 · 자기 자손을 부모로 둘 수 없다 — 두 칸 모두 · 아무것도 바뀌지 않는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { parentPropertyId, childrenPropertyId, row } = await tree('순환')
+    const [a, b, c] = [await row('가'), await row('나'), await row('다')]
+    // c → b → a (c 의 부모는 b, b 의 부모는 a)
+    unwrap(await linkRows(fx.owner.ctx, b, parentPropertyId, { add: [a] }))
+    unwrap(await linkRows(fx.owner.ctx, c, parentPropertyId, { add: [b] }))
+    const before = (await edges(parentPropertyId, childrenPropertyId)).rows.length
+
+    const cases = [
+      ['자기 자신', () => linkRows(fx.owner.ctx, a, parentPropertyId, { add: [a] })],
+      ['손자를 부모로(상위 항목 칸)', () => linkRows(fx.owner.ctx, a, parentPropertyId, { add: [c] })],
+      ['조상을 자식으로(하위 항목 칸)', () => linkRows(fx.owner.ctx, c, childrenPropertyId, { add: [a] })],
+    ] as const
+    for (const [label, run] of cases) {
+      const result = await run()
+      assert.equal(result.ok, false, label)
+      assert.equal(!result.ok && result.reason, 'invalid_value', label)
+      assert.match(JSON.stringify(!result.ok && result.issues), /상위 항목으로 둘 수 없습니다/, label)
+    }
+    assert.equal((await edges(parentPropertyId, childrenPropertyId)).rows.length, before)
+  })
+})
+
+describe('④ 부모는 하나', () => {
+  test('★ 하위 항목 칸에 다른 부모의 행을 더하면 옮겨 온다 — 옛 부모의 칸에서 빠진다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { parentPropertyId, childrenPropertyId, row } = await tree('옮기기')
+    const [a, b, c] = [await row('가'), await row('나'), await row('다')]
+    unwrap(await linkRows(fx.owner.ctx, b, childrenPropertyId, { add: [a] }))
+    unwrap(await linkRows(fx.owner.ctx, c, childrenPropertyId, { add: [a] }))
+    const e = await edges(parentPropertyId, childrenPropertyId)
+    assert.equal(e.parentOf.get(a), c)
+    assert.deepEqual(e.childrenOf(b), [])
+    assert.deepEqual(e.childrenOf(c), [a])
+  })
+
+  test('상위 항목 칸에서 바꿔도 같다 — 하나만이라 바뀐다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { parentPropertyId, childrenPropertyId, row } = await tree('바꾸기')
+    const [a, b, c] = [await row('가'), await row('나'), await row('다')]
+    unwrap(await linkRows(fx.owner.ctx, a, parentPropertyId, { add: [b] }))
+    unwrap(await linkRows(fx.owner.ctx, a, parentPropertyId, { add: [c] }))
+    const e = await edges(parentPropertyId, childrenPropertyId)
+    assert.equal(e.parentOf.get(a), c)
+    assert.deepEqual(e.childrenOf(b), [])
+  })
+})
+
+describe('⑤ 짝을 따로 지울 수 없다', () => {
+  test('managed_property — 끄기가 그 길이다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { ds, parentPropertyId, childrenPropertyId } = await tree('지우기')
+    for (const id of [parentPropertyId, childrenPropertyId]) {
+      const removed = await deleteProperty(fx.owner.ctx, ds, id)
+      assert.equal(!removed.ok && removed.reason, 'managed_property')
+    }
+  })
+})
+
+describe('⑥ 끄기', () => {
+  test('★ 일반 relation 으로 남는다 — 연결은 그대로 · role 은 지워진다 · 다시 켜면 새 짝(비어 있는 이름)', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { ds, parentPropertyId, childrenPropertyId, row } = await tree('끄기')
+    const [a, b] = [await row('가'), await row('나')]
+    unwrap(await linkRows(fx.owner.ctx, a, parentPropertyId, { add: [b] }))
+
+    const schema = unwrap(await disableSubItems(fx.owner.ctx, ds))
+    for (const id of [parentPropertyId, childrenPropertyId]) {
+      const property = schema.properties.find((p) => p.id === id)!
+      assert.equal(property.type, 'relation')
+      assert.equal(readRelationConfig(property.config)?.sub_items, undefined)
+    }
+    const e = await edges(parentPropertyId, childrenPropertyId)
+    assert.equal(e.parentOf.get(a), b)
+    assert.deepEqual(e.rows.map((r) => r.role), [null, null])
+    // 이제 일반 relation 이라 지울 수 있다 — 끄기 전에는 managed_property 였다(⑤).
+    assert.equal((await deleteProperty(fx.owner.ctx, ds, childrenPropertyId)).ok, true)
+
+    const again = unwrap(await enableSubItems(fx.owner.ctx, ds))
+    assert.notEqual(again.parentPropertyId, parentPropertyId)
+    assert.equal(again.schema.properties.find((p) => p.id === again.parentPropertyId)?.name, `${SUB_ITEM_NAMES.parent} 2`)
+    assert.equal(again.schema.properties.find((p) => p.id === again.childrenPropertyId)?.name, SUB_ITEM_NAMES.children)
+  })
+})

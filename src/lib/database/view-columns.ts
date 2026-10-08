@@ -52,6 +52,8 @@ export type RelationColumn = ColumnBase & {
     readonly limit: RelationLimit
     /** 짝이 있다(양방향 · 같은 표의 자기 짝 포함). 화면이 "반대쪽에도 보인다"를 말할 때 쓴다. */
     readonly synced: boolean
+    /** 하위 항목 짝의 한쪽(2b-1) — 화면이 트리를 그릴 때 쓴다. 일반 relation 은 null. */
+    readonly subItems: 'parent' | 'children' | null
   }
 }
 
@@ -107,6 +109,7 @@ export function relationOf(config: unknown): RelationColumn['relation'] | null {
     targetDataSourceId: parsed.target_data_source_id,
     limit: parsed.limit ?? 'none',
     synced: parsed.synced_property_id !== undefined,
+    subItems: parsed.sub_items ?? null,
   }
 }
 
