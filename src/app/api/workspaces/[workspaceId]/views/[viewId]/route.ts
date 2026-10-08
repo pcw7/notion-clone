@@ -17,6 +17,7 @@
 import { requireWorkspaceSession } from '@/lib/auth/route-session'
 import { deleteView, getView, updateView, type MvpViewType } from '@/lib/database/view'
 import type { GalleryLayout } from '@/lib/database/gallery'
+import type { CalendarLayout } from '@/lib/database/calendar'
 import { viewFailureStatus } from '@/lib/database/http'
 import type { FilterNode, SortKey } from '@/lib/database/filter'
 import type { GroupBy } from '@/lib/database/group'
@@ -48,6 +49,7 @@ export async function PATCH(request: Request, ctx: Ctx): Promise<Response> {
     groupBy?: unknown
     defaultTemplateId?: unknown
     gallery?: unknown
+    calendar?: unknown
   }
 
   // ★ `filter` · `groupBy` 는 `null` 과 "안 보냄"을 구분해야 한다 — 전자는 "없애라",
@@ -63,6 +65,8 @@ export async function PATCH(request: Request, ctx: Ctx): Promise<Response> {
     ...('defaultTemplateId' in body ? { defaultTemplateId: body.defaultTemplateId as string | null } : {}),
     // 갤러리 레이아웃(2f-2) — 바꿀 키만. 모양은 명령이 본다(`validateGalleryPatch`).
     ...('gallery' in body ? { gallery: body.gallery as Partial<GalleryLayout> } : {}),
+    // 캘린더 레이아웃(2g-1) — 바꿀 키만. 날짜 속성이 이 표의 것인지는 명령이 본다.
+    ...('calendar' in body ? { calendar: body.calendar as Partial<CalendarLayout> } : {}),
   })
 
   if (!updated.ok) {

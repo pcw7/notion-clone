@@ -12390,6 +12390,41 @@ async function main() {
         await waitFor(`!!document.querySelector('${card(withImage)} [data-testid="db-gallery-cover-image"]')`, 10000))
     }
 
+    if (sectionIf('캘린더 — 서버 (2g-1 · F-04-06)')) {
+      // 캘린더 뷰는 첫 날짜 속성을 고르고(없으면 400 date_required), 보이는 기간에 걸친 행만 날짜순으로 · 날짜 없는 행은 개수만 준다.
+      // 기간 · 조건 · 레이아웃의 규칙은 DB 검사가 본다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `캘린더 ${stamp}` })).body.database
+      const refused = await api('POST', `/databases/${db.id}/views`, { type: 'calendar' })
+      check('날짜 속성이 없는 표의 캘린더는 400 date_required', refused.status === 400 && refused.body?.error === 'date_required', JSON.stringify(refused))
+      const due = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '마감', type: 'date' })).body.property.id
+      const titleProp = (await api('GET', `/views/${db.defaultViewId}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const row = (title, date) => api('POST', `/views/${db.defaultViewId}/rows`, {
+        cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } }, ...(date ? [{ propertyId: due, value: { type: 'date', date } }] : [])],
+      })
+      await row('삼월 일', { start: '2026-03-10' })
+      await row('걸친 일', { start: '2026-02-27', end: '2026-03-02' })
+      await row('사월 일', { start: '2026-04-05' })
+      await row('날짜 없는 일', null)
+      const made = await api('POST', `/databases/${db.id}/views`, { type: 'calendar' })
+      check('★ 캘린더를 만들면 첫 날짜 속성을 고른다', made.status === 201 && made.body?.view?.calendar?.date_property_id === due, JSON.stringify(made.body?.view?.calendar))
+      const march = (await api('GET', `/views/${made.body.view.id}/calendar?from=2026-03-01&to=2026-03-31`)).body
+      check('★ 보이는 기간에 걸친 행만 날짜순 — 날짜 없는 행은 개수만',
+        JSON.stringify(march?.rows?.map((r) => r.title)) === JSON.stringify(['걸친 일', '삼월 일']) && march?.undated === 1 && march?.truncated === false,
+        JSON.stringify({ rows: march?.rows?.map((r) => r.title), undated: march?.undated }))
+      const bad = await api('GET', `/views/${made.body.view.id}/calendar?from=2026-03-31&to=2026-03-01`)
+      check('거꾸로 된 기간은 400', bad.status === 400 && bad.body?.error === 'invalid_value', JSON.stringify(bad))
+      const range = await api('PATCH', `/views/${made.body.view.id}`, { calendar: { view_range: 'week' } })
+      check('레이아웃은 바꿀 키만 — 날짜 속성은 그대로', range.status === 200 && range.body?.view?.calendar?.date_property_id === due && range.body?.view?.calendar?.view_range === 'week',
+        JSON.stringify(range.body?.view?.calendar))
+    }
+
     section('전체')
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))
     const serverErrors = serverOutput.split('\n').filter((l) => l.includes('⨯'))
