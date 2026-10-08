@@ -391,6 +391,12 @@ export async function createRowIn(
       [gate.containerId],
     )
 
+    // 형제 삽입을 **줄 세운다** — 다음 줄에서 형제의 마지막 키를 읽어 그 뒤에 새 키를 만드는데, 두 요청이 같은 키를 읽으면
+    // 같은 키를 만들어 `ux_block_sibling_order` 에 부딪힌다(한쪽이 500). 페이지 만들기가 부모 행을 잠그는 것과 같은 규칙이다
+    // (`block/page.ts` `lockParent`). 부모가 블록이 아니라 data source 라 그 줄을 잡는다 — `FOR NO KEY UPDATE` 인 이유: 다른 표의
+    // FK 검사(`FOR KEY SHARE`)는 막지 않고, 스키마 명령의 `FOR UPDATE`(`lockSchema`)와는 서로 기다린다.
+    await tx.query(`SELECT 1 FROM data_source WHERE id = $1 FOR NO KEY UPDATE`, [dataSourceId])
+
     // 형제 중 마지막 키. data_source 직속 형제만 본다(`parent_id = dataSourceId`).
     const last = await tx.queryMaybe<{ order_key: string }>(
       `SELECT order_key FROM block WHERE parent_id = $1 ORDER BY order_key DESC LIMIT 1`,

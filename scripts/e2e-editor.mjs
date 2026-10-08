@@ -11475,6 +11475,22 @@ async function main() {
       await sleep(500)
     }
 
+    if (sectionIf('행 동시 추가 (F-03-16)')) {
+      // 같은 표에 행을 동시에 여럿 더해도 모두 201 이다 — 전에는 형제의 마지막 키를 잠금 없이 읽어 한쪽이 500 이었다(HANDOFF §3.3-301).
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `동시 표 ${stamp}` })).body.database
+      const made = await Promise.all([1, 2, 3, 4, 5, 6].map(() => api('POST', `/views/${db.defaultViewId}/rows`, {})))
+      check('★ 같은 표에 동시에 행 여섯 — 모두 201', made.every((r) => r.status === 201), JSON.stringify(made.map((r) => r.status)))
+      const rows = (await api('GET', `/views/${db.defaultViewId}/rows`)).body?.rows ?? []
+      check('여섯 행이 모두 표에 있다', rows.length === 6 && new Set(rows.map((r) => r.id)).size === 6, String(rows.length))
+    }
+
     section('전체')
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))
     const serverErrors = serverOutput.split('\n').filter((l) => l.includes('⨯'))
