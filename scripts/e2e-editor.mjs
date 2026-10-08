@@ -11924,6 +11924,32 @@ async function main() {
         JSON.stringify({ header: await header(), cells: await cellsOf() }))
     }
 
+    if (sectionIf('열 집계 — 서버 (2d-1 · F-04-16)')) {
+      // 열에 집계 함수를 달면 행 응답의 첫 페이지에 그 값이 실린다(필터를 지난 행 전부) · 고를 수 없는 함수는 400. 규칙은 DB 검사가 본다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `열 집계 ${stamp}` })).body.database
+      const num = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '금액', type: 'number' })).body.property.id
+      for (const n of [10, 20, 60]) {
+        await api('POST', `/views/${db.defaultViewId}/rows`, { cells: [{ propertyId: num, value: { type: 'number', number: n } }] })
+      }
+      const set = await api('PATCH', `/views/${db.defaultViewId}/columns/${num}`, { calculation: 'average' })
+      check('열에 집계 함수를 단다 — 200', set.status === 200, String(set.status))
+      const first = (await api('GET', `/views/${db.defaultViewId}/rows?limit=1`)).body
+      check('★ 첫 페이지에 집계가 실린다 — 페이지에 든 행이 아니라 필터를 지난 행 전부(평균 30)',
+        first?.calculations?.[num]?.kind === 'number' && first.calculations[num].value === 30 && first.rows.length === 1,
+        JSON.stringify({ calculations: first?.calculations, rows: first?.rows?.length }))
+      const next = (await api('GET', `/views/${db.defaultViewId}/rows?limit=1&cursor=${encodeURIComponent(first.nextCursor)}`)).body
+      check('다음 페이지에는 다시 싣지 않는다', next?.calculations === undefined && next?.rows?.length === 1)
+      const bad = await api('PATCH', `/views/${db.defaultViewId}/columns/${num}`, { calculation: 'checked' })
+      check('타입이 고를 수 없는 함수는 400 invalid_calculation', bad.status === 400 && bad.body?.error === 'invalid_calculation', JSON.stringify(bad))
+    }
+
     section('전체')
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))
     const serverErrors = serverOutput.split('\n').filter((l) => l.includes('⨯'))

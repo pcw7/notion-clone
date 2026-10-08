@@ -29,17 +29,20 @@ export async function PATCH(request: Request, ctx: Ctx): Promise<Response> {
     visible?: unknown
     width?: unknown
     wrap?: unknown
+    /** 열 집계 함수(2d-1). `null` 이면 지운다. 고를 수 있는지는 라이브러리가 본다. */
+    calculation?: unknown
     /** `null` 이면 맨 뒤로. 키가 없으면 순서를 건드리지 않는다. */
     beforeId?: unknown
   }
 
   // 표시 설정을 먼저 적용한다. 순서만 보낸 요청에서는 건너뛴다.
-  const hasDisplay = 'visible' in body || 'width' in body || 'wrap' in body
+  const hasDisplay = 'visible' in body || 'width' in body || 'wrap' in body || 'calculation' in body
   let result = hasDisplay
     ? await setViewColumn(session.ctx, viewId, propertyId, {
         ...(typeof body.visible === 'boolean' ? { visible: body.visible } : {}),
         ...('width' in body ? { width: body.width as number | null } : {}),
         ...(typeof body.wrap === 'boolean' ? { wrap: body.wrap } : {}),
+        ...('calculation' in body ? { calculation: body.calculation } : {}),
       })
     : null
 

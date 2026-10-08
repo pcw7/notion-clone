@@ -1926,7 +1926,7 @@ CREATE TABLE view_property (               -- <C-6> 행 단위 테이블. JSON �
   visible boolean NOT NULL DEFAULT false,
   order_idx text NOT NULL, width int NULL, wrap boolean NOT NULL DEFAULT false,
   date_format text NULL, time_format text NULL, status_show_as text NULL,
-  card_property_width_mode text NULL, calculation text NULL,
+  card_property_width_mode text NULL, calculation text NULL,   -- [보강] 함수 이름 · CHECK(0054) · 아래 [보강] 열 집계
   PRIMARY KEY (view_id, property_id)
 );
 CREATE INDEX ON view_property (view_id, order_idx);
@@ -1944,6 +1944,21 @@ CREATE INDEX ON row_position (view_id, group_key, order_idx);
 -- 뷰별 수동 순서(row_position.order_idx)와 트리 순서(block.order_key)는 별개 축이며
 -- 서로를 대체하지 않는다. <C-3 경계선언>
 ```
+
+**[보강] 열 집계(`view_property.calculation`) — 함수 이름 · 타입별 허용 · 필터를 지난 행 전부** ⟨DB 심화 2d-1조각 · F-04-16 / 마이그레이션 0054⟩
+
+초판은 `calculation text NULL` 자리만 두었다.
+
+- ① 값은 함수 이름 하나다 — 모든 타입: `count_all` · `count_values` · `count_empty` · `count_unique` · `percent_empty` · `percent_not_empty` /
+  숫자: `sum` · `average` · `median` · `min` · `max` · `range` / 날짜: `earliest_date` · `latest_date` · `date_range` / 체크박스(빈 값이
+  없다 — 세기 계열 대신): `count_all` · `checked` · `unchecked` · `percent_checked` · `percent_unchecked`. 목록 밖의 이름은 CHECK 이
+  막는다(`ck_view_property_calculation`). 타입에 맞는지는 고를 때 명령이 보고, 읽을 때 맞지 않으면(타입을 바꾼 뒤) **무시한다**(rollup 의
+  접기와 같은 태도 — 저장값은 남긴다).
+- ② 대상은 **필터를 지난 행 전부**다 — 페이지에 들어오지 않은 행도(04 *"반드시 서버측 계산"*). 템플릿 · 휴지통은 뺀다(R1). 하위 항목이 켜진
+  표의 트리는 보지 않는다(자식 행도 센다 — 표의 행이다).
+- ③ 0 과 빈 값을 가른다 — 세기 · 합은 0, 평균 · 중앙값 · 최소 · 최대 · 날짜는 빈 값(`—`), 비율은 행이 0개면 빈 값.
+- ④ 행 응답의 **첫 페이지**에 함께 싣는다(04 *"행 쿼리 응답에 aggregates 를 함께 담아 1회 왕복"*). 캐시는 아직 없다.
+- 미룬 것: 보드 그룹 머리의 집계(`view.group_by` 의 계산) · relation · rollup · 고유 ID 열의 집계 · 집계 캐시.
 
 **[보강] `view.group_by` 의 모양과 `row_position.group_key` 의 뜻** ⟨보드 4a조각 / 마이그레이션 0022⟩
 

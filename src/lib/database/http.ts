@@ -179,6 +179,7 @@ export function viewFailureStatus(reason: ViewFailure): number {
     case 'invalid_group':
     case 'group_required':
     case 'invalid_template':
+    case 'invalid_calculation':
       return 400
   }
 }

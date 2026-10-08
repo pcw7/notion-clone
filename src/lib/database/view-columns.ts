@@ -16,6 +16,7 @@ import {
   type SelectOption,
 } from './property-types.ts'
 import { readRollupConfig, type RollupFunction } from './rollup-functions.ts'
+import type { Calculation } from './calculations.ts'
 import { isFilterableType } from './filter.ts'
 
 type ColumnBase = {
@@ -33,6 +34,11 @@ type ColumnBase = {
    * 주는 것과 같다 — 옵션을 따로 읽으면 표를 열 때마다 왕복이 하나 더 는다.
    */
   readonly options: readonly SelectOption[]
+  /**
+   * 이 뷰에서 이 열의 집계 함수(2d-1 · `view_property.calculation`). 없으면 null. 타입에 맞지 않는 저장값(타입을 바꾼 뒤)도 그대로
+   * 싣는다 — 계산하는 쪽(`calculate.ts`)이 맞지 않으면 빼고, 화면은 그 열의 고를 수 있는 목록으로 다시 고르게 한다.
+   */
+  readonly calculation?: Calculation | null
 }
 
 /** 값이 셀(`page_property_value`)에 있는 컬럼 — 필터 · 정렬 · 셀 편집이 이것만 받는다. */

@@ -54,6 +54,7 @@ import {
 import { readPropertyTypes } from './query.ts'
 import { isGroupableType, normalizeGroupBy, validateGroupBy, type GroupBy } from './group.ts'
 import { isMvpPropertyType, isOptionType } from './property-types.ts'
+import { calculationsFor, isCalculation } from './calculations.ts'
 import { relationOf, rollupOf, type ViewColumn } from './view-columns.ts'
 import { readOptionsOf } from './options.ts'
 import { readLiveTemplate } from './template.ts'
@@ -128,6 +129,8 @@ export type ViewFailure =
   | 'group_required'
   /** 기본 템플릿으로 준 id 가 이 표의 살아 있는 템플릿이 아니다(F-08-03 · 0026 의 트리거와 같은 조건). */
   | 'invalid_template'
+  /** 집계 함수가 목록에 없거나 그 열의 타입이 고를 수 없는 것이다(2d-1 · F-04-16). */
+  | 'invalid_calculation'
   /** 데이터베이스(구조) · 행 페이지가 잠겼다(7f-2 · F-06-16) — 풀어야 고친다. */
   | 'locked'
 
@@ -245,7 +248,7 @@ type ViewRow = {
 async function readColumns(tx: Tx, viewId: string): Promise<ViewColumn[]> {
   const rows = await tx.query<ColumnRow>(
     `SELECT vp.property_id, p.name, p.type::text AS type, p.config,
-            vp.visible, vp.order_idx, vp.width, vp.wrap, ds.unique_id_prefix
+            vp.visible, vp.order_idx, vp.width, vp.wrap, ds.unique_id_prefix, vp.calculation
        FROM view_property vp
        JOIN property p ON p.id = vp.property_id
        JOIN data_source ds ON ds.id = p.data_source_id
@@ -266,7 +269,7 @@ async function readColumns(tx: Tx, viewId: string): Promise<ViewColumn[]> {
 export async function readRecordColumns(tx: Tx, dataSourceId: string): Promise<ViewColumn[]> {
   const rows = await tx.query<ColumnRow>(
     `SELECT p.id AS property_id, p.name, p.type::text AS type, p.config,
-            true AS visible, p.order_idx, NULL::int AS width, false AS wrap, ds.unique_id_prefix
+            true AS visible, p.order_idx, NULL::int AS width, false AS wrap, ds.unique_id_prefix, NULL::text AS calculation
        FROM property p
        JOIN data_source ds ON ds.id = p.data_source_id
       WHERE p.data_source_id = $1 AND p.deleted_at IS NULL
@@ -287,6 +290,8 @@ type ColumnRow = {
   wrap: boolean
   /** 표(data source)의 고유 ID 접두사 — `unique_id` 컬럼만 쓴다. */
   unique_id_prefix: string | null
+  /** 이 뷰에서 이 열의 집계 함수(2d-1). */
+  calculation: string | null
 }
 
 /** 읽은 줄 → 컬럼. 뷰의 컬럼과 행의 속성 목록이 같은 함수로 만든다(옵션 · relation · rollup 을 읽는 곳이 한 곳). */
@@ -304,6 +309,7 @@ async function toColumns(tx: Tx, rows: readonly ColumnRow[]): Promise<ViewColumn
       width: r.width,
       wrap: r.wrap,
       options: optionsOf.get(r.property_id) ?? [],
+      calculation: isCalculation(r.calculation) ? r.calculation : null,
     }
     if (isMvpPropertyType(r.type)) {
       columns.push({ ...base, type: r.type })
@@ -711,6 +717,8 @@ export type SetColumnInput = {
   /** `null` 을 주면 자동 폭으로 돌린다. */
   readonly width?: number | null
   readonly wrap?: boolean
+  /** 열 집계 함수(2d-1 · F-04-16). `null` 이면 지운다. 그 열의 타입이 고를 수 있는 것이어야 한다(`calculationsFor`). */
+  readonly calculation?: unknown
 }
 
 /**
@@ -746,12 +754,22 @@ export async function setViewColumn(
     // (F-04-02: "모든 프로퍼티 숨김 → title 열만 남음"). 화면이 메뉴를 숨기는 것과
     // 별개로 여기서 막는다 — API 로 직접 부르면 화면의 규칙은 없다.
     if (input.visible === false && existing.type === 'title') return fail('title_required')
+    // 집계 함수는 그 타입이 고를 수 있는 것만(04 *"사용 가능 함수는 프로퍼티 타입에 의존한다"*) — 셀이 아닌 열(relation · rollup ·
+    // 고유 ID)은 아직 없다.
+    if (
+      input.calculation !== undefined &&
+      input.calculation !== null &&
+      !(isCalculation(input.calculation) && isMvpPropertyType(existing.type) && calculationsFor(existing.type).includes(input.calculation))
+    ) {
+      return fail('invalid_calculation')
+    }
 
     await tx.query(
       `UPDATE view_property
           SET visible = coalesce($3, visible),
               width = CASE WHEN $4::boolean THEN $5 ELSE width END,
-              wrap = coalesce($6, wrap)
+              wrap = coalesce($6, wrap),
+              calculation = CASE WHEN $7::boolean THEN $8 ELSE calculation END
         WHERE view_id = $1 AND property_id = $2`,
       [
         viewId,
@@ -760,6 +778,8 @@ export async function setViewColumn(
         input.width !== undefined,
         input.width ?? null,
         input.wrap ?? null,
+        input.calculation !== undefined,
+        input.calculation ?? null,
       ],
     )
 

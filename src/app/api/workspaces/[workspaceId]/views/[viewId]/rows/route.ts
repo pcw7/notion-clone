@@ -29,6 +29,7 @@ import { requireWorkspaceSession } from '@/lib/auth/route-session'
 import { getView } from '@/lib/database/view'
 import { nestsSubItems, subItemPairOf } from '@/lib/database/view-columns'
 import { queryRows } from '@/lib/database/query'
+import { computeCalculations } from '@/lib/database/calculate'
 import { createRow } from '@/lib/database/row'
 import { createRowFromTemplate } from '@/lib/database/template'
 import { createSubItem } from '@/lib/database/sub-item-rows'
@@ -81,7 +82,13 @@ export async function GET(request: Request, ctx: Ctx): Promise<Response> {
     return Response.json({ error: page.reason }, { status: page.reason === 'forbidden' ? 403 : 404 })
   }
 
+  // 열 집계(2d-1 · F-04-16) — 첫 페이지에만 함께 싣는다(04 *"행 쿼리 응답에 aggregates 를 함께 담아 1회 왕복"*). 다음 페이지 · 자식 행
+  // 읽기에는 다시 계산하지 않는다 — 대상은 필터를 지난 행 전부라 페이지마다 같다.
+  const first = params.get('cursor') === null && parent === null
+  const calculations = first ? await computeCalculations(session.ctx, view.value.dataSourceId, view.value.filter, view.value.columns) : undefined
+
   return Response.json({
+    ...(calculations === undefined ? {} : { calculations }),
     ok: true,
     // 화면이 컬럼 머리를 그리려면 스키마가 필요하다. 한 번에 준다 —
     // 표를 열 때마다 왕복이 둘이면 첫 화면이 느리다.
