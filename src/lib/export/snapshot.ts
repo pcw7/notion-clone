@@ -43,6 +43,7 @@ import { readImageSource } from '../block/image.ts'
 import { plainTitleOf, readTitle } from '../block/page.ts'
 import { PAGE_TYPE } from '../block/types.ts'
 import { DEFAULT_PROPERTY_TYPE, isMvpPropertyType, isOptionType } from '../database/property-types.ts'
+import { uniqueIdCell } from '../database/unique-id-format.ts'
 import { readOptionsOf } from '../database/options.ts'
 import { withReadTransaction, type Tx } from '../db/tx.ts'
 import { rowsToDoc, type BodyRow, type EditorBlock, type EditorDoc } from '../editor/document.ts'
@@ -141,15 +142,35 @@ export async function readExportSnapshot(
     if (placeholders.length > maxBlocks) return { ok: false, reason: 'too_large' } as const
 
     // ── ③ DB 행의 셀. 템플릿 행은 내보내지 않는다(불변식 R1) ──
+    // 고유 ID 는 셀이 아니다(C1) — 행의 번호(`unique_seq`)와 표의 접두사를 함께 읽어 그 행의 ID 칸에 끼운다(`uniqueIdCell` · 2a-2b).
+    // 살아 있는 ID 프로퍼티가 없으면 끼우지 않는다 — 표에도 그 열이 없다.
     const rowIds = blocks.filter((b) => b.type === PAGE_TYPE && b.parent_type === 'data_source').map((b) => b.id)
     const pageRows = rowIds.length === 0
       ? []
-      : await tx.query<{ id: string; is_template: boolean; properties_cache: Record<string, unknown> | null }>(
-          `SELECT id, is_template, properties_cache FROM page WHERE id = ANY($1::uuid[])`,
+      : await tx.query<{
+          id: string
+          is_template: boolean
+          properties_cache: Record<string, unknown> | null
+          unique_seq: string | null
+          unique_id_property: string | null
+          unique_id_prefix: string | null
+        }>(
+          `SELECT p.id, p.is_template, p.properties_cache, p.unique_seq, ds.unique_id_prefix,
+                  (SELECT pr.id FROM property pr
+                    WHERE pr.data_source_id = p.data_source_id AND pr.type = 'unique_id' AND pr.deleted_at IS NULL) AS unique_id_property
+             FROM page p JOIN data_source ds ON ds.id = p.data_source_id
+            WHERE p.id = ANY($1::uuid[])`,
           [rowIds],
         )
     const templates = new Set(pageRows.filter((r) => r.is_template).map((r) => r.id))
-    const cellsOf = new Map(pageRows.map((r) => [r.id, r.properties_cache ?? {}]))
+    const cellsOf = new Map(
+      pageRows.map((r) => [
+        r.id,
+        r.unique_id_property !== null && r.unique_seq !== null
+          ? { ...(r.properties_cache ?? {}), [r.unique_id_property]: uniqueIdCell(r.unique_id_prefix, Number(r.unique_seq)) }
+          : (r.properties_cache ?? {}),
+      ]),
+    )
 
     // ── ④ 노드와 트리 ──
     const nodeRows = blocks.filter(
@@ -307,8 +328,8 @@ async function readTables(tx: Tx, databaseIds: readonly string[]): Promise<Map<s
         .map((p) => ({
           propertyId: p.id,
           name: p.name,
-          // 스키마 ENUM 은 24종이다. 읽기는 관대하게 — `property.ts` 의 `toSummary` 와 같은 규칙.
-          type: isMvpPropertyType(p.type) ? p.type : DEFAULT_PROPERTY_TYPE,
+          // 스키마 ENUM 은 24종이다. 읽기는 관대하게 — `property.ts` 의 `toSummary` 와 같은 규칙. 고유 ID 는 그대로 둔다(값은 ③ 이 끼운다).
+          type: isMvpPropertyType(p.type) ? p.type : p.type === 'unique_id' ? ('unique_id' as const) : DEFAULT_PROPERTY_TYPE,
           ...(isOptionType(p.type) ? { options: optionsOf.get(p.id) ?? [] } : {}),
         })),
     })

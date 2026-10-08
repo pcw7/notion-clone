@@ -12,12 +12,21 @@
  *   ⑤ 셀 타입이 아니다 — 셀 컬럼으로 취급되지 않는다
  *   ⑥ ★ 화면(2a-2) — 필터 값 칸은 `12` 도 `TASK-12` 도 받는다 · 도구줄은 셀 컬럼 + 고유 ID 를 거르고 정렬한다 · 정렬 판정이 rollup ·
  *        relation · 옵션 타입을 뺀다(전에는 rollup 머리에 눌러도 아무 일 없는 정렬이 섰다) · 필터 초안이 고유 ID 규칙을 만든다
+ *   ⑦ ★ 내보내기(2a-2b) — 스냅숏이 끼운 칸(노션 API 모양)을 CSV · 행 Markdown 이 보이는 그대로 쓴다 · 손상된 칸은 빈 글자 · 수식 막기 대상이 아니다
  */
 
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { UNIQUE_ID_PREFIX_PATTERN, formatUniqueId, normalizeUniqueIdPrefix, parseUniqueIdQuery } from './unique-id-format.ts'
+import {
+  UNIQUE_ID_PREFIX_PATTERN,
+  formatUniqueId,
+  normalizeUniqueIdPrefix,
+  parseUniqueIdQuery,
+  uniqueIdCell,
+  uniqueIdCellText,
+} from './unique-id-format.ts'
+import { cellPlainText, tableToCsv } from '../export/csv.ts'
 import { isFilterableColumn, isSortable, type ViewColumn } from './view-columns.ts'
 import { describeRule, ruleFor, toFilter } from './filter-draft.ts'
 import type { OperatorCatalogEntry } from './operator-catalog.ts'
@@ -187,5 +196,30 @@ describe('⑥ 화면', () => {
       children: [{ property_id: 'pId', operator: 'greater_than', value: 3 }],
     })
     assert.equal(describeRule(filled, { propertyId: 'pId', name: 'ID', type: 'unique_id', options: [] }, CATALOG), 'ID · 초과 · 3')
+  })
+})
+
+describe('⑦ 내보내기', () => {
+  test('★ 칸은 노션 API 모양이고 보이는 그대로 쓴다', () => {
+    assert.deepEqual(uniqueIdCell('TASK', 12), { type: 'unique_id', unique_id: { prefix: 'TASK', number: 12 } })
+    assert.equal(uniqueIdCellText(uniqueIdCell('TASK', 12)), 'TASK-12')
+    assert.equal(uniqueIdCellText(uniqueIdCell(null, 3)), '3')
+  })
+
+  test('손상된 칸 · 다른 타입의 칸은 빈 글자', () => {
+    for (const raw of [undefined, null, 5, {}, { type: 'number', number: 5 }, { type: 'unique_id' }, { type: 'unique_id', unique_id: { number: 0 } }, { type: 'unique_id', unique_id: { number: '7' } }]) {
+      assert.equal(uniqueIdCellText(raw), '', JSON.stringify(raw))
+    }
+  })
+
+  test('★ CSV · 행 Markdown 의 함수가 ID 열을 쓴다 — 수식 막기는 걸리지 않는다', () => {
+    const column = { propertyId: 'pId', name: 'ID', type: 'unique_id' as const }
+    assert.equal(cellPlainText(column, uniqueIdCell('BUG', 7)), 'BUG-7')
+    const { csv, guardedFormulas } = tableToCsv(
+      [{ propertyId: 't', name: '이름', type: 'title' }, column],
+      [{ cells: { pId: uniqueIdCell('BUG', 7) } }, { cells: {} }],
+    )
+    assert.equal(csv, '﻿이름,ID\r\n,BUG-7\r\n,\r\n')
+    assert.equal(guardedFormulas, 0)
   })
 })

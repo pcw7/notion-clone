@@ -14,7 +14,8 @@
  *
  * select 는 옵션 **id** 를 이름으로 바꾼다(HANDOFF §3.2-8 — 셀은 id 를 담는다). 지워진 옵션은 빈
  * 칸이다(F-03-04). 날짜는 적힌 ISO 그대로 쓴다 — 화면용 `formatDate`("2026년 9월 13일")는 다시
- * 읽을 수 없다. 체크박스는 노션 CSV 와 같은 `Yes` · `No` 다.
+ * 읽을 수 없다. 체크박스는 노션 CSV 와 같은 `Yes` · `No` 다. 고유 ID 는 표에 보이는 그대로(`TASK-12`)다 — 셀이 아니라 스냅숏이 행에서
+ * 읽어 칸 묶음에 끼운 값(`uniqueIdCell`)이다(2a-2b).
  *
  * ──────────────────────────────────────────────────────────────────────
  * 사람이 Excel 로 여는 파일이다
@@ -40,11 +41,13 @@
 import { toPlainText } from '../contracts/rich-text.ts'
 import { readCell } from '../database/cell-format.ts'
 import { optionIdOf, type MvpPropertyType, type SelectOption } from '../database/property-types.ts'
+import { uniqueIdCellText } from '../database/unique-id-format.ts'
 
 export type CsvColumn = {
   readonly propertyId: string
   readonly name: string
-  readonly type: MvpPropertyType
+  /** 셀 타입 + 고유 ID(2a-2b — 값은 셀이 아니라 행의 번호다). */
+  readonly type: MvpPropertyType | 'unique_id'
   /** select 의 옵션. 셀은 id 를 담으므로 이름을 여기서 찾는다. */
   readonly options?: readonly SelectOption[]
 }
@@ -88,7 +91,7 @@ export function tableToCsv(columns: readonly CsvColumn[], rows: readonly CsvRow[
 }
 
 /** 사용자가 쓴 글자를 담는 타입. 수식 막기는 이것에만 건다(머리말). */
-const USER_TEXT: ReadonlySet<MvpPropertyType> = new Set(['title', 'rich_text', 'select', 'status'])
+const USER_TEXT: ReadonlySet<CsvColumn['type']> = new Set(['title', 'rich_text', 'select', 'status'])
 
 /**
  * 칸 하나의 글자. CSV 와 행 Markdown 의 속성 줄(`plan.ts`)이 **같은 규칙**을 쓴다.
@@ -96,6 +99,8 @@ const USER_TEXT: ReadonlySet<MvpPropertyType> = new Set(['title', 'rich_text', '
  * 수식 막기는 여기 없다 — Excel 이 여는 CSV 만의 일이다.
  */
 export function cellPlainText(column: CsvColumn, raw: unknown): string {
+  // 고유 ID 는 우리가 만든 값이다(접두사는 영숫자) — 수식 막기 대상이 아니다(`USER_TEXT` 밖).
+  if (column.type === 'unique_id') return uniqueIdCellText(raw)
   const value = readCell(column.type, raw)
   switch (value.type) {
     case 'title':

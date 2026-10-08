@@ -11594,6 +11594,55 @@ async function main() {
       await sleep(500)
     }
 
+    if (sectionIf('고유 ID 내보내기 · 행 페이지 (2a-2b · F-03-09 · F-09-14)')) {
+      // 행 페이지의 속성 묶음에 ID 가 보이고, 표를 내보낸 ZIP 의 CSV · 행 Markdown 에 보이는 그대로(`TK-1`) 들어간다. ZIP 은 우리가 짜지
+      // 않은 구현(python zipfile)으로 읽는다(§3.3-63). 자기 데이터를 스스로 만든다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const name = `ID 내보내기 ${stamp}`
+      const db = (await api('POST', '/databases', { name })).body.database
+      const titleProp = (await api('GET', `/views/${db.defaultViewId}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const rowIds = []
+      for (const t of ['첫 이슈', '둘째 이슈']) {
+        rowIds.push((await api('POST', `/views/${db.defaultViewId}/rows`, { cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun(t)] } }] })).body.row.id)
+      }
+      await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '번호', type: 'unique_id', prefix: 'tk' })
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${rowIds[1]}` })
+      check('★ 행 페이지의 속성 묶음에 ID 가 보인다 — 읽기 전용 칸',
+        await waitFor(`[...document.querySelectorAll('[data-testid="db-unique-id"]')].some((e) => e.textContent === 'TK-2')`, 15000),
+        await evaluate(`[...document.querySelectorAll('[data-testid="db-unique-id"]')].map((e) => e.textContent).join(' | ') || '(없음)'`))
+
+      const zipRes = await fetch(`${BASE}/api/workspaces/${workspaceId}/export?root=${db.id}`, { headers: authed })
+      check('표를 내보낸다 — 200', zipRes.status === 200, String(zipRes.status))
+      const dir = mkdtempSync(join(tmpdir(), 'nc-e2e-uid-export-'))
+      try {
+        const file = join(dir, 'export.zip')
+        writeFileSync(file, Buffer.from(await zipRes.arrayBuffer()))
+        const { findPython, runPythonJson } = await import(new URL('../src/lib/testing/external-tools.ts', import.meta.url).href)
+        const python = findPython()
+        const zip = python === null
+          ? { names: [], texts: {}, error: 'python 을 찾지 못했다' }
+          : runPythonJson(python, [
+              'import sys, json, zipfile',
+              'z = zipfile.ZipFile(sys.argv[1])',
+              "print(json.dumps({'names': z.namelist(), 'texts': {n: z.read(n).decode('utf-8') for n in z.namelist() if n.endswith(('.md', '.csv'))}}))",
+            ].join('\n'), [file])
+        const texts = zip.texts ?? {}
+        const csv = Object.entries(texts).find(([n]) => n.endsWith('.csv'))?.[1] ?? ''
+        check('★ CSV 에 ID 열과 보이는 그대로의 값', csv.includes('번호') && csv.includes('첫 이슈,TK-1') && csv.includes('둘째 이슈,TK-2'), JSON.stringify(csv.slice(0, 200)))
+        const rowMd = Object.entries(texts).find(([n, t]) => n.endsWith('.md') && t.includes('둘째 이슈'))?.[1] ?? ''
+        check('★ 행 Markdown 의 속성 줄에도 — **번호**: TK-2', rowMd.includes('**번호**: TK-2'), JSON.stringify(rowMd.slice(0, 200)))
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    }
+
     section('전체')
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))
     const serverErrors = serverOutput.split('\n').filter((l) => l.includes('⨯'))
