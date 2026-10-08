@@ -9,12 +9,14 @@
 
 import {
   isMvpPropertyType,
+  isOptionType,
   readRelationConfig,
   type MvpPropertyType,
   type RelationLimit,
   type SelectOption,
 } from './property-types.ts'
 import { readRollupConfig, type RollupFunction } from './rollup-functions.ts'
+import { isFilterableType } from './filter.ts'
 
 type ColumnBase = {
   readonly propertyId: string
@@ -84,6 +86,14 @@ export type UniqueIdColumn = ColumnBase & {
 
 export type ViewColumn = CellColumn | RelationColumn | RollupColumn | UniqueIdColumn
 
+/** 거르고 정렬할 수 있는 컬럼 — 셀 컬럼 + 고유 ID(2a-2 · `filter.ts` `FILTERABLE_TYPES` 와 같은 목록). */
+export type FilterableColumn = CellColumn | UniqueIdColumn
+
+/** 도구줄의 필터 · 정렬이 고를 수 있는 컬럼인가. 셀인지가 아니라 **서버가 거를 수 있는지**로 묻는다(`isFilterableType`). */
+export function isFilterableColumn(column: ViewColumn): column is FilterableColumn {
+  return isFilterableType(column.type)
+}
+
 /**
  * 저장된 config → 컬럼의 relation 부분. relation 의 모양이 아니면(손상) null — 그 컬럼은 그리지 않는다.
  *
@@ -122,4 +132,19 @@ export function rollupOf(config: unknown): RollupColumn['rollup'] | null {
  */
 export function isCellColumn(column: ViewColumn): column is CellColumn {
   return isMvpPropertyType(column.type)
+}
+
+/**
+ * 정렬할 수 있는 컬럼.
+ *
+ * ⚠ select 를 뺀다. 지금의 컴파일러는 select 를 사이드카(`text_value` = **옵션 id**)로
+ *   정렬해서 사용자에게는 아무 규칙 없는 순서로 보인다. F-04-10 이 요구하는 것은
+ *   **옵션 정의 순서**(`select_option.order_idx` 조인)이고 그것이 들어올 때 연다.
+ *   status 도 같은 사이드카라 같이 뺀다(`OPTION_TYPES`).
+ */
+export function isSortable(column: Pick<ViewColumn, 'type'>): boolean {
+  // 서버가 정렬할 수 있는 타입으로 묻는다(`isFilterableType` — 셀 타입 + 고유 ID). relation 은 사이드카가 없고(값이 엣지다),
+  // rollup 은 저장된 값이 없다(정본 D1) — 전에는 "relation 이 아니다"로 물어서 rollup 머리에 정렬이 섰고, 누르면 서버가
+  // 그 키를 조용히 건너뛰어 아무 일도 없었다(2a-2 에서 바로잡았다).
+  return isFilterableType(column.type) && !isOptionType(column.type)
 }

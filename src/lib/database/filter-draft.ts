@@ -34,10 +34,10 @@
  * 프로퍼티 삭제 → 해당 sort 엔트리 제거."*
  */
 
-import { MAX_SORT_KEYS, isGroup, type FilterLeaf, type FilterNode, type SortKey } from './filter.ts'
+import { MAX_SORT_KEYS, isGroup, type FilterLeaf, type FilterNode, type FilterableType, type SortKey } from './filter.ts'
 import { formatDate } from './cell-format.ts'
 import type { OperatorCatalogEntry } from './operator-catalog.ts'
-import type { MvpPropertyType, SelectOption } from './property-types.ts'
+import type { SelectOption } from './property-types.ts'
 
 export type FilterRule = FilterLeaf
 
@@ -45,7 +45,7 @@ export type FilterRule = FilterLeaf
 export type RuleColumn = {
   readonly propertyId: string
   readonly name: string
-  readonly type: MvpPropertyType
+  readonly type: FilterableType
   readonly options: readonly SelectOption[]
 }
 
@@ -65,14 +65,14 @@ export function readRules(filter: FilterNode | null): ReadRules {
 
 export function operatorsOf(
   catalog: readonly OperatorCatalogEntry[],
-  type: MvpPropertyType,
+  type: FilterableType,
 ): OperatorCatalogEntry[] {
   return catalog.filter((entry) => entry.propertyType === type)
 }
 
 function entryOf(
   catalog: readonly OperatorCatalogEntry[],
-  type: MvpPropertyType,
+  type: FilterableType,
   operator: string,
 ): OperatorCatalogEntry | undefined {
   return catalog.find((entry) => entry.propertyType === type && entry.operator === operator)
@@ -81,7 +81,7 @@ function entryOf(
 /** 저장해도 되는 규칙인가 — 속성이 살아 있고, 그 타입의 연산자이고, 값이 필요하면 값이 있다. */
 export function isComplete(
   rule: FilterRule,
-  type: MvpPropertyType | undefined,
+  type: FilterableType | undefined,
   catalog: readonly OperatorCatalogEntry[],
 ): boolean {
   if (type === undefined) return false
@@ -99,7 +99,7 @@ export function isComplete(
  */
 export function toFilter(
   rules: readonly FilterRule[],
-  types: ReadonlyMap<string, MvpPropertyType>,
+  types: ReadonlyMap<string, FilterableType>,
   catalog: readonly OperatorCatalogEntry[],
 ): FilterNode | null {
   const children: FilterLeaf[] = []
@@ -108,7 +108,7 @@ export function toFilter(
     if (!isComplete(rule, type, catalog)) continue
     // 값이 필요 없는 연산자(`is_empty`)에는 값을 싣지 않는다. 연산자를 바꾸기 전의
     // 값이 남아 있으면 저장된 AST 가 뜻과 다른 것을 들고 있게 된다.
-    const arity = entryOf(catalog, type as MvpPropertyType, rule.operator)?.arity
+    const arity = entryOf(catalog, type as FilterableType, rule.operator)?.arity
     children.push(
       arity === 0
         ? { property_id: rule.property_id, operator: rule.operator }
@@ -127,7 +127,7 @@ export function toFilter(
  */
 export function ruleFor(
   propertyId: string,
-  type: MvpPropertyType,
+  type: FilterableType,
   catalog: readonly OperatorCatalogEntry[],
 ): FilterRule {
   const first = operatorsOf(catalog, type)[0]
@@ -142,7 +142,7 @@ export function ruleFor(
 export function withOperator(
   rule: FilterRule,
   operator: string,
-  type: MvpPropertyType,
+  type: FilterableType,
   catalog: readonly OperatorCatalogEntry[],
 ): FilterRule {
   const entry = entryOf(catalog, type, operator)
@@ -183,7 +183,7 @@ function valueLabel(value: unknown, column: RuleColumn): string {
 // ── 정렬 ──────────────────────────────────────────────────────────────
 
 /** 지워진 속성을 가리키는 정렬 키를 뺀다(머리말 · F-04-10). */
-export function liveSorts(sorts: readonly SortKey[], types: ReadonlyMap<string, MvpPropertyType>): SortKey[] {
+export function liveSorts(sorts: readonly SortKey[], types: ReadonlyMap<string, FilterableType>): SortKey[] {
   return sorts.filter((sort) => types.has(sort.property_id))
 }
 

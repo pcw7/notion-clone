@@ -32,6 +32,14 @@
  * (`GET …/properties` — 볼 수 있을 때만), 속성을 고르면 그 타입이 고를 수 있는 함수만 남긴다(`rollupFunctionsFor`).
  *
  * 관계형 속성이 하나도 없으면 만들 수 없다 — 먼저 만들라고 말한다. rollup 은 relation 위에서만 성립한다.
+ *
+ * ──────────────────────────────────────────────────────────────────────
+ * ID 는 표에 하나다 (고유 ID 2a-2조각)
+ * ──────────────────────────────────────────────────────────────────────
+ *
+ * 이미 ID 속성이 보이면 유형 목록에서 뺀다(불변식 U1 — 서버도 `unique_id_exists` 로 막는다. 숨긴 ID 는 이 표가 모르므로 그때는
+ * 서버의 답을 그대로 보인다). 고르면 접두사 칸이 선다 — 비워도 된다(번호만 보인다). 만들면 있던 행이 만든 순서대로 번호를
+ * 받으므로 화면은 붙이지 않고 **다시 읽는다**(`onAddUniqueId` — 표가 그 일을 한다).
  */
 
 import { useEffect, useRef, useState } from 'react'
@@ -48,12 +56,13 @@ import type { PropertySummary } from '@/lib/database/property'
 import * as api from './table-api'
 import { TYPE_ICON, TYPE_LABEL } from './cell-view'
 
-type AddableType = Exclude<MvpPropertyType, 'title'> | 'relation' | 'rollup'
+type AddableType = Exclude<MvpPropertyType, 'title'> | 'relation' | 'rollup' | 'unique_id'
 
 const ADDABLE_TYPES: readonly AddableType[] = [
   ...MVP_PROPERTY_TYPES.filter((t): t is Exclude<MvpPropertyType, 'title'> => t !== 'title'),
   'relation',
   'rollup',
+  'unique_id',
 ]
 
 /** 이 표의 relation 컬럼 — rollup 이 탈 수 있는 것. 대상 표는 그 config 가 정한다. */
@@ -71,9 +80,11 @@ export function AddColumn({
   dataSourceId,
   tableName,
   relations,
+  hasUniqueId,
   onAdd,
   onAddRelation,
   onAddRollup,
+  onAddUniqueId,
 }: {
   workspaceId: string
   /** 이 표. 대상 목록에서 "이 표"를 짚어 주는 데만 쓴다. */
@@ -82,10 +93,13 @@ export function AddColumn({
   tableName: string
   /** rollup 이 탈 수 있는 관계. 비어 있으면 "먼저 관계형 속성을 만드세요". */
   relations: readonly RelationChoice[]
+  /** 이 표에 ID 속성이 이미 보인다 — 유형 목록에서 뺀다(U1). */
+  hasUniqueId: boolean
   /** 실패하면 사람이 읽을 이유를, 성공하면 `null` 을 돌려준다. */
   onAdd: (name: string, type: MvpPropertyType) => Promise<string | null>
   onAddRelation: (input: api.AddRelationInput) => Promise<string | null>
   onAddRollup: (input: api.AddRollupInput) => Promise<string | null>
+  onAddUniqueId: (name: string, prefix: string) => Promise<string | null>
 }) {
   const [open, setOpen] = useState(false)
   const [name, setName] = useState('')
@@ -108,6 +122,9 @@ export function AddColumn({
   const [inverseName, setInverseName] = useState(tableName)
   const [limitOne, setLimitOne] = useState(false)
 
+  // 고유 ID
+  const [prefix, setPrefix] = useState('')
+
   useEffect(() => {
     if (open) nameRef.current?.focus()
   }, [open])
@@ -125,6 +142,7 @@ export function AddColumn({
     setTargets(null)
     setTargetPropId('')
     setFn(DEFAULT_ROLLUP_FUNCTION)
+    setPrefix('')
   }
 
   /** 고른 관계의 **대상 표**의 프로퍼티를 읽는다. 볼 수 없는 표면 빈 목록이다(그 표의 내용을 알려 주지 않는다). */
@@ -211,7 +229,9 @@ export function AddColumn({
             if (incomplete || busy) return
             setBusy(true)
             const failure =
-              type === 'rollup'
+              type === 'unique_id'
+                ? await onAddUniqueId(name, prefix)
+                : type === 'rollup'
                 ? await onAddRollup({
                     name,
                     relationPropertyId: relation?.propertyId ?? '',
@@ -247,7 +267,7 @@ export function AddColumn({
             aria-label="속성 유형"
             className={FIELD}
           >
-            {ADDABLE_TYPES.map((t) => (
+            {ADDABLE_TYPES.filter((t) => t !== 'unique_id' || !hasUniqueId).map((t) => (
               <option key={t} value={t}>
                 {TYPE_ICON[t]} {TYPE_LABEL[t]}
               </option>
@@ -308,6 +328,22 @@ export function AddColumn({
                 />
                 하나만 연결
               </label>
+            </>
+          )}
+
+          {type === 'unique_id' && (
+            <>
+              <input
+                value={prefix}
+                onChange={(e) => setPrefix(e.target.value)}
+                placeholder="접두사(선택) — 예: TASK"
+                aria-label="ID 접두사"
+                data-testid="db-unique-id-prefix"
+                maxLength={7}
+                autoComplete="off"
+                className={FIELD}
+              />
+              <p className="text-xs text-neutral-500">영숫자 2~7자 · 대문자로 보입니다. 있던 행은 만든 순서대로 번호를 받습니다.</p>
             </>
           )}
 

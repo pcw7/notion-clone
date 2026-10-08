@@ -17,6 +17,8 @@
  *
  * 제목 속성에는 숨기기 · 삭제가 없다(F-04-12 · 불변식 P1). 서버도 막는다.
  *
+ * 고유 ID 속성에는 "접두사 바꾸기"가 선다(2a-2 · F-03-09 시나리오 3 *"`속성 편집` → 접두사 입력"*). 비우면 번호만 보인다.
+ *
  * 이 메뉴는 `edit_structure` 가 있을 때만 그려진다(표가 정한다).
  */
 
@@ -28,36 +30,45 @@ export function ColumnMenu({
   name,
   isTitle,
   sortable,
+  prefix,
   onSort,
   onRename,
+  onPrefix,
   onHide,
   onDelete,
 }: {
   name: string
   isTitle: boolean
-  /** select 는 아직 정렬할 수 없다(`view-toolbar.tsx` 의 `isSortable`). */
+  /** 고유 ID 속성의 지금 접두사(없으면 빈 글자). 고유 ID 가 아니면 `undefined` — 접두사 항목이 서지 않는다. */
+  prefix?: string
+  /** select · relation · rollup 은 정렬할 수 없다(`view-columns.ts` 의 `isSortable`). */
   sortable: boolean
   /** 실패하면 사람이 읽을 이유를, 성공하면 `null` 을 돌려준다. */
   onSort: (direction: SortKey['direction']) => Promise<string | null>
   onRename: (name: string) => Promise<string | null>
+  onPrefix?: (prefix: string) => Promise<string | null>
   onHide: () => Promise<string | null>
   onDelete: () => Promise<string | null>
 }) {
   const [open, setOpen] = useState(false)
-  const [step, setStep] = useState<'menu' | 'rename' | 'delete'>('menu')
+  const [step, setStep] = useState<'menu' | 'rename' | 'prefix' | 'delete'>('menu')
   const [draft, setDraft] = useState(name)
+  const [prefixDraft, setPrefixDraft] = useState(prefix ?? '')
+  const prefixRef = useRef<HTMLInputElement>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     if (step === 'rename') inputRef.current?.focus()
+    if (step === 'prefix') prefixRef.current?.focus()
   }, [step])
 
   const close = () => {
     setOpen(false)
     setStep('menu')
     setDraft(name)
+    setPrefixDraft(prefix ?? '')
     setError(null)
   }
 
@@ -111,6 +122,11 @@ export function ColumnMenu({
               <MenuItem testId="db-column-rename" disabled={busy} onClick={() => setStep('rename')}>
                 이름 바꾸기
               </MenuItem>
+              {prefix !== undefined && onPrefix !== undefined && (
+                <MenuItem testId="db-column-prefix" disabled={busy} onClick={() => setStep('prefix')}>
+                  접두사 바꾸기
+                </MenuItem>
+              )}
               {!isTitle && (
                 <MenuItem testId="db-column-hide" disabled={busy} onClick={() => void run(onHide)}>
                   보기에서 숨기기
@@ -152,6 +168,35 @@ export function ColumnMenu({
             </form>
           )}
 
+          {step === 'prefix' && onPrefix !== undefined && (
+            <form
+              onSubmit={(e) => {
+                e.preventDefault()
+                void run(() => onPrefix(prefixDraft))
+              }}
+              className="flex flex-col gap-1 p-1"
+            >
+              <input
+                ref={prefixRef}
+                value={prefixDraft}
+                onChange={(e) => setPrefixDraft(e.target.value)}
+                aria-label="ID 접두사"
+                placeholder="비우면 번호만"
+                maxLength={7}
+                autoComplete="off"
+                className="rounded border border-neutral-300 bg-transparent px-2 py-1 text-sm dark:border-neutral-700"
+              />
+              <p className="text-xs text-neutral-500">영숫자 2~7자 · 대문자로 보입니다.</p>
+              <button
+                type="submit"
+                data-testid="db-column-prefix-save"
+                disabled={busy}
+                className="self-end rounded-md border border-neutral-300 px-2 py-0.5 text-sm disabled:opacity-40 dark:border-neutral-700"
+              >
+                바꾸기
+              </button>
+            </form>
+          )}
           {step === 'delete' && (
             <div className="flex flex-col gap-1 p-1">
               <p className="text-xs text-neutral-500">

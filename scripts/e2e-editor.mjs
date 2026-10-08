@@ -11491,6 +11491,109 @@ async function main() {
       check('여섯 행이 모두 표에 있다', rows.length === 6 && new Set(rows.map((r) => r.id)).size === 6, String(rows.length))
     }
 
+    if (sectionIf('고유 ID 화면 (2a-2 · F-03-09)')) {
+      // 속성 추가 폼에서 ID 를 만들고(접두사 · 틀린 접두사는 이유를 말한다) · 머리 메뉴에서 접두사를 바꾸고 · 정렬하고 · 도구줄
+      // 필터로 번호를 거른다(`TASK-12` 처럼 보이는 그대로 쳐도 된다). 자기 데이터를 스스로 만든다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const clickOn = async (selector) => {
+        const p = await evaluate(`(() => {
+          const e = document.querySelector(${JSON.stringify(selector)})
+          if (!e) return null
+          e.scrollIntoView({ block: 'center' })
+          const r = e.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (p) await click(p.x, p.y)
+        return p !== null
+      }
+      const setSelect = (selector, value) => evaluate(`(() => {
+        const s = document.querySelector(${JSON.stringify(selector)})
+        if (!s) return false
+        s.value = ${JSON.stringify(value)}
+        s.dispatchEvent(new Event('change', { bubbles: true }))
+        return true
+      })()`)
+      const ids = () => evaluate(`[...document.querySelectorAll('[data-testid="db-unique-id"]')].map((e) => e.textContent)`)
+      const idsAre = (expected, ms = 10000) =>
+        waitFor(`JSON.stringify([...document.querySelectorAll('[data-testid="db-unique-id"]')].map((e) => e.textContent)) === ${JSON.stringify(JSON.stringify(expected))}`, ms)
+
+      const db = (await api('POST', '/databases', { name: `ID 화면 ${stamp}` })).body.database
+      const titleProp = (await api('GET', `/views/${db.defaultViewId}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      for (const t of ['가', '나', '다']) {
+        await api('POST', `/views/${db.defaultViewId}/rows`, { cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun(t)] } }] })
+      }
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === 3`, 15000)
+
+      // ── 속성 추가 폼 ──
+      await clickOn('[data-testid="db-add-column"]')
+      await waitFor(`document.activeElement?.getAttribute('aria-label') === '속성 이름'`, 3000)
+      await typeText('번호')
+      await setSelect('select[aria-label="속성 유형"]', 'unique_id')
+      check('★ 유형에서 ID 를 고르면 접두사 칸이 선다', await waitFor(`!!document.querySelector('[data-testid="db-unique-id-prefix"]')`, 3000))
+      await clickOn('[data-testid="db-unique-id-prefix"]')
+      await typeText('t-k')
+      await clickOn('[data-testid="db-add-column-form"] button[type="submit"]')
+      check('틀린 접두사는 이유를 말하고 폼이 남는다 — 아무것도 만들지 않는다',
+        await waitFor(`[...document.querySelectorAll('[data-testid="db-add-column-form"] [role="alert"]')].some((e) => e.textContent.includes('영숫자 2~7자'))`, 5000)
+          && (await evaluate(`![...document.querySelectorAll('[data-testid="db-table"] thead th[data-property-id]')].some((th) => th.textContent.includes('번호'))`)))
+      await evaluate(`document.querySelector('[data-testid="db-unique-id-prefix"]').select()`)
+      await typeText('tk')
+      await clickOn('[data-testid="db-add-column-form"] button[type="submit"]')
+      check('★ 만들면 있던 행이 만든 순서대로 번호를 받아 보인다 — 접두사는 대문자로',
+        (await waitFor(`!document.querySelector('[data-testid="db-add-column-form"]')`, 8000)) && (await idsAre(['TK-1', 'TK-2', 'TK-3'])),
+        JSON.stringify(await ids()))
+      const idProp = await evaluate(`[...document.querySelectorAll('[data-testid="db-table"] thead th[data-property-id]')].find((th) => th.textContent.includes('번호'))?.dataset.propertyId ?? null`)
+
+      await clickOn('[data-testid="db-add-column"]')
+      check('ID 가 이미 있으면 유형 목록에 ID 가 서지 않는다 — 표에 하나다',
+        await waitFor(`!!document.querySelector('select[aria-label="속성 유형"]') && !document.querySelector('select[aria-label="속성 유형"] option[value="unique_id"]')`, 3000))
+      await clickOn('[data-testid="db-add-column"]')
+
+      // ── 머리 메뉴: 접두사 · 정렬 ──
+      await clickOn(`th[data-property-id="${idProp}"] [data-testid="db-column-menu"]`)
+      check('★ ID 머리 메뉴에 접두사 바꾸기와 정렬이 선다',
+        await waitFor(`!!document.querySelector('[data-testid="db-column-prefix"]') && !!document.querySelector('[data-testid="db-column-sort-desc"]')`, 3000))
+      await clickOn('[data-testid="db-column-prefix"]')
+      check('접두사 칸은 지금 접두사로 연다', await waitFor(`document.activeElement?.getAttribute('aria-label') === 'ID 접두사' && document.activeElement.value === 'TK'`, 3000))
+      await evaluate(`document.activeElement.select()`)
+      await typeText('bug')
+      await clickOn('[data-testid="db-column-prefix-save"]')
+      check('★ 접두사를 바꾸면 표시가 따라온다 — 번호는 그대로', await idsAre(['BUG-1', 'BUG-2', 'BUG-3']), JSON.stringify(await ids()))
+
+      await clickOn(`th[data-property-id="${idProp}"] [data-testid="db-column-menu"]`)
+      await waitFor(`!!document.querySelector('[data-testid="db-column-sort-desc"]')`, 3000)
+      await clickOn('[data-testid="db-column-sort-desc"]')
+      check('★ 머리 메뉴의 내림차순 — 큰 번호가 위', await idsAre(['BUG-3', 'BUG-2', 'BUG-1']), JSON.stringify(await ids()))
+      check('★ 정렬 칩이 선다 — 셀 컬럼만 보던 때는 ID 정렬이 도구줄에서 사라졌다',
+        await waitFor(`[...document.querySelectorAll('[data-testid="db-sort-chip"]')].some((e) => e.textContent.includes('번호'))`, 5000),
+        await evaluate(`[...document.querySelectorAll('[data-testid="db-sort-chip"]')].map((e) => e.textContent).join(' | ')`))
+
+      // ── 도구줄 필터 ──
+      await clickOn('[data-testid="db-filter-button"]')
+      await waitFor(`!!document.querySelector('[data-testid="db-filter-panel"]')`, 3000)
+      await clickOn('[data-testid="db-filter-add"]')
+      await waitFor(`document.querySelectorAll('[data-testid="db-filter-rule"]').length === 1`, 3000)
+      check('★ 필터 속성 목록에 ID 가 있다', await evaluate(`!!document.querySelector('[data-testid="db-filter-rule"] select[aria-label="필터 속성"] option[value="${idProp}"]')`))
+      await setSelect('[data-testid="db-filter-rule"] select[aria-label="필터 속성"]', idProp)
+      await waitFor(`!!document.querySelector('[data-testid="db-filter-rule"] select[aria-label="필터 조건"] option[value="greater_than"]')`, 3000)
+      await setSelect('[data-testid="db-filter-rule"] select[aria-label="필터 조건"]', 'greater_than')
+      await clickOn('[data-testid="db-filter-rule"] input[data-testid="db-filter-value"]')
+      await typeText('BUG-1')
+      await key('Enter')
+      check('★ 보이는 그대로 `BUG-1` 을 쳐도 번호로 거른다 — 1 보다 큰 둘이 남는다', await idsAre(['BUG-3', 'BUG-2']), JSON.stringify(await ids()))
+      check('필터 칩이 조건을 말한다 — 번호 · 초과 · 1',
+        await waitFor(`[...document.querySelectorAll('[data-testid="db-filter-chip"]')].some((e) => e.textContent === '번호 · 초과 · 1')`, 5000),
+        await evaluate(`[...document.querySelectorAll('[data-testid="db-filter-chip"]')].map((e) => e.textContent).join(' | ')`))
+      await sleep(500)
+    }
+
     section('전체')
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))
     const serverErrors = serverOutput.split('\n').filter((l) => l.includes('⨯'))

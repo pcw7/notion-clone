@@ -43,7 +43,7 @@ import { requirePageSession } from '@/lib/auth/page-session'
 import { getDatabase } from '@/lib/database/database'
 import { databaseLockState } from '@/lib/permissions/lock'
 import { getView, listViews } from '@/lib/database/view'
-import { isCellColumn } from '@/lib/database/view-columns'
+import { isFilterableColumn } from '@/lib/database/view-columns'
 import { queryRows } from '@/lib/database/query'
 import { queryGroups } from '@/lib/database/group'
 import { loadRelationLabels, relationIdsIn } from '@/lib/database/relation'
@@ -131,7 +131,8 @@ export default async function DatabasePage({
   const columns = view.value.columns
   // 지워진 속성의 정렬 키를 뺀다. 그대로 두면 다른 키를 고친 저장까지 서버가 거부한다
   // (`filter-draft.ts` 머리말).
-  const sorts = liveSorts(view.value.sorts, new Map(columns.filter(isCellColumn).map((c) => [c.propertyId, c.type])))
+  // 거를 수 있는 컬럼으로 묻는다 — 셀 컬럼으로만 물으면 고유 ID 의 정렬 키가 도구줄에서 사라진다(서버는 그 키로 정렬하는데).
+  const sorts = liveSorts(view.value.sorts, new Map(columns.filter(isFilterableColumn).map((c) => [c.propertyId, c.type])))
 
   // ── 보드 ──
   const groupBy = view.value.groupBy
@@ -159,13 +160,15 @@ export default async function DatabasePage({
 
   // 표 · 보드를 새로 마운트하는 기준. 뷰 · 종류 · 필터 · 정렬 · 그룹 · 컬럼(이름 · 보임)이 바뀌면
   // 불러온 행과 커서가 무효다(F-04-15) — 옛 커서로 이어 붙이면 순서가 섞인다.
+  // 고유 ID 의 접두사도 넣는다(2a-2) — 표는 컬럼을 자기 상태로 들고 있어서, 기준에 없으면 접두사를 바꿔도 옛 접두사를 그린다.
+  //   빠뜨린 채 처음 만들었고 e2e 가 잡았다.
   const contentKey = JSON.stringify([
     view.value.id,
     view.value.type,
     view.value.filter,
     view.value.sorts,
     groupBy,
-    columns.map((c) => [c.propertyId, c.name, c.visible]),
+    columns.map((c) => [c.propertyId, c.name, c.visible, c.type === 'unique_id' ? c.uniqueId.prefix : null]),
   ])
   const visibleColumns = columns.filter((column) => column.visible)
   const variant = variantOf(view.value.type)
