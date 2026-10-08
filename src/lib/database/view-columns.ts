@@ -88,6 +88,25 @@ export type UniqueIdColumn = ColumnBase & {
 
 export type ViewColumn = CellColumn | RelationColumn | RollupColumn | UniqueIdColumn
 
+/** 이 표의 하위 항목 짝(2b-2) — 컬럼(숨긴 것 포함)의 relation 표시에서 읽는다. 꺼져 있으면 null. */
+export function subItemPairOf(
+  columns: readonly ViewColumn[],
+): { readonly parentPropertyId: string; readonly childrenPropertyId: string } | null {
+  const sideOf = (side: 'parent' | 'children') =>
+    columns.find((c) => c.type === 'relation' && c.relation.subItems === side)?.propertyId
+  const parent = sideOf('parent')
+  const children = sideOf('children')
+  return parent !== undefined && children !== undefined ? { parentPropertyId: parent, childrenPropertyId: children } : null
+}
+
+/**
+ * 이 뷰가 하위 항목을 **트리로** 그리는가 — 표 · 목록(2b-2). 보드는 아직 모든 행을 그린다(노션은 보드 · 캘린더 · 갤러리에서
+ * "부모만"이다 — §7).
+ */
+export function nestsSubItems(viewType: string): boolean {
+  return viewType === 'table' || viewType === 'list'
+}
+
 /** 거르고 정렬할 수 있는 컬럼 — 셀 컬럼 + 고유 ID(2a-2 · `filter.ts` `FILTERABLE_TYPES` 와 같은 목록). */
 export type FilterableColumn = CellColumn | UniqueIdColumn
 

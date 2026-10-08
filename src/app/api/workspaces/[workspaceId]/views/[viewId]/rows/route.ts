@@ -27,6 +27,7 @@
 import { isUuid } from '@/lib/ids'
 import { requireWorkspaceSession } from '@/lib/auth/route-session'
 import { getView } from '@/lib/database/view'
+import { nestsSubItems, subItemPairOf } from '@/lib/database/view-columns'
 import { queryRows } from '@/lib/database/query'
 import { createRow } from '@/lib/database/row'
 import { createRowFromTemplate } from '@/lib/database/template'
@@ -57,6 +58,13 @@ export async function GET(request: Request, ctx: Ctx): Promise<Response> {
   const params = new URL(request.url).searchParams
   const rawLimit = Number(params.get('limit'))
 
+  // 하위 항목이 켜진 표 · 목록은 트리로 읽는다(2b-2) — `parent` 가 없으면 최상위 행, 있으면 그 행의 자식. 트리가 아닌 뷰에
+  // `parent` 를 주면 거부한다(조용히 모든 행을 주면 화면이 자식 자리에 표 전체를 끼운다).
+  const parent = params.get('parent')
+  if (parent !== null && !isUuid(parent)) return Response.json({ error: 'invalid_value' }, { status: 400 })
+  const pair = nestsSubItems(view.value.type) ? subItemPairOf(view.value.columns) : null
+  if (parent !== null && pair === null) return Response.json({ error: 'invalid_value' }, { status: 400 })
+
   const page = await queryRows(session.ctx, view.value.dataSourceId, {
     filter: view.value.filter,
     sorts: view.value.sorts,
@@ -64,6 +72,7 @@ export async function GET(request: Request, ctx: Ctx): Promise<Response> {
     // F-03-17 의 권고("page_size 를 낮추면 빨라진다")와 같은 방향이다.
     limit: Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : view.value.loadLimit,
     cursor: params.get('cursor'),
+    ...(pair === null ? {} : { tree: { parentPropertyId: pair.parentPropertyId, under: parent } }),
   })
 
   if (!page.ok) {

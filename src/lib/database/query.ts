@@ -71,6 +71,11 @@ export type QueryRowsInput = {
   readonly limit?: number
   /** 이전 응답의 `nextCursor`. */
   readonly cursor?: string | null
+  /**
+   * 하위 항목의 트리(2b-2 · 정본 §3.5 [보강] 하위 항목). `under` 가 null 이면 **최상위 행**(살아 있는 부모가 없는 행 — 부모가 휴지통이면
+   * 최상위로 보인다 · ⑥), 행 id 면 **그 행의 자식**만. 부모는 상위 항목 프로퍼티의 엣지에서 묻는다(계층의 정본 · E2).
+   */
+  readonly tree?: { readonly parentPropertyId: string; readonly under: string | null }
 }
 
 export type QueryPage = {
@@ -167,11 +172,24 @@ export async function queryRows(
     const cursorSql =
       cursorValues === null ? null : compileCursor(compiledSort, cursorValues, params)
 
+    const tree = input.tree
+    const treeSql =
+      tree === undefined
+        ? null
+        : tree.under === null
+          ? `NOT EXISTS (SELECT 1 FROM relation_edge te JOIN block tb ON tb.id = te.to_page_id
+                          WHERE te.property_id = ${params.bind(tree.parentPropertyId)} AND te.from_page_id = p.id
+                            AND tb.lifecycle = 'live')`
+          : `EXISTS (SELECT 1 FROM relation_edge te
+                      WHERE te.property_id = ${params.bind(tree.parentPropertyId)} AND te.from_page_id = p.id
+                        AND te.to_page_id = ${params.bind(tree.under)}::uuid)`
+
     const where = [
       'p.data_source_id = $1',
       'p.is_template = false', // 불변식 R1
       "b.lifecycle = 'live'",
       filterSql,
+      treeSql,
       cursorSql,
     ].filter((s): s is string => s !== null)
 

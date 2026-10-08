@@ -11669,6 +11669,77 @@ async function main() {
       check('★ 끄면 일반 relation 으로 남는다', off.status === 200 && off.body?.schema?.properties?.filter((p) => p.type === 'relation').length === 2, JSON.stringify({ status: off.status }))
     }
 
+    if (sectionIf('하위 항목 화면 — 트리 (2b-2a · F-03-18)')) {
+      // 도구줄 "속성" 패널의 스위치로 켜고, 표가 최상위 행만 그리다 토글을 펴면 자식을 들여 끼우는지(손자까지) · 접으면 빠지는지 ·
+      // 끄면 평평한 표로 돌아오는지 본다. 연결은 API 로 만든다(연결 편집기는 relation 의 것 그대로다). 자기 데이터를 스스로 만든다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const clickOn = async (selector) => {
+        const p = await evaluate(`(() => {
+          const e = document.querySelector(${JSON.stringify(selector)})
+          if (!e) return null
+          e.scrollIntoView({ block: 'center' })
+          const r = e.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (p) await click(p.x, p.y)
+        return p !== null
+      }
+      const shown = () => evaluate(`[...document.querySelectorAll('[data-testid="db-table"] tbody tr')].map((tr) =>
+        (tr.querySelector('[data-testid="db-row-title"]')?.textContent ?? '') + ':' + (tr.dataset.depth ?? '-'))`)
+      const shownIs = (expected, ms = 10000) => waitFor(`JSON.stringify([...document.querySelectorAll('[data-testid="db-table"] tbody tr')].map((tr) =>
+        (tr.querySelector('[data-testid="db-row-title"]')?.textContent ?? '') + ':' + (tr.dataset.depth ?? '-'))) === ${JSON.stringify(JSON.stringify(expected))}`, ms)
+
+      const db = (await api('POST', '/databases', { name: `하위 항목 화면 ${stamp}` })).body.database
+      const titleProp = (await api('GET', `/views/${db.defaultViewId}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const ids = {}
+      for (const t of ['가', '나', '다', '라']) {
+        ids[t] = (await api('POST', `/views/${db.defaultViewId}/rows`, { cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun(t)] } }] })).body.row.id
+      }
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === 4`, 15000)
+
+      await clickOn('[data-testid="db-properties-button"]')
+      await waitFor(`!!document.querySelector('[data-testid="db-subitems-switch"]')`, 3000)
+      await clickOn('[data-testid="db-subitems-switch"]')
+      check('★ 도구줄의 "하위 항목"을 켜면 상위 항목 · 하위 항목 속성이 머리에 선다',
+        await waitFor(`(() => { const t = [...document.querySelectorAll('[data-testid="db-table"] thead th')].map((th) => th.textContent).join('|')
+          return t.includes('상위 항목') && t.includes('하위 항목') })()`, 10000))
+
+      const parentProp = (await api('GET', `/views/${db.defaultViewId}`)).body.view.columns.find((c) => c.type === 'relation' && c.relation.subItems === 'parent')?.propertyId
+      for (const [child, parent] of [['나', '가'], ['다', '가'], ['라', '나']]) {
+        await api('POST', `/rows/${ids[child]}/relations/${parentProp}`, { add: [ids[parent]] })
+      }
+      await send('Page.reload')
+      check('★ 최상위 행만 보인다 — 자식은 부모 밑에 숨는다', await shownIs(['가:0']), JSON.stringify(await shown()))
+      check('자식이 있는 행에 펼치기 토글이 선다', await evaluate(`!!document.querySelector('tr[data-row-id="${ids['가']}"] [data-testid="db-subitem-toggle"][aria-expanded="false"]')`))
+
+      await clickOn(`tr[data-row-id="${ids['가']}"] [data-testid="db-subitem-toggle"]`)
+      check('★ 펼치면 자식이 바로 아래에 한 단계 들여 선다', await shownIs(['가:0', '나:1', '다:1']), JSON.stringify(await shown()))
+      check('자식이 없는 행에는 토글이 없다', await evaluate(`!document.querySelector('tr[data-row-id="${ids['다']}"] [data-testid="db-subitem-toggle"]')`))
+      await clickOn(`tr[data-row-id="${ids['나']}"] [data-testid="db-subitem-toggle"]`)
+      check('★ 손자도 — 그 부모 바로 아래에 두 단계', await shownIs(['가:0', '나:1', '라:2', '다:1']), JSON.stringify(await shown()))
+      const indent = await evaluate(`(() => {
+        const left = (id) => document.querySelector('tr[data-row-id="' + id + '"] [data-testid="db-row-title"]')?.getBoundingClientRect().left ?? 0
+        return [left('${ids['가']}'), left('${ids['나']}'), left('${ids['라']}')]
+      })()`)
+      check('들여쓰기가 화면에 보인다 — 깊을수록 오른쪽', indent[0] < indent[1] && indent[1] < indent[2], JSON.stringify(indent))
+      await clickOn(`tr[data-row-id="${ids['가']}"] [data-testid="db-subitem-toggle"]`)
+      check('★ 접으면 자식 · 손자가 함께 빠진다', await shownIs(['가:0']), JSON.stringify(await shown()))
+
+      await clickOn('[data-testid="db-properties-button"]')
+      await waitFor(`!!document.querySelector('[data-testid="db-subitems-switch"]')`, 3000)
+      await clickOn('[data-testid="db-subitems-switch"]')
+      check('★ 끄면 평평한 표로 돌아온다 — 네 행 · 토글 없음',
+        await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === 4 && !document.querySelector('[data-testid="db-subitem-toggle"]')`, 10000),
+        JSON.stringify(await shown()))
+    }
+
     section('전체')
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))
     const serverErrors = serverOutput.split('\n').filter((l) => l.includes('⨯'))
