@@ -46,6 +46,7 @@ import {
   type PropertyTypes,
   type SortKey,
 } from './filter.ts'
+import { compileSearch } from './search.ts'
 // 상수는 화면과 나눠 쓴다(`limits.ts` 머리말). 기존 import 경로를 깨지 않게 다시 내보낸다.
 import { DEFAULT_QUERY_LIMIT, MAX_QUERY_LIMIT, MAX_QUERY_PAGINATION } from './limits.ts'
 
@@ -76,6 +77,10 @@ export type QueryRowsInput = {
    * 최상위로 보인다 · ⑥), 행 id 면 **그 행의 자식**만. 부모는 상위 항목 프로퍼티의 엣지에서 묻는다(계층의 정본 · E2).
    */
   readonly tree?: { readonly parentPropertyId: string; readonly under: string | null }
+  /**
+   * 뷰 검색어(2e-1 · F-04-27) — 필터와 AND 로 붙는다(`search.ts`). `normalizeSearch` 를 지난 값만. 뷰에 저장하지 않는다.
+   */
+  readonly search?: string | null
 }
 
 export type QueryPage = {
@@ -173,12 +178,14 @@ export async function queryRows(
       cursorValues === null ? null : compileCursor(compiledSort, cursorValues, params)
 
     const treeSql = input.tree === undefined ? null : compileTree(input.tree, params)
+    const searchSql = input.search === undefined || input.search === null ? null : compileSearch(input.search, types, params)
 
     const where = [
       'p.data_source_id = $1',
       'p.is_template = false', // 불변식 R1
       "b.lifecycle = 'live'",
       filterSql,
+      searchSql,
       treeSql,
       cursorSql,
     ].filter((s): s is string => s !== null)

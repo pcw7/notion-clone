@@ -93,6 +93,7 @@ import { readRow, updateCellsIn, type RowFailure, type RowSummary } from './row.
 import { MAX_QUERY_LIMIT } from './limits.ts'
 import { calculationResult, canCalculate, isCalculation, type Calculation, type CalculationResult } from './calculations.ts'
 import { columnStatsOf, EMPTY_STATS_ROW, statsJsonSql, type StatsRow } from './calculate.ts'
+import { compileSearch } from './search.ts'
 
 // ── 계약 ──────────────────────────────────────────────────────────────
 
@@ -281,7 +282,15 @@ type Board = {
   readonly subItemsParent: string | null
   /** 살아 있는 그룹 머리의 계산(2d-3). */
   readonly calculation: GroupCalculation | null
+  /**
+   * 뷰 검색어(2e-1 · F-04-27) — 카드 · 개수 · 머리 값이 같이 좁혀진다(필터와 AND). 그룹(열)은 남는다 — 04 *"그룹은 유지하고 카드만
+   * 좁힌다. 빈 그룹이 되어도 컬럼은 남기는 편이 덜 혼란스럽다"*(빈 그룹 숨김을 켰으면 그것이 따로 거른다).
+   */
+  readonly search: string | null
 }
+
+/** 보드를 읽는 요청의 공통 입력 — 뷰 검색어(2e-1). */
+export type BoardReadInput = { readonly search?: string | null }
 
 /**
  * 그룹이 걸린 뷰를 열고 권한 · 그룹 프로퍼티를 읽는다.
@@ -294,6 +303,7 @@ async function openBoard(
   ctx: SessionContext,
   viewId: string,
   need: 'view' | 'edit_content',
+  search: string | null = null,
 ): Promise<Board | GroupResult<never>> {
   const view = await tx.queryMaybe<{
     database_id: string
@@ -337,6 +347,7 @@ async function openBoard(
     types,
     subItemsParent: (await readSubItemPair(tx, view.data_source_id))?.parentPropertyId ?? null,
     calculation: liveGroupCalculation(groupBy, types),
+    search,
   }
 }
 
@@ -409,13 +420,14 @@ function compileBoard(board: Board, params: ParamBag, withOrder = true): Compile
   const order = manual ? MANUAL_ORDER : withOrder ? compileSorts(board.sorts, board.types, params) : MANUAL_ORDER
   const filterSql = compileFilter(board.filter, board.types, params)
   const treeSql = board.subItemsParent === null ? null : compileTree({ parentPropertyId: board.subItemsParent, under: null }, params)
+  const searchSql = board.search === null ? null : compileSearch(board.search, board.types, params)
   return {
     keyExpr,
     from: `FROM page p
        JOIN block b ON b.id = p.id
        LEFT JOIN page_property_value gv ON gv.page_id = p.id AND gv.property_id = ${gp}
        LEFT JOIN row_position rp ON rp.view_id = ${viewParam} AND rp.row_id = p.id AND rp.group_key = ${keyExpr}`,
-    where: ['p.data_source_id = $1', 'p.is_template = false', "b.lifecycle = 'live'", filterSql, treeSql]
+    where: ['p.data_source_id = $1', 'p.is_template = false', "b.lifecycle = 'live'", filterSql, searchSql, treeSql]
       .filter((s): s is string => s !== null)
       .join(' AND '),
     order,
@@ -438,9 +450,9 @@ function nextCursorOf(order: CompiledSort, last: RowRow | undefined, hasMore: bo
 /**
  * 보드의 그룹 전부와, 보이는 그룹의 첫 페이지 행.
  */
-export async function queryGroups(ctx: SessionContext, viewId: string): Promise<GroupResult<GroupsPage>> {
+export async function queryGroups(ctx: SessionContext, viewId: string, input: BoardReadInput = {}): Promise<GroupResult<GroupsPage>> {
   return withReadTransaction(async (tx) => {
-    const board = await openBoard(tx, ctx, viewId, 'view')
+    const board = await openBoard(tx, ctx, viewId, 'view', input.search ?? null)
     if (isFailure(board)) return board
 
     // ── ① 카운트 (+ 그룹 머리의 계산) ──
@@ -512,9 +524,13 @@ export async function queryGroups(ctx: SessionContext, viewId: string): Promise<
  * 그룹 머리의 계산만 다시 낸다(2d-3) — 카드를 옮기거나 만든 뒤 화면이 부른다. 카운트와 같은 질의 하나(`readGroupCounts`)라
  * 머리의 값과 카드 수가 같은 행들을 본다. 그룹 목록(옵션)에 있는 키만 낸다 — 행이 없는 그룹도(빈 통계).
  */
-export async function queryGroupCalculations(ctx: SessionContext, viewId: string): Promise<GroupResult<GroupCalculationsPage>> {
+export async function queryGroupCalculations(
+  ctx: SessionContext,
+  viewId: string,
+  input: BoardReadInput = {},
+): Promise<GroupResult<GroupCalculationsPage>> {
   return withReadTransaction(async (tx) => {
-    const board = await openBoard(tx, ctx, viewId, 'view')
+    const board = await openBoard(tx, ctx, viewId, 'view', input.search ?? null)
     if (isFailure(board)) return board
     if (board.calculation === null) return { ok: true, value: { calculation: null, values: {} } } as const
     const counted = await readGroupCounts(tx, board)
@@ -564,10 +580,10 @@ export async function queryGroupRows(
   ctx: SessionContext,
   viewId: string,
   groupKey: string,
-  input: { readonly cursor?: string | null; readonly limit?: number } = {},
+  input: { readonly cursor?: string | null; readonly limit?: number } & BoardReadInput = {},
 ): Promise<GroupResult<GroupRowsPage>> {
   return withReadTransaction(async (tx) => {
-    const board = await openBoard(tx, ctx, viewId, 'view')
+    const board = await openBoard(tx, ctx, viewId, 'view', input.search ?? null)
     if (isFailure(board)) return board
     if (!catalogOf(board).some((g) => g.key === groupKey)) return fail('invalid_value')
 
