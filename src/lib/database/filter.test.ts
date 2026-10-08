@@ -113,6 +113,15 @@ describe('★ 사용자 입력이 SQL 에 들어가지 않는다', () => {
     const literals = [...sql.matchAll(/'([^']*)'/g)].map((m) => m[1])
     assert.deepEqual(literals, ['%'])
   })
+
+  test('★ LIKE 에 들어가는 값은 % · _ · \\ 를 글자로 만들어 바인딩한다 — 같음 비교는 그대로', () => {
+    const bs = String.fromCharCode(92)
+    for (const operator of ['contains', 'does_not_contain', 'starts_with', 'ends_with']) {
+      const { values } = compile({ property_id: 'pText', operator, value: `50%_${bs}` })
+      assert.ok(values.includes(`50${bs}%${bs}_${bs}${bs}`), `${operator}: ${JSON.stringify(values)}`)
+    }
+    assert.ok(compile({ property_id: 'pText', operator: 'equals', value: '50%' }).values.includes('50%'), '= 는 와일드카드가 없다')
+  })
 })
 
 describe('★ 부정 연산자는 NOT EXISTS 다', () => {

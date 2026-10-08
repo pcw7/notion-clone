@@ -167,6 +167,21 @@ type OperatorSpec = {
    * ⚠ 반환 문자열에 들어갈 수 있는 것은 `col`·`param`·리터럴뿐이다.
    */
   readonly predicate: (col: string, param: string, cast: string) => string
+  /**
+   * 값이 LIKE 패턴에 들어간다 — 바인딩할 때 `escapeLike` 로 `%` · `_` · `\` 를 글자로 만든다. 없으면 `contains '%'` 가 모든 행에,
+   * `contains '_'` 가 아무 글자 하나에 맞는다(사용자가 친 글자가 와일드카드가 된다 — 뷰 검색(2e)을 짜다 찾았다).
+   */
+  readonly like?: true
+}
+
+/**
+ * LIKE 의 와일드카드를 글자로 만든다 — `%` · `_` · 그리고 이스케이프 문자 자신(`\`). LIKE 의 기본 이스케이프 문자가 `\` 다.
+ *
+ * 안 하면 `100%` 를 찾을 때 `%` 가 "아무 글자"가 되어 전부가 나오고, `_` 는 아무 한 글자와 맞는다. 값은 파라미터로
+ * 바인딩하므로 주입은 아니다 — **결과가 틀리는** 문제다. 필터의 글 비교 · 관계형 후보 검색(`relation.ts`)이 같이 쓴다.
+ */
+export function escapeLike(text: string): string {
+  return text.replace(/[\\%_]/g, (ch) => '\\' + ch)
 }
 
 /**
@@ -183,16 +198,18 @@ type OperatorSpec = {
 const TEXT_OPERATORS: Readonly<Record<string, OperatorSpec>> = Object.freeze({
     // `lower()` 를 양쪽에 건다. 부분 인덱스가
     // `(property_id, lower(text_value) text_pattern_ops)` 이므로 같은 모양이어야 쓰인다.
-    contains: { arity: 1, predicate: (c, p) => `lower(${c}) LIKE '%' || lower(${p}) || '%'` },
+    // LIKE 에 들어가는 값은 `like` — 바인딩할 때 와일드카드를 글자로 만든다(`escapeLike`).
+    contains: { arity: 1, like: true, predicate: (c, p) => `lower(${c}) LIKE '%' || lower(${p}) || '%'` },
     does_not_contain: {
       arity: 1,
       negate: true,
+      like: true,
       predicate: (c, p) => `lower(${c}) LIKE '%' || lower(${p}) || '%'`,
     },
     equals: { arity: 1, predicate: (c, p) => `lower(${c}) = lower(${p})` },
     does_not_equal: { arity: 1, negate: true, predicate: (c, p) => `lower(${c}) = lower(${p})` },
-    starts_with: { arity: 1, predicate: (c, p) => `lower(${c}) LIKE lower(${p}) || '%'` },
-    ends_with: { arity: 1, predicate: (c, p) => `lower(${c}) LIKE '%' || lower(${p})` },
+    starts_with: { arity: 1, like: true, predicate: (c, p) => `lower(${c}) LIKE lower(${p}) || '%'` },
+    ends_with: { arity: 1, like: true, predicate: (c, p) => `lower(${c}) LIKE '%' || lower(${p})` },
     is_empty: { arity: 0, negate: true, predicate: (c) => `${c} IS NOT NULL` },
     is_not_empty: { arity: 0, predicate: (c) => `${c} IS NOT NULL` },
 })
@@ -462,7 +479,8 @@ export function compileFilter(
 
   const axis = AXIS[rawType]
   const propParam = params.bind(node.property_id)
-  const valueParam = spec.arity === 1 ? params.bind(bindValue(rawType, node.value)) : ''
+  const value = spec.arity === 1 ? bindValue(rawType, node.value) : undefined
+  const valueParam = spec.arity === 1 ? params.bind(spec.like ? escapeLike(String(value)) : value) : ''
   const inner = spec.predicate(COLUMN[axis], valueParam, CAST[axis])
 
   const exists = `EXISTS (SELECT 1 FROM page_property_value v
