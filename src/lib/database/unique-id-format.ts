@@ -37,6 +37,30 @@ export function parseUniqueIdQuery(text: string): number | null {
   return match === null ? null : Number(match[1])
 }
 
+/**
+ * 내보내기가 행의 ID 칸에 싣는 값(2a-2b). 노션 API 의 프로퍼티 값과 같은 모양이다(`{"type":"unique_id","unique_id":{"prefix","number"}}`).
+ *
+ * 셀이 아니다(C1 — `page_property_value` 에 이 모양은 없다). 내보내기의 스냅숏이 행을 읽을 때 `page.unique_seq` 와 data source 의 접두사로
+ * 만들어 그 행의 칸 묶음에 끼운다 — CSV 와 행 Markdown 이 **같은 함수**(`cellPlainText`)로 쓰게 하려고.
+ */
+export type UniqueIdCell = {
+  readonly type: 'unique_id'
+  readonly unique_id: { readonly prefix: string | null; readonly number: number }
+}
+
+export function uniqueIdCell(prefix: string | null, seq: number): UniqueIdCell {
+  return { type: 'unique_id', unique_id: { prefix, number: seq } }
+}
+
+/** 칸 → 표시 문자열. 모양이 아니면(번호가 없던 행 · 손상) 빈 문자열. */
+export function uniqueIdCellText(raw: unknown): string {
+  if (typeof raw !== 'object' || raw === null) return ''
+  const value = (raw as { type?: unknown; unique_id?: { prefix?: unknown; number?: unknown } }).unique_id
+  if ((raw as { type?: unknown }).type !== 'unique_id' || typeof value !== 'object' || value === null) return ''
+  if (typeof value.number !== 'number' || !Number.isSafeInteger(value.number) || value.number < 1) return ''
+  return formatUniqueId(typeof value.prefix === 'string' ? value.prefix : null, value.number)
+}
+
 /** 표시 문자열 — `접두사-번호`, 접두사가 없으면 번호만. 번호가 없으면(템플릿) 빈 문자열. */
 export function formatUniqueId(prefix: string | null, seq: number | null): string {
   if (seq === null) return ''

@@ -188,6 +188,47 @@ describe('① 트리 · 본문 · 순서', () => {
 
 // ── ② · ③ 권한 ────────────────────────────────────────────────────────
 
+describe('① 고유 ID (2a-2b · F-03-09)', () => {
+  test('★ CSV 와 행 Markdown 에 보이는 그대로 — 셀이 아니라 행의 번호다 · ID 를 지우면 열도 값도 없다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { owner } = await freshWorkspace()
+    const created = await createDatabase(owner.ctx, { name: '이슈' })
+    assert.equal(created.ok, true)
+    if (!created.ok) throw new Error('unreachable')
+    const { id: databaseId, dataSourceId } = created.value
+    const schema = await getSchema(owner.ctx, dataSourceId)
+    if (!schema.ok) throw new Error('unreachable')
+    const titleId = schema.value.properties.find((p) => p.type === 'title')?.id as string
+    const rows: string[] = []
+    for (const title of ['첫 이슈', '둘째 이슈']) {
+      const row = await createRow(owner.ctx, dataSourceId, { cells: [{ propertyId: titleId, value: { type: 'title', title: [textRun(title)] } }] })
+      if (!row.ok) throw new Error(row.reason)
+      rows.push(row.value.id)
+    }
+    const added = await addProperty(owner.ctx, dataSourceId, { name: '번호', type: 'unique_id', prefix: 'tk' })
+    if (!added.ok) throw new Error(added.reason)
+    const idProp = added.value.properties.find((p) => p.type === 'unique_id')!.id
+
+    const snapshot = await snap(owner, { kind: 'workspace' })
+    const table = (snapshot.nodes.get(databaseId) as ExportDatabaseNode).sources[0]
+    assert.deepEqual(table.columns.map((c) => [c.name, c.type]), [['이름', 'title'], ['번호', 'unique_id']])
+    assert.deepEqual(pageOf(snapshot, rows[1]).cells?.[idProp], { type: 'unique_id', unique_id: { prefix: 'TK', number: 2 } })
+
+    const plan = planExport(snapshot, { untitled: '제목 없음' })
+    const csv = plan.entries.find((e) => e.path === '이슈.csv')
+    assert.ok(csv?.kind === 'text' && csv.text.includes('첫 이슈,TK-1') && csv.text.includes('둘째 이슈,TK-2'), JSON.stringify(csv))
+    const rowMd = plan.entries.find((e) => e.kind === 'text' && e.path.endsWith('.md') && e.text.includes('첫 이슈'))
+    assert.ok(rowMd?.kind === 'text' && rowMd.text.includes('**번호**: TK-1'), JSON.stringify(rowMd))
+
+    // 지우면 표에도 그 열이 없고, 행의 칸 묶음에도 끼우지 않는다(번호는 행에 남아 있다 — 다시 더하면 돌아온다).
+    const { deleteProperty } = await import('../database/property.ts')
+    assert.equal((await deleteProperty(owner.ctx, dataSourceId, idProp)).ok, true)
+    const after = await snap(owner, { kind: 'workspace' })
+    assert.deepEqual((after.nodes.get(databaseId) as ExportDatabaseNode).sources[0].columns.map((c) => c.type), ['title'])
+    assert.equal(pageOf(after, rows[0]).cells?.[idProp], undefined)
+  })
+})
+
 describe('② · ③ 권한', () => {
   test('★ 볼 수 없는 하위 페이지 — 제목도 본문도 없고 자리만 남는다 · 그 밑에 공유받은 페이지는 위로 올라온다', async (t) => {
     if (skipReason) return t.skip(skipReason)
