@@ -348,6 +348,7 @@ export default async function DatabasePage({
             search={search}
             {...(isGallery ? { gallery: view.value.gallery } : {})}
             {...(isCalendar ? { calendar: view.value.calendar } : {})}
+            personal={view.value.personal}
           />
         </div>
         {/* 데이터 소스(8e-2)는 데이터베이스의 구조다 — 고칠 수 있는 사람에게만 선다(잠기면 `access` 가 이미 닫는다). */}

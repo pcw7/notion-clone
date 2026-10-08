@@ -12649,6 +12649,93 @@ async function main() {
         JSON.stringify({ status: published.status, filter: published.body?.view?.filter }))
     }
 
+    if (sectionIf('개인 필터 · 정렬 — 화면 (2h-2 · F-04-17)')) {
+      // 볼 수만 있는 사람(브라우저 세션을 바꾼다)이 도구줄의 필터로 조건을 걸면 **자기 것**으로 저장되고 그 사람의 표만 좁혀진다 — "나만 보는
+      // 필터" 표시 · 초기화. 편집자는 자기 개인 것을 "모두에게 저장"한다. 브라우저 세션은 끝에 반드시 소유자로 되돌린다.
+      const stamp = Date.now()
+      const api = async (method, path, body, headers = authed) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const clickOn = async (selector) => {
+        const p = await evaluate(`(() => {
+          const e = document.querySelector(${JSON.stringify(selector)})
+          if (!e) return null
+          e.scrollIntoView({ block: 'center' })
+          const r = e.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (p) await click(p.x, p.y)
+        return p !== null
+      }
+      const setSelect = (selector, value) => evaluate(`(() => {
+        const s = document.querySelector(${JSON.stringify(selector)})
+        if (!s) return false
+        s.value = ${JSON.stringify(value)}
+        s.dispatchEvent(new Event('change', { bubbles: true }))
+        return true
+      })()`)
+      const browseAs = (token) => send('Network.setCookie', { name: 'nc_session', value: token, domain: 'localhost', path: '/', httpOnly: true })
+      const db = (await api('POST', '/databases', { name: `개인 필터 화면 ${stamp}` })).body.database
+      const view = db.defaultViewId
+      const score = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '점수', type: 'number' })).body.property.id
+      const titleProp = (await api('GET', `/views/${view}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      for (const [t, n] of [['가', 10], ['나', 20], ['다', 30]]) {
+        await api('POST', `/views/${view}/rows`, { cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun(t)] } }, { propertyId: score, value: { type: 'number', number: n } }] })
+      }
+      await api('PATCH', `/views/${view}`, { filter: { property_id: score, operator: 'greater_than', value: 15 } })
+      // 볼 수만 있는 동료 — 이 표만 'view'
+      const viewer = await joinAs(workspaceId, await createUser(`보는 동료 ${stamp}`), 'member')
+      const access = (body) => api('POST', `/pages/${db.id}/access`, body)
+      await access({ action: 'restrict' })
+      await access({ action: 'grant', principal: { type: 'user', id: ctx.userId }, level: 'full_access' })
+      await access({ action: 'grant', principal: { type: 'user', id: viewer.userId }, level: 'view' })
+      await access({ action: 'revoke', principal: { type: 'workspace_everyone' } })
+      const titlesJs = `[...document.querySelectorAll('[data-testid="db-table"] tbody tr')].map((tr) => tr.querySelector('[data-testid="db-row-title"]')?.textContent ?? '').join(',')`
+      const titles = () => evaluate(titlesJs)
+
+      try {
+        await browseAs(viewer.token)
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+        await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === 2`, 15000)
+        check('볼 수만 있는 사람 — 공유 필터(> 15)로 두 행 · "나만 보는" 표시는 없다',
+          (await titles()) === '나,다' && !(await evaluate(`!!document.querySelector('[data-testid="db-personal"]')`)), await titles())
+        // 필터 패널 — 규칙의 값을 25 로, 조건을 "미만"으로
+        await clickOn('[data-testid="db-filter-button"]')
+        await waitFor(`!!document.querySelector('[data-testid="db-filter-rule"]')`, 5000)
+        check('★ 볼 수만 있는 사람도 필터 패널을 고칠 수 있다(잠겨 있지 않다)',
+          await evaluate(`(() => { const s = document.querySelector('[data-testid="db-filter-rule"] select[aria-label="필터 조건"]'); return !!s && !s.disabled })()`))
+        await setSelect('[data-testid="db-filter-rule"] select[aria-label="필터 조건"]', 'less_than')
+        await evaluate(`(() => { const i = document.querySelector('[data-testid="db-filter-value"]'); i.focus(); i.select() })()`)
+        await typeText('25')
+        await key('Enter')
+        check('★ 저장하면 그 사람의 표만 좁혀진다(< 25 — 공유 조건을 대체) · "나만 보는 필터"',
+          await waitFor(`${titlesJs} === '가,나' && (document.querySelector('[data-testid="db-personal"]')?.textContent ?? '').includes('나만 보는 필터')`, 10000),
+          await titles())
+        check('볼 수만 있는 사람에게는 "모두에게 저장"이 없다', !(await evaluate(`!!document.querySelector('[data-testid="db-personal-publish"]')`)))
+        const shared = await api('GET', `/views/${view}/rows`)
+        check('★ 소유자는 여전히 공유 필터(> 15)로 본다', (shared.body?.rows ?? []).map((r) => r.title).join(',') === '나,다')
+        await clickOn('[data-testid="db-personal-reset"]')
+        check('초기화 — 공유 것으로 돌아간다', await waitFor(`${titlesJs} === '나,다' && !document.querySelector('[data-testid="db-personal"]')`, 10000), await titles())
+      } finally {
+        await browseAs(session)
+      }
+
+      // 편집자 — 자기 개인 것을 모두에게
+      await api('PATCH', `/views/${view}/personal`, { sorts: [{ property_id: score, direction: 'desc' }] })
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      await waitFor(`!!document.querySelector('[data-testid="db-personal-publish"]')`, 15000)
+      await clickOn('[data-testid="db-personal-publish"]')
+      const stored = async () => (await api('GET', `/views/${view}`)).body?.view
+      check('★ 편집자의 "모두에게 저장" — 개인 정렬이 공유 정렬이 되고 표시는 사라진다',
+        (await waitFor(`!document.querySelector('[data-testid="db-personal"]') && ${titlesJs} === '다,나'`, 10000))
+          // jsonb 는 키 순서를 다시 매긴다 — 값으로 비교한다
+          && ((s) => s?.length === 1 && s[0].property_id === score && s[0].direction === 'desc')((await stored())?.sorts),
+        JSON.stringify((await stored())?.sorts))
+    }
+
     section('전체')
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))
     const serverErrors = serverOutput.split('\n').filter((l) => l.includes('⨯'))
