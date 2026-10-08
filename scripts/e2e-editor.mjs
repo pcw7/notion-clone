@@ -12379,6 +12379,11 @@ async function main() {
           && JSON.stringify(await stored()) === JSON.stringify({ cover: 'none', cover_size: 'large', cover_aspect: 'cover' }),
         JSON.stringify(await stored()))
       // 미리보기를 다시 켜면 서버 렌더가 미리보기를 새로 읽는다 — 갤러리는 미리보기를 상태로 들어서, 다시 서지 않으면 빈 채로 남는다.
+      // ★ 미리보기가 **꺼진 채로 연** 갤러리여야 그 상태가 비어 있다(한 화면에서 끄고 켜면 처음 받은 미리보기가 그대로 남아 이 검사가
+      //   다시 마운트를 가르지 못한다 — 반사실이 살아남았다).
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}?v=${gallery.id}` })
+      await waitFor(`document.querySelectorAll('[data-testid="db-gallery-card"]').length === 3 && !document.querySelector('[data-testid="db-gallery-cover"]')`, 15000)
+      await clickOn('[data-testid="db-gallery-layout-button"]')
       await waitFor(`!!document.querySelector('[data-testid="db-gallery-cover-select"]')`, 3000)
       await setSelect('[data-testid="db-gallery-cover-select"]', 'page_content')
       check('★ 미리보기를 다시 켜면 이미지가 돌아온다(갤러리가 새로 선다)',
