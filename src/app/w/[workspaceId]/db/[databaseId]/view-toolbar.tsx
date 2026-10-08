@@ -63,8 +63,9 @@ import { disableSubItems, enableSubItems, setColumnVisible, setDependencies, upd
 import { TYPE_ICON } from './cell-view'
 import { ViewSearch } from './view-search'
 import { GALLERY_ASPECTS, GALLERY_COVERS, GALLERY_SIZES, type GalleryLayout } from '@/lib/database/gallery'
+import type { CalendarLayout, LiveCalendarLayout } from '@/lib/database/calendar'
 
-type Panel = 'filter' | 'sort' | 'properties' | 'group' | 'gallery'
+type Panel = 'filter' | 'sort' | 'properties' | 'group' | 'gallery' | 'calendar'
 
 /**
  * 보드의 그룹 설정(보드 4b조각). 보드 뷰일 때만 온다 — "그룹" 버튼과 패널이 그때만 그려진다.
@@ -97,6 +98,7 @@ export function ViewToolbar({
   board,
   search,
   gallery,
+  calendar,
 }: {
   workspaceId: string
   viewId: string
@@ -115,6 +117,8 @@ export function ViewToolbar({
   search?: string | null
   /** 갤러리 뷰의 레이아웃(2f-2). 갤러리일 때만 온다 — "카드" 버튼과 패널이 그때만 그려진다. */
   gallery?: GalleryLayout
+  /** 캘린더 뷰의 레이아웃(2g-2). 캘린더일 때만 온다 — "달력" 버튼과 패널이 그때만 그려진다. */
+  calendar?: LiveCalendarLayout
 }) {
   const router = useRouter()
   const [panel, setPanel] = useState<Panel | null>(null)
@@ -177,6 +181,9 @@ export function ViewToolbar({
         {gallery !== undefined && (
           <ToolbarButton label="카드" count={0} active={panel === 'gallery'} testId="db-gallery-layout-button" onClick={() => toggle('gallery')} />
         )}
+        {calendar !== undefined && (
+          <ToolbarButton label="달력" count={0} active={panel === 'calendar'} testId="db-cal-layout-button" onClick={() => toggle('calendar')} />
+        )}
         {busy && <span className="text-xs text-neutral-400">저장하는 중…</span>}
         <span className="ml-auto">
           {/* 뷰를 바꾸면 새로 선다 — 다른 뷰의 검색 칸에 옛 글자가 남지 않게. */}
@@ -218,6 +225,15 @@ export function ViewToolbar({
             layout={gallery}
             locked={!canEdit || busy}
             onSave={(patch) => run(() => updateView(workspaceId, viewId, { gallery: patch }))}
+            onClose={() => setPanel(null)}
+          />
+        )}
+        {panel === 'calendar' && calendar !== undefined && (
+          <CalendarPanel
+            columns={columns}
+            layout={calendar}
+            locked={!canEdit || busy}
+            onSave={(patch) => run(() => updateView(workspaceId, viewId, { calendar: patch }))}
             onClose={() => setPanel(null)}
           />
         )}
@@ -975,6 +991,52 @@ function GalleryPanel({
           {GALLERY_ASPECTS.map((c) => (
             <option key={c} value={c}>
               {ASPECT_LABEL[c]}
+            </option>
+          ))}
+        </select>
+      </label>
+    </Popover>
+  )
+}
+
+// ── 달력 (캘린더) ─────────────────────────────────────────────────────
+
+/**
+ * 캘린더의 날짜 속성(2g-2 · F-04-06). 고르는 즉시 저장한다(그 키만 · 서버가 합친다). 날짜 속성이 지워졌으면 "지워진 속성"을 보이고 다른
+ * 것을 고르게 한다. 뷰의 설정이라 `edit_structure` 다.
+ */
+function CalendarPanel({
+  columns,
+  layout,
+  locked,
+  onSave,
+  onClose,
+}: {
+  columns: ViewColumn[]
+  layout: LiveCalendarLayout
+  locked: boolean
+  onSave: (patch: Partial<CalendarLayout>) => Promise<boolean>
+  onClose: () => void
+}) {
+  const dates = columns.filter((c) => c.type === 'date')
+  return (
+    <Popover label="달력" testId="db-cal-layout-panel" onClose={onClose}>
+      <label className="flex items-center gap-2 text-sm">
+        날짜 속성
+        <select
+          aria-label="달력에 놓을 날짜 속성"
+          data-testid="db-cal-date-select"
+          value={layout.date_property_id ?? ''}
+          disabled={locked}
+          onChange={(e) => {
+            if (e.target.value !== '') void onSave({ date_property_id: e.target.value })
+          }}
+          className={FIELD}
+        >
+          {layout.date_property_id === null && <option value="">지워진 속성 — 고르세요…</option>}
+          {dates.map((c) => (
+            <option key={c.propertyId} value={c.propertyId}>
+              {c.name}
             </option>
           ))}
         </select>

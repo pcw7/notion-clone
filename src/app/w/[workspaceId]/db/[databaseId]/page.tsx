@@ -71,6 +71,9 @@ import { ViewTabs } from './view-tabs'
 import { ViewToolbar, type BoardSettings } from './view-toolbar'
 import { SearchEmpty } from './view-search'
 import { DatabaseGallery } from './database-gallery'
+import { DatabaseCalendar } from './database-calendar'
+import { isYm, monthGrid } from '@/lib/database/calendar'
+import { queryCalendar } from '@/lib/database/calendar-query'
 import { readCardCovers } from '@/lib/database/gallery-covers'
 import { TemplatePanel } from './template-panel'
 import { DataSourcePanel } from './data-source-panel'
@@ -82,7 +85,7 @@ export default async function DatabasePage({
   searchParams,
 }: PageProps<'/w/[workspaceId]/db/[databaseId]'>) {
   const { workspaceId, databaseId } = await params
-  const { v, q } = await searchParams
+  const { v, q, m } = await searchParams
   // 뷰 검색어(2e · F-04-27) — 주소의 `q`. 뷰에 저장하지 않는다. 서버가 다듬는다(빈 글 · 상한).
   const search = normalizeSearch(Array.isArray(q) ? q[0] : q)
 
@@ -107,13 +110,16 @@ export default async function DatabasePage({
 
   const isBoard = view.value.type === 'board'
   const isGallery = view.value.type === 'gallery'
+  const isCalendar = view.value.type === 'calendar'
+  // 캘린더의 보이는 달(2g-2) — 주소의 `m`(`YYYY-MM`). 없으면 이번 달(UTC — 화면의 "오늘" 단추가 보는 사람의 달로 옮긴다).
+  const calendarMonth = isYm(m) ? m : new Date().toISOString().slice(0, 7)
   // 하위 항목이 켜진 표 · 목록은 최상위 행만 먼저 읽는다 — 자식은 토글을 펼 때 읽는다(2b-2 · 행 라우트와 같은 규칙).
   // 검색 중에는 트리를 펴지 않는다 — 맞는 행을 평평하게(2e-1 · 행 라우트와 같은 규칙).
   const subItems = nestsSubItems(view.value.type) && search === null ? subItemPairOf(view.value.columns) : null
   // 갤러리는 부모만(2f-1 · 행 라우트와 같은 규칙) — 펴지 않는다.
   const parentsOnly = showsParentsOnly(view.value.type) ? subItemPairOf(view.value.columns) : null
   const [tablePage, catalog, board] = await Promise.all([
-    isBoard
+    isBoard || isCalendar
       ? null
       : queryRows(ctx, view.value.dataSourceId, {
           filter: view.value.filter,
@@ -204,8 +210,16 @@ export default async function DatabasePage({
     search,
     // 갤러리 레이아웃(2f-2) — 미리보기를 켜고 끄면 서버 렌더가 미리보기를 다시 읽는다. 갤러리 컴포넌트는 미리보기를 상태로 든다.
     isGallery ? view.value.gallery : null,
+    // 캘린더(2g-2) — 보이는 달 · 날짜 속성이 바뀌면 읽은 행이 무효다.
+    isCalendar ? [calendarMonth, view.value.calendar] : null,
   ])
   const visibleColumns = columns.filter((column) => column.visible)
+  // 캘린더의 행 — 그 달의 격자(6주) 기간에 걸친 것만(2g-1 `queryCalendar`). 날짜 속성이 지워졌으면 읽지 않고 "고르라"를 그린다.
+  const calendarGrid = monthGrid(calendarMonth)
+  const calendarPage =
+    isCalendar && view.value.calendar.date_property_id !== null
+      ? await queryCalendar(ctx, view.value.id, { from: calendarGrid.from, to: calendarGrid.to, search })
+      : null
   // 갤러리의 카드 미리보기(2f-2) — 첫 페이지의 행마다 본문의 첫 이미지. 그 뒤("더 보기")의 것은 행 라우트가 함께 준다.
   const galleryCovers =
     isGallery && tablePage !== null && view.value.gallery.cover === 'page_content'
@@ -332,6 +346,7 @@ export default async function DatabasePage({
             board={boardSettings}
             search={search}
             {...(isGallery ? { gallery: view.value.gallery } : {})}
+            {...(isCalendar ? { calendar: view.value.calendar } : {})}
           />
         </div>
         {/* 데이터 소스(8e-2)는 데이터베이스의 구조다 — 고칠 수 있는 사람에게만 선다(잠기면 `access` 가 이미 닫는다). */}
@@ -387,6 +402,30 @@ export default async function DatabasePage({
             {access.canEditStructure
               ? '도구줄의 "그룹"에서 그룹 기준을 다시 고르세요.'
               : '고칠 수 있는 사람이 그룹 기준을 다시 골라야 합니다.'}
+          </p>
+        )
+      ) : isCalendar ? (
+        calendarPage !== null && calendarPage.ok ? (
+          <DatabaseCalendar
+            key={contentKey}
+            workspaceId={workspaceId}
+            viewId={view.value.id}
+            tableName={tableName}
+            month={calendarMonth}
+            datePropertyId={calendarPage.value.datePropertyId}
+            titlePropertyId={columns.find((c) => c.type === 'title')?.propertyId ?? null}
+            rows={calendarPage.value.rows.map(rowJson)}
+            undated={calendarPage.value.undated}
+            truncated={calendarPage.value.truncated}
+            access={access}
+            search={search}
+          />
+        ) : (
+          <p className="px-2 text-sm text-neutral-500" data-testid="db-cal-needs-date">
+            이 캘린더의 날짜 속성이 지워졌습니다.{' '}
+            {access.canEditStructure
+              ? '도구줄의 "달력"에서 날짜 속성을 다시 고르세요.'
+              : '고칠 수 있는 사람이 날짜 속성을 다시 골라야 합니다.'}
           </p>
         )
       ) : isGallery ? (

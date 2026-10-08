@@ -109,3 +109,97 @@ export function cellDays(value: unknown): { readonly start: string; readonly end
   const end = typeof date.end === 'string' && isYmd(date.end.slice(0, 10)) ? date.end.slice(0, 10) : start
   return { start, end: end < start ? start : end }
 }
+
+// ── 달 격자 · 막대 배치 (2g-2 · 화면이 쓴다 · DB 없음) ──────────────────
+
+/** 날짜 글자에 일수를 더한다(UTC 로 셈 — 날짜 글자에는 시간대가 없다). */
+export function addDays(ymd: string, days: number): string {
+  const d = new Date(Date.parse(`${ymd}T00:00:00Z`) + days * 86_400_000)
+  return d.toISOString().slice(0, 10)
+}
+
+const YM = /^(\d{4})-(\d{2})$/
+
+/** `YYYY-MM` 인가. */
+export function isYm(s: unknown): s is string {
+  if (typeof s !== 'string') return false
+  const m = YM.exec(s)
+  return m !== null && Number(m[2]) >= 1 && Number(m[2]) <= 12
+}
+
+/** 달을 앞뒤로 옮긴다(`2026-01` 에서 -1 이면 `2025-12`). */
+export function shiftMonth(month: string, delta: number): string {
+  const [y, m] = month.split('-').map(Number) as [number, number]
+  const d = new Date(Date.UTC(y, m - 1 + delta, 1))
+  return d.toISOString().slice(0, 7)
+}
+
+/**
+ * 한 달의 격자 — **일요일에 시작하는 6주**(42칸). 노션 · 한국 달력의 기본처럼 주는 일요일에 시작한다(주 시작 요일 설정은 아직 · §7).
+ * 늘 6주라 달마다 격자의 높이가 같다.
+ */
+export function monthGrid(month: string): { readonly from: string; readonly to: string; readonly weeks: readonly (readonly string[])[] } {
+  const first = `${month}-01`
+  const weekday = new Date(`${first}T00:00:00Z`).getUTCDay()
+  const from = addDays(first, -weekday)
+  const weeks = Array.from({ length: 6 }, (_, w) => Array.from({ length: 7 }, (_, d) => addDays(from, w * 7 + d)))
+  return { from, to: addDays(from, 41), weeks }
+}
+
+export type CalendarEvent = { readonly id: string; readonly start: string; readonly end: string }
+
+export type PlacedEvent = {
+  readonly id: string
+  /** 그 주에서의 첫 칸(0 = 일요일). */
+  readonly col: number
+  /** 그 주에서 차지하는 칸 수. */
+  readonly span: number
+  readonly lane: number
+  /** 주 앞에서 이어져 왔다 · 주 뒤로 이어진다 — 막대의 끝을 열어 그린다. */
+  readonly continuesBefore: boolean
+  readonly continuesAfter: boolean
+}
+
+/**
+ * 한 주의 막대 배치 — 그 주에 걸친 일정을 주 안으로 자르고, **시작이 이른 것 · 긴 것 · 들어온 순서**로 줄(lane)을 탐욕적으로 잡는다
+ * (04 *"multi-day 이벤트 lane packing"*). `maxLanes` 를 넘는 일정은 그리지 않고 그 날짜마다 센다(`hidden` — 칸의 "+N").
+ */
+export function layoutWeek(
+  week: readonly string[],
+  events: readonly CalendarEvent[],
+  maxLanes: number,
+): { readonly placed: readonly PlacedEvent[]; readonly hidden: readonly number[] } {
+  const weekStart = week[0]!
+  const weekEnd = week[week.length - 1]!
+  const inWeek = events
+    .map((e, order) => ({ e, order }))
+    .filter(({ e }) => e.start <= weekEnd && e.end >= weekStart)
+    .map(({ e, order }) => {
+      const start = e.start < weekStart ? weekStart : e.start
+      const end = e.end > weekEnd ? weekEnd : e.end
+      return { e, order, col: daysBetween(weekStart, start), span: daysBetween(start, end) + 1 }
+    })
+    .sort((a, b) => a.col - b.col || b.span - a.span || a.order - b.order)
+
+  const laneEnds: number[] = [] // 줄마다 마지막으로 찬 칸
+  const placed: PlacedEvent[] = []
+  const hidden = Array.from({ length: week.length }, () => 0)
+  for (const item of inWeek) {
+    let lane = laneEnds.findIndex((endCol) => endCol < item.col)
+    if (lane === -1) lane = laneEnds.length
+    if (lane >= maxLanes) {
+      for (let c = item.col; c < item.col + item.span; c += 1) hidden[c]! += 1
+      continue
+    }
+    laneEnds[lane] = item.col + item.span - 1
+    placed.push({
+      id: item.e.id,
+      col: item.col,
+      span: item.span,
+      lane,
+      continuesBefore: item.e.start < weekStart,
+      continuesAfter: item.e.end > weekEnd,
+    })
+  }
+  return { placed, hidden }
+}
