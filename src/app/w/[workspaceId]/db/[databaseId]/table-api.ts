@@ -65,6 +65,9 @@ function messageOf(status: number, body: ErrorBody): string {
       return '그룹 설정을 확인하세요.'
     case 'invalid_config':
       return '속성 설정을 확인하세요.'
+    // ── 열 집계 (2d-2) ──
+    case 'invalid_calculation':
+      return '이 열에서 고를 수 없는 계산입니다.'
     // ── 타입 바꾸기 (2c-2) ──
     case 'unsupported_type':
       return '이 유형으로는 바꿀 수 없습니다.'
@@ -464,6 +467,20 @@ export function addColumn(
       body: JSON.stringify({ name, type, ...(prefix !== undefined && prefix.trim() !== '' ? { prefix } : {}) }),
     },
     (body) => body.property as PropertySummary,
+  )
+}
+
+/** 이 뷰에서 이 열의 집계 함수를 바꾼다(2d-2 · F-04-16). `null` 이면 지운다. 타입이 고를 수 없는 함수는 서버가 거부한다. */
+export function setColumnCalculation(
+  workspaceId: string,
+  viewId: string,
+  propertyId: string,
+  calculation: string | null,
+): Promise<ApiResult<null>> {
+  return call(
+    `${base(workspaceId)}/views/${viewId}/columns/${propertyId}`,
+    { method: 'PATCH', headers: JSON_HEADERS, body: JSON.stringify({ calculation }) },
+    () => null,
   )
 }
 

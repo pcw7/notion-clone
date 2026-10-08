@@ -45,6 +45,7 @@ import { databaseLockState } from '@/lib/permissions/lock'
 import { getView, listViews } from '@/lib/database/view'
 import { isFilterableColumn, nestsSubItems, subItemPairOf } from '@/lib/database/view-columns'
 import { queryRows } from '@/lib/database/query'
+import { computeCalculations } from '@/lib/database/calculate'
 import { queryGroups } from '@/lib/database/group'
 import { loadRelationLabels, relationIdsIn } from '@/lib/database/relation'
 import { computeRollups, EMPTY_ROLLUP_PAGE } from '@/lib/database/rollup'
@@ -172,7 +173,8 @@ export default async function DatabasePage({
     view.value.sorts,
     groupBy,
     // 타입도 넣는다(2c-2) — 표는 컬럼을 자기 상태로 들고 있어서, 타입을 바꾼 뒤에도 옛 타입으로 칸을 그린다.
-    columns.map((c) => [c.propertyId, c.name, c.visible, c.type, c.type === 'unique_id' ? c.uniqueId.prefix : null]),
+    // 집계 함수도(2d-2) — 바꾸면 표가 새 값으로 다시 선다(값은 서버 렌더가 준다).
+    columns.map((c) => [c.propertyId, c.name, c.visible, c.type, c.type === 'unique_id' ? c.uniqueId.prefix : null, c.calculation ?? null]),
     // 하위 항목을 켜고 끄면 같은 뷰가 트리 ↔ 평평한 표로 바뀐다(2b-2) — 읽은 행(최상위만 ↔ 전부)이 무효다. 이름 · 보임은 그대로라
     // 이것이 없으면 끈 뒤에도 최상위 행만 남는다(e2e 가 잡았다).
     subItems?.parentPropertyId ?? null,
@@ -200,6 +202,10 @@ export default async function DatabasePage({
       ? null
       : await computeRollups(ctx, view.value.dataSourceId, firstRows.map((row) => row.id))
   const rollupValues = computed !== null && computed.ok ? computed.value : EMPTY_ROLLUP_PAGE
+
+  // ── 열 집계(2d-2 · F-04-16) ── 필터를 지난 행 전부로 계산한다(첫 페이지와 무관 · `calculate.ts`). 표 모양만 그린다.
+  const calculations =
+    tablePage === null || variant !== 'table' ? {} : await computeCalculations(ctx, view.value.dataSourceId, view.value.filter, view.value.columns)
 
   // ── 기본 템플릿(F-08-03) ──
   // 뷰는 **살아 있는 템플릿일 때만** id 를 준다(`readView` · §3.3-176). 버튼이 그 이름을 말하므로 이름까지 읽는다 —
@@ -364,6 +370,7 @@ export default async function DatabasePage({
             sorts={sorts}
             defaultTemplate={defaultTemplate}
             subItems={subItems}
+            calculations={calculations}
           />
         )
       )}
