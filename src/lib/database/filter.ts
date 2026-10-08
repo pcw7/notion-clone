@@ -88,6 +88,24 @@ export function isGroup(node: FilterNode): node is FilterGroup {
   return 'op' in node
 }
 
+/**
+ * 이 속성을 가리키는 규칙을 뺀 필터 — 타입을 바꾼 속성의 규칙은 지운다(2c-1 · 정본 [보강] 프로퍼티 타입 바꾸기 ⑤). 빈 묶음은 접고,
+ * 남는 것이 없으면 null(필터 없음). `removed` 는 뺀 규칙 수다 — 명령이 "필터 N개를 지웠다"고 말한다.
+ */
+export function withoutProperty(node: FilterNode | null, propertyId: string): { filter: FilterNode | null; removed: number } {
+  if (node === null) return { filter: null, removed: 0 }
+  if (!isGroup(node)) return node.property_id === propertyId ? { filter: null, removed: 1 } : { filter: node, removed: 0 }
+  let removed = 0
+  const children: FilterNode[] = []
+  for (const child of node.children) {
+    const kept = withoutProperty(child, propertyId)
+    removed += kept.removed
+    if (kept.filter !== null) children.push(kept.filter)
+  }
+  if (removed === 0) return { filter: node, removed: 0 }
+  return { filter: children.length === 0 ? null : { op: node.op, children }, removed }
+}
+
 export type SortKey = {
   readonly property_id: string
   readonly direction: 'asc' | 'desc'

@@ -859,33 +859,34 @@ try {
     // ── 셀 ──
     await client.query(
       `INSERT INTO page_property_value (page_id, property_id, value, text_value, updated_at)
-       VALUES ($1, $2, '[{"type":"text","text":{"content":"첫 행"}}]'::jsonb, '첫 행', now())`,
+       VALUES ($1, $2, '{"type":"title","title":[{"type":"text","text":{"content":"첫 행"}}]}'::jsonb, '첫 행', now())`,
       [rowId, pid(1)],
     )
     ok('셀 삽입 — value + 사이드카(text_value)')
 
     await mustReject(
       '같은 (행, 프로퍼티)에 셀 두 개 — 병합 단위가 이 쌍이다 [X-4]',
+      // 봉투는 올바르게 — 0053(CV1)이 먼저 거부하면 이 검사가 PK 가 아니라 봉투 때문에 통과한다.
       `INSERT INTO page_property_value (page_id, property_id, value, updated_at)
-       VALUES ($1, $2, '"중복"'::jsonb, now())`,
+       VALUES ($1, $2, '{"type":"title","title":[]}'::jsonb, now())`,
       [rowId, pid(1)],
     )
     await mustReject(
       '거꾸로 된 기간 — 기간 필터가 조용히 0건이 된다',
       `INSERT INTO page_property_value (page_id, property_id, value, date_start, date_end, updated_at)
-       VALUES ($1, $2, '{}'::jsonb, '2026-02-01', '2026-01-01', now())`,
+       VALUES ($1, $2, '{"type":"select","select":null}'::jsonb, '2026-02-01', '2026-01-01', now())`,
       [rowId, pid(7)],
     )
     await mustReject(
       'date_end 만 있는 값',
       `INSERT INTO page_property_value (page_id, property_id, value, date_end, updated_at)
-       VALUES ($1, $2, '{}'::jsonb, '2026-01-01', now())`,
+       VALUES ($1, $2, '{"type":"select","select":null}'::jsonb, '2026-01-01', now())`,
       [rowId, pid(7)],
     )
     await mustReject(
       '모르는 filled_by',
       `INSERT INTO page_property_value (page_id, property_id, value, filled_by, updated_at)
-       VALUES ($1, $2, '{}'::jsonb, 'telepathy', now())`,
+       VALUES ($1, $2, '{"type":"select","select":null}'::jsonb, 'telepathy', now())`,
       [rowId, pid(7)],
     )
 
@@ -2854,6 +2855,53 @@ try {
     await client.query('SET CONSTRAINTS tg_relation_edge_no_dependency_cycle DEFERRED')
     await rejectBy('★ DP2: 자기 자신이 막는다', 'tg_relation_edge_no_dependency_cycle', blocks(b, b), 'tg_relation_edge_no_dependency_cycle')
     await rejectBy('★ DP2: 사슬 끝이 처음을 막는다(d 가 a 에게 막힘)', 'tg_relation_edge_no_dependency_cycle', blocks(d, a), 'tg_relation_edge_no_dependency_cycle')
+  }
+
+  console.log('\n[37] 셀 봉투의 타입 (0053 / §3.5 [보강] 프로퍼티 타입 바꾸기 ⑥ · CV1 · 2c-1조각)')
+  {
+    const rejectBy = async (label, constraint, sql, params) => {
+      await client.query('SAVEPOINT probe')
+      try {
+        await client.query(sql, params)
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        fail(`${label} — 거부되어야 하는데 통과했다`)
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        if (e.constraint === constraint) ok(`${label} — ${constraint} 가 거부함 (${e.code})`)
+        else fail(`${label} — ${constraint} 가 아니라 ${e.constraint ?? e.code} 에 걸렸다`)
+      }
+    }
+    const root = randomUUID()
+    const dbBlock = randomUUID()
+    const ds = randomUUID()
+    const putBlock = `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key,
+                                         ancestor_path, perm_scope_id, properties, format, created_at, last_edited_at)
+                      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, '{}'::jsonb, '{}'::jsonb, now(), now())`
+    await client.query(putBlock, [root, wsId, 'page', 'workspace', wsId, 'zconv0', [], root])
+    await client.query(putBlock, [dbBlock, wsId, 'database', 'block', root, 'zconv0', [root], root])
+    await client.query(`INSERT INTO database (id, created_at, updated_at) VALUES ($1, now(), now())`, [dbBlock])
+    await client.query(`INSERT INTO data_source (id, owner_database_id, name, created_at, updated_at) VALUES ($1, $2, '봉투 표', now(), now())`, [ds, dbBlock])
+    await client.query(`INSERT INTO database_data_source (database_id, data_source_id, order_idx) VALUES ($1, $2, 'a0')`, [dbBlock, ds])
+    const cid = (n) => `c${String(n).padStart(20, '0')}`
+    const putProp = `INSERT INTO property (id, data_source_id, name, type, order_idx, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, now(), now())`
+    await client.query(putProp, [cid(1), ds, '이름', 'title', 'a0'])
+    await client.query(putProp, [cid(2), ds, '수량', 'number', 'a1'])
+    const rowId = randomUUID()
+    await client.query(putBlock, [rowId, wsId, 'page', 'data_source', ds, 'r0', [root, dbBlock], root])
+    await client.query(`INSERT INTO page (id, data_source_id) VALUES ($1, $2)`, [rowId, ds])
+    const putCell = `INSERT INTO page_property_value (page_id, property_id, value, num_value, updated_at) VALUES ($1, $2, $3::jsonb, $4, now())`
+    await client.query(putCell, [rowId, cid(2), JSON.stringify({ type: 'number', number: 5 }), 5])
+    ok('숫자 프로퍼티에 숫자 봉투 — 정상 경로가 통과한다')
+    await rejectBy('★ CV1: 숫자 프로퍼티에 글 봉투', 'tg_ppv_value_type',
+      `UPDATE page_property_value SET value = $3::jsonb WHERE page_id = $1 AND property_id = $2`,
+      [rowId, cid(2), JSON.stringify({ type: 'rich_text', rich_text: [] })])
+    await rejectBy('CV1: 봉투에 타입이 없다', 'tg_ppv_value_type',
+      `UPDATE page_property_value SET value = $3::jsonb WHERE page_id = $1 AND property_id = $2`,
+      [rowId, cid(2), JSON.stringify({ number: 5 })])
+    await client.query(`UPDATE property SET type = 'rich_text' WHERE id = $1`, [cid(2)])
+    await rejectBy('★ CV1: 프로퍼티의 타입이 바뀐 뒤 옛 타입으로 다시 쓴다(변환과 엇갈린 쓰기)', 'tg_ppv_value_type',
+      `UPDATE page_property_value SET value = $3::jsonb WHERE page_id = $1 AND property_id = $2`,
+      [rowId, cid(2), JSON.stringify({ type: 'number', number: 6 })])
   }
 
   await client.query('ROLLBACK')

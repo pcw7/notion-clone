@@ -15,6 +15,7 @@ import type { DatabaseFailure } from './database.ts'
 import type { DataSourceFailure } from './data-source.ts'
 import type { LayoutFailure } from './layout.ts'
 import type { PropertyFailure } from './property.ts'
+import type { ConvertFailure } from './property-convert.ts'
 import type { RowCell, RowFailure } from './row.ts'
 import type { RelationFailure } from './relation.ts'
 import type { GroupFailure } from './group.ts'
@@ -85,6 +86,12 @@ export function propertyFailureStatus(reason: PropertyFailure): number {
     case 'title_immutable':
       return 400
   }
+}
+
+/** 타입 바꾸기의 거부(2c-1). 손실 확인 · 상한은 입력이 아니라 지금 상태가 허락하지 않는 것이다 — 확인을 실으면 · 칸이 줄면 통과한다. */
+export function convertFailureStatus(reason: ConvertFailure): number {
+  if (reason === 'lossy_conversion' || reason === 'too_large') return 409
+  return propertyFailureStatus(reason)
 }
 
 export function templateFailureStatus(reason: TemplateFailure): number {

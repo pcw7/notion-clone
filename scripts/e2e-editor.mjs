@@ -11840,6 +11840,33 @@ async function main() {
       check('★ 끄면 일반 관계형으로 남는다 — 속성 둘은 그대로 · 표시는 없다', off.length === 2 && off.every((c) => c.relation.dependencies === null), JSON.stringify(off.map((c) => c.relation)))
     }
 
+    if (sectionIf('속성 타입 바꾸기 — 서버 (2c-1 · F-03-14)')) {
+      // 값이 사라지는 칸이 있으면 409 와 개수 · 확인을 실으면 바뀐다 · 표가 새 타입의 값을 준다 · 제목은 400. 규칙은 DB 검사가 본다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `타입 바꾸기 ${stamp}` })).body.database
+      const memo = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '수량', type: 'rich_text' })).body.property.id
+      const titleProp = (await api('GET', `/views/${db.defaultViewId}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      for (const text of ['12', '약 3']) {
+        await api('POST', `/views/${db.defaultViewId}/rows`, { cells: [{ propertyId: memo, value: { type: 'rich_text', rich_text: [textRun(text)] } }] })
+      }
+      const convert = (body) => api('POST', `/data-sources/${db.dataSourceId}/properties/${memo}/convert`, body)
+      const lossy = await convert({ type: 'number' })
+      check('★ 값이 사라지는 칸이 있으면 409 — 그 개수를 말한다', lossy.status === 409 && lossy.body?.error === 'lossy_conversion' && lossy.body?.lost === 1, JSON.stringify(lossy))
+      const done = await convert({ type: 'number', confirmLoss: true })
+      check('★ 확인을 실으면 바뀐다 — 옮긴 칸 · 사라진 칸을 말한다', done.status === 200 && done.body?.converted === 1 && done.body?.lost === 1, JSON.stringify(done.body && { converted: done.body.converted, lost: done.body.lost }))
+      const rows = (await api('GET', `/views/${db.defaultViewId}/rows`)).body.rows
+      const values = rows.map((r) => r.properties[memo]).filter(Boolean)
+      check('표가 새 타입의 값을 준다', values.length === 1 && values[0].type === 'number' && values[0].number === 12, JSON.stringify(values))
+      const title = await api('POST', `/data-sources/${db.dataSourceId}/properties/${titleProp}/convert`, { type: 'rich_text' })
+      check('제목은 바꿀 수 없다 — 400', title.status === 400 && title.body?.error === 'title_immutable', JSON.stringify(title))
+    }
+
     section('전체')
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))
     const serverErrors = serverOutput.split('\n').filter((l) => l.includes('⨯'))
