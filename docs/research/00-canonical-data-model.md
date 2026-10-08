@@ -1566,7 +1566,7 @@ CREATE TABLE relation_edge (                  -- relation 의 유일한 정본
   from_page_id uuid NOT NULL REFERENCES page(id) ON DELETE CASCADE,
   to_page_id   uuid NOT NULL REFERENCES page(id) ON DELETE CASCADE,
   order_idx    text NOT NULL,                 -- relation 셀 내 표시 순서
-  role         text NULL CHECK (role IN ('sub_item','dependency')),
+  role         text NULL CHECK (role IN ('sub_item','dependency')),   -- [보강] 자식→부모 엣지에만 · 트리거가 매긴다(0051 · 아래 [보강] 하위 항목)
   owner        text NOT NULL DEFAULT 'user'   -- <15 R8> sync 가 만든 엣지를 사용자 엣지와 구분
                CHECK (owner IN ('user','sync')),
   PRIMARY KEY (property_id, from_page_id, to_page_id)
@@ -1628,6 +1628,30 @@ CREATE INDEX ON derived_value (property_id, num_value) WHERE NOT stale AND num_v
   1개로 양방향 동작이 기본."* 역방향 프로퍼티는 `limit` 을 물려받지 않는다.
 - 거울상 엣지는 **시스템이 유지하는 투영**이다. 연결 명령은 대상 표의 `edit_content` 를 요구하지 않고(대상 행을 **볼 수
   있어야** 한다), 대상 행의 `block.version` · `last_edited_*` 를 올리지 않는다 — 그 행을 고친 사람이 없다.
+
+**[보강] 하위 항목(sub-item) — 같은 표의 relation 짝 · 엣지의 `role` · 부모 하나 · 순환 없음** ⟨DB 심화 2b-1조각 · F-03-18 / 마이그레이션 0051⟩
+
+초판은 `relation_edge.role`(`sub_item` · `dependency`)과 불변식 E2(*"`parent_row_id` 같은 비정규화 컬럼을 두지 않는다"*)만 두고
+**어느 엣지에 role 이 붙는지 · 누가 붙이는지**를 정하지 않았다. 03 F-03-18 의 데이터 모델(`property.relation_role` ·
+`page.parent_row_id` · `page.ancestor_path`)은 이 문서가 이긴다 — 엣지가 정본이고 계층을 행에 복사하지 않는다.
+
+- ① **하위 항목은 relation 의 특수화다**(03 *"별도 프로퍼티 타입이 아니라"*). 켜면 **같은 표를 가리키는 양방향 relation 짝**이
+  생긴다 — "상위 항목"(`limit: 'one'`) · "하위 항목". 둘의 `property.config` 에 `"sub_items": "parent" | "children"` 를 단다.
+  표마다 살아 있는 짝은 하나(불변식 SI1 · `ux_property_sub_items`) · 표시는 relation 에만 · 같은 표를 가리키는 relation 에만
+  (`ck_property_sub_items`).
+- ② **`role='sub_item'` 은 자식 → 부모 엣지(상위 항목 프로퍼티의 엣지)에만 붙는다.** 거울상(부모 → 자식)은 표시용 투영이라
+  `NULL` 이다. **DB 가 매긴다** — 엣지를 넣거나 고칠 때 트리거가 프로퍼티의 표시에서 `role` 을 다시 정한다(애플리케이션이
+  쓰는 값은 덮인다).
+- ③ **부모는 하나다**(불변식 SI2 · `ux_relation_edge_one_parent` — `(property_id, from_page_id) WHERE role='sub_item'`). 하위
+  항목 칸에 행을 더하면 그 행은 **옮겨 온다** — 있던 부모와의 엣지(와 그 거울상)를 같은 명령이 뺀다.
+- ④ **순환은 없다**(불변식 SI3). 자기 자신 · 자기 자손을 부모로 둘 수 없다. 명령이 먼저 묻고(이유를 말한다), 지연 제약
+  트리거(`tg_relation_edge_no_cycle`)가 커밋 때 다시 본다 — 두 사람이 동시에 서로를 부모로 두는 경쟁도 거기서 막힌다.
+- ⑤ **끄면 일반 relation 으로 남는다**(03 권고 · 노션 실동작 `[확인필요]`) — 표시를 떼고 엣지의 `role` 을 지운다. 엣지 ·
+  "하나만" 제한은 남는다. 짝의 한쪽을 따로 지울 수 없다(`managed_property`) — 끄기가 그 길이다.
+- ⑥ **휴지통**: 부모가 휴지통에 가도 엣지는 남는다(relation 의 규칙 그대로 · 복원하면 되살아난다). 읽는 쪽이 살아 있지 않은
+  부모를 없는 것으로 본다 — 자식은 최상위로 보인다(03 의 "승격"을 데이터를 바꾸지 않고 얻는다).
+- 미룬 것: 있는 relation 짝을 하위 항목으로 쓰기(옮기기 전에 부모 여럿 · 순환을 검사해야 한다) · 깊이 상한(03 의 권고 10 —
+  노션 문서에 없다. 화면이 지연 로딩한다) · 뷰의 `sub_item_display` · `sub_item_filter_scope`(2b-2 의 화면과 함께).
 
 **[보강] rollup v1 — 읽을 때 계산한다. `derived_value` · `property_dependency` 는 아직 만들지 않는다** ⟨rollup 5c-1조각 / 마이그레이션 없음⟩
 

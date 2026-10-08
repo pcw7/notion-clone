@@ -135,6 +135,11 @@ export type RelationConfig = {
   /** 양방향의 짝. 자기 자신일 수 있다(같은 표 · 프로퍼티 하나). 없으면 단방향. */
   readonly synced_property_id?: string
   readonly limit?: RelationLimit
+  /**
+   * 하위 항목 짝의 한쪽(2b-1 · 정본 §3.5 [보강] 하위 항목) — `parent` 는 "상위 항목"(자식 → 부모 · 하나만), `children` 은
+   * "하위 항목"(거울상). 같은 표를 가리키는 relation 에만 있다(`ck_property_sub_items`).
+   */
+  readonly sub_items?: 'parent' | 'children'
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -148,6 +153,7 @@ export function readRelationConfig(raw: unknown): RelationConfig | null {
     target_data_source_id: c.target_data_source_id,
     ...(typeof c.synced_property_id === 'string' ? { synced_property_id: c.synced_property_id } : {}),
     ...(c.limit === 'one' ? { limit: 'one' as const } : {}),
+    ...(c.sub_items === 'parent' || c.sub_items === 'children' ? { sub_items: c.sub_items } : {}),
   }
 }
 

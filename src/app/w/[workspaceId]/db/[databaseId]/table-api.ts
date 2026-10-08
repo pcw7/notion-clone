@@ -68,6 +68,9 @@ function messageOf(status: number, body: ErrorBody): string {
     // ── 고유 ID (2a-1) ──
     case 'unique_id_exists':
       return 'ID 속성은 표에 하나만 둘 수 있습니다.'
+    // ── 하위 항목 (2b-1) ──
+    case 'managed_property':
+      return '하위 항목 속성은 따로 지울 수 없습니다. 하위 항목을 끄세요.'
     // ── relation (5b-2) ──
     case 'invalid_target':
       return '대상 표를 찾을 수 없습니다. 그사이 지워졌거나 볼 수 없는 표입니다.'

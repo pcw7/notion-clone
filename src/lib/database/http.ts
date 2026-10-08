@@ -55,6 +55,8 @@ export function propertyFailureStatus(reason: PropertyFailure): number {
     case 'locked':
     // ID 프로퍼티는 하나뿐이다(U1) — 입력이 아니라 지금 상태가 허락하지 않는다. 있는 것을 지우면 같은 요청이 통과한다.
     case 'unique_id_exists':
+    // 하위 항목 짝(2b-1) — 지금 상태(기능이 켜져 있다)가 허락하지 않는다. 끄면 같은 요청이 통과한다.
+    case 'managed_property':
       return 409
     case 'invalid_name':
     case 'invalid_color':

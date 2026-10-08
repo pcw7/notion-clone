@@ -88,6 +88,7 @@ import {
   type PropertyResult,
   type SchemaSnapshot,
 } from './property.ts'
+import { wouldCreateCycle } from './sub-items.ts'
 import { decodeCursorValues, encodeCursorValues } from './query.ts'
 import { readRow, type RowSummary } from './row.ts'
 import { MAX_QUERY_LIMIT } from './limits.ts'
@@ -349,6 +350,29 @@ export async function linkRows(
       return fail('invalid_value', [{ path: 'add', message: '이 속성에는 하나만 연결할 수 있습니다' }])
     }
 
+    // ── 하위 항목(2b-1 · `sub-items.ts` 머리말): 순환을 거부하고, 하위 항목 칸에 더하는 행은 옮겨 온다 ──
+    // 상위 항목 칸이면 (자식 = 이 행, 부모 = 더할 행), 하위 항목 칸이면 (자식 = 더할 행, 부모 = 이 행). 부모 쪽 프로퍼티는 상위
+    // 항목이다 — 하위 항목 칸의 짝이 그것이다.
+    const hierarchy = config.sub_items ?? null
+    const parentProperty = hierarchy === 'parent' ? propertyId : hierarchy === 'children' ? synced : null
+    let reparented: { child: string; from: string }[] = []
+    if (parentProperty !== null && add.length > 0) {
+      const pairs = hierarchy === 'parent' ? add.map((p) => ({ child: rowId, parent: p })) : add.map((c) => ({ child: c, parent: rowId }))
+      for (const { child, parent } of pairs) {
+        if (await wouldCreateCycle(tx, parentProperty, child, parent)) {
+          return fail('invalid_value', [{ path: 'add', message: '자기 자신이나 자기 하위 항목을 상위 항목으로 둘 수 없습니다' }])
+        }
+      }
+      if (hierarchy === 'children') {
+        // 부모는 하나다(SI2) — 다른 부모 밑에 있던 행은 그 부모에게서 뺀다(그 부모의 칸도 함께 바뀐다).
+        reparented = await tx.query<{ child: string; from: string }>(
+          `SELECT from_page_id AS child, to_page_id AS "from" FROM relation_edge
+            WHERE property_id = $1 AND from_page_id = ANY($2::uuid[]) AND to_page_id <> $3`,
+          [parentProperty, add, rowId],
+        )
+      }
+    }
+
     // ── 더할 대상: 대상 표의 살아 있는 행이고 볼 수 있어야 한다. 아니면 전부 같은 답(존재를 알리지 않는다) ──
     if (add.length > 0) {
       const found = open.canViewTarget
@@ -382,7 +406,7 @@ export async function linkRows(
     }
 
     // ── 잠금: 건드리는 행 전부를 id 순서로(머리말) ──
-    const touched = synced === null ? [rowId] : [rowId, ...toAdd, ...toRemove]
+    const touched = synced === null ? [rowId] : [rowId, ...toAdd, ...toRemove, ...reparented.map((r) => r.from)]
     await tx.query(`SELECT id FROM block WHERE id = ANY($1::uuid[]) ORDER BY id FOR UPDATE`, [[...new Set(touched)]])
 
     // ── 빼기: 엣지와 그 거울상 ──
@@ -397,6 +421,12 @@ export async function linkRows(
           [synced, rowId, toRemove],
         )
       }
+    }
+
+    // ── 옮겨 오는 행: 있던 부모와의 엣지와 그 거울상을 뺀다(더하기보다 먼저 — 부모가 둘인 순간을 만들지 않는다 · SI2) ──
+    for (const { child, from } of reparented) {
+      await tx.query(`DELETE FROM relation_edge WHERE property_id = $1 AND from_page_id = $2 AND to_page_id = $3`, [synced, child, from])
+      await tx.query(`DELETE FROM relation_edge WHERE property_id = $1 AND from_page_id = $2 AND to_page_id = $3`, [propertyId, from, child])
     }
 
     // ── 더하기: 칸의 맨 뒤에, 준 순서대로 ──

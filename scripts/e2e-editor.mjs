@@ -11643,6 +11643,32 @@ async function main() {
       }
     }
 
+    if (sectionIf('하위 항목 — 서버 (2b-1 · F-03-18)')) {
+      // 켜기 · 끄기 · 연결의 순환 거부 · 짝을 따로 지우기 거부를 실제 경로로 본다(규칙은 `sub-items.db.test.ts`). 화면은 2b-2.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `하위 항목 ${stamp}` })).body.database
+      const on = await api('POST', `/data-sources/${db.dataSourceId}/sub-items`)
+      check('★ 하위 항목을 켜면 상위 항목 · 하위 항목 짝이 생긴다', on.status === 200 && on.body?.schema?.properties?.some((p) => p.name === '상위 항목') && on.body?.schema?.properties?.some((p) => p.name === '하위 항목'),
+        JSON.stringify({ status: on.status, names: on.body?.schema?.properties?.map((p) => p.name) }))
+      const again = await api('POST', `/data-sources/${db.dataSourceId}/sub-items`)
+      check('두 번 켜도 같은 짝이다', again.status === 200 && again.body?.parentPropertyId === on.body?.parentPropertyId)
+      const [a, b] = [(await api('POST', `/views/${db.defaultViewId}/rows`, {})).body.row.id, (await api('POST', `/views/${db.defaultViewId}/rows`, {})).body.row.id]
+      const link = (row, propertyId, add) => api('POST', `/rows/${row}/relations/${propertyId}`, { add })
+      check('부모를 둔다 — 200', (await link(a, on.body.parentPropertyId, [b])).status === 200)
+      const cycle = await link(b, on.body.parentPropertyId, [a])
+      check('★ 자기 하위 항목을 부모로 두면 400 — 이유를 말한다', cycle.status === 400 && JSON.stringify(cycle.body).includes('상위 항목으로 둘 수 없습니다'), JSON.stringify(cycle))
+      const remove = await api('DELETE', `/data-sources/${db.dataSourceId}/properties/${on.body.childrenPropertyId}`)
+      check('짝의 한쪽을 따로 지우면 409 managed_property', remove.status === 409 && remove.body?.error === 'managed_property', JSON.stringify(remove))
+      const off = await api('DELETE', `/data-sources/${db.dataSourceId}/sub-items`)
+      check('★ 끄면 일반 relation 으로 남는다', off.status === 200 && off.body?.schema?.properties?.filter((p) => p.type === 'relation').length === 2, JSON.stringify({ status: off.status }))
+    }
+
     section('전체')
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))
     const serverErrors = serverOutput.split('\n').filter((l) => l.includes('⨯'))
