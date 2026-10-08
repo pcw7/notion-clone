@@ -61,6 +61,7 @@ import { parseUniqueIdQuery } from '@/lib/database/unique-id-format'
 import { isFilterableColumn, isSortable, subItemPairOf, type FilterableColumn, type ViewColumn } from '@/lib/database/view-columns'
 import { disableSubItems, enableSubItems, setColumnVisible, setDependencies, updateView, type ApiResult } from './table-api'
 import { TYPE_ICON } from './cell-view'
+import { ViewSearch } from './view-search'
 
 type Panel = 'filter' | 'sort' | 'properties' | 'group'
 
@@ -93,6 +94,7 @@ export function ViewToolbar({
   catalog,
   canEdit,
   board,
+  search,
 }: {
   workspaceId: string
   viewId: string
@@ -107,6 +109,8 @@ export function ViewToolbar({
   canEdit: boolean
   /** 보드 뷰의 그룹 설정. 표에는 없다. */
   board?: BoardSettings
+  /** 뷰 검색어(2e-2) — 주소의 `q`. 있으면 검색 칸이 열린 채로 선다. */
+  search?: string | null
 }) {
   const router = useRouter()
   const [panel, setPanel] = useState<Panel | null>(null)
@@ -167,6 +171,10 @@ export function ViewToolbar({
           />
         )}
         {busy && <span className="text-xs text-neutral-400">저장하는 중…</span>}
+        <span className="ml-auto">
+          {/* 뷰를 바꾸면 새로 선다 — 다른 뷰의 검색 칸에 옛 글자가 남지 않게. */}
+          <ViewSearch key={viewId} search={search ?? null} />
+        </span>
 
         {panel === 'filter' && (
           <FilterPanel

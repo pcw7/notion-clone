@@ -12131,6 +12131,88 @@ async function main() {
         JSON.stringify({ done: done.status, made: [made.status, made.body?.error], groups: groups?.groups?.map((g) => [g.key, g.count]) ?? groups }))
     }
 
+    if (sectionIf('뷰 검색 — 화면 (2e-2 · F-04-27)')) {
+      // 도구줄 "검색"을 눌러 치면 잠깐 뒤 주소의 q 가 바뀌고 표가 좁혀진다. "더 보기" · 열 집계도 같은 검색어다. 맞는 행이 없으면 안내와
+      // "검색어 지우기", Esc 로 닫으면 원래대로. 보드는 열을 남기고 카드만 좁힌다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const clickOn = async (selector) => {
+        const p = await evaluate(`(() => {
+          const e = document.querySelector(${JSON.stringify(selector)})
+          if (!e) return null
+          e.scrollIntoView({ block: 'center' })
+          const r = e.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (p) await click(p.x, p.y)
+        return p !== null
+      }
+      const db = (await api('POST', '/databases', { name: `뷰 검색 화면 ${stamp}` })).body.database
+      const view = db.defaultViewId
+      const titleProp = (await api('GET', `/views/${view}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const titleCell = (text) => ({ propertyId: titleProp, value: { type: 'title', title: [textRun(text)] } })
+      for (const t of ['주간 보고서', '회의록', '월간 보고서', '예산', '분기 보고서']) {
+        await api('POST', `/views/${view}/rows`, { cells: [titleCell(t)] })
+      }
+      // 한 페이지 2행 — "더 보기"가 검색어를 싣는지 보려고.
+      await api('PATCH', `/views/${view}`, { loadLimit: 2 })
+      await api('PATCH', `/views/${view}/columns/${titleProp}`, { calculation: 'count_all' })
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === 2`, 15000)
+
+      const titlesJs = `[...document.querySelectorAll('[data-testid="db-table"] tbody tr')].map((tr) => tr.querySelector('[data-testid="db-row-title"]')?.textContent ?? tr.textContent).join('|')`
+      const titles = () => evaluate(titlesJs)
+      const allMatch = (word, n) => waitFor(`(() => { const t = ${titlesJs}.split('|').filter(Boolean); return t.length === ${n} && t.every((x) => x.includes(${JSON.stringify(word)})) })()`, 10000)
+      const calcText = () => evaluate(`document.querySelector('td[data-testid="db-calc-cell"][data-property-id="${titleProp}"] [data-testid="db-calc-button"]')?.textContent ?? ''`)
+
+      await clickOn('[data-testid="db-search-button"]')
+      check('"검색"을 누르면 검색 칸이 열리고 포커스가 간다',
+        await waitFor(`document.activeElement?.getAttribute('data-testid') === 'db-search-input'`, 3000))
+      await typeText('보고')
+      check('★ 치고 잠깐 뒤 주소에 q 가 서고 표가 좁혀진다(첫 페이지 2행 — 둘 다 "보고")',
+        (await waitFor(`new URLSearchParams(location.search).get('q') === '보고'`, 8000)) && (await allMatch('보고', 2)), await titles())
+      check('★ 열 집계도 검색에 맞는 행으로 — 모두 세기 3', await waitFor(`(document.querySelector('td[data-testid="db-calc-cell"][data-property-id="${titleProp}"] [data-testid="db-calc-button"]')?.textContent ?? '') === '모두 세기3'`, 5000), await calcText())
+      check('검색 칸은 치던 글자를 그대로 들고 있다', (await evaluate(`document.querySelector('[data-testid="db-search-input"]')?.value`)) === '보고')
+      await clickOn('[data-testid="db-load-more"]')
+      check('★ "더 보기"도 같은 검색어로 — 셋 다 "보고서"(회의록 · 예산은 오지 않는다)', await allMatch('보고', 3), await titles())
+
+      // 맞는 행이 없다 → 안내 · "검색어 지우기"
+      await evaluate(`(() => { const i = document.querySelector('[data-testid="db-search-input"]'); i.focus(); i.select() })()`)
+      await typeText('없는말')
+      check('★ 맞는 행이 없으면 안내와 "검색어 지우기"가 선다(빈 표만 두지 않는다)',
+        await waitFor(`!!document.querySelector('[data-testid="db-search-empty"]') && !document.querySelector('[data-testid="db-empty"]')`, 8000))
+      await clickOn('[data-testid="db-search-reset"]')
+      check('★ "검색어 지우기" — 주소의 q 가 빠지고 행이 돌아오며 도구줄의 검색 칸도 닫힌다',
+        (await waitFor(`!new URLSearchParams(location.search).has('q') && document.querySelectorAll('[data-testid="db-table"] tbody tr').length === 2`, 8000))
+          && (await waitFor(`!!document.querySelector('[data-testid="db-search-button"]') && !document.querySelector('[data-testid="db-search-input"]')`, 3000)),
+        await titles())
+
+      // Esc 로 닫는다
+      await clickOn('[data-testid="db-search-button"]')
+      await waitFor(`document.activeElement?.getAttribute('data-testid') === 'db-search-input'`, 3000)
+      await typeText('회의')
+      await waitFor(`new URLSearchParams(location.search).get('q') === '회의'`, 8000)
+      await key('Escape')
+      check('Esc — 검색을 지우고 닫는다(원래 첫 페이지)',
+        await waitFor(`!new URLSearchParams(location.search).has('q') && document.querySelectorAll('[data-testid="db-table"] tbody tr').length === 2 && !document.querySelector('[data-testid="db-search-input"]')`, 8000),
+        await titles())
+
+      // 보드 — 열은 남고 카드만 좁혀진다 · 맞는 카드가 없으면 안내
+      const done = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '완료', type: 'checkbox' })).body.property.id
+      const board = (await api('POST', `/databases/${db.id}/views`, { type: 'board', groupBy: { property_id: done } })).body.view
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}?v=${board.id}&q=${encodeURIComponent('회의')}` })
+      check('★ 보드 — 주소의 q 로 카드가 좁혀지고 열(체크 안 됨 · 체크됨)은 남는다',
+        await waitFor(`document.querySelectorAll('[data-testid="db-board-card"]').length === 1 && document.querySelectorAll('[data-testid="db-board-column"]').length === 2
+          && document.querySelector('[data-testid="db-search-input"]')?.value === '회의'`, 15000))
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}?v=${board.id}&q=${encodeURIComponent('없는말')}` })
+      check('보드에 맞는 카드가 없으면 안내', await waitFor(`!!document.querySelector('[data-testid="db-search-empty"]') && document.querySelectorAll('[data-testid="db-board-column"]').length === 2`, 15000))
+    }
+
     section('전체')
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))
     const serverErrors = serverOutput.split('\n').filter((l) => l.includes('⨯'))

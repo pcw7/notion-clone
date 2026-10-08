@@ -74,6 +74,7 @@ import { formatUniqueId, normalizeUniqueIdPrefix } from '@/lib/database/unique-i
 import { CONVERTIBLE_TYPES, isConvertibleType } from '@/lib/database/type-conversion'
 import type { Calculations } from '@/lib/database/calculate'
 import { CalculationCell } from './calculation-cell'
+import { SearchEmpty } from './view-search'
 import { MAX_QUERY_PAGINATION } from '@/lib/database/limits'
 import {
   emptyValue,
@@ -155,6 +156,11 @@ export function DatabaseTable(props: {
    * 다시 계산하지 않는다 — 표를 다시 열면 맞는다(§7).
    */
   calculations?: Calculations
+  /**
+   * 뷰 검색어(2e-2 · F-04-27) — 서버 렌더가 이것으로 첫 페이지를 읽었다. "더 보기"도 같은 검색어를 싣는다. 검색 중에는 하위 항목 트리를
+   * 펴지 않는다(부르는 쪽이 `subItems` 를 주지 않는다 — 결과는 평평하다).
+   */
+  search?: string | null
 }) {
   const { workspaceId, viewId, dataSourceId, tableName, access } = props
   const variant: TableVariant = props.variant ?? 'table'
@@ -750,7 +756,7 @@ export function DatabaseTable(props: {
   const loadMore = async () => {
     if (cursor === null || loadingMore || reachedCap) return
     setLoadingMore(true)
-    const result = await api.loadRows(workspaceId, viewId, cursor)
+    const result = await api.loadRows(workspaceId, viewId, cursor, undefined, props.search)
     setLoadingMore(false)
     if (!result.ok) {
       setError(result.message)
@@ -1109,12 +1115,15 @@ export function DatabaseTable(props: {
         </table>
       </div>
 
-      {/* F-04-01 · F-04-02: 행이 0개여도 헤더 · 빈 상태 · "+ 새로 만들기"는 남는다. */}
-      {rows.length === 0 && (
-        <p className="px-2 text-sm text-neutral-400" data-testid="db-empty">
-          아직 행이 없습니다.
-        </p>
-      )}
+      {/* F-04-01 · F-04-02: 행이 0개여도 헤더 · 빈 상태 · "+ 새로 만들기"는 남는다. 검색 중이면 "맞는 행이 없다"와 지우기(2e-2). */}
+      {rows.length === 0 &&
+        (props.search ? (
+          <SearchEmpty search={props.search} />
+        ) : (
+          <p className="px-2 text-sm text-neutral-400" data-testid="db-empty">
+            아직 행이 없습니다.
+          </p>
+        ))}
 
       {error && (
         <p role="alert" data-testid="db-error" className="text-sm text-red-600 dark:text-red-400">
