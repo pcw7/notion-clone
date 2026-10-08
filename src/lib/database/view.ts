@@ -65,7 +65,8 @@ import type { ValidationIssue } from '../contracts/rich-text.ts'
  * 받는 뷰 타입. 정본의 10종 중 셋 — 마이그레이션 0022 의 CHECK 이 전체 집합이고 이것은 그 부분집합이다.
  * `board` 는 그룹이 필수다(F-04-03). `list` 는 표의 축약 렌더러라 서버 쪽은 타입 이름뿐이다(F-04-04).
  */
-export const MVP_VIEW_TYPES = ['table', 'board', 'list'] as const
+// 갤러리(2f-1 · F-04-05)를 더했다 — `ck_view_type`(0022)이 이미 받는 이름이라 마이그레이션이 없다.
+export const MVP_VIEW_TYPES = ['table', 'board', 'list', 'gallery'] as const
 export type MvpViewType = (typeof MVP_VIEW_TYPES)[number]
 
 export const DEFAULT_VIEW_NAME = '표'

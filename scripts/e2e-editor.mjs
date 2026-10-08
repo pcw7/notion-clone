@@ -12215,6 +12215,94 @@ async function main() {
       check('보드에 맞는 카드가 없으면 안내', await waitFor(`!!document.querySelector('[data-testid="db-search-empty"]') && document.querySelectorAll('[data-testid="db-board-column"]').length === 2`, 15000))
     }
 
+    if (sectionIf('갤러리 뷰 (2f-1 · F-04-05)')) {
+      // 뷰 추가에서 "갤러리"를 고르면 카드 그리드가 선다 — 카드는 제목(아이콘) + 값이 있는 속성의 배지. 하위 항목이 켜진 표는 부모만.
+      // "+ 새로 만들기"는 제목을 바로 받고, 카드의 제목은 그 행 페이지로 간다. 검색 · "더 보기"는 표와 같은 길이다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const clickOn = async (selector) => {
+        const p = await evaluate(`(() => {
+          const e = document.querySelector(${JSON.stringify(selector)})
+          if (!e) return null
+          e.scrollIntoView({ block: 'center' })
+          const r = e.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (p) await click(p.x, p.y)
+        return p !== null
+      }
+      const db = (await api('POST', '/databases', { name: `갤러리 ${stamp}` })).body.database
+      const ds = db.dataSourceId
+      const titleProp = (await api('GET', `/views/${db.defaultViewId}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const titleCell = (text) => ({ propertyId: titleProp, value: { type: 'title', title: [textRun(text)] } })
+      const amount = (await api('POST', `/data-sources/${ds}/properties`, { name: '금액', type: 'number' })).body.property.id
+      const stage = (await api('POST', `/data-sources/${ds}/properties`, { name: '단계', type: 'select' })).body.property.id
+      const plan = (await api('POST', `/data-sources/${ds}/properties/${stage}/options`, { name: '기획' })).body.option.id
+      const first = (await api('POST', `/views/${db.defaultViewId}/rows`, { cells: [
+        titleCell('첫 카드'),
+        { propertyId: amount, value: { type: 'number', number: 10 } },
+        { propertyId: stage, value: { type: 'select', select: { id: plan } } },
+      ] })).body.row.id
+      await api('POST', `/views/${db.defaultViewId}/rows`, { cells: [titleCell('둘째 카드')] })
+      await api('POST', `/data-sources/${ds}/sub-items`)
+      await api('POST', `/views/${db.defaultViewId}/rows`, { cells: [titleCell('자식 카드')], parent: first })
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      await waitFor(`!!document.querySelector('[data-testid="db-view-add"]')`, 15000)
+      await clickOn('[data-testid="db-view-add"]')
+      await waitFor(`!!document.querySelector('[data-testid="db-view-add-gallery"]')`, 3000)
+      await clickOn('[data-testid="db-view-add-gallery"]')
+      const cardTitles = () => evaluate(`[...document.querySelectorAll('[data-testid="db-gallery-card-title"]')].map((e) => e.textContent).join('|')`)
+      check('★ 뷰 추가의 "갤러리" — 카드 그리드가 서고 부모만 그린다(자식 카드는 없다)',
+        await waitFor(`!!document.querySelector('[data-testid="db-gallery"]') && [...document.querySelectorAll('[data-testid="db-gallery-card-title"]')].map((e) => e.textContent).join('|') === '첫 카드|둘째 카드'`, 15000),
+        await cardTitles())
+      // 첫 카드에는 하위 항목(자식 카드)의 배지도 붙는다 — 보이는 속성이다.
+      check('카드에는 값이 있는 속성만 배지로 — 첫 카드는 10 · 기획 · 하위 항목, 둘째 카드는 없다',
+        await evaluate(`(() => {
+          const badges = (id) => [...document.querySelectorAll('[data-row-id="' + id + '"] [data-testid="db-gallery-badge"]')].map((b) => b.textContent)
+          const second = [...document.querySelectorAll('[data-testid="db-gallery-card"]')].find((c) => c.textContent.includes('둘째'))
+          const mine = badges(${JSON.stringify(first)})
+          return mine.includes('10') && mine.includes('기획') && mine.some((b) => b.includes('자식 카드'))
+            && second.querySelectorAll('[data-testid="db-gallery-badge"]').length === 0
+        })()`),
+        JSON.stringify(await evaluate(`[...document.querySelectorAll('[data-row-id="${first}"] [data-testid="db-gallery-badge"]')].map((b) => b.textContent)`)))
+
+      await clickOn('[data-testid="db-gallery-add"]')
+      check('"+ 새로 만들기" — 새 카드가 서고 제목 칸에 포커스',
+        await waitFor(`document.activeElement?.getAttribute('data-testid') === 'db-gallery-title-input'`, 8000))
+      await typeText('새 카드')
+      await key('Enter')
+      const galleryId = await evaluate(`new URLSearchParams(location.search).get('v')`)
+      const storedTitle = async () => {
+        for (let i = 0; i < 25; i += 1) {
+          if (((await api('GET', `/views/${galleryId}/rows`)).body?.rows ?? []).some((r) => r.title === '새 카드')) return true
+          await sleep(200)
+        }
+        return false
+      }
+      check('★ 제목을 치고 Enter — 카드에 서고 서버에 남는다',
+        (await waitFor(`[...document.querySelectorAll('[data-testid="db-gallery-card-title"]')].some((e) => e.textContent === '새 카드')`, 5000))
+          && (await storedTitle()))
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}?v=${galleryId}&q=${encodeURIComponent('둘째')}` })
+      check('검색 — 주소의 q 로 카드가 좁혀진다', await waitFor(`[...document.querySelectorAll('[data-testid="db-gallery-card-title"]')].map((e) => e.textContent).join('|') === '둘째 카드'`, 15000), await cardTitles())
+
+      // 한 페이지 2행 — 행 순서는 첫 · 둘째 · 자식 · 새 카드라, 다음 페이지가 부모만이면 "새 카드", 아니면 "자식 카드"가 온다.
+      await api('PATCH', `/views/${galleryId}`, { loadLimit: 2 })
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}?v=${galleryId}` })
+      await waitFor(`document.querySelectorAll('[data-testid="db-gallery-card"]').length === 2`, 15000)
+      await clickOn('[data-testid="db-load-more"]')
+      check('★ "더 보기"도 부모만 — 다음 카드는 자식이 아니라 새 카드', await waitFor(`[...document.querySelectorAll('[data-testid="db-gallery-card-title"]')].map((e) => e.textContent).join('|') === '첫 카드|둘째 카드|새 카드'`, 8000), await cardTitles())
+
+      await clickOn(`[data-row-id="${first}"] [data-testid="db-gallery-open"]`)
+      check('★ 카드의 제목을 누르면 그 행 페이지로 간다', await waitFor(`location.pathname === ${JSON.stringify(`/w/${workspaceId}/${first}`)}`, 15000), await evaluate('location.pathname'))
+    }
+
     section('전체')
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))
     const serverErrors = serverOutput.split('\n').filter((l) => l.includes('⨯'))
