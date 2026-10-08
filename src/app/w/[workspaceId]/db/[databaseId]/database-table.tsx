@@ -596,6 +596,25 @@ export function DatabaseTable(props: {
   const childCount = (row: RowJson): number =>
     subItems === null ? 0 : readRelationValue(row.properties[subItems.childrenPropertyId]).count
 
+  /** 이 행의 자식을 끝까지 읽는다(상한에서 멈춘다). 실패하면 이유를 걸고 null. */
+  const loadChildren = async (rowId: string): Promise<RowJson[] | null> => {
+    setLoadingChildren(rowId)
+    const children: RowJson[] = []
+    let next: string | null = null
+    do {
+      const result = await api.loadRows(workspaceId, viewId, next, rowId)
+      if (!result.ok) {
+        setLoadingChildren(null)
+        setError(result.message)
+        return null
+      }
+      children.push(...result.value.rows)
+      next = result.value.hasMore ? result.value.nextCursor : null
+    } while (next !== null && children.length < MAX_QUERY_PAGINATION)
+    setLoadingChildren(null)
+    return children
+  }
+
   const toggleSubItems = async (rowId: string) => {
     const at = rows.findIndex((r) => r.id === rowId)
     if (at < 0 || loadingChildren !== null) return
@@ -610,20 +629,8 @@ export function DatabaseTable(props: {
       setExpanded((current) => new Set([...current].filter((id) => id !== rowId && !gone.has(id))))
       return
     }
-    setLoadingChildren(rowId)
-    const children: RowJson[] = []
-    let next: string | null = null
-    do {
-      const result = await api.loadRows(workspaceId, viewId, next, rowId)
-      if (!result.ok) {
-        setLoadingChildren(null)
-        setError(result.message)
-        return
-      }
-      children.push(...result.value.rows)
-      next = result.value.hasMore ? result.value.nextCursor : null
-    } while (next !== null && children.length < MAX_QUERY_PAGINATION)
-    setLoadingChildren(null)
+    const children = await loadChildren(rowId)
+    if (children === null) return
     setRows((current) => {
       const i = current.findIndex((r) => r.id === rowId)
       if (i < 0) return current
@@ -632,6 +639,51 @@ export function DatabaseTable(props: {
     })
     setDepthOf((current) => new Map([...current, ...children.map((c) => [c.id, depth + 1] as const)]))
     setExpanded((current) => new Set([...current, rowId]))
+  }
+
+  /**
+   * 하위 항목 `+`(2b-2b) — 그 행 밑에 새 행을 만든다(만들기와 연결이 한 트랜잭션 · `sub-item-rows.ts`). 접혀 있었으면 펴서 다시 읽고
+   * (방금 만든 행이 그 안에 있다), 펴 있었으면 그 부모의 마지막 자손 뒤에 끼운다. 그리고 새 행의 제목을 바로 편집한다(`addRow` 와 같다).
+   */
+  const addSubItem = async (parentId: string) => {
+    if (subItems === null || addingRow || loadingChildren !== null) return
+    setAddingRow(true)
+    setError(null)
+    const result = await api.createRow(workspaceId, viewId, [], { parent: parentId })
+    setAddingRow(false)
+    if (!result.ok) {
+      setError(result.message)
+      return
+    }
+    const row = result.value
+    const at = rows.findIndex((r) => r.id === parentId)
+    if (at < 0) return
+    const depth = depthOf.get(parentId) ?? 0
+    let next: RowJson[]
+    if (!expanded.has(parentId)) {
+      // 접혀 있었다 — 펴서 자식을 읽는다(방금 만든 행이 그 안에 있다).
+      const children = await loadChildren(parentId)
+      if (children === null) return
+      const seen = new Set(rows.map((r) => r.id))
+      next = [...rows.slice(0, at + 1), ...children.filter((c) => !seen.has(c.id)), ...rows.slice(at + 1)]
+      setDepthOf((current) => new Map([...current, ...children.map((c) => [c.id, depth + 1] as const)]))
+      setExpanded((current) => new Set([...current, parentId]))
+    } else {
+      // 펴 있었다 — 그 부모의 마지막 자손 뒤에 끼운다.
+      let end = at + 1
+      while (end < rows.length && (depthOf.get(rows[end].id) ?? 0) > depth) end += 1
+      next = [...rows.slice(0, end), row, ...rows.slice(end)]
+      setDepthOf((current) => new Map([...current, [row.id, depth + 1]]))
+    }
+    setRows(next)
+    // 새 행의 제목 칸을 바로 편집한다(`addRow` 와 같다 — 빈 행이 이름 없이 쌓이지 않게).
+    const index = next.findIndex((r) => r.id === row.id)
+    const titleCol = columns.findIndex((c) => c.type === 'title')
+    const column = columns[titleCol]
+    if (index >= 0 && titleCol >= 0 && column !== undefined && isCellColumn(column) && access.canEditContent) {
+      setDraft(draftOf(valueAt(next[index], column)))
+      setMode({ kind: 'editing', at: { row: index, col: titleCol } })
+    }
   }
 
   // ── 머리 메뉴 ──────────────────────────────────────────────────────
@@ -874,6 +926,21 @@ export function DatabaseTable(props: {
                           <PageIconView icon={row.icon} fallback />
                           <span className="min-w-0 flex-1">{content}</span>
                         </span>
+                        {subItems !== null && access.canCreateRows && (
+                          // 하위 항목 `+`(2b-2b) — 마우스를 올리면 "열기" 옆에 선다. 칸을 고르는 누르기로 번지지 않게 막는다.
+                          <button
+                            type="button"
+                            data-testid="db-subitem-add"
+                            aria-label={`${row.title || '제목 없음'} 밑에 하위 항목 추가`}
+                            tabIndex={-1}
+                            disabled={addingRow}
+                            onMouseDown={(e) => e.stopPropagation()}
+                            onClick={() => void addSubItem(row.id)}
+                            className="shrink-0 rounded border border-neutral-200 bg-white px-1.5 text-xs text-neutral-500 opacity-0 hover:bg-neutral-50 group-hover/title:opacity-100 dark:border-neutral-700 dark:bg-neutral-900"
+                          >
+                            ＋
+                          </button>
+                        )}
                         <Link
                           href={`/w/${workspaceId}/${row.id}`}
                           data-testid="db-row-open"

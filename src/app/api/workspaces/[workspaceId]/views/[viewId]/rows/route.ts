@@ -31,9 +31,11 @@ import { nestsSubItems, subItemPairOf } from '@/lib/database/view-columns'
 import { queryRows } from '@/lib/database/query'
 import { createRow } from '@/lib/database/row'
 import { createRowFromTemplate } from '@/lib/database/template'
+import { createSubItem } from '@/lib/database/sub-item-rows'
 import {
   failureResponse,
   parseCells,
+  relationFailureStatus,
   rowFailureStatus,
   rowJson,
   templateFailureStatus,
@@ -98,10 +100,14 @@ export async function POST(request: Request, ctx: Ctx): Promise<Response> {
   if (!isUuid(viewId)) return notFound()
 
   // 본문은 선택이다 — 빈 행 추가("+ 새로 만들기")가 가장 흔한 요청이다.
-  const body = (await request.json().catch(() => ({}))) as { cells?: unknown; templateId?: unknown }
+  const body = (await request.json().catch(() => ({}))) as { cells?: unknown; templateId?: unknown; parent?: unknown }
   const cells = parseCells(body?.cells)
   if (cells === null) return Response.json({ error: 'invalid_value' }, { status: 400 })
   if (body?.templateId !== undefined && typeof body.templateId !== 'string') {
+    return Response.json({ error: 'invalid_value' }, { status: 400 })
+  }
+  // `parent` — 그 행 밑에 하위 항목으로 만든다(2b-2b). 템플릿과 함께는 받지 않는다(템플릿으로 하위 항목 만들기는 아직 없다 · §7).
+  if (body?.parent !== undefined && (typeof body.parent !== 'string' || body.templateId !== undefined)) {
     return Response.json({ error: 'invalid_value' }, { status: 400 })
   }
 
@@ -125,6 +131,12 @@ export async function POST(request: Request, ctx: Ctx): Promise<Response> {
       },
       { status: 201 },
     )
+  }
+
+  if (typeof body.parent === 'string') {
+    const child = await createSubItem(session.ctx, view.value.dataSourceId, body.parent, { cells })
+    if (!child.ok) return failureResponse(relationFailureStatus(child.reason), child)
+    return Response.json({ ok: true, row: rowJson(child.value) }, { status: 201 })
   }
 
   const created = await createRow(session.ctx, view.value.dataSourceId, { cells })

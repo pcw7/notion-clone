@@ -13,6 +13,8 @@
  *   ⑤ 짝의 한쪽을 따로 지울 수 없다(`managed_property`)
  *   ⑥ ★ 끄면 일반 relation 으로 남는다 — 연결은 그대로 · role 은 지워진다 · 다시 켜면 새 짝(이름은 비어 있는 것)
  *   ⑦ ★ 트리 질의(2b-2) — 최상위만 · 이 행의 자식만. 부모가 휴지통이면 자식이 최상위로 보인다(엣지는 남는다) · 필터와 함께 걸린다
+ *   ⑧ ★ 하위 항목 `+`(2b-2b) — 부모 밑에 바로 만든다. 연결이 거부되면 행도 남지 않는다(한 트랜잭션) · 꺼진 표면 거부
+ *   ⑨ ★ 보드는 부모만(2b-2b) — 카드 · 열의 개수 모두
  *
  * ⚠ skip 은 테스트마다 `ctx.skip` 으로 건다(`describe` 의 skip 옵션은 등록 시점에 평가된다 — HANDOFF §5).
  */
@@ -30,6 +32,10 @@ import { createRow, trashRow } from './row.ts'
 import { queryRows } from './query.ts'
 import { linkRows } from './relation.ts'
 import { disableSubItems, enableSubItems, SUB_ITEM_NAMES } from './sub-items.ts'
+import { createSubItem } from './sub-item-rows.ts'
+import { addProperty } from './property.ts'
+import { createView } from './view.ts'
+import { queryGroups } from './group.ts'
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'
 
@@ -233,5 +239,59 @@ describe('⑦ 트리 질의 (2b-2)', () => {
     assert.deepEqual(await titles(null), ['나', '다'], '부모가 휴지통이면 자식이 최상위로 보인다')
     const kept = await edges(parentPropertyId, childrenPropertyId)
     assert.equal(kept.parentOf.get(b), a, '엣지는 남는다 — 복원하면 돌아온다')
+  })
+})
+
+async function pageCount(ds: string): Promise<number> {
+  const row = await withReadTransaction((tx) => tx.queryOne<{ n: string }>(`SELECT count(*) AS n FROM page WHERE data_source_id = $1`, [ds]))
+  return Number(row.n)
+}
+
+describe('⑧ 하위 항목 + (2b-2b)', () => {
+  test('★ 부모 밑에 바로 만든다 — 연결이 거부되면 행도 남지 않는다 · 꺼진 표면 거부', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { ds, parentPropertyId, childrenPropertyId, row } = await tree('하위 항목 +')
+    const a = await row('가')
+    const child = unwrap(await createSubItem(fx.owner.ctx, ds, a))
+    const e = await edges(parentPropertyId, childrenPropertyId)
+    assert.equal(e.parentOf.get(child.id), a)
+    assert.deepEqual(e.childrenOf(a), [child.id])
+
+    const before = await pageCount(ds)
+    const stranger = (await tree('다른 표')).ds
+    const otherRow = unwrap(await createRow(fx.owner.ctx, stranger, {})).id
+    const refused = await createSubItem(fx.owner.ctx, ds, otherRow)
+    assert.equal(!refused.ok && refused.reason, 'invalid_value', '다른 표의 행은 부모가 될 수 없다')
+    assert.equal(await pageCount(ds), before, '거부되면 만든 행도 되돌린다')
+
+    unwrap(await disableSubItems(fx.owner.ctx, ds))
+    const off = await createSubItem(fx.owner.ctx, ds, a)
+    assert.equal(!off.ok && off.reason, 'invalid_value')
+    assert.equal(await pageCount(ds), before)
+  })
+})
+
+describe('⑨ 보드는 부모만 (2b-2b)', () => {
+  test('★ 하위 항목이 켜진 표의 보드는 최상위 행만 — 카드도 개수도', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const created = unwrap(await createDatabase(fx.owner.ctx, { name: '보드 부모만' }))
+    const ds = created.dataSourceId
+    unwrap(await addProperty(fx.owner.ctx, ds, { name: '상태', type: 'select' }))
+    const titleId = unwrap(await getSchema(fx.owner.ctx, ds)).properties.find((p) => p.type === 'title')!.id
+    const row = async (title: string) =>
+      unwrap(await createRow(fx.owner.ctx, ds, { cells: [{ propertyId: titleId, value: { type: 'title', title: [textRun(title)] } }] })).id
+    const [a, b] = [await row('부모'), await row('둘째 부모')]
+    const board = unwrap(await createView(fx.owner.ctx, created.id, { type: 'board' }))
+    const cards = async () => {
+      const page = unwrap(await queryGroups(fx.owner.ctx, board.id))
+      return { titles: page.groups.flatMap((g) => g.rows.map((r) => r.title)).sort(), count: page.groups.reduce((n, g) => n + g.count, 0) }
+    }
+    assert.deepEqual(await cards(), { titles: ['둘째 부모', '부모'], count: 2 })
+
+    const { parentPropertyId } = unwrap(await enableSubItems(fx.owner.ctx, ds))
+    const c = unwrap(await createSubItem(fx.owner.ctx, ds, a)).id
+    assert.ok(c)
+    unwrap(await linkRows(fx.owner.ctx, b, parentPropertyId, { add: [a] }))
+    assert.deepEqual(await cards(), { titles: ['부모'], count: 1 })
   })
 })

@@ -11,28 +11,12 @@
  */
 
 import { readJsonBody, requireWorkspaceSession } from '@/lib/auth/route-session'
-import { linkRows, readRelation, type RelationFailure } from '@/lib/database/relation'
-import { failureResponse, rowJson } from '@/lib/database/http'
+import { linkRows, readRelation } from '@/lib/database/relation'
+import { failureResponse, relationFailureStatus, rowJson } from '@/lib/database/http'
 
 type Ctx = RouteContext<'/api/workspaces/[workspaceId]/rows/[rowId]/relations/[propertyId]'>
 
 /** `rowFailureStatus` 와 같은 매핑 — 못 보면 404, 볼 수는 있는데 못 고치면 403. */
-function statusOf(reason: RelationFailure): number {
-  switch (reason) {
-    case 'not_found':
-      return 404
-    case 'forbidden':
-      return 403
-    // 잠긴 행 페이지(7f-2) — 입력은 맞는데 지금 상태가 허락하지 않는다.
-    case 'locked':
-      return 409
-    case 'unknown_property':
-    case 'readonly_property':
-    case 'invalid_value':
-      return 400
-  }
-}
-
 export async function GET(request: Request, ctx: Ctx): Promise<Response> {
   const { workspaceId, rowId, propertyId } = await ctx.params
   const session = await requireWorkspaceSession(workspaceId)
@@ -44,7 +28,7 @@ export async function GET(request: Request, ctx: Ctx): Promise<Response> {
     cursor: params.get('cursor'),
     ...(Number.isFinite(rawLimit) && rawLimit > 0 ? { limit: rawLimit } : {}),
   })
-  if (!page.ok) return failureResponse(statusOf(page.reason), page)
+  if (!page.ok) return failureResponse(relationFailureStatus(page.reason), page)
   return Response.json({ ok: true, ...page.value })
 }
 
@@ -62,6 +46,6 @@ export async function POST(request: Request, ctx: Ctx): Promise<Response> {
     ...(body.add !== undefined ? { add: body.add as string[] } : {}),
     ...(body.remove !== undefined ? { remove: body.remove as string[] } : {}),
   })
-  if (!linked.ok) return failureResponse(statusOf(linked.reason), linked)
+  if (!linked.ok) return failureResponse(relationFailureStatus(linked.reason), linked)
   return Response.json({ ok: true, row: rowJson(linked.value) })
 }

@@ -16,6 +16,7 @@ import type { DataSourceFailure } from './data-source.ts'
 import type { LayoutFailure } from './layout.ts'
 import type { PropertyFailure } from './property.ts'
 import type { RowCell, RowFailure } from './row.ts'
+import type { RelationFailure } from './relation.ts'
 import type { GroupFailure } from './group.ts'
 import type { TemplateFailure } from './template.ts'
 import type { ViewFailure } from './view.ts'
@@ -28,6 +29,23 @@ export function rowFailureStatus(reason: RowFailure): number {
       return 403
     case 'schema_conflict':
     case 'version_conflict':
+    case 'locked':
+      return 409
+    case 'unknown_property':
+    case 'readonly_property':
+    case 'invalid_value':
+      return 400
+  }
+}
+
+/** relation 연결의 거부(5a) — 연결 라우트와 하위 항목 `+`(2b-2b · 행 라우트)가 같은 답을 준다. */
+export function relationFailureStatus(reason: RelationFailure): number {
+  switch (reason) {
+    case 'not_found':
+      return 404
+    case 'forbidden':
+      return 403
+    // 잠긴 행 페이지(7f-2) — 입력은 맞는데 지금 상태가 허락하지 않는다.
     case 'locked':
       return 409
     case 'unknown_property':
