@@ -85,6 +85,7 @@ export function DatabaseGallery(props: {
   const [covers, setCovers] = useState<Readonly<Record<string, string>>>(props.covers)
   /** 불러오다 깨진 이미지 — 빈 자리로 돌린다(같은 주소를 다시 묻지 않는다). */
   const [broken, setBroken] = useState<ReadonlySet<string>>(() => new Set())
+  const markBroken = (src: string) => setBroken((current) => (current.has(src) ? current : new Set(current).add(src)))
   const { layout } = props
   const showCover = layout.cover !== 'none'
   const editingRef = useRef<Editing | null>(null)
@@ -215,10 +216,12 @@ export function DatabaseGallery(props: {
                     alt=""
                     loading="lazy"
                     data-testid="db-gallery-cover-image"
-                    onError={() => {
-                      const src = covers[row.id]!
-                      setBroken((current) => new Set(current).add(src))
+                    // 화면이 붙기(hydration) 전에 이미 깨진 이미지에는 `onError` 가 오지 않는다 — 붙는 순간 한 번 본다(`complete` 인데 폭이
+                    // 0 이면 깨졌다). 서버 렌더가 `<img>` 를 내보내므로 브라우저는 스크립트보다 먼저 그것을 받는다(#219 의 전체 판이 잡았다).
+                    ref={(el) => {
+                      if (el !== null && el.complete && el.naturalWidth === 0) markBroken(covers[row.id]!)
                     }}
+                    onError={() => markBroken(covers[row.id]!)}
                     className={`h-full w-full ${layout.cover_aspect === 'contain' ? 'object-contain' : 'object-cover'}`}
                   />
                 )}
