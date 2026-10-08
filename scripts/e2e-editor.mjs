@@ -6819,9 +6819,10 @@ async function main() {
       await key('ArrowRight')
       check('마지막 칸을 선택했다', await waitFor(`document.activeElement?.dataset?.cell === '1:3'`, 3000), String(await activeCell()))
       await key('Tab')
-      check('★ 표 끝의 Tab 은 포커스를 표 밖으로 보낸다 — 키보드 사용자를 가두지 않는다 (WCAG 2.1.2)',
+      // "표 밖"은 칸의 격자(`tbody`) 밖이다 — 그 다음 자리는 표 아래의 집계 줄(`tfoot` 의 "계산" · 2d-2)일 수 있고, 그것도 갇힘이 아니다.
+      check('★ 표 끝의 Tab 은 포커스를 칸의 격자 밖으로 보낸다 — 키보드 사용자를 가두지 않는다 (WCAG 2.1.2)',
         await waitFor(`!!document.activeElement && document.activeElement !== document.body
-          && !document.querySelector('[data-testid="db-table"]').contains(document.activeElement)`, 3000),
+          && !document.querySelector('[data-testid="db-table"] tbody').contains(document.activeElement)`, 3000),
         await evaluate(`document.activeElement?.outerHTML?.slice(0, 100) ?? '(없음)'`))
 
       // ── 새로고침 ──
@@ -11896,7 +11897,8 @@ async function main() {
       await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
       await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === 2`, 15000)
       const header = () => evaluate(`document.querySelector('th[data-property-id="${memo}"]')?.textContent ?? ''`)
-      const cellsOf = () => evaluate(`[...document.querySelectorAll('td[data-property-id="${memo}"]')].map((td) => td.textContent.trim())`)
+      // 행의 칸만 — 표 아래 집계 줄(`tfoot` · 2d-2)의 칸도 같은 `data-property-id` 를 단다.
+      const cellsOf = () => evaluate(`[...document.querySelectorAll('tbody td[data-property-id="${memo}"]')].map((td) => td.textContent.trim())`)
 
       await clickOn(`th[data-property-id="${memo}"] [data-testid="db-column-menu"]`)
       await waitFor(`!!document.querySelector('[data-testid="db-column-convert"]')`, 3000)
@@ -11911,7 +11913,7 @@ async function main() {
       await clickOn('[data-testid="db-column-convert-confirm-button"]')
       check('★ 확인하면 바뀌고 칸이 숫자로 그려진다 — 읽히지 않던 칸은 빈 칸',
         await waitFor(`(document.querySelector('th[data-property-id="${memo}"]')?.textContent ?? '').includes('숫자')
-          && JSON.stringify([...document.querySelectorAll('td[data-property-id="${memo}"]')].map((td) => td.textContent.trim())) === JSON.stringify(['12', ''])`, 10000),
+          && JSON.stringify([...document.querySelectorAll('tbody td[data-property-id="${memo}"]')].map((td) => td.textContent.trim())) === JSON.stringify(['12', ''])`, 10000),
         JSON.stringify({ header: await header(), cells: await cellsOf() }))
 
       await clickOn(`th[data-property-id="${memo}"] [data-testid="db-column-menu"]`)
