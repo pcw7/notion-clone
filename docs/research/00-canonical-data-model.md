@@ -1966,6 +1966,19 @@ CREATE INDEX ON row_position (view_id, group_key, order_idx);
   프로퍼티가 살아 있는지 · 타입에 맞는지는 ①과 같다(고를 때 거부 · 읽을 때 무시).
 - 미룬 것: relation · rollup · 고유 ID 열의 집계 · 집계 캐시 · 표의 그룹(표 모양의 `group_by`).
 
+**[보강] 캘린더 — 날짜 속성으로 놓는다** ⟨DB 심화 2g-1조각 · F-04-06 / 마이그레이션 0058⟩
+
+- ① `view.type = 'calendar'`(CHECK 은 그대로 · 명령이 받는다). 레이아웃은 `view.configuration.calendar = { date_property_id, view_range }`
+  — 갤러리와 같은 규칙(한 키 · 두 키를 늘 함께 · 바뀐 키만 `configuration || patch` 로 덮는다 · CHECK `ck_view_calendar_layout` · `IS TRUE`).
+  `view_range` = month · week(주 보기는 화면이 아직). `show_weekends` 는 아직 없다.
+- ② **날짜 속성은 필수다** — 만들거나 캘린더로 바꿀 때 저장된 것이 살아 있으면 그대로, 아니면 **첫 날짜 속성**(스키마 순서), 없으면 거부
+  (`date_required` — 보드의 `group_required` 와 같은 태도). 지워지면 읽기가 null 을 준다(저장값은 남아 복원하면 돌아온다 · 04 의 "다른
+  날짜 속성으로 자동 폴백"은 하지 않는다 — 그룹 속성과 같은 이유 §3.6 [보강] `view.group_by`).
+- ③ 행은 **보이는 기간**(날짜 글자 `from` ~ `to` · 62일 이하)에 걸친 것만 — 사이드카로 `date_start ≤ to+1일 AND coalesce(date_end,
+  date_start) ≥ from−1일`(양끝을 하루씩 넓힌다 — 시각이 있는 값은 시간대에 따라 UTC 날짜가 어긋난다) · 날짜순 · 상한 1000(`truncated`) ·
+  커서 없음. 조건은 표와 같다(필터 · 뷰 검색 · 템플릿 · 휴지통) · 하위 항목은 **부모만**. **날짜 없는 행은 개수만** 준다(`undated`).
+- ④ 칸에 놓는 날은 **칸 값의 날짜 글자**(`start` · `end` 의 앞 열 자 — 사람이 고른 그 날)다. 서버가 넓혀 준 행을 화면이 이것으로 다시 가른다.
+
 **[보강] 갤러리 — 카드 그리드부터** ⟨DB 심화 2f-1조각 · F-04-05 / 마이그레이션 없음⟩
 
 - ① `view.type = 'gallery'` — `ck_view_type`(0022)이 이미 받는 이름이라 스키마는 그대로다. 명령이 받는 뷰 타입(`MVP_VIEW_TYPES`)에 더했다.

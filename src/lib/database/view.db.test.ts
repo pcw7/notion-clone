@@ -514,9 +514,9 @@ describe('뷰 목록 · 생성 · 삭제', () => {
   test('MVP 밖 뷰 타입은 거부', async (t) => {
     if (skipReason) return t.skip(skipReason)
     const table = await newTable()
-    // 4a(#98)가 board · list 를 열었으므로 정본 10종 중 아직 닫힌 것으로 본다.
+    // 4a(#98)가 board · list 를, 2f-1 · 2g-1 이 gallery · calendar 를 열었으므로 정본 10종 중 아직 닫힌 것으로 본다.
     // @ts-expect-error — 런타임 방어를 확인한다
-    const r = await createView(fx.owner.ctx, table.databaseId, { type: 'calendar' })
+    const r = await createView(fx.owner.ctx, table.databaseId, { type: 'timeline' })
     assert.equal(r.ok, false)
     if (!r.ok) assert.equal(r.reason, 'unsupported_type')
   })

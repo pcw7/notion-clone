@@ -3044,6 +3044,22 @@ try {
       [viewId, JSON.stringify({ gallery: { cover: 'none', cover_size: 'small' } })])
     await rejectBy('모르는 크기', 'ck_view_gallery_layout', setConfig, [viewId, layout({ cover_size: 'huge' })])
     await rejectBy('갤러리 키가 객체가 아니다', 'ck_view_gallery_layout', setConfig, [viewId, JSON.stringify({ gallery: 'large' })])
+
+    console.log('\n[41] 캘린더 레이아웃 (0058 / §3.6 [보강] 캘린더 · 2g-1조각)')
+    const calendar = (over) => JSON.stringify({ gallery: { cover: 'none', cover_size: 'small', cover_aspect: 'cover' }, calendar: { date_property_id: 'd'.repeat(21), view_range: 'month', ...over } })
+    await client.query('SAVEPOINT probe')
+    try {
+      await client.query(setConfig, [viewId, calendar({})])
+      await client.query(setConfig, [viewId, calendar({ view_range: 'week' })])
+      ok('날짜 속성 · 달 · 주 — 정상 경로가 통과한다(갤러리 키와 함께)')
+    } catch (e) {
+      fail(`정상 경로가 거부됐다 (${e.constraint ?? e.code})`)
+    }
+    await client.query('ROLLBACK TO SAVEPOINT probe')
+    await rejectBy('★ 날짜 속성이 없다(NULL 이면 통과하는 구멍)', 'ck_view_calendar_layout', setConfig,
+      [viewId, JSON.stringify({ calendar: { view_range: 'month' } })])
+    await rejectBy('★ 모르는 보기 단위', 'ck_view_calendar_layout', setConfig, [viewId, calendar({ view_range: 'year' })])
+    await rejectBy('날짜 속성이 글이 아니다', 'ck_view_calendar_layout', setConfig, [viewId, calendar({ date_property_id: 7 })])
   }
 
   await client.query('ROLLBACK')

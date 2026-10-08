@@ -54,6 +54,12 @@ import {
 import { readPropertyTypes } from './query.ts'
 import { isGroupableType, normalizeGroupBy, validateGroupBy, type GroupBy } from './group.ts'
 import { mergeGalleryLayout, readGalleryLayout, validateGalleryPatch, type GalleryLayout } from './gallery.ts'
+import {
+  readCalendarLayout,
+  validateCalendarPatch,
+  type CalendarLayout,
+  type LiveCalendarLayout,
+} from './calendar.ts'
 import { isMvpPropertyType, isOptionType } from './property-types.ts'
 import { calculationsFor, isCalculation } from './calculations.ts'
 import { relationOf, rollupOf, type ViewColumn } from './view-columns.ts'
@@ -67,7 +73,8 @@ import type { ValidationIssue } from '../contracts/rich-text.ts'
  * `board` 는 그룹이 필수다(F-04-03). `list` 는 표의 축약 렌더러라 서버 쪽은 타입 이름뿐이다(F-04-04).
  */
 // 갤러리(2f-1 · F-04-05)를 더했다 — `ck_view_type`(0022)이 이미 받는 이름이라 마이그레이션이 없다.
-export const MVP_VIEW_TYPES = ['table', 'board', 'list', 'gallery'] as const
+// 캘린더(2g-1 · F-04-06)도 — 이것도 `ck_view_type` 이 이미 받는 이름이다.
+export const MVP_VIEW_TYPES = ['table', 'board', 'list', 'gallery', 'calendar'] as const
 export type MvpViewType = (typeof MVP_VIEW_TYPES)[number]
 
 export const DEFAULT_VIEW_NAME = '표'
@@ -109,6 +116,11 @@ export type ViewDetail = {
    * 갤러리로 바꾸면 그대로 쓰인다.
    */
   readonly gallery: GalleryLayout
+  /**
+   * 캘린더 레이아웃(2g-1 · `configuration.calendar`). 날짜 속성이 살아 있는 날짜 컬럼이 아니면(지워졌다 · 타입을 바꿨다) `date_property_id`
+   * 가 null 이다 — 저장값은 남는다(그룹 속성과 같은 규칙). 캘린더가 아닌 뷰는 날짜 속성 null · 달.
+   */
+  readonly calendar: LiveCalendarLayout
 }
 
 export type ViewSummary = {
@@ -138,8 +150,10 @@ export type ViewFailure =
   | 'invalid_template'
   /** 집계 함수가 목록에 없거나 그 열의 타입이 고를 수 없는 것이다(2d-1 · F-04-16). */
   | 'invalid_calculation'
-  /** 갤러리 레이아웃의 키 · 값이 틀렸다(2f-2 · F-04-05). `issues` 가 어디인지 말한다. */
+  /** 갤러리 · 캘린더 레이아웃의 키 · 값이 틀렸다(2f-2 · 2g-1). `issues` 가 어디인지 말한다. */
   | 'invalid_layout'
+  /** 캘린더는 날짜 속성이 필수인데 고를 것이 없다(2g-1 · F-04-06 — 보드의 `group_required` 와 같은 태도). */
+  | 'date_required'
   /** 데이터베이스(구조) · 행 페이지가 잠겼다(7f-2 · F-06-16) — 풀어야 고친다. */
   | 'locked'
 
@@ -376,7 +390,31 @@ async function readView(tx: Tx, viewId: string): Promise<ViewDetail | null> {
     defaultTemplateId: row.default_template_page_id,
     columns,
     gallery: readGalleryLayout(row.configuration),
+    calendar: liveCalendarLayout(row.configuration, columns),
   }
+}
+
+/** 저장된 캘린더 레이아웃 — 날짜 속성이 살아 있는 날짜 컬럼일 때만 그 id(`ViewDetail.calendar` 주석). */
+function liveCalendarLayout(configuration: unknown, columns: readonly ViewColumn[]): LiveCalendarLayout {
+  const stored = readCalendarLayout(configuration)
+  const id = stored.date_property_id
+  return id !== null && columns.some((c) => c.propertyId === id && c.type === 'date') ? stored : { ...stored, date_property_id: null }
+}
+
+/**
+ * 캘린더로 만들거나 바꿀 때의 레이아웃 — 저장된 날짜 속성이 살아 있으면 그대로, 아니면 **첫 날짜 속성**(스키마 순서), 그것도 없으면
+ * null(호출자가 `date_required` 로 거부한다). 보드가 첫 select 를 고르는 것과 같은 태도다.
+ */
+async function resolveCalendarLayout(tx: Tx, dataSourceId: string, stored: LiveCalendarLayout): Promise<CalendarLayout | null> {
+  const types = await readPropertyTypes(tx, dataSourceId)
+  if (stored.date_property_id !== null && types.get(stored.date_property_id) === 'date') {
+    return { date_property_id: stored.date_property_id, view_range: stored.view_range }
+  }
+  const first = await tx.queryMaybe<{ id: string }>(
+    `SELECT id FROM property WHERE data_source_id = $1 AND deleted_at IS NULL AND type = 'date' ORDER BY order_idx, id LIMIT 1`,
+    [dataSourceId],
+  )
+  return first === null ? null : { date_property_id: first.id, view_range: stored.view_range }
 }
 
 /** 저장된 `group_by` 가 살아 있는 · 묶을 수 있는 컬럼을 가리킬 때만 돌려준다(`ViewDetail.groupBy` 주석). */
@@ -497,6 +535,10 @@ export async function createView(
     const grouped = await resolveGroupBy(tx, dataSourceId, type, input.groupBy, null)
     if (isFailure(grouped)) return grouped
 
+    // 캘린더는 날짜 속성이 필수다(2g-1) — 첫 날짜 속성을 고르고, 없으면 거부한다.
+    const calendar = type === 'calendar' ? await resolveCalendarLayout(tx, dataSourceId, readCalendarLayout(null)) : null
+    if (type === 'calendar' && calendar === null) return fail('date_required')
+
     const last = await tx.queryMaybe<{ order_idx: string }>(
       `SELECT order_idx FROM view
         WHERE database_id = $1 AND owner_kind = 'database_view'
@@ -508,7 +550,7 @@ export async function createView(
     await tx.query(
       `INSERT INTO view (id, owner_kind, database_id, data_source_id, name, type, order_idx,
                          group_by, configuration, created_at, updated_at)
-       VALUES ($1, 'database_view', $2, $3, $4, $5, $6, $7::jsonb, '{}'::jsonb, now(), now())`,
+       VALUES ($1, 'database_view', $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, now(), now())`,
       [
         viewId,
         databaseId,
@@ -517,6 +559,7 @@ export async function createView(
         type,
         orderKeyBetween(last?.order_idx ?? null, null),
         grouped === null ? null : JSON.stringify(grouped),
+        JSON.stringify(calendar === null ? {} : { calendar }),
       ],
     )
 
@@ -598,6 +641,11 @@ export type UpdateViewInput = {
    * 않는다 — 04 *"JSON 전체 교체 금지"*). 뷰의 종류와 무관하게 받는다.
    */
   readonly gallery?: Partial<GalleryLayout>
+  /**
+   * 캘린더 레이아웃의 바꿀 키만(2g-1) — 갤러리와 같은 규칙(지금 값 위에 합쳐 `configuration.calendar` 한 키만). 날짜 속성은 이 표의 살아 있는
+   * 날짜 속성이어야 한다.
+   */
+  readonly calendar?: Partial<CalendarLayout>
 }
 
 /**
@@ -675,6 +723,10 @@ export async function updateView(
       const issues = validateGalleryPatch(input.gallery)
       if (issues.length > 0) return fail('invalid_layout', issues)
     }
+    if (input.calendar !== undefined) {
+      const issues = validateCalendarPatch(input.calendar, types)
+      if (issues.length > 0) return fail('invalid_layout', issues)
+    }
 
     // 타입 · 그룹은 서로에 기댄다(보드 ⇒ 그룹) — 지금 값과 합쳐서 본다.
     const current = await tx.queryOne<{ type: string; group_by: unknown; configuration: unknown }>(
@@ -684,6 +736,18 @@ export async function updateView(
     // 갤러리 레이아웃 — 잠근 행의 지금 값 위에 바꿀 키만 얹는다(동시에 다른 키를 바꾼 사람의 것을 덮지 않는다).
     const gallery =
       input.gallery === undefined ? null : mergeGalleryLayout(readGalleryLayout(current.configuration), input.gallery)
+    // 캘린더 레이아웃 — 바꿀 키를 얹거나(2g-1), 캘린더로 **바꿀 때** 날짜 속성을 고른다(저장된 것이 살아 있으면 그대로).
+    const storedCalendar = readCalendarLayout(current.configuration)
+    const patchedCalendar = input.calendar === undefined ? storedCalendar : { ...storedCalendar, ...input.calendar }
+    const becomesCalendar = input.type === 'calendar' && current.type !== 'calendar'
+    const calendar =
+      input.calendar !== undefined || becomesCalendar ? await resolveCalendarLayout(tx, gate.dataSourceId, patchedCalendar) : undefined
+    if (calendar === null) return fail('date_required')
+    // `configuration` 은 바뀐 키만 덮는다(최상위 `||`) — 다른 종류의 키는 그대로다.
+    const configurationPatch = {
+      ...(gallery === null ? {} : { gallery }),
+      ...(calendar === undefined ? {} : { calendar }),
+    }
     const type = input.type ?? current.type
     const touchesGroup = input.groupBy !== undefined || input.type !== undefined
     const grouped = touchesGroup
@@ -710,8 +774,7 @@ export async function updateView(
               group_by = CASE WHEN $9::boolean THEN $10::jsonb ELSE group_by END,
               default_template_page_id =
                 CASE WHEN $11::boolean THEN $12::uuid ELSE default_template_page_id END,
-              configuration = CASE WHEN $13::jsonb IS NULL THEN configuration
-                                   ELSE jsonb_set(configuration, '{gallery}', $13::jsonb) END,
+              configuration = configuration || $13::jsonb,
               updated_at = now()
         WHERE id = $1`,
       [
@@ -727,7 +790,7 @@ export async function updateView(
         grouped === null ? null : JSON.stringify(grouped),
         input.defaultTemplateId !== undefined,
         input.defaultTemplateId ?? null,
-        gallery === null ? null : JSON.stringify(gallery),
+        JSON.stringify(configurationPatch),
       ],
     )
 

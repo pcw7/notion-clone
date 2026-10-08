@@ -181,6 +181,7 @@ export function viewFailureStatus(reason: ViewFailure): number {
     case 'invalid_template':
     case 'invalid_calculation':
     case 'invalid_layout':
+    case 'date_required':
       return 400
   }
 }

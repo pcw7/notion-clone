@@ -6,7 +6,7 @@
  * 이 파일이 지키는 것.
  *
  *   ① ★ 갤러리 뷰를 만들고 · 표를 갤러리로 바꾸고 · 갤러리를 표로 되돌린다 — 그룹이 필요 없다
- *   ② 아직 받지 않는 뷰 타입(캘린더)은 거부한다(`unsupported_type`) — CHECK(`ck_view_type`)은 받지만 명령이 막는다
+ *   ② 아직 받지 않는 뷰 타입(타임라인)은 거부한다(`unsupported_type`) — CHECK(`ck_view_type`)은 받지만 명령이 막는다
  *
  * 부모만 그리는 규칙(하위 항목)은 행 라우트 · 서버 렌더의 일이라 e2e 가 본다.
  *
@@ -64,10 +64,10 @@ describe('① 갤러리 뷰', () => {
 })
 
 describe('② 아직 받지 않는 뷰 타입', () => {
-  test('캘린더는 거부한다 — CHECK 은 받는 이름이지만 명령이 막는다', async (t) => {
+  test('타임라인은 거부한다 — CHECK 은 받는 이름이지만 명령이 막는다', async (t) => {
     if (skipReason) return t.skip(skipReason)
     const db = unwrap(await createDatabase(fx.owner.ctx, { name: `갤러리 ${Date.now()}` }))
-    const r = await createView(fx.owner.ctx, db.id, { type: 'calendar' as MvpViewType })
+    const r = await createView(fx.owner.ctx, db.id, { type: 'timeline' as MvpViewType })
     assert.equal(!r.ok && r.reason, 'unsupported_type')
   })
 })
