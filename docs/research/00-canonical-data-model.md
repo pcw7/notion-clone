@@ -1966,6 +1966,21 @@ CREATE INDEX ON row_position (view_id, group_key, order_idx);
   프로퍼티가 살아 있는지 · 타입에 맞는지는 ①과 같다(고를 때 거부 · 읽을 때 무시).
 - 미룬 것: relation · rollup · 고유 ID 열의 집계 · 집계 캐시 · 표의 그룹(표 모양의 `group_by`).
 
+**[보강] 뷰 검색 — 저장하지 않는 술어 하나** ⟨DB 심화 2e-1조각 · F-04-27 / 마이그레이션 0056⟩
+
+초판은 뷰 검색을 다루지 않았다(04 F-04-27 이 *"테이블 추가 없음 — 검색어는 요청 파라미터이자 클라이언트 상태"* 라고 했다).
+
+- ① **스키마가 없다.** 검색어는 요청(`?q=`)이 들고 오고 `view` 에 쓰지 않는다. 필터와 **AND** 로 붙는 술어 하나다 — 행 질의 · 열 집계 ·
+  보드(카드 · 개수 · 머리 값 · 다음 페이지)가 같은 술어를 끼워 같은 행을 본다.
+- ② **찾는 칸은 명시적 목록이다** — 제목 · 글(사이드카 `text_value`) · 선택 · 상태(사이드카는 옵션 id 라 `select_option.name` 으로).
+  숫자 · 날짜 · 체크박스 · relation · rollup · 고유 ID · 본문은 찾지 않는다. 살아 있는 프로퍼티의 칸만. 대소문자 무시 · 부분 일치 ·
+  `%` · `_` · `\` 는 글자 그대로(필터의 글 비교와 같은 `escapeLike`).
+- ③ **인덱스** — `ix_ppv_text_bigm`(`lower(text_value)` 의 pg_bigm GIN · 부분 `text_value IS NOT NULL`). 0013 의 `ix_ppv_text` 는
+  `text_pattern_ops` 라 접두사만 받는다. pg_trgm 이 아니라 pg_bigm 인 것은 한국어 2-gram 때문이다(0012). 질의는
+  `p.id IN (SELECT page_id … LIKE …)` 모양이라 인덱스가 쓰인다(상관 `EXISTS` 면 행마다 칸을 찾는다).
+- ④ 하위 항목이 켜진 표는 검색 중에 트리를 펴지 않고 **맞는 행을 평평하게** 준다(자식만 맞으면 트리로는 보일 자리가 없다 — 04 의
+  "부모를 회색 행으로" 는 하지 않았다). 보드는 그룹(열)을 남기고 카드만 좁힌다.
+
 **[보강] `view.group_by` 의 모양과 `row_position.group_key` 의 뜻** ⟨보드 4a조각 / 마이그레이션 0022⟩
 
 초판은 `group_by jsonb` 와 `group_key text DEFAULT ''` 만 적고 안을 비워 두었다. 구현이 정한 것:

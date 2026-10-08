@@ -12093,6 +12093,44 @@ async function main() {
       await closePanel()
     }
 
+    if (sectionIf('뷰 검색 — 서버 (2e-1 · F-04-27)')) {
+      // `?q=` 로 행 · 열 집계 · 보드가 같이 좁혀진다(뷰에 저장하지 않는다). 하위 항목이 켜진 표는 검색 중에 맞는 행을 평평하게 준다.
+      // 찾는 칸 · 필터와의 AND · 탈출 같은 규칙은 DB 검사가 본다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `뷰 검색 ${stamp}` })).body.database
+      const view = db.defaultViewId
+      const titleProp = (await api('GET', `/views/${view}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const titleCell = (text) => ({ propertyId: titleProp, value: { type: 'title', title: [textRun(text)] } })
+      const parentRow = (await api('POST', `/views/${view}/rows`, { cells: [titleCell('분기 계획')] })).body.row.id
+      await api('POST', `/views/${view}/rows`, { cells: [titleCell('회의록')] })
+      await api('POST', `/data-sources/${db.dataSourceId}/sub-items`)
+      await api('POST', `/views/${view}/rows`, { cells: [titleCell('주간 보고서')], parent: parentRow })
+      await api('PATCH', `/views/${view}/columns/${titleProp}`, { calculation: 'count_all' })
+
+      const titlesOf = (body) => (body?.rows ?? []).map((r) => r.title).sort().join(',')
+      const all = (await api('GET', `/views/${view}/rows`)).body
+      check('검색어가 없으면 트리의 최상위 행만(자식은 부모 밑에)', titlesOf(all) === ['분기 계획', '회의록'].sort().join(','), titlesOf(all))
+      const found = (await api('GET', `/views/${view}/rows?q=${encodeURIComponent('보고')}`)).body
+      check('★ ?q= 로 맞는 행만 — 하위 항목이 켜진 표라도 자식이 평평하게 나온다', titlesOf(found) === '주간 보고서', titlesOf(found))
+      check('★ 열 집계도 검색에 맞는 행으로(모두 세기 1)', found?.calculations?.[titleProp]?.value === 1, JSON.stringify(found?.calculations))
+      const nested = await api('GET', `/views/${view}/rows?q=${encodeURIComponent('보고')}&parent=${parentRow}`)
+      check('검색 중에 parent 를 주면 400 — 트리를 펴지 않는다', nested.status === 400, String(nested.status))
+
+      const done = await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '완료', type: 'checkbox' })
+      const made = await api('POST', `/databases/${db.id}/views`, { type: 'board', groupBy: { property_id: done.body?.property?.id } })
+      const board = made.body?.view
+      const groups = board ? (await api('GET', `/views/${board.id}/groups?q=${encodeURIComponent('회의')}`)).body : null
+      const counted = (groups?.groups ?? []).reduce((n, g) => n + g.count, 0)
+      check('★ 보드도 ?q= 로 좁혀진다(카드 수 합 1)', counted === 1,
+        JSON.stringify({ done: done.status, made: [made.status, made.body?.error], groups: groups?.groups?.map((g) => [g.key, g.count]) ?? groups }))
+    }
+
     section('전체')
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))
     const serverErrors = serverOutput.split('\n').filter((l) => l.includes('⨯'))

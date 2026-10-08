@@ -12,7 +12,9 @@
  * 깨진다. 필터를 바꾸려면 `PATCH /views/[viewId]` 다 — 그쪽은 `edit_structure` 를
  * 묻는다.
  *
- * 받는 것은 페이지네이션뿐이다: `cursor` · `limit`.
+ * 받는 것은 페이지네이션뿐이다: `cursor` · `limit`. 그리고 **뷰 검색어** `q`(2e-1 · F-04-27) — 필터와 AND 로 붙는 임시 조건이고 뷰에
+ * 저장하지 않는다(04 *"검색은 임시 상태"*). 공유 상태(필터)를 바꾸지 않으므로 위의 원칙과 부딪히지 않는다. 검색 중에는 하위 항목
+ * 트리를 펴지 않고 **맞는 행을 평평하게** 준다 — 자식만 맞으면 트리로는 보일 자리가 없다(04 F-04-27 의 중첩 엣지 · §7).
  *
  * ──────────────────────────────────────────────────────────────────────
  * 행 추가도 **뷰의 주소**로 받는다
@@ -30,6 +32,7 @@ import { getView } from '@/lib/database/view'
 import { nestsSubItems, subItemPairOf } from '@/lib/database/view-columns'
 import { queryRows } from '@/lib/database/query'
 import { computeCalculations } from '@/lib/database/calculate'
+import { normalizeSearch } from '@/lib/database/search'
 import { createRow } from '@/lib/database/row'
 import { createRowFromTemplate } from '@/lib/database/template'
 import { createSubItem } from '@/lib/database/sub-item-rows'
@@ -65,7 +68,8 @@ export async function GET(request: Request, ctx: Ctx): Promise<Response> {
   // `parent` 를 주면 거부한다(조용히 모든 행을 주면 화면이 자식 자리에 표 전체를 끼운다).
   const parent = params.get('parent')
   if (parent !== null && !isUuid(parent)) return Response.json({ error: 'invalid_value' }, { status: 400 })
-  const pair = nestsSubItems(view.value.type) ? subItemPairOf(view.value.columns) : null
+  const search = normalizeSearch(params.get('q'))
+  const pair = nestsSubItems(view.value.type) && search === null ? subItemPairOf(view.value.columns) : null
   if (parent !== null && pair === null) return Response.json({ error: 'invalid_value' }, { status: 400 })
 
   const page = await queryRows(session.ctx, view.value.dataSourceId, {
@@ -76,6 +80,7 @@ export async function GET(request: Request, ctx: Ctx): Promise<Response> {
     limit: Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : view.value.loadLimit,
     cursor: params.get('cursor'),
     ...(pair === null ? {} : { tree: { parentPropertyId: pair.parentPropertyId, under: parent } }),
+    search,
   })
 
   if (!page.ok) {
@@ -85,7 +90,9 @@ export async function GET(request: Request, ctx: Ctx): Promise<Response> {
   // 열 집계(2d-1 · F-04-16) — 첫 페이지에만 함께 싣는다(04 *"행 쿼리 응답에 aggregates 를 함께 담아 1회 왕복"*). 다음 페이지 · 자식 행
   // 읽기에는 다시 계산하지 않는다 — 대상은 필터를 지난 행 전부라 페이지마다 같다.
   const first = params.get('cursor') === null && parent === null
-  const calculations = first ? await computeCalculations(session.ctx, view.value.dataSourceId, view.value.filter, view.value.columns) : undefined
+  const calculations = first
+    ? await computeCalculations(session.ctx, view.value.dataSourceId, view.value.filter, view.value.columns, search)
+    : undefined
 
   return Response.json({
     ...(calculations === undefined ? {} : { calculations }),

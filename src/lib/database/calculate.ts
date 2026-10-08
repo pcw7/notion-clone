@@ -18,6 +18,7 @@ import { effectiveCaps } from '../permissions/effective.ts'
 import { calculationResult, canCalculate, type Calculation, type CalculationResult, type ColumnStats } from './calculations.ts'
 import { compileFilter, ParamBag, type FilterNode } from './filter.ts'
 import { readPropertyTypes } from './query.ts'
+import { compileSearch } from './search.ts'
 
 /** 계산을 단 열 — 컬럼의 `calculation` 과 타입. */
 export type CalculatedColumn = { readonly propertyId: string; readonly type: string; readonly calculation?: Calculation | null }
@@ -26,13 +27,14 @@ export type Calculations = Readonly<Record<string, CalculationResult>>
 
 /**
  * 이 표 · 이 필터로 열들의 집계를 계산한다. 계산이 없거나 타입에 맞지 않는 열(타입을 바꾼 뒤)은 빠진다 — 저장값은 남는다.
- * 못 보는 표면 빈 결과다(존재를 알리지 않는다).
+ * 못 보는 표면 빈 결과다(존재를 알리지 않는다). 뷰 검색어(2e-1)가 있으면 그것도 건다 — 표에 보이는 행과 같은 행이다.
  */
 export async function computeCalculations(
   ctx: SessionContext,
   dataSourceId: string,
   filter: FilterNode | null,
   columns: readonly CalculatedColumn[],
+  search: string | null = null,
 ): Promise<Calculations> {
   const wanted = columns.filter(
     (c): c is CalculatedColumn & { calculation: Calculation } =>
@@ -47,7 +49,7 @@ export async function computeCalculations(
       [dataSourceId, ctx.workspaceId],
     )
     if (ds === null || !can(await effectiveCaps(tx, ctx, ds.container_id), 'view')) return {}
-    const stats = await readStats(tx, dataSourceId, filter, wanted.map((c) => c.propertyId))
+    const stats = await readStats(tx, dataSourceId, filter, search, wanted.map((c) => c.propertyId))
     const out: Record<string, CalculationResult> = {}
     for (const column of wanted) {
       const s = stats.get(column.propertyId)
@@ -112,10 +114,17 @@ export function columnStatsOf(total: number, s: StatsRow): ColumnStats {
 }
 
 /** 열마다 통계 한 줄 — 질의 하나. 지워진 프로퍼티를 가리키는 필터 규칙은 컴파일러가 건너뛴다(표의 행 질의와 같은 규칙). */
-async function readStats(tx: Tx, dataSourceId: string, filter: FilterNode | null, propertyIds: readonly string[]): Promise<Map<string, ColumnStats>> {
+async function readStats(
+  tx: Tx,
+  dataSourceId: string,
+  filter: FilterNode | null,
+  search: string | null,
+  propertyIds: readonly string[],
+): Promise<Map<string, ColumnStats>> {
   const types = await readPropertyTypes(tx, dataSourceId)
   const params = new ParamBag(2)
   const filterSql = compileFilter(filter, types, params)
+  const searchSql = search === null ? null : compileSearch(search, types, params)
   const columns = propertyIds.map((id, i) => {
     const p = params.bind(id)
     return `(SELECT ${statsJsonSql('v')}
@@ -124,7 +133,9 @@ async function readStats(tx: Tx, dataSourceId: string, filter: FilterNode | null
   const row = await tx.queryOne<Record<string, unknown>>(
     `WITH r AS (
        SELECT p.id FROM page p JOIN block b ON b.id = p.id
-        WHERE p.data_source_id = $1 AND p.is_template = false AND b.lifecycle = 'live'${filterSql === null ? '' : ` AND ${filterSql}`}
+        WHERE p.data_source_id = $1 AND p.is_template = false AND b.lifecycle = 'live'${filterSql === null ? '' : ` AND ${filterSql}`}${
+          searchSql === null ? '' : ` AND ${searchSql}`
+        }
      )
      SELECT (SELECT count(*) FROM r)::int AS total, ${columns.join(', ')}`,
     [dataSourceId, ...params.values],

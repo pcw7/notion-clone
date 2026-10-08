@@ -6,6 +6,8 @@
  *   GET                       그룹 전부(카운트 · 숨김) + 보이는 그룹의 첫 페이지 행
  *   GET ?group=<key>&cursor=  한 그룹의 다음 페이지 — 그룹별 독립 커서(F-04-15)
  *   GET ?calculations=1       그룹 머리의 계산만(2d-3 · F-04-16) — 카드를 옮기거나 만든 뒤. 행은 읽지 않는다
+ *
+ *   셋 다 `q`(뷰 검색어 · 2e-1 · F-04-27)를 받는다 — 카드 · 개수 · 머리 값이 같이 좁혀진다. 뷰에 저장하지 않는다.
  *   POST { action: 'move', rowId, groupKey, beforeRowId? }
  *                             카드 이동. 셀 값 + 열 안 자리를 **한 트랜잭션**으로(마스터 문서 §5.2 4번)
  *
@@ -20,6 +22,7 @@ import { isUuid } from '@/lib/ids'
 import { readJsonBody, requireWorkspaceSession } from '@/lib/auth/route-session'
 import { moveRow, queryGroupCalculations, queryGroupRows, queryGroups } from '@/lib/database/group'
 import { failureResponse, groupFailureStatus, rowJson } from '@/lib/database/http'
+import { normalizeSearch } from '@/lib/database/search'
 
 type Ctx = RouteContext<'/api/workspaces/[workspaceId]/views/[viewId]/groups'>
 
@@ -34,9 +37,10 @@ export async function GET(request: Request, ctx: Ctx): Promise<Response> {
 
   const params = new URL(request.url).searchParams
   const group = params.get('group')
+  const search = normalizeSearch(params.get('q'))
 
   if (params.get('calculations') === '1') {
-    const calculated = await queryGroupCalculations(session.ctx, viewId)
+    const calculated = await queryGroupCalculations(session.ctx, viewId, { search })
     if (!calculated.ok) return failureResponse(groupFailureStatus(calculated.reason), calculated)
     return Response.json({ ok: true, calculation: calculated.value.calculation, values: calculated.value.values })
   }
@@ -46,6 +50,7 @@ export async function GET(request: Request, ctx: Ctx): Promise<Response> {
     const page = await queryGroupRows(session.ctx, viewId, group, {
       cursor: params.get('cursor'),
       ...(Number.isFinite(rawLimit) && rawLimit > 0 ? { limit: rawLimit } : {}),
+      search,
     })
     if (!page.ok) return failureResponse(groupFailureStatus(page.reason), page)
     return Response.json({
@@ -56,7 +61,7 @@ export async function GET(request: Request, ctx: Ctx): Promise<Response> {
     })
   }
 
-  const groups = await queryGroups(session.ctx, viewId)
+  const groups = await queryGroups(session.ctx, viewId, { search })
   if (!groups.ok) return failureResponse(groupFailureStatus(groups.reason), groups)
   const { value } = groups
   return Response.json({
