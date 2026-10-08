@@ -46,6 +46,7 @@ import { isLocked } from '../permissions/lock.ts'
 import { orderKeyBetween } from '../block/order-key.ts'
 import {
   MAX_SORT_KEYS,
+  isGroup,
   validateFilter,
   validateSorts,
   type FilterNode,
@@ -121,6 +122,15 @@ export type ViewDetail = {
    * 가 null 이다 — 저장값은 남는다(그룹 속성과 같은 규칙). 캘린더가 아닌 뷰는 날짜 속성 null · 달.
    */
   readonly calendar: LiveCalendarLayout
+  /**
+   * 이 사람의 개인 필터 · 정렬(2h-1 · F-04-17 · `view_user_override`) — 어느 쪽을 덮어썼는지. 없으면 null. `filter` · `sorts` 는 늘
+   * **공유** 것이고, 행을 고를 때는 `effectiveFilter` · `effectiveSorts` 를 쓴다(개인 것이 공유 것을 **대체**한다).
+   */
+  readonly personal: { readonly filter: boolean; readonly sorts: boolean } | null
+  /** 이 사람이 실제로 보는 필터 — 개인 필터가 있으면 그것(빈 묶음이면 "필터 없음"), 아니면 공유 필터. */
+  readonly effectiveFilter: FilterNode | null
+  /** 이 사람이 실제로 보는 정렬 — 개인 정렬이 있으면 그것, 아니면 공유 정렬. */
+  readonly effectiveSorts: readonly SortKey[]
 }
 
 export type ViewSummary = {
@@ -257,6 +267,8 @@ type ViewRow = {
   load_limit: number
   default_template_page_id: string | null
   configuration: unknown
+  personal_filter: unknown
+  personal_sorts: unknown
 }
 
 /**
@@ -359,21 +371,29 @@ async function toColumns(tx: Tx, rows: readonly ColumnRow[]): Promise<ViewColumn
   return columns
 }
 
-async function readView(tx: Tx, viewId: string): Promise<ViewDetail | null> {
+async function readView(tx: Tx, viewId: string, userId: string | null = null): Promise<ViewDetail | null> {
   const row = await tx.queryMaybe<ViewRow>(
     `SELECT v.id, v.database_id, v.data_source_id, v.name, v.type, v.order_idx,
             v.filter, v.sorts, v.group_by, v.load_limit, v.configuration,
+            -- 이 사람의 개인 필터 · 정렬(2h-1) — NULL 이면 덮어쓰지 않았다
+            o.filter AS personal_filter, o.sorts AS personal_sorts,
             -- 살아 있는 템플릿을 가리킬 때만 준다(ViewDetail.defaultTemplateId). 0026 의 트리거가 "이 표의
             -- 템플릿 행"까지는 지키지만 휴지통은 보지 못한다 — 행이 남아 있기 때문이다(X-3).
             (SELECT v.default_template_page_id
                FROM page p JOIN block b ON b.id = p.id
               WHERE p.id = v.default_template_page_id AND p.is_template AND b.lifecycle = 'live')
               AS default_template_page_id
-       FROM view v WHERE v.id = $1`,
-    [viewId],
+       FROM view v
+       LEFT JOIN view_user_override o ON o.view_id = v.id AND o.user_id = $2::uuid
+      WHERE v.id = $1`,
+    [viewId, userId],
   )
   if (row === null) return null
   const columns = await readColumns(tx, viewId)
+  const sharedFilter = (row.filter as FilterNode | null) ?? null
+  const sharedSorts = Array.isArray(row.sorts) ? (row.sorts as SortKey[]) : []
+  const personalFilter = row.personal_filter as FilterNode | null
+  const personalSorts = Array.isArray(row.personal_sorts) ? (row.personal_sorts as SortKey[]) : null
   return {
     id: row.id,
     databaseId: row.database_id,
@@ -383,14 +403,17 @@ async function readView(tx: Tx, viewId: string): Promise<ViewDetail | null> {
     orderKey: row.order_idx,
     // 저장된 AST 를 그대로 준다. 검증은 쓰기 경로에서 이미 했고, 읽기에서
     // 다시 검증하면 상한을 낮추는 날 기존 뷰가 열리지 않는다(정본 §3.5).
-    filter: (row.filter as FilterNode | null) ?? null,
-    sorts: Array.isArray(row.sorts) ? (row.sorts as SortKey[]) : [],
+    filter: sharedFilter,
+    sorts: sharedSorts,
     loadLimit: row.load_limit,
     groupBy: liveGroupBy(row.group_by, columns),
     defaultTemplateId: row.default_template_page_id,
     columns,
     gallery: readGalleryLayout(row.configuration),
     calendar: liveCalendarLayout(row.configuration, columns),
+    personal: personalFilter === null && personalSorts === null ? null : { filter: personalFilter !== null, sorts: personalSorts !== null },
+    effectiveFilter: personalFilter !== null ? personalFilter : sharedFilter,
+    effectiveSorts: personalSorts ?? sharedSorts,
   }
 }
 
@@ -446,7 +469,7 @@ export async function getView(ctx: SessionContext, viewId: string): Promise<View
   return withReadTransaction(async (tx) => {
     const gate = await openView(tx, ctx, viewId, 'view')
     if (isFailure(gate)) return gate
-    const view = await readView(tx, viewId)
+    const view = await readView(tx, viewId, ctx.userId)
     return view === null ? fail('not_found') : ({ ok: true, value: view } as const)
   })
 }
@@ -565,7 +588,7 @@ export async function createView(
 
     await seedViewProperties(tx, viewId, dataSourceId)
 
-    const view = await readView(tx, viewId)
+    const view = await readView(tx, viewId, ctx.userId)
     return view === null ? fail('not_found') : ({ ok: true, value: view } as const)
   })
 }
@@ -794,7 +817,117 @@ export async function updateView(
       ],
     )
 
-    const view = await readView(tx, viewId)
+    // 공유 필터 · 정렬을 바꾼 사람은 **자기 개인 것**의 그 쪽을 지운다(2h-1) — 방금 고친 공유 것을 자기만 못 보는 일이 없게. 두 쪽이 다 비면
+    // 행을 지운다(빈 행은 CHECK 이 막는다).
+    const filterTouched = input.filter !== undefined
+    const sortsTouched = input.sorts !== undefined
+    if (filterTouched || sortsTouched) {
+      await tx.query(
+        `DELETE FROM view_user_override
+          WHERE view_id = $1 AND user_id = $2 AND (filter IS NULL OR $3) AND (sorts IS NULL OR $4)`,
+        [viewId, ctx.userId, filterTouched, sortsTouched],
+      )
+      await tx.query(
+        `UPDATE view_user_override
+            SET filter = CASE WHEN $3 THEN NULL ELSE filter END,
+                sorts = CASE WHEN $4 THEN NULL ELSE sorts END,
+                updated_at = now()
+          WHERE view_id = $1 AND user_id = $2`,
+        [viewId, ctx.userId, filterTouched, sortsTouched],
+      )
+    }
+
+    const view = await readView(tx, viewId, ctx.userId)
+    return view === null ? fail('not_found') : ({ ok: true, value: view } as const)
+  })
+}
+
+// ── 개인 필터 · 정렬 (2h-1 · F-04-17) ────────────────────────────────
+
+/** 개인 필터의 "필터 없음" — 빈 묶음이다(NULL 은 "덮어쓰지 않았다"라 쓸 수 없다 · 0059 머리말). 컴파일러는 빈 묶음을 조건 없음으로 읽는다. */
+const NO_FILTER: FilterNode = { op: 'and', children: [] }
+
+export type PersonalViewInput = {
+  /** `null` 은 "나는 필터를 걸지 않는다"(공유 필터를 끈다) · 생략하면 그대로. */
+  readonly filter?: FilterNode | null
+  readonly sorts?: readonly SortKey[]
+}
+
+/**
+ * 나에게만 적용하는 필터 · 정렬을 건다(04 F-04-17). **볼 수 있으면 된다** — 읽기 권한만 있어도 개인 필터는 건다(04 *"읽기 권한만 있는
+ * 사용자도 개인 필터는 적용할 수 있어야 한다"*). 공유 것을 **대체**한다. 주지 않은 쪽은 그대로 둔다. 검증은 공유 것과 같은 함수다.
+ */
+export async function setPersonalView(ctx: SessionContext, viewId: string, input: PersonalViewInput): Promise<ViewResult<ViewDetail>> {
+  if (input.filter === undefined && input.sorts === undefined) return fail('invalid_filter')
+  return withCommandTransaction(async (tx) => {
+    const gate = await openView(tx, ctx, viewId, 'view')
+    if (isFailure(gate)) return gate
+    const types = await readPropertyTypes(tx, gate.dataSourceId)
+    if (input.filter !== undefined && input.filter !== null) {
+      const issues = validateFilter(input.filter, types)
+      if (issues.length > 0) return fail('invalid_filter', issues)
+    }
+    if (input.sorts !== undefined) {
+      const issues = validateSorts(input.sorts, types)
+      if (issues.length > 0) return fail('invalid_sorts', issues)
+    }
+    const filter = input.filter === undefined ? null : JSON.stringify(input.filter ?? NO_FILTER)
+    const sorts = input.sorts === undefined ? null : JSON.stringify(input.sorts)
+    await tx.query(
+      `INSERT INTO view_user_override (view_id, user_id, filter, sorts)
+       VALUES ($1, $2, $3::jsonb, $4::jsonb)
+       ON CONFLICT (view_id, user_id) DO UPDATE
+          SET filter = coalesce(EXCLUDED.filter, view_user_override.filter),
+              sorts = coalesce(EXCLUDED.sorts, view_user_override.sorts),
+              updated_at = now()`,
+      [viewId, ctx.userId, filter, sorts],
+    )
+    const view = await readView(tx, viewId, ctx.userId)
+    return view === null ? fail('not_found') : ({ ok: true, value: view } as const)
+  })
+}
+
+/** 개인 필터 · 정렬을 버리고 공유 것으로 돌아간다(04 *"`Reset` 으로 개인 변경 폐기"*). 없으면 아무 일 없다. */
+export async function resetPersonalView(ctx: SessionContext, viewId: string): Promise<ViewResult<ViewDetail>> {
+  return withCommandTransaction(async (tx) => {
+    const gate = await openView(tx, ctx, viewId, 'view')
+    if (isFailure(gate)) return gate
+    await tx.query(`DELETE FROM view_user_override WHERE view_id = $1 AND user_id = $2`, [viewId, ctx.userId])
+    const view = await readView(tx, viewId, ctx.userId)
+    return view === null ? fail('not_found') : ({ ok: true, value: view } as const)
+  })
+}
+
+/**
+ * 내 개인 필터 · 정렬을 **모두에게** 저장한다(04 *"Save for everyone"*) — 뷰의 구조를 고치는 일이라 `edit_structure` 다(잠긴 데이터베이스는
+ * 거부). 덮어쓴 쪽만 옮기고(빈 묶음은 "필터 없음" — 공유 필터를 지운다) 개인 것은 지운다. 개인 것이 없으면 아무 일 없다.
+ */
+export async function publishPersonalView(ctx: SessionContext, viewId: string): Promise<ViewResult<ViewDetail>> {
+  return withCommandTransaction(async (tx) => {
+    const gate = await openView(tx, ctx, viewId, 'edit_structure')
+    if (isFailure(gate)) return gate
+    const mine = await tx.queryMaybe<{ filter: FilterNode | null; sorts: unknown }>(
+      `DELETE FROM view_user_override WHERE view_id = $1 AND user_id = $2 RETURNING filter, sorts`,
+      [viewId, ctx.userId],
+    )
+    if (mine !== null) {
+      const clears = mine.filter !== null && isGroup(mine.filter) && mine.filter.children.length === 0
+      await tx.query(
+        `UPDATE view
+            SET filter = CASE WHEN $2::boolean THEN $3::jsonb ELSE filter END,
+                sorts = CASE WHEN $4::boolean THEN $5::jsonb ELSE sorts END,
+                updated_at = now()
+          WHERE id = $1`,
+        [
+          viewId,
+          mine.filter !== null,
+          mine.filter === null || clears ? null : JSON.stringify(mine.filter),
+          mine.sorts !== null,
+          mine.sorts === null ? null : JSON.stringify(mine.sorts),
+        ],
+      )
+    }
+    const view = await readView(tx, viewId, ctx.userId)
     return view === null ? fail('not_found') : ({ ok: true, value: view } as const)
   })
 }
@@ -872,7 +1005,7 @@ export async function setViewColumn(
       ],
     )
 
-    const view = await readView(tx, viewId)
+    const view = await readView(tx, viewId, ctx.userId)
     return view === null ? fail('not_found') : ({ ok: true, value: view } as const)
   })
 }
@@ -900,7 +1033,7 @@ export async function moveViewColumn(
     // 자기 앞으로 옮기기는 아무 일도 아니다 — `moveProperty` 에서 같은 버그를
     // 겪었다(자신을 목록에서 빼면 `findIndex` 가 -1 이 되어 맨 앞으로 날아간다).
     if (beforeId === propertyId) {
-      const view = await readView(tx, viewId)
+      const view = await readView(tx, viewId, ctx.userId)
       return view === null ? fail('not_found') : ({ ok: true, value: view } as const)
     }
 
@@ -914,7 +1047,7 @@ export async function moveViewColumn(
       [viewId, propertyId, orderKeyBetween(prev, next)],
     )
 
-    const view = await readView(tx, viewId)
+    const view = await readView(tx, viewId, ctx.userId)
     return view === null ? fail('not_found') : ({ ok: true, value: view } as const)
   })
 }
