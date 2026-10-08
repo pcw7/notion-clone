@@ -19,6 +19,9 @@
  *
  * 고유 ID 속성에는 "접두사 바꾸기"가 선다(2a-2 · F-03-09 시나리오 3 *"`속성 편집` → 접두사 입력"*). 비우면 번호만 보인다.
  *
+ * "유형 바꾸기"(2c-2 · F-03-14) — 바꿀 수 있는 타입(글 · 숫자 · 선택 · 체크박스 · 날짜)의 속성에만 선다. 값이 사라지는 칸이 있으면 서버가
+ * 센 개수로 **한 번 더 묻는다**("N개 칸의 값이 사라집니다") — 노션은 묻지 않고 되돌릴 수도 없다(03).
+ *
  * 이 메뉴는 `edit_structure` 가 있을 때만 그려진다(표가 정한다).
  */
 
@@ -31,6 +34,8 @@ export function ColumnMenu({
   isTitle,
   sortable,
   prefix,
+  convertTo,
+  onConvert,
   onSort,
   onRename,
   onPrefix,
@@ -41,6 +46,10 @@ export function ColumnMenu({
   isTitle: boolean
   /** 고유 ID 속성의 지금 접두사(없으면 빈 글자). 고유 ID 가 아니면 `undefined` — 접두사 항목이 서지 않는다. */
   prefix?: string
+  /** 바꿀 수 있는 다른 타입들(2c-2). 비었거나 없으면 "유형 바꾸기"가 서지 않는다. */
+  convertTo?: readonly { readonly type: string; readonly label: string }[]
+  /** 타입을 바꾼다 — 바뀌었으면 `done`, 값이 사라지는 칸이 있으면 그 개수(`lost` — 확인을 받아 다시 부른다), 실패면 이유. */
+  onConvert?: (type: string, confirmLoss: boolean) => Promise<{ readonly done: true } | { readonly lost: number } | { readonly error: string }>
   /** select · relation · rollup 은 정렬할 수 없다(`view-columns.ts` 의 `isSortable`). */
   sortable: boolean
   /** 실패하면 사람이 읽을 이유를, 성공하면 `null` 을 돌려준다. */
@@ -51,7 +60,9 @@ export function ColumnMenu({
   onDelete: () => Promise<string | null>
 }) {
   const [open, setOpen] = useState(false)
-  const [step, setStep] = useState<'menu' | 'rename' | 'prefix' | 'delete'>('menu')
+  const [step, setStep] = useState<'menu' | 'rename' | 'prefix' | 'convert' | 'confirm-loss' | 'delete'>('menu')
+  /** 손실 확인을 기다리는 변환 — 고른 타입과 서버가 센 칸 수. */
+  const [pending, setPending] = useState<{ type: string; label: string; lost: number } | null>(null)
   const [draft, setDraft] = useState(name)
   const [prefixDraft, setPrefixDraft] = useState(prefix ?? '')
   const prefixRef = useRef<HTMLInputElement>(null)
@@ -69,7 +80,21 @@ export function ColumnMenu({
     setStep('menu')
     setDraft(name)
     setPrefixDraft(prefix ?? '')
+    setPending(null)
     setError(null)
+  }
+
+  const convert = async (type: string, label: string, confirmLoss: boolean) => {
+    if (onConvert === undefined) return
+    setBusy(true)
+    setError(null)
+    const result = await onConvert(type, confirmLoss)
+    setBusy(false)
+    if ('done' in result) close()
+    else if ('lost' in result) {
+      setPending({ type, label, lost: result.lost })
+      setStep('confirm-loss')
+    } else setError(result.error)
   }
 
   const run = async (action: () => Promise<string | null>) => {
@@ -122,6 +147,11 @@ export function ColumnMenu({
               <MenuItem testId="db-column-rename" disabled={busy} onClick={() => setStep('rename')}>
                 이름 바꾸기
               </MenuItem>
+              {convertTo !== undefined && convertTo.length > 0 && onConvert !== undefined && (
+                <MenuItem testId="db-column-convert" disabled={busy} onClick={() => setStep('convert')}>
+                  유형 바꾸기
+                </MenuItem>
+              )}
               {prefix !== undefined && onPrefix !== undefined && (
                 <MenuItem testId="db-column-prefix" disabled={busy} onClick={() => setStep('prefix')}>
                   접두사 바꾸기
@@ -168,6 +198,42 @@ export function ColumnMenu({
             </form>
           )}
 
+          {step === 'convert' && convertTo !== undefined && (
+            <div className="flex flex-col p-1" data-testid="db-column-convert-list">
+              <p className="px-1 pb-1 text-xs text-neutral-500">바꿀 유형</p>
+              {convertTo.map((option) => (
+                <MenuItem
+                  key={option.type}
+                  testId={`db-column-convert-${option.type}`}
+                  disabled={busy}
+                  onClick={() => void convert(option.type, option.label, false)}
+                >
+                  {option.label}
+                </MenuItem>
+              ))}
+            </div>
+          )}
+          {step === 'confirm-loss' && pending !== null && (
+            <div className="flex flex-col gap-1 p-1" data-testid="db-column-convert-confirm">
+              <p className="text-xs text-neutral-600 dark:text-neutral-300">
+                ‘{name}’ 속성을 {pending.label}(으)로 바꾸면 <strong>{pending.lost.toLocaleString('ko-KR')}개 칸의 값이 사라집니다.</strong> 되돌릴 수 없습니다.
+              </p>
+              <div className="flex justify-end gap-1">
+                <button type="button" onClick={close} className="rounded px-2 py-0.5 text-sm text-neutral-500">
+                  취소
+                </button>
+                <button
+                  type="button"
+                  data-testid="db-column-convert-confirm-button"
+                  disabled={busy}
+                  onClick={() => void convert(pending.type, pending.label, true)}
+                  className="rounded-md border border-red-300 px-2 py-0.5 text-sm text-red-700 disabled:opacity-40 dark:border-red-800 dark:text-red-300"
+                >
+                  그래도 바꾸기
+                </button>
+              </div>
+            </div>
+          )}
           {step === 'prefix' && onPrefix !== undefined && (
             <form
               onSubmit={(e) => {

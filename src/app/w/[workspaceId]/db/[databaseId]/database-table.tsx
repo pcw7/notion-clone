@@ -71,6 +71,7 @@ import type { RowJson } from '@/lib/database/http'
 import { PageIconView } from '../../page-icon-view'
 import { isCellColumn, isSortable, relationOf, rollupOf, type CellColumn, type ViewColumn } from '@/lib/database/view-columns'
 import { formatUniqueId, normalizeUniqueIdPrefix } from '@/lib/database/unique-id-format'
+import { CONVERTIBLE_TYPES, isConvertibleType } from '@/lib/database/type-conversion'
 import { MAX_QUERY_PAGINATION } from '@/lib/database/limits'
 import {
   emptyValue,
@@ -705,6 +706,20 @@ export function DatabaseTable(props: {
       ),
     onRename: async (name: string) =>
       afterStructure(await api.renameColumn(workspaceId, dataSourceId, column.propertyId, name)),
+    // 유형 바꾸기(2c-2) — 바꿀 수 있는 타입의 컬럼에만. 바뀌면 서버 렌더를 다시 받는다(컬럼의 타입이 다시 마운트 기준에 있다).
+    ...(isConvertibleType(column.type)
+      ? {
+          convertTo: CONVERTIBLE_TYPES.filter((t) => t !== column.type).map((t) => ({ type: t, label: TYPE_LABEL[t] })),
+          onConvert: async (type: string, confirmLoss: boolean) => {
+            const result = await api.convertColumn(workspaceId, dataSourceId, column.propertyId, type, confirmLoss)
+            if (result.ok) {
+              router.refresh()
+              return { done: true } as const
+            }
+            return result.lost !== undefined ? { lost: result.lost } : { error: result.message }
+          },
+        }
+      : {}),
     // 접두사는 고유 ID 에만 있다 — 다른 컬럼에는 항목이 서지 않는다(`ColumnMenu` 가 `prefix` 로 가른다).
     ...(column.type === 'unique_id'
       ? {

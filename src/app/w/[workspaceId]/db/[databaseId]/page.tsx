@@ -171,7 +171,8 @@ export default async function DatabasePage({
     view.value.filter,
     view.value.sorts,
     groupBy,
-    columns.map((c) => [c.propertyId, c.name, c.visible, c.type === 'unique_id' ? c.uniqueId.prefix : null]),
+    // 타입도 넣는다(2c-2) — 표는 컬럼을 자기 상태로 들고 있어서, 타입을 바꾼 뒤에도 옛 타입으로 칸을 그린다.
+    columns.map((c) => [c.propertyId, c.name, c.visible, c.type, c.type === 'unique_id' ? c.uniqueId.prefix : null]),
     // 하위 항목을 켜고 끄면 같은 뷰가 트리 ↔ 평평한 표로 바뀐다(2b-2) — 읽은 행(최상위만 ↔ 전부)이 무효다. 이름 · 보임은 그대로라
     // 이것이 없으면 끈 뒤에도 최상위 행만 남는다(e2e 가 잡았다).
     subItems?.parentPropertyId ?? null,
