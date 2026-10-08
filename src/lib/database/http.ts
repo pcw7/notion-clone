@@ -180,6 +180,7 @@ export function viewFailureStatus(reason: ViewFailure): number {
     case 'group_required':
     case 'invalid_template':
     case 'invalid_calculation':
+    case 'invalid_layout':
       return 400
   }
 }

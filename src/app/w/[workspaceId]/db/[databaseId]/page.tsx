@@ -71,6 +71,7 @@ import { ViewTabs } from './view-tabs'
 import { ViewToolbar, type BoardSettings } from './view-toolbar'
 import { SearchEmpty } from './view-search'
 import { DatabaseGallery } from './database-gallery'
+import { readCardCovers } from '@/lib/database/gallery-covers'
 import { TemplatePanel } from './template-panel'
 import { DataSourcePanel } from './data-source-panel'
 
@@ -201,8 +202,15 @@ export default async function DatabasePage({
     subItems?.parentPropertyId ?? null,
     // 검색어(2e-2) — 바뀌면 읽은 행 · 커서가 무효다(필터와 같은 이유).
     search,
+    // 갤러리 레이아웃(2f-2) — 미리보기를 켜고 끄면 서버 렌더가 미리보기를 다시 읽는다. 갤러리 컴포넌트는 미리보기를 상태로 든다.
+    isGallery ? view.value.gallery : null,
   ])
   const visibleColumns = columns.filter((column) => column.visible)
+  // 갤러리의 카드 미리보기(2f-2) — 첫 페이지의 행마다 본문의 첫 이미지. 그 뒤("더 보기")의 것은 행 라우트가 함께 준다.
+  const galleryCovers =
+    isGallery && tablePage !== null && view.value.gallery.cover === 'page_content'
+      ? await readCardCovers(ctx, tablePage.value.rows.map((r) => r.id))
+      : {}
   const variant = variantOf(view.value.type)
 
   // ── relation 칸의 제목 ──
@@ -323,6 +331,7 @@ export default async function DatabasePage({
             canEdit={access.canEditStructure}
             board={boardSettings}
             search={search}
+            {...(isGallery ? { gallery: view.value.gallery } : {})}
           />
         </div>
         {/* 데이터 소스(8e-2)는 데이터베이스의 구조다 — 고칠 수 있는 사람에게만 선다(잠기면 `access` 가 이미 닫는다). */}
@@ -397,6 +406,8 @@ export default async function DatabasePage({
             access={access}
             defaultTemplate={defaultTemplate}
             search={search}
+            layout={view.value.gallery}
+            covers={galleryCovers}
           />
         )
       ) : (

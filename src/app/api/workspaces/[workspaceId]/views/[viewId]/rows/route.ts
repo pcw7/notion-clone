@@ -33,6 +33,7 @@ import { nestsSubItems, showsParentsOnly, subItemPairOf } from '@/lib/database/v
 import { queryRows } from '@/lib/database/query'
 import { computeCalculations } from '@/lib/database/calculate'
 import { normalizeSearch } from '@/lib/database/search'
+import { readCardCovers } from '@/lib/database/gallery-covers'
 import { createRow } from '@/lib/database/row'
 import { createRowFromTemplate } from '@/lib/database/template'
 import { createSubItem } from '@/lib/database/sub-item-rows'
@@ -97,8 +98,15 @@ export async function GET(request: Request, ctx: Ctx): Promise<Response> {
     ? await computeCalculations(session.ctx, view.value.dataSourceId, view.value.filter, view.value.columns, search)
     : undefined
 
+  // 갤러리의 카드 미리보기(2f-2) — 이 페이지의 행마다 본문의 첫 이미지. 미리보기를 끈 갤러리 · 다른 뷰에는 싣지 않는다.
+  const covers =
+    view.value.type === 'gallery' && view.value.gallery.cover === 'page_content'
+      ? await readCardCovers(session.ctx, page.value.rows.map((r) => r.id))
+      : undefined
+
   return Response.json({
     ...(calculations === undefined ? {} : { calculations }),
+    ...(covers === undefined ? {} : { covers }),
     ok: true,
     // 화면이 컬럼 머리를 그리려면 스키마가 필요하다. 한 번에 준다 —
     // 표를 열 때마다 왕복이 둘이면 첫 화면이 느리다.

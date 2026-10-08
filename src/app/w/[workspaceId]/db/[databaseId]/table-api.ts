@@ -11,6 +11,7 @@
 import type { FilterNode, SortKey } from '@/lib/database/filter'
 import type { GroupBy } from '@/lib/database/group'
 import type { CalculationResult } from '@/lib/database/calculations'
+import type { GalleryLayout } from '@/lib/database/gallery'
 import type { RowJson } from '@/lib/database/http'
 import type { PageIcon } from '@/lib/block/page-icon'
 import type { DatabaseListItem } from '@/lib/database/database'
@@ -187,7 +188,13 @@ export function createRowFrom(
   )
 }
 
-export type RowPage = { rows: RowJson[]; hasMore: boolean; nextCursor: string | null }
+export type RowPage = {
+  rows: RowJson[]
+  hasMore: boolean
+  nextCursor: string | null
+  /** 갤러리의 카드 미리보기(2f-2) — 행 id → 이미지 주소. 갤러리가 아니면 비어 있다. */
+  covers?: Readonly<Record<string, string>>
+}
 
 /**
  * 뷰의 다음 페이지. `parent` 를 주면 그 행의 하위 항목(자식)을 읽는다(2b-2 — 하위 항목이 켜진 표 · 목록만 · 아니면 400).
@@ -212,6 +219,7 @@ export function loadRows(
       rows: body.rows as RowJson[],
       hasMore: body.hasMore === true,
       nextCursor: typeof body.nextCursor === 'string' ? body.nextCursor : null,
+      ...(typeof body.covers === 'object' && body.covers !== null ? { covers: body.covers as Record<string, string> } : {}),
     }),
   )
 }
@@ -591,6 +599,8 @@ export function updateView(
     readonly groupBy?: GroupBy | null
     /** 이 뷰의 기본 템플릿(F-08-03). `null` 이 "빈 항목으로 돌려라"다. */
     readonly defaultTemplateId?: string | null
+    /** 갤러리 레이아웃의 바꿀 키만(2f-2). */
+    readonly gallery?: Partial<GalleryLayout>
   },
 ): Promise<ApiResult<null>> {
   return call(

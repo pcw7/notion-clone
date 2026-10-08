@@ -53,6 +53,7 @@ import {
 } from './filter.ts'
 import { readPropertyTypes } from './query.ts'
 import { isGroupableType, normalizeGroupBy, validateGroupBy, type GroupBy } from './group.ts'
+import { mergeGalleryLayout, readGalleryLayout, validateGalleryPatch, type GalleryLayout } from './gallery.ts'
 import { isMvpPropertyType, isOptionType } from './property-types.ts'
 import { calculationsFor, isCalculation } from './calculations.ts'
 import { relationOf, rollupOf, type ViewColumn } from './view-columns.ts'
@@ -103,6 +104,11 @@ export type ViewDetail = {
   readonly defaultTemplateId: string | null
   /** 스키마 순서가 아니라 **뷰 순서**다. 숨긴 컬럼도 들어 있다(화면이 거른다). */
   readonly columns: readonly ViewColumn[]
+  /**
+   * 갤러리 레이아웃(2f-2 · `configuration.gallery`) — 저장된 것이 없으면 기본값이다(`readGalleryLayout`). 갤러리가 아닌 뷰에도 온다 —
+   * 갤러리로 바꾸면 그대로 쓰인다.
+   */
+  readonly gallery: GalleryLayout
 }
 
 export type ViewSummary = {
@@ -132,6 +138,8 @@ export type ViewFailure =
   | 'invalid_template'
   /** 집계 함수가 목록에 없거나 그 열의 타입이 고를 수 없는 것이다(2d-1 · F-04-16). */
   | 'invalid_calculation'
+  /** 갤러리 레이아웃의 키 · 값이 틀렸다(2f-2 · F-04-05). `issues` 가 어디인지 말한다. */
+  | 'invalid_layout'
   /** 데이터베이스(구조) · 행 페이지가 잠겼다(7f-2 · F-06-16) — 풀어야 고친다. */
   | 'locked'
 
@@ -234,6 +242,7 @@ type ViewRow = {
   group_by: unknown
   load_limit: number
   default_template_page_id: string | null
+  configuration: unknown
 }
 
 /**
@@ -339,7 +348,7 @@ async function toColumns(tx: Tx, rows: readonly ColumnRow[]): Promise<ViewColumn
 async function readView(tx: Tx, viewId: string): Promise<ViewDetail | null> {
   const row = await tx.queryMaybe<ViewRow>(
     `SELECT v.id, v.database_id, v.data_source_id, v.name, v.type, v.order_idx,
-            v.filter, v.sorts, v.group_by, v.load_limit,
+            v.filter, v.sorts, v.group_by, v.load_limit, v.configuration,
             -- 살아 있는 템플릿을 가리킬 때만 준다(ViewDetail.defaultTemplateId). 0026 의 트리거가 "이 표의
             -- 템플릿 행"까지는 지키지만 휴지통은 보지 못한다 — 행이 남아 있기 때문이다(X-3).
             (SELECT v.default_template_page_id
@@ -366,6 +375,7 @@ async function readView(tx: Tx, viewId: string): Promise<ViewDetail | null> {
     groupBy: liveGroupBy(row.group_by, columns),
     defaultTemplateId: row.default_template_page_id,
     columns,
+    gallery: readGalleryLayout(row.configuration),
   }
 }
 
@@ -583,6 +593,11 @@ export type UpdateViewInput = {
    * 것을 DB 에서 막지만, 거기까지 가면 예외가 되어 화면이 받을 말이 없다. 애플리케이션이 먼저 답한다.
    */
   readonly defaultTemplateId?: string | null
+  /**
+   * 갤러리 레이아웃의 바꿀 키만(2f-2) — 지금 값 위에 합쳐서 `configuration.gallery` 한 키만 쓴다(다른 키 · 다른 사람이 바꾼 키를 덮지
+   * 않는다 — 04 *"JSON 전체 교체 금지"*). 뷰의 종류와 무관하게 받는다.
+   */
+  readonly gallery?: Partial<GalleryLayout>
 }
 
 /**
@@ -656,12 +671,19 @@ export async function updateView(
       const issues = validateSorts(input.sorts, types)
       if (issues.length > 0) return fail('invalid_sorts', issues)
     }
+    if (input.gallery !== undefined) {
+      const issues = validateGalleryPatch(input.gallery)
+      if (issues.length > 0) return fail('invalid_layout', issues)
+    }
 
     // 타입 · 그룹은 서로에 기댄다(보드 ⇒ 그룹) — 지금 값과 합쳐서 본다.
-    const current = await tx.queryOne<{ type: string; group_by: unknown }>(
-      `SELECT type, group_by FROM view WHERE id = $1`,
+    const current = await tx.queryOne<{ type: string; group_by: unknown; configuration: unknown }>(
+      `SELECT type, group_by, configuration FROM view WHERE id = $1 FOR UPDATE`,
       [viewId],
     )
+    // 갤러리 레이아웃 — 잠근 행의 지금 값 위에 바꿀 키만 얹는다(동시에 다른 키를 바꾼 사람의 것을 덮지 않는다).
+    const gallery =
+      input.gallery === undefined ? null : mergeGalleryLayout(readGalleryLayout(current.configuration), input.gallery)
     const type = input.type ?? current.type
     const touchesGroup = input.groupBy !== undefined || input.type !== undefined
     const grouped = touchesGroup
@@ -688,6 +710,8 @@ export async function updateView(
               group_by = CASE WHEN $9::boolean THEN $10::jsonb ELSE group_by END,
               default_template_page_id =
                 CASE WHEN $11::boolean THEN $12::uuid ELSE default_template_page_id END,
+              configuration = CASE WHEN $13::jsonb IS NULL THEN configuration
+                                   ELSE jsonb_set(configuration, '{gallery}', $13::jsonb) END,
               updated_at = now()
         WHERE id = $1`,
       [
@@ -703,6 +727,7 @@ export async function updateView(
         grouped === null ? null : JSON.stringify(grouped),
         input.defaultTemplateId !== undefined,
         input.defaultTemplateId ?? null,
+        gallery === null ? null : JSON.stringify(gallery),
       ],
     )
 

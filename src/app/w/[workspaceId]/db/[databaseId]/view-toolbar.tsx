@@ -62,8 +62,9 @@ import { isFilterableColumn, isSortable, subItemPairOf, type FilterableColumn, t
 import { disableSubItems, enableSubItems, setColumnVisible, setDependencies, updateView, type ApiResult } from './table-api'
 import { TYPE_ICON } from './cell-view'
 import { ViewSearch } from './view-search'
+import { GALLERY_ASPECTS, GALLERY_COVERS, GALLERY_SIZES, type GalleryLayout } from '@/lib/database/gallery'
 
-type Panel = 'filter' | 'sort' | 'properties' | 'group'
+type Panel = 'filter' | 'sort' | 'properties' | 'group' | 'gallery'
 
 /**
  * 보드의 그룹 설정(보드 4b조각). 보드 뷰일 때만 온다 — "그룹" 버튼과 패널이 그때만 그려진다.
@@ -95,6 +96,7 @@ export function ViewToolbar({
   canEdit,
   board,
   search,
+  gallery,
 }: {
   workspaceId: string
   viewId: string
@@ -111,6 +113,8 @@ export function ViewToolbar({
   board?: BoardSettings
   /** 뷰 검색어(2e-2) — 주소의 `q`. 있으면 검색 칸이 열린 채로 선다. */
   search?: string | null
+  /** 갤러리 뷰의 레이아웃(2f-2). 갤러리일 때만 온다 — "카드" 버튼과 패널이 그때만 그려진다. */
+  gallery?: GalleryLayout
 }) {
   const router = useRouter()
   const [panel, setPanel] = useState<Panel | null>(null)
@@ -170,6 +174,9 @@ export function ViewToolbar({
             onClick={() => toggle('group')}
           />
         )}
+        {gallery !== undefined && (
+          <ToolbarButton label="카드" count={0} active={panel === 'gallery'} testId="db-gallery-layout-button" onClick={() => toggle('gallery')} />
+        )}
         {busy && <span className="text-xs text-neutral-400">저장하는 중…</span>}
         <span className="ml-auto">
           {/* 뷰를 바꾸면 새로 선다 — 다른 뷰의 검색 칸에 옛 글자가 남지 않게. */}
@@ -203,6 +210,14 @@ export function ViewToolbar({
             onToggle={(propertyId, visible) => run(() => setColumnVisible(workspaceId, viewId, propertyId, visible))}
             onSubItems={(on) => run(() => (on ? enableSubItems : disableSubItems)(workspaceId, dataSourceId))}
             onDependencies={(on) => run(() => setDependencies(workspaceId, dataSourceId, on))}
+            onClose={() => setPanel(null)}
+          />
+        )}
+        {panel === 'gallery' && gallery !== undefined && (
+          <GalleryPanel
+            layout={gallery}
+            locked={!canEdit || busy}
+            onSave={(patch) => run(() => updateView(workspaceId, viewId, { gallery: patch }))}
             onClose={() => setPanel(null)}
           />
         )}
@@ -885,6 +900,85 @@ function GroupPanel({
           </ul>
         </>
       )}
+    </Popover>
+  )
+}
+
+// ── 카드 (갤러리) ─────────────────────────────────────────────────────
+
+const COVER_LABEL: Readonly<Record<GalleryLayout['cover'], string>> = { page_content: '본문의 첫 이미지', none: '없음' }
+const SIZE_LABEL: Readonly<Record<GalleryLayout['cover_size'], string>> = { small: '작게', medium: '보통', large: '크게' }
+const ASPECT_LABEL: Readonly<Record<GalleryLayout['cover_aspect'], string>> = { cover: '채우기', contain: '전체 보이기' }
+
+/**
+ * 갤러리의 카드 미리보기 · 크기 · 맞춤(2f-2 · F-04-05). 고르는 즉시 그 키 하나만 저장한다(서버가 지금 값 위에 합친다 — 다른 사람이 바꾼
+ * 키를 덮지 않는다). 레이아웃은 뷰의 설정이라 `edit_structure` 다 — 없는 사람에게는 잠긴 채로 보여 준다. 미리보기가 "없음"이면 맞춤은
+ * 뜻이 없어 잠근다.
+ */
+function GalleryPanel({
+  layout,
+  locked,
+  onSave,
+  onClose,
+}: {
+  layout: GalleryLayout
+  locked: boolean
+  onSave: (patch: Partial<GalleryLayout>) => Promise<boolean>
+  onClose: () => void
+}) {
+  return (
+    <Popover label="카드" testId="db-gallery-layout-panel" onClose={onClose}>
+      <label className="flex items-center gap-2 text-sm">
+        미리보기
+        <select
+          aria-label="카드 미리보기"
+          data-testid="db-gallery-cover-select"
+          value={layout.cover}
+          disabled={locked}
+          onChange={(e) => void onSave({ cover: e.target.value as GalleryLayout['cover'] })}
+          className={FIELD}
+        >
+          {GALLERY_COVERS.map((c) => (
+            <option key={c} value={c}>
+              {COVER_LABEL[c]}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="flex items-center gap-2 text-sm">
+        카드 크기
+        <select
+          aria-label="카드 크기"
+          data-testid="db-gallery-size-select"
+          value={layout.cover_size}
+          disabled={locked}
+          onChange={(e) => void onSave({ cover_size: e.target.value as GalleryLayout['cover_size'] })}
+          className={FIELD}
+        >
+          {GALLERY_SIZES.map((c) => (
+            <option key={c} value={c}>
+              {SIZE_LABEL[c]}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="flex items-center gap-2 text-sm">
+        이미지 맞춤
+        <select
+          aria-label="이미지 맞춤"
+          data-testid="db-gallery-aspect-select"
+          value={layout.cover_aspect}
+          disabled={locked || layout.cover === 'none'}
+          onChange={(e) => void onSave({ cover_aspect: e.target.value as GalleryLayout['cover_aspect'] })}
+          className={FIELD}
+        >
+          {GALLERY_ASPECTS.map((c) => (
+            <option key={c} value={c}>
+              {ASPECT_LABEL[c]}
+            </option>
+          ))}
+        </select>
+      </label>
     </Popover>
   )
 }

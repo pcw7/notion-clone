@@ -5,9 +5,13 @@
  *
  * 정본: 04-database-views.md F-04-05 · 00-canonical-data-model.md §3.6 [보강] 갤러리
  *
- * 04: *"각 행을 커버 이미지가 있는 카드 그리드로 표시한다."* 이 조각은 **카드 그리드**까지다 — 카드 미리보기(페이지 커버 · 본문의 첫 이미지
- * · 파일 속성)는 그 소스가 생긴 뒤의 일이다(커버 F-02-06 · 파일 속성 · §7). 노션의 "미리보기 없음"과 같은 모양이다: 제목(아이콘) +
- * 보이는 속성의 배지(`CardBadges` — 보드와 같은 것).
+ * 04: *"각 행을 커버 이미지가 있는 카드 그리드로 표시한다."* 카드 = 미리보기(2f-2) + 제목(아이콘) + 보이는 속성의 배지(`CardBadges` —
+ * 보드와 같은 것).
+ *
+ * 미리보기는 레이아웃(`view.configuration.gallery` · `gallery.ts`)이 정한다 — **본문의 첫 이미지**(`page_content` · 서버가 행마다 주소를
+ * 준다 · `gallery-covers.ts`) 또는 없음. 미리보기가 켜져 있으면 이미지가 없는 카드도 같은 높이의 빈 자리를 둔다 — 04 *"카드 높이는
+ * 유지해야 그리드가 흔들리지 않음"*. 이미지가 깨지면(외부 URL 만료) 빈 자리로 돌린다. 카드 폭(작게 · 보통 · 크게)과 맞춤(채우기 · 전체)도
+ * 레이아웃이다. 고르는 곳은 도구줄의 "카드" 패널이다.
  *
  * 행은 표와 같은 길로 읽는다(`queryRows` · 필터 · 정렬 · 검색 · "더 보기"). 하위 항목이 켜진 표면 **부모만**이다(03 F-03-18 — 행 라우트 ·
  * 서버 렌더가 `showsParentsOnly` 로 고른다). 카드를 누르면 그 행 페이지가 열린다(8f-1). 수동 재정렬(카드 끌기)은 아직이다(§7).
@@ -24,6 +28,7 @@ import type { RowJson } from '@/lib/database/http'
 import type { ViewColumn } from '@/lib/database/view'
 import { cellText, parseDraft, readCell, sameValue } from '@/lib/database/cell-format'
 import { MAX_QUERY_PAGINATION } from '@/lib/database/limits'
+import type { GalleryLayout } from '@/lib/database/gallery'
 import { templateRowNote, type DefaultTemplate } from '@/lib/database/new-row'
 import { PageIconView } from '../../page-icon-view'
 import * as api from './table-api'
@@ -36,6 +41,13 @@ import { useRelationLabels } from './use-relation-labels'
 const UNTITLED = '제목 없음'
 
 type Editing = { readonly rowId: string; readonly draft: string }
+
+/** 카드 폭 — 그리드 칸의 최소 폭. 칸 수는 컨테이너 폭이 정한다(04 *"그리드 컬럼 수는 컨테이너 폭 기준 자동"*). */
+const CARD_GRID: Readonly<Record<GalleryLayout['cover_size'], string>> = {
+  small: 'grid-cols-[repeat(auto-fill,minmax(10rem,1fr))]',
+  medium: 'grid-cols-[repeat(auto-fill,minmax(14rem,1fr))]',
+  large: 'grid-cols-[repeat(auto-fill,minmax(20rem,1fr))]',
+}
 
 /** 표시 순서가 뒤에 오는 응답인가. 버전은 bigint 문자열이다. */
 const notOlder = (incoming: string, current: string): boolean => BigInt(incoming) >= BigInt(current)
@@ -56,6 +68,10 @@ export function DatabaseGallery(props: {
   defaultTemplate?: DefaultTemplate | null
   /** 뷰 검색어(2e-2) — "더 보기"도 같은 검색어를 싣는다. */
   search?: string | null
+  /** 레이아웃(2f-2) — 미리보기 · 카드 폭 · 맞춤. */
+  layout: GalleryLayout
+  /** 첫 페이지의 카드 미리보기(행 id → 이미지 주소). "더 보기"의 것은 응답이 함께 준다. */
+  covers: Readonly<Record<string, string>>
 }) {
   const { workspaceId, viewId, dataSourceId, tableName, columns, access } = props
   const [rows, setRows] = useState<readonly RowJson[]>(props.rows)
@@ -66,6 +82,11 @@ export function DatabaseGallery(props: {
   const [notice, setNotice] = useState<string | null>(null)
   const [editing, setEditingState] = useState<Editing | null>(null)
   const [defaultTemplate, setDefaultTemplate] = useState<DefaultTemplate | null>(props.defaultTemplate ?? null)
+  const [covers, setCovers] = useState<Readonly<Record<string, string>>>(props.covers)
+  /** 불러오다 깨진 이미지 — 빈 자리로 돌린다(같은 주소를 다시 묻지 않는다). */
+  const [broken, setBroken] = useState<ReadonlySet<string>>(() => new Set())
+  const { layout } = props
+  const showCover = layout.cover !== 'none'
   const editingRef = useRef<Editing | null>(null)
   const setEditing = (next: Editing | null) => {
     editingRef.current = next
@@ -104,6 +125,10 @@ export function DatabaseGallery(props: {
       return [...current, ...result.value.rows.filter((r) => !seen.has(r.id))]
     })
     setCursor(result.value.hasMore ? result.value.nextCursor : null)
+    if (result.value.covers) {
+      const more = result.value.covers
+      setCovers((current) => ({ ...current, ...more }))
+    }
   }
 
   /** `templateId` 가 `null` 이면 빈 카드다. */
@@ -171,48 +196,69 @@ export function DatabaseGallery(props: {
     <section className="flex min-w-0 flex-col gap-3" aria-label={tableName || UNTITLED}>
       <ul
         data-testid="db-gallery"
-        className="grid grid-cols-[repeat(auto-fill,minmax(13rem,1fr))] gap-3"
+        data-card-size={layout.cover_size}
+        className={`grid gap-3 ${CARD_GRID[layout.cover_size]}`}
       >
         {rows.map((row) => (
           <li
             key={row.id}
             data-row-id={row.id}
             data-testid="db-gallery-card"
-            className="flex min-h-24 flex-col gap-1.5 rounded-md border border-neutral-200 bg-white p-3 text-sm shadow-sm dark:border-neutral-700 dark:bg-neutral-950"
+            className="flex min-h-24 flex-col overflow-hidden rounded-md border border-neutral-200 bg-white text-sm shadow-sm dark:border-neutral-700 dark:bg-neutral-950"
           >
-            {editing !== null && editing.rowId === row.id ? (
-              <input
-                ref={titleInputRef}
-                value={editing.draft}
-                onChange={(e) => setEditing({ rowId: row.id, draft: e.target.value })}
-                onKeyDown={onTitleKeyDown}
-                onBlur={() => void commitTitle()}
-                aria-label="카드 제목"
-                data-testid="db-gallery-title-input"
-                placeholder={UNTITLED}
-                autoComplete="off"
-                className="w-full bg-transparent font-medium outline-none"
-              />
-            ) : (
-              // 카드의 제목이 그 행 페이지로 가는 길이다(8f-1) — 아이콘을 앞에 단다(8c-3a).
-              <Link
-                href={`/w/${workspaceId}/${row.id}`}
-                data-testid="db-gallery-open"
-                className={`flex min-w-0 items-start gap-1.5 font-medium hover:underline ${row.title ? 'break-words' : 'text-neutral-400'}`}
-              >
-                <PageIconView icon={row.icon} fallback className="mt-[0.2em]" />
-                <span className="min-w-0" data-testid="db-gallery-card-title">
-                  {row.title || UNTITLED}
-                </span>
-              </Link>
+            {showCover && (
+              <div data-testid="db-gallery-cover" className="h-32 w-full shrink-0 bg-neutral-100 dark:bg-neutral-900">
+                {covers[row.id] !== undefined && !broken.has(covers[row.id]!) && (
+                  // eslint-disable-next-line @next/next/no-img-element -- 우리 파일 경로(세션 인증)와 외부 URL 을 그대로 그린다. 썸네일 파이프라인은 아직이다(§7).
+                  <img
+                    src={covers[row.id]}
+                    alt=""
+                    loading="lazy"
+                    data-testid="db-gallery-cover-image"
+                    onError={() => {
+                      const src = covers[row.id]!
+                      setBroken((current) => new Set(current).add(src))
+                    }}
+                    className={`h-full w-full ${layout.cover_aspect === 'contain' ? 'object-contain' : 'object-cover'}`}
+                  />
+                )}
+              </div>
             )}
-            <CardBadges
-              row={row}
-              columns={badgeColumns}
-              relationLabels={labels}
-              relationIcons={relationIcons}
-              testId="db-gallery-badge"
-            />
+            <div className="flex flex-col gap-1.5 p-3">
+              {editing !== null && editing.rowId === row.id ? (
+                <input
+                  ref={titleInputRef}
+                  value={editing.draft}
+                  onChange={(e) => setEditing({ rowId: row.id, draft: e.target.value })}
+                  onKeyDown={onTitleKeyDown}
+                  onBlur={() => void commitTitle()}
+                  aria-label="카드 제목"
+                  data-testid="db-gallery-title-input"
+                  placeholder={UNTITLED}
+                  autoComplete="off"
+                  className="w-full bg-transparent font-medium outline-none"
+                />
+              ) : (
+                // 카드의 제목이 그 행 페이지로 가는 길이다(8f-1) — 아이콘을 앞에 단다(8c-3a).
+                <Link
+                  href={`/w/${workspaceId}/${row.id}`}
+                  data-testid="db-gallery-open"
+                  className={`flex min-w-0 items-start gap-1.5 font-medium hover:underline ${row.title ? 'break-words' : 'text-neutral-400'}`}
+                >
+                  <PageIconView icon={row.icon} fallback className="mt-[0.2em]" />
+                  <span className="min-w-0" data-testid="db-gallery-card-title">
+                    {row.title || UNTITLED}
+                  </span>
+                </Link>
+              )}
+              <CardBadges
+                row={row}
+                columns={badgeColumns}
+                relationLabels={labels}
+                relationIcons={relationIcons}
+                testId="db-gallery-badge"
+              />
+            </div>
           </li>
         ))}
         {access.canCreateRows && (
