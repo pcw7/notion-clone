@@ -426,12 +426,32 @@ export function addColumn(
   workspaceId: string,
   dataSourceId: string,
   name: string,
-  type: MvpPropertyType,
+  type: MvpPropertyType | 'unique_id',
+  /** 고유 ID 의 접두사(2a-2). 비우면 보내지 않는다 — 서버가 옛 접두사를 그대로 둔다. */
+  prefix?: string,
 ): Promise<ApiResult<PropertySummary>> {
   return call(
     `${base(workspaceId)}/data-sources/${dataSourceId}/properties`,
-    { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ name, type }) },
+    {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ name, type, ...(prefix !== undefined && prefix.trim() !== '' ? { prefix } : {}) }),
+    },
     (body) => body.property as PropertySummary,
+  )
+}
+
+/** 고유 ID 의 접두사를 바꾼다(2a-2). 빈 글자는 "접두사 없음"이다. 모양은 서버가 판정한다(`normalizeUniqueIdPrefix`). */
+export function setUniqueIdPrefix(
+  workspaceId: string,
+  dataSourceId: string,
+  propertyId: string,
+  prefix: string,
+): Promise<ApiResult<null>> {
+  return call(
+    `${base(workspaceId)}/data-sources/${dataSourceId}/properties/${propertyId}`,
+    { method: 'PATCH', headers: JSON_HEADERS, body: JSON.stringify({ prefix: prefix.trim() === '' ? null : prefix }) },
+    () => null,
   )
 }
 

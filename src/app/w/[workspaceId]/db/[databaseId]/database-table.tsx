@@ -69,8 +69,8 @@ import type { SortKey } from '@/lib/database/filter'
 import { sortFirst } from '@/lib/database/filter-draft'
 import type { RowJson } from '@/lib/database/http'
 import { PageIconView } from '../../page-icon-view'
-import { isCellColumn, relationOf, rollupOf, type CellColumn, type ViewColumn } from '@/lib/database/view-columns'
-import { formatUniqueId } from '@/lib/database/unique-id-format'
+import { isCellColumn, isSortable, relationOf, rollupOf, type CellColumn, type ViewColumn } from '@/lib/database/view-columns'
+import { formatUniqueId, normalizeUniqueIdPrefix } from '@/lib/database/unique-id-format'
 import { MAX_QUERY_PAGINATION } from '@/lib/database/limits'
 import {
   emptyValue,
@@ -98,7 +98,6 @@ import { SelectEditor } from './select-editor'
 import { RelationEditor } from './relation-editor'
 import { AddColumn } from './add-column'
 import { ColumnMenu } from './column-menu'
-import { isSortable } from './view-toolbar'
 
 const keyOf = (at: CellPos): string => `${at.row}:${at.col}`
 const samePos = (a: CellPos, b: CellPos): boolean => a.row === b.row && a.col === b.col
@@ -116,6 +115,9 @@ function CellSlot({ active, children }: { active: boolean; children: ReactNode }
 
 /** 표시 순서가 뒤에 오는 응답인가. 버전은 bigint 문자열이다. */
 const notOlder = (incoming: string, current: string): boolean => BigInt(incoming) >= BigInt(current)
+
+/** 틀린 접두사의 이유 — 저장 CHECK(0050)과 같은 규칙을 사람 말로. */
+const PREFIX_RULE = '접두사는 영숫자 2~7자입니다(비우면 번호만 보입니다).'
 
 export function DatabaseTable(props: {
   workspaceId: string
@@ -531,6 +533,20 @@ export function DatabaseTable(props: {
   }
 
   /**
+   * 고유 ID 컬럼을 만든다(2a-2). **붙이지 않고 다시 읽는다** — 있던 행이 만든 순서대로 번호를 받는데(서버가 채운다) 이 표가 들고
+   * 있는 행에는 번호가 없다. 컬럼이 늘면 `page.tsx` 의 key 가 바뀌어 표가 새로 마운트되고 번호가 실린 행을 받는다. "더 보기"로
+   * 모은 행은 버려진다 — 표마다 한 번 하는 구조 변경이다.
+   */
+  const addUniqueIdColumn = async (name: string, prefix: string): Promise<string | null> => {
+    // 서버와 같은 함수로 먼저 본다 — 서버의 답(`invalid_config`)은 무엇이 틀렸는지 말하지 않는다.
+    if (!normalizeUniqueIdPrefix(prefix).ok) return PREFIX_RULE
+    const result = await api.addColumn(workspaceId, dataSourceId, name, 'unique_id', prefix)
+    if (!result.ok) return result.message
+    router.refresh()
+    return null
+  }
+
+  /**
    * rollup 컬럼을 만든다. 늘 하나다(반대쪽에 생기는 것이 없다).
    *
    * 값은 붙이지 않는다 — 어디에도 저장되지 않으므로 응답에 실을 것이 없다. 컬럼이 늘면 `useRollupValues` 가 그것을
@@ -579,6 +595,16 @@ export function DatabaseTable(props: {
       ),
     onRename: async (name: string) =>
       afterStructure(await api.renameColumn(workspaceId, dataSourceId, column.propertyId, name)),
+    // 접두사는 고유 ID 에만 있다 — 다른 컬럼에는 항목이 서지 않는다(`ColumnMenu` 가 `prefix` 로 가른다).
+    ...(column.type === 'unique_id'
+      ? {
+          prefix: column.uniqueId.prefix ?? '',
+          onPrefix: async (prefix: string) =>
+            normalizeUniqueIdPrefix(prefix).ok
+              ? afterStructure(await api.setUniqueIdPrefix(workspaceId, dataSourceId, column.propertyId, prefix))
+              : PREFIX_RULE,
+        }
+      : {}),
     onHide: async () =>
       afterStructure(await api.setColumnVisible(workspaceId, viewId, column.propertyId, false)),
     onDelete: async () =>
@@ -681,9 +707,11 @@ export function DatabaseTable(props: {
                         ? [{ propertyId: c.propertyId, name: c.name, targetDataSourceId: c.relation.targetDataSourceId }]
                         : [],
                     )}
+                    hasUniqueId={columns.some((c) => c.type === 'unique_id')}
                     onAdd={addColumn}
                     onAddRelation={addRelationColumn}
                     onAddRollup={addRollupColumn}
+                    onAddUniqueId={addUniqueIdColumn}
                   />
                 </th>
               )}

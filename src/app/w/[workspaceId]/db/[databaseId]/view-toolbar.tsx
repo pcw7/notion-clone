@@ -48,8 +48,10 @@ import {
 } from '@/lib/database/filter-draft'
 import type { GroupBy } from '@/lib/database/group'
 import type { OperatorCatalogEntry } from '@/lib/database/operator-catalog'
-import { isGroupableType, isOptionType, type MvpPropertyType } from '@/lib/database/property-types'
-import { isCellColumn, type CellColumn, type ViewColumn } from '@/lib/database/view-columns'
+import type { FilterableType } from '@/lib/database/filter'
+import { isGroupableType } from '@/lib/database/property-types'
+import { parseUniqueIdQuery } from '@/lib/database/unique-id-format'
+import { isFilterableColumn, isSortable, type FilterableColumn, type ViewColumn } from '@/lib/database/view-columns'
 import { setColumnVisible, updateView, type ApiResult } from './table-api'
 import { TYPE_ICON } from './cell-view'
 
@@ -73,19 +75,6 @@ export type BoardSettings = {
 
 const FIELD =
   'rounded border border-neutral-300 bg-transparent px-1.5 py-1 text-sm disabled:opacity-60 dark:border-neutral-700'
-
-/**
- * 정렬할 수 있는 컬럼.
- *
- * ⚠ select 를 뺀다. 지금의 컴파일러는 select 를 사이드카(`text_value` = **옵션 id**)로
- *   정렬해서 사용자에게는 아무 규칙 없는 순서로 보인다. F-04-10 이 요구하는 것은
- *   **옵션 정의 순서**(`select_option.order_idx` 조인)이고 그것이 들어올 때 연다.
- *   status 도 같은 사이드카라 같이 뺀다(`OPTION_TYPES`).
- */
-export function isSortable(column: Pick<ViewColumn, 'type'>): boolean {
-  // relation 은 사이드카가 없다 — 정렬 · 필터의 축이 아니다(값이 엣지다 · HANDOFF §7).
-  return column.type !== 'relation' && !isOptionType(column.type)
-}
 
 export function ViewToolbar({
   workspaceId,
@@ -114,11 +103,11 @@ export function ViewToolbar({
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
-  // 필터 · 정렬은 **셀 컬럼만** 받는다. relation 은 사이드카가 없어 거를 축이 없다 — 패널에 아예 나오지 않는다.
-  const cellColumns = useMemo(() => columns.filter(isCellColumn), [columns])
+  // 필터 · 정렬은 **거를 수 있는 컬럼만** 받는다(셀 컬럼 + 고유 ID). relation · rollup 은 거를 축이 없다 — 패널에 아예 나오지 않는다.
+  const filterColumns = useMemo(() => columns.filter(isFilterableColumn), [columns])
   const types = useMemo(
-    () => new Map<string, MvpPropertyType>(cellColumns.map((c) => [c.propertyId, c.type])),
-    [cellColumns],
+    () => new Map<string, FilterableType>(filterColumns.map((c) => [c.propertyId, c.type])),
+    [filterColumns],
   )
   const read = readRules(filter)
   const hidden = columns.filter((c) => !c.visible).length
@@ -146,7 +135,7 @@ export function ViewToolbar({
       ? []
       : read.editable
         ? read.rules.map((rule) =>
-            describeRule(rule, cellColumns.find((c) => c.propertyId === rule.property_id), catalog),
+            describeRule(rule, filterColumns.find((c) => c.propertyId === rule.property_id), catalog),
           )
         : ['고급 필터 (여기서 고칠 수 없음)']
 
@@ -171,7 +160,7 @@ export function ViewToolbar({
 
         {panel === 'filter' && (
           <FilterPanel
-            columns={cellColumns}
+            columns={filterColumns}
             catalog={catalog}
             filter={filter}
             types={types}
@@ -182,7 +171,7 @@ export function ViewToolbar({
         )}
         {panel === 'sort' && (
           <SortPanel
-            columns={cellColumns.filter(isSortable)}
+            columns={filterColumns.filter(isSortable)}
             sorts={sorts}
             canEdit={canEdit}
             onSave={(next) => run(() => updateView(workspaceId, viewId, { sorts: next }))}
@@ -307,10 +296,10 @@ function FilterPanel({
   onSave,
   onClose,
 }: {
-  columns: CellColumn[]
+  columns: FilterableColumn[]
   catalog: OperatorCatalogEntry[]
   filter: FilterNode | null
-  types: ReadonlyMap<string, MvpPropertyType>
+  types: ReadonlyMap<string, FilterableType>
   canEdit: boolean
   onSave: (next: FilterNode | null) => Promise<boolean>
   onClose: () => void
@@ -466,7 +455,7 @@ function RuleValue({
   disabled,
   onChange,
 }: {
-  column: CellColumn
+  column: FilterableColumn
   value: unknown
   disabled: boolean
   /** `undefined` 는 "값 없음"이다 — 그 규칙은 저장 트리에서 빠진다. */
@@ -539,6 +528,21 @@ function RuleValue({
           onChange={onChange}
         />
       )
+    case 'unique_id':
+      // 번호를 받는다 — 화면에 보이는 그대로(`TASK-12`) 쳐도 된다(`parseUniqueIdQuery`). 접두사는 표 전체에 하나다.
+      return (
+        <DraftInput
+          initial={typeof value === 'number' ? String(value) : ''}
+          disabled={disabled}
+          inputMode="numeric"
+          parse={(text) => {
+            if (text.trim() === '') return { ok: true, value: undefined }
+            const seq = parseUniqueIdQuery(text)
+            return seq === null ? { ok: false, message: '번호를 넣으세요(예: 12 또는 TASK-12)' } : { ok: true, value: seq }
+          }}
+          onChange={onChange}
+        />
+      )
     default:
       return (
         <DraftInput
@@ -566,7 +570,7 @@ function DraftInput({
 }: {
   initial: string
   disabled: boolean
-  inputMode?: 'decimal'
+  inputMode?: 'decimal' | 'numeric'
   parse: (text: string) => { ok: true; value: unknown } | { ok: false; message: string }
   onChange: (value: unknown) => void
 }) {
@@ -622,7 +626,7 @@ function SortPanel({
   onClose,
 }: {
   /** 정렬할 수 있는 컬럼만(`isSortable`). */
-  columns: CellColumn[]
+  columns: FilterableColumn[]
   sorts: SortKey[]
   canEdit: boolean
   onSave: (next: SortKey[]) => Promise<boolean>

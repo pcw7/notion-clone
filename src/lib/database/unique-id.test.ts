@@ -10,12 +10,17 @@
  *        비어 있음 · 비어 있지 않음은 없다(정본 ⑧)
  *   ④ 정렬 · 커서 — 같은 열을 키로 쓴다(서브쿼리가 없다). 커서의 캐스트가 붙는다
  *   ⑤ 셀 타입이 아니다 — 셀 컬럼으로 취급되지 않는다
+ *   ⑥ ★ 화면(2a-2) — 필터 값 칸은 `12` 도 `TASK-12` 도 받는다 · 도구줄은 셀 컬럼 + 고유 ID 를 거르고 정렬한다 · 정렬 판정이 rollup ·
+ *        relation · 옵션 타입을 뺀다(전에는 rollup 머리에 눌러도 아무 일 없는 정렬이 섰다) · 필터 초안이 고유 ID 규칙을 만든다
  */
 
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { UNIQUE_ID_PREFIX_PATTERN, formatUniqueId, normalizeUniqueIdPrefix } from './unique-id-format.ts'
+import { UNIQUE_ID_PREFIX_PATTERN, formatUniqueId, normalizeUniqueIdPrefix, parseUniqueIdQuery } from './unique-id-format.ts'
+import { isFilterableColumn, isSortable, type ViewColumn } from './view-columns.ts'
+import { describeRule, ruleFor, toFilter } from './filter-draft.ts'
+import type { OperatorCatalogEntry } from './operator-catalog.ts'
 import {
   ParamBag,
   compileCursor,
@@ -134,5 +139,53 @@ describe('⑤ 셀이 아니다', () => {
     assert.equal(isFilterableType('unique_id'), true)
     assert.equal(isFilterableType('rollup'), false)
     assert.equal(isFilterableType('relation'), false)
+  })
+})
+
+const columnOf = (type: string): ViewColumn =>
+  ({ propertyId: 'p', name: 'n', visible: true, orderKey: 'a0', width: null, wrap: false, options: [], type }) as ViewColumn
+
+const CATALOG: OperatorCatalogEntry[] = [
+  { propertyType: 'unique_id', operator: 'equals', arity: 1, label: '같음' },
+  { propertyType: 'unique_id', operator: 'greater_than', arity: 1, label: '초과' },
+]
+
+describe('⑥ 화면', () => {
+  test('★ 필터 값 칸 — 번호도, 보이는 그대로의 `TASK-12` 도 받는다', () => {
+    assert.equal(parseUniqueIdQuery('12'), 12)
+    assert.equal(parseUniqueIdQuery(' TASK-12 '), 12)
+    assert.equal(parseUniqueIdQuery('task-7'), 7)
+    assert.equal(parseUniqueIdQuery('0'), 0)
+  })
+
+  test('번호가 아니면 받지 않는다', () => {
+    for (const text of ['', '  ', 'abc', '1.5', '-3', 'TA-SK-1', 'TASK-', '12a']) {
+      assert.equal(parseUniqueIdQuery(text), null, JSON.stringify(text))
+    }
+  })
+
+  test('★ 도구줄이 거를 수 있는 컬럼 — 셀 컬럼 + 고유 ID', () => {
+    assert.equal(isFilterableColumn(columnOf('unique_id')), true)
+    assert.equal(isFilterableColumn(columnOf('number')), true)
+    assert.equal(isFilterableColumn(columnOf('rollup')), false)
+    assert.equal(isFilterableColumn(columnOf('relation')), false)
+  })
+
+  test('★ 정렬 판정 — 고유 ID 는 되고, rollup · relation · 옵션 타입은 안 된다', () => {
+    assert.equal(isSortable({ type: 'unique_id' }), true)
+    assert.equal(isSortable({ type: 'number' }), true)
+    assert.equal(isSortable({ type: 'title' }), true)
+    for (const type of ['rollup', 'relation', 'select', 'status'] as const) assert.equal(isSortable({ type }), false, type)
+  })
+
+  test('필터 초안 — 고유 ID 규칙을 만들고 칩에 번호를 적는다', () => {
+    const rule = ruleFor('pId', 'unique_id', CATALOG)
+    assert.deepEqual(rule, { property_id: 'pId', operator: 'equals' })
+    const filled = { ...rule, operator: 'greater_than', value: 3 }
+    assert.deepEqual(toFilter([filled], new Map([['pId', 'unique_id' as const]]), CATALOG), {
+      op: 'and',
+      children: [{ property_id: 'pId', operator: 'greater_than', value: 3 }],
+    })
+    assert.equal(describeRule(filled, { propertyId: 'pId', name: 'ID', type: 'unique_id', options: [] }, CATALOG), 'ID · 초과 · 3')
   })
 })

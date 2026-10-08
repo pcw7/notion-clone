@@ -28,6 +28,15 @@ export function normalizeUniqueIdPrefix(raw: unknown): PrefixInput {
   return UNIQUE_ID_PREFIX_PATTERN.test(upper) ? { ok: true, prefix: upper } : { ok: false }
 }
 
+/**
+ * 필터 값 칸에 친 글자 → 번호. `12` 도, 화면에 보이는 그대로 `TASK-12` 도 받는다(접두사는 표 전체에 하나라 거를 뜻이 없다 —
+ * 떼고 번호만 본다). 0 이상의 정수가 아니면 null — 칸이 그 값을 받지 않는다.
+ */
+export function parseUniqueIdQuery(text: string): number | null {
+  const match = /^(?:[A-Za-z0-9]+-)?(\d{1,15})$/.exec(text.trim())
+  return match === null ? null : Number(match[1])
+}
+
 /** 표시 문자열 — `접두사-번호`, 접두사가 없으면 번호만. 번호가 없으면(템플릿) 빈 문자열. */
 export function formatUniqueId(prefix: string | null, seq: number | null): string {
   if (seq === null) return ''
