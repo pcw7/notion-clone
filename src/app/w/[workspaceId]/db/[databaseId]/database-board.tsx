@@ -35,6 +35,15 @@
  * 드래그 → 드롭 타겟 없음."*
  *
  * ──────────────────────────────────────────────────────────────────────
+ * 그룹 머리의 계산은 서버가 낸다 (2d-3 · F-04-16)
+ * ──────────────────────────────────────────────────────────────────────
+ *
+ * 계산이 걸리면 열 머리의 카드 수 자리에 그 값을 그린다(노션처럼 — 무엇의 계산인지는 `title`). 값은 필터를 지난 그 그룹의 행
+ * **전부**로 계산한 것이라 불러온 카드로 셈하지 않는다. 카드를 옮기거나 만들면 카드 수는 로컬로 고치고, 머리 값은 서버에서 **다시
+ * 받는다**(`loadGroupCalculations` — 행은 읽지 않는 질의 하나). 늦게 온 옛 답은 버린다(`calcSeq`). 고르는 곳은 도구줄의 "그룹"
+ * 패널이다(보드 안에 팝오버를 두지 않는다 — 아래).
+ *
+ * ──────────────────────────────────────────────────────────────────────
  * 보드 안에 팝오버를 두지 않는다
  * ──────────────────────────────────────────────────────────────────────
  *
@@ -72,6 +81,7 @@ import {
   type DropTarget,
 } from '@/lib/database/board-drag'
 import { templateRowNote, UNTITLED_TEMPLATE, type DefaultTemplate } from '@/lib/database/new-row'
+import { CALCULATION_LABEL, formatCalculation, type Calculation, type CalculationResult } from '@/lib/database/calculations'
 import * as api from './table-api'
 import { CellDisplay, OptionChip, RelationChips, type RelationIcons, type RelationLabels } from './cell-view'
 import { NewRowMenu } from './new-row-menu'
@@ -83,6 +93,8 @@ export type BoardGroupJson = {
   readonly option: SelectOption | null
   readonly count: number
   readonly hidden: boolean
+  /** 그룹 머리의 계산 값(2d-3). 계산이 없으면 null — 머리는 카드 수. */
+  readonly calculation: CalculationResult | null
   readonly rows: readonly RowJson[]
   readonly hasMore: boolean
   readonly nextCursor: string | null
@@ -135,6 +147,8 @@ export function DatabaseBoard(props: {
   relationIcons: RelationIcons
   /** 이 뷰의 기본 템플릿(F-08-03). 열의 `+` 를 그냥 누르면 이것으로 만든다 — 그 열의 값이 템플릿의 값을 덮는다. */
   defaultTemplate?: DefaultTemplate | null
+  /** 살아 있는 그룹 머리의 계산(2d-3) — 무엇의 계산인지(머리의 `title`). 없으면 머리는 카드 수. */
+  calculation?: { readonly propertyId: string; readonly propertyName: string; readonly fn: Calculation } | null
 }) {
   const { workspaceId, viewId, dataSourceId, tableName, columns, property, groupBy, manualOrder, access } = props
   const router = useRouter()
@@ -164,6 +178,21 @@ export function DatabaseBoard(props: {
   const setEditing = (next: Editing | null) => {
     editingRef.current = next
     setEditingState(next)
+  }
+
+  /** 머리 값을 다시 받은 횟수 — 늦게 온 옛 답을 버린다(머리말). */
+  const calcSeq = useRef(0)
+  const calculation = props.calculation ?? null
+  const refreshCalculations = async () => {
+    if (calculation === null) return
+    const seq = ++calcSeq.current
+    const result = await api.loadGroupCalculations(workspaceId, viewId)
+    if (seq !== calcSeq.current) return
+    if (!result.ok) {
+      setError(result.message)
+      return
+    }
+    update((current) => current.map((g) => ({ ...g, calculation: result.value[g.key] ?? null })))
   }
 
   const boardRef = useRef<HTMLDivElement>(null)
@@ -302,6 +331,8 @@ export function DatabaseBoard(props: {
       return
     }
     takeRow(result.value.row)
+    // 열 사이로 옮겼으면 두 열의 머리 값이 바뀐다(2d-3). 열 안 이동은 값이 그대로다.
+    if (target.key !== fromKey) void refreshCalculations()
     // 정렬된 보드: 옮긴 카드의 자리는 정렬이 정한다(머리말). 열 안 이동은 여기 오지 않는다(resolveDrop 이 null).
     if (!manualOrder && target.key !== fromKey) await reloadColumn(target.key)
   }
@@ -372,6 +403,7 @@ export function DatabaseBoard(props: {
       current.map((g) => (g.key === group.key ? { ...g, rows: [...g.rows, row], count: g.count + 1 } : g)),
     )
     setNotice(templateRowNote(result.value.skippedPages, result.value.skippedLinks))
+    void refreshCalculations()
     // 새 카드의 제목을 바로 받는다 — 이름 없는 카드가 쌓이지 않게(표와 같은 규칙).
     // ★ 초안은 그 카드의 **지금 제목**이다 — 템플릿이 준 제목을 빈 글자로 덮지 않는다(표의 `addRow` 와 같은 이유).
     if (access.canEditContent && titleColumn !== null) {
@@ -407,6 +439,8 @@ export function DatabaseBoard(props: {
       return
     }
     takeRow(result.value)
+    // 제목의 계산(값 세기 · 고유 값)이면 머리 값이 바뀐다(2d-3).
+    if (calculation?.propertyId === titleColumn.propertyId) void refreshCalculations()
   }
 
   const onTitleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
@@ -476,9 +510,19 @@ export function DatabaseBoard(props: {
                 ) : (
                   <span className="truncate text-sm font-medium text-neutral-700 dark:text-neutral-200">{label}</span>
                 )}
-                <span data-testid="db-board-count" className="text-xs tabular-nums text-neutral-400">
-                  {group.count}
-                </span>
+                {calculation !== null && group.calculation !== null ? (
+                  <span
+                    data-testid="db-board-calc"
+                    title={`${calculation.propertyName} · ${CALCULATION_LABEL[calculation.fn]}`}
+                    className="truncate text-xs tabular-nums text-neutral-500 dark:text-neutral-400"
+                  >
+                    {formatCalculation(group.calculation)}
+                  </span>
+                ) : (
+                  <span data-testid="db-board-count" className="text-xs tabular-nums text-neutral-400">
+                    {group.count}
+                  </span>
+                )}
                 <span className="ml-auto flex items-center">
                   {access.canCreateRows && (
                     <NewRowMenu

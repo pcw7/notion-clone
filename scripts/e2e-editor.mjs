@@ -11997,6 +11997,102 @@ async function main() {
       check('"없음"이면 지워진다', await waitFor(`(document.querySelector('${cell} [data-testid="db-calc-button"]')?.textContent ?? '') === '계산'`, 10000), await calcText())
     }
 
+    if (sectionIf('그룹 집계 — 보드 머리 (2d-3 · F-04-16)')) {
+      // 도구줄 "그룹" 패널의 "머리에"로 속성을 고르면 열 머리의 카드 수 자리에 그 그룹의 계산이 선다(필터를 지난 그 그룹의 행 전부).
+      // 카드를 다른 열로 옮기면 두 열의 머리 값을 다시 받는다. "카드 수"로 돌리면 개수가 돌아온다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const clickOn = async (selector) => {
+        const p = await evaluate(`(() => {
+          const e = document.querySelector(${JSON.stringify(selector)})
+          if (!e) return null
+          e.scrollIntoView({ block: 'center' })
+          const r = e.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (p) await click(p.x, p.y)
+        return p !== null
+      }
+      const setSelect = (selector, value) => evaluate(`(() => {
+        const s = document.querySelector(${JSON.stringify(selector)})
+        if (!s) return false
+        s.value = ${JSON.stringify(value)}
+        s.dispatchEvent(new Event('change', { bubbles: true }))
+        return true
+      })()`)
+      const db = (await api('POST', '/databases', { name: `그룹 집계 ${stamp}` })).body.database
+      const ds = db.dataSourceId
+      const num = (await api('POST', `/data-sources/${ds}/properties`, { name: '금액', type: 'number' })).body.property.id
+      const stage = (await api('POST', `/data-sources/${ds}/properties`, { name: '단계', type: 'select' })).body.property.id
+      const opt = async (name) => (await api('POST', `/data-sources/${ds}/properties/${stage}/options`, { name })).body.option.id
+      const ga = await opt('가')
+      const na = await opt('나')
+      const rows = []
+      for (const [n, o] of [[10, ga], [20, ga], [60, na]]) {
+        const cells = [
+          { propertyId: num, value: { type: 'number', number: n } },
+          { propertyId: stage, value: { type: 'select', select: { id: o } } },
+        ]
+        rows.push((await api('POST', `/views/${db.defaultViewId}/rows`, { cells })).body.row.id)
+      }
+      const board = (await api('POST', `/databases/${db.id}/views`, { type: 'board', groupBy: { property_id: stage } })).body.view
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}?v=${board.id}` })
+      await waitFor(`document.querySelectorAll('[data-testid="db-board-card"]').length === 3`, 15000)
+
+      // 열 머리 — 계산이 있으면 그 값, 없으면 "#카드 수".
+      const headsJs = `JSON.stringify([...document.querySelectorAll('[data-testid="db-board-column"]')].map((c) =>
+        c.querySelector('[data-testid="db-board-calc"]')?.textContent ?? ('#' + (c.querySelector('[data-testid="db-board-count"]')?.textContent ?? '?'))))`
+      const heads = () => evaluate(headsJs)
+      const headsAre = (expected) => waitFor(`${headsJs} === ${JSON.stringify(JSON.stringify(expected))}`, 10000)
+      const openPanel = async () => {
+        if (!(await evaluate(`!!document.querySelector('[data-testid="db-group-panel"]')`))) await clickOn('[data-testid="db-group-button"]')
+        return waitFor(`!!document.querySelector('[data-testid="db-group-calc-property"]')`, 3000)
+      }
+      const closePanel = async () => {
+        if (await evaluate(`!!document.querySelector('[data-testid="db-group-panel"]')`)) await clickOn('[data-testid="db-group-button"]')
+        await waitFor(`!document.querySelector('[data-testid="db-group-panel"]')`, 3000)
+      }
+
+      // 열 순서: 단계 없음 · 가 · 나
+      check('계산이 없으면 머리는 카드 수', await headsAre(['#0', '#2', '#1']), await heads())
+      await openPanel()
+      await setSelect('[data-testid="db-group-calc-property"]', num)
+      check('★ "머리에" 금액을 고르면 합계가 붙고 열마다 그 그룹의 합 — 없음 0 · 가 30 · 나 60', await headsAre(['0', '30', '60']), await heads())
+      await openPanel()
+      check('함수 칸이 열리고 숫자의 함수만 있다 — 지금은 합계 · 평균은 있고 체크 계열은 없다',
+        await waitFor(`(() => { const s = document.querySelector('[data-testid="db-group-calc-function"]')
+          return !!s && s.value === 'sum' && !!s.querySelector('option[value="average"]') && !s.querySelector('option[value="checked"]') })()`, 3000))
+      await setSelect('[data-testid="db-group-calc-function"]', 'average')
+      check('평균으로 바꾸면 — 행이 없는 열은 빈 값(—) · 가 15 · 나 60', await headsAre(['—', '15', '60']), await heads())
+
+      // 카드 이동 — 20 을 "나" 로. 가 = 10 · 나 = (60 + 20) / 2 = 40
+      await closePanel()
+      const card = await rect(`[data-testid="db-board"] [data-row-id="${rows[1]}"]`)
+      const target = await rect(`[data-testid="db-board-column"][data-group-key="${na}"]`)
+      const sx = card.x + card.w / 2
+      const sy = card.y + card.h / 2
+      const tx = target.x + target.w / 2
+      const ty = target.y + target.h - 10
+      await move(sx, sy)
+      await press(sx, sy)
+      for (let i = 1; i <= 10; i += 1) {
+        await move(sx + ((tx - sx) * i) / 10, sy + ((ty - sy) * i) / 10, true)
+        await sleep(16)
+      }
+      await release(tx, ty)
+      check('★ 카드를 다른 열로 옮기면 두 열의 머리 값을 다시 받는다 — 가 10 · 나 40', await headsAre(['—', '10', '40']), await heads())
+
+      await openPanel()
+      await setSelect('[data-testid="db-group-calc-property"]', '')
+      check('"카드 수"로 돌리면 개수가 돌아온다 — 가 1 · 나 2', await headsAre(['#0', '#1', '#2']), await heads())
+      await closePanel()
+    }
+
     section('전체')
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))
     const serverErrors = serverOutput.split('\n').filter((l) => l.includes('⨯'))

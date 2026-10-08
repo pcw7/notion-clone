@@ -2944,6 +2944,59 @@ try {
     await client.query('ROLLBACK TO SAVEPOINT probe')
   }
 
+  console.log('\n[39] 그룹 머리의 계산 (0055 / §3.6 [보강] 열 집계 ⑤ · 2d-3조각)')
+  {
+    const root = randomUUID()
+    const dbBlock = randomUUID()
+    const ds = randomUUID()
+    const viewId = randomUUID()
+    const putBlock = `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key,
+                                         ancestor_path, perm_scope_id, properties, format, created_at, last_edited_at)
+                      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, '{}'::jsonb, '{}'::jsonb, now(), now())`
+    await client.query(putBlock, [root, wsId, 'page', 'workspace', wsId, 'zgcalc0', [], root])
+    await client.query(putBlock, [dbBlock, wsId, 'database', 'block', root, 'zgcalc0', [root], root])
+    await client.query(`INSERT INTO database (id, created_at, updated_at) VALUES ($1, now(), now())`, [dbBlock])
+    await client.query(`INSERT INTO data_source (id, owner_database_id, name, created_at, updated_at) VALUES ($1, $2, '그룹 집계 표', now(), now())`, [ds, dbBlock])
+    await client.query(`INSERT INTO database_data_source (database_id, data_source_id, order_idx) VALUES ($1, $2, 'a0')`, [dbBlock, ds])
+    await client.query(
+      `INSERT INTO view (id, database_id, data_source_id, type, order_idx, configuration, created_at, updated_at)
+       VALUES ($1, $2, $3, 'board', 'a0', '{}'::jsonb, now(), now())`,
+      [viewId, dbBlock, ds],
+    )
+    const setGroup = `UPDATE view SET group_by = $2::jsonb WHERE id = $1`
+    const group = (calculation) => JSON.stringify({ property_id: 'g'.repeat(21), calculation })
+    const rejectBy = async (label, constraint, sql, params) => {
+      await client.query('SAVEPOINT probe')
+      try {
+        await client.query(sql, params)
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        fail(`${label} — 거부되어야 하는데 통과했다`)
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        if (e.constraint === constraint) ok(`${label} — ${constraint} 가 거부함 (${e.code})`)
+        else fail(`${label} — ${constraint} 가 아니라 ${e.constraint ?? e.code} 에 걸렸다`)
+      }
+    }
+    await client.query('SAVEPOINT probe')
+    try {
+      await client.query(setGroup, [viewId, JSON.stringify({ property_id: 'g'.repeat(21) })])
+      await client.query(setGroup, [viewId, group({ property_id: 'n'.repeat(21), function: 'sum' })])
+      ok('계산 없음 · 함수 이름 — 정상 경로가 통과한다')
+    } catch (e) {
+      fail(`정상 경로가 거부됐다 (${e.constraint ?? e.code})`)
+    }
+    await client.query('ROLLBACK TO SAVEPOINT probe')
+    await rejectBy('★ 목록 밖의 함수 이름', 'ck_view_group_by_calculation', setGroup, [viewId, group({ property_id: 'n'.repeat(21), function: 'sum_of_squares' })])
+    await rejectBy('★ 속성이 없다', 'ck_view_group_by_calculation', setGroup, [viewId, group({ function: 'sum' })])
+    await rejectBy('계산이 객체가 아니다', 'ck_view_group_by_calculation', setGroup, [viewId, group('sum')])
+    await rejectBy('함수 이름이 글이 아니다', 'ck_view_group_by_calculation', setGroup, [viewId, group({ property_id: 'n'.repeat(21), function: 1 })])
+    // 0054 의 제약을 같은 이름으로 다시 걸었다 — 목록 함수(`is_calculation_name`)를 보는지
+    const kid = 'q'.repeat(21)
+    await client.query(`INSERT INTO property (id, data_source_id, name, type, order_idx, created_at, updated_at) VALUES ($1, $2, '이름', 'title', 'a0', now(), now())`, [kid, ds])
+    await rejectBy('★ 열 집계의 목록 밖 함수 이름 — 다시 건 제약', 'ck_view_property_calculation',
+      `INSERT INTO view_property (view_id, property_id, order_idx, calculation) VALUES ($1, $2, 'a0', 'sum_of_squares')`, [viewId, kid])
+  }
+
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
 } catch (e) {
