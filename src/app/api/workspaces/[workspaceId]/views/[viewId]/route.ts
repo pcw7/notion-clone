@@ -16,6 +16,7 @@
 
 import { requireWorkspaceSession } from '@/lib/auth/route-session'
 import { deleteView, getView, updateView, type MvpViewType } from '@/lib/database/view'
+import type { GalleryLayout } from '@/lib/database/gallery'
 import { viewFailureStatus } from '@/lib/database/http'
 import type { FilterNode, SortKey } from '@/lib/database/filter'
 import type { GroupBy } from '@/lib/database/group'
@@ -46,6 +47,7 @@ export async function PATCH(request: Request, ctx: Ctx): Promise<Response> {
     loadLimit?: unknown
     groupBy?: unknown
     defaultTemplateId?: unknown
+    gallery?: unknown
   }
 
   // ★ `filter` · `groupBy` 는 `null` 과 "안 보냄"을 구분해야 한다 — 전자는 "없애라",
@@ -59,6 +61,8 @@ export async function PATCH(request: Request, ctx: Ctx): Promise<Response> {
     ...('groupBy' in body ? { groupBy: body.groupBy as GroupBy | null } : {}),
     // 기본 템플릿도 `null`(빈 페이지로 돌려라)과 "안 보냄"을 구분한다(F-08-03).
     ...('defaultTemplateId' in body ? { defaultTemplateId: body.defaultTemplateId as string | null } : {}),
+    // 갤러리 레이아웃(2f-2) — 바꿀 키만. 모양은 명령이 본다(`validateGalleryPatch`).
+    ...('gallery' in body ? { gallery: body.gallery as Partial<GalleryLayout> } : {}),
   })
 
   if (!updated.ok) {

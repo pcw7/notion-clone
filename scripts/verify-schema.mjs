@@ -2997,6 +2997,55 @@ try {
       `INSERT INTO view_property (view_id, property_id, order_idx, calculation) VALUES ($1, $2, 'a0', 'sum_of_squares')`, [viewId, kid])
   }
 
+  console.log('\n[40] 갤러리 레이아웃 (0057 / §3.6 [보강] 갤러리 ④ · 2f-2조각)')
+  {
+    const root = randomUUID()
+    const dbBlock = randomUUID()
+    const ds = randomUUID()
+    const viewId = randomUUID()
+    const putBlock = `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key,
+                                         ancestor_path, perm_scope_id, properties, format, created_at, last_edited_at)
+                      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, '{}'::jsonb, '{}'::jsonb, now(), now())`
+    await client.query(putBlock, [root, wsId, 'page', 'workspace', wsId, 'zgal0', [], root])
+    await client.query(putBlock, [dbBlock, wsId, 'database', 'block', root, 'zgal0', [root], root])
+    await client.query(`INSERT INTO database (id, created_at, updated_at) VALUES ($1, now(), now())`, [dbBlock])
+    await client.query(`INSERT INTO data_source (id, owner_database_id, name, created_at, updated_at) VALUES ($1, $2, '갤러리 표', now(), now())`, [ds, dbBlock])
+    await client.query(`INSERT INTO database_data_source (database_id, data_source_id, order_idx) VALUES ($1, $2, 'a0')`, [dbBlock, ds])
+    await client.query(
+      `INSERT INTO view (id, database_id, data_source_id, type, order_idx, configuration, created_at, updated_at)
+       VALUES ($1, $2, $3, 'gallery', 'a0', '{}'::jsonb, now(), now())`,
+      [viewId, dbBlock, ds],
+    )
+    const setConfig = `UPDATE view SET configuration = $2::jsonb WHERE id = $1`
+    const layout = (over) => JSON.stringify({ other: 1, gallery: { cover: 'page_content', cover_size: 'medium', cover_aspect: 'cover', ...over } })
+    const rejectBy = async (label, constraint, sql, params) => {
+      await client.query('SAVEPOINT probe')
+      try {
+        await client.query(sql, params)
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        fail(`${label} — 거부되어야 하는데 통과했다`)
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        if (e.constraint === constraint) ok(`${label} — ${constraint} 가 거부함 (${e.code})`)
+        else fail(`${label} — ${constraint} 가 아니라 ${e.constraint ?? e.code} 에 걸렸다`)
+      }
+    }
+    await client.query('SAVEPOINT probe')
+    try {
+      await client.query(setConfig, [viewId, JSON.stringify({ other: 1 })])
+      await client.query(setConfig, [viewId, layout({ cover: 'none', cover_size: 'large', cover_aspect: 'contain' })])
+      ok('갤러리 키 없음 · 세 키 모두 — 정상 경로가 통과한다')
+    } catch (e) {
+      fail(`정상 경로가 거부됐다 (${e.constraint ?? e.code})`)
+    }
+    await client.query('ROLLBACK TO SAVEPOINT probe')
+    await rejectBy('★ 모르는 미리보기', 'ck_view_gallery_layout', setConfig, [viewId, layout({ cover: 'page_cover' })])
+    await rejectBy('★ 키가 빠졌다(NULL 이면 통과하는 구멍)', 'ck_view_gallery_layout', setConfig,
+      [viewId, JSON.stringify({ gallery: { cover: 'none', cover_size: 'small' } })])
+    await rejectBy('모르는 크기', 'ck_view_gallery_layout', setConfig, [viewId, layout({ cover_size: 'huge' })])
+    await rejectBy('갤러리 키가 객체가 아니다', 'ck_view_gallery_layout', setConfig, [viewId, JSON.stringify({ gallery: 'large' })])
+  }
+
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
 } catch (e) {

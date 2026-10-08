@@ -12303,6 +12303,93 @@ async function main() {
       check('★ 카드의 제목을 누르면 그 행 페이지로 간다', await waitFor(`location.pathname === ${JSON.stringify(`/w/${workspaceId}/${first}`)}`, 15000), await evaluate('location.pathname'))
     }
 
+    if (sectionIf('갤러리 — 카드 미리보기 (2f-2 · F-04-05)')) {
+      // 카드 미리보기는 본문의 첫 이미지다(서버가 행마다 주소를 준다) · 이미지가 없는 카드도 같은 높이의 빈 자리 · 깨진 이미지는 빈 자리로.
+      // 도구줄 "카드" 패널로 미리보기 · 크기를 바꾸면 그 키만 저장되고 갤러리가 다시 선다. "더 보기"의 카드도 미리보기를 받는다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const clickOn = async (selector) => {
+        const p = await evaluate(`(() => {
+          const e = document.querySelector(${JSON.stringify(selector)})
+          if (!e) return null
+          e.scrollIntoView({ block: 'center' })
+          const r = e.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (p) await click(p.x, p.y)
+        return p !== null
+      }
+      const setSelect = (selector, value) => evaluate(`(() => {
+        const s = document.querySelector(${JSON.stringify(selector)})
+        if (!s) return false
+        s.value = ${JSON.stringify(value)}
+        s.dispatchEvent(new Event('change', { bubbles: true }))
+        return true
+      })()`)
+      // 진짜로 열리는 이미지 — 1x1 PNG 를 올린다(우리 파일 경로 · 세션 인증)
+      const form = new FormData()
+      form.append('file', new Blob([Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64')], { type: 'image/png' }), '표지.png')
+      const uploaded = await (await fetch(`${BASE}/api/workspaces/${workspaceId}/files`, { method: 'POST', headers: { cookie: authed.cookie, origin: BASE }, body: form })).json()
+      const db = (await api('POST', '/databases', { name: `갤러리 미리보기 ${stamp}` })).body.database
+      const titleProp = (await api('GET', `/views/${db.defaultViewId}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const titleCell = (text) => ({ propertyId: titleProp, value: { type: 'title', title: [textRun(text)] } })
+      const row = async (title) => (await api('POST', `/views/${db.defaultViewId}/rows`, { cells: [titleCell(title)] })).body.row.id
+      const withImage = await row('사진 있음')
+      const plain = await row('사진 없음')
+      const broken = await row('깨진 사진')
+      const later = await row('뒤의 사진')
+      const imageBlock = (source) => ({ id: randomUUID(), type: 'image', title: [], properties: { source }, format: {}, children: [] })
+      const para = (text) => ({ id: randomUUID(), type: 'paragraph', title: [textRun(text)], properties: {}, format: {}, children: [] })
+      await saveBody(withImage, { blocks: [para('앞 문단'), imageBlock({ type: 'file', file_id: uploaded.file.id })] })
+      await saveBody(plain, { blocks: [para('글뿐')] })
+      await saveBody(broken, { blocks: [imageBlock({ type: 'external', url: `${BASE}/no-such-image-${stamp}.png` })] })
+      await saveBody(later, { blocks: [imageBlock({ type: 'file', file_id: uploaded.file.id })] })
+      const gallery = (await api('POST', `/databases/${db.id}/views`, { type: 'gallery' })).body.view
+      await api('PATCH', `/views/${gallery.id}`, { loadLimit: 3 })
+
+      const card = (id) => `[data-testid="db-gallery-card"][data-row-id="${id}"]`
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}?v=${gallery.id}` })
+      await waitFor(`document.querySelectorAll('[data-testid="db-gallery-card"]').length === 3`, 15000)
+      check('★ 본문의 첫 이미지가 카드 미리보기다 — 우리 파일 경로 · 실제로 그려졌다',
+        await waitFor(`(() => { const img = document.querySelector('${card(withImage)} [data-testid="db-gallery-cover-image"]')
+          return !!img && img.getAttribute('src') === ${JSON.stringify(`/api/workspaces/${workspaceId}/files/${uploaded.file.id}/content`)} && img.complete && img.naturalWidth > 0 })()`, 8000))
+      check('이미지가 없는 카드도 같은 높이의 빈 자리를 둔다',
+        await evaluate(`(() => { const a = document.querySelector('${card(withImage)} [data-testid="db-gallery-cover"]'), b = document.querySelector('${card(plain)} [data-testid="db-gallery-cover"]')
+          return !!a && !!b && !b.querySelector('img') && a.getBoundingClientRect().height === b.getBoundingClientRect().height })()`))
+      check('★ 깨진 이미지는 빈 자리로 돌린다', await waitFor(`!!document.querySelector('${card(broken)} [data-testid="db-gallery-cover"]') && !document.querySelector('${card(broken)} img')`, 8000))
+      await clickOn('[data-testid="db-load-more"]')
+      check('★ "더 보기"의 카드도 미리보기를 받는다', await waitFor(`!!document.querySelector('${card(later)} [data-testid="db-gallery-cover-image"]')`, 8000))
+
+      await clickOn('[data-testid="db-gallery-layout-button"]')
+      await waitFor(`!!document.querySelector('[data-testid="db-gallery-size-select"]')`, 3000)
+      await setSelect('[data-testid="db-gallery-size-select"]', 'large')
+      check('★ 카드 크기를 "크게" — 저장되고 그리드가 그 크기로 선다',
+        (await waitFor(`document.querySelector('[data-testid="db-gallery"]')?.dataset.cardSize === 'large'`, 10000))
+          && (await api('GET', `/views/${gallery.id}`)).body?.view?.gallery?.cover_size === 'large')
+      await waitFor(`!!document.querySelector('[data-testid="db-gallery-cover-select"]')`, 3000)
+      await setSelect('[data-testid="db-gallery-cover-select"]', 'none')
+      const stored = async () => (await api('GET', `/views/${gallery.id}`)).body?.view?.gallery
+      check('★ 미리보기 "없음" — 미리보기 자리가 사라지고, 앞에서 바꾼 크기는 남는다(그 키만 저장)',
+        (await waitFor(`document.querySelectorAll('[data-testid="db-gallery-card"]').length > 0 && !document.querySelector('[data-testid="db-gallery-cover"]')`, 10000))
+          && JSON.stringify(await stored()) === JSON.stringify({ cover: 'none', cover_size: 'large', cover_aspect: 'cover' }),
+        JSON.stringify(await stored()))
+      // 미리보기를 다시 켜면 서버 렌더가 미리보기를 새로 읽는다 — 갤러리는 미리보기를 상태로 들어서, 다시 서지 않으면 빈 채로 남는다.
+      // ★ 미리보기가 **꺼진 채로 연** 갤러리여야 그 상태가 비어 있다(한 화면에서 끄고 켜면 처음 받은 미리보기가 그대로 남아 이 검사가
+      //   다시 마운트를 가르지 못한다 — 반사실이 살아남았다).
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}?v=${gallery.id}` })
+      await waitFor(`document.querySelectorAll('[data-testid="db-gallery-card"]').length === 3 && !document.querySelector('[data-testid="db-gallery-cover"]')`, 15000)
+      await clickOn('[data-testid="db-gallery-layout-button"]')
+      await waitFor(`!!document.querySelector('[data-testid="db-gallery-cover-select"]')`, 3000)
+      await setSelect('[data-testid="db-gallery-cover-select"]', 'page_content')
+      check('★ 미리보기를 다시 켜면 이미지가 돌아온다(갤러리가 새로 선다)',
+        await waitFor(`!!document.querySelector('${card(withImage)} [data-testid="db-gallery-cover-image"]')`, 10000))
+    }
+
     section('전체')
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))
     const serverErrors = serverOutput.split('\n').filter((l) => l.includes('⨯'))
