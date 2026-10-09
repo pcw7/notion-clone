@@ -37,6 +37,7 @@ import { CardBadges } from './card-badges'
 import { NewRowMenu } from './new-row-menu'
 import { SearchEmpty } from './view-search'
 import { useRelationLabels } from './use-relation-labels'
+import { useAdoptServerValue, useLiveServerRefresh } from './use-table-changes'
 
 const UNTITLED = '제목 없음'
 
@@ -86,6 +87,15 @@ export function DatabaseGallery(props: {
   /** 불러오다 깨진 이미지 — 빈 자리로 돌린다(같은 주소를 다시 묻지 않는다). */
   const [broken, setBroken] = useState<ReadonlySet<string>>(() => new Set())
   const markBroken = (src: string) => setBroken((current) => (current.has(src) ? current : new Set(current).add(src)))
+  // 표 변경 알림(2k-3 · F-04-24) — 다른 곳에서 바뀌면 서버 렌더를 다시 부르고 첫 페이지 · 미리보기를 받아들인다. 만들기 · 편집 · 더 보기
+  // 중이면 끝난 뒤에. "더 보기"로 더 읽은 카드는 첫 페이지로 돌아간다(§7).
+  const galleryBusy = loadingMore || busy || editing !== null
+  useLiveServerRefresh(workspaceId, dataSourceId, galleryBusy)
+  useAdoptServerValue(props.rows, galleryBusy, (next) => {
+    setRows(next)
+    setCursor(props.hasMore ? props.nextCursor : null)
+  })
+  useAdoptServerValue(props.covers, galleryBusy, setCovers)
   const { layout } = props
   const showCover = layout.cover !== 'none'
   const editingRef = useRef<Editing | null>(null)

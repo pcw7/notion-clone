@@ -49,6 +49,7 @@ import { cellText, parseDraft, readCell, sameValue } from '@/lib/database/cell-f
 import { PageIconView } from '../../page-icon-view'
 import * as api from './table-api'
 import { SearchEmpty } from './view-search'
+import { useAdoptServerValue, useLiveServerRefresh } from './use-table-changes'
 
 const UNTITLED = '제목 없음'
 const WEEKDAYS = ['일', '월', '화', '수', '목', '금', '토']
@@ -91,6 +92,8 @@ function useToday(): string | null {
 
 export function DatabaseCalendar(props: {
   workspaceId: string
+  /** 이 뷰의 표 — 표 변경 알림(2k-3)을 구독한다. */
+  dataSourceId: string
   viewId: string
   tableName: string
   /** 보이는 달(`YYYY-MM`). */
@@ -124,6 +127,11 @@ export function DatabaseCalendar(props: {
   const swallowClick = useRef(false)
   const [draggingId, setDraggingId] = useState<string | null>(null)
   const [dropDay, setDropDay] = useState<string | null>(null)
+  // 표 변경 알림(2k-3 · F-04-24) — 다른 곳에서 바뀌면 서버 렌더(그 달의 격자)를 다시 부르고 새 막대를 받아들인다. 끌기 · 편집 · 만들기
+  // 중이면 끝난 뒤에.
+  const calendarBusy = draggingId !== null || editing !== null || busyDay !== null
+  useLiveServerRefresh(workspaceId, props.dataSourceId, calendarBusy)
+  useAdoptServerValue(props.rows, calendarBusy, setRows)
   useEffect(() => {
     if (editing !== null) titleInputRef.current?.focus()
   }, [editing?.rowId]) // eslint-disable-line react-hooks/exhaustive-deps -- 새 행이 설 때만 포커스를 준다
