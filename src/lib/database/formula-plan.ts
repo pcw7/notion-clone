@@ -19,13 +19,21 @@
  *
  * **지금(`now()` · `today()`)은 계획에 박는다** — 서버 렌더와 브라우저가 같은 시각으로 계산해야 붙을 때(hydration) 글자가 어긋나지
  * 않는다. 화면을 오래 열어 두면 그 시각에 머문다(다시 열면 맞는다).
+ *
+ * ──────────────────────────────────────────────────────────────────────
+ * 쓰는 동안 검사한다 (2i-3b)
+ * ──────────────────────────────────────────────────────────────────────
+ *
+ * 식 편집기는 치는 동안 **같은 함수**(`compileFormula`)로 식을 읽어 틀린 자리를 보이고, 맞으면 결과 타입과 첫 행의 값을 미리 보인다
+ * (`checkFormulaDraft`). 그래서 계획은 수식 컬럼이 없어도 선다 — 첫 수식을 만드는 폼이 표의 속성을 알아야 한다. 화면이 보지 못하는 것
+ * (다른 수식을 거쳐 돌아오는 고리 · 깊이 15)은 저장할 때 서버가 본다 — 화면은 자기 자신을 바로 읽는 것만 먼저 막는다.
  */
 
 import { textRun } from '../contracts/rich-text.ts'
-import type { FormulaValue } from '../formula/formula.ts'
+import { compileFormula, type FormulaError, type FormulaType, type FormulaValue } from '../formula/formula.ts'
 import type { CellValue } from './property-types.ts'
 import type { ViewColumn } from './view-columns.ts'
-import { compileLiveFormulas, evaluateRowFormulas, type FormulaSourceProperty } from './formula-schema.ts'
+import { compileLiveFormulas, evaluateRowFormulas, formulaSchemaOf, type FormulaSourceProperty } from './formula-schema.ts'
 
 /** 화면이 수식을 계산하는 데 필요한 전부 — 직렬화할 수 있다(서버 렌더 → 브라우저). */
 export type FormulaPlan = {
@@ -37,9 +45,8 @@ export type FormulaPlan = {
   readonly now: string
 }
 
-/** 뷰의 컬럼 **전부**(숨긴 것 포함)로 계획을 만든다. 수식 컬럼이 없으면 null(계산할 것이 없다). */
-export function formulaPlanOf(columns: readonly ViewColumn[], now: Date): FormulaPlan | null {
-  if (!columns.some((c) => c.type === 'formula')) return null
+/** 뷰의 컬럼 **전부**(숨긴 것 포함)로 계획을 만든다. 수식 컬럼이 없어도 선다 — 식 편집기가 표의 속성을 읽는다(머리말). */
+export function formulaPlanOf(columns: readonly ViewColumn[], now: Date): FormulaPlan {
   return {
     sources: columns.map((c) => ({
       id: c.propertyId,
@@ -95,4 +102,51 @@ export function formulaCell(value: FormulaValue | undefined): CellValue | null {
     case 'date':
       return { type: 'date', date: value.value.end === undefined ? { start: value.value.start } : { start: value.value.start, end: value.value.end } }
   }
+}
+
+// ── 쓰는 동안 검사 (2i-3b) ──────────────────────────────────────────
+
+/** 편집기가 그리는 검사 결과 — 비었다 · 틀렸다(자리와 이유) · 읽힌다(결과 타입 · 미리볼 행이 있으면 그 값). */
+export type FormulaDraftCheck =
+  | { readonly kind: 'empty' }
+  | { readonly kind: 'error'; readonly error: FormulaError }
+  | { readonly kind: 'ok'; readonly resultType: FormulaType; readonly preview?: FormulaValue }
+
+/**
+ * 사람이 친 식을 지금 표의 속성으로 읽는다(서버가 저장할 때 쓰는 그 함수). `selfId` 는 고치는 수식 — 자기 자신을 바로 읽으면 틀렸다고
+ * 말한다(거쳐서 돌아오는 고리는 서버가 본다). `previewCells` 가 있으면 그 행으로 계산해 미리 보인다 — 다른 수식을 읽으면 그 수식도
+ * 계산한다(고치는 수식을 읽는 수식은 새 식으로).
+ */
+export function checkFormulaDraft(
+  plan: FormulaPlan,
+  expression: string,
+  options: {
+    readonly selfId?: string
+    readonly previewCells?: Readonly<Record<string, unknown>> | null
+    readonly optionName?: (id: string) => string | null
+  } = {},
+): FormulaDraftCheck {
+  if (expression.trim() === '') return { kind: 'empty' }
+  const compiled = compileFormula(expression, formulaSchemaOf(plan.sources))
+  if (!compiled.ok) return { kind: 'error', error: compiled.error }
+  const { selfId, previewCells } = options
+  if (selfId !== undefined && compiled.value.dependsOn.includes(selfId)) {
+    return { kind: 'error', error: { message: '수식이 자기 자신을 읽습니다', start: 0, end: expression.length } }
+  }
+  if (previewCells === undefined || previewCells === null) return { kind: 'ok', resultType: compiled.value.resultType }
+
+  const draftId = selfId ?? '\u0000draft'
+  const formulas = [
+    ...compileLiveFormulas(plan.sources).filter((f) => f.id !== draftId),
+    { id: draftId, ok: true as const, compiled: compiled.value },
+  ]
+  const typeOf = new Map(plan.sources.map((p) => [p.id, p.type]))
+  const values = evaluateRowFormulas(
+    formulas,
+    (id) => typeOf.get(id) ?? null,
+    previewCells,
+    (id) => plan.optionNames[id] ?? options.optionName?.(id) ?? null,
+    { now: new Date(plan.now) },
+  )
+  return { kind: 'ok', resultType: compiled.value.resultType, preview: values[draftId] ?? null }
 }

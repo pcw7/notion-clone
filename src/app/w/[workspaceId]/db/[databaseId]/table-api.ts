@@ -530,6 +530,20 @@ export function addFormula(
   )
 }
 
+/** 수식의 식을 고친다(2i-3b). 서버가 식을 읽고 · 표의 수식 그래프를 다시 본다(고리 · 깊이). */
+export function updateFormula(
+  workspaceId: string,
+  dataSourceId: string,
+  propertyId: string,
+  expression: string,
+): Promise<ApiResult<null>> {
+  return call(
+    `${base(workspaceId)}/data-sources/${dataSourceId}/properties/${propertyId}`,
+    { method: 'PATCH', headers: JSON_HEADERS, body: JSON.stringify({ expression }) },
+    () => null,
+  )
+}
+
 /** 나에게만 적용하는 필터 · 정렬을 건다(2h-2 · F-04-17) — 볼 수 있으면 된다. `filter: null` 은 "필터 없음"(공유 필터를 끈다). */
 export function setPersonalView(
   workspaceId: string,

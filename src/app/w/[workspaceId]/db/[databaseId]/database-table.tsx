@@ -102,6 +102,7 @@ import { useRollupValues } from './use-rollup-values'
 import { SelectEditor } from './select-editor'
 import { RelationEditor } from './relation-editor'
 import { AddColumn } from './add-column'
+import { FormulaEditForm } from './formula-editor'
 import { ColumnMenu } from './column-menu'
 
 const keyOf = (at: CellPos): string => `${at.row}:${at.col}`
@@ -738,6 +739,7 @@ export function DatabaseTable(props: {
     return null
   }
 
+  const formulaPlan = props.formulaPlan ?? null
   const columnActions = (column: ViewColumn) => ({
     onSort: async (direction: SortKey['direction']) =>
       afterStructure(
@@ -767,6 +769,21 @@ export function DatabaseTable(props: {
             normalizeUniqueIdPrefix(prefix).ok
               ? afterStructure(await api.setUniqueIdPrefix(workspaceId, dataSourceId, column.propertyId, prefix))
               : PREFIX_RULE,
+        }
+      : {}),
+    // 식 고치기(2i-3b) — 수식에만. 편집기는 이 표가 그린다(계산 계획 · 첫 행을 들고 있다). 저장하면 다시 읽는다(계획이 새로 선다).
+    ...(column.type === 'formula' && formulaPlan !== null
+      ? {
+          formulaEdit: (close: () => void) => (
+            <FormulaEditForm
+              plan={formulaPlan}
+              selfId={column.propertyId}
+              initial={column.formula.expression}
+              previewCells={rows[0]?.properties ?? null}
+              onSave={async (expression) => afterStructure(await api.updateFormula(workspaceId, dataSourceId, column.propertyId, expression))}
+              onDone={close}
+            />
+          ),
         }
       : {}),
     onHide: async () =>
@@ -877,6 +894,8 @@ export function DatabaseTable(props: {
                     onAddRollup={addRollupColumn}
                     onAddUniqueId={addUniqueIdColumn}
                     onAddFormula={addFormulaColumn}
+                    formulaPlan={formulaPlan}
+                    previewCells={rows[0]?.properties ?? null}
                   />
                 </th>
               )}

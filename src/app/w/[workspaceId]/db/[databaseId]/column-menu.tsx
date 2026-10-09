@@ -22,6 +22,9 @@
  * "유형 바꾸기"(2c-2 · F-03-14) — 바꿀 수 있는 타입(글 · 숫자 · 선택 · 체크박스 · 날짜)의 속성에만 선다. 값이 사라지는 칸이 있으면 서버가
  * 센 개수로 **한 번 더 묻는다**("N개 칸의 값이 사라집니다") — 노션은 묻지 않고 되돌릴 수도 없다(03).
  *
+ * "식 고치기"(2i-3b · F-03-12) — 수식 속성에만 선다. 편집기는 표가 그린다(`formulaEdit` — 계산 계획 · 첫 행을 표가 갖고 있다). 메뉴는
+ * 그 자리를 넓혀 담기만 한다.
+ *
  * 이 메뉴는 `edit_structure` 가 있을 때만 그려진다(표가 정한다).
  */
 
@@ -41,6 +44,7 @@ export function ColumnMenu({
   onPrefix,
   onHide,
   onDelete,
+  formulaEdit,
 }: {
   name: string
   isTitle: boolean
@@ -58,9 +62,11 @@ export function ColumnMenu({
   onPrefix?: (prefix: string) => Promise<string | null>
   onHide: () => Promise<string | null>
   onDelete: () => Promise<string | null>
+  /** 수식 속성의 "식 고치기"(2i-3b) — 편집기를 그린다. 끝나면(저장 · 취소) `close` 를 부른다. 없으면 항목이 서지 않는다. */
+  formulaEdit?: (close: () => void) => ReactNode
 }) {
   const [open, setOpen] = useState(false)
-  const [step, setStep] = useState<'menu' | 'rename' | 'prefix' | 'convert' | 'confirm-loss' | 'delete'>('menu')
+  const [step, setStep] = useState<'menu' | 'rename' | 'prefix' | 'convert' | 'confirm-loss' | 'delete' | 'formula'>('menu')
   /** 손실 확인을 기다리는 변환 — 고른 타입과 서버가 센 칸 수. */
   const [pending, setPending] = useState<{ type: string; label: string; lost: number } | null>(null)
   const [draft, setDraft] = useState(name)
@@ -130,7 +136,9 @@ export function ColumnMenu({
               close()
             }
           }}
-          className="absolute right-0 top-full z-30 mt-1 flex w-56 flex-col rounded-md border border-neutral-200 bg-white p-1 text-left text-sm font-normal text-neutral-800 shadow-lg dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+          className={`absolute right-0 top-full z-30 mt-1 flex ${
+            step === 'formula' ? 'w-80' : 'w-56'
+          } flex-col rounded-md border border-neutral-200 bg-white p-1 text-left text-sm font-normal text-neutral-800 shadow-lg dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100`}
         >
           {step === 'menu' && (
             <>
@@ -155,6 +163,11 @@ export function ColumnMenu({
               {prefix !== undefined && onPrefix !== undefined && (
                 <MenuItem testId="db-column-prefix" disabled={busy} onClick={() => setStep('prefix')}>
                   접두사 바꾸기
+                </MenuItem>
+              )}
+              {formulaEdit !== undefined && (
+                <MenuItem testId="db-column-formula" disabled={busy} onClick={() => setStep('formula')}>
+                  식 고치기
                 </MenuItem>
               )}
               {!isTitle && (
@@ -263,6 +276,7 @@ export function ColumnMenu({
               </button>
             </form>
           )}
+          {step === 'formula' && formulaEdit !== undefined && formulaEdit(close)}
           {step === 'delete' && (
             <div className="flex flex-col gap-1 p-1">
               <p className="text-xs text-neutral-500">

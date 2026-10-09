@@ -1,11 +1,12 @@
 /**
  * 수식 — 화면이 계산하는 계획 (2i-3a조각 · F-03-12)
  *
- *   ① 계획은 컬럼 **전부**(숨긴 것 포함)로 만든다 — 숨긴 속성을 읽는 수식도 계산된다. 수식 컬럼이 없으면 계획이 없다
+ *   ① 계획은 컬럼 **전부**(숨긴 것 포함)로 만든다 — 숨긴 속성을 읽는 수식도 계산된다. 수식 컬럼이 없어도 선다(편집기가 쓴다)
  *   ② 계산기는 저장된 식(`⟦id⟧`)을 읽는다 — 이름이 겹쳐도 다른 속성을 묶지 않는다. 읽히지 않는 식은 컬럼 전체가 이유를 든다
  *   ③ 옵션 이름 — 계획의 것, 없으면 지금 화면의 것(계획 뒤에 만든 옵션)
  *   ④ 지금은 계획의 시각이다(서버 렌더와 브라우저가 같은 값을 낸다)
  *   ⑤ 수식 값 → 칸 값(칸을 그리는 함수로 그린다)
+ *   ⑥ 쓰는 동안 검사(2i-3b) — 비었다 · 틀린 자리 · 자기 자신 · 결과 타입 · 첫 행 미리보기(다른 수식을 거쳐도)
  */
 
 import { test, describe } from 'node:test'
@@ -14,7 +15,7 @@ import assert from 'node:assert/strict'
 import { textRun } from '../contracts/rich-text.ts'
 import type { CellValue, SelectOption } from './property-types.ts'
 import type { ViewColumn } from './view-columns.ts'
-import { formulaCell, formulaEvaluator, formulaPlanOf } from './formula-plan.ts'
+import { checkFormulaDraft, formulaCell, formulaEvaluator, formulaPlanOf } from './formula-plan.ts'
 
 const NOW = new Date('2026-10-10T09:00:00Z')
 const slot = (id: string) => `⟦${id}⟧`
@@ -34,7 +35,7 @@ const formula = (propertyId: string, name: string, source: string, resultType: '
 const cell = (v: CellValue) => v
 
 describe('① 계획 — 컬럼 전부로', () => {
-  test('★ 숨긴 속성을 읽는 수식도 계산된다 · 수식 컬럼이 없으면 계획이 없다', () => {
+  test('★ 숨긴 속성을 읽는 수식도 계산된다 · 수식 컬럼이 없어도 계획은 선다(계산할 것은 없다)', () => {
     const columns = [
       col('t', '이름', 'title'),
       col('h', '시간', 'number', { visible: false }), // 숨겼다
@@ -46,7 +47,9 @@ describe('① 계획 — 컬럼 전부로', () => {
     const values = formulaEvaluator(plan).valuesOf({ h: cell({ type: 'number', number: 21 }) })
     assert.deepEqual(values, { f: { type: 'number', value: 42 } })
 
-    assert.equal(formulaPlanOf(columns.slice(0, 2), NOW), null)
+    const bare = formulaPlanOf(columns.slice(0, 2), NOW)
+    assert.deepEqual(bare.sources.map((p) => p.id), ['t', 'h'], '편집기가 읽을 속성은 있다')
+    assert.deepEqual(formulaEvaluator(bare).valuesOf({ h: cell({ type: 'number', number: 21 }) }), {})
   })
 
   test('계획은 직렬화된다(서버 렌더 → 브라우저)', () => {
@@ -114,5 +117,44 @@ describe('⑤ 칸 값으로', () => {
     assert.deepEqual(formulaCell({ type: 'date', value: { start: '2026-10-01' } }), { type: 'date', date: { start: '2026-10-01' } })
     assert.equal(formulaCell(null), null)
     assert.equal(formulaCell(undefined), null)
+  })
+})
+
+describe('⑥ 쓰는 동안 검사', () => {
+  const columns = [
+    col('t', '이름', 'title'),
+    col('q', '수량', 'number'),
+    formula('f', '두 배', `${slot('q')} * 2`, 'number'),
+  ]
+  const plan = formulaPlanOf(columns, NOW)
+  const row = { q: cell({ type: 'number', number: 3 }) }
+
+  test('★ 비었다 · 틀린 자리(서버와 같은 함수 — 같은 자리)', () => {
+    assert.deepEqual(checkFormulaDraft(plan, '   '), { kind: 'empty' })
+    const bad = checkFormulaDraft(plan, 'prop("수량") +')
+    assert.equal(bad.kind, 'error')
+    if (bad.kind !== 'error') return
+    assert.deepEqual([bad.error.start, bad.error.end], [12, 12])
+    assert.equal(checkFormulaDraft(plan, 'prop("없는 속성")').kind, 'error')
+  })
+
+  test('★ 자기 자신을 바로 읽으면 틀렸다 — 고치는 수식만(새 수식은 아직 이름이 없다)', () => {
+    const self = checkFormulaDraft(plan, 'prop("두 배") + 1', { selfId: 'f' })
+    assert.equal(self.kind === 'error' && self.error.message, '수식이 자기 자신을 읽습니다')
+    assert.equal(checkFormulaDraft(plan, 'prop("두 배") + 1').kind, 'ok', '다른 수식이 읽는 것은 된다')
+  })
+
+  test('★ 결과 타입 · 첫 행 미리보기 — 다른 수식을 거쳐도 · 미리볼 행이 없으면 타입만', () => {
+    assert.deepEqual(checkFormulaDraft(plan, 'prop("두 배") + 1', { previewCells: row }), { kind: 'ok', resultType: 'number', preview: { type: 'number', value: 7 } })
+    assert.deepEqual(checkFormulaDraft(plan, 'prop("수량") > 1'), { kind: 'ok', resultType: 'boolean' })
+    assert.deepEqual(checkFormulaDraft(plan, 'prop("수량") > 1', { previewCells: {} }), { kind: 'ok', resultType: 'boolean', preview: { type: 'boolean', value: false } })
+  })
+
+  test('고치는 수식을 미리 볼 때 — 저장된 식이 아니라 새 식으로', () => {
+    assert.deepEqual(checkFormulaDraft(plan, 'prop("수량") + 100', { selfId: 'f', previewCells: row }), {
+      kind: 'ok',
+      resultType: 'number',
+      preview: { type: 'number', value: 103 },
+    })
   })
 })
