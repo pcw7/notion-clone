@@ -287,8 +287,8 @@ export function DatabaseTable(props: {
 
     // rollup 칸은 **읽기 전용이다** — 값이 행에 없고 읽을 때 계산된다(정본 [보강] rollup v1). 고칠 것은 설정뿐이고
     // 그것은 속성의 일이다(칸의 일이 아니다). 선택만 한다.
-    // 고유 ID 칸도 읽기 전용이다 — 번호는 시스템이 매긴다(정본 [보강] 고유 ID ⑥ · 2a-1).
-    if (column.type === 'rollup' || column.type === 'unique_id') {
+    // 고유 ID 칸도 읽기 전용이다 — 번호는 시스템이 매긴다(정본 [보강] 고유 ID ⑥ · 2a-1). 수식 칸도(2i-2) — 고칠 것은 식이다.
+    if (column.type === 'rollup' || column.type === 'unique_id' || column.type === 'formula') {
       setMode({ kind: 'selected', at })
       return
     }

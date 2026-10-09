@@ -95,8 +95,11 @@ export type EdgePropertyType = (typeof EDGE_PROPERTY_TYPES)[number]
  * relation 과 같은 이유로 `MVP_PROPERTY_TYPES` 밖에 둔다(§3.3-159): 셀 값 계약이 없고, `prepareCells` 가 거부해야 한다 —
  * 읽기 전용 칸이다. relation 과도 다르다: `properties_cache` 에 투영되지 않는다(결과가 보는 사람마다 다르다 — 볼 수 없는
  * 행을 집계에서 뺀다). 규칙은 `rollup.ts` · `rollup-functions.ts`.
+ *
+ * 수식(formula · 2i-2 · F-03-12)도 여기다 — 같은 행의 칸으로 읽을 때 계산한다(`formula-property.ts`). 1단계의 수식은 보는 사람과
+ * 무관하지만(같은 행의 칸만 읽는다) 캐시에 넣지 않는다 — 3단계(relation 순회)부터는 rollup 처럼 보는 사람마다 다르다.
  */
-export const DERIVED_PROPERTY_TYPES = ['rollup'] as const
+export const DERIVED_PROPERTY_TYPES = ['rollup', 'formula'] as const
 export type DerivedPropertyType = (typeof DERIVED_PROPERTY_TYPES)[number]
 
 /**

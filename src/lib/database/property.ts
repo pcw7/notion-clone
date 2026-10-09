@@ -68,6 +68,7 @@ import { readOptionsOf, toSelectOption } from './options.ts'
 import { addPropertyToViews } from './view.ts'
 import { fillUniqueIds } from './unique-id.ts'
 import { normalizeUniqueIdPrefix } from './unique-id-format.ts'
+import { formulaGraphProblem } from './formula-graph.ts'
 
 /**
  * data_source 당 프로퍼티 상한.
@@ -167,6 +168,12 @@ export type PropertyFailure =
   | 'unique_id_exists'
   /** 기능이 관리하는 속성이다(하위 항목 짝 · 2b-1 · 종속 관계 짝 · 2b-3) — 따로 지우지 않고 그 기능을 끈다. */
   | 'managed_property'
+  /** 수식이 읽히지 않는다(문법 · 없는 속성 · 타입 — 2i-2 · F-03-12). `formulaError` 가 위치와 이유를 든다. */
+  | 'invalid_formula'
+  /** 수식끼리 서로를 읽는다(순환 — 2i-2). */
+  | 'formula_cycle'
+  /** 수식이 수식을 읽는 깊이가 15 를 넘는다(2i-2 · 03 F-03-12). */
+  | 'formula_too_deep'
 
 export type PropertyResult<T = SchemaSnapshot> =
   | { readonly ok: true; readonly value: T }
@@ -175,6 +182,8 @@ export type PropertyResult<T = SchemaSnapshot> =
       readonly reason: PropertyFailure
       /** `schema_conflict` 일 때 서버의 현재 버전. */
       readonly currentVersion?: string
+      /** `invalid_formula` 일 때 — 식의 어디가 왜 틀렸는지(편집기가 그 자리에 밑줄을 긋는다). */
+      readonly formulaError?: { readonly message: string; readonly start: number; readonly end: number }
     }
 
 const fail = (reason: PropertyFailure, currentVersion?: string): PropertyResult<never> =>
@@ -750,6 +759,12 @@ export async function restoreProperty(
     await addPropertyToViews(tx, dataSourceId, propertyId)
     // 지운 동안 만든 행은 번호가 없다(ID 프로퍼티가 살아 있을 때만 준다) — 되살리면서 채운다(정본 ③ · ⑤).
     if (target.type === 'unique_id') await fillUniqueIds(tx, dataSourceId)
+    // 수식을 되살리면 그래프에 노드가 돌아온다 — 지운 동안 다른 수식이 이것을 거쳐 돌아오는 길을 만들었을 수 있다(2i-2 · `formula-graph.ts`).
+    // 되살린 뒤의 그래프로 보고, 고리 · 깊이 초과면 되살리지 않는다(명령 거부 = 롤백).
+    if (target.type === 'formula') {
+      const bad = await formulaGraphProblem(tx, dataSourceId)
+      if (bad !== null) return fail(bad)
+    }
 
     await bumpSchema(tx, dataSourceId)
     return { ok: true, value: await readSchema(tx, dataSourceId) } as const

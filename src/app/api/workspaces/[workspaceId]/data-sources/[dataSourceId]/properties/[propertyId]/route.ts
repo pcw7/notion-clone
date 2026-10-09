@@ -19,6 +19,7 @@ import { isUuid } from '@/lib/ids'
 import { readJsonBody, requireWorkspaceSession } from '@/lib/auth/route-session'
 import { deleteProperty, updateProperty } from '@/lib/database/property'
 import { failureResponse, propertyFailureStatus } from '@/lib/database/http'
+import { updateFormulaExpression } from '@/lib/database/formula-property'
 
 type Ctx = RouteContext<'/api/workspaces/[workspaceId]/data-sources/[dataSourceId]/properties/[propertyId]'>
 
@@ -34,7 +35,18 @@ export async function PATCH(request: Request, ctx: Ctx): Promise<Response> {
     name?: unknown
     description?: unknown
     prefix?: unknown
+    expression?: unknown
     expectedVersion?: unknown
+  }
+
+  // 수식의 식 고치기(2i-2) — 이름 · 설명과 따로 보낸다(식을 읽고 의존 그래프를 보는 길이 따로다).
+  if ('expression' in body) {
+    const changed = await updateFormulaExpression(session.ctx, dataSourceId, propertyId, {
+      expression: body.expression,
+      ...(typeof body.expectedVersion === 'string' ? { expectedVersion: body.expectedVersion } : {}),
+    })
+    if (!changed.ok) return failureResponse(propertyFailureStatus(changed.reason), changed)
+    return Response.json({ ok: true, schema: changed.value })
   }
 
   const hasName = typeof body.name === 'string'

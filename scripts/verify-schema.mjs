@@ -67,6 +67,8 @@ const EXPECTED_TABLES = [
   'plan', 'plan_entitlement', 'billing_subscription',
   // 개인 필터 · 정렬 2h-1조각 (0059)
   'view_user_override',
+  // 수식 속성의 의존 그래프 2i-2조각 (0060)
+  'property_dependency',
   'schema_migration', 'scim_token', 'session_policy', 'sso_config',
   'user', 'user_email', 'user_session',
   'workspace', 'workspace_invite', 'workspace_member',
@@ -1386,17 +1388,18 @@ try {
       // relation 의 정본은 엣지이고 rollup 은 읽을 때 계산한다 — 그 프로퍼티들에 셀 행이 생기면 캐시에 걸러지지 않은
       // 값이 실린다. `from` 은 위에서 만든 이 표의 행, `oneWay` 는 이 표의 relation 프로퍼티다.
       const cell = `INSERT INTO page_property_value (page_id, property_id, value, updated_at) VALUES ($1, $2, $3::jsonb, now())`
-      const typed = async (n, type, key) => {
+      // 수식은 설정(식 · 결과 타입)이 있어야 수식이다(0060 ck_property_formula_config) — 그 밖의 타입은 빈 설정
+      const typed = async (n, type, key, config = {}) => {
         await client.query(
           `INSERT INTO property (id, data_source_id, name, type, config, order_idx, created_at, updated_at)
-           VALUES ($1, $2, $3, $4::property_type, '{}'::jsonb, $5, now(), now())`,
-          [pid(n), dsId, `셀 없는 ${type}`, type, key],
+           VALUES ($1, $2, $3, $4::property_type, $6::jsonb, $5, now(), now())`,
+          [pid(n), dsId, `셀 없는 ${type}`, type, key, JSON.stringify(config)],
         )
         return pid(n)
       }
       await mustReject('C2: relation 프로퍼티에 셀 행', cell, [from, oneWay, '{"type":"relation","relation":[]}'])
       await mustReject('C1: rollup 프로퍼티에 셀 행', cell, [from, await typed(97, 'rollup', 'q1'), '{"type":"number","number":1}'])
-      await mustReject('C1: formula 프로퍼티에 셀 행', cell, [from, await typed(98, 'formula', 'q2'), '{"type":"number","number":1}'])
+      await mustReject('C1: formula 프로퍼티에 셀 행', cell, [from, await typed(98, 'formula', 'q2', { expression: '1', result_type: 'number' }), '{"type":"number","number":1}'])
       await mustReject('C1: 자동 메타(created_time) 프로퍼티에 셀 행', cell, [from, await typed(99, 'created_time', 'q3'), '{"type":"date","date":null}'])
       {
         await client.query('SAVEPOINT plain')
@@ -3085,6 +3088,50 @@ try {
       const left = (await client.query(`SELECT count(*)::int AS n FROM view_user_override WHERE view_id = $1`, [viewId])).rows[0].n
       if (left === 0) ok('★ 뷰를 지우면 그 뷰의 개인 설정도 사라진다(cascade)')
       else fail(`뷰를 지웠는데 개인 설정 ${left}개가 남았다`)
+    } catch (e) {
+      fail(`cascade 확인 중 오류 (${e.constraint ?? e.code})`)
+    }
+    await client.query('ROLLBACK TO SAVEPOINT probe')
+
+    console.log('\n[43] 수식 속성 · 의존 그래프 (0060 / §3.5 property_dependency · [보강] 수식 1단계 · 2i-2조각)')
+    const putProperty = `INSERT INTO property (id, data_source_id, name, type, order_idx, config, created_at, updated_at)
+                         VALUES ($1, $2, $3, $4, $5, $6::jsonb, now(), now())`
+    const numberProp = 'n'.repeat(21)
+    const formulaProp = 'f'.repeat(21)
+    const elsewhere = 'x'.repeat(21)
+    const otherDs = randomUUID()
+    await client.query(`INSERT INTO data_source (id, owner_database_id, name, created_at, updated_at) VALUES ($1, $2, '다른 표', now(), now())`, [otherDs, dbBlock])
+    await client.query(putProperty, [numberProp, ds, '시간', 'number', 'b0', '{}'])
+    await client.query(putProperty, [elsewhere, otherDs, '남의 시간', 'number', 'b0', '{}'])
+    const putEdge = `INSERT INTO property_dependency (dependent_property_id, source_property_id, via_relation_id) VALUES ($1, $2, $3)`
+    await client.query('SAVEPOINT probe')
+    try {
+      await client.query(putProperty, [formulaProp, ds, '두 배', 'formula', 'b1', JSON.stringify({ expression: `\u27e6${numberProp}\u27e7 * 2`, result_type: 'number' })])
+      await client.query(putEdge, [formulaProp, numberProp, null])
+      ok('수식(식 · 결과 타입) · 같은 표의 간선 — 정상 경로가 통과한다')
+    } catch (e) {
+      fail(`정상 경로가 거부됐다 (${e.constraint ?? e.code})`)
+    }
+    await client.query('ROLLBACK TO SAVEPOINT probe')
+    await rejectBy('★ 식이 없다(NULL 이면 통과하는 구멍)', 'ck_property_formula_config', putProperty,
+      [formulaProp, ds, '두 배', 'formula', 'b1', JSON.stringify({ result_type: 'number' })])
+    await rejectBy('★ 모르는 결과 타입', 'ck_property_formula_config', putProperty,
+      [formulaProp, ds, '두 배', 'formula', 'b1', JSON.stringify({ expression: '1', result_type: 'list' })])
+    await rejectBy('식이 글이 아니다', 'ck_property_formula_config', putProperty,
+      [formulaProp, ds, '두 배', 'formula', 'b1', JSON.stringify({ expression: 1, result_type: 'number' })])
+    await rejectBy('칸 속성을 설정 없이 수식으로 바꾼다', 'ck_property_formula_config',
+      `UPDATE property SET type = 'formula' WHERE id = $1`, [numberProp])
+
+    await client.query(putProperty, [formulaProp, ds, '두 배', 'formula', 'b1', JSON.stringify({ expression: '1', result_type: 'number' })])
+    await rejectBy('★ 자기 자신을 읽는 간선', 'ck_property_dependency_not_self', putEdge, [formulaProp, formulaProp, null])
+    await rejectBy('★ relation 을 타지 않는데 다른 표의 속성을 읽는다', 'tg_property_dependency_same_source', putEdge, [formulaProp, elsewhere, null])
+    await client.query('SAVEPOINT probe')
+    try {
+      await client.query(putEdge, [formulaProp, numberProp, null])
+      await client.query(`DELETE FROM property WHERE id = $1`, [numberProp])
+      const left = (await client.query(`SELECT count(*)::int AS n FROM property_dependency WHERE dependent_property_id = $1`, [formulaProp])).rows[0].n
+      if (left === 0) ok('★ 읽던 속성의 행이 사라지면 간선도 사라진다(cascade)')
+      else fail(`읽던 속성을 지웠는데 간선 ${left}개가 남았다`)
     } catch (e) {
       fail(`cascade 확인 중 오류 (${e.constraint ?? e.code})`)
     }

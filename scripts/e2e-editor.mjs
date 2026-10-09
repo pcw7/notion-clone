@@ -12649,6 +12649,51 @@ async function main() {
         JSON.stringify({ status: published.status, filter: published.body?.view?.filter }))
     }
 
+    if (sectionIf('수식 속성 — 서버 (2i-2 · F-03-12)')) {
+      // 수식을 만들면 행 응답에 그 행의 값이 실리고(읽을 때 계산) · 뷰 컬럼에 사람이 읽는 식이 선다. 틀린 식은 자리와 함께 400 · 순환은 400.
+      // 깊이 · 되살리기 고리 · 끊긴 수식 · 권한은 DB 검사가 본다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `수식 ${stamp}` })).body.database
+      const view = db.defaultViewId
+      const props = `/data-sources/${db.dataSourceId}/properties`
+      const hours = (await api('POST', props, { name: '시간', type: 'number' })).body.property.id
+      const rate = (await api('POST', props, { name: '단가', type: 'number' })).body.property.id
+      const titleProp = (await api('GET', `/views/${view}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const row = (await api('POST', `/views/${view}/rows`, {
+        cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun('가')] } }, { propertyId: hours, value: { type: 'number', number: 3 } }, { propertyId: rate, value: { type: 'number', number: 50 } }],
+      })).body.row.id
+      const rows = () => api('GET', `/views/${view}/rows`)
+      check('수식 컬럼이 없으면 행 응답에 수식 값이 없다', !('formulas' in ((await rows()).body ?? {})))
+
+      const made = await api('POST', props, { name: '금액', type: 'formula', expression: 'prop("시간") * prop("단가")' })
+      check('★ 수식 속성을 만든다(201 · 타입 formula)', made.status === 201 && made.body?.property?.type === 'formula', JSON.stringify({ status: made.status, body: made.body }))
+      const amount = made.body?.property?.id
+      const read = (await rows()).body
+      check('★ 행 응답에 그 행의 수식 값이 실린다(3 × 50)',
+        read?.formulas?.columns?.[amount]?.error === null && read?.formulas?.values?.[row]?.[amount]?.value === 150, JSON.stringify(read?.formulas))
+      const column = (await api('GET', `/views/${view}`)).body?.view?.columns?.find((c) => c.propertyId === amount)
+      check('★ 뷰 컬럼에 사람이 읽는 식과 결과 타입', column?.type === 'formula' && column?.formula?.expression === 'prop("시간") * prop("단가")' && column?.formula?.resultType === 'number',
+        JSON.stringify(column))
+
+      const bad = await api('POST', props, { name: '틀림', type: 'formula', expression: 'prop("시간") +' })
+      check('★ 틀린 식 — 400 · 자리와 이유', bad.status === 400 && bad.body?.error === 'invalid_formula' && bad.body?.formulaError?.start === 12 && typeof bad.body?.formulaError?.message === 'string',
+        JSON.stringify(bad))
+      await api('POST', props, { name: '하나 더', type: 'formula', expression: 'prop("금액") + 1' })
+      const cycle = await api('PATCH', `${props}/${amount}`, { expression: 'prop("하나 더") * 2' })
+      check('★ 순환 — 400 formula_cycle', cycle.status === 400 && cycle.body?.error === 'formula_cycle', JSON.stringify(cycle))
+      const fixed = await api('PATCH', `${props}/${amount}`, { expression: 'prop("시간") + prop("단가")' })
+      const after = (await rows()).body
+      check('★ 식을 고치면 다음 읽기가 새 값(3 + 50) · 그것을 읽는 수식도(+1)',
+        fixed.status === 200 && after?.formulas?.values?.[row]?.[amount]?.value === 53 && Object.values(after?.formulas?.values?.[row] ?? {}).some((v) => v?.value === 54),
+        JSON.stringify({ status: fixed.status, values: after?.formulas?.values?.[row] }))
+    }
+
     if (sectionIf('개인 필터 · 정렬 — 화면 (2h-2 · F-04-17)')) {
       // 볼 수만 있는 사람(브라우저 세션을 바꾼다)이 도구줄의 필터로 조건을 걸면 **자기 것**으로 저장되고 그 사람의 표만 좁혀진다 — "나만 보는
       // 필터" 표시 · 초기화. 편집자는 자기 개인 것을 "모두에게 저장"한다. 브라우저 세션은 끝에 반드시 소유자로 되돌린다.

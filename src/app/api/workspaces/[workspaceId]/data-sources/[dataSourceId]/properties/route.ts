@@ -13,6 +13,7 @@ import { isUuid } from '@/lib/ids'
 import { readJsonBody, requireWorkspaceSession } from '@/lib/auth/route-session'
 import { addProperty, getSchema, type AddPropertyInput } from '@/lib/database/property'
 import { failureResponse, propertyFailureStatus } from '@/lib/database/http'
+import { addFormulaProperty } from '@/lib/database/formula-property'
 
 type Ctx = RouteContext<'/api/workspaces/[workspaceId]/data-sources/[dataSourceId]/properties'>
 
@@ -41,7 +42,19 @@ export async function POST(request: Request, ctx: Ctx): Promise<Response> {
 
   const parsed = await readJsonBody(request)
   if (!parsed.ok) return parsed.response
-  const body = (parsed.body ?? {}) as { name?: unknown; type?: unknown; prefix?: unknown; expectedVersion?: unknown }
+  const body = (parsed.body ?? {}) as { name?: unknown; type?: unknown; prefix?: unknown; expression?: unknown; expectedVersion?: unknown }
+
+  // 수식(2i-2 · F-03-12)은 식을 함께 받는다 — 식을 읽고 의존 그래프를 보는 길이 따로다(`formula-property.ts`).
+  if (body.type === 'formula') {
+    const made = await addFormulaProperty(session.ctx, dataSourceId, {
+      name: body.name,
+      expression: body.expression,
+      ...(typeof body.expectedVersion === 'string' ? { expectedVersion: body.expectedVersion } : {}),
+    })
+    if (!made.ok) return failureResponse(propertyFailureStatus(made.reason), made)
+    const property = made.value.schema.properties.find((p) => p.id === made.value.propertyId)
+    return Response.json({ ok: true, schema: made.value.schema, property }, { status: 201 })
+  }
 
   // 타입이 틀린 값은 그대로 넘긴다 — 무엇이 MVP 타입인지는 라이브러리가 판정한다
   // (`title` 은 `title_immutable`, 모르는 값은 `unsupported_type`). 여기서 거르면

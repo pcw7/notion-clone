@@ -34,6 +34,7 @@ import { queryRows } from '@/lib/database/query'
 import { computeCalculations } from '@/lib/database/calculate'
 import { normalizeSearch } from '@/lib/database/search'
 import { readCardCovers } from '@/lib/database/gallery-covers'
+import { computeFormulaValues } from '@/lib/database/formula-property'
 import { createRow } from '@/lib/database/row'
 import { createRowFromTemplate } from '@/lib/database/template'
 import { createSubItem } from '@/lib/database/sub-item-rows'
@@ -105,9 +106,15 @@ export async function GET(request: Request, ctx: Ctx): Promise<Response> {
       ? await readCardCovers(session.ctx, page.value.rows.map((r) => r.id))
       : undefined
 
+  // 수식(2i-2 · F-03-12) — 이 페이지의 행마다 계산한다(읽을 때 계산 · 같은 행의 칸만 읽는다). 수식 컬럼이 없으면 싣지 않는다.
+  const formulas = view.value.columns.some((c) => c.type === 'formula')
+    ? await computeFormulaValues(session.ctx, view.value.dataSourceId, page.value.rows)
+    : undefined
+
   return Response.json({
     ...(calculations === undefined ? {} : { calculations }),
     ...(covers === undefined ? {} : { covers }),
+    ...(formulas === undefined ? {} : { formulas }),
     ok: true,
     // 화면이 컬럼 머리를 그리려면 스키마가 필요하다. 한 번에 준다 —
     // 표를 열 때마다 왕복이 둘이면 첫 화면이 느리다.
