@@ -81,7 +81,7 @@ const HEADFUL = process.env.E2E_HEADFUL === '1'
 
 // 응답의 본문은 늘 끝까지 읽는다 — 상태만 보고 버린 화면 응답은 서버의 스트리밍 도중에 연결을 닫을 수 있다(§3.3-276 ⑤). 그런 검사가
 // 옛 절에 수십 곳이라 하나씩 `.text()` 를 붙이지 않고 여기서 한 번 — 사본(clone)을 끝까지 읽으면 원래 응답의 본문은 그대로 읽을 수
-// 있다. 스트리밍으로 읽는 검사는 없다(있으면 여기서 막힌다). 전체 판의 "서버에서 오류"는 이것이 아니라 브라우저가 refresh 도중에 떠난
+// 있다. 스트리밍으로 읽는 검사는 이것을 거치면 막힌다 — `rawFetch` 를 쓴다(표 변경 알림 2k-1 의 SSE). 전체 판의 "서버에서 오류"는 이것이 아니라 브라우저가 refresh 도중에 떠난
 // 것이었다 — 그것은 `connect` 의 inflight 가 막는다(§3.3-278 ⑥). 이것은 해가 없어 남긴다.
 const rawFetch = globalThis.fetch
 globalThis.fetch = async (...args) => {
@@ -13160,6 +13160,87 @@ async function main() {
       await send('Page.reload')
       check('새로고침해도 같다(서버가 수식 값의 캐시로 거르고 정렬한다)',
         await waitFor(`${titlesJs} === '다,나'`, 15000), await evaluate(titlesJs))
+    }
+
+    if (sectionIf('표 변경 알림 — 서버 (2k-1 · F-04-24)')) {
+      // 표를 보는 사람에게 "바뀌었다"를 흘리는 SSE — 준비됨 · 칸을 고치면 바뀌었다 · 볼 수 없는 표는 404 · 권한이 회수되면 회수됨으로 닫힌다.
+      const stamp = Date.now()
+      const api = async (method, path, body, headers = authed) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      /** SSE 를 연다 — 이벤트 이름을 차례로 모은다. */
+      const openFeed = async (dataSourceId, headers = authed) => {
+        const controller = new AbortController()
+        // 감싸지 않은 fetch — 감싼 것은 본문을 끝까지 읽어서(파일 머리 `rawFetch`) 끝나지 않는 SSE 에서 멈춘다
+        const res = await rawFetch(`${BASE}/api/workspaces/${workspaceId}/data-sources/${dataSourceId}/changes`, { headers, signal: controller.signal })
+        const events = []
+        let ended = false
+        if (res.ok && res.body) {
+          ;(async () => {
+            const reader = res.body.getReader()
+            const decoder = new TextDecoder()
+            let buffer = ''
+            try {
+              for (;;) {
+                const { value, done } = await reader.read()
+                if (done) break
+                buffer += decoder.decode(value, { stream: true })
+                let at
+                while ((at = buffer.indexOf('\n\n')) >= 0) {
+                  const chunk = buffer.slice(0, at)
+                  buffer = buffer.slice(at + 2)
+                  const name = /^event: (.+)$/m.exec(chunk)?.[1]
+                  if (name) events.push(name)
+                }
+              }
+            } catch {
+              // 닫았다
+            }
+            ended = true
+          })()
+        }
+        const waitEvent = async (name, ms = 5000) => {
+          for (let t = 0; t < ms; t += 50) {
+            if (events.includes(name)) return true
+            await sleep(50)
+          }
+          return false
+        }
+        return { status: res.status, type: res.headers.get('content-type'), events, waitEvent, ended: () => ended, close: () => controller.abort() }
+      }
+
+      const db = (await api('POST', '/databases', { name: `알림 ${stamp}` })).body.database
+      const view = db.defaultViewId
+      const qty = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '수량', type: 'number' })).body.property.id
+      const titleProp = (await api('GET', `/views/${view}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const row = (await api('POST', `/views/${view}/rows`, { cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun('가')] } }] })).body.row.id
+
+      const feed = await openFeed(db.dataSourceId)
+      check('★ 표를 보는 사람은 구독한다 — SSE · 준비됨', feed.status === 200 && (feed.type ?? '').startsWith('text/event-stream') && (await feed.waitEvent('ready')),
+        JSON.stringify({ status: feed.status, type: feed.type, events: feed.events }))
+      await api('PATCH', `/rows/${row}`, { cells: [{ propertyId: qty, value: { type: 'number', number: 5 } }] })
+      check('★ 칸을 고치면 "바뀌었다"가 온다(무엇이 바뀌었는지는 싣지 않는다)', await feed.waitEvent('changed'), JSON.stringify(feed.events))
+      feed.close()
+
+      // 볼 수 없는 표 — 404(존재를 알리지 않는다) · 볼 수 있다가 회수되면 회수됨으로 닫힌다
+      const mate = await joinAs(workspaceId, await createUser(`알림 동료 ${stamp}`), 'member')
+      const mateHeaders = { ...authed, cookie: `nc_session=${mate.token}` }
+      const mateFeed = await openFeed(db.dataSourceId, mateHeaders)
+      check('동료도 표를 볼 수 있으면 구독한다', await mateFeed.waitEvent('ready'), JSON.stringify(mateFeed.events))
+      const access = (body) => api('POST', `/pages/${db.id}/access`, body)
+      await access({ action: 'restrict' })
+      await access({ action: 'grant', principal: { type: 'user', id: ctx.userId }, level: 'full_access' })
+      await access({ action: 'revoke', principal: { type: 'workspace_everyone' } })
+      check('★ 권한을 잃으면 서버가 "회수됨"을 보내고 닫는다', (await mateFeed.waitEvent('revoked', 8000)) && (await (async () => {
+        for (let t = 0; t < 3000 && !mateFeed.ended(); t += 50) await sleep(50)
+        return mateFeed.ended()
+      })()), JSON.stringify(mateFeed.events))
+      const denied = await openFeed(db.dataSourceId, mateHeaders)
+      check('★ 볼 수 없는 표는 404', denied.status === 404, String(denied.status))
+      denied.close()
     }
 
     if (sectionIf('개인 필터 · 정렬 — 화면 (2h-2 · F-04-17)')) {

@@ -18,6 +18,9 @@
  *     이 버퍼를 빼는 반사실에서 검사가 전부 통과했다
  *   - 끊긴 pg 클라이언트는 다시 쓸 수 없다(진단) — 붙을 때마다 새로 만든다
  *   - 커넥션 풀을 쓰지 않는다. LISTEN 은 그 세션에 걸리므로 풀에 돌려주면 다른 쿼리가 그 세션을 쓴다
+ *
+ * 듣는 채널은 부르는 쪽이 고른다(`channels`) — 협업 서버는 본문 · 권한을, Next 의 표 변경 허브(`database/row-feed.ts` · 2k-1)는
+ * 표(`db_rows` · 0063) · 권한을 듣는다. 기본은 협업 서버의 것이다.
  */
 
 import pg from 'pg'
@@ -26,6 +29,8 @@ import { isUuid } from '../ids.ts'
 
 export const DOC_CHANNEL = 'collab_doc'
 export const ACCESS_CHANNEL = 'collab_access'
+/** 표(data source)가 바뀌었다 — 0063 · 뷰 결과 실시간 동기화(F-04-24 · 2k-1). */
+export const ROWS_CHANNEL = 'db_rows'
 
 /** `pg_stat_activity` 에서 이 연결을 알아본다. */
 export const FEED_APPLICATION_NAME = 'notion-clone-collab-feed'
@@ -37,6 +42,8 @@ export type CollabSignal =
   | { readonly kind: 'access'; readonly workspaceId: string }
   /** 그 사용자의 세션이 바뀌었다. */
   | { readonly kind: 'session'; readonly userId: string }
+  /** 그 표의 행 · 속성 · 뷰가 바뀌었다(2k-1). 무엇이 바뀌었는지는 싣지 않는다 — 받는 쪽이 다시 읽는다. */
+  | { readonly kind: 'rows'; readonly dataSourceId: string }
 
 export type ChangeFeedHandlers = {
   /** 신호 하나. 받은 순서(= 커밋 순서)대로 동기로 부른다. */
@@ -55,6 +62,10 @@ export type ChangeFeedOptions = {
   readonly connectionString?: string
   /** 끊긴 뒤 다시 붙기까지. 기본 200ms — 이어서 실패하면 두 배씩, 최대 5초. */
   readonly retryDelayMs?: number
+  /** 들을 채널. 기본은 협업 서버의 것(본문 · 권한). */
+  readonly channels?: readonly string[]
+  /** `pg_stat_activity` 에 보일 이름. */
+  readonly applicationName?: string
 }
 
 const MAX_RETRY_DELAY_MS = 5000
@@ -71,6 +82,7 @@ export function parseCollabSignal(channel: string, payload: string | undefined):
     if (payload.startsWith('ws:') && isUuid(payload.slice(3))) return { kind: 'access', workspaceId: payload.slice(3) }
     if (payload.startsWith('user:') && isUuid(payload.slice(5))) return { kind: 'session', userId: payload.slice(5) }
   }
+  if (channel === ROWS_CHANNEL) return isUuid(payload) ? { kind: 'rows', dataSourceId: payload } : null
   return null
 }
 
@@ -79,6 +91,8 @@ export async function openChangeFeed(handlers: ChangeFeedHandlers, options: Chan
   const connectionString = options.connectionString ?? process.env.DATABASE_URL
   if (!connectionString) throw new Error('DATABASE_URL 이 설정되지 않았습니다 — 협업 서버가 커밋 신호를 들을 수 없다.')
   const baseDelay = options.retryDelayMs ?? 200
+  const channels = options.channels ?? [DOC_CHANNEL, ACCESS_CHANNEL]
+  const applicationName = options.applicationName ?? FEED_APPLICATION_NAME
 
   let closed = false
   let current: pg.Client | null = null
@@ -103,7 +117,7 @@ export async function openChangeFeed(handlers: ChangeFeedHandlers, options: Chan
   }
 
   const connect = async (): Promise<void> => {
-    const client = new pg.Client({ connectionString, application_name: FEED_APPLICATION_NAME })
+    const client = new pg.Client({ connectionString, application_name: applicationName })
     let lost = false
     // 끊기면 'error' 가 두 번 오고 'end' 가 온다(진단). 한 번만 처리한다. 붙기 전에 잃으면 connect 가 던져 호출자가 다시 잡는다.
     const onLost = (error?: unknown): void => {
@@ -132,8 +146,8 @@ export async function openChangeFeed(handlers: ChangeFeedHandlers, options: Chan
 
     try {
       await client.connect()
-      await client.query(`LISTEN ${DOC_CHANNEL}`)
-      await client.query(`LISTEN ${ACCESS_CHANNEL}`)
+      // 채널 이름은 이 파일의 상수 · 부르는 쪽의 상수다(사용자 입력이 아니다)
+      for (const channel of channels) await client.query(`LISTEN ${channel}`)
     } catch (error) {
       lost = true
       client.end().catch(() => undefined)
