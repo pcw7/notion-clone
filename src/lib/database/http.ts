@@ -84,6 +84,10 @@ export function propertyFailureStatus(reason: PropertyFailure): number {
     case 'invalid_target':
     case 'unsupported_type':
     case 'title_immutable':
+    // 수식(2i-2) — 식이 틀렸다 · 순환 · 깊이는 입력의 문제다(식을 고치면 통과한다)
+    case 'invalid_formula':
+    case 'formula_cycle':
+    case 'formula_too_deep':
       return 400
   }
 }
@@ -189,13 +193,20 @@ export function viewFailureStatus(reason: ViewFailure): number {
 /** 실패 결과를 응답으로. 라이브러리가 준 `issues` · `currentVersion` 을 그대로 싣는다. */
 export function failureResponse(
   status: number,
-  failure: { readonly reason: string; readonly issues?: readonly unknown[]; readonly currentVersion?: string },
+  failure: {
+    readonly reason: string
+    readonly issues?: readonly unknown[]
+    readonly currentVersion?: string
+    /** 수식이 틀린 자리와 이유(2i-2) — 편집기가 그 자리에 밑줄을 긋는다. */
+    readonly formulaError?: unknown
+  },
 ): Response {
   return Response.json(
     {
       error: failure.reason,
       ...(failure.issues ? { issues: failure.issues } : {}),
       ...(failure.currentVersion !== undefined ? { currentVersion: failure.currentVersion } : {}),
+      ...(failure.formulaError !== undefined ? { formulaError: failure.formulaError } : {}),
     },
     { status },
   )

@@ -1721,6 +1721,40 @@ CREATE INDEX ON derived_value (property_id, num_value) WHERE NOT stale AND num_v
   `max`(number) / `checked` · `percent_checked`(checkbox) / `earliest_date` · `latest_date`(date — 시작일만 본다).
   대상 타입에 맞지 않는 함수는 만들 때 거부하고, 읽을 때(타입이 나중에 바뀌었다면) `show_original` 로 접는다.
 
+**[보강] 수식 1단계 — 식은 `⟦id⟧` 자리로 · `property_dependency` 를 들인다 · 값은 읽을 때 계산한다** ⟨DB 심화 2i-1 · 2i-2조각 · F-03-12 / 마이그레이션 0060⟩
+
+마스터 문서 §5.3 2번 트랙 *"formula 는 3단계 점진 도입"* 의 1단계(최소 언어 · 같은 행의 칸만). 위 DDL 의 `property_dependency` 를
+**정본 그대로** 만든다(rollup v1 은 만들지 않았다 — 순환 · 깊이를 볼 읽는 쪽이 이제 생겼다). `derived_value` 는 아직이다.
+
+- ① **`property.config = {expression, result_type}`**(`ck_property_formula_config` — 묶음을 `IS TRUE` 로 접는다). 03 F-03-12 의
+  `{expression, compiled_ast, result_type, depends_on, ref_depth}` 에서 셋을 뺐다 — 나무(`compiled_ast`)는 읽을 때 식에서 다시
+  만든다(싸다 · 언어가 바뀌어도 저장값을 고칠 일이 없다). `depends_on` 은 `property_dependency` 가 정본이다(두 곳에 두면 어긋난다).
+  `ref_depth` 는 저장할 때 표 전체로 다시 센다(표에 수식이 몇 개 안 된다 — 캐시가 틀릴 길을 만들지 않는다).
+- ② **식은 원문 그대로에 속성 자리만 `⟦id⟧`** — 사람이 쓴 `prop("이름")` 을 저장할 때 id 로 묶는다. 공백 · 주석 · 줄바꿈이 남고,
+  이름을 바꿔도 식이 깨지지 않는다(P2 — id 는 바뀌지 않는다). 보여 줄 때 지금 이름으로 되돌린다(따옴표 · 역슬래시 탈출).
+  `eval` · `Function` 은 쓰지 않는다(마스터 문서의 금지 — 나무를 걷는 계산기).
+- ③ **`property_dependency` — 수식이 읽는 속성마다 한 줄.** 자기 자신을 가리키지 않는다(`ck_property_dependency_not_self`).
+  relation 을 타지 않는 간선(`via_relation_id IS NULL`)은 **같은 표의 속성끼리**다(`tg_property_dependency_same_source` — 다른
+  표를 봐야 해서 트리거). 1단계는 relation 을 타지 않으므로 모든 간선이 이 줄이다.
+- ④ **순환은 거부 · 깊이는 15 까지**(03 *"저장 거부"* — 노션처럼 조용히 틀리지 않는다). 수식이 수식을 읽을 때마다 하나씩
+  쌓인다(칸만 읽으면 1). **그래프를 바꾸는 세 명령이 같은 판정을 쓴다** — 만들기 · 식 고치기 · **지운 수식 되살리기**. 지운 수식은
+  그래프에 없으므로(잎) 그동안 다른 수식이 그것을 거쳐 돌아오는 길을 만들 수 있다(B 를 지운 사이 A → C, C → B 는 원래 있었다 —
+  B → A 인 B 를 되살리면 고리). 되살린 뒤의 그래프로 보고 고리 · 깊이 초과면 되살리지 않는다.
+- ⑤ **읽을 수 있는 속성** — 제목 · 글 · 선택 · 상태(옵션 **이름** — 칸의 옵션 id 를 이름으로) → 글, 수 → 수, 체크박스 → 참거짓
+  (빈 칸은 거짓), 날짜 → 날짜(칸과 같은 `{start, end?}` 를 **글자 그대로** 읽는다 — 캘린더와 같은 축), 수식 → 그 결과 타입.
+  relation · rollup · 고유 ID · 사람 · 파일 · 목록은 다음 단계다(3단계 — relation 순회 · `via_relation_id` 를 쓰는 간선).
+- ⑥ **값은 저장하지 않는다 — 읽을 때 계산한다**(rollup v1 과 같은 이유 · `page_property_value` 에도 캐시에도 없다 — C1). 행을 읽은
+  뒤 그 행들로 한 번에 계산한다. **식은 읽을 때 지금 스키마로 다시 읽는다** — 저장된 결과 타입을 믿지 않는다. 읽던 속성이 지워졌거나
+  타입이 바뀌어 읽히지 않으면 그 컬럼은 **이유를 든 채 빈 값**이다(03 *"참조하던 프로퍼티 삭제 → 수식이 에러 상태"*). 간선은 남아
+  속성을 되살리면 돌아온다. 그것을 읽는 수식은 빈 값을 받는다(빈 값은 흐른다). `now()` · `today()` 는 계산하는 순간이다.
+- ⑦ **D1 의 귀결**(rollup 과 같다): `derived_value` 가 없으므로 **수식으로 거르거나 정렬할 수 없다.** 그 표를 들이는 조각이 함께
+  연다 — 그때 `property_dependency` 의 역방향 인덱스(`ix_property_dependency_source`)가 무효화의 출발점이다.
+- ⑧ 다른 길은 닫는다 — 일반 속성 추가 · config 덮어쓰기 · 셀 쓰기 · 타입 바꾸기는 수식을 만들거나 고칠 수 없다(식을 읽고 그래프를
+  보는 길을 건너뛴다).
+- 미룬 것: 결과 타입이 바뀔 때 그것을 읽는 수식에 알리기(지금은 다음 읽기에서 이유를 든다) · 지울 때 "N개 수식이 이 속성을
+  참조합니다" 확인(F-03-13) · rollup 의 간선(rollup 은 아직 `property_dependency` 에 쓰지 않는다 — 1단계 수식이 rollup 을 읽지
+  못하므로 rollup → formula → rollup 우회로는 아직 열리지 않았다).
+
 **[보강] 고유 ID(`unique_id`) — 번호는 행에, 접두사는 data source 에** ⟨DB 심화 2a-1조각 · F-03-09 / 마이그레이션 0050⟩
 
 0013 이 자리(`data_source.unique_id_counter` · `unique_id_prefix` · `page.unique_seq` · `ux_page_unique_seq`)만 두고 **언제

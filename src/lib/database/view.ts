@@ -55,6 +55,8 @@ import {
 import { readPropertyTypes } from './query.ts'
 import { isGroupableType, normalizeGroupBy, validateGroupBy, type GroupBy } from './group.ts'
 import { mergeGalleryLayout, readGalleryLayout, validateGalleryPatch, type GalleryLayout } from './gallery.ts'
+import { readFormulaConfig } from './formula-schema.ts'
+import { displayFormula } from '../formula/formula.ts'
 import {
   readCalendarLayout,
   validateCalendarPatch,
@@ -335,6 +337,8 @@ async function toColumns(tx: Tx, rows: readonly ColumnRow[]): Promise<ViewColumn
   // 옵션을 읽는 곳은 `options.ts` 하나다(그쪽 머리말 — status 옵션은 그룹 순서가 먼저다).
   const optionsOf = await readOptionsOf(tx, rows.filter((r) => isOptionType(r.type)).map((r) => r.property_id))
 
+  // 수식의 식을 사람이 읽는 모양으로 되돌릴 때 쓰는 이름(뷰의 컬럼은 표의 속성 전부다 — 숨긴 것도)
+  const nameOf = new Map(rows.map((r) => [r.property_id, r.name]))
   const columns: ViewColumn[] = []
   for (const r of rows) {
     const base = {
@@ -365,6 +369,18 @@ async function toColumns(tx: Tx, rows: readonly ColumnRow[]): Promise<ViewColumn
     }
     if (r.type === 'unique_id') {
       columns.push({ ...base, type: 'unique_id', uniqueId: { prefix: r.unique_id_prefix } })
+      continue
+    }
+    // 수식(2i-2) — 값은 읽을 때 계산한다(`computeFormulaValues`). 여기는 사람이 읽는 식(지금 이름으로)과 결과 타입만.
+    if (r.type === 'formula') {
+      const config = readFormulaConfig(r.config)
+      if (config !== null) {
+        columns.push({
+          ...base,
+          type: 'formula',
+          formula: { expression: displayFormula(config.expression, (id) => nameOf.get(id) ?? null), resultType: config.result_type },
+        })
+      }
       continue
     }
   }

@@ -16,6 +16,7 @@ import {
   type SelectOption,
 } from './property-types.ts'
 import { readRollupConfig, type RollupFunction } from './rollup-functions.ts'
+import type { FormulaType } from '../formula/values.ts'
 import type { Calculation } from './calculations.ts'
 import { isFilterableType } from './filter.ts'
 
@@ -94,7 +95,19 @@ export type UniqueIdColumn = ColumnBase & {
   readonly uniqueId: { readonly prefix: string | null }
 }
 
-export type ViewColumn = CellColumn | RelationColumn | RollupColumn | UniqueIdColumn
+/**
+ * 수식 컬럼(2i-2 · F-03-12). **값이 행에 없다** — 읽을 때 계산한다(`formula-property.ts` `computeFormulaValues` → `FormulaPage`).
+ * 여기 싣는 것은 **설정**이다: 사람이 읽는 식(지금 이름으로 되돌린 것 — 저장된 식은 `⟦id⟧` 다)과 결과 타입. 편집기가 이 식을 연다.
+ */
+export type FormulaColumn = ColumnBase & {
+  readonly type: 'formula'
+  readonly formula: {
+    readonly expression: string
+    readonly resultType: FormulaType
+  }
+}
+
+export type ViewColumn = CellColumn | RelationColumn | RollupColumn | UniqueIdColumn | FormulaColumn
 
 /** 이 표의 하위 항목 짝(2b-2) — 컬럼(숨긴 것 포함)의 relation 표시에서 읽는다. 꺼져 있으면 null. */
 export function subItemPairOf(

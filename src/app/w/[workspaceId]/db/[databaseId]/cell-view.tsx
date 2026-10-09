@@ -21,6 +21,7 @@ export const TYPE_LABEL: Readonly<Record<AppPropertyType, string>> = {
   date: '날짜',
   relation: '관계형',
   rollup: '롤업',
+  formula: '수식',
   unique_id: 'ID',
 }
 
@@ -35,6 +36,7 @@ export const TYPE_ICON: Readonly<Record<AppPropertyType, string>> = {
   date: '◷',
   relation: '↗',
   rollup: '∑',
+  formula: 'ƒ',
   unique_id: '№',
 }
 
