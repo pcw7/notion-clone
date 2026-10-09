@@ -61,7 +61,7 @@
  */
 
 import Link from 'next/link'
-import { useEffect, useRef, useState, type FocusEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type FocusEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react'
 import { useRouter } from 'next/navigation'
 
 import type { DatabaseAccess } from '@/lib/database/database'
@@ -94,7 +94,8 @@ import { isCollapsed, isRelationCollapsed, isRollupCollapsed, type TableVariant 
 import { rollupIsEmpty, type RollupPage } from '@/lib/database/rollup-functions'
 import { newRowLabel, templateRowNote, type DefaultTemplate } from '@/lib/database/new-row'
 import * as api from './table-api'
-import { CellDisplay, RelationChips, RollupDisplay, TYPE_ICON, TYPE_LABEL, type RelationIcons, type RelationLabels } from './cell-view'
+import { CellDisplay, FormulaDisplay, RelationChips, RollupDisplay, TYPE_ICON, TYPE_LABEL, type RelationIcons, type RelationLabels } from './cell-view'
+import { formulaEvaluator, type FormulaPlan } from '@/lib/database/formula-plan'
 import { NewRowMenu } from './new-row-menu'
 import { useRelationLabels } from './use-relation-labels'
 import { useRollupValues } from './use-rollup-values'
@@ -144,6 +145,11 @@ export function DatabaseTable(props: {
   relationIcons: RelationIcons
   /** 첫 화면의 rollup 값(서버 렌더가 계산해 준다). 그 뒤에 온 행의 것은 `useRollupValues` 가 받는다. */
   rollupValues: RollupPage
+  /**
+   * 수식을 계산할 계획(2i-3a · `formula-plan.ts`) — 서버 렌더가 표의 속성 **전부**로 만든다(숨긴 속성도 수식은 읽는다 — 이 표는 보이는
+   * 컬럼만 받는다). 값은 화면이 그 행의 칸으로 계산한다. 없으면 수식 칸은 빈 칸이다.
+   */
+  formulaPlan?: FormulaPlan | null
   /** 이 뷰의 기본 템플릿(F-08-03). `New` 를 그냥 누르면 이것으로 만든다. 없으면 빈 항목이다. */
   defaultTemplate?: DefaultTemplate | null
   /**
@@ -239,6 +245,15 @@ export function DatabaseTable(props: {
     rows,
     columns,
   )
+
+  // 수식 칸의 값 — 행에 없다. **그 행의 칸으로 여기서 계산한다**(`formula-plan.ts` 머리말 — 1단계의 수식은 같은 행만 읽는다). 칸을
+  // 고치면(낙관적으로 칠한 값 그대로) 수식이 따라 바뀐다. 계획 뒤에 이 화면에서 만든 옵션은 지금 컬럼에서 이름을 찾는다.
+  const formulas = useMemo(() => (props.formulaPlan ? formulaEvaluator(props.formulaPlan) : null), [props.formulaPlan])
+  const formulaValues = useMemo(() => {
+    if (formulas === null || !columns.some((c) => c.type === 'formula')) return null
+    const liveOptions = new Map(columns.flatMap((c) => c.options.map((o) => [o.id, o.name] as const)))
+    return new Map(rows.map((row) => [row.id, formulas.valuesOf(row.properties, (id) => liveOptions.get(id) ?? null)]))
+  }, [formulas, rows, columns])
 
   // ── 저장 ───────────────────────────────────────────────────────────
 
@@ -602,6 +617,17 @@ export function DatabaseTable(props: {
     return null
   }
 
+  /**
+   * 수식 컬럼을 만든다(2i-3a). **붙이지 않고 다시 읽는다** — 계산 계획(`formulaPlan`)은 서버 렌더가 표의 속성 전부로 만든다. 컬럼이 늘면
+   * `page.tsx` 의 key 가 바뀌어 표가 새로 서고 새 계획으로 계산한다(고유 ID 와 같은 길).
+   */
+  const addFormulaColumn = async (name: string, expression: string): Promise<string | null> => {
+    const result = await api.addFormula(workspaceId, dataSourceId, name, expression)
+    if (!result.ok) return result.message
+    router.refresh()
+    return null
+  }
+
   // ── 하위 항목 펼치기 · 접기 (2b-2) ─────────────────────────────────
   //
   // 화면의 행 목록은 **평평하다** — 펼친 행 바로 뒤에 자식이 깊이를 달고 들어온다. 칸의 자리(행 번호)가 바뀌므로 선택은 놓는다.
@@ -850,6 +876,7 @@ export function DatabaseTable(props: {
                     onAddRelation={addRelationColumn}
                     onAddRollup={addRollupColumn}
                     onAddUniqueId={addUniqueIdColumn}
+                    onAddFormula={addFormulaColumn}
                   />
                 </th>
               )}
@@ -875,15 +902,23 @@ export function DatabaseTable(props: {
                   const at = { row: r, col: c }
                   const isSelected = mode.kind !== 'idle' && samePos(mode.at, at)
                   const isEditing = mode.kind === 'editing' && samePos(mode.at, at)
-                  // 칸은 넷 중 하나다 — 셀(값이 EAV 에 있다) · relation(값이 엣지이고 여기에는 캐시의 id 가 있다) ·
-                  // 고유 ID(값이 행에 있다 — 번호 · 접두사는 컬럼의 것) · rollup(값이 **어디에도 없다** — 읽을 때 계산해 따로 받는다).
+                  // 칸은 다섯 중 하나다 — 셀(값이 EAV 에 있다) · relation(값이 엣지이고 여기에는 캐시의 id 가 있다) ·
+                  // 고유 ID(값이 행에 있다 — 번호 · 접두사는 컬럼의 것) · rollup(값이 **어디에도 없다** — 읽을 때 계산해 따로 받는다) ·
+                  // 수식(값이 어디에도 없다 — 그 행의 칸으로 여기서 계산한다 · 식이 읽히지 않으면 컬럼 전체가 이유를 든다).
                   const cell = isCellColumn(column)
                     ? ({ kind: 'cell', column, value: valueAt(row, column) } as const)
                     : column.type === 'relation'
                       ? ({ kind: 'relation', column, value: readRelationValue(row.properties[column.propertyId]) } as const)
                       : column.type === 'unique_id'
                         ? ({ kind: 'unique_id', column, value: formatUniqueId(column.uniqueId.prefix, row.uniqueSeq) } as const)
-                        : ({ kind: 'rollup', column, value: rollups.values[row.id]?.[column.propertyId] } as const)
+                        : column.type === 'formula'
+                          ? ({
+                              kind: 'formula',
+                              column,
+                              value: formulaValues?.get(row.id)?.[column.propertyId] ?? null,
+                              error: formulas?.errors[column.propertyId] ?? null,
+                            } as const)
+                          : ({ kind: 'rollup', column, value: rollups.values[row.id]?.[column.propertyId] } as const)
                   // List: 빈 칸은 접는다. 선택 · 편집 중이면 비어 있어도 선다(`list-layout.ts`).
                   const collapsed =
                     cell.kind === 'cell'
@@ -892,7 +927,9 @@ export function DatabaseTable(props: {
                         ? isRelationCollapsed(variant, cell.value, isSelected)
                         : cell.kind === 'unique_id'
                           ? isList && !isSelected && cell.value === ''
-                          : isRollupCollapsed(variant, cell.value, isSelected)
+                          : cell.kind === 'formula'
+                            ? isList && !isSelected && cell.value === null && cell.error === null
+                            : isRollupCollapsed(variant, cell.value, isSelected)
                   const empty =
                     cell.kind === 'cell'
                       ? isEmptyValue(cell.value) && cell.column.type !== 'checkbox'
@@ -900,8 +937,10 @@ export function DatabaseTable(props: {
                         ? cell.value.count === 0
                         : cell.kind === 'unique_id'
                           ? cell.value === ''
-                          : rollupIsEmpty(cell.value)
-                  const readOnlyCell = cell.kind === 'rollup' || cell.kind === 'unique_id'
+                          : cell.kind === 'formula'
+                            ? cell.value === null && cell.error === null
+                            : rollupIsEmpty(cell.value)
+                  const readOnlyCell = cell.kind === 'rollup' || cell.kind === 'unique_id' || cell.kind === 'formula'
                   const content =
                     // rollup · 고유 ID 는 **채우는 자리가 아니다** — 빈 칸에 속성 이름을 세우면 "여기를 채우라"로 읽힌다.
                     isList && empty && !readOnlyCell ? (
@@ -917,6 +956,8 @@ export function DatabaseTable(props: {
                       <span className="truncate tabular-nums text-neutral-600 dark:text-neutral-300" data-testid="db-unique-id">
                         {cell.value}
                       </span>
+                    ) : cell.kind === 'formula' ? (
+                      <FormulaDisplay value={cell.value} error={cell.error} />
                     ) : (
                       <RollupDisplay cell={cell.value} info={rollups.columns[column.propertyId]} />
                     )

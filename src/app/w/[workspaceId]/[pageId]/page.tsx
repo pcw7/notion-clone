@@ -53,6 +53,7 @@ import { readRowPage } from '@/lib/database/row-page'
 import { listColumns } from '@/lib/database/list-layout'
 import { loadRelationLabels, relationIdsIn } from '@/lib/database/relation'
 import { EMPTY_ROLLUP_PAGE } from '@/lib/database/rollup'
+import { formulaPlanOf } from '@/lib/database/formula-plan'
 import { rowJson } from '@/lib/database/http'
 import { RowTitle } from '../db/[databaseId]/row-title'
 import { RowProperties } from './row-properties'
@@ -278,6 +279,8 @@ export default async function PageView({ params, searchParams }: PageProps<'/w/[
             relationIcons={rowRelation.icons}
             // rollup 은 레코드 모양에서 빠진다(`listColumns('record', …)` — 템플릿 화면과 같다 · §7).
             rollupValues={EMPTY_ROLLUP_PAGE}
+            // 수식은 그 행의 칸으로 화면이 계산한다(2i-3a) — 계획은 표의 속성 전부로(제목 · 숨긴 속성도 수식은 읽는다).
+            formulaPlan={formulaPlanOf(rowPage.columns, new Date())}
             access={rowAccess}
             sorts={[]}
           />
