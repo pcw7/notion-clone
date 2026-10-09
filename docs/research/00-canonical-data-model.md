@@ -1753,9 +1753,13 @@ CREATE INDEX ON derived_value (property_id, num_value) WHERE NOT stale AND num_v
   연다 — 그때 `property_dependency` 의 역방향 인덱스(`ix_property_dependency_source`)가 무효화의 출발점이다.
 - ⑧ 다른 길은 닫는다 — 일반 속성 추가 · config 덮어쓰기 · 셀 쓰기 · 타입 바꾸기는 수식을 만들거나 고칠 수 없다(식을 읽고 그래프를
   보는 길을 건너뛴다).
-- 미룬 것: 결과 타입이 바뀔 때 그것을 읽는 수식에 알리기(지금은 다음 읽기에서 이유를 든다) · 지울 때 "N개 수식이 이 속성을
-  참조합니다" 확인(F-03-13) · rollup 의 간선(rollup 은 아직 `property_dependency` 에 쓰지 않는다 — 1단계 수식이 rollup 을 읽지
-  못하므로 rollup → formula → rollup 우회로는 아직 열리지 않았다).
+- ⑨ **지우거나 유형을 바꾸기 전에 그 속성을 바로 읽는 수식 · 롤업을 알린다**(2j-1 · F-03-13 — 03 F-03-14 *"사용자에게 알림"*). 막지는
+  않는다(지우기는 되살릴 수 있다). 수식은 `property_dependency` 의 역방향으로, 롤업은 config 로 찾는다 — 이 표의 relation 을 타는
+  것(같은 표) · 이 속성을 모으는 것(다른 표 — **0061 `ix_property_rollup_target`**, 대상 속성으로 찾는 부분 인덱스). 다른 표의 롤업은 그
+  표를 볼 수 있을 때만 이름을, 아니면 개수만 준다 · 휴지통의 표는 세지 않는다.
+- 미룬 것: 결과 타입이 바뀔 때 그것을 읽는 수식에 알리기(지금은 다음 읽기에서 이유를 든다) · rollup 의 간선(rollup 은 아직
+  `property_dependency` 에 쓰지 않는다 — config 로 찾는다 · 1단계 수식이 rollup 을 읽지 못하므로 rollup → formula → rollup 우회로는 아직
+  열리지 않았다).
 
 **[보강] 고유 ID(`unique_id`) — 번호는 행에, 접두사는 data source 에** ⟨DB 심화 2a-1조각 · F-03-09 / 마이그레이션 0050⟩
 

@@ -22,6 +22,10 @@
  * "유형 바꾸기"(2c-2 · F-03-14) — 바꿀 수 있는 타입(글 · 숫자 · 선택 · 체크박스 · 날짜)의 속성에만 선다. 값이 사라지는 칸이 있으면 서버가
  * 센 개수로 **한 번 더 묻는다**("N개 칸의 값이 사라집니다") — 노션은 묻지 않고 되돌릴 수도 없다(03).
  *
+ * 지우기 · 유형 바꾸기를 열면 **이 속성을 읽는 수식 · 롤업**을 읽어 알린다(2j-1 · F-03-13 — `loadDependents`). 막지는 않는다 — 지우면 그
+ * 칸이 오류가 되고(되살리면 돌아온다), 유형을 바꾸면 맞지 않는 것이 오류가 된다. 누르기 전에 무엇이 깨지는지 말한다. 다른 표의 롤업은 그
+ * 표를 볼 수 있을 때만 이름이 있다(아니면 개수만).
+ *
  * "식 고치기"(2i-3b · F-03-12) — 수식 속성에만 선다. 편집기는 표가 그린다(`formulaEdit` — 계산 계획 · 첫 행을 표가 갖고 있다). 메뉴는
  * 그 자리를 넓혀 담기만 한다.
  *
@@ -31,6 +35,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 
 import type { SortKey } from '@/lib/database/filter'
+import type { PropertyDependents } from '@/lib/database/property-dependents'
 
 export function ColumnMenu({
   name,
@@ -45,6 +50,7 @@ export function ColumnMenu({
   onHide,
   onDelete,
   formulaEdit,
+  loadDependents,
 }: {
   name: string
   isTitle: boolean
@@ -64,6 +70,8 @@ export function ColumnMenu({
   onDelete: () => Promise<string | null>
   /** 수식 속성의 "식 고치기"(2i-3b) — 편집기를 그린다. 끝나면(저장 · 취소) `close` 를 부른다. 없으면 항목이 서지 않는다. */
   formulaEdit?: (close: () => void) => ReactNode
+  /** 이 속성을 읽는 수식 · 롤업(2j-1). 못 읽으면 null(알리지 못할 뿐 지우기 · 바꾸기는 그대로). 없으면 묻지 않는다. */
+  loadDependents?: () => Promise<PropertyDependents | null>
 }) {
   const [open, setOpen] = useState(false)
   const [step, setStep] = useState<'menu' | 'rename' | 'prefix' | 'convert' | 'confirm-loss' | 'delete' | 'formula'>('menu')
@@ -75,10 +83,24 @@ export function ColumnMenu({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+  /** 이 속성을 읽는 것 — `undefined` 는 아직 읽는 중(또는 묻지 않음), `null` 은 못 읽었다. */
+  const [dependents, setDependents] = useState<PropertyDependents | null | undefined>(undefined)
 
+  /** 지우기 · 유형 바꾸기로 들어간다 — 들어갈 때마다 다시 읽는다(그사이 수식이 생겼을 수 있다). */
+  const enter = (next: 'delete' | 'convert') => {
+    setStep(next)
+    if (loadDependents === undefined) return
+    setDependents(undefined)
+    void loadDependents().then(setDependents)
+  }
+
+  const panelRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     if (step === 'rename') inputRef.current?.focus()
-    if (step === 'prefix') prefixRef.current?.focus()
+    else if (step === 'prefix') prefixRef.current?.focus()
+    // 입력칸이 없는 단계(지우기 · 유형 바꾸기 · 손실 확인)는 누른 항목이 사라지면서 포커스가 패널 밖(body)으로 간다 — 그러면 패널의
+    // Escape 가 닿지 않아 키보드로 닫을 수 없다(2j-1 의 검사가 찾았다). 패널로 옮긴다. 식 고치기는 편집기가 스스로 잡는다.
+    else if (step !== 'menu' && step !== 'formula') panelRef.current?.focus()
   }, [step])
 
   const close = () => {
@@ -88,6 +110,7 @@ export function ColumnMenu({
     setPrefixDraft(prefix ?? '')
     setPending(null)
     setError(null)
+    setDependents(undefined)
   }
 
   const convert = async (type: string, label: string, confirmLoss: boolean) => {
@@ -127,6 +150,8 @@ export function ColumnMenu({
 
       {open && (
         <div
+          ref={panelRef}
+          tabIndex={-1}
           role="menu"
           aria-label={`${name} 속성 메뉴`}
           data-testid="db-column-menu-panel"
@@ -156,7 +181,7 @@ export function ColumnMenu({
                 이름 바꾸기
               </MenuItem>
               {convertTo !== undefined && convertTo.length > 0 && onConvert !== undefined && (
-                <MenuItem testId="db-column-convert" disabled={busy} onClick={() => setStep('convert')}>
+                <MenuItem testId="db-column-convert" disabled={busy} onClick={() => enter('convert')}>
                   유형 바꾸기
                 </MenuItem>
               )}
@@ -176,7 +201,7 @@ export function ColumnMenu({
                 </MenuItem>
               )}
               {!isTitle && (
-                <MenuItem testId="db-column-delete" disabled={busy} danger onClick={() => setStep('delete')}>
+                <MenuItem testId="db-column-delete" disabled={busy} danger onClick={() => enter('delete')}>
                   속성 삭제
                 </MenuItem>
               )}
@@ -213,6 +238,7 @@ export function ColumnMenu({
 
           {step === 'convert' && convertTo !== undefined && (
             <div className="flex flex-col p-1" data-testid="db-column-convert-list">
+              {loadDependents !== undefined && <DependentsNote dependents={dependents} effect="유형을 바꾸면 맞지 않는 것은 오류가 됩니다." />}
               <p className="px-1 pb-1 text-xs text-neutral-500">바꿀 유형</p>
               {convertTo.map((option) => (
                 <MenuItem
@@ -279,6 +305,7 @@ export function ColumnMenu({
           {step === 'formula' && formulaEdit !== undefined && formulaEdit(close)}
           {step === 'delete' && (
             <div className="flex flex-col gap-1 p-1">
+              {loadDependents !== undefined && <DependentsNote dependents={dependents} effect="지우면 그 칸이 오류가 됩니다(속성을 되살리면 돌아옵니다)." />}
               <p className="text-xs text-neutral-500">
                 ‘{name}’ 속성과 모든 행의 이 칸이 표에서 사라집니다. 값은 보관되지만 되돌리는 화면은 아직 없습니다.
               </p>
@@ -307,6 +334,41 @@ export function ColumnMenu({
         </div>
       )}
     </span>
+  )
+}
+
+const KIND_LABEL = { formula: '수식', rollup: '롤업' } as const
+
+/**
+ * 이 속성을 읽는 수식 · 롤업(2j-1) — 읽는 중이면 그렇다고, 없으면 아무것도 그리지 않는다. 못 읽었으면 말하지 않는다(지우기를 막을
+ * 이유가 아니다 — 알림일 뿐이다).
+ */
+function DependentsNote({ dependents, effect }: { dependents: PropertyDependents | null | undefined; effect: string }) {
+  if (dependents === undefined) {
+    return (
+      <p data-testid="db-column-dependents-loading" className="px-1 pb-1 text-xs text-neutral-400">
+        이 속성을 읽는 수식 · 롤업을 확인하는 중…
+      </p>
+    )
+  }
+  if (dependents === null || (dependents.dependents.length === 0 && dependents.hidden === 0)) return null
+  return (
+    <div
+      data-testid="db-column-dependents"
+      className="mb-1 rounded border border-amber-200 bg-amber-50 px-2 py-1 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200"
+    >
+      <p>이 속성을 읽는 것:</p>
+      <ul className="list-disc pl-4">
+        {dependents.dependents.map((d) => (
+          <li key={d.id} data-testid="db-column-dependent">
+            ‘{d.name}’ {KIND_LABEL[d.type]}
+            {d.tableName !== null && <span className="text-amber-700 dark:text-amber-300"> · {d.tableName}</span>}
+          </li>
+        ))}
+        {dependents.hidden > 0 && <li data-testid="db-column-dependents-hidden">볼 수 없는 표의 롤업 {dependents.hidden}개</li>}
+      </ul>
+      <p>{effect}</p>
+    </div>
   )
 }
 

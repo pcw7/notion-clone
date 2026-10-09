@@ -12959,6 +12959,86 @@ async function main() {
       await key('Escape')
     }
 
+    if (sectionIf('속성 의존 — 지우기 · 유형 바꾸기 전에 알린다 (2j-1 · F-03-13)')) {
+      // 머리 메뉴의 "속성 삭제" · "유형 바꾸기"를 열면 그 속성을 읽는 수식 · 롤업(다른 표의 것은 그 표 이름과 함께)을 알린다. 읽는 것이
+      // 없으면 아무것도 말하지 않는다. 권한(볼 수 없는 표의 롤업은 개수만) · 휴지통 · 순서는 DB 검사가 본다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const clickOn = async (selector) => {
+        const p = await evaluate(`(() => {
+          const e = document.querySelector(${JSON.stringify(selector)})
+          if (!e) return null
+          e.scrollIntoView({ block: 'center' })
+          const r = e.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (p) await click(p.x, p.y)
+        return p !== null
+      }
+      const tasks = (await api('POST', '/databases', { name: `작업 ${stamp}` })).body.database
+      const projects = (await api('POST', '/databases', { name: `프로젝트 ${stamp}` })).body.database
+      const tprops = `/data-sources/${tasks.dataSourceId}/properties`
+      const qty = (await api('POST', tprops, { name: '수량', type: 'number' })).body.property.id
+      const memo = (await api('POST', tprops, { name: '메모', type: 'rich_text' })).body.property.id
+      await api('POST', tprops, { name: '금액', type: 'formula', expression: 'prop("수량") * 1000' })
+      const rel = (await api('POST', `/data-sources/${tasks.dataSourceId}/relations`, {
+        name: '프로젝트', targetDataSourceId: projects.dataSourceId, twoWay: { name: '작업들' },
+      })).body
+      await api('POST', `/data-sources/${projects.dataSourceId}/rollups`, {
+        name: '총 수량', relationPropertyId: rel?.syncedPropertyId ?? rel?.property?.config?.synced_property_id, targetPropertyId: qty, function: 'sum',
+      })
+
+      const listed = await api('GET', `${tprops}/${qty}/dependents`)
+      check('★ API — 수량을 읽는 것: 이 표의 수식 · 다른 표의 롤업(그 표 이름과 함께)',
+        listed.status === 200 && JSON.stringify(listed.body?.dependents?.map((d) => [d.name, d.type, d.tableName]))
+          === JSON.stringify([['금액', 'formula', null], ['총 수량', 'rollup', `프로젝트 ${stamp}`]]) && listed.body?.hidden === 0,
+        JSON.stringify(listed))
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${tasks.id}` })
+      await waitFor(`!!document.querySelector('[data-testid="db-table"]')`, 15000)
+      const noteText = () => evaluate(`document.querySelector('[data-testid="db-column-dependents"]')?.textContent ?? null`)
+      const openMenuItem = async (propertyId, item) => {
+        await clickOn(`th[data-property-id="${propertyId}"] [data-testid="db-column-menu"]`)
+        await clickOn(`[data-testid="${item}"]`)
+      }
+      // 단계를 바꾸면 누른 항목이 사라져 포커스가 패널 밖으로 간다 — Escape 대신 메뉴 단추를 다시 눌러 닫는다
+      const closeMenu = async (propertyId) => {
+        await clickOn(`th[data-property-id="${propertyId}"] [data-testid="db-column-menu"]`)
+        await waitFor(`!document.querySelector('[data-testid="db-column-menu-panel"]')`, 3000)
+      }
+
+      await openMenuItem(qty, 'db-column-delete')
+      check('★ "속성 삭제"를 열면 읽는 수식 · 롤업을 알린다 — 다른 표 이름과 지우면 어떻게 되는지',
+        await waitFor(`(() => {
+          const t = document.querySelector('[data-testid="db-column-dependents"]')?.textContent ?? ''
+          return t.includes('‘금액’ 수식') && t.includes('‘총 수량’ 롤업') && t.includes('프로젝트 ${stamp}') && t.includes('오류가 됩니다')
+        })()`, 8000),
+        await noteText())
+      await closeMenu(qty)
+
+      await openMenuItem(qty, 'db-column-convert')
+      check('★ "유형 바꾸기"를 열어도 알린다 — 맞지 않는 것은 오류가 된다',
+        await waitFor(`(document.querySelector('[data-testid="db-column-convert-list"] [data-testid="db-column-dependents"]')?.textContent ?? '').includes('맞지 않는 것은 오류')`, 8000),
+        await noteText())
+      await closeMenu(qty)
+
+      await openMenuItem(memo, 'db-column-delete')
+      check('읽는 것이 없으면 아무것도 말하지 않는다(확인이 끝난 뒤)',
+        (await waitFor(`!!document.querySelector('[data-testid="db-column-delete-confirm"]') && !document.querySelector('[data-testid="db-column-dependents-loading"]')`, 8000))
+          && (await noteText()) === null,
+        await noteText())
+      // 단계를 바꿔도(누른 항목이 사라져도) Escape 로 닫힌다 — 포커스가 패널에 남는다
+      await key('Escape')
+      check('★ 지우기 단계에서도 Escape 로 메뉴가 닫힌다(포커스가 패널에 남는다)',
+        await waitFor(`!document.querySelector('[data-testid="db-column-menu-panel"]')`, 3000),
+        await evaluate(`document.activeElement?.outerHTML.slice(0, 80) ?? null`))
+    }
+
     if (sectionIf('개인 필터 · 정렬 — 화면 (2h-2 · F-04-17)')) {
       // 볼 수만 있는 사람(브라우저 세션을 바꾼다)이 도구줄의 필터로 조건을 걸면 **자기 것**으로 저장되고 그 사람의 표만 좁혀진다 — "나만 보는
       // 필터" 표시 · 초기화. 편집자는 자기 개인 것을 "모두에게 저장"한다. 브라우저 세션은 끝에 반드시 소유자로 되돌린다.
