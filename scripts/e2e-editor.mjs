@@ -13019,6 +13019,14 @@ async function main() {
           return t.includes('‘금액’ 수식') && t.includes('‘총 수량’ 롤업') && t.includes('프로젝트 ${stamp}') && t.includes('오류가 됩니다')
         })()`, 8000),
         await noteText())
+      // 알림은 "삭제" 단추 **아래**에 선다 — 위에 서면 읽는 중 줄이 사라지거나 알림이 서면서 단추가 움직여 누르려던 자리를 빗나간다
+      // (#230 의 전체 판에서 W8-b 의 "속성을 지우면 머리에서 빠진다"가 그렇게 떨어졌다). 시간에 기대지 않게 자리로 본다.
+      check('★ 알림은 "삭제" 단추 아래에 선다(단추가 움직이지 않는다)',
+        await evaluate(`(() => {
+          const b = document.querySelector('[data-testid="db-column-delete-confirm"]')?.getBoundingClientRect()
+          const n = document.querySelector('[data-testid="db-column-dependents"]')?.getBoundingClientRect()
+          return !!b && !!n && n.top >= b.bottom
+        })()`))
       await closeMenu(qty)
 
       await openMenuItem(qty, 'db-column-convert')
