@@ -284,7 +284,7 @@ export function createCollabServer(options: CollabServerOptions): Server<CollabC
         requestRecheck(`ws:${signal.workspaceId}`)
       } else if (signal.kind === 'session') {
         requestRecheck(`user:${signal.userId}`)
-      } else {
+      } else if (signal.kind === 'doc') {
         const document = loaded.get(signal.pageId)
         const seq = BigInt(signal.seq)
         const known = document === undefined ? undefined : appliedSeq.get(document)
