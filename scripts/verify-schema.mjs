@@ -69,6 +69,8 @@ const EXPECTED_TABLES = [
   'view_user_override',
   // 수식 속성의 의존 그래프 2i-2조각 (0060)
   'property_dependency',
+  // 수식 값의 캐시 2j-2조각 (0062)
+  'derived_value',
   'schema_migration', 'scim_token', 'session_policy', 'sso_config',
   'user', 'user_email', 'user_session',
   'workspace', 'workspace_invite', 'workspace_member',
@@ -3135,6 +3137,49 @@ try {
     } catch (e) {
       fail(`cascade 확인 중 오류 (${e.constraint ?? e.code})`)
     }
+    await client.query('ROLLBACK TO SAVEPOINT probe')
+
+    console.log('\n[44] 수식 값의 캐시 (0062 / §3.5 derived_value · [보강] derived_value · 2j-2조각)')
+    const row = randomUUID()
+    await client.query(putBlock, [row, wsId, 'page', 'data_source', ds, 'r0', [root], dbBlock])
+    await client.query(`INSERT INTO page (id, data_source_id) VALUES ($1, $2)`, [row, ds])
+    const otherFormula = 'y'.repeat(21)
+    await client.query(putProperty, [otherFormula, otherDs, '남의 수식', 'formula', 'b1', JSON.stringify({ expression: '1', result_type: 'number' })])
+    const selectProp = 's'.repeat(21)
+    await client.query(putProperty, [selectProp, ds, '단계', 'select', 'b2', '{}'])
+    const putDerived = `INSERT INTO derived_value (page_id, property_id, value, num_value, stale) VALUES ($1, $2, '{"type":"number","value":1}'::jsonb, 1, false)`
+    const staleOf = async () => (await client.query(`SELECT stale FROM derived_value WHERE page_id = $1 AND property_id = $2`, [row, formulaProp])).rows[0]?.stale
+    const fresh = () => client.query(`UPDATE derived_value SET stale = false WHERE page_id = $1`, [row])
+    await client.query('SAVEPOINT probe')
+    try {
+      await client.query(putDerived, [row, formulaProp])
+      ok('그 행의 표의 수식 — 정상 경로가 통과한다')
+    } catch (e) {
+      fail(`정상 경로가 거부됐다 (${e.constraint ?? e.code})`)
+    }
+    await rejectBy('★ 수식이 아닌 속성의 캐시', 'tg_derived_value_formula_of_row', putDerived, [row, numberProp])
+    await rejectBy('★ 다른 표의 수식의 캐시', 'tg_derived_value_formula_of_row', putDerived, [row, otherFormula])
+
+    // 무효화 — 칸 · 속성 · 옵션이 바뀌면 낡는다 · 다른 표가 바뀌면 그대로
+    await client.query(
+      `INSERT INTO page_property_value (page_id, property_id, value, num_value, updated_at) VALUES ($1, $2, '{"type":"number","number":3}'::jsonb, 3, now())`,
+      [row, numberProp],
+    )
+    if ((await staleOf()) === true) ok('★ 칸이 바뀌면 그 행의 수식 값이 낡는다')
+    else fail('칸을 넣었는데 수식 값이 낡지 않았다')
+    await fresh()
+    await client.query(`UPDATE property SET config = $2::jsonb WHERE id = $1`, [formulaProp, JSON.stringify({ expression: '2', result_type: 'number' })])
+    if ((await staleOf()) === true) ok('★ 속성의 설정이 바뀌면 그 표의 수식 값이 낡는다')
+    else fail('수식의 식을 바꿨는데 수식 값이 낡지 않았다')
+    await fresh()
+    await client.query(`INSERT INTO select_option (id, property_id, name, color, order_idx) VALUES ($1, $2, '검토', 'default', 'a0')`, [randomUUID(), selectProp])
+    if ((await staleOf()) === true) ok('★ 옵션이 생기면(이름이 바뀌면) 그 표의 수식 값이 낡는다')
+    else fail('옵션을 넣었는데 수식 값이 낡지 않았다')
+    await fresh()
+    await client.query(`UPDATE property SET name = '이름만 바꿈' WHERE id = $1`, [numberProp])
+    await client.query(`UPDATE property SET config = $2::jsonb WHERE id = $1`, [otherFormula, JSON.stringify({ expression: '3', result_type: 'number' })])
+    if ((await staleOf()) === false) ok('이름만 바뀌거나 다른 표가 바뀌면 그대로다')
+    else fail('이름만 바꿨거나 다른 표를 바꿨는데 이 표의 수식 값이 낡았다')
     await client.query('ROLLBACK TO SAVEPOINT probe')
   }
 

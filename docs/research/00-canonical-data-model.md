@@ -1589,6 +1589,7 @@ CREATE TABLE derived_value (                  -- formula / rollup 값 캐시
   page_id uuid NOT NULL REFERENCES page(id) ON DELETE CASCADE,
   property_id text NOT NULL REFERENCES property(id) ON DELETE CASCADE,
   value jsonb, num_value numeric NULL, text_value text NULL, date_start timestamptz NULL,
+  date_end timestamptz NULL, bool_value boolean NULL,   -- [보강] derived_value ① — 칸과 같은 다섯 축(0062)
   stale boolean NOT NULL DEFAULT true, computed_at timestamptz NULL,
   PRIMARY KEY (page_id, property_id)
 );
@@ -1760,6 +1761,30 @@ CREATE INDEX ON derived_value (property_id, num_value) WHERE NOT stale AND num_v
 - 미룬 것: 결과 타입이 바뀔 때 그것을 읽는 수식에 알리기(지금은 다음 읽기에서 이유를 든다) · rollup 의 간선(rollup 은 아직
   `property_dependency` 에 쓰지 않는다 — config 로 찾는다 · 1단계 수식이 rollup 을 읽지 못하므로 rollup → formula → rollup 우회로는 아직
   열리지 않았다).
+
+**[보강] `derived_value` — 수식 값의 캐시 · 수식으로 거르기 · 정렬(D1)** ⟨DB 심화 2j-2조각 · F-03-13 / 마이그레이션 0062⟩
+
+위 DDL 의 `derived_value` 를 들인다 — **수식만** 쓴다. 03 F-03-13 의 현실적 대안(완전 lazy)은 값을 보이는 데는 충분하지만 불변식 D1
+(*"formula/rollup 필터·정렬은 derived_value 의 사이드카 컬럼으로만 컴파일된다"*) 때문에 거르기 · 정렬은 이 표가 있어야 한다.
+
+- ① **사이드카는 칸과 같다** — `num_value` · `text_value` · `date_start` 에 **`date_end` · `bool_value` 를 더한다**(초판 DDL 에 없다).
+  `page_property_value` 의 사이드카와 같은 다섯 축이어야 필터 컴파일러가 한 축 표(타입 → 컬럼)로 두 표를 본다. 값은 칸을 만드는 함수
+  (`formulaCell` → `deriveSidecars`)로 채운다 — 수식이 낸 날짜 · 글이 칸의 날짜 · 글과 같은 기준으로 비교된다. `value` 는 수식 값 그대로.
+- ② **rollup 은 넣지 않는다** — 결과가 보는 사람마다 다르다(볼 수 없는 행을 집계에서 뺀다 · [보강] rollup v1). 전역 캐시 한 벌이 맞지 않으므로
+  rollup 은 계속 거르거나 정렬할 수 없다(권한 클래스별 N벌은 03 이 경고한 비용이다).
+- ③ **무효화는 DB 가 한다**(트리거 — 쓰는 길이 많아 애플리케이션이 빠뜨리면 조용히 틀린 결과가 된다):
+  칸이 바뀌면(`page_property_value` 의 INSERT · UPDATE · DELETE) **그 행**의 수식 값 전부 · 속성의 타입 · 설정 · 지움/되살림 · 영구 삭제가
+  바뀌면 **그 표**의 수식 값 전부 · 선택 옵션의 이름 · 추가 · 삭제가 바뀌면 그 표의 수식 값 전부를 `stale` 로. 1단계 수식은 같은 행만 읽으므로
+  행 단위 무효화가 정확하다(relation 을 타는 3단계가 오면 `relation_edge` 역방향이 더해진다 — 03 F-03-13 의 무효화 트리거 ②③).
+- ④ **채우기는 lazy** — 거르거나 정렬하기 **직전에**(쓰기 트랜잭션 · 읽기는 READ ONLY 다) 그 표의 낡은 · 없는 행을 계산해 채운다. 계산은
+  화면과 같은 함수(`compileLiveFormulas` · `evaluateRowFormulas`)다. 그동안 표를 `FOR SHARE` 로(스키마가 바뀌지 않게), 행을
+  `FOR SHARE SKIP LOCKED` 로 잡는다 — 계산하는 사이 칸이 바뀌면 그 무효화를 잃는다(옛 값을 `stale = false` 로 덮는다). 지금 쓰이고 있는
+  행은 건너뛴다 — 쓰기가 끝나면 트리거가 다시 `stale` 로 둔다(그 한 번의 질의는 옛 값으로 걸러질 수 있다 — 막 고치는 행이다).
+- ⑤ **`now()` · `today()` 를 쓰는(다른 수식을 거쳐서라도) 수식**은 거를 때마다 표 전부를 다시 계산한다 — 캐시가 시간이 지나면 틀린다.
+- ⑥ 템플릿 행 · 휴지통의 행은 채우지 않는다(목록 · 필터에 나오지 않는다 — R1).
+- ⑦ 필터 · 정렬의 타입 — 수식은 **결과 타입의 칸 타입** 연산자를 쓴다(수 → 숫자 · 글 → 텍스트 · 참거짓 → 체크박스 · 날짜 → 날짜). 타입 맵은
+  수식을 `formula:<결과 타입>` 으로 싣고 컴파일러가 `derived_value` 를 본다.
+- 미룬 것: 값을 서버가 내줄 때도 이 캐시를 읽기(지금은 화면이 계산한다 — 2i-3a) · 큰 표의 `now()` 수식 거르기(매번 다시 쓴다) · rollup.
 
 **[보강] 고유 ID(`unique_id`) — 번호는 행에, 접두사는 data source 에** ⟨DB 심화 2a-1조각 · F-03-09 / 마이그레이션 0050⟩
 

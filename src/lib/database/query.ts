@@ -41,11 +41,14 @@ import {
   compileCursor,
   compileFilter,
   compileSorts,
+  formulaTypeKey,
+  propertyIdsIn,
   ParamBag,
   type FilterNode,
   type PropertyTypes,
   type SortKey,
 } from './filter.ts'
+import { refreshDerivedValues } from './derived-values.ts'
 import { compileSearch } from './search.ts'
 // 상수는 화면과 나눠 쓴다(`limits.ts` 머리말). 기존 import 경로를 깨지 않게 다시 내보낸다.
 import { DEFAULT_QUERY_LIMIT, MAX_QUERY_LIMIT, MAX_QUERY_PAGINATION } from './limits.ts'
@@ -125,11 +128,12 @@ export type RowRow = {
  * 판단의 근거가 이 맵에 없다는 사실이다.
  */
 export async function readPropertyTypes(tx: Tx, dataSourceId: string): Promise<PropertyTypes> {
-  const rows = await tx.query<{ id: string; type: string }>(
-    `SELECT id, type FROM property WHERE data_source_id = $1 AND deleted_at IS NULL`,
+  const rows = await tx.query<{ id: string; type: string; result_type: string | null }>(
+    `SELECT id, type, config ->> 'result_type' AS result_type FROM property WHERE data_source_id = $1 AND deleted_at IS NULL`,
     [dataSourceId],
   )
-  return new Map(rows.map((r) => [r.id, r.type]))
+  // 수식은 결과 타입과 함께 싣는다(2j-2) — 컴파일러가 그 칸 타입의 연산자로 캐시(`derived_value`)를 거른다(`filterTypeOf`)
+  return new Map(rows.map((r) => [r.id, r.type === 'formula' ? formulaTypeKey(r.result_type ?? '') : r.type]))
 }
 
 /**
@@ -147,6 +151,9 @@ export async function queryRows(
     MAX_QUERY_LIMIT,
   )
   const sorts = (input.sorts ?? []).slice()
+
+  // 수식으로 거르거나 정렬하면 그 캐시를 먼저 채운다(2j-2 — 읽기는 READ ONLY 다 · `derived-values.ts`). 수식이 없으면 질의 하나로 끝난다.
+  await refreshDerivedValues(ctx, dataSourceId, propertyIdsIn(input.filter ?? null, sorts))
 
   return withReadTransaction(async (tx) => {
     // ── ① 권한. 필터보다 먼저다 ──

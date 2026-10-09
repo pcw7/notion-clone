@@ -39,6 +39,15 @@
  *
  * 그래서 부정 연산자(`does_not_*`)는 전부 `NOT EXISTS(… 긍정 조건 …)` 로 컴파일한다.
  * 테스트가 "셀이 없는 행이 걸리는가"를 명시적으로 확인한다.
+ *
+ * ──────────────────────────────────────────────────────────────────────
+ * 수식은 `derived_value` 의 사이드카를 본다 (2j-2 · 정본 D1)
+ * ──────────────────────────────────────────────────────────────────────
+ *
+ * 수식의 값은 칸이 아니다 — 캐시(`derived_value`)에 칸과 같은 다섯 축의 사이드카로 있다(정본 [보강] `derived_value` ①). 타입 맵은 수식을
+ * `formula:<결과 타입>` 으로 싣고(`readPropertyTypes`), 여기서 그것을 **결과 타입의 칸 타입**으로 풀어(수 → 숫자 · 글 → 텍스트 · 참거짓 →
+ * 체크박스 · 날짜 → 날짜 — `filterTypeOf`) 그 연산자를 쓰되 표만 `derived_value` 로 바꾼다. 표 이름도 이 파일의 상수다. 캐시를 채우는 것은
+ * 부르는 쪽의 일이다 — 거르기 직전에 `refreshDerivedValues`(읽기는 READ ONLY 다).
  */
 
 import { MVP_PROPERTY_TYPES, isMvpPropertyType, type MvpPropertyType } from './property-types.ts'
@@ -53,6 +62,48 @@ import type { ValidationIssue } from '../contracts/rich-text.ts'
 export type FilterableType = MvpPropertyType | 'unique_id'
 
 export const FILTERABLE_TYPES: readonly FilterableType[] = [...MVP_PROPERTY_TYPES, 'unique_id']
+
+/** 수식의 결과 타입 → 거를 때 쓰는 칸 타입(2j-2). 연산자 · 축 · 캐스트가 그 칸 타입의 것이다. */
+const FORMULA_FILTER_TYPE: Readonly<Record<string, FilterableType>> = Object.freeze({
+  number: 'number',
+  text: 'rich_text',
+  boolean: 'checkbox',
+  date: 'date',
+})
+
+/** 타입 맵에 수식을 싣는 모양 — `formula:<결과 타입>`(`readPropertyTypes`). */
+export function formulaTypeKey(resultType: string): string {
+  return `formula:${resultType}`
+}
+
+/** 거를 때 값을 읽는 표 — 칸(`page_property_value`) 또는 수식 캐시(`derived_value`). 이 파일의 상수만 SQL 에 들어간다. */
+const SOURCE_TABLE = Object.freeze({ cell: 'page_property_value', derived: 'derived_value' })
+
+/**
+ * 타입 맵의 값 → 거를 수 있다면 그 칸 타입과 값을 읽는 표. 셀 타입 · 고유 ID 는 그대로, 수식은 결과 타입의 칸 타입과 캐시. 아니면 null
+ * (relation · rollup · 결과 타입을 모르는 수식 — 걸러지지 않고 건너뛴다).
+ */
+export function filterTypeOf(rawType: string | undefined): { readonly type: FilterableType; readonly table: keyof typeof SOURCE_TABLE } | null {
+  if (rawType === undefined) return null
+  if (isFilterableType(rawType)) return { type: rawType, table: 'cell' }
+  if (rawType.startsWith('formula:')) {
+    const type = FORMULA_FILTER_TYPE[rawType.slice('formula:'.length)]
+    return type === undefined ? null : { type, table: 'derived' }
+  }
+  return null
+}
+
+/** 필터 · 정렬이 읽는 속성 id(중복 없이) — 거르기 전에 수식 캐시를 채울 대상을 고른다(2j-2). */
+export function propertyIdsIn(filter: FilterNode | null | undefined, sorts: readonly SortKey[] = []): string[] {
+  const ids = new Set<string>()
+  const walk = (node: FilterNode) => {
+    if (isGroup(node)) node.children.forEach(walk)
+    else if (typeof node.property_id === 'string') ids.add(node.property_id)
+  }
+  if (filter !== null && filter !== undefined) walk(filter)
+  for (const s of sorts) ids.add(s.property_id)
+  return [...ids]
+}
 
 export function isFilterableType(t: unknown): t is FilterableType {
   return isMvpPropertyType(t) || t === 'unique_id'
@@ -349,11 +400,13 @@ export function validateFilter(
     // 쓰기 경로에서는 거부한다 — 없는 프로퍼티로 규칙을 **새로 만들** 이유가 없다.
     return [{ path: `${path}.property_id`, message: '없는 프로퍼티입니다' }]
   }
-  if (!isFilterableType(rawType)) {
+  // 수식은 결과 타입의 칸 타입 연산자를 쓴다(2j-2 · `filterTypeOf`)
+  const resolved = filterTypeOf(rawType)
+  if (resolved === null) {
     return [{ path: `${path}.property_id`, message: `필터할 수 없는 타입입니다: ${rawType}` }]
   }
 
-  const spec = BY_TYPE[rawType][String(obj.operator)]
+  const spec = BY_TYPE[resolved.type][String(obj.operator)]
   if (spec === undefined) {
     return [
       {
@@ -460,10 +513,11 @@ export function compileFilter(
     return `(${parts.join(node.op === 'and' ? ' AND ' : ' OR ')})`
   }
 
-  const rawType = types.get(node.property_id)
   // ★ F-03-17: 지워진 프로퍼티를 참조하는 규칙은 **무시한다.** 결과 0건으로
   //   만들면 사용자가 데이터 소실로 오인한다.
-  if (rawType === undefined || !isFilterableType(rawType)) return null
+  const resolved = filterTypeOf(types.get(node.property_id))
+  if (resolved === null) return null
+  const rawType = resolved.type
 
   const spec = BY_TYPE[rawType][node.operator]
   // 모르는 연산자도 무시한다. 여기서 던지면 카탈로그를 줄이는 날 기존 뷰가
@@ -483,7 +537,8 @@ export function compileFilter(
   const valueParam = spec.arity === 1 ? params.bind(spec.like ? escapeLike(String(value)) : value) : ''
   const inner = spec.predicate(COLUMN[axis], valueParam, CAST[axis])
 
-  const exists = `EXISTS (SELECT 1 FROM page_property_value v
+  // 칸이면 `page_property_value`, 수식이면 그 캐시(`derived_value` — 같은 사이드카 축 · 2j-2)
+  const exists = `EXISTS (SELECT 1 FROM ${SOURCE_TABLE[resolved.table]} v
           WHERE v.page_id = p.id AND v.property_id = ${propParam} AND ${inner})`
 
   return spec.negate ? `NOT ${exists}` : exists
@@ -530,8 +585,9 @@ export function compileSorts(
   const keys: { expr: string; direction: 'asc' | 'desc'; cast: string }[] = []
 
   for (const sort of sorts) {
-    const rawType = types.get(sort.property_id)
-    if (rawType === undefined || !isFilterableType(rawType)) continue // 지워진 프로퍼티
+    const resolved = filterTypeOf(types.get(sort.property_id))
+    if (resolved === null) continue // 지워진 프로퍼티 · 거를 수 없는 타입
+    const rawType = resolved.type
     // 고유 ID — 행의 열을 그대로 정렬한다(서브쿼리가 없다).
     if (rawType === 'unique_id') {
       keys.push({ expr: UNIQUE_ID_COLUMN, direction: sort.direction, cast: UNIQUE_ID_CAST })
@@ -540,7 +596,7 @@ export function compileSorts(
     const column = COLUMN[AXIS[rawType]].replace('v.', 'sv.')
     const param = params.bind(sort.property_id)
     keys.push({
-      expr: `(SELECT ${column} FROM page_property_value sv
+      expr: `(SELECT ${column} FROM ${SOURCE_TABLE[resolved.table]} sv
                 WHERE sv.page_id = p.id AND sv.property_id = ${param})`,
       direction: sort.direction,
       cast: CAST[AXIS[rawType]],

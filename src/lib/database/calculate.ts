@@ -16,7 +16,8 @@ import { withReadTransaction, type Tx } from '../db/tx.ts'
 import { can } from '../permissions/levels.ts'
 import { effectiveCaps } from '../permissions/effective.ts'
 import { calculationResult, canCalculate, type Calculation, type CalculationResult, type ColumnStats } from './calculations.ts'
-import { compileFilter, ParamBag, type FilterNode } from './filter.ts'
+import { compileFilter, ParamBag, propertyIdsIn, type FilterNode } from './filter.ts'
+import { refreshDerivedValues } from './derived-values.ts'
 import { readPropertyTypes } from './query.ts'
 import { compileSearch } from './search.ts'
 
@@ -41,6 +42,8 @@ export async function computeCalculations(
       c.calculation !== null && c.calculation !== undefined && canCalculate(c.type, c.calculation),
   )
   if (wanted.length === 0) return {}
+  // 수식으로 거르면 그 캐시를 먼저 채운다(2j-2 — 표에 보이는 행과 같은 행을 센다)
+  await refreshDerivedValues(ctx, dataSourceId, propertyIdsIn(filter))
   return withReadTransaction(async (tx) => {
     const ds = await tx.queryMaybe<{ container_id: string }>(
       `SELECT ds.owner_database_id AS container_id
