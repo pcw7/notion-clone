@@ -56,6 +56,7 @@ import { readBodyYDoc } from '@/lib/collab/ydoc'
 import { templateTrail } from '@/lib/block/breadcrumb'
 import { BodyEditor } from '../../../../[pageId]/body-editor'
 import { DatabaseTable } from '../../database-table'
+import { formulaPlanOf } from '@/lib/database/formula-plan'
 import { RowTitle } from '../../row-title'
 import { PageIconControl } from '../../../../[pageId]/page-icon-control'
 import { PageIconView } from '../../../../page-icon-view'
@@ -196,6 +197,8 @@ export default async function TemplatePage({
             relationIcons={relation.icons}
             // 템플릿 행의 rollup 은 서버가 계산하지 않는다 — `listColumns('record', …)` 가 그 컬럼을 아예 뺀다.
             rollupValues={EMPTY_ROLLUP_PAGE}
+            // 수식은 템플릿에 채운 칸으로 계산해 보인다(2i-3a — 같은 행만 읽는다). 계획은 표의 속성 전부로.
+            formulaPlan={formulaPlanOf(recordColumns, new Date())}
             access={database.value.access}
             sorts={[]}
           />

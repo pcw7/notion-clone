@@ -50,6 +50,7 @@ import { normalizeSearch } from '@/lib/database/search'
 import { queryGroups } from '@/lib/database/group'
 import { loadRelationLabels, relationIdsIn } from '@/lib/database/relation'
 import { computeRollups, EMPTY_ROLLUP_PAGE } from '@/lib/database/rollup'
+import { formulaPlanOf } from '@/lib/database/formula-plan'
 import { groupLabel } from '@/lib/database/board-drag'
 import { listColumns, variantOf } from '@/lib/database/list-layout'
 import { isGroupableType } from '@/lib/database/property-types'
@@ -203,7 +204,16 @@ export default async function DatabasePage({
     groupBy,
     // 타입도 넣는다(2c-2) — 표는 컬럼을 자기 상태로 들고 있어서, 타입을 바꾼 뒤에도 옛 타입으로 칸을 그린다.
     // 집계 함수도(2d-2) — 바꾸면 표가 새 값으로 다시 선다(값은 서버 렌더가 준다).
-    columns.map((c) => [c.propertyId, c.name, c.visible, c.type, c.type === 'unique_id' ? c.uniqueId.prefix : null, c.calculation ?? null]),
+    // 수식의 식도(2i-3a) — 고치면 표가 새 계획으로 다시 선다(표는 컬럼을 자기 상태로 든다).
+    columns.map((c) => [
+      c.propertyId,
+      c.name,
+      c.visible,
+      c.type,
+      c.type === 'unique_id' ? c.uniqueId.prefix : null,
+      c.calculation ?? null,
+      c.type === 'formula' ? c.formula.source : null,
+    ]),
     // 하위 항목을 켜고 끄면 같은 뷰가 트리 ↔ 평평한 표로 바뀐다(2b-2) — 읽은 행(최상위만 ↔ 전부)이 무효다. 이름 · 보임은 그대로라
     // 이것이 없으면 끈 뒤에도 최상위 행만 남는다(e2e 가 잡았다).
     subItems?.parentPropertyId ?? null,
@@ -248,6 +258,10 @@ export default async function DatabasePage({
       ? null
       : await computeRollups(ctx, view.value.dataSourceId, firstRows.map((row) => row.id))
   const rollupValues = computed !== null && computed.ok ? computed.value : EMPTY_ROLLUP_PAGE
+
+  // ── 수식 칸의 값(2i-3a) ── 서버가 계산해 주지 않는다 — 계획(표의 속성 **전부** · 저장된 식 · 옵션 이름 · 지금)만 내려주고 화면이 그 행의
+  // 칸으로 계산한다(`formula-plan.ts` 머리말 — 같은 행만 읽으므로 새로 알려 주는 것이 없다). 보드 · 갤러리 · 캘린더의 카드는 아직이다(§7).
+  const formulaPlan = formulaPlanOf(columns, new Date())
 
   // ── 열 집계(2d-2 · F-04-16) ── 필터를 지난 행 전부로 계산한다(첫 페이지와 무관 · `calculate.ts`). 표 모양만 그린다.
   const calculations =
@@ -469,6 +483,7 @@ export default async function DatabasePage({
             relationLabels={relation.labels}
             relationIcons={relation.icons}
             rollupValues={rollupValues}
+            formulaPlan={formulaPlan}
             access={access}
             sorts={sorts}
             defaultTemplate={defaultTemplate}

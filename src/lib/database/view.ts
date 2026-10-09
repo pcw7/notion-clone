@@ -378,7 +378,11 @@ async function toColumns(tx: Tx, rows: readonly ColumnRow[]): Promise<ViewColumn
         columns.push({
           ...base,
           type: 'formula',
-          formula: { expression: displayFormula(config.expression, (id) => nameOf.get(id) ?? null), resultType: config.result_type },
+          formula: {
+            expression: displayFormula(config.expression, (id) => nameOf.get(id) ?? null),
+            source: config.expression,
+            resultType: config.result_type,
+          },
         })
       }
       continue

@@ -9,6 +9,8 @@ import type { PageIcon } from '@/lib/block/page-icon'
 import { PageIconView } from '../../page-icon-view'
 import { optionIdOf } from '@/lib/database/property-types'
 import type { RollupCell, RollupColumnInfo } from '@/lib/database/rollup-functions'
+import type { FormulaValue } from '@/lib/formula/formula'
+import { formulaCell } from '@/lib/database/formula-plan'
 import type { AppPropertyType, CellValue, OptionColor, RelationValue, SelectOption } from '@/lib/database/property-types'
 
 export const TYPE_LABEL: Readonly<Record<AppPropertyType, string>> = {
@@ -187,6 +189,31 @@ export function RelationChips({ value, labels, icons = {} }: { value: RelationVa
 // ── rollup (5c-2) ────────────────────────────────────────────────────
 
 const NOTE = 'flex-none text-xs text-neutral-400'
+
+// ── 수식 (2i-3a) ─────────────────────────────────────────────────────
+
+/**
+ * 수식 칸 — 읽기 전용이다. 값은 화면이 그 행의 칸으로 계산한다(`formula-plan.ts`).
+ *
+ * 칸을 그리는 함수(`CellDisplay`)로 그린다 — 수는 오른쪽 · 날짜는 날짜 칸의 모양 · 참거짓은 체크 표시. 빈 값은 그리지 않는다(0 이 아니다).
+ * 식이 읽히지 않으면(읽던 속성이 지워졌다 · 타입이 바뀌었다) **말한다** — 조용히 비우면 "값이 없다"와 구분되지 않는다(03 *"셀에 에러 표시"*).
+ */
+export function FormulaDisplay({ value, error }: { value: FormulaValue | undefined; error: string | null }) {
+  if (error !== null) {
+    return (
+      <span data-testid="db-formula-error" title={error} className={NOTE}>
+        ⚠ 수식 오류
+      </span>
+    )
+  }
+  const cell = formulaCell(value)
+  if (cell === null) return null
+  return (
+    <span data-testid="db-formula" className="block min-w-0 flex-1">
+      <CellDisplay value={cell} options={[]} />
+    </span>
+  )
+}
 
 /**
  * rollup 칸 — 읽기 전용이다.

@@ -97,12 +97,15 @@ export type UniqueIdColumn = ColumnBase & {
 
 /**
  * 수식 컬럼(2i-2 · F-03-12). **값이 행에 없다** — 읽을 때 계산한다(`formula-property.ts` `computeFormulaValues` → `FormulaPage`).
- * 여기 싣는 것은 **설정**이다: 사람이 읽는 식(지금 이름으로 되돌린 것 — 저장된 식은 `⟦id⟧` 다)과 결과 타입. 편집기가 이 식을 연다.
+ * 여기 싣는 것은 **설정**이다: 사람이 읽는 식(지금 이름으로 되돌린 것 — 편집기가 이 식을 연다) · 저장된 식(`⟦id⟧` — 화면이 같은 행의
+ * 칸으로 계산할 때 이것을 읽는다 · `formula-plan.ts`) · 결과 타입.
  */
 export type FormulaColumn = ColumnBase & {
   readonly type: 'formula'
   readonly formula: {
     readonly expression: string
+    /** 저장된 식 — 원문 그대로에 속성 자리만 `⟦id⟧`(2i-3a). 이름으로 되돌린 `expression` 을 다시 읽지 않는다(이름이 겹치면 다른 속성을 묶는다). */
+    readonly source: string
     readonly resultType: FormulaType
   }
 }

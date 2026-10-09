@@ -24,7 +24,12 @@ import type { MvpViewType, ViewSummary } from '@/lib/database/view'
 
 export type ApiResult<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly message: string }
 
-type ErrorBody = { error?: string; issues?: { message?: string }[] } | null
+type ErrorBody = {
+  error?: string
+  issues?: { message?: string }[]
+  /** 수식이 틀린 자리와 이유(2i-2) — 몇 번째 글자인지 함께 말한다. */
+  formulaError?: { message?: string; start?: number }
+} | null
 
 const JSON_HEADERS = { 'content-type': 'application/json' }
 
@@ -32,6 +37,9 @@ function messageOf(status: number, body: ErrorBody): string {
   // 값의 계약 위반은 서버가 필드별로 이유를 준다. 그것이 가장 구체적이다.
   const issue = body?.issues?.[0]?.message
   if (issue) return issue
+  // 수식(2i-3a) — 서버가 식을 읽고 틀린 자리를 준다. 글자는 1부터 센다(사람의 셈).
+  const formula = body?.formulaError
+  if (formula?.message) return typeof formula.start === 'number' ? `${formula.message} (${formula.start + 1}번째 글자)` : formula.message
   switch (body?.error) {
     case 'forbidden':
       return '이 표를 고칠 권한이 없습니다.'
@@ -113,6 +121,13 @@ function messageOf(status: number, body: ErrorBody): string {
       return '다른 사람이 먼저 레이아웃을 바꿨습니다. 새로고침한 뒤 다시 하세요.'
     case 'invalid_layout':
       return '레이아웃을 확인하세요. 제목 속성은 숨길 수 없습니다.'
+    // ── 수식 (2i-3a) ──
+    case 'invalid_formula':
+      return '수식을 확인하세요.'
+    case 'formula_cycle':
+      return '수식이 돌고 돌아 자기 자신을 읽습니다. 다른 속성을 읽게 고치세요.'
+    case 'formula_too_deep':
+      return '수식이 수식을 읽는 깊이가 15단을 넘습니다.'
   }
   return status >= 500 ? '서버에서 처리하지 못했습니다.' : '처리하지 못했습니다.'
 }
@@ -497,6 +512,20 @@ export function addColumn(
       headers: JSON_HEADERS,
       body: JSON.stringify({ name, type, ...(prefix !== undefined && prefix.trim() !== '' ? { prefix } : {}) }),
     },
+    (body) => body.property as PropertySummary,
+  )
+}
+
+/** 수식 속성을 만든다(2i-3a · F-03-12). 식은 사람이 쓴 그대로 — 서버가 읽고 틀리면 자리를 준다. */
+export function addFormula(
+  workspaceId: string,
+  dataSourceId: string,
+  name: string,
+  expression: string,
+): Promise<ApiResult<PropertySummary>> {
+  return call(
+    `${base(workspaceId)}/data-sources/${dataSourceId}/properties`,
+    { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ name, type: 'formula', expression }) },
     (body) => body.property as PropertySummary,
   )
 }

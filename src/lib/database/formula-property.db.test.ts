@@ -394,11 +394,12 @@ describe('⑥ 컬럼', () => {
     let c = await column()
     assert.equal(c?.type, 'formula')
     if (c?.type !== 'formula') throw new Error('unreachable')
-    assert.deepEqual(c.formula, { expression: 'prop("시간") * 2 // 두 배', resultType: 'number' })
+    assert.deepEqual(c.formula, { expression: 'prop("시간") * 2 // 두 배', source: `${slot(hours)} * 2 // 두 배`, resultType: 'number' })
 
     unwrap(await updateProperty(fx.owner.ctx, t.ds, hours, { name: '작업 "시간"' }))
     c = await column()
     if (c?.type !== 'formula') throw new Error('unreachable')
     assert.equal(c.formula.expression, 'prop("작업 \\"시간\\"") * 2 // 두 배', '새 이름으로 · 따옴표는 탈출해서')
+    assert.equal(c.formula.source, `${slot(hours)} * 2 // 두 배`, '저장된 식은 그대로(id)')
   })
 })

@@ -40,6 +40,13 @@
  * 이미 ID 속성이 보이면 유형 목록에서 뺀다(불변식 U1 — 서버도 `unique_id_exists` 로 막는다. 숨긴 ID 는 이 표가 모르므로 그때는
  * 서버의 답을 그대로 보인다). 고르면 접두사 칸이 선다 — 비워도 된다(번호만 보인다). 만들면 있던 행이 만든 순서대로 번호를
  * 받으므로 화면은 붙이지 않고 **다시 읽는다**(`onAddUniqueId` — 표가 그 일을 한다).
+ *
+ * ──────────────────────────────────────────────────────────────────────
+ * 수식은 식을 받는다 (수식 2i-3a조각)
+ * ──────────────────────────────────────────────────────────────────────
+ *
+ * 고르면 식 칸이 선다 — `prop("속성 이름")` 으로 속성을 읽는다. 서버가 식을 읽고, 틀리면 **이유와 몇 번째 글자인지**를 돌려준다(폼이
+ * 그대로 보인다 · 식은 지우지 않는다). 만들면 다시 읽는다(`onAddFormula` — 계산 계획이 새로 서야 한다).
  */
 
 import { useEffect, useRef, useState } from 'react'
@@ -56,12 +63,13 @@ import type { PropertySummary } from '@/lib/database/property'
 import * as api from './table-api'
 import { TYPE_ICON, TYPE_LABEL } from './cell-view'
 
-type AddableType = Exclude<MvpPropertyType, 'title'> | 'relation' | 'rollup' | 'unique_id'
+type AddableType = Exclude<MvpPropertyType, 'title'> | 'relation' | 'rollup' | 'unique_id' | 'formula'
 
 const ADDABLE_TYPES: readonly AddableType[] = [
   ...MVP_PROPERTY_TYPES.filter((t): t is Exclude<MvpPropertyType, 'title'> => t !== 'title'),
   'relation',
   'rollup',
+  'formula',
   'unique_id',
 ]
 
@@ -85,6 +93,7 @@ export function AddColumn({
   onAddRelation,
   onAddRollup,
   onAddUniqueId,
+  onAddFormula,
 }: {
   workspaceId: string
   /** 이 표. 대상 목록에서 "이 표"를 짚어 주는 데만 쓴다. */
@@ -100,6 +109,7 @@ export function AddColumn({
   onAddRelation: (input: api.AddRelationInput) => Promise<string | null>
   onAddRollup: (input: api.AddRollupInput) => Promise<string | null>
   onAddUniqueId: (name: string, prefix: string) => Promise<string | null>
+  onAddFormula: (name: string, expression: string) => Promise<string | null>
 }) {
   const [open, setOpen] = useState(false)
   const [name, setName] = useState('')
@@ -125,6 +135,9 @@ export function AddColumn({
   // 고유 ID
   const [prefix, setPrefix] = useState('')
 
+  // 수식
+  const [expression, setExpression] = useState('')
+
   useEffect(() => {
     if (open) nameRef.current?.focus()
   }, [open])
@@ -143,6 +156,7 @@ export function AddColumn({
     setTargetPropId('')
     setFn(DEFAULT_ROLLUP_FUNCTION)
     setPrefix('')
+    setExpression('')
   }
 
   /** 고른 관계의 **대상 표**의 프로퍼티를 읽는다. 볼 수 없는 표면 빈 목록이다(그 표의 내용을 알려 주지 않는다). */
@@ -197,7 +211,8 @@ export function AddColumn({
   const incomplete =
     name.trim() === '' ||
     (isRelation && (targetId === '' || (twoWay && inverseName.trim() === ''))) ||
-    (isRollup && (relation === undefined || targetProp === undefined))
+    (isRollup && (relation === undefined || targetProp === undefined)) ||
+    (type === 'formula' && expression.trim() === '')
 
   return (
     <div className="relative">
@@ -231,6 +246,8 @@ export function AddColumn({
             const failure =
               type === 'unique_id'
                 ? await onAddUniqueId(name, prefix)
+                : type === 'formula'
+                ? await onAddFormula(name, expression)
                 : type === 'rollup'
                 ? await onAddRollup({
                     name,
@@ -344,6 +361,23 @@ export function AddColumn({
                 className={FIELD}
               />
               <p className="text-xs text-neutral-500">영숫자 2~7자 · 대문자로 보입니다. 있던 행은 만든 순서대로 번호를 받습니다.</p>
+            </>
+          )}
+
+          {type === 'formula' && (
+            <>
+              <textarea
+                value={expression}
+                onChange={(e) => setExpression(e.target.value)}
+                placeholder={'prop("수량") * prop("단가")'}
+                aria-label="수식"
+                data-testid="db-formula-expression"
+                rows={3}
+                spellCheck={false}
+                autoComplete="off"
+                className={`${FIELD} resize-y font-mono text-xs`}
+              />
+              <p className="text-xs text-neutral-500">속성은 prop(&quot;이름&quot;)으로 읽습니다. 같은 행의 값으로 계산합니다.</p>
             </>
           )}
 
