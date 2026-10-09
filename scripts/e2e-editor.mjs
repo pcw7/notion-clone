@@ -13032,7 +13032,11 @@ async function main() {
         (await waitFor(`!!document.querySelector('[data-testid="db-column-delete-confirm"]') && !document.querySelector('[data-testid="db-column-dependents-loading"]')`, 8000))
           && (await noteText()) === null,
         await noteText())
-      await closeMenu(memo)
+      // 단계를 바꿔도(누른 항목이 사라져도) Escape 로 닫힌다 — 포커스가 패널에 남는다
+      await key('Escape')
+      check('★ 지우기 단계에서도 Escape 로 메뉴가 닫힌다(포커스가 패널에 남는다)',
+        await waitFor(`!document.querySelector('[data-testid="db-column-menu-panel"]')`, 3000),
+        await evaluate(`document.activeElement?.outerHTML.slice(0, 80) ?? null`))
     }
 
     if (sectionIf('개인 필터 · 정렬 — 화면 (2h-2 · F-04-17)')) {

@@ -94,9 +94,13 @@ export function ColumnMenu({
     void loadDependents().then(setDependents)
   }
 
+  const panelRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     if (step === 'rename') inputRef.current?.focus()
-    if (step === 'prefix') prefixRef.current?.focus()
+    else if (step === 'prefix') prefixRef.current?.focus()
+    // 입력칸이 없는 단계(지우기 · 유형 바꾸기 · 손실 확인)는 누른 항목이 사라지면서 포커스가 패널 밖(body)으로 간다 — 그러면 패널의
+    // Escape 가 닿지 않아 키보드로 닫을 수 없다(2j-1 의 검사가 찾았다). 패널로 옮긴다. 식 고치기는 편집기가 스스로 잡는다.
+    else if (step !== 'menu' && step !== 'formula') panelRef.current?.focus()
   }, [step])
 
   const close = () => {
@@ -146,6 +150,8 @@ export function ColumnMenu({
 
       {open && (
         <div
+          ref={panelRef}
+          tabIndex={-1}
           role="menu"
           aria-label={`${name} 속성 메뉴`}
           data-testid="db-column-menu-panel"
