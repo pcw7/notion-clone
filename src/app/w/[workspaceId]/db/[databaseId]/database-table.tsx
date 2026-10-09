@@ -90,7 +90,7 @@ import {
 } from '@/lib/database/property-types'
 import { cellText, defaultColumnWidth, draftOf, parseDraft, readCell, sameValue } from '@/lib/database/cell-format'
 import { handleGridKey, type CellPos, type GridMode, type KeyResult } from '@/lib/database/grid-nav'
-import { isCollapsed, isRelationCollapsed, isRollupCollapsed, type TableVariant } from '@/lib/database/list-layout'
+import { isCollapsed, isRelationCollapsed, isRollupCollapsed, listColumns, type TableVariant } from '@/lib/database/list-layout'
 import { rollupIsEmpty, type RollupPage } from '@/lib/database/rollup-functions'
 import { newRowLabel, templateRowNote, type DefaultTemplate } from '@/lib/database/new-row'
 import * as api from './table-api'
@@ -102,6 +102,8 @@ import { useRollupValues } from './use-rollup-values'
 import { SelectEditor } from './select-editor'
 import { RelationEditor } from './relation-editor'
 import { AddColumn } from './add-column'
+import { useTableChanges } from './use-table-changes'
+import { mergeReloaded } from '@/lib/database/live-rows'
 import { FormulaEditForm } from './formula-editor'
 import { ColumnMenu } from './column-menu'
 
@@ -191,6 +193,20 @@ export function DatabaseTable(props: {
   const [notice, setNotice] = useState<string | null>(null)
   /** 기본 템플릿은 `New ▾` 에서 바뀐다 — 서버 렌더를 다시 부르지 않고 이 화면이 들고 있는다. */
   const [defaultTemplate, setDefaultTemplate] = useState<DefaultTemplate | null>(props.defaultTemplate ?? null)
+  /** 열 집계 — 첫 화면은 서버 렌더의 것, 표가 바뀌었다는 알림(2k-2)에 다시 읽으면 그것으로. */
+  const [calculations, setCalculations] = useState<Calculations | undefined>(props.calculations)
+  /**
+   * 이 화면에서 고친 행(2k-2) — 다시 읽었더니 이 뷰의 조건 밖이면 바로 지우지 않고 남긴다(04 F-04-24 엣지 케이스 · `live-rows.ts`).
+   * 고칠 때마다 `localWrites` 도 올린다 — 다시 읽는 사이에 고쳤으면 그 결과(고치기 전의 서버 것)를 버린다.
+   */
+  const touched = useRef(new Set<string>())
+  const localWrites = useRef(0)
+  const markTouched = (rowId: string) => {
+    touched.current.add(rowId)
+    localWrites.current += 1
+  }
+  /** 다시 읽은 결과에는 없지만 내가 고쳐서 남긴 행 — 제목 옆에 "조건 밖"을 단다. */
+  const [outside, setOutside] = useState<ReadonlySet<string>>(new Set())
 
   // ── 하위 항목의 트리(2b-2) ──
   const subItems = props.subItems ?? null
@@ -269,6 +285,7 @@ export function DatabaseTable(props: {
     })
 
     setError(null)
+    markTouched(rowId)
     setRows((current) => current.map((row) => (row.id === rowId ? withValue(row, next) : row)))
 
     const result = await api.updateCell(workspaceId, rowId, column.propertyId, next)
@@ -486,6 +503,7 @@ export function DatabaseTable(props: {
    * 같은 배치라 순서는 상관없지만, 맵에 넣지 않으면 훅이 그 id 를 서버에 다시 묻는다.
    */
   const onRelationChange = (row: RowJson, known: Readonly<Record<string, string>>, knownIcons: RelationIcons) => {
+    markTouched(row.id)
     addLabels(known, knownIcons)
     setRows((current) => current.map((r) => (r.id === row.id && notOlder(row.version, r.version) ? row : r)))
     // ★ 이 행이 **무엇을 모으는지**가 바뀌었다 — rollup 은 연결을 타고 계산한다. 그 행만 다시 묻는다.
@@ -507,6 +525,7 @@ export function DatabaseTable(props: {
     }
     const { row } = result.value
     const index = rows.length
+    markTouched(row.id)
     setRows((current) => [...current, row])
     // 템플릿에서 빠진 것이 있으면 말한다(§3.3-174). 없으면 아무 말도 하지 않는다.
     setNotice(templateRowNote(result.value.skippedPages, result.value.skippedLinks))
@@ -805,6 +824,141 @@ export function DatabaseTable(props: {
   // 로직은 반드시 깨진다. 무한 스크롤을 만들지 않는 이유이기도 하다.
   const reachedCap = rows.length >= MAX_QUERY_PAGINATION
 
+  // ── 표가 바뀌었다는 알림(2k-2 · F-04-24) ───────────────────────────
+  //
+  // 받으면 다시 읽는다 — 지금 보이는 만큼(최상위 행 수만큼 페이지를 읽고 · 펼쳐 둔 행의 자식도). 편집 · 추가 · 더 보기 중이면 미뤘다가
+  // 끝나면 읽는다. 다른 사람이 컬럼(속성 · 보임 · 순서 · 집계)을 바꿨으면 행만 맞추지 않고 화면을 새로 세운다(`router.refresh()` — 다시
+  // 마운트 기준에 컬럼이 있다). 내가 고친 행이 조건 밖이 되면 남긴다(`live-rows.ts`).
+
+  const rowsRef = useRef(rows)
+  const depthRef = useRef(depthOf)
+  const expandedRef = useRef(expanded)
+  useEffect(() => {
+    rowsRef.current = rows
+    depthRef.current = depthOf
+    expandedRef.current = expanded
+  })
+  const reloadWanted = useRef(false)
+  const reloading = useRef(false)
+  const busyRef = useRef(false)
+  useEffect(() => {
+    busyRef.current = mode.kind === 'editing' || addingRow || loadingMore || loadingChildren !== null
+  })
+
+  /** 컬럼의 모양 — 서버의 컬럼과 지금 컬럼이 같은지 본다(폭은 빼고 · 다시 마운트 기준과 같은 것들). */
+  const shapeOf = (cs: readonly ViewColumn[]) =>
+    JSON.stringify(
+      cs.map((c) => [
+        c.propertyId,
+        c.name,
+        c.type,
+        c.type === 'unique_id' ? c.uniqueId.prefix : null,
+        c.type === 'formula' ? c.formula.source : null,
+        c.calculation ?? null,
+        c.options.map((o) => [o.id, o.name, o.color]),
+      ]),
+    )
+
+  /** 그 행의 자식을 조용히 읽는다(화면의 "읽는 중"을 세우지 않는다). 실패하면 null. */
+  const fetchChildren = async (rowId: string): Promise<RowJson[] | null> => {
+    const children: RowJson[] = []
+    let next: string | null = null
+    do {
+      const result = await api.loadRows(workspaceId, viewId, next, rowId)
+      if (!result.ok) return null
+      children.push(...result.value.rows)
+      next = result.value.hasMore ? result.value.nextCursor : null
+    } while (next !== null && children.length < MAX_QUERY_PAGINATION)
+    return children
+  }
+
+  const reload = async (): Promise<void> => {
+    if (busyRef.current || reloading.current) {
+      reloadWanted.current = true
+      return
+    }
+    reloading.current = true
+    reloadWanted.current = false
+    const writesAtStart = localWrites.current
+    try {
+      const want = Math.max(1, rowsRef.current.filter((r) => (depthRef.current.get(r.id) ?? 0) === 0).length)
+      const top: RowJson[] = []
+      let next: string | null = null
+      let first = true
+      let calc: Calculations | undefined
+      do {
+        const page = await api.loadRows(workspaceId, viewId, next, undefined, props.search)
+        if (!page.ok) return
+        if (first) {
+          first = false
+          calc = page.value.calculations
+          // 다른 사람이 컬럼을 바꿨다 — 행만 맞추지 않고 화면을 새로 세운다
+          const serverColumns = page.value.columns
+          if (serverColumns !== undefined && shapeOf(listColumns(variant, serverColumns.filter((c) => c.visible))) !== shapeOf(columns)) {
+            router.refresh()
+            return
+          }
+        }
+        top.push(...page.value.rows)
+        next = page.value.hasMore ? page.value.nextCursor : null
+      } while (next !== null && top.length < want && top.length < MAX_QUERY_PAGINATION)
+
+      const childrenOf = new Map<string, RowJson[]>()
+      for (const id of expandedRef.current) {
+        const kids = await fetchChildren(id)
+        if (kids !== null) childrenOf.set(id, kids)
+      }
+      // 읽는 사이 이 화면에서 고쳤다 — 이 결과는 고치기 전의 서버 것일 수 있다. 버리고 다시 읽는다(곧 그 쓰기의 알림이 온다).
+      if (localWrites.current !== writesAtStart) {
+        reloadWanted.current = true
+        return
+      }
+      const merged = mergeReloaded({
+        previous: rowsRef.current,
+        depthOf: depthRef.current,
+        top,
+        childrenOf,
+        expanded: expandedRef.current,
+        touched: touched.current,
+      })
+      // 선택은 행으로 지킨다 — 자리가 바뀌어도 같은 행에 선다
+      const current = modeRef.current
+      if (current.kind === 'selected') {
+        const id = rowsRef.current[current.at.row]?.id
+        const at = id === undefined ? -1 : merged.rows.findIndex((r) => r.id === id)
+        setMode(at < 0 ? { kind: 'idle' } : { kind: 'selected', at: { row: at, col: current.at.col } })
+      }
+      setRows(merged.rows)
+      setDepthOf(merged.depthOf)
+      setExpanded(merged.expanded)
+      setOutside(merged.outside)
+      setCursor(next)
+      setHasMore(next !== null)
+      if (calc !== undefined) setCalculations(calc)
+      // rollup 은 행에 없다 — 보이는 행 전부의 것을 다시 묻는다(그사이 연결된 행이 바뀌었을 수 있다)
+      refreshRollups(merged.rows.map((r) => r.id))
+    } finally {
+      reloading.current = false
+    }
+  }
+
+  // 미뤄 둔 다시 읽기 — 편집 · 추가 · 더 보기가 끝나면
+  useEffect(() => {
+    if (reloadWanted.current && !busyRef.current && !reloading.current) void reload()
+  })
+
+  useTableChanges(
+    workspaceId,
+    dataSourceId,
+    {
+      onChanged: () => void reload(),
+      // 더 볼 수 없다 — 화면을 다시 읽으면 서버 렌더가 "없음"을 보인다
+      onRevoked: () => router.refresh(),
+    },
+    // 행 페이지 · 템플릿 편집(레코드 모양)은 그 한 행이다 — 구독하지 않는다
+    variant !== 'record',
+  )
+
   const loadMore = async () => {
     if (cursor === null || loadingMore || reachedCap) return
     setLoadingMore(true)
@@ -1019,6 +1173,15 @@ export function DatabaseTable(props: {
                           ) : (
                             <span aria-hidden className="w-4 shrink-0" />
                           ))}
+                        {outside.has(row.id) && (
+                          <span
+                            data-testid="db-row-outside"
+                            title="고친 뒤 이 뷰의 조건에 맞지 않습니다 — 새로 열면 빠집니다"
+                            className="shrink-0 rounded bg-amber-50 px-1 text-[10px] text-amber-800 dark:bg-amber-950/40 dark:text-amber-200"
+                          >
+                            조건 밖
+                          </span>
+                        )}
                         <span className="flex min-w-0 flex-1 items-center gap-1.5" data-testid="db-row-title">
                           <PageIconView icon={row.icon} fallback />
                           <span className="min-w-0 flex-1">{content}</span>
@@ -1169,7 +1332,7 @@ export function DatabaseTable(props: {
                     <CalculationCell
                       type={column.type}
                       calculation={column.calculation ?? null}
-                      result={props.calculations?.[column.propertyId]}
+                      result={calculations?.[column.propertyId]}
                       canEdit={access.canEditStructure}
                       onPick={async (calculation) =>
                         afterStructure(await api.setColumnCalculation(workspaceId, viewId, column.propertyId, calculation))

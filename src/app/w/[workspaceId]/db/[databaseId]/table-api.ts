@@ -21,6 +21,8 @@ import type { CellValue, MvpPropertyType, SelectOption } from '@/lib/database/pr
 import type { RowCell } from '@/lib/database/row'
 import type { RollupFunction, RollupPage } from '@/lib/database/rollup-functions'
 import type { MvpViewType, ViewSummary } from '@/lib/database/view'
+import type { ViewColumn } from '@/lib/database/view-columns'
+import type { Calculations } from '@/lib/database/calculate'
 import type { PropertyDependents } from '@/lib/database/property-dependents'
 
 export type ApiResult<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly message: string }
@@ -214,6 +216,9 @@ export type RowPage = {
   nextCursor: string | null
   /** 갤러리의 카드 미리보기(2f-2) — 행 id → 이미지 주소. 갤러리가 아니면 비어 있다. */
   covers?: Readonly<Record<string, string>>
+  /** 첫 페이지에만 — 열 집계(2d-1)와 뷰의 컬럼 전부. 표 변경 알림(2k-2)이 다시 읽을 때 집계를 바꾸고 컬럼이 바뀌었는지 본다. */
+  calculations?: Calculations
+  columns?: ViewColumn[]
 }
 
 /**
@@ -240,6 +245,8 @@ export function loadRows(
       hasMore: body.hasMore === true,
       nextCursor: typeof body.nextCursor === 'string' ? body.nextCursor : null,
       ...(typeof body.covers === 'object' && body.covers !== null ? { covers: body.covers as Record<string, string> } : {}),
+      ...(typeof body.calculations === 'object' && body.calculations !== null ? { calculations: body.calculations as Calculations } : {}),
+      ...(Array.isArray(body.columns) ? { columns: body.columns as ViewColumn[] } : {}),
     }),
   )
 }

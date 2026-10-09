@@ -270,6 +270,9 @@ function connect(url) {
   // 스트리밍 중인데 검사가 곧바로 다른 주소로 가면 서버는 그 렌더를 "The destination stream closed early" 로 끊고 ⨯ 를 찍는다 —
   // 페이지가 쌓여 레이아웃이 느린 전체 판에서만 났다(§3.3-278 ⑥). 사용자는 결과가 그려진 것을 보고 떠나므로 기다리는 쪽이 사용자에 가깝다.
   const inflight = new Set()
+  // 열린 SSE(표 변경 알림 · 2k-2) — 이게 열려 있으면 다른 곳의 쓰기가 **조금 뒤에** 이 페이지의 다시 읽기(때로 `router.refresh()`)를
+  // 시작한다. 진행 중인 요청만 기다리면 그 뒤에 시작될 것을 놓친다 — 떠나기 전에 요청이 잠시 조용할 때까지 기다린다(아래 `send`).
+  const eventStreams = new Set()
   ws.onmessage = (event) => {
     const msg = JSON.parse(event.data)
     if (msg.id && pending.has(msg.id)) {
@@ -277,8 +280,10 @@ function connect(url) {
       pending.delete(msg.id)
     } else if (msg.method === 'Network.requestWillBeSent') {
       if (msg.params.type === 'Fetch' || msg.params.type === 'XHR') inflight.add(msg.params.requestId)
+      if (msg.params.type === 'EventSource') eventStreams.add(msg.params.requestId)
     } else if (msg.method === 'Network.loadingFinished' || msg.method === 'Network.loadingFailed') {
       inflight.delete(msg.params.requestId)
+      eventStreams.delete(msg.params.requestId)
     } else if (msg.method === 'Runtime.exceptionThrown') {
       const d = msg.params.exceptionDetails
       pageErrors.push(d?.exception?.description ?? d?.text)
@@ -295,7 +300,16 @@ function connect(url) {
   const send = async (method, params = {}) => {
     if (method === 'Page.navigate') {
       for (let waited = 0; inflight.size > 0 && waited < 3000; waited += 50) await sleep(50)
+      // 표 변경 알림이 열려 있으면 — 방금의 쓰기가 일으킬 다시 읽기가 시작될 틈(서버가 250ms 모은다)까지 조용하기를 기다린다
+      if (eventStreams.size > 0) {
+        for (let round = 0; round < 4; round += 1) {
+          await sleep(600)
+          if (inflight.size === 0) break
+          for (let waited = 0; inflight.size > 0 && waited < 3000; waited += 50) await sleep(50)
+        }
+      }
       inflight.clear()
+      eventStreams.clear()
     }
     return rawSend(method, params)
   }
@@ -13143,6 +13157,8 @@ async function main() {
       await key('Enter')
       check('★ 수식으로 거른다 — 금액 > 100 (나 · 다)', await waitFor(`${titlesJs} === '나,다'`, 10000), await evaluate(titlesJs))
       await key('Escape')
+      // 표 변경 알림(2k-2)이 행을 먼저 맞춘다 — 저장이 부른 새로 세우기(서버 렌더 · 도구줄의 칩)가 끝난 뒤에 메뉴를 연다(열린 메뉴가 닫히지 않게)
+      await waitFor(`document.querySelectorAll('[data-testid="db-filter-chip"]').length === 1`, 10000)
 
       // ── 머리 메뉴의 정렬 — 수식에도 선다 ──
       await clickOn(`th[data-property-id="${amount}"] [data-testid="db-column-menu"]`)
@@ -13241,6 +13257,92 @@ async function main() {
       const denied = await openFeed(db.dataSourceId, mateHeaders)
       check('★ 볼 수 없는 표는 404', denied.status === 404, String(denied.status))
       denied.close()
+    }
+
+    if (sectionIf('표 변경 알림 — 화면 (2k-2 · F-04-24)')) {
+      // 다른 곳(API)에서 바꾸면 새로고침 없이 표가 맞춰진다 — 새 행 · 제목 · 집계 · 뷰 필터. 내가 고쳐 조건 밖이 된 행은 남고 "조건 밖", 남이
+      // 고쳐 나간 행은 빠진다. 편집 중에는 미뤘다가 끝나면 맞춘다. 남이 속성을 더하면 표가 새로 선다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const clickOn = async (selector) => {
+        const p = await evaluate(`(() => {
+          const e = document.querySelector(${JSON.stringify(selector)})
+          if (!e) return null
+          e.scrollIntoView({ block: 'center' })
+          const r = e.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (p) await click(p.x, p.y)
+        return p !== null
+      }
+      const db = (await api('POST', '/databases', { name: `실시간 ${stamp}` })).body.database
+      const view = db.defaultViewId
+      const props = `/data-sources/${db.dataSourceId}/properties`
+      const qty = (await api('POST', props, { name: '수량', type: 'number' })).body.property.id
+      const titleProp = (await api('GET', `/views/${view}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const rowOf = async (t, n) => (await api('POST', `/views/${view}/rows`, {
+        cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun(t)] } }, { propertyId: qty, value: { type: 'number', number: n } }],
+      })).body.row.id
+      const ga = await rowOf('가', 3)
+      const na = await rowOf('나', 30)
+      await api('PATCH', `/views/${view}/columns/${titleProp}`, { calculation: 'count_all' })
+      const titlesJs = `[...document.querySelectorAll('[data-testid="db-table"] tbody tr')].map((tr) => tr.querySelector('[data-testid="db-row-title"]')?.textContent ?? '').join(',')`
+      const titles = () => evaluate(titlesJs)
+      const footerJs = `document.querySelector('[data-testid="db-table"] tfoot td[data-property-id="${titleProp}"]')?.textContent ?? ''`
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      await waitFor(`${titlesJs} === '가,나'`, 15000)
+      await sleep(800) // 구독이 붙을 때까지
+
+      // ── 새 행 · 제목 · 집계 ──
+      const da = await rowOf('다', 12)
+      check('★ 다른 곳에서 행을 더하면 새로고침 없이 선다 · 열 집계도(3)',
+        await waitFor(`${titlesJs} === '가,나,다' && (${footerJs}).includes('3')`, 8000),
+        JSON.stringify({ titles: await titles(), footer: await evaluate(footerJs) }))
+      await api('PATCH', `/rows/${na}`, { cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun('나!')] } }] })
+      check('★ 다른 곳에서 제목을 고치면 따라 바뀐다', await waitFor(`${titlesJs} === '가,나!,다'`, 8000), await titles())
+
+      // ── 뷰 필터가 바뀌면 행이 맞춰진다(수량 > 10) ──
+      await api('PATCH', `/views/${view}`, { filter: { property_id: qty, operator: 'greater_than', value: 10 } })
+      check('★ 뷰의 필터가 바뀌면 행이 맞춰진다(가 빠짐)', await waitFor(`${titlesJs} === '나!,다'`, 8000), await titles())
+
+      // ── 내가 고쳐 조건 밖이 된 행은 남고 "조건 밖" ──
+      await clickOn(`tr[data-row-id="${da}"] td[data-property-id="${qty}"]`)
+      await key('Enter')
+      if (await waitFor(`document.activeElement?.matches('[data-testid="db-cell-input"]')`, 5000)) {
+        await evaluate(`document.querySelector('[data-testid="db-cell-input"]').select()`)
+        await typeText('5')
+        await key('Enter')
+      }
+      check('★ 내가 고쳐 조건 밖이 된 행은 바로 지우지 않는다 — "조건 밖"을 단다',
+        await waitFor(`!!document.querySelector('tr[data-row-id="${da}"] [data-testid="db-row-outside"]')`, 8000) && (await titles()).includes('다'),
+        await titles())
+      await api('PATCH', `/rows/${na}`, { cells: [{ propertyId: qty, value: { type: 'number', number: 1 } }] })
+      check('★ 남이 고쳐 조건 밖이 된 행은 빠진다', await waitFor(`!document.querySelector('tr[data-row-id="${na}"]')`, 8000), await titles())
+
+      // ── 편집 중에는 미뤘다가 끝나면 맞춘다 ──
+      await api('PATCH', `/views/${view}`, { filter: null })
+      await waitFor(`!!document.querySelector('tr[data-row-id="${ga}"]')`, 8000)
+      await clickOn(`tr[data-row-id="${ga}"] td[data-property-id="${titleProp}"]`)
+      await key('Enter')
+      const editing = await waitFor(`document.activeElement?.matches('[data-testid="db-cell-input"]')`, 5000)
+      const ra = await rowOf('라', 50)
+      await sleep(1500)
+      check('★ 편집 중에는 다시 읽지 않는다 — 편집칸이 그대로 · 새 행은 아직',
+        editing && (await evaluate(`document.activeElement?.matches('[data-testid="db-cell-input"]')`)) && !(await evaluate(`!!document.querySelector('tr[data-row-id="${ra}"]')`)),
+        await titles())
+      await key('Escape')
+      check('편집이 끝나면 맞춘다 — 새 행(라)이 선다', await waitFor(`!!document.querySelector('tr[data-row-id="${ra}"]')`, 8000), await titles())
+
+      // ── 남이 속성을 더하면 표가 새로 선다 ──
+      await api('POST', props, { name: '메모', type: 'rich_text' })
+      check('★ 남이 속성을 더하면 표가 새로 선다(머리에 메모)',
+        await waitFor(`[...document.querySelectorAll('[data-testid="db-table"] thead th[data-property-id]')].some((th) => th.textContent.includes('메모'))`, 10000))
     }
 
     if (sectionIf('개인 필터 · 정렬 — 화면 (2h-2 · F-04-17)')) {
