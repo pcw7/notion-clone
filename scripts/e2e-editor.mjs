@@ -615,8 +615,24 @@ async function main() {
           await tab.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: box.x, y: box.y, button: 'left', buttons: 1, clickCount: 1 })
           await tab.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: box.x, y: box.y, button: 'left', buttons: 0, clickCount: 1 })
           const end = { key: 'End', code: 'End', windowsVirtualKeyCode: 35, nativeVirtualKeyCode: 35 }
-          await tab.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', ...end })
-          await tab.send('Input.dispatchKeyEvent', { type: 'keyUp', ...end })
+          // ★ 캐럿이 블록 끝에 설 때까지 End 를 누른다. 부하가 있으면 클릭의 선택 동기화가 End 보다 늦게 와서 캐럿을 클릭 자리(글
+          //   가운데)로 되돌린다 — 바로 치면 글 가운데에 들어간다("첫째 둘째 탭 탭" · HANDOFF §3.3-327 ④). 사람은 그 틈에 치지 못한다.
+          const caretAtEnd = `(() => {
+            const s = getSelection()
+            if (!s || !s.isCollapsed || !s.focusNode) return false
+            const block = (s.focusNode.nodeType === 3 ? s.focusNode.parentElement : s.focusNode)?.closest('.blk')
+            if (!block) return false
+            const rest = document.createRange()
+            rest.setStart(s.focusNode, s.focusOffset)
+            rest.setEnd(block, block.childNodes.length)
+            return rest.toString().length === 0
+          })()`
+          for (let i = 0; i < 20; i += 1) {
+            await tab.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', ...end })
+            await tab.send('Input.dispatchKeyEvent', { type: 'keyUp', ...end })
+            await sleep(50)
+            if (await evaluateIn(caretAtEnd)) break
+          }
           await tab.send('Input.insertText', { text })
         },
       }
