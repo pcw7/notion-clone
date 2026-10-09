@@ -238,7 +238,6 @@ export function ColumnMenu({
 
           {step === 'convert' && convertTo !== undefined && (
             <div className="flex flex-col p-1" data-testid="db-column-convert-list">
-              {loadDependents !== undefined && <DependentsNote dependents={dependents} effect="유형을 바꾸면 맞지 않는 것은 오류가 됩니다." />}
               <p className="px-1 pb-1 text-xs text-neutral-500">바꿀 유형</p>
               {convertTo.map((option) => (
                 <MenuItem
@@ -250,6 +249,8 @@ export function ColumnMenu({
                   {option.label}
                 </MenuItem>
               ))}
+              {/* 목록 아래 — 알림이 서면서 고를 항목이 움직이지 않게(지우기와 같은 이유) */}
+              {loadDependents !== undefined && <DependentsNote dependents={dependents} effect="유형을 바꾸면 맞지 않는 것은 오류가 됩니다." />}
             </div>
           )}
           {step === 'confirm-loss' && pending !== null && (
@@ -305,7 +306,6 @@ export function ColumnMenu({
           {step === 'formula' && formulaEdit !== undefined && formulaEdit(close)}
           {step === 'delete' && (
             <div className="flex flex-col gap-1 p-1">
-              {loadDependents !== undefined && <DependentsNote dependents={dependents} effect="지우면 그 칸이 오류가 됩니다(속성을 되살리면 돌아옵니다)." />}
               <p className="text-xs text-neutral-500">
                 ‘{name}’ 속성과 모든 행의 이 칸이 표에서 사라집니다. 값은 보관되지만 되돌리는 화면은 아직 없습니다.
               </p>
@@ -323,6 +323,8 @@ export function ColumnMenu({
                   삭제
                 </button>
               </div>
+              {/* 단추 **아래**에 둔다 — 위에 두면 읽는 중 줄이 사라지거나 알림이 서면서 단추가 움직여 누르려던 자리를 빗나간다(전체 e2e 가 잡았다) */}
+              {loadDependents !== undefined && <DependentsNote dependents={dependents} effect="지우면 그 칸이 오류가 됩니다(속성을 되살리면 돌아옵니다)." />}
             </div>
           )}
 

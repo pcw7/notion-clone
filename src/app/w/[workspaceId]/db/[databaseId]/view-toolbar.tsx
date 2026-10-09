@@ -58,7 +58,7 @@ import {
   type Calculation,
 } from '@/lib/database/calculations'
 import { parseUniqueIdQuery } from '@/lib/database/unique-id-format'
-import { isFilterableColumn, isSortable, subItemPairOf, type FilterableColumn, type ViewColumn } from '@/lib/database/view-columns'
+import { filterColumnsOf, isSortable, subItemPairOf, type FilterableColumn, type ViewColumn } from '@/lib/database/view-columns'
 import {
   disableSubItems,
   enableSubItems,
@@ -141,8 +141,9 @@ export function ViewToolbar({
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
-  // 필터 · 정렬은 **거를 수 있는 컬럼만** 받는다(셀 컬럼 + 고유 ID). relation · rollup 은 거를 축이 없다 — 패널에 아예 나오지 않는다.
-  const filterColumns = useMemo(() => columns.filter(isFilterableColumn), [columns])
+  // 필터 · 정렬은 **거를 수 있는 컬럼만** 받는다(셀 컬럼 + 고유 ID + 수식 — 수식은 결과 타입의 칸 컬럼 모양으로 · 2j-3). relation ·
+  // rollup 은 거를 축이 없다 — 패널에 아예 나오지 않는다.
+  const filterColumns = useMemo(() => filterColumnsOf(columns), [columns])
   const types = useMemo(
     () => new Map<string, FilterableType>(filterColumns.map((c) => [c.propertyId, c.type])),
     [filterColumns],

@@ -43,7 +43,7 @@ import { requirePageSession } from '@/lib/auth/page-session'
 import { getDatabase } from '@/lib/database/database'
 import { databaseLockState } from '@/lib/permissions/lock'
 import { getView, listViews } from '@/lib/database/view'
-import { isFilterableColumn, nestsSubItems, showsParentsOnly, subItemPairOf } from '@/lib/database/view-columns'
+import { filterColumnsOf, nestsSubItems, showsParentsOnly, subItemPairOf } from '@/lib/database/view-columns'
 import { queryRows } from '@/lib/database/query'
 import { computeCalculations } from '@/lib/database/calculate'
 import { normalizeSearch } from '@/lib/database/search'
@@ -155,8 +155,8 @@ export default async function DatabasePage({
   const columns = view.value.columns
   // 지워진 속성의 정렬 키를 뺀다. 그대로 두면 다른 키를 고친 저장까지 서버가 거부한다
   // (`filter-draft.ts` 머리말).
-  // 거를 수 있는 컬럼으로 묻는다 — 셀 컬럼으로만 물으면 고유 ID 의 정렬 키가 도구줄에서 사라진다(서버는 그 키로 정렬하는데).
-  const sorts = liveSorts(view.value.effectiveSorts, new Map(columns.filter(isFilterableColumn).map((c) => [c.propertyId, c.type])))
+  // 거를 수 있는 컬럼으로 묻는다 — 셀 컬럼으로만 물으면 고유 ID · 수식(2j-3)의 정렬 키가 도구줄에서 사라진다(서버는 그 키로 정렬하는데).
+  const sorts = liveSorts(view.value.effectiveSorts, new Map(filterColumnsOf(columns).map((c) => [c.propertyId, c.type])))
 
   // ── 보드 ──
   const groupBy = view.value.groupBy

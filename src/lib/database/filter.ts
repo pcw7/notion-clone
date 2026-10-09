@@ -71,6 +71,11 @@ const FORMULA_FILTER_TYPE: Readonly<Record<string, FilterableType>> = Object.fre
   date: 'date',
 })
 
+/** 수식의 결과 타입으로 거를 때의 칸 타입 — 서버(`filterTypeOf`)와 화면(`filterColumnOf` · 2j-3)이 같은 표를 본다. 모르는 타입이면 null. */
+export function formulaFilterType(resultType: string): FilterableType | null {
+  return FORMULA_FILTER_TYPE[resultType] ?? null
+}
+
 /** 타입 맵에 수식을 싣는 모양 — `formula:<결과 타입>`(`readPropertyTypes`). */
 export function formulaTypeKey(resultType: string): string {
   return `formula:${resultType}`
@@ -87,8 +92,8 @@ export function filterTypeOf(rawType: string | undefined): { readonly type: Filt
   if (rawType === undefined) return null
   if (isFilterableType(rawType)) return { type: rawType, table: 'cell' }
   if (rawType.startsWith('formula:')) {
-    const type = FORMULA_FILTER_TYPE[rawType.slice('formula:'.length)]
-    return type === undefined ? null : { type, table: 'derived' }
+    const type = formulaFilterType(rawType.slice('formula:'.length))
+    return type === null ? null : { type, table: 'derived' }
   }
   return null
 }

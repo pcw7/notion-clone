@@ -9,13 +9,15 @@
  *   ② config → 컬럼은 서버와 화면이 **같은 함수**로 읽는다(`relationOf` · `rollupOf`). 모양이 아니면 null — 그 컬럼은
  *      그리지 않는다(모르는 타입과 같은 취급)
  *
+ *   ④ 거르고 정렬할 때 수식은 **결과 타입의 칸 컬럼**이다(2j-3 · `filterColumnOf`) — 서버의 `filterTypeOf` 와 같은 표
+ *
  * 반사실(HANDOFF §3.3-170): `isCellColumn` 을 `type !== 'relation'` 으로 되돌리면 ① 이 rollup 에서 실패한다.
  */
 
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { isCellColumn, nestsSubItems, relationOf, rollupOf, subItemPairOf, type ViewColumn } from './view-columns.ts'
+import { filterColumnOf, filterColumnsOf, isCellColumn, isSortable, nestsSubItems, relationOf, rollupOf, subItemPairOf, type ViewColumn } from './view-columns.ts'
 import {
   APP_PROPERTY_TYPES,
   DERIVED_PROPERTY_TYPES,
@@ -113,5 +115,31 @@ describe('③ 하위 항목 (2b-2)', () => {
     assert.equal(nestsSubItems('table'), true)
     assert.equal(nestsSubItems('list'), true)
     assert.equal(nestsSubItems('board'), false)
+  })
+})
+
+describe('④ 거르고 정렬할 때의 모양 (2j-3)', () => {
+  const formula = (resultType: 'number' | 'text' | 'boolean' | 'date'): ViewColumn =>
+    ({ ...columnOf('formula'), propertyId: `f-${resultType}`, name: `수식 ${resultType}`, formula: { expression: '1', source: '1', resultType } }) as ViewColumn
+
+  test('★ 수식은 결과 타입의 칸 컬럼 — 수 → 숫자 · 글 → 텍스트 · 참거짓 → 체크박스 · 날짜 → 날짜', () => {
+    assert.deepEqual(
+      (['number', 'text', 'boolean', 'date'] as const).map((t) => filterColumnOf(formula(t))?.type),
+      ['number', 'rich_text', 'checkbox', 'date'],
+    )
+    const f = filterColumnOf(formula('number'))!
+    assert.deepEqual([f.propertyId, f.name], ['f-number', '수식 number'], 'id · 이름은 그대로(서버는 그 id 의 캐시를 거른다)')
+  })
+
+  test('셀 · 고유 ID 는 그대로 · relation · rollup 은 없다 · 정렬은 선택 · 상태만 빼고', () => {
+    const cell = columnOf('number')
+    assert.equal(filterColumnOf(cell), cell)
+    assert.equal(filterColumnOf(columnOf('unique_id'))?.type, 'unique_id')
+    assert.equal(filterColumnOf(columnOf('relation')), null)
+    assert.equal(filterColumnOf(columnOf('rollup')), null)
+    assert.deepEqual(filterColumnsOf([cell, columnOf('rollup'), formula('text')]).map((c) => c.type), ['number', 'rich_text'])
+    assert.equal(isSortable(formula('date')), true, '수식은 정렬할 수 있다')
+    assert.equal(isSortable(columnOf('select')), false)
+    assert.equal(isSortable(columnOf('rollup')), false)
   })
 })
