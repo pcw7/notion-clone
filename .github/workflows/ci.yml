@@ -74,6 +74,21 @@ jobs:
       - name: 외부 구현 검사 도구 (python3 · bsdtar · unzip)
         run: sudo apt-get update -q && sudo apt-get install -y -q python3 libarchive-tools unzip
 
+      # 기반 이미지를 Google 의 Docker Hub 미러(mirror.gcr.io)에서 받아 Docker Hub 의 이름을 붙여 둔다.
+      # 러너의 익명 받기가 Docker Hub 에서 429(한도) · 500(인증 서버)을 맞아 db 잡이 기동 단계에서 멈춘 적이 있다(#234).
+      # 이미지가 로컬에 있으면 compose 의 빌드(`FROM postgres:16-bookworm`) · 기동은 Docker Hub 에 묻지 않는다.
+      # 미러가 실패하면 아무것도 붙이지 않고 넘어간다 — 다음 단계가 예전처럼 Docker Hub 에서 받는다.
+      # 이미지를 바꾸면 docker/postgres/Dockerfile · docker-compose.yml 과 함께 여기도 고친다.
+      - name: 기반 이미지 받기 (Docker Hub 미러)
+        run: |
+          for image in library/postgres:16-bookworm valkey/valkey:8-alpine; do
+            if docker pull -q "mirror.gcr.io/$image"; then
+              docker tag "mirror.gcr.io/$image" "${image#library/}"
+            else
+              echo "::warning::미러에서 받지 못했다: $image — Docker Hub 에서 받는다"
+            fi
+          done
+
       # pg_bigm 을 소스에서 빌드하므로 첫 실행은 몇 분 걸린다.
       # 로컬에서만 도는 인프라를 CI 가 한 번도 세워보지 않으면
       # "내 컴퓨터에서는 됩니다" 가 그대로 남는다.
