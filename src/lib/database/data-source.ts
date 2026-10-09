@@ -39,6 +39,22 @@
  *   · 휴지통의 소스는 이 모듈의 목록 · 이름 바꾸기 · 뷰 · 행 · 속성의 모든 문에서 **없는 것**이다(`lifecycle = 'live'`).
  *   · 소스의 뷰는 지우지 않는다 — 숨길 뿐이다(되살리면 탭이 돌아온다).
  *   · 권한은 더하기와 같다 — 주인 데이터베이스의 `edit_structure` · 잠기면 막는다.
+ *
+ * ──────────────────────────────────────────────────────────────────────
+ * 다른 데이터베이스의 소스를 붙인다 — 연결된 데이터베이스 (2l-1 · F-04-13)
+ * ──────────────────────────────────────────────────────────────────────
+ *
+ * 정본 DS2 *"`is_linked` 는 파생 — 부착 행의 데이터베이스가 소스의 주인이 아니다"*. 붙이는 것은 **부착 행 하나와 뷰 하나**다 — 스키마 · 행은
+ * 원본의 것 그대로다(04 F-04-13 *"구조적 변경은 전역 전파 · 뷰 레벨 변경은 독립적"*). 그래서 권한도 둘로 갈린다:
+ *
+ *   · 행 · 스키마는 **원본(소스의 주인)** 의 권한을 따른다 — 행 질의 · 셀 쓰기 · 속성 명령이 이미 `owner_database_id` 로 묻는다. 링크로
+ *     권한이 오르지 않는다(04 *"Linked data sources … respect the access level of the original database"*)
+ *   · 뷰(필터 · 정렬 · 컬럼)는 **붙인 데이터베이스** 의 것이다 — 뷰 명령이 뷰의 `database_id` 로 묻는다(04 *"Can edit content 등급도 링크드
+ *     데이터베이스 위에서는 자기 뷰를 만들 수 있다"*)
+ *
+ * 붙이려면 이 데이터베이스의 `edit_structure` 와 **원본을 볼 수 있어야** 한다(볼 수 없으면 없는 것과 같은 답). 떼면 부착 행이 빠지고 그
+ * 위의 뷰가 함께 사라진다(0042 의 복합 FK · CASCADE) — 원본은 다치지 않는다(DS3). 소유한 소스는 떼지 않는다(휴지통이 그 길이다).
+ * 원본을 볼 수 없는 사람에게는 붙은 소스의 **이름도** 주지 않는다(`readable: false` — 이름은 원본의 내용이다).
  */
 
 import { randomUUID } from 'node:crypto'
@@ -52,6 +68,7 @@ import { orderKeyBetween } from '../block/order-key.ts'
 import { plainTitleOf } from '../block/page.ts'
 import { newPropertyId } from './property.ts'
 import { DEFAULT_VIEW_NAME } from './view.ts'
+import { isUuid } from '../ids.ts'
 
 /** 제목 프로퍼티의 기본 이름. 노션은 "Name" 이고 우리는 한국어 UI 다. */
 export const DEFAULT_TITLE_PROPERTY_NAME = '이름'
@@ -70,6 +87,11 @@ export type DataSourceSummary = {
    */
   readonly owned: boolean
   readonly orderKey: string
+  /**
+   * 원본을 볼 수 있다(2l-1) — 소유한 소스는 늘 참이다. 거짓이면 이름을 비워 준다(원본의 내용이다). 묻는 사람을 모르는 읽기(`readDataSources`
+   * 에 세션을 주지 않은 것)는 참으로 둔다.
+   */
+  readonly readable: boolean
 }
 
 export type DataSourceFailure =
@@ -77,8 +99,14 @@ export type DataSourceFailure =
   | 'forbidden'
   | 'invalid_name'
   | 'locked'
-  /** 데이터베이스의 마지막 살아 있는 소스는 휴지통에 넣을 수 없다(8e-3a). */
+  /** 데이터베이스의 마지막 살아 있는 소스는 휴지통에 넣을 수 없다(8e-3a) · 뗄 수 없다(2l-1). */
   | 'last_source'
+  /** 붙일 수 없는 소스 — 이미 이 데이터베이스의 것이다(2l-1). */
+  | 'invalid_target'
+  /** 이미 붙어 있다(2l-1). */
+  | 'already_attached'
+  /** 소유한 소스는 떼지 않는다 — 휴지통이 그 길이다(2l-1). */
+  | 'owned_source'
 
 export type DataSourceResult<T> =
   | { readonly ok: true; readonly value: T }
@@ -93,16 +121,31 @@ function normalizeName(raw: unknown): string | null {
 }
 
 /** 이 데이터베이스에 붙은 **살아 있는** data source 들 — 부착 순서대로. 권한은 부르는 쪽이 이미 봤다. 휴지통의 소스는 없는 것이다(8e-3a). */
-export async function readDataSources(tx: Tx, databaseId: string): Promise<DataSourceSummary[]> {
-  const rows = await tx.query<{ id: string; name: string; owned: boolean; order_idx: string }>(
-    `SELECT ds.id, ds.name, ds.owner_database_id = dds.database_id AS owned, dds.order_idx
+export async function readDataSources(tx: Tx, databaseId: string, ctx?: SessionContext): Promise<DataSourceSummary[]> {
+  const rows = await tx.query<{ id: string; name: string; owned: boolean; order_idx: string; owner: string }>(
+    `SELECT ds.id, ds.name, ds.owner_database_id = dds.database_id AS owned, dds.order_idx, ds.owner_database_id AS owner
        FROM database_data_source dds
        JOIN data_source ds ON ds.id = dds.data_source_id
       WHERE dds.database_id = $1 AND ds.lifecycle = 'live'
       ORDER BY dds.order_idx, ds.id`,
     [databaseId],
   )
-  return rows.map((r) => ({ id: r.id, name: r.name, owned: r.owned, orderKey: r.order_idx }))
+  const out: DataSourceSummary[] = []
+  for (const r of rows) {
+    // 붙인 소스 — 원본을 볼 수 있어야 이름을 준다(2l-1 · 머리말). 원본이 휴지통이면 볼 수 없는 것과 같다.
+    const readable = r.owned || ctx === undefined || (await canViewOwner(tx, ctx, r.owner))
+    out.push({ id: r.id, name: readable ? r.name : '', owned: r.owned, orderKey: r.order_idx, readable })
+  }
+  return out
+}
+
+/** 이 데이터베이스(소스의 주인)를 볼 수 있는가 — 살아 있고 이 워크스페이스의 것이어야 한다. */
+async function canViewOwner(tx: Tx, ctx: SessionContext, databaseId: string): Promise<boolean> {
+  const live = await tx.queryMaybe<{ one: number }>(
+    `SELECT 1 AS one FROM block WHERE id = $1 AND workspace_id = $2 AND lifecycle = 'live'`,
+    [databaseId, ctx.workspaceId],
+  )
+  return live !== null && can(await effectiveCaps(tx, ctx, databaseId), 'view')
 }
 
 /**
@@ -190,7 +233,7 @@ export async function listDataSources(
   return withReadTransaction(async (tx) => {
     const gate = await openDatabase(tx, ctx, databaseId, 'view')
     if (isFailure(gate)) return gate
-    return { ok: true, value: await readDataSources(tx, databaseId) } as const
+    return { ok: true, value: await readDataSources(tx, databaseId, ctx) } as const
   })
 }
 
@@ -251,7 +294,7 @@ export async function addDataSource(
     )
     return {
       ok: true,
-      value: { dataSource: { id: dataSourceId, name, owned: true, orderKey: sourceOrder }, viewId },
+      value: { dataSource: { id: dataSourceId, name, owned: true, orderKey: sourceOrder, readable: true }, viewId },
     } as const
   })
 }
@@ -435,5 +478,107 @@ export async function purgeDataSource(
     )
     await touchDatabase(tx, ctx, source.owner_database_id)
     return { ok: true, value: { dataSourceId, purgedRows: purged.length } } as const
+  })
+}
+
+// ── 연결된 소스 (2l-1 · F-04-13) ──────────────────────────────────────
+
+/**
+ * 다른 데이터베이스의 소스를 붙인다 — 부착 행 하나와 그 소스를 보는 표 뷰 하나(탭의 끝 · 그 소스의 살아 있는 속성 전부를 보이는 컬럼으로).
+ * 이 데이터베이스의 `edit_structure` · 잠기지 않음 · **원본을 볼 수 있어야** 한다(머리말).
+ */
+export async function attachLinkedDataSource(
+  ctx: SessionContext,
+  databaseId: string,
+  input: { readonly dataSourceId: unknown },
+): Promise<DataSourceResult<AddedDataSource>> {
+  const dataSourceId = input.dataSourceId
+  if (typeof dataSourceId !== 'string' || !isUuid(dataSourceId)) return fail('not_found')
+
+  return withCommandTransaction(async (tx) => {
+    const gate = await openDatabase(tx, ctx, databaseId, 'edit_structure')
+    if (isFailure(gate)) return gate
+
+    const source = await tx.queryMaybe<{ name: string; owner: string }>(
+      `SELECT ds.name, ds.owner_database_id AS owner FROM data_source ds
+        WHERE ds.id = $1 AND ds.lifecycle = 'live'`,
+      [dataSourceId],
+    )
+    // 원본을 볼 수 없으면 없는 것과 같은 답 — 남의 표의 소스가 있는지 알리지 않는다
+    if (source === null || !(await canViewOwner(tx, ctx, source.owner))) return fail('not_found')
+    if (source.owner === databaseId) return fail('invalid_target')
+    const attached = await tx.queryMaybe<{ one: number }>(
+      `SELECT 1 AS one FROM database_data_source WHERE database_id = $1 AND data_source_id = $2`,
+      [databaseId, dataSourceId],
+    )
+    if (attached !== null) return fail('already_attached')
+
+    const lastSource = await tx.queryMaybe<{ order_idx: string }>(
+      `SELECT order_idx FROM database_data_source WHERE database_id = $1 ORDER BY order_idx DESC LIMIT 1`,
+      [databaseId],
+    )
+    const lastView = await tx.queryMaybe<{ order_idx: string }>(
+      `SELECT order_idx FROM view WHERE database_id = $1 AND owner_kind = 'database_view' ORDER BY order_idx DESC LIMIT 1`,
+      [databaseId],
+    )
+    const sourceOrder = orderKeyBetween(lastSource?.order_idx ?? null, null)
+    await tx.query(`INSERT INTO database_data_source (database_id, data_source_id, order_idx) VALUES ($1, $2, $3)`, [
+      databaseId,
+      dataSourceId,
+      sourceOrder,
+    ])
+    // 뷰 하나 — 이 데이터베이스의 것이다(뷰 · 필터 · 정렬은 붙인 곳의 것 · 머리말). 컬럼은 원본의 스키마 순서를 물려받는다(`createView` 와 같다).
+    const viewId = randomUUID()
+    await tx.query(
+      `INSERT INTO view (id, owner_kind, database_id, data_source_id, name, type, order_idx, configuration, created_at, updated_at)
+       VALUES ($1, 'database_view', $2, $3, $4, 'table', $5, '{}'::jsonb, now(), now())`,
+      [viewId, databaseId, dataSourceId, source.name, orderKeyBetween(lastView?.order_idx ?? null, null)],
+    )
+    await tx.query(
+      `INSERT INTO view_property (view_id, property_id, visible, order_idx)
+       SELECT $1, p.id, true, p.order_idx FROM property p WHERE p.data_source_id = $2 AND p.deleted_at IS NULL`,
+      [viewId, dataSourceId],
+    )
+    await tx.query(
+      `UPDATE block SET last_edited_by = $2, last_edited_at = now(), version = version + 1 WHERE id = $1`,
+      [databaseId, ctx.userId],
+    )
+    return {
+      ok: true,
+      value: { dataSource: { id: dataSourceId, name: source.name, owned: false, orderKey: sourceOrder, readable: true }, viewId },
+    } as const
+  })
+}
+
+/**
+ * 붙인 소스를 뗀다 — 부착 행이 빠지고 그 위의 뷰가 함께 사라진다(원본은 그대로 · DS3). 소유한 소스는 떼지 않는다(`owned_source` — 휴지통이
+ * 그 길이다) · 데이터베이스의 마지막 살아 있는 소스는 떼지 않는다(`last_source` — 그릴 것이 없어진다). 권한은 이 데이터베이스의
+ * `edit_structure` 다 — 원본을 볼 수 없게 된 사람도 뗄 수 있다(붙인 곳의 일이다).
+ */
+export async function detachLinkedDataSource(
+  ctx: SessionContext,
+  databaseId: string,
+  dataSourceId: string,
+): Promise<DataSourceResult<null>> {
+  if (!isUuid(dataSourceId)) return fail('not_found')
+  return withCommandTransaction(async (tx) => {
+    const gate = await openDatabase(tx, ctx, databaseId, 'edit_structure')
+    if (isFailure(gate)) return gate
+    const row = await tx.queryMaybe<{ owner: string }>(
+      `SELECT ds.owner_database_id AS owner FROM database_data_source dds JOIN data_source ds ON ds.id = dds.data_source_id
+        WHERE dds.database_id = $1 AND dds.data_source_id = $2`,
+      [databaseId, dataSourceId],
+    )
+    if (row === null) return fail('not_found')
+    if (row.owner === databaseId) return fail('owned_source')
+    const live = await readDataSources(tx, databaseId)
+    if (live.length <= 1 && live.some((s) => s.id === dataSourceId)) return fail('last_source')
+
+    await tx.query(`DELETE FROM database_data_source WHERE database_id = $1 AND data_source_id = $2`, [databaseId, dataSourceId])
+    await tx.query(
+      `UPDATE block SET last_edited_by = $2, last_edited_at = now(), version = version + 1 WHERE id = $1`,
+      [databaseId, ctx.userId],
+    )
+    return { ok: true, value: null } as const
   })
 }
