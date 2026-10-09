@@ -95,6 +95,7 @@ import { MAX_QUERY_LIMIT } from './limits.ts'
 import { calculationResult, canCalculate, isCalculation, type Calculation, type CalculationResult } from './calculations.ts'
 import { columnStatsOf, EMPTY_STATS_ROW, statsJsonSql, type StatsRow } from './calculate.ts'
 import { compileSearch } from './search.ts'
+import { canViewOwnerDatabase } from './source-access.ts'
 
 // ── 계약 ──────────────────────────────────────────────────────────────
 
@@ -309,13 +310,14 @@ async function openBoard(
   const view = await tx.queryMaybe<{
     database_id: string
     data_source_id: string
+    owner: string
     filter: unknown
     sorts: unknown
     group_by: unknown
     load_limit: number
   }>(
     // 필터 · 정렬은 이 사람이 실제로 보는 것 — 개인 것이 있으면 그것이 공유 것을 대체한다(2h-1 · F-04-17 · `view.ts` `effectiveFilter`).
-    `SELECT v.database_id, v.data_source_id,
+    `SELECT v.database_id, v.data_source_id, ds.owner_database_id AS owner,
             coalesce(o.filter, v.filter) AS filter, coalesce(o.sorts, v.sorts) AS sorts,
             v.group_by, v.load_limit
        FROM view v
@@ -330,6 +332,9 @@ async function openBoard(
 
   const caps = await effectiveCaps(tx, ctx, view.database_id)
   if (!can(caps, 'view')) return fail('not_found')
+  // 붙인 소스의 보드(2l-2) — 카드는 원본의 행이다. 원본을 못 보면 없는 것과 같다(`view.ts` `openView` 와 같은 규칙). 카드를 다른 열로
+  // 옮기는 셀 쓰기는 `updateCellsIn` 이 원본의 `edit_content` 로 다시 묻는다 — 아래의 `edit_content` 는 이 뷰 안의 자리(`row_position`)의 것이다.
+  if (view.owner !== view.database_id && !(await canViewOwnerDatabase(tx, ctx, view.owner))) return fail('not_found')
   if (need === 'edit_content' && !can(caps, 'edit_content')) return fail('forbidden')
 
   const groupBy = view.group_by as GroupBy | null

@@ -13431,6 +13431,49 @@ async function main() {
         JSON.stringify({ detached: detached.status, after: after.body?.dataSources, gone: gone.status }))
     }
 
+    if (sectionIf('붙인 뷰의 권한 — 서버 (2l-2 · F-04-13)')) {
+      // 원본을 못 보게 된 동료에게 붙인 뷰는 없는 것과 같다 — 뷰 · 행 API 가 404 이고, 그 뷰를 가리키는 주소는 그릇의 제 뷰로 열린다(원본의
+      // 행 · 속성 이름이 화면에 없다). 볼 수 있는 사람에게는 그대로 열린다. 보드 · 캘린더 · 개인 필터 · 뷰 고치기는 DB 검사가 본다.
+      const stamp = Date.now()
+      const api = async (method, path, body, headers = authed) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const original = (await api('POST', '/databases', { name: `숨을 원본 ${stamp}` })).body.database
+      const secretProp = `기밀속성${stamp}`
+      await api('POST', `/data-sources/${original.dataSourceId}/properties`, { name: secretProp, type: 'text' })
+      const titleProp = (await api('GET', `/views/${original.defaultViewId}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const secretRow = `기밀행${stamp}`
+      await api('POST', `/views/${original.defaultViewId}/rows`, { cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun(secretRow)] } }] })
+      const container = (await api('POST', '/databases', { name: `함께 보는 그릇 ${stamp}` })).body.database
+      const linkedView = (await api('POST', `/databases/${container.id}/linked-sources`, { dataSourceId: original.dataSourceId })).body?.viewId
+
+      const mate = await joinAs(workspaceId, await createUser(`붙인 뷰 동료 ${stamp}`), 'member')
+      const asMate = { ...authed, cookie: `nc_session=${mate.token}` }
+      const before = await api('GET', `/views/${linkedView}`, undefined, asMate)
+      check('볼 수 있을 때는 동료에게도 붙인 뷰가 열린다', before.status === 200, String(before.status))
+
+      const aclMod = await import(new URL('../src/lib/permissions/acl.ts', import.meta.url).href)
+      const hidden = [
+        await aclMod.stopInheriting(ctx, original.id),
+        await aclMod.grantAccess(ctx, original.id, { type: 'user', id: ctx.userId }, 'full_access'),
+        await aclMod.revokeAccess(ctx, original.id, { type: 'workspace_everyone', id: null }),
+      ].every((r) => r.ok)
+      const view = await api('GET', `/views/${linkedView}`, undefined, asMate)
+      const rows = await api('GET', `/views/${linkedView}/rows`, undefined, asMate)
+      check('★ 원본을 못 보게 되면 붙인 뷰 · 그 행이 없는 것과 같다(404 — 컬럼은 원본의 스키마다)',
+        hidden && view.status === 404 && rows.status === 404 && !JSON.stringify([view.body, rows.body]).includes(secretProp),
+        JSON.stringify({ hidden, view: view.status, rows: rows.status }))
+      const mateHtml = await (await fetch(`${BASE}/w/${workspaceId}/db/${container.id}?v=${linkedView}`, { headers: { cookie: asMate.cookie } })).text()
+      check('★ 그 뷰를 가리키는 주소는 그릇의 제 뷰로 열린다 — 원본의 행 · 속성 이름이 없다',
+        mateHtml.includes('data-testid="db-view-tab"') && !mateHtml.includes(secretRow) && !mateHtml.includes(secretProp),
+        JSON.stringify([mateHtml.includes('data-testid="db-view-tab"'), mateHtml.includes(secretRow), mateHtml.includes(secretProp)]))
+      const ownerHtml = await (await fetch(`${BASE}/w/${workspaceId}/db/${container.id}?v=${linkedView}`, { headers: { cookie: authed.cookie } })).text()
+      check('볼 수 있는 사람에게는 그 뷰가 그대로 열린다 — 원본의 행이 보인다', ownerHtml.includes(secretRow), String(ownerHtml.length))
+    }
+
     if (sectionIf('개인 필터 · 정렬 — 화면 (2h-2 · F-04-17)')) {
       // 볼 수만 있는 사람(브라우저 세션을 바꾼다)이 도구줄의 필터로 조건을 걸면 **자기 것**으로 저장되고 그 사람의 표만 좁혀진다 — "나만 보는
       // 필터" 표시 · 초기화. 편집자는 자기 개인 것을 "모두에게 저장"한다. 브라우저 세션은 끝에 반드시 소유자로 되돌린다.

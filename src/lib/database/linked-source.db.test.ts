@@ -6,8 +6,11 @@
  *   ③ 링크로 권한이 오르지 않는다 — 행은 원본의 권한 · 뷰(필터 · 정렬)는 붙인 곳의 권한
  *   ④ 떼면 부착 행과 그 뷰가 사라진다 — 원본은 그대로 · 소유한 소스는 떼지 않는다 · 마지막 살아 있는 소스는 떼지 않는다
  *   ⑤ 이미 붙었다 · 제 것이다 · 원본의 소스가 휴지통이면 붙인 쪽에서도 빠진다
+ *   ⑥ 원본을 못 보면 붙인 뷰가 열리지 않는다(2l-2) — 뷰 읽기 · 보드 · 캘린더 · 개인 필터 · 뷰 고치기 · 그 소스로 뷰 만들기가 모두 없는 것과
+ *      같은 답이다(뷰는 그릇의 것이지만 컬럼 · 행은 원본의 내용이다) · 그릇의 제 뷰는 그대로 · 떼기는 된다
  *
  * 반사실(HANDOFF §3.3): 원본의 권한을 안 보면 ② 가, 이름을 가리지 않으면 ② 의 이름이, 소유를 안 가리면 ④ 가 실패한다.
+ * 뷰 게이트(`openView`) · 보드 게이트(`openBoard`) · 뷰 만들기에서 원본을 안 보면 ⑥ 의 각 줄이 실패한다.
  *
  * ⚠ skip 은 테스트마다 `ctx.skip` 으로 건다(`describe` 의 skip 옵션은 등록 시점에 평가된다 — HANDOFF §5).
  */
@@ -23,7 +26,9 @@ import { createDatabase, getDatabase } from './database.ts'
 import { addProperty, getSchema } from './property.ts'
 import { createRow, updateCells } from './row.ts'
 import { queryRows } from './query.ts'
-import { getView, updateView } from './view.ts'
+import { createView, getView, setPersonalView, updateView } from './view.ts'
+import { moveRow, queryGroupCalculations, queryGroups } from './group.ts'
+import { queryCalendar } from './calendar-query.ts'
 import { attachLinkedDataSource, detachLinkedDataSource, listDataSources, trashDataSource, addDataSource } from './data-source.ts'
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'
@@ -191,5 +196,41 @@ describe('⑤ 이미 붙었다 · 제 것 · 원본의 휴지통', () => {
     unwrap(await addDataSource(fx.owner.ctx, original.id, { name: '원본 둘째' })) // 마지막 소스는 휴지통에 넣을 수 없다
     unwrap(await trashDataSource(fx.owner.ctx, original.ds))
     assert.ok(!unwrap(await listDataSources(fx.owner.ctx, container.id)).some((x) => x.id === original.ds))
+  })
+})
+
+describe('⑥ 원본을 못 보면 붙인 뷰가 열리지 않는다 (2l-2)', () => {
+  test('★ 뷰 읽기 · 보드 · 캘린더 · 개인 필터 · 뷰 고치기 · 뷰 만들기 — 모두 없는 것과 같은 답 · 그릇의 제 뷰는 그대로 · 떼기는 된다', async (ctx) => {
+    if (skipReason) return ctx.skip(skipReason)
+    const original = await table('숨을 원본')
+    const row = await original.row('기밀 행')
+    unwrap(await addProperty(fx.owner.ctx, original.ds, { name: '기밀 상태', type: 'select' }))
+    unwrap(await addProperty(fx.owner.ctx, original.ds, { name: '기밀 날짜', type: 'date' }))
+    const container = await table('함께 보는 그릇')
+    const added = unwrap(await attachLinkedDataSource(fx.owner.ctx, container.id, { dataSourceId: original.ds }))
+    const board = unwrap(await createView(fx.owner.ctx, container.id, { type: 'board', dataSourceId: original.ds }))
+    const calendar = unwrap(await createView(fx.owner.ctx, container.id, { type: 'calendar', dataSourceId: original.ds }))
+    const month = { from: '2026-01-01', to: '2026-01-31' }
+
+    // 볼 수 있을 때는 열린다 — 아래의 거부가 다른 까닭이 아님을 먼저 보인다
+    assert.ok(JSON.stringify(unwrap(await getView(other.ctx, added.viewId)).columns).includes('기밀 상태'))
+    assert.equal((await queryGroups(other.ctx, board.id)).ok, true)
+    assert.equal((await queryCalendar(other.ctx, calendar.id, month)).ok, true)
+
+    await restrict(original.id) // 동료는 이제 원본을 볼 수 없다 — 그릇은 그대로 보고 고칠 수 있다
+    const reason = (r: { ok: boolean; reason?: string }) => (r.ok ? 'ok' : r.reason)
+    assert.equal(reason(await getView(other.ctx, added.viewId)), 'not_found', '뷰 읽기 — 컬럼은 원본의 스키마다')
+    assert.equal(reason(await queryGroups(other.ctx, board.id)), 'not_found', '보드의 카드는 원본의 행이다')
+    assert.equal(reason(await queryGroupCalculations(other.ctx, board.id)), 'not_found', '보드의 그룹 계산')
+    assert.equal(reason(await moveRow(other.ctx, board.id, { rowId: row, groupKey: '' })), 'not_found', '카드 옮기기')
+    assert.equal(reason(await queryCalendar(other.ctx, calendar.id, month)), 'not_found', '캘린더의 행')
+    assert.equal(reason(await setPersonalView(other.ctx, added.viewId, { sorts: [] })), 'not_found', '개인 정렬')
+    assert.equal(reason(await updateView(other.ctx, added.viewId, { name: '바꾼 이름' })), 'not_found', '뷰 고치기도 컬럼째 돌려준다')
+    assert.equal(reason(await createView(other.ctx, container.id, { dataSourceId: original.ds })), 'not_found', '그 소스로 뷰 만들기')
+
+    // 그릇의 제 뷰는 그대로 열린다 · 떼기는 된다(그릇의 일이다 — 원본을 못 보게 된 사람이 그 탭을 치우는 길)
+    assert.equal((await getView(other.ctx, container.viewId)).ok, true)
+    unwrap(await detachLinkedDataSource(other.ctx, container.id, original.ds))
+    assert.deepEqual(unwrap(await listDataSources(other.ctx, container.id)).map((s) => s.id), [container.ds])
   })
 })
