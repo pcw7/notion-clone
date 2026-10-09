@@ -13039,6 +13039,42 @@ async function main() {
         await evaluate(`document.activeElement?.outerHTML.slice(0, 80) ?? null`))
     }
 
+    if (sectionIf('수식으로 거르기 · 정렬 — 서버 (2j-2 · F-03-13)')) {
+      // 뷰의 필터 · 정렬이 수식을 읽으면 그 값의 캐시(derived_value)로 거른다 — 칸을 고치면 다음 읽기가 맞다. 무효화의 경우 · 보드 · 캘린더 ·
+      // 지금을 읽는 수식은 DB 검사가 본다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `수식 거르기 ${stamp}` })).body.database
+      const view = db.defaultViewId
+      const props = `/data-sources/${db.dataSourceId}/properties`
+      const qty = (await api('POST', props, { name: '수량', type: 'number' })).body.property.id
+      const titleProp = (await api('GET', `/views/${view}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const rowIds = {}
+      for (const [t, n] of [['가', 3], ['나', 30], ['다', 12]]) {
+        rowIds[t] = (await api('POST', `/views/${view}/rows`, {
+          cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun(t)] } }, { propertyId: qty, value: { type: 'number', number: n } }],
+        })).body.row.id
+      }
+      const amount = (await api('POST', props, { name: '금액', type: 'formula', expression: 'prop("수량") * 10' })).body.property.id
+      const titles = async () => ((await api('GET', `/views/${view}/rows`)).body?.rows ?? []).map((r) => r.title).join(',')
+
+      const set = await api('PATCH', `/views/${view}`, { filter: { property_id: amount, operator: 'greater_than', value: 100 } })
+      check('★ 뷰의 필터가 수식을 읽는다 — 금액 > 100 (나 · 다)', set.status === 200 && (await titles()) === '나,다', JSON.stringify({ status: set.status, titles: await titles() }))
+      await api('PATCH', `/rows/${rowIds['가']}`, { cells: [{ propertyId: qty, value: { type: 'number', number: 50 } }] })
+      check('★ 칸을 고치면 다음 읽기가 맞다 — 가(500)도 걸린다', (await titles()) === '가,나,다', await titles())
+      await api('PATCH', `/views/${view}`, { filter: null, sorts: [{ property_id: amount, direction: 'desc' }] })
+      check('★ 수식으로 정렬한다 — 금액 내림차순(가 500 · 나 300 · 다 120)', (await titles()) === '가,나,다', await titles())
+      await api('PATCH', `/views/${view}`, { sorts: [{ property_id: amount, direction: 'asc' }] })
+      check('오름차순', (await titles()) === '다,나,가', await titles())
+      const bad = await api('PATCH', `/views/${view}`, { filter: { property_id: amount, operator: 'contains', value: '1' } })
+      check('결과 타입(수)에 없는 연산자는 400', bad.status === 400 && bad.body?.error === 'invalid_filter', JSON.stringify(bad))
+    }
+
     if (sectionIf('개인 필터 · 정렬 — 화면 (2h-2 · F-04-17)')) {
       // 볼 수만 있는 사람(브라우저 세션을 바꾼다)이 도구줄의 필터로 조건을 걸면 **자기 것**으로 저장되고 그 사람의 표만 좁혀진다 — "나만 보는
       // 필터" 표시 · 초기화. 편집자는 자기 개인 것을 "모두에게 저장"한다. 브라우저 세션은 끝에 반드시 소유자로 되돌린다.

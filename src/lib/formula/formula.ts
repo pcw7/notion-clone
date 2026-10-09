@@ -146,3 +146,22 @@ export function displayFormula(stored: string, nameOf: (id: string) => string | 
 export function evaluateFormula(compiled: Pick<CompiledFormula, 'ast'>, prop: (id: string) => FormulaValue, env: FormulaEnv): FormulaValue {
   return evaluateNode(compiled.ast, prop, env)
 }
+
+/** 지금을 읽는 함수 — 이것을 부르는 식은 시간이 지나면 값이 바뀐다(캐시가 틀린다 · `derived-values.ts`). */
+const CLOCK_FUNCTIONS: ReadonlySet<string> = new Set(['now', 'today'])
+
+/** 이 나무가 지금(`now()` · `today()`)을 읽는가. 다른 수식을 거쳐 읽는 것은 부르는 쪽이 그래프로 본다. */
+export function usesClock(node: Node): boolean {
+  switch (node.kind) {
+    case 'call':
+      return CLOCK_FUNCTIONS.has(node.name) || node.args.some(usesClock)
+    case 'unary':
+      return usesClock(node.arg)
+    case 'binary':
+      return usesClock(node.left) || usesClock(node.right)
+    case 'ternary':
+      return usesClock(node.cond) || usesClock(node.then) || usesClock(node.else)
+    default:
+      return false
+  }
+}

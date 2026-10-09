@@ -17,7 +17,8 @@
 import type { SessionContext } from '../auth/session-context.ts'
 import { withReadTransaction } from '../db/tx.ts'
 import { isValidSpan, MAX_CALENDAR_ROWS } from './calendar.ts'
-import { compileFilter, ParamBag } from './filter.ts'
+import { compileFilter, ParamBag, propertyIdsIn } from './filter.ts'
+import { refreshDerivedValues } from './derived-values.ts'
 import { compileTree, readPropertyTypes, toQueriedRow, type QueriedRow, type RowRow } from './query.ts'
 import { compileSearch } from './search.ts'
 import { getView } from './view.ts'
@@ -62,6 +63,8 @@ export async function queryCalendar(
   if (dateProperty === null) return fail('no_date_property')
   // 이 사람이 실제로 보는 필터(2h-1 — 개인 필터가 있으면 그것)
   const { dataSourceId, effectiveFilter: filter, columns } = view.value
+  // 수식으로 거르면 그 캐시를 먼저 채운다(2j-2)
+  await refreshDerivedValues(ctx, dataSourceId, propertyIdsIn(filter))
 
   return withReadTransaction(async (tx) => {
     const types = await readPropertyTypes(tx, dataSourceId)

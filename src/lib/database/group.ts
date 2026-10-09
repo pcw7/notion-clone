@@ -63,13 +63,14 @@ import {
   compileCursor,
   compileFilter,
   compileSorts,
-  isFilterableType,
+  filterTypeOf,
   ParamBag,
   type CompiledSort,
   type FilterNode,
   type PropertyTypes,
   type SortKey,
 } from './filter.ts'
+import { refreshDerivedForView } from './derived-values.ts'
 import {
   isGroupableType,
   isOptionType,
@@ -407,7 +408,7 @@ type Compiled = {
 
 /** 살아 있는 정렬 키가 있는가. 없으면(전부 지워진 프로퍼티) 수동 순서다 — 사용자에게는 정렬이 없는 것과 같다. */
 function hasLiveSort(board: Board): boolean {
-  return board.sorts.some((s) => isFilterableType(board.types.get(s.property_id)))
+  return board.sorts.some((s) => filterTypeOf(board.types.get(s.property_id)) !== null)
 }
 
 /**
@@ -455,6 +456,8 @@ function nextCursorOf(order: CompiledSort, last: RowRow | undefined, hasMore: bo
  * 보드의 그룹 전부와, 보이는 그룹의 첫 페이지 행.
  */
 export async function queryGroups(ctx: SessionContext, viewId: string, input: BoardReadInput = {}): Promise<GroupResult<GroupsPage>> {
+  // 뷰를 읽기 트랜잭션 안에서 연다 — 수식으로 거르거나 정렬하면 그 캐시를 먼저 채운다(2j-2 · 이 사람의 실제 필터로)
+  await refreshDerivedForView(ctx, viewId)
   return withReadTransaction(async (tx) => {
     const board = await openBoard(tx, ctx, viewId, 'view', input.search ?? null)
     if (isFailure(board)) return board
@@ -533,6 +536,7 @@ export async function queryGroupCalculations(
   viewId: string,
   input: BoardReadInput = {},
 ): Promise<GroupResult<GroupCalculationsPage>> {
+  await refreshDerivedForView(ctx, viewId)
   return withReadTransaction(async (tx) => {
     const board = await openBoard(tx, ctx, viewId, 'view', input.search ?? null)
     if (isFailure(board)) return board
@@ -586,6 +590,7 @@ export async function queryGroupRows(
   groupKey: string,
   input: { readonly cursor?: string | null; readonly limit?: number } & BoardReadInput = {},
 ): Promise<GroupResult<GroupRowsPage>> {
+  await refreshDerivedForView(ctx, viewId)
   return withReadTransaction(async (tx) => {
     const board = await openBoard(tx, ctx, viewId, 'view', input.search ?? null)
     if (isFailure(board)) return board
