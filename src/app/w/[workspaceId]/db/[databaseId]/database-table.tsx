@@ -786,6 +786,15 @@ export function DatabaseTable(props: {
           ),
         }
       : {}),
+    // 지우기 · 유형 바꾸기 전에 이 속성을 읽는 수식 · 롤업을 알린다(2j-1 · F-03-13). 제목은 지우지도 바꾸지도 못한다.
+    ...(column.type === 'title'
+      ? {}
+      : {
+          loadDependents: async () => {
+            const result = await api.propertyDependents(workspaceId, dataSourceId, column.propertyId)
+            return result.ok ? result.value : null
+          },
+        }),
     onHide: async () =>
       afterStructure(await api.setColumnVisible(workspaceId, viewId, column.propertyId, false)),
     onDelete: async () =>

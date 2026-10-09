@@ -21,6 +21,7 @@ import type { CellValue, MvpPropertyType, SelectOption } from '@/lib/database/pr
 import type { RowCell } from '@/lib/database/row'
 import type { RollupFunction, RollupPage } from '@/lib/database/rollup-functions'
 import type { MvpViewType, ViewSummary } from '@/lib/database/view'
+import type { PropertyDependents } from '@/lib/database/property-dependents'
 
 export type ApiResult<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly message: string }
 
@@ -527,6 +528,19 @@ export function addFormula(
     `${base(workspaceId)}/data-sources/${dataSourceId}/properties`,
     { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ name, type: 'formula', expression }) },
     (body) => body.property as PropertySummary,
+  )
+}
+
+/** 이 속성을 읽는 수식 · 롤업(2j-1 · F-03-13) — 지우거나 유형을 바꾸기 전에 알린다. 다른 표의 롤업은 볼 수 있을 때만 이름이 있다. */
+export function propertyDependents(
+  workspaceId: string,
+  dataSourceId: string,
+  propertyId: string,
+): Promise<ApiResult<PropertyDependents>> {
+  return call(
+    `${base(workspaceId)}/data-sources/${dataSourceId}/properties/${propertyId}/dependents`,
+    { method: 'GET' },
+    (body) => ({ dependents: body.dependents as PropertyDependents['dependents'], hidden: body.hidden as number }),
   )
 }
 
