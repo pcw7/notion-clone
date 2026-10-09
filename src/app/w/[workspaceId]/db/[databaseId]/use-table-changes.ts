@@ -14,6 +14,7 @@
  */
 
 import { useEffect, useRef } from 'react'
+import { useRouter } from 'next/navigation'
 
 export function useTableChanges(
   workspaceId: string,
@@ -41,4 +42,52 @@ export function useTableChanges(
     })
     return () => source.close()
   }, [workspaceId, dataSourceId, enabled])
+}
+
+/**
+ * 보드 · 갤러리 · 캘린더(2k-3) — "바뀌었다"면 서버 렌더를 다시 부른다(`router.refresh()`). 이 화면들은 데이터를 서버 렌더에서 받는다
+ * (보드의 그룹 · 캘린더의 달) — 표처럼 따로 읽는 길을 두지 않는다. 끌기 · 편집 · 추가 중(`busy`)이면 미뤘다가 끝나면 부른다. 새 값은
+ * `useAdoptServerValue` 가 상태로 받아들인다.
+ */
+export function useLiveServerRefresh(workspaceId: string, dataSourceId: string, busy: boolean, enabled = true): void {
+  const router = useRouter()
+  const pending = useRef(false)
+  const busyRef = useRef(busy)
+  useEffect(() => {
+    busyRef.current = busy
+  })
+  useTableChanges(
+    workspaceId,
+    dataSourceId,
+    {
+      onChanged: () => {
+        if (busyRef.current) pending.current = true
+        else router.refresh()
+      },
+      onRevoked: () => router.refresh(),
+    },
+    enabled,
+  )
+  useEffect(() => {
+    if (busy || !pending.current) return
+    pending.current = false
+    router.refresh()
+  }, [busy, router])
+}
+
+/**
+ * 서버 렌더가 새 값을 주면(다시 부른 뒤 — 값의 정체가 바뀐다) 상태로 받아들인다. 바쁘면(끌기 · 편집 중) 끝난 뒤에. 처음 값은 이미
+ * 상태의 시작이라 받아들이지 않는다.
+ */
+export function useAdoptServerValue<T>(value: T, busy: boolean, adopt: (value: T) => void): void {
+  const seen = useRef(value)
+  const latest = useRef(adopt)
+  useEffect(() => {
+    latest.current = adopt
+  })
+  useEffect(() => {
+    if (value === seen.current || busy) return
+    seen.current = value
+    latest.current(value)
+  }, [value, busy])
 }

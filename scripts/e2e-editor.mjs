@@ -13345,6 +13345,59 @@ async function main() {
         await waitFor(`[...document.querySelectorAll('[data-testid="db-table"] thead th[data-property-id]')].some((th) => th.textContent.includes('메모'))`, 10000))
     }
 
+    if (sectionIf('표 변경 알림 — 보드 · 갤러리 · 캘린더 (2k-3 · F-04-24)')) {
+      // 다른 곳(API)에서 바꾸면 보드의 카드가 서고 · 열을 옮기고, 갤러리의 카드가 서고, 캘린더의 막대가 선다 — 새로고침 없이.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `실시간 카드 ${stamp}` })).body.database
+      const view = db.defaultViewId
+      const props = `/data-sources/${db.dataSourceId}/properties`
+      const done = (await api('POST', props, { name: '완료', type: 'checkbox' })).body.property.id
+      const due = (await api('POST', props, { name: '마감', type: 'date' })).body.property.id
+      const titleProp = (await api('GET', `/views/${view}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const rowOf = async (t, checked, day) => (await api('POST', `/views/${view}/rows`, {
+        cells: [
+          { propertyId: titleProp, value: { type: 'title', title: [textRun(t)] } },
+          { propertyId: done, value: { type: 'checkbox', checkbox: checked } },
+          { propertyId: due, value: { type: 'date', date: { start: day } } },
+        ],
+      })).body.row.id
+      const ga = await rowOf('가', false, '2026-03-05')
+      await rowOf('나', true, '2026-03-06')
+      const board = (await api('POST', `/databases/${db.id}/views`, { name: '보드', type: 'board', groupBy: { property_id: done } })).body.view.id
+      const gallery = (await api('POST', `/databases/${db.id}/views`, { name: '갤러리', type: 'gallery' })).body.view.id
+      const calendar = (await api('POST', `/databases/${db.id}/views`, { name: '캘린더', type: 'calendar' })).body.view.id
+      const cardIn = (key, rowId) => `!!document.querySelector('[data-testid="db-board-column"][data-group-key="${key}"] [data-testid="db-board-card"][data-row-id="${rowId}"]')`
+
+      // ── 보드 ──
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}?v=${board}` })
+      await waitFor(cardIn('false', ga), 15000)
+      await sleep(800) // 구독이 붙을 때까지
+      const da = await rowOf('다', true, '2026-03-07')
+      check('★ 보드 — 다른 곳에서 행을 더하면 그 열에 카드가 선다', await waitFor(cardIn('true', da), 8000))
+      await api('PATCH', `/rows/${ga}`, { cells: [{ propertyId: done, value: { type: 'checkbox', checkbox: true } }] })
+      check('★ 보드 — 다른 곳에서 값을 바꾸면 카드가 열을 옮긴다', await waitFor(`${cardIn('true', ga)} && !${cardIn('false', ga)}`, 8000))
+
+      // ── 갤러리 ──
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}?v=${gallery}` })
+      await waitFor(`document.querySelectorAll('[data-testid="db-gallery-card"]').length === 3`, 15000)
+      await sleep(800)
+      const ra = await rowOf('라', false, '2026-03-08')
+      check('★ 갤러리 — 다른 곳에서 행을 더하면 카드가 선다', await waitFor(`!!document.querySelector('[data-testid="db-gallery-card"][data-row-id="${ra}"]')`, 8000))
+
+      // ── 캘린더 ──
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}?v=${calendar}&m=2026-03` })
+      await waitFor(`!!document.querySelector('[data-testid="db-cal-event"][data-row-id="${ra}"]')`, 15000)
+      await sleep(800)
+      const ma = await rowOf('마', false, '2026-03-20')
+      check('★ 캘린더 — 다른 곳에서 행을 더하면 그 날에 막대가 선다', await waitFor(`!!document.querySelector('[data-testid="db-cal-event"][data-row-id="${ma}"]')`, 8000))
+    }
+
     if (sectionIf('개인 필터 · 정렬 — 화면 (2h-2 · F-04-17)')) {
       // 볼 수만 있는 사람(브라우저 세션을 바꾼다)이 도구줄의 필터로 조건을 걸면 **자기 것**으로 저장되고 그 사람의 표만 좁혀진다 — "나만 보는
       // 필터" 표시 · 초기화. 편집자는 자기 개인 것을 "모두에게 저장"한다. 브라우저 세션은 끝에 반드시 소유자로 되돌린다.

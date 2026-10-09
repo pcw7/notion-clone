@@ -425,6 +425,7 @@ export default async function DatabasePage({
           <DatabaseCalendar
             key={contentKey}
             workspaceId={workspaceId}
+            dataSourceId={view.value.dataSourceId}
             viewId={view.value.id}
             tableName={tableName}
             month={calendarMonth}

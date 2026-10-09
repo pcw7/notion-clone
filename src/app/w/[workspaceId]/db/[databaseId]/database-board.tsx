@@ -85,6 +85,7 @@ import { OptionChip, type RelationIcons, type RelationLabels } from './cell-view
 import { NewRowMenu } from './new-row-menu'
 import { CardBadges } from './card-badges'
 import { useRelationLabels } from './use-relation-labels'
+import { useAdoptServerValue, useLiveServerRefresh } from './use-table-changes'
 
 /** `GET /groups` 의 그룹 하나 — 행은 `rowJson`. 서버 렌더(`page.tsx`)도 같은 모양으로 내려준다. */
 export type BoardGroupJson = {
@@ -180,6 +181,12 @@ export function DatabaseBoard(props: {
     editingRef.current = next
     setEditingState(next)
   }
+
+  // 표 변경 알림(2k-3 · F-04-24) — 다른 곳에서 바뀌면 서버 렌더를 다시 부르고 새 그룹을 받아들인다. 끌기 · 편집 · 만들기 · 더 보기
+  // 중이면 끝난 뒤에. "더 보기"로 더 읽은 카드는 첫 페이지로 돌아간다(§7).
+  const boardBusy = draggingId !== null || editing !== null || busyKey !== null || loadingKey !== null
+  useLiveServerRefresh(workspaceId, dataSourceId, boardBusy)
+  useAdoptServerValue(props.groups, boardBusy, (next) => update(() => next))
 
   /** 머리 값을 다시 받은 횟수 — 늦게 온 옛 답을 버린다(머리말). */
   const calcSeq = useRef(0)
