@@ -33,6 +33,18 @@
  * F-04-01: *"삭제된 뷰의 `?v=` 딥링크로 접근 → 기본 뷰로 리다이렉트 + 토스트.
  * 404 로 떨어뜨리지 않는다."* 링크를 저장해 둔 사람이 표 자체에 못 들어오면 안 된다.
  * 토스트는 아직 없다.
+ *
+ * ──────────────────────────────────────────────────────────────────────
+ * 붙인 소스의 뷰 (2l-2 · 2l-3 · F-04-13)
+ * ──────────────────────────────────────────────────────────────────────
+ *
+ * 다른 데이터베이스의 소스를 붙인 뷰는 원본을 볼 수 있어야 열린다(서버의 뷰 게이트). 볼 수 없는 사람이 그 탭을 고르면 탭 줄은 그대로 두고
+ * 내용 자리에 "접근 권한 없음"을 그린다 — 뷰 이름은 그릇의 것이지만 소스 이름 · 컬럼 · 행은 원본의 것이다. 고르지 않았으면 그런 뷰를
+ * 건너뛴 첫 뷰가 기본이다.
+ *
+ * 열리는 붙인 뷰에서 칸 · 행 · 속성을 고칠 수 있는지는 **그릇과 원본의 교집합**으로 보인다. 서버는 칸 · 행 · 속성을 원본으로, 뷰 안의
+ * 자리 · 계산 · 필터를 그릇으로 묻는다 — 둘을 다 갖춘 것만 열면 어느 쪽을 묻는 길이든 넘쳐 보이지 않는다. 도구줄 · 탭 · 소스 창은 뷰의
+ * 것이라 그릇의 권한 그대로다.
  */
 
 import Link from 'next/link'
@@ -77,9 +89,37 @@ import { isYm, monthGrid } from '@/lib/database/calendar'
 import { queryCalendar } from '@/lib/database/calendar-query'
 import { readCardCovers } from '@/lib/database/gallery-covers'
 import { TemplatePanel } from './template-panel'
-import { DataSourcePanel } from './data-source-panel'
+import { DataSourcePanel, type DataSourceEntry } from './data-source-panel'
+import type { DataSourceSummary } from '@/lib/database/data-source'
+import type { DatabaseAccess } from '@/lib/database/database'
 
 const UNTITLED = '제목 없음'
+
+/** "데이터 소스" 창의 항목 — 소스마다 그 소스를 보는 첫 뷰(열기 · 떼기 뒤의 이동)를 단다. */
+function panelSourcesOf(
+  sources: readonly DataSourceSummary[],
+  views: readonly { readonly id: string; readonly dataSourceId: string }[],
+): DataSourceEntry[] {
+  return sources.map((source) => ({
+    id: source.id,
+    name: source.name,
+    owned: source.owned,
+    readable: source.readable,
+    ownerDatabaseId: source.ownerDatabaseId,
+    firstViewId: views.find((v) => v.dataSourceId === source.id)?.id ?? null,
+  }))
+}
+
+/** 두 권한의 교집합 — 붙인 뷰의 칸 · 행 · 속성(머리말 "붙인 소스의 뷰"). */
+function bothOf(a: DatabaseAccess, b: DatabaseAccess): DatabaseAccess {
+  return {
+    canEditContent: a.canEditContent && b.canEditContent,
+    canCreateRows: a.canCreateRows && b.canCreateRows,
+    canEditStructure: a.canEditStructure && b.canEditStructure,
+  }
+}
+
+const NO_ACCESS: DatabaseAccess = { canEditContent: false, canCreateRows: false, canEditStructure: false }
 
 export default async function DatabasePage({
   params,
@@ -104,11 +144,80 @@ export default async function DatabasePage({
 
   const views = await listViews(ctx, databaseId)
   if (!views.ok || views.value.length === 0) notFound()
-  // 붙인 소스의 원본을 못 보면 그 소스의 뷰는 열리지 않는다(2l-2 · `openView`). 그런 뷰를 가리키는 `?v=` 는 지워진 뷰처럼 기본 뷰로 —
-  // 기본 뷰도 그런 뷰를 건너뛴 첫 뷰다. 탭은 그대로 선다(뷰 이름은 그릇의 것이다).
+  // 붙인 소스의 원본을 못 보면 그 소스의 뷰는 열리지 않는다(2l-2 · `openView`). 기본 뷰는 그런 뷰를 건너뛴 첫 뷰다. 그런 뷰를 고른 주소 ·
+  // 열 뷰가 하나도 없는 그릇은 "접근 권한 없음"을 그린다(2l-3 · 머리말) — 탭은 그대로 선다(뷰 이름은 그릇의 것이다).
   const hiddenSources = new Set(database.value.dataSources.filter((s) => !s.readable).map((s) => s.id))
   const openable = views.value.filter((view) => !hiddenSources.has(view.dataSourceId))
-  if (openable.length === 0) notFound()
+  const blocked =
+    views.value.find((view) => view.id === v && hiddenSources.has(view.dataSourceId)) ??
+    (openable.length === 0 ? views.value[0] : undefined)
+  if (blocked !== undefined) {
+    const lock = await databaseLockState(ctx, databaseId)
+    const canEditStructure = database.value.access.canEditStructure && !lock?.locked
+    return (
+      <main className="flex min-h-screen min-w-0 flex-col gap-6 px-10 py-12">
+        <nav aria-label="상위 경로" className="flex flex-wrap items-center gap-1 text-sm text-neutral-500">
+          <Link href={`/w/${workspaceId}`} className="hover:underline underline-offset-4">
+            워크스페이스
+          </Link>
+          <span aria-hidden>/</span>
+          <span className="text-neutral-400">
+            <PageIconView icon={database.value.icon} className="mr-1" />
+            {database.value.name || UNTITLED}
+          </span>
+        </nav>
+        <div className="group/header flex flex-col gap-2">
+          <PageIconControl
+            workspaceId={workspaceId}
+            pageId={databaseId}
+            kind="database"
+            initialIcon={database.value.icon}
+            readOnly={!canEditStructure}
+          />
+          <DatabaseTitle
+            workspaceId={workspaceId}
+            databaseId={databaseId}
+            initialName={database.value.name}
+            canEdit={canEditStructure}
+          />
+        </div>
+        <div className="flex flex-col gap-1">
+          <p className="px-1 text-sm font-medium text-neutral-400" data-testid="db-source-name">
+            접근 권한 없음
+          </p>
+          <ViewTabs
+            workspaceId={workspaceId}
+            databaseId={databaseId}
+            views={views.value}
+            currentId={blocked.id}
+            // 이 뷰의 메뉴(이름 · 복제 · 지우기)는 서버가 열지 않는다 — 다른 탭에서 고친다. 치우는 길은 "데이터 소스"의 떼기다.
+            canEdit={false}
+            sources={[]}
+          />
+        </div>
+        {canEditStructure && (
+          <div className="flex justify-end">
+            <DataSourcePanel
+              workspaceId={workspaceId}
+              databaseId={databaseId}
+              databaseName={database.value.name}
+              sources={panelSourcesOf(database.value.dataSources, views.value)}
+              currentSourceId={blocked.dataSourceId}
+            />
+          </div>
+        )}
+        <div
+          role="status"
+          data-testid="db-no-access"
+          className="flex flex-col gap-1 rounded-lg border border-neutral-200 px-6 py-8 text-sm text-neutral-500 dark:border-neutral-800"
+        >
+          <p className="font-medium text-neutral-700 dark:text-neutral-200">접근 권한 없음</p>
+          <p>이 뷰는 다른 데이터베이스의 데이터 소스를 봅니다. 그 데이터베이스를 볼 수 있는 사람만 내용을 봅니다.</p>
+          {canEditStructure && <p>&quot;데이터 소스&quot;에서 이 소스를 떼면 이 탭이 사라집니다(원본은 그대로입니다).</p>}
+        </div>
+      </main>
+    )
+  }
   const current = openable.find((view) => view.id === v) ?? openable[0]
 
   const view = await getView(ctx, current.id)
@@ -157,6 +266,16 @@ export default async function DatabasePage({
   // 거부한다. 행 · 셀은 그대로다(`canEditContent` · `canCreateRows` 는 건드리지 않는다).
   const lock = await databaseLockState(ctx, databaseId)
   const access = lock?.locked ? { ...granted, canEditStructure: false } : granted
+  // 붙인 소스의 뷰(2l-3) — 칸 · 행 · 속성은 그릇과 원본의 교집합으로 연다(머리말). 원본의 잠금은 원본의 구조를 닫는다.
+  const ownerId = currentSource !== null && !currentSource.owned ? currentSource.ownerDatabaseId : null
+  const original = ownerId === null ? null : await getDatabase(ctx, ownerId)
+  const originalLock = ownerId === null ? null : await databaseLockState(ctx, ownerId)
+  const contentAccess =
+    original === null
+      ? access
+      : original.ok
+        ? bothOf(access, originalLock?.locked ? { ...original.value.access, canEditStructure: false } : original.value.access)
+        : NO_ACCESS
   const columns = view.value.columns
   // 지워진 속성의 정렬 키를 뺀다. 그대로 두면 다른 키를 고친 저장까지 서버가 거부한다
   // (`filter-draft.ts` 머리말).
@@ -338,8 +457,18 @@ export default async function DatabasePage({
 
       <div className="flex flex-col gap-1">
         {multiSource && currentSource !== null && (
-          <p className="px-1 text-sm font-medium text-neutral-600 dark:text-neutral-300" data-testid="db-source-name">
+          <p className="flex items-center gap-2 px-1 text-sm font-medium text-neutral-600 dark:text-neutral-300" data-testid="db-source-name">
             {currentSource.name}
+            {/* 붙인 소스(2l-3) — 연결 표시와 원본으로 가는 길 */}
+            {!currentSource.owned && currentSource.ownerDatabaseId !== null && (
+              <Link
+                href={`/w/${workspaceId}/db/${currentSource.ownerDatabaseId}`}
+                data-testid="db-source-original-link"
+                className="rounded px-1.5 py-0.5 text-xs font-normal text-neutral-500 hover:bg-neutral-100 hover:text-neutral-800 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
+              >
+                ↗ 연결된 소스 — 원본 열기
+              </Link>
+            )}
           </p>
         )}
         <ViewTabs
@@ -348,7 +477,8 @@ export default async function DatabasePage({
           views={views.value}
           currentId={current.id}
           canEdit={access.canEditStructure}
-          sources={sources.map((source) => ({ id: source.id, name: source.name }))}
+          // 뷰를 더할 소스 — 원본을 못 보는 붙인 소스는 고를 수 없다(서버가 거부한다 · 이름도 없다)
+          sources={sources.filter((source) => source.readable).map((source) => ({ id: source.id, name: source.name }))}
         />
       </div>
 
@@ -376,11 +506,7 @@ export default async function DatabasePage({
             workspaceId={workspaceId}
             databaseId={databaseId}
             databaseName={name}
-            sources={sources.map((source) => ({
-              id: source.id,
-              name: source.name,
-              firstViewId: views.value.find((v) => v.dataSourceId === source.id)?.id ?? null,
-            }))}
+            sources={panelSourcesOf(sources, views.value)}
             currentSourceId={view.value.dataSourceId}
           />
         )}
@@ -389,7 +515,8 @@ export default async function DatabasePage({
           workspaceId={workspaceId}
           databaseId={databaseId}
           dataSourceId={view.value.dataSourceId}
-          canEdit={access.canEditStructure}
+          // 템플릿은 표(소스)의 행이다 — 붙인 소스면 원본의 권한도 있어야 한다(교집합)
+          canEdit={contentAccess.canEditStructure}
         />
       </div>
 
@@ -412,7 +539,7 @@ export default async function DatabasePage({
             groups={groups}
             relationLabels={relation.labels}
             relationIcons={relation.icons}
-            access={access}
+            access={contentAccess}
             defaultTemplate={defaultTemplate}
             calculation={groupCalculation}
             search={search}
@@ -439,7 +566,7 @@ export default async function DatabasePage({
             rows={calendarPage.value.rows.map(rowJson)}
             undated={calendarPage.value.undated}
             truncated={calendarPage.value.truncated}
-            access={access}
+            access={contentAccess}
             search={search}
           />
         ) : (
@@ -464,7 +591,7 @@ export default async function DatabasePage({
             nextCursor={tablePage.value.nextCursor}
             relationLabels={relation.labels}
             relationIcons={relation.icons}
-            access={access}
+            access={contentAccess}
             defaultTemplate={defaultTemplate}
             search={search}
             layout={view.value.gallery}
@@ -490,7 +617,7 @@ export default async function DatabasePage({
             relationIcons={relation.icons}
             rollupValues={rollupValues}
             formulaPlan={formulaPlan}
-            access={access}
+            access={contentAccess}
             sorts={sorts}
             defaultTemplate={defaultTemplate}
             subItems={subItems}

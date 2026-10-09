@@ -2,7 +2,8 @@
  * 연결된 데이터베이스 — 다른 데이터베이스의 소스 붙이기 · 떼기 (2l-1 · F-04-13, DB 필요)
  *
  *   ① 붙이면 부착 행(소유 아님)과 원본의 컬럼으로 된 뷰가 생긴다 — 원본의 행이 보이고, 원본에 더한 속성은 그 뷰에도 선다(스키마는 전역)
- *   ② 권한 — 원본을 볼 수 없으면 붙일 수 없고(없는 것과 같은 답) 붙은 소스의 이름도 받지 못한다 · 붙인 데이터베이스의 구조 권한이 필요하다
+ *   ② 권한 — 원본을 볼 수 없으면 붙일 수 없고(없는 것과 같은 답) 붙은 소스의 이름 · 원본 id 도 받지 못한다 · 붙인 데이터베이스의 구조 권한이
+ *      필요하다(원본 id 는 화면의 "원본으로 가기" — 2l-3)
  *   ③ 링크로 권한이 오르지 않는다 — 행은 원본의 권한 · 뷰(필터 · 정렬)는 붙인 곳의 권한
  *   ④ 떼면 부착 행과 그 뷰가 사라진다 — 원본은 그대로 · 소유한 소스는 떼지 않는다 · 마지막 살아 있는 소스는 떼지 않는다
  *   ⑤ 이미 붙었다 · 제 것이다 · 원본의 소스가 휴지통이면 붙인 쪽에서도 빠진다
@@ -86,9 +87,15 @@ describe('① 붙이기', () => {
     const container = await table('대시보드')
 
     const added = unwrap(await attachLinkedDataSource(fx.owner.ctx, container.id, { dataSourceId: original.ds }))
-    assert.deepEqual([added.dataSource.id, added.dataSource.owned, added.dataSource.name], [original.ds, false, '원본'])
+    assert.deepEqual(
+      [added.dataSource.id, added.dataSource.owned, added.dataSource.name, added.dataSource.ownerDatabaseId],
+      [original.ds, false, '원본', original.id],
+    )
     const sources = unwrap(await listDataSources(fx.owner.ctx, container.id))
-    assert.deepEqual(sources.map((s) => [s.owned, s.readable]), [[true, true], [false, true]])
+    assert.deepEqual(sources.map((s) => [s.owned, s.readable, s.ownerDatabaseId]), [
+      [true, true, container.id],
+      [false, true, original.id],
+    ])
 
     const view = unwrap(await getView(fx.owner.ctx, added.viewId))
     assert.equal(view.dataSourceId, original.ds)
@@ -126,7 +133,7 @@ describe('② 권한', () => {
     await restrict(original.id)
     const seen = unwrap(await listDataSources(other.ctx, container.id))
     const linked = seen.find((s) => !s.owned)!
-    assert.deepEqual([linked.readable, linked.name], [false, ''])
+    assert.deepEqual([linked.readable, linked.name, linked.ownerDatabaseId], [false, '', null])
     assert.ok(!JSON.stringify(seen).includes('나중에 숨는 원본'))
     const db = unwrap(await getDatabase(other.ctx, container.id))
     assert.ok(!JSON.stringify(db.dataSources).includes('나중에 숨는 원본'), '데이터베이스 읽기도 가린다')

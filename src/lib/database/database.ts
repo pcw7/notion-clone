@@ -236,7 +236,7 @@ export async function createDatabase(
         id,
         name,
         icon: null,
-        dataSources: [{ id: dataSourceId, name: sourceName, owned: true, orderKey: sourceOrder, readable: true }],
+        dataSources: [{ id: dataSourceId, name: sourceName, owned: true, orderKey: sourceOrder, readable: true, ownerDatabaseId: id }],
         dataSourceId,
         isInline: false,
         teamspaceId,

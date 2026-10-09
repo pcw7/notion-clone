@@ -93,6 +93,11 @@ export type DataSourceSummary = {
    * 에 세션을 주지 않은 것)는 참으로 둔다.
    */
   readonly readable: boolean
+  /**
+   * 소스의 주인 데이터베이스(2l-3) — 소유한 소스면 이 데이터베이스 자신이다. 붙인 소스면 원본이고, 화면이 "원본으로 가기"를 단다. 원본을
+   * 볼 수 없으면 null 이다(이름과 같은 규칙).
+   */
+  readonly ownerDatabaseId: string | null
 }
 
 export type DataSourceFailure =
@@ -135,7 +140,14 @@ export async function readDataSources(tx: Tx, databaseId: string, ctx?: SessionC
   for (const r of rows) {
     // 붙인 소스 — 원본을 볼 수 있어야 이름을 준다(2l-1 · 머리말). 원본이 휴지통이면 볼 수 없는 것과 같다.
     const readable = r.owned || ctx === undefined || (await canViewOwnerDatabase(tx, ctx, r.owner))
-    out.push({ id: r.id, name: readable ? r.name : '', owned: r.owned, orderKey: r.order_idx, readable })
+    out.push({
+      id: r.id,
+      name: readable ? r.name : '',
+      owned: r.owned,
+      orderKey: r.order_idx,
+      readable,
+      ownerDatabaseId: readable ? r.owner : null,
+    })
   }
   return out
 }
@@ -286,7 +298,10 @@ export async function addDataSource(
     )
     return {
       ok: true,
-      value: { dataSource: { id: dataSourceId, name, owned: true, orderKey: sourceOrder, readable: true }, viewId },
+      value: {
+        dataSource: { id: dataSourceId, name, owned: true, orderKey: sourceOrder, readable: true, ownerDatabaseId: databaseId },
+        viewId,
+      },
     } as const
   })
 }
@@ -537,7 +552,17 @@ export async function attachLinkedDataSource(
     )
     return {
       ok: true,
-      value: { dataSource: { id: dataSourceId, name: source.name, owned: false, orderKey: sourceOrder, readable: true }, viewId },
+      value: {
+        dataSource: {
+          id: dataSourceId,
+          name: source.name,
+          owned: false,
+          orderKey: sourceOrder,
+          readable: true,
+          ownerDatabaseId: source.owner,
+        },
+        viewId,
+      },
     } as const
   })
 }
