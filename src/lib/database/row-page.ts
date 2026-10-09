@@ -37,6 +37,8 @@ export type RowPage = {
   readonly columns: readonly ViewColumn[]
   /** 레이아웃의 버전 — 편집 모드가 적용할 때 낙관적 잠금으로 보낸다(머리가 없으면 `'0'`). */
   readonly layoutVersion: string
+  /** 제목 아래에 고정한 속성(3a-1 · F-16-02) — heading 안의 순서. `columns` 에도 그대로 있다(속성 묶음에서 빼는 것은 화면이다). */
+  readonly pinned: readonly string[]
   readonly titlePropertyId: string | null
   readonly row: RowSummary
   readonly access: DatabaseAccess
@@ -78,6 +80,7 @@ export async function readRowPage(ctx: SessionContext, pageId: string): Promise<
       summary,
       columns: columns.map((c) => (hidden.has(c.propertyId) ? { ...c, visible: false } : c)),
       layoutVersion: layout.version,
+      pinned: layout.pinned,
       locked,
     }
   })
@@ -96,6 +99,7 @@ export async function readRowPage(ctx: SessionContext, pageId: string): Promise<
     viewId: found.viewId,
     columns: found.columns,
     layoutVersion: found.layoutVersion,
+    pinned: found.pinned,
     titlePropertyId: found.columns.find((c) => c.type === 'title')?.propertyId ?? null,
     row: found.summary,
     access: found.locked ? { ...database.value.access, canEditStructure: false } : database.value.access,

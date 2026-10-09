@@ -146,6 +146,7 @@ export function layoutFailureStatus(reason: LayoutFailure): number {
     case 'layout_conflict':
       return 409
     case 'invalid_layout':
+    case 'too_many_pinned':
       return 400
   }
 }

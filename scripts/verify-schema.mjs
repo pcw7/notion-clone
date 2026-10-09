@@ -3183,6 +3183,82 @@ try {
     await client.query('ROLLBACK TO SAVEPOINT probe')
   }
 
+  console.log('\n[45] 제목 아래 고정 속성 (0064 / §3.6 M3 · [보강] 고정 속성 · 3a-1조각)')
+  {
+    // 데이터베이스 하나 · 소스 하나 · 속성 17개 · 레이아웃 한 벌(머리 · content 탭 · heading · 그룹).
+    const root = randomUUID()
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key,
+                          ancestor_path, perm_scope_id, properties, format, created_at, last_edited_at)
+       VALUES ($1, $2, 'page', 'workspace', $2, 'z45', '{}', $1, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      [root, wsId],
+    )
+    const dbId = randomUUID()
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key,
+                          ancestor_path, perm_scope_id, properties, format, created_at, last_edited_at)
+       VALUES ($1, $2, 'database', 'block', $3, 's1', $4, $3, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      [dbId, wsId, root, [root]],
+    )
+    await client.query(`INSERT INTO database (id, created_at, updated_at) VALUES ($1, now(), now())`, [dbId])
+    const ds = randomUUID()
+    await client.query(`INSERT INTO data_source (id, owner_database_id, name, created_at, updated_at) VALUES ($1, $2, '소스', now(), now())`, [ds, dbId])
+    await client.query(`INSERT INTO database_data_source (database_id, data_source_id, order_idx) VALUES ($1, $2, 'a0')`, [dbId, ds])
+    const props = []
+    for (let i = 0; i < 17; i += 1) {
+      const id = randomUUID().replaceAll('-', '').slice(0, 21)
+      await client.query(`INSERT INTO property (id, data_source_id, name, type, order_idx) VALUES ($1, $2, $3, 'number', $4)`, [id, ds, `속성${i}`, `a${String(i).padStart(2, '0')}`])
+      props.push(id)
+    }
+    const tab = randomUUID()
+    const heading = randomUUID()
+    const group = randomUUID()
+    await client.query(`INSERT INTO page_layout (data_source_id) VALUES ($1)`, [ds])
+    await client.query(`INSERT INTO layout_tab (id, data_source_id, kind, order_idx) VALUES ($1, $2, 'content', 'a0')`, [tab, ds])
+    await client.query(`INSERT INTO layout_module (id, data_source_id, tab_id, kind, area, order_idx) VALUES ($1, $2, $3, 'heading', 'heading', 'a0')`, [heading, ds, tab])
+    await client.query(`INSERT INTO layout_module (id, data_source_id, tab_id, kind, area, order_idx) VALUES ($1, $2, $3, 'property_group', 'main', 'a0')`, [group, ds, tab])
+    const mod = `INSERT INTO layout_module (id, data_source_id, tab_id, kind, area, parent_module_id, property_id, visible, order_idx)
+                 VALUES ($1, $2, $3, 'property', $4, $5, $6, $7, $8)`
+
+    // 15개를 고정한다 — 한 문장에(문장 끝에 센다)
+    await client.query(
+      `INSERT INTO layout_module (id, data_source_id, tab_id, kind, area, parent_module_id, property_id, visible, order_idx)
+       SELECT gen_random_uuid(), $1, $2, 'property', 'heading', $3, p, true, 'b' || lpad(i::text, 2, '0')
+         FROM unnest($4::text[]) WITH ORDINALITY AS x(p, i)`,
+      [ds, tab, heading, props.slice(0, 15)],
+    )
+    // 숨김(그룹 아래 · 순서 없음)은 고정과 따로다
+    await client.query(mod, [randomUUID(), ds, tab, 'main', group, props[16], false, null])
+    ok('15개 고정(한 문장) · 숨김 하나 — 정상 경로가 통과한다')
+
+    const rejectBy = async (label, constraint, sql, params) => {
+      await client.query('SAVEPOINT probe')
+      try {
+        await client.query(sql, params)
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        fail(`${label} — 거부되어야 하는데 통과했다`)
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        if (e.constraint === constraint) ok(`${label} — ${constraint} 가 거부함 (${e.code})`)
+        else fail(`${label} — ${constraint} 가 아니라 ${e.constraint ?? e.code} 에 걸렸다 (${e.message})`)
+      }
+    }
+    await rejectBy('★ M3: 16번째 고정', 'tg_layout_module_pin_limit', mod, [randomUUID(), ds, tab, 'heading', heading, props[15], true, 'b99'])
+    await rejectBy('★ M3: 숨김 행을 heading 으로 옮겨 16번째', 'tg_layout_module_pin_limit',
+      `UPDATE layout_module SET area = 'heading', visible = true, order_idx = 'b99', parent_module_id = $2 WHERE data_source_id = $1 AND property_id = $3`,
+      [ds, heading, props[16]])
+    await client.query(`DELETE FROM layout_module WHERE data_source_id = $1 AND property_id = $2`, [ds, props[14]])
+    await rejectBy('★ 숨긴 고정', 'ck_layout_module_pinned', mod, [randomUUID(), ds, tab, 'heading', heading, props[15], false, 'b99'])
+    await rejectBy('★ 순서 없는 고정', 'ck_layout_module_pinned', mod, [randomUUID(), ds, tab, 'heading', heading, props[15], true, null])
+
+    // 속성을 지우면(soft delete) 고정이 풀린다 · 숨김은 남는다
+    const pinnedOf = async (p) => (await client.query(`SELECT count(*)::int AS n FROM layout_module WHERE property_id = $1`, [p])).rows[0].n
+    await client.query(`UPDATE property SET deleted_at = now() WHERE id = ANY($1::text[])`, [[props[0], props[16]]])
+    const [pinnedGone, hiddenKept] = [await pinnedOf(props[0]), await pinnedOf(props[16])]
+    if (pinnedGone === 0 && hiddenKept === 1) ok('★ 속성을 지우면 고정 행이 지워진다 — 숨김 행은 남는다(되살리면 숨김이 돌아온다)')
+    else fail(`지운 속성의 고정 ${pinnedGone}행 · 숨김 ${hiddenKept}행 — 1 · 0 이 아니라 0 · 1 이어야 한다`)
+  }
+
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
 } catch (e) {

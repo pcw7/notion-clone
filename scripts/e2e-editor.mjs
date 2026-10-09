@@ -13587,6 +13587,38 @@ async function main() {
         JSON.stringify({ asked, detached, after: after.map((d) => d.id), originRows: originRows.length }))
     }
 
+    if (sectionIf('제목 아래 고정 — 서버 (3a-1 · F-16-02)')) {
+      // 레이아웃 적용(PUT …/layout)이 고정을 받는다 — 순서대로 서고, 주지 않으면 그대로다 · 16개는 400 too_many_pinned · 제목은 400.
+      // 숨김과의 관계 · 지운 속성 · 행 페이지는 DB 검사가 본다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const table = (await api('POST', '/databases', { name: `고정 ${stamp}` })).body.database
+      const ids = []
+      for (let i = 0; i < 16; i += 1) {
+        const added = await api('POST', `/data-sources/${table.dataSourceId}/properties`, { name: `칸${i}`, type: 'number' })
+        ids.push(added.body?.property?.id)
+      }
+      const titleProp = (await api('GET', `/views/${table.defaultViewId}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const layoutUrl = `/data-sources/${table.dataSourceId}/layout`
+
+      const pinned = await api('PUT', layoutUrl, { version: '0', order: [], hidden: [], pinned: [ids[2], ids[0]] })
+      check('★ 고정을 적용하면 그 순서대로 선다(스키마 순서가 아니다)',
+        pinned.status === 200 && JSON.stringify(pinned.body?.layout?.pinned) === JSON.stringify([ids[2], ids[0]]) && pinned.body?.layout?.version === '1',
+        JSON.stringify(pinned))
+      const kept = await api('PUT', layoutUrl, { version: '1', order: [], hidden: [] })
+      check('고정을 주지 않으면 그대로다', kept.status === 200 && kept.body?.changed === false && kept.body?.layout?.pinned?.length === 2, JSON.stringify(kept))
+      const tooMany = await api('PUT', layoutUrl, { version: '1', order: [], hidden: [], pinned: ids })
+      const title = await api('PUT', layoutUrl, { version: '1', order: [], hidden: [], pinned: [titleProp] })
+      check('★ 16개를 고정하면 400 too_many_pinned · 제목을 고정하면 400 invalid_layout',
+        tooMany.status === 400 && tooMany.body?.error === 'too_many_pinned' && title.status === 400 && title.body?.error === 'invalid_layout',
+        JSON.stringify({ tooMany: [tooMany.status, tooMany.body?.error], title: [title.status, title.body?.error] }))
+    }
+
     if (sectionIf('개인 필터 · 정렬 — 화면 (2h-2 · F-04-17)')) {
       // 볼 수만 있는 사람(브라우저 세션을 바꾼다)이 도구줄의 필터로 조건을 걸면 **자기 것**으로 저장되고 그 사람의 표만 좁혀진다 — "나만 보는
       // 필터" 표시 · 초기화. 편집자는 자기 개인 것을 "모두에게 저장"한다. 브라우저 세션은 끝에 반드시 소유자로 되돌린다.
