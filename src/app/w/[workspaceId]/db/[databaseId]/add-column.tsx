@@ -45,11 +45,12 @@
  * 수식은 식을 받는다 (수식 2i-3a조각)
  * ──────────────────────────────────────────────────────────────────────
  *
- * 고르면 식 칸이 선다 — `prop("속성 이름")` 으로 속성을 읽는다. 서버가 식을 읽고, 틀리면 **이유와 몇 번째 글자인지**를 돌려준다(폼이
- * 그대로 보인다 · 식은 지우지 않는다). 만들면 다시 읽는다(`onAddFormula` — 계산 계획이 새로 서야 한다).
+ * 고르면 식 편집기가 선다(`formula-editor.tsx` — 치는 동안 같은 함수로 검사 · 첫 행 미리보기 · 속성 · 함수 넣기 · 2i-3b). 화면의 검사가
+ * 틀렸다면 "추가"를 막는다. 서버도 식을 읽고(고리 · 깊이까지) 틀리면 이유와 몇 번째 글자인지를 돌려준다(폼이 그대로 보인다 · 식은
+ * 지우지 않는다). 만들면 다시 읽는다(`onAddFormula` — 계산 계획이 새로 서야 한다). 계산 계획이 없는 표에는 "수식"이 서지 않는다.
  */
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { isMvpPropertyType, MVP_PROPERTY_TYPES, type MvpPropertyType } from '@/lib/database/property-types'
 import {
@@ -62,6 +63,8 @@ import type { DatabaseListItem } from '@/lib/database/database'
 import type { PropertySummary } from '@/lib/database/property'
 import * as api from './table-api'
 import { TYPE_ICON, TYPE_LABEL } from './cell-view'
+import { FormulaEditor } from './formula-editor'
+import { checkFormulaDraft, type FormulaPlan } from '@/lib/database/formula-plan'
 
 type AddableType = Exclude<MvpPropertyType, 'title'> | 'relation' | 'rollup' | 'unique_id' | 'formula'
 
@@ -94,6 +97,8 @@ export function AddColumn({
   onAddRollup,
   onAddUniqueId,
   onAddFormula,
+  formulaPlan,
+  previewCells,
 }: {
   workspaceId: string
   /** 이 표. 대상 목록에서 "이 표"를 짚어 주는 데만 쓴다. */
@@ -110,6 +115,10 @@ export function AddColumn({
   onAddRollup: (input: api.AddRollupInput) => Promise<string | null>
   onAddUniqueId: (name: string, prefix: string) => Promise<string | null>
   onAddFormula: (name: string, expression: string) => Promise<string | null>
+  /** 수식의 계산 계획(2i-3b) — 편집기가 표의 속성을 읽는다. 없으면 "수식"이 서지 않는다. */
+  formulaPlan: FormulaPlan | null
+  /** 미리보기에 쓸 첫 행의 칸. 행이 없으면 null(결과 타입만 보인다). */
+  previewCells: Readonly<Record<string, unknown>> | null
 }) {
   const [open, setOpen] = useState(false)
   const [name, setName] = useState('')
@@ -208,11 +217,17 @@ export function AddColumn({
   const functions = targetProp === undefined ? [] : rollupFunctionsFor(targetProp.type)
   const chosenFn = functions.includes(fn) ? fn : (functions[0] ?? DEFAULT_ROLLUP_FUNCTION)
 
+  // ── 수식: 치는 동안 같은 함수로 검사한다 ──
+  const formulaCheck = useMemo(
+    () => (formulaPlan === null ? null : checkFormulaDraft(formulaPlan, expression, { previewCells })),
+    [formulaPlan, expression, previewCells],
+  )
+
   const incomplete =
     name.trim() === '' ||
     (isRelation && (targetId === '' || (twoWay && inverseName.trim() === ''))) ||
     (isRollup && (relation === undefined || targetProp === undefined)) ||
-    (type === 'formula' && expression.trim() === '')
+    (type === 'formula' && formulaCheck?.kind !== 'ok')
 
   return (
     <div className="relative">
@@ -267,7 +282,9 @@ export function AddColumn({
             if (failure === null) close()
             else setError(failure)
           }}
-          className="absolute right-0 z-20 mt-1 flex w-64 flex-col gap-2 rounded-md border border-neutral-200 bg-white p-3 text-left font-normal shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
+          className={`absolute right-0 z-20 mt-1 flex ${
+            type === 'formula' ? 'w-80' : 'w-64'
+          } flex-col gap-2 rounded-md border border-neutral-200 bg-white p-3 text-left font-normal shadow-lg dark:border-neutral-700 dark:bg-neutral-900`}
         >
           <input
             ref={nameRef}
@@ -284,7 +301,7 @@ export function AddColumn({
             aria-label="속성 유형"
             className={FIELD}
           >
-            {ADDABLE_TYPES.filter((t) => t !== 'unique_id' || !hasUniqueId).map((t) => (
+            {ADDABLE_TYPES.filter((t) => (t !== 'unique_id' || !hasUniqueId) && (t !== 'formula' || formulaPlan !== null)).map((t) => (
               <option key={t} value={t}>
                 {TYPE_ICON[t]} {TYPE_LABEL[t]}
               </option>
@@ -364,21 +381,8 @@ export function AddColumn({
             </>
           )}
 
-          {type === 'formula' && (
-            <>
-              <textarea
-                value={expression}
-                onChange={(e) => setExpression(e.target.value)}
-                placeholder={'prop("수량") * prop("단가")'}
-                aria-label="수식"
-                data-testid="db-formula-expression"
-                rows={3}
-                spellCheck={false}
-                autoComplete="off"
-                className={`${FIELD} resize-y font-mono text-xs`}
-              />
-              <p className="text-xs text-neutral-500">속성은 prop(&quot;이름&quot;)으로 읽습니다. 같은 행의 값으로 계산합니다.</p>
-            </>
+          {type === 'formula' && formulaPlan !== null && formulaCheck !== null && (
+            <FormulaEditor plan={formulaPlan} value={expression} onChange={setExpression} check={formulaCheck} />
           )}
 
           {isRollup &&

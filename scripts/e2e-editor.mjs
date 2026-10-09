@@ -12804,10 +12804,11 @@ async function main() {
       await waitFor(`!!document.querySelector('[data-testid="db-formula-expression"]')`, 3000)
       await evaluate(`document.querySelector('[data-testid="db-formula-expression"]').focus()`)
       await typeText('prop("수량") +')
-      await clickOn('[data-testid="db-add-column-form"] button[type="submit"]')
-      check('★ 틀린 식 — 폼이 남고 이유와 자리(몇 번째 글자)를 말한다',
-        await waitFor(`(document.querySelector('[data-testid="db-add-column-form"] [role="alert"]')?.textContent ?? '').includes('13번째 글자')`, 8000),
-        await evaluate(`document.querySelector('[data-testid="db-add-column-form"] [role="alert"]')?.textContent ?? null`))
+      // 2i-3b 부터는 치는 동안 화면이 같은 함수로 검사한다 — 이유와 자리를 말하고 "추가"를 막는다(서버의 같은 답은 고리 · 깊이에서 본다)
+      check('★ 틀린 식 — 이유와 자리(몇 번째 글자)를 말하고 "추가"가 막힌다',
+        await waitFor(`(document.querySelector('[data-testid="db-add-column-form"] [data-testid="db-formula-check"]')?.textContent ?? '').includes('13번째 글자')
+          && document.querySelector('[data-testid="db-add-column-form"] button[type="submit"]')?.disabled === true`, 8000),
+        await evaluate(`document.querySelector('[data-testid="db-add-column-form"] [data-testid="db-formula-check"]')?.textContent ?? null`))
       await key('Escape')
 
       // ── 행 페이지 — 같은 값 ──
@@ -12823,6 +12824,139 @@ async function main() {
       check('★ 읽던 속성(단가)이 지워지면 "수식 오류" — 조용히 비우지 않는다',
         await waitFor(`!!document.querySelector('${formulaCell(first)} [data-testid="db-formula-error"]') && !!document.querySelector('${formulaCell(second)} [data-testid="db-formula-error"]')`, 8000),
         await evaluate(`document.querySelector('${formulaCell(first)}')?.textContent ?? null`))
+    }
+
+    if (sectionIf('수식 — 식 편집기 (2i-3b · F-03-12)')) {
+      // 치는 동안 같은 함수로 검사한다(틀린 자리 밑줄 · 결과 타입 · 첫 행 미리보기) · 속성 · 함수를 눌러 넣는다 · 머리 메뉴의 "식 고치기"
+      // (지금 식으로 연다 · 자기 자신은 화면이 막는다 · 다른 수식을 거친 고리는 서버가 이유를 준다).
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const clickOn = async (selector) => {
+        const p = await evaluate(`(() => {
+          const e = document.querySelector(${JSON.stringify(selector)})
+          if (!e) return null
+          e.scrollIntoView({ block: 'center' })
+          const r = e.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (p) await click(p.x, p.y)
+        return p !== null
+      }
+      const setSelect = (selector, value) => evaluate(`(() => {
+        const s = document.querySelector(${JSON.stringify(selector)})
+        if (!s) return false
+        s.value = ${JSON.stringify(value)}
+        s.dispatchEvent(new Event('change', { bubbles: true }))
+        return true
+      })()`)
+      const editorIn = (scope) => ({
+        value: () => evaluate(`document.querySelector('${scope} [data-testid="db-formula-expression"]')?.value ?? null`),
+        status: () => evaluate(`document.querySelector('${scope} [data-testid="db-formula-check"]')?.textContent ?? null`),
+        clear: async () => {
+          await evaluate(`(() => { const t = document.querySelector('${scope} [data-testid="db-formula-expression"]'); t.focus(); t.select() })()`)
+          await key('Backspace')
+        },
+        focusEnd: () => evaluate(`(() => { const t = document.querySelector('${scope} [data-testid="db-formula-expression"]'); t.focus(); t.setSelectionRange(t.value.length, t.value.length) })()`),
+      })
+      const db = (await api('POST', '/databases', { name: `식 편집기 ${stamp}` })).body.database
+      const view = db.defaultViewId
+      const props = `/data-sources/${db.dataSourceId}/properties`
+      const qty = (await api('POST', props, { name: '수량', type: 'number' })).body.property.id
+      const titleProp = (await api('GET', `/views/${view}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const first = (await api('POST', `/views/${view}/rows`, {
+        cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun('가')] } }, { propertyId: qty, value: { type: 'number', number: 3 } }],
+      })).body.row.id
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === 1`, 15000)
+
+      // ── 치는 동안 검사 ──
+      await clickOn('[data-testid="db-add-column"]')
+      await waitFor(`document.activeElement?.getAttribute('aria-label') === '속성 이름'`, 3000)
+      await typeText('계산')
+      await setSelect('select[aria-label="속성 유형"]', 'formula')
+      await waitFor(`!!document.querySelector('[data-testid="db-formula-expression"]')`, 3000)
+      const add = editorIn('[data-testid="db-add-column-form"]')
+      await add.focusEnd()
+      await typeText('prop("수량") *')
+      check('★ 치는 동안 틀린 자리를 말하고 식 아래에 밑줄로 다시 보인다 — "추가"는 막힌다',
+        await waitFor(`(document.querySelector('[data-testid="db-formula-check"]')?.textContent ?? '').includes('13번째 글자')
+          && !!document.querySelector('[data-testid="db-formula-mark"] mark')
+          && document.querySelector('[data-testid="db-add-column-form"] button[type="submit"]')?.disabled === true`, 5000),
+        await add.status())
+      await typeText(' 2')
+      check('★ 맞으면 결과 타입과 첫 행의 값을 미리 보인다(3 × 2) — "추가"가 열린다',
+        await waitFor(`(document.querySelector('[data-testid="db-formula-check"]')?.textContent ?? '').includes('결과: 숫자')
+          && (document.querySelector('[data-testid="db-formula-preview"]')?.textContent ?? '').includes('첫 행: 6')
+          && document.querySelector('[data-testid="db-add-column-form"] button[type="submit"]')?.disabled === false`, 5000),
+        await add.status())
+
+      // ── 속성 · 함수 넣기 ──
+      await add.clear()
+      await clickOn('[data-testid="db-formula-insert"] summary')
+      await clickOn('[data-testid="db-formula-insert-fn"][data-fn="abs"]')
+      await add.focusEnd()
+      await typeText(' - 10)')
+      // 캐럿을 `abs(` 뒤(가운데)에 두고 속성을 누른다 — 끝에 붙이지 않고 캐럿 자리에 넣는지 본다
+      await evaluate(`(() => { const t = document.querySelector('[data-testid="db-add-column-form"] [data-testid="db-formula-expression"]'); t.focus(); t.setSelectionRange(4, 4) })()`)
+      await clickOn('[data-testid="db-formula-insert-prop"][data-name="수량"]')
+      check('★ 함수 · 속성을 눌러 캐럿 자리에 넣는다 — abs( - 10) 의 가운데에 → abs(prop("수량") - 10) · 첫 행 7',
+        (await add.value()) === 'abs(prop("수량") - 10)'
+          && (await waitFor(`(document.querySelector('[data-testid="db-formula-preview"]')?.textContent ?? '').includes('첫 행: 7')`, 5000)),
+        JSON.stringify({ value: await add.value(), status: await add.status() }))
+      await clickOn('[data-testid="db-add-column-form"] button[type="submit"]')
+      const calc = await (async () => {
+        for (let i = 0; i < 40; i += 1) {
+          const c = (await api('GET', `/views/${view}`)).body?.view?.columns?.find((x) => x.name === '계산')
+          if (c) return c.propertyId
+          await sleep(150)
+        }
+        return null
+      })()
+      const calcText = () => evaluate(`document.querySelector('tr[data-row-id="${first}"] td[data-property-id="${calc}"] [data-testid="db-formula"]')?.textContent.trim() ?? null`)
+      check('만들면 칸에 7',
+        calc !== null && (await waitFor(`(document.querySelector('tr[data-row-id="${first}"] td[data-property-id="${calc}"] [data-testid="db-formula"]')?.textContent.trim() ?? null) === '7'`, 15000)),
+        await calcText())
+
+      // ── 식 고치기 ──
+      const openFormulaMenu = async () => {
+        await clickOn(`th[data-property-id="${calc}"] [data-testid="db-column-menu"]`)
+        await clickOn('[data-testid="db-column-formula"]')
+        return waitFor(`!!document.querySelector('[data-testid="db-formula-edit"] [data-testid="db-formula-expression"]')`, 5000)
+      }
+      const edit = editorIn('[data-testid="db-formula-edit"]')
+      check('★ "식 고치기"는 지금 식(사람이 읽는 모양)으로 연다',
+        (await openFormulaMenu()) && (await edit.value()) === 'abs(prop("수량") - 10)', await edit.value())
+      await edit.clear()
+      await typeText('prop("계산") + 1')
+      check('★ 자기 자신을 읽으면 화면이 막는다 — 저장이 막힌다',
+        await waitFor(`(document.querySelector('[data-testid="db-formula-edit"] [data-testid="db-formula-check"]')?.textContent ?? '').includes('자기 자신')
+          && document.querySelector('[data-testid="db-formula-save"]')?.disabled === true`, 5000),
+        await edit.status())
+      await edit.clear()
+      await typeText('prop("수량") + 100')
+      await clickOn('[data-testid="db-formula-save"]')
+      check('★ 저장하면 다시 읽어 칸이 새 식의 값(103)',
+        await waitFor(`!document.querySelector('[data-testid="db-formula-edit"]') && (document.querySelector('tr[data-row-id="${first}"] td[data-property-id="${calc}"] [data-testid="db-formula"]')?.textContent.trim() ?? null) === '103'`, 15000),
+        await calcText())
+
+      // ── 다른 수식을 거친 고리는 서버가 말한다 ──
+      await api('POST', props, { name: '다음', type: 'formula', expression: 'prop("계산") + 1' })
+      await send('Page.reload')
+      await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === 1`, 15000)
+      await openFormulaMenu()
+      await edit.clear()
+      await typeText('prop("다음") * 2')
+      await clickOn('[data-testid="db-formula-save"]')
+      check('★ 다른 수식을 거쳐 돌아오는 고리 — 화면은 못 보고 서버가 이유를 준다(메뉴가 남는다)',
+        await waitFor(`(document.querySelector('[data-testid="db-formula-edit"] [role="alert"]')?.textContent ?? '').includes('돌고 돌아')`, 8000),
+        await evaluate(`document.querySelector('[data-testid="db-formula-edit"] [role="alert"]')?.textContent ?? null`))
+      await key('Escape')
     }
 
     if (sectionIf('개인 필터 · 정렬 — 화면 (2h-2 · F-04-17)')) {
