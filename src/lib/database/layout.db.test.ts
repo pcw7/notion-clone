@@ -10,6 +10,10 @@
  *   ⑤ 누가 — 구조를 고칠 수 있는 사람만(`edit_structure`) · 잠긴 데이터베이스 · 휴지통의 소스는 막힌다
  *   ⑥ 제목은 숨길 수 없다 · 모르는 id 는 건너뛴다 · 새 속성은 보인다(M6) · 지운 속성의 숨김은 되살리면 돌아온다
  *   ⑦ 행 페이지가 숨김을 읽는다 — 소스마다 따로 · 데이터베이스가 잠기면 구조를 닫는다
+ *   ⑧ 제목 아래 고정(3a-1 · F-16-02) — heading 의 property 행 · 자기 순서 · 풀면 행이 지워진다 · 주지 않으면 그대로 · 숨김과 겹치지 않는다
+ *      · 제목은 고정하지 않는다 · 15개까지 · 속성을 지우면 풀린다(되살려도 속성 묶음으로) · 행 페이지가 읽는다
+ *
+ * 반사실(HANDOFF §3.3): 고정을 다시 쓰지 않으면 ⑧ 의 순서가, 상한을 세지 않으면 16개가, 숨김과 겹침을 안 보면 겹침이 실패한다.
  */
 
 import { test, describe, before, after } from 'node:test'
@@ -25,7 +29,7 @@ import { createDatabase } from './database.ts'
 import { addDataSource, trashDataSource } from './data-source.ts'
 import { addProperty, deleteProperty, getSchema, restoreProperty } from './property.ts'
 import { createRow } from './row.ts'
-import { applyRecordLayout, readRecordLayout } from './layout.ts'
+import { applyRecordLayout, MAX_PINNED_PROPERTIES, readRecordLayout } from './layout.ts'
 import { readRowPage } from './row-page.ts'
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'
@@ -91,12 +95,12 @@ describe('① 머리는 lazy 다', () => {
   test('★ 처음에는 표에 아무것도 없고 기본(version 0 · 모두 보임)이다 — 처음 숨길 때 한 벌이 생긴다', async (t) => {
     if (skipReason) return t.skip(skipReason)
     const db = await seeded()
-    assert.deepEqual(await layoutOf(db.dataSourceId), { version: '0', hidden: [] })
+    assert.deepEqual(await layoutOf(db.dataSourceId), { version: '0', hidden: [], pinned: [] })
     assert.deepEqual(await tables(db.dataSourceId), { heads: 0, tabs: 0, headings: 0, groups: 0, props: 0 })
 
     const applied = unwrap(await applyRecordLayout(fx.owner.ctx, db.dataSourceId, { expectedVersion: '0', order: [], hidden: [db.id('B')] }))
     assert.equal(applied.changed, true)
-    assert.deepEqual(applied.layout, { version: '1', hidden: [db.id('B')] })
+    assert.deepEqual(applied.layout, { version: '1', hidden: [db.id('B')], pinned: [] })
     assert.deepEqual(await tables(db.dataSourceId), { heads: 1, tabs: 1, headings: 1, groups: 1, props: 1 })
     const rows = await query<{ visible: boolean; order_idx: string | null; parent_kind: string; area: string }>(
       `SELECT m.visible, m.order_idx, g.kind AS parent_kind, m.area
@@ -114,7 +118,7 @@ describe('② sparse', () => {
     const db = await seeded()
     unwrap(await applyRecordLayout(fx.owner.ctx, db.dataSourceId, { expectedVersion: '0', order: [], hidden: [db.id('A'), db.id('C')] }))
     const shown = unwrap(await applyRecordLayout(fx.owner.ctx, db.dataSourceId, { expectedVersion: '1', order: [], hidden: [db.id('C')] }))
-    assert.deepEqual(shown.layout, { version: '2', hidden: [db.id('C')] })
+    assert.deepEqual(shown.layout, { version: '2', hidden: [db.id('C')], pinned: [] })
     assert.deepEqual(await tables(db.dataSourceId), { heads: 1, tabs: 1, headings: 1, groups: 1, props: 1 })
 
     unwrap(await applyRecordLayout(fx.owner.ctx, db.dataSourceId, { expectedVersion: '2', order: [], hidden: [] }))
@@ -129,12 +133,12 @@ describe('② sparse', () => {
       order: [db.id('A'), db.id('B'), db.id('C')],
       hidden: [],
     }))
-    assert.deepEqual(same, { layout: { version: '0', hidden: [] }, changed: false })
+    assert.deepEqual(same, { layout: { version: '0', hidden: [], pinned: [] }, changed: false })
     assert.equal((await tables(db.dataSourceId)).heads, 0, '바뀐 것이 없는데 머리가 생겼다')
 
     unwrap(await applyRecordLayout(fx.owner.ctx, db.dataSourceId, { expectedVersion: '0', order: [], hidden: [db.id('A')] }))
     const again = unwrap(await applyRecordLayout(fx.owner.ctx, db.dataSourceId, { expectedVersion: '1', order: [], hidden: [db.id('A')] }))
-    assert.deepEqual(again, { layout: { version: '1', hidden: [db.id('A')] }, changed: false })
+    assert.deepEqual(again, { layout: { version: '1', hidden: [db.id('A')], pinned: [] }, changed: false })
   })
 })
 
@@ -151,7 +155,7 @@ describe('③ 순서는 스키마 순서다', () => {
       order: [db.id('C'), db.id('A'), db.id('B')],
       hidden: [],
     }))
-    assert.deepEqual(applied.layout, { version: '1', hidden: [] })
+    assert.deepEqual(applied.layout, { version: '1', hidden: [], pinned: [] })
     assert.deepEqual(await schemaOrder(db.dataSourceId), ['이름', 'C', 'A', 'B'])
 
     const afterSchema = unwrap(await getSchema(fx.owner.ctx, db.dataSourceId))
@@ -173,7 +177,7 @@ describe('④ 낙관적 잠금', () => {
       hidden: [db.id('B')],
     })
     assert.deepEqual(stale, { ok: false, reason: 'layout_conflict', currentVersion: '1' })
-    assert.deepEqual(await layoutOf(db.dataSourceId), { version: '1', hidden: [db.id('A')] })
+    assert.deepEqual(await layoutOf(db.dataSourceId), { version: '1', hidden: [db.id('A')], pinned: [] })
     assert.deepEqual(await schemaOrder(db.dataSourceId), ['이름', 'A', 'B', 'C'], '거부됐는데 순서가 바뀌었다')
   })
 })
@@ -240,7 +244,7 @@ describe('⑥ 속성의 변화', () => {
       hidden: [elsewhere.id('B'), db.id('C')],
     }))
     assert.deepEqual(applied.layout.hidden, [db.id('C')])
-    assert.deepEqual(await layoutOf(elsewhere.dataSourceId), { version: '0', hidden: [] }, '다른 소스의 레이아웃이 생겼다')
+    assert.deepEqual(await layoutOf(elsewhere.dataSourceId), { version: '0', hidden: [], pinned: [] }, '다른 소스의 레이아웃이 생겼다')
   })
 
   test('★ 새 속성은 보인다(그룹은 열거하지 않는다 · M6) · 지운 속성의 숨김은 빠졌다가 되살리면 돌아온다', async (t) => {
@@ -282,5 +286,83 @@ describe('⑦ 행 페이지', () => {
     const secondPage = await readRowPage(fx.owner.ctx, second.id)
     assert.equal(secondPage?.layoutVersion, '0')
     assert.ok(secondPage?.columns.every((c) => c.visible), '다른 소스의 행에 숨김이 섞였다')
+  })
+})
+
+describe('⑧ 제목 아래 고정 (3a-1 · F-16-02)', () => {
+  /** 이 소스의 고정 행 — heading 안의 순서대로 [속성, 부모가 heading 인가, 순서가 있는가, 보이는가]. */
+  const pinRows = async (dataSourceId: string) =>
+    (
+      await query<{ property_id: string; under_heading: boolean; ordered: boolean; visible: boolean }>(
+        `SELECT m.property_id, h.kind = 'heading' AS under_heading, m.order_idx IS NOT NULL AS ordered, m.visible
+           FROM layout_module m JOIN layout_module h ON h.id = m.parent_module_id
+          WHERE m.data_source_id = $1 AND m.kind = 'property' AND m.area = 'heading'
+          ORDER BY m.order_idx`,
+        [dataSourceId],
+      )
+    ).map((r) => [r.property_id, r.under_heading, r.ordered, r.visible])
+
+  test('★ 고정은 heading 의 property 행(자기 순서 · 보임) — 순서를 바꾸고, 같으면 쓰지 않고, 주지 않으면 그대로, 풀면 행이 지워진다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const db = await seeded()
+    const [a, c] = [db.id('A'), db.id('C')]
+    const first = unwrap(await applyRecordLayout(fx.owner.ctx, db.dataSourceId, { expectedVersion: '0', order: [], hidden: [], pinned: [c, a] }))
+    assert.deepEqual([first.layout.pinned, first.layout.hidden, first.layout.version, first.changed], [[c, a], [], '1', true])
+    assert.deepEqual(await pinRows(db.dataSourceId), [[c, true, true, true], [a, true, true, true]])
+
+    const swapped = unwrap(await applyRecordLayout(fx.owner.ctx, db.dataSourceId, { expectedVersion: '1', order: [], hidden: [], pinned: [a, c] }))
+    assert.deepEqual([swapped.layout.pinned, swapped.layout.version], [[a, c], '2'], 'heading 안의 순서는 스키마 순서가 아니다')
+    const same = unwrap(await applyRecordLayout(fx.owner.ctx, db.dataSourceId, { expectedVersion: '2', order: [], hidden: [], pinned: [a, c] }))
+    assert.deepEqual([same.changed, same.layout.version], [false, '2'])
+    const omitted = unwrap(await applyRecordLayout(fx.owner.ctx, db.dataSourceId, { expectedVersion: '2', order: [], hidden: [] }))
+    assert.deepEqual([omitted.changed, omitted.layout.pinned], [false, [a, c]], '주지 않으면 그대로다')
+
+    const unpinned = unwrap(await applyRecordLayout(fx.owner.ctx, db.dataSourceId, { expectedVersion: '2', order: [], hidden: [], pinned: [a] }))
+    assert.deepEqual(unpinned.layout.pinned, [a])
+    assert.equal((await tables(db.dataSourceId)).props, 1, '푼 고정의 행은 지워진다(sparse) — 속성 묶음으로 돌아간다')
+  })
+
+  test('★ 숨김과 겹치지 않는다 — 고정을 주지 않고 숨기면 풀리고, 숨기면서 고정하거나 제목을 고정하면 invalid_layout · 16개는 too_many_pinned', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const db = await seeded()
+    const [a, b] = [db.id('A'), db.id('B')]
+    unwrap(await applyRecordLayout(fx.owner.ctx, db.dataSourceId, { expectedVersion: '0', order: [], hidden: [], pinned: [a, b] }))
+    const hid = unwrap(await applyRecordLayout(fx.owner.ctx, db.dataSourceId, { expectedVersion: '1', order: [], hidden: [a] }))
+    assert.deepEqual([hid.layout.hidden, hid.layout.pinned], [[a], [b]], '고정을 주지 않고 숨기면 그 속성의 고정이 풀린다(한 속성은 한 자리)')
+    const back = unwrap(await applyRecordLayout(fx.owner.ctx, db.dataSourceId, { expectedVersion: '2', order: [], hidden: [], pinned: [a, b] }))
+    assert.deepEqual([back.layout.hidden, back.layout.pinned], [[], [a, b]], '숨긴 속성을 고정하면 숨김이 풀린다')
+
+    const reason = (r: { ok: boolean; reason?: string }) => (r.ok ? 'ok' : r.reason)
+    assert.equal(reason(await applyRecordLayout(fx.owner.ctx, db.dataSourceId, { expectedVersion: '3', order: [], hidden: [a], pinned: [a] })), 'invalid_layout')
+    assert.equal(reason(await applyRecordLayout(fx.owner.ctx, db.dataSourceId, { expectedVersion: '3', order: [], hidden: [], pinned: [db.id('이름')] })), 'invalid_layout')
+
+    for (let i = 0; i < MAX_PINNED_PROPERTIES - 1; i += 1) unwrap(await addProperty(fx.owner.ctx, db.dataSourceId, { name: `P${i}`, type: 'number' }))
+    const all = unwrap(await getSchema(fx.owner.ctx, db.dataSourceId)).properties.filter((p) => p.type !== 'title').map((p) => p.id)
+    assert.equal(all.length, MAX_PINNED_PROPERTIES + 2)
+    assert.equal(reason(await applyRecordLayout(fx.owner.ctx, db.dataSourceId, { expectedVersion: '3', order: [], hidden: [], pinned: all.slice(0, MAX_PINNED_PROPERTIES + 1) })), 'too_many_pinned')
+    assert.deepEqual((await layoutOf(db.dataSourceId)).pinned, [a, b], '거부된 적용은 아무것도 쓰지 않는다')
+    const full = unwrap(await applyRecordLayout(fx.owner.ctx, db.dataSourceId, { expectedVersion: '3', order: [], hidden: [], pinned: all.slice(0, MAX_PINNED_PROPERTIES) }))
+    assert.equal(full.layout.pinned.length, MAX_PINNED_PROPERTIES, '15개까지는 된다')
+  })
+
+  test('★ 속성을 지우면 고정이 풀린다 — 되살려도 속성 묶음으로 돌아온다(숨김은 되살리면 돌아온다 — ⑥)', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const db = await seeded()
+    const [a, b] = [db.id('A'), db.id('B')]
+    unwrap(await applyRecordLayout(fx.owner.ctx, db.dataSourceId, { expectedVersion: '0', order: [], hidden: [], pinned: [a, b] }))
+    unwrap(await deleteProperty(fx.owner.ctx, db.dataSourceId, a))
+    assert.deepEqual((await layoutOf(db.dataSourceId)).pinned, [b])
+    assert.deepEqual((await pinRows(db.dataSourceId)).map((r) => r[0]), [b], '지운 속성의 고정 행이 남았다 — 15자리 중 하나를 차지한다')
+    unwrap(await restoreProperty(fx.owner.ctx, db.dataSourceId, a))
+    assert.deepEqual((await layoutOf(db.dataSourceId)).pinned, [b], '되살린 속성은 속성 묶음으로 돌아온다')
+  })
+
+  test('행 페이지가 고정을 읽는다 — heading 안의 순서 · 속성 묶음의 컬럼에도 그대로 있다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const db = await seeded()
+    unwrap(await applyRecordLayout(fx.owner.ctx, db.dataSourceId, { expectedVersion: '0', order: [], hidden: [], pinned: [db.id('C'), db.id('A')] }))
+    const page = await readRowPage(fx.owner.ctx, db.rowId)
+    assert.deepEqual(page?.pinned, [db.id('C'), db.id('A')])
+    assert.ok(page?.columns.some((c) => c.propertyId === db.id('C') && c.visible))
   })
 })
