@@ -18,7 +18,7 @@ import {
 import { readRollupConfig, type RollupFunction } from './rollup-functions.ts'
 import type { FormulaType } from '../formula/values.ts'
 import type { Calculation } from './calculations.ts'
-import { isFilterableType } from './filter.ts'
+import { formulaFilterType, isFilterableType } from './filter.ts'
 
 type ColumnBase = {
   readonly propertyId: string
@@ -142,9 +142,40 @@ export function showsParentsOnly(viewType: string): boolean {
 /** 거르고 정렬할 수 있는 컬럼 — 셀 컬럼 + 고유 ID(2a-2 · `filter.ts` `FILTERABLE_TYPES` 와 같은 목록). */
 export type FilterableColumn = CellColumn | UniqueIdColumn
 
-/** 도구줄의 필터 · 정렬이 고를 수 있는 컬럼인가. 셀인지가 아니라 **서버가 거를 수 있는지**로 묻는다(`isFilterableType`). */
+/** 그 타입 그대로 거를 수 있는 컬럼인가(셀 · 고유 ID). 수식까지 고르려면 `filterColumnOf` 를 쓴다. */
 export function isFilterableColumn(column: ViewColumn): column is FilterableColumn {
   return isFilterableType(column.type)
+}
+
+/**
+ * 거르고 정렬할 때 이 컬럼이 보이는 모양(2j-3) — 셀 · 고유 ID 는 그대로, 수식은 **결과 타입의 칸 컬럼**(수 → 숫자 · 글 → 텍스트 · 참거짓 →
+ * 체크박스 · 날짜 → 날짜 — `formulaFilterType`, 서버의 `filterTypeOf` 와 같은 표)이다. 그래서 도구줄의 연산자 · 값 입력이 칸과 같은 것을
+ * 쓴다 — 서버는 같은 연산자로 수식 값의 캐시(`derived_value`)를 거른다. 거를 수 없으면 null(relation · rollup).
+ */
+export function filterColumnOf(column: ViewColumn): FilterableColumn | null {
+  if (isFilterableColumn(column)) return column
+  if (column.type !== 'formula') return null
+  const type = formulaFilterType(column.formula.resultType)
+  if (type === null || type === 'unique_id') return null
+  return {
+    propertyId: column.propertyId,
+    name: column.name,
+    visible: column.visible,
+    orderKey: column.orderKey,
+    width: column.width,
+    wrap: column.wrap,
+    options: [],
+    calculation: null,
+    type,
+  }
+}
+
+/** 컬럼들 중 거르고 정렬할 수 있는 것을 그 모양으로(`filterColumnOf`). */
+export function filterColumnsOf(columns: readonly ViewColumn[]): FilterableColumn[] {
+  return columns.flatMap((c) => {
+    const f = filterColumnOf(c)
+    return f === null ? [] : [f]
+  })
 }
 
 /**
@@ -197,9 +228,10 @@ export function isCellColumn(column: ViewColumn): column is CellColumn {
  *   **옵션 정의 순서**(`select_option.order_idx` 조인)이고 그것이 들어올 때 연다.
  *   status 도 같은 사이드카라 같이 뺀다(`OPTION_TYPES`).
  */
-export function isSortable(column: Pick<ViewColumn, 'type'>): boolean {
-  // 서버가 정렬할 수 있는 타입으로 묻는다(`isFilterableType` — 셀 타입 + 고유 ID). relation 은 사이드카가 없고(값이 엣지다),
-  // rollup 은 저장된 값이 없다(정본 D1) — 전에는 "relation 이 아니다"로 물어서 rollup 머리에 정렬이 섰고, 누르면 서버가
-  // 그 키를 조용히 건너뛰어 아무 일도 없었다(2a-2 에서 바로잡았다).
-  return isFilterableType(column.type) && !isOptionType(column.type)
+export function isSortable(column: ViewColumn): boolean {
+  // 서버가 정렬할 수 있는 타입으로 묻는다(`filterColumnOf` — 셀 타입 + 고유 ID + 수식(결과 타입 · 2j-3)). relation 은 사이드카가
+  // 없고(값이 엣지다), rollup 은 저장된 값이 없다(정본 D1) — 전에는 "relation 이 아니다"로 물어서 rollup 머리에 정렬이 섰고, 누르면
+  // 서버가 그 키를 조용히 건너뛰어 아무 일도 없었다(2a-2 에서 바로잡았다).
+  const f = filterColumnOf(column)
+  return f !== null && !isOptionType(f.type)
 }

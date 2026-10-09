@@ -13075,6 +13075,85 @@ async function main() {
       check('결과 타입(수)에 없는 연산자는 400', bad.status === 400 && bad.body?.error === 'invalid_filter', JSON.stringify(bad))
     }
 
+    if (sectionIf('수식으로 거르기 · 정렬 — 화면 (2j-3 · F-03-13)')) {
+      // 도구줄의 필터가 수식 컬럼을 고른다(연산자 · 값 입력은 결과 타입의 칸 것) · 머리 메뉴로 수식 정렬 · 정렬 칩이 도구줄에 남는다 ·
+      // 새로고침해도 같은 결과(서버가 수식 값의 캐시로 거른다).
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const clickOn = async (selector) => {
+        const p = await evaluate(`(() => {
+          const e = document.querySelector(${JSON.stringify(selector)})
+          if (!e) return null
+          e.scrollIntoView({ block: 'center' })
+          const r = e.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (p) await click(p.x, p.y)
+        return p !== null
+      }
+      const setSelect = (selector, value) => evaluate(`(() => {
+        const s = document.querySelector(${JSON.stringify(selector)})
+        if (!s) return false
+        s.value = ${JSON.stringify(value)}
+        s.dispatchEvent(new Event('change', { bubbles: true }))
+        return true
+      })()`)
+      const db = (await api('POST', '/databases', { name: `수식 화면 거르기 ${stamp}` })).body.database
+      const view = db.defaultViewId
+      const props = `/data-sources/${db.dataSourceId}/properties`
+      const qty = (await api('POST', props, { name: '수량', type: 'number' })).body.property.id
+      const titleProp = (await api('GET', `/views/${view}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      for (const [t, n] of [['가', 3], ['나', 30], ['다', 12]]) {
+        await api('POST', `/views/${view}/rows`, {
+          cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun(t)] } }, { propertyId: qty, value: { type: 'number', number: n } }],
+        })
+      }
+      const amount = (await api('POST', props, { name: '금액', type: 'formula', expression: 'prop("수량") * 10' })).body.property.id
+      const titlesJs = `[...document.querySelectorAll('[data-testid="db-table"] tbody tr')].map((tr) => tr.querySelector('[data-testid="db-row-title"]')?.textContent ?? '').join(',')`
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === 3`, 15000)
+
+      // ── 도구줄의 필터 — 수식을 고르고 "보다 큼 100" ──
+      await clickOn('[data-testid="db-filter-button"]')
+      if (!(await waitFor(`!!document.querySelector('[data-testid="db-filter-rule"]')`, 2000))) await clickOn('[data-testid="db-filter-add"]')
+      await waitFor(`!!document.querySelector('[data-testid="db-filter-rule"] select[aria-label="필터 속성"]')`, 5000)
+      check('★ 필터 속성에 수식이 선다',
+        await evaluate(`[...document.querySelector('[data-testid="db-filter-rule"] select[aria-label="필터 속성"]').options].some((o) => o.value === ${JSON.stringify(amount)})`))
+      await setSelect('[data-testid="db-filter-rule"] select[aria-label="필터 속성"]', amount)
+      await waitFor(`[...(document.querySelector('[data-testid="db-filter-rule"] select[aria-label="필터 조건"]')?.options ?? [])].some((o) => o.value === 'greater_than')`, 5000)
+      check('★ 연산자는 결과 타입(수)의 것 — "보다 큼"이 있고 "포함"이 없다',
+        await evaluate(`(() => { const o = [...document.querySelector('[data-testid="db-filter-rule"] select[aria-label="필터 조건"]').options].map((x) => x.value); return o.includes('greater_than') && !o.includes('contains') })()`))
+      await setSelect('[data-testid="db-filter-rule"] select[aria-label="필터 조건"]', 'greater_than')
+      await evaluate(`(() => { const i = document.querySelector('[data-testid="db-filter-value"]'); i.focus(); i.select() })()`)
+      await typeText('100')
+      await key('Enter')
+      check('★ 수식으로 거른다 — 금액 > 100 (나 · 다)', await waitFor(`${titlesJs} === '나,다'`, 10000), await evaluate(titlesJs))
+      await key('Escape')
+
+      // ── 머리 메뉴의 정렬 — 수식에도 선다 ──
+      await clickOn(`th[data-property-id="${amount}"] [data-testid="db-column-menu"]`)
+      check('★ 수식 머리 메뉴에 정렬이 선다', await waitFor(`!!document.querySelector('[data-testid="db-column-sort-asc"]')`, 3000))
+      await clickOn('[data-testid="db-column-sort-asc"]')
+      check('★ 수식으로 정렬한다 — 금액 오름차순(다 120 · 나 300)', await waitFor(`${titlesJs} === '다,나'`, 10000), await evaluate(titlesJs))
+
+      // ── 정렬 칩이 도구줄에 남는다(서버 렌더가 수식 키를 버리지 않는다) ──
+      await clickOn('[data-testid="db-sort-button"]')
+      check('★ 정렬 패널에 수식 정렬이 남는다',
+        await waitFor(`(document.querySelector('[data-testid="db-sort-rule"] select[aria-label="정렬 속성"]')?.value ?? '') === ${JSON.stringify(amount)}`, 5000),
+        await evaluate(`document.querySelector('[data-testid="db-sort-rule"]')?.textContent ?? null`))
+      await key('Escape')
+
+      await send('Page.reload')
+      check('새로고침해도 같다(서버가 수식 값의 캐시로 거르고 정렬한다)',
+        await waitFor(`${titlesJs} === '다,나'`, 15000), await evaluate(titlesJs))
+    }
+
     if (sectionIf('개인 필터 · 정렬 — 화면 (2h-2 · F-04-17)')) {
       // 볼 수만 있는 사람(브라우저 세션을 바꾼다)이 도구줄의 필터로 조건을 걸면 **자기 것**으로 저장되고 그 사람의 표만 좁혀진다 — "나만 보는
       // 필터" 표시 · 초기화. 편집자는 자기 개인 것을 "모두에게 저장"한다. 브라우저 세션은 끝에 반드시 소유자로 되돌린다.
