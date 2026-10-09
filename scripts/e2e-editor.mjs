@@ -13243,6 +13243,92 @@ async function main() {
       denied.close()
     }
 
+    if (sectionIf('표 변경 알림 — 화면 (2k-2 · F-04-24)')) {
+      // 다른 곳(API)에서 바꾸면 새로고침 없이 표가 맞춰진다 — 새 행 · 제목 · 집계 · 뷰 필터. 내가 고쳐 조건 밖이 된 행은 남고 "조건 밖", 남이
+      // 고쳐 나간 행은 빠진다. 편집 중에는 미뤘다가 끝나면 맞춘다. 남이 속성을 더하면 표가 새로 선다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const clickOn = async (selector) => {
+        const p = await evaluate(`(() => {
+          const e = document.querySelector(${JSON.stringify(selector)})
+          if (!e) return null
+          e.scrollIntoView({ block: 'center' })
+          const r = e.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (p) await click(p.x, p.y)
+        return p !== null
+      }
+      const db = (await api('POST', '/databases', { name: `실시간 ${stamp}` })).body.database
+      const view = db.defaultViewId
+      const props = `/data-sources/${db.dataSourceId}/properties`
+      const qty = (await api('POST', props, { name: '수량', type: 'number' })).body.property.id
+      const titleProp = (await api('GET', `/views/${view}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const rowOf = async (t, n) => (await api('POST', `/views/${view}/rows`, {
+        cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun(t)] } }, { propertyId: qty, value: { type: 'number', number: n } }],
+      })).body.row.id
+      const ga = await rowOf('가', 3)
+      const na = await rowOf('나', 30)
+      await api('PATCH', `/views/${view}/columns/${titleProp}`, { calculation: 'count_all' })
+      const titlesJs = `[...document.querySelectorAll('[data-testid="db-table"] tbody tr')].map((tr) => tr.querySelector('[data-testid="db-row-title"]')?.textContent ?? '').join(',')`
+      const titles = () => evaluate(titlesJs)
+      const footerJs = `document.querySelector('[data-testid="db-table"] tfoot td[data-property-id="${titleProp}"]')?.textContent ?? ''`
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      await waitFor(`${titlesJs} === '가,나'`, 15000)
+      await sleep(800) // 구독이 붙을 때까지
+
+      // ── 새 행 · 제목 · 집계 ──
+      const da = await rowOf('다', 12)
+      check('★ 다른 곳에서 행을 더하면 새로고침 없이 선다 · 열 집계도(3)',
+        await waitFor(`${titlesJs} === '가,나,다' && (${footerJs}).includes('3')`, 8000),
+        JSON.stringify({ titles: await titles(), footer: await evaluate(footerJs) }))
+      await api('PATCH', `/rows/${na}`, { cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun('나!')] } }] })
+      check('★ 다른 곳에서 제목을 고치면 따라 바뀐다', await waitFor(`${titlesJs} === '가,나!,다'`, 8000), await titles())
+
+      // ── 뷰 필터가 바뀌면 행이 맞춰진다(수량 > 10) ──
+      await api('PATCH', `/views/${view}`, { filter: { property_id: qty, operator: 'greater_than', value: 10 } })
+      check('★ 뷰의 필터가 바뀌면 행이 맞춰진다(가 빠짐)', await waitFor(`${titlesJs} === '나!,다'`, 8000), await titles())
+
+      // ── 내가 고쳐 조건 밖이 된 행은 남고 "조건 밖" ──
+      await clickOn(`tr[data-row-id="${da}"] td[data-property-id="${qty}"]`)
+      await key('Enter')
+      if (await waitFor(`document.activeElement?.matches('[data-testid="db-cell-input"]')`, 5000)) {
+        await evaluate(`document.querySelector('[data-testid="db-cell-input"]').select()`)
+        await typeText('5')
+        await key('Enter')
+      }
+      check('★ 내가 고쳐 조건 밖이 된 행은 바로 지우지 않는다 — "조건 밖"을 단다',
+        await waitFor(`!!document.querySelector('tr[data-row-id="${da}"] [data-testid="db-row-outside"]')`, 8000) && (await titles()).includes('다'),
+        await titles())
+      await api('PATCH', `/rows/${na}`, { cells: [{ propertyId: qty, value: { type: 'number', number: 1 } }] })
+      check('★ 남이 고쳐 조건 밖이 된 행은 빠진다', await waitFor(`!document.querySelector('tr[data-row-id="${na}"]')`, 8000), await titles())
+
+      // ── 편집 중에는 미뤘다가 끝나면 맞춘다 ──
+      await api('PATCH', `/views/${view}`, { filter: null })
+      await waitFor(`!!document.querySelector('tr[data-row-id="${ga}"]')`, 8000)
+      await clickOn(`tr[data-row-id="${ga}"] td[data-property-id="${titleProp}"]`)
+      await key('Enter')
+      const editing = await waitFor(`document.activeElement?.matches('[data-testid="db-cell-input"]')`, 5000)
+      const ra = await rowOf('라', 50)
+      await sleep(1500)
+      check('★ 편집 중에는 다시 읽지 않는다 — 편집칸이 그대로 · 새 행은 아직',
+        editing && (await evaluate(`document.activeElement?.matches('[data-testid="db-cell-input"]')`)) && !(await evaluate(`!!document.querySelector('tr[data-row-id="${ra}"]')`)),
+        await titles())
+      await key('Escape')
+      check('편집이 끝나면 맞춘다 — 새 행(라)이 선다', await waitFor(`!!document.querySelector('tr[data-row-id="${ra}"]')`, 8000), await titles())
+
+      // ── 남이 속성을 더하면 표가 새로 선다 ──
+      await api('POST', props, { name: '메모', type: 'rich_text' })
+      check('★ 남이 속성을 더하면 표가 새로 선다(머리에 메모)',
+        await waitFor(`[...document.querySelectorAll('[data-testid="db-table"] thead th[data-property-id]')].some((th) => th.textContent.includes('메모'))`, 10000))
+    }
+
     if (sectionIf('개인 필터 · 정렬 — 화면 (2h-2 · F-04-17)')) {
       // 볼 수만 있는 사람(브라우저 세션을 바꾼다)이 도구줄의 필터로 조건을 걸면 **자기 것**으로 저장되고 그 사람의 표만 좁혀진다 — "나만 보는
       // 필터" 표시 · 초기화. 편집자는 자기 개인 것을 "모두에게 저장"한다. 브라우저 세션은 끝에 반드시 소유자로 되돌린다.
