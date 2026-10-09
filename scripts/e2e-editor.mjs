@@ -270,6 +270,9 @@ function connect(url) {
   // 스트리밍 중인데 검사가 곧바로 다른 주소로 가면 서버는 그 렌더를 "The destination stream closed early" 로 끊고 ⨯ 를 찍는다 —
   // 페이지가 쌓여 레이아웃이 느린 전체 판에서만 났다(§3.3-278 ⑥). 사용자는 결과가 그려진 것을 보고 떠나므로 기다리는 쪽이 사용자에 가깝다.
   const inflight = new Set()
+  // 열린 SSE(표 변경 알림 · 2k-2) — 이게 열려 있으면 다른 곳의 쓰기가 **조금 뒤에** 이 페이지의 다시 읽기(때로 `router.refresh()`)를
+  // 시작한다. 진행 중인 요청만 기다리면 그 뒤에 시작될 것을 놓친다 — 떠나기 전에 요청이 잠시 조용할 때까지 기다린다(아래 `send`).
+  const eventStreams = new Set()
   ws.onmessage = (event) => {
     const msg = JSON.parse(event.data)
     if (msg.id && pending.has(msg.id)) {
@@ -277,8 +280,10 @@ function connect(url) {
       pending.delete(msg.id)
     } else if (msg.method === 'Network.requestWillBeSent') {
       if (msg.params.type === 'Fetch' || msg.params.type === 'XHR') inflight.add(msg.params.requestId)
+      if (msg.params.type === 'EventSource') eventStreams.add(msg.params.requestId)
     } else if (msg.method === 'Network.loadingFinished' || msg.method === 'Network.loadingFailed') {
       inflight.delete(msg.params.requestId)
+      eventStreams.delete(msg.params.requestId)
     } else if (msg.method === 'Runtime.exceptionThrown') {
       const d = msg.params.exceptionDetails
       pageErrors.push(d?.exception?.description ?? d?.text)
@@ -295,7 +300,16 @@ function connect(url) {
   const send = async (method, params = {}) => {
     if (method === 'Page.navigate') {
       for (let waited = 0; inflight.size > 0 && waited < 3000; waited += 50) await sleep(50)
+      // 표 변경 알림이 열려 있으면 — 방금의 쓰기가 일으킬 다시 읽기가 시작될 틈(서버가 250ms 모은다)까지 조용하기를 기다린다
+      if (eventStreams.size > 0) {
+        for (let round = 0; round < 4; round += 1) {
+          await sleep(600)
+          if (inflight.size === 0) break
+          for (let waited = 0; inflight.size > 0 && waited < 3000; waited += 50) await sleep(50)
+        }
+      }
       inflight.clear()
+      eventStreams.clear()
     }
     return rawSend(method, params)
   }
@@ -13143,6 +13157,8 @@ async function main() {
       await key('Enter')
       check('★ 수식으로 거른다 — 금액 > 100 (나 · 다)', await waitFor(`${titlesJs} === '나,다'`, 10000), await evaluate(titlesJs))
       await key('Escape')
+      // 표 변경 알림(2k-2)이 행을 먼저 맞춘다 — 저장이 부른 새로 세우기(서버 렌더 · 도구줄의 칩)가 끝난 뒤에 메뉴를 연다(열린 메뉴가 닫히지 않게)
+      await waitFor(`document.querySelectorAll('[data-testid="db-filter-chip"]').length === 1`, 10000)
 
       // ── 머리 메뉴의 정렬 — 수식에도 선다 ──
       await clickOn(`th[data-property-id="${amount}"] [data-testid="db-column-menu"]`)
