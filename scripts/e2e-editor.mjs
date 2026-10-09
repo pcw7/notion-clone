@@ -298,7 +298,9 @@ function connect(url) {
       ws.send(JSON.stringify({ id, method, params }))
     })
   const send = async (method, params = {}) => {
-    if (method === 'Page.navigate') {
+    // 새로고침도 떠나는 것이다 — 보드의 "+ 카드" 뒤 곧바로 `Page.reload` 하던 검사가 알림이 시작한 `router.refresh()` 를 끊어 ⨯ 를 찍었다
+    // (전체 판 #237 · 4c-1). 기다림을 `Page.navigate` 에만 걸어 두었었다.
+    if (method === 'Page.navigate' || method === 'Page.reload') {
       for (let waited = 0; inflight.size > 0 && waited < 3000; waited += 50) await sleep(50)
       // 표 변경 알림이 열려 있으면 — 방금의 쓰기가 일으킬 다시 읽기가 시작될 틈(서버가 250ms 모은다)까지 조용하기를 기다린다
       if (eventStreams.size > 0) {
