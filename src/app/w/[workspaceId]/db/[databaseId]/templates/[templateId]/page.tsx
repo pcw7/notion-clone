@@ -75,10 +75,11 @@ export default async function TemplatePage({
 
   // 템플릿은 **data source** 의 것이다(`page.data_source_id`). 데이터베이스가 data source 를 여럿 가지면(8e-1) 첫 뷰의 것이 아닐 수 있다 —
   // 템플릿 자신의 data source 를 읽고, 그것이 이 데이터베이스에 붙어 있어야 한다(다른 표의 템플릿 id 를 이 주소에 넣어도 열리지 않는다).
+  // 붙인 소스면 원본도 볼 수 있어야 한다(2l-2 — 템플릿은 원본의 행이다 · 아래의 `getView` 도 같은 답을 한다).
   const source = await withReadTransaction((tx) =>
     tx.queryMaybe<{ data_source_id: string }>(`SELECT data_source_id FROM page WHERE id = $1`, [templateId]),
   )
-  if (source === null || !database.value.dataSources.some((ds) => ds.id === source.data_source_id)) notFound()
+  if (source === null || !database.value.dataSources.some((ds) => ds.id === source.data_source_id && ds.readable)) notFound()
   const dataSourceId = source.data_source_id
 
   // "이 표의 살아 있는 템플릿인가"를 묻는 곳은 한 함수다(`template.ts`) — 권한은 위에서 이미 봤다.

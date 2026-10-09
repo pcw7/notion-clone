@@ -68,6 +68,7 @@ import { calculationsFor, isCalculation } from './calculations.ts'
 import { relationOf, rollupOf, type ViewColumn } from './view-columns.ts'
 import { readOptionsOf } from './options.ts'
 import { readLiveTemplate } from './template.ts'
+import { canViewOwnerDatabase } from './source-access.ts'
 import type { ValidationIssue } from '../contracts/rich-text.ts'
 
 /** MVP 가 만드는 뷰 타입. 정본의 `type` 은 10종이지만 Table 하나로 제품이 성립한다. */
@@ -223,6 +224,10 @@ async function openDatabase(
 /**
  * 뷰 id 로 열고 권한을 본다. 뷰가 어느 DB 의 것이고 **어느 data source 를 보는지**는 뷰 행이 안다 — 필터 · 정렬 · 그룹 · 기본 템플릿을 그
  * data source 의 스키마로 검사한다(8e-1 전에는 데이터베이스의 첫 data source 를 골랐다 — 둘째 소스의 뷰가 남의 스키마로 검사됐을 것이다).
+ *
+ * 붙인 소스의 뷰(2l-2 · F-04-13)는 **원본도 볼 수 있어야** 연다 — 권한은 그 뷰의 데이터베이스(그릇)로 묻지만 뷰가 돌려주는 컬럼(속성 이름 ·
+ * 옵션 · 수식)은 원본의 스키마다. 읽기만이 아니다: 이름 바꾸기 · 필터 걸기도 고친 뷰를 컬럼째 돌려준다. 원본을 못 보게 된 사람이 그
+ * 탭을 치우는 길은 떼기다(`detachLinkedDataSource` — 이 게이트를 지나지 않는다).
  */
 async function openView(
   tx: Tx,
@@ -230,8 +235,8 @@ async function openView(
   viewId: string,
   need: 'view' | 'edit_structure',
 ): Promise<(DatabaseGate & { dataSourceId: string; viewId: string }) | ViewResult<never>> {
-  const row = await tx.queryMaybe<{ database_id: string; data_source_id: string }>(
-    `SELECT v.database_id, v.data_source_id
+  const row = await tx.queryMaybe<{ database_id: string; data_source_id: string; owner: string }>(
+    `SELECT v.database_id, v.data_source_id, ds.owner_database_id AS owner
        FROM view v
        JOIN block b ON b.id = v.database_id
        JOIN data_source ds ON ds.id = v.data_source_id
@@ -243,6 +248,8 @@ async function openView(
 
   const gate = await openDatabase(tx, ctx, row.database_id, need)
   if (isFailure(gate)) return gate
+  // 붙인 소스 — 원본을 못 보면 없는 것과 같은 답(남의 표의 스키마가 있는지 알리지 않는다)
+  if (row.owner !== row.database_id && !(await canViewOwnerDatabase(tx, ctx, row.owner))) return fail('not_found')
   return { ...gate, dataSourceId: row.data_source_id, viewId }
 }
 
@@ -565,14 +572,16 @@ export async function createView(
     if (isFailure(gate)) return gate
 
     // 0042 의 복합 FK 가 같은 것을 막지만, 거기까지 가면 예외라 화면이 받을 말이 없다 — 먼저 묻는다.
-    const source = await tx.queryMaybe<{ data_source_id: string }>(
-      `SELECT dds.data_source_id FROM database_data_source dds
+    const source = await tx.queryMaybe<{ data_source_id: string; owner: string }>(
+      `SELECT dds.data_source_id, ds.owner_database_id AS owner FROM database_data_source dds
          JOIN data_source ds ON ds.id = dds.data_source_id
         WHERE dds.database_id = $1 AND ($2::uuid IS NULL OR dds.data_source_id = $2::uuid) AND ds.lifecycle = 'live'
         ORDER BY dds.order_idx, dds.data_source_id LIMIT 1`,
       [databaseId, input.dataSourceId ?? null],
     )
     if (source === null) return fail('not_found')
+    // 붙인 소스면 원본도 볼 수 있어야 한다(2l-2 · `openView` 와 같은 규칙) — 만든 뷰를 원본의 컬럼째 돌려준다.
+    if (source.owner !== databaseId && !(await canViewOwnerDatabase(tx, ctx, source.owner))) return fail('not_found')
     const dataSourceId = source.data_source_id
 
     const grouped = await resolveGroupBy(tx, dataSourceId, type, input.groupBy, null)

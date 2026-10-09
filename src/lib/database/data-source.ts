@@ -69,6 +69,7 @@ import { plainTitleOf } from '../block/page.ts'
 import { newPropertyId } from './property.ts'
 import { DEFAULT_VIEW_NAME } from './view.ts'
 import { isUuid } from '../ids.ts'
+import { canViewOwnerDatabase } from './source-access.ts'
 
 /** 제목 프로퍼티의 기본 이름. 노션은 "Name" 이고 우리는 한국어 UI 다. */
 export const DEFAULT_TITLE_PROPERTY_NAME = '이름'
@@ -82,8 +83,8 @@ export type DataSourceSummary = {
   readonly id: string
   readonly name: string
   /**
-   * 이 데이터베이스가 **소유한다**(DS2 의 `is_linked` 의 반대). 거짓이면 다른 데이터베이스의 것을 붙인 것이다(linked · F-04-13) —
-   * 아직 그것을 만드는 길은 없다.
+   * 이 데이터베이스가 **소유한다**(DS2 의 `is_linked` 의 반대). 거짓이면 다른 데이터베이스의 것을 붙인 것이다(linked · F-04-13 ·
+   * `attachLinkedDataSource`).
    */
   readonly owned: boolean
   readonly orderKey: string
@@ -133,19 +134,10 @@ export async function readDataSources(tx: Tx, databaseId: string, ctx?: SessionC
   const out: DataSourceSummary[] = []
   for (const r of rows) {
     // 붙인 소스 — 원본을 볼 수 있어야 이름을 준다(2l-1 · 머리말). 원본이 휴지통이면 볼 수 없는 것과 같다.
-    const readable = r.owned || ctx === undefined || (await canViewOwner(tx, ctx, r.owner))
+    const readable = r.owned || ctx === undefined || (await canViewOwnerDatabase(tx, ctx, r.owner))
     out.push({ id: r.id, name: readable ? r.name : '', owned: r.owned, orderKey: r.order_idx, readable })
   }
   return out
-}
-
-/** 이 데이터베이스(소스의 주인)를 볼 수 있는가 — 살아 있고 이 워크스페이스의 것이어야 한다. */
-async function canViewOwner(tx: Tx, ctx: SessionContext, databaseId: string): Promise<boolean> {
-  const live = await tx.queryMaybe<{ one: number }>(
-    `SELECT 1 AS one FROM block WHERE id = $1 AND workspace_id = $2 AND lifecycle = 'live'`,
-    [databaseId, ctx.workspaceId],
-  )
-  return live !== null && can(await effectiveCaps(tx, ctx, databaseId), 'view')
 }
 
 /**
@@ -505,7 +497,7 @@ export async function attachLinkedDataSource(
       [dataSourceId],
     )
     // 원본을 볼 수 없으면 없는 것과 같은 답 — 남의 표의 소스가 있는지 알리지 않는다
-    if (source === null || !(await canViewOwner(tx, ctx, source.owner))) return fail('not_found')
+    if (source === null || !(await canViewOwnerDatabase(tx, ctx, source.owner))) return fail('not_found')
     if (source.owner === databaseId) return fail('invalid_target')
     const attached = await tx.queryMaybe<{ one: number }>(
       `SELECT 1 AS one FROM database_data_source WHERE database_id = $1 AND data_source_id = $2`,

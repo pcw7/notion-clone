@@ -104,7 +104,12 @@ export default async function DatabasePage({
 
   const views = await listViews(ctx, databaseId)
   if (!views.ok || views.value.length === 0) notFound()
-  const current = views.value.find((view) => view.id === v) ?? views.value[0]
+  // 붙인 소스의 원본을 못 보면 그 소스의 뷰는 열리지 않는다(2l-2 · `openView`). 그런 뷰를 가리키는 `?v=` 는 지워진 뷰처럼 기본 뷰로 —
+  // 기본 뷰도 그런 뷰를 건너뛴 첫 뷰다. 탭은 그대로 선다(뷰 이름은 그릇의 것이다).
+  const hiddenSources = new Set(database.value.dataSources.filter((s) => !s.readable).map((s) => s.id))
+  const openable = views.value.filter((view) => !hiddenSources.has(view.dataSourceId))
+  if (openable.length === 0) notFound()
+  const current = openable.find((view) => view.id === v) ?? openable[0]
 
   const view = await getView(ctx, current.id)
   if (!view.ok) notFound()
