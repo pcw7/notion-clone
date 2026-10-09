@@ -298,7 +298,9 @@ function connect(url) {
       ws.send(JSON.stringify({ id, method, params }))
     })
   const send = async (method, params = {}) => {
-    if (method === 'Page.navigate') {
+    // 새로고침도 떠나는 것이다 — 보드의 "+ 카드" 뒤 곧바로 `Page.reload` 하던 검사가 알림이 시작한 `router.refresh()` 를 끊어 ⨯ 를 찍었다
+    // (전체 판 #237 · 4c-1). 기다림을 `Page.navigate` 에만 걸어 두었었다.
+    if (method === 'Page.navigate' || method === 'Page.reload') {
       for (let waited = 0; inflight.size > 0 && waited < 3000; waited += 50) await sleep(50)
       // 표 변경 알림이 열려 있으면 — 방금의 쓰기가 일으킬 다시 읽기가 시작될 틈(서버가 250ms 모은다)까지 조용하기를 기다린다
       if (eventStreams.size > 0) {
@@ -13472,6 +13474,117 @@ async function main() {
         JSON.stringify([mateHtml.includes('data-testid="db-view-tab"'), mateHtml.includes(secretRow), mateHtml.includes(secretProp)]))
       const ownerHtml = await (await fetch(`${BASE}/w/${workspaceId}/db/${container.id}?v=${linkedView}`, { headers: { cookie: authed.cookie } })).text()
       check('볼 수 있는 사람에게는 그 뷰가 그대로 열린다 — 원본의 행이 보인다', ownerHtml.includes(secretRow), String(ownerHtml.length))
+    }
+
+    if (sectionIf('연결된 데이터베이스 — 화면 (2l-3 · F-04-13)')) {
+      // "데이터 소스" 창에서 다른 데이터베이스의 소스를 골라 붙이면 그 탭으로 옮기고 원본의 행이 보인다 · 연결 표시와 원본으로 가는 길 ·
+      // 원본을 볼 수만 있는 동료에게는 칸 · 새 행이 닫힌다(그릇과 원본의 교집합) · 원본을 못 보는 동료에게는 그 탭이 "접근 권한 없음" ·
+      // 떼면 그 탭이 사라지고 원본은 그대로다. 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
+      const stamp = Date.now()
+      const api = async (method, path, body, headers = authed) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const setSelect = (selector, value) => evaluate(`(() => {
+        const s = document.querySelector(${JSON.stringify(selector)})
+        if (!s) return false
+        s.value = ${JSON.stringify(value)}
+        s.dispatchEvent(new Event('change', { bubbles: true }))
+        return true
+      })()`)
+      const original = (await api('POST', '/databases', { name: `연결원본${stamp}` })).body.database
+      const titleProp = (await api('GET', `/views/${original.defaultViewId}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const originRow = `원본행${stamp}`
+      await api('POST', `/views/${original.defaultViewId}/rows`, { cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun(originRow)] } }] })
+      const container = (await api('POST', '/databases', { name: `연결그릇${stamp}` })).body.database
+      const PANEL = '[data-testid="db-sources-panel"]'
+      const LINKED = `${PANEL} [data-testid="db-source-item"][data-source-id="${original.dataSourceId}"]`
+      const openPanel = async () => {
+        for (let i = 0; i < 5; i += 1) {
+          if (await evaluate(`!!document.querySelector('${PANEL}')`)) return true
+          await clickSelector('[data-testid="db-sources-button"]')
+          if (await waitFor(`!!document.querySelector('${PANEL}')`, 1500)) return true
+        }
+        return false
+      }
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${container.id}` })
+      await waitFor(`!!document.querySelector('[data-testid="db-sources-button"]')`, 15000)
+      await openPanel()
+      await clickSelector('[data-testid="db-source-link"]')
+      const OPTION = (id) => `[data-testid="db-source-link-select"] option[value="${id}"]`
+      check('★ "다른 데이터베이스 연결" — 볼 수 있는 데이터베이스의 소스가 고르개에 서고 · 이 데이터베이스의 것은 없다',
+        (await waitFor(`!!document.querySelector('${OPTION(original.dataSourceId)}')`, 5000))
+          && !(await evaluate(`!!document.querySelector('${OPTION(container.dataSourceId)}')`)),
+        await evaluate(`document.querySelector('[data-testid="db-source-link-picker"]')?.textContent?.slice(0, 200) ?? '(고르개 없음)'`))
+      await setSelect('[data-testid="db-source-link-select"]', original.dataSourceId)
+      await clickSelector('[data-testid="db-source-link-confirm"]')
+      const linkedView = await (async () => {
+        for (let i = 0; i < 60; i += 1) {
+          const views = (await api('GET', `/databases/${container.id}/views`)).body?.views ?? []
+          const found = views.find((v) => v.dataSourceId === original.dataSourceId)
+          if (found) return found.id
+          await new Promise((r) => setTimeout(r, 250))
+        }
+        return null
+      })()
+      check('★ 연결하면 그 소스를 보는 새 탭으로 옮기고 원본의 행이 보인다',
+        linkedView !== null
+          && (await waitFor(`location.search.includes(${JSON.stringify(`v=${linkedView}`)}) && document.querySelector('main')?.textContent.includes(${JSON.stringify(originRow)})`, 15000)),
+        JSON.stringify([linkedView, await evaluate('location.search')]))
+      check('★ 탭 줄 위에 원본의 소스 이름과 "연결된 소스 — 원본 열기"가 선다(원본 데이터베이스로 간다)',
+        await waitFor(`document.querySelector('[data-testid="db-source-original-link"]')?.getAttribute('href') === ${JSON.stringify(`/w/${workspaceId}/db/${original.id}`)}`, 5000),
+        await evaluate(`document.querySelector('[data-testid="db-source-name"]')?.textContent ?? '(없음)'`))
+      await openPanel()
+      check('★ 창의 붙인 소스 — "연결됨" · "원본" · 떼기가 서고, 이름 칸 · 휴지통은 없다(원본의 것이다)',
+        (await waitFor(`!!document.querySelector('${LINKED} [data-testid="db-source-linked"]')`, 5000))
+          && (await evaluate(`document.querySelector('${LINKED} [data-testid="db-source-original"]')?.getAttribute('href') === ${JSON.stringify(`/w/${workspaceId}/db/${original.id}`)}
+            && !!document.querySelector('${LINKED} [data-testid="db-source-detach"]')
+            && !document.querySelector('${LINKED} input') && !document.querySelector('${LINKED} [data-testid="db-source-trash"]')`)),
+        await evaluate(`document.querySelector('${LINKED}')?.outerHTML?.slice(0, 300) ?? '(줄 없음)'`))
+      await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+      await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+
+      // 권한 — 원본을 볼 수만 있는 동료(그릇은 고칠 수 있다): 칸 · 새 행이 닫힌다 / 원본을 못 보는 동료: "접근 권한 없음"
+      const aclMod = await import(new URL('../src/lib/permissions/acl.ts', import.meta.url).href)
+      const mate = await joinAs(workspaceId, await createUser(`연결 화면 동료 ${stamp}`), 'member')
+      const asMate = { cookie: `nc_session=${mate.token}` }
+      const restricted = [
+        await aclMod.stopInheriting(ctx, original.id),
+        await aclMod.grantAccess(ctx, original.id, { type: 'user', id: ctx.userId }, 'full_access'),
+        await aclMod.revokeAccess(ctx, original.id, { type: 'workspace_everyone', id: null }),
+        await aclMod.grantAccess(ctx, original.id, { type: 'user', id: mate.userId }, 'view'),
+      ].every((r) => r.ok)
+      const readerHtml = await (await fetch(`${BASE}/w/${workspaceId}/db/${container.id}?v=${linkedView}`, { headers: asMate })).text()
+      const ownHtml = await (await fetch(`${BASE}/w/${workspaceId}/db/${container.id}?v=${container.defaultViewId}`, { headers: asMate })).text()
+      check('★ 원본을 볼 수만 있는 동료 — 붙인 뷰의 행은 보이고 칸은 읽기 전용 · 새 행 단추가 없다(그릇의 제 뷰에는 있다)',
+        restricted && readerHtml.includes(originRow) && readerHtml.includes('aria-readonly="true"') && !readerHtml.includes('data-testid="db-add-row"')
+          && ownHtml.includes('data-testid="db-add-row"'),
+        JSON.stringify([restricted, readerHtml.includes(originRow), readerHtml.includes('aria-readonly="true"'), readerHtml.includes('data-testid="db-add-row"'), ownHtml.includes('data-testid="db-add-row"')]))
+      const revoked = await aclMod.revokeAccess(ctx, original.id, { type: 'user', id: mate.userId })
+      const blockedHtml = await (await fetch(`${BASE}/w/${workspaceId}/db/${container.id}?v=${linkedView}`, { headers: asMate })).text()
+      // 탭 이름은 붙일 때 원본 소스의 이름을 받아 적은 그릇의 것이라 남는다(§3.2-139) — 소스 이름 줄은 원본의 것이라 가린다.
+      check('★ 원본을 못 보는 동료 — 그 탭은 "접근 권한 없음"이다(탭 줄은 선다 · 소스 이름 줄도 "접근 권한 없음" · 원본의 행이 없다)',
+        revoked.ok && blockedHtml.includes('data-testid="db-no-access"') && blockedHtml.includes('data-testid="db-view-tab"')
+          && blockedHtml.includes('data-testid="db-source-name">접근 권한 없음') && !blockedHtml.includes(originRow),
+        JSON.stringify([revoked.ok, blockedHtml.includes('data-testid="db-no-access"'), blockedHtml.includes('data-testid="db-view-tab"'),
+          blockedHtml.includes('data-testid="db-source-name">접근 권한 없음'), blockedHtml.includes(originRow)]))
+
+      // 떼기 — 창에서 한 번 더 묻고, 그 탭이 사라지며 그릇의 첫 뷰로 간다 · 원본은 그대로
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${container.id}?v=${linkedView}` })
+      await waitFor(`!!document.querySelector('[data-testid="db-sources-button"]')`, 15000)
+      await openPanel()
+      await clickSelector(`${LINKED} [data-testid="db-source-detach"]`)
+      const asked = await waitFor(`!!document.querySelector('[data-testid="db-source-detach-ask"]')`, 3000)
+      await clickSelector('[data-testid="db-source-detach-confirm"]')
+      const detached = await waitFor(`!location.search.includes(${JSON.stringify(linkedView)}) && document.querySelectorAll('[data-testid="db-view-tab"]').length === 1`, 15000)
+      const after = (await api('GET', `/databases/${container.id}/data-sources`)).body?.dataSources ?? []
+      const originRows = (await api('GET', `/views/${original.defaultViewId}/rows`)).body?.rows ?? []
+      check('★ 떼기 — 한 번 더 묻고, 그 탭이 사라지며 그릇의 첫 뷰로 간다 · 원본의 행은 그대로',
+        asked && detached && after.map((d) => d.id).join() === container.dataSourceId && originRows.map((r) => r.title).join() === originRow,
+        JSON.stringify({ asked, detached, after: after.map((d) => d.id), originRows: originRows.length }))
     }
 
     if (sectionIf('개인 필터 · 정렬 — 화면 (2h-2 · F-04-17)')) {

@@ -116,7 +116,12 @@ function messageOf(status: number, body: ErrorBody): string {
       return '기본 템플릿으로 지정할 수 없습니다. 그사이 지워졌을 수 있습니다.'
     // ── 데이터 소스 (8e-3a) · 뷰 지우기 (8e-3b) ──
     case 'last_source':
-      return '마지막 데이터 소스는 휴지통에 넣을 수 없습니다.'
+      return '마지막 데이터 소스는 휴지통에 넣거나 뗄 수 없습니다.'
+    // ── 연결된 데이터베이스 (2l-3) ──
+    case 'already_attached':
+      return '이미 이 데이터베이스에 붙어 있는 데이터 소스입니다.'
+    case 'owned_source':
+      return '이 데이터베이스의 소스는 뗄 수 없습니다. 휴지통으로 보내세요.'
     case 'last_view':
       return '이 데이터 소스를 보는 마지막 뷰입니다. 소스와 함께 휴지통으로 보내야 합니다.'
     // ── 행의 레이아웃 (8f-2) ──
@@ -495,6 +500,24 @@ export function addDataSource(workspaceId: string, databaseId: string): Promise<
 /** 데이터 소스를 휴지통으로 — 그 소스의 항목이 함께 간다(8e-3a). 마지막 소스면 `last_source` 다. */
 export function trashDataSource(workspaceId: string, dataSourceId: string): Promise<ApiResult<null>> {
   return call(`${base(workspaceId)}/data-sources/${dataSourceId}/trash`, { method: 'POST' }, () => null)
+}
+
+/** 다른 데이터베이스의 소스를 붙인다(2l-3 · F-04-13) — 함께 태어난 뷰의 id 를 준다(화면이 그 탭으로 옮긴다). */
+export function attachLinkedSource(
+  workspaceId: string,
+  databaseId: string,
+  dataSourceId: string,
+): Promise<ApiResult<{ viewId: string }>> {
+  return call(
+    `${base(workspaceId)}/databases/${databaseId}/linked-sources`,
+    { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ dataSourceId }) },
+    (body) => ({ viewId: body.viewId as string }),
+  )
+}
+
+/** 붙인 소스를 뗀다 — 그 소스를 보는 뷰가 함께 사라진다(원본은 그대로). 이 데이터베이스의 소스면 `owned_source` 다. */
+export function detachLinkedSource(workspaceId: string, databaseId: string, dataSourceId: string): Promise<ApiResult<null>> {
+  return call(`${base(workspaceId)}/databases/${databaseId}/linked-sources/${dataSourceId}`, { method: 'DELETE' }, () => null)
 }
 
 export function renameDataSource(workspaceId: string, dataSourceId: string, name: string): Promise<ApiResult<null>> {
