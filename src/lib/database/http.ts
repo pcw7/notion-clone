@@ -123,11 +123,14 @@ export function dataSourceFailureStatus(reason: DataSourceFailure): number {
       return 404
     case 'forbidden':
       return 403
-    // 잠김 · 마지막 살아 있는 소스(8e-3a) — 입력이 아니라 지금 상태가 허락하지 않는다.
+    // 잠김 · 마지막 살아 있는 소스(8e-3a) — 입력이 아니라 지금 상태가 허락하지 않는다. 이미 붙었다 · 소유한 소스(2l-1)도 상태다.
     case 'locked':
     case 'last_source':
+    case 'already_attached':
+    case 'owned_source':
       return 409
     case 'invalid_name':
+    case 'invalid_target':
       return 400
   }
 }

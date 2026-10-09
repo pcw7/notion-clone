@@ -27,6 +27,10 @@ const MESSAGES: Readonly<Record<DataSourceFailure, string>> = {
   locked: '잠긴 데이터베이스입니다. 잠금을 풀어야 합니다.',
   last_source: '마지막 데이터 소스는 휴지통에 넣을 수 없습니다.',
   invalid_name: '이름을 확인하세요.',
+  // 연결된 소스(2l-1) — 휴지통 길에서는 나오지 않지만 사유 표는 빠짐없어야 한다
+  invalid_target: '붙일 수 없는 데이터 소스입니다.',
+  already_attached: '이미 붙어 있는 데이터 소스입니다.',
+  owned_source: '이 데이터베이스의 소스는 떼지 않고 휴지통에 넣습니다.',
 }
 
 async function resolve(ctx: Ctx) {

@@ -13398,6 +13398,39 @@ async function main() {
       check('★ 캘린더 — 다른 곳에서 행을 더하면 그 날에 막대가 선다', await waitFor(`!!document.querySelector('[data-testid="db-cal-event"][data-row-id="${ma}"]')`, 8000))
     }
 
+    if (sectionIf('연결된 데이터베이스 — 서버 (2l-1 · F-04-13)')) {
+      // 다른 데이터베이스의 소스를 붙이면 그 소스를 보는 뷰가 생기고 원본의 행이 보인다 · 두 번 붙이면 409 · 떼면 뷰와 함께 빠진다 · 제 소스는 떼지 않는다.
+      // 권한(원본을 못 보면 붙일 수 없음 · 이름을 가림 · 링크로 권한이 오르지 않음)은 DB 검사가 본다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const original = (await api('POST', '/databases', { name: `원본 ${stamp}` })).body.database
+      const titleProp = (await api('GET', `/views/${original.defaultViewId}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      await api('POST', `/views/${original.defaultViewId}/rows`, { cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun('원본의 행')] } }] })
+      const container = (await api('POST', '/databases', { name: `대시보드 ${stamp}` })).body.database
+
+      const linked = await api('POST', `/databases/${container.id}/linked-sources`, { dataSourceId: original.dataSourceId })
+      check('★ 다른 데이터베이스의 소스를 붙인다(201 · 소유 아님 · 그 소스를 보는 뷰)',
+        linked.status === 201 && linked.body?.dataSource?.owned === false && typeof linked.body?.viewId === 'string', JSON.stringify(linked))
+      const rows = await api('GET', `/views/${linked.body?.viewId}/rows`)
+      check('★ 붙인 뷰로 원본의 행이 보인다', (rows.body?.rows ?? []).map((r) => r.title).join() === '원본의 행', JSON.stringify(rows.body?.rows))
+      const twice = await api('POST', `/databases/${container.id}/linked-sources`, { dataSourceId: original.dataSourceId })
+      check('두 번 붙이면 409', twice.status === 409 && twice.body?.error === 'already_attached', JSON.stringify(twice))
+      const owned = await api('DELETE', `/databases/${container.id}/linked-sources/${container.dataSourceId}`)
+      check('제 소스는 떼지 않는다(409)', owned.status === 409 && owned.body?.error === 'owned_source', JSON.stringify(owned))
+      const detached = await api('DELETE', `/databases/${container.id}/linked-sources/${original.dataSourceId}`)
+      const after = await api('GET', `/databases/${container.id}/data-sources`)
+      const gone = await api('GET', `/views/${linked.body?.viewId}`)
+      check('★ 떼면 그 소스와 뷰가 빠진다 — 원본은 그대로',
+        detached.status === 200 && (after.body?.dataSources ?? []).map((d) => d.id).join() === container.dataSourceId && gone.status === 404
+          && ((await api('GET', `/views/${original.defaultViewId}/rows`)).body?.rows ?? []).length === 1,
+        JSON.stringify({ detached: detached.status, after: after.body?.dataSources, gone: gone.status }))
+    }
+
     if (sectionIf('개인 필터 · 정렬 — 화면 (2h-2 · F-04-17)')) {
       // 볼 수만 있는 사람(브라우저 세션을 바꾼다)이 도구줄의 필터로 조건을 걸면 **자기 것**으로 저장되고 그 사람의 표만 좁혀진다 — "나만 보는
       // 필터" 표시 · 초기화. 편집자는 자기 개인 것을 "모두에게 저장"한다. 브라우저 세션은 끝에 반드시 소유자로 되돌린다.
