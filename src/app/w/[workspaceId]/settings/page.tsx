@@ -6,7 +6,7 @@
  *       [라벨 / 설명 / 컨트롤 / 상태 배지]"*
  *
  * 화면의 모든 것이 레지스트리에서 나온다 — 왼쪽 내비(`visibleSettingGroups` — 보이는 항목이나 패널이 있는 절만), 오른쪽 항목
- * (`readSettings` — 보이는 것만 · 값 · 고칠 수 있는가), 읽기 전용의 안내(`editorsNote`), 항목 뒤의 패널(`visiblePanels` — 사람 ·
+ * (`readSettings` — 보이는 것만 · 값 · 고칠 수 있는가 · 요금제가 막는가), 읽기 전용의 안내(`editorsNote` · 요금제면 그 안내), 항목 뒤의 패널(`visiblePanels` — 사람 ·
  * 내보내기 · 8g-2). 이 파일에 항목의 이름이나 역할 판정을 적지 않는다. 지금은 내 계정 · 워크스페이스 두 묶음이다(조직은 조직 기능이
  * 생길 때 — 정본 ③). 절은 `?s=` 로 고른다.
  */
@@ -19,6 +19,7 @@ import { visiblePanels } from '@/lib/settings/panels'
 import { readSettings } from '@/lib/settings/settings'
 import { SettingPanelView } from './setting-panel'
 import { SettingRow } from './setting-row'
+import { SETTING_PLAN_NOTE } from './settings-messages'
 
 export default async function SettingsPage({ params, searchParams }: PageProps<'/w/[workspaceId]/settings'>) {
   const { workspaceId } = await params
@@ -79,7 +80,8 @@ export default async function SettingsPage({ params, searchParams }: PageProps<'
               control={item.control}
               value={item.value}
               editable={item.editable}
-              readOnlyNote={definition === null ? null : editorsNote(definition)}
+              planRequired={item.planRequired}
+              readOnlyNote={item.planRequired ? SETTING_PLAN_NOTE : definition === null ? null : editorsNote(definition)}
             />
           )
         })}

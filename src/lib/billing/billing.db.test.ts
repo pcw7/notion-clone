@@ -150,6 +150,7 @@ test('★ ⑥ 개요 — 소유자 · 멤버 관리자만 · 가격 순 · 값�
     'guests.max': [10, null, null, null],
     'teamspace.private': [false, false, true, true],
     'import.max_bytes': [5242880, 52428800, 52428800, 52428800],
+    'trash.custom_retention': [false, false, false, true],
   })
   assert.equal(overview.usage.guests, 2, '활성 게스트 하나 + 대기 초대 하나')
 
