@@ -11,7 +11,7 @@
  *   · 시각은 실행기의 `now` 하나 — SQL 의 `now()` 를 쓰지 않는다(검사가 시각을 정한다)
  *   · 세션 없이 도는 **시스템 주체**다 — 권한을 묻지 않는다. 무엇을 해도 되는지는 그 일의 규칙이 정한다
  *
- * 일의 종류는 CHECK(`ck_scheduled_job_kind` — 0068 · 0069 · 0070 · 0073 · 0074)와 아래 `HANDLERS` 두 곳에 있다 — 소비자를 더할 때 둘을 함께 늘린다.
+ * 일의 종류는 CHECK(`ck_scheduled_job_kind` — 0068 · 0069 · 0070 · 0073 · 0074 · 0076)와 아래 `HANDLERS` 두 곳에 있다 — 소비자를 더할 때 둘을 함께 늘린다.
  *
  *   · `version_gc` — 만료된 버전을 지운다(4a-1 · F-11-03 · `history/gc.ts`)
  *   · `trash_purge` — 만료된 휴지통 묶음을 `purged` 로(4b-1 · F-11-06 · `block/trash-purge.ts`)
@@ -19,6 +19,8 @@
  *   · `reminder_fire` — 때가 된 리마인더를 알림으로(4c-2 · F-11-10 · `notification/reminder-fire.ts`) — 늘 1분마다
  *   · `data_retention` — 읽은 알림 · 오래된 활동 이벤트 · 넘친 안 읽은 알림 · 넘친 최근 방문을 지우고 파티션을 미리 만든다(4d-1 · F-11-18 ·
  *     `notification/retention.ts`)
+ *   · `webhook_deliver` — 모으는 창이 끝났거나 다시 보낼 때가 된 웹훅 묶음을 보낸다(4e-2 · F-11-19 · `notification/webhook-delivery.ts`) — 늘
+ *     1분마다
  */
 
 import { randomUUID } from 'node:crypto'
@@ -29,8 +31,9 @@ import { runTrashPurge } from '../block/trash-purge.ts'
 import { runVersionGc } from '../history/gc.ts'
 import { runReminderFire } from '../notification/reminder-fire.ts'
 import { runDataRetention } from '../notification/retention.ts'
+import { runWebhookDelivery } from '../notification/webhook-delivery.ts'
 
-export type JobKind = 'version_gc' | 'trash_purge' | 'trash_hard_delete' | 'reminder_fire' | 'data_retention'
+export type JobKind = 'version_gc' | 'trash_purge' | 'trash_hard_delete' | 'reminder_fire' | 'data_retention' | 'webhook_deliver'
 
 /** 일의 결과 — 주기 일은 다음 실행 시각을 준다(없으면 한 번으로 끝). */
 export type JobOutcome = { readonly again: Date | null }
@@ -51,6 +54,8 @@ const HANDLERS: Readonly<Record<JobKind, JobHandler>> = {
     return { again: new Date(now.getTime() + 60_000) }
   },
   data_retention: async (_payload, now) => ({ again: nextSweep(now, (await runDataRetention(now)).more) }),
+  // 웹훅 — 창이 5분이고 다시 보내기가 분 단위다. 남았으면 곧바로(다음 판), 아니면 1분 뒤(정본 [보강] 페이지 웹훅 ⓒ)
+  webhook_deliver: async (_payload, now) => ({ again: new Date(now.getTime() + ((await runWebhookDelivery(now)).more ? 0 : 60_000)) }),
 }
 
 /** 워커가 뜰 때 넣어 보는 주기 일 — 이미 살아 있으면 그대로다(키의 부분 UNIQUE). */
@@ -60,6 +65,7 @@ export const RECURRING: readonly { readonly kind: JobKind; readonly dedupeKey: s
   { kind: 'trash_hard_delete', dedupeKey: 'trash_hard_delete' },
   { kind: 'reminder_fire', dedupeKey: 'reminder_fire' },
   { kind: 'data_retention', dedupeKey: 'data_retention' },
+  { kind: 'webhook_deliver', dedupeKey: 'webhook_deliver' },
 ]
 
 /** 다섯 번째 실패면 멈춘다. */

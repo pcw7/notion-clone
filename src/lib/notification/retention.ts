@@ -13,6 +13,7 @@
  *      알림을 먼저 지우고(①②) 이벤트를 나중에 — 남은 알림 전체의 `event_ids` 로 본다(시각의 짝에 기대지 않는다)
  *   ④ 최근 방문 — 사람마다(워크스페이스마다) 최근 `RECENT_VISIT_CAP` 개만 남긴다
  *   ⑤ 파티션 — 활동 이벤트의 올해 · 다음 해 파티션을 미리 만든다(`ensure_activity_partition` — 마이그레이션의 함수 · 앱은 DDL 을 쓰지 않는다)
+ *   ⑥ 끝난 웹훅 묶음 — 끝난 지(`finished_at`) `WEBHOOK_DELIVERY_DAYS` 일이 지나면 지운다(4e-2 · 정본 [보강] 페이지 웹훅 ⓖ)
  *
  * 감사 기록(`audit_event`)은 지우지 않는다(F-11-12). 기간은 코드 상수다 — 관리자 화면은 없다(노션에도 없다).
  */
@@ -27,6 +28,8 @@ export const UNREAD_NOTIFICATION_CAP = 1000
 export const ACTIVITY_DAYS = 90
 /** 사람마다(워크스페이스마다) 남기는 최근 방문의 수. */
 export const RECENT_VISIT_CAP = 200
+/** 끝난(보냄 · 실패 · 버림) 웹훅 묶음을 남기는 날 — 화면이 "마지막 보낸 때 · 실패"를 읽는다. */
+export const WEBHOOK_DELIVERY_DAYS = 7
 /** 한 판에 종류마다 지우는 수 — 꽉 차면 스케줄러가 곧 다시 부른다. */
 export const RETENTION_BATCH = 5000
 
@@ -40,6 +43,7 @@ export type RetentionResult = {
   readonly unreadOverCap: number
   readonly events: number
   readonly visits: number
+  readonly deliveries: number
   /** 그 해마다 파티션이 어떻게 됐나 — `created` · `exists` · `blocked`. */
   readonly partitions: Readonly<Record<number, string>>
   /** 한 종류라도 한 판이 꽉 찼다 — 더 남았을 수 있다. */
@@ -127,6 +131,19 @@ export async function runDataRetention(
     [visitCap, batch, ws],
   )
 
+  // ⑥ 끝난 웹훅 묶음
+  const deliveries = await query<{ id: string }>(
+    `DELETE FROM webhook_delivery d USING (
+       SELECT d2.id FROM webhook_delivery d2
+         JOIN page_webhook w ON w.id = d2.webhook_id
+        WHERE d2.finished_at < $1
+          AND ($3::uuid[] IS NULL OR w.workspace_id = ANY($3::uuid[]))
+        LIMIT $2) old
+     WHERE d.id = old.id
+     RETURNING d.id`,
+    [new Date(now.getTime() - WEBHOOK_DELIVERY_DAYS * DAY), batch, ws],
+  )
+
   // ⑤ 파티션 — 올해 · 다음 해(UTC). 검사는 끈다(위 `options.partitions`)
   const partitions: Record<number, string> = {}
   if (options.partitions !== false) {
@@ -135,12 +152,13 @@ export async function runDataRetention(
     }
   }
 
-  const counts = [processed.length, overCap.length, events.length, visits.length]
+  const counts = [processed.length, overCap.length, events.length, visits.length, deliveries.length]
   return {
     processedNotifications: processed.length,
     unreadOverCap: overCap.length,
     events: events.length,
     visits: visits.length,
+    deliveries: deliveries.length,
     partitions,
     more: counts.some((n) => n === batch),
   }

@@ -3661,6 +3661,55 @@ try {
     await client.query('ROLLBACK TO SAVEPOINT cascade')
   }
 
+  console.log('\n[56] 웹훅 보내기 (0076 / §3.8 [보강] 페이지 웹훅 — 보내기 · 4e-2조각)')
+  {
+    const kinds = await client.query(`SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conname = 'ck_scheduled_job_kind'`)
+    const kindDef = kinds.rows[0]?.def ?? ''
+    if (['version_gc', 'trash_purge', 'trash_hard_delete', 'reminder_fire', 'data_retention', 'webhook_deliver'].every((k) => kindDef.includes(`'${k}'`))) {
+      ok('★ 일의 종류에 webhook_deliver 가 있다 · 앞의 다섯도 그대로')
+    } else fail(`일의 종류가 어긋났다: ${kindDef}`)
+
+    const hookPage = randomUUID()
+    const hookId = randomUUID()
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key, ancestor_path, perm_scope_id, properties, format,
+                          created_at, last_edited_at)
+       VALUES ($1, $2, 'page', 'block', $3, 'a0', '{}', $1, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      [hookPage, wsId, randomUUID()],
+    )
+    await client.query(
+      `INSERT INTO page_webhook (id, workspace_id, page_id, url_sealed, url_hint, created_by) VALUES ($1, $2, $3, '\\x01'::bytea, 'h', $4)`,
+      [hookId, wsId, hookPage, userId],
+    )
+    const put = `INSERT INTO webhook_delivery (id, webhook_id, event_ids, window_end, status, next_attempt_at, finished_at)
+                 VALUES ($1, $2, $3::uuid[], now(), $4, $5, $6)`
+    const ev = [randomUUID()]
+    await client.query(put, [randomUUID(), hookId, ev, 'collecting', null, null])
+    await client.query(put, [randomUUID(), hookId, ev, 'pending', new Date(), null])
+    await client.query(put, [randomUUID(), hookId, ev, 'sent', null, new Date()])
+    ok('묶음 셋(모으는 중 · 보낼 차례 · 보냄) — 정상 경로가 통과한다')
+
+    const rejectBy = async (label, constraint, params) => {
+      await client.query('SAVEPOINT probe')
+      try {
+        await client.query(put, params)
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        fail(`${label} — 거부되어야 하는데 통과했다`)
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        if (e.constraint === constraint) ok(`${label} — ${constraint} 가 거부함 (${e.code})`)
+        else fail(`${label} — ${constraint} 가 아니라 ${e.constraint ?? e.code} 에 걸렸다 (${e.message})`)
+      }
+    }
+    await rejectBy('★ 웹훅마다 모으는 묶음은 하나', 'ux_webhook_delivery_collecting', [randomUUID(), hookId, ev, 'collecting', null, null])
+    await rejectBy('★ 보낼 차례인데 보낼 시각이 없다', 'ck_webhook_delivery_pending', [randomUUID(), hookId, ev, 'pending', null, null])
+    await rejectBy('보낸 것에 보낼 시각이 남아 있다', 'ck_webhook_delivery_pending', [randomUUID(), hookId, ev, 'sent', new Date(), new Date()])
+    await rejectBy('★ 끝났는데 끝난 시각이 없다', 'ck_webhook_delivery_finished', [randomUUID(), hookId, ev, 'failed', null, null])
+    await rejectBy('모으는 중인데 끝난 시각이 있다', 'ck_webhook_delivery_finished', [randomUUID(), hookId, ev, 'collecting', null, new Date()])
+    await rejectBy('★ 이벤트가 하나도 없다', 'ck_webhook_delivery_events', [randomUUID(), hookId, [], 'dropped', null, new Date()])
+    await rejectBy('모르는 상태', 'ck_webhook_delivery_status', [randomUUID(), hookId, ev, 'retrying', null, null])
+  }
+
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
 } catch (e) {

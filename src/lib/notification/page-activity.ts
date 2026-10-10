@@ -19,18 +19,10 @@ import { withReadTransaction, type Tx } from '../db/tx.ts'
 import { isUuid } from '../ids.ts'
 import { can } from '../permissions/levels.ts'
 import { effectiveCaps, readableScopes } from '../permissions/effective.ts'
-import type { ActivityType } from './activity.ts'
+import { PAGE_ACTIVITY_TYPES, type PageActivityType } from './page-activity-types.ts'
 
-/** Updates 에 보이는 종류 — 허용 목록(정본 ②). `suggestion.*` 은 제안 편집이 생길 때 더한다. */
-export const PAGE_ACTIVITY_TYPES = [
-  'page.created',
-  'page.moved',
-  'page.trashed',
-  'block.updated',
-  'property.updated',
-  'comment.created',
-] as const satisfies readonly ActivityType[]
-export type PageActivityType = (typeof PAGE_ACTIVITY_TYPES)[number]
+// 허용 목록(정본 ②)은 웹훅(4e-2)과 함께 쓴다 — 순환을 피해 작은 모듈에 둔다
+export { PAGE_ACTIVITY_TYPES, type PageActivityType } from './page-activity-types.ts'
 
 /** 한 번에 읽는 수(정본 ③). */
 export const PAGE_ACTIVITY_PAGE_SIZE = 30
