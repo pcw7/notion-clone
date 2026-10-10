@@ -279,6 +279,7 @@ export default async function PageView({ params, searchParams }: PageProps<'/w/[
             variant="record"
             columns={rowColumns}
             layoutVersion={rowPage.layoutVersion}
+            layoutUndo={rowPage.layoutUndo}
             pinned={rowPage.pinned}
             main={rowPage.main}
             panel={rowPage.panel}

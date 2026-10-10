@@ -46,6 +46,8 @@ export type RowPage = {
   readonly main: readonly string[]
   /** 상세 패널의 속성(3c-1 · F-16-05). */
   readonly panel: readonly string[]
+  /** 직전 레이아웃으로 되돌릴 수 있다(3e-2 · F-16-12 — 직전 버전이 지금 버전을 만든 적용의 것이다). */
+  readonly layoutUndo: boolean
   readonly titlePropertyId: string | null
   readonly row: RowSummary
   readonly access: DatabaseAccess
@@ -75,10 +77,14 @@ export async function readRowPage(ctx: SessionContext, pageId: string): Promise<
     )
     const summary = await readRow(tx, pageId)
     if (view === null || summary === null) return null
-    const [columns, layout, locked] = await Promise.all([
+    const [columns, layout, locked, kept] = await Promise.all([
       readRecordColumns(tx, row.data_source_id),
       readRecordLayout(tx, row.data_source_id),
       isLocked(tx, row.database_id),
+      tx.queryMaybe<{ after_version: string }>(
+        `SELECT after_version::text AS after_version FROM page_layout_history WHERE data_source_id = $1`,
+        [row.data_source_id],
+      ),
     ])
     const hidden = new Set(layout.hidden)
     return {
@@ -91,6 +97,7 @@ export async function readRowPage(ctx: SessionContext, pageId: string): Promise<
       settings: layout.settings,
       main: layout.main,
       panel: layout.panel,
+      layoutUndo: kept !== null && kept.after_version === layout.version,
       locked,
     }
   })
@@ -113,6 +120,7 @@ export async function readRowPage(ctx: SessionContext, pageId: string): Promise<
     settings: found.settings,
     main: found.main,
     panel: found.panel,
+    layoutUndo: found.layoutUndo,
     titlePropertyId: found.columns.find((c) => c.type === 'title')?.propertyId ?? null,
     row: found.summary,
     access: found.locked ? { ...database.value.access, canEditStructure: false } : database.value.access,

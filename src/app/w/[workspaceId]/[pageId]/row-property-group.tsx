@@ -15,7 +15,10 @@
  *     토글이 없다). 좁은 화면에서는 본문 아래로 쌓인다
  *   · 속성 묶음 — 고정 · 본문 모듈 · 패널 · 숨김 밖의 나머지(M6 — 서버는 `columns` 에서 빼지 않는다). 보이는 속성은 스키마 순서 ·
  *     숨긴 속성은 "숨긴 속성 N개"로 펼친다(숨김은 표시 규칙이지 접근 제어가 아니다 — 16 R12)
- *   · 레이아웃 편집 — 구조를 고칠 수 있는 사람에게만(잠긴 데이터베이스는 닫는다 — `readRowPage`)
+ *   · 레이아웃 편집 — 구조를 고칠 수 있는 사람에게만(잠긴 데이터베이스는 닫는다 — `readRowPage`) · 직전 레이아웃으로 되돌리기(3e-2 · 되돌릴
+ *     수 있을 때만 — 한 단계)
+ *   · 실시간(3e-2 · F-16-12) — 표 변경 알림(`db_rows` — 레이아웃 머리도 보낸다 · 0067)을 받으면 레이아웃 버전을 묻고, **바뀌었을 때만**
+ *     다시 그린다(칸이 바뀐 신호에는 그리지 않는다). 편집 중이면 닫은 뒤에 묻는다. 내가 적용 · 되돌리기로 만든 버전은 이미 안다
  *
  * ★ 접혀 있거나 편집하는 동안에도 **표를 내리지 않는다**(`hidden`). 표는 처음 받은 행을 상태로 들고 고친 값을 그 위에 칠한다 —
  *   내렸다가 다시 올리면 서버가 처음 준 행으로 그려 그사이 고친 값이 옛값으로 보인다. 패널도 접을 때 `hidden` 으로 감춘다.
@@ -31,6 +34,8 @@ import type { ViewColumn } from '@/lib/database/view-columns'
 import { GROUP_MODULE } from '@/lib/database/layout-modules'
 import type { PageSettings } from '@/lib/database/page-settings'
 import { DatabaseTable } from '../db/[databaseId]/database-table'
+import { useTableChanges } from '../db/[databaseId]/use-table-changes'
+import * as api from '../db/[databaseId]/table-api'
 import { RowLayoutEditor } from './row-layout-editor'
 
 const keyOf = (columns: readonly ViewColumn[]): string => columns.map((c) => c.propertyId).join(',')
@@ -75,6 +80,8 @@ export function RowPropertyGroup(
     columns: ViewColumn[]
     /** 레이아웃의 버전 — 편집 모드가 적용할 때 보낸다. */
     layoutVersion: string
+    /** 직전 레이아웃으로 되돌릴 수 있다(3e-2). */
+    layoutUndo: boolean
     /** 제목 아래에 고정한 속성 — heading 안의 순서(3a-2). `columns` 에도 그대로 있다 — 여기서 묶음과 가른다. */
     pinned: readonly string[]
     /** 본문 줄 — 속성 id 와 속성 묶음(`GROUP_MODULE`)의 순서(3c-2). */
@@ -87,7 +94,7 @@ export function RowPropertyGroup(
     canEditLayout: boolean
   },
 ) {
-  const { columns, layoutVersion, pinned, main, panel, settings, canEditLayout, ...table } = props
+  const { columns, layoutVersion, layoutUndo, pinned, main, panel, settings, canEditLayout, ...table } = props
   const byId = new Map(columns.map((c) => [c.propertyId, c]))
   const columnsOf = (ids: readonly string[]) => ids.flatMap((id) => (byId.has(id) ? [byId.get(id)!] : []))
   const pinnedColumns = columnsOf(pinned)
@@ -110,6 +117,58 @@ export function RowPropertyGroup(
   const editButton = useRef<HTMLButtonElement>(null)
   /** 편집 모드를 닫은 뒤 "레이아웃 편집" 단추로 포커스를 돌려준다. */
   const returnFocus = useRef(false)
+  const [undoError, setUndoError] = useState<string | null>(null)
+  const [undoing, setUndoing] = useState(false)
+  /** 이 화면이 아는 레이아웃 버전 — 서버 렌더가 준 것과 내가 적용 · 되돌리기로 만든 것 중 큰 것. */
+  const knownVersion = useRef(layoutVersion)
+  /** 편집 중에 온 신호 — 닫은 뒤에 묻는다. */
+  const pendingCheck = useRef(false)
+  const editingRef = useRef(editing)
+
+  useEffect(() => {
+    if (BigInt(layoutVersion) > BigInt(knownVersion.current)) knownVersion.current = layoutVersion
+  }, [layoutVersion])
+
+  const learn = (version: string) => {
+    if (/^\d+$/.test(version) && BigInt(version) > BigInt(knownVersion.current)) knownVersion.current = version
+  }
+
+  /** 레이아웃 버전을 묻고, 이 화면이 모르는 버전이면 다시 그린다. */
+  const checkLayout = async () => {
+    const now = await api.layoutVersion(table.workspaceId, table.dataSourceId)
+    if (!now.ok || !/^\d+$/.test(now.value) || BigInt(now.value) <= BigInt(knownVersion.current)) return
+    knownVersion.current = now.value
+    startTransition(() => router.refresh())
+  }
+
+  useEffect(() => {
+    editingRef.current = editing
+    if (editing || !pendingCheck.current) return
+    pendingCheck.current = false
+    void checkLayout()
+  })
+
+  useTableChanges(table.workspaceId, table.dataSourceId, {
+    onChanged: () => {
+      if (editingRef.current) pendingCheck.current = true
+      else void checkLayout()
+    },
+    // 더 볼 수 없다 — 서버 렌더가 "없음"을 보인다
+    onRevoked: () => router.refresh(),
+  })
+
+  const undo = async () => {
+    setUndoing(true)
+    setUndoError(null)
+    const result = await api.undoLayout(table.workspaceId, table.dataSourceId, layoutVersion)
+    setUndoing(false)
+    if (!result.ok) {
+      setUndoError(result.message)
+      return
+    }
+    learn(result.value.version)
+    startTransition(() => router.refresh())
+  }
 
   useEffect(() => {
     if (editing || !returnFocus.current) return
@@ -124,11 +183,12 @@ export function RowPropertyGroup(
     setEditing(false)
   }
 
-  const applied = (changed: boolean) => {
+  const applied = (changed: boolean, version: string) => {
     if (!changed) {
       close()
       return
     }
+    learn(version)
     // 새 레이아웃이 도착할 때 편집 모드가 함께 닫힌다 — 그 사이에 옛 레이아웃이 비치지 않는다.
     startTransition(() => {
       router.refresh()
@@ -167,7 +227,23 @@ export function RowPropertyGroup(
               레이아웃 편집
             </button>
           )}
+          {canEditLayout && layoutUndo && (
+            <button
+              type="button"
+              data-testid="row-layout-undo"
+              disabled={undoing || refreshing}
+              onClick={() => void undo()}
+              className="rounded px-1 py-0.5 hover:bg-neutral-100 disabled:opacity-40 dark:hover:bg-neutral-800"
+            >
+              {undoing ? '되돌리는 중…' : '직전 레이아웃으로 되돌리기'}
+            </button>
+          )}
         </div>
+      )}
+      {undoError !== null && (
+        <p role="alert" data-testid="row-layout-undo-error" className="text-xs text-red-600">
+          {undoError}
+        </p>
       )}
       {hidden.length > 0 && (
         <div hidden={!showHidden} data-testid="row-hidden-properties">

@@ -82,8 +82,8 @@ export function RowLayoutEditor(props: {
   /** 적용한 뒤 서버가 다시 그리는 중이다 — 그동안 단추를 막는다. */
   refreshing: boolean
   onCancel: () => void
-  /** 적용됐다(바뀐 것이 없어도). */
-  onApplied: (changed: boolean) => void
+  /** 적용됐다(바뀐 것이 없어도) — 서버의 새 버전과 함께. */
+  onApplied: (changed: boolean, version: string) => void
 }) {
   const schemaIndex = new Map(props.columns.map((c, i) => [c.propertyId, i]))
   const [lists, setLists] = useState<Lists>(() => {
@@ -176,7 +176,7 @@ export function RowLayoutEditor(props: {
       setError(result.message)
       return
     }
-    props.onApplied(result.value.changed)
+    props.onApplied(result.value.changed, result.value.version)
   }
 
   const hiddenCount = itemsOf(lists.group).filter((item) => !item.visible).length

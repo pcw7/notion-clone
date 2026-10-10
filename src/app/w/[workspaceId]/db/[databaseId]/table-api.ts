@@ -133,6 +133,8 @@ function messageOf(status: number, body: ErrorBody): string {
       return '레이아웃을 확인하세요. 제목 속성은 숨기거나 고정할 수 없고, 고정한 속성은 숨길 수 없습니다.'
     case 'panel_type':
       return '관계형 속성은 상세 패널에 놓을 수 없습니다.'
+    case 'no_undo':
+      return '되돌릴 직전 레이아웃이 없습니다. 그사이 누가 되돌렸을 수 있습니다.'
     case 'too_many_pinned':
       return `제목 아래에는 속성을 ${MAX_PINNED_PROPERTIES}개까지 고정할 수 있습니다.`
     // ── 수식 (2i-3a) ──
@@ -813,6 +815,26 @@ export function deleteTemplate(workspaceId: string, templateId: string): Promise
  * 편집 모드의 초안을 한 번에 적용한다 — 고정 · 숨김 · 순서를 함께(전체 교체). `version` 은 초안을 시작할 때 읽은 것이다(머리가 없으면 `'0'`).
  * 남이 먼저 적용했으면 `layout_conflict` 로 거부된다(부분 병합 없음).
  */
+/** 직전 레이아웃으로 되돌린다(3e-2 · F-16-12) — 지금 보고 있는 버전을 보낸다. 되돌릴 것이 없으면 `no_undo`. */
+export function undoLayout(
+  workspaceId: string,
+  dataSourceId: string,
+  version: string,
+): Promise<ApiResult<{ changed: boolean; version: string }>> {
+  return call(
+    `${base(workspaceId)}/data-sources/${dataSourceId}/layout/undo`,
+    { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ version }) },
+    (body) => ({ changed: body.changed === true, version: String((body.layout as { version?: unknown } | undefined)?.version ?? '') }),
+  )
+}
+
+/** 레이아웃의 지금 버전(3e-2) — 열린 행 페이지가 표 변경 알림을 받으면 묻는다(바뀌었을 때만 다시 그린다). */
+export function layoutVersion(workspaceId: string, dataSourceId: string): Promise<ApiResult<string>> {
+  return call(`${base(workspaceId)}/data-sources/${dataSourceId}/layout`, { method: 'GET' }, (body) =>
+    String((body.layout as { version?: unknown } | undefined)?.version ?? ''),
+  )
+}
+
 export function applyLayout(
   workspaceId: string,
   dataSourceId: string,
@@ -829,10 +851,10 @@ export function applyLayout(
     /** 상세 패널의 속성(3c-2). */
     readonly panel?: readonly string[]
   },
-): Promise<ApiResult<{ changed: boolean }>> {
+): Promise<ApiResult<{ changed: boolean; version: string }>> {
   return call(
     `${base(workspaceId)}/data-sources/${dataSourceId}/layout`,
     { method: 'PUT', headers: JSON_HEADERS, body: JSON.stringify(draft) },
-    (body) => ({ changed: body.changed === true }),
+    (body) => ({ changed: body.changed === true, version: String((body.layout as { version?: unknown } | undefined)?.version ?? '') }),
   )
 }

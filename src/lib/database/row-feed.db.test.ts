@@ -22,6 +22,7 @@ import { addProperty, addSelectOption, getSchema } from './property.ts'
 import type { MvpPropertyType } from './property-types.ts'
 import { createRow, trashRow, updateCells } from './row.ts'
 import { updateView } from './view.ts'
+import { applyRecordLayout, undoRecordLayout } from './layout.ts'
 import { closeRowFeed, dispatchRowSignal, rowFeedListenerCount, subscribeRows, type RowFeedListener } from './row-feed.ts'
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'
@@ -100,6 +101,22 @@ describe('① 신호를 보내는 쓰기', () => {
     assert.ok((await signalsDuring(t.ds, () => addSelectOption(fx.owner.ctx, t.ds, stage, { name: '검토' }))) >= 1, '옵션')
     assert.ok((await signalsDuring(t.ds, () => updateView(fx.owner.ctx, t.viewId, { filter: { property_id: qty, operator: 'greater_than', value: 1 } }))) >= 1, '뷰')
     assert.ok((await signalsDuring(t.ds, () => trashRow(fx.owner.ctx, r))) >= 1, '휴지통')
+  })
+})
+
+describe('①-2 레이아웃 (3e-2 · F-16-12)', () => {
+  test('★ 레이아웃의 적용 · 되돌리기도 신호를 보낸다 — 설정만 바꿔 머리만 고쳐져도(0067)', async (ctx) => {
+    if (skipReason) return ctx.skip(skipReason)
+    const t = await table('레이아웃 신호')
+    assert.ok(
+      (await signalsDuring(t.ds, () => applyRecordLayout(fx.owner.ctx, t.ds, { expectedVersion: '0', order: [], hidden: [], settings: { fullWidth: true } }))) >= 1,
+      '처음 적용(머리가 생긴다)',
+    )
+    assert.ok(
+      (await signalsDuring(t.ds, () => applyRecordLayout(fx.owner.ctx, t.ds, { expectedVersion: '1', order: [], hidden: [], settings: { backlinks: 'off' } }))) >= 1,
+      '설정만 바꾼 적용 — 속성 · 행은 그대로이고 머리만 고쳐진다',
+    )
+    assert.ok((await signalsDuring(t.ds, () => undoRecordLayout(fx.owner.ctx, t.ds, { expectedVersion: '2' }))) >= 1, '되돌리기')
   })
 })
 
