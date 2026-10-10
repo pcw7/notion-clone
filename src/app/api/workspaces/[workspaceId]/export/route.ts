@@ -12,7 +12,7 @@
  */
 
 import { requireWorkspaceSession } from '@/lib/auth/route-session'
-import { exportZipStream, prepareExport } from '@/lib/export/download'
+import { exportZipStream, prepareExport, recordExport } from '@/lib/export/download'
 import { exportRejectionStatus, exportScopeOf, zipResponseHeaders } from '@/lib/export/http'
 
 export async function GET(
@@ -23,10 +23,12 @@ export async function GET(
   const session = await requireWorkspaceSession(workspaceId)
   if (!session.ok) return session.response
 
-  const prepared = await prepareExport(session.ctx, exportScopeOf(new URL(request.url)))
+  const scope = exportScopeOf(new URL(request.url))
+  const prepared = await prepareExport(session.ctx, scope)
   if (!prepared.ok) {
     return Response.json({ error: prepared.reason }, { status: exportRejectionStatus(prepared.reason) })
   }
+  await recordExport(session.ctx, scope)
 
   return new Response(exportZipStream(session.ctx, prepared.value.plan), {
     headers: zipResponseHeaders(prepared.value.fileName),

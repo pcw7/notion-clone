@@ -18,6 +18,7 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import type { SessionContext, WorkspaceRole } from '../auth/session-context.ts'
 import { isUuid } from '../ids.ts'
 import { queryMaybe } from '../db/pool.ts'
+import { recordAuditIn } from '../audit/audit.ts'
 import { withCommandTransaction, withTransaction, type Tx } from '../db/tx.ts'
 import { grantFromInviteIn } from '../permissions/acl.ts'
 import { membersWith } from '../permissions/effective.ts'
@@ -124,6 +125,7 @@ export async function createEmailInvite(
           WHERE id = $1`,
         [pending.id, input.role, hashInviteToken(token), input.inviterUserId, String(INVITE_TTL_DAYS)],
       )
+      await auditInvited(tx, input.workspaceId, input.inviterUserId, pending.id, email, input.role, true)
       return { ok: true, inviteId: pending.id, token } as const
     }
 
@@ -143,7 +145,19 @@ export async function createEmailInvite(
       ],
     )
 
+    await auditInvited(tx, input.workspaceId, input.inviterUserId, row.id, email, input.role, false)
     return { ok: true, inviteId: row.id, token } as const
+  })
+}
+
+/** 감사 로그(F-11-12 — 6d-1) — 누구를 들이려 했는가가 감사의 목적이라 받는 주소를 남긴다. */
+function auditInvited(tx: Tx, workspaceId: string, inviterUserId: string, inviteId: string, email: string, role: string, renewed: boolean) {
+  return recordAuditIn(tx, {
+    type: 'workspace.member_invited',
+    workspaceId,
+    actorUserId: inviterUserId,
+    target: { type: 'invite', id: inviteId },
+    metadata: { email, role, renewed },
   })
 }
 
@@ -335,6 +349,14 @@ export async function acceptInvite(
     await tx.query(`UPDATE workspace SET acl_epoch = acl_epoch + 1 WHERE id = $1`, [
       invite.workspace_id,
     ])
+    // 감사 로그(F-11-12 — 6d-1) — 들어온 사람이 행위자다
+    await recordAuditIn(tx, {
+      type: 'workspace.member_joined',
+      workspaceId: invite.workspace_id,
+      actorUserId: userId,
+      target: { type: 'user', id: userId },
+      metadata: { role, via: 'invite' },
+    })
 
     return { ok: true, workspaceId: invite.workspace_id, role } as const
   })
@@ -401,6 +423,17 @@ async function acceptGuestInvite(tx: Tx, invite: GuestInviteRow, userId: string)
   if (granted !== 'granted' && granted !== 'covered') return { ok: false, reason: 'page_unavailable' } as const
 
   await tx.query(`UPDATE workspace_invite SET accepted_at = now(), accepted_by_user_id = $2 WHERE id = $1`, [invite.id, userId])
+  // 감사 로그(F-11-12 — 6d-1) — 이미 이 워크스페이스의 사람이면 들어온 것이 아니다(페이지 하나를 받았을 뿐 — 권한 변경으로 남지 않는다:
+  // 초대한 사람이 이미 그 공유를 정했다)
+  if (!active) {
+    await recordAuditIn(tx, {
+      type: 'workspace.member_joined',
+      workspaceId: invite.workspace_id,
+      actorUserId: userId,
+      target: { type: 'user', id: userId },
+      metadata: { role: 'guest', via: 'invite', pageId },
+    })
+  }
   return {
     ok: true,
     workspaceId: invite.workspace_id,

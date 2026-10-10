@@ -16,6 +16,7 @@
  */
 
 import type { SessionContext } from '../auth/session-context.ts'
+import { recordForContextIn } from '../audit/audit.ts'
 import { entitlement } from '../billing/entitlement.ts'
 import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
 import { readSecurityPolicyIn, writeNonmemberRequestPolicyIn, writePublishPolicyIn } from '../workspace/security-policy.ts'
@@ -173,7 +174,17 @@ export async function updateSetting(ctx: SessionContext, key: string, raw: unkno
   return withCommandTransaction(async (tx): Promise<SettingResult> => {
     if (requires !== null && !(await entitlement(ctx.workspaceId, requires, tx))) return { ok: false, reason: 'plan_required' }
     if (value === null) return { ok: false, reason: 'invalid_value' }
+    // 감사 로그(F-11-12 — 6d-1) — 워크스페이스의 설정만(내 계정의 이름 · 테마는 보안 기록이 아니다) · 바뀌었을 때만 · 앞뒤 값과 함께
+    const audited = definition.scope === 'workspace'
+    const before = audited ? await store.read(tx, ctx) : null
     await store.write(tx, ctx, value)
-    return { ok: true, value: await store.read(tx, ctx) }
+    const after = await store.read(tx, ctx)
+    if (audited && JSON.stringify(before) !== JSON.stringify(after)) {
+      await recordForContextIn(tx, ctx, 'workspace.setting_changed', {
+        target: { type: 'setting', id: definition.key },
+        setting: { key: definition.key, before, after },
+      })
+    }
+    return { ok: true, value: after }
   })
 }

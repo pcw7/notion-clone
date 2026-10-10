@@ -11,6 +11,7 @@
  * 트랜잭션이 강제된다.
  */
 
+import { recordAuditIn } from '../audit/audit.ts'
 import { withTransaction } from '../db/tx.ts'
 import { createSession, type IssuedSession } from './session.ts'
 import type { AuthMethod } from './session-context.ts'
@@ -97,6 +98,14 @@ export async function establishLogin(input: EstablishLoginInput): Promise<Establ
         JSON.stringify({ auth_method: input.authMethod, session_id: session.sessionId }),
       ],
     )
+    // 감사 로그(F-11-12 · 계정 범위 — 6d-1)
+    await recordAuditIn(tx, {
+      type: 'account.login',
+      workspaceId: null,
+      actorUserId: userId,
+      sessionId: session.sessionId,
+      metadata: { authMethod: input.authMethod, newAccount: created },
+    })
 
     return { userId, session, created }
   })

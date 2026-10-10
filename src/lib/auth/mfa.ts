@@ -17,6 +17,7 @@
 import { randomUUID } from 'node:crypto'
 
 import type { SessionContext } from './session-context.ts'
+import { recordAuditIn } from '../audit/audit.ts'
 import { hashSessionToken } from './session-context.ts'
 import { queryMaybe } from '../db/pool.ts'
 import { withCommandTransaction, withReadTransaction, withTransaction, type Tx } from '../db/tx.ts'
@@ -130,6 +131,10 @@ async function replaceBackupCodes(tx: Tx, userId: string): Promise<string[]> {
   return codes
 }
 
+/** 감사 로그(F-11-12 · 계정 범위 — 6d-1) — 2단계 인증의 설정 · 해제 · 백업 코드. */
+const auditSecurity = (tx: Tx, ctx: SessionContext, change: string) =>
+  recordAuditIn(tx, { type: 'account.security_changed', workspaceId: null, actorUserId: ctx.userId, sessionId: ctx.sessionId, metadata: { change } })
+
 const recordEvent = (tx: Tx, userId: string, kind: string, meta: Record<string, unknown> = {}) =>
   tx.query(`INSERT INTO auth_event (at, user_id, kind, meta) VALUES (now(), $1, $2, $3)`, [userId, kind, JSON.stringify(meta)])
 
@@ -233,6 +238,7 @@ export async function confirmTotpEnrollment(
     await tx.query(`UPDATE user_session SET mfa_satisfied = true WHERE id = $1`, [ctx.sessionId])
     const backupCodes = before.length === 0 ? await replaceBackupCodes(tx, ctx.userId) : null
     await recordEvent(tx, ctx.userId, before.length === 0 ? 'mfa_enabled' : 'mfa_method_added', { method_id: methodId })
+    await auditSecurity(tx, ctx, before.length === 0 ? 'mfa_enabled' : 'mfa_method_added')
     return { ok: true, value: { backupCodes } } as const
   })
 }
@@ -252,6 +258,7 @@ export async function removeMfaMethod(
     const disabled = methods.length === 1
     if (disabled) await tx.query(`DELETE FROM mfa_backup_code WHERE user_id = $1`, [ctx.userId])
     await recordEvent(tx, ctx.userId, disabled ? 'mfa_disabled' : 'mfa_method_removed', { method_id: methodId })
+    await auditSecurity(tx, ctx, disabled ? 'mfa_disabled' : 'mfa_method_removed')
     return { ok: true, value: { disabled } } as const
   })
 }
@@ -264,6 +271,7 @@ export async function regenerateBackupCodes(ctx: SessionContext, code: unknown):
     if ((await consumeCode(tx, ctx.userId, code)) === null) return fail('invalid_code')
     const backupCodes = await replaceBackupCodes(tx, ctx.userId)
     await recordEvent(tx, ctx.userId, 'mfa_backup_codes_regenerated')
+    await auditSecurity(tx, ctx, 'mfa_backup_codes_regenerated')
     return { ok: true, value: { backupCodes } } as const
   })
 }
