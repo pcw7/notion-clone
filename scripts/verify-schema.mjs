@@ -3581,6 +3581,47 @@ try {
     else fail(`활동 종류가 어긋났다: ${typeDef}`)
   }
 
+  console.log('\n[54] 알림 · 활동 데이터 수명 (0074 / §3.8 [보강] 알림 · 활동 데이터 수명 · 4d-1조각)')
+  {
+    const kinds = await client.query(`SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conname = 'ck_scheduled_job_kind'`)
+    const kindDef = kinds.rows[0]?.def ?? ''
+    if (['version_gc', 'trash_purge', 'trash_hard_delete', 'reminder_fire', 'data_retention'].every((k) => kindDef.includes(`'${k}'`))) {
+      ok('★ 일의 종류에 data_retention 이 있다 · 앞의 넷도 그대로')
+    } else fail(`일의 종류가 어긋났다: ${kindDef}`)
+    const index = await client.query(`SELECT indexdef FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'ix_notification_processed'`)
+    const indexDef = index.rows[0]?.indexdef ?? ''
+    if (/GREATEST\(read_at, archived_at\)/.test(indexDef) && /WHERE \(\(read_at IS NOT NULL\) OR \(archived_at IS NOT NULL\)\)/.test(indexDef)) {
+      ok('처리한 알림의 색인 — 늦은 쪽의 시각 · 읽었거나 보관한 것만')
+    } else fail(`ix_notification_processed 가 없거나 모양이 다르다: ${indexDef || '없음'}`)
+    // 함수는 검증 트랜잭션 안에서 부른다 — 만든 파티션은 롤백된다
+    await client.query('SAVEPOINT partition')
+    try {
+      const made = await client.query(`SELECT ensure_activity_partition(2199) AS a, ensure_activity_partition(2199) AS b`)
+      const { a, b } = made.rows[0] ?? {}
+      if (a === 'created' && b === 'exists') ok("★ 파티션 함수 — 없으면 만들고('created') 있으면 그대로('exists')")
+      else fail(`파티션 함수의 답이 다르다: ${a} · ${b}`)
+      // DEFAULT 에 그 해의 행이 이미 있으면 붙일 수 없다 — 만들지 않고 'blocked'
+      const blockPage = randomUUID()
+      await client.query(
+        `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key, ancestor_path, perm_scope_id, properties, format,
+                            created_at, last_edited_at)
+         VALUES ($1, $2, 'page', 'block', $3, 'a0', '{}', $1, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+        [blockPage, wsId, randomUUID()],
+      )
+      await client.query(
+        `INSERT INTO activity_event (id, workspace_id, page_id, type, payload, created_at)
+         VALUES ($1, $2, $3, 'page.created', '{}'::jsonb, '2198-06-01T00:00:00Z')`,
+        [randomUUID(), wsId, blockPage],
+      )
+      const blocked = (await client.query(`SELECT ensure_activity_partition(2198) AS s`)).rows[0]?.s
+      if (blocked === 'blocked') ok("★ DEFAULT 에 그 해의 행이 있으면 만들지 않는다('blocked' — 그 해는 DEFAULT 에 남는다)")
+      else fail(`DEFAULT 에 행이 있는데 ${blocked} 를 답했다`)
+    } catch (e) {
+      fail(`파티션 함수가 실패했다: ${e.message}`)
+    }
+    await client.query('ROLLBACK TO SAVEPOINT partition')
+  }
+
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
 } catch (e) {
