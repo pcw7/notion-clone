@@ -3326,6 +3326,40 @@ CREATE TABLE external_sync_source (            -- 구 external_binding. 정본 �
 >
 > **세 번째 소비자 — 물리 삭제(F-11-06 · `trash_hard_delete`)**: §3.4 [보강] 물리 삭제(4b-2 · 마이그레이션 0070).
 
+**[보강] 자동화 엔진 · 버튼 속성** ⟨자동화 5a · F-08-07 · F-03-15(= 08 F-08-08) / 마이그레이션 0078⟩
+
+> 08 F-08-07 의 클론 대안 *"액션을 플러그인 인터페이스(`execute(ctx, config)`)로 정의하고 내부 액션 3~4종만 먼저"* 그대로다. 5a 는
+> **버튼 속성** 하나로 엔진을 세운다 — DB 트리거(5b) · 웹훅 액션(5c) · 변수(5d) · 버튼 블록(5e)이 그 위에 선다. 위 DDL 의 넷 중
+> `automation` · `automation_action` · `automation_run` 을 만든다(`automation_trigger` 는 5b).
+>
+> ① **[정정] `automation.host_id`(다형) → 주인 칸 셋** — `host_property_id text NULL REFERENCES property(id)` ·
+>    `host_data_source_id uuid NULL REFERENCES data_source(id)` · `host_page_id uuid NULL REFERENCES block(id)` 와, `kind` 마다 **정확히 그
+>    하나만** 채운다(CHECK — 버튼 속성은 속성 · DB automation 은 데이터 소스 · 버튼 블록은 그 블록이 있는 페이지). 다형 칸은 FK 를 걸 수 없어
+>    주인이 지워져도 남는다 — 물리 삭제(4b-2)가 지울 표 목록에 손으로 더해야 하는 표가 된다. 모두 `ON DELETE CASCADE`. DB automation 의
+>    주인이 database 가 아니라 **data_source** 인 것은 행 · 속성의 주인이 data_source 이기 때문이다(0013).
+> ② **버튼 속성은 셀이 없는 타입** — 값이 없다(정렬 · 필터 · rollup · 수식이 읽는 값이 없다). 셀 가드(0025)의 목록에 `button` 을 더한다.
+>    속성을 더하면 automation(kind `button_property`)이 **함께** 생긴다(액션 0개 — 눌러도 아무 일이 없다). 버튼의 글자는 속성 이름이다.
+>    타입 바꾸기로 들어오거나 나가지 못한다. 속성은 소프트 삭제되므로(`deleted_at`) automation 은 남고 · 속성을 되살리면 함께 돌아온다.
+> ③ **누르는 사람의 권한으로** — 버튼은 클릭한 사람으로 실행한다(08 *"버튼 클릭 권한 = 페이지의 편집 + 액션 대상별 추가 조건"*).
+>    누르기는 그 행의 `edit_content`(03 *"Can edit content 도 클릭 가능"*). 액션마다 그 대상을 **그 사람의 권한으로 다시** 판정한다 — 액션이
+>    권한을 넓히지 않는다. 액션을 고치는 것은 그 데이터 소스의 `edit_structure`(속성 설정과 같은 무게).
+> ④ **한 트랜잭션 · 실행 기록 하나**(AU1) — 누르면 `automation_run`(run_kind `automation` · origin `user` · depth 0)을 남기고 액션을
+>    순서대로 **같은 트랜잭션에서** 실행한다. 대상을 고칠 권한이 없거나 잠겨서 못 하는 액션은 **건너뛰고**(세이브포인트) 실행은 `partial`
+>    — 08 *"접근이 제한된 페이지에는 영향을 주지 않는다 … 전체 실패가 아니라 스킵 + 로그"*. 그 밖의 실패(값이 틀렸다 · 대상 속성이
+>    사라졌다)는 **전부 되돌리고** `failed` 를 따로 남긴다 — 반쪽 실행이 남지 않게. [보강] 칸 `automation_run.steps jsonb` — 단계마다의
+>    결과(`done` · `skipped` 와 까닭 · `failed` 와 까닭). 실행 기록은 대상의 **내용**을 담지 않는다(id 와 까닭만 — 레벨이 전순서가 아니라
+>    `create` 만 받은 사람이 기록으로 행을 읽으면 안 된다 · A2).
+> ⑤ **연타는 한 번** — 화면이 누를 때마다 만든 uuid 를 멱등 키로 보낸다(`UNIQUE (workspace_id, idempotency_key)` — 키는 `button:{uuid}`).
+>    같은 키가 다시 오면 실행하지 않고 처음 실행의 결과를 돌려준다(08 *"클릭 연타 — 서버 멱등 토큰"*).
+> ⑥ **액션은 등록부** — `automation_action.type` 은 처음부터 상위집합으로 CHECK 한다(`edit_property` · `add_page_to` · `insert_blocks` ·
+>    `send_webhook` · `define_variables` · `show_confirmation`). 5a-1 은 `edit_property`(**그 행**의 셀을 바꾼다), 5a-2 는 `add_page_to`(다른
+>    데이터 소스에 행을 더한다 · 템플릿 값이 이긴다 — 08 *"The values from the template overwrite the values from the button"*).
+>    `config` 는 판(`v: 1`)을 갖는다. 값은 지금은 **고정 값만** — 셀 쓰기 API 의 `CellValue` 그대로다(멘션 · 수식 슬롯은 5d).
+>    `automation_action.order_idx` 는 0부터의 네 자리 글자(`0000`)다 — 액션 목록은 통째로 바꿔 쓴다(부분 이동이 없다).
+> ⑦ **자동화가 쓴 셀은 `filled_by = 'automation'`** — 활동의 행위자는 누른 사람이다. 자동화가 쓴 것이 다른 자동화를 깨우지 않는 규칙
+>    (08 F-08-10 *"automation 은 다른 automation 을 트리거하지 않는다 · 단 버튼이 만든 페이지는 발동한다"*)은 트리거(5b)가 정한다.
+> ⑧ 실행 기록은 automation 마다 **최근 50건**만 남긴다(08 F-08-10 클론 대안 *"실행 로그는 최근 50건만 보관"* · `data_retention`).
+
 ---
 
 ### 3.11 알고리즘 정본
