@@ -14297,6 +14297,74 @@ async function main() {
         await waitFor(`document.querySelector(${JSON.stringify(bell(future))})?.dataset.state === 'passed'`, 15000), String(await stateOf(future)))
     }
 
+    if (sectionIf('업데이트 패널 (4d-3 · F-11-04)')) {
+      // 머리의 "업데이트" — 그 페이지의 활동을 최신순으로. 실제 API 로 만들고 · 이름을 바꾸고 · 옮긴 뒤(4d-2 가 남긴다), 오래된 편집 30개와
+      // 보이지 않아야 할 멘션 하나를 DB 에 넣는다. 30개씩 · "더 보기" · Esc 로 닫기 · 활동이 없는 페이지의 빈 상태. 자기 데이터를 스스로
+      // 만든다 — E2E_ONLY 로 홀로 돈다.
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const stamp = Date.now()
+      const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
+      const post = async (body) => (await (await fetch(pagesUrl, { method: 'POST', headers: authed, body: JSON.stringify(body) })).json()).page.id
+      const page = await post({ title: `업데이트${stamp}` })
+      const destTitle = `옮긴곳${stamp}`
+      const dest = await post({ title: destTitle })
+      const renamed = await fetch(`${pagesUrl}/${page}`, { method: 'PATCH', headers: authed, body: JSON.stringify({ title: `바꾼이름${stamp}` }) })
+      const moved = await fetch(`${pagesUrl}/${page}/move`, { method: 'POST', headers: authed, body: JSON.stringify({ targetParentId: dest }) })
+      // 오래된 편집 30개(한 시간 전부터 1분 간격) · 보이지 않아야 할 멘션
+      await dbQuery(
+        `INSERT INTO activity_event (id, workspace_id, page_id, actor_id, type, created_at)
+         SELECT gen_random_uuid(), $1, $2, $3, 'block.updated', now() - interval '1 hour' - make_interval(mins => g) FROM generate_series(1, 30) g`,
+        [workspaceId, page, ctx.userId],
+      )
+      await dbQuery(`INSERT INTO activity_event (id, workspace_id, page_id, actor_id, type) VALUES (gen_random_uuid(), $1, $2, $3, 'user.mentioned')`, [
+        workspaceId, page, ctx.userId,
+      ])
+      const ownerName = (await dbQuery(`SELECT name FROM "user" WHERE id = $1`, [ctx.userId]))[0]?.name ?? ''
+
+      const DIALOG = '[data-testid="page-updates"]'
+      const ITEMS = `${DIALOG} [data-testid="page-update-item"]`
+      const types = () => evaluate(`[...document.querySelectorAll('${ITEMS}')].map((li) => li.dataset.type)`)
+      // 하이드레이션 전의 클릭은 사라진다(§6) — 창이 설 때까지 다시 누른다.
+      const openUpdates = async () => {
+        for (let tries = 0; tries < 6; tries += 1) {
+          await clickSelector('[data-testid="page-updates-open"]')
+          if (await waitFor(`!!document.querySelector('${DIALOG}')`, 2000)) return true
+        }
+        return false
+      }
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+      await waitFor(`!!document.querySelector('[data-testid="page-updates-open"]')`, 15000)
+      check('전제 — 이름 바꾸기 · 옮기기가 됐다', renamed.ok && moved.ok, JSON.stringify([renamed.status, moved.status]))
+      check('★ 머리의 "업데이트"를 누르면 패널이 열린다', await openUpdates())
+      check('★ 최신순 30개 — 옮기기 · 편집(이름) · 만들기가 먼저, 멘션은 보이지 않는다',
+        await waitFor(`(() => { const t = [...document.querySelectorAll('${ITEMS}')].map((li) => li.dataset.type)
+          return t.length === 30 && t[0] === 'page.moved' && t[1] === 'block.updated' && t[2] === 'page.created' && !t.includes('user.mentioned') })()`, 8000),
+        JSON.stringify(await types()))
+      const first = await evaluate(`document.querySelector('${ITEMS}')?.textContent ?? ''`)
+      check('★ 한 줄은 이름 · 한 일 · 시각 — 옮기기는 볼 수 있는 목적지의 제목을 말한다',
+        ownerName !== '' && first.startsWith(ownerName) && first.includes(`‘${destTitle}’ 아래로 옮겼습니다`) && first.includes('오늘 '),
+        first)
+      await clickSelector('[data-testid="page-updates-more"]')
+      check('★ "더 보기"로 나머지를 잇는다 — 33개 · 겹치지 않고 더 볼 것이 없다',
+        await waitFor(`(() => { const ids = [...document.querySelectorAll('${ITEMS}')].map((li) => li.textContent + li.querySelector('time')?.dateTime)
+          return ids.length === 33 && !document.querySelector('[data-testid="page-updates-more"]') })()`, 8000),
+        JSON.stringify((await types()).length))
+      check('겹친 항목이 없다', new Set(await evaluate(`[...document.querySelectorAll('${DIALOG} time')].map((t) => t.dateTime)`)).size === 33)
+      await key('Escape')
+      check('★ Esc 로 닫고 포커스는 "업데이트" 단추로 돌아간다',
+        await waitFor(`!document.querySelector('${DIALOG}') && document.activeElement?.getAttribute('data-testid') === 'page-updates-open'`, 5000),
+        String(await evaluate('document.activeElement?.outerHTML?.slice(0, 80) ?? null')))
+
+      // 활동이 없는 페이지(4d-2 전에 만든 것처럼) — 빈 상태를 말한다
+      const quiet = await post({ title: `조용한${stamp}` })
+      await dbQuery(`DELETE FROM activity_event WHERE page_id = $1`, [quiet])
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${quiet}` })
+      await waitFor(`!!document.querySelector('[data-testid="page-updates-open"]')`, 15000)
+      await openUpdates()
+      check('★ 활동이 없으면 "아직 활동이 없습니다"', await waitFor(`!!document.querySelector('[data-testid="page-updates-empty"]')`, 8000))
+    }
+
     if (sectionIf('개인 필터 · 정렬 — 화면 (2h-2 · F-04-17)')) {
       // 볼 수만 있는 사람(브라우저 세션을 바꾼다)이 도구줄의 필터로 조건을 걸면 **자기 것**으로 저장되고 그 사람의 표만 좁혀진다 — "나만 보는
       // 필터" 표시 · 초기화. 편집자는 자기 개인 것을 "모두에게 저장"한다. 브라우저 세션은 끝에 반드시 소유자로 되돌린다.
