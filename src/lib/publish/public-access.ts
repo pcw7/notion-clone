@@ -20,7 +20,7 @@
  * 휴지통을 익명에게 구별해 주면 그 주소가 무엇이었는지를 알려 준다.
  */
 
-import { withReadTransaction } from '../db/tx.ts'
+import { withReadTransaction, type Tx } from '../db/tx.ts'
 import { isUuid } from '../ids.ts'
 import { PUBLIC_TOKEN_PATTERN, type AiCrawler, type RobotsDirective } from './public-link.ts'
 
@@ -68,60 +68,99 @@ const NOT_FOUND = { ok: false, reason: 'not_found' } as const
  */
 export async function resolvePublicPage(token: string, pageId?: string): Promise<PublicAccess> {
   if (!PUBLIC_TOKEN_PATTERN.test(token) || (pageId !== undefined && !isUuid(pageId))) return NOT_FOUND
-  return withReadTransaction(async (tx) => {
-    const root = await tx.queryMaybe<RootRow>(
-      `SELECT pl.node_id, pl.enabled,
-              (pl.expires_at IS NOT NULL AND pl.expires_at <= now()) AS expired,
-              pl.robots_directive, pl.ai_crawler,
-              b.workspace_id, (w.deleted_at IS NULL) AS workspace_live,
-              coalesce(sp.allow_publish_sites_and_forms, true) AS policy_allows
-         FROM public_link pl
-         JOIN block b ON b.id = pl.node_id
-         JOIN workspace w ON w.id = b.workspace_id
-         LEFT JOIN security_policy sp ON sp.workspace_id = b.workspace_id
-        WHERE pl.token = $1`,
-      [token],
-    )
-    if (root === null || !root.enabled || !root.workspace_live || !root.policy_allows) return NOT_FOUND
+  return withReadTransaction((tx) => resolvePublicPageIn(tx, token, pageId))
+}
 
-    const targetId = pageId ?? root.node_id
-    const target = await tx.queryMaybe<{ ancestor_path: string[] }>(
-      `SELECT ancestor_path FROM block WHERE id = $1 AND workspace_id = $2`,
-      [targetId, root.workspace_id],
-    )
-    if (target === null) return NOT_FOUND
-    const path = [...target.ancestor_path, targetId]
-    const rootAt = path.indexOf(root.node_id)
-    if (rootAt < 0) return NOT_FOUND
+/** `resolvePublicPage` 의 트랜잭션 안쪽 — 공개 화면이 판정과 같은 스냅샷에서 본문을 읽으려고 부른다(`public-read.ts`). */
+export async function resolvePublicPageIn(tx: Tx, token: string, pageId?: string): Promise<PublicAccess> {
+  if (!PUBLIC_TOKEN_PATTERN.test(token) || (pageId !== undefined && !isUuid(pageId))) return NOT_FOUND
+  const root = await tx.queryMaybe<RootRow>(
+    `SELECT pl.node_id, pl.enabled,
+            (pl.expires_at IS NOT NULL AND pl.expires_at <= now()) AS expired,
+            pl.robots_directive, pl.ai_crawler,
+            b.workspace_id, (w.deleted_at IS NULL) AS workspace_live,
+            coalesce(sp.allow_publish_sites_and_forms, true) AS policy_allows
+       FROM public_link pl
+       JOIN block b ON b.id = pl.node_id
+       JOIN workspace w ON w.id = b.workspace_id
+       LEFT JOIN security_policy sp ON sp.workspace_id = b.workspace_id
+      WHERE pl.token = $1`,
+    [token],
+  )
+  if (root === null || !root.enabled || !root.workspace_live || !root.policy_allows) return NOT_FOUND
 
-    const rows = await tx.query<ChainRow>(
-      `SELECT b.id, b.type, b.lifecycle, b.moderation_state, coalesce(m.inherits_from_parent, true) AS inherits
-         FROM block b LEFT JOIN block_acl_meta m ON m.node_id = b.id
-        WHERE b.id = ANY($1::uuid[])`,
-      [path],
-    )
-    const byId = new Map(rows.map((row) => [row.id, row]))
-    for (let at = 0; at < path.length; at += 1) {
-      const row = byId.get(path[at]!)
-      if (row === undefined) return NOT_FOUND
-      // 사슬 전체(루트 위 포함) — 휴지통 · 테이크다운은 서브트리를 덮는다
-      if (row.lifecycle !== 'live' || BLOCKING_MODERATION.has(row.moderation_state)) return NOT_FOUND
-      // 루트 아래 — 상속을 끊은 노드부터는 공개가 아니다(06 *"하위에서 상속을 끊어 공개 대상에서 제외"*)
-      if (at > rootAt && !row.inherits) return NOT_FOUND
-    }
-    if (byId.get(targetId)?.type !== 'page' || byId.get(root.node_id)?.type !== 'page') return NOT_FOUND
+  const targetId = pageId ?? root.node_id
+  const chains = await openableChainsIn(tx, root.workspace_id, root.node_id, [targetId])
+  const chain = chains.get(targetId)
+  if (chain === undefined) return NOT_FOUND
 
-    if (root.expired) return { ok: false, reason: 'expired' } as const
-    return {
-      ok: true,
-      value: {
-        workspaceId: root.workspace_id,
-        rootId: root.node_id,
-        pageId: targetId,
-        chain: path.slice(rootAt),
-        robots: root.robots_directive,
-        aiCrawler: root.ai_crawler,
-      },
-    } as const
-  })
+  if (root.expired) return { ok: false, reason: 'expired' } as const
+  return {
+    ok: true,
+    value: {
+      workspaceId: root.workspace_id,
+      rootId: root.node_id,
+      pageId: targetId,
+      chain,
+      robots: root.robots_directive,
+      aiCrawler: root.ai_crawler,
+    },
+  } as const
+}
+
+/**
+ * 이 루트의 토큰으로 열 수 있는 페이지 — 하위 페이지 참조 · 페이지 멘션을 링크로 둘지 공개 화면이 묻는다. 루트 자신도 열 수 있다.
+ *
+ * 조건은 `resolvePublicPage` 의 사슬 조건 그대로다(정본 [정정] 웹 게시 ③ — 루트 아래 · 상속이 끊기지 않음 · 사슬 전체가 `live` ·
+ * 제한 · 테이크다운 없음 · 페이지). 게시 · 정책 · 만료는 부르는 쪽이 루트에서 이미 봤다.
+ */
+export async function openablePagesIn(tx: Tx, workspaceId: string, rootId: string, ids: readonly string[]): Promise<ReadonlySet<string>> {
+  return new Set((await openableChainsIn(tx, workspaceId, rootId, ids)).keys())
+}
+
+/** 열 수 있는 페이지마다 루트에서 그 페이지까지의 사슬(양끝 포함). 열 수 없는 것은 없다. */
+async function openableChainsIn(
+  tx: Tx,
+  workspaceId: string,
+  rootId: string,
+  ids: readonly string[],
+): Promise<ReadonlyMap<string, readonly string[]>> {
+  const wanted = [...new Set(ids.filter(isUuid))]
+  if (wanted.length === 0) return new Map()
+  const targets = await tx.query<{ id: string; ancestor_path: string[] }>(
+    `SELECT id, ancestor_path FROM block WHERE id = ANY($1::uuid[]) AND workspace_id = $2`,
+    [wanted, workspaceId],
+  )
+  const paths = new Map<string, string[]>()
+  for (const target of targets) {
+    const path = [...target.ancestor_path, target.id]
+    if (path.includes(rootId)) paths.set(target.id, path)
+  }
+  if (paths.size === 0) return new Map()
+
+  const rows = await tx.query<ChainRow>(
+    `SELECT b.id, b.type, b.lifecycle, b.moderation_state, coalesce(m.inherits_from_parent, true) AS inherits
+       FROM block b LEFT JOIN block_acl_meta m ON m.node_id = b.id
+      WHERE b.id = ANY($1::uuid[])`,
+    [[...new Set([...paths.values()].flat())]],
+  )
+  const byId = new Map(rows.map((row) => [row.id, row]))
+  const open = new Map<string, readonly string[]>()
+  for (const [id, path] of paths) {
+    if (chainOpens(path, path.indexOf(rootId), byId)) open.set(id, path.slice(path.indexOf(rootId)))
+  }
+  return open
+}
+
+/** 사슬이 열리는가 — 루트와 끝이 페이지 · 사슬 전체가 `live` · 막는 모더레이션 없음 · 루트 아래에서 상속이 끊기지 않음. */
+function chainOpens(path: readonly string[], rootAt: number, byId: ReadonlyMap<string, ChainRow>): boolean {
+  for (let at = 0; at < path.length; at += 1) {
+    const row = byId.get(path[at]!)
+    if (row === undefined) return false
+    // 사슬 전체(루트 위 포함) — 휴지통 · 테이크다운은 서브트리를 덮는다
+    if (row.lifecycle !== 'live' || BLOCKING_MODERATION.has(row.moderation_state)) return false
+    // 루트 아래 — 상속을 끊은 노드부터는 공개가 아니다(06 *"하위에서 상속을 끊어 공개 대상에서 제외"*)
+    if (at > rootAt && !row.inherits) return false
+  }
+  return byId.get(path[rootAt]!)?.type === 'page' && byId.get(path[path.length - 1]!)?.type === 'page'
 }
