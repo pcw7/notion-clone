@@ -576,12 +576,13 @@ CREATE TABLE public_link (
   level text NOT NULL DEFAULT 'view' CHECK (level IN ('view','comment','edit')),
   token text UNIQUE, expires_at timestamptz NULL,
   allow_duplicate boolean NOT NULL DEFAULT true,
-  robots_directive text NOT NULL DEFAULT 'index'
+  robots_directive text NOT NULL DEFAULT 'noindex'          -- [정정 6a-1] 'index' → 'noindex' (마스터 §9.4)
     CHECK (robots_directive IN ('index','noindex')),          -- <17 F-17-11>
-  ai_crawler text NOT NULL DEFAULT 'allow'
+  ai_crawler text NOT NULL DEFAULT 'deny'                    -- [정정 6a-1] 'allow' → 'deny'
     CHECK (ai_crawler IN ('allow','deny')),                   -- <17 F-17-11> 2축 분리
   created_by uuid, created_at timestamptz
 );
+-- [정정 6a-1] public_link 는 effective() 의 항이 아니다 — 공개 경로가 따로 판정한다. §3.3 끝의 [정정] 웹 게시 참조.
 
 CREATE TABLE page_access_rule (                              -- <C-7: data_source 단위가 정본>
   id uuid PRIMARY KEY,
@@ -1002,6 +1003,60 @@ CREATE TABLE access_request (
 > 셀이다. 양방향의 거울상은 대상 행이 잠겨 있어도 따라간다 — 이 행의 연결이 바뀐 결과이지 대상 행을 고치는 것이 아니다(하위
 > 페이지 참조가 트리를 따라가는 것과 같다). 같은 열 안에서 카드의 자리만 옮기는 것(`row_position`)은 셀이 아니라 막지 않고,
 > 다른 열로 옮기면 그룹 셀이 바뀌므로 거부한다.
+
+**[정정] 웹 게시 — 공개는 `effective()` 의 항이 아니다 · 색인 기본값은 `noindex`** ⟨게시 · 공유 6a-1 · F-06-08 · F-06-07(웹 링크) · F-17-11 · F-06-11 / 마이그레이션 0084⟩
+
+> 초판 DDL 은 `public_link` 의 칸만 두었고, §3.11 은 공개를 판정의 한 항(`public_link_grant(U,N)` · `P(U)` 의 `('public',NULL)`)으로
+> 적었으며, X-8 은 그 위에 `perm_scope_id` 재계산 트리거 ⑤ 를 더했다. 6a-1 에서 게시를 만들며 셋 다 바로잡는다.
+>
+> ① **[정정] 기본값** — `robots_directive` 의 `'index'` → **`'noindex'`**, `ai_crawler` 의 `'allow'` → **`'deny'`**. 마스터 §9.4 가
+> 결정으로 종결한 것(*"공개 페이지 색인 기본값 `noindex` — 며칠만 index 로 운영해도 비공개 의도 콘텐츠가 색인되고 되돌릴 수
+> 없다"*) · F-17-11 *"기본 noindex"* 를 DDL 이 거슬렀다. 색인 · AI 크롤러 허용은 사람이 켠다.
+>
+> ② **[정정] 공개는 `effective()` 의 항이 아니다** — 공개 링크는 **링크를 아는 사람**에게 주는 것이다. 판정의 항으로 두면 공개
+> 페이지가 워크스페이스의 모든 멤버 · 게스트의 사이드바 · 검색 · 멘션 후보 · 백링크(`perm_scope_id = ANY(readableScopes)`)에
+> 들어온다 — 그들은 링크를 모른다. 공개 경로는 따로 판정한다(③ — 마스터 §5.3 *"공개 렌더러는 앱 렌더러와 분리된 읽기 전용 SSR ·
+> 내부 조회 함수 재사용 금지"*). 따라서:
+>    - `P(U)` 에 `('public',NULL)` 이 없고, **`acl_entry.principal_type = 'public'` 행을 쓰지 않는다**(CHECK `ck_acl_no_public` — 0084).
+>      공개의 레벨 · 만료 · 주소는 `public_link` 한 곳에 산다. 두 곳에 두면 어느 쪽이 공개의 정본인지가 생긴다.
+>    - `perm_scope_id` 재계산 트리거 ⑤(`public_link.enabled` 전이 · X-8 부수 판결)는 **없다**. 스코프는 판정의 경계이고 공개는 판정
+>      밖이다. 익명 검색(사이트 · 6c 이후)은 게시 루트의 서브트리(`ancestor_path`)와 ③ 의 사슬 조건으로 거른다.
+>    - 로그인한 멤버도 공개 링크로는 공개 경로에서 본다 — 앱 안(`/w/…`)에서 보려면 공유받아야 한다.
+>
+> ③ **공개 경로의 판정**(`publish/public-access.ts`) — **`SessionContext` 를 만들지 않는다**(발급자는 여전히 둘 — 공개 방문자는
+> 워크스페이스에 들어온 사람이 아니다). 토큰 → 게시 루트. 열 수 있는 페이지는 **루트와, 루트에서 그 페이지까지 상속이 끊기지 않은
+> 하위 페이지**다(06 *"Publishing a Notion page to the web means all of its subpages will be published too"* · *"하위에서 상속을 끊어
+> 공개 대상에서 제외"* — 루트 아래 사슬의 어느 노드든 `inherits_from_parent = false` 면 그 아래는 공개가 아니다). 그리고 아래가
+> **모두** 참일 때만 연다:
+>    `enabled` · 만료 전(`expires_at IS NULL OR expires_at > now()`) · 워크스페이스 정책이 허용(`security_policy.allow_publish_sites_and_forms`
+>    — 06 *"기존 `public_link.enabled` 를 런타임 정책 게이트로 무효화(행 삭제 아님) → 정책 해제 시 원복"*) · 워크스페이스가 지워지지
+>    않음 · 루트부터 그 페이지까지 모두 `live` · 그 사슬 어디에도 `moderation_state ∈ (restricted, taken_down)` 이 없음(테이크다운은
+>    서브트리를 덮는다 — 17 `moderation_action.scope`).
+>    어긴 이유는 **만료만** 구별해 돌려준다(06 엣지 *"만료된 링크 접근 → 만료 안내 화면"*). 나머지는 모두 없는 페이지다 — 정책 ·
+>    테이크다운 · 휴지통을 익명에게 구별해 주면 그 주소가 무엇이었는지를 알려 준다.
+>
+> ④ **게시하는 사람 = 그 페이지에 `manage_perm` 이 있는 사람**(전체 권한 — 06 *"Share → Publish"* 는 공유 패널의 일이다). 볼 수 없으면
+> `not_found` · 볼 수만 있으면 `forbidden`(공유 설정의 게이트와 같다 · §3.2-18). **페이지만**(`type='page'` — 데이터베이스의 게시는
+> 공개 렌더러가 표를 그릴 때). 휴지통의 페이지는 게시할 수 없다. 워크스페이스 정책이 막으면 `policy_disabled` — 게시 해제는 정책과
+> 무관하게 된다(끄는 것은 언제나 된다). 잠금은 막지 않는다(잠금은 본문 · 제목의 게이트 — 위 [보강] 잠금 ③).
+>
+> ⑤ **게시 해제 = `enabled := false`** — 행과 토큰은 남는다(다시 게시하면 **같은 주소**). 주소를 바꾸는 것은 토큰을 새로 만드는
+> 별도 동작이다(화면과 함께 — 6a-3). 토큰은 무작위 128비트의 base64url 22자(CHECK `ck_public_link_token`) · 처음 게시할 때 만든다 ·
+> **`enabled` 면 토큰이 있다**(CHECK `ck_public_link_enabled_token`).
+>
+> ⑥ **레벨은 지금 `view` 하나** — comment · edit 은 06 *"댓글 · 편집에는 로그인 필요 · 로그인 후 그 사용자는 게스트가 아닌
+> 익명-인증 주체"* 다. 워크스페이스에 들어오지 않은 사람의 주체가 필요하고 `SessionContext` 는 들어온 사람만 받는다 — 그 주체를 정할
+> 때까지 명령이 `view` 만 쓴다(DDL 의 CHECK 은 정본대로 셋을 둔다).
+>
+> ⑦ `node_id` 는 `block(id)` 의 FK(**`ON DELETE CASCADE`** — 물리 삭제가 지울 표 목록에 손으로 더하지 않는다) · `created_by` 는
+> `"user"(id)` 의 FK · `created_at NOT NULL DEFAULT now()` · 마지막으로 바꾼 사람 · 시각(`updated_by` · `updated_at`)을 더한다.
+> 복제는 공개를 옮기지 않는다(새 노드다 — 표가 따로라 복제가 읽지 않는다).
+>
+> ⑧ **`block.public_exposure` 는 아직 쓰지 않는다** — 파생 칸이고 읽는 곳(모더레이션 큐 · 6b)이 그때 생긴다. 지금 채우면 하위
+> 페이지 만들기 · 이동 · 상속 절단마다 다시 계산해야 하는 값이 읽는 곳 없이 생긴다. `search_document.is_public` 도 같다.
+>
+> ⑨ **정책 칸 `allow_publish_sites_and_forms` 를 바꾸는 길은 설정이다**(`workspace.allow_publish_sites_and_forms` · 소유자 — §3.1
+> [보강] 설정 정보구조 ②). 끄면 이미 게시한 주소가 **곧바로** 열리지 않고(③), 다시 켜면 돌아온다.
 
 ---
 
@@ -3589,15 +3644,15 @@ effective(session S, node N) -> level:
     local = MAX_BY_CAP over acl_entry(N) where principal in P(U)
     if block_acl_meta(N).inherits_from_parent and parent(N) exists:
         local = MAX_BY_CAP(local, effective(S, parent(N)))     -- 절단 노드에서 멈춘다
-    -- 아래 3항은 노드 로컬 grant. 절단 플래그의 영향을 받지 않는다.
-    local = MAX_BY_CAP(local, page_access_rule_grant(U,N),
-                              public_link_grant(U,N), form_submitter_grant(U,N))
+    -- 아래 2항은 노드 로컬 grant. 절단 플래그의 영향을 받지 않는다.
+    -- [정정 6a-1] public_link_grant(U,N) 는 이 합집합에 없다 — 공개 경로가 따로 판정한다(§3.3 끝 [정정] 웹 게시).
+    local = MAX_BY_CAP(local, page_access_rule_grant(U,N), form_submitter_grant(U,N))
     return local or 'none'
 
   P(U) = {('user',U)} + {('group',g) : g in active_groups(U)}
        + {('teamspace',t) : t in active_teamspaces(U)}
        + {('workspace_everyone',NULL) : U 가 role in (owner,membership_admin,member) 인 active 멤버}
-       + {('public',NULL)}
+  -- [정정 6a-1] ('public',NULL) 은 P(U) 에 없다. acl_entry 의 'public' 행은 쓰지 않는다(CHECK · 0084).
   -- guest 와 restricted_member 는 workspace_everyone 에 포함되지 않는다. [확인필요] 6-7
 
 -- 2단계: 잠금 게이트
@@ -3609,9 +3664,9 @@ Enterprise 관리자 콘텐츠 검색·감사는 `effective()` 의 항이 아니
 
 **권한 스코프 `perm_scope_id`**
 
-> `perm_scope_id(N)` = N 자신 또는 가장 가까운 조상 중 **`acl_entry` 를 1개 이상 갖거나, `inherits_from_parent=FALSE` 이거나, `public_link.enabled=true` 인 노드**의 id. 없으면 teamspace 루트(또는 Private 루트) id.
+> `perm_scope_id(N)` = N 자신 또는 가장 가까운 조상 중 **`acl_entry` 를 1개 이상 갖거나, `inherits_from_parent=FALSE` 인 노드**의 id. 없으면 teamspace 루트(또는 Private 루트) id. ([정정 6a-1] *"`public_link.enabled=true` 인 노드"* 를 뺐다 — 공개는 판정 밖이다.)
 
-재계산 트리거는 정확히 5개다 — ① 첫 `acl_entry` 삽입 ② 마지막 `acl_entry` 삭제 ③ `inherits_from_parent` 전이 ④ 서브트리 이동 ⑤ `public_link.enabled` 전이 [X-8 이 추가]. 전부 `UPDATE block SET perm_scope_id=... WHERE ancestor_path @> ARRAY[:N]` 형태의 서브트리 일괄 갱신이다.
+재계산 트리거는 정확히 4개다 — ① 첫 `acl_entry` 삽입 ② 마지막 `acl_entry` 삭제 ③ `inherits_from_parent` 전이 ④ 서브트리 이동. 전부 `UPDATE block SET perm_scope_id=... WHERE ancestor_path @> ARRAY[:N]` 형태의 서브트리 일괄 갱신이다. ([정정 6a-1] X-8 이 더한 ⑤ `public_link.enabled` 전이는 없다 — §3.3 끝 [정정] 웹 게시 ②.)
 
 **상속 차단 쓰기 알고리즘**
 
@@ -3948,7 +4003,7 @@ gap 감지 축은 `data_source.change_seq`(단조 증가)이며, 재동기는 `W
 
 **부수 판결 3건**
 - `search_document.routing` 의 값은 `workspace_id` 다. block-tree 가 `block.space_id` 를 폐기했으므로 "space_id" 라는 이름은 더 이상 존재하지 않는다.
-- `perm_scope_id` 재계산 트리거에 **`public_link.enabled` 전이**를 추가한다(공개 링크는 노드 로컬 grant 이므로 그 노드가 스코프 루트가 되어야 익명 검색이 스코프 필터로 성립한다).
+- `perm_scope_id` 재계산 트리거에 **`public_link.enabled` 전이**를 추가한다(공개 링크는 노드 로컬 grant 이므로 그 노드가 스코프 루트가 되어야 익명 검색이 스코프 필터로 성립한다). **[정정 6a-1] 뺐다** — 공개는 `effective()` 의 항이 아니므로 판정의 경계(스코프)를 만들지 않는다. 익명 검색은 게시 루트의 서브트리로 거른다(§3.3 끝 [정정] 웹 게시 ②).
 - **`page_access_rule` 로만 접근 가능한 행은 스코프 필터에 걸리지 않는다.** 이것은 방식 B 의 알려진 구멍이며 §6-3 에 실측 항목으로 남긴다. 잠정 대응: person property 기반 접근 행은 검색 결과에서 제외하고, 대신 그 DB 의 뷰에서만 노출한다.
 
 ---
