@@ -66,7 +66,7 @@ import { TYPE_ICON, TYPE_LABEL } from './cell-view'
 import { FormulaEditor } from './formula-editor'
 import { checkFormulaDraft, type FormulaPlan } from '@/lib/database/formula-plan'
 
-type AddableType = Exclude<MvpPropertyType, 'title'> | 'relation' | 'rollup' | 'unique_id' | 'formula'
+type AddableType = Exclude<MvpPropertyType, 'title'> | 'relation' | 'rollup' | 'unique_id' | 'formula' | 'button'
 
 const ADDABLE_TYPES: readonly AddableType[] = [
   ...MVP_PROPERTY_TYPES.filter((t): t is Exclude<MvpPropertyType, 'title'> => t !== 'title'),
@@ -74,6 +74,8 @@ const ADDABLE_TYPES: readonly AddableType[] = [
   'rollup',
   'formula',
   'unique_id',
+  // 버튼(자동화 5a-3) — 만들면 액션 0개. "버튼 설정"(열 머리 메뉴)에서 액션을 더한다.
+  'button',
 ]
 
 /** 이 표의 relation 컬럼 — rollup 이 탈 수 있는 것. 대상 표는 그 config 가 정한다. */
@@ -97,6 +99,7 @@ export function AddColumn({
   onAddRollup,
   onAddUniqueId,
   onAddFormula,
+  onAddButton,
   formulaPlan,
   previewCells,
 }: {
@@ -115,6 +118,8 @@ export function AddColumn({
   onAddRollup: (input: api.AddRollupInput) => Promise<string | null>
   onAddUniqueId: (name: string, prefix: string) => Promise<string | null>
   onAddFormula: (name: string, expression: string) => Promise<string | null>
+  /** 버튼 속성을 만든다(5a-3) — 표가 다시 읽는다(버튼 열은 서버가 세운다). */
+  onAddButton: (name: string) => Promise<string | null>
   /** 수식의 계산 계획(2i-3b) — 편집기가 표의 속성을 읽는다. 없으면 "수식"이 서지 않는다. */
   formulaPlan: FormulaPlan | null
   /** 미리보기에 쓸 첫 행의 칸. 행이 없으면 null(결과 타입만 보인다). */
@@ -261,6 +266,8 @@ export function AddColumn({
             const failure =
               type === 'unique_id'
                 ? await onAddUniqueId(name, prefix)
+                : type === 'button'
+                ? await onAddButton(name)
                 : type === 'formula'
                 ? await onAddFormula(name, expression)
                 : type === 'rollup'

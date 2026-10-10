@@ -14473,6 +14473,123 @@ async function main() {
       }
     }
 
+    if (sectionIf('버튼 속성 — 화면 (5a-3 · F-03-15)')) {
+      // 속성 추가에서 "버튼" → 버튼 열(칸은 이름의 단추) · 액션 0개면 "할 일이 없습니다" · 열 머리 메뉴의 "버튼 설정"으로 값 바꾸기 둘을
+      // 넣는다 · 누르면 "완료"이고 칸이 바뀐다 · 잠긴 행은 "일부를 건너뛰었습니다" · 편집기가 모르는 액션은 저장해도 남는다. 자기 데이터를
+      // 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `버튼 ${stamp}` })).body.database
+      const other = (await api('POST', '/databases', { name: `버튼이 더할 표 ${stamp}` })).body.database
+      const prop = async (name, type) => (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name, type })).body.property.id
+      const qty = await prop('수량', 'number')
+      const done = await prop('완료', 'checkbox')
+      const row = (await api('POST', `/views/${db.defaultViewId}/rows`, { cells: [] })).body.row.id
+      const cellsOf = async () => (await api('GET', `/views/${db.defaultViewId}/rows`)).body.rows.find((r) => r.id === row)?.properties ?? {}
+      const CELL = `tr[data-row-id="${row}"] [data-testid="db-button-cell"]`
+      const RESULT = `tr[data-row-id="${row}"] [data-testid="db-button-result"]`
+      const resultText = () => evaluate(`document.querySelector('${RESULT}')?.textContent ?? null`)
+      const press = async () => {
+        await clickSelector(CELL)
+        return waitFor(`!!document.querySelector('${RESULT}') && document.querySelector('${CELL}')?.getAttribute('aria-busy') === 'false'`, 10000)
+      }
+      const setSelect = (selector, value) => evaluate(`(() => {
+        const s = document.querySelector(${JSON.stringify(selector)})
+        if (!s) return false
+        s.value = ${JSON.stringify(value)}
+        s.dispatchEvent(new Event('change', { bubbles: true }))
+        return true
+      })()`)
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      await waitFor(`!!document.querySelector('[data-testid="db-add-column"]') && document.querySelectorAll('thead th').length >= 3`, 15000)
+      // ① 속성 추가에서 "버튼"
+      for (let i = 0; i < 6 && !(await evaluate(`!!document.querySelector('[data-testid="db-add-column-form"]')`)); i += 1) {
+        await clickSelector('[data-testid="db-add-column"]')
+        await waitFor(`!!document.querySelector('[data-testid="db-add-column-form"]')`, 2000)
+      }
+      await waitFor(`document.activeElement?.getAttribute('aria-label') === '속성 이름'`, 3000)
+      await typeText('끝내기')
+      await setSelect('select[aria-label="속성 유형"]', 'button')
+      await clickSelector('[data-testid="db-add-column-form"] button[type="submit"]')
+      check('★ 속성 추가에서 "버튼"을 고르면 버튼 열이 선다 — 칸은 속성 이름의 단추',
+        await waitFor(`(document.querySelector('${CELL}')?.textContent ?? '') === '끝내기'`, 15000),
+        String(await evaluate(`document.querySelector('tr[data-row-id="${row}"]')?.textContent ?? '(행 없음)'`)))
+      const buttonId = (await api('GET', `/views/${db.defaultViewId}`)).body.view.columns.find((c) => c.name === '끝내기')?.propertyId
+
+      // ② 액션 0개
+      check('누르면 — 액션이 없으면 "할 일이 없습니다"', (await press()) && ((await resultText()) ?? '').startsWith('할 일이 없습니다'), String(await resultText()))
+
+      // ③ 버튼 설정 — 값 바꾸기 둘
+      const MENU = `th:has([data-testid="db-column-menu"][aria-label="끝내기 속성 메뉴"]) [data-testid="db-column-menu"]`
+      const EDITOR = '[data-testid="db-button-editor"]'
+      for (let i = 0; i < 6 && !(await evaluate(`!!document.querySelector('[data-testid="db-column-button"]')`)); i += 1) {
+        await clickSelector(MENU)
+        await waitFor(`!!document.querySelector('[data-testid="db-column-button"]')`, 2000)
+      }
+      await clickSelector('[data-testid="db-column-button"]')
+      const opened = await waitFor(`(document.querySelector('${EDITOR}')?.textContent ?? '').includes('아직 할 일이 없습니다')`, 8000)
+      await clickSelector(`${EDITOR} [data-testid="db-button-add-action"]`)
+      await waitFor(`!!document.querySelector('${EDITOR} [data-testid="db-button-property"]')`, 3000)
+      await setSelect(`${EDITOR} [data-testid="db-button-property"]`, qty)
+      await waitFor(`document.querySelector('${EDITOR} [data-testid="db-button-value"]')?.type === 'number'`, 3000)
+      await evaluate(`(() => { const el = document.querySelector('${EDITOR} [data-testid="db-button-value"]'); el.focus(); el.select() })()`)
+      await typeText('7')
+      await clickSelector(`${EDITOR} [data-testid="db-button-add-value"]`)
+      await waitFor(`document.querySelectorAll('${EDITOR} [data-testid="db-button-property"]').length === 2`, 3000)
+      await setSelect(`${EDITOR} [data-testid="db-button-cell-value"]:nth-child(2) [data-testid="db-button-property"]`, done)
+      await waitFor(`document.querySelector('${EDITOR} [data-testid="db-button-cell-value"]:nth-child(2) [data-testid="db-button-value"]')?.type === 'checkbox'`, 3000)
+      await clickSelector(`${EDITOR} [data-testid="db-button-cell-value"]:nth-child(2) [data-testid="db-button-value"]`)
+      await clickSelector(`${EDITOR} [data-testid="db-button-save"]`)
+      const savedActions = async () => (await api('GET', `/data-sources/${db.dataSourceId}/properties/${buttonId}/actions`)).body?.actions ?? []
+      check('★ "버튼 설정"으로 이 행의 값 바꾸기를 넣고 저장한다 — 수량 7 · 완료 체크',
+        opened && (await waitFor(`!document.querySelector('${EDITOR}')`, 8000))
+          && JSON.stringify(await savedActions()) === JSON.stringify([{ type: 'edit_property', config: { v: 1, cells: [
+            { propertyId: qty, value: { type: 'number', number: 7 } },
+            { propertyId: done, value: { type: 'checkbox', checkbox: true } },
+          ] } }]),
+        JSON.stringify([opened, await savedActions()]))
+
+      // ④ 누르면 완료 · 칸이 바뀐다
+      const pressed = await press()
+      const cells = await cellsOf()
+      check('★ 누르면 "완료" — 그 행의 수량 · 완료가 바뀐다',
+        pressed && (await resultText()) === '완료' && cells[qty]?.number === 7 && cells[done]?.checkbox === true,
+        JSON.stringify([await resultText(), cells[qty], cells[done]]))
+
+      // ⑤ 잠긴 행 — 건너뛴다
+      await api('PUT', `/pages/${row}/lock`)
+      check('★ 잠긴 행에서 누르면 "일부를 건너뛰었습니다"',
+        (await press()) && ((await resultText()) ?? '').startsWith('일부를 건너뛰었습니다'), String(await resultText()))
+      await api('DELETE', `/pages/${row}/lock`)
+
+      // ⑥ 편집기가 모르는 액션은 저장해도 남는다
+      await api('PUT', `/data-sources/${db.dataSourceId}/properties/${buttonId}/actions`, { actions: [
+        { type: 'add_page_to', config: { v: 1, dataSourceId: other.dataSourceId, cells: [] } },
+        { type: 'edit_property', config: { v: 1, cells: [{ propertyId: qty, value: { type: 'number', number: 1 } }] } },
+      ] })
+      for (let i = 0; i < 6 && !(await evaluate(`!!document.querySelector('[data-testid="db-column-button"]')`)); i += 1) {
+        await clickSelector(MENU)
+        await waitFor(`!!document.querySelector('[data-testid="db-column-button"]')`, 2000)
+      }
+      await clickSelector('[data-testid="db-column-button"]')
+      const both = await waitFor(`(() => { const kinds = [...document.querySelectorAll('${EDITOR} [data-testid="db-button-action"]')].map((li) => li.dataset.kind)
+        return kinds.join(',') === 'other,edit' && (document.querySelector('${EDITOR}')?.textContent ?? '').includes('다른 표에 행 추가') })()`, 8000)
+      await clickSelector(`${EDITOR} [data-testid="db-button-action"]:nth-child(2) [data-testid="db-button-action-remove"]`)
+      await waitFor(`document.querySelectorAll('${EDITOR} [data-testid="db-button-action"]').length === 1`, 3000)
+      await clickSelector(`${EDITOR} [data-testid="db-button-save"]`)
+      await waitFor(`!document.querySelector('${EDITOR}')`, 8000)
+      const kept = await savedActions()
+      check('★ 편집기가 모르는 액션(다른 표에 행 추가)은 요약으로 서고 저장해도 남는다',
+        both && kept.length === 1 && kept[0].type === 'add_page_to' && kept[0].config.dataSourceId === other.dataSourceId,
+        JSON.stringify([both, kept]))
+    }
+
     if (sectionIf('개인 필터 · 정렬 — 화면 (2h-2 · F-04-17)')) {
       // 볼 수만 있는 사람(브라우저 세션을 바꾼다)이 도구줄의 필터로 조건을 걸면 **자기 것**으로 저장되고 그 사람의 표만 좁혀진다 — "나만 보는
       // 필터" 표시 · 초기화. 편집자는 자기 개인 것을 "모두에게 저장"한다. 브라우저 세션은 끝에 반드시 소유자로 되돌린다.

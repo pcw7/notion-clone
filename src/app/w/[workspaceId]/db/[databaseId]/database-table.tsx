@@ -106,6 +106,8 @@ import { useTableChanges } from './use-table-changes'
 import { mergeReloaded } from '@/lib/database/live-rows'
 import { FormulaEditForm } from './formula-editor'
 import { ColumnMenu } from './column-menu'
+import { ButtonCell } from './button-cell'
+import { ButtonEditForm } from './button-editor'
 import { ReminderBell } from './reminder-bell'
 import type { DateReminderJson } from '@/lib/database/reminder'
 
@@ -653,6 +655,14 @@ export function DatabaseTable(props: {
     return null
   }
 
+  /** 버튼 컬럼을 만든다(5a-3) — 다시 읽는다(버튼 열은 서버가 세운다 · 고유 ID 와 같은 길). 액션은 "버튼 설정"에서. */
+  const addButtonColumn = async (name: string): Promise<string | null> => {
+    const result = await api.addColumn(workspaceId, dataSourceId, name, 'button')
+    if (!result.ok) return result.message
+    router.refresh()
+    return null
+  }
+
   /**
    * rollup 컬럼을 만든다. 늘 하나다(반대쪽에 생기는 것이 없다).
    *
@@ -847,6 +857,21 @@ export function DatabaseTable(props: {
               previewCells={rows[0]?.properties ?? null}
               onSave={async (expression) => afterStructure(await api.updateFormula(workspaceId, dataSourceId, column.propertyId, expression))}
               onDone={close}
+            />
+          ),
+        }
+      : {}),
+    // 버튼 설정(5a-3) — 버튼에만. 편집기가 열 때 액션을 읽는다. 저장하면 닫는다(액션은 칸에 그려지지 않는다 — 다시 읽을 것이 없다).
+    ...(column.type === 'button'
+      ? {
+          buttonEdit: (close: () => void) => (
+            <ButtonEditForm
+              workspaceId={workspaceId}
+              dataSourceId={dataSourceId}
+              propertyId={column.propertyId}
+              columns={columns}
+              onSaved={close}
+              onCancel={close}
             />
           ),
         }
@@ -1103,6 +1128,7 @@ export function DatabaseTable(props: {
                     onAddRelation={addRelationColumn}
                     onAddRollup={addRollupColumn}
                     onAddUniqueId={addUniqueIdColumn}
+                    onAddButton={addButtonColumn}
                     onAddFormula={addFormulaColumn}
                     formulaPlan={formulaPlan}
                     previewCells={rows[0]?.properties ?? null}
@@ -1142,7 +1168,9 @@ export function DatabaseTable(props: {
                       ? ({ kind: 'relation', column, value: readRelationValue(row.properties[column.propertyId]) } as const)
                       : column.type === 'unique_id'
                         ? ({ kind: 'unique_id', column, value: formatUniqueId(column.uniqueId.prefix, row.uniqueSeq) } as const)
-                        : column.type === 'formula'
+                        : column.type === 'button'
+                          ? ({ kind: 'button', column } as const)
+                          : column.type === 'formula'
                           ? ({
                               kind: 'formula',
                               column,
@@ -1158,7 +1186,9 @@ export function DatabaseTable(props: {
                         ? isRelationCollapsed(variant, cell.value, isSelected)
                         : cell.kind === 'unique_id'
                           ? isList && !isSelected && cell.value === ''
-                          : cell.kind === 'formula'
+                          : cell.kind === 'button'
+                            ? false
+                            : cell.kind === 'formula'
                             ? isList && !isSelected && cell.value === null && cell.error === null
                             : isRollupCollapsed(variant, cell.value, isSelected)
                   const empty =
@@ -1168,10 +1198,12 @@ export function DatabaseTable(props: {
                         ? cell.value.count === 0
                         : cell.kind === 'unique_id'
                           ? cell.value === ''
-                          : cell.kind === 'formula'
+                          : cell.kind === 'button'
+                            ? false
+                            : cell.kind === 'formula'
                             ? cell.value === null && cell.error === null
                             : rollupIsEmpty(cell.value)
-                  const readOnlyCell = cell.kind === 'rollup' || cell.kind === 'unique_id' || cell.kind === 'formula'
+                  const readOnlyCell = cell.kind === 'rollup' || cell.kind === 'unique_id' || cell.kind === 'formula' || cell.kind === 'button'
                   const content =
                     // rollup · 고유 ID 는 **채우는 자리가 아니다** — 빈 칸에 속성 이름을 세우면 "여기를 채우라"로 읽힌다.
                     isList && empty && !readOnlyCell ? (
@@ -1187,6 +1219,14 @@ export function DatabaseTable(props: {
                       <span className="truncate tabular-nums text-neutral-600 dark:text-neutral-300" data-testid="db-unique-id">
                         {cell.value}
                       </span>
+                    ) : cell.kind === 'button' ? (
+                      <ButtonCell
+                        workspaceId={workspaceId}
+                        rowId={row.id}
+                        propertyId={column.propertyId}
+                        name={column.name}
+                        canPress={access.canEditContent}
+                      />
                     ) : cell.kind === 'formula' ? (
                       <FormulaDisplay value={cell.value} error={cell.error} />
                     ) : (
