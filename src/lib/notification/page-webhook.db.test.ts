@@ -155,6 +155,28 @@ describe('④ 상한', () => {
   })
 })
 
+describe('⑥ 마지막 배달', () => {
+  test('★ 끝난 묶음 중 가장 최근 것 — 모으는 중인 것은 아니다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const target = await page('배달')
+    const hook = await added(target)
+    assert.equal(hook.lastDelivery, null, '아직 보낸 적 없다')
+    const put = (status: string, hoursAgo: number | null, http: number | null) =>
+      query(
+        `INSERT INTO webhook_delivery (id, webhook_id, event_ids, window_end, status, finished_at, last_status)
+         VALUES ($1, $2, ARRAY[$1]::uuid[], now(), $3, CASE WHEN $4::int IS NULL THEN NULL ELSE now() - make_interval(hours => $4::int) END, $5)`,
+        [randomUUID(), hook.id, status, hoursAgo, http],
+      )
+    await put('sent', 3, 200)
+    await put('failed', 1, 500)
+    await put('collecting', null, null)
+    const listed = await listPageWebhooks(fx.owner.ctx, target)
+    assert.ok(listed.ok)
+    const last = listed.value[0].lastDelivery
+    assert.deepEqual(last === null ? null : [last.status, last.httpStatus], ['failed', 500])
+  })
+})
+
 describe('⑤ 멈추기 · 다시 켜기 · 지우기', () => {
   test('★ 사람이 멈추고 다시 켠다 — 실패로 멈춘 것도 다시 켠다', async (t) => {
     if (skipReason) return t.skip(skipReason)

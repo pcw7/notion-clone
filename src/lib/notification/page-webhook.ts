@@ -35,7 +35,11 @@ export type PageWebhook = {
   /** 건 사람의 지금 이름. 탈퇴했으면 빈 글이다. */
   readonly createdBy: { readonly id: string; readonly name: string }
   readonly paused: { readonly at: Date; readonly reason: WebhookPauseReason } | null
+  /** 끝난 묶음 중 가장 최근 것(7일 안 — 정본 ⓙ ⓖ). 아직 없으면 null. */
+  readonly lastDelivery: { readonly status: DeliveryEnd; readonly at: Date; readonly httpStatus: number | null } | null
 }
+
+export type DeliveryEnd = 'sent' | 'failed' | 'dropped'
 
 export type WebhookFailure = 'not_found' | 'forbidden' | 'row_page' | 'invalid_url' | 'too_many'
 
@@ -72,12 +76,22 @@ type Row = {
   creator_deleted: boolean | null
   paused_at: Date | null
   pause_reason: WebhookPauseReason | null
+  last_end: DeliveryEnd | null
+  last_at: Date | null
+  last_http: number | null
 }
 
 const SELECT = `SELECT w.id, w.url_hint, w.created_at, w.created_by, w.paused_at, w.pause_reason,
-                       u.name AS creator_name, u.deleted_at IS NOT NULL AS creator_deleted
+                       u.name AS creator_name, u.deleted_at IS NOT NULL AS creator_deleted,
+                       ld.status AS last_end, ld.finished_at AS last_at, ld.last_status AS last_http
                   FROM page_webhook w
-                  LEFT JOIN "user" u ON u.id = w.created_by`
+                  LEFT JOIN "user" u ON u.id = w.created_by
+                  LEFT JOIN LATERAL (
+                    SELECT d.status, d.finished_at, d.last_status FROM webhook_delivery d
+                     WHERE d.webhook_id = w.id AND d.finished_at IS NOT NULL
+                     ORDER BY d.finished_at DESC, d.id DESC
+                     LIMIT 1
+                  ) ld ON true`
 
 const toWebhook = (r: Row): PageWebhook => ({
   id: r.id,
@@ -85,6 +99,7 @@ const toWebhook = (r: Row): PageWebhook => ({
   createdAt: r.created_at,
   createdBy: { id: r.created_by, name: r.creator_deleted ? '' : (r.creator_name ?? '') },
   paused: r.paused_at === null || r.pause_reason === null ? null : { at: r.paused_at, reason: r.pause_reason },
+  lastDelivery: r.last_end === null || r.last_at === null ? null : { status: r.last_end, at: r.last_at, httpStatus: r.last_http },
 })
 
 /** 그 페이지의 웹훅 — 건 순서대로. */

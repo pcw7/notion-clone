@@ -8,6 +8,8 @@
  *
  * 판정은 전부 서버에 있다 — 무엇이 보이고 이름 · 목적지를 줄지는 서버가 정했다(① ② ④ ⑤). 이 파일은 목록과 호출만 한다(코멘트 패널과
  * 같은 규칙). 여러 번 열고 닫으면 **마지막 요청의 답만** 받는다(인박스와 같은 번호 매기기 — 4c-3).
+ *
+ * 아래에 페이지 웹훅 칸(`page-webhooks.tsx` — 4e-3)이 선다 — 노션의 "Connect Slack channel" 자리.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -15,6 +17,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { PageActivityType } from '@/lib/notification/page-activity'
 import { formatVersionTime } from '@/lib/history/format'
 import { ACTIVITY_ERRORS, activityActorLabel, activityLine } from './activity-messages'
+import { PageWebhooks } from './page-webhooks'
 
 type Item = {
   readonly id: string
@@ -142,6 +145,8 @@ export function PageUpdatesButton({ workspaceId, pageId }: { workspaceId: string
               더 보기
             </button>
           )}
+          {/* 웹훅(4e-3 · F-11-19) — 전체 권한이 없으면 서버가 거절하고 칸이 서지 않는다 */}
+          <PageWebhooks workspaceId={workspaceId} pageId={pageId} />
         </div>
       )}
     </div>
