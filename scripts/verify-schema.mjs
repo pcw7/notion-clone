@@ -73,6 +73,8 @@ const EXPECTED_TABLES = [
   'derived_value',
   // 레이아웃의 직전 버전 3e-1조각 (0066)
   'page_layout_history',
+  // 공용 스케줄러 4a-1조각 (0068)
+  'scheduled_job',
   'schema_migration', 'scim_token', 'session_policy', 'sso_config',
   'user', 'user_email', 'user_session',
   'workspace', 'workspace_invite', 'workspace_member',
@@ -3427,6 +3429,47 @@ try {
     await client.query('ROLLBACK TO SAVEPOINT cascade')
     if (left === 0) ok('소스를 영구히 지우면 직전 버전도 CASCADE 된다')
     else fail(`소스를 지웠는데 직전 버전이 ${left}행 남았다`)
+  }
+
+  console.log('\n[49] 공용 스케줄러 (0068 / §3.10 [보강] 공용 스케줄러 · 4a-1조각)')
+  {
+    // 검증 트랜잭션 안에서만 넣는다(롤백된다) — 키는 이 프로브만의 것
+    const put = `INSERT INTO scheduled_job (id, kind, run_at, payload, dedupe_key, locked_until, dead_at) VALUES ($1, $2, now(), $3::jsonb, $4, $5, $6)`
+    const key = `probe-${randomUUID()}`
+    await client.query(put, [randomUUID(), 'version_gc', '{}', key, null, null])
+    ok('일 하나(키 있음) — 정상 경로가 통과한다')
+
+    const rejectBy = async (label, constraint, sql, params) => {
+      await client.query('SAVEPOINT probe')
+      try {
+        await client.query(sql, params)
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        fail(`${label} — 거부되어야 하는데 통과했다`)
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        if (e.constraint === constraint) ok(`${label} — ${constraint} 가 거부함 (${e.code})`)
+        else fail(`${label} — ${constraint} 가 아니라 ${e.constraint ?? e.code} 에 걸렸다 (${e.message})`)
+      }
+    }
+    await rejectBy('★ 살아 있는 일은 키마다 하나', 'ux_scheduled_job_dedupe', put, [randomUUID(), 'version_gc', '{}', key, null, null])
+    await rejectBy('★ 모르는 일', 'ck_scheduled_job_kind', put, [randomUUID(), 'mystery', '{}', null, null, null])
+    await rejectBy('일의 내용이 객체가 아니다', 'ck_scheduled_job_payload', put, [randomUUID(), 'version_gc', '[]', null, null, null])
+    await rejectBy('★ 죽은 일이 임대를 쥔다', 'ck_scheduled_job_dead', put, [randomUUID(), 'version_gc', '{}', null, new Date(), new Date()])
+    await rejectBy('시도 횟수가 음수', 'ck_scheduled_job_attempts', `UPDATE scheduled_job SET attempts = -1 WHERE dedupe_key = $1`, [key])
+
+    // 죽은 일은 키를 막지 않는다(부분 UNIQUE)
+    await client.query('SAVEPOINT dead')
+    await client.query(`UPDATE scheduled_job SET dead_at = now() WHERE dedupe_key = $1`, [key])
+    let revived = false
+    try {
+      await client.query(put, [randomUUID(), 'version_gc', '{}', key, null, null])
+      revived = true
+    } catch {
+      revived = false
+    }
+    await client.query('ROLLBACK TO SAVEPOINT dead')
+    if (revived) ok('죽은 일은 키를 막지 않는다 — 같은 키로 새 일을 넣는다')
+    else fail('죽은 일이 키를 막았다')
   }
 
   await client.query('ROLLBACK')
