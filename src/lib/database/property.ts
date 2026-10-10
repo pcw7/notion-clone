@@ -208,11 +208,8 @@ type DataSourceRow = { id: string; schema_version: string; container_id: string 
  * 주지 않는다. 즉 "값은 고칠 수 있지만 컬럼은 못 고치는 사람"이 데이터로 존재한다.
  * 레벨 비교로 추측하지 않고 capability 를 묻는다(규칙 A2).
  *
- * ⚠ **알려진 공백**: `resolveCaps` 는 ACL 대상을 `'page'` 로 고정하고 있다
- * (`permissions/effective.ts` — "database 는 W8 에서 온다"). 그래서 database 노드에
- * `edit_content` **레벨**을 직접 부여하면 페이지에 정의되지 않은 레벨이라 무시된다.
- * 상속받은 페이지 grant 로는 정상 동작한다. 대상 종류를 `effective()` 에 흘리는
- * 것은 별개 변경이다 — HANDOFF §7 에 남긴다.
+ * 데이터베이스 노드에 준 `edit_content` 레벨("내용 편집")이 바로 그 사람이다 — 판정이 레벨의 뜻을 레벨로 읽는다(6f-1 ·
+ * `permissions/database-levels.db.test.ts` ①).
  */
 export async function lockSchema(
   tx: Tx,

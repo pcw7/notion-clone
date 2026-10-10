@@ -38,7 +38,7 @@ import type { SessionContext } from '../auth/session-context.ts'
 import { recordForContextIn } from '../audit/audit.ts'
 import { withTransaction, type Tx } from '../db/tx.ts'
 import { mayInviteGuestsIn } from '../workspace/security-policy.ts'
-import { can, capabilitiesOf, isDefinedLevel, unionCaps, type Level } from './levels.ts'
+import { can, grantCapabilities, isGrantableLevel, unionCaps, type Level } from './levels.ts'
 import { effectiveCaps, principalsOf, resolveCaps, type AclRow } from './effective.ts'
 
 export type PrincipalRef =
@@ -63,12 +63,14 @@ export type AclFailure =
   | 'guest_level'
   /** 워크스페이스 정책이 멤버의 게스트 공유를 막았다(`allow_member_invite_guests` · 6e-1) — 소유자 · 멤버 관리자만 게스트에게 준다. */
   | 'policy_disabled'
+  /** 이 종류의 노드에 줄 수 없는 레벨이다(6f-1) — 페이지는 넷(view · comment · edit · full_access) · 데이터베이스는 여섯. */
+  | 'invalid_level'
 
 export type AclResult<T = void> =
   | ({ readonly ok: true } & (T extends void ? object : { readonly value: T }))
   | { readonly ok: false; readonly reason: AclFailure }
 
-type NodeRow = { id: string; ancestor_path: string[]; perm_scope_id: string; parent_type: string; parent_id: string }
+type NodeRow = { id: string; type: string; ancestor_path: string[]; perm_scope_id: string; parent_type: string; parent_id: string }
 
 async function loadNode(tx: Tx, ctx: SessionContext, nodeId: string): Promise<NodeRow | null> {
   return tx.queryMaybe<NodeRow>(
@@ -80,7 +82,7 @@ async function loadNode(tx: Tx, ctx: SessionContext, nodeId: string): Promise<No
     // 본문 블록(paragraph 등)은 여전히 제외한다 — 권한 경계는 페이지·데이터베이스
     // 단위이고, 문단마다 ACL 을 걸 수 있게 두면 `perm_scope_id` 재계산이
     // 본문 편집마다 일어난다.
-    `SELECT id, ancestor_path, perm_scope_id, parent_type, parent_id
+    `SELECT id, type, ancestor_path, perm_scope_id, parent_type, parent_id
        FROM block WHERE id = $1 AND workspace_id = $2 AND type IN ('page', 'database')`,
     [nodeId, ctx.workspaceId],
   )
@@ -269,6 +271,8 @@ export async function grantAccessIn(
     if (node === null) return { ok: false, reason: 'not_found' } as const
     const denied = await gate(tx, ctx, pageId, 'manage_perm')
     if (denied !== null) return { ok: false, reason: denied } as const
+    // 부여는 노드의 종류가 정한다(6f-1 · 정본 [보강] 데이터베이스의 레벨 ③)
+    if (!isGrantableLevel(node.type === 'database' ? 'database' : 'page', level)) return { ok: false, reason: 'invalid_level' } as const
     if (principal.type === 'group' && !(await lockLiveGroup(tx, ctx, principal.id))) {
       return { ok: false, reason: 'invalid_principal' } as const
     }
@@ -329,9 +333,10 @@ export async function directGrantCovers(tx: Tx, nodeId: string, userId: string, 
       WHERE node_kind = 'block' AND node_id = $1 AND principal_type = 'user' AND principal_id = $2`,
     [nodeId, userId],
   )
-  if (direct === null || !isDefinedLevel('page', direct.level as Level)) return false
-  const have = capabilitiesOf('page', direct.level as Level)
-  return unionCaps(have, capabilitiesOf('page', level)) === have
+  const have = direct === null ? null : grantCapabilities(direct.level)
+  const want = grantCapabilities(level)
+  if (have === null || want === null) return false
+  return unionCaps(have, want) === have
 }
 
 export type InviteGrantOutcome = 'granted' | 'covered' | 'not_found' | 'invalid_principal' | 'guest_level'
@@ -354,7 +359,7 @@ export async function grantFromInviteIn(
   grantedBy: string,
 ): Promise<InviteGrantOutcome> {
   const node = await tx.queryMaybe<NodeRow>(
-    `SELECT id, ancestor_path, perm_scope_id, parent_type, parent_id
+    `SELECT id, type, ancestor_path, perm_scope_id, parent_type, parent_id
        FROM block WHERE id = $1 AND workspace_id = $2 AND type IN ('page', 'database') AND lifecycle = 'live'`,
     [pageId, workspaceId],
   )

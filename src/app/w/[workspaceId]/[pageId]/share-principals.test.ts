@@ -6,6 +6,7 @@
  *   ① ★ 그룹 행은 **그룹**으로 보낸다 — "사용자가 아니면 모든 멤버"로 읽으면 그룹의 "제거"가 모든 멤버를 지운다
  *   ② 모르는 종류의 주체는 보내지 않는다(null) — 아는 것으로 바꿔 보내지 않는다
  *   ③ 추가 고르개의 값은 종류를 싣는다 — 사람과 그룹이 한 목록이다
+ *   ④ 레벨 고르개는 노드의 종류가 정한다(6f-1) — 서버가 받는 목록과 같다 · ★ 목록에 없는 지금 레벨은 그 줄에 덧붙인다
  *
  * 문구는 글자 그대로 비교한다(§6).
  */
@@ -13,11 +14,15 @@
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 
+import { LEVELS, isGrantableLevel } from '../../../../lib/permissions/levels.ts'
 import { GUEST_LEVELS } from '../../../../lib/workspace/guest.ts'
 import {
   GUEST_LEVEL_OPTIONS,
   choiceValue,
   entryLabel,
+  entryLevelOptions,
+  levelLabel,
+  shareLevelOptions,
   guestInviteMessage,
   guestInvitedNotice,
   memberLabel,
@@ -88,6 +93,32 @@ describe('choiceValue · parseChoice', () => {
     assert.equal(parseChoice('workspace_everyone:'), null)
     assert.equal(parseChoice('teamspace:x'), null)
     assert.equal(parseChoice('group:'), null)
+  })
+})
+
+describe('레벨 고르개 (6f-1)', () => {
+  const values = (options: readonly { value: string }[]) => options.map((o) => o.value)
+
+  test('페이지는 서버가 받는 넷 · 데이터베이스는 "만들기만"(6f-2)을 뺀 다섯 — 고를 수 있으면 서버가 받는다', () => {
+    assert.deepEqual(values(shareLevelOptions('page')), LEVELS.filter((l) => isGrantableLevel('page', l)))
+    assert.deepEqual(values(shareLevelOptions('database')), LEVELS.filter((l) => isGrantableLevel('database', l) && l !== 'create'))
+    assert.deepEqual(
+      shareLevelOptions('database').find((o) => o.value === 'edit_content'),
+      { value: 'edit_content', label: '내용 편집' },
+    )
+  })
+
+  test('★ 목록에 없는 지금 레벨은 그 줄에만 덧붙인다 — API 로 준 "만들기만" 이 "읽기" 로 보이지 않는다', () => {
+    assert.deepEqual(entryLevelOptions('database', 'create').at(-1), { value: 'create', label: '만들기만' })
+    assert.equal(entryLevelOptions('database', 'create').length, 6)
+    assert.deepEqual(entryLevelOptions('database', 'edit_content'), shareLevelOptions('database'), '목록에 있으면 그대로')
+    assert.deepEqual(entryLevelOptions('page', 'edit_content').at(-1), { value: 'edit_content', label: '내용 편집' })
+  })
+
+  test('레벨 이름 — 모르는 값은 그대로 · 프로토타입 이름에 함수를 내주지 않는다', () => {
+    assert.equal(levelLabel('full_access'), '전체 권한')
+    assert.equal(levelLabel('owner'), 'owner')
+    assert.equal(levelLabel('constructor'), 'constructor')
   })
 })
 

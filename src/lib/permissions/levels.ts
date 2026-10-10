@@ -102,6 +102,27 @@ export function capabilitiesOf(targetKind: TargetKind, level: Level): CapSet {
 export type Grant = { readonly targetKind: TargetKind; readonly level: Level }
 
 /**
+ * ACL 행 하나(블록 노드)가 주는 능력 — **레벨의 뜻은 레벨이 정한다**(정본 §3.3 [보강] 데이터베이스의 레벨 ①). page 매트릭스에서 읽고, 없으면
+ * database 매트릭스에서 읽는다. 공통 레벨은 두 매트릭스에서 같은 능력이라 어느 쪽을 먼저 읽어도 뜻이 같고, `edit_content` · `create` 는
+ * database 의 뜻 하나뿐이다. 어디에도 없으면 null — 판정은 그 행을 없는 부여로 본다(뜻을 알 수 없는 부여로 문을 열지 않는다).
+ */
+export function grantCapabilities(level: string): CapSet | null {
+  if (!isLevel(level)) return null
+  if (isDefinedLevel('page', level)) return capabilitiesOf('page', level)
+  if (isDefinedLevel('database', level)) return capabilitiesOf('database', level)
+  return null
+}
+
+/** 이 종류의 노드에 **부여할 수 있는** 레벨인가(정본 [보강] 데이터베이스의 레벨 ③) — 페이지는 넷 · 데이터베이스는 여섯. */
+export function isGrantableLevel(kind: 'page' | 'database', level: string): level is Level {
+  return isLevel(level) && isDefinedLevel(kind, level)
+}
+
+function isLevel(value: string): value is Level {
+  return (LEVELS as readonly string[]).includes(value)
+}
+
+/**
  * MAX_BY_CAP — capability 비트마스크 OR.
  *
  * 정본 §3.11: "capability 비트마스크 OR 후 가장 가까운 표시용 레벨로 환원.

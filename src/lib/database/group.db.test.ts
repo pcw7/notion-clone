@@ -9,10 +9,8 @@
  *   ④ **자리 없는 행이 정상이다** — 자리 있는 행 뒤에 트리 순서. "맨 뒤"는 그 뒤여야 하고, 자리 없는 행 앞에도 놓을 수 있다
  *   ⑤ **정렬이 걸리면 자리를 읽지도 쓰지도 않는다** — 드롭은 셀 값만 바꾼다
  *   ⑥ 그룹별 독립 커서로 이어 읽으면 중복 · 누락이 없다
- *   ⑦ 권한: 못 보면 카운트도 없고, 볼 수만 있으면 이동은 안 된다. `edit_content` 는 이동은 되고 그룹 설정은 안 되는 것이
- *      코드의 규칙인데(`openBoard` 는 edit_content · `updateView` 는 edit_structure) **여기서 검사하지 못한다** — `resolveCaps` 가
- *      대상 종류를 'page' 로 고정해 데이터베이스 노드에 `edit_content` 레벨을 직접 줄 수 없다(HANDOFF §7). 그 부채가 풀리면
- *      그때 검사를 더한다
+ *   ⑦ 권한: 못 보면 카운트도 없고, 볼 수만 있으면 이동은 안 된다. "내용 편집"(`edit_content` 레벨 · 6f-1)은 이동은 되고 그룹
+ *      설정은 forbidden 이다(`openBoard` 는 edit_content · `updateView` 는 edit_structure)
  *   ⑧ 그룹 프로퍼티가 지워지면 `groupBy` 가 null 이고 복원하면 돌아온다 — 저장값은 건드리지 않는다
  */
 
@@ -474,7 +472,7 @@ describe('그룹별 커서', () => {
 })
 
 describe('★ 권한', () => {
-  const makePrivate = async (databaseId: string, level?: 'view' | 'edit') => {
+  const makePrivate = async (databaseId: string, level?: 'view' | 'edit_content' | 'edit') => {
     assert.equal((await stopInheriting(fx.owner.ctx, databaseId)).ok, true)
     assert.equal((await grantAccess(fx.owner.ctx, databaseId, { type: 'user', id: fx.owner.userId }, 'full_access')).ok, true)
     assert.equal((await revokeAccess(fx.owner.ctx, databaseId, { type: 'workspace_everyone', id: null })).ok, true)
@@ -502,6 +500,19 @@ describe('★ 권한', () => {
     await makePrivate(table.databaseId, 'view')
     assert.equal(countOf(unwrap(await queryGroups(other.ctx, board.id)), table.todo), 1)
     const r = await moveRow(other.ctx, board.id, { rowId: a.id, groupKey: table.doing })
+    assert.equal(r.ok, false)
+    if (!r.ok) assert.equal(r.reason, 'forbidden')
+  })
+
+  test('★ "내용 편집"(6f-1)이면 카드는 옮기지만 그룹 설정은 forbidden — 이동은 내용 · 그룹은 구조', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const table = await newTable()
+    const a = await table.row('A', table.todo)
+    const board = unwrap(await createView(fx.owner.ctx, table.databaseId, { type: 'board' }))
+    await makePrivate(table.databaseId, 'edit_content')
+
+    unwrap(await moveRow(other.ctx, board.id, { rowId: a.id, groupKey: table.doing }))
+    const r = await updateView(other.ctx, board.id, { groupBy: { property_id: table.statusId, hidden: [table.todo] } })
     assert.equal(r.ok, false)
     if (!r.ok) assert.equal(r.reason, 'forbidden')
   })

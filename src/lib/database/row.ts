@@ -368,10 +368,9 @@ export async function createRow(
  *                                 만들 행의 초기 상태를 정하게 두지 않는다(08 F-08-02 의 *"DB 편집 권한 없음 →
  *                                 목록 노출은 하되 생성 불가"* 가 가르는 자리)
  *
- * ⚠ **그 구분은 오늘 관찰되지 않는다.** `resolveCaps` 가 ACL 의 대상 종류를 `'page'` 로 고정해서 데이터베이스
- *   노드에 `create` · `edit_content` 레벨을 부여할 수 없고(HANDOFF §7), 줄 수 있는 레벨에서는 두 capability 가
- *   늘 함께 온다. 검사도 그래서 이 줄을 가려내지 못한다(`template.db.test.ts` 머리말) — §7 이 풀리면 그때
- *   차이가 드러난다. 지금 이렇게 써 두는 이유는 그날 이 줄을 다시 판단하지 않기 위해서다.
+ * 그 구분은 데이터베이스에 준 "내용 편집" · "만들기만" 레벨(6f-1 · 정본 §3.3 [보강] 데이터베이스의 레벨)에서 드러나고,
+ * `template.db.test.ts` ③ 이 가른다. 템플릿 만들기는 `createTemplate` 이 같은 게이트를 먼저 묻는다(두 겹) — 이 줄 하나만
+ * 풀어도 검사는 통과한다. 이 줄은 `createTemplate` 을 거치지 않는 새 길을 위한 겹이다.
  */
 export async function createRowIn(
   tx: Tx,
