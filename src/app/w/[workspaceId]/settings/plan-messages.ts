@@ -20,6 +20,8 @@ export function entitlementLabel(key: EntitlementKey | string): string {
       return '가져오기 파일 크기'
     case 'trash.custom_retention':
       return '휴지통 보관 기간 바꾸기'
+    case 'automation.webhook':
+      return '자동화의 웹훅 보내기'
     default:
       return key
   }

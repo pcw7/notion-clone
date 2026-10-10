@@ -16,8 +16,8 @@ import type { SessionContext } from '../auth/session-context.ts'
 import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
 import { isRowFailure, openDataSource } from '../database/row.ts'
 import { isUuid } from '../ids.ts'
-import { parseActions, type ActionInput, type ActionProblem } from './actions.ts'
-import { checkActions, readActions, writeActions, type ActionSchemaProblem } from './action-check.ts'
+import { parseActions, type ActionProblem } from './actions.ts'
+import { checkActions, readActions, readPublicActions, writeActions, type ActionSchemaProblem, type PublicAction } from './action-check.ts'
 import { runAutomation, type RunOutcome } from './engine.ts'
 
 export type ButtonFailure = 'not_found' | 'forbidden' | 'locked' | 'invalid_action' | 'disabled' | 'invalid_key'
@@ -28,7 +28,8 @@ export type ButtonResult<T> =
   | { readonly ok: true; readonly value: T }
   | { readonly ok: false; readonly reason: ButtonFailure; readonly problem?: ButtonActionProblem; readonly index?: number }
 
-export type ButtonActions = { readonly automationId: string; readonly enabled: boolean; readonly actions: readonly ActionInput[] }
+/** 액션은 화면 · API 에 주는 모양이다(`send_webhook` 의 URL · 헤더 값은 없다 — 정본 ⑫). */
+export type ButtonActions = { readonly automationId: string; readonly enabled: boolean; readonly actions: readonly PublicAction[] }
 
 const fail = (reason: ButtonFailure, problem?: ButtonActionProblem, index?: number) =>
   ({ ok: false, reason, ...(problem === undefined ? {} : { problem }), ...(index === undefined ? {} : { index }) }) as const
@@ -54,7 +55,7 @@ export async function readButtonActions(ctx: SessionContext, dataSourceId: strin
     if (isRowFailure(gate)) return fail('not_found')
     const button = await findButton(tx, dataSourceId, propertyId)
     if (button === null) return fail('not_found')
-    return { ok: true, value: { automationId: button.automation_id, enabled: button.enabled, actions: await readActions(tx, button.automation_id) } } as const
+    return { ok: true, value: { automationId: button.automation_id, enabled: button.enabled, actions: await readPublicActions(tx, button.automation_id) } } as const
   })
 }
 
@@ -76,11 +77,11 @@ export async function setButtonActions(
     if (!parsed.ok) return fail('invalid_action', parsed.problem, parsed.index)
 
     // 셀이 쓰일 표의 스키마에 대어 본다(`action-check.ts` — DB automation 과 같은 검사)
-    const problem = await checkActions(tx, ctx, gate, parsed.actions)
+    const problem = await checkActions(tx, ctx, gate, parsed.actions, button.automation_id)
     if (problem !== null) return fail('invalid_action', problem.problem, problem.index)
     await writeActions(tx, button.automation_id, parsed.actions)
     await tx.query(`UPDATE automation SET updated_at = now() WHERE id = $1`, [button.automation_id])
-    return { ok: true, value: { automationId: button.automation_id, enabled: button.enabled, actions: parsed.actions } } as const
+    return { ok: true, value: { automationId: button.automation_id, enabled: button.enabled, actions: await readPublicActions(tx, button.automation_id) } } as const
   })
 }
 

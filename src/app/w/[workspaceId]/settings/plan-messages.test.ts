@@ -13,7 +13,7 @@ import assert from 'node:assert/strict'
 import { entitlementLabel, formatEntitlement, formatPrice, guestUsageLine } from './plan-messages.ts'
 
 test('① 줄 이름', () => {
-  const keys = ['history.days', 'guests.max', 'teamspace.private', 'import.max_bytes', 'trash.custom_retention']
+  const keys = ['history.days', 'guests.max', 'teamspace.private', 'import.max_bytes', 'trash.custom_retention', 'automation.webhook']
   assert.equal(new Set(keys.map(entitlementLabel)).size, keys.length)
   assert.ok(keys.every((k) => entitlementLabel(k) !== k))
   assert.equal(entitlementLabel('charts.max'), 'charts.max')

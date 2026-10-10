@@ -54,12 +54,24 @@ export const toDraft = (action: api.ButtonActionJson): ActionDraft => {
   }
   return { kind: 'other', raw: action }
 }
+/**
+ * 받은 `send_webhook` 을 그대로 남긴다 — 서버는 URL · 헤더 값을 주지 않으므로(봉인 · 정본 ⑫) 읽을 때 받은 `ref` 를 `keep` 으로, 헤더는 이름만
+ * 돌려준다(값이 없으면 서버가 그 액션에서 옮긴다).
+ */
+const keepWebhook = (raw: api.ButtonActionJson): api.ButtonActionJson => {
+  const c = raw.config
+  const headers = Array.isArray(c.headers) ? c.headers.flatMap((h) => (typeof h === 'object' && h !== null && 'name' in h ? [{ name: String(h.name) }] : [])) : []
+  return { type: 'send_webhook', config: { v: 1, keep: c.ref, headers, properties: Array.isArray(c.properties) ? c.properties : [] } }
+}
+
 export const toAction = (draft: ActionDraft): api.ButtonActionJson =>
   draft.kind === 'edit'
     ? { type: 'edit_property', config: { v: 1, cells: draft.cells } }
     : draft.kind === 'add'
       ? { type: 'add_page_to', config: { v: 1, dataSourceId: draft.dataSourceId, cells: draft.cells, templateId: draft.templateId } }
-      : draft.raw
+      : draft.raw.type === 'send_webhook' && typeof draft.raw.config.ref === 'string'
+        ? keepWebhook(draft.raw)
+        : draft.raw
 
 const fieldsOf = (properties: readonly PropertySummary[]): Field[] =>
   properties.flatMap((p) => (isMvpPropertyType(p.type) ? [{ id: p.id, name: p.name, type: p.type, options: p.options ?? [] }] : []))
