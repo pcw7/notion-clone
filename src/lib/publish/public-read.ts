@@ -14,7 +14,7 @@
  */
 
 import { readTitle } from '../block/page.ts'
-import { pageIconOfFormat } from '../block/page-icon.ts'
+import { pageIconOfFormat, type PageIcon } from '../block/page-icon.ts'
 import { cellsOf } from '../block/table.ts'
 import { codeCaptionRuns } from '../block/code.ts'
 import { PAGE_TYPE } from '../block/types.ts'
@@ -28,8 +28,8 @@ export type PublicPageView = {
   readonly token: string
   readonly target: PublicTarget
   readonly title: readonly RichTextRun[]
-  /** 이모지 아이콘 — 이미지 아이콘은 공개 파일 경로와 함께(6a-2b). */
-  readonly emoji: string | null
+  /** 페이지 아이콘 — 이모지 · 이미지(파일이면 공개 파일 경로로 · 6a-2b). */
+  readonly icon: PageIcon | null
   readonly doc: EditorDoc
   /** 이 토큰으로 열 수 있는 페이지의 제목 — 사슬 · 하위 페이지 참조 · 페이지 멘션. **없는 id 는 열 수 없다**(가린다). */
   readonly pages: ReadonlyMap<string, readonly RichTextRun[]>
@@ -41,7 +41,7 @@ export type PublicRead =
   | { readonly ok: true; readonly value: PublicPageView }
   | { readonly ok: false; readonly reason: PublicAccessFailure }
 
-/** 본문에서 그리지 않는 타입 — 데이터베이스는 공개 파일 경로 · 표 렌더와 함께(6a-2b). */
+/** 본문에서 그리지 않는 타입 — 데이터베이스는 읽기 전용 표와 함께(6a-2c). */
 const SKIPPED_TYPES: ReadonlySet<string> = new Set(['database'])
 
 type ScopeRow = BodyRow & { lifecycle: string }
@@ -81,14 +81,13 @@ export async function readPublicPage(token: string, pageId?: string): Promise<Pu
             [mentions.people, target.workspaceId],
           )
 
-    const icon = pageIconOfFormat(page.format)
     return {
       ok: true,
       value: {
         token,
         target,
         title: readTitle(page.properties),
-        emoji: icon?.type === 'emoji' ? icon.emoji : null,
+        icon: pageIconOfFormat(page.format),
         doc,
         pages: new Map(titles.map((row) => [row.id, readTitle(row.properties)])),
         people: new Map(people.map((row) => [row.id, row.name])),

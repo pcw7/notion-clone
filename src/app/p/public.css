@@ -71,3 +71,8 @@
 
 :root[data-theme='dark'] .pub-trail-sep { color: #4b5563; }
 :root[data-theme='dark'] .pub-divider, :root[data-theme='dark'] .pub-table td, :root[data-theme='dark'] .pub-table th { border-color: rgba(255, 255, 255, 0.14); }
+
+/* 6a-2b — 이미지 · 이미지 아이콘 */
+.pub-image img { display: block; max-width: 100%; height: auto; border-radius: 2px; }
+.pub-image figcaption { font-size: 0.875rem; color: #6b7280; margin-top: 0.25rem; }
+.pub-icon-image { width: 4.5rem; height: 4.5rem; object-fit: cover; border-radius: 4px; margin-bottom: 0.5rem; }
