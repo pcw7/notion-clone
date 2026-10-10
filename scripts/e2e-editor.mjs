@@ -15412,6 +15412,101 @@ async function main() {
       check('다시 열면 줄 목록이 그대로', JSON.stringify(rows) === JSON.stringify([['to_do', '물 마시기'], ['paragraph', '메모']]), JSON.stringify(rows))
     }
 
+    if (sectionIf('공개 화면 (6a-2a · F-06-08)')) {
+      // 게시한 페이지를 **세션 없이** 연다 — 제목 · 본문 · 서식 · 색인 meta · referrer · 열린 하위만 링크 · 닫힌 하위와 공개 밖 멘션은
+      // 제목조차 없다 · 하위로 가면 이동 경로 · 닫힌 하위의 주소는 404 · robots.txt · 해제하면 404. 브라우저 세션은 끝에 반드시 되돌린다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const newPage = async (title, parentPageId) =>
+        (await api('POST', '/pages', parentPageId === undefined ? { title } : { title, parentPageId })).body.page.id
+      const run = (text, annotations = {}) => ({ type: 'text', text: { content: text, link: null }, plain_text: text, href: null, annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: 'default', ...annotations } })
+      const mention = (pageId) => ({ type: 'mention', mention: { type: 'page', page: { id: pageId } }, plain_text: '', href: null, annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: 'default' } })
+      const blk = (type, title, extra = {}) => ({ id: randomUUID(), type, title, properties: {}, format: {}, children: [], ...extra })
+
+      const root = await newPage(`공개 위키 ${stamp}`)
+      const openChild = await newPage(`열린 하위 ${stamp}`, root)
+      const closedChild = await newPage(`닫힌 하위 ${stamp}`, root)
+      const secret = await newPage(`비밀 계획 ${stamp}`)
+      await api('POST', `/pages/${closedChild}/access`, { action: 'restrict' })
+      await saveBody(root, {
+        blocks: [
+          blk('heading_1', [run(`머리 ${stamp}`)]),
+          blk('paragraph', [run('여기는 '), run('굵게', { bold: true }), run(' · 안 '), mention(openChild), run(' · 밖 '), mention(secret)]),
+          blk('to_do', [run('끝낸 일')], { properties: { checked: true } }),
+          { id: openChild, type: 'page', title: [], properties: {}, format: {}, children: [] },
+          { id: closedChild, type: 'page', title: [], properties: {}, format: {}, children: [] },
+        ],
+      })
+      const published = await api('PUT', `/pages/${root}/publish`)
+      const token = published.body?.token
+      check('게시 — 토큰 · 기본 noindex', published.status === 200 && /^[A-Za-z0-9_-]{22}$/.test(token ?? '') && published.body.robots === 'noindex',
+        JSON.stringify(published))
+
+      try {
+        await send('Network.deleteCookies', { name: 'nc_session', domain: 'localhost', path: '/' })
+        await send('Page.navigate', { url: `${BASE}/p/${token}` })
+        const shown = await waitFor(`!!document.querySelector('[data-testid="public-title"]')`, 15000)
+        const view = await evaluate(`(() => {
+          const body = document.querySelector('[data-testid="public-body"]')
+          return {
+            title: document.querySelector('[data-testid="public-title"]')?.textContent ?? '',
+            heading: body?.querySelector('h2')?.textContent ?? '',
+            bold: body?.querySelector('strong')?.textContent ?? '',
+            todo: body?.querySelector('.pub-todo')?.getAttribute('data-checked') ?? '',
+            robots: document.querySelector('meta[name="robots"]')?.content ?? '',
+            referrer: document.querySelector('meta[name="referrer"]')?.content ?? '',
+            editor: !!document.querySelector('.ProseMirror'),
+          }
+        })()`)
+        check('★ 세션 없이 연다 — 제목 · 제목 블록 · 굵게 · 끝낸 할 일 · 편집기는 없다',
+          shown && view.title === `공개 위키 ${stamp}` && view.heading === `머리 ${stamp}` && view.bold === '굵게' && view.todo === 'true' && !view.editor,
+          JSON.stringify(view))
+        check('★ 색인 meta 는 링크의 설정(noindex · AI 거부) · referrer 를 보내지 않는다',
+          view.robots === 'noindex, nofollow, noai, noimageai' && view.referrer === 'no-referrer', JSON.stringify(view))
+
+        const links = await evaluate(`(() => {
+          const html = document.documentElement.outerHTML
+          return {
+            refs: [...document.querySelectorAll('a.pub-page-ref')].map((a) => [a.getAttribute('href'), a.textContent.trim()]),
+            mentions: [...document.querySelectorAll('.pub-mention')].map((m) => [m.tagName, m.getAttribute('href'), m.textContent]),
+            closed: html.includes(${JSON.stringify(`닫힌 하위 ${stamp}`)}) || html.includes(${JSON.stringify(closedChild)}),
+            secret: html.includes(${JSON.stringify(`비밀 계획 ${stamp}`)}) || html.includes(${JSON.stringify(secret)}),
+          }
+        })()`)
+        check('★ 하위 참조는 열린 것만 링크 — 닫힌 하위는 제목도 id 도 없다',
+          JSON.stringify(links.refs) === JSON.stringify([[`/p/${token}/${openChild}`, `📄 열린 하위 ${stamp}`]]) && !links.closed,
+          JSON.stringify(links))
+        check('★ 멘션 — 공개 안은 링크 · 밖은 "비공개 페이지"(제목도 id 도 싣지 않는다)',
+          JSON.stringify(links.mentions) === JSON.stringify([['A', `/p/${token}/${openChild}`, `열린 하위 ${stamp}`], ['SPAN', null, '비공개 페이지']]) && !links.secret,
+          JSON.stringify(links))
+
+        await clickSelector('a.pub-page-ref')
+        const sub = await waitFor(`document.querySelector('[data-testid="public-page"]')?.dataset.pageId === '${openChild}'`, 10000)
+        const trail = await evaluate(`[...document.querySelectorAll('[data-testid="public-trail"] a')].map((a) => [a.getAttribute('href'), a.textContent])`)
+        check('하위로 가면 이동 경로 — 루트로 돌아가는 링크(루트 위는 없다)',
+          sub && JSON.stringify(trail) === JSON.stringify([[`/p/${token}`, `공개 위키 ${stamp}`]]), JSON.stringify(trail))
+
+        const status = async (path) => (await fetch(`${BASE}${path}`)).status
+        const statuses = [await status(`/p/${token}/${closedChild}`), await status(`/p/${token}/${secret}`), await status(`/p/${token.slice(0, 21)}x`)]
+        check('★ 닫힌 하위 · 공개 밖 · 없는 토큰의 주소는 404', JSON.stringify(statuses) === '[404,404,404]', JSON.stringify(statuses))
+
+        const robots = await (await fetch(`${BASE}/robots.txt`)).text()
+        check('robots.txt — 앱 경로를 막고 AI 크롤러를 막는다',
+          robots.includes('Disallow: /w/') && robots.includes('Disallow: /api/') && robots.includes('User-Agent: GPTBot') && robots.includes('Allow: /p/'),
+          robots)
+      } finally {
+        await send('Network.setCookie', { name: 'nc_session', value: session, domain: 'localhost', path: '/', httpOnly: true })
+      }
+
+      await api('DELETE', `/pages/${root}/publish`)
+      check('해제하면 그 주소는 404', (await fetch(`${BASE}/p/${token}`)).status === 404)
+    }
+
     if (sectionIf('개인 필터 · 정렬 — 화면 (2h-2 · F-04-17)')) {
       // 볼 수만 있는 사람(브라우저 세션을 바꾼다)이 도구줄의 필터로 조건을 걸면 **자기 것**으로 저장되고 그 사람의 표만 좁혀진다 — "나만 보는
       // 필터" 표시 · 초기화. 편집자는 자기 개인 것을 "모두에게 저장"한다. 브라우저 세션은 끝에 반드시 소유자로 되돌린다.
