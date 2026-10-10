@@ -131,7 +131,7 @@ export function ButtonEditForm({
                         }}
                         className="min-w-0 max-w-[8rem] rounded border border-neutral-300 px-1 py-0.5 dark:border-neutral-700 dark:bg-neutral-900"
                       >
-                        {column === undefined && <option value={cell.propertyId}>(사라진 속성)</option>}
+                        {column === undefined && <option value={cell.propertyId}>(이 보기에 없는 속성 — 값은 그대로 남는다)</option>}
                         {cellColumns
                           .filter((col) => col.propertyId === cell.propertyId || !draft.cells.some((x) => x.propertyId === col.propertyId))
                           .map((col) => (
