@@ -20,6 +20,8 @@ import { randomUUID } from 'node:crypto'
 
 import type { SessionContext } from '../auth/session-context.ts'
 import type { Tx } from '../db/tx.ts'
+import { isPageActivityType } from './page-activity-types.ts'
+import { routeToWebhooks } from './webhook-route.ts'
 
 /** 정본 §3.8 의 목록 그대로. 0020 의 CHECK 과 같아야 한다 — 늘리려면 마이그레이션이 함께 온다. */
 export const ACTIVITY_TYPES = [
@@ -76,6 +78,8 @@ export async function recordActivity(tx: Tx, ctx: ActivityActor, input: Activity
       JSON.stringify(input.payload ?? {}),
     ],
   )
+  // 페이지 웹훅(4e-2) — 보내는 종류면 같은 트랜잭션에서 그 웹훅의 묶음에 더한다(정본 §3.8 [보강] 페이지 웹훅 ⓐ)
+  if (isPageActivityType(input.type)) await routeToWebhooks(tx, { eventId: row.id, pageId: input.pageId })
   return { id: row.id, createdAt: row.created_at }
 }
 
