@@ -63,6 +63,8 @@ const OTHER_LABEL: Record<string, string> = {
 
 export const toDraft = (action: api.ButtonActionJson): ActionDraft => {
   const c = action.config
+  // 동적 값(⑯)이 든 셀은 이 편집기가 아직 고치지 않는다 — 받은 그대로 남긴다(5d-2 가 칸을 세운다)
+  if (Array.isArray(c.cells) && c.cells.some((cell) => typeof cell === 'object' && cell !== null && 'from' in cell)) return { kind: 'other', raw: action }
   if (action.type === 'edit_property' && Array.isArray(c.cells)) return { kind: 'edit', cells: c.cells as CellDraft[] }
   if (action.type === 'add_page_to' && typeof c.dataSourceId === 'string' && Array.isArray(c.cells)) {
     return { kind: 'add', dataSourceId: c.dataSourceId, templateId: typeof c.templateId === 'string' ? c.templateId : null, cells: c.cells as CellDraft[] }

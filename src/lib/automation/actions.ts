@@ -1,7 +1,7 @@
 /**
- * 자동화 액션 — 종류 · 설정의 모양 (자동화 5a-1 · 5c-1 · F-08-07 · F-08-13 · 순수)
+ * 자동화 액션 — 종류 · 설정의 모양 (자동화 5a-1 · 5c-1 · 5d-1 · F-08-07 · F-08-11 · F-08-13 · 순수)
  *
- * 정본: 00-canonical-data-model.md §3.10 [보강] 자동화 엔진 · 버튼 속성 ⑥ ⑫
+ * 정본: 00-canonical-data-model.md §3.10 [보강] 자동화 엔진 · 버튼 속성 ⑥ ⑫ ⑯
  *
  * 종류는 처음부터 상위집합이다(`ck_automation_action_type`) — 버튼 · DB automation 이 같은 등록부를 쓴다(08 F-08-07 *"버튼·automation 공통
  * 액션 목록"*). 실행하는 것은 `edit_property`(그 행의 셀을 고정 값으로 · 5a-1) · `add_page_to`(그 표에 행을 하나 · 5a-2) · `send_webhook`
@@ -10,6 +10,8 @@
  * `send_webhook` 은 모양이 셋이다(정본 ⑫) — **받는 것**(`SendWebhookInput` — 평문 URL · 헤더 값, 또는 이전 액션에서 옮기라는 `keep`) ·
  * **저장하는 것**(`SendWebhookStored` — 봉인) · 읽어 주는 것(`action-check.ts` `readPublicActions` — 힌트 · 헤더 이름만). 받는 것은
  * `parseActions`, 저장한 것은 `parseStoredActions` 가 읽는다. 나머지 종류는 받는 것과 저장하는 것이 같다.
+ *
+ * 셀은 고정 값(`{ propertyId, value }`) 또는 동적 값(`{ propertyId, from }` — 지금 · 일하는 행의 속성 · ⑯)이다. 동적 값은 실행할 때 엔진이 푼다.
  *
  * 이 파일은 **모양만** 본다(어떤 속성 · 어떤 값인가는 저장할 때 그 표의 스키마에 대어 본다 — `action-check.ts`).
  */
@@ -37,8 +39,17 @@ export const MAX_WEBHOOK_PROPERTIES = 50
 /** 발송기가 정하는 헤더 — 사람이 덮지 못한다(정본 ⑫). */
 export const RESERVED_WEBHOOK_HEADERS: readonly string[] = ['host', 'content-length', 'content-type', 'connection', 'transfer-encoding', 'user-agent']
 
-/** 그 행의 셀을 고정 값으로 바꾼다 — 값은 셀 쓰기 API 의 `CellValue` 그대로(정본 ⑥ · 수식 · 멘션 슬롯은 5d). */
-export type EditPropertyConfig = { readonly v: 1; readonly cells: readonly RowCell[] }
+/** 동적 값의 출처(정본 ⑯) — 실행한 시각 · 일하는 행(누른 행 · 트리거된 행)의 그 속성. */
+export type DynamicSource = { readonly kind: 'now' } | { readonly kind: 'row_property'; readonly propertyId: string }
+/** 동적 값의 셀 — 실행할 때 고정 값으로 푼다. */
+export type DynamicCell = { readonly propertyId: string; readonly from: DynamicSource }
+/** 액션의 셀 — 고정 값(셀 쓰기 API 의 `CellValue` 그대로) 또는 동적 값. */
+export type ActionCell = RowCell | DynamicCell
+
+export const isDynamicCell = (cell: ActionCell): cell is DynamicCell => 'from' in cell
+
+/** 그 행의 셀을 바꾼다(정본 ⑥ · 동적 값은 ⑯ · 수식 슬롯은 v2). */
+export type EditPropertyConfig = { readonly v: 1; readonly cells: readonly ActionCell[] }
 
 /**
  * 그 데이터 소스에 행을 하나 더한다(정본 ⑨). 셀은 비어도 된다(빈 행). 템플릿을 고르면 템플릿 값이 이긴다.
@@ -46,7 +57,7 @@ export type EditPropertyConfig = { readonly v: 1; readonly cells: readonly RowCe
 export type AddPageToConfig = {
   readonly v: 1
   readonly dataSourceId: string
-  readonly cells: readonly RowCell[]
+  readonly cells: readonly ActionCell[]
   readonly templateId: string | null
 }
 
@@ -104,15 +115,30 @@ const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'obj
 
 type Parsed<T> = { readonly ok: true; readonly actions: readonly T[] } | { readonly ok: false; readonly problem: ActionProblem; readonly index?: number }
 
-/** 셀 목록 — 같은 속성 두 번은 안 된다. */
-function parseCells(raw: unknown): RowCell[] | ActionProblem {
+/** 동적 값의 출처 — 모르는 모양이면 null. */
+function parseSource(raw: unknown): DynamicSource | null {
+  if (!isRecord(raw)) return null
+  if (raw.kind === 'now') return { kind: 'now' }
+  if (raw.kind === 'row_property' && typeof raw.propertyId === 'string' && raw.propertyId !== '') return { kind: 'row_property', propertyId: raw.propertyId }
+  return null
+}
+
+/** 셀 목록 — 고정 값 또는 동적 값(둘 다는 안 된다) · 같은 속성 두 번은 안 된다. */
+function parseCells(raw: unknown): ActionCell[] | ActionProblem {
   if (!Array.isArray(raw)) return 'invalid'
   if (raw.length > MAX_CELLS_PER_ACTION) return 'too_many_cells'
-  const cells: RowCell[] = []
+  const cells: ActionCell[] = []
   const seen = new Set<string>()
   for (const cell of raw) {
-    if (!isRecord(cell) || typeof cell.propertyId !== 'string' || !isRecord(cell.value) || seen.has(cell.propertyId)) return 'invalid'
+    if (!isRecord(cell) || typeof cell.propertyId !== 'string' || seen.has(cell.propertyId)) return 'invalid'
     seen.add(cell.propertyId)
+    if ('from' in cell) {
+      const from = parseSource(cell.from)
+      if (from === null || 'value' in cell) return 'invalid'
+      cells.push({ propertyId: cell.propertyId, from })
+      continue
+    }
+    if (!isRecord(cell.value)) return 'invalid'
     cells.push({ propertyId: cell.propertyId, value: cell.value as RowCell['value'] })
   }
   return cells
