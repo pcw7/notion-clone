@@ -1,5 +1,6 @@
 /**
  * 행의 레이아웃 — 속성 묶음의 숨김 · 순서 (잔여 묶음 8f-2 · F-16-03 · F-16-07) · 제목 아래 고정 (3a-1 · F-16-02) · 페이지 설정 (3b-1 · F-16-09 · F-16-10)
+ *   · 본문 모듈 · 상세 패널 (3c-1 · F-16-04 · F-16-05)
  *
  * 정본: 00-canonical-data-model.md §3.6 `page_layout` · `layout_tab` · `layout_module` · [보강] 행의 레이아웃(① ~ ⑦) · [보강] 고정 속성
  *       16-item-layout.md F-16-01(편집 모드 · 한 번에 적용) · F-16-02(Heading · pinned ≤ 15) · F-16-03(Property group) · F-16-12(영속화)
@@ -15,6 +16,10 @@
  *     한 탭에 한 번이라 숨김과 겹치지 않는다. 속성을 지우면 고정이 풀린다(0064 의 트리거 — 되살려도 속성 묶음으로 돌아온다)
  *   · 페이지 설정 = 머리의 다섯 칸(백링크 · 인라인 코멘트 · 토론 · 속성 아이콘 · 전체 폭 — `page-settings.ts`). 머리가 없으면 기본값이고,
  *     기본에서 벗어나면 머리가 생긴다(다른 이탈과 같다). 준 칸만 바꾼다
+ *   · 본문 모듈 = 부모 없는 property 행 · area `main` · 자기 순서 — 속성 묶음(그룹 모듈)과 한 줄에서 순서를 다툰다. 상세 패널 = area
+ *     `panel` 의 같은 행(관계형은 못 놓는다 — M4 · `layout-modules.ts` · 0065). 내리면 행을 지운다(속성 묶음으로)
+ *   · **한 속성은 한 자리다**(숨김 · 고정 · 본문 모듈 · 패널) — 적용이 받은 목록끼리 겹치면 거부하고, 받지 않은 목록은 지금 것에서 받은
+ *     목록이 가져간 속성을 뺀다. 쓰기는 지우기를 모두 넣기보다 먼저 한다(`layout_module_prop_once`)
  *   · 저장은 전체 교체 한 번이다 — 편집 모드의 초안을 "모든 행에 적용"이 한꺼번에 보낸다. version 이 낙관적 잠금이고, 바뀐 것이
  *     없으면 아무것도 쓰지 않는다(version 도 그대로)
  *   · 누가 — 구조의 문(`lockSchema` — 주인 데이터베이스의 `edit_structure` · 데이터베이스 잠금 · 소스가 살아 있다)
@@ -30,6 +35,7 @@ import { firstOrderKey, orderKeysBetween } from '../block/order-key.ts'
 import { planOrder } from './layout-order.ts'
 import { bumpSchema, isSchemaFailure, lockSchema } from './property.ts'
 import { MAX_PINNED_PROPERTIES } from './limits.ts'
+import { canPlaceInPanel, GROUP_MODULE } from './layout-modules.ts'
 import {
   DEFAULT_PAGE_SETTINGS,
   samePageSettings,
@@ -47,9 +53,20 @@ export type RecordLayout = {
   readonly hidden: readonly string[]
   /** 제목 아래에 고정한 속성(3a-1) — 살아 있는 것만 · heading 안의 순서. */
   readonly pinned: readonly string[]
+  /** 본문 영역의 줄(3c-1) — 속성 id 와 속성 묶음(`GROUP_MODULE`) · 위에서 아래로. 머리가 없으면 속성 묶음 하나. */
+  readonly main: readonly string[]
+  /** 상세 패널의 속성(3c-1) — 위에서 아래로. */
+  readonly panel: readonly string[]
 }
 
-const DEFAULT_LAYOUT: RecordLayout = { version: '0', settings: DEFAULT_PAGE_SETTINGS, hidden: [], pinned: [] }
+const DEFAULT_LAYOUT: RecordLayout = {
+  version: '0',
+  settings: DEFAULT_PAGE_SETTINGS,
+  hidden: [],
+  pinned: [],
+  main: [GROUP_MODULE],
+  panel: [],
+}
 
 
 export type LayoutFailure =
@@ -64,6 +81,8 @@ export type LayoutFailure =
   | 'invalid_layout'
   /** 고정이 15개를 넘는다(M3). */
   | 'too_many_pinned'
+  /** 상세 패널에 놓을 수 없는 유형이다(관계형 — M4). */
+  | 'panel_type'
 
 export type LayoutResult =
   | { readonly ok: true; readonly value: { readonly layout: RecordLayout; readonly changed: boolean } }
@@ -117,7 +136,26 @@ export async function readRecordLayout(tx: Tx, dataSourceId: string): Promise<Re
       ORDER BY p.order_idx, p.id`,
     [dataSourceId],
   )
-  return { version: head.version, settings, hidden: rows.map((r) => r.property_id), pinned: pinned.map((r) => r.property_id) }
+  // 본문 줄 · 패널(3c-1) — 부모 없는 모듈. 지운 속성의 모듈은 빠진다(되살리면 돌아온다 — 숨김과 같다).
+  const modules = await tx.query<{ kind: string; area: string; property_id: string | null }>(
+    `SELECT m.kind, m.area, m.property_id
+       FROM layout_module m
+       JOIN layout_tab t ON t.id = m.tab_id AND t.kind = 'content'
+       LEFT JOIN property p ON p.id = m.property_id
+      WHERE m.data_source_id = $1 AND m.parent_module_id IS NULL AND m.area IN ('main', 'panel')
+        AND (m.kind = 'property_group' OR (m.kind = 'property' AND p.deleted_at IS NULL))
+      ORDER BY m.order_idx, m.id`,
+    [dataSourceId],
+  )
+  const keyOf = (m: { kind: string; property_id: string | null }) => (m.kind === 'property_group' ? GROUP_MODULE : m.property_id!)
+  return {
+    version: head.version,
+    settings,
+    hidden: rows.map((r) => r.property_id),
+    pinned: pinned.map((r) => r.property_id),
+    main: modules.filter((m) => m.area === 'main').map(keyOf),
+    panel: modules.filter((m) => m.area === 'panel').map(keyOf),
+  }
 }
 
 /**
@@ -129,6 +167,8 @@ export async function readRecordLayout(tx: Tx, dataSourceId: string): Promise<Re
  * @param input.pinned 제목 아래에 고정할 속성 — 원하는 순서(3a-1). 주지 않으면 그대로다(단 숨기는 속성은 고정이 풀린다). 그사이 지워진
  *   속성은 건너뛴다. 15개를 넘으면 `too_many_pinned` · 제목이나 숨기는 속성이 있으면 `invalid_layout`.
  * @param input.settings 페이지 설정 — 준 칸만 바꾼다(3b-1). 검사는 부르는 쪽이 했다(`parsePageSettings`).
+ * @param input.main 본문 영역의 줄 — 속성 id 와 속성 묶음(`GROUP_MODULE`, 꼭 하나)의 순서(3c-1). 주지 않으면 그대로다.
+ * @param input.panel 상세 패널의 속성 — 순서(3c-1). 주지 않으면 그대로다. 관계형이 있으면 `panel_type`.
  */
 export async function applyRecordLayout(
   ctx: SessionContext,
@@ -139,6 +179,8 @@ export async function applyRecordLayout(
     readonly hidden: readonly string[]
     readonly pinned?: readonly string[]
     readonly settings?: Partial<PageSettings>
+    readonly main?: readonly string[]
+    readonly panel?: readonly string[]
   },
 ): Promise<LayoutResult> {
   return withCommandTransaction(async (tx) => {
@@ -158,17 +200,40 @@ export async function applyRecordLayout(
       [dataSourceId],
     )
     const live = new Map(properties.map((p) => [p.id, p]))
-    if (input.hidden.some((id) => live.get(id)?.type === 'title')) return fail('invalid_layout')
+    const liveOf = (ids: readonly string[]) => [...new Set(ids)].filter((id) => live.has(id))
 
-    const wanted = new Set(input.hidden.filter((id) => live.has(id)))
-    // 고정(3a-1) — 살아 있는 것만 · 처음 나온 자리. 주지 않았으면 지금 것에서 숨기는 속성만 뺀다(한 속성은 한 자리다).
-    const pinnedInput = input.pinned === undefined ? null : [...new Set(input.pinned)].filter((id) => live.has(id))
-    if (pinnedInput !== null && pinnedInput.some((id) => live.get(id)?.type === 'title' || wanted.has(id))) return fail('invalid_layout')
+    // 자리 — 한 속성은 한 자리다(머리말). 받은 목록끼리 겹치거나 제목이 끼면 거부한다. 그사이 지워진 속성은 건너뛴다.
+    const hidden = liveOf(input.hidden)
+    const pinnedInput = input.pinned === undefined ? null : liveOf(input.pinned)
+    const mainInput = input.main === undefined ? null : [...new Set(input.main)].filter((id) => id === GROUP_MODULE || live.has(id))
+    const panelInput = input.panel === undefined ? null : liveOf(input.panel)
+    if (mainInput !== null && !mainInput.includes(GROUP_MODULE)) return fail('invalid_layout')
+    const claimed = new Set<string>()
+    for (const list of [hidden, pinnedInput, mainInput, panelInput]) {
+      for (const id of list ?? []) {
+        if (id === GROUP_MODULE) continue
+        if (live.get(id)?.type === 'title' || claimed.has(id)) return fail('invalid_layout')
+        claimed.add(id)
+      }
+    }
     if (pinnedInput !== null && pinnedInput.length > MAX_PINNED_PROPERTIES) return fail('too_many_pinned')
-    const pinned = pinnedInput ?? current.pinned.filter((id) => !wanted.has(id))
-    const pinChanged = pinned.length !== current.pinned.length || pinned.some((id, i) => id !== current.pinned[i])
+    if (panelInput !== null && panelInput.some((id) => !canPlaceInPanel(live.get(id)!.type))) return fail('panel_type')
+    // 받지 않은 목록 — 지금 것에서 다른 목록이 가져간 속성을 뺀다
+    const others = (own: readonly string[] | null) => new Set([...claimed].filter((id) => !(own ?? []).includes(id)))
+    const takenFromPinned = others(pinnedInput)
+    const takenFromMain = others(mainInput)
+    const takenFromPanel = others(panelInput)
+    const pinned = pinnedInput ?? current.pinned.filter((id) => !takenFromPinned.has(id))
+    const main = mainInput ?? current.main.filter((id) => id === GROUP_MODULE || !takenFromMain.has(id))
+    const panel = panelInput ?? current.panel.filter((id) => !takenFromPanel.has(id))
+    const same = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((id, i) => id === b[i])
+    const pinChanged = !same(pinned, current.pinned)
+    const mainChanged = !same(main, current.main)
+    const panelChanged = !same(panel, current.panel)
+
     const settings: PageSettings = { ...current.settings, ...input.settings }
     const settingsChanged = !samePageSettings(settings, current.settings)
+    const wanted = new Set(hidden)
     const now = new Set(current.hidden)
     const hide = [...wanted].filter((id) => !now.has(id))
     const show = [...now].filter((id) => !wanted.has(id))
@@ -176,16 +241,40 @@ export async function applyRecordLayout(
       properties.map((p) => ({ id: p.id, key: p.order_idx })),
       input.order,
     )
-    if (hide.length === 0 && show.length === 0 && moves.length === 0 && !pinChanged && !settingsChanged) {
+    if (
+      hide.length === 0 && show.length === 0 && moves.length === 0 &&
+      !pinChanged && !mainChanged && !panelChanged && !settingsChanged
+    ) {
       return { ok: true, value: { layout: current, changed: false } } as const
     }
 
     const { created, tabId, headingId, groupId } = await ensureLayout(tx, dataSourceId, ctx.userId)
-    // 고정은 통째로 다시 쓴다 — 열 몇 개의 순서라 옮긴 것만 고르는 수고가 값어치가 없다. 지우기를 넣기보다 먼저 한다(한 속성은 한
-    // 탭에 한 번 — 고정에서 숨김으로 옮기는 속성의 행이 먼저 빠져야 한다).
+
+    // ── 지우기 — 넣기보다 먼저(한 속성은 한 탭에 한 번이다 — 자리를 옮기는 속성의 옛 행이 먼저 빠져야 한다) ──
+    // 고정 · 본문 모듈 · 패널은 바뀌면 통째로 다시 쓴다 — 열 몇 개의 순서라 옮긴 것만 고르는 수고가 값어치가 없다.
     if (pinChanged) {
       await tx.query(`DELETE FROM layout_module WHERE tab_id = $1 AND kind = 'property' AND area = 'heading'`, [tabId])
     }
+    // 영역마다 따로 — 바뀐 영역의 지금 보이는 모듈만 지운다. 지운 속성의 모듈은 남아 되살리면 돌아온다(숨김과 같다). 한 영역만
+    // 바뀌었는데 둘을 다 지우면 다른 영역이 사라진다(⑩ 의 검사가 잡았다).
+    const removeModules = async (area: 'main' | 'panel', ids: readonly string[]) => {
+      await tx.query(
+        `DELETE FROM layout_module
+          WHERE tab_id = $1 AND kind = 'property' AND parent_module_id IS NULL AND area = $2 AND property_id = ANY($3::text[])`,
+        [tabId, area, ids.filter((id) => id !== GROUP_MODULE)],
+      )
+    }
+    if (mainChanged) await removeModules('main', current.main)
+    if (panelChanged) await removeModules('panel', current.panel)
+    if (show.length > 0) {
+      await tx.query(
+        `DELETE FROM layout_module
+          WHERE tab_id = $1 AND kind = 'property' AND NOT visible AND property_id = ANY($2::text[])`,
+        [tabId, show],
+      )
+    }
+
+    // ── 넣기 ──
     if (hide.length > 0) {
       await tx.query(
         `INSERT INTO layout_module (id, data_source_id, tab_id, kind, area, parent_module_id, property_id, visible)
@@ -193,14 +282,6 @@ export async function applyRecordLayout(
            FROM unnest($2::uuid[], $3::text[]) AS x(id, property_id), layout_module g
           WHERE g.id = $1`,
         [groupId, hide.map(() => randomUUID()), hide],
-      )
-    }
-    // 숨김 행은 그룹 아래의 것뿐이다 — 고정(heading)은 숨기지 않는다(0064 ②). 섹션(F-16-03 v2)이 들어오면 property 행이 숨김 말고도
-    // 배치를 진다 — 그때 다시 보이기는 행을 지우지 않고 `visible` 만 켠다.
-    if (show.length > 0) {
-      await tx.query(
-        `DELETE FROM layout_module WHERE tab_id = $1 AND kind = 'property' AND area <> 'heading' AND property_id = ANY($2::text[])`,
-        [tabId, show],
       )
     }
     if (pinChanged && pinned.length > 0) {
@@ -212,6 +293,17 @@ export async function applyRecordLayout(
           WHERE h.id = $1`,
         [headingId, pinned.map(() => randomUUID()), pinned, keys],
       )
+    }
+    if (mainChanged) {
+      // 본문 줄 — 속성 묶음도 이 줄의 한 자리다(순서 키를 새로 받는다)
+      const keys = orderKeysBetween(null, null, main.length)
+      await tx.query(`UPDATE layout_module SET order_idx = $2 WHERE id = $1`, [groupId, keys[main.indexOf(GROUP_MODULE)]])
+      const modules = main.flatMap((id, i) => (id === GROUP_MODULE ? [] : [{ id, key: keys[i]! }]))
+      await insertModules(tx, tabId, dataSourceId, 'main', modules)
+    }
+    if (panelChanged) {
+      const keys = orderKeysBetween(null, null, panel.length)
+      await insertModules(tx, tabId, dataSourceId, 'panel', panel.map((id, i) => ({ id, key: keys[i]! })))
     }
     if (moves.length > 0) {
       await tx.query(
@@ -240,6 +332,23 @@ export async function applyRecordLayout(
     }
     return { ok: true, value: { layout: await readRecordLayout(tx, dataSourceId), changed: true } } as const
   })
+}
+
+/** 부모 없는 property 모듈(본문 · 패널)을 넣는다 — 보임 · 자기 순서(0065 ①). */
+async function insertModules(
+  tx: Tx,
+  tabId: string,
+  dataSourceId: string,
+  area: 'main' | 'panel',
+  modules: readonly { readonly id: string; readonly key: string }[],
+): Promise<void> {
+  if (modules.length === 0) return
+  await tx.query(
+    `INSERT INTO layout_module (id, data_source_id, tab_id, kind, area, parent_module_id, property_id, visible, order_idx)
+     SELECT x.id, $2, $1, 'property', $3, NULL, x.property_id, true, x.key
+       FROM unnest($4::uuid[], $5::text[], $6::text[]) AS x(id, property_id, key)`,
+    [tabId, dataSourceId, area, modules.map(() => randomUUID()), modules.map((m) => m.id), modules.map((m) => m.key)],
+  )
 }
 
 /**
