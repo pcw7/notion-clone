@@ -42,6 +42,10 @@ export type RowPage = {
   readonly pinned: readonly string[]
   /** 페이지 설정(3b-1 · F-16-09 · F-16-10) — 이 데이터베이스의 모든 행에 같다. 머리가 없으면 기본값. */
   readonly settings: PageSettings
+  /** 본문 영역의 줄(3c-1 · F-16-04) — 속성 id 와 속성 묶음(`GROUP_MODULE`). 올린 속성도 `columns` 에 그대로 있다. */
+  readonly main: readonly string[]
+  /** 상세 패널의 속성(3c-1 · F-16-05). */
+  readonly panel: readonly string[]
   readonly titlePropertyId: string | null
   readonly row: RowSummary
   readonly access: DatabaseAccess
@@ -85,6 +89,8 @@ export async function readRowPage(ctx: SessionContext, pageId: string): Promise<
       layoutVersion: layout.version,
       pinned: layout.pinned,
       settings: layout.settings,
+      main: layout.main,
+      panel: layout.panel,
       locked,
     }
   })
@@ -105,6 +111,8 @@ export async function readRowPage(ctx: SessionContext, pageId: string): Promise<
     layoutVersion: found.layoutVersion,
     pinned: found.pinned,
     settings: found.settings,
+    main: found.main,
+    panel: found.panel,
     titlePropertyId: found.columns.find((c) => c.type === 'title')?.propertyId ?? null,
     row: found.summary,
     access: found.locked ? { ...database.value.access, canEditStructure: false } : database.value.access,

@@ -2539,8 +2539,9 @@ try {
     await mustRejectBy('★ M1: heading 을 heading 영역 밖으로', 'ck_layout_module_heading_area',
       `UPDATE layout_module SET area = 'main' WHERE id = $1`, [la.heading])
     await mustRejectBy('★ M2: 탭의 둘째 property_group', 'layout_module_one_group', mod, [randomUUID(), a, la.tab, 'property_group', 'main', null, null, true, 'a1'])
-    await mustRejectBy('한 탭에 같은 속성을 두 번', 'layout_module_prop_once', mod, [randomUUID(), a, la.tab, 'property', 'main', la.group, pa, true, null])
-    await mustRejectBy('property 모듈인데 속성이 없다', 'ck_layout_module_property', mod, [randomUUID(), a, la.tab, 'property', 'main', la.group, null, true, null])
+    // 숨김 행의 모양(그룹 아래 · 보이지 않음 · 순서 없음)으로 넣는다 — 그래야 자리 CHECK(0065 ck_layout_module_place)를 지나 겨냥한 제약에 닿는다
+    await mustRejectBy('한 탭에 같은 속성을 두 번', 'layout_module_prop_once', mod, [randomUUID(), a, la.tab, 'property', 'main', la.group, pa, false, null])
+    await mustRejectBy('property 모듈인데 속성이 없다', 'ck_layout_module_property', mod, [randomUUID(), a, la.tab, 'property', 'main', la.group, null, false, null])
     await mustRejectBy('★ 순서 없는 모듈은 property 행뿐 — 순서 없는 섹션', 'ck_layout_module_order', mod, [randomUUID(), a, la.tab, 'section', 'main', la.group, null, true, null])
     await mustRejectBy('★ 모듈의 탭이 다른 소스의 것', 'fk_layout_module_tab_source', mod, [randomUUID(), b, la.tab, 'section', 'main', null, null, true, 'a1'])
     await mustRejectBy('★ 다른 소스의 속성을 숨긴다', 'fk_layout_module_property_source', mod, [randomUUID(), a, la.tab, 'property', 'main', la.group, pb, false, null])
@@ -3303,6 +3304,80 @@ try {
     await rejectBy('★ 모르는 인라인 코멘트 표시', 'ck_page_layout_inline_comment', set('inline_comment_mode'), [ds, 'loud'])
     await rejectBy('모르는 구조', 'ck_page_layout_structure', set('structure'), [ds, 'grid'])
     await rejectBy('버전 0 — 머리가 있으면 1 부터', 'ck_page_layout_version', set('version'), [ds, 0])
+  }
+
+  console.log('\n[47] 본문 모듈 · 상세 패널 (0065 / §3.6 M4 · [보강] 본문 모듈 · 상세 패널 · 3c-1조각)')
+  {
+    // 데이터베이스 하나 · 소스 하나 · 숫자 속성 셋 · 관계형 하나 · 레이아웃 한 벌.
+    const root = randomUUID()
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key,
+                          ancestor_path, perm_scope_id, properties, format, created_at, last_edited_at)
+       VALUES ($1, $2, 'page', 'workspace', $2, 'z47', '{}', $1, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      [root, wsId],
+    )
+    const dbId = randomUUID()
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key,
+                          ancestor_path, perm_scope_id, properties, format, created_at, last_edited_at)
+       VALUES ($1, $2, 'database', 'block', $3, 's1', $4, $3, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      [dbId, wsId, root, [root]],
+    )
+    await client.query(`INSERT INTO database (id, created_at, updated_at) VALUES ($1, now(), now())`, [dbId])
+    const ds = randomUUID()
+    await client.query(`INSERT INTO data_source (id, owner_database_id, name, created_at, updated_at) VALUES ($1, $2, '소스', now(), now())`, [ds, dbId])
+    await client.query(`INSERT INTO database_data_source (database_id, data_source_id, order_idx) VALUES ($1, $2, 'a0')`, [dbId, ds])
+    const pid = () => randomUUID().replaceAll('-', '').slice(0, 21)
+    const [main1, panel1, spare, rel] = [pid(), pid(), pid(), pid()]
+    for (const [id, key] of [[main1, 'a1'], [panel1, 'a2'], [spare, 'a3']]) {
+      await client.query(`INSERT INTO property (id, data_source_id, name, type, order_idx) VALUES ($1, $2, $3, 'number', $4)`, [id, ds, `칸${key}`, key])
+    }
+    await client.query(
+      `INSERT INTO property (id, data_source_id, name, type, config, order_idx, created_at, updated_at)
+       VALUES ($1, $2, '관계', 'relation', $3::jsonb, 'a4', now(), now())`,
+      [rel, ds, JSON.stringify({ target_data_source_id: ds })],
+    )
+    const tab = randomUUID()
+    const heading = randomUUID()
+    const group = randomUUID()
+    await client.query(`INSERT INTO page_layout (data_source_id) VALUES ($1)`, [ds])
+    await client.query(`INSERT INTO layout_tab (id, data_source_id, kind, order_idx) VALUES ($1, $2, 'content', 'a0')`, [tab, ds])
+    await client.query(`INSERT INTO layout_module (id, data_source_id, tab_id, kind, area, order_idx) VALUES ($1, $2, $3, 'heading', 'heading', 'a0')`, [heading, ds, tab])
+    await client.query(`INSERT INTO layout_module (id, data_source_id, tab_id, kind, area, order_idx) VALUES ($1, $2, $3, 'property_group', 'main', 'b0')`, [group, ds, tab])
+    const mod = `INSERT INTO layout_module (id, data_source_id, tab_id, kind, area, parent_module_id, property_id, visible, order_idx)
+                 VALUES ($1, $2, $3, 'property', $4, $5, $6, $7, $8)`
+    await client.query(mod, [randomUUID(), ds, tab, 'main', null, main1, true, 'b1'])
+    await client.query(mod, [randomUUID(), ds, tab, 'panel', null, panel1, true, 'c0'])
+    ok('본문 모듈 · 패널 모듈(부모 없음 · 보임 · 순서) — 정상 경로가 통과한다')
+
+    const rejectBy = async (label, constraint, sql, params) => {
+      await client.query('SAVEPOINT probe')
+      try {
+        await client.query(sql, params)
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        fail(`${label} — 거부되어야 하는데 통과했다`)
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        if (e.constraint === constraint) ok(`${label} — ${constraint} 가 거부함 (${e.code})`)
+        else fail(`${label} — ${constraint} 가 아니라 ${e.constraint ?? e.code} 에 걸렸다 (${e.message})`)
+      }
+    }
+    await rejectBy('★ 순서 없는 본문 모듈', 'ck_layout_module_place', mod, [randomUUID(), ds, tab, 'main', null, spare, true, null])
+    await rejectBy('★ 숨긴 본문 모듈(부모 없음)', 'ck_layout_module_place', mod, [randomUUID(), ds, tab, 'main', null, spare, false, 'b2'])
+    await rejectBy('★ 그룹 아래의 보이는 행', 'ck_layout_module_place', mod, [randomUUID(), ds, tab, 'main', group, spare, true, null])
+    await rejectBy('★ M4: 관계형을 패널에', 'tg_layout_module_panel_type', mod, [randomUUID(), ds, tab, 'panel', null, rel, true, 'c1'])
+    // 관계형은 본문 모듈로는 된다 — 그것을 패널로 옮기는 UPDATE 가 막힌다(한 문장의 CTE 로 넣고 옮기면 UPDATE 가 넣은 행을 못 본다)
+    const relModule = randomUUID()
+    await client.query(mod, [relModule, ds, tab, 'main', null, rel, true, 'b3'])
+    await rejectBy('★ M4: 관계형의 본문 모듈을 패널로 옮긴다', 'tg_layout_module_panel_type',
+      `UPDATE layout_module SET area = 'panel' WHERE id = $1`, [relModule])
+
+    // 패널에 있던 속성이 관계형이 되면 패널에서 내린다
+    await client.query(`UPDATE property SET type = 'relation', config = $2::jsonb WHERE id = $1`, [panel1, JSON.stringify({ target_data_source_id: ds })])
+    const left = (await client.query(`SELECT count(*)::int AS n FROM layout_module WHERE property_id = $1`, [panel1])).rows[0].n
+    const mainKept = (await client.query(`SELECT count(*)::int AS n FROM layout_module WHERE property_id = $1`, [main1])).rows[0].n
+    if (left === 0 && mainKept === 1) ok('★ 패널의 속성이 관계형이 되면 패널에서 내린다(속성 묶음으로) — 다른 모듈은 그대로')
+    else fail(`관계형이 된 패널 모듈 ${left}행 · 본문 모듈 ${mainKept}행 — 0 · 1 이어야 한다`)
   }
 
   await client.query('ROLLBACK')

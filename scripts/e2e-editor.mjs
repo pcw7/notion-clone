@@ -13849,6 +13849,35 @@ async function main() {
       check('일반 페이지는 그대로다 — 레이아웃은 행의 것이다', plain === ',,true', plain)
     }
 
+    if (sectionIf('본문 모듈 · 상세 패널 — 서버 (3c-1 · F-16-04 · F-16-05)')) {
+      // 레이아웃 적용(PUT …/layout)이 본문 줄(main — 속성 묶음은 'property_group')과 패널(panel)을 받는다 — 그 순서로 선다 · 관계형을
+      // 패널에 놓으면 400 panel_type · 한 속성을 두 자리에 놓으면 400. 자리 옮기기 · 지운 속성 · 행 페이지는 DB 검사가 본다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const table = (await api('POST', '/databases', { name: `모듈 ${stamp}` })).body.database
+      const target = (await api('POST', '/databases', { name: `모듈 대상 ${stamp}` })).body.database
+      const memo = (await api('POST', `/data-sources/${table.dataSourceId}/properties`, { name: '메모', type: 'rich_text' })).body?.property?.id
+      const qty = (await api('POST', `/data-sources/${table.dataSourceId}/properties`, { name: '수량', type: 'number' })).body?.property?.id
+      const rel = (await api('POST', `/data-sources/${table.dataSourceId}/relations`, { name: '관계', targetDataSourceId: target.dataSourceId })).body?.property?.id
+      const layoutUrl = `/data-sources/${table.dataSourceId}/layout`
+
+      const placed = await api('PUT', layoutUrl, { version: '0', order: [], hidden: [], main: [memo, 'property_group'], panel: [qty] })
+      check('★ 본문 줄 · 패널을 적용하면 그 순서로 선다(속성 묶음도 줄의 한 자리)',
+        placed.status === 200 && JSON.stringify(placed.body?.layout?.main) === JSON.stringify([memo, 'property_group'])
+          && JSON.stringify(placed.body?.layout?.panel) === JSON.stringify([qty]),
+        JSON.stringify([placed.status, placed.body?.layout?.main, placed.body?.layout?.panel]))
+      const relInPanel = await api('PUT', layoutUrl, { version: '1', order: [], hidden: [], panel: [qty, rel] })
+      const twice = await api('PUT', layoutUrl, { version: '1', order: [], hidden: [], main: ['property_group', qty], panel: [qty] })
+      check('★ 관계형을 패널에 놓으면 400 panel_type · 한 속성을 두 자리에 놓으면 400 invalid_layout',
+        relInPanel.status === 400 && relInPanel.body?.error === 'panel_type' && twice.status === 400 && twice.body?.error === 'invalid_layout',
+        JSON.stringify({ rel: [relInPanel.status, relInPanel.body?.error, rel], twice: [twice.status, twice.body?.error] }))
+    }
+
     if (sectionIf('개인 필터 · 정렬 — 화면 (2h-2 · F-04-17)')) {
       // 볼 수만 있는 사람(브라우저 세션을 바꾼다)이 도구줄의 필터로 조건을 걸면 **자기 것**으로 저장되고 그 사람의 표만 좁혀진다 — "나만 보는
       // 필터" 표시 · 초기화. 편집자는 자기 개인 것을 "모두에게 저장"한다. 브라우저 세션은 끝에 반드시 소유자로 되돌린다.

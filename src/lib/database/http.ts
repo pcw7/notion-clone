@@ -147,6 +147,7 @@ export function layoutFailureStatus(reason: LayoutFailure): number {
       return 409
     case 'invalid_layout':
     case 'too_many_pinned':
+    case 'panel_type':
       return 400
   }
 }
