@@ -592,6 +592,8 @@ CREATE TABLE page_access_rule (                              -- <C-7: data_sourc
   level text NOT NULL CHECK (level IN ('view','comment','edit','full_access')),
   CHECK ((source_kind='person_property') = (source_property_id IS NOT NULL))
 );
+-- [보강 6f-2a] 원천마다 하나: UNIQUE (data_source_id, source_kind, COALESCE(source_property_id, '')) · 판정은 그 행의 ACL 행으로 합성한다
+--              (§3.3 끝 [보강] 행 단위 접근 규칙)
 
 CREATE TABLE node_lock (                                     -- <C-7 부속. database.is_locked 폐기 X-9>
   node_id uuid PRIMARY KEY, kind text NOT NULL CHECK (kind IN ('page','database')),
@@ -677,6 +679,31 @@ CREATE TABLE access_request (
 > 뜻이 선다 — 6f-2. 판정은 ① 로 이미 맞다(`create` = `create_child` 하나). 고르개에 없는 레벨을 이미 가진 줄(API 로 준 `create`)은
 > **그 줄에만 그 레벨을 덧붙여 보인다** — 목록에 없는 값의 select 는 첫 옵션("읽기")으로 보여 그 사람이 다른 것을 가진 것처럼 속인다. 행
 > 화면에는 여전히 공유 패널이 없다(8f-1 — 행의 권한은 데이터베이스가 정한다) · 행의 절단(②)은 API 로만 닿는다.
+
+**[보강] 행 단위 접근 규칙(`page_access_rule`) — 규칙의 부여는 그 행의 ACL 행처럼 읽는다 · 지금은 "만든 사람" 만** ⟨게시 · 공유 6f-2a · F-06-10 / 마이그레이션 0089⟩
+
+> 06 F-06-10 *"Page-level access rule: person 속성 / created by 기반 … 문서 권고 조합: DB 전체는 Can create + Created by → Can edit
+> 규칙 → 자기가 만든 것만 보고 편집"*. DDL(§3.3 위)은 판결 C-7 그대로 data source 단위다.
+>
+> ① **판정 — 규칙의 부여는 그 행 노드의 ACL 행으로 합성한다.** `created_by` 규칙이면 `('user', 행의 block.created_by, level)`,
+> 사람 속성 규칙이면 그 칸의 사람마다 한 줄. 합성한 행은 주체와 무관하므로(그 행의 사람이 주체다) 판정 함수 · 여러 사람을 한 번에
+> 판정하는 길(관리자 찾기 등)이 그대로 읽는다. §3.11 의 `page_access_rule_grant(U,N)` 이 이것이다. **노드 로컬**(P4) — 행을 끊어도
+> 그 행의 규칙 부여는 남고, 행을 끊을 때 복사하는 것은 조상(데이터베이스)의 것뿐이다. 행의 하위 페이지는 상속으로 받는다 — 하위를
+> 끊으면 그 순간의 것(규칙 부여 포함)이 복사된다(P1). 여러 규칙 · ACL 은 합집합(06 *"가장 높은 레벨"* 과 같다). **템플릿 행은 받지
+> 않는다**(R1 — 템플릿은 항목이 아니다).
+>
+> ② **규칙은 data source 마다 원천마다 하나**(`UNIQUE (data_source_id, source_kind, COALESCE(source_property_id, ''))`) — 레벨만 바꾼다.
+> 레벨은 페이지 레벨 넷(대상이 행 — 페이지다 · [보강] 데이터베이스의 레벨 ③).
+>
+> ③ **사람 속성 규칙은 사람 속성(F-03-07)이 생길 때** — 그 타입이 아직 없다. DDL 은 둘 다 받고, 명령이 `person_property` 를
+> `unsupported_source` 로 거절한다(그 타입이 서면 이 거절을 걷고 "칸의 사람이 바뀌면 신호" 를 더한다 — 06 엣지 *"person 속성 값
+> 변경 → 이전 담당자의 접근 즉시 소멸"*).
+>
+> ④ **명령은 데이터베이스의 `manage_perm`** — 공유의 일이다(못 보면 not_found · 보지만 관리 못 하면 forbidden). 바뀌면 감사 로그
+> (`page.permission_changed` · `rule_set` / `rule_removed`)와 권한 신호(트리거 — 협업 서버가 그 워크스페이스의 연결을 다시 판정한다).
+>
+> ⑤ **목록 · 검색에는 걸리지 않는다** — 규칙으로만 열리는 행은 `perm_scope_id` 스코프에 없다. §6.1-3(검색 제외) 그대로.
+> 그 행은 주소 · 데이터베이스 화면(6f-2b — 볼 수 없는 사람이 자기 행만 보는 표)으로 연다.
 
 **[정정] `"group"` 의 `UNIQUE (workspace_id, lower(name))` → 살아있는 그룹에만 거는 부분 UNIQUE** ⟨Teamspace · 게스트 · 그룹 7a / 마이그레이션 0027⟩
 
