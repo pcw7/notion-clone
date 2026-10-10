@@ -15933,6 +15933,45 @@ async function main() {
         settled && noPreview && (await fetch(`${BASE}/p/${token}`)).status === 200, String(noPreview))
     }
 
+    if (sectionIf('보안 정책 — 내보내기 · 게스트 초대 (6e-1 · F-06-11)')) {
+      // 소유자의 설정 → 보안 절에 두 토글 · 내보내기를 끄면 멤버의 페이지 내보내기 창이 정책 때문이라고 말한다 · 게스트 초대를 끄면 멤버의
+      // 이메일 초대가 403 policy_disabled. 정책 · 브라우저 세션은 끝에 반드시 되돌린다.
+      const stamp = Date.now()
+      const setting = (key, value) => fetch(`${BASE}/api/workspaces/${workspaceId}/settings/${key}`, { method: 'PUT', headers: authed, body: JSON.stringify({ value }) })
+      const browseAs = (token) => send('Network.setCookie', { name: 'nc_session', value: token, domain: 'localhost', path: '/', httpOnly: true })
+      const mate = await joinAs(workspaceId, await createUser(`정책 동료 ${stamp}`), 'member')
+      const doc = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: JSON.stringify({ title: `정책 문서 ${stamp}` }) })).json()).page.id
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/settings?s=workspace.security` })
+      const toggles = await waitFor(`['workspace.allow_export', 'workspace.allow_member_invite_guests'].every((k) => !!document.querySelector('[data-testid="setting-row"][data-setting-key="' + k + '"]'))`, 15000)
+      check('소유자의 설정 → 보안 절에 멤버의 내보내기 · 멤버의 게스트 초대 토글이 선다', toggles)
+
+      try {
+        await setting('workspace.allow_export', false)
+        await setting('workspace.allow_member_invite_guests', false)
+        await browseAs(mate.token)
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${doc}` })
+        await waitFor(`!!document.querySelector('[data-testid="export-button"]')`, 15000)
+        for (let i = 0; i < 5; i += 1) {
+          await clickSelector('[data-testid="export-button"]')
+          if (await waitFor(`!!document.querySelector('[data-testid="export-panel"]')`, 3000)) break
+        }
+        const exportError = await waitFor(`(document.querySelector('[data-testid="export-error"]')?.textContent ?? '').includes('정책')`, 10000)
+        check('★ 내보내기를 끄면 멤버의 내보내기 창이 정책 때문이라고 말한다',
+          exportError, await evaluate(`document.querySelector('[data-testid="export-panel"]')?.textContent ?? '(패널 없음)'`))
+
+        const invite = await fetch(`${BASE}/api/workspaces/${workspaceId}/pages/${doc}/guests`, {
+          method: 'POST', headers: { ...json, cookie: `nc_session=${mate.token}` },
+          body: JSON.stringify({ email: `policy-guest-${stamp}@example.com`, level: 'view' }),
+        })
+        check('★ 게스트 초대를 끄면 멤버의 이메일 초대는 403 policy_disabled', invite.status === 403 && (await invite.json()).error === 'policy_disabled', String(invite.status))
+      } finally {
+        await browseAs(session)
+        await setting('workspace.allow_export', true)
+        await setting('workspace.allow_member_invite_guests', true)
+      }
+    }
+
     if (sectionIf('개인 필터 · 정렬 — 화면 (2h-2 · F-04-17)')) {
       // 볼 수만 있는 사람(브라우저 세션을 바꾼다)이 도구줄의 필터로 조건을 걸면 **자기 것**으로 저장되고 그 사람의 표만 좁혀진다 — "나만 보는
       // 필터" 표시 · 초기화. 편집자는 자기 개인 것을 "모두에게 저장"한다. 브라우저 세션은 끝에 반드시 소유자로 되돌린다.

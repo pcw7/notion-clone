@@ -30,6 +30,7 @@ import { randomBytes } from 'node:crypto'
 import type { SessionContext, WorkspaceRole } from '../auth/session-context.ts'
 import { entitlement } from '../billing/entitlement.ts'
 import { query } from '../db/pool.ts'
+import { mayInviteGuestsIn } from './security-policy.ts'
 import { recordForContextIn } from '../audit/audit.ts'
 import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
 import { dropGrantsOf, grantAccessIn, shareGateIn, type AclFailure } from '../permissions/acl.ts'
@@ -127,6 +128,8 @@ export async function inviteGuestToPage(
       const denied = await shareGateIn(tx, ctx, pageId)
       if (denied !== null) return fail(denied)
       if (target !== null) return fail('unavailable')
+      // 보안 정책(6e-1) — 대기 초대도 게스트를 들이는 길이다
+      if (!(await mayInviteGuestsIn(tx, ctx))) return fail('policy_disabled')
       // 계정이 없다 — 대기 초대를 남긴다(7g-1). 받아들일 때 멤버십 → 부여를 한 트랜잭션에 쓴다(`acceptInvite`). 대기 초대는 게스트
       // 한도의 자리를 미리 잡는다 — 받아들일 때는 다시 묻지 않는다(8k-2).
       if (!(await guestRoomIn(tx, ctx.workspaceId, { email }))) return fail('guest_limit')

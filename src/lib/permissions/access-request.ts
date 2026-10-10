@@ -417,6 +417,8 @@ export type AccessDecisionFailure =
   | 'invalid_principal'
   /** 밖의 사람을 게스트로 들여야 하는데 요금제의 게스트 한도에 닿았다(`admitGuestIn` · 8k-2) — 요청은 대기 중으로 남는다. */
   | 'guest_limit'
+  /** 워크스페이스 정책이 멤버의 게스트 공유를 막았다(`grantAccessIn` · 6e-1) — 요청은 대기 중으로 남는다. */
+  | 'policy_disabled'
 
 export type AccessDecisionResult<T> =
   | { readonly ok: true; readonly value: T }

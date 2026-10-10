@@ -21,6 +21,8 @@ const STATUS: Readonly<Record<AccessRequestFailure | AccessDecisionFailure, numb
   guest_level: 400,
   // 요금제가 허락하지 않는다(8k-2) — 권한 거부(forbidden)와 코드로 가른다.
   guest_limit: 403,
+  // 보안 정책(6e-1) — 멤버의 게스트 공유를 막았다
+  policy_disabled: 403,
 }
 
 export function accessRequestResponse(failure: { readonly reason: AccessRequestFailure | AccessDecisionFailure }): Response {

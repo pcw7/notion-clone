@@ -58,7 +58,7 @@ const userName = async (userId: string) => (await query<{ name: string }>(`SELEC
 const rows = async (who: Actor) => (await readSettings(who.ctx)).map((item) => [item.key, item.editable])
 
 describe('① 읽기', () => {
-  test('★ 역할마다 보이는 항목과 고칠 수 있는가 — 소유자 여섯 · 멤버 셋(워크스페이스 이름은 읽기 전용) · 게스트 둘(내 계정만)', async (t) => {
+  test('★ 역할마다 보이는 항목과 고칠 수 있는가 — 소유자 여덟 · 멤버 셋(워크스페이스 이름은 읽기 전용) · 게스트 둘(내 계정만)', async (t) => {
     if (skipReason) return t.skip(skipReason)
     assert.deepEqual(await rows(fx.owner), [
       ['account.name', true],
@@ -66,6 +66,8 @@ describe('① 읽기', () => {
       ['workspace.name', true],
       ['workspace.allow_nonmember_page_access_request', true],
       ['workspace.allow_publish_sites_and_forms', true],
+      ['workspace.allow_export', true],
+      ['workspace.allow_member_invite_guests', true],
       ['workspace.trash_days', false], // 요금제가 막는다(⑦)
     ])
     assert.deepEqual(await rows(member), [

@@ -167,6 +167,28 @@ export const SETTINGS = [
     editors: OWNER,
   },
   {
+    key: 'workspace.allow_export',
+    scope: 'workspace',
+    section: 'workspace.security',
+    label: '멤버의 내보내기',
+    description: '멤버가 페이지 · 데이터베이스를 내보낼 수 있습니다. 끄면 소유자만 내보냅니다(워크스페이스 전체 내보내기는 원래 소유자만).',
+    control: { kind: 'toggle' },
+    viewers: OWNER,
+    editors: OWNER,
+  },
+  {
+    key: 'workspace.allow_member_invite_guests',
+    scope: 'workspace',
+    section: 'workspace.security',
+    label: '멤버의 게스트 초대',
+    description:
+      '멤버가 페이지에 게스트를 초대하거나 게스트와 공유할 수 있습니다. 끄면 소유자 · 멤버 관리자만 합니다. 이미 들어온 게스트의 접근은 ' +
+      '그대로입니다.',
+    control: { kind: 'toggle' },
+    viewers: OWNER,
+    editors: OWNER,
+  },
+  {
     key: 'workspace.trash_days',
     scope: 'workspace',
     section: 'workspace.security',

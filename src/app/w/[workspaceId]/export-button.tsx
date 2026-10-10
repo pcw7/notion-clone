@@ -26,8 +26,9 @@ type PanelState =
   | { kind: 'ready'; counts: Counts; bytesAtMost: number }
   | { kind: 'error'; message: string }
 
-/** 실패 문구는 여기 한 곳. 상태 코드는 `lib/export/http.ts` 가 정한다. */
-function failureMessage(status: number): string {
+/** 실패 문구는 여기 한 곳. 상태 코드는 `lib/export/http.ts` 가 정한다. 같은 403 이라도 정책(6e-1)은 코드로 가른다. */
+function failureMessage(status: number, error?: unknown): string {
+  if (error === 'policy_disabled') return '워크스페이스 정책이 멤버의 내보내기를 막았습니다 — 소유자만 내보낼 수 있습니다.'
   switch (status) {
     case 401:
       return '로그인이 만료됐습니다. 다시 로그인해 주세요.'
@@ -89,7 +90,8 @@ export function ExportButton({
       try {
         const res = await fetch(summaryUrl, { signal: controller.signal, cache: 'no-store' })
         if (!res.ok) {
-          setPanel({ kind: 'error', message: failureMessage(res.status) })
+          const body = (await res.json().catch(() => null)) as { error?: unknown } | null
+          setPanel({ kind: 'error', message: failureMessage(res.status, body?.error) })
           return
         }
         const data = (await res.json()) as { counts: Counts; bytesAtMost: number }

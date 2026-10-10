@@ -93,6 +93,8 @@ export function accessRequestFailureMessage(error: unknown): string {
       return '요청한 사람이 이제 이 워크스페이스에 없습니다.'
     case 'has_access':
       return '이미 이 페이지를 볼 수 있습니다.'
+    case 'policy_disabled':
+      return '워크스페이스 정책이 멤버의 게스트 초대를 막았습니다 — 소유자나 멤버 관리자에게 부탁하세요.'
     case 'guest_limit':
       // 이메일 초대(`[pageId]/share-principals.ts` 의 GUEST_LIMIT_MESSAGE)와 같은 말 — 문구 모듈은 서로 불러오지 않는다(노드 검사).
       return '이 요금제의 게스트 한도에 닿았습니다. 게스트를 정리하거나 요금제를 올리면 더 들일 수 있습니다.'

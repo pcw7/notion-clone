@@ -32,6 +32,7 @@ export function exportRejectionStatus(reason: ExportRejection): number {
     case 'not_found':
       return 404
     case 'forbidden':
+    case 'policy_disabled':
       return 403
     case 'too_large':
       return 422

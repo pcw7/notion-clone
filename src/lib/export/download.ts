@@ -41,7 +41,8 @@
 
 import type { SessionContext } from '../auth/session-context.ts'
 import { recordForContextIn } from '../audit/audit.ts'
-import { withTransaction } from '../db/tx.ts'
+import { withReadTransaction, withTransaction } from '../db/tx.ts'
+import { readSecurityPolicyIn } from '../workspace/security-policy.ts'
 import { toPlainText } from '../contracts/rich-text.ts'
 import { readFile } from '../file/file.ts'
 import { streamExportZip } from './archive.ts'
@@ -60,6 +61,8 @@ export type ExportRejection =
   | 'forbidden'
   /** 블록 수 또는 ZIP 추정이 상한을 넘는다. */
   | 'too_large'
+  /** 워크스페이스 정책이 멤버의 내보내기를 막았다(`allow_export` · 6e-1) — 소유자만 내보낸다. */
+  | 'policy_disabled'
 
 export type PreparedExport = {
   readonly plan: ExportPlan
@@ -94,6 +97,10 @@ export async function prepareExport(
 ): Promise<PrepareResult> {
   // 스냅샷을 읽기 전에 막는다 — 거부될 요청에 워크스페이스 전체를 읽지 않는다.
   if (scope.kind === 'workspace' && !canExportWorkspace(ctx)) return { ok: false, reason: 'forbidden' }
+  // 보안 정책(6e-1 · 정본 [보강] 보안 정책 ①) — 끄면 소유자만
+  if (ctx.role !== 'owner' && !(await withReadTransaction((tx) => readSecurityPolicyIn(tx, ctx.workspaceId))).allowExport) {
+    return { ok: false, reason: 'policy_disabled' }
+  }
 
   const snapshot = await readExportSnapshot(
     ctx,
