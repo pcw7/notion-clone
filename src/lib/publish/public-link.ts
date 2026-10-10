@@ -12,30 +12,23 @@
  * `public-access.ts` 가 따로 한다.
  *
  * 게시 해제는 `enabled := false` 다 — 행과 토큰이 남아 다시 게시하면 같은 주소다(정본 ⑤).
+ *
+ * 6a-3 — 공유 패널이 쓰는 둘을 더했다: 검색 엔진 노출(`robots_directive`)과 주소 바꾸기(토큰을 새로 — 옛 주소는 곧바로 닫힌다). AI 크롤러
+ * 칸은 열지 않는다(정본 [보강] 공개 화면 ⑥ — robots.txt 가 링크마다 열 수 없다). 게시 상태는 **위 페이지의 게시로 공개되었는가**도
+ * 말한다(`coveredBy` — 하위 페이지는 함께 공개된다는 것을 그 페이지의 공유 패널에서도 보여야 한다).
  */
 
-import { randomBytes } from 'node:crypto'
-
 import type { SessionContext } from '../auth/session-context.ts'
+import { plainTitleOf } from '../block/page.ts'
 import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
 import { isUuid } from '../ids.ts'
 import { effectiveCaps } from '../permissions/effective.ts'
 import { can } from '../permissions/levels.ts'
 import { readSecurityPolicyIn } from '../workspace/security-policy.ts'
+import { openablePagesIn } from './public-access.ts'
+import { isRobotsDirective, newPublicToken, type AiCrawler, type RobotsDirective } from './public-token.ts'
 
-/** 토큰의 바이트 수 — base64url 로 22자(0084 `ck_public_link_token`). */
-const TOKEN_BYTES = 16
-
-/** 공개 주소의 토큰 — 무작위 128비트 · base64url 22자. */
-export function newPublicToken(): string {
-  return randomBytes(TOKEN_BYTES).toString('base64url')
-}
-
-/** 토큰의 모양 — 0084 의 CHECK 과 같다. 공개 경로가 DB 에 묻기 전에 거른다. */
-export const PUBLIC_TOKEN_PATTERN = /^[A-Za-z0-9_-]{22}$/
-
-export type RobotsDirective = 'index' | 'noindex'
-export type AiCrawler = 'allow' | 'deny'
+export { newPublicToken, PUBLIC_TOKEN_PATTERN, type AiCrawler, type RobotsDirective } from './public-token.ts'
 
 export type PublishState = {
   /** 웹에 게시되어 있는가(이 페이지 자신의 행 — 위 페이지의 게시로 공개된 것은 아니다). */
@@ -51,6 +44,11 @@ export type PublishState = {
   readonly policyAllows: boolean
   /** 게시하고 해제할 수 있는가(`manage_perm`). */
   readonly canManage: boolean
+  /**
+   * 위 페이지의 게시로 이 페이지도 공개되어 있으면 그 페이지(가장 가까운 것) — 그 페이지를 볼 수 있는 사람에게만 id · 제목(볼 수 없으면
+   * 둘 다 null — 공개되어 있다는 사실만). 아니면 null. 정책이 막았거나 만료된 게시는 덮지 않는다.
+   */
+  readonly coveredBy: { readonly pageId: string | null; readonly title: string | null } | null
 }
 
 export type PublishFailure =
@@ -64,6 +62,10 @@ export type PublishFailure =
   | 'trashed'
   /** 워크스페이스 정책이 게시를 막았다(`allow_publish_sites_and_forms`). */
   | 'policy_disabled'
+  /** 게시되어 있지 않다 — 설정 · 주소 바꾸기는 게시된 링크에만(6a-3). */
+  | 'not_published'
+  /** 바꿀 것이 없거나 값이 틀렸다(6a-3 — `{ robots?: 'index' | 'noindex', rotateToken?: true }`). */
+  | 'invalid_input'
 
 export type PublishResult =
   | { readonly ok: true; readonly value: PublishState }
@@ -78,20 +80,22 @@ export function publishFailureStatus(reason: PublishFailure): number {
       return 403
     case 'not_page':
     case 'trashed':
+    case 'invalid_input':
       return 400
     case 'policy_disabled':
+    case 'not_published':
       return 409
   }
 }
 
-type NodeRow = { id: string; type: string; lifecycle: string }
+type NodeRow = { id: string; type: string; lifecycle: string; ancestor_path: string[] }
 type LinkRow = { enabled: boolean; token: string | null; robots_directive: RobotsDirective; ai_crawler: AiCrawler; expires_at: Date | null }
 
 /** 이 워크스페이스의 페이지 · 데이터베이스 노드. `lock` 이면 행을 잡는다 — 휴지통 · 이동과 줄을 세운다. */
 async function loadNode(tx: Tx, ctx: SessionContext, nodeId: string, lock: boolean): Promise<NodeRow | null> {
   if (!isUuid(nodeId)) return null
   return tx.queryMaybe<NodeRow>(
-    `SELECT id, type, lifecycle FROM block
+    `SELECT id, type, lifecycle, ancestor_path FROM block
       WHERE id = $1 AND workspace_id = $2 AND type IN ('page', 'database')${lock ? ' FOR UPDATE' : ''}`,
     [nodeId, ctx.workspaceId],
   )
@@ -104,7 +108,46 @@ async function loadLink(tx: Tx, nodeId: string): Promise<LinkRow | null> {
   )
 }
 
-function stateOf(link: LinkRow | null, policyAllows: boolean, canManage: boolean): PublishState {
+/**
+ * 이 페이지를 덮는 위 페이지의 게시 — 가장 가까운 것부터. 판정은 공개 경로와 같은 함수다(`openablePagesIn` — 상속 절단 · 휴지통 ·
+ * 테이크다운). 정책이 막았으면 아무것도 덮지 않는다.
+ */
+async function coveredByIn(
+  tx: Tx,
+  ctx: SessionContext,
+  node: NodeRow,
+  policyAllows: boolean,
+): Promise<PublishState['coveredBy']> {
+  if (!policyAllows || node.ancestor_path.length === 0) return null
+  const roots = await tx.query<{ node_id: string }>(
+    `SELECT node_id FROM public_link
+      WHERE node_id = ANY($1::uuid[]) AND enabled AND (expires_at IS NULL OR expires_at > now())`,
+    [node.ancestor_path],
+  )
+  const published = new Set(roots.map((r) => r.node_id))
+  for (let at = node.ancestor_path.length - 1; at >= 0; at -= 1) {
+    const rootId = node.ancestor_path[at]!
+    if (!published.has(rootId)) continue
+    if (!(await openablePagesIn(tx, ctx.workspaceId, rootId, [node.id])).has(node.id)) continue
+    if (!can(await effectiveCaps(tx, ctx, rootId), 'view')) return { pageId: null, title: null }
+    const row = await tx.queryOne<{ properties: Record<string, unknown> | null }>(`SELECT properties FROM block WHERE id = $1`, [rootId])
+    return { pageId: rootId, title: plainTitleOf(row.properties) }
+  }
+  return null
+}
+
+async function stateIn(
+  tx: Tx,
+  ctx: SessionContext,
+  node: NodeRow,
+  link: LinkRow | null,
+  policyAllows: boolean,
+  canManage: boolean,
+): Promise<PublishState> {
+  return { ...stateOf(link, policyAllows, canManage), coveredBy: await coveredByIn(tx, ctx, node, policyAllows) }
+}
+
+function stateOf(link: LinkRow | null, policyAllows: boolean, canManage: boolean): Omit<PublishState, 'coveredBy'> {
   return {
     published: link?.enabled ?? false,
     token: canManage ? (link?.token ?? null) : null,
@@ -125,7 +168,7 @@ export async function readPublishState(ctx: SessionContext, pageId: string): Pro
     const caps = await effectiveCaps(tx, ctx, pageId)
     if (!can(caps, 'view')) return { ok: false, reason: 'not_found' } as const
     const policy = await readSecurityPolicyIn(tx, ctx.workspaceId)
-    return { ok: true, value: stateOf(await loadLink(tx, pageId), policy.allowPublish, can(caps, 'manage_perm')) } as const
+    return { ok: true, value: await stateIn(tx, ctx, node, await loadLink(tx, pageId), policy.allowPublish, can(caps, 'manage_perm')) } as const
   })
 }
 
@@ -157,7 +200,7 @@ export async function publishPage(ctx: SessionContext, pageId: string): Promise<
        RETURNING enabled, token, robots_directive, ai_crawler, expires_at`,
       [pageId, newPublicToken(), ctx.userId],
     )
-    return { ok: true, value: stateOf(link, true, true) } as const
+    return { ok: true, value: await stateIn(tx, ctx, node, link, true, true) } as const
   })
 }
 
@@ -179,6 +222,49 @@ export async function unpublishPage(ctx: SessionContext, pageId: string): Promis
       [pageId, ctx.userId],
     )
     const policy = await readSecurityPolicyIn(tx, ctx.workspaceId)
-    return { ok: true, value: stateOf(await loadLink(tx, pageId), policy.allowPublish, true) } as const
+    return { ok: true, value: await stateIn(tx, ctx, node, await loadLink(tx, pageId), policy.allowPublish, true) } as const
   })
+}
+
+/**
+ * 게시된 링크의 설정을 바꾼다(6a-3) — `{ robots?: 'index' | 'noindex', rotateToken?: true }`.
+ *
+ *   · `robots` — 검색 엔진 노출(정본 [정정] 웹 게시 ① — 기본 `noindex`). 공개 화면의 meta · 파일의 `X-Robots-Tag` 가 따른다
+ *   · `rotateToken` — 주소를 새로 만든다. **옛 주소는 곧바로 닫힌다**(정본 ⑤ — 해제와 다시 게시는 같은 주소다. 주소를 버리는 것은 이것)
+ *
+ * 누가: 게시하는 사람과 같다(`manage_perm`). 게시된 링크에만 — 아니면 `not_published`. 정책 · 휴지통과 무관하다(끄고 좁히는 쪽이다).
+ */
+export async function updatePublicLink(ctx: SessionContext, pageId: string, patch: unknown): Promise<PublishResult> {
+  const input = parsePatch(patch)
+  if (input === null) return { ok: false, reason: 'invalid_input' }
+  return withCommandTransaction(async (tx) => {
+    const node = await loadNode(tx, ctx, pageId, true)
+    if (node === null) return { ok: false, reason: 'not_found' } as const
+    const caps = await effectiveCaps(tx, ctx, pageId)
+    if (!can(caps, 'view')) return { ok: false, reason: 'not_found' } as const
+    if (!can(caps, 'manage_perm')) return { ok: false, reason: 'forbidden' } as const
+
+    const link = await tx.queryMaybe<LinkRow>(
+      `UPDATE public_link
+          SET robots_directive = coalesce($2, robots_directive),
+              token = CASE WHEN $3 THEN $4 ELSE token END,
+              updated_by = $5, updated_at = now()
+        WHERE node_id = $1 AND enabled
+        RETURNING enabled, token, robots_directive, ai_crawler, expires_at`,
+      [pageId, input.robots ?? null, input.rotateToken, newPublicToken(), ctx.userId],
+    )
+    if (link === null) return { ok: false, reason: 'not_published' } as const
+    const policy = await readSecurityPolicyIn(tx, ctx.workspaceId)
+    return { ok: true, value: await stateIn(tx, ctx, node, link, policy.allowPublish, true) } as const
+  })
+}
+
+function parsePatch(raw: unknown): { robots?: RobotsDirective; rotateToken: boolean } | null {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null
+  const { robots, rotateToken, ...rest } = raw as { robots?: unknown; rotateToken?: unknown }
+  if (Object.keys(rest).length > 0) return null
+  if (robots !== undefined && !isRobotsDirective(robots)) return null
+  if (rotateToken !== undefined && rotateToken !== true) return null
+  if (robots === undefined && rotateToken === undefined) return null
+  return { ...(robots === undefined ? {} : { robots }), rotateToken: rotateToken === true }
 }

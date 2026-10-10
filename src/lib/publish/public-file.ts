@@ -21,7 +21,7 @@ import { withReadTransaction, type Tx } from '../db/tx.ts'
 import { fileStorage } from '../file/storage.ts'
 import { isUuid } from '../ids.ts'
 import { openablePagesIn, resolvePublicPageIn } from './public-access.ts'
-import type { AiCrawler, RobotsDirective } from './public-link.ts'
+import type { AiCrawler, RobotsDirective } from './public-token.ts'
 
 /** 공개 파일의 종류 — 본문의 이미지 블록 · 페이지의 이미지 아이콘. */
 export const PUBLIC_FILE_KINDS = ['image', 'icon'] as const

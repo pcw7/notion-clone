@@ -22,7 +22,7 @@
 
 import { withReadTransaction, type Tx } from '../db/tx.ts'
 import { isUuid } from '../ids.ts'
-import { PUBLIC_TOKEN_PATTERN, type AiCrawler, type RobotsDirective } from './public-link.ts'
+import { PUBLIC_TOKEN_PATTERN, type AiCrawler, type RobotsDirective } from './public-token.ts'
 
 /** 공개로 열 수 있는 페이지 하나. */
 export type PublicTarget = {
