@@ -28,16 +28,21 @@ export type ButtonResult<T> =
   | { readonly ok: true; readonly value: T }
   | { readonly ok: false; readonly reason: ButtonFailure; readonly problem?: ButtonActionProblem; readonly index?: number }
 
-/** 액션은 화면 · API 에 주는 모양이다(`send_webhook` 의 URL · 헤더 값은 없다 — 정본 ⑫). */
-export type ButtonActions = { readonly automationId: string; readonly enabled: boolean; readonly actions: readonly PublicAction[] }
+/** 액션은 화면 · API 에 주는 모양이다(`send_webhook` 의 URL · 헤더 값은 없다 — 정본 ⑫). 꺼진 까닭은 실패로 멈췄을 때(⑬ · `webhook_failed`). */
+export type ButtonActions = {
+  readonly automationId: string
+  readonly enabled: boolean
+  readonly disabledReason: string | null
+  readonly actions: readonly PublicAction[]
+}
 
 const fail = (reason: ButtonFailure, problem?: ButtonActionProblem, index?: number) =>
   ({ ok: false, reason, ...(problem === undefined ? {} : { problem }), ...(index === undefined ? {} : { index }) }) as const
 
 /** 그 표의 살아 있는 버튼 속성과 그 automation. */
 async function findButton(tx: Tx, dataSourceId: string, propertyId: string, lock = false) {
-  return tx.queryMaybe<{ automation_id: string; enabled: boolean }>(
-    `SELECT a.id AS automation_id, a.enabled
+  return tx.queryMaybe<{ automation_id: string; enabled: boolean; disabled_reason: string | null }>(
+    `SELECT a.id AS automation_id, a.enabled, a.disabled_reason
        FROM property p
        JOIN automation a ON a.host_property_id = p.id AND a.kind = 'button_property'
       WHERE p.id = $1 AND p.data_source_id = $2 AND p.type = 'button' AND p.deleted_at IS NULL
@@ -55,7 +60,40 @@ export async function readButtonActions(ctx: SessionContext, dataSourceId: strin
     if (isRowFailure(gate)) return fail('not_found')
     const button = await findButton(tx, dataSourceId, propertyId)
     if (button === null) return fail('not_found')
-    return { ok: true, value: { automationId: button.automation_id, enabled: button.enabled, actions: await readPublicActions(tx, button.automation_id) } } as const
+    return {
+      ok: true,
+      value: {
+        automationId: button.automation_id,
+        enabled: button.enabled,
+        disabledReason: button.disabled_reason,
+        actions: await readPublicActions(tx, button.automation_id),
+      },
+    } as const
+  })
+}
+
+/**
+ * 버튼을 켜거나 끈다 — 버튼 설정과 같은 문(그 표의 `edit_structure` · 잠기면 `locked`). 켜면 꺼진 까닭이 지워진다(웹훅이 실패로 멈춘 것을
+ * 사람이 다시 켠다 — 정본 [보강] 자동화 엔진 ⑮).
+ */
+export async function setButtonEnabled(
+  ctx: SessionContext,
+  dataSourceId: string,
+  propertyId: string,
+  enabled: unknown,
+): Promise<ButtonResult<ButtonActions>> {
+  if (!isUuid(dataSourceId)) return fail('not_found')
+  if (typeof enabled !== 'boolean') return fail('invalid_action', 'invalid')
+  return withCommandTransaction(async (tx) => {
+    const gate = await openDataSource(tx, ctx, dataSourceId, 'edit_structure')
+    if (isRowFailure(gate)) return fail(!gate.ok && (gate.reason === 'forbidden' || gate.reason === 'locked') ? gate.reason : 'not_found')
+    const button = await findButton(tx, dataSourceId, propertyId, true)
+    if (button === null) return fail('not_found')
+    await tx.query(`UPDATE automation SET enabled = $2, disabled_reason = NULL, updated_at = now() WHERE id = $1`, [button.automation_id, enabled])
+    return {
+      ok: true,
+      value: { automationId: button.automation_id, enabled, disabledReason: null, actions: await readPublicActions(tx, button.automation_id) },
+    } as const
   })
 }
 
@@ -81,7 +119,15 @@ export async function setButtonActions(
     if (problem !== null) return fail('invalid_action', problem.problem, problem.index)
     await writeActions(tx, button.automation_id, parsed.actions)
     await tx.query(`UPDATE automation SET updated_at = now() WHERE id = $1`, [button.automation_id])
-    return { ok: true, value: { automationId: button.automation_id, enabled: button.enabled, actions: await readPublicActions(tx, button.automation_id) } } as const
+    return {
+      ok: true,
+      value: {
+        automationId: button.automation_id,
+        enabled: button.enabled,
+        disabledReason: button.disabled_reason,
+        actions: await readPublicActions(tx, button.automation_id),
+      },
+    } as const
   })
 }
 

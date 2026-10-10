@@ -10,7 +10,7 @@
  *   ⑤ 위임 발급자 — 만든 사람으로 · `automation` · 세션 자리에 automation id · 떠났거나 지워졌으면 `creator_left` · 남의 워크스페이스는 `not_found`
  *   ⑥ 위임 컨텍스트의 권한은 그 사람의 **지금** 권한이다 — 그 사람의 접근을 거두면 위임도 못 쓴다
  *   ⑦ 화면 — ⚡ 의 배지는 전체 권한에만(켜진 수 · 꺼진 까닭이 있는 수) · 실행 기록은 새것부터 상한만큼 · 트리거된 행의 제목은 보는 사람의
- *      권한으로(볼 수 없음 null · 지워짐은 키 없음) · 문은 정의와 같다
+ *      권한으로(볼 수 없음 null · 지워짐은 키 없음) · 웹훅 단계의 배달 상태(5c-3b — 그 실행들의 것만) · 문은 정의와 같다
  *
  * 반사실(HANDOFF §3.3): 문을 고치기로 낮추면 ①, 조건 검사를 빼면 ②, 실행 주체를 고친 사람으로 바꾸면 ③, 멤버십을 보지 않으면 ⑤ 가 실패한다.
  */
@@ -263,7 +263,23 @@ describe('⑦ 화면 — 배지 · 실행 기록', () => {
     await put(auto.id, null, 1, 'failed') // 행이 물리 삭제됐다(SET NULL)
     await put(other.id, tb.row, 0)
 
+    // 웹훅 단계의 배달 — 이 automation 의 가장 새 실행 하나 · 다른 automation 의 실행 하나
+    const deliver = async (automationId: string, status: string, lastStatus: number | null) => {
+      const [run] = await query<{ id: string }>(`SELECT id FROM automation_run WHERE automation_id = $1 ORDER BY started_at DESC LIMIT 1`, [automationId])
+      const id = randomUUID()
+      await query(
+        `INSERT INTO automation_delivery (id, run_id, automation_id, workspace_id, url_sealed, url_hint, payload, status, last_status, finished_at)
+         VALUES ($1, $2, $3, $4, '\\x01'::bytea, 'hooks.example.com', '{}'::jsonb, $5, $6, now())`,
+        [id, run.id, automationId, fx.workspaceId, status, lastStatus],
+      )
+      return id
+    }
+    const mine = await deliver(auto.id, 'failed', 500)
+    const theirs = await deliver(other.id, 'sent', 200)
+
     const seen = unwrap(await listDbAutomationRuns(admin.ctx, tb.ds, auto.id))
+    assert.deepEqual(seen.deliveries, { [mine]: { status: 'failed', lastStatus: 500 } }, '그 실행들의 배달만 — 상태와 마지막 HTTP 상태')
+    assert.equal(theirs in seen.deliveries, false)
     assert.equal(seen.runs.length, AUTOMATION_RUN_CAP, '보관 상한만큼')
     assert.deepEqual(
       seen.runs.slice(0, 3).map((r) => [r.status, r.triggerPageId]),

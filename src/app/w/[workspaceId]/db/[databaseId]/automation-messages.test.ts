@@ -8,6 +8,7 @@ import assert from 'node:assert/strict'
 import {
   actionSummary,
   automationProblemMessage,
+  deliveryLabel,
   disabledMessage,
   runRowLabel,
   runStatusLabel,
@@ -78,4 +79,12 @@ test('★ 저장 거절 — 이름 · 상한 · 몇 번째 트리거의 무엇 �
   assert.equal(automationProblemMessage('invalid_trigger', 'no_triggers', undefined), '트리거를 하나 이상 넣으세요.')
   assert.equal(automationProblemMessage('invalid_action', 'invalid_value', 0), null)
   assert.equal(automationProblemMessage('forbidden', undefined, undefined), null)
+})
+
+test('★ 웹훅 배달의 상태 — 보낼 차례 · 보냄 · 실패와 HTTP 상태 · 버림', () => {
+  assert.equal(deliveryLabel({ status: 'pending', lastStatus: 503 }), '보낼 차례')
+  assert.equal(deliveryLabel({ status: 'sent', lastStatus: 200 }), '보냄')
+  assert.equal(deliveryLabel({ status: 'failed', lastStatus: 500 }), '실패(HTTP 500)')
+  assert.equal(deliveryLabel({ status: 'failed', lastStatus: null }), '실패')
+  assert.equal(deliveryLabel({ status: 'dropped', lastStatus: null }), '버림')
 })

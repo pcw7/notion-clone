@@ -23,7 +23,7 @@ import { isFilterableType } from '@/lib/database/filter'
 import { describeRule, type RuleColumn } from '@/lib/database/filter-draft'
 import * as api from './table-api'
 import { AutomationEditor } from './automation-editor'
-import { actionSummary, disabledMessage, runRowLabel, runStatusLabel, stepLine, triggerSummary, type TriggerNames } from './automation-messages'
+import { actionSummary, deliveryLabel, disabledMessage, runRowLabel, runStatusLabel, stepLine, triggerSummary, type TriggerNames } from './automation-messages'
 
 type Badge = { readonly enabled: number; readonly attention: number }
 
@@ -310,11 +310,16 @@ export function AutomationPanel(props: {
                                   </span>
                                 )}
                               </span>
-                              {run.steps.map((step) => (
-                                <span key={step.index} data-testid="db-automation-step" className="pl-2 text-neutral-500">
-                                  {stepLine(step)}
-                                </span>
-                              ))}
+                              {run.steps.map((step) => {
+                                // 웹훅 단계는 그 배달의 상태를 함께(5c-3b · 정본 ⑮)
+                                const delivery = step.deliveryId === undefined ? undefined : runs.deliveries[step.deliveryId]
+                                return (
+                                  <span key={step.index} data-testid="db-automation-step" className="pl-2 text-neutral-500">
+                                    {stepLine(step)}
+                                    {delivery !== undefined && <span data-testid="db-automation-delivery"> · {deliveryLabel(delivery)}</span>}
+                                  </span>
+                                )
+                              })}
                             </div>
                           )
                         })}

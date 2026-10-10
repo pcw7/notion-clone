@@ -116,6 +116,14 @@ export function automationProblemMessage(error: string | undefined, problem: str
   return index === undefined ? text : `${index + 1}번째 트리거: ${text}`
 }
 
+const DELIVERY: Record<string, string> = { pending: '보낼 차례', sent: '보냄', failed: '실패', dropped: '버림' }
+
+/** 웹훅 배달의 상태 — "보냄" · "실패(HTTP 500)" · …(5c-3b · 정본 ⑮). */
+export function deliveryLabel(state: { readonly status: string; readonly lastStatus: number | null }): string {
+  const label = DELIVERY[state.status] ?? state.status
+  return state.status === 'failed' && state.lastStatus !== null ? `${label}(HTTP ${state.lastStatus})` : label
+}
+
 /**
  * 트리거된 항목 — 제목(빈 글이면 "제목 없음") · 볼 수 없음(null) · 지워짐(키 없음 · 행이 물리 삭제돼 id 가 없다). 정본 화면 ⓓ — relation 의
  * 제목 맵과 같은 셋. 링크는 제목이 있을 때만.

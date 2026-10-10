@@ -5,7 +5,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { buttonActionProblemMessage, buttonRunMessage } from './button-messages.ts'
+import { buttonActionProblemMessage, buttonDisabledMessage, buttonRunMessage } from './button-messages.ts'
 
 test('★ 실행 결과 한 줄 — 완료 · 할 일 없음 · 일부 건너뜀 · 실패와 까닭 · 거절', () => {
   assert.deepEqual(buttonRunMessage({ status: 'success', steps: [{ status: 'done' }] }), { text: '완료', tone: 'ok' })
@@ -34,4 +34,10 @@ test('★ 웹훅 액션의 거절 — 주소 · 헤더 · 다섯 개 · 옮길 �
     const text = buttonActionProblemMessage(problem, 0)
     assert.ok(text.startsWith('1번째 액션: ') && !text.includes('저장하지 못했습니다'), `${problem} — ${text}`)
   }
+})
+
+test('꺼진 버튼의 까닭 — 웹훅 실패 · 사람이 끔 · 모르는 까닭', () => {
+  assert.match(buttonDisabledMessage('webhook_failed'), /웹훅을 네 번 보내지 못해/)
+  assert.equal(buttonDisabledMessage(null), '꺼진 버튼입니다.')
+  assert.equal(buttonDisabledMessage('tired'), '꺼진 버튼입니다.')
 })
