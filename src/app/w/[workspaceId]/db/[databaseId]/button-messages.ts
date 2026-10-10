@@ -1,7 +1,9 @@
 /**
- * 버튼 속성의 글자 — 실행 결과 한 줄 · 편집기 거절의 까닭 (자동화 5a-3 · F-03-15 · 순수)
+ * 버튼 속성의 글자 — 실행 결과 한 줄 · 편집기 거절의 까닭 (자동화 5a-3 · 5c-3a · F-03-15 · F-08-13 · 순수)
  *
- * 정본: 00-canonical-data-model.md §3.10 [보강] 자동화 엔진 · 버튼 속성 ④ ⑩
+ * 정본: 00-canonical-data-model.md §3.10 [보강] 자동화 엔진 · 버튼 속성 ④ ⑩ ⑭
+ *
+ * 액션의 거절(`buttonActionProblemMessage`)은 DB automation 편집기도 쓴다 — 같은 액션 · 같은 검사다.
  */
 
 export type ButtonTone = 'ok' | 'warn' | 'error'
@@ -48,6 +50,11 @@ const PROBLEM: Record<string, string> = {
   invalid_value: '값이 그 속성에 맞지 않습니다.',
   unknown_data_source: '볼 수 없는 표입니다.',
   unknown_template: '그 표의 템플릿이 아닙니다.',
+  invalid_url: '받는 주소는 https 로 시작하는 바깥 주소여야 합니다.',
+  invalid_header: '헤더가 맞지 않습니다 — 이름은 영문 · 숫자 · 하이픈, 정해진 이름(Host · Content-Type …)은 못 쓰고, 값은 1,024자 · 10개까지입니다.',
+  too_many_webhooks: '웹훅은 다섯 개까지입니다.',
+  unknown_ref: '받는 주소와 헤더 값을 넣으세요 — 그대로 둘 저장된 값이 없습니다.',
+  plan_required: '이 요금제에서는 웹훅을 보낼 수 없습니다.',
 }
 
 /** 버튼 설정의 거절 — 몇 번째 액션의 무엇이 틀렸나. */

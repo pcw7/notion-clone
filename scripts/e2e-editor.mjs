@@ -14943,6 +14943,129 @@ async function main() {
         && (await evaluate(`document.querySelector('${item} [data-testid="db-automation-name"]')?.textContent`)) === `${name} 고침`)
     }
 
+    if (sectionIf('웹훅 보내기 — 편집 (5c-3a · F-08-13)')) {
+      // 버튼 설정에서 "+ 웹훅 보내기" — 받는 주소 · 헤더 · 보낼 속성(숨긴 속성도)을 넣고 저장한다. 서버는 주소 · 헤더 값을 돌려주지 않는다 —
+      // 다시 열면 힌트만 보이고 비워 둔 채 저장해도 그대로다. 누르면 받는 서버에 그 헤더와 몸이 닿는다(보내기는 이 판에서 부른다). 틀린
+      // 헤더는 몇 번째 액션인지 말하고 저장하지 않는다. 받는 서버는 127.0.0.1:HOOK_PORT — 앱은 그 주소만 검사를 비켜 간다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const fill = async (selector, text) => {
+        const found = await evaluate(`(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (!el) return false; el.focus(); el.select(); return true })()`)
+        if (found) await typeText(text)
+      }
+      const { runAutomationWebhooks } = await import(new URL('../src/lib/automation/webhook-send.ts', import.meta.url).href)
+      const { createServer } = await import('node:http')
+      const received = []
+      const receiver = createServer((req, res) => {
+        let body = ''
+        req.on('data', (c) => (body += c))
+        req.on('end', () => {
+          received.push({ path: req.url, headers: req.headers, body })
+          res.writeHead(200).end('ok')
+        })
+      })
+      await new Promise((r) => receiver.listen(HOOK_PORT, '127.0.0.1', r))
+      const savedAllow = process.env.OUTBOUND_ALLOW_HOSTS
+      process.env.OUTBOUND_ALLOW_HOSTS = `127.0.0.1:${HOOK_PORT}` // 보내기는 이 판에서 부른다
+      try {
+        const db = (await api('POST', '/databases', { name: `웹훅 버튼 ${stamp}` })).body.database
+        const ds = db.dataSourceId
+        const prop = async (name, type) => (await api('POST', `/data-sources/${ds}/properties`, { name, type })).body.property.id
+        const qty = await prop('수량', 'number')
+        await api('PATCH', `/views/${db.defaultViewId}/columns/${qty}`, { visible: false })
+        const buttonId = await prop('알리기', 'button')
+        const row = (await api('POST', `/views/${db.defaultViewId}/rows`, { cells: [{ propertyId: qty, value: { type: 'number', number: 7 } }] })).body.row.id
+        const EDITOR = '[data-testid="db-button-editor"]'
+        const MENU = `th:has([data-testid="db-column-menu"][aria-label="알리기 속성 메뉴"]) [data-testid="db-column-menu"]`
+        const hookPath = `/hook-${stamp}`
+        const openEditor = async () => {
+          for (let i = 0; i < 6 && !(await evaluate(`!!document.querySelector('[data-testid="db-column-button"]')`)); i += 1) {
+            await clickSelector(MENU)
+            await waitFor(`!!document.querySelector('[data-testid="db-column-button"]')`, 2000)
+          }
+          await clickSelector('[data-testid="db-column-button"]')
+          return waitFor(`!!document.querySelector('${EDITOR} [data-testid="db-button-add-webhook-action"]')`, 8000)
+        }
+        const savedActions = async () => (await api('GET', `/data-sources/${ds}/properties/${buttonId}/actions`)).body?.actions ?? []
+
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+        await waitFor(`!!document.querySelector('tr[data-row-id="${row}"] [data-testid="db-button-cell"]')`, 15000)
+        await openEditor()
+        // ① 넣고 저장 — 주소 · 헤더 · 숨긴 속성
+        await clickSelector(`${EDITOR} [data-testid="db-button-add-webhook-action"]`)
+        await waitFor(`!!document.querySelector('${EDITOR} [data-testid="db-button-webhook-url"]')`, 3000)
+        await fill(`${EDITOR} [data-testid="db-button-webhook-url"]`, `http://127.0.0.1:${HOOK_PORT}${hookPath}`)
+        await clickSelector(`${EDITOR} [data-testid="db-button-webhook-add-header"]`)
+        await waitFor(`!!document.querySelector('${EDITOR} [data-testid="db-button-webhook-header-name"]')`, 3000)
+        await fill(`${EDITOR} [data-testid="db-button-webhook-header-name"]`, 'X-Token')
+        await fill(`${EDITOR} [data-testid="db-button-webhook-header-value"]`, `tok-${stamp}`)
+        const hiddenListed = await waitFor(`!!document.querySelector('${EDITOR} [data-testid="db-button-webhook-property"][data-property-id="${qty}"]')`, 5000)
+        await clickSelector(`${EDITOR} [data-testid="db-button-webhook-property"][data-property-id="${qty}"]`)
+        await clickSelector(`${EDITOR} [data-testid="db-button-save"]`)
+        const closed = await waitFor(`!document.querySelector('${EDITOR}')`, 8000)
+        const stored = await savedActions()
+        const config = stored[0]?.config ?? {}
+        check('★ 웹훅을 넣고 저장한다 — 주소 · 헤더 · 숨긴 속성(서버) · 주소와 헤더 값은 돌아오지 않는다(힌트 · 이름만)',
+          hiddenListed && closed && stored.length === 1 && stored[0].type === 'send_webhook'
+            && String(config.urlHint ?? '').startsWith(`127.0.0.1:${HOOK_PORT}/…`)
+            && JSON.stringify(config.headers) === JSON.stringify([{ name: 'x-token' }])
+            && JSON.stringify(config.properties) === JSON.stringify([qty])
+            && !JSON.stringify(stored).includes(`tok-${stamp}`) && !JSON.stringify(stored).includes(hookPath),
+          JSON.stringify(stored))
+
+        // ② 다시 열면 힌트만 — 비워 둔 채 저장해도 그대로
+        await openEditor()
+        await waitFor(`!!document.querySelector('${EDITOR} [data-testid="db-button-webhook-url"]')`, 5000)
+        const shown = await evaluate(`(() => {
+          const url = document.querySelector('${EDITOR} [data-testid="db-button-webhook-url"]')
+          const value = document.querySelector('${EDITOR} [data-testid="db-button-webhook-header-value"]')
+          return { url: url?.value, urlHint: url?.placeholder, header: value?.value, headerHint: value?.placeholder,
+            checked: document.querySelector('${EDITOR} [data-testid="db-button-webhook-property"][data-property-id="${qty}"]')?.checked }
+        })()`)
+        await clickSelector(`${EDITOR} [data-testid="db-button-save"]`)
+        // 저장이 **받아들여져** 닫혀야 한다 — 거절돼 열린 채면 서버 값이 그대로인 것은 아무것도 말하지 않는다
+        const resaved = await waitFor(`!document.querySelector('${EDITOR}')`, 8000)
+        check('★ 다시 열면 주소 · 헤더 값은 비어 있고 힌트만 보인다 — 비워 둔 채 저장해도 그대로',
+          resaved && shown.url === '' && String(shown.urlHint).includes('지금: 127.0.0.1') && shown.header === '' && String(shown.headerHint).includes('저장된 값')
+            && shown.checked === true && (await savedActions())[0]?.config?.urlHint === config.urlHint,
+          JSON.stringify([resaved, shown, await evaluate(`document.querySelector('${EDITOR} [data-testid="db-button-editor-error"]')?.textContent ?? null`)]))
+
+        // ③ 누르면 받는 서버에 그 헤더와 몸이 닿는다
+        await clickSelector(`tr[data-row-id="${row}"] [data-testid="db-button-cell"]`)
+        await waitFor(`(document.querySelector('tr[data-row-id="${row}"] [data-testid="db-button-result"]')?.textContent ?? '') === '완료'`, 10000)
+        await runAutomationWebhooks(new Date(Date.now() + 1000), { workspaces: [workspaceId] })
+        const got = received.find((r) => r.path === hookPath)
+        const body = got === undefined ? null : JSON.parse(got.body)
+        check('★ 누르면 받는 서버에 닿는다 — 저장한 헤더 · 고른 속성의 값 · run_id',
+          got !== undefined && got.headers['x-token'] === `tok-${stamp}` && body?.properties?.['수량']?.number === 7 && typeof body?.run_id === 'string',
+          JSON.stringify(got ?? received.map((r) => r.path)))
+
+        // ④ 틀린 헤더는 몇 번째 액션인지 말하고 저장하지 않는다
+        await openEditor()
+        await clickSelector(`${EDITOR} [data-testid="db-button-webhook-add-header"]`)
+        await waitFor(`document.querySelectorAll('${EDITOR} [data-testid="db-button-webhook-header-name"]').length === 2`, 3000)
+        await evaluate(`(() => { const all = document.querySelectorAll('${EDITOR} [data-testid="db-button-webhook-header-name"]'); const el = all[all.length - 1]; el.focus(); el.select() })()`)
+        await typeText('Host')
+        await evaluate(`(() => { const all = document.querySelectorAll('${EDITOR} [data-testid="db-button-webhook-header-value"]'); const el = all[all.length - 1]; el.focus(); el.select() })()`)
+        await typeText('evil.example.com')
+        await clickSelector(`${EDITOR} [data-testid="db-button-save"]`)
+        const refused = await waitFor(`(document.querySelector('${EDITOR} [data-testid="db-button-editor-error"]')?.textContent ?? '').startsWith('1번째 액션: 헤더가 맞지 않습니다')`, 5000)
+        check('★ 정해진 헤더(Host)는 몇 번째 액션인지 말하고 저장하지 않는다',
+          refused && !!(await evaluate(`!!document.querySelector('${EDITOR}')`)) && JSON.stringify((await savedActions())[0]?.config?.headers) === JSON.stringify([{ name: 'x-token' }]),
+          String(await evaluate(`document.querySelector('${EDITOR} [data-testid="db-button-editor-error"]')?.textContent ?? null`)))
+      } finally {
+        if (savedAllow === undefined) delete process.env.OUTBOUND_ALLOW_HOSTS
+        else process.env.OUTBOUND_ALLOW_HOSTS = savedAllow
+        receiver.closeAllConnections()
+        await new Promise((r) => receiver.close(() => r()))
+      }
+    }
+
     if (sectionIf('개인 필터 · 정렬 — 화면 (2h-2 · F-04-17)')) {
       // 볼 수만 있는 사람(브라우저 세션을 바꾼다)이 도구줄의 필터로 조건을 걸면 **자기 것**으로 저장되고 그 사람의 표만 좁혀진다 — "나만 보는
       // 필터" 표시 · 초기화. 편집자는 자기 개인 것을 "모두에게 저장"한다. 브라우저 세션은 끝에 반드시 소유자로 되돌린다.

@@ -59,6 +59,7 @@ test('실행 기록 — 결과 · 단계 한 줄', () => {
   assert.equal(runStatusLabel('partial'), '일부 건너뜀')
   assert.equal(stepLine({ index: 0, type: 'edit_property', status: 'done' }), '1. 값 바꾸기 — 완료')
   assert.equal(stepLine({ index: 1, type: 'add_page_to', status: 'skipped', reason: 'forbidden' }), '2. 다른 표에 항목 추가 — 건너뜀(권한 없음)')
+  assert.equal(stepLine({ index: 0, type: 'send_webhook', status: 'skipped', reason: 'plan' }), '1. 웹훅 보내기 — 건너뜀(요금제가 허락하지 않음)')
 })
 
 test('★ 트리거된 항목 — 제목 · 제목 없음 · 볼 수 없음 · 지워짐(키 없음 · id 없음)', () => {

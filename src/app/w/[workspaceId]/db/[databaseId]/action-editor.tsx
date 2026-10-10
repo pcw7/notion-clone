@@ -1,16 +1,18 @@
 'use client'
 
 /**
- * 액션 편집 — 버튼 설정 · DB automation 편집기가 함께 쓰는 부품 (자동화 5a-3 · 5a-4 · 5b-3b · F-08-07 · F-08-09)
+ * 액션 편집 — 버튼 설정 · DB automation 편집기가 함께 쓰는 부품 (자동화 5a-3 · 5a-4 · 5b-3b · 5c-3a · F-08-07 · F-08-09 · F-08-13)
  *
- * 정본: 00-canonical-data-model.md §3.10 [보강] 자동화 엔진 · 버튼 속성 ⑥ ⑨ ⑩ ⑪ · DB automation — 화면 ② ⓓ
+ * 정본: 00-canonical-data-model.md §3.10 [보강] 자동화 엔진 · 버튼 속성 ⑥ ⑨ ⑩ ⑪ ⑭ · DB automation — 화면 ② ⓓ
  *
- * 고치는 액션은 둘이다.
+ * 고치는 액션은 셋이다.
  *
  *   - **값 바꾸기**(`edit_property`) — 일하는 행(버튼은 누른 행 · DB automation 은 트리거된 행)의 속성을 고르고 그 타입의 값을 넣는다
  *     (숫자 · 체크 · 선택 · 상태 · 글 · 날짜).
  *   - **다른 표에 행 추가**(`add_page_to`) — 대상 표(이 표도 된다) · 그 표의 템플릿 · 그 표의 값. 템플릿을 고르면 "템플릿이 정한 칸은
  *     템플릿 값이 이긴다"를 한 줄로 알린다(08 — 직관과 반대다).
+ *   - **웹훅 보내기**(`send_webhook` · ⑭) — 받는 주소 · 헤더 · 보낼 속성. 서버는 저장된 주소 · 헤더 값을 주지 않는다(봉인 · ⑫) — 힌트만
+ *     보이고 **비워 두면 그대로**다(읽을 때 받은 `ref` 를 `keep` 으로 돌려준다).
  *
  * 속성은 보기의 컬럼이 아니라 **그 표의 스키마**에서 고른다(숨긴 속성도 — ⑪). 그 밖의 액션은 요약으로 서고 저장할 때 **그대로 남는다** —
  * 화면이 모르는 액션을 지우지 않는다(지우기 단추로만 지운다). 판정은 서버에 있다 — 저장하면 서버가 대어 보고, 틀리면 몇 번째 액션의
@@ -28,9 +30,20 @@ import { textRun, toPlainText } from '@/lib/contracts/rich-text'
 import * as api from './table-api'
 
 type CellDraft = { readonly propertyId: string; readonly value: CellValue }
+/** 헤더 초안 — 저장된 것(`saved`)은 값을 모른다: 비워 두면 서버가 옮긴다. */
+type HeaderDraft = { readonly name: string; readonly value: string; readonly saved: boolean }
 export type ActionDraft =
   | { readonly kind: 'edit'; readonly cells: readonly CellDraft[] }
   | { readonly kind: 'add'; readonly dataSourceId: string; readonly templateId: string | null; readonly cells: readonly CellDraft[] }
+  /** `ref` · `urlHint` 는 저장된 것 — 새 웹훅이면 null. `url` 은 새로 친 주소(비면 그대로). */
+  | {
+      readonly kind: 'webhook'
+      readonly ref: string | null
+      readonly urlHint: string | null
+      readonly url: string
+      readonly headers: readonly HeaderDraft[]
+      readonly properties: readonly string[]
+    }
   /** 이 편집기가 고치지 않는 액션 — 받은 그대로 다시 보낸다. */
   | { readonly kind: 'other'; readonly raw: api.ButtonActionJson }
 
@@ -39,8 +52,10 @@ type Field = { readonly id: string; readonly name: string; readonly type: MvpPro
 /** 표 하나의 값 칸 재료 — 속성들과 템플릿들. */
 type Table = { readonly fields: readonly Field[]; readonly templates: readonly { readonly id: string; readonly title: string }[] }
 
+/** 웹훅의 헤더 상한(서버 `MAX_WEBHOOK_HEADERS` 와 같다). */
+const MAX_HEADERS = 10
+
 const OTHER_LABEL: Record<string, string> = {
-  send_webhook: '웹훅 보내기',
   insert_blocks: '블록 넣기',
   define_variables: '변수 정하기',
   show_confirmation: '확인 묻기',
@@ -52,16 +67,37 @@ export const toDraft = (action: api.ButtonActionJson): ActionDraft => {
   if (action.type === 'add_page_to' && typeof c.dataSourceId === 'string' && Array.isArray(c.cells)) {
     return { kind: 'add', dataSourceId: c.dataSourceId, templateId: typeof c.templateId === 'string' ? c.templateId : null, cells: c.cells as CellDraft[] }
   }
+  if (action.type === 'send_webhook' && typeof c.ref === 'string') {
+    const headers = Array.isArray(c.headers)
+      ? c.headers.flatMap((h): HeaderDraft[] => (typeof h === 'object' && h !== null && 'name' in h ? [{ name: String(h.name), value: '', saved: true }] : []))
+      : []
+    return {
+      kind: 'webhook',
+      ref: c.ref,
+      urlHint: typeof c.urlHint === 'string' ? c.urlHint : null,
+      url: '',
+      headers,
+      properties: Array.isArray(c.properties) ? c.properties.filter((p): p is string => typeof p === 'string') : [],
+    }
+  }
   return { kind: 'other', raw: action }
 }
 /**
- * 받은 `send_webhook` 을 그대로 남긴다 — 서버는 URL · 헤더 값을 주지 않으므로(봉인 · 정본 ⑫) 읽을 때 받은 `ref` 를 `keep` 으로, 헤더는 이름만
- * 돌려준다(값이 없으면 서버가 그 액션에서 옮긴다).
+ * 웹훅 초안을 보낼 모양으로 — 새 주소가 있으면 `url`, 저장된 것이 있으면 `keep`(둘 다 있으면 주소는 새 것 · 헤더 값은 옮길 수 있다).
+ * 저장된 헤더의 값을 비웠으면 이름만 — 서버가 옮긴다(⑫).
  */
-const keepWebhook = (raw: api.ButtonActionJson): api.ButtonActionJson => {
-  const c = raw.config
-  const headers = Array.isArray(c.headers) ? c.headers.flatMap((h) => (typeof h === 'object' && h !== null && 'name' in h ? [{ name: String(h.name) }] : [])) : []
-  return { type: 'send_webhook', config: { v: 1, keep: c.ref, headers, properties: Array.isArray(c.properties) ? c.properties : [] } }
+const webhookAction = (draft: Extract<ActionDraft, { kind: 'webhook' }>): api.ButtonActionJson => {
+  const url = draft.url.trim()
+  return {
+    type: 'send_webhook',
+    config: {
+      v: 1,
+      ...(url !== '' || draft.ref === null ? { url } : {}),
+      ...(draft.ref === null ? {} : { keep: draft.ref }),
+      headers: draft.headers.map((h) => (h.value === '' && h.saved ? { name: h.name } : { name: h.name, value: h.value })),
+      properties: draft.properties,
+    },
+  }
 }
 
 export const toAction = (draft: ActionDraft): api.ButtonActionJson =>
@@ -69,8 +105,8 @@ export const toAction = (draft: ActionDraft): api.ButtonActionJson =>
     ? { type: 'edit_property', config: { v: 1, cells: draft.cells } }
     : draft.kind === 'add'
       ? { type: 'add_page_to', config: { v: 1, dataSourceId: draft.dataSourceId, cells: draft.cells, templateId: draft.templateId } }
-      : draft.raw.type === 'send_webhook' && typeof draft.raw.config.ref === 'string'
-        ? keepWebhook(draft.raw)
+      : draft.kind === 'webhook'
+        ? webhookAction(draft)
         : draft.raw
 
 const fieldsOf = (properties: readonly PropertySummary[]): Field[] =>
@@ -152,7 +188,14 @@ export function ActionListEditor({
           <li key={index} data-testid={`${p}-action`} data-kind={draft.kind} className="rounded border border-neutral-200 p-2 dark:border-neutral-700">
             <div className="mb-1 flex items-center justify-between gap-2">
               <span className="font-medium">
-                {index + 1}. {draft.kind === 'edit' ? editLabel : draft.kind === 'add' ? '다른 표에 행 추가' : (OTHER_LABEL[draft.raw.type] ?? draft.raw.type)}
+                {index + 1}.{' '}
+                {draft.kind === 'edit'
+                  ? editLabel
+                  : draft.kind === 'add'
+                    ? '다른 표에 행 추가'
+                    : draft.kind === 'webhook'
+                      ? '웹훅 보내기'
+                      : (OTHER_LABEL[draft.raw.type] ?? draft.raw.type)}
               </span>
               <button type="button" data-testid={`${p}-action-remove`} onClick={() => update(index, null)} className="text-neutral-500 hover:text-red-600">
                 지우기
@@ -160,6 +203,7 @@ export function ActionListEditor({
             </div>
             {draft.kind === 'other' && <p className="text-neutral-500">이 편집기에서는 고치지 않습니다 — 저장해도 그대로 남습니다.</p>}
             {draft.kind === 'edit' && <Cells p={p} fields={own} cells={draft.cells} require onChange={(cells) => update(index, { ...draft, cells })} />}
+            {draft.kind === 'webhook' && <Webhook p={p} fields={own} draft={draft} onChange={(next) => update(index, next)} />}
             {draft.kind === 'add' && (
               <div className="flex flex-col gap-1">
                 <label className="flex items-center gap-1">
@@ -234,7 +278,105 @@ export function ActionListEditor({
         >
           + 다른 표에 행 추가
         </button>
+        <button
+          type="button"
+          data-testid={`${p}-add-webhook-action`}
+          onClick={() => onChange([...drafts, { kind: 'webhook', ref: null, urlHint: null, url: '', headers: [], properties: [] }])}
+          className="rounded border border-neutral-300 px-2 py-0.5 hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-800"
+        >
+          + 웹훅 보내기
+        </button>
       </div>
+    </div>
+  )
+}
+
+/** 웹훅 칸 — 받는 주소 · 헤더 · 보낼 속성(⑭). 저장된 주소 · 헤더 값은 보이지 않는다 — 비워 두면 그대로. */
+function Webhook({
+  p,
+  fields,
+  draft,
+  onChange,
+}: {
+  p: string
+  fields: readonly Field[]
+  draft: Extract<ActionDraft, { kind: 'webhook' }>
+  onChange: (next: Extract<ActionDraft, { kind: 'webhook' }>) => void
+}) {
+  const box = 'min-w-0 flex-1 rounded border border-neutral-300 px-1 py-0.5 dark:border-neutral-700 dark:bg-neutral-900'
+  const setHeader = (i: number, next: HeaderDraft | null) =>
+    onChange({ ...draft, headers: next === null ? draft.headers.filter((_, j) => j !== i) : draft.headers.map((h, j) => (j === i ? next : h)) })
+  return (
+    <div className="flex flex-col gap-1">
+      <label className="flex items-center gap-1">
+        <span className="w-10 shrink-0 text-neutral-500">주소</span>
+        <input
+          type="url"
+          aria-label="받는 주소"
+          data-testid={`${p}-webhook-url`}
+          value={draft.url}
+          placeholder={draft.urlHint === null ? 'https://…' : `지금: ${draft.urlHint} — 비우면 그대로`}
+          autoComplete="off"
+          onChange={(e) => onChange({ ...draft, url: e.target.value })}
+          className={box}
+        />
+      </label>
+      {draft.headers.map((h, i) => (
+        <div key={i} className="flex items-center gap-1" data-testid={`${p}-webhook-header`}>
+          <input
+            type="text"
+            aria-label="헤더 이름"
+            data-testid={`${p}-webhook-header-name`}
+            value={h.name}
+            disabled={h.saved}
+            onChange={(e) => setHeader(i, { ...h, name: e.target.value })}
+            className={`${box} max-w-[8rem]`}
+          />
+          <input
+            type="text"
+            aria-label={`${h.name || '헤더'} 값`}
+            data-testid={`${p}-webhook-header-value`}
+            value={h.value}
+            placeholder={h.saved ? '저장된 값 — 비우면 그대로' : '값'}
+            autoComplete="off"
+            onChange={(e) => setHeader(i, { ...h, value: e.target.value })}
+            className={box}
+          />
+          <button type="button" aria-label="이 헤더 빼기" onClick={() => setHeader(i, null)} className="px-1 text-neutral-400 hover:text-red-600">
+            ×
+          </button>
+        </div>
+      ))}
+      {draft.headers.length < MAX_HEADERS && (
+        <button
+          type="button"
+          data-testid={`${p}-webhook-add-header`}
+          onClick={() => onChange({ ...draft, headers: [...draft.headers, { name: '', value: '', saved: false }] })}
+          className="self-start text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200"
+        >
+          + 헤더
+        </button>
+      )}
+      <fieldset className="flex flex-col gap-0.5">
+        <legend className="text-neutral-500">보낼 속성 — 고르지 않으면 행의 id 와 주소만</legend>
+        {fields.map((f) => (
+          <label key={f.id} className="flex items-center gap-1">
+            <input
+              type="checkbox"
+              data-testid={`${p}-webhook-property`}
+              data-property-id={f.id}
+              checked={draft.properties.includes(f.id)}
+              onChange={(e) =>
+                onChange({ ...draft, properties: e.target.checked ? [...draft.properties, f.id] : draft.properties.filter((x) => x !== f.id) })
+              }
+            />
+            {f.name}
+          </label>
+        ))}
+      </fieldset>
+      <p className="text-neutral-500">
+        몸은 <code>{'{ run_id, page, properties }'}</code> — 받는 쪽은 <code>run_id</code> 로 겹친 것을 거르세요. 네 번 실패하면 멈춥니다.
+      </p>
     </div>
   )
 }
