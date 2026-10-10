@@ -378,6 +378,11 @@ async function toColumns(tx: Tx, rows: readonly ColumnRow[]): Promise<ViewColumn
       columns.push({ ...base, type: 'unique_id', uniqueId: { prefix: r.unique_id_prefix } })
       continue
     }
+    // 버튼(5a-3) — 설정(액션)은 여기 싣지 않는다. 편집기가 열 때 읽는다(`…/properties/{id}/actions`).
+    if (r.type === 'button') {
+      columns.push({ ...base, type: 'button' })
+      continue
+    }
     // 수식(2i-2) — 값은 읽을 때 계산한다(`computeFormulaValues`). 여기는 사람이 읽는 식(지금 이름으로)과 결과 타입만.
     if (r.type === 'formula') {
       const config = readFormulaConfig(r.config)

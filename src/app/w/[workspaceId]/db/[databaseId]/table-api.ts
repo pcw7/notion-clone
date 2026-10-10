@@ -27,6 +27,7 @@ import type { PropertyDependents } from '@/lib/database/property-dependents'
 import type { PageSettings } from '@/lib/database/page-settings'
 import type { DateReminderJson } from '@/lib/database/reminder'
 import { MAX_PINNED_PROPERTIES } from '@/lib/database/limits'
+import { buttonActionProblemMessage } from './button-messages'
 
 export type ApiResult<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly message: string }
 
@@ -550,7 +551,7 @@ export function addColumn(
   workspaceId: string,
   dataSourceId: string,
   name: string,
-  type: MvpPropertyType | 'unique_id',
+  type: MvpPropertyType | 'unique_id' | 'button',
   /** 고유 ID 의 접두사(2a-2). 비우면 보내지 않는다 — 서버가 옛 접두사를 그대로 둔다. */
   prefix?: string,
 ): Promise<ApiResult<PropertySummary>> {
@@ -563,6 +564,73 @@ export function addColumn(
     },
     (body) => body.property as PropertySummary,
   )
+}
+
+// ── 버튼 속성 (자동화 5a-3 · F-03-15) ──
+
+/** 실행 기록 — 상태와 단계마다의 결과(서버 `automation/engine.ts` 의 `RunOutcome`). */
+export type ButtonRun = {
+  readonly runId: string
+  readonly status: 'success' | 'partial' | 'failed'
+  readonly steps: readonly { readonly index: number; readonly type: string; readonly status: string; readonly reason?: string; readonly pageId?: string }[]
+  readonly duplicate: boolean
+}
+
+/** 버튼을 누른다 — 누를 때마다 새 멱등 키(정본 ⑤ ⑩). 거절은 서버의 까닭 코드를 그대로 준다(화면이 한 줄로 바꾼다). */
+export async function pressButton(
+  workspaceId: string,
+  rowId: string,
+  propertyId: string,
+): Promise<{ readonly ok: true; readonly run: ButtonRun } | { readonly ok: false; readonly error: string }> {
+  try {
+    const res = await fetch(`${base(workspaceId)}/rows/${rowId}/buttons/${propertyId}`, {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ idempotencyKey: crypto.randomUUID() }),
+    })
+    const body = (await res.json().catch(() => null)) as { run?: ButtonRun; error?: string } | null
+    if (!res.ok || body?.run === undefined) return { ok: false, error: body?.error ?? 'failed' }
+    return { ok: true, run: body.run }
+  } catch {
+    return { ok: false, error: 'network' }
+  }
+}
+
+/** 버튼의 액션(서버가 저장한 모양 그대로 — 편집기가 고칠 수 있는 것만 고치고 나머지는 그대로 다시 보낸다). */
+export type ButtonActionJson = { readonly type: string; readonly config: Record<string, unknown> }
+
+export function readButtonActions(
+  workspaceId: string,
+  dataSourceId: string,
+  propertyId: string,
+): Promise<ApiResult<{ readonly actions: readonly ButtonActionJson[]; readonly enabled: boolean }>> {
+  return call(
+    `${base(workspaceId)}/data-sources/${dataSourceId}/properties/${propertyId}/actions`,
+    { method: 'GET' },
+    (body) => ({ actions: (body.actions ?? []) as ButtonActionJson[], enabled: body.enabled !== false }),
+  )
+}
+
+/** 액션을 통째로 바꾼다. 틀린 액션은 몇 번째 · 무엇이 틀렸는지 말한다. */
+export async function saveButtonActions(
+  workspaceId: string,
+  dataSourceId: string,
+  propertyId: string,
+  actions: readonly ButtonActionJson[],
+): Promise<{ readonly ok: true } | { readonly ok: false; readonly message: string }> {
+  try {
+    const res = await fetch(`${base(workspaceId)}/data-sources/${dataSourceId}/properties/${propertyId}/actions`, {
+      method: 'PUT',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ actions }),
+    })
+    if (res.ok) return { ok: true }
+    const body = (await res.json().catch(() => null)) as (ErrorBody & { problem?: string; index?: number }) | null
+    if (body?.error === 'invalid_action') return { ok: false, message: buttonActionProblemMessage(body.problem, body.index) }
+    return { ok: false, message: messageOf(res.status, body) }
+  } catch {
+    return { ok: false, message: '연결에 실패했습니다. 버튼 설정이 저장되지 않았습니다.' }
+  }
 }
 
 /** 수식 속성을 만든다(2i-3a · F-03-12). 식은 사람이 쓴 그대로 — 서버가 읽고 틀리면 자리를 준다. */

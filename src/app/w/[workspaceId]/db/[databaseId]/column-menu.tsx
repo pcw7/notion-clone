@@ -29,6 +29,8 @@
  * "식 고치기"(2i-3b · F-03-12) — 수식 속성에만 선다. 편집기는 표가 그린다(`formulaEdit` — 계산 계획 · 첫 행을 표가 갖고 있다). 메뉴는
  * 그 자리를 넓혀 담기만 한다.
  *
+ * "버튼 설정"(자동화 5a-3 · F-03-15) — 버튼 속성에만 선다. 식 고치기와 같은 꼴이다(`buttonEdit` — 편집기는 표가 그린다).
+ *
  * 이 메뉴는 `edit_structure` 가 있을 때만 그려진다(표가 정한다).
  */
 
@@ -50,6 +52,7 @@ export function ColumnMenu({
   onHide,
   onDelete,
   formulaEdit,
+  buttonEdit,
   loadDependents,
 }: {
   name: string
@@ -70,11 +73,13 @@ export function ColumnMenu({
   onDelete: () => Promise<string | null>
   /** 수식 속성의 "식 고치기"(2i-3b) — 편집기를 그린다. 끝나면(저장 · 취소) `close` 를 부른다. 없으면 항목이 서지 않는다. */
   formulaEdit?: (close: () => void) => ReactNode
+  /** 버튼 속성의 "버튼 설정"(5a-3) — 편집기를 그린다. 끝나면(저장 · 취소) `close` 를 부른다. 없으면 항목이 서지 않는다. */
+  buttonEdit?: (close: () => void) => ReactNode
   /** 이 속성을 읽는 수식 · 롤업(2j-1). 못 읽으면 null(알리지 못할 뿐 지우기 · 바꾸기는 그대로). 없으면 묻지 않는다. */
   loadDependents?: () => Promise<PropertyDependents | null>
 }) {
   const [open, setOpen] = useState(false)
-  const [step, setStep] = useState<'menu' | 'rename' | 'prefix' | 'convert' | 'confirm-loss' | 'delete' | 'formula'>('menu')
+  const [step, setStep] = useState<'menu' | 'rename' | 'prefix' | 'convert' | 'confirm-loss' | 'delete' | 'formula' | 'button'>('menu')
   /** 손실 확인을 기다리는 변환 — 고른 타입과 서버가 센 칸 수. */
   const [pending, setPending] = useState<{ type: string; label: string; lost: number } | null>(null)
   const [draft, setDraft] = useState(name)
@@ -100,7 +105,7 @@ export function ColumnMenu({
     else if (step === 'prefix') prefixRef.current?.focus()
     // 입력칸이 없는 단계(지우기 · 유형 바꾸기 · 손실 확인)는 누른 항목이 사라지면서 포커스가 패널 밖(body)으로 간다 — 그러면 패널의
     // Escape 가 닿지 않아 키보드로 닫을 수 없다(2j-1 의 검사가 찾았다). 패널로 옮긴다. 식 고치기는 편집기가 스스로 잡는다.
-    else if (step !== 'menu' && step !== 'formula') panelRef.current?.focus()
+    else if (step !== 'menu' && step !== 'formula' && step !== 'button') panelRef.current?.focus()
   }, [step])
 
   const close = () => {
@@ -162,7 +167,7 @@ export function ColumnMenu({
             }
           }}
           className={`absolute right-0 top-full z-30 mt-1 flex ${
-            step === 'formula' ? 'w-80' : 'w-56'
+            step === 'formula' ? 'w-80' : step === 'button' ? 'w-96' : 'w-56'
           } flex-col rounded-md border border-neutral-200 bg-white p-1 text-left text-sm font-normal text-neutral-800 shadow-lg dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100`}
         >
           {step === 'menu' && (
@@ -193,6 +198,11 @@ export function ColumnMenu({
               {formulaEdit !== undefined && (
                 <MenuItem testId="db-column-formula" disabled={busy} onClick={() => setStep('formula')}>
                   식 고치기
+                </MenuItem>
+              )}
+              {buttonEdit !== undefined && (
+                <MenuItem testId="db-column-button" disabled={busy} onClick={() => setStep('button')}>
+                  버튼 설정
                 </MenuItem>
               )}
               {!isTitle && (
@@ -304,6 +314,7 @@ export function ColumnMenu({
             </form>
           )}
           {step === 'formula' && formulaEdit !== undefined && formulaEdit(close)}
+          {step === 'button' && buttonEdit !== undefined && buttonEdit(close)}
           {step === 'delete' && (
             <div className="flex flex-col gap-1 p-1">
               <p className="text-xs text-neutral-500">

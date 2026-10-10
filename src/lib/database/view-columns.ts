@@ -110,7 +110,13 @@ export type FormulaColumn = ColumnBase & {
   }
 }
 
-export type ViewColumn = CellColumn | RelationColumn | RollupColumn | UniqueIdColumn | FormulaColumn
+/**
+ * 버튼 컬럼(자동화 5a-3 · F-03-15). **값이 없다** — 칸은 속성 이름의 단추이고, 누르면 그 행에서 액션을 실행한다(`automation/button-property.ts`).
+ * 정렬 · 필터 · 그룹 · 집계의 대상이 아니다(`isCellColumn` 이 거른다).
+ */
+export type ButtonColumn = ColumnBase & { readonly type: 'button' }
+
+export type ViewColumn = CellColumn | RelationColumn | RollupColumn | UniqueIdColumn | FormulaColumn | ButtonColumn
 
 /** 이 표의 하위 항목 짝(2b-2) — 컬럼(숨긴 것 포함)의 relation 표시에서 읽는다. 꺼져 있으면 null. */
 export function subItemPairOf(

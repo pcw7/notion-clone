@@ -43,7 +43,8 @@ export function CardBadges({
           )
         }
         // 수식(2i-2)도 — 값이 행에 없다(읽을 때 계산 · 카드에는 아직 싣지 않는다 · §7).
-        if (column.type === 'rollup' || column.type === 'formula') return null
+        // 버튼(5a-3)도 — 값이 없다(카드에는 아직 단추를 세우지 않는다 · §7).
+        if (column.type === 'rollup' || column.type === 'formula' || column.type === 'button') return null
         // 고유 ID 는 행에 있다 — 번호를 그대로 그린다(2a-1).
         if (column.type === 'unique_id') {
           const id = formatUniqueId(column.uniqueId.prefix, row.uniqueSeq)
