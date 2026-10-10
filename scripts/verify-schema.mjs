@@ -3259,6 +3259,52 @@ try {
     else fail(`지운 속성의 고정 ${pinnedGone}행 · 숨김 ${hiddenKept}행 — 1 · 0 이 아니라 0 · 1 이어야 한다`)
   }
 
+  console.log('\n[46] 페이지 설정 (0044 의 page_layout CHECK / §3.6 [보강] 페이지 설정 · 3b-1조각)')
+  {
+    // 0044 가 건 CHECK 넷은 3b-1 이 칸을 쓰기 시작하기 전까지 거부를 확인한 적이 없다 — 여기서 본다.
+    const root = randomUUID()
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key,
+                          ancestor_path, perm_scope_id, properties, format, created_at, last_edited_at)
+       VALUES ($1, $2, 'page', 'workspace', $2, 'z46', '{}', $1, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      [root, wsId],
+    )
+    const dbId = randomUUID()
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key,
+                          ancestor_path, perm_scope_id, properties, format, created_at, last_edited_at)
+       VALUES ($1, $2, 'database', 'block', $3, 's1', $4, $3, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      [dbId, wsId, root, [root]],
+    )
+    await client.query(`INSERT INTO database (id, created_at, updated_at) VALUES ($1, now(), now())`, [dbId])
+    const ds = randomUUID()
+    await client.query(`INSERT INTO data_source (id, owner_database_id, name, created_at, updated_at) VALUES ($1, $2, '소스', now(), now())`, [ds, dbId])
+    await client.query(
+      `INSERT INTO page_layout (data_source_id, backlinks_mode, inline_comment_mode, show_discussions, show_property_icons, full_width)
+       VALUES ($1, 'off', 'minimal', false, false, true)`,
+      [ds],
+    )
+    ok('페이지 설정 다섯 칸을 모두 바꾼 머리 — 정상 경로가 통과한다')
+
+    const rejectBy = async (label, constraint, sql, params) => {
+      await client.query('SAVEPOINT probe')
+      try {
+        await client.query(sql, params)
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        fail(`${label} — 거부되어야 하는데 통과했다`)
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        if (e.constraint === constraint) ok(`${label} — ${constraint} 가 거부함 (${e.code})`)
+        else fail(`${label} — ${constraint} 가 아니라 ${e.constraint ?? e.code} 에 걸렸다 (${e.message})`)
+      }
+    }
+    const set = (column) => `UPDATE page_layout SET ${column} = $2 WHERE data_source_id = $1`
+    await rejectBy('★ 모르는 백링크 표시', 'ck_page_layout_backlinks', set('backlinks_mode'), [ds, 'sometimes'])
+    await rejectBy('★ 모르는 인라인 코멘트 표시', 'ck_page_layout_inline_comment', set('inline_comment_mode'), [ds, 'loud'])
+    await rejectBy('모르는 구조', 'ck_page_layout_structure', set('structure'), [ds, 'grid'])
+    await rejectBy('버전 0 — 머리가 있으면 1 부터', 'ck_page_layout_version', set('version'), [ds, 0])
+  }
+
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
 } catch (e) {

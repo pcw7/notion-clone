@@ -1,5 +1,5 @@
 /**
- * 행의 레이아웃 — 속성 묶음의 숨김 · 순서 (잔여 묶음 8f-2 · F-16-03 · F-16-07) · 제목 아래 고정 (3a-1 · F-16-02)
+ * 행의 레이아웃 — 속성 묶음의 숨김 · 순서 (잔여 묶음 8f-2 · F-16-03 · F-16-07) · 제목 아래 고정 (3a-1 · F-16-02) · 페이지 설정 (3b-1 · F-16-09 · F-16-10)
  *
  * 정본: 00-canonical-data-model.md §3.6 `page_layout` · `layout_tab` · `layout_module` · [보강] 행의 레이아웃(① ~ ⑦) · [보강] 고정 속성
  *       16-item-layout.md F-16-01(편집 모드 · 한 번에 적용) · F-16-02(Heading · pinned ≤ 15) · F-16-03(Property group) · F-16-12(영속화)
@@ -13,6 +13,8 @@
  *   · 고정 = content 탭의 property 행 · heading 영역 · 부모는 heading · **자기 순서**(heading 안의 순서는 스키마 순서가 아니다) · 보임.
  *     풀면 행을 지운다(속성 묶음으로 돌아간다). 소스마다 15개까지(M3 — `MAX_PINNED_PROPERTIES` · 0064 의 트리거가 마지막 그물). 한 속성은
  *     한 탭에 한 번이라 숨김과 겹치지 않는다. 속성을 지우면 고정이 풀린다(0064 의 트리거 — 되살려도 속성 묶음으로 돌아온다)
+ *   · 페이지 설정 = 머리의 다섯 칸(백링크 · 인라인 코멘트 · 토론 · 속성 아이콘 · 전체 폭 — `page-settings.ts`). 머리가 없으면 기본값이고,
+ *     기본에서 벗어나면 머리가 생긴다(다른 이탈과 같다). 준 칸만 바꾼다
  *   · 저장은 전체 교체 한 번이다 — 편집 모드의 초안을 "모든 행에 적용"이 한꺼번에 보낸다. version 이 낙관적 잠금이고, 바뀐 것이
  *     없으면 아무것도 쓰지 않는다(version 도 그대로)
  *   · 누가 — 구조의 문(`lockSchema` — 주인 데이터베이스의 `edit_structure` · 데이터베이스 잠금 · 소스가 살아 있다)
@@ -28,17 +30,26 @@ import { firstOrderKey, orderKeysBetween } from '../block/order-key.ts'
 import { planOrder } from './layout-order.ts'
 import { bumpSchema, isSchemaFailure, lockSchema } from './property.ts'
 import { MAX_PINNED_PROPERTIES } from './limits.ts'
+import {
+  DEFAULT_PAGE_SETTINGS,
+  samePageSettings,
+  type BacklinksMode,
+  type InlineCommentMode,
+  type PageSettings,
+} from './page-settings.ts'
 
 export type RecordLayout = {
   /** 낙관적 잠금 — 머리가 없으면 `'0'`. bigint 라 문자열이다. */
   readonly version: string
+  /** 페이지 설정(3b-1) — 머리가 없으면 기본값. */
+  readonly settings: PageSettings
   /** 숨긴 속성 — 살아 있는 것만 · 스키마 순서. */
   readonly hidden: readonly string[]
   /** 제목 아래에 고정한 속성(3a-1) — 살아 있는 것만 · heading 안의 순서. */
   readonly pinned: readonly string[]
 }
 
-const DEFAULT_LAYOUT: RecordLayout = { version: '0', hidden: [], pinned: [] }
+const DEFAULT_LAYOUT: RecordLayout = { version: '0', settings: DEFAULT_PAGE_SETTINGS, hidden: [], pinned: [] }
 
 
 export type LayoutFailure =
@@ -68,11 +79,26 @@ const fail = (reason: LayoutFailure, currentVersion?: string): LayoutResult =>
  * 들어와도 "숨겼는가"의 질문은 같다 — 부모를 묻지 않는다. soft delete 된 속성의 행은 남되 여기서는 빠진다(되살리면 숨김도 돌아온다).
  */
 export async function readRecordLayout(tx: Tx, dataSourceId: string): Promise<RecordLayout> {
-  const head = await tx.queryMaybe<{ version: string }>(
-    `SELECT version::text AS version FROM page_layout WHERE data_source_id = $1`,
+  const head = await tx.queryMaybe<{
+    version: string
+    backlinks_mode: BacklinksMode
+    inline_comment_mode: InlineCommentMode
+    show_discussions: boolean
+    show_property_icons: boolean
+    full_width: boolean
+  }>(
+    `SELECT version::text AS version, backlinks_mode, inline_comment_mode, show_discussions, show_property_icons, full_width
+       FROM page_layout WHERE data_source_id = $1`,
     [dataSourceId],
   )
   if (head === null) return DEFAULT_LAYOUT
+  const settings: PageSettings = {
+    backlinks: head.backlinks_mode,
+    inlineComments: head.inline_comment_mode,
+    showDiscussions: head.show_discussions,
+    showPropertyIcons: head.show_property_icons,
+    fullWidth: head.full_width,
+  }
   const pinned = await tx.query<{ property_id: string }>(
     `SELECT m.property_id
        FROM layout_module m
@@ -91,7 +117,7 @@ export async function readRecordLayout(tx: Tx, dataSourceId: string): Promise<Re
       ORDER BY p.order_idx, p.id`,
     [dataSourceId],
   )
-  return { version: head.version, hidden: rows.map((r) => r.property_id), pinned: pinned.map((r) => r.property_id) }
+  return { version: head.version, settings, hidden: rows.map((r) => r.property_id), pinned: pinned.map((r) => r.property_id) }
 }
 
 /**
@@ -102,6 +128,7 @@ export async function readRecordLayout(tx: Tx, dataSourceId: string): Promise<Re
  * @param input.hidden 숨길 속성 — 여기 없는 속성은 보인다. 그사이 지워진 속성은 건너뛴다.
  * @param input.pinned 제목 아래에 고정할 속성 — 원하는 순서(3a-1). 주지 않으면 그대로다(단 숨기는 속성은 고정이 풀린다). 그사이 지워진
  *   속성은 건너뛴다. 15개를 넘으면 `too_many_pinned` · 제목이나 숨기는 속성이 있으면 `invalid_layout`.
+ * @param input.settings 페이지 설정 — 준 칸만 바꾼다(3b-1). 검사는 부르는 쪽이 했다(`parsePageSettings`).
  */
 export async function applyRecordLayout(
   ctx: SessionContext,
@@ -111,6 +138,7 @@ export async function applyRecordLayout(
     readonly order: readonly string[]
     readonly hidden: readonly string[]
     readonly pinned?: readonly string[]
+    readonly settings?: Partial<PageSettings>
   },
 ): Promise<LayoutResult> {
   return withCommandTransaction(async (tx) => {
@@ -139,6 +167,8 @@ export async function applyRecordLayout(
     if (pinnedInput !== null && pinnedInput.length > MAX_PINNED_PROPERTIES) return fail('too_many_pinned')
     const pinned = pinnedInput ?? current.pinned.filter((id) => !wanted.has(id))
     const pinChanged = pinned.length !== current.pinned.length || pinned.some((id, i) => id !== current.pinned[i])
+    const settings: PageSettings = { ...current.settings, ...input.settings }
+    const settingsChanged = !samePageSettings(settings, current.settings)
     const now = new Set(current.hidden)
     const hide = [...wanted].filter((id) => !now.has(id))
     const show = [...now].filter((id) => !wanted.has(id))
@@ -146,7 +176,7 @@ export async function applyRecordLayout(
       properties.map((p) => ({ id: p.id, key: p.order_idx })),
       input.order,
     )
-    if (hide.length === 0 && show.length === 0 && moves.length === 0 && !pinChanged) {
+    if (hide.length === 0 && show.length === 0 && moves.length === 0 && !pinChanged && !settingsChanged) {
       return { ok: true, value: { layout: current, changed: false } } as const
     }
 
@@ -192,6 +222,14 @@ export async function applyRecordLayout(
       )
       // 스키마 순서를 고쳤다 — 스키마를 들고 있는 화면의 낙관적 잠금이 이것을 알아야 한다.
       await bumpSchema(tx, dataSourceId)
+    }
+    if (settingsChanged) {
+      await tx.query(
+        `UPDATE page_layout
+            SET backlinks_mode = $2, inline_comment_mode = $3, show_discussions = $4, show_property_icons = $5, full_width = $6
+          WHERE data_source_id = $1`,
+        [dataSourceId, settings.backlinks, settings.inlineComments, settings.showDiscussions, settings.showPropertyIcons, settings.fullWidth],
+      )
     }
     // 방금 만든 머리는 이미 첫 버전(1)이다.
     if (!created) {

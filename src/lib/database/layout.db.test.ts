@@ -13,7 +13,11 @@
  *   ⑧ 제목 아래 고정(3a-1 · F-16-02) — heading 의 property 행 · 자기 순서 · 풀면 행이 지워진다 · 주지 않으면 그대로 · 숨김과 겹치지 않는다
  *      · 제목은 고정하지 않는다 · 15개까지 · 속성을 지우면 풀린다(되살려도 속성 묶음으로) · 행 페이지가 읽는다
  *
+ *   ⑨ 페이지 설정(3b-1 · F-16-09 · F-16-10) — 머리가 없으면 기본값 · 처음 벗어나면 머리가 생긴다 · 준 칸만 바꾼다 · 같으면 쓰지 않는다 ·
+ *      숨김 · 고정과 함께 보내도 서로 건드리지 않는다 · 행 페이지가 읽는다
+ *
  * 반사실(HANDOFF §3.3): 고정을 다시 쓰지 않으면 ⑧ 의 순서가, 상한을 세지 않으면 16개가, 숨김과 겹침을 안 보면 겹침이 실패한다.
+ * 설정을 바뀐 것으로 세지 않으면 ⑨ 의 머리가, 지금 것과 합치지 않으면 ⑨ 의 부분 적용이 실패한다.
  */
 
 import { test, describe, before, after } from 'node:test'
@@ -31,6 +35,7 @@ import { addProperty, deleteProperty, getSchema, restoreProperty } from './prope
 import { createRow } from './row.ts'
 import { applyRecordLayout, readRecordLayout } from './layout.ts'
 import { MAX_PINNED_PROPERTIES } from './limits.ts'
+import { DEFAULT_PAGE_SETTINGS } from './page-settings.ts'
 import { readRowPage } from './row-page.ts'
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'
@@ -96,12 +101,12 @@ describe('① 머리는 lazy 다', () => {
   test('★ 처음에는 표에 아무것도 없고 기본(version 0 · 모두 보임)이다 — 처음 숨길 때 한 벌이 생긴다', async (t) => {
     if (skipReason) return t.skip(skipReason)
     const db = await seeded()
-    assert.deepEqual(await layoutOf(db.dataSourceId), { version: '0', hidden: [], pinned: [] })
+    assert.deepEqual(await layoutOf(db.dataSourceId), { version: '0', settings: DEFAULT_PAGE_SETTINGS, hidden: [], pinned: [] })
     assert.deepEqual(await tables(db.dataSourceId), { heads: 0, tabs: 0, headings: 0, groups: 0, props: 0 })
 
     const applied = unwrap(await applyRecordLayout(fx.owner.ctx, db.dataSourceId, { expectedVersion: '0', order: [], hidden: [db.id('B')] }))
     assert.equal(applied.changed, true)
-    assert.deepEqual(applied.layout, { version: '1', hidden: [db.id('B')], pinned: [] })
+    assert.deepEqual(applied.layout, { version: '1', settings: DEFAULT_PAGE_SETTINGS, hidden: [db.id('B')], pinned: [] })
     assert.deepEqual(await tables(db.dataSourceId), { heads: 1, tabs: 1, headings: 1, groups: 1, props: 1 })
     const rows = await query<{ visible: boolean; order_idx: string | null; parent_kind: string; area: string }>(
       `SELECT m.visible, m.order_idx, g.kind AS parent_kind, m.area
@@ -119,7 +124,7 @@ describe('② sparse', () => {
     const db = await seeded()
     unwrap(await applyRecordLayout(fx.owner.ctx, db.dataSourceId, { expectedVersion: '0', order: [], hidden: [db.id('A'), db.id('C')] }))
     const shown = unwrap(await applyRecordLayout(fx.owner.ctx, db.dataSourceId, { expectedVersion: '1', order: [], hidden: [db.id('C')] }))
-    assert.deepEqual(shown.layout, { version: '2', hidden: [db.id('C')], pinned: [] })
+    assert.deepEqual(shown.layout, { version: '2', settings: DEFAULT_PAGE_SETTINGS, hidden: [db.id('C')], pinned: [] })
     assert.deepEqual(await tables(db.dataSourceId), { heads: 1, tabs: 1, headings: 1, groups: 1, props: 1 })
 
     unwrap(await applyRecordLayout(fx.owner.ctx, db.dataSourceId, { expectedVersion: '2', order: [], hidden: [] }))
@@ -134,12 +139,12 @@ describe('② sparse', () => {
       order: [db.id('A'), db.id('B'), db.id('C')],
       hidden: [],
     }))
-    assert.deepEqual(same, { layout: { version: '0', hidden: [], pinned: [] }, changed: false })
+    assert.deepEqual(same, { layout: { version: '0', settings: DEFAULT_PAGE_SETTINGS, hidden: [], pinned: [] }, changed: false })
     assert.equal((await tables(db.dataSourceId)).heads, 0, '바뀐 것이 없는데 머리가 생겼다')
 
     unwrap(await applyRecordLayout(fx.owner.ctx, db.dataSourceId, { expectedVersion: '0', order: [], hidden: [db.id('A')] }))
     const again = unwrap(await applyRecordLayout(fx.owner.ctx, db.dataSourceId, { expectedVersion: '1', order: [], hidden: [db.id('A')] }))
-    assert.deepEqual(again, { layout: { version: '1', hidden: [db.id('A')], pinned: [] }, changed: false })
+    assert.deepEqual(again, { layout: { version: '1', settings: DEFAULT_PAGE_SETTINGS, hidden: [db.id('A')], pinned: [] }, changed: false })
   })
 })
 
@@ -156,7 +161,7 @@ describe('③ 순서는 스키마 순서다', () => {
       order: [db.id('C'), db.id('A'), db.id('B')],
       hidden: [],
     }))
-    assert.deepEqual(applied.layout, { version: '1', hidden: [], pinned: [] })
+    assert.deepEqual(applied.layout, { version: '1', settings: DEFAULT_PAGE_SETTINGS, hidden: [], pinned: [] })
     assert.deepEqual(await schemaOrder(db.dataSourceId), ['이름', 'C', 'A', 'B'])
 
     const afterSchema = unwrap(await getSchema(fx.owner.ctx, db.dataSourceId))
@@ -178,7 +183,7 @@ describe('④ 낙관적 잠금', () => {
       hidden: [db.id('B')],
     })
     assert.deepEqual(stale, { ok: false, reason: 'layout_conflict', currentVersion: '1' })
-    assert.deepEqual(await layoutOf(db.dataSourceId), { version: '1', hidden: [db.id('A')], pinned: [] })
+    assert.deepEqual(await layoutOf(db.dataSourceId), { version: '1', settings: DEFAULT_PAGE_SETTINGS, hidden: [db.id('A')], pinned: [] })
     assert.deepEqual(await schemaOrder(db.dataSourceId), ['이름', 'A', 'B', 'C'], '거부됐는데 순서가 바뀌었다')
   })
 })
@@ -245,7 +250,7 @@ describe('⑥ 속성의 변화', () => {
       hidden: [elsewhere.id('B'), db.id('C')],
     }))
     assert.deepEqual(applied.layout.hidden, [db.id('C')])
-    assert.deepEqual(await layoutOf(elsewhere.dataSourceId), { version: '0', hidden: [], pinned: [] }, '다른 소스의 레이아웃이 생겼다')
+    assert.deepEqual(await layoutOf(elsewhere.dataSourceId), { version: '0', settings: DEFAULT_PAGE_SETTINGS, hidden: [], pinned: [] }, '다른 소스의 레이아웃이 생겼다')
   })
 
   test('★ 새 속성은 보인다(그룹은 열거하지 않는다 · M6) · 지운 속성의 숨김은 빠졌다가 되살리면 돌아온다', async (t) => {
@@ -365,5 +370,42 @@ describe('⑧ 제목 아래 고정 (3a-1 · F-16-02)', () => {
     const page = await readRowPage(fx.owner.ctx, db.rowId)
     assert.deepEqual(page?.pinned, [db.id('C'), db.id('A')])
     assert.ok(page?.columns.some((c) => c.propertyId === db.id('C') && c.visible))
+  })
+})
+
+describe('⑨ 페이지 설정 (3b-1 · F-16-09 · F-16-10)', () => {
+  test('★ 머리가 없으면 기본값 — 설정만 바꿔도 머리가 생긴다(version 1) · 준 칸만 바꾸고 같으면 쓰지 않는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const db = await seeded()
+    assert.deepEqual((await layoutOf(db.dataSourceId)).settings, DEFAULT_PAGE_SETTINGS)
+
+    const wide = unwrap(await applyRecordLayout(fx.owner.ctx, db.dataSourceId, { expectedVersion: '0', order: [], hidden: [], settings: { fullWidth: true } }))
+    assert.deepEqual([wide.changed, wide.layout.version, wide.layout.settings], [true, '1', { ...DEFAULT_PAGE_SETTINGS, fullWidth: true }])
+    assert.equal((await tables(db.dataSourceId)).heads, 1, '설정만 바꿔도 기본에서 벗어난 것이다 — 머리가 생긴다')
+
+    const off = unwrap(await applyRecordLayout(fx.owner.ctx, db.dataSourceId, { expectedVersion: '1', order: [], hidden: [], settings: { backlinks: 'off' } }))
+    assert.deepEqual([off.layout.version, off.layout.settings], ['2', { ...DEFAULT_PAGE_SETTINGS, fullWidth: true, backlinks: 'off' }], '준 칸만 바꾼다 — 전체 폭은 남는다')
+
+    const same = unwrap(await applyRecordLayout(fx.owner.ctx, db.dataSourceId, { expectedVersion: '2', order: [], hidden: [], settings: { backlinks: 'off', fullWidth: true } }))
+    assert.deepEqual([same.changed, same.layout.version], [false, '2'])
+  })
+
+  test('★ 숨김 · 고정과 함께 보내도 서로 건드리지 않는다 — 설정을 주지 않으면 그대로 · 행 페이지가 읽는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const db = await seeded()
+    const all = {
+      backlinks: 'always',
+      inlineComments: 'minimal',
+      showDiscussions: false,
+      showPropertyIcons: false,
+      fullWidth: true,
+    } as const
+    const first = unwrap(await applyRecordLayout(fx.owner.ctx, db.dataSourceId, {
+      expectedVersion: '0', order: [], hidden: [db.id('B')], pinned: [db.id('A')], settings: all,
+    }))
+    assert.deepEqual([first.layout.settings, first.layout.hidden, first.layout.pinned], [all, [db.id('B')], [db.id('A')]])
+    const omitted = unwrap(await applyRecordLayout(fx.owner.ctx, db.dataSourceId, { expectedVersion: '1', order: [], hidden: [] }))
+    assert.deepEqual([omitted.layout.settings, omitted.layout.hidden, omitted.layout.pinned], [all, [], [db.id('A')]], '설정을 주지 않으면 그대로다')
+    assert.deepEqual((await readRowPage(fx.owner.ctx, db.rowId))?.settings, all)
   })
 })
