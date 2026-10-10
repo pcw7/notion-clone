@@ -14580,8 +14580,12 @@ async function main() {
       await clickSelector('[data-testid="db-column-button"]')
       const both = await waitFor(`(() => { const kinds = [...document.querySelectorAll('${EDITOR} [data-testid="db-button-action"]')].map((li) => li.dataset.kind)
         return kinds.join(',') === 'add,edit' && (document.querySelector('${EDITOR}')?.textContent ?? '').includes('다른 표에 행 추가') })()`, 8000)
-      await clickSelector(`${EDITOR} [data-testid="db-button-action"]:nth-child(2) [data-testid="db-button-action-remove"]`)
-      await waitFor(`document.querySelectorAll('${EDITOR} [data-testid="db-button-action"]').length === 1`, 3000)
+      // 줄어든 것을 보고 저장한다 — 전체 판의 부하에서 첫 누름이 닿지 않은 채 저장해 둘 다 남은 적이 있다(#265)
+      let removed = false
+      for (let i = 0; i < 3 && !removed; i += 1) {
+        await clickSelector(`${EDITOR} [data-testid="db-button-action"]:nth-child(2) [data-testid="db-button-action-remove"]`)
+        removed = await waitFor(`document.querySelectorAll('${EDITOR} [data-testid="db-button-action"]').length === 1`, 3000)
+      }
       await clickSelector(`${EDITOR} [data-testid="db-button-save"]`)
       await waitFor(`!document.querySelector('${EDITOR}')`, 8000)
       const kept = await savedActions()

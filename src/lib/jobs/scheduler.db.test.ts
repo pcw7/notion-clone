@@ -8,6 +8,7 @@
  *   ③ 실패하면 물러난다 — 1분 · 2분 … · 다섯 번째에 멈춘다(`dead_at` · 행은 남는다) · 죽은 일은 돌지 않는다
  *   ④ 임대 — 한 일은 한 워커만 돈다(동시에 돌려도) · 임대가 지난 일(죽은 워커)은 다시 가져간다
  *   ⑤ 주기 일 넣기는 멱등이다
+ *   ⑥ 다음 일의 시각 — 워커가 그때까지만 쉰다(5b-2) · 잡힌 일은 임대가 끝나는 때 · 죽은 일은 보지 않는다
  *
  * 검사는 `version_gc` 종류에 일을 바꿔 끼운다(`handlers`) — 진짜 GC 는 다른 검사의 버전 · 휴지통을 건드린다. 검사마다 표를 비운다
  * (이 표를 쓰는 검사는 이 파일뿐이다).
@@ -21,7 +22,7 @@ import assert from 'node:assert/strict'
 import { probeDatabase } from '../testing/db-fixtures.ts'
 import { query } from '../db/pool.ts'
 import { withTransaction } from '../db/tx.ts'
-import { enqueueJob, ensureRecurringJobs, MAX_ATTEMPTS, RECURRING, runDueJobs, type JobHandler } from './scheduler.ts'
+import { enqueueJob, ensureRecurringJobs, MAX_ATTEMPTS, nextDueAt, RECURRING, runDueJobs, type JobHandler } from './scheduler.ts'
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'
 
@@ -145,6 +146,21 @@ describe('⑤ 주기 일 넣기', () => {
     if (skipReason) return t.skip(skipReason)
     assert.equal(await ensureRecurringJobs(NOW), RECURRING.length)
     assert.equal(await ensureRecurringJobs(at(5)), 0)
-    assert.deepEqual((await jobs()).map((j) => j.dedupe_key).sort(), ['data_retention', 'reminder_fire', 'trash_hard_delete', 'trash_purge', 'version_gc', 'webhook_deliver'])
+    assert.deepEqual((await jobs()).map((j) => j.dedupe_key).sort(), ['automation_dispatch', 'data_retention', 'reminder_fire', 'trash_hard_delete', 'trash_purge', 'version_gc', 'webhook_deliver'])
+  })
+})
+
+describe('⑥ 다음 일의 시각', () => {
+  test('★ 가장 이른 일의 시각 — 잡힌 일은 임대가 끝나는 때 · 죽은 일은 보지 않는다 · 일이 없으면 null', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    assert.equal(await nextDueAt(), null, '일이 없다')
+    await put(at(60), 'late')
+    await put(at(10), 'soon')
+    assert.deepEqual(await nextDueAt(), at(10))
+    await put(at(-5), 'dead')
+    await query(`UPDATE scheduled_job SET dead_at = now() WHERE dedupe_key = 'dead'`)
+    assert.deepEqual(await nextDueAt(), at(10), '죽은 일은 보지 않는다')
+    await query(`UPDATE scheduled_job SET locked_until = $1 WHERE dedupe_key = 'soon'`, [at(30)])
+    assert.deepEqual(await nextDueAt(), at(30), '잡힌 일은 임대가 끝나야 다시 가져간다')
   })
 })

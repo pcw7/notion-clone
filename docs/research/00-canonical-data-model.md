@@ -3408,6 +3408,43 @@ CREATE TABLE external_sync_source (            -- 구 external_binding. 정본 �
 >    `manual_click` 은 이 조각에서 받지 않는다. 트리거가 가리키는 속성이 지워지면 그 트리거는 맞지 않는다(5b-2 가 끄고 까닭을 남긴다).
 > ④ **액션** — 등록부 그대로(`edit_property` 는 **트리거된 행** · `add_page_to`). 저장할 때 버튼과 같은 검사를 지난다(그 표의 스키마 · 대상 표).
 > ⑤ 템플릿 행은 트리거하지 않는다(⑪ 과 같은 까닭 — 5b-2).
+>
+> **받기 · 실행 — 5b-2 에서 정한 것** ⟨마이그레이션 0080⟩
+>
+> ```sql
+> CREATE TABLE automation_event (
+>   id            uuid PRIMARY KEY,
+>   automation_id uuid NOT NULL REFERENCES automation(id) ON DELETE CASCADE,
+>   page_id       uuid NOT NULL REFERENCES block(id) ON DELETE CASCADE,   -- 트리거된 행
+>   page_added    boolean NOT NULL DEFAULT false,
+>   before        jsonb NOT NULL DEFAULT '{}',   -- 감시하는 속성의 창 전 값 { property_id: 셀 값 | null }
+>   window_end    timestamptz NOT NULL,           -- 첫 일 + 3초
+>   status        text NOT NULL CHECK (status IN ('collecting','dispatching')),
+>   locked_until  timestamptz NULL,               -- dispatching 일 때만(임대)
+>   created_at    timestamptz NOT NULL DEFAULT now()
+> );
+> CREATE UNIQUE INDEX ux_automation_event_collecting ON automation_event (automation_id, page_id) WHERE status = 'collecting';
+> ```
+>
+> ⓐ **받는 곳 — 쓰기와 같은 트랜잭션**(AU2 를 4e-2 의 방식으로): 행 만들기(`createRowIn` → `page_added`)와 셀 쓰기(`updateCellsIn` → 바뀐
+>    속성마다 `property_edited`). 그 표에 켜진 DB automation 이 그 일을 볼 때만 쌓는다(질의 하나 — 없으면 끝). 활동 기록(5분 접기)은
+>    쓰지 않는다 — 접힌 편집이 트리거를 잃는다. relation 연결 · 행 제목이 아닌 본문 편집 · 수식 · 롤업 재계산은 트리거하지 않는다(08 *"사용자
+>    편집에 의한 직접 변경만"* — 셀 속성만 · §7).
+> ⓑ **3초 창 · 순변화**(08 *"Database automations work over a three second window"*) — automation · 행마다 모으는 묶음 하나. 첫 일에서
+>    감시하는 속성의 **창 전 값**(`before`)을 붙들고 창 안의 일은 그것을 덮지 않는다(가장 이른 값이 남는다). 창이 끝나면 그 속성의 지금
+>    값과 비교해 **바뀌었고**(셀이 없는 것과 빈 값의 셀은 같다) 조건이 지금 값에 맞을 때만 실행한다 — 창 안에서 되돌리면 실행하지 않는다. `page_added` 는 행이 아직
+>    살아 있으면. 창이 끝난 뒤 **워커의 다음 판**에 실행된다 — 판은 5초마다(남았으면 곧바로) · 워커는 다음 일의 시각까지만 쉰다(길어도 `WORKER_INTERVAL_MS`).
+> ⓒ **자동화는 자동화를 깨우지 않는다**(08 F-08-10) — 쓰기는 `origin` 을 싣는다(`user` · `button` · `automation`). `automation` 이 쓴 것은
+>    받지 않는다. **버튼이 쓴 것은 받는다**(08 *"버튼 클릭으로 페이지가 생성되면 automation 은 발동한다"*). 셀의 `filled_by` 는 둘 다
+>    `automation` 이다(누가 채웠나 — 사람이 아니다). DB automation 의 실행은 origin `automation` · depth 1.
+> ⓓ **실행 — 공용 스케줄러의 일 `automation_dispatch`**: 창이 끝난 묶음을 잡아(`dispatching` · 임대 · `FOR UPDATE SKIP LOCKED`) 하나씩 —
+>    위임 컨텍스트를 받는다(못 받으면 automation 을 끈다 — `creator_left`) · automation 이 켜져 있고 행이 살아 있고 템플릿이 아니고
+>    데이터베이스가 잠기지 않았는지(08 *"DB 가 잠겨 있으면 트리거하지 않는다"*) · 트리거의 속성이 아직 살아 있는지(아니면 끈다 —
+>    `trigger_broken`) · 순변화와 조건(필터 컴파일러가 그 행 하나에 묻는다) → 맞는 트리거가 하나라도 있으면(`any`) 엔진으로 실행한다(멱등 키
+>    `event:{묶음 id}`). 끝나면 묶음을 지운다 — 기록은 실행 기록이 남는다.
+> ⓔ **실패가 이어지면 끈다** — 같은 automation 의 최근 실행 셋이 모두 `failed` 면 `failures` 로 끈다(사람이 다시 켠다). 권한 · 잠금으로 건너뛴
+>    것(`partial`)은 실패가 아니다.
+> ⓕ 한 판에 묶음 50개 — 큰 가져오기는 여러 판에 나뉜다.
 
 ---
 

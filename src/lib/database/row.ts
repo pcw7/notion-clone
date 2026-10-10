@@ -68,6 +68,7 @@ import {
   type MvpPropertyType,
 } from './property-types.ts'
 import { issueUniqueSeq } from './unique-id.ts'
+import { routeCellsEdited, routeRowAdded, type WriteOrigin } from '../automation/trigger-route.ts'
 
 /** 한 번에 읽는 행 수. 뷰의 "더 보기"는 W8-b 다. */
 export const DEFAULT_ROW_LIMIT = 50
@@ -331,6 +332,8 @@ export type CreateRowInput = {
   readonly cells?: readonly RowCell[]
   /** 누가 채웠나 — 자동화의 `add_page_to` 가 `automation` 을 준다(5a-2). 없으면 사람. */
   readonly filledBy?: CellFiller
+  /** 쓰기의 출처 — DB automation 이 받을지 정한다(5b-2 · 자동화가 쓴 것은 받지 않는다). 없으면 사람. */
+  readonly origin?: WriteOrigin
   /** 주면 낙관적 잠금이 된다 — 낡은 스키마로 쓰는 것을 막는다. */
   readonly expectedSchemaVersion?: string
 }
@@ -442,6 +445,8 @@ export async function createRowIn(
     if (!isTemplate) await issueUniqueSeq(tx, dataSourceId, rowId)
     // 활동 — 행을 만들었다(4d-2). 템플릿은 행이 아니다(표에 서지 않는다)
     if (!isTemplate) await recordActivity(tx, ctx, { pageId: rowId, type: 'page.created' })
+    // DB automation — 행이 생겼다(5b-2 · 같은 트랜잭션 · 템플릿은 받지 않는다)
+    if (!isTemplate) await routeRowAdded(tx, { dataSourceId, pageId: rowId, origin: input.origin ?? 'user' })
 
     if (prepared.length > 0) {
       await writeCells(tx, rowId, prepared, input.filledBy)
@@ -460,6 +465,8 @@ export type UpdateCellsInput = {
   readonly cells: readonly RowCell[]
   /** 누가 채웠나 — 자동화의 액션이 `automation` 을 준다(5a-1). 없으면 사람. */
   readonly filledBy?: CellFiller
+  /** 쓰기의 출처 — DB automation 이 받을지 정한다(5b-2 · 자동화가 쓴 것은 받지 않는다). 없으면 사람. */
+  readonly origin?: WriteOrigin
   readonly expectedSchemaVersion?: string
   /**
    * 클라이언트가 읽었을 때의 `block.version`.
@@ -524,6 +531,13 @@ export async function updateCellsIn(
     if (isRowFailure(prepared)) return prepared
 
     if (prepared.length > 0) {
+      // DB automation — 셀이 바뀐다(5b-2). **쓰기 전에** — 창 전 값을 붙든다
+      await routeCellsEdited(tx, {
+        dataSourceId: row.data_source_id,
+        pageId: rowId,
+        propertyIds: prepared.map((cell) => cell.propertyId),
+        origin: input.origin ?? 'user',
+      })
       await writeCells(tx, rowId, prepared, input.filledBy)
       await projectTitle(tx, rowId, prepared, gate.titlePropertyId)
       await bumpRow(tx, ctx, rowId)

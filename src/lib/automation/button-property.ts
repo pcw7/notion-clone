@@ -114,6 +114,7 @@ export async function pressButton(
     idempotencyKey: `button:${idempotencyKey}`,
     context: { triggerPageId: rowId },
     actions: prepared.value.actions,
+    kind: 'button',
   })
   if (outcome === null) return fail('invalid_key')
   return { ok: true, value: outcome } as const
