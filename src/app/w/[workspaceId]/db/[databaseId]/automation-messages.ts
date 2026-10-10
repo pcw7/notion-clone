@@ -84,6 +84,7 @@ const STEP_REASON: Record<string, string> = {
   readonly_property: '고칠 수 없는 속성',
   invalid_value: '값이 속성에 맞지 않음',
   unknown_template: '템플릿이 사라짐',
+  plan: '요금제가 허락하지 않음',
 }
 
 /** 단계 한 줄 — "1. 값 바꾸기 — 건너뜀(권한 없음)". */
