@@ -1,11 +1,20 @@
 /**
- * DB automation 의 글자 (5b-3a · F-08-09)
+ * DB automation 의 글자 (5b-3a · 5b-3b · F-08-09)
  */
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { actionSummary, disabledMessage, runRowLabel, runStatusLabel, stepLine, subjectParticle, triggerSummary } from './automation-messages.ts'
+import {
+  actionSummary,
+  automationProblemMessage,
+  disabledMessage,
+  runRowLabel,
+  runStatusLabel,
+  stepLine,
+  subjectParticle,
+  triggerSummary,
+} from './automation-messages.ts'
 
 const names = {
   property: (id: string) => ({ qty: '수량', state: '상태' })[id] ?? null,
@@ -58,4 +67,13 @@ test('★ 트리거된 항목 — 제목 · 제목 없음 · 볼 수 없음 · �
   assert.deepEqual(runRowLabel('c', titles), { text: '볼 수 없는 항목', linkable: false })
   assert.deepEqual(runRowLabel('d', titles), { text: '지워진 항목', linkable: false })
   assert.deepEqual(runRowLabel(null, titles), { text: '지워진 항목', linkable: false })
+})
+
+test('★ 저장 거절 — 이름 · 상한 · 몇 번째 트리거의 무엇 · 액션과 모르는 까닭은 부르는 쪽에', () => {
+  assert.equal(automationProblemMessage('invalid_name', undefined, undefined), '이름은 1~100자로 넣으세요.')
+  assert.equal(automationProblemMessage('too_many', undefined, undefined), '한 표의 자동화는 50개까지입니다.')
+  assert.equal(automationProblemMessage('invalid_trigger', 'invalid_condition', 1), '2번째 트리거: 조건이 그 속성에 맞지 않습니다.')
+  assert.equal(automationProblemMessage('invalid_trigger', 'no_triggers', undefined), '트리거를 하나 이상 넣으세요.')
+  assert.equal(automationProblemMessage('invalid_action', 'invalid_value', 0), null)
+  assert.equal(automationProblemMessage('forbidden', undefined, undefined), null)
 })
