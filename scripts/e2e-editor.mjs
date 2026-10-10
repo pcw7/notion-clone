@@ -75,6 +75,8 @@ const { createDiscussion } = await import(new URL('../src/lib/comment/discussion
 
 const PORT = Number(process.env.E2E_PORT ?? 3100)
 const COLLAB_PORT = Number(process.env.E2E_COLLAB_PORT ?? 3101)
+// 페이지 웹훅의 받는 서버(4e-3) — 앱이 이 host:port 로만 바깥 요청의 검사를 비켜 간다(`OUTBOUND_ALLOW_HOSTS` · net/outbound.ts)
+const HOOK_PORT = Number(process.env.E2E_HOOK_PORT ?? 3102)
 const BASE = `http://localhost:${PORT}`
 const COLLAB_URL = `ws://localhost:${COLLAB_PORT}`
 const HEADFUL = process.env.E2E_HEADFUL === '1'
@@ -174,7 +176,11 @@ function startServer() {
   const server = spawn(
     process.execPath,
     [join(ROOT, 'node_modules', 'next', 'dist', 'bin', 'next'), 'start', '-p', String(PORT)],
-    { cwd: ROOT, env: { ...process.env, MAIL_TRANSPORT: 'console', COLLAB_URL }, stdio: ['ignore', 'pipe', 'pipe'] },
+    {
+      cwd: ROOT,
+      env: { ...process.env, MAIL_TRANSPORT: 'console', COLLAB_URL, OUTBOUND_ALLOW_HOSTS: `127.0.0.1:${HOOK_PORT}` },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    },
   )
   const collect = (chunk) => {
     const text = chunk.toString('utf8')
@@ -14363,6 +14369,108 @@ async function main() {
       await waitFor(`!!document.querySelector('[data-testid="page-updates-open"]')`, 15000)
       await openUpdates()
       check('★ 활동이 없으면 "아직 활동이 없습니다"', await waitFor(`!!document.querySelector('[data-testid="page-updates-empty"]')`, 8000))
+    }
+
+    if (sectionIf('페이지 웹훅 — 화면 (4e-3 · F-11-19)')) {
+      // Updates 패널 아래의 웹훅 칸 — 걸기(거절의 까닭 · 힌트만 보인다) · 활동을 모아 받는 서버로(워커 대신 이 판이 보내기를 부른다) ·
+      // 마지막 배달 · 멈추기 · 다시 켜기 · 지우기(한 번 더 묻는다). 받는 서버는 127.0.0.1:HOOK_PORT — 앱은 그 주소만 검사를 비켜 간다.
+      // 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
+      const { runWebhookDelivery } = await import(new URL('../src/lib/notification/webhook-delivery.ts', import.meta.url).href)
+      const { createServer } = await import('node:http')
+      const received = []
+      const receiver = createServer((req, res) => {
+        let body = ''
+        req.on('data', (c) => (body += c))
+        req.on('end', () => {
+          received.push({ path: req.url, body })
+          res.writeHead(200).end('ok')
+        })
+      })
+      await new Promise((r) => receiver.listen(HOOK_PORT, '127.0.0.1', r))
+      const savedAllow = process.env.OUTBOUND_ALLOW_HOSTS
+      process.env.OUTBOUND_ALLOW_HOSTS = `127.0.0.1:${HOOK_PORT}` // 보내기는 이 판에서 부른다
+      try {
+        const stamp = Date.now()
+        const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
+        const page = (await (await fetch(pagesUrl, { method: 'POST', headers: authed, body: JSON.stringify({ title: `웹훅${stamp}` }) })).json()).page.id
+        const SECTION = '[data-testid="page-webhooks"]'
+        const ITEM = `${SECTION} [data-testid="page-webhook"]`
+        const INPUT = `${SECTION} [data-testid="page-webhook-url"]`
+        const itemText = () => evaluate(`document.querySelector('${ITEM}')?.textContent ?? null`)
+        const openPanel = async () => {
+          for (let tries = 0; tries < 6; tries += 1) {
+            await clickSelector('[data-testid="page-updates-open"]')
+            if (await waitFor(`!!document.querySelector('${SECTION}')`, 3000)) return true
+            if (await evaluate(`!!document.querySelector('[data-testid="page-updates"]')`)) await key('Escape')
+          }
+          return false
+        }
+        const connect = async (url) => {
+          for (let i = 0; i < 6; i += 1) {
+            await evaluate(`(() => { const el = document.querySelector('${INPUT}'); el?.focus(); el?.select() })()`)
+            await typeText(url)
+            if ((await evaluate(`document.querySelector('${INPUT}')?.value ?? null`)) === url) break
+            await sleep(300)
+          }
+          await clickSelector(`${SECTION} [data-testid="page-webhook-add"]`)
+        }
+
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+        await waitFor(`!!document.querySelector('[data-testid="page-updates-open"]')`, 15000)
+        check('★ 전체 권한이면 Updates 패널 아래에 웹훅 칸이 선다 — 무엇이 나가는지 알린다',
+          (await openPanel()) && (await evaluate(`(document.querySelector('${SECTION}')?.textContent ?? '').includes('이 주소로 나갑니다')`)))
+
+        await connect('http://hooks.example.com/x')
+        check('★ https 가 아니면 까닭을 말하고 걸지 않는다',
+          await waitFor(`(document.querySelector('${SECTION} [data-testid="page-webhook-error"]')?.textContent ?? '') === 'https 주소만 받습니다.'
+            && !document.querySelector('${ITEM}')`, 8000),
+          String(await evaluate(`document.querySelector('${SECTION}')?.textContent ?? '(없음)'`)))
+
+        const hookPath = `/hook/${stamp}`
+        await connect(`http://127.0.0.1:${HOOK_PORT}${hookPath}`)
+        check('★ 걸면 힌트 · 켜짐 · 아직 보낸 적 없음 — 원문 주소는 화면에 없다',
+          await waitFor(`(() => { const t = document.querySelector('${ITEM}')?.textContent ?? ''
+            return t.includes('127.0.0.1:${HOOK_PORT}/…${String(stamp).slice(-4)}') && t.includes('켜짐') && t.includes('아직 보낸 적 없음')
+              && !(document.body?.textContent ?? '').includes('${hookPath}')
+              && document.querySelector('${INPUT}')?.value === '' })()`, 8000),
+          String(await itemText()))
+
+        // 활동 → 받는 서버(5분 창이 지난 시각으로 이 판이 보내기를 부른다)
+        const renamed = await fetch(`${pagesUrl}/${page}`, { method: 'PATCH', headers: authed, body: JSON.stringify({ title: `바꾼웹훅${stamp}` }) })
+        const outcome = await runWebhookDelivery(new Date(Date.now() + 6 * 60_000), { workspaces: [workspaceId] })
+        const got = received.find((r) => r.path === hookPath)
+        const payload = got === undefined ? null : JSON.parse(got.body)
+        check('★ 활동을 모아 받는 서버로 보낸다 — 지금 제목 · 편집 · 배달 id',
+          renamed.ok && payload !== null && payload.text.includes(`‘바꾼웹훅${stamp}’`) && payload.text.includes('편집 1')
+            && typeof payload.notion_clone?.delivery_id === 'string',
+          JSON.stringify([outcome, payload?.text ?? null]))
+
+        await key('Escape')
+        await openPanel()
+        check('★ 다시 열면 마지막 배달이 "보냄 · 오늘 …"',
+          await waitFor(`(document.querySelector('${ITEM} [data-testid="page-webhook-last"]')?.textContent ?? '').startsWith('보냄 · 오늘 ')`, 8000),
+          String(await itemText()))
+
+        await clickSelector(`${ITEM} [data-testid="page-webhook-toggle"]`)
+        check('★ 멈추기 — 상태가 멈춤 · 단추는 다시 켜기',
+          await waitFor(`document.querySelector('${ITEM}')?.dataset.state === 'manual'
+            && document.querySelector('${ITEM} [data-testid="page-webhook-toggle"]')?.textContent === '다시 켜기'`, 8000),
+          String(await itemText()))
+        await clickSelector(`${ITEM} [data-testid="page-webhook-toggle"]`)
+        check('다시 켜기 — 켜짐',
+          await waitFor(`document.querySelector('${ITEM}')?.dataset.state === 'on'`, 8000), String(await itemText()))
+
+        await clickSelector(`${ITEM} [data-testid="page-webhook-remove"]`)
+        const asked = await waitFor(`!!document.querySelector('${ITEM} [data-testid="page-webhook-remove-confirm"]') && !!document.querySelector('${ITEM}')`, 5000)
+        await clickSelector(`${ITEM} [data-testid="page-webhook-remove-confirm"]`)
+        check('★ 지우기는 한 번 더 묻고 · 지우면 목록에서 사라진다',
+          asked && (await waitFor(`!document.querySelector('${ITEM}')`, 8000)), String(await itemText()))
+      } finally {
+        if (savedAllow === undefined) delete process.env.OUTBOUND_ALLOW_HOSTS
+        else process.env.OUTBOUND_ALLOW_HOSTS = savedAllow
+        receiver.closeAllConnections()
+        await new Promise((r) => receiver.close(() => r()))
+      }
     }
 
     if (sectionIf('개인 필터 · 정렬 — 화면 (2h-2 · F-04-17)')) {
