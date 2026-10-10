@@ -11,12 +11,12 @@
  * F-03-17 엣지 케이스: *"권한 없는 행이 필터 결과에 포함 → **건수조차 노출하면
  * 안 된다** → 권한 술어를 필터보다 먼저 적용."*
  *
- * 우리 구조에서는 권한이 **data_source 단위**다 — 행의 `perm_scope_id` 는 컨테이너
- * 블록에서 물려받으므로 한 표의 행은 전부 같은 권한을 갖는다. 그래서 게이트가
- * 질의 앞에 있고(`openDataSource`), 통과하지 못하면 SQL 을 아예 돌리지 않는다.
+ * 데이터베이스를 볼 수 있으면 모든 행이다 — 행의 `perm_scope_id` 는 컨테이너 블록에서 물려받는다. 게이트가 질의 앞에 있고,
+ * 통과하지 못하면 SQL 을 아예 돌리지 않는다.
  *
- * 행마다 권한이 달라지는 것은 `page_access_rule`(person property 기반)인데 그건
- * Phase 0 밖이고, 판결 X-8 이 "스코프 필터에 걸리지 않는 알려진 구멍"으로 남겼다.
+ * "만들기만"(6f-2b-1 — `create_child` 는 있고 `view` 는 없다)인 사람은 표를 열지만 **자기가 열 수 있는 행만** 본다 — 행 술어
+ * (`row-access.ts` 의 `restrictedRowsSql` — 행에 따로 준 부여 · 만든 사람 규칙)가 필터와 같은 WHERE 에 들어간다. 보드 · 캘린더 ·
+ * 열 집계도 같은 술어다.
  *
  * ──────────────────────────────────────────────────────────────────────
  * OFFSET 을 쓰지 않는다
@@ -33,7 +33,6 @@
 
 import type { SessionContext } from '../auth/session-context.ts'
 import { withReadTransaction, type Tx } from '../db/tx.ts'
-import { can } from '../permissions/levels.ts'
 import { effectiveCaps } from '../permissions/effective.ts'
 import { plainTitleOf } from '../block/page.ts'
 import { readPageIcon, type PageIcon } from '../block/page-icon.ts'
@@ -50,6 +49,7 @@ import {
 } from './filter.ts'
 import { refreshDerivedValues } from './derived-values.ts'
 import { compileSearch } from './search.ts'
+import { restrictedRowsSql, rowsAccessIn } from './row-access.ts'
 // 상수는 화면과 나눠 쓴다(`limits.ts` 머리말). 기존 import 경로를 깨지 않게 다시 내보낸다.
 import { DEFAULT_QUERY_LIMIT, MAX_QUERY_LIMIT, MAX_QUERY_PAGINATION } from './limits.ts'
 
@@ -165,15 +165,15 @@ export async function queryRows(
       [dataSourceId, ctx.workspaceId],
     )
     if (ds === null) return { ok: false, reason: 'not_found' } as const
-    if (!can(await effectiveCaps(tx, ctx, ds.container_id), 'view')) {
-      // 못 보는 사람에게는 존재를 알리지 않는다.
-      return { ok: false, reason: 'not_found' } as const
-    }
+    // 못 보는 사람에게는 존재를 알리지 않는다. "만들기만" 이면 자기가 열 수 있는 행만(6f-2b-1).
+    const access = await rowsAccessIn(tx, ctx, await effectiveCaps(tx, ctx, ds.container_id))
+    if (access === null) return { ok: false, reason: 'not_found' } as const
 
     const types = await readPropertyTypes(tx, dataSourceId)
 
     // ── ② 컴파일. `$1` 은 dataSourceId 가 쓰므로 2번부터 발급한다 ──
     const params = new ParamBag(2)
+    const accessSql = restrictedRowsSql(access, params)
     const filterSql = compileFilter(input.filter ?? null, types, params)
     const compiledSort = compileSorts(sorts, types, params)
 
@@ -191,6 +191,7 @@ export async function queryRows(
       'p.data_source_id = $1',
       'p.is_template = false', // 불변식 R1
       "b.lifecycle = 'live'",
+      accessSql, // 권한이 필터보다 먼저다(F-03-17)
       filterSql,
       searchSql,
       treeSql,

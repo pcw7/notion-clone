@@ -138,6 +138,10 @@ type DataSourceGate = {
  * 셀 쓰기는 **`edit_content`** 를 묻는다. 스키마 변경(`edit_structure`)과 다른
  * capability 이고, 정본 §3.3 의 database 매트릭스가 그 둘을 갈라 놓은 이유가
  * "값은 고치지만 컬럼은 못 고치는 사람"이다(`property.ts` 머리말 참조).
+ *
+ * **행을 더하는 문(`create_child`)은 볼 수 없어도 연다**(6f-2b-1) — "만들기만"(`create` 레벨)은 데이터베이스를 못 보면서 행을 더한다
+ * (06 F-06-10). 돌려주는 것은 스키마뿐이고, 만든 행을 다시 보는 것은 그 행의 판정(만든 사람 규칙)이다. 다른 문은 보는 것이 먼저다.
+ * 셀 쓰기는 이 문이 아니라 그 행의 권한으로 묻는다(`openRowCells`).
  */
 export async function openDataSource(
   tx: Tx,
@@ -145,21 +149,51 @@ export async function openDataSource(
   dataSourceId: string,
   need: 'view' | 'edit_content' | 'create_child' | 'edit_structure',
 ): Promise<DataSourceGate | RowResult<never>> {
-  const ds = await tx.queryMaybe<{ id: string; container_id: string; schema_version: string }>(
+  const ds = await loadLiveDataSource(tx, ctx, dataSourceId)
+  if (ds === null) return { ok: false, reason: 'not_found' } as const
+
+  const caps = await effectiveCaps(tx, ctx, ds.container_id)
+  if (need === 'create_child') {
+    if (!can(caps, 'create_child')) return { ok: false, reason: can(caps, 'view') ? 'forbidden' : 'not_found' } as const
+  } else {
+    if (!can(caps, 'view')) return { ok: false, reason: 'not_found' } as const
+    if (need !== 'view' && !can(caps, need)) return { ok: false, reason: 'forbidden' } as const
+  }
+  // 이 문은 행(데이터)과 템플릿(구조)이 함께 쓴다 — 데이터베이스 잠금은 **구조를 여는 쪽만** 막는다(7f-2). 행 · 셀은 그대로다.
+  if (need === 'edit_structure' && (await isLocked(tx, ds.container_id))) return { ok: false, reason: 'locked' } as const
+
+  return readSchemaGate(tx, dataSourceId, ds)
+}
+
+/**
+ * 셀을 쓰는 문 — **그 행의 권한으로 묻는다**(6f-2b-1). 셀은 그 행의 것이다. 행은 데이터베이스에서 상속하므로 보통은 데이터베이스와
+ * 같은 답이고, 행 단위 규칙(만든 사람 → 편집) · 행에 따로 준 부여가 있으면 그 행의 답이다 — "만들기만 + 만든 사람 → 편집" 이 자기
+ * 행의 칸을 고치는 길이다. 못 보면 not_found · 보지만 못 고치면 forbidden.
+ */
+async function openRowCells(tx: Tx, ctx: SessionContext, rowId: string, dataSourceId: string): Promise<DataSourceGate | RowResult<never>> {
+  const ds = await loadLiveDataSource(tx, ctx, dataSourceId)
+  if (ds === null) return { ok: false, reason: 'not_found' } as const
+  const caps = await effectiveCaps(tx, ctx, rowId)
+  if (!can(caps, 'view')) return { ok: false, reason: 'not_found' } as const
+  if (!can(caps, 'edit_content')) return { ok: false, reason: 'forbidden' } as const
+  return readSchemaGate(tx, dataSourceId, ds)
+}
+
+type LiveDataSource = { id: string; container_id: string; schema_version: string }
+
+/** 이 워크스페이스의 살아 있는 data source(그 데이터베이스도 살아 있다). */
+async function loadLiveDataSource(tx: Tx, ctx: SessionContext, dataSourceId: string): Promise<LiveDataSource | null> {
+  return tx.queryMaybe<LiveDataSource>(
     `SELECT ds.id, ds.owner_database_id AS container_id, ds.schema_version
        FROM data_source ds
        JOIN block b ON b.id = ds.owner_database_id
       WHERE ds.id = $1 AND b.workspace_id = $2 AND b.lifecycle = 'live' AND ds.lifecycle = 'live'`,
     [dataSourceId, ctx.workspaceId],
   )
-  if (ds === null) return { ok: false, reason: 'not_found' } as const
+}
 
-  const caps = await effectiveCaps(tx, ctx, ds.container_id)
-  if (!can(caps, 'view')) return { ok: false, reason: 'not_found' } as const
-  if (need !== 'view' && !can(caps, need)) return { ok: false, reason: 'forbidden' } as const
-  // 이 문은 행(데이터)과 템플릿(구조)이 함께 쓴다 — 데이터베이스 잠금은 **구조를 여는 쪽만** 막는다(7f-2). 행 · 셀은 그대로다.
-  if (need === 'edit_structure' && (await isLocked(tx, ds.container_id))) return { ok: false, reason: 'locked' } as const
-
+/** 문을 지난 뒤의 스키마 — 살아 있는 속성들. */
+async function readSchemaGate(tx: Tx, dataSourceId: string, ds: LiveDataSource): Promise<DataSourceGate> {
   const rows = await tx.query<PropertyMeta>(
     `SELECT id, type, writable, order_idx, config FROM property
       WHERE data_source_id = $1 AND deleted_at IS NULL`,
@@ -510,7 +544,7 @@ export async function updateCellsIn(
     )
     if (row === null) return { ok: false, reason: 'not_found' } as const
 
-    const gate = await openDataSource(tx, ctx, row.data_source_id, 'edit_content')
+    const gate = await openRowCells(tx, ctx, rowId, row.data_source_id)
     if (isRowFailure(gate)) return gate
     // 잠긴 **행 페이지**의 셀(행 제목 포함)은 막는다(7f-2) — 페이지 잠금이 제목을 막는 것과 같다. 데이터베이스 잠금은 셀을 막지
     // 않는다(구조가 아니다). 행을 이미 잠갔으므로 잠그는 명령과 줄을 선다.

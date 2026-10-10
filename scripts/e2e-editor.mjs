@@ -16078,6 +16078,48 @@ async function main() {
       check('지우면 곧바로 못 연다', removed.status === 200 && gone.status === 404, `${removed.status} ${gone.status}`)
     }
 
+    if (sectionIf('만들기만 — 표 화면 (6f-2b-1 · F-06-10)')) {
+      // "만들기만" 을 받은 동료가 표에 행을 더하고, "만든 사람 → 편집" 규칙 뒤에 표를 열면 자기 행만 보인다(남의 행 둘은 없다). 이 화면은
+      // 6f-2b-1 전에는 404 였다 — 들어오게 된 화면이 오류 없이 서는지(전체 절의 페이지 · 서버 오류)도 함께 본다. 브라우저 세션은 끝에
+      // 반드시 소유자로 되돌린다.
+      const stamp = Date.now()
+      const api = async (method, path, body, headers = authed) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const browseAs = (token) => send('Network.setCookie', { name: 'nc_session', value: token, domain: 'localhost', path: '/', httpOnly: true })
+      const db = (await api('POST', '/databases', { name: `제출함 ${stamp}` })).body.database
+      const view = db.defaultViewId
+      const titleProp = (await api('GET', `/views/${view}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const titled = (t) => ({ cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun(t)] } }] })
+      for (const t of ['남의 것 가', '남의 것 나']) await api('POST', `/views/${view}/rows`, titled(t))
+      const maker = await joinAs(workspaceId, await createUser(`제출자 ${stamp}`), 'member')
+      const access = (body) => api('POST', `/pages/${db.id}/access`, body)
+      await access({ action: 'restrict' })
+      await access({ action: 'grant', principal: { type: 'user', id: ctx.userId }, level: 'full_access' })
+      await access({ action: 'grant', principal: { type: 'user', id: maker.userId }, level: 'create' })
+      await access({ action: 'revoke', principal: { type: 'workspace_everyone' } })
+
+      const asMaker = { ...json, cookie: `nc_session=${maker.token}` }
+      const made = await api('POST', `/views/${view}/rows`, titled('내 제출'), asMaker)
+      check('★ "만들기만" 은 표를 못 보면서 행을 더한다(201)', made.status === 201, String(made.status))
+      await api('PUT', `/databases/${db.id}/access-rules`, { dataSourceId: db.dataSourceId, source: 'created_by', level: 'edit' })
+      const listed = await api('GET', `/views/${view}/rows`, undefined, asMaker)
+      check('★ 행 질의 — 자기 행만', (listed.body?.rows ?? []).map((r) => r.title).join(',') === '내 제출', JSON.stringify(listed.body?.rows?.map((r) => r.title)))
+
+      const titlesJs = `[...document.querySelectorAll('[data-testid="db-table"] tbody tr')].map((tr) => tr.querySelector('[data-testid="db-row-title"]')?.textContent ?? '').join(',')`
+      try {
+        await browseAs(maker.token)
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+        check('★ 표 화면이 선다 — 자기 행만(남의 행 둘은 없다)',
+          await waitFor(`${titlesJs} === '내 제출'`, 15000), await evaluate(titlesJs))
+      } finally {
+        await browseAs(session)
+      }
+    }
+
     if (sectionIf('개인 필터 · 정렬 — 화면 (2h-2 · F-04-17)')) {
       // 볼 수만 있는 사람(브라우저 세션을 바꾼다)이 도구줄의 필터로 조건을 걸면 **자기 것**으로 저장되고 그 사람의 표만 좁혀진다 — "나만 보는
       // 필터" 표시 · 초기화. 편집자는 자기 개인 것을 "모두에게 저장"한다. 브라우저 세션은 끝에 반드시 소유자로 되돌린다.

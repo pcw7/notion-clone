@@ -132,6 +132,7 @@ describe('createDatabase — 불변식의 "적어도 1개"를 지킨다', () => 
       assert.equal(got.value.name, '읽을 표')
       assert.equal(got.value.isInline, false)
       assert.deepEqual(got.value.access, {
+        canViewAllRows: true,
         canEditContent: true,
         canCreateRows: true,
         canEditStructure: true,
@@ -700,6 +701,7 @@ describe('★ 권한 — 스키마 변경은 edit_structure 다', () => {
     assert.equal(seen.ok, true)
     if (seen.ok) {
       assert.deepEqual(seen.value.access, {
+        canViewAllRows: true,
         canEditContent: false,
         canCreateRows: false,
         canEditStructure: false,
