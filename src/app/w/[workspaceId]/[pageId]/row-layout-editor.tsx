@@ -1,7 +1,7 @@
 'use client'
 
 /**
- * 레이아웃 편집 모드 — 행 페이지의 속성 묶음 (잔여 묶음 8f-2 · F-16-01 · F-16-03) · 제목 아래 고정 (3a-2 · F-16-02)
+ * 레이아웃 편집 모드 — 행 페이지의 속성 묶음 (잔여 묶음 8f-2 · F-16-01 · F-16-03) · 제목 아래 고정 (3a-2 · F-16-02) · 페이지 설정 (3b-2 · F-16-09 · F-16-10)
  *
  * 정본: 00-canonical-data-model.md §3.6 [보강] 행의 레이아웃 ③ ~ ⑤ · [보강] 제목 아래 고정
  *       16-item-layout.md F-16-01 *"한 번의 확정 동작으로 전체에 반영"* · 클론 대안 *"드래그 앤 드롭 빌더를 처음부터 만들지 말고 …
@@ -14,6 +14,9 @@
  * 풀면 아래 목록의 스키마 자리로 돌아간다. 숨긴 속성을 고정하면 보이게 된다(한 속성은 한 자리 — 정본 [보강] ③). 고정한 속성에는 숨기기가
  * 없다 — 먼저 푼다. 15개가 차면 핀이 꺼지고 까닭을 말한다.
  *
+ * 페이지 설정(백링크 · 코멘트 표시 · 토론 · 속성 아이콘 · 전체 폭)도 같은 초안이다 — 같은 "모든 행에 적용"이 함께 보낸다(정본 [보강]
+ * 페이지 설정 ② — 준 칸만 바뀐다). 이 화면은 다섯 칸을 늘 다 보낸다.
+ *
  * 순서는 위 · 아래 단추로 바꾼다 — 키보드로도 된다. 옮긴 뒤에도 포커스가 그 속성의 단추에 남는다(줄이 DOM 에서 옮겨지면 포커스를
  * 잃는다). 핀을 누르면 포커스가 옮겨 간 줄의 핀 단추로 따라간다.
  */
@@ -22,6 +25,7 @@ import { useEffect, useRef, useState } from 'react'
 
 import type { ViewColumn } from '@/lib/database/view-columns'
 import { MAX_PINNED_PROPERTIES } from '@/lib/database/limits'
+import type { BacklinksMode, InlineCommentMode, PageSettings } from '@/lib/database/page-settings'
 import { TYPE_ICON } from '../db/[databaseId]/cell-view'
 import * as api from '../db/[databaseId]/table-api'
 
@@ -33,6 +37,16 @@ type FocusTarget = { readonly id: string; readonly testId: string; readonly fall
 
 const PIN_FULL = `제목 아래에는 속성을 ${MAX_PINNED_PROPERTIES}개까지 고정할 수 있습니다`
 
+/** 백링크 표시의 이름 — 16 의 "호버할 때만"은 접어 두고 눌러 펼친다(터치 화면에도 같은 길 · §3.2-143). */
+const BACKLINKS_LABEL: Record<BacklinksMode, string> = { always: '늘 펼쳐 보임', hover: '접어 둠', off: '보이지 않음' }
+const INLINE_COMMENTS_LABEL: Record<InlineCommentMode, string> = { default: '칠해서 보임', minimal: '밑줄만' }
+/** 켜고 끄는 세 칸 — 칸 · 이름 · 검사가 찾는 id. */
+const TOGGLES: readonly { key: 'showDiscussions' | 'showPropertyIcons' | 'fullWidth'; label: string; testId: string }[] = [
+  { key: 'showDiscussions', label: '머리에 "코멘트" 단추(토론)를 보인다', testId: 'row-layout-discussions' },
+  { key: 'showPropertyIcons', label: '속성 이름 앞에 유형 아이콘을 보인다', testId: 'row-layout-property-icons' },
+  { key: 'fullWidth', label: '페이지를 화면 폭으로 편다', testId: 'row-layout-full-width' },
+]
+
 export function RowLayoutEditor(props: {
   workspaceId: string
   dataSourceId: string
@@ -40,6 +54,8 @@ export function RowLayoutEditor(props: {
   columns: readonly ViewColumn[]
   /** 제목 아래에 고정한 속성 — heading 안의 순서(3a-2). */
   pinned: readonly string[]
+  /** 지금의 페이지 설정(3b-2) — 초안이 여기서 시작한다. */
+  settings: PageSettings
   /** 초안을 시작할 때의 레이아웃 버전(머리가 없으면 `'0'`). */
   version: string
   /** 적용한 뒤 서버가 다시 그리는 중이다 — 그동안 단추를 막는다. */
@@ -58,6 +74,7 @@ export function RowLayoutEditor(props: {
   const [items, setItems] = useState<Item[]>(() =>
     props.columns.filter((c) => !props.pinned.includes(c.propertyId)).map(itemOf),
   )
+  const [settings, setSettings] = useState<PageSettings>(props.settings)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const rootRef = useRef<HTMLDivElement>(null)
@@ -128,6 +145,7 @@ export function RowLayoutEditor(props: {
       order: items.map((item) => item.id),
       hidden: items.filter((item) => !item.visible).map((item) => item.id),
       pinned: pinned.map((item) => item.id),
+      settings,
     })
     setSaving(false)
     if (!result.ok) {
@@ -267,6 +285,54 @@ export function RowLayoutEditor(props: {
           {PIN_FULL}. 더 고정하려면 먼저 하나를 푸세요.
         </p>
       )}
+
+      <h3 className="mt-1 text-xs font-medium text-neutral-600 dark:text-neutral-300">페이지 설정</h3>
+      <div className="flex flex-col gap-1.5 px-1 text-sm" data-testid="row-layout-settings">
+        <label className="flex items-center justify-between gap-2">
+          <span>백링크</span>
+          <select
+            data-testid="row-layout-backlinks"
+            value={settings.backlinks}
+            disabled={busy}
+            onChange={(e) => setSettings({ ...settings, backlinks: e.target.value as BacklinksMode })}
+            className="rounded border border-neutral-200 bg-white px-1 py-0.5 text-xs dark:border-neutral-700 dark:bg-neutral-950"
+          >
+            {(Object.keys(BACKLINKS_LABEL) as BacklinksMode[]).map((mode) => (
+              <option key={mode} value={mode}>
+                {BACKLINKS_LABEL[mode]}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="flex items-center justify-between gap-2">
+          <span>본문의 코멘트 표시</span>
+          <select
+            data-testid="row-layout-inline-comments"
+            value={settings.inlineComments}
+            disabled={busy}
+            onChange={(e) => setSettings({ ...settings, inlineComments: e.target.value as InlineCommentMode })}
+            className="rounded border border-neutral-200 bg-white px-1 py-0.5 text-xs dark:border-neutral-700 dark:bg-neutral-950"
+          >
+            {(Object.keys(INLINE_COMMENTS_LABEL) as InlineCommentMode[]).map((mode) => (
+              <option key={mode} value={mode}>
+                {INLINE_COMMENTS_LABEL[mode]}
+              </option>
+            ))}
+          </select>
+        </label>
+        {TOGGLES.map((toggle) => (
+          <label key={toggle.key} className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              data-testid={toggle.testId}
+              checked={settings[toggle.key]}
+              disabled={busy}
+              onChange={(e) => setSettings({ ...settings, [toggle.key]: e.target.checked })}
+            />
+            <span>{toggle.label}</span>
+          </label>
+        ))}
+      </div>
       {error !== null && (
         <p role="alert" data-testid="row-layout-error" className="text-xs text-red-600">
           {error}

@@ -13759,6 +13759,96 @@ async function main() {
       check('모르는 값은 400 invalid_layout', bad.status === 400 && bad.body?.error === 'invalid_layout', JSON.stringify(bad))
     }
 
+    if (sectionIf('페이지 설정 — 화면 (3b-2 · F-16-09 · F-16-10)')) {
+      // 레이아웃 편집 모드의 "페이지 설정"에서 다섯 칸을 바꾸고 적용하면 행 페이지가 따른다 — 화면 폭 · 백링크 펼침 · 코멘트 단추 없음 ·
+      // 속성 아이콘 없음 · 옅은 코멘트 표시. 백링크 "보이지 않음"은 사라지고, 일반 페이지는 그대로다. 자기 데이터를 스스로 만든다.
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const stamp = Date.now()
+      const api = `${BASE}/api/workspaces/${workspaceId}`
+      const readRes = async (res) => ({ status: res.status, body: await res.json().catch(() => null) })
+      const created = (await readRes(await fetch(`${api}/databases`, { method: 'POST', headers: authed, body: JSON.stringify({ name: `설정화면${stamp}`, privateTop: true }) }))).body?.database
+      const ds = created?.dataSourceId
+      const props = (await readRes(await fetch(`${api}/data-sources/${ds}/properties`, { method: 'POST', headers: authed, body: JSON.stringify({ name: '수량', type: 'number' }) }))).body?.schema?.properties ?? []
+      const titleId = props.find((p) => p.type === 'title')?.id
+      const rowId = (await readRes(await fetch(`${api}/views/${created?.defaultViewId}/rows`, { method: 'POST', headers: authed,
+        body: JSON.stringify({ cells: [{ propertyId: titleId, value: { type: 'title', title: [textRun('설정할 행')] } }] }) }))).body?.row?.id
+      // 백링크 — 이 행을 멘션한 일반 페이지(투영이 쓰는 엣지를 바로 넣는다 · 멘션을 치는 길은 F-07-09 구간이 본다)
+      const mentioner = (await readRes(await fetch(`${api}/pages`, { method: 'POST', headers: authed, body: JSON.stringify({ privateTop: true, title: `멘션한문서${stamp}` }) }))).body?.page?.id
+      await dbQuery(`INSERT INTO link_edge (source_page_id, source_block_id, target_kind, target_id) VALUES ($1, gen_random_uuid(), 'page', $2)`, [mentioner, rowId])
+
+      const has = (sel) => evaluate(`!!document.querySelector(${JSON.stringify(sel)})`)
+      const setSelect = (selector, value) => evaluate(`(() => {
+        const s = document.querySelector(${JSON.stringify(selector)})
+        if (!s) return false
+        s.value = ${JSON.stringify(value)}
+        s.dispatchEvent(new Event('change', { bubbles: true }))
+        return true
+      })()`)
+      const openRow = async () => {
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${rowId}` })
+        return waitFor(`!!document.querySelector('[data-testid="row-layout-edit"]') && !!document.querySelector('[data-testid="row-title"]')`, 15000)
+      }
+      const openEditor = async () => {
+        for (let i = 0; i < 6; i += 1) {
+          if (await has('[data-testid="row-layout-editor"]')) return true
+          await clickSelector('[data-testid="row-layout-edit"]')
+          if (await waitFor(`!!document.querySelector('[data-testid="row-layout-editor"]')`, 1500)) return true
+        }
+        return false
+      }
+      const looks = () => evaluate(`(() => {
+        const main = document.querySelector('main')
+        return {
+          wide: main?.getAttribute('data-full-width') === 'true' && getComputedStyle(main).maxWidth === 'none',
+          backlinks: document.querySelector('[data-testid="page-backlinks"]') ? (document.querySelector('[data-testid="page-backlinks"]').open ? 'open' : 'closed') : 'none',
+          toggle: !!document.querySelector('[data-testid="comment-panel-toggle"]'),
+          icons: !!document.querySelector('[data-testid="row-properties"] [data-testid="db-record-icon"]'),
+          comments: main?.getAttribute('data-inline-comments') ?? null,
+        }
+      })()`)
+
+      await openRow()
+      check('처음에는 기본 — 좁게 · 백링크 접힘 · 코멘트 단추 · 속성 아이콘 · 칠한 코멘트',
+        JSON.stringify(await looks()) === JSON.stringify({ wide: false, backlinks: 'closed', toggle: true, icons: true, comments: 'default' }),
+        JSON.stringify(await looks()))
+
+      await openEditor()
+      await setSelect('[data-testid="row-layout-backlinks"]', 'always')
+      await setSelect('[data-testid="row-layout-inline-comments"]', 'minimal')
+      await clickSelector('[data-testid="row-layout-discussions"]')
+      await clickSelector('[data-testid="row-layout-property-icons"]')
+      await clickSelector('[data-testid="row-layout-full-width"]')
+      check('편집 모드의 "페이지 설정" — 초안이 바뀌고 서버는 그대로다',
+        (await evaluate(`[document.querySelector('[data-testid="row-layout-backlinks"]').value, document.querySelector('[data-testid="row-layout-inline-comments"]').value,
+          document.querySelector('[data-testid="row-layout-discussions"]').checked, document.querySelector('[data-testid="row-layout-property-icons"]').checked,
+          document.querySelector('[data-testid="row-layout-full-width"]').checked].join()`)) === 'always,minimal,false,false,true'
+          && (await dbQuery(`SELECT 1 FROM page_layout WHERE data_source_id = $1`, [ds])).length === 0,
+        String(await evaluate(`document.querySelector('[data-testid="row-layout-settings"]')?.textContent ?? '(없음)'`)))
+      await clickSelector('[data-testid="row-layout-apply"]')
+      // 적용 뒤 서버가 다시 그린 것을 기다린다 — 다섯 칸을 따로 본다(하나가 어긋나도 다른 칸의 검사는 그대로 선다)
+      await waitFor(`!document.querySelector('[data-testid="row-layout-editor"]') && document.querySelector('main')?.getAttribute('data-inline-comments') === 'minimal'`, 15000)
+      const after = await looks()
+      check('★ 적용하면 페이지가 화면 폭으로 펴진다', after.wide === true, JSON.stringify(after))
+      check('★ 백링크가 펼쳐 보인다', after.backlinks === 'open', JSON.stringify(after))
+      check('★ 머리의 "코멘트" 단추(토론)가 없다', after.toggle === false, JSON.stringify(after))
+      check('속성 이름 앞의 유형 아이콘이 없다', after.icons === false, JSON.stringify(after))
+      check('본문의 코멘트 표시가 "밑줄만"이다(표시 칸)', after.comments === 'minimal', JSON.stringify(after))
+      const saved = (await dbQuery(`SELECT backlinks_mode, inline_comment_mode, show_discussions, show_property_icons, full_width FROM page_layout WHERE data_source_id = $1`, [ds]))[0]
+      check('서버 — 다섯 칸이 레이아웃 머리에 남았다',
+        JSON.stringify(saved) === JSON.stringify({ backlinks_mode: 'always', inline_comment_mode: 'minimal', show_discussions: false, show_property_icons: false, full_width: true }),
+        JSON.stringify(saved))
+
+      const version = (await dbQuery(`SELECT version::text AS v FROM page_layout WHERE data_source_id = $1`, [ds]))[0]?.v
+      await fetch(`${api}/data-sources/${ds}/layout`, { method: 'PUT', headers: authed, body: JSON.stringify({ version, order: [], hidden: [], settings: { backlinks: 'off' } }) })
+      await openRow()
+      check('★ 백링크 "보이지 않음" — 멘션한 페이지가 있어도 백링크가 없다', (await looks()).backlinks === 'none', JSON.stringify(await looks()))
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${mentioner}` })
+      await waitFor(`!!document.querySelector('[data-testid="comment-panel-toggle"]')`, 15000)
+      const plain = await evaluate(`[document.querySelector('main')?.getAttribute('data-full-width'), document.querySelector('main')?.getAttribute('data-inline-comments'), !!document.querySelector('[data-testid="comment-panel-toggle"]')].join()`)
+      check('일반 페이지는 그대로다 — 레이아웃은 행의 것이다', plain === ',,true', plain)
+    }
+
     if (sectionIf('개인 필터 · 정렬 — 화면 (2h-2 · F-04-17)')) {
       // 볼 수만 있는 사람(브라우저 세션을 바꾼다)이 도구줄의 필터로 조건을 걸면 **자기 것**으로 저장되고 그 사람의 표만 좁혀진다 — "나만 보는
       // 필터" 표시 · 초기화. 편집자는 자기 개인 것을 "모두에게 저장"한다. 브라우저 세션은 끝에 반드시 소유자로 되돌린다.

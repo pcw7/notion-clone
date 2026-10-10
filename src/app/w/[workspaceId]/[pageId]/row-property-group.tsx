@@ -25,6 +25,7 @@ import { useRouter } from 'next/navigation'
 import type { ViewColumn } from '@/lib/database/view-columns'
 import { DatabaseTable } from '../db/[databaseId]/database-table'
 import { RowLayoutEditor } from './row-layout-editor'
+import type { PageSettings } from '@/lib/database/page-settings'
 
 const keyOf = (columns: readonly ViewColumn[]): string => columns.map((c) => c.propertyId).join(',')
 
@@ -36,11 +37,13 @@ export function RowPropertyGroup(
     layoutVersion: string
     /** 제목 아래에 고정한 속성 — heading 안의 순서(3a-2). `columns` 에도 그대로 있다 — 여기서 묶음과 가른다. */
     pinned: readonly string[]
+    /** 페이지 설정(3b-2) — 편집 모드의 초안이 여기서 시작한다. 그리기는 페이지 화면과 표(`showPropertyIcons`)가 한다. */
+    settings: PageSettings
     /** 레이아웃을 고칠 수 있다(`edit_structure` · 데이터베이스가 잠기지 않았다). */
     canEditLayout: boolean
   },
 ) {
-  const { columns, layoutVersion, pinned, canEditLayout, ...table } = props
+  const { columns, layoutVersion, pinned, settings, canEditLayout, ...table } = props
   const pinnedColumns = pinned.flatMap((id) => columns.filter((c) => c.propertyId === id))
   const inGroup = columns.filter((c) => !pinned.includes(c.propertyId))
   const visible = inGroup.filter((c) => c.visible)
@@ -133,6 +136,7 @@ export function RowPropertyGroup(
           dataSourceId={table.dataSourceId}
           columns={columns}
           pinned={pinned}
+          settings={settings}
           version={layoutVersion}
           refreshing={refreshing}
           onCancel={close}

@@ -83,11 +83,17 @@ export function CommentPanel({
   workspaceId,
   pageId,
   initialOpenCount,
+  showToggle = true,
 }: {
   workspaceId: string
   pageId: string
   /** 열린 스레드 수 — **서버가 그려서 준다.** 버튼에 수를 띄우려고 열기 전에 한 번 읽는 것을 없앤다. */
   initialOpenCount: number
+  /**
+   * 머리의 "코멘트" 단추를 세운다 — 행 페이지의 레이아웃이 토론을 끄면 거짓이다(3b-2 · F-16-10). 꺼도 창은 남는다 — 본문의 코멘트 표시를
+   * 누르면 그 스레드로 열린다(16 *"알림 클릭으로 진입할 때는 영역을 강제 표시"* 와 같은 예외 · 코멘트는 그대로다).
+   */
+  showToggle?: boolean
 }) {
   const [open, setOpen] = useState(false)
   const [resolved, setResolved] = useState(false)
@@ -192,21 +198,24 @@ export function CommentPanel({
 
   return (
     <div className="relative">
-      <button
-        type="button"
-        onClick={() => {
-          const next = !open
-          setOpen(next)
-          if (next) {
-            setError(null)
-            void load(resolved)
-          }
-        }}
-        aria-expanded={open}
-        className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
-      >
-        코멘트{openCount > 0 ? ` ${openCount}` : ''}
-      </button>
+      {(showToggle || open) && (
+        <button
+          type="button"
+          data-testid="comment-panel-toggle"
+          onClick={() => {
+            const next = !open
+            setOpen(next)
+            if (next) {
+              setError(null)
+              void load(resolved)
+            }
+          }}
+          aria-expanded={open}
+          className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
+        >
+          코멘트{openCount > 0 ? ` ${openCount}` : ''}
+        </button>
+      )}
 
       {open && (
         <div

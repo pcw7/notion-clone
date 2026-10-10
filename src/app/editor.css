@@ -1047,6 +1047,24 @@ span.blk-equation {
 }
 
 /*
+  옅은 코멘트 표시 — 행 페이지의 레이아웃이 "옅게"를 고르면(3b-2 · F-16-10 · `page_layout.inline_comment_mode = 'minimal'`).
+  칠하지 않고 밑줄만 남긴다 — 코멘트는 그대로이고 누르면 열린다(표시만 줄인다).
+*/
+[data-inline-comments='minimal'] .blk-comment {
+  background: transparent;
+  box-shadow: inset 0 -1px 0 rgba(202, 138, 4, 0.55);
+}
+
+:root {
+  @variant dark {
+    [data-inline-comments='minimal'] .blk-comment {
+      background: transparent;
+      box-shadow: inset 0 -1px 0 rgba(250, 204, 21, 0.45);
+    }
+  }
+}
+
+/*
   멘션 칩 — F-07-08 (코멘트 5b조각).
   노드에는 id 뿐이고 이름은 노드 뷰가 권한으로 거른 맵에서 그린다(`node-views.ts`). 볼 수 없는 페이지는 자리만.
 */
