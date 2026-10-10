@@ -6731,6 +6731,8 @@ async function main() {
       await addColumn('수량', 'number')
       await addColumn('상태', 'select')
       await addColumn('완료', 'checkbox')
+      // 머리는 서버가 답한 뒤에 붙는다 — 한 번만 세면 부하에서 셋을 읽는다(#253 의 전체 판). 넷이 될 때까지 기다린다
+      await waitFor(`document.querySelectorAll('[data-testid="db-table"] thead th[data-property-id]').length === 4`, 8000)
       const propIds = await evaluate(`[...document.querySelectorAll('[data-testid="db-table"] thead th[data-property-id]')].map((th) => th.dataset.propertyId)`)
       check('★ 속성을 더하면 머리에 붙는다 — 제목 · 수량 · 상태 · 완료', propIds.length === 4, JSON.stringify(propIds))
       const [, numberProp, selectProp, checkProp] = propIds
@@ -13267,9 +13269,14 @@ async function main() {
       check('★ 수식으로 정렬한다 — 금액 오름차순(다 120 · 나 300)', await waitFor(`${titlesJs} === '다,나'`, 10000), await evaluate(titlesJs))
 
       // ── 정렬 칩이 도구줄에 남는다(서버 렌더가 수식 키를 버리지 않는다) ──
-      await clickOn('[data-testid="db-sort-button"]')
+      // 정렬을 저장한 뒤의 새로 세우기가 열린 패널을 닫을 수 있다 — 그 규칙이 보일 때까지 다시 연다(#253 의 전체 판이 부하에서 찾았다)
+      const sortRuleShown = `(document.querySelector('[data-testid="db-sort-rule"] select[aria-label="정렬 속성"]')?.value ?? '') === ${JSON.stringify(amount)}`
+      for (let i = 0; i < 5 && !(await evaluate(sortRuleShown)); i += 1) {
+        if (!(await evaluate(`!!document.querySelector('[data-testid="db-sort-rule"]')`))) await clickOn('[data-testid="db-sort-button"]')
+        await waitFor(sortRuleShown, 1500)
+      }
       check('★ 정렬 패널에 수식 정렬이 남는다',
-        await waitFor(`(document.querySelector('[data-testid="db-sort-rule"] select[aria-label="정렬 속성"]')?.value ?? '') === ${JSON.stringify(amount)}`, 5000),
+        await waitFor(sortRuleShown, 5000),
         await evaluate(`document.querySelector('[data-testid="db-sort-rule"]')?.textContent ?? null`))
       await key('Escape')
 
