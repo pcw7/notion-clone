@@ -25,6 +25,7 @@ export const TYPE_LABEL: Readonly<Record<AppPropertyType, string>> = {
   rollup: '롤업',
   formula: '수식',
   unique_id: 'ID',
+  button: '버튼',
 }
 
 /** 헤더의 타입 아이콘. 장식이다 — 스크린리더에는 `TYPE_LABEL` 이 간다. */
@@ -40,6 +41,7 @@ export const TYPE_ICON: Readonly<Record<AppPropertyType, string>> = {
   rollup: '∑',
   formula: 'ƒ',
   unique_id: '№',
+  button: '▶',
 }
 
 /**

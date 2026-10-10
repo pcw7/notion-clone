@@ -3710,6 +3710,85 @@ try {
     await rejectBy('모르는 상태', 'ck_webhook_delivery_status', [randomUUID(), hookId, ev, 'retrying', null, null])
   }
 
+  console.log('\n[57] 자동화 엔진 · 버튼 속성 (0078 / §3.10 [보강] 자동화 엔진 · 버튼 속성 · 5a-1조각)')
+  {
+    // 표 하나와 속성 둘(숫자 · 버튼) — data source 는 앞의 프로브가 쓰지 않은 새 것
+    const dbBlock = randomUUID()
+    const dsId = randomUUID()
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key, ancestor_path, perm_scope_id, properties, format,
+                          created_at, last_edited_at)
+       VALUES ($1, $2, 'database', 'block', $3, 'a0', '{}', $1, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      [dbBlock, wsId, randomUUID()],
+    )
+    await client.query(`INSERT INTO database (id) VALUES ($1)`, [dbBlock])
+    await client.query(`INSERT INTO data_source (id, owner_database_id, name, schema_version) VALUES ($1, $2, '자동화', 1)`, [dsId, dbBlock])
+    const buttonProp = `btn${randomUUID().replaceAll('-', '').slice(0, 18)}`
+    const numberProp = `num${randomUUID().replaceAll('-', '').slice(0, 18)}`
+    await client.query(
+      `INSERT INTO property (id, data_source_id, name, type, order_idx, created_at, updated_at)
+       VALUES ($1, $3, '버튼', 'button', 'a0', now(), now()), ($2, $3, '숫자', 'number', 'a1', now(), now())`,
+      [buttonProp, numberProp, dsId],
+    )
+    const rowPage = randomUUID()
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key, ancestor_path, perm_scope_id, properties, format,
+                          created_at, last_edited_at)
+       VALUES ($1, $2, 'page', 'data_source', $3, 'a0', ARRAY[$4::uuid], $4, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      [rowPage, wsId, dsId, dbBlock],
+    )
+    await client.query(`INSERT INTO page (id, data_source_id) VALUES ($1, $2)`, [rowPage, dsId])
+
+    const tryReject = async (label, constraint, sql, params) => {
+      await client.query('SAVEPOINT probe')
+      try {
+        await client.query(sql, params)
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        fail(`${label} — 거부되어야 하는데 통과했다`)
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        if (e.constraint === constraint) ok(`${label} — ${constraint} 가 거부함 (${e.code})`)
+        else fail(`${label} — ${constraint} 가 아니라 ${e.constraint ?? e.code} 에 걸렸다 (${e.message})`)
+      }
+    }
+    await tryReject('★ 버튼 프로퍼티에는 셀이 없다', 'tg_ppv_type_guard',
+      `INSERT INTO page_property_value (page_id, property_id, value) VALUES ($1, $2, '{}'::jsonb)`, [rowPage, buttonProp])
+
+    const putAutomation = `INSERT INTO automation (id, workspace_id, kind, host_property_id, host_data_source_id, host_page_id, created_by)
+                           VALUES ($1, $2, $3, $4, $5, $6, $7)`
+    const automationId = randomUUID()
+    await client.query(putAutomation, [automationId, wsId, 'button_property', buttonProp, null, null, userId])
+    ok('버튼 속성의 automation — 정상 경로가 통과한다')
+    await tryReject('★ 버튼 속성마다 automation 하나', 'ux_automation_button_property', putAutomation,
+      [randomUUID(), wsId, 'button_property', buttonProp, null, null, userId])
+    await tryReject('★ 주인 칸이 둘', 'ck_automation_host', putAutomation, [randomUUID(), wsId, 'button_property', buttonProp, dsId, null, userId])
+    await tryReject('★ 종류와 주인 칸이 맞지 않는다(DB automation 인데 속성)', 'ck_automation_host', putAutomation,
+      [randomUUID(), wsId, 'db_automation', buttonProp, null, null, userId])
+    await tryReject('주인이 없다', 'ck_automation_host', putAutomation, [randomUUID(), wsId, 'button_block', null, null, null, userId])
+
+    const putAction = `INSERT INTO automation_action (id, automation_id, order_idx, type, config) VALUES ($1, $2, $3, $4, $5::jsonb)`
+    await client.query(putAction, [randomUUID(), automationId, '0000', 'edit_property', '{"v":1,"cells":[]}'])
+    await tryReject('★ 모르는 액션', 'ck_automation_action_type', putAction, [randomUUID(), automationId, '0001', 'drop_table', '{}'])
+    await tryReject('순서가 네 자리 숫자가 아니다', 'ck_automation_action_order', putAction, [randomUUID(), automationId, 'a0', 'edit_property', '{}'])
+    await tryReject('같은 순서 둘', 'ux_automation_action_order', putAction, [randomUUID(), automationId, '0000', 'edit_property', '{}'])
+    await tryReject('설정이 객체가 아니다', 'ck_automation_action_config', putAction, [randomUUID(), automationId, '0002', 'edit_property', '[]'])
+
+    const putRun = `INSERT INTO automation_run (id, automation_id, workspace_id, origin, status, idempotency_key, finished_at)
+                    VALUES ($1, $2, $3, 'user', $4, $5, $6)`
+    await client.query(putRun, [randomUUID(), automationId, wsId, 'success', 'button:k1', new Date()])
+    await tryReject('★ 같은 멱등 키 둘', 'ux_automation_run_idempotency', putRun, [randomUUID(), automationId, wsId, 'success', 'button:k1', new Date()])
+    await tryReject('★ 끝났는데 끝난 시각이 없다', 'ck_automation_run_finished', putRun, [randomUUID(), automationId, wsId, 'partial', 'button:k2', null])
+    await tryReject('도는 중인데 끝난 시각이 있다', 'ck_automation_run_finished', putRun, [randomUUID(), automationId, wsId, 'running', 'button:k3', new Date()])
+
+    await client.query('SAVEPOINT cascade')
+    await client.query(`DELETE FROM property WHERE id = $1`, [buttonProp])
+    const left = (await client.query(`SELECT count(*)::int AS n FROM automation_run r JOIN automation a ON a.id = r.automation_id WHERE a.id = $1`, [automationId])).rows[0].n
+    const gone = (await client.query(`SELECT count(*)::int AS n FROM automation WHERE id = $1`, [automationId])).rows[0].n
+    if (gone === 0 && left === 0) ok('★ 주인(속성) 행이 지워지면 automation · 액션 · 실행 기록이 함께 지워진다(CASCADE)')
+    else fail(`속성을 지웠는데 automation ${gone} · 기록 ${left} 이 남았다`)
+    await client.query('ROLLBACK TO SAVEPOINT cascade')
+  }
+
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
 } catch (e) {

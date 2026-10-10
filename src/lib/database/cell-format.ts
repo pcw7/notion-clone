@@ -235,6 +235,8 @@ export function defaultColumnWidth(type: AppPropertyType): number {
       return 90
     // 고유 ID 는 `TASK-123` 정도다(접두사 7자까지 · 2a-1).
     case 'unique_id':
+    // 버튼은 이름 하나다(5a-1).
+    case 'button':
       return 120
   }
 }

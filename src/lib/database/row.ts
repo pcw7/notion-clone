@@ -252,14 +252,17 @@ function prepareCells(
   return prepared
 }
 
-async function writeCells(tx: Tx, rowId: string, cells: readonly PreparedCell[]): Promise<void> {
+/** 셀을 누가 채웠나(`page_property_value.filled_by`) — 사람 · 자동화(정본 §3.10 [보강] 자동화 엔진 · 버튼 속성 ⑦). */
+export type CellFiller = 'user' | 'automation'
+
+async function writeCells(tx: Tx, rowId: string, cells: readonly PreparedCell[], filledBy: CellFiller = 'user'): Promise<void> {
   for (const cell of cells) {
     await tx.query(
       `INSERT INTO page_property_value (
          page_id, property_id, value,
          num_value, text_value, date_start, date_end, bool_value,
          filled_by, updated_at
-       ) VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, 'user', now())
+       ) VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, now())
        ON CONFLICT (page_id, property_id) DO UPDATE SET
          value      = EXCLUDED.value,
          num_value  = EXCLUDED.num_value,
@@ -278,6 +281,7 @@ async function writeCells(tx: Tx, rowId: string, cells: readonly PreparedCell[])
         cell.sidecars.dateStart,
         cell.sidecars.dateEnd,
         cell.sidecars.bool,
+        filledBy,
       ],
     )
   }
@@ -452,6 +456,8 @@ export async function createRowIn(
 
 export type UpdateCellsInput = {
   readonly cells: readonly RowCell[]
+  /** 누가 채웠나 — 자동화의 액션이 `automation` 을 준다(5a-1). 없으면 사람. */
+  readonly filledBy?: CellFiller
   readonly expectedSchemaVersion?: string
   /**
    * 클라이언트가 읽었을 때의 `block.version`.
@@ -516,7 +522,7 @@ export async function updateCellsIn(
     if (isRowFailure(prepared)) return prepared
 
     if (prepared.length > 0) {
-      await writeCells(tx, rowId, prepared)
+      await writeCells(tx, rowId, prepared, input.filledBy)
       await projectTitle(tx, rowId, prepared, gate.titlePropertyId)
       await bumpRow(tx, ctx, rowId)
       // 활동 — 셀을 고쳤다(4d-2 · 같은 사람 · 같은 행 5분 안이면 접는다)

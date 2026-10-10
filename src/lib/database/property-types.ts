@@ -111,12 +111,22 @@ export type DerivedPropertyType = (typeof DERIVED_PROPERTY_TYPES)[number]
 export const SYSTEM_PROPERTY_TYPES = ['unique_id'] as const
 export type SystemPropertyType = (typeof SYSTEM_PROPERTY_TYPES)[number]
 
-/** 앱이 만드는 프로퍼티 타입 전부 — 셀 타입 + 엣지 타입 + 파생 타입 + 시스템 타입. 스키마(`PropertySummary.type`)가 이것이다. */
+/**
+ * **액션 타입** — 값이 없고 누르면 일을 하는 타입 (자동화 5a-1 · 정본 §3.10 [보강] 자동화 엔진 · 버튼 속성 ②).
+ *
+ * 버튼은 셀이 없다(셀 가드 0078) — 정렬 · 필터 · rollup · 수식이 읽는 값이 없다. 무엇을 하는지는 속성마다 하나인 automation
+ * (kind `button_property`)의 액션이 정한다(`automation/button-property.ts`). 셀 타입 밖에 두어 `prepareCells` 가 거부한다.
+ */
+export const ACTION_PROPERTY_TYPES = ['button'] as const
+export type ActionPropertyType = (typeof ACTION_PROPERTY_TYPES)[number]
+
+/** 앱이 만드는 프로퍼티 타입 전부 — 셀 타입 + 엣지 타입 + 파생 타입 + 시스템 타입 + 액션 타입. 스키마(`PropertySummary.type`)가 이것이다. */
 export const APP_PROPERTY_TYPES = [
   ...MVP_PROPERTY_TYPES,
   ...EDGE_PROPERTY_TYPES,
   ...DERIVED_PROPERTY_TYPES,
   ...SYSTEM_PROPERTY_TYPES,
+  ...ACTION_PROPERTY_TYPES,
 ] as const
 export type AppPropertyType = (typeof APP_PROPERTY_TYPES)[number]
 

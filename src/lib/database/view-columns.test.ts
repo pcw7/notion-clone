@@ -24,6 +24,7 @@ import {
   EDGE_PROPERTY_TYPES,
   MVP_PROPERTY_TYPES,
   SYSTEM_PROPERTY_TYPES,
+  ACTION_PROPERTY_TYPES,
 } from './property-types.ts'
 
 /** 타입만 다른 컬럼. 술어는 `type` 만 본다. */
@@ -37,8 +38,8 @@ describe('① isCellColumn', () => {
     }
   })
 
-  test('★ 셀이 없는 타입은 전부 거짓이다 — 엣지(relation) · 파생(rollup) · 시스템(unique_id)', () => {
-    const notCells = [...EDGE_PROPERTY_TYPES, ...DERIVED_PROPERTY_TYPES, ...SYSTEM_PROPERTY_TYPES]
+  test('★ 셀이 없는 타입은 전부 거짓이다 — 엣지(relation) · 파생(rollup) · 시스템(unique_id) · 액션(button)', () => {
+    const notCells = [...EDGE_PROPERTY_TYPES, ...DERIVED_PROPERTY_TYPES, ...SYSTEM_PROPERTY_TYPES, ...ACTION_PROPERTY_TYPES]
     assert.ok(notCells.length >= 2, '셀이 아닌 타입이 둘은 되어야 이 검사가 무언가를 본다')
     for (const type of notCells) {
       assert.equal(isCellColumn(columnOf(type)), false, type)
@@ -46,7 +47,7 @@ describe('① isCellColumn', () => {
   })
 
   test('앱이 만드는 타입은 셀 타입 + 셀 아닌 타입으로 **남김없이** 갈린다', () => {
-    const split = [...MVP_PROPERTY_TYPES, ...EDGE_PROPERTY_TYPES, ...DERIVED_PROPERTY_TYPES, ...SYSTEM_PROPERTY_TYPES]
+    const split = [...MVP_PROPERTY_TYPES, ...EDGE_PROPERTY_TYPES, ...DERIVED_PROPERTY_TYPES, ...SYSTEM_PROPERTY_TYPES, ...ACTION_PROPERTY_TYPES]
     assert.deepEqual([...APP_PROPERTY_TYPES].sort(), split.sort())
   })
 
