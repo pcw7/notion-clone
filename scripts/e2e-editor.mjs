@@ -15066,6 +15066,95 @@ async function main() {
       }
     }
 
+    if (sectionIf('웹훅 보내기 — 배달 상태 · 다시 켜기 (5c-3b · F-08-13)')) {
+      // 받는 서버가 500 을 주면 네 번째 실패에 버튼이 꺼진다 — 누르면 "꺼진 버튼", 버튼 설정이 까닭을 적고 "다시 켜기"로 켠다. DB automation 의
+      // 실행 기록은 웹훅 단계의 배달 상태(보냄)를 함께 말한다. 보내기 · 판은 이 판에서 부른다. 받는 서버는 127.0.0.1:HOOK_PORT.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const { runAutomationWebhooks } = await import(new URL('../src/lib/automation/webhook-send.ts', import.meta.url).href)
+      const { runAutomationDispatch } = await import(new URL('../src/lib/automation/dispatch.ts', import.meta.url).href)
+      const { createServer } = await import('node:http')
+      const receiver = createServer((req, res) => {
+        req.on('data', () => {})
+        req.on('end', () => res.writeHead((req.url ?? '').startsWith('/fail') ? 500 : 200).end('ok'))
+      })
+      await new Promise((r) => receiver.listen(HOOK_PORT, '127.0.0.1', r))
+      const savedAllow = process.env.OUTBOUND_ALLOW_HOSTS
+      process.env.OUTBOUND_ALLOW_HOSTS = `127.0.0.1:${HOOK_PORT}` // 보내기는 이 판에서 부른다
+      try {
+        const db = (await api('POST', '/databases', { name: `웹훅 상태 ${stamp}` })).body.database
+        const ds = db.dataSourceId
+        const prop = async (name, type) => (await api('POST', `/data-sources/${ds}/properties`, { name, type })).body.property.id
+        const qty = await prop('수량', 'number')
+        const buttonId = await prop('알림', 'button')
+        const row = (await api('POST', `/views/${db.defaultViewId}/rows`, { cells: [] })).body.row.id
+        await api('PUT', `/data-sources/${ds}/properties/${buttonId}/actions`, { actions: [
+          { type: 'send_webhook', config: { v: 1, url: `http://127.0.0.1:${HOOK_PORT}/fail-${stamp}`, headers: [], properties: [qty] } },
+        ] })
+        const EDITOR = '[data-testid="db-button-editor"]'
+        const MENU = `th:has([data-testid="db-column-menu"][aria-label="알림 속성 메뉴"]) [data-testid="db-column-menu"]`
+        const CELL = `tr[data-row-id="${row}"] [data-testid="db-button-cell"]`
+        const RESULT = `tr[data-row-id="${row}"] [data-testid="db-button-result"]`
+
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+        await waitFor(`!!document.querySelector('${CELL}')`, 15000)
+        await clickSelector(CELL)
+        await waitFor(`(document.querySelector('${RESULT}')?.textContent ?? '') === '완료'`, 10000)
+        // ① 네 번 실패하면 버튼이 꺼진다
+        const t0 = Date.now() + 1000
+        for (const at of [t0, t0 + 60_000, t0 + 3 * 60_000, t0 + 7 * 60_000]) await runAutomationWebhooks(new Date(at), { workspaces: [workspaceId] })
+        const state = (await api('GET', `/data-sources/${ds}/properties/${buttonId}/actions`)).body
+        await clickSelector(CELL)
+        const refused = await waitFor(`(document.querySelector('${RESULT}')?.textContent ?? '') === '꺼진 버튼입니다.'`, 10000)
+        check('★ 받는 서버가 네 번 실패하면 버튼이 꺼진다 — 누르면 "꺼진 버튼입니다"',
+          state?.enabled === false && state?.disabledReason === 'webhook_failed' && refused,
+          JSON.stringify([state?.enabled, state?.disabledReason, await evaluate(`document.querySelector('${RESULT}')?.textContent ?? null`)]))
+
+        // ② 버튼 설정이 까닭을 적고 다시 켠다
+        for (let i = 0; i < 6 && !(await evaluate(`!!document.querySelector('[data-testid="db-column-button"]')`)); i += 1) {
+          await clickSelector(MENU)
+          await waitFor(`!!document.querySelector('[data-testid="db-column-button"]')`, 2000)
+        }
+        await clickSelector('[data-testid="db-column-button"]')
+        const noted = await waitFor(`(document.querySelector('${EDITOR} [data-testid="db-button-disabled"]')?.textContent ?? '').includes('웹훅을 네 번 보내지 못해')`, 8000)
+        await clickSelector(`${EDITOR} [data-testid="db-button-enable"]`)
+        const cleared = await waitFor(`!!document.querySelector('${EDITOR}') && !document.querySelector('${EDITOR} [data-testid="db-button-disabled"]')`, 8000)
+        const after = (await api('GET', `/data-sources/${ds}/properties/${buttonId}/actions`)).body
+        check('★ 버튼 설정이 꺼진 까닭을 적고 "다시 켜기"로 켠다 — 까닭이 지워진다(서버)',
+          noted && cleared && after?.enabled === true && after?.disabledReason === null,
+          JSON.stringify([noted, cleared, after?.enabled, after?.disabledReason]))
+
+        // ③ DB automation 의 실행 기록은 웹훅 단계의 배달 상태를 말한다
+        const auto = (await api('POST', `/data-sources/${ds}/automations`, {
+          name: `바뀌면 알림 ${stamp}`,
+          triggers: [{ type: 'property_edited', propertyId: qty }],
+          actions: [{ type: 'send_webhook', config: { v: 1, url: `http://127.0.0.1:${HOOK_PORT}/ok-${stamp}`, headers: [], properties: [qty] } }],
+        })).body.automation
+        await api('PATCH', `/rows/${row}`, { cells: [{ propertyId: qty, value: { type: 'number', number: 3 } }] })
+        await runAutomationDispatch(new Date(Date.now() + 10_000), { workspaces: [workspaceId] })
+        await runAutomationWebhooks(new Date(Date.now() + 1000), { workspaces: [workspaceId] })
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+        await waitFor(`!!document.querySelector('[data-testid="db-automations-button"]')`, 15000)
+        await clickSelector('[data-testid="db-automations-button"]')
+        const ITEM = `[data-testid="db-automation-item"][data-automation-id="${auto?.id}"]`
+        await waitFor(`!!document.querySelector('${ITEM}')`, 8000)
+        await clickSelector(`${ITEM} [data-testid="db-automation-runs-button"]`)
+        const stepText = await waitFor(`(document.querySelector('${ITEM} [data-testid="db-automation-step"]')?.textContent ?? '') === '1. 웹훅 보내기 — 완료 · 보냄'`, 8000)
+        check('★ 실행 기록의 웹훅 단계는 배달 상태를 함께 말한다 — "완료 · 보냄"', stepText,
+          String(await evaluate(`document.querySelector('${ITEM} [data-testid="db-automation-step"]')?.textContent ?? null`)))
+      } finally {
+        if (savedAllow === undefined) delete process.env.OUTBOUND_ALLOW_HOSTS
+        else process.env.OUTBOUND_ALLOW_HOSTS = savedAllow
+        receiver.closeAllConnections()
+        await new Promise((r) => receiver.close(() => r()))
+      }
+    }
+
     if (sectionIf('개인 필터 · 정렬 — 화면 (2h-2 · F-04-17)')) {
       // 볼 수만 있는 사람(브라우저 세션을 바꾼다)이 도구줄의 필터로 조건을 걸면 **자기 것**으로 저장되고 그 사람의 표만 좁혀진다 — "나만 보는
       // 필터" 표시 · 초기화. 편집자는 자기 개인 것을 "모두에게 저장"한다. 브라우저 세션은 끝에 반드시 소유자로 되돌린다.

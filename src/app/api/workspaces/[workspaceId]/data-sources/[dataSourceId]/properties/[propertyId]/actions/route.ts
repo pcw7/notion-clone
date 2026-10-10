@@ -4,12 +4,13 @@
  *   GET — 액션 목록(그 표를 볼 수 있으면).
  *   PUT — `{ "actions": [{ "type": "edit_property", "config": { "v": 1, "cells": [{ "propertyId", "value" }] } }] }` 로 통째로 바꾼다.
  *         그 표의 `edit_structure` — 잠긴 데이터베이스면 409. 그 표에 맞지 않으면 400 `invalid_action`(+ `problem` · `index`).
+ *   PATCH — `{ "enabled": true | false }` 켜고 끈다(5c-3b — 웹훅이 실패로 멈춘 버튼을 다시 켠다 · 켜면 꺼진 까닭이 지워진다). 문은 PUT 과 같다.
  *
  * 판정은 `automation/button-property.ts` 가 한다.
  */
 
 import { readJsonBody, requireWorkspaceSession } from '@/lib/auth/route-session'
-import { buttonFailureStatus, readButtonActions, setButtonActions, type ButtonResult } from '@/lib/automation/button-property'
+import { buttonFailureStatus, readButtonActions, setButtonActions, setButtonEnabled, type ButtonResult } from '@/lib/automation/button-property'
 
 type Ctx = RouteContext<'/api/workspaces/[workspaceId]/data-sources/[dataSourceId]/properties/[propertyId]/actions'>
 
@@ -36,6 +37,18 @@ export async function PUT(request: Request, ctx: Ctx): Promise<Response> {
   if (!parsed.ok) return parsed.response
   const actions = typeof parsed.body === 'object' && parsed.body !== null ? (parsed.body as { actions?: unknown }).actions : undefined
   const saved = await setButtonActions(session.ctx, dataSourceId, propertyId, actions)
+  if (!saved.ok) return failure(saved)
+  return Response.json({ ok: true, ...saved.value })
+}
+
+export async function PATCH(request: Request, ctx: Ctx): Promise<Response> {
+  const { workspaceId, dataSourceId, propertyId } = await ctx.params
+  const session = await requireWorkspaceSession(workspaceId)
+  if (!session.ok) return session.response
+  const parsed = await readJsonBody(request)
+  if (!parsed.ok) return parsed.response
+  const enabled = typeof parsed.body === 'object' && parsed.body !== null ? (parsed.body as { enabled?: unknown }).enabled : undefined
+  const saved = await setButtonEnabled(session.ctx, dataSourceId, propertyId, enabled)
   if (!saved.ok) return failure(saved)
   return Response.json({ ok: true, ...saved.value })
 }

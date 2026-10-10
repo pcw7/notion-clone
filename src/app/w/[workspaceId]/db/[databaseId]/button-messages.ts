@@ -57,6 +57,15 @@ const PROBLEM: Record<string, string> = {
   plan_required: '이 요금제에서는 웹훅을 보낼 수 없습니다.',
 }
 
+const DISABLED: Record<string, string> = {
+  webhook_failed: '웹훅을 네 번 보내지 못해 꺼졌습니다. 받는 주소가 살아 있는지 확인한 뒤 다시 켜세요.',
+}
+
+/** 꺼진 버튼의 까닭 — 버튼 설정 편집기가 적는다(5c-3b · 정본 ⑮). 까닭이 없으면 사람이 끈 것. */
+export function buttonDisabledMessage(reason: string | null): string {
+  return reason === null ? '꺼진 버튼입니다.' : (DISABLED[reason] ?? '꺼진 버튼입니다.')
+}
+
 /** 버튼 설정의 거절 — 몇 번째 액션의 무엇이 틀렸나. */
 export function buttonActionProblemMessage(problem: string | undefined, index: number | undefined): string {
   const text = PROBLEM[problem ?? ''] ?? '버튼을 저장하지 못했습니다.'

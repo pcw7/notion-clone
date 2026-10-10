@@ -9,6 +9,7 @@
  *   ③ 임대 — 잡혀 있는 배달은 다른 판이 보내지 않는다 · 임대가 지나면 다시 보낸다
  *   ④ 진짜로 — 바깥 요청의 길로 받는 서버가 JSON 과 헤더를 받는다
  *   ⑤ 끝난 배달은 7일 뒤 지운다(보낼 차례인 것은 남는다)
+ *   ⑥ 다시 켜기(5c-3b) — 버튼 설정과 같은 문(잠기면 locked) · 켜면 꺼진 까닭이 지워지고 다시 눌린다
  *
  * 반사실(HANDOFF §3.3): 실패 상한을 빼면 ②, 꺼진 automation 을 보지 않으면 ②, 임대를 보지 않으면 ③, 헤더를 싣지 않으면 ① ④, 보관을
  * 빼면 ⑤ 가 실패한다.
@@ -30,7 +31,8 @@ import { createRow, updateCells } from '../database/row.ts'
 import { setWorkspacePlan } from '../billing/plan.ts'
 import type { OutboundResult } from '../net/outbound.ts'
 import { runDataRetention } from '../notification/retention.ts'
-import { pressButton, setButtonActions } from './button-property.ts'
+import { pressButton, readButtonActions, setButtonActions, setButtonEnabled } from './button-property.ts'
+import { setDatabaseLock } from '../permissions/lock.ts'
 import { runAutomationWebhooks, type WebhookSender } from './webhook-send.ts'
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'
@@ -65,7 +67,7 @@ const unwrap = <T>(r: { ok: true; value: T } | { ok: false; reason: string }): T
 const URL_A = 'https://hooks.example.com/services/T0/B0/secret-a'
 const MIN = 60_000
 
-type Button = { ds: string; qty: string; button: string; row: string; automationId: string }
+type Button = { databaseId: string; ds: string; qty: string; button: string; row: string; automationId: string }
 
 /** 표 하나 · 수량 7 인 행 · 그 행의 수량을 보내는 버튼. */
 async function button(name: string, url = URL_A): Promise<Button> {
@@ -79,7 +81,7 @@ async function button(name: string, url = URL_A): Promise<Button> {
   const saved = unwrap(await setButtonActions(fx.owner.ctx, ds, buttonId, [
     { type: 'send_webhook', config: { v: 1, url, headers: [{ name: 'X-Token', value: 'tok-1' }], properties: [qty] } },
   ]))
-  return { ds, qty, button: buttonId, row, automationId: saved.automationId }
+  return { databaseId: db.id, ds, qty, button: buttonId, row, automationId: saved.automationId }
 }
 
 const press = async (b: Button) => unwrap(await pressButton(fx.owner.ctx, b.row, b.button, randomUUID()))
@@ -223,5 +225,23 @@ describe('⑤ 보관', () => {
     const purged = await runDataRetention(new Date(Date.now() + 8 * 86_400_000), { workspaces: [fx.workspaceId], partitions: false })
     assert.ok(purged.automationDeliveries >= 1)
     assert.deepEqual((await deliveriesOf(b.automationId)).map((d) => d.status), ['pending'])
+  })
+})
+
+describe('⑥ 다시 켜기', () => {
+  test('★ 실패로 꺼진 버튼을 다시 켠다 — 버튼 설정과 같은 문(잠기면 locked) · 까닭이 지워지고 다시 눌린다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const b = await button('다시 켜기 표')
+    await query(`UPDATE automation SET enabled = false, disabled_reason = 'webhook_failed' WHERE id = $1`, [b.automationId])
+    const read = unwrap(await readButtonActions(fx.owner.ctx, b.ds, b.button))
+    assert.deepEqual([read.enabled, read.disabledReason], [false, 'webhook_failed'], '편집기가 꺼진 까닭을 읽는다')
+    unwrap(await setDatabaseLock(fx.owner.ctx, b.databaseId, true))
+    assert.deepEqual(await setButtonEnabled(fx.owner.ctx, b.ds, b.button, true), { ok: false, reason: 'locked' })
+    unwrap(await setDatabaseLock(fx.owner.ctx, b.databaseId, false))
+    assert.deepEqual(await setButtonEnabled(fx.owner.ctx, b.ds, b.button, 'yes'), { ok: false, reason: 'invalid_action', problem: 'invalid' })
+    const enabled = unwrap(await setButtonEnabled(fx.owner.ctx, b.ds, b.button, true))
+    assert.deepEqual([enabled.enabled, enabled.disabledReason], [true, null])
+    assert.deepEqual(await automationOf(b.automationId), { enabled: true, disabled_reason: null })
+    assert.equal((await press(b)).status, 'success', '다시 눌린다')
   })
 })

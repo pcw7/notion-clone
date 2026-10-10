@@ -372,11 +372,20 @@ export type DbAutomationRun = {
  * 실행 기록 — 새것부터 보관 상한(50)만큼. 트리거된 행의 제목은 **보는 사람의 권한으로** 읽는다(정본 화면 ⓓ — relation 의 제목 맵과 같은
  * 셋: 제목 · 볼 수 없음(null) · 키 없음(지워짐)). 문은 정의와 같다.
  */
+/** 웹훅 단계의 배달 상태(정본 [보강] 자동화 엔진 ⑮) — 주소 · 몸 · 응답 본문은 싣지 않는다. */
+export type DeliveryState = { readonly status: string; readonly lastStatus: number | null }
+
 export async function listDbAutomationRuns(
   ctx: SessionContext,
   dataSourceId: string,
   automationId: string,
-): Promise<DbAutomationResult<{ readonly runs: readonly DbAutomationRun[]; readonly titles: Readonly<Record<string, string | null>> }>> {
+): Promise<
+  DbAutomationResult<{
+    readonly runs: readonly DbAutomationRun[]
+    readonly titles: Readonly<Record<string, string | null>>
+    readonly deliveries: Readonly<Record<string, DeliveryState>>
+  }>
+> {
   const listed = await withReadTransaction(async (tx) => {
     const g = await gate(tx, ctx, dataSourceId, false)
     if (typeof g === 'string') return fail(g)
@@ -399,11 +408,17 @@ export async function listDbAutomationRuns(
       triggerPageId: r.trigger_page_id,
       steps: r.steps,
     }))
-    return { ok: true, value: runs } as const
+    // 웹훅 단계의 배달 — 그 실행들의 것만
+    const deliveryRows = await tx.query<{ id: string; status: string; last_status: number | null }>(
+      `SELECT id, status, last_status FROM automation_delivery WHERE run_id = ANY($1::uuid[])`,
+      [runs.map((r) => r.id)],
+    )
+    const deliveries = Object.fromEntries(deliveryRows.map((d) => [d.id, { status: d.status, lastStatus: d.last_status }]))
+    return { ok: true, value: { runs, deliveries } } as const
   })
   if (!listed.ok) return listed
-  const { labels } = await loadRelationLabels(ctx, listed.value.flatMap((r) => (r.triggerPageId === null ? [] : [r.triggerPageId])))
-  return { ok: true, value: { runs: listed.value, titles: labels } }
+  const { labels } = await loadRelationLabels(ctx, listed.value.runs.flatMap((r) => (r.triggerPageId === null ? [] : [r.triggerPageId])))
+  return { ok: true, value: { runs: listed.value.runs, titles: labels, deliveries: listed.value.deliveries } }
 }
 
 /** 실패를 HTTP 로 — 없음 404 · 권한 403 · 나머지 400. */
