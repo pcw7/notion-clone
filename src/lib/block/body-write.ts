@@ -53,6 +53,7 @@ import type { EditorBlock, EditorDoc } from '../editor/document.ts'
 import { isUuid } from '../ids.ts'
 import { effectiveCaps } from '../permissions/effective.ts'
 import { isLocked } from '../permissions/lock.ts'
+import { recordCoalescedActivity } from '../notification/activity.ts'
 import { can } from '../permissions/levels.ts'
 import { MAX_TREE_DEPTH, PAGE_TYPE } from './types.ts'
 import {
@@ -440,8 +441,13 @@ export async function appendDocUpdate(
 
     // 멘션을 넣은 update 도 미루지 않는다 — 밀린 투영은 창의 **마지막** 참여자 세션으로 돌아(`projection-scheduler.ts`)
     // 멘션 알림의 행위자가 엉뚱한 사람이 된다. 곧바로 투영하면 이 참여자가 행위자다(§3.3-141).
+    // 활동 — 사람이 본문을 고쳤다(4d-2 · 참여자의 update 만 · 같은 사람 · 같은 페이지 5분 안이면 접는다)
+    const recordEdit = async () => {
+      if (options.origin === 'editor') await recordCoalescedActivity(tx, ctx, { pageId, type: 'block.updated' })
+    }
     if (options.projection === 'deferred' && !body.touchedPageRefs && !body.touchedMentions) {
       const commit = await body.appendWithoutProjection({ compactEvery: options.compactEvery })
+      if (commit.appended) await recordEdit()
       return commit.appended
         ? ({ ok: true, seq: commit.seq, appended: true, repair: commit.repair } as const)
         : ({ ok: true, seq: commit.seq, appended: false, repair: null } as const)
@@ -453,6 +459,7 @@ export async function appendDocUpdate(
       return { ok: false, reason: result.reason } as const
     }
     const { commit } = result
+    if (commit.appended) await recordEdit()
     return commit.appended
       ? ({ ok: true, seq: commit.seq, appended: true, repair: commit.repair } as const)
       : ({ ok: true, seq: commit.seq, appended: false, repair: null } as const)

@@ -80,6 +80,7 @@ import { finishOrThrow, openPageBody, ownerPageOf, type PageBodyWrite } from './
 import { appendPageRef, removePageRef } from './page-refs.ts'
 import { toPlainText, type RichTextRun } from '../contracts/rich-text.ts'
 import { readPageIcon, type PageIcon } from './page-icon.ts'
+import { recordActivity } from '../notification/activity.ts'
 
 export type MoveErrorCode =
   /** 옮길 페이지가 없거나 다른 워크스페이스거나 휴지통에 있거나 볼 수 없다. */
@@ -415,10 +416,12 @@ export async function movePage(
     }
 
     // 투영이 순서 키를 본문 위치로 다시 매겼을 수 있다 — 돌려줄 키 · 버전은 다시 읽는다.
-    const final = await tx.queryOne<{ order_key: string; version: string }>(
-      `SELECT order_key, version FROM block WHERE id = $1`,
+    const final = await tx.queryOne<{ order_key: string; version: string; parent_id: string }>(
+      `SELECT order_key, version, parent_id FROM block WHERE id = $1`,
       [moving.id],
     )
+    // 활동 — 옮겼다(4d-2 · 어디서 어디로 — id 만)
+    await recordActivity(tx, ctx, { pageId: moving.id, type: 'page.moved', payload: { from: moving.parent_id, to: final.parent_id } })
 
     return {
       pageId: asBlockId(moving.id),

@@ -79,6 +79,24 @@ export async function recordActivity(tx: Tx, ctx: ActivityActor, input: Activity
   return { id: row.id, createdAt: row.created_at }
 }
 
+/** 접는 창 — 같은 사람 · 같은 페이지 · 같은 종류가 이 안에 있으면 새로 남기지 않는다(정본 §3.8 [보강] 활동 기록 ②). */
+export const ACTIVITY_COALESCE_MINUTES = 5
+
+/**
+ * 접어서 남긴다 — 본문 편집(`block.updated`) · 셀 쓰기(`property.updated`)처럼 잇달아 일어나는 것. 같은 사람 · 같은 페이지 · 같은 종류의
+ * 이벤트가 `ACTIVITY_COALESCE_MINUTES` 분 안에 있으면 남기지 않고 null. 접기는 저장할 때 한다 — 조회 때 접으면 타자 하나마다 행이 쌓인다.
+ */
+export async function recordCoalescedActivity(tx: Tx, ctx: ActivityActor, input: ActivityInput): Promise<ActivityEvent | null> {
+  const recent = await tx.queryMaybe<{ id: string }>(
+    `SELECT id FROM activity_event
+      WHERE page_id = $1 AND actor_id = $2 AND type = $3 AND created_at > now() - make_interval(mins => $4)
+      LIMIT 1`,
+    [input.pageId, ctx.userId, input.type, ACTIVITY_COALESCE_MINUTES],
+  )
+  if (recent !== null) return null
+  return recordActivity(tx, ctx, input)
+}
+
 export type StoredEvent = {
   readonly id: string
   readonly actorId: string | null

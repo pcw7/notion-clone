@@ -117,7 +117,7 @@ describe('본문 저장이 멘션을 투영한다', () => {
     assert.equal(inbox[0].preview, '담당:  확인 바랍니다', '멘션 노드는 글자를 싣지 않는다 — 그 블록의 지금 글만 보인다')
 
     const events = await query<{ type: string; payload: Record<string, unknown> }>(
-      `SELECT type, payload FROM activity_event WHERE page_id = $1`,
+      `SELECT type, payload FROM activity_event WHERE page_id = $1 AND type <> 'page.created'`, // 만들기(4d-2)는 이 검사의 것이 아니다
       [pageId],
     )
     assert.deepEqual(events, [{ type: 'user.mentioned', payload: { block_id: blockId } }], 'payload 는 id 만 담는다')

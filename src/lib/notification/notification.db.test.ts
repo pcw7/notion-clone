@@ -207,7 +207,7 @@ describe('알림은 글을 복제하지 않는다 (N3)', () => {
     assert.equal((await deleteComment(member.ctx, commentId)).ok, true)
 
     const events = await query<{ payload: Record<string, unknown> }>(
-      `SELECT payload FROM activity_event WHERE page_id = $1`,
+      `SELECT payload FROM activity_event WHERE page_id = $1 AND type <> 'page.created'`, // 만들기(4d-2)는 이 검사의 것이 아니다
       [pageId],
     )
     assert.ok(events.length >= 1)
@@ -342,7 +342,7 @@ describe('활동 이벤트', () => {
     assert.equal(notifications[0].n, '0', '자기 자신에게는 알리지 않는다')
 
     const events = await query<{ type: string; actor_id: string; block_id: string | null }>(
-      `SELECT type, actor_id, block_id FROM activity_event WHERE page_id = $1`,
+      `SELECT type, actor_id, block_id FROM activity_event WHERE page_id = $1 AND type <> 'page.created'`, // 만들기(4d-2)는 이 검사의 것이 아니다
       [pageId],
     )
     assert.deepEqual(events.map((e) => e.type), ['comment.created'])
