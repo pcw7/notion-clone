@@ -1,10 +1,13 @@
 'use client'
 
 /**
- * 행 페이지의 속성 묶음 — 보이는 속성 · 숨긴 속성 · 레이아웃 편집 (8f-1 · 8f-2 · F-16-03 · F-16-01)
+ * 행 페이지의 속성 묶음 — 제목 아래 고정 · 보이는 속성 · 숨긴 속성 · 레이아웃 편집 (8f-1 · 8f-2 · 3a-2 · F-16-03 · F-16-02 · F-16-01)
  *
- * 정본: 00-canonical-data-model.md §3.6 [보강] 행의 레이아웃 · 16-item-layout.md F-16-03(Property group) · F-16-01(편집 모드)
+ * 정본: 00-canonical-data-model.md §3.6 [보강] 행의 레이아웃 · [보강] 제목 아래 고정
+ *       16-item-layout.md F-16-03(Property group) · F-16-02(Heading · pinned) · F-16-01(편집 모드)
  *
+ *   · 제목 아래 고정 — heading 안의 순서 · 가로로 늘어놓은 레코드(`recordAxis="row"` — 이름이 값 위). 넘치면 줄을 바꾼다(가로 스크롤
+ *     상자는 칸 안의 팝오버를 자른다 — `database-table.tsx`). 값은 같은 셀 편집기로 고친다. 고정한 속성은 속성 묶음에서 빠진다
  *   · 보이는 속성 — 스키마 순서 · 레코드 모양의 표(`DatabaseTable variant="record"`)
  *   · 숨긴 속성 — "숨긴 속성 N개"로 펼친다. 숨김은 표시 규칙이지 접근 제어가 아니다(16 R12) — 값은 남고 여기서 채울 수 있다
  *   · 레이아웃 편집 — 구조를 고칠 수 있는 사람에게만(잠긴 데이터베이스는 닫는다 — `readRowPage`)
@@ -31,13 +34,17 @@ export function RowPropertyGroup(
     columns: ViewColumn[]
     /** 레이아웃의 버전 — 편집 모드가 적용할 때 보낸다. */
     layoutVersion: string
+    /** 제목 아래에 고정한 속성 — heading 안의 순서(3a-2). `columns` 에도 그대로 있다 — 여기서 묶음과 가른다. */
+    pinned: readonly string[]
     /** 레이아웃을 고칠 수 있다(`edit_structure` · 데이터베이스가 잠기지 않았다). */
     canEditLayout: boolean
   },
 ) {
-  const { columns, layoutVersion, canEditLayout, ...table } = props
-  const visible = columns.filter((c) => c.visible)
-  const hidden = columns.filter((c) => !c.visible)
+  const { columns, layoutVersion, pinned, canEditLayout, ...table } = props
+  const pinnedColumns = pinned.flatMap((id) => columns.filter((c) => c.propertyId === id))
+  const inGroup = columns.filter((c) => !pinned.includes(c.propertyId))
+  const visible = inGroup.filter((c) => c.visible)
+  const hidden = inGroup.filter((c) => !c.visible)
   const router = useRouter()
   const [editing, setEditing] = useState(false)
   const [showHidden, setShowHidden] = useState(false)
@@ -72,6 +79,17 @@ export function RowPropertyGroup(
   return (
     <>
       <div hidden={editing} className="flex flex-col gap-2">
+        {pinnedColumns.length > 0 && (
+          <div data-testid="row-pinned-properties" className="border-b border-neutral-100 pb-2 dark:border-neutral-900">
+            <DatabaseTable
+              key={keyOf(pinnedColumns)}
+              {...table}
+              tableName={`${table.tableName} · 제목 아래 고정`}
+              columns={pinnedColumns}
+              recordAxis="row"
+            />
+          </div>
+        )}
         {visible.length > 0 && (
           <div data-testid="row-visible-properties">
             <DatabaseTable key={keyOf(visible)} {...table} columns={visible} />
@@ -114,6 +132,7 @@ export function RowPropertyGroup(
           workspaceId={table.workspaceId}
           dataSourceId={table.dataSourceId}
           columns={columns}
+          pinned={pinned}
           version={layoutVersion}
           refreshing={refreshing}
           onCancel={close}
