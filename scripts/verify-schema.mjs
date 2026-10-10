@@ -4151,6 +4151,41 @@ try {
     await rejects('모르는 조치', put, [randomUUID(), randomUUID(), wsId, 'delete', null, '', '운영자'], 'ck_moderation_action_action')
   }
 
+  console.log('\n[66] 감사 로그 — 쌓기만 · 365일 (0087 / §3.8 끝 [보강] 감사 로그 · 6d-1조각)')
+  {
+    const put = `INSERT INTO audit_event (id, scope, workspace_id, event_type, setting_key, occurred_at) VALUES ($1, $2, $3, $4, $5, $6)`
+    const recent = randomUUID()
+    const old = randomUUID()
+    await client.query(put, [recent, 'workspace', wsId, 'workspace.exported', null, new Date()])
+    await client.query(put, [old, 'workspace', wsId, 'workspace.exported', null, new Date(Date.now() - 400 * 86_400_000)])
+    ok('감사 한 줄 — 정상 경로가 통과한다(지난 시각으로 넣는 것도)')
+
+    const rejects = async (label, sql, params, expect) => {
+      await client.query('SAVEPOINT probe')
+      try {
+        await client.query(sql, params)
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        fail(`${label} — 거부되어야 하는데 통과했다`)
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        const got = e.constraint ?? e.code
+        if (got === expect) ok(`${label} — ${expect} 가 거부함 (${e.code})`)
+        else fail(`${label} — ${expect} 가 아니라 ${got} 에 걸렸다 (${e.message})`)
+      }
+    }
+    await rejects('★ 감사 행을 고친다', `UPDATE audit_event SET metadata = '{"x":1}' WHERE id = $1`, [recent], '23001')
+    await rejects('★ 최근 감사 행을 지운다', `DELETE FROM audit_event WHERE id = $1`, [recent], '23001')
+    await rejects('계정 범위에 워크스페이스', put, [randomUUID(), 'account', wsId, 'account.login', null, new Date()], 'ck_audit_event_account_scope')
+    await rejects('워크스페이스 범위에 워크스페이스 없음', put, [randomUUID(), 'workspace', null, 'workspace.exported', null, new Date()], 'ck_audit_event_account_scope')
+    await rejects('설정 변경인데 키가 없다', put, [randomUUID(), 'workspace', wsId, 'workspace.setting_changed', null, new Date()], 'ck_audit_event_setting')
+    await rejects('설정 변경이 아닌데 키가 있다', put, [randomUUID(), 'workspace', wsId, 'workspace.exported', 'workspace.name', new Date()], 'ck_audit_event_setting')
+    await rejects('모르는 종류', put, [randomUUID(), 'workspace', wsId, 'page.viewed', null, new Date()], 'ck_audit_event_type')
+
+    const gone = await client.query(`DELETE FROM audit_event WHERE id = $1 RETURNING id`, [old])
+    if (gone.rowCount === 1) ok('★ 365일이 지난 행은 지운다(보관 기간)')
+    else fail('365일이 지난 행을 지우지 못했다')
+  }
+
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
 } catch (e) {

@@ -30,6 +30,7 @@ import { randomBytes } from 'node:crypto'
 import type { SessionContext, WorkspaceRole } from '../auth/session-context.ts'
 import { entitlement } from '../billing/entitlement.ts'
 import { query } from '../db/pool.ts'
+import { recordForContextIn } from '../audit/audit.ts'
 import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
 import { dropGrantsOf, grantAccessIn, shareGateIn, type AclFailure } from '../permissions/acl.ts'
 import { hashInviteToken, INVITE_TTL_DAYS } from './invite.ts'
@@ -184,6 +185,8 @@ export async function admitGuestIn(
   )
   if (row === null) throw new Error('이미 이 워크스페이스의 사람이다 — 게스트로 들이지 않는다')
   await membershipChanged(tx, ctx, userId)
+  // 감사 로그(F-11-12 — 6d-1) — 들인 사람이 행위자다
+  await recordForContextIn(tx, ctx, 'workspace.member_joined', { target: { type: 'user', id: userId }, metadata: { role: 'guest', via: joinMethod } })
   return null
 }
 
@@ -249,6 +252,8 @@ async function pendGuestInvite(tx: Tx, ctx: SessionContext, pageId: string, emai
                    created_at = now(), expires_at = EXCLUDED.expires_at`,
     [ctx.workspaceId, email, hashInviteToken(token), ctx.userId, String(INVITE_TTL_DAYS), pageId, level],
   )
+  // 감사 로그(F-11-12 — 6d-1)
+  await recordForContextIn(tx, ctx, 'workspace.member_invited', { target: { type: 'page', id: pageId }, metadata: { email, role: 'guest', level } })
   return token
 }
 
@@ -341,6 +346,7 @@ export async function promoteGuest(ctx: SessionContext, userId: string): Promise
     )
     const teamspaces = await joinDefaultTeamspaces(tx, ctx.workspaceId, userId, 'member')
     await membershipChanged(tx, ctx, userId)
+    await recordForContextIn(tx, ctx, 'workspace.member_role_changed', { target: { type: 'user', id: userId }, metadata: { from: 'guest', to: 'member' } })
     return { ok: true, value: { teamspaces } } as const
   })
 }
@@ -362,6 +368,7 @@ export async function removeGuest(ctx: SessionContext, userId: string): Promise<
       [ctx.workspaceId, userId],
     )
     await membershipChanged(tx, ctx, userId)
+    await recordForContextIn(tx, ctx, 'workspace.member_removed', { target: { type: 'user', id: userId }, metadata: { role: 'guest', pages: dropped.nodes } })
     return { ok: true, value: { pages: dropped.nodes } } as const
   })
 }

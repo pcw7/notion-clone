@@ -40,6 +40,8 @@
  */
 
 import type { SessionContext } from '../auth/session-context.ts'
+import { recordForContextIn } from '../audit/audit.ts'
+import { withTransaction } from '../db/tx.ts'
 import { toPlainText } from '../contracts/rich-text.ts'
 import { readFile } from '../file/file.ts'
 import { streamExportZip } from './archive.ts'
@@ -105,6 +107,18 @@ export async function prepareExport(
   if (!estimate.fits) return { ok: false, reason: 'too_large' }
 
   return { ok: true, value: { plan, estimate, fileName: zipFileName(snapshot.value) } }
+}
+
+/**
+ * 내보내기를 감사 로그에 남긴다(F-11-12 — 6d-1) — 준비가 통과한 뒤에. 내보내기는 읽기만 하는 명령이라 따로 쓴다(정본 [보강] 감사 로그 ②).
+ */
+export async function recordExport(ctx: SessionContext, scope: ExportScopeInput): Promise<void> {
+  await withTransaction((tx) =>
+    recordForContextIn(tx, ctx, 'workspace.exported', {
+      target: scope.kind === 'workspace' ? { type: 'workspace', id: ctx.workspaceId } : { type: 'page', id: scope.rootId },
+      metadata: { scope: scope.kind },
+    }),
+  )
 }
 
 /**

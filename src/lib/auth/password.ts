@@ -19,6 +19,7 @@
 import { randomUUID } from 'node:crypto'
 
 import type { SessionContext } from './session-context.ts'
+import { recordAuditIn } from '../audit/audit.ts'
 import { query, queryMaybe } from '../db/pool.ts'
 import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
 import { isAcceptablePassword } from './password-policy.ts'
@@ -79,12 +80,15 @@ async function checkCurrent(tx: Tx, ctx: SessionContext, stored: string, current
   return (await verifyPassword(current, stored)) ? null : 'wrong_password'
 }
 
-const recordEvent = (tx: Tx, ctx: SessionContext, kind: string) =>
-  tx.query(`INSERT INTO auth_event (at, user_id, kind, meta) VALUES (now(), $1, $2, $3)`, [
+const recordEvent = async (tx: Tx, ctx: SessionContext, kind: string): Promise<void> => {
+  await tx.query(`INSERT INTO auth_event (at, user_id, kind, meta) VALUES (now(), $1, $2, $3)`, [
     ctx.userId,
     kind,
     JSON.stringify({ session_id: ctx.sessionId }),
   ])
+  // 감사 로그(F-11-12 · 계정 범위 — 6d-1)
+  await recordAuditIn(tx, { type: 'account.security_changed', workspaceId: null, actorUserId: ctx.userId, sessionId: ctx.sessionId, metadata: { change: kind } })
+}
 
 /** 설정 화면이 그리는 상태. */
 export async function passwordStatus(ctx: SessionContext): Promise<PasswordStatus> {

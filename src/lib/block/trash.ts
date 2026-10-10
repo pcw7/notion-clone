@@ -60,6 +60,7 @@
  */
 
 import type { SessionContext } from '../auth/session-context.ts'
+import { recordForContextIn } from '../audit/audit.ts'
 import type { BlockId } from '../ids.ts'
 import { asBlockId } from '../ids.ts'
 import { withReadTransaction, withTransaction, type Tx } from '../db/tx.ts'
@@ -356,6 +357,11 @@ export async function purgePage(ctx: SessionContext, pageId: BlockId): Promise<P
         WHERE id = $1 AND workspace_id = $2`,
       [target.id, ctx.workspaceId],
     )
+    // 감사 로그(F-11-12 — 6d-1) — 사람이 휴지통에서 지운 것만(GC 의 일괄 삭제는 사람의 행위가 아니다)
+    await recordForContextIn(tx, ctx, 'page.permanently_deleted', {
+      target: { type: 'page', id: target.id },
+      metadata: { descendants: descendants.length },
+    })
 
     return { pageId: asBlockId(target.id), purgedDescendants: descendants.length }
   })

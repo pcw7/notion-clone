@@ -35,6 +35,7 @@
 import { randomUUID } from 'node:crypto'
 
 import type { SessionContext } from '../auth/session-context.ts'
+import { recordForContextIn } from '../audit/audit.ts'
 import { withTransaction, type Tx } from '../db/tx.ts'
 import { can, capabilitiesOf, isDefinedLevel, unionCaps, type Level } from './levels.ts'
 import { effectiveCaps, principalsOf, resolveCaps, type AclRow } from './effective.ts'
@@ -279,6 +280,10 @@ export async function grantAccessIn(
     }
 
     await writeGrant(tx, ctx.workspaceId, node, principal, level, ctx.userId)
+    await recordForContextIn(tx, ctx, 'page.permission_changed', {
+      target: { type: 'page', id: pageId },
+      metadata: { change: 'grant', principal: principalColumns(principal), level },
+    })
     return { ok: true } as const
   }
 }
@@ -391,6 +396,7 @@ export async function revokeAccess(
       await rescope(tx, ctx.workspaceId, node, node.id, await parentScope(tx, ctx, node))
     }
 
+    await recordForContextIn(tx, ctx, 'page.permission_changed', { target: { type: 'page', id: pageId }, metadata: { change: 'revoke', principal: p } })
     return { ok: true } as const
   })
 }
@@ -462,6 +468,7 @@ export async function stopInheriting(ctx: SessionContext, pageId: string): Promi
 
     // 트리거 ③: 절단 → 경계가 된다.
     await rescope(tx, ctx.workspaceId, node, node.perm_scope_id, node.id)
+    await recordForContextIn(tx, ctx, 'page.permission_changed', { target: { type: 'page', id: pageId }, metadata: { change: 'stop_inheriting' } })
     return { ok: true } as const
   })
 }
@@ -555,6 +562,7 @@ export async function resumeInheriting(ctx: SessionContext, pageId: string): Pro
     if (!(await hasEntries(tx, pageId))) {
       await rescope(tx, ctx.workspaceId, node, node.id, await parentScope(tx, ctx, node))
     }
+    await recordForContextIn(tx, ctx, 'page.permission_changed', { target: { type: 'page', id: pageId }, metadata: { change: 'resume_inheriting' } })
     return { ok: true } as const
   })
 }

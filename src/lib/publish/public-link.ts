@@ -19,6 +19,7 @@
  */
 
 import type { SessionContext } from '../auth/session-context.ts'
+import { recordForContextIn } from '../audit/audit.ts'
 import { plainTitleOf } from '../block/page.ts'
 import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
 import { isUuid } from '../ids.ts'
@@ -213,6 +214,7 @@ export async function publishPage(ctx: SessionContext, pageId: string): Promise<
     // 운영자가 내린 페이지 — 해제 · 다시 게시로 우회하지 못한다(상태는 블록에 있다 · 정본 [보강] 모더레이션 조치 ⑤)
     if ((await moderationIn(tx, node)) !== null) return { ok: false, reason: 'moderated' } as const
 
+    const prior = await loadLink(tx, pageId)
     const link = await tx.queryOne<LinkRow>(
       `INSERT INTO public_link (node_id, enabled, token, created_by, updated_by)
        VALUES ($1, true, $2, $3, $3)
@@ -224,6 +226,8 @@ export async function publishPage(ctx: SessionContext, pageId: string): Promise<
        RETURNING enabled, token, robots_directive, ai_crawler, expires_at`,
       [pageId, newPublicToken(), ctx.userId],
     )
+    // 감사 로그(F-11-12 — 6d-1) — 켜졌을 때만(이미 게시돼 있었으면 바뀐 것이 없다)
+    if (prior?.enabled !== true) await auditPublish(tx, ctx, pageId, { change: 'publish' })
     return { ok: true, value: await stateIn(tx, ctx, node, link, true, true) } as const
   })
 }
@@ -241,10 +245,11 @@ export async function unpublishPage(ctx: SessionContext, pageId: string): Promis
     if (!can(caps, 'view')) return { ok: false, reason: 'not_found' } as const
     if (!can(caps, 'manage_perm')) return { ok: false, reason: 'forbidden' } as const
 
-    await tx.query(
-      `UPDATE public_link SET enabled = false, updated_by = $2, updated_at = now() WHERE node_id = $1 AND enabled`,
+    const turnedOff = await tx.query<{ node_id: string }>(
+      `UPDATE public_link SET enabled = false, updated_by = $2, updated_at = now() WHERE node_id = $1 AND enabled RETURNING node_id`,
       [pageId, ctx.userId],
     )
+    if (turnedOff.length > 0) await auditPublish(tx, ctx, pageId, { change: 'unpublish' })
     const policy = await readSecurityPolicyIn(tx, ctx.workspaceId)
     return { ok: true, value: await stateIn(tx, ctx, node, await loadLink(tx, pageId), policy.allowPublish, true) } as const
   })
@@ -278,9 +283,15 @@ export async function updatePublicLink(ctx: SessionContext, pageId: string, patc
       [pageId, input.robots ?? null, input.rotateToken, newPublicToken(), ctx.userId],
     )
     if (link === null) return { ok: false, reason: 'not_published' } as const
+    await auditPublish(tx, ctx, pageId, { change: 'settings', ...(input.robots === undefined ? {} : { robots: input.robots }), rotated: input.rotateToken })
     const policy = await readSecurityPolicyIn(tx, ctx.workspaceId)
     return { ok: true, value: await stateIn(tx, ctx, node, link, policy.allowPublish, true) } as const
   })
+}
+
+/** 감사 로그(F-11-12 — 6d-1) — 토큰은 싣지 않는다(주소가 자격이다). */
+function auditPublish(tx: Tx, ctx: SessionContext, pageId: string, metadata: Record<string, unknown>): Promise<void> {
+  return recordForContextIn(tx, ctx, 'page.publish_changed', { target: { type: 'page', id: pageId }, metadata })
 }
 
 function parsePatch(raw: unknown): { robots?: RobotsDirective; rotateToken: boolean } | null {
