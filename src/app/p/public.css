@@ -76,3 +76,17 @@
 .pub-image img { display: block; max-width: 100%; height: auto; border-radius: 2px; }
 .pub-image figcaption { font-size: 0.875rem; color: #6b7280; margin-top: 0.25rem; }
 .pub-icon-image { width: 4.5rem; height: 4.5rem; object-fit: cover; border-radius: 4px; margin-bottom: 0.5rem; }
+
+/* 6b-1b — 신고 */
+.pub-footer { margin-top: 4rem; padding-top: 1rem; border-top: 1px solid rgba(55, 53, 47, 0.12); font-size: 0.75rem; color: #9ca3af; }
+.pub-footer a { color: inherit; }
+.pub-report-form { display: flex; flex-direction: column; gap: 1rem; }
+.pub-report-form fieldset { display: flex; flex-direction: column; gap: 0.5rem; border: 0; padding: 0; }
+.pub-report-form legend { font-weight: 600; margin-bottom: 0.5rem; }
+.pub-report-reason { display: flex; align-items: baseline; gap: 0.5rem; cursor: pointer; }
+.pub-report-detail { display: flex; flex-direction: column; gap: 0.25rem; }
+.pub-report-detail textarea { border: 1px solid rgba(55, 53, 47, 0.25); border-radius: 4px; padding: 0.5rem; font: inherit; background: transparent; }
+.pub-report-form button { align-self: flex-start; border-radius: 4px; padding: 0.375rem 1rem; background: #dc2626; color: #fff; }
+.pub-report-error { color: #dc2626; font-size: 0.875rem; }
+/* 사람에게는 보이지 않는 칸(허니팟) — display:none 은 봇이 건너뛰는 경우가 있어 화면 밖으로 */
+.pub-report-trap { position: absolute; left: -10000px; width: 1px; height: 1px; overflow: hidden; }

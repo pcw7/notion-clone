@@ -15684,6 +15684,93 @@ async function main() {
       check('취소한 것은 정책을 켜도 닫혀 있다', after.body?.published === false)
     }
 
+    if (sectionIf('공개 화면의 신고 (6b-1b · F-17-08)')) {
+      // 세션 없이 공개 화면 → "이 페이지 신고" → 사유 · 설명 → 접수. 서버에 신고 한 줄 · 케이스 · reported. 하위 페이지는 그 페이지가
+      // 대상 · 사유 없음은 그 까닭을 말한다 · 허니팟은 받은 척하고 남기지 않는다 · 다른 출처는 받지 않는다 · 공개 밖은 404.
+      // 브라우저 세션은 끝에 반드시 되돌린다.
+      const stamp = Date.now()
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const newPage = async (title, parentPageId) =>
+        (await api('POST', '/pages', parentPageId === undefined ? { title } : { title, parentPageId })).body.page.id
+      const reportsOf = async (pageId) => dbQuery(`SELECT reason, detail FROM abuse_report WHERE target_id = $1 ORDER BY created_at`, [pageId])
+      const post = (token, fields, origin = BASE) => fetch(`${BASE}/p/${token}/report/submit`, {
+        method: 'POST',
+        redirect: 'manual',
+        headers: { 'content-type': 'application/x-www-form-urlencoded', origin, 'user-agent': `e2e-report-${stamp}-${randomUUID()}` },
+        body: new URLSearchParams(fields).toString(),
+      })
+
+      const root = await newPage(`신고할 공개 위키 ${stamp}`)
+      const sub = await newPage(`신고할 하위 ${stamp}`, root)
+      const secret = await newPage(`공개 아님 ${stamp}`)
+      const token = (await api('PUT', `/pages/${root}/publish`)).body?.token
+
+      try {
+        await send('Network.deleteCookies', { name: 'nc_session', domain: 'localhost', path: '/' })
+        await send('Page.navigate', { url: `${BASE}/p/${token}` })
+        await waitFor(`!!document.querySelector('[data-testid="public-report-link"]')`, 15000)
+        const link = await evaluate(`document.querySelector('[data-testid="public-report-link"]')?.getAttribute('href')`)
+        await clickSelector('[data-testid="public-report-link"]')
+        const form = await waitFor(`!!document.querySelector('[data-testid="public-report-form"]')`, 10000)
+        const options = await evaluate(`[...document.querySelectorAll('input[name="reason"]')].map((i) => i.value)`)
+        const robots = await evaluate(`document.querySelector('meta[name="robots"]')?.content ?? ''`)
+        check('공개 화면의 "이 페이지 신고" — 신고 화면 · 사유 넷 · 색인하지 않는다',
+          link === `/p/${token}/report` && form && JSON.stringify(options) === JSON.stringify(['phishing_spam', 'inappropriate', 'dmca', 'other']) && robots.startsWith('noindex'),
+          JSON.stringify([link, options, robots]))
+
+        await clickSelector('[data-testid="public-report-reason-inappropriate"]')
+        await evaluate(`(() => { const t = document.querySelector('[data-testid="public-report-detail"]'); t.focus(); return true })()`)
+        await typeText('혐오 표현이 있습니다')
+        await clickSelector('[data-testid="public-report-submit"]')
+        const sent = await waitFor(`!!document.querySelector('[data-testid="public-report-sent"]')`, 10000)
+        const rows = await reportsOf(root)
+        const state = (await dbQuery(`SELECT moderation_state FROM block WHERE id = $1`, [root]))[0]?.moderation_state
+        const where = await evaluate(`({ href: location.href, error: document.querySelector('[data-testid="public-report-error"]')?.textContent ?? null, checked: document.querySelector('input[name="reason"]:checked')?.value ?? null })`)
+        check('★ 신고하면 접수 화면 · 서버에 신고 한 줄(사유 · 설명) · 대상은 reported · 공개는 그대로',
+          sent && rows.length === 1 && rows[0].reason === 'inappropriate' && rows[0].detail === '혐오 표현이 있습니다' && state === 'reported'
+            && (await fetch(`${BASE}/p/${token}`)).status === 200,
+          JSON.stringify([sent, rows, state, where]))
+
+        // 하위 페이지 — 그 페이지가 대상
+        await send('Page.navigate', { url: `${BASE}/p/${token}/${sub}` })
+        await waitFor(`!!document.querySelector('[data-testid="public-report-link"]')`, 15000)
+        const subLink = await evaluate(`document.querySelector('[data-testid="public-report-link"]')?.getAttribute('href')`)
+        const subPost = await post(token, { page: sub, reason: 'phishing_spam', detail: '' })
+        check('하위 페이지의 신고 — 그 페이지가 대상이다',
+          subLink === `/p/${token}/report?page=${sub}` && subPost.status === 303 && (subPost.headers.get('location') ?? '').includes('sent=1') && (await reportsOf(sub)).length === 1,
+          JSON.stringify([subLink, subPost.status, subPost.headers.get('location')]))
+
+        // 사유 없음 · 허니팟 · 다른 출처 · 공개 밖
+        const noReason = await post(token, { detail: 'x' })
+        await send('Page.navigate', { url: new URL(noReason.headers.get('location'), BASE).href })
+        await waitFor(`!!document.querySelector('[data-testid="public-report-error"]')`, 10000)
+        const errorText = await evaluate(`document.querySelector('[data-testid="public-report-error"]')?.textContent ?? ''`)
+        check('사유가 없으면 그 까닭을 말한다(서버가 다시 묻는다)', errorText === '신고 사유를 하나 고르세요.', errorText)
+
+        const before = (await reportsOf(root)).length
+        const trap = await post(token, { reason: 'other', detail: '봇', website: 'http://spam.example' })
+        const evil = await post(token, { reason: 'other', detail: '다른 사이트에서' }, 'https://evil.example')
+        const after = (await reportsOf(root)).length
+        check('★ 허니팟은 받은 척하고 남기지 않는다 · 다른 출처의 신고는 받지 않는다',
+          (trap.headers.get('location') ?? '').includes('sent=1') && (evil.headers.get('location') ?? '').includes('error=bad_origin') && after === before,
+          JSON.stringify([trap.headers.get('location'), evil.headers.get('location'), before, after]))
+
+        const closed = [
+          (await fetch(`${BASE}/p/${token}/report?page=${secret}`)).status,
+          (await post(token, { page: secret, reason: 'other' })).status,
+        ]
+        check('★ 공개 밖의 페이지는 신고 화면도 신고도 404', JSON.stringify(closed) === '[404,404]', JSON.stringify(closed))
+      } finally {
+        await send('Network.setCookie', { name: 'nc_session', value: session, domain: 'localhost', path: '/', httpOnly: true })
+      }
+    }
+
     if (sectionIf('개인 필터 · 정렬 — 화면 (2h-2 · F-04-17)')) {
       // 볼 수만 있는 사람(브라우저 세션을 바꾼다)이 도구줄의 필터로 조건을 걸면 **자기 것**으로 저장되고 그 사람의 표만 좁혀진다 — "나만 보는
       // 필터" 표시 · 초기화. 편집자는 자기 개인 것을 "모두에게 저장"한다. 브라우저 세션은 끝에 반드시 소유자로 되돌린다.
