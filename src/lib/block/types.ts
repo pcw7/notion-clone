@@ -52,7 +52,7 @@ export type MvpBlockType = (typeof MVP_BLOCK_TYPES)[number]
  *
  * ⚠ 순서가 뜻을 갖는다 — 첫 항목(`paragraph`)이 새 블록의 기본형이다(`editor/schema.ts`). 더하는 것은 뒤에 붙인다.
  */
-export const BODY_BLOCK_TYPES = [...MVP_BLOCK_TYPES, 'code', 'table_of_contents', 'breadcrumb', 'equation'] as const
+export const BODY_BLOCK_TYPES = [...MVP_BLOCK_TYPES, 'code', 'table_of_contents', 'breadcrumb', 'equation', 'button'] as const
 export type BodyBlockType = (typeof BODY_BLOCK_TYPES)[number]
 
 /**
@@ -119,6 +119,11 @@ export type BlockTypeSpec = {
    */
   readonly expression?: boolean
   /**
+   * `properties.label`(문자열)을 담는가 — 버튼 블록(F-08-06 · 자동화 5e-1). 본문을 읽을 때 이 칸을 정화한다(`block/props.ts` — 문자열이
+   * 아니거나 비면 지우고 `MAX_BUTTON_LABEL` 을 넘으면 자른다 · `block/button.ts`). 액션은 본문이 아니라 automation 에 있다.
+   */
+  readonly label?: boolean
+  /**
    * 배치의 틀이다(컬럼 목록 · 컬럼 — Phase 2 1c). 글 · 핸들 · 선택이 없고 화면은 자식만 그린다. 편집기의 이웃 찾기 · 블록 선택은 이
    * 틀을 건너뛰고 그 안의 블록을 본다(`pm-blocks.ts` `visibleBlocks`).
    */
@@ -181,6 +186,10 @@ export const BLOCK_TYPES: Readonly<Record<BlockType, BlockTypeSpec>> = Object.fr
   // 텍스트를 담지 않아 원자다(식은 편집기 밖의 입력창에서 고친다). **노드는 `equation_block`** — 인라인 수식의 노드가 이미 `equation` 이다
   // (코드 ↔ `code_block` 과 같은 사상 · 저장 포맷이라 바꾸면 마이그레이션이다).
   equation: { hasRichText: false, canHaveChildren: false, supportsColor: false, nodeName: 'equation_block', expression: true },
+
+  // 버튼 블록(F-08-06 · 자동화 5e-1) — 누르면 액션을 실행하는 단추. 내용은 라벨 하나(`properties.label`) · 글 · 자식 · 색 없음 · 원자.
+  // 액션은 `automation(kind='button_block', host_page_id = 이 블록)` 에 있다(정본 §3.10 [보강] 자동화 엔진 ⑰).
+  button: { hasRichText: false, canHaveChildren: false, supportsColor: false, label: true },
 
   // 컬럼(Phase 2 1c · F-01-12) — 2계층 고정의 배치 틀. 컬럼 목록의 자식은 컬럼뿐(둘 이상 — 하나면 풀린다), 컬럼의 자식은 아무 블록(컬럼
   // 목록은 아니다 — 중첩 금지). 색 · 글이 없다. 폭(`format.column_ratio`)은 1c-2.

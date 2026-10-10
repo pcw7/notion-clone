@@ -15242,6 +15242,98 @@ async function main() {
         JSON.stringify([filled[due], filled[copy]]))
     }
 
+    if (sectionIf('버튼 블록 (5e-1 · F-08-06)')) {
+      // 빈 줄에서 `/버튼` → 그 줄이 버튼 블록이 되고 설정 창이 곧바로 열린다 → 이름과 "다른 표에 행 추가"를 넣고 저장하면 단추에 이름이
+      // 서고(본문의 라벨 · 서버의 액션) 누르면 그 표에 행이 선다. 일하는 행이 없어 값 바꾸기는 없다. 다시 열면 그대로. 자기 데이터를 만든다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const setSelect = (selector, value) => evaluate(`(() => {
+        const s = document.querySelector(${JSON.stringify(selector)})
+        if (!s) return false
+        s.value = ${JSON.stringify(value)}
+        s.dispatchEvent(new Event('change', { bubbles: true }))
+        return true
+      })()`)
+      const fill = async (selector, text) => {
+        const found = await evaluate(`(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (!el) return false; el.focus(); el.select(); return true })()`)
+        if (found) await typeText(text)
+      }
+      const db = (await api('POST', '/databases', { name: `버튼 블록의 표 ${stamp}` })).body.database
+      const qty = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '수량', type: 'number' })).body.property.id
+      const rowsOfTarget = async () => (await api('GET', `/views/${db.defaultViewId}/rows`)).body?.rows ?? []
+      const page = (await api('POST', '/pages', { title: `버튼 블록 ${stamp}` })).body.page.id
+      const line = randomUUID()
+      await saveBody(page, { blocks: [{ id: line, type: 'paragraph', title: [], properties: {}, format: {}, children: [] }] })
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+      await waitFor(`!!document.querySelector('[data-block-id="${line}"] p')`, 15000)
+      let focused = false
+      for (let i = 0; i < 20 && !focused; i += 1) {
+        await clickSelector(`[data-block-id="${line}"] p`)
+        focused = await waitFor(`document.activeElement?.classList.contains('ProseMirror') && document.querySelector('[data-block-id="${line}"]')?.contains(window.getSelection()?.anchorNode ?? null)`, 500)
+      }
+      check('전제 — 빈 줄에 캐럿이 섰다', focused)
+
+      const BLOCK = `[data-block-id="${line}"] div.blk-button`
+      const SETTINGS = '[data-testid="button-block-settings"]'
+      await typeText('/')
+      await typeText('버튼')
+      await waitFor(`!!document.querySelector('[role="listbox"][aria-label="블록 삽입"]')`, 3000)
+      await key('Enter')
+      check('★ /버튼 — 그 줄이 버튼 블록이 되고 설정 창이 곧바로 열린다 · 라벨은 "버튼"',
+        await waitFor(`!!document.querySelector('${BLOCK}') && !!document.querySelector('${SETTINGS}') && document.querySelector('${BLOCK} .blk-button-press')?.textContent === '버튼'`, 8000),
+        String(await evaluate(`document.querySelector('[data-block-id="${line}"]')?.innerHTML?.slice(0, 200) ?? '(없음)'`)))
+
+      // ① 이름 · 다른 표에 행 추가(수량 3)
+      await fill(`${SETTINGS} [data-testid="button-block-label"]`, `주문 ${stamp}`)
+      await waitFor(`!!document.querySelector('${SETTINGS} [data-testid="button-block-add-row-action"]')`, 8000)
+      const noEdit = await evaluate(`!document.querySelector('${SETTINGS} [data-testid="button-block-add-action"]')`)
+      await clickSelector(`${SETTINGS} [data-testid="button-block-add-row-action"]`)
+      await waitFor(`[...(document.querySelector('${SETTINGS} [data-testid="button-block-target"]')?.options ?? [])].some((o) => o.value === '${db.dataSourceId}')`, 8000)
+      await setSelect(`${SETTINGS} [data-testid="button-block-target"]`, db.dataSourceId)
+      await waitFor(`!!document.querySelector('${SETTINGS} [data-testid="button-block-add-value"]')`, 8000)
+      await clickSelector(`${SETTINGS} [data-testid="button-block-add-value"]`)
+      await waitFor(`!!document.querySelector('${SETTINGS} [data-testid="button-block-property"]')`, 3000)
+      await setSelect(`${SETTINGS} [data-testid="button-block-property"]`, qty)
+      await waitFor(`document.querySelector('${SETTINGS} [data-testid="button-block-value"]')?.type === 'number'`, 3000)
+      await fill(`${SETTINGS} [data-testid="button-block-value"]`, '3')
+      await clickSelector(`${SETTINGS} [data-testid="button-block-save"]`)
+      const closed = await waitFor(`!document.querySelector('${SETTINGS}')`, 8000)
+      const labeled = await waitFor(`document.querySelector('${BLOCK} .blk-button-press')?.textContent === '주문 ${stamp}'`, 5000)
+      let bodyLabel = null
+      for (let i = 0; i < 30 && bodyLabel !== `주문 ${stamp}`; i += 1) {
+        bodyLabel = (await readBody(page)).doc.blocks.find((b) => b.id === line)?.properties?.label ?? null
+        if (bodyLabel !== `주문 ${stamp}`) await sleep(300)
+      }
+      const saved = (await api('GET', `/pages/${page}/buttons/${line}`)).body
+      check('★ 저장하면 단추에 이름이 선다 — 라벨은 본문에 · 액션은 서버에(다른 표에 행 추가 · 수량 3) · 값 바꾸기는 없다(일하는 행 없음)',
+        noEdit && closed && labeled && bodyLabel === `주문 ${stamp}` && saved?.actions?.length === 1 && saved.actions[0].type === 'add_page_to'
+          && saved.actions[0].config.dataSourceId === db.dataSourceId && saved.actions[0].config.cells?.[0]?.value?.number === 3,
+        JSON.stringify([noEdit, closed, labeled, bodyLabel, saved?.actions]))
+
+      // ② 누르면 그 표에 행이 선다
+      const before = (await rowsOfTarget()).length
+      await clickSelector(`${BLOCK} .blk-button-press`)
+      const done = await waitFor(`(document.querySelector('${BLOCK} .blk-button-result')?.textContent ?? '') === '완료'`, 10000)
+      const after = await rowsOfTarget()
+      check('★ 누르면 그 표에 행이 선다 — 수량 3 · 결과 "완료"',
+        done && after.length === before + 1 && after.some((r) => r.properties?.[qty]?.number === 3),
+        JSON.stringify([await evaluate(`document.querySelector('${BLOCK} .blk-button-result')?.textContent ?? null`), before, after.length]))
+
+      // ③ 다시 열면 그대로
+      await clickSelector(`${BLOCK} [data-testid="blk-button-settings"]`)
+      await waitFor(`!!document.querySelector('${SETTINGS} [data-testid="button-block-action"]')`, 8000)
+      const reopened = await evaluate(`({ label: document.querySelector('${SETTINGS} [data-testid="button-block-label"]')?.value,
+        actions: document.querySelectorAll('${SETTINGS} [data-testid="button-block-action"]').length })`)
+      await clickSelector(`${SETTINGS} [data-testid="button-block-cancel"]`)
+      const cancelled = await waitFor(`!document.querySelector('${SETTINGS}')`, 3000)
+      check('다시 열면 이름과 액션이 그대로', cancelled && reopened.label === `주문 ${stamp}` && reopened.actions === 1, JSON.stringify([cancelled, reopened]))
+    }
+
     if (sectionIf('개인 필터 · 정렬 — 화면 (2h-2 · F-04-17)')) {
       // 볼 수만 있는 사람(브라우저 세션을 바꾼다)이 도구줄의 필터로 조건을 걸면 **자기 것**으로 저장되고 그 사람의 표만 좁혀진다 — "나만 보는
       // 필터" 표시 · 초기화. 편집자는 자기 개인 것을 "모두에게 저장"한다. 브라우저 세션은 끝에 반드시 소유자로 되돌린다.

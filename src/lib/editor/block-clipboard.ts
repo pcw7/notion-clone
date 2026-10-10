@@ -56,6 +56,7 @@ import type { EditorView } from '@tiptap/pm/view'
 
 import { codeCaptionText, codeLanguageOf, fencedCode } from '../block/code.ts'
 import { equationDisplayLines } from '../block/equation.ts'
+import { buttonPlainText } from '../block/button.ts'
 import { cellsOf, TABLE_TYPE } from '../block/table.ts'
 import { isKnownBlockType, specOf, PAGE_TYPE } from '../block/types.ts'
 import { textRun, toPlainText } from '../contracts/rich-text.ts'
@@ -171,6 +172,10 @@ export function plainTextForBlocks(blocks: readonly EditorBlock[]): string {
         case 'equation':
           // 블록 수식(Phase 2 1a) — 내보내기와 같은 `$$` 울타리.
           lines.push(...equationDisplayLines((block.properties ?? {}) as Record<string, unknown>).map((line) => `${indent}${line}`))
+          break
+        case 'button':
+          // 버튼 블록(자동화 5e-1) — 내보내기와 같은 `[버튼: …]`.
+          lines.push(`${indent}${buttonPlainText((block.properties ?? {}) as Record<string, unknown>)}`)
           break
         case 'code':
           // 코드 블록(8a-1) — 울타리 · 언어. 첫 줄만 들여 쓰면 둘째 줄부터 목록 밖으로 나간다.

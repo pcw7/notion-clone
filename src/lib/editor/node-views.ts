@@ -23,6 +23,8 @@ import { TOC_TYPE } from '../block/toc.ts'
 import { breadcrumbNodeView, type BreadcrumbViewDeps } from './breadcrumb-view.ts'
 import { codeNodeView, type CodeViewDeps } from './code-view.ts'
 import { equationNodeView, type EquationViewDeps } from './equation-view.ts'
+import { buttonNodeView, type ButtonViewDeps } from './button-view.ts'
+import { BUTTON_TYPE } from '../block/button.ts'
 import { inlineEquationNodeView, type InlineEquationViewDeps } from './inline-equation-view.ts'
 import { imageNodeView, type ImageViewDeps } from './image-view.ts'
 import { mentionDisplay, mentionTargetOf } from './mention-label.ts'
@@ -31,7 +33,7 @@ import type { PageIcon } from '../block/page-icon.ts'
 import { nodeNameOf } from './schema.ts'
 import { tocNodeView, type TocViewDeps } from './toc-view.ts'
 
-export type NodeViewDeps = ImageViewDeps & CodeViewDeps & TocViewDeps & BreadcrumbViewDeps & EquationViewDeps & InlineEquationViewDeps & {
+export type NodeViewDeps = ImageViewDeps & CodeViewDeps & TocViewDeps & BreadcrumbViewDeps & EquationViewDeps & InlineEquationViewDeps & ButtonViewDeps & {
   isCollapsed: (blockId: string) => boolean
   toggleCollapsed: (blockId: string) => void
   /** 하위 페이지로 이동. */
@@ -269,6 +271,8 @@ export function createNodeViews(deps: NodeViewDeps): Record<
     [nodeNameOf(BREADCRUMB_TYPE)]: (node, view, _getPos, decorations) => breadcrumbNodeView(node, view, decorations, deps),
     // 블록 수식(Phase 2 1a) — 노드는 `equation_block`(인라인 수식이 `equation` 이다).
     [nodeNameOf(EQUATION_TYPE)]: (node, view, getPos) => equationNodeView(node, view, getPos, deps),
+    // 버튼 블록(자동화 5e-1) — 라벨의 단추 · 설정은 편집기 밖의 오버레이.
+    [nodeNameOf(BUTTON_TYPE)]: (node, view, getPos) => buttonNodeView(node, view, getPos, deps),
     mention: (node, view, getPos) => mentionNodeView(node, view, getPos, deps),
     // 인라인 수식(Phase 2 1b) — rich text 의 원자. 그리기는 블록 수식과 같은 한 곳(`equation-render.ts`).
     equation: (node, view, getPos) => inlineEquationNodeView(node, view, getPos, deps),

@@ -4003,6 +4003,39 @@ try {
     else fail(`ix_automation_delivery_finished 가 어긋났다: ${idx.rows[0]?.indexdef}`)
   }
 
+  console.log('\n[62] 버튼 블록 (0083 / §3.10 [보강] 자동화 엔진 ⑰ · 5e-1조각)')
+  {
+    const pageBlock = randomUUID()
+    const buttonBlock = randomUUID()
+    for (const [id, type, parent] of [[pageBlock, 'page', randomUUID()], [buttonBlock, 'button', pageBlock]]) {
+      await client.query(
+        `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key, ancestor_path, perm_scope_id, properties, format,
+                            created_at, last_edited_at)
+         VALUES ($1, $2, $3, 'block', $4, 'a0', '{}', $5, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+        [id, wsId, type, parent, pageBlock],
+      )
+    }
+    const put = `INSERT INTO automation (id, workspace_id, kind, host_page_id, created_by) VALUES ($1, $2, 'button_block', $3, $4)`
+    await client.query(put, [randomUUID(), wsId, buttonBlock, userId])
+    ok('버튼 블록의 automation — 정상 경로가 통과한다')
+    await client.query('SAVEPOINT probe')
+    try {
+      await client.query(put, [randomUUID(), wsId, buttonBlock, userId])
+      await client.query('ROLLBACK TO SAVEPOINT probe')
+      fail('★ 같은 블록의 두 번째 automation — 거부되어야 하는데 통과했다')
+    } catch (e) {
+      await client.query('ROLLBACK TO SAVEPOINT probe')
+      if (e.constraint === 'ux_automation_button_block') ok(`★ 블록마다 automation 하나 — ux_automation_button_block 가 거부함 (${e.code})`)
+      else fail(`ux_automation_button_block 가 아니라 ${e.constraint ?? e.code} 에 걸렸다 (${e.message})`)
+    }
+    await client.query('SAVEPOINT cascade')
+    await client.query(`DELETE FROM block WHERE id = $1`, [buttonBlock])
+    const left = (await client.query(`SELECT count(*)::int AS n FROM automation WHERE host_page_id = $1`, [buttonBlock])).rows[0].n
+    if (left === 0) ok('★ 블록이 지워지면 그 automation 도 함께 지워진다(CASCADE)')
+    else fail(`블록을 지웠는데 automation ${left}개가 남았다`)
+    await client.query('ROLLBACK TO SAVEPOINT cascade')
+  }
+
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
 } catch (e) {
