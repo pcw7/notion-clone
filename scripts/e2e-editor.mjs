@@ -4304,7 +4304,7 @@ async function main() {
       })()`)
       await sleep(3000)
       const forced = await evaluate(`({
-        discarded: document.body.textContent.includes('서버가 받지 못한 편집'),
+        discarded: (document.body?.textContent ?? '').includes('서버가 받지 못한 편집'),
         overlay: !!document.querySelector('${LANG_MENU}') || !!document.querySelector('${CAPTION_INPUT}'),
         checked: document.querySelector('[data-block-id="${cb.todo}"] input.blk-checkbox').checked,
         wrap: document.querySelector('${CB(cb.code)}').dataset.wrap,
@@ -8379,7 +8379,7 @@ async function main() {
 
       await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${copyId}` })
       check('★ 사본은 열리는 진짜 페이지다 — 본문과 하위 페이지가 화면에 선다',
-        (await waitFor(`document.body.textContent.includes(${JSON.stringify(marker)})`, 15000))
+        (await waitFor(`(document.body?.textContent ?? '').includes(${JSON.stringify(marker)})`, 15000))
           && (await evaluate(`document.querySelectorAll('.blk-editor .blk-page-link').length === 1
             && [...document.querySelectorAll('.blk-editor .blk-page-link')].every((e) => e.textContent === '하위 문서')`)),
         await evaluate(`[...document.querySelectorAll('.blk-editor .blk-page-link')].map((e) => e.textContent).join() || '(참조 없음)'`))
@@ -8393,7 +8393,7 @@ async function main() {
       const before = await pageCount()
       await clickOn('[data-testid="page-duplicate"]')
       check('★ 페이지의 "복제"를 누르면 사본으로 옮겨 간다 — 본문이 따라와 있다',
-        (await waitFor(`!location.pathname.endsWith('/${source}') && document.body.textContent.includes(${JSON.stringify(marker)})`, 15000))
+        (await waitFor(`!location.pathname.endsWith('/${source}') && (document.body?.textContent ?? '').includes(${JSON.stringify(marker)})`, 15000))
           // 개수는 한 번만 세면 refresh 와 경주한다(7c-7 반사실 빌드에서 한 번 걸렸다) — 자랄 때까지 기다린다.
           && (await waitFor(`document.querySelectorAll('nav[aria-label="페이지 트리"] a').length > ${before}`, 8000)),
         `${await evaluate('location.pathname')} · 트리 ${before} → ${await pageCount()}`)
@@ -8404,7 +8404,7 @@ async function main() {
       const beforeSide = await pageCount()
       await clickOn(`[aria-label=${JSON.stringify(`복제 원본 ${stamp} 복제`)}]`)
       check('★ 사이드바의 ⧉ 로도 복제한다 — 사본으로 옮겨 간다',
-        (await waitFor(`document.body.textContent.includes(${JSON.stringify(marker)})`, 15000))
+        (await waitFor(`(document.body?.textContent ?? '').includes(${JSON.stringify(marker)})`, 15000))
           && (await pageCount()) > beforeSide,
         `트리 ${beforeSide} → ${await pageCount()}`)
 
