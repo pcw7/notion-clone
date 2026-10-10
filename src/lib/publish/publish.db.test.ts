@@ -14,13 +14,14 @@
  *   ⑥ [6a-3] 게시된 링크의 설정 — 검색 엔진 노출 · ★ 주소 바꾸기(옛 주소는 곧바로 닫힌다) · 게시되지 않았으면 not_published · 틀린 몸체 ·
  *      누가(manage_perm)
  *   ⑦ [6a-3] ★ 위 페이지의 게시로 공개되었는가(`coveredBy`) — 가장 가까운 것 · 볼 수 없는 위 페이지는 id · 제목 없이 · 상속을 끊었거나
- *      정책이 막았거나 해제했으면 덮지 않는다
+ *      정책이 막았거나 해제했으면 덮지 않는다 *   ⑧ [6a-4] ★ 이동 미리보기의 웹 공개 — 게시 안으로 옮기면 공개 · 밖으로 옮기면 내려감 · 자기 게시는 옮겨도 남음 · 정책이 막으면 공개가 아님
  */
 
 import { test, describe, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 
 import { createPage, titleFromPlainText } from '../block/page.ts'
+import { previewMove } from '../block/move-page.ts'
 import { restorePage, trashPage } from '../block/trash.ts'
 import { createDatabase } from '../database/database.ts'
 import { query, queryOne } from '../db/pool.ts'
@@ -476,5 +477,33 @@ describe('⑦ [6a-3] ★ 위 페이지의 게시로 공개되었는가', () => {
     const state = await readPublishState(viewer.ctx, sub)
     assert.ok(state.ok, JSON.stringify(state))
     assert.deepEqual(state.value.coveredBy, { pageId: null, title: null })
+  })
+})
+
+// ── ⑧ 이동 미리보기 ───────────────────────────────────────────────────
+
+describe('⑧ [6a-4] ★ 이동 미리보기의 웹 공개', () => {
+  test('게시 안으로 · 밖으로 · 자기 게시는 남는다 · 정책이 막으면 공개가 아니다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { boss } = await office()
+    const site = await topOf(boss)
+    const inside = await childOf(boss, site)
+    const loose = await topOf(boss)
+    const own = await topOf(boss)
+    published(await publishPage(boss.ctx, site))
+    published(await publishPage(boss.ctx, own))
+
+    const into = await previewMove(boss.ctx, loose, site)
+    assert.deepEqual(into.web, { own: false, before: false, after: true }, '게시 안으로 옮기면 공개된다')
+    const out = await previewMove(boss.ctx, inside, { privateTop: true })
+    assert.deepEqual(out.web, { own: false, before: true, after: false }, '게시 밖으로 옮기면 내려간다')
+    const stays = await previewMove(boss.ctx, own, loose)
+    assert.deepEqual(stays.web, { own: true, before: true, after: true }, '자기 게시는 옮겨도 남는다')
+
+    // 미리보기는 되돌린다 — 실제로는 아무것도 옮기지 않았다
+    assert.equal(await opens(published(await publishPage(boss.ctx, site)).token!, inside), 'open')
+
+    await withPolicy(boss, false)
+    assert.deepEqual((await previewMove(boss.ctx, loose, site)).web, { own: false, before: false, after: false }, '정책이 막으면 아무것도 공개가 아니다')
   })
 })

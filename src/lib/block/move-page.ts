@@ -72,6 +72,7 @@ import { asBlockId } from '../ids.ts'
 import { withReadTransaction, withRolledBackTransaction, withTransaction, type Tx } from '../db/tx.ts'
 import { enterPrivateRoot, grantToRestorer, inheritFromWorkspace, isScopeBoundary, leavePrivateRoot, leaveWorkspaceRoot } from '../permissions/acl.ts'
 import { effectiveCaps, readableScopes, scopesWith, teamspaceCaps, viewersOf } from '../permissions/effective.ts'
+import { webExposureIn } from '../publish/public-access.ts'
 import { can, type CapSet } from '../permissions/levels.ts'
 import { listMyTeamspaces } from '../workspace/teamspace.ts'
 import { specOf, isKnownBlockType, MAX_TREE_DEPTH } from './types.ts'
@@ -457,6 +458,11 @@ export type MovePreview = {
    * 여전히 M명이 접근 가능"*). 개인으로 옮길 때 가장 중요하다: 이 페이지는 나만 보게 돼도 하위는 그대로 열려 있다.
    */
   readonly keptBelow: { readonly pages: number; readonly people: number }
+  /**
+   * 웹 공개(6a-4 — 06 엣지 *"이동으로 상속 원천이 바뀌어도 public_link 는 노드 로컬이라 살아남는다 → 이동 시 공개 상태 경고 필수"*) —
+   * 옮기기 전과 뒤에 이 페이지가 웹에서 열리는가 · 자기 게시인가(자기 게시는 옮겨도 남는다).
+   */
+  readonly web: { readonly own: boolean; readonly before: boolean; readonly after: boolean }
 }
 
 /** 미리보기가 싣는 이름의 수(쪽마다). 나머지는 수로만 말한다. */
@@ -468,6 +474,7 @@ const NOOP_PREVIEW: MovePreview = {
   gain: { count: 0, names: [] },
   keep: 0,
   keptBelow: { pages: 0, people: 0 },
+  web: { own: false, before: false, after: false },
 }
 
 /**
@@ -490,7 +497,9 @@ export async function previewMove(ctx: SessionContext, pageId: BlockId, destinat
     const pageKey = plan.moving.id
 
     const before = (await viewersOf(tx, ctx.workspaceId, [pageKey])).get(pageKey) ?? new Set<string>()
+    const webBefore = await webExposureIn(tx, ctx.workspaceId, pageKey)
     const placed = await relocateSubtree(tx, ctx, plan.moving, plan.target)
+    const webAfter = await webExposureIn(tx, ctx.workspaceId, pageKey)
 
     // 하위의 **다른 스코프** — 따로 공유했거나 상속을 끊은 하위 페이지. 같은 스코프는 정의상 이 페이지와 권한이 같다.
     const below = await tx.query<{ scope: string; pages: number }>(
@@ -532,6 +541,7 @@ export async function previewMove(ctx: SessionContext, pageId: BlockId, destinat
       gain: await side(gain),
       keep: [...now].filter((u) => before.has(u)).length,
       keptBelow: { pages: pagesBelow, people: peopleBelow.size },
+      web: { own: webAfter.own, before: webBefore.open, after: webAfter.open },
     } satisfies MovePreview
   })
 }

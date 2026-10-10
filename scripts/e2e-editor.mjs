@@ -7144,7 +7144,12 @@ async function main() {
         await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/settings?s=workspace.general` })
         check('소유자의 설정 — 일반 절에 전체 내보내기가 있다(8g-2 — 홈에서 옮겼다)',
           await waitFor(`document.querySelector('[data-testid="export-button"]')?.textContent === '워크스페이스 내보내기'`, 15000))
-        await clickOn('[data-testid="export-button"]')
+        // 패널이 설 때까지 누른다 — 버튼의 글자는 서버가 그린 HTML 이라 화면이 살아나기(hydration) 전에 누른 클릭은 버려진다. 전체 판(서버가
+        // 바쁘다)에서만 패널이 서지 않아 요약 · ZIP 둘이 떨어졌다
+        for (let i = 0; i < 5; i += 1) {
+          await clickOn('[data-testid="export-button"]')
+          if (await waitFor(`!!document.querySelector('[data-testid="export-panel"]')`, 3000)) break
+        }
         // 표의 수는 앞 절들이 만든 것에 따라 달라진다(7c-4 가 teamspace 에 표를 만든다) — 소유자가 볼 수 있는 표의 수로 묻는다.
         const visibleTables = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/databases`, { headers: authed })).json()).databases.length
         check('★ 워크스페이스 요약은 표와 그 행까지 센다', await summaryMatches(`/데이터베이스 ${visibleTables} · 행 \\d+ ·/`), await exportPanelText())
@@ -9194,8 +9199,8 @@ async function main() {
       check('★ 사이드바의 "설정"으로 연다 — 첫 절은 내 계정의 프로필',
         await waitFor(`location.pathname === ${JSON.stringify(`/w/${workspaceId}/settings`)} && document.querySelector('[data-testid="settings-title"]')?.textContent === '프로필'`, 15000),
         JSON.stringify([await evaluate('location.pathname'), await title()]))
-      check('★ 소유자의 내비 — 내 계정(프로필 · 환경설정 · 보안) · 워크스페이스(일반 · 사람 · 보안)',
-        JSON.stringify(await navSections()) === JSON.stringify(['account.profile', 'account.preferences', 'account.security', 'workspace.general', 'workspace.people', 'workspace.security', 'workspace.plan']),
+      check('★ 소유자의 내비 — 내 계정(프로필 · 환경설정 · 보안) · 워크스페이스(일반 · 사람 · 보안 · 요금제 · 감사 로그)',
+        JSON.stringify(await navSections()) === JSON.stringify(['account.profile', 'account.preferences', 'account.security', 'workspace.general', 'workspace.people', 'workspace.security', 'workspace.plan', 'workspace.audit']),
         JSON.stringify(await navSections()))
 
       // 내 이름 — Enter 로 저장 · 공백을 정리한 값이 남는다
@@ -15874,6 +15879,58 @@ async function main() {
       } finally {
         await setWorkspacePlan(workspaceId, before)
       }
+    }
+
+    if (sectionIf('옮기기의 웹 공개 경고 (6a-4 · F-06-08)')) {
+      // 워크스페이스 최상위의 두 페이지 — 볼 수 있는 사람은 같다. 그래도 게시된 페이지 밑으로 옮기면 웹에 공개되므로 미리보기가 묻고
+      // 그렇다고 말한다 · 확인하면 그 공개 주소 아래에서 열린다 · 게시된 페이지를 옮기면 옮겨도 공개된 채라고 묻지 않고 옮긴다.
+      const stamp = Date.now()
+      const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
+      const newTop = async (title) => (await (await fetch(pagesUrl, { method: 'POST', headers: authed, body: JSON.stringify({ title }) })).json()).page.id
+      const site = await newTop(`게시된 위키 ${stamp}`)
+      const lone = await newTop(`옮겨 들어갈 문서 ${stamp}`)
+      const token = (await (await fetch(`${pagesUrl}/${site}/publish`, { method: 'PUT', headers: authed })).json()).token
+      const openPicker = async () => {
+        for (let i = 0; i < 5; i += 1) {
+          await clickSelector('[data-testid="move-open"]')
+          if (await waitFor(`!!document.querySelector('[data-testid="move-picker"]')`, 3000)) return true
+        }
+        return false
+      }
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${lone}` })
+      await waitFor(`!!document.querySelector('[data-testid="move-open"]')`, 15000)
+      await openPicker()
+      const siteOption = `[data-testid="move-to-page"][data-page-id="${site}"]`
+      await waitFor(`!!document.querySelector('${siteOption}')`, 5000)
+      await clickSelector(siteOption)
+      const asked = await waitFor(`!!document.querySelector('[data-testid="move-preview-web"]')`, 10000)
+      const webLine = await evaluate(`document.querySelector('[data-testid="move-preview-web"]')?.textContent ?? ''`)
+      const stillClosed = (await fetch(`${BASE}/p/${token}/${lone}`)).status
+      check('★ 볼 수 있는 사람이 같아도 게시된 페이지 밑으로 옮기면 묻는다 — 웹에 공개된다고 · 묻는 동안은 아직 닫혀 있다',
+        asked && webLine.includes('웹에 공개됩니다') && stillClosed === 404, JSON.stringify([webLine, stillClosed]))
+
+      await clickSelector('[data-testid="move-preview-confirm"]')
+      await waitFor(`!document.querySelector('[data-testid="move-picker"]')`, 15000)
+      let opened = 0
+      for (let i = 0; i < 20 && opened !== 200; i += 1) {
+        opened = (await fetch(`${BASE}/p/${token}/${lone}`)).status
+        if (opened !== 200) await sleep(250)
+      }
+      check('확인하면 옮긴다 — 그 공개 주소 아래에서 열린다', opened === 200, String(opened))
+
+      // 게시된 페이지 자신을 옮긴다 — 사람도 웹 공개도 그대로라 묻지 않는다(자기 게시는 옮겨도 남는다)
+      const home = await newTop(`받을 문서 ${stamp}`)
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${site}` })
+      await waitFor(`!!document.querySelector('[data-testid="move-open"]')`, 15000)
+      await openPicker()
+      const homeOption = `[data-testid="move-to-page"][data-page-id="${home}"]`
+      await waitFor(`!!document.querySelector('${homeOption}')`, 5000)
+      await clickSelector(homeOption)
+      const settled = await waitFor(`!document.querySelector('[data-testid="move-picker"]') || !!document.querySelector('[data-testid="move-preview"]')`, 15000)
+      const noPreview = !(await evaluate(`!!document.querySelector('[data-testid="move-preview"]')`))
+      check('게시된 페이지는 옮겨도 공개된 채 — 바뀌는 것이 없어 묻지 않고 옮긴다 · 주소는 그대로 열린다',
+        settled && noPreview && (await fetch(`${BASE}/p/${token}`)).status === 200, String(noPreview))
     }
 
     if (sectionIf('개인 필터 · 정렬 — 화면 (2h-2 · F-04-17)')) {

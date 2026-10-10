@@ -16,14 +16,17 @@ export type MovePreviewView = {
   readonly gain: MovePreviewSideView
   readonly keep: number
   readonly keptBelow: { readonly pages: number; readonly people: number }
+  /** 웹 공개의 앞뒤(6a-4) — 옮기기 전 · 뒤에 웹에서 열리는가 · 자기 게시인가. */
+  readonly web: { readonly own: boolean; readonly before: boolean; readonly after: boolean }
 }
 
 /**
- * 한 번 더 물을까 — **볼 수 있는 사람이 바뀔 때만**. 같은 사람들이 그대로 보면 곧바로 옮긴다(그때 묻는 것은 소음이다).
- * 하위의 공유(`keptBelow`)만 있고 바뀌는 사람이 없으면 묻지 않는다 — 이동 전에도 그랬던 것이다.
+ * 한 번 더 물을까 — **볼 수 있는 사람이 바뀔 때만**(워크스페이스 안의 사람이든 웹이든). 같은 사람들이 그대로 보면 곧바로 옮긴다(그때 묻는
+ * 것은 소음이다). 하위의 공유(`keptBelow`)만 있고 바뀌는 사람이 없으면 묻지 않는다 — 이동 전에도 그랬던 것이다. 웹 공개가 바뀌면(위
+ * 페이지의 게시 안으로 · 밖으로) 묻는다 — 6a-4.
  */
 export function moveNeedsConfirm(preview: MovePreviewView): boolean {
-  return !preview.noop && (preview.lose.count > 0 || preview.gain.count > 0)
+  return !preview.noop && (preview.lose.count > 0 || preview.gain.count > 0 || preview.web.before !== preview.web.after)
 }
 
 /** 사람들을 한 줄로 — 이름을 받았으면 이름(넘치면 "외 N명"), 못 받았으면 수만. */
@@ -44,6 +47,14 @@ export function movePreviewLines(preview: MovePreviewView): { readonly key: stri
       key: 'below',
       text: `하위 페이지 ${preview.keptBelow.pages}개는 이 페이지를 못 보는 ${preview.keptBelow.people}명이 여전히 봅니다 — 따로 준 공유는 옮겨도 남습니다`,
     })
+  }
+  // 웹 공개(6a-4) — 06 엣지 *"이동 시 공개 상태 경고 필수"*
+  if (preview.web.own && preview.web.after) {
+    lines.push({ key: 'web', text: '이 페이지는 웹에 게시되어 있어 옮겨도 주소를 아는 누구나 봅니다 — 게시는 공유 메뉴에서 취소합니다' })
+  } else if (!preview.web.before && preview.web.after) {
+    lines.push({ key: 'web', text: '옮기면 위 페이지의 웹 게시로 이 페이지와 하위 페이지가 웹에 공개됩니다' })
+  } else if (preview.web.before && !preview.web.after) {
+    lines.push({ key: 'web', text: '옮기면 웹 게시 밖으로 나가 웹에서 더는 열리지 않습니다' })
   }
   return lines
 }
