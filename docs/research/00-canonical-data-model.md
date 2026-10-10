@@ -65,6 +65,7 @@
 | `row_position` | DB | 뷰별·그룹별 수동 행 순서 | 04 |
 | `view_user_override` | DB | 개인 필터/정렬 | 04 |
 | `page_layout` / `layout_tab` / `layout_module` | IL | 행 페이지 화면 정의. data_source 당 최대 1벌 — 없으면 기본(lazy · §3.6 [보강] 8f-2) | 16, 03 |
+| `page_layout_history` | IL | **[추가 3e-1]** 레이아웃의 직전 버전 한 단계 — 되돌리기(§3.6 [보강] 레이아웃의 직전 버전) | 16 |
 | `acl_entry` | PM | **권한의 유일한 저장 지점.** deny 계층 없음 | 02, 04, 06, 07 |
 | `block_acl_meta` | PM | 상속 차단 플래그와 머티리얼라이즈 시각 | 06 |
 | `level_capability` | PM | (대상종류, 레벨) → capability 매핑. 정수 서열 비교 금지 | 06 |
@@ -85,6 +86,7 @@
 | `discussion` / `comment` / `reaction` | MISC(05) | 코멘트 스레드. **CRDT 밖 관계형 테이블** | 05, 11 |
 | `automation` / `automation_trigger` / `automation_action` / `automation_run` | MISC(08) | 버튼·DB 자동화 정의와 실행 로그 | 08, 15 |
 | `file` | MISC(01/09) | blob 참조와 refcount | 01, 09, 11 |
+| `scheduled_job` | MISC | **[추가 4a-1]** 공용 스케줄러 — "시각이 되면 실행"의 단일 행 큐(GC · 리마인더 · 만료 · 반복) · `FOR UPDATE SKIP LOCKED`(§3.10 [보강] 공용 스케줄러) | 마스터 §6 · 11 |
 | `plan` / `plan_entitlement` / `billing_subscription` | MISC(13) | 플랜 → 기능/한도 매핑. **코드가 아니라 데이터** | 13, 15, 17 |
 | `external_sync_source` | XS | 외부 커넥션 + 범위 → data_source 바인딩 (구 `external_binding`) | 15 |
 | `external_connection` / `external_field_map` / `external_row_link` / `sync_run` / `sync_issue` / `user_external_identity` / `external_write_back` | XS | 외부 동기화 부속 | 15 |
@@ -2372,7 +2374,8 @@ CREATE TABLE device_offline_manifest (         -- 오프라인 권한 회수 축
 >    · **S5** — 버전이 담은 이미지 블록의 파일만큼 `file.ref_count` 를 올린다. 지금은 버전을 지우는 GC 가 없어 내리지 않는다
 > ④ **보관 기간** — `expires_at` 은 만들 때 그 워크스페이스의 요금제로 정해 고정한다(초판의 주석). Free 7일 · Plus 30일 · Business 90일 ·
 >    Enterprise 무제한(`'infinity'`) — F-11-01 *"플랜 차이는 보관 기간뿐"*. 엔타이틀먼트 표(PE1)가 아직 없어 그 값은 한 함수에 둔다
->    (파일 크기 상한과 같은 처지 — 8k). 지난 버전은 목록에 서지 않고, 열면 `expired`(410)다. 지우는 GC 는 아직 없다.
+>    (파일 크기 상한과 같은 처지 — 8k). 지난 버전은 목록에 서지 않고, 열면 `expired`(410)다. ~~지우는 GC 는 아직 없다~~ **지우는 GC 는
+>    공용 스케줄러의 첫 일이다(§3.10 [보강] 공용 스케줄러 · 4a-1) — 가장 최근 버전 · 복원이 가리키는 버전은 남긴다 · S5 참조를 내린다.**
 > ⑤ **누가 보는가** — 그 페이지를 고칠 수 있는 사람(`edit_content`)이다(F-11-01 *"`Can edit` 이상"*). 볼 수만 있으면 `forbidden`(403),
 >    볼 수 없으면 `not_found`(404). 잠긴 페이지도 기록은 본다(읽기다 — 복원이 잠금을 묻는다). 미리보기의 하위 페이지 · 멘션의 이름과
 >    아이콘은 **지금의 권한으로 거른 맵**으로 준다(본문과 같은 규칙 — 옛 버전이 지금 볼 수 없는 페이지를 가리킬 수 있다).
@@ -3016,6 +3019,52 @@ CREATE TABLE external_sync_source (            -- 구 external_binding. 정본 �
 > ③ **쓴 양은 게이트의 셈과 같다** — 활성 게스트 + 받아들이지 않은 게스트 초대의 이메일(같은 SQL 을 쓴다).
 > ④ **고르개는 서버의 규칙을 그대로 보인다**(표시 전용) — teamspace 공개 범위의 private 는 요금제가 허락하지 않으면 막고 "요금제 필요"를 붙인다.
 > 이미 private 인 teamspace 의 설정에서는 막지 않는다(서버는 바꿀 때만 묻는다). 거부는 서버가 다시 한다(`plan_required`).
+
+
+**[보강] 공용 스케줄러 — `scheduled_job` 하나** ⟨히스토리 · 활동 4a-1 / 마이그레이션 0068⟩
+
+> 마스터 문서 §6 *"스케줄러는 하나만 만든다. 리마인더 · 반복 템플릿 · 히스토리 GC · verification 만료 · resync 가 전부 '시각이 되면
+> 실행'이다. 세 벌 만들면 세 벌 다 미묘하게 틀린다"* · 같은 표가 BullMQ(Redis) 또는 pg-boss 를 들었다. 초판의 표 목록에는 작업 표가
+> 없다. **둘 다 쓰지 않고 표 하나를 둔다** — 근거: (a) pg-boss 는 자기 스키마(`pgboss.*`)를 자기 마이그레이션으로 소유한다 — 이 저장소의
+> 규칙(*"스키마는 SQL 로 쓰고 애플리케이션은 읽기만 한다"*)과 부딪힌다 (b) BullMQ 는 일을 Valkey 에 두어 "이 행을 지웠으면 그 일도
+> 넣는다"를 한 트랜잭션으로 할 수 없다 — 리마인더 · 만료는 DB 쓰기와 같은 트랜잭션에서 일을 넣어야 한다 (c) 필요한 것은 작다 —
+> `FOR UPDATE SKIP LOCKED` 로 여러 워커가 겹치지 않게 가져가는 행 큐.
+>
+> ```sql
+> CREATE TABLE scheduled_job (
+>   id           uuid PRIMARY KEY,
+>   kind         text NOT NULL CHECK (kind IN (...)),          -- 소비자가 들어올 때마다 늘린다(마이그레이션)
+>   run_at       timestamptz NOT NULL,
+>   payload      jsonb NOT NULL DEFAULT '{}' CHECK (jsonb_typeof(payload) = 'object'),
+>   dedupe_key   text NULL,                                      -- 살아 있는 일은 키마다 하나(부분 UNIQUE)
+>   attempts     int NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+>   locked_until timestamptz NULL,                               -- 가져간 워커의 임대 — 지나면 다른 워커가 다시 가져간다
+>   last_error   text NULL,
+>   dead_at      timestamptz NULL,                               -- 다섯 번 실패하면 멈춘다(지우지 않는다 — 사람이 본다)
+>   created_at   timestamptz NOT NULL DEFAULT now(),
+>   CHECK (dead_at IS NULL OR locked_until IS NULL)
+> );
+> CREATE UNIQUE INDEX … ON scheduled_job (dedupe_key) WHERE dedupe_key IS NOT NULL AND dead_at IS NULL;
+> CREATE INDEX … ON scheduled_job (run_at) WHERE dead_at IS NULL;
+> ```
+>
+> ① **가져가기** — 때가 된(`run_at ≤ now`) · 임대가 없거나 지난 · 죽지 않은 일을 `FOR UPDATE SKIP LOCKED` 로 잠그고 임대(`locked_until`)를
+>    건 뒤 커밋하고, 일은 그 바깥에서 한다(긴 일이 행 잠금을 오래 쥐지 않게). 워커가 죽으면 임대가 지나 다른 워커가 다시 가져간다 —
+>    **일은 두 번 돌아도 같은 결과여야 한다**(멱등).
+> ② **끝나면 행을 지운다** — 기록은 남기지 않는다(표가 쌓이지 않게). 주기 일은 끝날 때 다음 실행을 같은 키로 다시 넣는다 — 키의 부분
+>    UNIQUE 가 "살아 있는 주기 일은 하나"를 지킨다. 워커가 뜰 때도 주기 일을 넣어 본다(이미 있으면 그대로).
+> ③ **실패하면 물러난다** — `attempts` 를 올리고 `last_error` 를 적고 1분 · 2분 · 4분 … 뒤로 미룬다. 다섯 번째 실패면 `dead_at` 을 적고
+>    멈춘다(행은 남는다).
+> ④ **시각은 하나** — 실행기의 `now` 를 SQL 에 넘긴다(검사가 시각을 정한다 · DB 시계와 앱 시계를 섞지 않는다).
+> ⑤ **누가 돌리나** — 별도 프로세스(`npm run worker` — 협업 서버처럼)다. 세션 없이 도는 **시스템 주체**라 권한을 묻지 않는다 — 일마다
+>    무엇을 해도 되는지는 그 일의 규칙이 정한다(예: 버전 GC 는 만료된 것만).
+>
+> **첫 소비자 — 버전 GC(F-11-03 · `version_gc`)**: 만료된(`expires_at < now`) 버전을 지운다. 단 ⓐ 페이지의 **가장 최근 버전은 남긴다**
+> (11 F-11-03 *"최소 1개는 보관 기간과 무관하게 유지"*) ⓑ **다른 버전이 `restored_from` 으로 가리키는 버전은 남긴다** — 가리키는 쪽이
+> 더 나중에 만료되므로 그것이 지워진 다음 판에 지워진다(`restored_from` 의 FK 를 SET NULL 로 바꾸면 `reason='restore' ⇔ restored_from`
+> CHECK 와 부딪힌다). 지울 때 그 버전이 담은 파일 참조(S5)를 기록할 때와 같은 셈으로 내리고 행을 지운 뒤(한 트랜잭션), 커밋하고 나서
+> 바이트를 저장소에서 지운다(실패하면 고아로 남는다 — 저장소 고아 쓸기는 파일 GC 와 함께). 한 판에 200개 — 남았으면 곧 다시, 다
+> 지웠으면 한 시간 뒤.
 
 ---
 
