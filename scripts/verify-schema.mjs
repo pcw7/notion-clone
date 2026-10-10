@@ -3472,6 +3472,33 @@ try {
     else fail('죽은 일이 키를 막았다')
   }
 
+  console.log('\n[50] 휴지통 자동 비우기 (0069 / §3.4 [보강] 휴지통 자동 비우기 · 4b-1조각)')
+  {
+    const put = `INSERT INTO scheduled_job (id, kind, run_at, dedupe_key) VALUES ($1, $2, now(), $3)`
+    await client.query('SAVEPOINT probe')
+    try {
+      await client.query(put, [randomUUID(), 'trash_purge', `probe-${randomUUID()}`])
+      ok('★ 일의 종류에 trash_purge 가 있다 — 두 번째 소비자를 넣을 수 있다')
+    } catch (e) {
+      fail(`trash_purge 를 넣지 못했다 (${e.constraint ?? e.code} — ${e.message})`)
+    }
+    await client.query('ROLLBACK TO SAVEPOINT probe')
+    try {
+      await client.query(put, [randomUUID(), 'trash_purge_x', null])
+      await client.query('ROLLBACK TO SAVEPOINT probe')
+      fail('모르는 일이 통과했다 — CHECK 를 넓히다 목록을 잃었다')
+    } catch (e) {
+      await client.query('ROLLBACK TO SAVEPOINT probe')
+      if (e.constraint === 'ck_scheduled_job_kind') ok(`모르는 일은 여전히 거부된다 — ck_scheduled_job_kind (${e.code})`)
+      else fail(`모르는 일이 ck_scheduled_job_kind 가 아니라 ${e.constraint ?? e.code} 에 걸렸다`)
+    }
+    const index = await client.query(
+      `SELECT indexdef FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'ix_data_source_purge_due'`,
+    )
+    if (/WHERE \(lifecycle = 'trashed'/.test(index.rows[0]?.indexdef ?? '')) ok('만료가 된 소스 휴지통의 부분 색인 — 휴지통에 있는 것만')
+    else fail(`ix_data_source_purge_due 가 없거나 모양이 다르다: ${index.rows[0]?.indexdef ?? '없음'}`)
+  }
+
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
 } catch (e) {

@@ -11,33 +11,38 @@
  *   · 시각은 실행기의 `now` 하나 — SQL 의 `now()` 를 쓰지 않는다(검사가 시각을 정한다)
  *   · 세션 없이 도는 **시스템 주체**다 — 권한을 묻지 않는다. 무엇을 해도 되는지는 그 일의 규칙이 정한다
  *
- * 일의 종류는 0068 의 CHECK(`ck_scheduled_job_kind`)와 아래 `HANDLERS` 두 곳에 있다 — 소비자를 더할 때 둘을 함께 늘린다.
+ * 일의 종류는 CHECK(`ck_scheduled_job_kind` — 0068 · 0069)와 아래 `HANDLERS` 두 곳에 있다 — 소비자를 더할 때 둘을 함께 늘린다.
+ *
+ *   · `version_gc` — 만료된 버전을 지운다(4a-1 · F-11-03 · `history/gc.ts`)
+ *   · `trash_purge` — 만료된 휴지통 묶음을 `purged` 로(4b-1 · F-11-06 · `block/trash-purge.ts`)
  */
 
 import { randomUUID } from 'node:crypto'
 
 import { withTransaction, type Tx } from '../db/tx.ts'
+import { runTrashPurge } from '../block/trash-purge.ts'
 import { runVersionGc } from '../history/gc.ts'
 
-export type JobKind = 'version_gc'
+export type JobKind = 'version_gc' | 'trash_purge'
 
 /** 일의 결과 — 주기 일은 다음 실행 시각을 준다(없으면 한 번으로 끝). */
 export type JobOutcome = { readonly again: Date | null }
 
 export type JobHandler = (payload: Readonly<Record<string, unknown>>, now: Date) => Promise<JobOutcome>
 
-/** 일의 종류마다 하는 일 — 0068 의 CHECK 와 같은 목록이다. */
+/** 남았으면 곧 다시(1분), 다 했으면 한 시간 뒤 — 두 GC 의 주기다. */
+const nextSweep = (now: Date, more: boolean) => new Date(now.getTime() + (more ? 60_000 : 60 * 60_000))
+
+/** 일의 종류마다 하는 일 — CHECK 와 같은 목록이다. */
 const HANDLERS: Readonly<Record<JobKind, JobHandler>> = {
-  version_gc: async (_payload, now) => {
-    const swept = await runVersionGc(now)
-    // 한 판이 꽉 찼으면 곧 다시, 다 지웠으면 한 시간 뒤(정본 [보강] — 첫 소비자)
-    return { again: new Date(now.getTime() + (swept.more ? 60_000 : 60 * 60_000)) }
-  },
+  version_gc: async (_payload, now) => ({ again: nextSweep(now, (await runVersionGc(now)).more) }),
+  trash_purge: async (_payload, now) => ({ again: nextSweep(now, (await runTrashPurge(now)).more) }),
 }
 
 /** 워커가 뜰 때 넣어 보는 주기 일 — 이미 살아 있으면 그대로다(키의 부분 UNIQUE). */
 export const RECURRING: readonly { readonly kind: JobKind; readonly dedupeKey: string }[] = [
   { kind: 'version_gc', dedupeKey: 'version_gc' },
+  { kind: 'trash_purge', dedupeKey: 'trash_purge' },
 ]
 
 /** 다섯 번째 실패면 멈춘다. */
