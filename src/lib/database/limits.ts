@@ -13,3 +13,9 @@ export const MAX_QUERY_PAGINATION = 10_000
 /** 마스터 문서 W8-b: "keyset 커서 + '더 보기' 50행". */
 export const DEFAULT_QUERY_LIMIT = 50
 export const MAX_QUERY_LIMIT = 100
+
+/**
+ * 행 페이지의 제목 아래에 고정할 수 있는 속성의 수(16 F-16-02 *"You can pin up to 15 properties"* · 정본 M3) — 적용(`layout.ts`)과
+ * 편집 모드(핀이 꺼지는 때)가 같은 값을 본다. 0064 의 트리거가 같은 수를 센다.
+ */
+export const MAX_PINNED_PROPERTIES = 15

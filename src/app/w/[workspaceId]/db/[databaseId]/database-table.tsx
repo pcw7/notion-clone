@@ -170,12 +170,20 @@ export function DatabaseTable(props: {
    * 펴지 않는다(부르는 쪽이 `subItems` 를 주지 않는다 — 결과는 평평하다).
    */
   search?: string | null
+  /**
+   * 레코드 모양의 방향(3a-2) — `column`(기본)은 속성을 세로로 쌓고 이름이 왼쪽에 선다(속성 묶음 · 템플릿 화면). `row` 는 가로로
+   * 늘어놓고 이름이 값 위에 선다 — 행 페이지의 제목 아래 고정 줄(F-16-02). 넘치면 **줄을 바꾼다** — 가로 스크롤 상자는 칸 안의
+   * 팝오버를 자른다(아래 "표를 가로 스크롤 상자로 감싸지 않는다").
+   */
+  recordAxis?: 'column' | 'row'
 }) {
   const { workspaceId, viewId, dataSourceId, tableName, access } = props
   const variant: TableVariant = props.variant ?? 'table'
   const isList = variant === 'list'
   /** 한 행을 세로로 펼친 모양 — 템플릿 편집 화면(6c-3 · F-08-02). 칸마다 속성 이름이 왼쪽에 선다. */
   const isRecord = variant === 'record'
+  /** 레코드를 가로로 — 제목 아래 고정 줄(3a-2). */
+  const isRecordRow = isRecord && props.recordAxis === 'row'
   /** 머리 행 · 머리 메뉴 · 속성 추가 · 꼬리 칸이 있는 모양은 표 하나뿐이다. */
   const isGrid = variant === 'table'
   const router = useRouter()
@@ -1002,8 +1010,8 @@ export function DatabaseTable(props: {
           data-testid="db-table"
           data-variant={variant}
           onKeyDown={onKeyDown}
-          style={isList ? undefined : { width: totalWidth }}
-          className={isList ? 'block w-full text-sm' : 'table-fixed border-collapse text-sm'}
+          style={isList || isRecordRow ? undefined : { width: totalWidth }}
+          className={isList || isRecordRow ? 'block w-full text-sm' : 'table-fixed border-collapse text-sm'}
         >
           {/* List 는 머리 행을 화면에서 감춘다. 컬럼 이름은 스크린 리더에 남는다. */}
           <thead role="rowgroup" className={isGrid ? undefined : 'sr-only'}>
@@ -1075,9 +1083,11 @@ export function DatabaseTable(props: {
                 className={
                   isList
                     ? 'flex items-center gap-1 border-b border-neutral-100 hover:bg-neutral-50 dark:border-neutral-900 dark:hover:bg-neutral-900/60'
-                    : isRecord
-                      ? 'flex flex-col'
-                      : undefined
+                    : isRecordRow
+                      ? 'flex flex-wrap gap-x-2 gap-y-1'
+                      : isRecord
+                        ? 'flex flex-col'
+                        : undefined
                 }
               >
                 {columns.map((column, c) => {
@@ -1240,6 +1250,10 @@ export function DatabaseTable(props: {
                             } ${isEditing && column.type !== 'title' ? 'min-w-[11rem]' : ''} ${
                               isSelected ? 'shadow-[inset_0_0_0_2px_theme(colors.blue.500)]' : ''
                             }`
+                          : isRecordRow
+                            ? `flex w-44 flex-none flex-col rounded outline-none ${
+                                isSelected ? 'shadow-[inset_0_0_0_2px_theme(colors.blue.500)]' : ''
+                              }`
                           : isRecord
                             ? `flex h-9 items-center gap-2 rounded outline-none ${
                                 isSelected ? 'shadow-[inset_0_0_0_2px_theme(colors.blue.500)]' : ''
@@ -1254,7 +1268,9 @@ export function DatabaseTable(props: {
                         칸 안에 따로 감싼다 — 편집칸은 `absolute inset-0` 이라 그 자리를 정확히 덮어야 한다.
                       */}
                       {isRecord && (
-                        <span className="flex w-40 flex-none items-center gap-1.5 truncate px-1 text-xs text-neutral-500">
+                        <span
+                          className={`flex items-center gap-1.5 truncate px-1 text-xs text-neutral-500 ${isRecordRow ? 'pt-1' : 'w-40 flex-none'}`}
+                        >
                           <span aria-hidden className="text-neutral-400">
                             {TYPE_ICON[column.type]}
                           </span>

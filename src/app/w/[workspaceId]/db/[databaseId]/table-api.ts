@@ -24,6 +24,7 @@ import type { MvpViewType, ViewSummary } from '@/lib/database/view'
 import type { ViewColumn } from '@/lib/database/view-columns'
 import type { Calculations } from '@/lib/database/calculate'
 import type { PropertyDependents } from '@/lib/database/property-dependents'
+import { MAX_PINNED_PROPERTIES } from '@/lib/database/limits'
 
 export type ApiResult<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly message: string }
 
@@ -128,7 +129,9 @@ function messageOf(status: number, body: ErrorBody): string {
     case 'layout_conflict':
       return '다른 사람이 먼저 레이아웃을 바꿨습니다. 새로고침한 뒤 다시 하세요.'
     case 'invalid_layout':
-      return '레이아웃을 확인하세요. 제목 속성은 숨길 수 없습니다.'
+      return '레이아웃을 확인하세요. 제목 속성은 숨기거나 고정할 수 없고, 고정한 속성은 숨길 수 없습니다.'
+    case 'too_many_pinned':
+      return `제목 아래에는 속성을 ${MAX_PINNED_PROPERTIES}개까지 고정할 수 있습니다.`
     // ── 수식 (2i-3a) ──
     case 'invalid_formula':
       return '수식을 확인하세요.'
@@ -804,13 +807,19 @@ export function deleteTemplate(workspaceId: string, templateId: string): Promise
 // ── 행의 레이아웃 (8f-2 · F-16-03 · F-16-01) ─────────────────────────
 
 /**
- * 편집 모드의 초안을 한 번에 적용한다 — 숨김과 순서를 함께(전체 교체). `version` 은 초안을 시작할 때 읽은 것이다(머리가 없으면 `'0'`).
+ * 편집 모드의 초안을 한 번에 적용한다 — 고정 · 숨김 · 순서를 함께(전체 교체). `version` 은 초안을 시작할 때 읽은 것이다(머리가 없으면 `'0'`).
  * 남이 먼저 적용했으면 `layout_conflict` 로 거부된다(부분 병합 없음).
  */
 export function applyLayout(
   workspaceId: string,
   dataSourceId: string,
-  draft: { readonly version: string; readonly order: readonly string[]; readonly hidden: readonly string[] },
+  draft: {
+    readonly version: string
+    readonly order: readonly string[]
+    readonly hidden: readonly string[]
+    /** 제목 아래에 고정할 속성 — 원하는 순서(3a-2). */
+    readonly pinned: readonly string[]
+  },
 ): Promise<ApiResult<{ changed: boolean }>> {
   return call(
     `${base(workspaceId)}/data-sources/${dataSourceId}/layout`,

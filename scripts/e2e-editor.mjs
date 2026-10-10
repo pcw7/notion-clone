@@ -13619,6 +13619,122 @@ async function main() {
         JSON.stringify({ tooMany: [tooMany.status, tooMany.body?.error], title: [title.status, title.body?.error] }))
     }
 
+    if (sectionIf('제목 아래 고정 — 화면 (3a-2 · F-16-02)')) {
+      // 레이아웃 편집 모드에서 "고정"을 누르면 속성이 "제목 아래" 목록으로 옮겨 가고(포커스가 따라간다), 그 안에서 순서를 바꾼다. 적용하면
+      // 제목 아래에 가로 줄로 서고 속성 묶음에서 빠진다 · 그 줄에서 값을 고친다 · 숨긴 속성을 고정하면 보인다 · 풀면 묶음의 스키마 자리로
+      // 돌아온다 · 15개가 차면 핀이 꺼지고 까닭을 말한다. 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const stamp = Date.now()
+      const api = `${BASE}/api/workspaces/${workspaceId}`
+      const readRes = async (res) => ({ status: res.status, body: await res.json().catch(() => null) })
+      const created = (await readRes(await fetch(`${api}/databases`, { method: 'POST', headers: authed, body: JSON.stringify({ name: `고정화면${stamp}`, privateTop: true }) }))).body?.database
+      const ds = created?.dataSourceId
+      const viewId = created?.defaultViewId
+      const addProp = async (name, type) => (await readRes(await fetch(`${api}/data-sources/${ds}/properties`, { method: 'POST', headers: authed, body: JSON.stringify({ name, type }) }))).body
+      await addProp('수량', 'number')
+      await addProp('메모', 'rich_text')
+      const props = (await addProp('마감', 'date'))?.schema?.properties ?? []
+      const idOf = (name) => props.find((p) => p.name === name)?.id
+      const rowId = (await readRes(await fetch(`${api}/views/${viewId}/rows`, { method: 'POST', headers: authed, body: JSON.stringify({ cells: [
+        { propertyId: idOf('이름'), value: { type: 'title', title: [textRun('고정할 행')] } },
+        { propertyId: idOf('수량'), value: { type: 'number', number: 7 } },
+      ] }) }))).body?.row?.id
+
+      const idsExpr = (testId) => `[...document.querySelectorAll('[data-testid="${testId}"] td[data-property-id]')].map((td) => td.getAttribute('data-property-id'))`
+      const idsIn = (testId) => evaluate(idsExpr(testId))
+      const listIds = (testId) => evaluate(`[...document.querySelectorAll('[data-testid="${testId}"] [data-testid="row-layout-item"]')].map((li) => li.getAttribute('data-property-id'))`)
+      const item = (name, testId) => `[data-testid="row-layout-item"][data-property-id="${idOf(name)}"] [data-testid="${testId}"]`
+      const ids = (...names) => JSON.stringify(names.map(idOf))
+      const has = (sel) => evaluate(`!!document.querySelector(${JSON.stringify(sel)})`)
+      const pinnedOnServer = async () =>
+        (await dbQuery(`SELECT m.property_id FROM layout_module m WHERE m.data_source_id = $1 AND m.kind = 'property' AND m.area = 'heading' ORDER BY m.order_idx`, [ds])).map((r) => r.property_id)
+      const openEditor = async () => {
+        for (let i = 0; i < 6; i += 1) {
+          if (await has('[data-testid="row-layout-editor"]')) return true
+          await clickSelector('[data-testid="row-layout-edit"]')
+          if (await waitFor(`!!document.querySelector('[data-testid="row-layout-editor"]')`, 1500)) return true
+        }
+        return false
+      }
+      const openRow = async () => {
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${rowId}` })
+        return waitFor(`!!document.querySelector('[data-testid="row-layout-edit"]') && !!document.querySelector('[data-testid="row-title"]')`, 15000)
+      }
+
+      await openRow()
+      await openEditor()
+      check('편집 모드 — "제목 아래 고정"은 비어 있고(0 / 15) 속성은 모두 묶음에 있다',
+        (await has('[data-testid="row-layout-pinned-empty"]')) && JSON.stringify(await listIds('row-layout-group')) === ids('수량', '메모', '마감'),
+        JSON.stringify(await listIds('row-layout-group')))
+      await clickSelector(item('마감', 'row-layout-pin'))
+      check('★ "고정"을 누르면 그 속성이 "제목 아래"로 옮겨 가고 포커스가 그 줄의 "풀기"로 따라간다',
+        JSON.stringify(await listIds('row-layout-pinned')) === ids('마감')
+          && (await evaluate(`document.activeElement === document.querySelector(${JSON.stringify(item('마감', 'row-layout-unpin'))})`)),
+        JSON.stringify([await listIds('row-layout-pinned'), await evaluate(`document.activeElement?.getAttribute('aria-label')`)]))
+      await clickSelector(item('수량', 'row-layout-pin'))
+      await clickSelector(`[data-testid="row-layout-pinned"] ${item('수량', 'row-layout-up')}`)
+      check('제목 아래 안에서 순서를 바꾼다 — 스키마 순서가 아니다(서버는 아직 그대로)',
+        JSON.stringify(await listIds('row-layout-pinned')) === ids('수량', '마감') && JSON.stringify(await listIds('row-layout-group')) === ids('메모')
+          && (await pinnedOnServer()).length === 0,
+        JSON.stringify([await listIds('row-layout-pinned'), await listIds('row-layout-group')]))
+
+      await clickSelector('[data-testid="row-layout-apply"]')
+      check('★ 적용하면 제목 아래에 그 순서로 서고 값이 보인다 · 속성 묶음에서는 빠진다',
+        await waitFor(`!document.querySelector('[data-testid="row-layout-editor"]')
+          && JSON.stringify(${idsExpr('row-pinned-properties')}) === ${JSON.stringify(ids('수량', '마감'))}
+          && JSON.stringify(${idsExpr('row-visible-properties')}) === ${JSON.stringify(ids('메모'))}
+          && (document.querySelector('[data-testid="row-pinned-properties"] td[data-property-id="${idOf('수량')}"]')?.textContent ?? '').includes('7')`, 15000),
+        JSON.stringify([await idsIn('row-pinned-properties'), await idsIn('row-visible-properties')]))
+      check('서버 — 고정이 heading 의 순서로 남았다', JSON.stringify(await pinnedOnServer()) === ids('수량', '마감'), JSON.stringify(await pinnedOnServer()))
+      check('제목 아래 줄은 가로다 — 둘째 칸이 첫 칸의 오른쪽에 있다(같은 줄)',
+        await evaluate(`(() => { const tds = [...document.querySelectorAll('[data-testid="row-pinned-properties"] td[data-property-id]')].map((td) => td.getBoundingClientRect())
+          return tds.length === 2 && tds[1].left > tds[0].left && Math.abs(tds[1].top - tds[0].top) < 2 })()`))
+
+      // 제목 아래 줄에서 값을 고친다 — 같은 셀 편집기
+      const qtyCell = `[data-testid="row-pinned-properties"] td[data-property-id="${idOf('수량')}"]`
+      await clickSelector(qtyCell)
+      await send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 })
+      await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 })
+      await waitFor(`!!document.querySelector('[data-testid="db-cell-input"]')`, 3000)
+      // 편집기는 지금 값(7)을 들고 열린다 — 모두 골라 바꾼다
+      await evaluate(`document.querySelector('[data-testid="db-cell-input"]')?.select()`)
+      await typeText('12')
+      await send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 })
+      await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 })
+      const savedQty = async () => (await dbQuery(`SELECT num_value::float AS n FROM page_property_value WHERE page_id = $1 AND property_id = $2`, [rowId, idOf('수량')]))[0]?.n ?? null
+      let qty = null
+      for (let i = 0; i < 20 && qty !== 12; i += 1) { await sleep(250); qty = await savedQty() }
+      check('★ 제목 아래 줄에서 값을 고치면 저장된다', qty === 12, String(qty))
+
+      // 숨긴 속성을 고정하면 보인다 · 고정을 풀면 묶음의 스키마 자리로 돌아온다
+      await fetch(`${api}/data-sources/${ds}/layout`, { method: 'PUT', headers: authed, body: JSON.stringify({
+        version: (await dbQuery(`SELECT version::text AS v FROM page_layout WHERE data_source_id = $1`, [ds]))[0]?.v, order: [], hidden: [idOf('메모')] }) })
+      await openRow()
+      await openEditor()
+      await clickSelector(item('메모', 'row-layout-pin'))
+      await clickSelector(item('수량', 'row-layout-unpin'))
+      check('★ 숨긴 속성을 고정하면 보이는 것이 되고 · 푼 속성은 묶음의 스키마 자리로 돌아온다',
+        JSON.stringify(await listIds('row-layout-pinned')) === ids('마감', '메모')
+          && (await evaluate(`document.querySelector('[data-testid="row-layout-pinned"] [data-property-id="${idOf('메모')}"]')?.getAttribute('data-visible')`)) === 'true'
+          && JSON.stringify(await listIds('row-layout-group')) === ids('수량'),
+        JSON.stringify([await listIds('row-layout-pinned'), await listIds('row-layout-group')]))
+      await clickSelector('[data-testid="row-layout-cancel"]')
+
+      // 15개가 차면 핀이 꺼지고 까닭을 말한다
+      for (let i = 0; i < 13; i += 1) await addProp(`칸${i}`, 'number')
+      const all = (await dbQuery(`SELECT id FROM property WHERE data_source_id = $1 AND deleted_at IS NULL AND type <> 'title' ORDER BY order_idx, id`, [ds])).map((r) => r.id)
+      const version = (await dbQuery(`SELECT version::text AS v FROM page_layout WHERE data_source_id = $1`, [ds]))[0]?.v
+      const filled = await fetch(`${api}/data-sources/${ds}/layout`, { method: 'PUT', headers: authed, body: JSON.stringify({ version, order: [], hidden: [], pinned: all.slice(0, 15) }) })
+      await openRow()
+      await openEditor()
+      const lastId = all[15]
+      check('★ 15개가 차면 남은 속성의 "고정"이 꺼지고 까닭을 말한다(15 / 15)',
+        filled.ok && (await evaluate(`document.querySelector('[data-testid="row-layout-item"][data-property-id="${lastId}"] [data-testid="row-layout-pin"]')?.disabled === true`))
+          && (await has('[data-testid="row-layout-pin-full"]')),
+        JSON.stringify([filled.status, await evaluate(`document.querySelector('[data-testid="row-layout-pin-full"]')?.textContent ?? null`)]))
+      await clickSelector('[data-testid="row-layout-cancel"]')
+    }
+
     if (sectionIf('개인 필터 · 정렬 — 화면 (2h-2 · F-04-17)')) {
       // 볼 수만 있는 사람(브라우저 세션을 바꾼다)이 도구줄의 필터로 조건을 걸면 **자기 것**으로 저장되고 그 사람의 표만 좁혀진다 — "나만 보는
       // 필터" 표시 · 초기화. 편집자는 자기 개인 것을 "모두에게 저장"한다. 브라우저 세션은 끝에 반드시 소유자로 되돌린다.

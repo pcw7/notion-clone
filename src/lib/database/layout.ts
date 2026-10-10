@@ -27,6 +27,7 @@ import { withCommandTransaction, type Tx } from '../db/tx.ts'
 import { firstOrderKey, orderKeysBetween } from '../block/order-key.ts'
 import { planOrder } from './layout-order.ts'
 import { bumpSchema, isSchemaFailure, lockSchema } from './property.ts'
+import { MAX_PINNED_PROPERTIES } from './limits.ts'
 
 export type RecordLayout = {
   /** 낙관적 잠금 — 머리가 없으면 `'0'`. bigint 라 문자열이다. */
@@ -39,8 +40,6 @@ export type RecordLayout = {
 
 const DEFAULT_LAYOUT: RecordLayout = { version: '0', hidden: [], pinned: [] }
 
-/** 제목 아래에 고정할 수 있는 속성의 수(16 F-16-02 *"You can pin up to 15 properties"* · 불변식 M3). */
-export const MAX_PINNED_PROPERTIES = 15
 
 export type LayoutFailure =
   | 'not_found'
