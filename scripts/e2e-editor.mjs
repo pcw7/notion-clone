@@ -15876,6 +15876,58 @@ async function main() {
       }
     }
 
+    if (sectionIf('옮기기의 웹 공개 경고 (6a-4 · F-06-08)')) {
+      // 워크스페이스 최상위의 두 페이지 — 볼 수 있는 사람은 같다. 그래도 게시된 페이지 밑으로 옮기면 웹에 공개되므로 미리보기가 묻고
+      // 그렇다고 말한다 · 확인하면 그 공개 주소 아래에서 열린다 · 게시된 페이지를 옮기면 옮겨도 공개된 채라고 묻지 않고 옮긴다.
+      const stamp = Date.now()
+      const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
+      const newTop = async (title) => (await (await fetch(pagesUrl, { method: 'POST', headers: authed, body: JSON.stringify({ title }) })).json()).page.id
+      const site = await newTop(`게시된 위키 ${stamp}`)
+      const lone = await newTop(`옮겨 들어갈 문서 ${stamp}`)
+      const token = (await (await fetch(`${pagesUrl}/${site}/publish`, { method: 'PUT', headers: authed })).json()).token
+      const openPicker = async () => {
+        for (let i = 0; i < 5; i += 1) {
+          await clickSelector('[data-testid="move-open"]')
+          if (await waitFor(`!!document.querySelector('[data-testid="move-picker"]')`, 3000)) return true
+        }
+        return false
+      }
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${lone}` })
+      await waitFor(`!!document.querySelector('[data-testid="move-open"]')`, 15000)
+      await openPicker()
+      const siteOption = `[data-testid="move-to-page"][data-page-id="${site}"]`
+      await waitFor(`!!document.querySelector('${siteOption}')`, 5000)
+      await clickSelector(siteOption)
+      const asked = await waitFor(`!!document.querySelector('[data-testid="move-preview-web"]')`, 10000)
+      const webLine = await evaluate(`document.querySelector('[data-testid="move-preview-web"]')?.textContent ?? ''`)
+      const stillClosed = (await fetch(`${BASE}/p/${token}/${lone}`)).status
+      check('★ 볼 수 있는 사람이 같아도 게시된 페이지 밑으로 옮기면 묻는다 — 웹에 공개된다고 · 묻는 동안은 아직 닫혀 있다',
+        asked && webLine.includes('웹에 공개됩니다') && stillClosed === 404, JSON.stringify([webLine, stillClosed]))
+
+      await clickSelector('[data-testid="move-preview-confirm"]')
+      await waitFor(`!document.querySelector('[data-testid="move-picker"]')`, 15000)
+      let opened = 0
+      for (let i = 0; i < 20 && opened !== 200; i += 1) {
+        opened = (await fetch(`${BASE}/p/${token}/${lone}`)).status
+        if (opened !== 200) await sleep(250)
+      }
+      check('확인하면 옮긴다 — 그 공개 주소 아래에서 열린다', opened === 200, String(opened))
+
+      // 게시된 페이지 자신을 옮긴다 — 사람도 웹 공개도 그대로라 묻지 않는다(자기 게시는 옮겨도 남는다)
+      const home = await newTop(`받을 문서 ${stamp}`)
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${site}` })
+      await waitFor(`!!document.querySelector('[data-testid="move-open"]')`, 15000)
+      await openPicker()
+      const homeOption = `[data-testid="move-to-page"][data-page-id="${home}"]`
+      await waitFor(`!!document.querySelector('${homeOption}')`, 5000)
+      await clickSelector(homeOption)
+      const settled = await waitFor(`!document.querySelector('[data-testid="move-picker"]') || !!document.querySelector('[data-testid="move-preview"]')`, 15000)
+      const noPreview = !(await evaluate(`!!document.querySelector('[data-testid="move-preview"]')`))
+      check('게시된 페이지는 옮겨도 공개된 채 — 바뀌는 것이 없어 묻지 않고 옮긴다 · 주소는 그대로 열린다',
+        settled && noPreview && (await fetch(`${BASE}/p/${token}`)).status === 200, String(noPreview))
+    }
+
     if (sectionIf('개인 필터 · 정렬 — 화면 (2h-2 · F-04-17)')) {
       // 볼 수만 있는 사람(브라우저 세션을 바꾼다)이 도구줄의 필터로 조건을 걸면 **자기 것**으로 저장되고 그 사람의 표만 좁혀진다 — "나만 보는
       // 필터" 표시 · 초기화. 편집자는 자기 개인 것을 "모두에게 저장"한다. 브라우저 세션은 끝에 반드시 소유자로 되돌린다.

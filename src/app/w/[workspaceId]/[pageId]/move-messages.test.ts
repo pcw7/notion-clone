@@ -22,6 +22,7 @@ const preview = (over: Partial<MovePreviewView> = {}): MovePreviewView => ({
   gain: { count: 0, names: [] },
   keep: 3,
   keptBelow: { pages: 0, people: 0 },
+  web: { own: false, before: false, after: false },
   ...over,
 })
 
@@ -49,4 +50,17 @@ test('줄은 있는 것만 — 잃는 · 새로 보는 · 그대로 · 하위의
   )
   assert.match(lines[1].text, /하위 페이지 2개.*1명이 여전히/)
   assert.match(lines[1].text, /옮겨도 남습니다/)
+})
+
+test('★ [6a-4] 웹 공개 — 바뀌면 묻는다 · 자기 게시는 옮겨도 남는다고 · 위 게시 안으로 · 밖으로', () => {
+  assert.equal(moveNeedsConfirm(preview({ web: { own: false, before: false, after: true } })), true, '웹에 공개된다')
+  assert.equal(moveNeedsConfirm(preview({ web: { own: false, before: true, after: false } })), true, '웹에서 내려간다')
+  assert.equal(moveNeedsConfirm(preview({ web: { own: true, before: true, after: true } })), false, '그대로면 묻지 않는다(사람이 바뀌면 그쪽이 묻는다)')
+
+  const stays = movePreviewLines(preview({ web: { own: true, before: true, after: true } }))
+  assert.deepEqual(stays.map((l) => l.key), ['keep', 'web'])
+  assert.match(stays[1]!.text, /웹에 게시되어 있어 옮겨도/)
+  assert.match(movePreviewLines(preview({ web: { own: false, before: false, after: true } })).at(-1)!.text, /웹에 공개됩니다/)
+  assert.match(movePreviewLines(preview({ web: { own: false, before: true, after: false } })).at(-1)!.text, /웹에서 더는 열리지 않습니다/)
+  assert.ok(!movePreviewLines(preview()).some((l) => l.key === 'web'), '공개와 무관하면 말하지 않는다')
 })

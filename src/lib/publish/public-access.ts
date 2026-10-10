@@ -118,6 +118,39 @@ export async function openablePagesIn(tx: Tx, workspaceId: string, rootId: strin
   return new Set((await openableChainsIn(tx, workspaceId, rootId, ids)).keys())
 }
 
+/**
+ * 이 페이지가 지금 웹에서 열리는가(6a-4) — 그 페이지 자신의 게시(`own`)와, 이 페이지를 여는 게시 루트가 하나라도 있는가(`open`).
+ *
+ * 루트 후보는 그 페이지와 조상 중 게시된(켜짐 · 만료 전) 것이고, 판정은 공개 경로와 같다(`openablePagesIn` — 상속 절단 · 휴지통 ·
+ * 테이크다운). 정책이 막았으면 아무것도 열리지 않는다(런타임 게이트). 이동 미리보기가 옮기기 전과 뒤에 묻는다 — 같은 트랜잭션에서 옮긴
+ * 뒤의 행을 읽는다.
+ */
+export async function webExposureIn(tx: Tx, workspaceId: string, pageId: string): Promise<{ readonly own: boolean; readonly open: boolean }> {
+  const policy = await tx.queryMaybe<{ allow: boolean }>(
+    `SELECT allow_publish_sites_and_forms AS allow FROM security_policy WHERE workspace_id = $1`,
+    [workspaceId],
+  )
+  if (policy !== null && !policy.allow) return { own: false, open: false }
+  const node = await tx.queryMaybe<{ ancestor_path: string[] }>(`SELECT ancestor_path FROM block WHERE id = $1 AND workspace_id = $2`, [
+    pageId,
+    workspaceId,
+  ])
+  if (node === null) return { own: false, open: false }
+  const roots = await tx.query<{ node_id: string }>(
+    `SELECT node_id FROM public_link
+      WHERE node_id = ANY($1::uuid[]) AND enabled AND (expires_at IS NULL OR expires_at > now())`,
+    [[...node.ancestor_path, pageId]],
+  )
+  let own = false
+  let open = false
+  for (const root of roots) {
+    if (!(await openablePagesIn(tx, workspaceId, root.node_id, [pageId])).has(pageId)) continue
+    open = true
+    if (root.node_id === pageId) own = true
+  }
+  return { own, open }
+}
+
 /** 열 수 있는 페이지마다 루트에서 그 페이지까지의 사슬(양끝 포함). 열 수 없는 것은 없다. */
 async function openableChainsIn(
   tx: Tx,

@@ -163,6 +163,7 @@ describe('② 미리보기가 말한 대로 된다', () => {
       gain: { count: 1, names: ['비'] },
       keep: 3,
       keptBelow: { pages: 0, people: 0 },
+      web: { own: false, before: false, after: false },
     })
 
     await movePage(boss.ctx, doc, { teamspaceId: B })
