@@ -106,6 +106,8 @@ import { useTableChanges } from './use-table-changes'
 import { mergeReloaded } from '@/lib/database/live-rows'
 import { FormulaEditForm } from './formula-editor'
 import { ColumnMenu } from './column-menu'
+import { ReminderBell } from './reminder-bell'
+import type { DateReminderJson } from '@/lib/database/reminder'
 
 const keyOf = (at: CellPos): string => `${at.row}:${at.col}`
 const samePos = (a: CellPos, b: CellPos): boolean => a.row === b.row && a.col === b.col
@@ -221,6 +223,36 @@ export function DatabaseTable(props: {
   }
   /** 다시 읽은 결과에는 없지만 내가 고쳐서 남긴 행 — 제목 옆에 "조건 밖"을 단다. */
   const [outside, setOutside] = useState<ReadonlySet<string>>(new Set())
+
+  // ── 날짜 칸의 리마인더(4c-3 · F-11-10) ──
+  // 행의 읽기에 싣지 않고 보이는 행들의 것을 따로 읽는다(정본 §3.8 [보강] 리마인더 ⑨ ⓑ). 행의 판이 바뀌면 다시 읽는다 — 날짜를 옮기면
+  // 트리거가 시각 · "지남"을 바꾼다. 날짜 속성이 없는 표는 읽지 않는다.
+  const [reminders, setReminders] = useState<api.ReminderMap>({})
+  const reminderKey = columns.some((c) => c.type === 'date') ? rows.map((r) => `${r.id}:${r.version}`).join(',') : ''
+  useEffect(() => {
+    if (reminderKey === '') return
+    let stale = false
+    const ids = reminderKey.split(',').map((entry) => entry.slice(0, entry.indexOf(':')))
+    void (async () => {
+      const merged: Record<string, Readonly<Record<string, DateReminderJson>>> = {}
+      for (let i = 0; i < ids.length; i += 200) {
+        const read = await api.loadReminders(workspaceId, dataSourceId, ids.slice(i, i + 200))
+        if (!read.ok) return
+        Object.assign(merged, read.value)
+      }
+      if (!stale) setReminders(merged)
+    })()
+    return () => {
+      stale = true
+    }
+  }, [reminderKey, workspaceId, dataSourceId])
+  const putReminder = (rowId: string, propertyId: string, next: DateReminderJson | null) =>
+    setReminders((current) => {
+      const byProperty = { ...(current[rowId] ?? {}) }
+      if (next === null) delete byProperty[propertyId]
+      else byProperty[propertyId] = next
+      return { ...current, [rowId]: byProperty }
+    })
 
   // ── 하위 항목의 트리(2b-2) ──
   const subItems = props.subItems ?? null
@@ -1227,6 +1259,22 @@ export function DatabaseTable(props: {
                           className="shrink-0 rounded border border-neutral-200 bg-white px-1.5 text-xs text-neutral-500 opacity-0 after:content-['열기'] hover:bg-neutral-50 group-hover/title:opacity-100 dark:border-neutral-700 dark:bg-neutral-900"
                         />
                       </span>
+                    ) : column.type === 'date' && cell.kind === 'cell' ? (
+                      // 날짜 칸의 종(4c-3) — 리마인더가 있으면 늘 · 없으면 고칠 수 있는 사람에게 마우스를 올리면 선다(`reminder-bell.tsx`)
+                      <span className="group/date flex min-w-0 items-center gap-1">
+                        <span className="min-w-0 flex-1 truncate">{content}</span>
+                        <ReminderBell
+                          workspaceId={workspaceId}
+                          rowId={row.id}
+                          propertyId={column.propertyId}
+                          propertyName={column.name}
+                          start={dateStartOf(cell.value)}
+                          reminder={reminders[row.id]?.[column.propertyId] ?? null}
+                          canEdit={access.canEditContent}
+                          align={isList ? 'right' : 'left'}
+                          onChange={(next) => putReminder(row.id, column.propertyId, next)}
+                        />
+                      </span>
                     ) : (
                       content
                     )
@@ -1440,4 +1488,12 @@ export function DatabaseTable(props: {
       )}
     </section>
   )
+}
+
+/** 날짜 칸 값의 시작 — 비었거나 날짜가 아니면 null(리마인더를 걸 수 없다). */
+function dateStartOf(value: unknown): string | null {
+  const date = (value as { type?: unknown; date?: { start?: unknown } | null } | null)?.date
+  return value !== null && typeof value === 'object' && (value as { type?: unknown }).type === 'date' && typeof date?.start === 'string'
+    ? date.start
+    : null
 }

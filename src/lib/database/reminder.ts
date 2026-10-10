@@ -11,21 +11,23 @@
  *   · 지난 시각에 걸면 울리지 않는다 — "지남"으로 둔다(`firedAt` 이 건 시각). 화면은 빨갛게 보인다
  *   · 리드는 값의 모양에 따라 고르는 목록이 다르다(`DATE_ONLY_LEADS` · `DATE_TIME_LEADS`) — 반복은 없다
  *
- * 울리는 것(공용 스케줄러의 소비자)은 4c-2 다.
+ * 울리는 것(공용 스케줄러의 소비자)은 4c-2 다. 화면(4c-3)은 보이는 행들의 리마인더를 따로 읽는다(`listDateReminders` — 정본 ⑨ ⓑ).
  */
 
 import { randomUUID } from 'node:crypto'
 
 import type { SessionContext } from '../auth/session-context.ts'
-import { withCommandTransaction, type Tx } from '../db/tx.ts'
+import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
 import { isUuid } from '../ids.ts'
 import { isLocked } from '../permissions/lock.ts'
+import { leadsFor } from './reminder-leads.ts'
 import { isRowFailure, openDataSource } from './row.ts'
 
-/** 날짜만인 값 — 그날 · 하루 · 이틀 · 일주일 전(모두 09:00). */
-export const DATE_ONLY_LEADS = [0, 1440, 2880, 10080] as const
-/** 시각이 있는 값 — 그 시각 · 5 · 10 · 15 · 30분 · 1 · 2시간 · 하루 전. */
-export const DATE_TIME_LEADS = [0, 5, 10, 15, 30, 60, 120, 1440] as const
+// 리드의 목록 · 말은 화면과 함께 쓴다(DOM · DB 없는 모듈) — 두 벌이면 화면이 고를 수 있는 것을 서버가 거부한다
+export { DATE_ONLY_LEADS, DATE_TIME_LEADS, isDateOnlyStart, leadsFor } from './reminder-leads.ts'
+
+/** 한 번에 읽는 행의 수 — 표의 한 쪽(200행)과 같다. */
+export const MAX_REMINDER_ROWS = 200
 
 export type DateReminder = {
   readonly propertyId: string
@@ -59,12 +61,6 @@ export type ReminderFailure =
 export type ReminderResult<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly reason: ReminderFailure }
 
 const fail = (reason: ReminderFailure) => ({ ok: false, reason }) as const
-
-/** 날짜만인 값인가 — 시각이 있으면 `T` 가 붙는다(셀의 ISO 규칙 · `property-types.ts`). */
-export const isDateOnlyStart = (start: string): boolean => /^\d{4}-\d{2}-\d{2}$/.test(start)
-
-/** 그 값에 고를 수 있는 리드. */
-export const leadsFor = (start: string): readonly number[] => (isDateOnlyStart(start) ? DATE_ONLY_LEADS : DATE_TIME_LEADS)
 
 type ReminderRow = {
   property_id: string
@@ -188,6 +184,30 @@ export async function clearDateReminder(ctx: SessionContext, rowId: string, prop
     if (typeof cell === 'string') return fail(cell)
     await tx.query(`DELETE FROM reminder WHERE page_id = $1 AND property_id = $2`, [rowId, propertyId])
     return { ok: true, value: null }
+  })
+}
+
+/**
+ * 화면이 보이는 행들의 리마인더를 읽는다(정본 ⑨ ⓑ) — 그 표를 볼 수 있는 사람이면 누구나(리마인더는 날짜 값의 일부다). 그 표의 살아 있는
+ * 행 것만 · 한 번에 `MAX_REMINDER_ROWS` 행. 행 → 속성 → 리마인더.
+ */
+export async function listDateReminders(
+  ctx: SessionContext,
+  dataSourceId: string,
+  rowIds: readonly string[],
+): Promise<ReminderResult<Map<string, Map<string, DateReminder>>>> {
+  if (!isUuid(dataSourceId)) return fail('not_found')
+  const ids = [...new Set(rowIds.filter(isUuid))].slice(0, MAX_REMINDER_ROWS)
+  return withReadTransaction(async (tx): Promise<ReminderResult<Map<string, Map<string, DateReminder>>>> => {
+    const gate = await openDataSource(tx, ctx, dataSourceId, 'view')
+    if (isRowFailure(gate)) return fail(gate.ok === false && gate.reason === 'forbidden' ? 'forbidden' : 'not_found')
+    if (ids.length === 0) return { ok: true, value: new Map() }
+    const live = await tx.query<{ id: string }>(
+      `SELECT p.id FROM page p JOIN block b ON b.id = p.id
+        WHERE p.data_source_id = $1 AND p.id = ANY($2::uuid[]) AND b.lifecycle = 'live'`,
+      [dataSourceId, ids],
+    )
+    return { ok: true, value: await readDateReminders(tx, live.map((r) => r.id)) }
   })
 }
 

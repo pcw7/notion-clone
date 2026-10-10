@@ -8,6 +8,7 @@
  *   ② 거부 — 날짜 속성이 아님 · 날짜가 없음 · 값의 모양에 없는 리드 · 모르는 타임존 · 볼 수만 있음 · 볼 수 없음 · 행 잠금
  *   ③ 셀과 함께 움직인다(0072 트리거) — 날짜를 옮기면 시각이 따라 · 미래로 옮기면 다시 건다 · 지난 시각이면 "지남" · 날짜를 비우면 풀린다
  *   ④ 지난 시각에 걸면 울리지 않는다("지남") · 풀기는 멱등
+ *   ⑤ 보이는 행들의 것을 읽는다(4c-3) — 그 표를 볼 수 있으면 누구나 · 그 표의 살아 있는 행 것만 · 볼 수 없으면 not_found
  *
  * 반사실(HANDOFF §3.3): 09:00 이 아니면 ①, 값의 타임존을 보지 않으면 ①, 트리거가 없으면 ③, 지난 시각을 보지 않으면 ③ · ④ 가 실패한다.
  */
@@ -21,8 +22,8 @@ import { grantAccess } from '../permissions/acl.ts'
 import { setPageLock } from '../permissions/lock.ts'
 import { createDatabase } from './database.ts'
 import { addProperty } from './property.ts'
-import { createRow, updateCells } from './row.ts'
-import { clearDateReminder, readDateReminders, setDateReminder, type DateReminder } from './reminder.ts'
+import { createRow, trashRow, updateCells } from './row.ts'
+import { clearDateReminder, listDateReminders, readDateReminders, setDateReminder, type DateReminder } from './reminder.ts'
 import { withReadTransaction } from '../db/tx.ts'
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'
@@ -161,5 +162,29 @@ describe('④ 지난 시각 · 풀기', () => {
     assert.equal((await clearDateReminder(fx.owner.ctx, tb.row, tb.due)).ok, true)
     assert.deepEqual(await stored(tb.row), [])
     assert.equal((await clearDateReminder(fx.owner.ctx, tb.row, tb.due)).ok, true, '이미 풀렸어도 성공')
+  })
+})
+
+describe('⑤ 보이는 행들의 것을 읽는다 (4c-3)', () => {
+  test('★ 그 표를 볼 수 있으면 누구나 · 그 표의 살아 있는 행 것만 · 볼 수 없으면 not_found', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const tb = await table('리마인더 읽기')
+    await tb.setDate({ start: '2030-08-01' })
+    unwrap(await setDateReminder(fx.owner.ctx, tb.row, tb.due, { leadMinutes: 1440, timeZone: 'Asia/Seoul' }))
+    const other = await table('리마인더 읽기 — 다른 표')
+    await other.setDate({ start: '2030-08-01' })
+    unwrap(await setDateReminder(fx.owner.ctx, other.row, other.due, { leadMinutes: 0, timeZone: 'Asia/Seoul' }))
+
+    const read = unwrap(await listDateReminders(fx.owner.ctx, tb.db.dataSourceId, [tb.row, other.row, 'nope']))
+    assert.deepEqual([...read.keys()], [tb.row], '그 표의 행 것만 — 다른 표의 행 · 엉뚱한 id 는 빠진다')
+    assert.equal(read.get(tb.row)?.get(tb.due)?.leadMinutes, 1440)
+
+    assert.equal((await listDateReminders(viewer.ctx, tb.db.dataSourceId, [tb.row])).ok, false, '볼 수 없으면 not_found')
+    assert.equal((await grantAccess(fx.owner.ctx, tb.db.id, { type: 'user', id: viewer.userId }, 'view')).ok, true)
+    const asViewer = await listDateReminders(viewer.ctx, tb.db.dataSourceId, [tb.row])
+    assert.equal(asViewer.ok && asViewer.value.get(tb.row)?.size, 1, '볼 수만 있어도 읽는다 — 리마인더는 날짜 값의 일부다')
+
+    unwrap(await trashRow(fx.owner.ctx, tb.row))
+    assert.equal(unwrap(await listDateReminders(fx.owner.ctx, tb.db.dataSourceId, [tb.row])).size, 0, '휴지통의 행 것은 빠진다')
   })
 })

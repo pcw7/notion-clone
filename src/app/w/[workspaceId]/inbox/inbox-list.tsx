@@ -25,6 +25,7 @@ import Link from 'next/link'
 
 import type { PageIcon } from '@/lib/block/page-icon'
 import { accessInboxLine, inboxHref } from '../access-request-messages'
+import { reminderInboxLine } from './inbox-messages'
 import { PageIconView } from '../page-icon-view'
 
 export type InboxRow = {
@@ -42,6 +43,8 @@ export type InboxRow = {
   deleted: boolean
   /** 접근 · 편집 요청(7e-1 · 7e-2)의 지금 상태 — 서버가 요청 행에서 읽어 준다. 다른 알림은 null. */
   access: { requesterName: string | null; status: string; kind: string } | null
+  /** 리마인더(4c-3) — 울린 날짜 속성의 지금 이름. 다른 알림은 null. */
+  reminder: { propertyName: string | null } | null
 }
 
 const FILTERS: readonly { value: string; label: string }[] = [
@@ -58,6 +61,7 @@ const KIND_LABEL: Readonly<Record<string, string>> = {
   page_update: '페이지 변경',
   access_requested: '접근 요청',
   access_granted: '요청 허락',
+  reminder: '리마인더',
 }
 
 const UNTITLED = '제목 없음'
@@ -195,6 +199,7 @@ export function InboxList({
 
               <p className="text-sm text-neutral-600 dark:text-neutral-400">
                 {accessInboxLine(item.kind, item.access) ??
+                  reminderInboxLine(item.reminder) ??
                   (item.deleted ? <span className="text-neutral-400">삭제된 코멘트</span> : (item.preview ?? ''))}
               </p>
 
