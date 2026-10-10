@@ -2698,6 +2698,52 @@ CREATE INDEX ON reminder (target_at) WHERE fired_at IS NULL;
 > ⑥ **하위 페이지의 활동은 넣지 않는다**(11 *"기본 미포함"*). "하위 포함" 토글은 두지 않았다 — 필요해지면 방문 집합 · 깊이 상한과 함께.
 > ⑦ 열 때 읽는다 — 실시간으로 따라오지 않는다(다시 열면 다시 읽는다). 항목을 눌러 그 블록으로 가는 것은 두지 않는다(11 `[확인필요]`).
 
+**[보강] 페이지 웹훅 — 활동을 바깥으로** ⟨히스토리 · 활동 4e · F-11-19 / 마이그레이션 0075~⟩
+
+> 11 F-11-11b(= F-11-19 — 마스터 ※3)는 페이지의 편집 · 코멘트를 Slack 채널로 보낸다. 마스터 문서 비고 20 이 판단을 끝냈다 — **Slack 전용
+> 커넥터(OAuth · 토큰 갱신 · 채널 고르기) 대신 임의 URL 로 JSON 을 POST 하는 웹훅 하나.** Slack 은 incoming webhook URL 을 그대로 붙인다
+> (OAuth 생략). 같은 발송기(①)를 자동화의 `send_webhook`(08 F-08-13)이 쓴다.
+>
+> ```sql
+> CREATE TABLE page_webhook (
+>   id            uuid PRIMARY KEY,
+>   workspace_id  uuid NOT NULL REFERENCES workspace(id),
+>   page_id       uuid NOT NULL REFERENCES block(id) ON DELETE CASCADE,
+>   url_sealed    bytea NOT NULL,    -- 봉인한 URL(③) — incoming webhook URL 은 그 자체가 비밀이다
+>   url_hint      text NOT NULL,     -- 화면 표시 — 호스트와 끝 4자만(`hooks.slack.com/…a1b2`)
+>   created_by    uuid NOT NULL REFERENCES "user"(id),
+>   created_at    timestamptz NOT NULL DEFAULT now(),
+>   paused_at     timestamptz NULL,  -- 멈춤(⑦) — 실패가 이어졌거나 사람이 멈췄다
+>   pause_reason  text NULL CHECK (pause_reason IN ('failures','manual')),
+>   CHECK ((paused_at IS NULL) = (pause_reason IS NULL))
+> );
+> ```
+>
+> ① **바깥 요청은 한 길로**(`net/outbound.ts`) — https 만 · 기본 포트(443)만 · URL 에 사용자 정보(`user:pass@`) 금지 · 리다이렉트를 따라가지
+>    않는다(3xx 는 실패) · 10초 · 응답 본문은 64KB 까지만 읽고 버린다. **이름을 풀어 나온 주소가 하나라도 막힌 대역이면 보내지 않는다**
+>    (사설 · 루프백 · 링크 로컬(메타데이터 `169.254.169.254`) · CGNAT · 문서용 · 벤치마크 · 멀티캐스트 · 예약 · IPv6 의 ULA · 링크 로컬 ·
+>    사이트 로컬 · IPv4 매핑 · NAT64 · 6to4 · Teredo · 문서용). 연결은 **검사한 그 주소로** 한다(`lookup` 고정) — 검사와 연결 사이에 이름이
+>    바뀌는 DNS rebinding 을 막는다. 검사를 비켜 가는 호스트는 환경변수 `OUTBOUND_ALLOW_HOSTS`(`host:port` 목록 · 그 호스트는 http 도 허용)뿐이다
+>    — e2e 의 받는 서버용이고 운영에는 두지 않는다.
+> ② **저장할 때도 본다** — 모양만(https · 사용자 정보 없음 · 기본 포트 · 호스트가 막힌 대역의 주소 글자가 아님 · `localhost` 류가 아님 ·
+>    2,048자 이하). 이름 풀이는 보낼 때 한다 — 그 사이에 바뀔 수 있다.
+> ③ **URL 은 봉인한다** — 2단계 인증의 비밀값과 같은 방식(`AUTH_SECRET` 에서 HKDF-SHA256 · info `notion-clone/webhook-url/v1` · AES-256-GCM).
+>    화면에는 힌트만 주고 원문을 다시 보여주지 않는다(바꾸려면 지우고 다시 건다). `external_connection.credential_ref`(시크릿 스토어)는
+>    아직 없다 — 앱 키 봉인으로 대신한다(§3.2 `mfa_method` 와 같은 판단).
+> ④ **누가 거나** — 그 페이지의 **전체 권한**(`manage_perm`). 페이지 글이 바깥으로 나가는 길이라 공유와 같은 무게다(11 *"비공개 페이지 →
+>    공개 채널 — 정보 유출 위험"*). 목록 · 지우기 · 멈추기 · 다시 켜기도 같은 권한이다. 데이터베이스 행에는 걸지 않는다(행의 공유는
+>    데이터베이스가 정한다 — 행 페이지에 공유 단추가 없는 것과 같다). 잠긴 페이지에도 건다(본문을 고치지 않는다). 페이지마다
+>    **5개**까지(08 *"automation 당 최대 5개"* 와 같은 수). 요금제 게이트는 두지 않는다.
+> ⑤ **무엇을 보내나**(4e-2) — 4d-3 의 허용 목록과 같은 종류. **그 페이지와 그 아래 페이지**의 활동이다(11 *"하위 페이지 포함이 명시"*). 아래에
+>    웹훅이 걸린 페이지가 있으면 그 아래의 활동은 **가장 가까운 페이지의 웹훅만** 받는다(11 *"중첩 — 가장 가까운 연결 하나만"*).
+> ⑥ **모아서 보낸다**(4e-2) — 웹훅마다 첫 이벤트부터 5분을 모아 한 번(11 *"시간 윈도우(5분) 집계 후 1건"*). 본문은 `text`(Slack 이 그리는
+>    한 줄 — 페이지 제목 · 누가 · 무엇을 몇 번 · 링크)와 `notion_clone`(판 · 배달 id(멱등 키 — 08 *"`run_id` 를 반드시"*) · 페이지 id · 이벤트의
+>    id · 종류 · 행위자 id · 시각). 사람이 쓴 글(본문 · 코멘트)은 싣지 않는다 — payload 는 id 만이라는 이 표의 규칙과 같은 까닭이다.
+> ⑦ **실패하면**(4e-2) — 짧게 다시 해 보고(1 · 2 · 4분) 그래도 실패면 웹훅을 **멈춘다**(`failures`) — 끝없는 재시도는 상대 서버를 두드리는
+>    것이다(08 F-08-13 *"짧은 재시도 3회 후 정지"*). 사람이 다시 켠다. 멈춘 동안의 활동은 보내지 않는다(쌓았다가 몰아 보내지 않는다).
+> ⑧ 페이지가 휴지통에 가면 보내지 않고 웹훅은 남는다(되살리면 다시) · 페이지 행이 지워지면 함께 지워진다(FK CASCADE · 11 *"삭제된 참조"*).
+> ⑨ 화면(4e-3)은 Updates 패널 안이다 — 노션은 그 패널의 "Connect Slack channel" 토글이다.
+
 **[정정] `activity_event` 의 PK 는 `(id, created_at)` 이다** ⟨코멘트 3조각 / 마이그레이션 0020⟩
 
 > 초판은 `id uuid PRIMARY KEY` 와 `PARTITION BY RANGE (created_at)` 을 함께 적었다.
