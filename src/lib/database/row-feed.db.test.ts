@@ -4,6 +4,7 @@
  *   ① 뷰에 보이는 것이 바뀌는 쓰기가 신호를 보낸다 — 행 만들기 · 칸 · 휴지통 · 속성 · 옵션 · 뷰
  *   ② 한 트랜잭션은 표마다 한 번이다(Postgres 가 같은 신호를 합친다) · 다른 표의 쓰기는 이 표의 신호가 아니다
  *   ③ 허브 — 그 표의 구독에게만 "바뀌었다" · 워크스페이스의 권한 신호는 그 워크스페이스의 구독에게 · 세션 신호는 그 사용자에게 · 끊으면 더 받지 않는다
+ *   ④ 구독이 붙기 전의 틈(#250) — 렌더 시각 뒤에 바뀐 표만 "바뀌었다" · 다른 표 · 그 뒤의 렌더는 아니다 · 허브가 듣기 전의 렌더는 모르니 "바뀌었다"
  *
  * 반사실(HANDOFF §3.3): 행의 트리거가 없으면 ① 의 칸이, 허브가 표를 가리지 않으면 ③ 이 실패한다.
  *
@@ -12,6 +13,7 @@
 
 import { test, describe, before, after } from 'node:test'
 import assert from 'node:assert/strict'
+import { randomUUID } from 'node:crypto'
 
 import { probeDatabase, makeFixture, type Fixture } from '../testing/db-fixtures.ts'
 import { openChangeFeed, ROWS_CHANNEL, type ChangeFeed, type CollabSignal } from '../collab/change-feed.ts'
@@ -23,7 +25,15 @@ import type { MvpPropertyType } from './property-types.ts'
 import { createRow, trashRow, updateCells } from './row.ts'
 import { updateView } from './view.ts'
 import { applyRecordLayout, undoRecordLayout } from './layout.ts'
-import { closeRowFeed, dispatchRowSignal, rowFeedListenerCount, subscribeRows, type RowFeedListener } from './row-feed.ts'
+import {
+  closeRowFeed,
+  dispatchRowSignal,
+  feedClock,
+  rowFeedListenerCount,
+  rowsChangedSince,
+  subscribeRows,
+  type RowFeedListener,
+} from './row-feed.ts'
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'
 
@@ -190,5 +200,49 @@ describe('③ 허브', () => {
     await t.row('나')
     await sleep(400)
     assert.equal(mine.seen.length, count, '끊은 뒤에는 받지 않는다')
+  })
+})
+
+describe('④ 구독이 붙기 전의 틈 (#250)', () => {
+  test('★ 렌더 시각 뒤에 바뀐 표만 — 다른 표 · 그 뒤의 렌더는 아니다 · 허브가 듣기 전의 렌더는 "바뀌었다"', async (ctx) => {
+    if (skipReason) return ctx.skip(skipReason)
+    const t = await table('틈')
+    const other = await table('틈 밖')
+    // 허브를 연다(구독 하나) — 이 앞의 시각은 허브가 듣지 않았다
+    const seen: string[] = []
+    const off = await subscribeRows({
+      dataSourceId: t.ds,
+      workspaceId: fx.workspaceId,
+      userId: fx.owner.userId,
+      onChanged: () => seen.push('changed'),
+      onAccess: () => undefined,
+      onSession: () => undefined,
+    })
+    try {
+      await sleep(20)
+      const rendered = feedClock() // 화면이 읽기 전의 시각
+      assert.deepEqual([rowsChangedSince(t.ds, rendered), rowsChangedSince(other.ds, rendered)], [false, false], '아직 아무것도 바뀌지 않았다')
+      // 허브가 한 번도 신호를 받지 않은 표로 묻는다 — 이 파일의 표는 허브가 듣는 동안 만들어져 신호가 적혀 있다(그 표로 물으면 듣기 전의
+      // 규칙이 없어도 참이 나온다 — 반사실이 찾았다)
+      const unseen = randomUUID()
+      assert.deepEqual(
+        [rowsChangedSince(unseen, 0), rowsChangedSince(unseen, rendered)],
+        [true, false],
+        '허브가 듣기 전의 렌더는 모른다 — 바뀐 것으로 친다 · 듣는 동안의 렌더는 신호가 없으면 아니다',
+      )
+
+      await t.row('읽은 뒤에 들어온 행')
+      for (let i = 0; i < 40 && !seen.includes('changed'); i++) await sleep(50)
+      assert.ok(seen.includes('changed'), '전제 — 신호가 왔다')
+      assert.deepEqual(
+        [rowsChangedSince(t.ds, rendered), rowsChangedSince(other.ds, rendered)],
+        [true, false],
+        '그 표만 렌더 뒤에 바뀌었다',
+      )
+      await sleep(20)
+      assert.equal(rowsChangedSince(t.ds, feedClock()), false, '그 뒤에 읽은 화면에는 바뀐 것이 없다')
+    } finally {
+      off()
+    }
   })
 })

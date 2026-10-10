@@ -10,6 +10,10 @@
  *   reconnect   서버가 닫는다 — 브라우저가 알아서 다시 붙는다(`EventSource` 의 기본)
  *   ready       붙었다 — **두 번째부터는** 끊긴 사이의 신호를 잃었을 수 있으니 "바뀌었다"로 친다
  *
+ * 첫 구독이 붙기 전의 틈(#250) — 서버 렌더로 읽은 뒤 이 구독이 붙기까지의 변경은 신호가 이미 지나갔다. 서버 화면이 준 렌더 시각
+ * (`since` — 읽기 전의 시각)을 주소에 실으면 서버가 그 사이에 바뀌었을 때 `ready` 바로 뒤에 `changed` 를 보낸다. 렌더 시각은 **마운트
+ * 때의 것**만 쓴다 — 다시 그린 서버 화면이 새 시각을 주어도 구독을 다시 열지 않는다(열린 구독이 그 뒤의 신호를 받는다).
+ *
  * 부르는 쪽의 함수는 렌더마다 새로 만들어지므로 ref 로 최신 것을 부른다 — 구독을 매번 다시 열지 않는다.
  */
 
@@ -21,15 +25,21 @@ export function useTableChanges(
   dataSourceId: string,
   handlers: { readonly onChanged: () => void; readonly onRevoked: () => void },
   enabled = true,
+  /** 서버 화면이 읽기 전의 시각(ms) — 머리말. 없으면 첫 구독 전의 틈을 메우지 않는다. */
+  since?: number,
 ): void {
   const latest = useRef(handlers)
   useEffect(() => {
     latest.current = handlers
   })
+  const sinceAtMount = useRef(since)
 
   useEffect(() => {
     if (!enabled || typeof EventSource === 'undefined') return
-    const source = new EventSource(`/api/workspaces/${workspaceId}/data-sources/${dataSourceId}/changes`)
+    const at = sinceAtMount.current
+    const source = new EventSource(
+      `/api/workspaces/${workspaceId}/data-sources/${dataSourceId}/changes${at === undefined ? '' : `?since=${Math.floor(at)}`}`,
+    )
     let readyCount = 0
     source.addEventListener('ready', () => {
       readyCount += 1
@@ -49,7 +59,7 @@ export function useTableChanges(
  * (보드의 그룹 · 캘린더의 달) — 표처럼 따로 읽는 길을 두지 않는다. 끌기 · 편집 · 추가 중(`busy`)이면 미뤘다가 끝나면 부른다. 새 값은
  * `useAdoptServerValue` 가 상태로 받아들인다.
  */
-export function useLiveServerRefresh(workspaceId: string, dataSourceId: string, busy: boolean, enabled = true): void {
+export function useLiveServerRefresh(workspaceId: string, dataSourceId: string, busy: boolean, since?: number): void {
   const router = useRouter()
   const pending = useRef(false)
   const busyRef = useRef(busy)
@@ -66,7 +76,8 @@ export function useLiveServerRefresh(workspaceId: string, dataSourceId: string, 
       },
       onRevoked: () => router.refresh(),
     },
-    enabled,
+    true,
+    since,
   )
   useEffect(() => {
     if (busy || !pending.current) return

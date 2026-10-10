@@ -56,6 +56,7 @@ import { EMPTY_ROLLUP_PAGE } from '@/lib/database/rollup'
 import { formulaPlanOf } from '@/lib/database/formula-plan'
 import { rowJson } from '@/lib/database/http'
 import { RowTitle } from '../db/[databaseId]/row-title'
+import { feedClock } from '@/lib/database/row-feed'
 import { RowProperties } from './row-properties'
 
 /** 제목 없는 페이지의 표시 문구. 저장된 값은 빈 배열이다. */
@@ -63,6 +64,8 @@ const UNTITLED = '제목 없음'
 
 export default async function PageView({ params, searchParams }: PageProps<'/w/[workspaceId]/[pageId]'>) {
   const { workspaceId, pageId: rawPageId } = await params
+  // 읽기 전의 시각 — 행 페이지의 속성 묶음이 구독할 때 들고 가 그 사이의 레이아웃 변경을 메운다(#250)
+  const renderedAt = feedClock()
   // 인박스의 접근 요청 줄은 공유 패널을 연 채로 온다(`?share=1` · 7e-1).
   const { share } = await searchParams
 
@@ -297,6 +300,7 @@ export default async function PageView({ params, searchParams }: PageProps<'/w/[
             formulaPlan={formulaPlanOf(rowPage.columns, new Date())}
             access={rowAccess}
             sorts={[]}
+            renderedAt={renderedAt}
           />
         </section>
       )}

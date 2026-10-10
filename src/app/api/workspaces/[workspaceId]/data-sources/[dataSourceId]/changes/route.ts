@@ -8,7 +8,8 @@
  * 읽는 길이 권한 · 필터를 본다). 그래서 이 연결로는 볼 수 없는 것이 새지 않는다 — 새는 것은 "그 표가 바뀌었다"는 사실 하나이고, 그것도
  * 그 표를 볼 수 있는 사람에게만 간다.
  *
- *   event: ready     구독했다
+ *   event: ready     구독했다 — 주소에 `?since=`(화면이 서버에서 읽기 전의 시각 · ms)가 있고 그 뒤에 이 표가 바뀌었으면 곧바로 `changed`
+ *                    가 따른다(구독이 붙기 전의 틈 · #250 — `rowsChangedSince`)
  *   event: changed   그 표의 행 · 속성 · 뷰가 바뀌었다(250ms 모아서 한 번 — 일괄 편집이 신호를 여러 번 보내도 한 번 다시 읽는다)
  *   event: revoked   더 볼 수 없다 — 닫는다(다시 붙지 마라)
  *   event: reconnect 세션이 바뀌었다 — 닫는다(다시 붙으면 다시 확인한다)
@@ -21,7 +22,7 @@ import { isUuid } from '@/lib/ids'
 import { requireWorkspaceSession } from '@/lib/auth/route-session'
 import { withReadTransaction } from '@/lib/db/tx'
 import { canViewDataSource } from '@/lib/database/relation'
-import { subscribeRows } from '@/lib/database/row-feed'
+import { rowsChangedSince, subscribeRows } from '@/lib/database/row-feed'
 
 type Ctx = RouteContext<'/api/workspaces/[workspaceId]/data-sources/[dataSourceId]/changes'>
 
@@ -29,12 +30,19 @@ type Ctx = RouteContext<'/api/workspaces/[workspaceId]/data-sources/[dataSourceI
 const COALESCE_MS = 250
 const HEARTBEAT_MS = 25_000
 
+/** `?since=` — 0 이상의 정수(ms)만. 아니면 없는 것으로 본다(옛 화면 · 손으로 연 주소). */
+function sinceOf(request: Request): number | null {
+  const raw = new URL(request.url).searchParams.get('since')
+  return raw !== null && /^\d{1,16}$/.test(raw) ? Number(raw) : null
+}
+
 export async function GET(request: Request, ctx: Ctx): Promise<Response> {
   const { workspaceId, dataSourceId } = await ctx.params
   const session = await requireWorkspaceSession(workspaceId)
   if (!session.ok) return session.response
   if (!isUuid(dataSourceId)) return Response.json({ error: 'not_found' }, { status: 404 })
   const sessionCtx = session.ctx
+  const since = sinceOf(request)
   const canView = () => withReadTransaction((tx) => canViewDataSource(tx, sessionCtx, dataSourceId))
   if (!(await canView())) return Response.json({ error: 'not_found' }, { status: 404 })
 
@@ -112,6 +120,8 @@ export async function GET(request: Request, ctx: Ctx): Promise<Response> {
         return
       }
       send('ready', { dataSourceId })
+      // 화면이 읽은 뒤 · 이 구독이 붙기 전에 바뀌었으면 곧바로 다시 읽게 한다(머리말) — 붙은 뒤의 신호는 위의 구독이 받는다
+      if (since !== null && rowsChangedSince(dataSourceId, since)) send('changed', { dataSourceId })
     },
     cancel() {
       stop()

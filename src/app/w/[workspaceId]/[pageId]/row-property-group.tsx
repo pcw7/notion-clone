@@ -148,14 +148,21 @@ export function RowPropertyGroup(
     void checkLayout()
   })
 
-  useTableChanges(table.workspaceId, table.dataSourceId, {
-    onChanged: () => {
-      if (editingRef.current) pendingCheck.current = true
-      else void checkLayout()
+  useTableChanges(
+    table.workspaceId,
+    table.dataSourceId,
+    {
+      onChanged: () => {
+        if (editingRef.current) pendingCheck.current = true
+        else void checkLayout()
+      },
+      // 더 볼 수 없다 — 서버 렌더가 "없음"을 보인다
+      onRevoked: () => router.refresh(),
     },
-    // 더 볼 수 없다 — 서버 렌더가 "없음"을 보인다
-    onRevoked: () => router.refresh(),
-  })
+    true,
+    // 행 페이지를 그린 뒤 · 구독이 붙기 전의 적용을 놓치지 않는다(#250)
+    table.renderedAt,
+  )
 
   const undo = async () => {
     setUndoing(true)

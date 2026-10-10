@@ -69,6 +69,8 @@ export function DatabaseGallery(props: {
   defaultTemplate?: DefaultTemplate | null
   /** 뷰 검색어(2e-2) — "더 보기"도 같은 검색어를 싣는다. */
   search?: string | null
+  /** 서버 화면이 읽기 전의 시각(ms) — 구독이 붙기 전의 변경을 메운다(#250 · `use-table-changes.ts`). */
+  renderedAt?: number
   /** 레이아웃(2f-2) — 미리보기 · 카드 폭 · 맞춤. */
   layout: GalleryLayout
   /** 첫 페이지의 카드 미리보기(행 id → 이미지 주소). "더 보기"의 것은 응답이 함께 준다. */
@@ -90,7 +92,7 @@ export function DatabaseGallery(props: {
   // 표 변경 알림(2k-3 · F-04-24) — 다른 곳에서 바뀌면 서버 렌더를 다시 부르고 첫 페이지 · 미리보기를 받아들인다. 만들기 · 편집 · 더 보기
   // 중이면 끝난 뒤에. "더 보기"로 더 읽은 카드는 첫 페이지로 돌아간다(§7).
   const galleryBusy = loadingMore || busy || editing !== null
-  useLiveServerRefresh(workspaceId, dataSourceId, galleryBusy)
+  useLiveServerRefresh(workspaceId, dataSourceId, galleryBusy, props.renderedAt)
   useAdoptServerValue(props.rows, galleryBusy, (next) => {
     setRows(next)
     setCursor(props.hasMore ? props.nextCursor : null)
