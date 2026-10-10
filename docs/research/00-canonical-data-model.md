@@ -2743,6 +2743,45 @@ CREATE INDEX ON reminder (target_at) WHERE fired_at IS NULL;
 >    것이다(08 F-08-13 *"짧은 재시도 3회 후 정지"*). 사람이 다시 켠다. 멈춘 동안의 활동은 보내지 않는다(쌓았다가 몰아 보내지 않는다).
 > ⑧ 페이지가 휴지통에 가면 보내지 않고 웹훅은 남는다(되살리면 다시) · 페이지 행이 지워지면 함께 지워진다(FK CASCADE · 11 *"삭제된 참조"*).
 > ⑨ 화면(4e-3)은 Updates 패널 안이다 — 노션은 그 패널의 "Connect Slack channel" 토글이다.
+>
+> **보내기 — 4e-2 에서 정한 것** ⟨마이그레이션 0076⟩
+>
+> ```sql
+> CREATE TABLE webhook_delivery (
+>   id            uuid PRIMARY KEY,              -- 받는 쪽의 멱등 키(⑥)
+>   webhook_id    uuid NOT NULL REFERENCES page_webhook(id) ON DELETE CASCADE,
+>   event_ids     uuid[] NOT NULL,               -- 모은 이벤트(시간순)
+>   window_end    timestamptz NOT NULL,          -- 첫 이벤트 + 5분 — 이때 보낸다
+>   status        text NOT NULL CHECK (status IN ('collecting','pending','sent','failed','dropped')),
+>   attempts      int NOT NULL DEFAULT 0,
+>   next_attempt_at timestamptz NULL,            -- pending 일 때만 — 보낼 시각(첫 시도 · 다시)
+>   locked_until  timestamptz NULL,              -- 보내는 중(임대) — 워커가 죽으면 지나서 다시 가져간다
+>   last_status   int NULL, last_error text NULL,
+>   finished_at   timestamptz NULL,              -- sent · failed · dropped 일 때만
+>   created_at    timestamptz NOT NULL DEFAULT now()
+> );
+> CREATE UNIQUE INDEX ux_webhook_delivery_collecting ON webhook_delivery (webhook_id) WHERE status = 'collecting';
+> ```
+>
+> ⓐ **이벤트를 남길 때 같은 트랜잭션에서 고른다**(`recordActivity`) — 그 이벤트의 페이지와 **권한 범위(`perm_scope_id`)가 같은** 자기 · 조상
+>    페이지 중 웹훅이 걸린 **가장 가까운** 페이지의 켜진 웹훅마다, 모으는 묶음(웹훅마다 하나 — 부분 UNIQUE)에 이벤트를 더한다. 묶음이
+>    없으면 만들고 그때 `window_end` = 지금 + 5분. 나중에 로그를 거꾸로 훑지 않는다 — 커밋 순서와 시각이 어긋나면 훑는 쪽이 이벤트를 건너뛴다.
+> ⓑ **권한 범위가 같은 것만**(⑤를 좁힌다) — 같은 `perm_scope_id` 의 페이지는 정의상 권한이 같다(§3.3). 아래 페이지 중 권한을 따로 정한
+>    페이지(상속을 끊었거나 따로 공유한 것)와 그 아래의 활동은 위의 웹훅으로 가지 않는다 — 그 페이지를 볼 수 없는 사람이 건 웹훅으로 그 활동이
+>    새지 않게. 거기에도 보내려면 그 페이지에 따로 건다.
+> ⓒ **보내기는 공용 스케줄러의 일**(`webhook_deliver` — 1분마다) — 때가 된 묶음(`collecting` 이고 `window_end` 가 지났거나 · `pending` 이고
+>    `next_attempt_at` 이 지났다)을 `FOR UPDATE SKIP LOCKED` 로 잡아 **`pending` 으로 바꾸고** 임대를 걸어 커밋한 뒤 **트랜잭션 밖에서** 보낸다
+>    (바깥 요청이 행 잠금을 쥐지 않게). 잡는 순간 `collecting` 을 떠나므로 보내는 동안 생긴 이벤트는 새 묶음으로 간다 — 이미 만든 본문에 끼어
+>    보내지 않은 채 `sent` 가 되는 일이 없다. 결과는 다시 트랜잭션으로 적는다. 워커가 보내다 죽으면 임대가 지나 다시 보낸다 — **적어도 한 번**이고, 받는 쪽은 배달 id 로
+>    겹친 것을 거른다.
+> ⓓ **보내기 직전에 다시 본다** — 걸린 페이지가 살아 있지 않거나(휴지통 — ⑧) 웹훅이 멈췄으면 보내지 않고 `dropped`. 묶음의 이벤트 중 이미
+>    지워진 것(보관 기간)은 빼고, 남은 것이 없으면 `dropped`.
+> ⓔ **실패** — 1 · 2 · 4분 뒤 다시(`pending`), 네 번째도 실패면 `failed` 로 끝내고 웹훅을 멈춘다(`failures` — ⑦). 멈춘 웹훅은 새 이벤트를
+>    받지 않는다(ⓐ 가 켜진 웹훅만 고른다).
+> ⓕ **본문** — `text` 는 걸린 페이지의 제목(링크) · 행위자 이름 · 종류별 수(예: *"‘회의록’ — 홍길동 · 김철수: 편집 3 · 코멘트 1"*). 아래 페이지가
+>    섞였으면 그 수를 말한다. `notion_clone` 은 `{ version: 1, delivery_id, page: { id, url }, events: [{ id, type, page_id, actor_id, at }],
+>    event_count }` — 이벤트는 앞의 100개만 싣고 전체 수를 `event_count` 로. 링크는 `NEXT_PUBLIC_APP_URL` 로 만든다.
+> ⓖ **끝난 묶음은 7일 뒤 지운다**(`data_retention` — [보강] 데이터 수명의 규칙 *"쌓이기만 하는 표에는 보관 규칙"*).
 
 **[정정] `activity_event` 의 PK 는 `(id, created_at)` 이다** ⟨코멘트 3조각 / 마이그레이션 0020⟩
 
