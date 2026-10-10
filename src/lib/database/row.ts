@@ -53,6 +53,7 @@ import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.t
 import { can } from '../permissions/levels.ts'
 import { effectiveCaps } from '../permissions/effective.ts'
 import { isLocked } from '../permissions/lock.ts'
+import { recordActivity, recordCoalescedActivity } from '../notification/activity.ts'
 import { orderKeyBetween } from '../block/order-key.ts'
 import { titleFromPlainText } from '../block/page.ts'
 import { readPageIcon, type PageIcon } from '../block/page-icon.ts'
@@ -433,6 +434,8 @@ export async function createRowIn(
     ])
     // 고유 ID — 행을 넣은 **뒤에** 묻는다(`unique-id.ts` 머리말의 잠금 순서). 템플릿은 받지 않는다(불변식 U2).
     if (!isTemplate) await issueUniqueSeq(tx, dataSourceId, rowId)
+    // 활동 — 행을 만들었다(4d-2). 템플릿은 행이 아니다(표에 서지 않는다)
+    if (!isTemplate) await recordActivity(tx, ctx, { pageId: rowId, type: 'page.created' })
 
     if (prepared.length > 0) {
       await writeCells(tx, rowId, prepared)
@@ -516,6 +519,8 @@ export async function updateCellsIn(
       await writeCells(tx, rowId, prepared)
       await projectTitle(tx, rowId, prepared, gate.titlePropertyId)
       await bumpRow(tx, ctx, rowId)
+      // 활동 — 셀을 고쳤다(4d-2 · 같은 사람 · 같은 행 5분 안이면 접는다)
+      await recordCoalescedActivity(tx, ctx, { pageId: rowId, type: 'property.updated' })
     }
 
     const summary = await readRow(tx, rowId)
@@ -703,6 +708,8 @@ export async function trashRow(ctx: SessionContext, rowId: string): Promise<RowR
         WHERE id = $1`,
       [rowId, ctx.userId, ctx.workspaceId],
     )
+    // 활동 — 버렸다(4d-2 · 행은 제 묶음의 루트다)
+    await recordActivity(tx, ctx, { pageId: rowId, type: 'page.trashed' })
     return { ok: true, value: null } as const
   })
 }

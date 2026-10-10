@@ -37,6 +37,7 @@ import { isLocked } from '../permissions/lock.ts'
 import { MAX_TREE_DEPTH } from './types.ts'
 import { indexPageTitle } from '../search/index-page.ts'
 import { autoSubscribe } from '../notification/subscription.ts'
+import { recordActivity, recordCoalescedActivity } from '../notification/activity.ts'
 import { openPageBody } from './body-write.ts'
 import { appendPageRef, placePageRefAt } from './page-refs.ts'
 import { PAGE_ICON_KEY, pageIconJson, pageIconOfFormat, parsePageIconInput, samePageIcon, type PageIcon } from './page-icon.ts'
@@ -463,6 +464,8 @@ export async function createPageIn(
     // 만든 사람은 이 페이지의 코멘트를 받는다(F-11-09 `auto_created`). 행이 없을 때만 넣으므로 나중에 뮤트하면
     // 그 값이 이긴다(불변식 N1 · `notification/subscription.ts`).
     await autoSubscribe(tx, ctx.userId, id, 'auto_created', 'all_comments')
+    // 활동 — 만들었다(4d-2 · 정본 §3.8 [보강] 활동 기록 ①)
+    await recordActivity(tx, ctx, { pageId: id, type: 'page.created' })
 
     let current = row
     if (parentBody !== null) {
@@ -668,6 +671,8 @@ export async function renamePage(
 
     const summary = toSummary(row)
     await indexPageTitle(tx, pageId, summary.plainTitle)
+    // 활동 — 제목도 사람이 친 글이다(4d-2 · 본문 편집과 같은 종류 · 같은 접기)
+    await recordCoalescedActivity(tx, ctx, { pageId, type: 'block.updated' })
 
     return {
       ...summary,
