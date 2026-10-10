@@ -2668,7 +2668,8 @@ CREATE INDEX ON reminder (target_at) WHERE fired_at IS NULL;
 >    · `page.moved`(옮기기 — payload `from` · `to` 부모 id) · `page.trashed`(버리기 — **묶음의 루트에만**, 함께 들어간 자손에는 남기지 않는다
 >    · 휴지통 명령과 참여자가 참조를 지운 길이 함께 쓰는 행 쓰기 한 곳 · 행 휴지통) · `block.updated`(**참여자의 본문 update** — 사람이 친
 >    편집. 명령이 본문을 고친 것(하위 페이지 만들기 · 옮기기 · 되돌리기 · 가져오기)은 그 명령의 이벤트가 말하므로 남기지 않는다) ·
->    `property.updated`(셀 쓰기).
+>    `property.updated`(셀 쓰기). **페이지 제목 바꾸기**(`renamePage` — 본문 update 밖의 명령이지만 사람이 친 글이다)도 `block.updated`
+>    (페이지 블록 자신의 제목 · 같은 접기). 행의 제목은 셀이므로 `property.updated`. 아이콘 · 커버는 남기지 않는다(글이 아니다).
 > ② **접는다** — `block.updated` · `property.updated` 는 같은 사람 · 같은 페이지 · 같은 종류의 이벤트가 **5분** 안에 있으면 새로 남기지
 >    않는다(11 F-11-04 *"동일 actor 의 연속 편집은 시간 윈도우(예: 5분)로 합쳐 1건"*). 타자 하나마다 행이 생기면 피드도 표도 못 쓴다.
 >    접기는 저장할 때 한다(조회 때 접으면 저장이 폭주한다).
