@@ -75,6 +75,8 @@ const EXPECTED_TABLES = [
   'page_layout_history',
   // 공용 스케줄러 4a-1조각 (0068)
   'scheduled_job',
+  // 리마인더 4c-1조각 (0072)
+  'reminder',
   'schema_migration', 'scim_token', 'session_policy', 'sso_config',
   'user', 'user_email', 'user_session',
   'workspace', 'workspace_invite', 'workspace_member',
@@ -3527,6 +3529,41 @@ try {
     else fail(`ix_data_source_hard_del_due 가 없거나 모양이 다르다: ${defOf('ix_data_source_hard_del_due') || '없음'}`)
     if (/\(trash_root_id\) WHERE \(trash_root_id IS NOT NULL\)/.test(defOf('ix_block_trash_root'))) ok('묶음을 루트로 찾는 부분 색인 — 휴지통 · purged 인 것만')
     else fail(`ix_block_trash_root 가 없거나 모양이 다르다: ${defOf('ix_block_trash_root') || '없음'}`)
+  }
+
+  console.log('\n[52] 리마인더 (0072 / §3.8 [보강] 리마인더 · 4c-1조각)')
+  {
+    const pageId = randomUUID()
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key, ancestor_path, perm_scope_id, properties, format,
+                          created_at, last_edited_at)
+       VALUES ($1, $2, 'page', 'block', $3, 'a0', '{}', $1, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      [pageId, wsId, randomUUID()],
+    )
+    const put = `INSERT INTO reminder (id, workspace_id, block_id, page_id, property_id, target_at, timezone, lead_minutes, fire_at, recipient_ids, created_by)
+                 VALUES ($1, $2, $3, $4, $5, $6, 'Asia/Seoul', $7, $8, $9::uuid[], $10)`
+    const at = new Date('2030-01-01T00:00:00Z')
+    const minus = (minutes) => new Date(at.getTime() - minutes * 60_000)
+    await client.query(put, [randomUUID(), wsId, pageId, pageId, null, at, 30, minus(30), [userId], userId])
+    ok('리마인더 하나(30분 전) — 정상 경로가 통과한다')
+
+    const rejectBy = async (label, constraint, params) => {
+      await client.query('SAVEPOINT probe')
+      try {
+        await client.query(put, params)
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        fail(`${label} — 거부되어야 하는데 통과했다`)
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        if (e.constraint === constraint) ok(`${label} — ${constraint} 가 거부함 (${e.code})`)
+        else fail(`${label} — ${constraint} 가 아니라 ${e.constraint ?? e.code} 에 걸렸다 (${e.message})`)
+      }
+    }
+    await rejectBy('★ 울릴 시각이 식과 다르다(리드 30 인데 그 시각)', 'ck_reminder_fire_at', [randomUUID(), wsId, pageId, pageId, null, at, 30, at, [userId], userId])
+    await rejectBy('리드가 일주일을 넘는다', 'ck_reminder_lead', [randomUUID(), wsId, pageId, pageId, null, at, 10081, minus(10081), [userId], userId])
+    await rejectBy('★ 받는 사람이 없다', 'ck_reminder_recipients', [randomUUID(), wsId, pageId, pageId, null, at, 0, at, [], userId])
+    // CHECK 은 FK 보다 먼저 본다 — 없는 속성 id 로도 이 거부를 볼 수 있다
+    await rejectBy('★ 날짜 속성의 리마인더인데 블록이 그 행이 아니다', 'ck_reminder_property_block', [randomUUID(), wsId, userId, pageId, 'nope', at, 0, at, [userId], userId])
   }
 
   await client.query('ROLLBACK')
