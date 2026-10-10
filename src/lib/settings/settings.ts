@@ -19,7 +19,13 @@ import type { SessionContext } from '../auth/session-context.ts'
 import { recordForContextIn } from '../audit/audit.ts'
 import { entitlement } from '../billing/entitlement.ts'
 import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
-import { readSecurityPolicyIn, writeNonmemberRequestPolicyIn, writePublishPolicyIn } from '../workspace/security-policy.ts'
+import {
+  readSecurityPolicyIn,
+  writeExportPolicyIn,
+  writeMemberInviteGuestsPolicyIn,
+  writeNonmemberRequestPolicyIn,
+  writePublishPolicyIn,
+} from '../workspace/security-policy.ts'
 import {
   DEFAULT_THEME,
   SETTINGS,
@@ -94,6 +100,15 @@ const STORES: { readonly [K in SettingKey]: Store<SettingValueOf<K>> } = {
   'workspace.allow_publish_sites_and_forms': {
     read: async (tx, ctx) => (await readSecurityPolicyIn(tx, ctx.workspaceId)).allowPublish,
     write: (tx, ctx, value) => writePublishPolicyIn(tx, ctx.workspaceId, value),
+  },
+  // 보안 정책(6e-1 · 정본 [보강] 보안 정책) — 멤버의 내보내기 · 게스트 초대
+  'workspace.allow_export': {
+    read: async (tx, ctx) => (await readSecurityPolicyIn(tx, ctx.workspaceId)).allowExport,
+    write: (tx, ctx, value) => writeExportPolicyIn(tx, ctx.workspaceId, value),
+  },
+  'workspace.allow_member_invite_guests': {
+    read: async (tx, ctx) => (await readSecurityPolicyIn(tx, ctx.workspaceId)).allowMemberInviteGuests,
+    write: (tx, ctx, value) => writeMemberInviteGuestsPolicyIn(tx, ctx.workspaceId, value),
   },
   // 휴지통 보관 기간(4b-3) — 버리는 명령이 이 칸을 읽어 `purge_after` 를 적는다. 바꿔도 이미 버린 것은 그대로다(정본 [보강] ③)
   'workspace.trash_days': {

@@ -44,6 +44,7 @@ const STATUS: Readonly<Record<AclFailure, number>> = {
   would_orphan: 409,
   invalid_principal: 400,
   guest_level: 400,
+  policy_disabled: 403,
 }
 
 const MESSAGE: Readonly<Record<AclFailure, string>> = {
@@ -53,6 +54,7 @@ const MESSAGE: Readonly<Record<AclFailure, string>> = {
     '이 페이지를 관리할 수 있는 사람이 아무도 남지 않습니다. 먼저 다른 사람에게 전체 권한을 주세요.',
   invalid_principal: '그 사람 · 그룹 · teamspace 를 찾을 수 없습니다. 워크스페이스를 떠났거나 지워졌을 수 있습니다 — 밖의 사람은 이메일로 초대하세요.',
   guest_level: '게스트에게는 전체 권한을 줄 수 없습니다 — 편집까지 줄 수 있습니다.',
+  policy_disabled: '워크스페이스 정책이 멤버의 게스트 초대를 막았습니다 — 소유자나 멤버 관리자에게 부탁하세요.',
 }
 
 /** 화면이 보내온 주체를 우리 타입으로. 모양이 아니면 null. */

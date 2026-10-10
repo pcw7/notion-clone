@@ -37,6 +37,7 @@ import { randomUUID } from 'node:crypto'
 import type { SessionContext } from '../auth/session-context.ts'
 import { recordForContextIn } from '../audit/audit.ts'
 import { withTransaction, type Tx } from '../db/tx.ts'
+import { mayInviteGuestsIn } from '../workspace/security-policy.ts'
 import { can, capabilitiesOf, isDefinedLevel, unionCaps, type Level } from './levels.ts'
 import { effectiveCaps, principalsOf, resolveCaps, type AclRow } from './effective.ts'
 
@@ -60,6 +61,8 @@ export type AclFailure =
   | 'invalid_principal'
   /** 게스트에게 전체 권한을 주려 했다 — 게스트의 레벨은 편집까지다(7d-1 · 공유를 품으면 게스트가 게스트를 초대한다). */
   | 'guest_level'
+  /** 워크스페이스 정책이 멤버의 게스트 공유를 막았다(`allow_member_invite_guests` · 6e-1) — 소유자 · 멤버 관리자만 게스트에게 준다. */
+  | 'policy_disabled'
 
 export type AclResult<T = void> =
   | ({ readonly ok: true } & (T extends void ? object : { readonly value: T }))
@@ -277,6 +280,10 @@ export async function grantAccessIn(
     }
     if (principal.type === 'user' && level === 'full_access' && (await isGuest(tx, ctx.workspaceId, principal.id))) {
       return { ok: false, reason: 'guest_level' } as const
+    }
+    // 보안 정책(6e-1 · 정본 [보강] 보안 정책 ②) — 게스트에게 주는 모든 길이 여기를 지난다(공유 패널 · 이메일 초대 · 접근 요청의 허락)
+    if (principal.type === 'user' && (await isGuest(tx, ctx.workspaceId, principal.id)) && !(await mayInviteGuestsIn(tx, ctx))) {
+      return { ok: false, reason: 'policy_disabled' } as const
     }
 
     await writeGrant(tx, ctx.workspaceId, node, principal, level, ctx.userId)

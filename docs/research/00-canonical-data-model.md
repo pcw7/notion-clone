@@ -616,7 +616,8 @@ CREATE TABLE security_policy (
   who_can_add_restricted_members text NOT NULL DEFAULT 'owners'
 );
 -- 행이 없으면 모든 칸이 기본값이다(행은 처음 바꿀 때 생긴다) · 바꾸는 사람은 워크스페이스 owner [보강 7g-2 / 0036]
--- 지금 읽는 칸은 allow_nonmember_page_access_request 하나다(접근 요청 ⑩) — 나머지는 그 기능이 생길 때 건다
+-- 지금 읽는 칸: allow_nonmember_page_access_request(접근 요청 ⑩) · allow_publish_sites_and_forms(웹 게시 6a-1) ·
+-- allow_export · allow_member_invite_guests(6e-1 — 아래 [보강] 보안 정책). 나머지는 그 기능이 생길 때 건다
 CREATE TABLE org_security_policy (
   org_id uuid REFERENCES organization(id), policy_key text,
   mode text CHECK (mode IN ('workspace_managed','enabled_for_everyone','disabled_for_everyone')),
@@ -634,6 +635,24 @@ CREATE TABLE access_request (
 -- 불변식: pending 은 만료되지 않는다(1차 출처는 accept/ignore 2택만 서술).
 -- 대기 중인 요청은 (node_id, requester_id, kind)마다 하나 · 페이지 요청은 node_id · requester_id 가 있다 [보강 7e-1 / 0033]
 ```
+
+**[보강] 보안 정책 — 내보내기 · 멤버의 게스트 초대** ⟨게시 · 공유 6e-1 · F-06-11 / 마이그레이션 없음⟩
+
+> 06 F-06-11 *"정책은 ACL 보다 상위에서 평가된다 — 유일하게 deny 가 존재하는 계층"* · *"게이트 누락 하나가 곧 정책 우회"*. 쓰는 곳이
+> 생긴 칸 둘을 건다. 바꾸는 길은 설정(소유자 — §3.1 [보강] 설정 정보구조 ②)이고, 바꾸면 감사 로그에 남는다(§3.8 [보강] 감사 로그).
+>
+> ① **`allow_export` — 끄면 소유자만 내보낸다**(06 *"Disable export — Don't let members export pages"*). 페이지 · 데이터베이스의 내보내기가
+> 소유자가 아니면 `policy_disabled`(403 — 권한 거부와 코드가 다르다). 워크스페이스 전체는 원래 소유자만이다. 공개 API 가 생기면 같은
+> 게이트를 지난다(06 엣지 *"API 도 함께 막지 않으면 정책이 우회된다"*).
+>
+> ② **`allow_member_invite_guests` — 끄면 소유자 · 멤버 관리자만 게스트를 들이고 게스트와 공유한다**(06 *"Allow members to invite guests
+> to pages"*). 게스트에게 주는 **모든 길**이 같은 게이트를 지난다: 공유 패널의 게스트 부여(`grantAccessIn` — 대상이 게스트면) · 이메일
+> 초대(이미 있는 계정 · 대기 초대) · 접근 요청의 허락(밖의 사람을 게스트로) · **대기 초대의 수락**(초대한 사람의 지금 역할로 — 정책이 바뀐
+> 뒤에 받은 초대는 들어오지 않는다). 거부는 `policy_disabled`. **이미 들어온 게스트의 접근은 그대로다**(06 엣지 *"게스트 존재 상태에서
+> 게스트 금지 — 결정 필요"* → 막는 것은 새 초대 · 새 공유다. 걷으려면 게스트 관리에서 뺀다).
+>
+> ③ 요금제 게이트는 두지 않는다 — 웹 게시 정책(6a-1)과 같다(노션은 Enterprise 기능이지만 이 클론의 정책은 소유자의 안전장치다). 조직
+> 계층(`org_security_policy`)은 조직이 생길 때.
 
 **[정정] `"group"` 의 `UNIQUE (workspace_id, lower(name))` → 살아있는 그룹에만 거는 부분 UNIQUE** ⟨Teamspace · 게스트 · 그룹 7a / 마이그레이션 0027⟩
 

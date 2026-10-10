@@ -18,6 +18,7 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import type { SessionContext, WorkspaceRole } from '../auth/session-context.ts'
 import { isUuid } from '../ids.ts'
 import { queryMaybe } from '../db/pool.ts'
+import { roleMayInviteGuestsIn } from './security-policy.ts'
 import { recordAuditIn } from '../audit/audit.ts'
 import { withCommandTransaction, withTransaction, type Tx } from '../db/tx.ts'
 import { grantFromInviteIn } from '../permissions/acl.ts'
@@ -392,6 +393,12 @@ async function acceptGuestInvite(tx: Tx, invite: GuestInviteRow, userId: string)
     [pageId, invite.workspace_id],
   )
   if (page === null || !sharers?.has(invite.created_by)) return { ok: false, reason: 'page_unavailable' } as const
+  // 보안 정책(6e-1 · 정본 [보강] 보안 정책 ②) — 초대한 사람의 **지금** 역할로. 정책이 바뀐 뒤에 받은 초대는 들어오지 않는다
+  const inviter = await tx.queryMaybe<{ role: string }>(
+    `SELECT role FROM workspace_member WHERE workspace_id = $1 AND user_id = $2 AND status = 'active'`,
+    [invite.workspace_id, invite.created_by],
+  )
+  if (!(await roleMayInviteGuestsIn(tx, invite.workspace_id, inviter?.role ?? null))) return { ok: false, reason: 'page_unavailable' } as const
 
   const existing = await tx.queryMaybe<{ role: string; status: string }>(
     `SELECT role, status FROM workspace_member WHERE workspace_id = $1 AND user_id = $2 FOR UPDATE`,

@@ -135,6 +135,8 @@ export function guestInviteMessage(error: unknown): string {
       return '그 사람은 지금 이 워크스페이스에 들어올 수 없습니다.'
     case 'guest_limit':
       return GUEST_LIMIT_MESSAGE
+    case 'policy_disabled':
+      return '워크스페이스 정책이 멤버의 게스트 초대를 막았습니다 — 소유자나 멤버 관리자에게 부탁하세요.'
     case 'forbidden':
       return '이 페이지의 공유 설정을 바꿀 권한이 없습니다.'
     case 'not_found':

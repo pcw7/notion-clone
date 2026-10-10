@@ -27,6 +27,7 @@ const STATUS: Readonly<Record<GuestInviteFailure, number>> = {
   guest_level: 400,
   unavailable: 409,
   guest_limit: 403,
+  policy_disabled: 403,
 }
 
 export async function POST(request: Request, ctx: Ctx): Promise<Response> {
