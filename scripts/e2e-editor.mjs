@@ -14143,6 +14143,9 @@ async function main() {
       await openRow()
       check('처음에는 되돌릴 것이 없다 — 단추가 없다', !(await has('[data-testid="row-layout-undo"]')))
       await putLayout({ hidden: [memo] })
+      // 열린 화면이 그 적용을 따라 다시 그린 뒤에 떠난다 — 다시 그리기(`router.refresh`) 도중에 떠나면 서버가 그 렌더를 "destination stream
+      // closed early" 로 끊는다(#250 의 전체 판 — 구독 전 틈을 고치자 이 페이지가 적용을 늘 받게 되어 드러났다)
+      await waitFor(`![...document.querySelectorAll('[data-testid="row-visible-properties"] td[data-property-id]')].some((td) => td.getAttribute('data-property-id') === ${JSON.stringify(memo)})`, 10000)
       await openRow()
       check('적용 뒤에는 "직전 레이아웃으로 되돌리기"가 선다 — 메모는 숨겨져 있다',
         (await has('[data-testid="row-layout-undo"]')) && !(await visibleIds()).includes(memo),
