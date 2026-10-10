@@ -4085,6 +4085,43 @@ try {
     await client.query('ROLLBACK TO SAVEPOINT cascade')
   }
 
+  console.log('\n[64] 공개 페이지 신고 — 케이스 · 신고 (0085 / §3.3 끝 [보강] 공개 페이지 신고 · 6b-1a조각)')
+  {
+    const target = randomUUID()
+    const caseId = randomUUID()
+    const openCase = `INSERT INTO moderation_case (id, target_type, target_id, workspace_id, state, report_count, first_reported_at, last_reported_at)
+                      VALUES ($1, 'page', $2, $3, 'open', 1, now(), now())`
+    await client.query(openCase, [caseId, target, wsId])
+    ok('열린 케이스 — 정상 경로가 통과한다')
+    const report = `INSERT INTO abuse_report (id, case_id, target_type, target_id, reason, detail, content_snapshot)
+                    VALUES ($1, $2, 'page', $3, $4, $5, $6::jsonb)`
+    await client.query(report, [randomUUID(), caseId, target, 'other', '', '{"title":"t"}'])
+    ok('신고 한 줄 — 정상 경로가 통과한다')
+
+    const rejects = async (label, sql, params, constraint) => {
+      await client.query('SAVEPOINT probe')
+      try {
+        await client.query(sql, params)
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        fail(`${label} — 거부되어야 하는데 통과했다`)
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        if (e.constraint === constraint) ok(`${label} — ${constraint} 가 거부함 (${e.code})`)
+        else fail(`${label} — ${constraint} 가 아니라 ${e.constraint ?? e.code} 에 걸렸다 (${e.message})`)
+      }
+    }
+    await rejects('★ 같은 대상의 두 번째 열린 케이스', openCase, [randomUUID(), target, wsId], 'ux_moderation_case_open')
+    await rejects('닫는 시각 없이 닫힌 케이스', `UPDATE moderation_case SET state = 'dismissed' WHERE id = $1`, [caseId], 'ck_moderation_case_closed')
+    await rejects('열린 채 닫는 시각', `UPDATE moderation_case SET closed_at = now() WHERE id = $1`, [caseId], 'ck_moderation_case_closed')
+    await rejects('사유의 값', report, [randomUUID(), caseId, target, 'spam', '', '{}'], 'ck_abuse_report_reason')
+    await rejects('상세 2001자', report, [randomUUID(), caseId, target, 'other', 'x'.repeat(2001), '{}'], 'ck_abuse_report_detail')
+    await rejects('스냅샷이 객체가 아니다', report, [randomUUID(), caseId, target, 'other', '', '[]'], 'ck_abuse_report_snapshot')
+
+    await client.query(`UPDATE moderation_case SET state = 'dismissed', closed_at = now() WHERE id = $1`, [caseId])
+    await client.query(openCase, [randomUUID(), target, wsId])
+    ok('★ 닫힌 케이스 뒤에는 같은 대상의 새 케이스가 열린다(부분 UNIQUE)')
+  }
+
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
 } catch (e) {
