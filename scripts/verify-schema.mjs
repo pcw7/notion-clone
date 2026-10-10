@@ -3499,6 +3499,36 @@ try {
     else fail(`ix_data_source_purge_due 가 없거나 모양이 다르다: ${index.rows[0]?.indexdef ?? '없음'}`)
   }
 
+  console.log('\n[51] 물리 삭제 (0070 / §3.4 [보강] 물리 삭제 · 4b-2조각)')
+  {
+    await client.query('SAVEPOINT probe')
+    try {
+      await client.query(`INSERT INTO scheduled_job (id, kind, run_at, dedupe_key) VALUES ($1, 'trash_hard_delete', now(), $2)`, [
+        randomUUID(),
+        `probe-${randomUUID()}`,
+      ])
+      ok('★ 일의 종류에 trash_hard_delete 가 있다 — 세 번째 소비자를 넣을 수 있다')
+    } catch (e) {
+      fail(`trash_hard_delete 를 넣지 못했다 (${e.constraint ?? e.code} — ${e.message})`)
+    }
+    await client.query('ROLLBACK TO SAVEPOINT probe')
+    const kinds = await client.query(
+      `SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conname = 'ck_scheduled_job_kind'`,
+    )
+    const def = kinds.rows[0]?.def ?? ''
+    if (['version_gc', 'trash_purge', 'trash_hard_delete'].every((k) => def.includes(`'${k}'`))) ok('앞의 두 소비자도 그대로 받는다')
+    else fail(`CHECK 를 넓히다 앞의 종류를 잃었다: ${def}`)
+    const indexes = await client.query(
+      `SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = 'public' AND indexname = ANY($1::text[])`,
+      [['ix_data_source_hard_del_due', 'ix_block_trash_root']],
+    )
+    const defOf = (name) => indexes.rows.find((r) => r.indexname === name)?.indexdef ?? ''
+    if (/\(purged_at\) WHERE \(lifecycle = 'purged'/.test(defOf('ix_data_source_hard_del_due'))) ok('지울 때가 된 소스의 부분 색인 — purged 인 것만')
+    else fail(`ix_data_source_hard_del_due 가 없거나 모양이 다르다: ${defOf('ix_data_source_hard_del_due') || '없음'}`)
+    if (/\(trash_root_id\) WHERE \(trash_root_id IS NOT NULL\)/.test(defOf('ix_block_trash_root'))) ok('묶음을 루트로 찾는 부분 색인 — 휴지통 · purged 인 것만')
+    else fail(`ix_block_trash_root 가 없거나 모양이 다르다: ${defOf('ix_block_trash_root') || '없음'}`)
+  }
+
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
 } catch (e) {

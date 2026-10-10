@@ -1339,7 +1339,7 @@ CREATE VIEW live_block AS SELECT * FROM block WHERE lifecycle = 'live';
 | `live` → `trashed` | Delete / API `in_trash:true` / 소스 삭제 전파 | page 타입 자손 전체에 전파. 자손 `trash_root_id`=대상 id. `purge_after`=now+`trash_days`. 부모 Y.Doc 에서 참조 노드 제거 |
 | `trashed` → `live` | Restore / API `in_trash:false` | `trash_root_id` 일치 자손만. 부모 Y.Doc 에 참조 노드 재삽입(order_key 위치, 불가 시 말미) |
 | `trashed` → `purged` | GC(`purge_after` 경과) 또는 영구 삭제 | 누구도 접근 불가(30일 동안 지원 경로로만 복구 — 11 F-11-06). ~~`file.ref_count` 감소~~ → **내리지 않는다** [보강] 휴지통 자동 비우기 ③ |
-| `purged` → 물리 삭제 | GC(`purged_at` + 30일) | `doc_update`/`doc_snapshot`/`page_version`/`search_document` 를 page_id 로 일괄 삭제 · 지운 행이 쥐던 `file.ref_count` 를 내린다(본문 이미지 · 아이콘 · 버전 S5 — [보강] 휴지통 자동 비우기 ③) |
+| `purged` → 물리 삭제 | GC(`purged_at` + 30일) | `doc_update`/`doc_snapshot`/`page_version`/`search_document` 를 page_id 로 일괄 삭제 · 지운 행이 쥐던 `file.ref_count` 를 내린다(본문 이미지 · 아이콘 · 버전 S5 — [보강] 휴지통 자동 비우기 ③) · 다른 묶음의 자손이 남아 있으면 기다린다([보강] 물리 삭제) |
 
 **[보강] 휴지통 자동 비우기** ⟨히스토리 · 활동 4b-1 · F-11-06 / 마이그레이션 0069 · 공용 스케줄러(§3.10 [보강])의 두 번째 소비자 `trash_purge`⟩
 
@@ -1360,6 +1360,29 @@ CREATE VIEW live_block AS SELECT * FROM block WHERE lifecycle = 'live';
 >    (c) 수동 영구 삭제도 이미 내리지 않는다(`trash.ts` — "그동안 첨부 스토리지도 GC 하면 안 된다").
 > ④ **누가** — 세션 없는 시스템 주체(§3.10 [보강] ⑤). 권한을 묻지 않는다 — 규칙은 "만료된 것만"이다. 한 판에 100 묶음 — 남았으면 곧
 >    다시(1분), 다 했으면 한 시간 뒤.
+
+**[보강] 물리 삭제** ⟨히스토리 · 활동 4b-2 · F-11-06 / 마이그레이션 0070 · 공용 스케줄러의 세 번째 소비자 `trash_hard_delete`⟩
+
+> 위 전이표의 마지막 행(`purged` → 물리 삭제, `purged_at` + `PURGED_HARD_DELETE_DAYS`)을 하는 일이다.
+>
+> ① **단위는 묶음** — 자동 비우기와 같다. 루트를 먼저 `SKIP LOCKED` 로 잠그고 쥔 쪽이 있으면 건너뛴다. 묶음의 페이지가 **모두**
+>    `purged` 이고 그 `purged_at` 이 30일 지났을 때만 지운다(하나라도 아니면 기다린다).
+> ② **다른 묶음의 자손이 남아 있으면 기다린다** — 묶음의 페이지를 조상 경로(`ancestor_path`)에 품은 다른 묶음의 페이지(따로 먼저
+>    버린 하위 페이지)가 있거나, 루트가 소스인데 그 소스 아래 다른 묶음의 행이 남아 있으면 이번 판은 건너뛴다. 먼저 지우면 (a) 남은
+>    페이지의 권한 스코프(`perm_scope_id`)가 가리키는 ACL 이 사라져 **아무도 그 페이지를 휴지통에서 보지 못하고** (b) 소스를 지우면
+>    `page` 확장이 CASCADE 로 사라져 남은 행이 돌아갈 자리를 잃는다. 같은 보관 기간이면 따로 먼저 버린 쪽이 먼저 만료되어 먼저
+>    지워지므로 대개 기다리지 않는다(보관 기간을 줄였거나 손으로 영구 삭제했을 때 기다린다). 남은 쪽이 되살아나면 B4 가 최상위로
+>    옮겨 조상 경로에서 빠진다. **기다리는 묶음은 후보에서 뺀다** — 한 판을 차지하면 뒤의 묶음이 영영 지워지지 않는다.
+> ③ **지우는 것** — 묶음의 페이지(행 · 템플릿 포함), 각 페이지의 본문 블록(문서 범위 — 재귀는 페이지에서 멈춘다), 루트가 소스면 그
+>    소스. FK 가 없는 것을 직접 지운다: `acl_entry`(node_id) · `doc_update` · `doc_snapshot` · `page_version`(바이트는 커밋 뒤) · 그
+>    페이지의 스레드 · 코멘트에 단 `reaction`. 나머지는 CASCADE 가 지운다(`page` 확장 · 셀 · 관계 간선 · 파생값 · 검색 문서 · 출발
+>    링크 간선 · 스레드와 코멘트 · 알림 · 즐겨찾기 · 최근 방문 · 구독 · 잠금 · 활동 · 소스면 속성 · 뷰 · 부착 · 레이아웃).
+>    **남는 것** — 다른 페이지에서 이 페이지를 가리키던 멘션 · 링크(`link_edge.target_id` — purged 일 때처럼 "없는 페이지"로 보인다) ·
+>    감사 기록(`audit_event`) · 올린 파일의 행(참조가 0 이 되면 파일 GC 의 몫 — FS1).
+> ④ **참조를 내린다**(휴지통 자동 비우기 ③) — 지우는 본문 블록의 이미지(본문 프로젝터와 같은 셈 `countFileReferences`) · 지우는
+>    페이지의 파일 아이콘 · 지우는 버전이 담은 이미지(S5 — 기록과 같은 셈 `versionFileReferences`). 삭제와 같은 트랜잭션 · 바닥은 0.
+>    버전의 바이트는 트랜잭션 **바깥에서** 먼저 읽어 센다(버전 GC 와 같다 — `purged` 페이지의 버전은 더 생기지 않는다).
+> ⑤ 시스템 주체 · 알림 · 실시간 신호 없음. 한 판 50 묶음 — 남았으면 곧 다시(1분), 다 했으면 한 시간 뒤.
 
 **공개 API 투영 규칙 (Notion 계약 유지)**
 
@@ -3087,6 +3110,8 @@ CREATE TABLE external_sync_source (            -- 구 external_binding. 정본 �
 > 지웠으면 한 시간 뒤.
 >
 > **두 번째 소비자 — 휴지통 자동 비우기(F-11-06 · `trash_purge`)**: §3.4 [보강] 휴지통 자동 비우기(4b-1 · 마이그레이션 0069).
+>
+> **세 번째 소비자 — 물리 삭제(F-11-06 · `trash_hard_delete`)**: §3.4 [보강] 물리 삭제(4b-2 · 마이그레이션 0070).
 
 ---
 
