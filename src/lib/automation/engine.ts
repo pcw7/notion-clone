@@ -15,6 +15,8 @@
  *     몸은 그때의 값을 실행하는 사람의 권한으로 읽는다(그 행을 볼 수 없으면 건너뛴다). 요금제가 허락하지 않으면 건너뛴다(`plan`).
  *   ⑧ 동적 값(⑯) — 셀의 `from` 을 실행할 때 푼다: 지금은 그 실행의 시작 시각, 일하는 행의 속성은 그때의 값(실행하는 사람이 그 행을 볼 수 있을
  *     때만 · 비었으면 빈 값 · 원본 속성이 사라졌거나 타입이 바뀌었으면 실패).
+ *   ⑨ 블록 넣기(정본 ⑱) — 그 페이지의 본문을 **명령 경로로** 연다(페이지 행 잠금 → 본문 세션 → 변경 → 투영 · 로그 · 퍼뜨리기). 블록마다 새 id ·
+ *     버튼 아래 또는 페이지 끝. 같은 트랜잭션이라 실행이 되돌려지면 넣은 블록도 남지 않는다.
  */
 
 import { randomUUID } from 'node:crypto'
@@ -27,7 +29,11 @@ import { createRowFromTemplateIn, readLiveTemplate } from '../database/template.
 import { entitlement } from '../billing/entitlement.ts'
 import { can } from '../permissions/levels.ts'
 import { effectiveCaps } from '../permissions/effective.ts'
-import { isDynamicCell, type ActionCell, type ActionType, type SendWebhookStored, type StoredAction } from './actions.ts'
+import { isDynamicCell, type ActionCell, type ActionType, type InsertBlocksConfig, type SendWebhookStored, type StoredAction } from './actions.ts'
+import { openPageBody } from '../block/body-write.ts'
+import { remapBody } from '../block/duplicate-remap.ts'
+import { containerFor } from '../editor/pm-adapter.ts'
+import { findContainerById } from '../editor/pm-blocks.ts'
 import type { WriteOrigin } from './trigger-route.ts'
 
 export type StepStatus = 'done' | 'skipped' | 'failed'
@@ -44,8 +50,11 @@ export type Step = {
 export type RunStatus = 'success' | 'partial' | 'failed'
 export type RunOutcome = { readonly runId: string; readonly status: RunStatus; readonly steps: readonly Step[]; readonly duplicate: boolean }
 
-/** 액션이 일하는 자리 — 버튼 속성이면 누른 행 · DB automation 이면 트리거된 행. */
-export type RunContext = { readonly triggerPageId: string }
+/**
+ * 액션이 일하는 자리 — 버튼 속성이면 누른 행 · DB automation 이면 트리거된 행 · 버튼 블록이면 그 페이지. `hostBlockId` 는 버튼 블록 자신
+ * (블록 넣기가 그 아래에 넣는다 · 정본 ⑱).
+ */
+export type RunContext = { readonly triggerPageId: string; readonly hostBlockId?: string }
 
 /**
  * 실행의 종류 — 버튼 속성 · 버튼 블록(누른 사람 · origin `user` · depth 0 · 쓰기는 `button` — DB automation 이 받는다 · 버튼 블록은 ⑰) 또는
@@ -189,6 +198,29 @@ async function queueWebhook(tx: Tx, ctx: SessionContext, config: SendWebhookStor
   return { deliveryId }
 }
 
+/** 블록 넣기(⑨ · 정본 ⑱) — 새 id 로 복제해 버튼 아래(같은 부모 · 바로 뒤) 또는 페이지 끝. 버튼이 사라졌으면 페이지 끝. */
+async function insertBlocks(tx: Tx, ctx: SessionContext, config: InsertBlocksConfig, context: RunContext): Promise<Done> {
+  const pageId = context.triggerPageId
+  // 명령 경로 ① — 본문을 가진 페이지 행을 먼저 잡는다(잠금 순서: 페이지 행 → 스냅샷)
+  const page = await tx.queryMaybe<{ id: string }>(
+    `SELECT id FROM block WHERE id = $1 AND workspace_id = $2 AND type = 'page' AND lifecycle = 'live' FOR UPDATE`,
+    [pageId, ctx.workspaceId],
+  )
+  if (page === null) throw new StepSkipped('not_found')
+  const write = await openPageBody(tx, ctx, pageId, 'api')
+  const copied = remapBody({ blocks: config.blocks }, new Map(), randomUUID).blocks
+  write.change((tr, doc) => {
+    const nodes = copied.map(containerFor)
+    const host = config.position === 'below' && context.hostBlockId !== undefined ? findContainerById(doc, context.hostBlockId) : null
+    // 페이지 끝 — 뿌리는 doc > blockGroup > 컨테이너들
+    const end = 1 + (doc.firstChild?.content.size ?? 0)
+    tr.insert(host === null ? end : host.pos + host.node.nodeSize, nodes)
+  })
+  const result = await write.finish({ origin: 'api' })
+  if (!result.ok) throw new StepFailed(result.reason)
+  return {}
+}
+
 async function execute(tx: Tx, ctx: SessionContext, action: StoredAction, context: RunContext, env: RunEnv): Promise<Done> {
   const { origin } = env
   switch (action.type) {
@@ -215,6 +247,8 @@ async function execute(tx: Tx, ctx: SessionContext, action: StoredAction, contex
     }
     case 'send_webhook':
       return queueWebhook(tx, ctx, action.config, context, env)
+    case 'insert_blocks':
+      return insertBlocks(tx, ctx, action.config, context)
   }
 }
 

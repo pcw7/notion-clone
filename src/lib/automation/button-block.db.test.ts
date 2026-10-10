@@ -8,6 +8,8 @@
  *   ③ 일하는 행이 없다 — 값 바꾸기 · 행의 속성 · 웹훅의 보낼 속성은 거절 · 다른 표에 행 추가(고정 값 · 지금)는 된다
  *   ④ 누르기 — 처음 저장하거나 누를 때 automation 하나(블록마다) · 그 페이지를 일하는 자리로 · origin user · depth 0
  *   ⑤ 블록이 본문에서 지워지면 automation 도 사라진다
+ *   ⑥ 블록 넣기(5e-2 · ⑱) — 새 id 로 복제해 버튼 아래 · 페이지 끝 · 누를 때마다 · 행과 Y.Doc 이 같다 · 실행이 되돌려지면 남지 않는다 ·
+ *      버튼 속성 · DB automation 은 받지 않는다
  *
  * 반사실(HANDOFF §3.3): 라벨을 정화하지 않으면 ①, 블록이 그 페이지의 것인지 보지 않으면 ②, 고치기를 보기로 낮추면 ②, 빈 표 대신 아무 표나
  * 주면 ③, 블록마다 하나를 지키지 않으면 ④ 가 실패한다.
@@ -34,6 +36,9 @@ import { addProperty } from '../database/property.ts'
 import { grantAccess, revokeAccess, stopInheriting } from '../permissions/acl.ts'
 import { setPageLock } from '../permissions/lock.ts'
 import { pressButtonBlock, readButtonBlock, setButtonBlockActions } from './button-block.ts'
+import { setButtonActions } from './button-property.ts'
+import { createDbAutomation } from './db-automation.ts'
+import { loadPageBody } from '../block/save-page-body.ts'
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'
 
@@ -80,7 +85,8 @@ const block = (type: string, properties: Record<string, unknown> = {}, text = ''
 async function pageWithButton(label = '알림') {
   const pageId = (await createPage(fx.owner.ctx, { title: titleFromPlainText('버튼 페이지') })).id
   const button = block('button', { label })
-  assert.ok((await savePageBody(fx.owner.ctx, pageId, { blocks: [block('paragraph', {}, '앞'), button] })).ok)
+  // 버튼 뒤에도 문단 — "버튼 아래"와 "페이지 끝"이 갈린다
+  assert.ok((await savePageBody(fx.owner.ctx, pageId, { blocks: [block('paragraph', {}, '앞'), button, block('paragraph', {}, '뒤')] })).ok)
   assert.equal((await stopInheriting(fx.owner.ctx, pageId)).ok, true)
   assert.equal((await grantAccess(fx.owner.ctx, pageId, { type: 'user', id: fx.owner.userId }, 'full_access')).ok, true)
   await revokeAccess(fx.owner.ctx, pageId, { type: 'workspace_everyone' })
@@ -150,7 +156,7 @@ describe('② 문', () => {
     assert.deepEqual(await pressButtonBlock(viewer.ctx, pageId, blockId, randomUUID()), { ok: false, reason: 'forbidden' })
     assert.deepEqual(await readButtonBlock(outsider.ctx, pageId, blockId), { ok: false, reason: 'not_found' })
     assert.deepEqual(await readButtonBlock(fx.owner.ctx, pageId, other.blockId), { ok: false, reason: 'not_found' }, '다른 페이지의 버튼')
-    const paragraph = (await query<{ id: string }>(`SELECT id FROM block WHERE parent_id = $1 AND type = 'paragraph'`, [pageId]))[0].id
+    const paragraph = (await query<{ id: string }>(`SELECT id FROM block WHERE parent_id = $1 AND type = 'paragraph' ORDER BY order_key LIMIT 1`, [pageId]))[0].id
     assert.deepEqual(await readButtonBlock(fx.owner.ctx, pageId, paragraph), { ok: false, reason: 'not_found' }, '버튼이 아닌 블록')
     unwrap(await setPageLock(fx.owner.ctx, pageId, true))
     assert.deepEqual(await setButtonBlockActions(fx.owner.ctx, pageId, blockId, []), { ok: false, reason: 'locked' })
@@ -218,3 +224,63 @@ describe('⑤ 지우기', () => {
     assert.equal((await automationsOf(blockId)).length, 0)
   })
 })
+
+describe('⑥ 블록 넣기', () => {
+  const template = () => [
+    { ...block('to_do', {}, '할 일'), children: [block('paragraph', {}, '자식')] },
+    block('paragraph', {}, '메모'),
+  ]
+  const shape = async (pageId: string) =>
+    (await loadPageBody(fx.owner.ctx, pageId))!.doc.blocks.map((b) => [b.type, b.title.map((r) => r.plain_text).join(''), b.children?.length ?? 0])
+
+  test('★ 버튼 아래 · 페이지 끝 — 새 id 로 · 누를 때마다 · 행과 Y.Doc 이 같다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { pageId, blockId } = await pageWithButton()
+    const blocks = template()
+    unwrap(await setButtonBlockActions(fx.owner.ctx, pageId, blockId, [{ type: 'insert_blocks', config: { v: 1, position: 'below', blocks } }]))
+    assert.equal((unwrap(await pressButtonBlock(fx.owner.ctx, pageId, blockId, randomUUID()))).status, 'success')
+    assert.deepEqual(
+      await shape(pageId),
+      [['paragraph', '앞', 0], ['button', '', 0], ['to_do', '할 일', 1], ['paragraph', '메모', 0], ['paragraph', '뒤', 0]],
+      '버튼 바로 아래(뒤 문단보다 앞)',
+    )
+    unwrap(await pressButtonBlock(fx.owner.ctx, pageId, blockId, randomUUID()))
+    const twice = (await loadPageBody(fx.owner.ctx, pageId))!.doc.blocks
+    assert.equal(twice.filter((b) => b.type === 'to_do').length, 2, '누를 때마다')
+    const ids = twice.flatMap((b) => [b.id, ...(b.children ?? []).map((c) => c.id)])
+    assert.equal(new Set(ids).size, ids.length, 'id 가 겹치지 않는다')
+    assert.equal(ids.includes(blocks[0].id), false, '템플릿의 id 를 쓰지 않는다')
+    await assertBodyMatchesYDoc(fx.owner.ctx, pageId)
+
+    unwrap(await setButtonBlockActions(fx.owner.ctx, pageId, blockId, [{ type: 'insert_blocks', config: { v: 1, position: 'bottom', blocks: [block('quote', {}, '끝')] } }]))
+    unwrap(await pressButtonBlock(fx.owner.ctx, pageId, blockId, randomUUID()))
+    assert.deepEqual((await shape(pageId)).at(-1), ['quote', '끝', 0], '페이지 끝')
+    await assertBodyMatchesYDoc(fx.owner.ctx, pageId)
+  })
+
+  test('★ 실행이 되돌려지면 넣은 블록도 남지 않는다 · 버튼 속성 · DB automation 은 받지 않는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { pageId, blockId } = await pageWithButton()
+    const tb = await target()
+    unwrap(await setButtonBlockActions(fx.owner.ctx, pageId, blockId, [
+      { type: 'insert_blocks', config: { v: 1, position: 'below', blocks: [block('paragraph', {}, '되돌릴 것')] } },
+      { type: 'add_page_to', config: { v: 1, dataSourceId: tb.ds, cells: [{ propertyId: tb.qty, value: { type: 'number', number: 1 } }] } },
+    ]))
+    await query(`UPDATE property SET deleted_at = now() WHERE id = $1`, [tb.qty])
+    const before = await shape(pageId)
+    const run = unwrap(await pressButtonBlock(fx.owner.ctx, pageId, blockId, randomUUID()))
+    assert.equal(run.status, 'failed')
+    assert.deepEqual(await shape(pageId), before, '넣은 블록이 남지 않았다')
+    await assertBodyMatchesYDoc(fx.owner.ctx, pageId)
+
+    const insert = [{ type: 'insert_blocks', config: { v: 1, position: 'below', blocks: [block('paragraph', {}, 'x')] } }]
+    const db = unwrap(await createDatabase(fx.owner.ctx, { name: '버튼 속성 표' }))
+    const buttonProp = unwrap(await addProperty(fx.owner.ctx, db.dataSourceId, { name: '버튼', type: 'button' })).properties.find((p) => p.name === '버튼')!.id
+    assert.deepEqual(await setButtonActions(fx.owner.ctx, db.dataSourceId, buttonProp, insert), { ok: false, reason: 'invalid_action', problem: 'unsupported_here', index: 0 })
+    assert.deepEqual(
+      await createDbAutomation(fx.owner.ctx, db.dataSourceId, { name: '넣기', triggers: [{ type: 'page_added' }], actions: insert }),
+      { ok: false, reason: 'invalid_action', problem: 'unsupported_here', index: 0 },
+    )
+  })
+})
+

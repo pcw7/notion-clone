@@ -10,7 +10,8 @@
  *   - 문 — 읽기는 그 페이지를 볼 수 있으면, 고치기 · 누르기는 그 페이지의 `edit_content`(잠겼으면 `locked`).
  *   - 투영이 밀려 블록의 행이 아직 없으면 밀린 투영을 먼저 한다 — 편집기는 Y.Doc 을 보므로 방금 만든 블록일 수 있다. 그 페이지를 고칠 수
  *     있는 사람만 투영을 부른다(투영은 권한을 보지 않고 마지막 편집자를 남긴다 — `projectPendingBody`).
- *   - **일하는 행이 없다** — 저장 검사는 빈 표로 본다(값 바꾸기 · 행의 속성 · 보낼 속성이 거절된다). 실행의 `triggerPageId` 는 그 페이지.
+ *   - **일하는 행이 없다** — 저장 검사는 빈 표로 본다(값 바꾸기 · 행의 속성 · 보낼 속성이 거절된다). 실행의 `triggerPageId` 는 그 페이지,
+ *     `hostBlockId` 는 그 블록(블록 넣기가 그 아래에 넣는다 · ⑱).
  */
 
 import { randomUUID } from 'node:crypto'
@@ -126,7 +127,7 @@ export async function setButtonBlockActions(
     if (denied !== null) return fail(denied)
     if (!parsed.ok) return fail('invalid_action', parsed.problem, parsed.index)
     const existing = await findAutomation(tx, blockId, true)
-    const problem = await checkActions(tx, ctx, NO_TABLE, parsed.actions, existing?.id ?? null)
+    const problem = await checkActions(tx, ctx, NO_TABLE, parsed.actions, existing?.id ?? null, { insertBlocks: true })
     if (problem !== null) return fail('invalid_action', problem.problem, problem.index)
     const automation = existing ?? (await ensureAutomation(tx, ctx, blockId))
     await writeActions(tx, automation.id, parsed.actions)
@@ -174,7 +175,7 @@ export async function pressButtonBlock(
   const outcome = await runAutomation(ctx, {
     automationId: prepared.value.automationId,
     idempotencyKey: `button:${idempotencyKey}`,
-    context: { triggerPageId: pageId },
+    context: { triggerPageId: pageId, hostBlockId: blockId },
     actions: prepared.value.actions,
     kind: 'button_block',
   })
