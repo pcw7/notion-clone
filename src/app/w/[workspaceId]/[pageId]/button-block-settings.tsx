@@ -160,6 +160,7 @@ export function ButtonBlockSettings({
             editLabel="값 바꾸기"
             rowLabel="누른 행"
             testIdPrefix="button-block"
+            allowInsertBlocks
           />
         )}
         {error !== null && drafts !== null && (
