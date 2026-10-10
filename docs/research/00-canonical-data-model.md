@@ -1338,8 +1338,28 @@ CREATE VIEW live_block AS SELECT * FROM block WHERE lifecycle = 'live';
 |---|---|---|
 | `live` → `trashed` | Delete / API `in_trash:true` / 소스 삭제 전파 | page 타입 자손 전체에 전파. 자손 `trash_root_id`=대상 id. `purge_after`=now+`trash_days`. 부모 Y.Doc 에서 참조 노드 제거 |
 | `trashed` → `live` | Restore / API `in_trash:false` | `trash_root_id` 일치 자손만. 부모 Y.Doc 에 참조 노드 재삽입(order_key 위치, 불가 시 말미) |
-| `trashed` → `purged` | GC(`purge_after` 경과) 또는 영구 삭제 | 누구도 접근 불가. `file.ref_count` 감소 |
-| `purged` → 물리 삭제 | GC(`purged_at` + 30일) | `doc_update`/`doc_snapshot`/`page_version`/`search_document` 를 page_id 로 일괄 삭제 |
+| `trashed` → `purged` | GC(`purge_after` 경과) 또는 영구 삭제 | 누구도 접근 불가(30일 동안 지원 경로로만 복구 — 11 F-11-06). ~~`file.ref_count` 감소~~ → **내리지 않는다** [보강] 휴지통 자동 비우기 ③ |
+| `purged` → 물리 삭제 | GC(`purged_at` + 30일) | `doc_update`/`doc_snapshot`/`page_version`/`search_document` 를 page_id 로 일괄 삭제 · 지운 행이 쥐던 `file.ref_count` 를 내린다(본문 이미지 · 아이콘 · 버전 S5 — [보강] 휴지통 자동 비우기 ③) |
+
+**[보강] 휴지통 자동 비우기** ⟨히스토리 · 활동 4b-1 · F-11-06 / 마이그레이션 0069 · 공용 스케줄러(§3.10 [보강])의 두 번째 소비자 `trash_purge`⟩
+
+> 위 전이표의 GC 행(`trashed` → `purged`, `purge_after` 경과)을 하는 일이다. 지금까지는 수동 영구 삭제만 있었다.
+>
+> ① **단위는 삭제 루트다** — `purge_after` 가 지난 휴지통 묶음(`trash_root_id` 가 같은 페이지들 · 루트가 data source 면 그 소스까지)을
+>    **한 트랜잭션에서** `purged` 로 바꾼다. 루트 행을 먼저 잠근다(`SKIP LOCKED`) — 되살리기 · 손으로 하는 영구 삭제도 루트를 잠그므로,
+>    그쪽이 쥐고 있으면 이 판은 그 묶음을 건너뛴다(다음 판에 다시 본다 — 워커가 사람의 명령을 기다리지 않는다). 잠그지 않고 묶음을 한
+>    문장으로 바꾸면 자손을 먼저 잡은 채 루트를 기다리게 되어 되살리기와 교착하고, 묶음을 나눠 바꾸면 "루트는 되살아났는데 자식은
+>    `purged`"가 생긴다. 묶음 안의 시각은 같다(버리는 명령이 한 문장 · 한 트랜잭션의 `now()` 로 적는다).
+> ② **수동 영구 삭제와 같은 쓰기** — `purged_at` = 실행기의 `now`(§3.10 [보강] 공용 스케줄러 ④). 검색 색인은 트리거가 내린다(0012).
+>    따로 먼저 지운 자손 · 행은 제 루트를 가지므로 제 시각에 따로 비워진다(B3).
+> ③ **`file.ref_count` 는 이 전이에서 내리지 않는다** — 초판 전이표는 `trashed` → `purged` 에서 내렸다. 물리 삭제 행으로 옮긴다.
+>    근거: (a) 11 F-11-06 원문 — *"permanently deleted … retained for 30 days before they become inaccessible to all users"* — `purged`
+>    는 30일 동안 지원 경로로 되살릴 수 있어야 하고, 그때 첨부도 살아 있어야 한다. 참조를 내리면 파일 GC(FS1 — `ref_count = 0` 을
+>    쓸어간다)가 그 사이에 바이트를 지운다 (b) 참조는 **그것을 쥔 행이 사라질 때** 내린다 — 셀 때와 같은 규칙이다(본문 프로젝터는
+>    이미지 블록 행이 생기고 사라질 때 · 아이콘은 그 칸이 바뀔 때 · 버전은 기록 · GC 때). `purged` 는 행을 지우지 않는다
+>    (c) 수동 영구 삭제도 이미 내리지 않는다(`trash.ts` — "그동안 첨부 스토리지도 GC 하면 안 된다").
+> ④ **누가** — 세션 없는 시스템 주체(§3.10 [보강] ⑤). 권한을 묻지 않는다 — 규칙은 "만료된 것만"이다. 한 판에 100 묶음 — 남았으면 곧
+>    다시(1분), 다 했으면 한 시간 뒤.
 
 **공개 API 투영 규칙 (Notion 계약 유지)**
 
@@ -3065,6 +3085,8 @@ CREATE TABLE external_sync_source (            -- 구 external_binding. 정본 �
 > CHECK 와 부딪힌다). 지울 때 그 버전이 담은 파일 참조(S5)를 기록할 때와 같은 셈으로 내리고 행을 지운 뒤(한 트랜잭션), 커밋하고 나서
 > 바이트를 저장소에서 지운다(실패하면 고아로 남는다 — 저장소 고아 쓸기는 파일 GC 와 함께). 한 판에 200개 — 남았으면 곧 다시, 다
 > 지웠으면 한 시간 뒤.
+>
+> **두 번째 소비자 — 휴지통 자동 비우기(F-11-06 · `trash_purge`)**: §3.4 [보강] 휴지통 자동 비우기(4b-1 · 마이그레이션 0069).
 
 ---
 
