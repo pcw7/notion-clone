@@ -45,6 +45,7 @@ const ACTION_NAME: Record<string, string> = {
   edit_property: '값 바꾸기',
   add_page_to: '다른 표에 항목 추가',
   send_webhook: '웹훅 보내기',
+  insert_blocks: '블록 넣기',
 }
 
 /** 액션 요약 — 종류마다 몇 개("값 바꾸기 · 다른 표에 항목 추가 2"). */

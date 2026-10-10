@@ -47,6 +47,8 @@ export type ActionSchemaProblem =
   | 'plan_required'
   /** 동적 값의 짝이 맞지 않는다 — "지금"은 날짜 속성에만 · 일하는 행의 속성은 같은 타입(선택지 · 상태 제외 · 정본 ⑯). */
   | 'invalid_dynamic'
+  /** 이 자리에서 쓸 수 없는 액션 — `insert_blocks` 는 버튼 블록에서만(정본 ⑱). */
+  | 'unsupported_here'
 
 /** 그 표의 속성들 — `openDataSource` 의 문이 준다. */
 export type SchemaGate = {
@@ -107,6 +109,7 @@ function refProblem(config: SendWebhookInput, stored: ReadonlyMap<string, SendWe
  * 액션들을 그 automation 의 표(`gate`)와 대상 표에 대어 본다. 맞으면 null.
  *
  * @param automationId 고치는 automation — `send_webhook` 의 `keep` 은 이 automation 의 것만 옮긴다(새로 만들면 null — 옮길 것이 없다)
+ * @param options.insertBlocks 블록 넣기를 받는가 — 버튼 블록만(정본 ⑱)
  */
 export async function checkActions(
   tx: Tx,
@@ -114,11 +117,16 @@ export async function checkActions(
   gate: SchemaGate,
   actions: readonly ActionInput[],
   automationId: string | null = null,
+  options: { readonly insertBlocks?: boolean } = {},
 ): Promise<{ readonly problem: ActionSchemaProblem; readonly index: number } | null> {
   const firstWebhook = actions.findIndex((a) => a.type === 'send_webhook')
   if (firstWebhook >= 0 && !(await entitlement(ctx.workspaceId, 'automation.webhook', tx))) return { problem: 'plan_required', index: firstWebhook }
   const stored = firstWebhook >= 0 ? await storedWebhooks(tx, automationId) : new Map<string, SendWebhookStored>()
   for (const [index, action] of actions.entries()) {
+    if (action.type === 'insert_blocks') {
+      if (options.insertBlocks !== true) return { problem: 'unsupported_here', index }
+      continue
+    }
     if (action.type === 'send_webhook') {
       // 보낼 속성은 그 automation 의 표의 셀 속성(버튼 · relation 은 못 고른다 — 08 *"DB 버튼 property 는 전송 필드로 선택 불가"*)
       for (const propertyId of action.config.properties) {

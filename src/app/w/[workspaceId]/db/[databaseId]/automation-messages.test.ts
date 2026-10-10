@@ -43,7 +43,8 @@ test('★ 트리거 요약 — 행 추가 · 속성 편집 · 조건은 칩 · �
 test('액션 요약 — 종류마다 몇 개 · 모르는 액션 · 없음', () => {
   assert.equal(actionSummary([{ type: 'edit_property' }]), '값 바꾸기')
   assert.equal(actionSummary([{ type: 'edit_property' }, { type: 'add_page_to' }, { type: 'add_page_to' }]), '값 바꾸기 · 다른 표에 항목 추가 2')
-  assert.equal(actionSummary([{ type: 'insert_blocks' }]), '알 수 없는 액션')
+  assert.equal(actionSummary([{ type: 'insert_blocks' }]), '블록 넣기')
+  assert.equal(actionSummary([{ type: 'define_variables' }]), '알 수 없는 액션')
   assert.equal(actionSummary([]), '할 일이 없습니다')
 })
 

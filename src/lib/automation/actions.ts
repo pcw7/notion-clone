@@ -18,13 +18,14 @@
 
 import type { RowCell } from '../database/row.ts'
 import { checkOutboundUrl } from '../net/outbound.ts'
+import { validateDoc, type EditorBlock } from '../editor/document.ts'
 
 /** 정본 CHECK 와 같은 목록. */
 export const ACTION_TYPES = ['edit_property', 'add_page_to', 'insert_blocks', 'send_webhook', 'define_variables', 'show_confirmation'] as const
 export type ActionType = (typeof ACTION_TYPES)[number]
 
 /** 지금 실행할 수 있는 종류 — 조각마다 늘린다(5a-2 `add_page_to` · 5c `send_webhook` · 5d `define_variables` · 5e `insert_blocks`). */
-export const IMPLEMENTED_ACTIONS: readonly ActionType[] = ['edit_property', 'add_page_to', 'send_webhook']
+export const IMPLEMENTED_ACTIONS: readonly ActionType[] = ['edit_property', 'add_page_to', 'send_webhook', 'insert_blocks']
 
 /** 한 automation 의 액션 상한. */
 export const MAX_ACTIONS = 20
@@ -36,6 +37,29 @@ export const MAX_WEBHOOK_ACTIONS = 5
 export const MAX_WEBHOOK_HEADERS = 10
 export const MAX_WEBHOOK_HEADER_VALUE = 1024
 export const MAX_WEBHOOK_PROPERTIES = 50
+/** `insert_blocks` 의 블록 상한(자식 포함) · 깊이 상한(정본 ⑱). */
+export const MAX_INSERT_BLOCKS = 50
+export const MAX_INSERT_DEPTH = 3
+/** 넣을 수 있는 타입 — 글 계열(정본 ⑱). 하위 페이지 · DB · 이미지 · 버튼 · 표 · 컬럼 · 목차 · 이동 경로는 못 넣는다. */
+export const INSERTABLE_BLOCK_TYPES: readonly string[] = [
+  'paragraph',
+  'heading_1',
+  'heading_2',
+  'heading_3',
+  'bulleted_list_item',
+  'numbered_list_item',
+  'to_do',
+  'toggle',
+  'quote',
+  'callout',
+  'divider',
+  'code',
+  'equation',
+]
+/** 블록을 넣는 자리 — 버튼 아래 · 페이지 끝(08 클론 대안의 둘). */
+export const INSERT_POSITIONS = ['below', 'bottom'] as const
+export type InsertPosition = (typeof INSERT_POSITIONS)[number]
+
 /** 발송기가 정하는 헤더 — 사람이 덮지 못한다(정본 ⑫). */
 export const RESERVED_WEBHOOK_HEADERS: readonly string[] = ['host', 'content-length', 'content-type', 'connection', 'transfer-encoding', 'user-agent']
 
@@ -82,17 +106,22 @@ export type SendWebhookStored = {
   readonly properties: readonly string[]
 }
 
+/** 미리 적어 둔 블록 묶음을 본문에 복제해 넣는다(정본 ⑱ — 버튼 블록에서만). */
+export type InsertBlocksConfig = { readonly v: 1; readonly position: InsertPosition; readonly blocks: readonly EditorBlock[] }
+
 /** 받는 액션. */
 export type ActionInput =
   | { readonly type: 'edit_property'; readonly config: EditPropertyConfig }
   | { readonly type: 'add_page_to'; readonly config: AddPageToConfig }
   | { readonly type: 'send_webhook'; readonly config: SendWebhookInput }
+  | { readonly type: 'insert_blocks'; readonly config: InsertBlocksConfig }
 
 /** 저장한 액션 — 엔진이 실행하는 것. */
 export type StoredAction =
   | { readonly type: 'edit_property'; readonly config: EditPropertyConfig }
   | { readonly type: 'add_page_to'; readonly config: AddPageToConfig }
   | { readonly type: 'send_webhook'; readonly config: SendWebhookStored }
+  | { readonly type: 'insert_blocks'; readonly config: InsertBlocksConfig }
 
 export type ActionProblem =
   | 'invalid'
@@ -106,6 +135,8 @@ export type ActionProblem =
   | 'invalid_header'
   /** `send_webhook` 이 automation 마다 5개를 넘는다. */
   | 'too_many_webhooks'
+  /** `insert_blocks` 의 블록 — 없다 · 모양이 틀렸다 · 넣을 수 없는 타입 · 50개 · 깊이 3 을 넘는다 · 자리가 틀렸다(정본 ⑱). */
+  | 'invalid_blocks'
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 /** RFC 9110 의 token. */
@@ -178,6 +209,31 @@ function headerNames(raw: readonly unknown[]): string[] | null {
   return names
 }
 
+/** 블록 묶음의 크기 — 넣을 수 없는 타입이 있으면 null. */
+function insertableShape(blocks: readonly EditorBlock[], depth: number): number | null {
+  let count = 0
+  for (const block of blocks) {
+    if (!INSERTABLE_BLOCK_TYPES.includes(block.type)) return null
+    const children = block.children ?? []
+    if (children.length > 0 && depth >= MAX_INSERT_DEPTH) return null
+    const inner = insertableShape(children, depth + 1)
+    if (inner === null) return null
+    count += 1 + inner
+  }
+  return count
+}
+
+/** `insert_blocks`(정본 ⑱) — 받는 것과 저장한 것이 같다. */
+function parseInsertBlocks(config: Record<string, unknown>): ActionInput | ActionProblem {
+  if (typeof config.position !== 'string' || !(INSERT_POSITIONS as readonly string[]).includes(config.position)) return 'invalid_blocks'
+  if (!Array.isArray(config.blocks) || config.blocks.length === 0) return 'invalid_blocks'
+  const blocks = config.blocks as EditorBlock[]
+  if (blocks.some((b) => !isRecord(b)) || validateDoc({ blocks }).length > 0) return 'invalid_blocks'
+  const count = insertableShape(blocks, 1)
+  if (count === null || count > MAX_INSERT_BLOCKS) return 'invalid_blocks'
+  return { type: 'insert_blocks', config: { v: 1, position: config.position as InsertPosition, blocks } }
+}
+
 /** 받는 `send_webhook`(정본 ⑫). */
 function parseSendWebhookInput(config: Record<string, unknown>): ActionInput | ActionProblem {
   const url = config.url ?? null
@@ -244,7 +300,11 @@ function parseList<T extends { readonly type: ActionType }>(
 /** 받은 액션 목록의 모양을 본다 — 셀의 속성 · 값이 그 표에 맞는지는 보지 않는다. */
 export function parseActions(raw: unknown): Parsed<ActionInput> {
   return parseList(raw, (type, config) =>
-    type === 'send_webhook' ? parseSendWebhookInput(config) : parseCellAction(type as 'edit_property' | 'add_page_to', config),
+    type === 'send_webhook'
+      ? parseSendWebhookInput(config)
+      : type === 'insert_blocks'
+        ? parseInsertBlocks(config)
+        : parseCellAction(type as 'edit_property' | 'add_page_to', config),
   )
 }
 
@@ -252,6 +312,7 @@ export function parseActions(raw: unknown): Parsed<ActionInput> {
 export function parseStoredActions(raw: unknown): Parsed<StoredAction> {
   return parseList<StoredAction>(raw, (type, config) => {
     if (type === 'send_webhook') return parseSendWebhookStored(config)
+    if (type === 'insert_blocks') return parseInsertBlocks(config) as StoredAction | ActionProblem
     const parsed = parseCellAction(type as 'edit_property' | 'add_page_to', config)
     return typeof parsed === 'string' ? parsed : (parsed as StoredAction)
   })

@@ -121,3 +121,21 @@ test('★ 값 슬롯 — 고정 값 또는 동적 값(지금 · 일하는 행의
   const ds = '11111111-2222-3333-4444-555555555555'
   assert.ok(parseActions([{ type: 'add_page_to', config: { v: 1, dataSourceId: ds, cells: [copy] } }]).ok, '다른 표에 행 추가도 동적 값을 받는다')
 })
+
+const para = (id: string, children: unknown[] = [], type = 'paragraph') => ({ id, type, title: [], properties: {}, format: {}, children })
+const uid = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`
+const insert = (config: Record<string, unknown>) => ({ type: 'insert_blocks', config: { v: 1, ...config } })
+
+test('★ 블록 넣기 — 자리(버튼 아래 · 페이지 끝) · 하나 이상 · 글 계열만 · 50개 · 깊이 3 · 문서의 모양', () => {
+  const ok = parseActions([insert({ position: 'below', blocks: [para(uid(1), [para(uid(2))]), para(uid(3), [], 'to_do')] })])
+  assert.ok(ok.ok && ok.actions[0].type === 'insert_blocks' && ok.actions[0].config.blocks.length === 2, JSON.stringify(ok))
+  const bad = (config: Record<string, unknown>) => assert.deepEqual(parseActions([insert(config)]), { ok: false, problem: 'invalid_blocks', index: 0 }, JSON.stringify(config).slice(0, 80))
+  bad({ position: 'top', blocks: [para(uid(1))] })
+  bad({ position: 'below', blocks: [] })
+  for (const type of ['page', 'image', 'button', 'table_of_contents', 'column_list']) bad({ position: 'bottom', blocks: [para(uid(1), [], type)] })
+  bad({ position: 'bottom', blocks: Array.from({ length: 51 }, (_, i) => para(uid(i + 1))) })
+  bad({ position: 'bottom', blocks: [para(uid(1), [para(uid(2), [para(uid(3), [para(uid(4))])])])] })
+  bad({ position: 'bottom', blocks: [para(uid(1)), para(uid(1))] })
+  assert.ok(parseActions([insert({ position: 'bottom', blocks: [para(uid(1), [para(uid(2), [para(uid(3))])])] })]).ok, '깊이 3 까지')
+})
+
