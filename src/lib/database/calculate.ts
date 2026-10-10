@@ -13,13 +13,12 @@
 
 import type { SessionContext } from '../auth/session-context.ts'
 import { withReadTransaction, type Tx } from '../db/tx.ts'
-import { can } from '../permissions/levels.ts'
-import { effectiveCaps } from '../permissions/effective.ts'
 import { calculationResult, canCalculate, type Calculation, type CalculationResult, type ColumnStats } from './calculations.ts'
 import { compileFilter, ParamBag, propertyIdsIn, type FilterNode } from './filter.ts'
 import { refreshDerivedValues } from './derived-values.ts'
 import { readPropertyTypes } from './query.ts'
 import { compileSearch } from './search.ts'
+import { restrictedRowsSql, rowsAccessForDataSource, type RowsAccess } from './row-access.ts'
 
 /** 계산을 단 열 — 컬럼의 `calculation` 과 타입. */
 export type CalculatedColumn = { readonly propertyId: string; readonly type: string; readonly calculation?: Calculation | null }
@@ -45,14 +44,10 @@ export async function computeCalculations(
   // 수식으로 거르면 그 캐시를 먼저 채운다(2j-2 — 표에 보이는 행과 같은 행을 센다)
   await refreshDerivedValues(ctx, dataSourceId, propertyIdsIn(filter))
   return withReadTransaction(async (tx) => {
-    const ds = await tx.queryMaybe<{ container_id: string }>(
-      `SELECT ds.owner_database_id AS container_id
-         FROM data_source ds JOIN block b ON b.id = ds.owner_database_id
-        WHERE ds.id = $1 AND b.workspace_id = $2 AND b.lifecycle = 'live' AND ds.lifecycle = 'live'`,
-      [dataSourceId, ctx.workspaceId],
-    )
-    if (ds === null || !can(await effectiveCaps(tx, ctx, ds.container_id), 'view')) return {}
-    const stats = await readStats(tx, dataSourceId, filter, search, wanted.map((c) => c.propertyId))
+    // "만들기만" 이면 자기가 열 수 있는 행만 센다(6f-2b-1) — 표에 보이는 행과 같은 행이다. 남의 행이 합 · 개수로 새지 않는다.
+    const access = await rowsAccessForDataSource(tx, ctx, dataSourceId)
+    if (access === null) return {}
+    const stats = await readStats(tx, dataSourceId, access, filter, search, wanted.map((c) => c.propertyId))
     const out: Record<string, CalculationResult> = {}
     for (const column of wanted) {
       const s = stats.get(column.propertyId)
@@ -120,12 +115,14 @@ export function columnStatsOf(total: number, s: StatsRow): ColumnStats {
 async function readStats(
   tx: Tx,
   dataSourceId: string,
+  access: RowsAccess,
   filter: FilterNode | null,
   search: string | null,
   propertyIds: readonly string[],
 ): Promise<Map<string, ColumnStats>> {
   const types = await readPropertyTypes(tx, dataSourceId)
   const params = new ParamBag(2)
+  const accessSql = restrictedRowsSql(access, params)
   const filterSql = compileFilter(filter, types, params)
   const searchSql = search === null ? null : compileSearch(search, types, params)
   const columns = propertyIds.map((id, i) => {
@@ -136,7 +133,9 @@ async function readStats(
   const row = await tx.queryOne<Record<string, unknown>>(
     `WITH r AS (
        SELECT p.id FROM page p JOIN block b ON b.id = p.id
-        WHERE p.data_source_id = $1 AND p.is_template = false AND b.lifecycle = 'live'${filterSql === null ? '' : ` AND ${filterSql}`}${
+        WHERE p.data_source_id = $1 AND p.is_template = false AND b.lifecycle = 'live'${accessSql === null ? '' : ` AND ${accessSql}`}${
+          filterSql === null ? '' : ` AND ${filterSql}`
+        }${
           searchSql === null ? '' : ` AND ${searchSql}`
         }
      )

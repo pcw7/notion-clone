@@ -46,6 +46,7 @@ import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.t
 import { can } from '../permissions/levels.ts'
 import { enterPrivateRoot, inheritFromWorkspace } from '../permissions/acl.ts'
 import { effectiveCaps, readableScopes, teamspaceCaps } from '../permissions/effective.ts'
+import { canOpenDatabase } from './row-access.ts'
 import { isLocked } from '../permissions/lock.ts'
 import { orderKeyBetween } from '../block/order-key.ts'
 import { nextSiblingKey, titleFromPlainText, plainTitleOf } from '../block/page.ts'
@@ -95,6 +96,11 @@ export type CreatedDatabase = DatabaseDetail & {
  * (`displayLevel()` 과 같은 규칙).
  */
 export type DatabaseAccess = {
+  /**
+   * 모든 행을 본다(`view`). 아니면 "만들기만"(6f-2b-1 — `create_child` 만) — 표를 열지만 행은 자기가 열 수 있는 것만 온다
+   * (`row-access.ts`). 화면이 "내가 열 수 있는 행만 보인다" 를 말할 때 읽는다.
+   */
+  readonly canViewAllRows: boolean
   /** 셀을 고칠 수 있다 (`edit_content`). */
   readonly canEditContent: boolean
   /** 행을 추가할 수 있다 (`create_child`). */
@@ -381,7 +387,8 @@ export async function getDatabase(
     const row = await loadDatabase(tx, ctx, databaseId)
     if (row === null) return { ok: false, reason: 'not_found' } as const
     const caps = await effectiveCaps(tx, ctx, databaseId)
-    if (!can(caps, 'view')) {
+    // 표를 여는 문 — 볼 수 있거나 "만들기만"(6f-2b-1). 행은 돌려주지 않는다(`view.ts` `openDatabase` 머리말).
+    if (!canOpenDatabase(caps)) {
       return { ok: false, reason: 'not_found' } as const
     }
     return {
@@ -395,6 +402,7 @@ export async function getDatabase(
         teamspaceId: row.parent_type === 'teamspace' ? row.parent_id : null,
         ownerUserId: row.parent_type === 'workspace' ? row.owner_user_id : null,
         access: {
+          canViewAllRows: can(caps, 'view'),
           canEditContent: can(caps, 'edit_content'),
           canCreateRows: can(caps, 'create_child'),
           canEditStructure: can(caps, 'edit_structure'),

@@ -96,6 +96,7 @@ import { calculationResult, canCalculate, isCalculation, type Calculation, type 
 import { columnStatsOf, EMPTY_STATS_ROW, statsJsonSql, type StatsRow } from './calculate.ts'
 import { compileSearch } from './search.ts'
 import { canViewOwnerDatabase } from './source-access.ts'
+import { restrictedRowsSql, rowsAccessIn, type RowsAccess } from './row-access.ts'
 
 // ── 계약 ──────────────────────────────────────────────────────────────
 
@@ -289,6 +290,8 @@ type Board = {
    * 좁힌다. 빈 그룹이 되어도 컬럼은 남기는 편이 덜 혼란스럽다"*(빈 그룹 숨김을 켰으면 그것이 따로 거른다).
    */
   readonly search: string | null
+  /** 행의 범위(6f-2b-1) — "만들기만" 이면 자기가 열 수 있는 카드만 · 개수 · 머리 값도 같다(`compileBoard` 하나가 WHERE 를 만든다). */
+  readonly access: RowsAccess
 }
 
 /** 보드를 읽는 요청의 공통 입력 — 뷰 검색어(2e-1). */
@@ -331,7 +334,8 @@ async function openBoard(
   if (view === null) return fail('not_found')
 
   const caps = await effectiveCaps(tx, ctx, view.database_id)
-  if (!can(caps, 'view')) return fail('not_found')
+  const access = await rowsAccessIn(tx, ctx, caps)
+  if (access === null) return fail('not_found')
   // 붙인 소스의 보드(2l-2) — 카드는 원본의 행이다. 원본을 못 보면 없는 것과 같다(`view.ts` `openView` 와 같은 규칙). 카드를 다른 열로
   // 옮기는 셀 쓰기는 `updateCellsIn` 이 원본의 `edit_content` 로 다시 묻는다 — 아래의 `edit_content` 는 이 뷰 안의 자리(`row_position`)의 것이다.
   if (view.owner !== view.database_id && !(await canViewOwnerDatabase(tx, ctx, view.owner))) return fail('not_found')
@@ -358,6 +362,7 @@ async function openBoard(
     subItemsParent: (await readSubItemPair(tx, view.data_source_id))?.parentPropertyId ?? null,
     calculation: liveGroupCalculation(groupBy, types),
     search,
+    access,
   }
 }
 
@@ -428,6 +433,8 @@ function compileBoard(board: Board, params: ParamBag, withOrder = true): Compile
   const viewParam = params.bind(board.viewId)
   const manual = !hasLiveSort(board)
   const order = manual ? MANUAL_ORDER : withOrder ? compileSorts(board.sorts, board.types, params) : MANUAL_ORDER
+  // 권한이 필터보다 먼저다(F-03-17) — "만들기만" 이면 자기가 열 수 있는 행만(6f-2b-1). 카드 · 개수 · 머리 값이 이 WHERE 하나를 쓴다.
+  const accessSql = restrictedRowsSql(board.access, params)
   const filterSql = compileFilter(board.filter, board.types, params)
   const treeSql = board.subItemsParent === null ? null : compileTree({ parentPropertyId: board.subItemsParent, under: null }, params)
   const searchSql = board.search === null ? null : compileSearch(board.search, board.types, params)
@@ -437,7 +444,7 @@ function compileBoard(board: Board, params: ParamBag, withOrder = true): Compile
        JOIN block b ON b.id = p.id
        LEFT JOIN page_property_value gv ON gv.page_id = p.id AND gv.property_id = ${gp}
        LEFT JOIN row_position rp ON rp.view_id = ${viewParam} AND rp.row_id = p.id AND rp.group_key = ${keyExpr}`,
-    where: ['p.data_source_id = $1', 'p.is_template = false', "b.lifecycle = 'live'", filterSql, searchSql, treeSql]
+    where: ['p.data_source_id = $1', 'p.is_template = false', "b.lifecycle = 'live'", accessSql, filterSql, searchSql, treeSql]
       .filter((s): s is string => s !== null)
       .join(' AND '),
     order,

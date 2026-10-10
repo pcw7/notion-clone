@@ -21,6 +21,7 @@ import { compileFilter, ParamBag, propertyIdsIn } from './filter.ts'
 import { refreshDerivedValues } from './derived-values.ts'
 import { compileTree, readPropertyTypes, toQueriedRow, type QueriedRow, type RowRow } from './query.ts'
 import { compileSearch } from './search.ts'
+import { restrictedRowsSql, rowsAccessForDataSource } from './row-access.ts'
 import { getView } from './view.ts'
 import { subItemPairOf } from './view-columns.ts'
 
@@ -55,7 +56,7 @@ export async function queryCalendar(
   input: { readonly from: string; readonly to: string; readonly search?: string | null },
 ): Promise<CalendarResult> {
   if (!isValidSpan(input.from, input.to)) return fail('invalid_value')
-  // 권한은 뷰를 여는 데서 본다(데이터베이스 단위 — 행 단위 권한이 없다 · `query.ts` 머리말).
+  // 뷰를 여는 것은 데이터베이스 단위다 — 행의 범위("만들기만" 이면 자기가 열 수 있는 행만 · 6f-2b-1)는 아래 트랜잭션에서 정한다.
   const view = await getView(ctx, viewId)
   if (!view.ok) return fail('not_found')
   if (view.value.type !== 'calendar') return fail('not_calendar')
@@ -67,13 +68,17 @@ export async function queryCalendar(
   await refreshDerivedValues(ctx, dataSourceId, propertyIdsIn(filter))
 
   return withReadTransaction(async (tx) => {
+    const access = await rowsAccessForDataSource(tx, ctx, dataSourceId)
+    if (access === null) return fail('not_found')
     const types = await readPropertyTypes(tx, dataSourceId)
     const params = new ParamBag(2)
+    // 권한이 필터보다 먼저다(F-03-17) — 달력의 행과 "날짜 없음" 의 수가 같은 WHERE 를 쓴다
+    const accessSql = restrictedRowsSql(access, params)
     const filterSql = compileFilter(filter, types, params)
     const searchSql = input.search ? compileSearch(input.search, types, params) : null
     const pair = subItemPairOf(columns)
     const treeSql = pair === null ? null : compileTree({ parentPropertyId: pair.parentPropertyId, under: null }, params)
-    const where = ['p.data_source_id = $1', 'p.is_template = false', "b.lifecycle = 'live'", filterSql, searchSql, treeSql]
+    const where = ['p.data_source_id = $1', 'p.is_template = false', "b.lifecycle = 'live'", accessSql, filterSql, searchSql, treeSql]
       .filter((s): s is string => s !== null)
       .join(' AND ')
     const dateParam = params.bind(dateProperty)
