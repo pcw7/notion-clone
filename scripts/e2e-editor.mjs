@@ -9116,7 +9116,9 @@ async function main() {
       check('★ 남이 먼저 적용했으면 거부된다 — 알리고 편집 모드에 남는다 · 남의 레이아웃은 그대로',
         other.ok && (await waitFor(`(document.querySelector('[data-testid="row-layout-error"]')?.textContent ?? '').includes('다른 사람이 먼저')`, 8000))
           && (await has('[data-testid="row-layout-editor"]')) && (await layoutVersion()) === '2'
-          && JSON.stringify((await dbQuery(`SELECT property_id FROM layout_module WHERE data_source_id = $1 AND kind = 'property' ORDER BY property_id`, [ds])).map((r) => r.property_id))
+          // 양쪽을 JS 로 정렬한다 — DB 의 `ORDER BY` 는 ko-KR 정렬 규칙(대소문자를 섞는다)이라 JS 의 `.sort()` 와 순서가 다를 수 있다(무작위
+          // id 의 대소문자에 따라 갈렸다 · §3.3-345 ①)
+          && JSON.stringify((await dbQuery(`SELECT property_id FROM layout_module WHERE data_source_id = $1 AND kind = 'property'`, [ds])).map((r) => r.property_id).sort())
             === JSON.stringify([idOf('수량'), idOf('메모')].sort()),
         // 상세에 조건 넷을 모두 싣는다 — 전체 판(부하)에서 한 번 떨어졌는데 무엇이었는지 알 수 없었다(§3.3-286 ⑥).
         JSON.stringify([other.status, await evaluate(`document.querySelector('[data-testid="row-layout-error"]')?.textContent ?? null`), await layoutVersion(),
@@ -13995,6 +13997,70 @@ async function main() {
         undone.status === 200 && undone.body?.layout?.version === '2' && JSON.stringify(undone.body?.layout?.hidden) === '[]'
           && undone.body?.layout?.settings?.fullWidth === false && twice.status === 409 && twice.body?.error === 'no_undo',
         JSON.stringify({ undone: [undone.status, undone.body?.layout?.version, undone.body?.layout?.hidden], twice: [twice.status, twice.body?.error] }))
+    }
+
+    if (sectionIf('레이아웃 되돌리기 · 실시간 — 화면 (3e-2 · F-16-12)')) {
+      // 직전 레이아웃으로 되돌리기 단추(되돌릴 수 있을 때만) · 열린 행 페이지가 다른 사람의 적용을 새로고침 없이 따른다 · 편집 중이면
+      // 닫은 뒤에 따른다. "다른 사람"은 API 로 적용한다. 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const stamp = Date.now()
+      const api = `${BASE}/api/workspaces/${workspaceId}`
+      const readRes = async (res) => ({ status: res.status, body: await res.json().catch(() => null) })
+      const post = async (path, body) => readRes(await fetch(`${api}${path}`, { method: 'POST', headers: authed, body: JSON.stringify(body) }))
+      const created = (await post('/databases', { name: `레이아웃실시간${stamp}`, privateTop: true })).body?.database
+      const ds = created?.dataSourceId
+      const memo = (await post(`/data-sources/${ds}/properties`, { name: '메모', type: 'rich_text' })).body?.property?.id
+      const qty = (await post(`/data-sources/${ds}/properties`, { name: '수량', type: 'number' })).body?.property?.id
+      const titleId = (await readRes(await fetch(`${api}/views/${created?.defaultViewId}`, { headers: authed }))).body?.view?.columns?.find((c) => c.type === 'title')?.propertyId
+      const rowId = (await post(`/views/${created?.defaultViewId}/rows`, { cells: [{ propertyId: titleId, value: { type: 'title', title: [textRun('실시간 행')] } }] })).body?.row?.id
+      const version = async () => (await dbQuery(`SELECT version::text AS v FROM page_layout WHERE data_source_id = $1`, [ds]))[0]?.v ?? '0'
+      const putLayout = async (body) => readRes(await fetch(`${api}/data-sources/${ds}/layout`, { method: 'PUT', headers: authed, body: JSON.stringify({ version: await version(), order: [], hidden: [], ...body }) }))
+      const has = (sel) => evaluate(`!!document.querySelector(${JSON.stringify(sel)})`)
+      const visibleIds = () => evaluate(`[...document.querySelectorAll('[data-testid="row-visible-properties"] td[data-property-id]')].map((td) => td.getAttribute('data-property-id'))`)
+      const openRow = async () => {
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${rowId}` })
+        return waitFor(`!!document.querySelector('[data-testid="row-layout-edit"]') && !!document.querySelector('[data-testid="row-title"]')`, 15000)
+      }
+
+      // ① 되돌리기 — 남이 메모를 숨겼다 → 행 페이지의 "직전 레이아웃으로 되돌리기"
+      await openRow()
+      check('처음에는 되돌릴 것이 없다 — 단추가 없다', !(await has('[data-testid="row-layout-undo"]')))
+      await putLayout({ hidden: [memo] })
+      await openRow()
+      check('적용 뒤에는 "직전 레이아웃으로 되돌리기"가 선다 — 메모는 숨겨져 있다',
+        (await has('[data-testid="row-layout-undo"]')) && !(await visibleIds()).includes(memo),
+        JSON.stringify(await visibleIds()))
+      for (let i = 0; i < 5 && (await has('[data-testid="row-layout-undo"]')); i += 1) {
+        await clickSelector('[data-testid="row-layout-undo"]')
+        if (await waitFor(`!document.querySelector('[data-testid="row-layout-undo"]')`, 3000)) break
+      }
+      check('★ 되돌리면 메모가 다시 보이고 단추가 사라진다 — 서버는 새 버전(2) · 기록이 지워졌다',
+        (await waitFor(`[...document.querySelectorAll('[data-testid="row-visible-properties"] td[data-property-id]')].some((td) => td.getAttribute('data-property-id') === ${JSON.stringify(memo)})`, 10000))
+          && !(await has('[data-testid="row-layout-undo"]'))
+          && (await version()) === '2' && (await dbQuery(`SELECT 1 FROM page_layout_history WHERE data_source_id = $1`, [ds])).length === 0,
+        JSON.stringify([await visibleIds(), await version(), await has('[data-testid="row-layout-undo"]')]))
+
+      // ② 실시간 — 행 페이지를 연 채로 남이 수량을 고정한다
+      await openRow()
+      await putLayout({ pinned: [qty] })
+      check('★ 열린 행 페이지가 남의 적용을 새로고침 없이 따른다 — 수량이 제목 아래에 선다',
+        await waitFor(`!!document.querySelector('[data-testid="row-pinned-properties"] td[data-property-id="${qty}"]')`, 10000),
+        String(await evaluate(`document.querySelector('[data-testid="row-pinned-properties"]')?.textContent ?? '(없음)'`)))
+
+      // ③ 편집 중이면 닫은 뒤에 따른다 — ② 에 기대지 않게 새로 연다(② 가 깨지면 고정 줄이 처음부터 없어 ③ 이 거저 통과했다 · §3.3-345 ③)
+      await openRow()
+      check('전제 — 새로 연 행 페이지에 수량이 제목 아래에 있다',
+        await waitFor(`!!document.querySelector('[data-testid="row-pinned-properties"] td[data-property-id="${qty}"]')`, 5000))
+      for (let i = 0; i < 6 && !(await has('[data-testid="row-layout-editor"]')); i += 1) {
+        await clickSelector('[data-testid="row-layout-edit"]')
+        await waitFor(`!!document.querySelector('[data-testid="row-layout-editor"]')`, 1500)
+      }
+      await putLayout({ pinned: [] })
+      await sleep(1500)
+      check('편집 중에는 다시 그리지 않는다 — 편집 모드가 그대로 열려 있다', await has('[data-testid="row-layout-editor"]'))
+      await clickSelector('[data-testid="row-layout-cancel"]')
+      check('★ 편집 모드를 닫으면 그사이의 적용을 따른다 — 고정이 풀렸다',
+        await waitFor(`!document.querySelector('[data-testid="row-layout-editor"]') && !document.querySelector('[data-testid="row-pinned-properties"]')`, 10000))
     }
 
     if (sectionIf('개인 필터 · 정렬 — 화면 (2h-2 · F-04-17)')) {
