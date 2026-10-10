@@ -2259,6 +2259,28 @@ CREATE UNIQUE INDEX layout_module_prop_once ON layout_module (tab_id, property_i
 > ⑥ 0065 는 개발 DB 에 남아 있던 뜻 없는 행(그룹 아래의 보이는 행 — 8f-2 의 반사실이 남긴 것)을 지우고 CHECK 를 건다 — 보임은 기본이라
 > 지워도 화면이 같다.
 
+**[보강] 레이아웃의 직전 버전 — 한 단계 되돌리기 · F-16-12** ⟨항목 레이아웃 3e-1 / 마이그레이션 0066⟩
+
+> 16 F-16-12 *"클론 권고: 직전 버전 1개를 `page_layout_history` 에 남겨 `실행 취소` 를 1스텝 제공한다(비용 대비 안전 이득이 크다)"* ·
+> *"[클론 자체 결정]"*. 초판의 표 목록에 없던 표를 더한다 — 레이아웃 변경은 전 구성원의 화면을 바꾸므로 한 번의 실수를 되돌릴 길이 있어야 한다.
+>
+> ```sql
+> CREATE TABLE page_layout_history (
+>   data_source_id uuid PRIMARY KEY REFERENCES data_source(id) ON DELETE CASCADE,   -- 소스마다 한 단계
+>   after_version  bigint NOT NULL CHECK (after_version >= 1),  -- 이 스냅샷을 남긴 적용의 결과 버전
+>   snapshot       jsonb  NOT NULL CHECK (jsonb_typeof(snapshot) = 'object'),  -- 적용 전의 레이아웃(순서 · 자리 · 설정)
+>   changed_by     uuid NULL REFERENCES "user"(id),
+>   changed_at     timestamptz NOT NULL DEFAULT now()
+> );
+> ```
+>
+> ① **한 단계뿐이다** — 소스마다 한 행(PK). 바뀐 적용이 적용 **전**의 레이아웃을 덮어쓴다(바뀐 것이 없는 적용은 남기지 않는다).
+> ② **되돌리기는 그 스냅샷을 새 적용으로 쓴다** — version 이 오른다(되감지 않는다 · 낙관적 잠금은 그대로). 되돌린 뒤에는 기록을 지운다 —
+> 되돌리기는 되돌리지 않는다. 지금 버전이 `after_version` 이 아니면(그 뒤에 다른 적용이 있었으면) 거부한다.
+> ③ 스냅샷은 적용 입력과 같은 모양이다(스키마 순서 · 숨김 · 고정 · 본문 줄 · 패널 · 설정) — 그사이 지워진 속성은 건너뛰고, 새로 생긴 속성은
+> 제자리 · 속성 묶음이다(적용의 규칙 그대로).
+> ④ 페이지 버전 기록(`page_version`)에 넣지 않는다 — 레이아웃은 페이지에 속하지 않는다(16). 감사 로그는 그 표가 생길 때(거버넌스 트랙).
+
 ---
 
 ### 3.7 동기화 · 버전 ⟨C-11/V-3 · C-12 · V-5 · U-2 · U-9 · X-1 · X-5⟩
