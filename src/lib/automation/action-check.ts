@@ -17,12 +17,20 @@
 
 import type { SessionContext } from '../auth/session-context.ts'
 import type { Tx } from '../db/tx.ts'
-import { isRowFailure, openDataSource, type RowCell } from '../database/row.ts'
+import { isRowFailure, openDataSource } from '../database/row.ts'
 import { isMvpPropertyType, validateCellValue } from '../database/property-types.ts'
 import { readLiveTemplate } from '../database/template.ts'
 import { entitlement } from '../billing/entitlement.ts'
 import { sealWebhookUrl, webhookUrlHint } from '../net/url-seal.ts'
-import { parseStoredActions, type ActionInput, type SendWebhookInput, type SendWebhookStored, type StoredAction } from './actions.ts'
+import {
+  isDynamicCell,
+  parseStoredActions,
+  type ActionCell,
+  type ActionInput,
+  type SendWebhookInput,
+  type SendWebhookStored,
+  type StoredAction,
+} from './actions.ts'
 
 /** 액션이 그 표에 맞지 않는 까닭(모양은 `ActionProblem` — `actions.ts`). */
 export type ActionSchemaProblem =
@@ -37,6 +45,8 @@ export type ActionSchemaProblem =
   | 'unknown_ref'
   /** `send_webhook` 을 이 워크스페이스의 요금제가 허락하지 않는다(`automation.webhook`). */
   | 'plan_required'
+  /** 동적 값의 짝이 맞지 않는다 — "지금"은 날짜 속성에만 · 일하는 행의 속성은 같은 타입(선택지 · 상태 제외 · 정본 ⑯). */
+  | 'invalid_dynamic'
 
 /** 그 표의 속성들 — `openDataSource` 의 문이 준다. */
 export type SchemaGate = {
@@ -44,12 +54,28 @@ export type SchemaGate = {
   readonly properties: ReadonlyMap<string, { readonly type: string; readonly writable: string }>
 }
 
-/** 셀들이 그 표에 맞는가 — 맞으면 null. */
-export function cellProblem(gate: SchemaGate, cells: readonly RowCell[], index: number): ActionSchemaProblem | null {
+/** 일하는 행의 속성으로 채울 수 없는 타입 — 옵션이 속성마다 다르다(이름으로 맞추는 것은 v2 · 정본 ⑯). */
+const NOT_COPYABLE: ReadonlySet<string> = new Set(['select', 'status'])
+
+/**
+ * 셀들이 그 표에 맞는가 — 맞으면 null.
+ *
+ * @param source 동적 값 `row_property` 의 원본 속성이 있는 표 — 그 automation 의 표(일하는 행의 표). 받는 표와 같으면 주지 않는다.
+ */
+export function cellProblem(gate: SchemaGate, cells: readonly ActionCell[], index: number, source: SchemaGate = gate): ActionSchemaProblem | null {
   for (const cell of cells) {
     const meta = gate.properties.get(cell.propertyId)
     if (meta === undefined || !isMvpPropertyType(meta.type)) return 'unknown_property'
     if (meta.writable === 'readonly') return 'readonly_property'
+    if (isDynamicCell(cell)) {
+      if (cell.from.kind === 'now') {
+        if (meta.type !== 'date') return 'invalid_dynamic'
+        continue
+      }
+      const from = source.properties.get(cell.from.propertyId)
+      if (from === undefined || from.type !== meta.type || NOT_COPYABLE.has(meta.type)) return 'invalid_dynamic'
+      continue
+    }
     if (validateCellValue(meta.type, cell.value, `actions.${index}.${cell.propertyId}`).length > 0) return 'invalid_value'
   }
   return null
@@ -108,7 +134,7 @@ export async function checkActions(
       if (isRowFailure(other)) return { problem: 'unknown_data_source', index }
       target = other
     }
-    const problem = cellProblem(target, action.config.cells, index)
+    const problem = cellProblem(target, action.config.cells, index, gate)
     if (problem !== null) return { problem, index }
     if (action.type === 'add_page_to' && action.config.templateId !== null) {
       if ((await readLiveTemplate(tx, ctx, target.dataSourceId, action.config.templateId)) === null) return { problem: 'unknown_template', index }

@@ -1,7 +1,7 @@
 /**
  * 자동화 엔진 — 액션을 순서대로, 한 트랜잭션에서, 실행 기록 하나로 (자동화 5a-1 · 5c-1 · F-08-07 · F-08-10 · F-08-13)
  *
- * 정본: 00-canonical-data-model.md §3.10 불변식 AU1 · [보강] 자동화 엔진 · 버튼 속성 ③ ④ ⑤ ⑦ ⑫
+ * 정본: 00-canonical-data-model.md §3.10 불변식 AU1 · [보강] 자동화 엔진 · 버튼 속성 ③ ④ ⑤ ⑦ ⑫ ⑯
  *
  *   ① 멱등 — 실행 기록을 멱등 키로 먼저 넣는다(`UNIQUE (workspace_id, idempotency_key)`). 같은 키가 이미 있으면 실행하지 않고 그 기록을
  *     돌려준다(연타 · 다시 보내기). 다른 automation 의 키면 null — 부르는 쪽이 거절한다.
@@ -13,18 +13,21 @@
  *   ⑥ 기록에는 id 와 까닭만 — 대상의 내용을 담지 않는다(레벨이 전순서가 아니다 · A2).
  *   ⑦ `send_webhook` 은 바깥으로 나가지 않는다 — 같은 트랜잭션에서 배달 한 줄(`automation_delivery`)을 쌓는다(되돌리면 함께 사라진다).
  *     몸은 그때의 값을 실행하는 사람의 권한으로 읽는다(그 행을 볼 수 없으면 건너뛴다). 요금제가 허락하지 않으면 건너뛴다(`plan`).
+ *   ⑧ 동적 값(⑯) — 셀의 `from` 을 실행할 때 푼다: 지금은 그 실행의 시작 시각, 일하는 행의 속성은 그때의 값(실행하는 사람이 그 행을 볼 수 있을
+ *     때만 · 비었으면 빈 값 · 원본 속성이 사라졌거나 타입이 바뀌었으면 실패).
  */
 
 import { randomUUID } from 'node:crypto'
 
 import type { SessionContext } from '../auth/session-context.ts'
 import { withTransaction, type Tx } from '../db/tx.ts'
-import { createRowIn, isRowFailure, openDataSource, readRow, updateCellsIn } from '../database/row.ts'
+import { createRowIn, isRowFailure, openDataSource, readRow, updateCellsIn, type RowCell, type RowSummary } from '../database/row.ts'
+import { emptyValue, isMvpPropertyType, type CellValue } from '../database/property-types.ts'
 import { createRowFromTemplateIn, readLiveTemplate } from '../database/template.ts'
 import { entitlement } from '../billing/entitlement.ts'
 import { can } from '../permissions/levels.ts'
 import { effectiveCaps } from '../permissions/effective.ts'
-import type { ActionType, SendWebhookStored, StoredAction } from './actions.ts'
+import { isDynamicCell, type ActionCell, type ActionType, type SendWebhookStored, type StoredAction } from './actions.ts'
 import type { WriteOrigin } from './trigger-route.ts'
 
 export type StepStatus = 'done' | 'skipped' | 'failed'
@@ -83,8 +86,53 @@ const SKIPPABLE: ReadonlySet<string> = new Set(['forbidden', 'not_found', 'locke
 /** 액션의 결과 — 만든 행 · 쌓은 배달이 있으면 그 id. */
 type Done = { readonly pageId?: string; readonly deliveryId?: string }
 
-/** 실행 하나의 자리 — 쓰기의 출처 · 실행 기록 · automation(배달이 싣는다). */
-type RunEnv = { readonly origin: WriteOrigin; readonly runId: string; readonly automationId: string }
+/** 실행 하나의 자리 — 쓰기의 출처 · 실행 기록 · automation(배달이 싣는다) · 시작 시각(동적 값 "지금"). */
+type RunEnv = { readonly origin: WriteOrigin; readonly runId: string; readonly automationId: string; readonly startedAt: string }
+
+/** 일하는 행의 속성으로 채울 수 없는 타입(`action-check.ts` 와 같다 · 정본 ⑯). */
+const NOT_COPYABLE: ReadonlySet<string> = new Set(['select', 'status'])
+
+/**
+ * 동적 값을 고정 값으로 푼다(⑧ · 정본 ⑯). 고정 값만이면 그대로. 일하는 행은 처음 필요할 때 한 번 읽는다 — 실행하는 사람이 볼 수 없으면 그
+ * 액션을 건너뛴다(웹훅과 같다).
+ */
+async function resolveCells(tx: Tx, ctx: SessionContext, cells: readonly ActionCell[], context: RunContext, env: RunEnv): Promise<RowCell[]> {
+  if (!cells.some(isDynamicCell)) return cells as RowCell[]
+  let row: RowSummary | undefined
+  let types: Map<string, string> | undefined
+  const out: RowCell[] = []
+  for (const cell of cells) {
+    if (!isDynamicCell(cell)) {
+      out.push(cell)
+      continue
+    }
+    if (cell.from.kind === 'now') {
+      out.push({ propertyId: cell.propertyId, value: { type: 'date', date: { start: env.startedAt } } })
+      continue
+    }
+    if (row === undefined || types === undefined) {
+      if (!can(await effectiveCaps(tx, ctx, context.triggerPageId), 'view')) throw new StepSkipped('not_found')
+      const read = await readRow(tx, context.triggerPageId)
+      if (read === null) throw new StepSkipped('not_found')
+      row = read
+      types = new Map(
+        (
+          await tx.query<{ id: string; type: string }>(
+            `SELECT pr.id, pr.type FROM property pr JOIN page p ON p.data_source_id = pr.data_source_id WHERE p.id = $1 AND pr.deleted_at IS NULL`,
+            [context.triggerPageId],
+          )
+        ).map((p) => [p.id, p.type]),
+      )
+    }
+    // 원본 속성이 사라졌거나 옮길 수 없는 타입이 됐다 — 정의가 깨졌다(실패 · ④)
+    const type = types.get(cell.from.propertyId)
+    if (type === undefined || !isMvpPropertyType(type) || NOT_COPYABLE.has(type)) throw new StepFailed('unknown_property')
+    const raw = row.properties[cell.from.propertyId]
+    const value = typeof raw === 'object' && raw !== null && (raw as { type?: unknown }).type === type ? (raw as CellValue) : emptyValue(type)
+    out.push({ propertyId: cell.propertyId, value })
+  }
+  return out
+}
 
 const rejected = (reason: string): never => {
   throw SKIPPABLE.has(reason) ? new StepSkipped(reason) : new StepFailed(reason)
@@ -144,15 +192,17 @@ async function execute(tx: Tx, ctx: SessionContext, action: StoredAction, contex
   const { origin } = env
   switch (action.type) {
     case 'edit_property': {
-      const result = await updateCellsIn(tx, ctx, context.triggerPageId, { cells: action.config.cells, filledBy: 'automation', origin })
+      const cells = await resolveCells(tx, ctx, action.config.cells, context, env)
+      const result = await updateCellsIn(tx, ctx, context.triggerPageId, { cells, filledBy: 'automation', origin })
       return result.ok ? {} : rejected(result.reason)
     }
     case 'add_page_to': {
       // 그 표에 행을 만들 수 있는가 — 누른 사람의 권한으로(없으면 건너뛴다 · 정본 ⑨). 템플릿을 확인하기 전에 묻는다 — 볼 수 없는 표의
       // 템플릿이 있는지 없는지를 실패 까닭으로 알려주지 않게.
-      const { dataSourceId, cells, templateId } = action.config
+      const { dataSourceId, templateId } = action.config
       const gate = await openDataSource(tx, ctx, dataSourceId, 'create_child')
       if (isRowFailure(gate)) return rejected(gate.ok ? 'not_found' : gate.reason)
+      const cells = await resolveCells(tx, ctx, action.config.cells, context, env)
       if (templateId === null) {
         const made = await createRowIn(tx, ctx, dataSourceId, { cells, filledBy: 'automation', origin })
         return made.ok ? { pageId: made.value.id } : rejected(made.reason)
@@ -183,7 +233,7 @@ export async function runAutomation(
   },
 ): Promise<RunOutcome | null> {
   const runId = randomUUID()
-  const env: RunEnv = { origin: WRITE_ORIGIN[input.kind], runId, automationId: input.automationId }
+  const env: RunEnv = { origin: WRITE_ORIGIN[input.kind], runId, automationId: input.automationId, startedAt: new Date().toISOString() }
   const record = (tx: Tx, status: 'running' | 'failed', steps: readonly Step[]) =>
     tx.query<{ id: string }>(
       `INSERT INTO automation_run (id, automation_id, workspace_id, trigger_page_id, actor_id, origin, depth, status, idempotency_key, steps, finished_at)

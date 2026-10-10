@@ -102,3 +102,22 @@ test('저장한 send_webhook 은 봉인된 모양으로만 읽는다 — 평문 
   assert.deepEqual(parseStoredActions([{ type: 'send_webhook', config: { v: 1, url: URL_OK } }]), { ok: false, problem: 'invalid', index: 0 })
   assert.deepEqual(parseActions([{ type: 'send_webhook', config: stored }]), { ok: false, problem: 'invalid', index: 0 }, '봉인된 모양을 받지 않는다')
 })
+
+test('★ 값 슬롯 — 고정 값 또는 동적 값(지금 · 일하는 행의 속성) · 둘 다 · 모르는 출처는 안 된다', () => {
+  const now = { propertyId: 'due', from: { kind: 'now' } }
+  const copy = { propertyId: 'copy', from: { kind: 'row_property', propertyId: 'qty' } }
+  assert.deepEqual(parseActions([edit([now, copy, cell('a')])]), {
+    ok: true,
+    actions: [{ type: 'edit_property', config: { v: 1, cells: [now, copy, cell('a')] } }],
+  })
+  for (const bad of [
+    { propertyId: 'x', from: { kind: 'clicker' } },
+    { propertyId: 'x', from: { kind: 'row_property' } },
+    { propertyId: 'x', from: { kind: 'now' }, value: { type: 'date', date: null } },
+    { propertyId: 'x', from: 'now' },
+  ]) {
+    assert.deepEqual(parseActions([edit([bad])]), { ok: false, problem: 'invalid', index: 0 }, JSON.stringify(bad))
+  }
+  const ds = '11111111-2222-3333-4444-555555555555'
+  assert.ok(parseActions([{ type: 'add_page_to', config: { v: 1, dataSourceId: ds, cells: [copy] } }]).ok, '다른 표에 행 추가도 동적 값을 받는다')
+})
