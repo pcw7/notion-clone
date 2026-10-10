@@ -3051,6 +3051,56 @@ CREATE INDEX ON reminder (target_at) WHERE fired_at IS NULL;
 `activity_event` → ① 대상자 산출(`subscription.level` + 직접 트리거) → ② **배달 시점 권한 재검사** → ③ presence 조회로 활성 뷰어 억제 → `notification_delivery` 스케줄.
 ②를 팬아웃 시점이 아니라 배달 시점에 두는 이유: 이벤트와 배달 사이에 권한이 회수될 수 있고, 알림 본문(멘션 스니펫)이 곧 콘텐츠 유출 경로다.
 
+
+**[보강] 감사 로그 — 보안 이벤트 11종 · 쌓기만 한다 · 365일** ⟨게시 · 공유 6d-1 · F-11-12 / 마이그레이션 0087⟩
+
+> 11 F-11-12 클론 대안 *"이벤트 타입 100종 대신 보안 관련 10종만(로그인, 권한 변경, 멤버 초대/제거, 페이지 공유 설정 변경, 영구 삭제,
+> 내보내기) 정의하고 `audit_event` 한 테이블"* 과 17 의 소급 불가 축(`scope`) · 설정 변경 칸(`setting_key` · `value_before/after`)을
+> 함께 들인다. 정본은 `audit_event` 를 이름만 두었다(V-8 이 17 로 이관) — 여기서 칸을 정한다.
+>
+> ```sql
+> CREATE TABLE audit_event (
+>   id uuid PRIMARY KEY,
+>   scope text NOT NULL CHECK (scope IN ('account','workspace','teamspace','organization')),   -- 17: 1일차 축(소급 불가)
+>   workspace_id uuid NULL REFERENCES workspace(id),
+>   event_type text NOT NULL CHECK (event_type IN (
+>     'account.login','account.security_changed',
+>     'workspace.member_invited','workspace.member_joined','workspace.member_removed','workspace.member_role_changed',
+>     'workspace.setting_changed','workspace.exported',
+>     'page.permission_changed','page.publish_changed','page.permanently_deleted')),
+>   actor_user_id uuid NULL,                  -- FK 없음 — 사람이 지워져도 남는다(11 *"actor 계정 삭제 → 이벤트는 유지"*)
+>   actor_name text NULL, actor_email text NULL,   -- 그때의 이름 · 메일(비정규화 — 11 *"표시용 이름/이메일은 이벤트에 비정규화 저장"*)
+>   target_type text NULL CHECK (target_type IN ('page','user','invite','setting','workspace')),
+>   target_id text NULL,                      -- uuid 또는 설정 키
+>   ip inet NULL,                             -- 그 세션이 열린 곳(있을 때)
+>   metadata jsonb NOT NULL DEFAULT '{}',     -- 무엇이 어떻게 — 내용(제목 · 본문 · 코멘트)은 싣지 않는다
+>   setting_key text NULL, value_before jsonb NULL, value_after jsonb NULL,
+>   occurred_at timestamptz NOT NULL DEFAULT now(),
+>   CHECK ((scope = 'account') = (workspace_id IS NULL)),
+>   CHECK ((event_type = 'workspace.setting_changed') = (setting_key IS NOT NULL))
+> );
+> -- 고치기를 트리거가 막는다 · 지우기는 365일이 지난 행만(보관 기간 — 11 *"보관: 최대 365일"*)
+> ```
+>
+> ① **11종** — `account.login`(로그인 성공) · `account.security_changed`(비밀번호 · 2단계 인증의 설정 · 해제 · 백업 코드) ·
+> `workspace.member_invited`(이메일 초대 · 게스트 초대) · `workspace.member_joined`(초대 수락) · `workspace.member_removed`(게스트 빼기) ·
+> `workspace.member_role_changed`(게스트 → 멤버) · `workspace.setting_changed`(설정 레지스트리의 모든 칸 — 그때의 값과 바뀐 값) ·
+> `workspace.exported`(내보내기) · `page.permission_changed`(주기 · 회수 · 상속 끊기 · 잇기) · `page.publish_changed`(게시 · 해제 · 검색
+> 노출 · 주소 바꾸기) · `page.permanently_deleted`(사람이 휴지통에서 영구 삭제 — GC 의 일괄 삭제는 넣지 않는다: 사람의 행위가 아니다).
+> 구성원의 제거 · 역할 변경은 지금 게스트 경로뿐이다.
+>
+> ② **명령과 같은 트랜잭션에서 쌓는다** — 명령이 되돌려지면 기록도 없다(거부된 명령은 기록되지 않는다). 내보내기처럼 읽기만 하는
+> 명령은 성공한 뒤 따로 쌓는다.
+>
+> ③ **내용을 싣지 않는다** — 11 *"페이지 본문/코멘트 원문을 절대 metadata 에 넣지 않는다"*. 페이지는 id 로만, 설정은 키와 값으로(설정
+> 값은 내용이 아니다), 초대는 받는 메일 주소(누구를 들였는가가 감사의 목적이다).
+>
+> ④ **보관은 365일** — 데이터 수명 잡(§3.8 [보강] 데이터 수명 · `data_retention`)이 지난 행을 지운다. 그 밖의 지우기 · 고치기는 DB 가
+> 거부한다. 블록 · 사람이 파기돼도 감사 행은 남는다(FK 가 없다).
+>
+> ⑤ **누가 보는가** — 워크스페이스 범위는 그 워크스페이스의 owner(요금제 게이트는 화면과 함께 — 6d-2). 계정 범위는 그 사람 자신.
+> 조회하는 함수는 세션을 받는다(일반 판정 — 운영자 경로가 아니다).
+
 ---
 
 ### 3.9 코멘트 · 검색 ⟨U-6 · X-8⟩
