@@ -31,6 +31,7 @@
     "test": "node --test \"src/**/*.test.ts\"",
     "e2e": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/e2e-editor.mjs",
     "collab": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/collab-server.mjs",
+    "moderation": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/moderation.mjs",
     "worker": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/worker.mjs"
   },
   "dependencies": {

@@ -1171,6 +1171,48 @@ CREATE TABLE access_request (
 > 퍼붓지 못하게) · **허니팟**(사람에게 보이지 않는 칸이 차 있으면 받은 척하고 남기지 않는다). 신고 화면의 referrer 는 `same-origin` 이다 —
 > `no-referrer` 면 브라우저가 같은 출처 POST 에도 `Origin: null` 을 보낸다(Fetch 규격). 그 화면에서 나가는 링크는 같은 출처뿐이다.
 
+**[보강] 모더레이션 조치 — 운영자는 주체가 아니다 · 조치는 쌓기만 한다** ⟨게시 · 공유 6b-2 · F-17-09 / 마이그레이션 0086⟩
+
+> 17 F-17-09 클론 대안 *"운영자 콘솔 대신 관리자 CLI 1개(`takedown --page <id> --reason <code>`)로 시작 … L → M 이면서 법적 대응 능력은
+> 확보된다"* 그대로다 — *"반드시 P1 인 부분은 테이크다운을 실행할 수 있는 경로와 `moderation_state` 축"*.
+>
+> ```sql
+> CREATE TABLE moderation_action (
+>   id uuid PRIMARY KEY,
+>   case_id uuid NULL REFERENCES moderation_case(id),             -- 신고 없이 하는 조치(법적 요청 메일 등)도 있다
+>   target_type text NOT NULL CHECK (target_type IN ('page')), target_id uuid NOT NULL,   -- FK 없음 — 파기돼도 이력은 남는다
+>   workspace_id uuid NOT NULL REFERENCES workspace(id),
+>   action text NOT NULL CHECK (action IN ('take_down','dismiss','reinstate')),
+>   reason_code text NULL CHECK (reason_code IN ('phishing','malware','illegal','harassment','copyright','spam','other')),
+>   note text NOT NULL DEFAULT '' CHECK (char_length(note) <= 2000),
+>   actor text NOT NULL CHECK (char_length(btrim(actor)) BETWEEN 1 AND 100),
+>   created_at timestamptz NOT NULL DEFAULT now(),
+>   CHECK ((action = 'take_down') = (reason_code IS NOT NULL))       -- 내리는 데는 까닭이 있다
+> );
+> -- append-only — 고치기 · 지우기를 트리거가 막는다(17 *"moderation_action 이력은 파기 대상에서 제외"*)
+> ```
+>
+> ① **운영자는 워크스페이스의 주체가 아니다** — 조치 함수는 `SessionContext` 를 받지 않고(셋째 발급자를 만들지 않는다) HTTP 에서 부르지
+> 않는다. 부르는 곳은 서버 셸의 운영자 명령 하나(`npm run moderation`)이고, 누가 했는지는 운영자가 적은 이름(`actor`)으로 남는다(17 은
+> `staff_user` 를 말했다 — 콘솔이 생길 때). 워크스페이스 owner 는 모더레이션을 보지 못한다(17 *"owner 가 자기 워크스페이스 케이스를
+> 보면 신고자가 노출된다"*).
+>
+> ② **테이크다운 = `moderation_state := 'taken_down'`** — `lifecycle` 은 건드리지 않는다(마스터 §9.4 · 17 §1.4). 공개 경로가 그 페이지와
+> **그 아래 전체**를 닫는다([정정] 웹 게시 ③ 의 사슬 — 17 의 범위 `node` / `subtree` 는 이 모델에서 늘 서브트리다). 워크스페이스
+> 안에서는 그대로 보이고 고쳐진다. 그 페이지의 열린 케이스는 `actioned` 로 닫힌다. 이미 내려져 있으면 `already`.
+>
+> ③ **기각 = 케이스를 `dismissed` 로 닫고** 그 페이지가 `reported` 였으면 `none` 으로 — 열린 케이스에만(`not_open`).
+>
+> ④ **복구 = `taken_down` · `restricted` → `reinstated`** — 공개 경로가 다시 연다(게시 · 정책 · 휴지통이 허락하면). 내려져 있지 않으면
+> `not_moderated`.
+>
+> ⑤ **소유자가 안다** — 게시 상태(`PublishState.moderation`)가 그 페이지 또는 위 페이지가 내려졌는지 말하고, 공유 패널이 "운영 정책에
+> 따라 웹 공개가 내려졌다" 를 보인다. 내려진 페이지를 다시 게시하면 `moderated` 로 거부한다(해제 · 다시 게시로 우회할 수 없다 —
+> 상태가 블록에 있다). 인박스 알림은 활동 이벤트와 함께(§7).
+>
+> ⑥ 워크스페이스 단위 게시 차단(17 *"반복 위반 → 운영자가 강제"*)은 다음 조각이다 — 소유자가 설정으로 되돌릴 수 없는 운영자 잠금이
+> 필요하다(§7).
+
 ---
 
 ### 3.4 블록 트리 ⟨C-1/V-4 · C-3/V-6 · C-9/V-9 · C-10 · X-1 · X-3 · X-7⟩

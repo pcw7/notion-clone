@@ -102,6 +102,7 @@ npm run db:migrate      # 미적용 마이그레이션 실행
 npm run db:migrate:status
 npm run db:verify:schema # 스키마가 정본대로인지 + 불변식이 실제로 거부하는지
 npm run plan:set -- <workspaceId> <free|plus|business|enterprise>  # 요금제 바꾸기(운영자 — 결제 연동 없음)
+npm run moderation -- list   # 신고 케이스 · 테이크다운 · 기각 · 복구(운영자 — 서버 셸에서만 · HTTP 로 열지 않는다)
 npm run worker          # 공용 스케줄러 워커(버전 GC 등 "시각이 되면 실행") — 앱 · 협업 서버 옆에 따로 띄운다
 
 npm run check           # typecheck + lint + license

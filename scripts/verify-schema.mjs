@@ -4122,6 +4122,35 @@ try {
     ok('★ 닫힌 케이스 뒤에는 같은 대상의 새 케이스가 열린다(부분 UNIQUE)')
   }
 
+  console.log('\n[65] 모더레이션 조치 — 쌓기만 한다 (0086 / §3.3 끝 [보강] 모더레이션 조치 · 6b-2조각)')
+  {
+    const actionId = randomUUID()
+    const put = `INSERT INTO moderation_action (id, target_type, target_id, workspace_id, action, reason_code, note, actor)
+                 VALUES ($1, 'page', $2, $3, $4, $5, $6, $7)`
+    await client.query(put, [actionId, randomUUID(), wsId, 'take_down', 'phishing', '', '운영자'])
+    ok('테이크다운 한 줄 — 정상 경로가 통과한다')
+
+    const rejects = async (label, sql, params, expect) => {
+      await client.query('SAVEPOINT probe')
+      try {
+        await client.query(sql, params)
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        fail(`${label} — 거부되어야 하는데 통과했다`)
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        const got = e.constraint ?? e.code
+        if (got === expect) ok(`${label} — ${expect} 가 거부함 (${e.code})`)
+        else fail(`${label} — ${expect} 가 아니라 ${got} 에 걸렸다 (${e.message})`)
+      }
+    }
+    await rejects('★ 조치를 고친다', `UPDATE moderation_action SET note = '고침' WHERE id = $1`, [actionId], '23001')
+    await rejects('★ 조치를 지운다', `DELETE FROM moderation_action WHERE id = $1`, [actionId], '23001')
+    await rejects('까닭 없는 테이크다운', put, [randomUUID(), randomUUID(), wsId, 'take_down', null, '', '운영자'], 'ck_moderation_action_reason_needed')
+    await rejects('까닭이 붙은 기각', put, [randomUUID(), randomUUID(), wsId, 'dismiss', 'spam', '', '운영자'], 'ck_moderation_action_reason_needed')
+    await rejects('빈 이름', put, [randomUUID(), randomUUID(), wsId, 'reinstate', null, '', '   '], 'ck_moderation_action_actor')
+    await rejects('모르는 조치', put, [randomUUID(), randomUUID(), wsId, 'delete', null, '', '운영자'], 'ck_moderation_action_action')
+  }
+
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
 } catch (e) {

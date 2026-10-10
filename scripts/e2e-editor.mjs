@@ -15771,6 +15771,54 @@ async function main() {
       }
     }
 
+    if (sectionIf('운영자 테이크다운 (6b-2 · F-17-09)')) {
+      // 운영자 명령(`npm run moderation` — 서버 셸)으로 내리면 공개 주소가 닫히고, 소유자의 공유 패널이 "운영 정책에 따라 내려졌다" 를
+      // 말하며 게시 단추가 서지 않는다 · 되살리면 같은 주소로 다시 열린다 · 틀린 까닭은 명령이 거부한다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const moderation = (args) => new Promise((resolve) => {
+        const child = spawn(process.execPath, ['--disable-warning=MODULE_TYPELESS_PACKAGE_JSON', 'scripts/moderation.mjs', ...args], { cwd: ROOT, env: process.env })
+        let out = ''
+        child.stdout.on('data', (d) => { out += d })
+        child.stderr.on('data', (d) => { out += d })
+        child.on('close', (code) => resolve({ code, out }))
+      })
+      const SECTION = '[role="dialog"][aria-label="공유 설정"] [data-testid="publish-section"]'
+
+      const page = (await api('POST', '/pages', { title: `내려질 페이지 ${stamp}` })).body.page.id
+      const token = (await api('PUT', `/pages/${page}/publish`)).body?.token
+      const statusOf = async () => (await fetch(`${BASE}/p/${token}`)).status
+      const opened = await statusOf()
+
+      const bad = await moderation(['takedown', page, '--reason', '악성', '--by', 'e2e 운영자'])
+      const down = await moderation(['takedown', page, '--reason', 'phishing', '--by', 'e2e 운영자', '--note', `e2e ${stamp}`])
+      check('★ 운영자 명령으로 내리면 공개 주소가 닫힌다 — 틀린 까닭은 거부',
+        opened === 200 && bad.code === 1 && down.code === 0 && down.out.includes('내렸다') && (await statusOf()) === 404,
+        JSON.stringify([opened, bad, down]))
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+      await waitFor(`[...document.querySelectorAll('button')].some((b) => b.textContent.trim() === '공유')`, 15000)
+      await clickText('공유')
+      const notice = await waitFor(`!!document.querySelector('${SECTION} [data-testid="publish-moderated"]')`, 8000)
+      await clickSelector(`${SECTION} [data-testid="publish-unpublish"]`)
+      await waitFor(`!document.querySelector('${SECTION} [data-testid="publish-url"]')`, 5000)
+      const noPublish = await evaluate(`!document.querySelector('${SECTION} [data-testid="publish-publish"]')`)
+      const retry = await api('PUT', `/pages/${page}/publish`)
+      check('★ 소유자의 공유 패널이 "운영 정책에 따라 내려졌다" 를 말한다 · 게시 단추가 서지 않고 다시 게시는 거부(moderated)',
+        notice && noPublish && retry.status === 409 && retry.body?.error === 'moderated', JSON.stringify([notice, noPublish, retry]))
+
+      const back = await moderation(['reinstate', page, '--by', 'e2e 운영자'])
+      const republished = await api('PUT', `/pages/${page}/publish`)
+      check('되살리면 다시 게시되고 같은 주소로 열린다',
+        back.code === 0 && republished.status === 200 && republished.body?.token === token && (await statusOf()) === 200,
+        JSON.stringify([back, republished.status]))
+    }
+
     if (sectionIf('개인 필터 · 정렬 — 화면 (2h-2 · F-04-17)')) {
       // 볼 수만 있는 사람(브라우저 세션을 바꾼다)이 도구줄의 필터로 조건을 걸면 **자기 것**으로 저장되고 그 사람의 표만 좁혀진다 — "나만 보는
       // 필터" 표시 · 초기화. 편집자는 자기 개인 것을 "모두에게 저장"한다. 브라우저 세션은 끝에 반드시 소유자로 되돌린다.

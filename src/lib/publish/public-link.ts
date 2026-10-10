@@ -49,6 +49,11 @@ export type PublishState = {
    * 둘 다 null — 공개되어 있다는 사실만). 아니면 null. 정책이 막았거나 만료된 게시는 덮지 않는다.
    */
   readonly coveredBy: { readonly pageId: string | null; readonly title: string | null } | null
+  /**
+   * 운영자가 이 페이지(또는 위 페이지)의 공개를 내렸는가(6b-2 — 정본 [보강] 모더레이션 조치 ⑤). 내려졌으면 게시해도 열리지 않고 다시
+   * 게시는 거부된다(`moderated`). 신고만 된 것(`reported`)은 말하지 않는다 — 신고는 소유자에게 알리지 않는다(신고자 보호).
+   */
+  readonly moderation: 'taken_down' | 'restricted' | null
 }
 
 export type PublishFailure =
@@ -66,6 +71,8 @@ export type PublishFailure =
   | 'not_published'
   /** 바꿀 것이 없거나 값이 틀렸다(6a-3 — `{ robots?: 'index' | 'noindex', rotateToken?: true }`). */
   | 'invalid_input'
+  /** 운영자가 이 페이지(또는 위 페이지)의 공개를 내렸다(6b-2) — 다시 게시해 우회할 수 없다. */
+  | 'moderated'
 
 export type PublishResult =
   | { readonly ok: true; readonly value: PublishState }
@@ -84,6 +91,7 @@ export function publishFailureStatus(reason: PublishFailure): number {
       return 400
     case 'policy_disabled':
     case 'not_published':
+    case 'moderated':
       return 409
   }
 }
@@ -136,6 +144,16 @@ async function coveredByIn(
   return null
 }
 
+/** 이 페이지와 위 페이지들 중 운영자가 내린 것 — 공개 경로의 사슬과 같다(테이크다운은 서브트리를 덮는다). `taken_down` 이 먼저다. */
+async function moderationIn(tx: Tx, node: NodeRow): Promise<PublishState['moderation']> {
+  const rows = await tx.query<{ moderation_state: string }>(
+    `SELECT moderation_state FROM block WHERE id = ANY($1::uuid[]) AND moderation_state IN ('taken_down', 'restricted')`,
+    [[...node.ancestor_path, node.id]],
+  )
+  if (rows.some((r) => r.moderation_state === 'taken_down')) return 'taken_down'
+  return rows.length > 0 ? 'restricted' : null
+}
+
 async function stateIn(
   tx: Tx,
   ctx: SessionContext,
@@ -144,10 +162,14 @@ async function stateIn(
   policyAllows: boolean,
   canManage: boolean,
 ): Promise<PublishState> {
-  return { ...stateOf(link, policyAllows, canManage), coveredBy: await coveredByIn(tx, ctx, node, policyAllows) }
+  return {
+    ...stateOf(link, policyAllows, canManage),
+    coveredBy: await coveredByIn(tx, ctx, node, policyAllows),
+    moderation: await moderationIn(tx, node),
+  }
 }
 
-function stateOf(link: LinkRow | null, policyAllows: boolean, canManage: boolean): Omit<PublishState, 'coveredBy'> {
+function stateOf(link: LinkRow | null, policyAllows: boolean, canManage: boolean): Omit<PublishState, 'coveredBy' | 'moderation'> {
   return {
     published: link?.enabled ?? false,
     token: canManage ? (link?.token ?? null) : null,
@@ -188,6 +210,8 @@ export async function publishPage(ctx: SessionContext, pageId: string): Promise<
     if (node.lifecycle !== 'live') return { ok: false, reason: 'trashed' } as const
     const policy = await readSecurityPolicyIn(tx, ctx.workspaceId)
     if (!policy.allowPublish) return { ok: false, reason: 'policy_disabled' } as const
+    // 운영자가 내린 페이지 — 해제 · 다시 게시로 우회하지 못한다(상태는 블록에 있다 · 정본 [보강] 모더레이션 조치 ⑤)
+    if ((await moderationIn(tx, node)) !== null) return { ok: false, reason: 'moderated' } as const
 
     const link = await tx.queryOne<LinkRow>(
       `INSERT INTO public_link (node_id, enabled, token, created_by, updated_by)
