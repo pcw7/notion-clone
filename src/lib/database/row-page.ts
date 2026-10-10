@@ -20,6 +20,7 @@ import type { PageIcon } from '../block/page-icon.ts'
 import { isLocked } from '../permissions/lock.ts'
 import { getDatabase, type DatabaseAccess } from './database.ts'
 import { readRecordLayout } from './layout.ts'
+import type { PageSettings } from './page-settings.ts'
 import { readRow, type RowSummary } from './row.ts'
 import { readRecordColumns } from './view.ts'
 import type { ViewColumn } from './view-columns.ts'
@@ -39,6 +40,8 @@ export type RowPage = {
   readonly layoutVersion: string
   /** 제목 아래에 고정한 속성(3a-1 · F-16-02) — heading 안의 순서. `columns` 에도 그대로 있다(속성 묶음에서 빼는 것은 화면이다). */
   readonly pinned: readonly string[]
+  /** 페이지 설정(3b-1 · F-16-09 · F-16-10) — 이 데이터베이스의 모든 행에 같다. 머리가 없으면 기본값. */
+  readonly settings: PageSettings
   readonly titlePropertyId: string | null
   readonly row: RowSummary
   readonly access: DatabaseAccess
@@ -81,6 +84,7 @@ export async function readRowPage(ctx: SessionContext, pageId: string): Promise<
       columns: columns.map((c) => (hidden.has(c.propertyId) ? { ...c, visible: false } : c)),
       layoutVersion: layout.version,
       pinned: layout.pinned,
+      settings: layout.settings,
       locked,
     }
   })
@@ -100,6 +104,7 @@ export async function readRowPage(ctx: SessionContext, pageId: string): Promise<
     columns: found.columns,
     layoutVersion: found.layoutVersion,
     pinned: found.pinned,
+    settings: found.settings,
     titlePropertyId: found.columns.find((c) => c.type === 'title')?.propertyId ?? null,
     row: found.summary,
     access: found.locked ? { ...database.value.access, canEditStructure: false } : database.value.access,

@@ -13735,6 +13735,30 @@ async function main() {
       await clickSelector('[data-testid="row-layout-cancel"]')
     }
 
+    if (sectionIf('페이지 설정 — 서버 (3b-1 · F-16-09 · F-16-10)')) {
+      // 레이아웃 적용(PUT …/layout)이 페이지 설정을 받는다 — 준 칸만 바꾸고 나머지는 그대로 · 틀린 값은 400. 기본값 · 머리 · 숨김과의
+      // 관계는 DB 검사가 본다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const table = (await api('POST', '/databases', { name: `설정 ${stamp}` })).body.database
+      const layoutUrl = `/data-sources/${table.dataSourceId}/layout`
+      const wide = await api('PUT', layoutUrl, { version: '0', order: [], hidden: [], settings: { fullWidth: true, backlinks: 'off' } })
+      const icons = await api('PUT', layoutUrl, { version: '1', order: [], hidden: [], settings: { showPropertyIcons: false } })
+      check('★ 페이지 설정을 적용한다 — 준 칸만 바뀌고 나머지는 그대로다',
+        wide.status === 200 && icons.status === 200
+          && JSON.stringify(icons.body?.layout?.settings) === JSON.stringify({
+            backlinks: 'off', inlineComments: 'default', showDiscussions: true, showPropertyIcons: false, fullWidth: true,
+          }),
+        JSON.stringify([wide.status, icons.body?.layout?.settings]))
+      const bad = await api('PUT', layoutUrl, { version: '2', order: [], hidden: [], settings: { backlinks: 'sometimes' } })
+      check('모르는 값은 400 invalid_layout', bad.status === 400 && bad.body?.error === 'invalid_layout', JSON.stringify(bad))
+    }
+
     if (sectionIf('개인 필터 · 정렬 — 화면 (2h-2 · F-04-17)')) {
       // 볼 수만 있는 사람(브라우저 세션을 바꾼다)이 도구줄의 필터로 조건을 걸면 **자기 것**으로 저장되고 그 사람의 표만 좁혀진다 — "나만 보는
       // 필터" 표시 · 초기화. 편집자는 자기 개인 것을 "모두에게 저장"한다. 브라우저 세션은 끝에 반드시 소유자로 되돌린다.
