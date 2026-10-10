@@ -31,6 +31,8 @@ export const ENTITLEMENTS = {
   'import.max_bytes': 'limit',
   /** 휴지통 보관 기간(`workspace.trash_days`)을 바꿀 수 있는가(F-11-06 · 4b-3) — Enterprise 만. */
   'trash.custom_retention': 'boolean',
+  /** 자동화의 `send_webhook` 액션(F-08-13 · 5c-1) — Free 만 false(08 *"유료 플랜 전용"*). 저장할 때 막고 실행 때 다시 묻는다. */
+  'automation.webhook': 'boolean',
 } as const
 
 export type EntitlementKey = keyof typeof ENTITLEMENTS

@@ -1,7 +1,7 @@
 /**
- * 자동화 엔진 — 액션을 순서대로, 한 트랜잭션에서, 실행 기록 하나로 (자동화 5a-1 · F-08-07 · F-08-10)
+ * 자동화 엔진 — 액션을 순서대로, 한 트랜잭션에서, 실행 기록 하나로 (자동화 5a-1 · 5c-1 · F-08-07 · F-08-10 · F-08-13)
  *
- * 정본: 00-canonical-data-model.md §3.10 불변식 AU1 · [보강] 자동화 엔진 · 버튼 속성 ③ ④ ⑤ ⑦
+ * 정본: 00-canonical-data-model.md §3.10 불변식 AU1 · [보강] 자동화 엔진 · 버튼 속성 ③ ④ ⑤ ⑦ ⑫
  *
  *   ① 멱등 — 실행 기록을 멱등 키로 먼저 넣는다(`UNIQUE (workspace_id, idempotency_key)`). 같은 키가 이미 있으면 실행하지 않고 그 기록을
  *     돌려준다(연타 · 다시 보내기). 다른 automation 의 키면 null — 부르는 쪽이 거절한다.
@@ -11,15 +11,20 @@
  *   ④ 실패 — 그 밖의 거절(값이 틀렸다 · 속성이 사라졌다)은 **전부 되돌리고** 실패 기록만 따로 남긴다(반쪽 실행이 남지 않게).
  *   ⑤ 액션은 **실행하는 사람의 권한으로** 다시 판정된다 — 각 액션이 부르는 명령(`updateCellsIn` …)이 그 사람의 `SessionContext` 로 묻는다.
  *   ⑥ 기록에는 id 와 까닭만 — 대상의 내용을 담지 않는다(레벨이 전순서가 아니다 · A2).
+ *   ⑦ `send_webhook` 은 바깥으로 나가지 않는다 — 같은 트랜잭션에서 배달 한 줄(`automation_delivery`)을 쌓는다(되돌리면 함께 사라진다).
+ *     몸은 그때의 값을 실행하는 사람의 권한으로 읽는다(그 행을 볼 수 없으면 건너뛴다). 요금제가 허락하지 않으면 건너뛴다(`plan`).
  */
 
 import { randomUUID } from 'node:crypto'
 
 import type { SessionContext } from '../auth/session-context.ts'
 import { withTransaction, type Tx } from '../db/tx.ts'
-import { createRowIn, isRowFailure, openDataSource, updateCellsIn } from '../database/row.ts'
+import { createRowIn, isRowFailure, openDataSource, readRow, updateCellsIn } from '../database/row.ts'
 import { createRowFromTemplateIn, readLiveTemplate } from '../database/template.ts'
-import type { ActionInput, ActionType } from './actions.ts'
+import { entitlement } from '../billing/entitlement.ts'
+import { can } from '../permissions/levels.ts'
+import { effectiveCaps } from '../permissions/effective.ts'
+import type { ActionType, SendWebhookStored, StoredAction } from './actions.ts'
 import type { WriteOrigin } from './trigger-route.ts'
 
 export type StepStatus = 'done' | 'skipped' | 'failed'
@@ -30,6 +35,8 @@ export type Step = {
   readonly reason?: string
   /** `add_page_to` 가 만든 행 — 화면이 열어 준다(내용은 담지 않는다 · ⑥). */
   readonly pageId?: string
+  /** `send_webhook` 이 쌓은 배달(⑦). */
+  readonly deliveryId?: string
 }
 export type RunStatus = 'success' | 'partial' | 'failed'
 export type RunOutcome = { readonly runId: string; readonly status: RunStatus; readonly steps: readonly Step[]; readonly duplicate: boolean }
@@ -73,14 +80,68 @@ class RunFailed extends Error {
 /** 건너뛰는 거절 — 대상에 손댈 수 없다(③). 나머지는 실패(④). */
 const SKIPPABLE: ReadonlySet<string> = new Set(['forbidden', 'not_found', 'locked'])
 
-/** 액션의 결과 — 만든 행이 있으면 그 id. */
-type Done = { readonly pageId?: string }
+/** 액션의 결과 — 만든 행 · 쌓은 배달이 있으면 그 id. */
+type Done = { readonly pageId?: string; readonly deliveryId?: string }
+
+/** 실행 하나의 자리 — 쓰기의 출처 · 실행 기록 · automation(배달이 싣는다). */
+type RunEnv = { readonly origin: WriteOrigin; readonly runId: string; readonly automationId: string }
 
 const rejected = (reason: string): never => {
   throw SKIPPABLE.has(reason) ? new StepSkipped(reason) : new StepFailed(reason)
 }
 
-async function execute(tx: Tx, ctx: SessionContext, action: ActionInput, context: RunContext, origin: WriteOrigin): Promise<Done> {
+/**
+ * `send_webhook` 의 배달을 쌓는다(⑦ · 정본 ⑫). 몸은 `{ run_id, automation_id, page: { id, url }, properties: { 이름: 셀 값 } }` — 고른 속성 중
+ * 지금 살아 있는 것만, 그때의 값으로.
+ */
+async function queueWebhook(tx: Tx, ctx: SessionContext, config: SendWebhookStored, context: RunContext, env: RunEnv): Promise<Done> {
+  // 요금제를 내렸으면 건너뛴다 — 실패가 아니다(정본 ⑫)
+  if (!(await entitlement(ctx.workspaceId, 'automation.webhook', tx))) throw new StepSkipped('plan')
+  // 그 행을 실행하는 사람이 볼 수 있어야 값을 싣는다
+  if (!can(await effectiveCaps(tx, ctx, context.triggerPageId), 'view')) throw new StepSkipped('not_found')
+  const row = await readRow(tx, context.triggerPageId)
+  if (row === null) throw new StepSkipped('not_found')
+  const names = await tx.query<{ id: string; name: string }>(
+    `SELECT pr.id, pr.name FROM property pr JOIN page p ON p.data_source_id = pr.data_source_id
+      WHERE p.id = $1 AND pr.id = ANY($2::text[]) AND pr.deleted_at IS NULL`,
+    [context.triggerPageId, config.properties],
+  )
+  // 선택지 셀은 옵션 id 만 담는다 — 받는 쪽은 이름이 필요하다(옵션 표에서 붙인다)
+  const options = new Map(
+    (
+      await tx.query<{ id: string; name: string }>(`SELECT id::text, name FROM select_option WHERE property_id = ANY($1::text[])`, [config.properties])
+    ).map((o) => [o.id, o.name]),
+  )
+  const withOptionName = (value: unknown): unknown => {
+    if (typeof value !== 'object' || value === null) return value ?? null
+    const cell = value as { type?: string; select?: { id: string } | null; status?: { id: string } | null }
+    if (cell.type === 'select' && cell.select) return { ...cell, select: { ...cell.select, name: options.get(cell.select.id) ?? null } }
+    if (cell.type === 'status' && cell.status) return { ...cell, status: { ...cell.status, name: options.get(cell.status.id) ?? null } }
+    return value
+  }
+  const properties: Record<string, unknown> = {}
+  for (const propertyId of config.properties) {
+    const name = names.find((n) => n.id === propertyId)?.name
+    if (name !== undefined) properties[name] = withOptionName(row.properties[propertyId])
+  }
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000'
+  const payload = {
+    run_id: env.runId,
+    automation_id: env.automationId,
+    page: { id: row.id, url: `${appUrl}/w/${ctx.workspaceId}/${row.id}` },
+    properties,
+  }
+  const deliveryId = randomUUID()
+  await tx.query(
+    `INSERT INTO automation_delivery (id, run_id, automation_id, workspace_id, url_sealed, url_hint, headers, payload, status, next_attempt_at)
+     VALUES ($1, $2, $3, $4, decode($5, 'base64'), $6, $7::jsonb, $8::jsonb, 'pending', now())`,
+    [deliveryId, env.runId, env.automationId, ctx.workspaceId, config.urlSealed, config.urlHint, JSON.stringify(config.headers), JSON.stringify(payload)],
+  )
+  return { deliveryId }
+}
+
+async function execute(tx: Tx, ctx: SessionContext, action: StoredAction, context: RunContext, env: RunEnv): Promise<Done> {
+  const { origin } = env
   switch (action.type) {
     case 'edit_property': {
       const result = await updateCellsIn(tx, ctx, context.triggerPageId, { cells: action.config.cells, filledBy: 'automation', origin })
@@ -101,6 +162,8 @@ async function execute(tx: Tx, ctx: SessionContext, action: ActionInput, context
       const made = await createRowFromTemplateIn(tx, ctx, dataSourceId, templateId, { cells, precedence: 'template', filledBy: 'automation', origin })
       return made.ok ? { pageId: made.value.row.id } : rejected(made.reason)
     }
+    case 'send_webhook':
+      return queueWebhook(tx, ctx, action.config, context, env)
   }
 }
 
@@ -115,12 +178,12 @@ export async function runAutomation(
     readonly automationId: string
     readonly idempotencyKey: string
     readonly context: RunContext
-    readonly actions: readonly ActionInput[]
+    readonly actions: readonly StoredAction[]
     readonly kind: RunKind
   },
 ): Promise<RunOutcome | null> {
   const runId = randomUUID()
-  const writeOrigin = WRITE_ORIGIN[input.kind]
+  const env: RunEnv = { origin: WRITE_ORIGIN[input.kind], runId, automationId: input.automationId }
   const record = (tx: Tx, status: 'running' | 'failed', steps: readonly Step[]) =>
     tx.query<{ id: string }>(
       `INSERT INTO automation_run (id, automation_id, workspace_id, trigger_page_id, actor_id, origin, depth, status, idempotency_key, steps, finished_at)
@@ -149,8 +212,14 @@ export async function runAutomation(
       const steps: Step[] = []
       for (const [index, action] of input.actions.entries()) {
         try {
-          const done = await tx.savepoint('automation_step', () => execute(tx, ctx, action, input.context, writeOrigin))
-          steps.push({ index, type: action.type, status: 'done', ...(done.pageId === undefined ? {} : { pageId: done.pageId }) })
+          const done = await tx.savepoint('automation_step', () => execute(tx, ctx, action, input.context, env))
+          steps.push({
+            index,
+            type: action.type,
+            status: 'done',
+            ...(done.pageId === undefined ? {} : { pageId: done.pageId }),
+            ...(done.deliveryId === undefined ? {} : { deliveryId: done.deliveryId }),
+          })
         } catch (e) {
           if (e instanceof StepSkipped) {
             steps.push({ index, type: action.type, status: 'skipped', reason: e.reason })

@@ -3916,6 +3916,70 @@ try {
     await client.query('ROLLBACK TO SAVEPOINT cascade')
   }
 
+  console.log('\n[60] send_webhook — 배달 (0081 / §3.10 [보강] 자동화 엔진 ⑫ · 5c-1조각)')
+  {
+    const plans = await client.query(
+      `SELECT p.code, e.kind, e.value FROM plan p JOIN plan_entitlement e ON e.plan_id = p.id AND e.key = 'automation.webhook' ORDER BY p.code`,
+    )
+    const byPlan = Object.fromEntries(plans.rows.map((r) => [r.code, r.kind === 'boolean' ? r.value : `(${r.kind})`]))
+    if (plans.rows.length === 4 && byPlan.free === false && byPlan.plus === true && byPlan.business === true && byPlan.enterprise === true) {
+      ok('★ 엔타이틀먼트 automation.webhook — Free 만 false · 네 요금제 모두 줄이 있다')
+    } else fail(`automation.webhook 줄이 어긋났다: ${JSON.stringify(byPlan)}`)
+
+    // 배달의 FK 만 본다 — DB automation 하나를 세운다
+    const automationId = randomUUID()
+    const dbBlock = randomUUID()
+    const dsId = randomUUID()
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key, ancestor_path, perm_scope_id, properties, format,
+                          created_at, last_edited_at)
+       VALUES ($1, $2, 'database', 'block', $3, 'a0', '{}', $1, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      [dbBlock, wsId, randomUUID()],
+    )
+    await client.query(`INSERT INTO database (id) VALUES ($1)`, [dbBlock])
+    await client.query(`INSERT INTO data_source (id, owner_database_id, name, schema_version) VALUES ($1, $2, '배달', 1)`, [dsId, dbBlock])
+    await client.query(
+      `INSERT INTO automation (id, workspace_id, kind, host_data_source_id, name, enabled, created_by) VALUES ($1, $2, 'db_automation', $3, '배달', true, $4)`,
+      [automationId, wsId, dsId, userId],
+    )
+    const runId = randomUUID()
+    await client.query(
+      `INSERT INTO automation_run (id, automation_id, workspace_id, origin, depth, status, steps) VALUES ($1, $2, $3, 'user', 0, 'running', '[]'::jsonb)`,
+      [runId, automationId, wsId],
+    )
+    const put = `INSERT INTO automation_delivery (id, run_id, automation_id, workspace_id, url_sealed, url_hint, headers, payload, status, next_attempt_at, finished_at)
+                 VALUES ($1, $2, $3, $4, '\\x01'::bytea, 'hooks.example.com', $5::jsonb, $6::jsonb, $7, $8, $9)`
+    const now = new Date()
+    await client.query(put, [randomUUID(), runId, automationId, wsId, '[]', '{}', 'pending', now, null])
+    await client.query(put, [randomUUID(), runId, automationId, wsId, '[{"name":"x","valueSealed":"AA=="}]', '{"run_id":"r"}', 'sent', null, now])
+    ok('배달 둘(보낼 차례 · 보냄) — 정상 경로가 통과한다')
+    const rejectBy = async (label, constraint, params) => {
+      await client.query('SAVEPOINT probe')
+      try {
+        await client.query(put, params)
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        fail(`${label} — 거부되어야 하는데 통과했다`)
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        if (e.constraint === constraint) ok(`${label} — ${constraint} 가 거부함 (${e.code})`)
+        else fail(`${label} — ${constraint} 가 아니라 ${e.constraint ?? e.code} 에 걸렸다 (${e.message})`)
+      }
+    }
+    await rejectBy('★ 보낼 차례인데 보낼 시각이 없다', 'ck_automation_delivery_pending', [randomUUID(), runId, automationId, wsId, '[]', '{}', 'pending', null, null])
+    await rejectBy('보낸 것에 보낼 시각이 남아 있다', 'ck_automation_delivery_pending', [randomUUID(), runId, automationId, wsId, '[]', '{}', 'sent', now, now])
+    await rejectBy('★ 끝났는데 끝난 시각이 없다', 'ck_automation_delivery_finished', [randomUUID(), runId, automationId, wsId, '[]', '{}', 'failed', null, null])
+    await rejectBy('헤더가 배열이 아니다', 'ck_automation_delivery_headers', [randomUUID(), runId, automationId, wsId, '{}', '{}', 'dropped', null, now])
+    await rejectBy('몸이 객체가 아니다', 'ck_automation_delivery_payload', [randomUUID(), runId, automationId, wsId, '[]', '[]', 'dropped', null, now])
+    await rejectBy('모르는 상태', 'ck_automation_delivery_status', [randomUUID(), runId, automationId, wsId, '[]', '{}', 'retrying', null, null])
+
+    await client.query('SAVEPOINT cascade')
+    await client.query(`DELETE FROM automation_run WHERE id = $1`, [runId])
+    const left = (await client.query(`SELECT count(*)::int AS n FROM automation_delivery WHERE run_id = $1`, [runId])).rows[0].n
+    if (left === 0) ok('★ 실행 기록을 지우면(보관 상한 · 되돌린 실행) 그 배달도 함께 지워진다(CASCADE)')
+    else fail(`실행 기록을 지웠는데 배달 ${left}개가 남았다`)
+    await client.query('ROLLBACK TO SAVEPOINT cascade')
+  }
+
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
 } catch (e) {

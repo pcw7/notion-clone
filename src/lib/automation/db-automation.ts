@@ -29,7 +29,7 @@ import { loadRelationLabels } from '../database/relation.ts'
 import { AUTOMATION_RUN_CAP } from '../notification/retention.ts'
 import { parseActions, type ActionInput, type ActionProblem } from './actions.ts'
 import type { Step } from './engine.ts'
-import { checkActions, readActions, writeActions, type ActionSchemaProblem, type SchemaGate } from './action-check.ts'
+import { checkActions, readPublicActions, writeActions, type ActionSchemaProblem, type PublicAction, type SchemaGate } from './action-check.ts'
 
 export const MAX_DB_AUTOMATIONS = 50
 export const MAX_TRIGGERS = 5
@@ -52,7 +52,8 @@ export type DbAutomation = {
   /** 실행 주체(정본 ①). 탈퇴했으면 이름이 빈 글이다. */
   readonly createdBy: { readonly id: string; readonly name: string }
   readonly triggers: readonly TriggerInput[]
-  readonly actions: readonly ActionInput[]
+  /** 화면 · API 에 주는 모양(`send_webhook` 의 URL · 헤더 값은 없다 — 정본 [보강] 자동화 엔진 ⑫). */
+  readonly actions: readonly PublicAction[]
   readonly updatedAt: Date
 }
 
@@ -184,7 +185,7 @@ async function readAutomations(tx: Tx, dataSourceId: string, only: string | null
             ? [{ type: 'property_edited', propertyId: t.property_id, condition: t.condition }]
             : [],
       ),
-      actions: await readActions(tx, r.id),
+      actions: await readPublicActions(tx, r.id),
       updatedAt: r.updated_at,
     })
   }
@@ -240,7 +241,7 @@ export async function createDbAutomation(
     if (!actions.ok) return fail('invalid_action', actions.problem, actions.index)
     const triggerProblem = checkTriggers(g, triggers.triggers)
     if (triggerProblem !== null) return fail('invalid_trigger', triggerProblem.problem, triggerProblem.index)
-    const actionProblem = await checkActions(tx, ctx, g, actions.actions)
+    const actionProblem = await checkActions(tx, ctx, g, actions.actions, null)
     if (actionProblem !== null) return fail('invalid_action', actionProblem.problem, actionProblem.index)
     const count = await tx.queryOne<{ n: number }>(
       `SELECT count(*)::int AS n FROM automation WHERE host_data_source_id = $1 AND kind = 'db_automation'`,
@@ -302,7 +303,7 @@ export async function updateDbAutomation(
     if (patch.actions !== undefined) {
       const parsed = parseActions(patch.actions)
       if (!parsed.ok) return fail('invalid_action', parsed.problem, parsed.index)
-      const problem = await checkActions(tx, ctx, g, parsed.actions)
+      const problem = await checkActions(tx, ctx, g, parsed.actions, automationId)
       if (problem !== null) return fail('invalid_action', problem.problem, problem.index)
       actions = parsed.actions
     }
