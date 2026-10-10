@@ -55,6 +55,7 @@ const PROBLEM: Record<string, string> = {
   too_many_webhooks: '웹훅은 다섯 개까지입니다.',
   unknown_ref: '받는 주소와 헤더 값을 넣으세요 — 그대로 둘 저장된 값이 없습니다.',
   plan_required: '이 요금제에서는 웹훅을 보낼 수 없습니다.',
+  invalid_dynamic: '값의 출처가 그 속성에 맞지 않습니다 — "지금"은 날짜에만, 행의 속성은 같은 타입만(선택지 · 상태 제외) 넣을 수 있습니다.',
 }
 
 const DISABLED: Record<string, string> = {

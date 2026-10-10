@@ -11,6 +11,7 @@
  *     (숫자 · 체크 · 선택 · 상태 · 글 · 날짜).
  *   - **다른 표에 행 추가**(`add_page_to`) — 대상 표(이 표도 된다) · 그 표의 템플릿 · 그 표의 값. 템플릿을 고르면 "템플릿이 정한 칸은
  *     템플릿 값이 이긴다"를 한 줄로 알린다(08 — 직관과 반대다).
+ *   값 칸 옆에서 **출처**를 고른다(⑯) — 값(고정) · 지금(날짜일 때) · 일하는 행의 ‹속성›(같은 타입 · 선택지 제외 — 서버의 저장 검사와 같은 규칙).
  *   - **웹훅 보내기**(`send_webhook` · ⑭) — 받는 주소 · 헤더 · 보낼 속성. 서버는 저장된 주소 · 헤더 값을 주지 않는다(봉인 · ⑫) — 힌트만
  *     보이고 **비워 두면 그대로**다(읽을 때 받은 `ref` 를 `keep` 으로 돌려준다).
  *
@@ -29,7 +30,12 @@ import { emptyValue, isMvpPropertyType, type CellValue, type MvpPropertyType, ty
 import { textRun, toPlainText } from '@/lib/contracts/rich-text'
 import * as api from './table-api'
 
-type CellDraft = { readonly propertyId: string; readonly value: CellValue }
+/** 동적 값의 출처(⑯ — 서버 `DynamicSource` 와 같은 모양). */
+type Source = { readonly kind: 'now' } | { readonly kind: 'row_property'; readonly propertyId: string }
+/** 셀 초안 — 고정 값 또는 동적 값(서버 `ActionCell` 과 같은 모양). */
+type CellDraft = { readonly propertyId: string; readonly value: CellValue } | { readonly propertyId: string; readonly from: Source }
+/** 일하는 행의 속성으로 채울 수 없는 타입 — 옵션이 속성마다 다르다(서버와 같다). */
+const NOT_COPYABLE: ReadonlySet<string> = new Set(['select', 'status'])
 /** 헤더 초안 — 저장된 것(`saved`)은 값을 모른다: 비워 두면 서버가 옮긴다. */
 type HeaderDraft = { readonly name: string; readonly value: string; readonly saved: boolean }
 export type ActionDraft =
@@ -63,8 +69,6 @@ const OTHER_LABEL: Record<string, string> = {
 
 export const toDraft = (action: api.ButtonActionJson): ActionDraft => {
   const c = action.config
-  // 동적 값(⑯)이 든 셀은 이 편집기가 아직 고치지 않는다 — 받은 그대로 남긴다(5d-2 가 칸을 세운다)
-  if (Array.isArray(c.cells) && c.cells.some((cell) => typeof cell === 'object' && cell !== null && 'from' in cell)) return { kind: 'other', raw: action }
   if (action.type === 'edit_property' && Array.isArray(c.cells)) return { kind: 'edit', cells: c.cells as CellDraft[] }
   if (action.type === 'add_page_to' && typeof c.dataSourceId === 'string' && Array.isArray(c.cells)) {
     return { kind: 'add', dataSourceId: c.dataSourceId, templateId: typeof c.templateId === 'string' ? c.templateId : null, cells: c.cells as CellDraft[] }
@@ -118,6 +122,7 @@ const fieldsOf = (properties: readonly PropertySummary[]): Field[] =>
  * 액션 목록 편집 — 초안은 부르는 쪽이 들고 있다(저장도 부르는 쪽).
  *
  * @param editLabel 값 바꾸기의 이름 — 버튼은 "이 행의 값 바꾸기", DB automation 은 "트리거된 행의 값 바꾸기"
+ * @param rowLabel 일하는 행의 이름 — 버튼은 "누른 행", DB automation 은 "트리거된 행"(값의 출처 목록에 쓴다)
  * @param testIdPrefix 검사가 잡는 이름의 앞 — 버튼은 `db-button`(5a-3 · 5a-4 의 e2e 가 그대로 잡는다)
  */
 export function ActionListEditor({
@@ -126,6 +131,7 @@ export function ActionListEditor({
   drafts,
   onChange,
   editLabel,
+  rowLabel,
   testIdPrefix,
 }: {
   workspaceId: string
@@ -133,6 +139,7 @@ export function ActionListEditor({
   drafts: readonly ActionDraft[]
   onChange: (drafts: readonly ActionDraft[]) => void
   editLabel: string
+  rowLabel: string
   testIdPrefix: string
 }) {
   const p = testIdPrefix
@@ -204,7 +211,9 @@ export function ActionListEditor({
               </button>
             </div>
             {draft.kind === 'other' && <p className="text-neutral-500">이 편집기에서는 고치지 않습니다 — 저장해도 그대로 남습니다.</p>}
-            {draft.kind === 'edit' && <Cells p={p} fields={own} cells={draft.cells} require onChange={(cells) => update(index, { ...draft, cells })} />}
+            {draft.kind === 'edit' && (
+              <Cells p={p} fields={own} sources={own} rowLabel={rowLabel} cells={draft.cells} require onChange={(cells) => update(index, { ...draft, cells })} />
+            )}
             {draft.kind === 'webhook' && <Webhook p={p} fields={own} draft={draft} onChange={(next) => update(index, next)} />}
             {draft.kind === 'add' && (
               <div className="flex flex-col gap-1">
@@ -252,6 +261,8 @@ export function ActionListEditor({
                 <Cells
                   p={p}
                   fields={tables[draft.dataSourceId]?.fields ?? []}
+                  sources={own}
+                  rowLabel={rowLabel}
                   cells={draft.cells}
                   require={false}
                   onChange={(cells) => update(index, { ...draft, cells })}
@@ -383,16 +394,27 @@ function Webhook({
   )
 }
 
-/** 값 목록 — 속성 고르기 + 그 타입의 값 칸. `require` 면 마지막 하나는 뺄 수 없다(값 바꾸기는 값이 하나 이상). */
+/** 출처 고르기의 값 — `literal` · `now` · `row:{속성 id}`. */
+const sourceKey = (cell: CellDraft): string => ('from' in cell ? (cell.from.kind === 'now' ? 'now' : `row:${cell.from.propertyId}`) : 'literal')
+
+/**
+ * 값 목록 — 속성 고르기 + 출처(⑯) + 그 타입의 값 칸. `require` 면 마지막 하나는 뺄 수 없다(값 바꾸기는 값이 하나 이상).
+ *
+ * @param sources 일하는 행의 표의 속성 — 동적 값의 원본(다른 표에 행 추가여도 이 표다)
+ */
 function Cells({
   p,
   fields,
+  sources,
+  rowLabel,
   cells,
   require,
   onChange,
 }: {
   p: string
   fields: readonly Field[]
+  sources: readonly Field[]
+  rowLabel: string
   cells: readonly CellDraft[]
   require: boolean
   onChange: (cells: readonly CellDraft[]) => void
@@ -424,7 +446,39 @@ function Cells({
                 ))}
             </select>
             {field !== undefined && (
-              <ValueInput p={p} field={field} value={cell.value} onChange={(value) => onChange(cells.map((x, i) => (i === c ? { ...x, value } : x)))} />
+              <select
+                aria-label={`${field.name} 값의 출처`}
+                data-testid={`${p}-value-source`}
+                value={sourceKey(cell)}
+                onChange={(e) => {
+                  const key = e.target.value
+                  const next: CellDraft =
+                    key === 'now'
+                      ? { propertyId: cell.propertyId, from: { kind: 'now' } }
+                      : key.startsWith('row:')
+                        ? { propertyId: cell.propertyId, from: { kind: 'row_property', propertyId: key.slice(4) } }
+                        : { propertyId: cell.propertyId, value: emptyValue(field.type) }
+                  onChange(cells.map((x, i) => (i === c ? next : x)))
+                }}
+                className="min-w-0 max-w-[9rem] rounded border border-neutral-300 px-1 py-0.5 dark:border-neutral-700 dark:bg-neutral-900"
+              >
+                <option value="literal">값</option>
+                {field.type === 'date' && <option value="now">지금</option>}
+                {!NOT_COPYABLE.has(field.type) &&
+                  sources
+                    .filter((s) => s.type === field.type)
+                    .map((s) => (
+                      <option key={s.id} value={`row:${s.id}`}>
+                        {rowLabel}의 {s.name}
+                      </option>
+                    ))}
+                {'from' in cell && cell.from.kind === 'row_property' && !sources.some((s) => s.id === (cell.from as { propertyId: string }).propertyId) && (
+                  <option value={sourceKey(cell)}>(없는 속성)</option>
+                )}
+              </select>
+            )}
+            {field !== undefined && 'value' in cell && (
+              <ValueInput p={p} field={field} value={cell.value} onChange={(value) => onChange(cells.map((x, i) => (i === c ? { propertyId: x.propertyId, value } : x)))} />
             )}
             {(!require || cells.length > 1) && (
               <button type="button" aria-label="이 값 빼기" onClick={() => onChange(cells.filter((_, i) => i !== c))} className="px-1 text-neutral-400 hover:text-red-600">
