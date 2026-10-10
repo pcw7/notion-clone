@@ -547,13 +547,15 @@ function FilterPanel({
   )
 }
 
-function RuleValue({
+/** 필터 규칙의 값 칸 — 타입마다. DB automation 의 트리거 조건(5b-3b)도 이 부품을 쓴다(보기의 필터와 같은 말 · 같은 모양). */
+export function RuleValue({
   column,
   value,
   disabled,
   onChange,
 }: {
-  column: FilterableColumn
+  /** 타입과 선택지만 본다 — 트리거 조건은 보기의 컬럼이 아니라 스키마의 속성을 준다. */
+  column: Pick<FilterableColumn, 'type' | 'options'>
   value: unknown
   disabled: boolean
   /** `undefined` 는 "값 없음"이다 — 그 규칙은 저장 트리에서 빠진다. */

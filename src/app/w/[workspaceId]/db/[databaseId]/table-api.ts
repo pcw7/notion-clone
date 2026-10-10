@@ -28,6 +28,7 @@ import type { PageSettings } from '@/lib/database/page-settings'
 import type { DateReminderJson } from '@/lib/database/reminder'
 import { MAX_PINNED_PROPERTIES } from '@/lib/database/limits'
 import { buttonActionProblemMessage } from './button-messages'
+import { automationProblemMessage } from './automation-messages'
 
 export type ApiResult<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly message: string }
 
@@ -1011,6 +1012,37 @@ export function setDbAutomationEnabled(
     { method: 'PATCH', headers: JSON_HEADERS, body: JSON.stringify({ enabled }) },
     (body) => body.automation as DbAutomationJson,
   )
+}
+
+/** 만들기 · 고치기의 몸 — 켜짐은 목록의 스위치만 바꾼다(정본 화면 ② ⓐ). */
+export type DbAutomationBody = {
+  readonly name: string
+  readonly triggers: readonly DbAutomationTriggerJson[]
+  readonly actions: readonly ButtonActionJson[]
+}
+
+/**
+ * 만든다(`automationId` 가 null) 또는 고친다. 틀리면 몇 번째 트리거 · 액션의 무엇인지 말한다 — 액션은 버튼과 같은 말이다(정본 화면 ② ⓔ).
+ */
+export async function saveDbAutomation(
+  workspaceId: string,
+  dataSourceId: string,
+  automationId: string | null,
+  body: DbAutomationBody,
+): Promise<ApiResult<DbAutomationJson>> {
+  try {
+    const res = await fetch(automationId === null ? automationsUrl(workspaceId, dataSourceId) : `${automationsUrl(workspaceId, dataSourceId)}/${automationId}`, {
+      method: automationId === null ? 'POST' : 'PATCH',
+      headers: JSON_HEADERS,
+      body: JSON.stringify(body),
+    })
+    const json = (await res.json().catch(() => null)) as (ErrorBody & { automation?: DbAutomationJson; problem?: string; index?: number }) | null
+    if (res.ok && json?.automation !== undefined) return { ok: true, value: json.automation }
+    if (json?.error === 'invalid_action') return { ok: false, message: buttonActionProblemMessage(json.problem, json.index) }
+    return { ok: false, message: automationProblemMessage(json?.error, json?.problem, json?.index) ?? messageOf(res.status, json) }
+  } catch {
+    return { ok: false, message: '연결에 실패했습니다. 자동화가 저장되지 않았습니다.' }
+  }
 }
 
 export function deleteDbAutomation(workspaceId: string, dataSourceId: string, automationId: string): Promise<ApiResult<null>> {

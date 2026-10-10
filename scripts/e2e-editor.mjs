@@ -14817,6 +14817,132 @@ async function main() {
         kept && gone && listed.length === 1 && listed[0].id === auto.id, JSON.stringify([kept, gone, listed.map((a) => a.name)]))
     }
 
+    if (sectionIf('DB automation — 만들기 · 고치기 (5b-3b · F-08-09)')) {
+      // 패널의 "+ 새 자동화"로 만든다 — 이름 · 속성 편집 트리거와 조건(보기의 필터와 같은 칸) · 트리거된 행의 값 바꾸기(숨긴 속성도) → 목록 ·
+      // 배지 · 서버. 실행된다. "고치기"는 같은 편집기 — 실행 주체를 말하고 · 조건을 빼고 트리거를 더한다. 조건 값이 비면 · 이름이 비면
+      // 저장하지 않고 까닭을 말한다. 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const src = (p) => new URL(`../src/lib/${p}`, import.meta.url).href
+      const setSelect = (selector, value) => evaluate(`(() => {
+        const s = document.querySelector(${JSON.stringify(selector)})
+        if (!s) return false
+        s.value = ${JSON.stringify(value)}
+        s.dispatchEvent(new Event('change', { bubbles: true }))
+        return true
+      })()`)
+      // 칸이 없으면 치지 않는다 — 앞 장면이 틀려 편집기가 닫혔어도 판은 끝까지 돌고 검사가 실패를 말한다
+      const fill = async (selector, text) => {
+        const found = await evaluate(`(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (!el) return false; el.focus(); el.select(); return true })()`)
+        if (found) await typeText(text)
+      }
+      const db = (await api('POST', '/databases', { name: `자동화 편집 ${stamp}` })).body.database
+      const ds = db.dataSourceId
+      const prop = async (name, type) => (await api('POST', `/data-sources/${ds}/properties`, { name, type })).body.property.id
+      const qty = await prop('수량', 'number')
+      const mark = await prop('표시', 'checkbox')
+      await api('PATCH', `/views/${db.defaultViewId}/columns/${mark}`, { visible: false })
+      const EDITOR = '[data-testid="db-automation-editor"]'
+      const name = `많으면 표시 ${stamp}`
+      const listed = async () => (await api('GET', `/data-sources/${ds}/automations`)).body?.automations ?? []
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      await waitFor(`!!document.querySelector('[data-testid="db-automations-button"]')`, 15000)
+      await clickSelector('[data-testid="db-automations-button"]')
+      await waitFor(`!!document.querySelector('[data-testid="db-automations-new"]')`, 8000)
+      await clickSelector('[data-testid="db-automations-new"]')
+      await waitFor(`!!document.querySelector('${EDITOR} [data-testid="db-automation-trigger-type"]')`, 5000)
+      check('새 자동화 — 기본 이름 · 행 추가 트리거 하나 · 내 권한으로 돈다고 말한다',
+        (await evaluate(`document.querySelector('${EDITOR} [data-testid="db-automation-editor-name"]').value`)) === '새 자동화'
+          && (await evaluate(`[...document.querySelectorAll('${EDITOR} [data-testid="db-automation-trigger"]')].map((li) => li.dataset.kind).join(',')`)) === 'page_added'
+          && ((await evaluate(`document.querySelector('${EDITOR} [data-testid="db-automation-editor-actor"]')?.textContent`)) ?? '').includes('내 권한'))
+
+      // ① 이름 · 트리거(수량이 바뀌면 · 초과 5) · 액션(숨긴 "표시"를 체크)
+      await fill(`${EDITOR} [data-testid="db-automation-editor-name"]`, name)
+      await setSelect(`${EDITOR} [data-testid="db-automation-trigger-type"]`, 'edited')
+      await waitFor(`!!document.querySelector('${EDITOR} [data-testid="db-automation-trigger-property"]')`, 3000)
+      await setSelect(`${EDITOR} [data-testid="db-automation-trigger-property"]`, qty)
+      await clickSelector(`${EDITOR} [data-testid="db-automation-condition-add"]`)
+      await waitFor(`!!document.querySelector('${EDITOR} [data-testid="db-automation-condition-operator"]')`, 3000)
+      await setSelect(`${EDITOR} [data-testid="db-automation-condition-operator"]`, 'greater_than')
+      await waitFor(`!!document.querySelector('${EDITOR} [data-testid="db-filter-value"]')`, 3000)
+      // 값이 비면 저장하지 않는다
+      await clickSelector(`${EDITOR} [data-testid="db-automation-editor-save"]`)
+      const emptyRefused = await waitFor(`(document.querySelector('${EDITOR} [data-testid="db-automation-editor-error"]')?.textContent ?? '') === '1번째 트리거: 조건의 값을 넣으세요.'`, 3000)
+      await fill(`${EDITOR} [data-testid="db-filter-value"]`, '5')
+      await key('Enter')
+      await waitFor(`!!document.querySelector('${EDITOR} [data-testid="db-automation-add-action"]')`, 8000)
+      await clickSelector(`${EDITOR} [data-testid="db-automation-add-action"]`)
+      await waitFor(`[...(document.querySelector('${EDITOR} [data-testid="db-automation-property"]')?.options ?? [])].some((o) => o.value === '${mark}')`, 5000)
+      await setSelect(`${EDITOR} [data-testid="db-automation-property"]`, mark)
+      await waitFor(`document.querySelector('${EDITOR} [data-testid="db-automation-value"]')?.type === 'checkbox'`, 3000)
+      await clickSelector(`${EDITOR} [data-testid="db-automation-value"]`)
+      await clickSelector(`${EDITOR} [data-testid="db-automation-editor-save"]`)
+      const closed = await waitFor(`!document.querySelector('${EDITOR}') && !!document.querySelector('[data-testid="db-automation-item"]')`, 8000)
+      const made = (await listed())[0]
+      check('★ 조건의 값이 비면 저장하지 않고 몇 번째 트리거인지 말한다', emptyRefused,
+        String(await evaluate(`document.querySelector('${EDITOR} [data-testid="db-automation-editor-error"]')?.textContent ?? null`)))
+      check('★ 만든다 — 이름 · 속성 편집 트리거와 조건(초과 5) · 숨긴 속성을 체크하는 액션(서버)',
+        closed && made?.name === name && made.enabled
+          // jsonb 는 키 순서를 바꾼다 — 칸마다 본다
+          && made.triggers.length === 1 && made.triggers[0].type === 'property_edited' && made.triggers[0].propertyId === qty
+          && made.triggers[0].condition?.operator === 'greater_than' && made.triggers[0].condition?.value === 5
+          && made.actions.length === 1 && made.actions[0].type === 'edit_property'
+          && made.actions[0].config.cells?.[0]?.propertyId === mark && made.actions[0].config.cells?.[0]?.value?.checkbox === true,
+        JSON.stringify(made))
+      const item = `[data-testid="db-automation-item"][data-automation-id="${made?.id}"]`
+      check('★ 저장하면 목록과 배지가 그 결과로 — 요약은 보기의 칩과 같은 말',
+        (await evaluate(`document.querySelector('${item} [data-testid="db-automation-triggers"]')?.textContent`)) === '‘수량’이 바뀌면 (수량 · 초과 · 5)'
+          && (await evaluate(`document.querySelector('[data-testid="db-automations-count"]')?.textContent`)) === '1',
+        String(await evaluate(`document.querySelector('${item} [data-testid="db-automation-triggers"]')?.textContent`)))
+
+      // ② 실행된다 — 수량 7 → 표시가 체크
+      const row = (await api('POST', `/views/${db.defaultViewId}/rows`, { cells: [] })).body.row.id
+      await api('PATCH', `/rows/${row}`, { cells: [{ propertyId: qty, value: { type: 'number', number: 7 } }] })
+      const { runAutomationDispatch } = await import(src('automation/dispatch.ts'))
+      await runAutomationDispatch(new Date(Date.now() + 10_000), { workspaces: [workspaceId] })
+      const markCell = (await api('GET', `/views/${db.defaultViewId}/rows`)).body?.rows?.find((r) => r.id === row)?.properties?.[mark]
+      check('★ 화면에서 만든 자동화가 돈다 — 수량 7 이면 숨긴 "표시"가 체크된다', markCell?.checkbox === true, JSON.stringify(markCell))
+
+      // ③ 고치기 — 실행 주체를 말한다 · 조건을 빼고 행 추가 트리거를 더한다 · 이름이 비면 저장하지 않는다
+      await clickSelector(`${item} [data-testid="db-automation-edit"]`)
+      await waitFor(`!!document.querySelector('${EDITOR} [data-testid="db-automation-condition-remove"]')`, 5000)
+      const actor = await evaluate(`document.querySelector('${EDITOR} [data-testid="db-automation-editor-actor"]')?.textContent ?? ''`)
+      await fill(`${EDITOR} [data-testid="db-automation-editor-name"]`, ' ')
+      await clickSelector(`${EDITOR} [data-testid="db-automation-editor-save"]`)
+      const nameRefused = await waitFor(`(document.querySelector('${EDITOR} [data-testid="db-automation-editor-error"]')?.textContent ?? '') === '이름을 넣으세요.'`, 3000)
+      await fill(`${EDITOR} [data-testid="db-automation-editor-name"]`, `${name} 고침`)
+      await clickSelector(`${EDITOR} [data-testid="db-automation-condition-remove"]`)
+      await clickSelector(`${EDITOR} [data-testid="db-automation-add-trigger"]`)
+      const anyNote = await waitFor(`document.querySelectorAll('${EDITOR} [data-testid="db-automation-trigger"]').length === 2 && (document.querySelector('${EDITOR}')?.textContent ?? '').includes('하나라도 일어나면 실행합니다')`, 3000)
+      await clickSelector(`${EDITOR} [data-testid="db-automation-editor-save"]`)
+      await waitFor(`!document.querySelector('${EDITOR}')`, 8000)
+      const edited = (await listed())[0]
+      check('고칠 때는 실행 주체가 처음 만든 사람으로 남는다고 말한다', actor.startsWith('실행 주체는 처음 만든'), actor)
+      check('이름이 비면 저장하지 않는다', nameRefused)
+      check('★ 고친다 — 같은 편집기 · 조건을 빼고 행 추가 트리거를 더한다(둘이면 "하나라도") · 켜짐 · 실행 주체는 그대로(서버)',
+        anyNote && edited?.id === made?.id && edited.name === `${name} 고침` && edited.enabled && edited.createdBy.id === made.createdBy.id
+          && JSON.stringify(edited.triggers.map((t) => t.type).sort()) === JSON.stringify(['page_added', 'property_edited'])
+          && edited.triggers.find((t) => t.type === 'property_edited')?.condition === null
+          // 서버는 트리거를 종류 순으로 준다(행 추가가 먼저)
+          && (await evaluate(`document.querySelector('${item} [data-testid="db-automation-triggers"]')?.textContent`)) === '새 항목이 추가되면 또는 ‘수량’이 바뀌면',
+        JSON.stringify(edited))
+
+      // ④ 취소하면 그대로
+      await clickSelector(`${item} [data-testid="db-automation-edit"]`)
+      await waitFor(`!!document.querySelector('${EDITOR}')`, 5000)
+      await fill(`${EDITOR} [data-testid="db-automation-editor-name"]`, '버릴 이름')
+      await clickSelector(`${EDITOR} [data-testid="db-automation-editor-cancel"]`)
+      await waitFor(`!document.querySelector('${EDITOR}')`, 3000)
+      check('취소하면 바뀌지 않는다', (await listed())[0]?.name === `${name} 고침`
+        && (await evaluate(`document.querySelector('${item} [data-testid="db-automation-name"]')?.textContent`)) === `${name} 고침`)
+    }
+
     if (sectionIf('개인 필터 · 정렬 — 화면 (2h-2 · F-04-17)')) {
       // 볼 수만 있는 사람(브라우저 세션을 바꾼다)이 도구줄의 필터로 조건을 걸면 **자기 것**으로 저장되고 그 사람의 표만 좁혀진다 — "나만 보는
       // 필터" 표시 · 초기화. 편집자는 자기 개인 것을 "모두에게 저장"한다. 브라우저 세션은 끝에 반드시 소유자로 되돌린다.

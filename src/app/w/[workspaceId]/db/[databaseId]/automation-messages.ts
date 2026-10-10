@@ -1,7 +1,7 @@
 /**
- * DB automation 의 글자 — 트리거 · 액션 요약 · 꺼진 까닭 · 실행 기록 (자동화 5b-3a · F-08-09 · 순수)
+ * DB automation 의 글자 — 트리거 · 액션 요약 · 꺼진 까닭 · 실행 기록 (자동화 5b-3a · 5b-3b · F-08-09 · 순수)
  *
- * 정본: 00-canonical-data-model.md §3.10 [보강] DB automation — 화면 ① ⓑ ⓓ
+ * 정본: 00-canonical-data-model.md §3.10 [보강] DB automation — 화면 ① ⓑ ⓓ · ② ⓔ
  *
  * 속성 이름 · 조건 칩은 부르는 쪽이 준다 — 패널은 그 표의 스키마와 보기의 필터 칩(`describeRule` — "수량 · 초과 · 5")으로 채운다.
  * 액션 · 단계의 까닭은 버튼과 같은 말로 쓴다.
@@ -91,6 +91,27 @@ export function stepLine(step: StepLike): string {
   const status = STEP_STATUS[step.status] ?? step.status
   const why = step.reason === undefined ? '' : `(${STEP_REASON[step.reason] ?? step.reason})`
   return `${step.index + 1}. ${what} — ${status}${why}`
+}
+
+const TRIGGER_PROBLEM: Record<string, string> = {
+  invalid: '트리거의 모양이 맞지 않습니다.',
+  unsupported_trigger: '아직 쓸 수 없는 트리거입니다.',
+  no_triggers: '트리거를 하나 이상 넣으세요.',
+  too_many_triggers: '트리거는 5개까지입니다.',
+  unknown_property: '없는 속성이거나 트리거로 쓸 수 없는 속성입니다.',
+  invalid_condition: '조건이 그 속성에 맞지 않습니다.',
+}
+
+/**
+ * 저장 거절 — 이름 · 상한 · 몇 번째 트리거의 무엇(정본 화면 ② ⓔ). 액션의 거절(`invalid_action`)은 버튼과 같은 말이라 여기서 다루지 않는다
+ * (null — 부르는 쪽이 버튼의 글을 쓴다). 모르는 까닭도 null.
+ */
+export function automationProblemMessage(error: string | undefined, problem: string | undefined, index: number | undefined): string | null {
+  if (error === 'invalid_name') return '이름은 1~100자로 넣으세요.'
+  if (error === 'too_many') return '한 표의 자동화는 50개까지입니다.'
+  if (error !== 'invalid_trigger') return null
+  const text = TRIGGER_PROBLEM[problem ?? ''] ?? '트리거를 저장하지 못했습니다.'
+  return index === undefined ? text : `${index + 1}번째 트리거: ${text}`
 }
 
 /**

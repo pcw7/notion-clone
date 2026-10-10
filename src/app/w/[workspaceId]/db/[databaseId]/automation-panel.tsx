@@ -1,15 +1,16 @@
 'use client'
 
 /**
- * DB automation 패널 — 도구줄 줄의 ⚡ (자동화 5b-3a · F-08-09)
+ * DB automation 패널 — 도구줄 줄의 ⚡ (자동화 5b-3a · 5b-3b · F-08-09)
  *
- * 정본: 00-canonical-data-model.md §3.10 [보강] DB automation — 화면 ① ⓐ ~ ⓔ
+ * 정본: 00-canonical-data-model.md §3.10 [보강] DB automation — 화면 ① ⓐ ~ ⓔ · ② ⓐ
  *   08 *"DB 헤더의 ⚡ 아이콘(활성 automation 개수 배지), automation 목록 팝오버, 켜기/끄기 토글"*
  *
  * 서버가 이 패널을 세울지 정한다 — 그 표의 전체 권한이 있을 때만 배지를 준다(정의의 문과 같다). 목록은 열 때 받는다(템플릿 패널과
  * 같다) — 트리거의 속성 이름은 그 표의 **스키마**에서 읽는다(숨긴 속성도 · 사라졌으면 "지워진 속성").
  *
- * 만들기 · 고치기는 5b-3b 다. 이 조각은 보고 · 켜고 끄고 · 지우고 · 실행 기록을 본다.
+ * 보고 · 켜고 끄고 · 지우고 · 실행 기록을 본다(5b-3a). "+ 새 자동화" · "고치기"는 같은 편집기를 이 패널 안에 연다(5b-3b ·
+ * `automation-editor.tsx`) — 저장하면 목록이 그 결과로 바뀐다(배지도).
  */
 
 import { useEffect, useRef, useState } from 'react'
@@ -21,6 +22,7 @@ import type { FilterLeaf } from '@/lib/database/filter'
 import { isFilterableType } from '@/lib/database/filter'
 import { describeRule, type RuleColumn } from '@/lib/database/filter-draft'
 import * as api from './table-api'
+import { AutomationEditor } from './automation-editor'
 import { actionSummary, disabledMessage, runRowLabel, runStatusLabel, stepLine, triggerSummary, type TriggerNames } from './automation-messages'
 
 type Badge = { readonly enabled: number; readonly attention: number }
@@ -56,6 +58,8 @@ export function AutomationPanel(props: {
   const [confirming, setConfirming] = useState<string | null>(null)
   const [runsFor, setRunsFor] = useState<string | null>(null)
   const [runs, setRuns] = useState<api.DbAutomationRunsJson | null>(null)
+  /** 편집기 — 새로 만들기(id null) 또는 그 automation 고치기. */
+  const [editing, setEditing] = useState<{ readonly id: string | null } | null>(null)
   const boxRef = useRef<HTMLDivElement>(null)
 
   // 배지 — 목록을 받았으면 목록에서, 아니면 서버가 준 것
@@ -74,6 +78,7 @@ export function AutomationPanel(props: {
     setError(null)
     setRunsFor(null)
     setConfirming(null)
+    setEditing(null)
     const [listed, properties] = await Promise.all([api.listDbAutomations(workspaceId, dataSourceId), api.readProperties(workspaceId, dataSourceId)])
     if (!listed.ok) {
       setError(listed.message)
@@ -156,7 +161,7 @@ export function AutomationPanel(props: {
       {open && (
         <div
           data-testid="db-automations-panel"
-          className="absolute right-0 top-full z-20 mt-1 w-96 rounded-lg border border-neutral-200 bg-white p-2 text-sm shadow-lg dark:border-neutral-800 dark:bg-neutral-950"
+          className={`absolute right-0 top-full z-20 mt-1 ${editing === null ? 'w-96' : 'w-[32rem]'} rounded-lg border border-neutral-200 bg-white p-2 text-sm shadow-lg dark:border-neutral-800 dark:bg-neutral-950`}
         >
           <p className="px-2 py-1 text-xs text-neutral-500">자동화는 만든 사람의 권한으로 돕니다. 바뀐 뒤 몇 초 안에 실행됩니다.</p>
           {locked && (
@@ -166,13 +171,31 @@ export function AutomationPanel(props: {
           )}
 
           {automations === null && !error && <p className="px-2 py-2 text-neutral-400">불러오는 중…</p>}
-          {automations !== null && automations.length === 0 && (
+          {automations !== null && editing !== null && (
+            <AutomationEditor
+              // 다른 것을 고치러 가면 초안을 새로 — 같은 편집기를 다시 쓰지 않는다
+              key={editing.id ?? 'new'}
+              workspaceId={workspaceId}
+              dataSourceId={dataSourceId}
+              columns={columns}
+              catalog={catalog}
+              initial={editing.id === null ? null : (automations.find((a) => a.id === editing.id) ?? null)}
+              onSaved={(saved) => {
+                setAutomations((current) =>
+                  (current ?? []).some((a) => a.id === saved.id) ? (current ?? []).map((a) => (a.id === saved.id ? saved : a)) : [...(current ?? []), saved],
+                )
+                setEditing(null)
+              }}
+              onCancel={() => setEditing(null)}
+            />
+          )}
+          {automations !== null && editing === null && automations.length === 0 && (
             <p className="px-2 py-2 text-neutral-400" data-testid="db-automations-empty">
               아직 자동화가 없습니다.
             </p>
           )}
 
-          {automations !== null && automations.length > 0 && (
+          {automations !== null && editing === null && automations.length > 0 && (
             <ul className="flex flex-col gap-1" data-testid="db-automations-list">
               {automations.map((a) => {
                 const reason = disabledMessage(a.disabledReason)
@@ -210,6 +233,18 @@ export function AutomationPanel(props: {
                       </p>
                     )}
                     <div className="flex items-center gap-2 text-xs">
+                      <button
+                        type="button"
+                        data-testid="db-automation-edit"
+                        onClick={() => {
+                          setRunsFor(null)
+                          setConfirming(null)
+                          setEditing({ id: a.id })
+                        }}
+                        className="text-neutral-500 hover:underline underline-offset-4"
+                      >
+                        고치기
+                      </button>
                       <button
                         type="button"
                         data-testid="db-automation-runs-button"
@@ -289,6 +324,20 @@ export function AutomationPanel(props: {
                 )
               })}
             </ul>
+          )}
+          {automations !== null && editing === null && (
+            <button
+              type="button"
+              data-testid="db-automations-new"
+              onClick={() => {
+                setRunsFor(null)
+                setConfirming(null)
+                setEditing({ id: null })
+              }}
+              className="mt-1 rounded-md px-2 py-1 text-left text-sm text-neutral-500 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+            >
+              + 새 자동화
+            </button>
           )}
 
           {error && (
