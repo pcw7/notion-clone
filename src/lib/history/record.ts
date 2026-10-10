@@ -53,6 +53,22 @@ export type RecordReason = 'idle' | 'interval' | 'pre_restore' | 'restore'
 
 export type RecordedVersion = { readonly id: string; readonly reason: RecordReason; readonly throughSeq: string }
 
+/**
+ * 버전이 담은 파일 참조(S5) — 본문의 모든 블록(자식 포함)에서 센다. 기록이 올리고 GC(`gc.ts`)가 내리는 **같은 셈**이다(둘이 갈라지면
+ * 참조 수가 새거나 음수로 간다).
+ */
+export function versionFileReferences(ydoc: Y.Doc, pageId: string): Map<string, number> {
+  const blocks: { properties?: Readonly<Record<string, unknown>> }[] = []
+  const walk = (list: readonly EditorBlock[]): void => {
+    for (const block of list) {
+      blocks.push(block)
+      if (block.children !== undefined) walk(block.children)
+    }
+  }
+  walk(readBodyYDoc(ydoc, pageId).doc.blocks)
+  return countFileReferences(blocks)
+}
+
 /** 버전의 바이트를 둘 저장소 키 — 워크스페이스 · 페이지 아래(올린 파일과 같은 저장소의 다른 가지). */
 export function versionStorageKey(workspaceId: string, pageId: string, versionId: string): string {
   return `versions/${workspaceId}/${pageId}/${versionId}.yjs`
@@ -160,17 +176,9 @@ export async function recordVersion(
     ],
   )
 
-  // S5 — 버전이 담은 이미지 블록의 파일은 그 버전의 참조다(옛 버전으로 되돌릴 때 첨부가 깨지지 않게). 버전을 지우는 GC 가 아직 없어
-  // 내리지 않는다.
-  const blocks: { properties?: Readonly<Record<string, unknown>> }[] = []
-  const walk = (list: readonly EditorBlock[]): void => {
-    for (const block of list) {
-      blocks.push(block)
-      if (block.children !== undefined) walk(block.children)
-    }
-  }
-  walk(readBodyYDoc(input.ydoc, pageId).doc.blocks)
-  for (const [fileId, count] of countFileReferences(blocks)) {
+  // S5 — 버전이 담은 이미지 블록의 파일은 그 버전의 참조다(옛 버전으로 되돌릴 때 첨부가 깨지지 않게). 버전 GC(`gc.ts`)가 같은 셈으로
+  // 내린다.
+  for (const [fileId, count] of versionFileReferences(input.ydoc, pageId)) {
     await tx.query(`UPDATE file SET ref_count = ref_count + $3 WHERE id = $1 AND workspace_id = $2`, [fileId, input.workspaceId, count])
   }
 

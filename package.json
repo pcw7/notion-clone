@@ -30,7 +30,8 @@
     "plan:set": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/set-plan.mjs",
     "test": "node --test \"src/**/*.test.ts\"",
     "e2e": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/e2e-editor.mjs",
-    "collab": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/collab-server.mjs"
+    "collab": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/collab-server.mjs",
+    "worker": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/worker.mjs"
   },
   "dependencies": {
     "@hocuspocus/provider": "^4.7.0",
