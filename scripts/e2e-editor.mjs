@@ -4304,7 +4304,7 @@ async function main() {
       })()`)
       await sleep(3000)
       const forced = await evaluate(`({
-        discarded: document.body.textContent.includes('서버가 받지 못한 편집'),
+        discarded: (document.body?.textContent ?? '').includes('서버가 받지 못한 편집'),
         overlay: !!document.querySelector('${LANG_MENU}') || !!document.querySelector('${CAPTION_INPUT}'),
         checked: document.querySelector('[data-block-id="${cb.todo}"] input.blk-checkbox').checked,
         wrap: document.querySelector('${CB(cb.code)}').dataset.wrap,
@@ -6731,6 +6731,8 @@ async function main() {
       await addColumn('수량', 'number')
       await addColumn('상태', 'select')
       await addColumn('완료', 'checkbox')
+      // 머리는 서버가 답한 뒤에 붙는다 — 한 번만 세면 부하에서 셋을 읽는다(#253 의 전체 판). 넷이 될 때까지 기다린다
+      await waitFor(`document.querySelectorAll('[data-testid="db-table"] thead th[data-property-id]').length === 4`, 8000)
       const propIds = await evaluate(`[...document.querySelectorAll('[data-testid="db-table"] thead th[data-property-id]')].map((th) => th.dataset.propertyId)`)
       check('★ 속성을 더하면 머리에 붙는다 — 제목 · 수량 · 상태 · 완료', propIds.length === 4, JSON.stringify(propIds))
       const [, numberProp, selectProp, checkProp] = propIds
@@ -8379,7 +8381,7 @@ async function main() {
 
       await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${copyId}` })
       check('★ 사본은 열리는 진짜 페이지다 — 본문과 하위 페이지가 화면에 선다',
-        (await waitFor(`document.body.textContent.includes(${JSON.stringify(marker)})`, 15000))
+        (await waitFor(`(document.body?.textContent ?? '').includes(${JSON.stringify(marker)})`, 15000))
           && (await evaluate(`document.querySelectorAll('.blk-editor .blk-page-link').length === 1
             && [...document.querySelectorAll('.blk-editor .blk-page-link')].every((e) => e.textContent === '하위 문서')`)),
         await evaluate(`[...document.querySelectorAll('.blk-editor .blk-page-link')].map((e) => e.textContent).join() || '(참조 없음)'`))
@@ -8393,7 +8395,7 @@ async function main() {
       const before = await pageCount()
       await clickOn('[data-testid="page-duplicate"]')
       check('★ 페이지의 "복제"를 누르면 사본으로 옮겨 간다 — 본문이 따라와 있다',
-        (await waitFor(`!location.pathname.endsWith('/${source}') && document.body.textContent.includes(${JSON.stringify(marker)})`, 15000))
+        (await waitFor(`!location.pathname.endsWith('/${source}') && (document.body?.textContent ?? '').includes(${JSON.stringify(marker)})`, 15000))
           // 개수는 한 번만 세면 refresh 와 경주한다(7c-7 반사실 빌드에서 한 번 걸렸다) — 자랄 때까지 기다린다.
           && (await waitFor(`document.querySelectorAll('nav[aria-label="페이지 트리"] a').length > ${before}`, 8000)),
         `${await evaluate('location.pathname')} · 트리 ${before} → ${await pageCount()}`)
@@ -8404,7 +8406,7 @@ async function main() {
       const beforeSide = await pageCount()
       await clickOn(`[aria-label=${JSON.stringify(`복제 원본 ${stamp} 복제`)}]`)
       check('★ 사이드바의 ⧉ 로도 복제한다 — 사본으로 옮겨 간다',
-        (await waitFor(`document.body.textContent.includes(${JSON.stringify(marker)})`, 15000))
+        (await waitFor(`(document.body?.textContent ?? '').includes(${JSON.stringify(marker)})`, 15000))
           && (await pageCount()) > beforeSide,
         `트리 ${beforeSide} → ${await pageCount()}`)
 
@@ -13267,9 +13269,14 @@ async function main() {
       check('★ 수식으로 정렬한다 — 금액 오름차순(다 120 · 나 300)', await waitFor(`${titlesJs} === '다,나'`, 10000), await evaluate(titlesJs))
 
       // ── 정렬 칩이 도구줄에 남는다(서버 렌더가 수식 키를 버리지 않는다) ──
-      await clickOn('[data-testid="db-sort-button"]')
+      // 정렬을 저장한 뒤의 새로 세우기가 열린 패널을 닫을 수 있다 — 그 규칙이 보일 때까지 다시 연다(#253 의 전체 판이 부하에서 찾았다)
+      const sortRuleShown = `(document.querySelector('[data-testid="db-sort-rule"] select[aria-label="정렬 속성"]')?.value ?? '') === ${JSON.stringify(amount)}`
+      for (let i = 0; i < 5 && !(await evaluate(sortRuleShown)); i += 1) {
+        if (!(await evaluate(`!!document.querySelector('[data-testid="db-sort-rule"]')`))) await clickOn('[data-testid="db-sort-button"]')
+        await waitFor(sortRuleShown, 1500)
+      }
       check('★ 정렬 패널에 수식 정렬이 남는다',
-        await waitFor(`(document.querySelector('[data-testid="db-sort-rule"] select[aria-label="정렬 속성"]')?.value ?? '') === ${JSON.stringify(amount)}`, 5000),
+        await waitFor(sortRuleShown, 5000),
         await evaluate(`document.querySelector('[data-testid="db-sort-rule"]')?.textContent ?? null`))
       await key('Escape')
 
@@ -14201,6 +14208,93 @@ async function main() {
         await send('Fetch.disable').catch(() => undefined)
         await releasePaused()
       }
+    }
+
+    if (sectionIf('리마인더 — 화면 (4c-3 · F-11-10)')) {
+      // 날짜 칸의 종 — 없으면 마우스를 올리면 서고, 누르면 값의 모양(날짜만)에 맞는 리드 넷이 메뉴로 선다. 고르면 종이 선다(다시 열어도) ·
+      // 지난 날짜는 빨갛다 · "알림 없음"으로 푼다. 울리면(워커 대신 이 판이 울리기를 부른다) 인박스에 리마인더 줄이 선다. 자기 데이터를
+      // 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const { runReminderFire } = await import(new URL('../src/lib/notification/reminder-fire.ts', import.meta.url).href)
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `리마인더 ${stamp}` })).body.database
+      const view = db.defaultViewId
+      const due = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '마감', type: 'date' })).body.property.id
+      const titleProp = (await api('GET', `/views/${view}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const rowOf = async (t, start) => (await api('POST', `/views/${view}/rows`, {
+        cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun(t)] } }, { propertyId: due, value: { type: 'date', date: { start } } }],
+      })).body.row.id
+      const future = await rowOf('앞으로', '2030-05-01')
+      const past = await rowOf('지난', '2020-01-01')
+      const bell = (row) => `tr[data-row-id="${row}"] td[data-property-id="${due}"] [data-testid="db-reminder-bell"]`
+      const stateOf = (row) => evaluate(`document.querySelector(${JSON.stringify(bell(row))})?.dataset.state ?? null`)
+      const MENU = '[data-testid="db-reminder-menu"]'
+      const stored = async (row) => (await dbQuery(`SELECT lead_minutes, timezone, fired_at FROM reminder WHERE page_id = $1`, [row]))[0] ?? null
+      const openMenu = async (row) => {
+        for (let i = 0; i < 6; i += 1) {
+          await clickSelector(bell(row))
+          if (await waitFor(`!!document.querySelector('${MENU}')`, 1500)) return true
+        }
+        return false
+      }
+      const pick = async (selector) => {
+        await clickSelector(selector)
+        return waitFor(`!document.querySelector('${MENU}')`, 8000)
+      }
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      await waitFor(`!!document.querySelector(${JSON.stringify(bell(future))})`, 15000)
+      check('처음에는 리마인더가 없다 — 종은 마우스를 올려야 보이는 자리만 있다', (await stateOf(future)) === 'none', String(await stateOf(future)))
+
+      const opened = await openMenu(future)
+      const labels = await evaluate(`[...document.querySelectorAll('${MENU} [data-testid="db-reminder-option"]')].map((b) => b.textContent.trim())`)
+      check('★ 종을 누르면 날짜만인 값의 리드 넷이 선다(모두 오전 9시) · 걸려 있지 않으니 "알림 없음"은 없다',
+        opened && JSON.stringify(labels) === JSON.stringify(['그날 오전 9시', '하루 전 오전 9시', '이틀 전 오전 9시', '일주일 전 오전 9시'])
+          && !(await evaluate(`!!document.querySelector('${MENU} [data-testid="db-reminder-off"]')`)),
+        JSON.stringify([opened, labels]))
+      const closed = await pick(`${MENU} [data-testid="db-reminder-option"][data-lead="1440"]`)
+      const saved = await stored(future)
+      check('★ "하루 전"을 고르면 메뉴가 닫히고 종이 선다 — 서버에는 리드 1440 · 이 브라우저의 타임존',
+        closed && (await waitFor(`document.querySelector(${JSON.stringify(bell(future))})?.dataset.state === 'armed'`, 8000))
+          && saved?.lead_minutes === 1440 && typeof saved?.timezone === 'string' && saved.timezone.length > 0 && saved.fired_at === null,
+        JSON.stringify([closed, await stateOf(future), saved]))
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      check('다시 열어도 종이 서 있다 — 제목이 리드를 말한다',
+        (await waitFor(`document.querySelector(${JSON.stringify(bell(future))})?.dataset.state === 'armed'`, 15000))
+          && (await evaluate(`document.querySelector(${JSON.stringify(bell(future))})?.getAttribute('title')`)) === '알림 — 하루 전 오전 9시',
+        String(await evaluate(`document.querySelector(${JSON.stringify(bell(future))})?.getAttribute('title') ?? null`)))
+
+      await openMenu(past)
+      await pick(`${MENU} [data-testid="db-reminder-option"][data-lead="0"]`)
+      check('★ 지난 날짜에 걸면 울리지 않고 "지남" — 종이 빨갛다',
+        (await waitFor(`document.querySelector(${JSON.stringify(bell(past))})?.dataset.state === 'passed'`, 8000))
+          && (await stored(past))?.fired_at !== null,
+        JSON.stringify([await stateOf(past), await stored(past)]))
+
+      await openMenu(past)
+      const checked = await evaluate(`document.querySelector('${MENU} [data-testid="db-reminder-option"][data-lead="0"]')?.getAttribute('aria-checked')`)
+      await pick(`${MENU} [data-testid="db-reminder-off"]`)
+      check('★ 걸린 리드에 표시가 있고 "알림 없음"으로 푼다 — 종이 내려가고 서버에서도 지워진다',
+        checked === 'true' && (await waitFor(`document.querySelector(${JSON.stringify(bell(past))})?.dataset.state === 'none'`, 8000))
+          && (await stored(past)) === null,
+        JSON.stringify([checked, await stateOf(past), await stored(past)]))
+
+      // 울린다 — 워커 대신 이 판이 울리기를 부른다(시각을 2030년 뒤로)
+      const fired = await runReminderFire(new Date('2030-06-01T00:00:00Z'), { workspaces: [workspaceId] })
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/inbox` })
+      check('★ 울리면 인박스에 리마인더 줄이 선다 — 울린 날짜 속성의 이름을 말한다',
+        fired.fired >= 1 && (await waitFor(`(document.body?.textContent ?? '').includes('"마감" 날짜의 리마인더가 울렸습니다.')`, 15000)),
+        JSON.stringify(fired))
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      check('울린 리마인더의 종은 빨갛다',
+        await waitFor(`document.querySelector(${JSON.stringify(bell(future))})?.dataset.state === 'passed'`, 15000), String(await stateOf(future)))
     }
 
     if (sectionIf('개인 필터 · 정렬 — 화면 (2h-2 · F-04-17)')) {

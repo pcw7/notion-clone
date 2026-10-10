@@ -25,6 +25,7 @@ import type { ViewColumn } from '@/lib/database/view-columns'
 import type { Calculations } from '@/lib/database/calculate'
 import type { PropertyDependents } from '@/lib/database/property-dependents'
 import type { PageSettings } from '@/lib/database/page-settings'
+import type { DateReminderJson } from '@/lib/database/reminder'
 import { MAX_PINNED_PROPERTIES } from '@/lib/database/limits'
 
 export type ApiResult<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly message: string }
@@ -144,6 +145,15 @@ function messageOf(status: number, body: ErrorBody): string {
       return '수식이 돌고 돌아 자기 자신을 읽습니다. 다른 속성을 읽게 고치세요.'
     case 'formula_too_deep':
       return '수식이 수식을 읽는 깊이가 15단을 넘습니다.'
+    // ── 리마인더 (4c-3) ──
+    case 'no_date':
+      return '날짜를 먼저 넣어야 알림을 걸 수 있습니다.'
+    case 'not_date':
+      return '날짜 속성에만 알림을 걸 수 있습니다.'
+    case 'invalid_lead':
+      return '이 날짜에는 고를 수 없는 알림입니다.'
+    case 'invalid_time_zone':
+      return '이 기기의 시간대를 알 수 없어 알림을 걸지 못했습니다.'
   }
   return status >= 500 ? '서버에서 처리하지 못했습니다.' : '처리하지 못했습니다.'
 }
@@ -857,4 +867,30 @@ export function applyLayout(
     { method: 'PUT', headers: JSON_HEADERS, body: JSON.stringify(draft) },
     (body) => ({ changed: body.changed === true, version: String((body.layout as { version?: unknown } | undefined)?.version ?? '') }),
   )
+}
+
+// ── 리마인더 (4c-3 · F-11-10) ─────────────────────────────────────────
+
+/** 행 → 속성 → 리마인더. */
+export type ReminderMap = Readonly<Record<string, Readonly<Record<string, DateReminderJson>>>>
+
+/** 보이는 행들의 리마인더 — 그 표를 볼 수 있으면 누구나(리마인더는 날짜 값의 일부다 · 정본 ⑨). */
+export function loadReminders(workspaceId: string, dataSourceId: string, rowIds: readonly string[]): Promise<ApiResult<ReminderMap>> {
+  const rows = encodeURIComponent(rowIds.join(','))
+  return call(`${base(workspaceId)}/data-sources/${dataSourceId}/reminders?rows=${rows}`, { method: 'GET' }, (body) => (body.reminders ?? {}) as ReminderMap)
+}
+
+/** 날짜 칸에 리마인더를 건다(이미 있으면 바꾼다) — 타임존은 이 브라우저의 것. */
+export function setReminder(workspaceId: string, rowId: string, propertyId: string, leadMinutes: number): Promise<ApiResult<DateReminderJson>> {
+  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone
+  return call(
+    `${base(workspaceId)}/rows/${rowId}/reminders/${encodeURIComponent(propertyId)}`,
+    { method: 'PUT', headers: JSON_HEADERS, body: JSON.stringify({ leadMinutes, timeZone }) },
+    (body) => body.reminder as DateReminderJson,
+  )
+}
+
+/** 날짜 칸의 리마인더를 푼다. */
+export function clearReminder(workspaceId: string, rowId: string, propertyId: string): Promise<ApiResult<null>> {
+  return call(`${base(workspaceId)}/rows/${rowId}/reminders/${encodeURIComponent(propertyId)}`, { method: 'DELETE' }, () => null)
 }

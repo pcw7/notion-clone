@@ -18,13 +18,21 @@
  * 거르는 규칙이 두 벌이면 "보관했는데 아직 보인다"가 생긴다.
  *
  * 지운 코멘트의 미리보기는 서버가 `null` 로 준다(§3.3-133). 여기서 옛 내용을 기억해 두지 않는다.
+ *
+ * ──────────────────────────────────────────────────────────────────────
+ * 마지막 요청의 답만 받는다
+ * ──────────────────────────────────────────────────────────────────────
+ *
+ * "읽음"을 누르고 곧바로 다른 필터를 누르면 두 다시 읽기가 엇갈린다 — 늦게 온 옛 필터의 답이 지금 필터의 목록을 덮으면 "안 읽음"에
+ * 읽은 알림이 선다(전체 e2e 가 찾았다). 다시 읽기마다 번호를 매겨 마지막 것만 받고, 표시 뒤의 다시 읽기는 **지금** 필터로 한다.
  */
 
-import { useCallback, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import Link from 'next/link'
 
 import type { PageIcon } from '@/lib/block/page-icon'
 import { accessInboxLine, inboxHref } from '../access-request-messages'
+import { reminderInboxLine } from './inbox-messages'
 import { PageIconView } from '../page-icon-view'
 
 export type InboxRow = {
@@ -42,6 +50,8 @@ export type InboxRow = {
   deleted: boolean
   /** 접근 · 편집 요청(7e-1 · 7e-2)의 지금 상태 — 서버가 요청 행에서 읽어 준다. 다른 알림은 null. */
   access: { requesterName: string | null; status: string; kind: string } | null
+  /** 리마인더(4c-3) — 울린 날짜 속성의 지금 이름. 다른 알림은 null. */
+  reminder: { propertyName: string | null } | null
 }
 
 const FILTERS: readonly { value: string; label: string }[] = [
@@ -58,6 +68,7 @@ const KIND_LABEL: Readonly<Record<string, string>> = {
   page_update: '페이지 변경',
   access_requested: '접근 요청',
   access_granted: '요청 허락',
+  reminder: '리마인더',
 }
 
 const UNTITLED = '제목 없음'
@@ -78,22 +89,28 @@ export function InboxList({
   const [unread, setUnread] = useState(initialUnread)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  /** 지금 필터 · 마지막 다시 읽기의 번호 — 늦게 온 답이 지금 목록을 덮지 않게(머리말). */
+  const filterRef = useRef(filter)
+  const latestLoad = useRef(0)
 
   const url = `/api/workspaces/${workspaceId}/inbox`
 
   const load = useCallback(
     async (next: string) => {
+      const ticket = ++latestLoad.current
       try {
         const res = await fetch(`${url}?filter=${next}`)
+        if (ticket !== latestLoad.current) return
         if (!res.ok) {
           setError('인박스를 불러오지 못했습니다.')
           return
         }
         const data = (await res.json()) as { items: InboxRow[]; unread: number }
+        if (ticket !== latestLoad.current) return
         setItems(data.items)
         setUnread(data.unread)
       } catch {
-        setError('연결에 실패했습니다.')
+        if (ticket === latestLoad.current) setError('연결에 실패했습니다.')
       }
     },
     [url],
@@ -110,14 +127,14 @@ export function InboxList({
           body: JSON.stringify({ ids, ...patch }),
         })
         if (!res.ok) setError('처리하지 못했습니다.')
-        await load(filter)
+        await load(filterRef.current)
       } catch {
         setError('연결에 실패했습니다.')
       } finally {
         setBusy(false)
       }
     },
-    [filter, load, url],
+    [load, url],
   )
 
   const allIds = items.flatMap((i) => i.notificationIds)
@@ -132,6 +149,7 @@ export function InboxList({
               type="button"
               aria-pressed={filter === f.value}
               onClick={() => {
+                filterRef.current = f.value
                 setFilter(f.value)
                 void load(f.value)
               }}
@@ -195,6 +213,7 @@ export function InboxList({
 
               <p className="text-sm text-neutral-600 dark:text-neutral-400">
                 {accessInboxLine(item.kind, item.access) ??
+                  reminderInboxLine(item.reminder) ??
                   (item.deleted ? <span className="text-neutral-400">삭제된 코멘트</span> : (item.preview ?? ''))}
               </p>
 
