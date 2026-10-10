@@ -2225,6 +2225,20 @@ CREATE UNIQUE INDEX layout_module_prop_once ON layout_module (tab_id, property_i
 > ⑤ **적용은 전체 교체 그대로다**(⑤) — 고정 목록을 주지 않으면 그대로다(앞 화면과의 호환). 주면 고정 행을 통째로 다시 쓰고 version 이
 > 오른다. 모든 속성 타입을 고정할 수 있다 — 16 의 `can_pin` 은 두지 않는다(고정은 표시 위치일 뿐 값 편집기는 같다 · R12).
 
+**[보강] 페이지 설정 — 머리의 다섯 칸** ⟨항목 레이아웃 3b-1 / 마이그레이션 없음⟩
+
+> 16 F-16-09 *"표시 정책 1개 enum"* · F-16-10 *"4개 모두 표시 정책이며 권한 · 데이터에 영향이 없다"* · R5(scope 축).
+>
+> ① **다섯 칸(`backlinks_mode` · `inline_comment_mode` · `show_discussions` · `show_property_icons` · `full_width`)은 머리의 것이다** — 데이터베이스의
+> 모든 행에 같다. 머리가 없으면 **칸의 기본값**(hover · default · 보임 · 보임 · 좁게)으로 읽는다 — lazy 머리(8f-2 ①)와 같은 규칙이고, 설정만
+> 바꿔도 기본에서 벗어난 것이라 머리가 생긴다.
+> ② **적용은 같은 PUT 이고 준 칸만 바꾼다**(부분) — 숨김 · 고정 · 순서와 한 번에 갈 수 있고, 설정을 주지 않으면 그대로다. 바뀐 것이 없으면
+> 쓰지 않는다 · 바뀌면 version 이 오른다(낙관적 잠금은 레이아웃 전체의 것 하나). 화면과 서버는 같은 타입 · 기본값 · 검사를 본다
+> (`page-settings.ts` — 기본값을 바꾸려면 0044 의 칸 기본값과 함께).
+> ③ **R5 — 행 페이지는 레이아웃 값만 쓴다.** 일반 페이지가 페이지마다 갖는 값(`block.format.page_full_width` 등)은 행에서 무시한다. 행 ↔
+> 일반 페이지 이동의 물질화(16 F-16-10)는 그 이동 길이 생길 때 정한다.
+> ④ 0044 가 건 CHECK 넷(`ck_page_layout_backlinks` · `_inline_comment` · `_structure` · `_version`)은 이 조각에서 처음 거부를 확인했다(verify-schema [46]).
+
 ---
 
 ### 3.7 동기화 · 버전 ⟨C-11/V-3 · C-12 · V-5 · U-2 · U-9 · X-1 · X-5⟩
