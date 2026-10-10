@@ -131,6 +131,8 @@ function messageOf(status: number, body: ErrorBody): string {
       return '다른 사람이 먼저 레이아웃을 바꿨습니다. 새로고침한 뒤 다시 하세요.'
     case 'invalid_layout':
       return '레이아웃을 확인하세요. 제목 속성은 숨기거나 고정할 수 없고, 고정한 속성은 숨길 수 없습니다.'
+    case 'panel_type':
+      return '관계형 속성은 상세 패널에 놓을 수 없습니다.'
     case 'too_many_pinned':
       return `제목 아래에는 속성을 ${MAX_PINNED_PROPERTIES}개까지 고정할 수 있습니다.`
     // ── 수식 (2i-3a) ──
@@ -822,6 +824,10 @@ export function applyLayout(
     readonly pinned: readonly string[]
     /** 페이지 설정(3b-2) — 준 칸만 바뀐다. */
     readonly settings?: PageSettings
+    /** 본문 줄 — 속성 id 와 속성 묶음(`property_group`)(3c-2). */
+    readonly main?: readonly string[]
+    /** 상세 패널의 속성(3c-2). */
+    readonly panel?: readonly string[]
   },
 ): Promise<ApiResult<{ changed: boolean }>> {
   return call(

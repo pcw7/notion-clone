@@ -13878,6 +13878,97 @@ async function main() {
         JSON.stringify({ rel: [relInPanel.status, relInPanel.body?.error, rel], twice: [twice.status, twice.body?.error] }))
     }
 
+    if (sectionIf('본문 모듈 · 상세 패널 — 화면 (3c-2 · F-16-04 · F-16-05)')) {
+      // 편집 모드에서 속성을 "본문"으로 올려 속성 묶음 위에 두고, 다른 속성을 "패널"로 보낸다(관계형은 패널 단추가 꺼진다). 적용하면 행
+      // 페이지가 본문 줄 순서로 모듈을 그리고, 상세 패널은 접힌 채 토글로 펼친다(이 기기에 남는다). 내리면 속성 묶음의 스키마 자리로.
+      // 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const stamp = Date.now()
+      const api = `${BASE}/api/workspaces/${workspaceId}`
+      const readRes = async (res) => ({ status: res.status, body: await res.json().catch(() => null) })
+      const post = async (path, body) => readRes(await fetch(`${api}${path}`, { method: 'POST', headers: authed, body: JSON.stringify(body) }))
+      const created = (await post('/databases', { name: `모듈화면${stamp}`, privateTop: true })).body?.database
+      const target = (await post('/databases', { name: `모듈대상${stamp}`, privateTop: true })).body?.database
+      const ds = created?.dataSourceId
+      const memo = (await post(`/data-sources/${ds}/properties`, { name: '메모', type: 'rich_text' })).body?.property?.id
+      const qty = (await post(`/data-sources/${ds}/properties`, { name: '수량', type: 'number' })).body?.property?.id
+      const rel = (await post(`/data-sources/${ds}/relations`, { name: '관계', targetDataSourceId: target?.dataSourceId })).body?.property?.id
+      const titleId = (await readRes(await fetch(`${api}/views/${created?.defaultViewId}`, { headers: authed }))).body?.view?.columns?.find((c) => c.type === 'title')?.propertyId
+      const rowId = (await post(`/views/${created?.defaultViewId}/rows`, { cells: [
+        { propertyId: titleId, value: { type: 'title', title: [textRun('모듈 행')] } },
+        { propertyId: qty, value: { type: 'number', number: 42 } },
+      ] })).body?.row?.id
+
+      const has = (sel) => evaluate(`!!document.querySelector(${JSON.stringify(sel)})`)
+      const item = (id, testId) => `[data-testid="row-layout-item"][data-property-id="${id}"] [data-testid="${testId}"]`
+      const listIds = (testId) => evaluate(`[...document.querySelectorAll('[data-testid="${testId}"] > li')].map((li) => li.getAttribute('data-property-id'))`)
+      const openRow = async () => {
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${rowId}` })
+        return waitFor(`!!document.querySelector('[data-testid="row-layout-edit"]') && !!document.querySelector('[data-testid="row-title"]')`, 15000)
+      }
+      const openEditor = async () => {
+        for (let i = 0; i < 6; i += 1) {
+          if (await has('[data-testid="row-layout-editor"]')) return true
+          await clickSelector('[data-testid="row-layout-edit"]')
+          if (await waitFor(`!!document.querySelector('[data-testid="row-layout-editor"]')`, 1500)) return true
+        }
+        return false
+      }
+      const mainOrder = () => evaluate(`[...document.querySelectorAll('[data-testid="row-main"] > *')].map((e) => e.getAttribute('data-testid') === 'row-property-group' ? 'group' : e.getAttribute('data-property-id'))`)
+      const groupIds = () => evaluate(`[...document.querySelectorAll('[data-testid="row-visible-properties"] td[data-property-id]')].map((td) => td.getAttribute('data-property-id'))`)
+
+      await openRow()
+      await openEditor()
+      check('편집 모드 — 본문 줄에는 속성 묶음뿐 · 패널은 비었다 · 관계형의 "패널"은 꺼지고 까닭을 말한다',
+        JSON.stringify(await listIds('row-layout-main')) === JSON.stringify(['property_group'])
+          && (await has('[data-testid="row-layout-panel-empty"]'))
+          && (await evaluate(`document.querySelector(${JSON.stringify(item(rel, 'row-layout-to-panel'))})?.disabled === true`))
+          && (await has('[data-testid="row-layout-panel-forbidden"]')),
+        JSON.stringify(await listIds('row-layout-main')))
+      await clickSelector(item(memo, 'row-layout-raise'))
+      check('★ "본문"을 누르면 본문 줄의 끝으로 옮겨 가고 포커스가 그 줄의 "내리기"로 따라간다',
+        JSON.stringify(await listIds('row-layout-main')) === JSON.stringify(['property_group', memo])
+          && (await evaluate(`document.activeElement === document.querySelector(${JSON.stringify(item(memo, 'row-layout-lower'))})`)),
+        JSON.stringify([await listIds('row-layout-main'), await evaluate('document.activeElement?.getAttribute("aria-label")')]))
+      await clickSelector(`[data-testid="row-layout-main"] ${item(memo, 'row-layout-up')}`)
+      await clickSelector(item(qty, 'row-layout-to-panel'))
+      check('본문 줄에서 속성 묶음 위로 · 수량은 패널로 — 서버는 아직 그대로',
+        JSON.stringify(await listIds('row-layout-main')) === JSON.stringify([memo, 'property_group'])
+          && JSON.stringify(await listIds('row-layout-panel')) === JSON.stringify([qty])
+          && (await dbQuery(`SELECT 1 FROM page_layout WHERE data_source_id = $1`, [ds])).length === 0,
+        JSON.stringify([await listIds('row-layout-main'), await listIds('row-layout-panel')]))
+
+      await clickSelector('[data-testid="row-layout-apply"]')
+      await waitFor(`!document.querySelector('[data-testid="row-layout-editor"]') && !!document.querySelector('[data-testid="row-module"]')`, 15000)
+      check('★ 적용하면 본문 줄 순서로 그린다 — 올린 메모가 속성 묶음 위의 모듈 · 묶음에서는 빠진다',
+        JSON.stringify(await mainOrder()) === JSON.stringify([memo, 'group']) && !(await groupIds()).includes(memo) && !(await groupIds()).includes(qty),
+        JSON.stringify([await mainOrder(), await groupIds()]))
+      check('★ 상세 패널은 접힌 채 토글이 선다("상세 패널 1") — 비어 있지 않으니까',
+        (await evaluate(`document.querySelector('[data-testid="row-panel"]')?.hidden === true`))
+          && (await evaluate(`document.querySelector('[data-testid="row-panel-toggle"]')?.textContent`)) === '상세 패널 1',
+        String(await evaluate(`document.querySelector('[data-testid="row-panel-toggle"]')?.textContent ?? null`)))
+      await clickSelector('[data-testid="row-panel-toggle"]')
+      check('★ 토글을 누르면 패널이 펼쳐지고 그 속성의 값이 보인다',
+        await waitFor(`document.querySelector('[data-testid="row-panel"]')?.hidden === false
+          && (document.querySelector('[data-testid="row-panel"] td[data-property-id="${qty}"]')?.textContent ?? '').includes('42')`, 5000),
+        String(await evaluate(`document.querySelector('[data-testid="row-panel"]')?.textContent ?? null`)))
+      await openRow()
+      check('패널의 펼침은 이 기기에 남는다 — 새로 열어도 펼쳐져 있다',
+        await waitFor(`document.querySelector('[data-testid="row-panel"]')?.hidden === false`, 5000))
+
+      await openEditor()
+      await clickSelector(item(qty, 'row-layout-lower'))
+      check('패널에서 "내리기" — 속성 묶음의 스키마 자리로 돌아간다(메모 · 관계 사이가 아니라 스키마 순서)',
+        JSON.stringify(await listIds('row-layout-group')) === JSON.stringify([qty, rel]),
+        JSON.stringify(await listIds('row-layout-group')))
+      await clickSelector('[data-testid="row-layout-apply"]')
+      await waitFor(`!document.querySelector('[data-testid="row-layout-editor"]')`, 15000)
+      const saved = (await dbQuery(`SELECT area, property_id FROM layout_module WHERE data_source_id = $1 AND kind = 'property' AND parent_module_id IS NULL AND area <> 'heading' ORDER BY area, order_idx`, [ds])).map((r) => `${r.area}:${r.property_id}`)
+      check('★ 패널이 비면 토글이 없다 · 서버에는 본문 모듈 하나만 남는다',
+        (await waitFor(`!document.querySelector('[data-testid="row-panel-toggle"]')`, 5000)) && JSON.stringify(saved) === JSON.stringify([`main:${memo}`]),
+        JSON.stringify(saved))
+    }
+
     if (sectionIf('개인 필터 · 정렬 — 화면 (2h-2 · F-04-17)')) {
       // 볼 수만 있는 사람(브라우저 세션을 바꾼다)이 도구줄의 필터로 조건을 걸면 **자기 것**으로 저장되고 그 사람의 표만 좁혀진다 — "나만 보는
       // 필터" 표시 · 초기화. 편집자는 자기 개인 것을 "모두에게 저장"한다. 브라우저 세션은 끝에 반드시 소유자로 되돌린다.

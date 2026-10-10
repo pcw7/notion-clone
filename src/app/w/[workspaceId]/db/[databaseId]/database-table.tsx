@@ -173,9 +173,10 @@ export function DatabaseTable(props: {
   /**
    * 레코드 모양의 방향(3a-2) — `column`(기본)은 속성을 세로로 쌓고 이름이 왼쪽에 선다(속성 묶음 · 템플릿 화면). `row` 는 가로로
    * 늘어놓고 이름이 값 위에 선다 — 행 페이지의 제목 아래 고정 줄(F-16-02). 넘치면 **줄을 바꾼다** — 가로 스크롤 상자는 칸 안의
-   * 팝오버를 자른다(아래 "표를 가로 스크롤 상자로 감싸지 않는다").
+   * 팝오버를 자른다(아래 "표를 가로 스크롤 상자로 감싸지 않는다"). `module` 은 `row` 와 같되 칸이 줄을 다 쓴다 — 행 페이지의 본문
+   * 모듈(3c-2 · F-16-04 *"더 큰 표시 영역"*).
    */
-  recordAxis?: 'column' | 'row'
+  recordAxis?: 'column' | 'row' | 'module'
   /** 레코드 모양에서 속성 이름 앞의 유형 아이콘을 보인다(3b-2 · F-16-10 · 기본 참). 행 페이지의 레이아웃이 끈다. */
   showPropertyIcons?: boolean
 }) {
@@ -184,8 +185,9 @@ export function DatabaseTable(props: {
   const isList = variant === 'list'
   /** 한 행을 세로로 펼친 모양 — 템플릿 편집 화면(6c-3 · F-08-02). 칸마다 속성 이름이 왼쪽에 선다. */
   const isRecord = variant === 'record'
-  /** 레코드를 가로로 — 제목 아래 고정 줄(3a-2). */
-  const isRecordRow = isRecord && props.recordAxis === 'row'
+  /** 레코드를 가로로 — 제목 아래 고정 줄(3a-2) · 본문 모듈(3c-2 — 칸이 줄을 다 쓴다). 둘 다 이름이 값 위에 선다. */
+  const isRecordModule = isRecord && props.recordAxis === 'module'
+  const isRecordRow = isRecord && (props.recordAxis === 'row' || isRecordModule)
   /** 머리 행 · 머리 메뉴 · 속성 추가 · 꼬리 칸이 있는 모양은 표 하나뿐이다. */
   const isGrid = variant === 'table'
   const router = useRouter()
@@ -1253,7 +1255,7 @@ export function DatabaseTable(props: {
                               isSelected ? 'shadow-[inset_0_0_0_2px_theme(colors.blue.500)]' : ''
                             }`
                           : isRecordRow
-                            ? `flex w-44 flex-none flex-col rounded outline-none ${
+                            ? `flex ${isRecordModule ? 'w-full' : 'w-44 flex-none'} flex-col rounded outline-none ${
                                 isSelected ? 'shadow-[inset_0_0_0_2px_theme(colors.blue.500)]' : ''
                               }`
                           : isRecord

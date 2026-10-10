@@ -280,6 +280,8 @@ export default async function PageView({ params, searchParams }: PageProps<'/w/[
             columns={rowColumns}
             layoutVersion={rowPage.layoutVersion}
             pinned={rowPage.pinned}
+            main={rowPage.main}
+            panel={rowPage.panel}
             settings={rowPage.settings}
             showPropertyIcons={rowPage.settings.showPropertyIcons}
             canEditLayout={rowAccess.canEditStructure}
