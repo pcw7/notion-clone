@@ -14,15 +14,24 @@
 
 import type { SessionContext } from '../auth/session-context.ts'
 import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
-import { isRowFailure, openDataSource } from '../database/row.ts'
+import { isRowFailure, openDataSource, type RowCell } from '../database/row.ts'
 import { isMvpPropertyType, validateCellValue } from '../database/property-types.ts'
+import { readLiveTemplate } from '../database/template.ts'
 import { isUuid } from '../ids.ts'
 import { parseActions, type ActionInput, type ActionProblem } from './actions.ts'
 import { runAutomation, type RunOutcome } from './engine.ts'
 
 export type ButtonFailure = 'not_found' | 'forbidden' | 'locked' | 'invalid_action' | 'disabled' | 'invalid_key'
 /** 액션이 그 표에 맞지 않는 까닭 — 모양(`ActionProblem`) 또는 스키마. */
-export type ButtonActionProblem = ActionProblem | 'unknown_property' | 'readonly_property' | 'invalid_value'
+export type ButtonActionProblem =
+  | ActionProblem
+  | 'unknown_property'
+  | 'readonly_property'
+  | 'invalid_value'
+  /** `add_page_to` 의 대상 표를 저장하는 사람이 볼 수 없다 — 없는 표와 같은 답(정본 ⑨). */
+  | 'unknown_data_source'
+  /** `add_page_to` 의 템플릿이 그 표의 살아 있는 템플릿이 아니다. */
+  | 'unknown_template'
 
 export type ButtonResult<T> =
   | { readonly ok: true; readonly value: T }
@@ -67,6 +76,21 @@ export async function readButtonActions(ctx: SessionContext, dataSourceId: strin
   })
 }
 
+/** 셀들이 그 표에 맞는가 — 살아 있는 셀 속성 · 읽기 전용이 아님 · 값의 모양. 맞으면 null. */
+function cellProblem(
+  properties: ReadonlyMap<string, { readonly type: string; readonly writable: string }>,
+  cells: readonly RowCell[],
+  index: number,
+): ButtonActionProblem | null {
+  for (const cell of cells) {
+    const meta = properties.get(cell.propertyId)
+    if (meta === undefined || !isMvpPropertyType(meta.type)) return 'unknown_property'
+    if (meta.writable === 'readonly') return 'readonly_property'
+    if (validateCellValue(meta.type, cell.value, `actions.${index}.${cell.propertyId}`).length > 0) return 'invalid_value'
+  }
+  return null
+}
+
 /** 버튼의 액션을 통째로 바꾼다 — 그 표의 `edit_structure`. */
 export async function setButtonActions(
   ctx: SessionContext,
@@ -83,13 +107,20 @@ export async function setButtonActions(
     if (button === null) return fail('not_found')
     if (!parsed.ok) return fail('invalid_action', parsed.problem, parsed.index)
 
-    // 그 표의 스키마에 대어 본다 — 살아 있는 셀 속성 · 읽기 전용이 아님 · 값의 모양
+    // 셀이 쓰일 표의 스키마에 대어 본다 — `edit_property` 는 이 표, `add_page_to` 는 대상 표(저장하는 사람이 볼 수 있어야 한다)
     for (const [index, action] of parsed.actions.entries()) {
-      for (const cell of action.config.cells) {
-        const meta = gate.properties.get(cell.propertyId)
-        if (meta === undefined || !isMvpPropertyType(meta.type)) return fail('invalid_action', 'unknown_property', index)
-        if (meta.writable === 'readonly') return fail('invalid_action', 'readonly_property', index)
-        if (validateCellValue(meta.type, cell.value, `actions.${index}.${cell.propertyId}`).length > 0) return fail('invalid_action', 'invalid_value', index)
+      let target = gate
+      if (action.type === 'add_page_to' && action.config.dataSourceId !== dataSourceId) {
+        const other = await openDataSource(tx, ctx, action.config.dataSourceId, 'view')
+        if (isRowFailure(other)) return fail('invalid_action', 'unknown_data_source', index)
+        target = other
+      }
+      const problem = cellProblem(target.properties, action.config.cells, index)
+      if (problem !== null) return fail('invalid_action', problem, index)
+      if (action.type === 'add_page_to' && action.config.templateId !== null) {
+        if ((await readLiveTemplate(tx, ctx, target.dataSourceId, action.config.templateId)) === null) {
+          return fail('invalid_action', 'unknown_template', index)
+        }
       }
     }
 

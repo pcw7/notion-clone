@@ -17,11 +17,19 @@ import { randomUUID } from 'node:crypto'
 
 import type { SessionContext } from '../auth/session-context.ts'
 import { withTransaction, type Tx } from '../db/tx.ts'
-import { updateCellsIn } from '../database/row.ts'
+import { createRowIn, isRowFailure, openDataSource, updateCellsIn } from '../database/row.ts'
+import { createRowFromTemplateIn, readLiveTemplate } from '../database/template.ts'
 import type { ActionInput, ActionType } from './actions.ts'
 
 export type StepStatus = 'done' | 'skipped' | 'failed'
-export type Step = { readonly index: number; readonly type: ActionType; readonly status: StepStatus; readonly reason?: string }
+export type Step = {
+  readonly index: number
+  readonly type: ActionType
+  readonly status: StepStatus
+  readonly reason?: string
+  /** `add_page_to` 가 만든 행 — 화면이 열어 준다(내용은 담지 않는다 · ⑥). */
+  readonly pageId?: string
+}
 export type RunStatus = 'success' | 'partial' | 'failed'
 export type RunOutcome = { readonly runId: string; readonly status: RunStatus; readonly steps: readonly Step[]; readonly duplicate: boolean }
 
@@ -55,13 +63,33 @@ class RunFailed extends Error {
 /** 건너뛰는 거절 — 대상에 손댈 수 없다(③). 나머지는 실패(④). */
 const SKIPPABLE: ReadonlySet<string> = new Set(['forbidden', 'not_found', 'locked'])
 
-async function execute(tx: Tx, ctx: SessionContext, action: ActionInput, context: RunContext): Promise<void> {
+/** 액션의 결과 — 만든 행이 있으면 그 id. */
+type Done = { readonly pageId?: string }
+
+const rejected = (reason: string): never => {
+  throw SKIPPABLE.has(reason) ? new StepSkipped(reason) : new StepFailed(reason)
+}
+
+async function execute(tx: Tx, ctx: SessionContext, action: ActionInput, context: RunContext): Promise<Done> {
   switch (action.type) {
     case 'edit_property': {
       const result = await updateCellsIn(tx, ctx, context.triggerPageId, { cells: action.config.cells, filledBy: 'automation' })
-      if (result.ok) return
-      if (SKIPPABLE.has(result.reason)) throw new StepSkipped(result.reason)
-      throw new StepFailed(result.reason)
+      return result.ok ? {} : rejected(result.reason)
+    }
+    case 'add_page_to': {
+      // 그 표에 행을 만들 수 있는가 — 누른 사람의 권한으로(없으면 건너뛴다 · 정본 ⑨). 템플릿을 확인하기 전에 묻는다 — 볼 수 없는 표의
+      // 템플릿이 있는지 없는지를 실패 까닭으로 알려주지 않게.
+      const { dataSourceId, cells, templateId } = action.config
+      const gate = await openDataSource(tx, ctx, dataSourceId, 'create_child')
+      if (isRowFailure(gate)) return rejected(gate.ok ? 'not_found' : gate.reason)
+      if (templateId === null) {
+        const made = await createRowIn(tx, ctx, dataSourceId, { cells, filledBy: 'automation' })
+        return made.ok ? { pageId: made.value.id } : rejected(made.reason)
+      }
+      // 템플릿이 사라졌으면 정의가 깨진 것이다 — 실패(④)
+      if ((await readLiveTemplate(tx, ctx, dataSourceId, templateId)) === null) throw new StepFailed('unknown_template')
+      const made = await createRowFromTemplateIn(tx, ctx, dataSourceId, templateId, { cells, precedence: 'template', filledBy: 'automation' })
+      return made.ok ? { pageId: made.value.row.id } : rejected(made.reason)
     }
   }
 }
@@ -98,8 +126,8 @@ export async function runAutomation(
       const steps: Step[] = []
       for (const [index, action] of input.actions.entries()) {
         try {
-          await tx.savepoint('automation_step', () => execute(tx, ctx, action, input.context))
-          steps.push({ index, type: action.type, status: 'done' })
+          const done = await tx.savepoint('automation_step', () => execute(tx, ctx, action, input.context))
+          steps.push({ index, type: action.type, status: 'done', ...(done.pageId === undefined ? {} : { pageId: done.pageId }) })
         } catch (e) {
           if (e instanceof StepSkipped) {
             steps.push({ index, type: action.type, status: 'skipped', reason: e.reason })

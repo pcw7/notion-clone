@@ -329,6 +329,8 @@ async function bumpRow(tx: Tx, ctx: SessionContext, rowId: string): Promise<stri
 
 export type CreateRowInput = {
   readonly cells?: readonly RowCell[]
+  /** 누가 채웠나 — 자동화의 `add_page_to` 가 `automation` 을 준다(5a-2). 없으면 사람. */
+  readonly filledBy?: CellFiller
   /** 주면 낙관적 잠금이 된다 — 낡은 스키마로 쓰는 것을 막는다. */
   readonly expectedSchemaVersion?: string
 }
@@ -442,7 +444,7 @@ export async function createRowIn(
     if (!isTemplate) await recordActivity(tx, ctx, { pageId: rowId, type: 'page.created' })
 
     if (prepared.length > 0) {
-      await writeCells(tx, rowId, prepared)
+      await writeCells(tx, rowId, prepared, input.filledBy)
       await projectTitle(tx, rowId, prepared, gate.titlePropertyId)
     }
 
