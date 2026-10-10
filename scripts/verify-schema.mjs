@@ -3847,6 +3847,75 @@ try {
     await client.query('ROLLBACK TO SAVEPOINT cascade')
   }
 
+  console.log('\n[59] DB automation — 받기 · 실행 (0080 / §3.10 [보강] DB automation — 받기 · 실행 · 5b-2조각)')
+  {
+    const kinds = await client.query(`SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conname = 'ck_scheduled_job_kind'`)
+    const kindDef = kinds.rows[0]?.def ?? ''
+    if (
+      ['version_gc', 'trash_purge', 'trash_hard_delete', 'reminder_fire', 'data_retention', 'webhook_deliver', 'automation_dispatch'].every((k) =>
+        kindDef.includes(`'${k}'`),
+      )
+    ) {
+      ok('★ 일의 종류에 automation_dispatch 가 있다 · 앞의 여섯도 그대로')
+    } else fail(`일의 종류가 어긋났다: ${kindDef}`)
+
+    const dbBlock = randomUUID()
+    const dsId = randomUUID()
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key, ancestor_path, perm_scope_id, properties, format,
+                          created_at, last_edited_at)
+       VALUES ($1, $2, 'database', 'block', $3, 'a0', '{}', $1, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      [dbBlock, wsId, randomUUID()],
+    )
+    await client.query(`INSERT INTO database (id) VALUES ($1)`, [dbBlock])
+    await client.query(`INSERT INTO data_source (id, owner_database_id, name, schema_version) VALUES ($1, $2, '받기', 1)`, [dsId, dbBlock])
+    const automationId = randomUUID()
+    await client.query(
+      `INSERT INTO automation (id, workspace_id, kind, host_data_source_id, name, enabled, created_by)
+       VALUES ($1, $2, 'db_automation', $3, '받기', true, $4)`,
+      [automationId, wsId, dsId, userId],
+    )
+    // 행 자리 — FK 는 block 만 본다
+    const rowA = dbBlock
+    const rowB = randomUUID()
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key, ancestor_path, perm_scope_id, properties, format,
+                          created_at, last_edited_at)
+       VALUES ($1, $2, 'page', 'block', $3, 'a1', '{}', $1, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      [rowB, wsId, randomUUID()],
+    )
+    const put = `INSERT INTO automation_event (id, automation_id, page_id, before, window_end, status, locked_until)
+                 VALUES ($1, $2, $3, $4::jsonb, now(), $5, $6)`
+    await client.query(put, [randomUUID(), automationId, rowA, '{}', 'collecting', null])
+    await client.query(put, [randomUUID(), automationId, rowA, '{"p":null}', 'dispatching', new Date()])
+    await client.query(put, [randomUUID(), automationId, rowB, '{}', 'collecting', null])
+    ok('묶음 셋(모으는 중 · 같은 행의 잡힌 것 · 다른 행) — 정상 경로가 통과한다')
+    const rejectBy = async (label, constraint, params) => {
+      await client.query('SAVEPOINT probe')
+      try {
+        await client.query(put, params)
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        fail(`${label} — 거부되어야 하는데 통과했다`)
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        if (e.constraint === constraint) ok(`${label} — ${constraint} 가 거부함 (${e.code})`)
+        else fail(`${label} — ${constraint} 가 아니라 ${e.constraint ?? e.code} 에 걸렸다 (${e.message})`)
+      }
+    }
+    await rejectBy('★ automation · 행마다 모으는 묶음은 하나', 'ux_automation_event_collecting', [randomUUID(), automationId, rowA, '{}', 'collecting', null])
+    await rejectBy('★ 잡혔는데 임대가 없다', 'ck_automation_event_lease', [randomUUID(), automationId, rowB, '{}', 'dispatching', null])
+    await rejectBy('모으는 중인데 임대가 있다', 'ck_automation_event_lease', [randomUUID(), automationId, rowB, '{}', 'collecting', new Date()])
+    await rejectBy('창 전 값이 객체가 아니다', 'ck_automation_event_before', [randomUUID(), automationId, rowB, '[]', 'dispatching', new Date()])
+    await rejectBy('모르는 상태', 'ck_automation_event_status', [randomUUID(), automationId, rowB, '{}', 'done', null])
+
+    await client.query('SAVEPOINT cascade')
+    await client.query(`DELETE FROM automation WHERE id = $1`, [automationId])
+    const left = (await client.query(`SELECT count(*)::int AS n FROM automation_event WHERE automation_id = $1`, [automationId])).rows[0].n
+    if (left === 0) ok('★ automation 을 지우면 그 묶음도 함께 지워진다(CASCADE)')
+    else fail(`automation 을 지웠는데 묶음 ${left}개가 남았다`)
+    await client.query('ROLLBACK TO SAVEPOINT cascade')
+  }
+
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
 } catch (e) {

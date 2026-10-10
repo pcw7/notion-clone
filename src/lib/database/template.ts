@@ -83,6 +83,7 @@ import {
   type RowSummary,
 } from './row.ts'
 import type { CellValue } from './property-types.ts'
+import type { WriteOrigin } from '../automation/trigger-route.ts'
 
 /** 한 표가 가질 수 있는 템플릿 수(머리말). */
 export const MAX_TEMPLATES_PER_SOURCE = 100
@@ -329,6 +330,8 @@ export type CreateFromTemplateInput = {
   readonly precedence?: 'given' | 'template'
   /** 누가 채웠나 — 자동화가 `automation` 을 준다(5a-2). */
   readonly filledBy?: CellFiller
+  /** 쓰기의 출처 — DB automation 이 받을지 정한다(5b-2). */
+  readonly origin?: WriteOrigin
 }
 
 export type TemplateRow = {
@@ -422,7 +425,7 @@ export async function createRowFromTemplateIn(
         //   셀이고(`row.ts`) 그것은 위에서 셀과 함께 복사했다 — 엔진의 제목은 `block.properties.title` 의
         //   투영이라 서식이 없다. 꼬리표가 붙지 않는 것도 여기서 따라 나온다(머리말).
         create: async () => {
-          created = await createRowIn(tx, ctx, dataSourceId, { cells, filledBy: input.filledBy })
+          created = await createRowIn(tx, ctx, dataSourceId, { cells, filledBy: input.filledBy, origin: input.origin })
           if (!created.ok) throw new RowRejected(created)
           return created.value.id
         },

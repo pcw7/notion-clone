@@ -20,6 +20,7 @@ import { withTransaction, type Tx } from '../db/tx.ts'
 import { createRowIn, isRowFailure, openDataSource, updateCellsIn } from '../database/row.ts'
 import { createRowFromTemplateIn, readLiveTemplate } from '../database/template.ts'
 import type { ActionInput, ActionType } from './actions.ts'
+import type { WriteOrigin } from './trigger-route.ts'
 
 export type StepStatus = 'done' | 'skipped' | 'failed'
 export type Step = {
@@ -33,8 +34,17 @@ export type Step = {
 export type RunStatus = 'success' | 'partial' | 'failed'
 export type RunOutcome = { readonly runId: string; readonly status: RunStatus; readonly steps: readonly Step[]; readonly duplicate: boolean }
 
-/** 액션이 일하는 자리 — 버튼 속성이면 누른 행. */
+/** 액션이 일하는 자리 — 버튼 속성이면 누른 행 · DB automation 이면 트리거된 행. */
 export type RunContext = { readonly triggerPageId: string }
+
+/**
+ * 실행의 종류 — 버튼(누른 사람 · origin `user` · depth 0 · 쓰기는 `button` — DB automation 이 받는다) 또는 DB automation(만든 사람의
+ * 위임 · origin `automation` · depth 1 · 쓰기는 `automation` — 다른 automation 을 깨우지 않는다 · 정본 [보강] DB automation ⓒ).
+ */
+export type RunKind = 'button' | 'db_automation'
+const RUN_ORIGIN: Record<RunKind, 'user' | 'automation'> = { button: 'user', db_automation: 'automation' }
+const RUN_DEPTH: Record<RunKind, number> = { button: 0, db_automation: 1 }
+const WRITE_ORIGIN: Record<RunKind, WriteOrigin> = { button: 'button', db_automation: 'automation' }
 
 /** 이 액션은 건너뛴다(권한 · 잠금) — 세이브포인트를 되돌린다. */
 class StepSkipped extends Error {
@@ -70,10 +80,10 @@ const rejected = (reason: string): never => {
   throw SKIPPABLE.has(reason) ? new StepSkipped(reason) : new StepFailed(reason)
 }
 
-async function execute(tx: Tx, ctx: SessionContext, action: ActionInput, context: RunContext): Promise<Done> {
+async function execute(tx: Tx, ctx: SessionContext, action: ActionInput, context: RunContext, origin: WriteOrigin): Promise<Done> {
   switch (action.type) {
     case 'edit_property': {
-      const result = await updateCellsIn(tx, ctx, context.triggerPageId, { cells: action.config.cells, filledBy: 'automation' })
+      const result = await updateCellsIn(tx, ctx, context.triggerPageId, { cells: action.config.cells, filledBy: 'automation', origin })
       return result.ok ? {} : rejected(result.reason)
     }
     case 'add_page_to': {
@@ -83,12 +93,12 @@ async function execute(tx: Tx, ctx: SessionContext, action: ActionInput, context
       const gate = await openDataSource(tx, ctx, dataSourceId, 'create_child')
       if (isRowFailure(gate)) return rejected(gate.ok ? 'not_found' : gate.reason)
       if (templateId === null) {
-        const made = await createRowIn(tx, ctx, dataSourceId, { cells, filledBy: 'automation' })
+        const made = await createRowIn(tx, ctx, dataSourceId, { cells, filledBy: 'automation', origin })
         return made.ok ? { pageId: made.value.id } : rejected(made.reason)
       }
       // 템플릿이 사라졌으면 정의가 깨진 것이다 — 실패(④)
       if ((await readLiveTemplate(tx, ctx, dataSourceId, templateId)) === null) throw new StepFailed('unknown_template')
-      const made = await createRowFromTemplateIn(tx, ctx, dataSourceId, templateId, { cells, precedence: 'template', filledBy: 'automation' })
+      const made = await createRowFromTemplateIn(tx, ctx, dataSourceId, templateId, { cells, precedence: 'template', filledBy: 'automation', origin })
       return made.ok ? { pageId: made.value.row.id } : rejected(made.reason)
     }
   }
@@ -106,16 +116,29 @@ export async function runAutomation(
     readonly idempotencyKey: string
     readonly context: RunContext
     readonly actions: readonly ActionInput[]
+    readonly kind: RunKind
   },
 ): Promise<RunOutcome | null> {
   const runId = randomUUID()
+  const writeOrigin = WRITE_ORIGIN[input.kind]
   const record = (tx: Tx, status: 'running' | 'failed', steps: readonly Step[]) =>
     tx.query<{ id: string }>(
       `INSERT INTO automation_run (id, automation_id, workspace_id, trigger_page_id, actor_id, origin, depth, status, idempotency_key, steps, finished_at)
-       VALUES ($1, $2, $3, $4, $5, 'user', 0, $6, $7, $8::jsonb, CASE WHEN $6::text = 'failed' THEN now() END)
+       VALUES ($1, $2, $3, $4, $5, $9, $10, $6, $7, $8::jsonb, CASE WHEN $6::text = 'failed' THEN now() END)
        ON CONFLICT (workspace_id, idempotency_key) DO NOTHING
        RETURNING id`,
-      [runId, input.automationId, ctx.workspaceId, input.context.triggerPageId, ctx.userId, status, input.idempotencyKey, JSON.stringify(steps)],
+      [
+        runId,
+        input.automationId,
+        ctx.workspaceId,
+        input.context.triggerPageId,
+        ctx.userId,
+        status,
+        input.idempotencyKey,
+        JSON.stringify(steps),
+        RUN_ORIGIN[input.kind],
+        RUN_DEPTH[input.kind],
+      ],
     )
 
   try {
@@ -126,7 +149,7 @@ export async function runAutomation(
       const steps: Step[] = []
       for (const [index, action] of input.actions.entries()) {
         try {
-          const done = await tx.savepoint('automation_step', () => execute(tx, ctx, action, input.context))
+          const done = await tx.savepoint('automation_step', () => execute(tx, ctx, action, input.context, writeOrigin))
           steps.push({ index, type: action.type, status: 'done', ...(done.pageId === undefined ? {} : { pageId: done.pageId }) })
         } catch (e) {
           if (e instanceof StepSkipped) {
