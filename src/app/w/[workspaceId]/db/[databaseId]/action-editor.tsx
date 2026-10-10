@@ -208,7 +208,11 @@ export function ActionListEditor({
   allowInsertBlocks?: boolean
 }) {
   const p = testIdPrefix
-  const [databases, setDatabases] = useState<readonly DatabaseListItem[]>([])
+  /**
+   * 고를 수 있는 표 — 읽는 동안은 null 이다. 그동안에도 "+ 다른 표에 행 추가" 의 자리를 잡아 둔다(눌리지 않게): 목록이 온 뒤에 단추가
+   * 끼어들면 그 오른쪽 단추들이 손 밑에서 밀려 다른 단추가 눌린다(전체 e2e 가 "+ 블록 넣기" 대신 이것을 눌러 찾았다).
+   */
+  const [databases, setDatabases] = useState<readonly DatabaseListItem[] | null>(null)
   /** 표마다의 값 칸 재료 — 처음 볼 때 읽어 둔다. */
   const [tables, setTables] = useState<Readonly<Record<string, Table>>>({})
 
@@ -294,10 +298,10 @@ export function ActionListEditor({
                     onChange={(e) => update(index, { kind: 'add', dataSourceId: e.target.value, templateId: null, cells: [] })}
                     className="min-w-0 flex-1 rounded border border-neutral-300 px-1 py-0.5 dark:border-neutral-700 dark:bg-neutral-900"
                   >
-                    {!databases.some((d) => d.dataSourceId === draft.dataSourceId) && (
+                    {!(databases ?? []).some((d) => d.dataSourceId === draft.dataSourceId) && (
                       <option value={draft.dataSourceId}>{draft.dataSourceId === dataSourceId ? '이 표' : '(볼 수 없는 표)'}</option>
                     )}
-                    {databases.map((d) => (
+                    {(databases ?? []).map((d) => (
                       <option key={d.dataSourceId} value={d.dataSourceId}>
                         {d.dataSourceId === dataSourceId ? `이 표 — ${d.name}` : d.sourceName === null ? d.name : `${d.name} · ${d.sourceName}`}
                       </option>
@@ -351,14 +355,16 @@ export function ActionListEditor({
             + {editLabel}
           </button>
         )}
-        {(dataSourceId !== '' || databases.length > 0) && (
+        {(dataSourceId !== '' || databases === null || databases.length > 0) && (
           <button
             type="button"
             data-testid={`${p}-add-row-action`}
-            onClick={() =>
-              onChange([...drafts, { kind: 'add', dataSourceId: dataSourceId !== '' ? dataSourceId : databases[0]!.dataSourceId, templateId: null, cells: [] }])
-            }
-            className="rounded border border-neutral-300 px-2 py-0.5 hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-800"
+            disabled={dataSourceId === '' && databases === null}
+            onClick={() => {
+              const target = dataSourceId !== '' ? dataSourceId : databases?.[0]?.dataSourceId
+              if (target !== undefined) onChange([...drafts, { kind: 'add', dataSourceId: target, templateId: null, cells: [] }])
+            }}
+            className="rounded border border-neutral-300 px-2 py-0.5 hover:bg-neutral-50 disabled:opacity-50 dark:border-neutral-700 dark:hover:bg-neutral-800"
           >
             + 다른 표에 행 추가
           </button>

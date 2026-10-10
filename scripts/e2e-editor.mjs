@@ -15290,7 +15290,7 @@ async function main() {
 
       // ① 이름 · 다른 표에 행 추가(수량 3)
       await fill(`${SETTINGS} [data-testid="button-block-label"]`, `주문 ${stamp}`)
-      await waitFor(`!!document.querySelector('${SETTINGS} [data-testid="button-block-add-row-action"]')`, 8000)
+      await waitFor(`document.querySelector('${SETTINGS} [data-testid="button-block-add-row-action"]')?.disabled === false`, 8000)
       const noEdit = await evaluate(`!document.querySelector('${SETTINGS} [data-testid="button-block-add-action"]')`)
       await clickSelector(`${SETTINGS} [data-testid="button-block-add-row-action"]`)
       await waitFor(`[...(document.querySelector('${SETTINGS} [data-testid="button-block-target"]')?.options ?? [])].some((o) => o.value === '${db.dataSourceId}')`, 8000)
@@ -15364,6 +15364,8 @@ async function main() {
       await waitFor(`!!document.querySelector('${BLOCK} .blk-button-press')`, 15000)
       await clickSelector(`${BLOCK} [data-testid="blk-button-settings"]`)
       await waitFor(`!!document.querySelector('${SETTINGS} [data-testid="button-block-add-insert-action"]')`, 8000)
+      // 표 목록이 온 뒤에 누른다 — 좌표로 누르므로 단추가 움직이는 동안 누르면 옆 단추가 눌린다(전체 판에서 겪었다)
+      await waitFor(`document.querySelector('${SETTINGS} [data-testid="button-block-add-row-action"]')?.disabled === false`, 8000)
       await clickSelector(`${SETTINGS} [data-testid="button-block-add-insert-action"]`)
       await waitFor(`document.querySelectorAll('${ROW}').length === 1`, 3000)
       await setSelectAt(`${ROW} [data-testid="button-block-insert-type"]`, 0, 'to_do')
