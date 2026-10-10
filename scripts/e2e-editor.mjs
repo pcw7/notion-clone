@@ -15334,6 +15334,82 @@ async function main() {
       check('다시 열면 이름과 액션이 그대로', cancelled && reopened.label === `주문 ${stamp}` && reopened.actions === 1, JSON.stringify([cancelled, reopened]))
     }
 
+    if (sectionIf('블록 넣기 — 화면 (5e-3 · F-08-06)')) {
+      // 버튼 블록의 ⚙ → "+ 블록 넣기" → 자리(버튼 아래) · 줄 목록(할 일 "물 마시기" · 텍스트 "메모")을 넣고 저장 → 누르면 그 두 블록이 버튼 바로
+      // 아래(뒤 문단보다 앞)에 선다 · 다시 누르면 또 · 다시 열면 줄 목록이 그대로. 자기 데이터를 스스로 만든다.
+      const stamp = Date.now()
+      const setSelectAt = (selector, index, value) => evaluate(`(() => {
+        const s = document.querySelectorAll(${JSON.stringify(selector)})[${index}]
+        if (!s) return false
+        s.value = ${JSON.stringify(value)}
+        s.dispatchEvent(new Event('change', { bubbles: true }))
+        return true
+      })()`)
+      const fillAt = async (selector, index, text) => {
+        const found = await evaluate(`(() => { const el = document.querySelectorAll(${JSON.stringify(selector)})[${index}]; if (!el) return false; el.focus(); el.select(); return true })()`)
+        if (found) await typeText(text)
+      }
+      const page = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
+        method: 'POST', headers: authed, body: JSON.stringify({ title: `블록 넣기 ${stamp}` }),
+      })).json()).page.id
+      const button = randomUUID()
+      const paragraph = (id, text) => ({ id, type: 'paragraph', title: text === '' ? [] : [{ type: 'text', text: { content: text, link: null }, plain_text: text, href: null, annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: 'default' } }], properties: {}, format: {}, children: [] })
+      await saveBody(page, { blocks: [paragraph(randomUUID(), '앞'), { id: button, type: 'button', title: [], properties: { label: '체크리스트 넣기' }, format: {}, children: [] }, paragraph(randomUUID(), '뒤')] })
+      const BLOCK = `[data-block-id="${button}"] div.blk-button`
+      const SETTINGS = '[data-testid="button-block-settings"]'
+      const ROW = `${SETTINGS} [data-testid="button-block-insert-row"]`
+      const shape = async () => (await readBody(page)).doc.blocks.map((b) => `${b.type}:${(b.title ?? []).map((r) => r.plain_text ?? '').join('')}`)
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+      await waitFor(`!!document.querySelector('${BLOCK} .blk-button-press')`, 15000)
+      await clickSelector(`${BLOCK} [data-testid="blk-button-settings"]`)
+      await waitFor(`!!document.querySelector('${SETTINGS} [data-testid="button-block-add-insert-action"]')`, 8000)
+      await clickSelector(`${SETTINGS} [data-testid="button-block-add-insert-action"]`)
+      await waitFor(`document.querySelectorAll('${ROW}').length === 1`, 3000)
+      await setSelectAt(`${ROW} [data-testid="button-block-insert-type"]`, 0, 'to_do')
+      await fillAt(`${ROW} [data-testid="button-block-insert-text"]`, 0, '물 마시기')
+      await clickSelector(`${SETTINGS} [data-testid="button-block-insert-add-row"]`)
+      await waitFor(`document.querySelectorAll('${ROW}').length === 2`, 3000)
+      await fillAt(`${ROW} [data-testid="button-block-insert-text"]`, 1, '메모')
+      const position = await evaluate(`document.querySelector('${SETTINGS} [data-testid="button-block-insert-position"]')?.value`)
+      await clickSelector(`${SETTINGS} [data-testid="button-block-save"]`)
+      const closed = await waitFor(`!document.querySelector('${SETTINGS}')`, 8000)
+      const saved = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages/${page}/buttons/${button}`, { headers: authed })).json())
+      const config = saved?.actions?.[0]?.config
+      check('★ 블록 넣기를 넣고 저장한다 — 자리는 버튼 아래(기본) · 줄 목록이 블록으로(서버)',
+        closed && position === 'below' && saved?.actions?.[0]?.type === 'insert_blocks' && config?.position === 'below'
+          && JSON.stringify(config?.blocks?.map((b) => [b.type, (b.title ?? []).map((r) => r.plain_text).join('')])) === JSON.stringify([['to_do', '물 마시기'], ['paragraph', '메모']]),
+        JSON.stringify([closed, position, saved?.actions]))
+
+      // 누르면 버튼 바로 아래 · 다시 누르면 또
+      await clickSelector(`${BLOCK} .blk-button-press`)
+      const done = await waitFor(`(document.querySelector('${BLOCK} .blk-button-result')?.textContent ?? '') === '완료'`, 10000)
+      const shown = await waitFor(`(() => {
+        const ids = [...document.querySelectorAll('.blk-editor [data-block-id]')]
+        const texts = ids.map((e) => e.textContent?.trim() ?? '')
+        const at = ids.findIndex((e) => e.dataset.blockId === '${button}')
+        return at >= 0 && texts[at + 1]?.includes('물 마시기') && texts[at + 2]?.includes('메모') && texts[at + 3]?.includes('뒤')
+      })()`, 10000)
+      const once = await shape()
+      check('★ 누르면 그 블록들이 버튼 바로 아래에 선다 — 화면 · 서버(뒤 문단보다 앞)',
+        done && shown && JSON.stringify(once) === JSON.stringify(['paragraph:앞', 'button:', 'to_do:물 마시기', 'paragraph:메모', 'paragraph:뒤']),
+        JSON.stringify([done, shown, once]))
+      await clickSelector(`${BLOCK} .blk-button-press`)
+      let twice = once
+      for (let i = 0; i < 30 && twice.filter((t) => t === 'to_do:물 마시기').length < 2; i += 1) {
+        await sleep(300)
+        twice = await shape()
+      }
+      check('다시 누르면 또 넣는다', twice.filter((t) => t === 'to_do:물 마시기').length === 2, JSON.stringify(twice))
+
+      // 다시 열면 줄 목록이 그대로
+      await clickSelector(`${BLOCK} [data-testid="blk-button-settings"]`)
+      await waitFor(`document.querySelectorAll('${ROW}').length === 2`, 8000)
+      const rows = await evaluate(`[...document.querySelectorAll('${ROW}')].map((r) => [r.querySelector('[data-testid="button-block-insert-type"]')?.value, r.querySelector('[data-testid="button-block-insert-text"]')?.value ?? null])`)
+      await clickSelector(`${SETTINGS} [data-testid="button-block-cancel"]`)
+      check('다시 열면 줄 목록이 그대로', JSON.stringify(rows) === JSON.stringify([['to_do', '물 마시기'], ['paragraph', '메모']]), JSON.stringify(rows))
+    }
+
     if (sectionIf('개인 필터 · 정렬 — 화면 (2h-2 · F-04-17)')) {
       // 볼 수만 있는 사람(브라우저 세션을 바꾼다)이 도구줄의 필터로 조건을 걸면 **자기 것**으로 저장되고 그 사람의 표만 좁혀진다 — "나만 보는
       // 필터" 표시 · 초기화. 편집자는 자기 개인 것을 "모두에게 저장"한다. 브라우저 세션은 끝에 반드시 소유자로 되돌린다.

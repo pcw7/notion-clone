@@ -12,6 +12,8 @@
  *   - **다른 표에 행 추가**(`add_page_to`) — 대상 표(이 표도 된다) · 그 표의 템플릿 · 그 표의 값. 템플릿을 고르면 "템플릿이 정한 칸은
  *     템플릿 값이 이긴다"를 한 줄로 알린다(08 — 직관과 반대다).
  *   값 칸 옆에서 **출처**를 고른다(⑯) — 값(고정) · 지금(날짜일 때) · 일하는 행의 ‹속성›(같은 타입 · 선택지 제외 — 서버의 저장 검사와 같은 규칙).
+ *   - **블록 넣기**(`insert_blocks` · ⑱ — 버튼 블록에서만 · `allowInsertBlocks`) — 자리(버튼 아래 · 페이지 끝)와 **줄 목록**(타입 · 글). v1 은 한
+ *     단계 · 평문이다 — 자식 · 서식이 든 저장값은 고치지 않고 남긴다(모르는 액션과 같다).
  *   - **웹훅 보내기**(`send_webhook` · ⑭) — 받는 주소 · 헤더 · 보낼 속성. 서버는 저장된 주소 · 헤더 값을 주지 않는다(봉인 · ⑫) — 힌트만
  *     보이고 **비워 두면 그대로**다(읽을 때 받은 `ref` 를 `keep` 으로 돌려준다).
  *
@@ -41,6 +43,7 @@ type HeaderDraft = { readonly name: string; readonly value: string; readonly sav
 export type ActionDraft =
   | { readonly kind: 'edit'; readonly cells: readonly CellDraft[] }
   | { readonly kind: 'add'; readonly dataSourceId: string; readonly templateId: string | null; readonly cells: readonly CellDraft[] }
+  | { readonly kind: 'insert'; readonly position: 'below' | 'bottom'; readonly rows: readonly InsertRow[] }
   /** `ref` · `urlHint` 는 저장된 것 — 새 웹훅이면 null. `url` 은 새로 친 주소(비면 그대로). */
   | {
       readonly kind: 'webhook'
@@ -57,6 +60,57 @@ export type ActionDraft =
 type Field = { readonly id: string; readonly name: string; readonly type: MvpPropertyType; readonly options: readonly SelectOption[] }
 /** 표 하나의 값 칸 재료 — 속성들과 템플릿들. */
 type Table = { readonly fields: readonly Field[]; readonly templates: readonly { readonly id: string; readonly title: string }[] }
+
+/** 넣을 줄 — 타입과 평문(⑱ — v1 은 한 단계). */
+type InsertRow = { readonly type: string; readonly text: string }
+/** 넣을 수 있는 타입과 이름(서버 `INSERTABLE_BLOCK_TYPES` 의 글 계열 — 블록 수식은 입력창이 따로라 v1 화면에서 뺐다). */
+const INSERT_TYPES: readonly { readonly type: string; readonly label: string }[] = [
+  { type: 'paragraph', label: '텍스트' },
+  { type: 'heading_1', label: '제목 1' },
+  { type: 'heading_2', label: '제목 2' },
+  { type: 'heading_3', label: '제목 3' },
+  { type: 'bulleted_list_item', label: '글머리 목록' },
+  { type: 'numbered_list_item', label: '번호 목록' },
+  { type: 'to_do', label: '할 일' },
+  { type: 'toggle', label: '토글' },
+  { type: 'quote', label: '인용' },
+  { type: 'callout', label: '콜아웃' },
+  { type: 'divider', label: '구분선' },
+  { type: 'code', label: '코드' },
+]
+/** 넣을 줄의 상한(서버 `MAX_INSERT_BLOCKS` 와 같다). */
+const MAX_INSERT_ROWS = 50
+
+/** 저장된 블록을 줄 목록으로 — 한 단계 · 평문 · 아는 타입 · 다른 칸이 없을 때만. 아니면 null(고치지 않고 남긴다). */
+function rowsOf(blocks: unknown): InsertRow[] | null {
+  if (!Array.isArray(blocks)) return null
+  const rows: InsertRow[] = []
+  for (const b of blocks as { type?: unknown; title?: unknown; properties?: unknown; format?: unknown; children?: unknown }[]) {
+    if (typeof b !== 'object' || b === null || typeof b.type !== 'string' || !INSERT_TYPES.some((t) => t.type === b.type)) return null
+    if (Array.isArray(b.children) && b.children.length > 0) return null
+    if (typeof b.properties === 'object' && b.properties !== null && Object.keys(b.properties).length > 0) return null
+    if (typeof b.format === 'object' && b.format !== null && Object.keys(b.format).length > 0) return null
+    const runs = Array.isArray(b.title) ? (b.title as { type?: unknown; plain_text?: unknown; href?: unknown; annotations?: Record<string, unknown> }[]) : []
+    // 서식 · 링크 · 멘션이 든 글은 평문 칸으로 옮기면 잃는다
+    const plain = runs.every(
+      (r) => r.type === 'text' && (r.href ?? null) === null && Object.entries(r.annotations ?? {}).every(([k, v]) => (k === 'color' ? v === 'default' : v === false)),
+    )
+    if (!plain) return null
+    rows.push({ type: b.type, text: runs.map((r) => String(r.plain_text ?? '')).join('') })
+  }
+  return rows
+}
+
+/** 줄 목록을 넣을 블록으로 — 줄마다 새 id(서버가 누를 때 다시 새 id 로 복제한다). */
+const blocksOf = (rows: readonly InsertRow[]) =>
+  rows.map((r) => ({
+    id: crypto.randomUUID(),
+    type: r.type,
+    title: r.type === 'divider' || r.text === '' ? [] : [textRun(r.text)],
+    properties: {},
+    format: {},
+    children: [],
+  }))
 
 /** 웹훅의 헤더 상한(서버 `MAX_WEBHOOK_HEADERS` 와 같다). */
 const MAX_HEADERS = 10
@@ -86,6 +140,10 @@ export const toDraft = (action: api.ButtonActionJson): ActionDraft => {
       properties: Array.isArray(c.properties) ? c.properties.filter((p): p is string => typeof p === 'string') : [],
     }
   }
+  if (action.type === 'insert_blocks' && (c.position === 'below' || c.position === 'bottom')) {
+    const rows = rowsOf(c.blocks)
+    if (rows !== null) return { kind: 'insert', position: c.position, rows }
+  }
   return { kind: 'other', raw: action }
 }
 /**
@@ -113,7 +171,9 @@ export const toAction = (draft: ActionDraft): api.ButtonActionJson =>
       ? { type: 'add_page_to', config: { v: 1, dataSourceId: draft.dataSourceId, cells: draft.cells, templateId: draft.templateId } }
       : draft.kind === 'webhook'
         ? webhookAction(draft)
-        : draft.raw
+        : draft.kind === 'insert'
+          ? { type: 'insert_blocks', config: { v: 1, position: draft.position, blocks: blocksOf(draft.rows) } }
+          : draft.raw
 
 const fieldsOf = (properties: readonly PropertySummary[]): Field[] =>
   properties.flatMap((p) => (isMvpPropertyType(p.type) ? [{ id: p.id, name: p.name, type: p.type, options: p.options ?? [] }] : []))
@@ -122,6 +182,7 @@ const fieldsOf = (properties: readonly PropertySummary[]): Field[] =>
  * 액션 목록 편집 — 초안은 부르는 쪽이 들고 있다(저장도 부르는 쪽).
  *
  * @param editLabel 값 바꾸기의 이름 — 버튼은 "이 행의 값 바꾸기", DB automation 은 "트리거된 행의 값 바꾸기"
+ * @param allowInsertBlocks 블록 넣기를 세우는가 — 버튼 블록만(⑱ · 서버도 그 밖은 거절한다)
  * @param rowLabel 일하는 행의 이름 — 버튼은 "누른 행", DB automation 은 "트리거된 행"(값의 출처 목록에 쓴다)
  * @param dataSourceId 일하는 행의 표 — 버튼 블록처럼 **일하는 행이 없으면 빈 글**(정본 ⑰): 값 바꾸기 · 보낼 속성이 서지 않고, 다른 표에 행 추가의
  *   기본 대상은 데이터베이스 목록의 첫 표다
@@ -135,6 +196,7 @@ export function ActionListEditor({
   editLabel,
   rowLabel,
   testIdPrefix,
+  allowInsertBlocks = false,
 }: {
   workspaceId: string
   dataSourceId: string
@@ -143,6 +205,7 @@ export function ActionListEditor({
   editLabel: string
   rowLabel: string
   testIdPrefix: string
+  allowInsertBlocks?: boolean
 }) {
   const p = testIdPrefix
   const [databases, setDatabases] = useState<readonly DatabaseListItem[]>([])
@@ -206,7 +269,9 @@ export function ActionListEditor({
                     ? '다른 표에 행 추가'
                     : draft.kind === 'webhook'
                       ? '웹훅 보내기'
-                      : (OTHER_LABEL[draft.raw.type] ?? draft.raw.type)}
+                      : draft.kind === 'insert'
+                        ? '블록 넣기'
+                        : (OTHER_LABEL[draft.raw.type] ?? draft.raw.type)}
               </span>
               <button type="button" data-testid={`${p}-action-remove`} onClick={() => update(index, null)} className="text-neutral-500 hover:text-red-600">
                 지우기
@@ -217,6 +282,7 @@ export function ActionListEditor({
               <Cells p={p} fields={own} sources={own} rowLabel={rowLabel} cells={draft.cells} require onChange={(cells) => update(index, { ...draft, cells })} />
             )}
             {draft.kind === 'webhook' && <Webhook p={p} fields={own} draft={draft} onChange={(next) => update(index, next)} />}
+            {draft.kind === 'insert' && <InsertRows p={p} draft={draft} onChange={(next) => update(index, next)} />}
             {draft.kind === 'add' && (
               <div className="flex flex-col gap-1">
                 <label className="flex items-center gap-1">
@@ -297,6 +363,16 @@ export function ActionListEditor({
             + 다른 표에 행 추가
           </button>
         )}
+        {allowInsertBlocks && (
+          <button
+            type="button"
+            data-testid={`${p}-add-insert-action`}
+            onClick={() => onChange([...drafts, { kind: 'insert', position: 'below', rows: [{ type: 'paragraph', text: '' }] }])}
+            className="rounded border border-neutral-300 px-2 py-0.5 hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-800"
+          >
+            + 블록 넣기
+          </button>
+        )}
         <button
           type="button"
           data-testid={`${p}-add-webhook-action`}
@@ -306,6 +382,80 @@ export function ActionListEditor({
           + 웹훅 보내기
         </button>
       </div>
+    </div>
+  )
+}
+
+/** 블록 넣기 칸 — 자리 · 줄 목록(⑱). 구분선은 글이 없다. */
+function InsertRows({
+  p,
+  draft,
+  onChange,
+}: {
+  p: string
+  draft: Extract<ActionDraft, { kind: 'insert' }>
+  onChange: (next: Extract<ActionDraft, { kind: 'insert' }>) => void
+}) {
+  const box = 'min-w-0 rounded border border-neutral-300 px-1 py-0.5 dark:border-neutral-700 dark:bg-neutral-900'
+  const setRow = (i: number, next: InsertRow | null) =>
+    onChange({ ...draft, rows: next === null ? draft.rows.filter((_, j) => j !== i) : draft.rows.map((r, j) => (j === i ? next : r)) })
+  return (
+    <div className="flex flex-col gap-1">
+      <label className="flex items-center gap-1">
+        <span className="w-10 shrink-0 text-neutral-500">자리</span>
+        <select
+          aria-label="넣을 자리"
+          data-testid={`${p}-insert-position`}
+          value={draft.position}
+          onChange={(e) => onChange({ ...draft, position: e.target.value === 'bottom' ? 'bottom' : 'below' })}
+          className={box}
+        >
+          <option value="below">버튼 아래</option>
+          <option value="bottom">페이지 끝</option>
+        </select>
+      </label>
+      {draft.rows.map((row, i) => (
+        <div key={i} className="flex items-center gap-1" data-testid={`${p}-insert-row`}>
+          <select
+            aria-label="블록 종류"
+            data-testid={`${p}-insert-type`}
+            value={row.type}
+            onChange={(e) => setRow(i, { ...row, type: e.target.value })}
+            className={`${box} max-w-[7rem]`}
+          >
+            {INSERT_TYPES.map((t) => (
+              <option key={t.type} value={t.type}>
+                {t.label}
+              </option>
+            ))}
+          </select>
+          {row.type !== 'divider' && (
+            <input
+              type="text"
+              aria-label="넣을 글"
+              data-testid={`${p}-insert-text`}
+              value={row.text}
+              onChange={(e) => setRow(i, { ...row, text: e.target.value })}
+              className={`${box} flex-1`}
+            />
+          )}
+          {draft.rows.length > 1 && (
+            <button type="button" aria-label="이 줄 빼기" onClick={() => setRow(i, null)} className="px-1 text-neutral-400 hover:text-red-600">
+              ×
+            </button>
+          )}
+        </div>
+      ))}
+      {draft.rows.length < MAX_INSERT_ROWS && (
+        <button
+          type="button"
+          data-testid={`${p}-insert-add-row`}
+          onClick={() => onChange({ ...draft, rows: [...draft.rows, { type: 'paragraph', text: '' }] })}
+          className="self-start text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200"
+        >
+          + 줄
+        </button>
+      )}
     </div>
   )
 }
