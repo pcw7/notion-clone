@@ -117,13 +117,14 @@ function panelSourcesOf(
 /** 두 권한의 교집합 — 붙인 뷰의 칸 · 행 · 속성(머리말 "붙인 소스의 뷰"). */
 function bothOf(a: DatabaseAccess, b: DatabaseAccess): DatabaseAccess {
   return {
+    canViewAllRows: a.canViewAllRows && b.canViewAllRows,
     canEditContent: a.canEditContent && b.canEditContent,
     canCreateRows: a.canCreateRows && b.canCreateRows,
     canEditStructure: a.canEditStructure && b.canEditStructure,
   }
 }
 
-const NO_ACCESS: DatabaseAccess = { canEditContent: false, canCreateRows: false, canEditStructure: false }
+const NO_ACCESS: DatabaseAccess = { canViewAllRows: false, canEditContent: false, canCreateRows: false, canEditStructure: false }
 
 export default async function DatabasePage({
   params,

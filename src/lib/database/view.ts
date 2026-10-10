@@ -42,6 +42,7 @@ import type { SessionContext } from '../auth/session-context.ts'
 import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
 import { can } from '../permissions/levels.ts'
 import { effectiveCaps } from '../permissions/effective.ts'
+import { canOpenDatabase } from './row-access.ts'
 import { isLocked } from '../permissions/lock.ts'
 import { orderKeyBetween } from '../block/order-key.ts'
 import {
@@ -195,6 +196,9 @@ type DatabaseGate = { databaseId: string }
  * ACL 은 **컨테이너 블록**에 걸린다(`database.id` = `block.id`, X-2). `data_source`
  * 에는 ACL 이 없다 — 같은 표의 행은 전부 같은 권한이라는 전제가 거기서 온다.
  *
+ * `view` 는 **표를 여는 문**이다 — 스키마 · 뷰 설정만 준다(행은 돌려주지 않는다). "만들기만"(`create_child` 는 있고 `view` 는 없다 ·
+ * 6f-2b-1)인 사람도 연다 — 행을 더하려면 속성을 알아야 하고, 행은 행 질의가 자기가 열 수 있는 것만 준다(`row-access.ts`).
+ *
  * data source 를 고르지 않는다(8e-1) — 데이터베이스는 여럿을 가질 수 있고, 어느 것인지는 뷰가 안다(`openView`).
  */
 async function openDatabase(
@@ -213,7 +217,7 @@ async function openDatabase(
   if (row === null) return fail('not_found')
 
   const caps = await effectiveCaps(tx, ctx, databaseId)
-  if (!can(caps, 'view')) return fail('not_found')
+  if (!canOpenDatabase(caps)) return fail('not_found')
   if (need === 'edit_structure' && !can(caps, 'edit_structure')) return fail('forbidden')
   // 뷰를 고치는 것은 구조다 — 잠긴 데이터베이스는 거부한다(7f-2). 읽기(`view`)는 묻지 않는다.
   if (need === 'edit_structure' && (await isLocked(tx, databaseId))) return fail('locked')
