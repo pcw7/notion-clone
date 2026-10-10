@@ -146,7 +146,7 @@ describe('⑤ 주기 일 넣기', () => {
     if (skipReason) return t.skip(skipReason)
     assert.equal(await ensureRecurringJobs(NOW), RECURRING.length)
     assert.equal(await ensureRecurringJobs(at(5)), 0)
-    assert.deepEqual((await jobs()).map((j) => j.dedupe_key).sort(), ['automation_dispatch', 'data_retention', 'reminder_fire', 'trash_hard_delete', 'trash_purge', 'version_gc', 'webhook_deliver'])
+    assert.deepEqual((await jobs()).map((j) => j.dedupe_key).sort(), ['automation_dispatch', 'automation_webhook', 'data_retention', 'reminder_fire', 'trash_hard_delete', 'trash_purge', 'version_gc', 'webhook_deliver'])
   })
 })
 

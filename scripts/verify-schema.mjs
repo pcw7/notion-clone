@@ -3980,6 +3980,29 @@ try {
     await client.query('ROLLBACK TO SAVEPOINT cascade')
   }
 
+  console.log('\n[61] send_webhook — 보내기 (0082 / §3.10 [보강] 자동화 엔진 ⑬ · 5c-2조각)')
+  {
+    const kinds = await client.query(`SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conname = 'ck_scheduled_job_kind'`)
+    const kindDef = kinds.rows[0]?.def ?? ''
+    if (
+      ['version_gc', 'trash_purge', 'trash_hard_delete', 'reminder_fire', 'data_retention', 'webhook_deliver', 'automation_dispatch', 'automation_webhook'].every(
+        (k) => kindDef.includes(`'${k}'`),
+      )
+    ) {
+      ok('★ 일의 종류에 automation_webhook 이 있다 · 앞의 일곱도 그대로')
+    } else fail(`일의 종류가 어긋났다: ${kindDef}`)
+
+    const reasons = await client.query(`SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conname = 'ck_automation_disabled_reason_value'`)
+    const reasonDef = reasons.rows[0]?.def ?? ''
+    if (['creator_left', 'trigger_broken', 'failures', 'webhook_failed'].every((r) => reasonDef.includes(`'${r}'`))) {
+      ok('★ 꺼진 까닭에 webhook_failed 가 있다 · 앞의 셋도 그대로')
+    } else fail(`꺼진 까닭이 어긋났다: ${reasonDef}`)
+
+    const idx = await client.query(`SELECT indexdef FROM pg_indexes WHERE indexname = 'ix_automation_delivery_finished'`)
+    if ((idx.rows[0]?.indexdef ?? '').includes('WHERE (finished_at IS NOT NULL)')) ok('끝난 배달을 지우는 색인(부분)')
+    else fail(`ix_automation_delivery_finished 가 어긋났다: ${idx.rows[0]?.indexdef}`)
+  }
+
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
 } catch (e) {

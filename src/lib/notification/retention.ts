@@ -15,6 +15,7 @@
  *   ⑤ 파티션 — 활동 이벤트의 올해 · 다음 해 파티션을 미리 만든다(`ensure_activity_partition` — 마이그레이션의 함수 · 앱은 DDL 을 쓰지 않는다)
  *   ⑥ 끝난 웹훅 묶음 — 끝난 지(`finished_at`) `WEBHOOK_DELIVERY_DAYS` 일이 지나면 지운다(4e-2 · 정본 [보강] 페이지 웹훅 ⓖ)
  *   ⑦ 자동화 실행 기록 — automation 마다 최근 `AUTOMATION_RUN_CAP` 건만 남긴다(5a-1 · 정본 §3.10 [보강] 자동화 엔진 · 버튼 속성 ⑧)
+ *   ⑧ 끝난 자동화 배달 — 끝난 지 `WEBHOOK_DELIVERY_DAYS` 일이 지나면 지운다(5c-2 · 정본 ⑬ — 페이지 웹훅의 묶음과 같다)
  *
  * 감사 기록(`audit_event`)은 지우지 않는다(F-11-12). 기간은 코드 상수다 — 관리자 화면은 없다(노션에도 없다).
  */
@@ -48,6 +49,7 @@ export type RetentionResult = {
   readonly visits: number
   readonly deliveries: number
   readonly runs: number
+  readonly automationDeliveries: number
   /** 그 해마다 파티션이 어떻게 됐나 — `created` · `exists` · `blocked`. */
   readonly partitions: Readonly<Record<number, string>>
   /** 한 종류라도 한 판이 꽉 찼다 — 더 남았을 수 있다. */
@@ -166,6 +168,18 @@ export async function runDataRetention(
     [runCap, batch, ws],
   )
 
+  // ⑧ 끝난 자동화 배달
+  const automationDeliveries = await query<{ id: string }>(
+    `DELETE FROM automation_delivery d USING (
+       SELECT d2.id FROM automation_delivery d2
+        WHERE d2.finished_at < $1
+          AND ($3::uuid[] IS NULL OR d2.workspace_id = ANY($3::uuid[]))
+        LIMIT $2) old
+     WHERE d.id = old.id
+     RETURNING d.id`,
+    [new Date(now.getTime() - WEBHOOK_DELIVERY_DAYS * DAY), batch, ws],
+  )
+
   // ⑤ 파티션 — 올해 · 다음 해(UTC). 검사는 끈다(위 `options.partitions`)
   const partitions: Record<number, string> = {}
   if (options.partitions !== false) {
@@ -174,7 +188,7 @@ export async function runDataRetention(
     }
   }
 
-  const counts = [processed.length, overCap.length, events.length, visits.length, deliveries.length, runs.length]
+  const counts = [processed.length, overCap.length, events.length, visits.length, deliveries.length, runs.length, automationDeliveries.length]
   return {
     processedNotifications: processed.length,
     unreadOverCap: overCap.length,
@@ -182,6 +196,7 @@ export async function runDataRetention(
     visits: visits.length,
     deliveries: deliveries.length,
     runs: runs.length,
+    automationDeliveries: automationDeliveries.length,
     partitions,
     more: counts.some((n) => n === batch),
   }

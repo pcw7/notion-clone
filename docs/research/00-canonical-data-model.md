@@ -3403,6 +3403,20 @@ CREATE TABLE external_sync_source (            -- 구 external_binding. 정본 �
 >      싣는다: 나중에 고쳐도 쌓인 배달은 그때의 것)을 쌓고 단계는 `done`(`deliveryId`). 실행이 되돌려지면 배달도 함께 사라진다. 몸(payload)은
 >      **그때의 값을 실행 주체의 권한으로** 읽어 싣는다 — `{ run_id, automation_id, page: { id, url }, properties: { ‹속성 이름›: ‹셀 값› } }`(선택지 · 상태는 옵션 이름을 붙인다 — 셀은 id 만 담는다).
 >      `run_id` 는 받는 쪽의 중복 제거 키다(08 *"페이로드에 `run_id` 를 반드시 포함"*). 보내기 · 재시도 · 실패 뒤 멈춤은 5c-2.
+> ⑬ **`send_webhook` — 보내기**(5c-2 · 마이그레이션 0082) — 공용 스케줄러의 여덟 번째 소비자 `automation_webhook`(남았으면 곧바로 · 아니면
+>    5초 뒤). 페이지 웹훅의 보내기(§3.8 [보강] 보내기 ⓒ ~ ⓕ)와 같은 규칙이다.
+>    - **잡기** — 보낼 차례(`pending` · `next_attempt_at` 이 지났다)를 `FOR UPDATE SKIP LOCKED` 로 잡아 임대를 걸고 커밋한다. 워커가 보내다
+>      죽으면 임대가 지나 다시 보낸다 — **적어도 한 번**이고, 받는 쪽은 몸의 `run_id` 로 겹친 것을 거른다.
+>    - **다시 보기** — automation 이 꺼졌으면(사람이 껐든 실패로 멈췄든) 보내지 않고 `dropped`(`paused`) — 멈춘 뒤에도 쌓여 있던 것이
+>      상대 서버를 계속 두드리지 않게. 봉인을 풀지 못하면 `dropped`(`unseal_failed`). 요금제는 다시 묻지 않는다(쌓을 때 물었다 — 이미
+>      실행된 일이다).
+>    - **보내기** — 트랜잭션 밖에서 `net/outbound.ts` 의 한 길로(`postJson` — 주소 고정 · 리다이렉트 없음 · 10초). 헤더는 봉인을 풀어
+>      싣는다. 몸은 쌓을 때의 것 그대로.
+>    - **적기** — 내 임대일 때만. 성공(2xx)이면 `sent`. 실패면 1 · 2 · 4분 뒤 다시, 네 번째도 실패면 `failed` 로 끝내고 **automation 을
+>      멈춘다**(`enabled = false` · `disabled_reason = 'webhook_failed'` — 08 *"전송 실패 시 느낌표가 표시되고 automation 이 자동 일시정지되며
+>      사용자가 수동으로 재개해야 한다"*). 버튼이면 버튼이 꺼진다(누르면 *"꺼진 버튼입니다"*). DB automation 은 ⚡ 의 `!` 와 꺼진 까닭이
+>      말한다. 다시 켜면 까닭이 지워진다(5b-1).
+>    - 끝난 배달(`sent` · `failed` · `dropped`)은 **7일** 뒤 지운다(`data_retention` — 페이지 웹훅의 배달과 같다).
 
 **[보강] DB automation — 정의 · 실행 주체** ⟨자동화 5b-1 · F-08-09 · F-08-10 / 마이그레이션 0079⟩
 

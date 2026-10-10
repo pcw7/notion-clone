@@ -11,7 +11,7 @@
  *   · 시각은 실행기의 `now` 하나 — SQL 의 `now()` 를 쓰지 않는다(검사가 시각을 정한다)
  *   · 세션 없이 도는 **시스템 주체**다 — 권한을 묻지 않는다. 무엇을 해도 되는지는 그 일의 규칙이 정한다
  *
- * 일의 종류는 CHECK(`ck_scheduled_job_kind` — 0068 · 0069 · 0070 · 0073 · 0074 · 0076 · 0080)와 아래 `HANDLERS` 두 곳에 있다 — 소비자를 더할 때 둘을 함께 늘린다.
+ * 일의 종류는 CHECK(`ck_scheduled_job_kind` — 0068 · 0069 · 0070 · 0073 · 0074 · 0076 · 0080 · 0082)와 아래 `HANDLERS` 두 곳에 있다 — 소비자를 더할 때 둘을 함께 늘린다.
  *
  *   · `version_gc` — 만료된 버전을 지운다(4a-1 · F-11-03 · `history/gc.ts`)
  *   · `trash_purge` — 만료된 휴지통 묶음을 `purged` 로(4b-1 · F-11-06 · `block/trash-purge.ts`)
@@ -23,6 +23,8 @@
  *     1분마다
  *   · `automation_dispatch` — 창(3초)이 끝난 DB automation 의 묶음을 판정해 실행한다(5b-2 · F-08-09 · `automation/dispatch.ts`) — 남았으면
  *     곧바로, 아니면 5초 뒤(워커의 판 간격이 실제 지연을 정한다)
+ *   · `automation_webhook` — 자동화가 쌓은 `send_webhook` 배달을 보낸다(5c-2 · F-08-13 · `automation/webhook-send.ts`) — 남았으면 곧바로,
+ *     아니면 5초 뒤
  */
 
 import { randomUUID } from 'node:crypto'
@@ -36,8 +38,17 @@ import { runReminderFire } from '../notification/reminder-fire.ts'
 import { runDataRetention } from '../notification/retention.ts'
 import { runWebhookDelivery } from '../notification/webhook-delivery.ts'
 import { runAutomationDispatch } from '../automation/dispatch.ts'
+import { runAutomationWebhooks } from '../automation/webhook-send.ts'
 
-export type JobKind = 'version_gc' | 'trash_purge' | 'trash_hard_delete' | 'reminder_fire' | 'data_retention' | 'webhook_deliver' | 'automation_dispatch'
+export type JobKind =
+  | 'version_gc'
+  | 'trash_purge'
+  | 'trash_hard_delete'
+  | 'reminder_fire'
+  | 'data_retention'
+  | 'webhook_deliver'
+  | 'automation_dispatch'
+  | 'automation_webhook'
 
 /** 일의 결과 — 주기 일은 다음 실행 시각을 준다(없으면 한 번으로 끝). */
 export type JobOutcome = { readonly again: Date | null }
@@ -62,6 +73,8 @@ const HANDLERS: Readonly<Record<JobKind, JobHandler>> = {
   webhook_deliver: async (_payload, now) => ({ again: new Date(now.getTime() + ((await runWebhookDelivery(now)).more ? 0 : 60_000)) }),
   // DB automation — 창이 3초다. 남았으면 곧바로, 아니면 5초 뒤(정본 [보강] DB automation ⓑ ⓓ)
   automation_dispatch: async (_payload, now) => ({ again: new Date(now.getTime() + ((await runAutomationDispatch(now)).more ? 0 : 5_000)) }),
+  // 자동화의 웹훅 — 누르면 곧 나가야 한다. 남았으면 곧바로, 아니면 5초 뒤(정본 ⑬)
+  automation_webhook: async (_payload, now) => ({ again: new Date(now.getTime() + ((await runAutomationWebhooks(now)).more ? 0 : 5_000)) }),
 }
 
 /** 워커가 뜰 때 넣어 보는 주기 일 — 이미 살아 있으면 그대로다(키의 부분 UNIQUE). */
@@ -73,6 +86,7 @@ export const RECURRING: readonly { readonly kind: JobKind; readonly dedupeKey: s
   { kind: 'data_retention', dedupeKey: 'data_retention' },
   { kind: 'webhook_deliver', dedupeKey: 'webhook_deliver' },
   { kind: 'automation_dispatch', dedupeKey: 'automation_dispatch' },
+  { kind: 'automation_webhook', dedupeKey: 'automation_webhook' },
 ]
 
 /** 다섯 번째 실패면 멈춘다. */

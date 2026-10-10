@@ -51,6 +51,7 @@ test('★ 꺼진 까닭 — 셋 · 사람이 껐으면 없음', () => {
   assert.match(disabledMessage('creator_left') ?? '', /떠나/)
   assert.match(disabledMessage('trigger_broken') ?? '', /속성이 지워져/)
   assert.match(disabledMessage('failures') ?? '', /세 번 이어서 실패/)
+  assert.match(disabledMessage('webhook_failed') ?? '', /웹훅을 네 번 보내지 못해/)
   assert.equal(disabledMessage('tired'), '꺼졌습니다.')
 })
 

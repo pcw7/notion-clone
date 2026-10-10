@@ -41,7 +41,8 @@ export type TriggerInput =
 
 export type TriggerProblem = 'invalid' | 'unsupported_trigger' | 'no_triggers' | 'too_many_triggers' | 'unknown_property' | 'invalid_condition'
 
-export type DisabledReason = 'creator_left' | 'trigger_broken' | 'failures'
+/** 꺼진 까닭 — `webhook_failed` 는 배달이 네 번 실패해 멈춘 것(5c-2 · 정본 [보강] 자동화 엔진 ⑬). */
+export type DisabledReason = 'creator_left' | 'trigger_broken' | 'failures' | 'webhook_failed'
 
 export type DbAutomation = {
   readonly id: string
