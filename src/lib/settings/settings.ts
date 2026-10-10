@@ -18,7 +18,7 @@
 import type { SessionContext } from '../auth/session-context.ts'
 import { entitlement } from '../billing/entitlement.ts'
 import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
-import { readSecurityPolicyIn, writeNonmemberRequestPolicyIn } from '../workspace/security-policy.ts'
+import { readSecurityPolicyIn, writeNonmemberRequestPolicyIn, writePublishPolicyIn } from '../workspace/security-policy.ts'
 import {
   DEFAULT_THEME,
   SETTINGS,
@@ -88,6 +88,11 @@ const STORES: { readonly [K in SettingKey]: Store<SettingValueOf<K>> } = {
   'workspace.allow_nonmember_page_access_request': {
     read: async (tx, ctx) => (await readSecurityPolicyIn(tx, ctx.workspaceId)).allowNonmemberPageAccessRequest,
     write: (tx, ctx, value) => writeNonmemberRequestPolicyIn(tx, ctx.workspaceId, value),
+  },
+  // 웹 게시(6a-1) — 끄면 게시한 주소도 곧바로 닫힌다(공개 경로가 런타임에 묻는다 · 정본 [정정] 웹 게시 ③⑨)
+  'workspace.allow_publish_sites_and_forms': {
+    read: async (tx, ctx) => (await readSecurityPolicyIn(tx, ctx.workspaceId)).allowPublish,
+    write: (tx, ctx, value) => writePublishPolicyIn(tx, ctx.workspaceId, value),
   },
   // 휴지통 보관 기간(4b-3) — 버리는 명령이 이 칸을 읽어 `purge_after` 를 적는다. 바꿔도 이미 버린 것은 그대로다(정본 [보강] ③)
   'workspace.trash_days': {
