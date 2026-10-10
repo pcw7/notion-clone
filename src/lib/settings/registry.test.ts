@@ -28,6 +28,7 @@ import {
   settingDefinition,
   toggledTheme,
   visibleSettingGroups,
+  requiredEntitlement,
 } from './registry.ts'
 
 describe('① 선언이 맞물린다', () => {
@@ -116,6 +117,31 @@ describe('⑤ 값의 규칙', () => {
     assert.equal(normalizeSettingValue(policy, false), false)
     assert.equal(normalizeSettingValue(policy, true), true)
     for (const bad of ['false', 0, 1, null, undefined, {}]) assert.equal(normalizeSettingValue(policy, bad), null, JSON.stringify(bad))
+  })
+
+  test('★ 숫자(4b-3) — 범위 안의 정수만 · 글자로 쓴 수 · 소수 · 범위 밖은 null', () => {
+    const days = settingDefinition('workspace.trash_days')!
+    assert.deepEqual(days.control, { kind: 'number', min: 1, max: 3650, unit: '일' })
+    for (const ok of [1, 30, 3650]) assert.equal(normalizeSettingValue(days, ok), ok)
+    for (const bad of [0, 3651, -1, 2.5, '30', NaN, Infinity, null, undefined, true]) {
+      assert.equal(normalizeSettingValue(days, bad), null, String(bad))
+    }
+  })
+})
+
+describe('⑧ 요금제 게이트(4b-3)', () => {
+  test('★ 휴지통 보관 기간은 소유자의 보안 절 · trash.custom_retention 이 막는다 — 나머지는 막지 않는다', () => {
+    const days = settingDefinition('workspace.trash_days')!
+    assert.deepEqual([days.section, days.viewers, days.editors, requiredEntitlement(days)], [
+      'workspace.security',
+      ['owner'],
+      ['owner'],
+      'trash.custom_retention',
+    ])
+    assert.deepEqual(
+      SETTINGS.filter((d) => requiredEntitlement(d) !== null).map((d) => d.key),
+      ['workspace.trash_days'],
+    )
   })
 })
 

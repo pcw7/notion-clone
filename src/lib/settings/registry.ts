@@ -14,13 +14,16 @@
  *   · 누가 — 워크스페이스 **역할 이름**으로 묻는다(④ — 설정은 노드가 아니라 권한 레벨이 아니다). 보이지 않으면 화면에 없고 쓰기는
  *     거부된다. 보이지만 고칠 수 없으면 읽기 전용으로 선다. 고치는 사람은 늘 보는 사람 안에 있다(검사가 본다)
  *
- * 플랜 게이트(F-13-18) · 감사 이벤트(F-11-12) · 조직 잠금(F-17-13)은 그 표가 생길 때 정의의 칸으로 더한다(⑥).
+ * 플랜 게이트(F-13-18)는 정의의 `requires` — boolean 엔타이틀먼트 키다(⑦ · 4b-3). 그 키가 거짓인 워크스페이스에서 항목은 보이되 읽기
+ * 전용이고, 쓰기는 `plan_required` 다(판정은 `settings.ts` — 이 모듈은 DB 를 보지 않는다). 감사 이벤트(F-11-12) · 조직 잠금(F-17-13)은
+ * 그 표가 생길 때 정의의 칸으로 더한다(⑥).
  *
  * 값 하나로 그릴 수 없는 관리 화면(사람 · 내보내기)은 이 표의 항목이 아니라 절 안의 **패널**이다(`panels.ts` · 8g-2) — 절은 여기에
  * 선언하고, 패널이 선 절도 내비에 선다(`visibleSettingGroups` 의 둘째 인자).
  */
 
 import type { WorkspaceRole } from '../auth/session-context.ts'
+import type { BooleanEntitlementKey } from '../billing/entitlement.ts'
 
 /** 지금 쓰는 범위 — `device`(12 의 테마 · 고대비)와 `organization`(조직 기능)은 그것이 생길 때 더한다(정본 ③). */
 export type SettingScope = 'account' | 'workspace'
@@ -32,6 +35,8 @@ export type SettingControl =
   | { readonly kind: 'toggle' }
   /** 몇 가지 중 하나 고르기(8h) — 값은 `options` 의 `value` 중 하나. */
   | { readonly kind: 'choice'; readonly options: readonly { readonly value: string; readonly label: string }[] }
+  /** 정수 하나(4b-3 · 정본 ⑧) — `min` ~ `max` · 화면은 값 뒤에 `unit` 을 붙인다. */
+  | { readonly kind: 'number'; readonly min: number; readonly max: number; readonly unit: string }
 
 /** 테마 — `system` 은 OS 를 따른다(기본 · 정본 [보강] 설정 값 표 · 테마 ③). 루트 레이아웃 · 단축키가 이 값을 쓴다. */
 export const THEMES = ['system', 'light', 'dark'] as const
@@ -49,7 +54,7 @@ export function toggledTheme(current: Theme, osPrefersDark: boolean): Exclude<Th
   return showing === 'dark' ? 'light' : 'dark'
 }
 
-export type SettingValue = string | boolean
+export type SettingValue = string | boolean | number
 
 /** 누가 — 모두(게스트 포함)이거나 역할 목록. */
 export type Audience = 'everyone' | readonly WorkspaceRole[]
@@ -99,6 +104,8 @@ export type SettingDefinition = {
   readonly viewers: Audience
   /** 고칠 수 있는 사람 — `viewers` 안에 있어야 한다. */
   readonly editors: Audience
+  /** 요금제 게이트(정본 ⑦) — 이 키가 거짓인 워크스페이스에서는 보이되 고칠 수 없다(`plan_required`). 없으면 모든 요금제. */
+  readonly requires?: BooleanEntitlementKey
 }
 
 /** 모든 설정 — 화면의 순서이기도 하다. */
@@ -145,6 +152,19 @@ export const SETTINGS = [
     viewers: OWNER,
     editors: OWNER,
   },
+  {
+    key: 'workspace.trash_days',
+    scope: 'workspace',
+    section: 'workspace.security',
+    label: '휴지통 보관 기간',
+    description:
+      '휴지통에 넣은 페이지가 이 기간이 지나면 영구 삭제됩니다. 바꾼 기간은 지금부터 버리는 것에 적용됩니다 — 이미 휴지통에 있는 것은 ' +
+      '버릴 때의 기간을 따릅니다.',
+    control: { kind: 'number', min: 1, max: 3650, unit: '일' },
+    viewers: OWNER,
+    editors: OWNER,
+    requires: 'trash.custom_retention',
+  },
 ] as const satisfies readonly SettingDefinition[]
 
 export type SettingKey = (typeof SETTINGS)[number]['key']
@@ -153,9 +173,11 @@ type DefinitionOf<K extends SettingKey> = Extract<(typeof SETTINGS)[number], { r
 /** 키의 값 모양 — 컨트롤이 정한다(고르기는 그 선택지의 값 중 하나). */
 export type SettingValueOf<K extends SettingKey> = DefinitionOf<K>['control'] extends { readonly kind: 'toggle' }
   ? boolean
-  : DefinitionOf<K>['control'] extends { readonly kind: 'choice'; readonly options: readonly (infer O)[] }
-    ? O extends { readonly value: infer V } ? V : never
-    : string
+  : DefinitionOf<K>['control'] extends { readonly kind: 'number' }
+    ? number
+    : DefinitionOf<K>['control'] extends { readonly kind: 'choice'; readonly options: readonly (infer O)[] }
+      ? O extends { readonly value: infer V } ? V : never
+      : string
 
 const reaches = (audience: Audience, role: WorkspaceRole): boolean => audience === 'everyone' || audience.includes(role)
 
@@ -164,6 +186,9 @@ export const canSeeSetting = (definition: SettingDefinition, role: WorkspaceRole
 /** 고칠 수 있는가 — 보이지 않는 것은 고칠 수 없다. */
 export const canEditSetting = (definition: SettingDefinition, role: WorkspaceRole): boolean =>
   canSeeSetting(definition, role) && reaches(definition.editors, role)
+
+/** 이 설정을 고치는 데 필요한 엔타이틀먼트 — 없으면 null(모든 요금제). */
+export const requiredEntitlement = (definition: SettingDefinition): BooleanEntitlementKey | null => definition.requires ?? null
 
 /** 키 → 정의. 모르는 키면 null — 라우트가 주소에서 받는 값이라 문자열로 묻는다. */
 export function settingDefinition(key: string): (typeof SETTINGS)[number] | null {
@@ -174,6 +199,9 @@ export function settingDefinition(key: string): (typeof SETTINGS)[number] | null
 export function normalizeSettingValue(definition: SettingDefinition, raw: unknown): SettingValue | null {
   const control = definition.control
   if (control.kind === 'toggle') return typeof raw === 'boolean' ? raw : null
+  if (control.kind === 'number') {
+    return typeof raw === 'number' && Number.isInteger(raw) && raw >= control.min && raw <= control.max ? raw : null
+  }
   if (typeof raw !== 'string') return null
   if (control.kind === 'choice') return control.options.some((option) => option.value === raw) ? raw : null
   const text = raw.trim().replace(/\s+/g, ' ')

@@ -10,10 +10,13 @@
  *     설정은 `setting_value` 의 한 줄이다(8h — 테마 · `storedAccountSetting`)
  *   · 보이지 않는 설정은 읽기 목록에 없고 쓰기는 `forbidden` 이다. 모르는 키는 `not_found`(④)
  *   · 값은 레지스트리의 규칙으로 고친 뒤 쓴다(`normalizeSettingValue`) — 맞지 않으면 `invalid_value`
+ *   · 요금제 게이트(⑦ · 4b-3) — 정의의 `requires` 가 거짓인 워크스페이스에서는 보이되 읽기 전용(`planRequired`)이고 쓰기는
+ *     `plan_required`. 쓰기는 그 트랜잭션에서 다시 묻는다(화면의 판정은 표시일 뿐이다)
  *   · 마지막 쓰기가 이긴다 — 설정은 CRDT 대상이 아니다(⑥)
  */
 
 import type { SessionContext } from '../auth/session-context.ts'
+import { entitlement } from '../billing/entitlement.ts'
 import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
 import { readSecurityPolicyIn, writeNonmemberRequestPolicyIn } from '../workspace/security-policy.ts'
 import {
@@ -23,6 +26,7 @@ import {
   isTheme,
   canSeeSetting,
   normalizeSettingValue,
+  requiredEntitlement,
   settingDefinition,
   type SettingControl,
   type SettingKey,
@@ -85,6 +89,14 @@ const STORES: { readonly [K in SettingKey]: Store<SettingValueOf<K>> } = {
     read: async (tx, ctx) => (await readSecurityPolicyIn(tx, ctx.workspaceId)).allowNonmemberPageAccessRequest,
     write: (tx, ctx, value) => writeNonmemberRequestPolicyIn(tx, ctx.workspaceId, value),
   },
+  // 휴지통 보관 기간(4b-3) — 버리는 명령이 이 칸을 읽어 `purge_after` 를 적는다. 바꿔도 이미 버린 것은 그대로다(정본 [보강] ③)
+  'workspace.trash_days': {
+    read: async (tx, ctx) =>
+      (await tx.queryOne<{ days: number }>(`SELECT trash_days AS days FROM workspace WHERE id = $1`, [ctx.workspaceId])).days,
+    write: async (tx, ctx, value) => {
+      await tx.query(`UPDATE workspace SET trash_days = $2 WHERE id = $1`, [ctx.workspaceId, value])
+    },
+  },
 }
 
 /** 키로 고른 자리 — 값의 모양은 레지스트리가 이미 맞췄다(`normalizeSettingValue`). */
@@ -100,6 +112,8 @@ export type SettingItem = {
   readonly value: SettingValue
   /** 이 사람이 고칠 수 있는가 — 아니면 읽기 전용으로 선다. */
   readonly editable: boolean
+  /** 요금제가 막는가(⑦) — 참이면 `editable` 은 거짓이고 화면은 "요금제 필요"를 붙인다. */
+  readonly planRequired: boolean
 }
 
 /** 이 사람에게 보이는 설정과 그 값 — 레지스트리의 순서로. 한 스냅샷에서 읽는다. */
@@ -108,6 +122,8 @@ export async function readSettings(ctx: SessionContext): Promise<SettingItem[]> 
   return withReadTransaction(async (tx) => {
     const items: SettingItem[] = []
     for (const definition of visible) {
+      const requires = requiredEntitlement(definition)
+      const planRequired = requires !== null && !(await entitlement(ctx.workspaceId, requires, tx))
       items.push({
         key: definition.key,
         section: definition.section,
@@ -115,7 +131,8 @@ export async function readSettings(ctx: SessionContext): Promise<SettingItem[]> 
         description: definition.description,
         control: definition.control,
         value: await storeOf(definition.key).read(tx, ctx),
-        editable: canEditSetting(definition, ctx.role),
+        editable: canEditSetting(definition, ctx.role) && !planRequired,
+        planRequired,
       })
     }
     return items
@@ -127,24 +144,31 @@ export type SettingFailure =
   | 'not_found'
   /** 볼 수 없거나 고칠 수 없다. */
   | 'forbidden'
-  /** 값이 컨트롤의 규칙에 맞지 않는다(글자 수 · 빈 값 · 모양). */
+  /** 값이 컨트롤의 규칙에 맞지 않는다(글자 수 · 빈 값 · 모양 · 범위). */
   | 'invalid_value'
+  /** 이 워크스페이스의 요금제가 이 설정을 허락하지 않는다(⑦). */
+  | 'plan_required'
 
 export type SettingResult =
   | { readonly ok: true; readonly value: SettingValue }
   | { readonly ok: false; readonly reason: SettingFailure }
 
-/** 설정 하나를 바꾼다 — 판정 · 값 검사를 쓰기 앞에서 하고, 쓴 뒤의 값을 다시 읽어 준다. */
+/**
+ * 설정 하나를 바꾼다 — 판정 · 요금제 · 값 검사를 쓰기 앞에서 하고, 쓴 뒤의 값을 다시 읽어 준다. 요금제는 값보다 먼저 묻는다 — 바꿀 수
+ * 없는 사람에게 값의 규칙을 말해도 소용이 없다.
+ */
 export async function updateSetting(ctx: SessionContext, key: string, raw: unknown): Promise<SettingResult> {
   const definition = settingDefinition(key)
   if (definition === null) return { ok: false, reason: 'not_found' }
   if (!canEditSetting(definition, ctx.role)) return { ok: false, reason: 'forbidden' }
   const value = normalizeSettingValue(definition, raw)
-  if (value === null) return { ok: false, reason: 'invalid_value' }
+  const requires = requiredEntitlement(definition)
 
   const store = storeOf(definition.key)
-  return withCommandTransaction(async (tx) => {
+  return withCommandTransaction(async (tx): Promise<SettingResult> => {
+    if (requires !== null && !(await entitlement(ctx.workspaceId, requires, tx))) return { ok: false, reason: 'plan_required' }
+    if (value === null) return { ok: false, reason: 'invalid_value' }
     await store.write(tx, ctx, value)
-    return { ok: true, value: await store.read(tx, ctx) } as const
+    return { ok: true, value: await store.read(tx, ctx) }
   })
 }

@@ -8,6 +8,7 @@
  *   not_found      404  모르는 키
  *   forbidden      403  보이지 않거나 고칠 수 없다 — 설정의 키는 코드에 있어 존재를 숨길 것이 없다
  *   invalid_value  400  컨트롤의 규칙에 맞지 않는다
+ *   plan_required  403  요금제가 이 설정을 허락하지 않는다(4b-3 — 권한 거부와 코드가 다르다 · 정본 [보강] 요금제 게이트 ⑤)
  *
  * 계정 범위(`account.*`)도 이 워크스페이스의 세션으로 바꾼다 — `SessionContext` 가 그 사람이라는 증명이다. 바뀐 값은 모든
  * 워크스페이스에서 같다.
@@ -18,7 +19,7 @@ import { updateSetting, type SettingFailure } from '@/lib/settings/settings'
 
 type Ctx = RouteContext<'/api/workspaces/[workspaceId]/settings/[key]'>
 
-const STATUS: Readonly<Record<SettingFailure, number>> = { not_found: 404, forbidden: 403, invalid_value: 400 }
+const STATUS: Readonly<Record<SettingFailure, number>> = { not_found: 404, forbidden: 403, invalid_value: 400, plan_required: 403 }
 
 export async function PUT(request: Request, ctx: Ctx): Promise<Response> {
   const { workspaceId, key } = await ctx.params

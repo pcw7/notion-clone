@@ -9238,6 +9238,92 @@ async function main() {
       await fetch(settingsApi('workspace.name'), { method: 'PUT', headers: authed, body: JSON.stringify({ value: originalWorkspace }) })
     }
 
+    if (sectionIf('휴지통 보관 기간 (4b-3 · F-11-06)')) {
+      // 설정 → 워크스페이스 → 보안의 "휴지통 보관 기간"(1 ~ 3650일)은 Enterprise 만 바꾼다(엔타이틀먼트 `trash.custom_retention`). 이 판의
+      // 워크스페이스는 Business 라 처음엔 보이되 읽기 전용("요금제 필요") · 서버도 403 plan_required. Enterprise 로 올리면 숫자 칸이 서고, 범위
+      // 밖은 거부 · Esc 는 되돌림 · Enter 로 저장. 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다. 끝에 기간 · 요금제를 되돌린다.
+      const { setWorkspacePlan } = await import(new URL('../src/lib/billing/plan.ts', import.meta.url).href)
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const SECURITY = `${BASE}/w/${workspaceId}/settings?s=workspace.security`
+      const ROW = '[data-testid="setting-row"][data-setting-key="workspace.trash_days"]'
+      const CONTROL = `${ROW} [data-testid="setting-control"]`
+      const trashDaysApi = `${BASE}/api/workspaces/${workspaceId}/settings/workspace.trash_days`
+      const days = async () => Number((await dbQuery(`SELECT trash_days AS d FROM workspace WHERE id = $1`, [workspaceId]))[0]?.d)
+      const rowState = () => evaluate(`(() => {
+        const row = document.querySelector(${JSON.stringify(ROW)})
+        if (row === null) return null
+        const control = row.querySelector('[data-testid="setting-control"]')
+        return {
+          tag: control?.tagName ?? null, type: control?.getAttribute('type') ?? null, value: control?.value ?? null, text: control?.textContent ?? null,
+          badge: row.querySelector('[data-testid="setting-plan-badge"]')?.textContent ?? null,
+          note: row.querySelector('[data-testid="setting-readonly-note"]')?.textContent ?? null,
+          unit: row.querySelector('[data-testid="setting-unit"]')?.textContent ?? null,
+          status: row.querySelector('[data-testid="setting-status"]')?.textContent ?? null,
+        }
+      })()`)
+      const pressKey = (name, code, vk) => async () => {
+        await send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: name, code, windowsVirtualKeyCode: vk })
+        await send('Input.dispatchKeyEvent', { type: 'keyUp', key: name, code, windowsVirtualKeyCode: vk })
+      }
+      const enter = pressKey('Enter', 'Enter', 13)
+      const escape = pressKey('Escape', 'Escape', 27)
+      // 숫자 칸을 통째로 바꿔 쓴다 — 하이드레이션 전에 쓴 글자는 사라지므로 칸이 그 글자가 될 때까지 다시 한다.
+      const fill = async (text) => {
+        for (let i = 0; i < 6; i += 1) {
+          await clickSelector(CONTROL)
+          await evaluate(`(() => { const el = document.querySelector(${JSON.stringify(CONTROL)}); el?.focus(); el?.select() })()`)
+          await typeText(text)
+          if ((await evaluate(`document.querySelector(${JSON.stringify(CONTROL)})?.value ?? null`)) === text) return true
+          await sleep(300)
+        }
+        return false
+      }
+
+      const originalDays = await days()
+      try {
+        await send('Page.navigate', { url: SECURITY })
+        await waitFor(`!!document.querySelector(${JSON.stringify(ROW)})`, 15000)
+        const locked = await rowState()
+        check('★ Business — 보안 절에 "휴지통 보관 기간"이 서되 읽기 전용 · "요금제 필요" · 요금제를 올리면 바꿀 수 있다고 말한다',
+          locked?.tag === 'SPAN' && locked.text === `${originalDays}일` && locked.badge === '요금제 필요' && (locked.note ?? '').includes('요금제를 올리면'),
+          JSON.stringify(locked))
+        const blocked = await fetch(trashDaysApi, { method: 'PUT', headers: authed, body: JSON.stringify({ value: 7 }) })
+        const blockedBody = await blocked.json().catch(() => null)
+        check('★ 화면을 건너뛰어도 서버가 막는다 — 403 plan_required · 값은 그대로',
+          blocked.status === 403 && blockedBody?.error === 'plan_required' && (await days()) === originalDays,
+          JSON.stringify([blocked.status, blockedBody]))
+
+        await setWorkspacePlan(workspaceId, 'enterprise')
+        await send('Page.navigate', { url: SECURITY })
+        await waitFor(`document.querySelector(${JSON.stringify(CONTROL)})?.tagName === 'INPUT'`, 15000)
+        const open = await rowState()
+        check('★ Enterprise — 숫자 칸(일)이 서고 "요금제 필요"가 사라진다',
+          open?.type === 'number' && open.value === String(originalDays) && open.unit === '일' && open.badge === null,
+          JSON.stringify(open))
+
+        await fill('0')
+        await enter()
+        check('★ 범위 밖(0)은 거부되고 범위를 말한다 — 쓴 글자는 남는다 · 서버는 그대로',
+          (await waitFor(`(document.querySelector(${JSON.stringify(`${ROW} [role="alert"]`)})?.textContent ?? '') === '1일에서 3650일 사이의 정수를 적으세요.'`, 8000))
+            && (await rowState())?.value === '0' && (await days()) === originalDays,
+          JSON.stringify([await rowState(), await days()]))
+        await escape()
+        check('Esc 는 저장된 값으로 되돌린다', (await rowState())?.value === String(originalDays), JSON.stringify(await rowState()))
+
+        await fill('7')
+        await enter()
+        check('★ Enter 로 저장 — "저장했습니다" · 워크스페이스의 휴지통 보관 기간이 7일이 된다',
+          (await waitFor(`(document.querySelector(${JSON.stringify(`${ROW} [data-testid="setting-status"]`)})?.textContent ?? '') === '저장했습니다.'`, 8000))
+            && (await days()) === 7,
+          JSON.stringify([await rowState(), await days()]))
+        await send('Page.navigate', { url: SECURITY })
+        check('새로 열어도 7일이다', await waitFor(`document.querySelector(${JSON.stringify(CONTROL)})?.value === '7'`, 15000), JSON.stringify(await rowState()))
+      } finally {
+        await dbQuery(`UPDATE workspace SET trash_days = $2 WHERE id = $1`, [workspaceId, originalDays])
+        await setWorkspacePlan(workspaceId, 'business')
+      }
+    }
+
     if (sectionIf('설정 — 사람 · 내보내기 (8g-2 · F-17-12)')) {
       // 홈의 관리 절(멤버 · 초대 · 게스트 · 그룹 · 내보내기)이 설정으로 옮겨 갔다 — 사람 절의 패널 넷 · 일반 절의 내보내기. 패널은 그 기능의
       // 판정 그대로 선다(멤버 관리자: 내보내기 · 보안 없음 / 멤버: 목록 · 그룹뿐 / 게스트: 내 계정만). 자기 데이터를 스스로 만든다.

@@ -29,10 +29,14 @@ export const ENTITLEMENTS = {
   'teamspace.private': 'boolean',
   /** 가져오기의 파일 크기 상한(F-09-12 · 8m-1) — Free 5 MiB · 유료 50 MiB(바이트). */
   'import.max_bytes': 'limit',
+  /** 휴지통 보관 기간(`workspace.trash_days`)을 바꿀 수 있는가(F-11-06 · 4b-3) — Enterprise 만. */
+  'trash.custom_retention': 'boolean',
 } as const
 
 export type EntitlementKey = keyof typeof ENTITLEMENTS
 export type EntitlementKind = (typeof ENTITLEMENTS)[EntitlementKey]
+/** 켜고 끄는 키 — 설정의 요금제 게이트 칸이 받는다(정본 §3.1 [보강] 설정 정보구조 ⑦). */
+export type BooleanEntitlementKey = { [K in EntitlementKey]: (typeof ENTITLEMENTS)[K] extends 'boolean' ? K : never }[EntitlementKey]
 
 type ValueOfKind = {
   readonly boolean: boolean
