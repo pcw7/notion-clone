@@ -73,6 +73,16 @@ export async function PublicPage({ token, pageId }: { token: string; pageId?: st
       <article className="pub-body" data-testid="public-body">
         <Blocks blocks={view.doc.blocks} view={view} />
       </article>
+      {/* 신고(6b-1b · F-17-08) — 공개 화면에만 있다(앱 안에는 없다 · 17) */}
+      <footer className="pub-footer">
+        <a
+          href={view.target.pageId === view.target.rootId ? `/p/${token}/report` : `/p/${token}/report?page=${view.target.pageId}`}
+          rel="nofollow"
+          data-testid="public-report-link"
+        >
+          이 페이지 신고
+        </a>
+      </footer>
     </main>
   )
 }
