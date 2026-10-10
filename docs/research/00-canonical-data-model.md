@@ -3383,6 +3383,26 @@ CREATE TABLE external_sync_source (            -- 구 external_binding. 정본 �
 >    반대이므로 클론은 설정 화면에서 경고해야 한다"*). 버튼은 표 · 행 페이지 · 보드 · 갤러리의 카드에 선다(카드를 여는 누르기로 번지지
 >    않게) — 캘린더 카드는 제목만 그리므로 서지 않는다. **템플릿 행에서는 누르지 않는다** — 템플릿은 행이 아니라 새 행의 모양이다
 >    (누르면 템플릿의 값이 바뀐다). 화면은 단추를 막고 서버도 거절한다(`not_found` — 템플릿은 누를 행이 아니다).
+> ⑫ **`send_webhook` — 정의 · 쌓기**(5c-1 · 08 F-08-13 · 마이그레이션 0081) — 그 행의 고른 속성 값을 JSON 으로 바깥 URL 에 POST 한다.
+>    페이지 웹훅(§3.8 [보강])과 **같은 발송기 · 같은 봉인**을 쓴다(그 블록 머리 — *"같은 발송기를 자동화의 `send_webhook` 이 쓴다"*).
+>    - **세 모양** — 받는 것 `{ v: 1, url?, keep?, headers: [{ name, value? }], properties: [propertyId] }` · 저장하는 것 `{ v: 1, urlSealed,
+>      urlHint, headers: [{ name, valueSealed }], properties }`(봉인은 base64) · 읽어 주는 것 `{ v: 1, ref, urlHint, headers: [{ name }],
+>      properties }`. **URL 과 헤더 값은 비밀이다**(Slack 의 incoming webhook URL · 인증 토큰) — 봉인해서 저장하고(`sealWebhookUrl` 과 같은
+>      키) 화면 · API 에 돌려주지 않는다(힌트 · 헤더 이름만). 고칠 때 URL 을 다시 넣지 않으면 `keep`(읽을 때 받은 `ref` — **같은 automation**
+>      의 이전 `send_webhook` 액션)에서 옮기고, 헤더 값을 비우면 그 액션의 같은 이름 헤더 값을 옮긴다. 옮길 것이 없으면 거절(`unknown_ref`) —
+>      다른 automation 의 비밀을 끌어오지 못한다.
+>    - **검사** — URL 은 페이지 웹훅과 같다(`checkOutboundUrl` — https · 자격 증명 없음 · 포트 · 사설 주소 · 2048자 → `invalid_url`).
+>      automation 마다 **5개까지**(08 *"automation 당 최대 5개"* → `too_many_webhooks`). 헤더는 10개까지 · 이름은 토큰 글자 · 값은 1024자까지 ·
+>      발송기가 정하는 이름(`host` · `content-length` · `content-type` · `connection` · `transfer-encoding` · `user-agent`)은 못 쓴다. 속성은
+>      **그 automation 의 표**(버튼 — 버튼이 있는 표 · DB automation — 그 표)의 살아 있는 **셀 속성**이고(버튼 · relation 은 못 고른다 — 08 *"DB
+>      버튼 property 는 전송 필드로 선택 불가"* → `unknown_property`) 50개까지 · 0개면 행의 id 와 주소만 간다.
+>    - **요금제** — 유료 요금제만(08 *"`Send webhook` … 유료 플랜 전용"*) — 엔타이틀먼트 `automation.webhook`(Free false · 나머지 true). 저장할
+>      때 막는다(`plan_required`). 실행 때도 다시 묻는다 — 요금제를 내린 뒤에는 그 액션을 **건너뛴다**(`skipped` · `plan` — 실패가 아니다).
+>    - **실행은 쌓기만** — 엔진은 바깥으로 나가지 않는다. 트랜잭션 안에서 네트워크를 타지 않고(락을 쥔 채 10초를 기다리지 않는다) · 되돌린
+>      실행이 이미 보낸 요청을 되돌릴 수 없어서다. 같은 트랜잭션에서 **배달 한 줄**(`automation_delivery` — 그때의 봉인된 URL · 헤더를 옮겨
+>      싣는다: 나중에 고쳐도 쌓인 배달은 그때의 것)을 쌓고 단계는 `done`(`deliveryId`). 실행이 되돌려지면 배달도 함께 사라진다. 몸(payload)은
+>      **그때의 값을 실행 주체의 권한으로** 읽어 싣는다 — `{ run_id, automation_id, page: { id, url }, properties: { ‹속성 이름›: ‹셀 값› } }`(선택지 · 상태는 옵션 이름을 붙인다 — 셀은 id 만 담는다).
+>      `run_id` 는 받는 쪽의 중복 제거 키다(08 *"페이로드에 `run_id` 를 반드시 포함"*). 보내기 · 재시도 · 실패 뒤 멈춤은 5c-2.
 
 **[보강] DB automation — 정의 · 실행 주체** ⟨자동화 5b-1 · F-08-09 · F-08-10 / 마이그레이션 0079⟩
 
