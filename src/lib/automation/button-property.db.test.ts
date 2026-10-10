@@ -136,7 +136,7 @@ describe('② 고치기', () => {
       [[ok, edit([{ propertyId: other.qty, value: { type: 'number', number: 1 } }])], 'unknown_property', 1],
       [[edit([{ propertyId: tb.button, value: { type: 'checkbox', checkbox: true } }])], 'unknown_property', 0],
       [[edit([{ propertyId: tb.qty, value: { type: 'checkbox', checkbox: true } }])], 'invalid_value', 0],
-      [[{ type: 'add_page_to', config: { v: 1 } }], 'unsupported_action', 0],
+      [[{ type: 'insert_blocks', config: { v: 1 } }], 'unsupported_action', 0],
       [[edit([])], 'empty_cells', 0],
       ['액션 아님', 'invalid', undefined],
     ]

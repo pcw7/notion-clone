@@ -3359,6 +3359,14 @@ CREATE TABLE external_sync_source (            -- 구 external_binding. 정본 �
 > ⑦ **자동화가 쓴 셀은 `filled_by = 'automation'`** — 활동의 행위자는 누른 사람이다. 자동화가 쓴 것이 다른 자동화를 깨우지 않는 규칙
 >    (08 F-08-10 *"automation 은 다른 automation 을 트리거하지 않는다 · 단 버튼이 만든 페이지는 발동한다"*)은 트리거(5b)가 정한다.
 > ⑧ 실행 기록은 automation 마다 **최근 50건**만 남긴다(08 F-08-10 클론 대안 *"실행 로그는 최근 50건만 보관"* · `data_retention`).
+> ⑨ **`add_page_to`**(5a-2) — `config = { v: 1, dataSourceId, cells, templateId? }`. 그 데이터 소스(같은 표여도 된다)에 행을 하나
+>    더한다. 대상 표의 `create_child` 를 **누른 사람의 권한으로** 묻고, 없으면 그 액션만 건너뛴다(`partial` — ④). 템플릿을 고르면 그
+>    템플릿으로 만들되 **템플릿 값이 버튼 값을 덮는다**(08 *"The values from the template overwrite the values from the button"*) — 보드의
+>    열에서 만든 카드가 "열 값이 템플릿을 덮는" 것과 반대다. 그래서 템플릿으로 행 만들기는 우선순위를 고르는 칸을 갖는다(기본은 지금대로
+>    준 값이 이긴다). 저장할 때: 대상 표를 저장하는 사람이 볼 수 있어야 하고(아니면 `unknown_data_source` — 없는 표와 같은 답), 셀은
+>    **대상 표의** 스키마에 대어 보고, 템플릿은 그 표의 살아 있는 템플릿이어야 한다(`unknown_template`). 실행 때 템플릿이 사라졌으면
+>    실패다(정의가 깨졌다 — ④). 실행 기록의 단계는 만든 행의 id 를 담는다(`pageId` — 화면이 열어 준다 · 내용은 담지 않는다). 만든 행의
+>    셀도 `filled_by = 'automation'`.
 
 ---
 

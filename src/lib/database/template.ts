@@ -77,6 +77,7 @@ import {
   isRowFailure,
   openDataSource,
   readRow,
+  type CellFiller,
   type RowCell,
   type RowResult,
   type RowSummary,
@@ -317,10 +318,17 @@ export async function deleteTemplate(ctx: SessionContext, templateId: string): P
 
 export type CreateFromTemplateInput = {
   /**
-   * 템플릿의 값을 **덮는** 셀. 08 의 엣지 케이스 *"보드 뷰에서 그룹 컬럼값과 템플릿 property 가 충돌 → 그룹 컬럼값이
-   * 템플릿 값을 덮어씀"* 이다 — 보드의 열에서 만든 카드는 그 열의 값이어야 한다.
+   * 템플릿과 함께 쓰는 셀. 기본은 템플릿의 값을 **덮는다** — 08 의 엣지 케이스 *"보드 뷰에서 그룹 컬럼값과 템플릿 property 가
+   * 충돌 → 그룹 컬럼값이 템플릿 값을 덮어씀"* 이다(보드의 열에서 만든 카드는 그 열의 값이어야 한다).
    */
   readonly cells?: readonly RowCell[]
+  /**
+   * 누가 이기나 — `given`(기본 · 보드의 열) 또는 `template`(버튼의 `add_page_to` — 08 *"The values from the template overwrite the
+   * values from the button"* · 정본 §3.10 [보강] 자동화 엔진 ⑨). `template` 이면 준 셀은 템플릿이 정하지 않은 칸에만 들어간다.
+   */
+  readonly precedence?: 'given' | 'template'
+  /** 누가 채웠나 — 자동화가 `automation` 을 준다(5a-2). */
+  readonly filledBy?: CellFiller
 }
 
 export type TemplateRow = {
@@ -339,7 +347,18 @@ export async function createRowFromTemplate(
   templateId: string,
   input: CreateFromTemplateInput = {},
 ): Promise<TemplateResult<TemplateRow>> {
-  return withCommandTransaction(async (tx) => {
+  return withCommandTransaction((tx) => createRowFromTemplateIn(tx, ctx, dataSourceId, templateId, input))
+}
+
+/** 부르는 쪽의 트랜잭션 안에서 — 자동화의 액션(5a-2)이 다른 액션과 한 트랜잭션으로 묶는다(AU1). */
+export async function createRowFromTemplateIn(
+  tx: Tx,
+  ctx: SessionContext,
+  dataSourceId: string,
+  templateId: string,
+  input: CreateFromTemplateInput = {},
+): Promise<TemplateResult<TemplateRow>> {
+  {
     // 행을 만드는 것이므로 `create_child` 다 — 템플릿을 **고르는** 것은 목록을 읽는 일이고(`view`), 만드는 것은
     // 보통 행을 만드는 일과 같은 권한이다(08: *"템플릿 목록 노출은 하되 생성 불가"* 의 반대쪽).
     const gate = await openDataSource(tx, ctx, dataSourceId, 'create_child')
@@ -366,11 +385,12 @@ export async function createRowFromTemplate(
       [template.id, dataSourceId],
     )
     const given = input.cells ?? []
-    const overridden = new Set(given.map((cell) => cell.propertyId))
-    const cells: RowCell[] = [
-      ...stored.filter((s) => !overridden.has(s.property_id)).map((s) => ({ propertyId: s.property_id, value: s.value })),
-      ...given,
-    ]
+    const fromTemplate = stored.map((s) => ({ propertyId: s.property_id, value: s.value }))
+    // 누가 이기나(위 `precedence`) — 진 쪽은 이긴 쪽이 정하지 않은 칸에만 들어간다
+    const winners = input.precedence === 'template' ? fromTemplate : given
+    const losers = input.precedence === 'template' ? given : fromTemplate
+    const taken = new Set(winners.map((cell) => cell.propertyId))
+    const cells: RowCell[] = [...losers.filter((cell) => !taken.has(cell.propertyId)), ...winners]
 
     // ── relation 엣지 ──
     // 잠그기 전에 **무엇을 잠글지** 알아야 한다. 대상 행이 살아 있고 템플릿이 아니어야 하며(`linkRows` 와 같은 조건),
@@ -402,7 +422,7 @@ export async function createRowFromTemplate(
         //   셀이고(`row.ts`) 그것은 위에서 셀과 함께 복사했다 — 엔진의 제목은 `block.properties.title` 의
         //   투영이라 서식이 없다. 꼬리표가 붙지 않는 것도 여기서 따라 나온다(머리말).
         create: async () => {
-          created = await createRowIn(tx, ctx, dataSourceId, { cells })
+          created = await createRowIn(tx, ctx, dataSourceId, { cells, filledBy: input.filledBy })
           if (!created.ok) throw new RowRejected(created)
           return created.value.id
         },
@@ -433,7 +453,7 @@ export async function createRowFromTemplate(
       ok: true,
       value: { row: summary, skippedPages: copied.skipped, skippedLinks: edges.length - linkable.length },
     } as const
-  })
+  }
 }
 
 /** 행 명령이 거부를 **값으로** 돌려주므로, 엔진 콜백 안에서는 예외로 바꿔 빠져나온다. */
