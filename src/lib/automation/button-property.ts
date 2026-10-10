@@ -14,24 +14,15 @@
 
 import type { SessionContext } from '../auth/session-context.ts'
 import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
-import { isRowFailure, openDataSource, type RowCell } from '../database/row.ts'
-import { isMvpPropertyType, validateCellValue } from '../database/property-types.ts'
-import { readLiveTemplate } from '../database/template.ts'
+import { isRowFailure, openDataSource } from '../database/row.ts'
 import { isUuid } from '../ids.ts'
 import { parseActions, type ActionInput, type ActionProblem } from './actions.ts'
+import { checkActions, readActions, writeActions, type ActionSchemaProblem } from './action-check.ts'
 import { runAutomation, type RunOutcome } from './engine.ts'
 
 export type ButtonFailure = 'not_found' | 'forbidden' | 'locked' | 'invalid_action' | 'disabled' | 'invalid_key'
-/** 액션이 그 표에 맞지 않는 까닭 — 모양(`ActionProblem`) 또는 스키마. */
-export type ButtonActionProblem =
-  | ActionProblem
-  | 'unknown_property'
-  | 'readonly_property'
-  | 'invalid_value'
-  /** `add_page_to` 의 대상 표를 저장하는 사람이 볼 수 없다 — 없는 표와 같은 답(정본 ⑨). */
-  | 'unknown_data_source'
-  /** `add_page_to` 의 템플릿이 그 표의 살아 있는 템플릿이 아니다. */
-  | 'unknown_template'
+/** 액션이 맞지 않는 까닭 — 모양(`ActionProblem`) 또는 스키마(`ActionSchemaProblem` — `action-check.ts`). */
+export type ButtonActionProblem = ActionProblem | ActionSchemaProblem
 
 export type ButtonResult<T> =
   | { readonly ok: true; readonly value: T }
@@ -54,15 +45,6 @@ async function findButton(tx: Tx, dataSourceId: string, propertyId: string, lock
   )
 }
 
-async function readActions(tx: Tx, automationId: string): Promise<ActionInput[]> {
-  const rows = await tx.query<{ type: string; config: unknown }>(
-    `SELECT type, config FROM automation_action WHERE automation_id = $1 ORDER BY order_idx`,
-    [automationId],
-  )
-  // 저장한 것은 저장할 때 본 것이다 — 모양만 다시 맞춘다(지금 실행할 수 없는 종류는 빠진다)
-  const parsed = parseActions(rows.map((r) => ({ type: r.type, config: r.config })))
-  return parsed.ok ? [...parsed.actions] : []
-}
 
 /** 버튼의 액션 — 그 표를 볼 수 있으면. */
 export async function readButtonActions(ctx: SessionContext, dataSourceId: string, propertyId: string): Promise<ButtonResult<ButtonActions>> {
@@ -76,20 +58,6 @@ export async function readButtonActions(ctx: SessionContext, dataSourceId: strin
   })
 }
 
-/** 셀들이 그 표에 맞는가 — 살아 있는 셀 속성 · 읽기 전용이 아님 · 값의 모양. 맞으면 null. */
-function cellProblem(
-  properties: ReadonlyMap<string, { readonly type: string; readonly writable: string }>,
-  cells: readonly RowCell[],
-  index: number,
-): ButtonActionProblem | null {
-  for (const cell of cells) {
-    const meta = properties.get(cell.propertyId)
-    if (meta === undefined || !isMvpPropertyType(meta.type)) return 'unknown_property'
-    if (meta.writable === 'readonly') return 'readonly_property'
-    if (validateCellValue(meta.type, cell.value, `actions.${index}.${cell.propertyId}`).length > 0) return 'invalid_value'
-  }
-  return null
-}
 
 /** 버튼의 액션을 통째로 바꾼다 — 그 표의 `edit_structure`. */
 export async function setButtonActions(
@@ -107,30 +75,10 @@ export async function setButtonActions(
     if (button === null) return fail('not_found')
     if (!parsed.ok) return fail('invalid_action', parsed.problem, parsed.index)
 
-    // 셀이 쓰일 표의 스키마에 대어 본다 — `edit_property` 는 이 표, `add_page_to` 는 대상 표(저장하는 사람이 볼 수 있어야 한다)
-    for (const [index, action] of parsed.actions.entries()) {
-      let target = gate
-      if (action.type === 'add_page_to' && action.config.dataSourceId !== dataSourceId) {
-        const other = await openDataSource(tx, ctx, action.config.dataSourceId, 'view')
-        if (isRowFailure(other)) return fail('invalid_action', 'unknown_data_source', index)
-        target = other
-      }
-      const problem = cellProblem(target.properties, action.config.cells, index)
-      if (problem !== null) return fail('invalid_action', problem, index)
-      if (action.type === 'add_page_to' && action.config.templateId !== null) {
-        if ((await readLiveTemplate(tx, ctx, target.dataSourceId, action.config.templateId)) === null) {
-          return fail('invalid_action', 'unknown_template', index)
-        }
-      }
-    }
-
-    await tx.query(`DELETE FROM automation_action WHERE automation_id = $1`, [button.automation_id])
-    for (const [index, action] of parsed.actions.entries()) {
-      await tx.query(
-        `INSERT INTO automation_action (id, automation_id, order_idx, type, config) VALUES (gen_random_uuid(), $1, $2, $3, $4::jsonb)`,
-        [button.automation_id, String(index).padStart(4, '0'), action.type, JSON.stringify(action.config)],
-      )
-    }
+    // 셀이 쓰일 표의 스키마에 대어 본다(`action-check.ts` — DB automation 과 같은 검사)
+    const problem = await checkActions(tx, ctx, gate, parsed.actions)
+    if (problem !== null) return fail('invalid_action', problem.problem, problem.index)
+    await writeActions(tx, button.automation_id, parsed.actions)
     await tx.query(`UPDATE automation SET updated_at = now() WHERE id = $1`, [button.automation_id])
     return { ok: true, value: { automationId: button.automation_id, enabled: button.enabled, actions: parsed.actions } } as const
   })

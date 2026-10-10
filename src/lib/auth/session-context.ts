@@ -15,6 +15,17 @@
  * 결과적으로 **SessionContext 를 손에 쥐고 있다는 것 자체가 "이 사용자는 이
  * 워크스페이스에 들어올 수 있다"는 증명**이 된다. 권한 함수가 userId 만 받는
  * 실수를 저지를 수 없다.
+ *
+ * ──────────────────────────────────────────────────────────────────────
+ * 발급자는 둘이다 (자동화 5b-1 · 정본 §3.10 [보강] DB automation ①)
+ * ──────────────────────────────────────────────────────────────────────
+ *
+ *   · `resolveSessionContext()` — 로그인 세션. 0단계 게이트를 지난다.
+ *   · `resolveDelegatedContext()` — DB automation 을 **만든 사람**으로 실행하는 위임(세션 없는 워커가 부른다). 발급 전에 그 사람이
+ *     지금도 지워지지 않았고 그 워크스페이스의 활성 멤버인지 본다. SSO · 2단계 인증은 로그인의 문이라 묻지 않는다. `delegation` 을
+ *     싣고 `sessionId` 자리에 automation id 를 둔다 — 세션 표를 가리키지 않으므로 세션에 매인 명령(비밀번호 · 2단계 인증)에 넘기지 않는다.
+ *
+ * 셋째 발급자를 만들지 않는다(CLAUDE.md "권한 코드 규칙").
  */
 
 import { createHash, timingSafeEqual } from 'node:crypto'
@@ -45,18 +56,24 @@ export type WorkspaceRole = (typeof WORKSPACE_ROLES)[number]
 
 declare const sessionContextBrand: unique symbol
 
+/** 컨텍스트가 온 길 — 로그인의 방법이거나 자동화의 위임(`automation` — 세션이 없다). */
+export type ContextAuthMethod = AuthMethod | 'automation'
+
 /**
  * 이 값을 갖고 있다 = 이 사용자가 이 워크스페이스에 들어올 수 있음이 확인됨.
- * 직접 만들 수 없다. resolveSessionContext() 만 발급한다.
+ * 직접 만들 수 없다. resolveSessionContext() · resolveDelegatedContext() 만 발급한다.
  */
 export type SessionContext = {
   readonly [sessionContextBrand]: true
+  /** 로그인 세션의 id. 위임이면 automation id 다(세션 표를 가리키지 않는다). */
   readonly sessionId: SessionId
   readonly userId: UserId
   readonly workspaceId: WorkspaceId
-  readonly authMethod: AuthMethod
+  readonly authMethod: ContextAuthMethod
   readonly mfaSatisfied: boolean
   readonly role: WorkspaceRole
+  /** 자동화의 위임이면 그 automation — 로그인 세션이면 없다. */
+  readonly delegation?: { readonly automationId: string }
 }
 
 export type SessionDenialReason =
@@ -183,6 +200,45 @@ export async function resolveSessionContext(
       authMethod,
       mfaSatisfied: row.mfa_satisfied,
       role,
+    } as SessionContext,
+  }
+}
+
+export type DelegationDenialReason =
+  | 'not_found' // 이 워크스페이스의 automation 이 아니다
+  | 'creator_left' // 만든 사람이 지워졌거나 이 워크스페이스의 활성 멤버가 아니다
+
+export type DelegationResolution =
+  | { readonly ok: true; readonly context: SessionContext }
+  | { readonly ok: false; readonly reason: DelegationDenialReason }
+
+/**
+ * DB automation 을 **만든 사람**으로 실행하는 컨텍스트 — 세션 없는 워커가 부른다(자동화 5b-1 · 정본 §3.10 [보강] DB automation ①).
+ *
+ * 한 번의 질의로 automation · 사람 · 멤버십을 읽는다(`resolveSessionContext` 와 같은 까닭 — 다른 시점의 사실을 섞지 않는다). 그 사람이
+ * **지금** 지워지지 않았고 활성 멤버여야 한다. 권한(무엇을 할 수 있나)은 여기서 보지 않는다 — 액션이 부르는 명령이 이 컨텍스트로 묻는다.
+ */
+export async function resolveDelegatedContext(workspaceId: WorkspaceId, automationId: string): Promise<DelegationResolution> {
+  const row = await queryMaybe<{ created_by: string; user_deleted: boolean; role: string | null; member_status: string | null }>(
+    `SELECT a.created_by, u.deleted_at IS NOT NULL AS user_deleted, m.role, m.status AS member_status
+       FROM automation a
+       JOIN "user" u ON u.id = a.created_by
+       LEFT JOIN workspace_member m ON m.user_id = a.created_by AND m.workspace_id = a.workspace_id
+      WHERE a.id = $1 AND a.workspace_id = $2`,
+    [automationId, workspaceId],
+  )
+  if (!row) return { ok: false, reason: 'not_found' }
+  if (row.user_deleted || row.role === null || row.member_status !== 'active') return { ok: false, reason: 'creator_left' }
+  return {
+    ok: true,
+    context: {
+      sessionId: asSessionId(automationId),
+      userId: asUserId(row.created_by),
+      workspaceId: asWorkspaceId(workspaceId),
+      authMethod: 'automation',
+      mfaSatisfied: false,
+      role: row.role as WorkspaceRole,
+      delegation: { automationId },
     } as SessionContext,
   }
 }
