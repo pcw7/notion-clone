@@ -311,6 +311,9 @@ CREATE INDEX ON user_session (user_id) WHERE revoked_at IS NULL;
 -- 불변식 A9: effective() 의 입력은 user_id 가 아니라
 --            (user_id, workspace_id, auth_method, mfa_satisfied, session_id) 다.
 --            SSO 강제는 이 컨텍스트가 없으면 UI 장식이다. <14 R-11>
+--            [보강 · 자동화 5b-1] 발급자는 둘이다 — 로그인 세션(resolveSessionContext)과 자동화의 위임(resolveDelegatedContext:
+--            DB automation 을 만든 사람으로 · auth_method 'automation' · session_id 자리에 automation id · 세션 표를 가리키지 않는다).
+--            위임도 발급 전에 그 사람의 멤버십을 지금 다시 본다(§3.10 [보강] DB automation ①).
 
 CREATE TABLE session_policy (
   workspace_id uuid PRIMARY KEY REFERENCES workspace(id),
@@ -3380,6 +3383,31 @@ CREATE TABLE external_sync_source (            -- 구 external_binding. 정본 �
 >    반대이므로 클론은 설정 화면에서 경고해야 한다"*). 버튼은 표 · 행 페이지 · 보드 · 갤러리의 카드에 선다(카드를 여는 누르기로 번지지
 >    않게) — 캘린더 카드는 제목만 그리므로 서지 않는다. **템플릿 행에서는 누르지 않는다** — 템플릿은 행이 아니라 새 행의 모양이다
 >    (누르면 템플릿의 값이 바뀐다). 화면은 단추를 막고 서버도 거절한다(`not_found` — 템플릿은 누를 행이 아니다).
+
+**[보강] DB automation — 정의 · 실행 주체** ⟨자동화 5b-1 · F-08-09 · F-08-10 / 마이그레이션 0079⟩
+
+> 08 F-08-09 의 규칙형 automation 이다 — 데이터베이스(정확히는 data_source)에서 일이 생기면 액션을 실행한다. 이 조각은 **정의**와 **실행
+> 주체**를 세운다. 일을 받아 실행하는 것은 5b-2, 화면은 5b-3.
+>
+> ① **실행 주체 = 만든 사람**(08 F-08-10 *"automation 생성자로 실행 + 실행 시점 재검증"* — 08 이 [확인필요]로 남긴 자리를 사용자와 정했다
+>    · 2026-10-10). 세션 없는 워커가 그 사람을 대신하는 컨텍스트는 **`resolveDelegatedContext(workspaceId, automationId)` 하나만** 발급한다
+>    — A9 의 두 번째 발급자. 발급 전에 그 automation 의 `created_by` 가 **지금** 지워지지 않았고(`user.deleted_at`) · 그 워크스페이스의
+>    활성 멤버인지 본다. SSO 강제 · 2단계 인증은 묻지 않는다 — 로그인의 문이고, 그 사람이 만들 때 이미 지났다(API 토큰과 같은 판단).
+>    통과하지 못하면 automation 을 **끈다**(`enabled = false` · [보강] 칸 `disabled_reason` — `creator_left` · 조용히 실패하지 않는다).
+>    권한은 실행할 때마다 그 사람의 **지금** 권한으로 판정된다(액션이 부르는 명령이 묻는다 — 저장할 때의 권한을 쓰면 권한 상승 경로다).
+>    위임 컨텍스트는 `delegation: { automationId }` 를 싣고 `sessionId` 자리에 automation id 를 둔다 — 세션에 매인 명령(비밀번호 ·
+>    2단계 인증)을 이 컨텍스트로 부르지 않는다.
+> ② **정의** — kind `db_automation` · 주인은 data_source(④ 의 [정정] 그대로). 만들기 · 읽기 · 고치기 · 켜고 끄기 · 지우기는 그 데이터베이스의
+>    **전체 권한**(`manage_perm` — 08 *"automation 생성·편집에는 DB 의 full access 필요"* · 액션이 바깥으로 나갈 수 있고(5c) 남의 권한으로
+>    돈다). 고친 사람이 바뀌어도 실행 주체는 **처음 만든 사람**이다(`created_by` 는 바뀌지 않는다) — 넘기려면 지우고 다시 만든다(§7).
+>    이름은 1~100자. 표마다 automation 50개.
+> ③ **트리거**(`automation_trigger` — DDL 그대로): `page_added`(조건 없음) · `property_edited`(그 속성 · 조건 선택). 조건은 **보기의 필터와 같은
+>    모양** — 그 속성에 대한 잎 하나(`{ property_id, operator, value }` · `validateFilter` 가 본다)이고, 판정은 필터 컴파일러가 그 행 하나에
+>    묻는다(5b-2 — 판정이 두 벌이 되지 않게). **값의 모양도 저장할 때 본다**(숫자 · 체크 · 날짜 · 글 — `validateFilter` 는 연산자와 값의
+>    유무만 본다 · 사람이 보지 않는 워커가 판정하므로 그때 깨지지 않게). 트리거는 automation 마다 1~5개 · `trigger_mode` 는 `any` 만(`all` 은 §7). `schedule` ·
+>    `manual_click` 은 이 조각에서 받지 않는다. 트리거가 가리키는 속성이 지워지면 그 트리거는 맞지 않는다(5b-2 가 끄고 까닭을 남긴다).
+> ④ **액션** — 등록부 그대로(`edit_property` 는 **트리거된 행** · `add_page_to`). 저장할 때 버튼과 같은 검사를 지난다(그 표의 스키마 · 대상 표).
+> ⑤ 템플릿 행은 트리거하지 않는다(⑪ 과 같은 까닭 — 5b-2).
 
 ---
 

@@ -3754,8 +3754,8 @@ try {
     await tryReject('★ 버튼 프로퍼티에는 셀이 없다', 'tg_ppv_type_guard',
       `INSERT INTO page_property_value (page_id, property_id, value) VALUES ($1, $2, '{}'::jsonb)`, [rowPage, buttonProp])
 
-    const putAutomation = `INSERT INTO automation (id, workspace_id, kind, host_property_id, host_data_source_id, host_page_id, created_by)
-                           VALUES ($1, $2, $3, $4, $5, $6, $7)`
+    const putAutomation = `INSERT INTO automation (id, workspace_id, kind, host_property_id, host_data_source_id, host_page_id, created_by, name)
+                           VALUES ($1, $2, $3, $4, $5, $6, $7, '프로브')` // 이름은 0079 의 DB automation 이름 CHECK 를 비켜 간다(이 프로브는 주인 칸을 본다)
     const automationId = randomUUID()
     await client.query(putAutomation, [automationId, wsId, 'button_property', buttonProp, null, null, userId])
     ok('버튼 속성의 automation — 정상 경로가 통과한다')
@@ -3786,6 +3786,64 @@ try {
     const gone = (await client.query(`SELECT count(*)::int AS n FROM automation WHERE id = $1`, [automationId])).rows[0].n
     if (gone === 0 && left === 0) ok('★ 주인(속성) 행이 지워지면 automation · 액션 · 실행 기록이 함께 지워진다(CASCADE)')
     else fail(`속성을 지웠는데 automation ${gone} · 기록 ${left} 이 남았다`)
+    await client.query('ROLLBACK TO SAVEPOINT cascade')
+  }
+
+  console.log('\n[58] DB automation — 트리거 · 꺼진 까닭 (0079 / §3.10 [보강] DB automation · 5b-1조각)')
+  {
+    const dbBlock = randomUUID()
+    const dsId = randomUUID()
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key, ancestor_path, perm_scope_id, properties, format,
+                          created_at, last_edited_at)
+       VALUES ($1, $2, 'database', 'block', $3, 'a0', '{}', $1, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      [dbBlock, wsId, randomUUID()],
+    )
+    await client.query(`INSERT INTO database (id) VALUES ($1)`, [dbBlock])
+    await client.query(`INSERT INTO data_source (id, owner_database_id, name, schema_version) VALUES ($1, $2, '트리거', 1)`, [dsId, dbBlock])
+    const prop = `num${randomUUID().replaceAll('-', '').slice(0, 18)}`
+    await client.query(
+      `INSERT INTO property (id, data_source_id, name, type, order_idx, created_at, updated_at) VALUES ($1, $2, '수량', 'number', 'a0', now(), now())`,
+      [prop, dsId],
+    )
+    const tryReject = async (label, constraint, sql, params) => {
+      await client.query('SAVEPOINT probe')
+      try {
+        await client.query(sql, params)
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        fail(`${label} — 거부되어야 하는데 통과했다`)
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        if (e.constraint === constraint) ok(`${label} — ${constraint} 가 거부함 (${e.code})`)
+        else fail(`${label} — ${constraint} 가 아니라 ${e.constraint ?? e.code} 에 걸렸다 (${e.message})`)
+      }
+    }
+    const putAutomation = `INSERT INTO automation (id, workspace_id, kind, host_data_source_id, name, enabled, disabled_reason, created_by)
+                           VALUES ($1, $2, 'db_automation', $3, $4, $5, $6, $7)`
+    const automationId = randomUUID()
+    await client.query(putAutomation, [automationId, wsId, dsId, '완료 처리', true, null, userId])
+    await client.query(putAutomation, [randomUUID(), wsId, dsId, '떠난 사람의 것', false, 'creator_left', userId])
+    ok('DB automation 둘(켜짐 · 만든 사람이 떠나 꺼짐) — 정상 경로가 통과한다')
+    await tryReject('★ DB automation 에 이름이 없다', 'ck_automation_db_name', putAutomation, [randomUUID(), wsId, dsId, null, true, null, userId])
+    await tryReject('이름이 100자를 넘는다', 'ck_automation_db_name', putAutomation, [randomUUID(), wsId, dsId, 'x'.repeat(101), true, null, userId])
+    await tryReject('★ 꺼진 까닭이 있는데 켜져 있다', 'ck_automation_disabled_reason', putAutomation, [randomUUID(), wsId, dsId, '이상한', true, 'failures', userId])
+    await tryReject('모르는 까닭', 'ck_automation_disabled_reason_value', putAutomation, [randomUUID(), wsId, dsId, '모름', false, 'tired', userId])
+
+    const putTrigger = `INSERT INTO automation_trigger (id, automation_id, type, property_id, condition, schedule) VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb)`
+    await client.query(putTrigger, [randomUUID(), automationId, 'page_added', null, null, null])
+    await client.query(putTrigger, [randomUUID(), automationId, 'property_edited', prop, '{"property_id":"x","operator":"is_empty"}', null])
+    ok('트리거 둘(행 추가 · 속성 편집과 조건) — 정상 경로가 통과한다')
+    await tryReject('★ 속성 편집인데 속성이 없다', 'ck_automation_trigger_property', putTrigger, [randomUUID(), automationId, 'property_edited', null, null, null])
+    await tryReject('행 추가인데 속성이 있다', 'ck_automation_trigger_property', putTrigger, [randomUUID(), automationId, 'page_added', prop, null, null])
+    await tryReject('★ 행 추가에 조건이 있다', 'ck_automation_trigger_condition', putTrigger, [randomUUID(), automationId, 'page_added', null, '{}', null])
+    await tryReject('일정 트리거에 일정이 없다', 'ck_automation_trigger_schedule', putTrigger, [randomUUID(), automationId, 'schedule', null, null, null])
+    await tryReject('모르는 트리거', 'ck_automation_trigger_type', putTrigger, [randomUUID(), automationId, 'row_deleted', null, null, null])
+
+    await client.query('SAVEPOINT cascade')
+    await client.query(`DELETE FROM property WHERE id = $1`, [prop])
+    const left = (await client.query(`SELECT count(*)::int AS n FROM automation_trigger WHERE automation_id = $1`, [automationId])).rows[0].n
+    if (left === 1) ok('★ 속성이 물리 삭제되면 그 속성의 트리거만 함께 지워진다(CASCADE)')
+    else fail(`속성을 지웠는데 트리거가 ${left}개 남았다(1개여야 한다)`)
     await client.query('ROLLBACK TO SAVEPOINT cascade')
   }
 
