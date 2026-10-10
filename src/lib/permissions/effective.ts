@@ -258,7 +258,7 @@ async function chainInputs(
   chain: string[],
   teamspaceId: string | null,
 ): Promise<{ chain: string[]; cutAt: ReadonlySet<string>; entries: AclRow[] }> {
-  const [entries, cuts] = await Promise.all([
+  const [acl, cuts, rules] = await Promise.all([
     // teamspace 노드의 행은 `node_kind` 가 다르다 — 블록 id 와 겹칠 일은 없지만 종류까지 맞춰 읽는다.
     //
     // **보관된 teamspace 의 행은 읽지 않는다**(7c-6). 멤버는 이미 잃는다 — `principalsFor` 가 보관된 teamspace 를 주체로
@@ -279,9 +279,30 @@ async function chainInputs(
         WHERE node_id = ANY($1::uuid[]) AND inherits_from_parent = false`,
       [chain],
     ),
+    accessRuleEntries(tx, chain),
   ])
 
-  return { chain, cutAt: new Set(cuts.map((c) => c.node_id)), entries }
+  return { chain, cutAt: new Set(cuts.map((c) => c.node_id)), entries: [...acl, ...rules] }
+}
+
+/**
+ * 행 단위 접근 규칙이 이 노드들에 주는 부여 — **그 행 노드의 ACL 행으로 합성한다**(6f-2a · 정본 §3.3 끝 [보강] 행 단위 접근 규칙 ①).
+ *
+ * `created_by` 규칙이면 `('user', 그 행을 만든 사람, 레벨)`. 합성한 행의 주체는 그 행의 사람이라 **판정하는 주체와 무관하다** — 그래서
+ * 사슬의 ACL 행과 같은 자리에 섞으면 판정(`resolveCaps`) · 여러 사람 판정(`membersWith`) · 관리자 찾기가 고치지 않고 읽는다. 노드
+ * 로컬이다(P4) — 그 행이 끊겨도 자기 노드의 행이므로 남는다. 템플릿 행은 받지 않는다(R1). 사람 속성 규칙은 사람 속성(F-03-07)이
+ * 생길 때 여기에 한 갈래를 더한다(그 칸의 사람마다 한 줄) — 지금은 명령이 만들지 않는다.
+ */
+export async function accessRuleEntries(tx: Tx, nodes: readonly string[]): Promise<AclRow[]> {
+  if (nodes.length === 0) return []
+  return tx.query<AclRow>(
+    `SELECT p.id AS node_id, 'user' AS principal_type, b.created_by AS principal_id, r.level
+       FROM page p
+       JOIN block b ON b.id = p.id
+       JOIN page_access_rule r ON r.data_source_id = p.data_source_id AND r.source_kind = 'created_by'
+      WHERE p.id = ANY($1::uuid[]) AND p.is_template = false AND b.created_by IS NOT NULL`,
+    [nodes],
+  )
 }
 
 /**

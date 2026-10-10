@@ -39,7 +39,7 @@ import { recordForContextIn } from '../audit/audit.ts'
 import { withTransaction, type Tx } from '../db/tx.ts'
 import { mayInviteGuestsIn } from '../workspace/security-policy.ts'
 import { can, grantCapabilities, isGrantableLevel, unionCaps, type Level } from './levels.ts'
-import { effectiveCaps, principalsOf, resolveCaps, type AclRow } from './effective.ts'
+import { accessRuleEntries, effectiveCaps, principalsOf, resolveCaps, type AclRow } from './effective.ts'
 
 export type PrincipalRef =
   | { readonly type: 'user'; readonly id: string }
@@ -502,7 +502,7 @@ async function inheritedGrants(
   const chain = teamspaceId === null ? ancestors : [...ancestors, teamspaceId]
   if (chain.length === 0) return result
 
-  const [entries, cuts] = await Promise.all([
+  const [acl, cuts, rules] = await Promise.all([
     tx.query<AclRow>(
       `SELECT node_id, principal_type, principal_id, level
          FROM acl_entry
@@ -515,7 +515,11 @@ async function inheritedGrants(
         WHERE node_id = ANY($1::uuid[]) AND inherits_from_parent = false`,
       [ancestors],
     ),
+    // 조상 행의 규칙 부여도 상속분이다 — 행 아래 페이지를 끊으면 그 순간의 것을 복사한다(P1 · 6f-2a ①). 끊는 노드 자신의 규칙 부여는
+    // 조상이 아니므로 여기 오지 않는다 — 그 행을 끊어도 자기 규칙은 그대로 판정에 남는다(노드 로컬 · P4).
+    accessRuleEntries(tx, ancestors),
   ])
+  const entries = [...acl, ...rules]
   const cutSet = new Set(cuts.map((c) => c.node_id))
 
   for (const nodeId of chain) {
