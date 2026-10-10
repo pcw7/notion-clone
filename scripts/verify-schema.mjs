@@ -3622,6 +3622,45 @@ try {
     await client.query('ROLLBACK TO SAVEPOINT partition')
   }
 
+  console.log('\n[55] 페이지 웹훅 (0075 / §3.8 [보강] 페이지 웹훅 · 4e-1조각)')
+  {
+    const hookPage = randomUUID()
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key, ancestor_path, perm_scope_id, properties, format,
+                          created_at, last_edited_at)
+       VALUES ($1, $2, 'page', 'block', $3, 'a0', '{}', $1, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      [hookPage, wsId, randomUUID()],
+    )
+    const put = `INSERT INTO page_webhook (id, workspace_id, page_id, url_sealed, url_hint, created_by, paused_at, pause_reason)
+                 VALUES ($1, $2, $3, '\\x01'::bytea, 'hooks.example.com/…abcd', $4, $5, $6)`
+    await client.query(put, [randomUUID(), wsId, hookPage, userId, null, null])
+    await client.query(put, [randomUUID(), wsId, hookPage, userId, new Date(), 'failures'])
+    ok('웹훅 둘(켜짐 · 실패로 멈춤) — 정상 경로가 통과한다')
+
+    const rejectBy = async (label, constraint, params) => {
+      await client.query('SAVEPOINT probe')
+      try {
+        await client.query(put, params)
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        fail(`${label} — 거부되어야 하는데 통과했다`)
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        if (e.constraint === constraint) ok(`${label} — ${constraint} 가 거부함 (${e.code})`)
+        else fail(`${label} — ${constraint} 가 아니라 ${e.constraint ?? e.code} 에 걸렸다 (${e.message})`)
+      }
+    }
+    await rejectBy('★ 멈춘 시각만 있고 까닭이 없다', 'ck_page_webhook_pause_pair', [randomUUID(), wsId, hookPage, userId, new Date(), null])
+    await rejectBy('★ 까닭만 있고 멈춘 시각이 없다', 'ck_page_webhook_pause_pair', [randomUUID(), wsId, hookPage, userId, null, 'manual'])
+    await rejectBy('모르는 까닭', 'ck_page_webhook_pause_reason', [randomUUID(), wsId, hookPage, userId, new Date(), 'tired'])
+
+    await client.query('SAVEPOINT cascade')
+    await client.query(`DELETE FROM block WHERE id = $1`, [hookPage])
+    const left = (await client.query(`SELECT count(*)::int AS n FROM page_webhook WHERE page_id = $1`, [hookPage])).rows[0].n
+    if (left === 0) ok('★ 페이지 행이 지워지면 웹훅도 함께 지워진다(CASCADE)')
+    else fail(`페이지를 지웠는데 웹훅 ${left}개가 남았다`)
+    await client.query('ROLLBACK TO SAVEPOINT cascade')
+  }
+
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
 } catch (e) {
