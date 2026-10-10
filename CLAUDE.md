@@ -162,7 +162,8 @@ Rancher Desktop 1.24.0을 먼저 설치했으나 WSL 2.7.13과의 조합에서 *
 정본 불변식 A9: **`effective()` 의 입력은 `user_id` 가 아니다.**
 
 - 권한을 묻는 모든 함수는 `SessionContext` 를 받는다. `UserId` 만 받는 권한 함수를 만들지 않는다.
-- `SessionContext` 는 브랜디드 타입이라 리터럴로 만들 수 없다. `resolveSessionContext()` 만 발급하고, 그 함수는 발급 전에 0단계 게이트(`can_enter_workspace`)를 통과시킨다.
+- `SessionContext` 는 브랜디드 타입이라 리터럴로 만들 수 없다. **발급자는 둘뿐이다** — `resolveSessionContext()`(로그인 세션 · 발급 전에 0단계 게이트 `can_enter_workspace`)와 `resolveDelegatedContext()`(DB automation 을 **만든 사람**으로 실행하는 위임 · 발급 전에 그 사람의 멤버십을 지금 다시 본다 · 자동화 5b-1 — 2026-10-10 사용자와 정했다). 셋째 발급자를 만들지 않는다.
+- 위임 컨텍스트(`ctx.delegation` 이 있다)는 세션이 없다 — 세션에 매인 명령(비밀번호 · 2단계 인증)에 넘기지 않는다.
 - 따라서 **`SessionContext` 를 갖고 있다는 것 자체가 "이 사용자는 이 워크스페이스에 들어올 수 있다"는 증명**이다. 우회하려면 타입을 캐스팅해야 하고, 그건 리뷰에서 보인다.
 
 ## 커밋 규칙
