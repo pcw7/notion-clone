@@ -24,6 +24,7 @@ import type { MvpViewType, ViewSummary } from '@/lib/database/view'
 import type { ViewColumn } from '@/lib/database/view-columns'
 import type { Calculations } from '@/lib/database/calculate'
 import type { PropertyDependents } from '@/lib/database/property-dependents'
+import type { PageSettings } from '@/lib/database/page-settings'
 import { MAX_PINNED_PROPERTIES } from '@/lib/database/limits'
 
 export type ApiResult<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly message: string }
@@ -819,6 +820,8 @@ export function applyLayout(
     readonly hidden: readonly string[]
     /** 제목 아래에 고정할 속성 — 원하는 순서(3a-2). */
     readonly pinned: readonly string[]
+    /** 페이지 설정(3b-2) — 준 칸만 바뀐다. */
+    readonly settings?: PageSettings
   },
 ): Promise<ApiResult<{ changed: boolean }>> {
   return call(

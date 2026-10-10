@@ -176,6 +176,8 @@ export function DatabaseTable(props: {
    * 팝오버를 자른다(아래 "표를 가로 스크롤 상자로 감싸지 않는다").
    */
   recordAxis?: 'column' | 'row'
+  /** 레코드 모양에서 속성 이름 앞의 유형 아이콘을 보인다(3b-2 · F-16-10 · 기본 참). 행 페이지의 레이아웃이 끈다. */
+  showPropertyIcons?: boolean
 }) {
   const { workspaceId, viewId, dataSourceId, tableName, access } = props
   const variant: TableVariant = props.variant ?? 'table'
@@ -1271,9 +1273,11 @@ export function DatabaseTable(props: {
                         <span
                           className={`flex items-center gap-1.5 truncate px-1 text-xs text-neutral-500 ${isRecordRow ? 'pt-1' : 'w-40 flex-none'}`}
                         >
-                          <span aria-hidden className="text-neutral-400">
-                            {TYPE_ICON[column.type]}
-                          </span>
+                          {props.showPropertyIcons !== false && (
+                            <span aria-hidden className="text-neutral-400" data-testid="db-record-icon">
+                              {TYPE_ICON[column.type]}
+                            </span>
+                          )}
                           {column.name}
                           <span className="sr-only"> ({TYPE_LABEL[column.type]})</span>
                         </span>

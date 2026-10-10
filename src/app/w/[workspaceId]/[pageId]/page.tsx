@@ -157,13 +157,20 @@ export default async function PageView({ params, searchParams }: PageProps<'/w/[
   const rowColumns = rowPage === null ? [] : listColumns('record', rowPage.columns)
   const rowAccess = rowPage === null ? null : { ...rowPage.access, canEditContent: rowPage.access.canEditContent && access === 'edit' }
   const rowRelationIds = rowColumns.filter((c) => c.type === 'relation').map((c) => c.propertyId)
+  // 행 페이지의 페이지 설정(3b-2 · F-16-09 · F-16-10) — 레이아웃의 것이다(데이터베이스의 모든 행에 같다 · 정본 [보강] 페이지 설정 ③).
+  // 일반 페이지는 null — 지금의 모양(좁게 · 접은 백링크 · 코멘트 단추 · 칠한 코멘트)이 그대로다.
+  const settings = rowPage?.settings ?? null
   const rowRelation =
     rowPage === null || rowRelationIds.length === 0
       ? { labels: {}, icons: {} }
       : await loadRelationLabels(ctx, relationIdsIn([rowPage.row], rowRelationIds))
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-3xl flex-col gap-6 px-6 py-12">
+    <main
+      className={`mx-auto flex min-h-screen ${settings?.fullWidth ? 'max-w-none' : 'max-w-3xl'} flex-col gap-6 px-6 py-12`}
+      data-full-width={settings?.fullWidth ? 'true' : undefined}
+      data-inline-comments={settings?.inlineComments}
+    >
       <div className="flex items-start justify-between gap-3">
         <nav
           aria-label="상위 경로"
@@ -204,6 +211,7 @@ export default async function PageView({ params, searchParams }: PageProps<'/w/[
             workspaceId={workspaceId}
             pageId={page.id}
             initialOpenCount={openThreads.ok ? openThreads.discussions.length : 0}
+            showToggle={settings?.showDiscussions ?? true}
           />
           {/* 행의 권한 · 자리는 데이터베이스가 정한다 — 공유 · 옮기기 · 내보내기 · 복제는 행에 세우지 않는다(8f-1 · §7). */}
           {rowPage === null && <SharePanel workspaceId={workspaceId} pageId={page.id} initialOpen={share === '1'} />}
@@ -272,6 +280,8 @@ export default async function PageView({ params, searchParams }: PageProps<'/w/[
             columns={rowColumns}
             layoutVersion={rowPage.layoutVersion}
             pinned={rowPage.pinned}
+            settings={rowPage.settings}
+            showPropertyIcons={rowPage.settings.showPropertyIcons}
             canEditLayout={rowAccess.canEditStructure}
             rows={[rowJson(rowPage.row)]}
             hasMore={false}
@@ -288,9 +298,17 @@ export default async function PageView({ params, searchParams }: PageProps<'/w/[
         </section>
       )}
 
-      {/* 백링크 — F-07-09 "제목 아래 `{#} backlinks`, 접힌 채로". 볼 수 없는 페이지는 개수에도 없다. */}
-      {backlinks.length > 0 && (
-        <details aria-label="백링크" className="text-sm text-neutral-500">
+      {/*
+        백링크 — F-07-09 "제목 아래 `{#} backlinks`, 접힌 채로". 볼 수 없는 페이지는 개수에도 없다. 행 페이지는 레이아웃이 정한다(3b-2 ·
+        F-16-09) — 늘 펼침 · 접어 둠(기본 — 16 의 "호버할 때만"을 누르면 펼치는 것으로 · 터치 화면에도 같은 길) · 보이지 않음.
+      */}
+      {backlinks.length > 0 && settings?.backlinks !== 'off' && (
+        <details
+          aria-label="백링크"
+          data-testid="page-backlinks"
+          open={settings?.backlinks === 'always'}
+          className="text-sm text-neutral-500"
+        >
           <summary className="cursor-pointer select-none">이 페이지를 멘션한 페이지 {backlinks.length}</summary>
           <ul className="mt-1 flex flex-col gap-1 pl-4">
             {backlinks.map((b) => (
