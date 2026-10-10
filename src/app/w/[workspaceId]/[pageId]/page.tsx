@@ -48,6 +48,7 @@ import { DeletePageButton } from './delete-page-button'
 import { NoAccess } from './no-access'
 import { LockButton } from './lock-button'
 import { PageHistoryButton } from './page-history'
+import { PageUpdatesButton } from './page-updates'
 import { canViewPageHistory } from '@/lib/history/version'
 import { readRowPage } from '@/lib/database/row-page'
 import { listColumns } from '@/lib/database/list-layout'
@@ -235,6 +236,8 @@ export default async function PageView({ params, searchParams }: PageProps<'/w/[
           />
           )}
           {history && <PageHistoryButton workspaceId={workspaceId} pageId={page.id} />}
+          {/* 업데이트(4d-3 · F-11-04) — 볼 수 있는 사람 모두 · 행도 */}
+          <PageUpdatesButton workspaceId={workspaceId} pageId={page.id} />
           {rowPage === null && <ExportButton workspaceId={workspaceId} rootId={page.id} />}
           {/* 복제는 원본을 고치지 않는다 — 볼 수만 있는 사람도 누를 수 있다(자리가 없으면 서버가 거부한다). */}
           {rowPage === null && <DuplicatePageButton workspaceId={workspaceId} pageId={page.id} />}
