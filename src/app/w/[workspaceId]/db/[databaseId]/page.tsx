@@ -91,6 +91,8 @@ import { queryCalendar } from '@/lib/database/calendar-query'
 import { readCardCovers } from '@/lib/database/gallery-covers'
 import { TemplatePanel } from './template-panel'
 import { DataSourcePanel, type DataSourceEntry } from './data-source-panel'
+import { AutomationPanel } from './automation-panel'
+import { dbAutomationBadge } from '@/lib/automation/db-automation'
 import type { DataSourceSummary } from '@/lib/database/data-source'
 import type { DatabaseAccess } from '@/lib/database/database'
 
@@ -279,6 +281,10 @@ export default async function DatabasePage({
       : original.ok
         ? bothOf(access, originalLock?.locked ? { ...original.value.access, canEditStructure: false } : original.value.access)
         : NO_ACCESS
+  // DB automation(5b-3a) — 그 표(소스)의 전체 권한이 있을 때만 배지가 온다(정의의 문과 같다 · 없으면 null). 실행 쪽이 보는 잠금은 소스의
+  // 원본 데이터베이스의 것이다 — 붙인 소스면 원본의 잠금.
+  const automationBadge = await dbAutomationBadge(ctx, view.value.dataSourceId)
+  const automationLocked = (ownerId === null ? lock : originalLock)?.locked ?? false
   const columns = view.value.columns
   // 지워진 속성의 정렬 키를 뺀다. 그대로 두면 다른 키를 고친 저장까지 서버가 거부한다
   // (`filter-draft.ts` 머리말).
@@ -521,6 +527,15 @@ export default async function DatabasePage({
           // 템플릿은 표(소스)의 행이다 — 붙인 소스면 원본의 권한도 있어야 한다(교집합)
           canEdit={contentAccess.canEditStructure}
         />
+        {automationBadge !== null && (
+          <AutomationPanel
+            workspaceId={workspaceId}
+            dataSourceId={view.value.dataSourceId}
+            badge={automationBadge}
+            locked={automationLocked}
+            catalog={catalog}
+          />
+        )}
       </div>
 
       {/* 보드는 열을 남긴다 — 맞는 카드가 하나도 없으면 위에 안내를 둔다(2e-2 · 04 *"빈 테이블만 보이면 필터 버그로 오인"*). */}
