@@ -1,9 +1,10 @@
 /**
- * DB automation — 정의 (자동화 5b-1 · F-08-09)
+ * DB automation — 정의 · 화면이 읽는 것 (자동화 5b-1 · 5b-3a · F-08-09)
  *
- * 정본: 00-canonical-data-model.md §3.10 [보강] DB automation — 정의 · 실행 주체 ② ③ ④ · 마이그레이션 0079
+ * 정본: 00-canonical-data-model.md §3.10 [보강] DB automation — 정의 · 실행 주체 ② ③ ④ · 화면 ① ⓐ ⓓ · 마이그레이션 0079
  *
- * 데이터베이스(data_source)에서 일이 생기면 액션을 실행하는 규칙이다. 이 파일은 **정의**만 다룬다 — 일을 받아 실행하는 것은 5b-2.
+ * 데이터베이스(data_source)에서 일이 생기면 액션을 실행하는 규칙이다. 이 파일은 **정의**와 화면이 읽는 배지 · 실행 기록을 다룬다 — 일을
+ * 받아 실행하는 것은 `trigger-route.ts` · `dispatch.ts`(5b-2).
  *
  *   - 문 — 그 데이터베이스의 **전체 권한**(`manage_perm`). 볼 수 없으면 `not_found`, 볼 수 있지만 전체 권한이 없으면 `forbidden`. 읽기도
  *     같다 — 액션이 남의 권한(만든 사람)으로 돌고 바깥으로 나갈 수 있다(5c).
@@ -24,7 +25,10 @@ import { validateFilter, type FilterLeaf } from '../database/filter.ts'
 import { isUuid } from '../ids.ts'
 import { can } from '../permissions/levels.ts'
 import { effectiveCaps } from '../permissions/effective.ts'
+import { loadRelationLabels } from '../database/relation.ts'
+import { AUTOMATION_RUN_CAP } from '../notification/retention.ts'
 import { parseActions, type ActionInput, type ActionProblem } from './actions.ts'
+import type { Step } from './engine.ts'
 import { checkActions, readActions, writeActions, type ActionSchemaProblem, type SchemaGate } from './action-check.ts'
 
 export const MAX_DB_AUTOMATIONS = 50
@@ -332,6 +336,72 @@ export async function deleteDbAutomation(ctx: SessionContext, dataSourceId: stri
     )
     return removed.length === 0 ? fail('not_found') : ({ ok: true, value: null } as const)
   })
+}
+
+// ── 화면 — 배지 · 실행 기록 (5b-3a · 정본 [보강] DB automation — 화면 ① ⓐ ⓓ) ──────────────
+
+/** ⚡ 의 배지 — 켜진 수 · 꺼진 까닭이 있는 수. 전체 권한이 없으면 null(⚡ 가 서지 않는다 · 정본 화면 ⓐ). */
+export async function dbAutomationBadge(
+  ctx: SessionContext,
+  dataSourceId: string,
+): Promise<{ readonly enabled: number; readonly attention: number } | null> {
+  return withReadTransaction(async (tx) => {
+    const g = await gate(tx, ctx, dataSourceId, false)
+    if (typeof g === 'string') return null
+    return tx.queryOne<{ enabled: number; attention: number }>(
+      `SELECT count(*) FILTER (WHERE enabled)::int AS enabled, count(*) FILTER (WHERE disabled_reason IS NOT NULL)::int AS attention
+         FROM automation WHERE host_data_source_id = $1 AND kind = 'db_automation'`,
+      [dataSourceId],
+    )
+  })
+}
+
+export type DbAutomationRun = {
+  readonly id: string
+  readonly status: string
+  readonly startedAt: Date
+  readonly finishedAt: Date | null
+  /** 트리거된 행 — 지워졌으면 null(FK SET NULL). */
+  readonly triggerPageId: string | null
+  readonly steps: readonly Step[]
+}
+
+/**
+ * 실행 기록 — 새것부터 보관 상한(50)만큼. 트리거된 행의 제목은 **보는 사람의 권한으로** 읽는다(정본 화면 ⓓ — relation 의 제목 맵과 같은
+ * 셋: 제목 · 볼 수 없음(null) · 키 없음(지워짐)). 문은 정의와 같다.
+ */
+export async function listDbAutomationRuns(
+  ctx: SessionContext,
+  dataSourceId: string,
+  automationId: string,
+): Promise<DbAutomationResult<{ readonly runs: readonly DbAutomationRun[]; readonly titles: Readonly<Record<string, string | null>> }>> {
+  const listed = await withReadTransaction(async (tx) => {
+    const g = await gate(tx, ctx, dataSourceId, false)
+    if (typeof g === 'string') return fail(g)
+    if (!isUuid(automationId)) return fail('not_found')
+    const found = await tx.queryMaybe<{ one: number }>(
+      `SELECT 1 AS one FROM automation WHERE id = $1 AND host_data_source_id = $2 AND kind = 'db_automation'`,
+      [automationId, dataSourceId],
+    )
+    if (found === null) return fail('not_found')
+    const rows = await tx.query<{ id: string; status: string; started_at: Date; finished_at: Date | null; trigger_page_id: string | null; steps: Step[] }>(
+      `SELECT id, status, started_at, finished_at, trigger_page_id, steps FROM automation_run
+        WHERE automation_id = $1 ORDER BY started_at DESC, id DESC LIMIT $2`,
+      [automationId, AUTOMATION_RUN_CAP],
+    )
+    const runs: DbAutomationRun[] = rows.map((r) => ({
+      id: r.id,
+      status: r.status,
+      startedAt: r.started_at,
+      finishedAt: r.finished_at,
+      triggerPageId: r.trigger_page_id,
+      steps: r.steps,
+    }))
+    return { ok: true, value: runs } as const
+  })
+  if (!listed.ok) return listed
+  const { labels } = await loadRelationLabels(ctx, listed.value.flatMap((r) => (r.triggerPageId === null ? [] : [r.triggerPageId])))
+  return { ok: true, value: { runs: listed.value, titles: labels } }
 }
 
 /** 실패를 HTTP 로 — 없음 404 · 권한 403 · 나머지 400. */

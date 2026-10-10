@@ -1,7 +1,7 @@
 /**
- * DB automation — 정의 · 실행 주체 (자동화 5b-1 · F-08-09 · F-08-10, DB 필요)
+ * DB automation — 정의 · 실행 주체 · 화면이 읽는 것 (자동화 5b-1 · 5b-3a · F-08-09 · F-08-10, DB 필요)
  *
- * 이 파일이 지키는 것(정본 §3.10 [보강] DB automation ① ~ ④).
+ * 이 파일이 지키는 것(정본 §3.10 [보강] DB automation ① ~ ④ · 화면 ① ⓐ ⓓ).
  *
  *   ① 문 — 그 데이터베이스의 전체 권한만(고치기만 받았으면 403 · 못 보면 404) · 읽기도 같다
  *   ② 정의 검사 — 트리거(없음 · 너무 많음 · 아직 받지 않는 종류 · 그 표의 셀 속성이 아님 · 조건이 그 속성의 필터가 아님) · 액션(버튼과 같은 검사)
@@ -9,6 +9,8 @@
  *   ④ 표마다 50개
  *   ⑤ 위임 발급자 — 만든 사람으로 · `automation` · 세션 자리에 automation id · 떠났거나 지워졌으면 `creator_left` · 남의 워크스페이스는 `not_found`
  *   ⑥ 위임 컨텍스트의 권한은 그 사람의 **지금** 권한이다 — 그 사람의 접근을 거두면 위임도 못 쓴다
+ *   ⑦ 화면 — ⚡ 의 배지는 전체 권한에만(켜진 수 · 꺼진 까닭이 있는 수) · 실행 기록은 새것부터 상한만큼 · 트리거된 행의 제목은 보는 사람의
+ *      권한으로(볼 수 없음 null · 지워짐은 키 없음) · 문은 정의와 같다
  *
  * 반사실(HANDOFF §3.3): 문을 고치기로 낮추면 ①, 조건 검사를 빼면 ②, 실행 주체를 고친 사람으로 바꾸면 ③, 멤버십을 보지 않으면 ⑤ 가 실패한다.
  */
@@ -24,9 +26,18 @@ import { resolveDelegatedContext } from '../auth/session-context.ts'
 import { asWorkspaceId } from '../ids.ts'
 import { createDatabase } from '../database/database.ts'
 import { addProperty } from '../database/property.ts'
-import { createRow, updateCellsIn } from '../database/row.ts'
+import { createRow, trashRow, updateCellsIn } from '../database/row.ts'
+import { AUTOMATION_RUN_CAP } from '../notification/retention.ts'
 import { grantAccess, revokeAccess, stopInheriting } from '../permissions/acl.ts'
-import { createDbAutomation, deleteDbAutomation, listDbAutomations, MAX_DB_AUTOMATIONS, updateDbAutomation } from './db-automation.ts'
+import {
+  createDbAutomation,
+  dbAutomationBadge,
+  deleteDbAutomation,
+  listDbAutomationRuns,
+  listDbAutomations,
+  MAX_DB_AUTOMATIONS,
+  updateDbAutomation,
+} from './db-automation.ts'
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'
 
@@ -211,5 +222,65 @@ describe('⑤ 위임 발급자', () => {
     assert.equal((await revokeAccess(fx.owner.ctx, tb.databaseId, { type: 'user', id: admin.userId })).ok, true)
     const after = await write()
     assert.deepEqual(after.ok ? null : after.reason, 'not_found', '거둔 뒤에는 위임도 그 표를 못 본다')
+  })
+})
+
+describe('⑦ 화면 — 배지 · 실행 기록', () => {
+  test('★ 배지는 전체 권한에만 — 켜진 수 · 꺼진 까닭이 있는 수', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const tb = await table('배지 표')
+    assert.deepEqual(await dbAutomationBadge(fx.owner.ctx, tb.ds), { enabled: 0, attention: 0 })
+    unwrap(await createDbAutomation(fx.owner.ctx, tb.ds, definition(tb, '켜진 것')))
+    const tired = unwrap(await createDbAutomation(fx.owner.ctx, tb.ds, definition(tb, '지친 것')))
+    const off = unwrap(await createDbAutomation(fx.owner.ctx, tb.ds, definition(tb, '사람이 끈 것')))
+    await query(`UPDATE automation SET enabled = false, disabled_reason = 'failures' WHERE id = $1`, [tired.id])
+    unwrap(await updateDbAutomation(fx.owner.ctx, tb.ds, off.id, { enabled: false }))
+    assert.deepEqual(await dbAutomationBadge(admin.ctx, tb.ds), { enabled: 1, attention: 1 })
+    assert.equal(await dbAutomationBadge(editor.ctx, tb.ds), null, '고치기만 받았으면 ⚡ 가 서지 않는다')
+    assert.equal(await dbAutomationBadge(outsider.ctx, tb.ds), null)
+  })
+
+  test('★ 실행 기록 — 새것부터 상한만큼 · 트리거된 행의 제목은 보는 사람의 권한으로(볼 수 없음 · 지워짐)', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const tb = await table('기록 표')
+    const auto = unwrap(await createDbAutomation(fx.owner.ctx, tb.ds, definition(tb)))
+    const other = unwrap(await createDbAutomation(fx.owner.ctx, tb.ds, definition(tb, '다른 것')))
+    // 관리하는 사람이 볼 수 없는 행 — 그 행만 상속을 끊고 그 사람을 뺀다
+    const hidden = unwrap(await createRow(fx.owner.ctx, tb.ds)).id
+    assert.equal((await stopInheriting(fx.owner.ctx, hidden)).ok, true)
+    await revokeAccess(fx.owner.ctx, hidden, { type: 'user', id: admin.userId })
+    const trashed = unwrap(await createRow(fx.owner.ctx, tb.ds)).id
+    unwrap(await trashRow(fx.owner.ctx, trashed))
+    const put = (automationId: string, page: string | null, minutesAgo: number, status = 'success') =>
+      query(
+        `INSERT INTO automation_run (id, automation_id, workspace_id, trigger_page_id, actor_id, origin, depth, status, steps, started_at, finished_at)
+         VALUES (gen_random_uuid(), $1, $2, $3, $4, 'automation', 1, $5, $6::jsonb, now() - make_interval(mins => $7), now() - make_interval(mins => $7))`,
+        [automationId, fx.workspaceId, page, fx.owner.userId, status, JSON.stringify([{ index: 0, type: 'edit_property', status: 'done' }]), minutesAgo],
+      )
+    for (let i = 0; i < AUTOMATION_RUN_CAP; i += 1) await put(auto.id, tb.row, 100 + i) // 오래된 것
+    await put(auto.id, hidden, 3, 'partial')
+    await put(auto.id, trashed, 2)
+    await put(auto.id, null, 1, 'failed') // 행이 물리 삭제됐다(SET NULL)
+    await put(other.id, tb.row, 0)
+
+    const seen = unwrap(await listDbAutomationRuns(admin.ctx, tb.ds, auto.id))
+    assert.equal(seen.runs.length, AUTOMATION_RUN_CAP, '보관 상한만큼')
+    assert.deepEqual(
+      seen.runs.slice(0, 3).map((r) => [r.status, r.triggerPageId]),
+      [['failed', null], ['success', trashed], ['partial', hidden]],
+      '새것부터 · 다른 automation 의 기록은 없다',
+    )
+    assert.deepEqual(seen.runs[0].steps, [{ index: 0, type: 'edit_property', status: 'done' }])
+    assert.equal(seen.titles[tb.row], '', '볼 수 있는 행 — 제목(빈 글이면 화면이 "제목 없음")')
+    assert.equal(seen.titles[hidden], null, '★ 볼 수 없는 행의 제목은 주지 않는다')
+    assert.equal(trashed in seen.titles, false, '지워진 행은 키가 없다')
+    const ownerSees = unwrap(await listDbAutomationRuns(fx.owner.ctx, tb.ds, auto.id))
+    assert.equal(ownerSees.titles[hidden], '', '그 행을 볼 수 있는 사람에게는 준다')
+
+    assert.deepEqual(await listDbAutomationRuns(editor.ctx, tb.ds, auto.id), { ok: false, reason: 'forbidden' }, '문은 정의와 같다')
+    assert.deepEqual(await listDbAutomationRuns(outsider.ctx, tb.ds, auto.id), { ok: false, reason: 'not_found' })
+    const elsewhere = await table('다른 기록 표')
+    assert.deepEqual(await listDbAutomationRuns(fx.owner.ctx, elsewhere.ds, auto.id), { ok: false, reason: 'not_found' }, '다른 표의 automation')
+    assert.deepEqual(await listDbAutomationRuns(fx.owner.ctx, tb.ds, 'nope'), { ok: false, reason: 'not_found' })
   })
 })

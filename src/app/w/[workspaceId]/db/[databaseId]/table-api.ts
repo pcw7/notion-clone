@@ -8,7 +8,7 @@
  * try/catch 를 빠뜨려 낙관적으로 칠한 칸이 되돌아가지 않는 경로를 만들지 않는다.
  */
 
-import type { FilterNode, SortKey } from '@/lib/database/filter'
+import type { FilterLeaf, FilterNode, SortKey } from '@/lib/database/filter'
 import type { GroupBy } from '@/lib/database/group'
 import type { CalculationResult } from '@/lib/database/calculations'
 import type { GalleryLayout } from '@/lib/database/gallery'
@@ -961,4 +961,65 @@ export function setReminder(workspaceId: string, rowId: string, propertyId: stri
 /** 날짜 칸의 리마인더를 푼다. */
 export function clearReminder(workspaceId: string, rowId: string, propertyId: string): Promise<ApiResult<null>> {
   return call(`${base(workspaceId)}/rows/${rowId}/reminders/${encodeURIComponent(propertyId)}`, { method: 'DELETE' }, () => null)
+}
+
+// ── DB automation (자동화 5b-3a · F-08-09) ──────────────────────────────
+
+export type DbAutomationTriggerJson =
+  | { readonly type: 'page_added' }
+  | { readonly type: 'property_edited'; readonly propertyId: string; readonly condition: FilterLeaf | null }
+
+export type DbAutomationJson = {
+  readonly id: string
+  readonly name: string
+  readonly enabled: boolean
+  readonly disabledReason: string | null
+  readonly createdBy: { readonly id: string; readonly name: string }
+  readonly triggers: readonly DbAutomationTriggerJson[]
+  readonly actions: readonly ButtonActionJson[]
+  readonly updatedAt: string
+}
+
+export type DbAutomationRunsJson = {
+  readonly runs: readonly {
+    readonly id: string
+    readonly status: string
+    readonly startedAt: string
+    readonly finishedAt: string | null
+    readonly triggerPageId: string | null
+    readonly steps: readonly { readonly index: number; readonly type: string; readonly status: string; readonly reason?: string }[]
+  }[]
+  /** 보는 사람의 권한으로 — 볼 수 없으면 null · 지워졌으면 키가 없다. */
+  readonly titles: Readonly<Record<string, string | null>>
+}
+
+const automationsUrl = (workspaceId: string, dataSourceId: string) => `${base(workspaceId)}/data-sources/${dataSourceId}/automations`
+
+export function listDbAutomations(workspaceId: string, dataSourceId: string): Promise<ApiResult<readonly DbAutomationJson[]>> {
+  return call(automationsUrl(workspaceId, dataSourceId), { method: 'GET' }, (body) => (body.automations ?? []) as DbAutomationJson[])
+}
+
+/** 켜고 끈다 — 켜면 꺼진 까닭이 지워진다. */
+export function setDbAutomationEnabled(
+  workspaceId: string,
+  dataSourceId: string,
+  automationId: string,
+  enabled: boolean,
+): Promise<ApiResult<DbAutomationJson>> {
+  return call(
+    `${automationsUrl(workspaceId, dataSourceId)}/${automationId}`,
+    { method: 'PATCH', headers: JSON_HEADERS, body: JSON.stringify({ enabled }) },
+    (body) => body.automation as DbAutomationJson,
+  )
+}
+
+export function deleteDbAutomation(workspaceId: string, dataSourceId: string, automationId: string): Promise<ApiResult<null>> {
+  return call(`${automationsUrl(workspaceId, dataSourceId)}/${automationId}`, { method: 'DELETE' }, () => null)
+}
+
+export function listDbAutomationRuns(workspaceId: string, dataSourceId: string, automationId: string): Promise<ApiResult<DbAutomationRunsJson>> {
+  return call(`${automationsUrl(workspaceId, dataSourceId)}/${automationId}/runs`, { method: 'GET' }, (body) => ({
+    runs: (body.runs ?? []) as DbAutomationRunsJson['runs'],
+    titles: (body.titles ?? {}) as DbAutomationRunsJson['titles'],
+  }))
 }

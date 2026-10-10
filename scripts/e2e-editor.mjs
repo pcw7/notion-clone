@@ -14700,6 +14700,123 @@ async function main() {
         String(loaded))
     }
 
+    if (sectionIf('DB automation — 목록 · 켜고 끄기 · 실행 기록 (5b-3a · F-08-09)')) {
+      // ⚡ 는 전체 권한이 있는 사람에게만 선다 — 배지는 켜진 수 · 꺼진 까닭이 있으면 `!`. 목록은 트리거(조건은 보기의 칩과 같은 말) · 액션 ·
+      // 실행 주체 · 켜고 끄기(배지가 따라간다) · 꺼진 까닭(켜면 지워진다) · 실행 기록(결과 · 트리거된 항목 · 단계) · 지우기는 한 번 더 묻는다.
+      // 실행은 워커 대신 판을 직접 부른다(웹훅 화면과 같다). 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const src = (p) => new URL(`../src/lib/${p}`, import.meta.url).href
+      const browseAs = (token) => send('Network.setCookie', { name: 'nc_session', value: token, domain: 'localhost', path: '/', httpOnly: true })
+      const db = (await api('POST', '/databases', { name: `자동화 화면 ${stamp}` })).body.database
+      const ds = db.dataSourceId
+      const prop = async (name, type) => (await api('POST', `/data-sources/${ds}/properties`, { name, type })).body.property.id
+      const qty = await prop('수량', 'number')
+      const mark = await prop('표시', 'checkbox')
+      await api('PATCH', `/views/${db.defaultViewId}/columns/${mark}`, { visible: false })
+      const definition = (name, triggers) => ({
+        name, triggers, actions: [{ type: 'edit_property', config: { v: 1, cells: [{ propertyId: mark, value: { type: 'checkbox', checkbox: true } }] } }],
+      })
+      const auto = (await api('POST', `/data-sources/${ds}/automations`, definition(`많으면 표시 ${stamp}`, [
+        { type: 'property_edited', propertyId: qty, condition: { property_id: qty, operator: 'greater_than', value: 5 } },
+      ]))).body.automation
+      const tired = (await api('POST', `/data-sources/${ds}/automations`, definition(`지칠 것 ${stamp}`, [{ type: 'page_added' }]))).body.automation
+      const { query: dbQuery } = await import(src('db/pool.ts'))
+      // 실행 쪽이 끈 상태(실패가 이어짐)를 만든다 — 실패 셋을 만드는 길은 서버 검사가 지킨다
+      await dbQuery(`UPDATE automation SET enabled = false, disabled_reason = 'failures' WHERE id = $1`, [tired.id])
+      const row = (await api('POST', `/views/${db.defaultViewId}/rows`, { cells: [] })).body.row.id
+      await api('PATCH', `/rows/${row}`, { cells: [{ propertyId: qty, value: { type: 'number', number: 7 } }] })
+      const { runAutomationDispatch } = await import(src('automation/dispatch.ts'))
+      const dispatched = await runAutomationDispatch(new Date(Date.now() + 10_000), { workspaces: [workspaceId] })
+      const ITEM = (id) => `[data-testid="db-automation-item"][data-automation-id="${id}"]`
+      const text = (selector) => evaluate(`document.querySelector(${JSON.stringify(selector)})?.textContent ?? null`)
+
+      // ① 고치기만 받은 사람에게는 ⚡ 가 없다
+      const editor = await joinAs(workspaceId, await createUser(`고치는 동료 ${stamp}`), 'member')
+      const access = (body) => api('POST', `/pages/${db.id}/access`, body)
+      await access({ action: 'restrict' })
+      await access({ action: 'grant', principal: { type: 'user', id: ctx.userId }, level: 'full_access' })
+      await access({ action: 'grant', principal: { type: 'user', id: editor.userId }, level: 'edit' })
+      await access({ action: 'revoke', principal: { type: 'workspace_everyone' } })
+      try {
+        await browseAs(editor.token)
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+        const loaded = await waitFor(`!!document.querySelector('[data-testid="db-templates-button"]')`, 15000)
+        check('★ 고치기만 받은 사람에게는 ⚡ 가 서지 않는다 — 정의의 문(전체 권한)과 같다',
+          loaded && !(await evaluate(`!!document.querySelector('[data-testid="db-automations-button"]')`)), String(loaded))
+      } finally {
+        await browseAs(session)
+      }
+
+      // ② 배지 — 켜진 수 · 꺼진 까닭
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      await waitFor(`!!document.querySelector('[data-testid="db-automations-button"]')`, 15000)
+      check('★ ⚡ 의 배지 — 켜진 수(1) · 꺼진 까닭이 있으면 !',
+        (await text('[data-testid="db-automations-count"]')) === '1' && (await evaluate(`!!document.querySelector('[data-testid="db-automations-attention"]')`)),
+        JSON.stringify([await text('[data-testid="db-automations-count"]'), dispatched]))
+
+      // ③ 목록 — 트리거 · 액션 · 실행 주체 · 꺼진 까닭
+      await clickSelector('[data-testid="db-automations-button"]')
+      await waitFor(`!!document.querySelector('${ITEM(auto.id)}') && !!document.querySelector('${ITEM(tired.id)}')`, 8000)
+      const triggerText = await text(`${ITEM(auto.id)} [data-testid="db-automation-triggers"]`)
+      check('★ 트리거 요약 — 속성 이름과 조건(보기의 칩과 같은 말)', triggerText === '‘수량’이 바뀌면 (수량 · 초과 · 5)', triggerText)
+      check('행 추가 트리거 · 액션 요약 · 실행 주체',
+        (await text(`${ITEM(tired.id)} [data-testid="db-automation-triggers"]`)) === '새 항목이 추가되면'
+          && (await text(`${ITEM(auto.id)} [data-testid="db-automation-actions"]`)) === '→ 값 바꾸기'
+          && ((await text(`${ITEM(auto.id)} [data-testid="db-automation-creator"]`)) ?? '').startsWith('실행 주체: ')
+          && !((await text(`${ITEM(auto.id)} [data-testid="db-automation-creator"]`)) ?? '').includes('떠난 사람'),
+        JSON.stringify([await text(`${ITEM(tired.id)} [data-testid="db-automation-triggers"]`), await text(`${ITEM(auto.id)} [data-testid="db-automation-actions"]`)]))
+      check('★ 꺼진 까닭을 말한다 — 실패가 이어져 꺼졌다',
+        ((await text(`${ITEM(tired.id)} [data-testid="db-automation-reason"]`)) ?? '').includes('세 번 이어서 실패'),
+        String(await text(`${ITEM(tired.id)} [data-testid="db-automation-reason"]`)))
+
+      // ④ 켜고 끄기 — 켜면 까닭이 지워지고 배지가 따라간다
+      await clickSelector(`${ITEM(tired.id)} [data-testid="db-automation-toggle"]`)
+      const turnedOn = await waitFor(`document.querySelector('${ITEM(tired.id)} [data-testid="db-automation-toggle"]')?.getAttribute('aria-checked') === 'true'
+        && !document.querySelector('${ITEM(tired.id)} [data-testid="db-automation-reason"]')
+        && document.querySelector('[data-testid="db-automations-count"]')?.textContent === '2'
+        && !document.querySelector('[data-testid="db-automations-attention"]')`, 8000)
+      const [tiredRow] = await dbQuery(`SELECT enabled, disabled_reason FROM automation WHERE id = $1`, [tired.id])
+      check('★ 켜면 꺼진 까닭이 지워진다 — 배지가 2 · ! 가 사라진다(서버도)', turnedOn && tiredRow.enabled && tiredRow.disabled_reason === null, JSON.stringify(tiredRow))
+      await clickSelector(`${ITEM(auto.id)} [data-testid="db-automation-toggle"]`)
+      const turnedOff = await waitFor(`document.querySelector('${ITEM(auto.id)} [data-testid="db-automation-toggle"]')?.getAttribute('aria-checked') === 'false'
+        && document.querySelector('[data-testid="db-automations-count"]')?.textContent === '1'`, 8000)
+      const [autoRow] = await dbQuery(`SELECT enabled, disabled_reason FROM automation WHERE id = $1`, [auto.id])
+      check('끄면 꺼지고 까닭은 없다(사람이 껐다)', turnedOff && !autoRow.enabled && autoRow.disabled_reason === null, JSON.stringify(autoRow))
+
+      // ⑤ 실행 기록 — 결과 · 트리거된 항목 · 단계
+      await clickSelector(`${ITEM(auto.id)} [data-testid="db-automation-runs-button"]`)
+      await waitFor(`!!document.querySelector('${ITEM(auto.id)} [data-testid="db-automation-run"]')`, 8000)
+      const run = await evaluate(`(() => {
+        const r = document.querySelector('${ITEM(auto.id)} [data-testid="db-automation-run"]')
+        return { status: r?.dataset.status, row: r?.querySelector('[data-testid="db-automation-run-row"]')?.textContent, href: r?.querySelector('a[data-testid="db-automation-run-row"]')?.getAttribute('href'),
+          steps: [...(r?.querySelectorAll('[data-testid="db-automation-step"]') ?? [])].map((s) => s.textContent) }
+      })()`)
+      check('★ 실행 기록 — 성공 · 트리거된 항목(제목 없음 → 그 행으로) · 단계(값 바꾸기 — 완료)',
+        run.status === 'success' && run.row === '제목 없음' && (run.href ?? '').endsWith(`/${row}`) && run.steps.join('|') === '1. 값 바꾸기 — 완료',
+        JSON.stringify(run))
+      await clickSelector(`${ITEM(tired.id)} [data-testid="db-automation-runs-button"]`)
+      check('실행된 적이 없으면 그렇게 말한다', await waitFor(`!!document.querySelector('${ITEM(tired.id)} [data-testid="db-automation-runs-empty"]')`, 8000))
+
+      // ⑥ 지우기는 한 번 더 묻는다
+      await clickSelector(`${ITEM(tired.id)} [data-testid="db-automation-delete"]`)
+      await waitFor(`!!document.querySelector('${ITEM(tired.id)} [data-testid="db-automation-delete-confirm"]')`, 3000)
+      await clickSelector(`${ITEM(tired.id)} [data-testid="db-automation-delete-no"]`)
+      const kept = await waitFor(`!document.querySelector('${ITEM(tired.id)} [data-testid="db-automation-delete-confirm"]') && !!document.querySelector('${ITEM(tired.id)}')`, 3000)
+      await clickSelector(`${ITEM(tired.id)} [data-testid="db-automation-delete"]`)
+      await waitFor(`!!document.querySelector('${ITEM(tired.id)} [data-testid="db-automation-delete-yes"]')`, 3000)
+      await clickSelector(`${ITEM(tired.id)} [data-testid="db-automation-delete-yes"]`)
+      const gone = await waitFor(`!document.querySelector('${ITEM(tired.id)}')`, 8000)
+      const listed = (await api('GET', `/data-sources/${ds}/automations`)).body?.automations ?? []
+      check('★ 지우기는 한 번 더 묻는다 — 그만두면 남고, 지우면 사라진다(서버도)',
+        kept && gone && listed.length === 1 && listed[0].id === auto.id, JSON.stringify([kept, gone, listed.map((a) => a.name)]))
+    }
+
     if (sectionIf('개인 필터 · 정렬 — 화면 (2h-2 · F-04-17)')) {
       // 볼 수만 있는 사람(브라우저 세션을 바꾼다)이 도구줄의 필터로 조건을 걸면 **자기 것**으로 저장되고 그 사람의 표만 좁혀진다 — "나만 보는
       // 필터" 표시 · 초기화. 편집자는 자기 개인 것을 "모두에게 저장"한다. 브라우저 세션은 끝에 반드시 소유자로 되돌린다.
