@@ -83,6 +83,8 @@ export const SETTING_GROUPS = [
       { id: 'workspace.security', label: '보안' },
       // 요금제(8k-3) — 지금 요금제 · 한도와 쓴 양 · 비교. 소유자 · 멤버 관리자에게만(패널 하나로 선다).
       { id: 'workspace.plan', label: '요금제' },
+      // 감사 로그(6d-2 · F-11-12) — 소유자에게만(패널 하나로 선다 · 요금제는 패널이 말한다).
+      { id: 'workspace.audit', label: '감사 로그' },
     ],
   },
 ] as const satisfies readonly {

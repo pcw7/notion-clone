@@ -22,6 +22,8 @@ export function entitlementLabel(key: EntitlementKey | string): string {
       return '휴지통 보관 기간 바꾸기'
     case 'automation.webhook':
       return '자동화의 웹훅 보내기'
+    case 'audit.log':
+      return '감사 로그'
     default:
       return key
   }

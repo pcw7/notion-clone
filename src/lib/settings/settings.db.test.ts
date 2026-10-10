@@ -7,7 +7,7 @@
  *   ② **내 이름은 `"user".name` 을 고친다** — 게스트도 · 공백을 정리한 값으로 · 다른 워크스페이스에서도 같은 이름
  *   ③ 워크스페이스 이름은 소유자만 — 멤버는 보지만 못 고친다 · 목록 · 머리가 따라온다
  *   ④ 거부는 아무것도 쓰지 않는다 — 모르는 키 · 권한 · 값
- *   ⑤ 패널(8g-2 · 8i-1b) — 그 기능의 판정 그대로 역할마다 선다(비밀번호는 누구나 · 소유자 다섯 · 멤버 관리자 넷 · 멤버 둘)
+ *   ⑤ 패널(8g-2 · 8i-1b · 6d-2) — 그 기능의 판정 그대로 역할마다 선다(비밀번호는 누구나 · 소유자 여섯 · 멤버 관리자 넷 · 멤버 둘)
  *   ⑥ 테마(8h) — 행이 없으면 system · 고르면 setting_value 한 줄 · 모든 워크스페이스에서 같다 · 세션 토큰으로 읽는다
  *   ⑦ 휴지통 보관 기간(4b-3) — 요금제가 막으면 보이되 읽기 전용 · 쓰기는 plan_required(값보다 먼저) · Enterprise 면 바꾼다 · 바꾼 값은
  *      지금부터 버리는 것에 · 내려도 값은 그대로
@@ -136,11 +136,11 @@ describe('④ 거부는 아무것도 쓰지 않는다', () => {
 })
 
 describe('⑤ 패널', () => {
-  test('★ 그 기능의 판정 그대로 — 비밀번호는 누구나 · 소유자 다섯 · 멤버 관리자 넷(내보내기 없음) · 멤버 둘(목록 · 그룹) · 게스트는 비밀번호뿐', async (t) => {
+  test('★ 그 기능의 판정 그대로 — 비밀번호는 누구나 · 소유자 여섯(감사 로그 — 6d-2) · 멤버 관리자 넷(내보내기 · 감사 로그 없음) · 멤버 둘(목록 · 그룹) · 게스트는 비밀번호뿐', async (t) => {
     if (skipReason) return t.skip(skipReason)
     const admin = await joinAs(fx.workspaceId, await createUser('설정의 멤버 관리자'), 'membership_admin')
     const ids = (who: Actor) => visiblePanels(who.ctx).map((panel) => panel.id)
-    assert.deepEqual(ids(fx.owner), ['password', 'mfa', 'members', 'invites', 'guests', 'groups', 'export', 'plan'])
+    assert.deepEqual(ids(fx.owner), ['password', 'mfa', 'members', 'invites', 'guests', 'groups', 'export', 'plan', 'audit'])
     assert.deepEqual(ids(admin), ['password', 'mfa', 'members', 'invites', 'guests', 'groups', 'plan'])
     assert.deepEqual(ids(member), ['password', 'mfa', 'members', 'groups'])
     assert.deepEqual(ids(guest), ['password', 'mfa'])

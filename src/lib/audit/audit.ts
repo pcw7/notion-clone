@@ -14,22 +14,12 @@
 import { randomUUID } from 'node:crypto'
 
 import type { SessionContext } from '../auth/session-context.ts'
+import { entitlement } from '../billing/entitlement.ts'
 import { withReadTransaction, type Tx } from '../db/tx.ts'
 
-export const AUDIT_EVENT_TYPES = [
-  'account.login',
-  'account.security_changed',
-  'workspace.member_invited',
-  'workspace.member_joined',
-  'workspace.member_removed',
-  'workspace.member_role_changed',
-  'workspace.setting_changed',
-  'workspace.exported',
-  'page.permission_changed',
-  'page.publish_changed',
-  'page.permanently_deleted',
-] as const
-export type AuditEventType = (typeof AUDIT_EVENT_TYPES)[number]
+import { AUDIT_EVENT_TYPES, type AuditEventType, type AuditRow } from './audit-types.ts'
+
+export { AUDIT_EVENT_TYPES, type AuditEventType, type AuditRow } from './audit-types.ts'
 
 /** 보관 기간 — 0087 의 트리거가 이보다 오래된 행만 지우게 둔다. */
 export const AUDIT_RETENTION_DAYS = 365
@@ -105,29 +95,34 @@ export function recordForContextIn(
 
 // ── 읽기 ──────────────────────────────────────────────────────────────
 
-export type AuditRow = {
-  readonly id: string
-  readonly type: AuditEventType
-  readonly occurredAt: string
-  readonly actor: { readonly userId: string | null; readonly name: string | null; readonly email: string | null }
-  readonly target: { readonly type: string; readonly id: string } | null
-  readonly ip: string | null
-  readonly metadata: Readonly<Record<string, unknown>>
-  readonly setting: { readonly key: string; readonly before: unknown; readonly after: unknown } | null
+export type AuditReadFailure =
+  /** owner 가 아니다(위임 컨텍스트도). */
+  | 'forbidden'
+  /** 이 워크스페이스의 요금제가 감사 로그를 읽게 하지 않는다(`audit.log` — Enterprise 만 · 6d-2). 쌓는 것은 그대로다. */
+  | 'plan_required'
+
+/** 한 번에 읽는 상한 — 화면 한 쪽. CSV 는 따로(`AUDIT_CSV_MAX`). */
+export const AUDIT_PAGE_MAX = 500
+/** CSV 한 번에 담는 상한 — 365일치가 이보다 많으면 거르기 · 기간으로 나눈다(화면이 말한다). */
+export const AUDIT_CSV_MAX = 10_000
+
+/** 감사 로그를 볼 수 있는 역할인가 — 설정의 절이 설지 정한다(요금제는 패널이 따로 말한다). 판정은 `listWorkspaceAudit` 가 다시 한다. */
+export function canReadAudit(ctx: SessionContext): boolean {
+  return ctx.role === 'owner' && ctx.delegation === undefined
 }
 
-export type AuditReadFailure = 'forbidden'
-
 /**
- * 워크스페이스의 감사 로그 — **owner 만**(정본 ⑤ · 11 *"Enterprise 조직/워크스페이스 소유자 외 접근 시 403"*). 최근 것부터 `limit` 개 ·
- * `before`(그 시각보다 앞)로 넘긴다 · 종류로 거를 수 있다. 요금제 게이트는 화면과 함께(6d-2).
+ * 워크스페이스의 감사 로그 — **owner 만**(정본 ⑤ · 11 *"Enterprise 조직/워크스페이스 소유자 외 접근 시 403"*) · **Enterprise 만**(6d-2 ·
+ * `audit.log`). 최근 것부터 `limit` 개 · `before`(그 시각보다 앞)로 넘긴다 · 종류로 거를 수 있다.
  */
 export async function listWorkspaceAudit(
   ctx: SessionContext,
   options: { readonly limit?: number; readonly before?: string; readonly type?: string } = {},
+  max = AUDIT_PAGE_MAX,
 ): Promise<{ readonly ok: true; readonly value: readonly AuditRow[] } | { readonly ok: false; readonly reason: AuditReadFailure }> {
-  if (ctx.role !== 'owner' || ctx.delegation !== undefined) return { ok: false, reason: 'forbidden' }
-  const limit = Math.min(Math.max(Math.floor(options.limit ?? 100), 1), 500)
+  if (!canReadAudit(ctx)) return { ok: false, reason: 'forbidden' }
+  if (!(await entitlement(ctx.workspaceId, 'audit.log'))) return { ok: false, reason: 'plan_required' }
+  const limit = Math.min(Math.max(Math.floor(options.limit ?? 100), 1), max)
   const before = options.before !== undefined && !Number.isNaN(Date.parse(options.before)) ? new Date(options.before) : null
   const type = options.type !== undefined && (AUDIT_EVENT_TYPES as readonly string[]).includes(options.type) ? options.type : null
   const rows = await withReadTransaction((tx) =>

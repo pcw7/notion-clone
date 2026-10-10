@@ -10,6 +10,7 @@
  *   ④ 내용을 싣지 않는다(제목 · 토큰) · 행위자가 이름을 바꿔도 그때의 이름이 남는다
  *   ⑤ 읽기 — owner 만 · 최근 것부터 · 종류로 거르기 · 앞으로 넘기기 · 계정 범위는 워크스페이스 목록에 없다
  *   ⑥ 데이터 수명 — 365일이 지난 것만 지운다 · 잡의 시각이 앞서 있어도 깨지지 않는다
+ *   ⑦ [6d-2] ★ 읽기는 Enterprise 만 — 다른 요금제는 plan_required(쌓는 것은 그대로 · 올리면 지난 기록이 보인다)
  */
 
 process.env.AUTH_SECRET ??= 'test-secret-only-for-unit-tests'
@@ -24,6 +25,7 @@ import { purgePage, trashPage } from '../block/trash.ts'
 import { query, queryOne } from '../db/pool.ts'
 import { recordExport } from '../export/download.ts'
 import type { BlockId } from '../ids.ts'
+import { setWorkspacePlan } from '../billing/plan.ts'
 import { runDataRetention } from '../notification/retention.ts'
 import { grantAccess, resumeInheriting, revokeAccess, stopInheriting } from '../permissions/acl.ts'
 import { publishPage, unpublishPage, updatePublicLink } from '../publish/public-link.ts'
@@ -253,6 +255,7 @@ describe('⑤ 읽기 — owner 만', () => {
   test('최근 것부터 · 종류로 거르기 · 앞으로 넘기기 · 멤버는 forbidden · 계정 범위는 없다', async (t) => {
     if (skipReason) return t.skip(skipReason)
     const { ws, boss, person } = await office()
+    assert.ok((await setWorkspacePlan(ws, 'enterprise')).ok)
     const mate = await person('동료')
     const doc = await topOf(boss)
     for (const level of ['view', 'comment', 'edit'] as const) {
@@ -294,5 +297,24 @@ describe('⑥ 데이터 수명', () => {
     assert.equal(result.auditEvents, 1, '잡의 시각이 앞서 있어도 DB 시각으로 365일이 지난 것만')
     const left = await eventsIn(ws)
     assert.equal(left.length, 1)
+  })
+})
+
+// ── ⑦ 요금제 ──────────────────────────────────────────────────────────
+
+describe('⑦ [6d-2] ★ 읽기는 Enterprise 만', () => {
+  test('다른 요금제는 plan_required — 쌓는 것은 그대로 · 올리면 지난 기록이 보인다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { ws, boss } = await office()
+    await recordExport(boss.ctx, { kind: 'workspace' })
+    for (const plan of ['free', 'plus', 'business'] as const) {
+      assert.ok((await setWorkspacePlan(ws, plan)).ok)
+      assert.deepEqual(await listWorkspaceAudit(boss.ctx), { ok: false, reason: 'plan_required' }, plan)
+    }
+    assert.equal((await eventsIn(ws, 'workspace.exported')).length, 1, '쌓는 것은 요금제와 무관하다')
+    assert.ok((await setWorkspacePlan(ws, 'enterprise')).ok)
+    const read = await listWorkspaceAudit(boss.ctx)
+    assert.ok(read.ok)
+    assert.ok(read.value.some((r) => r.type === 'workspace.exported'), '올리면 지난 기록이 보인다')
   })
 })

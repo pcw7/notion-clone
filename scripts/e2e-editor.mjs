@@ -15819,6 +15819,63 @@ async function main() {
         JSON.stringify([back, republished.status]))
     }
 
+    if (sectionIf('감사 로그 (6d-2 · F-11-12)')) {
+      // 설정 → 워크스페이스 → 감사 로그 — 요금제가 Enterprise 가 아니면 그렇다고만 말한다(기록은 쌓인다) · Enterprise 면 표 · 종류 거르기 ·
+      // CSV · 멤버는 절도 API 도 없다. 요금제는 끝에 반드시 되돌린다.
+      const stamp = Date.now()
+      const { setWorkspacePlan } = await import(new URL('../src/lib/billing/plan.ts', import.meta.url).href)
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const before = (await dbQuery(`SELECT plan_code FROM workspace WHERE id = $1`, [workspaceId]))[0]?.plan_code ?? 'free'
+      const policyUrl = `${BASE}/api/workspaces/${workspaceId}/settings/workspace.allow_publish_sites_and_forms`
+      const PANEL = '[data-testid="audit-panel"]'
+      const openAudit = async () => {
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/settings?s=workspace.audit` })
+        return waitFor(`!!document.querySelector('${PANEL}') || !!document.querySelector('[data-testid="audit-plan-required"]')`, 15000)
+      }
+
+      try {
+        await setWorkspacePlan(workspaceId, 'free')
+        await openAudit()
+        const planNote = await evaluate(`document.querySelector('[data-testid="audit-plan-required"]')?.textContent ?? ''`)
+        const apiFree = await fetch(`${BASE}/api/workspaces/${workspaceId}/audit`, { headers: authed })
+        check('Enterprise 가 아니면 — 감사 로그는 요금제 안내만 · API 는 plan_required',
+          planNote.includes('엔터프라이즈') && apiFree.status === 403 && (await apiFree.json()).error === 'plan_required', planNote)
+
+        // 감사에 남는 일 — 정책을 껐다 켠다(무료 동안 쌓인다)
+        await fetch(policyUrl, { method: 'PUT', headers: authed, body: JSON.stringify({ value: false }) })
+        await fetch(policyUrl, { method: 'PUT', headers: authed, body: JSON.stringify({ value: true }) })
+        await setWorkspacePlan(workspaceId, 'enterprise')
+        await openAudit()
+        const shown = await waitFor(`[...document.querySelectorAll('${PANEL} [data-testid="audit-row"]')].some((r) => r.dataset.type === 'workspace.setting_changed')`, 8000)
+        const details = await evaluate(`[...document.querySelectorAll('${PANEL} [data-testid="audit-row"][data-type="workspace.setting_changed"] [data-testid="audit-detail"]')].slice(0, 2).map((d) => d.textContent)`)
+        check('★ Enterprise 면 표가 선다 — 무료 동안 쌓인 설정 변경이 앞뒤 값과 함께(최근 것부터)',
+          shown && JSON.stringify(details) === JSON.stringify(['workspace.allow_publish_sites_and_forms: false → true', 'workspace.allow_publish_sites_and_forms: true → false']),
+          JSON.stringify(details))
+
+        await evaluate(`(() => { const s = document.querySelector('${PANEL} [data-testid="audit-type"]'); s.value = 'workspace.setting_changed'; s.dispatchEvent(new Event('change', { bubbles: true })); return true })()`)
+        const filtered = await waitFor(`(() => { const rows = [...document.querySelectorAll('${PANEL} [data-testid="audit-row"]')]; return rows.length > 0 && rows.every((r) => r.dataset.type === 'workspace.setting_changed') })()`, 8000)
+        const csvHref = await evaluate(`document.querySelector('${PANEL} [data-testid="audit-csv"]')?.getAttribute('href')`)
+        const csv = await fetch(`${BASE}${csvHref}`, { headers: authed })
+        // `text()` 는 UTF-8 BOM 을 떼고 읽는다 — BOM 은 바이트로 본다
+        const csvBytes = new Uint8Array(await csv.arrayBuffer())
+        const bom = csvBytes[0] === 0xef && csvBytes[1] === 0xbb && csvBytes[2] === 0xbf
+        const csvText = new TextDecoder().decode(csvBytes)
+        check('종류로 거르면 그 종류만 · CSV 는 그 거르기 그대로(BOM · 머리 · 같은 문구)',
+          filtered && csvHref.endsWith('?type=workspace.setting_changed') && csv.status === 200 && (csv.headers.get('content-type') ?? '').startsWith('text/csv')
+            && bom && csvText.startsWith('시각,종류,누가,대상,세부,IP') && csvText.includes('workspace.allow_publish_sites_and_forms: false → true') && !csvText.includes('로그인,'),
+          JSON.stringify([csvHref, csv.status, csvText.slice(0, 120)]))
+
+        const mate = await joinAs(workspaceId, await createUser(`감사 못 보는 동료 ${stamp}`), 'member')
+        const mateApi = await fetch(`${BASE}/api/workspaces/${workspaceId}/audit`, { headers: { ...json, cookie: `nc_session=${mate.token}` } })
+        const matePage = await (await fetch(`${BASE}/w/${workspaceId}/settings?s=workspace.audit`, { headers: { cookie: `nc_session=${mate.token}` } })).text()
+        check('★ 멤버는 감사 로그를 못 본다 — API 403 forbidden · 설정에 절이 없다',
+          mateApi.status === 403 && (await mateApi.json()).error === 'forbidden' && !matePage.includes('data-testid="audit-panel"'),
+          String(mateApi.status))
+      } finally {
+        await setWorkspacePlan(workspaceId, before)
+      }
+    }
+
     if (sectionIf('개인 필터 · 정렬 — 화면 (2h-2 · F-04-17)')) {
       // 볼 수만 있는 사람(브라우저 세션을 바꾼다)이 도구줄의 필터로 조건을 걸면 **자기 것**으로 저장되고 그 사람의 표만 좁혀진다 — "나만 보는
       // 필터" 표시 · 초기화. 편집자는 자기 개인 것을 "모두에게 저장"한다. 브라우저 세션은 끝에 반드시 소유자로 되돌린다.

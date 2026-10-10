@@ -8,6 +8,7 @@
 
 import { MAX_TOTP_METHODS, mfaStatus } from '@/lib/auth/mfa'
 import { passwordStatus } from '@/lib/auth/password'
+import { listWorkspaceAudit } from '@/lib/audit/audit'
 import { planOverview } from '@/lib/billing/overview'
 import type { SessionContext } from '@/lib/auth/session-context'
 import type { SettingPanelId } from '@/lib/settings/panels'
@@ -19,6 +20,7 @@ import { GroupPanel } from '../group-panel'
 import { GuestPanel } from '../guest-panel'
 import { InviteForm } from '../invite-form'
 import { PendingInviteList } from '../pending-invite-list'
+import { AuditPanel } from './audit-panel'
 import { MfaPanel } from './mfa-panel'
 import { PasswordPanel } from './password-panel'
 import { PlanPanel } from './plan-panel'
@@ -51,6 +53,19 @@ export async function SettingPanelView({ id, ctx }: { id: SettingPanelId; ctx: S
       // 요금제(8k-3) — 읽기만. 볼 수 없는 역할이면 null(패널 목록이 이미 걸렀다 — 서버가 다시 묻는다).
       const overview = await planOverview(ctx)
       return overview === null ? null : <PlanPanel overview={overview} />
+    }
+    case 'audit': {
+      // 감사 로그(6d-2) — 첫 쪽은 여기서 읽는다(최근 50). 요금제가 막으면 그렇다고만 말한다(기록은 쌓이고 있다).
+      const first = await listWorkspaceAudit(ctx, { limit: 50 })
+      if (!first.ok && first.reason === 'plan_required') {
+        return (
+          <section data-testid="audit-plan-required" className="mt-6 text-sm">
+            <p>감사 로그는 엔터프라이즈 요금제에서 볼 수 있습니다.</p>
+            <p className={NOTE}>기록은 요금제와 상관없이 쌓이고 있습니다 — 요금제를 바꾸면 지난 365일치를 볼 수 있습니다.</p>
+          </section>
+        )
+      }
+      return first.ok ? <AuditPanel workspaceId={ctx.workspaceId} initial={[...first.value]} /> : null
     }
     case 'members': {
       const members = await listMembers(ctx.workspaceId)
