@@ -11,6 +11,10 @@
  *   ④ ★ 공개 경로(③) — 루트 · 상속이 이어진 하위 페이지는 열고, 상속을 끊은 하위 · 루트 밖 · 휴지통 · 테이크다운(위에서도) ·
  *      정책 끔 · 해제는 없는 페이지 · 만료만 따로 말한다 · 모양이 틀린 토큰 · id 는 DB 에 묻지 않고 없는 페이지
  *   ⑤ 물리 삭제는 공개 링크를 함께 지운다(CASCADE)
+ *   ⑥ [6a-3] 게시된 링크의 설정 — 검색 엔진 노출 · ★ 주소 바꾸기(옛 주소는 곧바로 닫힌다) · 게시되지 않았으면 not_published · 틀린 몸체 ·
+ *      누가(manage_perm)
+ *   ⑦ [6a-3] ★ 위 페이지의 게시로 공개되었는가(`coveredBy`) — 가장 가까운 것 · 볼 수 없는 위 페이지는 id · 제목 없이 · 상속을 끊었거나
+ *      정책이 막았거나 해제했으면 덮지 않는다
  */
 
 import { test, describe, before, after } from 'node:test'
@@ -28,7 +32,7 @@ import { effectiveCaps, readableScopes } from '../permissions/effective.ts'
 import { can } from '../permissions/levels.ts'
 import { updateSetting } from '../settings/settings.ts'
 import { resolvePublicPage } from './public-access.ts'
-import { publishPage, readPublishState, unpublishPage } from './public-link.ts'
+import { publishPage, readPublishState, unpublishPage, updatePublicLink } from './public-link.ts'
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'
 
@@ -378,5 +382,99 @@ describe('⑤ 물리 삭제', () => {
     await query(`DELETE FROM block WHERE id = $1`, [doc])
     const left = await queryOne<{ n: number }>(`SELECT count(*)::int AS n FROM public_link WHERE token = $1`, [token])
     assert.equal(left.n, 0)
+  })
+})
+
+// ── ⑥ 설정 ────────────────────────────────────────────────────────────
+
+describe('⑥ [6a-3] 게시된 링크의 설정', () => {
+  test('검색 엔진 노출을 켜면 공개 경로가 따른다 · ★ 주소를 바꾸면 옛 주소는 곧바로 닫힌다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { boss } = await office()
+    const doc = await topOf(boss)
+    const first = published(await publishPage(boss.ctx, doc)).token!
+
+    const indexed = await updatePublicLink(boss.ctx, doc, { robots: 'index' })
+    assert.ok(indexed.ok, JSON.stringify(indexed))
+    assert.equal(indexed.value.robots, 'index')
+    assert.equal(indexed.value.token, first, '설정만 바꾸면 주소는 그대로')
+    const open = await resolvePublicPage(first)
+    assert.ok(open.ok)
+    assert.equal(open.value.robots, 'index')
+
+    const rotated = await updatePublicLink(boss.ctx, doc, { rotateToken: true })
+    assert.ok(rotated.ok)
+    const second = rotated.value.token!
+    assert.notEqual(second, first)
+    assert.equal(await opens(first), 'not_found', '옛 주소는 곧바로 닫힌다')
+    assert.equal(await opens(second), 'open')
+    assert.equal(rotated.value.robots, 'index', '주소를 바꿔도 설정은 그대로')
+  })
+
+  test('게시되어 있지 않으면 not_published · 틀린 몸체는 invalid_input · 편집자는 forbidden · 못 보면 not_found', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { boss, person } = await office()
+    const editor = await person('편집자')
+    const stranger = await person('모르는 사람')
+    const doc = await topOf(boss)
+    assert.ok((await grantAccess(boss.ctx, doc, { type: 'user', id: editor.userId }, 'edit')).ok)
+
+    assert.deepEqual(await updatePublicLink(boss.ctx, doc, { robots: 'index' }), { ok: false, reason: 'not_published' })
+    published(await publishPage(boss.ctx, doc))
+    assert.ok((await unpublishPage(boss.ctx, doc)).ok)
+    assert.deepEqual(await updatePublicLink(boss.ctx, doc, { rotateToken: true }), { ok: false, reason: 'not_published' })
+    published(await publishPage(boss.ctx, doc))
+
+    for (const bad of [{}, null, [], { robots: 'all' }, { rotateToken: false }, { robots: 'index', extra: 1 }, { aiCrawler: 'allow' }]) {
+      assert.deepEqual(await updatePublicLink(boss.ctx, doc, bad), { ok: false, reason: 'invalid_input' }, JSON.stringify(bad))
+    }
+    assert.deepEqual(await updatePublicLink(editor.ctx, doc, { robots: 'index' }), { ok: false, reason: 'forbidden' })
+    assert.deepEqual(await updatePublicLink(stranger.ctx, doc, { robots: 'index' }), { ok: false, reason: 'not_found' })
+  })
+})
+
+// ── ⑦ 위 페이지의 게시 ────────────────────────────────────────────────
+
+describe('⑦ [6a-3] ★ 위 페이지의 게시로 공개되었는가', () => {
+  test('가장 가까운 게시된 위 페이지 — id · 제목 · 상속을 끊으면 · 해제하면 · 정책이 막으면 덮지 않는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { boss } = await office()
+    const top = await topOf(boss)
+    const doc = await childOf(boss, top)
+    const sub = await childOf(boss, doc)
+    const cut = await childOf(boss, doc)
+    published(await publishPage(boss.ctx, top))
+    published(await publishPage(boss.ctx, doc))
+    assert.ok((await stopInheriting(boss.ctx, cut)).ok)
+
+    const covered = async (id: string) => {
+      const state = await readPublishState(boss.ctx, id)
+      assert.ok(state.ok)
+      return state.value.coveredBy
+    }
+    const nearest = await covered(sub)
+    assert.equal(nearest?.pageId, doc, '가장 가까운 것')
+    assert.match(nearest?.title ?? '', /^하위/)
+    assert.equal(await covered(cut), null, '상속을 끊은 하위는 덮이지 않는다')
+    assert.equal(await covered(top), null, '자기 게시는 덮임이 아니다')
+
+    assert.ok((await unpublishPage(boss.ctx, doc)).ok)
+    assert.equal((await covered(sub))?.pageId, top, '가까운 것을 해제하면 그 위')
+    await withPolicy(boss, false)
+    assert.equal(await covered(sub), null, '정책이 막으면 아무것도 덮지 않는다')
+  })
+
+  test('볼 수 없는 위 페이지는 id · 제목 없이 — 공개되어 있다는 사실만', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { boss, person } = await office()
+    const viewer = await person('하위만 보는 사람')
+    const doc = await topOf(boss)
+    const sub = await childOf(boss, doc)
+    assert.ok((await grantAccess(boss.ctx, sub, { type: 'user', id: viewer.userId }, 'view')).ok)
+    published(await publishPage(boss.ctx, doc))
+
+    const state = await readPublishState(viewer.ctx, sub)
+    assert.ok(state.ok, JSON.stringify(state))
+    assert.deepEqual(state.value.coveredBy, { pageId: null, title: null })
   })
 })

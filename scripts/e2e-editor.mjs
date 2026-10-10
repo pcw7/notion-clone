@@ -15580,6 +15580,110 @@ async function main() {
       check('해제하면 이미지 주소도 404', (await fetch(`${BASE}/p/${token}/blocks/${bodyImage}/image`)).status === 404)
     }
 
+    if (sectionIf('공유 패널의 웹 게시 (6a-3 · F-06-08)')) {
+      // 공유 패널의 "웹에 게시" 절 — 게시하면 주소가 서고 세션 없이 열린다 · 검색 엔진 노출 · 주소 바꾸기(옛 주소는 곧바로 닫힌다) ·
+      // 하위 페이지의 패널은 위의 게시로 공개됐다고 말한다 · 보기만 하는 사람은 주소 없이 게시 여부만 · 정책을 끄면 막혔다고 말하고 취소는 된다 ·
+      // 게시 취소. 브라우저 세션 · 정책은 끝에 반드시 되돌린다.
+      const stamp = Date.now()
+      const api = async (method, path, body, headers = authed) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const newPage = async (title, parentPageId) =>
+        (await api('POST', '/pages', parentPageId === undefined ? { title } : { title, parentPageId })).body.page.id
+      const browseAs = (token) => send('Network.setCookie', { name: 'nc_session', value: token, domain: 'localhost', path: '/', httpOnly: true })
+      const policyUrl = `${BASE}/api/workspaces/${workspaceId}/settings/workspace.allow_publish_sites_and_forms`
+      const SECTION = '[role="dialog"][aria-label="공유 설정"] [data-testid="publish-section"]'
+      const openShare = async (pageId) => {
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${pageId}` })
+        await waitFor(`[...document.querySelectorAll('button')].some((b) => b.textContent.trim() === '공유')`, 15000)
+        await clickText('공유')
+        return waitFor(`!!document.querySelector('${SECTION}')`, 8000)
+      }
+      const urlValue = () => evaluate(`document.querySelector('${SECTION} [data-testid="publish-url"]')?.value ?? null`)
+      const statusOf = async (address) => (await fetch(address)).status
+
+      const root = await newPage(`게시할 위키 ${stamp}`)
+      const child = await newPage(`그 아래 ${stamp}`, root)
+      const viewer = await joinAs(workspaceId, await createUser(`보는 사람 ${stamp}`), 'member')
+      await api('POST', `/pages/${root}/access`, { action: 'restrict' })
+      await api('POST', `/pages/${root}/access`, { action: 'grant', principal: { type: 'user', id: ctx.userId }, level: 'full_access' })
+      await api('POST', `/pages/${root}/access`, { action: 'grant', principal: { type: 'user', id: viewer.userId }, level: 'view' })
+      await api('POST', `/pages/${root}/access`, { action: 'revoke', principal: { type: 'workspace_everyone' } })
+
+      try {
+        // ① 게시
+        const opened = await openShare(root)
+        const hint = await evaluate(`document.querySelector('${SECTION}')?.textContent ?? ''`)
+        check('공유 패널에 "웹에 게시" 절 — 무엇이 열리는지 먼저 말한다(하위 페이지 · 로그인 없이)',
+          opened && hint.includes('하위 페이지') && hint.includes('로그인 없이') && !hint.includes('공개 주소'), hint)
+        await clickSelector(`${SECTION} [data-testid="publish-publish"]`)
+        await waitFor(`!!document.querySelector('${SECTION} [data-testid="publish-url"]')`, 8000)
+        const first = await urlValue()
+        check('★ 게시하면 주소가 선다 — 세션 없이 열린다',
+          /\/p\/[A-Za-z0-9_-]{22}$/.test(first ?? '') && (await statusOf(first)) === 200, String(first))
+
+        // ② 검색 엔진 노출
+        await clickSelector(`${SECTION} [data-testid="publish-index"]`)
+        const indexed = await waitFor(`document.querySelector('${SECTION} [data-testid="publish-index"]')?.checked === true`, 5000)
+        const html = await (await fetch(first)).text()
+        check('검색 엔진 노출을 켜면 공개 화면의 meta 가 따른다',
+          indexed && html.includes('<meta name="robots" content="index, follow, noai, noimageai"'), html.match(/<meta name="robots"[^>]*>/)?.[0] ?? '(없음)')
+
+        // ③ 주소 바꾸기 — 두 번 누른다
+        await clickSelector(`${SECTION} [data-testid="publish-rotate"]`)
+        const asked = await waitFor(`!!document.querySelector('${SECTION} [data-testid="publish-rotate-confirm"]')`, 3000)
+        const stillFirst = await urlValue()
+        await clickSelector(`${SECTION} [data-testid="publish-rotate-yes"]`)
+        await waitFor(`(document.querySelector('${SECTION} [data-testid="publish-url"]')?.value ?? '') !== ${JSON.stringify(first)}`, 5000)
+        const second = await urlValue()
+        check('★ 주소 바꾸기 — 한 번 더 묻고 · 옛 주소는 곧바로 404 · 새 주소는 열린다',
+          asked && stillFirst === first && second !== first && (await statusOf(first)) === 404 && (await statusOf(second)) === 200,
+          JSON.stringify([asked, first, second]))
+
+        // ④ 하위 페이지의 패널 — 위의 게시로 공개됨
+        await openShare(child)
+        const covered = await waitFor(`!!document.querySelector('${SECTION} [data-testid="publish-covered"]')`, 5000)
+        const coveredText = await evaluate(`document.querySelector('${SECTION} [data-testid="publish-covered"]')?.textContent ?? ''`)
+        const coveredLink = await evaluate(`document.querySelector('${SECTION} [data-testid="publish-covered"] a')?.getAttribute('href') ?? null`)
+        check('★ 하위 페이지의 패널은 위 페이지의 게시로 공개되었다고 말한다 — 그 페이지로 가는 링크',
+          covered && coveredText.includes(`게시할 위키 ${stamp}`) && coveredLink === `/w/${workspaceId}/${root}`, JSON.stringify([coveredText, coveredLink]))
+
+        // ⑤ 보기만 하는 사람 — 주소 없이
+        await browseAs(viewer.token)
+        await openShare(root)
+        const viewerSees = await evaluate(`({
+          published: !!document.querySelector('${SECTION} [data-testid="publish-published"]'),
+          url: !!document.querySelector('${SECTION} [data-testid="publish-url"]'),
+          buttons: !!document.querySelector('${SECTION} [data-testid="publish-unpublish"]'),
+          token: (document.querySelector('${SECTION}')?.textContent ?? '').includes(${JSON.stringify(second.split('/p/')[1])}),
+        })`)
+        check('보기만 하는 사람은 게시되어 있다는 것만 — 주소도 단추도 없다',
+          viewerSees.published && !viewerSees.url && !viewerSees.buttons && !viewerSees.token, JSON.stringify(viewerSees))
+        await browseAs(session)
+
+        // ⑥ 정책을 끄면 — 막혔다고 말하고 취소는 된다
+        const off = await fetch(policyUrl, { method: 'PUT', headers: authed, body: JSON.stringify({ value: false }) })
+        await openShare(root)
+        const blocked = await waitFor(`!!document.querySelector('${SECTION} [data-testid="publish-policy-off"]')`, 5000)
+        const closedByPolicy = (await statusOf(second)) === 404
+        await clickSelector(`${SECTION} [data-testid="publish-unpublish"]`)
+        const unpublished = await waitFor(`!document.querySelector('${SECTION} [data-testid="publish-url"]')`, 5000)
+        const noPublishButton = await evaluate(`!document.querySelector('${SECTION} [data-testid="publish-publish"]')`)
+        check('★ 정책을 끄면 막혔다고 말하고 주소도 닫힌다 · 취소는 된다 · 게시 단추는 서지 않는다',
+          off.status === 200 && blocked && closedByPolicy && unpublished && noPublishButton, JSON.stringify([off.status, blocked, closedByPolicy, unpublished, noPublishButton]))
+      } finally {
+        await fetch(policyUrl, { method: 'PUT', headers: authed, body: JSON.stringify({ value: true }) })
+        await browseAs(session)
+      }
+
+      // ⑦ 정책을 다시 켜도 취소한 것은 닫혀 있다
+      const after = await api('GET', `/pages/${root}/publish`)
+      check('취소한 것은 정책을 켜도 닫혀 있다', after.body?.published === false)
+    }
+
     if (sectionIf('개인 필터 · 정렬 — 화면 (2h-2 · F-04-17)')) {
       // 볼 수만 있는 사람(브라우저 세션을 바꾼다)이 도구줄의 필터로 조건을 걸면 **자기 것**으로 저장되고 그 사람의 표만 좁혀진다 — "나만 보는
       // 필터" 표시 · 초기화. 편집자는 자기 개인 것을 "모두에게 저장"한다. 브라우저 세션은 끝에 반드시 소유자로 되돌린다.

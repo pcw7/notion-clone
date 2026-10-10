@@ -48,6 +48,7 @@ import {
   requestKindLabel,
   requesterLabel,
 } from '../access-request-messages'
+import { PublishSection } from './publish-section'
 
 type AccessEntry = {
   principalType: string
@@ -617,6 +618,9 @@ export function SharePanel({
               )}
             </>
           )}
+
+          {/* 웹 게시(6a-3) — 상태는 이 절이 따로 읽는다(공유 목록과 다른 요청) */}
+          {state !== null && <PublishSection workspaceId={workspaceId} pageId={pageId} />}
 
           {error && (
             <p role="alert" className="mt-3 text-xs text-red-600">
