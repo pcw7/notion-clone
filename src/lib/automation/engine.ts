@@ -48,13 +48,14 @@ export type RunOutcome = { readonly runId: string; readonly status: RunStatus; r
 export type RunContext = { readonly triggerPageId: string }
 
 /**
- * 실행의 종류 — 버튼(누른 사람 · origin `user` · depth 0 · 쓰기는 `button` — DB automation 이 받는다) 또는 DB automation(만든 사람의
+ * 실행의 종류 — 버튼 속성 · 버튼 블록(누른 사람 · origin `user` · depth 0 · 쓰기는 `button` — DB automation 이 받는다 · 버튼 블록은 ⑰) 또는
+ * DB automation(만든 사람의
  * 위임 · origin `automation` · depth 1 · 쓰기는 `automation` — 다른 automation 을 깨우지 않는다 · 정본 [보강] DB automation ⓒ).
  */
-export type RunKind = 'button' | 'db_automation'
-const RUN_ORIGIN: Record<RunKind, 'user' | 'automation'> = { button: 'user', db_automation: 'automation' }
-const RUN_DEPTH: Record<RunKind, number> = { button: 0, db_automation: 1 }
-const WRITE_ORIGIN: Record<RunKind, WriteOrigin> = { button: 'button', db_automation: 'automation' }
+export type RunKind = 'button' | 'button_block' | 'db_automation'
+const RUN_ORIGIN: Record<RunKind, 'user' | 'automation'> = { button: 'user', button_block: 'user', db_automation: 'automation' }
+const RUN_DEPTH: Record<RunKind, number> = { button: 0, button_block: 0, db_automation: 1 }
+const WRITE_ORIGIN: Record<RunKind, WriteOrigin> = { button: 'button', button_block: 'button', db_automation: 'automation' }
 
 /** 이 액션은 건너뛴다(권한 · 잠금) — 세이브포인트를 되돌린다. */
 class StepSkipped extends Error {

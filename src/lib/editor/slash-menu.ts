@@ -124,6 +124,8 @@ const CATALOG: Readonly<Record<BodyBlockType, SlashCommandBase>> = {
   breadcrumb: { label: '이동 경로', aliases: ['이동 경로', '경로', '이동경로', 'breadcrumb', 'bread'], group: '고급 블록' },
   // 블록 수식(Phase 2 1a · F-01-20 — 노션의 `/math` · `/latex`).
   equation: { label: '블록 수식', aliases: ['수식', '블록 수식', '방정식', 'math', 'latex', 'tex', 'equation', 'katex'], group: '고급 블록' },
+  // 버튼 블록(자동화 5e-1 · F-08-06 — 노션의 `/button`). 구 `/template` 도 받는다(08 *"구 template button 의 후신"*).
+  button: { label: '버튼', aliases: ['버튼', 'button', 'template', '템플릿 버튼'], group: '고급 블록' },
 }
 
 /**

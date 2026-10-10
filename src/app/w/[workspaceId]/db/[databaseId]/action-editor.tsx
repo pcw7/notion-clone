@@ -123,6 +123,8 @@ const fieldsOf = (properties: readonly PropertySummary[]): Field[] =>
  *
  * @param editLabel 값 바꾸기의 이름 — 버튼은 "이 행의 값 바꾸기", DB automation 은 "트리거된 행의 값 바꾸기"
  * @param rowLabel 일하는 행의 이름 — 버튼은 "누른 행", DB automation 은 "트리거된 행"(값의 출처 목록에 쓴다)
+ * @param dataSourceId 일하는 행의 표 — 버튼 블록처럼 **일하는 행이 없으면 빈 글**(정본 ⑰): 값 바꾸기 · 보낼 속성이 서지 않고, 다른 표에 행 추가의
+ *   기본 대상은 데이터베이스 목록의 첫 표다
  * @param testIdPrefix 검사가 잡는 이름의 앞 — 버튼은 `db-button`(5a-3 · 5a-4 의 e2e 가 그대로 잡는다)
  */
 export function ActionListEditor({
@@ -159,7 +161,7 @@ export function ActionListEditor({
 
   // 이 표와 초안이 가리키는 표 중 아직 읽지 않은 것
   const missing = [...new Set([dataSourceId, ...drafts.flatMap((d) => (d.kind === 'add' ? [d.dataSourceId] : []))])]
-    .filter((id) => tables[id] === undefined)
+    .filter((id) => id !== '' && tables[id] === undefined)
     .join(',')
   useEffect(() => {
     if (missing === '') return
@@ -283,14 +285,18 @@ export function ActionListEditor({
             + {editLabel}
           </button>
         )}
-        <button
-          type="button"
-          data-testid={`${p}-add-row-action`}
-          onClick={() => onChange([...drafts, { kind: 'add', dataSourceId, templateId: null, cells: [] }])}
-          className="rounded border border-neutral-300 px-2 py-0.5 hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-800"
-        >
-          + 다른 표에 행 추가
-        </button>
+        {(dataSourceId !== '' || databases.length > 0) && (
+          <button
+            type="button"
+            data-testid={`${p}-add-row-action`}
+            onClick={() =>
+              onChange([...drafts, { kind: 'add', dataSourceId: dataSourceId !== '' ? dataSourceId : databases[0]!.dataSourceId, templateId: null, cells: [] }])
+            }
+            className="rounded border border-neutral-300 px-2 py-0.5 hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-800"
+          >
+            + 다른 표에 행 추가
+          </button>
+        )}
         <button
           type="button"
           data-testid={`${p}-add-webhook-action`}
@@ -370,6 +376,9 @@ function Webhook({
           + 헤더
         </button>
       )}
+      {fields.length === 0 ? (
+        <p className="text-neutral-500">보낼 속성이 없습니다 — 페이지의 id 와 주소만 갑니다.</p>
+      ) : (
       <fieldset className="flex flex-col gap-0.5">
         <legend className="text-neutral-500">보낼 속성 — 고르지 않으면 행의 id 와 주소만</legend>
         {fields.map((f) => (
@@ -387,6 +396,7 @@ function Webhook({
           </label>
         ))}
       </fieldset>
+      )}
       <p className="text-neutral-500">
         몸은 <code>{'{ run_id, page, properties }'}</code> — 받는 쪽은 <code>run_id</code> 로 겹친 것을 거르세요. 네 번 실패하면 멈춥니다.
       </p>

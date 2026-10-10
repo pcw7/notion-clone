@@ -77,6 +77,10 @@ import { FormatToolbar, type FormatToolbarAt } from './format-toolbar'
 import { CodeCaptionEditor } from './code-caption-editor'
 import { CodeLanguageMenu } from './code-language-menu'
 import { EquationEditor } from './equation-editor'
+import { ButtonBlockSettings } from './button-block-settings'
+import { buttonRunMessage } from '../db/[databaseId]/button-messages'
+import { BUTTON_TYPE } from '@/lib/block/button'
+import { buttonBlockInfo, setButtonLabelCommand } from '@/lib/editor/button-block'
 import { runColumnsSlashCommand } from '@/lib/editor/columns'
 import { runTableSlashCommand } from '@/lib/editor/table'
 import { runColorSlashCommand } from '@/lib/editor/block-color'
@@ -377,6 +381,8 @@ export function BodyEditor({
   const codeUiCloseRef = useRef<((restoreFocus: boolean) => void) | null>(null)
   // 블록 수식의 입력창(Phase 2 1a) — 코드 블록의 오버레이와 같은 짜임.
   const [equationUi, setEquationUi] = useState<EquationUi | null>(null)
+  /** 버튼 블록의 설정 창(자동화 5e-1) — 연 블록과 그때의 라벨. */
+  const [buttonUi, setButtonUi] = useState<{ readonly blockId: string; readonly label: string } | null>(null)
   const equationUiRef = useRef<EquationUi | null>(null)
   const equationCloseRef = useRef<((restoreFocus: boolean) => void) | null>(null)
   /** 코멘트를 쓰는 중 — 앵커는 **여는 순간** 만든다(아래). */
@@ -913,12 +919,14 @@ export function BodyEditor({
       }
 
       // `/수식` 은 지금 블록을 수식으로 바꾼다(블록 id 그대로) — 바꾼 뒤 그 입력창을 연다(F-01-20 — 만들면 곧바로 식을 쓴다).
-      const target = command.id === EQUATION_TYPE ? (containerAt(view.state.selection.$from)?.id ?? null) : null
+      // `/버튼` 도 같다 — 바꾼 뒤 설정 창을 연다(08 — 액션 없는 빈 버튼이 남지 않게 · 정본 ⑰).
+      const target = command.id === EQUATION_TYPE || command.id === BUTTON_TYPE ? (containerAt(view.state.selection.$from)?.id ?? null) : null
       const ran = runSlashCommand(view.state, view.dispatch.bind(view), command, {
         isCollapsed: (id) => collapsedRef.current.has(id),
       })
       view.focus()
-      if (ran && target !== null) openEquationUi(target)
+      if (ran && target !== null && command.id === EQUATION_TYPE) openEquationUi(target)
+      if (ran && target !== null && command.id === BUTTON_TYPE) setButtonUi({ blockId: target, label: '' })
     },
     [createSubpage, openEquationUi],
   )
@@ -1048,6 +1056,25 @@ export function BodyEditor({
       openCodeCaption: (id) => openCodeUi('caption', id),
       // 블록 수식(Phase 2 1a) — 누르거나 골라서 Enter 를 치면 입력창.
       openEquation: (id) => openEquationUi(id),
+      // 버튼 블록(자동화 5e-1) — 누르면 서버가 실행하고 결과를 한 줄로(버튼 속성과 같은 말). ⚙ 는 설정 창.
+      pressButtonBlock: async (id) => {
+        try {
+          const res = await fetch(`/api/workspaces/${workspaceId}/pages/${pageId}/buttons/${id}/press`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ idempotencyKey: crypto.randomUUID() }),
+          })
+          const body = (await res.json().catch(() => null)) as { run?: { status: string; steps: { status: string; reason?: string }[] }; error?: string } | null
+          return buttonRunMessage(res.ok && body?.run ? body.run : null, body?.error)
+        } catch {
+          return { text: '연결에 실패했습니다.', tone: 'error' }
+        }
+      },
+      openButtonBlock: (id) => {
+        const current = viewRef.current
+        const info = current ? buttonBlockInfo(current.state, id) : null
+        setButtonUi({ blockId: id, label: info?.label ?? '' })
+      },
       // 인라인 수식(Phase 2 1b) — 누르거나 골라서 Enter · Ctrl/Cmd+Shift+E 로 넣은 빈 수식.
       openInlineEquation: (ref) => openInlineEquationUi(ref),
       // 링크(Ctrl/Cmd+K · 1e-2) — 서식 툴바의 링크 입력칸을 연다. 고른 글자가 없으면 툴바가 없어 아무 일도 없다.
@@ -1432,6 +1459,21 @@ export function BodyEditor({
             onClose={closeCodeUi}
             closeRef={codeUiCloseRef}
             isTrigger={(target) => isCodeUiTrigger(target, codeUi)}
+          />
+        )}
+        {/* 버튼 블록의 설정 창(자동화 5e-1) — 편집기 밖. 라벨은 저장할 때 편집기 명령으로 본문에 쓴다. */}
+        {editable && buttonUi !== null && (
+          <ButtonBlockSettings
+            key={buttonUi.blockId}
+            workspaceId={workspaceId}
+            pageId={pageId}
+            blockId={buttonUi.blockId}
+            initialLabel={buttonUi.label}
+            onSaveLabel={(label) => {
+              const view = viewRef.current
+              if (view?.editable) setButtonLabelCommand(buttonUi.blockId, label)(view.state, view.dispatch.bind(view))
+            }}
+            onClose={() => setButtonUi(null)}
           />
         )}
         {/* 블록 수식의 입력창(Phase 2 1a) — 편집기 밖 · 프레임 좌표. 같은 블록을 다시 열면 새로 연다(key). */}

@@ -50,6 +50,7 @@ import { readCaption, readImageSource, type ImageSource } from '../block/image.t
 import { TOC_TYPE, headingsOfBlocks, tocEntries, type TocEntry } from '../block/toc.ts'
 import { BREADCRUMB_TYPE } from '../block/breadcrumb.ts'
 import { EQUATION_TYPE, equationDisplayLines } from '../block/equation.ts'
+import { BUTTON_TYPE, buttonPlainText } from '../block/button.ts'
 import { cellsOf, TABLE_TYPE } from '../block/table.ts'
 import { isSafeLinkUrl } from '../contracts/link-url.ts'
 import { PAGE_TYPE, UNSUPPORTED_TYPE } from '../block/types.ts'
@@ -658,6 +659,11 @@ function renderBlock(block: EditorBlock, ctx: Ctx, number: number): string[] {
     case EQUATION_TYPE:
       // 블록 수식(Phase 2 1a · F-01-20 *"마크다운은 `$$...$$`"*) — 울타리 줄 사이에 식. 빈 식은 쓰지 않는다(저장된 내용이 없다).
       return equationDisplayLines((block.properties ?? {}) as Record<string, unknown>)
+
+    case BUTTON_TYPE:
+      // 버튼 블록(자동화 5e-1) — 마크다운에 단추가 없다. 라벨을 `[버튼: …]` 한 줄로 남긴다(액션은 파일에 담지 않는다 — 세지 않는다:
+      // 액션은 본문의 내용이 아니다).
+      return [buttonPlainText((block.properties ?? {}) as Record<string, unknown>)]
 
     case TOC_TYPE: {
       // 목차(8b-1 · F-01-16 *"내보내기 시점에 동일 계산을 수행해 정적 목차 생성"*) — 헤딩의 글자를 목록으로. 링크는 달지 않는다

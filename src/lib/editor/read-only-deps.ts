@@ -38,6 +38,8 @@ export function readOnlyEditorDeps(workspaceId: string, labels: PreviewLabels): 
     openCodeCaption: nothing,
     openEquation: nothing,
     openInlineEquation: nothing,
+    openButtonBlock: nothing,
+    pressButtonBlock: async () => ({ text: '미리보기에서는 누를 수 없습니다.', tone: 'warn' }),
     uploadImage: async () => ({ ok: false, message: '미리보기에서는 올릴 수 없습니다.' }),
     breadcrumbTrail: () => null,
     pageRefTitle: (id) => lookup(labels.pages, id),

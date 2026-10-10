@@ -30,6 +30,7 @@ import { isPlainRecord, jsonSafe } from '../contracts/json-safe.ts'
 import { sanitizeRichText } from '../contracts/rich-text.ts'
 import { MAX_CODE_LANGUAGE_LENGTH } from './code.ts'
 import { clampExpression } from './equation.ts'
+import { clampButtonLabel } from './button.ts'
 import { COLUMN_HEADER_KEY, ROW_HEADER_KEY } from './table.ts'
 import { normalizeFormat, PAGE_TYPE, specOf, UNSUPPORTED_TYPE, type BlockFormat, type BlockType } from './types.ts'
 import { PAGE_ICON_KEY } from './page-icon.ts'
@@ -88,6 +89,12 @@ export function sanitizeBlockAttrs(type: BlockType, props: Record<string, unknow
     const expression = nextProps.expression
     if (typeof expression !== 'string' || expression.trim() === '') delete edit().expression
     else if (clampExpression(expression) !== expression) edit().expression = clampExpression(expression)
+  }
+
+  if (spec.label && 'label' in nextProps) {
+    const label = nextProps.label
+    if (typeof label !== 'string' || label.trim() === '') delete edit().label
+    else if (clampButtonLabel(label) !== label) edit().label = clampButtonLabel(label)
   }
 
   if (spec.childrenInContent) {
