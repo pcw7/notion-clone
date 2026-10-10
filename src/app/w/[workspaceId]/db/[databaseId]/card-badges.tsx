@@ -15,6 +15,7 @@ import { isEmptyValue, readRelationValue } from '@/lib/database/property-types'
 import { cellText, readCell } from '@/lib/database/cell-format'
 import { formatUniqueId } from '@/lib/database/unique-id-format'
 import { CellDisplay, RelationChips, type RelationIcons, type RelationLabels } from './cell-view'
+import { ButtonCell } from './button-cell'
 
 export function CardBadges({
   row,
@@ -22,11 +23,14 @@ export function CardBadges({
   relationLabels,
   relationIcons,
   testId,
+  button,
 }: {
   row: RowJson
   columns: readonly ViewColumn[]
   relationLabels: RelationLabels
   relationIcons: RelationIcons
+  /** 버튼 칸(5a-4)을 세울 때 — 워크스페이스와 누를 수 있는가. 없으면 버튼은 서지 않는다. */
+  button?: { readonly workspaceId: string; readonly canPress: boolean }
   /** 배지 하나의 `data-testid` — 보드는 `db-board-badge`, 갤러리는 `db-gallery-badge`. */
   testId: string
 }) {
@@ -43,8 +47,16 @@ export function CardBadges({
           )
         }
         // 수식(2i-2)도 — 값이 행에 없다(읽을 때 계산 · 카드에는 아직 싣지 않는다 · §7).
-        // 버튼(5a-3)도 — 값이 없다(카드에는 아직 단추를 세우지 않는다 · §7).
-        if (column.type === 'rollup' || column.type === 'formula' || column.type === 'button') return null
+        // 버튼(5a-4) — 카드에도 단추가 선다(누르기가 카드를 열지 않는다 · `ButtonCell`)
+        if (column.type === 'button') {
+          if (button === undefined) return null
+          return (
+            <span key={column.propertyId} data-testid={testId} className="max-w-full">
+              <ButtonCell workspaceId={button.workspaceId} rowId={row.id} propertyId={column.propertyId} name={column.name} canPress={button.canPress} />
+            </span>
+          )
+        }
+        if (column.type === 'rollup' || column.type === 'formula') return null
         // 고유 ID 는 행에 있다 — 번호를 그대로 그린다(2a-1).
         if (column.type === 'unique_id') {
           const id = formatUniqueId(column.uniqueId.prefix, row.uniqueSeq)

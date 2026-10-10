@@ -96,7 +96,8 @@ export default async function TemplatePage({
   if (!view.ok) notFound()
 
   const recordColumns = await withReadTransaction((tx) => readRecordColumns(tx, dataSourceId))
-  const columns = listColumns('record', recordColumns)
+  // 버튼(5a-4)은 템플릿의 일이 아니다 — 누르면 템플릿의 값이 바뀐다(서버도 거절한다 · 정본 §3.10 [보강] 자동화 엔진 ⑪)
+  const columns = listColumns('record', recordColumns).filter((c) => c.type !== 'button')
   // 표의 이름 — 소스가 둘 이상이면 이 템플릿의 소스 이름이다(8e-2 · 데이터베이스 화면과 같은 규칙).
   const sources = database.value.dataSources
   const tableName =

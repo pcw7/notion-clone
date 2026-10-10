@@ -9,7 +9,8 @@
  * 단추를 막는다(두 번 눌러도 한 번). 값을 고칠 수 없는 사람에게는 눌리지 않는다(서버가 다시 묻는다 — 거절은 말로). 바뀐 칸은 표 변경
  * 알림이 다시 그린다(X-5) — 이 칸은 결과만 말한다.
  *
- * 칸을 고르는 누르기(`onCellMouseDown`)로 번지지 않게 막는다 — 단추를 누르는 것이 칸을 고르는 것이 아니다.
+ * 칸을 고르는 누르기(`onCellMouseDown`) · 카드를 여는 누르기로 번지지 않게 막는다 — 단추를 누르는 것이 칸을 고르거나 카드를 여는 것이
+ * 아니다. 표 · 행 페이지 · 보드 · 갤러리의 카드가 이 칸을 쓴다(5a-4 · 정본 ⑪).
  */
 
 import { useState } from 'react'
@@ -57,7 +58,14 @@ export function ButtonCell({
         disabled={!canPress || busy}
         tabIndex={-1}
         onMouseDown={(e) => e.stopPropagation()}
-        onClick={() => void press()}
+        // 보드 카드는 pointerdown 으로 끌기를 시작한다 — 단추를 누르는 것이 카드를 끄는 것이 아니다
+        onPointerDown={(e) => e.stopPropagation()}
+        onClick={(e) => {
+          // 카드(보드 · 갤러리)를 여는 누르기로 번지지 않게
+          e.stopPropagation()
+          e.preventDefault()
+          void press()
+        }}
         title={canPress ? undefined : '이 표의 값을 고칠 수 있는 사람만 누를 수 있습니다'}
         className="max-w-full shrink-0 truncate rounded-md border border-neutral-300 bg-white px-2 py-0.5 text-xs font-medium hover:bg-neutral-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-neutral-600 dark:bg-neutral-900 dark:hover:bg-neutral-800"
       >
