@@ -7,6 +7,8 @@
  *      쌓는 쓰기는 쌓은 seq 마다 보낸다. 신호는 한 트랜잭션 안에서 쓴 순서대로 온다(휴지통은 권한이 부모 본문보다 먼저)
  *   ② **커밋한 것만 온다** — 되돌린 트랜잭션은 보내지 않는다
  *   ③ **끊기면 다시 붙고, 붙은 뒤에 다시 맞추라고 알린다** — 끊긴 사이의 신호는 오지 않는다(그래서 `onResync` 가 있다)
+ *   ④ **행 단위 접근 규칙(6f-2a · 0089)이 바뀌면 워크스페이스 신호** — 두기 · 레벨 바꾸기 · 지우기마다. 같은 레벨 · 없는 규칙 지우기는
+ *      쓰지 않으므로 보내지 않는다
  *
  * 신호는 DB 전체에서 온다 — 다른 검사 파일이 동시에 쓰는 것까지. 그래서 이 검사가 만든 페이지 · 워크스페이스 · 사용자의 신호만 본다.
  * "오지 않았다"는 기다려서 보지 않는다 — **뒤에 보낸 신호가 도착한 뒤에** 본다(신호는 커밋 순서대로 온다).
@@ -20,12 +22,14 @@ import { revokeSession } from '../auth/session.ts'
 import { hashSessionToken } from '../auth/session-context.ts'
 import { movePage } from '../block/move-page.ts'
 import { createPage, titleFromPlainText } from '../block/page.ts'
+import { createDatabase } from '../database/database.ts'
 import { savePageBody } from '../block/save-page-body.ts'
 import { trashPage } from '../block/trash.ts'
 import { textRun } from '../contracts/rich-text.ts'
 import { query } from '../db/pool.ts'
 import { withTransaction } from '../db/tx.ts'
 import { grantAccess, resumeInheriting, stopInheriting } from '../permissions/acl.ts'
+import { removeAccessRule, setAccessRule } from '../permissions/access-rule.ts'
 import { createBareWorkspace, createUser, joinAs, probeDatabase } from '../testing/db-fixtures.ts'
 import { openChangeFeed, parseCollabSignal, type ChangeFeed, type CollabSignal } from './change-feed.ts'
 
@@ -189,6 +193,41 @@ describe('① 권한 · 본문을 바꾸는 쓰기가 신호를 보낸다 · ②
     )
 
     assert.deepEqual(heard.signals.slice(start).filter(mine), expected)
+  })
+})
+
+// ── ④ 행 단위 접근 규칙 ──────────────────────────────────────────────
+
+describe('④ 행 단위 접근 규칙이 바뀌면 워크스페이스 신호(6f-2a · 0089)', () => {
+  test('★ 두기 · 레벨 바꾸기 · 지우기마다 — 같은 레벨 · 없는 규칙 지우기는 보내지 않는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const heard = await listen(t)
+    const workspaceId = await createBareWorkspace('규칙 신호')
+    const owner = await joinAs(workspaceId, await createUser('소유자'), 'owner')
+    const made = await createDatabase(owner.ctx, { name: '제출함', privateTop: true })
+    assert.ok(made.ok)
+    const { id: databaseId, dataSourceId } = made.value
+    const page = await createPage(owner.ctx, { parentPageId: null as never, title: titleFromPlainText('표식') })
+
+    // 표식 사이의 신호만 센다 — 앞의 설정(멤버 · 표 · 페이지의 ACL)이 보낸 것은 앞 표식보다 먼저 온다(커밋 순서).
+    const mark = async (text: string): Promise<number> => {
+      assert.equal((await savePageBody(owner.ctx, page.id as never, { blocks: [para(text)] })).ok, true)
+      const seq = (await seqsOf(page.id)).at(-1)
+      await waitFor(`표식(${text})이 온다`, () => heard.signals.some((s) => s.kind === 'doc' && s.pageId === page.id && s.seq === seq))
+      return heard.signals.findIndex((s) => s.kind === 'doc' && s.pageId === page.id && s.seq === seq)
+    }
+    const start = await mark('앞')
+    const rule = (level: string) => ({ dataSourceId, source: 'created_by', level })
+    const off = { dataSourceId, source: 'created_by' }
+    assert.ok((await setAccessRule(owner.ctx, databaseId, rule('edit'))).ok)
+    assert.ok((await setAccessRule(owner.ctx, databaseId, rule('edit'))).ok) // 같은 레벨 — 쓰지 않는다
+    assert.ok((await setAccessRule(owner.ctx, databaseId, rule('view'))).ok)
+    assert.ok((await removeAccessRule(owner.ctx, databaseId, off)).ok)
+    assert.ok((await removeAccessRule(owner.ctx, databaseId, off)).ok) // 없다 — 쓰지 않는다
+    const end = await mark('뒤')
+
+    const between = heard.signals.slice(start + 1, end).filter((s) => s.kind === 'access' && s.workspaceId === workspaceId)
+    assert.deepEqual(between, [access(workspaceId), access(workspaceId), access(workspaceId)])
   })
 })
 

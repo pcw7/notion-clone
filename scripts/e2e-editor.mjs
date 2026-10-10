@@ -16030,6 +16030,54 @@ async function main() {
       check('★ 페이지에 "내용 편집" 은 400 invalid_level', onPage.status === 400 && onPage.body?.error === 'invalid_level', JSON.stringify(onPage.body))
     }
 
+    if (sectionIf('행 단위 접근 규칙 — 라우트 (6f-2a · F-06-10)')) {
+      // 라우트의 연결 — 두기 · 목록 · 레벨 바꾸기 · 지우기 · 거부 코드. 판정은 DB 검사(`access-rule.db.test.ts`)가 본다 — 여기서는 규칙으로
+      // 열린 행이 실제 요청(그 행의 공유 상태 읽기 — 볼 수 있어야 답한다)에서도 열리는지 하나만 본다.
+      const stamp = Date.now()
+      const api = async (method, path, body, headers = authed) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `규칙 표 ${stamp}` })).body.database
+      const rules = `/databases/${db.id}/access-rules`
+      const mate = await joinAs(workspaceId, await createUser(`규칙 동료 ${stamp}`), 'member')
+      const asMate = { ...json, cookie: `nc_session=${mate.token}` }
+      const access = (body) => api('POST', `/pages/${db.id}/access`, body)
+      // 동료가 잠시 편집으로 행 하나를 만들고, 표의 부여를 거둔다 — 이제 그 행을 못 본다
+      await access({ action: 'restrict' })
+      await access({ action: 'grant', principal: { type: 'user', id: ctx.userId }, level: 'full_access' })
+      await access({ action: 'revoke', principal: { type: 'workspace_everyone' } })
+      await access({ action: 'grant', principal: { type: 'user', id: mate.userId }, level: 'edit' })
+      const row = (await api('POST', `/views/${db.defaultViewId}/rows`, {}, asMate)).body.row.id
+      await access({ action: 'revoke', principal: { type: 'user', id: mate.userId } })
+      const before = await api('GET', `/pages/${row}/access`, undefined, asMate)
+
+      const put = await api('PUT', rules, { dataSourceId: db.dataSourceId, source: 'created_by', level: 'edit' })
+      check('규칙을 둔다 — 200 · 돌려준 규칙', put.status === 200 && put.body?.rule?.level === 'edit', JSON.stringify(put.body))
+      const after = await api('GET', `/pages/${row}/access`, undefined, asMate)
+      check('★ 규칙 전에는 못 열던 자기 행이 규칙 뒤에 열린다', before.status === 404 && after.status === 200, `${before.status} → ${after.status}`)
+      const listed = await api('GET', rules)
+      check('목록 — 하나', listed.status === 200 && listed.body?.rules?.length === 1, JSON.stringify(listed.body))
+
+      const bad = await Promise.all([
+        api('PUT', rules, { dataSourceId: db.dataSourceId, source: 'created_by', level: 'edit_content' }),
+        api('PUT', rules, { dataSourceId: db.dataSourceId, source: 'person_property', level: 'edit' }),
+        api('PUT', rules, { dataSourceId: db.dataSourceId, source: 'created_by' }),
+        api('PUT', rules, { dataSourceId: db.dataSourceId, source: 'created_by', level: 'edit' }, asMate),
+        api('GET', `/databases/not-a-uuid/access-rules`),
+      ])
+      check('거부 — 400 invalid_level · 400 unsupported_source · 400 invalid_input · 못 보는 사람 404 · 모양이 틀린 id 404',
+        JSON.stringify(bad.map((r) => `${r.status} ${r.body?.error}`)) ===
+          JSON.stringify(['400 invalid_level', '400 unsupported_source', '400 invalid_input', '404 not_found', '404 not_found']),
+        JSON.stringify(bad.map((r) => `${r.status} ${r.body?.error}`)))
+
+      const removed = await api('DELETE', rules, { dataSourceId: db.dataSourceId, source: 'created_by' })
+      const gone = await api('GET', `/pages/${row}/access`, undefined, asMate)
+      check('지우면 곧바로 못 연다', removed.status === 200 && gone.status === 404, `${removed.status} ${gone.status}`)
+    }
+
     if (sectionIf('개인 필터 · 정렬 — 화면 (2h-2 · F-04-17)')) {
       // 볼 수만 있는 사람(브라우저 세션을 바꾼다)이 도구줄의 필터로 조건을 걸면 **자기 것**으로 저장되고 그 사람의 표만 좁혀진다 — "나만 보는
       // 필터" 표시 · 초기화. 편집자는 자기 개인 것을 "모두에게 저장"한다. 브라우저 세션은 끝에 반드시 소유자로 되돌린다.

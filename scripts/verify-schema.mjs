@@ -4186,6 +4186,45 @@ try {
     else fail('365일이 지난 행을 지우지 못했다')
   }
 
+  console.log('\n[67] 행 단위 접근 규칙 (0089 / §3.3 끝 [보강] 행 단위 접근 규칙 · 6f-2a조각)')
+  {
+    const dbBlock = randomUUID()
+    const ds = randomUUID()
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key,
+                          ancestor_path, perm_scope_id, properties, format, created_at, last_edited_at)
+       VALUES ($1, $2, 'database', 'workspace', $2, $3, '{}', $1, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      // 순서 키는 무작위 — 워크스페이스 최상위의 다른 프로브 블록과 겹치지 않게(ux_block_sibling_order)
+      [dbBlock, wsId, `z${randomUUID().replace(/-/g, '')}`],
+    )
+    await client.query(`INSERT INTO database (id, created_at, updated_at) VALUES ($1, now(), now())`, [dbBlock])
+    await client.query(`INSERT INTO data_source (id, owner_database_id, name, created_at, updated_at) VALUES ($1, $2, '규칙', now(), now())`, [
+      ds,
+      dbBlock,
+    ])
+    const put = `INSERT INTO page_access_rule (id, data_source_id, source_kind, source_property_id, level) VALUES ($1, $2, $3, $4, $5)`
+    await client.query(put, [randomUUID(), ds, 'created_by', null, 'edit'])
+    ok('만든 사람 규칙 — 정상 경로가 통과한다')
+
+    const rejects = async (label, params, constraint) => {
+      await client.query('SAVEPOINT probe')
+      try {
+        await client.query(put, params)
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        fail(`${label} — 거부되어야 하는데 통과했다`)
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        if (e.constraint === constraint) ok(`${label} — ${constraint} 가 거부함 (${e.code})`)
+        else fail(`${label} — ${constraint} 가 아니라 ${e.constraint ?? e.code} 에 걸렸다 (${e.message})`)
+      }
+    }
+    await rejects('★ 같은 원천의 두 번째 규칙(레벨만 바꾼다)', [randomUUID(), ds, 'created_by', null, 'view'], 'ux_page_access_rule_source')
+    await rejects('데이터베이스 전용 레벨(대상은 행 — 페이지다)', [randomUUID(), ds, 'created_by', null, 'edit_content'], 'ck_page_access_rule_level')
+    await rejects('모르는 원천', [randomUUID(), ds, 'assignee', null, 'edit'], 'ck_page_access_rule_source')
+    await rejects('만든 사람인데 속성이 있다', [randomUUID(), ds, 'created_by', 'p00000000000000000001', 'edit'], 'ck_page_access_rule_property')
+    await rejects('사람 속성인데 속성이 없다', [randomUUID(), ds, 'person_property', null, 'edit'], 'ck_page_access_rule_property')
+  }
+
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
 } catch (e) {
