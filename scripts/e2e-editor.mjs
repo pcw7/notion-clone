@@ -7144,7 +7144,12 @@ async function main() {
         await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/settings?s=workspace.general` })
         check('소유자의 설정 — 일반 절에 전체 내보내기가 있다(8g-2 — 홈에서 옮겼다)',
           await waitFor(`document.querySelector('[data-testid="export-button"]')?.textContent === '워크스페이스 내보내기'`, 15000))
-        await clickOn('[data-testid="export-button"]')
+        // 패널이 설 때까지 누른다 — 버튼의 글자는 서버가 그린 HTML 이라 화면이 살아나기(hydration) 전에 누른 클릭은 버려진다. 전체 판(서버가
+        // 바쁘다)에서만 패널이 서지 않아 요약 · ZIP 둘이 떨어졌다
+        for (let i = 0; i < 5; i += 1) {
+          await clickOn('[data-testid="export-button"]')
+          if (await waitFor(`!!document.querySelector('[data-testid="export-panel"]')`, 3000)) break
+        }
         // 표의 수는 앞 절들이 만든 것에 따라 달라진다(7c-4 가 teamspace 에 표를 만든다) — 소유자가 볼 수 있는 표의 수로 묻는다.
         const visibleTables = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/databases`, { headers: authed })).json()).databases.length
         check('★ 워크스페이스 요약은 표와 그 행까지 센다', await summaryMatches(`/데이터베이스 ${visibleTables} · 행 \\d+ ·/`), await exportPanelText())
@@ -9194,8 +9199,8 @@ async function main() {
       check('★ 사이드바의 "설정"으로 연다 — 첫 절은 내 계정의 프로필',
         await waitFor(`location.pathname === ${JSON.stringify(`/w/${workspaceId}/settings`)} && document.querySelector('[data-testid="settings-title"]')?.textContent === '프로필'`, 15000),
         JSON.stringify([await evaluate('location.pathname'), await title()]))
-      check('★ 소유자의 내비 — 내 계정(프로필 · 환경설정 · 보안) · 워크스페이스(일반 · 사람 · 보안)',
-        JSON.stringify(await navSections()) === JSON.stringify(['account.profile', 'account.preferences', 'account.security', 'workspace.general', 'workspace.people', 'workspace.security', 'workspace.plan']),
+      check('★ 소유자의 내비 — 내 계정(프로필 · 환경설정 · 보안) · 워크스페이스(일반 · 사람 · 보안 · 요금제 · 감사 로그)',
+        JSON.stringify(await navSections()) === JSON.stringify(['account.profile', 'account.preferences', 'account.security', 'workspace.general', 'workspace.people', 'workspace.security', 'workspace.plan', 'workspace.audit']),
         JSON.stringify(await navSections()))
 
       // 내 이름 — Enter 로 저장 · 공백을 정리한 값이 남는다
