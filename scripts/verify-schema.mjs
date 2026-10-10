@@ -71,6 +71,8 @@ const EXPECTED_TABLES = [
   'property_dependency',
   // 수식 값의 캐시 2j-2조각 (0062)
   'derived_value',
+  // 레이아웃의 직전 버전 3e-1조각 (0066)
+  'page_layout_history',
   'schema_migration', 'scim_token', 'session_policy', 'sso_config',
   'user', 'user_email', 'user_session',
   'workspace', 'workspace_invite', 'workspace_member',
@@ -3378,6 +3380,53 @@ try {
     const mainKept = (await client.query(`SELECT count(*)::int AS n FROM layout_module WHERE property_id = $1`, [main1])).rows[0].n
     if (left === 0 && mainKept === 1) ok('★ 패널의 속성이 관계형이 되면 패널에서 내린다(속성 묶음으로) — 다른 모듈은 그대로')
     else fail(`관계형이 된 패널 모듈 ${left}행 · 본문 모듈 ${mainKept}행 — 0 · 1 이어야 한다`)
+  }
+
+  console.log('\n[48] 레이아웃의 직전 버전 (0066 / §3.6 [보강] 레이아웃의 직전 버전 · 3e-1조각)')
+  {
+    const root = randomUUID()
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key,
+                          ancestor_path, perm_scope_id, properties, format, created_at, last_edited_at)
+       VALUES ($1, $2, 'page', 'workspace', $2, 'z48', '{}', $1, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      [root, wsId],
+    )
+    const dbId = randomUUID()
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key,
+                          ancestor_path, perm_scope_id, properties, format, created_at, last_edited_at)
+       VALUES ($1, $2, 'database', 'block', $3, 's1', $4, $3, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      [dbId, wsId, root, [root]],
+    )
+    await client.query(`INSERT INTO database (id, created_at, updated_at) VALUES ($1, now(), now())`, [dbId])
+    const ds = randomUUID()
+    await client.query(`INSERT INTO data_source (id, owner_database_id, name, created_at, updated_at) VALUES ($1, $2, '소스', now(), now())`, [ds, dbId])
+    const put = `INSERT INTO page_layout_history (data_source_id, after_version, snapshot) VALUES ($1, $2, $3::jsonb)`
+    await client.query(put, [ds, 1, JSON.stringify({ order: [], hidden: [] })])
+    ok('직전 버전 한 행 — 정상 경로가 통과한다')
+
+    const rejectBy = async (label, constraint, sql, params) => {
+      await client.query('SAVEPOINT probe')
+      try {
+        await client.query(sql, params)
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        fail(`${label} — 거부되어야 하는데 통과했다`)
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        if (e.constraint === constraint) ok(`${label} — ${constraint} 가 거부함 (${e.code})`)
+        else fail(`${label} — ${constraint} 가 아니라 ${e.constraint ?? e.code} 에 걸렸다 (${e.message})`)
+      }
+    }
+    await rejectBy('★ 한 단계뿐 — 소스의 둘째 기록', 'page_layout_history_pkey', put, [ds, 2, '{}'])
+    await rejectBy('★ 버전 0', 'ck_page_layout_history_version', `UPDATE page_layout_history SET after_version = 0 WHERE data_source_id = $1`, [ds])
+    await rejectBy('★ 스냅샷이 객체가 아니다', 'ck_page_layout_history_snapshot', `UPDATE page_layout_history SET snapshot = '[]'::jsonb WHERE data_source_id = $1`, [ds])
+
+    await client.query('SAVEPOINT cascade')
+    await client.query(`DELETE FROM data_source WHERE id = $1`, [ds])
+    const left = (await client.query(`SELECT count(*)::int AS n FROM page_layout_history WHERE data_source_id = $1`, [ds])).rows[0].n
+    await client.query('ROLLBACK TO SAVEPOINT cascade')
+    if (left === 0) ok('소스를 영구히 지우면 직전 버전도 CASCADE 된다')
+    else fail(`소스를 지웠는데 직전 버전이 ${left}행 남았다`)
   }
 
   await client.query('ROLLBACK')

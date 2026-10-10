@@ -30,14 +30,16 @@
 import { randomUUID } from 'node:crypto'
 
 import type { SessionContext } from '../auth/session-context.ts'
-import { withCommandTransaction, type Tx } from '../db/tx.ts'
+import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
 import { firstOrderKey, orderKeysBetween } from '../block/order-key.ts'
 import { planOrder } from './layout-order.ts'
 import { bumpSchema, isSchemaFailure, lockSchema } from './property.ts'
 import { MAX_PINNED_PROPERTIES } from './limits.ts'
 import { canPlaceInPanel, GROUP_MODULE } from './layout-modules.ts'
+import { canViewDataSource } from './relation.ts'
 import {
   DEFAULT_PAGE_SETTINGS,
+  parsePageSettings,
   samePageSettings,
   type BacklinksMode,
   type InlineCommentMode,
@@ -83,6 +85,8 @@ export type LayoutFailure =
   | 'too_many_pinned'
   /** 상세 패널에 놓을 수 없는 유형이다(관계형 — M4). */
   | 'panel_type'
+  /** 되돌릴 직전 버전이 없다(3e-1 — 한 단계뿐이고 되돌리기는 되돌리지 않는다). */
+  | 'no_undo'
 
 export type LayoutResult =
   | { readonly ok: true; readonly value: { readonly layout: RecordLayout; readonly changed: boolean } }
@@ -184,153 +188,277 @@ export async function applyRecordLayout(
   },
 ): Promise<LayoutResult> {
   return withCommandTransaction(async (tx) => {
-    // 구조의 문 — 소스 행을 FOR UPDATE 로 잠근다. 같은 소스의 적용 둘이 여기서 줄을 서므로 버전을 읽고 쓰는 사이에 끼어들 수 없다.
-    const ds = await lockSchema(tx, ctx, dataSourceId)
-    if (isSchemaFailure(ds)) {
-      return fail(!ds.ok && (ds.reason === 'forbidden' || ds.reason === 'locked') ? ds.reason : 'not_found')
+    const opened = await openForWrite(tx, ctx, dataSourceId, input.expectedVersion)
+    if (!opened.ok) return opened.failure
+    const before = await snapshotOf(tx, dataSourceId, opened.current)
+    const result = await applyIn(tx, ctx, dataSourceId, opened.current, input)
+    // 바뀐 적용만 직전 버전을 남긴다(3e-1 — 한 단계 · 덮어쓴다)
+    if (result.ok && result.value.changed) {
+      await tx.query(
+        `INSERT INTO page_layout_history (data_source_id, after_version, snapshot, changed_by)
+         VALUES ($1, $2, $3::jsonb, $4)
+         ON CONFLICT (data_source_id) DO UPDATE
+            SET after_version = EXCLUDED.after_version, snapshot = EXCLUDED.snapshot,
+                changed_by = EXCLUDED.changed_by, changed_at = now()`,
+        [dataSourceId, result.value.layout.version, JSON.stringify(before), ctx.userId],
+      )
     }
+    return result
+  })
+}
 
-    const current = await readRecordLayout(tx, dataSourceId)
-    if (current.version !== input.expectedVersion) return fail('layout_conflict', current.version)
+/** 적용 입력의 모양 — 바깥 함수와 되돌리기가 같은 안쪽(`applyIn`)을 쓴다. */
+type LayoutDraft = {
+  readonly order: readonly string[]
+  readonly hidden: readonly string[]
+  readonly pinned?: readonly string[]
+  readonly settings?: Partial<PageSettings>
+  readonly main?: readonly string[]
+  readonly panel?: readonly string[]
+}
 
-    const properties = await tx.query<{ id: string; type: string; order_idx: string }>(
-      `SELECT id, type::text AS type, order_idx FROM property
-        WHERE data_source_id = $1 AND deleted_at IS NULL
-        ORDER BY order_idx, id`,
+/**
+ * 구조의 문 — 소스 행을 FOR UPDATE 로 잠근다. 같은 소스의 적용 둘이 여기서 줄을 서므로 버전을 읽고 쓰는 사이에 끼어들 수 없다. 버전이
+ * 다르면 `layout_conflict`(지금 버전과 함께).
+ */
+async function openForWrite(
+  tx: Tx,
+  ctx: SessionContext,
+  dataSourceId: string,
+  expectedVersion: string,
+): Promise<{ readonly ok: true; readonly current: RecordLayout } | { readonly ok: false; readonly failure: LayoutResult }> {
+  const ds = await lockSchema(tx, ctx, dataSourceId)
+  if (isSchemaFailure(ds)) {
+    return { ok: false, failure: fail(!ds.ok && (ds.reason === 'forbidden' || ds.reason === 'locked') ? ds.reason : 'not_found') }
+  }
+  const current = await readRecordLayout(tx, dataSourceId)
+  if (current.version !== expectedVersion) return { ok: false, failure: fail('layout_conflict', current.version) }
+  return { ok: true, current }
+}
+
+/** 지금의 레이아웃을 적용 입력의 모양으로 — 직전 버전의 스냅샷(3e-1). 순서는 살아 있는 속성의 스키마 순서다. */
+async function snapshotOf(tx: Tx, dataSourceId: string, current: RecordLayout): Promise<Required<LayoutDraft>> {
+  const order = await tx.query<{ id: string }>(
+    `SELECT id FROM property WHERE data_source_id = $1 AND deleted_at IS NULL ORDER BY order_idx, id`,
+    [dataSourceId],
+  )
+  return {
+    order: order.map((r) => r.id),
+    hidden: current.hidden,
+    pinned: current.pinned,
+    settings: current.settings,
+    main: current.main,
+    panel: current.panel,
+  }
+}
+
+/** 적용의 안쪽 — 잠금 · 버전은 바깥이 봤다. 바뀐 것이 없으면 아무것도 쓰지 않는다. */
+async function applyIn(
+  tx: Tx,
+  ctx: SessionContext,
+  dataSourceId: string,
+  current: RecordLayout,
+  input: LayoutDraft,
+): Promise<LayoutResult> {
+  const properties = await tx.query<{ id: string; type: string; order_idx: string }>(
+    `SELECT id, type::text AS type, order_idx FROM property
+      WHERE data_source_id = $1 AND deleted_at IS NULL
+      ORDER BY order_idx, id`,
+    [dataSourceId],
+  )
+  const live = new Map(properties.map((p) => [p.id, p]))
+  const liveOf = (ids: readonly string[]) => [...new Set(ids)].filter((id) => live.has(id))
+
+  // 자리 — 한 속성은 한 자리다(머리말). 받은 목록끼리 겹치거나 제목이 끼면 거부한다. 그사이 지워진 속성은 건너뛴다.
+  const hidden = liveOf(input.hidden)
+  const pinnedInput = input.pinned === undefined ? null : liveOf(input.pinned)
+  const mainInput = input.main === undefined ? null : [...new Set(input.main)].filter((id) => id === GROUP_MODULE || live.has(id))
+  const panelInput = input.panel === undefined ? null : liveOf(input.panel)
+  if (mainInput !== null && !mainInput.includes(GROUP_MODULE)) return fail('invalid_layout')
+  const claimed = new Set<string>()
+  for (const list of [hidden, pinnedInput, mainInput, panelInput]) {
+    for (const id of list ?? []) {
+      if (id === GROUP_MODULE) continue
+      if (live.get(id)?.type === 'title' || claimed.has(id)) return fail('invalid_layout')
+      claimed.add(id)
+    }
+  }
+  if (pinnedInput !== null && pinnedInput.length > MAX_PINNED_PROPERTIES) return fail('too_many_pinned')
+  if (panelInput !== null && panelInput.some((id) => !canPlaceInPanel(live.get(id)!.type))) return fail('panel_type')
+  // 받지 않은 목록 — 지금 것에서 다른 목록이 가져간 속성을 뺀다
+  const others = (own: readonly string[] | null) => new Set([...claimed].filter((id) => !(own ?? []).includes(id)))
+  const takenFromPinned = others(pinnedInput)
+  const takenFromMain = others(mainInput)
+  const takenFromPanel = others(panelInput)
+  const pinned = pinnedInput ?? current.pinned.filter((id) => !takenFromPinned.has(id))
+  const main = mainInput ?? current.main.filter((id) => id === GROUP_MODULE || !takenFromMain.has(id))
+  const panel = panelInput ?? current.panel.filter((id) => !takenFromPanel.has(id))
+  const same = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((id, i) => id === b[i])
+  const pinChanged = !same(pinned, current.pinned)
+  const mainChanged = !same(main, current.main)
+  const panelChanged = !same(panel, current.panel)
+
+  const settings: PageSettings = { ...current.settings, ...input.settings }
+  const settingsChanged = !samePageSettings(settings, current.settings)
+  const wanted = new Set(hidden)
+  const now = new Set(current.hidden)
+  const hide = [...wanted].filter((id) => !now.has(id))
+  const show = [...now].filter((id) => !wanted.has(id))
+  const moves = planOrder(
+    properties.map((p) => ({ id: p.id, key: p.order_idx })),
+    input.order,
+  )
+  if (
+    hide.length === 0 && show.length === 0 && moves.length === 0 &&
+    !pinChanged && !mainChanged && !panelChanged && !settingsChanged
+  ) {
+    return { ok: true, value: { layout: current, changed: false } } as const
+  }
+
+  const { created, tabId, headingId, groupId } = await ensureLayout(tx, dataSourceId, ctx.userId)
+
+  // ── 지우기 — 넣기보다 먼저(한 속성은 한 탭에 한 번이다 — 자리를 옮기는 속성의 옛 행이 먼저 빠져야 한다) ──
+  // 고정 · 본문 모듈 · 패널은 바뀌면 통째로 다시 쓴다 — 열 몇 개의 순서라 옮긴 것만 고르는 수고가 값어치가 없다.
+  if (pinChanged) {
+    await tx.query(`DELETE FROM layout_module WHERE tab_id = $1 AND kind = 'property' AND area = 'heading'`, [tabId])
+  }
+  // 영역마다 따로 — 바뀐 영역의 지금 보이는 모듈만 지운다. 지운 속성의 모듈은 남아 되살리면 돌아온다(숨김과 같다). 한 영역만
+  // 바뀌었는데 둘을 다 지우면 다른 영역이 사라진다(⑩ 의 검사가 잡았다).
+  const removeModules = async (area: 'main' | 'panel', ids: readonly string[]) => {
+    await tx.query(
+      `DELETE FROM layout_module
+        WHERE tab_id = $1 AND kind = 'property' AND parent_module_id IS NULL AND area = $2 AND property_id = ANY($3::text[])`,
+      [tabId, area, ids.filter((id) => id !== GROUP_MODULE)],
+    )
+  }
+  if (mainChanged) await removeModules('main', current.main)
+  if (panelChanged) await removeModules('panel', current.panel)
+  if (show.length > 0) {
+    await tx.query(
+      `DELETE FROM layout_module
+        WHERE tab_id = $1 AND kind = 'property' AND NOT visible AND property_id = ANY($2::text[])`,
+      [tabId, show],
+    )
+  }
+
+  // ── 넣기 ──
+  if (hide.length > 0) {
+    await tx.query(
+      `INSERT INTO layout_module (id, data_source_id, tab_id, kind, area, parent_module_id, property_id, visible)
+       SELECT x.id, g.data_source_id, g.tab_id, 'property', g.area, g.id, x.property_id, false
+         FROM unnest($2::uuid[], $3::text[]) AS x(id, property_id), layout_module g
+        WHERE g.id = $1`,
+      [groupId, hide.map(() => randomUUID()), hide],
+    )
+  }
+  if (pinChanged && pinned.length > 0) {
+    const keys = orderKeysBetween(null, null, pinned.length)
+    await tx.query(
+      `INSERT INTO layout_module (id, data_source_id, tab_id, kind, area, parent_module_id, property_id, visible, order_idx)
+       SELECT x.id, h.data_source_id, h.tab_id, 'property', 'heading', h.id, x.property_id, true, x.key
+         FROM unnest($2::uuid[], $3::text[], $4::text[]) AS x(id, property_id, key), layout_module h
+        WHERE h.id = $1`,
+      [headingId, pinned.map(() => randomUUID()), pinned, keys],
+    )
+  }
+  if (mainChanged) {
+    // 본문 줄 — 속성 묶음도 이 줄의 한 자리다(순서 키를 새로 받는다)
+    const keys = orderKeysBetween(null, null, main.length)
+    await tx.query(`UPDATE layout_module SET order_idx = $2 WHERE id = $1`, [groupId, keys[main.indexOf(GROUP_MODULE)]])
+    const modules = main.flatMap((id, i) => (id === GROUP_MODULE ? [] : [{ id, key: keys[i]! }]))
+    await insertModules(tx, tabId, dataSourceId, 'main', modules)
+  }
+  if (panelChanged) {
+    const keys = orderKeysBetween(null, null, panel.length)
+    await insertModules(tx, tabId, dataSourceId, 'panel', panel.map((id, i) => ({ id, key: keys[i]! })))
+  }
+  if (moves.length > 0) {
+    await tx.query(
+      `UPDATE property p SET order_idx = x.key, updated_at = now()
+         FROM unnest($2::text[], $3::text[]) AS x(id, key)
+        WHERE p.id = x.id AND p.data_source_id = $1`,
+      [dataSourceId, moves.map((m) => m.id), moves.map((m) => m.key)],
+    )
+    // 스키마 순서를 고쳤다 — 스키마를 들고 있는 화면의 낙관적 잠금이 이것을 알아야 한다.
+    await bumpSchema(tx, dataSourceId)
+  }
+  if (settingsChanged) {
+    await tx.query(
+      `UPDATE page_layout
+          SET backlinks_mode = $2, inline_comment_mode = $3, show_discussions = $4, show_property_icons = $5, full_width = $6
+        WHERE data_source_id = $1`,
+      [dataSourceId, settings.backlinks, settings.inlineComments, settings.showDiscussions, settings.showPropertyIcons, settings.fullWidth],
+    )
+  }
+  // 방금 만든 머리는 이미 첫 버전(1)이다.
+  if (!created) {
+    await tx.query(
+      `UPDATE page_layout SET version = version + 1, updated_at = now(), updated_by = $2 WHERE data_source_id = $1`,
+      [dataSourceId, ctx.userId],
+    )
+  }
+  return { ok: true, value: { layout: await readRecordLayout(tx, dataSourceId), changed: true } } as const
+}
+
+/**
+ * 직전 버전으로 되돌린다(3e-1 · 16 F-16-12 *"실행 취소 1스텝"*) — 남긴 스냅샷을 **새 적용**으로 쓴다(version 이 오른다 · 되감지 않는다)
+ * 그리고 기록을 지운다(되돌리기는 되돌리지 않는다). 기록이 없으면 `no_undo` · 지금 버전이 기록을 남긴 적용의 결과가 아니면(그 뒤에 다른
+ * 적용이 있었으면) `layout_conflict`. 권한 · 잠금은 적용과 같은 구조의 문이다.
+ */
+export async function undoRecordLayout(
+  ctx: SessionContext,
+  dataSourceId: string,
+  input: { readonly expectedVersion: string },
+): Promise<LayoutResult> {
+  return withCommandTransaction(async (tx) => {
+    const opened = await openForWrite(tx, ctx, dataSourceId, input.expectedVersion)
+    if (!opened.ok) return opened.failure
+    const kept = await tx.queryMaybe<{ after_version: string; snapshot: unknown }>(
+      `SELECT after_version::text AS after_version, snapshot FROM page_layout_history WHERE data_source_id = $1`,
       [dataSourceId],
     )
-    const live = new Map(properties.map((p) => [p.id, p]))
-    const liveOf = (ids: readonly string[]) => [...new Set(ids)].filter((id) => live.has(id))
+    if (kept === null) return fail('no_undo')
+    if (kept.after_version !== opened.current.version) return fail('layout_conflict', opened.current.version)
+    const draft = draftOf(kept.snapshot)
+    if (draft === null) return fail('no_undo')
+    const result = await applyIn(tx, ctx, dataSourceId, opened.current, draft)
+    if (result.ok) await tx.query(`DELETE FROM page_layout_history WHERE data_source_id = $1`, [dataSourceId])
+    return result
+  })
+}
 
-    // 자리 — 한 속성은 한 자리다(머리말). 받은 목록끼리 겹치거나 제목이 끼면 거부한다. 그사이 지워진 속성은 건너뛴다.
-    const hidden = liveOf(input.hidden)
-    const pinnedInput = input.pinned === undefined ? null : liveOf(input.pinned)
-    const mainInput = input.main === undefined ? null : [...new Set(input.main)].filter((id) => id === GROUP_MODULE || live.has(id))
-    const panelInput = input.panel === undefined ? null : liveOf(input.panel)
-    if (mainInput !== null && !mainInput.includes(GROUP_MODULE)) return fail('invalid_layout')
-    const claimed = new Set<string>()
-    for (const list of [hidden, pinnedInput, mainInput, panelInput]) {
-      for (const id of list ?? []) {
-        if (id === GROUP_MODULE) continue
-        if (live.get(id)?.type === 'title' || claimed.has(id)) return fail('invalid_layout')
-        claimed.add(id)
-      }
-    }
-    if (pinnedInput !== null && pinnedInput.length > MAX_PINNED_PROPERTIES) return fail('too_many_pinned')
-    if (panelInput !== null && panelInput.some((id) => !canPlaceInPanel(live.get(id)!.type))) return fail('panel_type')
-    // 받지 않은 목록 — 지금 것에서 다른 목록이 가져간 속성을 뺀다
-    const others = (own: readonly string[] | null) => new Set([...claimed].filter((id) => !(own ?? []).includes(id)))
-    const takenFromPinned = others(pinnedInput)
-    const takenFromMain = others(mainInput)
-    const takenFromPanel = others(panelInput)
-    const pinned = pinnedInput ?? current.pinned.filter((id) => !takenFromPinned.has(id))
-    const main = mainInput ?? current.main.filter((id) => id === GROUP_MODULE || !takenFromMain.has(id))
-    const panel = panelInput ?? current.panel.filter((id) => !takenFromPanel.has(id))
-    const same = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((id, i) => id === b[i])
-    const pinChanged = !same(pinned, current.pinned)
-    const mainChanged = !same(main, current.main)
-    const panelChanged = !same(panel, current.panel)
+/** 남긴 스냅샷을 적용 입력으로 — 우리가 쓴 JSON 이지만 모양을 다시 본다(옛 기록 · 손으로 고친 기록이 함수를 죽이지 않게). */
+function draftOf(raw: unknown): LayoutDraft | null {
+  if (typeof raw !== 'object' || raw === null) return null
+  const r = raw as Record<string, unknown>
+  const ids = (v: unknown): string[] | null => (Array.isArray(v) && v.every((x) => typeof x === 'string') ? (v as string[]) : null)
+  const order = ids(r.order)
+  const hidden = ids(r.hidden)
+  const pinned = ids(r.pinned)
+  const main = ids(r.main)
+  const panel = ids(r.panel)
+  const settings = parsePageSettings(r.settings)
+  if (order === null || hidden === null || pinned === null || main === null || panel === null || settings === null) return null
+  return { order, hidden, pinned, main, panel, settings }
+}
 
-    const settings: PageSettings = { ...current.settings, ...input.settings }
-    const settingsChanged = !samePageSettings(settings, current.settings)
-    const wanted = new Set(hidden)
-    const now = new Set(current.hidden)
-    const hide = [...wanted].filter((id) => !now.has(id))
-    const show = [...now].filter((id) => !wanted.has(id))
-    const moves = planOrder(
-      properties.map((p) => ({ id: p.id, key: p.order_idx })),
-      input.order,
+/** 레이아웃 읽기(3e-1 · 16 F-16-12 *"GET /data_sources/{id}/layout"*) — 원본 데이터베이스를 볼 수 있어야 한다. 되돌릴 수 있는지를 함께 준다. */
+export async function getRecordLayout(
+  ctx: SessionContext,
+  dataSourceId: string,
+): Promise<
+  | { readonly ok: true; readonly value: { readonly layout: RecordLayout; readonly undo: { readonly available: boolean; readonly at: string | null } } }
+  | { readonly ok: false; readonly reason: 'not_found' }
+> {
+  return withReadTransaction(async (tx) => {
+    if (!(await canViewDataSource(tx, ctx, dataSourceId))) return { ok: false, reason: 'not_found' } as const
+    const layout = await readRecordLayout(tx, dataSourceId)
+    const kept = await tx.queryMaybe<{ after_version: string; changed_at: string }>(
+      `SELECT after_version::text AS after_version, changed_at::text AS changed_at FROM page_layout_history WHERE data_source_id = $1`,
+      [dataSourceId],
     )
-    if (
-      hide.length === 0 && show.length === 0 && moves.length === 0 &&
-      !pinChanged && !mainChanged && !panelChanged && !settingsChanged
-    ) {
-      return { ok: true, value: { layout: current, changed: false } } as const
-    }
-
-    const { created, tabId, headingId, groupId } = await ensureLayout(tx, dataSourceId, ctx.userId)
-
-    // ── 지우기 — 넣기보다 먼저(한 속성은 한 탭에 한 번이다 — 자리를 옮기는 속성의 옛 행이 먼저 빠져야 한다) ──
-    // 고정 · 본문 모듈 · 패널은 바뀌면 통째로 다시 쓴다 — 열 몇 개의 순서라 옮긴 것만 고르는 수고가 값어치가 없다.
-    if (pinChanged) {
-      await tx.query(`DELETE FROM layout_module WHERE tab_id = $1 AND kind = 'property' AND area = 'heading'`, [tabId])
-    }
-    // 영역마다 따로 — 바뀐 영역의 지금 보이는 모듈만 지운다. 지운 속성의 모듈은 남아 되살리면 돌아온다(숨김과 같다). 한 영역만
-    // 바뀌었는데 둘을 다 지우면 다른 영역이 사라진다(⑩ 의 검사가 잡았다).
-    const removeModules = async (area: 'main' | 'panel', ids: readonly string[]) => {
-      await tx.query(
-        `DELETE FROM layout_module
-          WHERE tab_id = $1 AND kind = 'property' AND parent_module_id IS NULL AND area = $2 AND property_id = ANY($3::text[])`,
-        [tabId, area, ids.filter((id) => id !== GROUP_MODULE)],
-      )
-    }
-    if (mainChanged) await removeModules('main', current.main)
-    if (panelChanged) await removeModules('panel', current.panel)
-    if (show.length > 0) {
-      await tx.query(
-        `DELETE FROM layout_module
-          WHERE tab_id = $1 AND kind = 'property' AND NOT visible AND property_id = ANY($2::text[])`,
-        [tabId, show],
-      )
-    }
-
-    // ── 넣기 ──
-    if (hide.length > 0) {
-      await tx.query(
-        `INSERT INTO layout_module (id, data_source_id, tab_id, kind, area, parent_module_id, property_id, visible)
-         SELECT x.id, g.data_source_id, g.tab_id, 'property', g.area, g.id, x.property_id, false
-           FROM unnest($2::uuid[], $3::text[]) AS x(id, property_id), layout_module g
-          WHERE g.id = $1`,
-        [groupId, hide.map(() => randomUUID()), hide],
-      )
-    }
-    if (pinChanged && pinned.length > 0) {
-      const keys = orderKeysBetween(null, null, pinned.length)
-      await tx.query(
-        `INSERT INTO layout_module (id, data_source_id, tab_id, kind, area, parent_module_id, property_id, visible, order_idx)
-         SELECT x.id, h.data_source_id, h.tab_id, 'property', 'heading', h.id, x.property_id, true, x.key
-           FROM unnest($2::uuid[], $3::text[], $4::text[]) AS x(id, property_id, key), layout_module h
-          WHERE h.id = $1`,
-        [headingId, pinned.map(() => randomUUID()), pinned, keys],
-      )
-    }
-    if (mainChanged) {
-      // 본문 줄 — 속성 묶음도 이 줄의 한 자리다(순서 키를 새로 받는다)
-      const keys = orderKeysBetween(null, null, main.length)
-      await tx.query(`UPDATE layout_module SET order_idx = $2 WHERE id = $1`, [groupId, keys[main.indexOf(GROUP_MODULE)]])
-      const modules = main.flatMap((id, i) => (id === GROUP_MODULE ? [] : [{ id, key: keys[i]! }]))
-      await insertModules(tx, tabId, dataSourceId, 'main', modules)
-    }
-    if (panelChanged) {
-      const keys = orderKeysBetween(null, null, panel.length)
-      await insertModules(tx, tabId, dataSourceId, 'panel', panel.map((id, i) => ({ id, key: keys[i]! })))
-    }
-    if (moves.length > 0) {
-      await tx.query(
-        `UPDATE property p SET order_idx = x.key, updated_at = now()
-           FROM unnest($2::text[], $3::text[]) AS x(id, key)
-          WHERE p.id = x.id AND p.data_source_id = $1`,
-        [dataSourceId, moves.map((m) => m.id), moves.map((m) => m.key)],
-      )
-      // 스키마 순서를 고쳤다 — 스키마를 들고 있는 화면의 낙관적 잠금이 이것을 알아야 한다.
-      await bumpSchema(tx, dataSourceId)
-    }
-    if (settingsChanged) {
-      await tx.query(
-        `UPDATE page_layout
-            SET backlinks_mode = $2, inline_comment_mode = $3, show_discussions = $4, show_property_icons = $5, full_width = $6
-          WHERE data_source_id = $1`,
-        [dataSourceId, settings.backlinks, settings.inlineComments, settings.showDiscussions, settings.showPropertyIcons, settings.fullWidth],
-      )
-    }
-    // 방금 만든 머리는 이미 첫 버전(1)이다.
-    if (!created) {
-      await tx.query(
-        `UPDATE page_layout SET version = version + 1, updated_at = now(), updated_by = $2 WHERE data_source_id = $1`,
-        [dataSourceId, ctx.userId],
-      )
-    }
-    return { ok: true, value: { layout: await readRecordLayout(tx, dataSourceId), changed: true } } as const
+    const available = kept !== null && kept.after_version === layout.version
+    return { ok: true, value: { layout, undo: { available, at: available ? kept!.changed_at : null } } } as const
   })
 }
 

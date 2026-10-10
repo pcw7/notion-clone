@@ -23,6 +23,9 @@
  *
  * 설정을 바뀐 것으로 세지 않으면 ⑨ 의 머리가, 지금 것과 합치지 않으면 ⑨ 의 부분 적용이 실패한다.
  * 다른 목록이 가져간 속성을 빼지 않으면 ⑩ 의 옮기기가, 패널 유형을 안 보면 ⑩ 의 관계형이 실패한다.
+ *   ⑪ 직전 버전(3e-1 · F-16-12) — 바뀐 적용이 적용 전을 남긴다(한 단계 · 바뀐 것이 없으면 그대로) · 되돌리면 그 레이아웃이 새 버전으로
+ *      돌아오고(스키마 순서 · 자리 · 설정) 기록이 지워진다 · 낡은 버전은 거부 · 읽기는 볼 수 있으면 · 되돌리기는 구조의 문
+ * 기록을 남기지 않으면 ⑪ 의 되돌리기가, 기록을 지우지 않으면 ⑪ 의 두 번째 되돌리기가 실패한다.
  */
 
 import { test, describe, before, after } from 'node:test'
@@ -39,7 +42,7 @@ import { addDataSource, trashDataSource } from './data-source.ts'
 import { addProperty, deleteProperty, getSchema, restoreProperty } from './property.ts'
 import { createRow } from './row.ts'
 import { addRelationProperty } from './relation.ts'
-import { applyRecordLayout, readRecordLayout } from './layout.ts'
+import { applyRecordLayout, getRecordLayout, readRecordLayout, undoRecordLayout } from './layout.ts'
 import { MAX_PINNED_PROPERTIES } from './limits.ts'
 import { DEFAULT_PAGE_SETTINGS } from './page-settings.ts'
 import { GROUP_MODULE } from './layout-modules.ts'
@@ -490,5 +493,63 @@ describe('⑩ 본문 모듈 · 상세 패널 (3c-1 · F-16-04 · F-16-05)', () =
     assert.deepEqual((await layoutOf(db.dataSourceId)).main, [GROUP_MODULE, a], '되살리면 본문 모듈로 돌아온다')
     const page = await readRowPage(fx.owner.ctx, db.rowId)
     assert.deepEqual([page?.main, page?.panel], [[GROUP_MODULE, a], []])
+  })
+})
+
+describe('⑪ 직전 버전 — 한 단계 되돌리기 (3e-1 · F-16-12)', () => {
+  const kept = async (dataSourceId: string) =>
+    (await query<{ after_version: string }>(`SELECT after_version::text AS after_version FROM page_layout_history WHERE data_source_id = $1`, [dataSourceId]))[0]
+      ?.after_version ?? null
+
+  test('★ 바뀐 적용이 적용 전을 남기고, 되돌리면 그 레이아웃이 새 버전으로 돌아온다 — 기록은 지워지고 두 번은 되돌리지 않는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const db = await seeded()
+    const [a, b, c] = [db.id('A'), db.id('B'), db.id('C')]
+    assert.equal((unwrap(await getRecordLayout(fx.owner.ctx, db.dataSourceId))).undo.available, false, '처음에는 되돌릴 것이 없다')
+
+    const first = unwrap(await applyRecordLayout(fx.owner.ctx, db.dataSourceId, {
+      expectedVersion: '0', order: [], hidden: [b], pinned: [a], main: [c, GROUP_MODULE], settings: { fullWidth: true },
+    }))
+    assert.equal(await kept(db.dataSourceId), '1')
+    const unchanged = unwrap(await applyRecordLayout(fx.owner.ctx, db.dataSourceId, { expectedVersion: '1', order: [], hidden: [b] }))
+    assert.deepEqual([unchanged.changed, await kept(db.dataSourceId)], [false, '1'], '바뀐 것이 없는 적용은 기록을 덮지 않는다')
+
+    // 둘째 적용 — 순서를 바꾸고 고정을 풀고 설정을 바꾼다
+    unwrap(await applyRecordLayout(fx.owner.ctx, db.dataSourceId, {
+      expectedVersion: '1', order: [c, b, a], hidden: [], pinned: [], main: [GROUP_MODULE], settings: { fullWidth: false, backlinks: 'off' },
+    }))
+    assert.deepEqual(await schemaOrder(db.dataSourceId), ['이름', 'C', 'B', 'A'])
+    const got = unwrap(await getRecordLayout(fx.owner.ctx, db.dataSourceId))
+    assert.deepEqual([got.layout.version, got.undo.available], ['2', true])
+
+    const undone = unwrap(await undoRecordLayout(fx.owner.ctx, db.dataSourceId, { expectedVersion: '2' }))
+    assert.deepEqual(
+      [undone.layout.version, { ...undone.layout, version: first.layout.version }],
+      ['3', first.layout],
+      '첫 적용의 레이아웃이 새 버전(3)으로 돌아온다 — 되감지 않는다',
+    )
+    assert.deepEqual(await schemaOrder(db.dataSourceId), ['이름', 'A', 'B', 'C'], '스키마 순서도 돌아온다')
+    assert.equal(await kept(db.dataSourceId), null, '되돌리기는 기록을 지운다')
+    assert.equal(unwrap(await getRecordLayout(fx.owner.ctx, db.dataSourceId)).undo.available, false)
+    const again = await undoRecordLayout(fx.owner.ctx, db.dataSourceId, { expectedVersion: '3' })
+    assert.equal(again.ok === false && again.reason, 'no_undo', '되돌리기는 되돌리지 않는다')
+  })
+
+  test('★ 낡은 버전은 거부 · 읽기는 볼 수 있으면 · 되돌리기는 구조의 문(볼 수만 있으면 forbidden)', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const db = await seeded()
+    unwrap(await applyRecordLayout(fx.owner.ctx, db.dataSourceId, { expectedVersion: '0', order: [], hidden: [db.id('A')] }))
+    const stale = await undoRecordLayout(fx.owner.ctx, db.dataSourceId, { expectedVersion: '0' })
+    assert.deepEqual(stale, { ok: false, reason: 'layout_conflict', currentVersion: '1' })
+
+    assert.equal((await stopInheriting(fx.owner.ctx, db.databaseId)).ok, true)
+    assert.equal((await grantAccess(fx.owner.ctx, db.databaseId, { type: 'user', id: fx.owner.userId }, 'full_access')).ok, true)
+    assert.equal((await revokeAccess(fx.owner.ctx, db.databaseId, { type: 'workspace_everyone', id: null })).ok, true)
+    assert.deepEqual(await getRecordLayout(other.ctx, db.dataSourceId), { ok: false, reason: 'not_found' }, '못 보는 사람은 읽지도 못한다')
+    assert.equal((await grantAccess(fx.owner.ctx, db.databaseId, { type: 'user', id: other.userId }, 'view')).ok, true)
+    assert.equal((await getRecordLayout(other.ctx, db.dataSourceId)).ok, true, '볼 수 있으면 읽는다')
+    const viewer = await undoRecordLayout(other.ctx, db.dataSourceId, { expectedVersion: '1' })
+    assert.equal(viewer.ok === false && viewer.reason, 'forbidden')
+    assert.equal(await kept(db.dataSourceId), '1', '거부된 되돌리기는 기록을 지우지 않는다')
   })
 })
