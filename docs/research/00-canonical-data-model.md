@@ -2533,7 +2533,8 @@ CREATE TABLE activity_event (                  -- 알림·피드·웹훅의 단�
   type text NOT NULL,                          -- 'block.updated'|'property.updated'|'comment.created'
                                                -- |'user.mentioned'|'page.created'|'page.moved'|'page.trashed'
                                                -- |'suggestion.created'|'suggestion.accepted'
-                                               -- |'access.requested'|'access.granted' [보강 7e-1]|...
+                                               -- |'access.requested'|'access.granted' [보강 7e-1]
+                                               -- |'reminder.fired' [보강 4c-2]|...
   payload jsonb NOT NULL, created_at timestamptz NOT NULL
 ) PARTITION BY RANGE (created_at);             -- <17> (workspace_id, occurred_at) 파티션 요구
 CREATE INDEX ON activity_event (page_id, created_at DESC);
@@ -2626,6 +2627,13 @@ CREATE INDEX ON reminder (target_at) WHERE fired_at IS NULL;
 >    없다(노션에도 없다).
 > ⑦ 발화(4c-2)는 공용 스케줄러의 소비자 — `fire_at` 이 지난 것을 1분마다 조건부 선점(`UPDATE … WHERE fired_at IS NULL`)으로 한 번만, 그때의
 >    권한으로 거르고, 페이지가 살아 있지 않으면 울리지 않는다.
+> ⑧ **[보강 4c-2] 울리기** ⟨마이그레이션 0073 · 일의 종류 `reminder_fire`⟩ — ⓐ **한 번만**: 선점이 `fired_at` 을 실행기의 시각으로 적는다 —
+>    두 워커가 같은 것을 집어도 하나만 이긴다(F-11-10 *"중복 발화 — 조건부 선점으로 at-most-once"*). 선점한 뒤 울리지 못하면(아래) 그대로
+>    "지남"이다 — 되살려도 지난 것은 울리지 않는다(F-11-10 *"복원 시 이미 지난 것은 발화하지 않음"*) ⓑ **울리지 않는 것**: 페이지가 살아 있지
+>    않다(휴지통 · purged) · 날짜 속성이 지워졌거나 날짜가 아니다 · 받는 사람 중 이 워크스페이스의 멤버가 하나도 없다(F-11-10 *"수신자 중
+>    워크스페이스를 떠난 사람만 제외"*) ⓒ **페이지를 볼 수 있는가는 인박스가 읽을 때** 본다(배달 파이프라인 ② — 울리는 시점에는 받는 사람의
+>    세션이 없다 · A9) ⓓ 활동 이벤트 `reminder.fired`(payload 는 `reminder_id` · `property_id` — id 만) · 행위자는 건 사람 · 알림 종류
+>    `reminder` · 묶음 열쇠 `reminder:{id}` ⓔ 한 판 200 — 늘 1분 뒤에 다시(리마인더는 분 단위다).
 
 **[정정] `activity_event` 의 PK 는 `(id, created_at)` 이다** ⟨코멘트 3조각 / 마이그레이션 0020⟩
 
