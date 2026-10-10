@@ -273,6 +273,8 @@ function connect(url) {
   // 열린 SSE(표 변경 알림 · 2k-2) — 이게 열려 있으면 다른 곳의 쓰기가 **조금 뒤에** 이 페이지의 다시 읽기(때로 `router.refresh()`)를
   // 시작한다. 진행 중인 요청만 기다리면 그 뒤에 시작될 것을 놓친다 — 떠나기 전에 요청이 잠시 조용할 때까지 기다린다(아래 `send`).
   const eventStreams = new Set()
+  // 붙잡힌 요청(`Fetch.enable` 의 패턴에 걸린 것) — 검사가 놓아 줄 때까지 서버에 닿지 않는다(표 변경 알림의 구독 전 틈 · #250)
+  const paused = []
   ws.onmessage = (event) => {
     const msg = JSON.parse(event.data)
     if (msg.id && pending.has(msg.id)) {
@@ -284,6 +286,8 @@ function connect(url) {
     } else if (msg.method === 'Network.loadingFinished' || msg.method === 'Network.loadingFailed') {
       inflight.delete(msg.params.requestId)
       eventStreams.delete(msg.params.requestId)
+    } else if (msg.method === 'Fetch.requestPaused') {
+      paused.push(msg.params.requestId)
     } else if (msg.method === 'Runtime.exceptionThrown') {
       const d = msg.params.exceptionDetails
       pageErrors.push(d?.exception?.description ?? d?.text)
@@ -326,7 +330,13 @@ function connect(url) {
     for (const settle of pending.values()) settle({ error: { message: '브라우저와의 연결이 끊겼다(브라우저가 종료됐다)' } })
     pending.clear()
   }
-  return { ws, send, opened, pageErrors }
+  /** 붙잡힌 요청을 모두 놓아 준다 — 놓은 수. */
+  const releasePaused = async () => {
+    const ids = paused.splice(0)
+    for (const requestId of ids) await rawSend('Fetch.continueRequest', { requestId }).catch(() => undefined)
+    return ids.length
+  }
+  return { ws, send, opened, pageErrors, releasePaused, pausedCount: () => paused.length }
 }
 
 async function launchBrowser(executable) {
@@ -490,7 +500,7 @@ async function main() {
     const devtoolsPort = launched.port
     cdp = connect(launched.url)
     await cdp.opened
-    const { send, pageErrors } = cdp
+    const { send, pageErrors, releasePaused, pausedCount } = cdp
 
     const evaluate = async (expression) => {
       const r = await send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true })
@@ -13433,6 +13443,27 @@ async function main() {
       await api('POST', props, { name: '메모', type: 'rich_text' })
       check('★ 남이 속성을 더하면 표가 새로 선다(머리에 메모)',
         await waitFor(`[...document.querySelectorAll('[data-testid="db-table"] thead th[data-property-id]')].some((th) => th.textContent.includes('메모'))`, 10000))
+
+      // ── 구독이 붙기 전의 변경(#250) — 변경 알림 주소를 막은 채 표를 열고, 남이 행을 더한 뒤 막음을 푼다. 다시 붙은 구독이 그 사이의
+      // 변경을 따라와야 한다(고치기 전에는 첫 `ready` 를 "바뀌었다"로 치지 않아 따라오지 못했다 — #249 의 전체 e2e 가 부하에서 찾은 틈)
+      // 막지 않고 **붙잡는다**(`Fetch`) — 막으면(`setBlockedURLs`) EventSource 가 다시 붙지 않고 닫힌다. 붙잡힌 요청은 놓을 때 서버에 닿는다
+      await send('Fetch.enable', { patterns: [{ urlPattern: '*/changes*', requestStage: 'Request' }] })
+      try {
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+        await waitFor(`!!document.querySelector('tr[data-row-id="${ra}"]')`, 15000)
+        for (let i = 0; i < 100 && pausedCount() === 0; i += 1) await sleep(50)
+        const ma = await rowOf('마', 60)
+        await sleep(800)
+        check('전제 — 구독이 붙잡혀 있는 동안에는 따라오지 않는다',
+          pausedCount() > 0 && !(await evaluate(`!!document.querySelector('tr[data-row-id="${ma}"]')`)), JSON.stringify([pausedCount(), await titles()]))
+        await send('Fetch.disable')
+        await releasePaused()
+        check('★ 구독이 붙기 전에 더한 행도 구독이 붙으면 따라온다 — 서버가 렌더 시각 뒤의 변경을 곧바로 알린다(#250)',
+          await waitFor(`!!document.querySelector('tr[data-row-id="${ma}"]')`, 15000), await titles())
+      } finally {
+        await send('Fetch.disable').catch(() => undefined)
+        await releasePaused()
+      }
     }
 
     if (sectionIf('표 변경 알림 — 보드 · 갤러리 · 캘린더 (2k-3 · F-04-24)')) {
@@ -14112,6 +14143,9 @@ async function main() {
       await openRow()
       check('처음에는 되돌릴 것이 없다 — 단추가 없다', !(await has('[data-testid="row-layout-undo"]')))
       await putLayout({ hidden: [memo] })
+      // 열린 화면이 그 적용을 따라 다시 그린 뒤에 떠난다 — 다시 그리기(`router.refresh`) 도중에 떠나면 서버가 그 렌더를 "destination stream
+      // closed early" 로 끊는다(#250 의 전체 판 — 구독 전 틈을 고치자 이 페이지가 적용을 늘 받게 되어 드러났다)
+      await waitFor(`![...document.querySelectorAll('[data-testid="row-visible-properties"] td[data-property-id]')].some((td) => td.getAttribute('data-property-id') === ${JSON.stringify(memo)})`, 10000)
       await openRow()
       check('적용 뒤에는 "직전 레이아웃으로 되돌리기"가 선다 — 메모는 숨겨져 있다',
         (await has('[data-testid="row-layout-undo"]')) && !(await visibleIds()).includes(memo),
@@ -14147,6 +14181,26 @@ async function main() {
       await clickSelector('[data-testid="row-layout-cancel"]')
       check('★ 편집 모드를 닫으면 그사이의 적용을 따른다 — 고정이 풀렸다',
         await waitFor(`!document.querySelector('[data-testid="row-layout-editor"]') && !document.querySelector('[data-testid="row-pinned-properties"]')`, 10000))
+
+      // ④ 구독이 붙기 전의 적용(#250) — 변경 알림 주소를 막은 채 행 페이지를 열고 남이 수량을 고정한 뒤 막음을 푼다. 다시 붙은 구독이
+      // 그 사이의 적용을 따라와야 한다(#249 의 전체 e2e 가 부하에서 ② 를 떨어뜨린 틈을 결정적으로 만든다)
+      await send('Fetch.enable', { patterns: [{ urlPattern: '*/changes*', requestStage: 'Request' }] })
+      try {
+        await openRow()
+        for (let i = 0; i < 100 && pausedCount() === 0; i += 1) await sleep(50)
+        await putLayout({ pinned: [qty] })
+        await sleep(800)
+        check('전제 — 구독이 붙잡혀 있는 동안에는 따라오지 않는다(고정 줄이 없다)',
+          pausedCount() > 0 && !(await has('[data-testid="row-pinned-properties"]')), String(pausedCount()))
+        await send('Fetch.disable')
+        await releasePaused()
+        check('★ 구독이 붙기 전의 적용도 구독이 붙으면 따른다 — 서버가 렌더 시각 뒤의 변경을 곧바로 알린다(#250)',
+          await waitFor(`!!document.querySelector('[data-testid="row-pinned-properties"] td[data-property-id="${qty}"]')`, 15000),
+          String(await evaluate(`document.querySelector('[data-testid="row-pinned-properties"]')?.textContent ?? '(없음)'`)))
+      } finally {
+        await send('Fetch.disable').catch(() => undefined)
+        await releasePaused()
+      }
     }
 
     if (sectionIf('개인 필터 · 정렬 — 화면 (2h-2 · F-04-17)')) {

@@ -151,6 +151,8 @@ export function DatabaseBoard(props: {
   calculation?: { readonly propertyId: string; readonly propertyName: string; readonly fn: Calculation } | null
   /** 뷰 검색어(2e-2) — 서버 렌더가 이것으로 그룹을 읽었다. 열의 "더 보기" · 머리 값 다시 받기도 같은 검색어를 싣는다. */
   search?: string | null
+  /** 서버 화면이 읽기 전의 시각(ms) — 구독이 붙기 전의 변경을 메운다(#250 · `use-table-changes.ts`). */
+  renderedAt?: number
 }) {
   const { workspaceId, viewId, dataSourceId, tableName, columns, property, groupBy, manualOrder, access } = props
   const router = useRouter()
@@ -185,7 +187,7 @@ export function DatabaseBoard(props: {
   // 표 변경 알림(2k-3 · F-04-24) — 다른 곳에서 바뀌면 서버 렌더를 다시 부르고 새 그룹을 받아들인다. 끌기 · 편집 · 만들기 · 더 보기
   // 중이면 끝난 뒤에. "더 보기"로 더 읽은 카드는 첫 페이지로 돌아간다(§7).
   const boardBusy = draggingId !== null || editing !== null || busyKey !== null || loadingKey !== null
-  useLiveServerRefresh(workspaceId, dataSourceId, boardBusy)
+  useLiveServerRefresh(workspaceId, dataSourceId, boardBusy, props.renderedAt)
   useAdoptServerValue(props.groups, boardBusy, (next) => update(() => next))
 
   /** 머리 값을 다시 받은 횟수 — 늦게 온 옛 답을 버린다(머리말). */

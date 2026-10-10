@@ -13,6 +13,10 @@
  *                   *"권한 회수 시 서버 강제 unsubscribe"*)
  *   session(사용자)  그 사용자의 구독에게 `onSession` — 세션이 끝났을 수 있다. 구독이 닫고 받는 쪽이 다시 붙어 다시 확인받는다
  *
+ * **구독이 붙기 전의 틈**(#250 · 정본 X-5 [보강] "X-5 의 단계") — 화면은 서버 렌더로 읽은 뒤에 구독한다. 그 사이의 신호는 지나갔다.
+ * 허브가 표마다 마지막 신호를 받은 시각과 **듣기 시작한 시각**(LISTEN 이 걸린 때 · 다시 붙으면 새로)을 기억하고, 구독이 렌더 시각을
+ * 들고 오면 `rowsChangedSince` 가 그 사이에 바뀌었는가를 답한다 — 모르면(그때 듣고 있지 않았으면) "바뀌었다"다.
+ *
  * 개발 서버의 모듈 다시 읽기에서도 허브가 하나로 남도록 `globalThis` 에 둔다.
  */
 
@@ -30,13 +34,50 @@ export type RowFeedListener = {
   onSession(): void
 }
 
-type Hub = { feed: Promise<ChangeFeed> | null; readonly listeners: Set<RowFeedListener> }
+type Hub = {
+  feed: Promise<ChangeFeed> | null
+  readonly listeners: Set<RowFeedListener>
+  /** LISTEN 이 (다시) 걸린 시각 — 이보다 앞의 신호는 받지 못했을 수 있다. 아직 듣지 않았으면 null. */
+  listeningSince: number | null
+  /** 표마다 마지막으로 "바뀌었다"를 받은 시각. */
+  readonly lastChanged: Map<string, number>
+}
+
+/**
+ * 허브의 시계 — 신호를 받은 시각 · 듣기 시작한 시각 · **서버 화면이 읽기 전의 시각**(`renderedAt`)이 모두 이것을 쓴다(같은 프로세스의
+ * 시계 하나 — 정본 X-5 [보강]). 서버 화면은 요청마다 한 번 그려지므로 렌더 중에 불러도 된다(클라이언트 컴포넌트에서는 부르지 않는다).
+ */
+export const feedClock = (): number => Date.now()
+
+/** 기억하는 표의 수 — 넘으면 비우고 듣기 시작한 시각을 지금으로 한다(그 앞의 렌더는 "바뀌었을 수 있다"가 된다 · 보수적). */
+const LAST_CHANGED_CAP = 10_000
 
 const HUB_KEY = Symbol.for('notion-clone.row-feed')
 
 function hub(): Hub {
   const g = globalThis as { [HUB_KEY]?: Hub }
-  return (g[HUB_KEY] ??= { feed: null, listeners: new Set() })
+  return (g[HUB_KEY] ??= { feed: null, listeners: new Set(), listeningSince: null, lastChanged: new Map() })
+}
+
+/** 신호를 받은 시각을 적는다(표의 신호만). */
+function recordRowSignal(h: Hub, signal: CollabSignal, at: number): void {
+  if (signal.kind !== 'rows') return
+  if (h.lastChanged.size >= LAST_CHANGED_CAP && !h.lastChanged.has(signal.dataSourceId)) {
+    h.lastChanged.clear()
+    h.listeningSince = at
+  }
+  h.lastChanged.set(signal.dataSourceId, at)
+}
+
+/**
+ * `since`(화면이 서버에서 읽기 **전**의 시각 — 같은 서버 프로세스의 시계) 뒤에 이 표가 바뀌었을 수 있는가. 그 시각에 허브가 듣고
+ * 있지 않았으면(아직 열리지 않았거나 · 끊겼다 다시 붙었거나 · 기억이 넘쳐 비웠으면) 모른다 — 참이다. 거짓 양성(이미 읽은 것을 한 번
+ * 더 읽음)은 허용한다 — 읽기 전의 시각을 쓰므로 읽은 뒤의 변경을 놓치지는 않는다.
+ */
+export function rowsChangedSince(dataSourceId: string, since: number): boolean {
+  const h = hub()
+  if (h.listeningSince === null || since < h.listeningSince) return true
+  return (h.lastChanged.get(dataSourceId) ?? Number.NEGATIVE_INFINITY) >= since
 }
 
 /** 신호 하나를 그 범위의 구독에게. 테스트가 연결 없이 부를 수 있게 내보낸다. */
@@ -58,8 +99,13 @@ export async function subscribeRows(listener: RowFeedListener): Promise<() => vo
     let first = true
     h.feed = openChangeFeed(
       {
-        onSignal: (signal) => dispatchRowSignal(signal, h.listeners),
+        onSignal: (signal) => {
+          recordRowSignal(h, signal, feedClock())
+          dispatchRowSignal(signal, h.listeners)
+        },
         onResync: () => {
+          // LISTEN 이 (다시) 걸렸다 — 이 앞의 신호는 받지 못했을 수 있다(머리말 "구독이 붙기 전의 틈")
+          h.listeningSince = feedClock()
           if (first) {
             first = false
             return
@@ -91,5 +137,7 @@ export async function closeRowFeed(): Promise<void> {
   const feed = h.feed
   h.feed = null
   h.listeners.clear()
+  h.listeningSince = null
+  h.lastChanged.clear()
   if (feed !== null) await (await feed.catch(() => null))?.close()
 }

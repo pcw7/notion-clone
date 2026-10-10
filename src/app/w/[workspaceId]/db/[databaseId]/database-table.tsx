@@ -170,6 +170,8 @@ export function DatabaseTable(props: {
    * 펴지 않는다(부르는 쪽이 `subItems` 를 주지 않는다 — 결과는 평평하다).
    */
   search?: string | null
+  /** 서버 화면이 읽기 전의 시각(ms) — 구독이 붙기 전의 변경을 메운다(#250 · `use-table-changes.ts`). */
+  renderedAt?: number
   /**
    * 레코드 모양의 방향(3a-2) — `column`(기본)은 속성을 세로로 쌓고 이름이 왼쪽에 선다(속성 묶음 · 템플릿 화면). `row` 는 가로로
    * 늘어놓고 이름이 값 위에 선다 — 행 페이지의 제목 아래 고정 줄(F-16-02). 넘치면 **줄을 바꾼다** — 가로 스크롤 상자는 칸 안의
@@ -969,6 +971,7 @@ export function DatabaseTable(props: {
     },
     // 행 페이지 · 템플릿 편집(레코드 모양)은 그 한 행이다 — 구독하지 않는다
     variant !== 'record',
+    props.renderedAt,
   )
 
   const loadMore = async () => {

@@ -52,6 +52,7 @@ import { notFound } from 'next/navigation'
 
 import { isUuid } from '@/lib/ids'
 import { requirePageSession } from '@/lib/auth/page-session'
+import { feedClock } from '@/lib/database/row-feed'
 import { getDatabase } from '@/lib/database/database'
 import { databaseLockState } from '@/lib/permissions/lock'
 import { getView, listViews } from '@/lib/database/view'
@@ -127,6 +128,8 @@ export default async function DatabasePage({
 }: PageProps<'/w/[workspaceId]/db/[databaseId]'>) {
   const { workspaceId, databaseId } = await params
   const { v, q, m } = await searchParams
+  // 읽기 전의 시각 — 화면이 구독할 때 들고 가 그 사이의 변경을 메운다(#250 · `use-table-changes.ts`)
+  const renderedAt = feedClock()
   // 뷰 검색어(2e · F-04-27) — 주소의 `q`. 뷰에 저장하지 않는다. 서버가 다듬는다(빈 글 · 상한).
   const search = normalizeSearch(Array.isArray(q) ? q[0] : q)
 
@@ -543,6 +546,7 @@ export default async function DatabasePage({
             defaultTemplate={defaultTemplate}
             calculation={groupCalculation}
             search={search}
+            renderedAt={renderedAt}
           />
         ) : (
           <p className="px-2 text-sm text-neutral-500" data-testid="db-board-needs-group">
@@ -568,6 +572,7 @@ export default async function DatabasePage({
             truncated={calendarPage.value.truncated}
             access={contentAccess}
             search={search}
+            renderedAt={renderedAt}
           />
         ) : (
           <p className="px-2 text-sm text-neutral-500" data-testid="db-cal-needs-date">
@@ -596,6 +601,7 @@ export default async function DatabasePage({
             search={search}
             layout={view.value.gallery}
             covers={galleryCovers}
+            renderedAt={renderedAt}
           />
         )
       ) : (
@@ -623,6 +629,7 @@ export default async function DatabasePage({
             subItems={subItems}
             calculations={calculations}
             search={search}
+            renderedAt={renderedAt}
           />
         )
       )}
