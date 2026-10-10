@@ -9,7 +9,7 @@
  *   ④ 권한 · 잠금 — 볼 수만 있으면 403 · 못 보면 404 · 잠긴 행이면 그 액션만 건너뛰고 partial
  *   ⑤ 실패 — 액션 하나가 실패하면 앞의 액션까지 되돌리고 실패 기록만 남는다
  *   ⑥ 연타 — 같은 키는 한 번 · 다른 버튼의 키 · 모양이 틀린 키는 거절
- *   ⑦ 지운 버튼 · 꺼진 버튼 — 지우면 404 · 되살리면 다시 · 꺼지면 409
+ *   ⑦ 지운 버튼 · 꺼진 버튼 — 지우면 404 · 되살리면 다시 · 꺼지면 409 · 템플릿 행은 누를 행이 아니다(404 · 5a-4)
  *   ⑧ 실행 기록은 automation 마다 최근 N건
  *
  * 반사실(HANDOFF §3.3): 권한 문을 낮추면 ② ④, 건너뛰기를 실패로 바꾸면 ④, 세이브포인트 대신 계속하면 ⑤, 멱등 키를 빼면 ⑥ 이 실패한다.
@@ -25,6 +25,7 @@ import { createDatabase } from '../database/database.ts'
 import { addProperty, deleteProperty, restoreProperty } from '../database/property.ts'
 import { convertProperty } from '../database/property-convert.ts'
 import { createRow, updateCells } from '../database/row.ts'
+import { createTemplate } from '../database/template.ts'
 import { grantAccess, revokeAccess, stopInheriting } from '../permissions/acl.ts'
 import { setPageLock } from '../permissions/lock.ts'
 import { runDataRetention } from '../notification/retention.ts'
@@ -231,6 +232,17 @@ describe('⑦ 지운 버튼 · 꺼진 버튼', () => {
     assert.equal(unwrap(await readButtonActions(fx.owner.ctx, tb.ds, tb.button)).actions.length, 2, '액션이 함께 돌아온다')
     await query(`UPDATE automation SET enabled = false WHERE id = $1`, [saved.automationId])
     assert.deepEqual(await pressButton(fx.owner.ctx, tb.row, tb.button, randomUUID()), { ok: false, reason: 'disabled' })
+  })
+})
+
+describe('⑦-2 템플릿 행', () => {
+  test('★ 템플릿 행은 누를 행이 아니다 — 404 · 템플릿의 값은 그대로', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const tb = await table('템플릿 버튼 표')
+    unwrap(await setButtonActions(fx.owner.ctx, tb.ds, tb.button, finish(tb)))
+    const template = unwrap(await createTemplate(fx.owner.ctx, tb.ds, { title: '틀' })).id
+    assert.deepEqual(await pressButton(fx.owner.ctx, template, tb.button, randomUUID()), { ok: false, reason: 'not_found' })
+    assert.equal(await cellOf(template, tb.qty), null)
   })
 })
 

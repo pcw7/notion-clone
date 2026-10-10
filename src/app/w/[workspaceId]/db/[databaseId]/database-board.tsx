@@ -577,6 +577,7 @@ export function DatabaseBoard(props: {
                     openHref={`/w/${workspaceId}/${row.id}`}
                     groupKey={group.key}
                     badgeColumns={badgeColumns}
+                    button={{ workspaceId, canPress: access.canEditContent }}
                     relationLabels={labels}
                     relationIcons={relationIcons}
                     dragging={draggingId === row.id}
@@ -675,6 +676,7 @@ function BoardCard({
   openHref,
   groupKey,
   badgeColumns,
+  button,
   relationLabels,
   relationIcons,
   dragging,
@@ -695,6 +697,8 @@ function BoardCard({
   openHref: string
   groupKey: string
   badgeColumns: readonly ViewColumn[]
+  /** 버튼 칸의 재료(5a-4) — 카드에도 단추가 선다. */
+  button: { readonly workspaceId: string; readonly canPress: boolean }
   relationLabels: RelationLabels
   relationIcons: RelationIcons
   dragging: boolean
@@ -766,6 +770,7 @@ function BoardCard({
           relationLabels={relationLabels}
           relationIcons={relationIcons}
           testId="db-board-badge"
+          button={button}
         />
       </li>
     </>

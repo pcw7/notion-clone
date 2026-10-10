@@ -869,7 +869,6 @@ export function DatabaseTable(props: {
               workspaceId={workspaceId}
               dataSourceId={dataSourceId}
               propertyId={column.propertyId}
-              columns={columns}
               onSaved={close}
               onCancel={close}
             />

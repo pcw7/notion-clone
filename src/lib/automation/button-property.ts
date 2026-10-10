@@ -9,7 +9,7 @@
  *   - 고치기 — 그 표의 `edit_structure`(속성 설정과 같은 무게 · 잠긴 데이터베이스는 `locked`). 받은 액션을 그 표의 스키마에 대어 본다
  *     (살아 있는 셀 속성인가 · 읽기 전용이 아닌가 · 값이 그 타입의 모양인가) — 실행 때 다시 보지만, 틀린 정의를 저장하지 않는다.
  *   - 누르기 — 그 행의 `edit_content`(03 *"Can edit content 도 클릭 가능"*). 누른 사람으로 실행한다(엔진 · 정본 ③). 멱등 키는 화면이 누를
- *     때마다 만든 uuid 다(정본 ⑤).
+ *     때마다 만든 uuid 다(정본 ⑤). **템플릿 행은 누를 행이 아니다**(`not_found` — 누르면 템플릿의 값이 바뀐다 · 정본 ⑪).
  */
 
 import type { SessionContext } from '../auth/session-context.ts'
@@ -148,7 +148,7 @@ export async function pressButton(
   const prepared = await withReadTransaction(async (tx) => {
     const row = await tx.queryMaybe<{ data_source_id: string }>(
       `SELECT p.data_source_id FROM page p JOIN block b ON b.id = p.id
-        WHERE p.id = $1 AND b.workspace_id = $2 AND b.lifecycle = 'live'`,
+        WHERE p.id = $1 AND b.workspace_id = $2 AND b.lifecycle = 'live' AND NOT p.is_template`,
       [rowId, ctx.workspaceId],
     )
     if (row === null) return fail('not_found')

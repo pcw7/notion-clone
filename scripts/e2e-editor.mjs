@@ -14475,7 +14475,7 @@ async function main() {
 
     if (sectionIf('버튼 속성 — 화면 (5a-3 · F-03-15)')) {
       // 속성 추가에서 "버튼" → 버튼 열(칸은 이름의 단추) · 액션 0개면 "할 일이 없습니다" · 열 머리 메뉴의 "버튼 설정"으로 값 바꾸기 둘을
-      // 넣는다 · 누르면 "완료"이고 칸이 바뀐다 · 잠긴 행은 "일부를 건너뛰었습니다" · 편집기가 모르는 액션은 저장해도 남는다. 자기 데이터를
+      // 넣는다 · 누르면 "완료"이고 칸이 바뀐다 · 잠긴 행은 "일부를 건너뛰었습니다" · 지우기는 그 액션만(다른 액션은 남는다). 자기 데이터를
       // 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
       const stamp = Date.now()
       const api = async (method, path, body) => {
@@ -14579,15 +14579,121 @@ async function main() {
       }
       await clickSelector('[data-testid="db-column-button"]')
       const both = await waitFor(`(() => { const kinds = [...document.querySelectorAll('${EDITOR} [data-testid="db-button-action"]')].map((li) => li.dataset.kind)
-        return kinds.join(',') === 'other,edit' && (document.querySelector('${EDITOR}')?.textContent ?? '').includes('다른 표에 행 추가') })()`, 8000)
+        return kinds.join(',') === 'add,edit' && (document.querySelector('${EDITOR}')?.textContent ?? '').includes('다른 표에 행 추가') })()`, 8000)
       await clickSelector(`${EDITOR} [data-testid="db-button-action"]:nth-child(2) [data-testid="db-button-action-remove"]`)
       await waitFor(`document.querySelectorAll('${EDITOR} [data-testid="db-button-action"]').length === 1`, 3000)
       await clickSelector(`${EDITOR} [data-testid="db-button-save"]`)
       await waitFor(`!document.querySelector('${EDITOR}')`, 8000)
       const kept = await savedActions()
-      check('★ 편집기가 모르는 액션(다른 표에 행 추가)은 요약으로 서고 저장해도 남는다',
+      check('★ 지우기는 그 액션만 — 다른 표에 행 추가는 저장해도 남는다',
         both && kept.length === 1 && kept[0].type === 'add_page_to' && kept[0].config.dataSourceId === other.dataSourceId,
         JSON.stringify([both, kept]))
+    }
+
+    if (sectionIf('버튼 속성 — 행 추가 편집기 · 카드 · 템플릿 (5a-4 · F-08-07)')) {
+      // "버튼 설정"이 그 표의 스키마로 고른다(숨긴 속성도) · "다른 표에 행 추가"를 고친다(대상 표 · 템플릿 — 템플릿 값이 이긴다를 알린다 ·
+      // 그 표의 값) · 누르면 그 표에 템플릿 값으로 행이 선다 · 갤러리 카드의 단추는 카드를 열지 않는다 · 템플릿 화면에는 버튼이 없다.
+      // 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `행 추가 버튼 ${stamp}` })).body.database
+      const other = (await api('POST', '/databases', { name: `행이 설 표 ${stamp}` })).body.database
+      const prop = async (ds, name, type) => (await api('POST', `/data-sources/${ds}/properties`, { name, type })).body.property.id
+      await prop(db.dataSourceId, '수량', 'number')
+      const hidden = await prop(db.dataSourceId, '숨김', 'number')
+      const buttonId = await prop(db.dataSourceId, '더하기', 'button')
+      const score = await prop(other.dataSourceId, '점수', 'number')
+      await api('PATCH', `/views/${db.defaultViewId}/columns/${hidden}`, { visible: false })
+      const template = (await api('POST', `/data-sources/${other.dataSourceId}/templates`, { title: `틀 ${stamp}` })).body.template.id
+      await api('PATCH', `/rows/${template}`, { cells: [{ propertyId: score, value: { type: 'number', number: 5 } }] })
+      const row = (await api('POST', `/views/${db.defaultViewId}/rows`, { cells: [] })).body.row.id
+      const otherRows = async () => (await api('GET', `/views/${other.defaultViewId}/rows`)).body.rows
+      const setSelect = (selector, value) => evaluate(`(() => {
+        const s = document.querySelector(${JSON.stringify(selector)})
+        if (!s) return false
+        s.value = ${JSON.stringify(value)}
+        s.dispatchEvent(new Event('change', { bubbles: true }))
+        return true
+      })()`)
+      const EDITOR = '[data-testid="db-button-editor"]'
+      const MENU = `th:has([data-testid="db-column-menu"][aria-label="더하기 속성 메뉴"]) [data-testid="db-column-menu"]`
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      await waitFor(`!!document.querySelector('tr[data-row-id="${row}"] [data-testid="db-button-cell"]')`, 15000)
+      for (let i = 0; i < 6 && !(await evaluate(`!!document.querySelector('[data-testid="db-column-button"]')`)); i += 1) {
+        await clickSelector(MENU)
+        await waitFor(`!!document.querySelector('[data-testid="db-column-button"]')`, 2000)
+      }
+      await clickSelector('[data-testid="db-column-button"]')
+      await waitFor(`!!document.querySelector('${EDITOR} [data-testid="db-button-add-action"]')`, 8000)
+      // ① 숨긴 속성도 고른다 — 보기의 컬럼이 아니라 스키마
+      await clickSelector(`${EDITOR} [data-testid="db-button-add-action"]`)
+      const hiddenListed = await waitFor(`[...(document.querySelector('${EDITOR} [data-testid="db-button-property"]')?.options ?? [])].some((o) => o.value === '${hidden}')`, 5000)
+      check('★ "버튼 설정"은 그 표의 스키마로 고른다 — 이 보기에서 숨긴 속성도', hiddenListed,
+        String(await evaluate(`[...(document.querySelector('${EDITOR} [data-testid="db-button-property"]')?.options ?? [])].map((o) => o.textContent).join(',')`)))
+      await clickSelector(`${EDITOR} [data-testid="db-button-action-remove"]`)
+      await waitFor(`document.querySelectorAll('${EDITOR} [data-testid="db-button-action"]').length === 0`, 3000)
+
+      // ② 다른 표에 행 추가 — 대상 표 · 템플릿 · 값
+      await clickSelector(`${EDITOR} [data-testid="db-button-add-row-action"]`)
+      await waitFor(`!!document.querySelector('${EDITOR} [data-testid="db-button-target"]')`, 3000)
+      await waitFor(`[...document.querySelector('${EDITOR} [data-testid="db-button-target"]').options].some((o) => o.value === '${other.dataSourceId}')`, 8000)
+      await setSelect(`${EDITOR} [data-testid="db-button-target"]`, other.dataSourceId)
+      await waitFor(`[...(document.querySelector('${EDITOR} [data-testid="db-button-template"]')?.options ?? [])].some((o) => o.value === '${template}')`, 8000)
+      await setSelect(`${EDITOR} [data-testid="db-button-template"]`, template)
+      const noted = await waitFor(`!!document.querySelector('${EDITOR} [data-testid="db-button-template-note"]')`, 3000)
+      await waitFor(`!!document.querySelector('${EDITOR} [data-testid="db-button-add-value"]')`, 5000)
+      await clickSelector(`${EDITOR} [data-testid="db-button-add-value"]`)
+      await waitFor(`!!document.querySelector('${EDITOR} [data-testid="db-button-property"]')`, 3000)
+      await setSelect(`${EDITOR} [data-testid="db-button-property"]`, score)
+      await waitFor(`document.querySelector('${EDITOR} [data-testid="db-button-value"]')?.type === 'number'`, 3000)
+      await evaluate(`(() => { const el = document.querySelector('${EDITOR} [data-testid="db-button-value"]'); el.focus(); el.select() })()`)
+      await typeText('1')
+      await clickSelector(`${EDITOR} [data-testid="db-button-save"]`)
+      const saved = (await api('GET', `/data-sources/${db.dataSourceId}/properties/${buttonId}/actions`)).body?.actions ?? []
+      await waitFor(`!document.querySelector('${EDITOR}')`, 8000)
+      const actions = (await api('GET', `/data-sources/${db.dataSourceId}/properties/${buttonId}/actions`)).body?.actions ?? []
+      check('★ 다른 표에 행 추가를 고친다 — 대상 표 · 템플릿(템플릿 값이 이긴다를 알린다) · 그 표의 값',
+        noted && actions.length === 1 && actions[0].type === 'add_page_to' && actions[0].config.dataSourceId === other.dataSourceId
+          && actions[0].config.templateId === template && actions[0].config.cells?.[0]?.propertyId === score && actions[0].config.cells?.[0]?.value?.number === 1,
+        JSON.stringify([noted, saved, actions]))
+
+      // ③ 누르면 그 표에 템플릿 값으로 행이 선다
+      const before = (await otherRows()).length
+      await clickSelector(`tr[data-row-id="${row}"] [data-testid="db-button-cell"]`)
+      await waitFor(`(document.querySelector('tr[data-row-id="${row}"] [data-testid="db-button-result"]')?.textContent ?? '') === '완료'`, 10000)
+      const after = await otherRows()
+      check('★ 누르면 그 표에 행이 선다 — 템플릿 값(5)이 버튼 값(1)을 이긴다',
+        after.length === before + 1 && after.some((r) => r.properties[score]?.number === 5),
+        JSON.stringify([before, after.map((r) => r.properties[score])]))
+
+      // ④ 갤러리 카드 — 단추는 카드를 열지 않는다
+      const gallery = (await api('POST', `/databases/${db.id}/views`, { type: 'gallery', name: `갤러리 ${stamp}` })).body.view.id
+      const galleryUrl = `${BASE}/w/${workspaceId}/db/${db.id}?v=${gallery}`
+      await send('Page.navigate', { url: galleryUrl })
+      const CARD_BUTTON = '[data-testid="db-gallery-badge"] [data-testid="db-button-cell"]'
+      await waitFor(`!!document.querySelector('${CARD_BUTTON}')`, 15000)
+      const beforeCard = (await otherRows()).length
+      await clickSelector(CARD_BUTTON)
+      const cardDone = await waitFor(`(document.querySelector('[data-testid="db-gallery-badge"] [data-testid="db-button-result"]')?.textContent ?? '') === '완료'`, 10000)
+      await sleep(500)
+      const stillHere = await evaluate(`location.href`)
+      check('★ 갤러리 카드에도 단추가 선다 — 누르면 실행하고 카드를 열지 않는다',
+        cardDone && stillHere.includes(`/db/${db.id}`) && (await otherRows()).length === beforeCard + 1,
+        JSON.stringify([cardDone, stillHere]))
+
+      // ⑤ 템플릿 화면에는 버튼이 없다
+      const ownTemplate = (await api('POST', `/data-sources/${db.dataSourceId}/templates`, { title: `버튼 표의 틀 ${stamp}` })).body.template.id
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}/templates/${ownTemplate}` })
+      const loaded = await waitFor(`(document.body?.textContent ?? '').includes('수량')`, 15000)
+      check('★ 템플릿 화면에는 버튼이 서지 않는다 — 템플릿은 누를 행이 아니다',
+        loaded && !(await evaluate(`!!document.querySelector('[data-testid="db-button-cell"]')`)),
+        String(loaded))
     }
 
     if (sectionIf('개인 필터 · 정렬 — 화면 (2h-2 · F-04-17)')) {

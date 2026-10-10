@@ -272,6 +272,7 @@ export function DatabaseGallery(props: {
                 relationLabels={labels}
                 relationIcons={relationIcons}
                 testId="db-gallery-badge"
+                button={{ workspaceId, canPress: access.canEditContent }}
               />
             </div>
           </li>
