@@ -17,7 +17,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 
-import { PUBLISH_HINT, ROTATE_WARNING, coveredMessage, publicUrlOf, publishFailureMessage } from './publish-messages'
+import { MODERATED_NOTICE, PUBLISH_HINT, ROTATE_WARNING, coveredMessage, publicUrlOf, publishFailureMessage } from './publish-messages'
 
 type PublishState = {
   published: boolean
@@ -26,6 +26,7 @@ type PublishState = {
   policyAllows: boolean
   canManage: boolean
   coveredBy: { pageId: string | null; title: string | null } | null
+  moderation: 'taken_down' | 'restricted' | null
 }
 
 export function PublishSection({ workspaceId, pageId }: { workspaceId: string; pageId: string }) {
@@ -95,7 +96,7 @@ export function PublishSection({ workspaceId, pageId }: { workspaceId: string; p
     )
   }
   // 바꿀 수 없고 공개된 것도 없으면 이 절은 서지 않는다
-  if (!state.canManage && !state.published && state.coveredBy === null) return null
+  if (!state.canManage && !state.published && state.coveredBy === null && state.moderation === null) return null
 
   const address = state.token !== null && typeof window !== 'undefined' ? publicUrlOf(window.location.origin, state.token) : null
 
@@ -114,6 +115,12 @@ export function PublishSection({ workspaceId, pageId }: { workspaceId: string; p
               </a>
             </>
           )}
+        </p>
+      )}
+
+      {state.moderation !== null && (
+        <p data-testid="publish-moderated" className="mb-2 text-xs text-red-700 dark:text-red-400">
+          {MODERATED_NOTICE}
         </p>
       )}
 
@@ -209,7 +216,7 @@ export function PublishSection({ workspaceId, pageId }: { workspaceId: string; p
         </div>
       )}
 
-      {!state.published && state.canManage && state.policyAllows && (
+      {!state.published && state.canManage && state.policyAllows && state.moderation === null && (
         <div className="flex flex-col gap-2">
           <p className="text-xs text-neutral-600 dark:text-neutral-400">{PUBLISH_HINT}</p>
           <button

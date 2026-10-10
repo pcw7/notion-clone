@@ -14,7 +14,12 @@ const FAILURE: Readonly<Record<string, string>> = {
   policy_disabled: '워크스페이스 정책이 웹 게시를 막았습니다.',
   not_published: '게시되어 있지 않습니다.',
   invalid_input: '바꾸지 못했습니다.',
+  moderated: '운영 정책에 따라 공개가 내려진 페이지는 다시 게시할 수 없습니다.',
 }
+
+/** 운영자가 공개를 내렸을 때 — 소유자가 아는 길(정본 [보강] 모더레이션 조치 ⑤). 이의는 운영자에게(17 — 이의제기는 이메일). */
+export const MODERATED_NOTICE =
+  '운영 정책에 따라 이 페이지의 웹 공개가 내려졌습니다. 게시되어 있어도 열리지 않습니다. 이의가 있으면 운영자에게 문의하세요.'
 
 export function publishFailureMessage(reason: unknown): string {
   // 자기 칸만 — `FAILURE['constructor']` 는 객체 원형의 함수다(단위 검사가 잡았다)
