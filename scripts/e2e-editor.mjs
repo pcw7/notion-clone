@@ -15507,6 +15507,79 @@ async function main() {
       check('해제하면 그 주소는 404', (await fetch(`${BASE}/p/${token}`)).status === 404)
     }
 
+    if (sectionIf('공개 화면 — 이미지 (6a-2b · F-06-08)')) {
+      // 게시한 페이지의 이미지 블록 · 이미지 아이콘이 **세션 없이** 보인다 — 블록 id 로 여는 공개 파일 경로 · X-Robots-Tag · 짧은 캐시.
+      // 닫힌 하위의 이미지 · 파일 id 로 찍은 주소는 404. 브라우저 세션은 끝에 반드시 되돌린다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const upload = async (name) => {
+        const form = new FormData()
+        form.append('file', new Blob([Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64')], { type: 'image/png' }), name)
+        return (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/files`, { method: 'POST', headers: { cookie: authed.cookie, origin: BASE }, body: form })).json()).file.id
+      }
+      const newPage = async (title, parentPageId) =>
+        (await api('POST', '/pages', parentPageId === undefined ? { title } : { title, parentPageId })).body.page.id
+      const image = (id, fileId, caption) => ({ id, type: 'image', title: [], properties: { source: { type: 'file', file_id: fileId }, ...(caption ? { caption: [textRun(caption)] } : {}) }, format: {}, children: [] })
+      const ref = (id) => ({ id, type: 'page', title: [], properties: {}, format: {}, children: [] })
+
+      const root = await newPage(`사진 위키 ${stamp}`)
+      const closed = await newPage(`닫힌 사진 ${stamp}`, root)
+      await api('POST', `/pages/${closed}/access`, { action: 'restrict' })
+      const bodyFile = await upload('본문.png')
+      const iconFile = await upload('아이콘.png')
+      const closedFile = await upload('닫힌.png')
+      const bodyImage = randomUUID()
+      const closedImage = randomUUID()
+      await saveBody(root, { blocks: [image(bodyImage, bodyFile, '첫 사진'), ref(closed)] })
+      await saveBody(closed, { blocks: [image(closedImage, closedFile)] })
+      await api('PATCH', `/pages/${root}`, { icon: { type: 'file', file_id: iconFile } })
+      const token = (await api('PUT', `/pages/${root}/publish`)).body?.token
+
+      try {
+        await send('Network.deleteCookies', { name: 'nc_session', domain: 'localhost', path: '/' })
+        await send('Page.navigate', { url: `${BASE}/p/${token}` })
+        await waitFor(`!!document.querySelector('[data-testid="public-title"]')`, 15000)
+        const loaded = await waitFor(`(() => {
+          const body = document.querySelector('.pub-image img')
+          const icon = document.querySelector('[data-testid="public-icon-image"]')
+          return !!body && body.complete && body.naturalWidth === 1 && !!icon && icon.complete && icon.naturalWidth === 1
+        })()`, 10000)
+        const seen = await evaluate(`({
+          body: document.querySelector('.pub-image img')?.getAttribute('src'),
+          caption: document.querySelector('.pub-image figcaption')?.textContent ?? null,
+          icon: document.querySelector('[data-testid="public-icon-image"]')?.getAttribute('src'),
+        })`)
+        check('★ 세션 없이 이미지 블록 · 이미지 아이콘이 보인다 — 블록 id 로 여는 주소 · 캡션',
+          loaded && seen.body === `/p/${token}/blocks/${bodyImage}/image` && seen.icon === `/p/${token}/blocks/${root}/icon` && seen.caption === '첫 사진',
+          JSON.stringify(seen))
+
+        const r = await fetch(`${BASE}/p/${token}/blocks/${bodyImage}/image`)
+        const headers = { type: r.headers.get('content-type'), robots: r.headers.get('x-robots-tag'), cache: r.headers.get('cache-control'), referrer: r.headers.get('referrer-policy') }
+        check('공개 파일 응답 — 이미지 · 색인 설정 · 짧은 개인 캐시 · referrer 없음',
+          r.status === 200 && headers.type === 'image/png' && headers.robots === 'noindex, nofollow, noai, noimageai' && headers.cache === 'private, max-age=60' && headers.referrer === 'no-referrer',
+          JSON.stringify([r.status, headers]))
+
+        const status = async (path) => (await fetch(`${BASE}${path}`)).status
+        const statuses = [
+          await status(`/p/${token}/blocks/${closedImage}/image`),
+          await status(`/p/${token}/blocks/${bodyFile}/image`),
+          await status(`/p/${token}/blocks/${bodyImage}/icon`),
+          await status(`/p/${token}/blocks/${bodyImage}/file`),
+        ]
+        check('★ 닫힌 하위의 이미지 · 파일 id 로 찍은 주소 · 종류가 다른 주소는 404', JSON.stringify(statuses) === '[404,404,404,404]', JSON.stringify(statuses))
+      } finally {
+        await send('Network.setCookie', { name: 'nc_session', value: session, domain: 'localhost', path: '/', httpOnly: true })
+      }
+
+      await api('DELETE', `/pages/${root}/publish`)
+      check('해제하면 이미지 주소도 404', (await fetch(`${BASE}/p/${token}/blocks/${bodyImage}/image`)).status === 404)
+    }
+
     if (sectionIf('개인 필터 · 정렬 — 화면 (2h-2 · F-04-17)')) {
       // 볼 수만 있는 사람(브라우저 세션을 바꾼다)이 도구줄의 필터로 조건을 걸면 **자기 것**으로 저장되고 그 사람의 표만 좁혀진다 — "나만 보는
       // 필터" 표시 · 초기화. 편집자는 자기 개인 것을 "모두에게 저장"한다. 브라우저 세션은 끝에 반드시 소유자로 되돌린다.

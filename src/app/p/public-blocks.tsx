@@ -13,6 +13,7 @@ import katex from 'katex'
 import type { ReactNode } from 'react'
 
 import { codeCaptionRuns, codeLanguageOf } from '@/lib/block/code'
+import { readCaption, readImageSource } from '@/lib/block/image'
 import { EQUATION_TYPE, equationExpressionOf } from '@/lib/block/equation'
 import { cellsOf, COLUMN_HEADER_KEY, ROW_HEADER_KEY, TABLE_TYPE } from '@/lib/block/table'
 import { TOC_TYPE, headingsOfBlocks, tocEntries } from '@/lib/block/toc'
@@ -36,6 +37,11 @@ export function publicHref(view: Pick<PublicPageView, 'token' | 'target'>, pageI
 export function titleText(runs: readonly RichTextRun[] | undefined): string {
   const text = toPlainText(runs ?? []).trim()
   return text === '' ? UNTITLED : text
+}
+
+/** 공개 파일의 주소 — 블록 id 로 연다(파일 id 로 열지 않는다 · 정본 [보강] 공개 화면 ⑨). */
+export function publicFileHref(view: Pick<PublicPageView, 'token'>, blockId: string, kind: 'image' | 'icon'): string {
+  return `/p/${view.token}/blocks/${blockId}/${kind}`
 }
 
 /** 헤딩의 앵커 — 목차가 가리킨다. */
@@ -246,6 +252,19 @@ function Block({ block, view }: { block: EditorBlock; view: PublicPageView }): R
           <Trail view={view} />
         </nav>
       )
+    case 'image': {
+      const source = readImageSource(props)
+      if (source === null) return null
+      const caption = readCaption(props).trim()
+      const src = source.kind === 'file' ? publicFileHref(view, block.id, 'image') : source.url
+      return (
+        <figure className="pub-block pub-image">
+          {/* eslint-disable-next-line @next/next/no-img-element -- 공개 화면은 최적화 경로를 거치지 않는다(바깥 주소 · 토큰 경로) */}
+          <img src={src} alt={caption} loading="lazy" referrerPolicy="no-referrer" />
+          {caption !== '' && <figcaption>{caption}</figcaption>}
+        </figure>
+      )
+    }
     case PAGE_TYPE: {
       // 읽는 쪽이 열 수 없는 참조를 이미 뺐다 — 그래도 지도에 없으면 그리지 않는다
       const title = view.pages.get(block.id)
@@ -257,7 +276,7 @@ function Block({ block, view }: { block: EditorBlock; view: PublicPageView }): R
       )
     }
     default:
-      // 버튼 블록 · 모르는 블록 · 이미지(6a-2b)는 그리지 않는다(정본 [보강] 공개 화면 ③)
+      // 버튼 블록 · 모르는 블록은 그리지 않는다(정본 [보강] 공개 화면 ③)
       return null
   }
 }

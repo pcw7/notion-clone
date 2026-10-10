@@ -14,7 +14,7 @@ import { notFound } from 'next/navigation'
 import { cache, type ReactNode } from 'react'
 
 import { readPublicPage, type PublicRead } from '@/lib/publish/public-read'
-import { Blocks, RichText, Trail, UNTITLED, titleText } from './public-blocks'
+import { Blocks, RichText, Trail, UNTITLED, publicFileHref, titleText } from './public-blocks'
 
 export const loadPublicPage = cache((token: string, pageId?: string): Promise<PublicRead> => readPublicPage(token, pageId))
 
@@ -56,7 +56,17 @@ export async function PublicPage({ token, pageId }: { token: string; pageId?: st
           <Trail view={view} />
         </nav>
       )}
-      {view.emoji !== null && <div className="pub-icon" aria-hidden="true">{view.emoji}</div>}
+      {view.icon?.type === 'emoji' && <div className="pub-icon" aria-hidden="true">{view.icon.emoji}</div>}
+      {view.icon !== null && view.icon.type !== 'emoji' && (
+        // eslint-disable-next-line @next/next/no-img-element -- 공개 화면은 최적화 경로를 거치지 않는다(바깥 주소 · 토큰 경로)
+        <img
+          className="pub-icon-image"
+          data-testid="public-icon-image"
+          alt=""
+          referrerPolicy="no-referrer"
+          src={view.icon.type === 'file' ? publicFileHref(view, view.target.pageId, 'icon') : view.icon.url}
+        />
+      )}
       <h1 className="pub-title" data-testid="public-title">
         {untitled ? UNTITLED : <RichText runs={view.title} view={view} />}
       </h1>

@@ -103,7 +103,7 @@ describe('① 본문 — 그 페이지의 문서 범위', () => {
     assert.equal(plain(view.title).startsWith('위키'), true)
   })
 
-  test('데이터베이스 블록은 빠진다(6a-2b)', async (t) => {
+  test('데이터베이스 블록은 빠진다(6a-2c)', async (t) => {
     if (skipReason) return t.skip(skipReason)
     const { boss } = await office()
     const doc = await pageNamed(boss, unique('표가 든 문서'))
