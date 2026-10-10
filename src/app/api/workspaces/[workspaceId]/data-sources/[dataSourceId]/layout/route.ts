@@ -17,11 +17,14 @@
  * 한 속성은 한 자리다 — 목록끼리 겹치면 400 `invalid_layout`.
  *
  * 권한은 주인 데이터베이스의 `edit_structure` 이고, 잠긴 데이터베이스는 409 다(`layout.ts`).
+ *
+ * GET — 레이아웃 읽기(3e-1 · 16 F-16-12 *"GET /data_sources/{id}/layout"*). 원본 데이터베이스를 볼 수 있어야 한다. `{ layout, undo }` —
+ * `undo.available` 은 직전 버전으로 되돌릴 수 있는가(`POST …/layout/undo`).
  */
 
 import { isUuid } from '@/lib/ids'
 import { readJsonBody, requireWorkspaceSession } from '@/lib/auth/route-session'
-import { applyRecordLayout } from '@/lib/database/layout'
+import { applyRecordLayout, getRecordLayout } from '@/lib/database/layout'
 import { failureResponse, layoutFailureStatus } from '@/lib/database/http'
 import { MAX_PROPERTIES_PER_DATA_SOURCE } from '@/lib/database/property'
 import { parsePageSettings } from '@/lib/database/page-settings'
@@ -33,6 +36,16 @@ const propertyIds = (value: unknown, extra = 0): string[] | null =>
   Array.isArray(value) && value.length <= MAX_PROPERTIES_PER_DATA_SOURCE + extra && value.every((v) => typeof v === 'string')
     ? (value as string[])
     : null
+
+export async function GET(_request: Request, ctx: Ctx): Promise<Response> {
+  const { workspaceId, dataSourceId } = await ctx.params
+  const session = await requireWorkspaceSession(workspaceId)
+  if (!session.ok) return session.response
+  if (!isUuid(dataSourceId)) return Response.json({ error: 'not_found' }, { status: 404 })
+  const got = await getRecordLayout(session.ctx, dataSourceId)
+  if (!got.ok) return Response.json({ error: 'not_found' }, { status: 404 })
+  return Response.json({ ok: true, layout: got.value.layout, undo: got.value.undo })
+}
 
 export async function PUT(request: Request, ctx: Ctx): Promise<Response> {
   const { workspaceId, dataSourceId } = await ctx.params

@@ -144,6 +144,8 @@ export function layoutFailureStatus(reason: LayoutFailure): number {
     // 잠김 · 남이 먼저 적용했다(8f-2) — 입력이 아니라 지금 상태가 허락하지 않는다. 다시 읽으면 풀린다.
     case 'locked':
     case 'layout_conflict':
+    // 되돌릴 직전 버전이 없다(3e-1) — 지금 상태의 문제다
+    case 'no_undo':
       return 409
     case 'invalid_layout':
     case 'too_many_pinned':

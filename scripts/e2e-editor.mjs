@@ -13969,6 +13969,34 @@ async function main() {
         JSON.stringify(saved))
     }
 
+    if (sectionIf('레이아웃 되돌리기 — 서버 (3e-1 · F-16-12)')) {
+      // GET …/layout 이 레이아웃과 되돌릴 수 있는지를 주고, POST …/layout/undo 가 직전 버전을 새 버전으로 되돌린다 — 두 번은 409 no_undo.
+      // 한 단계 · 스키마 순서 · 권한은 DB 검사가 본다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const table = (await api('POST', '/databases', { name: `되돌리기 ${stamp}` })).body.database
+      const memo = (await api('POST', `/data-sources/${table.dataSourceId}/properties`, { name: '메모', type: 'rich_text' })).body?.property?.id
+      const layoutUrl = `/data-sources/${table.dataSourceId}/layout`
+      const fresh = await api('GET', layoutUrl)
+      await api('PUT', layoutUrl, { version: '0', order: [], hidden: [memo], settings: { fullWidth: true } })
+      const applied = await api('GET', layoutUrl)
+      check('★ GET — 레이아웃과 되돌릴 수 있는지(적용 전에는 없고 · 적용 뒤에는 있다)',
+        fresh.status === 200 && fresh.body?.undo?.available === false && fresh.body?.layout?.version === '0'
+          && applied.body?.undo?.available === true && JSON.stringify(applied.body?.layout?.hidden) === JSON.stringify([memo]),
+        JSON.stringify([fresh.body?.undo, applied.body?.undo, applied.body?.layout?.hidden]))
+      const undone = await api('POST', `${layoutUrl}/undo`, { version: '1' })
+      const twice = await api('POST', `${layoutUrl}/undo`, { version: '2' })
+      check('★ 되돌리면 직전 버전이 새 버전(2)으로 돌아온다 · 두 번은 409 no_undo',
+        undone.status === 200 && undone.body?.layout?.version === '2' && JSON.stringify(undone.body?.layout?.hidden) === '[]'
+          && undone.body?.layout?.settings?.fullWidth === false && twice.status === 409 && twice.body?.error === 'no_undo',
+        JSON.stringify({ undone: [undone.status, undone.body?.layout?.version, undone.body?.layout?.hidden], twice: [twice.status, twice.body?.error] }))
+    }
+
     if (sectionIf('개인 필터 · 정렬 — 화면 (2h-2 · F-04-17)')) {
       // 볼 수만 있는 사람(브라우저 세션을 바꾼다)이 도구줄의 필터로 조건을 걸면 **자기 것**으로 저장되고 그 사람의 표만 좁혀진다 — "나만 보는
       // 필터" 표시 · 초기화. 편집자는 자기 개인 것을 "모두에게 저장"한다. 브라우저 세션은 끝에 반드시 소유자로 되돌린다.
