@@ -7,13 +7,10 @@
  *      정본이 *"모든 뷰/API 쿼리는 기본 조건으로 is_template=false 를 강제한다"* 고 적은 것을
  *      **읽는 경로마다** 확인한다 — 한 군데만 빠져도 템플릿이 표에 섞여 보인다
  *   ② 템플릿 목록은 그 조건의 반대쪽이고, 그 목록만이 템플릿을 본다
- *   ③ 권한: 목록은 `view`, 만들기 · 버리기는 쓰기 권한
- *
- *      ⚠ **이 파일은 `edit_structure` 와 `create_child` 를 가려내지 못한다.** `resolveCaps` 가 ACL 의 대상 종류를
- *        `'page'` 로 고정해서(HANDOFF §7) 데이터베이스 노드에 `create` · `edit_content` 레벨을 줄 수 없고, 줄 수
- *        있는 레벨(`view` · `comment` · `edit` · `full_access`)에서는 그 셋이 늘 함께 오거나 함께 없다. 반사실로
- *        확인했다 — `createRowIn` 의 게이트를 `create_child` 로 되돌려도 이 파일은 **전부 통과한다.** 지키는 것은
- *        "볼 수만 있는 사람은 못 만든다"까지이고, 그 위의 구분은 §7 의 부채가 풀릴 때 검사가 생긴다
+ *   ③ 권한: 목록은 `view`, 만들기 · 버리기는 `edit_structure` — ★ "내용 편집"(`edit_content` 레벨 · 6f-1)은 행은 만들지만
+ *      템플릿은 만들지도 버리지도 못한다. 초판은 그 레벨을 줄 수 없어(HANDOFF §7) 이 구분을 검사하지 못했다. 만들기의 게이트는
+ *      **두 겹**이다(`createTemplate` 의 `openDataSource` · `createRowIn` 의 템플릿 게이트) — 한 겹만 풀면 다른 겹이 막아 이
+ *      파일은 통과하고, 둘을 함께 풀면 떨어진다(6f-1 반사실). 버리기는 한 겹이고 그것만 풀어도 떨어진다
  *   ④ **행 명령으로는 템플릿을 버릴 수 없다**(`trashRow`). 거부하면 아무것도 바뀌지 않는다
  *   ⑤ 기본 템플릿(F-08-03)은 **살아 있는 이 표의 템플릿**만 가리킨다 — 애플리케이션이 먼저 거부하고
  *      0026 의 트리거가 뒤에서 막는다. 휴지통에 보내면 읽기가 null 을 주고 **복원하면 돌아온다**
@@ -229,7 +226,7 @@ describe('불변식 R1 — 템플릿 행은 읽기 경로 어디에도 없다', 
 
 describe('권한 — 목록은 view, 만들기 · 버리기는 edit_structure', () => {
   /** 이 표를 `other` 에게 주어진 레벨로만 열어 둔다. */
-  const shareWith = async (table: Table, level: 'view' | 'comment' | 'edit') => {
+  const shareWith = async (table: Table, level: 'view' | 'comment' | 'edit_content' | 'edit') => {
     assert.equal(
       (await grantAccess(fx.owner.ctx, table.databaseId, { type: 'user', id: fx.owner.userId }, 'full_access')).ok,
       true,
@@ -292,6 +289,22 @@ describe('권한 — 목록은 view, 만들기 · 버리기는 edit_structure', 
       !JSON.stringify(listed).includes('기밀 작업') && !JSON.stringify(deleted).includes('기밀 작업'),
       '거부 응답에 템플릿 제목이 실렸다',
     )
+  })
+
+  test('★ "내용 편집"(6f-1)은 행은 만들지만 템플릿은 만들지도 버리지도 못한다 — `edit_structure` 와 `create_child` 를 가른다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const table = await newTable()
+    const template = unwrapTemplate(await createTemplate(fx.owner.ctx, table.dataSourceId, { title: '정해 둔 모양' }))
+    await shareWith(table, 'edit_content')
+
+    assert.equal((await createRow(other.ctx, table.dataSourceId)).ok, true, '행은 만든다(create_child)')
+    const created = await createTemplate(other.ctx, table.dataSourceId, { title: '끼어들기' })
+    assert.equal(created.ok, false)
+    if (!created.ok) assert.equal(created.reason, 'forbidden')
+    const deleted = await deleteTemplate(other.ctx, template.id)
+    assert.equal(deleted.ok, false)
+    if (!deleted.ok) assert.equal(deleted.reason, 'forbidden')
+    assert.equal((await createRowFromTemplate(other.ctx, table.dataSourceId, template.id)).ok, true, '템플릿으로 행 만들기는 행 만들기다')
   })
 
   test('고칠 수 있는 사람은 만들고 버린다', async (t) => {

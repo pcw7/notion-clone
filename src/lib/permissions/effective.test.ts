@@ -94,12 +94,18 @@ describe('★ 레벨은 전순서가 아니다 (규칙 A2)', () => {
     assert.equal(can(capabilitiesOf('database', 'create'), 'view'), false)
   })
 
-  test('★ 페이지에 없는 레벨이 들어오면 grant 로 치지 않는다 — 던지지 않는다', () => {
-    // `node_kind='block'` 하나에 페이지와 database 가 섞이므로 DB CHECK 으로는
-    // 막을 수 없는 조합이다. 판정이 던지면 그 페이지를 아무도 못 여는 500 이 된다.
-    const caps = resolve(['page'], [entry('page', 'create')])
-    assert.equal(can(caps, 'create_child'), false)
-    assert.equal(can(caps, 'view'), false)
+  test('★ 레벨의 뜻은 레벨이 정한다(6f-1) — create 는 create_child 하나(view 없음) · edit_content 는 구조 없이 · 모르는 레벨은 부여가 아니고 던지지 않는다', () => {
+    // 초판은 대상 종류를 page 로 고정해 데이터베이스 전용 레벨을 무시했다(정본 §3.3 [보강] 데이터베이스의 레벨 ①). 이제 page 매트릭스에
+    // 없으면 database 매트릭스로 읽는다 — 행에서 상속을 끊어 복사한 그 레벨도 같은 뜻이다(②).
+    const create = resolve(['page'], [entry('page', 'create')])
+    assert.equal(can(create, 'create_child'), true)
+    assert.equal(can(create, 'view'), false, '만들기만 — 기존 행은 보이지 않는다')
+    const content = resolve(['page'], [entry('page', 'edit_content')])
+    assert.equal(can(content, 'edit_content'), true)
+    assert.equal(can(content, 'edit_structure'), false, '내용 편집은 구조를 못 고친다')
+    // 뜻을 알 수 없는 레벨 — 판정이 던지면 그 페이지를 아무도 못 여는 500 이 된다
+    const unknown = resolve(['page'], [entry('page', 'owner' as never)])
+    assert.equal(unknown, 0)
   })
 
   test('두 grant 를 합치면 capability 가 합쳐진다', () => {

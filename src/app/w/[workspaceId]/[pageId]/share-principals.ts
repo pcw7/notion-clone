@@ -101,6 +101,49 @@ export function parseChoice(value: string): { readonly type: 'user' | 'group'; r
   return { type, id }
 }
 
+// ── 레벨 고르개 (6f-1) ────────────────────────────────────────────────
+
+type LevelOption = { readonly value: string; readonly label: string }
+
+/** 레벨의 이름 — 여섯 모두(정본 §3.3). 표시만 한다 — 판정은 서버의 능력 집합이다. */
+const LEVEL_LABELS: Readonly<Record<string, string>> = {
+  view: '읽기',
+  comment: '댓글',
+  edit_content: '내용 편집',
+  create: '만들기만',
+  edit: '편집',
+  full_access: '전체 권한',
+}
+
+/** 페이지에 줄 수 있는 레벨 — 넷. `edit_content` · `create` 는 데이터베이스 전용이다(서버 `isGrantableLevel` — 테스트가 대조한다). */
+const PAGE_LEVELS = ['view', 'comment', 'edit', 'full_access'] as const
+
+/**
+ * 데이터베이스에 줄 수 있는 레벨(정본 §3.3 [보강] 데이터베이스의 레벨 ④) — "내용 편집"은 행 · 값을 고치고 구조(속성 · 뷰 · 템플릿)는 못 고친다.
+ * "만들기만"(`create`)은 행 단위 규칙과 함께(6f-2) — 아직 고를 수 없다.
+ */
+const DATABASE_LEVELS = ['view', 'comment', 'edit_content', 'edit', 'full_access'] as const
+
+/** 레벨의 이름. 모르는 값은 그대로(`constructor` 같은 프로토타입 이름에 함수를 내주지 않는다). */
+export function levelLabel(level: string): string {
+  return Object.hasOwn(LEVEL_LABELS, level) ? LEVEL_LABELS[level] : level
+}
+
+/** 추가 고르개의 레벨 — 노드의 종류가 정한다. */
+export function shareLevelOptions(kind: 'page' | 'database'): readonly LevelOption[] {
+  return (kind === 'database' ? DATABASE_LEVELS : PAGE_LEVELS).map((value) => ({ value, label: levelLabel(value) }))
+}
+
+/**
+ * 이미 있는 줄의 고르개 — 종류의 목록에 **지금 레벨이 없으면 그 줄에만 덧붙인다.** 데이터베이스에 API 로 준 "만들기만"(고르개에는 6f-2 전까지
+ * 없다)이 그렇다 — 목록에 없는 값의 select 는 첫 옵션("읽기")으로 보여, 그 사람이 다른 것을 가진 것처럼 속인다. 덧붙인 값은 고를 수 있는 다른
+ * 레벨로 바꾸는 출발점일 뿐이다(그 값으로 다시 부여하지 않는다).
+ */
+export function entryLevelOptions(kind: 'page' | 'database', current: string): readonly LevelOption[] {
+  const options = shareLevelOptions(kind)
+  return options.some((o) => o.value === current) ? options : [...options, { value: current, label: levelLabel(current) }]
+}
+
 // ── 이메일로 초대 · 게스트 (7d-1) ─────────────────────────────────────
 
 /**

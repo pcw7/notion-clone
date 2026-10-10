@@ -5,9 +5,8 @@
  * 아이콘과 같고, 고치는 사람은 이름과 같다(`edit_structure` · 데이터베이스 잠금).
  *
  *   ① ★ 바꾸기 · 지우기 — 같은 아이콘이면 쓰지 않는다 · 지우면 SQL NULL · 받기는 페이지와 같은 규칙(앞뒤 공백 · type 생략 · 두 글자 거부)
- *   ② ★ 누가 — 구조를 고칠 수 있는 사람만(볼 수만 있으면 forbidden · 못 보면 not_found) · 잠기면 locked · 페이지 id 는 not_found
- *      ⚠ `edit_content` 와 `edit_structure` 의 구분은 **오늘 관찰되지 않는다** — `resolveCaps` 가 대상 종류를 `'page'` 로 고정해
- *      데이터베이스 노드에 `edit_content` 레벨을 줄 수 없고(HANDOFF §7), 줄 수 있는 레벨에서는 둘이 늘 함께 온다(템플릿 §3.2-36 과 같다)
+ *   ② ★ 누가 — 구조를 고칠 수 있는 사람만(볼 수만 있으면 · **내용 편집이면** forbidden · 못 보면 not_found) · 잠기면 locked ·
+ *      페이지 id 는 not_found. "내용 편집"(`edit_content` 레벨)은 6f-1 부터 줄 수 있다 — `edit_structure` 를 가려내는 것은 그 레벨이다
  *   ③ ★ 읽는 길 — 화면(`getDatabase`) · 사이드바 트리 · 관계형의 대상 목록 · teamspace 화면 · 멘션의 이름 맵(볼 수 있을 때만)
  */
 
@@ -118,9 +117,12 @@ describe('② 누가', () => {
     const db = unwrap(await createDatabase(fx.owner.ctx, { name: '개인 서가', privateTop: true }))
     const viewer = await joinAs(fx.workspaceId, await createUser('보기만 하는 사람'), 'member')
     const stranger = await joinAs(fx.workspaceId, await createUser('못 보는 사람'), 'member')
+    const content = await joinAs(fx.workspaceId, await createUser('내용만 고치는 사람'), 'member')
     assert.ok((await grantAccess(fx.owner.ctx, db.id, { type: 'user', id: viewer.userId }, 'view')).ok)
+    assert.ok((await grantAccess(fx.owner.ctx, db.id, { type: 'user', id: content.userId }, 'edit_content')).ok)
 
     assert.deepEqual(await setDatabaseIcon(viewer.ctx, db.id, emoji('📚')), { ok: false, reason: 'forbidden' })
+    assert.deepEqual(await setDatabaseIcon(content.ctx, db.id, emoji('📚')), { ok: false, reason: 'forbidden' }, '내용 편집은 구조가 아니다(6f-1)')
     assert.deepEqual(await setDatabaseIcon(stranger.ctx, db.id, emoji('📚')), { ok: false, reason: 'not_found' })
     assert.equal((await stored(db.id)).isNull, true)
 

@@ -27,12 +27,15 @@ import {
   GUEST_LEVEL_OPTIONS,
   choiceValue,
   entryLabel,
+  entryLevelOptions,
   groupLabel,
   guestInviteMessage,
   guestInvitedNotice,
+  levelLabel,
   memberLabel,
   parseChoice,
   principalOfEntry,
+  shareLevelOptions,
   type ShareGroup,
   type ShareMember,
   type ShareTeamspace,
@@ -101,21 +104,16 @@ async function readAccess(url: string): Promise<AccessState | string> {
   }
 }
 
-/** 페이지에 줄 수 있는 레벨. `create`·`edit_content` 는 database 전용이다. */
-const PAGE_LEVELS: readonly { value: string; label: string }[] = [
-  { value: 'view', label: '읽기' },
-  { value: 'comment', label: '댓글' },
-  { value: 'edit', label: '편집' },
-  { value: 'full_access', label: '전체 권한' },
-]
-
 export function SharePanel({
   workspaceId,
   pageId,
   initialOpen = false,
+  kind = 'page',
 }: {
   workspaceId: string
   pageId: string
+  /** 페이지 · 데이터베이스(6f-1) — 고를 수 있는 레벨과 웹 게시 절이 갈린다. */
+  kind?: 'page' | 'database'
   /** 연 채로 시작한다 — 인박스의 접근 요청 줄이 `?share=1` 로 데려올 때(7e-1). */
   initialOpen?: boolean
 }) {
@@ -132,6 +130,7 @@ export function SharePanel({
   /** 요청마다 고른 레벨 — 고르지 않았으면 그 요청의 첫 선택지(읽기). */
   const [requestLevels, setRequestLevels] = useState<Record<string, string>>({})
 
+  const levels = shareLevelOptions(kind)
   const url = `/api/workspaces/${workspaceId}/pages/${pageId}/access`
   const guestsUrl = `/api/workspaces/${workspaceId}/pages/${pageId}/guests`
 
@@ -431,7 +430,7 @@ export function SharePanel({
                           }
                           className="rounded border border-neutral-300 bg-transparent px-1 py-0.5 text-xs dark:border-neutral-700"
                         >
-                          {PAGE_LEVELS.map((l) => (
+                          {entryLevelOptions(kind, entry.level).map((l) => (
                             <option key={l.value} value={l.value}>
                               {l.label}
                             </option>
@@ -456,7 +455,7 @@ export function SharePanel({
                       </span>
                     ) : (
                       <span className="flex-none text-xs text-neutral-400">
-                        {PAGE_LEVELS.find((l) => l.value === entry.level)?.label ?? entry.level}
+                        {levelLabel(entry.level)}
                       </span>
                     )}
                   </li>
@@ -508,7 +507,7 @@ export function SharePanel({
                       onChange={(e) => setAddLevel(e.target.value)}
                       className="rounded border border-neutral-300 bg-transparent px-1 py-0.5 text-xs dark:border-neutral-700"
                     >
-                      {PAGE_LEVELS.map((l) => (
+                      {levels.map((l) => (
                         <option key={l.value} value={l.value}>
                           {l.label}
                         </option>
@@ -620,7 +619,8 @@ export function SharePanel({
           )}
 
           {/* 웹 게시(6a-3) — 상태는 이 절이 따로 읽는다(공유 목록과 다른 요청) */}
-          {state !== null && <PublishSection workspaceId={workspaceId} pageId={pageId} />}
+          {/* 웹 게시는 페이지만(6a-1 · 정본 [정정] 웹 게시 ④) */}
+          {state !== null && kind === 'page' && <PublishSection workspaceId={workspaceId} pageId={pageId} />}
 
           {error && (
             <p role="alert" className="mt-3 text-xs text-red-600">

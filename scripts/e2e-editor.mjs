@@ -15972,6 +15972,64 @@ async function main() {
       }
     }
 
+    if (sectionIf('데이터베이스의 레벨 — 공유 패널 (6f-1 · F-06-10)')) {
+      // 표 화면에 공유 버튼 → "줄 권한" 에 "내용 편집"(만들기만은 6f-2) · 웹 게시 절은 없다. "내용 편집" 을 받은 동료는 행을 만들고 속성은
+      // 못 만든다. 페이지에 "내용 편집" 은 400 invalid_level. 고르개에 없는 "만들기만"(API 로 준 것)은 그 줄에 그대로 보인다("읽기" 로 속이지 않는다).
+      const stamp = Date.now()
+      const api = async (method, path, body, headers = authed) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `내용 편집 표 ${stamp}` })).body.database
+      const mateName = `내용 편집 동료 ${stamp}`
+      const mate = await joinAs(workspaceId, await createUser(mateName), 'member')
+      const makerName = `만들기 동료 ${stamp}`
+      const maker = await joinAs(workspaceId, await createUser(makerName), 'member')
+      const access = (node, body) => api('POST', `/pages/${node}/access`, body)
+      await access(db.id, { action: 'restrict' })
+      await access(db.id, { action: 'grant', principal: { type: 'user', id: ctx.userId }, level: 'full_access' })
+      const granted = await access(db.id, { action: 'grant', principal: { type: 'user', id: mate.userId }, level: 'edit_content' })
+      await access(db.id, { action: 'grant', principal: { type: 'user', id: maker.userId }, level: 'create' })
+      await access(db.id, { action: 'revoke', principal: { type: 'workspace_everyone' } })
+      check('데이터베이스에 "내용 편집" 을 준다', granted.status === 200, JSON.stringify(granted.body))
+
+      const dialog = '[role="dialog"][aria-label="공유 설정"]'
+      const levelOf = (name) => evaluate(`(() => {
+        const li = [...document.querySelectorAll('${dialog} li')].find((l) => l.textContent.includes(${JSON.stringify(name)}))
+        const sel = li?.querySelector('select')
+        return sel ? sel.value + '|' + (sel.selectedOptions[0]?.textContent ?? '') : '(줄 없음)'
+      })()`)
+      // 하이드레이션 전의 클릭은 버려진다 — 열릴 때까지 다시 누른다
+      const openPanel = async () => {
+        await waitFor(`[...document.querySelectorAll('button')].some((b) => b.textContent.trim() === '공유')`, 15000)
+        for (let i = 0; i < 5; i += 1) {
+          await clickText('공유')
+          if (await waitFor(`!!document.querySelector('${dialog}')`, 3000)) break
+        }
+        await waitFor(`(document.querySelector('${dialog}')?.textContent ?? '').includes(${JSON.stringify(mateName)})`, 10000)
+      }
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      await openPanel()
+      const offered = await evaluate(`[...(document.querySelector('${dialog} select[aria-label="줄 권한"]')?.options ?? [])].map((o) => o.textContent).join(',')`)
+      check('★ 표의 공유 패널 — "줄 권한" 에 "내용 편집" · "만들기만" 은 아직 없다', offered === '읽기,댓글,내용 편집,편집,전체 권한', offered)
+      check('동료의 줄이 "내용 편집" 으로 보인다', (await levelOf(mateName)) === 'edit_content|내용 편집', await levelOf(mateName))
+      check('★ 고르개에 없는 "만들기만"(API 로 준 것)이 그 줄에 그대로 보인다 — "읽기" 로 속이지 않는다',
+        (await levelOf(makerName)) === 'create|만들기만', await levelOf(makerName))
+      check('표의 공유 패널에는 웹 게시 절이 없다', !(await evaluate(`!!document.querySelector('${dialog} [data-testid="publish-section"]')`)))
+      await clickText('공유')
+
+      const asMate = { ...json, cookie: `nc_session=${mate.token}` }
+      const row = await api('POST', `/views/${db.defaultViewId}/rows`, {}, asMate)
+      const prop = await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '마감', type: 'date' }, asMate)
+      check('★ "내용 편집" 은 행을 만들고 · 속성은 못 만든다(403)', row.status < 300 && prop.status === 403, `${row.status} ${prop.status}`)
+
+      const doc = (await api('POST', '/pages', { title: `레벨 문서 ${stamp}` })).body.page.id
+      const onPage = await access(doc, { action: 'grant', principal: { type: 'user', id: mate.userId }, level: 'edit_content' })
+      check('★ 페이지에 "내용 편집" 은 400 invalid_level', onPage.status === 400 && onPage.body?.error === 'invalid_level', JSON.stringify(onPage.body))
+    }
+
     if (sectionIf('개인 필터 · 정렬 — 화면 (2h-2 · F-04-17)')) {
       // 볼 수만 있는 사람(브라우저 세션을 바꾼다)이 도구줄의 필터로 조건을 걸면 **자기 것**으로 저장되고 그 사람의 표만 좁혀진다 — "나만 보는
       // 필터" 표시 · 초기화. 편집자는 자기 개인 것을 "모두에게 저장"한다. 브라우저 세션은 끝에 반드시 소유자로 되돌린다.

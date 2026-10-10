@@ -79,6 +79,7 @@ import { DatabaseBoard, type BoardGroupJson, type GroupProperty } from './databa
 import { listTeamspaceDestinations } from '@/lib/block/move-page'
 import { MovePageControl } from '../../[pageId]/move-page-control'
 import { LockButton } from '../../[pageId]/lock-button'
+import { SharePanel } from '../../[pageId]/share-panel'
 import { PageIconControl } from '../../[pageId]/page-icon-control'
 import { PageIconView } from '../../page-icon-view'
 import { ViewTabs } from './view-tabs'
@@ -444,6 +445,8 @@ export default async function DatabasePage({
           />
           {/* 풀페이지 표는 워크스페이스 직속이라 페이지 내보내기로는 닿지 않는다(`lib/export/download.ts`). */}
           <ExportButton workspaceId={workspaceId} rootId={databaseId} />
+          {/* 공유(6f-1) — 페이지와 같은 패널 · 레벨에 "내용 편집"이 선다 · 웹 게시 절은 없다 */}
+          <SharePanel workspaceId={workspaceId} pageId={databaseId} kind="database" />
         </div>
       </div>
 

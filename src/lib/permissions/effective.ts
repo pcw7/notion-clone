@@ -39,18 +39,7 @@
 
 import type { SessionContext, WorkspaceRole } from '../auth/session-context.ts'
 import { withReadTransaction, type Tx } from '../db/tx.ts'
-import {
-  can,
-  capabilitiesOf,
-  isDefinedLevel,
-  maxByCap,
-  unionCaps,
-  NO_CAPABILITIES,
-  type CapSet,
-  type Capability,
-  type Grant,
-  type Level,
-} from './levels.ts'
+import { can, grantCapabilities, unionCaps, NO_CAPABILITIES, type CapSet, type Capability } from './levels.ts'
 
 /** ACL 행 중 판정에 필요한 것만. */
 export type AclRow = {
@@ -173,35 +162,18 @@ export function resolveCaps(input: ResolveInput): CapSet {
   let caps: CapSet = NO_CAPABILITIES
 
   for (const nodeId of input.chain) {
-    const grants: Grant[] = input.entries
-      .filter((row) => row.node_id === nodeId && matches(row, input.principals))
-      // ⚠ 대상 종류를 `'page'` 로 **고정한다.** W8-a 에서 데이터베이스 블록이
-      //   생겼지만 여기는 아직 그것을 구분하지 않는다.
-      //
-      //   되는 것: `view` · `comment` · `edit` · `full_access` — 정본 §3.3 의
-      //   page 와 database 매트릭스에 **같은 이름으로 같은 capability 집합**이
-      //   있으므로 판정이 같다. 그래서 표의 공유(W8-a)가 정상 동작한다.
-      //
-      //   안 되는 것: `edit_content` · `create` 레벨을 **데이터베이스 노드에
-      //   직접 부여**하는 것. 그 둘은 database 매트릭스에만 있어서 아래
-      //   `isDefinedLevel` 이 걸러낸다 — 즉 조용히 무시된다. "행은 추가하지만
-      //   컬럼은 못 고치는 사람"(정본이 `create` 로 표현한 것)을 아직 만들 수 없다.
-      //
-      //   고치려면 `node_kind` 를 `acl_entry` 에서 읽어 여기까지 흘려야 하고,
-      //   그건 별개 변경이다(HANDOFF §7).
-      //
-      //   teamspace 노드의 행(7c-1)도 page 매트릭스로 읽는다 — 그 행은 **그 아래 페이지가 물려받는 부여**다
-      //   (정본 §3.3 [보강]). teamspace 자체의 관리(설정 · 멤버)는 ACL 이 아니라 `teamspace_member.role` 이 정한다.
-      .map((row) => ({ targetKind: 'page' as const, level: row.level as Level }))
-      // ★ 페이지에 정의되지 않은 레벨(`create`·`edit_content` 는 database 전용)은
-      //   **없는 grant 로 본다.** `capabilitiesOf` 는 그런 조합에 던지는데, 권한
-      //   경로에서 던지면 그 페이지를 아무도 못 여는 500 이 된다. 거부 쪽으로
-      //   기우는 것이 맞다 — 뜻을 알 수 없는 grant 로 문을 열어주지 않는다.
-      //   (DB 는 node_kind='block' 하나로 페이지와 database 를 다 담으므로
-      //    CHECK 으로는 막을 수 없는 조합이다.)
-      .filter((grant) => isDefinedLevel(grant.targetKind, grant.level))
-
-    if (grants.length > 0) caps = unionCaps(caps, maxByCap(grants))
+    // 레벨의 뜻은 레벨이 정한다(6f-1 · 정본 §3.3 [보강] 데이터베이스의 레벨 ①) — page 매트릭스, 없으면 database 매트릭스. 그래서
+    // 데이터베이스에 준 `edit_content` · `create` 가 판정에 들고(초판은 대상 종류를 page 로 고정해 조용히 무시했다), 상속으로 행에 그 능력
+    // 그대로 내려가며, 행에서 상속을 끊어 복사한 그 레벨도 같은 능력이다(②). 어디에도 없는 레벨은 없는 부여다 — 뜻을 알 수 없는 부여로
+    // 문을 열지 않는다(던지면 그 페이지를 아무도 못 여는 500 이 된다).
+    //
+    // teamspace 노드의 행(7c-1)도 같은 읽기다 — 그 행은 **그 아래 페이지가 물려받는 부여**다(정본 §3.3 [보강]). teamspace 자체의 관리
+    // (설정 · 멤버)는 ACL 이 아니라 `teamspace_member.role` 이 정한다.
+    for (const row of input.entries) {
+      if (row.node_id !== nodeId || !matches(row, input.principals)) continue
+      const granted = grantCapabilities(row.level)
+      if (granted !== null) caps = unionCaps(caps, granted)
+    }
 
     // 절단된 노드다. 이 위의 조상은 이 노드에 아무 영향도 주지 않는다(불변식 P2).
     if (input.cutAt.has(nodeId)) break
@@ -484,8 +456,8 @@ export async function namedManagersOf(tx: Tx, workspaceId: string, nodeId: strin
   for (const id of chain) {
     for (const row of entries) {
       if (row.node_id !== id || row.principal_type !== 'user' || row.principal_id === null) continue
-      const level = row.level as Level
-      if (isDefinedLevel('page', level) && can(capabilitiesOf('page', level), 'manage_perm')) named.add(row.principal_id)
+      const granted = grantCapabilities(row.level)
+      if (granted !== null && can(granted, 'manage_perm')) named.add(row.principal_id)
     }
     if (cutAt.has(id)) break
   }
