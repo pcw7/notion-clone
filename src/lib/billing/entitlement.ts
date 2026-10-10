@@ -33,6 +33,8 @@ export const ENTITLEMENTS = {
   'trash.custom_retention': 'boolean',
   /** 자동화의 `send_webhook` 액션(F-08-13 · 5c-1) — Free 만 false(08 *"유료 플랜 전용"*). 저장할 때 막고 실행 때 다시 묻는다. */
   'automation.webhook': 'boolean',
+  /** 감사 로그를 읽을 수 있는가(F-11-12 · 6d-2) — Enterprise 만. 쌓는 것은 요금제와 무관하다. */
+  'audit.log': 'boolean',
 } as const
 
 export type EntitlementKey = keyof typeof ENTITLEMENTS

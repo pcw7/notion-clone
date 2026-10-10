@@ -14,6 +14,7 @@
  */
 
 import type { SessionContext } from '../auth/session-context.ts'
+import { canReadAudit } from '../audit/audit.ts'
 import { canSeePlan } from '../billing/overview.ts'
 import { canExportWorkspace } from '../export/download.ts'
 import { canSeeGroups } from '../workspace/group.ts'
@@ -35,6 +36,8 @@ export const SETTING_PANELS = [
   { id: 'export', section: 'workspace.general', visible: (ctx: SessionContext) => canExportWorkspace(ctx) },
   // 요금제(8k-3) — 소유자 · 멤버 관리자. 읽기만 한다(바꾸는 길은 운영자 명령).
   { id: 'plan', section: 'workspace.plan', visible: (ctx: SessionContext) => canSeePlan(ctx.role) },
+  // 감사 로그(6d-2) — 소유자. 요금제(Enterprise)가 아니면 패널이 그렇다고 말한다. 판정은 `listWorkspaceAudit` 가 다시 한다.
+  { id: 'audit', section: 'workspace.audit', visible: (ctx: SessionContext) => canReadAudit(ctx) },
 ] as const satisfies readonly {
   readonly id: string
   readonly section: SettingSectionId

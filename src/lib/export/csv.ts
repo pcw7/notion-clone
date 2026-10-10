@@ -130,6 +130,16 @@ export function cellPlainText(column: CsvColumn, raw: unknown): string {
  * 그 규칙을 빼도 python csv 가 같은 칸을 읽었고, 감싸지 않은 공백을 지우는 도구를 실제로 확인하지
  * 못했다. 증명하지 못한 규칙은 남기지 않았다.
  */
+/**
+ * 글자 표를 CSV 로 — 감사 로그(6d-2)처럼 칸이 모두 글자인 표. **모든 칸에 수식 막기를 건다** — 사람 이름 · 메일 · 설정 값은 남이 쓴 글자다.
+ * BOM · CRLF 는 `tableToCsv` 와 같다.
+ */
+export function textTableToCsv(header: readonly string[], rows: readonly (readonly string[])[]): string {
+  const guard = (value: string): string => (FORMULA_LEAD.test(value) ? `'${value}` : value)
+  const lines = [header, ...rows].map((cells) => cells.map((cell) => field(guard(cell))).join(','))
+  return `${BOM}${lines.join('\r\n')}\r\n`
+}
+
 function field(value: string): string {
   return /[",\r\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value
 }
