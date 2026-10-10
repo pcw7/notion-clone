@@ -14,6 +14,7 @@
  *   ④ 최근 방문 — 사람마다(워크스페이스마다) 최근 `RECENT_VISIT_CAP` 개만 남긴다
  *   ⑤ 파티션 — 활동 이벤트의 올해 · 다음 해 파티션을 미리 만든다(`ensure_activity_partition` — 마이그레이션의 함수 · 앱은 DDL 을 쓰지 않는다)
  *   ⑥ 끝난 웹훅 묶음 — 끝난 지(`finished_at`) `WEBHOOK_DELIVERY_DAYS` 일이 지나면 지운다(4e-2 · 정본 [보강] 페이지 웹훅 ⓖ)
+ *   ⑦ 자동화 실행 기록 — automation 마다 최근 `AUTOMATION_RUN_CAP` 건만 남긴다(5a-1 · 정본 §3.10 [보강] 자동화 엔진 · 버튼 속성 ⑧)
  *
  * 감사 기록(`audit_event`)은 지우지 않는다(F-11-12). 기간은 코드 상수다 — 관리자 화면은 없다(노션에도 없다).
  */
@@ -30,6 +31,8 @@ export const ACTIVITY_DAYS = 90
 export const RECENT_VISIT_CAP = 200
 /** 끝난(보냄 · 실패 · 버림) 웹훅 묶음을 남기는 날 — 화면이 "마지막 보낸 때 · 실패"를 읽는다. */
 export const WEBHOOK_DELIVERY_DAYS = 7
+/** automation 마다 남기는 실행 기록의 수(08 F-08-10 *"실행 로그는 최근 50건만"*). */
+export const AUTOMATION_RUN_CAP = 50
 /** 한 판에 종류마다 지우는 수 — 꽉 차면 스케줄러가 곧 다시 부른다. */
 export const RETENTION_BATCH = 5000
 
@@ -44,6 +47,7 @@ export type RetentionResult = {
   readonly events: number
   readonly visits: number
   readonly deliveries: number
+  readonly runs: number
   /** 그 해마다 파티션이 어떻게 됐나 — `created` · `exists` · `blocked`. */
   readonly partitions: Readonly<Record<number, string>>
   /** 한 종류라도 한 판이 꽉 찼다 — 더 남았을 수 있다. */
@@ -52,7 +56,7 @@ export type RetentionResult = {
 
 /**
  * @param options.workspaces 이 워크스페이스들만 — 검사가 다른 검사의 데이터를 지우지 않게(워커는 주지 않는다)
- * @param options.unreadCap · visitCap 상한을 바꿔 끼운다 — 검사가 1,000개를 만들지 않게(워커는 주지 않는다)
+ * @param options.unreadCap · visitCap · runCap 상한을 바꿔 끼운다 — 검사가 1,000개를 만들지 않게(워커는 주지 않는다)
  * @param options.partitions 거짓이면 파티션을 건드리지 않는다 — **DB 검사는 늘 끈다**: 파티션을 만드는 DDL 이 활동 이벤트의 부모 표를 잠가
  *   병렬로 도는 다른 검사와 교착한다(함수는 혼자 도는 verify-schema 의 프로브가 롤백 트랜잭션 안에서 본다)
  */
@@ -63,6 +67,7 @@ export async function runDataRetention(
     readonly workspaces?: readonly string[]
     readonly unreadCap?: number
     readonly visitCap?: number
+    readonly runCap?: number
     readonly partitions?: boolean
   } = {},
 ): Promise<RetentionResult> {
@@ -144,6 +149,23 @@ export async function runDataRetention(
     [new Date(now.getTime() - WEBHOOK_DELIVERY_DAYS * DAY), batch, ws],
   )
 
+  // ⑦ 넘친 자동화 실행 기록 — 끝난 것만 센다(돌고 있는 것은 지우지 않는다)
+  const runCap = options.runCap ?? AUTOMATION_RUN_CAP
+  const runs = await query<{ id: string }>(
+    `DELETE FROM automation_run r USING (
+       SELECT id FROM (
+         SELECT x.id, row_number() OVER (PARTITION BY x.automation_id ORDER BY x.started_at DESC, x.id DESC) AS rank
+           FROM automation_run x
+          WHERE x.automation_id IS NOT NULL AND x.finished_at IS NOT NULL
+            AND ($3::uuid[] IS NULL OR x.workspace_id = ANY($3::uuid[]))
+       ) ranked
+        WHERE rank > $1
+        LIMIT $2) extra
+     WHERE r.id = extra.id
+     RETURNING r.id`,
+    [runCap, batch, ws],
+  )
+
   // ⑤ 파티션 — 올해 · 다음 해(UTC). 검사는 끈다(위 `options.partitions`)
   const partitions: Record<number, string> = {}
   if (options.partitions !== false) {
@@ -152,13 +174,14 @@ export async function runDataRetention(
     }
   }
 
-  const counts = [processed.length, overCap.length, events.length, visits.length, deliveries.length]
+  const counts = [processed.length, overCap.length, events.length, visits.length, deliveries.length, runs.length]
   return {
     processedNotifications: processed.length,
     unreadOverCap: overCap.length,
     events: events.length,
     visits: visits.length,
     deliveries: deliveries.length,
+    runs: runs.length,
     partitions,
     more: counts.some((n) => n === batch),
   }
