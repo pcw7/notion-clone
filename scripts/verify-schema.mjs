@@ -3566,6 +3566,21 @@ try {
     await rejectBy('★ 날짜 속성의 리마인더인데 블록이 그 행이 아니다', 'ck_reminder_property_block', [randomUUID(), wsId, userId, pageId, 'nope', at, 0, at, [userId], userId])
   }
 
+  console.log('\n[53] 리마인더 울리기 (0073 / §3.8 [보강] 리마인더 ⑧ · 4c-2조각)')
+  {
+    const kinds = await client.query(`SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conname = 'ck_scheduled_job_kind'`)
+    const kindDef = kinds.rows[0]?.def ?? ''
+    if (['version_gc', 'trash_purge', 'trash_hard_delete', 'reminder_fire'].every((k) => kindDef.includes(`'${k}'`))) {
+      ok('★ 일의 종류에 reminder_fire 가 있다 · 앞의 셋도 그대로')
+    } else fail(`일의 종류가 어긋났다: ${kindDef}`)
+    const types = await client.query(
+      `SELECT pg_get_constraintdef(c.oid) AS def FROM pg_constraint c WHERE c.conname = 'activity_event_type_check' AND c.conrelid = 'activity_event'::regclass`,
+    )
+    const typeDef = types.rows[0]?.def ?? ''
+    if (typeDef.includes("'reminder.fired'") && typeDef.includes("'access.granted'")) ok('활동 종류에 reminder.fired 가 있다 · 앞의 것도 그대로')
+    else fail(`활동 종류가 어긋났다: ${typeDef}`)
+  }
+
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
 } catch (e) {

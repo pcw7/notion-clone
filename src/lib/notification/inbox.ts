@@ -73,6 +73,11 @@ export type InboxItem = {
    * 멤버 목록을 받을 수 있는 역할일 때만(정본 §3.8 [보강] 접근 요청의 알림 ③). 다른 알림은 null.
    */
   readonly access: { readonly requesterName: string | null; readonly status: string; readonly kind: string } | null
+  /**
+   * 리마인더(4c-2 · `reminder`) — 울린 날짜 속성의 **지금** 이름(N3 — 복제하지 않는다). 속성이 없어졌거나 날짜 속성의 것이 아니면 이름이
+   * null. 다른 알림은 null.
+   */
+  readonly reminder: { readonly propertyName: string | null } | null
 }
 
 type GroupRow = {
@@ -141,6 +146,13 @@ export async function listInbox(ctx: SessionContext, options: ListInboxOptions =
       .filter((id): id is string => typeof id === 'string')
     const blocks = await readBlockTexts(tx, ctx, blockIds)
     const titles = await readTitles(tx, ctx, groups.map((g) => g.page_id))
+    const propertyNames = await readPropertyNames(
+      tx,
+      groups
+        .filter((g) => g.kind === 'reminder' && g.latest_event !== null)
+        .map((g) => events.get(g.latest_event as string)?.payload.property_id)
+        .filter((id): id is string => typeof id === 'string'),
+    )
     const requests = await readAccessRequests(
       tx,
       ctx,
@@ -179,6 +191,13 @@ export async function listInbox(ctx: SessionContext, options: ListInboxOptions =
               : blockText.slice(0, MAX_PREVIEW),
         deleted: comment?.deleted ?? false,
         access: requestId === null ? null : (requests.get(requestId) ?? null),
+        reminder:
+          g.kind === 'reminder'
+            ? {
+                propertyName:
+                  typeof event?.payload.property_id === 'string' ? (propertyNames.get(event.payload.property_id) ?? null) : null,
+              }
+            : null,
       }
     })
   })
@@ -200,6 +219,15 @@ async function readAccessRequests(
   )
   const named = canListMembers(ctx.role)
   return new Map(rows.map((r) => [r.id, { requesterName: named ? r.name : null, status: r.status, kind: r.kind }]))
+}
+
+/** 리마인더가 울린 날짜 속성의 지금 이름 — 페이지는 이미 권한으로 걸렀고, 속성은 그 행의 표의 것이다. */
+async function readPropertyNames(tx: Tx, ids: readonly string[]): Promise<Map<string, string>> {
+  if (ids.length === 0) return new Map()
+  const rows = await tx.query<{ id: string; name: string }>(`SELECT id, name FROM property WHERE id = ANY($1::text[]) AND deleted_at IS NULL`, [
+    [...new Set(ids)],
+  ])
+  return new Map(rows.map((r) => [r.id, r.name]))
 }
 
 async function readComments(tx: Tx, ids: readonly string[]): Promise<Map<string, { text: string; deleted: boolean }>> {

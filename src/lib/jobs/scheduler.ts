@@ -11,11 +11,12 @@
  *   · 시각은 실행기의 `now` 하나 — SQL 의 `now()` 를 쓰지 않는다(검사가 시각을 정한다)
  *   · 세션 없이 도는 **시스템 주체**다 — 권한을 묻지 않는다. 무엇을 해도 되는지는 그 일의 규칙이 정한다
  *
- * 일의 종류는 CHECK(`ck_scheduled_job_kind` — 0068 · 0069 · 0070)와 아래 `HANDLERS` 두 곳에 있다 — 소비자를 더할 때 둘을 함께 늘린다.
+ * 일의 종류는 CHECK(`ck_scheduled_job_kind` — 0068 · 0069 · 0070 · 0073)와 아래 `HANDLERS` 두 곳에 있다 — 소비자를 더할 때 둘을 함께 늘린다.
  *
  *   · `version_gc` — 만료된 버전을 지운다(4a-1 · F-11-03 · `history/gc.ts`)
  *   · `trash_purge` — 만료된 휴지통 묶음을 `purged` 로(4b-1 · F-11-06 · `block/trash-purge.ts`)
  *   · `trash_hard_delete` — `purged` 30일이 지난 묶음의 행을 지운다(4b-2 · F-11-06 · `block/trash-hard-delete.ts`)
+ *   · `reminder_fire` — 때가 된 리마인더를 알림으로(4c-2 · F-11-10 · `notification/reminder-fire.ts`) — 늘 1분마다
  */
 
 import { randomUUID } from 'node:crypto'
@@ -24,8 +25,9 @@ import { withTransaction, type Tx } from '../db/tx.ts'
 import { runTrashHardDelete } from '../block/trash-hard-delete.ts'
 import { runTrashPurge } from '../block/trash-purge.ts'
 import { runVersionGc } from '../history/gc.ts'
+import { runReminderFire } from '../notification/reminder-fire.ts'
 
-export type JobKind = 'version_gc' | 'trash_purge' | 'trash_hard_delete'
+export type JobKind = 'version_gc' | 'trash_purge' | 'trash_hard_delete' | 'reminder_fire'
 
 /** 일의 결과 — 주기 일은 다음 실행 시각을 준다(없으면 한 번으로 끝). */
 export type JobOutcome = { readonly again: Date | null }
@@ -40,6 +42,11 @@ const HANDLERS: Readonly<Record<JobKind, JobHandler>> = {
   version_gc: async (_payload, now) => ({ again: nextSweep(now, (await runVersionGc(now)).more) }),
   trash_purge: async (_payload, now) => ({ again: nextSweep(now, (await runTrashPurge(now)).more) }),
   trash_hard_delete: async (_payload, now) => ({ again: nextSweep(now, (await runTrashHardDelete(now)).more) }),
+  // 리마인더는 분 단위다 — 남았든 다 했든 1분 뒤에 다시(정본 [보강] 리마인더 ⑧ ⓔ)
+  reminder_fire: async (_payload, now) => {
+    await runReminderFire(now)
+    return { again: new Date(now.getTime() + 60_000) }
+  },
 }
 
 /** 워커가 뜰 때 넣어 보는 주기 일 — 이미 살아 있으면 그대로다(키의 부분 UNIQUE). */
@@ -47,6 +54,7 @@ export const RECURRING: readonly { readonly kind: JobKind; readonly dedupeKey: s
   { kind: 'version_gc', dedupeKey: 'version_gc' },
   { kind: 'trash_purge', dedupeKey: 'trash_purge' },
   { kind: 'trash_hard_delete', dedupeKey: 'trash_hard_delete' },
+  { kind: 'reminder_fire', dedupeKey: 'reminder_fire' },
 ]
 
 /** 다섯 번째 실패면 멈춘다. */
