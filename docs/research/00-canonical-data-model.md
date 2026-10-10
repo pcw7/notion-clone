@@ -1105,6 +1105,66 @@ CREATE TABLE access_request (
 > `Referrer-Policy: no-referrer` · `nosniff` · **짧은 개인 캐시**(`private, max-age=60` — 앱의 파일은 id 로 불변이라 1년이지만 공개
 > 여부는 바뀐다: 해제 · 정책 · 휴지통이 곧 닿아야 한다). 바깥 주소 이미지는 그 주소를 그대로 쓴다(`referrerpolicy="no-referrer"`).
 
+**[보강] 공개 페이지 신고 — 신고는 케이스로 묶이고 사람이 본다** ⟨게시 · 공유 6b-1a · F-17-08 · F-17-09 / 마이그레이션 0085⟩
+
+> 17 의 `abuse_report` · `moderation_case` 를 정본으로 들인다(17 단독이던 축 — §7 의 *"17 고유"*). 17 F-17-08 클론 대안 *"모더레이션
+> 큐 없이 신고 → 운영자 알림 + `abuse_report` 행 적재 · 처리는 사람이"* 그대로 시작한다 — 큐 화면은 없고 운영자 경로(테이크다운)는 6b-2.
+>
+> ```sql
+> CREATE TABLE moderation_case (
+>   id uuid PRIMARY KEY,
+>   target_type text NOT NULL CHECK (target_type IN ('page')),      -- 17 의 site · form · comment · file 은 그것이 공개될 때
+>   target_id uuid NOT NULL,                                         -- FK 없음 — 대상이 파기돼도 케이스는 남는다(moot · 재범 판정)
+>   workspace_id uuid NOT NULL REFERENCES workspace(id),
+>   state text NOT NULL DEFAULT 'open'
+>     CHECK (state IN ('open','investigating','actioned','dismissed','moot')),
+>   report_count int NOT NULL DEFAULT 0 CHECK (report_count >= 0),
+>   first_reported_at timestamptz NOT NULL, last_reported_at timestamptz NOT NULL,
+>   closed_at timestamptz NULL,
+>   CHECK ((state IN ('actioned','dismissed','moot')) = (closed_at IS NOT NULL))
+> );
+> CREATE UNIQUE INDEX ux_moderation_case_open ON moderation_case (target_type, target_id)
+>   WHERE state IN ('open','investigating');                        -- 열린 케이스는 대상마다 하나(같은 페이지에 100건이 와도 하나)
+>
+> CREATE TABLE abuse_report (
+>   id uuid PRIMARY KEY,
+>   case_id uuid NOT NULL REFERENCES moderation_case(id),
+>   target_type text NOT NULL CHECK (target_type IN ('page')), target_id uuid NOT NULL,
+>   via_root_id uuid NULL,                                           -- 어느 게시 루트(토큰)로 들어와 신고했나 — 조치의 범위를 정할 때
+>   reason text NOT NULL CHECK (reason IN ('phishing_spam','inappropriate','dmca','other')),
+>   detail text NOT NULL DEFAULT '' CHECK (char_length(detail) <= 2000),
+>   reporter_hash text NULL,                                         -- HMAC(AUTH_SECRET, ip · ua) — 원문 IP 를 남기지 않는다
+>   content_snapshot jsonb NOT NULL,                                 -- 신고 시점에 방문자가 본 것(제목 · 본문)
+>   created_at timestamptz NOT NULL DEFAULT now()
+> );
+> ```
+>
+> ① **신고자는 주체가 아니다** — 공개 화면은 세션을 읽지 않으므로(공개 화면 ⑧) `reporter_user_id` 를 두지 않는다(17 은 NULL 허용으로
+> 적었다 — 우리는 늘 NULL 이라 칸을 두지 않는다). 원문 IP · UA 도 남기지 않는다 — `AUTH_SECRET` 키의 HMAC 하나(`reporter_hash`)로
+> 같은 사람의 반복만 알아본다(17 *"허위 신고 — fingerprint 별 정확도"* 의 재료).
+>
+> ② **신고는 공개 경로로만 들어온다** — 토큰 · 페이지 id 를 받아 공개 화면과 같은 판정(`resolvePublicPage`)을 지난 페이지만. 비공개
+> 페이지는 신고할 길이 없다(17 *"비공개 페이지는 신고 버튼 자체가 없다"*). 만료된 링크도 신고할 수 없다(볼 수 없다).
+>
+> ③ **신고 시점 스냅샷** — 17 *"신고 접수 후 소유자가 내용을 수정 → 신고 시점 스냅샷을 첨부하지 않으면 검토가 불가능"*. 공개 화면이
+> 그린 재료 그대로(제목 · 본문 문서 — 공개 밖은 이미 가려진 것)를 `content_snapshot` 에 남긴다. 256 KiB 를 넘으면 제목만 남기고
+> `truncated: true`(오브젝트 저장소로 옮기는 것은 큐 화면과 함께).
+>
+> ④ **케이스는 대상마다 하나 열린다** — 신고가 오면 열린 케이스에 붙고(`report_count` · `last_reported_at`), 없으면 새로 연다(닫힌
+> 케이스는 다시 열지 않는다 — 새 케이스다). 동시에 두 신고가 와도 하나(부분 UNIQUE + `ON CONFLICT`).
+>
+> ⑤ **신고만으로 내리지 않는다** — 17 *"자동 테이크다운 금지(사람 검토 필수)"*. 대상 페이지의 `moderation_state` 가 `none` ·
+> `reinstated` 면 `reported` 로 바꾼다(큐를 좁히는 표지 — 공개 경로는 `reported` 를 연다 · [정정] 웹 게시 ③). `restricted` ·
+> `taken_down` 은 건드리지 않는다.
+>
+> ⑥ **신고 자체가 공격 벡터다**(17 — 2021 대량 피싱 신고로 도메인 차단) — 레이트리밋 둘: 보내는 사람마다(`reporter_hash` — 모르면
+> 한 통) 10분에 5건 · 대상 페이지마다 1시간에 30건. 넘으면 받지 않는다(429). 저장소(Valkey)가 죽으면 연다(로그인과 같은 fail-open
+> — 신고를 막는 피해가 더 크다 · 로그를 남긴다).
+>
+> ⑦ 운영자에게 알리는 길은 서버 로그 한 줄(`[moderation] 새 신고 …`)이다 — 메일 · 메신저 연동은 운영 도구(6b-2)와 함께.
+>
+> ⑧ 사유의 DMCA 는 받되 공식 통지 절차를 안내한다(17 *"별도 DMCA 정책 페이지의 공식 통지 절차로 안내"*) — 화면의 일(6b-1b).
+
 ---
 
 ### 3.4 블록 트리 ⟨C-1/V-4 · C-3/V-6 · C-9/V-9 · C-10 · X-1 · X-3 · X-7⟩
