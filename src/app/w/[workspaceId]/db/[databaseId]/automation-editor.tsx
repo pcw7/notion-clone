@@ -248,6 +248,7 @@ export function AutomationEditor({
         drafts={actions}
         onChange={setActions}
         editLabel="트리거된 행의 값 바꾸기"
+        rowLabel="트리거된 행"
         testIdPrefix="db-automation"
       />
 

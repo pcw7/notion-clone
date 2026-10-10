@@ -15155,6 +15155,93 @@ async function main() {
       }
     }
 
+    if (sectionIf('값 슬롯 — 화면 (5d-2 · F-08-11)')) {
+      // 버튼 설정의 값 칸 옆에서 출처를 고른다 — 날짜는 "지금", 숫자는 "누른 행의 수량". 출처 목록은 저장 검사와 같은 규칙(지금은 날짜에만 ·
+      // 같은 타입끼리). 저장하면 서버에 동적 값으로 남고, 다시 열면 그대로 보이고, 누르면 그때의 값으로 채워진다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const setSelectAt = (selector, index, value) => evaluate(`(() => {
+        const s = document.querySelectorAll(${JSON.stringify(selector)})[${index}]
+        if (!s) return false
+        s.value = ${JSON.stringify(value)}
+        s.dispatchEvent(new Event('change', { bubbles: true }))
+        return true
+      })()`)
+      const db = (await api('POST', '/databases', { name: `값 슬롯 ${stamp}` })).body.database
+      const ds = db.dataSourceId
+      const prop = async (name, type) => (await api('POST', `/data-sources/${ds}/properties`, { name, type })).body.property.id
+      const qty = await prop('수량', 'number')
+      const copy = await prop('사본', 'number')
+      const due = await prop('마감', 'date')
+      const buttonId = await prop('채우기', 'button')
+      const row = (await api('POST', `/views/${db.defaultViewId}/rows`, { cells: [{ propertyId: qty, value: { type: 'number', number: 7 } }] })).body.row.id
+      const EDITOR = '[data-testid="db-button-editor"]'
+      const MENU = `th:has([data-testid="db-column-menu"][aria-label="채우기 속성 메뉴"]) [data-testid="db-column-menu"]`
+      const PROPERTY = `${EDITOR} [data-testid="db-button-property"]`
+      const SOURCE = `${EDITOR} [data-testid="db-button-value-source"]`
+      const openEditor = async () => {
+        for (let i = 0; i < 6 && !(await evaluate(`!!document.querySelector('[data-testid="db-column-button"]')`)); i += 1) {
+          await clickSelector(MENU)
+          await waitFor(`!!document.querySelector('[data-testid="db-column-button"]')`, 2000)
+        }
+        await clickSelector('[data-testid="db-column-button"]')
+        return waitFor(`!!document.querySelector('${EDITOR} [data-testid="db-button-add-action"]')`, 8000)
+      }
+      const optionsAt = (index) => evaluate(`[...(document.querySelectorAll('${SOURCE}')[${index}]?.options ?? [])].map((o) => o.value)`)
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      await waitFor(`!!document.querySelector('tr[data-row-id="${row}"] [data-testid="db-button-cell"]')`, 15000)
+      await openEditor()
+      // ① 마감 ← 지금 · 사본 ← 누른 행의 수량
+      await clickSelector(`${EDITOR} [data-testid="db-button-add-action"]`)
+      await waitFor(`document.querySelectorAll('${PROPERTY}').length === 1`, 3000)
+      await setSelectAt(PROPERTY, 0, due)
+      await waitFor(`document.querySelectorAll('${SOURCE}')[0]?.querySelector('option[value="now"]') !== null`, 3000)
+      const dueOptions = await optionsAt(0)
+      await setSelectAt(SOURCE, 0, 'now')
+      await clickSelector(`${EDITOR} [data-testid="db-button-add-value"]`)
+      await waitFor(`document.querySelectorAll('${PROPERTY}').length === 2`, 3000)
+      await setSelectAt(PROPERTY, 1, copy)
+      await waitFor(`!!document.querySelectorAll('${SOURCE}')[1]?.querySelector('option[value="row:${qty}"]')`, 3000)
+      const copyOptions = await optionsAt(1)
+      await setSelectAt(SOURCE, 1, `row:${qty}`)
+      const valueHidden = await evaluate(`document.querySelectorAll('${EDITOR} [data-testid="db-button-cell-value"] [data-testid="db-button-value"]').length === 0`)
+      check('★ 출처 목록은 저장 검사와 같다 — 날짜엔 "지금", 숫자엔 "누른 행의 수량"(지금 없음) · 동적이면 값 칸이 없다',
+        dueOptions.includes('now') && !copyOptions.includes('now') && copyOptions.includes(`row:${qty}`) && !copyOptions.includes(`row:${due}`) && valueHidden,
+        JSON.stringify([dueOptions, copyOptions, valueHidden]))
+      await clickSelector(`${EDITOR} [data-testid="db-button-save"]`)
+      const closed = await waitFor(`!document.querySelector('${EDITOR}')`, 8000)
+      const cells = (await api('GET', `/data-sources/${ds}/properties/${buttonId}/actions`)).body?.actions?.[0]?.config?.cells ?? []
+      check('★ 저장하면 동적 값으로 남는다 — 마감 ← 지금 · 사본 ← 누른 행의 수량(서버)',
+        closed && cells.length === 2 && cells[0].propertyId === due && cells[0].from?.kind === 'now'
+          && cells[1].propertyId === copy && cells[1].from?.kind === 'row_property' && cells[1].from?.propertyId === qty,
+        JSON.stringify(cells))
+
+      // ② 다시 열면 그대로
+      await openEditor()
+      await waitFor(`document.querySelectorAll('${SOURCE}').length === 2`, 5000)
+      const shown = await evaluate(`[...document.querySelectorAll('${SOURCE}')].map((s) => s.value)`)
+      // 취소 — 글자로 찾는다(값 빼기 × 도 testid 가 없다)
+      await evaluate(`[...document.querySelectorAll('${EDITOR} button')].find((b) => b.textContent.trim() === '취소')?.click()`)
+      const cancelled = await waitFor(`!document.querySelector('${EDITOR}')`, 3000)
+      check('다시 열면 출처가 그대로 보인다', cancelled && JSON.stringify(shown) === JSON.stringify(['now', `row:${qty}`]), JSON.stringify([cancelled, shown]))
+
+      // ③ 누르면 그때의 값으로
+      const before = Date.now()
+      await clickSelector(`tr[data-row-id="${row}"] [data-testid="db-button-cell"]`)
+      await waitFor(`(document.querySelector('tr[data-row-id="${row}"] [data-testid="db-button-result"]')?.textContent ?? '') === '완료'`, 10000)
+      const filled = (await api('GET', `/views/${db.defaultViewId}/rows`)).body?.rows?.find((r) => r.id === row)?.properties ?? {}
+      const at = Date.parse(filled[due]?.date?.start ?? '')
+      check('★ 누르면 그때의 값으로 — 마감은 지금 · 사본은 그 행의 수량(7)',
+        filled[copy]?.number === 7 && at >= before - 5000 && at <= Date.now() + 5000,
+        JSON.stringify([filled[due], filled[copy]]))
+    }
+
     if (sectionIf('개인 필터 · 정렬 — 화면 (2h-2 · F-04-17)')) {
       // 볼 수만 있는 사람(브라우저 세션을 바꾼다)이 도구줄의 필터로 조건을 걸면 **자기 것**으로 저장되고 그 사람의 표만 좁혀진다 — "나만 보는
       // 필터" 표시 · 초기화. 편집자는 자기 개인 것을 "모두에게 저장"한다. 브라우저 세션은 끝에 반드시 소유자로 되돌린다.

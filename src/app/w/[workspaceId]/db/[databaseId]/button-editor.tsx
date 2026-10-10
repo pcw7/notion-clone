@@ -103,6 +103,7 @@ export function ButtonEditForm({
         drafts={drafts}
         onChange={setDrafts}
         editLabel="이 행의 값 바꾸기"
+        rowLabel="누른 행"
         testIdPrefix="db-button"
       />
       {error !== null && (

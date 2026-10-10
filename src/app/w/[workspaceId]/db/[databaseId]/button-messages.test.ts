@@ -30,7 +30,7 @@ test('버튼 설정의 거절 — 몇 번째 액션의 무엇', () => {
 
 test('★ 웹훅 액션의 거절 — 주소 · 헤더 · 다섯 개 · 옮길 것 없음 · 요금제(몇 번째 액션인지)', () => {
   assert.equal(buttonActionProblemMessage('plan_required', 1), '2번째 액션: 이 요금제에서는 웹훅을 보낼 수 없습니다.')
-  for (const problem of ['invalid_url', 'invalid_header', 'too_many_webhooks', 'unknown_ref']) {
+  for (const problem of ['invalid_url', 'invalid_header', 'too_many_webhooks', 'unknown_ref', 'invalid_dynamic']) {
     const text = buttonActionProblemMessage(problem, 0)
     assert.ok(text.startsWith('1번째 액션: ') && !text.includes('저장하지 못했습니다'), `${problem} — ${text}`)
   }
