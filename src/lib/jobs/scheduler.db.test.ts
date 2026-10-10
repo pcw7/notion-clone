@@ -9,8 +9,8 @@
  *   ④ 임대 — 한 일은 한 워커만 돈다(동시에 돌려도) · 임대가 지난 일(죽은 워커)은 다시 가져간다
  *   ⑤ 주기 일 넣기는 멱등이다
  *
- * 일의 종류는 CHECK 가 `version_gc` 하나만 받는다 — 검사는 그 종류에 일을 바꿔 끼운다(`handlers`). 검사마다 표를 비운다(이 표를 쓰는
- * 검사는 이 파일뿐이다).
+ * 검사는 `version_gc` 종류에 일을 바꿔 끼운다(`handlers`) — 진짜 GC 는 다른 검사의 버전 · 휴지통을 건드린다. 검사마다 표를 비운다
+ * (이 표를 쓰는 검사는 이 파일뿐이다).
  *
  * 반사실(HANDOFF §3.3): 임대를 안 걸면 ④ 의 동시 실행이, 키를 안 보면 ① 이, 다섯 번에 멈추지 않으면 ③ 이 실패한다.
  */
@@ -21,7 +21,7 @@ import assert from 'node:assert/strict'
 import { probeDatabase } from '../testing/db-fixtures.ts'
 import { query } from '../db/pool.ts'
 import { withTransaction } from '../db/tx.ts'
-import { enqueueJob, ensureRecurringJobs, MAX_ATTEMPTS, runDueJobs, type JobHandler } from './scheduler.ts'
+import { enqueueJob, ensureRecurringJobs, MAX_ATTEMPTS, RECURRING, runDueJobs, type JobHandler } from './scheduler.ts'
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'
 
@@ -143,8 +143,8 @@ describe('④ 임대', () => {
 describe('⑤ 주기 일 넣기', () => {
   test('멱등이다 — 이미 살아 있으면 그대로', async (t) => {
     if (skipReason) return t.skip(skipReason)
-    assert.equal(await ensureRecurringJobs(NOW), 1)
+    assert.equal(await ensureRecurringJobs(NOW), RECURRING.length)
     assert.equal(await ensureRecurringJobs(at(5)), 0)
-    assert.deepEqual((await jobs()).map((j) => j.dedupe_key), ['version_gc'])
+    assert.deepEqual((await jobs()).map((j) => j.dedupe_key).sort(), ['trash_purge', 'version_gc'])
   })
 })
