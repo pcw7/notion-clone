@@ -68,7 +68,9 @@ export type Principal = { readonly type: string; readonly id: string | null }
  * 정본:
  *   P(U) = {('user',U)} + {('group',g)} + {('teamspace',t)}
  *        + {('workspace_everyone',NULL) : U 가 role in (owner, membership_admin, member)}
- *        + {('public',NULL)}
+ *
+ * `('public',NULL)` 은 없다(정본 [정정 6a-1]) — 공개 링크는 판정의 항이 아니다. 링크를 아는 사람에게 주는 것이므로 여기 넣으면
+ * 게시된 페이지가 모든 멤버 · 게스트의 사이드바 · 검색에 들어온다. 공개 경로는 `publish/public-access.ts` 가 따로 판정한다.
  *
  * teamspace(7c-1)는 그 teamspace 의 멤버에게 — 사람으로 받았든 그룹을 거쳐 받았든 — `('teamspace', t)` 로 들어온다.
  *
@@ -110,8 +112,7 @@ function principalsOfMember(
   if (member.role === 'owner' || member.role === 'membership_admin' || member.role === 'member') {
     principals.push({ type: 'workspace_everyone', id: null })
   }
-  // public 은 공개 링크(F-06-06)가 생길 때 온다. 지금 넣으면 아무도 만들지 않은
-  // grant 를 기다리는 코드가 된다.
+  // public 은 주체가 아니다(정본 [정정 6a-1]) — acl_entry 의 'public' 행은 DB 가 거부한다(0084 `ck_acl_no_public`).
   return principals
 }
 

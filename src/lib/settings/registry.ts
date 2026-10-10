@@ -153,6 +153,18 @@ export const SETTINGS = [
     editors: OWNER,
   },
   {
+    key: 'workspace.allow_publish_sites_and_forms',
+    scope: 'workspace',
+    section: 'workspace.security',
+    label: '웹 게시',
+    description:
+      '전체 권한을 가진 사람이 페이지를 웹에 게시할 수 있습니다. 끄면 새로 게시할 수 없고, 이미 게시한 페이지도 곧바로 열리지 ' +
+      '않습니다(다시 켜면 돌아옵니다).',
+    control: { kind: 'toggle' },
+    viewers: OWNER,
+    editors: OWNER,
+  },
+  {
     key: 'workspace.trash_days',
     scope: 'workspace',
     section: 'workspace.security',

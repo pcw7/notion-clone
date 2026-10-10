@@ -4036,6 +4036,55 @@ try {
     await client.query('ROLLBACK TO SAVEPOINT cascade')
   }
 
+  console.log('\n[63] 웹 게시 — 공개 링크 (0084 / §3.3 끝 [정정] 웹 게시 · 6a-1조각)')
+  {
+    const pageBlock = randomUUID()
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key, ancestor_path, perm_scope_id, properties, format,
+                          created_at, last_edited_at)
+       VALUES ($1, $2, 'page', 'block', $3, 'a0', '{}', $1, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      [pageBlock, wsId, randomUUID()],
+    )
+    const token = 'abcdefghijklmnopqrstuv'
+    await client.query(`INSERT INTO public_link (node_id, enabled, token, created_by) VALUES ($1, true, $2, $3)`, [pageBlock, token, userId])
+    const row = (await client.query(`SELECT robots_directive, ai_crawler, level FROM public_link WHERE node_id = $1`, [pageBlock])).rows[0]
+    if (row.robots_directive === 'noindex' && row.ai_crawler === 'deny' && row.level === 'view') {
+      ok('★ 기본값 — noindex · AI 크롤러 deny · view (마스터 §9.4)')
+    } else fail(`공개 링크의 기본값이 어긋났다: ${JSON.stringify(row)}`)
+
+    const rejects = async (label, sql, params, constraint) => {
+      await client.query('SAVEPOINT probe')
+      try {
+        await client.query(sql, params)
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        fail(`${label} — 거부되어야 하는데 통과했다`)
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        if (e.constraint === constraint) ok(`${label} — ${constraint} 가 거부함 (${e.code})`)
+        else fail(`${label} — ${constraint} 가 아니라 ${e.constraint ?? e.code} 에 걸렸다 (${e.message})`)
+      }
+    }
+    await rejects('★ 토큰 없이 켠 공개 링크', `UPDATE public_link SET token = NULL WHERE node_id = $1`, [pageBlock], 'ck_public_link_enabled_token')
+    await rejects('모양이 틀린 토큰', `UPDATE public_link SET token = 'short' WHERE node_id = $1`, [pageBlock], 'ck_public_link_token')
+    await rejects('색인 지시의 값', `UPDATE public_link SET robots_directive = 'all' WHERE node_id = $1`, [pageBlock], 'ck_public_link_robots')
+    await rejects(
+      "★ acl_entry 의 'public' 주체",
+      `INSERT INTO acl_entry (id, node_kind, node_id, principal_type, principal_id, level) VALUES ($1, 'block', $2, 'public', NULL, 'view')`,
+      [randomUUID(), pageBlock],
+      'ck_acl_no_public',
+    )
+
+    await client.query(`UPDATE public_link SET enabled = false, token = NULL WHERE node_id = $1`, [pageBlock])
+    ok('꺼진 공개 링크는 토큰이 없어도 된다')
+
+    await client.query('SAVEPOINT cascade')
+    await client.query(`DELETE FROM block WHERE id = $1`, [pageBlock])
+    const left = (await client.query(`SELECT count(*)::int AS n FROM public_link WHERE node_id = $1`, [pageBlock])).rows[0].n
+    if (left === 0) ok('★ 블록이 지워지면 공개 링크도 함께 지워진다(CASCADE)')
+    else fail(`블록을 지웠는데 공개 링크 ${left}개가 남았다`)
+    await client.query('ROLLBACK TO SAVEPOINT cascade')
+  }
+
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
 } catch (e) {
