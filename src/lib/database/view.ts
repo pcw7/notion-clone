@@ -794,6 +794,8 @@ export async function updateView(
       `SELECT type, group_by, configuration FROM view WHERE id = $1 FOR UPDATE`,
       [viewId],
     )
+    // 폼(7a-1)은 다른 종류로 바꾸지 않는다 — 설정 · 공개 토큰이 남은 채 행을 그리는 뷰가 되면 안 된다(정본 §3.6 끝 [보강] 폼 ①)
+    if (current.type === 'form' && input.type !== undefined) return fail('unsupported_type')
     // 갤러리 레이아웃 — 잠근 행의 지금 값 위에 바꿀 키만 얹는다(동시에 다른 키를 바꾼 사람의 것을 덮지 않는다).
     const gallery =
       input.gallery === undefined ? null : mergeGalleryLayout(readGalleryLayout(current.configuration), input.gallery)

@@ -150,7 +150,9 @@ export default async function DatabasePage({
   // 최상위 사이에서만 옮긴다(본문 참조가 없다 · move-page.ts).
   const moveTeamspaces = await listTeamspaceDestinations(ctx)
 
-  const views = await listViews(ctx, databaseId)
+  const listed = await listViews(ctx, databaseId)
+  // 폼 뷰(7a-1)는 행을 그리지 않는다 — 그 편집 화면(7a-3)이 서기 전까지 탭에 세우지 않는다
+  const views = listed.ok ? { ...listed, value: listed.value.filter((view) => view.type !== 'form') } : listed
   if (!views.ok || views.value.length === 0) notFound()
   // 붙인 소스의 원본을 못 보면 그 소스의 뷰는 열리지 않는다(2l-2 · `openView`). 기본 뷰는 그런 뷰를 건너뛴 첫 뷰다. 그런 뷰를 고른 주소 ·
   // 열 뷰가 하나도 없는 그릇은 "접근 권한 없음"을 그린다(2l-3 · 머리말) — 탭은 그대로 선다(뷰 이름은 그릇의 것이다).

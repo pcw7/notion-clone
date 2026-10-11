@@ -2783,6 +2783,58 @@ CREATE UNIQUE INDEX layout_module_prop_once ON layout_module (tab_id, property_i
 > 제자리 · 속성 묶음이다(적용의 규칙 그대로).
 > ④ 페이지 버전 기록(`page_version`)에 넣지 않는다 — 레이아웃은 페이지에 속하지 않는다(16). 감사 로그는 그 표가 생길 때(거버넌스 트랙).
 
+**[보강] 폼 — 데이터베이스의 뷰 · 질문은 속성 · 응답은 행** ⟨인접 제품 7a-1 · F-13-01 · F-13-02 · F-17-10 / 마이그레이션 0094⟩
+
+> 13 F-13-01 *"폼은 독립 엔티티가 아니라 데이터베이스의 뷰다 · 질문 1개 = 프로퍼티 1개 · 응답 = DB 행 그 자체"* · F-13-02 *"공개(web)는 강제
+> 익명"* · 17 F-17-10 *"인증 없이 데이터를 생성할 수 있는 유일한 경로"*. `view.type` 의 CHECK 은 초판부터 `form` 을 받는다 — 그 뷰의 칸과
+> 질문 · 공개 제출이 없었다.
+
+```sql
+CREATE TABLE form_view (                        -- [보강 7a-1] 폼 뷰의 설정 — 뷰마다 하나(view.type = 'form' 인 뷰만)
+  view_id uuid PRIMARY KEY REFERENCES view(id) ON DELETE CASCADE,
+  title text NULL, description text NULL,       -- 비면 데이터베이스 이름 · 설명 없음
+  submit_label text NULL,                       -- 비면 "제출"
+  confirmation_title text NULL, confirmation_body text NULL,   -- 제출 뒤 화면 — 비면 "제출했습니다"
+  access text NOT NULL DEFAULT 'closed' CHECK (access IN ('closed','public')),  -- 'workspace'(로그인 멤버)는 뒤로
+  token text NULL UNIQUE CHECK (token ~ '^[A-Za-z0-9_-]{22}$'),  -- 공개 주소의 자격(웹 게시와 같은 모양) · 처음 열 때 만든다
+  updated_by uuid NULL REFERENCES "user"(id), updated_at timestamptz NOT NULL DEFAULT now(),
+  CHECK (access <> 'public' OR token IS NOT NULL)
+);
+
+CREATE TABLE form_question (                    -- [보강 7a-1] 질문 = 그 데이터베이스의 속성 하나(13 — 동기화)
+  view_id uuid NOT NULL REFERENCES form_view(view_id) ON DELETE CASCADE,
+  property_id text NOT NULL REFERENCES property(id) ON DELETE CASCADE,
+  order_key text COLLATE "C" NOT NULL,          -- 질문의 순서(분수 인덱싱 — 뷰의 열과 같다)
+  label text NULL,                              -- 비면 속성 이름(속성 이름을 바꾸면 따라간다)
+  help_text text NULL,
+  required boolean NOT NULL DEFAULT false,
+  PRIMARY KEY (view_id, property_id)
+);
+```
+
+> ① **폼은 뷰다** — 데이터베이스(그 data source)의 뷰 탭 하나. 폼을 지워도 응답(행)은 남는다(13). 폼 뷰는 행을 그리지 않는다 — 표 ·
+> 보드처럼 행을 읽는 길(행 질의 · 집계)에 서지 않는다. 설정은 `form_view` 한 행(뷰를 만들 때 함께 · 뷰가 지워지면 함께).
+>
+> ② **질문 = 속성** — 질문 하나는 그 data source 의 살아 있는 속성 하나다(같은 속성을 두 번 묻지 않는다 — PK). 질문의 제목은 비우면 속성
+> 이름을 따른다. **받는 타입(v1)** — 제목 · 글 · 숫자 · 선택 · 체크박스 · 날짜(값이 그 칸에 바로 들어가는 것 · 다중 선택 · 이메일 · URL ·
+> 전화는 그 칸 타입이 생길 때 함께). 상태(팀의 일의 흐름 — 익명 제출자가 정할 것이 아니다) · 사람 · 관계형(제출자에게 이 워크스페이스의
+> 사람 · 다른 표의 행 목록이 열린다 — 17 F-17-10) · 파일(익명 업로드 — 스캐너와 함께) · 계산 열(수식 · 롤업 · 버튼 · 고유 ID · 만든 · 고친
+> 시각과 사람)은 받지 않는다(`unsupported_type`). 속성을 지우면(휴지통) 그 질문은
+> 폼에서 빠진다 — 되살리면 돌아온다(질문 행은 남는다).
+>
+> ③ **누가 고치는가** — 데이터베이스의 구조를 고치는 사람(`edit_structure` — 뷰를 만들고 고치는 것과 같다). **공개로 여는 것**
+> (`access = 'public'`)은 그 데이터베이스의 `manage_perm`(13 *"폼 공유에는 연결 DB 의 Full access 필요"* — 웹 게시와 같은 문) · 워크스페이스
+> 정책(`allow_publish_sites_and_forms`)이 허용할 때만. 닫으면(`closed`) 공개 주소가 곧바로 닫힌다(토큰은 남는다 — 다시 열면 같은 주소 ·
+> 웹 게시 ⑤ 와 같다).
+>
+> ④ **공개 제출(7a-2)은 세션이 없다** — 제출자는 주체가 아니다(17 *"제출자는 principal 이 아니다"*). `SessionContext` 를 만들지 않는다(A9 의
+> 발급자 둘 — 셋째를 만들지 않는다). 쓰기의 자격은 **그 폼**이다: 토큰 → 공개 · 정책 · 데이터베이스와 data source 가 살아 있다 → 그 폼의
+> 질문만 받는다. 만든 행은 `created_by NULL`(0006 이 이 경로를 위해 비워 두었다) · 활동의 행위자도 NULL. 응답은 **강제 익명**(F-13-02).
+> 남용 방어(17 F-17-10 계층 1~4)와 메타 사이드카(`form_submission_meta` — 행의 속성에 넣지 않는다)는 7a-2 에서 정한다.
+>
+> ⑤ **뒤로** — 워크스페이스 멤버만의 폼 · 제출 뒤 응답자 권한 · 이메일 사본 · 조건부 로직(F-13-03 · 유료) · 응답 상한 · 마감 시각 · 중복 제출
+> 막기 · 커버 · 아이콘 · "Notion 으로 제작" 배지.
+
 ---
 
 ### 3.7 동기화 · 버전 ⟨C-11/V-3 · C-12 · V-5 · U-2 · U-9 · X-1 · X-5⟩
