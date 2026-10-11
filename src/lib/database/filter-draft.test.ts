@@ -15,6 +15,7 @@ import assert from 'node:assert/strict'
 import {
   addSort,
   describeRule,
+  filterPeopleIds,
   isComplete,
   liveSorts,
   moveSort,
@@ -199,6 +200,34 @@ describe('describeRule — 칩의 요약', () => {
     assert.equal(describeRule({ property_id: 'qty', operator: 'equals' }, qty, catalog), '수량 · 같음 · …')
     assert.equal(describeRule({ property_id: 'due', operator: 'before', value: '2026-09-13' }, due, catalog), '마감 · 이전 · 2026년 9월 13일')
     assert.equal(describeRule({ property_id: 'done', operator: 'equals', value: false }, done, catalog), '완료 · 이다 · 체크 안 됨')
+  })
+
+  test('★ 사람 값은 이름으로 · 이름 지도에 없으면 "떠난 사용자"(6g-2b) · 원형의 이름은 이름이 아니다', () => {
+    const owner: RuleColumn = { propertyId: 'owner', name: '담당', type: 'people', options: [] }
+    const peopleCatalog: OperatorCatalogEntry[] = [{ propertyType: 'people', operator: 'contains', arity: 1, label: '포함' }]
+    const rule = (value: string) => ({ property_id: 'owner', operator: 'contains', value })
+    assert.equal(describeRule(rule('u-1'), owner, peopleCatalog, { 'u-1': '김하나' }), '담당 · 포함 · 김하나')
+    assert.equal(describeRule(rule('u-2'), owner, peopleCatalog, { 'u-1': '김하나' }), '담당 · 포함 · 떠난 사용자')
+    assert.equal(describeRule(rule('constructor'), owner, peopleCatalog), '담당 · 포함 · 떠난 사용자')
+  })
+})
+
+describe('filterPeopleIds — 이름을 물을 사람', () => {
+  test('사람 속성의 값만 · 겹치지 않게 · 값이 없는 규칙은 빼고', () => {
+    const peopleTypes = new Map([...types, ['owner', 'people' as const], ['reviewer', 'people' as const]])
+    assert.deepEqual(
+      filterPeopleIds(
+        [
+          { property_id: 'owner', operator: 'contains', value: 'u-1' },
+          { property_id: 'reviewer', operator: 'does_not_contain', value: 'u-1' },
+          { property_id: 'reviewer', operator: 'contains', value: 'u-2' },
+          { property_id: 'owner', operator: 'is_empty' },
+          { property_id: 'memo', operator: 'contains', value: 'u-3' },
+        ],
+        peopleTypes,
+      ),
+      ['u-1', 'u-2'],
+    )
   })
 })
 

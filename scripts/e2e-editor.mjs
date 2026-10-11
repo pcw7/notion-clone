@@ -16482,6 +16482,84 @@ async function main() {
         await waitFor(`[...document.querySelectorAll('[data-testid="row-properties"] [data-testid="db-person-chip"]')].some((c) => c.textContent === ${JSON.stringify(mateName)})`, 15000))
     }
 
+    if (sectionIf('사람 필터 값 고르개 (6g-2b · F-03-07)')) {
+      // 사람 속성의 필터 규칙 — 칩 · 패널이 값을 이름으로 그리고(첫 화면부터 — 서버가 이름을 준다), 값 칸을 누르면 칸의 고르개가 한 사람
+      // 모양으로 열린다: 다른 사람을 고르면 바꾸고 닫힌다 · Esc 는 고르개만 닫는다 · 고른 사람을 다시 고르면 값이 빈다(그 규칙은 저장에서 빠진다).
+      const stamp = Date.now()
+      const api = async (method, path, body, headers = authed) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `사람 필터 ${stamp}` })).body.database
+      const view = db.defaultViewId
+      const owner = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '담당', type: 'people' })).body.property.id
+      const mateName = `필터 동료 ${stamp}`
+      const mate = await joinAs(workspaceId, await createUser(mateName), 'member')
+      const myName = (await api('GET', `/people?ids=${ctx.userId}`)).body?.names?.[ctx.userId]
+      const assign = async (id) => {
+        const row = (await api('POST', `/views/${view}/rows`, {})).body.row.id
+        await api('PATCH', `/rows/${row}`, { cells: [{ propertyId: owner, value: { type: 'people', people: [{ id }] } }] })
+        return row
+      }
+      const mateRow = await assign(mate.userId)
+      const myRow = await assign(ctx.userId)
+      await api('PATCH', `/views/${view}`, { filter: { property_id: owner, operator: 'contains', value: mate.userId } })
+      // 서버의 필터에 든 사람(jsonb 는 키 순서를 바꾼다 — 문자열로 비교하지 않는다) · 필터가 없으면 'null'
+      const serverFilter = async () => {
+        const filter = (await api('GET', `/views/${view}`)).body?.view?.filter ?? null
+        return filter === null ? 'null' : (filter.children ?? [filter]).map((c) => `${c.property_id === owner ? '담당' : c.property_id}:${c.operator}:${c.value}`).join(',')
+      }
+      const serverUntil = async (want, ms = 8000) => {
+        for (const end = Date.now() + ms; Date.now() < end; await sleep(150)) if ((await serverFilter()) === want) return true
+        return false
+      }
+      const rowIds = `[...document.querySelectorAll('[data-testid="db-table"] tbody tr[data-row-id]')].map((tr) => tr.dataset.rowId).join(',')`
+      const chips = `[...document.querySelectorAll('[data-testid="db-filter-chip"]')].map((c) => c.textContent).join(' | ')`
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      const firstPaint = await waitFor(`!!document.querySelector('[data-testid="db-filter-chip"]')`, 15000)
+      check('★ 칩이 사람 값을 이름으로 — 첫 화면부터(서버가 이름을 준다) · 그 사람이 든 행만',
+        firstPaint && (await evaluate(chips)) === `담당 · 포함 · ${mateName}` && (await waitFor(`${rowIds} === ${JSON.stringify(mateRow)}`, 8000)),
+        `${await evaluate(chips)} · ${await evaluate(rowIds)}`)
+
+      for (let i = 0; i < 5 && !(await evaluate(`!!document.querySelector('[data-testid="db-filter-panel"]')`)); i += 1) {
+        await clickSelector('[data-testid="db-filter-button"]')
+        await waitFor(`!!document.querySelector('[data-testid="db-filter-panel"]')`, 2000)
+      }
+      const VALUE = '[data-testid="db-filter-panel"] [data-testid="db-filter-value"]'
+      check('패널의 값 칸도 이름', (await evaluate(`document.querySelector('${VALUE}')?.textContent ?? '(없음)'`)) === mateName,
+        await evaluate(`document.querySelector('${VALUE}')?.textContent ?? '(없음)'`))
+
+      await clickSelector(VALUE)
+      const opened = await waitFor(`document.activeElement?.matches('[data-testid="db-filter-panel"] [data-testid="db-people-input"]')`, 5000)
+      await key('Escape')
+      const escOnly = await waitFor(`!document.querySelector('[data-testid="db-people-editor"]')`, 3000)
+      check('값 칸을 누르면 고르개가 열리고 · Esc 는 고르개만 닫는다(필터 패널은 그대로)',
+        opened && escOnly && (await evaluate(`!!document.querySelector('[data-testid="db-filter-panel"]')`)))
+
+      await clickSelector(VALUE)
+      await waitFor(`document.activeElement?.matches('[data-testid="db-people-input"]')`, 5000)
+      await typeText(myName ?? '')
+      await waitFor(`[...document.querySelectorAll('[data-testid="db-people-option"]')].some((o) => o.textContent.includes(${JSON.stringify(myName ?? '')}))`, 8000)
+      await clickSelector(`[data-testid="db-people-option"]`)
+      const swapped = await serverUntil(`담당:contains:${ctx.userId}`)
+      check('★ 다른 사람을 고르면 그 사람으로 바뀌고 닫힌다 — 서버 필터 · 칩 · 행',
+        swapped && (await waitFor(`!document.querySelector('[data-testid="db-people-editor"]')`, 3000)) &&
+          (await waitFor(`${chips} === ${JSON.stringify(`담당 · 포함 · ${myName}`)} && ${rowIds} === ${JSON.stringify(myRow)}`, 8000)),
+        `${await serverFilter()} · ${await evaluate(chips)} · ${await evaluate(rowIds)}`)
+
+      await clickSelector(VALUE)
+      await waitFor(`!!document.querySelector('[data-testid="db-people-option"][data-picked]')`, 8000)
+      await clickSelector('[data-testid="db-people-option"][data-picked]')
+      check('고른 사람을 다시 고르면 값이 빈다 — 그 규칙은 저장에서 빠진다(필터 없음 · 두 행)',
+        (await serverUntil('null')) && (await waitFor(`${rowIds}.split(',').length === 2`, 8000)) &&
+          (await evaluate(`document.querySelector('[data-testid="db-filter-panel"]')?.textContent.includes('값을 넣으면 적용됩니다')`)),
+        `${await serverFilter()} · ${await evaluate(rowIds)}`)
+      await clickSelector('[data-testid="db-filter-button"]')
+    }
+
     if (sectionIf('개인 필터 · 정렬 — 화면 (2h-2 · F-04-17)')) {
       // 볼 수만 있는 사람(브라우저 세션을 바꾼다)이 도구줄의 필터로 조건을 걸면 **자기 것**으로 저장되고 그 사람의 표만 좁혀진다 — "나만 보는
       // 필터" 표시 · 초기화. 편집자는 자기 개인 것을 "모두에게 저장"한다. 브라우저 세션은 끝에 반드시 소유자로 되돌린다.
