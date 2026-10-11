@@ -54,6 +54,7 @@ import { can } from '../permissions/levels.ts'
 import { effectiveCaps } from '../permissions/effective.ts'
 import { isLocked } from '../permissions/lock.ts'
 import { recordActivity, recordCoalescedActivity } from '../notification/activity.ts'
+import { notifyAssigned } from '../notification/fanout.ts'
 import { orderKeyBetween } from '../block/order-key.ts'
 import { titleFromPlainText } from '../block/page.ts'
 import { readPageIcon, type PageIcon } from '../block/page-icon.ts'
@@ -69,7 +70,7 @@ import {
 } from './property-types.ts'
 import { issueUniqueSeq } from './unique-id.ts'
 import { routeCellsEdited, routeRowAdded, type WriteOrigin } from '../automation/trigger-route.ts'
-import { peopleIssuesIn } from './people.ts'
+import { peopleIdsOf, peopleIssuesIn } from './people.ts'
 
 /** 한 번에 읽는 행 수. 뷰의 "더 보기"는 W8-b 다. */
 export const DEFAULT_ROW_LIMIT = 50
@@ -329,6 +330,35 @@ async function writeCells(tx: Tx, rowId: string, cells: readonly PreparedCell[],
  * 머리말의 한쪽 방향 규칙. 이 투영이 없으면 행 페이지를 열었을 때 제목이
  * 비어 있고, breadcrumb·최근 방문·검색 색인이 전부 빈 제목을 본다.
  */
+/**
+ * 담당 알림(6h · 정본 §3.8 [보강] 담당 알림 ①) — 사람 칸마다 **새로 든 사람**에게. `before` 는 쓰기 전의 값(없으면 빈 칸 — 새 행).
+ * 템플릿 행은 부르지 않는다(부르는 쪽이 거른다 — R1).
+ */
+async function notifyNewlyAssigned(
+  tx: Tx,
+  ctx: SessionContext,
+  rowId: string,
+  cells: readonly PreparedCell[],
+  before: ReadonlyMap<string, unknown>,
+): Promise<void> {
+  for (const cell of cells) {
+    if (cell.value.type !== 'people') continue
+    const had = new Set(peopleIdsOf([before.get(cell.propertyId)]))
+    const added = cell.value.people.map((person) => person.id).filter((id) => !had.has(id))
+    if (added.length > 0) await notifyAssigned(tx, ctx, { rowId, propertyId: cell.propertyId, userIds: added })
+  }
+}
+
+/** 이 행의 칸들의 지금 값 — 사람 칸의 "쓰기 전" 을 붙든다(담당 알림). */
+async function readCellValues(tx: Tx, rowId: string, propertyIds: readonly string[]): Promise<Map<string, unknown>> {
+  if (propertyIds.length === 0) return new Map()
+  const rows = await tx.query<{ property_id: string; value: unknown }>(
+    `SELECT property_id, value FROM page_property_value WHERE page_id = $1 AND property_id = ANY($2::text[])`,
+    [rowId, propertyIds],
+  )
+  return new Map(rows.map((r) => [r.property_id, r.value]))
+}
+
 async function projectTitle(
   tx: Tx,
   rowId: string,
@@ -488,6 +518,8 @@ export async function createRowIn(
     if (prepared.length > 0) {
       await writeCells(tx, rowId, prepared, input.filledBy)
       await projectTitle(tx, rowId, prepared, gate.titlePropertyId)
+      // 담당 알림(6h) — 새 행의 사람 칸에 든 사람 모두가 새로 든 사람이다. 템플릿은 항목이 아니다(R1)
+      if (!isTemplate) await notifyNewlyAssigned(tx, ctx, rowId, prepared, new Map())
     }
 
     const summary = await readRow(tx, rowId)
@@ -538,8 +570,8 @@ export async function updateCellsIn(
   {
     // 행을 잠근다. 같은 행의 셀을 동시에 쓰면 `properties_cache` 재생성이
     // 겹치는데, 잠금이 있으면 순서가 정해져 마지막 재생성이 전부를 본다.
-    const row = await tx.queryMaybe<{ data_source_id: string; version: string }>(
-      `SELECT p.data_source_id, b.version
+    const row = await tx.queryMaybe<{ data_source_id: string; version: string; is_template: boolean }>(
+      `SELECT p.data_source_id, b.version, p.is_template
          FROM page p
          JOIN block b ON b.id = p.id
         WHERE p.id = $1 AND b.workspace_id = $2 AND b.lifecycle = 'live'
@@ -577,8 +609,12 @@ export async function updateCellsIn(
         propertyIds: prepared.map((cell) => cell.propertyId),
         origin: input.origin ?? 'user',
       })
+      // 담당 알림(6h) — 사람 칸의 쓰기 전 값을 붙든다(새로 든 사람만 받는다)
+      const peopleCells = row.is_template ? [] : prepared.filter((cell) => cell.value.type === 'people')
+      const before = await readCellValues(tx, rowId, peopleCells.map((cell) => cell.propertyId))
       await writeCells(tx, rowId, prepared, input.filledBy)
       await projectTitle(tx, rowId, prepared, gate.titlePropertyId)
+      await notifyNewlyAssigned(tx, ctx, rowId, peopleCells, before)
       await bumpRow(tx, ctx, rowId)
       // 활동 — 셀을 고쳤다(4d-2 · 같은 사람 · 같은 행 5분 안이면 접는다)
       await recordCoalescedActivity(tx, ctx, { pageId: rowId, type: 'property.updated' })

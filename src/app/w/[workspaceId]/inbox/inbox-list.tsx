@@ -32,7 +32,7 @@ import Link from 'next/link'
 
 import type { PageIcon } from '@/lib/block/page-icon'
 import { accessInboxLine, inboxHref } from '../access-request-messages'
-import { reminderInboxLine } from './inbox-messages'
+import { assignmentInboxLine, reminderInboxLine } from './inbox-messages'
 import { PageIconView } from '../page-icon-view'
 
 export type InboxRow = {
@@ -52,6 +52,8 @@ export type InboxRow = {
   access: { requesterName: string | null; status: string; kind: string } | null
   /** 리마인더(4c-3) — 울린 날짜 속성의 지금 이름. 다른 알림은 null. */
   reminder: { propertyName: string | null } | null
+  /** 담당(6h) — 회원님을 넣은 사람 속성의 지금 이름. 다른 알림은 null. */
+  assignment: { propertyName: string | null } | null
 }
 
 const FILTERS: readonly { value: string; label: string }[] = [
@@ -69,6 +71,7 @@ const KIND_LABEL: Readonly<Record<string, string>> = {
   access_requested: '접근 요청',
   access_granted: '요청 허락',
   reminder: '리마인더',
+  person_property_assigned: '담당',
 }
 
 const UNTITLED = '제목 없음'
@@ -214,6 +217,7 @@ export function InboxList({
               <p className="text-sm text-neutral-600 dark:text-neutral-400">
                 {accessInboxLine(item.kind, item.access) ??
                   reminderInboxLine(item.reminder) ??
+                  assignmentInboxLine(item.assignment) ??
                   (item.deleted ? <span className="text-neutral-400">삭제된 코멘트</span> : (item.preview ?? ''))}
               </p>
 
