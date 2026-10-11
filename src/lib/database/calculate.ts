@@ -14,7 +14,7 @@
 import type { SessionContext } from '../auth/session-context.ts'
 import { withReadTransaction, type Tx } from '../db/tx.ts'
 import { calculationResult, canCalculate, type Calculation, type CalculationResult, type ColumnStats } from './calculations.ts'
-import { compileFilter, ParamBag, propertyIdsIn, type FilterNode } from './filter.ts'
+import { compileFilter, ParamBag, propertyIdsIn, type FilterContext, type FilterNode } from './filter.ts'
 import { refreshDerivedValues } from './derived-values.ts'
 import { readPropertyTypes } from './query.ts'
 import { compileSearch } from './search.ts'
@@ -47,7 +47,7 @@ export async function computeCalculations(
     // "만들기만" 이면 자기가 열 수 있는 행만 센다(6f-2b-1) — 표에 보이는 행과 같은 행이다. 남의 행이 합 · 개수로 새지 않는다.
     const access = await rowsAccessForDataSource(tx, ctx, dataSourceId)
     if (access === null) return {}
-    const stats = await readStats(tx, dataSourceId, access, filter, search, wanted.map((c) => c.propertyId))
+    const stats = await readStats(tx, dataSourceId, access, filter, { me: ctx.userId }, search, wanted.map((c) => c.propertyId))
     const out: Record<string, CalculationResult> = {}
     for (const column of wanted) {
       const s = stats.get(column.propertyId)
@@ -117,13 +117,14 @@ async function readStats(
   dataSourceId: string,
   access: RowsAccess,
   filter: FilterNode | null,
+  context: FilterContext,
   search: string | null,
   propertyIds: readonly string[],
 ): Promise<Map<string, ColumnStats>> {
   const types = await readPropertyTypes(tx, dataSourceId)
   const params = new ParamBag(2)
   const accessSql = restrictedRowsSql(access, params)
-  const filterSql = compileFilter(filter, types, params)
+  const filterSql = compileFilter(filter, types, params, context)
   const searchSql = search === null ? null : compileSearch(search, types, params)
   const columns = propertyIds.map((id, i) => {
     const p = params.bind(id)

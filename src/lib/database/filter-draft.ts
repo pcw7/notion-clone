@@ -34,7 +34,7 @@
  * 프로퍼티 삭제 → 해당 sort 엔트리 제거."*
  */
 
-import { MAX_SORT_KEYS, isGroup, type FilterLeaf, type FilterNode, type FilterableType, type SortKey } from './filter.ts'
+import { MAX_SORT_KEYS, isGroup, isMeNode, type FilterLeaf, type FilterNode, type FilterableType, type SortKey } from './filter.ts'
 import { LEFT_USER, formatDate } from './cell-format.ts'
 import type { OperatorCatalogEntry } from './operator-catalog.ts'
 import type { SelectOption } from './property-types.ts'
@@ -182,6 +182,8 @@ function valueLabel(value: unknown, column: RuleColumn, names: PeopleNameMap): s
     case 'date':
       return typeof value === 'string' ? formatDate({ start: value }) : String(value)
     case 'people':
+      // "나"(6g-2c) — 보는 사람마다 다르다
+      if (isMeNode(value)) return '나'
       // 떠난 사람의 규칙은 남는다 — 그 사람이 든 행만 맞는다(지운 옵션과 같은 태도)
       return typeof value === 'string' && Object.hasOwn(names, value) ? names[value]! : LEFT_USER
     default:

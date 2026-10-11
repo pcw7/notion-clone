@@ -144,6 +144,30 @@ export function isGroup(node: FilterNode): node is FilterGroup {
   return 'op' in node
 }
 
+// ── 평가 컨텍스트 (6g-2c · 정본 VW1 · §3.5 [보강] 사람 속성 ⑪) ────────────
+
+/**
+ * 필터를 SQL 로 바꿀 때 묶는 것 — 지금은 "나" 뿐이다(`today` · `current_page` 는 같은 자리에 선다 · 16 R3). **컴파일러는 이것을 반드시
+ * 받는다** — 빠뜨린 길은 타입이 막는다. 세션이 있으면 그 사람, 없으면(공개 화면 — 익명) `null` 이다.
+ */
+export type FilterContext = { readonly me: string | null }
+
+/** 보는 사람이 없는 길(공개 화면 · 자동화의 조건) — "나" 는 아무도 아니다. */
+export const NO_VIEWER: FilterContext = Object.freeze({ me: null })
+
+/** 사람 값의 컨텍스트 노드 — "보는 사람". 16 R3 의 `{ "$context": "current_page" }` 와 같은 모양이다. */
+export const ME_NODE = Object.freeze({ $context: 'me' }) as { readonly $context: 'me' }
+
+export function isMeNode(value: unknown): value is typeof ME_NODE {
+  return typeof value === 'object' && value !== null && !Array.isArray(value) && (value as { $context?: unknown }).$context === 'me' &&
+    Object.keys(value).length === 1
+}
+
+/** 아무도 아닌 사람 — 칸에는 활동 중인 사람 id 만 들어가므로(사람 속성 ②) 이 id 는 어떤 칸에도 없다. */
+const NOBODY = '00000000-0000-0000-0000-000000000000'
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 /**
  * 이 속성을 가리키는 규칙을 뺀 필터 — 타입을 바꾼 속성의 규칙은 지운다(2c-1 · 정본 [보강] 프로퍼티 타입 바꾸기 ⑤). 빈 묶음은 접고,
  * 남는 것이 없으면 null(필터 없음). `removed` 는 뺀 규칙 수다 — 명령이 "필터 N개를 지웠다"고 말한다.
@@ -442,6 +466,10 @@ export function validateFilter(
   if (spec.arity === 1 && (obj.value === undefined || obj.value === null)) {
     return [{ path: `${path}.value`, message: '값이 필요합니다' }]
   }
+  // 사람(6g-1 · 6g-2c) — 값은 사람 id 하나 또는 "나"(컨텍스트 노드)
+  if (resolved.type === 'people' && spec.arity === 1 && !isMeNode(obj.value) && !(typeof obj.value === 'string' && UUID_RE.test(obj.value))) {
+    return [{ path: `${path}.value`, message: '사람 id 또는 { "$context": "me" } 여야 합니다' }]
+  }
   return []
 }
 
@@ -528,12 +556,13 @@ export function compileFilter(
   node: FilterNode | null | undefined,
   types: PropertyTypes,
   params: ParamBag,
+  context: FilterContext,
 ): string | null {
   if (node === null || node === undefined) return null
 
   if (isGroup(node)) {
     const parts = node.children
-      .map((child) => compileFilter(child, types, params))
+      .map((child) => compileFilter(child, types, params, context))
       .filter((s): s is string => s !== null)
     if (parts.length === 0) return null
     // 한 항목이면 괄호를 씌우지 않는다 — 읽기 어려운 SQL 이 디버깅을 어렵게 한다.
@@ -561,7 +590,9 @@ export function compileFilter(
 
   const axis = AXIS[rawType]
   const propParam = params.bind(node.property_id)
-  const value = spec.arity === 1 ? bindValue(rawType, node.value) : undefined
+  // "나"(6g-2c) — 지금 보는 사람으로 묶는다. 보는 사람이 없으면 아무도 아니다(포함은 0행 · 포함하지 않음은 모든 행)
+  const raw = rawType === 'people' && isMeNode(node.value) ? (context.me ?? NOBODY) : node.value
+  const value = spec.arity === 1 ? bindValue(rawType, raw) : undefined
   const valueParam = spec.arity === 1 ? params.bind(spec.like ? escapeLike(String(value)) : value) : ''
   const inner = spec.predicate(COLUMN[axis], valueParam, CAST[axis])
 

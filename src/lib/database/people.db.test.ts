@@ -10,6 +10,8 @@
  *   ④ 떠난 사람은 값에 남고 이름 지도에서 빠진다("떠난 사용자")
  *   ⑤ 내보내기 — 사람 열은 이름 지도를 싣고 CSV 는 이름이다
  *   ⑥ 고르개 후보(6g-2) — 활동 중인 사람만 · 이름 · 메일로 · **게스트에게는 없다**(7d-2) · 이름 지도는 id 를 주면 활동 중인 사람만
+ *   ⑦ ★ "나"(6g-2c · ⑪) — 같은 뷰가 보는 사람마다 다른 행이다: 표 · 보드의 개수 · 캘린더 · 열 집계 · 저장 검증 · 공개 표는 아무도
+ *      아니다(포함은 0행 · 포함하지 않음은 모든 행)
  */
 
 import { test, describe, before, after } from 'node:test'
@@ -19,13 +21,18 @@ import { query } from '../db/pool.ts'
 import { withReadTransaction } from '../db/tx.ts'
 import { createBareWorkspace, createUser, joinAs, probeDatabase } from '../testing/db-fixtures.ts'
 import { computeCalculations } from './calculate.ts'
+import { queryCalendar } from './calendar-query.ts'
+import { queryGroups } from './group.ts'
+import { resolvePublicPageIn } from '../publish/public-access.ts'
+import { readPublicTableIn } from '../publish/public-database.ts'
+import { publishPage } from '../publish/public-link.ts'
 import { createDatabase } from './database.ts'
 import { loadPeopleNames, peopleNamesIn, searchPeople } from './people.ts'
-import { addProperty, getSchema } from './property.ts'
+import { addProperty, addSelectOption, getSchema } from './property.ts'
 import type { CellValue } from './property-types.ts'
 import { queryRows } from './query.ts'
 import { createRow, updateCells } from './row.ts'
-import { updateView } from './view.ts'
+import { createView, updateView } from './view.ts'
 import { cellPlainText } from '../export/csv.ts'
 import { readExportSnapshot, type ExportDatabaseNode } from '../export/snapshot.ts'
 
@@ -161,3 +168,72 @@ describe('⑥ 고르개 후보 · 이름(6g-2)', () => {
   })
 })
 
+
+// ── ⑦ "나" ───────────────────────────────────────────────────────────
+
+describe('⑦ ★ "나"(6g-2c)', () => {
+  test('같은 뷰가 보는 사람마다 다른 행 — 표 · 보드 · 캘린더 · 집계 · 공개 표는 아무도 아니다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { boss, mate, db, owner } = await team()
+    const ds = db.dataSourceId
+    unwrap(await addProperty(boss.ctx, ds, { name: '상태', type: 'select' }))
+    unwrap(await addProperty(boss.ctx, ds, { name: '마감', type: 'date' }))
+    const schema = unwrap(await getSchema(boss.ctx, ds))
+    const status = schema.properties.find((p) => p.name === '상태')!.id
+    const due = schema.properties.find((p) => p.name === '마감')!.id
+    const todo = unwrap(await addSelectOption(boss.ctx, ds, status, { name: '할 일' })).option.id
+    const row = async (who: string) =>
+      unwrap(
+        await createRow(boss.ctx, ds, {
+          cells: [
+            { propertyId: owner, value: people(who) },
+            { propertyId: status, value: { type: 'select', select: { id: todo } } },
+            { propertyId: due, value: { type: 'date', date: { start: '2026-03-10' } } },
+          ],
+        }),
+      ).id
+    const bossRows = [await row(boss.userId), await row(boss.userId)]
+    const mateRow = await row(mate.userId)
+    const me = { property_id: owner, operator: 'contains', value: { $context: 'me' } }
+
+    // 저장 검증이 받는다 — 표 · 보드 · 캘린더의 공유 필터로
+    unwrap(await updateView(boss.ctx, db.defaultViewId, { filter: me as never }))
+    const board = unwrap(await createView(boss.ctx, db.id, { type: 'board' }))
+    const calendar = unwrap(await createView(boss.ctx, db.id, { type: 'calendar' }))
+    for (const view of [board.id, calendar.id]) unwrap(await updateView(boss.ctx, view, { filter: me as never }))
+    assert.equal((await updateView(boss.ctx, db.defaultViewId, { filter: { ...me, value: 'me' } as never })).ok, false, '"me" 글자는 받지 않는다')
+
+    const rowsOf = async (who: typeof boss) => {
+      const r = await queryRows(who.ctx, ds, { filter: me as never })
+      return r.ok ? r.value.rows.map((x) => x.id).sort() : r.reason
+    }
+    assert.deepEqual(await rowsOf(boss), [...bossRows].sort())
+    assert.deepEqual(await rowsOf(mate), [mateRow], '★ 같은 필터 — 동료에게는 동료의 행')
+
+    const countOf = async (who: typeof boss) => {
+      const r = await queryGroups(who.ctx, board.id)
+      return r.ok ? (r.value.groups.find((g) => g.key === todo)?.count ?? 0) : r.reason
+    }
+    assert.deepEqual([await countOf(boss), await countOf(mate)], [2, 1], '보드의 개수')
+    const calendarOf = async (who: typeof boss) => {
+      const r = await queryCalendar(who.ctx, calendar.id, { from: '2026-03-01', to: '2026-03-31' })
+      return r.ok ? r.value.rows.map((x) => x.id) : r.reason
+    }
+    assert.deepEqual(await calendarOf(mate), [mateRow], '캘린더')
+    const total = async (who: typeof boss) =>
+      (await computeCalculations(who.ctx, ds, me as never, [{ propertyId: owner, type: 'people', calculation: 'count_all' }]))[owner]
+    assert.deepEqual([await total(boss), await total(mate)], [{ kind: 'count', value: 2 }, { kind: 'count', value: 1 }], '열 집계')
+
+    // 공개 표 — 보는 사람이 없다
+    const token = unwrap(await publishPage(boss.ctx, db.id)).token!
+    const publicRows = async () =>
+      withReadTransaction(async (tx) => {
+        const access = await resolvePublicPageIn(tx, token)
+        if (!access.ok) return access.reason
+        return (await readPublicTableIn(tx, access.value))?.rows.map((r) => r.id).sort() ?? null
+      })
+    assert.deepEqual(await publicRows(), [], '공개 표 — "나" 는 아무도 아니다(포함은 0행)')
+    unwrap(await updateView(boss.ctx, db.defaultViewId, { filter: { ...me, operator: 'does_not_contain' } as never }))
+    assert.deepEqual(await publicRows(), [...bossRows, mateRow].sort(), '포함하지 않음은 모든 행')
+  })
+})
