@@ -24,7 +24,7 @@ import { randomUUID } from 'node:crypto'
 import type { SessionContext } from '../auth/session-context.ts'
 import { withTransaction, type Tx } from '../db/tx.ts'
 import { createRowIn, isRowFailure, openDataSource, readRow, updateCellsIn, type RowCell, type RowSummary } from '../database/row.ts'
-import { emptyValue, isMvpPropertyType, type CellValue } from '../database/property-types.ts'
+import { emptyValue, isAutomationCellType, type CellValue } from '../database/property-types.ts'
 import { createRowFromTemplateIn, readLiveTemplate } from '../database/template.ts'
 import { entitlement } from '../billing/entitlement.ts'
 import { can } from '../permissions/levels.ts'
@@ -136,7 +136,7 @@ async function resolveCells(tx: Tx, ctx: SessionContext, cells: readonly ActionC
     }
     // 원본 속성이 사라졌거나 옮길 수 없는 타입이 됐다 — 정의가 깨졌다(실패 · ④)
     const type = types.get(cell.from.propertyId)
-    if (type === undefined || !isMvpPropertyType(type) || NOT_COPYABLE.has(type)) throw new StepFailed('unknown_property')
+    if (type === undefined || !isAutomationCellType(type) || NOT_COPYABLE.has(type)) throw new StepFailed('unknown_property')
     const raw = row.properties[cell.from.propertyId]
     const value = typeof raw === 'object' && raw !== null && (raw as { type?: unknown }).type === type ? (raw as CellValue) : emptyValue(type)
     out.push({ propertyId: cell.propertyId, value })

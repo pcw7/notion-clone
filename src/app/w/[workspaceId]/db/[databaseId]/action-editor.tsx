@@ -28,7 +28,7 @@ import { useEffect, useState } from 'react'
 
 import type { PropertySummary } from '@/lib/database/property'
 import type { DatabaseListItem } from '@/lib/database/database'
-import { emptyValue, isMvpPropertyType, type CellValue, type MvpPropertyType, type SelectOption } from '@/lib/database/property-types'
+import { emptyValue, isAutomationCellType, type CellValue, type MvpPropertyType, type SelectOption } from '@/lib/database/property-types'
 import { textRun, toPlainText } from '@/lib/contracts/rich-text'
 import * as api from './table-api'
 
@@ -176,7 +176,7 @@ export const toAction = (draft: ActionDraft): api.ButtonActionJson =>
           : draft.raw
 
 const fieldsOf = (properties: readonly PropertySummary[]): Field[] =>
-  properties.flatMap((p) => (isMvpPropertyType(p.type) ? [{ id: p.id, name: p.name, type: p.type, options: p.options ?? [] }] : []))
+  properties.flatMap((p) => (isAutomationCellType(p.type) ? [{ id: p.id, name: p.name, type: p.type, options: p.options ?? [] }] : []))
 
 /**
  * 액션 목록 편집 — 초안은 부르는 쪽이 들고 있다(저장도 부르는 쪽).

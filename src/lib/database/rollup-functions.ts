@@ -88,9 +88,12 @@ export function rollupFunctionsFor(type: MvpPropertyType): readonly RollupFuncti
   return [...COMMON, ...(EXTRA[type] ?? [])]
 }
 
-/** rollup 의 대상이 될 수 있는 타입인가 — 셀 타입만. relation · rollup 은 안 된다(정본: 참조 체인이 깊이 1 에 머문다). */
+/**
+ * rollup 의 대상이 될 수 있는 타입인가 — 셀 타입만. relation · rollup 은 안 된다(정본: 참조 체인이 깊이 1 에 머문다). 사람(6g-1)도 아직
+ * 아니다(정본 §3.5 [보강] 사람 속성 ⑤ — 원본 보이기에 이름이 든다).
+ */
 export function isRollupTargetType(type: unknown): type is MvpPropertyType {
-  return isMvpPropertyType(type)
+  return isMvpPropertyType(type) && type !== 'people'
 }
 
 /** 읽을 때 쓰는 함수. 대상 타입에 맞지 않으면 기본 함수로 접는다(머리말). */

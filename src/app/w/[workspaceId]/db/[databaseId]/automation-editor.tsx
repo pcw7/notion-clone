@@ -21,7 +21,7 @@ import { useState } from 'react'
 
 import type { OperatorCatalogEntry } from '@/lib/database/operator-catalog'
 import { isComplete, operatorsOf, ruleFor, withOperator, type FilterRule, type RuleColumn } from '@/lib/database/filter-draft'
-import { isMvpPropertyType } from '@/lib/database/property-types'
+import { isAutomationCellType } from '@/lib/database/property-types'
 import * as api from './table-api'
 import { ActionListEditor, toAction, toDraft, type ActionDraft } from './action-editor'
 import { RuleValue } from './view-toolbar'
@@ -59,7 +59,7 @@ export function AutomationEditor({
   onSaved: (automation: api.DbAutomationJson) => void
   onCancel: () => void
 }) {
-  const fields = columns.filter((c) => isMvpPropertyType(c.type))
+  const fields = columns.filter((c) => isAutomationCellType(c.type))
   const [name, setName] = useState(initial?.name ?? '새 자동화')
   const [triggers, setTriggers] = useState<readonly TriggerDraft[]>(() => initial?.triggers.map(toTriggerDraft) ?? [{ kind: 'page_added' }])
   const [actions, setActions] = useState<readonly ActionDraft[]>(() => initial?.actions.map(toDraft) ?? [])

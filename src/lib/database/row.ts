@@ -69,6 +69,7 @@ import {
 } from './property-types.ts'
 import { issueUniqueSeq } from './unique-id.ts'
 import { routeCellsEdited, routeRowAdded, type WriteOrigin } from '../automation/trigger-route.ts'
+import { peopleIssuesIn } from './people.ts'
 
 /** 한 번에 읽는 행 수. 뷰의 "더 보기"는 W8-b 다. */
 export const DEFAULT_ROW_LIMIT = 50
@@ -427,6 +428,9 @@ export async function createRowIn(
     const given = input.cells ?? []
     const prepared = prepareCells(gate, [...given, ...defaultCells(gate, given)])
     if (isRowFailure(prepared)) return prepared
+    // 사람 칸(6g-1) — 이 워크스페이스의 활동 중인 사람만(정본 §3.5 [보강] 사람 속성 ②)
+    const strangers = await peopleIssuesIn(tx, ctx.workspaceId, prepared)
+    if (strangers.length > 0) return { ok: false, reason: 'invalid_value', issues: strangers } as const
 
     const rowId = randomUUID()
     const container = await tx.queryOne<{ ancestor_path: string[]; perm_scope_id: string }>(
@@ -562,6 +566,8 @@ export async function updateCellsIn(
 
     const prepared = prepareCells(gate, input.cells)
     if (isRowFailure(prepared)) return prepared
+    const strangers = await peopleIssuesIn(tx, ctx.workspaceId, prepared)
+    if (strangers.length > 0) return { ok: false, reason: 'invalid_value', issues: strangers } as const
 
     if (prepared.length > 0) {
       // DB automation — 셀이 바뀐다(5b-2). **쓰기 전에** — 창 전 값을 붙든다

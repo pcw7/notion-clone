@@ -147,6 +147,9 @@ export function cellToFormulaValue(type: MvpPropertyType, raw: unknown, optionNa
       const name = ref === null ? null : optionName(ref.id)
       return name === null ? null : { type: 'text', value: name }
     }
+    // 사람(6g-1)은 수식이 읽지 않는다 — `formulaTypeOfCell` 이 null 이라 `prop()` 이 찾지 못한다(정본 [보강] 사람 속성 ⑤)
+    case 'people':
+      return null
   }
 }
 

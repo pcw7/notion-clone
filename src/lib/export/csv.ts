@@ -39,7 +39,7 @@
  */
 
 import { toPlainText } from '../contracts/rich-text.ts'
-import { readCell } from '../database/cell-format.ts'
+import { LEFT_USER, readCell } from '../database/cell-format.ts'
 import { optionIdOf, type MvpPropertyType, type SelectOption } from '../database/property-types.ts'
 import { uniqueIdCellText } from '../database/unique-id-format.ts'
 
@@ -50,6 +50,8 @@ export type CsvColumn = {
   readonly type: MvpPropertyType | 'unique_id'
   /** select 의 옵션. 셀은 id 를 담으므로 이름을 여기서 찾는다. */
   readonly options?: readonly SelectOption[]
+  /** 사람 칸(6g-1)의 이름 — 사람 id → 이름(이 워크스페이스의 활동 중인 사람만). 없는 id 는 "떠난 사용자". */
+  readonly names?: ReadonlyMap<string, string>
 }
 
 export type CsvRow = {
@@ -91,7 +93,7 @@ export function tableToCsv(columns: readonly CsvColumn[], rows: readonly CsvRow[
 }
 
 /** 사용자가 쓴 글자를 담는 타입. 수식 막기는 이것에만 건다(머리말). */
-const USER_TEXT: ReadonlySet<CsvColumn['type']> = new Set(['title', 'rich_text', 'select', 'status'])
+const USER_TEXT: ReadonlySet<CsvColumn['type']> = new Set(['title', 'rich_text', 'select', 'status', 'people'])
 
 /**
  * 칸 하나의 글자. CSV 와 행 Markdown 의 속성 줄(`plan.ts`)이 **같은 규칙**을 쓴다.
@@ -120,6 +122,9 @@ export function cellPlainText(column: CsvColumn, raw: unknown): string {
       if (value.date === null) return ''
       // 범위는 노션 CSV 처럼 ` → ` 로 잇는다. `end: null` 과 `end` 없음은 같은 뜻이다.
       return value.date.end ? `${value.date.start} → ${value.date.end}` : value.date.start
+    // 사람(6g-1) — 이름을 `, ` 로(정본 [보강] 사람 속성 ⑦). 이름은 사람이 정한 글자라 수식 막기 대상이다(`USER_TEXT`)
+    case 'people':
+      return value.people.map((person) => column.names?.get(person.id) ?? LEFT_USER).join(', ')
   }
 }
 

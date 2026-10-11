@@ -69,10 +69,20 @@ export const MVP_PROPERTY_TYPES = [
   'status',
   'checkbox',
   'date',
+  // 사람(6g-1 · F-03-07 · 정본 §3.5 [보강] 사람 속성) — 값은 사람 id 의 집합. 정렬 · 그룹 · 수식 · 롤업 · 타입 바꾸기는 받지 않는다(⑤)
+  'people',
 ] as const
 export type MvpPropertyType = (typeof MVP_PROPERTY_TYPES)[number]
 
 const MVP_SET: ReadonlySet<string> = new Set(MVP_PROPERTY_TYPES)
+
+/**
+ * 자동화(버튼 · DB automation)가 쓰고 · 보내고 · 조건으로 거는 셀 타입 — MVP 셀 타입에서 사람을 뺀 것(6g-1 · 정본 §3.5 [보강] 사람 속성 ⑤).
+ * 사람은 값 슬롯 "현재 사용자" 와 함께 연다(정본 §3.10 [보강] 자동화 엔진 — 그때 이 함수를 걷는다).
+ */
+export function isAutomationCellType(t: unknown): t is Exclude<MvpPropertyType, 'people'> {
+  return isMvpPropertyType(t) && t !== 'people'
+}
 
 export function isMvpPropertyType(t: unknown): t is MvpPropertyType {
   return typeof t === 'string' && MVP_SET.has(t)
@@ -324,6 +334,12 @@ export type DateValue = {
   readonly time_zone?: string | null
 }
 
+/** 사람 칸의 한 사람 — id 만(이름은 사람의 표에서 · 정본 [보강] 사람 속성 ⑥). */
+export type PersonRef = { readonly id: string }
+
+/** 사람 칸 하나의 최대 인원(정본 [보강] 사람 속성 ①). */
+export const MAX_PEOPLE = 50
+
 export type CellValue =
   | { readonly type: 'title'; readonly title: readonly RichTextRun[] }
   | { readonly type: 'rich_text'; readonly rich_text: readonly RichTextRun[] }
@@ -333,6 +349,8 @@ export type CellValue =
   /** `checkbox` 에는 null 이 없다. 기본값은 `false` 다(전수표). */
   | { readonly type: 'checkbox'; readonly checkbox: boolean }
   | { readonly type: 'date'; readonly date: DateValue | null }
+  /** 순서 있는 집합 — 같은 사람은 한 번(6g-1). */
+  | { readonly type: 'people'; readonly people: readonly PersonRef[] }
 
 /** `page_property_value` 의 사이드카 컬럼. 한 셀은 보통 하나만 채운다. */
 export type Sidecars = {
@@ -369,6 +387,8 @@ export function emptyValue(type: MvpPropertyType): CellValue {
       return { type: 'checkbox', checkbox: false }
     case 'date':
       return { type: 'date', date: null }
+    case 'people':
+      return { type: 'people', people: [] }
   }
 }
 
@@ -391,6 +411,8 @@ export function isEmptyValue(value: CellValue): boolean {
       // `false` 는 "비어 있음"이 아니라 값이다 — 노션의 checkbox 필터에도
       // `is_empty` 가 없고 `equals false` 가 있다.
       return false
+    case 'people':
+      return value.people.length === 0
   }
 }
 
@@ -538,6 +560,22 @@ export function validateCellValue(
       }
       return []
     }
+
+    case 'people': {
+      // 모양만 본다 — 이 워크스페이스의 사람인가는 쓰는 트랜잭션이 본다(정본 [보강] 사람 속성 ②)
+      const people = v.people
+      if (!Array.isArray(people)) return [{ path: `${path}.people`, message: '배열이어야 합니다' }]
+      if (people.length > MAX_PEOPLE) return [{ path: `${path}.people`, message: `사람은 ${MAX_PEOPLE}명까지입니다` }]
+      const seen = new Set<string>()
+      for (const [i, person] of people.entries()) {
+        const id = typeof person === 'object' && person !== null && !Array.isArray(person) ? (person as Record<string, unknown>).id : undefined
+        if (typeof id !== 'string' || !UUID.test(id)) return [{ path: `${path}.people[${i}].id`, message: '사람 id(uuid)가 필요합니다' }]
+        // 03 *"같은 사람 2번 추가 → 중복 제거"* — 조용히 고치지 않고 거부한다(쓰기 경로는 관대하게 고치지 않는다 · 머리말)
+        if (seen.has(id.toLowerCase())) return [{ path: `${path}.people[${i}].id`, message: '같은 사람이 두 번 있습니다' }]
+        seen.add(id.toLowerCase())
+      }
+      return []
+    }
   }
 }
 
@@ -575,6 +613,10 @@ export function deriveSidecars(value: CellValue): Sidecars {
       const end = value.date.end ? parseDate(value.date.end) : null
       return { ...NO_SIDECARS, dateStart: start, dateEnd: end }
     }
+
+    case 'people':
+      // 사람 id 를 공백으로 — 정렬하지 않는다. 비었는지 · 찬 칸 수를 다른 타입과 같은 축으로 센다(정본 [보강] 사람 속성 ③)
+      return { ...NO_SIDECARS, text: nullIfEmpty(value.people.map((p) => p.id).join(' ')) }
   }
 }
 

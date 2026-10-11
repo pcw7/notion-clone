@@ -83,6 +83,9 @@ export function calculationsFor(type: MvpPropertyType): readonly Calculation[] {
       return [...COMMON, 'earliest_date', 'latest_date', 'date_range']
     case 'checkbox':
       return ['count_all', 'checked', 'unchecked', 'percent_checked', 'percent_unchecked']
+    // 사람(6g-1) — 세기만. 고유 값 세기는 사이드카(사람 id 의 이음)의 조합을 세게 되어 뜻이 없다(정본 [보강] 사람 속성 ⑤)
+    case 'people':
+      return ['count_all', 'count_values', 'count_empty', 'percent_empty', 'percent_not_empty']
     default:
       return COMMON
   }

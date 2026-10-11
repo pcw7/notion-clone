@@ -187,6 +187,8 @@ const AXIS: Readonly<Record<MvpPropertyType, Axis>> = Object.freeze({
   status: 'text',
   checkbox: 'bool',
   date: 'date',
+  // 사람(6g-1) — 사이드카는 사람 id 를 공백으로 이은 것(정본 §3.5 [보강] 사람 속성 ③). 비었는지만 이 축으로 묻고, 포함은 값으로 묻는다
+  people: 'text',
 })
 
 const COLUMN: Readonly<Record<Axis, string>> = Object.freeze({
@@ -327,6 +329,22 @@ const UNIQUE_ID_OPERATORS: Readonly<Record<string, OperatorSpec>> = Object.freez
   less_than_or_equal_to: NUMBER_OPERATORS.less_than_or_equal_to,
 })
 
+/**
+ * 사람(6g-1 · 정본 §3.5 [보강] 사람 속성 ④) — 포함은 **값의 jsonb 포함 연산**으로 묻는다(사이드카의 부분 문자열로 묻지 않는다 — id 하나가
+ * 다른 id 의 일부일 수는 없지만, 값이 정본이다). 값은 사람 id 하나다. 비어 있음은 사이드카 축(비면 NULL)이다.
+ */
+const PEOPLE_OPERATORS: Readonly<Record<string, OperatorSpec>> = Object.freeze({
+  contains: { arity: 1, predicate: (_c, p) => `v.value -> 'people' @> jsonb_build_array(jsonb_build_object('id', ${p}::text))` },
+  // 셀이 없는 행도 "포함하지 않음" 이다 — `negate` 는 `NOT EXISTS`(텍스트의 does_not_contain 과 같다)
+  does_not_contain: {
+    arity: 1,
+    negate: true,
+    predicate: (_c, p) => `v.value -> 'people' @> jsonb_build_array(jsonb_build_object('id', ${p}::text))`,
+  },
+  is_empty: TEXT_OPERATORS.is_empty,
+  is_not_empty: TEXT_OPERATORS.is_not_empty,
+})
+
 /** 타입별 연산자. **축이 아니라 타입에 달린다**(select 이 텍스트와 다르기 때문). */
 const BY_TYPE: Readonly<Record<FilterableType, Readonly<Record<string, OperatorSpec>>>> =
   Object.freeze({
@@ -338,6 +356,7 @@ const BY_TYPE: Readonly<Record<FilterableType, Readonly<Record<string, OperatorS
     checkbox: CHECKBOX_OPERATORS,
     date: DATE_OPERATORS,
     unique_id: UNIQUE_ID_OPERATORS,
+    people: PEOPLE_OPERATORS,
   })
 
 /** 이 타입이 노출하는 연산자 목록. 카탈로그와 같아야 한다(테스트가 확인). */
@@ -441,6 +460,10 @@ export function validateSorts(sorts: unknown, types: PropertyTypes): ValidationI
     }
     if (key.direction !== 'asc' && key.direction !== 'desc') {
       issues.push({ path: `sorts[${i}].direction`, message: "'asc' 또는 'desc' 여야 합니다" })
+    }
+    // 사람(6g-1)은 정렬 키가 아니다(정본 §3.5 [보강] 사람 속성 ⑤) — 사이드카는 사람 id 라 그 순서는 뜻이 없다
+    if (types.get(key.property_id) === 'people') {
+      issues.push({ path: `sorts[${i}].property_id`, message: '사람으로는 정렬할 수 없습니다' })
     }
     // 같은 프로퍼티로 두 번 정렬하면 두 번째 키가 아무 일도 하지 않는다.
     // 조용히 무시하면 사용자는 자기 설정이 먹은 줄 안다.
