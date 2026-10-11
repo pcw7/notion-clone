@@ -174,6 +174,18 @@ async function call<T>(url: string, init: RequestInit, pick: (body: Record<strin
 
 const base = (workspaceId: string) => `/api/workspaces/${workspaceId}`
 
+/** 사람 칸의 고르개 후보(6g-2) — 게스트에게는 빈 목록이다. */
+export type PersonCandidateJson = { readonly id: string; readonly name: string; readonly guest: boolean }
+
+export function searchPeople(workspaceId: string, q: string): Promise<ApiResult<PersonCandidateJson[]>> {
+  return call(`${base(workspaceId)}/people?q=${encodeURIComponent(q)}`, {}, (body) => (body.people as PersonCandidateJson[]) ?? [])
+}
+
+/** 칸에 든 사람의 이름(6g-2) — 활동 중인 사람만. 떠난 사람은 지도에 없다. */
+export function loadPeopleNames(workspaceId: string, ids: readonly string[]): Promise<ApiResult<Record<string, string>>> {
+  return call(`${base(workspaceId)}/people?ids=${ids.map(encodeURIComponent).join(',')}`, {}, (body) => (body.names as Record<string, string>) ?? {})
+}
+
 export function updateCell(
   workspaceId: string,
   rowId: string,

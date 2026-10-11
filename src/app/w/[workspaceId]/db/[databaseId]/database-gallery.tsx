@@ -32,11 +32,12 @@ import type { GalleryLayout } from '@/lib/database/gallery'
 import { templateRowNote, type DefaultTemplate } from '@/lib/database/new-row'
 import { PageIconView } from '../../page-icon-view'
 import * as api from './table-api'
-import type { RelationIcons, RelationLabels } from './cell-view'
+import type { PeopleNames, RelationIcons, RelationLabels } from './cell-view'
 import { CardBadges } from './card-badges'
 import { NewRowMenu } from './new-row-menu'
 import { SearchEmpty } from './view-search'
 import { useRelationLabels } from './use-relation-labels'
+import { usePeopleNames } from './use-people-names'
 import { useAdoptServerValue, useLiveServerRefresh } from './use-table-changes'
 
 const UNTITLED = '제목 없음'
@@ -65,6 +66,8 @@ export function DatabaseGallery(props: {
   nextCursor: string | null
   relationLabels: RelationLabels
   relationIcons: RelationIcons
+  /** 사람 칸의 이름(6g-2) — 첫 화면의 것은 서버가 준다. */
+  peopleNames?: PeopleNames
   access: DatabaseAccess
   defaultTemplate?: DefaultTemplate | null
   /** 뷰 검색어(2e-2) — "더 보기"도 같은 검색어를 싣는다. */
@@ -114,6 +117,8 @@ export function DatabaseGallery(props: {
   const titleColumn = columns.find((c) => c.type === 'title') ?? null
   const badgeColumns = columns.filter((c) => c.type !== 'title')
   const { labels, icons: relationIcons } = useRelationLabels(workspaceId, props.relationLabels, props.relationIcons, rows, columns)
+  // 사람 칸의 이름(6g-2) — 카드의 배지
+  const { names: peopleNames } = usePeopleNames(workspaceId, props.peopleNames ?? {}, rows, columns)
 
   /** 서버가 준 행으로 갈아 끼운다. 늦게 온(버전이 낮은) 응답은 버린다. */
   const takeRow = (row: RowJson) =>
@@ -271,6 +276,7 @@ export function DatabaseGallery(props: {
                 columns={badgeColumns}
                 relationLabels={labels}
                 relationIcons={relationIcons}
+                peopleNames={peopleNames}
                 testId="db-gallery-badge"
                 button={{ workspaceId, canPress: access.canEditContent }}
               />

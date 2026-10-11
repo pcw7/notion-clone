@@ -8,6 +8,7 @@ import { cellText } from '@/lib/database/cell-format'
 import type { PageIcon } from '@/lib/block/page-icon'
 import { PageIconView } from '../../page-icon-view'
 import { optionIdOf } from '@/lib/database/property-types'
+import { LEFT_USER } from '@/lib/database/cell-format'
 import type { RollupCell, RollupColumnInfo } from '@/lib/database/rollup-functions'
 import type { FormulaValue } from '@/lib/formula/formula'
 import { formulaCell } from '@/lib/database/formula-plan'
@@ -107,8 +108,36 @@ export function OptionChip({ option }: { option: SelectOption }) {
   )
 }
 
-export function CellDisplay({ value, options }: { value: CellValue; options: readonly SelectOption[] }) {
+/** 사람 칸의 이름 지도(6g-2) — 사람 id → 이름. 활동 중인 사람만 — 지도에 없는 id 는 떠난 사람이다. */
+export type PeopleNames = Readonly<Record<string, string>>
+
+/** 사람 칸 — 이름 칩(떠난 사람은 "떠난 사용자" · 흐리게). */
+export function PeopleChips({ ids, names }: { ids: readonly string[]; names: PeopleNames }) {
+  return (
+    <span className="flex min-w-0 flex-wrap gap-1 overflow-hidden" data-testid="db-people">
+      {ids.map((id) => {
+        const known = Object.hasOwn(names, id)
+        return (
+          <span
+            key={id}
+            data-testid="db-person-chip"
+            data-left={known ? undefined : 'true'}
+            className={`max-w-full truncate rounded px-1.5 py-0.5 text-xs ${
+              known ? 'bg-neutral-100 dark:bg-neutral-800' : 'bg-neutral-50 italic text-neutral-400 dark:bg-neutral-900'
+            }`}
+          >
+            {known ? names[id] : LEFT_USER}
+          </span>
+        )
+      })}
+    </span>
+  )
+}
+
+export function CellDisplay({ value, options, names = {} }: { value: CellValue; options: readonly SelectOption[]; names?: PeopleNames }) {
   switch (value.type) {
+    case 'people':
+      return <PeopleChips ids={value.people.map((p) => p.id)} names={names} />
     case 'checkbox':
       return (
         <span

@@ -16331,6 +16331,76 @@ async function main() {
       await api('DELETE', `/pages/${db.id}/publish`)
     }
 
+    if (sectionIf('사람 속성 — 칸 · 고르개 (6g-2a · F-03-07)')) {
+      // 속성 추가의 "사람" → 칸에서 Enter 로 고르개 → 이름으로 찾아 고르면 칩 · 서버 값 → × 로 빼면 빈 칸 → 행 화면에도 칩.
+      const stamp = Date.now()
+      const api = async (method, path, body, headers = authed) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const setSelect = (selector, value) => evaluate(`(() => {
+        const s = document.querySelector(${JSON.stringify(selector)})
+        if (!s) return false
+        s.value = ${JSON.stringify(value)}
+        s.dispatchEvent(new Event('change', { bubbles: true }))
+        return true
+      })()`)
+      const db = (await api('POST', '/databases', { name: `담당표 ${stamp}` })).body.database
+      const view = db.defaultViewId
+      const mateName = `담당 동료 ${stamp}`
+      const mate = await joinAs(workspaceId, await createUser(mateName), 'member')
+      const titleProp = (await api('GET', `/views/${view}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const row = (await api('POST', `/views/${view}/rows`, { cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun('할 일')] } }] })).body.row.id
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      await waitFor(`!!document.querySelector('[data-testid="db-add-column"]')`, 15000)
+      for (let i = 0; i < 6 && !(await evaluate(`!!document.querySelector('[data-testid="db-add-column-form"]')`)); i += 1) {
+        await clickSelector('[data-testid="db-add-column"]')
+        await waitFor(`!!document.querySelector('[data-testid="db-add-column-form"]')`, 2000)
+      }
+      const offered = await evaluate(`[...(document.querySelector('select[aria-label="속성 유형"]')?.options ?? [])].some((o) => o.value === 'people' && o.textContent.includes('사람'))`)
+      await waitFor(`document.activeElement?.getAttribute('aria-label') === '속성 이름'`, 3000)
+      await typeText('담당')
+      await setSelect('select[aria-label="속성 유형"]', 'people')
+      await clickSelector('[data-testid="db-add-column-form"] button[type="submit"]')
+      await waitFor(`[...document.querySelectorAll('thead th')].some((th) => th.textContent.includes('담당'))`, 15000)
+      const pid = (await api('GET', `/views/${view}`)).body.view.columns.find((c) => c.name === '담당')?.propertyId
+      check('★ 속성 추가에 "사람" — 고르면 사람 열이 선다', offered && typeof pid === 'string', String(pid))
+
+      const CELL = `tr[data-row-id="${row}"] td[data-property-id="${pid}"]`
+      const valueOf = async () => {
+        const rows = (await api('GET', `/views/${view}/rows`)).body?.rows ?? []
+        return (rows.find((r) => r.id === row)?.properties?.[pid]?.people ?? []).map((p) => p.id).join(',')
+      }
+      // 서버 값은 브라우저 식이 아니다 — 여기서 몇 번 묻는다
+      const serverUntil = async (want, ms = 8000) => {
+        for (const end = Date.now() + ms; Date.now() < end; await sleep(150)) if ((await valueOf()) === want) return true
+        return false
+      }
+      await clickSelector(CELL)
+      await key('Enter')
+      check('칸에서 Enter — 사람 고르개가 열리고 찾기 칸에 포커스', await waitFor(`document.activeElement?.matches('[data-testid="db-people-input"]')`, 5000))
+      await typeText('담당 동료')
+      await waitFor(`[...document.querySelectorAll('[data-testid="db-people-option"]')].some((o) => o.textContent.includes(${JSON.stringify(mateName)}))`, 8000)
+      await key('Enter')
+      check('★ 고르면 칩이 서고 서버에 저장된다',
+        (await waitFor(`(document.querySelector('${CELL} [data-testid="db-person-chip"]')?.textContent ?? '') === ${JSON.stringify(mateName)}`, 8000)) &&
+          (await serverUntil(mate.userId)),
+        `${await evaluate(`document.querySelector('${CELL}')?.textContent ?? '(칸 없음)'`)} · ${await valueOf()}`)
+
+      await clickSelector('[data-testid="db-people-remove"]')
+      const cleared = await waitFor(`!document.querySelector('${CELL} [data-testid="db-person-chip"]')`, 8000)
+      check('× 로 빼면 빈 칸 · 서버 값도 비었다', cleared && (await serverUntil('')), await valueOf())
+      await key('Escape')
+
+      await api('PATCH', `/rows/${row}`, { cells: [{ propertyId: pid, value: { type: 'people', people: [{ id: mate.userId }] } }] })
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${row}` })
+      check('행 화면의 속성 묶음에도 이름 칩',
+        await waitFor(`[...document.querySelectorAll('[data-testid="row-properties"] [data-testid="db-person-chip"]')].some((c) => c.textContent === ${JSON.stringify(mateName)})`, 15000))
+    }
+
     if (sectionIf('개인 필터 · 정렬 — 화면 (2h-2 · F-04-17)')) {
       // 볼 수만 있는 사람(브라우저 세션을 바꾼다)이 도구줄의 필터로 조건을 걸면 **자기 것**으로 저장되고 그 사람의 표만 좁혀진다 — "나만 보는
       // 필터" 표시 · 초기화. 편집자는 자기 개인 것을 "모두에게 저장"한다. 브라우저 세션은 끝에 반드시 소유자로 되돌린다.

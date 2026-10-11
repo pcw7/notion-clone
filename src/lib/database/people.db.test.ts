@@ -9,6 +9,7 @@
  *   ③ 정렬 키로는 거부 · 열 집계는 세기
  *   ④ 떠난 사람은 값에 남고 이름 지도에서 빠진다("떠난 사용자")
  *   ⑤ 내보내기 — 사람 열은 이름 지도를 싣고 CSV 는 이름이다
+ *   ⑥ 고르개 후보(6g-2) — 활동 중인 사람만 · 이름 · 메일로 · **게스트에게는 없다**(7d-2) · 이름 지도는 id 를 주면 활동 중인 사람만
  */
 
 import { test, describe, before, after } from 'node:test'
@@ -19,7 +20,7 @@ import { withReadTransaction } from '../db/tx.ts'
 import { createBareWorkspace, createUser, joinAs, probeDatabase } from '../testing/db-fixtures.ts'
 import { computeCalculations } from './calculate.ts'
 import { createDatabase } from './database.ts'
-import { peopleNamesIn } from './people.ts'
+import { loadPeopleNames, peopleNamesIn, searchPeople } from './people.ts'
 import { addProperty, getSchema } from './property.ts'
 import type { CellValue } from './property-types.ts'
 import { queryRows } from './query.ts'
@@ -139,6 +140,24 @@ describe('⑤ 내보내기', () => {
     const column = (snapshot.value.nodes.get(db.id) as ExportDatabaseNode).sources[0]!.columns.find((c) => c.propertyId === owner)
     assert.ok(column !== undefined && column.type === 'people')
     assert.equal(cellPlainText(column, row.properties[owner]), '동료')
+  })
+})
+
+describe('⑥ 고르개 후보 · 이름(6g-2)', () => {
+  test('★ 활동 중인 사람만 · 이름으로 좁힌다 · 게스트에게는 후보가 없다 · 이름 지도는 활동 중인 사람만', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { boss, mate, guest } = await team()
+    const all = await searchPeople(boss.ctx, '')
+    assert.ok(all.some((p) => p.id === mate.userId && !p.guest) && all.some((p) => p.id === guest.userId && p.guest))
+    assert.deepEqual((await searchPeople(boss.ctx, '동료')).map((p) => p.id), [mate.userId])
+    assert.deepEqual(await searchPeople(guest.ctx, ''), [], '게스트는 멤버 목록을 받지 않는다(7d-2)')
+
+    await query(`UPDATE workspace_member SET status = 'removed', removed_at = now() WHERE workspace_id = $1 AND user_id = $2`, [
+      boss.ctx.workspaceId,
+      mate.userId,
+    ])
+    assert.equal((await searchPeople(boss.ctx, '')).some((p) => p.id === mate.userId), false, '떠난 사람은 후보가 아니다')
+    assert.deepEqual(await loadPeopleNames(boss.ctx, [mate.userId, guest.userId, 'not-a-uuid']), { [guest.userId]: '손님' })
   })
 })
 

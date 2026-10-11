@@ -81,10 +81,11 @@ import {
 import { templateRowNote, UNTITLED_TEMPLATE, type DefaultTemplate } from '@/lib/database/new-row'
 import { CALCULATION_LABEL, formatCalculation, type Calculation, type CalculationResult } from '@/lib/database/calculations'
 import * as api from './table-api'
-import { OptionChip, type RelationIcons, type RelationLabels } from './cell-view'
+import { OptionChip, type PeopleNames, type RelationIcons, type RelationLabels } from './cell-view'
 import { NewRowMenu } from './new-row-menu'
 import { CardBadges } from './card-badges'
 import { useRelationLabels } from './use-relation-labels'
+import { usePeopleNames } from './use-people-names'
 import { useAdoptServerValue, useLiveServerRefresh } from './use-table-changes'
 
 /** `GET /groups` 의 그룹 하나 — 행은 `rowJson`. 서버 렌더(`page.tsx`)도 같은 모양으로 내려준다. */
@@ -145,6 +146,8 @@ export function DatabaseBoard(props: {
   relationLabels: RelationLabels
   /** 그 행들의 아이콘(8c-3a) — 제목 맵과 같은 답에서 왔다. */
   relationIcons: RelationIcons
+  /** 사람 칸의 이름(6g-2) — 첫 화면의 것은 서버가 준다. */
+  peopleNames?: PeopleNames
   /** 이 뷰의 기본 템플릿(F-08-03). 열의 `+` 를 그냥 누르면 이것으로 만든다 — 그 열의 값이 템플릿의 값을 덮는다. */
   defaultTemplate?: DefaultTemplate | null
   /** 살아 있는 그룹 머리의 계산(2d-3) — 무엇의 계산인지(머리의 `title`). 없으면 머리는 카드 수. */
@@ -488,6 +491,8 @@ export function DatabaseBoard(props: {
     groups.flatMap((g) => g.rows),
     columns,
   )
+  // 사람 칸의 이름(6g-2) — 카드의 배지
+  const { names: peopleNames } = usePeopleNames(workspaceId, props.peopleNames ?? {}, groups.flatMap((g) => g.rows), columns)
 
   const visible = groups.filter((g) => !g.hidden)
   const hiddenGroups = groups.filter((g) => g.hidden)
@@ -580,6 +585,7 @@ export function DatabaseBoard(props: {
                     badgeColumns={badgeColumns}
                     button={{ workspaceId, canPress: access.canEditContent }}
                     relationLabels={labels}
+                    peopleNames={peopleNames}
                     relationIcons={relationIcons}
                     dragging={draggingId === row.id}
                     dropBefore={isTarget && drop.beforeRowId === row.id}
@@ -679,6 +685,7 @@ function BoardCard({
   badgeColumns,
   button,
   relationLabels,
+  peopleNames,
   relationIcons,
   dragging,
   dropBefore,
@@ -702,6 +709,7 @@ function BoardCard({
   button: { readonly workspaceId: string; readonly canPress: boolean }
   relationLabels: RelationLabels
   relationIcons: RelationIcons
+  peopleNames: PeopleNames
   dragging: boolean
   dropBefore: boolean
   editing: Editing | null
@@ -770,6 +778,7 @@ function BoardCard({
           columns={badgeColumns}
           relationLabels={relationLabels}
           relationIcons={relationIcons}
+          peopleNames={peopleNames}
           testId="db-board-badge"
           button={button}
         />
