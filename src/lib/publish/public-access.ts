@@ -16,6 +16,10 @@
  *   → 그 페이지의 조상 사슬 전체(루트 위 포함)가 `live` · `restricted` / `taken_down` 이 없음
  *   → 만료 전
  *
+ * **루트는 데이터베이스일 수 있다**(6a-2c-1 · 정본 [정정] 웹 게시 ⑫) — 그 아래의 행(페이지)과 행의 하위 페이지가 같은 조건으로 열린다.
+ * 템플릿 행은 열지 않는다(R1 — 템플릿은 항목이 아니다 · 그 아래도). data source 를 휴지통에 보내면 그 행도 함께 휴지통에 간다
+ * (`trashDataSource`) — `live` 조건이 닫는다.
+ *
  * 어긴 이유는 **만료만** 구별해 돌려준다(06 엣지 *"만료된 링크 → 만료 안내 화면"*). 나머지는 모두 없는 페이지다 — 정책 · 테이크다운 ·
  * 휴지통을 익명에게 구별해 주면 그 주소가 무엇이었는지를 알려 준다.
  */
@@ -57,7 +61,15 @@ type RootRow = {
   policy_allows: boolean
 }
 
-type ChainRow = { id: string; type: string; lifecycle: string; moderation_state: string; inherits: boolean }
+type ChainRow = {
+  id: string
+  type: string
+  lifecycle: string
+  moderation_state: string
+  inherits: boolean
+  /** 템플릿 행(R1) — 공개 항목이 아니다. */
+  is_template: boolean
+}
 
 const NOT_FOUND = { ok: false, reason: 'not_found' } as const
 
@@ -172,8 +184,11 @@ async function openableChainsIn(
   if (paths.size === 0) return new Map()
 
   const rows = await tx.query<ChainRow>(
-    `SELECT b.id, b.type, b.lifecycle, b.moderation_state, coalesce(m.inherits_from_parent, true) AS inherits
-       FROM block b LEFT JOIN block_acl_meta m ON m.node_id = b.id
+    `SELECT b.id, b.type, b.lifecycle, b.moderation_state, coalesce(m.inherits_from_parent, true) AS inherits,
+            coalesce(p.is_template, false) AS is_template
+       FROM block b
+       LEFT JOIN block_acl_meta m ON m.node_id = b.id
+       LEFT JOIN page p ON p.id = b.id
       WHERE b.id = ANY($1::uuid[])`,
     [[...new Set([...paths.values()].flat())]],
   )
@@ -185,15 +200,23 @@ async function openableChainsIn(
   return open
 }
 
-/** 사슬이 열리는가 — 루트와 끝이 페이지 · 사슬 전체가 `live` · 막는 모더레이션 없음 · 루트 아래에서 상속이 끊기지 않음. */
+/**
+ * 사슬이 열리는가 — 루트는 페이지 또는 데이터베이스(6a-2c-1) · 끝은 페이지(루트 자신이면 데이터베이스도) · 사슬 전체가 `live` · 막는
+ * 모더레이션 없음 · 템플릿 행이 없음 · 루트 아래에서 상속이 끊기지 않음.
+ */
 function chainOpens(path: readonly string[], rootAt: number, byId: ReadonlyMap<string, ChainRow>): boolean {
   for (let at = 0; at < path.length; at += 1) {
     const row = byId.get(path[at]!)
     if (row === undefined) return false
     // 사슬 전체(루트 위 포함) — 휴지통 · 테이크다운은 서브트리를 덮는다
     if (row.lifecycle !== 'live' || BLOCKING_MODERATION.has(row.moderation_state)) return false
+    // 템플릿은 항목이 아니다(R1) — 그 아래도
+    if (row.is_template) return false
     // 루트 아래 — 상속을 끊은 노드부터는 공개가 아니다(06 *"하위에서 상속을 끊어 공개 대상에서 제외"*)
     if (at > rootAt && !row.inherits) return false
   }
-  return byId.get(path[rootAt]!)?.type === 'page' && byId.get(path[path.length - 1]!)?.type === 'page'
+  const root = byId.get(path[rootAt]!)?.type
+  const end = byId.get(path[path.length - 1]!)?.type
+  if (root !== 'page' && root !== 'database') return false
+  return end === 'page' || (end === 'database' && path.length - 1 === rootAt)
 }
