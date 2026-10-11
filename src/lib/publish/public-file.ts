@@ -14,7 +14,7 @@
  * 이유는 말하지 않는다 — 열 수 없으면 모두 null(404).
  */
 
-import { pageIconOfFormat } from '../block/page-icon.ts'
+import { pageIconOfFormat, readPageIcon } from '../block/page-icon.ts'
 import { readImageSource } from '../block/image.ts'
 import { PAGE_TYPE } from '../block/types.ts'
 import { withReadTransaction, type Tx } from '../db/tx.ts'
@@ -59,7 +59,13 @@ export async function readPublicBlockFile(token: string, blockId: string, kind: 
     let pageId: string | null
     let fileId: string | null
     if (kind === 'icon') {
-      const icon = block.type === PAGE_TYPE ? pageIconOfFormat(block.format) : null
+      // 데이터베이스의 아이콘은 그 칸(`database.icon` · 8c-3b)이다 — 게시된 데이터베이스(6a-2c-2)의 머리
+      const icon =
+        block.type === PAGE_TYPE
+          ? pageIconOfFormat(block.format)
+          : block.type === 'database'
+            ? readPageIcon((await tx.queryMaybe<{ icon: unknown }>(`SELECT icon FROM database WHERE id = $1`, [block.id]))?.icon ?? null)
+            : null
       pageId = block.id
       fileId = icon?.type === 'file' ? icon.file_id : null
     } else {

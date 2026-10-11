@@ -78,6 +78,21 @@
 .pub-icon-image { width: 4.5rem; height: 4.5rem; object-fit: cover; border-radius: 4px; margin-bottom: 0.5rem; }
 
 /* 6b-1b — 신고 */
+/* 공개 표 · 행의 속성(6a-2c-2) — 옵션 칩의 색은 편집기의 [data-color] 배경이다 */
+.pub-db { display: flex; flex-direction: column; gap: 0.5rem; }
+.pub-db-view { font-size: 0.875rem; font-weight: 600; color: #6b7280; }
+.pub-db-table { width: 100%; font-size: 0.875rem; }
+.pub-db-table td { vertical-align: top; }
+.pub-db-row-link { color: inherit; font-weight: 500; text-decoration: none; }
+.pub-db-row-link:hover { text-decoration: underline; }
+.pub-option { display: inline-block; border-radius: 3px; padding: 0 0.375rem; background: rgba(135, 131, 120, 0.15); white-space: nowrap; }
+.pub-checkbox { font-size: 1rem; }
+.pub-props { display: flex; flex-direction: column; gap: 0.375rem; margin: -0.75rem 0 1.5rem; font-size: 0.875rem; }
+.pub-prop { display: flex; gap: 1rem; }
+.pub-prop dt { flex: none; width: 9rem; color: #6b7280; }
+.pub-prop dd { margin: 0; min-width: 0; }
+@media (max-width: 640px) { .pub-prop { flex-direction: column; gap: 0.125rem; } .pub-prop dt { width: auto; } }
+
 .pub-footer { margin-top: 4rem; padding-top: 1rem; border-top: 1px solid rgba(55, 53, 47, 0.12); font-size: 0.75rem; color: #9ca3af; }
 .pub-footer a { color: inherit; }
 .pub-report-form { display: flex; flex-direction: column; gap: 1rem; }
