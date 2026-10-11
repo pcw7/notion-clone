@@ -711,7 +711,9 @@ CREATE TABLE access_request (
 > ④ **명령은 데이터베이스의 `manage_perm`** — 공유의 일이다(못 보면 not_found · 보지만 관리 못 하면 forbidden). 바뀌면 감사 로그
 > (`page.permission_changed` · `rule_set` / `rule_removed`)와 권한 신호(트리거 — 협업 서버가 그 워크스페이스의 연결을 다시 판정한다).
 >
-> ⑤ **목록 · 검색에는 걸리지 않는다** — 규칙으로만 열리는 행은 `perm_scope_id` 스코프에 없다. §6.1-3(검색 제외) 그대로.
+> ⑤ **목록 · 검색에는 걸리지 않는다** — 규칙으로만 열리는 행은 `perm_scope_id` 스코프에 없다. §6.1-3(검색 제외) 그대로. **인박스는 예외**
+> ⟨6h⟩ — 알림은 받는 사람의 것이고 배달 시점 권한(§3.8 [보강] 인앱 인박스 ②)은 판정과 같은 답을 내야 한다: 스코프 **또는** 규칙이 그
+> 사람에게 그 행을 연다(⑥ 의 술어와 같은 식 · 한 곳 — `ruleOpensRowSql`). 아니면 "담당 → 편집" 으로 행을 받은 사람이 담당 알림을 못 본다.
 > 그 행은 주소 · 데이터베이스 화면(6f-2b — 볼 수 없는 사람이 자기 행만 보는 표)으로 연다.
 >
 > ⑥ **"만들기만" 은 표를 열고 자기가 열 수 있는 행만 본다** ⟨6f-2b-1⟩ — `create_child` 는 있고 `view` 는 없는 사람(`create` 레벨)에게
@@ -2389,7 +2391,8 @@ const MAX_PROPERTIES_PER_DS  = 500;     // [확인필요] 스코프 = data_sourc
 >
 > ⑦ **내보내기** — CSV 는 이름을 `, ` 로 잇는다 · 스냅샷(JSON)은 값 그대로(id).
 >
-> ⑧ **화면** · **사람 규칙** · **담당 알림**(F-11-08 — `person_property_assigned`)은 다음 조각들이다.
+> ⑧ **화면** · **사람 규칙** · **담당 알림**(F-11-08 — `person_property_assigned`)은 다음 조각들이다. ⟨6g-2 · 6g-3 · 6h 에서 섰다 —
+> ⑨ ⑩ · [보강] 행 단위 접근 규칙 ③ ⑨ · §3.8 [보강] 담당 알림⟩
 >
 > ⑨ **[6g-2a] 칸 · 고르개** — 칸은 이름 칩(떠난 사람은 "떠난 사용자" · 흐리게) · 고르는 순간마다 저장한다(초안 없음 — 관계형 편집기와
 > 같다) · 이미 든 사람을 고르면 뺀다. 고르개의 후보는 이 워크스페이스의 **활동 중인** 사람(이름 · 메일로 · 30명) — **게스트에게는 후보가
@@ -2924,7 +2927,7 @@ CREATE TABLE activity_event (                  -- 알림·피드·웹훅의 단�
                                                -- |'user.mentioned'|'page.created'|'page.moved'|'page.trashed'
                                                -- |'suggestion.created'|'suggestion.accepted'
                                                -- |'access.requested'|'access.granted' [보강 7e-1]
-                                               -- |'reminder.fired' [보강 4c-2]|...
+                                               -- |'reminder.fired' [보강 4c-2]|'person.assigned' [보강 6h]|...
   payload jsonb NOT NULL, created_at timestamptz NOT NULL
 ) PARTITION BY RANGE (created_at);             -- <17> (workspace_id, occurred_at) 파티션 요구
 CREATE INDEX ON activity_event (page_id, created_at DESC);
@@ -3076,7 +3079,7 @@ CREATE INDEX ON reminder (target_at) WHERE fired_at IS NULL;
 >    (`getPage`)과 같은 문이다. 볼 수 없으면 없는 페이지와 같다(404).
 > ② **보이는 종류는 허용 목록** — `page.created` · `page.moved` · `page.trashed` · `block.updated` · `property.updated` · `comment.created`.
 >    빼는 것: `user.mentioned`(누가 멘션됐는지는 받은 사람의 것이고 편집은 `block.updated` 가 이미 말한다) · `access.*`(요청한 사람과
->    결정은 관리자의 것) · `reminder.fired`(한 사람의 것). `suggestion.*` 은 제안 편집(U-2)이 생길 때 목록에 더한다. 새 종류는 목록에
+>    결정은 관리자의 것) · `reminder.fired` · `person.assigned`(한 사람의 것 — 셀 편집은 `property.updated` 가 말한다). `suggestion.*` 은 제안 편집(U-2)이 생길 때 목록에 더한다. 새 종류는 목록에
 >    넣기 전까지 보이지 않는다 — 빠지는 쪽이 새는 쪽보다 낫다.
 > ③ **최신순 · 커서** — `(created_at, id)` 내림차순 · 한 번에 30개 · 커서는 마지막 항목의 시각(마이크로초)과 id 를 불투명하게 싼 것
 >    (`encodeCursor` — OFFSET 이 아니다). 색인은 `ix_activity_event_page`.
@@ -3284,6 +3287,32 @@ CREATE INDEX ON reminder (target_at) WHERE fired_at IS NULL;
 > 것부터 50줄 · 종류로 거르기 · 앞으로 넘기기. **CSV** 는 지금 고른 종류로, 화면과 같은 문구로(`audit-labels.ts`) · 모든 칸에 수식 막기
 > (이름 · 메일 · 설정 값은 남이 쓴 글자다) · 빈 결과도 머리 줄만 있는 파일(11 *"빈 CSV 도 생성해 내보내기 실패와 구분"*) · 한 번에
 > 10,000줄(넘으면 머리 `x-audit-truncated`). 감사 로그를 읽은 것 자체를 쌓지는 않는다(§7).
+
+**[보강] 담당 알림 — 사람 칸에 새로 든 사람에게** ⟨게시 · 공유 6h · F-11-08 / 마이그레이션 0092⟩
+
+> 11 F-11-08 *"데이터베이스 Person property 에 내가 추가됨 → 추가된 사용자 · 개별 사용자가 이 알림을 끌 수 없다"*. 알림 종류
+> `person_property_assigned` 는 초판(0020)에 있고, 이것을 만드는 길이 없었다([보강] 사람 속성 ⑧).
+>
+> ① **누가 받는가** — 사람 칸을 쓰는 두 문(`createRowIn` · `updateCellsIn` — [보강] 사람 속성 ②)에서 **새로 든 사람**(쓴 뒤의 집합 −
+> 쓰기 전의 집합). 쓴 사람 자신 · 이미 들어 있던 사람 · 뺀 사람은 받지 않는다. 템플릿 행(R1 — 항목이 아니다)은 만들지 않는다 — 템플릿으로
+> 만든 행에 든 사람은 받는다(그 행이 생긴 순간 든 것이다). 칸 비우기는 알림이 없다.
+>
+> ② **활동 · 알림** — 활동 이벤트 `person.assigned`(payload 는 `property_id` 하나 — 받는 사람은 알림 행이 안다 · N3). 셀 편집 자체는
+> `property.updated` 가 이미 남기므로 이 종류는 Updates 패널 · 페이지 웹훅의 허용 목록에 넣지 않는다(알림의 근거일 뿐이다). 알림은 받는
+> 사람마다 한 행(N2) · `group_key` 는 `assign:{행}:{속성}` — 같은 칸에 다시 들면 조회 때 접힌다.
+>
+> ③ **끌 수 없다** — 페이지 구독의 뮤트(`none`)를 따르지 않는다(11 *"개별 사용자가 이 알림을 끌 수 없다"* · 접근 요청의 알림 ①과 같다 —
+> 그 사람에게 온 일이다). 속성 단위 스위치(11 의 `person_property_setting.notify_on_assign`)는 뒤로 — 지금은 늘 켜져 있다.
+>
+> ④ **배달 시점 권한** — 인박스가 읽을 때 그 행을 볼 수 있는지 본다([보강] 인앱 인박스 ②) — 스코프 또는 행 단위 접근 규칙(그 절 ⑤ 의
+> 예외 — 인박스는 규칙이 연 행도 본다). 칸에 들었어도 그 행을 못 보면 보이지 않고, 볼 수 있게 되면(사람 규칙 — 같은 절 ③ 이 그 사람에게
+> 행을 열면 곧바로) 보인다. 11 *"수신자에게 페이지 권한 없음 →
+> 알림 생성 차단"* 의 우리 쪽 답이다 — 만들 때는 받는 사람의 세션이 없어 판정할 수 없다.
+>
+> ⑤ **인박스 줄** — *"'담당'에 회원님을 추가했습니다."* — 속성의 **지금** 이름(리마인더 ⑨ ⓓ 와 같다 — 복제하지 않는다). 속성이
+> 없어졌으면 *"사람 속성에 회원님을 추가했습니다."*. 종류 이름은 "담당".
+>
+> ⑥ N4 — 사람 칸은 사람만 쓴다(자동화 · 버튼은 사람 칸을 쓰지 못한다 — [보강] 사람 속성 ⑤). 그 문을 열면 이 절의 ① 을 함께 정한다.
 
 ---
 
