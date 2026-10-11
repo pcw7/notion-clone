@@ -1242,6 +1242,51 @@ CREATE TABLE access_request (
 > 패널에 웹 게시 절이 서고, 게시 전에 무엇이 열리는지 데이터베이스의 말로 말한다(첫 번째 뷰의 표와 그 행 · 숨긴 열과 관계형 · 롤업 ·
 > 수식 열은 보이지 않는다).
 
+**[보강] 사이트 주소 — 워크스페이스의 주소 · 페이지의 슬러그** ⟨게시 · 공유 6c-1 · F-13-08 / 마이그레이션 0093⟩
+
+> 13 F-13-08 *"URL slug 를 편집한다(최대 60자, 영문/숫자/하이픈)"* · 데이터 모델 함의의 `site_domain`(13 제안 — 정본에 없었다). 공개 주소는
+> 지금까지 토큰(`/p/{token}`)뿐이었다 — 무작위 22자는 나눠 줄 수는 있어도 사람이 읽고 기억할 수 없다. 사이트는 **같은 공개를 읽을 수 있는
+> 주소로 한 번 더 여는 것**이다 — 판정 · 읽기는 토큰의 것을 그대로 쓴다.
+
+```sql
+CREATE TABLE site_domain (                    -- [보강 6c-1] 워크스페이스의 사이트 주소(13 의 site_domain — 지금은 하위 주소만)
+  id uuid PRIMARY KEY,
+  workspace_id uuid NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+  kind text NOT NULL DEFAULT 'subdomain' CHECK (kind IN ('subdomain')),   -- 'custom' 은 F-13-09(DNS 검증)과 함께 넓힌다
+  name text NOT NULL CHECK (name ~ '^[a-z0-9](?:[a-z0-9-]{1,38}[a-z0-9])$'),  -- 3~40자 · 소문자 · 숫자 · 하이픈(끝은 아니다)
+  created_by uuid NULL, created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX ux_site_domain_name ON site_domain (name);                              -- 주소는 모두에게 하나
+CREATE UNIQUE INDEX ux_site_domain_workspace ON site_domain (workspace_id) WHERE kind = 'subdomain';  -- 워크스페이스마다 하나
+
+ALTER TABLE public_link
+  ADD COLUMN workspace_id uuid NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,  -- 슬러그의 이름 공간(기존 행은 블록에서 채운다)
+  ADD COLUMN slug text NULL CHECK (slug ~ '^[a-z0-9]+(?:-[a-z0-9]+)*$' AND length(slug) <= 60);
+CREATE UNIQUE INDEX ux_public_link_slug ON public_link (workspace_id, slug) WHERE slug IS NOT NULL;
+```
+
+> ① **주소** — `/s/{워크스페이스 주소}/{슬러그}`(하위 페이지는 `/s/{주소}/{슬러그}/{pageId}`). 운영에서는 `{주소}.{사이트 호스트}/{슬러그}` 로
+> 받아 같은 처리로 넘긴다(호스트를 경로로 바꾸는 것은 배포의 일 — 경로 꼴이 정본이다). 토큰 주소는 그대로 산다 — 사이트 주소는 **덧붙는
+> 이름**이지 공개의 정본이 아니다(공개 여부 · 만료 · 색인은 `public_link` 한 곳 — [정정] 웹 게시 ①).
+>
+> ② **판정은 토큰의 것** — 주소 → 워크스페이스 → 그 워크스페이스의 슬러그 → 그 링크의 토큰 → `resolvePublicPage`(만료 · 정책 · 휴지통 ·
+> 모더레이션 · 사슬 — 모두 같다). 게시를 해제하면(`enabled = false`) 슬러그 주소도 닫힌다(슬러그는 남는다 — 다시 게시하면 다시 열린다).
+> 열 수 없는 이유를 말하지 않는다(404 — 토큰과 같다).
+>
+> ③ **워크스페이스 주소** — 소유자만 정한다(설정). 3~40자 · 소문자 · 숫자 · 하이픈. **모두에게 하나**(다른 워크스페이스가 쓰면 `taken`) ·
+> 앱이 쓰는 이름(`www` · `api` · `app` · `admin` 등 — `reserved`)은 받지 않는다. 바꾸면 옛 주소는 곧바로 닫힌다(넘겨주는 길은 없다 —
+> v1). 지우면 사이트 주소가 모두 닫힌다(토큰 주소는 산다). 감사 로그(`workspace.setting_changed` · 키 `site.domain`).
+>
+> ④ **슬러그** — 그 페이지를 게시할 수 있는 사람(`manage_perm`)이 게시 설정에서 정한다(`updatePublicLink` 의 한 칸). 소문자 · 숫자 ·
+> 하이픈 · 60자 · **워크스페이스 안에서 하나**(`slug_taken`). 대문자는 소문자로 받는다 — 주소는 대소문자를 가르지 않는 편이 덜 헷갈린다.
+> 비우면 슬러그 주소가 닫힌다. 슬러그는 게시 설정의 한 칸이라 **게시된 링크에만**(`not_published` — 다른 설정과 같다) · 해제해도 남는다.
+>
+> ⑤ **화면 안의 주소** — 사이트 주소로 연 화면은 링크(하위 페이지 · 이동 경로 · 공개 표의 행)를 사이트 주소로 만든다(기준 경로 —
+> `/s/{주소}/{슬러그}`). 이미지 · 아이콘 · 신고는 토큰 경로 그대로다(같은 공개를 여는 같은 열쇠 — v1).
+>
+> ⑥ **뒤로** — 커스텀 도메인 · DNS 검증(F-13-09) · 사이트의 홈 지정 · SEO 제목 · 설명 · 분석(유료) · 하위 페이지의 슬러그 · 슬러그를
+> 바꿀 때 옛 주소 넘겨주기.
+
 **[보강] 공개 페이지 신고 — 신고는 케이스로 묶이고 사람이 본다** ⟨게시 · 공유 6b-1a · F-17-08 · F-17-09 / 마이그레이션 0085⟩
 
 > 17 의 `abuse_report` · `moderation_case` 를 정본으로 들인다(17 단독이던 축 — §7 의 *"17 고유"*). 17 F-17-08 클론 대안 *"모더레이션
