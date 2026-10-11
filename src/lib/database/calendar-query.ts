@@ -74,7 +74,7 @@ export async function queryCalendar(
     const params = new ParamBag(2)
     // 권한이 필터보다 먼저다(F-03-17) — 달력의 행과 "날짜 없음" 의 수가 같은 WHERE 를 쓴다
     const accessSql = restrictedRowsSql(access, params)
-    const filterSql = compileFilter(filter, types, params)
+    const filterSql = compileFilter(filter, types, params, { me: ctx.userId })
     const searchSql = input.search ? compileSearch(input.search, types, params) : null
     const pair = subItemPairOf(columns)
     const treeSql = pair === null ? null : compileTree({ parentPropertyId: pair.parentPropertyId, under: null }, params)

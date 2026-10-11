@@ -13,7 +13,7 @@
  * 않게) · 항목을 누를 때 `mousedown` 의 기본 동작을 막는다(입력칸이 포커스를 잃으면 표가 편집을 닫는다).
  */
 
-import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
+import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 
 import { LEFT_USER } from '@/lib/database/cell-format'
 import { MAX_PEOPLE } from '@/lib/database/property-types'
@@ -25,6 +25,7 @@ export function PeopleEditor({
   current,
   names,
   align = 'left',
+  leading,
   onChange,
 }: {
   workspaceId: string
@@ -32,6 +33,8 @@ export function PeopleEditor({
   current: readonly string[]
   names: PeopleNames
   align?: 'left' | 'right'
+  /** 찾기 칸 위에 끼우는 것 — 필터의 "나"(6g-2c · `people-value.tsx`). 칸의 고르개는 주지 않는다. */
+  leading?: ReactNode
   /** 새 목록 · 방금 이름을 안 사람(칩이 깜빡이지 않게 이름 지도에 넣는다). */
   onChange: (ids: readonly string[], known: PeopleNames) => void
 }) {
@@ -89,6 +92,7 @@ export function PeopleEditor({
         align === 'right' ? 'right-0' : 'left-0'
       }`}
     >
+      {leading}
       {current.length > 0 && (
         <ul aria-label="칸에 든 사람" className="mb-1 flex flex-wrap gap-1 px-1 pt-1" data-testid="db-people-current">
           {current.map((id) => (

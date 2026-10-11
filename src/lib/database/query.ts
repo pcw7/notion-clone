@@ -174,7 +174,8 @@ export async function queryRows(
     // ── ② 컴파일. `$1` 은 dataSourceId 가 쓰므로 2번부터 발급한다 ──
     const params = new ParamBag(2)
     const accessSql = restrictedRowsSql(access, params)
-    const filterSql = compileFilter(input.filter ?? null, types, params)
+    // "나"(6g-2c)는 이 세션의 사람이다
+    const filterSql = compileFilter(input.filter ?? null, types, params, { me: ctx.userId })
     const compiledSort = compileSorts(sorts, types, params)
 
     // 커서는 정렬 키 값 + order_key 를 담는다. 정렬 구성이 바뀌면 길이가 달라져

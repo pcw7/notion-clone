@@ -24,7 +24,7 @@
 import { readTitle } from '../block/page.ts'
 import { pageIconOfFormat, type PageIcon } from '../block/page-icon.ts'
 import type { RichTextRun } from '../contracts/rich-text.ts'
-import { compileFilter, compileSorts, formulaTypeKey, ParamBag, type FilterNode, type SortKey } from '../database/filter.ts'
+import { compileFilter, compileSorts, formulaTypeKey, NO_VIEWER, ParamBag, type FilterNode, type SortKey } from '../database/filter.ts'
 import type { Tx } from '../db/tx.ts'
 import type { PublicTarget } from './public-access.ts'
 
@@ -113,7 +113,8 @@ export async function readPublicTableIn(tx: Tx, target: PublicTarget): Promise<P
   const types = await propertyTypes(tx, view.data_source_id)
   // `$1` 은 data source — 2번부터 발급한다
   const params = new ParamBag(2)
-  const filterSql = compileFilter((view.filter as FilterNode | null) ?? null, types, params)
+  // 공개 화면은 보는 사람이 없다 — "나"(6g-2c)는 아무도 아니다(포함은 0행 · 포함하지 않음은 모든 행)
+  const filterSql = compileFilter((view.filter as FilterNode | null) ?? null, types, params, NO_VIEWER)
   const sorted = compileSorts(Array.isArray(view.sorts) ? (view.sorts as SortKey[]) : [], types, params)
   const limit = params.bind(PUBLIC_TABLE_MAX_ROWS + 1)
   const rows = await tx.query<{

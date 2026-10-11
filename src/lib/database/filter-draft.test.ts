@@ -209,6 +209,11 @@ describe('describeRule — 칩의 요약', () => {
     assert.equal(describeRule(rule('u-1'), owner, peopleCatalog, { 'u-1': '김하나' }), '담당 · 포함 · 김하나')
     assert.equal(describeRule(rule('u-2'), owner, peopleCatalog, { 'u-1': '김하나' }), '담당 · 포함 · 떠난 사용자')
     assert.equal(describeRule(rule('constructor'), owner, peopleCatalog), '담당 · 포함 · 떠난 사용자')
+    assert.equal(
+      describeRule({ property_id: 'owner', operator: 'contains', value: { $context: 'me' } }, owner, peopleCatalog, { 'u-1': '김하나' }),
+      '담당 · 포함 · 나',
+      '"나"(6g-2c)',
+    )
   })
 })
 

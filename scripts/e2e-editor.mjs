@@ -16560,6 +16560,60 @@ async function main() {
       await clickSelector('[data-testid="db-filter-button"]')
     }
 
+    if (sectionIf('사람 필터의 나 (6g-2c · F-03-07)')) {
+      // 사람 필터의 값 고르개 맨 위 "나" — 고르면 값이 컨텍스트 노드가 되고, 같은 뷰가 보는 사람마다 다른 행이다(소유자에게는 소유자의 행 ·
+      // 동료에게는 동료의 행). 브라우저 세션은 끝에 반드시 소유자로 되돌린다.
+      const stamp = Date.now()
+      const api = async (method, path, body, headers = authed) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const browseAs = (token) => send('Network.setCookie', { name: 'nc_session', value: token, domain: 'localhost', path: '/', httpOnly: true })
+      const db = (await api('POST', '/databases', { name: `내 담당 ${stamp}` })).body.database
+      const view = db.defaultViewId
+      const owner = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '담당', type: 'people' })).body.property.id
+      const mate = await joinAs(workspaceId, await createUser(`나 필터 동료 ${stamp}`), 'member')
+      const assign = async (id) => {
+        const row = (await api('POST', `/views/${view}/rows`, {})).body.row.id
+        await api('PATCH', `/rows/${row}`, { cells: [{ propertyId: owner, value: { type: 'people', people: [{ id }] } }] })
+        return row
+      }
+      const myRow = await assign(ctx.userId)
+      const mateRow = await assign(mate.userId)
+      await api('PATCH', `/views/${view}`, { filter: { property_id: owner, operator: 'contains', value: mate.userId } })
+      const savedValue = async () => JSON.stringify((await api('GET', `/views/${view}`)).body?.view?.filter?.children?.[0]?.value ?? null)
+      const rowIds = `[...document.querySelectorAll('[data-testid="db-table"] tbody tr[data-row-id]')].map((tr) => tr.dataset.rowId).join(',')`
+      const chips = `[...document.querySelectorAll('[data-testid="db-filter-chip"]')].map((c) => c.textContent).join(' | ')`
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      await waitFor(`!!document.querySelector('[data-testid="db-filter-chip"]')`, 15000)
+      for (let i = 0; i < 5 && !(await evaluate(`!!document.querySelector('[data-testid="db-filter-panel"]')`)); i += 1) {
+        await clickSelector('[data-testid="db-filter-button"]')
+        await waitFor(`!!document.querySelector('[data-testid="db-filter-panel"]')`, 2000)
+      }
+      await clickSelector('[data-testid="db-filter-panel"] [data-testid="db-filter-value"]')
+      await waitFor(`!!document.querySelector('[data-testid="db-filter-me"]')`, 5000)
+      await clickSelector('[data-testid="db-filter-me"]')
+      let saved = ''
+      for (const end = Date.now() + 8000; Date.now() < end && saved !== '{"$context":"me"}'; await sleep(150)) saved = await savedValue()
+      check('★ 고르개 맨 위의 "나" — 값이 컨텍스트 노드로 저장된다 · 칩은 "나" · 소유자에게는 소유자의 행',
+        saved === '{"$context":"me"}' && (await waitFor(`${chips} === '담당 · 포함 · 나' && ${rowIds} === ${JSON.stringify(myRow)}`, 8000)),
+        `${saved} · ${await evaluate(chips)} · ${await evaluate(rowIds)}`)
+      await clickSelector('[data-testid="db-filter-button"]')
+
+      try {
+        await browseAs(mate.token)
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+        check('★ 같은 뷰가 동료에게는 동료의 행 — 칩도 "나"',
+          await waitFor(`${chips} === '담당 · 포함 · 나' && ${rowIds} === ${JSON.stringify(mateRow)}`, 15000),
+          `${await evaluate(chips)} · ${await evaluate(rowIds)}`)
+      } finally {
+        await browseAs(session)
+      }
+    }
+
     if (sectionIf('담당 알림 (6h · F-11-08)')) {
       // 소유자만 보는 표에 "담당 → 읽기" 사람 규칙 — 소유자가 행의 담당에 동료를 넣으면 동료의 인박스에 "담당" 줄이 선다(스코프 밖의 행이라도
       // 규칙이 열면 보인다 · 정본 §3.8 [보강] 담당 알림 ④). 줄을 누르면 그 행이 열린다. 브라우저 세션은 끝에 반드시 소유자로 되돌린다.

@@ -66,6 +66,7 @@ import {
   filterTypeOf,
   ParamBag,
   type CompiledSort,
+  type FilterContext,
   type FilterNode,
   type PropertyTypes,
   type SortKey,
@@ -292,6 +293,8 @@ type Board = {
   readonly search: string | null
   /** 행의 범위(6f-2b-1) — "만들기만" 이면 자기가 열 수 있는 카드만 · 개수 · 머리 값도 같다(`compileBoard` 하나가 WHERE 를 만든다). */
   readonly access: RowsAccess
+  /** 필터의 "나"(6g-2c) — 보드를 연 세션의 사람. */
+  readonly context: FilterContext
 }
 
 /** 보드를 읽는 요청의 공통 입력 — 뷰 검색어(2e-1). */
@@ -363,6 +366,7 @@ async function openBoard(
     calculation: liveGroupCalculation(groupBy, types),
     search,
     access,
+    context: { me: ctx.userId },
   }
 }
 
@@ -435,7 +439,7 @@ function compileBoard(board: Board, params: ParamBag, withOrder = true): Compile
   const order = manual ? MANUAL_ORDER : withOrder ? compileSorts(board.sorts, board.types, params) : MANUAL_ORDER
   // 권한이 필터보다 먼저다(F-03-17) — "만들기만" 이면 자기가 열 수 있는 행만(6f-2b-1). 카드 · 개수 · 머리 값이 이 WHERE 하나를 쓴다.
   const accessSql = restrictedRowsSql(board.access, params)
-  const filterSql = compileFilter(board.filter, board.types, params)
+  const filterSql = compileFilter(board.filter, board.types, params, board.context)
   const treeSql = board.subItemsParent === null ? null : compileTree({ parentPropertyId: board.subItemsParent, under: null }, params)
   const searchSql = board.search === null ? null : compileSearch(board.search, board.types, params)
   return {

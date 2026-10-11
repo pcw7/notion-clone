@@ -9,6 +9,8 @@
  *   ③ **지워진 프로퍼티를 참조하는 규칙은 무시한다.** 0건으로 만들면 데이터 소실로 오인된다
  *   ④ 깊이·항목 수 상한은 **쓰기 경로에서만** 본다
  *   ⑤ 커서는 NULL 을 `IS NOT DISTINCT FROM` 으로 비교한다 — `=` 면 빈 칸 행이 사라진다
+ *   ⑥ "나"(6g-2c) — 사람 값의 컨텍스트 노드는 컴파일할 때 보는 사람으로 묶인다 · 보는 사람이 없으면 아무도 아니다 · 저장 검증은 사람
+ *      값으로 uuid 또는 이 노드만 받는다
  */
 
 import { test, describe } from 'node:test'
@@ -18,9 +20,12 @@ import {
   MAX_FILTER_DEPTH,
   MAX_FILTER_GROUP_ITEMS,
   MAX_SORT_KEYS,
+  ME_NODE,
+  NO_VIEWER,
   ParamBag,
   compileCursor,
   compileFilter,
+  isMeNode,
   compileSorts,
   isGroup,
   operatorArity,
@@ -38,13 +43,14 @@ const TYPES = new Map<string, string>([
   ['pSel', 'select'],
   ['pChk', 'checkbox'],
   ['pDate', 'date'],
+  ['pPeople', 'people'],
   // MVP 밖 타입. 필터할 수 없어야 한다.
   ['pFormula', 'formula'],
 ])
 
-const compile = (node: FilterNode | null): { sql: string | null; values: unknown[] } => {
+const compile = (node: FilterNode | null, me: string | null = null): { sql: string | null; values: unknown[] } => {
   const params = new ParamBag(1)
-  const sql = compileFilter(node, TYPES, params)
+  const sql = compileFilter(node, TYPES, params, me === null ? NO_VIEWER : { me })
   return { sql, values: params.values }
 }
 
@@ -484,5 +490,36 @@ describe('★ compileCursor', () => {
   test('★ 길이가 안 맞는 커서는 null — 정렬 구성이 바뀐 것이다', () => {
     assert.equal(cursorOf([{ property_id: 'pNum', direction: 'asc' }], ['a5']).sql, null)
     assert.equal(cursorOf([], ['a5', 'extra']).sql, null)
+  })
+})
+
+describe('⑥ "나"(6g-2c)', () => {
+  const ME = '11111111-2222-4333-8444-555555555555'
+  const OTHER = '99999999-8888-4777-8666-555555555555'
+
+  test('★ 컨텍스트 노드는 보는 사람으로 묶인다 — 값에 노드가 아니라 그 사람 id 가 간다', () => {
+    const { sql, values } = compile({ property_id: 'pPeople', operator: 'contains', value: ME_NODE }, ME)
+    assert.match(sql ?? '', /@>/)
+    assert.deepEqual(values, ['pPeople', ME])
+  })
+
+  test('보는 사람이 없으면(공개 화면) 아무도 아니다 — 어떤 칸에도 없는 id · 사람 id 값은 그대로', () => {
+    assert.deepEqual(compile({ property_id: 'pPeople', operator: 'contains', value: ME_NODE }).values, ['pPeople', '00000000-0000-0000-0000-000000000000'])
+    assert.deepEqual(compile({ property_id: 'pPeople', operator: 'contains', value: OTHER }, ME).values, ['pPeople', OTHER])
+  })
+
+  test('사람이 아닌 타입의 값에 노드가 있어도 묶지 않는다(사람만의 것)', () => {
+    assert.deepEqual(compile({ property_id: 'pText', operator: 'contains', value: ME_NODE }, ME).values.at(-1), '[object Object]')
+  })
+
+  test('★ 저장 검증 — 사람 값은 uuid 또는 노드만', () => {
+    const leaf = (value: unknown) => ({ property_id: 'pPeople', operator: 'contains', value })
+    assert.deepEqual(validateFilter(leaf(ME_NODE), TYPES), [])
+    assert.deepEqual(validateFilter(leaf(ME), TYPES), [])
+    for (const bad of ['me', 'not-a-uuid', { $context: 'current_page' }, { $context: 'me', extra: 1 }, 7]) {
+      assert.equal(validateFilter(leaf(bad), TYPES).length, 1, JSON.stringify(bad))
+    }
+    assert.equal(isMeNode({ $context: 'me' }), true)
+    assert.equal(isMeNode(['me']), false)
   })
 })
