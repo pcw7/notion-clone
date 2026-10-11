@@ -541,6 +541,7 @@ export function DatabaseBoard(props: {
                       dataSourceId={dataSourceId}
                       defaultTemplate={defaultTemplate}
                       canSetDefault={access.canEditStructure}
+                      canPickTemplate={access.canViewAllRows}
                       busy={busyKey !== null}
                       onCreate={(templateId) => void addCard(group, templateId)}
                       onDefaultChange={setDefaultTemplate}

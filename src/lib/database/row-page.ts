@@ -17,6 +17,8 @@
 import type { SessionContext } from '../auth/session-context.ts'
 import { withReadTransaction } from '../db/tx.ts'
 import type { PageIcon } from '../block/page-icon.ts'
+import { effectiveCaps } from '../permissions/effective.ts'
+import { can } from '../permissions/levels.ts'
 import { isLocked } from '../permissions/lock.ts'
 import { getDatabase, type DatabaseAccess } from './database.ts'
 import { readRecordLayout } from './layout.ts'
@@ -27,6 +29,11 @@ import type { ViewColumn } from './view-columns.ts'
 
 export type RowPage = {
   readonly databaseId: string
+  /**
+   * 그 데이터베이스를 열 수 있는가(6f-2b-2). 아니면 규칙 · 행에 따로 준 부여로만 이 행을 본다 — 이름 · 아이콘은 비어 있고(못 여는 표의
+   * 이름을 알리지 않는다) 접근은 모두 닫혀 있다(칸 편집은 부르는 쪽이 이 행의 권한으로 정한다 — 셀 쓰기가 행의 권한으로 묻는다).
+   */
+  readonly databaseOpenable: boolean
   readonly databaseName: string
   readonly databaseIcon: PageIcon | null
   readonly dataSourceId: string
@@ -54,8 +61,9 @@ export type RowPage = {
 }
 
 /**
- * 이 페이지가 데이터베이스 행이면 행 페이지에 필요한 것을, 아니면 null 을 준다. 볼 수 있는지는 부르는 쪽이 이미 물었다(`getPage`) —
- * 여기서는 그 행이 속한 데이터베이스를 읽을 수 있는지만 다시 본다(`getDatabase` — 못 보면 null).
+ * 이 페이지가 데이터베이스 행이면 행 페이지에 필요한 것을, 아니면 null 을 준다. **그 행을 볼 수 있는지 여기서도 묻는다** — 칸 값을
+ * 돌려주므로 부르는 쪽(`getPage`)에만 기대지 않는다(6f-2b-2 전에는 "데이터베이스를 볼 수 있는가" 가 그 문을 겸했다). 데이터베이스를
+ * 못 열어도(규칙 · 행에 따로 준 부여로만 본다) 행은 행으로 준다 — `databaseOpenable` 이 거짓이다.
  */
 export async function readRowPage(ctx: SessionContext, pageId: string): Promise<RowPage | null> {
   const found = await withReadTransaction(async (tx) => {
@@ -69,6 +77,7 @@ export async function readRowPage(ctx: SessionContext, pageId: string): Promise<
       [pageId, ctx.workspaceId],
     )
     if (row === null) return null
+    if (!can(await effectiveCaps(tx, ctx, pageId), 'view')) return null
     const view = await tx.queryMaybe<{ id: string }>(
       `SELECT id FROM view
         WHERE database_id = $1 AND data_source_id = $2 AND owner_kind = 'database_view'
@@ -103,16 +112,19 @@ export async function readRowPage(ctx: SessionContext, pageId: string): Promise<
   })
   if (found === null) return null
 
+  // 데이터베이스를 못 열어도 행은 행으로 그린다(6f-2b-2) — 이 행을 볼 수 있다는 것은 부르는 쪽이 이미 물었고(`getPage`), 속성 이름 · 값은
+  // 이 행을 보는 데 필요하다(노션도 공유받은 행에 속성을 보인다). 전에는 null 이라 행이 보통 페이지(공유 · 옮기기 · 내보내기 · 복제)로 섰다.
   const database = await getDatabase(ctx, found.database_id)
-  if (!database.ok) return null
-  const sources = database.value.dataSources
+  const sources = database.ok ? database.value.dataSources : []
   const source = sources.find((ds) => ds.id === found.data_source_id)
+  const databaseName = database.ok ? database.value.name : ''
   return {
     databaseId: found.database_id,
-    databaseName: database.value.name,
-    databaseIcon: database.value.icon,
+    databaseOpenable: database.ok,
+    databaseName,
+    databaseIcon: database.ok ? database.value.icon : null,
     dataSourceId: found.data_source_id,
-    tableName: sources.length > 1 && source !== undefined ? source.name : database.value.name,
+    tableName: sources.length > 1 && source !== undefined ? source.name : databaseName,
     viewId: found.viewId,
     columns: found.columns,
     layoutVersion: found.layoutVersion,
@@ -123,6 +135,9 @@ export async function readRowPage(ctx: SessionContext, pageId: string): Promise<
     layoutUndo: found.layoutUndo,
     titlePropertyId: found.columns.find((c) => c.type === 'title')?.propertyId ?? null,
     row: found.summary,
-    access: found.locked ? { ...database.value.access, canEditStructure: false } : database.value.access,
+    access: !database.ok ? CLOSED_DATABASE : found.locked ? { ...database.value.access, canEditStructure: false } : database.value.access,
   }
 }
+
+/** 못 여는 데이터베이스의 접근 — 모두 닫혀 있다. */
+const CLOSED_DATABASE: DatabaseAccess = { canViewAllRows: false, canEditContent: false, canCreateRows: false, canEditStructure: false }

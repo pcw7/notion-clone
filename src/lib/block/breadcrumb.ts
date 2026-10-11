@@ -109,19 +109,27 @@ export function templateTrail(input: {
  */
 export function rowTrail(input: {
   readonly workspaceId: string
-  readonly database: { readonly id: string; readonly name: string; readonly icon: PageIcon | null }
+  /**
+   * 그 행의 데이터베이스 — **열 수 없으면 null**(6f-2b-2 — 규칙 · 행에 따로 준 부여로만 이 행을 본다). 그때는 데이터베이스 자리를 세우지
+   * 않는다 — 못 여는 표의 이름을 알리지 않고, 눌러도 404 인 링크를 두지 않는다.
+   */
+  readonly database: { readonly id: string; readonly name: string; readonly icon: PageIcon | null } | null
   readonly row: { readonly id: string; readonly title: string; readonly icon: PageIcon | null }
 }): BreadcrumbTrail {
   const { workspaceId } = input
   return [
     { kind: 'workspace', id: workspaceId, label: WORKSPACE_LABEL, icon: null, href: `/w/${workspaceId}` },
-    {
-      kind: 'database',
-      id: input.database.id,
-      label: input.database.name || UNTITLED_PAGE,
-      icon: input.database.icon,
-      href: `/w/${workspaceId}/db/${input.database.id}`,
-    },
+    ...(input.database === null
+      ? []
+      : [
+          {
+            kind: 'database' as const,
+            id: input.database.id,
+            label: input.database.name || UNTITLED_PAGE,
+            icon: input.database.icon,
+            href: `/w/${workspaceId}/db/${input.database.id}`,
+          },
+        ]),
     { kind: 'current', id: input.row.id, label: input.row.title || UNTITLED_PAGE, icon: input.row.icon, href: null },
   ]
 }

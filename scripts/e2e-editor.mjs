@@ -16120,6 +16120,76 @@ async function main() {
       }
     }
 
+    if (sectionIf('만들기만 · 규칙 사용자의 화면 (6f-2b-2 · F-06-10)')) {
+      // "만들기만" 의 표 화면 — "내가 열 수 있는 행만" 안내 · 실패하는 단추(내보내기 · 공유 · 템플릿 · 새로 만들기 ▾)가 서지 않는다 · 변경
+      // 알림이 열린다. 규칙만 가진 사람(표를 못 연다)의 행 화면 — 행으로 선다(속성 묶음) · 경로에 표가 없다 · 공유가 없다. 브라우저 세션은
+      // 끝에 반드시 소유자로 되돌린다.
+      const stamp = Date.now()
+      const api = async (method, path, body, headers = authed) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const browseAs = (token) => send('Network.setCookie', { name: 'nc_session', value: token, domain: 'localhost', path: '/', httpOnly: true })
+      const db = (await api('POST', '/databases', { name: `규칙 화면 ${stamp}` })).body.database
+      const view = db.defaultViewId
+      const titleProp = (await api('GET', `/views/${view}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const titled = (t) => ({ cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun(t)] } }] })
+      await api('POST', `/views/${view}/rows`, titled('남의 것'))
+      const maker = await joinAs(workspaceId, await createUser(`만들기만 ${stamp}`), 'member')
+      const ruled = await joinAs(workspaceId, await createUser(`규칙만 ${stamp}`), 'member')
+      const access = (body) => api('POST', `/pages/${db.id}/access`, body)
+      await access({ action: 'restrict' })
+      await access({ action: 'grant', principal: { type: 'user', id: ctx.userId }, level: 'full_access' })
+      await access({ action: 'revoke', principal: { type: 'workspace_everyone' } })
+      await access({ action: 'grant', principal: { type: 'user', id: maker.userId }, level: 'create' })
+      // 규칙만 가진 사람 — 잠시 편집으로 행 하나를 만들고 표의 부여를 거둔다
+      await access({ action: 'grant', principal: { type: 'user', id: ruled.userId }, level: 'edit' })
+      const ruledRow = (await api('POST', `/views/${view}/rows`, titled('규칙만의 행'), { ...json, cookie: `nc_session=${ruled.token}` })).body.row.id
+      await access({ action: 'revoke', principal: { type: 'user', id: ruled.userId } })
+      await api('POST', `/views/${view}/rows`, titled('만들기만의 행'), { ...json, cookie: `nc_session=${maker.token}` })
+      await api('PUT', `/databases/${db.id}/access-rules`, { dataSourceId: db.dataSourceId, source: 'created_by', level: 'edit' })
+
+      const has = (selector) => evaluate(`!!document.querySelector(${JSON.stringify(selector)})`)
+      const hasButton = (text) => evaluate(`[...document.querySelectorAll('button')].some((b) => b.textContent.trim() === ${JSON.stringify(text)})`)
+      try {
+        await browseAs(maker.token)
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+        check('★ "만들기만" 의 표 — "내가 열 수 있는 행만" 안내',
+          await waitFor(`(document.querySelector('[data-testid="db-restricted"]')?.textContent ?? '').includes('내가 열 수 있는 행만')`, 15000))
+        await waitFor(`!!document.querySelector('[data-testid="db-add-row"]')`, 10000)
+        const closed = {
+          export: await has('[data-testid="export-button"]'),
+          share: await hasButton('공유'),
+          templates: await has('[data-testid="db-templates-button"]'),
+          newMenu: await has('[data-testid="db-add-row-menu"]'),
+          newRow: await has('[data-testid="db-add-row"]'),
+        }
+        check('★ 실패하는 단추가 서지 않는다 — 내보내기 · 공유 · 템플릿 · 새로 만들기 ▾ (새로 만들기는 선다)',
+          !closed.export && !closed.share && !closed.templates && !closed.newMenu && closed.newRow, JSON.stringify(closed))
+
+        // 화면이 쓰는 길 그대로(`EventSource`) — Node 의 fetch 로 열면 응답 머리를 받지 못한 채 기다린다(첫 판이 거기서 멈췄다)
+        const feed = await evaluate(`new Promise((resolve) => {
+          const es = new EventSource('/api/workspaces/${workspaceId}/data-sources/${db.dataSourceId}/changes')
+          const done = (v) => { es.close(); resolve(v) }
+          es.addEventListener('ready', () => done('ready'))
+          es.onerror = () => done('error')
+          setTimeout(() => done('timeout'), 8000)
+        })`)
+        check('변경 알림이 열린다(ready) — 다시 읽는 길이 행을 거른다', feed === 'ready', String(feed))
+
+        await browseAs(ruled.token)
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${ruledRow}` })
+        // 행 화면에서만 서는 제목 칸(`row-title`) — 이 표는 제목 하나뿐이라 속성 묶음은 그리지 않는다(남는 속성이 없다)
+        check('★ 규칙만 가진 사람의 행 — 행 화면으로 선다(행의 제목 칸)', await waitFor(`!!document.querySelector('[data-testid="row-title"]')`, 15000))
+        const trailLinks = await evaluate(`[...document.querySelectorAll('nav[aria-label="상위 경로"] a')].map((a) => a.getAttribute('href')).join(' ')`)
+        check('경로에 못 여는 표가 없다 · 공유 단추가 없다', !trailLinks.includes('/db/') && !(await hasButton('공유')), trailLinks)
+      } finally {
+        await browseAs(session)
+      }
+    }
+
     if (sectionIf('개인 필터 · 정렬 — 화면 (2h-2 · F-04-17)')) {
       // 볼 수만 있는 사람(브라우저 세션을 바꾼다)이 도구줄의 필터로 조건을 걸면 **자기 것**으로 저장되고 그 사람의 표만 좁혀진다 — "나만 보는
       // 필터" 표시 · 초기화. 편집자는 자기 개인 것을 "모두에게 저장"한다. 브라우저 세션은 끝에 반드시 소유자로 되돌린다.

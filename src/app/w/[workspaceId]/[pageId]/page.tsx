@@ -144,7 +144,8 @@ export default async function PageView({ params, searchParams }: PageProps<'/w/[
     rowPage !== null
       ? rowTrail({
           workspaceId,
-          database: { id: rowPage.databaseId, name: rowPage.databaseName, icon: rowPage.databaseIcon },
+          // 못 여는 데이터베이스는 경로에 세우지 않는다(6f-2b-2)
+          database: rowPage.databaseOpenable ? { id: rowPage.databaseId, name: rowPage.databaseName, icon: rowPage.databaseIcon } : null,
           row: { id: page.id, title: rowPage.row.title, icon: page.icon },
         })
       : breadcrumbTrail({
@@ -155,11 +156,11 @@ export default async function PageView({ params, searchParams }: PageProps<'/w/[
         })
 
   // ── 행의 속성 묶음(8f-1 · 8f-2) ──
-  // 셀을 고칠 수 있는가 — 데이터베이스의 `edit_content` 이고 **이 행 페이지가 잠기지 않았다**(7f-2 — 행의 값을 쓰는 길은 그 행의 잠금을
-  // 묻는다 · `access` 가 잠김을 이미 담는다). 구조(옵션 만들기 · 레이아웃)는 데이터베이스의 것이다 — 데이터베이스가 잠기면
-  // `readRowPage` 가 닫아서 준다. 행 페이지의 잠금은 레이아웃을 막지 않는다(레이아웃은 모든 행의 것이다). 서버가 다시 묻는다.
+  // 셀을 고칠 수 있는가 — **이 행의** 편집이고(6f-2b-1 — 셀 쓰기는 그 행의 권한으로 묻는다 · 만든 사람 규칙으로 자기 행만 고치는 사람도)
+  // **이 행 페이지가 잠기지 않았다**(7f-2 — `access` 가 잠김을 이미 담는다). 구조(옵션 만들기 · 레이아웃)는 데이터베이스의 것이다 —
+  // 데이터베이스가 잠기거나 못 열면 `readRowPage` 가 닫아서 준다. 행 페이지의 잠금은 레이아웃을 막지 않는다. 서버가 다시 묻는다.
   const rowColumns = rowPage === null ? [] : listColumns('record', rowPage.columns)
-  const rowAccess = rowPage === null ? null : { ...rowPage.access, canEditContent: rowPage.access.canEditContent && access === 'edit' }
+  const rowAccess = rowPage === null ? null : { ...rowPage.access, canEditContent: access === 'edit' }
   const rowRelationIds = rowColumns.filter((c) => c.type === 'relation').map((c) => c.propertyId)
   // 행 페이지의 페이지 설정(3b-2 · F-16-09 · F-16-10) — 레이아웃의 것이다(데이터베이스의 모든 행에 같다 · 정본 [보강] 페이지 설정 ③).
   // 일반 페이지는 null — 지금의 모양(좁게 · 접은 백링크 · 코멘트 단추 · 칠한 코멘트)이 그대로다.
@@ -247,7 +248,7 @@ export default async function PageView({ params, searchParams }: PageProps<'/w/[
             childCount={children.length}
             parentPageId={page.parentPageId}
             // 행을 지우면 그 표로 돌아간다(행에는 부모 페이지가 없다).
-            returnHref={rowPage === null ? undefined : `/w/${workspaceId}/db/${rowPage.databaseId}`}
+            returnHref={rowPage === null || !rowPage.databaseOpenable ? undefined : `/w/${workspaceId}/db/${rowPage.databaseId}`}
           />
         </div>
       </div>

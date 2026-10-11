@@ -23,6 +23,7 @@ import { createRow, trashRow } from './row.ts'
 import { createTemplate } from './template.ts'
 import { moveViewColumn, setViewColumn } from './view.ts'
 import { readRowPage } from './row-page.ts'
+import { setAccessRule } from '../permissions/access-rule.ts'
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'
 
@@ -136,3 +137,28 @@ describe('④ 고칠 수 있는지는 데이터베이스의 것', () => {
     assert.equal((await readRowPage(fx.owner.ctx, db.rowId))?.access.canEditContent, true)
   })
 })
+
+describe('⑤ 데이터베이스를 못 열어도 그 행을 보면 행이다(6f-2b-2)', () => {
+  test('★ 만든 사람 규칙으로만 보는 행 — 행으로 준다(이름 · 경로 없이 · 접근은 닫힘) · 남의 행은 여전히 null', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const db = await seeded('제출함')
+    assert.equal((await stopInheriting(fx.owner.ctx, db.databaseId)).ok, true)
+    assert.equal((await grantAccess(fx.owner.ctx, db.databaseId, { type: 'user', id: fx.owner.userId }, 'full_access')).ok, true)
+    assert.equal((await revokeAccess(fx.owner.ctx, db.databaseId, { type: 'workspace_everyone', id: null })).ok, true)
+    // 동료가 잠시 편집으로 행 하나를 만들고 표의 부여를 거둔다 — 이제 표도 그 행도 못 본다
+    assert.equal((await grantAccess(fx.owner.ctx, db.databaseId, { type: 'user', id: other.userId }, 'edit')).ok, true)
+    const mine = unwrap(await createRow(other.ctx, db.dataSourceId))
+    assert.equal((await revokeAccess(fx.owner.ctx, db.databaseId, { type: 'user', id: other.userId })).ok, true)
+    assert.equal(await readRowPage(other.ctx, mine.id), null, '규칙 전 — 못 보는 행은 null')
+
+    assert.equal((await setAccessRule(fx.owner.ctx, db.databaseId, { dataSourceId: db.dataSourceId, source: 'created_by', level: 'edit' })).ok, true)
+    const page = await readRowPage(other.ctx, mine.id)
+    assert.ok(page !== null, '규칙으로 보는 행은 행으로 그린다(전에는 null 이라 보통 페이지로 섰다)')
+    assert.equal(page.databaseOpenable, false)
+    assert.equal(page.databaseName, '', '못 여는 표의 이름을 알리지 않는다')
+    assert.deepEqual(page.access, { canViewAllRows: false, canEditContent: false, canCreateRows: false, canEditStructure: false })
+    assert.ok(page.columns.some((c) => c.name === 'A'), '속성은 이 행을 보는 데 필요하다')
+    assert.equal(await readRowPage(other.ctx, db.rowId), null, '남의 행은 여전히 null')
+  })
+})
+

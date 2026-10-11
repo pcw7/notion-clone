@@ -1494,6 +1494,7 @@ export function DatabaseTable(props: {
             dataSourceId={dataSourceId}
             defaultTemplate={defaultTemplate}
             canSetDefault={access.canEditStructure}
+            canPickTemplate={access.canViewAllRows}
             busy={addingRow}
             onCreate={(templateId) => void addRow(templateId)}
             onDefaultChange={setDefaultTemplate}

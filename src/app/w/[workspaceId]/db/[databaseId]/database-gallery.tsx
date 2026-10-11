@@ -285,6 +285,7 @@ export function DatabaseGallery(props: {
               dataSourceId={dataSourceId}
               defaultTemplate={defaultTemplate}
               canSetDefault={access.canEditStructure}
+              canPickTemplate={access.canViewAllRows}
               busy={busy}
               onCreate={(templateId) => void addCard(templateId)}
               onDefaultChange={setDefaultTemplate}

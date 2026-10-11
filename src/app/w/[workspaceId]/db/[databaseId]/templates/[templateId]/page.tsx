@@ -71,7 +71,8 @@ export default async function TemplatePage({
 
   // 볼 수 없는 표는 없는 표와 같다(§3.3-31).
   const database = await getDatabase(ctx, databaseId)
-  if (!database.ok) notFound()
+  // "만들기만"(6f-2b-1)은 표의 머리를 열지만 템플릿은 표를 보는 사람의 것이다(목록도 그렇다 · `listTemplates`) — 없는 것과 같다.
+  if (!database.ok || !database.value.access.canViewAllRows) notFound()
 
   // 템플릿은 **data source** 의 것이다(`page.data_source_id`). 데이터베이스가 data source 를 여럿 가지면(8e-1) 첫 뷰의 것이 아닐 수 있다 —
   // 템플릿 자신의 data source 를 읽고, 그것이 이 데이터베이스에 붙어 있어야 한다(다른 표의 템플릿 id 를 이 주소에 넣어도 열리지 않는다).
