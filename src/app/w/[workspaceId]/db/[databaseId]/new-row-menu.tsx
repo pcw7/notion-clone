@@ -44,6 +44,11 @@ export function NewRowMenu(props: {
   defaultTemplate: DefaultTemplate | null
   /** 기본 템플릿을 바꿀 수 있는가(`edit_structure` — 뷰를 고치는 일이다). */
   canSetDefault: boolean
+  /**
+   * 템플릿 목록을 열 수 있는가(6f-2b-2) — 목록은 표를 보는 일이다. "만들기만"(모든 행을 볼 수 없다)이면 화살표를 세우지 않는다 — 주 버튼은
+   * 그대로 뷰의 기본 템플릿으로 만든다(만드는 것과 같은 권한).
+   */
+  canPickTemplate: boolean
   /** 만들고 있는 중이면 두 버튼 모두 누를 수 없다. */
   busy: boolean
   /** 무엇으로 만들지 — 템플릿 id 또는 빈 항목(`null`). */
@@ -127,10 +132,11 @@ export function NewRowMenu(props: {
           onCreate(defaultTemplate?.id ?? null)
         }}
         aria-label={props.ariaLabel}
-        className="rounded-l-md px-2 py-1 text-neutral-500 hover:bg-neutral-100 disabled:opacity-40 dark:hover:bg-neutral-800"
+        className={`${props.canPickTemplate ? 'rounded-l-md' : 'rounded-md'} px-2 py-1 text-neutral-500 hover:bg-neutral-100 disabled:opacity-40 dark:hover:bg-neutral-800`}
       >
         {props.label}
       </button>
+      {props.canPickTemplate && (
       <button
         type="button"
         data-testid={`${props.testId}-menu`}
@@ -142,6 +148,7 @@ export function NewRowMenu(props: {
       >
         ▾
       </button>
+      )}
 
       {open && (
         <div

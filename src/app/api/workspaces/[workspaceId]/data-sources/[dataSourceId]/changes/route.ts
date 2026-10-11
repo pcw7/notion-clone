@@ -15,13 +15,14 @@
  *   event: reconnect 세션이 바뀌었다 — 닫는다(다시 붙으면 다시 확인한다)
  *   : ping           25초마다 — 중간 장치가 조용한 연결을 끊지 않게
  *
- * 표를 볼 수 없으면 404 다(존재를 알리지 않는다).
+ * 표를 열 수 없으면 404 다(존재를 알리지 않는다). "만들기만"(6f-2b-2 — 자기가 열 수 있는 행만 본다)도 연다 — 알림은 "바뀌었다" 뿐이고,
+ * 다시 읽는 길(`queryRows` 등)이 그 사람의 행 술어를 건다.
  */
 
 import { isUuid } from '@/lib/ids'
 import { requireWorkspaceSession } from '@/lib/auth/route-session'
 import { withReadTransaction } from '@/lib/db/tx'
-import { canViewDataSource } from '@/lib/database/relation'
+import { rowsAccessForDataSource } from '@/lib/database/row-access'
 import { rowsChangedSince, subscribeRows } from '@/lib/database/row-feed'
 
 type Ctx = RouteContext<'/api/workspaces/[workspaceId]/data-sources/[dataSourceId]/changes'>
@@ -43,7 +44,7 @@ export async function GET(request: Request, ctx: Ctx): Promise<Response> {
   if (!isUuid(dataSourceId)) return Response.json({ error: 'not_found' }, { status: 404 })
   const sessionCtx = session.ctx
   const since = sinceOf(request)
-  const canView = () => withReadTransaction((tx) => canViewDataSource(tx, sessionCtx, dataSourceId))
+  const canView = () => withReadTransaction(async (tx) => (await rowsAccessForDataSource(tx, sessionCtx, dataSourceId)) !== null)
   if (!(await canView())) return Response.json({ error: 'not_found' }, { status: 404 })
 
   const encoder = new TextEncoder()

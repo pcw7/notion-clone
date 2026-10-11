@@ -75,6 +75,14 @@ describe('③-2 데이터베이스 행 (8f-1)', () => {
     const trail = rowTrail({ workspaceId: WS, database: { id: A, name: '', icon: null }, row: { id: C, title: '', icon: null } })
     assert.deepEqual(trail.map((i) => i.label), ['워크스페이스', '제목 없음', '제목 없음'])
   })
+
+  test('★ 못 여는 데이터베이스(6f-2b-2 — 규칙으로만 이 행을 본다)는 세우지 않는다 — 이름도 404 링크도 없다', () => {
+    const trail = rowTrail({ workspaceId: WS, database: null, row: { id: C, title: '내 제출', icon: null } })
+    assert.deepEqual(trail.map((i) => [i.kind, i.label, i.href]), [
+      ['workspace', '워크스페이스', `/w/${WS}`],
+      ['current', '내 제출', null],
+    ])
+  })
 })
 
 describe('④ 같은 경로', () => {

@@ -444,10 +444,11 @@ export default async function DatabasePage({
             targets={[]}
             teamspaces={moveTeamspaces}
           />
-          {/* 풀페이지 표는 워크스페이스 직속이라 페이지 내보내기로는 닿지 않는다(`lib/export/download.ts`). */}
-          <ExportButton workspaceId={workspaceId} rootId={databaseId} />
+          {/* 풀페이지 표는 워크스페이스 직속이라 페이지 내보내기로는 닿지 않는다(`lib/export/download.ts`). 내보내기 · 공유는 표를 보는 일이다 —
+              "만들기만"(모든 행을 볼 수 없다 · 6f-2b-2)에게는 세우지 않는다(누르면 404 다). */}
+          {access.canViewAllRows && <ExportButton workspaceId={workspaceId} rootId={databaseId} />}
           {/* 공유(6f-1) — 페이지와 같은 패널 · 레벨에 "내용 편집"이 선다 · 웹 게시 절은 없다 */}
-          <SharePanel workspaceId={workspaceId} pageId={databaseId} kind="database" />
+          {access.canViewAllRows && <SharePanel workspaceId={workspaceId} pageId={databaseId} kind="database" />}
         </div>
       </div>
 
@@ -523,14 +524,17 @@ export default async function DatabasePage({
             currentSourceId={view.value.dataSourceId}
           />
         )}
-        {/* 템플릿은 뷰가 아니라 **표**의 것이다(`page.data_source_id`) — 뷰 설정 옆에 두되 같은 패널에 넣지 않는다. */}
-        <TemplatePanel
-          workspaceId={workspaceId}
-          databaseId={databaseId}
-          dataSourceId={view.value.dataSourceId}
-          // 템플릿은 표(소스)의 행이다 — 붙인 소스면 원본의 권한도 있어야 한다(교집합)
-          canEdit={contentAccess.canEditStructure}
-        />
+        {/* 템플릿은 뷰가 아니라 **표**의 것이다(`page.data_source_id`) — 뷰 설정 옆에 두되 같은 패널에 넣지 않는다. 목록은 표를 보는 일이라
+            "만들기만" 에게는 세우지 않는다(6f-2b-2). */}
+        {contentAccess.canViewAllRows && (
+          <TemplatePanel
+            workspaceId={workspaceId}
+            databaseId={databaseId}
+            dataSourceId={view.value.dataSourceId}
+            // 템플릿은 표(소스)의 행이다 — 붙인 소스면 원본의 권한도 있어야 한다(교집합)
+            canEdit={contentAccess.canEditStructure}
+          />
+        )}
         {automationBadge !== null && (
           <AutomationPanel
             workspaceId={workspaceId}
@@ -542,6 +546,13 @@ export default async function DatabasePage({
         )}
       </div>
 
+      {/* "만들기만"(6f-2b-2 · 정본 [보강] 행 단위 접근 규칙 ⑥) — 표는 열리지만 자기가 열 수 있는 행만 온다. 빈 표 · 작은 개수를 필터 탓으로
+          읽지 않게 말한다. */}
+      {!contentAccess.canViewAllRows && (
+        <p role="note" data-testid="db-restricted" className="px-1 text-sm text-neutral-500">
+          이 표에서는 내가 열 수 있는 행만 보입니다. 행을 더할 수 있지만 다른 사람의 행은 보이지 않고, 개수 · 합계도 내 행만 셉니다.
+        </p>
+      )}
       {/* 보드는 열을 남긴다 — 맞는 카드가 하나도 없으면 위에 안내를 둔다(2e-2 · 04 *"빈 테이블만 보이면 필터 버그로 오인"*). */}
       {isBoard && search !== null && board !== null && board.ok && board.value.groups.every((g) => g.count === 0) && (
         <SearchEmpty search={search} />
