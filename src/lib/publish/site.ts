@@ -51,6 +51,11 @@ export async function readSiteDomainIn(tx: Tx, workspaceId: string): Promise<str
   return row?.name ?? null
 }
 
+/** 사이트 주소를 정할 수 있는가 — 소유자(정본 ③). 설정의 패널이 서는 조건과 명령이 같은 함수를 쓴다. */
+export function canManageSiteDomain(ctx: Pick<SessionContext, 'role'>): boolean {
+  return ctx.role === 'owner'
+}
+
 /** 사이트 주소를 읽는다 — 이 워크스페이스의 누구나(게시 패널이 주소를 보인다). */
 export async function readSiteDomain(ctx: SessionContext): Promise<string | null> {
   return withReadTransaction((tx) => readSiteDomainIn(tx, ctx.workspaceId))
@@ -87,7 +92,7 @@ export function siteDomainFailureStatus(reason: SiteDomainFailure): number {
  * (넘겨주는 길은 없다 — v1). 바뀌었을 때만 감사 로그.
  */
 export async function setSiteDomain(ctx: SessionContext, raw: unknown): Promise<SiteDomainResult> {
-  if (ctx.role !== 'owner') return { ok: false, reason: 'forbidden' }
+  if (!canManageSiteDomain(ctx)) return { ok: false, reason: 'forbidden' }
   if (raw !== null && typeof raw !== 'string') return { ok: false, reason: 'invalid_name' }
   const name = raw === null || raw.trim() === '' ? null : raw.trim().toLowerCase()
   if (name !== null && !SITE_NAME_PATTERN.test(name)) return { ok: false, reason: 'invalid_name' }

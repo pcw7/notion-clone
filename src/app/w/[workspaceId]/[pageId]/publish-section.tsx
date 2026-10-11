@@ -13,9 +13,13 @@
  *   · 정책이 막으면 그렇다고 말하고 게시 단추를 세우지 않는다 — 취소는 언제나 된다
  *   · 게시를 바꿀 수 없는 사람에게는 게시되어 있다는 것만(주소는 서버가 주지 않는다)
  *   · AI 크롤러 칸은 없다 — robots.txt 가 링크마다 열 수 없다(정본 [보강] 공개 화면 ⑥)
+ *   · 사이트 주소(6c-2 · 정본 [보강] 사이트 주소 ⑦) — 워크스페이스 주소가 있으면 슬러그 칸과 그 주소(복사 · 열기), 없으면 소유자가
+ *     설정에서 정한다고만
  */
 
 import { useCallback, useEffect, useState } from 'react'
+
+import { SITE_DOMAIN_MISSING, siteUrlOf } from '../settings/site-messages'
 
 import {
   MODERATED_NOTICE,
@@ -35,6 +39,10 @@ type PublishState = {
   canManage: boolean
   coveredBy: { pageId: string | null; title: string | null } | null
   moderation: 'taken_down' | 'restricted' | null
+  /** 사이트 주소의 슬러그(6c-1) — 바꿀 수 있는 사람에게만. */
+  slug: string | null
+  /** 워크스페이스의 사이트 주소(6c-1). */
+  siteDomain: string | null
 }
 
 export function PublishSection({
@@ -192,6 +200,15 @@ export function PublishSection({
             />
             검색 엔진에 노출(기본은 노출하지 않음)
           </label>
+          <SiteAddress
+            // 서버의 슬러그가 바뀌면 초안을 새로 세운다(효과 안의 setState 없이)
+            key={state.slug ?? ''}
+            domain={state.siteDomain}
+            slug={state.slug}
+            busy={busy}
+            onSave={(slug) => void call('PATCH', { slug }, slug === null ? '슬러그를 지웠습니다. 사이트 주소로는 열리지 않습니다.' : '슬러그를 저장했습니다.')}
+            onCopy={(address) => void copy(address)}
+          />
           <div className="flex flex-wrap items-center gap-2 text-xs">
             {confirmRotate ? (
               <span data-testid="publish-rotate-confirm" className="flex items-center gap-1">
@@ -261,5 +278,93 @@ export function PublishSection({
         </p>
       )}
     </section>
+  )
+}
+
+/**
+ * 사이트 주소 칸(6c-2) — 워크스페이스 주소가 없으면 안내만. 있으면 슬러그 칸(저장 · 비우기)과, 슬러그가 있으면 그 주소(복사 · 열기).
+ * 판정(모양 · 하나뿐)은 서버다 — 실패는 절의 오류 줄이 말한다.
+ */
+function SiteAddress({
+  domain,
+  slug,
+  busy,
+  onSave,
+  onCopy,
+}: {
+  domain: string | null
+  slug: string | null
+  busy: boolean
+  onSave: (slug: string | null) => void
+  onCopy: (address: string) => void
+}) {
+  const [draft, setDraft] = useState(slug ?? '')
+  if (domain === null) {
+    return (
+      <p data-testid="publish-site-missing" className="text-xs text-neutral-500">
+        {SITE_DOMAIN_MISSING}
+      </p>
+    )
+  }
+  const address = slug !== null && typeof window !== 'undefined' ? siteUrlOf(window.location.origin, domain, slug) : null
+  return (
+    <div data-testid="publish-site" className="flex flex-col gap-1 text-xs">
+      <form
+        className="flex items-center gap-1"
+        onSubmit={(e) => {
+          e.preventDefault()
+          onSave(draft.trim() === '' ? null : draft)
+        }}
+      >
+        <span className="shrink-0 text-neutral-500">/s/{domain}/</span>
+        <input
+          aria-label="사이트 슬러그"
+          data-testid="publish-slug"
+          value={draft}
+          disabled={busy}
+          onChange={(e) => setDraft(e.target.value)}
+          placeholder="예: about-us"
+          autoComplete="off"
+          className="min-w-0 flex-1 rounded border border-neutral-300 px-2 py-1 text-xs dark:border-neutral-700 dark:bg-neutral-900"
+        />
+        <button
+          type="submit"
+          data-testid="publish-slug-save"
+          disabled={busy || draft.trim().toLowerCase() === (slug ?? '')}
+          className="shrink-0 rounded border border-neutral-300 px-2 py-1 hover:bg-neutral-50 disabled:opacity-50 dark:border-neutral-700 dark:hover:bg-neutral-800"
+        >
+          저장
+        </button>
+      </form>
+      {address !== null && (
+        <div className="flex items-center gap-1">
+          <input
+            readOnly
+            aria-label="사이트 주소"
+            data-testid="publish-site-url"
+            value={address}
+            onFocus={(e) => e.currentTarget.select()}
+            className="min-w-0 flex-1 rounded border border-neutral-300 px-2 py-1 dark:border-neutral-700 dark:bg-neutral-900"
+          />
+          <button
+            type="button"
+            data-testid="publish-site-copy"
+            onClick={() => onCopy(address)}
+            className="shrink-0 rounded border border-neutral-300 px-2 py-1 hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-800"
+          >
+            복사
+          </button>
+          <a
+            href={address}
+            target="_blank"
+            rel="noopener noreferrer"
+            data-testid="publish-site-open"
+            className="shrink-0 rounded border border-neutral-300 px-2 py-1 hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-800"
+          >
+            열기
+          </a>
+        </div>
+      )}
+    </div>
   )
 }

@@ -10,6 +10,7 @@ import { MAX_TOTP_METHODS, mfaStatus } from '@/lib/auth/mfa'
 import { passwordStatus } from '@/lib/auth/password'
 import { listWorkspaceAudit } from '@/lib/audit/audit'
 import { planOverview } from '@/lib/billing/overview'
+import { readSiteDomain } from '@/lib/publish/site'
 import type { SessionContext } from '@/lib/auth/session-context'
 import type { SettingPanelId } from '@/lib/settings/panels'
 import { canManageGroups, listGroups } from '@/lib/workspace/group'
@@ -24,6 +25,7 @@ import { AuditPanel } from './audit-panel'
 import { MfaPanel } from './mfa-panel'
 import { PasswordPanel } from './password-panel'
 import { PlanPanel } from './plan-panel'
+import { SitePanel } from './site-panel'
 
 const HEADING = 'text-sm font-medium'
 const NOTE = 'mt-1 text-xs text-neutral-500'
@@ -54,6 +56,9 @@ export async function SettingPanelView({ id, ctx }: { id: SettingPanelId; ctx: S
       const overview = await planOverview(ctx)
       return overview === null ? null : <PlanPanel overview={overview} />
     }
+    case 'site':
+      // 사이트 주소(6c-2) — 지금 주소는 여기서 읽는다. 정하는 것은 소유자만(패널 목록이 걸렀다 — 명령이 다시 묻는다).
+      return <SitePanel workspaceId={ctx.workspaceId} initialName={await readSiteDomain(ctx)} />
     case 'audit': {
       // 감사 로그(6d-2) — 첫 쪽은 여기서 읽는다(최근 50). 요금제가 막으면 그렇다고만 말한다(기록은 쌓이고 있다).
       const first = await listWorkspaceAudit(ctx, { limit: 50 })

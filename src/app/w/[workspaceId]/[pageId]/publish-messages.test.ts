@@ -5,6 +5,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
+import type { PublishFailure } from '../../../../lib/publish/public-link.ts'
 import { coveredMessage, publicUrlOf, publishFailureMessage } from './publish-messages.ts'
 
 test('실패 까닭을 사람의 말로 — 모르는 까닭은 일반 문구', () => {
@@ -14,6 +15,14 @@ test('실패 까닭을 사람의 말로 — 모르는 까닭은 일반 문구', 
   assert.equal(publishFailureMessage('뭔가'), '바꾸지 못했습니다.')
   assert.equal(publishFailureMessage(undefined), '바꾸지 못했습니다.')
   assert.equal(publishFailureMessage('constructor'), '바꾸지 못했습니다.', '객체의 속성 이름이 문구가 되지 않는다')
+})
+
+test('★ 서버의 까닭마다 할 말이 있다 — 슬러그 둘(6c-2)도', () => {
+  // `invalid_input` 은 일반 문구 그대로다(몸체가 틀린 것은 화면의 잘못)
+  const reasons: Exclude<PublishFailure, 'invalid_input'>[] = [
+    'not_found', 'forbidden', 'not_page', 'trashed', 'policy_disabled', 'not_published', 'moderated', 'invalid_slug', 'slug_taken',
+  ]
+  for (const reason of reasons) assert.notEqual(publishFailureMessage(reason), '바꾸지 못했습니다.', reason)
 })
 
 test('위 페이지의 게시 — 볼 수 없으면 이름 없이 · 빈 제목은 "제목 없음"', () => {

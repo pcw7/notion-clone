@@ -9210,8 +9210,8 @@ async function main() {
       check('★ 사이드바의 "설정"으로 연다 — 첫 절은 내 계정의 프로필',
         await waitFor(`location.pathname === ${JSON.stringify(`/w/${workspaceId}/settings`)} && document.querySelector('[data-testid="settings-title"]')?.textContent === '프로필'`, 15000),
         JSON.stringify([await evaluate('location.pathname'), await title()]))
-      check('★ 소유자의 내비 — 내 계정(프로필 · 환경설정 · 보안) · 워크스페이스(일반 · 사람 · 보안 · 요금제 · 감사 로그)',
-        JSON.stringify(await navSections()) === JSON.stringify(['account.profile', 'account.preferences', 'account.security', 'workspace.general', 'workspace.people', 'workspace.security', 'workspace.plan', 'workspace.audit']),
+      check('★ 소유자의 내비 — 내 계정(프로필 · 환경설정 · 보안) · 워크스페이스(일반 · 사람 · 보안 · 사이트 · 요금제 · 감사 로그)',
+        JSON.stringify(await navSections()) === JSON.stringify(['account.profile', 'account.preferences', 'account.security', 'workspace.general', 'workspace.people', 'workspace.security', 'workspace.sites', 'workspace.plan', 'workspace.audit']),
         JSON.stringify(await navSections()))
 
       // 내 이름 — Enter 로 저장 · 공백을 정리한 값이 남는다
@@ -15563,6 +15563,61 @@ async function main() {
           await waitFor(`document.readyState === 'complete' && !document.querySelector('[data-testid="public-page"]')`, 15000))
       } finally {
         await send('Network.setCookie', { name: 'nc_session', value: session, domain: 'localhost', path: '/', httpOnly: true })
+        await api('PUT', '/site-domain', { name: null })
+      }
+    }
+
+    if (sectionIf('사이트 주소 — 화면 (6c-2 · F-13-08)')) {
+      // 설정 → 사이트에서 워크스페이스 주소를 정하고(대문자는 소문자로) · 공유 패널의 웹 게시 절에서 슬러그를 정하면 사이트 주소가 서고
+      // 세션 없이 열린다 · 남이 쓰는 슬러그는 그렇다고 말한다. 주소는 끝에 반드시 지운다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const domain = `ui-${stamp.toString(36)}`
+      const SECTION = '[role="dialog"][aria-label="공유 설정"] [data-testid="publish-section"]'
+      const setInput = (selector, value) => evaluate(`(() => {
+        const el = document.querySelector(${JSON.stringify(selector)})
+        if (!el) return false
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, ${JSON.stringify(value)})
+        el.dispatchEvent(new Event('input', { bubbles: true }))
+        return true
+      })()`)
+      try {
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/settings` })
+        await waitFor(`!!document.querySelector('[data-testid="settings-nav-link"][data-section="workspace.sites"]')`, 15000)
+        await clickSelector('[data-testid="settings-nav-link"][data-section="workspace.sites"]')
+        await waitFor(`!!document.querySelector('[data-testid="site-name"]')`, 15000)
+        await setInput('[data-testid="site-name"]', domain.toUpperCase())
+        await clickSelector('[data-testid="site-save"]')
+        const saved = await waitFor(`document.querySelector('[data-testid="site-name"]')?.value === ${JSON.stringify(domain)} && !!document.querySelector('[data-testid="site-example"]')`, 10000)
+        check('★ 설정 → 사이트 — 주소를 저장하면 소문자로 받고 주소의 모양을 보인다',
+          saved && (await api('GET', '/site-domain')).body?.name === domain, await evaluate(`document.querySelector('[data-testid="site-panel"]')?.textContent ?? ''`))
+
+        const other = (await api('POST', '/pages', { title: `남의 슬러그 ${stamp}` })).body.page.id
+        await api('PUT', `/pages/${other}/publish`)
+        await api('PATCH', `/pages/${other}/publish`, { slug: 'taken-one' })
+        const page = (await api('POST', '/pages', { title: `사이트 화면 ${stamp}` })).body.page.id
+        await api('PUT', `/pages/${page}/publish`)
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+        await waitFor(`[...document.querySelectorAll('button')].some((b) => b.textContent.trim() === '공유')`, 15000)
+        await clickText('공유')
+        await waitFor(`!!document.querySelector('${SECTION} [data-testid="publish-slug"]')`, 8000)
+        await setInput(`${SECTION} [data-testid="publish-slug"]`, 'taken-one')
+        await clickSelector(`${SECTION} [data-testid="publish-slug-save"]`)
+        check('남이 쓰는 슬러그 — 그렇다고 말한다',
+          await waitFor(`(document.querySelector('${SECTION} [data-testid="publish-error"]')?.textContent ?? '').includes('다른 페이지가 쓰는 슬러그')`, 8000),
+          await evaluate(`document.querySelector('${SECTION} [data-testid="publish-error"]')?.textContent ?? '(없음)'`))
+        await setInput(`${SECTION} [data-testid="publish-slug"]`, 'Team-Intro')
+        await clickSelector(`${SECTION} [data-testid="publish-slug-save"]`)
+        const shown = await waitFor(`(document.querySelector('${SECTION} [data-testid="publish-site-url"]')?.value ?? '').endsWith(${JSON.stringify(`/s/${domain}/team-intro`)})`, 8000)
+        const address = await evaluate(`document.querySelector('${SECTION} [data-testid="publish-site-url"]')?.value ?? ''`)
+        check('★ 슬러그를 저장하면 사이트 주소가 선다(소문자) — 세션 없이 열린다',
+          shown && (await fetch(address)).status === 200, address)
+      } finally {
         await api('PUT', '/site-domain', { name: null })
       }
     }

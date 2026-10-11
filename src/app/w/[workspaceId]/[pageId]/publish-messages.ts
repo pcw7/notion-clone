@@ -15,6 +15,8 @@ const FAILURE: Readonly<Record<string, string>> = {
   not_published: '게시되어 있지 않습니다.',
   invalid_input: '바꾸지 못했습니다.',
   moderated: '운영 정책에 따라 공개가 내려진 페이지는 다시 게시할 수 없습니다.',
+  invalid_slug: '슬러그는 영문 소문자 · 숫자 · 하이픈으로 60자까지입니다(예: about-us).',
+  slug_taken: '이 워크스페이스의 다른 페이지가 쓰는 슬러그입니다.',
 }
 
 /** 운영자가 공개를 내렸을 때 — 소유자가 아는 길(정본 [보강] 모더레이션 조치 ⑤). 이의는 운영자에게(17 — 이의제기는 이메일). */
