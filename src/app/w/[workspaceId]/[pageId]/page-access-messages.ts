@@ -35,6 +35,7 @@ const FAILURE: Readonly<Record<string, string>> = {
   forbidden: '전체 권한이 있어야 페이지 단위 접근을 바꿀 수 있습니다.',
   invalid_level: '줄 수 없는 권한입니다.',
   unsupported_source: '아직 고를 수 없는 기준입니다.',
+  invalid_property: '고를 수 없는 속성입니다 — 이 데이터베이스의 사람 속성이어야 합니다.',
   invalid_input: '바꾸지 못했습니다.',
 }
 

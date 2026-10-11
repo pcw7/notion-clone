@@ -290,17 +290,28 @@ async function chainInputs(
  *
  * `created_by` 규칙이면 `('user', 그 행을 만든 사람, 레벨)`. 합성한 행의 주체는 그 행의 사람이라 **판정하는 주체와 무관하다** — 그래서
  * 사슬의 ACL 행과 같은 자리에 섞으면 판정(`resolveCaps`) · 여러 사람 판정(`membersWith`) · 관리자 찾기가 고치지 않고 읽는다. 노드
- * 로컬이다(P4) — 그 행이 끊겨도 자기 노드의 행이므로 남는다. 템플릿 행은 받지 않는다(R1). 사람 속성 규칙은 사람 속성(F-03-07)이
- * 생길 때 여기에 한 갈래를 더한다(그 칸의 사람마다 한 줄) — 지금은 명령이 만들지 않는다.
+ * 로컬이다(P4) — 그 행이 끊겨도 자기 노드의 행이므로 남는다. 템플릿 행은 받지 않는다(R1).
+ *
+ * 사람 속성 규칙이면 그 행의 칸에 든 사람마다 한 줄(6g-3a · 같은 절 ③). 원천 속성이 지워졌으면(휴지통) 규칙은 남지만 주지 않는다 —
+ * 되살리면 돌아온다. 칸의 id 는 쓸 때 이 워크스페이스의 사람인지 본 값이다(`peopleIssuesIn`) — 떠난 사람의 줄도 나오지만 그 사람은
+ * 0단계 게이트(`can_enter_workspace`)를 못 넘어 세션 컨텍스트가 없다.
  */
 export async function accessRuleEntries(tx: Tx, nodes: readonly string[]): Promise<AclRow[]> {
   if (nodes.length === 0) return []
   return tx.query<AclRow>(
-    `SELECT p.id AS node_id, 'user' AS principal_type, b.created_by AS principal_id, r.level
+    `SELECT p.id AS node_id, 'user' AS principal_type, b.created_by::text AS principal_id, r.level
        FROM page p
        JOIN block b ON b.id = p.id
        JOIN page_access_rule r ON r.data_source_id = p.data_source_id AND r.source_kind = 'created_by'
-      WHERE p.id = ANY($1::uuid[]) AND p.is_template = false AND b.created_by IS NOT NULL`,
+      WHERE p.id = ANY($1::uuid[]) AND p.is_template = false AND b.created_by IS NOT NULL
+     UNION ALL
+     SELECT p.id AS node_id, 'user' AS principal_type, person ->> 'id' AS principal_id, r.level
+       FROM page p
+       JOIN page_access_rule r ON r.data_source_id = p.data_source_id AND r.source_kind = 'person_property'
+       JOIN property pr ON pr.id = r.source_property_id AND pr.deleted_at IS NULL
+       JOIN page_property_value v ON v.page_id = p.id AND v.property_id = r.source_property_id
+       CROSS JOIN LATERAL jsonb_array_elements(v.value -> 'people') AS person
+      WHERE p.id = ANY($1::uuid[]) AND p.is_template = false AND jsonb_typeof(v.value -> 'people') = 'array'`,
     [nodes],
   )
 }

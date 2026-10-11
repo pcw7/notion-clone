@@ -16075,19 +16075,37 @@ async function main() {
 
       const bad = await Promise.all([
         api('PUT', rules, { dataSourceId: db.dataSourceId, source: 'created_by', level: 'edit_content' }),
+        api('PUT', rules, { dataSourceId: db.dataSourceId, source: 'assignee', level: 'edit' }),
         api('PUT', rules, { dataSourceId: db.dataSourceId, source: 'person_property', level: 'edit' }),
         api('PUT', rules, { dataSourceId: db.dataSourceId, source: 'created_by' }),
+        api('PUT', rules, { dataSourceId: db.dataSourceId, source: 'created_by', propertyId: 7, level: 'edit' }),
         api('PUT', rules, { dataSourceId: db.dataSourceId, source: 'created_by', level: 'edit' }, asMate),
         api('GET', `/databases/not-a-uuid/access-rules`),
       ])
-      check('거부 — 400 invalid_level · 400 unsupported_source · 400 invalid_input · 못 보는 사람 404 · 모양이 틀린 id 404',
+      check('거부 — 400 invalid_level · 400 unsupported_source · 400 invalid_property(6g-3a) · 400 invalid_input 둘 · 못 보는 사람 404 · 모양이 틀린 id 404',
         JSON.stringify(bad.map((r) => `${r.status} ${r.body?.error}`)) ===
-          JSON.stringify(['400 invalid_level', '400 unsupported_source', '400 invalid_input', '404 not_found', '404 not_found']),
+          JSON.stringify(['400 invalid_level', '400 unsupported_source', '400 invalid_property', '400 invalid_input', '400 invalid_input', '404 not_found', '404 not_found']),
         JSON.stringify(bad.map((r) => `${r.status} ${r.body?.error}`)))
 
       const removed = await api('DELETE', rules, { dataSourceId: db.dataSourceId, source: 'created_by' })
       const gone = await api('GET', `/pages/${row}/access`, undefined, asMate)
       check('지우면 곧바로 못 연다', removed.status === 200 && gone.status === 404, `${removed.status} ${gone.status}`)
+
+      // 사람 규칙(6g-3a) — 라우트가 `propertyId` 를 받는다. 소유자의 행에 동료를 담당으로 넣으면 열리고, 빼면 닫힌다
+      const owner = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '담당', type: 'people' })).body.property.id
+      const theirs = (await api('POST', `/views/${db.defaultViewId}/rows`, {})).body.row.id
+      const assign = (ids) => api('PATCH', `/rows/${theirs}`, { cells: [{ propertyId: owner, value: { type: 'people', people: ids.map((id) => ({ id })) } }] })
+      await assign([mate.userId])
+      const personPut = await api('PUT', rules, { dataSourceId: db.dataSourceId, source: 'person_property', propertyId: owner, level: 'view' })
+      const assigned = await api('GET', `/pages/${theirs}/access`, undefined, asMate)
+      check('★ 사람 규칙 — 200 · 돌려준 규칙의 속성 · 담당이면 연다',
+        personPut.status === 200 && personPut.body?.rule?.propertyId === owner && assigned.status === 200,
+        `${personPut.status} ${JSON.stringify(personPut.body?.rule)} ${assigned.status}`)
+      await assign([])
+      const unassigned = await api('GET', `/pages/${theirs}/access`, undefined, asMate)
+      const personOff = await api('DELETE', rules, { dataSourceId: db.dataSourceId, source: 'person_property', propertyId: owner })
+      check('★ 담당에서 빼면 곧바로 못 연다 · 규칙 지우기도 속성으로', unassigned.status === 404 && personOff.status === 200,
+        `${unassigned.status} ${personOff.status}`)
     }
 
     if (sectionIf('만들기만 — 표 화면 (6f-2b-1 · F-06-10)')) {

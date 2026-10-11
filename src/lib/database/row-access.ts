@@ -62,8 +62,9 @@ export async function rowsAccessForDataSource(tx: Tx, ctx: SessionContext, dataS
 /**
  * "만들기만" 인 사람이 볼 수 있는 행의 술어 — 바깥 질의에 `page p` · `block b`(그 행)가 있다고 전제한다. 모두 보면 null.
  *
- * 규칙의 조건은 `accessRuleEntries`(판정)와 같다 — 만든 사람 규칙이 이 data source 에 있고 그 행을 이 사람이 만들었다. 템플릿은 바깥
- * 질의가 이미 뺀다(R1).
+ * 규칙의 조건은 `accessRuleEntries`(판정)와 같다 — 만든 사람 규칙이 이 data source 에 있고 그 행을 이 사람이 만들었다, 또는 사람 규칙이
+ * 있고 그 원천 속성(살아 있는 것)의 이 행 칸에 이 사람이 들었다(6g-3a — 칸의 포함은 필터와 같은 jsonb 포함 연산). 템플릿은 바깥 질의가
+ * 이미 뺀다(R1).
  */
 export function restrictedRowsSql(access: RowsAccess, params: ParamBag): string | null {
   if (access.kind === 'all') return null
@@ -72,5 +73,10 @@ export function restrictedRowsSql(access: RowsAccess, params: ParamBag): string 
   return `(b.perm_scope_id = ANY(${scopes}::uuid[])
            OR (b.created_by = ${user}::uuid
                AND EXISTS (SELECT 1 FROM page_access_rule ar
-                            WHERE ar.data_source_id = p.data_source_id AND ar.source_kind = 'created_by')))`
+                            WHERE ar.data_source_id = p.data_source_id AND ar.source_kind = 'created_by'))
+           OR EXISTS (SELECT 1 FROM page_access_rule ar
+                        JOIN property apr ON apr.id = ar.source_property_id AND apr.deleted_at IS NULL
+                        JOIN page_property_value av ON av.page_id = p.id AND av.property_id = ar.source_property_id
+                       WHERE ar.data_source_id = p.data_source_id AND ar.source_kind = 'person_property'
+                         AND av.value -> 'people' @> jsonb_build_array(jsonb_build_object('id', ${user}::text))))`
 }

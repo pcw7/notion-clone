@@ -10,6 +10,8 @@
  *   ③ 행에 따로 준 부여도 보인다(스코프) · 뷰의 기본 템플릿으로 만든다 · 템플릿 목록 · 구조는 여전히 닫혀 있다
  *   ④ 셀 쓰기는 **그 행의 권한** — 데이터베이스를 고치는 사람이라도 자기를 뺀 채 끊긴 행의 칸은 not_found(초판은 데이터베이스로 물었다)
  *   ⑤ 볼 수도 만들 수도 없는 사람에게는 표 · 행 · 개수 모두 없다
+ *   ⑥ ★ "만들기만 + 사람 규칙"(6g-3a) — 칸에 든 행만 · 표 · 보드 · 캘린더 · 열 집계가 같은 행 · 칸에서 빠지면 · 원천 속성이 휴지통이면
+ *      사라진다(판정과 같은 답)
  */
 
 import { test, describe, before, after } from 'node:test'
@@ -23,7 +25,7 @@ import { computeCalculations } from './calculate.ts'
 import { queryCalendar } from './calendar-query.ts'
 import { createDatabase, getDatabase } from './database.ts'
 import { queryGroups } from './group.ts'
-import { addProperty, addSelectOption, getSchema } from './property.ts'
+import { addProperty, addSelectOption, deleteProperty, getSchema, restoreProperty } from './property.ts'
 import { queryRows } from './query.ts'
 import { createRow, updateCells } from './row.ts'
 import { createRowFromTemplate, createTemplate, listTemplates } from './template.ts'
@@ -198,5 +200,37 @@ describe('⑤ 볼 수도 만들 수도 없는 사람', () => {
     assert.equal(await calendarIds(stranger, calendar.id), 'not_found')
     assert.equal(await sumOf(stranger, ds, score), undefined)
     assert.deepEqual(await createRow(stranger.ctx, ds), { ok: false, reason: 'not_found' })
+  })
+})
+
+// ── ⑥ 사람 규칙 ───────────────────────────────────────────────────────
+
+describe('⑥ ★ "만들기만 + 사람 규칙"', () => {
+  test('칸에 든 행만 — 표 · 보드 개수 · 캘린더 · 열 집계가 같은 행 · 칸에서 빠지거나 원천 속성이 휴지통이면 사라진다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { boss, maker, db, ds, score, todo, cells, theirs, board, calendar } = await submissions()
+    unwrap(await addProperty(boss.ctx, ds, { name: '담당', type: 'people' }))
+    const owner = unwrap(await getSchema(boss.ctx, ds)).properties.find((p) => p.name === '담당')!.id
+    const assign = async (row: string, ...ids: string[]) =>
+      assert.ok((await updateCells(boss.ctx, row, { cells: [{ propertyId: owner, value: { type: 'people', people: ids.map((id) => ({ id })) } }] })).ok)
+    unwrap(await createRow(maker.ctx, ds, { cells: cells(5, '2026-03-12') })) // 자기가 만든 행 — 만든 사람 규칙이 없으니 보이지 않는다
+    await assign(theirs[0].id, maker.userId, boss.userId)
+    await assign(theirs[1].id, boss.userId)
+    assert.ok((await setAccessRule(boss.ctx, db.id, { dataSourceId: ds, source: 'person_property', propertyId: owner, level: 'edit' })).ok)
+
+    assert.deepEqual(await titlesOf(maker, ds), [theirs[0].id], '칸에 든 행만')
+    assert.equal(await countOf(maker, board.id, todo), 1)
+    assert.deepEqual(await calendarIds(maker, calendar.id), [theirs[0].id])
+    assert.deepEqual(await sumOf(maker, ds, score), { kind: 'number', value: 10 })
+    assert.ok((await updateCells(maker.ctx, theirs[0].id, { cells: [{ propertyId: score, value: num(11) }] })).ok, '편집 — 그 행의 칸을 고친다')
+
+    unwrap(await deleteProperty(boss.ctx, ds, owner))
+    assert.deepEqual(await titlesOf(maker, ds), [], '원천 속성이 휴지통 — 판정처럼 빠진다')
+    unwrap(await restoreProperty(boss.ctx, ds, owner))
+    assert.deepEqual(await titlesOf(maker, ds), [theirs[0].id], '되살리면 돌아온다')
+
+    await assign(theirs[0].id, boss.userId)
+    assert.deepEqual(await titlesOf(maker, ds), [], '칸에서 빠지면 사라진다')
+    assert.deepEqual(await sumOf(maker, ds, score), { kind: 'number', value: 0 })
   })
 })
