@@ -14,7 +14,7 @@ import type { ViewColumn } from '@/lib/database/view'
 import { isEmptyValue, readRelationValue } from '@/lib/database/property-types'
 import { cellText, readCell } from '@/lib/database/cell-format'
 import { formatUniqueId } from '@/lib/database/unique-id-format'
-import { CellDisplay, RelationChips, type RelationIcons, type RelationLabels } from './cell-view'
+import { CellDisplay, RelationChips, type RelationIcons, type RelationLabels, type PeopleNames } from './cell-view'
 import { ButtonCell } from './button-cell'
 
 export function CardBadges({
@@ -24,11 +24,14 @@ export function CardBadges({
   relationIcons,
   testId,
   button,
+  peopleNames = {},
 }: {
   row: RowJson
   columns: readonly ViewColumn[]
   relationLabels: RelationLabels
   relationIcons: RelationIcons
+  /** 사람 칸의 이름(6g-2) — 없으면 빈 지도(칩은 "떠난 사용자"). */
+  peopleNames?: PeopleNames
   /** 버튼 칸(5a-4)을 세울 때 — 워크스페이스와 누를 수 있는가. 없으면 버튼은 서지 않는다. */
   button?: { readonly workspaceId: string; readonly canPress: boolean }
   /** 배지 하나의 `data-testid` — 보드는 `db-board-badge`, 갤러리는 `db-gallery-badge`. */
@@ -81,8 +84,8 @@ export function CardBadges({
             data-testid={testId}
             className="max-w-full truncate text-xs text-neutral-600 dark:text-neutral-300"
           >
-            {value.type === 'select' || value.type === 'status' ? (
-              <CellDisplay value={value} options={column.options} />
+            {value.type === 'select' || value.type === 'status' || value.type === 'people' ? (
+              <CellDisplay value={value} options={column.options} names={peopleNames} />
             ) : value.type === 'checkbox' ? (
               `☑ ${column.name}`
             ) : (

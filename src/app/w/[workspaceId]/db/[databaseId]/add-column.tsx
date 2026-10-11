@@ -69,8 +69,7 @@ import { checkFormulaDraft, type FormulaPlan } from '@/lib/database/formula-plan
 type AddableType = Exclude<MvpPropertyType, 'title'> | 'relation' | 'rollup' | 'unique_id' | 'formula' | 'button'
 
 const ADDABLE_TYPES: readonly AddableType[] = [
-  // 사람(6g-1)은 칸 · 고르개 화면(6g-2)과 함께 선다
-  ...MVP_PROPERTY_TYPES.filter((t): t is Exclude<MvpPropertyType, 'title' | 'people'> => t !== 'title' && t !== 'people'),
+  ...MVP_PROPERTY_TYPES.filter((t): t is Exclude<MvpPropertyType, 'title'> => t !== 'title'),
   'relation',
   'rollup',
   'formula',

@@ -62,6 +62,7 @@ import { computeCalculations } from '@/lib/database/calculate'
 import { normalizeSearch } from '@/lib/database/search'
 import { queryGroups } from '@/lib/database/group'
 import { loadRelationLabels, relationIdsIn } from '@/lib/database/relation'
+import { loadPeopleNames, peopleIdsOf } from '@/lib/database/people'
 import { computeRollups, EMPTY_ROLLUP_PAGE } from '@/lib/database/rollup'
 import { formulaPlanOf } from '@/lib/database/formula-plan'
 import { groupLabel } from '@/lib/database/board-drag'
@@ -384,6 +385,14 @@ export default async function DatabasePage({
       ? { labels: {}, icons: {} }
       : await loadRelationLabels(ctx, relationIdsIn(firstRows, relationPropertyIds))
 
+  // ── 사람 칸의 이름(6g-2) ── 첫 화면의 행에 든 사람만 — 그 뒤에 온 행의 것은 화면이 `GET /people?ids=` 로 받는다(`use-people-names.ts`).
+  // 활동 중인 사람만 준다 — 떠난 사람은 칩이 "떠난 사용자"(정본 §3.5 [보강] 사람 속성 ⑥).
+  const peoplePropertyIds = visibleColumns.filter((c) => c.type === 'people').map((c) => c.propertyId)
+  const peopleNames =
+    peoplePropertyIds.length === 0
+      ? {}
+      : await loadPeopleNames(ctx, peopleIdsOf(firstRows.flatMap((row) => peoplePropertyIds.map((id) => row.properties[id]))))
+
   // ── rollup 칸의 값 ──
   // 값은 행에 없다 — 어디에도 저장하지 않고 **읽을 때 계산한다**(정본 §3.5 [보강] rollup v1 · 보는 사람마다 다르다).
   // 제목 맵과 같은 자리에서 첫 화면 것을 함께 계산한다. 그 뒤에 온 행("더 보기" · 새 행)의 것은 화면이
@@ -571,6 +580,7 @@ export default async function DatabasePage({
             manualOrder={board.value.manualOrder}
             groups={groups}
             relationLabels={relation.labels}
+            peopleNames={peopleNames}
             relationIcons={relation.icons}
             access={contentAccess}
             defaultTemplate={defaultTemplate}
@@ -625,6 +635,7 @@ export default async function DatabasePage({
             hasMore={tablePage.value.hasMore}
             nextCursor={tablePage.value.nextCursor}
             relationLabels={relation.labels}
+            peopleNames={peopleNames}
             relationIcons={relation.icons}
             access={contentAccess}
             defaultTemplate={defaultTemplate}
@@ -650,6 +661,7 @@ export default async function DatabasePage({
             hasMore={tablePage.value.hasMore}
             nextCursor={tablePage.value.nextCursor}
             relationLabels={relation.labels}
+            peopleNames={peopleNames}
             relationIcons={relation.icons}
             rollupValues={rollupValues}
             formulaPlan={formulaPlan}

@@ -94,7 +94,19 @@ import { isCollapsed, isRelationCollapsed, isRollupCollapsed, listColumns, type 
 import { rollupIsEmpty, type RollupPage } from '@/lib/database/rollup-functions'
 import { newRowLabel, templateRowNote, type DefaultTemplate } from '@/lib/database/new-row'
 import * as api from './table-api'
-import { CellDisplay, FormulaDisplay, RelationChips, RollupDisplay, TYPE_ICON, TYPE_LABEL, type RelationIcons, type RelationLabels } from './cell-view'
+import {
+  CellDisplay,
+  FormulaDisplay,
+  RelationChips,
+  RollupDisplay,
+  TYPE_ICON,
+  TYPE_LABEL,
+  type PeopleNames,
+  type RelationIcons,
+  type RelationLabels,
+} from './cell-view'
+import { PeopleEditor } from './people-editor'
+import { usePeopleNames } from './use-people-names'
 import { formulaEvaluator, type FormulaPlan } from '@/lib/database/formula-plan'
 import { NewRowMenu } from './new-row-menu'
 import { useRelationLabels } from './use-relation-labels'
@@ -148,6 +160,8 @@ export function DatabaseTable(props: {
   variant?: TableVariant
   /** 첫 화면의 relation 제목(서버 렌더가 준다). 그 뒤에 온 행의 것은 `useRelationLabels` 가 받는다. */
   relationLabels: RelationLabels
+  /** 사람 칸의 이름(6g-2) — 첫 화면의 것은 서버가 준다. 없으면 빈 지도(그 뒤에 온 행의 것은 이 표가 받는다). */
+  peopleNames?: PeopleNames
   /** 그 행들의 아이콘(8c-3a) — 제목 맵과 같은 답에서 왔다. */
   relationIcons: RelationIcons
   /** 첫 화면의 rollup 값(서버 렌더가 계산해 준다). 그 뒤에 온 행의 것은 `useRollupValues` 가 받는다. */
@@ -301,6 +315,8 @@ export function DatabaseTable(props: {
 
   // relation 칸의 제목 — 첫 화면은 서버가 줬고, "더 보기" · 새 행의 것은 여기서 받는다.
   const { labels, icons: relationIcons, addLabels } = useRelationLabels(workspaceId, props.relationLabels, props.relationIcons, rows, columns)
+  // 사람 칸의 이름(6g-2) — 관계형 제목과 같은 모양
+  const { names: peopleNames, addNames: addPeopleNames } = usePeopleNames(workspaceId, props.peopleNames ?? {}, rows, columns)
 
   // rollup 칸의 값 — 행에 없다. 읽을 때 계산하고, 첫 화면의 것은 서버가 함께 준다(`use-rollup-values.ts`).
   const { page: rollups, refresh: refreshRollups } = useRollupValues(
@@ -379,6 +395,11 @@ export function DatabaseTable(props: {
       return
     }
 
+    // 사람 칸(6g-2)은 초안이 없다 — 고르는 순간마다 저장된다(`people-editor.tsx`). 여는 것이 전부다.
+    if (column.type === 'people') {
+      setMode({ kind: 'editing', at })
+      return
+    }
     const value = valueAt(row, column)
     if (column.type === 'checkbox') {
       // 체크박스에는 편집칸이 없다. "편집 시작"이 곧 토글이다.
@@ -395,8 +416,8 @@ export function DatabaseTable(props: {
     const row = rows[at.row]
     const column = columns[at.col]
     if (row === undefined || column === undefined || !isCellColumn(column)) return true
-    // select · status 는 고르는 순간 저장됐다. 편집을 닫는 것 말고 할 일이 없다.
-    if (isOptionType(column.type) || column.type === 'checkbox') return true
+    // select · status · 사람은 고르는 순간 저장됐다. 편집을 닫는 것 말고 할 일이 없다.
+    if (isOptionType(column.type) || column.type === 'checkbox' || column.type === 'people') return true
 
     const previous = valueAt(row, column)
     const parsed = parseDraft(column.type, draft, previous)
@@ -523,6 +544,15 @@ export function DatabaseTable(props: {
     if (row === undefined || column === undefined || !isCellColumn(column) || !isOptionType(column.type)) return
     void saveCell(row.id, column, optionValue(column.type, optionId), valueAt(row, column))
     setMode({ kind: 'selected', at })
+  }
+
+  /** 사람 칸을 고친다(6g-2) — 고를 때마다. 편집은 열린 채다(여럿을 고른다). 이름은 먼저 넣는다(칩이 깜빡이지 않게). */
+  const setPeople = (at: CellPos, ids: readonly string[], known: PeopleNames) => {
+    const row = rows[at.row]
+    const column = columns[at.col]
+    if (row === undefined || column === undefined || !isCellColumn(column) || column.type !== 'people') return
+    addPeopleNames(known)
+    void saveCell(row.id, column, { type: 'people', people: ids.map((id) => ({ id })) }, valueAt(row, column))
   }
 
   const createOption = async (at: CellPos, name: string) => {
@@ -1211,7 +1241,7 @@ export function DatabaseTable(props: {
                         {column.type === 'title' ? '제목 없음' : column.name}
                       </span>
                     ) : cell.kind === 'cell' ? (
-                      <CellDisplay value={cell.value} options={column.options} />
+                      <CellDisplay value={cell.value} options={column.options} names={peopleNames} />
                     ) : cell.kind === 'relation' ? (
                       <RelationChips value={cell.value} labels={labels} icons={relationIcons} />
                     ) : cell.kind === 'unique_id' ? (
@@ -1387,6 +1417,17 @@ export function DatabaseTable(props: {
                             canCreate={access.canEditStructure}
                             onPick={(optionId) => pickOption(at, optionId)}
                             onCreate={(name) => void createOption(at, name)}
+                          />
+                        </>
+                      ) : isEditing && cell.kind === 'cell' && cell.value.type === 'people' ? (
+                        <>
+                          {isList ? <div className="min-w-0 flex-1">{display}</div> : display}
+                          <PeopleEditor
+                            workspaceId={workspaceId}
+                            current={cell.value.people.map((p) => p.id)}
+                            names={peopleNames}
+                            align={isList ? 'right' : 'left'}
+                            onChange={(ids, known) => setPeople(at, ids, known)}
                           />
                         </>
                       ) : isEditing && cell.kind === 'relation' ? (

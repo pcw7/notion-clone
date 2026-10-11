@@ -53,6 +53,7 @@ import { canViewPageHistory } from '@/lib/history/version'
 import { readRowPage } from '@/lib/database/row-page'
 import { listColumns } from '@/lib/database/list-layout'
 import { loadRelationLabels, relationIdsIn } from '@/lib/database/relation'
+import { loadPeopleNames, peopleIdsOf } from '@/lib/database/people'
 import { EMPTY_ROLLUP_PAGE } from '@/lib/database/rollup'
 import { formulaPlanOf } from '@/lib/database/formula-plan'
 import { rowJson } from '@/lib/database/http'
@@ -169,6 +170,12 @@ export default async function PageView({ params, searchParams }: PageProps<'/w/[
     rowPage === null || rowRelationIds.length === 0
       ? { labels: {}, icons: {} }
       : await loadRelationLabels(ctx, relationIdsIn([rowPage.row], rowRelationIds))
+  // 사람 칸의 이름(6g-2) — 이 행에 든 사람만
+  const rowPeopleIds = rowColumns.filter((c) => c.type === 'people').map((c) => c.propertyId)
+  const rowPeopleNames =
+    rowPage === null || rowPeopleIds.length === 0
+      ? {}
+      : await loadPeopleNames(ctx, peopleIdsOf(rowPeopleIds.map((id) => rowPage.row.properties[id])))
 
   return (
     <main
@@ -297,6 +304,7 @@ export default async function PageView({ params, searchParams }: PageProps<'/w/[
             hasMore={false}
             nextCursor={null}
             relationLabels={rowRelation.labels}
+            peopleNames={rowPeopleNames}
             relationIcons={rowRelation.icons}
             // rollup 은 레코드 모양에서 빠진다(`listColumns('record', …)` — 템플릿 화면과 같다 · §7).
             rollupValues={EMPTY_ROLLUP_PAGE}
