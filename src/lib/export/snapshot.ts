@@ -51,6 +51,7 @@ import { isUuid } from '../ids.ts'
 import { readableScopes } from '../permissions/effective.ts'
 import type { CsvColumn } from './csv.ts'
 import type { ExportFile, ExportNode, ExportSnapshot } from './plan.ts'
+import { peopleNamesIn } from '../database/people.ts'
 
 /**
  * 한 번에 읽는 블록 상한. 넘으면 읽기를 멈추고 `too_large` 다 — 전부 메모리에 올린 뒤에 ZIP 크기로
@@ -227,7 +228,7 @@ export async function readExportSnapshot(
     }
 
     const databaseIds = nodeRows.filter((b) => b.type === 'database').map((b) => b.id)
-    const tables = await readTables(tx, databaseIds)
+    const tables = await readTables(tx, ctx.workspaceId, databaseIds)
     for (const database of nodeRows.filter((b) => b.type === 'database')) {
       // 행은 자기 data source 의 표에 놓인다(8e-1) — 소스가 여럿이면 표도 여럿이다. 어느 소스에도 들지 않는 행은 없다(R3 · DS1).
       const rows = rowsOf.get(database.id) ?? []
@@ -296,7 +297,7 @@ type Table = { readonly dataSourceId: string; readonly name: string; readonly co
  * 표마다 **소유한** data source 들(부착 순서 · 8e-1)의 살아 있는 프로퍼티 · 옵션. 붙인 것(linked)은 넣지 않는다 — 그 행은 원본 데이터베이스의
  * 표로 나간다(두 번 내보내지 않는다).
  */
-async function readTables(tx: Tx, databaseIds: readonly string[]): Promise<Map<string, Table[]>> {
+async function readTables(tx: Tx, workspaceId: string, databaseIds: readonly string[]): Promise<Map<string, Table[]>> {
   if (databaseIds.length === 0) return new Map()
 
   const sources = await tx.query<{ id: string; owner_database_id: string; name: string }>(
@@ -317,6 +318,23 @@ async function readTables(tx: Tx, databaseIds: readonly string[]): Promise<Map<s
   )
   // 옵션을 읽는 곳은 `database/options.ts` 하나다 — status 옵션의 그룹 순서가 표 · 보드 · 익스포트에서 같다.
   const optionsOf = await readOptionsOf(tx, properties.filter((p) => isOptionType(p.type)).map((p) => p.id))
+  // 사람 칸의 이름(6g-1 · 정본 §3.5 [보강] 사람 속성 ⑦) — 이 워크스페이스의 활동 중인 사람. 칸에 든 사람만 읽는다
+  const peopleProperties = new Set(properties.filter((p) => p.type === 'people').map((p) => p.id))
+  const names =
+    peopleProperties.size === 0
+      ? new Map<string, string>()
+      : await peopleNamesIn(
+          tx,
+          workspaceId,
+          (
+            await tx.query<{ id: string }>(
+              `SELECT DISTINCT person ->> 'id' AS id
+                 FROM page_property_value v, jsonb_array_elements(v.value -> 'people') AS person
+                WHERE v.property_id = ANY($1::text[])`,
+              [[...peopleProperties]],
+            )
+          ).map((r) => r.id),
+        )
 
   const tables = new Map<string, Table[]>()
   for (const source of sources) {
@@ -331,6 +349,7 @@ async function readTables(tx: Tx, databaseIds: readonly string[]): Promise<Map<s
           // 스키마 ENUM 은 24종이다. 읽기는 관대하게 — `property.ts` 의 `toSummary` 와 같은 규칙. 고유 ID 는 그대로 둔다(값은 ③ 이 끼운다).
           type: isMvpPropertyType(p.type) ? p.type : p.type === 'unique_id' ? ('unique_id' as const) : DEFAULT_PROPERTY_TYPE,
           ...(isOptionType(p.type) ? { options: optionsOf.get(p.id) ?? [] } : {}),
+          ...(p.type === 'people' ? { names } : {}),
         })),
     })
   }

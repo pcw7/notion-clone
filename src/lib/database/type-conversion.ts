@@ -53,6 +53,9 @@ export function cellToText(value: CellValue, optionName: (id: string) => string 
     case 'date':
       if (value.date === null) return ''
       return value.date.end ? `${value.date.start} → ${value.date.end}` : value.date.start
+    // 사람(6g-1)은 바꿀 수 있는 타입이 아니다(`CONVERTIBLE_TYPES` 밖 · 정본 [보강] 사람 속성 ⑤) — 이 길로 오지 않는다
+    case 'people':
+      return ''
   }
 }
 
@@ -151,6 +154,8 @@ export function isBlank(value: CellValue): boolean {
       return !value.checkbox
     case 'date':
       return value.date === null
+    case 'people':
+      return value.people.length === 0
   }
 }
 

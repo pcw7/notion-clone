@@ -53,7 +53,8 @@ describe('① isCellColumn', () => {
 
   test('모르는 타입(스키마 ENUM 의 24종 중 아직 안 만드는 것)도 셀이 아니다', () => {
     assert.equal(isCellColumn(columnOf('formula')), false)
-    assert.equal(isCellColumn(columnOf('people')), false)
+    // 사람(people)은 6g-1 부터 셀이다 — 아직 안 만드는 타입의 예는 파일
+    assert.equal(isCellColumn(columnOf('files')), false)
   })
 })
 

@@ -61,8 +61,14 @@ export function readCell(type: MvpPropertyType, raw: unknown): CellValue {
  * 사용자가 알아볼 수 없는 문자열이 칸에 박힌다.
  *
  * checkbox 는 화면이 체크박스로 그린다. 여기서 주는 글자는 접근성 이름이다.
+ *
+ * 사람(6g-1)은 **이름으로** — 칸은 id 만 들고 있다(정본 [보강] 사람 속성 ⑥). 이름을 모르는 id(떠난 사람 · 아직 읽지 않음)는 "떠난 사용자".
  */
-export function cellText(value: CellValue, options: readonly SelectOption[] = []): string {
+export function cellText(
+  value: CellValue,
+  options: readonly SelectOption[] = [],
+  names: ReadonlyMap<string, string> = new Map(),
+): string {
   switch (value.type) {
     case 'title':
       return toPlainText(value.title)
@@ -79,8 +85,13 @@ export function cellText(value: CellValue, options: readonly SelectOption[] = []
       return value.checkbox ? '체크됨' : '체크 안 됨'
     case 'date':
       return value.date === null ? '' : formatDate(value.date)
+    case 'people':
+      return value.people.map((person) => names.get(person.id) ?? LEFT_USER).join(', ')
   }
 }
+
+/** 이름을 모르는 사람 — 워크스페이스를 떠났다(정본 [보강] 사람 속성 ②⑥). */
+export const LEFT_USER = '떠난 사용자'
 
 const DATE_PARTS = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}))?/
 
@@ -112,6 +123,7 @@ export function draftOf(value: CellValue): string {
     case 'select':
     case 'status':
     case 'checkbox':
+    case 'people':
       return ''
   }
 }
@@ -174,6 +186,7 @@ export function parseDraft(type: MvpPropertyType, draft: string, previous: CellV
     case 'select':
     case 'status':
     case 'checkbox':
+    case 'people':
       return { ok: false, message: '입력칸으로 고치는 타입이 아닙니다' }
   }
 }
@@ -233,6 +246,9 @@ export function defaultColumnWidth(type: AppPropertyType): number {
       return 160
     case 'checkbox':
       return 90
+    // 사람 이름 두셋(6g-1)
+    case 'people':
+      return 200
     // 고유 ID 는 `TASK-123` 정도다(접두사 7자까지 · 2a-1).
     case 'unique_id':
     // 버튼은 이름 하나다(5a-1).

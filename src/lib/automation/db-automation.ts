@@ -20,7 +20,7 @@ import { randomUUID } from 'node:crypto'
 import type { SessionContext } from '../auth/session-context.ts'
 import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
 import { isRowFailure, openDataSource } from '../database/row.ts'
-import { isMvpPropertyType } from '../database/property-types.ts'
+import { isAutomationCellType } from '../database/property-types.ts'
 import { validateFilter, type FilterLeaf } from '../database/filter.ts'
 import { isUuid } from '../ids.ts'
 import { can } from '../permissions/levels.ts'
@@ -127,7 +127,7 @@ function checkTriggers(gate: SchemaGate, triggers: readonly TriggerInput[]): { r
   for (const [index, trigger] of triggers.entries()) {
     if (trigger.type !== 'property_edited') continue
     const meta = gate.properties.get(trigger.propertyId)
-    if (meta === undefined || !isMvpPropertyType(meta.type)) return { problem: 'unknown_property', index }
+    if (meta === undefined || !isAutomationCellType(meta.type)) return { problem: 'unknown_property', index }
     if (trigger.condition !== null && (validateFilter(trigger.condition, types).length > 0 || !conditionValueOk(meta.type, trigger.condition.value))) {
       return { problem: 'invalid_condition', index }
     }

@@ -737,6 +737,17 @@ async function main() {
       await sleep(120)
       return true
     }
+    /**
+     * 누른 뒤 `until` 이 참이 될 때까지 다시 누른다 — 막 연 편집기가 살아나기 전의 클릭은 버려진다(액션 편집기의 "+ 액션" 이 그랬다 —
+     * 액션이 생기지 않아 다음 단계가 없는 칸에 `focus` 를 걸고 판이 멈췄다 · HANDOFF §7).
+     */
+    const clickUntil = async (sel, until, tries = 5, ms = 2000) => {
+      for (let i = 0; i < tries; i += 1) {
+        await clickSelector(sel)
+        if (await waitFor(until, ms)) return true
+      }
+      return false
+    }
     // 잠금 버튼은 누를 때의 글자대로 잠그거나 푼다(PUT · DELETE — 둘 다 멱등). 붙기 전의 클릭은 사라지므로 될 때까지 다시 누르되,
     // **글자가 바라는 쪽일 때만** 누른다 — 앞선 클릭의 새로고침이 늦게 와 글자가 막 바뀐 뒤에 누르면 거꾸로 돌린다(1c-2 의 전체 e2e
     // 에서 겪었다 — "잠김"이 선 채로 서버는 풀려 있었다).
@@ -14539,10 +14550,12 @@ async function main() {
       }
       await clickSelector('[data-testid="db-column-button"]')
       const opened = await waitFor(`(document.querySelector('${EDITOR}')?.textContent ?? '').includes('아직 할 일이 없습니다')`, 8000)
-      await clickSelector(`${EDITOR} [data-testid="db-button-add-action"]`)
-      await waitFor(`!!document.querySelector('${EDITOR} [data-testid="db-button-property"]')`, 3000)
-      await setSelect(`${EDITOR} [data-testid="db-button-property"]`, qty)
-      await waitFor(`document.querySelector('${EDITOR} [data-testid="db-button-value"]')?.type === 'number'`, 3000)
+      await clickUntil(`${EDITOR} [data-testid="db-button-add-action"]`, `!!document.querySelector('${EDITOR} [data-testid="db-button-property"]')`)
+      await waitFor(`!!document.querySelector('${EDITOR} [data-testid="db-button-property"] option[value="${qty}"]')`, 8000)
+      for (let i = 0; i < 5; i += 1) {
+        await setSelect(`${EDITOR} [data-testid="db-button-property"]`, qty)
+        if (await waitFor(`document.querySelector('${EDITOR} [data-testid="db-button-value"]')?.type === 'number'`, 3000)) break
+      }
       await evaluate(`(() => { const el = document.querySelector('${EDITOR} [data-testid="db-button-value"]'); el.focus(); el.select() })()`)
       await typeText('7')
       await clickSelector(`${EDITOR} [data-testid="db-button-add-value"]`)
@@ -14641,7 +14654,7 @@ async function main() {
       await clickSelector('[data-testid="db-column-button"]')
       await waitFor(`!!document.querySelector('${EDITOR} [data-testid="db-button-add-action"]')`, 8000)
       // ① 숨긴 속성도 고른다 — 보기의 컬럼이 아니라 스키마
-      await clickSelector(`${EDITOR} [data-testid="db-button-add-action"]`)
+      await clickUntil(`${EDITOR} [data-testid="db-button-add-action"]`, `!!document.querySelector('${EDITOR} [data-testid="db-button-property"]')`)
       const hiddenListed = await waitFor(`[...(document.querySelector('${EDITOR} [data-testid="db-button-property"]')?.options ?? [])].some((o) => o.value === '${hidden}')`, 5000)
       check('★ "버튼 설정"은 그 표의 스키마로 고른다 — 이 보기에서 숨긴 속성도', hiddenListed,
         String(await evaluate(`[...(document.querySelector('${EDITOR} [data-testid="db-button-property"]')?.options ?? [])].map((o) => o.textContent).join(',')`)))
@@ -14882,7 +14895,7 @@ async function main() {
       await fill(`${EDITOR} [data-testid="db-filter-value"]`, '5')
       await key('Enter')
       await waitFor(`!!document.querySelector('${EDITOR} [data-testid="db-automation-add-action"]')`, 8000)
-      await clickSelector(`${EDITOR} [data-testid="db-automation-add-action"]`)
+      await clickUntil(`${EDITOR} [data-testid="db-automation-add-action"]`, `!!document.querySelector('${EDITOR} [data-testid="db-automation-property"]')`)
       await waitFor(`[...(document.querySelector('${EDITOR} [data-testid="db-automation-property"]')?.options ?? [])].some((o) => o.value === '${mark}')`, 5000)
       await setSelect(`${EDITOR} [data-testid="db-automation-property"]`, mark)
       await waitFor(`document.querySelector('${EDITOR} [data-testid="db-automation-value"]')?.type === 'checkbox'`, 3000)
@@ -15002,8 +15015,7 @@ async function main() {
         await waitFor(`!!document.querySelector('tr[data-row-id="${row}"] [data-testid="db-button-cell"]')`, 15000)
         await openEditor()
         // ① 넣고 저장 — 주소 · 헤더 · 숨긴 속성
-        await clickSelector(`${EDITOR} [data-testid="db-button-add-webhook-action"]`)
-        await waitFor(`!!document.querySelector('${EDITOR} [data-testid="db-button-webhook-url"]')`, 3000)
+        await clickUntil(`${EDITOR} [data-testid="db-button-add-webhook-action"]`, `!!document.querySelector('${EDITOR} [data-testid="db-button-webhook-url"]')`)
         await fill(`${EDITOR} [data-testid="db-button-webhook-url"]`, `http://127.0.0.1:${HOOK_PORT}${hookPath}`)
         await clickSelector(`${EDITOR} [data-testid="db-button-webhook-add-header"]`)
         await waitFor(`!!document.querySelector('${EDITOR} [data-testid="db-button-webhook-header-name"]')`, 3000)
@@ -15203,8 +15215,7 @@ async function main() {
       await waitFor(`!!document.querySelector('tr[data-row-id="${row}"] [data-testid="db-button-cell"]')`, 15000)
       await openEditor()
       // ① 마감 ← 지금 · 사본 ← 누른 행의 수량
-      await clickSelector(`${EDITOR} [data-testid="db-button-add-action"]`)
-      await waitFor(`document.querySelectorAll('${PROPERTY}').length === 1`, 3000)
+      await clickUntil(`${EDITOR} [data-testid="db-button-add-action"]`, `document.querySelectorAll('${PROPERTY}').length === 1`)
       await setSelectAt(PROPERTY, 0, due)
       await waitFor(`document.querySelectorAll('${SOURCE}')[0]?.querySelector('option[value="now"]') !== null`, 3000)
       const dueOptions = await optionsAt(0)

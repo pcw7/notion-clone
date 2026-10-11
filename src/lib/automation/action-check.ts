@@ -18,7 +18,7 @@
 import type { SessionContext } from '../auth/session-context.ts'
 import type { Tx } from '../db/tx.ts'
 import { isRowFailure, openDataSource } from '../database/row.ts'
-import { isMvpPropertyType, validateCellValue } from '../database/property-types.ts'
+import { isAutomationCellType, validateCellValue } from '../database/property-types.ts'
 import { readLiveTemplate } from '../database/template.ts'
 import { entitlement } from '../billing/entitlement.ts'
 import { sealWebhookUrl, webhookUrlHint } from '../net/url-seal.ts'
@@ -67,7 +67,7 @@ const NOT_COPYABLE: ReadonlySet<string> = new Set(['select', 'status'])
 export function cellProblem(gate: SchemaGate, cells: readonly ActionCell[], index: number, source: SchemaGate = gate): ActionSchemaProblem | null {
   for (const cell of cells) {
     const meta = gate.properties.get(cell.propertyId)
-    if (meta === undefined || !isMvpPropertyType(meta.type)) return 'unknown_property'
+    if (meta === undefined || !isAutomationCellType(meta.type)) return 'unknown_property'
     if (meta.writable === 'readonly') return 'readonly_property'
     if (isDynamicCell(cell)) {
       if (cell.from.kind === 'now') {
@@ -131,7 +131,7 @@ export async function checkActions(
       // 보낼 속성은 그 automation 의 표의 셀 속성(버튼 · relation 은 못 고른다 — 08 *"DB 버튼 property 는 전송 필드로 선택 불가"*)
       for (const propertyId of action.config.properties) {
         const meta = gate.properties.get(propertyId)
-        if (meta === undefined || !isMvpPropertyType(meta.type)) return { problem: 'unknown_property', index }
+        if (meta === undefined || !isAutomationCellType(meta.type)) return { problem: 'unknown_property', index }
       }
       if (refProblem(action.config, stored)) return { problem: 'unknown_ref', index }
       continue
