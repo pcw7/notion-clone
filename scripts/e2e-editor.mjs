@@ -16298,6 +16298,69 @@ async function main() {
       }
     }
 
+    if (sectionIf('공유 패널의 사람 규칙 줄 (6g-3b · F-06-10)')) {
+      // 데이터베이스의 공유 패널 — "페이지 단위 접근" 절에 사람 속성마다 줄("담당에 든 사람")이 서고, 레벨을 고르면 사람 규칙이 선다. 원천
+      // 속성을 휴지통에 넣으면 그 규칙은 "휴지통" 줄(고르개 없이 지우기만)이 되고, 지우기를 누르면 규칙이 사라진다.
+      const stamp = Date.now()
+      const api = async (method, path, body, headers = authed) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const setSelect = (selector, value) => evaluate(`(() => {
+        const s = document.querySelector(${JSON.stringify(selector)})
+        if (!s) return false
+        s.value = ${JSON.stringify(value)}
+        s.dispatchEvent(new Event('change', { bubbles: true }))
+        return true
+      })()`)
+      const db = (await api('POST', '/databases', { name: `사람 규칙 줄 ${stamp}` })).body.database
+      const owner = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '담당', type: 'people' })).body.property.id
+      await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '점수', type: 'number' })
+      const rulesOf = async () =>
+        ((await api('GET', `/databases/${db.id}/access-rules`)).body?.rules ?? []).map((r) => `${r.source}:${r.propertyId === owner ? '담당' : r.propertyId}:${r.level}`).join(',')
+
+      const dialog = '[role="dialog"][aria-label="공유 설정"]'
+      const personLine = `${dialog} [data-testid="page-access-rule"][data-kind="person_property"]`
+      const openPanel = async (ready) => {
+        await waitFor(`[...document.querySelectorAll('button')].some((b) => b.textContent.trim() === '공유')`, 15000)
+        for (let i = 0; i < 5; i += 1) {
+          await clickText('공유')
+          if (await waitFor(`!!document.querySelector('${dialog}')`, 3000)) break
+        }
+        return waitFor(ready, 10000)
+      }
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      const opened = await openPanel(`!!document.querySelector('${personLine}')`)
+      const lines = await evaluate(`[...document.querySelectorAll('${dialog} [data-testid="page-access-rule"]')].map((li) => li.querySelector('span')?.textContent)`)
+      check('★ 사람 속성마다 줄 — "만든 사람" 아래 "담당에 든 사람"(사람이 아닌 속성은 줄이 없다)',
+        opened && JSON.stringify(lines) === JSON.stringify(['만든 사람', '담당에 든 사람']), JSON.stringify(lines))
+
+      await setSelect(`${personLine} select`, 'edit')
+      const set = await waitFor(`document.querySelector('${personLine} select')?.value === 'edit' && !document.querySelector('${personLine} select')?.disabled`, 10000)
+      check('★ "편집" 을 고르면 사람 규칙이 선다(담당 → 편집) · 만든 사람 줄은 그대로', set && (await rulesOf()) === 'person_property:담당:edit', await rulesOf())
+
+      await clickText('공유')
+      await api('DELETE', `/data-sources/${db.dataSourceId}/properties/${owner}`)
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      const trashedLine = `${dialog} [data-testid="page-access-rule-trashed"]`
+      const reopened = await openPanel(`!!document.querySelector('${trashedLine}')`)
+      const trashed = await evaluate(`({
+        text: document.querySelector('${trashedLine}')?.textContent ?? '',
+        select: !!document.querySelector('${trashedLine} select'),
+        people: document.querySelectorAll('${personLine}').length,
+      })`)
+      check('★ 원천 속성이 휴지통 — "휴지통" 줄(고르개 없이 지우기) · 사람 속성 줄은 없다',
+        reopened && trashed.text.includes('담당에 든 사람') && trashed.text.includes('되살리면 다시 적용') && !trashed.select && trashed.people === 0,
+        JSON.stringify(trashed))
+
+      await clickText('지우기', `${trashedLine} button`)
+      const removed = await waitFor(`!document.querySelector('${trashedLine}')`, 10000)
+      check('지우기를 누르면 규칙이 사라진다', removed && (await rulesOf()) === '', await rulesOf())
+      await clickText('공유')
+    }
+
     if (sectionIf('데이터베이스 게시 — 공개 표 · 공개 행 (6a-2c-2 · F-06-08)')) {
       // 표를 게시하면 `/p/{token}` 이 읽기 전용 표 — 첫 뷰의 공유 필터 · 정렬 · 옵션 칩 · 템플릿 없음. 제목은 그 행의 공개 주소 — 행의 공개
       // 화면은 속성 묶음. 공개 화면은 세션을 읽지 않으므로 로그인한 채로 열어도 같다.

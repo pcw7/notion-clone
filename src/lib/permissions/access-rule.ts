@@ -12,7 +12,8 @@
  * 남기고, 권한 신호는 0089 의 트리거가 보낸다(규칙의 칸이 바뀔 때는 0091).
  *
  * 누가 — 데이터베이스의 `manage_perm`(공유의 일이다 · ④). 못 보면 not_found, 보지만 관리하지 못하면 forbidden. 목록은 보는 사람
- * 누구나(공유 패널이 보는 사람에게도 상태를 그린다 — `listAccess` 와 같다).
+ * 누구나(공유 패널이 보는 사람에게도 상태를 그린다 — `listAccess` 와 같다). 공유 패널의 줄에 필요한 것도 함께 준다(⑨ · 6g-3b) — 규칙마다
+ * 원천 속성의 이름 · 휴지통 여부, 그리고 규칙이 아직 없는 사람 속성까지(`listRuleProperties`).
  *
  * 원천 — "만든 사람"(`created_by` — data source 마다 하나)과 사람 속성(`person_property` — 속성마다 하나 · 6g-3a · ③). 사람 속성의
  * 원천은 **그 data source 의 살아 있는 사람 속성**이다 — 다른 표의 속성 · 지운 속성 · 사람이 아닌 속성은 `invalid_property`. 만든 사람
@@ -36,6 +37,10 @@ export type AccessRule = {
   readonly dataSourceId: string
   readonly source: AccessRuleSource
   readonly propertyId: string | null
+  /** 원천 속성의 이름 — 만든 사람 규칙이면 null. 휴지통의 속성도 이름이 있다(⑨ — 그 줄에 쓴다). */
+  readonly propertyName: string | null
+  /** 원천 속성이 휴지통에 있다 — 규칙은 남지만 판정에 들지 않는다(③). */
+  readonly propertyTrashed: boolean
   readonly level: string
 }
 
@@ -45,13 +50,27 @@ export type AccessRuleResult<T = void> =
   | ({ readonly ok: true } & (T extends void ? object : { readonly value: T }))
   | { readonly ok: false; readonly reason: AccessRuleFailure }
 
-type RuleRow = { id: string; data_source_id: string; source_kind: AccessRuleSource; source_property_id: string | null; level: string }
+type RuleRow = {
+  id: string
+  data_source_id: string
+  source_kind: AccessRuleSource
+  source_property_id: string | null
+  level: string
+  property_name: string | null
+  property_trashed: boolean
+}
+
+/** 규칙의 칸과 원천 속성 — `r` 은 규칙, `pr` 은 `LEFT JOIN property pr ON pr.id = r.source_property_id`. */
+const RULE_COLUMNS = `r.id, r.data_source_id, r.source_kind, r.source_property_id, r.level,
+       pr.name AS property_name, (pr.deleted_at IS NOT NULL) AS property_trashed`
 
 const toRule = (r: RuleRow): AccessRule => ({
   id: r.id,
   dataSourceId: r.data_source_id,
   source: r.source_kind,
   propertyId: r.source_property_id,
+  propertyName: r.property_name,
+  propertyTrashed: r.property_trashed,
   level: r.level,
 })
 
@@ -111,14 +130,35 @@ export async function listAccessRules(ctx: SessionContext, databaseId: string): 
     const denied = await gateDatabase(tx, ctx, databaseId, 'view')
     if (denied !== null) return { ok: false, reason: denied } as const
     const rows = await tx.query<RuleRow>(
-      `SELECT r.id, r.data_source_id, r.source_kind, r.source_property_id, r.level
+      `SELECT ${RULE_COLUMNS}
          FROM page_access_rule r
          JOIN data_source d ON d.id = r.data_source_id
+         LEFT JOIN property pr ON pr.id = r.source_property_id
         WHERE d.owner_database_id = $1 AND d.lifecycle = 'live'
-        ORDER BY d.id, r.source_kind, r.source_property_id NULLS FIRST`,
+        ORDER BY d.id, r.source_kind, pr.order_idx NULLS FIRST, r.source_property_id`,
       [databaseId],
     )
     return { ok: true, value: rows.map(toRule) } as const
+  })
+}
+
+/** 사람 규칙의 원천이 될 수 있는 속성 — 공유 패널이 규칙이 없는 것까지 줄로 세운다(⑨). */
+export type RuleProperty = { readonly dataSourceId: string; readonly propertyId: string; readonly name: string }
+
+/** 이 데이터베이스가 소유한 살아 있는 data source 의 살아 있는 사람 속성 — data source 순 · 스키마 순. 보는 사람 누구나. */
+export async function listRuleProperties(ctx: SessionContext, databaseId: string): Promise<AccessRuleResult<RuleProperty[]>> {
+  return withTransaction(async (tx) => {
+    const denied = await gateDatabase(tx, ctx, databaseId, 'view')
+    if (denied !== null) return { ok: false, reason: denied } as const
+    const rows = await tx.query<{ data_source_id: string; id: string; name: string }>(
+      `SELECT pr.data_source_id, pr.id, pr.name
+         FROM property pr
+         JOIN data_source d ON d.id = pr.data_source_id
+        WHERE d.owner_database_id = $1 AND d.lifecycle = 'live' AND pr.type = 'people' AND pr.deleted_at IS NULL
+        ORDER BY d.id, pr.order_idx, pr.id`,
+      [databaseId],
+    )
+    return { ok: true, value: rows.map((r) => ({ dataSourceId: r.data_source_id, propertyId: r.id, name: r.name })) } as const
   })
 }
 
@@ -148,18 +188,23 @@ export async function setAccessRule(
     if (!isGrantableLevel('page', input.level)) return { ok: false, reason: 'invalid_level' } as const
 
     const before = await tx.queryMaybe<RuleRow>(
-      `SELECT id, data_source_id, source_kind, source_property_id, level FROM page_access_rule
-        WHERE data_source_id = $1 AND source_kind = $2 AND source_property_id IS NOT DISTINCT FROM $3
-        FOR UPDATE`,
+      `SELECT ${RULE_COLUMNS}
+         FROM page_access_rule r
+         LEFT JOIN property pr ON pr.id = r.source_property_id
+        WHERE r.data_source_id = $1 AND r.source_kind = $2 AND r.source_property_id IS NOT DISTINCT FROM $3
+        FOR UPDATE OF r`,
       [input.dataSourceId, key.source, key.propertyId],
     )
     if (before !== null && before.level === input.level) return { ok: true, value: toRule(before) } as const
 
     const saved = await tx.queryOne<RuleRow>(
-      `INSERT INTO page_access_rule (id, data_source_id, source_kind, source_property_id, level)
-       VALUES ($1, $2, $3, $4, $5)
-       ON CONFLICT (data_source_id, source_kind, COALESCE(source_property_id, '')) DO UPDATE SET level = EXCLUDED.level
-       RETURNING id, data_source_id, source_kind, source_property_id, level`,
+      `WITH r AS (
+         INSERT INTO page_access_rule (id, data_source_id, source_kind, source_property_id, level)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (data_source_id, source_kind, COALESCE(source_property_id, '')) DO UPDATE SET level = EXCLUDED.level
+         RETURNING id, data_source_id, source_kind, source_property_id, level
+       )
+       SELECT ${RULE_COLUMNS} FROM r LEFT JOIN property pr ON pr.id = r.source_property_id`,
       [randomUUID(), input.dataSourceId, key.source, key.propertyId, input.level],
     )
     await recordForContextIn(tx, ctx, 'page.permission_changed', {
