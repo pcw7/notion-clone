@@ -14,7 +14,7 @@
  */
 
 import { readTitle } from '../block/page.ts'
-import { pageIconOfFormat, type PageIcon } from '../block/page-icon.ts'
+import { pageIconOfFormat, readPageIcon, type PageIcon } from '../block/page-icon.ts'
 import { cellsOf } from '../block/table.ts'
 import { codeCaptionRuns } from '../block/code.ts'
 import { PAGE_TYPE } from '../block/types.ts'
@@ -22,6 +22,7 @@ import { mentionTarget, type RichTextRun } from '../contracts/rich-text.ts'
 import { withReadTransaction, type Tx } from '../db/tx.ts'
 import { rowsToDoc, type BodyRow, type EditorBlock, type EditorDoc } from '../editor/document.ts'
 import { openablePagesIn, resolvePublicPageIn, type PublicAccessFailure, type PublicTarget } from './public-access.ts'
+import { readPublicRowPropertiesIn, readPublicTableIn, type PublicRowProperties, type PublicTable } from './public-database.ts'
 
 /** 공개 화면 하나를 그릴 재료. */
 export type PublicPageView = {
@@ -35,6 +36,10 @@ export type PublicPageView = {
   readonly pages: ReadonlyMap<string, readonly RichTextRun[]>
   /** 멘션된 이 워크스페이스 사람의 이름. */
   readonly people: ReadonlyMap<string, string>
+  /** 게시된 데이터베이스를 여는 화면이면 그 표(6a-2c-2 — 본문 대신). 아니면 null. */
+  readonly table: PublicTable | null
+  /** 연 페이지가 데이터베이스의 행이면 그 속성 묶음(6a-2c-2 — 제목 아래). 아니면 null. */
+  readonly rowProperties: PublicRowProperties | null
 }
 
 export type PublicRead =
@@ -53,11 +58,16 @@ export async function readPublicPage(token: string, pageId?: string): Promise<Pu
     if (!access.ok) return access
     const target = access.value
 
-    const page = await tx.queryOne<{ properties: Record<string, unknown> | null; format: Record<string, unknown> | null }>(
-      `SELECT properties, format FROM block WHERE id = $1`,
+    const page = await tx.queryOne<{ type: string; properties: Record<string, unknown> | null; format: Record<string, unknown> | null }>(
+      `SELECT type, properties, format FROM block WHERE id = $1`,
       [target.pageId],
     )
-    const scope = await readScope(tx, target.workspaceId, target.pageId)
+    // 게시된 데이터베이스(6a-2c-2) — 본문이 없고 표다. 아이콘은 데이터베이스의 칸(`database.icon` · 8c-3b)이다.
+    const isDatabase = page.type === 'database'
+    const databaseIcon = isDatabase
+      ? readPageIcon((await tx.queryMaybe<{ icon: unknown }>(`SELECT icon FROM database WHERE id = $1`, [target.pageId]))?.icon ?? null)
+      : null
+    const scope = isDatabase ? [] : await readScope(tx, target.workspaceId, target.pageId)
 
     // 하위 페이지 참조 · 페이지 멘션 중 이 토큰으로 열 수 있는 것
     const refIds = scope.filter((row) => row.type === PAGE_TYPE).map((row) => row.id)
@@ -87,10 +97,12 @@ export async function readPublicPage(token: string, pageId?: string): Promise<Pu
         token,
         target,
         title: readTitle(page.properties),
-        icon: pageIconOfFormat(page.format),
+        icon: isDatabase ? databaseIcon : pageIconOfFormat(page.format),
         doc,
         pages: new Map(titles.map((row) => [row.id, readTitle(row.properties)])),
         people: new Map(people.map((row) => [row.id, row.name])),
+        table: isDatabase ? await readPublicTableIn(tx, target) : null,
+        rowProperties: isDatabase ? null : await readPublicRowPropertiesIn(tx, target),
       },
     } as const
   })

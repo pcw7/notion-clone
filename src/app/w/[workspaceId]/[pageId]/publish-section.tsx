@@ -17,7 +17,15 @@
 
 import { useCallback, useEffect, useState } from 'react'
 
-import { MODERATED_NOTICE, PUBLISH_HINT, ROTATE_WARNING, coveredMessage, publicUrlOf, publishFailureMessage } from './publish-messages'
+import {
+  MODERATED_NOTICE,
+  PUBLISH_DATABASE_HINT,
+  PUBLISH_HINT,
+  ROTATE_WARNING,
+  coveredMessage,
+  publicUrlOf,
+  publishFailureMessage,
+} from './publish-messages'
 
 type PublishState = {
   published: boolean
@@ -29,7 +37,16 @@ type PublishState = {
   moderation: 'taken_down' | 'restricted' | null
 }
 
-export function PublishSection({ workspaceId, pageId }: { workspaceId: string; pageId: string }) {
+export function PublishSection({
+  workspaceId,
+  pageId,
+  kind = 'page',
+}: {
+  workspaceId: string
+  pageId: string
+  /** 데이터베이스(6a-2c-2)면 무엇이 열리는지의 말이 다르다 — 첫 뷰의 표와 그 행. */
+  kind?: 'page' | 'database'
+}) {
   const url = `/api/workspaces/${workspaceId}/pages/${pageId}/publish`
   const [state, setState] = useState<PublishState | null>(null)
   const [busy, setBusy] = useState(false)
@@ -218,7 +235,9 @@ export function PublishSection({ workspaceId, pageId }: { workspaceId: string; p
 
       {!state.published && state.canManage && state.policyAllows && state.moderation === null && (
         <div className="flex flex-col gap-2">
-          <p className="text-xs text-neutral-600 dark:text-neutral-400">{PUBLISH_HINT}</p>
+          <p className="text-xs text-neutral-600 dark:text-neutral-400" data-testid="publish-hint">
+            {kind === 'database' ? PUBLISH_DATABASE_HINT : PUBLISH_HINT}
+          </p>
           <button
             type="button"
             data-testid="publish-publish"

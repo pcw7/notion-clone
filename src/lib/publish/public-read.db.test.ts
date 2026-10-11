@@ -8,6 +8,7 @@
  *   ③ ★ 페이지 멘션 — 공개 안이면 지도에 제목 · 공개 밖이면 지도에 없다(제목을 싣지 않는다) · 사람 멘션은 이 워크스페이스 사람만 이름
  *   ④ 사슬의 제목 — 루트에서 이 페이지까지만(루트 위의 조상은 없다)
  *   ⑤ 판정이 거절하면 그대로 — 없는 페이지 · 만료
+ *   ⑥ 게시된 데이터베이스(6a-2c-2) — 본문 대신 표 · 아이콘은 데이터베이스의 칸 · 그 행을 열면 속성 묶음(표는 없다) · 보통 페이지는 둘 다 없다
  */
 
 import { test, describe, before, after } from 'node:test'
@@ -17,7 +18,8 @@ import { createPage, titleFromPlainText } from '../block/page.ts'
 import { savePageBody } from '../block/save-page-body.ts'
 import { trashPage } from '../block/trash.ts'
 import { pageMentionRun, textRun, userMentionRun, type RichTextRun } from '../contracts/rich-text.ts'
-import { createDatabase } from '../database/database.ts'
+import { createDatabase, setDatabaseIcon } from '../database/database.ts'
+import { createRow } from '../database/row.ts'
 import { query } from '../db/pool.ts'
 import type { EditorBlock } from '../editor/document.ts'
 import type { BlockId } from '../ids.ts'
@@ -204,3 +206,37 @@ describe('⑤ 판정이 거절하면 그대로', () => {
     assert.deepEqual(await readPublicPage(token), { ok: false, reason: 'expired' })
   })
 })
+
+// ── ⑥ 게시된 데이터베이스 ─────────────────────────────────────────────
+
+describe('⑥ 게시된 데이터베이스(6a-2c-2)', () => {
+  test('★ 본문 대신 표 · 아이콘은 데이터베이스의 칸 · 행은 속성 묶음 · 보통 페이지는 둘 다 없다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { boss } = await office()
+    const made = await createDatabase(boss.ctx, { name: unique('공개 표'), privateTop: true })
+    assert.ok(made.ok)
+    const icon = await setDatabaseIcon(boss.ctx, made.value.id, { type: 'emoji', emoji: '📚' })
+    assert.ok(icon.ok, JSON.stringify(icon))
+    const row = await createRow(boss.ctx, made.value.dataSourceId)
+    assert.ok(row.ok)
+    const token = await tokenOf(boss, made.value.id)
+
+    const root = await readOk(token)
+    assert.ok(root.table !== null, '표가 실린다')
+    assert.deepEqual(root.table.rows.map((r) => r.id), [row.value.id])
+    assert.deepEqual(root.icon, { type: 'emoji', emoji: '📚' }, '데이터베이스의 아이콘(database.icon)')
+    assert.deepEqual(root.doc.blocks, [], '본문은 없다')
+    assert.equal(root.rowProperties, null)
+
+    const opened = await readOk(token, row.value.id)
+    assert.equal(opened.table, null)
+    assert.ok(opened.rowProperties !== null, '행은 속성 묶음을 싣는다')
+    assert.deepEqual(opened.target.chain, [made.value.id, row.value.id])
+
+    const doc = await pageNamed(boss, unique('보통 페이지'))
+    const page = await readOk(await tokenOf(boss, doc))
+    assert.equal(page.table, null)
+    assert.equal(page.rowProperties, null)
+  })
+})
+

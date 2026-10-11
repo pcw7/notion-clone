@@ -15973,7 +15973,7 @@ async function main() {
     }
 
     if (sectionIf('데이터베이스의 레벨 — 공유 패널 (6f-1 · F-06-10)')) {
-      // 표 화면에 공유 버튼 → "줄 권한" 에 "내용 편집" · "만들기만"(6f-2c 부터) · 웹 게시 절은 없다. "내용 편집" 을 받은 동료는 행을 만들고 속성은
+      // 표 화면에 공유 버튼 → "줄 권한" 에 "내용 편집" · "만들기만"(6f-2c 부터) · 웹 게시 절(6a-2c-2 부터). "내용 편집" 을 받은 동료는 행을 만들고 속성은
       // 못 만든다. 페이지에 "내용 편집" 은 400 invalid_level. 고르개에 없는 "만들기만"(API 로 준 것)은 그 줄에 그대로 보인다("읽기" 로 속이지 않는다).
       const stamp = Date.now()
       const api = async (method, path, body, headers = authed) => {
@@ -16017,7 +16017,8 @@ async function main() {
       check('동료의 줄이 "내용 편집" 으로 보인다', (await levelOf(mateName)) === 'edit_content|내용 편집', await levelOf(mateName))
       check('★ "만들기만" 을 받은 줄이 그대로 보인다 — "읽기" 로 속이지 않는다',
         (await levelOf(makerName)) === 'create|만들기만', await levelOf(makerName))
-      check('표의 공유 패널에는 웹 게시 절이 없다', !(await evaluate(`!!document.querySelector('${dialog} [data-testid="publish-section"]')`)))
+      check('표의 공유 패널에 웹 게시 절이 선다(6a-2c-2) — 데이터베이스의 말("첫 번째 뷰의 표")',
+        await waitFor(`(document.querySelector('${dialog} [data-testid="publish-hint"]')?.textContent ?? '').includes('첫 번째 뷰의 표')`, 10000))
       await clickText('공유')
 
       const asMate = { ...json, cookie: `nc_session=${mate.token}` }
@@ -16266,6 +16267,57 @@ async function main() {
       } finally {
         await browseAs(session)
       }
+    }
+
+    if (sectionIf('데이터베이스 게시 — 공개 표 · 공개 행 (6a-2c-2 · F-06-08)')) {
+      // 표를 게시하면 `/p/{token}` 이 읽기 전용 표 — 첫 뷰의 공유 필터 · 정렬 · 옵션 칩 · 템플릿 없음. 제목은 그 행의 공개 주소 — 행의 공개
+      // 화면은 속성 묶음. 공개 화면은 세션을 읽지 않으므로 로그인한 채로 열어도 같다.
+      const stamp = Date.now()
+      const api = async (method, path, body, headers = authed) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `공개 목록 ${stamp}` })).body.database
+      const view = db.defaultViewId
+      const score = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '점수', type: 'number' })).body.property.id
+      const stage = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '단계', type: 'select' })).body.property.id
+      const doing = (await api('POST', `/data-sources/${db.dataSourceId}/properties/${stage}/options`, { name: '진행 중' })).body.option.id
+      const titleProp = (await api('GET', `/views/${view}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const row = (title, n) => api('POST', `/views/${view}/rows`, {
+        cells: [
+          { propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } },
+          { propertyId: score, value: { type: 'number', number: n } },
+          { propertyId: stage, value: { type: 'select', select: { id: doing } } },
+        ],
+      })
+      const ids = {}
+      for (const [t, n] of [['가', 10], ['나', 20], ['다', 30]]) ids[t] = (await row(t, n)).body.row.id
+      await api('POST', `/data-sources/${db.dataSourceId}/templates`, { title: '숨은 양식' })
+      await api('PATCH', `/views/${view}`, { filter: { property_id: score, operator: 'greater_than', value: 15 }, sorts: [{ property_id: score, direction: 'desc' }] })
+      const token = (await api('PUT', `/pages/${db.id}/publish`)).body?.token
+      check('데이터베이스를 게시한다 — 토큰', typeof token === 'string', String(token))
+
+      await send('Page.navigate', { url: `${BASE}/p/${token}` })
+      const titlesJs = `[...document.querySelectorAll('[data-testid="public-db-row-link"]')].map((a) => a.textContent.trim()).join(',')`
+      check('★ 공개 표 — 공유 필터(> 15) · 정렬(내림차순) · 템플릿은 없다',
+        await waitFor(`${titlesJs} === '다,나'`, 15000), await evaluate(titlesJs))
+      const chip = await evaluate(`document.querySelector('[data-testid="public-db-row"] .pub-option')?.textContent ?? '(칩 없음)'`)
+      const head = await evaluate(`[...document.querySelectorAll('[data-testid="public-table"] th')].map((th) => th.textContent).join(',')`)
+      check('열 머리 · 옵션 칩 · 표의 제목', head === '이름,점수,단계' && chip === '진행 중' &&
+        (await evaluate(`document.querySelector('[data-testid="public-title"]')?.textContent ?? ''`)).startsWith('공개 목록'), `${head} · ${chip}`)
+
+      const firstHref = await evaluate(`document.querySelector('[data-testid="public-db-row-link"]')?.getAttribute('href') ?? '(링크 없음)'`)
+      check('★ 행의 제목은 그 행의 공개 주소로 간다', firstHref === `/p/${token}/${ids['다']}`, firstHref)
+
+      // 행 화면은 주소로 연다 — 링크가 틀려도 이 검사는 따로 선다
+      await send('Page.navigate', { url: `${BASE}/p/${token}/${ids['다']}` })
+      check('★ 행의 공개 화면 — 속성 묶음(점수 30 · 단계)',
+        await waitFor(`(document.querySelector('[data-testid="public-row-properties"]')?.textContent ?? '').includes('30') && (document.querySelector('[data-testid="public-row-properties"]')?.textContent ?? '').includes('진행 중')`, 15000),
+        await evaluate(`document.querySelector('[data-testid="public-row-properties"]')?.textContent ?? location.pathname`))
+      check('행의 경로가 표로 돌아간다(이동 경로)', await evaluate(`[...document.querySelectorAll('[data-testid="public-trail"] a')].some((a) => a.getAttribute('href') === '/p/${token}')`))
+      await api('DELETE', `/pages/${db.id}/publish`)
     }
 
     if (sectionIf('개인 필터 · 정렬 — 화면 (2h-2 · F-04-17)')) {

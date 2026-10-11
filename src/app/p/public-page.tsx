@@ -15,6 +15,7 @@ import { cache, type ReactNode } from 'react'
 
 import { readPublicPage, type PublicRead } from '@/lib/publish/public-read'
 import { Blocks, RichText, Trail, UNTITLED, publicFileHref, titleText } from './public-blocks'
+import { PublicRowPropertiesView, PublicTableView } from './public-table'
 
 export const loadPublicPage = cache((token: string, pageId?: string): Promise<PublicRead> => readPublicPage(token, pageId))
 
@@ -70,9 +71,16 @@ export async function PublicPage({ token, pageId }: { token: string; pageId?: st
       <h1 className="pub-title" data-testid="public-title">
         {untitled ? UNTITLED : <RichText runs={view.title} view={view} />}
       </h1>
-      <article className="pub-body" data-testid="public-body">
-        <Blocks blocks={view.doc.blocks} view={view} />
-      </article>
+      {/* 데이터베이스의 행이면 제목 아래에 속성 묶음(6a-2c-2) */}
+      {view.rowProperties !== null && <PublicRowPropertiesView properties={view.rowProperties} view={view} />}
+      {/* 게시된 데이터베이스는 본문 대신 표(6a-2c-2 · 정본 [보강] 공개 화면 ⑩) */}
+      {view.table !== null ? (
+        <PublicTableView table={view.table} view={view} />
+      ) : (
+        <article className="pub-body" data-testid="public-body">
+          <Blocks blocks={view.doc.blocks} view={view} />
+        </article>
+      )}
       {/* 신고(6b-1b · F-17-08) — 공개 화면에만 있다(앱 안에는 없다 · 17) */}
       <footer className="pub-footer">
         <a

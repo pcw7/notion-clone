@@ -29,6 +29,13 @@ export function publishFailureMessage(reason: unknown): string {
 /** 게시하기 전에 무엇이 열리는지 — 하위 페이지가 함께 공개된다(06 *"all of its subpages will be published too"*). */
 export const PUBLISH_HINT = '웹에 게시하면 주소를 아는 누구나 로그인 없이 이 페이지와 하위 페이지를 볼 수 있습니다.'
 
+/**
+ * 데이터베이스를 게시하기 전에(6a-2c-2 · 정본 [보강] 공개 화면 ⑩) — 첫 뷰의 표와 그 행이 열린다. 숨긴 열과 계산 열(관계형 · 롤업 · 수식)은
+ * 보이지 않는다고 함께 말한다(게시한 사람이 무엇이 나가는지 안다).
+ */
+export const PUBLISH_DATABASE_HINT =
+  '웹에 게시하면 주소를 아는 누구나 로그인 없이 첫 번째 뷰의 표와 그 행을 볼 수 있습니다. 숨긴 열과 관계형 · 롤업 · 수식 열은 보이지 않습니다.'
+
 /** 주소를 바꾸기 전에 — 옛 주소는 곧바로 닫힌다. */
 export const ROTATE_WARNING = '주소를 바꾸면 지금 주소로는 더 이상 열리지 않습니다.'
 
