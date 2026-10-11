@@ -35,7 +35,7 @@ describe('② 이름', () => {
 
 describe('③ 실패 문구', () => {
   test('★ 서버의 까닭마다 할 말 · 모르는 까닭 · 원형의 이름은 일반 문구', () => {
-    const reasons: AccessRuleFailure[] = ['not_found', 'forbidden', 'invalid_level', 'unsupported_source']
+    const reasons: AccessRuleFailure[] = ['not_found', 'forbidden', 'invalid_level', 'unsupported_source', 'invalid_property']
     for (const reason of reasons) assert.notEqual(pageAccessFailureMessage(reason), '바꾸지 못했습니다.', reason)
     assert.equal(pageAccessFailureMessage('forbidden'), '전체 권한이 있어야 페이지 단위 접근을 바꿀 수 있습니다.')
     assert.equal(pageAccessFailureMessage('invalid_input'), '바꾸지 못했습니다.')

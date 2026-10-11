@@ -9,6 +9,8 @@
  *   ③ **끊기면 다시 붙고, 붙은 뒤에 다시 맞추라고 알린다** — 끊긴 사이의 신호는 오지 않는다(그래서 `onResync` 가 있다)
  *   ④ **행 단위 접근 규칙(6f-2a · 0089)이 바뀌면 워크스페이스 신호** — 두기 · 레벨 바꾸기 · 지우기마다. 같은 레벨 · 없는 규칙 지우기는
  *      쓰지 않으므로 보내지 않는다
+ *   ⑤ **사람 규칙의 원천 칸이 바뀌면 워크스페이스 신호(6g-3a · 0091)** — 넣기 · 고치기마다, 원천 속성을 휴지통에 넣고 되살릴 때마다.
+ *      값이 그대로인 고치기 · 원천이 아닌 칸은 보내지 않는다(셀 쓰기는 잦다)
  *
  * 신호는 DB 전체에서 온다 — 다른 검사 파일이 동시에 쓰는 것까지. 그래서 이 검사가 만든 페이지 · 워크스페이스 · 사용자의 신호만 본다.
  * "오지 않았다"는 기다려서 보지 않는다 — **뒤에 보낸 신호가 도착한 뒤에** 본다(신호는 커밋 순서대로 온다).
@@ -23,6 +25,8 @@ import { hashSessionToken } from '../auth/session-context.ts'
 import { movePage } from '../block/move-page.ts'
 import { createPage, titleFromPlainText } from '../block/page.ts'
 import { createDatabase } from '../database/database.ts'
+import { addProperty, deleteProperty, getSchema, restoreProperty } from '../database/property.ts'
+import { createRow, updateCells } from '../database/row.ts'
 import { savePageBody } from '../block/save-page-body.ts'
 import { trashPage } from '../block/trash.ts'
 import { textRun } from '../contracts/rich-text.ts'
@@ -228,6 +232,61 @@ describe('④ 행 단위 접근 규칙이 바뀌면 워크스페이스 신호(6f
 
     const between = heard.signals.slice(start + 1, end).filter((s) => s.kind === 'access' && s.workspaceId === workspaceId)
     assert.deepEqual(between, [access(workspaceId), access(workspaceId), access(workspaceId)])
+  })
+})
+
+// ── ⑤ 사람 규칙의 원천 칸 ────────────────────────────────────────────
+
+describe('⑤ 사람 규칙의 원천 칸이 바뀌면 워크스페이스 신호(6g-3a · 0091)', () => {
+  test('★ 칸 넣기 · 고치기 · 원천 속성 휴지통 · 되살리기마다 — 같은 값 · 원천이 아닌 칸은 보내지 않는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const heard = await listen(t)
+    const workspaceId = await createBareWorkspace('사람 규칙 신호')
+    const owner = await joinAs(workspaceId, await createUser('소유자'), 'owner')
+    const mate = await joinAs(workspaceId, await createUser('동료'), 'member')
+    const made = await createDatabase(owner.ctx, { name: '할 일', privateTop: true })
+    assert.ok(made.ok)
+    const { id: databaseId, dataSourceId } = made.value
+    for (const [name, type] of [['담당', 'people'], ['검토', 'people']] as const) {
+      assert.ok((await addProperty(owner.ctx, dataSourceId, { name, type })).ok)
+    }
+    const schema = await getSchema(owner.ctx, dataSourceId)
+    assert.ok(schema.ok)
+    const id = (name: string) => schema.value.properties.find((p) => p.name === name)!.id
+    const [assignee, reviewer] = [id('담당'), id('검토')]
+    const row = await createRow(owner.ctx, dataSourceId)
+    assert.ok(row.ok)
+    assert.ok((await setAccessRule(owner.ctx, databaseId, { dataSourceId, source: 'person_property', propertyId: assignee, level: 'edit' })).ok)
+    const page = await createPage(owner.ctx, { parentPageId: null as never, title: titleFromPlainText('표식') })
+
+    const mark = async (text: string): Promise<number> => {
+      assert.equal((await savePageBody(owner.ctx, page.id as never, { blocks: [para(text)] })).ok, true)
+      const seq = (await seqsOf(page.id)).at(-1)
+      await waitFor(`표식(${text})이 온다`, () => heard.signals.some((s) => s.kind === 'doc' && s.pageId === page.id && s.seq === seq))
+      return heard.signals.findIndex((s) => s.kind === 'doc' && s.pageId === page.id && s.seq === seq)
+    }
+    const put = async (propertyId: string, ...ids: string[]) =>
+      assert.ok((await updateCells(owner.ctx, row.value.id, { cells: [{ propertyId, value: { type: 'people', people: ids.map((x) => ({ id: x })) } }] })).ok)
+    const between = (from: number, to: number) =>
+      heard.signals.slice(from + 1, to).filter((s) => s.kind === 'access' && s.workspaceId === workspaceId)
+
+    let start = await mark('앞')
+    await put(reviewer, mate.userId) // 원천이 아니다
+    let end = await mark('원천이 아닌 칸 뒤')
+    assert.deepEqual(between(start, end), [], '원천이 아닌 칸은 보내지 않는다')
+
+    start = end
+    await put(assignee, mate.userId) // 넣기
+    await put(assignee, mate.userId) // 같은 값
+    await put(assignee, owner.userId) // 고치기 — 동료를 뺀다
+    end = await mark('원천 칸 뒤')
+    assert.deepEqual(between(start, end), [access(workspaceId), access(workspaceId)], '넣기 · 고치기마다 — 같은 값은 보내지 않는다')
+
+    start = end
+    assert.ok((await deleteProperty(owner.ctx, dataSourceId, assignee)).ok)
+    assert.ok((await restoreProperty(owner.ctx, dataSourceId, assignee)).ok)
+    end = await mark('휴지통 뒤')
+    assert.deepEqual(between(start, end), [access(workspaceId), access(workspaceId)], '원천 속성 휴지통 · 되살리기마다')
   })
 })
 
