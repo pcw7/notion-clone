@@ -9,7 +9,7 @@
 const FAILURE: Readonly<Record<string, string>> = {
   not_found: '이 페이지를 찾을 수 없습니다.',
   forbidden: '전체 권한이 있어야 웹에 게시할 수 있습니다.',
-  not_page: '페이지만 웹에 게시할 수 있습니다.',
+  not_page: '페이지와 데이터베이스만 웹에 게시할 수 있습니다 — 템플릿은 게시하지 않습니다.',
   trashed: '휴지통의 페이지는 게시할 수 없습니다.',
   policy_disabled: '워크스페이스 정책이 웹 게시를 막았습니다.',
   not_published: '게시되어 있지 않습니다.',

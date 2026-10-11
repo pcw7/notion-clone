@@ -207,7 +207,9 @@ export async function publishPage(ctx: SessionContext, pageId: string): Promise<
     const caps = await effectiveCaps(tx, ctx, pageId)
     if (!can(caps, 'view')) return { ok: false, reason: 'not_found' } as const
     if (!can(caps, 'manage_perm')) return { ok: false, reason: 'forbidden' } as const
-    if (node.type !== 'page') return { ok: false, reason: 'not_page' } as const
+    // 페이지와 데이터베이스(6a-2c-1 — 표가 공개 표로 · 행이 공개 하위로). 템플릿 행은 항목이 아니다(R1) — 게시할 수 없다.
+    if (node.type !== 'page' && node.type !== 'database') return { ok: false, reason: 'not_page' } as const
+    if (await isTemplateRow(tx, pageId)) return { ok: false, reason: 'not_page' } as const
     if (node.lifecycle !== 'live') return { ok: false, reason: 'trashed' } as const
     const policy = await readSecurityPolicyIn(tx, ctx.workspaceId)
     if (!policy.allowPublish) return { ok: false, reason: 'policy_disabled' } as const
@@ -287,6 +289,11 @@ export async function updatePublicLink(ctx: SessionContext, pageId: string, patc
     const policy = await readSecurityPolicyIn(tx, ctx.workspaceId)
     return { ok: true, value: await stateIn(tx, ctx, node, link, policy.allowPublish, true) } as const
   })
+}
+
+/** 데이터베이스의 템플릿 행인가(R1). */
+async function isTemplateRow(tx: Tx, pageId: string): Promise<boolean> {
+  return (await tx.queryMaybe<{ one: number }>(`SELECT 1 AS one FROM page WHERE id = $1 AND is_template`, [pageId])) !== null
 }
 
 /** 감사 로그(F-11-12 — 6d-1) — 토큰은 싣지 않는다(주소가 자격이다). */

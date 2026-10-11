@@ -24,6 +24,7 @@ import { createPage, titleFromPlainText } from '../block/page.ts'
 import { previewMove } from '../block/move-page.ts'
 import { restorePage, trashPage } from '../block/trash.ts'
 import { createDatabase } from '../database/database.ts'
+import { createTemplate } from '../database/template.ts'
 import { query, queryOne } from '../db/pool.ts'
 import { withReadTransaction } from '../db/tx.ts'
 import type { BlockId } from '../ids.ts'
@@ -167,12 +168,15 @@ describe('② 누가 · 무엇을', () => {
     published(await publishPage(editor.ctx, doc))
   })
 
-  test('페이지만 — 데이터베이스는 not_page · 휴지통은 trashed · 없는 id 는 not_found', async (t) => {
+  test('페이지 · 데이터베이스(6a-2c-1) — 템플릿 행은 not_page · 휴지통은 trashed · 없는 id 는 not_found', async (t) => {
     if (skipReason) return t.skip(skipReason)
     const { boss } = await office()
     const db = await createDatabase(boss.ctx, { name: unique('표') })
     assert.ok(db.ok)
-    assert.deepEqual(await publishPage(boss.ctx, db.value.id), { ok: false, reason: 'not_page' })
+    published(await publishPage(boss.ctx, db.value.id))
+    const template = await createTemplate(boss.ctx, db.value.dataSourceId, { title: '양식' })
+    assert.ok(template.ok)
+    assert.deepEqual(await publishPage(boss.ctx, template.value.id), { ok: false, reason: 'not_page' }, '템플릿은 항목이 아니다(R1)')
 
     const doc = await topOf(boss)
     await trashPage(boss.ctx, doc)
