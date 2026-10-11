@@ -81,6 +81,8 @@ export const SETTING_GROUPS = [
       { id: 'workspace.general', label: '일반' },
       { id: 'workspace.people', label: '사람' },
       { id: 'workspace.security', label: '보안' },
+      // 사이트 주소(6c-2 · F-13-08) — 소유자에게만(패널 하나로 선다).
+      { id: 'workspace.sites', label: '사이트' },
       // 요금제(8k-3) — 지금 요금제 · 한도와 쓴 양 · 비교. 소유자 · 멤버 관리자에게만(패널 하나로 선다).
       { id: 'workspace.plan', label: '요금제' },
       // 감사 로그(6d-2 · F-11-12) — 소유자에게만(패널 하나로 선다 · 요금제는 패널이 말한다).

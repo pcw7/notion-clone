@@ -138,11 +138,11 @@ describe('④ 거부는 아무것도 쓰지 않는다', () => {
 })
 
 describe('⑤ 패널', () => {
-  test('★ 그 기능의 판정 그대로 — 비밀번호는 누구나 · 소유자 여섯(감사 로그 — 6d-2) · 멤버 관리자 넷(내보내기 · 감사 로그 없음) · 멤버 둘(목록 · 그룹) · 게스트는 비밀번호뿐', async (t) => {
+  test('★ 그 기능의 판정 그대로 — 비밀번호는 누구나 · 소유자 일곱(감사 로그 — 6d-2 · 사이트 — 6c-2) · 멤버 관리자 넷(내보내기 · 감사 로그 없음) · 멤버 둘(목록 · 그룹) · 게스트는 비밀번호뿐', async (t) => {
     if (skipReason) return t.skip(skipReason)
     const admin = await joinAs(fx.workspaceId, await createUser('설정의 멤버 관리자'), 'membership_admin')
     const ids = (who: Actor) => visiblePanels(who.ctx).map((panel) => panel.id)
-    assert.deepEqual(ids(fx.owner), ['password', 'mfa', 'members', 'invites', 'guests', 'groups', 'export', 'plan', 'audit'])
+    assert.deepEqual(ids(fx.owner), ['password', 'mfa', 'members', 'invites', 'guests', 'groups', 'export', 'plan', 'site', 'audit'])
     assert.deepEqual(ids(admin), ['password', 'mfa', 'members', 'invites', 'guests', 'groups', 'plan'])
     assert.deepEqual(ids(member), ['password', 'mfa', 'members', 'groups'])
     assert.deepEqual(ids(guest), ['password', 'mfa'])
