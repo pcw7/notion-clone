@@ -70,7 +70,7 @@ import { listColumns, variantOf } from '@/lib/database/list-layout'
 import { isGroupableType } from '@/lib/database/property-types'
 import { rowJson } from '@/lib/database/http'
 import { readOperatorCatalog } from '@/lib/database/operator-catalog'
-import { liveSorts } from '@/lib/database/filter-draft'
+import { filterPeopleIds, liveSorts, readRules } from '@/lib/database/filter-draft'
 import { readLiveTemplate } from '@/lib/database/template'
 import { withReadTransaction } from '@/lib/db/tx'
 import { ExportButton } from '../../export-button'
@@ -392,6 +392,12 @@ export default async function DatabasePage({
     peoplePropertyIds.length === 0
       ? {}
       : await loadPeopleNames(ctx, peopleIdsOf(firstRows.flatMap((row) => peoplePropertyIds.map((id) => row.properties[id]))))
+  // 필터에 든 사람의 이름(6g-2b) — 칩 · 패널이 이름으로 그린다(숨긴 컬럼으로도 거른다 — 컬럼 전부에서 타입을 본다)
+  const filterRules = readRules(view.value.effectiveFilter)
+  const filterPeople = filterRules.editable
+    ? filterPeopleIds(filterRules.rules, new Map(filterColumnsOf(columns).map((c) => [c.propertyId, c.type])))
+    : []
+  const filterPeopleNames = filterPeople.length === 0 ? {} : await loadPeopleNames(ctx, filterPeople)
 
   // ── rollup 칸의 값 ──
   // 값은 행에 없다 — 어디에도 저장하지 않고 **읽을 때 계산한다**(정본 §3.5 [보강] rollup v1 · 보는 사람마다 다르다).
@@ -521,6 +527,7 @@ export default async function DatabasePage({
             {...(isGallery ? { gallery: view.value.gallery } : {})}
             {...(isCalendar ? { calendar: view.value.calendar } : {})}
             personal={view.value.personal}
+            peopleNames={filterPeopleNames}
           />
         </div>
         {/* 데이터 소스(8e-2)는 데이터베이스의 구조다 — 고칠 수 있는 사람에게만 선다(잠기면 `access` 가 이미 닫는다). */}

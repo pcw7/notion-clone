@@ -35,7 +35,7 @@
  */
 
 import { MAX_SORT_KEYS, isGroup, type FilterLeaf, type FilterNode, type FilterableType, type SortKey } from './filter.ts'
-import { formatDate } from './cell-format.ts'
+import { LEFT_USER, formatDate } from './cell-format.ts'
 import type { OperatorCatalogEntry } from './operator-catalog.ts'
 import type { SelectOption } from './property-types.ts'
 
@@ -150,11 +150,17 @@ export function withOperator(
   return { ...rule, operator }
 }
 
-/** 칩에 쓰는 한 줄 요약. `상태 · 같음 · 진행 중`. */
+/** 사람 id → 이름(활동 중인 사람만 — 없으면 떠난 사람이다 · 6g-2b). */
+export type PeopleNameMap = Readonly<Record<string, string>>
+
+/**
+ * 칩에 쓰는 한 줄 요약. `상태 · 같음 · 진행 중`. 사람 값은 이름으로(`names` — 없으면 "떠난 사용자" · 정본 §3.5 [보강] 사람 속성 ⑩).
+ */
 export function describeRule(
   rule: FilterRule,
   column: RuleColumn | undefined,
   catalog: readonly OperatorCatalogEntry[],
+  names: PeopleNameMap = {},
 ): string {
   // F-03-17: 지워진 속성의 규칙은 "비활성 표시하고 무시". 조용히 사라지게 두지 않는다.
   if (column === undefined) return '지워진 속성 (무시됨)'
@@ -162,10 +168,10 @@ export function describeRule(
   const op = entry?.label ?? rule.operator
   if (entry?.arity === 0) return `${column.name} · ${op}`
   if (rule.value === undefined || rule.value === null || rule.value === '') return `${column.name} · ${op} · …`
-  return `${column.name} · ${op} · ${valueLabel(rule.value, column)}`
+  return `${column.name} · ${op} · ${valueLabel(rule.value, column, names)}`
 }
 
-function valueLabel(value: unknown, column: RuleColumn): string {
+function valueLabel(value: unknown, column: RuleColumn, names: PeopleNameMap): string {
   switch (column.type) {
     case 'select':
     case 'status':
@@ -175,9 +181,20 @@ function valueLabel(value: unknown, column: RuleColumn): string {
       return value === true || value === 'true' ? '체크됨' : '체크 안 됨'
     case 'date':
       return typeof value === 'string' ? formatDate({ start: value }) : String(value)
+    case 'people':
+      // 떠난 사람의 규칙은 남는다 — 그 사람이 든 행만 맞는다(지운 옵션과 같은 태도)
+      return typeof value === 'string' && Object.hasOwn(names, value) ? names[value]! : LEFT_USER
     default:
       return String(value)
   }
+}
+
+/** 필터 규칙들에 든 사람 id — 사람 속성의 값이 있는 규칙만(칩 · 패널이 이름을 물을 것). */
+export function filterPeopleIds(rules: readonly FilterRule[], types: ReadonlyMap<string, FilterableType>): string[] {
+  const ids = rules.flatMap((rule) =>
+    types.get(rule.property_id) === 'people' && typeof rule.value === 'string' && rule.value !== '' ? [rule.value] : [],
+  )
+  return [...new Set(ids)]
 }
 
 // ── 정렬 ──────────────────────────────────────────────────────────────

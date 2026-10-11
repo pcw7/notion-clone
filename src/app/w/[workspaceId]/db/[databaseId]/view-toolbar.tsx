@@ -70,7 +70,8 @@ import {
   updateView,
   type ApiResult,
 } from './table-api'
-import { TYPE_ICON } from './cell-view'
+import { TYPE_ICON, type PeopleNames } from './cell-view'
+import { PeopleValue } from './people-value'
 import { ViewSearch } from './view-search'
 import { GALLERY_ASPECTS, GALLERY_COVERS, GALLERY_SIZES, type GalleryLayout } from '@/lib/database/gallery'
 import type { CalendarLayout, LiveCalendarLayout } from '@/lib/database/calendar'
@@ -110,6 +111,7 @@ export function ViewToolbar({
   gallery,
   calendar,
   personal,
+  peopleNames = {},
 }: {
   workspaceId: string
   viewId: string
@@ -135,6 +137,11 @@ export function ViewToolbar({
    * `filter` · `sorts` 로 받는 것은 이미 "실제로 쓰는" 것이다(서버 렌더가 개인 것을 얹었다).
    */
   personal?: { readonly filter: boolean; readonly sorts: boolean } | null
+  /**
+   * 필터에 든 사람의 이름(6g-2b) — 서버 렌더가 준다(칩이 "떠난 사용자" 로 깜빡이지 않게 · 필터가 바뀌면 refresh 가 다시 준다). 없는 id 는
+   * 떠난 사람이다.
+   */
+  peopleNames?: PeopleNames
 }) {
   const router = useRouter()
   const [panel, setPanel] = useState<Panel | null>(null)
@@ -150,6 +157,9 @@ export function ViewToolbar({
   )
   const read = readRules(filter)
   const hidden = columns.filter((c) => !c.visible).length
+  // 패널에서 방금 고른 사람의 이름 — 저장 뒤 refresh 가 서버의 이름을 주기 전까지 칩이 이것으로 그린다
+  const [pickedNames, setPickedNames] = useState<PeopleNames>({})
+  const names: PeopleNames = { ...pickedNames, ...peopleNames }
 
   const run = async (request: () => Promise<ApiResult<null>>): Promise<boolean> => {
     setBusy(true)
@@ -174,7 +184,7 @@ export function ViewToolbar({
       ? []
       : read.editable
         ? read.rules.map((rule) =>
-            describeRule(rule, filterColumns.find((c) => c.propertyId === rule.property_id), catalog),
+            describeRule(rule, filterColumns.find((c) => c.propertyId === rule.property_id), catalog, names),
           )
         : ['고급 필터 (여기서 고칠 수 없음)']
 
@@ -235,10 +245,13 @@ export function ViewToolbar({
         {/* 필터 · 정렬은 누구나 고친다(2h-2) — 편집자는 지금처럼 모두의 것을, 볼 수만 있는 사람은 **자기 것**을(공유 것을 대체한다). */}
         {panel === 'filter' && (
           <FilterPanel
+            workspaceId={workspaceId}
             columns={filterColumns}
             catalog={catalog}
             filter={filter}
             types={types}
+            names={names}
+            onKnown={(known) => setPickedNames((current) => ({ ...current, ...known }))}
             canEdit
             onSave={(next) =>
               run(() => (canEdit ? updateView(workspaceId, viewId, { filter: next }) : setPersonalView(workspaceId, viewId, { filter: next })))
@@ -386,18 +399,25 @@ type Row = { readonly key: number; readonly rule: FilterRule }
 const toRow = (rule: FilterRule): Row => ({ key: (rowSeq += 1), rule })
 
 function FilterPanel({
+  workspaceId,
   columns,
   catalog,
   filter,
   types,
+  names,
+  onKnown,
   canEdit,
   onSave,
   onClose,
 }: {
+  workspaceId: string
   columns: FilterableColumn[]
   catalog: OperatorCatalogEntry[]
   filter: FilterNode | null
   types: ReadonlyMap<string, FilterableType>
+  /** 사람 값의 이름(6g-2b). */
+  names: PeopleNames
+  onKnown: (known: PeopleNames) => void
   canEdit: boolean
   onSave: (next: FilterNode | null) => Promise<boolean>
   onClose: () => void
@@ -501,6 +521,7 @@ function FilterPanel({
                       key={rule.property_id}
                       column={column}
                       value={rule.value}
+                      people={{ workspaceId, names, onKnown }}
                       disabled={!canEdit}
                       onChange={(value) =>
                         replace(
@@ -551,16 +572,32 @@ function FilterPanel({
 export function RuleValue({
   column,
   value,
+  people,
   disabled,
   onChange,
 }: {
   /** 타입과 선택지만 본다 — 트리거 조건은 보기의 컬럼이 아니라 스키마의 속성을 준다. */
   column: Pick<FilterableColumn, 'type' | 'options'>
   value: unknown
+  /** 사람 값의 고르개가 쓰는 것(6g-2b) — 보기의 필터만 준다(자동화의 조건은 사람 속성을 받지 않는다 · 정본 [보강] 사람 속성 ⑤). */
+  people?: { readonly workspaceId: string; readonly names: PeopleNames; readonly onKnown: (known: PeopleNames) => void }
   disabled: boolean
   /** `undefined` 는 "값 없음"이다 — 그 규칙은 저장 트리에서 빠진다. */
   onChange: (value: unknown) => void
 }) {
+  if (column.type === 'people' && people !== undefined) {
+    return (
+      <PeopleValue
+        workspaceId={people.workspaceId}
+        value={value}
+        names={people.names}
+        disabled={disabled}
+        className={FIELD}
+        onKnown={people.onKnown}
+        onChange={onChange}
+      />
+    )
+  }
   switch (column.type) {
     case 'select':
     case 'status':
