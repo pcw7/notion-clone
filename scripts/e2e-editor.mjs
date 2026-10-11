@@ -15973,7 +15973,7 @@ async function main() {
     }
 
     if (sectionIf('데이터베이스의 레벨 — 공유 패널 (6f-1 · F-06-10)')) {
-      // 표 화면에 공유 버튼 → "줄 권한" 에 "내용 편집"(만들기만은 6f-2) · 웹 게시 절은 없다. "내용 편집" 을 받은 동료는 행을 만들고 속성은
+      // 표 화면에 공유 버튼 → "줄 권한" 에 "내용 편집" · "만들기만"(6f-2c 부터) · 웹 게시 절은 없다. "내용 편집" 을 받은 동료는 행을 만들고 속성은
       // 못 만든다. 페이지에 "내용 편집" 은 400 invalid_level. 고르개에 없는 "만들기만"(API 로 준 것)은 그 줄에 그대로 보인다("읽기" 로 속이지 않는다).
       const stamp = Date.now()
       const api = async (method, path, body, headers = authed) => {
@@ -16013,9 +16013,9 @@ async function main() {
       await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
       await openPanel()
       const offered = await evaluate(`[...(document.querySelector('${dialog} select[aria-label="줄 권한"]')?.options ?? [])].map((o) => o.textContent).join(',')`)
-      check('★ 표의 공유 패널 — "줄 권한" 에 "내용 편집" · "만들기만" 은 아직 없다', offered === '읽기,댓글,내용 편집,편집,전체 권한', offered)
+      check('★ 표의 공유 패널 — "줄 권한" 에 "내용 편집" · "만들기만"', offered === '읽기,댓글,내용 편집,만들기만,편집,전체 권한', offered)
       check('동료의 줄이 "내용 편집" 으로 보인다', (await levelOf(mateName)) === 'edit_content|내용 편집', await levelOf(mateName))
-      check('★ 고르개에 없는 "만들기만"(API 로 준 것)이 그 줄에 그대로 보인다 — "읽기" 로 속이지 않는다',
+      check('★ "만들기만" 을 받은 줄이 그대로 보인다 — "읽기" 로 속이지 않는다',
         (await levelOf(makerName)) === 'create|만들기만', await levelOf(makerName))
       check('표의 공유 패널에는 웹 게시 절이 없다', !(await evaluate(`!!document.querySelector('${dialog} [data-testid="publish-section"]')`)))
       await clickText('공유')
@@ -16185,6 +16185,84 @@ async function main() {
         check('★ 규칙만 가진 사람의 행 — 행 화면으로 선다(행의 제목 칸)', await waitFor(`!!document.querySelector('[data-testid="row-title"]')`, 15000))
         const trailLinks = await evaluate(`[...document.querySelectorAll('nav[aria-label="상위 경로"] a')].map((a) => a.getAttribute('href')).join(' ')`)
         check('경로에 못 여는 표가 없다 · 공유 단추가 없다', !trailLinks.includes('/db/') && !(await hasButton('공유')), trailLinks)
+      } finally {
+        await browseAs(session)
+      }
+    }
+
+    if (sectionIf('공유 패널의 페이지 단위 접근 (6f-2c · F-06-10)')) {
+      // 데이터베이스의 공유 패널 — "페이지 단위 접근" 절의 "만든 사람" 줄에서 레벨을 고르면 규칙이 서고 "없음" 이면 지워진다 · 추가 고르개의
+      // "만들기만" 으로 동료를 들인다 · 보는 사람에게는 고르개 없이 레벨만. 브라우저 세션은 끝에 반드시 소유자로 되돌린다.
+      const stamp = Date.now()
+      const api = async (method, path, body, headers = authed) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const browseAs = (token) => send('Network.setCookie', { name: 'nc_session', value: token, domain: 'localhost', path: '/', httpOnly: true })
+      const setSelect = (selector, value) => evaluate(`(() => {
+        const s = document.querySelector(${JSON.stringify(selector)})
+        if (!s) return false
+        s.value = ${JSON.stringify(value)}
+        s.dispatchEvent(new Event('change', { bubbles: true }))
+        return true
+      })()`)
+      const db = (await api('POST', '/databases', { name: `페이지 단위 ${stamp}` })).body.database
+      const makerName = `만들기만 동료 ${stamp}`
+      const maker = await joinAs(workspaceId, await createUser(makerName), 'member')
+      const viewer = await joinAs(workspaceId, await createUser(`보는 동료 ${stamp}`), 'member')
+      const access = (body) => api('POST', `/pages/${db.id}/access`, body)
+      await access({ action: 'restrict' })
+      await access({ action: 'grant', principal: { type: 'user', id: ctx.userId }, level: 'full_access' })
+      await access({ action: 'revoke', principal: { type: 'workspace_everyone' } })
+      await access({ action: 'grant', principal: { type: 'user', id: viewer.userId }, level: 'view' })
+      const rulesOf = async () => ((await api('GET', `/databases/${db.id}/access-rules`)).body?.rules ?? []).map((r) => `${r.source}:${r.level}`).join(',')
+
+      const dialog = '[role="dialog"][aria-label="공유 설정"]'
+      const openPanel = async () => {
+        await waitFor(`[...document.querySelectorAll('button')].some((b) => b.textContent.trim() === '공유')`, 15000)
+        for (let i = 0; i < 5; i += 1) {
+          await clickText('공유')
+          if (await waitFor(`!!document.querySelector('${dialog}')`, 3000)) break
+        }
+        return waitFor(`!!document.querySelector('${dialog} [data-testid="page-access-rule"]')`, 10000)
+      }
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      const opened = await openPanel()
+      const rowText = await evaluate(`document.querySelector('${dialog} [data-testid="page-access-rule"]')?.textContent ?? '(줄 없음)'`)
+      const levelValue = () => evaluate(`document.querySelector('${dialog} [data-testid="page-access-level"]')?.value ?? '(고르개 없음)'`)
+      check('★ 데이터베이스의 공유 패널에 "페이지 단위 접근" — "만든 사람" 줄 · 처음은 "없음"',
+        opened && rowText.startsWith('만든 사람') && (await levelValue()) === '', `${rowText} ${await levelValue()}`)
+
+      await setSelect(`${dialog} [data-testid="page-access-level"]`, 'edit')
+      const set = await waitFor(`document.querySelector('${dialog} [data-testid="page-access-level"]')?.value === 'edit' && !document.querySelector('${dialog} [data-testid="page-access-level"]')?.disabled`, 10000)
+      check('★ "편집" 을 고르면 규칙이 선다(만든 사람 → 편집)', set && (await rulesOf()) === 'created_by:edit', await rulesOf())
+
+      // 추가 고르개의 "만들기만" 으로 동료를 들인다 — 둘을 함께 쓰면 06 의 권고 조합이다
+      await setSelect(`${dialog} select[aria-label="추가할 사람"]`, `user:${maker.userId}`)
+      await setSelect(`${dialog} select[aria-label="줄 권한"]`, 'create')
+      await clickText('추가', `${dialog} button`)
+      const added = await waitFor(`[...document.querySelectorAll('${dialog} li')].some((li) => li.textContent.includes(${JSON.stringify(makerName)}) && li.querySelector('select')?.value === 'create')`, 10000)
+      const entries = (await api('GET', `/pages/${db.id}/access`)).body?.entries ?? []
+      check('★ 추가 고르개의 "만들기만" 으로 들인다',
+        added && entries.some((e) => e.principalId === maker.userId && e.level === 'create'), JSON.stringify(entries.map((e) => e.level)))
+
+      await setSelect(`${dialog} [data-testid="page-access-level"]`, '')
+      const cleared = await waitFor(`document.querySelector('${dialog} [data-testid="page-access-level"]')?.value === '' && !document.querySelector('${dialog} [data-testid="page-access-level"]')?.disabled`, 10000)
+      check('"없음" 이면 규칙을 지운다', cleared && (await rulesOf()) === '', await rulesOf())
+      await api('PUT', `/databases/${db.id}/access-rules`, { dataSourceId: db.dataSourceId, source: 'created_by', level: 'comment' })
+      await clickText('공유')
+
+      try {
+        await browseAs(viewer.token)
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+        await openPanel()
+        const viewerSees = await evaluate(`({
+          text: document.querySelector('${dialog} [data-testid="page-access-level-text"]')?.textContent ?? '(없음)',
+          select: !!document.querySelector('${dialog} [data-testid="page-access-level"]'),
+        })`)
+        check('보는 사람에게는 고르개 없이 레벨만("댓글")', viewerSees.text === '댓글' && !viewerSees.select, JSON.stringify(viewerSees))
       } finally {
         await browseAs(session)
       }

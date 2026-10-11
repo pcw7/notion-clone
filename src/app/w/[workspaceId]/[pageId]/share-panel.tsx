@@ -52,6 +52,7 @@ import {
   requesterLabel,
 } from '../access-request-messages'
 import { PublishSection } from './publish-section'
+import { PageAccessSection } from './page-access-section'
 
 type AccessEntry = {
   principalType: string
@@ -621,6 +622,10 @@ export function SharePanel({
           {/* 웹 게시(6a-3) — 상태는 이 절이 따로 읽는다(공유 목록과 다른 요청) */}
           {/* 웹 게시는 페이지만(6a-1 · 정본 [정정] 웹 게시 ④) */}
           {state !== null && kind === 'page' && <PublishSection workspaceId={workspaceId} pageId={pageId} />}
+          {/* 페이지 단위 접근(6f-2c) — 데이터베이스만 · 규칙은 이 절이 따로 읽는다 */}
+          {state !== null && kind === 'database' && (
+            <PageAccessSection workspaceId={workspaceId} databaseId={pageId} canManage={state.canManage} />
+          )}
 
           {error && (
             <p role="alert" className="mt-3 text-xs text-red-600">
