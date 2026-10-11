@@ -15523,6 +15523,47 @@ async function main() {
       check('해제하면 그 주소는 404', (await fetch(`${BASE}/p/${token}`)).status === 404)
     }
 
+    if (sectionIf('폼 — 서버 라우트 (7a-1 · F-13-01)')) {
+      // 폼 뷰의 라우트 — 만들기(첫 질문은 제목) · 질문 바꾸기 · 설정 · 공개(토큰) · 거부 코드. 폼 탭의 화면(7a-3)이 서기 전에는 표 화면의
+      // 탭에 서지 않는다(행을 그리는 뷰로 잘못 열리지 않게).
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `폼 표 ${stamp}` })).body.database
+      const score = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '점수', type: 'number' })).body.property.id
+      const made = await api('POST', `/databases/${db.id}/forms`, { name: `신청서 ${stamp}` })
+      const form = made.body?.form
+      check('★ 폼 뷰를 만든다 — 201 · 첫 질문은 제목 · 닫힌 채로',
+        made.status === 201 && form?.questions?.length === 1 && form.settings.access === 'closed' && form.settings.token === null,
+        JSON.stringify(made.body))
+      const titleProp = form?.questions?.[0]?.propertyId
+      const asked = await api('PUT', `/forms/${form.viewId}/questions`, { questions: [{ propertyId: score, required: true, label: '나이' }, { propertyId: titleProp }] })
+      check('질문을 통째로 바꾼다 — 순서 · 필수 · 제목',
+        asked.status === 200 && JSON.stringify(asked.body.form.questions.map((q) => [q.propertyId, q.required, q.label])) === JSON.stringify([[score, true, '나이'], [titleProp, false, null]]),
+        JSON.stringify(asked.body))
+      const opened = await api('PATCH', `/forms/${form.viewId}`, { title: '참가 신청', access: 'public' })
+      check('★ 공개로 연다 — 토큰(22자) · 제목', opened.status === 200 && /^[A-Za-z0-9_-]{22}$/.test(opened.body?.form?.settings?.token ?? '') && opened.body.form.settings.title === '참가 신청',
+        JSON.stringify(opened.body))
+      const bad = await Promise.all([
+        api('PATCH', `/forms/${form.viewId}`, { access: 'everyone' }),
+        api('PUT', `/forms/${form.viewId}/questions`, { questions: [{ propertyId: score }, { propertyId: score }] }),
+        api('GET', `/forms/${db.defaultViewId}`),
+        api('PATCH', `/views/${form.viewId}`, { type: 'table' }),
+      ])
+      check('거부 — 400 invalid_input 둘 · 표는 폼이 아니다(404) · 폼은 종류를 바꾸지 않는다(400)',
+        JSON.stringify(bad.map((r) => `${r.status} ${r.body?.error}`)) === JSON.stringify(['400 invalid_input', '400 invalid_input', '404 not_found', '400 unsupported_type']),
+        JSON.stringify(bad.map((r) => `${r.status} ${r.body?.error}`)))
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      await waitFor(`document.querySelectorAll('[data-testid="db-view-tab"]').length > 0`, 15000)
+      const tabs = await evaluate(`[...document.querySelectorAll('[data-testid="db-view-tab"]')].map((t) => t.textContent)`)
+      check('폼 탭은 아직 표 화면에 서지 않는다(7a-3 전)', !tabs.some((t) => t.includes(`신청서 ${stamp}`)), JSON.stringify(tabs))
+    }
+
     if (sectionIf('사이트 주소 (6c-1 · F-13-08)')) {
       // 워크스페이스 주소 + 슬러그 — 게시한 페이지를 `/s/{주소}/{슬러그}` 로 **세션 없이** 연다 · 하위 페이지 링크도 사이트 주소다 · 없는
       // 슬러그는 404 · 슬러그는 소문자로 받는다. 브라우저 세션은 끝에 반드시 되돌린다.

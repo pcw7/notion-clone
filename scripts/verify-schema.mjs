@@ -79,6 +79,8 @@ const EXPECTED_TABLES = [
   'reminder',
   // 사이트 주소 6c-1조각 (0093)
   'site_domain',
+  // 폼 7a-1조각 (0094)
+  'form_view', 'form_question',
   'schema_migration', 'scim_token', 'session_policy', 'sso_config',
   'user', 'user_email', 'user_session',
   'workspace', 'workspace_invite', 'workspace_member',
@@ -4277,6 +4279,64 @@ try {
     for (const [label, slug] of [['대문자', 'About'], ['공백', 'about us'], ['하이픈으로 시작', '-about'], ['61자', 'a'.repeat(61)]]) {
       await rejects(`슬러그의 모양 — ${label}`, `UPDATE public_link SET slug = $2 WHERE node_id = $1`, [p1, slug], 'ck_public_link_slug')
     }
+  }
+
+  console.log('\n[69] 폼 — 폼 뷰의 설정 · 질문 (0094 / §3.6 끝 [보강] 폼 · 7a-1조각)')
+  {
+    const dbBlock = randomUUID()
+    const ds = randomUUID()
+    const viewId = randomUUID()
+    const prop = 'f' + randomUUID().replace(/-/g, '').slice(0, 20)
+    const prop2 = 'g' + randomUUID().replace(/-/g, '').slice(0, 20)
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key,
+                          ancestor_path, perm_scope_id, properties, format, created_at, last_edited_at)
+       VALUES ($1, $2, 'database', 'workspace', $2, $3, '{}', $1, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      [dbBlock, wsId, `z${randomUUID().replace(/-/g, '')}`],
+    )
+    await client.query(`INSERT INTO database (id, created_at, updated_at) VALUES ($1, now(), now())`, [dbBlock])
+    await client.query(`INSERT INTO data_source (id, owner_database_id, name, created_at, updated_at) VALUES ($1, $2, '폼', now(), now())`, [ds, dbBlock])
+    await client.query(`INSERT INTO database_data_source (database_id, data_source_id, order_idx) VALUES ($1, $2, 'a0')`, [dbBlock, ds])
+    for (const [p, order] of [[prop, 'a0'], [prop2, 'a1']]) {
+      await client.query(`INSERT INTO property (id, data_source_id, name, type, order_idx) VALUES ($1, $2, $3, 'rich_text', $4)`, [p, ds, `질문 ${order}`, order])
+    }
+    await client.query(
+      `INSERT INTO view (id, owner_kind, database_id, data_source_id, name, type, order_idx, configuration, created_at, updated_at)
+       VALUES ($1, 'database_view', $2, $3, '폼', 'form', 'a0', '{}'::jsonb, now(), now())`,
+      [viewId, dbBlock, ds],
+    )
+    await client.query(`INSERT INTO form_view (view_id) VALUES ($1)`, [viewId])
+    await client.query(`INSERT INTO form_question (view_id, property_id, order_key) VALUES ($1, $2, 'a0')`, [viewId, prop])
+    ok('폼 · 질문 — 정상 경로가 통과한다')
+
+    const rejects = async (label, sql, params, constraint) => {
+      await client.query('SAVEPOINT probe')
+      try {
+        await client.query(sql, params)
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        fail(`${label} — 거부되어야 하는데 통과했다`)
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        if (e.constraint === constraint) ok(`${label} — ${constraint} 가 거부함 (${e.code})`)
+        else fail(`${label} — ${constraint} 가 아니라 ${e.constraint ?? e.code} 에 걸렸다 (${e.message})`)
+      }
+    }
+    const update = (set) => `UPDATE form_view SET ${set} WHERE view_id = $1`
+    await rejects('★ 토큰 없이 공개', update(`access = 'public', token = NULL`), [viewId], 'ck_form_view_public_token')
+    await rejects('모르는 공개 범위', update(`access = 'workspace'`), [viewId], 'ck_form_view_access')
+    await rejects('모양이 틀린 토큰', update(`token = 'short'`), [viewId], 'ck_form_view_token')
+    await rejects('빈 제목', update(`title = ''`), [viewId], 'ck_form_view_title')
+    await rejects('41자 제출 문구', update(`submit_label = repeat('x', 41)`), [viewId], 'ck_form_view_submit')
+    await rejects('★ 같은 속성을 두 번 묻는다', `INSERT INTO form_question (view_id, property_id, order_key) VALUES ($1, $2, 'b0')`, [viewId, prop], 'form_question_pkey')
+    await rejects('같은 순서 키', `INSERT INTO form_question (view_id, property_id, order_key) VALUES ($1, $2, 'a0')`, [viewId, prop2], 'ux_form_question_order')
+    await rejects('빈 질문 제목', `INSERT INTO form_question (view_id, property_id, order_key, label) VALUES ($1, $2, 'b0', '')`, [viewId, prop2], 'ck_form_question_label')
+
+    await client.query('SAVEPOINT cascade')
+    await client.query(`DELETE FROM view WHERE id = $1`, [viewId])
+    const left = (await client.query(`SELECT (SELECT count(*) FROM form_view WHERE view_id = $1) + (SELECT count(*) FROM form_question WHERE view_id = $1) AS n`, [viewId])).rows[0].n
+    if (Number(left) === 0) ok('★ 뷰를 지우면 설정 · 질문도 지워진다(CASCADE)')
+    else fail(`뷰를 지웠는데 폼 행 ${left}개가 남았다`)
+    await client.query('ROLLBACK TO SAVEPOINT cascade')
   }
 
   await client.query('ROLLBACK')
