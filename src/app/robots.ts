@@ -30,7 +30,8 @@ export const AI_CRAWLERS = [
 export default function robots(): MetadataRoute.Robots {
   return {
     rules: [
-      { userAgent: '*', allow: '/p/', disallow: ['/w/', '/api/', '/login', '/invite'] },
+      // 사이트 주소(`/s/` — 6c-1)는 공개 화면과 같은 화면이다 — 색인은 그 화면의 meta 가 정한다
+      { userAgent: '*', allow: ['/p/', '/s/'], disallow: ['/w/', '/api/', '/login', '/invite'] },
       { userAgent: [...AI_CRAWLERS], disallow: ['/'] },
     ],
   }

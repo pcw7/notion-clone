@@ -15523,6 +15523,50 @@ async function main() {
       check('해제하면 그 주소는 404', (await fetch(`${BASE}/p/${token}`)).status === 404)
     }
 
+    if (sectionIf('사이트 주소 (6c-1 · F-13-08)')) {
+      // 워크스페이스 주소 + 슬러그 — 게시한 페이지를 `/s/{주소}/{슬러그}` 로 **세션 없이** 연다 · 하위 페이지 링크도 사이트 주소다 · 없는
+      // 슬러그는 404 · 슬러그는 소문자로 받는다. 브라우저 세션은 끝에 반드시 되돌린다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const newPage = async (title, parentPageId) =>
+        (await api('POST', '/pages', parentPageId === undefined ? { title } : { title, parentPageId })).body.page.id
+      const domain = `e2e-${stamp.toString(36)}`
+      const named = await api('PUT', '/site-domain', { name: domain.toUpperCase() })
+      const root = await newPage(`사이트 첫 장 ${stamp}`)
+      const child = await newPage(`사이트 둘째 장 ${stamp}`, root)
+      await saveBody(root, { blocks: [{ id: child, type: 'page', title: [], properties: {}, format: {}, children: [] }] })
+      await api('PUT', `/pages/${root}/publish`)
+      const slugged = await api('PATCH', `/pages/${root}/publish`, { slug: 'About-Team' })
+      check('워크스페이스 주소 · 슬러그 — 소문자로 받는다 · 게시 상태가 둘을 말한다',
+        named.status === 200 && named.body?.name === domain && slugged.status === 200 && slugged.body?.slug === 'about-team' && slugged.body?.siteDomain === domain,
+        `${JSON.stringify(named.body)} ${JSON.stringify(slugged.body)}`)
+      const taken = await api('PATCH', `/pages/${child}/publish`, { slug: 'about-team' })
+      check('게시되지 않은 하위에 슬러그 — 409 not_published', taken.status === 409 && taken.body?.error === 'not_published', JSON.stringify(taken.body))
+
+      try {
+        await send('Network.deleteCookies', { name: 'nc_session', domain: 'localhost', path: '/' })
+        await send('Page.navigate', { url: `${BASE}/s/${domain}/about-team` })
+        const shown = await waitFor(`document.querySelector('[data-testid="public-title"]')?.textContent === ${JSON.stringify(`사이트 첫 장 ${stamp}`)}`, 15000)
+        const href = await evaluate(`document.querySelector('.pub-page-ref')?.getAttribute('href') ?? '(없음)'`)
+        check('★ 사이트 주소로 세션 없이 연다 — 하위 페이지 링크도 사이트 주소', shown && href === `/s/${domain}/about-team/${child}`, href)
+        await clickSelector('.pub-page-ref')
+        check('하위로 가면 사이트 주소 아래 — 그 페이지',
+          await waitFor(`location.pathname === ${JSON.stringify(`/s/${domain}/about-team/${child}`)} && document.querySelector('[data-testid="public-title"]')?.textContent === ${JSON.stringify(`사이트 둘째 장 ${stamp}`)}`, 15000),
+          await evaluate('location.pathname'))
+        await send('Page.navigate', { url: `${BASE}/s/${domain}/no-such-page` })
+        check('없는 슬러그는 404 — 공개 화면이 서지 않는다',
+          await waitFor(`document.readyState === 'complete' && !document.querySelector('[data-testid="public-page"]')`, 15000))
+      } finally {
+        await send('Network.setCookie', { name: 'nc_session', value: session, domain: 'localhost', path: '/', httpOnly: true })
+        await api('PUT', '/site-domain', { name: null })
+      }
+    }
+
     if (sectionIf('공개 화면 — 이미지 (6a-2b · F-06-08)')) {
       // 게시한 페이지의 이미지 블록 · 이미지 아이콘이 **세션 없이** 보인다 — 블록 id 로 여는 공개 파일 경로 · X-Robots-Tag · 짧은 캐시.
       // 닫힌 하위의 이미지 · 파일 id 로 찍은 주소는 404. 브라우저 세션은 끝에 반드시 되돌린다.

@@ -28,9 +28,9 @@ import type { PublicPageView } from '@/lib/publish/public-read'
 /** 제목 없는 페이지의 이름. */
 export const UNTITLED = '제목 없음'
 
-/** 공개 화면 안의 주소 — 같은 토큰 아래. 루트는 토큰만이다. */
-export function publicHref(view: Pick<PublicPageView, 'token' | 'target'>, pageId: string): string {
-  return pageId === view.target.rootId ? `/p/${view.token}` : `/p/${view.token}/${pageId}`
+/** 공개 화면 안의 주소 — 같은 기준 경로 아래(토큰 주소 · 사이트 주소 — 6c-1). 루트는 기준 경로 그대로다. */
+export function publicHref(view: Pick<PublicPageView, 'base' | 'target'>, pageId: string): string {
+  return pageId === view.target.rootId ? view.base : `${view.base}/${pageId}`
 }
 
 /** 페이지 제목의 글자 — 비었으면 "제목 없음". */
