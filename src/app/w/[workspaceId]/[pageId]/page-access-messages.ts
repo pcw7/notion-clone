@@ -1,7 +1,7 @@
 /**
  * "페이지 단위 접근" 절의 문구 — 데이터베이스의 공유 패널 (게시 · 공유 6f-2c · F-06-10 · 순수)
  *
- * 정본: 00-canonical-data-model.md §3.3 끝 [보강] 행 단위 접근 규칙 ②⑧
+ * 정본: 00-canonical-data-model.md §3.3 끝 [보강] 행 단위 접근 규칙 ②⑧⑨
  *
  * 레벨 고르개(없음 + 페이지 레벨 넷 — 규칙의 대상은 행이다) · 서버의 실패 까닭(`AccessRuleFailure` · 라우트의 `invalid_input`)을 사람의 말로.
  */
@@ -17,12 +17,22 @@ export const RULE_LEVEL_OPTIONS: readonly { value: string; label: string }[] = [
   ...(['view', 'comment', 'edit', 'full_access'] as const).map((value) => ({ value, label: levelLabel(value) })),
 ]
 
-/** 절의 설명 — 06 의 권고 조합을 말한다. */
-export const PAGE_ACCESS_HINT = '행을 만든 사람에게 그 행의 권한을 줍니다. "만들기만" 과 함께 쓰면 각자 자기가 만든 행만 보고 고칩니다.'
+/** 절의 설명 — 두 원천(만든 사람 · 사람 속성 · ⑨)과 06 의 권고 조합을 말한다. */
+export const PAGE_ACCESS_HINT =
+  '행을 만든 사람이나 사람 속성(담당 등)에 든 사람에게 그 행의 권한을 줍니다. "만들기만" 과 함께 쓰면 각자 자기 행만 보고 고칩니다.'
+
+/** 휴지통의 속성의 규칙 — 보는 사람에게 · 관리하는 사람에게는 지우기 버튼 옆에. */
+export const TRASHED_RULE_HINT = '휴지통 — 되살리면 다시 적용'
 
 /** 규칙 줄의 이름 — 소스가 둘 이상이면 소스 이름을 앞에 단다(어느 표의 규칙인지). */
 export function ruleRowLabel(sourceName: string | null): string {
   return sourceName === null ? '만든 사람' : `${sourceName} · 만든 사람`
+}
+
+/** 사람 속성 규칙 줄의 이름(⑨) — "담당에 든 사람". 소스가 둘 이상이면 소스 이름을 앞에 단다. */
+export function personRuleRowLabel(sourceName: string | null, propertyName: string): string {
+  const subject = `${propertyName}에 든 사람`
+  return sourceName === null ? subject : `${sourceName} · ${subject}`
 }
 
 /** 보는 사람에게 — 지금 레벨의 이름(없으면 "없음"). */

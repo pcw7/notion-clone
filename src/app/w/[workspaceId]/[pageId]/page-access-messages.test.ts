@@ -2,7 +2,7 @@
  * "페이지 단위 접근" 절의 문구 — 6f-2c (F-06-10 · 순수)
  *
  *   ① 레벨 고르개는 "없음" + 서버가 규칙에 받는 페이지 레벨 넷이다(0089 의 CHECK · `isGrantableLevel('page')`)
- *   ② 줄 이름 · 보는 사람의 레벨 이름
+ *   ② 줄 이름(만든 사람 · 사람 속성 — 6g-3b) · 보는 사람의 레벨 이름
  *   ③ 실패 까닭마다 할 말이 있다 · 모르는 까닭 · 원형의 이름은 일반 문구
  */
 
@@ -11,7 +11,14 @@ import assert from 'node:assert/strict'
 
 import { LEVELS, isGrantableLevel } from '../../../../lib/permissions/levels.ts'
 import type { AccessRuleFailure } from '../../../../lib/permissions/access-rule.ts'
-import { NO_RULE, RULE_LEVEL_OPTIONS, pageAccessFailureMessage, ruleLevelLabel, ruleRowLabel } from './page-access-messages.ts'
+import {
+  NO_RULE,
+  RULE_LEVEL_OPTIONS,
+  pageAccessFailureMessage,
+  personRuleRowLabel,
+  ruleLevelLabel,
+  ruleRowLabel,
+} from './page-access-messages.ts'
 
 describe('① 레벨 고르개', () => {
   test('★ "없음" + 서버가 받는 페이지 레벨 넷 — 데이터베이스 전용 레벨은 없다', () => {
@@ -27,6 +34,8 @@ describe('② 이름', () => {
   test('소스가 하나면 "만든 사람" · 여럿이면 소스 이름을 앞에 · 보는 사람에게는 레벨 이름(없으면 "없음")', () => {
     assert.equal(ruleRowLabel(null), '만든 사람')
     assert.equal(ruleRowLabel('제출'), '제출 · 만든 사람')
+    assert.equal(personRuleRowLabel(null, '담당'), '담당에 든 사람')
+    assert.equal(personRuleRowLabel('제출', '검토자'), '제출 · 검토자에 든 사람')
     assert.equal(ruleLevelLabel(NO_RULE), '없음')
     assert.equal(ruleLevelLabel(null), '없음')
     assert.equal(ruleLevelLabel('edit'), '편집')

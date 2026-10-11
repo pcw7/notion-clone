@@ -1,7 +1,8 @@
 /**
  * /api/workspaces/[workspaceId]/databases/[databaseId]/access-rules — 행 단위 접근 규칙 (게시 · 공유 6f-2a · F-06-10)
  *
- *   GET    — 이 데이터베이스의 규칙(볼 수 있으면) `{ rules: [{ id, dataSourceId, source, propertyId, level }] }`
+ *   GET    — 이 데이터베이스의 규칙(볼 수 있으면) `{ rules: [{ id, dataSourceId, source, propertyId, propertyName, propertyTrashed, level }],
+ *            peopleProperties: [{ dataSourceId, propertyId, name }] }` — 뒤의 것은 사람 규칙의 원천이 될 수 있는 속성(공유 패널의 줄 · 6g-3b)
  *   PUT    — `{ dataSourceId, source: 'created_by' | 'person_property', propertyId?, level }` — 둔다(이미 있으면 레벨만 바꾼다) · `manage_perm`
  *   DELETE — `{ dataSourceId, source, propertyId? }` — 지운다(없어도 성공) · `manage_perm`
  *
@@ -17,6 +18,7 @@
 import { readJsonBody, requireWorkspaceSession } from '@/lib/auth/route-session'
 import {
   listAccessRules,
+  listRuleProperties,
   removeAccessRule,
   setAccessRule,
   type AccessRuleFailure,
@@ -58,8 +60,10 @@ export async function GET(_request: Request, ctx: Ctx): Promise<Response> {
   const { workspaceId, databaseId } = await ctx.params
   const session = await requireWorkspaceSession(workspaceId)
   if (!session.ok) return session.response
-  const result = await listAccessRules(session.ctx, databaseId)
-  return result.ok ? Response.json({ ok: true, rules: result.value }) : fail(result.reason)
+  const [rules, properties] = await Promise.all([listAccessRules(session.ctx, databaseId), listRuleProperties(session.ctx, databaseId)])
+  if (!rules.ok) return fail(rules.reason)
+  if (!properties.ok) return fail(properties.reason)
+  return Response.json({ ok: true, rules: rules.value, peopleProperties: properties.value })
 }
 
 export async function PUT(request: Request, ctx: Ctx): Promise<Response> {

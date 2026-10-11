@@ -17,6 +17,8 @@
  *   ⑦ 사람 속성 규칙의 게이트 — 원천은 그 data source 의 살아 있는 사람 속성(아니면 invalid_property) · 만든 사람 규칙에 속성을 주면
  *      invalid_property · 속성마다 하나(둘이 함께 있고 하나를 지워도 다른 것은 남는다) · 휴지통의 속성의 규칙도 지운다 · 감사 로그에
  *      속성
+ *   ⑧ 공유 패널의 줄(6g-3b · ⑨) — 규칙마다 원천 속성의 이름 · 휴지통 여부(두기 · 목록 모두) · 사람 속성 목록은 소유한 data source 의
+ *      살아 있는 사람 속성만(사람이 아닌 것 · 휴지통 · 다른 표의 것은 없다) · 스키마 순 · 보는 사람도 · 못 보면 not_found
  */
 
 import { test, describe, before, after } from 'node:test'
@@ -33,7 +35,7 @@ import { withReadTransaction } from '../db/tx.ts'
 import type { BlockId } from '../ids.ts'
 import { createBareWorkspace, createUser, joinAs, probeDatabase, type Actor } from '../testing/db-fixtures.ts'
 import { grantAccess, revokeAccess, stopInheriting } from './acl.ts'
-import { listAccessRules, removeAccessRule, setAccessRule } from './access-rule.ts'
+import { listAccessRules, listRuleProperties, removeAccessRule, setAccessRule } from './access-rule.ts'
 import { effectiveCaps, viewersOf } from './effective.ts'
 import { can } from './levels.ts'
 
@@ -363,5 +365,47 @@ describe('⑦ 사람 속성 규칙의 게이트', () => {
       { change: 'rule_set', source: 'person_property', propertyId: owner, level: 'view' },
       { change: 'rule_removed', source: 'person_property', propertyId: owner },
     ])
+  })
+})
+
+// ── ⑧ 공유 패널의 줄 ──────────────────────────────────────────────────
+
+describe('⑧ 공유 패널의 줄 — 속성 이름 · 휴지통 · 사람 속성 목록', () => {
+  test('규칙마다 원천 속성 · 사람 속성 목록은 소유한 살아 있는 것만 · 스키마 순 · 보는 사람도', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { ws, boss, mate, db, owner, reviewer } = await tableWithPeople()
+    const ds = db.dataSourceId
+    const other = await createDatabase(boss.ctx, { name: unique('다른 표'), privateTop: true })
+    assert.ok(other.ok)
+    assert.ok((await addProperty(boss.ctx, other.value.dataSourceId, { name: '남의 담당', type: 'people' })).ok)
+
+    assert.deepEqual(await listRuleProperties(boss.ctx, db.id), {
+      ok: true,
+      value: [
+        { dataSourceId: ds, propertyId: owner, name: '담당' },
+        { dataSourceId: ds, propertyId: reviewer, name: '검토' },
+      ],
+    }, '사람 속성만(점수는 없다) · 다른 표의 것은 없다 · 스키마 순')
+
+    const byCreator = await setAccessRule(boss.ctx, db.id, rule(ds, 'view'))
+    const byOwner = await setAccessRule(boss.ctx, db.id, personRule(ds, owner, 'edit'))
+    assert.ok(byCreator.ok && byOwner.ok)
+    assert.deepEqual([byCreator.value.propertyName, byCreator.value.propertyTrashed], [null, false], '만든 사람 규칙은 속성이 없다')
+    assert.deepEqual([byOwner.value.propertyName, byOwner.value.propertyTrashed], ['담당', false], '두기가 돌려준 규칙에 속성 이름')
+
+    assert.ok((await deleteProperty(boss.ctx, ds, owner)).ok)
+    const listed = await listAccessRules(boss.ctx, db.id)
+    assert.ok(listed.ok)
+    assert.deepEqual(
+      listed.value.map((r) => [r.source, r.propertyName, r.propertyTrashed, r.level]),
+      [['created_by', null, false, 'view'], ['person_property', '담당', true, 'edit']],
+      '휴지통의 속성의 규칙은 남고 이름과 휴지통 여부를 준다',
+    )
+    assert.deepEqual(await listRuleProperties(boss.ctx, db.id), { ok: true, value: [{ dataSourceId: ds, propertyId: reviewer, name: '검토' }] }, '휴지통의 속성은 목록에 없다')
+
+    const viewer = await joinAs(ws, await createUser('보는 사람'), 'member')
+    assert.ok((await grantAccess(boss.ctx, db.id, { type: 'user', id: viewer.userId }, 'view')).ok)
+    assert.equal((await listRuleProperties(viewer.ctx, db.id)).ok, true, '보는 사람도(스키마를 이미 본다)')
+    assert.deepEqual(await listRuleProperties(mate.ctx, db.id), { ok: false, reason: 'not_found' })
   })
 })
