@@ -99,20 +99,23 @@ describe('choiceValue · parseChoice', () => {
 describe('레벨 고르개 (6f-1)', () => {
   const values = (options: readonly { value: string }[]) => options.map((o) => o.value)
 
-  test('페이지는 서버가 받는 넷 · 데이터베이스는 "만들기만"(6f-2)을 뺀 다섯 — 고를 수 있으면 서버가 받는다', () => {
+  test('페이지는 서버가 받는 넷 · 데이터베이스는 여섯("만들기만" 은 6f-2c 부터) — 고를 수 있으면 서버가 받는다', () => {
     assert.deepEqual(values(shareLevelOptions('page')), LEVELS.filter((l) => isGrantableLevel('page', l)))
-    assert.deepEqual(values(shareLevelOptions('database')), LEVELS.filter((l) => isGrantableLevel('database', l) && l !== 'create'))
+    assert.deepEqual(values(shareLevelOptions('database')), LEVELS.filter((l) => isGrantableLevel('database', l)))
+    assert.deepEqual(
+      shareLevelOptions('database').find((o) => o.value === 'create'),
+      { value: 'create', label: '만들기만' },
+    )
     assert.deepEqual(
       shareLevelOptions('database').find((o) => o.value === 'edit_content'),
       { value: 'edit_content', label: '내용 편집' },
     )
   })
 
-  test('★ 목록에 없는 지금 레벨은 그 줄에만 덧붙인다 — API 로 준 "만들기만" 이 "읽기" 로 보이지 않는다', () => {
-    assert.deepEqual(entryLevelOptions('database', 'create').at(-1), { value: 'create', label: '만들기만' })
-    assert.equal(entryLevelOptions('database', 'create').length, 6)
-    assert.deepEqual(entryLevelOptions('database', 'edit_content'), shareLevelOptions('database'), '목록에 있으면 그대로')
+  test('★ 목록에 없는 지금 레벨은 그 줄에만 덧붙인다 — 행에 복사된 "내용 편집" 이 "읽기" 로 보이지 않는다', () => {
     assert.deepEqual(entryLevelOptions('page', 'edit_content').at(-1), { value: 'edit_content', label: '내용 편집' })
+    assert.equal(entryLevelOptions('page', 'create').length, 5)
+    assert.deepEqual(entryLevelOptions('database', 'create'), shareLevelOptions('database'), '목록에 있으면 그대로')
   })
 
   test('레벨 이름 — 모르는 값은 그대로 · 프로토타입 이름에 함수를 내주지 않는다', () => {

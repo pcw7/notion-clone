@@ -120,9 +120,10 @@ const PAGE_LEVELS = ['view', 'comment', 'edit', 'full_access'] as const
 
 /**
  * 데이터베이스에 줄 수 있는 레벨(정본 §3.3 [보강] 데이터베이스의 레벨 ④) — "내용 편집"은 행 · 값을 고치고 구조(속성 · 뷰 · 템플릿)는 못 고친다.
- * "만들기만"(`create`)은 행 단위 규칙과 함께(6f-2) — 아직 고를 수 없다.
+ * "만들기만"(`create`)은 행을 더하고 자기가 열 수 있는 행만 본다 — 그 화면(6f-2b)이 선 뒤 6f-2c 부터 고른다(같은 패널의 "페이지 단위
+ * 접근" 과 함께 쓴다 · [보강] 행 단위 접근 규칙 ⑧).
  */
-const DATABASE_LEVELS = ['view', 'comment', 'edit_content', 'edit', 'full_access'] as const
+const DATABASE_LEVELS = ['view', 'comment', 'edit_content', 'create', 'edit', 'full_access'] as const
 
 /** 레벨의 이름. 모르는 값은 그대로(`constructor` 같은 프로토타입 이름에 함수를 내주지 않는다). */
 export function levelLabel(level: string): string {
@@ -135,9 +136,9 @@ export function shareLevelOptions(kind: 'page' | 'database'): readonly LevelOpti
 }
 
 /**
- * 이미 있는 줄의 고르개 — 종류의 목록에 **지금 레벨이 없으면 그 줄에만 덧붙인다.** 데이터베이스에 API 로 준 "만들기만"(고르개에는 6f-2 전까지
- * 없다)이 그렇다 — 목록에 없는 값의 select 는 첫 옵션("읽기")으로 보여, 그 사람이 다른 것을 가진 것처럼 속인다. 덧붙인 값은 고를 수 있는 다른
- * 레벨로 바꾸는 출발점일 뿐이다(그 값으로 다시 부여하지 않는다).
+ * 이미 있는 줄의 고르개 — 종류의 목록에 **지금 레벨이 없으면 그 줄에만 덧붙인다.** 행에서 상속을 끊어 복사된 데이터베이스 전용 레벨(행은
+ * 페이지 넷만 고른다)이 그렇다 — 목록에 없는 값의 select 는 첫 옵션("읽기")으로 보여, 그 사람이 다른 것을 가진 것처럼 속인다. 덧붙인 값은
+ * 고를 수 있는 다른 레벨로 바꾸는 출발점일 뿐이다(그 값으로 다시 부여하지 않는다).
  */
 export function entryLevelOptions(kind: 'page' | 'database', current: string): readonly LevelOption[] {
   const options = shareLevelOptions(kind)
