@@ -77,6 +77,8 @@ const EXPECTED_TABLES = [
   'scheduled_job',
   // 리마인더 4c-1조각 (0072)
   'reminder',
+  // 사이트 주소 6c-1조각 (0093)
+  'site_domain',
   'schema_migration', 'scim_token', 'session_policy', 'sso_config',
   'user', 'user_email', 'user_session',
   'workspace', 'workspace_invite', 'workspace_member',
@@ -4223,6 +4225,58 @@ try {
     await rejects('모르는 원천', [randomUUID(), ds, 'assignee', null, 'edit'], 'ck_page_access_rule_source')
     await rejects('만든 사람인데 속성이 있다', [randomUUID(), ds, 'created_by', 'p00000000000000000001', 'edit'], 'ck_page_access_rule_property')
     await rejects('사람 속성인데 속성이 없다', [randomUUID(), ds, 'person_property', null, 'edit'], 'ck_page_access_rule_property')
+  }
+
+  console.log('\n[68] 사이트 주소 — 워크스페이스의 주소 · 페이지의 슬러그 (0093 / §3.3 끝 [보강] 사이트 주소 · 6c-1조각)')
+  {
+    // 다른 워크스페이스 하나 — 주소가 모두에게 하나인지 · 슬러그가 워크스페이스마다인지
+    const otherWs = randomUUID()
+    await client.query(`INSERT INTO workspace (id, name, region_id, created_at) VALUES ($1, '사이트 프로브', (SELECT id FROM region LIMIT 1), now())`, [otherWs])
+    const put = `INSERT INTO site_domain (id, workspace_id, name) VALUES ($1, $2, $3)`
+    await client.query(put, [randomUUID(), wsId, 'probe-site'])
+    ok('워크스페이스 주소 — 정상 경로가 통과한다')
+
+    const rejects = async (label, sql, params, constraint) => {
+      await client.query('SAVEPOINT probe')
+      try {
+        await client.query(sql, params)
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        fail(`${label} — 거부되어야 하는데 통과했다`)
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        if (e.constraint === constraint) ok(`${label} — ${constraint} 가 거부함 (${e.code})`)
+        else fail(`${label} — ${constraint} 가 아니라 ${e.constraint ?? e.code} 에 걸렸다 (${e.message})`)
+      }
+    }
+    await rejects('★ 다른 워크스페이스가 같은 주소', put, [randomUUID(), otherWs, 'probe-site'], 'ux_site_domain_name')
+    await rejects('★ 한 워크스페이스에 하위 주소 둘', put, [randomUUID(), wsId, 'probe-site-two'], 'ux_site_domain_workspace')
+    for (const [label, name] of [['대문자', 'Probe'], ['두 글자', 'ab'], ['하이픈으로 끝난다', 'probe-'], ['밑줄', 'probe_site']]) {
+      await rejects(`주소의 모양 — ${label}`, put, [randomUUID(), otherWs, name], 'ck_site_domain_name')
+    }
+    await rejects('모르는 종류(커스텀은 F-13-09)', `INSERT INTO site_domain (id, workspace_id, kind, name) VALUES ($1, $2, 'custom', 'probe-custom')`, [randomUUID(), otherWs], 'ck_site_domain_kind')
+
+    // 슬러그 — 넣을 때 워크스페이스는 블록에서(주는 값은 무시)
+    const page = async (ws) => {
+      const id = randomUUID()
+      await client.query(
+        `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key, ancestor_path, perm_scope_id, properties, format,
+                            created_at, last_edited_at)
+         VALUES ($1, $2, 'page', 'block', $3, 'a0', '{}', $1, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+        [id, ws, randomUUID()],
+      )
+      return id
+    }
+    const [p1, p2, p3] = [await page(wsId), await page(wsId), await page(otherWs)]
+    await client.query(`INSERT INTO public_link (node_id, workspace_id, slug) VALUES ($1, $2, 'about')`, [p1, otherWs])
+    const stored = (await client.query(`SELECT workspace_id FROM public_link WHERE node_id = $1`, [p1])).rows[0].workspace_id
+    if (stored === wsId) ok('★ 공개 링크의 워크스페이스는 블록의 것 — 준 값을 무시한다(트리거)')
+    else fail(`공개 링크의 워크스페이스가 ${stored} 다(블록은 ${wsId})`)
+    await client.query(`INSERT INTO public_link (node_id, slug) VALUES ($1, 'about')`, [p3])
+    ok('다른 워크스페이스는 같은 슬러그를 쓴다')
+    await rejects('★ 한 워크스페이스에 같은 슬러그', `INSERT INTO public_link (node_id, slug) VALUES ($1, 'about')`, [p2], 'ux_public_link_slug')
+    for (const [label, slug] of [['대문자', 'About'], ['공백', 'about us'], ['하이픈으로 시작', '-about'], ['61자', 'a'.repeat(61)]]) {
+      await rejects(`슬러그의 모양 — ${label}`, `UPDATE public_link SET slug = $2 WHERE node_id = $1`, [p1, slug], 'ck_public_link_slug')
+    }
   }
 
   await client.query('ROLLBACK')

@@ -28,6 +28,7 @@ import { can } from '../permissions/levels.ts'
 import { readSecurityPolicyIn } from '../workspace/security-policy.ts'
 import { openablePagesIn } from './public-access.ts'
 import { isRobotsDirective, newPublicToken, type AiCrawler, type RobotsDirective } from './public-token.ts'
+import { normalizeSlug, readSiteDomainIn } from './site.ts'
 
 export { newPublicToken, PUBLIC_TOKEN_PATTERN, type AiCrawler, type RobotsDirective } from './public-token.ts'
 
@@ -55,6 +56,10 @@ export type PublishState = {
    * 게시는 거부된다(`moderated`). 신고만 된 것(`reported`)은 말하지 않는다 — 신고는 소유자에게 알리지 않는다(신고자 보호).
    */
   readonly moderation: 'taken_down' | 'restricted' | null
+  /** 사이트 주소의 슬러그(6c-1 — 정본 [보강] 사이트 주소 ④) — 게시를 바꿀 수 있는 사람에게만(토큰과 같다). 없으면 null. */
+  readonly slug: string | null
+  /** 이 워크스페이스의 사이트 주소(6c-1) — 슬러그와 함께 `/s/{주소}/{슬러그}` 가 된다. 없으면 null. */
+  readonly siteDomain: string | null
 }
 
 export type PublishFailure =
@@ -74,6 +79,10 @@ export type PublishFailure =
   | 'invalid_input'
   /** 운영자가 이 페이지(또는 위 페이지)의 공개를 내렸다(6b-2) — 다시 게시해 우회할 수 없다. */
   | 'moderated'
+  /** 슬러그의 모양이 틀렸다(6c-1 — 소문자 · 숫자 · 하이픈 · 60자). */
+  | 'invalid_slug'
+  /** 이 워크스페이스의 다른 페이지가 그 슬러그를 쓴다(6c-1). */
+  | 'slug_taken'
 
 export type PublishResult =
   | { readonly ok: true; readonly value: PublishState }
@@ -89,16 +98,25 @@ export function publishFailureStatus(reason: PublishFailure): number {
     case 'not_page':
     case 'trashed':
     case 'invalid_input':
+    case 'invalid_slug':
       return 400
     case 'policy_disabled':
     case 'not_published':
     case 'moderated':
+    case 'slug_taken':
       return 409
   }
 }
 
 type NodeRow = { id: string; type: string; lifecycle: string; ancestor_path: string[] }
-type LinkRow = { enabled: boolean; token: string | null; robots_directive: RobotsDirective; ai_crawler: AiCrawler; expires_at: Date | null }
+type LinkRow = {
+  enabled: boolean
+  token: string | null
+  robots_directive: RobotsDirective
+  ai_crawler: AiCrawler
+  expires_at: Date | null
+  slug: string | null
+}
 
 /** 이 워크스페이스의 페이지 · 데이터베이스 노드. `lock` 이면 행을 잡는다 — 휴지통 · 이동과 줄을 세운다. */
 async function loadNode(tx: Tx, ctx: SessionContext, nodeId: string, lock: boolean): Promise<NodeRow | null> {
@@ -112,7 +130,7 @@ async function loadNode(tx: Tx, ctx: SessionContext, nodeId: string, lock: boole
 
 async function loadLink(tx: Tx, nodeId: string): Promise<LinkRow | null> {
   return tx.queryMaybe<LinkRow>(
-    `SELECT enabled, token, robots_directive, ai_crawler, expires_at FROM public_link WHERE node_id = $1`,
+    `SELECT enabled, token, robots_directive, ai_crawler, expires_at, slug FROM public_link WHERE node_id = $1`,
     [nodeId],
   )
 }
@@ -167,10 +185,15 @@ async function stateIn(
     ...stateOf(link, policyAllows, canManage),
     coveredBy: await coveredByIn(tx, ctx, node, policyAllows),
     moderation: await moderationIn(tx, node),
+    siteDomain: await readSiteDomainIn(tx, ctx.workspaceId),
   }
 }
 
-function stateOf(link: LinkRow | null, policyAllows: boolean, canManage: boolean): Omit<PublishState, 'coveredBy' | 'moderation'> {
+function stateOf(
+  link: LinkRow | null,
+  policyAllows: boolean,
+  canManage: boolean,
+): Omit<PublishState, 'coveredBy' | 'moderation' | 'siteDomain'> {
   return {
     published: link?.enabled ?? false,
     token: canManage ? (link?.token ?? null) : null,
@@ -180,6 +203,7 @@ function stateOf(link: LinkRow | null, policyAllows: boolean, canManage: boolean
     expiresAt: link?.expires_at ? link.expires_at.toISOString() : null,
     policyAllows,
     canManage,
+    slug: canManage ? (link?.slug ?? null) : null,
   }
 }
 
@@ -225,7 +249,7 @@ export async function publishPage(ctx: SessionContext, pageId: string): Promise<
              token = coalesce(public_link.token, EXCLUDED.token),
              updated_by = CASE WHEN public_link.enabled THEN public_link.updated_by ELSE EXCLUDED.updated_by END,
              updated_at = CASE WHEN public_link.enabled THEN public_link.updated_at ELSE now() END
-       RETURNING enabled, token, robots_directive, ai_crawler, expires_at`,
+       RETURNING enabled, token, robots_directive, ai_crawler, expires_at, slug`,
       [pageId, newPublicToken(), ctx.userId],
     )
     // 감사 로그(F-11-12 — 6d-1) — 켜졌을 때만(이미 게시돼 있었으면 바뀐 것이 없다)
@@ -262,12 +286,15 @@ export async function unpublishPage(ctx: SessionContext, pageId: string): Promis
  *
  *   · `robots` — 검색 엔진 노출(정본 [정정] 웹 게시 ① — 기본 `noindex`). 공개 화면의 meta · 파일의 `X-Robots-Tag` 가 따른다
  *   · `rotateToken` — 주소를 새로 만든다. **옛 주소는 곧바로 닫힌다**(정본 ⑤ — 해제와 다시 게시는 같은 주소다. 주소를 버리는 것은 이것)
+ *   · `slug` — 사이트 주소의 슬러그(6c-1 · 정본 [보강] 사이트 주소 ④). 소문자로 받는다 · 워크스페이스 안에서 하나(`slug_taken`) ·
+ *     `null` 이면 지운다(슬러그 주소가 닫힌다)
  *
  * 누가: 게시하는 사람과 같다(`manage_perm`). 게시된 링크에만 — 아니면 `not_published`. 정책 · 휴지통과 무관하다(끄고 좁히는 쪽이다).
  */
 export async function updatePublicLink(ctx: SessionContext, pageId: string, patch: unknown): Promise<PublishResult> {
   const input = parsePatch(patch)
   if (input === null) return { ok: false, reason: 'invalid_input' }
+  if (input === 'invalid_slug') return { ok: false, reason: 'invalid_slug' }
   return withCommandTransaction(async (tx) => {
     const node = await loadNode(tx, ctx, pageId, true)
     if (node === null) return { ok: false, reason: 'not_found' } as const
@@ -275,17 +302,34 @@ export async function updatePublicLink(ctx: SessionContext, pageId: string, patc
     if (!can(caps, 'view')) return { ok: false, reason: 'not_found' } as const
     if (!can(caps, 'manage_perm')) return { ok: false, reason: 'forbidden' } as const
 
+    // 게시된 링크에만 — 다른 거부(슬러그가 쓰인다 등)보다 먼저 말한다
+    if ((await loadLink(tx, pageId))?.enabled !== true) return { ok: false, reason: 'not_published' } as const
+    // 슬러그 — 이 워크스페이스의 다른 페이지가 쓰면 거부한다(UNIQUE 에 부딪혀 500 이 되기 전에)
+    if (input.slug !== undefined && input.slug !== null) {
+      const other = await tx.queryMaybe<{ node_id: string }>(
+        `SELECT node_id FROM public_link WHERE workspace_id = $1 AND slug = $2 AND node_id <> $3`,
+        [ctx.workspaceId, input.slug, pageId],
+      )
+      if (other !== null) return { ok: false, reason: 'slug_taken' } as const
+    }
+
     const link = await tx.queryMaybe<LinkRow>(
       `UPDATE public_link
           SET robots_directive = coalesce($2, robots_directive),
               token = CASE WHEN $3 THEN $4 ELSE token END,
+              slug = CASE WHEN $6 THEN $7 ELSE slug END,
               updated_by = $5, updated_at = now()
         WHERE node_id = $1 AND enabled
-        RETURNING enabled, token, robots_directive, ai_crawler, expires_at`,
-      [pageId, input.robots ?? null, input.rotateToken, newPublicToken(), ctx.userId],
+        RETURNING enabled, token, robots_directive, ai_crawler, expires_at, slug`,
+      [pageId, input.robots ?? null, input.rotateToken, newPublicToken(), ctx.userId, input.slug !== undefined, input.slug ?? null],
     )
     if (link === null) return { ok: false, reason: 'not_published' } as const
-    await auditPublish(tx, ctx, pageId, { change: 'settings', ...(input.robots === undefined ? {} : { robots: input.robots }), rotated: input.rotateToken })
+    await auditPublish(tx, ctx, pageId, {
+      change: 'settings',
+      ...(input.robots === undefined ? {} : { robots: input.robots }),
+      ...(input.slug === undefined ? {} : { slug: input.slug }),
+      rotated: input.rotateToken,
+    })
     const policy = await readSecurityPolicyIn(tx, ctx.workspaceId)
     return { ok: true, value: await stateIn(tx, ctx, node, link, policy.allowPublish, true) } as const
   })
@@ -301,12 +345,26 @@ function auditPublish(tx: Tx, ctx: SessionContext, pageId: string, metadata: Rec
   return recordForContextIn(tx, ctx, 'page.publish_changed', { target: { type: 'page', id: pageId }, metadata })
 }
 
-function parsePatch(raw: unknown): { robots?: RobotsDirective; rotateToken: boolean } | null {
+type LinkPatch = { robots?: RobotsDirective; rotateToken: boolean; slug?: string | null }
+
+/** 고치기의 몸체 — 모양이 틀리면 null · 슬러그만 틀리면 'invalid_slug'(화면이 그 칸에 말한다). */
+function parsePatch(raw: unknown): LinkPatch | 'invalid_slug' | null {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null
-  const { robots, rotateToken, ...rest } = raw as { robots?: unknown; rotateToken?: unknown }
+  const { robots, rotateToken, slug, ...rest } = raw as { robots?: unknown; rotateToken?: unknown; slug?: unknown }
   if (Object.keys(rest).length > 0) return null
   if (robots !== undefined && !isRobotsDirective(robots)) return null
   if (rotateToken !== undefined && rotateToken !== true) return null
-  if (robots === undefined && rotateToken === undefined) return null
-  return { ...(robots === undefined ? {} : { robots }), rotateToken: rotateToken === true }
+  if (slug !== undefined && slug !== null && typeof slug !== 'string') return null
+  if (robots === undefined && rotateToken === undefined && slug === undefined) return null
+  // 슬러그 — 빈 글자는 지우기다(null 과 같다) · 소문자로 받는다
+  let normalized: string | null | undefined = undefined
+  if (slug !== undefined) {
+    normalized = slug === null || slug.trim() === '' ? null : normalizeSlug(slug)
+    if (normalized === null && slug !== null && slug.trim() !== '') return 'invalid_slug'
+  }
+  return {
+    ...(robots === undefined ? {} : { robots }),
+    rotateToken: rotateToken === true,
+    ...(normalized === undefined ? {} : { slug: normalized }),
+  }
 }

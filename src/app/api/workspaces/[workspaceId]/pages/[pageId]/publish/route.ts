@@ -4,8 +4,9 @@
  *   GET    — 게시 상태(볼 수 있으면). 토큰은 게시를 바꿀 수 있는 사람에게만.
  *   PUT    — 게시한다(`manage_perm` · 페이지만 · 휴지통 아님 · 정책 허용). 해제했던 것은 같은 주소로 다시 켠다.
  *   DELETE — 게시를 해제한다(행과 토큰은 남는다). 정책과 무관하게 된다.
- *   PATCH  — 게시된 링크의 설정(6a-3): `{ robots?: 'index' | 'noindex', rotateToken?: true }` — 검색 엔진 노출 · 주소 바꾸기(옛 주소는
- *            곧바로 닫힌다). 게시되어 있지 않으면 409 `not_published` · 틀린 몸체는 400 `invalid_input`.
+ *   PATCH  — 게시된 링크의 설정(6a-3): `{ robots?: 'index' | 'noindex', rotateToken?: true, slug?: string | null }` — 검색 엔진 노출 ·
+ *            주소 바꾸기(옛 주소는 곧바로 닫힌다) · 사이트 주소의 슬러그(6c-1 — 틀리면 400 `invalid_slug` · 쓰이면 409 `slug_taken`).
+ *            게시되어 있지 않으면 409 `not_published` · 틀린 몸체는 400 `invalid_input`.
  *
  * 판정은 `publish/public-link.ts` 가 한다(정본 §3.3 끝 [정정] 웹 게시 ④⑤).
  */

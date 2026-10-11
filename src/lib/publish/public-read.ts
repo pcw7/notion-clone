@@ -23,10 +23,16 @@ import { withReadTransaction, type Tx } from '../db/tx.ts'
 import { rowsToDoc, type BodyRow, type EditorBlock, type EditorDoc } from '../editor/document.ts'
 import { openablePagesIn, resolvePublicPageIn, type PublicAccessFailure, type PublicTarget } from './public-access.ts'
 import { readPublicRowPropertiesIn, readPublicTableIn, type PublicRowProperties, type PublicTable } from './public-database.ts'
+import { resolveSiteTokenIn, siteBasePath } from './site.ts'
 
 /** 공개 화면 하나를 그릴 재료. */
 export type PublicPageView = {
   readonly token: string
+  /**
+   * 화면 안의 링크가 붙는 기준 경로 — 토큰 주소면 `/p/{token}`, 사이트 주소로 열었으면 `/s/{주소}/{슬러그}`(6c-1 · 정본 [보강] 사이트 주소
+   * ⑤). 루트는 이 경로 그대로, 하위는 `{기준}/{pageId}`.
+   */
+  readonly base: string
   readonly target: PublicTarget
   readonly title: readonly RichTextRun[]
   /** 페이지 아이콘 — 이모지 · 이미지(파일이면 공개 파일 경로로 · 6a-2b). */
@@ -52,7 +58,7 @@ const SKIPPED_TYPES: ReadonlySet<string> = new Set(['database'])
 type ScopeRow = BodyRow & { lifecycle: string }
 
 /** 토큰(과 하위 페이지 id)으로 공개 화면의 재료를 읽는다 — 판정과 같은 스냅샷에서. */
-export async function readPublicPage(token: string, pageId?: string): Promise<PublicRead> {
+export async function readPublicPage(token: string, pageId?: string, options: { readonly base?: string } = {}): Promise<PublicRead> {
   return withReadTransaction(async (tx) => {
     const access = await resolvePublicPageIn(tx, token, pageId)
     if (!access.ok) return access
@@ -95,6 +101,7 @@ export async function readPublicPage(token: string, pageId?: string): Promise<Pu
       ok: true,
       value: {
         token,
+        base: options.base ?? `/p/${token}`,
         target,
         title: readTitle(page.properties),
         icon: isDatabase ? databaseIcon : pageIconOfFormat(page.format),
@@ -156,4 +163,14 @@ function mentionsOf(blocks: readonly EditorBlock[]): { pages: string[]; people: 
   }
   for (const block of blocks) visit(block)
   return { pages: [...pages], people: [...people] }
+}
+
+/**
+ * 사이트 주소로 연다(6c-1 · 정본 [보강] 사이트 주소 ②) — 주소 → 그 링크의 토큰 → 토큰과 같은 판정 · 같은 읽기. 화면 안의 링크는 사이트
+ * 주소로 만든다(⑤). 없거나 해제됐으면 `not_found`(이유를 말하지 않는다).
+ */
+export async function readSitePage(domain: string, slug: string, pageId?: string): Promise<PublicRead> {
+  const token = await withReadTransaction((tx) => resolveSiteTokenIn(tx, domain, slug))
+  if (token === null) return { ok: false, reason: 'not_found' }
+  return readPublicPage(token, pageId, { base: siteBasePath(domain, slug) })
 }
