@@ -85,10 +85,10 @@ describe('① 문', () => {
 })
 
 describe('② 허용 목록', () => {
-  test('★ 멘션 · 접근 요청 · 리마인더는 보이지 않는다', async (t) => {
+  test('★ 멘션 · 접근 요청 · 리마인더 · 담당은 보이지 않는다', async (t) => {
     if (skipReason) return t.skip(skipReason)
     const target = await page('여러 일이 있었던 글')
-    for (const type of ['user.mentioned', 'access.requested', 'access.granted', 'reminder.fired'] as const) {
+    for (const type of ['user.mentioned', 'access.requested', 'access.granted', 'reminder.fired', 'person.assigned'] as const) {
       await record(fx.owner, target, type)
     }
     await record(fx.owner, target, 'comment.created', { discussion_id: randomUUID(), comment_id: randomUUID() })

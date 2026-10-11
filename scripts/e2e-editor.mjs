@@ -16560,6 +16560,45 @@ async function main() {
       await clickSelector('[data-testid="db-filter-button"]')
     }
 
+    if (sectionIf('담당 알림 (6h · F-11-08)')) {
+      // 소유자만 보는 표에 "담당 → 읽기" 사람 규칙 — 소유자가 행의 담당에 동료를 넣으면 동료의 인박스에 "담당" 줄이 선다(스코프 밖의 행이라도
+      // 규칙이 열면 보인다 · 정본 §3.8 [보강] 담당 알림 ④). 줄을 누르면 그 행이 열린다. 브라우저 세션은 끝에 반드시 소유자로 되돌린다.
+      const stamp = Date.now()
+      const api = async (method, path, body, headers = authed) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const browseAs = (token) => send('Network.setCookie', { name: 'nc_session', value: token, domain: 'localhost', path: '/', httpOnly: true })
+      const db = (await api('POST', '/databases', { name: `담당 알림 ${stamp}` })).body.database
+      const access = (body) => api('POST', `/pages/${db.id}/access`, body)
+      await access({ action: 'restrict' })
+      await access({ action: 'grant', principal: { type: 'user', id: ctx.userId }, level: 'full_access' })
+      await access({ action: 'revoke', principal: { type: 'workspace_everyone' } })
+      const owner = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '담당', type: 'people' })).body.property.id
+      await api('PUT', `/databases/${db.id}/access-rules`, { dataSourceId: db.dataSourceId, source: 'person_property', propertyId: owner, level: 'view' })
+      const mate = await joinAs(workspaceId, await createUser(`담당 받는 동료 ${stamp}`), 'member')
+      const titleProp = (await api('GET', `/views/${db.defaultViewId}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const rowTitle = `맡긴 일 ${stamp}`
+      const row = (await api('POST', `/views/${db.defaultViewId}/rows`, { cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun(rowTitle)] } }] })).body.row.id
+      const assigned = await api('PATCH', `/rows/${row}`, { cells: [{ propertyId: owner, value: { type: 'people', people: [{ id: mate.userId }] } }] })
+
+      try {
+        await browseAs(mate.token)
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/inbox` })
+        const line = `([...document.querySelectorAll('ul[aria-label="알림 목록"] li')].find((li) => li.textContent.includes(${JSON.stringify(rowTitle)}))?.textContent ?? '')`
+        check('★ 담당에 든 사람의 인박스에 "담당" 줄 — 속성 이름과 함께(규칙으로만 열리는 행이라도)',
+          assigned.status === 200 && (await waitFor(`${line}.includes('담당') && ${line}.includes('"담당"에 회원님을 추가했습니다.')`, 15000)),
+          `${assigned.status} ${await evaluate(line)}`)
+        await clickSelector(`ul[aria-label="알림 목록"] a[href^="/w/${workspaceId}/${row}"]`)
+        check('줄을 누르면 그 행이 열린다', await waitFor(`location.pathname.endsWith(${JSON.stringify(`/${row}`)}) && !!document.querySelector('[data-testid="row-title"]')`, 15000),
+          await evaluate('location.href'))
+      } finally {
+        await browseAs(session)
+      }
+    }
+
     if (sectionIf('개인 필터 · 정렬 — 화면 (2h-2 · F-04-17)')) {
       // 볼 수만 있는 사람(브라우저 세션을 바꾼다)이 도구줄의 필터로 조건을 걸면 **자기 것**으로 저장되고 그 사람의 표만 좁혀진다 — "나만 보는
       // 필터" 표시 · 초기화. 편집자는 자기 개인 것을 "모두에게 저장"한다. 브라우저 세션은 끝에 반드시 소유자로 되돌린다.

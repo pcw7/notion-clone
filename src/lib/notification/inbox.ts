@@ -10,7 +10,10 @@
  * 정본이 ②를 팬아웃이 아니라 배달 시점에 둔 이유: *"이벤트와 배달 사이에 권한이 회수될 수 있고, 알림 본문(멘션
  * 스니펫)이 곧 콘텐츠 유출 경로다."* 인앱 인박스에는 배달 시점이 따로 없으므로 **읽는 순간**이 그 시점이다.
  *
- * 그래서 `perm_scope_id = ANY(readableScopes)` 를 쿼리 안에 둔다 — 검색 · 사이드바와 같은 규칙(§3.3-32).
+ * 그래서 `perm_scope_id = ANY(readableScopes)` 를 쿼리 안에 둔다 — 검색 · 사이드바와 같은 규칙(§3.3-32). **행 단위 접근 규칙이 이 사람에게
+ * 연 행도**(`ruleOpensRowSql` — 6h · 정본 §3.8 [보강] 담당 알림 ④) — 스코프에 없지만 판정은 연다. 검색 · 사이드바는 그 행을 세우지
+ * 않지만(행 단위 접근 규칙 ⑤) 인박스는 받는 사람의 것이라 판정과 같은 답을 낸다 — 아니면 "담당 → 편집" 으로 행을 받은 사람이 정작 담당
+ * 알림을 못 본다.
  * 밖에서 거르면 페이지네이션이 깨지고, 무엇보다 한 곳만 잊으면 유출이다. 권한이 회수되면 **이미 만들어진 알림도**
  * 목록에서 사라진다(지우지는 않는다 — 다시 받으면 다시 보인다).
  *
@@ -36,6 +39,7 @@ import { readPageIcon, type PageIcon } from '../block/page-icon.ts'
 import { toPlainText, type RichTextRun } from '../contracts/rich-text.ts'
 import { withReadTransaction, withTransaction, type Tx } from '../db/tx.ts'
 import { readableScopes } from '../permissions/effective.ts'
+import { ruleOpensRowSql } from '../database/row-access.ts'
 import { canListMembers } from '../workspace/list.ts'
 import { readEvents } from './activity.ts'
 import type { NotificationKind } from './fanout.ts'
@@ -78,6 +82,11 @@ export type InboxItem = {
    * null. 다른 알림은 null.
    */
   readonly reminder: { readonly propertyName: string | null } | null
+  /**
+   * 담당(6h · `person_property_assigned`) — 회원님을 넣은 사람 속성의 **지금** 이름(N3 — 복제하지 않는다). 속성이 없어졌으면 이름이
+   * null 이고, 담당 알림이 아니면 항목 자체가 null 이다.
+   */
+  readonly assignment: { readonly propertyName: string | null } | null
 }
 
 type GroupRow = {
@@ -98,6 +107,12 @@ const WHERE: Record<InboxFilter, string> = {
   archived: 'n.archived_at IS NOT NULL',
 }
 
+/**
+ * 받는 사람이 그 페이지를 볼 수 있는가 — 스코프(`$3`) 또는 행 단위 접근 규칙(`$1` 이 받는 사람 · 행이고 템플릿이 아닐 때). 목록과 배지가
+ * 같은 식을 쓴다(배지가 목록에 없는 것을 세면 안 된다).
+ */
+const CAN_SEE = `(b.perm_scope_id = ANY($3::uuid[]) OR (p.id IS NOT NULL AND p.is_template = false AND ${ruleOpensRowSql('$1')}))`
+
 export type ListInboxOptions = {
   readonly filter?: InboxFilter
   readonly limit?: number
@@ -110,7 +125,6 @@ export async function listInbox(ctx: SessionContext, options: ListInboxOptions =
 
   return withReadTransaction(async (tx) => {
     const scopes = await readableScopes(tx, ctx)
-    if (scopes.length === 0) return []
 
     const groups = await tx.query<GroupRow>(
       `SELECT n.group_key, n.page_id,
@@ -122,8 +136,9 @@ export async function listInbox(ctx: SessionContext, options: ListInboxOptions =
               array_agg(n.id) AS ids
          FROM notification n
          JOIN block b ON b.id = n.page_id AND b.lifecycle = 'live'
+         LEFT JOIN page p ON p.id = n.page_id
         WHERE n.recipient_id = $1 AND n.workspace_id = $2
-          AND b.perm_scope_id = ANY($3::uuid[])
+          AND ${CAN_SEE}
           AND ${WHERE[filter]}
         GROUP BY n.group_key, n.page_id
         ORDER BY max(n.created_at) DESC
@@ -149,7 +164,7 @@ export async function listInbox(ctx: SessionContext, options: ListInboxOptions =
     const propertyNames = await readPropertyNames(
       tx,
       groups
-        .filter((g) => g.kind === 'reminder' && g.latest_event !== null)
+        .filter((g) => (g.kind === 'reminder' || g.kind === 'person_property_assigned') && g.latest_event !== null)
         .map((g) => events.get(g.latest_event as string)?.payload.property_id)
         .filter((id): id is string => typeof id === 'string'),
     )
@@ -193,6 +208,13 @@ export async function listInbox(ctx: SessionContext, options: ListInboxOptions =
         access: requestId === null ? null : (requests.get(requestId) ?? null),
         reminder:
           g.kind === 'reminder'
+            ? {
+                propertyName:
+                  typeof event?.payload.property_id === 'string' ? (propertyNames.get(event.payload.property_id) ?? null) : null,
+              }
+            : null,
+        assignment:
+          g.kind === 'person_property_assigned'
             ? {
                 propertyName:
                   typeof event?.payload.property_id === 'string' ? (propertyNames.get(event.payload.property_id) ?? null) : null,
@@ -278,13 +300,13 @@ async function readTitles(
 export async function unreadCount(ctx: SessionContext): Promise<number> {
   return withReadTransaction(async (tx) => {
     const scopes = await readableScopes(tx, ctx)
-    if (scopes.length === 0) return 0
     const row = await tx.queryOne<{ n: number }>(
       `SELECT count(*)::int AS n
          FROM notification n
          JOIN block b ON b.id = n.page_id AND b.lifecycle = 'live'
+         LEFT JOIN page p ON p.id = n.page_id
         WHERE n.recipient_id = $1 AND n.workspace_id = $2
-          AND b.perm_scope_id = ANY($3::uuid[])
+          AND ${CAN_SEE}
           AND n.archived_at IS NULL AND n.read_at IS NULL`,
       [ctx.userId, ctx.workspaceId, scopes],
     )

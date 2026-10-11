@@ -39,6 +39,8 @@ export const ACTIVITY_TYPES = [
   'access.granted',
   // 리마인더가 울렸다(4c-2 · 0073) — payload 는 리마인더 id · (날짜 속성이면) 속성 id.
   'reminder.fired',
+  // 사람 칸에 새로 든 사람이 있다(6h · 0092) — payload 는 속성 id 하나(받는 사람은 알림 행이 안다).
+  'person.assigned',
 ] as const
 export type ActivityType = (typeof ACTIVITY_TYPES)[number]
 

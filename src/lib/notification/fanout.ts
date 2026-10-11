@@ -212,6 +212,46 @@ export async function notifyAccessGranted(
   await insertNotifications(tx, ctx, event.pageId, activity.id, 'access_granted', accessGrantedGroupKey(event.pageId), [event.requesterId])
 }
 
+// ── 담당 (6h · F-11-08) ─────────────────────────────────────────────────
+
+/** 한 행 · 한 사람 칸의 담당 알림을 조회 시점에 접는 열쇠. */
+export const assignGroupKey = (rowId: string, propertyId: string): string => `assign:${rowId}:${propertyId}`
+
+export type AssignEvent = {
+  readonly rowId: string
+  readonly propertyId: string
+  /** 그 칸에 새로 든 사람(쓰기 전에 없던 사람). 쓴 사람 자신은 여기서 뺀다. */
+  readonly userIds: readonly string[]
+}
+
+/**
+ * 사람 칸에 새로 든 사람에게 — 셀 쓰기와 같은 트랜잭션에서(`row.ts`). 정본 §3.8 [보강] 담당 알림.
+ *
+ * **구독과 무관하다**(③) — 11 *"개별 사용자가 이 알림을 끌 수 없다"*. 뮤트한 행의 담당도 간다. 받는 사람이 이 워크스페이스의 활동 중인
+ * 사람인지는 칸을 쓰는 트랜잭션이 이미 봤다(`peopleIssuesIn`). 그 행을 볼 수 있는지는 인박스가 읽을 때 본다(④).
+ *
+ * @returns 만든 알림 수. 받을 사람이 없으면 이벤트도 남기지 않는다(알림의 근거일 뿐이다 · ②).
+ */
+export async function notifyAssigned(tx: Tx, ctx: ActivityActor, event: AssignEvent): Promise<number> {
+  const recipients = [...new Set(event.userIds)].filter((id) => id !== ctx.userId)
+  if (recipients.length === 0) return 0
+  const activity = await recordActivity(tx, ctx, {
+    pageId: event.rowId,
+    type: 'person.assigned',
+    payload: { property_id: event.propertyId },
+  })
+  await insertNotifications(
+    tx,
+    ctx,
+    event.rowId,
+    activity.id,
+    'person_property_assigned',
+    assignGroupKey(event.rowId, event.propertyId),
+    recipients,
+  )
+  return recipients.length
+}
+
 async function insertNotifications(
   tx: Tx,
   ctx: ActivityActor,

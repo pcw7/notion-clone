@@ -70,10 +70,18 @@ export function restrictedRowsSql(access: RowsAccess, params: ParamBag): string 
   if (access.kind === 'all') return null
   const scopes = params.bind(access.scopes)
   const user = params.bind(access.userId)
-  return `(b.perm_scope_id = ANY(${scopes}::uuid[])
-           OR (b.created_by = ${user}::uuid
-               AND EXISTS (SELECT 1 FROM page_access_rule ar
-                            WHERE ar.data_source_id = p.data_source_id AND ar.source_kind = 'created_by'))
+  return `(b.perm_scope_id = ANY(${scopes}::uuid[]) OR ${ruleOpensRowSql(user)})`
+}
+
+/**
+ * **규칙이 이 사람에게 그 행을 여는가** — 바깥 질의에 `page p` · `block b`(그 행)가 있다고 전제한다. `user` 는 사람 id 의 자리표(`$1` 등).
+ * 행 범위(`restrictedRowsSql`)와 인박스의 배달 시점 권한(6h — 정본 §3.8 [보강] 담당 알림 ④)이 함께 쓴다 — 판정(`accessRuleEntries`)과
+ * 같은 조건이 한 곳에만 있어야 둘이 어긋나지 않는다. 템플릿은 바깥 질의가 뺀다(R1). 규칙의 레벨은 모두 보기를 품는다.
+ */
+export function ruleOpensRowSql(user: string): string {
+  return `((b.created_by = ${user}::uuid
+            AND EXISTS (SELECT 1 FROM page_access_rule ar
+                         WHERE ar.data_source_id = p.data_source_id AND ar.source_kind = 'created_by'))
            OR EXISTS (SELECT 1 FROM page_access_rule ar
                         JOIN property apr ON apr.id = ar.source_property_id AND apr.deleted_at IS NULL
                         JOIN page_property_value av ON av.page_id = p.id AND av.property_id = ar.source_property_id

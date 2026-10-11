@@ -45,5 +45,6 @@ function toRow(item: Awaited<ReturnType<typeof listInbox>>[number]): InboxRow {
     deleted: item.deleted,
     access: item.access,
     reminder: item.reminder,
+    assignment: item.assignment,
   }
 }
