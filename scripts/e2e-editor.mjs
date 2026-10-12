@@ -15523,6 +15523,41 @@ async function main() {
       check('해제하면 그 주소는 404', (await fetch(`${BASE}/p/${token}`)).status === 404)
     }
 
+    if (sectionIf('커스텀 이모지 — 라우트 (7c-1 · F-13-16)')) {
+      // 이모지 라우트 — 이미지를 올린 파일로 이모지를 만든다(이름은 소문자로) · 목록 · 이름 바꾸기 · 거부 코드 · 지우면 목록에서 빠진다.
+      const stamp = Date.now().toString(36)
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const upload = async () => {
+        const form = new FormData()
+        form.append('file', new Blob([Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64')], { type: 'image/png' }), 'emoji.png')
+        return (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/files`, { method: 'POST', headers: { cookie: authed.cookie, origin: BASE }, body: form })).json()).file.id
+      }
+      const name = `party-${stamp}`
+      const made = await api('POST', '/emoji', { name: `:${name.toUpperCase()}:`, fileId: await upload() })
+      check('★ 이모지를 만든다 — 201 · 이름은 소문자로 · 양 끝의 : 를 걷는다', made.status === 201 && made.body?.emoji?.name === name && made.body.emoji.canManage === true,
+        JSON.stringify(made.body))
+      const listed = await api('GET', '/emoji')
+      check('목록에 선다', listed.status === 200 && listed.body?.emoji?.some((e) => e.id === made.body.emoji.id), String(listed.body?.emoji?.length))
+      const renamed = await api('PATCH', `/emoji/${made.body.emoji.id}`, { name: `${name}-2` })
+      const bad = await Promise.all([
+        api('POST', '/emoji', { name: 'has space', fileId: await upload() }),
+        api('POST', '/emoji', { name: `${name}-2`, fileId: await upload() }),
+        api('POST', '/emoji', { name: `x-${stamp}`, fileId: 'not-a-file' }),
+        api('PATCH', '/emoji/not-a-uuid', { name: 'x' }),
+      ])
+      check('이름 바꾸기 · 거부 — 400 invalid_name · 409 duplicate_name · 400 invalid_file · 404 not_found',
+        renamed.status === 200 && JSON.stringify(bad.map((r) => `${r.status} ${r.body?.error}`)) === JSON.stringify(['400 invalid_name', '409 duplicate_name', '400 invalid_file', '404 not_found']),
+        JSON.stringify([renamed.status, ...bad.map((r) => `${r.status} ${r.body?.error}`)]))
+      const removed = await api('DELETE', `/emoji/${made.body.emoji.id}`)
+      const after = await api('GET', '/emoji')
+      check('지우면 목록에서 빠진다', removed.status === 200 && !after.body?.emoji?.some((e) => e.id === made.body.emoji.id))
+    }
+
     if (sectionIf('폼 — 서버 라우트 (7a-1 · F-13-01)')) {
       // 폼 뷰의 라우트 — 만들기(첫 질문은 제목) · 질문 바꾸기 · 설정 · 공개(토큰) · 거부 코드 · 표 화면의 탭에 선다(7a-3 부터 — 그 탭은
       // 편집 화면이다).

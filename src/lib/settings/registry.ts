@@ -179,6 +179,17 @@ export const SETTINGS = [
     editors: OWNER,
   },
   {
+    // 커스텀 이모지(7c-1 · F-13-16) — 13 *"Limit custom emoji creation to workspace owners"*. 판정은 `createCustomEmoji` 가 읽는다
+    key: 'workspace.emoji_owners_only',
+    scope: 'workspace',
+    section: 'workspace.security',
+    label: '커스텀 이모지는 소유자만 추가',
+    description: '켜면 소유자만 커스텀 이모지를 올립니다. 끄면 멤버도 올립니다(게스트는 아니다). 이미 올린 이모지는 그대로입니다.',
+    control: { kind: 'toggle' },
+    viewers: OWNER,
+    editors: OWNER,
+  },
+  {
     key: 'workspace.allow_member_invite_guests',
     scope: 'workspace',
     section: 'workspace.security',

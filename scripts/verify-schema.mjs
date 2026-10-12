@@ -81,6 +81,8 @@ const EXPECTED_TABLES = [
   'site_domain',
   // 폼 7a-1조각 (0094) · 7a-2a조각 (0095)
   'form_view', 'form_question', 'form_submission_meta',
+  // 커스텀 이모지 7c-1조각 (0096)
+  'custom_emoji',
   'schema_migration', 'scim_token', 'session_policy', 'sso_config',
   'user', 'user_email', 'user_session',
   'workspace', 'workspace_invite', 'workspace_member',
@@ -4357,6 +4359,39 @@ try {
     if (kept.length === 1 && kept[0].view_id === null) ok('★ 폼(뷰)을 지워도 응답의 메타는 남고 폼만 비운다(SET NULL)')
     else fail(`폼을 지운 뒤 메타가 ${JSON.stringify(kept)} 다`)
     await client.query('ROLLBACK TO SAVEPOINT meta')
+  }
+
+  console.log('\n[70] 커스텀 이모지 (0096 / §3.4 [보강] 커스텀 이모지 · 7c-1조각)')
+  {
+    const fileId = randomUUID()
+    await client.query(
+      `INSERT INTO file (id, workspace_id, region_id, storage_key, mime, size_bytes, created_at)
+       VALUES ($1, $2, (SELECT region_id FROM workspace WHERE id = $2), $3, 'image/png', 16, now())`,
+      [fileId, wsId, `probe/${fileId}`],
+    )
+    const put = `INSERT INTO custom_emoji (id, workspace_id, name, file_id) VALUES ($1, $2, $3, $4)`
+    const first = randomUUID()
+    await client.query(put, [first, wsId, 'party', fileId])
+    ok('이모지 — 정상 경로가 통과한다')
+    const rejects = async (label, sql, params, constraint) => {
+      await client.query('SAVEPOINT probe')
+      try {
+        await client.query(sql, params)
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        fail(`${label} — 거부되어야 하는데 통과했다`)
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        if (e.constraint === constraint) ok(`${label} — ${constraint} 가 거부함 (${e.code})`)
+        else fail(`${label} — ${constraint} 가 아니라 ${e.constraint ?? e.code} 에 걸렸다 (${e.message})`)
+      }
+    }
+    await rejects('★ 살아 있는 것끼리 같은 이름', put, [randomUUID(), wsId, 'party', fileId], 'ux_custom_emoji_name')
+    for (const [label, name] of [['대문자', 'Party'], ['공백', 'my party'], ['콜론', ':party:'], ['41자', 'x'.repeat(41)], ['빈 이름', '']]) {
+      await rejects(`이름의 모양 — ${label}`, put, [randomUUID(), wsId, name, fileId], 'ck_custom_emoji_name')
+    }
+    await client.query(`UPDATE custom_emoji SET deleted_at = now() WHERE id = $1`, [first])
+    await client.query(put, [randomUUID(), wsId, 'party', fileId])
+    ok('★ 지운 이모지의 이름은 다시 쓴다(부분 UNIQUE)')
   }
 
   await client.query('ROLLBACK')

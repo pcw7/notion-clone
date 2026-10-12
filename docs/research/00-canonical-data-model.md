@@ -1739,6 +1739,39 @@ CREATE VIEW live_block AS SELECT * FROM block WHERE lifecycle = 'live';
 >     (사이드바 · 목록은 아이콘을 보는 모든 사람의 브라우저가 그 주소를 부른다). 불러오지 못하면 깨진 그림 대신 없을 때의 표시로 바꾼다
 >     (페이지로 가는 줄은 기본 글리프 · 글자 속의 경로는 없음)
 
+**[보강] 커스텀 이모지 — 워크스페이스의 이모지 라이브러리** ⟨인접 제품 7c-1 · F-13-16 / 마이그레이션 0096⟩
+
+> 13 F-13-16 *"워크스페이스 구성원이 직접 올린 이미지를 유니코드 이모지처럼 페이지 아이콘 · 반응 · 인라인에 사용한다"* · 데이터 모델 함의의
+> `custom_emoji`(정본에 없었다). 노션 API 는 아이콘을 `{"type":"custom_emoji","custom_emoji":{"id","name","url"}}` 로 준다.
+
+```sql
+CREATE TABLE custom_emoji (                     -- [보강 7c-1] 13 의 custom_emoji — 이미지는 파일 표의 것이다(참조 수를 센다)
+  id uuid PRIMARY KEY,
+  workspace_id uuid NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+  name text NOT NULL CHECK (name ~ '^[a-z0-9_-]{1,40}$'),    -- `:이름:` 의 이름 — 소문자 · 숫자 · 밑줄 · 하이픈
+  file_id uuid NOT NULL REFERENCES file(id),
+  created_by uuid NULL REFERENCES "user"(id),
+  created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
+  deleted_at timestamptz NULL                   -- 지워도 행은 남는다(쓰인 곳이 이름을 찾는다 · 13 *"tombstone"*)
+);
+CREATE UNIQUE INDEX ux_custom_emoji_name ON custom_emoji (workspace_id, name) WHERE deleted_at IS NULL;  -- 살아 있는 것끼리 이름이 하나
+```
+
+> ① **이모지는 이미지 파일 하나와 이름**이다 — 이미지는 올린 파일(그 워크스페이스의 이미지 · 1MB 까지 — 아이콘보다 작게)이고, 이모지가
+> 그 파일을 참조한다(`file.ref_count` +1 — 아이콘 ⑤ 와 같은 규칙 · 같은 트랜잭션). 이름은 `:이름:` 으로 쓰일 말 — 소문자 · 숫자 · 밑줄 ·
+> 하이픈 · 40자(받을 때 소문자로) · **살아 있는 것끼리 하나**(`duplicate_name`). 워크스페이스마다 **500개**(살아 있는 것 · 13 —
+> `too_many`).
+>
+> ② **누가** — 이 워크스페이스의 멤버(게스트는 아니다)가 올린다. 소유자가 설정(`workspace.emoji_owners_only`)을 켜면 소유자만 올린다
+> (13 *"Limit custom emoji creation to workspace owners"*). 이름 바꾸기 · 지우기는 **올린 사람이나 소유자**(13 *"소유자는 누가 올렸든"*).
+> 목록은 멤버 · 게스트 모두(페이지에 쓰인 이모지를 그려야 한다).
+>
+> ③ **지우기는 표시만** — `deleted_at` 을 찍고 파일 참조를 내린다(이미지는 더 그리지 않는다). 쓰인 곳은 id 로 가리키므로 지운 이모지는
+> "지운 이모지"(이름만)로 그린다 — 13 *"하드 삭제는 위험 · tombstone 유지 + 플레이스홀더"*. 지운 이름은 다시 쓸 수 있다(부분 UNIQUE).
+>
+> ④ **쓰이는 곳은 다음 조각들** — 페이지 아이콘(`{type:'custom_emoji', custom_emoji:{id}}` · 7c-2) · 설정의 관리 화면 · 고르개(7c-2) ·
+> 본문 인라인 · 반응(7c-3).
+
 **상태 전이 (type='page' 블록만)**
 
 | From → To | 트리거 | 부수효과 |
