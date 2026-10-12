@@ -15564,6 +15564,76 @@ async function main() {
       check('폼 탭은 아직 표 화면에 서지 않는다(7a-3 전)', !tabs.some((t) => t.includes(`신청서 ${stamp}`)), JSON.stringify(tabs))
     }
 
+    if (sectionIf('공개 폼 (7a-2b · F-13-02)')) {
+      // 공개한 폼을 **세션 없이** 연다 — 질문 칸 · 너무 빠른 제출은 다시 내라고 · 필수를 비우면 그 질문 아래에 까닭(입력은 남는다) · 받으면
+      // 확인 화면 · 응답은 만든 사람 없는 행 · "다른 응답 제출" 은 새 화면. 브라우저 세션은 끝에 반드시 되돌린다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const setInput = (selector, value) => evaluate(`(() => {
+        const el = document.querySelector(${JSON.stringify(selector)})
+        if (!el) return false
+        const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
+        Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, ${JSON.stringify(value)})
+        el.dispatchEvent(new Event('input', { bubbles: true }))
+        return true
+      })()`)
+      const db = (await api('POST', '/databases', { name: `행사 신청 ${stamp}` })).body.database
+      const age = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '나이', type: 'number' })).body.property.id
+      const kind = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '분류', type: 'select' })).body.property.id
+      const option = (await api('POST', `/data-sources/${db.dataSourceId}/properties/${kind}/options`, { name: '개인' })).body?.option?.id
+      const form = (await api('POST', `/databases/${db.id}/forms`, { name: '신청서' })).body.form
+      const titleProp = form.questions[0].propertyId
+      await api('PUT', `/forms/${form.viewId}/questions`, { questions: [{ propertyId: titleProp, required: true, label: '이름' }, { propertyId: age }, { propertyId: kind, required: true }] })
+      const token = (await api('PATCH', `/forms/${form.viewId}`, { title: `참가 신청 ${stamp}`, confirmationTitle: '고맙습니다', confirmationBody: '곧 연락드리겠습니다.', access: 'public' })).body?.form?.settings?.token
+      const q = (property) => `[data-testid="public-form-question"][data-property-id="${property}"]`
+
+      try {
+        await send('Network.deleteCookies', { name: 'nc_session', domain: 'localhost', path: '/' })
+        await send('Page.navigate', { url: `${BASE}/f/${token}` })
+        const shown = await waitFor(`document.querySelector('[data-testid="public-form-title"]')?.textContent === ${JSON.stringify(`참가 신청 ${stamp}`)}`, 15000)
+        const labels = await evaluate(`[...document.querySelectorAll('[data-testid="public-form-question"] label.pub-form-label')].map((l) => l.textContent.trim())`)
+        const robots = await evaluate(`document.querySelector('meta[name="robots"]')?.content ?? ''`)
+        check('★ 공개 폼을 세션 없이 연다 — 제목 · 질문(필수 표시) · 색인 안 함',
+          shown && JSON.stringify(labels) === JSON.stringify(['이름 *', '나이', '분류 *']) && robots.includes('noindex') && typeof option === 'string',
+          JSON.stringify([labels, robots, option]))
+
+        await clickSelector('[data-testid="public-form-submit"]')
+        check('너무 빠른 제출 — 다시 내라고 말한다(받은 척하지 않는다)',
+          await waitFor(`(document.querySelector('[data-testid="public-form-error"]')?.textContent ?? '').includes('조금 뒤에')`, 8000),
+          await evaluate(`document.querySelector('[data-testid="public-form-error"]')?.textContent ?? '(없음)'`))
+
+        await sleep(3200)
+        await setInput(`${q(age)} input`, '31')
+        await clickSelector('[data-testid="public-form-submit"]')
+        const flagged = await waitFor(`document.querySelectorAll('[data-testid="public-form-issue"]').length === 2`, 8000)
+        const kept = await evaluate(`document.querySelector('${q(age)} input')?.value`)
+        check('★ 필수를 비우면 그 질문 아래에 까닭 — 입력은 남는다',
+          flagged && !!(await evaluate(`!!document.querySelector('${q(titleProp)} [data-testid="public-form-issue"]') && !!document.querySelector('${q(kind)} [data-testid="public-form-issue"]')`)) && kept === '31',
+          JSON.stringify([await evaluate(`document.querySelectorAll('[data-testid="public-form-issue"]').length`), kept]))
+
+        await setInput(`${q(titleProp)} input`, `응답자 ${stamp}`)
+        await clickSelector(`${q(kind)} [data-testid="public-form-option"]`)
+        await clickSelector('[data-testid="public-form-submit"]')
+        const sent = await waitFor(`document.querySelector('[data-testid="public-form-sent"] h1')?.textContent === '고맙습니다'`, 8000)
+        const rows = (await api('GET', `/views/${db.defaultViewId}/rows`)).body?.rows ?? []
+        const mine = rows.find((r) => JSON.stringify(r.properties?.[titleProp] ?? '').includes(`응답자 ${stamp}`))
+        check('★ 받으면 확인 화면 · 응답은 행(나이 · 분류)',
+          sent && mine !== undefined && mine.properties?.[age]?.number === 31 && mine.properties?.[kind]?.select?.id === option,
+          JSON.stringify(mine?.properties ?? rows.length))
+
+        await clickSelector('[data-testid="public-form-again"]')
+        check('"다른 응답 제출" — 새 화면(빈 칸)',
+          await waitFor(`!!document.querySelector('[data-testid="public-form-body"]') && document.querySelector('${q(age)} input')?.value === ''`, 15000))
+      } finally {
+        await send('Network.setCookie', { name: 'nc_session', value: session, domain: 'localhost', path: '/', httpOnly: true })
+      }
+    }
+
     if (sectionIf('사이트 주소 (6c-1 · F-13-08)')) {
       // 워크스페이스 주소 + 슬러그 — 게시한 페이지를 `/s/{주소}/{슬러그}` 로 **세션 없이** 연다 · 하위 페이지 링크도 사이트 주소다 · 없는
       // 슬러그는 404 · 슬러그는 소문자로 받는다. 브라우저 세션은 끝에 반드시 되돌린다.
