@@ -76,6 +76,36 @@ function storedAccountSetting<V extends SettingValue>(
   }
 }
 
+/**
+ * 전용 칸이 없는 워크스페이스 설정 — `setting_value` 의 한 줄(scope `workspace`). 행이 없으면 `fallback`(계정 설정과 같은 모양 · 7c-1).
+ */
+function storedWorkspaceSetting<V extends SettingValue>(
+  key: SettingKey,
+  fallback: V,
+  accept: (raw: unknown) => raw is V,
+): Store<V> {
+  return {
+    read: async (tx, ctx) => {
+      const row = await tx.queryMaybe<{ value: unknown }>(
+        `SELECT value FROM setting_value WHERE scope = 'workspace' AND workspace_id = $1 AND key = $2`,
+        [ctx.workspaceId, key],
+      )
+      return row !== null && accept(row.value) ? row.value : fallback
+    },
+    write: async (tx, ctx, value) => {
+      await tx.query(
+        `INSERT INTO setting_value (scope, workspace_id, key, value, updated_by)
+         VALUES ('workspace', $1, $2, $3::jsonb, $4)
+         ON CONFLICT (workspace_id, key) WHERE scope = 'workspace'
+         DO UPDATE SET value = EXCLUDED.value, updated_by = EXCLUDED.updated_by, updated_at = now()`,
+        [ctx.workspaceId, key, JSON.stringify(value), ctx.userId],
+      )
+    },
+  }
+}
+
+const isBoolean = (raw: unknown): raw is boolean => typeof raw === 'boolean'
+
 /** 키마다 값이 사는 자리. 키를 더하면 타입이 여기를 요구한다. */
 const STORES: { readonly [K in SettingKey]: Store<SettingValueOf<K>> } = {
   'account.name': {
@@ -106,6 +136,8 @@ const STORES: { readonly [K in SettingKey]: Store<SettingValueOf<K>> } = {
     read: async (tx, ctx) => (await readSecurityPolicyIn(tx, ctx.workspaceId)).allowExport,
     write: (tx, ctx, value) => writeExportPolicyIn(tx, ctx.workspaceId, value),
   },
+  // 커스텀 이모지(7c-1) — 기본은 멤버도 올린다
+  'workspace.emoji_owners_only': storedWorkspaceSetting('workspace.emoji_owners_only', false, isBoolean),
   'workspace.allow_member_invite_guests': {
     read: async (tx, ctx) => (await readSecurityPolicyIn(tx, ctx.workspaceId)).allowMemberInviteGuests,
     write: (tx, ctx, value) => writeMemberInviteGuestsPolicyIn(tx, ctx.workspaceId, value),
