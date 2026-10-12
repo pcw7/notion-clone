@@ -29,7 +29,7 @@ import type { MvpViewType, ViewSummary } from '@/lib/database/view'
 import * as api from './table-api'
 
 /** 탭의 종류 아이콘. 장식이다 — 이름이 곧 종류를 말한다. */
-export const VIEW_TYPE_ICON: Readonly<Record<string, string>> = { table: '▦', board: '▥', list: '≡', gallery: '⊞', calendar: '▤' }
+export const VIEW_TYPE_ICON: Readonly<Record<string, string>> = { table: '▦', board: '▥', list: '≡', gallery: '⊞', calendar: '▤', form: '✎' }
 const VIEW_TYPE_LABEL: Readonly<Record<MvpViewType, string>> = { table: '표', board: '보드', list: '목록', gallery: '갤러리', calendar: '캘린더' }
 /** 이 화면이 만들 수 있는 종류 — 서버가 받는 것 전부(`MVP_VIEW_TYPES`). */
 const CREATABLE: readonly MvpViewType[] = ['table', 'board', 'list', 'gallery', 'calendar']
@@ -50,8 +50,11 @@ export function ViewTabs({
   views: readonly ViewSummary[]
   currentId: string
   canEdit: boolean
-  /** 이 데이터베이스의 소스들(부착 순서). 둘 이상이면 뷰를 만들 때 고른다. */
-  sources: readonly { readonly id: string; readonly name: string }[]
+  /**
+   * 이 데이터베이스의 소스들(부착 순서). 둘 이상이면 뷰를 만들 때 고른다. `owned` 가 거짓(붙인 소스)이면 폼을 만들 수 없다 — 응답은 소유한
+   * 소스의 행이다(7a-3 · 정본 §3.6 끝 [보강] 폼 ⑧).
+   */
+  sources: readonly { readonly id: string; readonly name: string; readonly owned?: boolean }[]
 }) {
   const router = useRouter()
   const [menu, setMenu] = useState<'add' | 'current' | null>(null)
@@ -87,6 +90,32 @@ export function ViewTabs({
     setMenu(null)
     router.push(`/w/${workspaceId}/db/${databaseId}?v=${result.value.id}`)
   }
+
+  /** 폼(7a-3) — 일반 뷰와 다른 명령이다(`POST /databases/{id}/forms` · 첫 질문은 제목). */
+  const createForm = async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      const res = await fetch(`/api/workspaces/${workspaceId}/databases/${databaseId}/forms`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: '폼', ...(sources.length > 1 && addSource !== '' ? { dataSourceId: addSource } : {}) }),
+      })
+      const body = (await res.json().catch(() => null)) as { form?: { viewId: string }; error?: string } | null
+      if (!res.ok || body?.form === undefined) {
+        setError(body?.error === 'forbidden' ? '이 표를 고칠 권한이 없습니다.' : body?.error === 'locked' ? '잠겨 있어 고칠 수 없습니다.' : '폼을 만들지 못했습니다.')
+        return
+      }
+      setMenu(null)
+      router.push(`/w/${workspaceId}/db/${databaseId}?v=${body.form.viewId}`)
+    } catch {
+      setError('연결에 실패했습니다.')
+    } finally {
+      setBusy(false)
+    }
+  }
+  // 붙인 소스에는 폼을 만들 수 없다 — 응답은 소유한 소스의 행이다
+  const formSourceOwned = sources.length <= 1 || sources.find((source) => source.id === addSource)?.owned !== false
 
   const switchType = async (type: MvpViewType) => {
     setBusy(true)
@@ -173,7 +202,8 @@ export function ViewTabs({
                 onKeyDown={onMenuKeyDown}
                 className="absolute left-0 top-full z-30 mt-1 w-64 rounded-md border border-neutral-200 bg-white p-1 shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
               >
-                {CREATABLE.filter((type) => type !== current.type).map((type) => (
+                {/* 폼(7a-1)은 다른 종류로 바꾸지 않는다 — 설정 · 공개 주소가 남은 채 행을 그리는 뷰가 되면 안 된다 */}
+                {(current.type === 'form' ? [] : CREATABLE.filter((type) => type !== current.type)).map((type) => (
                   <button
                     key={type}
                     type="button"
@@ -295,6 +325,20 @@ export function ViewTabs({
                     {VIEW_TYPE_LABEL[type]} 만들기
                   </button>
                 ))}
+                <button
+                  type="button"
+                  role="menuitem"
+                  data-testid="db-view-add-form"
+                  disabled={busy || !formSourceOwned}
+                  title={formSourceOwned ? undefined : '연결된 소스에는 폼을 만들 수 없습니다'}
+                  onClick={() => void createForm()}
+                  className={MENU_ITEM}
+                >
+                  <span aria-hidden className="mr-1.5 text-neutral-400">
+                    {VIEW_TYPE_ICON.form}
+                  </span>
+                  폼 만들기
+                </button>
               </div>
             )}
           </span>

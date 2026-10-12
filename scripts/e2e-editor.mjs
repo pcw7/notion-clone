@@ -15524,8 +15524,8 @@ async function main() {
     }
 
     if (sectionIf('폼 — 서버 라우트 (7a-1 · F-13-01)')) {
-      // 폼 뷰의 라우트 — 만들기(첫 질문은 제목) · 질문 바꾸기 · 설정 · 공개(토큰) · 거부 코드. 폼 탭의 화면(7a-3)이 서기 전에는 표 화면의
-      // 탭에 서지 않는다(행을 그리는 뷰로 잘못 열리지 않게).
+      // 폼 뷰의 라우트 — 만들기(첫 질문은 제목) · 질문 바꾸기 · 설정 · 공개(토큰) · 거부 코드 · 표 화면의 탭에 선다(7a-3 부터 — 그 탭은
+      // 편집 화면이다).
       const stamp = Date.now()
       const api = async (method, path, body) => {
         const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
@@ -15561,7 +15561,91 @@ async function main() {
       await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
       await waitFor(`document.querySelectorAll('[data-testid="db-view-tab"]').length > 0`, 15000)
       const tabs = await evaluate(`[...document.querySelectorAll('[data-testid="db-view-tab"]')].map((t) => t.textContent)`)
-      check('폼 탭은 아직 표 화면에 서지 않는다(7a-3 전)', !tabs.some((t) => t.includes(`신청서 ${stamp}`)), JSON.stringify(tabs))
+      check('폼 탭이 표 화면에 선다(7a-3)', tabs.some((t) => t.includes(`신청서 ${stamp}`)), JSON.stringify(tabs))
+    }
+
+    if (sectionIf('폼 편집 화면 (7a-3 · F-13-01)')) {
+      // 뷰 추가의 "폼 만들기" → 폼 탭의 편집 화면(첫 질문은 제목) · 폼 제목 · 질문 더하기 · 필수 · 옮기기 · 질문 제목 · 웹에 공개(주소가 서고
+      // 세션 없이 열린다) · 공개 닫기(주소가 닫힌다) · 폼 탭의 메뉴에는 종류 바꾸기가 없다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const setInput = (selector, value) => evaluate(`(() => {
+        const el = document.querySelector(${JSON.stringify(selector)})
+        if (!el) return false
+        // 칸을 떠날 때 저장한다 — 먼저 포커스해야 떠나는 것이 있다
+        el.focus()
+        const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
+        Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, ${JSON.stringify(value)})
+        el.dispatchEvent(new Event('input', { bubbles: true }))
+        return true
+      })()`)
+      const setSelect = (selector, value) => evaluate(`(() => {
+        const s = document.querySelector(${JSON.stringify(selector)})
+        if (!s) return false
+        Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(s, ${JSON.stringify(value)})
+        s.dispatchEvent(new Event('change', { bubbles: true }))
+        return true
+      })()`)
+      const db = (await api('POST', '/databases', { name: `폼 편집 ${stamp}` })).body.database
+      const age = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '나이', type: 'number' })).body.property.id
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      await waitFor(`!!document.querySelector('[data-testid="db-view-add"]')`, 15000)
+      for (let i = 0; i < 5 && !(await evaluate(`!!document.querySelector('[data-testid="db-view-add-form"]')`)); i += 1) {
+        await clickSelector('[data-testid="db-view-add"]')
+        await waitFor(`!!document.querySelector('[data-testid="db-view-add-form"]')`, 2000)
+      }
+      await clickSelector('[data-testid="db-view-add-form"]')
+      const opened = await waitFor(`!!document.querySelector('[data-testid="form-editor"]') && document.querySelectorAll('[data-testid="form-question"]').length === 1`, 15000)
+      const viewId = await evaluate(`new URL(location.href).searchParams.get('v')`)
+      const formOf = async () => (await api('GET', `/forms/${viewId}`)).body?.form
+      check('★ "폼 만들기" — 폼 탭의 편집 화면 · 첫 질문은 제목 · 표 · 도구막대는 없다',
+        opened && !(await evaluate(`!!document.querySelector('[data-testid="db-table"]') || !!document.querySelector('[data-testid="db-toolbar"]')`)) && typeof viewId === 'string',
+        String(viewId))
+
+      await setInput('[data-testid="form-title"]', `행사 신청 ${stamp}`)
+      await clickSelector('[data-testid="form-share"] h2')
+      let saved = null
+      for (const end = Date.now() + 8000; Date.now() < end && saved !== `행사 신청 ${stamp}`; await sleep(150)) saved = (await formOf())?.settings?.title ?? null
+      check('폼 제목 — 칸을 떠나면 저장된다', saved === `행사 신청 ${stamp}`, String(saved))
+
+      await setSelect('[data-testid="form-add-select"]', age)
+      await clickSelector('[data-testid="form-add"]')
+      await waitFor(`document.querySelectorAll('[data-testid="form-question"]').length === 2`, 8000)
+      const AGE = `[data-testid="form-question"][data-property-id="${age}"]`
+      await clickSelector(`${AGE} [data-testid="form-question-required"]`)
+      await waitFor(`document.querySelector('${AGE} [data-testid="form-question-required"]')?.checked === true`, 8000)
+      await clickSelector(`${AGE} [data-testid="form-question-up"]`)
+      await waitFor(`document.querySelector('[data-testid="form-question"]')?.dataset.propertyId === ${JSON.stringify(age)}`, 8000)
+      await setInput(`${AGE} [data-testid="form-question-label"]`, '몇 살인가요')
+      await clickSelector('[data-testid="form-share"] h2')
+      let questions = null
+      for (const end = Date.now() + 8000; Date.now() < end; await sleep(150)) {
+        questions = (await formOf())?.questions ?? null
+        if (questions?.[0]?.label === '몇 살인가요') break
+      }
+      check('★ 질문 더하기 · 필수 · 위로 · 질문 제목 — 서버에 순서대로',
+        JSON.stringify(questions?.map((q) => [q.propertyId === age ? '나이' : q.type, q.required, q.label])) === JSON.stringify([['나이', true, '몇 살인가요'], ['title', false, null]]),
+        JSON.stringify(questions))
+
+      await clickSelector('[data-testid="form-access"]')
+      const shown = await waitFor(`/\\/f\\/[A-Za-z0-9_-]{22}$/.test(document.querySelector('[data-testid="form-url"]')?.value ?? '')`, 8000)
+      const address = await evaluate(`document.querySelector('[data-testid="form-url"]')?.value ?? ''`)
+      check('★ 웹에 공개 — 주소가 서고 세션 없이 열린다', shown && (await fetch(address)).status === 200, address)
+      await clickSelector('[data-testid="form-access"]')
+      const closed = await waitFor(`!document.querySelector('[data-testid="form-url"]') && document.querySelector('[data-testid="form-access"]')?.dataset.access === 'closed'`, 8000)
+      check('공개 닫기 — 주소가 닫힌다', closed && address !== '' && (await fetch(address)).status === 404, address)
+
+      for (let i = 0; i < 5 && !(await evaluate(`!!document.querySelector('[data-testid="db-view-menu-panel"]')`)); i += 1) {
+        await clickSelector('[data-testid="db-view-menu"]')
+        await waitFor(`!!document.querySelector('[data-testid="db-view-menu-panel"]')`, 2000)
+      }
+      check('폼 탭의 메뉴에는 종류 바꾸기가 없다',
+        await evaluate(`!!document.querySelector('[data-testid="db-view-menu-panel"]') && !document.querySelector('[data-testid^="db-view-type-"]')`))
     }
 
     if (sectionIf('공개 폼 (7a-2b · F-13-02)')) {
