@@ -128,3 +128,19 @@ export async function reset(namespace: string, identity: string): Promise<void> 
     // 지우지 못해도 윈도우가 지나면 사라진다. 실패해도 무해하다.
   }
 }
+
+/**
+ * 한 번만 — 그 열쇠를 처음 쓰는 것이면 true, 이미 쓴 것이면 false(7a-2a — 공개 폼의 제출 토큰 · 정본 §3.6 끝 [보강] 폼 ⑥ ⓐ).
+ * `SET NX EX` 하나라 두 요청이 동시에 와도 하나만 true 다. 저장소 장애면 **연다**(true) — 레이트리밋과 같은 판단이고, 그 사실을 로그에
+ * 남긴다(한 번만 쓰기가 잠시 풀린다 · 서명 · 작성 시간 · 레이트리밋은 그대로 지킨다).
+ */
+export async function claimOnce(namespace: string, identity: string, ttlSeconds: number): Promise<boolean> {
+  const key = `once:${namespace}:${identity}`
+  try {
+    const set = await getValkey().set(key, '1', 'EX', ttlSeconds, 'NX')
+    return set === 'OK'
+  } catch (e) {
+    console.error(`[rate-limit] 한 번만 검사를 건너뜁니다 (fail-open): ${namespace} — ${(e as Error).message}`)
+    return true
+  }
+}

@@ -79,8 +79,8 @@ const EXPECTED_TABLES = [
   'reminder',
   // 사이트 주소 6c-1조각 (0093)
   'site_domain',
-  // 폼 7a-1조각 (0094)
-  'form_view', 'form_question',
+  // 폼 7a-1조각 (0094) · 7a-2a조각 (0095)
+  'form_view', 'form_question', 'form_submission_meta',
   'schema_migration', 'scim_token', 'session_policy', 'sso_config',
   'user', 'user_email', 'user_session',
   'workspace', 'workspace_invite', 'workspace_member',
@@ -4337,6 +4337,26 @@ try {
     if (Number(left) === 0) ok('★ 뷰를 지우면 설정 · 질문도 지워진다(CASCADE)')
     else fail(`뷰를 지웠는데 폼 행 ${left}개가 남았다`)
     await client.query('ROLLBACK TO SAVEPOINT cascade')
+
+    // 공개 제출의 메타 사이드카(0095 · [보강] 폼 ⑥) — 응답 행마다 한 줄 · 지문은 HMAC 64자 · 폼을 지우면 폼만 비운다
+    const responseRow = randomUUID()
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key, ancestor_path, perm_scope_id, properties, format,
+                          created_at, last_edited_at)
+       VALUES ($1, $2, 'page', 'data_source', $3, 'a0', ARRAY[$4::uuid], $4, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      [responseRow, wsId, ds, dbBlock],
+    )
+    await client.query(`INSERT INTO page (id, data_source_id, is_template) VALUES ($1, $2, false)`, [responseRow, ds])
+    const meta = `INSERT INTO form_submission_meta (page_id, view_id, submitter_hash, dwell_ms) VALUES ($1, $2, $3, $4)`
+    await rejects('지문의 모양(64자 16진수가 아니다)', meta, [responseRow, viewId, 'not-a-hash', 3000], 'ck_form_submission_hash')
+    await rejects('음수 작성 시간', meta, [responseRow, viewId, 'a'.repeat(64), -1], 'ck_form_submission_dwell')
+    await client.query(meta, [responseRow, viewId, 'a'.repeat(64), 3000])
+    await client.query('SAVEPOINT meta')
+    await client.query(`DELETE FROM view WHERE id = $1`, [viewId])
+    const kept = (await client.query(`SELECT view_id FROM form_submission_meta WHERE page_id = $1`, [responseRow])).rows
+    if (kept.length === 1 && kept[0].view_id === null) ok('★ 폼(뷰)을 지워도 응답의 메타는 남고 폼만 비운다(SET NULL)')
+    else fail(`폼을 지운 뒤 메타가 ${JSON.stringify(kept)} 다`)
+    await client.query('ROLLBACK TO SAVEPOINT meta')
   }
 
   await client.query('ROLLBACK')

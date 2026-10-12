@@ -60,9 +60,10 @@ export type ActivityEvent = {
 
 /**
  * 일을 한 사람 — 어느 워크스페이스의 누구. 보통은 `SessionContext` 이고, 워크스페이스 밖의 사람의 접근 요청(7g-2)은
- * `OutsiderContext` 다. 이벤트를 남기는 데는 이 둘만 필요하다 — 판정이 아니다.
+ * `OutsiderContext` 다. 이벤트를 남기는 데는 이 둘만 필요하다 — 판정이 아니다. **사람이 없으면 `null`** — 공개 폼의 익명 응답(7a-2a ·
+ * 정본 §3.6 끝 [보강] 폼 ⑥ — `activity_event.actor_id` 는 처음부터 "익명 · 시스템이면 NULL").
  */
-export type ActivityActor = Pick<SessionContext, 'workspaceId' | 'userId'>
+export type ActivityActor = Pick<SessionContext, 'workspaceId'> & { readonly userId: string | null }
 
 /** 이벤트를 남긴다. 호출자의 트랜잭션 안에서 — 일어난 일과 그 기록이 함께 커밋돼야 한다. */
 export async function recordActivity(tx: Tx, ctx: ActivityActor, input: ActivityInput): Promise<ActivityEvent> {
