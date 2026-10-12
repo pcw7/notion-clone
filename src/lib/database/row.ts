@@ -49,11 +49,12 @@
 import { randomUUID } from 'node:crypto'
 
 import type { SessionContext } from '../auth/session-context.ts'
+import type { WorkspaceId } from '../ids.ts'
 import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
 import { can } from '../permissions/levels.ts'
 import { effectiveCaps } from '../permissions/effective.ts'
 import { isLocked } from '../permissions/lock.ts'
-import { recordActivity, recordCoalescedActivity } from '../notification/activity.ts'
+import { recordActivity, recordCoalescedActivity, type ActivityActor } from '../notification/activity.ts'
 import { notifyAssigned } from '../notification/fanout.ts'
 import { orderKeyBetween } from '../block/order-key.ts'
 import { titleFromPlainText } from '../block/page.ts'
@@ -184,7 +185,7 @@ async function openRowCells(tx: Tx, ctx: SessionContext, rowId: string, dataSour
 type LiveDataSource = { id: string; container_id: string; schema_version: string }
 
 /** 이 워크스페이스의 살아 있는 data source(그 데이터베이스도 살아 있다). */
-async function loadLiveDataSource(tx: Tx, ctx: SessionContext, dataSourceId: string): Promise<LiveDataSource | null> {
+async function loadLiveDataSource(tx: Tx, ctx: Pick<SessionContext, 'workspaceId'>, dataSourceId: string): Promise<LiveDataSource | null> {
   return tx.queryMaybe<LiveDataSource>(
     `SELECT ds.id, ds.owner_database_id AS container_id, ds.schema_version
        FROM data_source ds
@@ -336,7 +337,7 @@ async function writeCells(tx: Tx, rowId: string, cells: readonly PreparedCell[],
  */
 async function notifyNewlyAssigned(
   tx: Tx,
-  ctx: SessionContext,
+  ctx: ActivityActor,
   rowId: string,
   cells: readonly PreparedCell[],
   before: ReadonlyMap<string, unknown>,
@@ -462,6 +463,43 @@ export async function createRowIn(
     const strangers = await peopleIssuesIn(tx, ctx.workspaceId, prepared)
     if (strangers.length > 0) return { ok: false, reason: 'invalid_value', issues: strangers } as const
 
+    return insertRowIn(tx, ctx, gate, dataSourceId, prepared, { isTemplate, origin: input.origin ?? 'user', filledBy: input.filledBy })
+  }
+}
+
+/**
+ * 공개 폼의 익명 응답을 행으로 넣는다(7a-2a · 정본 §3.6 끝 [보강] 폼 ⑥ ⓑ) — **권한을 묻지 않는다**: 자격은 폼이고 그 판정은 부르는 쪽
+ * (`form-submit.ts`)이 이미 했다. 만든 사람 · 활동의 행위자는 NULL · 템플릿이 아니다 · 자동화의 "행이 생겼다" 는 받는다(출처 `user`).
+ * 넣기의 몸체는 `createRowIn` 과 같다(`insertRowIn`).
+ */
+export async function createAnonymousRowIn(
+  tx: Tx,
+  workspaceId: WorkspaceId,
+  dataSourceId: string,
+  cells: readonly RowCell[],
+): Promise<RowResult<RowSummary>> {
+  const ds = await loadLiveDataSource(tx, { workspaceId }, dataSourceId)
+  if (ds === null) return { ok: false, reason: 'not_found' } as const
+  const gate = await readSchemaGate(tx, dataSourceId, ds)
+  const prepared = prepareCells(gate, [...cells, ...defaultCells(gate, cells)])
+  if (isRowFailure(prepared)) return prepared
+  return insertRowIn(tx, { workspaceId, userId: null }, gate, dataSourceId, prepared, { isTemplate: false, origin: 'user' })
+}
+
+/**
+ * 행 넣기의 몸체 — 사람이 만드는 행(`createRowIn`)과 익명 응답(`createAnonymousRowIn`)이 함께 쓴다. 권한 · 값 검증은 부르는 쪽이 끝냈다.
+ * `actor.userId` 가 null 이면 만든 사람 · 고친 사람 · 활동의 행위자가 비어 있다.
+ */
+async function insertRowIn(
+  tx: Tx,
+  actor: ActivityActor,
+  gate: DataSourceGate,
+  dataSourceId: string,
+  prepared: readonly PreparedCell[],
+  options: { readonly isTemplate: boolean; readonly origin: WriteOrigin; readonly filledBy?: CellFiller },
+): Promise<RowResult<RowSummary>> {
+  const { isTemplate } = options
+  {
     const rowId = randomUUID()
     const container = await tx.queryOne<{ ancestor_path: string[]; perm_scope_id: string }>(
       `SELECT ancestor_path, perm_scope_id FROM block WHERE id = $1`,
@@ -492,14 +530,14 @@ export async function createRowIn(
        )`,
       [
         rowId,
-        ctx.workspaceId,
+        actor.workspaceId,
         dataSourceId,
         orderKeyBetween(last?.order_key ?? null, null),
         // 컨테이너의 경로에 컨테이너 자신을 이어 붙인다 [X-7]. data_source 는
         // 블록이 아니므로 경로에 들어가지 않는다 — 경로는 block id 배열이다.
         [...container.ancestor_path, gate.containerId],
         container.perm_scope_id,
-        ctx.userId,
+        actor.userId,
       ],
     )
     // R3 트리거가 이 쌍을 검사한다(type · parent_type · data_source_id 일치).
@@ -511,15 +549,15 @@ export async function createRowIn(
     // 고유 ID — 행을 넣은 **뒤에** 묻는다(`unique-id.ts` 머리말의 잠금 순서). 템플릿은 받지 않는다(불변식 U2).
     if (!isTemplate) await issueUniqueSeq(tx, dataSourceId, rowId)
     // 활동 — 행을 만들었다(4d-2). 템플릿은 행이 아니다(표에 서지 않는다)
-    if (!isTemplate) await recordActivity(tx, ctx, { pageId: rowId, type: 'page.created' })
+    if (!isTemplate) await recordActivity(tx, actor, { pageId: rowId, type: 'page.created' })
     // DB automation — 행이 생겼다(5b-2 · 같은 트랜잭션 · 템플릿은 받지 않는다)
-    if (!isTemplate) await routeRowAdded(tx, { dataSourceId, pageId: rowId, origin: input.origin ?? 'user' })
+    if (!isTemplate) await routeRowAdded(tx, { dataSourceId, pageId: rowId, origin: options.origin })
 
     if (prepared.length > 0) {
-      await writeCells(tx, rowId, prepared, input.filledBy)
+      await writeCells(tx, rowId, prepared, options.filledBy)
       await projectTitle(tx, rowId, prepared, gate.titlePropertyId)
       // 담당 알림(6h) — 새 행의 사람 칸에 든 사람 모두가 새로 든 사람이다. 템플릿은 항목이 아니다(R1)
-      if (!isTemplate) await notifyNewlyAssigned(tx, ctx, rowId, prepared, new Map())
+      if (!isTemplate) await notifyNewlyAssigned(tx, actor, rowId, prepared, new Map())
     }
 
     const summary = await readRow(tx, rowId)
