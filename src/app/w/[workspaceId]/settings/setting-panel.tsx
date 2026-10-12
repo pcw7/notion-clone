@@ -10,6 +10,7 @@ import { MAX_TOTP_METHODS, mfaStatus } from '@/lib/auth/mfa'
 import { passwordStatus } from '@/lib/auth/password'
 import { listWorkspaceAudit } from '@/lib/audit/audit'
 import { planOverview } from '@/lib/billing/overview'
+import { canCreateCustomEmoji, listCustomEmoji } from '@/lib/emoji/custom-emoji'
 import { readSiteDomain } from '@/lib/publish/site'
 import type { SessionContext } from '@/lib/auth/session-context'
 import type { SettingPanelId } from '@/lib/settings/panels'
@@ -22,6 +23,7 @@ import { GuestPanel } from '../guest-panel'
 import { InviteForm } from '../invite-form'
 import { PendingInviteList } from '../pending-invite-list'
 import { AuditPanel } from './audit-panel'
+import { EmojiPanel } from './emoji-panel'
 import { MfaPanel } from './mfa-panel'
 import { PasswordPanel } from './password-panel'
 import { PlanPanel } from './plan-panel'
@@ -55,6 +57,11 @@ export async function SettingPanelView({ id, ctx }: { id: SettingPanelId; ctx: S
       // 요금제(8k-3) — 읽기만. 볼 수 없는 역할이면 null(패널 목록이 이미 걸렀다 — 서버가 다시 묻는다).
       const overview = await planOverview(ctx)
       return overview === null ? null : <PlanPanel overview={overview} />
+    }
+    case 'emoji': {
+      // 커스텀 이모지(7c-2b) — 목록 · 올릴 수 있는가를 여기서 읽는다. 명령(올리기 · 바꾸기 · 지우기)은 라우트가 다시 판정한다.
+      const [list, canCreate] = await Promise.all([listCustomEmoji(ctx), canCreateCustomEmoji(ctx)])
+      return <EmojiPanel workspaceId={ctx.workspaceId} initial={list} canCreate={canCreate} />
     }
     case 'site':
       // 사이트 주소(6c-2) — 지금 주소는 여기서 읽는다. 정하는 것은 소유자만(패널 목록이 걸렀다 — 명령이 다시 묻는다).

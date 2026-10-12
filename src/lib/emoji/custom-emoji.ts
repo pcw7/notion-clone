@@ -11,22 +11,18 @@
  *   · 누가 — 멤버가 올린다(게스트는 아니다) · 설정 `workspace.emoji_owners_only` 를 켜면 소유자만 · 이름 바꾸기 · 지우기는 올린 사람이나
  *     소유자 · 목록은 워크스페이스의 누구나(게스트 포함 — 쓰인 이모지를 그려야 한다)
  *   · 이름 — 소문자 · 숫자 · 밑줄 · 하이픈 40자(받을 때 소문자로) · 살아 있는 것끼리 하나 · 워크스페이스마다 500개
+ *
+ * 규칙(이름의 모양 · 크기 · 개수)은 화면도 쓰므로 순수 모듈 `custom-emoji-rules.ts` 에 있다(7c-2b).
  */
 
 import { randomUUID } from 'node:crypto'
 
-import type { SessionContext } from '../auth/session-context.ts'
+import type { SessionContext, WorkspaceRole } from '../auth/session-context.ts'
 import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
 import { readFile } from '../file/file.ts'
 import { ALLOWED_IMAGE_MIME } from '../file/limits.ts'
 import { isUuid } from '../ids.ts'
-
-/** 이름의 모양 — 0096 의 CHECK 과 같다. */
-export const EMOJI_NAME_PATTERN = /^[a-z0-9_-]{1,40}$/
-/** 워크스페이스마다 살아 있는 이모지 수(13 *"최대 500개"*). */
-export const MAX_CUSTOM_EMOJI = 500
-/** 이모지 이미지의 크기 — 아이콘보다 작게(13 *"대용량/애니메이션 파일 — 크기 제한 필요"*). */
-export const MAX_EMOJI_BYTES = 1024 * 1024
+import { MAX_CUSTOM_EMOJI, MAX_EMOJI_BYTES, normalizeEmojiName } from './custom-emoji-rules.ts'
 
 export type CustomEmoji = {
   readonly id: string
@@ -72,13 +68,6 @@ export function emojiFailureStatus(reason: EmojiFailure): number {
 
 const fail = (reason: EmojiFailure): { readonly ok: false; readonly reason: EmojiFailure } => ({ ok: false, reason })
 
-/** 이름을 받는 모양으로 — 앞뒤 공백과 양 끝의 `:` 를 걷고 소문자로. 받을 수 없으면 null. */
-export function normalizeEmojiName(raw: unknown): string | null {
-  if (typeof raw !== 'string') return null
-  const name = raw.trim().replace(/^:+|:+$/g, '').toLowerCase()
-  return EMOJI_NAME_PATTERN.test(name) ? name : null
-}
-
 type EmojiRow = { id: string; name: string; file_id: string; created_by: string | null; created_at: Date }
 
 const toEmoji = (ctx: SessionContext, r: EmojiRow): CustomEmoji => ({
@@ -100,6 +89,19 @@ export async function listCustomEmoji(ctx: SessionContext): Promise<CustomEmoji[
     )
     return rows.map((r) => toEmoji(ctx, r))
   })
+}
+
+/**
+ * 설정의 이모지 절(7c-2b)이 서는가 — 게스트가 아닌 사람. 게스트는 올리지 못하고, 쓰인 이모지를 그리는 데는 목록 라우트로 족하다
+ * (정본 [보강] 커스텀 이모지 ⑥). 올릴 수 있는가는 따로 묻는다(`canCreateCustomEmoji` — 소유자만 설정).
+ */
+export function canSeeEmojiLibrary(role: WorkspaceRole): boolean {
+  return role !== 'guest'
+}
+
+/** 이 사람이 지금 이모지를 올릴 수 있는가 — 화면이 올리기 대신 안내를 세울지 정한다. 판정은 `createCustomEmoji` 가 다시 한다. */
+export async function canCreateCustomEmoji(ctx: SessionContext): Promise<boolean> {
+  return withReadTransaction((tx) => canCreateIn(tx, ctx))
 }
 
 /** 올릴 수 있는가 — 게스트가 아니고, 소유자만 설정이 켜져 있으면 소유자. */
