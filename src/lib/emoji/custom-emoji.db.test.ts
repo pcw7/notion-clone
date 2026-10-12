@@ -5,7 +5,8 @@
  *
  *   ① ★ 올리기 — 멤버가 이름 · 이미지로 올린다(이름은 소문자로 · 양 끝의 `:` 는 걷는다) · 파일 참조가 하나 오른다 · 목록은 워크스페이스의
  *      누구나(게스트도) · 이름 순
- *   ② ★ 누가 — 게스트는 못 올린다 · "소유자만" 설정을 켜면 멤버는 forbidden · 이름 바꾸기 · 지우기는 올린 사람이나 소유자
+ *   ② ★ 누가 — 게스트는 못 올린다 · "소유자만" 설정을 켜면 멤버는 forbidden · 이름 바꾸기 · 지우기는 올린 사람이나 소유자 · 화면이 묻는
+ *      것(7c-2b — 설정의 이모지 절 · 올릴 수 있는가)이 같은 판정이다
  *   ③ 이름 · 파일 — 모양 · 살아 있는 것끼리 하나(지운 이름은 다시 쓴다) · 다른 워크스페이스의 파일 · 이미지가 아닌 파일 · 1MB
  *   ④ ★ 지우기는 표시만 — 행은 남고 목록에서 빠지며 파일 참조가 내린다
  *   ⑤ 500개 — 넘으면 too_many
@@ -19,7 +20,15 @@ import { setFileStorage, type FileStorage } from '../file/storage.ts'
 import { uploadFile } from '../file/file.ts'
 import { updateSetting } from '../settings/settings.ts'
 import { createBareWorkspace, createUser, joinAs, probeDatabase, type Actor } from '../testing/db-fixtures.ts'
-import { MAX_CUSTOM_EMOJI, createCustomEmoji, deleteCustomEmoji, listCustomEmoji, renameCustomEmoji } from './custom-emoji.ts'
+import {
+  canCreateCustomEmoji,
+  canSeeEmojiLibrary,
+  createCustomEmoji,
+  deleteCustomEmoji,
+  listCustomEmoji,
+  renameCustomEmoji,
+} from './custom-emoji.ts'
+import { MAX_CUSTOM_EMOJI } from './custom-emoji-rules.ts'
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'
 
@@ -121,6 +130,15 @@ describe('② ★ 누가', () => {
     assert.equal(unwrap(await renameCustomEmoji(boss.ctx, mine.id, 'mine-3')).name, 'mine-3', '소유자는 누가 올렸든')
     assert.deepEqual(await deleteCustomEmoji(mate.ctx, owners.id), { ok: false, reason: 'forbidden' }, '멤버는 소유자의 것을 못 지운다')
     unwrap(await deleteCustomEmoji(boss.ctx, mine.id))
+  })
+
+  test('★ 화면이 묻는 것(7c-2b) — 설정의 이모지 절은 게스트가 아닌 사람 · 올릴 수 있는가는 명령과 같은 판정', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { boss, mate, guest } = await team()
+    assert.deepEqual([canSeeEmojiLibrary(boss.ctx.role), canSeeEmojiLibrary(mate.ctx.role), canSeeEmojiLibrary(guest.ctx.role)], [true, true, false])
+    assert.deepEqual([await canCreateCustomEmoji(boss.ctx), await canCreateCustomEmoji(mate.ctx), await canCreateCustomEmoji(guest.ctx)], [true, true, false])
+    unwrap(await updateSetting(boss.ctx, 'workspace.emoji_owners_only', true))
+    assert.deepEqual([await canCreateCustomEmoji(boss.ctx), await canCreateCustomEmoji(mate.ctx)], [true, false], '소유자만')
   })
 })
 

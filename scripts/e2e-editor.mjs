@@ -9211,7 +9211,7 @@ async function main() {
         await waitFor(`location.pathname === ${JSON.stringify(`/w/${workspaceId}/settings`)} && document.querySelector('[data-testid="settings-title"]')?.textContent === '프로필'`, 15000),
         JSON.stringify([await evaluate('location.pathname'), await title()]))
       check('★ 소유자의 내비 — 내 계정(프로필 · 환경설정 · 보안) · 워크스페이스(일반 · 사람 · 보안 · 사이트 · 요금제 · 감사 로그)',
-        JSON.stringify(await navSections()) === JSON.stringify(['account.profile', 'account.preferences', 'account.security', 'workspace.general', 'workspace.people', 'workspace.security', 'workspace.sites', 'workspace.plan', 'workspace.audit']),
+        JSON.stringify(await navSections()) === JSON.stringify(['account.profile', 'account.preferences', 'account.security', 'workspace.general', 'workspace.people', 'workspace.security', 'workspace.emoji', 'workspace.sites', 'workspace.plan', 'workspace.audit']),
         JSON.stringify(await navSections()))
 
       // 내 이름 — Enter 로 저장 · 공백을 정리한 값이 남는다
@@ -15636,6 +15636,124 @@ async function main() {
         await send('Network.setCookie', { name: 'nc_session', value: session, domain: 'localhost', path: '/', httpOnly: true })
       }
       await api('DELETE', `/pages/${page}/publish`)
+    }
+
+    if (sectionIf('커스텀 이모지 — 설정 · 고르개 (7c-2b · F-13-16)')) {
+      // 설정 → 이모지: 그림을 고르면 이름을 파일 이름에서 제안하고 · 추가하면 줄이 선다(그림이 디코드) · 너무 큰 그림은 올리기 전에 막는다 ·
+      // 이름 바꾸기 · 지우기(한 번 더 묻는다). 아이콘 고르개의 "커스텀" 탭: 이름으로 찾고 고르면 머리의 아이콘이 그 이모지가 된다.
+      const stamp = Date.now().toString(36)
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const PNG_1PX = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64')
+      const goodPng = join(profile, 'Party Parrot.png')
+      writeFileSync(goodPng, PNG_1PX)
+      const bigPng = join(profile, 'too-big.png')
+      writeFileSync(bigPng, Buffer.concat([PNG_1PX, Buffer.alloc(1024 * 1024)]))
+      const setFile = async (path) => {
+        await send('DOM.enable')
+        const root = (await send('DOM.getDocument', { depth: -1 })).root.nodeId
+        const node = (await send('DOM.querySelector', { nodeId: root, selector: '[data-testid="emoji-file-input"]' })).nodeId
+        await send('DOM.setFileInputFiles', { files: [path], nodeId: node })
+      }
+      const retype = async (selector, text) => {
+        await clickSelector(selector)
+        await evaluate(`document.querySelector(${JSON.stringify(selector)})?.select()`)
+        await typeText(text)
+      }
+      const rowOf = (name) => `[data-testid="emoji-row"][data-name="${name}"]`
+      const name = `party-${stamp}`
+
+      // ① 설정의 이모지 절 — 너무 큰 그림은 올리기 전에 막는다 · 고르면 이름을 제안한다 · 추가하면 줄이 선다
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/settings?s=workspace.emoji` })
+      check('★ 설정 → 이모지 — 패널 · 이모지 추가 단추',
+        await waitFor(`!!document.querySelector('[data-testid="emoji-panel"]') && !!document.querySelector('[data-testid="emoji-add"]')`, 15000),
+        String(await evaluate(`document.querySelector('[data-testid="settings-title"]')?.textContent ?? null`)))
+      await setFile(bigPng)
+      check('★ 1MB 를 넘는 그림은 올리기 전에 막는다 — 초안이 서지 않는다',
+        (await waitFor(`/1MB/.test(document.querySelector('[data-testid="emoji-error"]')?.textContent ?? '')`, 5000)) && !(await evaluate(`!!document.querySelector('[data-testid="emoji-draft"]')`)),
+        String(await evaluate(`document.querySelector('[data-testid="emoji-error"]')?.textContent ?? null`)))
+      await setFile(goodPng)
+      check('★ 그림을 고르면 이름을 파일 이름에서 제안한다(소문자 · 하이픈)',
+        await waitFor(`document.querySelector('[data-testid="emoji-name-input"]')?.value === 'party-parrot'`, 5000),
+        String(await evaluate(`document.querySelector('[data-testid="emoji-name-input"]')?.value ?? null`)))
+      await retype('[data-testid="emoji-name-input"]', name.toUpperCase())
+      await clickSelector('[data-testid="emoji-save"]')
+      check('★ 추가하면 줄이 선다 — 이름은 소문자로 · 그림이 디코드된다',
+        await waitFor(`(() => { const i = document.querySelector('${rowOf(name)} img'); return !!i && i.complete && i.naturalWidth > 0
+          && !document.querySelector('[data-testid="emoji-draft"]') })()`, 15000),
+        JSON.stringify(await evaluate(`[...document.querySelectorAll('[data-testid="emoji-row"]')].map((r) => r.dataset.name).slice(0, 5)`)))
+      const emojiId = await evaluate(`document.querySelector('${rowOf(name)}')?.dataset.emojiId ?? null`)
+
+      // ② 이름 바꾸기
+      await clickSelector(`${rowOf(name)} [data-testid="emoji-rename"]`)
+      await waitFor(`!!document.querySelector('[data-testid="emoji-rename-input"]')`, 3000)
+      await retype('[data-testid="emoji-rename-input"]', `${name}-2`)
+      await key('Enter')
+      check('★ 이름 바꾸기 — Enter 로 저장하면 그 줄의 이름이 바뀐다',
+        await waitFor(`!!document.querySelector('${rowOf(`${name}-2`)}') && !document.querySelector('${rowOf(name)}')`, 8000),
+        JSON.stringify(await evaluate(`({ error: document.querySelector('[data-testid="emoji-error"]')?.textContent ?? null,
+          input: document.querySelector('[data-testid="emoji-rename-input"]')?.value ?? null,
+          names: [...document.querySelectorAll('[data-testid="emoji-row"]')].map((r) => r.dataset.name).filter((n) => n.includes(${JSON.stringify(stamp)})) })`)))
+
+      // ③ 고르개의 "커스텀" 탭 — 찾고 고르면 머리의 아이콘이 그 이모지
+      const page = (await api('POST', '/pages', { title: `커스텀탭${stamp}` })).body?.page?.id
+      await api('PATCH', `/pages/${page}`, { icon: { type: 'emoji', emoji: '🌱' } })
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+      await waitFor(`document.querySelector('[data-testid="page-icon"]')?.textContent === '🌱'`, 15000)
+      let opened = false
+      for (let tries = 0; tries < 6 && !opened; tries += 1) {
+        await clickSelector('[data-testid="page-icon"]')
+        opened = await waitFor(`!!document.querySelector('[data-testid="icon-tab-custom"]')`, 2000)
+      }
+      await clickSelector('[data-testid="icon-tab-custom"]')
+      const option = `[data-testid="custom-emoji-option"][data-emoji-id="${emojiId}"]`
+      check('★ 커스텀 탭 — 워크스페이스의 이모지가 그림으로 선다',
+        opened && (await waitFor(`!!document.querySelector('${option} img')`, 8000)),
+        String(await evaluate(`document.querySelector('[data-testid="icon-custom-panel"]')?.textContent?.slice(0, 120) ?? '(없음)'`)))
+      await clickSelector('[data-testid="custom-emoji-search"]')
+      await typeText(`:${stamp}-2`)
+      const shownIds = () => evaluate(`[...document.querySelectorAll('[data-testid="custom-emoji-option"]')].map((b) => b.dataset.emojiId)`)
+      check('★ 이름으로 찾는다 — 그 이모지 하나',
+        await waitFor(`(() => { const ids = [...document.querySelectorAll('[data-testid="custom-emoji-option"]')].map((b) => b.dataset.emojiId)
+          return ids.length === 1 && ids[0] === ${JSON.stringify(emojiId)} })()`, 5000),
+        JSON.stringify(await shownIds()))
+      await key('Enter')
+      check('★ 고르면(검색칸의 Enter — 첫 후보) 머리의 아이콘이 그 이모지가 된다 — 고르개는 닫힌다',
+        await waitFor(`!document.querySelector('[data-testid="emoji-picker"]')
+          && document.querySelector('[data-testid="page-icon"] img[data-page-icon]')?.getAttribute('data-page-icon') === ${JSON.stringify(`custom_emoji:${emojiId}`)}`, 8000),
+        String(await evaluate(`document.querySelector('[data-testid="page-icon"]')?.innerHTML?.slice(0, 160) ?? null`)))
+      // 화면은 아이콘을 먼저 바꾸고 저장한다 — 서버가 받을 때까지 기다린다.
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      let saved = null
+      for (let i = 0; i < 30 && saved === null; i += 1) {
+        const [row] = await dbQuery(`SELECT format -> 'page_icon' AS icon FROM block WHERE id = $1`, [page])
+        if (row?.icon?.type === 'custom_emoji') saved = row.icon
+        else await sleep(150)
+      }
+      check('저장된 아이콘은 id 만', JSON.stringify(saved) === JSON.stringify({ type: 'custom_emoji', custom_emoji: { id: emojiId } }), JSON.stringify(saved))
+      for (let tries = 0; tries < 6; tries += 1) {
+        await clickSelector('[data-testid="page-icon"]')
+        if (await waitFor(`!!document.querySelector('[data-testid="icon-tab-custom"]')`, 2000)) break
+      }
+      await clickSelector('[data-testid="icon-tab-custom"]')
+      check('다시 열면 지금 아이콘인 이모지가 표시된다',
+        await waitFor(`!!document.querySelector('${option}[data-current]')`, 8000))
+      await key('Escape')
+
+      // ④ 지우기 — 한 번 더 묻는다
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/settings?s=workspace.emoji` })
+      await waitFor(`!!document.querySelector('${rowOf(`${name}-2`)} [data-testid="emoji-delete"]')`, 15000)
+      await clickSelector(`${rowOf(`${name}-2`)} [data-testid="emoji-delete"]`)
+      check('★ 지우기는 한 번 더 묻는다 — 줄은 그대로',
+        (await waitFor(`!!document.querySelector('[data-testid="emoji-delete-confirm"]')`, 3000)) && (await evaluate(`!!document.querySelector('${rowOf(`${name}-2`)}')`)))
+      await clickSelector('[data-testid="emoji-delete-confirm"]')
+      check('★ 확인하면 줄이 빠진다 · 그림 경로는 404',
+        (await waitFor(`!document.querySelector('${rowOf(`${name}-2`)}')`, 8000))
+          && (await fetch(`${BASE}/api/workspaces/${workspaceId}/emoji/${emojiId}/image`, { headers: { cookie: authed.cookie } })).status === 404)
     }
 
     if (sectionIf('폼 — 서버 라우트 (7a-1 · F-13-01)')) {

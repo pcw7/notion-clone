@@ -81,6 +81,8 @@ export const SETTING_GROUPS = [
       { id: 'workspace.general', label: '일반' },
       { id: 'workspace.people', label: '사람' },
       { id: 'workspace.security', label: '보안' },
+      // 커스텀 이모지(7c-2b · F-13-16) — 게스트가 아닌 사람에게(패널 하나로 선다 · "소유자만" 토글은 보안 절이다).
+      { id: 'workspace.emoji', label: '이모지' },
       // 사이트 주소(6c-2 · F-13-08) — 소유자에게만(패널 하나로 선다).
       { id: 'workspace.sites', label: '사이트' },
       // 요금제(8k-3) — 지금 요금제 · 한도와 쓴 양 · 비교. 소유자 · 멤버 관리자에게만(패널 하나로 선다).

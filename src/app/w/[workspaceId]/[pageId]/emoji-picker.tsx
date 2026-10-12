@@ -15,6 +15,9 @@
  * `uploadImageFile`) 그 파일 id 를, 주소를 넣으면 그 주소를 아이콘으로 넘긴다. 주소의 규칙은 서버와 같은 함수다
  * (`parsePageIconInput` — http · https · 공백 없음 · 2048자). 파일 대화상자가 열리며 창의 포커스가 나가도 고르개는 닫히지 않는다
  * (아래 `onBlur` 는 포커스가 고르개 **밖의 요소**로 갈 때만 닫는다 — 창 밖은 `relatedTarget` 이 없다).
+ *
+ * **"커스텀" 탭**(7c-2b · 이미지 탭과 같은 조건) — 워크스페이스의 커스텀 이모지(`custom-emoji-tab.tsx`). 고르면 그림 아이콘
+ * (`{type:'custom_emoji', custom_emoji:{id}}`)으로 `onPickImage` 에 넘긴다.
  */
 
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
@@ -23,6 +26,7 @@ import { searchEmoji, type EmojiCatalog, type EmojiEntry } from '@/lib/emoji/cat
 import { parsePageIconInput, type ImageIcon } from '@/lib/block/page-icon'
 import { ALLOWED_IMAGE_MIME } from '@/lib/file/limits'
 import { uploadImageFile } from '@/lib/file/upload-client'
+import { CustomEmojiTab } from './custom-emoji-tab'
 import { loadEmojiCatalog } from './emoji-catalog-loader'
 
 /** 격자의 칸 수 — CSS 의 `grid-cols-10` 과 같은 값(↑ ↓ 가 한 줄을 건너뛴다). */
@@ -36,7 +40,12 @@ export type EmojiPickerProps = {
   current: string | null
   /** 지금 아이콘이 있다 — "제거"를 세운다(이미지 아이콘이면 `current` 는 null 이지만 지울 수 있다). */
   removable: boolean
-  /** 이미지 아이콘을 고른다(8c-4 — 올린 파일 · 이미지 주소). 없으면 "이미지" 탭을 세우지 않는다. */
+  /** 지금 아이콘이 커스텀 이모지면 그 id(7c-2b) — 커스텀 탭에서 표시한다. */
+  currentCustomId?: string | null
+  /**
+   * 그림 아이콘을 고른다(8c-4 — 올린 파일 · 이미지 주소 · 7c-2b — 커스텀 이모지). 없으면 "커스텀" · "이미지" 탭을 세우지 않는다
+   * (teamspace 아이콘은 글자 칸이다).
+   */
   onPickImage?: (icon: ImageIcon) => void
   /** 파일을 올릴 워크스페이스 — `onPickImage` 와 함께 준다. */
   workspaceId?: string
@@ -52,6 +61,7 @@ export type EmojiPickerProps = {
 export function EmojiPicker({
   current,
   removable,
+  currentCustomId = null,
   onPickImage,
   workspaceId,
   onPick,
@@ -60,7 +70,7 @@ export function EmojiPicker({
   onClose,
   isTrigger,
 }: EmojiPickerProps) {
-  const [tab, setTab] = useState<'emoji' | 'image'>('emoji')
+  const [tab, setTab] = useState<'emoji' | 'custom' | 'image'>('emoji')
   const [catalog, setCatalog] = useState<EmojiCatalog | null>(null)
   const [failed, setFailed] = useState(false)
   const [attempt, setAttempt] = useState(0)
@@ -179,6 +189,7 @@ export function EmojiPicker({
             {(
               [
                 ['emoji', '이모지'],
+                ['custom', '커스텀'],
                 ['image', '이미지'],
               ] as const
             ).map(([key, label]) => (
@@ -211,6 +222,8 @@ export function EmojiPicker({
       </div>
       {tab === 'image' && onPickImage !== undefined && workspaceId !== undefined ? (
         <ImagePanel workspaceId={workspaceId} onPickImage={onPickImage} />
+      ) : tab === 'custom' && onPickImage !== undefined && workspaceId !== undefined ? (
+        <CustomEmojiTab workspaceId={workspaceId} currentId={currentCustomId} onPick={onPickImage} />
       ) : (
         <>
           <div className="flex items-center gap-1">

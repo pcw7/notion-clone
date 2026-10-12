@@ -33,12 +33,12 @@ const MESSAGES: Record<IconOwner, Record<string, string>> = {
   page: {
     locked: '잠긴 페이지입니다 — 잠금을 풀어야 아이콘을 바꿀 수 있습니다.',
     forbidden: '이 페이지를 고칠 권한이 없습니다.',
-    invalid_icon: '아이콘은 이모지 한 글자 · 이 워크스페이스에 올린 이미지 · 이미지 주소여야 합니다.',
+    invalid_icon: '아이콘은 이모지 한 글자 · 이 워크스페이스에 올린 이미지 · 이미지 주소 · 이 워크스페이스의 커스텀 이모지(지운 것은 안 됩니다)여야 합니다.',
   },
   database: {
     locked: '잠긴 데이터베이스입니다 — 잠금을 풀어야 아이콘을 바꿀 수 있습니다.',
     forbidden: '이 데이터베이스의 구조를 고칠 권한이 없습니다.',
-    invalid_icon: '아이콘은 이모지 한 글자 · 이 워크스페이스에 올린 이미지 · 이미지 주소여야 합니다.',
+    invalid_icon: '아이콘은 이모지 한 글자 · 이 워크스페이스에 올린 이미지 · 이미지 주소 · 이 워크스페이스의 커스텀 이모지(지운 것은 안 됩니다)여야 합니다.',
   },
 }
 
@@ -177,6 +177,7 @@ export function PageIconControl({
       {open && icon !== null && (
         <EmojiPicker
           current={icon.type === 'emoji' ? icon.emoji : null}
+          currentCustomId={icon.type === 'custom_emoji' ? icon.custom_emoji.id : null}
           removable
           onPick={(emoji) => {
             close(true)
