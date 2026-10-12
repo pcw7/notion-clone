@@ -55,6 +55,7 @@ import { requirePageSession } from '@/lib/auth/page-session'
 import { feedClock } from '@/lib/database/row-feed'
 import { getDatabase } from '@/lib/database/database'
 import { databaseLockState } from '@/lib/permissions/lock'
+import { readForm } from '@/lib/database/form'
 import { getView, listViews } from '@/lib/database/view'
 import { filterColumnsOf, nestsSubItems, showsParentsOnly, subItemPairOf } from '@/lib/database/view-columns'
 import { queryRows } from '@/lib/database/query'
@@ -84,6 +85,7 @@ import { SharePanel } from '../../[pageId]/share-panel'
 import { PageIconControl } from '../../[pageId]/page-icon-control'
 import { PageIconView } from '../../page-icon-view'
 import { ViewTabs } from './view-tabs'
+import { FormEditor } from './form-editor'
 import { ViewToolbar, type BoardSettings } from './view-toolbar'
 import { SearchEmpty } from './view-search'
 import { DatabaseGallery } from './database-gallery'
@@ -150,9 +152,7 @@ export default async function DatabasePage({
   // 최상위 사이에서만 옮긴다(본문 참조가 없다 · move-page.ts).
   const moveTeamspaces = await listTeamspaceDestinations(ctx)
 
-  const listed = await listViews(ctx, databaseId)
-  // 폼 뷰(7a-1)는 행을 그리지 않는다 — 그 편집 화면(7a-3)이 서기 전까지 탭에 세우지 않는다
-  const views = listed.ok ? { ...listed, value: listed.value.filter((view) => view.type !== 'form') } : listed
+  const views = await listViews(ctx, databaseId)
   if (!views.ok || views.value.length === 0) notFound()
   // 붙인 소스의 원본을 못 보면 그 소스의 뷰는 열리지 않는다(2l-2 · `openView`). 기본 뷰는 그런 뷰를 건너뛴 첫 뷰다. 그런 뷰를 고른 주소 ·
   // 열 뷰가 하나도 없는 그릇은 "접근 권한 없음"을 그린다(2l-3 · 머리말) — 탭은 그대로 선다(뷰 이름은 그릇의 것이다).
@@ -236,6 +236,10 @@ export default async function DatabasePage({
   const isBoard = view.value.type === 'board'
   const isGallery = view.value.type === 'gallery'
   const isCalendar = view.value.type === 'calendar'
+  // 폼(7a-3) — 행을 그리지 않는다. 도구막대 · 표 자리에 편집 화면이 선다(정본 §3.6 끝 [보강] 폼 ⑧)
+  const isForm = view.value.type === 'form'
+  const form = isForm ? await readForm(ctx, view.value.id) : null
+  if (form !== null && !form.ok) notFound()
   // 캘린더의 보이는 달(2g-2) — 주소의 `m`(`YYYY-MM`). 없으면 이번 달(UTC — 화면의 "오늘" 단추가 보는 사람의 달로 옮긴다).
   const calendarMonth = isYm(m) ? m : new Date().toISOString().slice(0, 7)
   // 하위 항목이 켜진 표 · 목록은 최상위 행만 먼저 읽는다 — 자식은 토글을 펼 때 읽는다(2b-2 · 행 라우트와 같은 규칙).
@@ -244,7 +248,7 @@ export default async function DatabasePage({
   // 갤러리는 부모만(2f-1 · 행 라우트와 같은 규칙) — 펴지 않는다.
   const parentsOnly = showsParentsOnly(view.value.type) ? subItemPairOf(view.value.columns) : null
   const [tablePage, catalog, board] = await Promise.all([
-    isBoard || isCalendar
+    isBoard || isCalendar || isForm
       ? null
       : queryRows(ctx, view.value.dataSourceId, {
           // 이 사람이 실제로 보는 필터 · 정렬(2h-1 — 개인 것이 공유 것을 대체한다)
@@ -509,10 +513,14 @@ export default async function DatabasePage({
           currentId={current.id}
           canEdit={access.canEditStructure}
           // 뷰를 더할 소스 — 원본을 못 보는 붙인 소스는 고를 수 없다(서버가 거부한다 · 이름도 없다)
-          sources={sources.filter((source) => source.readable).map((source) => ({ id: source.id, name: source.name }))}
+          sources={sources.filter((source) => source.readable).map((source) => ({ id: source.id, name: source.name, owned: source.owned }))}
         />
       </div>
 
+      {form !== null && form.ok ? (
+        <FormEditor key={form.value.viewId} workspaceId={workspaceId} initial={form.value} />
+      ) : (
+      <>
       <div className="flex flex-wrap items-start gap-2">
         <div className="min-w-0 flex-1">
           <ViewToolbar
@@ -683,6 +691,8 @@ export default async function DatabasePage({
             renderedAt={renderedAt}
           />
         )
+      )}
+      </>
       )}
     </main>
   )
