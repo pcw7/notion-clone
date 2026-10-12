@@ -81,7 +81,7 @@ function PublicView({ read }: { read: PublicRead }): ReactNode {
           data-testid="public-icon-image"
           alt=""
           referrerPolicy="no-referrer"
-          src={view.icon.type === 'file' ? publicFileHref(view, view.target.pageId, 'icon') : view.icon.url}
+          src={view.icon.type === 'external' ? view.icon.url : publicFileHref(view, view.target.pageId, 'icon')}
         />
       )}
       <h1 className="pub-title" data-testid="public-title">

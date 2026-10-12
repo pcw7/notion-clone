@@ -7,7 +7,8 @@
  * 검색 색인을 함께 쓴다 — 데이터베이스는 이름이 두 곳(`block.properties.title` ·
  * `database.title_rich`)에 있고 `search_document` 에 행이 없다(`renameDatabase` 머리말).
  *
- * 몸체: `{ name?: string, icon?: { type: 'emoji', emoji } | null }` — 하나는 있어야 한다(페이지 라우트와 같은 모양). 둘 다 오면 아이콘을
+ * 몸체: `{ name?: string, icon?: 아이콘 | null }` — 하나는 있어야 한다(아이콘은 페이지 라우트와 같은 네 모양 — 이모지 · 올린 이미지 ·
+ * 이미지 주소 · 커스텀 이모지). 둘 다 오면 아이콘을
  * 먼저 쓰고 이름을 쓴다(각자 트랜잭션 — 화면은 둘을 함께 보내지 않는다). 아이콘의 검사는 명령(`setDatabaseIcon`)이 한다 — 라우트가
  * 먼저 거르지 않는다(페이지 라우트의 같은 검사는 증명하지 못한 방어로 남았다 · 8c-1 반사실 s11).
  */

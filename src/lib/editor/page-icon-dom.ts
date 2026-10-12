@@ -4,8 +4,9 @@
  * ⚠ 이 파일은 브라우저에서만 쓴다(`document`). 노드 뷰(하위 페이지 블록 · 멘션 칩 · 경로 블록)는 React 밖이라 같은 표시를 DOM 으로
  * 그린다:
  *   · 이모지면 `span[data-page-icon=이모지]`
- *   · 이미지면(8c-4) `img[data-page-icon=file:…|external:…]` — 올린 파일은 워크스페이스의 파일 경로(`workspaceId` 를 받는다),
- *     외부 주소는 그대로 · `referrerpolicy=no-referrer`. 불러오지 못하면 아래 규칙으로 바꾼다(깨진 그림을 그리지 않는다)
+ *   · 그림이면(8c-4 · 7c-2a) `img[data-page-icon=file:…|external:…|custom_emoji:…]` — 올린 파일 · 커스텀 이모지는 워크스페이스의
+ *     경로(`workspaceId` 를 받는다), 외부 주소는 그대로 · `referrerpolicy=no-referrer`. 불러오지 못하면(지운 이모지는 404) 아래 규칙으로
+ *     바꾼다(깨진 그림을 그리지 않는다)
  *   · 없고 `fallback` 이면(페이지로 가는 줄) 기본 문서 글리프 `svg[data-page-icon=""]` — 글자가 아니다(`PAGE_GLYPH`)
  *   · 없고 `fallback` 이 아니면(글자 속의 경로) null
  * 읽는 이에게는 숨긴다(`aria-hidden`) — 이름이 링크의 이름이다.

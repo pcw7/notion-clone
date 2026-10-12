@@ -17,6 +17,7 @@ import { randomUUID } from 'node:crypto'
 
 import type { SessionContext } from '../auth/session-context.ts'
 import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
+import { readFile } from '../file/file.ts'
 import { ALLOWED_IMAGE_MIME } from '../file/limits.ts'
 import { isUuid } from '../ids.ts'
 
@@ -203,4 +204,24 @@ export async function deleteCustomEmoji(ctx: SessionContext, id: string): Promis
     await tx.query(`UPDATE file SET ref_count = GREATEST(ref_count - 1, 0) WHERE id = $1 AND workspace_id = $2`, [row.file_id, ctx.workspaceId])
     return { ok: true, value: null } as const
   })
+}
+
+/**
+ * 이모지의 그림 — 아이콘(7c-2a)이 `<img>` 로 부른다. 워크스페이스의 누구나(목록과 같다). **살아 있는 것만** — 지운 이모지 · 없는 id ·
+ * 다른 워크스페이스의 것은 모두 null(404 · 구분하지 않는다) — 화면은 없을 때의 표시로 바꾼다(정본 [보강] 커스텀 이모지 ⑤).
+ */
+export async function readCustomEmojiImage(
+  ctx: SessionContext,
+  id: string,
+): Promise<{ readonly bytes: Uint8Array; readonly mime: string; readonly sizeBytes: number } | null> {
+  if (!isUuid(id)) return null
+  const row = await withReadTransaction((tx) =>
+    tx.queryMaybe<{ file_id: string }>(
+      `SELECT file_id FROM custom_emoji WHERE id = $1 AND workspace_id = $2 AND deleted_at IS NULL`,
+      [id, ctx.workspaceId],
+    ),
+  )
+  if (row === null) return null
+  const found = await readFile(ctx, row.file_id)
+  return found === null ? null : { bytes: found.bytes, mime: found.file.mime, sizeBytes: found.file.sizeBytes }
 }

@@ -104,7 +104,7 @@ export async function readPublicPage(token: string, pageId?: string, options: { 
         base: options.base ?? `/p/${token}`,
         target,
         title: readTitle(page.properties),
-        icon: isDatabase ? databaseIcon : pageIconOfFormat(page.format),
+        icon: await liveIconIn(tx, target.workspaceId, isDatabase ? databaseIcon : pageIconOfFormat(page.format)),
         doc,
         pages: new Map(titles.map((row) => [row.id, readTitle(row.properties)])),
         people: new Map(people.map((row) => [row.id, row.name])),
@@ -113,6 +113,20 @@ export async function readPublicPage(token: string, pageId?: string, options: { 
       },
     } as const
   })
+}
+
+/**
+ * 공개 화면에 세울 아이콘 — 지운 커스텀 이모지(7c-2a)는 없는 것으로 내린다. 앱은 그림이 못 오면 클라이언트 부품이 기본 글리프로
+ * 바꾸지만(`page-icon-image.tsx`) 공개 화면은 서버가 그린 `<img>` 뿐이라 깨진 그림이 선다 — 판정을 서버로 당긴다(정본 [보강] 커스텀
+ * 이모지 ⑤ · 공개 파일 경로도 살아 있는 것만 준다).
+ */
+async function liveIconIn(tx: Tx, workspaceId: string, icon: PageIcon | null): Promise<PageIcon | null> {
+  if (icon?.type !== 'custom_emoji') return icon
+  const live = await tx.queryMaybe<{ id: string }>(
+    `SELECT id FROM custom_emoji WHERE id = $1 AND workspace_id = $2 AND deleted_at IS NULL`,
+    [icon.custom_emoji.id, workspaceId],
+  )
+  return live === null ? null : icon
 }
 
 /**

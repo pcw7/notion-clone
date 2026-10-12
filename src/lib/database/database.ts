@@ -51,7 +51,7 @@ import { isLocked } from '../permissions/lock.ts'
 import { orderKeyBetween } from '../block/order-key.ts'
 import { nextSiblingKey, titleFromPlainText, plainTitleOf } from '../block/page.ts'
 import { pageIconJson, parsePageIconInput, readPageIcon, samePageIcon, type PageIcon } from '../block/page-icon.ts'
-import { isIconFile, moveIconFileReference } from '../file/icon-reference.ts'
+import { isUsableIcon, moveIconFileReference } from '../file/icon-reference.ts'
 import { insertOwnedDataSource, readDataSources, type DataSourceSummary } from './data-source.ts'
 
 export { DEFAULT_TITLE_PROPERTY_NAME } from './data-source.ts'
@@ -325,6 +325,7 @@ export async function renameDatabase(
  * `last_edited_*` · `version` 을 올린다(이름과 같다).
  *
  * 이미지 아이콘(8c-4)은 페이지와 같다 — 올린 파일은 이 워크스페이스의 이미지여야 하고(`invalid_icon`), 참조 수를 같은 트랜잭션에서 옮긴다.
+ * 커스텀 이모지(7c-2a)도 페이지와 같다 — 이 워크스페이스의 살아 있는 이모지여야 한다.
  */
 export async function setDatabaseIcon(
   ctx: SessionContext,
@@ -349,7 +350,7 @@ export async function setDatabaseIcon(
 
     const current = readPageIcon(row.icon)
     if (samePageIcon(current, icon)) return { ok: true, value: icon } as const
-    if (icon !== null && icon.type === 'file' && !(await isIconFile(tx, ctx, icon.file_id))) {
+    if (icon !== null && !(await isUsableIcon(tx, ctx, icon))) {
       return { ok: false, reason: 'invalid_icon' } as const
     }
     await tx.query(`UPDATE database SET icon = $2::jsonb, updated_at = now() WHERE id = $1`, [

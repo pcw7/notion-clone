@@ -15558,6 +15558,86 @@ async function main() {
       check('지우면 목록에서 빠진다', removed.status === 200 && !after.body?.emoji?.some((e) => e.id === made.body.emoji.id))
     }
 
+    if (sectionIf('커스텀 이모지 아이콘 (7c-2a · F-13-16)')) {
+      // 커스텀 이모지를 페이지 아이콘으로 — 라우트로 달면 머리 · 사이드바가 이모지의 그림 경로로 그린다(디코드) · 그림 경로의 응답 ·
+      // 지운 이모지는 새로 달 수 없고(400) 이미 달린 아이콘은 기본 글리프로 · 공개 화면은 세션 없이 그 그림을 · 지우면 공개 아이콘이 없다.
+      const stamp = Date.now().toString(36)
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const upload = async () => {
+        const form = new FormData()
+        form.append('file', new Blob([Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64')], { type: 'image/png' }), 'emoji.png')
+        return (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/files`, { method: 'POST', headers: { cookie: authed.cookie, origin: BASE }, body: form })).json()).file.id
+      }
+      const makeEmoji = async (name) => (await api('POST', '/emoji', { name, fileId: await upload() })).body?.emoji?.id ?? null
+      const iconOf = (id) => ({ type: 'custom_emoji', custom_emoji: { id } })
+      const pageOf = async (title) => (await api('POST', '/pages', { title })).body?.page?.id ?? null
+      const ICON = '[data-testid="page-icon"]'
+      const treeLink = (id) => `nav[aria-label="페이지 트리"] a[href="/w/${workspaceId}/${id}"]`
+      const keyIn = (sel) => `(document.querySelector(${JSON.stringify(sel)})?.querySelector('[data-page-icon]')?.getAttribute('data-page-icon') ?? null)`
+      const decodedIn = (sel) => `(() => { const i = document.querySelector(${JSON.stringify(sel)})?.querySelector('img[data-page-icon]')
+        return !!i && i.complete && i.naturalWidth > 0 })()`
+
+      // ① 단다 — 머리 · 사이드바가 이모지의 그림을 그린다
+      const live = await makeEmoji(`icon-${stamp}`)
+      const page = await pageOf(`이모지아이콘${stamp}`)
+      const set = await api('PATCH', `/pages/${page}`, { icon: iconOf(live?.toUpperCase()) })
+      check('★ 커스텀 이모지를 아이콘으로 단다 — 200 · 저장 모양은 id 만(소문자)',
+        set.status === 200 && JSON.stringify(set.body?.page?.icon) === JSON.stringify(iconOf(live)), JSON.stringify(set))
+      const key = `custom_emoji:${live}`
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+      check('★ 머리 · 사이드바가 이모지의 그림을 그린다 — 그림 경로 · 디코드',
+        await waitFor(`${keyIn(ICON)} === ${JSON.stringify(key)} && ${decodedIn(ICON)} && ${keyIn(treeLink(page))} === ${JSON.stringify(key)} && ${decodedIn(treeLink(page))}`, 15000),
+        JSON.stringify([await evaluate(keyIn(ICON)), await evaluate(`document.querySelector('${ICON} img')?.getAttribute('src') ?? null`), await evaluate(keyIn(treeLink(page)))]))
+      const image = await fetch(`${BASE}/api/workspaces/${workspaceId}/emoji/${live}/image`, { headers: { cookie: authed.cookie } })
+      check('그림 경로 — 이미지 · 짧은 개인 캐시(지울 수 있다) · nosniff',
+        image.status === 200 && image.headers.get('content-type') === 'image/png' && image.headers.get('cache-control') === 'private, max-age=300' && image.headers.get('x-content-type-options') === 'nosniff',
+        JSON.stringify([image.status, image.headers.get('content-type'), image.headers.get('cache-control')]))
+
+      // ② 지운 이모지 — 새로 달 수 없다 · 이미 달린 아이콘은 기본 글리프(한 번도 불러오지 않은 이모지 — 캐시가 끼지 않는다)
+      const gone = await makeEmoji(`gone-${stamp}`)
+      const other = await pageOf(`지운이모지아이콘${stamp}`)
+      await api('PATCH', `/pages/${other}`, { icon: iconOf(gone) })
+      await api('DELETE', `/emoji/${gone}`)
+      const refused = await api('PATCH', `/pages/${page}`, { icon: iconOf(gone) })
+      const goneImage = await fetch(`${BASE}/api/workspaces/${workspaceId}/emoji/${gone}/image`, { headers: { cookie: authed.cookie } })
+      check('★ 지운 이모지는 새로 달 수 없다(400 invalid_icon) · 그림 경로는 404',
+        refused.status === 400 && refused.body?.error === 'invalid_icon' && goneImage.status === 404, JSON.stringify([refused, goneImage.status]))
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${other}` })
+      check('★ 이미 달린 지운 이모지 아이콘은 기본 글리프로 — 사이드바 · 머리(깨진 그림이 없다)',
+        await waitFor(`${keyIn(treeLink(other))} === '' && !!document.querySelector('${ICON} svg[data-page-icon=""]')`, 15000),
+        JSON.stringify([await evaluate(keyIn(treeLink(other))), await evaluate(`document.querySelector('${ICON}')?.innerHTML?.slice(0, 160) ?? null`)]))
+
+      // ③ 공개 화면 — 세션 없이 그 그림 · 지우면 아이콘이 없다
+      const token = (await api('PUT', `/pages/${page}/publish`)).body?.token
+      try {
+        await send('Network.deleteCookies', { name: 'nc_session', domain: 'localhost', path: '/' })
+        await send('Page.navigate', { url: `${BASE}/p/${token}` })
+        check('★ 공개 화면 — 세션 없이 이모지의 그림이 아이콘으로(블록 id 로 여는 주소)',
+          await waitFor(`(() => { const i = document.querySelector('[data-testid="public-icon-image"]')
+            return !!i && i.getAttribute('src') === ${JSON.stringify(`/p/${token}/blocks/${page}/icon`)} && i.complete && i.naturalWidth === 1 })()`, 15000),
+          String(await evaluate(`document.querySelector('[data-testid="public-icon-image"]')?.outerHTML ?? '(없음)'`)))
+      } finally {
+        await send('Network.setCookie', { name: 'nc_session', value: session, domain: 'localhost', path: '/', httpOnly: true })
+      }
+      await api('DELETE', `/emoji/${live}`)
+      const closed = await fetch(`${BASE}/p/${token}/blocks/${page}/icon`)
+      try {
+        await send('Network.deleteCookies', { name: 'nc_session', domain: 'localhost', path: '/' })
+        await send('Page.navigate', { url: `${BASE}/p/${token}` })
+        check('★ 지우면 공개 아이콘 주소가 닫히고(404) 공개 화면에 아이콘이 없다',
+          closed.status === 404 && (await waitFor(`!!document.querySelector('[data-testid="public-title"]') && !document.querySelector('[data-testid="public-icon-image"]')`, 15000)),
+          JSON.stringify([closed.status, await evaluate(`document.querySelector('[data-testid="public-icon-image"]')?.outerHTML ?? null`)]))
+      } finally {
+        await send('Network.setCookie', { name: 'nc_session', value: session, domain: 'localhost', path: '/', httpOnly: true })
+      }
+      await api('DELETE', `/pages/${page}/publish`)
+    }
+
     if (sectionIf('폼 — 서버 라우트 (7a-1 · F-13-01)')) {
       // 폼 뷰의 라우트 — 만들기(첫 질문은 제목) · 질문 바꾸기 · 설정 · 공개(토큰) · 거부 코드 · 표 화면의 탭에 선다(7a-3 부터 — 그 탭은
       // 편집 화면이다).
