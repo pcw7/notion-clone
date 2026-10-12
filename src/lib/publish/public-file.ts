@@ -8,7 +8,7 @@
  *
  *   토큰 → 루트(`resolvePublicPageIn` — 게시 · 정책 · 만료 · 루트의 사슬)
  *   → 그 블록이 · 이미지 블록이면 그 블록이 든 페이지(가장 가까운 페이지 조상)가 · 아이콘이면 그 페이지 자신이 이 토큰으로 열린다
- *   → 그 블록이 **지금** 가리키는 파일 하나(이 워크스페이스의 것)
+ *   → 그 블록이 **지금** 가리키는 파일 하나(이 워크스페이스의 것) — 아이콘이 커스텀 이모지면(7c-2a) 그 이모지(살아 있는 것)의 파일
  *
  * 그래서 공개 주소를 알아도 다른 파일 id 를 찍어 읽을 수 없고, 이미지를 본문에서 지우거나 페이지를 닫으면 그 주소도 닫힌다.
  * 이유는 말하지 않는다 — 열 수 없으면 모두 null(404).
@@ -67,7 +67,17 @@ export async function readPublicBlockFile(token: string, blockId: string, kind: 
             ? readPageIcon((await tx.queryMaybe<{ icon: unknown }>(`SELECT icon FROM database WHERE id = $1`, [block.id]))?.icon ?? null)
             : null
       pageId = block.id
-      fileId = icon?.type === 'file' ? icon.file_id : null
+      fileId =
+        icon?.type === 'file'
+          ? icon.file_id
+          : icon?.type === 'custom_emoji'
+            ? ((
+                await tx.queryMaybe<{ file_id: string }>(
+                  `SELECT file_id FROM custom_emoji WHERE id = $1 AND workspace_id = $2 AND deleted_at IS NULL`,
+                  [icon.custom_emoji.id, root.workspaceId],
+                )
+              )?.file_id ?? null)
+            : null
     } else {
       const source = block.type === 'image' ? readImageSource(block.properties) : null
       pageId = await ownerPageOf(tx, block.ancestor_path)

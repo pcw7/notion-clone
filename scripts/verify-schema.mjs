@@ -2151,7 +2151,7 @@ try {
     ok('키캡 아이콘')
     await mustReject('JSON null 아이콘(없음은 SQL NULL 하나다)', setIcon, [dbId, 'null'])
     await mustReject('문자열 아이콘', setIcon, [dbId, JSON.stringify('📚')])
-    await mustReject('모르는 아이콘 종류', setIcon, [dbId, JSON.stringify({ type: 'custom_emoji', id: 'x' })])
+    await mustReject('모르는 아이콘 종류', setIcon, [dbId, JSON.stringify({ type: 'icon', icon: { name: 'x' } })])
     await mustReject('글자가 아닌 이모지', setIcon, [dbId, JSON.stringify({ type: 'emoji', emoji: 7 })])
     await mustReject('빈 이모지', setIcon, [dbId, JSON.stringify({ type: 'emoji', emoji: '' })])
     await mustReject('공백이 든 이모지', setIcon, [dbId, JSON.stringify({ type: 'emoji', emoji: '📚 ' })])
@@ -4392,6 +4392,63 @@ try {
     await client.query(`UPDATE custom_emoji SET deleted_at = now() WHERE id = $1`, [first])
     await client.query(put, [randomUUID(), wsId, 'party', fileId])
     ok('★ 지운 이모지의 이름은 다시 쓴다(부분 UNIQUE)')
+  }
+
+  console.log('\n[71] 커스텀 이모지 아이콘의 모양 (0097 / §3.4 [보강] 커스텀 이모지 ⑤ · 7c-2a조각)')
+  {
+    // 두 자리(페이지 행의 `format.page_icon` · `database.icon`)가 같은 판정 함수를 지난다 — 넷째 종류 `custom_emoji`({id}).
+    // 이모지가 살아 있는지는 명령이 본다(jsonb 안의 id 에 FK 를 걸 수 없다 · 지운 뒤에도 달린 아이콘은 남는다).
+    const pageId = randomUUID()
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key,
+                          ancestor_path, perm_scope_id, properties, format, created_at, last_edited_at)
+       VALUES ($1, $2, 'page', 'workspace', $2, $3, '{}', $1, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      [pageId, wsId, `emojiicon-${pageId}`],
+    )
+    const dbId = randomUUID()
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key,
+                          ancestor_path, perm_scope_id, properties, format, created_at, last_edited_at)
+       VALUES ($1, $2, 'database', 'workspace', $2, $3, '{}', $1, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      [dbId, wsId, `emojiicon-db-${dbId}`],
+    )
+    await client.query(`INSERT INTO database (id, created_at, updated_at) VALUES ($1, now(), now())`, [dbId])
+    const setPage = `UPDATE block SET format = $2::jsonb WHERE id = $1`
+    const setDb = `UPDATE database SET icon = $2::jsonb WHERE id = $1`
+    const icon = { type: 'custom_emoji', custom_emoji: { id: randomUUID() } }
+    await client.query(setPage, [pageId, JSON.stringify({ page_icon: icon })])
+    await client.query(setDb, [dbId, JSON.stringify(icon)])
+    ok('★ 페이지 · 데이터베이스에 커스텀 이모지 아이콘 — 정상 경로가 통과한다(없는 이모지 id 도 — 살아 있는지는 명령의 몫)')
+
+    // 오류(연산자 · 형)가 아니라 그 CHECK 의 거부(23514)여야 한다 — 함수가 터지면 쓰기는 막혀도 "모양이 틀렸다" 가 아니다
+    const rejects = async (label, sql, params, constraint) => {
+      await client.query('SAVEPOINT probe')
+      try {
+        await client.query(sql, params)
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        fail(`${label} — 거부되어야 하는데 통과했다`)
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        if (e.code === '23514' && e.constraint === constraint) ok(`${label} — ${constraint} 가 거부함`)
+        else fail(`${label} — ${constraint} 의 23514 가 아니라 ${e.constraint ?? '-'} ${e.code} (${e.message})`)
+      }
+    }
+    const id = icon.custom_emoji.id
+    const bad = [
+      ['안쪽에 이름(이름은 싣지 않는다 — 바뀐다)', { type: 'custom_emoji', custom_emoji: { id, name: 'party' } }],
+      ['안쪽에 주소(파생값이다)', { type: 'custom_emoji', custom_emoji: { id, url: 'https://example.com/a.png' } }],
+      ['바깥에 다른 키', { ...icon, emoji: '🎉' }],
+      ['안쪽이 글이다', { type: 'custom_emoji', custom_emoji: id }],
+      ['안쪽이 배열이다', { type: 'custom_emoji', custom_emoji: [id] }],
+      ['안쪽이 없다(바깥에 id)', { type: 'custom_emoji', id }],
+      ['id 가 uuid 가 아니다', { type: 'custom_emoji', custom_emoji: { id: 'party' } }],
+      ['id 가 대문자 uuid(명령은 소문자로 쓴다)', { type: 'custom_emoji', custom_emoji: { id: id.toUpperCase() } }],
+      ['id 가 글이 아니다', { type: 'custom_emoji', custom_emoji: { id: 7 } }],
+    ]
+    for (const [label, value] of bad) {
+      await rejects(`페이지 — ${label}`, setPage, [pageId, JSON.stringify({ page_icon: value })], 'block_page_icon_shape')
+      await rejects(`데이터베이스 — ${label}`, setDb, [dbId, JSON.stringify(value)], 'database_icon_shape')
+    }
   }
 
   await client.query('ROLLBACK')

@@ -21,10 +21,28 @@ import { iconFileId, type PageIcon } from '../block/page-icon.ts'
 import { ALLOWED_IMAGE_MIME } from './limits.ts'
 
 /**
+ * 이 아이콘을 이 워크스페이스에서 달 수 있는가 — 가리키는 것이 있는 종류만 DB 에 묻는다(이모지 글자 · 외부 주소는 받기에서 끝났다).
+ *   · 올린 파일(8c-4) — **이 워크스페이스의 이미지**(`isIconFile`)
+ *   · 커스텀 이모지(7c-2a) — **이 워크스페이스의 살아 있는** 이모지. 지운 것은 새로 달 수 없다(이미 달린 것은 그대로 둔다 — 정본
+ *     [보강] 커스텀 이모지 ⑤). 이모지의 파일 참조는 이모지가 쥐므로 여기서 세지 않는다(`iconFileId` 가 null)
+ */
+export async function isUsableIcon(tx: Tx, ctx: SessionContext, icon: PageIcon): Promise<boolean> {
+  if (icon.type === 'file') return isIconFile(tx, ctx, icon.file_id)
+  if (icon.type === 'custom_emoji') {
+    const row = await tx.queryMaybe<{ id: string }>(
+      `SELECT id FROM custom_emoji WHERE id = $1 AND workspace_id = $2 AND deleted_at IS NULL`,
+      [icon.custom_emoji.id, ctx.workspaceId],
+    )
+    return row !== null
+  }
+  return true
+}
+
+/**
  * 아이콘으로 쓸 수 있는 파일인가 — **이 워크스페이스의 이미지**여야 한다. 다른 워크스페이스의 파일 · 없는 id 는 쓸 수 없다(보이지도
  * 않는다 — 파일 경로가 워크스페이스로 한정된다). 지금 받는 형식은 전부 이미지지만 파일 표는 형식을 가리지 않으므로 함께 묻는다.
  */
-export async function isIconFile(tx: Tx, ctx: SessionContext, fileId: string): Promise<boolean> {
+async function isIconFile(tx: Tx, ctx: SessionContext, fileId: string): Promise<boolean> {
   const row = await tx.queryMaybe<{ id: string }>(
     `SELECT id FROM file WHERE id = $1 AND workspace_id = $2 AND mime = ANY($3::text[])`,
     [fileId, ctx.workspaceId, [...ALLOWED_IMAGE_MIME]],

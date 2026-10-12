@@ -41,7 +41,7 @@ import { recordActivity, recordCoalescedActivity } from '../notification/activit
 import { openPageBody } from './body-write.ts'
 import { appendPageRef, placePageRefAt } from './page-refs.ts'
 import { PAGE_ICON_KEY, pageIconJson, pageIconOfFormat, parsePageIconInput, samePageIcon, type PageIcon } from './page-icon.ts'
-import { isIconFile, moveIconFileReference } from '../file/icon-reference.ts'
+import { isUsableIcon, moveIconFileReference } from '../file/icon-reference.ts'
 import {
   normalizeRichText,
   toPlainText,
@@ -697,11 +697,14 @@ export async function renamePage(
  * (아이콘은 찾는 글자가 아니다).
  *
  * 이미지 아이콘(8c-4): 올린 파일이면 **이 워크스페이스의 이미지**여야 하고(아니면 `invalid_icon`), 그 파일의 참조 수를 같은 트랜잭션에서
- * 옮긴다(`icon-reference.ts` — 옛 파일은 하나 내리고 새 파일은 하나 올린다).
+ * 옮긴다(`icon-reference.ts` — 옛 파일은 하나 내리고 새 파일은 하나 올린다). 커스텀 이모지(7c-2a)는 이 워크스페이스의 살아 있는
+ * 이모지여야 한다(`invalid_icon`) — 파일 참조는 이모지가 쥐므로 옮기지 않는다.
  */
 export async function setPageIcon(ctx: SessionContext, pageId: BlockId, icon: PageIcon | null): Promise<PageIcon | null> {
   const parsed = parsePageIconInput(icon)
-  if (parsed === undefined) throw new PageError('invalid_icon', '아이콘은 이모지 한 글자 · 올린 이미지 · http(s) 이미지 주소여야 합니다.')
+  if (parsed === undefined) {
+    throw new PageError('invalid_icon', '아이콘은 이모지 한 글자 · 올린 이미지 · http(s) 이미지 주소 · 커스텀 이모지여야 합니다.')
+  }
 
   return withTransaction(async (tx) => {
     // 대상 행을 먼저 잠그고 권한 · 잠금을 묻는다 — 잠그는 명령(`setPageLock`)과 같은 행에 줄을 선다.
@@ -719,8 +722,11 @@ export async function setPageIcon(ctx: SessionContext, pageId: BlockId, icon: Pa
 
     const current = pageIconOfFormat(target.format)
     if (samePageIcon(current, parsed)) return parsed
-    if (parsed !== null && parsed.type === 'file' && !(await isIconFile(tx, ctx, parsed.file_id))) {
-      throw new PageError('invalid_icon', '이 워크스페이스에 올린 이미지가 아닙니다.')
+    if (parsed !== null && !(await isUsableIcon(tx, ctx, parsed))) {
+      throw new PageError(
+        'invalid_icon',
+        parsed.type === 'custom_emoji' ? '이 워크스페이스의 커스텀 이모지가 아니거나 지운 이모지입니다.' : '이 워크스페이스에 올린 이미지가 아닙니다.',
+      )
     }
     await tx.query(
       `UPDATE block

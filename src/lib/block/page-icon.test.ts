@@ -11,6 +11,8 @@
  *   ④ ★ 경로의 줄이 아이콘을 싣는다 — 페이지 · teamspace · 같은 경로의 판단이 아이콘을 본다
  *   ⑤ ★ 이미지 아이콘(8c-4) — 올린 파일(`file_id`) · 외부 주소(`url` — http · https · 공백 없음 · 2048자)를 읽고 받는다 · 같은가 ·
  *      보여줄 주소(올린 파일은 워크스페이스의 파일 경로)
+ *   ⑥ ★ 커스텀 이모지 아이콘(7c-2a) — `{type:'custom_emoji', custom_emoji:{id}}` 를 읽고 받는다(id 만 · 소문자) · 가리키는 글자 ·
+ *      보여줄 주소(이모지의 그림 경로) · 이름 · 저장 모양 · 파일 참조를 세지 않는다
  */
 
 import { test, describe } from 'node:test'
@@ -20,7 +22,10 @@ import * as Y from 'yjs'
 import {
   MAX_ICON_URL_LENGTH,
   PAGE_ICON_KEY,
+  iconFileId,
+  pageIconJson,
   pageIconKey,
+  pageIconLabel,
   pageIconOfFormat,
   pageIconSrc,
   parsePageIconInput,
@@ -200,5 +205,38 @@ describe('⑤ 이미지 아이콘', () => {
     assert.equal(pageIconSrc(file, 'ws-1'), `/api/workspaces/ws-1/files/${FILE}/content`)
     assert.equal(pageIconSrc(file, null), null, '워크스페이스를 모르면 주소가 없다')
     assert.equal(pageIconSrc(link, null), 'https://example.com/a.png')
+  })
+})
+
+describe('⑥ 커스텀 이모지 아이콘', () => {
+  const EMOJI = '0a1b2c3d-0000-4000-8000-00000000e0e0'
+  const icon = { type: 'custom_emoji', custom_emoji: { id: EMOJI } } as const
+
+  test('★ 읽기 · 받기 — id 만 남기고 소문자로 · 앞뒤 공백은 벗긴다(받기) · 모양이 아니면 null · undefined', () => {
+    assert.deepEqual(readPageIcon({ type: 'custom_emoji', custom_emoji: { id: EMOJI.toUpperCase(), name: 'party', url: 'https://x.y' } }), icon)
+    assert.deepEqual(parsePageIconInput({ type: 'custom_emoji', custom_emoji: { id: ` ${EMOJI.toUpperCase()} `, name: 'party' }, extra: 1 }), icon)
+    for (const raw of [
+      { type: 'custom_emoji' },
+      { type: 'custom_emoji', custom_emoji: EMOJI },
+      { type: 'custom_emoji', custom_emoji: [EMOJI] },
+      { type: 'custom_emoji', custom_emoji: { id: 'party' } },
+      { type: 'custom_emoji', custom_emoji: { name: 'party' } },
+      // 바깥에 id 를 둔 모양은 받지 않는다 — 노션 API 의 중첩 모양 하나
+      { type: 'custom_emoji', id: EMOJI },
+    ]) {
+      assert.equal(readPageIcon(raw), null, JSON.stringify(raw))
+      assert.equal(parsePageIconInput(raw), undefined, JSON.stringify(raw))
+    }
+  })
+
+  test('★ 같은가 · 가리키는 글자 · 보여줄 주소 · 이름 · 저장 모양 · 파일 참조', () => {
+    assert.ok(samePageIcon(icon, { type: 'custom_emoji', custom_emoji: { id: EMOJI } }))
+    assert.ok(!samePageIcon(icon, { type: 'file', file_id: EMOJI }), '같은 id 의 파일 아이콘과 다르다')
+    assert.equal(pageIconKey(icon), `custom_emoji:${EMOJI}`)
+    assert.equal(pageIconSrc(icon, 'ws-1'), `/api/workspaces/ws-1/emoji/${EMOJI}/image`)
+    assert.equal(pageIconSrc(icon, null), null, '워크스페이스를 모르면 주소가 없다')
+    assert.equal(pageIconLabel(icon), '커스텀 이모지')
+    assert.deepEqual(pageIconJson(icon), { type: 'custom_emoji', custom_emoji: { id: EMOJI } })
+    assert.equal(iconFileId(icon), null, '그 파일은 이모지가 쥔다 — 아이콘이 따로 세지 않는다')
   })
 })
