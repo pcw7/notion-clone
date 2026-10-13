@@ -9,6 +9,8 @@
  *      값이 틀린 제출은 토큰을 쓰지 않는다 · 레이트리밋(제출자 × 폼 10건)
  *   ③ 값 — 필수 · 선택은 그 속성의 옵션 · 숫자 · 날짜 · 길이 · 필수 체크박스 — 질문마다 까닭
  *   ④ ★ 열 수 없으면 not_found — 닫힘 · 정책 · 데이터베이스 휴지통 · 폼을 지움 · 토큰 모양
+ *   ⑥ ★ 응답 상한 · 마감 시각(7b-2 · 정본 ⑩) — 상한에 닿으면 form_closed(공개 읽기가 까닭을 싣는다 · 토큰 검사 전) · 휴지통의 응답은 세지
+ *      않는다 · 동시 제출이 상한을 넘지 않는다 · 마감 시각이 지나면 닫히고 미루면 다시 받는다
  *   ⑤ ★ 워크스페이스 멤버만의 폼(7b-1 · 정본 ⑨) — 응답자를 정한다(로그인 없음 · 게스트 · 다른 워크스페이스 · 멤버) · 멤버만 내고 만든 사람 ·
  *      활동의 행위자가 그 사람 · 정책이 웹 공개를 막아도 열린다 · 웹 공개 폼은 세션을 실어 내도 익명
  */
@@ -25,6 +27,7 @@ import { createFormView, setFormQuestions, updateFormSettings } from './form.ts'
 import { issueSubmissionToken, readPublicForm, resolveFormRespondent, submitFormResponse, type SubmitInput } from './form-submit.ts'
 import { addProperty, addSelectOption, getSchema } from './property.ts'
 import { deleteView } from './view.ts'
+import { trashPage } from '../block/trash.ts'
 
 process.env.AUTH_SECRET ??= 'test-secret-only-for-unit-tests'
 
@@ -305,5 +308,45 @@ describe('⑤ ★ 워크스페이스 멤버만의 폼(7b-1)', () => {
     unwrap(await updateFormSettings(fx.boss.ctx, fx.form.viewId, { access: 'workspace' }))
     unwrap(await updateFormSettings(fx.boss.ctx, fx.form.viewId, { access: 'closed' }))
     assert.deepEqual(await submit(fx, { sessionToken: mate.token }), { ok: false, reason: 'not_found' })
+  })
+})
+
+// ── ⑥ 응답 상한 · 마감 시각 ──────────────────────────────────────────
+
+describe('⑥ ★ 응답 상한 · 마감 시각(7b-2)', () => {
+  test('상한에 닿으면 form_closed — 공개 읽기가 까닭을 싣는다 · 토큰 검사 전 · 휴지통의 응답은 세지 않는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const fx = await publicForm()
+    unwrap(await updateFormSettings(fx.boss.ctx, fx.form.viewId, { maxResponses: 1 }))
+    const first = await submit(fx)
+    assert.ok(first.ok, JSON.stringify(first))
+    assert.equal((await readPublicForm(fx.token))?.closedBecause, 'limit')
+    assert.deepEqual(await submit(fx), { ok: false, reason: 'form_closed' })
+    assert.deepEqual(await submit(fx, { submission: 'not-a-token' }), { ok: false, reason: 'form_closed' }, '닫힌 폼은 토큰 검사 전에 말한다')
+
+    await trashPage(fx.boss.ctx, first.value.pageId! as never)
+    assert.equal((await readPublicForm(fx.token))?.closedBecause, null, '지운 응답은 자리를 돌려준다')
+    assert.ok((await submit(fx)).ok)
+  })
+
+  test('동시 제출이 상한을 넘지 않는다 — 폼 행을 잠그고 다시 센다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const fx = await publicForm()
+    unwrap(await updateFormSettings(fx.boss.ctx, fx.form.viewId, { maxResponses: 2 }))
+    const results = await Promise.all([submit(fx), submit(fx), submit(fx), submit(fx)])
+    assert.equal(results.filter((r) => r.ok).length, 2, JSON.stringify(results))
+    assert.ok(results.filter((r) => !r.ok).every((r) => !r.ok && r.reason === 'form_closed'))
+    assert.equal((await rowsOf(fx.ds)).length, 2)
+  })
+
+  test('마감 시각이 지나면 닫히고 미루면 다시 받는다 — access 는 그대로다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const fx = await publicForm()
+    const past = new Date(Date.now() - 60_000).toISOString()
+    const closed = unwrap(await updateFormSettings(fx.boss.ctx, fx.form.viewId, { closesAt: past }))
+    assert.deepEqual([closed.settings.access, closed.closedBecause], ['public', 'time'], '닫힘은 판정이다 — 공유는 그대로')
+    assert.deepEqual(await submit(fx), { ok: false, reason: 'form_closed' })
+    unwrap(await updateFormSettings(fx.boss.ctx, fx.form.viewId, { closesAt: new Date(Date.now() + 3_600_000).toISOString() }))
+    assert.ok((await submit(fx)).ok, '미루면 다시 받는다')
   })
 })

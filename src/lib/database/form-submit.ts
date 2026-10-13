@@ -35,7 +35,8 @@ import { withReadTransaction, withTransaction, type Tx } from '../db/tx.ts'
 import type { WorkspaceId } from '../ids.ts'
 import { claimOnce, consume, type RateLimitRule } from '../rate-limit.ts'
 import { readSecurityPolicyIn } from '../workspace/security-policy.ts'
-import { FORM_QUESTION_TYPES, type FormQuestionType } from './form.ts'
+import { FORM_QUESTION_TYPES, countFormResponsesIn, type FormQuestionType } from './form.ts'
+import { formClosedReason, type FormClosedReason } from './form-limits.ts'
 import { readOptionsOf } from './options.ts'
 import type { CellValue } from './property-types.ts'
 import { createAnonymousRowIn, createRespondentRowIn } from './row.ts'
@@ -78,6 +79,8 @@ export type PublicForm = {
   readonly confirmationTitle: string
   readonly confirmationBody: string | null
   readonly questions: readonly PublicFormQuestion[]
+  /** 닫혔다면 그 까닭(상한 · 마감 시각 — 7b-2 · 정본 ⑩). 닫힌 폼도 읽힌다 — 화면이 "마감했습니다" 라고 말한다. */
+  readonly closedBecause: FormClosedReason | null
 }
 
 export const DEFAULT_SUBMIT_LABEL = '제출'
@@ -104,9 +107,11 @@ async function readPublicFormIn(tx: Tx, token: string): Promise<PublicForm | nul
     confirmation_title: string | null
     confirmation_body: string | null
     database_title: Record<string, unknown> | null
+    max_responses: number | null
+    closes_at: Date | null
   }>(
     `SELECT f.view_id, f.access, b.workspace_id, v.data_source_id, f.title, f.description, f.submit_label, f.confirmation_title, f.confirmation_body,
-            b.properties AS database_title
+            b.properties AS database_title, f.max_responses, f.closes_at
        FROM form_view f
        JOIN view v ON v.id = f.view_id AND v.type = 'form'
        JOIN block b ON b.id = v.database_id AND b.lifecycle = 'live'
@@ -149,6 +154,10 @@ async function readPublicFormIn(tx: Tx, token: string): Promise<PublicForm | nul
     submitLabel: row.submit_label ?? DEFAULT_SUBMIT_LABEL,
     confirmationTitle: row.confirmation_title ?? DEFAULT_CONFIRMATION_TITLE,
     confirmationBody: row.confirmation_body,
+    closedBecause: formClosedReason(
+      { maxResponses: row.max_responses, closesAt: row.closes_at === null ? null : row.closes_at.toISOString() },
+      row.max_responses === null ? 0 : await countFormResponsesIn(tx, row.view_id),
+    ),
     questions: questions.map((q) => ({
       propertyId: q.property_id,
       label: q.label ?? q.name,
@@ -248,6 +257,8 @@ export type SubmitFailure =
   | 'rate_limited'
   /** 값이 틀렸다 — `issues` 가 질문마다 까닭을 말한다(`path` = 속성 id). */
   | 'invalid_value'
+  /** 응답을 마감했다 — 상한에 닿았거나 마감 시각이 지났다(7b-2 · 정본 ⑩). */
+  | 'form_closed'
 
 export type SubmitResult =
   | { readonly ok: true; readonly value: { readonly pageId: string | null } }
@@ -272,6 +283,8 @@ export function submitFailureStatus(reason: SubmitFailure): number {
   switch (reason) {
     case 'not_found':
       return 404
+    case 'form_closed':
+      return 410
     case 'rate_limited':
       return 429
     case 'bad_origin':
@@ -296,6 +309,8 @@ export async function submitFormResponse(input: SubmitInput, now: number = Date.
   const respondent = await resolveFormRespondent(form, input.sessionToken ?? null)
   if (respondent.kind === 'login' || respondent.kind === 'denied') return { ok: false, reason: 'not_found' }
   const member = respondent.kind === 'member' ? respondent.context : null
+  // 마감 — 열 수 있는 폼에만 말한다(토큰 · 값 검사 전에 · 정본 ⑩)
+  if (form.closedBecause !== null) return { ok: false, reason: 'form_closed' }
 
   const token = checkSubmissionToken(form.viewId, input.submission, now)
   if (typeof token === 'string') return { ok: false, reason: token }
@@ -316,11 +331,18 @@ export async function submitFormResponse(input: SubmitInput, now: number = Date.
 
   return withTransaction(async (tx): Promise<SubmitResult> => {
     // 토큰을 읽은 뒤 닫혔을 수 있다 — 같은 트랜잭션에서 다시 본다(닫기와 줄을 세운다)
-    const still = await tx.queryMaybe<{ one: number }>(
-      `SELECT 1 AS one FROM form_view WHERE view_id = $1 AND access = $3 AND token = $2 FOR SHARE`,
+    // 폼 행을 잠근다 — 동시 제출이 상한을 넘지 않게 그 사이 세기를 줄 세운다(7b-2 · 정본 ⑩)
+    const still = await tx.queryMaybe<{ max_responses: number | null; closes_at: Date | null }>(
+      `SELECT max_responses, closes_at FROM form_view WHERE view_id = $1 AND access = $3 AND token = $2 FOR UPDATE`,
       [form.viewId, input.token, form.access],
     )
     if (still === null) return { ok: false, reason: 'not_found' }
+    const closed = formClosedReason(
+      { maxResponses: still.max_responses, closesAt: still.closes_at === null ? null : still.closes_at.toISOString() },
+      still.max_responses === null ? 0 : await countFormResponsesIn(tx, form.viewId),
+      now,
+    )
+    if (closed !== null) return { ok: false, reason: 'form_closed' }
     const row =
       member === null
         ? await createAnonymousRowIn(tx, form.workspaceId, form.dataSourceId, parsed.cells)

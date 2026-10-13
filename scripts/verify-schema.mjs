@@ -4519,6 +4519,42 @@ try {
     ok('닫힌 폼은 토큰이 없어도 된다')
   }
 
+  console.log('\n[74] 폼의 응답 상한 (0100 / §3.6 끝 [보강] 폼 ⑩ · 7b-2조각)')
+  {
+    // 상한은 1~100,000 · 마감 시각은 시각이면 무엇이든(지난 시각도 — 닫힘은 판정이다).
+    const dbId = randomUUID()
+    const dsId = randomUUID()
+    const viewId = randomUUID()
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key,
+                          ancestor_path, perm_scope_id, properties, format, created_at, last_edited_at)
+       VALUES ($1, $2, 'database', 'workspace', $2, $3, '{}', $1, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      [dbId, wsId, `z${randomUUID().replace(/-/g, '')}`],
+    )
+    await client.query(`INSERT INTO database (id, created_at, updated_at) VALUES ($1, now(), now())`, [dbId])
+    await client.query(`INSERT INTO data_source (id, owner_database_id, name, created_at, updated_at) VALUES ($1, $2, '폼', now(), now())`, [dsId, dbId])
+    await client.query(`INSERT INTO database_data_source (database_id, data_source_id, order_idx) VALUES ($1, $2, 'a0')`, [dbId, dsId])
+    await client.query(
+      `INSERT INTO view (id, owner_kind, database_id, data_source_id, name, type, order_idx, configuration, created_at, updated_at)
+       VALUES ($1, 'database_view', $2, $3, '폼', 'form', 'a0', '{}'::jsonb, now(), now())`,
+      [viewId, dbId, dsId],
+    )
+    await client.query(`INSERT INTO form_view (view_id, max_responses, closes_at) VALUES ($1, 100000, now() - interval '1 day')`, [viewId])
+    ok('★ 상한 100,000 · 지난 마감 시각 — 통과한다')
+    for (const [label, value] of [['0', 0], ['100,001', 100001], ['음수', -1]]) {
+      await client.query('SAVEPOINT probe')
+      try {
+        await client.query(`UPDATE form_view SET max_responses = $2 WHERE view_id = $1`, [viewId, value])
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        fail(`상한 ${label} — 거부되어야 하는데 통과했다`)
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        if (e.code === '23514' && e.constraint === 'ck_form_view_max_responses') ok(`상한 ${label} — ck_form_view_max_responses 가 거부함`)
+        else fail(`상한 ${label} — ck_form_view_max_responses 의 23514 가 아니라 ${e.constraint ?? '-'} ${e.code} (${e.message})`)
+      }
+    }
+  }
+
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
 } catch (e) {

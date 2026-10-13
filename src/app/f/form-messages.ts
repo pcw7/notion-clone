@@ -14,6 +14,7 @@ const FAILURE: Readonly<Record<string, string>> = {
   rate_limited: '제출이 너무 잦습니다. 잠시 뒤에 다시 시도해 주세요.',
   not_found: '이 폼은 더 이상 응답을 받지 않습니다.',
   bad_origin: '이 화면에서 제출해 주세요.',
+  form_closed: '이 폼은 응답을 마감했습니다.',
 }
 
 export function formFailureMessage(reason: unknown): string {
@@ -34,3 +35,6 @@ export function respondentNote(name: string): string {
 
 /** 워크스페이스 멤버만의 폼에 로그인하지 않고 왔다 — 폼의 제목도 싣지 않는다(워크스페이스 안의 이름이다 · 정본 ⑨). */
 export const WORKSPACE_FORM_LOGIN = '이 폼은 워크스페이스 멤버만 응답할 수 있습니다. 로그인한 뒤 다시 열어 주세요.'
+
+/** 닫힌 폼(7b-2 — 응답 상한 · 마감 시각)의 화면 — 404 가 아니라 마감했다고 말한다(정본 ⑩). */
+export const FORM_CLOSED = '이 폼은 응답을 마감했습니다.'
