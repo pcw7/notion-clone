@@ -16,12 +16,18 @@
  *   ⑦ ★ 한 사람당 한 번(7b-3 · 정본 ⑪) — 둘째는 already_submitted(토큰 검사 전) · 켜기 전의 응답도 센다 · 다른 멤버는 낸다 · 그 사람의
  *      살아 있는 응답이 하나라도 있으면 막고 모두 지우면 다시 낸다 · 끄면 다시 받는다 · 같은 사람의 동시 제출은 하나만 · 웹 공개 폼은
  *      켜 두어도 막지 않는다(같은 지문 · 같은 세션도) — 워크스페이스로 바꾸면 그때부터(공개 때의 익명 응답은 그 사람의 것이 아니다)
+ *   ⑧ ★ 제출 뒤 응답자 권한(7b-4 · 정본 ⑫) — 데이터베이스를 못 보는 멤버가 자기 응답 하나를 그 레벨로 연다(다른 응답 · 표는 아니다) ·
+ *      ACL 행 하나(준 사람 없음) · 결과가 그 행의 주소를 싣는다 · 레벨대로(댓글은 고치지 못한다 · 편집은 고친다) · 바꿔도 이미 준 것은
+ *      그대로 · 없음이면 주지 않는다 · 웹 공개 응답은 받지 않는다(멤버의 세션을 실어도)
  */
 
 import { test, describe, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 
 import { query } from '../db/pool.ts'
+import { withReadTransaction } from '../db/tx.ts'
+import { effectiveCaps } from '../permissions/effective.ts'
+import { can, type Capability } from '../permissions/levels.ts'
 import { updateSetting } from '../settings/settings.ts'
 import { createBareWorkspace, createUser, joinAs, probeDatabase } from '../testing/db-fixtures.ts'
 import { addDataSource, trashDataSource } from './data-source.ts'
@@ -185,7 +191,7 @@ describe('② ★ 방어', () => {
     const now = Date.now()
     assert.deepEqual(await submit(fx, { origin: 'https://evil.example' }), { ok: false, reason: 'bad_origin' })
     assert.deepEqual(await submit(fx, { origin: 'http://localhost:3000' }).then((r) => r.ok), true, '같은 출처는 받는다')
-    assert.deepEqual(await submit(fx, { trap: 'http://spam.example' }), { ok: true, value: { pageId: null } }, '허니팟 — 받은 척')
+    assert.deepEqual(await submit(fx, { trap: 'http://spam.example' }), { ok: true, value: { pageId: null, responsePath: null } }, '허니팟 — 받은 척')
     assert.equal((await rowsOf(fx.ds)).length, 1, '허니팟은 아무것도 남기지 않는다')
 
     assert.deepEqual(await submit(fx, { submission: 'garbage' }), { ok: false, reason: 'invalid_token' })
@@ -418,5 +424,64 @@ describe('⑦ ★ 한 사람당 한 번(7b-3)', () => {
     unwrap(await updateFormSettings(fx.boss.ctx, fx.form.viewId, { access: 'workspace' }))
     assert.ok((await submit(fx, { sessionToken: mate.token })).ok, '공개 때의 익명 응답은 세지 않는다')
     assert.deepEqual(await submit(fx, { sessionToken: mate.token }), { ok: false, reason: 'already_submitted' })
+  })
+})
+
+// ── ⑧ 제출 뒤 응답자 권한 ──────────────────────────────────────────
+
+/** 그 사람이 그 노드에서 할 수 있는 것 — 물을 것만. */
+const capsOf = async (who: { ctx: Parameters<typeof effectiveCaps>[1] }, nodeId: string, asked: readonly Capability[]) => {
+  const caps = await withReadTransaction((tx) => effectiveCaps(tx, who.ctx, nodeId))
+  return asked.filter((c) => can(caps, c))
+}
+
+const grantsOn = (pageId: string) =>
+  query<{ principal_id: string; level: string; granted_by: string | null }>(
+    `SELECT principal_id, level, granted_by FROM acl_entry WHERE node_kind = 'block' AND node_id = $1 ORDER BY principal_id`,
+    [pageId],
+  )
+
+describe('⑧ ★ 제출 뒤 응답자 권한(7b-4)', () => {
+  test('데이터베이스를 못 보는 멤버가 자기 응답 하나를 그 레벨로 연다 — ACL 행 하나(준 사람 없음) · 결과가 주소를 싣는다 · 다른 응답 · 표는 아니다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const fx = await publicForm()
+    unwrap(await updateFormSettings(fx.boss.ctx, fx.form.viewId, { access: 'workspace', respondentAccess: 'comment' }))
+    const mate = await joinAs(fx.ws, await createUser('응답을 받는 멤버'), 'member')
+    const other = await joinAs(fx.ws, await createUser('옆자리 멤버'), 'member')
+    assert.deepEqual(await capsOf(mate, fx.db.id, ['view']), [], '전제 — 개인 표라 못 본다')
+
+    const mine = await submit(fx, { sessionToken: mate.token })
+    assert.ok(mine.ok, JSON.stringify(mine))
+    const pageId = mine.value.pageId!
+    assert.equal(mine.value.responsePath, `/w/${fx.ws}/${pageId}`, '확인 화면의 "내 응답 보기"')
+    assert.deepEqual(await grantsOn(pageId), [{ principal_id: mate.userId, level: 'comment', granted_by: null }], '폼의 칸이 준다 — 사람이 아니다')
+    assert.deepEqual(await capsOf(mate, pageId, ['view', 'comment', 'edit_content']), ['view', 'comment'], '댓글 — 고치지는 못한다')
+
+    const theirs = await submit(fx, { sessionToken: other.token })
+    assert.ok(theirs.ok)
+    assert.deepEqual(await capsOf(mate, theirs.value.pageId!, ['view']), [], '다른 응답은 열리지 않는다')
+    assert.deepEqual(await capsOf(mate, fx.db.id, ['view']), [], '표도 열리지 않는다')
+    assert.deepEqual(await capsOf(fx.boss, pageId, ['view', 'edit_content']), ['view', 'edit_content'], '표의 주인은 그대로 — 상속은 이어진다')
+  })
+
+  test('편집이면 고친다 · 바꿔도 이미 준 것은 그대로 · 없음이면 주지 않는다 · 웹 공개 응답은 받지 않는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const fx = await publicForm()
+    unwrap(await updateFormSettings(fx.boss.ctx, fx.form.viewId, { access: 'workspace', respondentAccess: 'edit' }))
+    const mate = await joinAs(fx.ws, await createUser('고치는 멤버'), 'member')
+    const first = await submit(fx, { sessionToken: mate.token })
+    assert.ok(first.ok)
+    assert.deepEqual(await capsOf(mate, first.value.pageId!, ['view', 'edit_content']), ['view', 'edit_content'])
+
+    unwrap(await updateFormSettings(fx.boss.ctx, fx.form.viewId, { respondentAccess: null }))
+    assert.deepEqual(await capsOf(mate, first.value.pageId!, ['edit_content']), ['edit_content'], '바꿔도 이미 준 것은 그대로')
+    const second = await submit(fx, { sessionToken: mate.token })
+    assert.ok(second.ok)
+    assert.deepEqual([second.value.responsePath, await grantsOn(second.value.pageId!)], [null, []], '없음이면 주지 않는다')
+
+    unwrap(await updateFormSettings(fx.boss.ctx, fx.form.viewId, { access: 'public', respondentAccess: 'view' }))
+    const anonymous = await submit(fx, { sessionToken: mate.token })
+    assert.ok(anonymous.ok)
+    assert.deepEqual([anonymous.value.responsePath, await grantsOn(anonymous.value.pageId!)], [null, []], '웹 공개 응답은 익명이라 줄 사람이 없다')
   })
 })

@@ -306,7 +306,7 @@ async function writeGrant(
   node: NodeRow,
   principal: PrincipalRef,
   level: Level,
-  grantedBy: string,
+  grantedBy: string | null,
 ): Promise<void> {
   const had = await hasEntries(tx, node.id)
   const p = principalColumns(principal)
@@ -357,6 +357,33 @@ export async function grantFromInviteIn(
   userId: string,
   level: Level,
   grantedBy: string,
+): Promise<InviteGrantOutcome> {
+  return grantWithoutSessionIn(tx, workspaceId, pageId, userId, level, grantedBy)
+}
+
+/**
+ * 폼 응답자의 부여(7b-4 · 정본 §3.6 끝 [보강] 폼 ⑫) — 워크스페이스 멤버만의 폼이 응답을 넣는 트랜잭션에서 그 응답 행에. **세션이 아니라
+ * 폼이 준다** — 응답자는 세션이 있지만 이 행의 공유를 바꿀 수 없다. 자격은 그 폼의 칸(`respondent_access` — 데이터베이스의
+ * `manage_perm` 이 정했다)이고, 그래서 `granted_by` 는 NULL 이다(사람이 준 것이 아니다). 대기 초대의 수락과 같은 규칙을 지난다.
+ */
+export async function grantToFormRespondentIn(
+  tx: Tx,
+  workspaceId: string,
+  pageId: string,
+  userId: string,
+  level: Level,
+): Promise<InviteGrantOutcome> {
+  return grantWithoutSessionIn(tx, workspaceId, pageId, userId, level, null)
+}
+
+/** 세션 없는 부여의 몸 — 대기 초대의 수락 · 폼 응답자. 게이트는 부르는 쪽이 지났다(초대한 사람 · 폼의 칸). */
+async function grantWithoutSessionIn(
+  tx: Tx,
+  workspaceId: string,
+  pageId: string,
+  userId: string,
+  level: Level,
+  grantedBy: string | null,
 ): Promise<InviteGrantOutcome> {
   const node = await tx.queryMaybe<NodeRow>(
     `SELECT id, type, ancestor_path, perm_scope_id, parent_type, parent_id

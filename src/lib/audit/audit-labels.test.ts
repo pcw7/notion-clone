@@ -41,6 +41,13 @@ test('세부 한 줄 — 종류마다', () => {
   )
   assert.equal(auditDetail(row('page.permission_changed', { change: 'revoke', principal: { type: 'workspace_everyone', id: null } })), '거두기 — 모든 멤버')
   assert.equal(auditDetail(row('page.publish_changed', { change: 'settings', robots: 'index', rotated: true })), '검색 엔진 노출 켬 · 주소 바꿈')
+  assert.deepEqual(
+    ['form_open', 'form_open_workspace', 'form_close'].map((change) => auditDetail(row('page.publish_changed', { change, viewId: 'v' }))),
+    ['폼 웹 공개', '폼 워크스페이스 멤버만', '폼 닫기'],
+    '폼의 공유 사건(7a-1 · 7b-1) — 빈 줄이 아니다',
+  )
+  assert.equal(auditDetail(row('page.publish_changed', { change: 'form_respondent_access', level: 'comment' })), '폼 응답자 권한 — 댓글')
+  assert.equal(auditDetail(row('page.publish_changed', { change: 'form_respondent_access', level: null })), '폼 응답자 권한 — 없음')
   assert.equal(auditDetail(row('page.permanently_deleted', { descendants: 3 })), '하위 페이지 3개와 함께')
   assert.equal(auditDetail(row('account.security_changed', { change: 'constructor' })), 'constructor', '원형의 이름을 꺼내지 않는다')
 })

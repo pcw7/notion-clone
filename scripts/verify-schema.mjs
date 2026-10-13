@@ -4590,6 +4590,47 @@ try {
     }
   }
 
+  console.log('\n[76] 폼의 응답자 권한 (0102 / §3.6 끝 [보강] 폼 ⑫ · 7b-4조각)')
+  {
+    // 페이지 레벨 가운데 전체 권한을 뺀 셋 · 비면 주지 않는다(none 레벨은 없다 · 데이터베이스 전용 레벨은 행이 받지 않는다).
+    const dbId = randomUUID()
+    const dsId = randomUUID()
+    const viewId = randomUUID()
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key,
+                          ancestor_path, perm_scope_id, properties, format, created_at, last_edited_at)
+       VALUES ($1, $2, 'database', 'workspace', $2, $3, '{}', $1, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      [dbId, wsId, `z${randomUUID().replace(/-/g, '')}`],
+    )
+    await client.query(`INSERT INTO database (id, created_at, updated_at) VALUES ($1, now(), now())`, [dbId])
+    await client.query(`INSERT INTO data_source (id, owner_database_id, name, created_at, updated_at) VALUES ($1, $2, '폼', now(), now())`, [dsId, dbId])
+    await client.query(`INSERT INTO database_data_source (database_id, data_source_id, order_idx) VALUES ($1, $2, 'a0')`, [dbId, dsId])
+    await client.query(
+      `INSERT INTO view (id, owner_kind, database_id, data_source_id, name, type, order_idx, configuration, created_at, updated_at)
+       VALUES ($1, 'database_view', $2, $3, '폼', 'form', 'a0', '{}'::jsonb, now(), now())`,
+      [viewId, dbId, dsId],
+    )
+    const made = await client.query(`INSERT INTO form_view (view_id) VALUES ($1) RETURNING respondent_access`, [viewId])
+    if (made.rows[0].respondent_access === null) ok('★ 칸을 주지 않으면 비어 있다 — 주지 않는다')
+    else fail(`기본값이 NULL 이 아니다 — ${JSON.stringify(made.rows[0])}`)
+    for (const level of ['view', 'comment', 'edit']) {
+      await client.query(`UPDATE form_view SET respondent_access = $2 WHERE view_id = $1`, [viewId, level])
+    }
+    ok('읽기 · 댓글 · 편집 — 통과한다')
+    for (const level of ['full_access', 'edit_content', 'create', 'none']) {
+      await client.query('SAVEPOINT probe')
+      try {
+        await client.query(`UPDATE form_view SET respondent_access = $2 WHERE view_id = $1`, [viewId, level])
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        fail(`${level} — 거부되어야 하는데 통과했다`)
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        if (e.code === '23514' && e.constraint === 'ck_form_view_respondent_access') ok(`${level} — ck_form_view_respondent_access 가 거부함`)
+        else fail(`${level} — ck_form_view_respondent_access 의 23514 가 아니라 ${e.constraint ?? '-'} ${e.code} (${e.message})`)
+      }
+    }
+  }
+
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
 } catch (e) {

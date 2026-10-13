@@ -10,7 +10,8 @@
  *   ③ ★ 설정 · 공개 — 글 칸(앞뒤 공백 · 비면 기본 · 길이) · 공개는 manage_perm(구조를 고쳐도 forbidden) · 정책이 막으면 policy_disabled ·
  *      워크스페이스 멤버만(7b-1)은 같은 문이되 정책을 묻지 않는다 ·
  *      처음 열 때 토큰 · 닫아도 토큰은 남고 다시 열면 같은 주소 · 토큰은 공개를 바꿀 수 있는 사람에게만 · 감사 로그 ·
- *      한 사람당 한 번(7b-3)은 구조를 고치는 사람 · 참 · 거짓만 · 공유와 따로
+ *      한 사람당 한 번(7b-3)은 구조를 고치는 사람 · 참 · 거짓만 · 공유와 따로 ·
+ *      응답자에게 줄 권한(7b-4)은 manage_perm · 셋(전체 권한 · 데이터베이스 레벨은 아니다) · 바뀌었을 때만 감사 로그
  *   ④ 다른 길 — 폼은 다른 종류로 바꾸지 않는다 · 폼이 아닌 뷰는 폼으로 읽지 않는다 · 뷰를 지우면 설정 · 질문도 지워진다 · 볼 수 없으면
  *      not_found
  */
@@ -92,7 +93,7 @@ describe('① ★ 만들기', () => {
     assert.deepEqual(form.questions.map((q) => [q.propertyId, q.label, q.required]), [[title, null, false]], '첫 질문은 제목')
     assert.deepEqual(form.settings, {
       title: null, description: null, submitLabel: null, confirmationTitle: null, confirmationBody: null, access: 'closed', token: null,
-      maxResponses: null, closesAt: null, onePerRespondent: false,
+      maxResponses: null, closesAt: null, onePerRespondent: false, respondentAccess: null,
     })
     assert.deepEqual(form.candidates.map((c) => c.propertyId), [memo, score, kind], '상태 · 사람은 질문이 아니다')
     assert.deepEqual([form.canEdit, form.canPublish, form.policyAllows], [true, false, true], '편집(edit)은 구조를 고치지만 공유는 아니다(공개는 전체 권한)')
@@ -247,6 +248,31 @@ describe('③ ★ 설정 · 공개', () => {
     assert.equal(unwrap(await readForm(boss.ctx, form.viewId)).settings.onePerRespondent, true)
     const off = unwrap(await updateFormSettings(editor.ctx, form.viewId, { onePerRespondent: false }))
     assert.equal(off.settings.onePerRespondent, false)
+  })
+
+  test('★ 응답자에게 줄 권한(7b-4) — manage_perm · 셋 · 바뀌었을 때만 감사 로그 · 공유와 따로', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { ws, boss, editor, viewer, db } = await workspace()
+    const form = unwrap(await createFormView(boss.ctx, db.id))
+    assert.deepEqual(await updateFormSettings(editor.ctx, form.viewId, { respondentAccess: 'view' }), { ok: false, reason: 'forbidden' }, '구조를 고쳐도')
+    for (const bad of ['full_access', 'edit_content', 'create', 'none', '', 1]) {
+      assert.deepEqual(await updateFormSettings(boss.ctx, form.viewId, { respondentAccess: bad }), { ok: false, reason: 'invalid_input' }, JSON.stringify(bad))
+    }
+    const set = unwrap(await updateFormSettings(boss.ctx, form.viewId, { respondentAccess: 'comment' }))
+    assert.deepEqual([set.settings.respondentAccess, set.settings.access], ['comment', 'closed'], '공유와 따로 — 닫힌 폼에도 정한다')
+    assert.equal(unwrap(await readForm(viewer.ctx, form.viewId)).settings.respondentAccess, 'comment', '보는 사람도 읽는다')
+    unwrap(await updateFormSettings(boss.ctx, form.viewId, { respondentAccess: 'comment' }))
+    assert.ok((await updateFormSettings(editor.ctx, form.viewId, { respondentAccess: 'comment', title: '같은 값은 문을 묻지 않는다' })).ok)
+    assert.equal(unwrap(await updateFormSettings(boss.ctx, form.viewId, { respondentAccess: null })).settings.respondentAccess, null)
+    const audits = await query<{ metadata: Record<string, unknown> }>(
+      `SELECT metadata FROM audit_event WHERE workspace_id = $1 AND event_type = 'page.publish_changed' ORDER BY occurred_at, id`,
+      [ws],
+    )
+    assert.deepEqual(
+      audits.map((a) => [a.metadata.change, a.metadata.level]),
+      [['form_respondent_access', 'comment'], ['form_respondent_access', null]],
+      '바뀌었을 때만',
+    )
   })
 })
 

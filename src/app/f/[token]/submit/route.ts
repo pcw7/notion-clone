@@ -7,7 +7,8 @@
  * 않는 칸). 웹 공개 폼은 **세션을 보지 않는다** — 제출자는 주체가 아니다. 워크스페이스 멤버만의 폼(7b-1)이면 쿠키의 세션을 넘겨
  * 응답자를 정한다(판정은 그쪽 — 정본 ⑨). 판정 · 방어 · 넣기는 `submitFormResponse` 한 곳이다.
  *
- *   200 `{ ok: true }` · 404 열 수 없는 폼(이유를 말하지 않는다) · 403 `bad_origin` · 429 `rate_limited` ·
+ *   200 `{ ok: true }`(+ `responsePath` — 응답자가 그 행을 받았으면 그 주소 · 7b-4) · 404 열 수 없는 폼(이유를 말하지 않는다) ·
+ *   403 `bad_origin` · 409 `already_submitted`(7b-3) · 410 `form_closed`(7b-2) · 429 `rate_limited` ·
  *   400 `invalid_token` | `expired` | `too_fast` | `invalid_value`(+ `issues` — 질문마다 까닭) | `invalid_input`(몸체가 JSON 이 아니다)
  */
 
@@ -33,7 +34,10 @@ export async function POST(request: Request, ctx: RouteContext<'/f/[token]/submi
     submitter: requestMeta(request),
     sessionToken: await readSessionToken(),
   })
-  if (result.ok) return Response.json({ ok: true }, { headers: HEADERS })
+  if (result.ok) {
+    const { responsePath } = result.value
+    return Response.json({ ok: true, ...(responsePath === null ? {} : { responsePath }) }, { headers: HEADERS })
+  }
   return Response.json(
     { ok: false, error: result.reason, ...(result.issues === undefined ? {} : { issues: result.issues }) },
     { status: submitFailureStatus(result.reason), headers: HEADERS },

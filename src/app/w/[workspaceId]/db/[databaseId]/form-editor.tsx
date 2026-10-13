@@ -25,6 +25,7 @@ import {
   FORM_ACCESS_OPTIONS,
   NO_QUESTIONS,
   ONE_PER_RESPONDENT_LABEL,
+  RESPONDENT_ACCESS_OPTIONS,
   closedBecauseText,
   formAccessNotice,
   formAccessState,
@@ -34,6 +35,7 @@ import {
   limitOfDraft,
   localDateTimeOf,
   onePerRespondentNote,
+  respondentAccessNote,
   responseCountText,
 } from './form-editor-messages'
 
@@ -363,6 +365,28 @@ export function FormEditor({ workspaceId, initial }: { workspaceId: string; init
               열기
             </a>
           </div>
+        )}
+        {/* 응답자에게 줄 권한(7b-4 · 정본 ⑫) — 접근을 나눠 주는 일이라 공개와 같은 사람만 고른다 */}
+        <label className="flex flex-col gap-1 text-sm">
+          <span>응답자에게 줄 권한</span>
+          <select
+            data-testid="form-respondent-access"
+            value={settings.respondentAccess ?? ''}
+            disabled={!form.canPublish || busy}
+            onChange={(e) => void saveSettings({ respondentAccess: e.target.value === '' ? null : e.target.value })}
+            className={FIELD}
+          >
+            {RESPONDENT_ACCESS_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        {respondentAccessNote(settings.access, settings.respondentAccess) !== null && (
+          <p data-testid="form-respondent-access-note" className="text-xs text-neutral-500">
+            {respondentAccessNote(settings.access, settings.respondentAccess)}
+          </p>
         )}
       </div>
 
