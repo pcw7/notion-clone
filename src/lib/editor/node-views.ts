@@ -27,9 +27,9 @@ import { buttonNodeView, type ButtonViewDeps } from './button-view.ts'
 import { BUTTON_TYPE } from '../block/button.ts'
 import { inlineEquationNodeView, type InlineEquationViewDeps } from './inline-equation-view.ts'
 import { imageNodeView, type ImageViewDeps } from './image-view.ts'
-import { mentionDisplay, mentionTargetOf } from './mention-label.ts'
+import { customEmojiIdOf, customEmojiText, mentionDisplay, mentionTargetOf, type EmojiLabel } from './mention-label.ts'
 import { pageIconElement } from './page-icon-dom.ts'
-import type { PageIcon } from '../block/page-icon.ts'
+import { customEmojiImagePath, type PageIcon } from '../block/page-icon.ts'
 import { nodeNameOf } from './schema.ts'
 import { tocNodeView, type TocViewDeps } from './toc-view.ts'
 
@@ -48,6 +48,11 @@ export type NodeViewDeps = ImageViewDeps & CodeViewDeps & TocViewDeps & Breadcru
    * (정본 §3.9 `link_edge` 절) — 서버가 권한으로 거른 맵에서 읽는다(`block/mention-candidates.ts` `loadMentionLabels`).
    */
   mentionLabel: (kind: 'user' | 'page', id: string) => string | null | undefined
+  /**
+   * 커스텀 이모지 멘션(7c-3a)이 그릴 이름 — 이 워크스페이스의 것이면 `{ name, deleted }`(지운 것도), 아니면 `null`, 모르면 `undefined`.
+   * 노드에는 id 뿐이다 — 서버의 이름 맵(`loadMentionLabels` 의 `emoji` · 정본 §3.4 [보강] 커스텀 이모지 ⑦).
+   */
+  emojiLabel: (id: string) => EmojiLabel | null | undefined
   /**
    * 하위 페이지 참조 · 페이지 멘션이 그릴 아이콘(8c-2) — 없거나 모르면 null(기본 글리프). 노드에는 없다(정본 §3.4 [보강] 페이지 아이콘
    * ③) — 서버가 제목과 같은 권한 필터로 준 맵에서 읽는다(볼 수 있고 아이콘이 있는 것만).
@@ -218,6 +223,8 @@ function pageRefNodeView(
  * 볼 수 없는 페이지는 자리만 보이고 열리지 않는다(하위 페이지 참조와 같은 규칙 · §3.2-22).
  */
 function mentionNodeView(node: PmNode, _view: EditorView, _getPos: () => number | undefined, deps: NodeViewDeps): NodeView {
+  const emojiId = customEmojiIdOf(node.attrs.mention)
+  if (emojiId !== null) return customEmojiNodeView(emojiId, deps)
   const dom = document.createElement('span')
   dom.className = 'blk-mention'
   dom.contentEditable = 'false'
@@ -251,6 +258,41 @@ function mentionNodeView(node: PmNode, _view: EditorView, _getPos: () => number 
   dom.addEventListener('click', () => {
     if (deps.mentionLabel('page', target.id) !== null) deps.openPage(target.id)
   })
+  return { dom, stopEvent: () => true }
+}
+
+/**
+ * 커스텀 이모지 멘션(7c-3a · 정본 §3.4 [보강] 커스텀 이모지 ⑦) — 살아 있으면 그림(글자 한 칸 높이 · `alt`/`title` 은 `:이름:`), 지웠으면
+ * `:이름:` 글자(흐리게 · "지운 이모지"), 이 워크스페이스에 없으면 "이모지" 자리 표시. 그림을 못 불러오면 글자로 바꾼다(깨진 그림을
+ * 그리지 않는다 — 아이콘과 같은 태도). 주소는 아이콘과 같은 이모지의 그림 경로(세션으로 인증된다).
+ */
+function customEmojiNodeView(id: string, deps: NodeViewDeps): NodeView {
+  const dom = document.createElement('span')
+  dom.className = 'blk-mention blk-mention-emoji'
+  dom.contentEditable = 'false'
+  dom.dataset.mentionKind = 'custom_emoji'
+  dom.dataset.mentionId = id
+  const label = deps.emojiLabel(id)
+  const asText = (): void => {
+    dom.classList.add('blk-mention-emoji-text')
+    if (label?.deleted === true) {
+      dom.classList.add('blk-mention-emoji-deleted')
+      dom.title = '지운 이모지'
+    }
+    dom.replaceChildren(customEmojiText(label))
+  }
+  if (label === null || label?.deleted === true) {
+    asText()
+    return { dom, stopEvent: () => true }
+  }
+  const img = document.createElement('img')
+  img.className = 'blk-emoji-image'
+  img.alt = label === undefined ? '' : `:${label.name}:`
+  if (label !== undefined) img.title = img.alt
+  img.draggable = false
+  img.addEventListener('error', asText)
+  img.src = customEmojiImagePath(deps.workspaceId, id)
+  dom.append(img)
   return { dom, stopEvent: () => true }
 }
 

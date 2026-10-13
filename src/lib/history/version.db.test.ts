@@ -21,7 +21,7 @@ import { query } from '../db/pool.ts'
 import { setWorkspacePlan } from '../billing/plan.ts'
 import { createPage, titleFromPlainText } from '../block/page.ts'
 import { savePageBody } from '../block/save-page-body.ts'
-import { textRun, toPlainText } from '../contracts/rich-text.ts'
+import { customEmojiMentionRun, textRun, toPlainText } from '../contracts/rich-text.ts'
 import type { EditorBlock } from '../editor/document.ts'
 import { grantAccess } from '../permissions/acl.ts'
 import { setPageLock } from '../permissions/lock.ts'
@@ -288,5 +288,27 @@ describe('⑦ 바이트 · 파일 참조', () => {
 
     store.delete(version.state_ref)
     assert.deepEqual(await readVersion(fx.owner.ctx, page, version.id), { ok: false, reason: 'not_found' })
+  })
+})
+
+describe('⑧ 미리보기의 이름 맵', () => {
+  test('★ 버전이 담은 커스텀 이모지(7c-3a)의 이름 — 본문의 이름 맵과 같다(지운 것도 이름)', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const page = await newPage('이모지 버전')
+    const up = await uploadFile(fx.owner.ctx, { bytes: new Uint8Array(16).fill(137), mime: 'image/png', originalName: 'e.png' })
+    assert.equal(up.ok, true)
+    if (!up.ok) return
+    const emojiId = randomUUID()
+    await query(`INSERT INTO custom_emoji (id, workspace_id, name, file_id, deleted_at) VALUES ($1, $2, $3, $4, now())`, [
+      emojiId, fx.workspaceId, `old-${emojiId.slice(0, 8)}`, up.file.id,
+    ])
+    const withEmoji: EditorBlock = { id: randomUUID(), type: 'paragraph', title: [textRun('이모지 '), customEmojiMentionRun(emojiId)], properties: {}, format: {}, children: [] }
+    await write(page, [], fx.owner, [withEmoji])
+    await age(page, '3 minutes')
+    await write(page, ['이모지 지움'])
+    const [version] = await versionsOf(page)
+    const read = await readVersion(fx.owner.ctx, page, version.id)
+    assert.ok(read.ok, JSON.stringify(read))
+    assert.deepEqual(read.value.labels.emoji, { [emojiId]: { name: `old-${emojiId.slice(0, 8)}`, deleted: true } })
   })
 })

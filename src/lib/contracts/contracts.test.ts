@@ -15,6 +15,8 @@ import {
   MAX_LINK_URL,
   MAX_RUN_CONTENT,
   TEXT_COLORS,
+  customEmojiIdOfRun,
+  customEmojiMentionRun,
   isColor,
   normalizeRichText,
   sameAnnotations,
@@ -133,6 +135,29 @@ describe('validateRichText', () => {
     // 돌려보낼 때 400 을 맞는다.
     const run = { ...textRun('x'), plain_text: '엉뚱한값', href: 'https://x' }
     assert.deepEqual(validateRichText([run]), [])
+  })
+})
+
+describe('커스텀 이모지 런 — 7c-3a', () => {
+  const id = '0a1b2c3d-0000-4000-8000-00000000e0e0'
+
+  test('★ 모양은 멘션 런 · 이름 · 주소를 싣지 않는다(plain_text 는 비어 있다) · id 를 꺼낸다', () => {
+    const run = customEmojiMentionRun(id, { bold: true })
+    assert.deepEqual(run.mention, { type: 'custom_emoji', custom_emoji: { id } })
+    assert.equal(run.plain_text, '')
+    assert.equal(run.annotations.bold, true)
+    assert.equal(customEmojiIdOfRun(run), id)
+    assert.equal(customEmojiIdOfRun(textRun('x')), null)
+    assert.equal(toPlainText([textRun('a'), run, textRun('b')]), 'ab', '검색 · 평문에 들어가지 않는다')
+  })
+
+  test('★ 받기 — id 가 uuid 가 아니면 거부(사람 · 페이지 멘션과 같다)', () => {
+    assert.deepEqual(validateRichText([customEmojiMentionRun(id)]), [])
+    for (const bad of [{ type: 'custom_emoji' }, { type: 'custom_emoji', custom_emoji: { id: 'party' } }, { type: 'custom_emoji', custom_emoji: id }]) {
+      const issues = validateRichText([{ ...customEmojiMentionRun(id), mention: bad }])
+      assert.equal(issues.length, 1, JSON.stringify(bad))
+      assert.equal(issues[0]!.path, 'rich_text[0].mention.custom_emoji.id')
+    }
   })
 })
 

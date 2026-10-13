@@ -64,7 +64,7 @@ function loadEnv(file = join(ROOT, '.env')) {
 }
 for (const [key, value] of Object.entries(loadEnv())) process.env[key] ??= value
 
-const { textRun, pageMentionRun, userMentionRun, mentionTarget } = await import(new URL('../src/lib/contracts/rich-text.ts', import.meta.url).href)
+const { textRun, pageMentionRun, userMentionRun, mentionTarget, customEmojiMentionRun } = await import(new URL('../src/lib/contracts/rich-text.ts', import.meta.url).href)
 // 본문 준비 · 확인은 **서버 명령 경로**로 한다(CRDT 6e). 본문 저장 API(PUT)는 걷어냈다 — 편집은 협업 서버로만 간다.
 const { resolveSessionContext } = await import(new URL('../src/lib/auth/session-context.ts', import.meta.url).href)
 const { savePageBody, loadPageBody } = await import(new URL('../src/lib/block/save-page-body.ts', import.meta.url).href)
@@ -15754,6 +15754,64 @@ async function main() {
       check('★ 확인하면 줄이 빠진다 · 그림 경로는 404',
         (await waitFor(`!document.querySelector('${rowOf(`${name}-2`)}')`, 8000))
           && (await fetch(`${BASE}/api/workspaces/${workspaceId}/emoji/${emojiId}/image`, { headers: { cookie: authed.cookie } })).status === 404)
+    }
+
+    if (sectionIf('커스텀 이모지 — 본문 인라인 (7c-3a · F-13-16)')) {
+      // 본문의 커스텀 이모지 멘션 — 살아 있으면 그림(alt 는 :이름:) · 지운 것은 :이름: 글자(흐리게) · 이 워크스페이스에 없으면 "이모지" ·
+      // 이름을 바꾸면 다시 열 때 따라간다 · 이름 맵 라우트가 emoji 를 준다. 본문은 명령 경로로 준비한다(saveBody).
+      const stamp = Date.now().toString(36)
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const upload = async () => {
+        const form = new FormData()
+        form.append('file', new Blob([Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64')], { type: 'image/png' }), 'emoji.png')
+        return (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/files`, { method: 'POST', headers: { cookie: authed.cookie, origin: BASE }, body: form })).json()).file.id
+      }
+      const makeEmoji = async (name) => (await api('POST', '/emoji', { name, fileId: await upload() })).body?.emoji?.id ?? null
+      const emojiRun = (id) => customEmojiMentionRun(id)
+      const live = await makeEmoji(`inline-${stamp}`)
+      const gone = await makeEmoji(`gone-${stamp}`)
+      const stranger = randomUUID()
+      const page = (await api('POST', '/pages', { title: `인라인이모지${stamp}` })).body?.page?.id
+      const para = randomUUID()
+      await saveBody(page, { blocks: [{ id: para, type: 'paragraph', title: [textRun('파티 '), emojiRun(live), textRun(' 끝 '), emojiRun(gone), textRun(' 남 '), emojiRun(stranger)], properties: {}, format: {}, children: [] }] })
+      await api('DELETE', `/emoji/${gone}`)
+
+      const chip = (id) => `.blk-editor .blk-mention-emoji[data-mention-id="${id}"]`
+      const seen = () => evaluate(`(() => {
+        const at = (id) => document.querySelector('.blk-editor .blk-mention-emoji[data-mention-id="' + id + '"]')
+        const img = at(${JSON.stringify(live)})?.querySelector('img')
+        return { img: img ? { alt: img.alt, ok: img.complete && img.naturalWidth > 0 } : null,
+          gone: at(${JSON.stringify(gone)}) ? { text: at(${JSON.stringify(gone)}).textContent, deleted: at(${JSON.stringify(gone)}).classList.contains('blk-mention-emoji-deleted') } : null,
+          stranger: at(${JSON.stringify(stranger)})?.textContent ?? null }
+      })()`)
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+      check('★ 살아 있는 이모지는 그림 — alt 는 :이름: · 디코드된다',
+        await waitFor(`(() => { const i = document.querySelector('${chip(live)} img'); return !!i && i.complete && i.naturalWidth > 0 && i.alt === ${JSON.stringify(`:inline-${stamp}:`)} })()`, 15000),
+        JSON.stringify(await seen()))
+      const now = await seen()
+      // 지운 것은 그림을 부르지도 않는다 — 불러 보고 404 에서 글자로 바꾸는 길(못 불러온 그림)과 겉모습이 같아 요청으로 가른다.
+      const goneRequested = await evaluate(`performance.getEntriesByType('resource').some((e) => e.name.endsWith(${JSON.stringify(`/emoji/${gone}/image`)}))`)
+      check('★ 지운 이모지는 :이름: 글자(흐리게 · 그림을 부르지 않는다) · 이 워크스페이스에 없으면 "이모지"',
+        now.gone?.text === `:gone-${stamp}:` && now.gone?.deleted === true && now.stranger === '이모지' && goneRequested === false,
+        JSON.stringify({ ...now, goneRequested }))
+      check('본문의 글자는 그대로 — 이모지가 원자로 사이에 선다',
+        (await evaluate(`document.querySelector('.blk-editor [data-block-id="${para}"]')?.textContent ?? ''`)).startsWith('파티 '),
+        String(await evaluate(`document.querySelector('.blk-editor [data-block-id="${para}"]')?.textContent ?? null`)))
+
+      await api('PATCH', `/emoji/${live}`, { name: `renamed-${stamp}` })
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+      check('★ 이름을 바꾸면 다시 열 때 따라간다(노드에는 id 뿐이다)',
+        await waitFor(`document.querySelector('${chip(live)} img')?.alt === ${JSON.stringify(`:renamed-${stamp}:`)}`, 15000),
+        JSON.stringify(await seen()))
+      const labels = await api('GET', `/mention-labels?emoji=${live},${gone},${stranger}`)
+      check('이름 맵 라우트 — emoji 를 준다(지운 것도 이름 · 없으면 null)',
+        JSON.stringify(labels.body?.emoji) === JSON.stringify({ [live]: { name: `renamed-${stamp}`, deleted: false }, [gone]: { name: `gone-${stamp}`, deleted: true }, [stranger]: null }),
+        JSON.stringify(labels.body?.emoji))
     }
 
     if (sectionIf('폼 — 서버 라우트 (7a-1 · F-13-01)')) {

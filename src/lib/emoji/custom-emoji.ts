@@ -227,3 +227,22 @@ export async function readCustomEmojiImage(
   const found = await readFile(ctx, row.file_id)
   return found === null ? null : { bytes: found.bytes, mime: found.file.mime, sizeBytes: found.file.sizeBytes }
 }
+
+/**
+ * 본문 인라인 멘션(7c-3a)이 그릴 이름 — id → `{ name, deleted }`. **지운 것도 이름을 준다**(정본 [보강] 커스텀 이모지 ③ "이름만" · ⑦).
+ * 이 워크스페이스에 없는 id 는 null. 권한 필터가 없다 — 목록은 워크스페이스의 누구나 본다(②).
+ */
+export async function emojiLabelsIn(
+  tx: Tx,
+  workspaceId: string,
+  ids: readonly string[],
+): Promise<Record<string, { readonly name: string; readonly deleted: boolean } | null>> {
+  const out: Record<string, { readonly name: string; readonly deleted: boolean } | null> = Object.fromEntries(ids.map((id) => [id, null]))
+  if (ids.length === 0) return out
+  const rows = await tx.query<{ id: string; name: string; deleted: boolean }>(
+    `SELECT id, name, deleted_at IS NOT NULL AS deleted FROM custom_emoji WHERE workspace_id = $1 AND id = ANY($2::uuid[])`,
+    [workspaceId, ids],
+  )
+  for (const r of rows) out[r.id] = { name: r.name, deleted: r.deleted }
+  return out
+}

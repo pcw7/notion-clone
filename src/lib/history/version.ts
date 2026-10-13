@@ -153,7 +153,7 @@ export async function readVersion(ctx: SessionContext, pageId: string, versionId
   ydoc.destroy()
 
   const ids = mentionIdsOf(doc)
-  const labels = await loadMentionLabels(ctx, { userIds: ids.userIds, pageIds: [...ids.pageIds, ...pageRefIdsOf(doc.blocks)] })
+  const labels = await loadMentionLabels(ctx, { userIds: ids.userIds, pageIds: [...ids.pageIds, ...pageRefIdsOf(doc.blocks)], emojiIds: ids.emojiIds })
   return { ok: true, value: { version: found.value.summary, doc, labels } }
 }
 

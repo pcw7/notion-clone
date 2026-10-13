@@ -287,6 +287,9 @@ export function validateRichText(value: unknown, path = 'rich_text'): Validation
       } else if ((m.type === 'user' || m.type === 'page') && mentionTarget(run as RichTextRun) === null) {
         // 사람 · 페이지 멘션은 대상 id 가 전부다 — 표시 텍스트는 저장하지 않는다(정본 §3.9 link_edge 절).
         issues.push({ path: `${p}.mention.${m.type}.id`, message: '대상 id 가 uuid 여야 합니다' })
+      } else if (m.type === 'custom_emoji' && customEmojiIdOfRun(run as RichTextRun) === null) {
+        // 커스텀 이모지(7c-3a)도 id 가 전부다 — 이름 · 주소는 싣지 않는다(정본 §3.4 [보강] 커스텀 이모지 ⑦).
+        issues.push({ path: `${p}.mention.custom_emoji.id`, message: '이모지 id 가 uuid 여야 합니다' })
       }
     }
   })
@@ -390,6 +393,28 @@ export function equationRun(expression: string, annotations: Partial<Annotations
     plain_text: expression,
     href: null,
     equation: { expression },
+  }
+}
+
+/**
+ * 커스텀 이모지 런(7c-3a)이 가리키는 이모지 — 노션 API 모양 `mention: { type: 'custom_emoji', custom_emoji: { id } }`. 아니면 null.
+ * 사람 · 페이지 멘션(`mentionTarget`)과 따로 둔다 — 역인덱스(`link_edge`)에 들어가지 않고 권한으로 거르지 않는다(정본 §3.4 [보강] 커스텀
+ * 이모지 ⑦).
+ */
+export function customEmojiIdOfRun(run: RichTextRun): string | null {
+  if (run.type !== 'mention' || run.mention === undefined) return null
+  const m = run.mention as { type?: unknown; custom_emoji?: { id?: unknown } }
+  return m.type === 'custom_emoji' && typeof m.custom_emoji?.id === 'string' && isUuid(m.custom_emoji.id) ? m.custom_emoji.id : null
+}
+
+/** 커스텀 이모지 런 — 이름을 싣지 않는다(`plain_text` 는 비어 있다 · 사람 · 페이지 멘션과 같다). */
+export function customEmojiMentionRun(emojiId: string, annotations: Partial<Annotations> = {}): RichTextRun {
+  return {
+    type: 'mention',
+    annotations: { ...DEFAULT_ANNOTATIONS, ...annotations },
+    plain_text: '',
+    href: null,
+    mention: { type: 'custom_emoji', custom_emoji: { id: emojiId } },
   }
 }
 
