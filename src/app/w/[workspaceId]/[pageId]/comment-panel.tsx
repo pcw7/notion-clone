@@ -25,6 +25,8 @@
 
 import { useCallback, useEffect, useState } from 'react'
 
+import { CommentReactions, type ReactionView } from './comment-reactions'
+
 const FOCUS_EVENT = 'nc:comment-focus'
 
 /**
@@ -46,6 +48,8 @@ type CommentView = {
   deleted: boolean
   createdAt: string
   editedAt: string | null
+  /** 이모지마다 누른 사람(누른 순) — 7c-3d-1 이 그린다. */
+  reactions?: ReactionView[]
 }
 
 type DiscussionView = {
@@ -342,6 +346,15 @@ export function CommentPanel({
                     ) : (
                       <>
                         <p className="whitespace-pre-wrap text-sm">{textOf(comment.richText)}</p>
+                        {/* 반응(7c-3d-1 · 정본 §3.9 [보강] 반응 화면) — 누를 수 있는가는 서버가 준 canComment 하나로. */}
+                        <CommentReactions
+                          reactions={comment.reactions ?? []}
+                          me={state.me}
+                          nameOf={(userId) => state.members.find((m) => m.userId === userId)?.name ?? null}
+                          canReact={state.canComment}
+                          busy={busy}
+                          onToggle={(emoji) => void send(actionUrl, { action: 'react', targetKind: 'comment', targetId: comment.id, emoji })}
+                        />
                         {comment.authorId === state.me && (
                           <div className="flex gap-1">
                             <button
@@ -478,4 +491,5 @@ const MESSAGES: Readonly<Record<string, string>> = {
   forbidden: '권한이 없습니다.',
   not_found: '대상을 찾을 수 없습니다.',
   too_long: '코멘트가 너무 깁니다.',
+  invalid_emoji: '이 반응은 남길 수 없습니다.',
 }

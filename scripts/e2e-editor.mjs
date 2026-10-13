@@ -6251,6 +6251,66 @@ async function main() {
         await inboxText())
     }
 
+    if (sectionIf('코멘트 반응 (7c-3d-1 · F-05-08)')) {
+      // 코멘트마다 반응 칩 — 다른 사람이 누른 것(수 · 이름) · 칩을 누르면 토글(aria-pressed) · "반응 추가" 의 빠른 고르개로 새 이모지 ·
+      // Esc 는 고르개만 닫는다 · 서버에 남은 것. 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
+      const stamp = Date.now().toString(36)
+      const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
+      const page = (await (await fetch(pagesUrl, { method: 'POST', headers: authed, body: JSON.stringify({ title: `반응${stamp}` }) })).json()).page.id
+      await fetch(`${pagesUrl}/${page}/discussions`, { method: 'POST', headers: authed, body: JSON.stringify({ action: 'open', richText: [textRun('반응을 남겨 주세요')] }) })
+      const listed = async () => (await (await fetch(`${pagesUrl}/${page}/discussions?resolved=false`, { headers: authed })).json())
+      const first = await listed()
+      const commentId = first.discussions?.[0]?.comments?.[0]?.id
+      const pal = await joinAs(workspaceId, await createUser(`반응동료${stamp}`), 'member')
+      const palReact = await fetch(`${BASE}/api/workspaces/${workspaceId}/discussions`, {
+        method: 'POST', headers: { ...authed, cookie: `nc_session=${pal.token}` },
+        body: JSON.stringify({ action: 'react', targetKind: 'comment', targetId: commentId, emoji: '👍' }),
+      })
+      const chip = (emoji) => `[data-testid="reaction-chip"][data-emoji="${emoji}"]`
+      const chipState = (emoji) => evaluate(`(() => { const c = document.querySelector('${chip(emoji)}')
+        return c ? { pressed: c.getAttribute('aria-pressed'), count: c.textContent.replace(${JSON.stringify(emoji)}, '').trim(), title: c.title } : null })()`)
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+      await waitFor(`!!document.querySelector('[data-testid="comment-panel-toggle"]')`, 15000)
+      for (let tries = 0; tries < 6; tries += 1) {
+        await clickSelector('[data-testid="comment-panel-toggle"]')
+        if (await waitFor(`!!document.querySelector('${chip('👍')}')`, 3000)) break
+      }
+      const seen = await chipState('👍')
+      check('★ 다른 사람이 누른 반응이 칩으로 — 수 1 · 내가 누르지 않았다 · title 에 누른 사람의 이름',
+        palReact.ok && seen?.pressed === 'false' && seen?.count === '1' && seen?.title === `반응동료${stamp}`, JSON.stringify(seen))
+
+      await clickSelector(chip('👍'))
+      check('★ 칩을 누르면 내 반응이 더해진다 — 수 2 · aria-pressed · title 에 "나"',
+        await waitFor(`(() => { const c = document.querySelector('${chip('👍')}'); return !!c && c.getAttribute('aria-pressed') === 'true'
+          && c.title === ${JSON.stringify(`반응동료${stamp} · 나`)} })()`, 8000),
+        JSON.stringify(await chipState('👍')))
+
+      await clickSelector('[data-testid="reaction-add"]')
+      check('반응 추가 — 빠른 고르개가 열린다(여덟)',
+        await waitFor(`document.querySelectorAll('[data-testid="reaction-option"]').length === 8`, 3000))
+      await key('Escape')
+      check('Esc 는 고르개만 닫는다 — 패널은 그대로',
+        (await waitFor(`!document.querySelector('[data-testid="reaction-picker"]')`, 3000)) && (await evaluate(`!!document.querySelector('[role="dialog"][aria-label="코멘트"]')`)))
+      await clickSelector('[data-testid="reaction-add"]')
+      await waitFor(`!!document.querySelector('[data-testid="reaction-option"][data-emoji="🎉"]')`, 3000)
+      await clickSelector('[data-testid="reaction-option"][data-emoji="🎉"]')
+      check('★ 고르개에서 고르면 새 칩 — 1 · 내가 눌렀다 · 고르개는 닫힌다',
+        await waitFor(`(() => { const c = document.querySelector('${chip('🎉')}'); return !!c && c.getAttribute('aria-pressed') === 'true'
+          && !document.querySelector('[data-testid="reaction-picker"]') })()`, 8000),
+        JSON.stringify(await chipState('🎉')))
+
+      await clickSelector(chip('👍'))
+      check('★ 내가 누른 칩을 다시 누르면 없어진다 — 다른 사람의 것은 남는다',
+        await waitFor(`(() => { const c = document.querySelector('${chip('👍')}'); return !!c && c.getAttribute('aria-pressed') === 'false' })()`, 8000),
+        JSON.stringify(await chipState('👍')))
+      const after = await listed()
+      const reactions = after.discussions?.[0]?.comments?.[0]?.reactions ?? []
+      check('서버에 남은 것 — 👍 은 동료만 · 🎉 은 나',
+        JSON.stringify(reactions.map((r) => [r.emoji, r.userIds])) === JSON.stringify([['👍', [pal.userId]], ['🎉', [after.me]]]),
+        JSON.stringify(reactions))
+    }
+
     if (sectionIf('본문 글자에 단 코멘트 (F-05-07)')) {
       const anchorBlock = randomUUID()
       const anchorPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
