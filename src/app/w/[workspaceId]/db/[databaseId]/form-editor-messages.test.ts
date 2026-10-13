@@ -29,7 +29,7 @@ import {
 } from './form-editor-messages.ts'
 
 test('① 까닭마다 할 말 · 모르는 까닭 · 원형의 이름', () => {
-  const reasons: FormFailure[] = ['not_found', 'forbidden', 'locked', 'invalid_input', 'unsupported_type', 'policy_disabled']
+  const reasons: FormFailure[] = ['not_found', 'forbidden', 'locked', 'invalid_input', 'unsupported_type', 'policy_disabled', 'publishing_blocked']
   for (const reason of reasons) assert.notEqual(formEditorFailureMessage(reason), '저장하지 못했습니다.', reason)
   assert.equal(formEditorFailureMessage('constructor'), '저장하지 못했습니다.')
   assert.equal(formEditorFailureMessage(undefined), '저장하지 못했습니다.')

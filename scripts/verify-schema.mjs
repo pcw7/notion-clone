@@ -4631,6 +4631,36 @@ try {
     }
   }
 
+  console.log('\n[77] 워크스페이스 게시 차단 (0103 / §3.3 끝 [보강] 모더레이션 조치 ⑥ · 6b-3a조각)')
+  {
+    // 잠금은 워크스페이스 행에(비면 없다) · 게시 차단 조치는 워크스페이스에만 · 페이지 조치는 페이지에만 · 막는 데는 까닭이 있다.
+    const blank = await client.query(`SELECT publishing_blocked_at FROM workspace WHERE id = $1`, [wsId])
+    if (blank.rows[0]?.publishing_blocked_at === null) ok('★ 잠금은 비어 있다 — 기존 워크스페이스는 바뀌는 것이 없다')
+    else fail(`잠금이 비어 있지 않다 — ${JSON.stringify(blank.rows[0])}`)
+    const put = `INSERT INTO moderation_action (id, target_type, target_id, workspace_id, action, reason_code, note, actor)
+                 VALUES ($1, $2, $3, $4, $5, $6, '', '운영자')`
+    await client.query(put, [randomUUID(), 'workspace', wsId, wsId, 'block_publishing', 'spam'])
+    await client.query(put, [randomUUID(), 'workspace', wsId, wsId, 'unblock_publishing', null])
+    ok('★ 막기(까닭과 함께) · 풀기 — 워크스페이스 대상으로 통과한다')
+    const rejects = async (label, params, constraint) => {
+      await client.query('SAVEPOINT probe')
+      try {
+        await client.query(put, params)
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        fail(`${label} — 거부되어야 하는데 통과했다`)
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        if (e.code === '23514' && e.constraint === constraint) ok(`${label} — ${constraint} 가 거부함`)
+        else fail(`${label} — ${constraint} 의 23514 가 아니라 ${e.constraint ?? '-'} ${e.code} (${e.message})`)
+      }
+    }
+    await rejects('★ 까닭 없는 게시 차단', [randomUUID(), 'workspace', wsId, wsId, 'block_publishing', null], 'ck_moderation_action_reason_needed')
+    await rejects('까닭 붙은 풀기', [randomUUID(), 'workspace', wsId, wsId, 'unblock_publishing', 'spam'], 'ck_moderation_action_reason_needed')
+    await rejects('★ 페이지에 게시 차단', [randomUUID(), 'page', randomUUID(), wsId, 'block_publishing', 'spam'], 'ck_moderation_action_target_action')
+    await rejects('워크스페이스를 테이크다운', [randomUUID(), 'workspace', wsId, wsId, 'take_down', 'spam'], 'ck_moderation_action_target_action')
+    await rejects('모르는 대상', [randomUUID(), 'teamspace', randomUUID(), wsId, 'dismiss', null], 'ck_moderation_action_target')
+  }
+
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
 } catch (e) {

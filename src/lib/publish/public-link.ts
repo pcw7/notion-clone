@@ -73,6 +73,8 @@ export type PublishFailure =
   | 'trashed'
   /** 워크스페이스 정책이 게시를 막았다(`allow_publish_sites_and_forms`). */
   | 'policy_disabled'
+  /** 운영자가 이 워크스페이스의 웹 게시를 막았다(6b-3a) — 소유자가 설정으로 되돌릴 수 없다. */
+  | 'publishing_blocked'
   /** 게시되어 있지 않다 — 설정 · 주소 바꾸기는 게시된 링크에만(6a-3). */
   | 'not_published'
   /** 바꿀 것이 없거나 값이 틀렸다(6a-3 — `{ robots?: 'index' | 'noindex', rotateToken?: true }`). */
@@ -101,6 +103,7 @@ export function publishFailureStatus(reason: PublishFailure): number {
     case 'invalid_slug':
       return 400
     case 'policy_disabled':
+    case 'publishing_blocked':
     case 'not_published':
     case 'moderated':
     case 'slug_taken':
@@ -236,7 +239,7 @@ export async function publishPage(ctx: SessionContext, pageId: string): Promise<
     if (await isTemplateRow(tx, pageId)) return { ok: false, reason: 'not_page' } as const
     if (node.lifecycle !== 'live') return { ok: false, reason: 'trashed' } as const
     const policy = await readSecurityPolicyIn(tx, ctx.workspaceId)
-    if (!policy.allowPublish) return { ok: false, reason: 'policy_disabled' } as const
+    if (!policy.allowPublish) return { ok: false, reason: policy.publishingBlocked ? 'publishing_blocked' : 'policy_disabled' } as const
     // 운영자가 내린 페이지 — 해제 · 다시 게시로 우회하지 못한다(상태는 블록에 있다 · 정본 [보강] 모더레이션 조치 ⑤)
     if ((await moderationIn(tx, node)) !== null) return { ok: false, reason: 'moderated' } as const
 

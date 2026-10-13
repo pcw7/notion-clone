@@ -128,7 +128,8 @@ const STORES: { readonly [K in SettingKey]: Store<SettingValueOf<K>> } = {
   },
   // 웹 게시(6a-1) — 끄면 게시한 주소도 곧바로 닫힌다(공개 경로가 런타임에 묻는다 · 정본 [정정] 웹 게시 ③⑨)
   'workspace.allow_publish_sites_and_forms': {
-    read: async (tx, ctx) => (await readSecurityPolicyIn(tx, ctx.workspaceId)).allowPublish,
+    // 소유자의 설정 값 그대로 — 운영자의 잠금(6b-3a)은 설정을 바꾸지 않는다(효과 정책은 `allowPublish`)
+    read: async (tx, ctx) => (await readSecurityPolicyIn(tx, ctx.workspaceId)).allowPublishSetting,
     write: (tx, ctx, value) => writePublishPolicyIn(tx, ctx.workspaceId, value),
   },
   // 보안 정책(6e-1 · 정본 [보강] 보안 정책) — 멤버의 내보내기 · 게스트 초대

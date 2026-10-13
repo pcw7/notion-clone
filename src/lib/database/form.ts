@@ -116,6 +116,8 @@ export type FormFailure =
   | 'unsupported_type'
   /** 워크스페이스 정책이 공개를 막았다. */
   | 'policy_disabled'
+  /** 운영자가 이 워크스페이스의 웹 게시를 막았다(6b-3a) — 워크스페이스 멤버만의 폼은 연다. */
+  | 'publishing_blocked'
 
 export type FormResult<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly reason: FormFailure }
 
@@ -127,6 +129,7 @@ export function formFailureStatus(reason: FormFailure): number {
       return 403
     case 'locked':
     case 'policy_disabled':
+    case 'publishing_blocked':
       return 409
     case 'invalid_input':
     case 'unsupported_type':
@@ -443,7 +446,10 @@ export async function updateFormSettings(ctx: SessionContext, viewId: string, pa
     if (accessChanges) {
       if (!can(gate.caps, 'manage_perm')) return fail('forbidden')
       // 웹에 여는 것만 정책을 묻는다 — 닫는 것은 언제나 된다(웹 게시와 같다) · 워크스페이스 멤버만은 밖으로 내보내는 것이 아니다(⑨)
-      if (access === 'public' && !(await readSecurityPolicyIn(tx, ctx.workspaceId)).allowPublish) return fail('policy_disabled')
+      if (access === 'public') {
+        const policy = await readSecurityPolicyIn(tx, ctx.workspaceId)
+        if (!policy.allowPublish) return fail(policy.publishingBlocked ? 'publishing_blocked' : 'policy_disabled')
+      }
     }
 
     const params: unknown[] = [viewId, ctx.userId]

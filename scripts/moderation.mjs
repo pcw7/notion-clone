@@ -7,6 +7,8 @@
  *   npm run moderation -- takedown <pageId> --reason <phishing|malware|illegal|harassment|copyright|spam|other> --by <이름> [--note <메모>]
  *   npm run moderation -- dismiss <caseId> --by <이름> [--note <메모>]
  *   npm run moderation -- reinstate <pageId> --by <이름> [--note <메모>]
+ *   npm run moderation -- block-publishing <workspaceId> --reason <까닭> --by <이름> [--note <메모>]   (6b-3a)
+ *   npm run moderation -- unblock-publishing <workspaceId> --by <이름> [--note <메모>]
  *
  * 정본: 00-canonical-data-model.md §3.3 끝 [보강] 모더레이션 조치 — 운영자는 워크스페이스의 주체가 아니다. 이 명령은 서버 셸에서만
  * 돈다(HTTP 로 열지 않는다). 조치는 `moderation_action` 에 쌓이고, 누가 했는지는 `--by` 의 이름으로 남는다. 판정 · 쓰기는
@@ -28,7 +30,16 @@ function loadEnv(file = '.env') {
 
 for (const [key, value] of Object.entries(loadEnv())) process.env[key] ??= value
 
-const { dismissCase, listCases, readCase, reinstatePage, takeDownPage, TAKEDOWN_REASONS } = await import('../src/lib/moderation/operator.ts')
+const {
+  blockWorkspacePublishing,
+  dismissCase,
+  listCases,
+  readCase,
+  reinstatePage,
+  takeDownPage,
+  unblockWorkspacePublishing,
+  TAKEDOWN_REASONS,
+} = await import('../src/lib/moderation/operator.ts')
 const { closePool } = await import('../src/lib/db/pool.ts')
 
 const USAGE = `쓰는 법:
@@ -36,7 +47,9 @@ const USAGE = `쓰는 법:
   npm run moderation -- show <caseId>
   npm run moderation -- takedown <pageId> --reason <${TAKEDOWN_REASONS.join('|')}> --by <이름> [--note <메모>]
   npm run moderation -- dismiss <caseId> --by <이름> [--note <메모>]
-  npm run moderation -- reinstate <pageId> --by <이름> [--note <메모>]`
+  npm run moderation -- reinstate <pageId> --by <이름> [--note <메모>]
+  npm run moderation -- block-publishing <workspaceId> --reason <${TAKEDOWN_REASONS.join('|')}> --by <이름> [--note <메모>]
+  npm run moderation -- unblock-publishing <workspaceId> --by <이름> [--note <메모>]`
 
 /** `--key value` 를 읽는다. 위치 인자는 순서대로. */
 function parse(argv) {
@@ -53,11 +66,13 @@ function parse(argv) {
 }
 
 const FAILURE = {
-  not_found: '그런 페이지 · 케이스가 없다.',
+  not_found: '그런 페이지 · 케이스 · 워크스페이스가 없다.',
   invalid_input: `값이 틀렸다 — --by 는 1~100자 · --note 는 2000자까지 · --reason 은 ${TAKEDOWN_REASONS.join(' · ')}.`,
   already: '이미 내려져 있다.',
   not_open: '열린 케이스가 아니다.',
   not_moderated: '내려져 있지 않다.',
+  already_blocked: '이미 게시가 막혀 있다.',
+  not_blocked: '게시가 막혀 있지 않다.',
 }
 
 function report(result, done) {
@@ -104,6 +119,23 @@ try {
       break
     case 'reinstate':
       report(await reinstatePage(target ?? '', { actor: flags.by ?? '', note: flags.note }), '되살렸다 — 게시되어 있으면 다시 열린다.')
+      break
+    case 'block-publishing': {
+      const result = await blockWorkspacePublishing(target ?? '', flags.reason, { actor: flags.by ?? '', note: flags.note })
+      if (result.ok) {
+        const { actionId, unpublishedPages, closedForms } = result.value
+        console.log(`막았다 — 게시 ${unpublishedPages}개를 내리고 웹 공개 폼 ${closedForms}개를 닫았다. 소유자가 설정으로 되돌릴 수 없다. (조치 ${actionId})`)
+      } else {
+        console.error(result.reason === 'already' ? FAILURE.already_blocked : (FAILURE[result.reason] ?? result.reason))
+        process.exitCode = 1
+      }
+      break
+    }
+    case 'unblock-publishing':
+      report(
+        await unblockWorkspacePublishing(target ?? '', { actor: flags.by ?? '', note: flags.note }),
+        '풀었다 — 내린 게시 · 폼은 그대로다(소유자가 다시 연다).',
+      )
       break
     default:
       console.error(USAGE)

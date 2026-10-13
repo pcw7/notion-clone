@@ -20,9 +20,12 @@ test('실패 까닭을 사람의 말로 — 모르는 까닭은 일반 문구', 
 test('★ 서버의 까닭마다 할 말이 있다 — 슬러그 둘(6c-2)도', () => {
   // `invalid_input` 은 일반 문구 그대로다(몸체가 틀린 것은 화면의 잘못)
   const reasons: Exclude<PublishFailure, 'invalid_input'>[] = [
-    'not_found', 'forbidden', 'not_page', 'trashed', 'policy_disabled', 'not_published', 'moderated', 'invalid_slug', 'slug_taken',
+    'not_found', 'forbidden', 'not_page', 'trashed', 'policy_disabled', 'publishing_blocked', 'not_published', 'moderated', 'invalid_slug', 'slug_taken',
   ]
   for (const reason of reasons) assert.notEqual(publishFailureMessage(reason), '바꾸지 못했습니다.', reason)
+  // 운영자의 게시 차단(6b-3a)은 소유자 정책과 다른 말 — 소유자가 설정으로 풀 수 없다
+  assert.notEqual(publishFailureMessage('publishing_blocked'), publishFailureMessage('policy_disabled'))
+  assert.match(publishFailureMessage('publishing_blocked'), /운영 정책/)
 })
 
 test('위 페이지의 게시 — 볼 수 없으면 이름 없이 · 빈 제목은 "제목 없음"', () => {
