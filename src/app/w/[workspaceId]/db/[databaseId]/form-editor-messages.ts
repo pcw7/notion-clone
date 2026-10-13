@@ -59,6 +59,16 @@ export function responseCountText(count: number, max: number | null): string {
   return `받은 응답 ${count}개${max === null ? '' : ` / 상한 ${max}개`}`
 }
 
+/** 한 사람당 한 번(7b-3 · 정본 ⑪)의 칸. */
+export const ONE_PER_RESPONDENT_LABEL = '한 사람당 한 번만 받기'
+
+/** 켰을 때의 한 줄 — 막는 것은 워크스페이스 멤버만의 폼뿐이다(웹 공개 폼은 응답자를 모른다). */
+export function onePerRespondentNote(access: FormAccessChoice): string {
+  return access === 'workspace'
+    ? '이미 응답한 멤버에게는 폼 대신 "이미 응답했습니다" 가 보입니다. 그 응답을 지우면 다시 낼 수 있습니다.'
+    : '워크스페이스 멤버만의 폼에서만 막습니다 — 웹 공개 폼은 누가 냈는지 알 수 없습니다.'
+}
+
 /** 닫힌 까닭 — 무엇을 고치면 다시 받는지까지. */
 export function closedBecauseText(reason: 'limit' | 'time'): string {
   return reason === 'limit'

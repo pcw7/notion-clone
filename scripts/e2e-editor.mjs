@@ -16201,6 +16201,72 @@ async function main() {
         String(byTime.status))
     }
 
+    if (sectionIf('폼의 한 사람당 한 번 (7b-3 · F-13-02)')) {
+      // 워크스페이스 멤버만의 폼에 편집 화면의 "한 사람당 한 번만 받기" 를 켠다 · 이 판의 사용자(멤버)가 한 번 내면 확인 화면에 "다른 응답
+      // 제출" 이 없다 · 다시 열면 폼 대신 "이미 응답했습니다" · 다시 낸 제출은 409 · 그 응답을 휴지통에 넣으면 폼이 돌아온다.
+      const stamp = Date.now().toString(36)
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `한 번 폼 표 ${stamp}` })).body.database
+      const made = (await api('POST', `/databases/${db.id}/forms`, { name: `한 번 신청서 ${stamp}` })).body?.form
+      const opened = await api('PATCH', `/forms/${made.viewId}`, { title: `한 번 신청 ${stamp}`, access: 'workspace' })
+      const address = `${BASE}/f/${opened.body?.form?.settings?.token}`
+
+      // ① 편집 화면에서 켠다 — 켜면 이미 낸 멤버에게 무엇이 보이는지 말한다
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}?v=${made.viewId}` })
+      await waitFor(`!!document.querySelector('[data-testid="form-one-per-respondent"]')`, 15000)
+      await clickSelector('[data-testid="form-one-per-respondent"]')
+      let saved = false
+      for (let i = 0; i < 30 && !saved; i += 1) {
+        saved = (await api('GET', `/forms/${made.viewId}`)).body?.form?.settings?.onePerRespondent === true
+        if (!saved) await sleep(150)
+      }
+      check('★ 편집 화면에서 "한 사람당 한 번만 받기" 를 켠다 — 서버 · 이미 낸 멤버에게 무엇이 보이는지 말한다',
+        saved && (await waitFor(`(document.querySelector('[data-testid="form-one-per-respondent-note"]')?.textContent ?? '').includes('이미 응답했습니다')`, 5000)),
+        JSON.stringify([saved, await evaluate(`document.querySelector('[data-testid="form-limits"]')?.textContent ?? null`)]))
+
+      // ② 한 번 낸다 — 확인 화면에 "다른 응답 제출" 이 없다
+      await send('Page.navigate', { url: address })
+      await waitFor(`!!document.querySelector('[data-testid="public-form-body"]')`, 15000)
+      await sleep(3200)
+      await clickSelector('[data-testid="public-form-body"] input[type="text"]:not([tabindex="-1"])')
+      await typeText(`한 번 응답 ${stamp}`)
+      await clickSelector('[data-testid="public-form-body"] button[type="submit"]')
+      const sent = await waitFor(`!!document.querySelector('[data-testid="public-form-sent"]')`, 10000)
+      check('★ 내면 확인 화면 — "다른 응답 제출" 이 없다',
+        sent && !(await evaluate(`!!document.querySelector('[data-testid="public-form-again"]')`)),
+        String(await evaluate(`document.querySelector('main')?.textContent?.slice(0, 160) ?? '(없음)'`)))
+
+      // ③ 다시 열면 폼 대신 "이미 응답했습니다"(제목은 보인다) · 다시 낸 제출은 409
+      await send('Page.navigate', { url: address })
+      check('★ 다시 열면 폼 대신 "이미 응답했습니다" — 제목은 보인다',
+        await waitFor(`(document.querySelector('[data-testid="public-form-answered"]')?.textContent ?? '').includes(${JSON.stringify(`한 번 신청 ${stamp}`)})
+          && !document.querySelector('[data-testid="public-form-body"]')`, 15000),
+        String(await evaluate(`document.querySelector('main')?.textContent?.slice(0, 160) ?? '(없음)'`)))
+      const again = await fetch(`${address}/submit`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: BASE, cookie: authed.cookie },
+        body: JSON.stringify({ submission: 'x', answers: {}, website: '' }),
+      })
+      check('다시 낸 제출은 409 already_submitted', again.status === 409 && (await again.json().catch(() => null))?.error === 'already_submitted', String(again.status))
+
+      // ④ 그 응답을 휴지통에 넣으면 폼이 돌아온다
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const rows = await dbQuery(
+        `SELECT p.id FROM page p JOIN block b ON b.id = p.id WHERE p.data_source_id = $1 AND NOT p.is_template AND b.lifecycle = 'live'`,
+        [db.dataSourceId],
+      )
+      const trashed = rows.length === 1 ? await api('POST', `/pages/${rows[0].id}/trash`, {}) : null
+      await send('Page.navigate', { url: address })
+      check('★ 그 응답을 휴지통에 넣으면 폼이 돌아온다',
+        trashed !== null && trashed.status < 300 && (await waitFor(`!!document.querySelector('[data-testid="public-form-body"]')`, 15000)),
+        JSON.stringify([rows.length, trashed?.status ?? null]))
+    }
+
     if (sectionIf('폼 — 서버 라우트 (7a-1 · F-13-01)')) {
       // 폼 뷰의 라우트 — 만들기(첫 질문은 제목) · 질문 바꾸기 · 설정 · 공개(토큰) · 거부 코드 · 표 화면의 탭에 선다(7a-3 부터 — 그 탭은
       // 편집 화면이다).

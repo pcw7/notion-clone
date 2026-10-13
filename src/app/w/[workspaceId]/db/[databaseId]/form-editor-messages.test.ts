@@ -3,6 +3,7 @@
  *
  *   ① 서버의 까닭마다 할 말 · 모르는 까닭 · 원형의 이름은 일반 문구
  *   ② 공개 주소의 모양
+ *   ⑤ 한 사람당 한 번(7b-3) — 켰을 때의 말이 공유에 따라 다르다(막는 것은 워크스페이스 멤버만의 폼뿐)
  */
 
 import { test } from 'node:test'
@@ -11,6 +12,7 @@ import assert from 'node:assert/strict'
 import type { FormFailure } from '../../../../../lib/database/form.ts'
 import {
   FORM_ACCESS_OPTIONS,
+  ONE_PER_RESPONDENT_LABEL,
   closedBecauseText,
   formAccessNotice,
   formAccessState,
@@ -19,6 +21,7 @@ import {
   isoOfLocalDateTime,
   limitOfDraft,
   localDateTimeOf,
+  onePerRespondentNote,
   responseCountText,
 } from './form-editor-messages.ts'
 
@@ -55,4 +58,11 @@ test('④ 응답 받기(7b-2) — 받은 수 · 닫힌 까닭 · 상한 칸 · �
   assert.equal(localDateTimeOf(null), '')
   assert.equal(isoOfLocalDateTime(''), null)
   assert.equal(isoOfLocalDateTime('2026-11-01'), undefined)
+})
+
+test('⑤ 한 사람당 한 번(7b-3) — 워크스페이스 멤버만이면 무엇이 보이는지 · 아니면 막지 않는다고', () => {
+  assert.equal(ONE_PER_RESPONDENT_LABEL, '한 사람당 한 번만 받기')
+  assert.match(onePerRespondentNote('workspace'), /이미 응답했습니다/)
+  assert.match(onePerRespondentNote('public'), /워크스페이스 멤버만의 폼에서만/)
+  assert.equal(onePerRespondentNote('closed'), onePerRespondentNote('public'), '닫힌 폼도 — 열 때 무엇을 고르느냐에 달렸다')
 })

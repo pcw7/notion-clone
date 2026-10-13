@@ -4555,6 +4555,41 @@ try {
     }
   }
 
+  console.log('\n[75] 폼의 한 사람당 한 번 (0101 / §3.6 끝 [보강] 폼 ⑪ · 7b-3조각)')
+  {
+    // 칸은 참 · 거짓 둘뿐이고 기본은 꺼짐이다(기존 폼은 바뀌는 것이 없다). 이미 냈는지는 칸이 아니라 판정이다.
+    const dbId = randomUUID()
+    const dsId = randomUUID()
+    const viewId = randomUUID()
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key,
+                          ancestor_path, perm_scope_id, properties, format, created_at, last_edited_at)
+       VALUES ($1, $2, 'database', 'workspace', $2, $3, '{}', $1, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      [dbId, wsId, `z${randomUUID().replace(/-/g, '')}`],
+    )
+    await client.query(`INSERT INTO database (id, created_at, updated_at) VALUES ($1, now(), now())`, [dbId])
+    await client.query(`INSERT INTO data_source (id, owner_database_id, name, created_at, updated_at) VALUES ($1, $2, '폼', now(), now())`, [dsId, dbId])
+    await client.query(`INSERT INTO database_data_source (database_id, data_source_id, order_idx) VALUES ($1, $2, 'a0')`, [dbId, dsId])
+    await client.query(
+      `INSERT INTO view (id, owner_kind, database_id, data_source_id, name, type, order_idx, configuration, created_at, updated_at)
+       VALUES ($1, 'database_view', $2, $3, '폼', 'form', 'a0', '{}'::jsonb, now(), now())`,
+      [viewId, dbId, dsId],
+    )
+    const made = await client.query(`INSERT INTO form_view (view_id) VALUES ($1) RETURNING one_per_respondent`, [viewId])
+    if (made.rows[0].one_per_respondent === false) ok('★ 칸을 주지 않으면 꺼진 채 — 기존 폼은 바뀌는 것이 없다')
+    else fail(`기본값이 false 가 아니다 — ${JSON.stringify(made.rows[0])}`)
+    await client.query('SAVEPOINT probe')
+    try {
+      await client.query(`UPDATE form_view SET one_per_respondent = NULL WHERE view_id = $1`, [viewId])
+      await client.query('ROLLBACK TO SAVEPOINT probe')
+      fail('비운 칸 — 거부되어야 하는데 통과했다')
+    } catch (e) {
+      await client.query('ROLLBACK TO SAVEPOINT probe')
+      if (e.code === '23502' && e.column === 'one_per_respondent') ok('비운 칸 — NOT NULL 이 거부함')
+      else fail(`비운 칸 — one_per_respondent 의 23502 가 아니라 ${e.column ?? '-'} ${e.code} (${e.message})`)
+    }
+  }
+
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
 } catch (e) {

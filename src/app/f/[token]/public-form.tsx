@@ -33,12 +33,15 @@ export function PublicFormView({
   submission,
   form,
   respondentName = null,
+  allowAnother = true,
 }: {
   token: string
   submission: string
   form: FormProps
   /** 워크스페이스 멤버만의 폼(7b-1)이면 응답자의 이름 — 응답에 이름이 남는다고 미리 말한다. 웹 공개 폼은 null(익명). */
   respondentName?: string | null
+  /** 확인 화면의 "다른 응답 제출" — 한 사람당 한 번인 폼의 멤버(7b-3)에게는 없다. */
+  allowAnother?: boolean
 }) {
   const [answers, setAnswers] = useState<Answers>({})
   const [busy, setBusy] = useState(false)
@@ -83,9 +86,11 @@ export function PublicFormView({
         <h1 className="pub-title">{form.confirmationTitle}</h1>
         {form.confirmationBody !== null && <p className="pub-form-description">{form.confirmationBody}</p>}
         {/* 새 화면 — 새 제출 토큰 */}
-        <a href={`/f/${token}`} className="pub-form-again" data-testid="public-form-again">
-          {ANOTHER_RESPONSE}
-        </a>
+        {allowAnother && (
+          <a href={`/f/${token}`} className="pub-form-again" data-testid="public-form-again">
+            {ANOTHER_RESPONSE}
+          </a>
+        )}
       </section>
     )
   }

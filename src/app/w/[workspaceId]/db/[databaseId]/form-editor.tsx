@@ -24,6 +24,7 @@ import { useBrowserOrigin } from '../../use-browser-origin'
 import {
   FORM_ACCESS_OPTIONS,
   NO_QUESTIONS,
+  ONE_PER_RESPONDENT_LABEL,
   closedBecauseText,
   formAccessNotice,
   formAccessState,
@@ -32,6 +33,7 @@ import {
   isoOfLocalDateTime,
   limitOfDraft,
   localDateTimeOf,
+  onePerRespondentNote,
   responseCountText,
 } from './form-editor-messages'
 
@@ -298,6 +300,22 @@ export function FormEditor({ workspaceId, initial }: { workspaceId: string; init
           onCommit={(iso) => void saveSettings({ closesAt: iso })}
           onInvalid={() => setError('마감 시각을 확인하세요.')}
         />
+        {/* 한 사람당 한 번(7b-3 · 정본 ⑪) — 공유와 따로 둔다: 막는 것은 워크스페이스 멤버만의 폼뿐이라 켰으면 그렇다고 함께 말한다 */}
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            data-testid="form-one-per-respondent"
+            checked={settings.onePerRespondent}
+            disabled={readOnly || busy}
+            onChange={(e) => void saveSettings({ onePerRespondent: e.target.checked })}
+          />
+          {ONE_PER_RESPONDENT_LABEL}
+        </label>
+        {settings.onePerRespondent && (
+          <p data-testid="form-one-per-respondent-note" className="text-xs text-neutral-500">
+            {onePerRespondentNote(settings.access)}
+          </p>
+        )}
       </div>
 
       {/* 공유 */}

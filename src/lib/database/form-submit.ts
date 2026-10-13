@@ -23,6 +23,13 @@
  * `access = 'workspace'` 면 공개 판정 다음에 **로그인 세션**을 묻는다(`resolveFormRespondent` — `resolveSessionContext` 그대로 · 발급자를
  * 늘리지 않는다). 그 워크스페이스의 멤버(게스트가 아닌)만 내고, 행의 만든 사람 · 활동의 행위자가 그 사람이다(`createRespondentRowIn`).
  * 방어 계층은 그대로 지난다 — 레이트리밋의 제출자는 그 사람이다.
+ *
+ * ──────────────────────────────────────────────────────────────────────
+ * 한 사람당 한 번(7b-3 · 정본 ⑪) — 열쇠는 로그인한 응답자 하나
+ * ──────────────────────────────────────────────────────────────────────
+ *
+ * 폼이 켰고 응답자가 멤버면, 그 사람이 이 폼으로 낸 살아 있는 응답이 있을 때 `already_submitted` 다(마감 다음 · 토큰 전). 웹 공개 폼은
+ * 응답자를 모른다 — 켜 두어도 막지 않는다(브라우저 지문은 쓰지 않는다). 넣는 트랜잭션에서 폼 행을 잠근 채 다시 본다(두 탭의 동시 제출).
  */
 
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
@@ -35,7 +42,7 @@ import { withReadTransaction, withTransaction, type Tx } from '../db/tx.ts'
 import type { WorkspaceId } from '../ids.ts'
 import { claimOnce, consume, type RateLimitRule } from '../rate-limit.ts'
 import { readSecurityPolicyIn } from '../workspace/security-policy.ts'
-import { FORM_QUESTION_TYPES, countFormResponsesIn, type FormQuestionType } from './form.ts'
+import { FORM_QUESTION_TYPES, countFormResponsesIn, hasRespondedIn, type FormQuestionType } from './form.ts'
 import { formClosedReason, type FormClosedReason } from './form-limits.ts'
 import { readOptionsOf } from './options.ts'
 import type { CellValue } from './property-types.ts'
@@ -81,6 +88,8 @@ export type PublicForm = {
   readonly questions: readonly PublicFormQuestion[]
   /** 닫혔다면 그 까닭(상한 · 마감 시각 — 7b-2 · 정본 ⑩). 닫힌 폼도 읽힌다 — 화면이 "마감했습니다" 라고 말한다. */
   readonly closedBecause: FormClosedReason | null
+  /** 한 사람당 한 번(7b-3 · 정본 ⑪) — 막는 것은 멤버 응답자뿐이다(`alreadyResponded`). */
+  readonly onePerRespondent: boolean
 }
 
 export const DEFAULT_SUBMIT_LABEL = '제출'
@@ -109,9 +118,10 @@ async function readPublicFormIn(tx: Tx, token: string): Promise<PublicForm | nul
     database_title: Record<string, unknown> | null
     max_responses: number | null
     closes_at: Date | null
+    one_per_respondent: boolean
   }>(
     `SELECT f.view_id, f.access, b.workspace_id, v.data_source_id, f.title, f.description, f.submit_label, f.confirmation_title, f.confirmation_body,
-            b.properties AS database_title, f.max_responses, f.closes_at
+            b.properties AS database_title, f.max_responses, f.closes_at, f.one_per_respondent
        FROM form_view f
        JOIN view v ON v.id = f.view_id AND v.type = 'form'
        JOIN block b ON b.id = v.database_id AND b.lifecycle = 'live'
@@ -158,6 +168,7 @@ async function readPublicFormIn(tx: Tx, token: string): Promise<PublicForm | nul
       { maxResponses: row.max_responses, closesAt: row.closes_at === null ? null : row.closes_at.toISOString() },
       row.max_responses === null ? 0 : await countFormResponsesIn(tx, row.view_id),
     ),
+    onePerRespondent: row.one_per_respondent,
     questions: questions.map((q) => ({
       propertyId: q.property_id,
       label: q.label ?? q.name,
@@ -195,6 +206,15 @@ export async function resolveFormRespondent(form: Pick<PublicForm, 'access' | 'w
     tx.queryMaybe<{ name: string }>(`SELECT name FROM "user" WHERE id = $1`, [session.context.userId]),
   )
   return { kind: 'member', context: session.context, name: user?.name ?? '' }
+}
+
+/**
+ * 이 응답자가 이미 냈는가(7b-3 · 정본 ⑪) — 폼이 한 사람당 한 번을 켰고 응답자가 멤버일 때만 묻는다(익명은 모른다 — 언제나 거짓).
+ * 화면은 폼 대신 "이미 응답했습니다" 를 보이고, 제출은 `already_submitted` 로 막는다.
+ */
+export async function alreadyResponded(form: Pick<PublicForm, 'viewId' | 'onePerRespondent'>, respondent: FormRespondent): Promise<boolean> {
+  if (!form.onePerRespondent || respondent.kind !== 'member') return false
+  return withReadTransaction((tx) => hasRespondedIn(tx, form.viewId, respondent.context.userId))
 }
 
 // ── 제출 토큰 ─────────────────────────────────────────────────────────
@@ -259,6 +279,8 @@ export type SubmitFailure =
   | 'invalid_value'
   /** 응답을 마감했다 — 상한에 닿았거나 마감 시각이 지났다(7b-2 · 정본 ⑩). */
   | 'form_closed'
+  /** 이미 냈다 — 한 사람당 한 번인 폼(7b-3 · 정본 ⑪). */
+  | 'already_submitted'
 
 export type SubmitResult =
   | { readonly ok: true; readonly value: { readonly pageId: string | null } }
@@ -285,6 +307,8 @@ export function submitFailureStatus(reason: SubmitFailure): number {
       return 404
     case 'form_closed':
       return 410
+    case 'already_submitted':
+      return 409
     case 'rate_limited':
       return 429
     case 'bad_origin':
@@ -311,6 +335,8 @@ export async function submitFormResponse(input: SubmitInput, now: number = Date.
   const member = respondent.kind === 'member' ? respondent.context : null
   // 마감 — 열 수 있는 폼에만 말한다(토큰 · 값 검사 전에 · 정본 ⑩)
   if (form.closedBecause !== null) return { ok: false, reason: 'form_closed' }
+  // 한 사람당 한 번 — 마감 다음 · 토큰 전(정본 ⑪). 익명이면 묻지 않는다
+  if (await alreadyResponded(form, respondent)) return { ok: false, reason: 'already_submitted' }
 
   const token = checkSubmissionToken(form.viewId, input.submission, now)
   if (typeof token === 'string') return { ok: false, reason: token }
@@ -332,8 +358,8 @@ export async function submitFormResponse(input: SubmitInput, now: number = Date.
   return withTransaction(async (tx): Promise<SubmitResult> => {
     // 토큰을 읽은 뒤 닫혔을 수 있다 — 같은 트랜잭션에서 다시 본다(닫기와 줄을 세운다)
     // 폼 행을 잠근다 — 동시 제출이 상한을 넘지 않게 그 사이 세기를 줄 세운다(7b-2 · 정본 ⑩)
-    const still = await tx.queryMaybe<{ max_responses: number | null; closes_at: Date | null }>(
-      `SELECT max_responses, closes_at FROM form_view WHERE view_id = $1 AND access = $3 AND token = $2 FOR UPDATE`,
+    const still = await tx.queryMaybe<{ max_responses: number | null; closes_at: Date | null; one_per_respondent: boolean }>(
+      `SELECT max_responses, closes_at, one_per_respondent FROM form_view WHERE view_id = $1 AND access = $3 AND token = $2 FOR UPDATE`,
       [form.viewId, input.token, form.access],
     )
     if (still === null) return { ok: false, reason: 'not_found' }
@@ -343,6 +369,10 @@ export async function submitFormResponse(input: SubmitInput, now: number = Date.
       now,
     )
     if (closed !== null) return { ok: false, reason: 'form_closed' }
+    // 같은 잠금 아래에서 다시 본다 — 같은 사람이 두 탭에서 동시에 내도 하나만(정본 ⑪)
+    if (member !== null && still.one_per_respondent && (await hasRespondedIn(tx, form.viewId, member.userId))) {
+      return { ok: false, reason: 'already_submitted' }
+    }
     const row =
       member === null
         ? await createAnonymousRowIn(tx, form.workspaceId, form.dataSourceId, parsed.cells)
