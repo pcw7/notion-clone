@@ -64,6 +64,7 @@ import {
 } from '../contracts/rich-text.ts'
 import { withTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
 import type { EditorBlock, EditorDoc } from '../editor/document.ts'
+import { customEmojiIdOfReaction, customEmojiReactionKey } from '../emoji/custom-emoji-rules.ts'
 import { isUuid } from '../ids.ts'
 import { notifyComment } from '../notification/fanout.ts'
 import { autoSubscribe } from '../notification/subscription.ts'
@@ -87,7 +88,7 @@ import {
  */
 export const MAX_COMMENT_LENGTH = 2000
 
-/** 반응 이모지의 바이트가 아니라 글자 수 상한. DB 의 CHECK 과 같은 값이다(0018). */
+/** 반응 이모지의 바이트가 아니라 글자 수 상한. DB 의 CHECK 과 같은 값이다(0018 · 커스텀 이모지 키는 따로 — 0098). */
 export const MAX_EMOJI_LENGTH = 16
 
 export type CommentFailure =
@@ -449,13 +450,18 @@ export type ToggleReactionInput = {
  * 같은 이모지를 다시 누르면 없앤다 — PK `(target_kind, target_id, user_id, emoji)` 가 곧 2P-Set 이다(정본 §3.9).
  *
  * 지워진 코멘트에는 반응할 수 없다. 내용이 없는 글에 붙은 반응은 무엇에 대한 반응인지 알 수 없다(D3 의 뒷면).
+ *
+ * 커스텀 이모지(7c-3d-2 · 정본 §3.4 [보강] 커스텀 이모지 ⑩)는 키 `custom_emoji:{id}`(받을 때 소문자로)다. **더하기**는 이 워크스페이스의
+ * 살아 있는 이모지만 — **빼기**는 지운 뒤에도 된다(먼저 지우고, 지운 것이 없을 때만 더하기를 판정한다).
  */
 export async function toggleReaction(
   ctx: SessionContext,
   input: ToggleReactionInput,
 ): Promise<CommentResult<{ readonly added: boolean }>> {
-  const emoji = typeof input.emoji === 'string' ? input.emoji.trim() : ''
-  if (emoji === '' || emoji.length > MAX_EMOJI_LENGTH || /\s/.test(emoji)) return fail('invalid_emoji')
+  const raw = typeof input.emoji === 'string' ? input.emoji.trim() : ''
+  const customId = customEmojiIdOfReaction(raw)
+  const emoji = customId === null ? raw : customEmojiReactionKey(customId)
+  if (customId === null && (emoji === '' || emoji.length > MAX_EMOJI_LENGTH || /\s/.test(emoji))) return fail('invalid_emoji')
   if (!REACTION_TARGETS.includes(input.targetKind)) return fail('invalid_emoji', '대상 종류가 올바르지 않습니다.')
   if (!isUuid(input.targetId)) return fail('not_found')
 
@@ -479,6 +485,13 @@ export async function toggleReaction(
     )
     if (removed.length > 0) return { ok: true, added: false } as const
 
+    if (customId !== null) {
+      const live = await tx.queryMaybe<{ id: string }>(
+        `SELECT id FROM custom_emoji WHERE id = $1 AND workspace_id = $2 AND deleted_at IS NULL`,
+        [customId, ctx.workspaceId],
+      )
+      if (live === null) return fail('invalid_emoji', '이 워크스페이스의 커스텀 이모지가 아니거나 지운 이모지입니다.')
+    }
     await tx.query(
       `INSERT INTO reaction (target_kind, target_id, user_id, emoji, created_at) VALUES ($1, $2, $3, $4, now())`,
       [input.targetKind, input.targetId, ctx.userId, emoji],

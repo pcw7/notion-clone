@@ -246,3 +246,12 @@ export async function emojiLabelsIn(
   for (const r of rows) out[r.id] = { name: r.name, deleted: r.deleted }
   return out
 }
+
+/** `emojiLabelsIn` 의 읽기 트랜잭션 판 — 코멘트 목록이 반응의 커스텀 이모지 이름을 함께 싣는다(7c-3d-2 · 정본 ⑩). */
+export async function readEmojiLabels(
+  ctx: SessionContext,
+  ids: readonly string[],
+): Promise<Record<string, { readonly name: string; readonly deleted: boolean } | null>> {
+  const unique = [...new Set(ids.filter(isUuid).map((id) => id.toLowerCase()))]
+  return withReadTransaction((tx) => emojiLabelsIn(tx, ctx.workspaceId, unique))
+}

@@ -25,7 +25,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 
-import { CommentReactions, type ReactionView } from './comment-reactions'
+import { CommentReactions, type EmojiLabel, type ReactionView } from './comment-reactions'
 
 const FOCUS_EVENT = 'nc:comment-focus'
 
@@ -71,6 +71,8 @@ type PanelState = {
   subscription: { level: string; source: string | null }
   me: string
   members: { userId: string; name: string }[]
+  /** 반응에 나온 커스텀 이모지의 이름(7c-3d-2) — 지운 것도. 이 워크스페이스에 없으면 null. */
+  emoji?: Record<string, EmojiLabel | null>
 }
 
 const LEVELS: readonly { value: string; label: string }[] = [
@@ -348,9 +350,11 @@ export function CommentPanel({
                         <p className="whitespace-pre-wrap text-sm">{textOf(comment.richText)}</p>
                         {/* 반응(7c-3d-1 · 정본 §3.9 [보강] 반응 화면) — 누를 수 있는가는 서버가 준 canComment 하나로. */}
                         <CommentReactions
+                          workspaceId={workspaceId}
                           reactions={comment.reactions ?? []}
                           me={state.me}
                           nameOf={(userId) => state.members.find((m) => m.userId === userId)?.name ?? null}
+                          emojiLabel={(id) => (state.emoji !== undefined && Object.hasOwn(state.emoji, id) ? state.emoji[id] : undefined)}
                           canReact={state.canComment}
                           busy={busy}
                           onToggle={(emoji) => void send(actionUrl, { action: 'react', targetKind: 'comment', targetId: comment.id, emoji })}
