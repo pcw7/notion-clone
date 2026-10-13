@@ -11,6 +11,7 @@
 
 import { useState } from 'react'
 
+import { useBrowserOrigin } from '../use-browser-origin'
 import { SITE_PANEL_NOTE, siteDomainFailureMessage, siteUrlOf } from './site-messages'
 
 const FIELD =
@@ -51,7 +52,8 @@ export function SitePanel({ workspaceId, initialName }: { workspaceId: string; i
     }
   }
 
-  const origin = typeof window === 'undefined' ? '' : window.location.origin
+  // 이 앱의 주소 — 하이드레이션 동안은 null(서버와 같게) · 그동안은 예시 줄을 그리지 않는다(`use-browser-origin.ts`)
+  const origin = useBrowserOrigin()
   return (
     <section data-testid="site-panel" className="mt-6 flex flex-col gap-3">
       <h2 className="text-sm font-medium">사이트 주소</h2>
@@ -82,7 +84,7 @@ export function SitePanel({ workspaceId, initialName }: { workspaceId: string; i
           </button>
         )}
       </form>
-      {name !== null && (
+      {name !== null && origin !== null && (
         <p className="text-xs text-neutral-600 dark:text-neutral-400" data-testid="site-example">
           게시한 페이지의 주소: <code>{siteUrlOf(origin, name, null)}</code>
         </p>
