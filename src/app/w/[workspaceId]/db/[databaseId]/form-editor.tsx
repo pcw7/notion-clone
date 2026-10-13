@@ -20,7 +20,7 @@
 import { useState } from 'react'
 
 import type { FormDetail, FormQuestion } from '@/lib/database/form'
-import { FORM_PUBLIC_HINT, NO_QUESTIONS, formEditorFailureMessage, formUrlOf } from './form-editor-messages'
+import { FORM_ACCESS_OPTIONS, NO_QUESTIONS, formAccessNotice, formAccessState, formEditorFailureMessage, formUrlOf } from './form-editor-messages'
 
 const FIELD =
   'w-full rounded border border-neutral-200 bg-transparent px-2 py-1 text-sm outline-none focus:border-neutral-400 disabled:opacity-60 dark:border-neutral-700'
@@ -82,7 +82,7 @@ export function FormEditor({ workspaceId, initial }: { workspaceId: string; init
   }
 
   const settings = form.settings
-  const address = settings.access === 'public' && settings.token !== null && typeof window !== 'undefined' ? formUrlOf(window.location.origin, settings.token) : null
+  const address = settings.access !== 'closed' && settings.token !== null && typeof window !== 'undefined' ? formUrlOf(window.location.origin, settings.token) : null
 
   return (
     <section data-testid="form-editor" className="flex max-w-2xl flex-col gap-6">
@@ -255,7 +255,30 @@ export function FormEditor({ workspaceId, initial }: { workspaceId: string; init
       <div className="flex flex-col gap-2" data-testid="form-share">
         <h2 className="text-sm font-medium">공유</h2>
         {!form.policyAllows && <p className="text-xs text-amber-700 dark:text-amber-400">워크스페이스 정책이 웹 공개를 막았습니다 — 공개된 폼도 열리지 않습니다.</p>}
-        {settings.access === 'closed' && <p className="text-xs text-neutral-500">{FORM_PUBLIC_HINT}</p>}
+        {form.canPublish ? (
+          // 셋 중 하나(7b-1 · 정본 ⑨) — 웹 공개는 정책이 막으면 고를 수 없다(이미 공개된 것은 다른 것으로 바꿀 수 있다)
+          <div role="radiogroup" aria-label="폼 공유" data-testid="form-access" data-access={settings.access} className="flex flex-col gap-1">
+            {FORM_ACCESS_OPTIONS.map((option) => (
+              <label key={option.access} className="flex items-start gap-2 text-sm">
+                <input
+                  type="radio"
+                  name="form-access"
+                  data-testid={`form-access-${option.access}`}
+                  checked={settings.access === option.access}
+                  disabled={busy || (option.access === 'public' && settings.access !== 'public' && !form.policyAllows)}
+                  onChange={() => void saveSettings({ access: option.access }, formAccessNotice(option.access))}
+                  className="mt-1"
+                />
+                <span className="flex flex-col">
+                  <span>{option.label}</span>
+                  <span className="text-xs text-neutral-500">{option.hint}</span>
+                </span>
+              </label>
+            ))}
+          </div>
+        ) : (
+          formAccessState(settings.access) !== null && <p className="text-xs text-neutral-500">{formAccessState(settings.access)}</p>
+        )}
         {address !== null && (
           <div className="flex items-center gap-1">
             <input
@@ -273,25 +296,6 @@ export function FormEditor({ workspaceId, initial }: { workspaceId: string; init
               열기
             </a>
           </div>
-        )}
-        {form.canPublish ? (
-          <button
-            type="button"
-            data-testid="form-access"
-            data-access={settings.access}
-            disabled={busy || (settings.access === 'closed' && !form.policyAllows)}
-            onClick={() =>
-              void saveSettings(
-                { access: settings.access === 'public' ? 'closed' : 'public' },
-                settings.access === 'public' ? '폼을 닫았습니다. 그 주소로는 응답을 받지 않습니다.' : '폼을 웹에 공개했습니다.',
-              )
-            }
-            className={`self-start ${settings.access === 'public' ? BUTTON : 'rounded bg-blue-600 px-3 py-1 text-xs text-white hover:bg-blue-700 disabled:opacity-50'}`}
-          >
-            {settings.access === 'public' ? '공개 닫기' : '웹에 공개'}
-          </button>
-        ) : (
-          settings.access === 'public' && <p className="text-xs text-neutral-500">이 폼은 웹에 공개되어 있습니다.</p>
         )}
       </div>
 

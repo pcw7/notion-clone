@@ -42,7 +42,10 @@ const MAX_VIEW_NAME = 100
 const LIMITS = { title: 200, description: 2000, submitLabel: 40, confirmationTitle: 200, confirmationBody: 2000, label: 200, helpText: 1000 }
 export const MAX_FORM_QUESTIONS = 50
 
-export type FormAccess = 'closed' | 'public'
+/** 닫힘 · 웹 공개(익명) · 워크스페이스 멤버만(응답자를 남긴다 — 7b-1 · 정본 ⑨). */
+export type FormAccess = 'closed' | 'public' | 'workspace'
+
+export const FORM_ACCESS: readonly FormAccess[] = ['closed', 'public', 'workspace']
 
 export type FormSettings = {
   readonly title: string | null
@@ -328,7 +331,7 @@ export async function updateFormSettings(ctx: SessionContext, viewId: string, pa
   const input = patch as Record<string, unknown>
   const known = new Set<string>([...TEXT_FIELDS.map(([key]) => key), 'access'])
   if (Object.keys(input).length === 0 || Object.keys(input).some((key) => !known.has(key))) return fail('invalid_input')
-  if (input.access !== undefined && input.access !== 'closed' && input.access !== 'public') return fail('invalid_input')
+  if (input.access !== undefined && !(FORM_ACCESS as readonly unknown[]).includes(input.access)) return fail('invalid_input')
   const sets: { column: string; value: string | null }[] = []
   for (const [key, column, max] of TEXT_FIELDS) {
     if (!(key in input)) continue
@@ -352,7 +355,7 @@ export async function updateFormSettings(ctx: SessionContext, viewId: string, pa
     }
     if (accessChanges) {
       if (!can(gate.caps, 'manage_perm')) return fail('forbidden')
-      // 여는 것만 정책을 묻는다 — 닫는 것은 언제나 된다(웹 게시와 같다)
+      // 웹에 여는 것만 정책을 묻는다 — 닫는 것은 언제나 된다(웹 게시와 같다) · 워크스페이스 멤버만은 밖으로 내보내는 것이 아니다(⑨)
       if (access === 'public' && !(await readSecurityPolicyIn(tx, ctx.workspaceId)).allowPublish) return fail('policy_disabled')
     }
 
@@ -374,7 +377,7 @@ export async function updateFormSettings(ctx: SessionContext, viewId: string, pa
     if (accessChanges) {
       await recordForContextIn(tx, ctx, 'page.publish_changed', {
         target: { type: 'page', id: gate.databaseId },
-        metadata: { change: access === 'public' ? 'form_open' : 'form_close', viewId },
+        metadata: { change: access === 'public' ? 'form_open' : access === 'workspace' ? 'form_open_workspace' : 'form_close', viewId },
       })
     }
     return { ok: true, value: await readFormIn(tx, ctx, gate) } as const

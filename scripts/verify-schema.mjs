@@ -4324,8 +4324,9 @@ try {
       }
     }
     const update = (set) => `UPDATE form_view SET ${set} WHERE view_id = $1`
-    await rejects('★ 토큰 없이 공개', update(`access = 'public', token = NULL`), [viewId], 'ck_form_view_public_token')
-    await rejects('모르는 공개 범위', update(`access = 'workspace'`), [viewId], 'ck_form_view_access')
+    // 0099 가 이름을 바꿨다(공개만이 아니라 닫지 않았으면 토큰이 있다) · 'workspace' 는 이제 아는 값이다(7b-1)
+    await rejects('★ 토큰 없이 공개', update(`access = 'public', token = NULL`), [viewId], 'ck_form_view_open_token')
+    await rejects('모르는 공개 범위', update(`access = 'everyone'`), [viewId], 'ck_form_view_access')
     await rejects('모양이 틀린 토큰', update(`token = 'short'`), [viewId], 'ck_form_view_token')
     await rejects('빈 제목', update(`title = ''`), [viewId], 'ck_form_view_title')
     await rejects('41자 제출 문구', update(`submit_label = repeat('x', 41)`), [viewId], 'ck_form_view_submit')
@@ -4475,6 +4476,47 @@ try {
     await rejects('uuid 가 아닌 커스텀 키', 'custom_emoji:party-parrot')
     await rejects('17자 글', 'x'.repeat(17))
     await rejects('빈 글', '')
+  }
+
+  console.log('\n[73] 워크스페이스 멤버만의 폼 (0099 / §3.6 끝 [보강] 폼 ⑨ · 7b-1조각)')
+  {
+    // access 는 셋(closed · public · workspace) · 닫지 않았으면 토큰이 있다(주소는 공개와 같은 /f/{토큰} 하나).
+    const dbId = randomUUID()
+    const dsId = randomUUID()
+    const viewId = randomUUID()
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key,
+                          ancestor_path, perm_scope_id, properties, format, created_at, last_edited_at)
+       VALUES ($1, $2, 'database', 'workspace', $2, $3, '{}', $1, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      [dbId, wsId, `z${randomUUID().replace(/-/g, '')}`],
+    )
+    await client.query(`INSERT INTO database (id, created_at, updated_at) VALUES ($1, now(), now())`, [dbId])
+    await client.query(`INSERT INTO data_source (id, owner_database_id, name, created_at, updated_at) VALUES ($1, $2, '폼', now(), now())`, [dsId, dbId])
+    await client.query(`INSERT INTO database_data_source (database_id, data_source_id, order_idx) VALUES ($1, $2, 'a0')`, [dbId, dsId])
+    await client.query(
+      `INSERT INTO view (id, owner_kind, database_id, data_source_id, name, type, order_idx, configuration, created_at, updated_at)
+       VALUES ($1, 'database_view', $2, $3, '폼', 'form', 'a0', '{}'::jsonb, now(), now())`,
+      [viewId, dbId, dsId],
+    )
+    const token = 'W'.repeat(22)
+    await client.query(`INSERT INTO form_view (view_id, access, token) VALUES ($1, 'workspace', $2)`, [viewId, token])
+    ok('★ 워크스페이스 멤버만의 폼 — 토큰과 함께 통과한다')
+    const rejects = async (label, sql, params, constraint) => {
+      await client.query('SAVEPOINT probe')
+      try {
+        await client.query(sql, params)
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        fail(`${label} — 거부되어야 하는데 통과했다`)
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        if (e.code === '23514' && e.constraint === constraint) ok(`${label} — ${constraint} 가 거부함`)
+        else fail(`${label} — ${constraint} 의 23514 가 아니라 ${e.constraint ?? '-'} ${e.code} (${e.message})`)
+      }
+    }
+    await rejects('★ 워크스페이스 멤버만인데 토큰이 없다', `UPDATE form_view SET token = NULL WHERE view_id = $1`, [viewId], 'ck_form_view_open_token')
+    await rejects('모르는 접근', `UPDATE form_view SET access = 'everyone' WHERE view_id = $1`, [viewId], 'ck_form_view_access')
+    await client.query(`UPDATE form_view SET access = 'closed', token = NULL WHERE view_id = $1`, [viewId])
+    ok('닫힌 폼은 토큰이 없어도 된다')
   }
 
   await client.query('ROLLBACK')

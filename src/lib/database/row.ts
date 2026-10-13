@@ -487,6 +487,27 @@ export async function createAnonymousRowIn(
 }
 
 /**
+ * 워크스페이스 멤버만의 폼(7b-1 · 정본 [보강] 폼 ⑨)의 응답 — 익명 응답과 같은 길(쓰기의 자격은 그 폼 · 그 사람의 데이터베이스 권한을
+ * 묻지 않는다)이되 **만든 사람 · 활동의 행위자가 그 사람**이다. 세션 컨텍스트는 신원으로만 쓴다(권한 판정에 넣지 않는다).
+ */
+export async function createRespondentRowIn(
+  tx: Tx,
+  respondent: SessionContext,
+  dataSourceId: string,
+  cells: readonly RowCell[],
+): Promise<RowResult<RowSummary>> {
+  const ds = await loadLiveDataSource(tx, { workspaceId: respondent.workspaceId }, dataSourceId)
+  if (ds === null) return { ok: false, reason: 'not_found' } as const
+  const gate = await readSchemaGate(tx, dataSourceId, ds)
+  const prepared = prepareCells(gate, [...cells, ...defaultCells(gate, cells)])
+  if (isRowFailure(prepared)) return prepared
+  return insertRowIn(tx, { workspaceId: respondent.workspaceId, userId: respondent.userId }, gate, dataSourceId, prepared, {
+    isTemplate: false,
+    origin: 'user',
+  })
+}
+
+/**
  * 행 넣기의 몸체 — 사람이 만드는 행(`createRowIn`)과 익명 응답(`createAnonymousRowIn`)이 함께 쓴다. 권한 · 값 검증은 부르는 쪽이 끝냈다.
  * `actor.userId` 가 null 이면 만든 사람 · 고친 사람 · 활동의 행위자가 비어 있다.
  */
