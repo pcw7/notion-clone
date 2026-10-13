@@ -20,7 +20,7 @@ import { TOC_TYPE, headingsOfBlocks, tocEntries } from '@/lib/block/toc'
 import { BREADCRUMB_TYPE } from '@/lib/block/breadcrumb'
 import { COLUMN_RATIO_KEY, PAGE_TYPE } from '@/lib/block/types'
 import { isSafeLinkUrl } from '@/lib/contracts/link-url'
-import { mentionTarget, toPlainText, type RichTextRun } from '@/lib/contracts/rich-text'
+import { customEmojiIdOfRun, mentionTarget, toPlainText, type RichTextRun } from '@/lib/contracts/rich-text'
 import type { EditorBlock } from '@/lib/editor/document'
 import { renderEquation } from '@/lib/editor/equation-render'
 import type { PublicPageView } from '@/lib/publish/public-read'
@@ -42,6 +42,11 @@ export function titleText(runs: readonly RichTextRun[] | undefined): string {
 /** 공개 파일의 주소 — 블록 id 로 연다(파일 id 로 열지 않는다 · 정본 [보강] 공개 화면 ⑨). */
 export function publicFileHref(view: Pick<PublicPageView, 'token'>, blockId: string, kind: 'image' | 'icon'): string {
   return `/p/${view.token}/blocks/${blockId}/${kind}`
+}
+
+/** 블록 제목 안의 커스텀 이모지 그림(7c-3c) — 블록 id 로 연다(정본 §3.4 [보강] 커스텀 이모지 ⑨). */
+export function publicEmojiHref(view: Pick<PublicPageView, 'token'>, blockId: string, emojiId: string): string {
+  return `/p/${view.token}/blocks/${blockId}/emoji/${emojiId}`
 }
 
 /** 헤딩의 앵커 — 목차가 가리킨다. */
@@ -66,13 +71,25 @@ function decorate(run: RichTextRun, content: ReactNode): ReactNode {
   return node
 }
 
-function RunView({ run, view }: { run: RichTextRun; view: PublicPageView }): ReactNode {
+function RunView({ run, view, blockId }: { run: RichTextRun; view: PublicPageView; blockId?: string }): ReactNode {
   if (run.type === 'equation') {
     const expression = run.equation?.expression ?? run.plain_text ?? ''
     const drawn = renderEquation(katex, expression, false)
     return decorate(run, drawn.ok ? <span className="pub-equation" dangerouslySetInnerHTML={{ __html: drawn.html }} /> : <code>{expression}</code>)
   }
   if (run.type === 'mention') {
+    // 커스텀 이모지(7c-3c) — 블록을 아는 자리는 그림(공개 경로 · 블록 id 로 연다), 모르는 자리(캡션 · 표 칸)와 지운 것은 `:이름:` 글자,
+    // 이 워크스페이스에 없으면 그리지 않는다(정본 ⑨).
+    const emojiId = customEmojiIdOfRun(run)?.toLowerCase()
+    if (emojiId !== undefined) {
+      const label = view.emoji.get(emojiId)
+      if (label === undefined) return null
+      if (label.deleted || blockId === undefined) return decorate(run, <span className="pub-emoji-text">:{label.name}:</span>)
+      return (
+        // eslint-disable-next-line @next/next/no-img-element -- 공개 화면은 최적화 경로를 거치지 않는다(토큰 경로)
+        <img className="pub-emoji" src={publicEmojiHref(view, blockId, emojiId)} alt={`:${label.name}:`} title={`:${label.name}:`} referrerPolicy="no-referrer" />
+      )
+    }
     const target = mentionTarget(run)
     if (target?.kind === 'page') {
       const title = view.pages.get(target.id)
@@ -92,8 +109,12 @@ function RunView({ run, view }: { run: RichTextRun; view: PublicPageView }): Rea
   return href === null ? body : <a href={href} rel="noopener noreferrer nofollow" target="_blank">{body}</a>
 }
 
-export function RichText({ runs, view }: { runs: readonly RichTextRun[]; view: PublicPageView }): ReactNode {
-  return runs.map((run, i) => <RunView key={i} run={run} view={view} />)
+/**
+ * 런들을 그린다. `blockId` 는 이 런들이 그 블록의 제목일 때만 준다 — 커스텀 이모지의 그림은 블록 id 로 열기 때문이다(7c-3c). 주지 않으면
+ * (캡션 · 표 칸) 이모지는 `:이름:` 글자다.
+ */
+export function RichText({ runs, view, blockId }: { runs: readonly RichTextRun[]; view: PublicPageView; blockId?: string }): ReactNode {
+  return runs.map((run, i) => <RunView key={i} run={run} view={view} blockId={blockId} />)
 }
 
 // ── 블록 ──────────────────────────────────────────────────────────────
@@ -112,7 +133,7 @@ export function Blocks({ blocks, view }: { blocks: readonly EditorBlock[]; view:
       while (i < blocks.length && blocks[i]!.type === kind) items.push(blocks[i++]!)
       const children = items.map((item) => (
         <li key={item.id} data-color={colorOf(item)}>
-          <RichText runs={item.title} view={view} />
+          <RichText runs={item.title} view={view} blockId={item.id} />
           {item.children && item.children.length > 0 && <Blocks blocks={item.children} view={view} />}
         </li>
       ))
@@ -141,7 +162,7 @@ function Block({ block, view }: { block: EditorBlock; view: PublicPageView }): R
     case 'paragraph':
       return (
         <div className="pub-block" data-color={color}>
-          <p><RichText runs={block.title} view={view} /></p>
+          <p><RichText runs={block.title} view={view} blockId={block.id} /></p>
           <Children block={block} view={view} />
         </div>
       )
@@ -151,7 +172,7 @@ function Block({ block, view }: { block: EditorBlock; view: PublicPageView }): R
       const Tag = (`h${Number(block.type.slice(-1)) + 1}`) as 'h2' | 'h3' | 'h4'
       return (
         <div className="pub-block" data-color={color}>
-          <Tag id={anchorOf(block.id)} className={`pub-${block.type}`}><RichText runs={block.title} view={view} /></Tag>
+          <Tag id={anchorOf(block.id)} className={`pub-${block.type}`}><RichText runs={block.title} view={view} blockId={block.id} /></Tag>
           <Children block={block} view={view} />
         </div>
       )
@@ -161,7 +182,7 @@ function Block({ block, view }: { block: EditorBlock; view: PublicPageView }): R
       return (
         <div className="pub-block pub-todo" data-color={color} data-checked={checked}>
           <span className="pub-todo-box" role="img" aria-label={checked ? '완료' : '할 일'}>{checked ? '☑' : '☐'}</span>
-          <span className="pub-todo-text"><RichText runs={block.title} view={view} /></span>
+          <span className="pub-todo-text"><RichText runs={block.title} view={view} blockId={block.id} /></span>
           <Children block={block} view={view} />
         </div>
       )
@@ -169,21 +190,21 @@ function Block({ block, view }: { block: EditorBlock; view: PublicPageView }): R
     case 'toggle':
       return (
         <details className="pub-block pub-toggle" data-color={color}>
-          <summary><RichText runs={block.title} view={view} /></summary>
+          <summary><RichText runs={block.title} view={view} blockId={block.id} /></summary>
           <Children block={block} view={view} />
         </details>
       )
     case 'quote':
       return (
         <blockquote className="pub-block pub-quote" data-color={color}>
-          <RichText runs={block.title} view={view} />
+          <RichText runs={block.title} view={view} blockId={block.id} />
           <Children block={block} view={view} />
         </blockquote>
       )
     case 'callout':
       return (
         <aside className="pub-block pub-callout" data-color={color}>
-          <RichText runs={block.title} view={view} />
+          <RichText runs={block.title} view={view} blockId={block.id} />
           <Children block={block} view={view} />
         </aside>
       )

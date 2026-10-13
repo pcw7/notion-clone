@@ -14,7 +14,9 @@
  * 이유는 말하지 않는다 — 열 수 없으면 모두 null(404).
  */
 
+import { readTitle } from '../block/page.ts'
 import { pageIconOfFormat, readPageIcon } from '../block/page-icon.ts'
+import { customEmojiIdOfRun } from '../contracts/rich-text.ts'
 import { readImageSource } from '../block/image.ts'
 import { PAGE_TYPE } from '../block/types.ts'
 import { withReadTransaction, type Tx } from '../db/tx.ts'
@@ -95,6 +97,45 @@ export async function readPublicBlockFile(token: string, blockId: string, kind: 
   if (found === null) return null
 
   // 바이트는 스냅샷 밖에서 읽는다 — 파일은 id 로 불변이다(내용을 바꾸면 새 파일이다)
+  const bytes = await fileStorage().read(found.file.storage_key)
+  if (bytes === null) return null
+  return { bytes, mime: found.file.mime, sizeBytes: Number(found.file.size_bytes), robots: found.robots, aiCrawler: found.aiCrawler }
+}
+
+/**
+ * 블록 제목 안의 커스텀 이모지 그림(7c-3c · 정본 §3.4 [보강] 커스텀 이모지 ⑨) — 블록 id 로 연다(이모지 id 로 열지 않는다).
+ *
+ *   토큰 → 그 블록이 든 페이지(블록이 페이지면 그 자신)가 이 토큰으로 열린다 → **그 블록의 제목 런에 그 이모지가 지금 있다** →
+ *   그 이모지가 이 워크스페이스에 살아 있다 → 그 이모지의 파일
+ *
+ * 그래서 공개 주소를 알아도 다른 이모지를 찍어 읽을 수 없고, 본문에서 지우거나 이모지를 지우면 그 주소도 닫힌다. 열 수 없으면 null.
+ */
+export async function readPublicEmojiFile(token: string, blockId: string, emojiId: string): Promise<PublicFile | null> {
+  if (!isUuid(blockId) || !isUuid(emojiId)) return null
+  const wanted = emojiId.toLowerCase()
+  const found = await withReadTransaction(async (tx) => {
+    const access = await resolvePublicPageIn(tx, token)
+    if (!access.ok) return null
+    const root = access.value
+
+    const block = await tx.queryMaybe<BlockRow>(
+      `SELECT id, type, ancestor_path, properties, format FROM block WHERE id = $1 AND workspace_id = $2`,
+      [blockId, root.workspaceId],
+    )
+    if (block === null) return null
+    if (!readTitle(block.properties).some((run) => customEmojiIdOfRun(run)?.toLowerCase() === wanted)) return null
+    const pageId = block.type === PAGE_TYPE ? block.id : await ownerPageOf(tx, block.ancestor_path)
+    if (pageId === null) return null
+    if (!(await openablePagesIn(tx, root.workspaceId, root.rootId, [pageId])).has(pageId)) return null
+
+    const file = await tx.queryMaybe<{ storage_key: string; mime: string; size_bytes: string }>(
+      `SELECT f.storage_key, f.mime, f.size_bytes FROM custom_emoji e JOIN file f ON f.id = e.file_id AND f.workspace_id = e.workspace_id
+        WHERE e.id = $1 AND e.workspace_id = $2 AND e.deleted_at IS NULL`,
+      [wanted, root.workspaceId],
+    )
+    return file === null ? null : { file, robots: root.robots, aiCrawler: root.aiCrawler }
+  })
+  if (found === null) return null
   const bytes = await fileStorage().read(found.file.storage_key)
   if (bytes === null) return null
   return { bytes, mime: found.file.mime, sizeBytes: Number(found.file.size_bytes), robots: found.robots, aiCrawler: found.aiCrawler }

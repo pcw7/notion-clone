@@ -8,6 +8,8 @@
  *   ③ ★ 블록이 **지금** 가리키는 파일만 — 종류가 다르면(이미지 주소로 페이지 · 아이콘 주소로 이미지) 없다 · 이모지 아이콘 · 바깥
  *      주소 이미지는 없다 · 블록에 남의 워크스페이스 파일 id 를 박아도 없다
  *   ④ 해제 · 만료 · 모양이 틀린 id 는 없다
+ *   ⑤ ★ 인라인 커스텀 이모지(7c-3c) — 블록 id 로 연다: 그 블록의 제목에 지금 있는 이모지만 · 페이지 제목도 · 닫힌 하위는 없다 · 지우면
+ *      없다 · 본문에서 빼면 없다 · 공개 읽기가 이름을 싣는다(지운 것도)
  */
 
 import { test, describe, before, after } from 'node:test'
@@ -15,7 +17,8 @@ import assert from 'node:assert/strict'
 
 import { createPage, titleFromPlainText } from '../block/page.ts'
 import { savePageBody } from '../block/save-page-body.ts'
-import { textRun } from '../contracts/rich-text.ts'
+import { customEmojiMentionRun, textRun } from '../contracts/rich-text.ts'
+import { createCustomEmoji, deleteCustomEmoji } from '../emoji/custom-emoji.ts'
 import { query } from '../db/pool.ts'
 import type { EditorBlock } from '../editor/document.ts'
 import { uploadFile } from '../file/file.ts'
@@ -23,8 +26,9 @@ import { setFileStorage, type FileStorage } from '../file/storage.ts'
 import type { BlockId } from '../ids.ts'
 import { stopInheriting } from '../permissions/acl.ts'
 import { createBareWorkspace, createUser, joinAs, probeDatabase, type Actor } from '../testing/db-fixtures.ts'
-import { readPublicBlockFile } from './public-file.ts'
+import { readPublicBlockFile, readPublicEmojiFile } from './public-file.ts'
 import { publishPage, unpublishPage } from './public-link.ts'
+import { readPublicPage } from './public-read.ts'
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'
 
@@ -211,5 +215,93 @@ describe('④ 해제 · 만료 · 모양', () => {
     await query(`UPDATE public_link SET expires_at = now() - interval '1 minute' WHERE node_id = $1`, [doc])
     assert.equal(await fillOf(token, image, 'image'), null)
     assert.equal(await readPublicBlockFile(token, 'not-a-uuid', 'image'), null)
+  })
+})
+
+// ── ⑤ 인라인 커스텀 이모지 ────────────────────────────────────────────
+
+describe('⑤ ★ 인라인 커스텀 이모지(7c-3c)', () => {
+  const emojiOf = async (by: Actor, fill: number, name: string): Promise<string> => {
+    const made = await createCustomEmoji(by.ctx, { name: `${name}-${(seq += 1)}`, fileId: await fileOf(by, fill) })
+    assert.ok(made.ok, JSON.stringify(made))
+    return made.value.id
+  }
+  /** 이모지가 든 문단 하나(+ 하위 참조)를 본문으로 쓴다. 그 문단의 id. */
+  const withEmoji = async (by: Actor, pageId: BlockId, emojiIds: readonly string[], refs: readonly string[] = []): Promise<string> => {
+    const id = crypto.randomUUID()
+    const blocks: EditorBlock[] = [
+      { id, type: 'paragraph', title: [textRun('파티 '), ...emojiIds.map((e) => customEmojiMentionRun(e))] },
+      ...refs.map((ref) => ({ id: ref, type: 'page', title: [] }) as EditorBlock),
+    ]
+    const saved = await savePageBody(by.ctx, pageId, { blocks })
+    assert.ok(saved.ok, JSON.stringify(saved))
+    return id
+  }
+  const emojiFill = async (token: string, blockId: string, emojiId: string) => {
+    const file = await readPublicEmojiFile(token, blockId, emojiId)
+    return file === null ? null : file.bytes[8]
+  }
+
+  test('그 블록의 제목에 지금 있는 이모지만 · 다른 이모지 · 닫힌 하위 · 모양이 틀린 id 는 없다 · 대문자 id 도 같다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { boss } = await office()
+    const party = await emojiOf(boss, 21, 'party')
+    const other = await emojiOf(boss, 22, 'other')
+    const doc = await pageNamed(boss, unique('이모지 루트'))
+    const cut = await pageNamed(boss, '닫힌 하위', doc)
+    const para = await withEmoji(boss, doc, [party], [cut])
+    const cutPara = await withEmoji(boss, cut, [party])
+    assert.ok((await stopInheriting(boss.ctx, cut)).ok)
+    const token = await tokenOf(boss, doc)
+
+    assert.equal(await emojiFill(token, para, party), 21)
+    assert.equal(await emojiFill(token, para, party.toUpperCase()), 21)
+    assert.equal(await emojiFill(token, para, other), null, '그 블록에 없는 이모지 — 이모지 id 만으로 열지 않는다')
+    assert.equal(await emojiFill(token, cutPara, party), null, '이 토큰으로 열리지 않는 페이지의 블록')
+    assert.equal(await emojiFill(token, 'not-a-uuid', party), null)
+    assert.equal(await emojiFill(token, para, 'not-a-uuid'), null)
+  })
+
+  test('페이지 제목의 이모지 · 지우면 없다 · 본문에서 빼면 없다 · 공개 읽기가 이름을 싣는다(지운 것도)', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { boss } = await office()
+    const party = await emojiOf(boss, 31, 'party')
+    const titled = await emojiOf(boss, 32, 'titled')
+    const doc = await pageNamed(boss, unique('이모지 제목'))
+    await query(`UPDATE block SET properties = jsonb_set(properties, '{title}', $2::jsonb) WHERE id = $1`, [
+      doc,
+      JSON.stringify([textRun('제목 '), customEmojiMentionRun(titled)]),
+    ])
+    const para = await withEmoji(boss, doc, [party])
+    const token = await tokenOf(boss, doc)
+
+    assert.equal(await emojiFill(token, doc, titled), 32, '페이지 제목 — 블록이 그 페이지 자신이다')
+    const read = await readPublicPage(token)
+    assert.ok(read.ok)
+    const names = Object.fromEntries([...read.value.emoji].map(([id, label]) => [id, label]))
+    assert.equal(names[party]?.deleted, false)
+    assert.equal(names[titled]?.deleted, false)
+
+    assert.ok((await deleteCustomEmoji(boss.ctx, party)).ok)
+    assert.equal(await emojiFill(token, para, party), null, '지운 이모지')
+    const after = await readPublicPage(token)
+    assert.ok(after.ok)
+    assert.equal(after.value.emoji.get(party)?.deleted, true, '지운 것도 이름을 싣는다(:이름: 글자로 그린다)')
+
+    await withEmoji(boss, doc, [])
+    assert.equal(await emojiFill(token, doc, titled), 32, '본문을 바꿔도 제목의 것은 그대로')
+  })
+
+  test('본문에서 빼면 그 블록의 주소가 닫힌다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { boss } = await office()
+    const party = await emojiOf(boss, 41, 'party')
+    const doc = await pageNamed(boss, unique('이모지 뺌'))
+    const para = await withEmoji(boss, doc, [party])
+    const token = await tokenOf(boss, doc)
+    assert.equal(await emojiFill(token, para, party), 41)
+    const saved = await savePageBody(boss.ctx, doc, { blocks: [{ id: para, type: 'paragraph', title: [textRun('이모지 없음')] }] })
+    assert.ok(saved.ok)
+    assert.equal(await emojiFill(token, para, party), null)
   })
 })

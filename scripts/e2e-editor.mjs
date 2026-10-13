@@ -15894,6 +15894,65 @@ async function main() {
         JSON.stringify(saved))
     }
 
+    if (sectionIf('커스텀 이모지 — 공개 화면 (7c-3c · F-13-16)')) {
+      // 게시한 페이지의 인라인 커스텀 이모지 — 세션 없이 그림(블록 id 로 여는 공개 경로 · alt 는 :이름:) · 지운 것은 :이름: 글자 · 페이지
+      // 제목의 이모지도 그림 · 그 블록에 없는 이모지 id 로는 열리지 않는다 · 응답은 공개 파일과 같은 머리.
+      const stamp = Date.now().toString(36)
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const upload = async () => {
+        const form = new FormData()
+        form.append('file', new Blob([Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64')], { type: 'image/png' }), 'emoji.png')
+        return (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/files`, { method: 'POST', headers: { cookie: authed.cookie, origin: BASE }, body: form })).json()).file.id
+      }
+      const makeEmoji = async (name) => (await api('POST', '/emoji', { name, fileId: await upload() })).body?.emoji?.id ?? null
+      const live = await makeEmoji(`pub-${stamp}`)
+      const gone = await makeEmoji(`pubgone-${stamp}`)
+      const titled = await makeEmoji(`pubtitle-${stamp}`)
+      const page = (await api('POST', '/pages', { title: `공개이모지${stamp}` })).body?.page?.id
+      const para = randomUUID()
+      await saveBody(page, { blocks: [{ id: para, type: 'paragraph', title: [textRun('파티 '), customEmojiMentionRun(live), textRun(' 끝 '), customEmojiMentionRun(gone)], properties: {}, format: {}, children: [] }] })
+      // 페이지 제목에도 이모지 — 제목은 명령 경로로 쓰는 길이 글자뿐이라 행에 직접 둔다(앱의 제목 칸은 아직 이모지를 넣지 않는다).
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      await dbQuery(`UPDATE block SET properties = jsonb_set(properties, '{title}', $2::jsonb) WHERE id = $1`, [page, JSON.stringify([textRun(`공개이모지${stamp} `), customEmojiMentionRun(titled)])])
+      await api('DELETE', `/emoji/${gone}`)
+      const token = (await api('PUT', `/pages/${page}/publish`)).body?.token
+
+      try {
+        await send('Network.deleteCookies', { name: 'nc_session', domain: 'localhost', path: '/' })
+        await send('Page.navigate', { url: `${BASE}/p/${token}` })
+        check('★ 세션 없이 본문의 이모지가 그림으로 — 블록 id 로 여는 공개 경로 · alt 는 :이름:',
+          await waitFor(`(() => { const i = document.querySelector('.pub-block img.pub-emoji'); return !!i && i.complete && i.naturalWidth === 1
+            && i.getAttribute('src') === ${JSON.stringify(`/p/${token}/blocks/${para}/emoji/${live}`)} && i.alt === ${JSON.stringify(`:pub-${stamp}:`)} })()`, 15000),
+          String(await evaluate(`document.querySelector('.pub-block')?.innerHTML?.slice(0, 300) ?? '(없음)'`)))
+        check('★ 지운 이모지는 :이름: 글자(그림이 아니다)',
+          (await evaluate(`[...document.querySelectorAll('.pub-emoji-text')].map((e) => e.textContent).includes(${JSON.stringify(`:pubgone-${stamp}:`)})`))
+            && !(await evaluate(`[...document.querySelectorAll('img.pub-emoji')].some((e) => (e.getAttribute('src') ?? '').endsWith(${JSON.stringify(`/emoji/${gone}`)}))`)),
+          String(await evaluate(`document.querySelector('.pub-block')?.innerHTML?.slice(0, 400) ?? '(없음)'`)))
+        check('★ 페이지 제목의 이모지도 그림 — 블록은 그 페이지 자신이다',
+          await waitFor(`(() => { const i = document.querySelector('[data-testid="public-title"] img.pub-emoji'); return !!i && i.complete && i.naturalWidth === 1
+            && i.getAttribute('src') === ${JSON.stringify(`/p/${token}/blocks/${page}/emoji/${titled}`)} })()`, 8000),
+          String(await evaluate(`document.querySelector('[data-testid="public-title"]')?.innerHTML ?? '(없음)'`)))
+      } finally {
+        await send('Network.setCookie', { name: 'nc_session', value: session, domain: 'localhost', path: '/', httpOnly: true })
+      }
+      const r = await fetch(`${BASE}/p/${token}/blocks/${para}/emoji/${live}`)
+      check('공개 이모지 응답 — 이미지 · 짧은 개인 캐시 · referrer 없음 · 색인 설정',
+        r.status === 200 && r.headers.get('content-type') === 'image/png' && r.headers.get('cache-control') === 'private, max-age=60'
+          && r.headers.get('referrer-policy') === 'no-referrer' && (r.headers.get('x-robots-tag') ?? '').startsWith('noindex'),
+        JSON.stringify([r.status, r.headers.get('content-type'), r.headers.get('cache-control')]))
+      const wrong = await Promise.all([
+        fetch(`${BASE}/p/${token}/blocks/${para}/emoji/${titled}`),
+        fetch(`${BASE}/p/${token}/blocks/${para}/emoji/${gone}`),
+      ])
+      check('★ 그 블록에 없는 이모지 · 지운 이모지는 404 — 이모지 id 만으로 열지 않는다', wrong.every((w) => w.status === 404), JSON.stringify(wrong.map((w) => w.status)))
+      await api('DELETE', `/pages/${page}/publish`)
+    }
+
     if (sectionIf('폼 — 서버 라우트 (7a-1 · F-13-01)')) {
       // 폼 뷰의 라우트 — 만들기(첫 질문은 제목) · 질문 바꾸기 · 설정 · 공개(토큰) · 거부 코드 · 표 화면의 탭에 선다(7a-3 부터 — 그 탭은
       // 편집 화면이다).

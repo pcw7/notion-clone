@@ -85,7 +85,7 @@ function PublicView({ read }: { read: PublicRead }): ReactNode {
         />
       )}
       <h1 className="pub-title" data-testid="public-title">
-        {untitled ? UNTITLED : <RichText runs={view.title} view={view} />}
+        {untitled ? UNTITLED : <RichText runs={view.title} view={view} blockId={view.target.pageId} />}
       </h1>
       {/* 데이터베이스의 행이면 제목 아래에 속성 묶음(6a-2c-2) */}
       {view.rowProperties !== null && <PublicRowPropertiesView properties={view.rowProperties} view={view} />}

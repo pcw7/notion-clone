@@ -68,6 +68,9 @@
 
 .pub-mention { font-weight: 500; }
 .pub-mention-hidden { color: #9ca3af; font-style: italic; }
+/* 커스텀 이모지(7c-3c) — 글자 한 칸 높이의 그림 · 그림을 그릴 수 없는 자리와 지운 것은 `:이름:` 글자. */
+.pub-emoji { display: inline-block; width: 1.25em; height: 1.25em; vertical-align: -0.25em; object-fit: contain; }
+.pub-emoji-text { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.875em; color: #6b7280; }
 
 :root[data-theme='dark'] .pub-trail-sep { color: #4b5563; }
 :root[data-theme='dark'] .pub-divider, :root[data-theme='dark'] .pub-table td, :root[data-theme='dark'] .pub-table th { border-color: rgba(255, 255, 255, 0.14); }
