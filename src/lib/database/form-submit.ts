@@ -30,6 +30,13 @@
  *
  * 폼이 켰고 응답자가 멤버면, 그 사람이 이 폼으로 낸 살아 있는 응답이 있을 때 `already_submitted` 다(마감 다음 · 토큰 전). 웹 공개 폼은
  * 응답자를 모른다 — 켜 두어도 막지 않는다(브라우저 지문은 쓰지 않는다). 넣는 트랜잭션에서 폼 행을 잠근 채 다시 본다(두 탭의 동시 제출).
+ *
+ * ──────────────────────────────────────────────────────────────────────
+ * 제출 뒤 응답자 권한(7b-4 · 정본 ⑫) — 그 응답 행 하나에 ACL 행 하나
+ * ──────────────────────────────────────────────────────────────────────
+ *
+ * 폼이 레벨을 정했고 응답자가 멤버면, 넣는 트랜잭션에서 그 응답 행에 `('user', 응답자, 레벨)` 을 쓴다(`grantToFormRespondentIn` — 준 사람은
+ * 없다 · 폼의 칸이 준다). 결과가 그 행의 주소를 싣는다 — 확인 화면의 "내 응답 보기". 웹 공개 응답은 익명이라 주지 않는다.
  */
 
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
@@ -41,8 +48,9 @@ import { textRun, type ValidationIssue } from '../contracts/rich-text.ts'
 import { withReadTransaction, withTransaction, type Tx } from '../db/tx.ts'
 import type { WorkspaceId } from '../ids.ts'
 import { claimOnce, consume, type RateLimitRule } from '../rate-limit.ts'
+import { grantToFormRespondentIn } from '../permissions/acl.ts'
 import { readSecurityPolicyIn } from '../workspace/security-policy.ts'
-import { FORM_QUESTION_TYPES, countFormResponsesIn, hasRespondedIn, type FormQuestionType } from './form.ts'
+import { FORM_QUESTION_TYPES, countFormResponsesIn, hasRespondedIn, type FormQuestionType, type RespondentAccess } from './form.ts'
 import { formClosedReason, type FormClosedReason } from './form-limits.ts'
 import { readOptionsOf } from './options.ts'
 import type { CellValue } from './property-types.ts'
@@ -283,7 +291,14 @@ export type SubmitFailure =
   | 'already_submitted'
 
 export type SubmitResult =
-  | { readonly ok: true; readonly value: { readonly pageId: string | null } }
+  | {
+      readonly ok: true
+      /**
+       * `pageId` — 받은 행(허니팟이면 null). `responsePath` — 응답자가 그 행을 받았으면 그 주소(`/w/{워크스페이스}/{행}` · 7b-4 · 정본 ⑫ ·
+       * 확인 화면의 "내 응답 보기"). 익명 · 주지 않는 폼이면 null.
+       */
+      readonly value: { readonly pageId: string | null; readonly responsePath: string | null }
+    }
   | { readonly ok: false; readonly reason: SubmitFailure; readonly issues?: readonly ValidationIssue[] }
 
 export type SubmitInput = {
@@ -325,7 +340,7 @@ export function submitFailureStatus(reason: SubmitFailure): number {
 export async function submitFormResponse(input: SubmitInput, now: number = Date.now()): Promise<SubmitResult> {
   if (input.origin !== null && input.origin !== input.serverOrigin) return { ok: false, reason: 'bad_origin' }
   // 허니팟 — 받은 척한다(봇이 실패를 보고 고쳐 오지 않게 · 신고와 같다)
-  if (typeof input.trap === 'string' && input.trap.trim() !== '') return { ok: true, value: { pageId: null } }
+  if (typeof input.trap === 'string' && input.trap.trim() !== '') return { ok: true, value: { pageId: null, responsePath: null } }
 
   const form = await readPublicForm(input.token)
   if (form === null) return { ok: false, reason: 'not_found' }
@@ -358,8 +373,14 @@ export async function submitFormResponse(input: SubmitInput, now: number = Date.
   return withTransaction(async (tx): Promise<SubmitResult> => {
     // 토큰을 읽은 뒤 닫혔을 수 있다 — 같은 트랜잭션에서 다시 본다(닫기와 줄을 세운다)
     // 폼 행을 잠근다 — 동시 제출이 상한을 넘지 않게 그 사이 세기를 줄 세운다(7b-2 · 정본 ⑩)
-    const still = await tx.queryMaybe<{ max_responses: number | null; closes_at: Date | null; one_per_respondent: boolean }>(
-      `SELECT max_responses, closes_at, one_per_respondent FROM form_view WHERE view_id = $1 AND access = $3 AND token = $2 FOR UPDATE`,
+    const still = await tx.queryMaybe<{
+      max_responses: number | null
+      closes_at: Date | null
+      one_per_respondent: boolean
+      respondent_access: RespondentAccess | null
+    }>(
+      `SELECT max_responses, closes_at, one_per_respondent, respondent_access
+         FROM form_view WHERE view_id = $1 AND access = $3 AND token = $2 FOR UPDATE`,
       [form.viewId, input.token, form.access],
     )
     if (still === null) return { ok: false, reason: 'not_found' }
@@ -385,7 +406,13 @@ export async function submitFormResponse(input: SubmitInput, now: number = Date.
       `INSERT INTO form_submission_meta (page_id, view_id, submitter_hash, dwell_ms) VALUES ($1, $2, $3, $4)`,
       [row.value.id, form.viewId, hash, Math.max(0, now - token.issuedAt)],
     )
-    return { ok: true, value: { pageId: row.value.id } }
+    // 제출 뒤 응답자 권한 — 그 응답 행 하나에(정본 ⑫). 같은 잠금 아래에서 읽은 칸이다(그사이 바꾼 것이 이긴다)
+    let responsePath: string | null = null
+    if (member !== null && still.respondent_access !== null) {
+      const granted = await grantToFormRespondentIn(tx, form.workspaceId, row.value.id, member.userId, still.respondent_access)
+      if (granted === 'granted' || granted === 'covered') responsePath = `/w/${form.workspaceId}/${row.value.id}`
+    }
+    return { ok: true, value: { pageId: row.value.id, responsePath } }
   })
 }
 

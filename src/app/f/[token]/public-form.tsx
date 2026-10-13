@@ -15,7 +15,7 @@
 import { useState, type FormEvent } from 'react'
 
 import type { PublicFormQuestion } from '@/lib/database/form-submit'
-import { ANOTHER_RESPONSE, REQUIRED_MARK, formFailureMessage, respondentNote } from '../form-messages'
+import { ANOTHER_RESPONSE, MY_RESPONSE, REQUIRED_MARK, formFailureMessage, respondentNote, responsePathOf } from '../form-messages'
 
 type FormProps = {
   readonly title: string
@@ -49,6 +49,8 @@ export function PublicFormView({
   const [issues, setIssues] = useState<Record<string, string>>({})
   const [trap, setTrap] = useState('')
   const [sent, setSent] = useState(false)
+  // 응답자가 그 행을 받았으면 그 주소(7b-4) — 확인 화면의 "내 응답 보기"
+  const [mine, setMine] = useState<string | null>(null)
 
   const set = (propertyId: string, value: string | boolean) => setAnswers((current) => ({ ...current, [propertyId]: value }))
 
@@ -64,8 +66,14 @@ export function PublicFormView({
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ submission, answers, website: trap }),
       })
-      const body = (await res.json().catch(() => null)) as { ok?: boolean; error?: string; issues?: { path: string; message: string }[] } | null
+      const body = (await res.json().catch(() => null)) as {
+        ok?: boolean
+        error?: string
+        issues?: { path: string; message: string }[]
+        responsePath?: unknown
+      } | null
       if (res.ok && body?.ok === true) {
+        setMine(responsePathOf(body.responsePath))
         setSent(true)
         return
       }
@@ -85,6 +93,11 @@ export function PublicFormView({
       <section data-testid="public-form-sent">
         <h1 className="pub-title">{form.confirmationTitle}</h1>
         {form.confirmationBody !== null && <p className="pub-form-description">{form.confirmationBody}</p>}
+        {mine !== null && (
+          <a href={mine} className="pub-form-again" data-testid="public-form-mine">
+            {MY_RESPONSE}
+          </a>
+        )}
         {/* 새 화면 — 새 제출 토큰 */}
         {allowAnother && (
           <a href={`/f/${token}`} className="pub-form-again" data-testid="public-form-again">

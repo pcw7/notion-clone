@@ -59,6 +59,24 @@ export function responseCountText(count: number, max: number | null): string {
   return `받은 응답 ${count}개${max === null ? '' : ` / 상한 ${max}개`}`
 }
 
+// ── 응답자에게 줄 권한(7b-4 · 정본 ⑫) ─────────────────────────────────
+
+/** 고르개 — 없음 · 읽기 · 댓글 · 편집(전체 권한은 주지 않는다 — 응답자가 그 행을 다시 나눠 준다). 값 '' 은 없음(null). */
+export const RESPONDENT_ACCESS_OPTIONS = [
+  { value: '', label: '없음' },
+  { value: 'view', label: '읽기' },
+  { value: 'comment', label: '댓글' },
+  { value: 'edit', label: '편집' },
+] as const
+
+/** 고른 레벨의 한 줄 — 없으면 null. 웹 공개(닫힘 포함)면 주지 않는다고 · 바꿔도 이미 준 권한은 그대로라고. */
+export function respondentAccessNote(access: FormAccessChoice, level: string | null): string | null {
+  const option = RESPONDENT_ACCESS_OPTIONS.find((o) => o.value !== '' && o.value === level)
+  if (option === undefined) return null
+  if (access !== 'workspace') return '워크스페이스 멤버만의 폼에서만 줍니다 — 웹 공개 응답은 익명이라 줄 사람이 없습니다.'
+  return `응답한 멤버에게 그 응답(행) 하나를 ${option.label} 권한으로 줍니다 — 제출한 뒤 "내 응답 보기" 로 엽니다. 바꿔도 이미 준 권한은 그대로입니다.`
+}
+
 /** 한 사람당 한 번(7b-3 · 정본 ⑪)의 칸. */
 export const ONE_PER_RESPONDENT_LABEL = '한 사람당 한 번만 받기'
 

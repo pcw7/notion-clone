@@ -4,6 +4,7 @@
  *   ① 서버의 까닭마다 할 말 · 모르는 까닭 · 원형의 이름은 일반 문구
  *   ② 공개 주소의 모양
  *   ⑤ 한 사람당 한 번(7b-3) — 켰을 때의 말이 공유에 따라 다르다(막는 것은 워크스페이스 멤버만의 폼뿐)
+ *   ⑥ 응답자에게 줄 권한(7b-4) — 넷(전체 권한 없음) · 고른 레벨의 말 · 웹 공개면 주지 않는다고
  */
 
 import { test } from 'node:test'
@@ -13,6 +14,7 @@ import type { FormFailure } from '../../../../../lib/database/form.ts'
 import {
   FORM_ACCESS_OPTIONS,
   ONE_PER_RESPONDENT_LABEL,
+  RESPONDENT_ACCESS_OPTIONS,
   closedBecauseText,
   formAccessNotice,
   formAccessState,
@@ -22,6 +24,7 @@ import {
   limitOfDraft,
   localDateTimeOf,
   onePerRespondentNote,
+  respondentAccessNote,
   responseCountText,
 } from './form-editor-messages.ts'
 
@@ -65,4 +68,14 @@ test('⑤ 한 사람당 한 번(7b-3) — 워크스페이스 멤버만이면 무
   assert.match(onePerRespondentNote('workspace'), /이미 응답했습니다/)
   assert.match(onePerRespondentNote('public'), /워크스페이스 멤버만의 폼에서만/)
   assert.equal(onePerRespondentNote('closed'), onePerRespondentNote('public'), '닫힌 폼도 — 열 때 무엇을 고르느냐에 달렸다')
+})
+
+test('⑥ 응답자에게 줄 권한(7b-4) — 넷 · 고른 레벨의 말 · 웹 공개면 주지 않는다고', () => {
+  assert.deepEqual(RESPONDENT_ACCESS_OPTIONS.map((o) => o.value), ['', 'view', 'comment', 'edit'], '전체 권한은 없다')
+  assert.equal(respondentAccessNote('workspace', null), null)
+  assert.equal(respondentAccessNote('workspace', 'full_access'), null, '모르는 레벨은 말하지 않는다')
+  assert.match(respondentAccessNote('workspace', 'comment')!, /댓글 권한으로 줍니다/)
+  assert.match(respondentAccessNote('workspace', 'view')!, /이미 준 권한은 그대로/)
+  assert.match(respondentAccessNote('public', 'edit')!, /익명이라 줄 사람이 없습니다/)
+  assert.equal(respondentAccessNote('closed', 'edit'), respondentAccessNote('public', 'edit'))
 })

@@ -26,6 +26,14 @@ export function formFailureMessage(reason: unknown): string {
 /** 필수 질문의 표시 — 화면이 제목 옆에 붙인다(읽는 기계에는 `aria-required`). */
 export const REQUIRED_MARK = '*'
 
+/** 확인 화면의 "내 응답 보기" — 응답자가 그 행을 받았을 때만(7b-4 · 정본 ⑫). */
+export const MY_RESPONSE = '내 응답 보기'
+
+/** 받은 주소가 이 앱의 행 화면인가 — 서버가 준 것만 링크로 세운다(다른 곳으로 보내지 않는다). */
+export function responsePathOf(raw: unknown): string | null {
+  return typeof raw === 'string' && /^\/w\/[0-9a-f-]{36}\/[0-9a-f-]{36}$/.test(raw) ? raw : null
+}
+
 /** 확인 화면의 "다른 응답" — 새 화면(새 제출 토큰). */
 export const ANOTHER_RESPONSE = '다른 응답 제출'
 

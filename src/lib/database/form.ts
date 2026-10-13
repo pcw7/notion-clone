@@ -49,6 +49,13 @@ export type { FormClosedReason }
 
 export const FORM_ACCESS: readonly FormAccess[] = ['closed', 'public', 'workspace']
 
+/**
+ * 제출 뒤 응답자에게 줄 레벨(7b-4 · 정본 ⑫) — 페이지 레벨 가운데 전체 권한을 뺀 셋(응답자가 그 행을 다시 나눠 주지 않게). 0102 의
+ * CHECK 과 같다. 주지 않으면 null(A1 — `none` 레벨은 없다).
+ */
+export type RespondentAccess = 'view' | 'comment' | 'edit'
+export const RESPONDENT_ACCESS: readonly RespondentAccess[] = ['view', 'comment', 'edit']
+
 export type FormSettings = {
   readonly title: string | null
   readonly description: string | null
@@ -64,6 +71,8 @@ export type FormSettings = {
   readonly closesAt: string | null
   /** 한 사람당 한 번(7b-3 · 정본 ⑪) — 워크스페이스 멤버만의 폼에서만 막는다(웹 공개 폼은 응답자를 모른다). */
   readonly onePerRespondent: boolean
+  /** 제출 뒤 응답자에게 줄 레벨(7b-4 · 정본 ⑫) — 그 응답 행 하나에 · 워크스페이스 멤버만의 폼에서만. 비면 주지 않는다. */
+  readonly respondentAccess: RespondentAccess | null
 }
 
 export type FormQuestion = {
@@ -184,8 +193,10 @@ async function readFormIn(tx: Tx, ctx: SessionContext, gate: FormGate): Promise<
     max_responses: number | null
     closes_at: Date | null
     one_per_respondent: boolean
+    respondent_access: RespondentAccess | null
   }>(
-    `SELECT title, description, submit_label, confirmation_title, confirmation_body, access, token, max_responses, closes_at, one_per_respondent
+    `SELECT title, description, submit_label, confirmation_title, confirmation_body, access, token, max_responses, closes_at, one_per_respondent,
+            respondent_access
        FROM form_view WHERE view_id = $1`,
     [gate.viewId],
   )
@@ -231,6 +242,7 @@ async function readFormIn(tx: Tx, ctx: SessionContext, gate: FormGate): Promise<
       maxResponses: limits.maxResponses,
       closesAt: limits.closesAt,
       onePerRespondent: settings.one_per_respondent,
+      respondentAccess: settings.respondent_access,
     },
     questions: questions.map((q) => ({
       propertyId: q.property_id,
@@ -374,15 +386,19 @@ function normalizeText(raw: unknown, max: number): string | null | undefined {
 }
 
 /**
- * 폼의 설정을 고친다 — 글 칸은 구조를 고치는 사람, **공개 · 닫기**는 `manage_perm`(정본 ③). 공개로 처음 열 때 토큰을 만든다 · 닫아도
- * 토큰은 남는다(다시 열면 같은 주소). 공개 · 닫기는 감사 로그(`page.publish_changed` — 웹 게시와 같은 종류).
+ * 폼의 설정을 고친다 — 글 칸은 구조를 고치는 사람, **공개 · 닫기 · 응답자에게 줄 권한(7b-4 · 정본 ⑫)**은 `manage_perm`(정본 ③). 공개로
+ * 처음 열 때 토큰을 만든다 · 닫아도 토큰은 남는다(다시 열면 같은 주소). 공개 · 닫기 · 응답자 권한은 감사 로그(`page.publish_changed` —
+ * 웹 게시와 같은 종류).
  */
 export async function updateFormSettings(ctx: SessionContext, viewId: string, patch: unknown): Promise<FormResult<FormDetail>> {
   if (typeof patch !== 'object' || patch === null || Array.isArray(patch)) return fail('invalid_input')
   const input = patch as Record<string, unknown>
-  const known = new Set<string>([...TEXT_FIELDS.map(([key]) => key), 'access', 'maxResponses', 'closesAt', 'onePerRespondent'])
+  const known = new Set<string>([...TEXT_FIELDS.map(([key]) => key), 'access', 'maxResponses', 'closesAt', 'onePerRespondent', 'respondentAccess'])
   if (Object.keys(input).length === 0 || Object.keys(input).some((key) => !known.has(key))) return fail('invalid_input')
   if (input.access !== undefined && !(FORM_ACCESS as readonly unknown[]).includes(input.access)) return fail('invalid_input')
+  if ('respondentAccess' in input && input.respondentAccess !== null && !(RESPONDENT_ACCESS as readonly unknown[]).includes(input.respondentAccess)) {
+    return fail('invalid_input')
+  }
   const sets: { column: string; value: string | number | boolean | null }[] = []
   for (const [key, column, max] of TEXT_FIELDS) {
     if (!(key in input)) continue
@@ -410,16 +426,20 @@ export async function updateFormSettings(ctx: SessionContext, viewId: string, pa
   return withCommandTransaction(async (tx) => {
     const gate = await openFormIn(tx, ctx, viewId)
     if (gate === null) return fail('not_found')
-    const before = await tx.queryOne<{ access: FormAccess; token: string | null }>(
-      `SELECT access, token FROM form_view WHERE view_id = $1 FOR UPDATE`,
+    const before = await tx.queryOne<{ access: FormAccess; token: string | null; respondent_access: RespondentAccess | null }>(
+      `SELECT access, token, respondent_access FROM form_view WHERE view_id = $1 FOR UPDATE`,
       [viewId],
     )
     const access = input.access as FormAccess | undefined
     const accessChanges = access !== undefined && access !== before.access
+    // 응답자에게 줄 권한(7b-4 · 정본 ⑫) — 접근을 나눠 주는 일이라 공개 · 닫기와 같은 문(`manage_perm`)
+    const respondentAccess = 'respondentAccess' in input ? (input.respondentAccess as RespondentAccess | null) : undefined
+    const respondentChanges = respondentAccess !== undefined && respondentAccess !== before.respondent_access
     if (sets.length > 0) {
       const denied = editDenied(gate)
       if (denied !== null) return fail(denied)
     }
+    if (respondentChanges && !can(gate.caps, 'manage_perm')) return fail('forbidden')
     if (accessChanges) {
       if (!can(gate.caps, 'manage_perm')) return fail('forbidden')
       // 웹에 여는 것만 정책을 묻는다 — 닫는 것은 언제나 된다(웹 게시와 같다) · 워크스페이스 멤버만은 밖으로 내보내는 것이 아니다(⑨)
@@ -435,6 +455,10 @@ export async function updateFormSettings(ctx: SessionContext, viewId: string, pa
       params.push(access, before.token ?? newPublicToken())
       assignments.push(`access = $${params.length - 1}`, `token = $${params.length}`)
     }
+    if (respondentChanges) {
+      params.push(respondentAccess)
+      assignments.push(`respondent_access = $${params.length}`)
+    }
     if (assignments.length > 0) {
       await tx.query(
         `UPDATE form_view SET ${assignments.join(', ')}, updated_by = $2, updated_at = now() WHERE view_id = $1`,
@@ -445,6 +469,12 @@ export async function updateFormSettings(ctx: SessionContext, viewId: string, pa
       await recordForContextIn(tx, ctx, 'page.publish_changed', {
         target: { type: 'page', id: gate.databaseId },
         metadata: { change: access === 'public' ? 'form_open' : access === 'workspace' ? 'form_open_workspace' : 'form_close', viewId },
+      })
+    }
+    if (respondentChanges) {
+      await recordForContextIn(tx, ctx, 'page.publish_changed', {
+        target: { type: 'page', id: gate.databaseId },
+        metadata: { change: 'form_respondent_access', viewId, level: respondentAccess },
       })
     }
     return { ok: true, value: await readFormIn(tx, ctx, gate) } as const

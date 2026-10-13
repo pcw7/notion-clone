@@ -42,6 +42,13 @@ const PRINCIPAL: Readonly<Record<string, string>> = {
 }
 
 const LEVEL: Readonly<Record<string, string>> = { view: '읽기', comment: '댓글', edit: '편집', full_access: '전체 권한' }
+/** 폼의 공유 사건(7a-1 · 7b-1 · 7b-4) — `page.publish_changed` 의 `change`. */
+const FORM_CHANGE: Readonly<Record<string, string>> = {
+  form_open: '폼 웹 공개',
+  form_open_workspace: '폼 워크스페이스 멤버만',
+  form_close: '폼 닫기',
+}
+
 const ROLE: Readonly<Record<string, string>> = { owner: '소유자', membership_admin: '멤버 관리자', member: '멤버', guest: '게스트' }
 
 /** 자기 칸만 읽는다 — `'constructor'` 같은 값이 원형의 것을 꺼내지 않게. */
@@ -92,6 +99,8 @@ export function auditDetail(row: Pick<AuditRow, 'type' | 'metadata' | 'setting'>
     case 'page.publish_changed':
       if (m.change === 'publish') return '게시'
       if (m.change === 'unpublish') return '게시 취소'
+      if (m.change === 'form_respondent_access') return `폼 응답자 권한 — ${m.level === null ? '없음' : (pick(LEVEL, m.level) ?? str(m.level))}`
+      if (pick(FORM_CHANGE, m.change) !== null) return pick(FORM_CHANGE, m.change)!
       return [
         m.robots === 'index' ? '검색 엔진 노출 켬' : m.robots === 'noindex' ? '검색 엔진 노출 끔' : null,
         m.rotated === true ? '주소 바꿈' : null,

@@ -16267,6 +16267,66 @@ async function main() {
         JSON.stringify([rows.length, trashed?.status ?? null]))
     }
 
+    if (sectionIf('폼의 응답자 권한 (7b-4 · F-13-02)')) {
+      // 편집 화면의 공유 절에서 "응답자에게 줄 권한" 을 읽기로 · 이 판의 사용자(멤버)가 워크스페이스 멤버만의 폼에 내면 확인 화면에 "내 응답
+      // 보기" 가 서고 그 행의 주소다 · 서버에는 그 행에 그 사람의 읽기 ACL 행 하나(준 사람 없음) · 링크를 누르면 행 화면이 열린다.
+      const stamp = Date.now().toString(36)
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `응답자 폼 표 ${stamp}` })).body.database
+      const made = (await api('POST', `/databases/${db.id}/forms`, { name: `응답자 신청서 ${stamp}` })).body?.form
+      const opened = await api('PATCH', `/forms/${made.viewId}`, { title: `응답자 신청 ${stamp}`, access: 'workspace' })
+      const address = `${BASE}/f/${opened.body?.form?.settings?.token}`
+
+      // ① 편집 화면에서 읽기를 고른다 — 무엇을 주는지 말한다(서버 렌더 뒤 React 가 붙기 전의 change 는 사라지므로 말이 설 때까지 다시 보낸다)
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}?v=${made.viewId}` })
+      await waitFor(`!!document.querySelector('[data-testid="form-respondent-access"]')`, 15000)
+      const noteSaysView = `(document.querySelector('[data-testid="form-respondent-access-note"]')?.textContent ?? '').includes('읽기 권한으로 줍니다')`
+      let chose = false
+      for (let i = 0; i < 20 && !chose; i += 1) {
+        await evaluate(`(() => {
+          const s = document.querySelector('[data-testid="form-respondent-access"]')
+          Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(s, 'view')
+          s.dispatchEvent(new Event('change', { bubbles: true }))
+        })()`)
+        chose = await waitFor(noteSaysView, 1500)
+      }
+      const saved = (await api('GET', `/forms/${made.viewId}`)).body?.form?.settings?.respondentAccess
+      check('★ 편집 화면에서 "응답자에게 줄 권한" 을 읽기로 — 서버 · 무엇을 주는지 말한다', chose && saved === 'view',
+        JSON.stringify([saved, await evaluate(`document.querySelector('[data-testid="form-share"]')?.textContent ?? null`)]))
+
+      // ② 내면 확인 화면에 "내 응답 보기" — 그 행의 주소
+      await send('Page.navigate', { url: address })
+      await waitFor(`!!document.querySelector('[data-testid="public-form-body"]')`, 15000)
+      await sleep(3200)
+      await clickSelector('[data-testid="public-form-body"] input[type="text"]:not([tabindex="-1"])')
+      await typeText(`응답자 응답 ${stamp}`)
+      await clickSelector('[data-testid="public-form-body"] button[type="submit"]')
+      await waitFor(`!!document.querySelector('[data-testid="public-form-sent"]')`, 10000)
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const rows = await dbQuery(`SELECT p.id FROM page p WHERE p.data_source_id = $1 AND NOT p.is_template`, [db.dataSourceId])
+      const rowId = rows[0]?.id ?? '(없음)'
+      const mine = await evaluate(`document.querySelector('[data-testid="public-form-mine"]')?.getAttribute('href') ?? null`)
+      check('★ 내면 확인 화면에 "내 응답 보기" — 그 행의 주소', rows.length === 1 && mine === `/w/${workspaceId}/${rowId}`,
+        JSON.stringify([rows.length, mine, await evaluate(`document.querySelector('main')?.textContent?.slice(0, 160) ?? '(없음)'`)]))
+      const grants = await dbQuery(`SELECT principal_id, level, granted_by FROM acl_entry WHERE node_kind = 'block' AND node_id = $1`, [rowId])
+      check('서버 — 그 행에 이 판의 사용자의 읽기 ACL 행 하나 · 준 사람 없음(폼의 칸이 준다)',
+        grants.length === 1 && grants[0].principal_id === ctx.userId && grants[0].level === 'view' && grants[0].granted_by === null,
+        JSON.stringify(grants))
+
+      // ③ 링크를 누르면 행 화면이 열린다 — 행의 제목이 그 응답이다(편집할 수 있으면 칸 · 읽기만이면 머리 · 속성이 제목뿐이라 속성 절은
+      // 서지 않는다 — F-16-03)
+      await clickSelector('[data-testid="public-form-mine"]')
+      const rowTitle = `(() => { const t = document.querySelector('[data-testid="row-title"]'); return t === null ? null : (t.value ?? t.textContent) })()`
+      check('★ "내 응답 보기" 를 누르면 그 행 화면이 열린다 — 제목이 그 응답이다',
+        await waitFor(`location.pathname === ${JSON.stringify(`/w/${workspaceId}/${rowId}`)} && ${rowTitle} === ${JSON.stringify(`응답자 응답 ${stamp}`)}`, 15000),
+        String(await evaluate(`location.pathname + ' ' + (${rowTitle} ?? '(제목 없음)')`)))
+    }
+
     if (sectionIf('폼 — 서버 라우트 (7a-1 · F-13-01)')) {
       // 폼 뷰의 라우트 — 만들기(첫 질문은 제목) · 질문 바꾸기 · 설정 · 공개(토큰) · 거부 코드 · 표 화면의 탭에 선다(7a-3 부터 — 그 탭은
       // 편집 화면이다).
