@@ -70,7 +70,9 @@ import { BODY_FRAGMENT, readBodyYDoc } from '@/lib/collab/ydoc'
 import { acceptAnchor, textRangeAnchor } from '@/lib/comment/anchor'
 import { commentHighlightPlugin, setCommentThreads, type AnchoredThread } from '@/lib/comment/highlight'
 import { uploadImageFile } from '@/lib/file/upload-client'
-import type { PageIcon } from '@/lib/block/page-icon'
+import { customEmojiImagePath, type PageIcon } from '@/lib/block/page-icon'
+import { searchCustomEmoji } from '@/lib/emoji/custom-emoji-rules'
+import { closeEmojiMenu, emojiMenuState, insertCustomEmoji, replaceColonEmoji } from '@/lib/editor/emoji-menu'
 import { BlockGutter } from './block-gutter'
 import { TableControls } from './table-controls'
 import { FormatToolbar, type FormatToolbarAt } from './format-toolbar'
@@ -128,6 +130,16 @@ function mergePageIcons(map: Map<string, PageIcon>, asked: Iterable<string>, ico
 type MentionUi = { open: boolean; query: string; index: number; left: number; top: number }
 
 const CLOSED_MENTION: MentionUi = { open: false, query: '', index: 0, left: 0, top: 0 }
+
+/** `:` 커스텀 이모지 메뉴(7c-3b) — 자리 · 쿼리 · 고른 줄. 후보는 이모지 목록에서 곧바로 찾는다(`searchCustomEmoji`). */
+type EmojiUi = { open: boolean; query: string; index: number; left: number; top: number }
+
+const CLOSED_EMOJI: EmojiUi = { open: false, query: '', index: 0, left: 0, top: 0 }
+
+/** `:` 메뉴가 보일 후보의 수 — 정본 §3.4 [보강] 커스텀 이모지 ⑧. */
+const EMOJI_MENU_LIMIT = 8
+
+type ListedEmoji = { readonly id: string; readonly name: string }
 
 /** 07 F-07-08: "debounce(~150ms)". 한글은 한 글자가 곧 한 음절이라 짧은 쪽을 고른다. */
 const MENTION_DEBOUNCE_MS = 150
@@ -363,6 +375,11 @@ export function BodyEditor({
   /** `@` 멘션 메뉴 — 트리거 · 쿼리는 플러그인이(`editor/mention-menu.ts`), 후보 · 팝업 · 키는 여기가. */
   const [mentionUi, setMentionUi] = useState<MentionUi>(CLOSED_MENTION)
   const [mentionCandidates, setMentionCandidates] = useState<MentionCandidate[]>([])
+  const [emojiUi, setEmojiUi] = useState<EmojiUi>(CLOSED_EMOJI)
+  /** 이 워크스페이스의 살아 있는 이모지 — `:` 메뉴가 열릴 때마다 다시 읽는다(다른 사람이 방금 올린 것도). 아직 모르면 null. */
+  const [emojiList, setEmojiList] = useState<readonly ListedEmoji[] | null>(null)
+  /** 같은 목록 — 트랜잭션마다 불리는 동기화(편집기를 만들 때 한 번 붙는다)가 읽는다. */
+  const emojiListRef = useRef<readonly ListedEmoji[] | null>(null)
   /** 연결이 알려주는 것 — 온라인 · 읽기 전용 · 미확인 편집 · 다시 여는 중 · 닫힘. */
   const [link, setLink] = useState<Pick<CollabSnapshot, 'online' | 'readOnly' | 'unconfirmed' | 'reopening' | 'closed'>>({
     online: false,
@@ -653,6 +670,55 @@ export function BodyEditor({
     [workspaceId],
   )
 
+  /** 이모지 목록을 읽는다 — `:` 메뉴가 새로 열릴 때. 못 읽으면 후보가 없다(입력은 막지 않는다). */
+  const loadEmojiList = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/workspaces/${workspaceId}/emoji`)
+      if (!res.ok) return
+      const data = (await res.json()) as { emoji?: ListedEmoji[] }
+      const list = (data.emoji ?? []).map((e) => ({ id: e.id, name: e.name }))
+      emojiListRef.current = list
+      setEmojiList(list)
+    } catch {
+      // 다음에 열 때 다시 읽는다.
+    }
+  }, [workspaceId])
+
+  const syncEmojiMenu = useCallback(
+    (view: EditorView) => {
+      const state = emojiMenuState(view.state)
+      if (!state.active) {
+        setEmojiUi((prev) => (prev.open ? CLOSED_EMOJI : prev))
+        // 닫는 `:` 로 닫혔고 이름이 꼭 맞는 이모지가 있으면 그 자리를 바꾼다(정본 ⑧) — 이 트랜잭션이 끝난 뒤에(디스패치 안에서
+        // 다시 디스패치하지 않는다). 그 사이 자리가 바뀌었으면 `replaceColonEmoji` 가 손대지 않는다.
+        const colon = state.colon
+        const exact = colon === undefined ? undefined : emojiListRef.current?.find((e) => e.name === colon.name.toLowerCase())
+        if (colon !== undefined && exact !== undefined) {
+          queueMicrotask(() => {
+            const current = viewRef.current
+            if (current === null) return
+            mentionLabelsRef.current.emoji.set(exact.id, { name: exact.name, deleted: false })
+            replaceColonEmoji(current.state, current.dispatch.bind(current), colon, exact.id)
+          })
+        }
+        return
+      }
+      const coords = view.coordsAtPos(view.state.selection.head)
+      const box = view.dom.getBoundingClientRect()
+      setEmojiUi((prev) => {
+        if (!prev.open) void loadEmojiList()
+        return {
+          open: true,
+          query: state.query,
+          index: prev.open && prev.query === state.query ? prev.index : 0,
+          left: coords.left - box.left,
+          top: coords.bottom - box.top,
+        }
+      })
+    },
+    [loadEmojiList],
+  )
+
   const syncMentionMenu = useCallback(
     (view: EditorView) => {
       const state = mentionMenuState(view.state)
@@ -691,6 +757,18 @@ export function BodyEditor({
     if (candidate.kind === 'page') mergePageIcons(pageIconsRef.current, [candidate.id], candidate.icon === null ? {} : { [candidate.id]: candidate.icon })
     const pick: MentionPick = { kind: candidate.kind, id: candidate.id }
     insertMention(view.state, view.dispatch.bind(view), pick)
+    view.focus()
+  }, [])
+
+  /**
+   * 커스텀 이모지를 고른다(7c-3b) — `:쿼리` 를 이모지 멘션 노드로 바꾼다(`insertCustomEmoji`, 한 트랜잭션). 이름을 맵에 **먼저**
+   * 넣는다 — 노드 뷰가 곧바로 `:이름:` 을 alt 로 그린다(`@` 메뉴와 같다 · 서버에 다시 묻지 않는다).
+   */
+  const pickEmoji = useCallback((entry: ListedEmoji) => {
+    const view = viewRef.current
+    if (!view) return
+    mentionLabelsRef.current.emoji.set(entry.id, { name: entry.name, deleted: false })
+    insertCustomEmoji(view.state, view.dispatch.bind(view), entry.id)
     view.focus()
   }, [])
 
@@ -1134,6 +1212,7 @@ export function BodyEditor({
         onTransaction: (v) => {
           syncMenu(v)
           syncMentionMenu(v)
+          syncEmojiMenu(v)
           syncCommentTarget(v)
           remeasureCodeUi(v)
           remeasureEquationUi(v)
@@ -1333,6 +1412,43 @@ export function BodyEditor({
     window.addEventListener('keydown', onKeyDown, true)
     return () => window.removeEventListener('keydown', onKeyDown, true)
   }, [mentionUi.open, mentionUi.index, mentionCandidates, pickMention])
+
+  // `:` 메뉴의 후보 — 쿼리가 한 글자 이상일 때만(정본 ⑧). 목록이 로컬이라 곧바로 찾는다.
+  const emojiCandidates = useMemo(
+    () => (!emojiUi.open || emojiUi.query === '' || emojiList === null ? [] : searchCustomEmoji(emojiList, emojiUi.query).slice(0, EMOJI_MENU_LIMIT)),
+    [emojiUi.open, emojiUi.query, emojiList],
+  )
+  const emojiPopup = emojiCandidates.length > 0
+
+  // `:` 메뉴의 키 조작 — 후보가 보일 때만 화살표 · Enter · Tab · Esc 를 먹는다(0건이면 Enter 는 줄바꿈 그대로 · 정본 ⑧). 닫는 `:` 는
+  // 여기서 잡지 않는다 — 글자가 들어온 뒤 트랜잭션에서 본다(`syncEmojiMenu` · keydown 없이 들어오는 입력도 있다).
+  useEffect(() => {
+    if (!emojiUi.open || !emojiPopup) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.target !== viewRef.current?.dom) return
+      if (event.isComposing) return
+      if (['ArrowDown', 'ArrowUp', 'Enter', 'Tab', 'Escape'].includes(event.key)) event.stopPropagation()
+      const count = emojiCandidates.length
+      if (event.key === 'ArrowDown') {
+        event.preventDefault()
+        setEmojiUi((m) => ({ ...m, index: (m.index + 1) % count }))
+      } else if (event.key === 'ArrowUp') {
+        event.preventDefault()
+        setEmojiUi((m) => ({ ...m, index: (m.index - 1 + count) % count }))
+      } else if (event.key === 'Enter' || event.key === 'Tab') {
+        event.preventDefault()
+        const entry = emojiCandidates[Math.min(emojiUi.index, count - 1)]
+        if (entry) pickEmoji(entry)
+      } else if (event.key === 'Escape') {
+        event.preventDefault()
+        const view = viewRef.current
+        // Esc 는 친 글자(`:par`)를 남긴 채 닫는다(`@` 메뉴와 같다).
+        if (view) view.dispatch(closeEmojiMenu(view.state.tr))
+      }
+    }
+    window.addEventListener('keydown', onKeyDown, true)
+    return () => window.removeEventListener('keydown', onKeyDown, true)
+  }, [emojiUi.open, emojiUi.index, emojiCandidates, emojiPopup, pickEmoji])
 
   // ── 렌더 ────────────────────────────────────────────────────────────
 
@@ -1601,6 +1717,38 @@ export function BodyEditor({
                 <span className="flex-none whitespace-nowrap text-xs text-neutral-400">{candidate.kind === 'user' ? '사람' : '페이지'}</span>
                 {candidate.kind === 'page' && <PageIconView icon={candidate.icon} fallback />}
                 <span>{candidate.kind === 'user' ? `@${candidate.label}` : candidate.label || '제목 없음'}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {emojiUi.open && emojiPopup && (
+        <ul
+          role="listbox"
+          aria-label="커스텀 이모지"
+          data-testid="emoji-menu"
+          style={{ left: emojiUi.left, top: emojiUi.top }}
+          className="absolute z-10 max-h-72 w-64 overflow-auto rounded-lg border border-neutral-200 bg-white py-1 shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
+        >
+          {emojiCandidates.map((entry, i) => (
+            <li key={entry.id}>
+              <button
+                type="button"
+                role="option"
+                data-testid="emoji-menu-option"
+                data-emoji-id={entry.id}
+                aria-selected={i === Math.min(emojiUi.index, emojiCandidates.length - 1)}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => pickEmoji(entry)}
+                onMouseEnter={() => setEmojiUi((m) => ({ ...m, index: i }))}
+                className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm ${
+                  i === Math.min(emojiUi.index, emojiCandidates.length - 1) ? 'bg-neutral-100 dark:bg-neutral-800' : ''
+                }`}
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element -- 세션으로 인증되는 우리 경로(아이콘 · 본문의 이모지와 같다) */}
+                <img src={customEmojiImagePath(workspaceId, entry.id)} alt="" className="h-5 w-5 flex-none object-contain" />
+                <span className="truncate font-mono">:{entry.name}:</span>
               </button>
             </li>
           ))}

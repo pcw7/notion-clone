@@ -52,6 +52,7 @@ import type { EditorBlock } from './document.ts'
 import { slashMenuPlugin } from './slash-menu.ts'
 import { tocPlugin } from './toc-plugin.ts'
 import { mentionMenuPlugin } from './mention-menu.ts'
+import { emojiMenuPlugin } from './emoji-menu.ts'
 import type { EditorDoc } from './document.ts'
 
 export type EditorDeps = EditorKeymapDeps & NodeViewDeps & {
@@ -117,6 +118,8 @@ export function editingPlugins(deps: EditorDeps): Plugin[] {
     slashMenuPlugin(),
     // `@` 멘션 — 슬래시 메뉴와 같은 뼈대(`mention-menu.ts`). 후보 · 팝업은 화면이 한다.
     mentionMenuPlugin(),
+    // `:` 커스텀 이모지(7c-3b) — 같은 뼈대(`emoji-menu.ts`). 후보 · 팝업은 화면이 한다.
+    emojiMenuPlugin(),
     // 블록 선택 하이라이트(F-01-09). 상태는 `state.selection` 이 갖고 있고
     // 이 플러그인은 그리기만 한다.
     blockSelectionPlugin(),
