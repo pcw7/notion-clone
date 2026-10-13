@@ -234,6 +234,7 @@ const EDITOR_DEPS = {
   pageRefTitle: () => undefined,
   pageIcon: () => null,
   mentionLabel: () => undefined,
+  emojiLabel: () => undefined,
   openCodeLanguageMenu: () => undefined,
   openCodeCaption: () => undefined,
   workspaceId: 'ws',

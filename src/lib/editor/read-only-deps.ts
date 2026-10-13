@@ -14,11 +14,14 @@
 
 import type { PageIcon } from '../block/page-icon.ts'
 import type { EditorDeps } from './create-editor.ts'
+import type { EmojiLabel } from './mention-label.ts'
 
 export type PreviewLabels = {
   readonly users: Readonly<Record<string, string | null>>
   readonly pages: Readonly<Record<string, string | null>>
   readonly pageIcons: Readonly<Record<string, PageIcon>>
+  /** 커스텀 이모지의 이름(7c-3a) — 본문의 이름 맵과 같은 모양. 없으면 모르는 것. */
+  readonly emoji?: Readonly<Record<string, EmojiLabel | null>>
 }
 
 function lookup(map: Readonly<Record<string, string | null>>, id: string): string | null | undefined {
@@ -44,6 +47,7 @@ export function readOnlyEditorDeps(workspaceId: string, labels: PreviewLabels): 
     breadcrumbTrail: () => null,
     pageRefTitle: (id) => lookup(labels.pages, id),
     mentionLabel: (kind, id) => lookup(kind === 'user' ? labels.users : labels.pages, id),
+    emojiLabel: (id) => (labels.emoji !== undefined && Object.hasOwn(labels.emoji, id) ? labels.emoji[id] : undefined),
     pageIcon: (id) => (Object.hasOwn(labels.pageIcons, id) ? labels.pageIcons[id] : null),
   }
 }

@@ -10,7 +10,7 @@ import { test, describe, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 
-import { pageMentionRun, textRun, userMentionRun } from '../contracts/rich-text.ts'
+import { customEmojiMentionRun, pageMentionRun, textRun, userMentionRun } from '../contracts/rich-text.ts'
 import { query } from '../db/pool.ts'
 import { grantAccess, revokeAccess, stopInheriting } from '../permissions/acl.ts'
 import { createBareWorkspace, createUser, joinAs, probeDatabase, type Actor } from '../testing/db-fixtures.ts'
@@ -131,20 +131,56 @@ describe('이름 맵', () => {
     assert.deepEqual(labels.users, { [member.userId]: '김멤버', [stranger]: null })
   })
 
-  test('본문에서 멘션 id 를 모은다 — 중첩까지, 중복 없이', () => {
+  test('본문에서 멘션 id 를 모은다 — 중첩까지, 중복 없이 · 커스텀 이모지(7c-3a)도', () => {
     const u = randomUUID()
     const p = randomUUID()
+    const e = randomUUID()
     const ids = mentionIdsOf({
       blocks: [
-        { id: randomUUID(), type: 'paragraph', title: [textRun('a '), userMentionRun(u), pageMentionRun(p)] },
+        { id: randomUUID(), type: 'paragraph', title: [textRun('a '), userMentionRun(u), pageMentionRun(p), customEmojiMentionRun(e)] },
         {
           id: randomUUID(),
           type: 'toggle',
           title: [userMentionRun(u)],
-          children: [{ id: randomUUID(), type: 'paragraph', title: [pageMentionRun(p)] }],
+          children: [{ id: randomUUID(), type: 'paragraph', title: [pageMentionRun(p), customEmojiMentionRun(e)] }],
         },
       ],
     })
-    assert.deepEqual(ids, { userIds: [u], pageIds: [p] })
+    assert.deepEqual(ids, { userIds: [u], pageIds: [p], emojiIds: [e] })
+  })
+
+  test('★ 커스텀 이모지(7c-3a) — 이름 · 지웠는가(지운 것도 이름) · 다른 워크스페이스 · 없는 id 는 null · 권한 필터가 없다(게스트도)', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { owner } = await workspace()
+    const guest = await joinAs(owner.ctx.workspaceId, await createUser('손님'), 'guest')
+    const elsewhere = await createBareWorkspace('남의 이모지')
+    const putEmoji = async (workspaceId: string, name: string, deleted: boolean): Promise<string> => {
+      const fileId = randomUUID()
+      await query(
+        `INSERT INTO file (id, workspace_id, region_id, storage_key, mime, size_bytes, created_at)
+         VALUES ($1, $2, (SELECT region_id FROM workspace WHERE id = $2), $3, 'image/png', 16, now())`,
+        [fileId, workspaceId, `mention-labels/${fileId}`],
+      )
+      const id = randomUUID()
+      await query(`INSERT INTO custom_emoji (id, workspace_id, name, file_id, deleted_at) VALUES ($1, $2, $3, $4, $5)`, [
+        id, workspaceId, name, fileId, deleted ? new Date() : null,
+      ])
+      return id
+    }
+    const live = await putEmoji(owner.ctx.workspaceId, 'party', false)
+    const gone = await putEmoji(owner.ctx.workspaceId, 'gone', true)
+    const theirs = await putEmoji(elsewhere, 'theirs', false)
+    const missing = randomUUID()
+
+    const expected = { [live]: { name: 'party', deleted: false }, [gone]: { name: 'gone', deleted: true }, [theirs]: null, [missing]: null }
+    const labels = await loadMentionLabels(owner.ctx, { userIds: [], pageIds: [], emojiIds: [live, gone, theirs, missing] })
+    assert.deepEqual(labels.emoji, expected)
+    assert.deepEqual((await loadMentionLabels(guest.ctx, { userIds: [], pageIds: [], emojiIds: [live, gone, theirs, missing] })).emoji, expected)
+    assert.deepEqual(
+      (await loadMentionLabels(owner.ctx, { userIds: [], pageIds: [], emojiIds: [live.toUpperCase(), 'not-a-uuid'] })).emoji,
+      { [live]: { name: 'party', deleted: false } },
+      '대문자 id 는 소문자로 묻고 uuid 가 아닌 것은 버린다',
+    )
+    assert.deepEqual((await loadMentionLabels(owner.ctx, { userIds: [], pageIds: [] })).emoji, {}, '묻지 않으면 빈 맵')
   })
 })

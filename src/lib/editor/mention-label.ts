@@ -26,3 +26,24 @@ export function mentionTargetOf(attrs: unknown): { kind: MentionKind; id: string
   if (m?.type === 'page' && typeof m.page?.id === 'string') return { kind: 'page', id: m.page.id }
   return null
 }
+
+/**
+ * 커스텀 이모지 멘션(7c-3a)이 그릴 이름 — 서버의 이름 맵(`loadMentionLabels` 의 `emoji`). 지운 이모지도 이름을 준다(정본 §3.4 [보강]
+ * 커스텀 이모지 ③ "이름만"). 사람 · 페이지와 달리 권한으로 거르지 않는다(목록은 워크스페이스의 누구나 본다).
+ */
+export type EmojiLabel = { readonly name: string; readonly deleted: boolean }
+
+/** 멘션 attr 이 커스텀 이모지면 그 id — 노션 API 모양(`mention.custom_emoji.id`). 아니면 null. */
+export function customEmojiIdOf(attrs: unknown): string | null {
+  const m = attrs as { type?: unknown; custom_emoji?: { id?: unknown } } | null
+  return m?.type === 'custom_emoji' && typeof m.custom_emoji?.id === 'string' ? m.custom_emoji.id.toLowerCase() : null
+}
+
+/**
+ * 커스텀 이모지를 그림 대신 글자로 그릴 때(지웠다 · 그림을 못 불러왔다 · 이 워크스페이스에 없다 · 아직 모른다)의 글자 — 이름을 알면
+ * `:이름:`, 이 워크스페이스에 없으면(`null`) "이모지", 아직 모르면(`undefined`) `:…:`.
+ */
+export function customEmojiText(label: EmojiLabel | null | undefined): string {
+  if (label === null) return '이모지'
+  return label === undefined ? ':…:' : `:${label.name}:`
+}

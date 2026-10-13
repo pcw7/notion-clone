@@ -25,15 +25,18 @@
  *   · 사람: 이 워크스페이스의 멤버였던 사람이면 이름(나간 사람도 — 05: *"칩 유지, 비활성 사용자로 표시"*). 아니면 null
  *   · 페이지: 볼 수 있는 살아 있는 페이지면 제목. **볼 수 없거나 없거나 휴지통이면 전부 null** — 셋을 가르면 볼 수 없는
  *     페이지가 "있다"는 것을 알려주게 된다. 07 의 "삭제된 페이지" 표시는 그래서 하지 않는다
+ *   · 커스텀 이모지(7c-3a): 이 워크스페이스의 것이면 `{ name, deleted }` — **지운 것도 이름을 준다**(정본 §3.4 [보강] 커스텀 이모지
+ *     ③ · ⑦ — 지운 이모지는 `:이름:` 글자로 그린다). 권한 필터가 없다(이모지 목록은 워크스페이스의 누구나 본다). 아니면 null
  */
 
 import type { SessionContext } from '../auth/session-context.ts'
-import { mentionTarget } from '../contracts/rich-text.ts'
+import { customEmojiIdOfRun, mentionTarget } from '../contracts/rich-text.ts'
 import { withReadTransaction, type Tx } from '../db/tx.ts'
 import type { EditorBlock, EditorDoc } from '../editor/document.ts'
 import { isUuid } from '../ids.ts'
 import { readableScopes } from '../permissions/effective.ts'
 import { canListMembers, listMembers } from '../workspace/list.ts'
+import { emojiLabelsIn } from '../emoji/custom-emoji.ts'
 import { plainTitleOf } from './page.ts'
 import { readPageIcon, type PageIcon } from './page-icon.ts'
 
@@ -102,15 +105,20 @@ export type MentionLabels = {
   readonly pages: Readonly<Record<string, string | null>>
   /** 페이지 id → 아이콘(8c-2) — **볼 수 있고 아이콘이 있는 것만**(제목과 같은 필터). */
   readonly pageIcons: Readonly<Record<string, PageIcon>>
+  /** 커스텀 이모지 id → 이름 · 지웠는가(7c-3a). 이 워크스페이스에 없으면 null. */
+  readonly emoji: Readonly<Record<string, { readonly name: string; readonly deleted: boolean } | null>>
 }
 
-/** 본문에 나오는 사람 · 페이지 멘션의 id — 그릴 이름을 물을 때 쓴다. */
-export function mentionIdsOf(doc: EditorDoc): { userIds: string[]; pageIds: string[] } {
+/** 본문에 나오는 사람 · 페이지 멘션 · 커스텀 이모지의 id — 그릴 이름을 물을 때 쓴다. */
+export function mentionIdsOf(doc: EditorDoc): { userIds: string[]; pageIds: string[]; emojiIds: string[] } {
   const users = new Set<string>()
   const pages = new Set<string>()
+  const emoji = new Set<string>()
   const walk = (blocks: readonly EditorBlock[]): void => {
     for (const block of blocks) {
       for (const run of block.title) {
+        const emojiId = customEmojiIdOfRun(run)
+        if (emojiId !== null) emoji.add(emojiId)
         const target = mentionTarget(run)
         if (target === null) continue
         ;(target.kind === 'user' ? users : pages).add(target.id)
@@ -119,18 +127,24 @@ export function mentionIdsOf(doc: EditorDoc): { userIds: string[]; pageIds: stri
     }
   }
   walk(doc.blocks)
-  return { userIds: [...users], pageIds: [...pages] }
+  return { userIds: [...users], pageIds: [...pages], emojiIds: [...emoji] }
 }
 
 export async function loadMentionLabels(
   ctx: SessionContext,
-  ids: { readonly userIds: readonly string[]; readonly pageIds: readonly string[] },
+  ids: { readonly userIds: readonly string[]; readonly pageIds: readonly string[]; readonly emojiIds?: readonly string[] },
 ): Promise<MentionLabels> {
   const userIds = [...new Set(ids.userIds.filter(isUuid))].slice(0, MENTION_LABEL_LIMIT)
   const pageIds = [...new Set(ids.pageIds.filter(isUuid))].slice(0, MENTION_LABEL_LIMIT)
+  const emojiIds = [...new Set((ids.emojiIds ?? []).filter(isUuid).map((id) => id.toLowerCase()))].slice(0, MENTION_LABEL_LIMIT)
   return withReadTransaction(async (tx) => {
     const pages = await pageLabels(tx, ctx, pageIds)
-    return { users: await userLabels(tx, ctx, userIds), pages: pages.titles, pageIcons: pages.icons }
+    return {
+      users: await userLabels(tx, ctx, userIds),
+      pages: pages.titles,
+      pageIcons: pages.icons,
+      emoji: await emojiLabelsIn(tx, ctx.workspaceId, emojiIds),
+    }
   })
 }
 

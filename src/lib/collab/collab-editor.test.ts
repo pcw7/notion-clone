@@ -37,6 +37,7 @@ const DEPS = {
   pageRefTitle: () => undefined,
   pageIcon: () => null,
   mentionLabel: () => undefined,
+  emojiLabel: () => undefined,
   workspaceId: 'ws',
   uploadImage: () => Promise.reject(new Error('검사에서 올리지 않는다')),
 } as unknown as EditorDeps

@@ -87,6 +87,7 @@ import { runColorSlashCommand } from '@/lib/editor/block-color'
 import { rememberColor } from '@/lib/editor/last-color'
 import { openCommentThread } from './comment-panel'
 import { PageIconView } from '../page-icon-view'
+import { customEmojiIdOf, type EmojiLabel } from '@/lib/editor/mention-label'
 import { closeMentionMenu, insertMention, mentionMenuState, type MentionPick } from '@/lib/editor/mention-menu'
 import { MENTION_NODE } from '@/lib/editor/schema'
 
@@ -109,6 +110,8 @@ type MenuUi = { open: boolean; query: string; index: number; left: number; top: 
 type MentionLabelMap = {
   readonly users: Readonly<Record<string, string | null>>
   readonly pages: Readonly<Record<string, string | null>>
+  /** 커스텀 이모지의 이름(7c-3a) — 지운 것도 이름이 있다. 이 워크스페이스에 없으면 null. */
+  readonly emoji?: Readonly<Record<string, EmojiLabel | null>>
 }
 
 type MentionCandidate = { kind: 'user' | 'page'; id: string; label: string; icon: PageIcon | null }
@@ -129,18 +132,21 @@ const CLOSED_MENTION: MentionUi = { open: false, query: '', index: 0, left: 0, t
 /** 07 F-07-08: "debounce(~150ms)". 한글은 한 글자가 곧 한 음절이라 짧은 쪽을 고른다. */
 const MENTION_DEBOUNCE_MS = 150
 
-/** 본문에 있는 멘션 노드의 대상 id — 이름 맵에 없는 것을 찾을 때. */
-function mentionIdsIn(view: EditorView): { users: string[]; pages: string[] } {
+/** 본문에 있는 멘션 노드의 대상 id — 이름 맵에 없는 것을 찾을 때. 커스텀 이모지(7c-3a)도 같은 노드다. */
+function mentionIdsIn(view: EditorView): { users: string[]; pages: string[]; emoji: string[] } {
   const users: string[] = []
   const pages: string[] = []
+  const emoji: string[] = []
   view.state.doc.descendants((node) => {
     if (node.type.name !== MENTION_NODE) return true
     const m = node.attrs.mention as { type?: unknown; user?: { id?: unknown }; page?: { id?: unknown } } | null
-    if (m?.type === 'user' && typeof m.user?.id === 'string') users.push(m.user.id)
+    const emojiId = customEmojiIdOf(node.attrs.mention)
+    if (emojiId !== null) emoji.push(emojiId)
+    else if (m?.type === 'user' && typeof m.user?.id === 'string') users.push(m.user.id)
     else if (m?.type === 'page' && typeof m.page?.id === 'string') pages.push(m.page.id)
     return false
   })
-  return { users, pages }
+  return { users, pages, emoji }
 }
 
 /**
@@ -338,9 +344,10 @@ export function BodyEditor({
   /** 제목을 다시 읽는 중인가 — 한 번에 하나만. */
   const refreshingTitlesRef = useRef(false)
   /** 멘션 노드의 이름 맵 — 문서에 없다. 서버가 권한으로 거른 것에서 시작하고, 모르는 id 를 받으면 다시 읽는다. */
-  const mentionLabelsRef = useRef<{ users: Map<string, string | null>; pages: Map<string, string | null> }>({
+  const mentionLabelsRef = useRef<{ users: Map<string, string | null>; pages: Map<string, string | null>; emoji: Map<string, EmojiLabel | null> }>({
     users: new Map(Object.entries(initialMentionLabels.users)),
     pages: new Map(Object.entries(initialMentionLabels.pages)),
+    emoji: new Map(Object.entries(initialMentionLabels.emoji ?? {})),
   })
   const refreshingLabelsRef = useRef(false)
   /** 하위 페이지 참조 · 멘션의 아이콘 — 문서에 없다(8c-2). 두 맵을 다시 읽을 때 함께 고친다(`mergePageIcons`). */
@@ -579,20 +586,22 @@ export function BodyEditor({
 
   /** 모르는 멘션 id 를 받았으면 이름 맵을 다시 읽는다 — 노드 뷰는 맵이 바뀌어도 스스로 다시 그리지 않는다. */
   const refreshMentionLabels = useCallback(
-    async (users: readonly string[], pages: readonly string[]) => {
+    async (users: readonly string[], pages: readonly string[], emoji: readonly string[]) => {
       if (refreshingLabelsRef.current) return
       refreshingLabelsRef.current = true
       try {
-        const params = new URLSearchParams({ users: users.join(','), pages: pages.join(',') })
+        const params = new URLSearchParams({ users: users.join(','), pages: pages.join(','), emoji: emoji.join(',') })
         const res = await fetch(`/api/workspaces/${workspaceId}/mention-labels?${params.toString()}`)
         if (!res.ok) return
         const data = (await res.json()) as {
           users?: Record<string, string | null>
           pages?: Record<string, string | null>
           pageIcons?: Record<string, PageIcon>
+          emoji?: Record<string, EmojiLabel | null>
         }
         for (const [id, label] of Object.entries(data.users ?? {})) mentionLabelsRef.current.users.set(id, label)
         for (const [id, label] of Object.entries(data.pages ?? {})) mentionLabelsRef.current.pages.set(id, label)
+        for (const [id, label] of Object.entries(data.emoji ?? {})) mentionLabelsRef.current.emoji.set(id, label)
         mergePageIcons(pageIconsRef.current, pages, data.pageIcons)
         const view = viewRef.current
         const deps = editorDepsRef.current
@@ -611,7 +620,8 @@ export function BodyEditor({
       const ids = mentionIdsIn(view)
       const users = ids.users.filter((id) => !mentionLabelsRef.current.users.has(id))
       const pages = ids.pages.filter((id) => !mentionLabelsRef.current.pages.has(id))
-      if (users.length > 0 || pages.length > 0) void refreshMentionLabels(users, pages)
+      const emoji = ids.emoji.filter((id) => !mentionLabelsRef.current.emoji.has(id))
+      if (users.length > 0 || pages.length > 0 || emoji.length > 0) void refreshMentionLabels(users, pages, emoji)
     },
     [refreshMentionLabels],
   )
@@ -1048,6 +1058,7 @@ export function BodyEditor({
       pageRefTitle: (id) => pageRefTitlesRef.current.get(id),
       pageIcon: (id) => pageIconsRef.current.get(id) ?? null,
       mentionLabel: (kind, id) => (kind === 'user' ? mentionLabelsRef.current.users : mentionLabelsRef.current.pages).get(id),
+      emojiLabel: (id) => mentionLabelsRef.current.emoji.get(id),
       onBlocked: (plan) => setStatus({ kind: 'error', message: plan.detail }),
       onRefused: (detail) => setStatus({ kind: 'error', message: detail }),
       openBlockMenu: () => openMenuRef.current?.(),
