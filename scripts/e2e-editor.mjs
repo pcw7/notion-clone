@@ -16470,6 +16470,12 @@ async function main() {
         const saved = await waitFor(`document.querySelector('[data-testid="site-name"]')?.value === ${JSON.stringify(domain)} && !!document.querySelector('[data-testid="site-example"]')`, 10000)
         check('★ 설정 → 사이트 — 주소를 저장하면 소문자로 받고 주소의 모양을 보인다',
           saved && (await api('GET', '/site-domain')).body?.name === domain, await evaluate(`document.querySelector('[data-testid="site-panel"]')?.textContent ?? ''`))
+        // 저장된 주소로 화면을 다시 연다 — 서버가 이름을 그린 채 하이드레이션한다(브라우저의 주소는 그 뒤에 · 어긋나면 React #418 이
+        // 이 구간 끝의 "페이지에서 오류가 나지 않았다" 로 잡힌다)
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/settings?s=workspace.sites` })
+        check('저장된 주소로 다시 열면 예시 줄이 이 앱의 주소로 선다',
+          await waitFor(`(document.querySelector('[data-testid="site-example"]')?.textContent ?? '').includes(location.origin + '/s/')`, 15000),
+          String(await evaluate(`document.querySelector('[data-testid="site-example"]')?.textContent ?? '(없음)'`)))
 
         const other = (await api('POST', '/pages', { title: `남의 슬러그 ${stamp}` })).body.page.id
         await api('PUT', `/pages/${other}/publish`)

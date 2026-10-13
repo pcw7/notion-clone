@@ -17,9 +17,10 @@
  * 고칠 수 없는 사람(`canEdit` 거짓)에게는 같은 화면이 읽기로 선다.
  */
 
-import { useState, useSyncExternalStore } from 'react'
+import { useState } from 'react'
 
 import type { FormDetail, FormQuestion } from '@/lib/database/form'
+import { useBrowserOrigin } from '../../use-browser-origin'
 import {
   FORM_ACCESS_OPTIONS,
   NO_QUESTIONS,
@@ -94,9 +95,8 @@ export function FormEditor({ workspaceId, initial }: { workspaceId: string; init
   }
 
   const settings = form.settings
-  // 이 앱의 주소 — 하이드레이션 동안은 서버와 같게 null(서버는 주소를 모른다)이고 그 뒤에 채운다. `typeof window` 로 가르면 이미 열린
-  // 폼으로 화면을 열 때 서버와 브라우저의 HTML 이 달라진다(7b-2 의 e2e 가 잡았다 — React #418).
-  const origin = useSyncExternalStore(noSubscribe, browserOrigin, serverOrigin)
+  // 이 앱의 주소 — 하이드레이션 동안은 null(서버와 같게 · `use-browser-origin.ts`).
+  const origin = useBrowserOrigin()
   const address = settings.access !== 'closed' && settings.token !== null && origin !== null ? formUrlOf(origin, settings.token) : null
 
   return (
@@ -366,10 +366,6 @@ export function FormEditor({ workspaceId, initial }: { workspaceId: string; init
  * 글 칸 하나 — 칸을 떠날 때(또는 Enter — 여러 줄이 아니면) 바뀌었으면 보낸다. 서버 값이 바뀌면 다시 선다(`key` — 효과 안의 setState 없이).
  * 비우면 `null`(기본 문구를 쓴다).
  */
-const noSubscribe = (): (() => void) => () => undefined
-const browserOrigin = (): string | null => window.location.origin
-const serverOrigin = (): string | null => null
-
 /**
  * 마감 시각 칸 — `datetime-local`(이 브라우저의 시간대로 보이고 ISO 로 보낸다). 칸을 떠날 때 · Enter 에 보낸다 · 비우면 마감 없음. 서버 값을
  * `key` 로 받아 다시 선다(`TextDraft` 와 같은 까닭 — 효과 안에서 초안을 덮지 않는다).
