@@ -72,13 +72,18 @@ const person = async (name = '2단계 인증의 사람') => {
 }
 
 /** 등록한 수단의 비밀값으로 이 창(지금 + offset)의 코드. */
-const codeOf = (secret: string, offset = 0) => totpAt(base32Decode(secret)!, totpStepAt(Date.now()) + offset)
+const codeAt = (secret: string, step: number) => totpAt(base32Decode(secret)!, step)
+const codeOf = (secret: string, offset = 0) => codeAt(secret, totpStepAt(Date.now()) + offset)
 
-/** 켠다 — 시작 · 확정. 비밀값과 백업 코드. */
+/**
+ * 켠다 — 시작 · 확정. 비밀값과 백업 코드 · **확정에 쓴 창**(`step`). 재사용 검사는 지금 시각이 아니라 그 창으로 코드를 만든다 — 지금으로
+ * 다시 계산하면 그사이 30초 창이 넘어갔을 때 새 창의 코드가 되어 받힌다(전체 검사에서 한 번 떨어졌다).
+ */
 const enable = async (who: Actor, label?: string) => {
   const started = unwrap(await startTotpEnrollment(who.ctx, { label }))
-  const confirmed = unwrap(await confirmTotpEnrollment(who.ctx, started.methodId, codeOf(started.secret)))
-  return { ...started, backupCodes: confirmed.backupCodes }
+  const step = totpStepAt(Date.now())
+  const confirmed = unwrap(await confirmTotpEnrollment(who.ctx, started.methodId, codeAt(started.secret, step)))
+  return { ...started, backupCodes: confirmed.backupCodes, step }
 }
 
 const second = (who: { readonly token: string }, code: string) =>
@@ -155,11 +160,11 @@ describe('③ 재사용 막기', () => {
   test('★ 쓴 TOTP 창과 그 앞은 다시 받지 않는다 · 쓴 백업 코드도', async (t) => {
     if (skipReason) return t.skip(skipReason)
     const { user, who } = await person()
-    const { secret, backupCodes } = await enable(who)
+    const { secret, backupCodes, step } = await enable(who)
     const other = await pendingSession(user.userId)
-    // 확정에 쓴 창(지금)과 그 앞은 거부된다
-    assert.deepEqual(await second(other, codeOf(secret, 0)), { ok: false, reason: 'invalid_code' })
-    assert.deepEqual(await second(other, codeOf(secret, -1)), { ok: false, reason: 'invalid_code' })
+    // 확정에 쓴 창과 그 앞은 거부된다 — 그 창으로 만든다(지금 시각이 아니라)
+    assert.deepEqual(await second(other, codeAt(secret, step)), { ok: false, reason: 'invalid_code' })
+    assert.deepEqual(await second(other, codeAt(secret, step - 1)), { ok: false, reason: 'invalid_code' })
 
     const code = backupCodes![0]!
     assert.deepEqual(await second(other, code.toUpperCase()), { ok: true, value: { via: 'backup' } })
