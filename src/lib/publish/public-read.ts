@@ -18,7 +18,7 @@ import { pageIconOfFormat, readPageIcon, type PageIcon } from '../block/page-ico
 import { cellsOf } from '../block/table.ts'
 import { codeCaptionRuns } from '../block/code.ts'
 import { PAGE_TYPE } from '../block/types.ts'
-import { mentionTarget, type RichTextRun } from '../contracts/rich-text.ts'
+import { customEmojiIdOfRun, mentionTarget, type RichTextRun } from '../contracts/rich-text.ts'
 import { withReadTransaction, type Tx } from '../db/tx.ts'
 import { rowsToDoc, type BodyRow, type EditorBlock, type EditorDoc } from '../editor/document.ts'
 import { openablePagesIn, resolvePublicPageIn, type PublicAccessFailure, type PublicTarget } from './public-access.ts'
@@ -42,6 +42,11 @@ export type PublicPageView = {
   readonly pages: ReadonlyMap<string, readonly RichTextRun[]>
   /** 멘션된 이 워크스페이스 사람의 이름. */
   readonly people: ReadonlyMap<string, string>
+  /**
+   * 문서(본문 · 페이지 제목)에 나오는 커스텀 이모지의 이름(7c-3c) — id(소문자) → `{ name, deleted }`. 지운 것도 이름을 준다(`:이름:`
+   * 글자로 그린다). 이 워크스페이스에 없는 id 는 없다(그리지 않는다). 정본 §3.4 [보강] 커스텀 이모지 ⑨.
+   */
+  readonly emoji: ReadonlyMap<string, { readonly name: string; readonly deleted: boolean }>
   /** 게시된 데이터베이스를 여는 화면이면 그 표(6a-2c-2 — 본문 대신). 아니면 null. */
   readonly table: PublicTable | null
   /** 연 페이지가 데이터베이스의 행이면 그 속성 묶음(6a-2c-2 — 제목 아래). 아니면 null. */
@@ -87,6 +92,14 @@ export async function readPublicPage(token: string, pageId?: string, options: { 
       `SELECT id, properties FROM block WHERE id = ANY($1::uuid[])`,
       [titled],
     )
+    const emojiIds = [...new Set([...mentions.emoji, ...emojiIdsOf(readTitle(page.properties))])]
+    const emoji =
+      emojiIds.length === 0
+        ? []
+        : await tx.query<{ id: string; name: string; deleted: boolean }>(
+            `SELECT id, name, deleted_at IS NOT NULL AS deleted FROM custom_emoji WHERE workspace_id = $1 AND id = ANY($2::uuid[])`,
+            [target.workspaceId, emojiIds],
+          )
     const people =
       mentions.people.length === 0
         ? []
@@ -108,6 +121,7 @@ export async function readPublicPage(token: string, pageId?: string, options: { 
         doc,
         pages: new Map(titles.map((row) => [row.id, readTitle(row.properties)])),
         people: new Map(people.map((row) => [row.id, row.name])),
+        emoji: new Map(emoji.map((row) => [row.id, { name: row.name, deleted: row.deleted }])),
         table: isDatabase ? await readPublicTableIn(tx, target) : null,
         rowProperties: isDatabase ? null : await readPublicRowPropertiesIn(tx, target),
       },
@@ -158,10 +172,17 @@ function withoutClosedRefs(blocks: readonly EditorBlock[], openable: ReadonlySet
 }
 
 /** 문서의 모든 글자(제목 · 표 셀 · 코드 캡션)에서 멘션의 대상을 모은다. */
-function mentionsOf(blocks: readonly EditorBlock[]): { pages: string[]; people: string[] } {
+/** 런들에 나오는 커스텀 이모지 id(소문자) — 7c-3c. */
+function emojiIdsOf(runs: readonly RichTextRun[]): string[] {
+  return runs.map(customEmojiIdOfRun).filter((id): id is string => id !== null).map((id) => id.toLowerCase())
+}
+
+function mentionsOf(blocks: readonly EditorBlock[]): { pages: string[]; people: string[]; emoji: string[] } {
   const pages = new Set<string>()
   const people = new Set<string>()
+  const emoji = new Set<string>()
   const visitRuns = (runs: readonly RichTextRun[]): void => {
+    for (const id of emojiIdsOf(runs)) emoji.add(id)
     for (const run of runs) {
       const target = mentionTarget(run)
       if (target?.kind === 'page') pages.add(target.id)
@@ -176,7 +197,7 @@ function mentionsOf(blocks: readonly EditorBlock[]): { pages: string[]; people: 
     for (const child of block.children ?? []) visit(child)
   }
   for (const block of blocks) visit(block)
-  return { pages: [...pages], people: [...people] }
+  return { pages: [...pages], people: [...people], emoji: [...emoji] }
 }
 
 /**
