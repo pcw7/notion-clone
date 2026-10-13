@@ -15814,6 +15814,86 @@ async function main() {
         JSON.stringify(labels.body?.emoji))
     }
 
+    if (sectionIf('커스텀 이모지 — : 자동완성 (7c-3b · F-13-16)')) {
+      // 본문에서 `:이름` 을 치면 후보 팝업(앞에서 맞는 것 먼저) · Enter 로 고르면 이모지 멘션(그림) · 닫는 `:` 까지 꼭 맞게 치면 곧바로 바뀐다 ·
+      // 글자 뒤의 `:`(10:30)는 열지 않는다 · 맞는 것이 없으면 팝업이 없다 · 저장된 본문은 id 만 실은 멘션 런이다.
+      const stamp = Date.now().toString(36)
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const upload = async () => {
+        const form = new FormData()
+        form.append('file', new Blob([Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64')], { type: 'image/png' }), 'emoji.png')
+        return (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/files`, { method: 'POST', headers: { cookie: authed.cookie, origin: BASE }, body: form })).json()).file.id
+      }
+      const makeEmoji = async (name) => (await api('POST', '/emoji', { name, fileId: await upload() })).body?.emoji?.id ?? null
+      // 앞에서 맞는 것(`ac{stamp}…`)과 가운데서 맞는 것(`zz-ac{stamp}`) — 찾기의 순서를 화면에서 본다.
+      const first = await makeEmoji(`ac${stamp}-one`)
+      const second = await makeEmoji(`ac${stamp}-two`)
+      const inner = await makeEmoji(`zz-ac${stamp}`)
+      const page = (await api('POST', '/pages', { title: `이모지자동완성${stamp}` })).body?.page?.id
+      const para = randomUUID()
+      await saveBody(page, { blocks: [{ id: para, type: 'paragraph', title: [textRun('시작 ')], properties: {}, format: {}, children: [] }] })
+      const typeChars = async (text) => {
+        for (const ch of text) await typeText(ch)
+      }
+      const options = () => evaluate(`[...document.querySelectorAll('[data-testid="emoji-menu-option"]')].map((b) => b.dataset.emojiId)`)
+      const chips = () => evaluate(`[...document.querySelectorAll('.blk-editor [data-block-id="${para}"] .blk-mention-emoji')].map((e) => e.dataset.mentionId)`)
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+      await waitFor(`!!document.querySelector('[data-block-id="${para}"]')`, 15000)
+      const box = await line(para)
+      await click(box.x + 4, box.y + box.h / 2)
+      await key('End')
+
+      // ① 글자 뒤의 : 는 열지 않는다
+      await typeChars('10:3')
+      check('★ 글자 뒤의 : 는 메뉴를 열지 않는다(10:30)', !(await evaluate(`!!document.querySelector('[data-testid="emoji-menu"]')`)))
+      await typeChars(' ')
+
+      // ② 후보 — 앞에서 맞는 것 먼저 · 가운데서 맞는 것 뒤
+      await typeChars(`:ac${stamp}`)
+      check('★ :이름 을 치면 후보 팝업 — 앞에서 맞는 둘이 먼저 · 가운데서 맞는 것이 뒤',
+        await waitFor(`JSON.stringify([...document.querySelectorAll('[data-testid="emoji-menu-option"]')].map((b) => b.dataset.emojiId)) === ${JSON.stringify(JSON.stringify([first, second, inner]))}`, 8000),
+        JSON.stringify(await options()))
+      await key('ArrowDown')
+      await key('Enter')
+      check('★ 화살표로 옮기고 Enter 로 고르면 :쿼리 가 그 이모지(그림)로 바뀐다 — 팝업은 닫힌다',
+        await waitFor(`(() => { const c = document.querySelector('.blk-editor [data-block-id="${para}"] .blk-mention-emoji[data-mention-id="${second}"] img')
+          return !!c && c.complete && c.naturalWidth > 0 && c.alt === ${JSON.stringify(`:ac${stamp}-two:`)} && !document.querySelector('[data-testid="emoji-menu"]') })()`, 8000),
+        JSON.stringify(await chips()))
+
+      // ③ 닫는 : 까지 꼭 맞게 치면 곧바로 바뀐다
+      await typeChars(` :AC${stamp}-ONE`)
+      const beforeColon = await options()
+      await typeChars(':')
+      check('★ 닫는 : 까지 이름을 꼭 맞게 치면(대소문자 무시) 곧바로 이모지 — : 글자는 남지 않는다',
+        await waitFor(`JSON.stringify([...document.querySelectorAll('.blk-editor [data-block-id="${para}"] .blk-mention-emoji')].map((e) => e.dataset.mentionId)) === ${JSON.stringify(JSON.stringify([second, first]))}`, 8000)
+          && !(await evaluate(`(document.querySelector('.blk-editor [data-block-id="${para}"]')?.textContent ?? '').includes('-ONE')`)),
+        JSON.stringify([await chips(), await evaluate(`document.querySelector('.blk-editor [data-block-id="${para}"]')?.textContent ?? null`), beforeColon]))
+
+      // ④ 맞는 것이 없으면 팝업이 없다
+      await typeChars(' :qqq')
+      check('맞는 이름이 없으면 팝업이 없다', !(await evaluate(`!!document.querySelector('[data-testid="emoji-menu"]')`)))
+      await key('Escape')
+
+      // ⑤ 저장된 본문 — id 만 실은 멘션 런 둘
+      let saved = null
+      for (let i = 0; i < 40 && saved === null; i += 1) {
+        const body = await readBody(page)
+        const runs = (body.doc?.blocks ?? body.blocks ?? []).find((b) => b.id === para)?.title ?? []
+        const emoji = runs.filter((r) => r.type === 'mention' && r.mention?.type === 'custom_emoji').map((r) => r.mention)
+        if (emoji.length === 2) saved = emoji
+        else await sleep(150)
+      }
+      check('★ 저장된 본문은 id 만 실은 커스텀 이모지 멘션 둘(고른 순서대로)',
+        JSON.stringify(saved) === JSON.stringify([{ type: 'custom_emoji', custom_emoji: { id: second } }, { type: 'custom_emoji', custom_emoji: { id: first } }]),
+        JSON.stringify(saved))
+    }
+
     if (sectionIf('폼 — 서버 라우트 (7a-1 · F-13-01)')) {
       // 폼 뷰의 라우트 — 만들기(첫 질문은 제목) · 질문 바꾸기 · 설정 · 공개(토큰) · 거부 코드 · 표 화면의 탭에 선다(7a-3 부터 — 그 탭은
       // 편집 화면이다).

@@ -52,7 +52,8 @@ export function closeMentionMenu(tr: Transaction): Transaction {
   return tr.setMeta(mentionMenuKey, { close: true })
 }
 
-function isTriggerPosition(state: EditorState, atPos: number): boolean {
+/** 트리거 글자가 줄 시작 · 공백 뒤에 있는가(코드 블록 밖에서) — `:` 자동완성(`emoji-menu.ts` · 7c-3b)도 같은 규칙이다. */
+export function isTriggerPosition(state: EditorState, atPos: number): boolean {
   const $at = state.doc.resolve(atPos)
   // 코드 블록(평문 본문) 안의 `@` 는 글자다 — 멘션을 담을 수 없다(8a-1).
   if (!$at.parent.isTextblock || isPlainTextNode($at.parent)) return false
@@ -61,8 +62,8 @@ function isTriggerPosition(state: EditorState, atPos: number): boolean {
   return /\s/.test(before)
 }
 
-/** 이 트랜잭션이 넣은 글자가 정확히 한 글자인가 — 붙여넣기(여러 글자)와 키 입력을 가른다. */
-function insertedExactlyOneChar(tr: Transaction): boolean {
+/** 이 트랜잭션이 넣은 글자가 정확히 한 글자인가 — 붙여넣기(여러 글자)와 키 입력을 가른다. `:` 자동완성도 쓴다. */
+export function insertedExactlyOneChar(tr: Transaction): boolean {
   let inserted = 0
   for (const step of tr.steps) {
     const json = step.toJSON() as { stepType?: string; slice?: { content?: { text?: string }[] } }
