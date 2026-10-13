@@ -62,6 +62,8 @@ export type FormSettings = {
   readonly maxResponses: number | null
   /** 마감 시각(ISO) — 비면 없다. */
   readonly closesAt: string | null
+  /** 한 사람당 한 번(7b-3 · 정본 ⑪) — 워크스페이스 멤버만의 폼에서만 막는다(웹 공개 폼은 응답자를 모른다). */
+  readonly onePerRespondent: boolean
 }
 
 export type FormQuestion = {
@@ -181,8 +183,9 @@ async function readFormIn(tx: Tx, ctx: SessionContext, gate: FormGate): Promise<
     token: string | null
     max_responses: number | null
     closes_at: Date | null
+    one_per_respondent: boolean
   }>(
-    `SELECT title, description, submit_label, confirmation_title, confirmation_body, access, token, max_responses, closes_at
+    `SELECT title, description, submit_label, confirmation_title, confirmation_body, access, token, max_responses, closes_at, one_per_respondent
        FROM form_view WHERE view_id = $1`,
     [gate.viewId],
   )
@@ -227,6 +230,7 @@ async function readFormIn(tx: Tx, ctx: SessionContext, gate: FormGate): Promise<
       token: canPublish ? settings.token : null,
       maxResponses: limits.maxResponses,
       closesAt: limits.closesAt,
+      onePerRespondent: settings.one_per_respondent,
     },
     questions: questions.map((q) => ({
       propertyId: q.property_id,
@@ -256,6 +260,21 @@ export async function countFormResponsesIn(tx: Tx, viewId: string): Promise<numb
     [viewId],
   )
   return row.n
+}
+
+/**
+ * 그 사람이 이 폼으로 낸 살아 있는 응답이 있는가(7b-3 · 정본 ⑪ — 한 사람당 한 번) — 응답의 만든 사람으로 본다(워크스페이스 멤버만의 폼이
+ * 남긴다 · 공개 폼의 응답은 NULL). 셈은 `countFormResponsesIn` 과 같다 — 휴지통의 응답은 빼고(지우면 다시 낸다), 켜기 전의 응답도 넣는다.
+ */
+export async function hasRespondedIn(tx: Tx, viewId: string, userId: string): Promise<boolean> {
+  const row = await tx.queryOne<{ answered: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1 FROM form_submission_meta m JOIN block b ON b.id = m.page_id
+        WHERE m.view_id = $1 AND b.created_by = $2 AND b.lifecycle = 'live'
+     ) AS answered`,
+    [viewId, userId],
+  )
+  return row.answered
 }
 
 /** 폼을 읽는다 — 표를 여는 사람. 폼이 아니면 not_found. */
@@ -361,10 +380,10 @@ function normalizeText(raw: unknown, max: number): string | null | undefined {
 export async function updateFormSettings(ctx: SessionContext, viewId: string, patch: unknown): Promise<FormResult<FormDetail>> {
   if (typeof patch !== 'object' || patch === null || Array.isArray(patch)) return fail('invalid_input')
   const input = patch as Record<string, unknown>
-  const known = new Set<string>([...TEXT_FIELDS.map(([key]) => key), 'access', 'maxResponses', 'closesAt'])
+  const known = new Set<string>([...TEXT_FIELDS.map(([key]) => key), 'access', 'maxResponses', 'closesAt', 'onePerRespondent'])
   if (Object.keys(input).length === 0 || Object.keys(input).some((key) => !known.has(key))) return fail('invalid_input')
   if (input.access !== undefined && !(FORM_ACCESS as readonly unknown[]).includes(input.access)) return fail('invalid_input')
-  const sets: { column: string; value: string | number | null }[] = []
+  const sets: { column: string; value: string | number | boolean | null }[] = []
   for (const [key, column, max] of TEXT_FIELDS) {
     if (!(key in input)) continue
     const value = normalizeText(input[key], max)
@@ -381,6 +400,11 @@ export async function updateFormSettings(ctx: SessionContext, viewId: string, pa
     const value = parseClosesAt(input.closesAt)
     if (value === undefined) return fail('invalid_input')
     sets.push({ column: 'closes_at', value })
+  }
+  // 한 사람당 한 번(7b-3 · 정본 ⑪) — 받는 규칙이다(상한과 같은 문) · 공유와 따로 둔다(웹 공개 폼에 켜 두어도 막지 않는다)
+  if ('onePerRespondent' in input) {
+    if (typeof input.onePerRespondent !== 'boolean') return fail('invalid_input')
+    sets.push({ column: 'one_per_respondent', value: input.onePerRespondent })
   }
 
   return withCommandTransaction(async (tx) => {

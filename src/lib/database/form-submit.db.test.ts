@@ -13,6 +13,9 @@
  *      않는다 · 동시 제출이 상한을 넘지 않는다 · 마감 시각이 지나면 닫히고 미루면 다시 받는다
  *   ⑤ ★ 워크스페이스 멤버만의 폼(7b-1 · 정본 ⑨) — 응답자를 정한다(로그인 없음 · 게스트 · 다른 워크스페이스 · 멤버) · 멤버만 내고 만든 사람 ·
  *      활동의 행위자가 그 사람 · 정책이 웹 공개를 막아도 열린다 · 웹 공개 폼은 세션을 실어 내도 익명
+ *   ⑦ ★ 한 사람당 한 번(7b-3 · 정본 ⑪) — 둘째는 already_submitted(토큰 검사 전) · 켜기 전의 응답도 센다 · 다른 멤버는 낸다 · 그 사람의
+ *      살아 있는 응답이 하나라도 있으면 막고 모두 지우면 다시 낸다 · 끄면 다시 받는다 · 같은 사람의 동시 제출은 하나만 · 웹 공개 폼은
+ *      켜 두어도 막지 않는다(같은 지문 · 같은 세션도) — 워크스페이스로 바꾸면 그때부터(공개 때의 익명 응답은 그 사람의 것이 아니다)
  */
 
 import { test, describe, before, after } from 'node:test'
@@ -24,7 +27,7 @@ import { createBareWorkspace, createUser, joinAs, probeDatabase } from '../testi
 import { addDataSource, trashDataSource } from './data-source.ts'
 import { createDatabase } from './database.ts'
 import { createFormView, setFormQuestions, updateFormSettings } from './form.ts'
-import { issueSubmissionToken, readPublicForm, resolveFormRespondent, submitFormResponse, type SubmitInput } from './form-submit.ts'
+import { alreadyResponded, issueSubmissionToken, readPublicForm, resolveFormRespondent, submitFormResponse, type SubmitInput } from './form-submit.ts'
 import { addProperty, addSelectOption, getSchema } from './property.ts'
 import { deleteView } from './view.ts'
 import { trashPage } from '../block/trash.ts'
@@ -348,5 +351,72 @@ describe('⑥ ★ 응답 상한 · 마감 시각(7b-2)', () => {
     assert.deepEqual(await submit(fx), { ok: false, reason: 'form_closed' })
     unwrap(await updateFormSettings(fx.boss.ctx, fx.form.viewId, { closesAt: new Date(Date.now() + 3_600_000).toISOString() }))
     assert.ok((await submit(fx)).ok, '미루면 다시 받는다')
+  })
+})
+
+// ── ⑦ 한 사람당 한 번 ──────────────────────────────────────────────
+
+describe('⑦ ★ 한 사람당 한 번(7b-3)', () => {
+  test('둘째는 already_submitted(토큰 검사 전) · 켜기 전의 응답도 센다 · 다른 멤버는 낸다 · 모두 지우면 다시 낸다 · 끄면 다시 받는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const fx = await publicForm()
+    unwrap(await updateFormSettings(fx.boss.ctx, fx.form.viewId, { access: 'workspace' }))
+    const mate = await joinAs(fx.ws, await createUser('한 번 내는 멤버'), 'member')
+    const other = await joinAs(fx.ws, await createUser('다른 멤버'), 'member')
+    assert.ok((await submit(fx, { sessionToken: mate.token })).ok)
+    assert.ok((await submit(fx, { sessionToken: mate.token })).ok, '끈 채로는 두 번 낸다')
+
+    unwrap(await updateFormSettings(fx.boss.ctx, fx.form.viewId, { onePerRespondent: true }))
+    const form = (await readPublicForm(fx.token))!
+    assert.equal(form.onePerRespondent, true)
+    const answered = async (sessionToken: string) => alreadyResponded(form, await resolveFormRespondent(form, sessionToken))
+    assert.deepEqual([await answered(mate.token), await answered(other.token)], [true, false], '켜기 전에 낸 응답도 센다')
+    assert.deepEqual(await submit(fx, { sessionToken: mate.token }), { ok: false, reason: 'already_submitted' })
+    assert.deepEqual(
+      await submit(fx, { sessionToken: mate.token, submission: 'not-a-token' }),
+      { ok: false, reason: 'already_submitted' },
+      '토큰 검사 전에 말한다',
+    )
+    assert.ok((await submit(fx, { sessionToken: other.token })).ok, '다른 멤버는 낸다')
+    assert.deepEqual(await submit(fx, { sessionToken: other.token }), { ok: false, reason: 'already_submitted' })
+
+    // 살아 있는 응답이 하나라도 있으면 막는다 — 모두 지우면 다시 낸다
+    const mine = (await rowsOf(fx.ds)).filter((r) => r.created_by === mate.userId)
+    assert.equal(mine.length, 2)
+    await trashPage(fx.boss.ctx, mine[0]!.id as never)
+    assert.equal(await answered(mate.token), true, '하나 남았다')
+    await trashPage(fx.boss.ctx, mine[1]!.id as never)
+    assert.equal(await answered(mate.token), false, '지운 응답은 세지 않는다')
+    assert.ok((await submit(fx, { sessionToken: mate.token })).ok)
+
+    unwrap(await updateFormSettings(fx.boss.ctx, fx.form.viewId, { onePerRespondent: false }))
+    assert.ok((await submit(fx, { sessionToken: mate.token })).ok, '끄면 다시 받는다')
+  })
+
+  test('같은 사람이 동시에 내도 하나만 — 폼 행을 잠근 채 다시 본다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const fx = await publicForm()
+    unwrap(await updateFormSettings(fx.boss.ctx, fx.form.viewId, { access: 'workspace', onePerRespondent: true }))
+    const mate = await joinAs(fx.ws, await createUser('두 탭의 멤버'), 'member')
+    const results = await Promise.all([1, 2, 3, 4].map(() => submit(fx, { sessionToken: mate.token })))
+    assert.equal(results.filter((r) => r.ok).length, 1, JSON.stringify(results))
+    assert.ok(results.filter((r) => !r.ok).every((r) => !r.ok && r.reason === 'already_submitted'), JSON.stringify(results))
+    assert.equal((await rowsOf(fx.ds)).length, 1)
+  })
+
+  test('웹 공개 폼은 켜 두어도 막지 않는다 — 워크스페이스로 바꾸면 그때부터(공개 때의 익명 응답은 그 사람의 것이 아니다)', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const fx = await publicForm()
+    unwrap(await updateFormSettings(fx.boss.ctx, fx.form.viewId, { onePerRespondent: true }))
+    const mate = await joinAs(fx.ws, await createUser('공개 폼의 멤버'), 'member')
+    const same = submitter()
+    assert.ok((await submit(fx, { sessionToken: mate.token, submitter: same })).ok)
+    assert.ok((await submit(fx, { sessionToken: mate.token, submitter: same })).ok, '같은 지문 · 같은 세션이어도 받는다(지문은 열쇠가 아니다)')
+    const form = (await readPublicForm(fx.token))!
+    assert.equal(await alreadyResponded(form, await resolveFormRespondent(form, mate.token)), false, '익명 응답자는 모른다')
+
+    unwrap(await updateFormSettings(fx.boss.ctx, fx.form.viewId, { access: 'workspace' }))
+    assert.ok((await submit(fx, { sessionToken: mate.token })).ok, '공개 때의 익명 응답은 세지 않는다')
+    assert.deepEqual(await submit(fx, { sessionToken: mate.token }), { ok: false, reason: 'already_submitted' })
   })
 })

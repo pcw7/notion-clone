@@ -11,6 +11,9 @@
  *
  * 응답을 마감한 폼(7b-2 — 상한 · 마감 시각 · 정본 ⑩)은 그 폼을 볼 수 있는 사람에게 제목과 "마감했습니다" 만 — 404 가 아니다.
  *
+ * 한 사람당 한 번인 폼(7b-3 · 정본 ⑪)에 이미 낸 멤버에게는 제목과 "이미 응답했습니다" 만(마감이 먼저) · 받은 뒤의 확인 화면에 "다른 응답
+ * 제출" 이 없다. 웹 공개 폼은 켜 두어도 그대로다(응답자를 모른다).
+ *
  * referrer 는 `same-origin` — `no-referrer` 면 브라우저가 같은 출처의 POST 에도 `Origin: null` 을 보내 제출의 출처 검사가 막는다
  * (신고 화면에서 e2e 가 잡은 것과 같다).
  */
@@ -20,8 +23,8 @@ import { notFound } from 'next/navigation'
 import { cache } from 'react'
 
 import { readSessionToken } from '@/lib/auth/session-cookie'
-import { issueSubmissionToken, readPublicForm, resolveFormRespondent } from '@/lib/database/form-submit'
-import { FORM_CLOSED, WORKSPACE_FORM_LOGIN } from '../form-messages'
+import { alreadyResponded, issueSubmissionToken, readPublicForm, resolveFormRespondent } from '@/lib/database/form-submit'
+import { ALREADY_RESPONDED, FORM_CLOSED, WORKSPACE_FORM_LOGIN } from '../form-messages'
 import { PublicFormView } from './public-form'
 
 /** 같은 요청에서 메타데이터와 화면이 두 번 읽지 않게 — 폼과 응답자(워크스페이스 멤버만의 폼이면 세션을 묻는다). */
@@ -62,11 +65,20 @@ export default async function PublicFormPage({ params }: PageProps<'/f/[token]'>
       </main>
     )
   }
+  if (await alreadyResponded(form, respondent)) {
+    return (
+      <main className="pub-page" data-testid="public-form-answered">
+        <h1 className="pub-title">{form.title}</h1>
+        <p className="pub-form-description">{ALREADY_RESPONDED}</p>
+      </main>
+    )
+  }
   return (
     <main className="pub-page" data-testid="public-form">
       <PublicFormView
         token={token}
         respondentName={respondent.kind === 'member' ? respondent.name : null}
+        allowAnother={!(form.onePerRespondent && respondent.kind === 'member')}
         submission={issueSubmissionToken(form.viewId)}
         form={{
           title: form.title,

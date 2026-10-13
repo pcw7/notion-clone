@@ -15,6 +15,7 @@ const FAILURE: Readonly<Record<string, string>> = {
   not_found: '이 폼은 더 이상 응답을 받지 않습니다.',
   bad_origin: '이 화면에서 제출해 주세요.',
   form_closed: '이 폼은 응답을 마감했습니다.',
+  already_submitted: '이미 응답했습니다. 이 폼은 한 사람당 한 번만 받습니다.',
 }
 
 export function formFailureMessage(reason: unknown): string {
@@ -38,3 +39,6 @@ export const WORKSPACE_FORM_LOGIN = '이 폼은 워크스페이스 멤버만 응
 
 /** 닫힌 폼(7b-2 — 응답 상한 · 마감 시각)의 화면 — 404 가 아니라 마감했다고 말한다(정본 ⑩). */
 export const FORM_CLOSED = '이 폼은 응답을 마감했습니다.'
+
+/** 한 사람당 한 번인 폼(7b-3)에 이미 낸 멤버의 화면 — 폼 대신(정본 ⑪). */
+export const ALREADY_RESPONDED = '이미 응답했습니다. 이 폼은 한 사람당 한 번만 받습니다.'

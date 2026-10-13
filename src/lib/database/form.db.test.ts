@@ -9,7 +9,8 @@
  *      unsupported_type(아무것도 바꾸지 않는다) · 속성을 휴지통에 넣으면 빠지고 되살리면 돌아온다(질문을 다시 정한 뒤에도)
  *   ③ ★ 설정 · 공개 — 글 칸(앞뒤 공백 · 비면 기본 · 길이) · 공개는 manage_perm(구조를 고쳐도 forbidden) · 정책이 막으면 policy_disabled ·
  *      워크스페이스 멤버만(7b-1)은 같은 문이되 정책을 묻지 않는다 ·
- *      처음 열 때 토큰 · 닫아도 토큰은 남고 다시 열면 같은 주소 · 토큰은 공개를 바꿀 수 있는 사람에게만 · 감사 로그
+ *      처음 열 때 토큰 · 닫아도 토큰은 남고 다시 열면 같은 주소 · 토큰은 공개를 바꿀 수 있는 사람에게만 · 감사 로그 ·
+ *      한 사람당 한 번(7b-3)은 구조를 고치는 사람 · 참 · 거짓만 · 공유와 따로
  *   ④ 다른 길 — 폼은 다른 종류로 바꾸지 않는다 · 폼이 아닌 뷰는 폼으로 읽지 않는다 · 뷰를 지우면 설정 · 질문도 지워진다 · 볼 수 없으면
  *      not_found
  */
@@ -91,7 +92,7 @@ describe('① ★ 만들기', () => {
     assert.deepEqual(form.questions.map((q) => [q.propertyId, q.label, q.required]), [[title, null, false]], '첫 질문은 제목')
     assert.deepEqual(form.settings, {
       title: null, description: null, submitLabel: null, confirmationTitle: null, confirmationBody: null, access: 'closed', token: null,
-      maxResponses: null, closesAt: null,
+      maxResponses: null, closesAt: null, onePerRespondent: false,
     })
     assert.deepEqual(form.candidates.map((c) => c.propertyId), [memo, score, kind], '상태 · 사람은 질문이 아니다')
     assert.deepEqual([form.canEdit, form.canPublish, form.policyAllows], [true, false, true], '편집(edit)은 구조를 고치지만 공유는 아니다(공개는 전체 권한)')
@@ -231,6 +232,21 @@ describe('③ ★ 설정 · 공개', () => {
     }
     const cleared = unwrap(await updateFormSettings(editor.ctx, form.viewId, { maxResponses: null, closesAt: '2020-01-01T00:00:00Z' }))
     assert.deepEqual([cleared.settings.maxResponses, cleared.closedBecause], [null, 'time'], '지난 시각이면 닫혔다고 싣는다')
+  })
+
+  test('★ 한 사람당 한 번(7b-3) — 구조를 고치는 사람 · 참 · 거짓만 · 읽기가 싣는다 · 공유와 따로', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { boss, editor, writer, db } = await workspace()
+    const form = unwrap(await createFormView(boss.ctx, db.id))
+    assert.deepEqual(await updateFormSettings(writer.ctx, form.viewId, { onePerRespondent: true }), { ok: false, reason: 'forbidden' }, '내용 편집은 아니다')
+    for (const bad of ['true', 1, null]) {
+      assert.deepEqual(await updateFormSettings(editor.ctx, form.viewId, { onePerRespondent: bad }), { ok: false, reason: 'invalid_input' }, JSON.stringify(bad))
+    }
+    const on = unwrap(await updateFormSettings(editor.ctx, form.viewId, { onePerRespondent: true }))
+    assert.deepEqual([on.settings.onePerRespondent, on.settings.access], [true, 'closed'], '공유와 따로 — 닫힌 폼에도 켠다')
+    assert.equal(unwrap(await readForm(boss.ctx, form.viewId)).settings.onePerRespondent, true)
+    const off = unwrap(await updateFormSettings(editor.ctx, form.viewId, { onePerRespondent: false }))
+    assert.equal(off.settings.onePerRespondent, false)
   })
 })
 
