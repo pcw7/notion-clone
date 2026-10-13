@@ -17,10 +17,22 @@
  * 고칠 수 없는 사람(`canEdit` 거짓)에게는 같은 화면이 읽기로 선다.
  */
 
-import { useState } from 'react'
+import { useState, useSyncExternalStore } from 'react'
 
 import type { FormDetail, FormQuestion } from '@/lib/database/form'
-import { FORM_ACCESS_OPTIONS, NO_QUESTIONS, formAccessNotice, formAccessState, formEditorFailureMessage, formUrlOf } from './form-editor-messages'
+import {
+  FORM_ACCESS_OPTIONS,
+  NO_QUESTIONS,
+  closedBecauseText,
+  formAccessNotice,
+  formAccessState,
+  formEditorFailureMessage,
+  formUrlOf,
+  isoOfLocalDateTime,
+  limitOfDraft,
+  localDateTimeOf,
+  responseCountText,
+} from './form-editor-messages'
 
 const FIELD =
   'w-full rounded border border-neutral-200 bg-transparent px-2 py-1 text-sm outline-none focus:border-neutral-400 disabled:opacity-60 dark:border-neutral-700'
@@ -82,7 +94,10 @@ export function FormEditor({ workspaceId, initial }: { workspaceId: string; init
   }
 
   const settings = form.settings
-  const address = settings.access !== 'closed' && settings.token !== null && typeof window !== 'undefined' ? formUrlOf(window.location.origin, settings.token) : null
+  // 이 앱의 주소 — 하이드레이션 동안은 서버와 같게 null(서버는 주소를 모른다)이고 그 뒤에 채운다. `typeof window` 로 가르면 이미 열린
+  // 폼으로 화면을 열 때 서버와 브라우저의 HTML 이 달라진다(7b-2 의 e2e 가 잡았다 — React #418).
+  const origin = useSyncExternalStore(noSubscribe, browserOrigin, serverOrigin)
+  const address = settings.access !== 'closed' && settings.token !== null && origin !== null ? formUrlOf(origin, settings.token) : null
 
   return (
     <section data-testid="form-editor" className="flex max-w-2xl flex-col gap-6">
@@ -251,6 +266,40 @@ export function FormEditor({ workspaceId, initial }: { workspaceId: string; init
         />
       </div>
 
+      {/* 응답 받기(7b-2 · 정본 ⑩) — 상한 · 마감 시각. 닫힘은 판정이다(공유와 따로) — 넘으면 받지 않고, 고치면 다시 받는다. */}
+      <div className="flex flex-col gap-2" data-testid="form-limits">
+        <h2 className="text-sm font-medium">응답 받기</h2>
+        <p data-testid="form-response-count" className="text-xs text-neutral-500">
+          {responseCountText(form.responseCount, settings.maxResponses)}
+        </p>
+        {form.closedBecause !== null && (
+          <p data-testid="form-closed-because" className="text-xs text-amber-700 dark:text-amber-400">
+            {closedBecauseText(form.closedBecause)}
+          </p>
+        )}
+        <TextDraft
+          label="응답 상한"
+          testId="form-max-responses"
+          value={settings.maxResponses === null ? null : String(settings.maxResponses)}
+          placeholder="상한 없음(1~100,000)"
+          disabled={readOnly || busy}
+          onCommit={(value) => {
+            const limit = limitOfDraft(value)
+            if (limit === undefined) setError('응답 상한은 1~100,000 의 정수입니다.')
+            else void saveSettings({ maxResponses: limit })
+          }}
+          className={FIELD}
+        />
+        <DateTimeDraft
+          label="마감 시각"
+          testId="form-closes-at"
+          value={settings.closesAt}
+          disabled={readOnly || busy}
+          onCommit={(iso) => void saveSettings({ closesAt: iso })}
+          onInvalid={() => setError('마감 시각을 확인하세요.')}
+        />
+      </div>
+
       {/* 공유 */}
       <div className="flex flex-col gap-2" data-testid="form-share">
         <h2 className="text-sm font-medium">공유</h2>
@@ -317,6 +366,69 @@ export function FormEditor({ workspaceId, initial }: { workspaceId: string; init
  * 글 칸 하나 — 칸을 떠날 때(또는 Enter — 여러 줄이 아니면) 바뀌었으면 보낸다. 서버 값이 바뀌면 다시 선다(`key` — 효과 안의 setState 없이).
  * 비우면 `null`(기본 문구를 쓴다).
  */
+const noSubscribe = (): (() => void) => () => undefined
+const browserOrigin = (): string | null => window.location.origin
+const serverOrigin = (): string | null => null
+
+/**
+ * 마감 시각 칸 — `datetime-local`(이 브라우저의 시간대로 보이고 ISO 로 보낸다). 칸을 떠날 때 · Enter 에 보낸다 · 비우면 마감 없음. 서버 값을
+ * `key` 로 받아 다시 선다(`TextDraft` 와 같은 까닭 — 효과 안에서 초안을 덮지 않는다).
+ */
+function DateTimeDraft(props: {
+  label: string
+  testId: string
+  value: string | null
+  disabled: boolean
+  onCommit: (iso: string | null) => void
+  onInvalid: () => void
+}) {
+  return <DateTimeDraftInner key={props.value ?? ''} {...props} />
+}
+
+function DateTimeDraftInner({
+  label,
+  testId,
+  value,
+  disabled,
+  onCommit,
+  onInvalid,
+}: {
+  label: string
+  testId: string
+  value: string | null
+  disabled: boolean
+  onCommit: (iso: string | null) => void
+  onInvalid: () => void
+}) {
+  const [draft, setDraft] = useState(localDateTimeOf(value))
+  const commit = () => {
+    const iso = isoOfLocalDateTime(draft)
+    if (iso === undefined) {
+      onInvalid()
+      return
+    }
+    if (iso !== value) onCommit(iso)
+  }
+  return (
+    <input
+      type="datetime-local"
+      aria-label={label}
+      data-testid={testId}
+      value={draft}
+      disabled={disabled}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault()
+          commit()
+        }
+      }}
+      className={FIELD}
+    />
+  )
+}
+
 function TextDraft(props: {
   label: string
   testId: string

@@ -16133,6 +16133,74 @@ async function main() {
       check('로그인 없는 제출은 404(열 수 없는 폼과 같다)', blind.status === 404, String(blind.status))
     }
 
+    if (sectionIf('폼의 응답 상한 · 마감 시각 (7b-2 · F-13-02)')) {
+      // 편집 화면의 "응답 받기" 에서 상한을 1 로 · 한 번 받으면 공개 화면이 "마감했습니다"(404 가 아니다 · 제목은 보인다) · 편집 화면이
+      // 받은 수와 닫힌 까닭을 말한다 · 마감 시각이 지나면 닫히고 지우면 다시 연다 — 공유(access)는 그대로다.
+      const stamp = Date.now().toString(36)
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `상한 폼 표 ${stamp}` })).body.database
+      const made = (await api('POST', `/databases/${db.id}/forms`, { name: `상한 신청서 ${stamp}` })).body?.form
+      const opened = await api('PATCH', `/forms/${made.viewId}`, { title: `상한 신청 ${stamp}`, access: 'public' })
+      const token = opened.body?.form?.settings?.token
+      const address = `${BASE}/f/${token}`
+
+      // ① 편집 화면에서 상한 1
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}?v=${made.viewId}` })
+      await waitFor(`!!document.querySelector('[data-testid="form-max-responses"]')`, 15000)
+      await clickSelector('[data-testid="form-max-responses"]')
+      await typeText('1')
+      await key('Enter')
+      let saved = null
+      for (let i = 0; i < 30 && saved !== 1; i += 1) {
+        saved = (await api('GET', `/forms/${made.viewId}`)).body?.form?.settings?.maxResponses ?? null
+        if (saved !== 1) await sleep(150)
+      }
+      check('★ 편집 화면에서 응답 상한을 1 로 — 서버 · 받은 수 줄',
+        saved === 1 && (await waitFor(`document.querySelector('[data-testid="form-response-count"]')?.textContent === '받은 응답 0개 / 상한 1개'`, 5000)),
+        JSON.stringify([saved, await evaluate(`document.querySelector('[data-testid="form-response-count"]')?.textContent ?? null`)]))
+
+      // ② 한 번 받으면 공개 화면이 마감했다고 말한다
+      await send('Page.navigate', { url: address })
+      await waitFor(`!!document.querySelector('[data-testid="public-form-body"]')`, 15000)
+      await sleep(3200)
+      await clickSelector('[data-testid="public-form-body"] input[type="text"]:not([tabindex="-1"])')
+      await typeText(`첫 응답 ${stamp}`)
+      await clickSelector('[data-testid="public-form-body"] button[type="submit"]')
+      check('첫 응답은 받는다', await waitFor(`!!document.querySelector('[data-testid="public-form-sent"]')`, 10000),
+        String(await evaluate(`document.querySelector('[role="alert"]')?.textContent ?? '(오류 없음)'`)))
+      await send('Page.navigate', { url: address })
+      check('★ 상한에 닿으면 공개 화면이 "마감했습니다" — 404 가 아니다 · 제목은 보인다',
+        await waitFor(`!!document.querySelector('[data-testid="public-form-closed"]') && (document.querySelector('[data-testid="public-form-closed"]')?.textContent ?? '').includes(${JSON.stringify(`상한 신청 ${stamp}`)})`, 15000),
+        String(await evaluate(`document.querySelector('main')?.textContent?.slice(0, 120) ?? '(없음)'`)))
+      const late = await fetch(`${address}/submit`, {
+        method: 'POST', headers: { 'content-type': 'application/json', origin: BASE }, body: JSON.stringify({ submission: 'x', answers: {}, website: '' }),
+      })
+      check('닫힌 폼의 제출은 410 form_closed', late.status === 410 && (await late.json().catch(() => null))?.error === 'form_closed', String(late.status))
+
+      // ③ 편집 화면이 받은 수와 닫힌 까닭을 말한다
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}?v=${made.viewId}` })
+      check('★ 편집 화면 — 받은 응답 1개 / 상한 1개 · 상한에 닿았다는 까닭 · 공유는 그대로(웹 공개)',
+        await waitFor(`document.querySelector('[data-testid="form-response-count"]')?.textContent === '받은 응답 1개 / 상한 1개'
+          && (document.querySelector('[data-testid="form-closed-because"]')?.textContent ?? '').startsWith('응답 상한')
+          && document.querySelector('[data-testid="form-access"]')?.dataset.access === 'public'`, 15000),
+        String(await evaluate(`document.querySelector('[data-testid="form-limits"]')?.textContent ?? '(없음)'`)))
+
+      // ④ 마감 시각 — 상한을 지우고 지난 시각이면 닫히고 지우면 다시 받는다
+      await api('PATCH', `/forms/${made.viewId}`, { maxResponses: null, closesAt: new Date(Date.now() - 60_000).toISOString() })
+      const byTime = await fetch(address)
+      const byTimeHtml = await byTime.text()
+      await api('PATCH', `/forms/${made.viewId}`, { closesAt: null })
+      const reopened = await fetch(address)
+      check('★ 마감 시각이 지나면 닫히고 지우면 다시 받는다',
+        byTime.status === 200 && byTimeHtml.includes('data-testid="public-form-closed"') && (await reopened.text()).includes('data-testid="public-form"'),
+        String(byTime.status))
+    }
+
     if (sectionIf('폼 — 서버 라우트 (7a-1 · F-13-01)')) {
       // 폼 뷰의 라우트 — 만들기(첫 질문은 제목) · 질문 바꾸기 · 설정 · 공개(토큰) · 거부 코드 · 표 화면의 탭에 선다(7a-3 부터 — 그 탭은
       // 편집 화면이다).

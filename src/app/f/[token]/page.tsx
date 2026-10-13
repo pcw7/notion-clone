@@ -9,6 +9,8 @@
  * 워크스페이스 멤버만의 폼(7b-1 · 정본 ⑨)은 로그인 세션을 묻는다(`resolveFormRespondent`) — 로그인하지 않았으면 로그인으로 가는 길만
  * (제목 · 설명도 싣지 않는다 · 메타데이터의 제목도), 그 워크스페이스의 멤버가 아니면 404, 멤버면 폼 + 응답자 줄.
  *
+ * 응답을 마감한 폼(7b-2 — 상한 · 마감 시각 · 정본 ⑩)은 그 폼을 볼 수 있는 사람에게 제목과 "마감했습니다" 만 — 404 가 아니다.
+ *
  * referrer 는 `same-origin` — `no-referrer` 면 브라우저가 같은 출처의 POST 에도 `Origin: null` 을 보내 제출의 출처 검사가 막는다
  * (신고 화면에서 e2e 가 잡은 것과 같다).
  */
@@ -19,7 +21,7 @@ import { cache } from 'react'
 
 import { readSessionToken } from '@/lib/auth/session-cookie'
 import { issueSubmissionToken, readPublicForm, resolveFormRespondent } from '@/lib/database/form-submit'
-import { WORKSPACE_FORM_LOGIN } from '../form-messages'
+import { FORM_CLOSED, WORKSPACE_FORM_LOGIN } from '../form-messages'
 import { PublicFormView } from './public-form'
 
 /** 같은 요청에서 메타데이터와 화면이 두 번 읽지 않게 — 폼과 응답자(워크스페이스 멤버만의 폼이면 세션을 묻는다). */
@@ -49,6 +51,14 @@ export default async function PublicFormPage({ params }: PageProps<'/f/[token]'>
         <a href={`/login?next=${encodeURIComponent(`/f/${token}`)}`} className="pub-form-again" data-testid="public-form-login-link">
           로그인
         </a>
+      </main>
+    )
+  }
+  if (form.closedBecause !== null) {
+    return (
+      <main className="pub-page" data-testid="public-form-closed">
+        <h1 className="pub-title">{form.title}</h1>
+        <p className="pub-form-description">{FORM_CLOSED}</p>
       </main>
     )
   }

@@ -29,6 +29,7 @@ import { can, type CapSet } from '../permissions/levels.ts'
 import { isLocked } from '../permissions/lock.ts'
 import { newPublicToken } from '../publish/public-token.ts'
 import { readSecurityPolicyIn } from '../workspace/security-policy.ts'
+import { formClosedReason, parseClosesAt, parseMaxResponses, type FormClosedReason } from './form-limits.ts'
 import { canOpenDatabase } from './row-access.ts'
 
 /** 질문으로 받는 속성 타입(v1 — 정본 ②). 상태 · 사람 · 관계형 · 파일 · 계산 열은 받지 않는다. */
@@ -44,6 +45,7 @@ export const MAX_FORM_QUESTIONS = 50
 
 /** 닫힘 · 웹 공개(익명) · 워크스페이스 멤버만(응답자를 남긴다 — 7b-1 · 정본 ⑨). */
 export type FormAccess = 'closed' | 'public' | 'workspace'
+export type { FormClosedReason }
 
 export const FORM_ACCESS: readonly FormAccess[] = ['closed', 'public', 'workspace']
 
@@ -56,6 +58,10 @@ export type FormSettings = {
   readonly access: FormAccess
   /** 공개 주소의 토큰 — 공개를 바꿀 수 있는 사람에게만(웹 게시와 같다). 아직 만들지 않았으면 null. */
   readonly token: string | null
+  /** 응답 상한(7b-2 · 정본 ⑩) — 비면 없다. */
+  readonly maxResponses: number | null
+  /** 마감 시각(ISO) — 비면 없다. */
+  readonly closesAt: string | null
 }
 
 export type FormQuestion = {
@@ -84,6 +90,10 @@ export type FormDetail = {
   readonly canPublish: boolean
   /** 워크스페이스 정책이 공개를 허용하는가 — 막으면 공개된 폼도 열리지 않는다(7a-2). */
   readonly policyAllows: boolean
+  /** 이 폼으로 받은 살아 있는 응답의 수(7b-2 — 상한이 세는 것). */
+  readonly responseCount: number
+  /** 닫혔다면 그 까닭(상한 · 마감 시각) — `access` 와 따로다(닫힘은 판정이다 · 정본 ⑩). */
+  readonly closedBecause: FormClosedReason | null
 }
 
 export type FormFailure =
@@ -169,10 +179,15 @@ async function readFormIn(tx: Tx, ctx: SessionContext, gate: FormGate): Promise<
     confirmation_body: string | null
     access: FormAccess
     token: string | null
+    max_responses: number | null
+    closes_at: Date | null
   }>(
-    `SELECT title, description, submit_label, confirmation_title, confirmation_body, access, token FROM form_view WHERE view_id = $1`,
+    `SELECT title, description, submit_label, confirmation_title, confirmation_body, access, token, max_responses, closes_at
+       FROM form_view WHERE view_id = $1`,
     [gate.viewId],
   )
+  const responseCount = await countFormResponsesIn(tx, gate.viewId)
+  const limits = { maxResponses: settings.max_responses, closesAt: settings.closes_at === null ? null : settings.closes_at.toISOString() }
   const questions = await tx.query<{
     property_id: string
     name: string
@@ -210,6 +225,8 @@ async function readFormIn(tx: Tx, ctx: SessionContext, gate: FormGate): Promise<
       confirmationBody: settings.confirmation_body,
       access: settings.access,
       token: canPublish ? settings.token : null,
+      maxResponses: limits.maxResponses,
+      closesAt: limits.closesAt,
     },
     questions: questions.map((q) => ({
       propertyId: q.property_id,
@@ -223,7 +240,22 @@ async function readFormIn(tx: Tx, ctx: SessionContext, gate: FormGate): Promise<
     canEdit: editDenied(gate) === null,
     canPublish,
     policyAllows: policy.allowPublish,
+    responseCount,
+    closedBecause: formClosedReason(limits, responseCount),
   }
+}
+
+/**
+ * 이 폼으로 받은 살아 있는 응답의 수(7b-2 · 정본 ⑩) — 메타 사이드카로 센다(공개 · 워크스페이스 멤버만 모두 남긴다). 휴지통의 행은 세지
+ * 않는다 — 지운 응답은 자리를 돌려준다.
+ */
+export async function countFormResponsesIn(tx: Tx, viewId: string): Promise<number> {
+  const row = await tx.queryOne<{ n: number }>(
+    `SELECT count(*)::int AS n FROM form_submission_meta m JOIN block b ON b.id = m.page_id
+      WHERE m.view_id = $1 AND b.lifecycle = 'live'`,
+    [viewId],
+  )
+  return row.n
 }
 
 /** 폼을 읽는다 — 표를 여는 사람. 폼이 아니면 not_found. */
@@ -329,15 +361,26 @@ function normalizeText(raw: unknown, max: number): string | null | undefined {
 export async function updateFormSettings(ctx: SessionContext, viewId: string, patch: unknown): Promise<FormResult<FormDetail>> {
   if (typeof patch !== 'object' || patch === null || Array.isArray(patch)) return fail('invalid_input')
   const input = patch as Record<string, unknown>
-  const known = new Set<string>([...TEXT_FIELDS.map(([key]) => key), 'access'])
+  const known = new Set<string>([...TEXT_FIELDS.map(([key]) => key), 'access', 'maxResponses', 'closesAt'])
   if (Object.keys(input).length === 0 || Object.keys(input).some((key) => !known.has(key))) return fail('invalid_input')
   if (input.access !== undefined && !(FORM_ACCESS as readonly unknown[]).includes(input.access)) return fail('invalid_input')
-  const sets: { column: string; value: string | null }[] = []
+  const sets: { column: string; value: string | number | null }[] = []
   for (const [key, column, max] of TEXT_FIELDS) {
     if (!(key in input)) continue
     const value = normalizeText(input[key], max)
     if (value === undefined) return fail('invalid_input')
     sets.push({ column, value })
+  }
+  // 응답 상한 · 마감 시각(7b-2 · 정본 ⑩) — 글 칸과 같은 문(구조를 고치는 사람)
+  if ('maxResponses' in input) {
+    const value = parseMaxResponses(input.maxResponses)
+    if (value === undefined) return fail('invalid_input')
+    sets.push({ column: 'max_responses', value })
+  }
+  if ('closesAt' in input) {
+    const value = parseClosesAt(input.closesAt)
+    if (value === undefined) return fail('invalid_input')
+    sets.push({ column: 'closes_at', value })
   }
 
   return withCommandTransaction(async (tx) => {

@@ -11,7 +11,7 @@ import type { SubmitFailure } from '../../lib/database/form-submit.ts'
 import { WORKSPACE_FORM_LOGIN, formFailureMessage, respondentNote } from './form-messages.ts'
 
 test('① 까닭마다 할 말 · 모르는 까닭 · 원형의 이름', () => {
-  const reasons: SubmitFailure[] = ['not_found', 'bad_origin', 'invalid_token', 'expired', 'too_fast', 'rate_limited', 'invalid_value']
+  const reasons: SubmitFailure[] = ['not_found', 'bad_origin', 'invalid_token', 'expired', 'too_fast', 'rate_limited', 'invalid_value', 'form_closed']
   const general = formFailureMessage('뭔가')
   for (const reason of reasons) assert.notEqual(formFailureMessage(reason), general, reason)
   assert.equal(formFailureMessage('constructor'), general)

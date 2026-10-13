@@ -51,3 +51,41 @@ export function formAccessState(access: FormAccessChoice): string | null {
   if (access === 'closed') return null
   return access === 'workspace' ? '이 폼은 워크스페이스 멤버에게 열려 있습니다.' : '이 폼은 웹에 공개되어 있습니다.'
 }
+
+// ── 응답 받기(7b-2 · 정본 ⑩) ──────────────────────────────────────────
+
+/** 받은 수 — 상한이 있으면 함께. 예: `받은 응답 3개 / 상한 10개` */
+export function responseCountText(count: number, max: number | null): string {
+  return `받은 응답 ${count}개${max === null ? '' : ` / 상한 ${max}개`}`
+}
+
+/** 닫힌 까닭 — 무엇을 고치면 다시 받는지까지. */
+export function closedBecauseText(reason: 'limit' | 'time'): string {
+  return reason === 'limit'
+    ? '응답 상한에 닿아 받지 않습니다 — 상한을 올리거나 지우면 다시 받습니다.'
+    : '마감 시각이 지나 받지 않습니다 — 시각을 미루거나 지우면 다시 받습니다.'
+}
+
+/** 상한 칸의 글 → 보낼 값. 비면 null(없음) · 1~100,000 의 정수가 아니면 undefined(틀렸다 — 서버와 같은 범위). */
+export function limitOfDraft(text: string | null): number | null | undefined {
+  if (text === null || text.trim() === '') return null
+  const n = Number(text.trim())
+  return Number.isInteger(n) && n >= 1 && n <= 100_000 ? n : undefined
+}
+
+/** ISO 시각 → `datetime-local` 칸의 값(이 브라우저의 시간대). 비면 빈 글. */
+export function localDateTimeOf(iso: string | null): string {
+  if (iso === null) return ''
+  const at = new Date(iso)
+  if (Number.isNaN(at.getTime())) return ''
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}T${pad(at.getHours())}:${pad(at.getMinutes())}`
+}
+
+/** `datetime-local` 칸의 값 → 보낼 ISO 시각(이 브라우저의 시간대로 읽는다 · 시간대를 붙인다). 비면 null · 틀리면 undefined. */
+export function isoOfLocalDateTime(local: string): string | null | undefined {
+  if (local.trim() === '') return null
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(local)) return undefined
+  const at = new Date(local)
+  return Number.isNaN(at.getTime()) ? undefined : at.toISOString()
+}

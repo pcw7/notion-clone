@@ -91,6 +91,7 @@ describe('① ★ 만들기', () => {
     assert.deepEqual(form.questions.map((q) => [q.propertyId, q.label, q.required]), [[title, null, false]], '첫 질문은 제목')
     assert.deepEqual(form.settings, {
       title: null, description: null, submitLabel: null, confirmationTitle: null, confirmationBody: null, access: 'closed', token: null,
+      maxResponses: null, closesAt: null,
     })
     assert.deepEqual(form.candidates.map((c) => c.propertyId), [memo, score, kind], '상태 · 사람은 질문이 아니다')
     assert.deepEqual([form.canEdit, form.canPublish, form.policyAllows], [true, false, true], '편집(edit)은 구조를 고치지만 공유는 아니다(공개는 전체 권한)')
@@ -213,6 +214,23 @@ describe('③ ★ 설정 · 공개', () => {
       [ws],
     )
     assert.deepEqual(audits.map((a) => a.metadata.change), ['form_open_workspace', 'form_close'])
+  })
+
+  test('★ 응답 상한 · 마감 시각(7b-2) — 구조를 고치는 사람 · 값의 모양 · 읽기가 받은 수 · 닫힌 까닭을 싣는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { boss, editor, writer, db } = await workspace()
+    const form = unwrap(await createFormView(boss.ctx, db.id))
+    const fresh = unwrap(await readForm(boss.ctx, form.viewId))
+    assert.deepEqual([fresh.settings.maxResponses, fresh.settings.closesAt, fresh.responseCount, fresh.closedBecause], [null, null, 0, null])
+
+    assert.deepEqual(await updateFormSettings(writer.ctx, form.viewId, { maxResponses: 5 }), { ok: false, reason: 'forbidden' }, '내용 편집은 아니다')
+    const set = unwrap(await updateFormSettings(editor.ctx, form.viewId, { maxResponses: 5, closesAt: '2030-01-01T09:00+09:00' }))
+    assert.deepEqual([set.settings.maxResponses, set.settings.closesAt], [5, '2030-01-01T00:00:00.000Z'], '구조를 고치는 사람 · 시각은 ISO Z 로')
+    for (const bad of [{ maxResponses: 0 }, { maxResponses: 1.5 }, { maxResponses: '5' }, { closesAt: '2030-01-01T09:00' }, { closesAt: 'soon' }]) {
+      assert.deepEqual(await updateFormSettings(editor.ctx, form.viewId, bad), { ok: false, reason: 'invalid_input' }, JSON.stringify(bad))
+    }
+    const cleared = unwrap(await updateFormSettings(editor.ctx, form.viewId, { maxResponses: null, closesAt: '2020-01-01T00:00:00Z' }))
+    assert.deepEqual([cleared.settings.maxResponses, cleared.closedBecause], [null, 'time'], '지난 시각이면 닫혔다고 싣는다')
   })
 })
 
