@@ -6311,6 +6311,70 @@ async function main() {
         JSON.stringify(reactions))
     }
 
+    if (sectionIf('커스텀 이모지 반응 (7c-3d-2 · F-13-16)')) {
+      // 반응 고르개의 커스텀 줄 — 찾기 · 고르면 그림 칩(키는 custom_emoji:{id}) · 이모지를 지우면 칩은 :이름: 글자 · 지운 뒤에도 빼기는 된다.
+      const stamp = Date.now().toString(36)
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const upload = async () => {
+        const form = new FormData()
+        form.append('file', new Blob([Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64')], { type: 'image/png' }), 'emoji.png')
+        return (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/files`, { method: 'POST', headers: { cookie: authed.cookie, origin: BASE }, body: form })).json()).file.id
+      }
+      const name = `react-${stamp}`
+      const emojiId = (await api('POST', '/emoji', { name, fileId: await upload() })).body?.emoji?.id
+      const page = (await api('POST', '/pages', { title: `커스텀반응${stamp}` })).body?.page?.id
+      await api('POST', `/pages/${page}/discussions`, { action: 'open', richText: [textRun('커스텀 반응을 남겨 주세요')] })
+      const key = `custom_emoji:${emojiId}`
+      const chip = `[data-testid="reaction-chip"][data-emoji="${key}"]`
+      const openPanel = async () => {
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+        await waitFor(`!!document.querySelector('[data-testid="comment-panel-toggle"]')`, 15000)
+        for (let tries = 0; tries < 6; tries += 1) {
+          await clickSelector('[data-testid="comment-panel-toggle"]')
+          if (await waitFor(`!!document.querySelector('[data-testid="reaction-add"]')`, 3000)) return true
+        }
+        return false
+      }
+
+      check('전제 — 패널 · 반응 추가', await openPanel())
+      await clickSelector('[data-testid="reaction-add"]')
+      const option = `[data-testid="reaction-custom-option"][data-emoji-id="${emojiId}"]`
+      check('★ 고르개의 커스텀 줄 — 워크스페이스의 이모지가 그림으로',
+        await waitFor(`!!document.querySelector('${option} img')`, 8000),
+        String(await evaluate(`document.querySelector('[data-testid="reaction-picker"]')?.innerHTML?.slice(0, 200) ?? '(없음)'`)))
+      await clickSelector('[data-testid="reaction-custom-search"]')
+      await typeText('zzz-nothing')
+      const hidden = await waitFor(`!document.querySelector('${option}')`, 3000)
+      await evaluate(`document.querySelector('[data-testid="reaction-custom-search"]')?.select()`)
+      await typeText(stamp)
+      check('이름으로 찾는다 — 맞지 않으면 빠지고 맞으면 선다', hidden && (await waitFor(`!!document.querySelector('${option}')`, 3000)))
+      await clickSelector(option)
+      check('★ 고르면 그림 칩 — 키는 custom_emoji:{id} · 읽는 이름은 :이름: · 내가 눌렀다',
+        await waitFor(`(() => { const c = document.querySelector('${chip}'); const i = c?.querySelector('img')
+          return !!c && !!i && i.complete && i.naturalWidth > 0 && c.getAttribute('aria-pressed') === 'true'
+            && (c.getAttribute('aria-label') ?? '').startsWith(${JSON.stringify(`:${name}:`)}) })()`, 8000),
+        String(await evaluate(`document.querySelector('[data-testid="comment-reactions"]')?.innerHTML?.slice(0, 300) ?? '(없음)'`)))
+
+      await api('DELETE', `/emoji/${emojiId}`)
+      const withLabels = await api('GET', `/pages/${page}/discussions?resolved=false`)
+      check('코멘트 목록이 반응의 커스텀 이모지 이름을 싣는다(지운 것도)',
+        JSON.stringify(withLabels.body?.emoji) === JSON.stringify({ [emojiId]: { name, deleted: true } }), JSON.stringify(withLabels.body?.emoji))
+      await openPanel()
+      check('★ 이모지를 지우면 칩은 :이름: 글자(그림이 아니다) — 반응은 남는다',
+        await waitFor(`(() => { const c = document.querySelector('${chip}'); return !!c && !c.querySelector('img') && c.textContent.includes(${JSON.stringify(`:${name}:`)}) })()`, 8000),
+        String(await evaluate(`document.querySelector('[data-testid="comment-reactions"]')?.innerHTML?.slice(0, 300) ?? '(없음)'`)))
+      await clickSelector(chip)
+      check('★ 지운 뒤에도 빼기는 된다 — 칩이 사라진다', await waitFor(`!document.querySelector('${chip}')`, 8000))
+      const listed = await api('GET', `/pages/${page}/discussions?resolved=false`)
+      check('서버에 남은 반응이 없다', JSON.stringify(listed.body?.discussions?.[0]?.comments?.[0]?.reactions) === '[]',
+        JSON.stringify(listed.body?.discussions?.[0]?.comments?.[0]?.reactions))
+    }
+
     if (sectionIf('본문 글자에 단 코멘트 (F-05-07)')) {
       const anchorBlock = randomUUID()
       const anchorPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {

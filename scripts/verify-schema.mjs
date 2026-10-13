@@ -4451,6 +4451,32 @@ try {
     }
   }
 
+  console.log('\n[72] 커스텀 이모지 반응의 키 (0098 / §3.4 [보강] 커스텀 이모지 ⑩ · 7c-3d-2조각)')
+  {
+    // 반응의 키는 1~16자이거나 `custom_emoji:` + 소문자 uuid — 그 이모지가 살아 있는지는 명령이 본다(키 안의 id 에 FK 를 걸 수 없다).
+    const userId = (await client.query(`SELECT id FROM "user" LIMIT 1`)).rows[0]?.id
+    const put = `INSERT INTO reaction (target_kind, target_id, user_id, emoji) VALUES ('comment', $1, $2, $3)`
+    await client.query(put, [randomUUID(), userId, '👍'])
+    await client.query(put, [randomUUID(), userId, `custom_emoji:${randomUUID()}`])
+    ok('★ 반응 — 유니코드 이모지 · 커스텀 이모지 키가 통과한다')
+    const rejects = async (label, emoji) => {
+      await client.query('SAVEPOINT probe')
+      try {
+        await client.query(put, [randomUUID(), userId, emoji])
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        fail(`${label} — 거부되어야 하는데 통과했다`)
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        if (e.code === '23514' && e.constraint === 'ck_reaction_emoji') ok(`${label} — ck_reaction_emoji 가 거부함`)
+        else fail(`${label} — ck_reaction_emoji 의 23514 가 아니라 ${e.constraint ?? '-'} ${e.code} (${e.message})`)
+      }
+    }
+    await rejects('대문자 uuid 키(명령은 소문자로 쓴다)', `custom_emoji:${randomUUID().toUpperCase()}`)
+    await rejects('uuid 가 아닌 커스텀 키', 'custom_emoji:party-parrot')
+    await rejects('17자 글', 'x'.repeat(17))
+    await rejects('빈 글', '')
+  }
+
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
 } catch (e) {

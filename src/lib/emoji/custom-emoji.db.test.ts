@@ -26,6 +26,7 @@ import {
   createCustomEmoji,
   deleteCustomEmoji,
   listCustomEmoji,
+  readEmojiLabels,
   renameCustomEmoji,
 } from './custom-emoji.ts'
 import { MAX_CUSTOM_EMOJI } from './custom-emoji-rules.ts'
@@ -200,5 +201,19 @@ describe('⑤ 500개', () => {
     )
     unwrap(await createCustomEmoji(boss.ctx, { name: 'last', fileId: await image(boss) }))
     assert.deepEqual(await createCustomEmoji(boss.ctx, { name: 'over', fileId: await image(boss) }), { ok: false, reason: 'too_many' })
+  })
+})
+
+describe('⑥ 이름 읽기(7c-3d-2)', () => {
+  test('코멘트 목록이 싣는 이름 — 지운 것도 · 대문자 id 는 소문자로 · uuid 가 아닌 것은 버린다 · 겹치면 하나', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { mate } = await team()
+    const live = unwrap(await createCustomEmoji(mate.ctx, { name: 'label-live', fileId: await image(mate) }))
+    const gone = unwrap(await createCustomEmoji(mate.ctx, { name: 'label-gone', fileId: await image(mate) }))
+    unwrap(await deleteCustomEmoji(mate.ctx, gone.id))
+    assert.deepEqual(await readEmojiLabels(mate.ctx, [live.id.toUpperCase(), live.id, gone.id, 'not-a-uuid']), {
+      [live.id]: { name: 'label-live', deleted: false },
+      [gone.id]: { name: 'label-gone', deleted: true },
+    })
   })
 })

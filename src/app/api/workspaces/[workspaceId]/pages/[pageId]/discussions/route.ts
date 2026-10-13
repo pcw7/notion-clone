@@ -24,6 +24,8 @@ import {
   type CommentResult,
 } from '@/lib/comment/discussion'
 import { withReadTransaction } from '@/lib/db/tx'
+import { readEmojiLabels } from '@/lib/emoji/custom-emoji'
+import { customEmojiIdOfReaction } from '@/lib/emoji/custom-emoji-rules'
 import { asBlockId } from '@/lib/ids'
 import { PAGE_LEVELS, setSubscription, subscriptionOf, type PageSubscriptionLevel } from '@/lib/notification/subscription'
 import { effectiveCaps } from '@/lib/permissions/effective'
@@ -77,9 +79,15 @@ export async function GET(request: Request, ctx: Ctx): Promise<Response> {
   const members = canListMembers(session.ctx.role)
     ? everyone
     : onlyPeople(everyone, [session.ctx.userId, ...peopleIn(listed.discussions)])
+  // 반응에 나온 커스텀 이모지의 이름(7c-3d-2 · 정본 [보강] 커스텀 이모지 ⑩) — 지운 것도 이름 · 화면이 따로 묻지 않는다.
+  const emojiIds = listed.discussions
+    .flatMap((d) => [...d.reactions, ...d.comments.flatMap((c) => c.reactions)])
+    .map((r) => customEmojiIdOfReaction(r.emoji))
+    .filter((id): id is string => id !== null)
   return Response.json({
     ok: true,
     discussions: listed.discussions,
+    emoji: emojiIds.length === 0 ? {} : await readEmojiLabels(session.ctx, emojiIds),
     canComment: can(caps, 'comment'),
     canResolve: can(caps, 'edit_content'),
     subscription: await subscriptionOf(session.ctx, pageId),

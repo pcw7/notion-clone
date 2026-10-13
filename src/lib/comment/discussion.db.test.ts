@@ -440,6 +440,46 @@ describe('반응', () => {
     })
     assert.equal(sentence.ok === false && sentence.reason, 'invalid_emoji')
   })
+
+  test('★ 커스텀 이모지(7c-3d-2) — 키는 소문자 · 더하기는 살아 있는 이 워크스페이스의 것만 · 빼기는 지운 뒤에도 된다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { owner, member } = await workspace()
+    const elsewhere = await createBareWorkspace('남의 반응 이모지')
+    const putEmoji = async (workspaceId: string, name: string): Promise<string> => {
+      const fileId = randomUUID()
+      await query(
+        `INSERT INTO file (id, workspace_id, region_id, storage_key, mime, size_bytes, created_at)
+         VALUES ($1, $2, (SELECT region_id FROM workspace WHERE id = $2), $3, 'image/png', 16, now())`,
+        [fileId, workspaceId, `reaction/${fileId}`],
+      )
+      const id = randomUUID()
+      await query(`INSERT INTO custom_emoji (id, workspace_id, name, file_id) VALUES ($1, $2, $3, $4)`, [id, workspaceId, name, fileId])
+      return id
+    }
+    const live = await putEmoji(owner.ctx.workspaceId, 'party')
+    const gone = await putEmoji(owner.ctx.workspaceId, 'gone')
+    await query(`UPDATE custom_emoji SET deleted_at = now() WHERE id = $1`, [gone])
+    const theirs = await putEmoji(elsewhere, 'theirs')
+    const pageId = await pageWith(owner, [para('본문')])
+    await openThread(owner, pageId, '이모지 반응')
+    const commentId = (await threadsOf(owner, pageId))[0].comments[0].id
+    const react = (emoji: string, who = member) => toggleReaction(who.ctx, { targetKind: 'comment', targetId: commentId, emoji })
+
+    const on = await react(`custom_emoji:${live.toUpperCase()}`)
+    assert.deepEqual(on, { ok: true, added: true })
+    assert.deepEqual((await threadsOf(owner, pageId))[0].comments[0].reactions, [{ emoji: `custom_emoji:${live}`, userIds: [member.userId] }], '키는 소문자로')
+
+    for (const [label, key] of [['지운 이모지', `custom_emoji:${gone}`], ['다른 워크스페이스', `custom_emoji:${theirs}`], ['없는 id', `custom_emoji:${randomUUID()}`], ['모양이 틀린 키', 'custom_emoji:party']] as const) {
+      const refused = await react(key)
+      assert.equal(refused.ok === false && refused.reason, 'invalid_emoji', label)
+    }
+
+    await query(`UPDATE custom_emoji SET deleted_at = now() WHERE id = $1`, [live])
+    const off = await react(`custom_emoji:${live}`)
+    // `off.ok === true && off.added` 를 false 와 견주면 실패(ok: false)도 통과한다 — 반사실이 잡았다. 결과를 통째로 본다.
+    assert.deepEqual(off, { ok: true, added: false }, '지운 뒤에도 빼기는 된다')
+    assert.deepEqual((await threadsOf(owner, pageId))[0].comments[0].reactions, [])
+  })
 })
 
 // ── ⑦ 범위 앵커 (2조각) ──────────────────────────────────────────────

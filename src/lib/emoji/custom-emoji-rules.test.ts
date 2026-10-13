@@ -6,12 +6,21 @@
  *   ① 이름 받기 — 앞뒤 공백 · 양 끝의 `:` 를 걷고 소문자로 · 모양이 아니면 null
  *   ② ★ 파일 이름에서 이름 제안 — 확장자를 떼고 소문자로 · 받을 수 없는 글자는 하이픈 하나 · 40자 · 비면 `emoji` · **늘 받는 모양이다**
  *   ③ ★ 이름으로 찾기 — 앞에서 맞는 것 먼저 · 부분 일치 · `:` · 대소문자 · 앞뒤 공백 무시 · 빈 검색어면 그대로
+ *   ④ ★ 반응 키(7c-3d-2) — `custom_emoji:{id}`(소문자) · 유니코드 · 모양이 틀린 키는 커스텀이 아니다
  */
 
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { EMOJI_NAME_PATTERN, MAX_EMOJI_NAME_LENGTH, normalizeEmojiName, searchCustomEmoji, suggestEmojiName } from './custom-emoji-rules.ts'
+import {
+  EMOJI_NAME_PATTERN,
+  MAX_EMOJI_NAME_LENGTH,
+  customEmojiIdOfReaction,
+  customEmojiReactionKey,
+  normalizeEmojiName,
+  searchCustomEmoji,
+  suggestEmojiName,
+} from './custom-emoji-rules.ts'
 
 describe('① 이름 받기', () => {
   test('앞뒤 공백 · 양 끝의 : 를 걷고 소문자로 · 모양이 아니면 null', () => {
@@ -64,5 +73,17 @@ describe('③ ★ 이름으로 찾기', () => {
     assert.deepEqual(searchCustomEmoji(list, '  ').map((e) => e.name), list.map((e) => e.name))
     assert.deepEqual(searchCustomEmoji(list, '::'), list)
     assert.deepEqual(searchCustomEmoji(list, 'dog'), [])
+  })
+})
+
+describe('④ ★ 반응 키', () => {
+  const id = '0A1B2C3D-0000-4000-8000-00000000E0E0'
+  test('키는 소문자 · 되읽으면 id(소문자) · 유니코드 · 모양이 틀린 키는 null', () => {
+    assert.equal(customEmojiReactionKey(id), `custom_emoji:${id.toLowerCase()}`)
+    assert.equal(customEmojiIdOfReaction(customEmojiReactionKey(id)), id.toLowerCase())
+    assert.equal(customEmojiIdOfReaction(`custom_emoji:${id}`), id.toLowerCase(), '대문자 키도 읽는다(받을 때 소문자로)')
+    for (const key of ['👍', 'custom_emoji:party', `custom_emoji:${id} `, `x custom_emoji:${id}`, '']) {
+      assert.equal(customEmojiIdOfReaction(key), null, JSON.stringify(key))
+    }
   })
 })

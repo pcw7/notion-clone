@@ -48,3 +48,17 @@ export function searchCustomEmoji<T extends { readonly name: string }>(list: rea
   const inner = list.filter((e) => !e.name.startsWith(q) && e.name.includes(q))
   return [...prefix, ...inner]
 }
+
+/** 반응의 커스텀 이모지 키 — `custom_emoji:{uuid}`(소문자 · 0098 의 CHECK 과 같은 모양 · 정본 [보강] 커스텀 이모지 ⑩). */
+const REACTION_KEY = /^custom_emoji:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i
+
+/** 커스텀 이모지 반응의 키(7c-3d-2) — 아이콘의 가리키는 글자(`pageIconKey`)와 같은 모양. */
+export function customEmojiReactionKey(emojiId: string): string {
+  return `custom_emoji:${emojiId.toLowerCase()}`
+}
+
+/** 반응 키가 커스텀 이모지면 그 id(소문자) — 아니면 null(유니코드 이모지 · 모양이 틀린 키). */
+export function customEmojiIdOfReaction(key: string): string | null {
+  const match = REACTION_KEY.exec(key)
+  return match === null ? null : match[1]!.toLowerCase()
+}
