@@ -13,6 +13,7 @@ const FAILURE: Readonly<Record<string, string>> = {
   invalid_input: '값을 확인하세요(길이 · 같은 질문 두 번).',
   unsupported_type: '질문으로 받을 수 없는 속성입니다.',
   policy_disabled: '워크스페이스 정책이 웹 공개를 막았습니다.',
+  publishing_blocked: '운영 정책에 따라 이 워크스페이스의 웹 공개가 막혔습니다.',
 }
 
 export function formEditorFailureMessage(reason: unknown): string {

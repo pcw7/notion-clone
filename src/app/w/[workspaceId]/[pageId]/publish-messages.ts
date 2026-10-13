@@ -12,6 +12,7 @@ const FAILURE: Readonly<Record<string, string>> = {
   not_page: '페이지와 데이터베이스만 웹에 게시할 수 있습니다 — 템플릿은 게시하지 않습니다.',
   trashed: '휴지통의 페이지는 게시할 수 없습니다.',
   policy_disabled: '워크스페이스 정책이 웹 게시를 막았습니다.',
+  publishing_blocked: '운영 정책에 따라 이 워크스페이스의 웹 게시가 막혔습니다.',
   not_published: '게시되어 있지 않습니다.',
   invalid_input: '바꾸지 못했습니다.',
   moderated: '운영 정책에 따라 공개가 내려진 페이지는 다시 게시할 수 없습니다.',

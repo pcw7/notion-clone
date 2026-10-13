@@ -1397,8 +1397,32 @@ CREATE UNIQUE INDEX ux_public_link_slug ON public_link (workspace_id, slug) WHER
 > 따라 웹 공개가 내려졌다" 를 보인다. 내려진 페이지를 다시 게시하면 `moderated` 로 거부한다(해제 · 다시 게시로 우회할 수 없다 —
 > 상태가 블록에 있다). 인박스 알림은 활동 이벤트와 함께(§7).
 >
-> ⑥ 워크스페이스 단위 게시 차단(17 *"반복 위반 → 운영자가 강제"*)은 다음 조각이다 — 소유자가 설정으로 되돌릴 수 없는 운영자 잠금이
-> 필요하다(§7).
+> ⑥ **[6b-3a · 마이그레이션 0103] 워크스페이스 게시 차단** — 17 F-17-09 *"반복 위반 → 워크스페이스 단위 게시 차단(F-06-11 의
+> `Disable publishing sites and forms` 를 운영자가 강제)"* · F-17-13 *"하위가 상위보다 더 허용적일 수 없다"* · Q14 *"잠금 해제 시 자동
+> 재게시는 위험(의도치 않은 공개) — 수동 재게시 권고"*.
+>
+> ```sql
+> ALTER TABLE workspace ADD COLUMN publishing_blocked_at timestamptz NULL;   -- 운영자의 잠금 — 비면 없다
+> -- moderation_action: target_type IN ('page','workspace') · action 에 'block_publishing' · 'unblock_publishing' 를 더한다
+> --   CHECK ((target_type = 'workspace') = (action IN ('block_publishing','unblock_publishing')))   -- 대상과 조치가 맞는다
+> --   CHECK ((action IN ('take_down','block_publishing')) = (reason_code IS NOT NULL))              -- 막는 데는 까닭이 있다
+> ```
+>
+>   · **잠금은 워크스페이스 행에** — 소유자의 설정(`security_policy.allow_publish_sites_and_forms`)과 따로 둔다. 소유자가 쓰는 길(설정)은
+>     이 칸에 닿지 않는다 — 설정으로 되돌릴 수 없다. 쓰는 것은 운영자 명령뿐이다(`blockWorkspacePublishing` · `unblockWorkspacePublishing` ·
+>     서버 셸 — ①)
+>   · **효과 정책은 둘의 곱** — `allowPublish = 설정 AND 잠금 없음`. 판정 한 곳(`readSecurityPolicyIn` — 설정 값 `allowPublishSetting` 과
+>     잠금 `publishingBlocked` 도 함께 낸다)과 공개 경로의 SQL 두 곳(공개 화면 · 이동 미리보기)이 같은 조건이다. 그래서 게시 · 웹 공개 폼 ·
+>     공개 화면 · 공개 폼 화면이 모두 함께 닫힌다. 막힌 동안 새로 게시하거나 폼을 웹에 열면 `publishing_blocked`(소유자 정책의
+>     `policy_disabled` 와 가른다 — 화면이 "운영 정책" 이라고 말한다). 워크스페이스 멤버만의 폼(§3.6 [보강] 폼 ⑨ — 밖으로 내보내는 것이
+>     아니다)은 그대로 열고 받는다. 설정 화면은 소유자의 설정 값을 그대로 보인다(잠금이 설정을 바꾸지 않는다)
+>   · **막을 때 지금 열린 것을 내린다** — 그 워크스페이스의 켜진 공개 링크를 모두 끄고(`enabled := false` · 토큰 · 검색 엔진 · 슬러그는
+>     남는다 — 다시 게시하면 같은 주소) 웹 공개 폼을 닫는다(`access := 'closed'` · 토큰은 남는다). 한 트랜잭션에서 잠금 · 조치 한 줄과
+>     함께. 몇 개를 내렸는지 운영자 명령이 말한다
+>   · **풀어도 다시 열지 않는다** — 해제는 잠금만 지운다. 내린 게시 · 폼은 소유자가 다시 연다(Q14). 막을 때 내리는 까닭이 이것이다 —
+>     잠금만 걸고 링크를 켜 둔 채면 풀 때 저절로 다시 열린다
+>   · 이미 막혀 있으면 `already` · 막혀 있지 않은데 풀면 `not_blocked` · 지운 워크스페이스는 `not_found`. 소유자에게 보이는 것(설정 ·
+>     공유 패널 · 폼 편집 화면의 "운영 정책에 따라 막혔다")은 6b-3b
 
 ---
 

@@ -91,7 +91,8 @@ export async function resolvePublicPageIn(tx: Tx, token: string, pageId?: string
             (pl.expires_at IS NOT NULL AND pl.expires_at <= now()) AS expired,
             pl.robots_directive, pl.ai_crawler,
             b.workspace_id, (w.deleted_at IS NULL) AS workspace_live,
-            coalesce(sp.allow_publish_sites_and_forms, true) AS policy_allows
+            -- 효과 정책 — 소유자의 설정 AND 운영자의 잠금 없음(6b-3a · readSecurityPolicyIn 과 같은 조건)
+            (coalesce(sp.allow_publish_sites_and_forms, true) AND w.publishing_blocked_at IS NULL) AS policy_allows
        FROM public_link pl
        JOIN block b ON b.id = pl.node_id
        JOIN workspace w ON w.id = b.workspace_id
@@ -138,8 +139,11 @@ export async function openablePagesIn(tx: Tx, workspaceId: string, rootId: strin
  * 뒤의 행을 읽는다.
  */
 export async function webExposureIn(tx: Tx, workspaceId: string, pageId: string): Promise<{ readonly own: boolean; readonly open: boolean }> {
+  // 효과 정책 — 소유자의 설정 AND 운영자의 잠금 없음(6b-3a)
   const policy = await tx.queryMaybe<{ allow: boolean }>(
-    `SELECT allow_publish_sites_and_forms AS allow FROM security_policy WHERE workspace_id = $1`,
+    `SELECT (coalesce(sp.allow_publish_sites_and_forms, true) AND w.publishing_blocked_at IS NULL) AS allow
+       FROM workspace w LEFT JOIN security_policy sp ON sp.workspace_id = w.id
+      WHERE w.id = $1`,
     [workspaceId],
   )
   if (policy !== null && !policy.allow) return { own: false, open: false }

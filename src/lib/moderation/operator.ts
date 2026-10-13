@@ -13,6 +13,13 @@
  * 부르지 않는다.** 누가 했는지는 운영자가 적은 이름(`actor`)으로 남는다.
  *
  * 조치마다 `moderation_action` 에 한 줄이 쌓인다(0086 — 고치기 · 지우기를 트리거가 막는다). 지금 상태는 블록의 `moderation_state` 다.
+ *
+ * ──────────────────────────────────────────────────────────────────────
+ * 워크스페이스 게시 차단(6b-3a · 정본 ⑥) — 소유자가 설정으로 되돌릴 수 없는 잠금
+ * ──────────────────────────────────────────────────────────────────────
+ *
+ * 잠금은 워크스페이스 행에(`publishing_blocked_at`) — 효과 정책은 소유자의 설정 AND 잠금 없음이다(`readSecurityPolicyIn`). 막을 때 지금
+ * 열린 공개 링크 · 웹 공개 폼을 내린다 · 풀 때는 잠금만 지운다(다시 여는 것은 소유자 — 17 Q14 의 수동 재게시).
  */
 
 import { randomUUID } from 'node:crypto'
@@ -44,6 +51,8 @@ export type OperatorFailure =
   | 'not_open'
   /** 내려져 있지 않다(reinstate). */
   | 'not_moderated'
+  /** 게시가 막혀 있지 않다(unblock_publishing). */
+  | 'not_blocked'
 
 export type OperatorResult<T = { readonly actionId: string }> =
   | { readonly ok: true; readonly value: T }
@@ -71,11 +80,27 @@ async function recordAction(
   row: { caseId: string | null; pageId: string; workspaceId: string; action: 'take_down' | 'dismiss' | 'reinstate'; reason: TakedownReason | null },
   who: { actor: string; note: string },
 ): Promise<string> {
+  return insertAction(tx, { ...row, targetType: 'page', targetId: row.pageId }, who)
+}
+
+/** 조치 한 줄 — 대상과 조치가 맞는지는 0103 의 CHECK 이 다시 본다(페이지 조치는 페이지에만 · 게시 차단은 워크스페이스에만). */
+async function insertAction(
+  tx: Tx,
+  row: {
+    caseId: string | null
+    targetType: 'page' | 'workspace'
+    targetId: string
+    workspaceId: string
+    action: 'take_down' | 'dismiss' | 'reinstate' | 'block_publishing' | 'unblock_publishing'
+    reason: TakedownReason | null
+  },
+  who: { actor: string; note: string },
+): Promise<string> {
   const id = randomUUID()
   await tx.query(
     `INSERT INTO moderation_action (id, case_id, target_type, target_id, workspace_id, action, reason_code, note, actor)
-     VALUES ($1, $2, 'page', $3, $4, $5, $6, $7, $8)`,
-    [id, row.caseId, row.pageId, row.workspaceId, row.action, row.reason, who.note, who.actor],
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+    [id, row.caseId, row.targetType, row.targetId, row.workspaceId, row.action, row.reason, who.note, who.actor],
   )
   return id
 }
@@ -146,6 +171,79 @@ export async function reinstatePage(pageId: string, input: OperatorInput): Promi
     const actionId = await recordAction(
       tx,
       { caseId: null, pageId: page.id, workspaceId: page.workspace_id, action: 'reinstate', reason: null },
+      who,
+    )
+    return { ok: true, value: { actionId } } as const
+  })
+}
+
+// ── 워크스페이스 게시 차단(6b-3a) ─────────────────────────────────────
+
+/** 막을 때 내린 것의 수 — 운영자 명령이 말한다. */
+export type PublishingBlockResult = { readonly actionId: string; readonly unpublishedPages: number; readonly closedForms: number }
+
+/** 워크스페이스 행을 잠근다 — 지운 워크스페이스는 없는 것과 같다. */
+async function lockWorkspace(tx: Tx, workspaceId: string): Promise<{ id: string; blocked: boolean } | null> {
+  if (!isUuid(workspaceId)) return null
+  return tx.queryMaybe<{ id: string; blocked: boolean }>(
+    `SELECT id, (publishing_blocked_at IS NOT NULL) AS blocked FROM workspace WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`,
+    [workspaceId],
+  )
+}
+
+/**
+ * 워크스페이스의 웹 게시를 막는다(정본 ⑥) — 잠금을 걸고, **지금 열린 것을 내린다**: 켜진 공개 링크를 모두 끄고(토큰 · 설정은 남는다)
+ * 웹 공개 폼을 닫는다(토큰은 남는다). 워크스페이스 멤버만의 폼은 그대로다(밖으로 내보내는 것이 아니다). 내린 것은 풀어도 다시 열리지
+ * 않는다 — 소유자가 다시 연다.
+ */
+export async function blockWorkspacePublishing(
+  workspaceId: string,
+  reason: unknown,
+  input: OperatorInput,
+): Promise<OperatorResult<PublishingBlockResult>> {
+  const who = cleanInput(input)
+  if (who === null || !isTakedownReason(reason)) return { ok: false, reason: 'invalid_input' }
+  return withCommandTransaction(async (tx) => {
+    const ws = await lockWorkspace(tx, workspaceId)
+    if (ws === null) return { ok: false, reason: 'not_found' } as const
+    if (ws.blocked) return { ok: false, reason: 'already' } as const
+
+    await tx.query(`UPDATE workspace SET publishing_blocked_at = now() WHERE id = $1`, [ws.id])
+    const pages = await tx.query<{ node_id: string }>(
+      `UPDATE public_link pl SET enabled = false, updated_at = now()
+         FROM block b
+        WHERE b.id = pl.node_id AND b.workspace_id = $1 AND pl.enabled
+       RETURNING pl.node_id`,
+      [ws.id],
+    )
+    const forms = await tx.query<{ view_id: string }>(
+      `UPDATE form_view f SET access = 'closed', updated_at = now()
+         FROM view v JOIN block d ON d.id = v.database_id
+        WHERE f.view_id = v.id AND d.workspace_id = $1 AND f.access = 'public'
+       RETURNING f.view_id`,
+      [ws.id],
+    )
+    const actionId = await insertAction(
+      tx,
+      { caseId: null, targetType: 'workspace', targetId: ws.id, workspaceId: ws.id, action: 'block_publishing', reason },
+      who,
+    )
+    return { ok: true, value: { actionId, unpublishedPages: pages.length, closedForms: forms.length } } as const
+  })
+}
+
+/** 게시 차단을 푼다(정본 ⑥) — 잠금만 지운다. 막을 때 내린 게시 · 폼은 소유자가 다시 연다(17 Q14 — 수동 재게시). */
+export async function unblockWorkspacePublishing(workspaceId: string, input: OperatorInput): Promise<OperatorResult> {
+  const who = cleanInput(input)
+  if (who === null) return { ok: false, reason: 'invalid_input' }
+  return withCommandTransaction(async (tx) => {
+    const ws = await lockWorkspace(tx, workspaceId)
+    if (ws === null) return { ok: false, reason: 'not_found' } as const
+    if (!ws.blocked) return { ok: false, reason: 'not_blocked' } as const
+    await tx.query(`UPDATE workspace SET publishing_blocked_at = NULL WHERE id = $1`, [ws.id])
+    const actionId = await insertAction(
+      tx,
+      { caseId: null, targetType: 'workspace', targetId: ws.id, workspaceId: ws.id, action: 'unblock_publishing', reason: null },
       who,
     )
     return { ok: true, value: { actionId } } as const
