@@ -9,6 +9,8 @@
  *      값이 틀린 제출은 토큰을 쓰지 않는다 · 레이트리밋(제출자 × 폼 10건)
  *   ③ 값 — 필수 · 선택은 그 속성의 옵션 · 숫자 · 날짜 · 길이 · 필수 체크박스 — 질문마다 까닭
  *   ④ ★ 열 수 없으면 not_found — 닫힘 · 정책 · 데이터베이스 휴지통 · 폼을 지움 · 토큰 모양
+ *   ⑤ ★ 워크스페이스 멤버만의 폼(7b-1 · 정본 ⑨) — 응답자를 정한다(로그인 없음 · 게스트 · 다른 워크스페이스 · 멤버) · 멤버만 내고 만든 사람 ·
+ *      활동의 행위자가 그 사람 · 정책이 웹 공개를 막아도 열린다 · 웹 공개 폼은 세션을 실어 내도 익명
  */
 
 import { test, describe, before, after } from 'node:test'
@@ -20,7 +22,7 @@ import { createBareWorkspace, createUser, joinAs, probeDatabase } from '../testi
 import { addDataSource, trashDataSource } from './data-source.ts'
 import { createDatabase } from './database.ts'
 import { createFormView, setFormQuestions, updateFormSettings } from './form.ts'
-import { issueSubmissionToken, readPublicForm, submitFormResponse, type SubmitInput } from './form-submit.ts'
+import { issueSubmissionToken, readPublicForm, resolveFormRespondent, submitFormResponse, type SubmitInput } from './form-submit.ts'
 import { addProperty, addSelectOption, getSchema } from './property.ts'
 import { deleteView } from './view.ts'
 
@@ -257,5 +259,51 @@ describe('④ ★ 열 수 없으면 not_found', () => {
     unwrap(await deleteView(deleted.boss.ctx, deleted.form.viewId))
     assert.deepEqual(await submit(deleted), notFound, '폼을 지웠다')
     for (const fx of [closed, policy, trashed, deleted]) assert.equal((await rowsOf(fx.ds)).length, 0)
+  })
+})
+
+// ── ⑤ 워크스페이스 멤버만의 폼 ────────────────────────────────────────
+
+describe('⑤ ★ 워크스페이스 멤버만의 폼(7b-1)', () => {
+  test('응답자를 정한다 · 멤버만 낸다 — 만든 사람 · 활동의 행위자가 그 사람 · 정책이 웹 공개를 막아도 열린다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const fx = await publicForm()
+    const opened = unwrap(await updateFormSettings(fx.boss.ctx, fx.form.viewId, { access: 'workspace' }))
+    assert.equal(opened.settings.token, fx.token, '주소는 그대로다')
+    unwrap(await updateSetting(fx.boss.ctx, 'workspace.allow_publish_sites_and_forms', false))
+    const mate = await joinAs(fx.ws, await createUser('응답하는 멤버'), 'member')
+    const guest = await joinAs(fx.ws, await createUser('손님'), 'guest')
+    const stranger = await joinAs(await createBareWorkspace('남의 곳'), await createUser('남'), 'owner')
+
+    const form = await readPublicForm(fx.token)
+    assert.equal(form?.access, 'workspace', '정책은 웹 공개만 막는다')
+    assert.deepEqual(await resolveFormRespondent(form!, null), { kind: 'login' })
+    assert.deepEqual(await resolveFormRespondent(form!, 'no-such-session'), { kind: 'login' })
+    assert.deepEqual(await resolveFormRespondent(form!, guest.token), { kind: 'denied' }, '게스트')
+    assert.deepEqual(await resolveFormRespondent(form!, stranger.token), { kind: 'denied' }, '다른 워크스페이스')
+    const asMate = await resolveFormRespondent(form!, mate.token)
+    assert.ok(asMate.kind === 'member' && asMate.name === '응답하는 멤버' && asMate.context.userId === mate.userId)
+
+    for (const [label, sessionToken] of [['로그인 없음', null], ['게스트', guest.token], ['다른 워크스페이스', stranger.token]] as const) {
+      assert.deepEqual(await submit(fx, { sessionToken }), { ok: false, reason: 'not_found' }, label)
+    }
+    const sent = await submit(fx, { sessionToken: mate.token })
+    assert.ok(sent.ok, JSON.stringify(sent))
+    const pageId = sent.value.pageId!
+    assert.deepEqual((await rowsOf(fx.ds)).map((r) => [r.id, r.created_by]), [[pageId, mate.userId]], '응답자가 만든 사람이다')
+    const activity = await query<{ actor_id: string | null }>(`SELECT actor_id FROM activity_event WHERE page_id = $1 AND type = 'page.created'`, [pageId])
+    assert.deepEqual(activity.map((a) => a.actor_id), [mate.userId], '활동의 행위자도 그 사람이다')
+  })
+
+  test('웹 공개 폼은 세션을 보지 않는다 — 멤버의 세션을 실어 내도 익명 · 닫으면 멤버도 not_found', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const fx = await publicForm()
+    const mate = await joinAs(fx.ws, await createUser('세션을 실은 멤버'), 'member')
+    const sent = await submit(fx, { sessionToken: mate.token })
+    assert.ok(sent.ok, JSON.stringify(sent))
+    assert.deepEqual((await rowsOf(fx.ds)).map((r) => r.created_by), [null], '강제 익명')
+    unwrap(await updateFormSettings(fx.boss.ctx, fx.form.viewId, { access: 'workspace' }))
+    unwrap(await updateFormSettings(fx.boss.ctx, fx.form.viewId, { access: 'closed' }))
+    assert.deepEqual(await submit(fx, { sessionToken: mate.token }), { ok: false, reason: 'not_found' })
   })
 })

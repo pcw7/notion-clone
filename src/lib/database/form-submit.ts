@@ -15,11 +15,20 @@
  *   폼 전체) → 값 검증(질문마다 까닭) → 토큰을 한 번만(Valkey) → 한 트랜잭션: 다시 공개인지 · 행 · 칸 · 메타
  *
  * 토큰을 쓰는 것은 값 검증 **뒤**다 — 값이 틀려 고쳐 다시 내는 사람이 같은 화면의 토큰으로 낸다.
+ *
+ * ──────────────────────────────────────────────────────────────────────
+ * 워크스페이스 멤버만의 폼(7b-1 · 정본 ⑨) — 같은 길에 응답자 하나를 더한다
+ * ──────────────────────────────────────────────────────────────────────
+ *
+ * `access = 'workspace'` 면 공개 판정 다음에 **로그인 세션**을 묻는다(`resolveFormRespondent` — `resolveSessionContext` 그대로 · 발급자를
+ * 늘리지 않는다). 그 워크스페이스의 멤버(게스트가 아닌)만 내고, 행의 만든 사람 · 활동의 행위자가 그 사람이다(`createRespondentRowIn`).
+ * 방어 계층은 그대로 지난다 — 레이트리밋의 제출자는 그 사람이다.
  */
 
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 
 import type { RequestMeta } from '../auth/request-meta.ts'
+import { resolveSessionContext, type SessionContext } from '../auth/session-context.ts'
 import { plainTitleOf } from '../block/page.ts'
 import { textRun, type ValidationIssue } from '../contracts/rich-text.ts'
 import { withReadTransaction, withTransaction, type Tx } from '../db/tx.ts'
@@ -29,7 +38,7 @@ import { readSecurityPolicyIn } from '../workspace/security-policy.ts'
 import { FORM_QUESTION_TYPES, type FormQuestionType } from './form.ts'
 import { readOptionsOf } from './options.ts'
 import type { CellValue } from './property-types.ts'
-import { createAnonymousRowIn } from './row.ts'
+import { createAnonymousRowIn, createRespondentRowIn } from './row.ts'
 
 /** 제출 토큰의 수명 — 화면을 받고 이 안에 내야 한다(17 *"1회용 + TTL(예: 2시간)"*). */
 export const SUBMISSION_TTL_MS = 2 * 60 * 60 * 1000
@@ -58,6 +67,8 @@ export type PublicFormQuestion = {
 
 export type PublicForm = {
   readonly viewId: string
+  /** 웹 공개(익명)인가 · 워크스페이스 멤버만인가(7b-1). 닫힌 폼은 읽히지 않는다. */
+  readonly access: 'public' | 'workspace'
   readonly workspaceId: WorkspaceId
   readonly dataSourceId: string
   /** 폼 제목 — 비었으면 데이터베이스 이름. */
@@ -72,7 +83,10 @@ export type PublicForm = {
 export const DEFAULT_SUBMIT_LABEL = '제출'
 export const DEFAULT_CONFIRMATION_TITLE = '제출했습니다'
 
-/** 공개 폼을 읽는다 — 세션이 없다. 열 수 없으면 null(닫힘 · 정책 · 휴지통 — 이유를 말하지 않는다 · 정본 ⑥ ⓒ). */
+/**
+ * 토큰으로 폼을 읽는다 — 세션을 보지 않는다. 열 수 없으면 null(닫힘 · 정책 · 휴지통 — 이유를 말하지 않는다 · 정본 ⑥ ⓒ). 워크스페이스
+ * 멤버만의 폼도 읽는다(`access`) — 누가 볼 수 있는지는 부르는 쪽이 `resolveFormRespondent` 로 정한다.
+ */
 export async function readPublicForm(token: string): Promise<PublicForm | null> {
   if (!FORM_TOKEN.test(token)) return null
   return withReadTransaction((tx) => readPublicFormIn(tx, token))
@@ -81,6 +95,7 @@ export async function readPublicForm(token: string): Promise<PublicForm | null> 
 async function readPublicFormIn(tx: Tx, token: string): Promise<PublicForm | null> {
   const row = await tx.queryMaybe<{
     view_id: string
+    access: 'public' | 'workspace'
     workspace_id: WorkspaceId
     data_source_id: string
     title: string | null
@@ -90,19 +105,20 @@ async function readPublicFormIn(tx: Tx, token: string): Promise<PublicForm | nul
     confirmation_body: string | null
     database_title: Record<string, unknown> | null
   }>(
-    `SELECT f.view_id, b.workspace_id, v.data_source_id, f.title, f.description, f.submit_label, f.confirmation_title, f.confirmation_body,
+    `SELECT f.view_id, f.access, b.workspace_id, v.data_source_id, f.title, f.description, f.submit_label, f.confirmation_title, f.confirmation_body,
             b.properties AS database_title
        FROM form_view f
        JOIN view v ON v.id = f.view_id AND v.type = 'form'
        JOIN block b ON b.id = v.database_id AND b.lifecycle = 'live'
        JOIN data_source ds ON ds.id = v.data_source_id AND ds.lifecycle = 'live'
-      WHERE f.token = $1 AND f.access = 'public'
+      WHERE f.token = $1 AND f.access IN ('public', 'workspace')
         -- 세션이 없어 권한 판정을 지나지 않는다 — 위의 페이지가 휴지통이면 닫는다(데이터베이스 블록은 수명이 없다 · X-3)
         AND NOT EXISTS (SELECT 1 FROM block a WHERE a.id = ANY(b.ancestor_path) AND a.lifecycle <> 'live')`,
     [token],
   )
   if (row === null) return null
-  if (!(await readSecurityPolicyIn(tx, row.workspace_id)).allowPublish) return null
+  // 정책은 웹에 여는 것만 막는다 — 워크스페이스 멤버만의 폼은 밖으로 내보내는 것이 아니다(⑨)
+  if (row.access === 'public' && !(await readSecurityPolicyIn(tx, row.workspace_id)).allowPublish) return null
 
   const questions = await tx.query<{
     property_id: string
@@ -125,6 +141,7 @@ async function readPublicFormIn(tx: Tx, token: string): Promise<PublicForm | nul
   )
   return {
     viewId: row.view_id,
+    access: row.access,
     workspaceId: row.workspace_id,
     dataSourceId: row.data_source_id,
     title: row.title ?? (plainTitleOf(row.database_title ?? {}) || '제목 없음'),
@@ -141,6 +158,34 @@ async function readPublicFormIn(tx: Tx, token: string): Promise<PublicForm | nul
       options: (options.get(q.property_id) ?? []).map((o) => ({ id: o.id, name: o.name, color: o.color })),
     })),
   }
+}
+
+// ── 응답자 ────────────────────────────────────────────────────────────
+
+/**
+ * 이 폼에 누가 내는가(7b-1 · 정본 ⑨) —
+ *   · 웹 공개면 `anonymous`(세션을 보지 않는다 — 강제 익명 ④)
+ *   · 워크스페이스 멤버만이면 로그인 세션을 그 워크스페이스로 해석한다: 멤버(게스트가 아닌)면 `member` · 로그인하지 않았다(만료 ·
+ *     폐기 · 둘째 단계가 남았다)면 `login` · 그 밖(멤버가 아니다 · 게스트 · 멈췄다)이면 `denied`(화면은 404 — 이유를 말하지 않는다)
+ */
+export type FormRespondent =
+  | { readonly kind: 'anonymous' }
+  | { readonly kind: 'member'; readonly context: SessionContext; readonly name: string }
+  | { readonly kind: 'login' }
+  | { readonly kind: 'denied' }
+
+export async function resolveFormRespondent(form: Pick<PublicForm, 'access' | 'workspaceId'>, sessionToken: string | null): Promise<FormRespondent> {
+  if (form.access === 'public') return { kind: 'anonymous' }
+  const session = await resolveSessionContext(sessionToken, form.workspaceId)
+  if (!session.ok) {
+    const reason = session.reason
+    return reason === 'no_session' || reason === 'expired' || reason === 'revoked' || reason === 'mfa_required' ? { kind: 'login' } : { kind: 'denied' }
+  }
+  if (session.context.role === 'guest') return { kind: 'denied' }
+  const user = await withReadTransaction((tx) =>
+    tx.queryMaybe<{ name: string }>(`SELECT name FROM "user" WHERE id = $1`, [session.context.userId]),
+  )
+  return { kind: 'member', context: session.context, name: user?.name ?? '' }
 }
 
 // ── 제출 토큰 ─────────────────────────────────────────────────────────
@@ -219,6 +264,8 @@ export type SubmitInput = {
   readonly origin: string | null
   readonly serverOrigin: string
   readonly submitter: RequestMeta
+  /** 로그인 세션의 토큰(쿠키) — 워크스페이스 멤버만의 폼(7b-1)에서만 읽는다. 웹 공개 폼은 보지 않는다. */
+  readonly sessionToken?: string | null
 }
 
 export function submitFailureStatus(reason: SubmitFailure): number {
@@ -245,12 +292,18 @@ export async function submitFormResponse(input: SubmitInput, now: number = Date.
 
   const form = await readPublicForm(input.token)
   if (form === null) return { ok: false, reason: 'not_found' }
+  // 워크스페이스 멤버만의 폼 — 멤버가 아니면(로그인하지 않았어도) 열 수 없는 폼과 같다(이유를 말하지 않는다 · ⑨)
+  const respondent = await resolveFormRespondent(form, input.sessionToken ?? null)
+  if (respondent.kind === 'login' || respondent.kind === 'denied') return { ok: false, reason: 'not_found' }
+  const member = respondent.kind === 'member' ? respondent.context : null
 
   const token = checkSubmissionToken(form.viewId, input.submission, now)
   if (typeof token === 'string') return { ok: false, reason: token }
 
   const hash = submitterHashOf(input.submitter)
-  if (!(await consume('form:who', `${form.viewId}:${hash}`, SUBMITTER_RATE_LIMIT)).allowed) return { ok: false, reason: 'rate_limited' }
+  // 제출자 × 폼 — 멤버면 그 사람이 제출자다(같은 사람이 여러 기기에서 내도 하나로 센다)
+  const who = member === null ? hash : `user:${member.userId}`
+  if (!(await consume('form:who', `${form.viewId}:${who}`, SUBMITTER_RATE_LIMIT)).allowed) return { ok: false, reason: 'rate_limited' }
   if (!(await consume('form:all', form.viewId, FORM_RATE_LIMIT)).allowed) return { ok: false, reason: 'rate_limited' }
 
   const parsed = parseAnswers(form, input.answers)
@@ -264,11 +317,14 @@ export async function submitFormResponse(input: SubmitInput, now: number = Date.
   return withTransaction(async (tx): Promise<SubmitResult> => {
     // 토큰을 읽은 뒤 닫혔을 수 있다 — 같은 트랜잭션에서 다시 본다(닫기와 줄을 세운다)
     const still = await tx.queryMaybe<{ one: number }>(
-      `SELECT 1 AS one FROM form_view WHERE view_id = $1 AND access = 'public' AND token = $2 FOR SHARE`,
-      [form.viewId, input.token],
+      `SELECT 1 AS one FROM form_view WHERE view_id = $1 AND access = $3 AND token = $2 FOR SHARE`,
+      [form.viewId, input.token, form.access],
     )
     if (still === null) return { ok: false, reason: 'not_found' }
-    const row = await createAnonymousRowIn(tx, form.workspaceId, form.dataSourceId, parsed.cells)
+    const row =
+      member === null
+        ? await createAnonymousRowIn(tx, form.workspaceId, form.dataSourceId, parsed.cells)
+        : await createRespondentRowIn(tx, member, form.dataSourceId, parsed.cells)
     if (!row.ok) {
       // 질문의 속성이 그사이 바뀌었다 — 값이 맞지 않는다
       return { ok: false, reason: 'invalid_value', issues: 'issues' in row ? row.issues : [] }

@@ -70,7 +70,7 @@ const { resolveSessionContext } = await import(new URL('../src/lib/auth/session-
 const { savePageBody, loadPageBody } = await import(new URL('../src/lib/block/save-page-body.ts', import.meta.url).href)
 const { closePool } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
 // 알림은 자기 글에는 오지 않는다 — 인박스를 보려면 동료가 하나 필요하다(코멘트 4조각).
-const { createUser, joinAs, visitAsOutsider } = await import(new URL('../src/lib/testing/db-fixtures.ts', import.meta.url).href)
+const { createBareWorkspace, createUser, joinAs, visitAsOutsider } = await import(new URL('../src/lib/testing/db-fixtures.ts', import.meta.url).href)
 const { createDiscussion } = await import(new URL('../src/lib/comment/discussion.ts', import.meta.url).href)
 
 const PORT = Number(process.env.E2E_PORT ?? 3100)
@@ -16077,6 +16077,62 @@ async function main() {
       await api('DELETE', `/pages/${page}/publish`)
     }
 
+    if (sectionIf('워크스페이스 멤버만의 폼 (7b-1 · F-13-02)')) {
+      // 편집 화면에서 "워크스페이스 멤버만" 을 고르면 주소가 선다 · 멤버는 /f/{토큰} 에서 응답자 줄과 함께 낸다(행의 만든 사람이 그 사람) ·
+      // 로그인하지 않으면 로그인 안내만(제목이 없다) · 게스트 · 다른 워크스페이스는 404 · 로그인 없는 제출은 404.
+      const stamp = Date.now().toString(36)
+      const api = async (method, path, body, headers = authed) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `멤버 폼 표 ${stamp}` })).body.database
+      const made = (await api('POST', `/databases/${db.id}/forms`, { name: `멤버 신청서 ${stamp}` })).body?.form
+      await api('PATCH', `/forms/${made.viewId}`, { title: `멤버 신청 ${stamp}` })
+
+      // ① 편집 화면 — 셋 중 "워크스페이스 멤버만"
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}?v=${made.viewId}` })
+      await waitFor(`!!document.querySelector('[data-testid="form-access-workspace"]')`, 15000)
+      await clickSelector('[data-testid="form-access-workspace"]')
+      const shown = await waitFor(`document.querySelector('[data-testid="form-access"]')?.dataset.access === 'workspace'
+        && /\\/f\\/[A-Za-z0-9_-]{22}$/.test(document.querySelector('[data-testid="form-url"]')?.value ?? '')`, 8000)
+      const address = await evaluate(`document.querySelector('[data-testid="form-url"]')?.value ?? ''`)
+      check('★ 편집 화면에서 워크스페이스 멤버만을 고르면 주소가 선다', shown, address)
+      const token = address.split('/f/')[1] ?? ''
+
+      // ② 멤버(이 판의 사용자)는 응답자 줄과 함께 낸다
+      await send('Page.navigate', { url: address })
+      check('★ 멤버는 폼과 응답자 줄을 본다',
+        await waitFor(`!!document.querySelector('[data-testid="public-form-title"]') && (document.querySelector('[data-testid="form-respondent"]')?.textContent ?? '').startsWith('응답자:')`, 15000),
+        String(await evaluate(`document.querySelector('[data-testid="public-form"]')?.textContent?.slice(0, 200) ?? '(없음)'`)))
+      await sleep(3200)
+      await clickSelector('[data-testid="public-form-body"] input[type="text"]:not([tabindex="-1"])')
+      await typeText(`멤버 응답 ${stamp}`)
+      await clickSelector('[data-testid="public-form-body"] button[type="submit"]')
+      check('★ 내면 확인 화면 — 응답은 그 사람의 행이다(만든 사람)',
+        await waitFor(`!!document.querySelector('[data-testid="public-form-sent"]')`, 10000),
+        String(await evaluate(`document.querySelector('[role="alert"]')?.textContent ?? '(오류 없음)'`)))
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const rows = await dbQuery(`SELECT b.created_by FROM page p JOIN block b ON b.id = p.id WHERE p.data_source_id = $1 AND NOT p.is_template`, [db.dataSourceId])
+      check('서버 — 행 하나 · 만든 사람이 이 판의 사용자다', rows.length === 1 && rows[0].created_by === ctx.userId, JSON.stringify(rows))
+
+      // ③ 로그인하지 않으면 안내만 · 게스트 · 다른 워크스페이스는 404 · 로그인 없는 제출은 404
+      const anon = await fetch(address)
+      const anonHtml = await anon.text()
+      check('★ 로그인하지 않으면 로그인 안내만 — 폼의 제목이 없다',
+        anon.status === 200 && anonHtml.includes('data-testid="public-form-login"') && !anonHtml.includes(`멤버 신청 ${stamp}`),
+        String(anon.status))
+      const guest = await joinAs(workspaceId, await createUser(`폼 손님 ${stamp}`), 'guest')
+      const stranger = await joinAs(await createBareWorkspace(`남의 곳 ${stamp}`), await createUser(`남 ${stamp}`), 'owner')
+      const denied = await Promise.all([guest, stranger].map((who) => fetch(address, { headers: { cookie: `nc_session=${who.token}` } })))
+      check('★ 게스트 · 다른 워크스페이스의 사람은 404', denied.every((r) => r.status === 404), JSON.stringify(denied.map((r) => r.status)))
+      const blind = await fetch(`${BASE}/f/${token}/submit`, {
+        method: 'POST', headers: { 'content-type': 'application/json', origin: BASE }, body: JSON.stringify({ submission: 'x', answers: {}, website: '' }),
+      })
+      check('로그인 없는 제출은 404(열 수 없는 폼과 같다)', blind.status === 404, String(blind.status))
+    }
+
     if (sectionIf('폼 — 서버 라우트 (7a-1 · F-13-01)')) {
       // 폼 뷰의 라우트 — 만들기(첫 질문은 제목) · 질문 바꾸기 · 설정 · 공개(토큰) · 거부 코드 · 표 화면의 탭에 선다(7a-3 부터 — 그 탭은
       // 편집 화면이다).
@@ -16186,11 +16242,12 @@ async function main() {
         JSON.stringify(questions?.map((q) => [q.propertyId === age ? '나이' : q.type, q.required, q.label])) === JSON.stringify([['나이', true, '몇 살인가요'], ['title', false, null]]),
         JSON.stringify(questions))
 
-      await clickSelector('[data-testid="form-access"]')
+      // 공유는 셋 중 고르기다(7b-1 — 닫힘 · 워크스페이스 멤버만 · 웹 공개)
+      await clickSelector('[data-testid="form-access-public"]')
       const shown = await waitFor(`/\\/f\\/[A-Za-z0-9_-]{22}$/.test(document.querySelector('[data-testid="form-url"]')?.value ?? '')`, 8000)
       const address = await evaluate(`document.querySelector('[data-testid="form-url"]')?.value ?? ''`)
       check('★ 웹에 공개 — 주소가 서고 세션 없이 열린다', shown && (await fetch(address)).status === 200, address)
-      await clickSelector('[data-testid="form-access"]')
+      await clickSelector('[data-testid="form-access-closed"]')
       const closed = await waitFor(`!document.querySelector('[data-testid="form-url"]') && document.querySelector('[data-testid="form-access"]')?.dataset.access === 'closed'`, 8000)
       check('공개 닫기 — 주소가 닫힌다', closed && address !== '' && (await fetch(address)).status === 404, address)
 

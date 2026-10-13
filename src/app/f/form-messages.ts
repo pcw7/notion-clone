@@ -26,3 +26,11 @@ export const REQUIRED_MARK = '*'
 
 /** 확인 화면의 "다른 응답" — 새 화면(새 제출 토큰). */
 export const ANOTHER_RESPONSE = '다른 응답 제출'
+
+/** 워크스페이스 멤버만의 폼(7b-1) — 응답자를 남긴다고 미리 말한다(공개 폼은 익명이라 없다). */
+export function respondentNote(name: string): string {
+  return `응답자: ${name || '나'} — 응답에 이름이 남습니다.`
+}
+
+/** 워크스페이스 멤버만의 폼에 로그인하지 않고 왔다 — 폼의 제목도 싣지 않는다(워크스페이스 안의 이름이다 · 정본 ⑨). */
+export const WORKSPACE_FORM_LOGIN = '이 폼은 워크스페이스 멤버만 응답할 수 있습니다. 로그인한 뒤 다시 열어 주세요.'

@@ -8,6 +8,7 @@
  *   ② ★ 질문 — 목록을 통째로 · 순서 · 필수 · 제목 · 설명 · 같은 속성 두 번은 invalid_input · 받지 않는 타입 · 다른 표 · 지운 속성은
  *      unsupported_type(아무것도 바꾸지 않는다) · 속성을 휴지통에 넣으면 빠지고 되살리면 돌아온다(질문을 다시 정한 뒤에도)
  *   ③ ★ 설정 · 공개 — 글 칸(앞뒤 공백 · 비면 기본 · 길이) · 공개는 manage_perm(구조를 고쳐도 forbidden) · 정책이 막으면 policy_disabled ·
+ *      워크스페이스 멤버만(7b-1)은 같은 문이되 정책을 묻지 않는다 ·
  *      처음 열 때 토큰 · 닫아도 토큰은 남고 다시 열면 같은 주소 · 토큰은 공개를 바꿀 수 있는 사람에게만 · 감사 로그
  *   ④ 다른 길 — 폼은 다른 종류로 바꾸지 않는다 · 폼이 아닌 뷰는 폼으로 읽지 않는다 · 뷰를 지우면 설정 · 질문도 지워진다 · 볼 수 없으면
  *      not_found
@@ -193,6 +194,25 @@ describe('③ ★ 설정 · 공개', () => {
       [ws],
     )
     assert.deepEqual(audits.map((a) => a.metadata.change), ['form_open', 'form_close', 'form_open'], '바뀌었을 때만')
+  })
+
+  test('★ 워크스페이스 멤버만(7b-1) — manage_perm · 정책은 묻지 않는다 · 처음 열 때 토큰 · 감사는 form_open_workspace', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { ws, boss, editor, db } = await workspace()
+    const form = unwrap(await createFormView(boss.ctx, db.id))
+    assert.deepEqual(await updateFormSettings(editor.ctx, form.viewId, { access: 'workspace' }), { ok: false, reason: 'forbidden' }, '구조를 고쳐도')
+    unwrap(await updateSetting(boss.ctx, 'workspace.allow_publish_sites_and_forms', false))
+    const opened = unwrap(await updateFormSettings(boss.ctx, form.viewId, { access: 'workspace' }))
+    assert.equal(opened.settings.access, 'workspace', '정책이 웹 공개를 막아도 연다 — 밖으로 내보내는 것이 아니다')
+    assert.match(opened.settings.token ?? '', /^[A-Za-z0-9_-]{22}$/, '처음 열 때 토큰')
+    assert.deepEqual(await updateFormSettings(boss.ctx, form.viewId, { access: 'public' }), { ok: false, reason: 'policy_disabled' }, '웹 공개는 여전히 막힌다')
+    const closed = unwrap(await updateFormSettings(boss.ctx, form.viewId, { access: 'closed' }))
+    assert.equal(closed.settings.token, opened.settings.token, '닫아도 토큰은 남는다')
+    const audits = await query<{ metadata: Record<string, unknown> }>(
+      `SELECT metadata FROM audit_event WHERE workspace_id = $1 AND event_type = 'page.publish_changed' ORDER BY occurred_at, id`,
+      [ws],
+    )
+    assert.deepEqual(audits.map((a) => a.metadata.change), ['form_open_workspace', 'form_close'])
   })
 })
 

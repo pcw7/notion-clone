@@ -15,7 +15,7 @@
 import { useState, type FormEvent } from 'react'
 
 import type { PublicFormQuestion } from '@/lib/database/form-submit'
-import { ANOTHER_RESPONSE, REQUIRED_MARK, formFailureMessage } from '../form-messages'
+import { ANOTHER_RESPONSE, REQUIRED_MARK, formFailureMessage, respondentNote } from '../form-messages'
 
 type FormProps = {
   readonly title: string
@@ -28,7 +28,18 @@ type FormProps = {
 
 type Answers = Record<string, string | boolean>
 
-export function PublicFormView({ token, submission, form }: { token: string; submission: string; form: FormProps }) {
+export function PublicFormView({
+  token,
+  submission,
+  form,
+  respondentName = null,
+}: {
+  token: string
+  submission: string
+  form: FormProps
+  /** 워크스페이스 멤버만의 폼(7b-1)이면 응답자의 이름 — 응답에 이름이 남는다고 미리 말한다. 웹 공개 폼은 null(익명). */
+  respondentName?: string | null
+}) {
   const [answers, setAnswers] = useState<Answers>({})
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -85,6 +96,11 @@ export function PublicFormView({ token, submission, form }: { token: string; sub
         {form.title}
       </h1>
       {form.description !== null && <p className="pub-form-description">{form.description}</p>}
+      {respondentName !== null && (
+        <p className="pub-form-description" data-testid="form-respondent">
+          {respondentNote(respondentName)}
+        </p>
+      )}
 
       {form.questions.map((q) => {
         const id = `q-${q.propertyId}`
