@@ -8,6 +8,7 @@
  * try/catch 를 빠뜨려 낙관적으로 칠한 칸이 되돌아가지 않는 경로를 만들지 않는다.
  */
 
+import type { OpenPagesIn } from '@/lib/database/open-pages'
 import type { FilterLeaf, FilterNode, SortKey } from '@/lib/database/filter'
 import type { GroupBy } from '@/lib/database/group'
 import type { CalculationResult } from '@/lib/database/calculations'
@@ -829,6 +830,8 @@ export function updateView(
     readonly gallery?: Partial<GalleryLayout>
     /** 캘린더 레이아웃의 바꿀 키만(2g-2). */
     readonly calendar?: Partial<CalendarLayout>
+    /** 행을 여는 방식(8n-2 · F-02-20). */
+    readonly openPagesIn?: OpenPagesIn
   },
 ): Promise<ApiResult<null>> {
   return call(

@@ -74,9 +74,10 @@ import { TYPE_ICON, type PeopleNames } from './cell-view'
 import { PeopleValue } from './people-value'
 import { ViewSearch } from './view-search'
 import { GALLERY_ASPECTS, GALLERY_COVERS, GALLERY_SIZES, type GalleryLayout } from '@/lib/database/gallery'
+import { OPEN_PAGES_IN, openPagesInLabel, type OpenPagesIn } from '@/lib/database/open-pages'
 import type { CalendarLayout, LiveCalendarLayout } from '@/lib/database/calendar'
 
-type Panel = 'filter' | 'sort' | 'properties' | 'group' | 'gallery' | 'calendar'
+type Panel = 'filter' | 'sort' | 'properties' | 'group' | 'gallery' | 'calendar' | 'open'
 
 /**
  * 보드의 그룹 설정(보드 4b조각). 보드 뷰일 때만 온다 — "그룹" 버튼과 패널이 그때만 그려진다.
@@ -112,6 +113,7 @@ export function ViewToolbar({
   calendar,
   personal,
   peopleNames = {},
+  openPagesIn,
 }: {
   workspaceId: string
   viewId: string
@@ -142,6 +144,8 @@ export function ViewToolbar({
    * 떠난 사람이다.
    */
   peopleNames?: PeopleNames
+  /** 행을 여는 방식(8n-2 · F-02-20) — 행을 그리는 뷰에만 온다(폼은 없다). 구조를 고치는 사람에게 "열기" 단추와 패널이 선다. */
+  openPagesIn?: OpenPagesIn
 }) {
   const router = useRouter()
   const [panel, setPanel] = useState<Panel | null>(null)
@@ -211,6 +215,9 @@ export function ViewToolbar({
         {calendar !== undefined && (
           <ToolbarButton label="달력" count={0} active={panel === 'calendar'} testId="db-cal-layout-button" onClick={() => toggle('calendar')} />
         )}
+        {canEdit && openPagesIn !== undefined && (
+          <ToolbarButton label="열기" count={0} active={panel === 'open'} testId="db-open-mode-button" onClick={() => toggle('open')} />
+        )}
         {busy && <span className="text-xs text-neutral-400">저장하는 중…</span>}
         {personal && (
           <span data-testid="db-personal" className="flex items-center gap-1 rounded-full bg-violet-50 px-2 py-0.5 text-xs text-violet-800 dark:bg-violet-950 dark:text-violet-200">
@@ -277,6 +284,14 @@ export function ViewToolbar({
             onToggle={(propertyId, visible) => run(() => setColumnVisible(workspaceId, viewId, propertyId, visible))}
             onSubItems={(on) => run(() => (on ? enableSubItems : disableSubItems)(workspaceId, dataSourceId))}
             onDependencies={(on) => run(() => setDependencies(workspaceId, dataSourceId, on))}
+            onClose={() => setPanel(null)}
+          />
+        )}
+        {panel === 'open' && openPagesIn !== undefined && (
+          <OpenModePanel
+            value={openPagesIn}
+            locked={busy}
+            onSave={(mode) => run(() => updateView(workspaceId, viewId, { openPagesIn: mode }))}
             onClose={() => setPanel(null)}
           />
         )}
@@ -1077,6 +1092,46 @@ function GalleryPanel({
           {GALLERY_ASPECTS.map((c) => (
             <option key={c} value={c}>
               {ASPECT_LABEL[c]}
+            </option>
+          ))}
+        </select>
+      </label>
+    </Popover>
+  )
+}
+
+// ── 열기 방식 (8n-2) ──────────────────────────────────────────────────
+
+/**
+ * 행을 여는 방식(8n-2 · F-02-20 · 정본 §3.6 [보강] 페이지 열기 모드 ⑥) — 사이드 피크 · 가운데 피크 · 전체 페이지. 고르는 즉시 저장하고 화면이
+ * 다시 읽어 행 링크가 바뀐다. 뷰의 설정이라 `edit_structure` 다.
+ */
+function OpenModePanel({
+  value,
+  locked,
+  onSave,
+  onClose,
+}: {
+  value: OpenPagesIn
+  locked: boolean
+  onSave: (mode: OpenPagesIn) => Promise<boolean>
+  onClose: () => void
+}) {
+  return (
+    <Popover label="열기" testId="db-open-mode-panel" onClose={onClose}>
+      <label className="flex items-center gap-2 text-sm">
+        행을 여는 방식
+        <select
+          aria-label="행을 여는 방식"
+          data-testid="db-open-mode-select"
+          value={value}
+          disabled={locked}
+          onChange={(e) => void onSave(e.target.value as OpenPagesIn)}
+          className={FIELD}
+        >
+          {OPEN_PAGES_IN.map((mode) => (
+            <option key={mode} value={mode}>
+              {openPagesInLabel(mode)}
             </option>
           ))}
         </select>

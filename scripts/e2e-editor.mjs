@@ -16640,6 +16640,67 @@ async function main() {
         await evaluate('location.pathname + location.search'))
     }
 
+    if (sectionIf('페이지 열기 모드 — 고르개 (8n-2 · F-02-20)')) {
+      // 도구막대의 "열기" 에서 전체 페이지를 고르면 표의 "열기" 가 행 화면으로 옮겨 가고, 가운데 피크를 고르면 가운데 상자로 연다(고르면 곧바로
+      // 저장 · 화면이 다시 읽어 행 링크가 바뀐다).
+      const stamp = Date.now().toString(36)
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `열기 고르개 표 ${stamp}` })).body.database
+      const viewId = db.defaultViewId
+      const titleId = (await api('GET', `/views/${viewId}`)).body?.view?.columns?.find((c) => c.type === 'title')?.propertyId
+      const row = (await api('POST', `/views/${viewId}/rows`, { cells: [{ propertyId: titleId, value: { type: 'title', title: [textRun(`고르개 행 ${stamp}`)] } }] })).body?.row
+      const DB_PATH = `/w/${workspaceId}/db/${db.id}`
+      const ROW_PATH = `/w/${workspaceId}/${row?.id}`
+      const modeNow = async () => (await api('GET', `/views/${viewId}`)).body?.view?.openPagesIn ?? null
+      const pick = async (mode) => {
+        // 서버 렌더 뒤 React 가 붙기 전의 클릭 · change 는 사라진다 — 패널 · 저장이 설 때까지 다시
+        for (let i = 0; i < 10 && !(await evaluate(`!!document.querySelector('[data-testid="db-open-mode-select"]')`)); i += 1) {
+          await clickSelector('[data-testid="db-open-mode-button"]')
+          await waitFor(`!!document.querySelector('[data-testid="db-open-mode-select"]')`, 1500)
+        }
+        for (let i = 0; i < 20 && (await modeNow()) !== mode; i += 1) {
+          await evaluate(`(() => {
+            const s = document.querySelector('[data-testid="db-open-mode-select"]')
+            if (!s) return
+            Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(s, ${JSON.stringify(mode)})
+            s.dispatchEvent(new Event('change', { bubbles: true }))
+          })()`)
+          await sleep(300)
+        }
+        return (await modeNow()) === mode
+      }
+      const openRow = async (done) => {
+        for (let i = 0; i < 6 && !(await evaluate(done)); i += 1) {
+          await clickSelector('[data-testid="db-row-open"]')
+          await waitFor(done, 2000)
+        }
+        return evaluate(done)
+      }
+
+      // ① 전체 페이지를 고르면 — 표의 "열기" 가 행 화면으로
+      await send('Page.navigate', { url: `${BASE}${DB_PATH}` })
+      await waitFor(`!!document.querySelector('[data-testid="db-open-mode-button"]') && !!document.querySelector('[data-testid="db-row-open"]')`, 15000)
+      const full = await pick('full_page')
+      await waitFor(`(document.querySelector('[data-testid="db-row-open"]')?.getAttribute('href') ?? '') === ${JSON.stringify(ROW_PATH)}`, 8000)
+      check('★ 도구막대의 "열기" 에서 전체 페이지를 고르면 — 서버 · 표의 "열기" 가 행 화면으로 간다',
+        full && (await openRow(`location.pathname === ${JSON.stringify(ROW_PATH)}`)),
+        JSON.stringify([await modeNow(), await evaluate('location.pathname')]))
+
+      // ② 가운데 피크를 고르면 — 가운데 상자로
+      await send('Page.navigate', { url: `${BASE}${DB_PATH}` })
+      await waitFor(`!!document.querySelector('[data-testid="db-open-mode-button"]') && !!document.querySelector('[data-testid="db-row-open"]')`, 15000)
+      const center = await pick('center_peek')
+      await waitFor(`(document.querySelector('[data-testid="db-row-open"]')?.getAttribute('href') ?? '').includes('peek=')`, 8000)
+      check('★ 가운데 피크를 고르면 — 서버 · 가운데 상자로 연다',
+        center && (await openRow(`document.querySelector('[data-testid="row-peek"]')?.dataset.mode === 'center'`)),
+        JSON.stringify([await modeNow(), await evaluate('location.pathname + location.search')]))
+    }
+
     if (sectionIf('폼 — 서버 라우트 (7a-1 · F-13-01)')) {
       // 폼 뷰의 라우트 — 만들기(첫 질문은 제목) · 질문 바꾸기 · 설정 · 공개(토큰) · 거부 코드 · 표 화면의 탭에 선다(7a-3 부터 — 그 탭은
       // 편집 화면이다).
