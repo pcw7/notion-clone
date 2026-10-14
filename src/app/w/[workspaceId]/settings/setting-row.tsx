@@ -43,6 +43,8 @@ export function SettingRow(props: {
   planRequired: boolean
   /** 읽기 전용일 때 — 누가 바꿀 수 있는지(요금제가 막으면 그 안내). */
   readOnlyNote: string | null
+  /** 그 줄 아래의 안내 한 줄(6b-3b — 운영자의 게시 차단처럼 설정 밖의 것이 이 설정을 덮을 때). */
+  notice?: string | null
 }) {
   const { control } = props
   const router = useRouter()
@@ -128,6 +130,11 @@ export function SettingRow(props: {
           <p id={`${id}-description`} className="text-xs text-neutral-500">
             {props.description}
           </p>
+          {props.notice != null && (
+            <p data-testid="setting-notice" className="text-xs text-amber-700 dark:text-amber-400">
+              {props.notice}
+            </p>
+          )}
         </div>
         {control.kind === 'toggle' ? (
           <input

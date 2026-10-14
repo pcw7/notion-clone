@@ -29,6 +29,7 @@ import {
   coveredMessage,
   publicUrlOf,
   publishFailureMessage,
+  publishPolicyNotice,
 } from './publish-messages'
 
 type PublishState = {
@@ -36,6 +37,8 @@ type PublishState = {
   token: string | null
   robots: 'index' | 'noindex'
   policyAllows: boolean
+  /** 운영자가 막았는가(6b-3b) — 정책 줄이 "운영 정책" 이라고 말한다. */
+  publishingBlocked: boolean
   canManage: boolean
   coveredBy: { pageId: string | null; title: string | null } | null
   moderation: 'taken_down' | 'restricted' | null
@@ -150,8 +153,8 @@ export function PublishSection({
       )}
 
       {!state.policyAllows && (
-        <p data-testid="publish-policy-off" className="mb-2 text-xs text-amber-700 dark:text-amber-400">
-          워크스페이스 정책이 웹 게시를 막았습니다. 게시된 주소도 지금은 열리지 않습니다.
+        <p data-testid="publish-policy-off" data-blocked={state.publishingBlocked} className="mb-2 text-xs text-amber-700 dark:text-amber-400">
+          {publishPolicyNotice(state.publishingBlocked)}
         </p>
       )}
 

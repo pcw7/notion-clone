@@ -14,7 +14,8 @@
  *   ⑧ ★ 워크스페이스 게시 차단(6b-3a · 정본 ⑥) — 지금 열린 공개 링크 · 웹 공개 폼을 내린다(토큰은 남는다) · 워크스페이스 멤버만의 폼은
  *      그대로 · 효과 정책은 닫히고 설정 값은 소유자의 것 그대로(소유자가 켜도 닫힌 채) · 링크를 직접 켜도 공개 경로 · 노출 판정이 닫는다 ·
  *      새로 게시 · 웹에 열기는 publishing_blocked · 다른 워크스페이스는 그대로 · 조치 한 줄 · 두 번은 already · 풀어도 다시 열지 않는다
- *      (소유자가 다시 게시하면 같은 주소) · 막혀 있지 않으면 not_blocked · 틀린 값은 아무것도 남기지 않는다
+ *      (소유자가 다시 게시하면 같은 주소) · 막혀 있지 않으면 not_blocked · 틀린 값은 아무것도 남기지 않는다 ·
+ *      소유자가 보는 세 상태(6b-3b — 게시 상태 · 폼 읽기 · 설정의 안내 줄)가 잠금을 싣고 풀면 거둔다
  */
 
 process.env.AUTH_SECRET ??= 'test-secret-only-for-unit-tests'
@@ -24,7 +25,7 @@ import assert from 'node:assert/strict'
 
 import { createPage, titleFromPlainText } from '../block/page.ts'
 import { createDatabase } from '../database/database.ts'
-import { createFormView, updateFormSettings } from '../database/form.ts'
+import { createFormView, readForm, updateFormSettings } from '../database/form.ts'
 import { readPublicForm } from '../database/form-submit.ts'
 import { query, queryOne } from '../db/pool.ts'
 import { withReadTransaction } from '../db/tx.ts'
@@ -33,7 +34,7 @@ import { effectiveCaps } from '../permissions/effective.ts'
 import { can } from '../permissions/levels.ts'
 import { resolvePublicPage, webExposureIn } from '../publish/public-access.ts'
 import { publishPage, readPublishState, unpublishPage } from '../publish/public-link.ts'
-import { readSettings, updateSetting } from '../settings/settings.ts'
+import { PUBLISHING_BLOCKED_SETTING_NOTICE, readSettings, updateSetting } from '../settings/settings.ts'
 import { createBareWorkspace, createUser, joinAs, probeDatabase, type Actor } from '../testing/db-fixtures.ts'
 import { readSecurityPolicyIn } from '../workspace/security-policy.ts'
 import {
@@ -346,6 +347,15 @@ describe('⑧ ★ 워크스페이스 게시 차단(6b-3a)', () => {
     assert.equal((await policyOf(ws)).allowPublish, false, '설정으로 되돌릴 수 없다')
     const setting = (await readSettings(boss.ctx)).find((item) => item.key === 'workspace.allow_publish_sites_and_forms')
     assert.equal(setting?.value, true, '설정 화면은 소유자의 값 그대로 — 잠금이 설정을 바꾸지 않는다')
+    // 소유자가 보는 세 상태(6b-3b) — 설정의 안내 줄 · 게시 상태 · 폼 읽기
+    assert.equal(setting?.notice, PUBLISHING_BLOCKED_SETTING_NOTICE, '그 줄 아래에 운영 정책의 안내')
+    assert.equal((await readSettings(boss.ctx)).find((item) => item.key === 'workspace.allow_export')?.notice, null, '다른 줄은 안내가 없다')
+    const shown = await readPublishState(boss.ctx, top)
+    assert.ok(shown.ok)
+    assert.deepEqual([shown.value.policyAllows, shown.value.publishingBlocked, shown.value.published], [false, true, false])
+    const formShown = await readForm(boss.ctx, web.viewId)
+    assert.ok(formShown.ok)
+    assert.deepEqual([formShown.value.policyAllows, formShown.value.publishingBlocked], [false, true])
 
     // 링크를 직접 켜도(우회) 공개 경로 · 노출 판정이 닫는다
     await query(`UPDATE public_link SET enabled = true WHERE node_id = $1`, [top])
@@ -374,6 +384,9 @@ describe('⑧ ★ 워크스페이스 게시 차단(6b-3a)', () => {
 
     const freed = await unblockWorkspacePublishing(ws, { actor: '운영자 이', note: '이의 받아들임' })
     assert.ok(freed.ok, JSON.stringify(freed))
+    const after = await readPublishState(boss.ctx, page)
+    assert.deepEqual(after.ok && [after.value.policyAllows, after.value.publishingBlocked], [true, false], '풀면 게시 상태가 거둔다')
+    assert.equal((await readSettings(boss.ctx)).find((item) => item.key === 'workspace.allow_publish_sites_and_forms')?.notice, null, '안내 줄도')
     assert.deepEqual([(await policyOf(ws)).allowPublish, (await policyOf(ws)).publishingBlocked], [true, false])
     assert.equal(await opens(token), 'not_found', '내린 게시는 그대로 — 소유자가 다시 연다(17 Q14)')
     assert.equal(await tokenOf(boss, page), token, '다시 게시하면 같은 주소')

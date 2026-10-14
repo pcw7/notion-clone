@@ -6,7 +6,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import type { PublishFailure } from '../../../../lib/publish/public-link.ts'
-import { coveredMessage, publicUrlOf, publishFailureMessage } from './publish-messages.ts'
+import { coveredMessage, publicUrlOf, publishFailureMessage, publishPolicyNotice } from './publish-messages.ts'
 
 test('실패 까닭을 사람의 말로 — 모르는 까닭은 일반 문구', () => {
   assert.equal(publishFailureMessage('policy_disabled'), '워크스페이스 정책이 웹 게시를 막았습니다.')
@@ -26,6 +26,12 @@ test('★ 서버의 까닭마다 할 말이 있다 — 슬러그 둘(6c-2)도', 
   // 운영자의 게시 차단(6b-3a)은 소유자 정책과 다른 말 — 소유자가 설정으로 풀 수 없다
   assert.notEqual(publishFailureMessage('publishing_blocked'), publishFailureMessage('policy_disabled'))
   assert.match(publishFailureMessage('publishing_blocked'), /운영 정책/)
+})
+
+test('정책 줄(6b-3b) — 운영자의 잠금은 "운영 정책" · 설정으로 풀 수 없다고 · 소유자 정책은 그대로', () => {
+  assert.match(publishPolicyNotice(true), /운영 정책/)
+  assert.match(publishPolicyNotice(true), /설정으로 풀 수 없습니다/)
+  assert.equal(publishPolicyNotice(false), '워크스페이스 정책이 웹 게시를 막았습니다. 게시된 주소도 지금은 열리지 않습니다.')
 })
 
 test('위 페이지의 게시 — 볼 수 없으면 이름 없이 · 빈 제목은 "제목 없음"', () => {
