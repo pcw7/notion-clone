@@ -50,3 +50,24 @@ export function normalizeSearchFilters(raw: {
 export function narrowsWithoutQuery(filters: SearchFilters): boolean {
   return filters.createdBy !== null || filters.edited !== null || filters.within !== null
 }
+
+/** 걸린 필터의 수 — 0건일 때 "필터가 걸려 있다" 와 "필터 풀기" 를 세운다(10a-2). */
+export function activeFilterCount(filters: SearchFilters): number {
+  return [filters.titleOnly, filters.createdBy !== null, filters.edited !== null, filters.within !== null].filter(Boolean).length
+}
+
+/** 검색 라우트의 쿼리 — 걸린 필터만(라우트가 같은 다듬기를 다시 한다 · 10a-2). */
+export function searchFilterParams(filters: SearchFilters): [string, string][] {
+  const params: [string, string][] = []
+  if (filters.titleOnly) params.push(['titleOnly', '1'])
+  if (filters.createdBy !== null) params.push(['createdBy', filters.createdBy])
+  if (filters.edited !== null) params.push(['edited', filters.edited])
+  if (filters.within !== null) params.push(['within', filters.within])
+  return params
+}
+
+/** 이 화면이 페이지 화면이면 그 페이지 id(`/w/{ws}/{page}`) — "이 페이지 안에서" 의 페이지. 아니면 null. */
+export function pageIdInPath(pathname: string | null): string | null {
+  const match = /^\/w\/[^/]+\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(pathname ?? '')
+  return match === null ? null : match[1]!.toLowerCase()
+}

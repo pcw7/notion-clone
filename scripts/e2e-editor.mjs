@@ -16721,6 +16721,66 @@ async function main() {
         JSON.stringify([within, titled, bad.status, (bad.body?.results ?? []).length]))
     }
 
+    if (sectionIf('검색 필터 — 덮개 (10a-2 · F-07-03)')) {
+      // 덮개의 칩 — 페이지 화면에서 열면 "이 페이지 안에서" 가 서고 그것만으로(입력 없이) 그 아래가 나온다 · 제목만 · 필터 풀기 · 0건이면 필터가
+      // 걸려 있다고 · 다른 페이지로 옮겨 가면 "이 페이지 안에서" 는 저절로 풀린다.
+      const stamp = Date.now().toString(36)
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const parent = (await api('POST', '/pages', { title: `칩 위 ${stamp}` })).body?.page?.id
+      const child = (await api('POST', '/pages', { title: `칩 아래 ${stamp}`, parentPageId: parent })).body?.page?.id
+      const hits = `[...document.querySelectorAll('[data-testid="search-hit"]')].map((e) => e.getAttribute('data-page-id') ?? e.textContent)`
+      const openOverlay = async () => {
+        for (let i = 0; i < 10 && !(await evaluate(`!!document.querySelector('[data-testid="search-overlay"]')`)); i += 1) {
+          await key('k', MOD)
+          await waitFor(`!!document.querySelector('[data-testid="search-overlay"]')`, 1500)
+        }
+      }
+
+      // ① 페이지 화면에서 — "이 페이지 안에서" 만으로(입력 없이) 그 아래가 나온다
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${parent}` })
+      await waitFor(`!!document.querySelector('input[aria-label="페이지 제목"]')`, 15000)
+      await openOverlay()
+      await clickSelector('[data-testid="search-filter-within"]')
+      check('★ 페이지 화면에서 "이 페이지 안에서" 를 누르면 입력 없이 그 아래가 나온다',
+        await waitFor(`document.querySelector('[data-testid="search-filter-within"]')?.getAttribute('aria-pressed') === 'true'
+          && document.querySelectorAll('[data-testid="search-hit"]').length === 1
+          && (document.querySelector('[data-testid="search-hit"]')?.textContent ?? '').includes(${JSON.stringify(`칩 아래 ${stamp}`)})`, 8000),
+        String(await evaluate(`JSON.stringify(${hits})`)))
+
+      // ② 제목만 + 없는 말 — 0건이면 필터가 걸려 있다고 · 필터 풀기
+      await typeText(`없는말${stamp}`)
+      await clickSelector('[data-testid="search-filter-title"]')
+      const emptyWithFilters = await waitFor(`(document.querySelector('[data-testid="search-empty"]')?.textContent ?? '').includes('필터 2개')`, 8000)
+      await clickSelector('[data-testid="search-filter-clear"]')
+      check('★ 0건이면 필터가 걸려 있다고 말한다 · 필터 풀기로 모두 푼다',
+        emptyWithFilters && (await waitFor(`!document.querySelector('[data-testid="search-filter-clear"]')
+          && document.querySelector('[data-testid="search-filter-title"]')?.getAttribute('aria-pressed') === 'false'
+          && document.querySelector('[data-testid="search-filter-within"]')?.getAttribute('aria-pressed') === 'false'`, 8000)),
+        String(await evaluate(`document.querySelector('[data-testid="search-empty"]')?.textContent ?? '(없음)'`)))
+      await key('Escape')
+
+      // ③ 다른 페이지로 옮겨 가면 "이 페이지 안에서" 는 저절로 풀린다(덮개는 필터를 기억하지만 그 페이지가 아니다). **화면 안에서** 옮겨 간다 —
+      // 결과에서 Enter(브라우저가 새로 읽으면 덮개의 기억이 통째로 지워져 이것을 보지 못한다)
+      await openOverlay()
+      await clickSelector('[data-testid="search-filter-within"]')
+      await waitFor(`document.querySelectorAll('[data-testid="search-hit"]').length === 1`, 8000)
+      await evaluate(`document.querySelector('[data-testid="search-input"]')?.focus()`)
+      await key('Enter')
+      await waitFor(`location.pathname === ${JSON.stringify(`/w/${workspaceId}/${child}`)} && !document.querySelector('[data-testid="search-overlay"]')`, 15000)
+      await waitFor(`!!document.querySelector('input[aria-label="페이지 제목"]')`, 15000)
+      await openOverlay()
+      check('다른 페이지에서 열면 "이 페이지 안에서" 는 눌려 있지 않다 — 입력이 비면 최근 방문',
+        await waitFor(`document.querySelector('[data-testid="search-filter-within"]')?.getAttribute('aria-pressed') === 'false'
+          && !document.querySelector('[data-testid="search-filter-clear"]')`, 8000),
+        String(await evaluate(`document.querySelector('[data-testid="search-filters"]')?.outerHTML?.slice(0, 300) ?? '(없음)'`)))
+      await key('Escape')
+    }
+
     if (sectionIf('폼 — 서버 라우트 (7a-1 · F-13-01)')) {
       // 폼 뷰의 라우트 — 만들기(첫 질문은 제목) · 질문 바꾸기 · 설정 · 공개(토큰) · 거부 코드 · 표 화면의 탭에 선다(7a-3 부터 — 그 탭은
       // 편집 화면이다).
