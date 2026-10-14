@@ -8535,26 +8535,35 @@ async function main() {
         await waitFor(`!!document.querySelector('nav[aria-label="페이지 트리"] a[href$="/${copyId}"]')`, 8000))
 
       // ── 화면 (6b) ──
-      const pageCount = () => evaluate(`document.querySelectorAll('nav[aria-label="페이지 트리"] a').length`)
+      // 사본이 트리에 섰는가는 **옮겨 간 주소의 페이지가 트리에 링크로 섰는가**로 본다. 링크 개수로 세면 안 된다 — 원본 화면에서는 원본의
+      // 하위 페이지가 펼쳐져 세어지고, 사본으로 옮겨 가면 그 가지가 접혀 하나가 빠진다(+1 −1 로 개수가 그대로 — #323 의 전체 판에서 찾았다).
+      const treeLinks = () => evaluate(`[...document.querySelectorAll('nav[aria-label="페이지 트리"] a')].map((a) => a.textContent.trim().slice(0, 24)).join(' | ')`)
+      const landedCopy = (from) => `(() => {
+        const id = location.pathname.split('/').pop()
+        return /^[0-9a-f-]{36}$/.test(id) && id !== ${JSON.stringify(source)} && location.pathname !== ${JSON.stringify(from)}
+          && (document.body?.textContent ?? '').includes(${JSON.stringify(marker)})
+          && !!document.querySelector('nav[aria-label="페이지 트리"] a[href$="/' + id + '"]')
+      })()`
+      // 실패하면 세 조건을 따로 — 주소 · 본문의 글 · 트리의 링크(그 페이지의 href 들)
+      const landedWhy = () => evaluate(`(() => {
+        const id = location.pathname.split('/').pop()
+        const hrefs = [...document.querySelectorAll('nav[aria-label="페이지 트리"] a')].map((a) => a.getAttribute('href')).filter((h) => h?.includes(id))
+        return JSON.stringify({ id, marker: (document.body?.textContent ?? '').includes(${JSON.stringify(marker)}), hrefs })
+      })()`)
       await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${source}` })
       await waitFor(`!!document.querySelector('[data-testid="page-duplicate"]')`, 15000)
-      const before = await pageCount()
       await clickOn('[data-testid="page-duplicate"]')
-      check('★ 페이지의 "복제"를 누르면 사본으로 옮겨 간다 — 본문이 따라와 있다',
-        (await waitFor(`!location.pathname.endsWith('/${source}') && (document.body?.textContent ?? '').includes(${JSON.stringify(marker)})`, 15000))
-          // 개수는 한 번만 세면 refresh 와 경주한다(7c-7 반사실 빌드에서 한 번 걸렸다) — 자랄 때까지 기다린다.
-          && (await waitFor(`document.querySelectorAll('nav[aria-label="페이지 트리"] a').length > ${before}`, 8000)),
-        `${await evaluate('location.pathname')} · 트리 ${before} → ${await pageCount()}`)
+      check('★ 페이지의 "복제"를 누르면 사본으로 옮겨 간다 — 본문이 따라와 있고 트리에 사본이 선다',
+        await waitFor(landedCopy(`/w/${workspaceId}/${source}`), 15000),
+        `${await landedWhy()} · ${await treeLinks()}`)
 
       // 사이드바의 ⧉ — 원본 옆에 하나 더.
       await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
       await waitFor(`!!document.querySelector('nav[aria-label="페이지 트리"] a[href$="/${source}"]')`, 15000)
-      const beforeSide = await pageCount()
       await clickOn(`[aria-label=${JSON.stringify(`복제 원본 ${stamp} 복제`)}]`)
-      check('★ 사이드바의 ⧉ 로도 복제한다 — 사본으로 옮겨 간다',
-        (await waitFor(`(document.body?.textContent ?? '').includes(${JSON.stringify(marker)})`, 15000))
-          && (await pageCount()) > beforeSide,
-        `트리 ${beforeSide} → ${await pageCount()}`)
+      check('★ 사이드바의 ⧉ 로도 복제한다 — 사본으로 옮겨 가고 트리에 사본이 선다',
+        await waitFor(landedCopy(`/w/${workspaceId}`), 15000),
+        `${await landedWhy()} · ${await treeLinks()}`)
 
       // ── 빠진 것이 있으면 멈춰서 말한다 ──
       // 볼 수 없는 하위 페이지를 만든다(`볼 수 없는 하위 페이지의 참조` 절과 같은 방법). 따로 만든 페이지에서 한다 —
