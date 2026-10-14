@@ -13,6 +13,17 @@ export const OPEN_PAGES_IN = ['side_peek', 'center_peek', 'full_page'] as const
 export type OpenPagesIn = (typeof OPEN_PAGES_IN)[number]
 export const DEFAULT_OPEN_PAGES_IN: OpenPagesIn = 'side_peek'
 
+/** 고르개의 이름(8n-2) — 무엇이 열리는지까지. */
+const OPEN_PAGES_IN_LABEL: Readonly<Record<OpenPagesIn, string>> = {
+  side_peek: '사이드 피크 — 오른쪽 패널(뒤의 표를 그대로 보며)',
+  center_peek: '가운데 피크 — 가운데 상자',
+  full_page: '전체 페이지 — 행 화면으로 옮겨 간다',
+}
+
+export function openPagesInLabel(mode: OpenPagesIn): string {
+  return OPEN_PAGES_IN_LABEL[mode]
+}
+
 export function isOpenPagesIn(value: unknown): value is OpenPagesIn {
   return typeof value === 'string' && (OPEN_PAGES_IN as readonly string[]).includes(value)
 }

@@ -4,12 +4,13 @@
  *   ① 데이터베이스 화면의 주소 — 뷰 · 검색 · 달만 지닌다(빈 값은 뺀다 · 글자는 주소에 맞게)
  *   ② ★ 행을 여는 주소 — 전체 페이지면 행 화면 · 아니면 그 주소에 peek(있으면 바꾼다 — 쌓지 않는다)
  *   ③ 열기 방식의 값 — 셋만
+ *   ④ 고르개의 이름(8n-2) — 셋 모두 다른 말
  */
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { DEFAULT_OPEN_PAGES_IN, databaseHref, isOpenPagesIn, rowOpenHref } from './open-pages.ts'
+import { DEFAULT_OPEN_PAGES_IN, OPEN_PAGES_IN, databaseHref, isOpenPagesIn, openPagesInLabel, rowOpenHref } from './open-pages.ts'
 
 test('① 데이터베이스 화면의 주소', () => {
   assert.equal(databaseHref('ws', 'db', {}), '/w/ws/db/db')
@@ -28,4 +29,9 @@ test('③ 열기 방식의 값', () => {
   assert.equal(DEFAULT_OPEN_PAGES_IN, 'side_peek')
   for (const value of ['side_peek', 'center_peek', 'full_page']) assert.equal(isOpenPagesIn(value), true, value)
   for (const value of ['peek', '', null, 1]) assert.equal(isOpenPagesIn(value), false, String(value))
+})
+
+test('④ 고르개의 이름(8n-2) — 셋 모두 다른 말', () => {
+  assert.equal(new Set(OPEN_PAGES_IN.map(openPagesInLabel)).size, 3)
+  assert.match(openPagesInLabel('full_page'), /전체 페이지/)
 })

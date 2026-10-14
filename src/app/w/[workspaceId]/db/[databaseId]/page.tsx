@@ -543,6 +543,8 @@ export default async function DatabasePage({
             filter={view.value.effectiveFilter}
             sorts={sorts}
             catalog={catalog}
+            // 행을 여는 방식(8n-2) — 행을 그리는 뷰에만(폼은 도구막대가 없다)
+            openPagesIn={view.value.openPagesIn}
             canEdit={access.canEditStructure}
             board={boardSettings}
             search={search}
