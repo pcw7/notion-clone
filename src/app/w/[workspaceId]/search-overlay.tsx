@@ -55,7 +55,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { DEFAULT_SEARCH_SORT, SEARCH_SORTS, type SearchSort } from '@/lib/search/sort'
-import { useRouter } from 'next/navigation'
+import {
+  NO_SEARCH_FILTERS,
+  SEARCH_EDITED_RANGES,
+  activeFilterCount,
+  narrowsWithoutQuery,
+  pageIdInPath,
+  searchFilterParams,
+  type SearchEditedRange,
+  type SearchFilters,
+} from '@/lib/search/search-filters'
+import { usePathname, useRouter } from 'next/navigation'
 
 import { splitHighlight } from '@/lib/search/highlight'
 import type { PageIcon } from '@/lib/block/page-icon'
@@ -125,6 +135,11 @@ const SORT_LABEL: Readonly<Record<SearchSort, string>> = {
   created_asc: '만든 때 — 오래된 순',
 }
 
+/** 편집 기간 칩의 말(10a-2). */
+const EDITED_LABEL: Readonly<Record<SearchEditedRange, string>> = { day: '오늘', week: '7일', month: '30일', year: '1년' }
+
+const CHIP = 'rounded-full border px-2 py-0.5 aria-pressed:border-blue-500 aria-pressed:bg-blue-50 aria-pressed:text-blue-700 dark:aria-pressed:bg-blue-950 dark:aria-pressed:text-blue-300'
+
 export function SearchOverlay({
   workspaceId,
   recent,
@@ -140,8 +155,25 @@ export function SearchOverlay({
   const [sort, setSort] = useState<SearchSort>(DEFAULT_SEARCH_SORT)
   const [result, setResult] = useState<QueryResult | null>(null)
   const [index, setIndex] = useState(0)
+  // 필터(10a-2 · F-07-03) — 정렬처럼 닫았다 열어도 기억한다. "이 페이지 안에서" 는 지금 페이지일 때만 효과가 있다(옮겨 가면 저절로 풀린다)
+  const pathname = usePathname()
+  const currentPageId = pageIdInPath(pathname)
+  const [chosen, setChosen] = useState<SearchFilters>(NO_SEARCH_FILTERS)
+  const filters = useMemo<SearchFilters>(
+    () => ({ ...chosen, within: chosen.within !== null && chosen.within === currentPageId ? chosen.within : null }),
+    [chosen, currentPageId],
+  )
+  const narrows = useMemo(() => narrowsWithoutQuery(filters), [filters])
+  const filterQuery = useMemo(
+    () =>
+      searchFilterParams(filters)
+        .map(([key, value]) => `&${key}=${encodeURIComponent(value)}`)
+        .join(''),
+    [filters],
+  )
 
-  const searching = query.trim() !== ''
+  // 찾는 중 — 검색어가 있거나, 좁히는 필터가 있다(검색어 없이 필터로만 · 정본 §3.9 [보강] 검색 필터 ③)
+  const searching = query.trim() !== '' || narrows
   /**
    * 입력이 비면 **무조건** 이동 모드다 — 낡은 `result` 를 보지 않는다.
    * 지우고 있는 중에 앞 글자의 결과가 잠깐 비치는 일이 없다.
@@ -237,16 +269,16 @@ export function SearchOverlay({
   // ── 질의 (debounce + 이전 요청 취소) ────────────────────────────────
   useEffect(() => {
     const q = query.trim()
-    // 입력이 비었으면 아무것도 하지 않는다. **여기서 setState 를 하지 않는 것이
+    // 찾는 중이 아니면(빈 입력 · 좁히는 필터 없음) 아무것도 하지 않는다. **여기서 setState 를 하지 않는 것이
     // 중요하다** — 이동 모드는 파생이므로 쓸 상태가 없다.
-    if (!open || q === '') return
+    if (!open || !searching) return
 
     // ★ 이전 요청을 취소한다. F-07-01 이 L 난이도의 근거로 든 것이 이
     //   "요청 취소·경쟁 조건"이다 — 취소하지 않으면 늦게 도착한 옛 응답이
     //   새 응답을 덮어써서, 타이핑을 멈춘 순간 결과가 한 글자 전으로 돌아간다.
     const controller = new AbortController()
     const timer = setTimeout(() => {
-      const url = `/api/workspaces/${workspaceId}/search?q=${encodeURIComponent(q)}&sort=${sort}`
+      const url = `/api/workspaces/${workspaceId}/search?q=${encodeURIComponent(q)}&sort=${sort}${filterQuery}`
       void fetch(url, { signal: controller.signal })
         .then(async (res) => {
           if (!res.ok) {
@@ -277,7 +309,7 @@ export function SearchOverlay({
       clearTimeout(timer)
       controller.abort()
     }
-  }, [open, query, sort, workspaceId])
+  }, [open, query, sort, workspaceId, searching, filterQuery])
 
   // ── 열려 있는 동안의 키 ─────────────────────────────────────────────
   const openRow = useCallback(
@@ -365,6 +397,78 @@ export function SearchOverlay({
           autoComplete="off"
           className="w-full flex-none border-b border-neutral-200 bg-transparent px-4 py-3 text-base outline-none dark:border-neutral-700"
         />
+        {/* 필터(10a-2 · F-07-03) — 입력 아래에 늘 선다(치기 전에도 고른다) · 누르면 입력으로 돌아간다 */}
+        <div data-testid="search-filters" className="flex flex-none flex-wrap items-center gap-1 border-b border-neutral-100 px-4 py-1.5 text-xs text-neutral-600 dark:border-neutral-800 dark:text-neutral-300">
+          <button
+            type="button"
+            aria-pressed={filters.titleOnly}
+            data-testid="search-filter-title"
+            onClick={() => {
+              setChosen((f) => ({ ...f, titleOnly: !f.titleOnly }))
+              inputRef.current?.focus()
+            }}
+            className={CHIP}
+          >
+            제목만
+          </button>
+          <button
+            type="button"
+            aria-pressed={filters.createdBy === 'me'}
+            data-testid="search-filter-mine"
+            onClick={() => {
+              setChosen((f) => ({ ...f, createdBy: f.createdBy === 'me' ? null : 'me' }))
+              inputRef.current?.focus()
+            }}
+            className={CHIP}
+          >
+            내가 만든
+          </button>
+          <select
+            aria-label="편집 기간"
+            data-testid="search-filter-edited"
+            value={filters.edited ?? ''}
+            onChange={(event) => {
+              const value = event.target.value
+              setChosen((f) => ({ ...f, edited: (SEARCH_EDITED_RANGES as readonly string[]).includes(value) ? (value as SearchEditedRange) : null }))
+              inputRef.current?.focus()
+            }}
+            className="rounded-full border border-neutral-200 bg-transparent px-1.5 py-0.5 dark:border-neutral-700"
+          >
+            <option value="">편집 — 언제든</option>
+            {SEARCH_EDITED_RANGES.map((range) => (
+              <option key={range} value={range}>
+                편집 — {EDITED_LABEL[range]}
+              </option>
+            ))}
+          </select>
+          {currentPageId !== null && (
+            <button
+              type="button"
+              aria-pressed={filters.within !== null}
+              data-testid="search-filter-within"
+              onClick={() => {
+                setChosen((f) => ({ ...f, within: f.within === currentPageId ? null : currentPageId }))
+                inputRef.current?.focus()
+              }}
+              className={CHIP}
+            >
+              이 페이지 안에서
+            </button>
+          )}
+          {activeFilterCount(filters) > 0 && (
+            <button
+              type="button"
+              data-testid="search-filter-clear"
+              onClick={() => {
+                setChosen(NO_SEARCH_FILTERS)
+                inputRef.current?.focus()
+              }}
+              className="ml-auto text-neutral-400 hover:text-neutral-600"
+            >
+              필터 풀기
+            </button>
+          )}
+        </div>
         {/* 정렬(8l-2) — 찾는 동안만 뜻이 있다(빈 입력은 최근 방문). F-07-02 의 다섯 그대로. */}
         {searching && (
           <label className="flex flex-none items-center gap-2 border-b border-neutral-100 px-4 py-1 text-xs text-neutral-500 dark:border-neutral-800">
@@ -441,6 +545,8 @@ export function SearchOverlay({
           {mode.kind === 'results' && mode.rows.length === 0 && (
             <p className="px-4 py-6 text-sm text-neutral-500" data-testid="search-empty">
               검색 결과가 없습니다.
+              {/* 어떤 필터가 줄였는지(07 엣지) — 위의 "필터 풀기" 로 넓힌다 */}
+              {activeFilterCount(filters) > 0 && ` 필터 ${activeFilterCount(filters)}개가 걸려 있습니다 — 위의 "필터 풀기" 로 넓혀 보세요.`}
             </p>
           )}
 
