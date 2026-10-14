@@ -16397,6 +16397,57 @@ async function main() {
       check('정리 — 푼다(내린 게시는 그대로 — 주소는 열리지 않는다)', freed.ok && (await fetch(address)).status === 404, JSON.stringify(freed))
     }
 
+    if (sectionIf('폼의 조건부 보이기 — 편집 화면이 조건을 지킨다 (7b-5a · F-13-03)')) {
+      // 편집 화면은 질문 목록을 통째로 보낸다 — 조건(API 로 만든)을 싣지 않으면 서버가 "지운다" 로 받는다. "필수" 를 눌러도 조건이 남고,
+      // 근거 질문을 빼면 그 조건만 지우고 보낸다(서버는 끊어진 조건을 받지 않는다 — 지우지 않으면 저장이 거부된다).
+      const stamp = Date.now().toString(36)
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `조건 폼 표 ${stamp}` })).body.database
+      const kind = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '분류', type: 'select' })).body.property.id
+      const memo = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '메모', type: 'rich_text' })).body.property.id
+      const personal = (await api('POST', `/data-sources/${db.dataSourceId}/properties/${kind}/options`, { name: '개인' })).body.option.id
+      const made = (await api('POST', `/databases/${db.id}/forms`, { name: `조건 신청서 ${stamp}` })).body?.form
+      const title = made.questions[0].propertyId
+      const when = { propertyId: kind, operator: 'equals', optionId: personal }
+      const set = await api('PUT', `/forms/${made.viewId}/questions`, {
+        questions: [{ propertyId: title }, { propertyId: kind }, { propertyId: memo, showWhen: when }],
+      })
+      const questionsNow = async () => (await api('GET', `/forms/${made.viewId}`)).body?.form?.questions ?? []
+      check('전제 — API 로 메모에 "분류가 개인이면 보인다" 를 걸었다',
+        set.status === 200 && JSON.stringify((await questionsNow())[2]?.showWhen) === JSON.stringify(when), JSON.stringify([set.status, set.body?.error]))
+
+      // ① 편집 화면에서 메모의 "필수" — 조건이 남는다
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}?v=${made.viewId}` })
+      const MEMO = `[data-testid="form-question"][data-property-id="${memo}"]`
+      await waitFor(`!!document.querySelector('${MEMO} [data-testid="form-question-required"]')`, 15000)
+      await clickSelector(`${MEMO} [data-testid="form-question-required"]`)
+      let after = []
+      for (let i = 0; i < 30 && after[2]?.required !== true; i += 1) {
+        after = await questionsNow()
+        if (after[2]?.required !== true) await sleep(150)
+      }
+      check('★ 편집 화면에서 "필수" 를 눌러도 조건이 남는다(목록을 통째로 보내도)',
+        after[2]?.required === true && JSON.stringify(after[2]?.showWhen) === JSON.stringify(when), JSON.stringify(after[2]))
+
+      // ② 근거(분류)를 빼면 메모의 조건만 지우고 저장된다
+      const KIND = `[data-testid="form-question"][data-property-id="${kind}"]`
+      await clickSelector(`${KIND} [data-testid="form-question-remove"]`)
+      let removed = []
+      for (let i = 0; i < 30 && removed.length !== 2; i += 1) {
+        removed = await questionsNow()
+        if (removed.length !== 2) await sleep(150)
+      }
+      check('★ 근거 질문을 빼면 그 조건만 지우고 저장된다 — 오류가 없다',
+        removed.length === 2 && removed[1]?.propertyId === memo && removed[1]?.showWhen === null && removed[1]?.required === true
+          && !(await evaluate(`!!document.querySelector('[data-testid="form-error"]')`)),
+        JSON.stringify([removed, await evaluate(`document.querySelector('[data-testid="form-error"]')?.textContent ?? null`)]))
+    }
+
     if (sectionIf('폼 — 서버 라우트 (7a-1 · F-13-01)')) {
       // 폼 뷰의 라우트 — 만들기(첫 질문은 제목) · 질문 바꾸기 · 설정 · 공개(토큰) · 거부 코드 · 표 화면의 탭에 선다(7a-3 부터 — 그 탭은
       // 편집 화면이다).
