@@ -47,6 +47,13 @@ export async function GET(
       : {}),
     cursor: params.get('cursor'),
     sort: params.get('sort'),
+    // 필터(10a-1 · F-07-03) — 틀린 값은 명령이 버린다(400 을 내지 않는다)
+    filters: {
+      titleOnly: params.get('titleOnly'),
+      createdBy: params.get('createdBy'),
+      edited: params.get('edited'),
+      within: params.get('within'),
+    },
   })
 
   if (!outcome.ok) {

@@ -267,10 +267,13 @@ describe('⑦ 운영자가 읽는 것', () => {
     const doc = await pageNamed(boss, unique('읽기'))
     const token = await tokenOf(boss, doc)
     const { caseId } = await reportOn(token)
-    assert.ok((await listCases('open', 500)).some((c) => c.id === caseId))
+    // 열린 목록은 오래된 순이라 상한 안에 들어야 보인다 — 검사가 남긴 열린 케이스가 쌓이는 개발 DB 에서도 서게 상한을 넉넉히(500 을 넘어
+    // 떨어졌다 · 2026-10-14)
+    const OPEN_ALL = 100_000
+    assert.ok((await listCases('open', OPEN_ALL)).some((c) => c.id === caseId))
 
     assert.ok((await takeDownPage(doc, 'malware', OP)).ok)
-    assert.ok(!(await listCases('open', 500)).some((c) => c.id === caseId), '닫힌 케이스는 열린 목록에 없다')
+    assert.ok(!(await listCases('open', OPEN_ALL)).some((c) => c.id === caseId), '닫힌 케이스는 열린 목록에 없다')
     const detail = await readCase(caseId)
     assert.ok(detail)
     assert.equal(detail.state, 'actioned')

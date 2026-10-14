@@ -11,20 +11,15 @@
  *      "25건 요청 → 3건 반환"이 일어나지 않는다
  *   ④ **짧은 쿼리와 0건을 구분한다.** 화면이 다르다
  *   ⑤ 휴지통 · 제목 우선 정렬 · breadcrumb
+ *   ⑥ ★ 필터(10a-1 · F-07-03) — 제목만(본문에만 있는 말은 빠진다) · 내가 만든 · 최근 편집 기간 · 이 페이지 아래(그 페이지 자신은 빼고) ·
+ *      검색어 없이 필터로만 · 짧은 검색어는 여전히 짧다 · 필터도 권한 스코프 안이다(볼 수 없는 페이지 아래를 골라도 그 페이지는 없다)
  */
 
 import { test, describe, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 
-import {
-  probeDatabase,
-  makeFixture,
-  createUser,
-  joinAs,
-  type Actor,
-  type Fixture,
-} from '../testing/db-fixtures.ts'
+import { type Actor, type Fixture, createBareWorkspace, createUser, joinAs, makeFixture, probeDatabase } from '../testing/db-fixtures.ts'
 import { createPage, titleFromPlainText } from '../block/page.ts'
 import { savePageBody } from '../block/save-page-body.ts'
 import { trashPage } from '../block/trash.ts'
@@ -668,5 +663,65 @@ describe('normalizeQuery', () => {
 
   test('기본 결과 수가 상식적인 범위다', () => {
     assert.ok(DEFAULT_SEARCH_LIMIT > 0 && DEFAULT_SEARCH_LIMIT <= 50)
+  })
+})
+
+// ── ⑥ 필터 ────────────────────────────────────────────────────────────
+
+describe('⑥ ★ 필터(10a-1 · F-07-03)', () => {
+  test('제목만 · 내가 만든 · 최근 편집 기간 · 이 페이지 아래 · 검색어 없이 · 권한 스코프 안', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    // 새 워크스페이스 — 다른 검사의 페이지가 필터만의 결과에 섞이지 않게
+    const ws = await createBareWorkspace('검색 필터')
+    const me = await joinAs(ws, await createUser('필터의 나'), 'owner')
+    const mate = await joinAs(ws, await createUser('필터의 동료'), 'member')
+    const page = async (who: Actor, title: string, body: string[] = [], parentPageId?: BlockId) => {
+      const id = (await createPage(who.ctx, { title: titleFromPlainText(title), ...(parentPageId ? { parentPageId } : {}) })).id
+      if (body.length > 0) assert.equal((await savePageBody(who.ctx, id, docOf(...body))).ok, true)
+      return id
+    }
+    const titled = await page(me, '분기 회고 문서')
+    const bodyOnly = await page(me, '다른 제목', ['본문에만 분기 회고 가 있다'])
+    const theirs = await page(mate, '동료의 분기 회고')
+    const parent = await page(me, '상위 묶음')
+    const child = await page(me, '아래의 분기 회고', [], parent)
+    const old = await page(me, '오래된 분기 회고')
+    const english = await page(me, 'Quarterly notes', ['release checklist inside the body'])
+    await query(`UPDATE search_document SET last_edited_at = now() - interval '40 days', created_at = now() - interval '40 days' WHERE doc_id = $1`, [old])
+
+    const ids = async (input: Parameters<typeof searchPages>[1], who: Actor = me) => {
+      const out = await searchPages(who.ctx, input)
+      assert.ok(out.ok, JSON.stringify(out))
+      return out.ok ? out.results.results.map((r) => r.pageId).sort() : []
+    }
+    const sorted = (...list: string[]) => [...list].sort()
+
+    assert.deepEqual(await ids({ query: '분기 회고' }), sorted(titled, bodyOnly, theirs, child, old), '전제 — 필터 없이')
+    assert.deepEqual(await ids({ query: '분기 회고', filters: { titleOnly: true } }), sorted(titled, theirs, child, old), '제목만 — 본문에만 있는 말은 빠진다')
+    assert.deepEqual(await ids({ query: 'release' }), [english], '전제 — 라틴 축은 본문에서 찾는다')
+    assert.deepEqual(await ids({ query: 'release', filters: { titleOnly: true } }), [], '라틴 축도 제목만 — 본문에만 있는 말은 빠진다')
+    assert.deepEqual(await ids({ query: 'quarterly', filters: { titleOnly: true } }), [english])
+    assert.deepEqual(await ids({ query: '분기 회고', filters: { createdBy: 'me' } }), sorted(titled, bodyOnly, child, old), '내가 만든')
+    assert.deepEqual(await ids({ query: '분기 회고', filters: { edited: 'month' } }), sorted(titled, bodyOnly, theirs, child), '30일 안에 고친')
+    assert.deepEqual(await ids({ query: '분기 회고', filters: { edited: 'year' } }), sorted(titled, bodyOnly, theirs, child, old))
+    assert.deepEqual(await ids({ query: '분기 회고', filters: { within: parent } }), [child], '이 페이지 아래 — 그 페이지 자신은 빼고')
+
+    // 검색어 없이 필터로만 — 좁히는 필터가 있으면 찾는다 · 짧은 검색어는 여전히 짧다 · 제목만은 좁히지 않는다
+    assert.deepEqual(await ids({ query: '', filters: { within: parent } }), [child])
+    assert.deepEqual(await ids({ query: '', filters: { createdBy: 'me', edited: 'month' } }), sorted(titled, bodyOnly, parent, child, english))
+    // 라틴 축의 최소는 2자(한글은 1자부터 찾는다 — `minQueryLength`)
+    const short = await searchPages(me.ctx, { query: 'a', filters: { createdBy: 'me' } })
+    assert.ok(!short.ok && short.reason === 'query_too_short', '짧은 검색어는 필터가 있어도 짧다')
+    const titleOnlyAlone = await searchPages(me.ctx, { query: '', filters: { titleOnly: true } })
+    assert.ok(!titleOnlyAlone.ok && titleOnlyAlone.reason === 'query_too_short', '제목만으로는 찾지 않는다(빈 상태)')
+
+    // 권한 — 볼 수 없는 페이지 아래를 골라도 그 페이지는 없다(필터도 스코프 안)
+    const secret = await page(me, '비밀 묶음')
+    const secretChild = await page(me, '비밀 아래 분기 회고', [], secret)
+    assert.equal((await stopInheriting(me.ctx, secret)).ok, true)
+    assert.equal((await grantAccess(me.ctx, secret, { type: 'user', id: me.userId }, 'full_access')).ok, true)
+    assert.equal((await revokeAccess(me.ctx, secret, { type: 'workspace_everyone', id: null })).ok, true)
+    assert.deepEqual(await ids({ query: '', filters: { within: secret } }, mate), [], '동료에게는 비밀 아래가 없다')
+    assert.deepEqual(await ids({ query: '', filters: { within: secret } }), [secretChild])
   })
 })
