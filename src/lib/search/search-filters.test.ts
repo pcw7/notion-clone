@@ -5,6 +5,7 @@
  *   ② 틀린 값은 그 필터가 없는 것 — 400 을 내지 않는다
  *   ③ 검색어 없이 찾을 수 있는가 — 좁히는 필터가 있을 때만(제목만은 세지 않는다)
  *   ④ 덮개(10a-2) — 걸린 필터의 수 · 라우트의 쿼리(걸린 것만) · 페이지 화면의 페이지 id
+ *   ⑤ ★ 사람 · 팀스페이스(10a-3a) — 만든 사람 · 최종 편집자는 'me' 또는 사람 id · 팀스페이스는 uuid · 셋 모두 좁힌다 · 수와 쿼리에 든다
  */
 
 import { test } from 'node:test'
@@ -21,13 +22,17 @@ import {
 } from './search-filters.ts'
 
 const PAGE = '0190A3F1-1111-7000-8000-000000000001'
+const PERSON = '0190A3F1-2222-7000-8000-000000000002'
+const TEAMSPACE = '0190A3F1-3333-7000-8000-000000000003'
 
 test('① 받는 값', () => {
   assert.deepEqual(normalizeSearchFilters({ titleOnly: '1', createdBy: 'me', edited: 'week', within: PAGE }), {
     titleOnly: true,
     createdBy: 'me',
+    editedBy: null,
     edited: 'week',
     within: PAGE.toLowerCase(),
+    teamspace: null,
   })
   assert.equal(normalizeSearchFilters({ titleOnly: true }).titleOnly, true)
   assert.equal(normalizeSearchFilters({ titleOnly: 'true' }).titleOnly, true)
@@ -37,7 +42,7 @@ test('① 받는 값', () => {
 test('② 틀린 값은 그 필터가 없는 것', () => {
   assert.deepEqual(normalizeSearchFilters({}), NO_SEARCH_FILTERS)
   assert.deepEqual(
-    normalizeSearchFilters({ titleOnly: '0', createdBy: 'someone', edited: 'decade', within: 'not-a-uuid' }),
+    normalizeSearchFilters({ titleOnly: '0', createdBy: 'someone', editedBy: 'ME', edited: 'decade', within: 'not-a-uuid', teamspace: 'all' }),
     NO_SEARCH_FILTERS,
   )
   assert.equal(normalizeSearchFilters({ within: `${PAGE}' OR 1=1 --` }).within, null, '주입처럼 보이는 값도 그대로 버린다')
@@ -60,4 +65,19 @@ test('④ 덮개(10a-2) — 걸린 필터의 수 · 라우트의 쿼리 · 페�
   assert.deepEqual(normalizeSearchFilters(Object.fromEntries(searchFilterParams(all))), all, '라우트가 같은 값으로 다시 읽는다')
   assert.equal(pageIdInPath(`/w/ws/${PAGE}`), PAGE.toLowerCase())
   for (const path of ['/w/ws', `/w/ws/db/${PAGE}`, `/w/ws/${PAGE}/x`, '/w/ws/settings', null]) assert.equal(pageIdInPath(path), null, String(path))
+})
+
+test('⑤ ★ 사람 · 팀스페이스(10a-3a)', () => {
+  const all = normalizeSearchFilters({ createdBy: PERSON, editedBy: 'me', teamspace: TEAMSPACE })
+  assert.equal(all.createdBy, PERSON.toLowerCase(), '사람 id — 소문자로')
+  assert.equal(all.editedBy, 'me')
+  assert.equal(all.teamspace, TEAMSPACE.toLowerCase())
+  assert.equal(normalizeSearchFilters({ editedBy: PERSON }).editedBy, PERSON.toLowerCase())
+  assert.equal(normalizeSearchFilters({ createdBy: `${PERSON} ` }).createdBy, null, '모양이 틀리면 버린다')
+  for (const patch of [{ editedBy: 'me' }, { editedBy: PERSON }, { createdBy: PERSON }, { teamspace: TEAMSPACE }]) {
+    assert.equal(narrowsWithoutQuery({ ...NO_SEARCH_FILTERS, ...patch }), true, JSON.stringify(patch))
+  }
+  assert.equal(activeFilterCount(all), 3)
+  assert.deepEqual(searchFilterParams(all), [['createdBy', PERSON.toLowerCase()], ['editedBy', 'me'], ['teamspace', TEAMSPACE.toLowerCase()]])
+  assert.deepEqual(normalizeSearchFilters(Object.fromEntries(searchFilterParams(all))), all, '라우트가 같은 값으로 다시 읽는다')
 })

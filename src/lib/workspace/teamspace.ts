@@ -304,6 +304,18 @@ async function roleIn(tx: Tx, ctx: SessionContext, teamspaceId: string): Promise
   return rows.some((r) => r.role === 'owner') ? 'owner' : 'member'
 }
 
+/**
+ * 내가 멤버인 이 워크스페이스의 보관되지 않은 teamspace 인가 — `listMyTeamspaces` 와 같은 규칙. 검색의 팀스페이스 필터(10a-3a)가 고를 수
+ * 있는 것을 묻는다(아니면 없는 teamspace 와 같은 답).
+ */
+export async function isMyTeamspaceIn(tx: Tx, ctx: SessionContext, teamspaceId: string): Promise<boolean> {
+  const live = await tx.queryMaybe<{ id: string }>(
+    `SELECT id FROM teamspace WHERE id = $1 AND workspace_id = $2 AND archived_at IS NULL`,
+    [teamspaceId, ctx.workspaceId],
+  )
+  return live !== null && (await roleIn(tx, ctx, teamspaceId)) !== null
+}
+
 /** 고칠 teamspace 를 잠근다 — 이 워크스페이스의 보관되지 않은 것만. 멤버십 명령이 "마지막 owner" 를 세는 사이를 직렬화한다. */
 async function lockTeamspace(
   tx: Tx,

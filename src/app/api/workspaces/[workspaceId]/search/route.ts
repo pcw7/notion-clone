@@ -1,7 +1,10 @@
 /**
  * GET /api/workspaces/[workspaceId]/search — 전문 검색 (F-07-01 · F-07-07)
  *
- * 쿼리 파라미터: `q` (필수) · `limit` · `cursor` · `sort`(8l-2 — best · edited_desc · edited_asc · created_desc · created_asc · 모르는 값은 best)
+ * 쿼리 파라미터: `q` (필수) · `limit` · `cursor` · `sort`(8l-2 — best · edited_desc · edited_asc · created_desc · created_asc · 모르는 값은 best) ·
+ * 필터(10a-1 · 10a-3a) `titleOnly` · `createdBy` · `editedBy`(`me` 또는 사람 id) · `edited` · `within` · `teamspace`
+ *
+ *   plan_required  403  요금제가 팀스페이스 필터를 허락하지 않는다(10a-3a — 필터를 버리고 넓은 결과를 주지 않는다)
  *
  * ──────────────────────────────────────────────────────────────────────
  * 짧은 쿼리는 200 + `tooShort` 로 돌려준다. 400 이 아니다
@@ -47,15 +50,18 @@ export async function GET(
       : {}),
     cursor: params.get('cursor'),
     sort: params.get('sort'),
-    // 필터(10a-1 · F-07-03) — 틀린 값은 명령이 버린다(400 을 내지 않는다)
+    // 필터(10a-1 · 10a-3a · F-07-03) — 틀린 값은 명령이 버린다(400 을 내지 않는다)
     filters: {
       titleOnly: params.get('titleOnly'),
       createdBy: params.get('createdBy'),
+      editedBy: params.get('editedBy'),
       edited: params.get('edited'),
       within: params.get('within'),
+      teamspace: params.get('teamspace'),
     },
   })
 
+  if (!outcome.ok && outcome.reason === 'plan_required') return Response.json({ error: outcome.reason }, { status: 403 })
   if (!outcome.ok) {
     return Response.json({
       ok: true,

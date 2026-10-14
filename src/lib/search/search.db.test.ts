@@ -13,6 +13,8 @@
  *   ⑤ 휴지통 · 제목 우선 정렬 · breadcrumb
  *   ⑥ ★ 필터(10a-1 · F-07-03) — 제목만(본문에만 있는 말은 빠진다) · 내가 만든 · 최근 편집 기간 · 이 페이지 아래(그 페이지 자신은 빼고) ·
  *      검색어 없이 필터로만 · 짧은 검색어는 여전히 짧다 · 필터도 권한 스코프 안이다(볼 수 없는 페이지 아래를 골라도 그 페이지는 없다)
+ *   ⑦ ★ 사람 · 팀스페이스(10a-3a · F-07-03) — 만든 사람 · 최종 편집자(나 · 다른 사람 · 떠난 사람도) · 팀스페이스는 루트의 부모(아래 페이지도) ·
+ *      멤버가 아니면 따로 공유받은 페이지가 있어도 0건(없는 팀스페이스와 같은 답) · 보관되면 0건 · 요금제가 허락하지 않으면 `plan_required`
  */
 
 import { test, describe, before, after } from 'node:test'
@@ -25,6 +27,8 @@ import { savePageBody } from '../block/save-page-body.ts'
 import { trashPage } from '../block/trash.ts'
 import { query } from '../db/pool.ts'
 import { grantAccess, revokeAccess, stopInheriting } from '../permissions/acl.ts'
+import { setWorkspacePlan } from '../billing/plan.ts'
+import { addTeamspaceMember, archiveTeamspace, createTeamspace } from '../workspace/teamspace.ts'
 import { searchPages, DEFAULT_SEARCH_LIMIT, normalizeQuery } from './search.ts'
 import type { BlockId } from '../ids.ts'
 import type { EditorDoc } from '../editor/document.ts'
@@ -723,5 +727,94 @@ describe('⑥ ★ 필터(10a-1 · F-07-03)', () => {
     assert.equal((await revokeAccess(me.ctx, secret, { type: 'workspace_everyone', id: null })).ok, true)
     assert.deepEqual(await ids({ query: '', filters: { within: secret } }, mate), [], '동료에게는 비밀 아래가 없다')
     assert.deepEqual(await ids({ query: '', filters: { within: secret } }), [secretChild])
+  })
+})
+
+// ── ⑦ 사람 · 팀스페이스 ─────────────────────────────────────────────────
+
+describe('⑦ ★ 사람 · 팀스페이스(10a-3a · F-07-03)', () => {
+  const pageIn = async (who: Actor, title: string, place: { parentPageId?: BlockId; teamspaceId?: string } = {}, body: string[] = []) => {
+    const id = (await createPage(who.ctx, { title: titleFromPlainText(title), ...place })).id
+    if (body.length > 0) assert.equal((await savePageBody(who.ctx, id, docOf(...body))).ok, true)
+    return id
+  }
+  const idsOf = async (who: Actor, input: Parameters<typeof searchPages>[1]) => {
+    const out = await searchPages(who.ctx, input)
+    assert.ok(out.ok, JSON.stringify(out))
+    return out.ok ? out.results.results.map((r) => r.pageId).sort() : []
+  }
+  const sorted = (...list: string[]) => [...list].sort()
+
+  test('만든 사람 · 최종 편집자 — 나 · 다른 사람 · 떠난 사람도', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const ws = await createBareWorkspace('검색 사람 필터')
+    const me = await joinAs(ws, await createUser('사람 필터의 나'), 'owner')
+    const mate = await joinAs(ws, await createUser('사람 필터의 동료'), 'member')
+    const mine = await pageIn(me, '사람축 회고')
+    const theirs = await pageIn(mate, '동료의 사람축 회고')
+    // 내가 만들고 동료가 마지막으로 고친 페이지
+    const touched = await pageIn(me, '동료가 고친 사람축 회고')
+    assert.equal((await savePageBody(mate.ctx, touched, docOf('동료가 고쳤다'))).ok, true)
+
+    assert.deepEqual(await idsOf(me, { query: '사람축' }), sorted(mine, theirs, touched), '전제 — 필터 없이')
+    assert.deepEqual(await idsOf(me, { query: '사람축', filters: { createdBy: mate.userId } }), [theirs], '다른 사람이 만든')
+    assert.deepEqual(await idsOf(me, { query: '사람축', filters: { createdBy: 'me' } }), sorted(mine, touched))
+    assert.deepEqual(await idsOf(me, { query: '사람축', filters: { editedBy: mate.userId } }), sorted(theirs, touched), '최종 편집자 — 만든 사람이 아니다')
+    assert.deepEqual(await idsOf(me, { query: '사람축', filters: { editedBy: 'me' } }), [mine])
+    assert.deepEqual(await idsOf(mate, { query: '사람축', filters: { editedBy: 'me' } }), sorted(theirs, touched), '"나" 는 찾는 사람이다')
+    assert.deepEqual(await idsOf(me, { query: '사람축', filters: { createdBy: 'me', editedBy: mate.userId } }), [touched], '둘을 함께')
+    assert.deepEqual(await idsOf(me, { query: '', filters: { editedBy: mate.userId } }), sorted(theirs, touched), '검색어 없이 — 좁히는 필터다')
+    assert.deepEqual(await idsOf(me, { query: '사람축', filters: { createdBy: randomUUID() } }), [], '모르는 사람은 0건')
+
+    // 떠난 사람으로도 필터는 계속 동작한다(07 엣지 — 색인의 칸은 id 그대로)
+    await query(`UPDATE workspace_member SET status = 'removed', removed_at = now() WHERE workspace_id = $1 AND user_id = $2`, [ws, mate.userId])
+    assert.deepEqual(await idsOf(me, { query: '사람축', filters: { createdBy: mate.userId } }), [theirs], '떠난 사람이 만든')
+    assert.deepEqual(await idsOf(me, { query: '사람축', filters: { editedBy: mate.userId } }), sorted(theirs, touched), '떠난 사람이 마지막으로 고친')
+  })
+
+  test('팀스페이스 — 루트의 부모 · 멤버인 것만 · 보관 · 요금제', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const ws = await createBareWorkspace('검색 팀스페이스 필터')
+    const me = await joinAs(ws, await createUser('팀 필터의 나'), 'owner')
+    const mate = await joinAs(ws, await createUser('팀 필터의 동료'), 'member')
+    await setWorkspacePlan(ws, 'plus')
+    const created = await createTeamspace(me.ctx, { name: '검색 팀' })
+    const elsewhere = await createTeamspace(me.ctx, { name: '다른 팀' })
+    assert.ok(created.ok && elsewhere.ok)
+    const team = created.ok ? created.value.id : ''
+    const otherTeam = elsewhere.ok ? elsewhere.value.id : ''
+
+    const top = await pageIn(me, '팀축 최상위', { teamspaceId: team })
+    const sub = await pageIn(me, '팀축 아래', { parentPageId: top })
+    const deep = await pageIn(me, '팀축 더 아래', { parentPageId: sub })
+    const outside = await pageIn(me, '다른 팀의 팀축', { teamspaceId: otherTeam })
+    const root = await pageIn(me, '워크스페이스 직속 팀축')
+
+    assert.deepEqual(await idsOf(me, { query: '팀축' }), sorted(top, sub, deep, outside, root), '전제 — 필터 없이')
+    assert.deepEqual(await idsOf(me, { query: '팀축', filters: { teamspace: team } }), sorted(top, sub, deep), '아래 페이지도 — 루트의 부모로 읽는다')
+    assert.deepEqual(await idsOf(me, { query: '', filters: { teamspace: team } }), sorted(top, sub, deep), '검색어 없이 — 좁히는 필터다')
+    assert.deepEqual(await idsOf(me, { query: '팀축', filters: { teamspace: otherTeam } }), [outside])
+    assert.deepEqual(await idsOf(me, { query: '팀축', filters: { teamspace: randomUUID() } }), [], '없는 팀스페이스')
+    assert.deepEqual(await idsOf(me, { query: '팀축', filters: { teamspace: 'all' } }), sorted(top, sub, deep, outside, root), '틀린 모양은 버린다')
+
+    // 멤버가 아니면 — 따로 공유받은 페이지가 있어도 없는 팀스페이스와 같은 답(소속을 캐지 못한다)
+    assert.equal((await grantAccess(me.ctx, sub, { type: 'user', id: mate.userId }, 'view')).ok, true)
+    assert.ok((await idsOf(mate, { query: '팀축' })).includes(sub), '전제 — 동료는 공유받은 페이지를 찾는다')
+    assert.deepEqual(await idsOf(mate, { query: '팀축', filters: { teamspace: team } }), [], '멤버가 아니면 0건')
+
+    // 보관되면 고를 수 없다 — 멤버였고 따로 공유받아 아직 보이는 페이지가 있어도(권한 판정이 가리지 않는 경우)
+    assert.equal((await addTeamspaceMember(me.ctx, otherTeam, { type: 'user', id: mate.userId })).ok, true)
+    assert.equal((await grantAccess(me.ctx, outside, { type: 'user', id: mate.userId }, 'view')).ok, true)
+    assert.deepEqual(await idsOf(mate, { query: '', filters: { teamspace: otherTeam } }), [outside], '전제 — 멤버는 고른다')
+    assert.equal((await archiveTeamspace(me.ctx, otherTeam)).ok, true)
+    assert.ok((await idsOf(mate, { query: '팀축' })).includes(outside), '전제 — 따로 공유받은 페이지는 보관 뒤에도 보인다')
+    assert.deepEqual(await idsOf(mate, { query: '', filters: { teamspace: otherTeam } }), [], '보관된 팀스페이스')
+
+    // 요금제 — 질의를 만드는 곳에서 막는다(필터를 버리고 넓은 결과를 주지 않는다)
+    await setWorkspacePlan(ws, 'free')
+    const gated = await searchPages(me.ctx, { query: '팀축', filters: { teamspace: team } })
+    assert.ok(!gated.ok && gated.reason === 'plan_required', JSON.stringify(gated))
+    assert.deepEqual(await idsOf(me, { query: '팀축', filters: { teamspace: 'all' } }), sorted(top, sub, deep, root), '틀린 모양은 필터가 아니다 — 게이트도 없다')
+    assert.deepEqual(await idsOf(me, { query: '팀축', filters: { createdBy: 'me' } }), sorted(top, sub, deep, root), '다른 필터는 게이트하지 않는다')
   })
 })
