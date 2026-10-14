@@ -35,7 +35,7 @@
  * 사이드바에 세울 수 없으니(그러면 "내 teamspace" 의 뜻이 흐려진다) 화면을 따로 둔다.
  */
 
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react'
+import { startTransition, useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 
@@ -233,13 +233,21 @@ export function Sidebar({
       setNote(null)
       try {
         const result = await requestDuplicate(workspaceId, pageId)
-        router.refresh()
         if (!result.ok) {
+          router.refresh()
           setNote({ text: result.message, tone: 'error' })
           return
         }
-        if (result.note.navigate) router.push(`/w/${workspaceId}/${result.pageId}`)
-        else if (result.note.text !== null) setNote({ text: result.note.text, tone: 'status' })
+        // 옮겨 가면 **옮긴 뒤에** 새로 읽는다 — 먼저 새로 읽으면 옮겨 간 화면이 사본이 없는 트리를 그대로 쓴다(복제 단추와 같다)
+        if (result.note.navigate) {
+          startTransition(() => {
+            router.push(`/w/${workspaceId}/${result.pageId}`)
+            router.refresh()
+          })
+          return
+        }
+        router.refresh()
+        if (result.note.text !== null) setNote({ text: result.note.text, tone: 'status' })
       } finally {
         setBusy(false)
       }

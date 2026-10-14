@@ -10,7 +10,7 @@
  * 그 이유가 여기 뜬다.
  */
 
-import { useState } from 'react'
+import { startTransition, useState } from 'react'
 import { useRouter } from 'next/navigation'
 
 import { requestDuplicate, type DuplicateNote } from '../duplicate-page'
@@ -31,12 +31,16 @@ export function DuplicatePageButton({ workspaceId, pageId }: { workspaceId: stri
       setError(result.message)
       return
     }
-    // 사이드바의 트리에 사본이 서야 한다 — 옮겨 가지 않는 경우에도.
-    router.refresh()
+    // 사이드바의 트리에 사본이 서야 한다 — 옮겨 가지 않는 경우에도. 옮겨 가면 **옮긴 뒤에** 새로 읽는다("새 페이지" 와 같은 순서):
+    // refresh 를 먼저 부르면 떠나는 원본 경로를 새로 읽고, 옮겨 간 화면은 새로 읽기 전의 레이아웃(사이드바 트리)을 그대로 쓴다.
     if (result.note.navigate) {
-      router.push(`/w/${workspaceId}/${result.pageId}`)
+      startTransition(() => {
+        router.push(`/w/${workspaceId}/${result.pageId}`)
+        router.refresh()
+      })
       return
     }
+    router.refresh()
     setDone(result)
   }
 
