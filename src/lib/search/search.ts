@@ -96,7 +96,9 @@ import {
 } from '../contracts/pagination.ts'
 import { exactTitleTarget, parseQuery, snippetAnchor, type ParsedQuery } from './query.ts'
 import { DEFAULT_SEARCH_SORT, isAscending, normalizeSearchSort, type SearchSort } from './sort.ts'
-import { EDITED_RANGE_DAYS, NO_SEARCH_FILTERS, narrowsWithoutQuery, normalizeSearchFilters, type SearchFilters } from './search-filters.ts'
+import { EDITED_RANGE_DAYS, NO_SEARCH_FILTERS, SEARCH_ME, narrowsWithoutQuery, normalizeSearchFilters, type SearchFilters } from './search-filters.ts'
+import { entitlement } from '../billing/entitlement.ts'
+import { isMyTeamspaceIn } from '../workspace/teamspace.ts'
 import { detectScript, minQueryLength, type Script } from './script.ts'
 
 /**
@@ -144,7 +146,10 @@ export type SearchInput = {
   readonly limit?: number
   /** 이전 응답의 `next_cursor`. */
   readonly cursor?: string | null
-  /** 필터(10a-1 · F-07-03) — 제목만 · 내가 만든 · 최근 편집 기간 · 이 페이지 아래. 받은 값 그대로(다듬기는 여기서 — 틀린 값은 버린다). */
+  /**
+   * 필터(10a-1 · 10a-3a · F-07-03) — 제목만 · 만든 사람 · 최종 편집자 · 최근 편집 기간 · 이 페이지 아래 · 팀스페이스. 받은 값 그대로(다듬기는
+   * 여기서 — 틀린 값은 버린다).
+   */
   readonly filters?: Parameters<typeof normalizeSearchFilters>[0]
 }
 
@@ -164,6 +169,11 @@ export type SearchOutcome =
       readonly minLength: number
       readonly script: Script
     }
+  /**
+   * 팀스페이스 필터를 지금 요금제가 허락하지 않는다(10a-3a · 엔타이틀먼트 `search.teamspace_filter`). 필터를 버리고 넓은 결과를 주지 않는다 —
+   * 걸린 줄 아는 사람이 다른 답을 받는다.
+   */
+  | { readonly ok: false; readonly reason: 'plan_required' }
 
 // ── 축별 술어 ─────────────────────────────────────────────────────────
 //
@@ -252,17 +262,43 @@ type HitRow = {
   snippet: string
 }
 
-function buildSql(axis: Axis, sort: SearchSort, filters: SearchFilters): string {
+type Narrow = { readonly sql: string; readonly params: readonly string[] }
+
+/**
+ * 필터(10a-1 · 10a-3a · 정본 §3.9 [보강] 검색 필터) — 권한 스코프 위에 더하는 술어와 그 파라미터. 후처리가 아니다. 파라미터는 `first` 부터
+ * (질의어 파라미터 뒤의 자리). 기간의 날수는 고정 표에서 온다(사용자 값이 아니다). 사람 필터의 "나" 는 찾는 사람이다.
+ *
+ * 팀스페이스는 **루트 블록의 부모**다(0028 머리말 — 아래 페이지는 칸을 따로 갖지 않는다). 루트는 `ancestor_ids[1]`, 없으면 자기다. 고를 수
+ * 있는가(멤버인가 · 요금제)는 질의 전에 명령이 본다.
+ */
+function narrowOf(filters: SearchFilters, me: string, first: number): Narrow {
+  const params: string[] = []
+  const param = (value: string): string => {
+    params.push(value)
+    return `$${first + params.length - 1}::uuid`
+  }
+  const person = (value: string | null): string | null => (value === SEARCH_ME ? me : value)
+  const lines: string[] = []
+  const createdBy = person(filters.createdBy)
+  if (createdBy !== null) lines.push(`AND s.created_by = ${param(createdBy)}`)
+  const editedBy = person(filters.editedBy)
+  if (editedBy !== null) lines.push(`AND s.last_edited_by = ${param(editedBy)}`)
+  if (filters.edited !== null) {
+    lines.push(`AND coalesce(s.last_edited_at, s.created_at, 'epoch'::timestamptz) > now() - interval '${EDITED_RANGE_DAYS[filters.edited]} days'`)
+  }
+  if (filters.within !== null) lines.push(`AND ${param(filters.within)} = ANY(s.ancestor_ids)`)
+  if (filters.teamspace !== null) {
+    lines.push(
+      `AND EXISTS (SELECT 1 FROM block r
+                       WHERE r.id = coalesce(s.ancestor_ids[1], s.doc_id)
+                         AND r.parent_type = 'teamspace' AND r.parent_id = ${param(filters.teamspace)})`,
+    )
+  }
+  return { sql: lines.join('\n         '), params }
+}
+
+function buildSql(axis: Axis, sort: SearchSort, narrow: Narrow): string {
   const ascending = isAscending(sort)
-  // 필터(10a-1 · 정본 §3.9 [보강] 검색 필터) — 권한 스코프 위에 더하는 술어다(후처리가 아니다). 기간의 날수는 고정 표에서 온다(사용자 값이
-  // 아니다). 이 페이지 아래의 id 는 질의어 파라미터 뒤의 자리다.
-  const narrow = [
-    filters.createdBy === 'me' ? 'AND s.created_by = $7::uuid' : '',
-    filters.edited === null
-      ? ''
-      : `AND coalesce(s.last_edited_at, s.created_at, 'epoch'::timestamptz) > now() - interval '${EDITED_RANGE_DAYS[filters.edited]} days'`,
-    filters.within === null ? '' : `AND $${FIRST_QUERY_PARAM + axis.params.length}::uuid = ANY(s.ancestor_ids)`,
-  ].join('\n         ')
   return `
     WITH matched AS (
       SELECT s.doc_id, s.title_text, s.body_text, s.ancestor_ids,
@@ -283,7 +319,7 @@ function buildSql(axis: Axis, sort: SearchSort, filters: SearchFilters): string 
          AND s.perm_scope_id = ANY($2::uuid[])   -- ★ 권한. 후처리가 아니다
          AND s.in_trash = false
          AND ${axis.match}
-         ${narrow}
+         ${narrow.sql}
     ), keyed AS (
       SELECT m.*, ${SORT_KEY[sort]} AS sort_key
         FROM matched m
@@ -399,10 +435,18 @@ export async function searchPages(
     // 어차피 0건이지만, 한 왕복을 아낀다.
     if (scopes.length === 0) return { ok: true, results: listEnvelope<SearchHit>([]) }
 
+    // 팀스페이스 필터(10a-3a · 정본 ⑥) — 요금제는 질의를 만드는 곳에서 묻는다(07 *"UI 에서 칩만 숨기면 우회된다"*). 고를 수 있는 것은 내가
+    // 멤버인 보관되지 않은 팀스페이스 — 아니면 없는 팀스페이스와 같은 답(0건)이다.
+    if (filters.teamspace !== null) {
+      if (!(await entitlement(ctx.workspaceId, 'search.teamspace_filter', tx))) return { ok: false, reason: 'plan_required' } as const
+      if (!(await isMyTeamspaceIn(tx, ctx, filters.teamspace))) return { ok: true, results: listEnvelope<SearchHit>([]) }
+    }
+
     // 한 건 더 읽어 "다음 페이지가 있는가"를 판단한다. 전체 개수를 세지 않는다 —
     // F-07-01: *"결과 상한이 존재하고 완전 열거는 보장되지 않는다."*
     const cursorKey = keyFromCursor(sort, cursor?.sortKey)
-    const rows = await tx.query<HitRow>(buildSql(axis, sort, filters), [
+    const narrow = narrowOf(filters, ctx.userId, FIRST_QUERY_PARAM + axis.params.length)
+    const rows = await tx.query<HitRow>(buildSql(axis, sort, narrow), [
       ctx.workspaceId,
       scopes,
       snippetAnchor(parsed) ?? query,
@@ -412,7 +456,7 @@ export async function searchPages(
       ctx.userId,
       exactTitleTarget(parsed),
       ...axis.params,
-      ...(filters.within === null ? [] : [filters.within]),
+      ...narrow.params,
     ])
 
     const hasMore = rows.length > limit

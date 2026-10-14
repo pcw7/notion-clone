@@ -37,6 +37,8 @@ export const ENTITLEMENTS = {
   'audit.log': 'boolean',
   /** 폼의 조건부 보이기를 더하고 바꿀 수 있는가(F-13-03 · 7b-5a) — Business · Enterprise. 지우기 · 이미 있는 조건의 적용은 무관하다. */
   'form.logic': 'boolean',
+  /** 검색을 팀스페이스로 좁힐 수 있는가(F-07-03 · 10a-3a) — Plus · Business · Enterprise. 질의를 만들 때 묻는다(허락하지 않으면 `plan_required`). */
+  'search.teamspace_filter': 'boolean',
 } as const
 
 export type EntitlementKey = keyof typeof ENTITLEMENTS

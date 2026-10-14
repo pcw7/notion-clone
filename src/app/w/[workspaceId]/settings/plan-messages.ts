@@ -26,6 +26,8 @@ export function entitlementLabel(key: EntitlementKey | string): string {
       return '감사 로그'
     case 'form.logic':
       return '폼의 조건부 질문'
+    case 'search.teamspace_filter':
+      return '검색의 팀스페이스 필터'
     default:
       return key
   }
