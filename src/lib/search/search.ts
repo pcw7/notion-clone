@@ -96,6 +96,7 @@ import {
 } from '../contracts/pagination.ts'
 import { exactTitleTarget, parseQuery, snippetAnchor, type ParsedQuery } from './query.ts'
 import { DEFAULT_SEARCH_SORT, isAscending, normalizeSearchSort, type SearchSort } from './sort.ts'
+import { EDITED_RANGE_DAYS, NO_SEARCH_FILTERS, narrowsWithoutQuery, normalizeSearchFilters, type SearchFilters } from './search-filters.ts'
 import { detectScript, minQueryLength, type Script } from './script.ts'
 
 /**
@@ -143,6 +144,8 @@ export type SearchInput = {
   readonly limit?: number
   /** 이전 응답의 `next_cursor`. */
   readonly cursor?: string | null
+  /** 필터(10a-1 · F-07-03) — 제목만 · 내가 만든 · 최근 편집 기간 · 이 페이지 아래. 받은 값 그대로(다듬기는 여기서 — 틀린 값은 버린다). */
+  readonly filters?: Parameters<typeof normalizeSearchFilters>[0]
 }
 
 export type SearchOutcome =
@@ -201,19 +204,23 @@ function keyFromCursor(sort: SearchSort, cursorKey: string | undefined): string 
 
 type Axis = { readonly match: string; readonly titleHit: string; readonly params: readonly string[] }
 
+/** 검색어 없이 필터로만 찾는다(정본 ③ — 07 *"match_all + filter"*). 제목이 걸릴 것도 없다. */
+const FILTER_ONLY_AXIS: Axis = { match: 'true', titleHit: 'false', params: [] }
+
 /**
  * 축의 술어와 그 파라미터. 라틴은 쿼리 그대로 `websearch_to_tsquery` 에. CJK 는 파서가 푼 절마다 — 절은 대안 중 하나가 제목이나 본문에
  * 있으면 되고, 제외는 제목과 본문 어디에도 없어야 한다. 제목이 걸렸다 = 모든 절이 제목에 있다.
  */
-function axisOf(script: Script, query: string, parsed: ParsedQuery): Axis {
+function axisOf(script: Script, query: string, parsed: ParsedQuery, titleOnly: boolean): Axis {
   if (script === 'latin') {
     const q = `$${FIRST_QUERY_PARAM}`
+    // 제목만 따로 본다. `tsv` 에서 weight A 만 걸러내려면 어차피 재계산이고,
+    // 여기 오는 행은 이미 매칭된 것뿐이라 건수가 작다.
+    const titleHit = `to_tsvector('simple', coalesce(s.title_text, '')) @@ websearch_to_tsquery('simple', ${q})`
     return {
-      // GENERATED 컬럼이라 제목 weight A · 본문 weight B 가 이미 들어 있다.
-      match: `s.tsv @@ websearch_to_tsquery('simple', ${q})`,
-      // 제목만 따로 본다. `tsv` 에서 weight A 만 걸러내려면 어차피 재계산이고,
-      // 여기 오는 행은 이미 매칭된 것뿐이라 건수가 작다.
-      titleHit: `to_tsvector('simple', coalesce(s.title_text, '')) @@ websearch_to_tsquery('simple', ${q})`,
+      // GENERATED 컬럼이라 제목 weight A · 본문 weight B 가 이미 들어 있다. 제목만(10a-1)이면 제목의 tsvector 로 찾는다(빼는 말도 그 안에서).
+      match: titleOnly ? titleHit : `s.tsv @@ websearch_to_tsquery('simple', ${q})`,
+      titleHit,
       params: [query],
     }
   }
@@ -230,7 +237,8 @@ function axisOf(script: Script, query: string, parsed: ParsedQuery): Axis {
     return `NOT (coalesce(s.title_text, '') LIKE ${p} OR coalesce(s.body_text, '') LIKE ${p})`
   })
   const titleHit = clauses.map((alts) => `(${alts.map((a) => `coalesce(s.title_text, '') LIKE ${a.p}`).join(' OR ')})`)
-  return { match: [...match, ...excluded].join(' AND '), titleHit: titleHit.join(' AND '), params }
+  // 제목만(10a-1) — 절마다 제목에 있어야 한다(빼는 말은 그대로 제목 · 본문 어디에도 없어야 한다)
+  return { match: [...(titleOnly ? titleHit : match), ...excluded].join(' AND '), titleHit: titleHit.join(' AND '), params }
 }
 
 type HitRow = {
@@ -244,8 +252,17 @@ type HitRow = {
   snippet: string
 }
 
-function buildSql(axis: Axis, sort: SearchSort): string {
+function buildSql(axis: Axis, sort: SearchSort, filters: SearchFilters): string {
   const ascending = isAscending(sort)
+  // 필터(10a-1 · 정본 §3.9 [보강] 검색 필터) — 권한 스코프 위에 더하는 술어다(후처리가 아니다). 기간의 날수는 고정 표에서 온다(사용자 값이
+  // 아니다). 이 페이지 아래의 id 는 질의어 파라미터 뒤의 자리다.
+  const narrow = [
+    filters.createdBy === 'me' ? 'AND s.created_by = $7::uuid' : '',
+    filters.edited === null
+      ? ''
+      : `AND coalesce(s.last_edited_at, s.created_at, 'epoch'::timestamptz) > now() - interval '${EDITED_RANGE_DAYS[filters.edited]} days'`,
+    filters.within === null ? '' : `AND $${FIRST_QUERY_PARAM + axis.params.length}::uuid = ANY(s.ancestor_ids)`,
+  ].join('\n         ')
   return `
     WITH matched AS (
       SELECT s.doc_id, s.title_text, s.body_text, s.ancestor_ids,
@@ -266,6 +283,7 @@ function buildSql(axis: Axis, sort: SearchSort): string {
          AND s.perm_scope_id = ANY($2::uuid[])   -- ★ 권한. 후처리가 아니다
          AND s.in_trash = false
          AND ${axis.match}
+         ${narrow}
     ), keyed AS (
       SELECT m.*, ${SORT_KEY[sort]} AS sort_key
         FROM matched m
@@ -358,15 +376,18 @@ export async function searchPages(
   const script = detectScript(query)
   const min = minQueryLength(script)
   const parsed = parseQuery(query)
+  const filters = input.filters === undefined ? NO_SEARCH_FILTERS : normalizeSearchFilters(input.filters)
+  // 검색어 없이 필터로만(10a-1 · 정본 ③) — 빈 검색어에 좁히는 필터가 있을 때만. 짧은 검색어는 여전히 짧다
+  const filterOnly = query === '' && narrowsWithoutQuery(filters)
 
   // 길이 미달은 질의하지 않는다. 빈 문자열도 여기서 걸린다 —
   // `likequery('')` 가 NULL 을 돌려주므로(실측) SQL 까지 가면 조용히 0건이 되고,
   // 화면은 "검색 결과 없음"을 띄운다. 빈 상태는 최근 방문이어야 한다.
   // 찾는 말이 하나도 없는 쿼리(`-초안` · `"" OR`)도 같다 — 무엇을 찾을지 없다(8l-1).
-  if (query.length < min || parsed.clauses.length === 0) {
+  if (!filterOnly && (query.length < min || parsed.clauses.length === 0)) {
     return { ok: false, reason: 'query_too_short', minLength: min, script }
   }
-  const axis = axisOf(script, query, parsed)
+  const axis = filterOnly ? FILTER_ONLY_AXIS : axisOf(script, query, parsed, filters.titleOnly)
   const sort = normalizeSearchSort(input.sort ?? DEFAULT_SEARCH_SORT)
 
   const limit = normalizeLimit(input.limit)
@@ -381,7 +402,7 @@ export async function searchPages(
     // 한 건 더 읽어 "다음 페이지가 있는가"를 판단한다. 전체 개수를 세지 않는다 —
     // F-07-01: *"결과 상한이 존재하고 완전 열거는 보장되지 않는다."*
     const cursorKey = keyFromCursor(sort, cursor?.sortKey)
-    const rows = await tx.query<HitRow>(buildSql(axis, sort), [
+    const rows = await tx.query<HitRow>(buildSql(axis, sort, filters), [
       ctx.workspaceId,
       scopes,
       snippetAnchor(parsed) ?? query,
@@ -391,6 +412,7 @@ export async function searchPages(
       ctx.userId,
       exactTitleTarget(parsed),
       ...axis.params,
+      ...(filters.within === null ? [] : [filters.within]),
     ])
 
     const hasMore = rows.length > limit

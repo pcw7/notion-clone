@@ -16701,6 +16701,26 @@ async function main() {
         JSON.stringify([await modeNow(), await evaluate('location.pathname + location.search')]))
     }
 
+    if (sectionIf('검색 필터 — 라우트 (10a-1 · F-07-03)')) {
+      // 검색 라우트가 쿼리의 필터를 명령에 넘긴다 — 이 페이지 아래(검색어 없이도) · 제목만 · 내가 만든 · 틀린 값은 버린다(400 이 아니다).
+      const stamp = Date.now().toString(36)
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const parent = (await api('POST', '/pages', { title: `필터 위 ${stamp}` })).body?.page?.id
+      const child = (await api('POST', '/pages', { title: `필터 아래 ${stamp}`, parentPageId: parent })).body?.page?.id
+      const ids = async (qs) => ((await api('GET', `/search?${qs}`)).body?.results ?? []).map((r) => r.pageId)
+      const within = await ids(`q=&within=${parent}`)
+      const titled = await ids(`q=${encodeURIComponent(`필터 아래 ${stamp}`)}&titleOnly=1&createdBy=me`)
+      const bad = await api('GET', `/search?q=${encodeURIComponent(stamp)}&edited=decade&within=nope`)
+      check('★ 검색 라우트가 필터를 넘긴다 — 이 페이지 아래(검색어 없이) · 제목만 · 내가 만든 · 틀린 값은 버린다',
+        JSON.stringify(within) === JSON.stringify([child]) && titled.includes(child) && bad.status === 200 && (bad.body?.results ?? []).length >= 2,
+        JSON.stringify([within, titled, bad.status, (bad.body?.results ?? []).length]))
+    }
+
     if (sectionIf('폼 — 서버 라우트 (7a-1 · F-13-01)')) {
       // 폼 뷰의 라우트 — 만들기(첫 질문은 제목) · 질문 바꾸기 · 설정 · 공개(토큰) · 거부 코드 · 표 화면의 탭에 선다(7a-3 부터 — 그 탭은
       // 편집 화면이다).
