@@ -334,6 +334,7 @@ describe('⑤ ★ 조건부 보이기(7b-5a)', () => {
     const saved = unwrap(await setFormQuestions(editor.ctx, form.viewId, list(when)))
     assert.equal(saved.logicAllowed, true)
     assert.deepEqual(saved.questions.map((q) => q.showWhen), [null, null, { propertyId: kind, operator: 'equals', optionId: yes }, null])
+    assert.deepEqual(saved.questions.map((q) => q.options.map((o) => o.name)), [[], ['예'], [], []], '선택 질문의 옵션을 싣는다(7b-5b)')
 
     // 내린 요금제 — 그대로 두기 · 지우기는 되고, 바꾸기는 막힌다
     unwrap(await setWorkspacePlan(ws, 'free'))

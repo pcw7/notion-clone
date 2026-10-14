@@ -7,12 +7,13 @@
  *   ② 답이 있는가 · 조건이 맞는가 — 글은 공백만이면 없다 · 숫자는 수도 · 체크는 true · 'true' · 'on'
  *   ③ ★ 보이는 질문 — 순서대로 · 숨은 근거의 답은 없는 것(그 뒤도 숨는다) · 끊어진 조건(근거가 앞에 없다)은 보인다
  *   ④ ★ 끊어질 조건을 지운다 — 근거를 빼거나 뒤로 옮긴 목록에서 그 조건만 null(나머지 칸 · 다른 조건은 그대로)
+ *   ⑤ 조건이 근거에 맞는가(7b-5b) — 연산자가 근거의 지금 타입의 것 · 옵션이 살아 있다 · 지우기가 맞지 않는 것도 지운다
  */
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { conditionHolds, isAnswered, needsOption, operatorsFor, pruneShowWhen, visibleQuestionIds, type ShowWhen } from './form-logic.ts'
+import { conditionHolds, isAnswered, needsOption, operatorsFor, pruneShowWhen, showWhenFits, visibleQuestionIds, type ShowWhen } from './form-logic.ts'
 
 test('① 연산자는 근거의 타입이 정한다', () => {
   assert.deepEqual(operatorsFor('select'), ['equals', 'not_equals', 'is_empty', 'is_not_empty'])
@@ -81,4 +82,21 @@ test('④ ★ 끊어질 조건을 지운다 — 근거를 빼거나 뒤로 옮�
     [null, null, onMemo],
     '근거보다 위로 옮기면 지운다',
   )
+})
+
+test('⑤ 조건이 근거에 맞는가 — 타입 · 옵션 · 지우기가 맞지 않는 것도', () => {
+  const eq: ShowWhen = { propertyId: 'kind', operator: 'equals', optionId: 'a' }
+  assert.equal(showWhenFits(eq, { type: 'select', options: [{ id: 'a' }] }), true)
+  assert.equal(showWhenFits(eq, { type: 'select', options: [{ id: 'b' }] }), false, '옵션이 지워졌다')
+  assert.equal(showWhenFits(eq, { type: 'rich_text', options: [] }), false, '근거가 글로 바뀌었다')
+  assert.equal(showWhenFits({ propertyId: 'kind', operator: 'is_empty', optionId: null }, { type: 'rich_text', options: [] }), true, '비었다는 글에도 맞는다')
+  // 옵션과 상관없이 연산자가 그 타입의 것이 아니면 맞지 않는다
+  assert.equal(showWhenFits({ propertyId: 'kind', operator: 'is_checked', optionId: null }, { type: 'select', options: [{ id: 'a' }] }), false, '선택에 체크')
+  assert.equal(showWhenFits({ propertyId: 'kind', operator: 'is_empty', optionId: null }, { type: 'checkbox', options: [] }), false, '체크박스에 비었다')
+  const list = [
+    { propertyId: 'kind', showWhen: null },
+    { propertyId: 'memo', showWhen: eq },
+  ]
+  assert.deepEqual(pruneShowWhen(list, () => false).map((q) => q.showWhen), [null, null], '맞지 않으면 지운다')
+  assert.deepEqual(pruneShowWhen(list, () => true).map((q) => q.showWhen), [null, eq])
 })

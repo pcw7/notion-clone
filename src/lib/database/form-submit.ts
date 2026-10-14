@@ -58,7 +58,7 @@ import { claimOnce, consume, type RateLimitRule } from '../rate-limit.ts'
 import { grantToFormRespondentIn } from '../permissions/acl.ts'
 import { readSecurityPolicyIn } from '../workspace/security-policy.ts'
 import { FORM_QUESTION_TYPES, countFormResponsesIn, hasRespondedIn, showWhenOf, type FormQuestionType, type RespondentAccess } from './form.ts'
-import { visibleQuestionIds, type ShowIfOperator, type ShowWhen } from './form-logic.ts'
+import { showWhenFits, visibleQuestionIds, type ShowIfOperator, type ShowWhen } from './form-logic.ts'
 import { formClosedReason, type FormClosedReason } from './form-limits.ts'
 import { readOptionsOf } from './options.ts'
 import type { CellValue } from './property-types.ts'
@@ -203,17 +203,18 @@ async function readPublicFormIn(tx: Tx, token: string): Promise<PublicForm | nul
 }
 
 /**
- * 끊어진 조건을 지운다(정본 ⑬) — 근거가 앞에 선 질문이 아니거나(빠졌다 · 휴지통 · 뒤로 갔다) 옵션이 그 근거의 살아 있는 옵션이 아니면
- * 조건이 없는 것과 같다(질문이 보인다).
+ * 끊어진 조건을 지운다(정본 ⑬) — 근거가 앞에 선 질문이 아니거나(빠졌다 · 휴지통 · 뒤로 갔다) 근거에 맞지 않으면(옵션이 지워졌다 · 근거의
+ * 타입이 바뀌어 연산자가 맞지 않는다 — `showWhenFits`) 조건이 없는 것과 같다(질문이 보인다).
  */
 function liveShowWhen(
   when: ShowWhen | null,
-  earlier: readonly { readonly property_id: string }[],
+  earlier: readonly { readonly property_id: string; readonly type: FormQuestionType }[],
   options: ReadonlyMap<string, readonly { readonly id: string }[]>,
 ): ShowWhen | null {
-  if (when === null || !earlier.some((q) => q.property_id === when.propertyId)) return null
-  if (when.optionId !== null && !(options.get(when.propertyId) ?? []).some((o) => o.id === when.optionId)) return null
-  return when
+  if (when === null) return null
+  const source = earlier.find((q) => q.property_id === when.propertyId)
+  if (source === undefined) return null
+  return showWhenFits(when, { type: source.type, options: options.get(when.propertyId) ?? [] }) ? when : null
 }
 
 // ── 응답자 ────────────────────────────────────────────────────────────

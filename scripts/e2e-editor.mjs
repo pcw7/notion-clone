@@ -16448,6 +16448,98 @@ async function main() {
         JSON.stringify([removed, await evaluate(`document.querySelector('[data-testid="form-error"]')?.textContent ?? null`)]))
     }
 
+    if (sectionIf('폼의 조건부 보이기 — 화면 (7b-5b · F-13-03)')) {
+      // 편집 화면에서 메모 질문에 "분류가 개인이면 보인다" 를 고르고(근거 → 연산자 · 옵션이 선다) 옵션을 단체로 바꾼다 · 공개 화면은 분류를
+      // 고를 때마다 메모를 보이고 숨긴다 · 숨은 필수 질문은 제출을 막지 않고 그 답은 행에 들어가지 않는다.
+      const stamp = Date.now().toString(36)
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `조건 화면 표 ${stamp}` })).body.database
+      const kind = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '분류', type: 'select' })).body.property.id
+      const memo = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '메모', type: 'rich_text' })).body.property.id
+      const personal = (await api('POST', `/data-sources/${db.dataSourceId}/properties/${kind}/options`, { name: '개인' })).body.option.id
+      const group = (await api('POST', `/data-sources/${db.dataSourceId}/properties/${kind}/options`, { name: '단체' })).body.option.id
+      const made = (await api('POST', `/databases/${db.id}/forms`, { name: `조건 화면 신청서 ${stamp}` })).body?.form
+      const title = made.questions[0].propertyId
+      await api('PUT', `/forms/${made.viewId}/questions`, {
+        questions: [{ propertyId: title, required: true }, { propertyId: kind }, { propertyId: memo, required: true }],
+      })
+      const opened = await api('PATCH', `/forms/${made.viewId}`, { access: 'public' })
+      const address = `${BASE}/f/${opened.body?.form?.settings?.token}`
+      const memoWhen = async () => (await api('GET', `/forms/${made.viewId}`)).body?.form?.questions?.[2]?.showWhen ?? null
+      const choose = async (selector, value, until) => {
+        // 서버 렌더 뒤 React 가 붙기 전의 change 는 사라진다 — 바라는 것이 설 때까지 다시 보낸다
+        for (let i = 0; i < 20; i += 1) {
+          await evaluate(`(() => {
+            const s = document.querySelector(${JSON.stringify(selector)})
+            if (!s) return
+            Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(s, ${JSON.stringify(value)})
+            s.dispatchEvent(new Event('change', { bubbles: true }))
+          })()`)
+          for (let j = 0; j < 10; j += 1) {
+            if (await until()) return true
+            await sleep(150)
+          }
+        }
+        return false
+      }
+
+      // ① 편집 화면 — 근거를 고르면 "개인이면" 이 선다 · 옵션을 단체로 바꾼다
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}?v=${made.viewId}` })
+      const MEMO = `[data-testid="form-question"][data-property-id="${memo}"]`
+      await waitFor(`!!document.querySelector('${MEMO} [data-testid="form-question-logic-source"]')`, 15000)
+      const sourced = await choose(`${MEMO} [data-testid="form-question-logic-source"]`, kind, async () => (await memoWhen())?.optionId === personal)
+      check('★ 편집 화면에서 근거(분류)를 고르면 "개인이면 보인다" 가 선다 — 서버 · 연산자 · 옵션 고르개',
+        sourced && (await waitFor(`document.querySelector('${MEMO} [data-testid="form-question-logic-operator"]')?.value === 'equals'
+          && document.querySelector('${MEMO} [data-testid="form-question-logic-option"]')?.value === ${JSON.stringify(personal)}`, 5000)),
+        JSON.stringify(await memoWhen()))
+      const regrouped = await choose(`${MEMO} [data-testid="form-question-logic-option"]`, group, async () => (await memoWhen())?.optionId === group)
+      check('옵션을 단체로 바꾼다 — 서버', regrouped, JSON.stringify(await memoWhen()))
+      await choose(`${MEMO} [data-testid="form-question-logic-option"]`, personal, async () => (await memoWhen())?.optionId === personal)
+
+      // ② 공개 화면 — 분류를 고를 때마다 메모가 보이고 숨는다
+      await send('Page.navigate', { url: address })
+      await waitFor(`!!document.querySelector('[data-testid="public-form-body"]')`, 15000)
+      const memoShown = `!!document.querySelector('[data-testid="public-form-question"][data-property-id="${memo}"]')`
+      const hiddenFirst = !(await evaluate(memoShown))
+      await clickSelector(`[data-testid="public-form-option"][value="${personal}"]`)
+      const shownOnPersonal = await waitFor(memoShown, 5000)
+      // 보이는 동안 메모에 쓴다 — 숨으면 그 답은 보내지 않아야 한다(③)
+      await clickSelector(`[data-testid="public-form-question"][data-property-id="${memo}"] textarea`)
+      await typeText(`숨을 메모 ${stamp}`)
+      await clickSelector(`[data-testid="public-form-option"][value="${group}"]`)
+      const hiddenOnGroup = await waitFor(`!(${memoShown})`, 5000)
+      check('★ 공개 화면 — 처음엔 메모가 없다 · 개인을 고르면 선다 · 단체로 바꾸면 사라진다', hiddenFirst && shownOnPersonal && hiddenOnGroup,
+        JSON.stringify([hiddenFirst, shownOnPersonal, hiddenOnGroup]))
+
+      // ③ 숨은 필수 질문은 제출을 막지 않는다 · 숨은 질문의 답은 보내지 않는다(보낸 몸체를 가로채 본다) — 행에 메모가 없다
+      await sleep(3200)
+      await clickSelector('[data-testid="public-form-body"] input[type="text"]:not([tabindex="-1"])')
+      await typeText(`조건 응답 ${stamp}`)
+      await evaluate(`(() => {
+        window.__sentBody = null
+        const original = window.fetch
+        window.fetch = (url, init) => { if (String(url).includes('/submit')) window.__sentBody = init?.body ?? null; return original(url, init) }
+      })()`)
+      await clickSelector('[data-testid="public-form-body"] button[type="submit"]')
+      const sent = await waitFor(`!!document.querySelector('[data-testid="public-form-sent"]')`, 10000)
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const cells = await dbQuery(
+        `SELECT v.property_id FROM page p JOIN page_property_value v ON v.page_id = p.id WHERE p.data_source_id = $1 AND NOT p.is_template`,
+        [db.dataSourceId],
+      )
+      check('★ 숨은 필수 질문(메모)은 제출을 막지 않는다 — 행에 메모가 없다',
+        sent && cells.length > 0 && !cells.some((c) => c.property_id === memo),
+        JSON.stringify([sent, cells, await evaluate(`document.querySelector('[role="alert"]')?.textContent ?? null`)]))
+      const sentAnswers = JSON.parse((await evaluate(`window.__sentBody`)) ?? '{}').answers ?? {}
+      check('★ 숨은 질문의 답(써 두었던 메모)은 보내지 않는다 — 서버만 버리는 것이 아니다',
+        Object.hasOwn(sentAnswers, kind) && !Object.hasOwn(sentAnswers, memo), JSON.stringify(sentAnswers))
+    }
+
     if (sectionIf('폼 — 서버 라우트 (7a-1 · F-13-01)')) {
       // 폼 뷰의 라우트 — 만들기(첫 질문은 제목) · 질문 바꾸기 · 설정 · 공개(토큰) · 거부 코드 · 표 화면의 탭에 선다(7a-3 부터 — 그 탭은
       // 편집 화면이다).

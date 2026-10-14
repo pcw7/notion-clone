@@ -77,13 +77,28 @@ export function conditionHolds(when: ShowWhen, sourceType: FormQuestionType, ans
 }
 
 /**
- * 끊어질 조건을 지운다 — 근거가 앞에 없는(빠졌다 · 뒤로 갔다) 질문의 조건을 null 로. 편집 화면이 질문을 빼거나 옮긴 목록을 보내기 전에
- * 부른다(13 *"규칙 대상 질문 삭제 → 규칙 동반 삭제"* — 서버는 끊어진 조건을 받지 않는다). 지우기는 요금제와 무관하다.
+ * 조건이 근거에 맞는가(7b-5b) — 연산자가 근거의 지금 타입의 것이고, 옵션이 있으면 그 근거의 살아 있는 옵션이다. 근거의 타입이 바뀌었거나
+ * (선택 → 글) 옵션이 지워졌으면 끊어진 조건이다.
  */
-export function pruneShowWhen<Q extends { readonly propertyId: string; readonly showWhen: ShowWhen | null }>(questions: readonly Q[]): Q[] {
+export function showWhenFits(
+  when: ShowWhen,
+  source: { readonly type: FormQuestionType; readonly options: readonly { readonly id: string }[] },
+): boolean {
+  if (!operatorsFor(source.type).includes(when.operator)) return false
+  return when.optionId === null || source.options.some((o) => o.id === when.optionId)
+}
+
+/**
+ * 끊어질 조건을 지운다 — 근거가 앞에 없는(빠졌다 · 뒤로 갔다) 질문의 조건을 null 로, `fits` 를 주면 근거에 맞지 않는 조건도. 편집 화면이
+ * 목록을 보내기 전에 부른다(13 *"규칙 대상 질문 삭제 → 규칙 동반 삭제"* — 서버는 끊어진 조건을 받지 않는다). 지우기는 요금제와 무관하다.
+ */
+export function pruneShowWhen<Q extends { readonly propertyId: string; readonly showWhen: ShowWhen | null }>(
+  questions: readonly Q[],
+  fits: (when: ShowWhen) => boolean = () => true,
+): Q[] {
   const before = new Set<string>()
   return questions.map((q) => {
-    const kept = q.showWhen !== null && !before.has(q.showWhen.propertyId) ? { ...q, showWhen: null } : q
+    const kept = q.showWhen !== null && (!before.has(q.showWhen.propertyId) || !fits(q.showWhen)) ? { ...q, showWhen: null } : q
     before.add(q.propertyId)
     return kept
   })

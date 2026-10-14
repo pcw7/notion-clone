@@ -5,6 +5,7 @@
  *   ② 공개 주소의 모양
  *   ⑤ 한 사람당 한 번(7b-3) — 켰을 때의 말이 공유에 따라 다르다(막는 것은 워크스페이스 멤버만의 폼뿐)
  *   ⑥ 응답자에게 줄 권한(7b-4) — 넷(전체 권한 없음) · 고른 레벨의 말 · 웹 공개면 주지 않는다고
+ *   ⑧ 조건부 보이기(7b-5b) — 연산자마다 다른 말 · 고를 수 있는 연산자(옵션이 없는 선택은 같다 · 같지 않다 를 뺀다) · 근거를 고르면 서는 조건
  */
 
 import { test } from 'node:test'
@@ -20,6 +21,9 @@ import {
   formAccessState,
   formEditorFailureMessage,
   formPolicyNotice,
+  defaultShowWhen,
+  showIfOperatorLabel,
+  usableOperators,
   formUrlOf,
   isoOfLocalDateTime,
   limitOfDraft,
@@ -85,4 +89,15 @@ test('⑦ 정책 줄(6b-3b) — 운영자의 잠금은 "운영 정책" · 멤버
   assert.match(formPolicyNotice(true), /운영 정책/)
   assert.match(formPolicyNotice(true), /워크스페이스 멤버만의 폼은 열 수 있습니다/)
   assert.equal(formPolicyNotice(false), '워크스페이스 정책이 웹 공개를 막았습니다 — 공개된 폼도 열리지 않습니다.')
+})
+
+test('⑧ 조건부 보이기(7b-5b) — 연산자의 말 · 고를 수 있는 연산자 · 근거를 고르면 서는 조건', () => {
+  const operators = ['equals', 'not_equals', 'is_checked', 'is_not_checked', 'is_empty', 'is_not_empty'] as const
+  assert.equal(new Set(operators.map(showIfOperatorLabel)).size, operators.length, '연산자마다 다른 말')
+  assert.deepEqual(usableOperators({ type: 'select', options: [] }), ['is_empty', 'is_not_empty'], '옵션이 없는 선택은 같다 · 같지 않다 를 뺀다')
+  assert.deepEqual(usableOperators({ type: 'select', options: [{ id: 'a' }] }), ['equals', 'not_equals', 'is_empty', 'is_not_empty'])
+  assert.deepEqual(defaultShowWhen({ propertyId: 'k', type: 'select', options: [{ id: 'a' }, { id: 'b' }] }), { propertyId: 'k', operator: 'equals', optionId: 'a' })
+  assert.deepEqual(defaultShowWhen({ propertyId: 'c', type: 'checkbox', options: [] }), { propertyId: 'c', operator: 'is_checked', optionId: null })
+  assert.deepEqual(defaultShowWhen({ propertyId: 'm', type: 'rich_text', options: [] }), { propertyId: 'm', operator: 'is_empty', optionId: null })
+  assert.match(formEditorFailureMessage('plan_required'), /요금제/)
 })
