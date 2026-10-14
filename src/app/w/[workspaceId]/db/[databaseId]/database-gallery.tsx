@@ -20,6 +20,7 @@
  * 규칙). 템플릿 · 기본 템플릿은 `NewRowMenu` 가 맡는다.
  */
 
+import { rowOpenHref } from '@/lib/database/open-pages'
 import Link from 'next/link'
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 
@@ -73,6 +74,8 @@ export function DatabaseGallery(props: {
   /** 뷰 검색어(2e-2) — "더 보기"도 같은 검색어를 싣는다. */
   search?: string | null
   /** 서버 화면이 읽기 전의 시각(ms) — 구독이 붙기 전의 변경을 메운다(#250 · `use-table-changes.ts`). */
+  /** 행을 여는 주소의 바탕(8n-1 · F-02-20) — 지금 데이터베이스 화면의 주소면 피크로, null 이면 행 화면으로(전체 페이지). */
+  peekBase?: string | null
   renderedAt?: number
   /** 레이아웃(2f-2) — 미리보기 · 카드 폭 · 맞춤. */
   layout: GalleryLayout
@@ -261,7 +264,8 @@ export function DatabaseGallery(props: {
               ) : (
                 // 카드의 제목이 그 행 페이지로 가는 길이다(8f-1) — 아이콘을 앞에 단다(8c-3a).
                 <Link
-                  href={`/w/${workspaceId}/${row.id}`}
+                  href={rowOpenHref(workspaceId, row.id, props.peekBase ?? null)}
+                  scroll={false}
                   data-testid="db-gallery-open"
                   className={`flex min-w-0 items-start gap-1.5 font-medium hover:underline ${row.title ? 'break-words' : 'text-neutral-400'}`}
                 >

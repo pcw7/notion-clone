@@ -15,6 +15,7 @@
  */
 
 import { requireWorkspaceSession } from '@/lib/auth/route-session'
+import type { OpenPagesIn } from '@/lib/database/open-pages'
 import { deleteView, getView, updateView, type MvpViewType } from '@/lib/database/view'
 import type { GalleryLayout } from '@/lib/database/gallery'
 import type { CalendarLayout } from '@/lib/database/calendar'
@@ -67,6 +68,8 @@ export async function PATCH(request: Request, ctx: Ctx): Promise<Response> {
     ...('gallery' in body ? { gallery: body.gallery as Partial<GalleryLayout> } : {}),
     // 캘린더 레이아웃(2g-1) — 바꿀 키만. 날짜 속성이 이 표의 것인지는 명령이 본다.
     ...('calendar' in body ? { calendar: body.calendar as Partial<CalendarLayout> } : {}),
+    // 행을 여는 방식(8n-1 · F-02-20) — 값은 명령이 본다(틀리면 invalid_layout)
+    ...('openPagesIn' in body ? { openPagesIn: body.openPagesIn as OpenPagesIn } : {}),
   })
 
   if (!updated.ok) {

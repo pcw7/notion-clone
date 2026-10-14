@@ -52,6 +52,7 @@
  * 보드 밖에서 연다. 새 카드의 제목 편집은 카드 안의 입력칸이다.
  */
 
+import { rowOpenHref } from '@/lib/database/open-pages'
 import Link from 'next/link'
 import {
   useEffect,
@@ -155,6 +156,8 @@ export function DatabaseBoard(props: {
   /** 뷰 검색어(2e-2) — 서버 렌더가 이것으로 그룹을 읽었다. 열의 "더 보기" · 머리 값 다시 받기도 같은 검색어를 싣는다. */
   search?: string | null
   /** 서버 화면이 읽기 전의 시각(ms) — 구독이 붙기 전의 변경을 메운다(#250 · `use-table-changes.ts`). */
+  /** 행을 여는 주소의 바탕(8n-1 · F-02-20) — 지금 데이터베이스 화면의 주소면 피크로, null 이면 행 화면으로(전체 페이지). */
+  peekBase?: string | null
   renderedAt?: number
 }) {
   const { workspaceId, viewId, dataSourceId, tableName, columns, property, groupBy, manualOrder, access } = props
@@ -580,7 +583,7 @@ export function DatabaseBoard(props: {
                   <BoardCard
                     key={row.id}
                     row={row}
-                    openHref={`/w/${workspaceId}/${row.id}`}
+                    openHref={rowOpenHref(workspaceId, row.id, props.peekBase ?? null)}
                     groupKey={group.key}
                     badgeColumns={badgeColumns}
                     button={{ workspaceId, canPress: access.canEditContent }}

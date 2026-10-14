@@ -31,6 +31,7 @@
  * 주소를 끄는 것)는 막는다 — 그것이 시작되면 포인터 이벤트가 끊긴다.
  */
 
+import { rowOpenHref } from '@/lib/database/open-pages'
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import {
@@ -107,6 +108,8 @@ export function DatabaseCalendar(props: {
   access: DatabaseAccess
   search?: string | null
   /** 서버 화면이 읽기 전의 시각(ms) — 구독이 붙기 전의 변경을 메운다(#250 · `use-table-changes.ts`). */
+  /** 행을 여는 주소의 바탕(8n-1 · F-02-20) — 지금 데이터베이스 화면의 주소면 피크로, null 이면 행 화면으로(전체 페이지). */
+  peekBase?: string | null
   renderedAt?: number
 }) {
   const { workspaceId, viewId, tableName, month, datePropertyId, titlePropertyId, access } = props
@@ -443,7 +446,8 @@ export function DatabaseCalendar(props: {
                       />
                     ) : (
                       <Link
-                        href={`/w/${workspaceId}/${row.id}`}
+                        href={rowOpenHref(workspaceId, row.id, props.peekBase ?? null)}
+                        scroll={false}
                         data-testid="db-cal-event-open"
                         draggable={false}
                         onDragStart={(e) => e.preventDefault()}

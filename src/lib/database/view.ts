@@ -68,6 +68,7 @@ import { isMvpPropertyType, isOptionType } from './property-types.ts'
 import { calculationsFor, isCalculation } from './calculations.ts'
 import { relationOf, rollupOf, type ViewColumn } from './view-columns.ts'
 import { readOptionsOf } from './options.ts'
+import { isOpenPagesIn, type OpenPagesIn } from './open-pages.ts'
 import { readLiveTemplate } from './template.ts'
 import { canViewOwnerDatabase } from './source-access.ts'
 import type { ValidationIssue } from '../contracts/rich-text.ts'
@@ -135,6 +136,8 @@ export type ViewDetail = {
   readonly effectiveFilter: FilterNode | null
   /** 이 사람이 실제로 보는 정렬 — 개인 정렬이 있으면 그것, 아니면 공유 정렬. */
   readonly effectiveSorts: readonly SortKey[]
+  /** 행을 여는 방식(8n-1 · F-02-20 · `open_pages_in`) — 사이드 피크(기본) · 가운데 피크 · 전체 페이지. */
+  readonly openPagesIn: OpenPagesIn
 }
 
 export type ViewSummary = {
@@ -278,6 +281,7 @@ type ViewRow = {
   sorts: unknown
   group_by: unknown
   load_limit: number
+  open_pages_in: OpenPagesIn
   default_template_page_id: string | null
   configuration: unknown
   personal_filter: unknown
@@ -410,7 +414,7 @@ async function toColumns(tx: Tx, rows: readonly ColumnRow[]): Promise<ViewColumn
 async function readView(tx: Tx, viewId: string, userId: string | null = null): Promise<ViewDetail | null> {
   const row = await tx.queryMaybe<ViewRow>(
     `SELECT v.id, v.database_id, v.data_source_id, v.name, v.type, v.order_idx,
-            v.filter, v.sorts, v.group_by, v.load_limit, v.configuration,
+            v.filter, v.sorts, v.group_by, v.load_limit, v.configuration, v.open_pages_in,
             -- 이 사람의 개인 필터 · 정렬(2h-1) — NULL 이면 덮어쓰지 않았다
             o.filter AS personal_filter, o.sorts AS personal_sorts,
             -- 살아 있는 템플릿을 가리킬 때만 준다(ViewDetail.defaultTemplateId). 0026 의 트리거가 "이 표의
@@ -442,6 +446,7 @@ async function readView(tx: Tx, viewId: string, userId: string | null = null): P
     filter: sharedFilter,
     sorts: sharedSorts,
     loadLimit: row.load_limit,
+    openPagesIn: row.open_pages_in,
     groupBy: liveGroupBy(row.group_by, columns),
     defaultTemplateId: row.default_template_page_id,
     columns,
@@ -707,6 +712,8 @@ export type UpdateViewInput = {
    * 날짜 속성이어야 한다.
    */
   readonly calendar?: Partial<CalendarLayout>
+  /** 행을 여는 방식(8n-1 · F-02-20) — 사이드 피크 · 가운데 피크 · 전체 페이지. 생략하면 그대로 둔다. */
+  readonly openPagesIn?: OpenPagesIn
 }
 
 /**
@@ -765,6 +772,7 @@ export async function updateView(
   ) {
     return fail('invalid_sorts')
   }
+  if (input.openPagesIn !== undefined && !isOpenPagesIn(input.openPagesIn)) return fail('invalid_layout')
 
   return withCommandTransaction(async (tx) => {
     const gate = await openView(tx, ctx, viewId, 'edit_structure')
@@ -838,6 +846,7 @@ export async function updateView(
               default_template_page_id =
                 CASE WHEN $11::boolean THEN $12::uuid ELSE default_template_page_id END,
               configuration = configuration || $13::jsonb,
+              open_pages_in = coalesce($14, open_pages_in),
               updated_at = now()
         WHERE id = $1`,
       [
@@ -854,6 +863,7 @@ export async function updateView(
         input.defaultTemplateId !== undefined,
         input.defaultTemplateId ?? null,
         JSON.stringify(configurationPatch),
+        input.openPagesIn ?? null,
       ],
     )
 

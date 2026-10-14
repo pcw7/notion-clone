@@ -10,6 +10,7 @@
  *   ④ **필터·정렬은 쓰기 경로에서 검증한다.** 저장된 뒤에는 다시 보지 않는다
  *   ⑤ 뷰 설정은 공유 상태라 `edit_structure` 다 — 셀만 고치는 사람은 못 바꾼다
  *   ⑥ 마지막 뷰는 지울 수 없다
+ *   ⑦ 행을 여는 방식(8n-1 · F-02-20) — 기본은 사이드 피크 · 셋만 받는다(틀리면 invalid_layout · 아무것도 바꾸지 않는다) · 생략하면 그대로
  */
 
 import { test, describe, before, after } from 'node:test'
@@ -655,5 +656,27 @@ describe('★ 권한 — 뷰 설정은 공유 상태다', () => {
     const table = await newTable()
     await makePrivate(table.databaseId, 'edit')
     assert.equal((await updateView(other.ctx, table.defaultViewId, { name: '고쳤다' })).ok, true)
+  })
+})
+
+describe('⑦ 행을 여는 방식(8n-1)', () => {
+  test('기본은 사이드 피크 · 셋만 받는다 · 생략하면 그대로', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const table = await newTable()
+    const read = async () => {
+      const view = await getView(fx.owner.ctx, table.defaultViewId)
+      assert.ok(view.ok)
+      return view.value.openPagesIn
+    }
+    assert.equal(await read(), 'side_peek', '정본의 기본값')
+    for (const value of ['center_peek', 'full_page'] as const) {
+      const updated = await updateView(fx.owner.ctx, table.defaultViewId, { openPagesIn: value })
+      assert.ok(updated.ok && updated.value.openPagesIn === value, JSON.stringify(updated))
+    }
+    const bad = await updateView(fx.owner.ctx, table.defaultViewId, { openPagesIn: 'peek' as never })
+    assert.ok(!bad.ok && bad.reason === 'invalid_layout', JSON.stringify(bad))
+    assert.equal(await read(), 'full_page', '틀린 값은 아무것도 바꾸지 않는다')
+    assert.ok((await updateView(fx.owner.ctx, table.defaultViewId, { name: '이름만' })).ok)
+    assert.equal(await read(), 'full_page', '생략하면 그대로')
   })
 })
