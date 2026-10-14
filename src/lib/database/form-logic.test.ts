@@ -6,12 +6,13 @@
  *   ① 연산자는 근거의 타입이 정한다 — 선택은 옵션 · 체크박스는 체크 · 나머지는 답이 있는지 · 옵션이 있어야 하는 것은 같다 · 같지 않다
  *   ② 답이 있는가 · 조건이 맞는가 — 글은 공백만이면 없다 · 숫자는 수도 · 체크는 true · 'true' · 'on'
  *   ③ ★ 보이는 질문 — 순서대로 · 숨은 근거의 답은 없는 것(그 뒤도 숨는다) · 끊어진 조건(근거가 앞에 없다)은 보인다
+ *   ④ ★ 끊어질 조건을 지운다 — 근거를 빼거나 뒤로 옮긴 목록에서 그 조건만 null(나머지 칸 · 다른 조건은 그대로)
  */
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { conditionHolds, isAnswered, needsOption, operatorsFor, visibleQuestionIds, type ShowWhen } from './form-logic.ts'
+import { conditionHolds, isAnswered, needsOption, operatorsFor, pruneShowWhen, visibleQuestionIds, type ShowWhen } from './form-logic.ts'
 
 test('① 연산자는 근거의 타입이 정한다', () => {
   assert.deepEqual(operatorsFor('select'), ['equals', 'not_equals', 'is_empty', 'is_not_empty'])
@@ -59,4 +60,25 @@ test('③ ★ 보이는 질문 — 순서대로 · 숨은 근거의 답은 없�
   )
   assert.deepEqual([...visibleQuestionIds(qs, { kind: 'a' })], ['kind', 'memo', 'early', 'late', 'orphan'], 'memo 가 비면 age 가 숨는다')
   assert.deepEqual([...visibleQuestionIds(qs, Object.create({ kind: 'a' }) as Record<string, unknown>)], ['kind', 'early', 'late', 'orphan'], '원형의 칸은 답이 아니다')
+})
+
+test('④ ★ 끊어질 조건을 지운다 — 근거를 빼거나 뒤로 옮긴 목록에서 그 조건만', () => {
+  const onKind: ShowWhen = { propertyId: 'kind', operator: 'equals', optionId: 'a' }
+  const onMemo: ShowWhen = { propertyId: 'memo', operator: 'is_not_empty', optionId: null }
+  const list = [
+    { propertyId: 'kind', label: '분류', showWhen: null },
+    { propertyId: 'memo', label: '메모', showWhen: onKind },
+    { propertyId: 'age', label: '나이', showWhen: onMemo },
+  ]
+  assert.deepEqual(pruneShowWhen(list), list, '그대로면 그대로')
+  assert.deepEqual(
+    pruneShowWhen(list.filter((q) => q.propertyId !== 'kind')).map((q) => [q.propertyId, q.label, q.showWhen]),
+    [['memo', '메모', null], ['age', '나이', onMemo]],
+    '근거를 빼면 그 조건만 — 다른 칸은 그대로',
+  )
+  assert.deepEqual(
+    pruneShowWhen([list[1]!, list[0]!, list[2]!]).map((q) => q.showWhen),
+    [null, null, onMemo],
+    '근거보다 위로 옮기면 지운다',
+  )
 })

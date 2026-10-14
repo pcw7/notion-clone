@@ -20,6 +20,7 @@
 import { useState } from 'react'
 
 import type { FormDetail, FormQuestion } from '@/lib/database/form'
+import { pruneShowWhen, type ShowWhen } from '@/lib/database/form-logic'
 import { useBrowserOrigin } from '../../use-browser-origin'
 import {
   FORM_ACCESS_OPTIONS,
@@ -45,9 +46,16 @@ const FIELD =
 const BUTTON =
   'rounded border border-neutral-300 px-2 py-1 text-xs hover:bg-neutral-50 disabled:opacity-40 dark:border-neutral-700 dark:hover:bg-neutral-800'
 
-type QuestionDraft = { propertyId: string; label: string | null; helpText: string | null; required: boolean }
+// 보이기 조건(7b-5a)도 싣는다 — 목록을 통째로 보내므로, 빠뜨리면 서버가 "조건을 지운다" 로 받는다
+type QuestionDraft = { propertyId: string; label: string | null; helpText: string | null; required: boolean; showWhen: ShowWhen | null }
 
-const draftOf = (q: FormQuestion): QuestionDraft => ({ propertyId: q.propertyId, label: q.label, helpText: q.helpText, required: q.required })
+const draftOf = (q: FormQuestion): QuestionDraft => ({
+  propertyId: q.propertyId,
+  label: q.label,
+  helpText: q.helpText,
+  required: q.required,
+  showWhen: q.showWhen,
+})
 
 export function FormEditor({ workspaceId, initial }: { workspaceId: string; initial: FormDetail }) {
   const [form, setForm] = useState<FormDetail>(initial)
@@ -79,7 +87,8 @@ export function FormEditor({ workspaceId, initial }: { workspaceId: string; init
   }
 
   const saveSettings = (patch: Record<string, unknown>, done?: string) => send(base, 'PATCH', patch, done)
-  const saveQuestions = (next: QuestionDraft[]) => send(`${base}/questions`, 'PUT', { questions: next })
+  // 빼거나 옮겨 근거가 앞에 없게 된 조건은 지우고 보낸다(서버는 끊어진 조건을 받지 않는다 · 지우기는 요금제와 무관하다)
+  const saveQuestions = (next: QuestionDraft[]) => send(`${base}/questions`, 'PUT', { questions: pruneShowWhen(next) })
   const drafts = form.questions.map(draftOf)
   const replaceAt = (index: number, patch: Partial<QuestionDraft>) =>
     saveQuestions(drafts.map((q, i) => (i === index ? { ...q, ...patch } : q)))
@@ -228,7 +237,7 @@ export function FormEditor({ workspaceId, initial }: { workspaceId: string; init
               onClick={() => {
                 const propertyId = adding
                 setAdding('')
-                void saveQuestions([...drafts, { propertyId, label: null, helpText: null, required: false }])
+                void saveQuestions([...drafts, { propertyId, label: null, helpText: null, required: false, showWhen: null }])
               }}
               className={BUTTON}
             >
