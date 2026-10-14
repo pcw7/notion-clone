@@ -14,6 +14,7 @@
 
 import { useState, type FormEvent } from 'react'
 
+import { visibleQuestionIds } from '@/lib/database/form-logic'
 import type { PublicFormQuestion } from '@/lib/database/form-submit'
 import { ANOTHER_RESPONSE, MY_RESPONSE, REQUIRED_MARK, formFailureMessage, respondentNote, responsePathOf } from '../form-messages'
 
@@ -53,6 +54,8 @@ export function PublicFormView({
   const [mine, setMine] = useState<string | null>(null)
 
   const set = (propertyId: string, value: string | boolean) => setAnswers((current) => ({ ...current, [propertyId]: value }))
+  // 조건부 보이기(7b-5b · 정본 ⑬) — 서버와 같은 판정으로 지금 보이는 질문만 그리고 그 답만 보낸다(서버도 다시 평가해 버린다)
+  const visible = visibleQuestionIds(form.questions, answers)
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -64,7 +67,7 @@ export function PublicFormView({
       const res = await fetch(`/f/${token}/submit`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ submission, answers, website: trap }),
+        body: JSON.stringify({ submission, answers: Object.fromEntries(Object.entries(answers).filter(([id]) => visible.has(id))), website: trap }),
       })
       const body = (await res.json().catch(() => null)) as {
         ok?: boolean
@@ -120,7 +123,7 @@ export function PublicFormView({
         </p>
       )}
 
-      {form.questions.map((q) => {
+      {form.questions.filter((q) => visible.has(q.propertyId)).map((q) => {
         const id = `q-${q.propertyId}`
         const issue = issues[q.propertyId]
         return (

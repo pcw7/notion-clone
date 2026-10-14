@@ -6,6 +6,8 @@
  * 서버의 실패 까닭(`FormFailure` · 라우트의 `invalid_input`)을 사람의 말로 · 공개 주소의 모양.
  */
 
+import { needsOption, operatorsFor, type FormQuestionType, type ShowIfOperator, type ShowWhen } from '../../../../../lib/database/form-logic.ts'
+
 const FAILURE: Readonly<Record<string, string>> = {
   not_found: '이 폼을 찾을 수 없습니다. 그사이 지워졌을 수 있습니다.',
   forbidden: '이 폼을 고칠 권한이 없습니다. 공개 · 닫기는 전체 권한이 있어야 합니다.',
@@ -13,6 +15,7 @@ const FAILURE: Readonly<Record<string, string>> = {
   invalid_input: '값을 확인하세요(길이 · 같은 질문 두 번).',
   unsupported_type: '질문으로 받을 수 없는 속성입니다.',
   policy_disabled: '워크스페이스 정책이 웹 공개를 막았습니다.',
+  plan_required: '조건부 질문은 지금 요금제에서 더하거나 바꿀 수 없습니다(지우기는 됩니다).',
   publishing_blocked: '운영 정책에 따라 이 워크스페이스의 웹 공개가 막혔습니다.',
 }
 
@@ -127,4 +130,40 @@ export function isoOfLocalDateTime(local: string): string | null | undefined {
   if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(local)) return undefined
   const at = new Date(local)
   return Number.isNaN(at.getTime()) ? undefined : at.toISOString()
+}
+
+// ── 조건부 보이기(7b-5b · 정본 ⑬) ─────────────────────────────────────
+
+export const SHOW_IF_LABEL = '보이기 조건'
+export const ALWAYS_SHOWN = '항상 보인다'
+export const CLEAR_LOGIC = '조건 지우기'
+/** 요금제가 막을 때 — 조건이 없는 질문에 한 줄(있는 조건은 지우기만 된다). */
+export const LOGIC_PLAN_NOTE = '조건부 질문은 Business · Enterprise 요금제에서 씁니다.'
+/** 끊어진 조건 — 근거가 빠졌거나 바뀌었다(공개 화면은 조건 없이 보인다). */
+export const LOGIC_BROKEN_NOTE = '근거 질문이 빠지거나 바뀌어 이 조건은 적용되지 않습니다 — 지우거나 다시 고르세요.'
+
+const OPERATOR_LABEL: Readonly<Record<ShowIfOperator, string>> = {
+  equals: '이(가) 이것이면',
+  not_equals: '이(가) 이것이 아니면',
+  is_checked: '이(가) 체크되면',
+  is_not_checked: '이(가) 체크되지 않으면',
+  is_empty: '이(가) 비어 있으면',
+  is_not_empty: '에 답이 있으면',
+}
+
+export function showIfOperatorLabel(operator: ShowIfOperator): string {
+  return OPERATOR_LABEL[operator]
+}
+
+type Source = { readonly propertyId: string; readonly type: FormQuestionType; readonly options: readonly { readonly id: string }[] }
+
+/** 고를 수 있는 연산자 — 근거의 타입의 것, 옵션이 없는 선택이면 같다 · 같지 않다 를 뺀다. */
+export function usableOperators(source: Pick<Source, 'type' | 'options'>): ShowIfOperator[] {
+  return operatorsFor(source.type).filter((operator) => !needsOption(operator) || source.options.length > 0)
+}
+
+/** 근거를 고르면 처음 서는 조건 — 첫 연산자 · 옵션이 있어야 하면 첫 옵션. */
+export function defaultShowWhen(source: Source): ShowWhen {
+  const operator = usableOperators(source)[0]!
+  return { propertyId: source.propertyId, operator, optionId: needsOption(operator) ? source.options[0]!.id : null }
 }

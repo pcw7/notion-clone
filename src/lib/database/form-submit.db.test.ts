@@ -20,7 +20,7 @@
  *      ACL 행 하나(준 사람 없음) · 결과가 그 행의 주소를 싣는다 · 레벨대로(댓글은 고치지 못한다 · 편집은 고친다) · 바꿔도 이미 준 것은
  *      그대로 · 없음이면 주지 않는다 · 웹 공개 응답은 받지 않는다(멤버의 세션을 실어도)
  *   ⑨ ★ 조건부 보이기(7b-5a · 정본 ⑬) — 공개 읽기가 조건을 싣는다 · 서버가 다시 평가한다: 숨은 질문은 필수도 묻지 않고 답을 버린다(숨은
- *      근거에 걸린 질문도) · 보이면 필수를 묻는다 · 옵션을 지우면 끊어진 조건이라 질문이 보인다(필수도 다시)
+ *      근거에 걸린 질문도) · 보이면 필수를 묻는다 · 옵션을 지우면 끊어진 조건이라 질문이 보인다(필수도 다시) · 근거의 타입이 바뀌어도(7b-5b)
  */
 
 import { test, describe, before, after } from 'node:test'
@@ -33,6 +33,7 @@ import { can, type Capability } from '../permissions/levels.ts'
 import { updateSetting } from '../settings/settings.ts'
 import { createBareWorkspace, createUser, joinAs, probeDatabase } from '../testing/db-fixtures.ts'
 import { addDataSource, trashDataSource } from './data-source.ts'
+import { convertProperty } from './property-convert.ts'
 import { createDatabase } from './database.ts'
 import { createFormView, setFormQuestions, updateFormSettings } from './form.ts'
 import { alreadyResponded, issueSubmissionToken, readPublicForm, resolveFormRespondent, submitFormResponse, type SubmitInput } from './form-submit.ts'
@@ -544,5 +545,30 @@ describe('⑨ ★ 조건부 보이기(7b-5a)', () => {
       afterTrash?.questions.map((q) => [q.propertyId, q.showWhen]),
       [[fx.title, null], [fx.kind, null], [fx.age, null]],
     )
+  })
+})
+
+describe('⑩ 조건부 보이기 — 근거의 타입이 바뀌면(7b-5b)', () => {
+  test('선택 → 체크박스로 바꾸면 "같다" · "비었다" 조건이 끊어진다 — 공개 읽기가 지워 싣고 질문이 보인다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const fx = await publicForm()
+    unwrap(await setWorkspacePlan(fx.ws, 'business'))
+    unwrap(
+      await setFormQuestions(fx.boss.ctx, fx.form.viewId, [
+        { propertyId: fx.title, required: true },
+        { propertyId: fx.kind },
+        { propertyId: fx.memo, showWhen: { propertyId: fx.kind, operator: 'equals', optionId: fx.optionA } },
+        // 옵션이 없는 조건 — 옵션만 보면 살아남는다(연산자가 근거의 타입의 것인지 봐야 끊어진다)
+        { propertyId: fx.age, showWhen: { propertyId: fx.kind, operator: 'is_empty' } },
+      ]),
+    )
+    assert.deepEqual(
+      (await readPublicForm(fx.token))?.questions.map((q) => q.showWhen?.operator ?? null),
+      [null, null, 'equals', 'is_empty'],
+      '전제 — 조건이 섰다',
+    )
+    const converted = await convertProperty(fx.boss.ctx, fx.ds, fx.kind, { type: 'checkbox', confirmLoss: true })
+    assert.ok(converted.ok, JSON.stringify(converted))
+    assert.deepEqual((await readPublicForm(fx.token))?.questions.map((q) => q.showWhen), [null, null, null, null], '맞지 않는 조건은 지워 싣는다')
   })
 })

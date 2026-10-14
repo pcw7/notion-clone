@@ -20,14 +20,20 @@
 import { useState } from 'react'
 
 import type { FormDetail, FormQuestion } from '@/lib/database/form'
-import { pruneShowWhen, type ShowWhen } from '@/lib/database/form-logic'
+import { needsOption, pruneShowWhen, showWhenFits, type ShowIfOperator, type ShowWhen } from '@/lib/database/form-logic'
 import { useBrowserOrigin } from '../../use-browser-origin'
 import {
+  ALWAYS_SHOWN,
+  CLEAR_LOGIC,
   FORM_ACCESS_OPTIONS,
+  LOGIC_BROKEN_NOTE,
+  LOGIC_PLAN_NOTE,
   NO_QUESTIONS,
   ONE_PER_RESPONDENT_LABEL,
   RESPONDENT_ACCESS_OPTIONS,
+  SHOW_IF_LABEL,
   closedBecauseText,
+  defaultShowWhen,
   formAccessNotice,
   formAccessState,
   formEditorFailureMessage,
@@ -39,6 +45,8 @@ import {
   onePerRespondentNote,
   respondentAccessNote,
   responseCountText,
+  showIfOperatorLabel,
+  usableOperators,
 } from './form-editor-messages'
 
 const FIELD =
@@ -87,8 +95,13 @@ export function FormEditor({ workspaceId, initial }: { workspaceId: string; init
   }
 
   const saveSettings = (patch: Record<string, unknown>, done?: string) => send(base, 'PATCH', patch, done)
-  // 빼거나 옮겨 근거가 앞에 없게 된 조건은 지우고 보낸다(서버는 끊어진 조건을 받지 않는다 · 지우기는 요금제와 무관하다)
-  const saveQuestions = (next: QuestionDraft[]) => send(`${base}/questions`, 'PUT', { questions: pruneShowWhen(next) })
+  // 끊어진 조건은 지우고 보낸다 — 빼거나 옮겨 근거가 앞에 없거나, 근거가 바뀌어 맞지 않는다(서버는 끊어진 조건을 받지 않는다 · 지우기는
+  // 요금제와 무관하다)
+  const fitsNow = (when: ShowWhen) => {
+    const source = form.questions.find((q) => q.propertyId === when.propertyId)
+    return source !== undefined && showWhenFits(when, source)
+  }
+  const saveQuestions = (next: QuestionDraft[]) => send(`${base}/questions`, 'PUT', { questions: pruneShowWhen(next, fitsNow) })
   const drafts = form.questions.map(draftOf)
   const replaceAt = (index: number, patch: Partial<QuestionDraft>) =>
     saveQuestions(drafts.map((q, i) => (i === index ? { ...q, ...patch } : q)))
@@ -210,6 +223,13 @@ export function FormEditor({ workspaceId, initial }: { workspaceId: string; init
                   </span>
                 )}
               </div>
+              <ShowWhenField
+                question={q}
+                earlier={form.questions.slice(0, i)}
+                allowed={form.logicAllowed}
+                disabled={readOnly || busy}
+                onChange={(showWhen) => void replaceAt(i, { showWhen })}
+              />
             </li>
           ))}
         </ol>
@@ -415,6 +435,101 @@ export function FormEditor({ workspaceId, initial }: { workspaceId: string; init
         </p>
       )}
     </section>
+  )
+}
+
+/**
+ * 보이기 조건 한 줄(7b-5b · 정본 ⑬) — 근거(앞에 선 질문만) · 연산자(근거의 타입의 것) · 옵션(같다 · 같지 않다). 요금제가 막으면 조건이 없는
+ * 질문에는 한 줄 · 있는 조건은 보이되 지우기만. 끊어진 조건은 그렇다고 말하고 지우기만.
+ */
+function ShowWhenField(props: {
+  question: FormQuestion
+  earlier: readonly FormQuestion[]
+  allowed: boolean
+  disabled: boolean
+  onChange: (showWhen: ShowWhen | null) => void
+}) {
+  const { question, earlier, allowed, disabled, onChange } = props
+  const when = question.showWhen
+  const source = when === null ? undefined : earlier.find((q) => q.propertyId === when.propertyId)
+  const broken = when !== null && (source === undefined || !showWhenFits(when, source))
+  const locked = disabled || !allowed || broken
+  const SELECT = 'rounded border border-neutral-200 bg-transparent px-1 py-0.5 text-xs disabled:opacity-60 dark:border-neutral-700'
+
+  if (when === null && !allowed) {
+    return (
+      <p data-testid="form-question-logic" className="text-xs text-neutral-500">
+        {SHOW_IF_LABEL}: <span data-testid="form-question-logic-plan" className="text-amber-700 dark:text-amber-400">{LOGIC_PLAN_NOTE}</span>
+      </p>
+    )
+  }
+  return (
+    <div data-testid="form-question-logic" className="flex flex-wrap items-center gap-1 text-xs">
+      <span className="text-neutral-500">{SHOW_IF_LABEL}</span>
+      <select
+        aria-label="보이기 조건의 근거 질문"
+        data-testid="form-question-logic-source"
+        value={when?.propertyId ?? ''}
+        disabled={locked || earlier.length === 0}
+        onChange={(e) => {
+          const next = earlier.find((q) => q.propertyId === e.target.value)
+          onChange(next === undefined ? null : defaultShowWhen(next))
+        }}
+        className={SELECT}
+      >
+        <option value="">{ALWAYS_SHOWN}</option>
+        {earlier.map((q) => (
+          <option key={q.propertyId} value={q.propertyId}>
+            {q.label ?? q.propertyName}
+          </option>
+        ))}
+      </select>
+      {when !== null && source !== undefined && !broken && (
+        <select
+          aria-label="보이기 조건의 연산자"
+          data-testid="form-question-logic-operator"
+          value={when.operator}
+          disabled={locked}
+          onChange={(e) => {
+            const operator = e.target.value as ShowIfOperator
+            onChange({ propertyId: when.propertyId, operator, optionId: needsOption(operator) ? (when.optionId ?? source.options[0]?.id ?? null) : null })
+          }}
+          className={SELECT}
+        >
+          {usableOperators(source).map((operator) => (
+            <option key={operator} value={operator}>
+              {showIfOperatorLabel(operator)}
+            </option>
+          ))}
+        </select>
+      )}
+      {when !== null && source !== undefined && !broken && needsOption(when.operator) && (
+        <select
+          aria-label="보이기 조건의 옵션"
+          data-testid="form-question-logic-option"
+          value={when.optionId ?? ''}
+          disabled={locked}
+          onChange={(e) => onChange({ ...when, optionId: e.target.value })}
+          className={SELECT}
+        >
+          {source.options.map((option) => (
+            <option key={option.id} value={option.id}>
+              {option.name}
+            </option>
+          ))}
+        </select>
+      )}
+      {when !== null && (broken || !allowed) && !disabled && (
+        <button type="button" data-testid="form-question-logic-clear" onClick={() => onChange(null)} className={BUTTON}>
+          {CLEAR_LOGIC}
+        </button>
+      )}
+      {broken && (
+        <span data-testid="form-question-logic-broken" className="text-amber-700 dark:text-amber-400">
+          {LOGIC_BROKEN_NOTE}
+        </span>
+      )}
+    </div>
   )
 }
 

@@ -32,6 +32,7 @@ import { readSecurityPolicyIn } from '../workspace/security-policy.ts'
 import { entitlement } from '../billing/entitlement.ts'
 import { formClosedReason, parseClosesAt, parseMaxResponses, type FormClosedReason } from './form-limits.ts'
 import { FORM_QUESTION_TYPES, SHOW_IF_OPERATORS, needsOption, operatorsFor, type FormQuestionType, type ShowIfOperator, type ShowWhen } from './form-logic.ts'
+import { readOptionsOf } from './options.ts'
 import { canOpenDatabase } from './row-access.ts'
 
 /**
@@ -89,6 +90,8 @@ export type FormQuestion = {
   readonly required: boolean
   /** 보이기 조건(7b-5a · 정본 ⑬) — 저장된 그대로(끊어졌는지는 공개 읽기 · 판정이 본다). 없으면 null. */
   readonly showWhen: ShowWhen | null
+  /** 선택 질문의 옵션(7b-5b — 편집 화면이 조건의 옵션을 고른다). 다른 타입은 빈 목록. */
+  readonly options: readonly { readonly id: string; readonly name: string }[]
 }
 
 export type FormDetail = {
@@ -237,6 +240,10 @@ async function readFormIn(tx: Tx, ctx: SessionContext, gate: FormGate): Promise<
     [gate.viewId, FORM_QUESTION_TYPES],
   )
   const asked = new Set(questions.map((q) => q.property_id))
+  const options = await readOptionsOf(
+    tx,
+    questions.filter((q) => q.type === 'select').map((q) => q.property_id),
+  )
   const properties = await tx.query<{ id: string; name: string; type: FormQuestionType }>(
     `SELECT id, name, type FROM property
       WHERE data_source_id = $1 AND deleted_at IS NULL AND type::text = ANY($2::text[])
@@ -271,6 +278,7 @@ async function readFormIn(tx: Tx, ctx: SessionContext, gate: FormGate): Promise<
       helpText: q.help_text,
       required: q.required,
       showWhen: showWhenOf(q),
+      options: (options.get(q.property_id) ?? []).map((o) => ({ id: o.id, name: o.name })),
     })),
     candidates: properties.filter((p) => !asked.has(p.id)).map((p) => ({ propertyId: p.id, name: p.name, type: p.type })),
     canEdit: editDenied(gate) === null,
