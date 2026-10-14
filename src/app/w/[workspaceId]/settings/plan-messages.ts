@@ -24,6 +24,8 @@ export function entitlementLabel(key: EntitlementKey | string): string {
       return '자동화의 웹훅 보내기'
     case 'audit.log':
       return '감사 로그'
+    case 'form.logic':
+      return '폼의 조건부 질문'
     default:
       return key
   }

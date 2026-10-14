@@ -19,6 +19,8 @@
  *   ⑧ ★ 제출 뒤 응답자 권한(7b-4 · 정본 ⑫) — 데이터베이스를 못 보는 멤버가 자기 응답 하나를 그 레벨로 연다(다른 응답 · 표는 아니다) ·
  *      ACL 행 하나(준 사람 없음) · 결과가 그 행의 주소를 싣는다 · 레벨대로(댓글은 고치지 못한다 · 편집은 고친다) · 바꿔도 이미 준 것은
  *      그대로 · 없음이면 주지 않는다 · 웹 공개 응답은 받지 않는다(멤버의 세션을 실어도)
+ *   ⑨ ★ 조건부 보이기(7b-5a · 정본 ⑬) — 공개 읽기가 조건을 싣는다 · 서버가 다시 평가한다: 숨은 질문은 필수도 묻지 않고 답을 버린다(숨은
+ *      근거에 걸린 질문도) · 보이면 필수를 묻는다 · 옵션을 지우면 끊어진 조건이라 질문이 보인다(필수도 다시)
  */
 
 import { test, describe, before, after } from 'node:test'
@@ -34,7 +36,8 @@ import { addDataSource, trashDataSource } from './data-source.ts'
 import { createDatabase } from './database.ts'
 import { createFormView, setFormQuestions, updateFormSettings } from './form.ts'
 import { alreadyResponded, issueSubmissionToken, readPublicForm, resolveFormRespondent, submitFormResponse, type SubmitInput } from './form-submit.ts'
-import { addProperty, addSelectOption, getSchema } from './property.ts'
+import { addProperty, addSelectOption, deleteProperty, getSchema } from './property.ts'
+import { setWorkspacePlan } from '../billing/plan.ts'
 import { deleteView } from './view.ts'
 import { trashPage } from '../block/trash.ts'
 
@@ -483,5 +486,63 @@ describe('⑧ ★ 제출 뒤 응답자 권한(7b-4)', () => {
     const anonymous = await submit(fx, { sessionToken: mate.token })
     assert.ok(anonymous.ok)
     assert.deepEqual([anonymous.value.responsePath, await grantsOn(anonymous.value.pageId!)], [null, []], '웹 공개 응답은 익명이라 줄 사람이 없다')
+  })
+})
+
+// ── ⑨ 조건부 보이기 ────────────────────────────────────────────────
+
+describe('⑨ ★ 조건부 보이기(7b-5a)', () => {
+  test('서버가 다시 평가한다 — 숨은 질문은 필수도 묻지 않고 답을 버린다 · 보이면 묻는다 · 옵션을 지우면 끊어진 조건이라 보인다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const fx = await publicForm()
+    unwrap(await setWorkspacePlan(fx.ws, 'business'))
+    const optionB = unwrap(await addSelectOption(fx.boss.ctx, fx.ds, fx.kind, { name: '단체' })).option.id
+    unwrap(
+      await setFormQuestions(fx.boss.ctx, fx.form.viewId, [
+        { propertyId: fx.title, required: true },
+        { propertyId: fx.kind, required: true },
+        // 분류가 "개인" 일 때만 · 필수
+        { propertyId: fx.memo, required: true, showWhen: { propertyId: fx.kind, operator: 'equals', optionId: fx.optionA } },
+        // 메모에 글이 있을 때만 — 메모가 숨으면 이것도 숨는다
+        { propertyId: fx.age, showWhen: { propertyId: fx.memo, operator: 'is_not_empty' } },
+      ]),
+    )
+    const read = await readPublicForm(fx.token)
+    assert.deepEqual(read?.questions.map((q) => q.showWhen), [
+      null,
+      null,
+      { propertyId: fx.kind, operator: 'equals', optionId: fx.optionA },
+      { propertyId: fx.memo, operator: 'is_not_empty', optionId: null },
+    ])
+    const cellsOf = async (pageId: string) =>
+      (await query<{ property_id: string }>(`SELECT property_id FROM page_property_value WHERE page_id = $1`, [pageId])).map((c) => c.property_id)
+
+    // 단체 — 메모 · 나이가 숨는다: 필수도 묻지 않고, 넣어 보낸 답도 버린다
+    const hidden = await submit(fx, { answers: { [fx.title]: '단체 응답', [fx.kind]: optionB, [fx.memo]: '몰래 넣은 글', [fx.age]: '99' } })
+    assert.ok(hidden.ok, JSON.stringify(hidden))
+    const hiddenCells = await cellsOf(hidden.value.pageId!)
+    assert.ok(!hiddenCells.includes(fx.memo) && !hiddenCells.includes(fx.age), JSON.stringify(hiddenCells))
+
+    // 개인 — 메모가 보인다: 필수를 묻는다
+    const missing = await submit(fx, { answers: { [fx.title]: '개인 응답', [fx.kind]: fx.optionA } })
+    assert.ok(!missing.ok && missing.reason === 'invalid_value' && missing.issues?.some((i) => i.path === fx.memo), JSON.stringify(missing))
+    const shown = await submit(fx, { answers: { [fx.title]: '개인 응답', [fx.kind]: fx.optionA, [fx.memo]: '안녕하세요', [fx.age]: '7' } })
+    assert.ok(shown.ok, JSON.stringify(shown))
+    const shownCells = await cellsOf(shown.value.pageId!)
+    assert.ok(shownCells.includes(fx.memo) && shownCells.includes(fx.age), JSON.stringify(shownCells))
+
+    // 근거의 옵션이 지워졌다(지우는 명령은 아직 없다 — 속성이 영구 삭제될 때 함께 사라진다) — 끊어진 조건이라 메모가 보인다(필수도 다시)
+    await query(`DELETE FROM select_option WHERE id = $1`, [fx.optionA])
+    assert.equal((await readPublicForm(fx.token))?.questions[2]?.showWhen, null)
+    const broken = await submit(fx, { answers: { [fx.title]: '끊긴 뒤', [fx.kind]: optionB } })
+    assert.ok(!broken.ok && broken.reason === 'invalid_value' && broken.issues?.some((i) => i.path === fx.memo), JSON.stringify(broken))
+
+    // 근거의 속성을 휴지통에 — 그 질문이 폼에서 빠지고, 거기에 걸린 조건은 끊어져 지워 싣는다(나이가 조건 없이 보인다)
+    unwrap(await deleteProperty(fx.boss.ctx, fx.ds, fx.memo))
+    const afterTrash = await readPublicForm(fx.token)
+    assert.deepEqual(
+      afterTrash?.questions.map((q) => [q.propertyId, q.showWhen]),
+      [[fx.title, null], [fx.kind, null], [fx.age, null]],
+    )
   })
 })

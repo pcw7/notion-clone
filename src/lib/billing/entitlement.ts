@@ -35,6 +35,8 @@ export const ENTITLEMENTS = {
   'automation.webhook': 'boolean',
   /** 감사 로그를 읽을 수 있는가(F-11-12 · 6d-2) — Enterprise 만. 쌓는 것은 요금제와 무관하다. */
   'audit.log': 'boolean',
+  /** 폼의 조건부 보이기를 더하고 바꿀 수 있는가(F-13-03 · 7b-5a) — Business · Enterprise. 지우기 · 이미 있는 조건의 적용은 무관하다. */
+  'form.logic': 'boolean',
 } as const
 
 export type EntitlementKey = keyof typeof ENTITLEMENTS

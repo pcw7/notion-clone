@@ -4661,6 +4661,62 @@ try {
     await rejects('모르는 대상', [randomUUID(), 'teamspace', randomUUID(), wsId, 'dismiss', null], 'ck_moderation_action_target')
   }
 
+  console.log('\n[78] 폼의 조건부 보이기 (0104 / §3.6 끝 [보강] 폼 ⑬ · 7b-5a조각)')
+  {
+    // 세 칸은 함께 비거나 함께 선다 · 자기 자신은 근거가 아니다 · 옵션은 같다 · 같지 않다 에만 있다.
+    const dbBlock = randomUUID()
+    const ds = randomUUID()
+    const viewId = randomUUID()
+    const source = 'h' + randomUUID().replace(/-/g, '').slice(0, 20)
+    const target = 'i' + randomUUID().replace(/-/g, '').slice(0, 20)
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key,
+                          ancestor_path, perm_scope_id, properties, format, created_at, last_edited_at)
+       VALUES ($1, $2, 'database', 'workspace', $2, $3, '{}', $1, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      [dbBlock, wsId, `z${randomUUID().replace(/-/g, '')}`],
+    )
+    await client.query(`INSERT INTO database (id, created_at, updated_at) VALUES ($1, now(), now())`, [dbBlock])
+    await client.query(`INSERT INTO data_source (id, owner_database_id, name, created_at, updated_at) VALUES ($1, $2, '조건 폼', now(), now())`, [ds, dbBlock])
+    await client.query(`INSERT INTO database_data_source (database_id, data_source_id, order_idx) VALUES ($1, $2, 'a0')`, [dbBlock, ds])
+    await client.query(`INSERT INTO property (id, data_source_id, name, type, order_idx) VALUES ($1, $2, '분류', 'select', 'a0')`, [source, ds])
+    await client.query(`INSERT INTO property (id, data_source_id, name, type, order_idx) VALUES ($1, $2, '메모', 'rich_text', 'a1')`, [target, ds])
+    await client.query(
+      `INSERT INTO view (id, owner_kind, database_id, data_source_id, name, type, order_idx, configuration, created_at, updated_at)
+       VALUES ($1, 'database_view', $2, $3, '폼', 'form', 'a0', '{}'::jsonb, now(), now())`,
+      [viewId, dbBlock, ds],
+    )
+    await client.query(`INSERT INTO form_view (view_id) VALUES ($1)`, [viewId])
+    await client.query(`INSERT INTO form_question (view_id, property_id, order_key) VALUES ($1, $2, 'a0')`, [viewId, source])
+    await client.query(
+      `INSERT INTO form_question (view_id, property_id, order_key, show_if_property_id, show_if_operator, show_if_option_id)
+       VALUES ($1, $2, 'a1', $3, 'equals', $4)`,
+      [viewId, target, source, randomUUID()],
+    )
+    await client.query(
+      `UPDATE form_question SET show_if_operator = 'is_empty', show_if_option_id = NULL WHERE view_id = $1 AND property_id = $2`,
+      [viewId, target],
+    )
+    ok('★ 조건 없음 · 같다(옵션과 함께) · 비었다(옵션 없이) — 통과한다')
+    const rejects = async (label, set, constraint) => {
+      await client.query('SAVEPOINT probe')
+      try {
+        await client.query(`UPDATE form_question SET ${set} WHERE view_id = $1 AND property_id = $2`, [viewId, target])
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        fail(`${label} — 거부되어야 하는데 통과했다`)
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        if (e.code === '23514' && e.constraint === constraint) ok(`${label} — ${constraint} 가 거부함`)
+        else fail(`${label} — ${constraint} 의 23514 가 아니라 ${e.constraint ?? '-'} ${e.code} (${e.message})`)
+      }
+    }
+    await rejects('★ 근거만 있고 연산자가 없다', `show_if_operator = NULL`, 'ck_form_question_show_if')
+    await rejects('연산자만 있고 근거가 없다', `show_if_property_id = NULL`, 'ck_form_question_show_if')
+    await rejects('★ 자기 자신이 근거', `show_if_property_id = property_id`, 'ck_form_question_show_if')
+    await rejects('같다인데 옵션이 없다', `show_if_operator = 'equals'`, 'ck_form_question_show_if')
+    await rejects('비었다인데 옵션이 있다', `show_if_option_id = gen_random_uuid()`, 'ck_form_question_show_if')
+    await rejects('모르는 연산자', `show_if_operator = 'contains'`, 'ck_form_question_show_if_operator')
+  }
+
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
 } catch (e) {
