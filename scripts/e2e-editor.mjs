@@ -16336,6 +16336,67 @@ async function main() {
         String(await evaluate(`location.pathname + ' ' + (${rowTitle} ?? '(제목 없음)')`)))
     }
 
+    if (sectionIf('운영자의 게시 차단 — 소유자가 보는 화면 (6b-3b · F-17-09)')) {
+      // 새 워크스페이스에 이 판의 사용자를 소유자로 넣고(이 판의 워크스페이스를 막으면 뒤 절의 공개 페이지가 내려간다) 페이지 하나를 게시 ·
+      // 폼 하나를 웹에 연 뒤 운영자가 막는다 — 설정의 "웹 게시" 줄 · 공유 패널 · 폼 편집 화면이 "운영 정책" 이라고 말한다. 끝에 푼다.
+      const stamp = Date.now().toString(36)
+      const ws = await createBareWorkspace(`게시 차단 ${stamp}`)
+      await joinAs(ws, { userId: ctx.userId }, 'owner')
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${ws}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const pageId = (await api('POST', '/pages', { title: `막힐 공지 ${stamp}` })).body.page.id
+      const published = await api('PUT', `/pages/${pageId}/publish`)
+      const address = `${BASE}/p/${published.body?.token}`
+      const db = (await api('POST', '/databases', { name: `막힐 폼 표 ${stamp}` })).body.database
+      const made = (await api('POST', `/databases/${db.id}/forms`, { name: `막힐 신청서 ${stamp}` })).body?.form
+      await api('PATCH', `/forms/${made.viewId}`, { access: 'public' })
+      const opened = (await fetch(address)).status
+
+      const { blockWorkspacePublishing, unblockWorkspacePublishing } = await import(new URL('../src/lib/moderation/operator.ts', import.meta.url).href)
+      const blocked = await blockWorkspacePublishing(ws, 'spam', { actor: 'e2e 운영자' })
+      check('전제 — 게시한 주소가 열렸고 운영자가 막았다(게시 하나 · 폼 하나를 내렸다)',
+        opened === 200 && blocked.ok && blocked.value.unpublishedPages === 1 && blocked.value.closedForms === 1,
+        JSON.stringify([opened, blocked, published.status]))
+
+      // ① 설정의 "웹 게시" 줄 — 토글은 소유자의 값 그대로 · 아래에 운영 정책의 안내
+      const ROW = '[data-testid="setting-row"][data-setting-key="workspace.allow_publish_sites_and_forms"]'
+      await send('Page.navigate', { url: `${BASE}/w/${ws}/settings?s=workspace.security` })
+      check('★ 설정의 "웹 게시" 줄 — 토글은 켜진 그대로 · 아래에 "운영 정책 … 이 설정으로 풀 수 없습니다"',
+        await waitFor(`(document.querySelector('${ROW} [data-testid="setting-notice"]')?.textContent ?? '').includes('이 설정으로 풀 수 없습니다')
+          && document.querySelector('${ROW} [data-testid="setting-control"]')?.checked === true`, 15000),
+        String(await evaluate(`document.querySelector('${ROW}')?.textContent ?? '(줄 없음)'`)))
+
+      // ② 공유 패널 — 정책 줄이 운영 정책이라고 · 게시 단추가 없다
+      const SECTION = '[role="dialog"][aria-label="공유 설정"] [data-testid="publish-section"]'
+      await send('Page.navigate', { url: `${BASE}/w/${ws}/${pageId}` })
+      await waitFor(`[...document.querySelectorAll('button')].some((b) => b.textContent.trim() === '공유')`, 15000)
+      // 서버가 그린 단추를 React 가 붙기 전에 누르면 버려진다 — 패널이 설 때까지 다시 누른다
+      for (let i = 0; i < 10 && !(await evaluate(`!!document.querySelector('${SECTION}')`)); i += 1) {
+        await clickText('공유')
+        await waitFor(`!!document.querySelector('${SECTION}')`, 1500)
+      }
+      check('★ 공유 패널 — "운영 정책에 따라 … 게시한 페이지는 내려졌고" · 게시 단추가 없다',
+        await waitFor(`document.querySelector('${SECTION} [data-testid="publish-policy-off"]')?.dataset.blocked === 'true'
+          && (document.querySelector('${SECTION} [data-testid="publish-policy-off"]')?.textContent ?? '').includes('운영 정책')
+          && !document.querySelector('${SECTION} [data-testid="publish-publish"]')`, 8000),
+        String(await evaluate(`document.querySelector('${SECTION}')?.textContent ?? '(패널 없음)'`)))
+
+      // ③ 폼 편집 화면 — 같은 한 줄 · 웹 공개는 고를 수 없고 멤버만은 고를 수 있다 · 폼은 닫혔다
+      await send('Page.navigate', { url: `${BASE}/w/${ws}/db/${db.id}?v=${made.viewId}` })
+      check('★ 폼 편집 화면 — "운영 정책 … 멤버만의 폼은 열 수 있습니다" · 웹 공개는 막히고 멤버만은 열린다 · 폼은 닫혔다',
+        await waitFor(`document.querySelector('[data-testid="form-policy-off"]')?.dataset.blocked === 'true'
+          && (document.querySelector('[data-testid="form-policy-off"]')?.textContent ?? '').includes('운영 정책')
+          && document.querySelector('[data-testid="form-access-public"]')?.disabled === true
+          && document.querySelector('[data-testid="form-access-workspace"]')?.disabled === false
+          && document.querySelector('[data-testid="form-access"]')?.dataset.access === 'closed'`, 15000),
+        String(await evaluate(`document.querySelector('[data-testid="form-share"]')?.textContent ?? '(없음)'`)))
+
+      const freed = await unblockWorkspacePublishing(ws, { actor: 'e2e 운영자' })
+      check('정리 — 푼다(내린 게시는 그대로 — 주소는 열리지 않는다)', freed.ok && (await fetch(address)).status === 404, JSON.stringify(freed))
+    }
+
     if (sectionIf('폼 — 서버 라우트 (7a-1 · F-13-01)')) {
       // 폼 뷰의 라우트 — 만들기(첫 질문은 제목) · 질문 바꾸기 · 설정 · 공개(토큰) · 거부 코드 · 표 화면의 탭에 선다(7a-3 부터 — 그 탭은
       // 편집 화면이다).

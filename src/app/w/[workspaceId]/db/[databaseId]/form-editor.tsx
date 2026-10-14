@@ -30,6 +30,7 @@ import {
   formAccessNotice,
   formAccessState,
   formEditorFailureMessage,
+  formPolicyNotice,
   formUrlOf,
   isoOfLocalDateTime,
   limitOfDraft,
@@ -323,7 +324,11 @@ export function FormEditor({ workspaceId, initial }: { workspaceId: string; init
       {/* 공유 */}
       <div className="flex flex-col gap-2" data-testid="form-share">
         <h2 className="text-sm font-medium">공유</h2>
-        {!form.policyAllows && <p className="text-xs text-amber-700 dark:text-amber-400">워크스페이스 정책이 웹 공개를 막았습니다 — 공개된 폼도 열리지 않습니다.</p>}
+        {!form.policyAllows && (
+          <p data-testid="form-policy-off" data-blocked={form.publishingBlocked} className="text-xs text-amber-700 dark:text-amber-400">
+            {formPolicyNotice(form.publishingBlocked)}
+          </p>
+        )}
         {form.canPublish ? (
           // 셋 중 하나(7b-1 · 정본 ⑨) — 웹 공개는 정책이 막으면 고를 수 없다(이미 공개된 것은 다른 것으로 바꿀 수 있다)
           <div role="radiogroup" aria-label="폼 공유" data-testid="form-access" data-access={settings.access} className="flex flex-col gap-1">

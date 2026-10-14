@@ -41,6 +41,16 @@ export const FORM_ACCESS_OPTIONS = [
 
 export type FormAccessChoice = (typeof FORM_ACCESS_OPTIONS)[number]['access']
 
+/**
+ * 웹 공개를 막은 까닭의 한 줄 — 소유자 정책이면 설정에서 풀 수 있고, 운영자의 잠금(6b-3b)이면 풀 수 없다(워크스페이스 멤버만의 폼은
+ * 그대로 연다).
+ */
+export function formPolicyNotice(publishingBlocked: boolean): string {
+  return publishingBlocked
+    ? '운영 정책에 따라 이 워크스페이스의 웹 공개가 막혔습니다 — 웹에 공개한 폼은 닫혔고, 설정으로 풀 수 없습니다. 워크스페이스 멤버만의 폼은 열 수 있습니다.'
+    : '워크스페이스 정책이 웹 공개를 막았습니다 — 공개된 폼도 열리지 않습니다.'
+}
+
 /** 바꾼 뒤의 한 줄. */
 export function formAccessNotice(access: FormAccessChoice): string {
   if (access === 'closed') return '폼을 닫았습니다. 그 주소로는 응답을 받지 않습니다.'

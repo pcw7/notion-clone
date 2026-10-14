@@ -24,6 +24,13 @@ const FAILURE: Readonly<Record<string, string>> = {
 export const MODERATED_NOTICE =
   '운영 정책에 따라 이 페이지의 웹 공개가 내려졌습니다. 게시되어 있어도 열리지 않습니다. 이의가 있으면 운영자에게 문의하세요.'
 
+/** 웹 게시를 막은 까닭의 한 줄(6b-3b) — 소유자 정책이면 설정에서 풀 수 있고, 운영자의 잠금이면 풀 수 없다. */
+export function publishPolicyNotice(publishingBlocked: boolean): string {
+  return publishingBlocked
+    ? '운영 정책에 따라 이 워크스페이스의 웹 게시가 막혔습니다 — 게시한 페이지는 내려졌고, 설정으로 풀 수 없습니다. 이의가 있으면 운영자에게 문의하세요.'
+    : '워크스페이스 정책이 웹 게시를 막았습니다. 게시된 주소도 지금은 열리지 않습니다.'
+}
+
 export function publishFailureMessage(reason: unknown): string {
   // 자기 칸만 — `FAILURE['constructor']` 는 객체 원형의 함수다(단위 검사가 잡았다)
   return typeof reason === 'string' && Object.hasOwn(FAILURE, reason) ? FAILURE[reason]! : '바꾸지 못했습니다.'

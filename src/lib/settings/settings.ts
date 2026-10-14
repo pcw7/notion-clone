@@ -45,7 +45,13 @@ import {
 type Store<V extends SettingValue> = {
   readonly read: (tx: Tx, ctx: SessionContext) => Promise<V>
   readonly write: (tx: Tx, ctx: SessionContext, value: V) => Promise<void>
+  /** 그 줄 아래의 안내 한 줄 — 값과 함께 읽는다(없으면 null). 운영자의 게시 차단(6b-3b)처럼 설정 밖의 것이 그 설정을 덮을 때. */
+  readonly notice?: (tx: Tx, ctx: SessionContext) => Promise<string | null>
 }
+
+/** 운영자가 웹 게시를 막았을 때 "웹 게시" 줄의 안내(6b-3b · 정본 [보강] 모더레이션 조치 ⑦) — 토글은 소유자의 값 그대로다. */
+export const PUBLISHING_BLOCKED_SETTING_NOTICE =
+  '운영 정책에 따라 이 워크스페이스의 웹 게시가 막혔습니다 — 이 설정으로 풀 수 없습니다. 게시한 페이지와 웹에 공개한 폼은 내려졌습니다.'
 
 /**
  * 전용 칸이 없는 계정 설정 — `setting_value` 의 한 줄(정본 [보강] 설정 값 표 · 테마 ① · ②). 행이 없으면 `fallback` 이다. 읽은 값이 지금의
@@ -131,6 +137,7 @@ const STORES: { readonly [K in SettingKey]: Store<SettingValueOf<K>> } = {
     // 소유자의 설정 값 그대로 — 운영자의 잠금(6b-3a)은 설정을 바꾸지 않는다(효과 정책은 `allowPublish`)
     read: async (tx, ctx) => (await readSecurityPolicyIn(tx, ctx.workspaceId)).allowPublishSetting,
     write: (tx, ctx, value) => writePublishPolicyIn(tx, ctx.workspaceId, value),
+    notice: async (tx, ctx) => ((await readSecurityPolicyIn(tx, ctx.workspaceId)).publishingBlocked ? PUBLISHING_BLOCKED_SETTING_NOTICE : null),
   },
   // 보안 정책(6e-1 · 정본 [보강] 보안 정책) — 멤버의 내보내기 · 게스트 초대
   'workspace.allow_export': {
@@ -168,6 +175,8 @@ export type SettingItem = {
   readonly editable: boolean
   /** 요금제가 막는가(⑦) — 참이면 `editable` 은 거짓이고 화면은 "요금제 필요"를 붙인다. */
   readonly planRequired: boolean
+  /** 그 줄 아래의 안내 한 줄(6b-3b) — 없으면 null. */
+  readonly notice: string | null
 }
 
 /** 이 사람에게 보이는 설정과 그 값 — 레지스트리의 순서로. 한 스냅샷에서 읽는다. */
@@ -187,6 +196,7 @@ export async function readSettings(ctx: SessionContext): Promise<SettingItem[]> 
         value: await storeOf(definition.key).read(tx, ctx),
         editable: canEditSetting(definition, ctx.role) && !planRequired,
         planRequired,
+        notice: (await storeOf(definition.key).notice?.(tx, ctx)) ?? null,
       })
     }
     return items

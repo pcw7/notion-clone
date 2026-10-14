@@ -99,8 +99,10 @@ export type FormDetail = {
   readonly canEdit: boolean
   /** 공개 · 닫기를 바꿀 수 있는가(`manage_perm`). */
   readonly canPublish: boolean
-  /** 워크스페이스 정책이 공개를 허용하는가 — 막으면 공개된 폼도 열리지 않는다(7a-2). */
+  /** 워크스페이스 정책이 공개를 허용하는가 — 막으면 공개된 폼도 열리지 않는다(7a-2). 운영자의 잠금도 막는다(6b-3a — 효과 정책). */
   readonly policyAllows: boolean
+  /** 운영자가 이 워크스페이스의 웹 게시를 막았는가(6b-3b) — 편집 화면이 "운영 정책" 이라고 말한다. */
+  readonly publishingBlocked: boolean
   /** 이 폼으로 받은 살아 있는 응답의 수(7b-2 — 상한이 세는 것). */
   readonly responseCount: number
   /** 닫혔다면 그 까닭(상한 · 마감 시각) — `access` 와 따로다(닫힘은 판정이다 · 정본 ⑩). */
@@ -259,6 +261,7 @@ async function readFormIn(tx: Tx, ctx: SessionContext, gate: FormGate): Promise<
     canEdit: editDenied(gate) === null,
     canPublish,
     policyAllows: policy.allowPublish,
+    publishingBlocked: policy.publishingBlocked,
     responseCount,
     closedBecause: formClosedReason(limits, responseCount),
   }

@@ -19,6 +19,7 @@ import {
   formAccessNotice,
   formAccessState,
   formEditorFailureMessage,
+  formPolicyNotice,
   formUrlOf,
   isoOfLocalDateTime,
   limitOfDraft,
@@ -78,4 +79,10 @@ test('⑥ 응답자에게 줄 권한(7b-4) — 넷 · 고른 레벨의 말 · �
   assert.match(respondentAccessNote('workspace', 'view')!, /이미 준 권한은 그대로/)
   assert.match(respondentAccessNote('public', 'edit')!, /익명이라 줄 사람이 없습니다/)
   assert.equal(respondentAccessNote('closed', 'edit'), respondentAccessNote('public', 'edit'))
+})
+
+test('⑦ 정책 줄(6b-3b) — 운영자의 잠금은 "운영 정책" · 멤버만의 폼은 열 수 있다고 · 소유자 정책은 그대로', () => {
+  assert.match(formPolicyNotice(true), /운영 정책/)
+  assert.match(formPolicyNotice(true), /워크스페이스 멤버만의 폼은 열 수 있습니다/)
+  assert.equal(formPolicyNotice(false), '워크스페이스 정책이 웹 공개를 막았습니다 — 공개된 폼도 열리지 않습니다.')
 })

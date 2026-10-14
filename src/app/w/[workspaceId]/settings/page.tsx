@@ -82,6 +82,7 @@ export default async function SettingsPage({ params, searchParams }: PageProps<'
               editable={item.editable}
               planRequired={item.planRequired}
               readOnlyNote={item.planRequired ? SETTING_PLAN_NOTE : definition === null ? null : editorsNote(definition)}
+              notice={item.notice}
             />
           )
         })}

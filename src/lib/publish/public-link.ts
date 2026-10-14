@@ -44,6 +44,8 @@ export type PublishState = {
   readonly expiresAt: string | null
   /** 워크스페이스 정책이 게시를 허용하는가 — 끄면 게시된 주소도 열리지 않는다(정본 ③ ⑨). */
   readonly policyAllows: boolean
+  /** 운영자가 이 워크스페이스의 웹 게시를 막았는가(6b-3b · 정본 [보강] 모더레이션 조치 ⑦) — 정책 줄이 "운영 정책" 이라고 말한다. */
+  readonly publishingBlocked: boolean
   /** 게시하고 해제할 수 있는가(`manage_perm`). */
   readonly canManage: boolean
   /**
@@ -186,6 +188,7 @@ async function stateIn(
 ): Promise<PublishState> {
   return {
     ...stateOf(link, policyAllows, canManage),
+    publishingBlocked: (await readSecurityPolicyIn(tx, ctx.workspaceId)).publishingBlocked,
     coveredBy: await coveredByIn(tx, ctx, node, policyAllows),
     moderation: await moderationIn(tx, node),
     siteDomain: await readSiteDomainIn(tx, ctx.workspaceId),
@@ -196,7 +199,7 @@ function stateOf(
   link: LinkRow | null,
   policyAllows: boolean,
   canManage: boolean,
-): Omit<PublishState, 'coveredBy' | 'moderation' | 'siteDomain'> {
+): Omit<PublishState, 'coveredBy' | 'moderation' | 'siteDomain' | 'publishingBlocked'> {
   return {
     published: link?.enabled ?? false,
     token: canManage ? (link?.token ?? null) : null,
