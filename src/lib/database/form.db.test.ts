@@ -12,6 +12,8 @@
  *      처음 열 때 토큰 · 닫아도 토큰은 남고 다시 열면 같은 주소 · 토큰은 공개를 바꿀 수 있는 사람에게만 · 감사 로그 ·
  *      한 사람당 한 번(7b-3)은 구조를 고치는 사람 · 참 · 거짓만 · 공유와 따로 ·
  *      응답자에게 줄 권한(7b-4)은 manage_perm · 셋(전체 권한 · 데이터베이스 레벨은 아니다) · 바뀌었을 때만 감사 로그
+ *   ⑤ ★ 조건부 보이기(7b-5a) — 근거는 앞에 선 질문 · 연산자는 근거의 타입의 것 · 옵션은 그 속성의 것(아니면 invalid_input) · 읽기가 싣는다 ·
+ *      요금제는 더하거나 바꿀 때만(plan_required) — 지우기 · 그대로 두기는 내린 요금제에서도 된다
  *   ④ 다른 길 — 폼은 다른 종류로 바꾸지 않는다 · 폼이 아닌 뷰는 폼으로 읽지 않는다 · 뷰를 지우면 설정 · 질문도 지워진다 · 볼 수 없으면
  *      not_found
  */
@@ -24,9 +26,10 @@ import { grantAccess } from '../permissions/acl.ts'
 import { setDatabaseLock } from '../permissions/lock.ts'
 import { updateSetting } from '../settings/settings.ts'
 import { createBareWorkspace, createUser, joinAs, probeDatabase } from '../testing/db-fixtures.ts'
+import { setWorkspacePlan } from '../billing/plan.ts'
 import { createDatabase } from './database.ts'
 import { createFormView, readForm, setFormQuestions, updateFormSettings } from './form.ts'
-import { addProperty, deleteProperty, getSchema, restoreProperty } from './property.ts'
+import { addProperty, addSelectOption, deleteProperty, getSchema, restoreProperty } from './property.ts'
 import { deleteView, listViews, updateView } from './view.ts'
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'
@@ -294,5 +297,53 @@ describe('④ 다른 길', () => {
       [form.viewId],
     )
     assert.equal(left[0]!.n, 0, '뷰를 지우면 설정 · 질문도')
+  })
+})
+
+// ── ⑤ 조건부 보이기 ────────────────────────────────────────────────
+
+describe('⑤ ★ 조건부 보이기(7b-5a)', () => {
+  test('근거 · 연산자 · 옵션의 검사 · 읽기가 싣는다 · 요금제는 더하거나 바꿀 때만', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { ws, boss, editor, db, title, memo, score, kind } = await workspace()
+    const ds = db.dataSourceId
+    const yes = unwrap(await addSelectOption(boss.ctx, ds, kind, { name: '예' })).option.id
+    const otherKind = unwrap(await addProperty(boss.ctx, ds, { name: '다른 분류', type: 'select' })).properties.find((p) => p.name === '다른 분류')!.id
+    const otherOption = unwrap(await addSelectOption(boss.ctx, ds, otherKind, { name: '남의 것' })).option.id
+    const form = unwrap(await createFormView(boss.ctx, db.id))
+    const when = { propertyId: kind, operator: 'equals', optionId: yes }
+    const list = (showWhen: unknown) => [{ propertyId: title }, { propertyId: kind }, { propertyId: memo, showWhen }, { propertyId: score }]
+
+    assert.equal(unwrap(await readForm(boss.ctx, form.viewId)).logicAllowed, false, 'Free 는 더할 수 없다')
+    assert.deepEqual(await setFormQuestions(editor.ctx, form.viewId, list(when)), { ok: false, reason: 'plan_required' })
+    unwrap(await setWorkspacePlan(ws, 'business'))
+
+    for (const [label, bad] of [
+      ['근거가 뒤에 있다', [{ propertyId: title }, { propertyId: memo, showWhen: when }, { propertyId: kind }]],
+      ['근거가 목록에 없다', [{ propertyId: title }, { propertyId: memo, showWhen: when }]],
+      ['자기 자신', [{ propertyId: title }, { propertyId: kind, showWhen: when }]],
+      ['체크박스의 연산자를 선택에', list({ propertyId: kind, operator: 'is_checked' })],
+      ['남의 옵션', list({ propertyId: kind, operator: 'equals', optionId: otherOption })],
+      ['같다인데 옵션이 없다', list({ propertyId: kind, operator: 'equals' })],
+      ['비었다인데 옵션이 있다', list({ propertyId: kind, operator: 'is_empty', optionId: yes })],
+      ['모르는 연산자', list({ propertyId: kind, operator: 'contains', optionId: yes })],
+    ] as const) {
+      assert.deepEqual(await setFormQuestions(editor.ctx, form.viewId, bad), { ok: false, reason: 'invalid_input' }, label)
+    }
+
+    const saved = unwrap(await setFormQuestions(editor.ctx, form.viewId, list(when)))
+    assert.equal(saved.logicAllowed, true)
+    assert.deepEqual(saved.questions.map((q) => q.showWhen), [null, null, { propertyId: kind, operator: 'equals', optionId: yes }, null])
+
+    // 내린 요금제 — 그대로 두기 · 지우기는 되고, 바꾸기는 막힌다
+    unwrap(await setWorkspacePlan(ws, 'free'))
+    assert.ok((await setFormQuestions(editor.ctx, form.viewId, list(when))).ok, '그대로 두면 묻지 않는다')
+    assert.deepEqual(
+      await setFormQuestions(editor.ctx, form.viewId, list({ propertyId: kind, operator: 'not_equals', optionId: yes })),
+      { ok: false, reason: 'plan_required' },
+      '바꾸기',
+    )
+    const cleared = unwrap(await setFormQuestions(editor.ctx, form.viewId, list(null)))
+    assert.deepEqual(cleared.questions.map((q) => q.showWhen), [null, null, null, null], '지우기는 언제나')
   })
 })

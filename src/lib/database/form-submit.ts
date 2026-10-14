@@ -37,6 +37,13 @@
  *
  * 폼이 레벨을 정했고 응답자가 멤버면, 넣는 트랜잭션에서 그 응답 행에 `('user', 응답자, 레벨)` 을 쓴다(`grantToFormRespondentIn` — 준 사람은
  * 없다 · 폼의 칸이 준다). 결과가 그 행의 주소를 싣는다 — 확인 화면의 "내 응답 보기". 웹 공개 응답은 익명이라 주지 않는다.
+ *
+ * ──────────────────────────────────────────────────────────────────────
+ * 조건부 보이기(7b-5a · 정본 ⑬) — 서버가 다시 평가한다
+ * ──────────────────────────────────────────────────────────────────────
+ *
+ * 공개 읽기는 끊어진 조건(근거가 앞에 없다 · 옵션이 지워졌다)을 지워 싣고, 제출은 같은 판정(`visibleQuestionIds`)으로 숨은 질문의 답을
+ * 버리고 필수 검사도 하지 않는다 — 숨은 질문에 값을 넣어 보내도 행에 들어가지 않는다.
  */
 
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
@@ -50,7 +57,8 @@ import type { WorkspaceId } from '../ids.ts'
 import { claimOnce, consume, type RateLimitRule } from '../rate-limit.ts'
 import { grantToFormRespondentIn } from '../permissions/acl.ts'
 import { readSecurityPolicyIn } from '../workspace/security-policy.ts'
-import { FORM_QUESTION_TYPES, countFormResponsesIn, hasRespondedIn, type FormQuestionType, type RespondentAccess } from './form.ts'
+import { FORM_QUESTION_TYPES, countFormResponsesIn, hasRespondedIn, showWhenOf, type FormQuestionType, type RespondentAccess } from './form.ts'
+import { visibleQuestionIds, type ShowIfOperator, type ShowWhen } from './form-logic.ts'
 import { formClosedReason, type FormClosedReason } from './form-limits.ts'
 import { readOptionsOf } from './options.ts'
 import type { CellValue } from './property-types.ts'
@@ -79,6 +87,8 @@ export type PublicFormQuestion = {
   readonly type: FormQuestionType
   /** 선택 질문의 옵션 — 이름 · 색. 다른 타입은 빈 목록. */
   readonly options: readonly { readonly id: string; readonly name: string; readonly color: string }[]
+  /** 보이기 조건(7b-5a · 정본 ⑬) — 끊어진 조건(근거가 앞에 없다 · 옵션이 지워졌다)은 지워 싣는다. 없으면 null. */
+  readonly showWhen: ShowWhen | null
 }
 
 export type PublicForm = {
@@ -150,8 +160,11 @@ async function readPublicFormIn(tx: Tx, token: string): Promise<PublicForm | nul
     label: string | null
     help_text: string | null
     required: boolean
+    show_if_property_id: string | null
+    show_if_operator: ShowIfOperator | null
+    show_if_option_id: string | null
   }>(
-    `SELECT q.property_id, p.name, p.type, q.label, q.help_text, q.required
+    `SELECT q.property_id, p.name, p.type, q.label, q.help_text, q.required, q.show_if_property_id, q.show_if_operator, q.show_if_option_id
        FROM form_question q
        JOIN property p ON p.id = q.property_id
       WHERE q.view_id = $1 AND p.data_source_id = $2 AND p.deleted_at IS NULL AND p.type::text = ANY($3::text[])
@@ -177,15 +190,30 @@ async function readPublicFormIn(tx: Tx, token: string): Promise<PublicForm | nul
       row.max_responses === null ? 0 : await countFormResponsesIn(tx, row.view_id),
     ),
     onePerRespondent: row.one_per_respondent,
-    questions: questions.map((q) => ({
+    questions: questions.map((q, index) => ({
       propertyId: q.property_id,
       label: q.label ?? q.name,
       helpText: q.help_text,
       required: q.required,
       type: q.type,
       options: (options.get(q.property_id) ?? []).map((o) => ({ id: o.id, name: o.name, color: o.color })),
+      showWhen: liveShowWhen(showWhenOf(q), questions.slice(0, index), options),
     })),
   }
+}
+
+/**
+ * 끊어진 조건을 지운다(정본 ⑬) — 근거가 앞에 선 질문이 아니거나(빠졌다 · 휴지통 · 뒤로 갔다) 옵션이 그 근거의 살아 있는 옵션이 아니면
+ * 조건이 없는 것과 같다(질문이 보인다).
+ */
+function liveShowWhen(
+  when: ShowWhen | null,
+  earlier: readonly { readonly property_id: string }[],
+  options: ReadonlyMap<string, readonly { readonly id: string }[]>,
+): ShowWhen | null {
+  if (when === null || !earlier.some((q) => q.property_id === when.propertyId)) return null
+  if (when.optionId !== null && !(options.get(when.propertyId) ?? []).some((o) => o.id === when.optionId)) return null
+  return when
 }
 
 // ── 응답자 ────────────────────────────────────────────────────────────
@@ -426,8 +454,11 @@ function parseAnswers(form: PublicForm, raw: unknown): ParsedAnswers {
   const cells: { propertyId: string; value: CellValue }[] = []
   const issues: ValidationIssue[] = []
   const issue = (propertyId: string, message: string) => issues.push({ path: propertyId, message })
+  // 조건부 보이기(정본 ⑬) — 숨은 질문은 답을 버리고 필수도 묻지 않는다(서버가 다시 평가한다 — 숨은 질문에 값을 넣어 와도 들어가지 않는다)
+  const visible = visibleQuestionIds(form.questions, answers)
 
   for (const q of form.questions) {
+    if (!visible.has(q.propertyId)) continue
     const answer = Object.hasOwn(answers, q.propertyId) ? answers[q.propertyId] : undefined
     switch (q.type) {
       case 'title':

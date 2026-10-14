@@ -29,12 +29,16 @@ import { can, type CapSet } from '../permissions/levels.ts'
 import { isLocked } from '../permissions/lock.ts'
 import { newPublicToken } from '../publish/public-token.ts'
 import { readSecurityPolicyIn } from '../workspace/security-policy.ts'
+import { entitlement } from '../billing/entitlement.ts'
 import { formClosedReason, parseClosesAt, parseMaxResponses, type FormClosedReason } from './form-limits.ts'
+import { FORM_QUESTION_TYPES, SHOW_IF_OPERATORS, needsOption, operatorsFor, type FormQuestionType, type ShowIfOperator, type ShowWhen } from './form-logic.ts'
 import { canOpenDatabase } from './row-access.ts'
 
-/** 질문으로 받는 속성 타입(v1 — 정본 ②). 상태 · 사람 · 관계형 · 파일 · 계산 열은 받지 않는다. */
-export const FORM_QUESTION_TYPES = ['title', 'rich_text', 'number', 'select', 'checkbox', 'date'] as const
-export type FormQuestionType = (typeof FORM_QUESTION_TYPES)[number]
+/**
+ * 질문으로 받는 속성 타입(v1 — 정본 ②). 상태 · 사람 · 관계형 · 파일 · 계산 열은 받지 않는다. 목록은 조건부 보이기의 순수 모듈에 있다
+ * (7b-5a — 브라우저도 쓴다).
+ */
+export { FORM_QUESTION_TYPES, type FormQuestionType, type ShowWhen }
 export const isFormQuestionType = (t: unknown): t is FormQuestionType => (FORM_QUESTION_TYPES as readonly unknown[]).includes(t)
 
 export const DEFAULT_FORM_NAME = '폼'
@@ -83,6 +87,8 @@ export type FormQuestion = {
   readonly label: string | null
   readonly helpText: string | null
   readonly required: boolean
+  /** 보이기 조건(7b-5a · 정본 ⑬) — 저장된 그대로(끊어졌는지는 공개 읽기 · 판정이 본다). 없으면 null. */
+  readonly showWhen: ShowWhen | null
 }
 
 export type FormDetail = {
@@ -107,6 +113,8 @@ export type FormDetail = {
   readonly responseCount: number
   /** 닫혔다면 그 까닭(상한 · 마감 시각) — `access` 와 따로다(닫힘은 판정이다 · 정본 ⑩). */
   readonly closedBecause: FormClosedReason | null
+  /** 이 요금제가 조건부 보이기를 더하고 바꾸게 하는가(7b-5a — `form.logic`). 지우기는 언제나 된다. */
+  readonly logicAllowed: boolean
 }
 
 export type FormFailure =
@@ -118,6 +126,8 @@ export type FormFailure =
   | 'unsupported_type'
   /** 워크스페이스 정책이 공개를 막았다. */
   | 'policy_disabled'
+  /** 요금제가 허락하지 않는다 — 조건부 보이기를 더하거나 바꾸기(7b-5a · `form.logic`). */
+  | 'plan_required'
   /** 운영자가 이 워크스페이스의 웹 게시를 막았다(6b-3a) — 워크스페이스 멤버만의 폼은 연다. */
   | 'publishing_blocked'
 
@@ -128,6 +138,7 @@ export function formFailureStatus(reason: FormFailure): number {
     case 'not_found':
       return 404
     case 'forbidden':
+    case 'plan_required':
       return 403
     case 'locked':
     case 'policy_disabled':
@@ -214,8 +225,11 @@ async function readFormIn(tx: Tx, ctx: SessionContext, gate: FormGate): Promise<
     label: string | null
     help_text: string | null
     required: boolean
+    show_if_property_id: string | null
+    show_if_operator: ShowIfOperator | null
+    show_if_option_id: string | null
   }>(
-    `SELECT q.property_id, p.name, p.type, q.label, q.help_text, q.required
+    `SELECT q.property_id, p.name, p.type, q.label, q.help_text, q.required, q.show_if_property_id, q.show_if_operator, q.show_if_option_id
        FROM form_question q
        JOIN property p ON p.id = q.property_id
       WHERE q.view_id = $1 AND p.deleted_at IS NULL AND p.type::text = ANY($2::text[])
@@ -256,6 +270,7 @@ async function readFormIn(tx: Tx, ctx: SessionContext, gate: FormGate): Promise<
       label: q.label,
       helpText: q.help_text,
       required: q.required,
+      showWhen: showWhenOf(q),
     })),
     candidates: properties.filter((p) => !asked.has(p.id)).map((p) => ({ propertyId: p.id, name: p.name, type: p.type })),
     canEdit: editDenied(gate) === null,
@@ -264,7 +279,18 @@ async function readFormIn(tx: Tx, ctx: SessionContext, gate: FormGate): Promise<
     publishingBlocked: policy.publishingBlocked,
     responseCount,
     closedBecause: formClosedReason(limits, responseCount),
+    logicAllowed: await entitlement(ctx.workspaceId, 'form.logic', tx),
   }
+}
+
+/** 행의 세 칸 → 보이기 조건(셋이 함께 비거나 선다 — 0104 의 CHECK). */
+export function showWhenOf(row: {
+  readonly show_if_property_id: string | null
+  readonly show_if_operator: ShowIfOperator | null
+  readonly show_if_option_id: string | null
+}): ShowWhen | null {
+  if (row.show_if_property_id === null || row.show_if_operator === null) return null
+  return { propertyId: row.show_if_property_id, operator: row.show_if_operator, optionId: row.show_if_option_id }
 }
 
 /**
@@ -497,7 +523,25 @@ export type FormQuestionInput = {
   readonly label?: string | null
   readonly helpText?: string | null
   readonly required?: boolean
+  /** 보이기 조건(7b-5a · 정본 ⑬) — 앞에 선 질문만 근거 · 연산자는 근거의 타입이 정한다 · 비면 없다. */
+  readonly showWhen?: { readonly propertyId: string; readonly operator: ShowIfOperator; readonly optionId?: string | null } | null
 }
+
+/** 받은 조건의 모양 — 틀리면 undefined(근거가 앞에 섰는지 · 연산자가 그 타입의 것인지는 명령이 속성을 읽고 본다). */
+function parseShowWhen(raw: unknown): ShowWhen | null | undefined {
+  if (raw === undefined || raw === null) return null
+  if (typeof raw !== 'object' || Array.isArray(raw)) return undefined
+  const w = raw as Record<string, unknown>
+  if (typeof w.propertyId !== 'string' || w.propertyId === '') return undefined
+  if (!(SHOW_IF_OPERATORS as readonly unknown[]).includes(w.operator)) return undefined
+  const operator = w.operator as ShowIfOperator
+  const optionId = w.optionId === undefined || w.optionId === null ? null : w.optionId
+  if (needsOption(operator) ? typeof optionId !== 'string' || !isUuid(optionId) : optionId !== null) return undefined
+  return { propertyId: w.propertyId, operator, optionId: optionId as string | null }
+}
+
+const sameShowWhen = (a: ShowWhen | null, b: ShowWhen | null): boolean =>
+  a === null || b === null ? a === b : a.propertyId === b.propertyId && a.operator === b.operator && a.optionId === b.optionId
 
 /**
  * 질문 목록을 통째로 바꾼다 — 순서대로. 같은 속성 두 번 · 받지 않는 타입 · 다른 표의 속성 · 지운 속성은 거부한다(아무것도 바꾸지 않는다).
@@ -505,7 +549,7 @@ export type FormQuestionInput = {
  */
 export async function setFormQuestions(ctx: SessionContext, viewId: string, raw: unknown): Promise<FormResult<FormDetail>> {
   if (!Array.isArray(raw) || raw.length > MAX_FORM_QUESTIONS) return fail('invalid_input')
-  const questions: { propertyId: string; label: string | null; helpText: string | null; required: boolean }[] = []
+  const questions: { propertyId: string; label: string | null; helpText: string | null; required: boolean; showWhen: ShowWhen | null }[] = []
   for (const item of raw) {
     if (typeof item !== 'object' || item === null || Array.isArray(item)) return fail('invalid_input')
     const q = item as Record<string, unknown>
@@ -513,8 +557,9 @@ export async function setFormQuestions(ctx: SessionContext, viewId: string, raw:
     if (q.required !== undefined && typeof q.required !== 'boolean') return fail('invalid_input')
     const label = q.label === undefined ? null : normalizeText(q.label, LIMITS.label)
     const helpText = q.helpText === undefined ? null : normalizeText(q.helpText, LIMITS.helpText)
-    if (label === undefined || helpText === undefined) return fail('invalid_input')
-    questions.push({ propertyId: q.propertyId, label, helpText, required: q.required === true })
+    const showWhen = parseShowWhen(q.showWhen)
+    if (label === undefined || helpText === undefined || showWhen === undefined) return fail('invalid_input')
+    questions.push({ propertyId: q.propertyId, label, helpText, required: q.required === true, showWhen })
   }
   if (new Set(questions.map((q) => q.propertyId)).size !== questions.length) return fail('invalid_input')
 
@@ -526,12 +571,39 @@ export async function setFormQuestions(ctx: SessionContext, viewId: string, raw:
     await tx.query(`SELECT 1 FROM form_view WHERE view_id = $1 FOR UPDATE`, [viewId])
 
     const ids = questions.map((q) => q.propertyId)
-    const live = await tx.query<{ id: string }>(
-      `SELECT id FROM property
+    const live = await tx.query<{ id: string; type: FormQuestionType }>(
+      `SELECT id, type FROM property
         WHERE id = ANY($1::text[]) AND data_source_id = $2 AND deleted_at IS NULL AND type::text = ANY($3::text[])`,
       [ids, gate.dataSourceId, FORM_QUESTION_TYPES],
     )
     if (live.length !== ids.length) return fail('unsupported_type')
+
+    // 보이기 조건(7b-5a · 정본 ⑬) — 근거는 이 목록에서 앞에 선 질문 · 연산자는 근거의 타입의 것 · 옵션은 그 속성의 것. 끊어진 조건은
+    // 저장하지 않는다
+    const typeOf = new Map(live.map((p) => [p.id, p.type]))
+    for (const [index, q] of questions.entries()) {
+      const when = q.showWhen
+      if (when === null) continue
+      if (!questions.slice(0, index).some((earlier) => earlier.propertyId === when.propertyId)) return fail('invalid_input')
+      if (!operatorsFor(typeOf.get(when.propertyId)!).includes(when.operator)) return fail('invalid_input')
+      if (when.optionId !== null) {
+        const option = await tx.queryMaybe<{ id: string }>(`SELECT id FROM select_option WHERE id = $1 AND property_id = $2`, [
+          when.optionId,
+          when.propertyId,
+        ])
+        if (option === null) return fail('invalid_input')
+      }
+    }
+    // 요금제는 조건을 **더하거나 바꿀 때만** 묻는다 — 지우기 · 그대로 두기는 언제나 된다(내려도 있는 것은 그대로)
+    const stored = await tx.query<{
+      property_id: string
+      show_if_property_id: string | null
+      show_if_operator: ShowIfOperator | null
+      show_if_option_id: string | null
+    }>(`SELECT property_id, show_if_property_id, show_if_operator, show_if_option_id FROM form_question WHERE view_id = $1`, [viewId])
+    const before = new Map(stored.map((row) => [row.property_id, showWhenOf(row)]))
+    const changes = questions.some((q) => q.showWhen !== null && !sameShowWhen(q.showWhen, before.get(q.propertyId) ?? null))
+    if (changes && !(await entitlement(ctx.workspaceId, 'form.logic', tx))) return fail('plan_required')
 
     // 살아 있는 속성의 질문만 지우고(휴지통의 것은 남긴다) 새 목록을 그 뒤에 넣는다
     await tx.query(
@@ -547,8 +619,9 @@ export async function setFormQuestions(ctx: SessionContext, viewId: string, raw:
     for (const q of questions) {
       const key = orderKeyBetween(previous, null)
       await tx.query(
-        `INSERT INTO form_question (view_id, property_id, order_key, label, help_text, required) VALUES ($1, $2, $3, $4, $5, $6)`,
-        [viewId, q.propertyId, key, q.label, q.helpText, q.required],
+        `INSERT INTO form_question (view_id, property_id, order_key, label, help_text, required, show_if_property_id, show_if_operator, show_if_option_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        [viewId, q.propertyId, key, q.label, q.helpText, q.required, q.showWhen?.propertyId ?? null, q.showWhen?.operator ?? null, q.showWhen?.optionId ?? null],
       )
       previous = key
     }
