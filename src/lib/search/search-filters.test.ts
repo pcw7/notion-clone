@@ -6,6 +6,7 @@
  *   ③ 검색어 없이 찾을 수 있는가 — 좁히는 필터가 있을 때만(제목만은 세지 않는다)
  *   ④ 덮개(10a-2) — 걸린 필터의 수 · 라우트의 쿼리(걸린 것만) · 페이지 화면의 페이지 id
  *   ⑤ ★ 사람 · 팀스페이스(10a-3a) — 만든 사람 · 최종 편집자는 'me' 또는 사람 id · 팀스페이스는 uuid · 셋 모두 좁힌다 · 수와 쿼리에 든다
+ *   ⑥ ★ 덮개가 거는 필터(10a-3b) — 이 페이지 안에서는 지금 페이지일 때만 · 팀스페이스는 후보에 있고 요금제가 허락할 때만 · 나머지는 그대로
  */
 
 import { test } from 'node:test'
@@ -15,6 +16,7 @@ import {
   EDITED_RANGE_DAYS,
   NO_SEARCH_FILTERS,
   activeFilterCount,
+  effectiveSearchFilters,
   narrowsWithoutQuery,
   normalizeSearchFilters,
   pageIdInPath,
@@ -80,4 +82,17 @@ test('⑤ ★ 사람 · 팀스페이스(10a-3a)', () => {
   assert.equal(activeFilterCount(all), 3)
   assert.deepEqual(searchFilterParams(all), [['createdBy', PERSON.toLowerCase()], ['editedBy', 'me'], ['teamspace', TEAMSPACE.toLowerCase()]])
   assert.deepEqual(normalizeSearchFilters(Object.fromEntries(searchFilterParams(all))), all, '라우트가 같은 값으로 다시 읽는다')
+})
+
+test('⑥ ★ 덮개가 거는 필터(10a-3b)', () => {
+  const chosen = normalizeSearchFilters({ titleOnly: true, createdBy: PERSON, editedBy: 'me', edited: 'week', within: PAGE, teamspace: TEAMSPACE })
+  const here = { currentPageId: PAGE.toLowerCase(), teamspaceIds: [TEAMSPACE.toLowerCase()], teamspaceAllowed: true }
+  assert.deepEqual(effectiveSearchFilters(chosen, here), chosen, '맥락이 맞으면 고른 그대로')
+  const moved = effectiveSearchFilters(chosen, { ...here, currentPageId: null })
+  assert.equal(moved.within, null, '다른 화면 — 이 페이지 안에서는 효과가 없다')
+  assert.equal(moved.teamspace, chosen.teamspace)
+  assert.equal(effectiveSearchFilters(chosen, { ...here, teamspaceIds: [] }).teamspace, null, '후보에서 빠진 팀스페이스(나갔다 · 보관)')
+  assert.equal(effectiveSearchFilters(chosen, { ...here, teamspaceAllowed: false }).teamspace, null, '요금제가 허락하지 않는다')
+  const rest = effectiveSearchFilters(chosen, { currentPageId: null, teamspaceIds: [], teamspaceAllowed: false })
+  assert.deepEqual([rest.titleOnly, rest.createdBy, rest.editedBy, rest.edited], [true, PERSON.toLowerCase(), 'me', 'week'], '나머지는 그대로')
 })

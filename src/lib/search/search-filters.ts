@@ -108,3 +108,21 @@ export function pageIdInPath(pathname: string | null): string | null {
   const match = /^\/w\/[^/]+\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(pathname ?? '')
   return match === null ? null : match[1]!.toLowerCase()
 }
+
+/**
+ * 덮개가 고른 것 → 실제로 거는 필터(10a-2 · 10a-3b). 고른 값은 기억하되 **지금 맥락과 맞을 때만** 효과를 낸다 — 옮겨 간 뒤 보이지 않는 필터가
+ * 결과를 줄이지 않게(07 엣지 *"teamspace 접근 권한 상실 → 이미 선택돼 있으면 해제"*):
+ *
+ *   · 이 페이지 안에서 — 지금 페이지일 때만
+ *   · 팀스페이스 — 후보(내가 멤버인 것)에 있고 요금제가 허락할 때만(요금제는 표시 전용 — 서버가 질의를 만들 때 다시 묻는다)
+ */
+export function effectiveSearchFilters(
+  chosen: SearchFilters,
+  context: { readonly currentPageId: string | null; readonly teamspaceIds: readonly string[]; readonly teamspaceAllowed: boolean },
+): SearchFilters {
+  return {
+    ...chosen,
+    within: chosen.within !== null && chosen.within === context.currentPageId ? chosen.within : null,
+    teamspace: chosen.teamspace !== null && context.teamspaceAllowed && context.teamspaceIds.includes(chosen.teamspace) ? chosen.teamspace : null,
+  }
+}

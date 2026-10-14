@@ -56,7 +56,7 @@ export default async function WorkspaceLayout({
   if ('outsider' in visitor) return <div className="min-h-screen">{children}</div>
   const ctx = visitor.member
 
-  const [tree, teamspaces, trash, recent, favorites, inboxUnread, workspaceName, switcher, otherAccounts, privateTeamspaceAllowed] = await Promise.all([
+  const [tree, teamspaces, trash, recent, favorites, inboxUnread, workspaceName, switcher, otherAccounts, privateTeamspaceAllowed, teamspaceFilterAllowed] = await Promise.all([
     listPageTree(ctx),
     listMyTeamspaces(ctx),
     listTrash(ctx),
@@ -71,6 +71,8 @@ export default async function WorkspaceLayout({
       .then((view) => withWorkspaces(view.others)),
     // teamspace 만들기 폼의 private 고르개(8k-3 · 표시 전용 — 서버가 다시 묻는다).
     entitlement(ctx.workspaceId, 'teamspace.private'),
+    // 검색의 팀스페이스 필터(10a-3b · 표시 전용 — 검색 명령이 질의를 만들 때 다시 묻는다).
+    entitlement(ctx.workspaceId, 'search.teamspace_filter'),
   ])
   // 루트를 섹션으로 가른다(F-07-16 의 파생 섹션 · 판결문 C-9 — Teamspaces · 공유됨 · 개인 · 워크스페이스 · 7c-7).
   const sections = groupSidebarRoots(tree, teamspaces)
@@ -128,6 +130,8 @@ export default async function WorkspaceLayout({
       <SearchOverlay
         workspaceId={workspaceId}
         recent={recent.map((e) => ({ id: e.id, title: e.title, icon: e.icon }))}
+        teamspaces={teamspaces.map((t) => ({ id: t.id, name: t.name }))}
+        teamspaceFilterAllowed={teamspaceFilterAllowed}
       />
     </div>
   )

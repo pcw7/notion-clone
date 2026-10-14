@@ -16781,6 +16781,125 @@ async function main() {
       await key('Escape')
     }
 
+    if (sectionIf('검색 필터 — 사람 · 팀스페이스 덮개 (10a-3b · F-07-03)')) {
+      // 사람 칩 둘(만든 사람 · 최종 편집자 — 칩 줄 아래 제자리의 사람 고르개 · 맨 위 "나" · Enter 는 고르개의 것 · Esc 는 고르개만) · 팀스페이스
+      // 고르개(내 팀스페이스) · 화면을 연 뒤 요금제가 내려가면 그렇게 말한다(조용히 넓히지 않는다) · 다시 그리면 잠긴 칩.
+      const stamp = Date.now().toString(36)
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const { setWorkspacePlan } = await import(new URL('../src/lib/billing/plan.ts', import.meta.url).href)
+      const { createPage, titleFromPlainText } = await import(new URL('../src/lib/block/page.ts', import.meta.url).href)
+      const mateName = `칩동료${stamp}`
+      const mate = await joinAs(workspaceId, await createUser(mateName), 'member')
+      const word = `사람칩${stamp}`
+      const mine = (await api('POST', '/pages', { title: `${word} 내 것` })).body?.page?.id
+      const theirs = (await createPage(mate.ctx, { title: titleFromPlainText(`${word} 동료 것`) })).id
+      // 내가 만들고 동료가 마지막으로 고친 것
+      const touched = (await api('POST', '/pages', { title: `${word} 동료가 고친 것` })).body?.page?.id
+      await dbQuery(`UPDATE block SET last_edited_by = $1 WHERE id = $2`, [mate.userId, touched])
+      const team = (await api('POST', '/teamspaces', { name: `칩 팀 ${stamp}` })).body?.teamspace?.id
+      const inTeam = (await api('POST', '/pages', { title: `${word} 팀 것`, teamspaceId: team })).body?.page?.id
+
+      const hitIds = `[...document.querySelectorAll('[data-testid="search-hit"]')].map((e) => e.getAttribute('data-page-id')).sort().join(',')`
+      const idsOf = (...ids) => JSON.stringify([...ids].sort().join(','))
+      const chipText = (testId) => `(document.querySelector('[data-testid="${testId}"]')?.textContent ?? '')`
+      const state = () => evaluate(`JSON.stringify({ hits: ${hitIds}, creator: ${chipText('search-filter-creator')}, editor: ${chipText('search-filter-editor')},
+        picker: document.querySelector('[data-testid="search-filter-person"]')?.getAttribute('data-filter') ?? null, path: location.pathname,
+        empty: document.querySelector('[data-testid="search-empty"]')?.textContent ?? null })`)
+      const openOverlay = async () => {
+        for (let i = 0; i < 10 && !(await evaluate(`!!document.querySelector('[data-testid="search-overlay"]')`)); i += 1) {
+          await key('k', MOD)
+          await waitFor(`!!document.querySelector('[data-testid="search-overlay"]')`, 1500)
+        }
+      }
+      const pickMate = async (chip) => {
+        await clickSelector(`[data-testid="${chip}"]`)
+        await waitFor(`document.activeElement?.getAttribute('data-testid') === 'db-people-input'`, 5000)
+        await typeText(mateName)
+        return waitFor(`[...document.querySelectorAll('[data-testid="search-filter-person"] [data-testid="db-people-option"]')]
+          .some((e) => e.textContent.includes(${JSON.stringify(mateName)}))`, 8000)
+      }
+      const before = (await dbQuery(`SELECT plan_code FROM workspace WHERE id = $1`, [workspaceId]))[0]?.plan_code ?? 'free'
+      await setWorkspacePlan(workspaceId, 'business')
+      try {
+        // 팀을 만든 뒤에 그린다 — 덮개의 팀스페이스 후보는 레이아웃이 읽는다
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${mine}` })
+        await waitFor(`!!document.querySelector('input[aria-label="페이지 제목"]')`, 15000)
+        await openOverlay()
+        await typeText(word)
+        await waitFor(`${hitIds} === ${idsOf(mine, theirs, touched, inTeam)}`, 8000)
+
+        // ① 만든 사람 — 고르개에서 찾아 Enter(덮개가 가로채면 결과를 연다) → 칩이 그 이름을 말하고 그 사람이 만든 것만
+        const offered = await pickMate('search-filter-creator')
+        await key('Enter')
+        check('★ 만든 사람 — 고르개에서 Enter 로 고르면 칩이 그 이름을 말하고 그 사람이 만든 것만',
+          offered && (await waitFor(`!document.querySelector('[data-testid="search-filter-person"]')
+            && ${chipText('search-filter-creator')}.includes(${JSON.stringify(mateName)})
+            && ${hitIds} === ${idsOf(theirs)}`, 8000)),
+          await state())
+
+        // ② Esc 는 고르개만 닫는다 — 덮개는 그대로
+        await clickSelector('[data-testid="search-filter-editor"]')
+        const pickerOpen = await waitFor(`document.querySelector('[data-testid="search-filter-person"]')?.getAttribute('data-filter') === 'editedBy'`, 5000)
+        await key('Escape')
+        check('Esc 는 사람 고르개만 닫는다 — 덮개와 결과는 그대로',
+          pickerOpen && (await waitFor(`!document.querySelector('[data-testid="search-filter-person"]')
+            && !!document.querySelector('[data-testid="search-overlay"]') && ${hitIds} === ${idsOf(theirs)}`, 5000)),
+          await state())
+
+        // ③ 최종 편집자(만든 사람과 다르다) — 눌러 고른다 · "내가 만든" 과 함께 걸면 만든 사람 칩이 "나"
+        await clickSelector('[data-testid="search-filter-clear"]')
+        await waitFor(`${hitIds} === ${idsOf(mine, theirs, touched, inTeam)}`, 8000)
+        const offeredAgain = await pickMate('search-filter-editor')
+        await clickSelector('[data-testid="search-filter-person"] [data-testid="db-people-option"]')
+        const editedByMate = offeredAgain && (await waitFor(`${hitIds} === ${idsOf(theirs, touched)}`, 8000))
+        await clickSelector('[data-testid="search-filter-mine"]')
+        check('★ 최종 편집자 — 동료가 마지막으로 고친 것 · "내가 만든" 과 함께 걸면 만든 사람 칩이 "나"',
+          editedByMate && (await waitFor(`${hitIds} === ${idsOf(touched)}
+            && ${chipText('search-filter-creator')}.includes('만든 사람: 나')
+            && ${chipText('search-filter-editor')}.includes(${JSON.stringify(mateName)})`, 8000)),
+          await state())
+
+        // ④ 팀스페이스 — 내 팀스페이스를 고르면 그 팀스페이스의 것만
+        await clickSelector('[data-testid="search-filter-clear"]')
+        await waitFor(`${hitIds} === ${idsOf(mine, theirs, touched, inTeam)}`, 8000)
+        await evaluate(`(() => {
+          const s = document.querySelector('[data-testid="search-filter-teamspace"]')
+          if (!s) return false
+          s.value = ${JSON.stringify(team)}
+          s.dispatchEvent(new Event('change', { bubbles: true }))
+          return true
+        })()`)
+        check('★ 팀스페이스 — 내 팀스페이스를 고르면 그 팀스페이스의 것만',
+          await waitFor(`${hitIds} === ${idsOf(inTeam)}`, 8000), await state())
+
+        // ⑤ 화면을 연 뒤 요금제가 내려가면 — 다음 질의에서 그렇게 말한다(다른 실패와 가른다 · 조용히 넓히지 않는다)
+        await setWorkspacePlan(workspaceId, 'free')
+        await clickSelector('[data-testid="search-filter-title"]')
+        check('★ 화면을 연 뒤 요금제가 내려가면 그렇게 말한다 — 결과를 넓히지 않는다',
+          await waitFor(`!!document.querySelector('[data-testid="search-plan-required"]')
+            && document.querySelectorAll('[data-testid="search-hit"]').length === 0`, 8000),
+          String(await evaluate(`document.querySelector('[data-testid="search-results"]')?.textContent?.slice(0, 200) ?? '(없음)'`)))
+        await key('Escape')
+
+        // 다시 그리면 — 고르개 대신 잠긴 칩
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${mine}` })
+        await waitFor(`!!document.querySelector('input[aria-label="페이지 제목"]')`, 15000)
+        await openOverlay()
+        check('요금제가 허락하지 않으면 팀스페이스 고르개 대신 잠긴 칩',
+          await waitFor(`!!document.querySelector('[data-testid="search-filter-teamspace-locked"]') && !document.querySelector('[data-testid="search-filter-teamspace"]')`, 8000),
+          String(await evaluate(`document.querySelector('[data-testid="search-filters"]')?.textContent ?? '(없음)'`)))
+        await key('Escape')
+      } finally {
+        await setWorkspacePlan(workspaceId, before)
+      }
+    }
+
     if (sectionIf('폼 — 서버 라우트 (7a-1 · F-13-01)')) {
       // 폼 뷰의 라우트 — 만들기(첫 질문은 제목) · 질문 바꾸기 · 설정 · 공개(토큰) · 거부 코드 · 표 화면의 탭에 선다(7a-3 부터 — 그 탭은
       // 편집 화면이다).

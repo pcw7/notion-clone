@@ -25,6 +25,7 @@ export function PeopleEditor({
   current,
   names,
   align = 'left',
+  inline = false,
   leading,
   onChange,
 }: {
@@ -33,6 +34,8 @@ export function PeopleEditor({
   current: readonly string[]
   names: PeopleNames
   align?: 'left' | 'right'
+  /** 떠 있지 않고 제자리에 그린다(검색 덮개의 사람 필터 · 10a-3b — 대화상자의 `overflow-hidden` 이 떠 있는 고르개를 자른다). */
+  inline?: boolean
   /** 찾기 칸 위에 끼우는 것 — 필터의 "나"(6g-2c · `people-value.tsx`). 칸의 고르개는 주지 않는다. */
   leading?: ReactNode
   /** 새 목록 · 방금 이름을 안 사람(칩이 깜빡이지 않게 이름 지도에 넣는다). */
@@ -88,9 +91,13 @@ export function PeopleEditor({
   return (
     <div
       data-testid="db-people-editor"
-      className={`absolute top-full z-20 mt-1 w-72 rounded-md border border-neutral-200 bg-white p-1 shadow-lg dark:border-neutral-700 dark:bg-neutral-900 ${
-        align === 'right' ? 'right-0' : 'left-0'
-      }`}
+      className={
+        inline
+          ? 'w-full rounded-md border border-neutral-200 bg-white p-1 dark:border-neutral-700 dark:bg-neutral-900'
+          : `absolute top-full z-20 mt-1 w-72 rounded-md border border-neutral-200 bg-white p-1 shadow-lg dark:border-neutral-700 dark:bg-neutral-900 ${
+              align === 'right' ? 'right-0' : 'left-0'
+            }`
+      }
     >
       {leading}
       {current.length > 0 && (
