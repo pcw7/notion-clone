@@ -58,7 +58,9 @@ import { DEFAULT_SEARCH_SORT, SEARCH_SORTS, type SearchSort } from '@/lib/search
 import {
   NO_SEARCH_FILTERS,
   SEARCH_EDITED_RANGES,
+  SEARCH_ME,
   activeFilterCount,
+  effectiveSearchFilters,
   narrowsWithoutQuery,
   pageIdInPath,
   searchFilterParams,
@@ -67,8 +69,11 @@ import {
 } from '@/lib/search/search-filters'
 import { usePathname, useRouter } from 'next/navigation'
 
+import { LEFT_USER } from '@/lib/database/cell-format'
 import { splitHighlight } from '@/lib/search/highlight'
 import type { PageIcon } from '@/lib/block/page-icon'
+import type { PeopleNames } from './db/[databaseId]/cell-view'
+import { PeopleEditor } from './db/[databaseId]/people-editor'
 import { PageIconView } from './page-icon-view'
 
 /** 사이드바 버튼처럼 오버레이 밖에서 여는 경로. */
@@ -97,6 +102,12 @@ export type SearchHitRow = {
 
 export type RecentRow = { id: string; title: string; icon: PageIcon | null }
 
+/** 팀스페이스 필터의 후보(10a-3b) — 내가 멤버인 보관되지 않은 팀스페이스. */
+export type SearchTeamspace = { id: string; name: string }
+
+/** 사람 필터 둘(10a-3b) — 만든 사람 · 최종 편집자. */
+type PersonFilter = 'createdBy' | 'editedBy'
+
 const UNTITLED = '제목 없음'
 
 /**
@@ -122,6 +133,8 @@ type QueryResult =
   | { kind: 'results'; rows: SearchHitRow[] }
   | { kind: 'too_short'; minLength: number }
   | { kind: 'error' }
+  /** 요금제가 팀스페이스 필터를 허락하지 않는다(10a-3b — 화면이 연 뒤 요금제가 내려갔다). 조용히 넓히지 않고 말한다. */
+  | { kind: 'plan_required' }
 
 /** 화면이 실제로 그리는 상태. `query` 와 `result` 에서 파생된다. */
 type Mode = { kind: 'recent' } | QueryResult
@@ -138,15 +151,27 @@ const SORT_LABEL: Readonly<Record<SearchSort, string>> = {
 /** 편집 기간 칩의 말(10a-2). */
 const EDITED_LABEL: Readonly<Record<SearchEditedRange, string>> = { day: '오늘', week: '7일', month: '30일', year: '1년' }
 
+/** 사람 필터 칩의 이름(10a-3b). */
+const PERSON_FILTER_LABEL: Readonly<Record<PersonFilter, string>> = { createdBy: '만든 사람', editedBy: '최종 편집자' }
+
+/** 팀스페이스 필터의 요금제(10a-3b · 엔타이틀먼트 `search.teamspace_filter`). */
+const TEAMSPACE_PLAN_NOTE = '팀스페이스로 좁히기는 Plus · Business · Enterprise 요금제에서 씁니다.'
+
 const CHIP = 'rounded-full border px-2 py-0.5 aria-pressed:border-blue-500 aria-pressed:bg-blue-50 aria-pressed:text-blue-700 dark:aria-pressed:bg-blue-950 dark:aria-pressed:text-blue-300'
 
 export function SearchOverlay({
   workspaceId,
   recent,
+  teamspaces,
+  teamspaceFilterAllowed,
 }: {
   workspaceId: string
   /** 빈 상태(F-07-04). 서버가 권한으로 걸러서 준다. */
   recent: RecentRow[]
+  /** 팀스페이스 필터의 후보(10a-3b) — 사이드바와 같은 목록(`listMyTeamspaces`). */
+  teamspaces: SearchTeamspace[]
+  /** 요금제가 팀스페이스 필터를 허락하는가(10a-3b — 표시 전용 · 서버가 질의를 만들 때 다시 묻는다). */
+  teamspaceFilterAllowed: boolean
 }) {
   const router = useRouter()
   const [open, setOpen] = useState(false)
@@ -159,10 +184,15 @@ export function SearchOverlay({
   const pathname = usePathname()
   const currentPageId = pageIdInPath(pathname)
   const [chosen, setChosen] = useState<SearchFilters>(NO_SEARCH_FILTERS)
+  // 팀스페이스는 후보에 있고 요금제가 허락할 때만 효과가 있다(10a-3b — 나가거나 보관되면 저절로 풀린다)
+  const teamspaceIds = useMemo(() => teamspaces.map((t) => t.id), [teamspaces])
   const filters = useMemo<SearchFilters>(
-    () => ({ ...chosen, within: chosen.within !== null && chosen.within === currentPageId ? chosen.within : null }),
-    [chosen, currentPageId],
+    () => effectiveSearchFilters(chosen, { currentPageId, teamspaceIds, teamspaceAllowed: teamspaceFilterAllowed }),
+    [chosen, currentPageId, teamspaceIds, teamspaceFilterAllowed],
   )
+  // 사람 필터의 고르개(10a-3b) — 펼친 것 하나 · 고른 사람의 이름(고른 순간에 안다 — 주소에 싣지 않으므로 다시 읽어 올 일이 없다)
+  const [picker, setPicker] = useState<PersonFilter | null>(null)
+  const [names, setNames] = useState<PeopleNames>({})
   const narrows = useMemo(() => narrowsWithoutQuery(filters), [filters])
   const filterQuery = useMemo(
     () =>
@@ -207,6 +237,7 @@ export function SearchOverlay({
 
   const close = useCallback(() => {
     setOpen(false)
+    setPicker(null)
     setQuery('')
     setResult(null)
     setIndex(0)
@@ -282,7 +313,9 @@ export function SearchOverlay({
       void fetch(url, { signal: controller.signal })
         .then(async (res) => {
           if (!res.ok) {
-            setResult({ kind: 'error' })
+            // 팀스페이스 필터의 요금제(10a-3b) — 다른 실패와 가른다(조용히 넓히지 않고 그 까닭을 말한다)
+            const body = (await res.json().catch(() => null)) as { error?: unknown } | null
+            setResult(res.status === 403 && body?.error === 'plan_required' ? { kind: 'plan_required' } : { kind: 'error' })
             return
           }
           const data = (await res.json()) as {
@@ -329,6 +362,18 @@ export function SearchOverlay({
       if (event.isComposing) return
       if (!['ArrowDown', 'ArrowUp', 'Enter', 'Escape'].includes(event.key)) return
 
+      // 사람 고르개가 펼쳐져 있으면(10a-3b) ↑↓ · Enter 는 고르개의 것이다 — 여기(window 의 capture)서 멈추면 고르개의 입력까지 가지 않는다.
+      // Esc 는 고르개만 닫는다(덮개는 그대로).
+      if (picker !== null) {
+        if (event.key === 'Escape') {
+          event.preventDefault()
+          event.stopPropagation()
+          setPicker(null)
+          inputRef.current?.focus()
+        }
+        return
+      }
+
       // 에디터·사이드바의 window 리스너까지 내려보내지 않는다. `preventDefault()`
       // 로는 막을 수 없다(§6) — 그건 브라우저 기본 동작만 막는다.
       //
@@ -365,9 +410,38 @@ export function SearchOverlay({
     }
     window.addEventListener('keydown', onKeyDown, true)
     return () => window.removeEventListener('keydown', onKeyDown, true)
-  }, [open, rows, index, close, openRow])
+  }, [open, rows, index, close, openRow, picker])
 
   if (!open) return null
+
+  /** 사람 필터 값의 이름 — 나 · 고른 사람(모르면 떠난 사용자). */
+  const personName = (value: string): string => (value === SEARCH_ME ? '나' : Object.hasOwn(names, value) ? names[value]! : LEFT_USER)
+
+  /** 사람 필터를 고른다(10a-3b) — 한 사람 · 고르개를 닫고 입력으로 돌아간다. */
+  const pickPerson = (which: PersonFilter, value: string | null) => {
+    setChosen((f) => ({ ...f, [which]: value }))
+    setPicker(null)
+    inputRef.current?.focus()
+  }
+
+  /** 사람 필터 칩 — 누르면 고르개를 펼치고 접는다. 포커스를 옮기지 않는다(고르개의 입력이 받는다 · 접힘은 그 입력이 포커스를 잃을 때). */
+  const personChip = (which: PersonFilter, testId: string) => {
+    const value = filters[which]
+    return (
+      <button
+        type="button"
+        aria-pressed={value !== null}
+        aria-expanded={picker === which}
+        data-testid={testId}
+        onMouseDown={(event) => event.preventDefault()}
+        onClick={() => setPicker((p) => (p === which ? null : which))}
+        className={CHIP}
+      >
+        {PERSON_FILTER_LABEL[which]}
+        {value !== null && `: ${personName(value)}`} ▾
+      </button>
+    )
+  }
 
   return (
     <div
@@ -423,6 +497,8 @@ export function SearchOverlay({
           >
             내가 만든
           </button>
+          {personChip('createdBy', 'search-filter-creator')}
+          {personChip('editedBy', 'search-filter-editor')}
           <select
             aria-label="편집 기간"
             data-testid="search-filter-edited"
@@ -441,6 +517,32 @@ export function SearchOverlay({
               </option>
             ))}
           </select>
+          {/* 팀스페이스(10a-3b) — 내가 멤버인 것 · 요금제가 허락하지 않으면 고르개 대신 그 까닭 */}
+          {teamspaces.length > 0 &&
+            (teamspaceFilterAllowed ? (
+              <select
+                aria-label="팀스페이스"
+                data-testid="search-filter-teamspace"
+                value={filters.teamspace ?? ''}
+                onChange={(event) => {
+                  const value = event.target.value
+                  setChosen((f) => ({ ...f, teamspace: value === '' ? null : value }))
+                  inputRef.current?.focus()
+                }}
+                className="max-w-[10rem] rounded-full border border-neutral-200 bg-transparent px-1.5 py-0.5 dark:border-neutral-700"
+              >
+                <option value="">팀스페이스 — 전체</option>
+                {teamspaces.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <span data-testid="search-filter-teamspace-locked" title={TEAMSPACE_PLAN_NOTE} className="rounded-full border border-dashed border-neutral-200 px-2 py-0.5 text-neutral-400 dark:border-neutral-700">
+                팀스페이스 🔒
+              </span>
+            ))}
           {currentPageId !== null && (
             <button
               type="button"
@@ -469,6 +571,47 @@ export function SearchOverlay({
             </button>
           )}
         </div>
+        {/* 사람 고르개(10a-3b) — 칩 줄 아래 제자리에(떠 있으면 대화상자가 자른다). 표의 사람 칸과 같은 고르개 · 맨 위 "나" */}
+        {picker !== null && (
+          <div
+            data-testid="search-filter-person"
+            data-filter={picker}
+            onBlur={(event) => {
+              if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setPicker(null)
+            }}
+            className="flex-none border-b border-neutral-100 px-4 py-1.5 dark:border-neutral-800"
+          >
+            <PeopleEditor
+              // 다른 사람 필터로 바꾸면 새로 — 찾던 말을 넘기지 않고 입력이 포커스를 받는다
+              key={picker}
+              inline
+              workspaceId={workspaceId}
+              current={filters[picker] === null || filters[picker] === SEARCH_ME ? [] : [filters[picker]!]}
+              names={names}
+              leading={
+                <button
+                  type="button"
+                  data-testid="search-filter-person-me"
+                  data-picked={filters[picker] === SEARCH_ME || undefined}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => pickPerson(picker, filters[picker] === SEARCH_ME ? null : SEARCH_ME)}
+                  className="mb-1 flex w-full items-center gap-2 rounded px-2 py-1 text-left text-sm hover:bg-neutral-100 dark:hover:bg-neutral-800"
+                >
+                  <span className="w-3 text-xs text-blue-600" aria-hidden>
+                    {filters[picker] === SEARCH_ME ? '✓' : ''}
+                  </span>
+                  <span className="flex-1">나</span>
+                </button>
+              }
+              onChange={(ids, known) => {
+                setNames((n) => ({ ...n, ...known }))
+                // 한 사람 — 새로 든 사람이 값이다. 고른 사람을 다시 고르면 푼다
+                const current = filters[picker]
+                pickPerson(picker, ids.find((id) => id !== current) ?? null)
+              }}
+            />
+          </div>
+        )}
         {/* 정렬(8l-2) — 찾는 동안만 뜻이 있다(빈 입력은 최근 방문). F-07-02 의 다섯 그대로. */}
         {searching && (
           <label className="flex flex-none items-center gap-2 border-b border-neutral-100 px-4 py-1 text-xs text-neutral-500 dark:border-neutral-800">
@@ -554,6 +697,12 @@ export function SearchOverlay({
           {mode.kind === 'too_short' && (
             <p className="px-4 py-6 text-sm text-neutral-400">
               {mode.minLength}자 이상 입력하세요.
+            </p>
+          )}
+
+          {mode.kind === 'plan_required' && (
+            <p role="alert" data-testid="search-plan-required" className="px-4 py-6 text-sm text-amber-700 dark:text-amber-400">
+              {TEAMSPACE_PLAN_NOTE} 팀스페이스 필터를 풀어 보세요.
             </p>
           )}
 
