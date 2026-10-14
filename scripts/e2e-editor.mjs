@@ -9047,7 +9047,8 @@ async function main() {
       const rowId = row?.id
       const ROW_URL = `${BASE}/w/${workspaceId}/${rowId}`
 
-      // 표의 제목 칸 — "열기"
+      // 표의 제목 칸 — "열기". 이 절은 전체 페이지의 행 화면을 본다 — 뷰의 열기 방식을 전체 페이지로(기본은 사이드 피크 · 8n-1)
+      await fetch(`${api}/views/${viewId}`, { method: 'PATCH', headers: authed, body: JSON.stringify({ openPagesIn: 'full_page' }) })
       await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${dbId}` })
       await waitFor(`!!document.querySelector('[data-testid="db-row-open"]')`, 15000)
       check('제목 칸의 "열기"는 제목의 글자에 섞이지 않는다', (await evaluate(`document.querySelector('[data-testid="db-row-title"]')?.textContent`)) === '첫 행',
@@ -9128,6 +9129,7 @@ async function main() {
       const board = (await readRes(await fetch(`${api}/databases/${dbId}/views`, { method: 'POST', headers: authed, body: JSON.stringify({ type: 'board' }) }))).body?.view
       await addProp('단계', 'select')
       const boardView = board?.id ?? (await readRes(await fetch(`${api}/databases/${dbId}/views`, { method: 'POST', headers: authed, body: JSON.stringify({ type: 'board' }) }))).body?.view?.id
+      await fetch(`${api}/views/${boardView}`, { method: 'PATCH', headers: authed, body: JSON.stringify({ openPagesIn: 'full_page' }) })
       await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${dbId}?v=${boardView}` })
       await waitFor(`!!document.querySelector('[data-testid="db-board-card"] [data-testid="db-row-open"]')`, 15000)
       check('카드의 "열기"도 제목의 글자에 섞이지 않는다', (await evaluate(`document.querySelector('[data-testid="db-board-card-title"]')?.textContent`)) === '고친 행',
@@ -12587,7 +12589,11 @@ async function main() {
       check('★ "더 보기"도 부모만 — 다음 카드는 자식이 아니라 새 카드', await waitFor(`[...document.querySelectorAll('[data-testid="db-gallery-card-title"]')].map((e) => e.textContent).join('|') === '첫 카드|둘째 카드|새 카드'`, 8000), await cardTitles())
 
       await clickOn(`[data-row-id="${first}"] [data-testid="db-gallery-open"]`)
-      check('★ 카드의 제목을 누르면 그 행 페이지로 간다', await waitFor(`location.pathname === ${JSON.stringify(`/w/${workspaceId}/${first}`)}`, 15000), await evaluate('location.pathname'))
+      // 기본 열기 방식은 사이드 피크다(8n-1 · F-02-20) — 갤러리를 떠나지 않고 그 행이 패널에 선다
+      check('★ 카드의 제목을 누르면 그 행이 사이드 피크로 열린다',
+        await waitFor(`new URLSearchParams(location.search).get('peek') === ${JSON.stringify(first)} && location.pathname === ${JSON.stringify(`/w/${workspaceId}/db/${db.id}`)}
+          && document.querySelector('[data-testid="row-peek"]')?.dataset.mode === 'side'`, 15000),
+        await evaluate('location.pathname + location.search'))
     }
 
     if (sectionIf('갤러리 — 카드 미리보기 (2f-2 · F-04-05)')) {
@@ -12902,7 +12908,10 @@ async function main() {
       // 움직이지 않고 놓으면 링크가 열린다(끌기가 클릭을 막지 않는다)
       const still = await center(`[data-testid="db-cal-event"][data-row-id="${single}"] [data-testid="db-cal-event-open"]`)
       await click(still.x, still.y)
-      check('끌지 않고 누르면 그 행 페이지가 열린다', await waitFor(`location.pathname === ${JSON.stringify(`/w/${workspaceId}/${single}`)}`, 15000), await evaluate('location.pathname'))
+      // 기본 열기 방식은 사이드 피크다(8n-1)
+      check('끌지 않고 누르면 그 행이 사이드 피크로 열린다',
+        await waitFor(`new URLSearchParams(location.search).get('peek') === ${JSON.stringify(single)} && !!document.querySelector('[data-testid="row-peek"]')`, 15000),
+        await evaluate('location.pathname + location.search'))
     }
 
     if (sectionIf('개인 필터 · 정렬 — 서버 (2h-1 · F-04-17)')) {
@@ -16538,6 +16547,97 @@ async function main() {
       const sentAnswers = JSON.parse((await evaluate(`window.__sentBody`)) ?? '{}').answers ?? {}
       check('★ 숨은 질문의 답(써 두었던 메모)은 보내지 않는다 — 서버만 버리는 것이 아니다',
         Object.hasOwn(sentAnswers, kind) && !Object.hasOwn(sentAnswers, memo), JSON.stringify(sentAnswers))
+    }
+
+    if (sectionIf('페이지 열기 모드 — 사이드 피크 (8n-1 · F-02-20)')) {
+      // 표의 "열기" 가 행을 사이드 피크로 연다(기본) — 주소는 데이터베이스 그대로 + peek · 뒤의 표가 남는다 · 피크 안은 행 화면 그대로(제목 셀 ·
+      // 본문 편집기) · Esc · 닫기 · 전체 페이지로 · 없는 행은 패널 안에서 · 가운데 피크 · 전체 페이지(행 화면으로).
+      const stamp = Date.now().toString(36)
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `피크 표 ${stamp}` })).body.database
+      const viewId = db.defaultViewId
+      const titleId = (await api('GET', `/views/${viewId}`)).body?.view?.columns?.find((c) => c.type === 'title')?.propertyId
+      const rowTitle = `피크 행 ${stamp}`
+      const row = (await api('POST', `/views/${viewId}/rows`, { cells: [{ propertyId: titleId, value: { type: 'title', title: [textRun(rowTitle)] } }] })).body?.row
+      const DB_PATH = `/w/${workspaceId}/db/${db.id}`
+      const peekTitle = `(document.querySelector('[data-testid="row-peek"] [data-testid="row-title"]')?.value ?? null)`
+      const openRow = async () => {
+        await waitFor(`!!document.querySelector('[data-testid="db-row-open"]')`, 15000)
+        for (let i = 0; i < 6 && !(await evaluate(`!!document.querySelector('[data-testid="row-peek"]')`)); i += 1) {
+          await clickSelector('[data-testid="db-row-open"]')
+          await waitFor(`!!document.querySelector('[data-testid="row-peek"]')`, 2000)
+        }
+      }
+
+      // ① 열면 — 주소는 데이터베이스 + peek · 뒤의 표가 남는다 · 피크 안은 행 화면(제목 셀 · 본문 편집기)
+      await send('Page.navigate', { url: `${BASE}${DB_PATH}` })
+      await openRow()
+      check('★ 표의 "열기" 는 사이드 피크로 연다 — 주소는 데이터베이스 + peek · 뒤의 표가 남는다 · 안은 행 화면(제목 · 본문)',
+        await waitFor(`location.pathname === ${JSON.stringify(DB_PATH)} && new URLSearchParams(location.search).get('peek') === ${JSON.stringify(row?.id)}
+          && document.querySelector('[data-testid="row-peek"]')?.dataset.mode === 'side'
+          && ${peekTitle} === ${JSON.stringify(rowTitle)}
+          && !!document.querySelector('[data-testid="row-peek"] .blk-editor')
+          && !!document.querySelector('[data-testid="db-row-title"]')`, 15000),
+        String(await evaluate(`location.pathname + location.search + ' ' + (${peekTitle} ?? '(제목 없음)')`)))
+
+      // ② Esc — 글을 쓰는 칸 밖이면 닫는다
+      await evaluate(`document.activeElement?.blur?.()`)
+      await key('Escape')
+      check('★ Esc 로 닫는다 — peek 이 주소에서 빠진다',
+        await waitFor(`!document.querySelector('[data-testid="row-peek"]') && !new URLSearchParams(location.search).has('peek')`, 8000),
+        await evaluate('location.pathname + location.search'))
+
+      // ③ 닫기 단추 · ④ 전체 페이지로
+      await openRow()
+      await clickSelector('[data-testid="peek-close"]')
+      const closed = await waitFor(`!document.querySelector('[data-testid="row-peek"]') && location.pathname === ${JSON.stringify(DB_PATH)}`, 8000)
+      await openRow()
+      await clickSelector('[data-testid="peek-expand"]')
+      check('★ 닫기 · 전체 페이지로 열기 — 행 화면으로 간다',
+        closed && (await waitFor(`location.pathname === ${JSON.stringify(`/w/${workspaceId}/${row?.id}`)} && !document.querySelector('[data-testid="row-peek"]')
+          && (document.querySelector('[data-testid="row-title"]')?.value ?? null) === ${JSON.stringify(rowTitle)}`, 15000)),
+        await evaluate('location.pathname'))
+
+      // ⑤ 없는 행 — 데이터베이스 화면은 그대로 · 패널 안에서 그렇다고
+      await send('Page.navigate', { url: `${BASE}${DB_PATH}?peek=${randomUUID()}` })
+      check('★ 없는 행의 피크 — 데이터베이스 화면은 그대로 · 패널 안에서 열 수 없다고',
+        await waitFor(`!!document.querySelector('[data-testid="row-peek"] [data-testid="peek-missing"]') && !!document.querySelector('[data-testid="db-row-title"]')`, 15000),
+        String(await evaluate(`document.querySelector('[data-testid="row-peek"]')?.textContent?.slice(0, 120) ?? '(패널 없음)'`)))
+
+      // ⑥ 가운데 피크 · 전체 페이지(열기 방식 — 고르개는 8n-2)
+      await api('PATCH', `/views/${viewId}`, { openPagesIn: 'center_peek' })
+      await send('Page.navigate', { url: `${BASE}${DB_PATH}` })
+      await openRow()
+      const centered = await waitFor(`document.querySelector('[data-testid="row-peek"]')?.dataset.mode === 'center'`, 8000)
+      await api('PATCH', `/views/${viewId}`, { openPagesIn: 'full_page' })
+      await send('Page.navigate', { url: `${BASE}${DB_PATH}` })
+      await waitFor(`!!document.querySelector('[data-testid="db-row-open"]')`, 15000)
+      for (let i = 0; i < 6 && !(await evaluate(`location.pathname === ${JSON.stringify(`/w/${workspaceId}/${row?.id}`)}`)); i += 1) {
+        await clickSelector('[data-testid="db-row-open"]')
+        await waitFor(`location.pathname === ${JSON.stringify(`/w/${workspaceId}/${row?.id}`)}`, 2000)
+      }
+      check('★ 가운데 피크는 가운데 상자로 · 전체 페이지면 행 화면으로 간다',
+        centered && (await waitFor(`location.pathname === ${JSON.stringify(`/w/${workspaceId}/${row?.id}`)} && !document.querySelector('[data-testid="row-peek"]')`, 15000)),
+        JSON.stringify([centered, await evaluate('location.pathname')]))
+
+      // ⑦ 보드 카드의 "열기" 도 그 뷰의 열기 방식(기본 — 사이드 피크)을 따른다
+      await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '단계', type: 'select' })
+      const board = (await api('POST', `/databases/${db.id}/views`, { type: 'board' })).body?.view
+      await send('Page.navigate', { url: `${BASE}${DB_PATH}?v=${board?.id}` })
+      await waitFor(`!!document.querySelector('[data-testid="db-board-card"] [data-testid="db-row-open"]')`, 15000)
+      for (let i = 0; i < 6 && !(await evaluate(`!!document.querySelector('[data-testid="row-peek"]')`)); i += 1) {
+        await clickSelector('[data-testid="db-board-card"] [data-testid="db-row-open"]')
+        await waitFor(`!!document.querySelector('[data-testid="row-peek"]')`, 2000)
+      }
+      check('★ 보드 카드의 "열기" 도 사이드 피크로 — 보드 뷰를 지닌 채',
+        await waitFor(`new URLSearchParams(location.search).get('peek') === ${JSON.stringify(row?.id)} && new URLSearchParams(location.search).get('v') === ${JSON.stringify(board?.id)}
+          && document.querySelector('[data-testid="row-peek"]')?.dataset.mode === 'side'`, 8000),
+        await evaluate('location.pathname + location.search'))
     }
 
     if (sectionIf('폼 — 서버 라우트 (7a-1 · F-13-01)')) {

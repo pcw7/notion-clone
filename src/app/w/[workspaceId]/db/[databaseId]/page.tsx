@@ -99,6 +99,10 @@ import { AutomationPanel } from './automation-panel'
 import { dbAutomationBadge } from '@/lib/automation/db-automation'
 import type { DataSourceSummary } from '@/lib/database/data-source'
 import type { DatabaseAccess } from '@/lib/database/database'
+import { asBlockId } from '@/lib/ids'
+import { databaseHref } from '@/lib/database/open-pages'
+import { PageContent } from '../../[pageId]/page-content'
+import { RowPeek } from './row-peek'
 
 const UNTITLED = '제목 없음'
 
@@ -134,7 +138,7 @@ export default async function DatabasePage({
   searchParams,
 }: PageProps<'/w/[workspaceId]/db/[databaseId]'>) {
   const { workspaceId, databaseId } = await params
-  const { v, q, m } = await searchParams
+  const { v, q, m, peek } = await searchParams
   // 읽기 전의 시각 — 화면이 구독할 때 들고 가 그 사이의 변경을 메운다(#250 · `use-table-changes.ts`)
   const renderedAt = feedClock()
   // 뷰 검색어(2e · F-04-27) — 주소의 `q`. 뷰에 저장하지 않는다. 서버가 다듬는다(빈 글 · 상한).
@@ -232,6 +236,14 @@ export default async function DatabasePage({
 
   const view = await getView(ctx, current.id)
   if (!view.ok) notFound()
+
+  // 페이지 열기 모드(8n-1 · F-02-20 · 정본 §3.6 [보강] 페이지 열기 모드) — 지금 주소(뷰 · 검색 · 달)가 피크를 닫는 주소이고 피크를 여는
+  // 주소의 바탕이다. 전체 페이지 뷰는 행 링크가 행 화면으로 간다(`peekBase` null).
+  const firstOf = (value: string | string[] | undefined) => (Array.isArray(value) ? value[0] : value) ?? null
+  const here = databaseHref(workspaceId, databaseId, { v: current.id, q: firstOf(q), m: firstOf(m) })
+  const peekBase = view.value.openPagesIn === 'full_page' ? null : here
+  const peekId = firstOf(peek)
+  const peekRow = peekId !== null && isUuid(peekId) ? asBlockId(peekId) : null
 
   const isBoard = view.value.type === 'board'
   const isGallery = view.value.type === 'gallery'
@@ -603,6 +615,7 @@ export default async function DatabasePage({
             defaultTemplate={defaultTemplate}
             calculation={groupCalculation}
             search={search}
+            peekBase={peekBase}
             renderedAt={renderedAt}
           />
         ) : (
@@ -629,6 +642,7 @@ export default async function DatabasePage({
             truncated={calendarPage.value.truncated}
             access={contentAccess}
             search={search}
+            peekBase={peekBase}
             renderedAt={renderedAt}
           />
         ) : (
@@ -659,6 +673,7 @@ export default async function DatabasePage({
             search={search}
             layout={view.value.gallery}
             covers={galleryCovers}
+            peekBase={peekBase}
             renderedAt={renderedAt}
           />
         )
@@ -688,11 +703,18 @@ export default async function DatabasePage({
             subItems={subItems}
             calculations={calculations}
             search={search}
+            peekBase={peekBase}
             renderedAt={renderedAt}
           />
         )
       )}
       </>
+      )}
+      {/* 행 피크(8n-1) — 행 화면의 몸 그대로 · 바꿔 열면 새로 선다(`key`) · 볼 수 없으면 패널 안에서 그렇다고 */}
+      {peekRow !== null && (
+        <RowPeek mode={view.value.openPagesIn === 'center_peek' ? 'center' : 'side'} closeHref={here} fullHref={`/w/${workspaceId}/${peekRow}`}>
+          <PageContent key={peekRow} ctx={ctx} workspaceId={workspaceId} pageId={peekRow} shareOpen={false} renderedAt={renderedAt} frame="peek" />
+        </RowPeek>
       )}
     </main>
   )

@@ -60,6 +60,7 @@
  *   오류 문구가 뜬다 — 조용히 사라지지 않고 **저장되지 않았다고 말한다.**
  */
 
+import { rowOpenHref } from '@/lib/database/open-pages'
 import Link from 'next/link'
 import { useEffect, useMemo, useRef, useState, type FocusEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react'
 import { useRouter } from 'next/navigation'
@@ -189,6 +190,8 @@ export function DatabaseTable(props: {
    */
   search?: string | null
   /** 서버 화면이 읽기 전의 시각(ms) — 구독이 붙기 전의 변경을 메운다(#250 · `use-table-changes.ts`). */
+  /** 행을 여는 주소의 바탕(8n-1 · F-02-20) — 지금 데이터베이스 화면의 주소면 피크로, null 이면 행 화면으로(전체 페이지). */
+  peekBase?: string | null
   renderedAt?: number
   /**
    * 레코드 모양의 방향(3a-2) — `column`(기본)은 속성을 세로로 쌓고 이름이 왼쪽에 선다(속성 묶음 · 템플릿 화면). `row` 는 가로로
@@ -1320,7 +1323,8 @@ export function DatabaseTable(props: {
                           </button>
                         )}
                         <Link
-                          href={`/w/${workspaceId}/${row.id}`}
+                          href={rowOpenHref(workspaceId, row.id, props.peekBase ?? null)}
+                          scroll={false}
                           data-testid="db-row-open"
                           aria-label={`${row.title || '제목 없음'} 열기`}
                           tabIndex={-1}
