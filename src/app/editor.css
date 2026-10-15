@@ -1107,3 +1107,16 @@ span.blk-equation {
   .blk-editor .blk-button-press { border-color: rgb(64 64 64); background: rgb(23 23 23); color: rgb(229 229 229); }
   .blk-editor .blk-button-press:hover:not(:disabled) { background: rgb(38 38 38); }
 }
+
+/*
+  페이지 안 찾기(10b · F-07-05) — 데코레이션이 붙이는 클래스다(`lib/editor/find-in-page.ts`). 문서에 마크를 넣지 않는다. 지금 매칭은 진하게.
+*/
+.blk-editor .blk-find { background: rgb(254 240 138); border-radius: 2px; }
+.blk-editor .blk-find-current { background: rgb(251 146 60); outline: 1px solid rgb(234 88 12); }
+/* 어두운 테마 — `dark` 변형(8h · 위의 코멘트 하이라이트와 같다). */
+:root {
+  @variant dark {
+    .blk-editor .blk-find { background: rgb(113 63 18); }
+    .blk-editor .blk-find-current { background: rgb(194 65 12); outline-color: rgb(251 146 60); }
+  }
+}

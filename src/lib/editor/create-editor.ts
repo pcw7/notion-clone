@@ -43,6 +43,7 @@ import { blockSelectionPlugin } from './block-selection-plugin.ts'
 import { codeHighlightPlugin } from './code-highlight.ts'
 import { columnLayoutPlugin } from './column-layout.ts'
 import { collapsePlugin } from './collapse-plugin.ts'
+import { findPlugin } from './find-in-page.ts'
 import { createKeydownHandler, type EditorKeymapDeps } from './keymap.ts'
 import { inputRulesPlugin } from './input-rules.ts'
 import { createNodeViews, type NodeViewDeps } from './node-views.ts'
@@ -144,6 +145,8 @@ export function editingPlugins(deps: EditorDeps): Plugin[] {
     columnLayoutPlugin(),
     // breadcrumb(F-01-16 · 8b-2) — 서버가 준 이 페이지의 경로를 breadcrumb 노드의 데코레이션에 싣는다(`breadcrumb-plugin.ts`).
     breadcrumbPlugin(() => deps.breadcrumbTrail?.() ?? null),
+    // 페이지 안 찾기(F-07-05 · 10b) — 매칭을 데코레이션으로 그린다. 문서에 쓰지 않는다(`find-in-page.ts` 머리말).
+    findPlugin(),
     // 멘션 · 수식의 서식을 attr 에 비춘다 — 협업 바인딩이 Y.Doc 에 싣는 것은 attr 뿐이다(`atom-marks.ts`).
     atomMarksPlugin(),
     // id 스탬프는 마지막이다. 다른 플러그인이 만든 노드까지 훑어야 한다.
