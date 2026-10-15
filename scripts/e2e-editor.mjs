@@ -17073,6 +17073,72 @@ async function main() {
       await key('Escape')
     }
 
+    if (sectionIf('홈 — 성격별 목록 (10c-1 · F-07-19)')) {
+      // 새 워크스페이스에서 — 비면 시작 카드 · 페이지를 놓으면 섹션이 그 차례로 선다(최근 방문 · 즐겨찾기 · 팀스페이스 · 개인 · 워크스페이스) ·
+      // 빈 섹션은 없다 · 같은 페이지가 여러 섹션에 · 처음 6개와 "모두 보기" · 데이터베이스 루트는 데이터베이스 화면으로.
+      const stamp = Date.now().toString(36)
+      const created = await fetch(`${BASE}/api/workspaces`, { method: 'POST', headers: authed, body: JSON.stringify({ name: `홈 ${stamp}` }) })
+      const ws = (await created.json()).workspaceId
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${ws}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const keys = `[...document.querySelectorAll('[data-testid="home-section"]')].map((s) => s.getAttribute('data-key'))`
+      const itemsIn = (key) => `[...document.querySelectorAll('[data-testid="home-section"][data-key="${key}"] [data-testid="home-item"]')].map((a) => a.getAttribute('data-page-id'))`
+      const moreOf = (key) => `document.querySelector('[data-testid="home-section"][data-key="${key}"] [data-testid="home-section-more"]')`
+      const same = (expr, value) => `JSON.stringify(${expr}) === ${JSON.stringify(JSON.stringify(value))}`
+      const homeState = () => evaluate(`JSON.stringify({ keys: ${keys}, empty: !!document.querySelector('[data-testid="home-empty"]'),
+        recent: ${itemsIn('recent')}, workspace: ${itemsIn('workspace')}, more: ${moreOf('workspace')}?.textContent ?? null })`)
+
+      // ① 비면 시작 카드
+      await send('Page.navigate', { url: `${BASE}/w/${ws}` })
+      check('★ 빈 워크스페이스의 홈 — 빈 섹션 대신 시작 카드',
+        await waitFor(`!!document.querySelector('[data-testid="home-empty"]') && document.querySelectorAll('[data-testid="home-section"]').length === 0`, 15000),
+        await homeState())
+
+      // ② 섹션 — 그 차례 · 빈 섹션(공유됨)은 없다 · 같은 페이지가 여러 섹션에
+      const page = async (body) => (await api('POST', '/pages', body)).body?.page?.id
+      const shared = await page({ title: `홈 공용 ${stamp}` })
+      const mine = await page({ title: `홈 개인 ${stamp}`, privateTop: true })
+      const team = (await api('POST', '/teamspaces', { name: `홈 팀 ${stamp}` })).body?.teamspace?.id
+      const teamPage = await page({ title: `홈 팀 페이지 ${stamp}`, teamspaceId: team })
+      await api('POST', `/pages/${shared}/favorite`)
+      // 최근 방문은 연 페이지다 — 개인 페이지를 연다
+      await send('Page.navigate', { url: `${BASE}/w/${ws}/${mine}` })
+      await waitFor(`!!document.querySelector('input[aria-label="페이지 제목"]')`, 15000)
+      const sectionsReady = `${same(keys, ['recent', 'favorites', `teamspace:${team}`, 'private', 'workspace'])}
+        && ${same(itemsIn('recent'), [mine])} && ${same(itemsIn('favorites'), [shared])}
+        && ${same(itemsIn(`teamspace:${team}`), [teamPage])} && ${same(itemsIn('private'), [mine])}
+        && ${same(itemsIn('workspace'), [shared])}`
+      let ready = false
+      for (let i = 0; i < 3 && !ready; i += 1) {
+        await send('Page.navigate', { url: `${BASE}/w/${ws}` })
+        ready = await waitFor(sectionsReady, 8000)
+      }
+      check('★ 섹션이 그 차례로 선다 — 최근 방문 · 즐겨찾기 · 팀스페이스 · 개인 · 워크스페이스 · 빈 섹션은 없다 · 같은 페이지가 여러 섹션에',
+        ready, await homeState())
+
+      // ③ 처음 6개 · "모두 보기 (N)" 로 편다 · 펴면 "접기"
+      for (let i = 0; i < 6; i += 1) await page({ title: `홈 더 ${i} ${stamp}` })
+      const dbId = (await api('POST', '/databases', { name: `홈 표 ${stamp}` })).body?.database?.id
+      await send('Page.navigate', { url: `${BASE}/w/${ws}` })
+      const folded = await waitFor(`${itemsIn('workspace')}.length === 6 && (${moreOf('workspace')}?.textContent ?? '').includes('모두 보기 (8)')`, 15000)
+      for (let i = 0; i < 6 && (await evaluate(`${itemsIn('workspace')}.length`)) !== 8; i += 1) {
+        await clickSelector('[data-testid="home-section"][data-key="workspace"] [data-testid="home-section-more"]')
+        await waitFor(`${itemsIn('workspace')}.length === 8`, 2000)
+      }
+      check('섹션은 처음 6개 · "모두 보기 (N)" 로 편다 · 펴면 "접기"',
+        folded && (await waitFor(`${itemsIn('workspace')}.length === 8 && ${moreOf('workspace')}?.textContent === '접기'`, 5000)),
+        await homeState())
+
+      // ④ 데이터베이스 루트는 데이터베이스 화면으로
+      check('데이터베이스 루트의 항목은 데이터베이스 화면으로 연다',
+        await waitFor(`(document.querySelector('[data-testid="home-item"][data-page-id="${dbId}"]')?.getAttribute('href') ?? '').endsWith('/db/${dbId}')`, 5000),
+        String(await evaluate(`document.querySelector('[data-testid="home-item"][data-page-id="${dbId}"]')?.getAttribute('href') ?? '(없음)'`)))
+    }
+
     if (sectionIf('폼 — 서버 라우트 (7a-1 · F-13-01)')) {
       // 폼 뷰의 라우트 — 만들기(첫 질문은 제목) · 질문 바꾸기 · 설정 · 공개(토큰) · 거부 코드 · 표 화면의 탭에 선다(7a-3 부터 — 그 탭은
       // 편집 화면이다).

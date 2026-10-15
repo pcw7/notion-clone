@@ -9,19 +9,28 @@
  * 403 을 주면 "그 워크스페이스는 존재한다"를 알려주는 셈이 된다.
  *
  * 관리 절(멤버 · 초대 · 게스트 · 그룹 · 정책 · 내보내기)은 설정 화면으로 옮겼다(8g-1 · 8g-2 · F-17-12) — 홈은 페이지로 들어가는 곳이다.
+ *
+ * Home(10c-1 · F-07-19 · 정본 §3.9 [보강] Home) — 검색 없이 성격별 목록으로 찾는다: 최근 방문 · 즐겨찾기 · 팀스페이스 · 공유됨 · 개인 ·
+ * 워크스페이스. 목록은 모두 이미 있는 것(각자 조회 시점에 권한을 거른다)이고 한 번에 읽는다. 빈 섹션은 세우지 않고 모두 비면 시작 카드.
  */
 
 import Link from 'next/link'
 
 import { requirePageSession } from '@/lib/auth/page-session'
-import { listChildPages } from '@/lib/block/page'
+import type { PageIcon } from '@/lib/block/page-icon'
+import { groupSidebarRoots, listPageTree } from '@/lib/block/page-tree'
+import { HOME_RECENT_LIMIT, homeSections, type HomeItem } from '@/lib/nav/home-sections'
+import { listFavorites, listRecent } from '@/lib/nav/recent'
+import { listMyTeamspaces } from '@/lib/workspace/teamspace'
 import { visiblePanels } from '@/lib/settings/panels'
 import { workspaceNameOf } from '@/lib/workspace/list'
+import { HomeSection } from './home-section'
 import { NewPageButton } from './new-page-button'
-import { PageIconView } from './page-icon-view'
 
-/** 제목 없는 페이지의 표시 문구. 저장된 값은 빈 배열이다. */
-const UNTITLED = '제목 없음'
+/** 목록의 한 줄 → Home 의 항목. 최근 방문 · 즐겨찾기는 페이지뿐이고, 트리의 루트는 데이터베이스일 수 있다. */
+function homeItem(node: { readonly id: string; readonly title: string; readonly icon: PageIcon | null; readonly kind?: 'page' | 'database' }): HomeItem {
+  return { id: node.id, title: node.title, icon: node.icon, kind: node.kind ?? 'page' }
+}
 
 export default async function WorkspacePage({ params }: PageProps<'/w/[workspaceId]'>) {
   const { workspaceId } = await params
@@ -30,7 +39,23 @@ export default async function WorkspacePage({ params }: PageProps<'/w/[workspace
   // (멤버 아님 → 404) 을 화면마다 복사하면 한 곳만 틀려도 존재가 유출된다.
   const ctx = await requirePageSession(workspaceId)
 
-  const [rootPages, workspaceName] = await Promise.all([listChildPages(ctx, null), workspaceNameOf(ctx)])
+  // Home 의 목록 — 모두 이미 있는 것이고 각자 권한 · 휴지통을 거른다. 한 번에 읽는다(07 *"여러 쿼리 → 묶을 것"*).
+  const [tree, teamspaces, recent, favorites, workspaceName] = await Promise.all([
+    listPageTree(ctx),
+    listMyTeamspaces(ctx),
+    listRecent(ctx, HOME_RECENT_LIMIT),
+    listFavorites(ctx),
+    workspaceNameOf(ctx),
+  ])
+  const grouped = groupSidebarRoots(tree, teamspaces)
+  const sections = homeSections({
+    recent: recent.map(homeItem),
+    favorites: favorites.map(homeItem),
+    teamspaces: grouped.teamspaces.map(({ teamspace, pages }) => ({ id: teamspace.id, name: teamspace.name, pages: pages.map(homeItem) })),
+    shared: grouped.shared.map(homeItem),
+    privatePages: grouped.privatePages.map(homeItem),
+    workspacePages: grouped.workspacePages.map(homeItem),
+  })
 
   return (
     <main className="mx-auto flex min-h-screen max-w-3xl flex-col gap-8 px-6 py-12">
@@ -55,31 +80,24 @@ export default async function WorkspacePage({ params }: PageProps<'/w/[workspace
         </div>
       </header>
 
-      <section className="flex flex-col gap-3">
-        <h2 className="text-sm font-medium text-neutral-500">
-          최상위 페이지 {rootPages.length}개
-        </h2>
-        {rootPages.length > 0 ? (
-          <ul className="divide-y divide-neutral-200 rounded-lg border border-neutral-200 dark:divide-neutral-800 dark:border-neutral-800">
-            {rootPages.map((p) => (
-              <li key={p.id}>
-                <Link
-                  href={`/w/${workspaceId}/${p.id}`}
-                  className="flex items-center gap-2 px-4 py-3 text-sm hover:bg-neutral-50 dark:hover:bg-neutral-900"
-                >
-                  <PageIconView icon={p.icon} fallback />
-                  {p.plainTitle || UNTITLED}
-                </Link>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="text-sm text-neutral-400">
-            왼쪽 사이드바의 &ldquo;+ 새 페이지&rdquo;로 시작하세요.
-          </p>
-        )}
-        <NewPageButton workspaceId={workspaceId} />
-      </section>
+      {/* Home(10c-1) — 빈 섹션은 세우지 않는다 · 모두 비면 시작 카드(07 — 빈 섹션 여럿은 고장 난 화면으로 읽힌다) */}
+      {sections.length === 0 ? (
+        <section
+          data-testid="home-empty"
+          className="flex flex-col items-start gap-3 rounded-lg border border-dashed border-neutral-300 p-6 dark:border-neutral-700"
+        >
+          <h2 className="text-base font-medium">아직 아무것도 없습니다</h2>
+          <p className="text-sm text-neutral-500">첫 페이지를 만들어 시작하세요 — 왼쪽 사이드바의 &ldquo;+ 새 페이지&rdquo;와 같습니다.</p>
+          <NewPageButton workspaceId={workspaceId} />
+        </section>
+      ) : (
+        <>
+          {sections.map((section) => (
+            <HomeSection key={section.key} workspaceId={workspaceId} section={section} />
+          ))}
+          <NewPageButton workspaceId={workspaceId} />
+        </>
+      )}
 
       {/* 사람 절이 서는 사람에게만(게스트에게는 없다) — 판정은 패널의 것이다. */}
       {visiblePanels(ctx).some((panel) => panel.section === 'workspace.people') && (
@@ -91,10 +109,6 @@ export default async function WorkspacePage({ params }: PageProps<'/w/[workspace
           에 있습니다.
         </p>
       )}
-
-      <p className="mt-auto text-xs text-neutral-400">
-        Phase 0 W1–W3 완료 — 인증 · 워크스페이스 · 초대 · 블록 모델. W4 진행 중 — 페이지 · 에디터.
-      </p>
     </main>
   )
 }
