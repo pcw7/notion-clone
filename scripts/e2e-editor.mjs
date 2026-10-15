@@ -554,6 +554,8 @@ async function main() {
       e: [69, 'KeyE'],
       // 마지막 색 다시 쓰기(Phase 2 1e-1) — `Mod+Shift+H`.
       h: [72, 'KeyH'],
+      // 페이지 안 찾기(10b) — `Mod+F`.
+      f: [70, 'KeyF'],
     }
     const SHIFT = 8
     // `Mod` 는 Mac 에서 Cmd(4), 그 외 Ctrl(2). 헤드리스 브라우저의 플랫폼을 따른다.
@@ -16898,6 +16900,115 @@ async function main() {
       } finally {
         await setWorkspacePlan(workspaceId, before)
       }
+    }
+
+    if (sectionIf('페이지 안 찾기 (10b · F-07-05)')) {
+      // Ctrl/Cmd+F 가 브라우저 찾기 대신 막대를 연다 · 편집기의 문서에서 찾는다(접힌 토글 안 · 방금 친 글자) · n/N · Enter 다음 · Shift+Enter 이전
+      // (돌아 감는다) · 접힌 토글 안의 매칭이면 그 토글을 펼친다 · 하이라이트는 데코레이션 · 0건이면 0/0 · Esc 는 그 글자를 골라 둔 채 닫는다 ·
+      // 모달이 열려 있으면 비켜선다.
+      const stamp = Date.now().toString(36)
+      const word = `찾기말${stamp}`
+      const made = await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: JSON.stringify({ title: `찾기 ${stamp}` }) })
+      const page = (await made.json()).page.id
+      const fid = { a: randomUUID(), t: randomUUID(), inside: randomUUID(), c: randomUUID() }
+      await saveBody(page, {
+        blocks: [
+          block(fid.a, 'paragraph', `첫 ${word} 줄`),
+          block(fid.t, 'toggle', '접히는 토글', [block(fid.inside, 'paragraph', `토글 안의 ${word}`)]),
+          block(fid.c, 'paragraph', `끝 ${word}`),
+        ],
+      })
+      const findState = () => evaluate(`JSON.stringify({ count: document.querySelector('[data-testid="find-count"]')?.textContent ?? null,
+        marks: document.querySelectorAll('.blk-editor .blk-find').length,
+        current: document.querySelector('.blk-editor .blk-find-current')?.closest('[data-block-id]')?.getAttribute('data-block-id') ?? null,
+        collapsed: document.querySelector('[data-block-id="${fid.t}"]')?.getAttribute('data-collapsed') ?? null,
+        active: document.activeElement?.getAttribute('data-testid') ?? document.activeElement?.className ?? null })`)
+      const counterIs = (text) => `document.querySelector('[data-testid="find-count"]')?.textContent === ${JSON.stringify(text)}`
+      const currentIn = (id) => `document.querySelector('.blk-editor .blk-find-current')?.closest('[data-block-id]')?.getAttribute('data-block-id') === ${JSON.stringify(id)}`
+      const openFind = async () => {
+        for (let i = 0; i < 10 && !(await evaluate(`!!document.querySelector('[data-testid="find-bar"]')`)); i += 1) {
+          await key('f', MOD)
+          await waitFor(`!!document.querySelector('[data-testid="find-bar"]')`, 1500)
+        }
+      }
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+      await waitFor(`!!document.querySelector('[data-block-id="${fid.inside}"]')`, 15000)
+      // 토글을 접는다 — 그 안의 글자는 화면에 없다(브라우저 찾기는 못 찾는다)
+      for (let i = 0; i < 5 && (await evaluate(`document.querySelector('[data-block-id="${fid.t}"]')?.getAttribute('data-collapsed') ?? null`)) !== 'true'; i += 1) {
+        const arrowAt = await rect(`[data-block-id="${fid.t}"] .blk-toggle-arrow`)
+        await click(arrowAt.x + arrowAt.w / 2, arrowAt.y + arrowAt.h / 2)
+        await waitFor(`document.querySelector('[data-block-id="${fid.t}"]')?.getAttribute('data-collapsed') === 'true'`, 2000)
+      }
+
+      // ① Ctrl/Cmd+F — 막대가 열리고 입력이 포커스를 받는다
+      await openFind()
+      check('★ Ctrl/Cmd+F 가 브라우저 찾기 대신 페이지 안 찾기 막대를 연다 — 입력에 포커스',
+        await waitFor(`document.activeElement?.getAttribute('data-testid') === 'find-input'`, 5000), await findState())
+
+      // ② 문서에서 찾는다 — 접힌 토글 안도 · 1/3 · 하이라이트는 데코레이션
+      await typeText(word)
+      check('★ 문서에서 찾는다 — 접힌 토글 안도 세어 1/3 · 하이라이트는 데코레이션(지금 것은 첫 줄)',
+        await waitFor(`${counterIs('1/3')} && document.querySelectorAll('.blk-editor .blk-find').length === 3 && ${currentIn(fid.a)}`, 8000),
+        await findState())
+
+      // ③ Enter — 다음 매칭이 접힌 토글 안이면 그 토글을 펼친다
+      await key('Enter')
+      check('★ Enter — 다음 매칭 · 접힌 토글 안이면 그 토글을 펼쳐 보인다',
+        await waitFor(`${counterIs('2/3')} && ${currentIn(fid.inside)}
+          && document.querySelector('[data-block-id="${fid.t}"]')?.getAttribute('data-collapsed') !== 'true'
+          && (document.querySelector('[data-block-id="${fid.inside}"]')?.getBoundingClientRect().height ?? 0) > 0`, 8000),
+        await findState())
+
+      // ④ Shift+Enter 이전 · 끝에서 돌아 감는다
+      await key('Enter', SHIFT)
+      const back = await waitFor(`${counterIs('1/3')} && ${currentIn(fid.a)}`, 5000)
+      await key('Enter', SHIFT)
+      check('Shift+Enter — 이전 · 처음에서 끝으로 돌아 감는다',
+        back && (await waitFor(`${counterIs('3/3')} && ${currentIn(fid.c)}`, 5000)), await findState())
+
+      // ⑤ 0건 — 0/0 과 붉은 테두리
+      await evaluate(`document.querySelector('[data-testid="find-input"]')?.select()`)
+      await typeText(`없는말${stamp}`)
+      check('0건이면 0/0 · 입력이 틀렸다고 표시한다 · 하이라이트가 없다',
+        await waitFor(`${counterIs('0/0')} && document.querySelector('[data-testid="find-input"]')?.getAttribute('aria-invalid') === 'true'
+          && document.querySelectorAll('.blk-editor .blk-find').length === 0`, 5000),
+        await findState())
+
+      // ⑥ Esc — 지금 매칭의 글자를 골라 둔 채 편집기로 돌아간다(하이라이트는 사라진다)
+      await evaluate(`document.querySelector('[data-testid="find-input"]')?.select()`)
+      await typeText(word)
+      await waitFor(counterIs('1/3'), 5000)
+      await key('Enter')
+      await waitFor(counterIs('2/3'), 5000)
+      await key('Escape')
+      check('★ Esc — 막대를 닫고 찾은 글자를 골라 둔 채 편집기로 돌아간다',
+        await waitFor(`!document.querySelector('[data-testid="find-bar"]') && document.querySelectorAll('.blk-editor .blk-find').length === 0
+          && window.getSelection()?.toString() === ${JSON.stringify(word)}
+          && !!document.activeElement?.closest('.blk-editor')`, 5000),
+        String(await evaluate(`JSON.stringify({ selection: window.getSelection()?.toString(), bar: !!document.querySelector('[data-testid="find-bar"]') })`)))
+
+      // ⑦ 방금 친 글자도 찾는다 — 서버의 색인이 아니라 편집기의 문서
+      await key('End')
+      await typeText(` 새로친${stamp}`)
+      await openFind()
+      await evaluate(`document.querySelector('[data-testid="find-input"]')?.select()`)
+      await typeText(`새로친${stamp}`)
+      check('방금 친 글자도 찾는다 — 서버 색인이 아니라 편집기의 문서',
+        await waitFor(`${counterIs('1/1')} && ${currentIn(fid.inside)}`, 5000), await findState())
+      await key('Escape')
+
+      // ⑧ 모달(검색 덮개)이 열려 있으면 Ctrl/Cmd+F 는 비켜선다
+      for (let i = 0; i < 10 && !(await evaluate(`!!document.querySelector('[data-testid="search-overlay"]')`)); i += 1) {
+        await key('k', MOD)
+        await waitFor(`!!document.querySelector('[data-testid="search-overlay"]')`, 1500)
+      }
+      await key('f', MOD)
+      await sleep(300)
+      check('검색 덮개가 열려 있으면 Ctrl/Cmd+F 는 막대를 열지 않는다',
+        (await evaluate(`!!document.querySelector('[data-testid="search-overlay"]') && !document.querySelector('[data-testid="find-bar"]')`)) === true,
+        await findState())
+      await key('Escape')
     }
 
     if (sectionIf('폼 — 서버 라우트 (7a-1 · F-13-01)')) {

@@ -80,6 +80,7 @@ import { CodeCaptionEditor } from './code-caption-editor'
 import { CodeLanguageMenu } from './code-language-menu'
 import { EquationEditor } from './equation-editor'
 import { ButtonBlockSettings } from './button-block-settings'
+import { FindBar } from './find-bar'
 import { buttonRunMessage } from '../db/[databaseId]/button-messages'
 import { BUTTON_TYPE } from '@/lib/block/button'
 import { buttonBlockInfo, setButtonLabelCommand } from '@/lib/editor/button-block'
@@ -91,6 +92,7 @@ import { openCommentThread } from './comment-panel'
 import { PageIconView } from '../page-icon-view'
 import { customEmojiIdOf, type EmojiLabel } from '@/lib/editor/mention-label'
 import { closeMentionMenu, insertMention, mentionMenuState, type MentionPick } from '@/lib/editor/mention-menu'
+import { collapsedAncestorsAt, findCounter, findStateOf, setFindQuery, stepFind } from '@/lib/editor/find-in-page'
 import { MENTION_NODE } from '@/lib/editor/schema'
 
 /** 이 시간 넘게 서버가 확인하지 않으면 "동기화 중…"을 보여 준다 — 그 전에는 무표시다(F-05-04). */
@@ -486,6 +488,97 @@ export function BodyEditor({
     }),
     [expandBlock],
   )
+
+  // ── 페이지 안 찾기 (10b · F-07-05) ──────────────────────────────────
+  //
+  // 찾는 것은 편집기의 플러그인이다(`find-in-page.ts` — 문서 모델 · 데코레이션). 여기는 여닫기 · 옮기기 · 지금 매칭을 보이기만 한다.
+  const [findOpen, setFindOpen] = useState(false)
+  const [findQuery, setFindQueryText] = useState('')
+  /** 카운터 · 0건 — 트랜잭션마다 플러그인 상태에서 읽는다(남의 편집으로도 바뀐다). */
+  const [findInfo, setFindInfo] = useState<{ readonly counter: string; readonly empty: boolean }>({ counter: '', empty: false })
+  const findInputRef = useRef<HTMLInputElement>(null)
+
+  /** 지금 매칭을 보인다 — 접힌 토글 안이면 그 토글을 펼친다(보는 사람의 화면 상태 · F-01-13 — 남에게 번지지 않는다) · 화면 가운데로 굴린다. */
+  const revealFindMatch = useCallback(() => {
+    const view = viewRef.current
+    if (!view) return
+    const found = findStateOf(view.state)
+    const match = found.matches[found.current]
+    if (match === undefined) return
+    for (const id of collapsedAncestorsAt(view.state.doc, match.from, (id) => collapsedRef.current.has(id))) expandBlock(id)
+    // 펼친 뒤에 잰다 — 접힌 토글 안의 글자는 펼치기 전에는 그려지지 않았다. 그 사이의 편집을 따라 다시 읽는다
+    requestAnimationFrame(() => {
+      const current = viewRef.current
+      if (!current || current.isDestroyed) return
+      const again = findStateOf(current.state)
+      const at = again.matches[again.current]
+      if (at === undefined) return
+      const { node } = current.domAtPos(at.from)
+      const element = node instanceof Element ? node : node.parentElement
+      element?.scrollIntoView({ block: 'center' })
+    })
+  }, [expandBlock])
+
+  /** 검색어를 바꾼다 — 캐럿 뒤의 첫 매칭이 지금 것. */
+  const onFindQuery = useCallback(
+    (query: string) => {
+      setFindQueryText(query)
+      const view = viewRef.current
+      if (!view) return
+      view.dispatch(setFindQuery(view.state.tr, query, view.state.selection.from))
+      revealFindMatch()
+    },
+    [revealFindMatch],
+  )
+
+  const onFindStep = useCallback(
+    (step: 1 | -1) => {
+      const view = viewRef.current
+      if (!view) return
+      view.dispatch(stepFind(view.state.tr, step))
+      revealFindMatch()
+    },
+    [revealFindMatch],
+  )
+
+  /** 닫는다 — 지금 매칭이 있으면 그 글자를 골라 둔 채 편집기로 포커스를 돌려준다(찾은 자리에서 이어 쓴다). 없으면 선택을 옮기지 않는다. */
+  const closeFind = useCallback(() => {
+    setFindOpen(false)
+    setFindQueryText('')
+    const view = viewRef.current
+    if (!view) return
+    const found = findStateOf(view.state)
+    const match = found.matches[found.current]
+    let tr = setFindQuery(view.state.tr, '')
+    if (match !== undefined) tr = tr.setSelection(TextSelection.create(tr.doc, match.from, match.to))
+    view.dispatch(tr)
+    view.focus()
+  }, [])
+
+  // `Ctrl/Cmd+F` — 브라우저 찾기를 가로챈다(07 — 접힌 토글 안 · 그려지지 않은 블록을 브라우저는 못 찾는다). 모달(검색 덮개 · 대화상자)이
+  // 열려 있으면 비켜선다. 이미 열려 있으면 입력으로 돌아가 검색어를 고른다(다시 치기 쉽게). 한글 입력 상태에서도 잡히게 자판 자리도 본다.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) return
+      if (event.key.toLowerCase() !== 'f' && event.code !== 'KeyF') return
+      if (document.querySelector('[aria-modal="true"]')) return
+      if (!viewRef.current) return
+      event.preventDefault()
+      setFindOpen(true)
+      const input = findInputRef.current
+      if (input) {
+        input.focus()
+        input.select()
+      }
+    }
+    window.addEventListener('keydown', onKeyDown, true)
+    return () => window.removeEventListener('keydown', onKeyDown, true)
+  }, [])
+
+  // 열리면 입력으로 — 처음 여는 순간에는 입력이 아직 그려지지 않았다
+  useEffect(() => {
+    if (findOpen) findInputRef.current?.focus()
+  }, [findOpen])
 
   // ── 슬래시 메뉴 ─────────────────────────────────────────────────────
 
@@ -1222,6 +1315,11 @@ export function BodyEditor({
           const count = selectedBlockCount(v.state)
           setSelectedBlocks((prev) => (prev === count ? prev : count))
           checkUnknownRefs(v)
+          // 페이지 안 찾기(10b) — 카운터 · 0건. 같은 값이면 리렌더하지 않는다
+          const found = findStateOf(v.state)
+          const counter = findCounter(found)
+          const empty = found.query !== '' && found.matches.length === 0
+          setFindInfo((prev) => (prev.counter === counter && prev.empty === empty ? prev : { counter, empty }))
         },
       })
       viewRef.current = view
@@ -1468,6 +1566,18 @@ export function BodyEditor({
 
   return (
     <section aria-label="본문" className="relative">
+      {/* 페이지 안 찾기(10b · F-07-05) — Ctrl/Cmd+F 로 연다 */}
+      {findOpen && (
+        <FindBar
+          inputRef={findInputRef}
+          query={findQuery}
+          counter={findInfo.counter}
+          empty={findInfo.empty}
+          onQuery={onFindQuery}
+          onStep={onFindStep}
+          onClose={closeFind}
+        />
+      )}
       {/*
         F-12-16 의 `Offline` 배너와 닫힘 안내. **편집을 막지 않는다** — 정본: *"저장 실패 시 편집 차단이 아니라 경고 유지"*.
         친 글은 보존본에 쌓이고 연결이 돌아오면 나간다. 다시 여는 중 · 읽기 전용 · 닫힘일 때만 편집기가 잠긴다.
