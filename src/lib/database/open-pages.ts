@@ -53,3 +53,13 @@ export function rowOpenHref(workspaceId: string, rowId: string, peekBase: string
   query.set('peek', rowId)
   return `${path}?${query.toString()}`
 }
+
+/**
+ * 피크의 이전 · 다음 행(8n-3a · 정본 ⑦) — 이 화면이 그린 행의 순서에서 이웃. 끝에서 돌아 감지 않는다 · 그 순서에 없으면 둘 다 없다(화면이
+ * 보여 준 적 없는 순서를 지어내지 않는다).
+ */
+export function peekNeighbors(order: readonly string[], current: string): { readonly prev: string | null; readonly next: string | null } {
+  const at = order.indexOf(current)
+  if (at === -1) return { prev: null, next: null }
+  return { prev: at > 0 ? order[at - 1]! : null, next: at < order.length - 1 ? order[at + 1]! : null }
+}
