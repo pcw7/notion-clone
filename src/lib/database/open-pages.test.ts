@@ -5,12 +5,13 @@
  *   ② ★ 행을 여는 주소 — 전체 페이지면 행 화면 · 아니면 그 주소에 peek(있으면 바꾼다 — 쌓지 않는다)
  *   ③ 열기 방식의 값 — 셋만
  *   ④ 고르개의 이름(8n-2) — 셋 모두 다른 말
+ *   ⑤ ★ 피크의 이전 · 다음 행(8n-3a) — 그린 순서의 이웃 · 끝에서 돌아 감지 않는다 · 순서에 없으면 둘 다 없다
  */
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { DEFAULT_OPEN_PAGES_IN, OPEN_PAGES_IN, databaseHref, isOpenPagesIn, openPagesInLabel, rowOpenHref } from './open-pages.ts'
+import { DEFAULT_OPEN_PAGES_IN, OPEN_PAGES_IN, databaseHref, isOpenPagesIn, openPagesInLabel, peekNeighbors, rowOpenHref } from './open-pages.ts'
 
 test('① 데이터베이스 화면의 주소', () => {
   assert.equal(databaseHref('ws', 'db', {}), '/w/ws/db/db')
@@ -34,4 +35,13 @@ test('③ 열기 방식의 값', () => {
 test('④ 고르개의 이름(8n-2) — 셋 모두 다른 말', () => {
   assert.equal(new Set(OPEN_PAGES_IN.map(openPagesInLabel)).size, 3)
   assert.match(openPagesInLabel('full_page'), /전체 페이지/)
+})
+
+test('⑤ ★ 피크의 이전 · 다음 행(8n-3a)', () => {
+  const order = ['a', 'b', 'c']
+  assert.deepEqual(peekNeighbors(order, 'b'), { prev: 'a', next: 'c' })
+  assert.deepEqual(peekNeighbors(order, 'a'), { prev: null, next: 'b' }, '첫 행 — 이전이 없다(돌아 감지 않는다)')
+  assert.deepEqual(peekNeighbors(order, 'c'), { prev: 'b', next: null }, '끝 행 — 다음이 없다')
+  assert.deepEqual(peekNeighbors(order, 'z'), { prev: null, next: null }, '순서에 없으면 둘 다 없다')
+  assert.deepEqual(peekNeighbors(['only'], 'only'), { prev: null, next: null })
 })

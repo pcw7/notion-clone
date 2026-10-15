@@ -16703,6 +16703,68 @@ async function main() {
         JSON.stringify([await modeNow(), await evaluate('location.pathname + location.search')]))
     }
 
+    if (sectionIf('페이지 열기 모드 — 이전 · 다음 행 (8n-3a · F-02-20)')) {
+      // 피크 머리의 "이전 행" · "다음 행" — 이 화면이 그린 행의 순서 · 피크를 바꿔 연다 · 끝에서 돌아 감지 않는다 · 검색에 빠진 행이면 둘 다 없다.
+      const stamp = Date.now().toString(36)
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `이웃 표 ${stamp}` })).body.database
+      const viewId = db.defaultViewId
+      const titleId = (await api('GET', `/views/${viewId}`)).body?.view?.columns?.find((c) => c.type === 'title')?.propertyId
+      const titleOf = {}
+      for (const name of ['가', '나', '다']) {
+        const title = `이웃${name}${stamp}`
+        const row = (await api('POST', `/views/${viewId}/rows`, { cells: [{ propertyId: titleId, value: { type: 'title', title: [textRun(title)] } }] })).body?.row
+        titleOf[row?.id] = title
+      }
+      const DB_PATH = `/w/${workspaceId}/db/${db.id}`
+      await send('Page.navigate', { url: `${BASE}${DB_PATH}` })
+      await waitFor(`document.querySelectorAll('tr[data-row-id]').length === 3`, 15000)
+      // 화면이 그린 순서
+      const order = JSON.parse(await evaluate(`JSON.stringify([...document.querySelectorAll('tr[data-row-id]')].map((tr) => tr.getAttribute('data-row-id')))`))
+      const peekTitle = `(document.querySelector('[data-testid="row-peek"] [data-testid="row-title"]')?.value ?? null)`
+      const linkOf = (testId) => `document.querySelector('[data-testid="row-peek"] a[data-testid="${testId}"]')`
+      const disabled = (testId) => `document.querySelector('[data-testid="row-peek"] [data-testid="${testId}"]')?.getAttribute('aria-disabled') === 'true'`
+      const showing = (id) => `new URLSearchParams(location.search).get('peek') === ${JSON.stringify(id)} && ${peekTitle} === ${JSON.stringify(titleOf[id])}`
+      const peekState = () => evaluate(`JSON.stringify({ url: location.pathname + location.search, title: ${peekTitle},
+        prev: document.querySelector('[data-testid="row-peek"] [data-testid="peek-prev"]')?.outerHTML?.slice(0, 120) ?? null,
+        next: document.querySelector('[data-testid="row-peek"] [data-testid="peek-next"]')?.outerHTML?.slice(0, 120) ?? null })`)
+      const go = async (testId, id) => {
+        for (let i = 0; i < 6 && !(await evaluate(showing(id))); i += 1) {
+          await clickSelector(`[data-testid="row-peek"] a[data-testid="${testId}"]`)
+          await waitFor(showing(id), 3000)
+        }
+        return evaluate(showing(id))
+      }
+
+      // ① 가운데 행 — 이전 · 다음이 둘 다 선다
+      await send('Page.navigate', { url: `${BASE}${DB_PATH}?peek=${order[1]}` })
+      check('★ 가운데 행의 피크 — "이전 행" · "다음 행" 이 둘 다 선다',
+        await waitFor(`${showing(order[1])} && !!${linkOf('peek-prev')} && !!${linkOf('peek-next')}`, 15000), await peekState())
+
+      // ② 다음 — 피크를 바꿔 연다 · 끝 행이면 "다음" 이 서지 않는다(돌아 감지 않는다)
+      check('★ "다음 행" — 화면이 그린 다음 행으로 바꿔 연다 · 끝 행에서는 "다음" 이 없다',
+        (await go('peek-next', order[2])) && (await waitFor(`${disabled('peek-next')} && !!${linkOf('peek-prev')}`, 5000)),
+        await peekState())
+
+      // ③ 이전 둘 — 첫 행에서는 "이전" 이 없다
+      const backOne = await go('peek-prev', order[1])
+      check('"이전 행" — 첫 행까지 · 첫 행에서는 "이전" 이 없다',
+        backOne && (await go('peek-prev', order[0])) && (await waitFor(`${disabled('peek-prev')} && !!${linkOf('peek-next')}`, 5000)),
+        await peekState())
+
+      // ④ 검색에 빠진 행 — 화면이 그린 순서에 없으니 둘 다 없다
+      await send('Page.navigate', { url: `${BASE}${DB_PATH}?q=${encodeURIComponent(titleOf[order[0]])}&peek=${order[2]}` })
+      check('검색에 빠진 행의 피크 — 화면이 그린 순서에 없으니 이전 · 다음이 둘 다 없다',
+        await waitFor(`${showing(order[2])} && ${disabled('peek-prev')} && ${disabled('peek-next')}
+          && document.querySelectorAll('tr[data-row-id]').length === 1`, 15000),
+        await peekState())
+    }
+
     if (sectionIf('검색 필터 — 라우트 (10a-1 · F-07-03)')) {
       // 검색 라우트가 쿼리의 필터를 명령에 넘긴다 — 이 페이지 아래(검색어 없이도) · 제목만 · 내가 만든 · 틀린 값은 버린다(400 이 아니다).
       const stamp = Date.now().toString(36)

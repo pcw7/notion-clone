@@ -103,6 +103,7 @@ import { asBlockId } from '@/lib/ids'
 import { databaseHref } from '@/lib/database/open-pages'
 import { PageContent } from '../../[pageId]/page-content'
 import { RowPeek } from './row-peek'
+import { peekNeighbors, rowOpenHref } from '@/lib/database/open-pages'
 
 const UNTITLED = '제목 없음'
 
@@ -398,6 +399,14 @@ export default async function DatabasePage({
   // 화면이 `POST /relation-labels` 로 받는다.
   const relationPropertyIds = visibleColumns.filter((c) => c.type === 'relation').map((c) => c.propertyId)
   const firstRows = tablePage !== null ? tablePage.value.rows : groups.flatMap((g) => g.rows)
+  // 피크의 이전 · 다음 행(8n-3a · 정본 §3.6 [보강] 페이지 열기 모드 ⑦) — 이 화면이 그린 행의 순서(첫 페이지 · 보드는 그룹 차례대로 · 캘린더는
+  // 그 달의 행). 그 순서에 없는 행(검색 · 필터에 빠졌다 · "더 보기" 뒤 · 펼친 하위 항목)이면 둘 다 없다.
+  const drawnOrder = (calendarPage !== null && calendarPage.ok ? calendarPage.value.rows : firstRows).map((r) => r.id as string)
+  const neighbors = peekRow === null || peekBase === null ? { prev: null, next: null } : peekNeighbors(drawnOrder, peekRow)
+  const peekNeighborHrefs = {
+    prev: neighbors.prev === null || peekBase === null ? null : rowOpenHref(workspaceId, neighbors.prev, peekBase),
+    next: neighbors.next === null || peekBase === null ? null : rowOpenHref(workspaceId, neighbors.next, peekBase),
+  }
   const relation =
     relationPropertyIds.length === 0
       ? { labels: {}, icons: {} }
@@ -714,7 +723,13 @@ export default async function DatabasePage({
       )}
       {/* 행 피크(8n-1) — 행 화면의 몸 그대로 · 바꿔 열면 새로 선다(`key`) · 볼 수 없으면 패널 안에서 그렇다고 */}
       {peekRow !== null && (
-        <RowPeek mode={view.value.openPagesIn === 'center_peek' ? 'center' : 'side'} closeHref={here} fullHref={`/w/${workspaceId}/${peekRow}`}>
+        <RowPeek
+          mode={view.value.openPagesIn === 'center_peek' ? 'center' : 'side'}
+          closeHref={here}
+          fullHref={`/w/${workspaceId}/${peekRow}`}
+          prevHref={peekNeighborHrefs.prev}
+          nextHref={peekNeighborHrefs.next}
+        >
           <PageContent key={peekRow} ctx={ctx} workspaceId={workspaceId} pageId={peekRow} shareOpen={false} renderedAt={renderedAt} frame="peek" />
         </RowPeek>
       )}
