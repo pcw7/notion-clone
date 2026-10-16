@@ -54,7 +54,7 @@ import {
   type BlockFormat,
   type BlockType,
 } from '../block/types.ts'
-import { IMAGE_TYPE, validateImageProperties } from '../block/image.ts'
+import { IMAGE_TYPE, validateImageFormat, validateImageProperties } from '../block/image.ts'
 import { CODE_TYPE, validateCodeProperties } from '../block/code.ts'
 import { TABLE_CELLS_KEY, TABLE_ROW_TYPE, validateTableRow, validateTableWidths } from '../block/table.ts'
 import { isUuid } from '../ids.ts'
@@ -171,6 +171,8 @@ export function validateDoc(doc: EditorDoc): DocIssue[] {
       // 들어간다. 화면에서만 막으면 API 로 직접 저장하는 경로가 열려 있다.
       if (block.type === IMAGE_TYPE) {
         issues.push(...validateImageProperties(block.properties, `${p}.properties`))
+        // 대체 텍스트(10d-1a · F-12-13) — 같은 까닭
+        issues.push(...validateImageFormat(block.format, `${p}.format`))
       }
       // 코드 블록의 언어 · 캡션(8a-1) — 같은 까닭(API 로 직접 저장하는 경로).
       if (block.type === CODE_TYPE) {

@@ -17228,6 +17228,57 @@ async function main() {
         await libState())
     }
 
+    if (sectionIf('이미지의 대체 텍스트 — 그리기 (10d-1a · F-12-13)')) {
+      // 형식의 대체 텍스트가 편집기 · 공개 화면의 `<img alt>` 가 된다 — 캡션과 따로 · 장식이면 빈 말 · 없으면 캡션 · 모양이 틀리면 문서 검증이 거부.
+      const stamp = Date.now().toString(36)
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const page = (await api('POST', '/pages', { title: `대체 텍스트 ${stamp}` })).body?.page?.id
+      const src = `${BASE}/globe.svg`
+      const ids = { alt: randomUUID(), decorative: randomUUID(), legacy: randomUUID() }
+      const image = (id, caption, format) => ({
+        id, type: 'image', title: [], properties: { source: { type: 'external', url: src }, caption: [textRun(caption)] }, format, children: [],
+      })
+      await saveBody(page, {
+        blocks: [
+          image(ids.alt, '보이는 설명', { alt_text: `고양이 사진 ${stamp}` }),
+          image(ids.decorative, '장식의 설명', { alt_decorative: true }),
+          image(ids.legacy, `옛 캡션 ${stamp}`, {}),
+        ],
+      })
+      const altOf = (id) => `document.querySelector('[data-block-id="${id}"] img')?.getAttribute('alt')`
+      const altState = () => evaluate(`JSON.stringify({ alt: ${altOf(ids.alt)}, decorative: ${altOf(ids.decorative)}, legacy: ${altOf(ids.legacy)} })`)
+
+      // ① 편집기 — 대체 텍스트 · 장식이면 빈 말 · 없으면 캡션 · 캡션은 그대로 보인다
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+      check('★ 편집기의 <img alt> — 대체 텍스트 · 장식이면 빈 말 · 없으면 캡션(캡션은 그대로 보인다)',
+        await waitFor(`${altOf(ids.alt)} === ${JSON.stringify(`고양이 사진 ${stamp}`)} && ${altOf(ids.decorative)} === ''
+          && ${altOf(ids.legacy)} === ${JSON.stringify(`옛 캡션 ${stamp}`)}
+          && (document.querySelector('[data-block-id="${ids.alt}"] figcaption')?.textContent ?? '') === '보이는 설명'`, 15000),
+        await altState())
+
+      // ② 공개 화면 — 같은 함수
+      const token = (await api('PUT', `/pages/${page}/publish`)).body?.token
+      const html = await (await fetch(`${BASE}/p/${token}`)).text()
+      check('★ 공개 화면의 <img alt> 도 같다',
+        html.includes(`alt="고양이 사진 ${stamp}"`) && html.includes('alt=""') && html.includes(`alt="옛 캡션 ${stamp}"`),
+        String((html.match(/<img [^>]*>/g) ?? []).join(' ').slice(0, 400)))
+      await api('DELETE', `/pages/${page}/publish`)
+
+      // ③ 모양이 틀리면 문서 검증이 거부한다
+      let refused = false
+      try {
+        await saveBody(page, { blocks: [image(randomUUID(), '틀린 것', { alt_text: 7 })] })
+      } catch (error) {
+        refused = String(error).includes('format.alt_text')
+      }
+      check('대체 텍스트의 모양이 틀리면 문서 검증이 거부한다', refused)
+    }
+
     if (sectionIf('폼 — 서버 라우트 (7a-1 · F-13-01)')) {
       // 폼 뷰의 라우트 — 만들기(첫 질문은 제목) · 질문 바꾸기 · 설정 · 공개(토큰) · 거부 코드 · 표 화면의 탭에 선다(7a-3 부터 — 그 탭은
       // 편집 화면이다).

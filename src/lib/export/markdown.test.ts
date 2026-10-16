@@ -473,6 +473,21 @@ describe('④ 참조와 잃은 것', () => {
     assert.equal(losses.omittedImages, 1)
   })
 
+  test('★ 이미지의 대체 텍스트(10d-1a) — 있으면 캡션 대신 · 장식이면 빈 말', () => {
+    const fileId = randomUUID()
+    const links: MarkdownLinks = { page: () => null, image: () => 'a.png' }
+    const withAlt = convert(
+      [block('image', [], { properties: { source: { type: 'file', file_id: fileId }, caption: [textRun('보이는 설명')] }, format: { alt_text: '고양이 사진' } })],
+      links,
+    )
+    assert.equal(withAlt.html, '<p><img src="a.png" alt="고양이 사진" /></p>')
+    const decorative = convert(
+      [block('image', [], { properties: { source: { type: 'file', file_id: fileId }, caption: [textRun('보이는 설명')] }, format: { alt_decorative: true } })],
+      links,
+    )
+    assert.equal(decorative.html, '<p><img src="a.png" alt="" /></p>')
+  })
+
   test('★ 모르는 블록은 주석으로 남고, 저장된 타입 이름이 주석을 깨지 못한다', () => {
     const { markdown, html, losses } = convert([
       block('unsupported', [], { properties: { original_type: 'synced_block' } }),

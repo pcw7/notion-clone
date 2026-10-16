@@ -110,6 +110,59 @@ export function captionToJson(caption: string): RichTextRun[] {
   return trimmed === '' ? [] : [textRun(trimmed)]
 }
 
+// ── 대체 텍스트 (10d-1a · F-12-13 · 정본 §3.4 [보강] 이미지의 대체 텍스트) ─────────────────────────────
+
+/** 대체 텍스트의 상한 — 스크린 리더가 읽는 말이다(캡션의 2000 보다 짧다). */
+export const MAX_ALT_TEXT = 1000
+
+/**
+ * 이미지의 대체 텍스트 — 형식의 두 키. 캡션(모두에게 보이는 설명)과 **따로** 둔다(12 *"겸용 금지"*).
+ *
+ *   · `format.alt_text` — 스크린 리더가 읽는 말
+ *   · `format.alt_decorative` — 장식이라 읽을 말이 없다고 밝혔다(`alt=""`)
+ */
+export type ImageAlt = { readonly text: string; readonly decorative: boolean }
+
+export function readImageAlt(format: unknown): ImageAlt {
+  const raw = (format as { alt_text?: unknown; alt_decorative?: unknown } | null | undefined) ?? {}
+  return { text: typeof raw.alt_text === 'string' ? raw.alt_text : '', decorative: raw.alt_decorative === true }
+}
+
+/**
+ * `<img alt>` 에 넣을 말 — 장식이면 빈 말 · 대체 텍스트가 있으면 그것 · **없으면 캡션**(대체 텍스트가 생기기 전의 이미지는 캡션이 그 일을
+ * 했다 — 아무 말도 없는 것보다 낫다 · 저장은 겸하지 않는다). 편집기 · 공개 화면 · 마크다운 내보내기가 함께 쓴다.
+ */
+export function imageAltText(format: unknown, properties: unknown): string {
+  const alt = readImageAlt(format)
+  if (alt.decorative) return ''
+  const text = alt.text.trim()
+  return text !== '' ? text : readCaption(properties).trim()
+}
+
+/** 형식에 대체 텍스트를 쓴다 — 빈 말 · 거짓은 키를 지운다(없음은 키가 없다) · 상한으로 자른다 · 모르는 키는 그대로. */
+export function withImageAlt(format: Readonly<Record<string, unknown>> | null | undefined, alt: ImageAlt): Record<string, unknown> {
+  const next: Record<string, unknown> = { ...(format ?? {}) }
+  const text = alt.text.slice(0, MAX_ALT_TEXT)
+  if (text.trim() === '') delete next.alt_text
+  else next.alt_text = text
+  if (alt.decorative) next.alt_decorative = true
+  else delete next.alt_decorative
+  return next
+}
+
+/** 형식의 대체 텍스트 검증 — 화면에서만 막으면 API 로 직접 저장하는 경로가 열려 있다(`validateDoc`). */
+export function validateImageFormat(format: unknown, path: string): { path: string; message: string }[] {
+  const raw = (format as { alt_text?: unknown; alt_decorative?: unknown } | null | undefined) ?? {}
+  const issues: { path: string; message: string }[] = []
+  if (raw.alt_text !== undefined && (typeof raw.alt_text !== 'string' || raw.alt_text.length > MAX_ALT_TEXT)) {
+    issues.push({ path: `${path}.alt_text`, message: `${MAX_ALT_TEXT}자 이하의 글자여야 합니다` })
+  }
+  if (raw.alt_decorative !== undefined && typeof raw.alt_decorative !== 'boolean') {
+    issues.push({ path: `${path}.alt_decorative`, message: '참거짓이어야 합니다' })
+  }
+  return issues
+}
+
 /**
  * 이미지 블록의 properties 를 만든다.
  *

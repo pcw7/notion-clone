@@ -9,13 +9,20 @@
  *      링크가 붙는 날 XSS 가 된다.
  *   ③ **참조는 집합이 아니라 횟수다.** 같은 파일을 두 블록이 가리키면 2 여야 하고,
  *      하나를 지웠을 때 남은 하나가 깨지면 안 된다.
+ *   ④ ★ **대체 텍스트는 캡션과 따로다**(10d-1a · F-12-13) — `<img alt>` 는 장식이면 빈 말 · 있으면 그것 · 없으면 캡션 · 쓰기는 빈 말을 지운다 ·
+ *      검증은 문서 검증에서
  */
 
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  MAX_ALT_TEXT,
   captionToJson,
+  imageAltText,
+  readImageAlt,
+  validateImageFormat,
+  withImageAlt,
   countFileReferences,
   fileReferenceDelta,
   imageContentPath,
@@ -27,6 +34,7 @@ import {
   withImageSource,
 } from './image.ts'
 import { textRun } from '../contracts/rich-text.ts'
+import { validateDoc } from '../editor/document.ts'
 
 const FILE_A = '11111111-1111-4111-8111-111111111111'
 const FILE_B = '22222222-2222-4222-8222-222222222222'
@@ -172,5 +180,33 @@ describe('★ 참조는 횟수다 — 집합이 아니다', () => {
     const one = countFileReferences([{ properties: fileProps(FILE_A) }])
     assert.deepEqual([...fileReferenceDelta(none, one)], [[FILE_A, 1]])
     assert.deepEqual([...fileReferenceDelta(one, none)], [[FILE_A, -1]])
+  })
+})
+
+describe('④ ★ 대체 텍스트(10d-1a · F-12-13)', () => {
+  test('<img alt> — 장식이면 빈 말 · 있으면 그것 · 없으면 캡션', () => {
+    const props = { caption: captionToJson('보이는 설명') }
+    assert.equal(imageAltText({ alt_text: '고양이 사진' }, props), '고양이 사진')
+    assert.equal(imageAltText({}, props), '보이는 설명', '없으면 캡션')
+    assert.equal(imageAltText({ alt_text: '   ' }, props), '보이는 설명', '빈 말은 없는 것')
+    assert.equal(imageAltText({ alt_text: '고양이', alt_decorative: true }, props), '', '장식이면 빈 말')
+    assert.equal(imageAltText(null, {}), '')
+  })
+
+  test('쓰기 — 빈 말 · 거짓은 키를 지운다 · 자른다 · 모르는 키는 그대로 · 모양이 아니면 없는 것으로 읽는다', () => {
+    assert.deepEqual(withImageAlt({ block_color: 'red', alt_text: '옛', alt_decorative: true }, { text: '', decorative: false }), { block_color: 'red' })
+    assert.deepEqual(withImageAlt({}, { text: '새 말', decorative: true }), { alt_text: '새 말', alt_decorative: true })
+    assert.equal((withImageAlt({}, { text: 'x'.repeat(MAX_ALT_TEXT + 5), decorative: false }).alt_text as string).length, MAX_ALT_TEXT)
+    assert.deepEqual(readImageAlt({ alt_text: 3, alt_decorative: 'yes' }), { text: '', decorative: false })
+  })
+
+  test('검증 — 글자가 아니거나 길면 · 참거짓이 아니면 거부 · 문서 검증이 거른다', () => {
+    assert.deepEqual(validateImageFormat({}, 'f'), [])
+    assert.deepEqual(validateImageFormat({ alt_text: '말', alt_decorative: false }, 'f'), [])
+    assert.deepEqual(validateImageFormat({ alt_text: 3 }, 'f').map((i) => i.path), ['f.alt_text'])
+    assert.deepEqual(validateImageFormat({ alt_text: 'x'.repeat(MAX_ALT_TEXT + 1) }, 'f').map((i) => i.path), ['f.alt_text'])
+    assert.deepEqual(validateImageFormat({ alt_decorative: 'true' }, 'f').map((i) => i.path), ['f.alt_decorative'])
+    const doc = { blocks: [{ id: '0190a3f1-1111-7000-8000-000000000001', type: 'image', title: [], properties: {}, format: { alt_text: 7 }, children: [] }] }
+    assert.ok(validateDoc(doc as never).some((i) => i.path.endsWith('format.alt_text')), JSON.stringify(validateDoc(doc as never)))
   })
 })
