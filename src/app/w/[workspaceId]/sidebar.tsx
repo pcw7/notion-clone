@@ -345,6 +345,16 @@ export function Sidebar({
         <span>홈</span>
       </Link>
 
+      {/* 라이브러리 — 성격별 탭 · 이름으로 찾기(10c-2 · F-07-19). 홈이 섹션마다 몇 개를 보이면 여기서 다 본다. */}
+      <Link
+        href={`/w/${workspaceId}/library`}
+        data-testid="sidebar-library"
+        className="flex items-center gap-1.5 rounded-md px-2 py-1 text-left text-sm text-neutral-500 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+      >
+        <span aria-hidden>📚</span>
+        <span>라이브러리</span>
+      </Link>
+
       {/* 인박스 — F-11-07. 배지는 "지금 안 읽은 수"이고 서버가 권한으로 걸러 센다. */}
       <Link
         href={`/w/${workspaceId}/inbox`}
