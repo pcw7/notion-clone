@@ -32,6 +32,7 @@ import type { Node as PmNode } from '@tiptap/pm/model'
 import type { EditorView, NodeView } from '@tiptap/pm/view'
 
 import {
+  imageAltText,
   IMAGE_TYPE,
   imageDisplayUrl,
   isSafeImageUrl,
@@ -195,14 +196,14 @@ export function imageNodeView(
     controls.append(pick, form)
   }
 
-  const renderImage = (source: ImageSource, caption: string): void => {
+  const renderImage = (source: ImageSource, caption: string, alt: string): void => {
     const url = imageDisplayUrl(deps.workspaceId, source)
     if (url === null) return
 
     const img = document.createElement('img')
     img.src = url
-    // 캡션이 곧 대체 텍스트다. 없으면 빈 문자열 — 장식 이미지로 읽힌다(F-12-12).
-    img.alt = caption
+    // 대체 텍스트(10d-1a · F-12-13) — 장식이면 빈 말 · 있으면 그것 · 없으면 캡션(`imageAltText` — 공개 화면 · 내보내기와 같은 함수).
+    img.alt = alt
     img.addEventListener('error', () => {
       // 정본 엣지 케이스: *"깨진 이미지 대신 '불러올 수 없음' + 원본 링크."*
       img.remove()
@@ -234,7 +235,7 @@ export function imageNodeView(
       controls.append(element('span', 'blk-image-status', '올리는 중'), progress)
     } else if (source !== null) {
       dom.dataset.state = 'ready'
-      renderImage(source, readCaption(props))
+      renderImage(source, readCaption(props), imageAltText(current.attrs.format, props))
     } else {
       dom.dataset.state = 'empty'
       renderEmpty()

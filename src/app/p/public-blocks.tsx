@@ -13,7 +13,7 @@ import katex from 'katex'
 import type { ReactNode } from 'react'
 
 import { codeCaptionRuns, codeLanguageOf } from '@/lib/block/code'
-import { readCaption, readImageSource } from '@/lib/block/image'
+import { imageAltText, readCaption, readImageSource } from '@/lib/block/image'
 import { EQUATION_TYPE, equationExpressionOf } from '@/lib/block/equation'
 import { cellsOf, COLUMN_HEADER_KEY, ROW_HEADER_KEY, TABLE_TYPE } from '@/lib/block/table'
 import { TOC_TYPE, headingsOfBlocks, tocEntries } from '@/lib/block/toc'
@@ -281,7 +281,7 @@ function Block({ block, view }: { block: EditorBlock; view: PublicPageView }): R
       return (
         <figure className="pub-block pub-image">
           {/* eslint-disable-next-line @next/next/no-img-element -- 공개 화면은 최적화 경로를 거치지 않는다(바깥 주소 · 토큰 경로) */}
-          <img src={src} alt={caption} loading="lazy" referrerPolicy="no-referrer" />
+          <img src={src} alt={imageAltText(block.format, props)} loading="lazy" referrerPolicy="no-referrer" />
           {caption !== '' && <figcaption>{caption}</figcaption>}
         </figure>
       )

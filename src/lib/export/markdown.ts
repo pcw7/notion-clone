@@ -46,7 +46,7 @@
  */
 
 import { codeCaptionRuns, codeLanguageOf, fencedCode } from '../block/code.ts'
-import { readCaption, readImageSource, type ImageSource } from '../block/image.ts'
+import { imageAltText, readImageSource, type ImageSource } from '../block/image.ts'
 import { TOC_TYPE, headingsOfBlocks, tocEntries, type TocEntry } from '../block/toc.ts'
 import { BREADCRUMB_TYPE } from '../block/breadcrumb.ts'
 import { EQUATION_TYPE, equationDisplayLines } from '../block/equation.ts'
@@ -697,7 +697,8 @@ function renderBlock(block: EditorBlock, ctx: Ctx, number: number): string[] {
         losses.omittedImages += 1
         return []
       }
-      const alt = escapeText(readCaption(block.properties).replace(/\s+/g, ' ').trim())
+      // 대체 텍스트(10d-1a) — 장식이면 빈 말 · 있으면 그것 · 없으면 캡션(편집기 · 공개 화면과 같은 함수)
+      const alt = escapeText(imageAltText(block.format, block.properties).replace(/\s+/g, ' ').trim())
       return [`![${alt}](${linkDestination(href)})`]
     }
 
