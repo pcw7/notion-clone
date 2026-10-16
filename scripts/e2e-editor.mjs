@@ -17139,6 +17139,95 @@ async function main() {
         String(await evaluate(`document.querySelector('[data-testid="home-item"][data-page-id="${dbId}"]')?.getAttribute('href') ?? '(없음)'`)))
     }
 
+    if (sectionIf('라이브러리 (10c-2 · F-07-19)')) {
+      // 새 워크스페이스에서 — 사이드바의 "라이브러리" · 탭마다 계층을 편 목록과 위치 · 이름으로 찾기(GET 폼 — 주소가 상태) · 탭 링크가
+      // 검색어를 지닌다 · 0건이면 그렇다고.
+      const stamp = Date.now().toString(36)
+      const created = await fetch(`${BASE}/api/workspaces`, { method: 'POST', headers: authed, body: JSON.stringify({ name: `서재 ${stamp}` }) })
+      const ws = (await created.json()).workspaceId
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${ws}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const page = async (body) => (await api('POST', '/pages', body)).body?.page?.id
+      const teamName = `서재 팀 ${stamp}`
+      const shared = await page({ title: `공용 ${stamp}` })
+      const sharedChild = await page({ title: `공용 아래 ${stamp}`, parentPageId: shared })
+      const mine = await page({ title: `개인 ${stamp}`, privateTop: true })
+      const mineChild = await page({ title: `개인 아래 ${stamp}`, parentPageId: mine })
+      const team = (await api('POST', '/teamspaces', { name: teamName })).body?.teamspace?.id
+      const teamPage = await page({ title: `팀 ${stamp}`, teamspaceId: team })
+      const teamChild = await page({ title: `팀 아래 ${stamp}`, parentPageId: teamPage })
+      await api('POST', `/pages/${shared}/favorite`)
+
+      const ids = `[...document.querySelectorAll('[data-testid="library-item"]')].map((a) => a.getAttribute('data-page-id'))`
+      const wheres = `[...document.querySelectorAll('[data-testid="library-item"]')].map((a) => a.querySelector('[data-testid="library-where"]')?.textContent ?? null)`
+      const same = (expr, value) => `JSON.stringify(${expr}) === ${JSON.stringify(JSON.stringify(value))}`
+      const current = (tab) => `document.querySelector('[data-testid="library-tab"][aria-current="page"]')?.getAttribute('data-tab') === ${JSON.stringify(tab)}`
+      const libState = () => evaluate(`JSON.stringify({ url: location.pathname + location.search, ids: ${ids}, wheres: ${wheres},
+        tab: document.querySelector('[data-testid="library-tab"][aria-current="page"]')?.getAttribute('data-tab') ?? null,
+        empty: document.querySelector('[data-testid="library-empty"]')?.textContent ?? null })`)
+      const LIB = `/w/${ws}/library`
+
+      // ① 사이드바의 "라이브러리" — 기본 탭은 최근 방문(연 페이지)
+      await send('Page.navigate', { url: `${BASE}/w/${ws}/${mine}` })
+      await waitFor(`!!document.querySelector('input[aria-label="페이지 제목"]')`, 15000)
+      for (let i = 0; i < 6 && !(await evaluate(`location.pathname === ${JSON.stringify(LIB)}`)); i += 1) {
+        await clickSelector('[data-testid="sidebar-library"]')
+        await waitFor(`location.pathname === ${JSON.stringify(LIB)}`, 3000)
+      }
+      let recentOk = await waitFor(`location.pathname === ${JSON.stringify(LIB)} && ${current('recent')} && ${same(ids, [mine])}`, 8000)
+      // 방문 기록이 늦게 닿았으면 다시 읽는다
+      for (let i = 0; i < 2 && !recentOk; i += 1) {
+        await send('Page.navigate', { url: `${BASE}${LIB}` })
+        recentOk = await waitFor(`${current('recent')} && ${same(ids, [mine])}`, 8000)
+      }
+      check('★ 사이드바의 "라이브러리" 가 연다 — 기본 탭은 최근 방문', recentOk, await libState())
+
+      // ② 탭마다 — 계층을 편 목록과 위치(루트는 팀스페이스 이름 · 아래는 부모의 제목)
+      await send('Page.navigate', { url: `${BASE}${LIB}?tab=teamspaces` })
+      const teamOk = await waitFor(`${current('teamspaces')} && ${same(ids, [teamPage, teamChild])} && ${same(wheres, [teamName, `팀 ${stamp}`])}`, 15000)
+      await send('Page.navigate', { url: `${BASE}${LIB}?tab=private` })
+      const privateOk = await waitFor(`${current('private')} && ${same(ids, [mine, mineChild])} && ${same(wheres, [null, `개인 ${stamp}`])}`, 15000)
+      await send('Page.navigate', { url: `${BASE}${LIB}?tab=favorites` })
+      const favoritesOk = await waitFor(`${current('favorites')} && ${same(ids, [shared])}`, 15000)
+      check('★ 탭마다 계층을 편 목록 — 팀스페이스(위치는 팀 이름 · 부모 제목) · 개인 · 즐겨찾기',
+        teamOk && privateOk && favoritesOk, await libState())
+
+      // ③ 이름으로 찾기 — GET 폼(주소가 상태) · 그 탭 안에서
+      await send('Page.navigate', { url: `${BASE}${LIB}?tab=workspace` })
+      await waitFor(`${current('workspace')} && ${same(ids, [shared, sharedChild])}`, 15000)
+      await evaluate(`document.querySelector('[data-testid="library-query"]')?.focus()`)
+      await typeText('아래')
+      // CDP 의 rawKeyDown 은 폼의 암묵적 제출(Enter)을 일으키지 않는다 — "찾기" 를 누른다
+      for (let i = 0; i < 6 && new URLSearchParams(String(await evaluate('location.search'))).get('q') !== '아래'; i += 1) {
+        await clickSelector('[data-testid="library-submit"]')
+        await waitFor(`new URLSearchParams(location.search).get('q') === '아래'`, 3000)
+      }
+      check('★ 이름으로 찾기 — 주소에 탭 · 검색어 · 그 탭 안의 맞는 것만',
+        await waitFor(`new URLSearchParams(location.search).get('tab') === 'workspace' && new URLSearchParams(location.search).get('q') === '아래'
+          && ${same(ids, [sharedChild])} && (document.querySelector('[data-testid="library-count"]')?.textContent ?? '') === '2개 중 1개'`, 15000),
+        await libState())
+
+      // ④ 탭 링크가 검색어를 지닌다
+      for (let i = 0; i < 6 && !(await evaluate(current('private'))); i += 1) {
+        await clickSelector('[data-testid="library-tab"][data-tab="private"]')
+        await waitFor(current('private'), 3000)
+      }
+      check('탭을 바꿔도 검색어를 지닌다 — 개인 탭의 맞는 것',
+        await waitFor(`${current('private')} && new URLSearchParams(location.search).get('q') === '아래' && ${same(ids, [mineChild])}`, 8000),
+        await libState())
+
+      // ⑤ 0건이면 그렇다고
+      await send('Page.navigate', { url: `${BASE}${LIB}?tab=private&q=${encodeURIComponent(`없는이름${stamp}`)}` })
+      check('맞는 것이 없으면 그렇다고 말한다',
+        await waitFor(`(document.querySelector('[data-testid="library-empty"]')?.textContent ?? '').includes(${JSON.stringify(`없는이름${stamp}`)})
+          && document.querySelectorAll('[data-testid="library-item"]').length === 0`, 15000),
+        await libState())
+    }
+
     if (sectionIf('폼 — 서버 라우트 (7a-1 · F-13-01)')) {
       // 폼 뷰의 라우트 — 만들기(첫 질문은 제목) · 질문 바꾸기 · 설정 · 공개(토큰) · 거부 코드 · 표 화면의 탭에 선다(7a-3 부터 — 그 탭은
       // 편집 화면이다).
