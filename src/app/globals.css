@@ -32,6 +32,78 @@
   }
 }
 
+/*
+ * 고대비 · 움직임 줄이기 — 플랫폼 잔여 10d-2 (F-12-13 · 정본 §3.1 [보강] 설정 값 표 · 테마 ⑥)
+ *
+ * `<html data-contrast>` · `data-motion` 은 이 기기의 값이다(쿠키 — 루트 레이아웃이 첫 HTML 에 싣는다). system 이면 OS 의 설정을 따른다 —
+ * 서버는 OS 를 모르므로 그 판정은 여기(미디어 쿼리)서 한다(테마와 같다).
+ */
+@custom-variant contrast-high {
+  &:where([data-contrast="high"], [data-contrast="high"] *) {
+    @slot;
+  }
+  @media (prefers-contrast: more) {
+    &:where([data-contrast="system"], [data-contrast="system"] *) {
+      @slot;
+    }
+  }
+}
+@custom-variant a11y-motion-reduced {
+  &:where([data-motion="reduce"], [data-motion="reduce"] *) {
+    @slot;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    &:where([data-motion="system"], [data-motion="system"] *) {
+      @slot;
+    }
+  }
+}
+
+/*
+ * 고대비 — Tailwind 의 회색 단계가 CSS 변수라 그것을 바꿔 끼운다(값은 Tailwind 의 neutral 팔레트에서 두 단계씩). 글자의 회색(400 · 500)은
+ * 밝은 테마에서 짙게 · 어두운 테마에서 밝게. 테두리(200 · 300)는 밝은 테마에서만 짙게 — 어두운 테마의 700 · 800 은 배경으로도 쓰여 건드리지
+ * 않는다(바꾸면 그 위의 밝은 글자가 묻힌다). 포커스 표시는 굵게.
+ */
+:root {
+  @variant contrast-high {
+    --color-neutral-200: oklch(87% 0 0);
+    --color-neutral-300: oklch(70.8% 0 0);
+    --color-neutral-400: oklch(43.9% 0 0);
+    --color-neutral-500: oklch(37.1% 0 0);
+
+    @variant dark {
+      --color-neutral-200: oklch(92.2% 0 0);
+      --color-neutral-300: oklch(87% 0 0);
+      --color-neutral-400: oklch(87% 0 0);
+      --color-neutral-500: oklch(80% 0 0);
+    }
+
+    & *:focus-visible {
+      outline: 3px solid currentColor !important;
+      outline-offset: 2px;
+    }
+  }
+}
+
+/*
+ * 움직임 줄이기 — 전이를 끄고 · 애니메이션을 한 번에 끝내고 · 부드러운 스크롤을 바로 옮기기로(스크립트가 굴리는 곳은 `reducesMotion`).
+ * ⚠ 전이는 **끈다**(`transition: none`) — 길이만 줄이면(`transition-duration: 0.01ms`) 안 된다: `transition-property` 의 기본값이 `all` 이라
+ * 모든 요소에 길이를 주면 꺼져 있던 전이가 **모든 속성에 켜져**, 바꾼 바로 그 순간 읽는 위치 · 색이 옛 값이 된다(끌기 · 손잡이가 엉뚱한 줄을
+ * 잡았다 — §3.3-437).
+ */
+:root {
+  @variant a11y-motion-reduced {
+    & *,
+    & *::before,
+    & *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition: none !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);

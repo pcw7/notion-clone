@@ -17342,6 +17342,73 @@ async function main() {
         await dialogState())
     }
 
+    if (sectionIf('이 기기의 고대비 · 움직임 줄이기 (10d-2 · F-12-13)')) {
+      // 설정 → 환경설정의 "접근성" — 고르면 곧바로 `<html data-contrast | data-motion>` · 회색 글자가 짙어진다 · 전이가 꺼진다 · 쿠키라 새로
+      // 읽어도 남는다(서버가 첫 HTML 에 싣는다) · "기기 설정을 따름" 이면 OS 를 따른다 · 끝에 쿠키 · 미디어 흉내를 지운다(다른 절로 번지지 않게).
+      // OS 의 설정은 흉내로 고정한다 — 이 PC 처럼 Windows 의 애니메이션을 끈 기계는 system 이 곧 "줄이기" 다.
+      const osMedia = (contrast, motion) => send('Emulation.setEmulatedMedia', {
+        features: [{ name: 'prefers-contrast', value: contrast }, { name: 'prefers-reduced-motion', value: motion }],
+      })
+      const SETTINGS = `${BASE}/w/${workspaceId}/settings?s=account.preferences`
+      const note = `document.querySelector('[data-testid="a11y-panel"] p')`
+      const colorNow = `getComputedStyle(${note}).color`
+      // 움직임 줄이기는 전이를 끈다(`transition: none` — 길이만 줄이면 모든 속성에 전이가 켜진다)
+      const transitionNow = `getComputedStyle(document.body).transitionProperty`
+      const a11yState = () => evaluate(`JSON.stringify({ contrast: document.documentElement.dataset.contrast ?? null, motion: document.documentElement.dataset.motion ?? null,
+        color: ${note} ? ${colorNow} : null, transition: ${transitionNow}, cookie: document.cookie })`)
+      // 화면이 살아나기 전의 클릭은 라디오의 표시만 바꾸고 버려진다 — `<html>` 의 속성이 바뀔 때까지 다시 누른다
+      const pick = async (group, value) => {
+        const attr = group === 'a11y-contrast' ? 'contrast' : 'motion'
+        const done = `document.documentElement.dataset.${attr} === ${JSON.stringify(value)} && document.cookie.includes(${JSON.stringify(`nc_${attr}=${value}`)})`
+        for (let i = 0; i < 8 && !(await evaluate(done)); i += 1) {
+          await clickSelector(`[data-testid="${group}"] input[value="${value}"]`)
+          await waitFor(done, 2000)
+        }
+        return evaluate(done)
+      }
+      try {
+        await osMedia('no-preference', 'no-preference')
+        // ① 처음 — 기기 설정을 따른다(system) · 패널이 선다
+        await send('Page.navigate', { url: SETTINGS })
+        check('★ 설정의 "접근성" 패널 — 처음은 둘 다 기기 설정을 따른다(system)',
+          await waitFor(`!!document.querySelector('[data-testid="a11y-panel"]') && document.documentElement.dataset.contrast === 'system'
+            && document.documentElement.dataset.motion === 'system' && ${transitionNow} === 'all'
+            && document.querySelector('[data-testid="a11y-contrast"] input[value="system"]')?.checked === true`, 15000),
+          await a11yState())
+        const before = await evaluate(colorNow)
+
+        // ② 고대비 높게 — 곧바로 회색 글자가 짙어진다 · 새로 읽어도 남는다(쿠키를 서버가 읽어 싣는다)
+        const picked = await pick('a11y-contrast', 'high')
+        const darker = picked && (await waitFor(`${colorNow} !== ${JSON.stringify(before)}`, 5000))
+        await send('Page.navigate', { url: SETTINGS })
+        check('★ 고대비 "높게" — 곧바로 회색 글자가 짙어지고 새로 읽어도 남는다(서버가 쿠키를 읽어 첫 HTML 에 싣는다)',
+          darker && (await waitFor(`document.documentElement.dataset.contrast === 'high' && document.querySelector('[data-testid="a11y-contrast"] input[value="high"]')?.checked === true
+            && ${colorNow} !== ${JSON.stringify(before)}`, 15000)),
+          JSON.stringify({ before, now: JSON.parse(await a11yState()) }))
+
+        // ③ 움직임 줄이기 — 전이가 꺼진다
+        const reduced = await pick('a11y-motion', 'reduce')
+        check('움직임 "줄이기" — 전이가 꺼진다',
+          reduced && (await waitFor(`${transitionNow} === 'none'`, 5000)), await a11yState())
+
+        // ④ 되돌리기 — 기기 설정을 따름(OS 는 둘 다 아니다)
+        const back = (await pick('a11y-contrast', 'system')) && (await pick('a11y-motion', 'system'))
+        check('"기기 설정을 따름" 으로 되돌리면 처음과 같다',
+          back && (await waitFor(`${colorNow} === ${JSON.stringify(before)} && ${transitionNow} === 'all'`, 5000)), await a11yState())
+
+        // ⑤ 기기 설정을 따름 + OS 가 고대비 · 움직임 줄이기 — 그대로 따른다
+        await osMedia('more', 'reduce')
+        check('★ "기기 설정을 따름" 이면 OS 를 따른다 — OS 가 고대비면 짙게 · 움직임을 줄이면 끈다',
+          await waitFor(`document.documentElement.dataset.contrast === 'system' && ${colorNow} !== ${JSON.stringify(before)}
+            && ${transitionNow} === 'none'`, 5000),
+          await a11yState())
+      } finally {
+        // 다른 절로 번지지 않게 — 쿠키 · 미디어 흉내를 지운다
+        await evaluate(`document.cookie = 'nc_contrast=; Path=/; Max-Age=0'; document.cookie = 'nc_motion=; Path=/; Max-Age=0'`)
+        await send('Emulation.setEmulatedMedia', { features: [] })
+      }
+    }
+
     if (sectionIf('폼 — 서버 라우트 (7a-1 · F-13-01)')) {
       // 폼 뷰의 라우트 — 만들기(첫 질문은 제목) · 질문 바꾸기 · 설정 · 공개(토큰) · 거부 코드 · 표 화면의 탭에 선다(7a-3 부터 — 그 탭은
       // 편집 화면이다).

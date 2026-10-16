@@ -22,6 +22,8 @@ import { GroupPanel } from '../group-panel'
 import { GuestPanel } from '../guest-panel'
 import { InviteForm } from '../invite-form'
 import { PendingInviteList } from '../pending-invite-list'
+import { readDevicePreferences } from '@/lib/settings/device-preferences-cookie'
+import { AccessibilityPanel } from './accessibility-panel'
 import { AuditPanel } from './audit-panel'
 import { EmojiPanel } from './emoji-panel'
 import { MfaPanel } from './mfa-panel'
@@ -63,6 +65,9 @@ export async function SettingPanelView({ id, ctx }: { id: SettingPanelId; ctx: S
       const [list, canCreate] = await Promise.all([listCustomEmoji(ctx), canCreateCustomEmoji(ctx)])
       return <EmojiPanel workspaceId={ctx.workspaceId} initial={list} canCreate={canCreate} />
     }
+    case 'accessibility':
+      // 이 기기의 고대비 · 움직임 줄이기(10d-2) — 지금 값은 요청의 쿠키에서(계정의 설정 표가 아니다)
+      return <AccessibilityPanel initial={await readDevicePreferences()} />
     case 'site':
       // 사이트 주소(6c-2) — 지금 주소는 여기서 읽는다. 정하는 것은 소유자만(패널 목록이 걸렀다 — 명령이 다시 묻는다).
       return <SitePanel workspaceId={ctx.workspaceId} initialName={await readSiteDomain(ctx)} />
