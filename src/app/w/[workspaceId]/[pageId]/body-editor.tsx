@@ -80,6 +80,9 @@ import { CodeCaptionEditor } from './code-caption-editor'
 import { CodeLanguageMenu } from './code-language-menu'
 import { EquationEditor } from './equation-editor'
 import { ButtonBlockSettings } from './button-block-settings'
+import { ImageAltDialog } from './image-alt-dialog'
+import { imageBlockInfo, setImageAltCommand } from '@/lib/editor/image-block'
+import type { ImageAlt } from '@/lib/block/image'
 import { FindBar } from './find-bar'
 import { buttonRunMessage } from '../db/[databaseId]/button-messages'
 import { BUTTON_TYPE } from '@/lib/block/button'
@@ -409,6 +412,8 @@ export function BodyEditor({
   const [equationUi, setEquationUi] = useState<EquationUi | null>(null)
   /** 버튼 블록의 설정 창(자동화 5e-1) — 연 블록과 그때의 라벨. */
   const [buttonUi, setButtonUi] = useState<{ readonly blockId: string; readonly label: string } | null>(null)
+  /** 이미지의 대체 텍스트 대화상자(10d-1b · F-12-13) — 연 블록과 연 순간의 값. */
+  const [imageAltUi, setImageAltUi] = useState<{ readonly blockId: string; readonly alt: ImageAlt } | null>(null)
   const equationUiRef = useRef<EquationUi | null>(null)
   const equationCloseRef = useRef<((restoreFocus: boolean) => void) | null>(null)
   /** 코멘트를 쓰는 중 — 앵커는 **여는 순간** 만든다(아래). */
@@ -1257,6 +1262,12 @@ export function BodyEditor({
         const info = current ? buttonBlockInfo(current.state, id) : null
         setButtonUi({ blockId: id, label: info?.label ?? '' })
       },
+      // 이미지의 대체 텍스트(10d-1b) — 편집기 밖의 대화상자. 저장할 때 편집기 명령으로 형식에 쓴다.
+      openImageAlt: (id) => {
+        const current = viewRef.current
+        const info = current ? imageBlockInfo(current.state, id) : null
+        if (info !== null) setImageAltUi({ blockId: id, alt: info.alt })
+      },
       // 인라인 수식(Phase 2 1b) — 누르거나 골라서 Enter · Ctrl/Cmd+Shift+E 로 넣은 빈 수식.
       openInlineEquation: (ref) => openInlineEquationUi(ref),
       // 링크(Ctrl/Cmd+K · 1e-2) — 서식 툴바의 링크 입력칸을 연다. 고른 글자가 없으면 툴바가 없어 아무 일도 없다.
@@ -1696,6 +1707,23 @@ export function BodyEditor({
             onClose={closeCodeUi}
             closeRef={codeUiCloseRef}
             isTrigger={(target) => isCodeUiTrigger(target, codeUi)}
+          />
+        )}
+        {/* 이미지의 대체 텍스트(10d-1b · F-12-13) — 편집기 밖. 저장할 때 편집기 명령으로 본문(형식)에 쓴다 · 닫으면 편집기로. */}
+        {editable && imageAltUi !== null && (
+          <ImageAltDialog
+            key={imageAltUi.blockId}
+            initial={imageAltUi.alt}
+            onSave={(alt) => {
+              const view = viewRef.current
+              if (view?.editable) setImageAltCommand(imageAltUi.blockId, alt)(view.state, view.dispatch.bind(view))
+              setImageAltUi(null)
+              view?.focus()
+            }}
+            onClose={() => {
+              setImageAltUi(null)
+              viewRef.current?.focus()
+            }}
           />
         )}
         {/* 버튼 블록의 설정 창(자동화 5e-1) — 편집기 밖. 라벨은 저장할 때 편집기 명령으로 본문에 쓴다. */}

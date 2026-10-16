@@ -32,6 +32,7 @@ import type { Node as PmNode } from '@tiptap/pm/model'
 import type { EditorView, NodeView } from '@tiptap/pm/view'
 
 import {
+  readImageAlt,
   imageAltText,
   IMAGE_TYPE,
   imageDisplayUrl,
@@ -54,6 +55,27 @@ export type ImageViewDeps = {
     file: File,
     onProgress: (fraction: number) => void,
   ) => Promise<UploadOutcome>
+  /** 대체 텍스트 대화상자를 연다(10d-1b · F-12-13) — 편집기 밖의 오버레이. 읽기 전용 편집기는 아무것도 하지 않는다. */
+  readonly openImageAlt: (blockId: string) => void
+}
+
+/** 대체 텍스트 단추의 말(10d-1b) — 장식이면 "장식 이미지" · 말이 있으면 ✓ · 없으면 "대체 텍스트". */
+function altButtonLabel(format: unknown): string {
+  const alt = readImageAlt(format)
+  if (alt.decorative) return '장식 이미지'
+  return alt.text.trim() !== '' ? '대체 텍스트 ✓' : '대체 텍스트'
+}
+
+/** 컨테이너의 blockId — 노드 뷰는 내용 노드만 받으므로 위로 올라간다(`button-view.ts` 와 같다). */
+function containerIdAt(view: EditorView, getPos: () => number | undefined): string {
+  const pos = getPos()
+  if (pos === undefined) return ''
+  const $pos = view.state.doc.resolve(pos)
+  for (let depth = $pos.depth; depth > 0; depth -= 1) {
+    const node = $pos.node(depth)
+    if (node.type.name === 'blockContainer') return String(node.attrs.blockId ?? '')
+  }
+  return ''
 }
 
 function element<K extends keyof HTMLElementTagNameMap>(
@@ -236,6 +258,16 @@ export function imageNodeView(
     } else if (source !== null) {
       dom.dataset.state = 'ready'
       renderImage(source, readCaption(props), imageAltText(current.attrs.format, props))
+      // 대체 텍스트(10d-1b) — 편집할 수 있을 때만 쓴다(읽기 전용 편집기에서는 CSS 가 숨기고, 눌러도 열지 않는다)
+      const altButton = element('button', 'blk-image-alt', altButtonLabel(current.attrs.format))
+      altButton.type = 'button'
+      altButton.setAttribute('data-testid', 'image-alt-open')
+      altButton.addEventListener('click', () => {
+        if (!view.editable) return
+        const id = containerIdAt(view, getPos)
+        if (id !== '') deps.openImageAlt(id)
+      })
+      controls.append(altButton)
     } else {
       dom.dataset.state = 'empty'
       renderEmpty()

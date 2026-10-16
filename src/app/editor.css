@@ -179,6 +179,27 @@
   background: rgba(0, 0, 0, 0.04);
 }
 
+/* 대체 텍스트 단추(10d-1b · F-12-13) — 그림 아래 · 머물거나 키보드로 오면 보인다 · 읽기 전용 편집기에서는 없다. */
+.blk-image .blk-image-alt {
+  margin-top: 0.25rem;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.25rem;
+  background: none;
+  padding: 0.125rem 0.5rem;
+  color: #6b7280;
+  font: inherit;
+  font-size: 0.75rem;
+  cursor: pointer;
+  opacity: 0;
+}
+.blk-image:hover .blk-image-alt,
+.blk-image .blk-image-alt:focus-visible {
+  opacity: 1;
+}
+.blk-editor[contenteditable='false'] .blk-image-alt {
+  display: none;
+}
+
 .blk-image-url {
   display: flex;
   gap: 0.25rem;
