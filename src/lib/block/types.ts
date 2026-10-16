@@ -341,6 +341,11 @@ export function normalizeFormat(type: BlockType, format: unknown): BlockFormat {
   if (COLUMN_RATIO_KEY in out && !(type === 'column' && isColumnRatio(out[COLUMN_RATIO_KEY]))) {
     delete out[COLUMN_RATIO_KEY]
   }
+  // 대체 텍스트(10d-1b)는 이미지의 것이다 — 다른 타입으로 바뀌면 사라진다(정본 §3.4 [보강] 이미지의 대체 텍스트 ⑤).
+  if (type !== 'image') {
+    delete out.alt_text
+    delete out.alt_decorative
+  }
   // 페이지 아이콘(8c-1)은 **페이지 행의 것**이다 — 본문(Y.Doc · 편집기 · 투영)의 format 에는 없다. 하위 페이지 참조도 타입이 `page` 라
   // 타입으로 가르지 않고 늘 버린다: 행에서 본문을 지을 때(`rowsToDoc` → `docToPm`) 참조 노드가 자식 행의 format 을 받아 와, 볼 수
   // 없는 하위 페이지의 아이콘이 부모 본문을 타고 퍼졌을 것이다(제목이 그랬다 — §3.2-22 · 정본 §3.4 [보강] 페이지 아이콘 ③).

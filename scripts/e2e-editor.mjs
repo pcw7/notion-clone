@@ -17279,6 +17279,69 @@ async function main() {
       check('대체 텍스트의 모양이 틀리면 문서 검증이 거부한다', refused)
     }
 
+    if (sectionIf('이미지의 대체 텍스트 — 편집 화면 (10d-1b · F-12-13)')) {
+      // 그림 아래의 "대체 텍스트" 단추 → 편집기 밖의 대화상자(글 칸 · 장식 이미지) · 저장하면 형식에 쓰여 `<img alt>` 가 바뀐다(캡션은 그대로) ·
+      // 새로 읽어도 남는다 · 장식이면 빈 말 · Esc 는 저장하지 않는다.
+      const stamp = Date.now().toString(36)
+      const made = await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: JSON.stringify({ title: `대체 편집 ${stamp}` }) })
+      const page = (await made.json()).page.id
+      const img = randomUUID()
+      await saveBody(page, {
+        blocks: [
+          { id: img, type: 'image', title: [], properties: { source: { type: 'external', url: `${BASE}/globe.svg` }, caption: [textRun('보이는 설명')] }, format: {}, children: [] },
+          block(randomUUID(), 'paragraph', '그림 뒤 문단'),
+        ],
+      })
+      const altNow = `document.querySelector('[data-block-id="${img}"] img')?.getAttribute('alt')`
+      const button = `document.querySelector('[data-block-id="${img}"] [data-testid="image-alt-open"]')`
+      const dialogState = () => evaluate(`JSON.stringify({ alt: ${altNow}, button: ${button}?.textContent ?? null,
+        dialog: !!document.querySelector('[data-testid="image-alt-dialog"]'),
+        text: document.querySelector('[data-testid="image-alt-text"]')?.value ?? null,
+        active: document.activeElement?.getAttribute('data-testid') ?? null })`)
+      const openDialog = async () => {
+        for (let i = 0; i < 6 && !(await evaluate(`!!document.querySelector('[data-testid="image-alt-dialog"]')`)); i += 1) {
+          await clickSelector(`[data-block-id="${img}"] [data-testid="image-alt-open"]`)
+          await waitFor(`!!document.querySelector('[data-testid="image-alt-dialog"]')`, 2000)
+        }
+      }
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+      await waitFor(`${altNow} === '보이는 설명' && !!${button}`, 15000)
+
+      // ① 단추가 대화상자를 연다 — 글 칸에 포커스 · 처음에는 비었다(캡션과 따로)
+      await openDialog()
+      check('★ 그림의 "대체 텍스트" 단추가 대화상자를 연다 — 글 칸에 포커스 · 캡션과 따로라 비어 있다',
+        await waitFor(`document.activeElement?.getAttribute('data-testid') === 'image-alt-text' && document.querySelector('[data-testid="image-alt-text"]')?.value === ''`, 5000),
+        await dialogState())
+
+      // ② 쓰고 저장 — alt 가 바뀐다 · 캡션은 그대로 · 단추가 ✓ · 새로 읽어도 남는다
+      await typeText(`고양이 ${stamp}`)
+      await clickSelector('[data-testid="image-alt-save"]')
+      const saved = await waitFor(`!document.querySelector('[data-testid="image-alt-dialog"]') && ${altNow} === ${JSON.stringify(`고양이 ${stamp}`)}
+        && (document.querySelector('[data-block-id="${img}"] figcaption')?.textContent ?? '') === '보이는 설명'
+        && (${button}?.textContent ?? '') === '대체 텍스트 ✓'`, 8000)
+      await sleep(1500)
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+      check('★ 저장하면 <img alt> 가 그 말이 된다 — 캡션은 그대로 · 단추가 ✓ · 새로 읽어도 남는다',
+        saved && (await waitFor(`${altNow} === ${JSON.stringify(`고양이 ${stamp}`)}`, 15000)), await dialogState())
+
+      // ③ 장식 이미지 — 글 칸이 잠기고 alt 는 빈 말 · 단추는 "장식 이미지"
+      await openDialog()
+      await clickSelector('[data-testid="image-alt-decorative"]')
+      const locked = await waitFor(`document.querySelector('[data-testid="image-alt-text"]')?.disabled === true`, 3000)
+      await clickSelector('[data-testid="image-alt-save"]')
+      check('장식 이미지 — 글 칸이 잠기고 alt 는 빈 말 · 단추가 "장식 이미지"',
+        locked && (await waitFor(`${altNow} === '' && (${button}?.textContent ?? '') === '장식 이미지'`, 8000)), await dialogState())
+
+      // ④ Esc 는 저장하지 않는다 — 편집기로 돌아간다
+      await openDialog()
+      await clickSelector('[data-testid="image-alt-decorative"]')
+      await key('Escape')
+      check('Esc 는 저장하지 않고 닫는다 — 편집기로 포커스가 돌아온다',
+        await waitFor(`!document.querySelector('[data-testid="image-alt-dialog"]') && ${altNow} === '' && !!document.activeElement?.closest('.blk-editor')`, 5000),
+        await dialogState())
+    }
+
     if (sectionIf('폼 — 서버 라우트 (7a-1 · F-13-01)')) {
       // 폼 뷰의 라우트 — 만들기(첫 질문은 제목) · 질문 바꾸기 · 설정 · 공개(토큰) · 거부 코드 · 표 화면의 탭에 선다(7a-3 부터 — 그 탭은
       // 편집 화면이다).
