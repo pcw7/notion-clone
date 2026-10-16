@@ -45,6 +45,7 @@ import { colorable, setBlockColorAt } from './block-color.ts'
 import { colorLabel } from './color-names.ts'
 import { blockTypeLabel } from './slash-menu.ts'
 import { tableShape, type TableEdit } from './table.ts'
+import { reducesMotion } from '../settings/device-preferences.ts'
 
 // ── 항목 ──────────────────────────────────────────────────────────────
 
@@ -419,7 +420,9 @@ export function revealBlockCommand(blockId: string, deps: CommandDeps, options: 
       if (options.align === 'start' && view) {
         const at = findContainerById(view.state.doc, blockId)
         const el = at === null ? null : view.nodeDOM(at.pos)
-        if (el instanceof HTMLElement) el.scrollIntoView({ block: 'start', behavior: 'smooth' })
+        // 움직임 줄이기(10d-2) — 이 기기의 값이 OS 를 이긴다(`reducesMotion`)
+        const reduced = reducesMotion(document.documentElement.dataset.motion, window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false)
+        if (el instanceof HTMLElement) el.scrollIntoView({ block: 'start', behavior: reduced ? 'auto' : 'smooth' })
       }
     }
     return true

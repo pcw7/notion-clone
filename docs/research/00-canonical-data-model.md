@@ -217,6 +217,15 @@ CREATE UNIQUE INDEX ux_setting_value_workspace ON setting_value (workspace_id, k
 > 둘이 되고 다른 기기에서 고친 값이 늦게 온다. `system` 의 판정은 CSS 가 한다(미디어 쿼리 · 서버는 OS 를 모른다).
 > ④ 어디서든 `cmd/ctrl + shift + L` 이 밝게 ↔ 어둡게를 바꾼다(지금 보이는 것의 반대 — `system` 이면 OS 가 고른 것의 반대) — 같은 설정을 쓴다.
 > ⑤ 고대비(`device` · 베타 · P2)는 이번에 없다 — 기기마다의 값이라 서버에 두지 않는다(그때 클라이언트의 자리를 연다).
+> ⑥ **[10d-2] 이 기기의 고대비 · 움직임 줄이기**(12 F-12-13 *"contrast(system | standard | high) · reduce_motion — device scope"*) —
+> **쿠키가 정본**(`nc_contrast` · `nc_motion` — 이 브라우저의 값 · 다른 기기로 번지지 않는다 · 400일). 계정의 설정 표가 아니고 테마처럼
+> 복제도 아니다(기기의 값이 사는 곳이 기기다). **브라우저가 쓰고 서버는 읽기만** 한다 — 루트 레이아웃이 첫 HTML 의 `<html data-contrast
+> data-motion>` 에 싣는다(첫 페인트 전). 값은 셋씩 — 고대비 `system`(OS `prefers-contrast: more`) · `standard` · `high` / 움직임 `system`(OS
+> `prefers-reduced-motion`) · `reduce` · `full`. 모르는 값은 `system`. 고대비는 Tailwind 의 회색 단계(CSS 변수)를 바꿔 끼운다 — 글자의 회색
+> (400 · 500)은 밝은 테마에서 짙게 · 어두운 테마에서 밝게, 테두리(200 · 300)는 밝은 테마에서 짙게(어두운 테마의 700 · 800 은 배경으로도
+> 쓰여 건드리지 않는다), 포커스 표시를 굵게. 움직임 줄이기는 전이를 **끄고**(`transition: none` — 길이만 줄이면 `transition-property` 의
+> 기본 `all` 때문에 꺼져 있던 전이가 모든 속성에 켜진다) 애니메이션을 한 번에 끝내고 부드러운 스크롤을 바로 옮기기로(스크립트가 굴리는 곳은
+> `reducesMotion` — 기기의 값이 OS 를 이긴다). 설정 → 내 계정 → 환경설정의 "접근성" 패널
 
 ---
 
