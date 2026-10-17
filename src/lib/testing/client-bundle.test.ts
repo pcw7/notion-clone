@@ -19,51 +19,17 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { dirname, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
+
+import { resolveImport as resolveFrom, valueImports, walkSources as walk } from './import-graph.ts'
 
 const SRC = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 /** 브라우저에 들어가면 안 되는 모듈. 여기에 닿는 값 import 경로가 있으면 실패다. */
 const SERVER_ONLY = [join(SRC, 'lib', 'db', 'pool.ts')]
 
-function walk(dir: string, out: string[] = []): string[] {
-  for (const name of readdirSync(dir)) {
-    const full = join(dir, name)
-    if (statSync(full).isDirectory()) walk(full, out)
-    else if (/\.(ts|tsx)$/.test(name) && !/\.test\.ts$/.test(name)) out.push(full)
-  }
-  return out
-}
-
-/** 파일의 **값** import 들(지워지는 `import type` · 전부 `type` 인 묶음은 뺀다). 동적 import 는 보지 않는다. */
-function valueImports(source: string): string[] {
-  const out: string[] = []
-  const pattern = /^\s*(import|export)\s+(type\s+)?([^'"]*?)\s*from\s*['"]([^'"]+)['"]|^\s*import\s*['"]([^'"]+)['"]/gm
-  for (const m of source.matchAll(pattern)) {
-    if (m[5] !== undefined) {
-      out.push(m[5])
-      continue
-    }
-    if (m[2] !== undefined) continue // import type … / export type …
-    const clause = m[3]
-    const braces = /\{([^}]*)\}/.exec(clause)
-    const outside = clause.replace(/\{[^}]*\}/, '').replace(/,/g, '').trim()
-    const named = braces === null ? [] : braces[1].split(',').map((s) => s.trim()).filter((s) => s.length > 0)
-    const hasValue = outside.length > 0 || named.some((s) => !s.startsWith('type '))
-    if (hasValue) out.push(m[4])
-  }
-  return out
-}
-
-function resolveImport(from: string, spec: string): string | null {
-  const base = spec.startsWith('@/') ? join(SRC, spec.slice(2)) : spec.startsWith('.') ? resolve(dirname(from), spec) : null
-  if (base === null) return null // 패키지 · node: 내장 — 그래프 밖이다
-  for (const candidate of [base, `${base}.ts`, `${base}.tsx`, join(base, 'index.ts'), join(base, 'index.tsx')]) {
-    if (existsSync(candidate) && statSync(candidate).isFile()) return candidate
-  }
-  return null
-}
+const resolveImport = (from: string, spec: string): string | null => resolveFrom(SRC, from, spec)
 
 const show = (file: string): string => relative(SRC, file).split(sep).join('/')
 
