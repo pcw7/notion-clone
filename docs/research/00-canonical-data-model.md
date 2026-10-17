@@ -1764,6 +1764,18 @@ CREATE VIEW live_block AS SELECT * FROM block WHERE lifecycle = 'live';
 > `Ctrl/Cmd+Enter` 는 저장). 저장은 편집기 명령으로 형식에 쓴다(`setImageAltCommand` — `withImageAlt` · 같은 값이면 쓰지 않는다 · 되돌리기의
 > 한 걸음). 닫으면 편집기로 포커스. **다른 타입으로 바뀌면 두 키가 사라진다**(`normalizeFormat` — 코드 줄바꿈 · 컬럼 폭과 같은 규칙)
 
+**[보강] 편집기 메뉴의 접근성 — 편집기 루트가 열린 목록과 지금 항목을 가리킨다** ⟨플랫폼 잔여 10d-3 · F-12-13 / 마이그레이션 없음⟩
+
+> 12 F-12-13 *"슬래시 메뉴/멘션 팝업은 role="listbox" + aria-activedescendant 로 조합 위젯 패턴을 따라야 하며, 포커스를 입력에서 빼앗으면
+> 안 된다"*. 초판은 목록 · 항목의 role 만 있어 ↑↓ 로 바뀌는 항목을 화면 읽기 프로그램이 몰랐다(포커스는 편집기에 있다).
+>
+> ① 슬래시 · 멘션 · 커스텀 이모지 메뉴가 열려 있는 동안 **편집기 루트**(`role="textbox"` · 여러 줄)에 `aria-autocomplete="list"` ·
+> `aria-controls`(목록의 id) · `aria-activedescendant`(지금 항목의 id — 항목이 없으면 달지 않는다). `aria-expanded` 는 textbox 의 속성이 아니라
+> 달지 않는다. 닫히면 셋 다 없다
+> ② 루트의 속성은 ProseMirror 가 쥔다 — 플러그인의 `attributes`(`combobox-a11y.ts`)로 단다. 지금 항목의 번호는 화면의 상태라 화면이 메타
+> 트랜잭션으로 알린다(같은 값이면 보내지 않는다). 메뉴가 둘 열리면 슬래시 · 멘션 · 이모지 차례(여는 쪽이 다른 메뉴를 닫는다)
+> ③ 목록 · 항목의 id 는 고정(`blk-slash-menu` · `blk-slash-option-{n}` · 멘션 · 이모지도 같은 모양) — 한 화면에 편집기가 하나다
+
 **[보강] 페이지 아이콘(`block.format.page_icon`)** ⟨잔여 묶음 8c-1 · 8c-4 · F-02-05 / 마이그레이션 0037 · 0039 · 0097⟩
 
 > 초판의 `block` 에는 아이콘 자리가 없다(`database` 에는 `icon jsonb` 가 있다 — 데이터베이스 자신의 아이콘은 그 칸이다 · §3.5 [보강]
