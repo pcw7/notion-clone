@@ -33,6 +33,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 
 import { STATUS_GROUP_LABEL, type SelectOption } from '@/lib/database/property-types'
+import { AnchoredLayer } from '../../anchored-layer'
 import { OptionChip } from './cell-view'
 
 export function SelectEditor({
@@ -102,11 +103,11 @@ export function SelectEditor({
   }
 
   return (
-    <div
-      data-testid="db-select-editor"
-      className={`absolute top-full z-20 mt-1 w-64 rounded-md border border-neutral-200 bg-white p-1 shadow-lg dark:border-neutral-700 dark:bg-neutral-900 ${
-        align === 'right' ? 'right-0' : 'left-0'
-      }`}
+    // 몸으로 내보낸 층(10j-3a) — 표가 자기 틀 안에서 흘러도 잘리지 않는다. 기준은 칸(위치를 가진 가장 가까운 조상)
+    <AnchoredLayer
+      testId="db-select-editor"
+      align={align === 'right' ? 'end' : 'start'}
+      className="w-64 rounded-md border border-neutral-200 bg-white p-1 shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
     >
       <input
         ref={inputRef}
@@ -186,6 +187,6 @@ export function SelectEditor({
           선택 지우기
         </button>
       )}
-    </div>
+    </AnchoredLayer>
   )
 }
