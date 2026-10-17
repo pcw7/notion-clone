@@ -31,6 +31,8 @@ import { Sidebar, type SidebarNode } from './sidebar'
 import { SearchOverlay } from './search-overlay'
 import { PerfReporter } from './perf-reporter'
 import { normalizeSampleRate } from '@/lib/perf/perf-reporter'
+import { currentRelease } from '@/lib/platform/release-server'
+import { ReleaseWatcher } from './release-watcher'
 import { ThemeShortcut } from './theme-shortcut'
 import { WorkspaceShortcut } from './workspace-shortcut'
 
@@ -131,6 +133,8 @@ export default async function WorkspaceLayout({
       <WorkspaceShortcut workspaceId={workspaceId} workspaceIds={switcher.workspaces.map((w) => w.workspaceId)} />
       {/* 성능 계측(10e-1b · F-12-18) — 이 문서의 수집기. 표본 비율은 환경 변수(기본 0.2 · 0 이면 끈다) */}
       <PerfReporter sampleRate={normalizeSampleRate(process.env.PERF_SAMPLE_RATE)} />
+      {/* 새 버전 알림(10h-1 · F-12-17) — 이 렌더의 배포 표지를 넘긴다. 화면이 다시 보일 때 · 10분마다 묻고 다르면 띠 */}
+      <ReleaseWatcher release={currentRelease()} />
       <SearchOverlay
         workspaceId={workspaceId}
         recent={recent.map((e) => ({ id: e.id, title: e.title, icon: e.icon }))}
