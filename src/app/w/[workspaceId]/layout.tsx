@@ -29,6 +29,8 @@ import { switcherOf, withWorkspaces, workspaceNameOf } from '@/lib/workspace/lis
 import { canBrowseTeamspaces, canCreateTeamspace, listMyTeamspaces } from '@/lib/workspace/teamspace'
 import { Sidebar, type SidebarNode } from './sidebar'
 import { SearchOverlay } from './search-overlay'
+import { PerfReporter } from './perf-reporter'
+import { normalizeSampleRate } from '@/lib/perf/perf-reporter'
 import { ThemeShortcut } from './theme-shortcut'
 import { WorkspaceShortcut } from './workspace-shortcut'
 
@@ -127,6 +129,8 @@ export default async function WorkspaceLayout({
       <ThemeShortcut workspaceId={workspaceId} />
       {/* 워크스페이스 단축키(8j-1 · F-14-09) — Ctrl/Cmd + Shift + 1~9 가 스위처 목록의 그 자리로. 같은 이유로 사이드바 밖에 둔다. */}
       <WorkspaceShortcut workspaceId={workspaceId} workspaceIds={switcher.workspaces.map((w) => w.workspaceId)} />
+      {/* 성능 계측(10e-1b · F-12-18) — 이 문서의 수집기. 표본 비율은 환경 변수(기본 0.2 · 0 이면 끈다) */}
+      <PerfReporter sampleRate={normalizeSampleRate(process.env.PERF_SAMPLE_RATE)} />
       <SearchOverlay
         workspaceId={workspaceId}
         recent={recent.map((e) => ({ id: e.id, title: e.title, icon: e.icon }))}

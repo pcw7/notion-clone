@@ -84,6 +84,7 @@ import { ImageAltDialog } from './image-alt-dialog'
 import { imageBlockInfo, setImageAltCommand } from '@/lib/editor/image-block'
 import type { ImageAlt } from '@/lib/block/image'
 import { FindBar } from './find-bar'
+import { perfEditorReady, perfEditorStarted } from '../perf-reporter'
 import { buttonRunMessage } from '../db/[databaseId]/button-messages'
 import { BUTTON_TYPE } from '@/lib/block/button'
 import { buttonBlockInfo, setButtonLabelCommand } from '@/lib/editor/button-block'
@@ -1335,6 +1336,8 @@ export function BodyEditor({
         },
       })
       viewRef.current = view
+      // 성능 계측(10e-1b) — 쓸 수 있게 됐다(첫 편집기만 뜻이 있다 — 수집기가 거른다)
+      perfEditorReady()
       // 한글 IME — 조합 중에는 후보를 묻지 않고, 조합이 끝나면 그때의 쿼리로 묻는다.
       // 서식 툴바(1e-2) — 끄는 동안은 접고 놓을 때 잰다 · 편집기 밖으로 포커스가 나가면 접는다(툴바 자신은 빼고).
       view.dom.addEventListener('mousedown', () => {
@@ -1360,6 +1363,8 @@ export function BodyEditor({
       void loadThreads()
     }
 
+    // 성능 계측(10e-1b) — 서기 시작했다(쓸 수 있게 되기 전에 떠나면 끝나지 않은 측정으로 남는다)
+    perfEditorStarted()
     void (async () => {
       const store = await openPendingEditStore()
       if (disposed) return

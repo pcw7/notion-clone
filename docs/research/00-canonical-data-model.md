@@ -4679,6 +4679,12 @@ CREATE TABLE external_sync_source (            -- 구 external_binding. 정본 �
 >
 > ④ **읽는 곳은 운영자 명령 하나**(`npm run perf -- [일수]` — 지표 · 경로마다 p50 · p75 · p95 · 미완료율 · 추정 수). HTTP 로 열지 않는다.
 > 브라우저의 수집기(웹 바이탈 · `editor_ready`)는 10e-1b. 보관 기간(지우는 일)은 스케줄러에 쓰임이 오면
+>
+> ⑤ **[10e-1b] 브라우저의 수집기** — 워크스페이스 화면(레이아웃)에 하나. **표본은 페이지 읽기마다 한 번**(비율은 환경 변수
+> `PERF_SAMPLE_RATE` — 기본 0.2 · 0 이면 끈다 · 측정값마다 싣는다). 웹 바이탈(`useReportWebVitals` — TTFB · FCP · LCP · CLS · INP)과
+> `editor_ready`(**문서를 처음 읽은 뒤의 첫 본문 편집기** — 읽기를 시작한 때부터 쓸 수 있게 되기까지 · 그 전에 화면을 떠나면 `completed=false`
+> · 화면 안에서 옮겨 간 뒤의 편집기는 재지 않는다). 모아 두었다가 20개가 차거나 화면을 떠날 때(`visibilitychange` hidden · `pagehide`)
+> `sendBeacon`. 경로는 보내기 전에 틀로(받는 쪽이 다시 한다)
 
 ### 3.11 알고리즘 정본
 

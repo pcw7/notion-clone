@@ -24,6 +24,11 @@ test('① ★ 경로의 틀', () => {
   assert.equal(routeTemplate('/'), '/')
   assert.equal(routeTemplate(''), '/')
   assert.equal(routeTemplate('/w/a/b/c/d/e/f/g/h/i/j').split('/').length - 1, 8, '8조각까지')
+  // 두 번 해도 같다 — 브라우저가 틀로 만들어 보낸 것을 받는 쪽이 다시 만든다(10e-1b)
+  for (const path of [`/w/${ID}/db/${ID}?v=1`, '/p/AbCdEfGhIjKlMnOpQrStUv', '/', `/w/${ID}/settings`]) {
+    assert.equal(routeTemplate(routeTemplate(path)), routeTemplate(path), path)
+  }
+  assert.equal(routeTemplate('/w/[ID]/[name]'), '/w/[x]/[x]', '아는 자리표시만 그대로')
 })
 
 test('② 측정값', () => {

@@ -178,7 +178,8 @@ function startServer() {
     [join(ROOT, 'node_modules', 'next', 'dist', 'bin', 'next'), 'start', '-p', String(PORT)],
     {
       cwd: ROOT,
-      env: { ...process.env, MAIL_TRANSPORT: 'console', COLLAB_URL, OUTBOUND_ALLOW_HOSTS: `127.0.0.1:${HOOK_PORT}` },
+      // 성능 계측(10e-1b) — 표본 비율 1(페이지 읽기마다) · 수집기의 절이 표에서 본다
+      env: { ...process.env, MAIL_TRANSPORT: 'console', COLLAB_URL, OUTBOUND_ALLOW_HOSTS: `127.0.0.1:${HOOK_PORT}`, PERF_SAMPLE_RATE: '1' },
       stdio: ['ignore', 'pipe', 'pipe'],
     },
   )
@@ -17478,6 +17479,30 @@ async function main() {
       check('★ 세션이 없으면 401 · 있으면 204 — 경로는 틀만 남고 모양이 틀린 것은 빠진다',
         anonymous.status === 401 && signed.status === 204 && JSON.stringify(rows) === JSON.stringify([{ metric_key: 'LCP', route: '/w/[id]/[id]' }]),
         JSON.stringify({ anonymous: anonymous.status, signed: signed.status, rows }))
+    }
+
+    if (sectionIf('성능 계측 — 브라우저의 수집기 (10e-1b · F-12-18)')) {
+      // e2e 서버는 표본 비율 1 — 페이지를 새로 읽고 편집기가 서면 화면을 떠나(다른 주소로) 수집기가 보낸 것을 표에서 본다 · 경로는 틀만.
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const made = await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: JSON.stringify({ title: `계측 ${Date.now()}` }) })
+      const page = (await made.json()).page.id
+      const marker = (await dbQuery(`SELECT coalesce(max(id), 0)::text AS max FROM perf_event`))[0].max
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}?from=perf` })
+      await waitFor(`document.querySelector('.blk-editor')?.getAttribute('contenteditable') === 'true'`, 15000)
+      await sleep(500)
+      await send('Page.navigate', { url: 'about:blank' })
+      let rows = []
+      for (let i = 0; i < 40; i += 1) {
+        rows = await dbQuery(`SELECT metric_key, route, completed, sample_rate FROM perf_event WHERE id > $1 ORDER BY id`, [marker])
+        if (rows.some((r) => r.metric_key === 'editor_ready')) break
+        await sleep(250)
+      }
+      const metrics = new Set(rows.map((r) => r.metric_key))
+      const editor = rows.find((r) => r.metric_key === 'editor_ready')
+      check('★ 화면을 떠나면 수집기가 보낸다 — editor_ready(끝남) · TTFB · FCP · 경로는 틀만 · 표본 비율 1',
+        editor !== undefined && editor.completed === true && editor.route === '/w/[id]/[id]' && metrics.has('TTFB') && metrics.has('FCP')
+          && rows.every((r) => r.sample_rate === 1 && !r.route.includes(page) && !r.route.includes('perf')),
+        JSON.stringify(rows))
     }
 
     if (sectionIf('폼 — 서버 라우트 (7a-1 · F-13-01)')) {
