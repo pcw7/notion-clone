@@ -21,6 +21,8 @@ import { outsiderNoAccessState } from '@/lib/permissions/access-request'
 import { feedClock } from '@/lib/database/row-feed'
 import { NoAccess } from './no-access'
 import { PageContent } from './page-content'
+import { SCREEN_TITLES } from '@/lib/nav/screen-title'
+import { DocumentTitle } from '../document-title'
 
 export default async function PageView({ params, searchParams }: PageProps<'/w/[workspaceId]/[pageId]'>) {
   const { workspaceId, pageId: rawPageId } = await params
@@ -43,7 +45,13 @@ export default async function PageView({ params, searchParams }: PageProps<'/w/[
   if ('outsider' in visitor) {
     const outsiderState = await outsiderNoAccessState(visitor.outsider, pageId)
     if (outsiderState === null) notFound()
-    return <NoAccess workspaceId={workspaceId} pageId={pageId} requested={outsiderState.requested} outsider />
+    return (
+      <>
+        {/* 탭 제목(10d-7b) — 이름을 싣지 않는다 */}
+        <DocumentTitle title={SCREEN_TITLES.noAccess} />
+        <NoAccess workspaceId={workspaceId} pageId={pageId} requested={outsiderState.requested} outsider />
+      </>
+    )
   }
   // 몸은 데이터베이스 화면의 피크와 함께 쓴다(8n-1 · `page-content.tsx`)
   return <PageContent ctx={visitor.member} workspaceId={workspaceId} pageId={pageId} shareOpen={share === '1'} renderedAt={renderedAt} frame="page" />

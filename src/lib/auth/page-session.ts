@@ -16,36 +16,22 @@
  */
 
 import { notFound, redirect } from 'next/navigation'
+import { cache } from 'react'
 
 import { asWorkspaceId } from '../ids.ts'
 import { resolveOutsiderContext, type OutsiderContext } from './outsider-context.ts'
 import { readSessionToken } from './session-cookie.ts'
 import { resolveSessionContext, type SessionContext } from './session-context.ts'
 
-export async function requirePageSession(rawWorkspaceId: string): Promise<SessionContext> {
-  let workspaceId
-  try {
-    workspaceId = asWorkspaceId(rawWorkspaceId)
-  } catch {
-    notFound()
-  }
-
-  const session = await resolveSessionContext(await readSessionToken(), workspaceId)
-  if (session.ok) return session.context
-
-  // 둘째 단계가 남은 세션 — 로그인 화면의 그 단계로(8i-2a).
-  if (session.reason === 'mfa_required') redirect('/login?mfa=1')
-  if (
-    session.reason === 'no_session' ||
-    session.reason === 'expired' ||
-    session.reason === 'revoked'
-  ) {
-    redirect('/login')
-  }
-
-  // not_a_member / member_inactive / sso_required
-  notFound()
-}
+/**
+ * 이 워크스페이스의 사람만 — 밖의 사람 · 멈춘 사람 · SSO 가 막은 사람은 404, 로그인이 안 됐으면 `/login`.
+ * `requirePageVisitor` 의 확인을 나눠 쓴다(한 요청에 한 번 — 아래).
+ */
+export const requirePageSession = cache(async (rawWorkspaceId: string): Promise<SessionContext> => {
+  const visitor = await requirePageVisitor(rawWorkspaceId)
+  if ('outsider' in visitor) notFound()
+  return visitor.member
+})
 
 /** 페이지 화면에 온 사람 — 이 워크스페이스의 사람(`member`)이거나, 요청만 할 수 있는 밖의 사람(`outsider` · 7g-2). */
 export type PageVisitor = { readonly member: SessionContext } | { readonly outsider: OutsiderContext }
@@ -56,8 +42,11 @@ export type PageVisitor = { readonly member: SessionContext } | { readonly outsi
  * 페이지 화면만 요청 화면을 그리고, 나머지(레이아웃)는 아무것도 싣지 않는다.
  *
  * 멈춘 사람 · SSO 가 막은 사람은 여전히 404 다. 로그인이 안 됐으면 `/login` 이다.
+ *
+ * **한 요청에 한 번**(React `cache` · 10d-7b) — 레이아웃 · 화면 · 제목(`generateMetadata`)이 같은 세션을 묻는다. 새 발급자가 아니다 — 같은
+ * 요청의 `resolveSessionContext` 결과를 다시 줄 뿐이다(던진 것 — `redirect` · `notFound` — 도 같이 다시 던진다).
  */
-export async function requirePageVisitor(rawWorkspaceId: string): Promise<PageVisitor> {
+export const requirePageVisitor = cache(async (rawWorkspaceId: string): Promise<PageVisitor> => {
   let workspaceId
   try {
     workspaceId = asWorkspaceId(rawWorkspaceId)
@@ -78,4 +67,4 @@ export async function requirePageVisitor(rawWorkspaceId: string): Promise<PageVi
     if (outsider !== null) return { outsider }
   }
   notFound()
-}
+})

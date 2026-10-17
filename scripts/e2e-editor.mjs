@@ -17747,7 +17747,8 @@ async function main() {
       check('★ 문서의 언어는 한국어 · 고정 화면 다섯의 제목은 "이름 · notion-clone"(홈 · 인박스 · 라이브러리 · 설정 · Teamspace 둘러보기)',
         seen.every(([, ok]) => ok), JSON.stringify(seen))
       await send('Page.navigate', { url: `${BASE}/` })
-      check('이름을 주지 않는 화면은 기본값 "notion-clone"', await waitFor(`document.readyState === 'complete' && document.title === 'notion-clone'`, 15000), await docState())
+      check('워크스페이스 고르기(/)는 "워크스페이스 · notion-clone" — 루트와 같은 구간이라 틀 대신 전체 제목(10d-7b)',
+        await waitFor(`document.readyState === 'complete' && document.title === '워크스페이스 · notion-clone'`, 15000), await docState())
 
       const stamp = Date.now()
       const api = async (method, path, body) => {
@@ -17770,6 +17771,90 @@ async function main() {
         await send('Network.setCookie', { name: 'nc_session', value: session, domain: 'localhost', path: '/', httpOnly: true })
         await api('DELETE', `/pages/${pageId}/publish`)
       }
+    }
+
+    if (sectionIf('내용의 화면 제목 (10d-7b · F-12-13)')) {
+      // 페이지 · 행 페이지 · 데이터베이스 · 템플릿 편집 · teamspace 의 탭 제목은 그 이름 — 화면이 읽은 값으로 브라우저에서 쓴다(첫 HTML 의
+      // <title> 은 기본값). 제목을 바꾸면 탭도 · 빈 제목은 "제목 없음" · 클라이언트 이동에도 옛 이름이 남지 않는다 · 피크는 탭을 바꾸지 않는다 ·
+      // 볼 수 없는 페이지는 이름을 싣지 않는다.
+      const stamp = Date.now()
+      const api = async (method, path, body, headers = authed) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const titleIs = (expected) => `document.readyState === 'complete' && document.title === ${JSON.stringify(expected)}`
+      const docTitle = () => evaluate('document.title')
+      const openAndTitle = async (path, expected) => {
+        await send('Page.navigate', { url: `${BASE}${path}` })
+        return (await waitFor(titleIs(expected), 15000)) ? true : await docTitle()
+      }
+
+      const pageId = (await api('POST', '/pages', { title: `탭 제목 ${stamp}` })).body.page.id
+      const shown = await openAndTitle(`/w/${workspaceId}/${pageId}`, `탭 제목 ${stamp} · notion-clone`)
+      const ssrTitle = /<title>([^<]*)<\/title>/.exec(await (await fetch(`${BASE}/w/${workspaceId}/${pageId}`, { headers: authed })).text())?.[1] ?? null
+      check('★ 페이지의 탭 제목은 그 제목 · notion-clone(첫 HTML 은 기본값 — 브라우저가 쓴다)', shown === true && ssrTitle === 'notion-clone',
+        JSON.stringify({ shown, ssrTitle }))
+
+      // 제목을 바꾸면(입력칸 → 떠나면 저장 → 화면이 새로 읽는다) 탭도 바뀐다
+      await waitFor(`!!document.querySelector('input[aria-label="페이지 제목"]')`, 10000)
+      await evaluate(`(() => { const input = document.querySelector('input[aria-label="페이지 제목"]'); input.focus(); input.select() })()`)
+      await typeText(`바꾼 제목 ${stamp}`)
+      await evaluate(`document.querySelector('input[aria-label="페이지 제목"]').blur()`)
+      check('★ 제목을 바꾸면 탭 제목도 바뀐다(저장 뒤 새로 읽기)', await waitFor(titleIs(`바꾼 제목 ${stamp} · notion-clone`), 10000), await docTitle())
+
+      // 클라이언트 이동 — 사이드바의 다른 페이지 · 홈으로 옮겨도 옛 이름이 남지 않는다
+      const other = (await api('POST', '/pages', { title: `옆 페이지 ${stamp}` })).body.page.id
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${pageId}` })
+      await waitFor(titleIs(`바꾼 제목 ${stamp} · notion-clone`), 15000)
+      for (let i = 0; i < 6 && !(await evaluate(`location.pathname.endsWith(${JSON.stringify(other)})`)); i += 1) {
+        await clickSelector(`a[href="/w/${workspaceId}/${other}"]`)
+        await waitFor(`location.pathname.endsWith(${JSON.stringify(other)})`, 3000)
+      }
+      check('★ 클라이언트 이동으로 다른 페이지 — 탭 제목이 그 페이지의 것(옛 이름이 남지 않는다)',
+        await waitFor(`location.pathname.endsWith(${JSON.stringify(other)}) && ${titleIs(`옆 페이지 ${stamp} · notion-clone`)}`, 10000), await docTitle())
+      for (let i = 0; i < 6 && !(await evaluate(`location.pathname === ${JSON.stringify(`/w/${workspaceId}`)}`)); i += 1) {
+        await clickSelector('[data-testid="sidebar-home"]')
+        await waitFor(`location.pathname === ${JSON.stringify(`/w/${workspaceId}`)}`, 3000)
+      }
+      check('클라이언트 이동으로 홈 — "홈 · notion-clone"', await waitFor(titleIs('홈 · notion-clone'), 10000), await docTitle())
+
+      const untitled = (await api('POST', '/pages', {})).body.page.id
+      const blank = await openAndTitle(`/w/${workspaceId}/${untitled}`, '제목 없음 · notion-clone')
+      check('빈 제목은 "제목 없음"', blank === true, String(blank))
+
+      const db = (await api('POST', '/databases', { name: `탭 표 ${stamp}` })).body.database
+      const dbShown = await openAndTitle(`/w/${workspaceId}/db/${db.id}`, `탭 표 ${stamp} · notion-clone`)
+      check('★ 데이터베이스 화면의 탭 제목은 그 이름', dbShown === true, String(dbShown))
+      const titleProp = (await api('GET', `/views/${db.defaultViewId}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const rowId = (await api('POST', `/views/${db.defaultViewId}/rows`, {
+        cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun(`탭 행 ${stamp}`)] } }],
+      })).body.row.id
+      const rowShown = await openAndTitle(`/w/${workspaceId}/${rowId}`, `탭 행 ${stamp} · notion-clone`)
+      check('행 페이지의 탭 제목은 그 행의 제목 셀', rowShown === true, String(rowShown))
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}?peek=${rowId}` })
+      const peeked = await waitFor(`!!document.querySelector('[data-testid="peek-page"]')`, 15000)
+      await sleep(800)
+      check('피크로 연 행은 탭 제목을 바꾸지 않는다 — 화면은 데이터베이스다', peeked && (await docTitle()) === `탭 표 ${stamp} · notion-clone`,
+        JSON.stringify({ peeked, title: await docTitle() }))
+      const template = (await api('POST', `/data-sources/${db.dataSourceId}/templates`, { title: '탭 템플릿' })).body.template
+      const templateShown = await openAndTitle(`/w/${workspaceId}/db/${db.id}/templates/${template.id}`, `템플릿 — 탭 표 ${stamp} · notion-clone`)
+      check('템플릿 편집의 탭 제목은 "템플릿 — 데이터베이스 이름"', templateShown === true, String(templateShown))
+
+      const team = (await api('POST', '/teamspaces', { name: `탭 팀 ${stamp}` })).body?.teamspace?.id
+      const teamShown = await openAndTitle(`/w/${workspaceId}/teamspaces/${team}`, `탭 팀 ${stamp} · notion-clone`)
+      check('teamspace 화면의 탭 제목은 그 이름', teamShown === true, String(teamShown))
+
+      // 볼 수 없는 페이지 — 내 개인 페이지를 동료가 연다: 접근 요청 화면 · 이름은 HTML 어디에도 없다 · 첫 제목은 기본값
+      const secret = `비밀 탭 ${stamp}`
+      const privateId = (await api('POST', '/pages', { privateTop: true, title: secret })).body.page.id
+      const mate = await joinAs(workspaceId, await createUser('탭 동료'), 'member')
+      const res = await fetch(`${BASE}/w/${workspaceId}/${privateId}`, { headers: { cookie: `nc_session=${mate.token}` } })
+      const html = res.status === 200 ? await res.text() : ''
+      check('★ 볼 수 없는 페이지는 이름을 싣지 않는다 — 접근 요청 화면 · 첫 제목은 기본값 "notion-clone"',
+        html.includes('data-testid="no-access"') && !html.includes(secret) && html.includes('<title>notion-clone</title>'),
+        JSON.stringify({ status: res.status, noAccess: html.includes('data-testid="no-access"'), leaked: html.includes(secret), title: /<title>[^<]*<\/title>/.exec(html)?.[0] ?? null }))
     }
 
     if (sectionIf('폼 — 서버 라우트 (7a-1 · F-13-01)')) {
