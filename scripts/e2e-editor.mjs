@@ -17505,6 +17505,38 @@ async function main() {
         JSON.stringify(rows))
     }
 
+    if (sectionIf('이 기기의 글자 크기 (10d-4 · F-12-13)')) {
+      // 설정 → 환경설정의 "접근성" — 글자 크기를 고르면 곧바로 루트의 글자 크기가 그 비율 · 새로 읽어도 남는다 · 끝에 쿠키를 지운다.
+      const SETTINGS = `${BASE}/w/${workspaceId}/settings?s=account.preferences`
+      const rootSize = `parseFloat(getComputedStyle(document.documentElement).fontSize)`
+      const pickScale = async (value) => {
+        const done = `document.documentElement.dataset.fontScale === ${JSON.stringify(value)} && document.cookie.includes(${JSON.stringify(`nc_font_scale=${value}`)})`
+        for (let i = 0; i < 8 && !(await evaluate(done)); i += 1) {
+          await clickSelector(`[data-testid="a11y-font-scale"] input[value="${value}"]`)
+          await waitFor(done, 2000)
+        }
+        return evaluate(done)
+      }
+      const scaleState = () => evaluate(`JSON.stringify({ scale: document.documentElement.dataset.fontScale ?? null, size: ${rootSize}, cookie: document.cookie })`)
+      try {
+        await send('Page.navigate', { url: SETTINGS })
+        await waitFor(`!!document.querySelector('[data-testid="a11y-font-scale"]')`, 15000)
+        const base = await evaluate(rootSize)
+        check('처음은 보통(100) — 루트의 글자 크기는 브라우저의 기본',
+          (await evaluate(`document.documentElement.dataset.fontScale === '100'`)) && base > 0, await scaleState())
+        const picked = await pickScale('125')
+        const bigger = picked && (await waitFor(`Math.abs(${rootSize} - ${base * 1.25}) < 0.5`, 5000))
+        await send('Page.navigate', { url: SETTINGS })
+        check('★ "크게(125%)" — 곧바로 루트의 글자 크기가 1.25배 · 새로 읽어도 남는다(서버가 쿠키를 읽어 싣는다)',
+          bigger && (await waitFor(`document.documentElement.dataset.fontScale === '125' && Math.abs(${rootSize} - ${base * 1.25}) < 0.5`, 15000)),
+          await scaleState())
+        const back = await pickScale('100')
+        check('보통으로 되돌리면 처음과 같다', back && (await waitFor(`Math.abs(${rootSize} - ${base}) < 0.5`, 5000)), await scaleState())
+      } finally {
+        await evaluate(`document.cookie = 'nc_font_scale=; Path=/; Max-Age=0'`)
+      }
+    }
+
     if (sectionIf('폼 — 서버 라우트 (7a-1 · F-13-01)')) {
       // 폼 뷰의 라우트 — 만들기(첫 질문은 제목) · 질문 바꾸기 · 설정 · 공개(토큰) · 거부 코드 · 표 화면의 탭에 선다(7a-3 부터 — 그 탭은
       // 편집 화면이다).

@@ -32,6 +32,7 @@ export default async function RootLayout({ children }: LayoutProps<"/">) {
       data-theme={theme}
       data-contrast={device.contrast}
       data-motion={device.motion}
+      data-font-scale={device.fontScale}
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col">{children}</body>

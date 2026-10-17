@@ -226,6 +226,9 @@ CREATE UNIQUE INDEX ux_setting_value_workspace ON setting_value (workspace_id, k
 > 쓰여 건드리지 않는다), 포커스 표시를 굵게. 움직임 줄이기는 전이를 **끄고**(`transition: none` — 길이만 줄이면 `transition-property` 의
 > 기본 `all` 때문에 꺼져 있던 전이가 모든 속성에 켜진다) 애니메이션을 한 번에 끝내고 부드러운 스크롤을 바로 옮기기로(스크립트가 굴리는 곳은
 > `reducesMotion` — 기기의 값이 OS 를 이긴다). 설정 → 내 계정 → 환경설정의 "접근성" 패널
+> ⑦ **[10d-4] 글자 크기** — 같은 자리(쿠키 `nc_font_scale` · 루트 레이아웃이 `<html data-font-scale>`). 12 *"font_scale — 브라우저 확대와
+> 별개인 앱 내 텍스트 배율"*. 다섯 — 90 · 100(기본) · 110 · 125 · 150(%). 루트의 글자 크기를 그 비율로 두면(`font-size: N%`) rem 으로 잰
+> 글자 · 간격이 함께 커진다(Tailwind · 편집기 CSS 가 rem 이다). 모르는 값은 100. "접근성" 패널의 셋째 고르개
 
 ---
 
