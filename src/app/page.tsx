@@ -1,3 +1,4 @@
+import type { Metadata } from 'next'
 import Link from 'next/link'
 import { redirect } from 'next/navigation'
 
@@ -5,6 +6,11 @@ import { getCurrentUser } from '@/lib/auth/current-user'
 import { roleLabel } from '@/lib/settings/registry'
 import { listWorkspacesForUser } from '@/lib/workspace/list'
 import { CreateWorkspaceForm } from './create-workspace-form'
+import { SCREEN_TITLES, fullTitle } from '@/lib/nav/screen-title'
+
+// 화면 제목(10d-7b) — 루트 레이아웃과 같은 구간이라 틀이 닿지 않는다(전체 제목을 그대로). 스위처의 "모든 워크스페이스" 가 클라이언트
+// 이동으로 닿으므로 이름이 있어야 앞 화면의 탭 제목이 남지 않는다
+export const metadata: Metadata = { title: { absolute: fullTitle(SCREEN_TITLES.workspaces) } }
 
 export default async function Home() {
   const user = await getCurrentUser()

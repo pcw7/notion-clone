@@ -104,6 +104,8 @@ import { databaseHref } from '@/lib/database/open-pages'
 import { PageContent } from '../../[pageId]/page-content'
 import { RowPeek } from './row-peek'
 import { peekNeighbors, rowOpenHref } from '@/lib/database/open-pages'
+import { contentTitle } from '@/lib/nav/screen-title'
+import { DocumentTitle } from '../../document-title'
 
 const UNTITLED = '제목 없음'
 
@@ -171,6 +173,8 @@ export default async function DatabasePage({
     const canEditStructure = database.value.access.canEditStructure && !lock?.locked
     return (
       <main className="flex min-h-screen min-w-0 flex-col gap-6 px-10 py-12">
+        {/* 탭 제목(10d-7b) — 그 데이터베이스의 이름 */}
+        <DocumentTitle title={contentTitle(database.value.name)} />
         <nav aria-label="상위 경로" className="flex flex-wrap items-center gap-1 text-sm text-neutral-500">
           <Link href={`/w/${workspaceId}`} className="hover:underline underline-offset-4">
             워크스페이스
@@ -458,6 +462,8 @@ export default async function DatabasePage({
 
   return (
     <main className="flex min-h-screen min-w-0 flex-col gap-6 px-10 py-12">
+      {/* 탭 제목(10d-7b) — 그 데이터베이스의 이름(피크로 연 행이 있어도 그대로) */}
+      <DocumentTitle title={contentTitle(database.value.name)} />
       <div className="flex items-start justify-between gap-3">
         <nav aria-label="상위 경로" className="flex flex-wrap items-center gap-1 text-sm text-neutral-500">
           <Link href={`/w/${workspaceId}`} className="hover:underline underline-offset-4">

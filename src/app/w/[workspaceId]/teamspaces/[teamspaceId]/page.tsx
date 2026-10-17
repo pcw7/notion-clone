@@ -34,6 +34,8 @@ import { teamspaceIcon } from '../../teamspace-messages'
 import { PageIconView } from '../../page-icon-view'
 import { TeamspaceMembers } from './teamspace-members'
 import { TeamspaceSettings } from './teamspace-settings'
+import { contentTitle } from '@/lib/nav/screen-title'
+import { DocumentTitle } from '../../document-title'
 
 const UNTITLED = '제목 없음'
 
@@ -59,6 +61,8 @@ export default async function TeamspacePage({ params }: PageProps<'/w/[workspace
 
   return (
     <main data-testid="teamspace-page" className="mx-auto flex min-h-screen max-w-3xl flex-col gap-8 px-6 py-12">
+      {/* 탭 제목(10d-7b) — 그 teamspace 의 이름 */}
+      <DocumentTitle title={contentTitle(teamspace.value.name)} />
       <header>
         <p className="text-xs text-neutral-500">
           <Link href={`/w/${workspaceId}`} className="hover:underline underline-offset-4">

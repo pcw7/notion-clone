@@ -60,6 +60,8 @@ import { formulaPlanOf } from '@/lib/database/formula-plan'
 import { RowTitle } from '../../row-title'
 import { PageIconControl } from '../../../../[pageId]/page-icon-control'
 import { PageIconView } from '../../../../page-icon-view'
+import { templateTitle } from '@/lib/nav/screen-title'
+import { DocumentTitle } from '../../../../document-title'
 
 export default async function TemplatePage({
   params,
@@ -131,6 +133,8 @@ export default async function TemplatePage({
 
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-3xl flex-col gap-6 px-6 py-12">
+      {/* 탭 제목(10d-7b) — "템플릿 — 데이터베이스 이름" */}
+      <DocumentTitle title={templateTitle(database.value.name)} />
       <nav aria-label="상위 경로" className="flex flex-wrap items-center gap-1 text-sm text-neutral-500">
         {trail.map((item, i) => (
           <span key={`${item.kind}:${item.id}`} className="flex items-center gap-1">

@@ -57,6 +57,8 @@ import { rowJson } from '@/lib/database/http'
 import { RowTitle } from '../db/[databaseId]/row-title'
 import type { feedClock } from '@/lib/database/row-feed'
 import { RowProperties } from './row-properties'
+import { SCREEN_TITLES, contentTitle } from '@/lib/nav/screen-title'
+import { DocumentTitle } from '../document-title'
 
 /** 제목 없는 페이지의 표시 문구. 저장된 값은 빈 배열이다. */
 const UNTITLED = '제목 없음'
@@ -98,7 +100,13 @@ export async function PageContent({
     // workspace_id 를 술어에 넣으므로 다른 워크스페이스의 페이지도 여기로 온다.
     const noAccess = await noAccessState(ctx, pageId)
     if (noAccess === null) return missing(frame)
-    return <NoAccess workspaceId={workspaceId} pageId={pageId} requested={noAccess.requested} />
+    return (
+      <>
+        {/* 탭 제목(10d-7b) — 이름을 싣지 않는다. 피크는 탭을 바꾸지 않는다 */}
+        {frame === 'page' && <DocumentTitle title={SCREEN_TITLES.noAccess} />}
+        <NoAccess workspaceId={workspaceId} pageId={pageId} requested={noAccess.requested} />
+      </>
+    )
   }
 
   // 본문은 Y.Doc 이 정본이다(판결 X-1 · CRDT 6d) — 협업 편집기가 그 상태로 시작하고 협업 서버에 붙는다. 행으로 만든 문서는
@@ -192,6 +200,8 @@ export async function PageContent({
       data-full-width={settings?.fullWidth ? 'true' : undefined}
       data-inline-comments={settings?.inlineComments}
     >
+      {/* 탭 제목(10d-7b) — 그 페이지의 평문 제목(행 페이지도). 피크는 탭을 바꾸지 않는다(화면은 데이터베이스다) */}
+      {frame === 'page' && <DocumentTitle title={contentTitle(page.plainTitle)} />}
       <div className="flex items-start justify-between gap-3">
         <nav
           aria-label="상위 경로"
