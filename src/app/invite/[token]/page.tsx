@@ -6,6 +6,7 @@
  * (이건 계정 열거가 아니다. 이미 초대 링크를 가진 사람에게만 보인다.)
  */
 
+import type { Metadata } from 'next'
 import Link from 'next/link'
 import { redirect } from 'next/navigation'
 
@@ -14,6 +15,10 @@ import { getCurrentUser } from '@/lib/auth/current-user'
 import { previewInvite } from '@/lib/workspace/invite'
 import { AcceptInviteButton } from './accept-button'
 import { inviteSummary } from './invite-messages'
+import { SCREEN_TITLES } from '@/lib/nav/screen-title'
+
+// 화면 제목(10d-7a · F-12-13) — 루트의 틀이 `… · notion-clone` 을 붙인다
+export const metadata: Metadata = { title: SCREEN_TITLES.invite }
 
 export default async function InvitePage({
   params,

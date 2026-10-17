@@ -8,9 +8,14 @@
  * 라우트가 하나 생기면 그 라우트만 통째로 무방비가 된다(레이아웃 머리말과 같은 규칙).
  */
 
+import type { Metadata } from 'next'
 import { requirePageSession } from '@/lib/auth/page-session'
 import { listInbox, unreadCount } from '@/lib/notification/inbox'
 import { InboxList, type InboxRow } from './inbox-list'
+import { SCREEN_TITLES } from '@/lib/nav/screen-title'
+
+// 화면 제목(10d-7a · F-12-13) — 루트의 틀이 `… · notion-clone` 을 붙인다
+export const metadata: Metadata = { title: SCREEN_TITLES.inbox }
 
 export default async function InboxView({ params }: PageProps<'/w/[workspaceId]/inbox'>) {
   const { workspaceId } = await params

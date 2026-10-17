@@ -23,6 +23,7 @@ import { notFound } from 'next/navigation'
 import { cache } from 'react'
 
 import { readSessionToken } from '@/lib/auth/session-cookie'
+import { publicTitle } from '@/lib/nav/screen-title'
 import { alreadyResponded, issueSubmissionToken, readPublicForm, resolveFormRespondent } from '@/lib/database/form-submit'
 import { ALREADY_RESPONDED, FORM_CLOSED, WORKSPACE_FORM_LOGIN } from '../form-messages'
 import { PublicFormView } from './public-form'
@@ -39,7 +40,8 @@ export async function generateMetadata({ params }: PageProps<'/f/[token]'>): Pro
   const loaded = await load(token)
   // 로그인하지 않은 사람 · 멤버가 아닌 사람에게는 폼의 제목을 싣지 않는다(워크스페이스 안의 이름이다)
   const title = loaded === null ? '없는 폼' : loaded.respondent.kind === 'anonymous' || loaded.respondent.kind === 'member' ? loaded.form.title : '폼'
-  return { title, robots: 'noindex, nofollow', referrer: 'same-origin' }
+  // 공개 화면 — 앱의 제목 틀을 씌우지 않는다(10d-7a)
+  return { title: publicTitle(title), robots: 'noindex, nofollow', referrer: 'same-origin' }
 }
 
 export default async function PublicFormPage({ params }: PageProps<'/f/[token]'>) {

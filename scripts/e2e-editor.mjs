@@ -17727,6 +17727,51 @@ async function main() {
       }
     }
 
+    if (sectionIf('문서의 언어 · 화면 제목 (10d-7a · F-12-13)')) {
+      // 문서의 언어는 한국어(화면 읽기가 발음을 고른다) · 고정 화면의 제목은 `이름 · notion-clone` · 공개 화면은 틀 없이 글 제목만.
+      // 로그인 화면은 세션을 잠시 지우고 본다 · 게시는 끝에 거둔다.
+      const docState = () => evaluate(`JSON.stringify({ title: document.title, lang: document.documentElement.lang })`)
+      const screens = [
+        [`/w/${workspaceId}`, '홈'],
+        [`/w/${workspaceId}/inbox`, '인박스'],
+        [`/w/${workspaceId}/library`, '라이브러리'],
+        [`/w/${workspaceId}/settings`, '설정'],
+        [`/w/${workspaceId}/teamspaces`, 'Teamspace 둘러보기'],
+      ]
+      const seen = []
+      for (const [path, name] of screens) {
+        await send('Page.navigate', { url: `${BASE}${path}` })
+        const ok = await waitFor(`document.readyState === 'complete' && document.title === ${JSON.stringify(`${name} · notion-clone`)} && document.documentElement.lang === 'ko'`, 15000)
+        seen.push([path, ok, JSON.parse(await docState())])
+      }
+      check('★ 문서의 언어는 한국어 · 고정 화면 다섯의 제목은 "이름 · notion-clone"(홈 · 인박스 · 라이브러리 · 설정 · Teamspace 둘러보기)',
+        seen.every(([, ok]) => ok), JSON.stringify(seen))
+      await send('Page.navigate', { url: `${BASE}/` })
+      check('이름을 주지 않는 화면은 기본값 "notion-clone"', await waitFor(`document.readyState === 'complete' && document.title === 'notion-clone'`, 15000), await docState())
+
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const pageId = (await api('POST', '/pages', { title: `여행 계획 ${stamp}` })).body.page.id
+      const token = (await api('PUT', `/pages/${pageId}/publish`)).body?.token
+      try {
+        await send('Page.navigate', { url: `${BASE}/p/${token}` })
+        check('★ 공개 화면은 틀을 씌우지 않는다 — 글 제목만(앱 이름을 붙이지 않는다)',
+          await waitFor(`document.readyState === 'complete' && document.title === ${JSON.stringify(`여행 계획 ${stamp}`)}`, 15000), await docState())
+        await send('Network.deleteCookies', { name: 'nc_session', domain: 'localhost', path: '/' })
+        await send('Page.navigate', { url: `${BASE}/login` })
+        check('로그인 화면 — "로그인 · notion-clone"(클라이언트 화면이라 틀(레이아웃)이 준다)',
+          await waitFor(`document.readyState === 'complete' && document.title === '로그인 · notion-clone' && document.documentElement.lang === 'ko'`, 15000), await docState())
+      } finally {
+        await send('Network.setCookie', { name: 'nc_session', value: session, domain: 'localhost', path: '/', httpOnly: true })
+        await api('DELETE', `/pages/${pageId}/publish`)
+      }
+    }
+
     if (sectionIf('폼 — 서버 라우트 (7a-1 · F-13-01)')) {
       // 폼 뷰의 라우트 — 만들기(첫 질문은 제목) · 질문 바꾸기 · 설정 · 공개(토큰) · 거부 코드 · 표 화면의 탭에 선다(7a-3 부터 — 그 탭은
       // 편집 화면이다).
