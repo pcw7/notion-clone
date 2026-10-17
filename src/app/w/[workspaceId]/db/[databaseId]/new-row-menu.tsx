@@ -35,6 +35,7 @@ import { useEffect, useRef, useState } from 'react'
 import { UNTITLED_TEMPLATE, type DefaultTemplate } from '@/lib/database/new-row'
 import * as api from './table-api'
 import { PageIconView } from '../../page-icon-view'
+import { AnchoredLayer, containsAcrossLayers } from '../../anchored-layer'
 
 export function NewRowMenu(props: {
   workspaceId: string
@@ -73,7 +74,8 @@ export function NewRowMenu(props: {
   useEffect(() => {
     if (!open) return
     const onDown = (e: MouseEvent) => {
-      if (!boxRef.current?.contains(e.target as Node)) setOpen(false)
+      // 메뉴는 몸으로 내보낸 층이다(10j-3b) — DOM 의 contains 는 포털을 모른다
+      if (boxRef.current === null || !containsAcrossLayers(boxRef.current, e.target as Node)) setOpen(false)
     }
     document.addEventListener('mousedown', onDown)
     return () => document.removeEventListener('mousedown', onDown)
@@ -151,11 +153,10 @@ export function NewRowMenu(props: {
       )}
 
       {open && (
+        <AnchoredLayer align={props.align === 'right' ? 'end' : 'start'}>
         <div
           data-testid="db-new-menu"
-          className={`absolute top-full z-20 mt-1 w-72 rounded-lg border border-neutral-200 bg-white p-1 text-left text-sm font-normal shadow-lg dark:border-neutral-800 dark:bg-neutral-950 ${
-            props.align === 'right' ? 'right-0' : 'left-0'
-          }`}
+          className="w-72 rounded-lg border border-neutral-200 bg-white p-1 text-left text-sm font-normal shadow-lg dark:border-neutral-800 dark:bg-neutral-950"
         >
           <button
             type="button"
@@ -222,6 +223,7 @@ export function NewRowMenu(props: {
             </p>
           )}
         </div>
+        </AnchoredLayer>
       )}
     </div>
   )

@@ -12286,15 +12286,20 @@ async function main() {
       const calcText = () => evaluate(`document.querySelector('${cell} [data-testid="db-calc-button"]')?.textContent ?? '(없음)'`)
       const pick = async (testId) => {
         await clickOn(`${cell} [data-testid="db-calc-button"]`)
-        await waitFor(`!!document.querySelector('${cell} [data-testid="db-calc-menu"]')`, 3000)
-        await clickOn(`${cell} [data-testid="${testId}"]`)
+        // 메뉴는 몸으로 내보낸 층이다(10j-3b) — 여는 단추만 칸 안에 있다
+        await waitFor(`!!document.querySelector('[data-testid="db-calc-menu"]')`, 3000)
+        await clickOn(`[data-testid="db-calc-menu"] [data-testid="${testId}"]`)
       }
 
       check('계산이 없는 열은 "계산"만 있다', (await calcText()) === '계산', await calcText())
       await clickOn(`${cell} [data-testid="db-calc-button"]`)
       check('★ 숫자 열의 목록에 평균 · 합계가 있다 — 체크 계열은 없다',
-        await waitFor(`!!document.querySelector('${cell} [data-testid="db-calc-average"]') && !document.querySelector('${cell} [data-testid="db-calc-checked"]')`, 3000))
-      await clickOn(`${cell} [data-testid="db-calc-average"]`)
+        await waitFor(`!!document.querySelector('[data-testid="db-calc-menu"] [data-testid="db-calc-average"]') && !document.querySelector('[data-testid="db-calc-menu"] [data-testid="db-calc-checked"]')`, 3000),
+        await evaluate(`JSON.stringify({ menu: !!document.querySelector('[data-testid="db-calc-menu"]'),
+          items: [...document.querySelectorAll('[data-testid="db-calc-menu"] [role="menuitemradio"]')].map((b) => b.dataset.testid),
+          expanded: document.querySelector('${cell} [data-testid="db-calc-button"]')?.getAttribute('aria-expanded') ?? null,
+          layers: document.querySelectorAll('[data-anchored-layer]').length })`))
+      await clickOn(`[data-testid="db-calc-menu"] [data-testid="db-calc-average"]`)
       check('★ 평균을 고르면 아래 줄에 "평균 30" — 필터를 지난 행 전부의 값', await waitFor(`(document.querySelector('${cell} [data-testid="db-calc-button"]')?.textContent ?? '') === '평균30'`, 10000), await calcText())
       await pick('db-calc-sum')
       check('합계로 바꾸면 "합계 90"', await waitFor(`(document.querySelector('${cell} [data-testid="db-calc-button"]')?.textContent ?? '') === '합계90'`, 10000), await calcText())
@@ -18091,6 +18096,123 @@ async function main() {
         await evaluate(`document.querySelector(${JSON.stringify(CELL)})?.textContent ?? null`))
     }
 
+    if (sectionIf('기준점에 붙는 층 — 표의 팝오버 (10j-3b · F-12-12)')) {
+      // 표의 팝오버(열 메뉴 · 열 추가 · 계산 · 새 행 · 사람)도 몸으로 내보낸 층이다 — 저마다 화면 안 · 열 메뉴는 머리 칸 아래 · 계산은 칸 위 ·
+      // 새 행 메뉴는 안을 눌러도 닫히지 않고 고른 대로 만든다 · 층은 원래 자리의 글자 크기를 물려받는다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `층 둘 ${stamp}` })).body.database
+      const score = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '점수', type: 'number' })).body.property.id
+      const owner = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '담당', type: 'people' })).body.property.id
+      const titleProp = (await api('GET', `/views/${db.defaultViewId}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      await api('POST', `/views/${db.defaultViewId}/rows`, { cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun(`층 둘 행 ${stamp}`)] } }] })
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      await waitFor(`!!document.querySelector('td[data-property-id="${score}"]')`, 15000)
+      // 그 요소가 몸으로 내보낸 층 안에 있고 화면 안이다 · 글자 크기
+      const layerOf = (sel) => evaluate(`JSON.stringify((() => {
+        const el = document.querySelector(${JSON.stringify(sel)})
+        if (!el) return null
+        const layer = el.closest('[data-anchored-layer]')
+        const r = el.getBoundingClientRect()
+        return { inLayer: !!layer && layer.parentElement === document.body, inView: r.left >= 0 && r.right <= document.documentElement.clientWidth + 1 && r.top >= 0,
+          top: Math.round(r.top), bottom: Math.round(r.bottom), right: Math.round(r.right), font: layer ? getComputedStyle(layer).fontSize : null }
+      })())`).then(JSON.parse)
+      const openUntil = async (trigger, target) => {
+        for (let i = 0; i < 6 && !(await evaluate(`!!document.querySelector(${JSON.stringify(target)})`)); i += 1) {
+          await clickSelector(trigger)
+          await waitFor(`!!document.querySelector(${JSON.stringify(target)})`, 2000)
+        }
+        return evaluate(`!!document.querySelector(${JSON.stringify(target)})`)
+      }
+      const escape = async () => {
+        await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+        await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+      }
+
+      // 열 메뉴 — 머리 칸 아래
+      const TH = `th[data-property-id="${score}"]`
+      await openUntil(`${TH} [data-testid="db-column-menu"]`, '[data-testid="db-column-menu-panel"]')
+      const menu = await layerOf('[data-testid="db-column-menu-panel"]')
+      const th = await evaluate(`JSON.stringify(document.querySelector(${JSON.stringify(TH)}).getBoundingClientRect())`).then(JSON.parse)
+      check('★ 열 메뉴는 층 — 머리 칸 아래 · 화면 안 · 머리 칸의 글자 크기(12px)를 물려받는다',
+        // 기준점은 머리 칸 안의 위치를 가진 틀(옛 `top-full` 의 기준)이라 머리 칸의 아래보다 조금 위일 수 있다 — 가운데보다 아래면 머리 칸 아래다
+        !!menu && menu.inLayer && menu.inView && menu.top >= th.top + th.height / 2 && menu.font === '12px', JSON.stringify({ menu, th }))
+      await escape()
+      await waitFor(`!document.querySelector('[data-testid="db-column-menu-panel"]')`, 3000)
+
+      // 열 추가
+      await openUntil('[data-testid="db-add-column"]', '[data-testid="db-add-column-form"]')
+      const add = await layerOf('[data-testid="db-add-column-form"]')
+      check('열 추가 폼도 층 — 화면 안', !!add && add.inLayer && add.inView, JSON.stringify(add))
+
+      // 내용이 최대 높이를 넘는 순간(수식의 "넣기" 목록을 연다) — 스크롤바가 생겨도 층이 옆으로 밀리지 않는다. 밀리면 누르던 단추가 손 밑에서
+      // 비켜 간다(전체 판의 식 편집기 절이 이것으로 빗나갔다). 목록을 열면 넘치도록 창 높이를 맞춘다.
+      const FORM = '[data-testid="db-add-column-form"]'
+      await evaluate(`(() => { const s = document.querySelector('${FORM} select[aria-label="속성 유형"]'); s.value = 'formula'; s.dispatchEvent(new Event('change', { bubbles: true })) })()`)
+      await waitFor(`!!document.querySelector('${FORM} [data-testid="db-formula-insert"]')`, 3000)
+      const measure = () => evaluate(`JSON.stringify((() => {
+        const f = document.querySelector('${FORM}')
+        const l = f.closest('[data-anchored-layer]')
+        return { left: f.getBoundingClientRect().left, top: l.getBoundingClientRect().top, sh: l.scrollHeight, ch: l.clientHeight }
+      })())`).then(JSON.parse)
+      const toggleInsert = () => evaluate(`(() => { const d = document.querySelector('${FORM} [data-testid="db-formula-insert"]'); d.open = !d.open })()`)
+      await toggleInsert()
+      await sleep(300)
+      const tall = await measure()
+      await toggleInsert()
+      await sleep(300)
+      const short = await measure()
+      const height = Math.round(short.top + 8 + (short.sh + tall.sh) / 2)
+      await send('Emulation.setDeviceMetricsOverride', { width: 1280, height, deviceScaleFactor: 1, mobile: false })
+      await sleep(300)
+      const fits = await measure()
+      await toggleInsert()
+      await sleep(400)
+      const overflows = await measure()
+      await send('Emulation.clearDeviceMetricsOverride')
+      check('★ 내용이 최대 높이를 넘어 층 안에서 스크롤하게 돼도 층은 옆으로 밀리지 않는다(스크롤바 자리를 늘 비워 둔다)',
+        fits.sh <= fits.ch && overflows.sh > overflows.ch && Math.abs(overflows.left - fits.left) < 0.5,
+        JSON.stringify({ short, tall, height, fits, overflows }))
+      await escape()
+      await waitFor(`!document.querySelector('[data-testid="db-add-column-form"]')`, 3000)
+
+      // 계산 — 칸 위
+      const CALC = `[data-testid="db-calc-cell"][data-property-id="${score}"] [data-testid="db-calc-button"]`
+      await openUntil(CALC, '[data-testid="db-calc-menu"]')
+      const calc = await layerOf('[data-testid="db-calc-menu"]')
+      const calcButton = await evaluate(`JSON.stringify(document.querySelector(${JSON.stringify(CALC)}).getBoundingClientRect())`).then(JSON.parse)
+      check('★ 계산 메뉴는 층 — 칸 위에 연다(위를 선호)', !!calc && calc.inLayer && calc.bottom <= calcButton.top + 1, JSON.stringify({ calc, buttonTop: calcButton.top }))
+      await escape()
+      await waitFor(`!document.querySelector('[data-testid="db-calc-menu"]')`, 3000)
+
+      // 사람 — 칸 아래 · 포커스가 남는다
+      const PEOPLE = `td[data-property-id="${owner}"]`
+      for (let i = 0; i < 6 && !(await evaluate(`!!document.querySelector('[data-testid="db-people-editor"]')`)); i += 1) {
+        await clickSelector(PEOPLE)
+        await key('Enter')
+        await waitFor(`!!document.querySelector('[data-testid="db-people-editor"]')`, 2000)
+      }
+      const people = await layerOf('[data-testid="db-people-editor"]')
+      check('사람 편집기도 층 — 화면 안 · 포커스가 편집기 안에 남는다(칸의 blur 가 층을 칸 안으로 본다)',
+        !!people && people.inLayer && people.inView && (await evaluate(`!!document.activeElement?.closest('[data-testid="db-people-editor"]')`)), JSON.stringify(people))
+      await escape()
+      await waitFor(`!document.querySelector('[data-testid="db-people-editor"]')`, 3000)
+
+      // 새 행 메뉴 — 안을 누르면 닫히지 않고 고른 대로 만든다
+      const before = await evaluate(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length`)
+      await openUntil('[data-testid="db-add-row-menu"]', '[data-testid="db-new-menu"]')
+      const newMenu = await layerOf('[data-testid="db-new-menu"]')
+      await clickSelector('[data-testid="db-new-blank"]')
+      check('★ 새 행 메뉴는 층 — 안(빈 항목)을 누르면 닫히기 전에 고른 대로 만든다(바깥 클릭이 층을 안으로 본다)',
+        !!newMenu && newMenu.inLayer && (await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === ${before + 1}`, 8000)),
+        JSON.stringify({ newMenu, before, now: await evaluate(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length`) }))
+    }
+
     if (sectionIf('폼 — 서버 라우트 (7a-1 · F-13-01)')) {
       // 폼 뷰의 라우트 — 만들기(첫 질문은 제목) · 질문 바꾸기 · 설정 · 공개(토큰) · 거부 코드 · 표 화면의 탭에 선다(7a-3 부터 — 그 탭은
       // 편집 화면이다).
@@ -19402,7 +19524,8 @@ async function main() {
         await evaluate(`document.querySelector('${VALUE}')?.textContent ?? '(없음)'`))
 
       await clickSelector(VALUE)
-      const opened = await waitFor(`document.activeElement?.matches('[data-testid="db-filter-panel"] [data-testid="db-people-input"]')`, 5000)
+      // 고르개는 몸으로 내보낸 층이다(10j-3b) — 필터 패널 밖에서 찾는다
+      const opened = await waitFor(`document.activeElement?.matches('[data-testid="db-people-editor"] [data-testid="db-people-input"]')`, 5000)
       await key('Escape')
       const escOnly = await waitFor(`!document.querySelector('[data-testid="db-people-editor"]')`, 3000)
       check('값 칸을 누르면 고르개가 열리고 · Esc 는 고르개만 닫는다(필터 패널은 그대로)',

@@ -35,6 +35,7 @@ import type { RowJson } from '@/lib/database/http'
 import type { PageIcon } from '@/lib/block/page-icon'
 import * as api from './table-api'
 import { PageIconView } from '../../page-icon-view'
+import { AnchoredLayer } from '../../anchored-layer'
 
 const SEARCH_DEBOUNCE_MS = 150
 const UNTITLED = '제목 없음'
@@ -172,13 +173,13 @@ export function RelationEditor({
   }
 
   return (
+    // 몸으로 내보낸 층(10j-3b) — 표가 자기 틀 안에서 흘러도 잘리지 않는다
+    <AnchoredLayer align={align === 'right' ? 'end' : 'start'}>
     <div
       role="dialog"
       aria-label={`${propertyName} 연결`}
       data-testid="db-relation-editor"
-      className={`absolute top-full z-20 mt-1 flex w-72 flex-col gap-1 rounded-md border border-neutral-200 bg-white p-1.5 shadow-lg dark:border-neutral-700 dark:bg-neutral-900 ${
-        align === 'right' ? 'right-0' : 'left-0'
-      }`}
+      className="flex w-72 flex-col gap-1 rounded-md border border-neutral-200 bg-white p-1.5 shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
     >
       {linked !== null && (linked.length > 0 || hidden > 0) && (
         <ul aria-label="지금 연결" className="flex max-h-40 flex-col gap-0.5 overflow-auto">
@@ -272,5 +273,6 @@ export function RelationEditor({
         </p>
       )}
     </div>
+    </AnchoredLayer>
   )
 }

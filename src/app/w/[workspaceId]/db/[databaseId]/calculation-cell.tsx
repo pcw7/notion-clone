@@ -21,6 +21,7 @@ import {
   type CalculationResult,
 } from '@/lib/database/calculations'
 import { isMvpPropertyType } from '@/lib/database/property-types'
+import { AnchoredLayer } from '../../anchored-layer'
 
 export function CalculationCell({
   type,
@@ -79,6 +80,7 @@ export function CalculationCell({
         )}
       </button>
       {open && canEdit && (
+        <AnchoredLayer align="end" prefer="above">
         <div
           role="menu"
           aria-label="계산"
@@ -86,7 +88,7 @@ export function CalculationCell({
           onKeyDown={(e) => {
             if (e.key === 'Escape') setOpen(false)
           }}
-          className="absolute bottom-full right-0 z-30 mb-1 flex max-h-72 w-44 flex-col overflow-y-auto rounded-md border border-neutral-200 bg-white p-1 text-left text-sm shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
+          className="flex max-h-72 w-44 flex-col overflow-y-auto rounded-md border border-neutral-200 bg-white p-1 text-left text-sm shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
         >
           <button
             type="button"
@@ -119,6 +121,7 @@ export function CalculationCell({
             </p>
           )}
         </div>
+        </AnchoredLayer>
       )}
     </div>
   )

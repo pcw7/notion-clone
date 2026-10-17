@@ -7,6 +7,12 @@
  * 세운다. 기준점은 그 자리의 **위치를 가진 가장 가까운 조상** — 절대 위치였을 때의 기준과 같다. 자리는 `placeLayer`(순수) · 스크롤(어느
  * 틀이든 — 포착 단계) · 창 크기 · 층과 기준점의 크기가 바뀌면 다시 잰다. 위치는 DOM 스타일로 직접 쓴다(효과 안의 setState 가 없다).
  *
+ * 몸으로 나가면 원래 자리(칸 · 머리 칸)에서 물려받던 글자 모양(글꼴 · 크기 · 굵기 · 줄 높이 · 자간 · 색)이 끊긴다 — 열 때 그 자리의
+ * 계산된 값을 층에 옮겨 둔다(10j-3b). 팝오버가 스스로 정한 글자 모양은 그대로 이긴다.
+ *
+ * 스크롤바 자리는 늘 비워 둔다(`scrollbar-gutter: stable`) — 내용이 최대 높이를 넘는 순간 스크롤바가 생겨 너비가 늘면, 끝에 맞춘 층은
+ * 다음 프레임에 그만큼 옆으로 밀려 누르던 단추가 손 밑에서 비켜 간다(10j-3b).
+ *
  * React 의 사건(키 · 포커스 · 마우스)은 포털을 넘어 React 트리를 따라 그대로 흐른다. DOM 의 `contains` 는 아니다 — "포커스가 칸 안에
  * 머무는가"처럼 DOM 으로 보는 곳은 `containsAcrossLayers` 를 쓴다(층에서 그 기준점으로 거슬러 올라가 본다).
  */
@@ -43,12 +49,15 @@ const subscribeNothing = () => () => {}
 
 export function AnchoredLayer({
   align = 'start',
+  prefer = 'below',
   gap = 4,
   className = '',
   testId,
   children,
 }: {
   readonly align?: LayerAlign
+  /** 선호하는 쪽 — 들어가거나 더 넓으면 그쪽(계산 칸은 위). */
+  readonly prefer?: 'below' | 'above'
   readonly gap?: number
   readonly className?: string
   readonly testId?: string
@@ -65,7 +74,14 @@ export function AnchoredLayer({
     if (layer === null || placeholder === null) return
     const anchor = positionedAncestor(placeholder)
     anchorOfLayer.set(layer, anchor)
+    // 원래 자리에서 물려받던 글자 모양을 옮겨 둔다(몸으로 나가면 상속이 끊긴다)
+    const inherited = getComputedStyle(placeholder.parentElement ?? anchor)
+    for (const prop of ['fontFamily', 'fontSize', 'fontWeight', 'lineHeight', 'letterSpacing', 'color'] as const) {
+      layer.style[prop] = inherited[prop]
+    }
     let frame = 0
+    // 쪽은 처음 잴 때 정해 쥔다 — 내용이 자랄 때마다(버튼 설정에 액션을 더하듯) 뒤집으면 자리가 튀어 누르던 것이 비켜 간다
+    let side: 'below' | 'above' | undefined
     const update = () => {
       frame = 0
       const root = document.documentElement
@@ -73,8 +89,9 @@ export function AnchoredLayer({
         anchor.getBoundingClientRect(),
         { width: layer.offsetWidth, height: layer.scrollHeight },
         { width: root.clientWidth, height: root.clientHeight },
-        { align, gap, margin: 8 },
+        { align, gap, margin: 8, prefer, side },
       )
+      side = placed.side
       layer.style.top = `${placed.top}px`
       layer.style.left = `${placed.left}px`
       layer.style.maxHeight = `${placed.maxHeight}px`
@@ -97,7 +114,7 @@ export function AnchoredLayer({
       observer.disconnect()
       anchorOfLayer.delete(layer)
     }
-  }, [align, gap, isClient])
+  }, [align, prefer, gap, isClient])
 
   return (
     <>
@@ -108,7 +125,7 @@ export function AnchoredLayer({
             ref={layerRef}
             data-anchored-layer=""
             data-testid={testId}
-            style={{ position: 'fixed', top: 0, left: 0, visibility: 'hidden', overflowY: 'auto' }}
+            style={{ position: 'fixed', top: 0, left: 0, visibility: 'hidden', overflowY: 'auto', scrollbarGutter: 'stable' }}
             className={`z-50 ${className}`}
           >
             {children}

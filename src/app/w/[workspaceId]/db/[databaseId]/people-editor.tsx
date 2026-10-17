@@ -19,6 +19,7 @@ import { LEFT_USER } from '@/lib/database/cell-format'
 import { MAX_PEOPLE } from '@/lib/database/property-types'
 import type { PeopleNames } from './cell-view'
 import * as api from './table-api'
+import { AnchoredLayer } from '../../anchored-layer'
 
 export function PeopleEditor({
   workspaceId,
@@ -88,15 +89,13 @@ export function PeopleEditor({
     }
   }
 
-  return (
+  const editor = (
     <div
       data-testid="db-people-editor"
       className={
         inline
           ? 'w-full rounded-md border border-neutral-200 bg-white p-1 dark:border-neutral-700 dark:bg-neutral-900'
-          : `absolute top-full z-20 mt-1 w-72 rounded-md border border-neutral-200 bg-white p-1 shadow-lg dark:border-neutral-700 dark:bg-neutral-900 ${
-              align === 'right' ? 'right-0' : 'left-0'
-            }`
+          : 'w-72 rounded-md border border-neutral-200 bg-white p-1 shadow-lg dark:border-neutral-700 dark:bg-neutral-900'
       }
     >
       {leading}
@@ -164,4 +163,6 @@ export function PeopleEditor({
       </ul>
     </div>
   )
+  // 칸 안에 놓일 때(inline)는 그 자리에 · 떠 있을 때는 몸으로 내보낸 층(10j-3b)
+  return inline ? editor : <AnchoredLayer align={align === 'right' ? 'end' : 'start'}>{editor}</AnchoredLayer>
 }

@@ -22,12 +22,23 @@ export function placeLayer(
   anchor: Rect,
   layer: Size,
   viewport: Size,
-  options: { readonly align: LayerAlign; readonly gap: number; readonly margin: number },
+  options: {
+    readonly align: LayerAlign
+    readonly gap: number
+    readonly margin: number
+    readonly prefer?: 'below' | 'above'
+    /** 이미 정한 쪽 — 주면 그쪽에 둔다(내용이 자랄 때 뒤집혀 자리가 튀지 않게 · 처음 잴 때 정해 쥔다). */
+    readonly side?: 'below' | 'above'
+  },
 ): LayerPlacement {
   const { align, gap, margin } = options
   const below = Math.max(0, viewport.height - anchor.bottom - gap - margin)
   const above = Math.max(0, anchor.top - gap - margin)
-  const side = layer.height <= below || below >= above ? 'below' : 'above'
+  // 선호하는 쪽(기본 아래 — 계산 칸처럼 위로 여는 것은 위) — 들어가거나 더 넓으면 그쪽, 아니면 반대쪽
+  const prefer = options.prefer ?? 'below'
+  const [first, second] = prefer === 'below' ? [below, above] : [above, below]
+  const side: 'below' | 'above' =
+    options.side ?? (layer.height <= first || first >= second ? prefer : prefer === 'below' ? 'above' : 'below')
   const maxHeight = side === 'below' ? below : above
   const height = Math.min(layer.height, maxHeight)
   const top = side === 'below' ? anchor.bottom + gap : anchor.top - gap - height
