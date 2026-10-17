@@ -343,7 +343,18 @@ function connect(url) {
     for (const requestId of ids) await rawSend('Fetch.continueRequest', { requestId }).catch(() => undefined)
     return ids.length
   }
-  return { ws, send, opened, pageErrors, releasePaused, pausedCount: () => paused.length }
+  /** 붙잡힌 요청을 모두 이 JSON 응답으로 채운다 — 서버에 닿지 않는다 · 채운 수(새 버전 알림 10h-1 — 바뀐 서버를 흉내 낸다). */
+  const fulfillPaused = async (status, json) => {
+    const ids = paused.splice(0)
+    const body = Buffer.from(JSON.stringify(json)).toString('base64')
+    for (const requestId of ids) {
+      await rawSend('Fetch.fulfillRequest', {
+        requestId, responseCode: status, responseHeaders: [{ name: 'content-type', value: 'application/json' }], body,
+      }).catch(() => undefined)
+    }
+    return ids.length
+  }
+  return { ws, send, opened, pageErrors, releasePaused, fulfillPaused, pausedCount: () => paused.length }
 }
 
 async function launchBrowser(executable) {
@@ -507,7 +518,7 @@ async function main() {
     const devtoolsPort = launched.port
     cdp = connect(launched.url)
     await cdp.opened
-    const { send, pageErrors, releasePaused, pausedCount } = cdp
+    const { send, pageErrors, releasePaused, fulfillPaused, pausedCount } = cdp
 
     const evaluate = async (expression) => {
       const r = await send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true })
@@ -17632,6 +17643,53 @@ async function main() {
         await evaluate(`document.getElementById('e2e-palette')?.remove(); document.cookie = 'nc_contrast=; Path=/; Max-Age=0'`)
         await send('Emulation.setEmulatedMedia', { features: [] })
         if (published) await api('DELETE', `/pages/${published.pageId}/publish`)
+      }
+    }
+
+    if (sectionIf('새 버전 알림 (10h-1 · F-12-17)')) {
+      // 서버는 지금 도는 배포의 표지를 안다(`APP_RELEASE` · 없으면 `.next/BUILD_ID`) — `/api/release` 가 세션 없이 준다. 워크스페이스 화면은
+      // 화면이 다시 보일 때 묻고, 문서가 실려 온 표지와 다르면 띠를 세운다. 바뀐 서버는 그 물음을 붙잡아 다른 표지로 채워 흉내 낸다(`Fetch`).
+      const buildId = readFileSync(join(ROOT, '.next', 'BUILD_ID'), 'utf8').trim()
+      const served = await (await fetch(`${BASE}/api/release`)).json().catch(() => null)
+      check('★ 서버가 지금 배포의 표지를 준다 — 이 빌드의 BUILD_ID(세션 없이)', served?.release === buildId, JSON.stringify({ served, buildId }))
+      const banner = `!!document.querySelector('[data-testid="release-banner"]')`
+      // 화면이 다시 보였다고 알리고 → 감시자의 물음을 붙잡아 → 이 표지로 답한다(살아나기 전의 알림은 듣는 이가 없다 — 붙잡힐 때까지 다시)
+      const answer = async (release) => {
+        for (let i = 0; i < 40 && pausedCount() === 0; i += 1) {
+          await evaluate(`document.dispatchEvent(new Event('visibilitychange'))`)
+          await sleep(250)
+        }
+        return (await fulfillPaused(200, { release })) > 0
+      }
+      try {
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
+        await waitFor(`!!document.querySelector('[data-testid="sidebar-home"]')`, 15000)
+        await send('Fetch.enable', { patterns: [{ urlPattern: '*/api/release*', requestStage: 'Request' }] })
+        const same = await answer(buildId)
+        await sleep(800)
+        check('같은 표지면 띠가 없다(물었고 · 답을 받았다)', same && !(await evaluate(banner)), JSON.stringify({ same }))
+        const newer = await answer('e2e-release-2')
+        check('★ 다른 표지면 띠 — "새 버전이 있습니다" · 새로고침 · 나중에',
+          newer && (await waitFor(`${banner} && document.querySelector('[data-testid="release-banner"]').textContent.includes('새 버전이 있습니다')
+            && !!document.querySelector('[data-testid="release-reload"]') && !!document.querySelector('[data-testid="release-later"]')`, 5000)),
+          JSON.stringify({ newer }))
+        await clickSelector('[data-testid="release-later"]')
+        const hidden = await waitFor(`!${banner}`, 3000)
+        const again = await answer('e2e-release-2')
+        await sleep(800)
+        check('"나중에" 는 그 표지를 덮는다 — 같은 표지를 다시 받아도 서지 않는다', hidden && again && !(await evaluate(banner)), JSON.stringify({ hidden, again }))
+        const newest = await answer('e2e-release-3')
+        check('더 새 표지가 오면 다시 선다', newest && (await waitFor(banner, 5000)), JSON.stringify({ newest }))
+        await send('Fetch.disable')
+        await releasePaused()
+        await clickSelector('[data-testid="release-reload"]')
+        check('★ "새로고침" 은 문서를 다시 읽는다 — 새 문서에는 띠가 없다(처음에는 묻지 않는다)',
+          await waitFor(`document.readyState === 'complete' && performance.getEntriesByType('navigation')[0]?.type === 'reload'
+            && !!document.querySelector('[data-testid="sidebar-home"]') && !${banner}`, 15000),
+          await evaluate(`performance.getEntriesByType('navigation')[0]?.type ?? null`))
+      } finally {
+        await send('Fetch.disable').catch(() => undefined)
+        await releasePaused()
       }
     }
 
