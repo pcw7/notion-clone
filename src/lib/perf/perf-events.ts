@@ -25,13 +25,15 @@ const STATIC_SEGMENTS = new Set([
   'w', 'db', 'p', 'f', 's', 'settings', 'library', 'inbox', 'teamspaces', 'templates', 'login', 'invite', 'report', 'submit', 'blocks', 'emoji',
 ])
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+/** 이미 틀인 조각(`[id]` · `[x]`) — 그대로 둔다. 브라우저가 틀로 만들어 보낸 경로를 받는 쪽이 다시 만들어도 같아야 한다(10e-1b 가 찾았다). */
+const PLACEHOLDER = /^\[(id|x)\]$/
 
-/** 경로의 틀 — 쿼리 · 조각을 버리고, uuid 는 `[id]` · 정적 조각은 그대로 · 나머지는 `[x]`. 8조각까지. */
+/** 경로의 틀 — 쿼리 · 조각을 버리고, uuid 는 `[id]` · 정적 조각 · 자리표시는 그대로 · 나머지는 `[x]`. 8조각까지. 두 번 해도 같다. */
 export function routeTemplate(pathname: string): string {
   const path = pathname.split(/[?#]/)[0] ?? ''
   const segments = path.split('/').filter((s) => s !== '').slice(0, 8)
   if (segments.length === 0) return '/'
-  return `/${segments.map((seg) => (UUID.test(seg) ? '[id]' : STATIC_SEGMENTS.has(seg) ? seg : '[x]')).join('/')}`
+  return `/${segments.map((seg) => (UUID.test(seg) ? '[id]' : STATIC_SEGMENTS.has(seg) || PLACEHOLDER.test(seg) ? seg : '[x]')).join('/')}`
 }
 
 export type PerfEvent = {
