@@ -4717,6 +4717,34 @@ try {
     await rejects('모르는 연산자', `show_if_operator = 'contains'`, 'ck_form_question_show_if_operator')
   }
 
+  console.log('\n[79] 성능 계측의 측정값 (0106 / §3.10 끝 [보강] 성능 계측 · 10e-1a조각)')
+  {
+    // 측정값은 사람 · 워크스페이스 · 페이지를 가리키지 않는다 — 경로는 틀만(조각 20자 · 소문자 · 자리표시). 지표 · 값 · 표본 비율은 범위 안.
+    await client.query(`INSERT INTO perf_event (metric_key, value, route, sample_rate) VALUES ('LCP', 1200, '/w/[id]/[id]', 0.2)`)
+    await client.query(`INSERT INTO perf_event (metric_key, value, route, sample_rate, completed) VALUES ('editor_ready', 0, '/', 1, false)`)
+    ok('★ 틀 경로 · 루트 · 끝나지 않은 측정 — 통과한다')
+    const rejects = async (label, values, constraint) => {
+      await client.query('SAVEPOINT probe')
+      try {
+        await client.query(`INSERT INTO perf_event (metric_key, value, route, sample_rate, navigation) VALUES ${values}`)
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        fail(`${label} — 거부되어야 하는데 통과했다`)
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        if (e.code === '23514' && e.constraint === constraint) ok(`${label} — ${constraint} 가 거부함`)
+        else fail(`${label} — ${constraint} 의 23514 가 아니라 ${e.constraint ?? '-'} ${e.code} (${e.message})`)
+      }
+    }
+    await rejects('★ 경로에 uuid 그대로', `('LCP', 1, '/w/${randomUUID()}', 1, NULL)`, 'ck_perf_event_route')
+    await rejects('★ 경로에 제목(한글)', `('LCP', 1, '/s/회의록', 1, NULL)`, 'ck_perf_event_route')
+    await rejects('경로에 공개 토큰(대문자)', `('LCP', 1, '/p/AbCdEfGhIjKlMnOpQrStUv', 1, NULL)`, 'ck_perf_event_route')
+    await rejects('경로에 쿼리', `('LCP', 1, '/w/[id]?q=x', 1, NULL)`, 'ck_perf_event_route')
+    await rejects('모르는 지표', `('FID', 1, '/', 1, NULL)`, 'ck_perf_event_metric')
+    await rejects('음수 값', `('LCP', -1, '/', 1, NULL)`, 'ck_perf_event_value')
+    await rejects('★ 표본 비율 0', `('LCP', 1, '/', 0, NULL)`, 'ck_perf_event_sample_rate')
+    await rejects('모르는 이동', `('LCP', 1, '/', 1, 'teleport')`, 'ck_perf_event_navigation')
+  }
+
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
 } catch (e) {

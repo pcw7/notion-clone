@@ -17461,6 +17461,25 @@ async function main() {
       await waitFor(closedState, 5000)
     }
 
+    if (sectionIf('성능 계측 — 받는 문 (10e-1a · F-12-18)')) {
+      // POST /api/perf — 세션이 없으면 401 · 있으면 204 · 쌓인 경로는 틀만(id · 쿼리 없이) · 모양이 틀린 것은 그 하나만 버린다.
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const page = randomUUID()
+      const marker = (await dbQuery(`SELECT coalesce(max(id), 0)::text AS max FROM perf_event`))[0].max
+      const batch = JSON.stringify({
+        events: [
+          { metric: 'LCP', value: 1234, route: `/w/${workspaceId}/${page}?q=비밀`, navigation: 'navigate', sampleRate: 1 },
+          { metric: 'FID', value: 10, route: '/', sampleRate: 1 },
+        ],
+      })
+      const anonymous = await fetch(`${BASE}/api/perf`, { method: 'POST', body: batch })
+      const signed = await fetch(`${BASE}/api/perf`, { method: 'POST', headers: { cookie: authed.cookie, 'content-type': 'text/plain' }, body: batch })
+      const rows = await dbQuery(`SELECT metric_key, route FROM perf_event WHERE id > $1 ORDER BY id`, [marker])
+      check('★ 세션이 없으면 401 · 있으면 204 — 경로는 틀만 남고 모양이 틀린 것은 빠진다',
+        anonymous.status === 401 && signed.status === 204 && JSON.stringify(rows) === JSON.stringify([{ metric_key: 'LCP', route: '/w/[id]/[id]' }]),
+        JSON.stringify({ anonymous: anonymous.status, signed: signed.status, rows }))
+    }
+
     if (sectionIf('폼 — 서버 라우트 (7a-1 · F-13-01)')) {
       // 폼 뷰의 라우트 — 만들기(첫 질문은 제목) · 질문 바꾸기 · 설정 · 공개(토큰) · 거부 코드 · 표 화면의 탭에 선다(7a-3 부터 — 그 탭은
       // 편집 화면이다).
