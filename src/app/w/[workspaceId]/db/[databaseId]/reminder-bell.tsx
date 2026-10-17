@@ -15,6 +15,7 @@ import { useEffect, useRef, useState } from 'react'
 
 import type { DateReminderJson } from '@/lib/database/reminder'
 import { isDateOnlyStart, leadLabel, leadsFor } from '@/lib/database/reminder-leads'
+import { AnchoredLayer, containsAcrossLayers } from '../../anchored-layer'
 import * as api from './table-api'
 
 export function ReminderBell(props: {
@@ -37,8 +38,10 @@ export function ReminderBell(props: {
 
   useEffect(() => {
     if (!open) return
+    // 메뉴는 몸으로 내보낸 층이다 — 바깥인지는 층을 넘어 본다(10j-3c). 메뉴가 mousedown 을 스스로 멈춰 지금은 여기에 닿지 않지만,
+    // 그 멈춤만 믿지 않는다(걷어 내면 DOM 의 포함으로는 메뉴 안을 누르는 순간 닫혀 고른 것이 사라진다)
     const away = (e: MouseEvent) => {
-      if (box.current !== null && !box.current.contains(e.target as Node)) setOpen(false)
+      if (box.current !== null && !containsAcrossLayers(box.current, e.target as Node)) setOpen(false)
     }
     document.addEventListener('mousedown', away)
     return () => document.removeEventListener('mousedown', away)
@@ -97,6 +100,7 @@ export function ReminderBell(props: {
         </svg>
       </button>
       {open && (
+        <AnchoredLayer align={props.align === 'right' ? 'end' : 'start'}>
         <div
           role="menu"
           aria-label={`${props.propertyName} 알림`}
@@ -108,9 +112,7 @@ export function ReminderBell(props: {
               setOpen(false)
             }
           }}
-          className={`absolute top-full z-20 mt-1 w-44 rounded-md border border-neutral-200 bg-white p-1 text-sm shadow-lg dark:border-neutral-700 dark:bg-neutral-900 ${
-            props.align === 'right' ? 'right-0' : 'left-0'
-          }`}
+          className="w-44 rounded-md border border-neutral-200 bg-white p-1 text-sm shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
         >
           <p className="px-2 py-1 text-xs text-neutral-500">알림</p>
           {start !== null &&
@@ -148,6 +150,7 @@ export function ReminderBell(props: {
             </p>
           )}
         </div>
+        </AnchoredLayer>
       )}
     </span>
   )
