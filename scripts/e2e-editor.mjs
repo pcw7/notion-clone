@@ -17693,6 +17693,40 @@ async function main() {
       }
     }
 
+    if (sectionIf('새 버전 알림 — 청크를 못 받으면 (10h-2 · F-12-17)')) {
+      // 이 앱의 청크를 못 받으면(배포 뒤 옛 청크가 지워졌다 — 404) 다시 보이기를 기다리지 않고 곧바로 묻는다. 지연 로드는 `<script>` 를
+      // 붙여 받으므로 없는 청크 주소의 스크립트를 붙여 흉내 낸다. 이 앱의 자산이 아니면 묻지 않는다 · 30초에 한 번.
+      const stamp = Date.now().toString(36)
+      const buildId = readFileSync(join(ROOT, '.next', 'BUILD_ID'), 'utf8').trim()
+      const banner = `!!document.querySelector('[data-testid="release-banner"]')`
+      const failScript = (src) => evaluate(`(() => { const s = document.createElement('script'); s.src = ${JSON.stringify(src)}; document.head.appendChild(s) })()`)
+      try {
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
+        await waitFor(`!!document.querySelector('[data-testid="sidebar-home"]')`, 15000)
+        await send('Fetch.enable', { patterns: [{ urlPattern: '*/api/release*', requestStage: 'Request' }] })
+        // 전제 — 감시자가 살아 있다(다시 보였다고 알려 물음이 붙잡힐 때까지 · 같은 표지로 답한다)
+        for (let i = 0; i < 40 && pausedCount() === 0; i += 1) {
+          await evaluate(`document.dispatchEvent(new Event('visibilitychange'))`)
+          await sleep(250)
+        }
+        const alive = (await fulfillPaused(200, { release: buildId })) > 0
+        await failScript(`/e2e-not-app-${stamp}.js`)
+        await sleep(1500)
+        check('이 앱의 자산이 아닌 스크립트를 못 받으면 묻지 않는다', alive && pausedCount() === 0 && !(await evaluate(banner)), JSON.stringify({ alive, paused: pausedCount() }))
+        await failScript(`/_next/static/chunks/e2e-missing-${stamp}.js`)
+        for (let i = 0; i < 40 && pausedCount() === 0; i += 1) await sleep(100)
+        const asked = (await fulfillPaused(200, { release: 'e2e-release-chunk' })) > 0
+        check('★ 이 앱의 청크를 못 받으면 곧바로 묻는다 — 다른 표지면 띠(다시 보이기를 기다리지 않는다)',
+          asked && (await waitFor(banner, 5000)), JSON.stringify({ asked }))
+        await failScript(`/_next/static/chunks/e2e-missing-2-${stamp}.js`)
+        await sleep(1500)
+        check('30초 안에 또 못 받아도 다시 묻지 않는다(여러 청크가 한꺼번에 실패해도 한 번)', pausedCount() === 0, JSON.stringify({ paused: pausedCount() }))
+      } finally {
+        await send('Fetch.disable').catch(() => undefined)
+        await releasePaused()
+      }
+    }
+
     if (sectionIf('폼 — 서버 라우트 (7a-1 · F-13-01)')) {
       // 폼 뷰의 라우트 — 만들기(첫 질문은 제목) · 질문 바꾸기 · 설정 · 공개(토큰) · 거부 코드 · 표 화면의 탭에 선다(7a-3 부터 — 그 탭은
       // 편집 화면이다).
