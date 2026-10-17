@@ -947,16 +947,28 @@ span.blk-equation {
  * 정본이 정한 것: 텍스트 9색 + 배경 9색 + default. `default_background` 는
  * **존재하지 않는다** — 배경이 없는 상태라서 값이 불필요할 뿐이다.
  * 인라인 색(`.blk-color`)과 블록 색(`[data-color]`)이 같은 팔레트를 쓴다.
+ * 글자색 9개는 변수다(`--block-text-<색>` · 10d-5) — 고대비가 그 값을 바꿔 끼운다(아래 "블록 색의 고대비 팔레트").
  */
-.blk-color[data-color='gray'],   [data-color='gray']   { color: #787774; }
-.blk-color[data-color='brown'],  [data-color='brown']  { color: #976d57; }
-.blk-color[data-color='orange'], [data-color='orange'] { color: #cc772d; }
-.blk-color[data-color='yellow'], [data-color='yellow'] { color: #c29343; }
-.blk-color[data-color='green'],  [data-color='green']  { color: #548164; }
-.blk-color[data-color='blue'],   [data-color='blue']   { color: #487ca5; }
-.blk-color[data-color='purple'], [data-color='purple'] { color: #8a67ab; }
-.blk-color[data-color='pink'],   [data-color='pink']   { color: #b35588; }
-.blk-color[data-color='red'],    [data-color='red']    { color: #c4554d; }
+:root {
+  --block-text-gray: #787774;
+  --block-text-brown: #976d57;
+  --block-text-orange: #cc772d;
+  --block-text-yellow: #c29343;
+  --block-text-green: #548164;
+  --block-text-blue: #487ca5;
+  --block-text-purple: #8a67ab;
+  --block-text-pink: #b35588;
+  --block-text-red: #c4554d;
+}
+.blk-color[data-color='gray'],   [data-color='gray']   { color: var(--block-text-gray); }
+.blk-color[data-color='brown'],  [data-color='brown']  { color: var(--block-text-brown); }
+.blk-color[data-color='orange'], [data-color='orange'] { color: var(--block-text-orange); }
+.blk-color[data-color='yellow'], [data-color='yellow'] { color: var(--block-text-yellow); }
+.blk-color[data-color='green'],  [data-color='green']  { color: var(--block-text-green); }
+.blk-color[data-color='blue'],   [data-color='blue']   { color: var(--block-text-blue); }
+.blk-color[data-color='purple'], [data-color='purple'] { color: var(--block-text-purple); }
+.blk-color[data-color='pink'],   [data-color='pink']   { color: var(--block-text-pink); }
+.blk-color[data-color='red'],    [data-color='red']    { color: var(--block-text-red); }
 
 .blk-color[data-color='gray_background'],   [data-color='gray_background']   { background: #f1f1ef; }
 .blk-color[data-color='brown_background'],  [data-color='brown_background']  { background: #f4eeee; }
@@ -1042,6 +1054,39 @@ span.blk-equation {
     .blk-color[data-color='purple_background'], [data-color='purple_background'] { background: #3c2d49; }
     .blk-color[data-color='pink_background'],   [data-color='pink_background']   { background: #4e2c3c; }
     .blk-color[data-color='red_background'],    [data-color='red_background']    { background: #522e2a; }
+  }
+}
+
+/*
+ * 블록 색의 고대비 팔레트 — 플랫폼 잔여 10d-5 (F-12-13 · 정본 §3.1 [보강] 설정 값 표 · 테마 ⑧)
+ *
+ * 글자색 9개를 바꿔 끼운다 — 화면 바탕(밝게 #ffffff · 어둡게 #0a0a0a)과 7:1 이상(WCAG AAA) · 같은 테마의 배경 9색 위에서도 4.5:1 이상.
+ * 밝은 테마는 같은 색상을 짙게, 어두운 테마는 밝게. 배경 9색은 그대로다 — 기본 글자와 이미 7:1 이상이다.
+ * 이 수치는 `lib/editor/block-color-palette.test.ts` 가 이 파일을 읽어 강제한다.
+ */
+:root {
+  @variant contrast-high {
+    --block-text-gray: #525252;
+    --block-text-brown: #6b4a3a;
+    --block-text-orange: #9a3412;
+    --block-text-yellow: #713f12;
+    --block-text-green: #166534;
+    --block-text-blue: #1e40af;
+    --block-text-purple: #6b21a8;
+    --block-text-pink: #9d174d;
+    --block-text-red: #991b1b;
+
+    @variant dark {
+      --block-text-gray: #d4d4d4;
+      --block-text-brown: #e0c4b4;
+      --block-text-orange: #fdba74;
+      --block-text-yellow: #fde047;
+      --block-text-green: #86efac;
+      --block-text-blue: #93c5fd;
+      --block-text-purple: #d8b4fe;
+      --block-text-pink: #f9a8d4;
+      --block-text-red: #fca5a5;
+    }
   }
 }
 
