@@ -17537,8 +17537,9 @@ async function main() {
       }
     }
 
-    if (sectionIf('블록 색의 고대비 팔레트 (10d-5 · F-12-13)')) {
-      // 고대비를 켜면 블록 글자색 9개가 바뀐 세트로 — 화면 바탕과 7:1 이상(밝게 · 어둡게 둘 다). 표준은 노션의 값 그대로(노랑은 3:1 도 안 된다).
+    if (sectionIf('블록 색의 팔레트 — 고대비 · 어두운 테마 (10d-5 · 10d-6 · F-12-13)')) {
+      // 고대비를 켜면 블록 글자색 9개가 바뀐 세트로 — 화면 바탕과 7:1 이상(밝게 · 어둡게 둘 다). 표준은 노션의 값 그대로(밝게 — 노랑은 3:1 도
+      // 안 된다 · 어둡게 — 노션의 어두운 값으로 4.5:1 이상 · 10d-6).
       // 테마는 계정의 값이라 여기선 `<html data-theme>` 를 직접 바꿔 CSS 만 본다(테마의 저장 · 첫 HTML 은 8h 절이 본다). 고대비는 쿠키를 넣고
       // 다시 연다(서버가 첫 HTML 에 싣는다 — 패널의 고르기는 10d-2 절이 본다). 공개 화면(/p)도 같은
       // 팔레트다 — 편집기 CSS 를 따로 다시 싣지 않는다(그러면 dark 가 OS 의 미디어 쿼리로 풀려 "밝게"인 사람에게도 어두운 칠이 섰다).
@@ -17590,6 +17591,9 @@ async function main() {
         await setRoot('theme', 'light')
         check('표준(밝게)은 노션의 팔레트 그대로 — 노랑은 바탕과 3:1 도 안 된다(고대비를 켜는 까닭)',
           await waitFor(`JSON.parse(${ratios}).yellow < 3`, 5000), await evaluate(ratios))
+        await setRoot('theme', 'dark')
+        check('★ 표준 · 어둡게는 어두운 세트 — 9개 모두 어두운 바탕과 4.5:1 이상(10d-6 · 밝은 테마의 값이면 4.3:1 인 색이 있다)',
+          await waitFor(`getComputedStyle(document.body).backgroundColor === 'rgb(10, 10, 10)' && ${lowest} >= 4.5`, 5000), await evaluate(ratios))
         const high = await openWithContrast('high')
         await setRoot('theme', 'light')
         check('★ 고대비 · 밝게 — 블록 글자색 9개가 모두 화면 바탕과 7:1 이상',
