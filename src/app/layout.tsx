@@ -4,6 +4,7 @@ import { readSessionToken } from "@/lib/auth/session-cookie";
 import { themeOfSessionToken } from "@/lib/settings/theme";
 import { readDevicePreferences } from "@/lib/settings/device-preferences-cookie";
 import { ROOT_TITLE } from "@/lib/nav/screen-title";
+import { supportCheckScript } from "@/lib/platform/browser-support";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -38,6 +39,10 @@ export default async function RootLayout({ children }: LayoutProps<"/">) {
       data-font-scale={device.fontScale}
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
+      <head>
+        {/* 지원 브라우저(10i-1 · F-12-15) — 기능 감지 · 못 미치면 안내 띠(앱은 막지 않는다). 앱의 JS 보다 먼저 · ES5 */}
+        <script dangerouslySetInnerHTML={{ __html: supportCheckScript() }} />
+      </head>
       <body className="min-h-full flex flex-col">{children}</body>
     </html>
   );
