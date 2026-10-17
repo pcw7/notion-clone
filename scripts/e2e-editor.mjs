@@ -618,7 +618,11 @@ async function main() {
     /**
      * 같은 브라우저에 탭을 하나 더 연다 — 두 사람이 같은 페이지를 보는 장면(F-05-01).
      *
-     * 쿠키는 프로필 전체가 공유하므로 로그인은 그대로다. 돌려주는 것은 그 탭의 `evaluate` · `waitFor` · 입력이다.
+     * 쿠키는 프로필 전체가 공유하므로 로그인은 그대로다. 돌려주는 것은 그 탭의 `evaluate` · `waitFor` · 입력 · 닫기다.
+     *
+     * ⚠ 장면이 끝나면 **반드시 닫는다**(`close`). 새 탭은 앞에 서고, 뒤로 밀린 주 탭은 **프레임을 받지 못한다** — rAF · ResizeObserver 가
+     * 멈추고 마우스 사건이 들어올 때만 한 프레임씩 돈다(`visibilityState` 는 그래도 `visible` 이라 속는다). 열어 둔 채였던 동안 그 뒤의
+     * 절이 모두 그렇게 돌았고, 층(`AnchoredLayer`)이 자기 폭 변화를 재지 못하다 클릭이 강제한 첫 프레임에 뛰어 수식 절의 클릭이 빗나갔다.
      */
     const openTab = async (url) => {
       const { targetId } = await send('Target.createTarget', { url })
@@ -683,8 +687,22 @@ async function main() {
           }
           await tab.send('Input.insertText', { text })
         },
+        /** 이 탭을 닫고 주 탭을 앞에 세운다 — 주 탭이 다시 프레임을 받는다(머리말). */
+        async close() {
+          await send('Target.closeTarget', { targetId })
+          tab.ws.close()
+          tabs.splice(tabs.indexOf(tab), 1)
+          await send('Page.bringToFront')
+        },
       }
     }
+    /** 주 탭이 프레임을 받고 있는가 — rAF 다섯 번이 0.5초 안에 돈다(뒤로 밀린 탭은 마우스 사건 없이는 돌지 않는다). */
+    const framesRunning = () => evaluate(`new Promise((ok) => {
+      let n = 0
+      const tick = () => { n += 1; if (n === 5) ok(true); else requestAnimationFrame(tick) }
+      requestAnimationFrame(tick)
+      setTimeout(() => ok(false), 500)
+    })`)
 
     /**
      * 보존본(IndexedDB) — 서버가 확인하지 않은 편집(`collab/pending-store.ts`).
@@ -1405,6 +1423,11 @@ async function main() {
       check('그 되돌리기가 다른 탭에도 간다',
         await other.waitFor(`!document.querySelector('.blk-editor').textContent.includes('첫째 탭')`, 20000),
         await other.evaluate(`document.querySelector('.blk-editor').textContent`))
+
+      // 둘째 탭을 닫는다 — 열어 둔 채면 뒤의 모든 절이 프레임이 멈춘 주 탭에서 돈다(`openTab` 머리말).
+      check('둘째 탭이 앞에 있는 동안 주 탭은 프레임을 받지 못한다(이 검사가 가려내는지)', !(await framesRunning()))
+      await other.close()
+      check('★ 둘째 탭을 닫으면 주 탭이 다시 프레임을 받는다(rAF 가 돈다)', await framesRunning())
     }
 
     }
