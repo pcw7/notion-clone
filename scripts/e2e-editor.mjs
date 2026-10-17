@@ -17951,6 +17951,91 @@ async function main() {
           && getComputedStyle(document.querySelector(${JSON.stringify(NAV)})).position === 'static'`, 15000), await navState())
     }
 
+    if (sectionIf('좁은 화면 — 화면마다 가로 스크롤 없음 (10j-2 · F-12-12)')) {
+      // 폰 폭(390)에서 화면마다 문서 폭이 보이는 폭을 넘지 않는다(가로 스크롤 없음). 넓은 표 같은 것은 **자기 틀 안에서** 가로로 흐른다.
+      // 넘치면 화면 밖으로 삐져나간 가장 안쪽 요소를 남긴다. 끝에 폭을 되돌린다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `좁은 표 ${stamp}` })).body.database
+      for (const name of ['상태', '마감', '담당', '점수', '메모']) await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: `${name} ${stamp}`, type: 'rich_text' })
+      const team = (await api('POST', '/teamspaces', { name: `좁은 팀 ${stamp}` })).body?.teamspace?.id
+      const pubPage = (await api('POST', '/pages', { title: `좁은 공개 ${stamp}` })).body.page.id
+      const token = (await api('PUT', `/pages/${pubPage}/publish`)).body?.token
+      // 넘친 것 — `skip` 안의 것은 세지 않는다(데이터베이스의 표 — 문서가 가로로 흐른다 · 정본 ⑤)
+      const overflow = (skip = null) => `JSON.stringify((() => {
+        const cw = document.documentElement.clientWidth
+        const skip = ${JSON.stringify(skip)}
+        const over = [...document.querySelectorAll('body *')].filter((el) => {
+          const r = el.getBoundingClientRect()
+          if (r.right <= cw + 1 || r.width === 0) return false
+          if (skip !== null && el.closest(skip)) return false
+          // 자기 틀 안에서 가로로 흐르는 것은 그 틀이 잘라 준다 — 조상 중에 가로 넘침을 감추는 틀이 있으면 넘침이 아니다
+          for (let p = el.parentElement; p && p !== document.body; p = p.parentElement) {
+            const ox = getComputedStyle(p).overflowX
+            if (ox !== 'visible' && p.getBoundingClientRect().right <= cw + 1) return false
+          }
+          return getComputedStyle(el).position !== 'fixed'
+        })
+        const leaves = over.filter((el) => !over.some((o) => o !== el && el.contains(o)))
+        return { sw: document.documentElement.scrollWidth, cw,
+          leaves: leaves.slice(0, 5).map((el) => el.tagName + '.' + String(el.className).slice(0, 48) + ':' + Math.round(el.getBoundingClientRect().right) + ' ' + (el.textContent ?? '').trim().slice(0, 16)) }
+      })())`
+      const noSideScroll = `document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1`
+      const screens = [
+        ['설정', `/w/${workspaceId}/settings`, `!!document.querySelector('[data-testid="settings-title"]')`],
+        ['인박스', `/w/${workspaceId}/inbox`, `!!document.querySelector('h1')`],
+        ['라이브러리', `/w/${workspaceId}/library`, `!!document.querySelector('[data-testid="library-tab"]')`],
+        ['Teamspace 둘러보기', `/w/${workspaceId}/teamspaces`, `!!document.querySelector('h1')`],
+        ['teamspace', `/w/${workspaceId}/teamspaces/${team}`, `!!document.querySelector('[data-testid="teamspace-page"]')`],
+        ['공개 화면', `/p/${token}`, `!!document.querySelector('[data-testid="public-title"]')`],
+        ['워크스페이스 고르기', '/', `!!document.querySelector('h1')`],
+      ]
+      try {
+        await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: false })
+        for (const [name, path, ready] of screens) {
+          await send('Page.navigate', { url: `${BASE}${path}` })
+          await waitFor(`document.readyState === 'complete' && ${ready}`, 15000)
+          const ok = await waitFor(noSideScroll, 3000)
+          check(`폰 폭에서 가로 스크롤이 없다 — ${name}`, ok, await evaluate(overflow()))
+        }
+        // 설정 줄 — 좁은 화면에서는 이름 아래에 컨트롤(나란히면 이름이 256px 입력칸 옆 50px 남짓에 끼어 읽을 수 없다)
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/settings` })
+        await waitFor(`document.readyState === 'complete' && !!document.querySelector('[data-testid="setting-row"] input[type="text"]')`, 15000)
+        const stacked = `(() => {
+          const row = [...document.querySelectorAll('[data-testid="setting-row"]')].find((r) => r.querySelector('input[type="text"]'))
+          const label = row?.querySelector('label')?.getBoundingClientRect()
+          const control = row?.querySelector('[data-testid="setting-control"]')?.getBoundingClientRect()
+          // 쌓였으면 둘의 왼쪽 끝이 같고 컨트롤이 아래다(나란히면 컨트롤이 이름의 오른쪽 — 세로 가운데 맞춤이라 위아래로는 가릴 수 없다)
+          return !!label && !!control && Math.abs(control.left - label.left) < 2 && control.top >= label.bottom - 1
+        })()`
+        check('폰 폭의 설정 — 이름 아래에 컨트롤이 선다(쌓는다)', await waitFor(stacked, 3000), await evaluate(overflow()))
+        // 아주 좁은 폰(280) — 쌓은 입력칸(256px)도 화면 폭을 넘지 않는다
+        await send('Emulation.setDeviceMetricsOverride', { width: 280, height: 653, deviceScaleFactor: 1, mobile: false })
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/settings` })
+        await waitFor(`document.readyState === 'complete' && !!document.querySelector('[data-testid="setting-row"] input[type="text"]')`, 15000)
+        check('아주 좁은 폰(280)의 설정 — 가로 스크롤이 없다(입력칸이 폭을 넘지 않는다)', await waitFor(noSideScroll, 3000), await evaluate(overflow()))
+        await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: false })
+        // 데이터베이스 — 표 바깥(머리 · 도구줄)은 넘치지 않는다(표는 문서가 가로로 흐른다 — 칸 안의 메뉴가 잘리지 않게)
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+        await waitFor(`document.readyState === 'complete' && !!document.querySelector('table')`, 15000)
+        const outsideTable = JSON.parse(await evaluate(overflow('table')))
+        check('폰 폭의 데이터베이스 — 표 바깥(머리 · 도구줄)은 넘치지 않는다', outsideTable.leaves.length === 0, JSON.stringify(outsideTable))
+        await send('Network.deleteCookies', { name: 'nc_session', domain: 'localhost', path: '/' })
+        await send('Page.navigate', { url: `${BASE}/login` })
+        await waitFor(`document.readyState === 'complete' && !!document.querySelector('h1')`, 15000)
+        check('폰 폭에서 가로 스크롤이 없다 — 로그인', await waitFor(noSideScroll, 3000), await evaluate(overflow()))
+      } finally {
+        await send('Network.setCookie', { name: 'nc_session', value: session, domain: 'localhost', path: '/', httpOnly: true })
+        await send('Emulation.clearDeviceMetricsOverride')
+        await api('DELETE', `/pages/${pubPage}/publish`)
+      }
+    }
+
     if (sectionIf('폼 — 서버 라우트 (7a-1 · F-13-01)')) {
       // 폼 뷰의 라우트 — 만들기(첫 질문은 제목) · 질문 바꾸기 · 설정 · 공개(토큰) · 거부 코드 · 표 화면의 탭에 선다(7a-3 부터 — 그 탭은
       // 편집 화면이다).
