@@ -202,7 +202,8 @@ export async function PageContent({
     >
       {/* 탭 제목(10d-7b) — 그 페이지의 평문 제목(행 페이지도). 피크는 탭을 바꾸지 않는다(화면은 데이터베이스다) */}
       {frame === 'page' && <DocumentTitle title={contentTitle(page.plainTitle)} />}
-      <div className="flex items-start justify-between gap-3">
+      {/* 좁은 화면(md 미만 · 10j-1)에서는 경로 위 · 단추 아래로 쌓고 단추는 감는다 — 한 줄이면 폰에서 문서 폭이 715px 로 늘었다 */}
+      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
         <nav
           aria-label="상위 경로"
           className="flex flex-wrap items-center gap-1 text-sm text-neutral-500"
@@ -229,7 +230,7 @@ export async function PageContent({
           ))}
         </nav>
 
-        <div className="flex flex-none items-start gap-2">
+        <div className="flex flex-wrap items-start gap-2 md:flex-none md:flex-nowrap">
           <LockButton
             lockUrl={`/api/workspaces/${workspaceId}/pages/${page.id}/lock`}
             locked={lock?.locked ?? false}
