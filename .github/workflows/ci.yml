@@ -52,6 +52,10 @@ jobs:
       - name: 빌드
         run: npm run build
 
+      # 경로마다 처음 받는 JS(gzip)가 예산 안인가 — 방금 만든 빌드 산출물을 잰다(10g-1 · F-12-07)
+      - name: 번들 예산
+        run: npm run check:bundle
+
   db:
     name: 스키마 마이그레이션 · 불변식
     runs-on: ubuntu-latest

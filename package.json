@@ -15,6 +15,7 @@
     "typegen": "next typegen",
     "typecheck": "next typegen && tsc --noEmit",
     "check:licenses": "node scripts/check-licenses.mjs",
+    "check:bundle": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/check-bundle.mjs",
     "licenses": "node scripts/check-licenses.mjs --list",
     "check": "npm run typecheck && npm run lint && npm run check:licenses && npm test",
     "dc": "node scripts/dc.mjs",

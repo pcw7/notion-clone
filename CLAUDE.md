@@ -106,6 +106,7 @@ npm run moderation -- list   # 신고 케이스 · 테이크다운 · 기각 · 
 npm run worker          # 공용 스케줄러 워커(버전 GC 등 "시각이 되면 실행") — 앱 · 협업 서버 옆에 따로 띄운다
 
 npm run check           # typecheck + lint + license
+npm run check:bundle    # 경로마다 처음 받는 JS(gzip)가 예산 안인가 — build 먼저(CI 는 빌드 바로 뒤에 돈다)
 npm run e2e             # 실제 브라우저(Edge·Chrome 헤드리스)로 에디터 검증. build · db:up 먼저
 npm run db:reset        # 볼륨 삭제 → 재생성 → 마이그레이션
 npm run dc -- <args>    # 임의의 docker compose 명령
