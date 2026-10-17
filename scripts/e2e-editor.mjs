@@ -17537,6 +17537,100 @@ async function main() {
       }
     }
 
+    if (sectionIf('블록 색의 고대비 팔레트 (10d-5 · F-12-13)')) {
+      // 고대비를 켜면 블록 글자색 9개가 바뀐 세트로 — 화면 바탕과 7:1 이상(밝게 · 어둡게 둘 다). 표준은 노션의 값 그대로(노랑은 3:1 도 안 된다).
+      // 테마는 계정의 값이라 여기선 `<html data-theme>` 를 직접 바꿔 CSS 만 본다(테마의 저장 · 첫 HTML 은 8h 절이 본다). 고대비는 쿠키를 넣고
+      // 다시 연다(서버가 첫 HTML 에 싣는다 — 패널의 고르기는 10d-2 절이 본다). 공개 화면(/p)도 같은
+      // 팔레트다 — 편집기 CSS 를 따로 다시 싣지 않는다(그러면 dark 가 OS 의 미디어 쿼리로 풀려 "밝게"인 사람에게도 어두운 칠이 섰다).
+      // 끝에 쿠키 · 흉내 · 속성 · 게시를 되돌린다.
+      const SETTINGS = `${BASE}/w/${workspaceId}/settings?s=account.preferences`
+      const COLORS = ['gray', 'brown', 'orange', 'yellow', 'green', 'blue', 'purple', 'pink', 'red']
+      // 화면에 9색 글자를 놓고(인라인 색과 같은 모양) 그 색과 body 의 바탕의 대비(WCAG 2)를 잰다 — 색 → 대비
+      const ratios = `(() => {
+        let box = document.getElementById('e2e-palette')
+        if (!box) {
+          box = document.createElement('div')
+          box.id = 'e2e-palette'
+          box.innerHTML = ${JSON.stringify(COLORS)}.map((c) => '<span class="blk-color" data-color="' + c + '">' + c + '</span>').join(' ')
+          document.body.appendChild(box)
+        }
+        const rgb = (s) => s.match(/[0-9.]+/g).slice(0, 3).map(Number)
+        const lum = (s) => rgb(s).map((v) => v / 255).map((v) => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4))
+          .reduce((sum, v, i) => sum + v * [0.2126, 0.7152, 0.0722][i], 0)
+        const bg = lum(getComputedStyle(document.body).backgroundColor)
+        return JSON.stringify(Object.fromEntries([...box.children].map((el) => {
+          const l = lum(getComputedStyle(el).color)
+          return [el.dataset.color, Math.round(((Math.max(l, bg) + 0.05) / (Math.min(l, bg) + 0.05)) * 100) / 100]
+        })))
+      })()`
+      const lowest = `Math.min(...Object.values(JSON.parse(${ratios})))`
+      // 이동이 아직 끝나지 않아 문서가 비었으면 쓰지 않는다(false)
+      const setRoot = (attr, value) => evaluate(`!!document.documentElement && (document.documentElement.dataset.${attr} = ${JSON.stringify(value)}) === ${JSON.stringify(value)}`)
+      const media = (scheme) => send('Emulation.setEmulatedMedia', {
+        features: [{ name: 'prefers-contrast', value: 'no-preference' }, { name: 'prefers-color-scheme', value: scheme }],
+      })
+      // 고대비를 쿠키로 정하고 설정을 다시 연다 — 서버가 실은 `<html data-contrast>` 와 패널의 고른 값이 같아야 한다
+      const openWithContrast = async (value) => {
+        await evaluate(`document.cookie = 'nc_contrast=${value}; Path=/; Max-Age=600'`)
+        await send('Page.navigate', { url: SETTINGS })
+        return waitFor(`document.documentElement?.dataset.contrast === ${JSON.stringify(value)}
+          && document.querySelector('[data-testid="a11y-contrast"] input[value="${value}"]')?.checked === true`, 30000)
+      }
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      let published = null
+      try {
+        await media('light')
+        await send('Page.navigate', { url: SETTINGS })
+        const panel = await waitFor(`!!document.querySelector('[data-testid="a11y-contrast"]')`, 15000)
+        await setRoot('theme', 'light')
+        check('표준(밝게)은 노션의 팔레트 그대로 — 노랑은 바탕과 3:1 도 안 된다(고대비를 켜는 까닭)',
+          await waitFor(`JSON.parse(${ratios}).yellow < 3`, 5000), await evaluate(ratios))
+        const high = await openWithContrast('high')
+        await setRoot('theme', 'light')
+        check('★ 고대비 · 밝게 — 블록 글자색 9개가 모두 화면 바탕과 7:1 이상',
+          high && (await waitFor(`${lowest} >= 7`, 5000)), JSON.stringify({ panel, high, ratios: JSON.parse(await evaluate(ratios)) }))
+        await setRoot('theme', 'dark')
+        check('★ 고대비 · 어둡게 — 9개 모두 화면 바탕과 7:1 이상(밝은 세트로 바뀐다)',
+          await waitFor(`getComputedStyle(document.body).backgroundColor === 'rgb(10, 10, 10)' && ${lowest} >= 7`, 5000), await evaluate(ratios))
+        const back = await openWithContrast('standard')
+        await setRoot('theme', 'dark')
+        check('표준으로 되돌리면 노션의 팔레트(어둡게 — 7:1 에 못 미치는 색이 다시 있다)',
+          back && (await waitFor(`${lowest} < 7`, 5000)), await evaluate(ratios))
+
+        // 공개 화면 — 회색 배경 블록 하나를 게시해 연다. OS 는 어둡고 테마는 "밝게" → 밝은 칠 · 고대비면 같은 세트
+        const stamp = Date.now()
+        const pageId = (await api('POST', '/pages', { title: `팔레트 ${stamp}` })).body.page.id
+        const text = { type: 'text', text: { content: `회색 배경 ${stamp}`, link: null }, plain_text: `회색 배경 ${stamp}`, href: null,
+          annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: 'default' } }
+        await saveBody(pageId, { blocks: [{ id: randomUUID(), type: 'paragraph', title: [text], properties: {}, format: { block_color: 'gray_background' }, children: [] }] })
+        published = { pageId, token: (await api('PUT', `/pages/${pageId}/publish`)).body?.token }
+        await evaluate(`document.cookie = 'nc_contrast=; Path=/; Max-Age=0'`)
+        await media('dark')
+        await send('Page.navigate', { url: `${BASE}/p/${published.token}` })
+        const tint = `getComputedStyle(document.querySelector('[data-testid="public-body"] .pub-block[data-color="gray_background"]')).backgroundColor`
+        // 다 읽힌 뒤 한 번 잰다 — "될 때까지 기다리기"는 늦게 실린 시트가 오기 전에 통과해 버린다
+        const opened = await waitFor(`document.readyState === 'complete' && !!document.querySelector('[data-testid="public-body"] .pub-block[data-color="gray_background"]')`, 15000)
+        await setRoot('theme', 'light')
+        await setRoot('contrast', 'standard')
+        const shown = opened ? JSON.parse(await evaluate(`JSON.stringify({ tint: ${tint}, osDark: matchMedia('(prefers-color-scheme: dark)').matches,
+          sheets: [...document.styleSheets].map((sheet) => (sheet.href ?? 'inline').split('/').pop()) })`)) : null
+        check('★ 공개 화면 — OS 가 어두워도 테마가 "밝게"면 배경색 블록은 밝은 칠(편집기 CSS 를 다시 싣지 않는다)',
+          shown?.osDark === true && shown.tint === 'rgb(241, 241, 239)', JSON.stringify(shown))
+        await setRoot('contrast', 'high')
+        check('공개 화면의 고대비 — 같은 세트(9개 모두 바탕과 7:1 이상)', await waitFor(`${lowest} >= 7`, 5000), await evaluate(ratios))
+      } finally {
+        // 다른 절로 번지지 않게 — 탐침 · 쿠키 · 미디어 흉내 · 게시를 되돌린다(속성은 다음 이동이 다시 싣는다)
+        await evaluate(`document.getElementById('e2e-palette')?.remove(); document.cookie = 'nc_contrast=; Path=/; Max-Age=0'`)
+        await send('Emulation.setEmulatedMedia', { features: [] })
+        if (published) await api('DELETE', `/pages/${published.pageId}/publish`)
+      }
+    }
+
     if (sectionIf('폼 — 서버 라우트 (7a-1 · F-13-01)')) {
       // 폼 뷰의 라우트 — 만들기(첫 질문은 제목) · 질문 바꾸기 · 설정 · 공개(토큰) · 거부 코드 · 표 화면의 탭에 선다(7a-3 부터 — 그 탭은
       // 편집 화면이다).
