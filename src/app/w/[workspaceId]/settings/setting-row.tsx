@@ -114,7 +114,8 @@ export function SettingRow(props: {
       data-setting-key={props.settingKey}
       className="flex flex-col gap-1.5 border-b border-neutral-100 py-4 last:border-b-0 dark:border-neutral-900"
     >
-      <div className="flex items-center justify-between gap-6">
+      {/* 좁은 화면(sm 미만 · 10j-2)에서는 이름 위 · 컨트롤 아래로 쌓는다 — 나란히면 입력칸(256px)이 폰에서 문서 폭을 늘렸다 */}
+      <div className="flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-6">
         <div className="flex min-w-0 flex-col gap-0.5">
           <label htmlFor={id} className="flex items-center gap-2 text-sm font-medium">
             {props.label}
@@ -199,7 +200,7 @@ export function SettingRow(props: {
             onChange={(e) => setDraft(e.target.value)}
             onBlur={commitText}
             onKeyDown={textKeys}
-            className="w-64 flex-none rounded-md border border-neutral-300 px-2 py-1 text-sm dark:border-neutral-700 dark:bg-neutral-900"
+            className="w-64 max-w-full flex-none rounded-md border border-neutral-300 px-2 py-1 text-sm dark:border-neutral-700 dark:bg-neutral-900"
           />
         ) : (
           <span id={id} data-testid="setting-control" className="max-w-64 flex-none truncate text-sm text-neutral-700 dark:text-neutral-300">
