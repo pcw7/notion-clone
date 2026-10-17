@@ -4647,6 +4647,39 @@ CREATE TABLE external_sync_source (            -- 구 external_binding. 정본 �
 
 ---
 
+**[보강] 성능 계측 — 실사용 측정값(RUM)** ⟨플랫폼 잔여 10e-1a조각 · F-12-18 / 마이그레이션 0106⟩
+
+> 12 F-12-18 *"지표 이름을 제품 동작으로 정의 · P95 를 본다"* · *"sample_rate 와 completed 를 이벤트에 같이 저장 — 둘 중 하나라도 없으면 사후
+> 재계산이 불가능하다"* · *"계측 payload 에 페이지 제목 · 본문이 섞이면 정보 유출 — 식별자만 · 워크스페이스 id 도 해시 검토"* · 클론 대안 *"웹은
+> web-vitals(LCP/INP/CLS) + 커스텀 마크 · 샘플링 10~20% 와 sample_rate 를 이벤트에"*. 12 의 `perf_event` 는 사람 · 공간의 해시와 플랫폼 칸을
+> 가졌다 — 여기는 그것을 **두지 않는다**(아래 ①).
+>
+> ```sql
+> CREATE TABLE perf_event (
+>   id bigserial PRIMARY KEY,
+>   metric_key  text NOT NULL CHECK (metric_key IN ('TTFB','FCP','LCP','CLS','INP','editor_ready')),
+>   value       double precision NOT NULL CHECK (value >= 0 AND value < 600000),   -- 밀리초(CLS 는 점수)
+>   route       text NOT NULL CHECK (length(route) <= 120 AND route ~ '^(/|(/([a-z0-9._-]{1,20}|\[[a-z]{1,10}\]))+)$'),
+>   navigation  text NULL CHECK (navigation IN ('navigate','reload','prerender','back-forward','back-forward-cache','restore')),
+>   completed   boolean NOT NULL DEFAULT true,
+>   sample_rate real NOT NULL CHECK (sample_rate > 0 AND sample_rate <= 1),
+>   recorded_at timestamptz NOT NULL DEFAULT now()
+> );
+> ```
+>
+> ① **아무도 가리키지 않는다** — 사람 · 워크스페이스 · 페이지의 id(해시도)를 두지 않는다. 경로는 **틀**(`/w/[id]/db/[id]`)만 — 알려진 정적
+> 조각만 남기고 uuid 는 `[id]`, 나머지(공개 토큰 · 사이트 이름 · 제목)는 `[x]`(`routeTemplate` — 브라우저가 보낸 경로도 서버가 다시 틀로
+> 만든다). 표가 모양을 막는다(조각 20자 · 소문자 — uuid 36자 · 토큰 22자 · 한글이 들어오지 못한다). 지역 · 플랫폼 · 버전 칸은 쓰임이 오면
+>
+> ② **표본 비율과 끝났는가를 함께** — 추정 수는 `sum(1 / sample_rate)` · 끝나지 않은 측정(시작했으나 끝나지 않았다 — 생존자 편향)은
+> `completed = false` 로 남기고 백분위에서 뺀 채 그 비율을 따로 본다
+>
+> ③ **받는 문** — `POST /api/perf`(살아 있는 세션의 사람만 · 사람마다 1분에 60번 · 한 번에 20개 · 모양이 틀린 것은 그 하나만 버린다 ·
+> `sendBeacon` 의 글 몸). 워크스페이스를 묻지 않는다
+>
+> ④ **읽는 곳은 운영자 명령 하나**(`npm run perf -- [일수]` — 지표 · 경로마다 p50 · p75 · p95 · 미완료율 · 추정 수). HTTP 로 열지 않는다.
+> 브라우저의 수집기(웹 바이탈 · `editor_ready`)는 10e-1b. 보관 기간(지우는 일)은 스케줄러에 쓰임이 오면
+
 ### 3.11 알고리즘 정본
 
 **유효 권한 `effective()`**
