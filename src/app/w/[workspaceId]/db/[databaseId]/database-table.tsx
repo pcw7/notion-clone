@@ -1094,13 +1094,16 @@ export function DatabaseTable(props: {
   return (
     <section className="flex min-w-0 flex-col gap-3">
       {/*
-        표를 가로 스크롤 상자로 감싸지 않는다. 한 축이 `auto` 인 상자는 다른 축의
-        `visible` 도 `auto` 로 계산되어(CSS 규칙), 칸 안의 팝오버(옵션 편집기 · 속성
-        추가 폼)가 **세로로 잘리고** 상자 안에 스크롤이 생긴다. 넓은 표는 페이지가
-        가로로 스크롤한다. 표 안에서만 스크롤하게 하려면 팝오버를 칸 밖(고정 위치)으로
-        빼야 한다 — e2e 의 잘림 검사가 그 조건을 본다.
+        표는 자기 틀 안에서 가로로 흐른다(10j-3c · 정본 §3.10 끝 [보강] 좁은 화면 ⑧) — 넓은 표도 페이지는
+        가로로 스크롤하지 않는다. 한 축이 `auto` 인 상자는 다른 축의 `visible` 도 `auto` 로 계산되어(CSS
+        규칙) 세로로도 자른다. 그래서 **표 안에는 칸 밖으로 그리는 것이 없어야 한다** — 칸의 팝오버(고르개 ·
+        열 메뉴 · 열 추가 · 계산 · 새 행 · 사람 · 관계 · 알림 종)는 모두 몸으로 내보낸 층(`AnchoredLayer`)이다.
+        새 팝오버도 처음부터 층으로 — e2e 의 잘림 검사가 그 조건을 본다.
+        틀은 위치를 가진다(`relative`) — 넘침을 담는 틀도 **기준(containing block)이 틀 밖에 있는 absolute
+        자손**은 자르지도 스크롤하지도 않는다. 칸의 스크린 리더 글자(`sr-only` — absolute)가 그렇게 틀을 빠져나가
+        표 폭만큼 문서를 넓혔다.
       */}
-      <div>
+      <div className="relative overflow-x-auto" data-testid="db-table-scroll">
         <table
           role="grid"
           aria-label={tableName || '제목 없음'}

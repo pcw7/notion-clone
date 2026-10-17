@@ -17973,14 +17973,12 @@ async function main() {
       const team = (await api('POST', '/teamspaces', { name: `좁은 팀 ${stamp}` })).body?.teamspace?.id
       const pubPage = (await api('POST', '/pages', { title: `좁은 공개 ${stamp}` })).body.page.id
       const token = (await api('PUT', `/pages/${pubPage}/publish`)).body?.token
-      // 넘친 것 — `skip` 안의 것은 세지 않는다(데이터베이스의 표 — 문서가 가로로 흐른다 · 정본 ⑤)
-      const overflow = (skip = null) => `JSON.stringify((() => {
+      // 넘친 것 — 진단용(어느 요소가 보이는 폭을 넘었나)
+      const overflow = () => `JSON.stringify((() => {
         const cw = document.documentElement.clientWidth
-        const skip = ${JSON.stringify(skip)}
         const over = [...document.querySelectorAll('body *')].filter((el) => {
           const r = el.getBoundingClientRect()
           if (r.right <= cw + 1 || r.width === 0) return false
-          if (skip !== null && el.closest(skip)) return false
           // 자기 틀 안에서 가로로 흐르는 것은 그 틀이 잘라 준다 — 조상 중에 가로 넘침을 감추는 틀이 있으면 넘침이 아니다
           for (let p = el.parentElement; p && p !== document.body; p = p.parentElement) {
             const ox = getComputedStyle(p).overflowX
@@ -18027,11 +18025,10 @@ async function main() {
         await waitFor(`document.readyState === 'complete' && !!document.querySelector('[data-testid="setting-row"] input[type="text"]')`, 15000)
         check('아주 좁은 폰(280)의 설정 — 가로 스크롤이 없다(입력칸이 폭을 넘지 않는다)', await waitFor(noSideScroll, 3000), await evaluate(overflow()))
         await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: false })
-        // 데이터베이스 — 표 바깥(머리 · 도구줄)은 넘치지 않는다(표는 문서가 가로로 흐른다 — 칸 안의 메뉴가 잘리지 않게)
+        // 데이터베이스 — 가로 스크롤이 없다. 넓은 표는 자기 틀 안에서 흐른다(10j-3c — 칸의 팝오버가 모두 층이 된 뒤)
         await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
         await waitFor(`document.readyState === 'complete' && !!document.querySelector('table')`, 15000)
-        const outsideTable = JSON.parse(await evaluate(overflow('table')))
-        check('폰 폭의 데이터베이스 — 표 바깥(머리 · 도구줄)은 넘치지 않는다', outsideTable.leaves.length === 0, JSON.stringify(outsideTable))
+        check('폰 폭에서 가로 스크롤이 없다 — 데이터베이스(표는 자기 틀 안에서 흐른다)', await waitFor(noSideScroll, 3000), await evaluate(overflow()))
         await send('Network.deleteCookies', { name: 'nc_session', domain: 'localhost', path: '/' })
         await send('Page.navigate', { url: `${BASE}/login` })
         await waitFor(`document.readyState === 'complete' && !!document.querySelector('h1')`, 15000)
@@ -18213,6 +18210,70 @@ async function main() {
       check('★ 새 행 메뉴는 층 — 안(빈 항목)을 누르면 닫히기 전에 고른 대로 만든다(바깥 클릭이 층을 안으로 본다)',
         !!newMenu && newMenu.inLayer && (await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === ${before + 1}`, 8000)),
         JSON.stringify({ newMenu, before, now: await evaluate(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length`) }))
+    }
+
+    if (sectionIf('표는 자기 틀 안에서 흐른다 (10j-3c · F-12-12)')) {
+      // 표를 가로 스크롤 틀에 넣었다 — 폰 폭에서 문서는 가로로 흐르지 않고 표가 자기 틀 안에서 넘친다. 칸의 마지막 팝오버(날짜 칸의
+      // 알림 종 메뉴)도 층이라 틀이 자르지 않는다 — 틀의 맨 오른쪽 · 마지막 행의 칸에서 열어도 끝 항목까지 보이고 눌린다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `틀 표 ${stamp}` })).body.database
+      const props = `/data-sources/${db.dataSourceId}/properties`
+      for (const name of ['상태', '담당', '점수', '메모']) await api('POST', props, { name: `${name} ${stamp}`, type: 'rich_text' })
+      const due = (await api('POST', props, { name: `마감 ${stamp}`, type: 'date' })).body.property.id
+      const titleProp = (await api('GET', `/views/${db.defaultViewId}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const row = (await api('POST', `/views/${db.defaultViewId}/rows`, {
+        cells: [
+          { propertyId: titleProp, value: { type: 'title', title: [textRun(`틀 표 행 ${stamp}`)] } },
+          { propertyId: due, value: { type: 'date', date: { start: '2030-05-01' } } },
+        ],
+      })).body.row.id
+      const BOX = '[data-testid="db-table-scroll"]'
+      const BELL = `tr[data-row-id="${row}"] td[data-property-id="${due}"] [data-testid="db-reminder-bell"]`
+      const MENU = '[data-testid="db-reminder-menu"]'
+      try {
+        await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: false })
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+        await waitFor(`document.readyState === 'complete' && !!document.querySelector(${JSON.stringify(BELL)})`, 15000)
+        const sizes = await evaluate(`JSON.stringify((() => {
+          const b = document.querySelector('${BOX}')
+          const d = document.documentElement
+          return { docSw: d.scrollWidth, docCw: d.clientWidth, boxSw: b?.scrollWidth ?? null, boxCw: b?.clientWidth ?? null }
+        })())`).then(JSON.parse)
+        check('★ 폰 폭의 넓은 표 — 문서는 가로로 흐르지 않고 표가 자기 틀 안에서 넘친다',
+          sizes.docSw <= sizes.docCw + 1 && sizes.boxSw !== null && sizes.boxSw > sizes.boxCw + 1, JSON.stringify(sizes))
+
+        // 틀을 맨 오른쪽까지 민다 — 날짜 칸은 마지막 열 · 마지막(하나뿐인) 행
+        await evaluate(`(() => { const b = document.querySelector('${BOX}'); b.scrollLeft = b.scrollWidth })()`)
+        let opened = false
+        for (let i = 0; i < 6 && !opened; i += 1) {
+          await clickSelector(BELL)
+          opened = await waitFor(`!!document.querySelector('${MENU}')`, 1500)
+        }
+        const seen = await evaluate(`JSON.stringify((() => {
+          const menu = document.querySelector('${MENU}')
+          const options = [...document.querySelectorAll('${MENU} [data-testid="db-reminder-option"]')]
+          const last = options[options.length - 1]
+          if (!menu || !last) return null
+          const r = last.getBoundingClientRect()
+          const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)
+          return { inLayer: !!menu.closest('[data-anchored-layer]') && !menu.closest('${BOX}'), lastVisible: !!hit && last.contains(hit),
+            bottom: Math.round(r.bottom), boxBottom: Math.round(document.querySelector('${BOX}').getBoundingClientRect().bottom) }
+        })())`).then(JSON.parse)
+        check('★ 틀의 맨 오른쪽 · 마지막 행에서 연 알림 종 메뉴도 잘리지 않는다 — 층이라 끝 항목까지 보이고 눌린다',
+          opened && seen !== null && seen.inLayer && seen.lastVisible, JSON.stringify({ opened, seen }))
+        await clickSelector(`${MENU} [data-testid="db-reminder-option"][data-lead="1440"]`)
+        check('고르면 닫히고 종이 선다 — 메뉴 안을 누른 것은 바깥 클릭이 아니다',
+          await waitFor(`!document.querySelector('${MENU}') && document.querySelector(${JSON.stringify(BELL)})?.dataset.state === 'armed'`, 8000),
+          String(await evaluate(`document.querySelector(${JSON.stringify(BELL)})?.dataset.state ?? null`)))
+      } finally {
+        await send('Emulation.clearDeviceMetricsOverride')
+      }
     }
 
     if (sectionIf('폼 — 서버 라우트 (7a-1 · F-13-01)')) {
