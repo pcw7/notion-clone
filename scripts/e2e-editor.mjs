@@ -18036,6 +18036,61 @@ async function main() {
       }
     }
 
+    if (sectionIf('기준점에 붙는 층 — 고르개 (10j-3a · F-12-12)')) {
+      // select 칸의 고르개는 몸(body)으로 내보낸 층이다 — 칸 바로 아래 · 왼쪽 맞춤 · 화면 안. 칸 밖(body)에 있어도 포커스는 검색칸에 남는다
+      // (칸의 blur 가 층을 칸 안으로 본다). 창을 스크롤하면 칸을 따라간다. 고르면 닫히고 칸에 들어간다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `층 표 ${stamp}` })).body.database
+      const prop = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '단계', type: 'select' })).body.property.id
+      const titleProp = (await api('GET', `/views/${db.defaultViewId}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      for (const name of ['아이디어', '진행', '끝']) await api('POST', `/data-sources/${db.dataSourceId}/properties/${prop}/options`, { name })
+      await api('POST', `/views/${db.defaultViewId}/rows`, { cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun(`층 행 ${stamp}`)] } }] })
+      // 화면이 실제로 스크롤되게 행을 넉넉히(스크롤 검사가 제자리에서 거저 통과하지 않게)
+      for (let i = 0; i < 30; i += 1) await api('POST', `/views/${db.defaultViewId}/rows`, { cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun(`채움 ${i}`)] } }] })
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      const CELL = `td[data-property-id="${prop}"]`
+      const LAYER = '[data-testid="db-select-editor"]'
+      await waitFor(`!!document.querySelector(${JSON.stringify(CELL)})`, 15000)
+      // 칸을 고르고(누름) Enter 로 편집 — 살아나기 전의 클릭은 버려진다 · 열릴 때까지
+      for (let i = 0; i < 6 && !(await evaluate(`!!document.querySelector(${JSON.stringify(LAYER)})`)); i += 1) {
+        await clickSelector(CELL)
+        await key('Enter')
+        await waitFor(`!!document.querySelector(${JSON.stringify(LAYER)})`, 2000)
+      }
+      const geometry = `JSON.stringify((() => {
+        const layer = document.querySelector(${JSON.stringify(LAYER)})
+        const cell = document.querySelector(${JSON.stringify(CELL)})
+        if (!layer || !cell) return null
+        const l = layer.getBoundingClientRect()
+        const c = cell.getBoundingClientRect()
+        return { inBody: layer.parentElement === document.body, layered: layer.hasAttribute('data-anchored-layer'),
+          position: getComputedStyle(layer).position, top: Math.round(l.top), cellTop: Math.round(c.top), cellBottom: Math.round(c.bottom), left: Math.round(l.left), cellLeft: Math.round(c.left),
+          right: Math.round(l.right), vw: document.documentElement.clientWidth, side: layer.dataset.side ?? null,
+          focus: document.activeElement?.getAttribute('data-testid') ?? document.activeElement?.tagName ?? null }
+      })())`
+      const g = JSON.parse(await evaluate(geometry))
+      check('★ 고르개는 몸으로 내보낸 층 — 칸 바로 아래(틈 4px) · 왼쪽 맞춤 · 화면 안',
+        !!g && g.inBody && g.layered && g.position === 'fixed' && g.side === 'below' && Math.abs(g.top - (g.cellBottom + 4)) <= 1
+          && Math.abs(g.left - g.cellLeft) <= 1 && g.right <= g.vw, JSON.stringify(g))
+      check('★ 칸 밖(body)에 있어도 포커스는 검색칸에 남는다 — 칸의 blur 가 층을 칸 안으로 본다', g?.focus === 'db-select-input', JSON.stringify(g))
+      await evaluate('window.scrollBy(0, 40)')
+      await sleep(200)
+      const scrolled = JSON.parse(await evaluate(geometry))
+      check('창을 스크롤하면 칸을 따라간다 — 칸이 실제로 움직였고 층이 그 아래에 있다',
+        !!scrolled && scrolled.cellTop !== g.cellTop && Math.abs(scrolled.top - (scrolled.cellBottom + 4)) <= 1, JSON.stringify({ before: g, after: scrolled }))
+      await evaluate('window.scrollTo(0, 0)')
+      await typeText('진행')
+      await key('Enter')
+      check('고르면 닫히고 칸에 들어간다', await waitFor(`!document.querySelector(${JSON.stringify(LAYER)}) && (document.querySelector(${JSON.stringify(CELL)})?.textContent ?? '').includes('진행')`, 5000),
+        await evaluate(`document.querySelector(${JSON.stringify(CELL)})?.textContent ?? null`))
+    }
+
     if (sectionIf('폼 — 서버 라우트 (7a-1 · F-13-01)')) {
       // 폼 뷰의 라우트 — 만들기(첫 질문은 제목) · 질문 바꾸기 · 설정 · 공개(토큰) · 거부 코드 · 표 화면의 탭에 선다(7a-3 부터 — 그 탭은
       // 편집 화면이다).

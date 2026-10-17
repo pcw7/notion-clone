@@ -113,6 +113,7 @@ import { NewRowMenu } from './new-row-menu'
 import { useRelationLabels } from './use-relation-labels'
 import { useRollupValues } from './use-rollup-values'
 import { SelectEditor } from './select-editor'
+import { containsAcrossLayers } from '../../anchored-layer'
 import { RelationEditor } from './relation-editor'
 import { AddColumn } from './add-column'
 import { useTableChanges } from './use-table-changes'
@@ -531,7 +532,8 @@ export function DatabaseTable(props: {
   const onCellBlur = (at: CellPos, event: FocusEvent<HTMLTableCellElement>) => {
     const current = modeRef.current
     if (current.kind !== 'editing' || !samePos(current.at, at)) return
-    if (event.currentTarget.contains(event.relatedTarget as Node | null)) return
+    // 칸의 편집기가 몸으로 내보낸 층(10j-3a)에 있어도 칸 안이다 — DOM 의 contains 는 포털을 모른다
+    if (containsAcrossLayers(event.currentTarget, event.relatedTarget as Node | null)) return
     if (!commitEdit(at)) {
       // 틀린 값을 들고 떠났다. 붙잡아 둘 수 없으므로 버리고, 버렸다고 말한다.
       setError((message) => `${message ?? '값을 확인하세요.'} — 저장하지 않았습니다.`)
