@@ -44,6 +44,7 @@ import { codeHighlightPlugin } from './code-highlight.ts'
 import { columnLayoutPlugin } from './column-layout.ts'
 import { collapsePlugin } from './collapse-plugin.ts'
 import { findPlugin } from './find-in-page.ts'
+import { comboboxPlugin } from './combobox-a11y.ts'
 import { createKeydownHandler, type EditorKeymapDeps } from './keymap.ts'
 import { inputRulesPlugin } from './input-rules.ts'
 import { createNodeViews, type NodeViewDeps } from './node-views.ts'
@@ -147,6 +148,8 @@ export function editingPlugins(deps: EditorDeps): Plugin[] {
     breadcrumbPlugin(() => deps.breadcrumbTrail?.() ?? null),
     // 페이지 안 찾기(F-07-05 · 10b) — 매칭을 데코레이션으로 그린다. 문서에 쓰지 않는다(`find-in-page.ts` 머리말).
     findPlugin(),
+    // 편집기 위의 목록 메뉴(10d-3 · F-12-13) — 열려 있으면 루트가 그 목록과 지금 항목을 가리킨다(`combobox-a11y.ts` 머리말).
+    comboboxPlugin(),
     // 멘션 · 수식의 서식을 attr 에 비춘다 — 협업 바인딩이 Y.Doc 에 싣는 것은 attr 뿐이다(`atom-marks.ts`).
     atomMarksPlugin(),
     // id 스탬프는 마지막이다. 다른 플러그인이 만든 노드까지 훑어야 한다.

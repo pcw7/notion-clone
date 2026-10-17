@@ -17409,6 +17409,58 @@ async function main() {
       }
     }
 
+    if (sectionIf('편집기 메뉴의 접근성 (10d-3 · F-12-13)')) {
+      // 슬래시 · 멘션 메뉴가 열리면 편집기 루트가 목록과 지금 항목을 가리킨다(aria-controls · aria-activedescendant · aria-autocomplete) — 포커스는
+      // 편집기에 남는다 · ↓ 로 지금 항목이 바뀐다 · Esc 로 닫으면 셋 다 없다.
+      const stamp = Date.now().toString(36)
+      const made = await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: JSON.stringify({ title: `메뉴 ${stamp}` }) })
+      const page = (await made.json()).page.id
+      const empty = randomUUID()
+      await saveBody(page, { blocks: [block(randomUUID(), 'paragraph', '앞 문단'), { id: empty, type: 'paragraph', title: [], properties: {}, format: {}, children: [] }] })
+      const ROOT = `document.querySelector('.blk-editor')`
+      const attr = (name) => `${ROOT}?.getAttribute(${JSON.stringify(name)})`
+      const rootState = () => evaluate(`JSON.stringify({ controls: ${attr('aria-controls')}, active: ${attr('aria-activedescendant')}, auto: ${attr('aria-autocomplete')},
+        selected: document.querySelector('[role="option"][aria-selected="true"]')?.id ?? null, focus: document.activeElement === ${ROOT} })`)
+      // 가리키는 항목이 실제로 있고 그것이 고른 항목인가
+      const pointsAtSelected = (listbox) => `${attr('aria-controls')} === ${JSON.stringify(listbox)} && ${attr('aria-autocomplete')} === 'list'
+        && !!document.getElementById(${attr('aria-activedescendant')} ?? '') && document.getElementById(${attr('aria-activedescendant')} ?? '')?.getAttribute('aria-selected') === 'true'
+        && document.activeElement === ${ROOT}`
+      const closedState = `${attr('aria-controls')} === null && ${attr('aria-activedescendant')} === null && ${attr('aria-autocomplete')} === null`
+      const focusEmpty = async () => {
+        for (let i = 0; i < 6 && !(await evaluate(`document.activeElement === ${ROOT} && !!window.getSelection()?.anchorNode?.parentElement?.closest('[data-block-id="${empty}"]')`)); i += 1) {
+          const box = await line(empty)
+          if (box) await click(box.x + 10, box.y + box.h / 2)
+          await sleep(200)
+        }
+      }
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+      await waitFor(`!!document.querySelector('[data-block-id="${empty}"]') && ${ROOT}?.getAttribute('contenteditable') === 'true'`, 15000)
+      check('메뉴가 닫혀 있으면 편집기 루트는 아무 목록도 가리키지 않는다', await evaluate(closedState), await rootState())
+
+      // ① 슬래시 메뉴
+      await focusEmpty()
+      await typeText('/')
+      check('★ 슬래시 메뉴가 열리면 편집기 루트가 그 목록과 고른 항목을 가리킨다 — 포커스는 편집기에',
+        await waitFor(pointsAtSelected('blk-slash-menu'), 5000), await rootState())
+      const first = await evaluate(attr('aria-activedescendant'))
+      await key('ArrowDown')
+      check('↓ — 가리키는 항목이 다음 항목으로 바뀐다(고른 항목과 같다)',
+        await waitFor(`${pointsAtSelected('blk-slash-menu')} && ${attr('aria-activedescendant')} !== ${JSON.stringify(first)}`, 5000), await rootState())
+      await key('Escape')
+      check('Esc 로 닫으면 셋 다 없다', await waitFor(closedState, 5000), await rootState())
+
+      // ② 멘션 메뉴 — 같은 규칙
+      await key('Backspace')
+      await typeText('@')
+      check('★ 멘션 메뉴도 같다 — 루트가 멘션 목록과 고른 항목을 가리킨다',
+        await waitFor(`${attr('aria-controls')} === 'blk-mention-menu' && ${attr('aria-autocomplete')} === 'list' && document.activeElement === ${ROOT}
+          && (${attr('aria-activedescendant')} === null || document.getElementById(${attr('aria-activedescendant')})?.getAttribute('aria-selected') === 'true')`, 5000),
+        await rootState())
+      await key('Escape')
+      await waitFor(closedState, 5000)
+    }
+
     if (sectionIf('폼 — 서버 라우트 (7a-1 · F-13-01)')) {
       // 폼 뷰의 라우트 — 만들기(첫 질문은 제목) · 질문 바꾸기 · 설정 · 공개(토큰) · 거부 코드 · 표 화면의 탭에 선다(7a-3 부터 — 그 탭은
       // 편집 화면이다).

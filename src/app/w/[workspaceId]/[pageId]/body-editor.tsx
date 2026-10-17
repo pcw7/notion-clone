@@ -96,6 +96,7 @@ import { PageIconView } from '../page-icon-view'
 import { customEmojiIdOf, type EmojiLabel } from '@/lib/editor/mention-label'
 import { closeMentionMenu, insertMention, mentionMenuState, type MentionPick } from '@/lib/editor/mention-menu'
 import { collapsedAncestorsAt, findCounter, findStateOf, setFindQuery, stepFind } from '@/lib/editor/find-in-page'
+import { MENU_IDS, comboboxStateOf, comboboxTarget, sameTarget, setComboboxTarget } from '@/lib/editor/combobox-a11y'
 import { MENTION_NODE } from '@/lib/editor/schema'
 
 /** 이 시간 넘게 서버가 확인하지 않으면 "동기화 중…"을 보여 준다 — 그 전에는 무표시다(F-05-04). */
@@ -1529,6 +1530,22 @@ export function BodyEditor({
   )
   const emojiPopup = emojiCandidates.length > 0
 
+  // 편집기 위의 목록 메뉴(10d-3 · F-12-13) — 포커스는 편집기에 남으므로 편집기 루트가 열린 목록과 지금 항목을 가리킨다(`combobox-a11y.ts`).
+  // 같은 값이면 보내지 않는다 — 보낸 트랜잭션이 메뉴를 다시 맞춰도 같은 값으로 멈춘다.
+  const slashListOpen = menu.open && items.length > 0
+  const emojiListOpen = emojiUi.open && emojiPopup
+  useEffect(() => {
+    const view = viewRef.current
+    if (!view) return
+    const target = comboboxTarget({
+      slash: { open: slashListOpen, index: menu.index, count: items.length },
+      mention: { open: mentionUi.open, index: mentionUi.index, count: mentionCandidates.length },
+      emoji: { open: emojiListOpen, index: emojiUi.index, count: emojiCandidates.length },
+    })
+    if (sameTarget(comboboxStateOf(view.state), target)) return
+    view.dispatch(setComboboxTarget(view.state.tr, target))
+  }, [slashListOpen, menu.index, items.length, mentionUi.open, mentionUi.index, mentionCandidates.length, emojiListOpen, emojiUi.index, emojiCandidates.length])
+
   // `:` 메뉴의 키 조작 — 후보가 보일 때만 화살표 · Enter · Tab · Esc 를 먹는다(0건이면 Enter 는 줄바꿈 그대로 · 정본 ⑧). 닫는 `:` 는
   // 여기서 잡지 않는다 — 글자가 들어온 뒤 트랜잭션에서 본다(`syncEmojiMenu` · keydown 없이 들어오는 입력도 있다).
   useEffect(() => {
@@ -1827,6 +1844,7 @@ export function BodyEditor({
 
       {mentionUi.open && (
         <ul
+          id={MENU_IDS.mention.listbox}
           role="listbox"
           aria-label="멘션"
           style={{ left: mentionUi.left, top: mentionUi.top }}
@@ -1842,6 +1860,7 @@ export function BodyEditor({
             <li key={`${candidate.kind}:${candidate.id}`}>
               <button
                 type="button"
+                id={MENU_IDS.mention.option(i)}
                 role="option"
                 aria-selected={i === mentionUi.index}
                 onMouseDown={(e) => e.preventDefault()}
@@ -1863,6 +1882,7 @@ export function BodyEditor({
 
       {emojiUi.open && emojiPopup && (
         <ul
+          id={MENU_IDS.emoji.listbox}
           role="listbox"
           aria-label="커스텀 이모지"
           data-testid="emoji-menu"
@@ -1873,6 +1893,7 @@ export function BodyEditor({
             <li key={entry.id}>
               <button
                 type="button"
+                id={MENU_IDS.emoji.option(i)}
                 role="option"
                 data-testid="emoji-menu-option"
                 data-emoji-id={entry.id}
@@ -1895,6 +1916,7 @@ export function BodyEditor({
 
       {menu.open && items.length > 0 && (
         <ul
+          id={MENU_IDS.slash.listbox}
           role="listbox"
           aria-label="블록 삽입"
           style={{ left: menu.left, top: menu.top }}
@@ -1904,6 +1926,7 @@ export function BodyEditor({
             <li key={command.id}>
               <button
                 type="button"
+                id={MENU_IDS.slash.option(i)}
                 role="option"
                 aria-selected={i === menu.index}
                 onMouseDown={(e) => e.preventDefault()}
