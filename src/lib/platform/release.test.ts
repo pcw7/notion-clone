@@ -5,11 +5,21 @@
  *   ② 어디서 오는가 — 배포가 준 값 · 없거나 틀리면 빌드의 표지 · 그것도 없으면 모른다
  *   ③ ★ 다른가 — 둘 다 알고 다를 때만(모르면 다르다고 하지 않는다)
  *   ④ 띠 — 새 버전이고 그 표지를 덮지 않았을 때(더 새 표지는 다시 선다)
+ *   ⑤ 이 앱의 정적 자산인가(10h-2) — 같은 출처 · /_next/static/
+ *   ⑥ 청크를 못 받으면 곧바로 묻는가(10h-2) — 이 앱의 자산 · 30초에 한 번
  */
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { isNewRelease, normalizeRelease, resolveRelease, shouldShowBanner } from './release.ts'
+import {
+  ASSET_ERROR_CHECK_GAP_MS,
+  isAppAssetUrl,
+  isNewRelease,
+  normalizeRelease,
+  resolveRelease,
+  shouldCheckOnAssetError,
+  shouldShowBanner,
+} from './release.ts'
 
 test('① 표지의 모양 — 영숫자 · . _ - 64자 · 앞뒤 공백을 걷는다', () => {
   assert.equal(normalizeRelease('o0SmUFvfl-dG3RRzf5Tlu'), 'o0SmUFvfl-dG3RRzf5Tlu', 'Next 의 BUILD_ID')
@@ -48,4 +58,25 @@ test('④ 띠 — 새 버전이고 그 표지를 덮지 않았을 때', () => {
   assert.equal(shouldShowBanner('a', 'c', 'b'), true, '더 새 표지가 오면 다시 선다')
   assert.equal(shouldShowBanner('a', 'a', null), false)
   assert.equal(shouldShowBanner('a', null, null), false)
+})
+
+const ORIGIN = 'https://notion.example'
+
+test('⑤ 이 앱의 정적 자산인가 — 같은 출처 · /_next/static/', () => {
+  assert.equal(isAppAssetUrl(`${ORIGIN}/_next/static/chunks/0abc.js`, ORIGIN), true)
+  assert.equal(isAppAssetUrl(`${ORIGIN}/_next/static/chunks/0abc.css?dpl=x`, ORIGIN), true)
+  assert.equal(isAppAssetUrl('/_next/static/chunks/0abc.js', ORIGIN), true, '상대 주소')
+  assert.equal(isAppAssetUrl('https://cdn.other.example/_next/static/chunks/0abc.js', ORIGIN), false, '다른 출처')
+  assert.equal(isAppAssetUrl(`${ORIGIN}/api/workspaces/x/files/y`, ORIGIN), false, '올린 파일')
+  assert.equal(isAppAssetUrl(`${ORIGIN}/e2e.js`, ORIGIN), false)
+  assert.equal(isAppAssetUrl('', ORIGIN), false, '빈 주소는 이 문서 자신이다')
+  assert.equal(isAppAssetUrl('http://[bad', ORIGIN), false, '읽을 수 없는 주소')
+})
+
+test('⑥ 청크를 못 받으면 곧바로 묻는가 — 이 앱의 자산 · 30초에 한 번', () => {
+  const chunk = `${ORIGIN}/_next/static/chunks/0abc.js`
+  assert.equal(shouldCheckOnAssetError(chunk, ORIGIN, null, 1000), true, '처음')
+  assert.equal(shouldCheckOnAssetError(chunk, ORIGIN, 1000, 1000 + ASSET_ERROR_CHECK_GAP_MS - 1), false, '간격 안')
+  assert.equal(shouldCheckOnAssetError(chunk, ORIGIN, 1000, 1000 + ASSET_ERROR_CHECK_GAP_MS), true, '간격이 지났다')
+  assert.equal(shouldCheckOnAssetError(`${ORIGIN}/e2e.js`, ORIGIN, null, 1000), false, '이 앱의 자산이 아니다')
 })

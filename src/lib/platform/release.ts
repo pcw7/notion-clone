@@ -10,6 +10,9 @@ const RELEASE = /^[A-Za-z0-9._-]{1,64}$/
 /** 화면이 보이는 동안 다시 묻는 간격(밀리초). 다시 보일 때는 곧바로 묻는다. */
 export const RELEASE_CHECK_INTERVAL_MS = 10 * 60 * 1000
 
+/** 청크를 못 받아 묻는 것의 최소 간격(밀리초 · 10h-2) — 여러 청크가 한꺼번에 실패해도 한 번 묻는다. */
+export const ASSET_ERROR_CHECK_GAP_MS = 30 * 1000
+
 /** 표지의 모양 — 영숫자 · `.` `_` `-` 64자까지. 앞뒤 공백은 걷는다(파일의 줄바꿈). 아니면 모른다(null). */
 export function normalizeRelease(raw: unknown): string | null {
   if (typeof raw !== 'string') return null
@@ -30,4 +33,19 @@ export function isNewRelease(loaded: string | null, current: string | null): boo
 /** 띠를 세우는가 — 새 버전이고 그 표지를 덮지 않았을 때("나중에" 는 그 표지만 덮는다). */
 export function shouldShowBanner(loaded: string | null, current: string | null, dismissed: string | null): boolean {
   return isNewRelease(loaded, current) && current !== dismissed
+}
+
+/** 이 앱의 정적 자산인가(10h-2) — 같은 출처 · `/_next/static/`. 다른 출처 · 다른 경로(올린 그림 · 바깥 스크립트)는 배포와 상관없다. */
+export function isAppAssetUrl(url: string, origin: string): boolean {
+  try {
+    const parsed = new URL(url, origin)
+    return parsed.origin === origin && parsed.pathname.startsWith('/_next/static/')
+  } catch {
+    return false
+  }
+}
+
+/** 자산을 못 받았을 때 곧바로 묻는가(10h-2) — 이 앱의 자산이고 지난번 그렇게 물은 지 간격이 지났을 때. */
+export function shouldCheckOnAssetError(url: string, origin: string, lastCheckAt: number | null, now: number): boolean {
+  return isAppAssetUrl(url, origin) && (lastCheckAt === null || now - lastCheckAt >= ASSET_ERROR_CHECK_GAP_MS)
 }

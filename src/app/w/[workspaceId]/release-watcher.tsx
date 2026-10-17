@@ -7,11 +7,14 @@
  *
  * 문서가 실려 온 표지를 쥐고 — **처음 받은 것만**(나중의 렌더가 새 서버의 값을 넘겨도 돌고 있는 JS 는 처음 문서의 것이다) — 화면이 다시
  * 보일 때 · 10분마다 `/api/release` 에 묻는다. 다르면 띠 — 새로고침 · 나중에(그 표지를 덮는다). 강제로 새로고침하지 않는다.
+ *
+ * 이 앱의 청크를 못 받으면 곧바로 묻는다(10h-2 · 정본 ⑥) — 지연 로드는 `<script>` · `<link>` 를 붙여 받으므로 창의 포착 단계 `error` 로
+ * 그 실패를 한곳에서 본다(자원의 `error` 는 거품이 일지 않는다 — 포착 단계에서만 창에 닿는다). 30초에 한 번.
  */
 
 import { useEffect, useState } from 'react'
 
-import { RELEASE_CHECK_INTERVAL_MS, normalizeRelease, shouldShowBanner } from '@/lib/platform/release'
+import { RELEASE_CHECK_INTERVAL_MS, normalizeRelease, shouldCheckOnAssetError, shouldShowBanner } from '@/lib/platform/release'
 
 /** 이 문서가 실려 온 표지 — 브라우저에서 처음 받은 것을 문서가 끝날 때까지 쥔다(모듈은 서버에서도 돌므로 효과 안에서만 정한다). */
 let loaded: string | null | undefined
@@ -41,10 +44,22 @@ export function ReleaseWatcher({ release }: { release: string | null }) {
     }
     document.addEventListener('visibilitychange', onVisibility)
     const timer = window.setInterval(() => void check(), RELEASE_CHECK_INTERVAL_MS)
+    // 앱의 청크를 못 받았다(10h-2) — 배포 뒤 옛 청크가 지워졌을 수 있다
+    let lastAssetCheck: number | null = null
+    const onResourceError = (event: Event) => {
+      const target = event.target
+      const url = target instanceof HTMLScriptElement ? target.src : target instanceof HTMLLinkElement ? target.href : null
+      const now = Date.now()
+      if (url === null || !shouldCheckOnAssetError(url, window.location.origin, lastAssetCheck, now)) return
+      lastAssetCheck = now
+      void check()
+    }
+    window.addEventListener('error', onResourceError, true)
     return () => {
       alive = false
       document.removeEventListener('visibilitychange', onVisibility)
       window.clearInterval(timer)
+      window.removeEventListener('error', onResourceError, true)
     }
   }, [])
 
