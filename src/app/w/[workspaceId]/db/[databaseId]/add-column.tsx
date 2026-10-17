@@ -65,6 +65,7 @@ import * as api from './table-api'
 import { TYPE_ICON, TYPE_LABEL } from './cell-view'
 import { FormulaEditor } from './formula-editor'
 import { checkFormulaDraft, type FormulaPlan } from '@/lib/database/formula-plan'
+import { AnchoredLayer } from '../../anchored-layer'
 
 type AddableType = Exclude<MvpPropertyType, 'title'> | 'relation' | 'rollup' | 'unique_id' | 'formula' | 'button'
 
@@ -249,6 +250,7 @@ export function AddColumn({
       </button>
 
       {open && (
+        <AnchoredLayer align="end">
         <form
           role="dialog"
           aria-label="속성 추가"
@@ -289,7 +291,7 @@ export function AddColumn({
             if (failure === null) close()
             else setError(failure)
           }}
-          className={`absolute right-0 z-20 mt-1 flex ${
+          className={`flex ${
             type === 'formula' ? 'w-80' : 'w-64'
           } flex-col gap-2 rounded-md border border-neutral-200 bg-white p-3 text-left font-normal shadow-lg dark:border-neutral-700 dark:bg-neutral-900`}
         >
@@ -463,6 +465,7 @@ export function AddColumn({
             </p>
           )}
         </form>
+        </AnchoredLayer>
       )}
     </div>
   )

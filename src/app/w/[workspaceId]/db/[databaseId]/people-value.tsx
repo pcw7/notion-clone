@@ -19,6 +19,7 @@ import { LEFT_USER } from '@/lib/database/cell-format'
 import { ME_NODE, isMeNode } from '@/lib/database/filter'
 import type { PeopleNames } from './cell-view'
 import { PeopleEditor } from './people-editor'
+import { containsAcrossLayers } from '../../anchored-layer'
 
 /** "나" 의 이름 — 칩의 요약(`describeRule`)과 같은 말. */
 const ME_LABEL = '나'
@@ -58,7 +59,8 @@ export function PeopleValue({
         }
       }}
       onBlur={(e) => {
-        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setOpen(false)
+        // 편집기는 몸으로 내보낸 층이다(10j-3b) — DOM 의 contains 는 포털을 모른다
+        if (!containsAcrossLayers(e.currentTarget, e.relatedTarget as Node | null)) setOpen(false)
       }}
     >
       <button

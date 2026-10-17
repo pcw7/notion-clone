@@ -38,6 +38,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 
 import type { SortKey } from '@/lib/database/filter'
 import type { PropertyDependents } from '@/lib/database/property-dependents'
+import { AnchoredLayer } from '../../anchored-layer'
 
 export function ColumnMenu({
   name,
@@ -154,6 +155,7 @@ export function ColumnMenu({
       </button>
 
       {open && (
+        <AnchoredLayer align="end">
         <div
           ref={panelRef}
           tabIndex={-1}
@@ -166,7 +168,7 @@ export function ColumnMenu({
               close()
             }
           }}
-          className={`absolute right-0 top-full z-30 mt-1 flex ${
+          className={`flex ${
             step === 'formula' ? 'w-80' : step === 'button' ? 'w-96' : 'w-56'
           } flex-col rounded-md border border-neutral-200 bg-white p-1 text-left text-sm font-normal text-neutral-800 shadow-lg dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100`}
         >
@@ -345,6 +347,7 @@ export function ColumnMenu({
             </p>
           )}
         </div>
+        </AnchoredLayer>
       )}
     </span>
   )
