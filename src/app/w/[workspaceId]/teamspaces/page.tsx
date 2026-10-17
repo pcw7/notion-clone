@@ -10,6 +10,7 @@
  * **모든 teamspace** 절(7c-10)은 워크스페이스 owner 에게만 선다 — 비공개 · 보관 · 고아까지 보고 소유자로 들어간다.
  */
 
+import type { Metadata } from 'next'
 import Link from 'next/link'
 
 import { requirePageSession } from '@/lib/auth/page-session'
@@ -17,6 +18,10 @@ import { listAllTeamspaces, listArchivedTeamspaces, listBrowsableTeamspaces } fr
 import { TeamspaceAdmin } from './teamspace-admin'
 import { TeamspaceArchived } from './teamspace-archived'
 import { TeamspaceBrowser } from './teamspace-browser'
+import { SCREEN_TITLES } from '@/lib/nav/screen-title'
+
+// 화면 제목(10d-7a · F-12-13) — 루트의 틀이 `… · notion-clone` 을 붙인다
+export const metadata: Metadata = { title: SCREEN_TITLES.teamspaces }
 
 export default async function TeamspaceBrowsePage({ params }: PageProps<'/w/[workspaceId]/teamspaces'>) {
   const { workspaceId } = await params

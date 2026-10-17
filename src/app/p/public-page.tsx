@@ -15,6 +15,7 @@ import { notFound } from 'next/navigation'
 import { cache, type ReactNode } from 'react'
 
 import { readPublicPage, readSitePage, type PublicRead } from '@/lib/publish/public-read'
+import { publicTitle } from '@/lib/nav/screen-title'
 import { Blocks, RichText, Trail, UNTITLED, publicFileHref, titleText } from './public-blocks'
 import { PublicRowPropertiesView, PublicTableView } from './public-table'
 
@@ -38,7 +39,8 @@ export async function siteMetadata(domain: string, slug: string, pageId?: string
 
 function metadataOf(read: PublicRead): Metadata {
   return {
-    title: read.ok ? titleText(read.value.title) : read.reason === 'expired' ? '만료된 링크' : '없는 페이지',
+    // 쓴 사람의 글이다 — 앱의 제목 틀을 씌우지 않는다(10d-7a)
+    title: publicTitle(read.ok ? titleText(read.value.title) : read.reason === 'expired' ? '만료된 링크' : '없는 페이지'),
     robots: robotsOf(read),
     referrer: 'no-referrer',
   }

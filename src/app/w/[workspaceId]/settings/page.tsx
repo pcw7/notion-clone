@@ -11,6 +11,7 @@
  * 생길 때 — 정본 ③). 절은 `?s=` 로 고른다.
  */
 
+import type { Metadata } from 'next'
 import Link from 'next/link'
 
 import { requirePageSession } from '@/lib/auth/page-session'
@@ -20,6 +21,10 @@ import { readSettings } from '@/lib/settings/settings'
 import { SettingPanelView } from './setting-panel'
 import { SettingRow } from './setting-row'
 import { SETTING_PLAN_NOTE } from './settings-messages'
+import { SCREEN_TITLES } from '@/lib/nav/screen-title'
+
+// 화면 제목(10d-7a · F-12-13) — 루트의 틀이 `… · notion-clone` 을 붙인다
+export const metadata: Metadata = { title: SCREEN_TITLES.settings }
 
 export default async function SettingsPage({ params, searchParams }: PageProps<'/w/[workspaceId]/settings'>) {
   const { workspaceId } = await params

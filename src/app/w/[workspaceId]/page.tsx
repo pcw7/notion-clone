@@ -14,6 +14,7 @@
  * 워크스페이스. 목록은 모두 이미 있는 것(각자 조회 시점에 권한을 거른다)이고 한 번에 읽는다. 빈 섹션은 세우지 않고 모두 비면 시작 카드.
  */
 
+import type { Metadata } from 'next'
 import Link from 'next/link'
 
 import { requirePageSession } from '@/lib/auth/page-session'
@@ -26,11 +27,15 @@ import { visiblePanels } from '@/lib/settings/panels'
 import { workspaceNameOf } from '@/lib/workspace/list'
 import { HomeSection } from './home-section'
 import { NewPageButton } from './new-page-button'
+import { SCREEN_TITLES } from '@/lib/nav/screen-title'
 
 /** 목록의 한 줄 → Home 의 항목. 최근 방문 · 즐겨찾기는 페이지뿐이고, 트리의 루트는 데이터베이스일 수 있다. */
 function homeItem(node: { readonly id: string; readonly title: string; readonly icon: PageIcon | null; readonly kind?: 'page' | 'database' }): HomeItem {
   return { id: node.id, title: node.title, icon: node.icon, kind: node.kind ?? 'page' }
 }
+
+// 화면 제목(10d-7a · F-12-13) — 루트의 틀이 `… · notion-clone` 을 붙인다
+export const metadata: Metadata = { title: SCREEN_TITLES.home }
 
 export default async function WorkspacePage({ params }: PageProps<'/w/[workspaceId]'>) {
   const { workspaceId } = await params

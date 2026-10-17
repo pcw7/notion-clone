@@ -16,6 +16,7 @@ import { notFound } from 'next/navigation'
 
 import { isUuid } from '@/lib/ids'
 import { MAX_REPORT_DETAIL } from '@/lib/moderation/report'
+import { publicTitle } from '@/lib/nav/screen-title'
 import { titleText } from '../../public-blocks'
 import { loadPublicPage } from '../../public-page'
 import { DMCA_NOTE, REPORT_REASON_OPTIONS, reportFailureMessage } from '../../report-messages'
@@ -25,7 +26,8 @@ import { DMCA_NOTE, REPORT_REASON_OPTIONS, reportFailureMessage } from '../../re
  * `Origin: null` 을 보내(Fetch 규격) 보내는 곳의 출처 검사가 막는다(e2e 가 잡았다). 이 화면에서 나가는 링크는 같은 출처뿐이라 토큰이
  * 밖으로 새지 않는다.
  */
-export const metadata: Metadata = { title: '페이지 신고', robots: 'noindex, nofollow', referrer: 'same-origin' }
+// 공개 화면 — 앱의 제목 틀을 씌우지 않는다(10d-7a)
+export const metadata: Metadata = { title: publicTitle('페이지 신고'), robots: 'noindex, nofollow', referrer: 'same-origin' }
 
 export default async function ReportPage({ params, searchParams }: PageProps<'/p/[token]/report'>) {
   const { token } = await params

@@ -8,6 +8,7 @@
  * 나누기 그대로 계층을 펴서(`flattenTree`) 줄마다 위치를 함께 보인다. 이름은 그 탭의 목록에서 찾는다(`matchesName` — 전문 검색이 아니다).
  */
 
+import type { Metadata } from 'next'
 import Link from 'next/link'
 
 import { requirePageSession } from '@/lib/auth/page-session'
@@ -29,6 +30,7 @@ import { listFavorites, listRecent, type NavEntry } from '@/lib/nav/recent'
 import { listMyTeamspaces } from '@/lib/workspace/teamspace'
 import type { SessionContext } from '@/lib/auth/session-context'
 import { PageIconView } from '../page-icon-view'
+import { SCREEN_TITLES } from '@/lib/nav/screen-title'
 
 const UNTITLED = '제목 없음'
 
@@ -51,6 +53,9 @@ async function itemsOf(ctx: SessionContext, tab: LibraryTab): Promise<LibraryIte
       return flattenTree(grouped.privatePages, null)
   }
 }
+
+// 화면 제목(10d-7a · F-12-13) — 루트의 틀이 `… · notion-clone` 을 붙인다
+export const metadata: Metadata = { title: SCREEN_TITLES.library }
 
 export default async function LibraryPage({ params, searchParams }: PageProps<'/w/[workspaceId]/library'>) {
   const { workspaceId } = await params
