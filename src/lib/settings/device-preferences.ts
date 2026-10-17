@@ -17,11 +17,28 @@ export type Motion = (typeof MOTIONS)[number]
 
 export const CONTRAST_COOKIE = 'nc_contrast'
 export const MOTION_COOKIE = 'nc_motion'
+/** 글자 크기(10d-4) — 루트의 글자 크기 비율(%). rem 으로 잰 것이 함께 커진다. */
+export const FONT_SCALES = ['90', '100', '110', '125', '150'] as const
+export type FontScale = (typeof FONT_SCALES)[number]
+export const FONT_SCALE_COOKIE = 'nc_font_scale'
 /** 쿠키의 수명 — 브라우저가 받아 주는 가장 긴 것(400일). */
 export const DEVICE_PREFERENCE_MAX_AGE = 60 * 60 * 24 * 400
 
-export type DevicePreferences = { readonly contrast: Contrast; readonly motion: Motion }
-export const DEFAULT_DEVICE_PREFERENCES: DevicePreferences = { contrast: 'system', motion: 'system' }
+export type DevicePreferences = { readonly contrast: Contrast; readonly motion: Motion; readonly fontScale: FontScale }
+export const DEFAULT_DEVICE_PREFERENCES: DevicePreferences = { contrast: 'system', motion: 'system', fontScale: '100' }
+
+export const FONT_SCALE_LABEL: Readonly<Record<FontScale, string>> = {
+  '90': '작게 (90%)',
+  '100': '보통 (100%)',
+  '110': '조금 크게 (110%)',
+  '125': '크게 (125%)',
+  '150': '아주 크게 (150%)',
+}
+
+/** 모르는 값은 보통(100). */
+export function normalizeFontScale(raw: unknown): FontScale {
+  return typeof raw === 'string' && (FONT_SCALES as readonly string[]).includes(raw) ? (raw as FontScale) : '100'
+}
 
 export const CONTRAST_LABEL: Readonly<Record<Contrast, string>> = {
   system: '기기 설정을 따름',
@@ -44,8 +61,8 @@ export function normalizeMotion(raw: unknown): Motion {
 }
 
 /** 브라우저가 쓰는 쿠키 한 줄 — 모든 경로 · 400일 · 다른 사이트의 요청에는 싣지 않는다. 값은 다듬은 것만. */
-export function devicePreferenceCookie(name: typeof CONTRAST_COOKIE | typeof MOTION_COOKIE, value: string): string {
-  const safe = name === CONTRAST_COOKIE ? normalizeContrast(value) : normalizeMotion(value)
+export function devicePreferenceCookie(name: typeof CONTRAST_COOKIE | typeof MOTION_COOKIE | typeof FONT_SCALE_COOKIE, value: string): string {
+  const safe = name === CONTRAST_COOKIE ? normalizeContrast(value) : name === MOTION_COOKIE ? normalizeMotion(value) : normalizeFontScale(value)
   return `${name}=${safe}; Path=/; Max-Age=${DEVICE_PREFERENCE_MAX_AGE}; SameSite=Lax`
 }
 

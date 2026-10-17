@@ -16,6 +16,10 @@ import {
   CONTRASTS,
   CONTRAST_COOKIE,
   CONTRAST_LABEL,
+  FONT_SCALES,
+  FONT_SCALE_COOKIE,
+  FONT_SCALE_LABEL,
+  type FontScale,
   MOTIONS,
   MOTION_COOKIE,
   MOTION_LABEL,
@@ -29,10 +33,11 @@ export function AccessibilityPanel({ initial }: { initial: DevicePreferences }) 
   const router = useRouter()
   const [contrast, setContrast] = useState<Contrast>(initial.contrast)
   const [motion, setMotion] = useState<Motion>(initial.motion)
+  const [fontScale, setFontScale] = useState<FontScale>(initial.fontScale)
 
-  const apply = (name: typeof CONTRAST_COOKIE | typeof MOTION_COOKIE, value: string) => {
+  const apply = (name: typeof CONTRAST_COOKIE | typeof MOTION_COOKIE | typeof FONT_SCALE_COOKIE, value: string) => {
     document.cookie = devicePreferenceCookie(name, value)
-    document.documentElement.dataset[name === CONTRAST_COOKIE ? 'contrast' : 'motion'] = value
+    document.documentElement.dataset[name === CONTRAST_COOKIE ? 'contrast' : name === MOTION_COOKIE ? 'motion' : 'fontScale'] = value
     startTransition(() => router.refresh())
   }
 
@@ -57,6 +62,24 @@ export function AccessibilityPanel({ initial }: { initial: DevicePreferences }) 
               }}
             />
             {CONTRAST_LABEL[value]}
+          </label>
+        ))}
+      </fieldset>
+      <fieldset data-testid="a11y-font-scale" className="flex flex-col gap-1">
+        <legend className="mb-1 text-sm">글자 크기 — 이 앱의 글자 · 간격(브라우저 확대와 따로)</legend>
+        {FONT_SCALES.map((value) => (
+          <label key={value} className="flex items-center gap-2 text-sm">
+            <input
+              type="radio"
+              name="a11y-font-scale"
+              value={value}
+              checked={fontScale === value}
+              onChange={() => {
+                setFontScale(value)
+                apply(FONT_SCALE_COOKIE, value)
+              }}
+            />
+            {FONT_SCALE_LABEL[value]}
           </label>
         ))}
       </fieldset>

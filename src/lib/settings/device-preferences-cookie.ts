@@ -9,9 +9,21 @@
 
 import { cookies } from 'next/headers'
 
-import { CONTRAST_COOKIE, MOTION_COOKIE, normalizeContrast, normalizeMotion, type DevicePreferences } from './device-preferences.ts'
+import {
+  CONTRAST_COOKIE,
+  FONT_SCALE_COOKIE,
+  MOTION_COOKIE,
+  normalizeContrast,
+  normalizeFontScale,
+  normalizeMotion,
+  type DevicePreferences,
+} from './device-preferences.ts'
 
 export async function readDevicePreferences(): Promise<DevicePreferences> {
   const jar = await cookies()
-  return { contrast: normalizeContrast(jar.get(CONTRAST_COOKIE)?.value), motion: normalizeMotion(jar.get(MOTION_COOKIE)?.value) }
+  return {
+    contrast: normalizeContrast(jar.get(CONTRAST_COOKIE)?.value),
+    motion: normalizeMotion(jar.get(MOTION_COOKIE)?.value),
+    fontScale: normalizeFontScale(jar.get(FONT_SCALE_COOKIE)?.value),
+  }
 }

@@ -85,6 +85,12 @@
   }
 }
 
+/* 글자 크기(10d-4) — 루트의 글자 크기 비율. rem 으로 잰 글자 · 간격(Tailwind · 편집기 CSS)이 함께 커진다. 100 은 브라우저의 기본 그대로. */
+:root[data-font-scale="90"] { font-size: 90%; }
+:root[data-font-scale="110"] { font-size: 110%; }
+:root[data-font-scale="125"] { font-size: 125%; }
+:root[data-font-scale="150"] { font-size: 150%; }
+
 /*
  * 움직임 줄이기 — 전이를 끄고 · 애니메이션을 한 번에 끝내고 · 부드러운 스크롤을 바로 옮기기로(스크립트가 굴리는 곳은 `reducesMotion`).
  * ⚠ 전이는 **끈다**(`transition: none`) — 길이만 줄이면(`transition-duration: 0.01ms`) 안 된다: `transition-property` 의 기본값이 `all` 이라
