@@ -947,7 +947,8 @@ span.blk-equation {
  * 정본이 정한 것: 텍스트 9색 + 배경 9색 + default. `default_background` 는
  * **존재하지 않는다** — 배경이 없는 상태라서 값이 불필요할 뿐이다.
  * 인라인 색(`.blk-color`)과 블록 색(`[data-color]`)이 같은 팔레트를 쓴다.
- * 글자색 9개는 변수다(`--block-text-<색>` · 10d-5) — 고대비가 그 값을 바꿔 끼운다(아래 "블록 색의 고대비 팔레트").
+ * 글자색 9개는 변수다(`--block-text-<색>` · 10d-5) — 어두운 테마(10d-6 · 아래 `dark` 변형) · 고대비(아래 "블록 색의 고대비 팔레트")가
+ * 그 값을 바꿔 끼운다.
  */
 :root {
   --block-text-gray: #787774;
@@ -1044,6 +1045,17 @@ span.blk-equation {
       --code-deletion-bg: #67060c;
     }
     .blk-to_do .blk-checkbox { accent-color: #ededed; }
+
+    /* 글자색 9개 — 노션의 어두운 값(배경 9색과 같은 출처). 어두운 바탕과 4.5:1 이상(10d-6 · `block-color-palette.test.ts`). */
+    --block-text-gray: #9b9b9b;
+    --block-text-brown: #ba856f;
+    --block-text-orange: #c77d48;
+    --block-text-yellow: #ca984d;
+    --block-text-green: #529e72;
+    --block-text-blue: #5e87c9;
+    --block-text-purple: #9d68d3;
+    --block-text-pink: #d15796;
+    --block-text-red: #df5452;
 
     .blk-color[data-color='gray_background'],   [data-color='gray_background']   { background: #2f2f2f; }
     .blk-color[data-color='brown_background'],  [data-color='brown_background']  { background: #4a3228; }

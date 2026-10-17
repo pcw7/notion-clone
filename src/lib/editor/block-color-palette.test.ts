@@ -8,6 +8,8 @@
  *   ④ ★ 고대비 — 화면 바탕과 7:1 이상(밝게 · 어둡게) · 같은 테마의 배경 9색 위에서도 4.5:1 이상
  *   ⑤ 배경 9색은 기본 글자와 7:1 이상(고대비에서 바꾸지 않는 까닭)
  *   ⑥ 편집기 CSS 는 `globals.css` 만 싣는다 — 따로 import 하면 우리 변형(`dark` · `contrast-high`)을 모른 채 컴파일된다
+ *   ⑦ 어두운 테마의 표준 세트(10d-6) — 어두운 바탕과 4.5:1 이상(AA). 밝은 테마의 값을 그대로 쓰면 4.3:1 인 색이 있다
+ *   ⑧ 고대비 세트는 표준 세트들보다 뒤에 선언한다 — 변형이 `:where()` 라 특이도가 같아 파일의 뒤가 이긴다
  */
 import assert from 'node:assert/strict'
 import { readdirSync, readFileSync } from 'node:fs'
@@ -59,6 +61,7 @@ const editor = declarations('editor.css')
 const globals = declarations('globals.css')
 
 const STANDARD = ':root'
+const STANDARD_DARK = ':root > @variant dark'
 const HIGH_LIGHT = ':root > @variant contrast-high'
 const HIGH_DARK = ':root > @variant contrast-high > @variant dark'
 
@@ -96,8 +99,8 @@ test('② 블록 글자색 9개는 변수를 칠한다 — 다른 곳에서 색�
   }
 })
 
-test('③ 세 세트(표준 · 고대비 밝게 · 고대비 어둡게)가 9색을 모두 갖는다', () => {
-  for (const path of [STANDARD, HIGH_LIGHT, HIGH_DARK]) {
+test('③ 네 세트(표준 밝게 · 표준 어둡게 · 고대비 밝게 · 고대비 어둡게)가 9색을 모두 갖는다', () => {
+  for (const path of [STANDARD, STANDARD_DARK, HIGH_LIGHT, HIGH_DARK]) {
     const palette = textPalette(path)
     assert.deepEqual([...palette.keys()].sort(), [...TEXT_COLORS].sort(), path)
     for (const [c, value] of palette) assert.match(value, HEX, `${path} ${c}`)
@@ -135,4 +138,22 @@ test('⑥ 편집기 CSS 는 globals.css 만 싣는다 — 따로 import 하면 �
     .filter((f) => /(^|\n)\s*(@?import)\s+['"][^'"]*editor\.css['"]/.test(readFileSync(join(src, f), 'utf8')))
     .map((f) => f.replaceAll('\\', '/'))
   assert.deepEqual(importers, ['app/globals.css'])
+})
+
+test('⑦ 어두운 테마의 표준 세트 — 어두운 바탕과 4.5:1 이상(AA)', () => {
+  const page = rootVar('--background', true)
+  const failures = [...textPalette(STANDARD_DARK)]
+    .map(([c, value]) => [c, value, contrast(value, page)] as const)
+    .filter(([, , ratio]) => ratio < 4.5)
+    .map(([c, value, ratio]) => `${c} ${value} — ${ratio.toFixed(2)}:1`)
+  assert.deepEqual(failures, [])
+  // 밝은 테마의 값을 그대로 쓰면 못 미친다 — 그래서 따로 둔다
+  const light = textPalette(STANDARD)
+  assert.ok([...light.values()].some((value) => contrast(value, page) < 4.5))
+})
+
+test('⑧ 고대비 세트는 표준 세트들보다 뒤에 선언한다 — 특이도가 같아(`:where`) 파일의 뒤가 이긴다', () => {
+  const at = (path: string) => editor.flatMap((d, i) => (d.path === path && d.prop.startsWith('--block-text-') ? [i] : []))
+  const lastStandard = Math.max(...at(STANDARD), ...at(STANDARD_DARK))
+  assert.ok(Math.min(...at(HIGH_LIGHT), ...at(HIGH_DARK)) > lastStandard, '고대비 블록이 표준 · 어두운 테마의 선언보다 앞에 있다')
 })
