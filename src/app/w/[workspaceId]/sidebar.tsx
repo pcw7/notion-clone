@@ -139,6 +139,12 @@ export function Sidebar({
 }) {
   const router = useRouter()
   const pathname = usePathname()
+  /**
+   * 좁은 화면의 서랍(10j-1 · F-12-12) — **연 주소**를 기억한다. 화면을 옮기면 주소가 달라져 저절로 닫힌다(효과 안의 setState 가 없다).
+   * 넓은 화면에서는 쓰지 않는다(단추가 `md` 이상에서 숨는다).
+   */
+  const [drawerOpenAt, setDrawerOpenAt] = useState<string | null>(null)
+  const drawerOpen = drawerOpenAt === pathname
 
   /**
    * `/w/{ws}/{pageId}` · `/w/{ws}/db/{databaseId}` 에서 현재 노드를 읽는다. 레이아웃은
@@ -192,6 +198,8 @@ export function Sidebar({
         event.preventDefault()
         toggleSidebar()
       }
+      // 좁은 화면의 서랍 — Esc 로 닫는다(10j-1)
+      if (event.key === 'Escape') setDrawerOpenAt(null)
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
@@ -278,9 +286,34 @@ export function Sidebar({
   // teamspace 를 가졌거나 만들 수 있으면 섹션을 세운다. 둘 다 아니면(게스트) 사이드바는 전과 같다.
   const showTeamspaces = teamspaces.length > 0 || canCreateTeamspace || canBrowseTeamspaces
 
-  if (collapsed) {
+  // 좁은 화면(md 미만)의 서랍 단추 · 덮인 곳(10j-1 · F-12-12) — 넓은 화면에서는 숨는다
+  const drawerControls = (
+    <>
+      <button
+        type="button"
+        onClick={() => setDrawerOpenAt(drawerOpen ? null : pathname)}
+        aria-label={drawerOpen ? '사이드바 닫기' : '사이드바 열기'}
+        aria-expanded={drawerOpen}
+        data-testid="sidebar-drawer-toggle"
+        className="fixed left-2 top-2 z-50 rounded border border-neutral-200 bg-white px-2 py-1 text-sm text-neutral-600 shadow-sm md:hidden dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300"
+      >
+        ☰
+      </button>
+      {drawerOpen && (
+        <div aria-hidden data-testid="sidebar-backdrop" onClick={() => setDrawerOpenAt(null)} className="fixed inset-0 z-30 bg-black/30 md:hidden" />
+      )}
+    </>
+  )
+  // 서랍으로 열린 사이드바는 좁은 화면에서 덮개로 선다 · 넓은 화면에서는 늘 그 자리(접혔으면 넓은 화면에서 숨는다 — 레일이 선다)
+  const navPlacement = `${drawerOpen ? 'flex' : 'hidden'} fixed inset-y-0 left-0 z-40 w-72 max-w-[85vw] overflow-y-auto bg-white pt-12 shadow-xl dark:bg-neutral-950 ${
+    collapsed ? 'md:hidden' : 'md:static md:z-auto md:flex md:w-64 md:max-w-none md:overflow-visible md:bg-transparent md:pt-3 md:shadow-none'
+  }`
+
+  if (collapsed && !drawerOpen) {
     return (
-      <div className="flex flex-none flex-col border-r border-neutral-200 p-2 dark:border-neutral-800">
+      <>
+      {drawerControls}
+      <div className="hidden flex-none flex-col border-r border-neutral-200 p-2 md:flex dark:border-neutral-800">
         <button
           type="button"
           onClick={toggleSidebar}
@@ -291,13 +324,18 @@ export function Sidebar({
           »
         </button>
       </div>
+      </>
     )
   }
 
   return (
+    <>
+    {drawerControls}
     <nav
       aria-label="페이지 트리"
-      className="flex w-64 flex-none flex-col gap-2 border-r border-neutral-200 p-3 dark:border-neutral-800"
+      data-testid="sidebar-nav"
+      data-drawer={drawerOpen ? 'open' : undefined}
+      className={`${navPlacement} flex-none flex-col gap-2 border-r border-neutral-200 p-3 dark:border-neutral-800`}
     >
       <div className="flex items-center justify-between">
         {/* 이름을 누르면 스위처가 열린다(8j-1 · F-14-09). 홈은 아래의 "홈"이다. */}
@@ -638,6 +676,7 @@ export function Sidebar({
 
       <TrashPanel workspaceId={workspaceId} entries={trash} />
     </nav>
+    </>
   )
 }
 

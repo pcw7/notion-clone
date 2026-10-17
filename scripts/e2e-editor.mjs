@@ -17886,6 +17886,71 @@ async function main() {
         await noticeState())
     }
 
+    if (sectionIf('좁은 화면 — 사이드바 서랍 (10j-1 · F-12-12)')) {
+      // 폰 폭(390)에서 — 사이드바는 숨고 "☰" 가 선다 · 누르면 덮개로 서고 뒤가 어두워진다 · 사이드바의 페이지를 누르면 옮기며 닫힌다 · Esc ·
+      // 덮인 곳을 누르면 닫힌다. 넓은 화면은 그대로(☰ 가 없고 사이드바가 그 자리). 끝에 폭을 되돌린다.
+      const stamp = Date.now()
+      const newPage = async (title) => (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
+        method: 'POST', headers: authed, body: JSON.stringify({ title }),
+      })).json()).page.id
+      const pageA = await newPage(`서랍 가 ${stamp}`)
+      const pageB = await newPage(`서랍 나 ${stamp}`)
+      const NAV = '[data-testid="sidebar-nav"]'
+      const TOGGLE = '[data-testid="sidebar-drawer-toggle"]'
+      const BACKDROP = '[data-testid="sidebar-backdrop"]'
+      const shown = (sel) => `(() => {
+        const el = document.querySelector(${JSON.stringify(sel)})
+        if (!el) return false
+        const r = el.getBoundingClientRect()
+        return getComputedStyle(el).display !== 'none' && r.width > 0 && r.height > 0
+      })()`
+      const navState = () => evaluate(`JSON.stringify({ nav: ${shown(NAV)}, toggle: ${shown(TOGGLE)}, backdrop: ${shown(BACKDROP)},
+        position: document.querySelector(${JSON.stringify(NAV)}) ? getComputedStyle(document.querySelector(${JSON.stringify(NAV)})).position : null,
+        main: Math.round(document.querySelector('main')?.getBoundingClientRect().width ?? 0), path: location.pathname, width: innerWidth,
+        scrollWidth: document.documentElement.scrollWidth, clientWidth: document.documentElement.clientWidth })`)
+      // 가로 스크롤이 없다 — 문서 폭이 보이는 폭을 넘지 않는다
+      const noSideScroll = `document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1`
+      // 살아나기 전의 클릭은 버려진다 — 서랍이 열릴 때까지 다시 누른다
+      const openDrawer = async () => {
+        for (let i = 0; i < 8 && !(await evaluate(shown(NAV))); i += 1) {
+          await clickSelector(TOGGLE)
+          await waitFor(shown(NAV), 2000)
+        }
+        return evaluate(shown(NAV))
+      }
+      try {
+        await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: false })
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${pageA}` })
+        await waitFor(`document.readyState === 'complete' && !!document.querySelector('.blk-editor')`, 15000)
+        check('★ 좁은 화면 — 사이드바는 숨고 ☰ 가 선다 · 본문이 화면 폭을 쓴다 · 가로 스크롤이 없다(머리의 단추가 감긴다)',
+          await waitFor(`!${shown(NAV)} && ${shown(TOGGLE)} && (document.querySelector('main')?.getBoundingClientRect().width ?? 0) > 330 && ${noSideScroll}`, 5000),
+          await navState())
+        const opened = await openDrawer()
+        check('★ ☰ 를 누르면 덮개로 선다 — 뒤가 어두워진다',
+          opened && (await evaluate(shown(BACKDROP))) && JSON.parse(await navState()).position === 'fixed', await navState())
+        await clickSelector(`${NAV} a[href="/w/${workspaceId}/${pageB}"]`)
+        check('★ 사이드바의 페이지를 누르면 옮기고 서랍은 닫힌다',
+          await waitFor(`location.pathname.endsWith(${JSON.stringify(pageB)}) && !${shown(NAV)} && !${shown(BACKDROP)}`, 10000), await navState())
+        const reopened = await openDrawer()
+        await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+        await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+        check('Esc 로 닫힌다', reopened && (await waitFor(`!${shown(NAV)}`, 3000)), await navState())
+        const third = await openDrawer()
+        // 서랍(폭 18rem) 밖 — 보이는 폭의 오른쪽 끝 안쪽
+        await click((await evaluate('document.documentElement.clientWidth')) - 20, 420)
+        check('덮인 곳(서랍 밖)을 누르면 닫힌다', third && (await waitFor(`!${shown(NAV)} && !${shown(BACKDROP)}`, 3000)), await navState())
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
+        check('홈도 가로 스크롤이 없다', await waitFor(`document.readyState === 'complete' && !!document.querySelector('[data-testid="workspace-title"]') && ${noSideScroll}`, 15000),
+          await navState())
+      } finally {
+        await send('Emulation.clearDeviceMetricsOverride')
+      }
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${pageA}` })
+      check('넓은 화면은 그대로 — ☰ 가 없고 사이드바가 그 자리(덮개가 아니다)',
+        await waitFor(`document.readyState === 'complete' && ${shown(NAV)} && !${shown(TOGGLE)}
+          && getComputedStyle(document.querySelector(${JSON.stringify(NAV)})).position === 'static'`, 15000), await navState())
+    }
+
     if (sectionIf('폼 — 서버 라우트 (7a-1 · F-13-01)')) {
       // 폼 뷰의 라우트 — 만들기(첫 질문은 제목) · 질문 바꾸기 · 설정 · 공개(토큰) · 거부 코드 · 표 화면의 탭에 선다(7a-3 부터 — 그 탭은
       // 편집 화면이다).
