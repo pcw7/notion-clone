@@ -17857,6 +17857,35 @@ async function main() {
         JSON.stringify({ status: res.status, noAccess: html.includes('data-testid="no-access"'), leaked: html.includes(secret), title: /<title>[^<]*<\/title>/.exec(html)?.[0] ?? null }))
     }
 
+    if (sectionIf('지원 브라우저 안내 (10i-1 · F-12-15)')) {
+      // 기능 감지 — 이 브라우저(지원 범위)에서는 안내가 없다. CSS 기능 감지가 못 미친다고 답하게 흉내 내면(문서마다 먼저 도는 스크립트) 첫 HTML
+      // 의 스크립트가 화면 위에 안내 띠를 세운다(무엇이 없는지 · role=alert) · 앱은 그대로 선다. 끝에 흉내를 걷는다.
+      const notice = `document.getElementById('nc-unsupported')`
+      const noticeState = () => evaluate(`JSON.stringify({ notice: !!${notice}, missing: ${notice}?.getAttribute('data-missing') ?? null,
+        role: ${notice}?.getAttribute('role') ?? null, text: ${notice}?.textContent ?? null, app: !!document.querySelector('[data-testid="sidebar-home"]') })`)
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
+      await waitFor(`document.readyState === 'complete' && !!document.querySelector('[data-testid="sidebar-home"]')`, 15000)
+      check('지원 범위의 브라우저에는 안내가 없다', !(await evaluate(`!!${notice}`)), await noticeState())
+      const { identifier } = await send('Page.addScriptToEvaluateOnNewDocument', { source: 'CSS.supports = function () { return false }' })
+      try {
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
+        const shown = await waitFor(`document.readyState === 'complete' && !!${notice}`, 15000)
+        const state = JSON.parse(await noticeState())
+        check('★ 기능이 못 미치면 화면 위에 안내 띠 — 무엇이 없는지 · role=alert · 지원 범위를 말한다 · 앱은 막지 않는다',
+          shown && state.missing === 'css-color-mix,css-where' && state.role === 'alert' && state.text.includes('Safari 16.4') && state.app,
+          JSON.stringify(state))
+        await send('Network.deleteCookies', { name: 'nc_session', domain: 'localhost', path: '/' })
+        await send('Page.navigate', { url: `${BASE}/login` })
+        check('로그인 화면에도 선다(루트 레이아웃 — 모든 화면)', await waitFor(`document.readyState === 'complete' && !!${notice}`, 15000), await noticeState())
+      } finally {
+        await send('Page.removeScriptToEvaluateOnNewDocument', { identifier }).catch(() => undefined)
+        await send('Network.setCookie', { name: 'nc_session', value: session, domain: 'localhost', path: '/', httpOnly: true })
+      }
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
+      check('흉내를 걷으면 다시 없다', await waitFor(`document.readyState === 'complete' && !${notice} && !!document.querySelector('[data-testid="sidebar-home"]')`, 15000),
+        await noticeState())
+    }
+
     if (sectionIf('폼 — 서버 라우트 (7a-1 · F-13-01)')) {
       // 폼 뷰의 라우트 — 만들기(첫 질문은 제목) · 질문 바꾸기 · 설정 · 공개(토큰) · 거부 코드 · 표 화면의 탭에 선다(7a-3 부터 — 그 탭은
       // 편집 화면이다).

@@ -4747,6 +4747,19 @@ CREATE TABLE external_sync_source (            -- 구 external_binding. 정본 �
 > `error`** 로 그 실패를 한곳에서 본다(각 `import()` 자리를 고치지 않는다). **이 앱의 정적 자산만**(같은 출처 · `/_next/static/`) · **30초에
 > 한 번**(여러 청크가 한꺼번에 실패해도 한 번 묻는다). 배포 뒤 옛 청크가 지워졌으면(404) 다시 보이기를 기다리지 않고 곧바로 띠가 선다
 > ⑦ 오래된 청크를 남겨 두는 일(CDN 유예) · 요청 스키마의 호환 검사는 다음
+**[보강] 지원 브라우저 — 기능 감지** ⟨플랫폼 잔여 10i-1조각 · F-12-15⟩
+
+> 12 F-12-15 *"어떤 OS · 브라우저 버전에서 동작한다고 보증하는지"* · 클론 대안 *"런타임 체크는 caniuse 대신 기능 감지 3~4개로 축약 · 플랫폼
+> 매트릭스는 상수 파일 1개로 시작"*.
+>
+> ① **지원 범위** — Next 16 의 기본 대상(Chrome · Edge 111+ · Firefox 111+ · Safari 16.4+)과 Tailwind v4 가 내는 CSS(`oklch` · `color-mix` ·
+> `:where`)가 겹치는 곳 — 안내에는 "Chrome · Edge 111 · Firefox 113 · Safari 16.4 이상" 으로 적는다(Firefox 의 `color-mix` 가 113)
+> ② **버전 문자열(UA)을 읽지 않고 기능을 본다** — 다섯: `structuredClone` · `Array.prototype.at` · `Object.hasOwn` · CSS `color-mix()` · CSS
+> `:where()`(`platform/browser-support.ts` 의 표 하나). 하나라도 없으면 화면 위에 안내 띠(`role="alert"` · 무엇이 없는지 `data-missing`)를
+> 세운다. **앱을 막지 않는다**(될 수도 있다 — 쓰는 사람이 고른다)
+> ③ **첫 HTML 의 인라인 스크립트**(ES5 · 루트 레이아웃의 `<head>`) — 앱의 JS 가 돌기 전에, 그 JS 가 못 도는 브라우저에서도 선다. 모든 화면
+> (공개 화면 · 로그인 포함). 서버로 아무것도 보내지 않는다(어느 브라우저가 못 미쳤는지 남기지 않는다)
+> ④ `isAvailable(featureKey)` 게이팅(플랫폼마다 빠지는 기능)은 플랫폼이 둘이 될 때 — 지금은 웹 하나다
 
 ### 3.11 알고리즘 정본
 
