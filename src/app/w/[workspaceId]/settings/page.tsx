@@ -12,7 +12,7 @@
  */
 
 import type { Metadata } from 'next'
-import Link from 'next/link'
+import Link from '@/app/link'
 
 import { requirePageSession } from '@/lib/auth/page-session'
 import { editorsNote, settingDefinition, visibleSettingGroups } from '@/lib/settings/registry'

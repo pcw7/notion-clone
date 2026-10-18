@@ -47,7 +47,7 @@
  * 것이라 그릇의 권한 그대로다.
  */
 
-import Link from 'next/link'
+import Link from '@/app/link'
 import { notFound } from 'next/navigation'
 
 import { isUuid } from '@/lib/ids'

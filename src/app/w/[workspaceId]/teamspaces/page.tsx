@@ -11,7 +11,7 @@
  */
 
 import type { Metadata } from 'next'
-import Link from 'next/link'
+import Link from '@/app/link'
 
 import { requirePageSession } from '@/lib/auth/page-session'
 import { listAllTeamspaces, listArchivedTeamspaces, listBrowsableTeamspaces } from '@/lib/workspace/teamspace'

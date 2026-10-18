@@ -21,7 +21,7 @@
  */
 
 import { rowOpenHref } from '@/lib/database/open-pages'
-import Link from 'next/link'
+import Link from '@/app/link'
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 
 import type { DatabaseAccess } from '@/lib/database/database'

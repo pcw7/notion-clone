@@ -13,7 +13,7 @@
  * 흐리게 남는다(머리가 흔들리지 않게).
  */
 
-import Link from 'next/link'
+import Link from '@/app/link'
 import { useRouter } from 'next/navigation'
 import { useEffect, type ReactNode } from 'react'
 

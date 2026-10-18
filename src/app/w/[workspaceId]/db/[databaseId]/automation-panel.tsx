@@ -14,7 +14,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react'
-import Link from 'next/link'
+import Link from '@/app/link'
 
 import type { OperatorCatalogEntry } from '@/lib/database/operator-catalog'
 import type { PropertySummary } from '@/lib/database/property'

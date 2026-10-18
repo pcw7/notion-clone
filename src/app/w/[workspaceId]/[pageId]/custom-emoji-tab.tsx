@@ -12,7 +12,7 @@
  * 고른다.
  */
 
-import Link from 'next/link'
+import Link from '@/app/link'
 import { useEffect, useMemo, useState } from 'react'
 
 import { customEmojiImagePath, type CustomEmojiIcon } from '@/lib/block/page-icon'

@@ -16,7 +16,7 @@
  * 최상위의 데이터베이스(7c-4)는 페이지 목록 아래 따로 선다 — 여는 길이 다르다(`/db/{id}`).
  */
 
-import Link from 'next/link'
+import Link from '@/app/link'
 import { notFound } from 'next/navigation'
 
 import { requirePageSession } from '@/lib/auth/page-session'

@@ -28,7 +28,7 @@
  */
 
 import { useCallback, useRef, useState } from 'react'
-import Link from 'next/link'
+import Link from '@/app/link'
 
 import type { PageIcon } from '@/lib/block/page-icon'
 import { accessInboxLine, inboxHref } from '../access-request-messages'

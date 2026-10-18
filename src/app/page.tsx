@@ -1,5 +1,5 @@
 import type { Metadata } from 'next'
-import Link from 'next/link'
+import Link from '@/app/link'
 import { redirect } from 'next/navigation'
 
 import { getCurrentUser } from '@/lib/auth/current-user'

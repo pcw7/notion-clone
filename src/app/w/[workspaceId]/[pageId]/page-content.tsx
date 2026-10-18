@@ -8,7 +8,7 @@
  * 화면 전체를 404 로 만들지 않는다). 세션 · 워크스페이스 밖의 사람 · id 해석은 부르는 쪽(`page.tsx` · 데이터베이스 화면)이 한다.
  */
 
-import Link from 'next/link'
+import Link from '@/app/link'
 import { notFound } from 'next/navigation'
 
 import * as Y from 'yjs'

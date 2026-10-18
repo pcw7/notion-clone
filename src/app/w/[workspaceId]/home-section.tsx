@@ -9,7 +9,7 @@
  * 단다(`aria-labelledby`) · 사이드바의 섹션을 찾는 셀렉터와 겹치지 않게.
  */
 
-import Link from 'next/link'
+import Link from '@/app/link'
 import { useId, useState } from 'react'
 
 import { HOME_SECTION_LIMIT, homeItemHref, visibleItems, type HomeSection as Section } from '@/lib/nav/home-sections'
