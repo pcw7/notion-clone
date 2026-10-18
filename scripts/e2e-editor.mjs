@@ -199,6 +199,11 @@ function findBrowser() {
 let serverOutput = ''
 /** 서버가 찍은 오류(⨯)마다 그때 돌던 절. */
 const serverErrorSections = []
+/**
+ * 브라우저가 최근에 취소한 요청(종류 · 경로 · 시각) — 서버 오류에 직전 5초의 것을 붙인다. "The destination stream closed early" 는
+ * 화면 렌더가 끊긴 것인데 어느 요청인지 말하지 않는다(#376 의 갤러리 2f-1 — 떠나는 순간 진행 중인 요청이 없었는데도 났다).
+ */
+const recentAborts = []
 
 function startServer() {
   if (!existsSync(join(ROOT, '.next', 'BUILD_ID'))) {
@@ -218,7 +223,9 @@ function startServer() {
     const text = chunk.toString('utf8')
     serverOutput += text
     for (const line of text.split('\n')) {
-      if (line.includes('⨯')) serverErrorSections.push(`[${currentSection} · 마지막 검사: ${results.at(-1)?.name ?? '-'}] ${line.trim()}`)
+      if (!line.includes('⨯')) continue
+      const aborts = recentAborts.filter((a) => Date.now() - a.at < 5000).map((a) => `${a.type} ${a.path} (${Date.now() - a.at}ms 전)`)
+      serverErrorSections.push(`[${currentSection} · 마지막 검사: ${results.at(-1)?.name ?? '-'}] ${line.trim()}${aborts.length > 0 ? ` — 직전에 취소된 요청: ${aborts.join(' · ')}` : ''}`)
     }
   }
   server.stdout.on('data', collect)
@@ -311,6 +318,12 @@ function connect(url) {
   // 열린 SSE(표 변경 알림 · 2k-2) — 이게 열려 있으면 다른 곳의 쓰기가 **조금 뒤에** 이 페이지의 다시 읽기(때로 `router.refresh()`)를
   // 시작한다. 진행 중인 요청만 기다리면 그 뒤에 시작될 것을 놓친다 — 떠나기 전에 요청이 잠시 조용할 때까지 기다린다(아래 `send`).
   const eventStreams = new Set()
+  // 받았지만 아직 다시 읽기가 시작되지 않은 "바뀌었다"(SSE 의 `changed`) — 받은 시각. 화면은 그 신호에 다시 읽는데(보드 · 갤러리 ·
+  // 캘린더는 `router.refresh()`) 바쁘면 미루고 느린 판에서는 늦게 시작한다. 600ms 조용함만 보면 그보다 늦게 시작한 다시 읽기를 떠나며
+  // 끊는다("The destination stream closed early" — 갤러리 2f-1 의 새 카드 뒤 검색 이동 · CPU 6배에서 재현 · #376 판).
+  let changedAt = null
+  // 요청마다 종류 · 경로 — 취소로 끝나면 `recentAborts` 에 남긴다(서버 오류의 단서)
+  const requests = new Map()
   // 붙잡힌 요청(`Fetch.enable` 의 패턴에 걸린 것) — 검사가 놓아 줄 때까지 서버에 닿지 않는다(표 변경 알림의 구독 전 틈 · #250)
   const paused = []
   ws.onmessage = (event) => {
@@ -319,9 +332,21 @@ function connect(url) {
       pending.get(msg.id)(msg)
       pending.delete(msg.id)
     } else if (msg.method === 'Network.requestWillBeSent') {
-      if (msg.params.type === 'Fetch' || msg.params.type === 'XHR') inflight.add(msg.params.requestId)
+      requests.set(msg.params.requestId, { type: msg.params.type, path: String(msg.params.request.url).replace(/^https?:\/\/[^/]+/, '').slice(0, 160) })
+      if (msg.params.type === 'Fetch' || msg.params.type === 'XHR') {
+        inflight.add(msg.params.requestId)
+        changedAt = null // 신호 뒤의 다시 읽기가 시작됐다 — 이제 진행 중인 요청으로 기다린다
+      }
       if (msg.params.type === 'EventSource') eventStreams.add(msg.params.requestId)
+    } else if (msg.method === 'Network.eventSourceMessageReceived') {
+      if (msg.params.eventName === 'changed') changedAt = Date.now()
     } else if (msg.method === 'Network.loadingFinished' || msg.method === 'Network.loadingFailed') {
+      const request = requests.get(msg.params.requestId)
+      requests.delete(msg.params.requestId)
+      if (msg.method === 'Network.loadingFailed' && msg.params.canceled && request !== undefined) {
+        recentAborts.push({ ...request, at: Date.now() })
+        if (recentAborts.length > 12) recentAborts.shift()
+      }
       inflight.delete(msg.params.requestId)
       eventStreams.delete(msg.params.requestId)
     } else if (msg.method === 'Fetch.requestPaused') {
@@ -343,17 +368,25 @@ function connect(url) {
     // 새로고침도 떠나는 것이다 — 보드의 "+ 카드" 뒤 곧바로 `Page.reload` 하던 검사가 알림이 시작한 `router.refresh()` 를 끊어 ⨯ 를 찍었다
     // (전체 판 #237 · 4c-1). 기다림을 `Page.navigate` 에만 걸어 두었었다.
     if (method === 'Page.navigate' || method === 'Page.reload') {
-      for (let waited = 0; inflight.size > 0 && waited < 3000; waited += 50) await sleep(50)
-      // 표 변경 알림이 열려 있으면 — 방금의 쓰기가 일으킬 다시 읽기가 시작될 틈(서버가 250ms 모은다)까지 조용하기를 기다린다
+      const settle = async () => {
+        // 받은 "바뀌었다"의 다시 읽기가 시작되기를(신호 뒤 3초까지) — 시작되면 진행 중인 요청으로 끝나기를 기다린다
+        while (changedAt !== null && Date.now() - changedAt < 3000) await sleep(50)
+        changedAt = null
+        for (let waited = 0; inflight.size > 0 && waited < 3000; waited += 50) await sleep(50)
+      }
+      await settle()
+      // 표 변경 알림이 열려 있으면 — 방금의 쓰기가 일으킬 다시 읽기가 시작될 틈(서버가 250ms 모은다)까지 조용하기를 기다린다. 그 사이에
+      // 온 신호도 본다(조용함을 기다리는 도중에 온 "바뀌었다"의 다시 읽기는 그 뒤에 시작된다)
       if (eventStreams.size > 0) {
         for (let round = 0; round < 4; round += 1) {
           await sleep(600)
-          if (inflight.size === 0) break
-          for (let waited = 0; inflight.size > 0 && waited < 3000; waited += 50) await sleep(50)
+          if (inflight.size === 0 && changedAt === null) break
+          await settle()
         }
       }
       inflight.clear()
       eventStreams.clear()
+      changedAt = null
     }
     return rawSend(method, params)
   }
@@ -1035,6 +1068,13 @@ async function main() {
       }
       return false
     }
+    /**
+     * 그 요소에 React 가 붙기를(하이드레이션 — DOM 노드의 `__reactProps$…` 키) 기다린다. 서버가 그린 HTML 은 먼저 서고 처리기는 나중에
+     * 붙는다 — 그 전의 사건은 버려진다. 다시 하면 되는 클릭과 달리 **파일 넣기는 다시 해도 소용없다** — 같은 파일이 이미 들어 있으면
+     * change 가 다시 오지 않는다(커스텀 이모지 7c-2b — #376 판 · 처리기가 받지 못해 입력에 파일이 남았다).
+     */
+    const waitHydrated = (sel, ms = 10000) =>
+      waitFor(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); return !!e && Object.keys(e).some((k) => k.startsWith('__reactProps')) })()`, ms)
     // 잠금 버튼은 누를 때의 글자대로 잠그거나 푼다(PUT · DELETE — 둘 다 멱등). 붙기 전의 클릭은 사라지므로 될 때까지 다시 누르되,
     // **글자가 바라는 쪽일 때만** 누른다 — 앞선 클릭의 새로고침이 늦게 와 글자가 막 바뀐 뒤에 누르면 거꾸로 돌린다(1c-2 의 전체 e2e
     // 에서 겪었다 — "잠김"이 선 채로 서버는 풀려 있었다).
@@ -12920,13 +12960,16 @@ async function main() {
 
       await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
       await waitFor(`!!document.querySelector('[data-testid="db-view-add"]')`, 15000)
-      await clickOn('[data-testid="db-view-add"]')
-      await waitFor(`!!document.querySelector('[data-testid="db-view-add-gallery"]')`, 3000)
-      await clickOn('[data-testid="db-view-add-gallery"]')
+      // 메뉴가 선 것 · 고른 것을 확인하며 누른다 — 막 그린 화면의 클릭은 버려질 수 있다. 버려지면 갤러리 뷰가 생기지 않고, 아래의
+      // 단계들이 주소의 `v`(null)로 이어 가 서버 오류까지 낸다(#376 의 홀로 판 · `?v=null`).
+      const menuOpened = await clickUntil('[data-testid="db-view-add"]', `!!document.querySelector('[data-testid="db-view-add-gallery"]')`)
+      const optionClicked = await clickUntil('[data-testid="db-view-add-gallery"]',
+        `!document.querySelector('[data-testid="db-view-add-gallery"]') || !!document.querySelector('[data-testid="db-gallery"]')`)
       const cardTitles = () => evaluate(`[...document.querySelectorAll('[data-testid="db-gallery-card-title"]')].map((e) => e.textContent).join('|')`)
       check('★ 뷰 추가의 "갤러리" — 카드 그리드가 서고 부모만 그린다(자식 카드는 없다)',
         await waitFor(`!!document.querySelector('[data-testid="db-gallery"]') && [...document.querySelectorAll('[data-testid="db-gallery-card-title"]')].map((e) => e.textContent).join('|') === '첫 카드|둘째 카드'`, 15000),
-        await cardTitles())
+        JSON.stringify({ cards: await cardTitles(), menuOpened, optionClicked, url: await evaluate('location.search'),
+          tabs: await evaluate(`document.querySelector('nav[aria-label="뷰"]')?.textContent?.slice(0, 200) ?? null`) }))
       // 첫 카드에는 하위 항목(자식 카드)의 배지도 붙는다 — 보이는 속성이다.
       check('카드에는 값이 있는 속성만 배지로 — 첫 카드는 10 · 기획 · 하위 항목, 둘째 카드는 없다',
         await evaluate(`(() => {
@@ -16191,10 +16234,19 @@ async function main() {
       check('★ 설정 → 이모지 — 패널 · 이모지 추가 단추',
         await waitFor(`!!document.querySelector('[data-testid="emoji-panel"]') && !!document.querySelector('[data-testid="emoji-add"]')`, 15000),
         String(await evaluate(`document.querySelector('[data-testid="settings-title"]')?.textContent ?? null`)))
+      // 패널은 서버가 그린 HTML 로 먼저 선다 — 살아나기 전에 넣은 파일의 change 는 받는 쪽이 없어 버려지고, 같은 파일을 다시 넣어도
+      // change 가 오지 않는다(갤러리 2f-1 뒤에 돌 때 떨어졌다 — 입력에 파일이 남아 있었다). 입력이 살아난 뒤에 넣는다.
+      check('전제 — 파일 입력이 살아났다(하이드레이션)', await waitHydrated('[data-testid="emoji-file-input"]'))
       await setFile(bigPng)
+      const bigBlocked = await waitFor(`/1MB/.test(document.querySelector('[data-testid="emoji-error"]')?.textContent ?? '')`, 5000)
       check('★ 1MB 를 넘는 그림은 올리기 전에 막는다 — 초안이 서지 않는다',
-        (await waitFor(`/1MB/.test(document.querySelector('[data-testid="emoji-error"]')?.textContent ?? '')`, 5000)) && !(await evaluate(`!!document.querySelector('[data-testid="emoji-draft"]')`)),
-        String(await evaluate(`document.querySelector('[data-testid="emoji-error"]')?.textContent ?? null`)))
+        bigBlocked && !(await evaluate(`!!document.querySelector('[data-testid="emoji-draft"]')`)),
+        // 처리기가 돌면 입력을 비운다(files 0) — 남아 있으면 처리기가 받지 못한 것이다
+        JSON.stringify(await evaluate(`({ error: document.querySelector('[data-testid="emoji-error"]')?.textContent ?? null,
+          draft: !!document.querySelector('[data-testid="emoji-draft"]'),
+          inputs: document.querySelectorAll('[data-testid="emoji-file-input"]').length,
+          files: document.querySelector('[data-testid="emoji-file-input"]')?.files?.length ?? null,
+          notice: document.querySelector('[data-testid="emoji-notice"]')?.textContent ?? null, url: location.search })`)))
       await setFile(goodPng)
       check('★ 그림을 고르면 이름을 파일 이름에서 제안한다(소문자 · 하이픈)',
         await waitFor(`document.querySelector('[data-testid="emoji-name-input"]')?.value === 'party-parrot'`, 5000),
@@ -16260,7 +16312,13 @@ async function main() {
       }
       await clickSelector('[data-testid="icon-tab-custom"]')
       check('다시 열면 지금 아이콘인 이모지가 표시된다',
-        await waitFor(`!!document.querySelector('${option}[data-current]')`, 8000))
+        await waitFor(`!!document.querySelector('${option}[data-current]')`, 8000),
+        // 떨어지면 무엇이 서 있었는지 — #376 의 전체 판에서 한 번 떨어졌고 홀로는 통과했다
+        JSON.stringify(await evaluate(`({ picker: !!document.querySelector('[data-testid="emoji-picker"]'),
+          panel: !!document.querySelector('[data-testid="icon-custom-panel"]'),
+          search: document.querySelector('[data-testid="custom-emoji-search"]')?.value ?? null,
+          options: [...document.querySelectorAll('[data-testid="custom-emoji-option"]')].map((b) => b.dataset.emojiId + (b.hasAttribute('data-current') ? '*' : '')).slice(0, 6),
+          icon: document.querySelector('[data-testid="page-icon"] [data-page-icon]')?.getAttribute('data-page-icon') ?? null })`)))
       await key('Escape')
 
       // ④ 지우기 — 한 번 더 묻는다
