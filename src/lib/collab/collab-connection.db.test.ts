@@ -17,6 +17,8 @@
  *      다시 붙는 대로 청한다(창을 기다리지 않는다)
  *   ⑨ **연결이 돌아왔다는 신호를 받으면 provider 의 다음 시도를 기다리지 않고 곧바로 다시 붙는다** — 그리고 **내린 연결은 다시
  *      붙지 않는다**(예약된 재시도가 소켓을 되살리지 않는다)
+ *   ⑩ **첫 연결을 기다리는 동안은 끊긴 것이 아니다**(`connecting` · F-12-16) — 붙으면 끝나고 다시 서지 않는다 · 첫 시도가 끊기면
+ *      시간을 기다리지 않고 끝난다 · 답이 없는 시도도 정한 시간이 지나면 끝나고 알린다
  *
  * 끊김은 소켓 클래스가 만든다 — `gate.offline` 이면 닫힌 포트로 붙는다. 서버 쪽 처리 순서는 커밋 신호를 붙잡아(`holdableFeed`) 멈춘다 —
  * 참여자 update 는 자기 seq 의 신호가 적용될 때까지 확인되지 않는다(`collab-server.ts` 머리말).
@@ -25,6 +27,7 @@
 import { test, describe, before, after, type TestContext } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
+import { createServer, type AddressInfo, type Socket } from 'node:net'
 
 import * as Y from 'yjs'
 import type { Transaction } from '@tiptap/pm/state'
@@ -47,6 +50,7 @@ import {
   rejectionAction,
   type CollabConnection,
   type CollabConnectionOptions,
+  type CollabSnapshot,
   type DiscardedDoc,
 } from './collab-connection.ts'
 import { collabDocumentName } from './collab-protocol.ts'
@@ -78,16 +82,17 @@ const DEAD_URL = 'ws://127.0.0.1:9'
 /** y-protocols 가 아닌 Hocuspocus 메시지 종류 — 서버의 update 확인. */
 const SYNC_STATUS = 8
 
-type Gate = { offline: boolean }
+/** `offline` 이면 닫힌 포트로(곧 끊긴다), `hang` 이 있으면 그 주소로(받기만 하고 답하지 않는 서버 — 시도가 끝나지 않는다). */
+type Gate = { offline: boolean; hang?: string }
 
 /** 받은 메시지를 세는 소켓 기록. */
 type Wire = { readonly sockets: WebSocket[]; readonly received: Uint8Array[]; readonly sent: Uint8Array[] }
 
-/** 이 사람의 쿠키 · 앱 Origin 을 싣는 소켓. `gate.offline` 이면 닫힌 포트로 붙는다. 주고받은 메시지를 `wire` 에 남긴다. */
+/** 이 사람의 쿠키 · 앱 Origin 을 싣는 소켓. `gate` 가 붙을 곳을 바꾼다. 주고받은 메시지를 `wire` 에 남긴다. */
 function socketFor(actor: Actor, gate: Gate, wire: Wire) {
   return class GatedSocket extends WebSocket {
     constructor(address: string | URL) {
-      super(gate.offline ? DEAD_URL : address, { headers: cookieOf(actor, { origin: APP_ORIGIN }) } as unknown as string[])
+      super(gate.offline ? DEAD_URL : (gate.hang ?? address), { headers: cookieOf(actor, { origin: APP_ORIGIN }) } as unknown as string[])
       wire.sockets.push(this)
       this.addEventListener('message', (event) => {
         if (event.data instanceof ArrayBuffer) wire.received.push(new Uint8Array(event.data))
@@ -99,6 +104,24 @@ function socketFor(actor: Actor, gate: Gate, wire: Wire) {
       super.send(data)
     }
   }
+}
+
+/** 연결을 받기만 하고 아무 답도 하지 않는 서버 — 소켓의 시도가 붙지도 끊기지도 않는다. */
+async function hangingServer(t: TestContext): Promise<string> {
+  const held = new Set<Socket>()
+  const server = createServer((socket) => {
+    held.add(socket)
+    socket.on('close', () => held.delete(socket))
+  })
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  t.after(
+    () =>
+      new Promise<void>((resolve) => {
+        for (const socket of held) socket.destroy()
+        server.close(() => resolve())
+      }),
+  )
+  return `ws://127.0.0.1:${(server.address() as AddressInfo).port}`
 }
 
 const includesText = (bytes: Uint8Array, text: string): boolean => Buffer.from(bytes).includes(Buffer.from(text, 'utf8'))
@@ -584,5 +607,61 @@ describe('⑨ 연결이 돌아오면', () => {
     // 예약된 시도가 지나갈 만큼 기다린다 — 되살아나면 소켓이 는다.
     await new Promise((resolve) => setTimeout(resolve, 4000))
     assert.equal(me.wire.sockets.length, sockets, '내린 연결이 다시 붙었다')
+  })
+})
+
+// ── ⑩ 첫 연결 ───────────────────────────────────────────────────────
+
+describe('⑩ 첫 연결을 기다리는 동안 (F-12-16)', () => {
+  test('★ 끊긴 것이 아니다 — 붙으면 끝나고, 그 뒤에 다시 붙는 동안은 끊긴 것이다(다시 서지 않는다)', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { workspaceId, owner, pageId } = await fixture()
+    const running = await startServer(t)
+    const hang = await hangingServer(t)
+    // 시간으로 끝나지 않게 길게 — 끝내는 것이 "붙었다" 임을 본다.
+    const me = await open(t, running, owner, { workspaceId, pageId }, memoryPendingEditStore(), { offline: false }, { firstConnectGraceMs: 60_000 })
+    assert.equal(me.connection.snapshot().online, false, '전제: 아직 붙지 않았다')
+    assert.equal(me.connection.snapshot().connecting, true, '첫 연결을 끊긴 것으로 봤다')
+    await waitFor('연결', settled(me))
+    assert.equal(me.connection.snapshot().connecting, false)
+
+    // 끊고, 다시 붙는 시도가 끝나지 않게 한다 — 그 시도는 첫 연결이 아니다.
+    me.gate.hang = hang
+    const sockets = me.wire.sockets.length
+    me.wire.sockets.at(-1)?.close()
+    await waitFor('다시 시도한다', () => me.wire.sockets.length > sockets)
+    assert.equal(me.connection.snapshot().online, false)
+    assert.equal(me.connection.snapshot().connecting, false, '다시 붙는 동안을 첫 연결로 봤다 — 화면이 오프라인을 말하지 않는다')
+  })
+
+  test('★ 첫 시도가 끊기면 시간을 기다리지 않고 끝난다 — 화면은 오프라인을 말한다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { workspaceId, owner, pageId } = await fixture()
+    const running = await startServer(t)
+    const changes: CollabSnapshot[] = []
+    const me = await open(t, running, owner, { workspaceId, pageId }, memoryPendingEditStore(), { offline: true }, {
+      firstConnectGraceMs: 60_000,
+      onChange: (s) => changes.push(s),
+    })
+    await waitFor('첫 시도가 끝났다', () => !me.connection.snapshot().connecting, 5000)
+    assert.equal(me.connection.snapshot().online, false)
+    assert.ok(changes.some((s) => !s.connecting && !s.online), '끝났다고 알리지 않았다')
+  })
+
+  test('★ 답이 없는 첫 시도도 정한 시간이 지나면 끝나고 알린다 — 아무것도 말하지 않는 것이 가장 나쁘다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { workspaceId, owner, pageId } = await fixture()
+    const running = await startServer(t)
+    const hang = await hangingServer(t)
+    const changes: CollabSnapshot[] = []
+    const me = await open(t, running, owner, { workspaceId, pageId }, memoryPendingEditStore(), { offline: false, hang }, {
+      firstConnectGraceMs: 400,
+      onChange: (s) => changes.push(s),
+    })
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    assert.equal(me.connection.snapshot().connecting, true, '전제: 시간 전에는 아직 기다린다')
+    await waitFor('시간이 지나 끝났다', () => !me.connection.snapshot().connecting, 3000)
+    assert.equal(me.connection.snapshot().online, false)
+    assert.ok(changes.some((s) => !s.connecting), '끝났다고 알리지 않았다 — 화면이 바뀌지 않는다')
   })
 })
