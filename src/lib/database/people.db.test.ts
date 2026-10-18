@@ -12,12 +12,14 @@
  *   ⑥ 고르개 후보(6g-2) — 활동 중인 사람만 · 이름 · 메일로 · **게스트에게는 없다**(7d-2) · 이름 지도는 id 를 주면 활동 중인 사람만
  *   ⑦ ★ "나"(6g-2c · ⑪) — 같은 뷰가 보는 사람마다 다른 행이다: 표 · 보드의 개수 · 캘린더 · 열 집계 · 저장 검증 · 공개 표는 아무도
  *      아니다(포함은 0행 · 포함하지 않음은 모든 행)
+ *   ⑧ ★ 더하기 · 빼기(10n-3 · ⑫) — 행을 잠근 채 지금 값에 합친다: 동시에 저마다 더해도 둘 다 남는다 · 바뀌지 않으면 쓰지 않는다 · 상한은
+ *      합친 결과로 · 모양이 틀리면 거부 · 검사는 새로 드는 사람만(떠난 사람이 든 칸도 고친다) · 템플릿의 떠난 사람은 빠진다
  */
 
 import { test, describe, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { query } from '../db/pool.ts'
+import { getPool, query } from '../db/pool.ts'
 import { withReadTransaction } from '../db/tx.ts'
 import { createBareWorkspace, createUser, joinAs, probeDatabase } from '../testing/db-fixtures.ts'
 import { computeCalculations } from './calculate.ts'
@@ -32,6 +34,7 @@ import { addProperty, addSelectOption, getSchema } from './property.ts'
 import type { CellValue } from './property-types.ts'
 import { queryRows } from './query.ts'
 import { createRow, updateCells } from './row.ts'
+import { createRowFromTemplate, createTemplate } from './template.ts'
 import { createView, updateView } from './view.ts'
 import { cellPlainText } from '../export/csv.ts'
 import { readExportSnapshot, type ExportDatabaseNode } from '../export/snapshot.ts'
@@ -94,10 +97,16 @@ describe('① ★ 이 워크스페이스의 사람만', () => {
       boss.ctx.workspaceId,
       guest.userId,
     ])
-    const left = await updateCells(boss.ctx, row.id, { cells: [{ propertyId: owner, value: people(guest.userId) }] })
+    // 떠난 사람이 없던 칸에 넣는다 — 새로 드는 사람이다(그 사람이 이미 든 칸은 ⑧ — 검사는 새로 드는 사람만)
+    const other = unwrap(await createRow(boss.ctx, db.dataSourceId, { cells: [{ propertyId: owner, value: people(mate.userId) }] }))
+    const left = await updateCells(boss.ctx, other.id, { cells: [{ propertyId: owner, value: people(mate.userId, guest.userId) }] })
     assert.equal(left.ok, false, '떠난 사람은 새로 넣지 못한다')
+    const leftByChange = await updateCells(boss.ctx, other.id, { cells: [], peopleChanges: [{ propertyId: owner, add: [guest.userId] }] })
+    assert.equal(leftByChange.ok, false, '더하기로도 같다')
+    const otherStored = await query<{ value: unknown }>(`SELECT value FROM page_property_value WHERE page_id = $1 AND property_id = $2`, [other.id, owner])
+    assert.deepEqual(otherStored[0]?.value, people(mate.userId), '거부는 아무것도 쓰지 않는다')
     const stored = await query<{ value: unknown }>(`SELECT value FROM page_property_value WHERE page_id = $1 AND property_id = $2`, [row.id, owner])
-    assert.deepEqual(stored[0]?.value, people(mate.userId, guest.userId), '거부는 아무것도 쓰지 않는다 · 떠난 사람도 값에는 남는다(④)')
+    assert.deepEqual(stored[0]?.value, people(mate.userId, guest.userId), '떠난 사람도 값에는 남는다(④)')
     const names = await withReadTransaction((tx) => peopleNamesIn(tx, boss.ctx.workspaceId, [mate.userId, guest.userId]))
     assert.deepEqual([...names.keys()], [mate.userId], '떠난 사람은 이름 지도에 없다 — 화면은 "떠난 사용자"')
   })
@@ -235,5 +244,106 @@ describe('⑦ ★ "나"(6g-2c)', () => {
     assert.deepEqual(await publicRows(), [], '공개 표 — "나" 는 아무도 아니다(포함은 0행)')
     unwrap(await updateView(boss.ctx, db.defaultViewId, { filter: { ...me, operator: 'does_not_contain' } as never }))
     assert.deepEqual(await publicRows(), [...bossRows, mateRow].sort(), '포함하지 않음은 모든 행')
+  })
+})
+
+describe('⑧ ★ 더하기 · 빼기 (10n-3 · ⑫)', () => {
+  const storedOf = async (rowId: string, propertyId: string) =>
+    (await query<{ value: unknown }>(`SELECT value FROM page_property_value WHERE page_id = $1 AND property_id = $2`, [rowId, propertyId]))[0]?.value
+
+  test('행을 잠근 채 지금 값에 합친다 — 동시에 저마다 더해도 둘 다 남는다 · 빼기 · 순서는 그대로', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { boss, mate, guest, db, owner } = await team()
+    const row = unwrap(await createRow(boss.ctx, db.dataSourceId))
+
+    // 다른 연결이 행을 잠근 채 두 쓰기를 보낸다 — 둘 다 잠금을 기다리게 한 뒤 놓는다(둘이 같은 빈 칸을 보고 출발한다).
+    const holder = await getPool().connect()
+    try {
+      await holder.query('BEGIN')
+      await holder.query('SELECT 1 FROM block WHERE id = $1 FOR UPDATE', [row.id])
+      const writes = Promise.all([
+        updateCells(mate.ctx, row.id, { cells: [], peopleChanges: [{ propertyId: owner, add: [mate.userId] }] }),
+        updateCells(boss.ctx, row.id, { cells: [], peopleChanges: [{ propertyId: owner, add: [boss.userId] }] }),
+      ])
+      for (let i = 0; i < 100; i += 1) {
+        const [{ n }] = (await query<{ n: string }>(
+          `SELECT count(*) AS n FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'`,
+        ))
+        if (Number(n) >= 2) break
+        await new Promise((resolve) => setTimeout(resolve, 20))
+      }
+      await holder.query('COMMIT')
+      const results = await writes
+      assert.ok(results.every((r) => r.ok), JSON.stringify(results))
+    } finally {
+      holder.release()
+    }
+    const both = await storedOf(row.id, owner)
+    assert.equal((both as { people: unknown[] }).people.length, 2, `한쪽이 사라졌다: ${JSON.stringify(both)}`)
+    assert.deepEqual(new Set((both as { people: { id: string }[] }).people.map((p) => p.id)), new Set([mate.userId, boss.userId]))
+
+    // 빼고 더하기 — 남은 사람의 순서는 그대로 · 더한 사람은 뒤에
+    const first = (both as { people: { id: string }[] }).people[0]!.id
+    const after = unwrap(await updateCells(boss.ctx, row.id, { cells: [], peopleChanges: [{ propertyId: owner, add: [guest.userId], remove: [first] }] }))
+    const kept = [mate.userId, boss.userId].find((id) => id !== first)!
+    assert.deepEqual(after.properties[owner], people(kept, guest.userId), '답은 합친 행이다')
+  })
+
+  test('바뀌지 않으면 쓰지 않는다 — 이미 든 사람을 더하고 없는 사람을 빼도 판이 오르지 않는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { boss, mate, guest, db, owner } = await team()
+    const row = unwrap(await createRow(boss.ctx, db.dataSourceId, { cells: [{ propertyId: owner, value: people(mate.userId) }] }))
+    const same = unwrap(await updateCells(boss.ctx, row.id, { cells: [], peopleChanges: [{ propertyId: owner, add: [mate.userId], remove: [guest.userId] }] }))
+    assert.equal(same.version, row.version, '쓰지 않았다')
+    assert.deepEqual(await storedOf(row.id, owner), people(mate.userId))
+  })
+
+  test('상한은 합친 결과로 본다 · 모양이 틀리면 거부한다(겹침 · 같은 칸 두 번 · 통째 값과 함께 · uuid 아님 · 사람 칸 아님)', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { boss, mate, guest, db, owner } = await team()
+    const row = unwrap(await createRow(boss.ctx, db.dataSourceId))
+    // 50명이 든 칸 — 사람의 표를 거치지 않고 값만 넣는다(상한은 사람 검사보다 먼저다)
+    const fifty = Array.from({ length: 50 }, () => crypto.randomUUID())
+    await query(`INSERT INTO page_property_value (page_id, property_id, value) VALUES ($1, $2, $3)`, [row.id, owner, JSON.stringify(people(...fifty))])
+    const over = await updateCells(boss.ctx, row.id, { cells: [], peopleChanges: [{ propertyId: owner, add: [mate.userId] }] })
+    assert.ok(!over.ok && JSON.stringify(over).includes('50명까지'), JSON.stringify(over))
+
+    const fresh = unwrap(await createRow(boss.ctx, db.dataSourceId))
+    const title = unwrap(await getSchema(boss.ctx, db.dataSourceId)).properties.find((p) => p.type === 'title')!.id
+    const rejects = async (label: string, input: Parameters<typeof updateCells>[2]) => {
+      const r = await updateCells(boss.ctx, fresh.id, input)
+      assert.ok(!r.ok && r.reason === 'invalid_value', `${label}: ${JSON.stringify(r)}`)
+    }
+    await rejects('같은 사람을 더하면서 뺀다', { cells: [], peopleChanges: [{ propertyId: owner, add: [mate.userId], remove: [mate.userId] }] })
+    await rejects('같은 칸을 두 번', { cells: [], peopleChanges: [{ propertyId: owner, add: [mate.userId] }, { propertyId: owner, add: [guest.userId] }] })
+    await rejects('통째 값과 함께', { cells: [{ propertyId: owner, value: people(guest.userId) }], peopleChanges: [{ propertyId: owner, add: [mate.userId] }] })
+    await rejects('uuid 가 아니다', { cells: [], peopleChanges: [{ propertyId: owner, add: ['누구'] }] })
+    await rejects('사람 칸이 아니다', { cells: [], peopleChanges: [{ propertyId: title, add: [mate.userId] }] })
+    assert.equal(await storedOf(fresh.id, owner), undefined, '아무것도 쓰지 않았다')
+  })
+
+  test('검사는 새로 드는 사람만 — 떠난 사람이 든 칸도 고친다 · 떠난 사람이 든 템플릿으로도 행을 만든다(떠난 사람은 빠진다)', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { boss, mate, guest, elsewhere, db, owner } = await team()
+    const row = unwrap(await createRow(boss.ctx, db.dataSourceId, { cells: [{ propertyId: owner, value: people(guest.userId) }] }))
+    const template = unwrap(await createTemplate(boss.ctx, db.dataSourceId, { title: '틀' }))
+    unwrap(await updateCells(boss.ctx, template.id, { cells: [{ propertyId: owner, value: people(guest.userId, mate.userId) }] }))
+    await query(`UPDATE workspace_member SET status = 'removed', removed_at = now() WHERE workspace_id = $1 AND user_id = $2`, [
+      boss.ctx.workspaceId,
+      guest.userId,
+    ])
+
+    const whole = await updateCells(boss.ctx, row.id, { cells: [{ propertyId: owner, value: people(guest.userId, mate.userId) }] })
+    assert.ok(whole.ok, `떠난 사람이 든 칸에 통째 값으로 더하지 못했다: ${JSON.stringify(whole)}`)
+    const byChange = await updateCells(boss.ctx, row.id, { cells: [], peopleChanges: [{ propertyId: owner, add: [boss.userId] }] })
+    assert.ok(byChange.ok, `더하기로 더하지 못했다: ${JSON.stringify(byChange)}`)
+    assert.deepEqual(await storedOf(row.id, owner), people(guest.userId, mate.userId, boss.userId), '떠난 사람은 값에 남는다')
+    const stranger = await updateCells(boss.ctx, row.id, { cells: [], peopleChanges: [{ propertyId: owner, add: [elsewhere.userId] }] })
+    assert.equal(stranger.ok, false, '새로 드는 사람은 여전히 본다')
+
+    const made = await createRowFromTemplate(boss.ctx, db.dataSourceId, template.id)
+    assert.ok(made.ok, `떠난 사람이 든 템플릿으로 행을 만들지 못했다: ${JSON.stringify(made)}`)
+    assert.deepEqual(made.ok && made.value.row.properties[owner], people(mate.userId), '떠난 사람은 빠진다')
+    assert.deepEqual(await storedOf(template.id, owner), people(guest.userId, mate.userId), '템플릿의 칸에는 남는다')
   })
 })

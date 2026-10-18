@@ -200,6 +200,23 @@ export function updateCell(
   )
 }
 
+/**
+ * 사람 칸에 더하고 뺀다(정본 [보강] 사람 속성 ⑫) — 서버가 행을 잠근 채 지금 값에 적용한다. 그사이 다른 사람이 더한 사람도 남는다.
+ * 답은 합친 행이다.
+ */
+export function changePeople(
+  workspaceId: string,
+  rowId: string,
+  propertyId: string,
+  change: { readonly add: readonly string[]; readonly remove: readonly string[] },
+): Promise<ApiResult<RowJson>> {
+  return call(
+    `${base(workspaceId)}/rows/${rowId}`,
+    { method: 'PATCH', headers: JSON_HEADERS, body: JSON.stringify({ peopleChanges: [{ propertyId, ...change }] }) },
+    (body) => body.row as RowJson,
+  )
+}
+
 /** 행을 만든다. `cells` 는 미리 채울 값 — 보드 열의 `+` 가 그룹 값을 넣는다(F-04-03). */
 /** 빈 행(또는 셀을 채운 행)을 만든다. `parent` 를 주면 그 행 밑의 하위 항목이다(2b-2b — 만들기와 연결이 한 트랜잭션). */
 export function createRow(
