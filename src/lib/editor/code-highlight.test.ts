@@ -42,6 +42,7 @@ import {
   codeHighlightKey,
   codeHighlightPlugin,
   codeHighlightState,
+  keepPieceStarts,
   lineStartsOf,
   pieceStartsOf,
   planHighlight,
@@ -74,10 +75,12 @@ function contentOf(state: EditorState, id: string): { start: number; size: numbe
 
 type Painted = { from: number; to: number; cls: string }
 
+const isPiece = (spec: unknown) => (spec as { piece?: boolean } | undefined)?.piece === true
+
 /** 칠한 데코레이션 — 전부(글자 조각은 칠이 아니다 — `pieces`). */
 function decorations(state: EditorState): Painted[] {
   return codeHighlightState(state)
-    .set.find()
+    .set.find(undefined, undefined, (spec) => !isPiece(spec))
     .map((d) => ({ from: d.from, to: d.to, cls: (d as unknown as { type: { attrs: { class?: string } } }).type.attrs.class }))
     .filter((d): d is Painted => d.cls !== undefined)
 }
@@ -86,9 +89,29 @@ function decorations(state: EditorState): Painted[] {
 function pieces(state: EditorState, id: string): [number, number][] {
   const { start, size } = contentOf(state, id)
   return codeHighlightState(state)
-    .set.find(start, start + size, (spec) => (spec as { piece?: boolean }).piece === true)
+    .set.find(start, start + size, isPiece)
     .map((d): [number, number] => [d.from - start, d.to - start])
     .sort((a, b) => a[0] - b[0])
+}
+
+/** 그 블록의 첫 조각이 그려지는 모양(속성). 조각이 없으면 null. */
+function pieceAttrs(state: EditorState, id: string): Record<string, string> | null {
+  const { start, size } = contentOf(state, id)
+  const first = codeHighlightState(state).set.find(start, start + size, isPiece)[0]
+  return first === undefined ? null : (first as unknown as { type: { attrs: Record<string, string> } }).type.attrs
+}
+
+/** `from` 부터 끝까지가 한 조각으로 상한의 2배를 넘을 때 그 자리에서 가른 머리들(`from` 뒤의 것) — `keepPieceStarts` 가 하는 것을 따로 센다. */
+function cutTail(text: string, from: number): number[] {
+  const tail = text.slice(from)
+  return pieceStartsOf(tail).slice(1).map((s) => from + s)
+}
+
+/** 조각이 `[from, to)` 를 빈틈 · 겹침 없이 덮는가. */
+function contiguous(out: [number, number][], from: number, to: number): boolean {
+  if (out.length === 0 || out[0][0] !== from || out[out.length - 1][1] !== to) return false
+  for (let i = 1; i < out.length; i += 1) if (out[i][0] !== out[i - 1][1]) return false
+  return true
 }
 
 /** 그 블록에 칠한 (글자, 클래스). */
@@ -495,6 +518,16 @@ describe('⑩ 글자 조각 — 큰 글자 노드 하나를 두지 않는다(10k
   test('상한 안의 글자는 가르지 않는다 — 한 조각', () => {
     assert.deepEqual(pieceStartsOf(''), [0])
     assert.deepEqual(pieceStartsOf('x\n'.repeat(PIECE_MAX_CHARS / 2)), [0])
+    assert.deepEqual(keepPieceStarts('x\n'.repeat(PIECE_MAX_CHARS / 2), [10, 20]), [0])
+  })
+
+  test('옮긴 머리 지키기 — 줄 머리가 아닌 것 · 범위 밖 · 겹친 것은 버리고, 처음에서 가른 것과 같은 모양을 지킨다', () => {
+    const text = bigPython(1_000)
+    const starts = lineStartsOf(text)
+    const fresh = pieceStartsOf(text)
+    assert.deepEqual(keepPieceStarts(text, fresh), fresh, '그대로 지킨다')
+    // 줄 가운데(머리 + 3) · 0 · 끝 · 중복은 버린다
+    assert.deepEqual(keepPieceStarts(text, [starts[50] + 3, 0, text.length, starts[100], starts[100]]), [0, starts[100], ...cutTail(text, starts[100])])
   })
 
   test('★ 조각은 줄 머리에서만 · PIECE_LINES 줄 · PIECE_MAX_CHARS 글자 안 — 1만 줄은 200조각', () => {
@@ -525,7 +558,7 @@ describe('⑩ 글자 조각 — 큰 글자 노드 하나를 두지 않는다(10k
     assert.ok(!cut.some((s) => s > giantStart && s < giantStart + giant.length + 1), '거대한 줄의 가운데를 갈랐다')
   })
 
-  test('★ 큰 블록은 조각 데코레이션이 글자 전체를 빈틈없이 덮는다 — 문법이 없어도(plain text) · 작은 블록에는 없다', () => {
+  test('★ 큰 블록은 속성 없는 조각이 글자 전체를 빈틈없이 덮는다 — 문법이 있어도(창과 상관없이) · 없어도(plain text) · 작은 블록에는 없다', () => {
     const python = code(bigPython(10_000), 'python')
     const plain = code(bigPython(10_000))
     const small = code(bigPython(100), 'python')
@@ -533,14 +566,44 @@ describe('⑩ 글자 조각 — 큰 글자 노드 하나를 두지 않는다(10k
     for (const block of [python, plain]) {
       const out = pieces(state, block.id)
       assert.equal(out.length, 10_000 / PIECE_LINES, block.id)
-      assert.equal(out[0][0], 0)
-      assert.equal(out[out.length - 1][1], contentOf(state, block.id).size)
-      for (let i = 1; i < out.length; i += 1) assert.equal(out[i][0], out[i - 1][1], '빈틈 · 겹침')
+      assert.ok(contiguous(out, 0, contentOf(state, block.id).size), JSON.stringify(out.slice(0, 3)))
+      // 속성이 없다 — PM 이 글자 노드만 가르고 span 을 만들지 않는다(블록 상자는 측정 뒤 뺐다 — 머리말)
+      assert.deepEqual(pieceAttrs(state, block.id), {})
     }
     assert.deepEqual(pieces(state, small.id), [])
     // 칠은 그대로 — 조각이 칠을 가리지 않는다
     assert.ok(has(painted(state, python.id), '# c0', 'hljs-comment'))
     assert.deepEqual(painted(state, plain.id), [])
+  })
+
+  test('★ 조각의 머리는 움직이지 않는다 — 줄을 넣어도 뒤의 조각은 글자가 그대로다 · 상한의 2배를 넘는 조각만 그 자리에서 가른다 · 경계의 줄바꿈을 지우면 합쳐진다', () => {
+    const block = code(bigPython(10_000)) // plain — 창이 없어 조각이 전부다
+    let state = stateOf([block])
+    const textOf = () => state.doc.nodeAt(contentOf(state, block.id).pos)!.textContent
+    const piecesText = () => pieces(state, block.id).map(([a, b]) => textOf().slice(a, b))
+    const before = piecesText()
+    assert.equal(before.length, 10_000 / PIECE_LINES, '전제')
+    // 3째 조각(150~199째 줄)의 가운데에 줄 하나 — 처음부터 다시 가르면 뒤의 200 - 4 조각이 모두 한 줄씩 밀린다
+    state = insertAt(state, block.id, lineStartsOf(textOf())[160], '# 새 줄\n')
+    const after = piecesText()
+    assert.equal(after.length, before.length, '조각 수가 바뀌었다')
+    assert.deepEqual(after.slice(0, 3), before.slice(0, 3))
+    assert.deepEqual(after.slice(4), before.slice(4), '뒤의 조각이 다시 쓰였다')
+    assert.ok(after[3].includes('# 새 줄') && after[3].split('\n').length - 1 === PIECE_LINES + 1, '넣은 줄은 3째 조각에 들어가 51줄이다')
+    // 같은 조각에 줄 60개를 더 넣어 2배(100줄)를 넘기면 — 그 조각만 그 자리에서 셋으로 갈리고 뒤는 그대로
+    state = insertAt(state, block.id, lineStartsOf(textOf())[160], '# 더\n'.repeat(60))
+    const split = piecesText()
+    assert.equal(split.length, before.length + 2, JSON.stringify(split.slice(3, 6).map((p) => p.split('\n').length - 1)))
+    assert.deepEqual(split.slice(6), before.slice(4), '뒤의 조각이 다시 쓰였다')
+    assert.ok(split[3].split('\n').length - 1 === PIECE_LINES && split[4].split('\n').length - 1 === PIECE_LINES)
+    // 7째 조각 머리 앞의 줄바꿈을 지우면 6 · 7 이 합쳐진다(61줄 — 2배 안) — 뒤는 그대로
+    const head = pieces(state, block.id)[6][0]
+    const base = contentOf(state, block.id).start
+    state = state.apply(state.tr.delete(base + head - 1, base + head))
+    const merged = piecesText()
+    assert.equal(merged.length, split.length - 1)
+    assert.deepEqual(merged.slice(6), split.slice(7), '뒤의 조각이 다시 쓰였다')
+    assert.equal(merged[5].split('\n').length - 1, split[5].split('\n').length - 1 + split[6].split('\n').length - 1 - 1)
   })
 
   test('★ 끝에서 치면 앞의 조각은 그대로다(글자가 같은 조각은 다시 쓰이지 않는다) — 미룬 블록도 조각은 새로 세어 겹치지 않는다', () => {
