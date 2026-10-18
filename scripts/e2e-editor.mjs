@@ -1081,6 +1081,14 @@ async function main() {
      */
     const waitHydrated = (sel, ms = 10000) =>
       waitFor(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); return !!e && Object.keys(e).some((k) => k.startsWith('__reactProps')) })()`, ms)
+    /**
+     * 편집기에 포커스를 준 클릭 **뒤에**, 키로 선택을 바꾸기 전에 부른다. ProseMirror 의 포커스 처리기는 20ms 타이머를 걸고, 그것이 돌 때
+     * DOM 의 선택이 자기가 마지막으로 읽은 것과 다르면 **자기 상태의 선택을 DOM 에 다시 쓴다**(prosemirror-view `handlers.focus`).
+     * 그 사이에 누른 Shift+← 는 `selectionchange` 를 아직 읽히지 않았으면 지워진다 — 코멘트 절(F-05-07)이 부하 아래에서 0~2 글자만
+     * 골랐다(#380 의 전체 판 · CPU 6배 8판 중 5). 그 타이머는 부하 아래에서 수백 ms 늦게도 돈다(재 보니 490ms) — 시간을 재지 않고
+     * **순서로** 기다린다: 클릭이 끝난 뒤 페이지에 더 긴 타이머를 걸어 그것이 돌면, 먼저 만기되는 포커스 타이머는 이미 돌았다.
+     */
+    const afterFocusTimer = () => evaluate('new Promise((resolve) => setTimeout(resolve, 40))')
     // 잠금 버튼은 누를 때의 글자대로 잠그거나 푼다(PUT · DELETE — 둘 다 멱등). 붙기 전의 클릭은 사라지므로 될 때까지 다시 누르되,
     // **글자가 바라는 쪽일 때만** 누른다 — 앞선 클릭의 새로고침이 늦게 와 글자가 막 바뀐 뒤에 누르면 거꾸로 돌린다(1c-2 의 전체 e2e
     // 에서 겪었다 — "잠김"이 선 채로 서버는 풀려 있었다).
@@ -6808,19 +6816,25 @@ async function main() {
       // 재다가 "지웠는데 한 글자가 남는" 실패를 봤다. `End` 에서 왼쪽으로 세는 것은 어디를 눌러도 같다.
       // 블록의 **왼쪽 끝**을 누른다. 가운데를 누르면 하이라이트 위에 떨어져 패널이 열리고, 그러면 포커스가 옮겨져
       // 이어지는 키가 편집기에 닿지 않는다 — 처음에 그것으로 "지워지지 않는" 실패를 봤다.
+      // 누른 뒤 포커스 타이머가 돌기를 기다린다 — 그 전의 Shift+← 는 ProseMirror 가 되돌릴 수 있다(`afterFocusTimer`).
       const caretInBlock = async () => {
         const box = await line(anchorBlock)
         await click(box.x + 4, box.y + box.h / 2)
+        await afterFocusTimer()
       }
-      /** 블록의 **마지막** `n` 글자를 고른다. */
+      const selection = () => evaluate('String(window.getSelection())')
+      /**
+       * 블록의 **마지막** `n` 글자를 고르고, 고른 글자 수가 맞는가를 돌려준다 — 부르는 쪽이 전제 검사로 남긴다. 전에는 맞지 않아도
+       * 넘어가 "코멘트 달기"를 눌렀고, 뒤 검사 다섯이 줄줄이 떨어져 원인이 보이지 않았다(원인은 포커스 타이머 — 위).
+       */
       const selectLast = async (n) => {
         await caretInBlock()
         await key('End')
         for (let i = 0; i < n; i += 1) await key('ArrowLeft', SHIFT)
-        // 고정 대기만으로는 부하 아래에서 키가 덜 처리된 채 넘어간다 — 첫 복사본 판(도구-2)이 작업 트리의 판과 함께 돌 때
-        // 한 글자("사")만 고른 채 "코멘트 달기"를 눌러 뒤의 검사 넷이 줄줄이 떨어졌다. 고른 글자 수가 맞을 때까지 기다린다.
-        await waitFor(`window.getSelection().toString().length === ${n}`, 3000)
+        // 키가 처리돼도 `selectionchange` 는 늦게 온다 — 고른 글자 수가 맞을 때까지 기다린다.
+        const ok = await waitFor(`window.getSelection().toString().length === ${n}`, 3000)
         await sleep(120)
+        return ok
       }
       /** 블록의 맨 앞으로. 한 블록뿐이라 왼쪽 끝에서 더 눌러도 그대로다. */
       const caretToStart = async () => {
@@ -6831,7 +6845,7 @@ async function main() {
       }
 
       // ① 글자를 고르면 버튼이 뜨고, 누르면 고른 글자를 보여 준다.
-      await selectLast(3)
+      check('전제 — 마지막 세 글자를 골랐다', await selectLast(3), await selection())
       check('★ 글자를 고르면 "코멘트 달기"가 뜬다',
         await waitFor(`[...document.querySelectorAll('button')].some((b) => b.textContent.trim() === '코멘트 달기')`, 5000))
       check('버튼을 누른다', await clickText('코멘트 달기'))
@@ -6860,7 +6874,7 @@ async function main() {
         await highlighted())
 
       // ④ ★ 그 글자를 다 지우면 하이라이트가 사라지고, 스레드는 "원본 없음"으로 남는다.
-      await selectLast(3)
+      check('전제 — 다시 마지막 세 글자를 골랐다', await selectLast(3), await selection())
       await key('Backspace')
       check('전제: 마지막 세 글자가 지워졌다', (await blockText()) === '앞가나다라', await blockText())
       check('★ 가리키던 글자를 다 지우면 하이라이트가 사라진다',
