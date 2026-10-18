@@ -7,10 +7,15 @@
  */
 
 import type { PoolClient, QueryResultRow } from 'pg'
-import { getPool } from './pool.ts'
+import { getPool, logSql, perfSqlEnabled } from './pool.ts'
 
 /** 트랜잭션 안에서만 쓰는 실행기. 풀이 아니라 고정된 커넥션을 쓴다. */
 export type Tx = {
+  /**
+   * 읽기 전용 트랜잭션(`withReadTransaction`)이다. 요청 메모(`permissions/request-memo.ts` · 10l-1)는 이 표지가 있을 때만 쓴다 —
+   * 쓰기 트랜잭션의 판정은 늘 자기 스냅샷에서 읽는다(HANDOFF §3.3-183).
+   */
+  readonly readOnly?: true
   query<T extends QueryResultRow = QueryResultRow>(
     sql: string,
     params?: readonly unknown[],
@@ -27,19 +32,28 @@ export type Tx = {
   savepoint<R>(name: string, fn: () => Promise<R>): Promise<R>
 }
 
-function wrap(client: PoolClient): Tx {
+function wrap(client: PoolClient, readOnly = false): Tx {
+  // 계측(`PERF_SQL=1` · pool.ts) — 트랜잭션의 쿼리는 `tx:` 표지로
+  const run = async <T extends QueryResultRow>(sql: string, params: readonly unknown[]): Promise<T[]> => {
+    if (!perfSqlEnabled) return (await client.query<T>(sql, params as unknown[])).rows
+    const startedAt = performance.now()
+    const result = await client.query<T>(sql, params as unknown[])
+    logSql(startedAt, result.rowCount, sql, 'tx:')
+    return result.rows
+  }
   return {
+    ...(readOnly ? { readOnly: true as const } : {}),
     async query<T extends QueryResultRow = QueryResultRow>(
       sql: string,
       params: readonly unknown[] = [],
     ): Promise<T[]> {
-      return (await client.query<T>(sql, params as unknown[])).rows
+      return run<T>(sql, params)
     },
     async queryOne<T extends QueryResultRow = QueryResultRow>(
       sql: string,
       params: readonly unknown[] = [],
     ): Promise<T> {
-      const rows = (await client.query<T>(sql, params as unknown[])).rows
+      const rows = await run<T>(sql, params)
       if (rows.length !== 1) throw new Error(`정확히 1행을 기대했지만 ${rows.length}행입니다.`)
       return rows[0]
     },
@@ -47,7 +61,7 @@ function wrap(client: PoolClient): Tx {
       sql: string,
       params: readonly unknown[] = [],
     ): Promise<T | null> {
-      const rows = (await client.query<T>(sql, params as unknown[])).rows
+      const rows = await run<T>(sql, params)
       if (rows.length > 1) throw new Error(`최대 1행을 기대했지만 ${rows.length}행입니다.`)
       return rows[0] ?? null
     },
@@ -172,7 +186,7 @@ export async function withReadTransaction<T>(fn: (tx: Tx) => Promise<T>): Promis
   const client = await getPool().connect()
   try {
     await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY')
-    const result = await fn(wrap(client))
+    const result = await fn(wrap(client, true))
     await client.query('COMMIT')
     return result
   } catch (e) {

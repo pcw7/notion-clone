@@ -88,6 +88,12 @@ test('★ 콜백이 { ok: false } 를 돌려주면 그 전에 쓴 것이 롤백�
   assert.equal(after.n, 0, '거부된 명령이 쓴 행이 남았다')
 })
 
+test('★ 읽기 전용 트랜잭션만 readOnly 표지를 진다 — 요청 메모(10l-1)가 이 표지로 쓰기 트랜잭션을 가려낸다', async (t) => {
+  if (skipReason) return t.skip(skipReason)
+  assert.equal(await withReadTransaction(async (tx) => tx.readOnly), true)
+  assert.deepEqual(await withCommandTransaction(async (tx) => ({ ok: true as const, value: tx.readOnly })), { ok: true, value: undefined })
+})
+
 test('{ ok: true } 면 커밋한다 · 던지면 롤백하고 그대로 던진다', async (t) => {
   if (skipReason) return t.skip(skipReason)
   const kept = `통과-${randomUUID()}`

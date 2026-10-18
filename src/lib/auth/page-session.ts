@@ -19,6 +19,7 @@ import { notFound, redirect } from 'next/navigation'
 import { cache } from 'react'
 
 import { asWorkspaceId } from '../ids.ts'
+import { enableRequestMemo } from '../permissions/request-memo.ts'
 import { resolveOutsiderContext, type OutsiderContext } from './outsider-context.ts'
 import { readSessionToken } from './session-cookie.ts'
 import { resolveSessionContext, type SessionContext } from './session-context.ts'
@@ -56,7 +57,11 @@ export const requirePageVisitor = cache(async (rawWorkspaceId: string): Promise<
 
   const token = await readSessionToken()
   const session = await resolveSessionContext(token, workspaceId)
-  if (session.ok) return { member: session.context }
+  if (session.ok) {
+    // 화면 요청 하나 안에서 권한의 읽기를 한 번만(10l-1 · `request-memo.ts`) — 이 ctx 는 React `cache` 로 요청마다 하나다(위).
+    enableRequestMemo(session.context)
+    return { member: session.context }
+  }
 
   if (session.reason === 'mfa_required') redirect('/login?mfa=1')
   if (session.reason === 'no_session' || session.reason === 'expired' || session.reason === 'revoked') {

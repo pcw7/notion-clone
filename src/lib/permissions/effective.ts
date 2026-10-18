@@ -40,6 +40,7 @@
 import type { SessionContext, WorkspaceRole } from '../auth/session-context.ts'
 import { withReadTransaction, type Tx } from '../db/tx.ts'
 import { can, grantCapabilities, unionCaps, NO_CAPABILITIES, type CapSet, type Capability } from './levels.ts'
+import { memoized } from './request-memo.ts'
 
 /** ACL 행 중 판정에 필요한 것만. */
 export type AclRow = {
@@ -111,8 +112,14 @@ function principalsOfMember(
  * 세션을 발급할 때(`resolveSessionContext`) 읽어 두지 않는 이유: 협업 서버는 연결을 오래 들고 신호가 올 때마다
  * 다시 판정한다. 그룹이 컨텍스트에 박혀 있으면 그룹에서 빠진 사람의 연결이 **옛 그룹으로** 다시 판정된다.
  * 판정과 같은 스냅샷에서 읽으면 ACL 과 멤버십이 같은 시점의 사실이다.
+ *
+ * 화면 요청 하나 안에서는 처음 읽은 것을 다시 쓴다(`memoized` — 읽기 전용 트랜잭션 · `requirePageVisitor` 가 켠 ctx 만 · 10l-1).
  */
 export async function principalsFor(tx: Tx, ctx: SessionContext): Promise<Principal[]> {
+  return memoized(tx, ctx, 'principals', () => readPrincipals(tx, ctx))
+}
+
+async function readPrincipals(tx: Tx, ctx: SessionContext): Promise<Principal[]> {
   const groups = await tx.query<{ id: string }>(
     `SELECT g.id
        FROM group_member gm
@@ -220,13 +227,16 @@ export async function effectiveCaps(
   ctx: SessionContext,
   nodeId: string,
 ): Promise<CapSet> {
-  const node = await tx.queryMaybe<ChainRow>(
-    `SELECT ${CHAIN_COLUMNS} FROM ${CHAIN_FROM} WHERE b.id = $1 AND b.workspace_id = $2`,
-    [nodeId, ctx.workspaceId],
-  )
-  if (node === null) return NO_CAPABILITIES
-  const { chain, teamspaceId } = chainOf(node)
-  return resolveChain(tx, await principalsFor(tx, ctx), chain, teamspaceId)
+  // 같은 요청이 같은 노드를 여러 번 묻는다(접근 · 잠금 · 기록 · 즐겨찾기 …) — 한 번만(10l-1 · `memoized`)
+  return memoized(tx, ctx, `caps:${nodeId}`, async () => {
+    const node = await tx.queryMaybe<ChainRow>(
+      `SELECT ${CHAIN_COLUMNS} FROM ${CHAIN_FROM} WHERE b.id = $1 AND b.workspace_id = $2`,
+      [nodeId, ctx.workspaceId],
+    )
+    if (node === null) return NO_CAPABILITIES
+    const { chain, teamspaceId } = chainOf(node)
+    return resolveChain(tx, await principalsFor(tx, ctx), chain, teamspaceId)
+  })
 }
 
 /**
@@ -235,12 +245,14 @@ export async function effectiveCaps(
  * 이 워크스페이스의 보관되지 않은 teamspace 가 아니면 아무 권한도 없다(`NO_CAPABILITIES`) — 없는 것과 같다.
  */
 export async function teamspaceCaps(tx: Tx, ctx: SessionContext, teamspaceId: string): Promise<CapSet> {
-  const live = await tx.queryMaybe<{ id: string }>(
-    `SELECT id FROM teamspace WHERE id = $1 AND workspace_id = $2 AND archived_at IS NULL`,
-    [teamspaceId, ctx.workspaceId],
-  )
-  if (live === null) return NO_CAPABILITIES
-  return resolveChain(tx, await principalsFor(tx, ctx), [teamspaceId], teamspaceId)
+  return memoized(tx, ctx, `teamspace:${teamspaceId}`, async () => {
+    const live = await tx.queryMaybe<{ id: string }>(
+      `SELECT id FROM teamspace WHERE id = $1 AND workspace_id = $2 AND archived_at IS NULL`,
+      [teamspaceId, ctx.workspaceId],
+    )
+    if (live === null) return NO_CAPABILITIES
+    return resolveChain(tx, await principalsFor(tx, ctx), [teamspaceId], teamspaceId)
+  })
 }
 
 async function resolveChain(
@@ -252,12 +264,24 @@ async function resolveChain(
   return resolveCaps({ ...(await chainInputs(tx, chain, teamspaceId)), principals })
 }
 
+type ChainInputs = { chain: string[]; cutAt: ReadonlySet<string>; entries: AclRow[] }
+
 /** 사슬의 판정 입력 — 그 사슬의 ACL 행과 절단 플래그. 주체와 무관하므로 여러 사람을 한 번에 판정할 때 한 번만 읽는다. */
-async function chainInputs(
+async function chainInputs(tx: Tx, chain: string[], teamspaceId: string | null): Promise<ChainInputs> {
+  return (await chainInputsMany(tx, [{ chain, teamspaceId }]))[0]
+}
+
+/**
+ * 사슬 여럿의 판정 입력을 **질의 셋으로 한 번에** 읽는다 — 사슬마다 셋씩 읽으면 스코프 수만큼 는다(`scopesWith` — 경계 노드 34개면 질의 102개 ·
+ * 10l-1 측정). 합집합으로 읽고 사슬마다 자기 노드의 행만 가른다 — 사슬마다 따로 읽은 것과 같은 답이다.
+ */
+async function chainInputsMany(
   tx: Tx,
-  chain: string[],
-  teamspaceId: string | null,
-): Promise<{ chain: string[]; cutAt: ReadonlySet<string>; entries: AclRow[] }> {
+  items: readonly { readonly chain: string[]; readonly teamspaceId: string | null }[],
+): Promise<ChainInputs[]> {
+  if (items.length === 0) return []
+  const nodeIds = [...new Set(items.flatMap((item) => item.chain))]
+  const teamspaceIds = [...new Set(items.map((item) => item.teamspaceId).filter((id): id is string => id !== null))]
   const [acl, cuts, rules] = await Promise.all([
     // teamspace 노드의 행은 `node_kind` 가 다르다 — 블록 id 와 겹칠 일은 없지만 종류까지 맞춰 읽는다.
     //
@@ -270,19 +294,29 @@ async function chainInputs(
       `SELECT node_id, principal_type, principal_id, level
          FROM acl_entry
         WHERE (node_kind = 'block' AND node_id = ANY($1::uuid[]))
-           OR (node_kind = 'teamspace' AND node_id = $2
-               AND EXISTS (SELECT 1 FROM teamspace t WHERE t.id = $2 AND t.archived_at IS NULL))`,
-      [chain, teamspaceId],
+           OR (node_kind = 'teamspace' AND node_id = ANY($2::uuid[])
+               AND EXISTS (SELECT 1 FROM teamspace t WHERE t.id = acl_entry.node_id AND t.archived_at IS NULL))`,
+      [nodeIds, teamspaceIds],
     ),
     tx.query<{ node_id: string }>(
       `SELECT node_id FROM block_acl_meta
         WHERE node_id = ANY($1::uuid[]) AND inherits_from_parent = false`,
-      [chain],
+      [nodeIds],
     ),
-    accessRuleEntries(tx, chain),
+    accessRuleEntries(tx, nodeIds),
   ])
 
-  return { chain, cutAt: new Set(cuts.map((c) => c.node_id)), entries: [...acl, ...rules] }
+  // 사슬마다 자기 노드의 행만 — 답을 바꾸지는 않는다(`resolveCaps` 가 사슬의 노드와 같은 행만 본다 · 반사실 C 가 통과했다). 사슬마다 합집합 전체를
+  // 훑지 않게 하는 것이다(스코프 N × 전체 행). 순서는 사슬마다 따로 읽던 때와 같다(ACL 행 먼저 · 규칙 행 뒤).
+  const cutSet = new Set(cuts.map((c) => c.node_id))
+  return items.map(({ chain }) => {
+    const nodes = new Set(chain)
+    return {
+      chain,
+      cutAt: new Set(chain.filter((id) => cutSet.has(id))),
+      entries: [...acl.filter((row) => nodes.has(row.node_id)), ...rules.filter((row) => nodes.has(row.node_id))],
+    }
+  })
 }
 
 /**
@@ -346,6 +380,11 @@ export async function scopesWith(
   ctx: SessionContext,
   required: readonly Capability[],
 ): Promise<string[]> {
+  // 화면 요청 하나가 같은 스코프 목록을 여덟 번 묻는다(사이드바 · 휴지통 · 최근 · 즐겨찾기 · 백링크 …) — 한 번만(10l-1)
+  return memoized(tx, ctx, `scopes:${[...required].sort().join(',')}`, () => readScopesWith(tx, ctx, required))
+}
+
+async function readScopesWith(tx: Tx, ctx: SessionContext, required: readonly Capability[]): Promise<string[]> {
   const [scopes, teamspaces] = await Promise.all([
     tx.query<ChainRow>(
       `SELECT DISTINCT ${CHAIN_COLUMNS}
@@ -362,19 +401,19 @@ export async function scopesWith(
     ]),
   ])
 
-  // 주체 집합은 한 번만 읽는다 — 스코프마다 읽으면 스코프 수만큼 질의가 는다.
+  // 주체 집합은 한 번만 읽는다 — 스코프마다 읽으면 스코프 수만큼 질의가 는다. 사슬의 입력도 한 번에(`chainInputsMany` · 10l-1).
   const principals = await principalsFor(tx, ctx)
-  const readable: string[] = []
-  const admit = async (id: string, chain: string[], teamspaceId: string | null) => {
-    const caps = await resolveChain(tx, principals, chain, teamspaceId)
-    if (required.every((capability) => can(caps, capability))) readable.push(id)
-  }
-  for (const scope of scopes) {
-    const { chain, teamspaceId } = chainOf(scope)
-    await admit(scope.id, chain, teamspaceId)
-  }
-  for (const teamspace of teamspaces) await admit(teamspace.id, [teamspace.id], teamspace.id)
-  return readable
+  const items = [
+    ...scopes.map((scope) => ({ id: scope.id, ...chainOf(scope) })),
+    ...teamspaces.map((teamspace) => ({ id: teamspace.id, chain: [teamspace.id], teamspaceId: teamspace.id })),
+  ]
+  const inputs = await chainInputsMany(tx, items)
+  return items
+    .filter((_, i) => {
+      const caps = resolveCaps({ ...inputs[i], principals })
+      return required.every((capability) => can(caps, capability))
+    })
+    .map((item) => item.id)
 }
 
 /** 트랜잭션 밖에서 쓰는 편의 함수. 읽기 전용이다. */
