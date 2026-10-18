@@ -1570,6 +1570,13 @@ async function main() {
       }
     }
 
+    // 첫 연결을 기다리는 동안 오프라인 배너가 한 번이라도 섰는가 — 섰다면 잠깐이라 나중에 물으면 놓친다. 페이지보다 먼저 도는
+    // 기록기로 본다.
+    const { identifier: bannerWatch } = await send('Page.addScriptToEvaluateOnNewDocument', { source: `
+      window.__offlineBannerSeen = false
+      new MutationObserver(() => {
+        if ([...document.querySelectorAll('[role="status"]')].some((e) => e.textContent.includes('오프라인'))) window.__offlineBannerSeen = true
+      }).observe(document, { childList: true, subtree: true, characterData: true })` })
     await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${syncPage}` })
     await waitFor(`!!document.querySelector('.blk-editor [data-block-id]')`, 15000)
     await click((await rect('.blk-editor')).x + 40, (await rect('.blk-editor')).y + 10)
@@ -1577,6 +1584,10 @@ async function main() {
     check('평상시 저장은 조용하다 — "저장됨"을 띄우지 않는다',
       !(await evaluate(`[...document.querySelectorAll('[role="status"]')].some((e) => e.textContent.includes('저장'))`)))
     check('온라인에서 친 글이 서버에 쌓인다', await savedHas('온라인에서 친 글'))
+    const bannerSeen = await evaluate('window.__offlineBannerSeen')
+    check('★ 처음 여는 동안(첫 연결을 기다리는 동안)은 오프라인 배너를 띄우지 않는다 — 열 때마다 섰다 사라지며 본문이 뛰지 않게',
+      bannerSeen === false, String(bannerSeen))
+    await send('Page.removeScriptToEvaluateOnNewDocument', { identifier: bannerWatch })
     check('확인된 편집은 보존본에 남지 않는다', await waitFor(PENDING_EMPTY, 10000))
 
     // ① 협업 서버를 내리고 계속 친다.
@@ -1598,6 +1609,8 @@ async function main() {
     check('★ 끊긴 채 새로고침해도 친 글이 화면에 돌아온다 — 보존본을 서버 본문 위에 되살린다',
       await waitFor(`document.querySelector('.blk-editor').textContent.includes('끊긴 뒤에 친 글')`, 15000),
       await evaluate(`document.querySelector('.blk-editor').textContent`))
+    check('★ 끊긴 채 새로 열면 첫 시도가 끊긴 뒤 오프라인 배너가 선다 — 첫 연결을 기다리는 것과 다르다',
+      await waitFor(`[...document.querySelectorAll('[role="status"]')].some((e) => e.textContent.includes('오프라인'))`, 10000))
 
     // ③ 서버가 돌아온다. 브라우저가 알리면 기다리지 않고 곧바로 다시 붙는다.
     await restartCollab()
@@ -11498,6 +11511,9 @@ async function main() {
       await saveBody(sidePage, { blocks: [para(s.top, '위 블록'), para(s.one, '첫 블록'), para(s.two, '둘째 블록'), para(s.three, '셋째 블록'), para(s.end, '끝 블록')] })
       await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${sidePage}` })
       await waitFor(`!!document.querySelector('[data-block-id="${s.end}"] p') && document.querySelector('.blk-editor')?.getAttribute('contenteditable') === 'true'`, 15000)
+      // 협업 서버에 붙은 뒤에 줄을 잰다 — 편집기는 붙기 전에도 편집할 수 있고, 그 사이 본문 위가 바뀌면 잰 줄이 옛 좌표가 된다(첫
+      // 연결 동안 서던 오프라인 배너가 본문을 48px 밀었다가 놓아 둘째 블록이 셋째 옆에 떨어졌다 — HANDOFF §3.2-268).
+      check('전제 — 협업 서버에 붙었다', await waitFor(`document.querySelector('section[aria-label="본문"]')?.getAttribute('data-online') === 'true'`, 15000))
       const serverIs = async (expected) => {
         let got = null
         for (let i = 0; i < 60; i += 1) {
@@ -11522,7 +11538,8 @@ async function main() {
 
       // ① 둘째 블록을 첫 블록 줄의 오른쪽 끝으로 — 세로 가이드 · 놓으면 나란한 두 컬럼.
       const one = await line(s.one)
-      await gripOn(s.two)
+      const bannerAt = await evaluate(`document.querySelector('section[aria-label="본문"] > p[role="status"]')?.textContent ?? null`)
+      check('전제 — 둘째 블록에 핸들이 선다', await gripOn(s.two))
       await drag(s.two, one.x + one.w - 10, one.y + one.h / 2, { drop: false })
       const guide = await evaluate(`(() => {
         const g = document.querySelector('.blk-drop-guide')
@@ -11530,9 +11547,11 @@ async function main() {
         const r = g.getBoundingClientRect()
         return { x: r.x, y: r.y, w: r.width, h: r.height, o: g.getAttribute('data-orientation') }
       })()`)
+      const at = await evaluate(`({ scrollY, innerHeight, one: document.querySelector('[data-block-id="${s.one}"] > *:first-child')?.getBoundingClientRect().y,
+        three: document.querySelector('[data-block-id="${s.three}"] > *:first-child')?.getBoundingClientRect().y })`)
       check('★ 블록 줄의 오른쪽 끝으로 끌면 세로 가이드가 그 줄의 오른쪽에 선다(줄의 높이만큼)',
         !!guide && guide.o === 'vertical' && guide.w <= 4 && Math.abs(guide.h - one.h) < 3 && Math.abs(guide.y - one.y) < 3 && Math.abs(guide.x + 2 - (one.x + one.w)) < 4,
-        JSON.stringify({ guide, one }))
+        JSON.stringify({ guide, one, at, bannerAt }))
       await release(one.x + one.w - 10, one.y + one.h / 2)
       const [made, madeGot] = await serverIs(['위 블록', ['column_list', [['column', ['첫 블록']], ['column', ['둘째 블록']]]], '셋째 블록', '끝 블록'])
       check('★ 놓으면 두 블록이 나란한 컬럼이 된다 — 서버', made, madeGot)
