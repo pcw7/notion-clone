@@ -6731,6 +6731,9 @@ async function main() {
         await caretInBlock()
         await key('End')
         for (let i = 0; i < n; i += 1) await key('ArrowLeft', SHIFT)
+        // 고정 대기만으로는 부하 아래에서 키가 덜 처리된 채 넘어간다 — 첫 복사본 판(도구-2)이 작업 트리의 판과 함께 돌 때
+        // 한 글자("사")만 고른 채 "코멘트 달기"를 눌러 뒤의 검사 넷이 줄줄이 떨어졌다. 고른 글자 수가 맞을 때까지 기다린다.
+        await waitFor(`window.getSelection().toString().length === ${n}`, 3000)
         await sleep(120)
       }
       /** 블록의 맨 앞으로. 한 블록뿐이라 왼쪽 끝에서 더 눌러도 그대로다. */
