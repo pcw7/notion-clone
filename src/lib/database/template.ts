@@ -80,6 +80,7 @@ import {
   type RowResult,
   type RowSummary,
 } from './row.ts'
+import { withoutMissingOptions } from './options.ts'
 import type { CellValue } from './property-types.ts'
 import type { WriteOrigin } from '../automation/trigger-route.ts'
 
@@ -386,7 +387,8 @@ export async function createRowFromTemplateIn(
       [template.id, dataSourceId],
     )
     const given = input.cells ?? []
-    const fromTemplate = stored.map((s) => ({ propertyId: s.property_id, value: s.value }))
+    // 그 속성에 없는 옵션을 가리키는 값도 무시한다(위와 같은 까닭 — 셀 쓰기가 그 속성의 옵션인지 묻는다 · `withoutMissingOptions`)
+    const fromTemplate = await withoutMissingOptions(tx, stored.map((s) => ({ propertyId: s.property_id, value: s.value })))
     // 누가 이기나(위 `precedence`) — 진 쪽은 이긴 쪽이 정하지 않은 칸에만 들어간다
     const winners = input.precedence === 'template' ? fromTemplate : given
     const losers = input.precedence === 'template' ? given : fromTemplate

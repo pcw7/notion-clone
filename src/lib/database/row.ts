@@ -72,6 +72,7 @@ import {
 import { issueUniqueSeq } from './unique-id.ts'
 import { routeCellsEdited, routeRowAdded, type WriteOrigin } from '../automation/trigger-route.ts'
 import { peopleIdsOf, peopleIssuesIn } from './people.ts'
+import { optionIssuesIn } from './options.ts'
 
 /** 한 번에 읽는 행 수. 뷰의 "더 보기"는 W8-b 다. */
 export const DEFAULT_ROW_LIMIT = 50
@@ -460,7 +461,8 @@ export async function createRowIn(
     const prepared = prepareCells(gate, [...given, ...defaultCells(gate, given)])
     if (isRowFailure(prepared)) return prepared
     // 사람 칸(6g-1) — 이 워크스페이스의 활동 중인 사람만(정본 §3.5 [보강] 사람 속성 ②)
-    const strangers = await peopleIssuesIn(tx, ctx.workspaceId, prepared)
+    // 옵션 칸 — 그 속성의 옵션만(`optionIssuesIn` · HANDOFF §7 의 구멍)
+    const strangers = [...(await peopleIssuesIn(tx, ctx.workspaceId, prepared)), ...(await optionIssuesIn(tx, prepared))]
     if (strangers.length > 0) return { ok: false, reason: 'invalid_value', issues: strangers } as const
 
     return insertRowIn(tx, ctx, gate, dataSourceId, prepared, { isTemplate, origin: input.origin ?? 'user', filledBy: input.filledBy })
@@ -483,6 +485,8 @@ export async function createAnonymousRowIn(
   const gate = await readSchemaGate(tx, dataSourceId, ds)
   const prepared = prepareCells(gate, [...cells, ...defaultCells(gate, cells)])
   if (isRowFailure(prepared)) return prepared
+  const badOptions = await optionIssuesIn(tx, prepared)
+  if (badOptions.length > 0) return { ok: false, reason: 'invalid_value', issues: badOptions } as const
   return insertRowIn(tx, { workspaceId, userId: null }, gate, dataSourceId, prepared, { isTemplate: false, origin: 'user' })
 }
 
@@ -501,6 +505,8 @@ export async function createRespondentRowIn(
   const gate = await readSchemaGate(tx, dataSourceId, ds)
   const prepared = prepareCells(gate, [...cells, ...defaultCells(gate, cells)])
   if (isRowFailure(prepared)) return prepared
+  const badOptions = await optionIssuesIn(tx, prepared)
+  if (badOptions.length > 0) return { ok: false, reason: 'invalid_value', issues: badOptions } as const
   return insertRowIn(tx, { workspaceId: respondent.workspaceId, userId: respondent.userId }, gate, dataSourceId, prepared, {
     isTemplate: false,
     origin: 'user',
@@ -657,7 +663,8 @@ export async function updateCellsIn(
 
     const prepared = prepareCells(gate, input.cells)
     if (isRowFailure(prepared)) return prepared
-    const strangers = await peopleIssuesIn(tx, ctx.workspaceId, prepared)
+    // 옵션 칸 — 그 속성의 옵션만(`optionIssuesIn` · HANDOFF §7 의 구멍)
+    const strangers = [...(await peopleIssuesIn(tx, ctx.workspaceId, prepared)), ...(await optionIssuesIn(tx, prepared))]
     if (strangers.length > 0) return { ok: false, reason: 'invalid_value', issues: strangers } as const
 
     if (prepared.length > 0) {
