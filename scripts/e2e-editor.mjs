@@ -326,6 +326,8 @@ function connect(url) {
   const requests = new Map()
   // Next 의 링크 미리받기 요청 수(`next-router-prefetch` 머리) — 보이는 링크마다 미리받지 않는지 본다(10n-7)
   let prefetches = 0
+  // 화면의 다시 읽기(미리받기가 아닌 RSC 요청 — `_rsc=`)가 시작된 수 — 떠나기 전 대기를 본다(10n-9)
+  let rscStarted = 0
   // 붙잡힌 요청(`Fetch.enable` 의 패턴에 걸린 것) — 검사가 놓아 줄 때까지 서버에 닿지 않는다(표 변경 알림의 구독 전 틈 · #250)
   const paused = []
   ws.onmessage = (event) => {
@@ -337,6 +339,7 @@ function connect(url) {
       requests.set(msg.params.requestId, { type: msg.params.type, path: String(msg.params.request.url).replace(/^https?:\/\/[^/]+/, '').slice(0, 160) })
       const prefetch = Object.keys(msg.params.request.headers ?? {}).some((k) => k.toLowerCase() === 'next-router-prefetch')
       if (prefetch) prefetches += 1
+      else if (String(msg.params.request.url).includes('_rsc=')) rscStarted += 1
       if (msg.params.type === 'Fetch' || msg.params.type === 'XHR') {
         inflight.add(msg.params.requestId)
         // 신호 뒤의 다시 읽기가 시작됐다 — 이제 진행 중인 요청으로 기다린다. 링크의 미리받기는 다시 읽기가 아니다(올려 둔 링크가 미리받으면
@@ -381,6 +384,19 @@ function connect(url) {
         for (let waited = 0; inflight.size > 0 && waited < 3000; waited += 50) await sleep(50)
       }
       await settle()
+      // 떠나는 화면이 다 살아나기를 먼저 — 문서를 다 받고(load) 메인 스레드가 비면(requestIdleCallback) 하이드레이션과 효과가 끝났다. 서버가
+      // 그린 내용만 보고 넘어온 검사가 살아나는 중인 화면을 떠나면, 그 화면은 아래의 대기가 본 뒤에야 구독을 열고 렌더 뒤의 변경(방금의
+      // 쓰기)을 곧바로 받아 다시 읽기를 시작한다 — 떠나는 이동이 그것을 끊어 "The destination stream closed early" 를 찍었다(갤러리 2f-1 ·
+      // #380 · #381 의 전체 판 · CPU 6배 홀로 열 판 남짓에 한 번 — 구독이 화면이 선 지 1.15초 뒤에 열렸다 · HANDOFF §3.3-477). 상한 3초.
+      await rawSend('Runtime.evaluate', {
+        expression: `new Promise((resolve) => {
+          const done = setTimeout(() => resolve(false), 3000)
+          const idle = () => requestIdleCallback(() => { clearTimeout(done); resolve(true) }, { timeout: 3000 })
+          if (document.readyState === 'complete') idle()
+          else addEventListener('load', idle, { once: true })
+        })`,
+        awaitPromise: true,
+      }).catch(() => undefined)
       // 표 변경 알림이 열려 있으면 — 방금의 쓰기가 일으킬 다시 읽기가 시작될 틈(서버가 250ms 모은다)까지 조용하기를 기다린다. 그 사이에
       // 온 신호도 본다(조용함을 기다리는 도중에 온 "바뀌었다"의 다시 읽기는 그 뒤에 시작된다)
       if (eventStreams.size > 0) {
@@ -424,7 +440,7 @@ function connect(url) {
     }
     return ids.length
   }
-  return { ws, send, opened, pageErrors, releasePaused, fulfillPaused, pausedCount: () => paused.length, prefetchCount: () => prefetches }
+  return { ws, send, opened, pageErrors, releasePaused, fulfillPaused, pausedCount: () => paused.length, prefetchCount: () => prefetches, rscCount: () => rscStarted }
 }
 
 async function launchBrowser(executable) {
@@ -588,7 +604,7 @@ async function main() {
     const devtoolsPort = launched.port
     cdp = connect(launched.url)
     await cdp.opened
-    const { send, pageErrors, releasePaused, fulfillPaused, pausedCount, prefetchCount } = cdp
+    const { send, pageErrors, releasePaused, fulfillPaused, pausedCount, prefetchCount, rscCount } = cdp
 
     const evaluate = async (expression) => {
       const r = await send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true })
@@ -14072,6 +14088,61 @@ async function main() {
         check('★ 구독이 붙기 전에 더한 행도 구독이 붙으면 따라온다 — 서버가 렌더 시각 뒤의 변경을 곧바로 알린다(#250)',
           await waitFor(`!!document.querySelector('tr[data-row-id="${ma}"]')`, 15000), await titles())
       } finally {
+        await send('Fetch.disable').catch(() => undefined)
+        await releasePaused()
+      }
+    }
+
+    if (sectionIf('떠나기 전 대기 — 살아나는 중인 화면 (도구 · F-04-24)')) {
+      // 판 도구가 떠나기 전에 기다리는 것(`send` 의 대기)을 본다. 서버가 그린 카드만 보고 넘어온 검사가 살아나는 중인 화면을 떠나면, 그 화면이
+      // 뒤늦게 구독을 열고 렌더 뒤의 변경을 곧바로 받아 다시 읽기를 시작해 떠나는 이동이 그것을 끊었다("The destination stream closed early"
+      // — 갤러리 2f-1 · #380 · #381 의 전체 판). CPU 를 느리게 해 화면이 살아나는 동안 떠나고, **다음 문서를 붙잡아 둔 채** 3초 동안 옛
+      // 화면이 다시 읽기를 시작하는지 센다 — 붙잡은 동안 시작한 다시 읽기는 놓는 순간 끊긴다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `떠나기 전 ${stamp}` })).body.database
+      const titleProp = (await api('GET', `/views/${db.defaultViewId}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const rowOf = async (t) => (await api('POST', `/views/${db.defaultViewId}/rows`, {
+        cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun(t)] } }],
+      })).body.row.id
+      await rowOf('가')
+      const gallery = (await api('POST', `/databases/${db.id}/views`, { name: '갤러리', type: 'gallery' })).body.view.id
+      await send('Emulation.setCPUThrottlingRate', { rate: 10 })
+      try {
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}?v=${gallery}` })
+        check('전제 — 서버가 그린 카드가 섰다', await waitFor(`document.querySelectorAll('[data-testid="db-gallery-card"]').length === 1`, 20000))
+        const before = rscCount()
+        // 렌더 뒤의 변경 — 화면이 구독을 열면 서버가 곧바로 "바뀌었다"를 보낸다(#250)
+        await rowOf('나')
+        await send('Fetch.enable', { patterns: [{ urlPattern: `*leave=${stamp}*`, resourceType: 'Document', requestStage: 'Request' }] })
+        const leaving = send('Page.navigate', { url: `${BASE}/w/${workspaceId}?leave=${stamp}` })
+        for (let i = 0; i < 600 && pausedCount() === 0; i += 1) await sleep(50)
+        const held = pausedCount() > 0
+        const atLeave = rscCount()
+        // 옛 화면은 아직 살아 있다 — 붙잡은 채 3초 지켜본다(살아나는 중이었다면 그 사이 구독을 열고 그 신호에 다시 읽기를 시작한다 —
+        // 기다리지 않는 반사실에서 0.5초 안에 시작했다). 그동안은 `evaluate` 로 옛 화면에 묻지 못한다 — `Page.navigate` 가 걸려 있는 동안
+        // `Runtime.evaluate` 는 돌아오지 않았다(옛 화면의 JS 는 돈다 — 구독 · 다시 읽기가 나갔다). 그래서 네트워크 사건으로만 센다.
+        await sleep(3000)
+        const whileLeaving = rscCount()
+        await send('Fetch.disable')
+        await releasePaused()
+        await leaving
+        await waitFor(`location.search.includes('leave=${stamp}')`, 20000)
+        // 끊긴 다시 읽기의 수는 보지 않는다 — 이 장면(CPU 10배)에서는 떠나기 전의 다시 읽기도 데이터를 다 받은 직후 브라우저가
+        // `net::ERR_ABORTED` 로 닫는 일이 잦았다(화면의 JS 는 abort · cancel 을 부르지 않았다 · 서버 오류는 없었다 — HANDOFF §7). 떠나는 이동과
+        // 무관한 현상이라 이 절의 주장이 아니다.
+        const seen = JSON.stringify({ before, atLeave, whileLeaving })
+        check('전제 — 떠날 때 다음 문서를 붙잡았다', held)
+        check('전제 — 렌더 뒤의 변경이 다시 읽기를 불렀다(떠나기 전이든 떠나는 동안이든)', whileLeaving > before, seen)
+        check('★ 떠나는 동안 옛 화면이 다시 읽기를 시작하지 않았다 — 판 도구가 화면이 살아나 신호의 다시 읽기를 끝낼 때까지 기다렸다',
+          whileLeaving === atLeave, seen)
+      } finally {
+        await send('Emulation.setCPUThrottlingRate', { rate: E2E_CPU_THROTTLE > 1 ? E2E_CPU_THROTTLE : 1 })
         await send('Fetch.disable').catch(() => undefined)
         await releasePaused()
       }
