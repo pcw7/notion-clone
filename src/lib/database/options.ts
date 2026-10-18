@@ -21,8 +21,9 @@
  * select 의 순서는 그대로다.
  */
 
+import type { ValidationIssue } from '../contracts/rich-text.ts'
 import type { Tx } from '../db/tx.ts'
-import { isOptionColor, isStatusGroupKind, type SelectOption } from './property-types.ts'
+import { isOptionColor, isStatusGroupKind, type CellValue, type SelectOption } from './property-types.ts'
 
 type OptionRow = {
   property_id: string
@@ -69,4 +70,51 @@ export async function readOptionsOf(
     out.set(row.property_id, list)
   }
   return out
+}
+
+/**
+ * 쓰려는 칸의 옵션이 **그 속성의 옵션**인가 — select · status 칸의 id 가 그 속성의 `select_option` 에 없으면 거부한다(셀 쓰기의
+ * `peopleIssuesIn` 과 같은 자리 · HANDOFF §7 의 구멍).
+ *
+ * 모양 검사(`validateCellValue`)는 id 의 꼴만 봤다. 없는 id(다른 속성의 옵션 · 아무 uuid)를 API 로 넣으면 읽기에서 빈 값으로 접혀
+ * 망가지지는 않았지만, 보드의 열 · 필터 · 집계가 "어느 열에도 없는 값"을 쥐게 됐다. 비우기(`null`)는 그대로 된다. 옵션을 지우는 길은 아직
+ * 없다 — 생기면 지운 옵션도 여기서 걸린다.
+ */
+export async function optionIssuesIn(
+  tx: Tx,
+  cells: readonly { readonly propertyId: string; readonly value: CellValue }[],
+): Promise<ValidationIssue[]> {
+  return (await missingOptionRefs(tx, cells)).map((r) => ({ path: `cells.${r.propertyId}.${r.kind}.id`, message: '이 속성의 옵션이 아닙니다' }))
+}
+
+/**
+ * 그 속성에 없는 옵션을 가리키는 칸을 뺀다 — 템플릿의 값이 쓴다(지운 프로퍼티의 값을 무시하는 것과 같은 까닭: 남겨 두면 셀 쓰기의 옵션
+ * 확인이 요청 전체를 거부해 그 템플릿으로는 영영 행을 못 만든다 · 08 *"템플릿에 저장된 property 가 이후 삭제됨 → 해당 값은 무시"*). 그런 값은
+ * 이 확인 전에 API 로 쓰였거나 앞으로 옵션 지우기가 남길 것이다.
+ */
+export async function withoutMissingOptions<Cell extends { readonly propertyId: string; readonly value: CellValue }>(
+  tx: Tx,
+  cells: readonly Cell[],
+): Promise<Cell[]> {
+  const missing = new Set((await missingOptionRefs(tx, cells)).map((r) => r.propertyId))
+  return cells.filter((cell) => !missing.has(cell.propertyId))
+}
+
+async function missingOptionRefs(
+  tx: Tx,
+  cells: readonly { readonly propertyId: string; readonly value: CellValue }[],
+): Promise<{ propertyId: string; id: string; kind: 'select' | 'status' }[]> {
+  const refs: { propertyId: string; id: string; kind: 'select' | 'status' }[] = []
+  for (const cell of cells) {
+    const v = cell.value
+    if (v.type === 'select' && v.select !== null) refs.push({ propertyId: cell.propertyId, id: v.select.id, kind: 'select' })
+    if (v.type === 'status' && v.status !== null) refs.push({ propertyId: cell.propertyId, id: v.status.id, kind: 'status' })
+  }
+  if (refs.length === 0) return []
+  const known = await tx.query<{ property_id: string; id: string }>(
+    `SELECT property_id, id FROM select_option WHERE id = ANY($1::uuid[])`,
+    [[...new Set(refs.map((r) => r.id))]],
+  )
+  const ok = new Set(known.map((row) => `${row.property_id}:${row.id}`))
+  return refs.filter((r) => !ok.has(`${r.propertyId}:${r.id}`))
 }

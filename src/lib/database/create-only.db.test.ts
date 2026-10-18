@@ -224,6 +224,28 @@ describe('⑦ ★ 볼 수 있는 사람도 끊겨 빠진 행은 보지 않는다
   })
 })
 
+// ── ⑧ 게스트와 데이터베이스의 부여 ────────────────────────────────────
+
+describe('⑧ 게스트도 데이터베이스의 부여로 셀을 고치고 행을 만든다', () => {
+  test('edit_content 를 받은 게스트 — 표를 열고 · 행을 보고 · 칸을 고치고 · 행을 만든다(HANDOFF §7 의 "not_found" 는 낡았다)', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const ws = await createBareWorkspace('게스트 편집')
+    const boss = await joinAs(ws, await createUser('대표'), 'owner')
+    const guest = await joinAs(ws, await createUser('손님'), 'guest')
+    const db = unwrap(await createDatabase(boss.ctx, { name: unique('손님의 표') }))
+    unwrap(await addProperty(boss.ctx, db.dataSourceId, { name: '점수', type: 'number' }))
+    const score = unwrap(await getSchema(boss.ctx, db.dataSourceId)).properties.find((p) => p.name === '점수')!.id
+    const row = unwrap(await createRow(boss.ctx, db.dataSourceId, { cells: [{ propertyId: score, value: num(1) }] }))
+    assert.ok((await grantAccess(boss.ctx, db.id, { type: 'user', id: guest.userId }, 'edit_content')).ok)
+
+    const seen = unwrap(await getDatabase(guest.ctx, db.id))
+    assert.deepEqual(seen.access, { canViewAllRows: true, canEditContent: true, canCreateRows: true, canEditStructure: false })
+    assert.deepEqual(await titlesOf(guest, db.dataSourceId), [row.id])
+    assert.ok((await updateCells(guest.ctx, row.id, { cells: [{ propertyId: score, value: num(2) }] })).ok, '칸을 고친다')
+    assert.ok((await createRow(guest.ctx, db.dataSourceId)).ok, '행을 만든다')
+  })
+})
+
 // ── ⑤ 아무것도 없는 사람 ──────────────────────────────────────────────
 
 describe('⑤ 볼 수도 만들 수도 없는 사람', () => {
