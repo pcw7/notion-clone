@@ -324,6 +324,8 @@ function connect(url) {
   let changedAt = null
   // 요청마다 종류 · 경로 — 취소로 끝나면 `recentAborts` 에 남긴다(서버 오류의 단서)
   const requests = new Map()
+  // Next 의 링크 미리받기 요청 수(`next-router-prefetch` 머리) — 보이는 링크마다 미리받지 않는지 본다(10n-7)
+  let prefetches = 0
   // 붙잡힌 요청(`Fetch.enable` 의 패턴에 걸린 것) — 검사가 놓아 줄 때까지 서버에 닿지 않는다(표 변경 알림의 구독 전 틈 · #250)
   const paused = []
   ws.onmessage = (event) => {
@@ -333,9 +335,13 @@ function connect(url) {
       pending.delete(msg.id)
     } else if (msg.method === 'Network.requestWillBeSent') {
       requests.set(msg.params.requestId, { type: msg.params.type, path: String(msg.params.request.url).replace(/^https?:\/\/[^/]+/, '').slice(0, 160) })
+      const prefetch = Object.keys(msg.params.request.headers ?? {}).some((k) => k.toLowerCase() === 'next-router-prefetch')
+      if (prefetch) prefetches += 1
       if (msg.params.type === 'Fetch' || msg.params.type === 'XHR') {
         inflight.add(msg.params.requestId)
-        changedAt = null // 신호 뒤의 다시 읽기가 시작됐다 — 이제 진행 중인 요청으로 기다린다
+        // 신호 뒤의 다시 읽기가 시작됐다 — 이제 진행 중인 요청으로 기다린다. 링크의 미리받기는 다시 읽기가 아니다(올려 둔 링크가 미리받으면
+        // 그것을 다시 읽기로 착각해 진짜 다시 읽기를 기다리지 않았다 — 10n-7 의 CPU 6배 판에서 갤러리의 `router.refresh()` 가 끊겼다)
+        if (!prefetch) changedAt = null
       }
       if (msg.params.type === 'EventSource') eventStreams.add(msg.params.requestId)
     } else if (msg.method === 'Network.eventSourceMessageReceived') {
@@ -418,7 +424,7 @@ function connect(url) {
     }
     return ids.length
   }
-  return { ws, send, opened, pageErrors, releasePaused, fulfillPaused, pausedCount: () => paused.length }
+  return { ws, send, opened, pageErrors, releasePaused, fulfillPaused, pausedCount: () => paused.length, prefetchCount: () => prefetches }
 }
 
 async function launchBrowser(executable) {
@@ -582,7 +588,7 @@ async function main() {
     const devtoolsPort = launched.port
     cdp = connect(launched.url)
     await cdp.opened
-    const { send, pageErrors, releasePaused, fulfillPaused, pausedCount } = cdp
+    const { send, pageErrors, releasePaused, fulfillPaused, pausedCount, prefetchCount } = cdp
 
     const evaluate = async (expression) => {
       const r = await send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true })
@@ -20266,6 +20272,24 @@ async function main() {
       await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${row}` })
       check('행 화면의 속성 묶음에도 이름 칩',
         await waitFor(`[...document.querySelectorAll('[data-testid="row-properties"] [data-testid="db-person-chip"]')].some((c) => c.textContent === ${JSON.stringify(mateName)})`, 15000))
+    }
+
+    if (sectionIf('링크 미리받기 — 뜻을 보일 때만 (10n-7 · F-12-18)')) {
+      // 보이는 링크마다 미리받지 않는다(`src/app/link.tsx` · HANDOFF §3.2-271) — 사이드바의 링크가 화면에 있어도 요청이 없고, 올려 두면 그
+      // 링크를 미리받는다. 전에는 화면이 다시 그려질 때마다 링크마다 나가(갤러리 절 한 판 77번) 떠날 때 끊겨 서버가 오류를 찍었다.
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
+      await waitFor(`!!document.querySelector('[data-testid="sidebar-library"]')`, 15000)
+      const before = prefetchCount()
+      // 없음을 보는 검사라 시간을 준다 — 보이는 링크의 미리받기는 화면이 서고 한가할 때 나간다(전에는 1초 안에 나갔다)
+      await sleep(2500)
+      const idle = prefetchCount() - before
+      check('★ 화면에 보이는 링크는 미리받지 않는다 — 사이드바 · 목록의 링크가 있어도 미리받기 요청이 없다', idle === 0, `${idle}번`)
+      const lib = await rect('[data-testid="sidebar-library"]')
+      await move(lib.x + lib.w / 2, lib.y + lib.h / 2)
+      let hovered = false
+      for (const end = Date.now() + 5000; Date.now() < end && !hovered; await sleep(100)) hovered = prefetchCount() > before + idle
+      check('올려 두면 그 링크를 미리받는다(뜻을 보인 링크만)', hovered, `${prefetchCount() - before - idle}번`)
+      await move(5, 5)
     }
 
     if (sectionIf('옵션 고치기 · 지우기 (10n-6 · F-03-04)')) {
