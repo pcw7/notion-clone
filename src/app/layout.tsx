@@ -1,9 +1,9 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { readSessionToken } from "@/lib/auth/session-cookie";
 import { themeOfSessionToken } from "@/lib/settings/theme";
 import { readDevicePreferences } from "@/lib/settings/device-preferences-cookie";
-import { ROOT_TITLE } from "@/lib/nav/screen-title";
+import { APP_NAME, ROOT_TITLE } from "@/lib/nav/screen-title";
 import { supportCheckScript } from "@/lib/platform/browser-support";
 import "./globals.css";
 
@@ -21,6 +21,18 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: ROOT_TITLE,
   description: "문서 · 데이터베이스 · 위키를 한곳에서 — 노션과 같은 워크스페이스",
+  // 홈 화면에 설치했을 때(10m-3 · F-12-12 · 정본 §3.10 끝 [보강] 좁은 화면 ⑩ⓐ) — 매니페스트(`manifest.ts`)는 Next 가 링크를 단다. iOS 는
+  // 매니페스트 대신 이 머리표와 `apple-icon.tsx` 를 본다.
+  appleWebApp: { title: APP_NAME, statusBarStyle: "default" },
+};
+
+// 화면 머리(주소 줄 · 설치한 앱의 제목 막대)의 색 — 밝은 · 어두운 테마의 배경(`globals.css` 의 --background). OS 의 설정을 따른다 — 계정의
+// 테마(data-theme)는 서버가 HTML 에 싣지만 이 머리표는 미디어 쿼리로만 고를 수 있다.
+export const viewport: Viewport = {
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#ffffff" },
+    { media: "(prefers-color-scheme: dark)", color: "#0a0a0a" },
+  ],
 };
 
 export default async function RootLayout({ children }: LayoutProps<"/">) {

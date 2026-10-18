@@ -18611,6 +18611,46 @@ async function main() {
         onDoing && status === doing && (await screenOrder(doing)) === 'B', JSON.stringify({ onDoing, status, doingColumn: await screenOrder(doing) }))
     }
 
+    if (sectionIf('설치할 수 있는 웹 앱 (10m-3 · F-12-12)')) {
+      // 매니페스트 · 아이콘은 로그인 없이 받는다(브라우저는 쿠키 없이 받는다) · 브라우저가 읽은 매니페스트에 오류가 없다 · 설치를 막는 이유가
+      // 없다(Chrome 의 판정) · 머리에 화면 색 · iOS 홈 화면 아이콘. 서비스 워커는 없다(정본 ⑩ⓑ).
+      const res = await rawFetch(`${BASE}/manifest.webmanifest`)
+      const manifest = res.ok ? await res.json() : null
+      check('★ 매니페스트를 로그인 없이 받는다 — 이름 · 시작 주소 · standalone',
+        res.status === 200 && manifest?.name === 'notion-clone' && manifest?.start_url === '/' && manifest?.display === 'standalone',
+        JSON.stringify({ status: res.status, type: res.headers.get('content-type'), manifest }))
+      const pngSize = (buf) => {
+        const v = new DataView(buf)
+        const sig = v.getUint32(0) === 0x89504e47 && v.getUint32(4) === 0x0d0a1a0a
+        return sig ? `${v.getUint32(16)}x${v.getUint32(20)}` : null
+      }
+      const icons = []
+      for (const icon of manifest?.icons ?? []) {
+        const r = await rawFetch(`${BASE}${icon.src}`)
+        icons.push({ src: icon.src, purpose: icon.purpose, declared: icon.sizes, status: r.status, type: r.headers.get('content-type'), actual: r.ok ? pngSize(await r.arrayBuffer()) : null })
+      }
+      check('★ 아이콘 192 · 512(+ maskable) — 로그인 없이 · PNG · 적은 크기 그대로',
+        icons.length === 3 && icons.every((i) => i.status === 200 && i.type?.startsWith('image/png') && i.actual === i.declared)
+          && icons.some((i) => i.declared === '192x192') && icons.some((i) => i.purpose === 'maskable' && i.declared === '512x512'),
+        JSON.stringify(icons))
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
+      await waitFor(`document.readyState === 'complete' && !!document.querySelector('link[rel="manifest"]')`, 15000)
+      const head = await evaluate(`JSON.stringify({
+        manifest: document.querySelector('link[rel="manifest"]')?.getAttribute('href') ?? null,
+        theme: [...document.querySelectorAll('meta[name="theme-color"]')].map((m) => (m.getAttribute('media') ?? '') + ' ' + m.getAttribute('content')),
+        apple: document.querySelector('link[rel="apple-touch-icon"]')?.getAttribute('href') ?? null,
+      })`).then(JSON.parse)
+      check('머리 — 매니페스트 링크 · 밝은 · 어두운 화면 색 · iOS 홈 화면 아이콘',
+        head.manifest === '/manifest.webmanifest' && head.theme.length === 2 && head.theme.some((t) => t.includes('#0a0a0a'))
+          && typeof head.apple === 'string' && head.apple.startsWith('/apple-icon'), JSON.stringify(head))
+      const read = await send('Page.getAppManifest', {})
+      check('★ 브라우저가 읽은 매니페스트에 오류가 없다', read?.url?.endsWith('/manifest.webmanifest') && (read.errors ?? []).length === 0,
+        JSON.stringify({ url: read?.url, errors: read?.errors }))
+      const installable = await send('Page.getInstallabilityErrors', {})
+      check('★ 설치할 수 있다 — 브라우저가 설치를 막는 이유가 없다', (installable?.installabilityErrors ?? ['(응답 없음)']).length === 0,
+        JSON.stringify(installable))
+    }
+
     if (sectionIf('기준점에 붙는 층 — 고르개 (10j-3a · F-12-12)')) {
       // select 칸의 고르개는 몸(body)으로 내보낸 층이다 — 칸 바로 아래 · 왼쪽 맞춤 · 화면 안. 칸 밖(body)에 있어도 포커스는 검색칸에 남는다
       // (칸의 blur 가 층을 칸 안으로 본다). 창을 스크롤하면 칸을 따라간다. 고르면 닫히고 칸에 들어간다.
