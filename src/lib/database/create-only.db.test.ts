@@ -188,6 +188,42 @@ describe('④ ★ 셀 쓰기는 그 행의 권한', () => {
   })
 })
 
+// ── ⑦ 볼 수 있는 사람과 끊긴 행 (10l-3) ───────────────────────────────
+
+describe('⑦ ★ 볼 수 있는 사람도 끊겨 빠진 행은 보지 않는다 (10l-3)', () => {
+  test('★ 행을 끊고 빼면 표 · 보드 개수 · 캘린더 · 합에서 빠진다 — 소유자는 그대로 · 그 행에 다시 주면 돌아온다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { boss, editor, ds, score, todo, theirs, board, calendar } = await submissions()
+    assert.deepEqual((await titlesOf(editor, ds)), theirs.map((r) => r.id), '전제: 편집자는 둘 다 본다')
+    assert.equal(await countOf(editor, board.id, todo), 2)
+
+    assert.ok((await stopInheriting(boss.ctx, theirs[1].id)).ok)
+    assert.ok((await revokeAccess(boss.ctx, theirs[1].id, { type: 'user', id: editor.userId })).ok)
+
+    assert.deepEqual(await titlesOf(editor, ds), [theirs[0].id], '표에서 빠진다(전에는 제목 · 칸이 그대로 섰다)')
+    assert.equal(await countOf(editor, board.id, todo), 1, '보드의 개수가 빠진 행을 세지 않는다')
+    assert.deepEqual(await calendarIds(editor, calendar.id), [theirs[0].id])
+    assert.deepEqual(await sumOf(editor, ds, score), { kind: 'number', value: 10 }, '합이 빠진 행(20)을 더하지 않는다')
+    assert.deepEqual(await sumOf(boss, ds, score), { kind: 'number', value: 30 }, '소유자는 그대로 둘 다')
+    assert.equal((await titlesOf(boss, ds) as string[]).length, 2)
+
+    assert.ok((await grantAccess(boss.ctx, theirs[1].id, { type: 'user', id: editor.userId }, 'view')).ok)
+    assert.deepEqual(await titlesOf(editor, ds), theirs.map((r) => r.id), '그 행에 다시 주면 돌아온다(그 행의 스코프)')
+    assert.deepEqual(await sumOf(editor, ds, score), { kind: 'number', value: 30 })
+  })
+
+  test('끊긴 행이라도 규칙이 그 사람을 열면 선다 — 판정과 같은 답(규칙은 그 행의 자리에 남는다)', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { boss, editor, db, ds, score, cells } = await submissions()
+    const own = unwrap(await createRow(editor.ctx, ds, { cells: cells(7, '2026-03-13') }))
+    assert.ok((await setAccessRule(boss.ctx, db.id, { dataSourceId: ds, source: 'created_by', level: 'edit' })).ok)
+    assert.ok((await stopInheriting(boss.ctx, own.id)).ok)
+    assert.ok((await revokeAccess(boss.ctx, own.id, { type: 'user', id: editor.userId })).ok)
+    assert.ok((await titlesOf(editor, ds) as string[]).includes(own.id), '만든 사람 규칙이 연다')
+    assert.ok((await updateCells(editor.ctx, own.id, { cells: [{ propertyId: score, value: num(8) }] })).ok, '판정도 같다 — 칸을 고친다')
+  })
+})
+
 // ── ⑤ 아무것도 없는 사람 ──────────────────────────────────────────────
 
 describe('⑤ 볼 수도 만들 수도 없는 사람', () => {
