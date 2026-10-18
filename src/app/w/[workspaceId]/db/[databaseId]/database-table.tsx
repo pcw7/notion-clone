@@ -342,7 +342,14 @@ export function DatabaseTable(props: {
 
   // ── 저장 ───────────────────────────────────────────────────────────
 
-  const saveCell = async (rowId: string, column: CellColumn, next: CellValue, previous: CellValue) => {
+  /** `send` — 서버에 보내는 길. 없으면 통째 값이다. 사람 칸은 더하기 · 빼기를 준다(`setPeople`). */
+  const saveCell = async (
+    rowId: string,
+    column: CellColumn,
+    next: CellValue,
+    previous: CellValue,
+    send: () => Promise<api.ApiResult<RowJson>> = () => api.updateCell(workspaceId, rowId, column.propertyId, next),
+  ) => {
     // 같은 값이면 보내지 않는다 — 셀 쓰기마다 block.version 이 오른다(X-6).
     if (sameValue(previous, next)) return
 
@@ -356,7 +363,7 @@ export function DatabaseTable(props: {
     markTouched(rowId)
     setRows((current) => current.map((row) => (row.id === rowId ? withValue(row, next) : row)))
 
-    const result = await api.updateCell(workspaceId, rowId, column.propertyId, next)
+    const result = await send()
     if (!result.ok) {
       // 그 칸만 되돌린다. 그사이 같은 칸을 또 고쳤다면(값이 `next` 가 아니면) 두지 않는다.
       setRows((current) =>
@@ -551,13 +558,22 @@ export function DatabaseTable(props: {
     setMode({ kind: 'selected', at })
   }
 
-  /** 사람 칸을 고친다(6g-2) — 고를 때마다. 편집은 열린 채다(여럿을 고른다). 이름은 먼저 넣는다(칩이 깜빡이지 않게). */
+  /**
+   * 사람 칸을 고친다(6g-2) — 고를 때마다. 편집은 열린 채다(여럿을 고른다). 이름은 먼저 넣는다(칩이 깜빡이지 않게).
+   * 서버에는 **더하기 · 빼기**로 보낸다(정본 [보강] 사람 속성 ⑫) — 통째 값이면 그사이 다른 사람이 더한 사람을 지운다. 답(합친 행)이
+   * 화면의 칸을 바꾼다.
+   */
   const setPeople = (at: CellPos, ids: readonly string[], known: PeopleNames) => {
     const row = rows[at.row]
     const column = columns[at.col]
     if (row === undefined || column === undefined || !isCellColumn(column) || column.type !== 'people') return
     addPeopleNames(known)
-    void saveCell(row.id, column, { type: 'people', people: ids.map((id) => ({ id })) }, valueAt(row, column))
+    const previous = valueAt(row, column)
+    const had = previous.type === 'people' ? previous.people.map((person) => person.id) : []
+    const change = { add: ids.filter((id) => !had.includes(id)), remove: had.filter((id) => !ids.includes(id)) }
+    void saveCell(row.id, column, { type: 'people', people: ids.map((id) => ({ id })) }, previous, () =>
+      api.changePeople(workspaceId, row.id, column.propertyId, change),
+    )
   }
 
   const createOption = async (at: CellPos, name: string) => {

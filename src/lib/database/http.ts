@@ -244,6 +244,17 @@ export function parseCells(raw: unknown): RowCell[] | null {
   return cells
 }
 
+/**
+ * 사람 칸의 더하기 · 빼기(`[{ propertyId, add?, remove? }]` · 정본 [보강] 사람 속성 ⑫). 여기서는 겉모양(객체의 배열 · 개수)만 —
+ * id 의 모양 · 겹침은 명령이 본다(`checkPeopleChanges` — 어느 칸이 틀렸는지 말해 준다).
+ */
+export function parsePeopleChanges(raw: unknown): { propertyId: unknown; add?: unknown; remove?: unknown }[] | null {
+  if (raw === undefined) return []
+  if (!Array.isArray(raw) || raw.length > MAX_CELLS_PER_REQUEST) return null
+  if (raw.some((item) => typeof item !== 'object' || item === null || Array.isArray(item))) return null
+  return raw as { propertyId: unknown; add?: unknown; remove?: unknown }[]
+}
+
 export type RowJson = {
   readonly id: string
   readonly title: string

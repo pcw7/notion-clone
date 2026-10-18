@@ -71,7 +71,7 @@ import {
 } from './property-types.ts'
 import { issueUniqueSeq } from './unique-id.ts'
 import { routeCellsEdited, routeRowAdded, type WriteOrigin } from '../automation/trigger-route.ts'
-import { peopleIdsOf, peopleIssuesIn } from './people.ts'
+import { applyPeopleChanges, checkPeopleChanges, peopleIdsOf, peopleIssuesIn } from './people.ts'
 import { optionIssuesIn } from './options.ts'
 
 /** 한 번에 읽는 행 수. 뷰의 "더 보기"는 W8-b 다. */
@@ -597,6 +597,11 @@ async function insertRowIn(
 
 export type UpdateCellsInput = {
   readonly cells: readonly RowCell[]
+  /**
+   * 사람 칸의 더하기 · 빼기(정본 [보강] 사람 속성 ⑫) — 행을 잠근 채 **지금 값에** 적용한다. 두 사람이 같은 칸에 동시에 더해도 둘 다
+   * 남는다(통째 값 `cells` 는 마지막 쓰기). 모양은 여기서 본다(`checkPeopleChanges`).
+   */
+  readonly peopleChanges?: readonly { readonly propertyId: unknown; readonly add?: unknown; readonly remove?: unknown }[]
   /** 누가 채웠나 — 자동화의 액션이 `automation` 을 준다(5a-1). 없으면 사람. */
   readonly filledBy?: CellFiller
   /** 쓰기의 출처 — DB automation 이 받을지 정한다(5b-2 · 자동화가 쓴 것은 받지 않는다). 없으면 사람. */
@@ -661,10 +666,17 @@ export async function updateCellsIn(
       return { ok: false, reason: 'version_conflict', currentVersion: row.version } as const
     }
 
-    const prepared = prepareCells(gate, input.cells)
+    // 사람 칸의 더하기 · 빼기 — 행을 잠근 채 지금 값에 적용해 통째 값으로 바꾼다(정본 ⑫ · 바뀌는 칸만). 그 뒤는 통째 쓰기와 같은 길이다.
+    const checked = checkPeopleChanges(input.peopleChanges ?? [], input.cells)
+    if (!checked.ok) return { ok: false, reason: 'invalid_value', issues: checked.issues } as const
+    const stored = await readCellValues(tx, rowId, checked.changes.map((change) => change.propertyId))
+    const prepared = prepareCells(gate, [...input.cells, ...applyPeopleChanges(checked.changes, stored)])
     if (isRowFailure(prepared)) return prepared
+    // 사람 칸의 쓰기 전 값 — 검사는 새로 드는 사람만 보고(정본 ⑫ⓒ) 담당 알림은 새로 든 사람만 받는다(6h)
+    const peopleCells = prepared.filter((cell) => cell.value.type === 'people')
+    const before = await readCellValues(tx, rowId, peopleCells.map((cell) => cell.propertyId))
     // 옵션 칸 — 그 속성의 옵션만(`optionIssuesIn` · HANDOFF §7 의 구멍)
-    const strangers = [...(await peopleIssuesIn(tx, ctx.workspaceId, prepared)), ...(await optionIssuesIn(tx, prepared))]
+    const strangers = [...(await peopleIssuesIn(tx, ctx.workspaceId, prepared, before)), ...(await optionIssuesIn(tx, prepared))]
     if (strangers.length > 0) return { ok: false, reason: 'invalid_value', issues: strangers } as const
 
     if (prepared.length > 0) {
@@ -675,12 +687,10 @@ export async function updateCellsIn(
         propertyIds: prepared.map((cell) => cell.propertyId),
         origin: input.origin ?? 'user',
       })
-      // 담당 알림(6h) — 사람 칸의 쓰기 전 값을 붙든다(새로 든 사람만 받는다)
-      const peopleCells = row.is_template ? [] : prepared.filter((cell) => cell.value.type === 'people')
-      const before = await readCellValues(tx, rowId, peopleCells.map((cell) => cell.propertyId))
       await writeCells(tx, rowId, prepared, input.filledBy)
       await projectTitle(tx, rowId, prepared, gate.titlePropertyId)
-      await notifyNewlyAssigned(tx, ctx, rowId, peopleCells, before)
+      // 템플릿은 항목이 아니다 — 담당 알림을 내지 않는다(R1)
+      await notifyNewlyAssigned(tx, ctx, rowId, row.is_template ? [] : peopleCells, before)
       await bumpRow(tx, ctx, rowId)
       // 활동 — 셀을 고쳤다(4d-2 · 같은 사람 · 같은 행 5분 안이면 접는다)
       await recordCoalescedActivity(tx, ctx, { pageId: rowId, type: 'property.updated' })

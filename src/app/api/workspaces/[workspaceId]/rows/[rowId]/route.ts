@@ -19,6 +19,9 @@
  * 것이 서로를 지우지 않는다.
  *
  * `expectedVersion` 을 생략하면 LWW 다(F-03-16: "셀 단위 잠금 없이 LWW").
+ *
+ * 사람 칸은 통째 값 대신 **더하기 · 빼기**(`peopleChanges: [{ propertyId, add, remove }]`)로도 고친다 — 행을 잠근 채 지금 값에
+ * 적용하므로 두 사람이 같은 칸에 동시에 더해도 둘 다 남는다(정본 [보강] 사람 속성 ⑫ · 칸의 고르개가 이것을 쓴다).
  */
 
 import { isUuid } from '@/lib/ids'
@@ -27,6 +30,7 @@ import { trashRow, updateCells } from '@/lib/database/row'
 import {
   failureResponse,
   parseCells,
+  parsePeopleChanges,
   rowFailureStatus,
   rowJson,
 } from '@/lib/database/http'
@@ -41,12 +45,13 @@ export async function PATCH(request: Request, ctx: Ctx): Promise<Response> {
 
   const parsed = await readJsonBody(request)
   if (!parsed.ok) return parsed.response
-  const body = (parsed.body ?? {}) as { cells?: unknown; expectedVersion?: unknown }
+  const body = (parsed.body ?? {}) as { cells?: unknown; peopleChanges?: unknown; expectedVersion?: unknown }
 
   const cells = parseCells(body.cells)
+  const peopleChanges = parsePeopleChanges(body.peopleChanges)
   // 고칠 셀이 없는 요청은 400 이다. 조용히 200 을 주면 클라이언트가 "보냈는데 안
   // 먹었다"를 성공으로 읽는다(컬럼 라우트와 같은 규칙).
-  if (cells === null || cells.length === 0) {
+  if (cells === null || peopleChanges === null || cells.length + peopleChanges.length === 0) {
     return Response.json({ error: 'invalid_value' }, { status: 400 })
   }
   if (body.expectedVersion !== undefined && typeof body.expectedVersion !== 'string') {
@@ -55,6 +60,7 @@ export async function PATCH(request: Request, ctx: Ctx): Promise<Response> {
 
   const updated = await updateCells(session.ctx, rowId, {
     cells,
+    peopleChanges,
     ...(typeof body.expectedVersion === 'string' ? { expectedVersion: body.expectedVersion } : {}),
   })
   if (!updated.ok) return failureResponse(rowFailureStatus(updated.reason), updated)

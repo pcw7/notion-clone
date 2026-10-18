@@ -20174,6 +20174,34 @@ async function main() {
       await clickSelector('[data-testid="db-people-remove"]')
       const cleared = await waitFor(`!document.querySelector('${CELL} [data-testid="db-person-chip"]')`, 8000)
       check('× 로 빼면 빈 칸 · 서버 값도 비었다', cleared && (await serverUntil('')), await valueOf())
+
+      // 그사이 다른 사람이 더한 사람이 남는다(10n-3 · 정본 [보강] 사람 속성 ⑫). 다른 연결이 행을 잠근 채 칸에 "나"를 넣어 둔다 — 커밋
+      // 전이라 화면은 볼 수 없다. 고르개에서 동료를 고르면 그 쓰기는 잠금을 기다렸다가 지금 값에 더한다(통째 값이면 "나"가 지워진다).
+      const { getPool } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const holder = await getPool().connect()
+      let waited = false
+      try {
+        await holder.query('BEGIN')
+        await holder.query('SELECT 1 FROM block WHERE id = $1 FOR UPDATE', [row])
+        await holder.query(
+          `UPDATE page_property_value SET value = $3 WHERE page_id = $1 AND property_id = $2`,
+          [row, pid, JSON.stringify({ type: 'people', people: [{ id: ctx.userId }] })],
+        )
+        await key('Enter')
+        for (const end = Date.now() + 8000; Date.now() < end && !waited; await sleep(50)) {
+          waited = Number((await holder.query(
+            `SELECT count(*) AS n FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'`,
+          )).rows[0].n) >= 1
+        }
+        await holder.query('COMMIT')
+      } finally {
+        holder.release()
+      }
+      check('전제 — 고르개의 쓰기가 행의 잠금을 기다렸다(다른 사람의 쓰기가 먼저 끝난다)', waited)
+      check('★ 그사이 다른 사람이 더한 사람이 남는다 — 고르개는 더하기로 보낸다 · 칸에 둘 다 선다',
+        (await serverUntil(`${ctx.userId},${mate.userId}`)) &&
+          (await waitFor(`document.querySelectorAll('${CELL} [data-testid="db-person-chip"]').length === 2`, 8000)),
+        `${await valueOf()} · 칩 ${await evaluate(`document.querySelectorAll('${CELL} [data-testid="db-person-chip"]').length`)}`)
       await key('Escape')
 
       await api('PATCH', `/rows/${row}`, { cells: [{ propertyId: pid, value: { type: 'people', people: [{ id: mate.userId }] } }] })
