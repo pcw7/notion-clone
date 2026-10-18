@@ -155,6 +155,48 @@ export function moveCard<Row extends { readonly id: string }, Column extends Boa
   return { columns: next, undo }
 }
 
+// ── 끌지 않고 옮기기 ──────────────────────────────────────────────────
+
+export type MoveChoices = {
+  /** 다른 열마다 그 열의 맨 뒤 — 화면의 열 순서대로. */
+  readonly others: readonly { readonly key: string; readonly target: DropTarget }[]
+  /** 같은 열에서 한 칸 위 — 수동 순서이고 맨 위가 아닐 때만. */
+  readonly up: DropTarget | null
+  /** 같은 열에서 한 칸 아래 — 수동 순서이고 맨 아래가 아닐 때만. */
+  readonly down: DropTarget | null
+}
+
+/**
+ * 끌지 않고 옮길 자리 — 카드의 "옮기기" 메뉴가 고른다(10m-2 · WCAG 2.5.7 끌기 동작의 대안 · 2.1.1 키보드 · F-04-03). 끌기와 같은
+ * 자리(`DropTarget`)라 같은 요청 · 같은 낙관적 갱신(`moveCard`)으로 간다.
+ *
+ * ① 다른 열마다 그 열의 맨 뒤. 정렬된 보드는 정렬이 자리를 정한다(끌기와 같다 — 머리말)
+ * ② 수동 순서면 같은 열의 위 · 아래 한 칸. 아래로는 "다음 카드의 다음 카드 앞"이다 — 그것이 없으면 맨 뒤. 다만 **불러온 카드의 끝인데
+ *    더 남았으면**("더 보기") 아래로는 없다 — 그 다음 카드를 모르니 맨 뒤로 보내면 한 칸이 아니라 열 끝까지 간다
+ *
+ * `columns` 는 화면에 선 열(숨긴 그룹은 뺀다)이다. 카드가 없으면 null.
+ */
+export function moveChoices<Row extends { readonly id: string }, Column extends BoardColumn<Row>>(
+  columns: readonly Column[],
+  rowId: string,
+  manualOrder: boolean,
+): MoveChoices | null {
+  const from = columns.find((column) => column.rows.some((row) => row.id === rowId))
+  if (from === undefined) return null
+  const others = columns.filter((c) => c.key !== from.key).map((c) => ({ key: c.key, target: { key: c.key, beforeRowId: null } }))
+  if (!manualOrder) return { others, up: null, down: null }
+  const at = from.rows.findIndex((row) => row.id === rowId)
+  const up = at > 0 ? { key: from.key, beforeRowId: from.rows[at - 1].id } : null
+  const loadedAll = from.count <= from.rows.length
+  const down =
+    at + 2 < from.rows.length
+      ? { key: from.key, beforeRowId: from.rows[at + 2].id }
+      : at + 1 < from.rows.length && loadedAll
+        ? { key: from.key, beforeRowId: null }
+        : null
+  return { others, up, down }
+}
+
 // ── 새 카드 · 이름 ────────────────────────────────────────────────────
 
 /**

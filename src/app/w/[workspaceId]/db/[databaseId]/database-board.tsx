@@ -75,11 +75,13 @@ import { cellText, parseDraft, readCell, sameValue } from '@/lib/database/cell-f
 import {
   groupLabel,
   moveCard,
+  moveChoices,
   prefillCells,
   resolveDrop,
   type ColumnBox,
   type DropTarget,
 } from '@/lib/database/board-drag'
+import { AnchoredLayer, containsAcrossLayers } from '../../anchored-layer'
 import { templateRowNote, UNTITLED_TEMPLATE, type DefaultTemplate } from '@/lib/database/new-row'
 import { CALCULATION_LABEL, formatCalculation, type Calculation, type CalculationResult } from '@/lib/database/calculations'
 import * as api from './table-api'
@@ -424,6 +426,17 @@ export function DatabaseBoard(props: {
     void commitMove(d.id, d.fromKey, d.target)
   }
 
+  /**
+   * "옮기기" 메뉴로 옮긴다(10m-2) — 끌기와 같은 요청. 낙관적 갱신이 카드를 새 자리에 그리면 그 카드의 "옮기기" 단추에 포커스를 돌려준다 —
+   * 키보드로 이어서 옮길 수 있게(카드가 다시 그려져 포커스를 잃는다).
+   */
+  const moveByMenu = (rowId: string, fromKey: string, target: DropTarget) => {
+    void commitMove(rowId, fromKey, target)
+    requestAnimationFrame(() =>
+      boardRef.current?.querySelector<HTMLElement>(`[data-row-id="${rowId}"] [data-testid="db-card-move"]`)?.focus(),
+    )
+  }
+
   const commitMove = async (rowId: string, fromKey: string, target: DropTarget) => {
     const moved = moveCard(groupsRef.current, rowId, target)
     if (moved === null) return
@@ -594,6 +607,13 @@ export function DatabaseBoard(props: {
 
   const visible = groups.filter((g) => !g.hidden)
   const hiddenGroups = groups.filter((g) => g.hidden)
+  /** 카드의 "옮기기"가 고를 자리(10m-2) — 화면에 선 열만(숨긴 그룹으로는 옮기지 않는다 — 끌기와 같다). */
+  const cardMove = (rowId: string): CardMove | null => {
+    const choices = moveChoices(visible, rowId, manualOrder)
+    if (choices === null) return null
+    const labelByKey = new Map(visible.map((g) => [g.key, labelOf(g)]))
+    return { ...choices, others: choices.others.map((o) => ({ ...o, label: labelByKey.get(o.key) ?? o.key })) }
+  }
 
   return (
     <section className="flex min-w-0 flex-col gap-3" aria-label={tableName || UNTITLED}>
@@ -701,6 +721,8 @@ export function DatabaseBoard(props: {
                       endDrag()
                     }}
                     onContextMenu={onCardContextMenu}
+                    move={access.canEditContent ? cardMove(row.id) : null}
+                    onMove={(target) => moveByMenu(row.id, group.key, target)}
                   />
                 ))}
                 {isTarget && drop.beforeRowId === null && <DropLine />}
@@ -802,6 +824,8 @@ function BoardCard({
   onPointerUp,
   onPointerCancel,
   onContextMenu,
+  move,
+  onMove,
 }: {
   row: RowJson
   /** 그 행 페이지(8f-1). */
@@ -826,6 +850,9 @@ function BoardCard({
   onPointerUp: (event: ReactPointerEvent<HTMLLIElement>) => void
   onPointerCancel: () => void
   onContextMenu: (event: ReactMouseEvent<HTMLLIElement>) => void
+  /** 끌지 않고 옮길 자리(10m-2) — 옮길 수 없으면 null(단추가 서지 않는다). */
+  move: CardMove | null
+  onMove: (target: DropTarget) => void
 }) {
   return (
     <>
@@ -877,6 +904,7 @@ function BoardCard({
               onPointerDown={(e) => e.stopPropagation()}
               className="shrink-0 rounded border border-neutral-200 bg-white px-1.5 text-xs text-neutral-500 opacity-0 after:content-['열기'] hover:bg-neutral-50 group-hover/title:opacity-100 touch:opacity-100 dark:border-neutral-700 dark:bg-neutral-900"
             />
+            {move !== null && <CardMoveMenu title={row.title || UNTITLED} move={move} onMove={onMove} />}
           </div>
         )}
         <CardBadges
@@ -890,5 +918,106 @@ function BoardCard({
         />
       </li>
     </>
+  )
+}
+
+/** 카드의 "옮기기"가 고를 자리 — 열의 이름을 붙였다(`moveChoices` 의 것). */
+type CardMove = {
+  readonly others: readonly { readonly key: string; readonly label: string; readonly target: DropTarget }[]
+  readonly up: DropTarget | null
+  readonly down: DropTarget | null
+}
+
+/**
+ * 끌지 않고 옮기기(10m-2 · WCAG 2.5.7 끌기 동작의 대안 · 2.1.1 키보드) — 카드의 "옮기기" 단추가 자리 목록을 연다: 같은 열의 위 · 아래
+ * (수동 순서일 때) · 다른 열마다(그 열의 맨 뒤). 끌기와 같은 자리라 같은 요청으로 간다(`commitMove`).
+ *
+ * 목록은 몸으로 내보낸 층이다(`AnchoredLayer`) — 그래서 DOM 의 탭 순서가 단추 뒤로 이어지지 않는다. 열 때 첫 항목에 포커스를 두고,
+ * Esc 는 단추로 돌려준다 · 포커스가 층과 단추 밖으로 나가면 닫는다 · 바깥을 누르면 닫는다(`containsAcrossLayers`).
+ */
+function CardMoveMenu({ title, move, onMove }: { title: string; move: CardMove; onMove: (target: DropTarget) => void }) {
+  const [open, setOpen] = useState(false)
+  const boxRef = useRef<HTMLSpanElement>(null)
+  const buttonRef = useRef<HTMLButtonElement>(null)
+  const listRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    listRef.current?.querySelector<HTMLButtonElement>('button')?.focus()
+    const onDown = (e: MouseEvent) => {
+      if (boxRef.current === null || !containsAcrossLayers(boxRef.current, e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [open])
+
+  const pick = (target: DropTarget) => {
+    setOpen(false)
+    onMove(target)
+  }
+  const item = 'flex w-full items-center rounded px-2 py-1.5 text-left hover:bg-neutral-100 focus:bg-neutral-100 focus:outline-none dark:hover:bg-neutral-800 dark:focus:bg-neutral-800'
+
+  return (
+    <span
+      ref={boxRef}
+      className="relative shrink-0"
+      onKeyDown={(e) => {
+        if (e.key === 'Escape' && open) {
+          e.stopPropagation()
+          setOpen(false)
+          buttonRef.current?.focus()
+        }
+      }}
+      onBlur={(e) => {
+        if (open && boxRef.current !== null && !(e.relatedTarget instanceof Node && containsAcrossLayers(boxRef.current, e.relatedTarget))) setOpen(false)
+      }}
+    >
+      <button
+        ref={buttonRef}
+        type="button"
+        data-testid="db-card-move"
+        aria-label={`${title} 옮기기`}
+        aria-haspopup="true"
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+        className="rounded border border-neutral-200 bg-white px-1.5 text-xs text-neutral-500 opacity-0 hover:bg-neutral-50 focus:opacity-100 group-hover/title:opacity-100 touch:opacity-100 aria-expanded:opacity-100 dark:border-neutral-700 dark:bg-neutral-900"
+      >
+        옮기기
+      </button>
+      {open && (
+        <AnchoredLayer align="end">
+          <div
+            ref={listRef}
+            role="group"
+            aria-label={`${title} 옮길 자리`}
+            data-testid="db-card-move-menu"
+            className="w-52 rounded-lg border border-neutral-200 bg-white p-1 text-left text-sm font-normal shadow-lg dark:border-neutral-800 dark:bg-neutral-950"
+          >
+            {move.up !== null && (
+              <button type="button" data-testid="db-card-move-up" className={item} onClick={() => pick(move.up!)}>
+                ↑ 위로
+              </button>
+            )}
+            {move.down !== null && (
+              <button type="button" data-testid="db-card-move-down" className={item} onClick={() => pick(move.down!)}>
+                ↓ 아래로
+              </button>
+            )}
+            {move.others.map((o) => (
+              <button
+                key={o.key}
+                type="button"
+                data-testid="db-card-move-to"
+                data-group-key={o.key}
+                className={item}
+                onClick={() => pick(o.target)}
+              >
+                → {o.label}
+              </button>
+            ))}
+          </div>
+        </AnchoredLayer>
+      )}
+    </span>
   )
 }

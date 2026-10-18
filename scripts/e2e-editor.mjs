@@ -18526,6 +18526,91 @@ async function main() {
       }
     }
 
+    if (sectionIf('카드를 끌지 않고 옮기기 — 키보드 (10m-2 · F-04-03 · F-12-13)')) {
+      // 끌기의 대안(WCAG 2.5.7) · 키보드(2.1.1) — 카드에 Tab 으로 "옮기기" 단추가 닿고 · Enter 로 열면 첫 항목에 포커스 · 위로(같은 열 한 칸) ·
+      // 옮긴 뒤 그 카드의 단추로 포커스가 돌아온다 · 다른 열로(그 값이 된다 · 서버) · Esc 는 닫고 단추로 돌려준다.
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `옮기기 보드 ${Date.now()}` })).body.database
+      const statusProp = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '상태', type: 'select' })).body.property.id
+      const option = async (name) => (await api('POST', `/data-sources/${db.dataSourceId}/properties/${statusProp}/options`, { name })).body.option.id
+      const todo = await option('할 일')
+      const doing = await option('진행 중')
+      const titleProp = (await api('GET', `/views/${db.defaultViewId}`)).body.view.columns.find((col) => col.type === 'title').propertyId
+      const addRow = async (title) => (await api('POST', `/views/${db.defaultViewId}/rows`, { cells: [
+        { propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } },
+        { propertyId: statusProp, value: { type: 'select', select: { id: todo } } },
+      ] })).body.row.id
+      const rows = { A: await addRow('가 카드'), B: await addRow('나 카드'), C: await addRow('다 카드') }
+      const nameOf = Object.fromEntries(Object.entries(rows).map(([k, v]) => [v, k]))
+      const board = (await api('POST', `/databases/${db.id}/views`, { type: 'board', name: '보드' })).body.view
+      const serverOrder = async (key) => ((await api('GET', `/views/${board.id}/groups?group=${encodeURIComponent(key)}`)).body?.rows ?? []).map((r) => nameOf[r.id] ?? '?').join('')
+      const screenOrder = (key) => evaluate(`[...document.querySelectorAll('[data-group-key="${key}"] [data-testid="db-board-card"]')].map((c) => c.getAttribute('data-row-id')).join(',')`)
+        .then((s) => s.split(',').filter(Boolean).map((id) => nameOf[id] ?? '?').join(''))
+      const active = () => evaluate(`JSON.stringify({ testid: document.activeElement?.getAttribute('data-testid'), row: document.activeElement?.closest('[data-row-id]')?.getAttribute('data-row-id') ?? null, text: document.activeElement?.textContent?.trim() ?? '' })`).then(JSON.parse)
+      const press = async (k, modifiers = 0) => {
+        const codes = { Tab: [9, 'Tab'], Enter: [13, 'Enter'], Escape: [27, 'Escape'] }
+        const [vk, code] = codes[k]
+        await send('Input.dispatchKeyEvent', { type: 'keyDown', key: k, code, windowsVirtualKeyCode: vk, modifiers, ...(k === 'Enter' ? { text: '\r' } : {}) })
+        await send('Input.dispatchKeyEvent', { type: 'keyUp', key: k, code, windowsVirtualKeyCode: vk, modifiers })
+      }
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}?v=${board.id}` })
+      await waitFor(`document.readyState === 'complete' && document.querySelectorAll('[data-testid="db-board-card"]').length === 3`, 15000)
+      check('전제 — 수동 순서 보드 · 할 일 열이 가 나 다', (await screenOrder(todo)) === 'ABC' && (await evaluate(`document.querySelector('[data-testid="db-board"]')?.dataset.manualOrder`)) === 'true',
+        await screenOrder(todo))
+      // 카드 "나" 에서 Tab — 그 카드의 "옮기기" 단추에 닿는다(살아나기 전의 포커스는 버려질 수 있다 — 닿을 때까지 다시)
+      let reached = null
+      for (let i = 0; i < 6; i += 1) {
+        await evaluate(`document.querySelector('[data-row-id="${rows.B}"]')?.focus()`)
+        await press('Tab')
+        reached = await active()
+        if (reached.testid === 'db-card-move' && reached.row === rows.B) break
+        await sleep(300)
+      }
+      check('★ 키보드 — 카드에서 Tab 으로 그 카드의 "옮기기" 단추에 닿는다 · 단추가 보인다',
+        reached?.testid === 'db-card-move' && reached?.row === rows.B
+          && (await evaluate(`getComputedStyle(document.activeElement).opacity`)) === '1', JSON.stringify(reached))
+      await press('Enter')
+      const firstItem = await waitFor(`document.activeElement?.getAttribute('data-testid') === 'db-card-move-up'`, 3000)
+      check('★ Enter 로 열면 첫 항목(위로)에 포커스 — 목록은 위로 · 아래로 · 다른 열', firstItem
+        && (await evaluate(`[...document.querySelectorAll('[data-testid="db-card-move-menu"] button')].map((b) => b.getAttribute('data-testid')).join(' ')`)) === 'db-card-move-up db-card-move-down db-card-move-to db-card-move-to',
+        await evaluate(`[...document.querySelectorAll('[data-testid="db-card-move-menu"] button')].map((b) => b.textContent).join(' / ')`))
+      await press('Enter')
+      check('★ 위로 — 같은 열에서 한 칸(나 가 다) · 화면', await waitFor(`[...document.querySelectorAll('[data-group-key="${todo}"] [data-testid="db-board-card"]')].map((c) => c.getAttribute('data-row-id')).join(',') === ${JSON.stringify([rows.B, rows.A, rows.C].join(','))}`, 3000),
+        await screenOrder(todo))
+      let saved = ''
+      for (let i = 0; i < 25 && saved !== 'BAC'; i += 1) {
+        saved = await serverOrder(todo)
+        if (saved !== 'BAC') await sleep(200)
+      }
+      check('서버에도 — 나 가 다', saved === 'BAC', saved)
+      check('★ 옮긴 뒤 포커스는 그 카드의 "옮기기" 단추로 돌아온다 — 이어서 옮길 수 있다',
+        await waitFor(`document.activeElement?.getAttribute('data-testid') === 'db-card-move' && document.activeElement?.closest('[data-row-id]')?.getAttribute('data-row-id') === ${JSON.stringify(rows.B)}`, 3000),
+        JSON.stringify(await active()))
+      // Esc — 닫고 단추로 돌려준다
+      await press('Enter')
+      await waitFor(`!!document.querySelector('[data-testid="db-card-move-menu"]')`, 3000)
+      await press('Escape')
+      check('Esc 는 목록을 닫고 단추로 포커스를 돌려준다',
+        await waitFor(`!document.querySelector('[data-testid="db-card-move-menu"]') && document.activeElement?.getAttribute('data-testid') === 'db-card-move'`, 3000),
+        JSON.stringify(await active()))
+      // 다른 열로 — Tab 으로 "진행 중" 항목까지 가서 Enter
+      await press('Enter')
+      await waitFor(`document.activeElement?.getAttribute('data-testid') === 'db-card-move-up'`, 3000)
+      for (let i = 0; i < 5 && (await active()).text !== '→ 진행 중'; i += 1) await press('Tab')
+      const onDoing = (await active()).text === '→ 진행 중'
+      await press('Enter')
+      let status = null
+      for (let i = 0; i < 25 && status !== doing; i += 1) {
+        status = (await api('GET', `/views/${db.defaultViewId}/rows`)).body.rows.find((r) => r.id === rows.B)?.properties[statusProp]?.select?.id ?? null
+        if (status !== doing) await sleep(200)
+      }
+      check('★ 다른 열로 — Tab 으로 그 열을 골라 Enter · 그 값이 된다(서버) · 화면도 그 열에',
+        onDoing && status === doing && (await screenOrder(doing)) === 'B', JSON.stringify({ onDoing, status, doingColumn: await screenOrder(doing) }))
+    }
+
     if (sectionIf('기준점에 붙는 층 — 고르개 (10j-3a · F-12-12)')) {
       // select 칸의 고르개는 몸(body)으로 내보낸 층이다 — 칸 바로 아래 · 왼쪽 맞춤 · 화면 안. 칸 밖(body)에 있어도 포커스는 검색칸에 남는다
       // (칸의 blur 가 층을 칸 안으로 본다). 창을 스크롤하면 칸을 따라간다. 고르면 닫히고 칸에 들어간다.
