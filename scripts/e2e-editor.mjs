@@ -1605,7 +1605,21 @@ async function main() {
     const hugeEditor = await rect('.blk-editor')
     await click(hugeEditor.x + 40, hugeEditor.y + 10)
     // 한 번에 보낼 수 있는 update 상한(1MiB)을 **확실히** 넘긴다 — 아슬아슬하면 통과해 버려 이 절이 아무것도 보지 않는다.
-    await send('Input.insertText', { text: '넘치는 글'.repeat(200000) })
+    // **글자 노드 하나에 넣지 않는다.** 예전에는 `Input.insertText` 로 2.6MB 를 문단 하나에 넣었는데, 넣는 데만 약 120초 · 알림까지
+    // 다시 약 78초가 걸렸다(전체 판의 28% · 렌더러 메모리 ~10GB — §7). 접근성 직렬화가 가장 큰 글자 노드의 크기에 비례하기
+    // 때문이다(10k-1). 줄 330개(줄마다 약 3,900바이트 · 합 약 1.29MB)를 **붙여넣기 한 번**으로 넣는다 — 한 트랜잭션이라 update 도
+    // 하나다. 글은 페이지 안에서 만든다(CDP 로 1MB 넘게 보내지 않는다).
+    const OVERFLOW_LINE = '넘치는 글'.repeat(300)
+    const OVERFLOW_LINES = 330
+    check('전제: 붙이는 글이 상한(1MiB)을 넉넉히 넘는다',
+      Buffer.byteLength(Array(OVERFLOW_LINES).fill(OVERFLOW_LINE).join('\n')) > 1.2 * 1024 * 1024)
+    await evaluate(`(() => {
+      const dt = new DataTransfer()
+      dt.setData('text/plain', Array(${OVERFLOW_LINES}).fill(${JSON.stringify(OVERFLOW_LINE)}).join('\\n'))
+      document.querySelector('.blk-editor').dispatchEvent(
+        new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }),
+      )
+    })()`)
     check('★ 서버가 받지 못한 편집은 버리고 다시 열며, 그 사실을 말해 준다',
       await waitFor(`[...document.querySelectorAll('[role="alert"]')].some((e) => e.textContent.includes('받지 못한'))`, 20000),
       await evaluate(`[...document.querySelectorAll('[role="alert"]')].map((e) => e.textContent).join(' / ')`))
