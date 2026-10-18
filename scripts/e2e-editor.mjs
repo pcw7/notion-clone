@@ -884,6 +884,33 @@ async function main() {
           const tail = await evaluate(`(() => { const blocks = document.querySelectorAll('.blk-editor .blk-container'); return blocks[blocks.length - 1].textContent.slice(-12) })()`)
           return `한 글자(insertText+evaluate) ${times.join(', ')}ms · 끝 ${JSON.stringify(tail)}`
         })
+        // 줄을 더하면(Enter) 뒤의 줄 머리가 모두 밀린다 — 글자 조각(50줄 · 줄 머리에서 가름)이 뒤의 조각을 전부 다시 쓰는지 본다(10k-3).
+        const anchor = label.startsWith('코드') ? '// c99' : label.startsWith('문단') ? '문단 99 —' : 'C'
+        await traced(`${label} · 100째 줄 끝에서 Enter 다섯 번`, async () => {
+          const found = await evaluate(`(() => {
+            const walker = document.createTreeWalker(document.querySelector('.blk-editor'), NodeFilter.SHOW_TEXT)
+            for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+              const at = n.data.indexOf(${JSON.stringify(anchor)})
+              if (at === -1) continue
+              const nl = n.data.indexOf('\\n', at)
+              const end = nl === -1 ? n.data.length : nl
+              // 캐럿이 든 요소(코드면 조각)를 가운데로 — 캐럿 줄이 보여야 강조의 창이 거기로 온다. 블록 컨테이너를 굴리면 캐럿 줄이 안 보여
+              // 첫 Enter 가 창을 옮기고 그 비용(창 뒤 조각 전부 다시 쓰기)이 Enter 의 것으로 섞인다(10k-3 의 첫 측정이 그랬다).
+              n.parentElement.scrollIntoView({ block: 'center' })
+              const r = document.createRange(); r.setStart(n, end); r.collapse(true)
+              const s = getSelection(); s.removeAllRanges(); s.addRange(r)
+              document.querySelector('.blk-editor').focus()
+              return true
+            }
+            return false
+          })()`)
+          if (!found) return '⚠ 기준 글자를 못 찾았다'
+          // 창이 캐럿 자리로 옮겨 자리 잡기를 기다린다(미룬 다시 읽기 150ms 포함)
+          await sleep(900)
+          const times = []
+          for (let i = 0; i < 5; i += 1) { const t0 = Date.now(); await key('Enter'); await evaluate('0'); times.push(Date.now() - t0) }
+          return `Enter 한 번 ${times.join(', ')}ms`
+        })
       }
       perfWs.close()
       perfRan = true
@@ -4915,6 +4942,33 @@ async function main() {
       console.log(`      (붙여넣기 ${pasteMs}ms · 끝에서 칠한 span ${atEnd}개 · 한 글자 ${times.join(', ')}ms)`)
       check('★ 1만 줄 — 손을 멈추면 친 글자까지 다시 칠한다', await waitFor(hasPaint(hb.big, `${LAST}xxxxx`, 'hljs-comment'), 5000),
         JSON.stringify((await paintedIn(hb.big)).slice(-2)))
+
+      // 조각의 머리는 움직이지 않는다(10k-3) — plain text 1만 줄의 가운데(100째 줄 끝)에 줄을 넣어도 뒤의 조각(글자 노드)은 다시 쓰이지 않는다.
+      // 처음부터 다시 가르면 뒤의 조각 ~190개가 한 줄씩 밀려 모두 다시 쓰인다(Enter 한 번에 수백 ms · 접근성이 모두 다시 읽는다). 문법이 있는 블록은
+      // 칠하는 창 안의 노드 수가 바뀌면 PM 이 그 뒤를 자리로 덧써 조각이 못 고친다(code-highlight.ts 머리말) — 그래서 언어를 뺀 뒤 본다.
+      await remoteEdit((client) => edit(client, (tr, doc) => {
+        const { pos, node } = findBlock(doc, hb.big)
+        const content = node.firstChild
+        const rest = { ...(content.attrs.props ?? {}) }
+        delete rest.language
+        tr.setNodeMarkup(pos + 1, undefined, { ...content.attrs, props: rest })
+      }))
+      check('전제 — 언어를 빼면 칠이 사라진다(plain text)', await waitFor(`document.querySelectorAll('${PRE(hb.big)} ${HL}').length === 0`, 8000))
+      const at100 = bigText.split('\n').slice(0, 100).join('\n').length
+      await caretInCode(hb.big, at100)
+      await evaluate(`(() => { const n = getSelection().focusNode; (n?.nodeType === 1 ? n : n?.parentElement)?.scrollIntoView({ block: 'center' }) })()`)
+      await sleep(600)
+      await evaluate(`(() => {
+        window.__textMut = new Set()
+        window.__textMo = new MutationObserver((ms) => { for (const m of ms) if (m.type === 'characterData') window.__textMut.add(m.target) })
+        window.__textMo.observe(document.querySelector('${PRE(hb.big)}'), { subtree: true, characterData: true })
+      })()`)
+      await key('Enter')
+      await sleep(500)
+      const rewritten = await evaluate(`(() => { window.__textMo.disconnect(); return window.__textMut.size })()`)
+      check('★ plain text 1만 줄 — 가운데에 줄을 넣어도 뒤의 조각(글자 노드)은 다시 쓰이지 않는다(글자 값이 바뀐 노드 2개 이하)',
+        rewritten <= 2 && (await codeText(hb.big)).includes('// c99\n\nconst v100'),
+        JSON.stringify({ rewritten, around: (await codeText(hb.big)).slice(at100 - 8, at100 + 14) }))
 
       // ⑧ 읽기 전용에서도 칠한다 — 열어 둔 채로 잠근다(편집기를 다시 만든다)
       const locked = await fetch(`${pagesUrl}/${hlPage}/lock`, { method: 'PUT', headers: authed })
