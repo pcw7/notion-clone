@@ -4697,6 +4697,15 @@ async function main() {
       // 다 칠하면 줄마다 셋(const · 숫자 · 주석) — 3만 개다. 보이는 줄 ± 여백 80줄이면 수백 개.
       check('★ 1만 줄 — 칠한 span 이 블록 크기와 상관없이 묶인다(다 칠하면 3만 개)', atEnd > 0 && atEnd < 3000, String(atEnd))
       check('★ 1만 줄 — 보이지 않는 첫 줄은 칠하지 않는다', !(await evaluate(hasPaint(hb.big, '// c0', 'hljs-comment'))))
+      // 글자 조각(10k-1) — 큰 글자 노드 하나가 있으면 글자마다 접근성 트리가 그것을 다시 읽어 0.5 ~ 1.5초가 걸린다. 가장 긴 글자 노드가
+      // 조각 상한(PIECE_MAX_CHARS · 4,000) 안이어야 한다 — 아래의 시간 검사가 보는 증상의 원인을 결정적으로 본다.
+      const longestTextNode = () => evaluate(`(() => {
+        const walker = document.createTreeWalker(document.querySelector('${PRE(hb.big)}'), NodeFilter.SHOW_TEXT)
+        let max = 0
+        for (let n = walker.nextNode(); n; n = walker.nextNode()) max = Math.max(max, n.data.length)
+        return max
+      })()`)
+      check('★ 1만 줄 — 글자 노드 하나는 4,000자 안이다(조각 · 큰 노드 하나는 글자마다 접근성 트리를 다시 읽게 한다)', (await longestTextNode()) <= 4_000, String(await longestTextNode()))
 
       // 굴린다 — 맨 위로 · 가운데로. 보이게 된 줄을 칠하고 멀어진 줄은 놓는다.
       await evaluate(`document.querySelector('${PRE(hb.big)}').scrollIntoView({ block: 'start' })`)
