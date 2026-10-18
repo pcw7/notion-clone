@@ -43,6 +43,11 @@
  *
  * ⚠ 다시 여는 동안(`reopening`) 편집기는 버린 문서를 붙들고 있다 — 그 문서에 친 편집은 쌓지 않으므로 편집기를 막아야 한다(6d).
  *
+ * **첫 연결을 기다리는 동안은 끊긴 것이 아니다**(`connecting` · F-12-16). 편집기는 서버가 준 본문으로 곧바로 서므로 소켓이 붙기 전에도
+ * 편집할 수 있다 — 그 사이 화면이 "오프라인"을 말하면 페이지를 열 때마다 배너가 잠깐 섰다 사라지고 본문이 그 높이만큼 뛴다(끌기가
+ * 옛 좌표에 떨어진다 — HANDOFF §3.2-268). 첫 시도가 붙거나 끊기면(status `connected` · `disconnected`) 끝나고, 답이 없는 시도도
+ * `firstConnectGraceMs` 가 지나면 끝난다(12 F-12-16 "아무것도 표시하지 않는 것이 최악").
+ *
  * 브라우저가 **연결이 돌아왔다고 알리면 곧바로 다시 붙는다**(`online`). provider 의 소켓은 다시 붙을 때마다 간격을 두 배로 늘려
  * (최대 30s) 기다리는데, 그 사이에 연결이 돌아와도 그만큼 조용히 기다린다 — 사용자는 이미 연결이 있는데 저장이 안 되는 것으로 본다.
  *
@@ -113,6 +118,11 @@ export type CollabSnapshot = {
   readonly readOnly: boolean | null
   /** 서버와 이어져 있다. */
   readonly online: boolean
+  /**
+   * 첫 연결을 기다린다 — 아직 붙지도 끊기지도 않았고 `firstConnectGraceMs` 가 지나지 않았다. 이때 `online` 이 false 인 것은 끊긴 것이
+   * 아니다(화면은 오프라인을 말하지 않는다 · F-12-16). 한 번 끝나면 다시 서지 않는다 — 그 뒤에 다시 붙는 동안은 끊긴 것이다.
+   */
+  readonly connecting: boolean
   /** 서버가 확인하지 않은 편집이 있다. */
   readonly unconfirmed: boolean
   /** 문서를 버리고 새 문서가 동기화되기를 기다린다 — `doc` 은 아직 버린 문서다. */
@@ -144,6 +154,8 @@ export type CollabConnectionOptions = {
   readonly retryDelayMs?: number
   /** "연결이 돌아왔다"(`online`)를 알리는 곳. 기본은 브라우저의 `window` — 브라우저 밖(검사)에서는 넣어 준다. */
   readonly onlineSource?: EventTarget
+  /** 첫 시도가 붙지도 끊기지도 않은 채 이만큼 지나면 `connecting` 을 끝낸다 — 답이 없는 연결도 오프라인으로 알린다. 기본 3s. */
+  readonly firstConnectGraceMs?: number
   onChange?(snapshot: CollabSnapshot): void
   onDiscarded?(discarded: DiscardedDoc): void
 }
@@ -168,6 +180,8 @@ export type CollabConnection = {
 const INITIAL = Symbol('collab-connection:initial')
 const RESTORED = Symbol('collab-connection:restored')
 const MAX_RETRY_DELAY_MS = 30_000
+/** 화면의 "동기화 중"(미확인 편집이 3초 넘게)과 같은 기준이다. */
+const FIRST_CONNECT_GRACE_MS = 3000
 
 export async function openCollabConnection(options: CollabConnectionOptions): Promise<CollabConnection> {
   const { store, storeKey } = options
@@ -187,6 +201,14 @@ export async function openCollabConnection(options: CollabConnectionOptions): Pr
   let provider: HocuspocusProvider | null = null
   let readOnly: boolean | null = null
   let online = false
+  let connecting = true
+  let graceTimer: ReturnType<typeof setTimeout> | null = null
+  const endConnecting = (): void => {
+    if (!connecting) return
+    connecting = false
+    if (graceTimer !== null) clearTimeout(graceTimer)
+    graceTimer = null
+  }
   let reopening = false
   let closed: CollabClosed | null = null
   let destroyed = false
@@ -220,6 +242,7 @@ export async function openCollabConnection(options: CollabConnectionOptions): Pr
     doc,
     readOnly,
     online,
+    connecting,
     unconfirmed: unconfirmed.length > 0,
     reopening,
     closed,
@@ -328,6 +351,8 @@ export async function openCollabConnection(options: CollabConnectionOptions): Pr
       if (!mine()) return
       online = status === 'connected'
       if (!online) awaiting = null // 끊긴 소켓의 답은 오지 않는다
+      // 붙었거나 끊겼다 — 첫 시도가 끝났다(머리말). 시도를 시작했다는 `connecting` 은 아니다.
+      if (status !== 'connecting') endConnecting()
       emit()
     })
     next.on('authenticated', ({ scope }: { scope: string }) => {
@@ -428,6 +453,12 @@ export async function openCollabConnection(options: CollabConnectionOptions): Pr
 
   doc.on('update', onLocalUpdate)
   connect(doc, false)
+  graceTimer = setTimeout(() => {
+    graceTimer = null
+    if (destroyed || !connecting) return
+    endConnecting()
+    emit()
+  }, options.firstConnectGraceMs ?? FIRST_CONNECT_GRACE_MS)
   if (unconfirmed.length > 0) scheduleConfirm()
 
   return {
@@ -454,6 +485,7 @@ export async function openCollabConnection(options: CollabConnectionOptions): Pr
       failWaiting('연결을 내렸다')
       if (retryTimer !== null) clearTimeout(retryTimer)
       if (confirmTimer !== null) clearTimeout(confirmTimer)
+      if (graceTimer !== null) clearTimeout(graceTimer)
       doc.off('update', onLocalUpdate)
       dropProvider()
       await writing

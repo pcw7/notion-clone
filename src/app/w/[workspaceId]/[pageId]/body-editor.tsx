@@ -387,9 +387,10 @@ export function BodyEditor({
   const [emojiList, setEmojiList] = useState<readonly ListedEmoji[] | null>(null)
   /** 같은 목록 — 트랜잭션마다 불리는 동기화(편집기를 만들 때 한 번 붙는다)가 읽는다. */
   const emojiListRef = useRef<readonly ListedEmoji[] | null>(null)
-  /** 연결이 알려주는 것 — 온라인 · 읽기 전용 · 미확인 편집 · 다시 여는 중 · 닫힘. */
-  const [link, setLink] = useState<Pick<CollabSnapshot, 'online' | 'readOnly' | 'unconfirmed' | 'reopening' | 'closed'>>({
+  /** 연결이 알려주는 것 — 온라인 · 첫 연결을 기다림 · 읽기 전용 · 미확인 편집 · 다시 여는 중 · 닫힘. */
+  const [link, setLink] = useState<Pick<CollabSnapshot, 'online' | 'connecting' | 'readOnly' | 'unconfirmed' | 'reopening' | 'closed'>>({
     online: false,
+    connecting: true,
     readOnly: null,
     unconfirmed: false,
     reopening: false,
@@ -1386,6 +1387,7 @@ export function BodyEditor({
           }
           setLink({
             online: snapshot.online,
+            connecting: snapshot.connecting,
             readOnly: snapshot.readOnly,
             unconfirmed: snapshot.unconfirmed,
             reopening: snapshot.reopening,
@@ -1593,12 +1595,14 @@ export function BodyEditor({
     // 올라가지 않는다(다시 열면 지금 상태로 연다).
     if (canEdit && link.readOnly === true) return '이 페이지를 고칠 수 없게 되어 읽기 전용입니다 — 권한이 바뀌었거나 페이지가 잠겼습니다.'
     if (!canEdit) return '읽기 전용입니다 — 이 페이지를 고칠 권한이 없습니다.'
-    if (!link.online) return '오프라인입니다. 계속 편집할 수 있고, 변경 사항은 연결이 돌아오면 저장됩니다.'
+    // 첫 연결을 기다리는 동안은 끊긴 것이 아니다 — 열 때마다 배너가 섰다 사라지며 본문이 뛰지 않게(`collab-connection.ts` 머리말).
+    if (!link.online && !link.connecting) return '오프라인입니다. 계속 편집할 수 있고, 변경 사항은 연결이 돌아오면 저장됩니다.'
     return null
   })()
 
   return (
-    <section aria-label="본문" className="relative">
+    // `data-online` — 협업 서버와 이어졌는가. 화면 검사가 "붙은 뒤"를 기다리는 표지다(배너는 첫 연결 동안 서지 않으므로 표지가 못 된다).
+    <section aria-label="본문" className="relative" data-online={link.online}>
       {/* 페이지 안 찾기(10b · F-07-05) — Ctrl/Cmd+F 로 연다 */}
       {findOpen && (
         <FindBar
