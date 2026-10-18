@@ -20292,6 +20292,56 @@ async function main() {
       await move(5, 5)
     }
 
+    if (sectionIf('뒤로 가기 캐시 — 표 변경 구독 (10n-7 · F-04-24)')) {
+      // 떠난 표 화면이 뒤로 가기 캐시(bfcache)에 얼어 있는 동안 표 변경 구독(SSE)을 닫는다(`use-table-changes.ts`). 전에는 그 구독이 열린 채
+      // 남아 표 화면을 몇 번 옮겨 다니면 호스트당 연결 6개를 다 차지했고, 새 화면의 요청이 서버에 닿지도 못했다(관계형 대상 목록이 8초 넘게
+      // 오지 않아 판이 멈췄다 · 링크가 보이기만 해도 미리받던 동안은 떠날 때 진행 중인 요청이 있어 화면이 캐시에 들지 못해 가려졌다).
+      // 그 막힘을 이 절에서 다시 만들지는 못했다(여덟 번 오가도 막히지 않았다 — 크롬이 얼린 화면의 연결을 붙드는 조건을 흉내 내지 못했다).
+      // 그래서 불변식을 직접 본다 — 문서마다 먼저 도는 기록기가 EventSource 의 열기 · 닫기를 세고, 캐시에서 돌아온 화면이 "떠날 때 닫고
+      // 돌아와 다시 열었는가" 를 말한다. 원래 멈춘 장면은 관계형 절이다(닫지 않으면 두 판 모두 멈췄다).
+      // 돌아오면 다시 읽는다 — 숨은 동안 더한 행이 선다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const dbs = []
+      for (let i = 0; i < 2; i += 1) dbs.push((await api('POST', '/databases', { name: `캐시 ${i} ${stamp}` })).body.database)
+      // 문서마다 먼저 도는 기록기 — 캐시에서 돌아왔는지(pageshow · persisted) · EventSource 의 열기 · 닫기 수
+      const { identifier: restoreWatch } = await send('Page.addScriptToEvaluateOnNewDocument', {
+        source: `window.addEventListener('pageshow', (e) => { if (e.persisted) window.__restored = (window.__restored ?? 0) + 1 })
+          ;(() => { const O = window.EventSource; if (!O) return; window.__esOpened = 0; window.__esClosed = 0
+            window.EventSource = function (...args) { const s = new O(...args); window.__esOpened += 1; const close = s.close.bind(s)
+              s.close = () => { window.__esClosed += 1; close() }; return s }
+            window.EventSource.prototype = O.prototype })()`,
+      })
+      // 첫째 표 → 둘째 표(문서째 옮긴다 — 첫째가 캐시에 든다)
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${dbs[0].id}?v=${dbs[0].defaultViewId}` })
+      await waitFor(`!!document.querySelector('[data-testid="db-table"]') && window.__esOpened >= 1`, 15000)
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${dbs[1].id}?v=${dbs[1].defaultViewId}` })
+      await waitFor(`!!document.querySelector('[data-testid="db-table"]')`, 15000)
+
+      // 첫째 표에 행을 더하고 뒤로 간다 — 첫째 표가 캐시에서 돌아온다
+      const titleProp = (await api('GET', `/views/${dbs[0].defaultViewId}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const hidden = `숨은 동안 ${stamp}`
+      await api('POST', `/views/${dbs[0].defaultViewId}/rows`, { cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun(hidden)] } }] })
+      await evaluate('history.back()')
+      const restored = await waitFor(`(window.__restored ?? 0) >= 1 && location.pathname.includes(${JSON.stringify(dbs[0].id)})`, 8000)
+      check('전제 — 뒤로 가면 화면이 캐시에서 돌아온다(pageshow · persisted)', restored, String(await evaluate('window.__restored ?? 0')))
+      const es = await evaluate('({ opened: window.__esOpened, closed: window.__esClosed })')
+      check('★ 캐시에 들 때 구독을 닫았고 돌아와 다시 열었다 — 얼어 있는 동안 연결을 붙들지 않는다(닫기 ≥ 1 · 열기 ≥ 2)',
+        es.closed >= 1 && es.opened >= 2, JSON.stringify(es))
+      check('★ 캐시에서 돌아온 표는 다시 읽는다 — 숨은 동안 더한 행이 선다',
+        await waitFor(`(document.querySelector('[data-testid="db-table"]')?.textContent ?? '').includes(${JSON.stringify(hidden)})`, 8000))
+      const after = `돌아온 뒤 ${stamp}`
+      await api('POST', `/views/${dbs[0].defaultViewId}/rows`, { cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun(after)] } }] })
+      check('★ 그리고 다시 구독한다 — 돌아온 뒤에 더한 행도 새로고침 없이 선다',
+        await waitFor(`(document.querySelector('[data-testid="db-table"]')?.textContent ?? '').includes(${JSON.stringify(after)})`, 8000))
+      await send('Page.removeScriptToEvaluateOnNewDocument', { identifier: restoreWatch })
+    }
+
     if (sectionIf('옵션 고치기 · 지우기 (10n-6 · F-03-04)')) {
       // 셀 고르개의 옵션 `···` → 고치기 판: 이름을 바꾸면 그 옵션을 든 모든 칸이 따라오고 · 색을 바꾸고 · 지우기는 쓰는 행 수를 묻는다
       // (취소하면 그대로) · 지우면 그 칸들이 비고 서버의 셀도 비었다 · 다른 옵션의 칸은 그대로다(정본 §3.5 [보강] 옵션 고치기 · 지우기).
