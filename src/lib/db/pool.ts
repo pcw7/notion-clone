@@ -44,11 +44,29 @@ export function getPool(): Pool {
   return globalThis.__notionClonePool
 }
 
+/**
+ * 쿼리 계측(플랫폼 잔여 10l-1 · F-12-07) — `PERF_SQL=1` 이면 쿼리마다 `[sql] 시각 소요 행수 프로세스:SQL머리` 한 줄을 찍는다. 측정 판
+ * (`E2E_PERF` · HANDOFF §6)이 서버 출력에서 이 줄을 모아 "요청 하나에 쿼리 몇 개 · 몇 단계"로 묶는다. 앱과 협업 서버가 한 출력에 섞이므로
+ * 프로세스 표지를 단다. 꺼져 있으면 비용이 없다(분기 하나).
+ */
+export const perfSqlEnabled = process.env.PERF_SQL === '1'
+const PROCESS_TAG = process.argv[1]?.includes('collab') ? 'collab' : 'app'
+
+export function logSql(startedAt: number, rowCount: number | null, sql: string, prefix = ''): void {
+  console.log(`[sql] ${startedAt.toFixed(1)} ${(performance.now() - startedAt).toFixed(1)} ${rowCount ?? 0} ${PROCESS_TAG}:${prefix}${sql.replace(/\s+/g, ' ').trim().slice(0, 80)}`)
+}
+
 /** 풀에서 한 번 실행. 트랜잭션이 필요하면 withTransaction 을 쓴다. */
 export async function query<T extends QueryResultRow = QueryResultRow>(
   sql: string,
   params: readonly unknown[] = [],
 ): Promise<T[]> {
+  if (perfSqlEnabled) {
+    const startedAt = performance.now()
+    const result = await getPool().query<T>(sql, params as unknown[])
+    logSql(startedAt, result.rowCount, sql)
+    return result.rows
+  }
   const result = await getPool().query<T>(sql, params as unknown[])
   return result.rows
 }

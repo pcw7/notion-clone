@@ -107,6 +107,7 @@ function check(name, ok, detail = '') {
  *   npm run e2e:affected -- --run            # 바꾼 파일이 닿는 게이트를 골라 돈다(testid · 주소 · 이 파일의 바뀐 줄)
  *   E2E_PERF=1 npm run e2e                   # 측정 판(10k-2) — 큰 페이지의 열기 · 스크롤 · 입력을 CDP 트레이스로 잰다. 검사는 돌지 않는다.
  *                                            #   E2E_PERF_BLOCKS="2000,3000" 으로 문단 페이지의 크기를 고른다(기본 2000)
+ *   PERF_SQL=1 E2E_PERF=1 npm run e2e        # 열기 장면에 서버의 쿼리 워터폴(10l-1) — 쿼리 수 · 단계 · 머리별 횟수 · 합(pool.ts 의 [sql] 줄)
  *
  * 조각마다는 **바꾼 것이 닿는 게이트**만 돈다(`npm run e2e:affected` — 조각 이름으로 고르면 바꾼 부품을 함께 쓰는 다른 절을
  * 놓친다). **전체 판은 4조각마다 · 트랙 끝에** 돈다(2026-10-17 사용자와 정함 · HANDOFF §4 — 문서에 적는 숫자는 마지막
@@ -847,9 +848,45 @@ async function main() {
       }
       for (const [label, page, lastText] of pages) {
         await traced(`${label} · 열기`, async () => {
+          const sqlMark = serverOutput.length
           await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
           const ok = await waitFor(`!!document.querySelector('.blk-editor') && document.querySelector('.blk-editor').textContent.includes(${JSON.stringify(lastText)})`, 90000)
           await sleep(500)
+          // 서버의 쿼리 워터폴(PERF_SQL=1 · pool.ts 의 [sql] 줄 · 10l-1) — 시작 시각순으로 걸으며 앞의 것들과 겹치지 않는 쿼리가 새 단계를 연다.
+          // 창은 열기부터 본문이 설 때까지라 그 뒤 클라이언트의 요청(perf 비컨 · 협업 연결)과 협업 서버의 배경 작업(투영)도 섞인다 — 프로세스
+          // 표지(app · collab)와 큰 틈(>40ms)으로 가른다.
+          const sqls = serverOutput.slice(sqlMark).split('\n').filter((l) => l.startsWith('[sql] ')).map((l) => {
+            const [, start, dur, rows, ...rest] = l.split(' ')
+            return { start: Number(start), dur: Number(dur), rows: Number(rows), sql: rest.join(' ') }
+          }).sort((a, b) => a.start - b.start)
+          if (sqls.length > 0) {
+            const stages = []
+            let stageEnd = -Infinity
+            for (const q of sqls) {
+              if (q.start >= stageEnd - 0.5) stages.push([])
+              stages[stages.length - 1].push(q)
+              stageEnd = Math.max(stageEnd, q.start + q.dur)
+            }
+            const first = sqls[0].start
+            const wall = Math.max(...sqls.map((q) => q.start + q.dur)) - first
+            const sum = sqls.reduce((s, q) => s + q.dur, 0)
+            const byProc = { app: 0, collab: 0 }
+            for (const q of sqls) byProc[q.sql.startsWith('collab:') ? 'collab' : 'app'] += 1
+            console.log(`      [sql] 쿼리 ${sqls.length}개(app ${byProc.app} · collab ${byProc.collab}) · 합 ${sum.toFixed(0)}ms · 벽시계 ${wall.toFixed(0)}ms · 단계 ${stages.length}`)
+            let prevEnd = first
+            for (const [i, s] of stages.slice(0, 15).entries()) {
+              const at = s[0].start - first
+              const gap = s[0].start - prevEnd
+              prevEnd = Math.max(...s.map((q) => q.start + q.dur))
+              const longest = s.reduce((a, b) => (b.dur > a.dur ? b : a))
+              console.log(`        ${String(i + 1).padStart(2)}단계 +${at.toFixed(0).padStart(4)}ms${gap > 40 ? ` (틈 ${gap.toFixed(0)}ms)` : ''} · ${s.length}개 · 가장 긴 ${longest.dur.toFixed(1)}ms ${longest.sql.slice(0, 64)}`)
+            }
+            if (stages.length > 15) console.log(`        … ${stages.length - 15}단계 더(마지막 +${(stages[stages.length - 1][0].start - first).toFixed(0)}ms)`)
+            const heads = new Map()
+            for (const q of sqls) { const k = q.sql.slice(0, 70); const h = heads.get(k) ?? { n: 0, sum: 0 }; h.n += 1; h.sum += q.dur; heads.set(k, h) }
+            console.log(`        횟수 상위: ${[...heads.entries()].sort((a, b) => b[1].n - a[1].n).slice(0, 8).map(([k, h]) => `${h.n}× ${k.slice(0, 48)}`).join(' | ')}`)
+            console.log(`        합 상위: ${[...heads.entries()].sort((a, b) => b[1].sum - a[1].sum).slice(0, 6).map(([k, h]) => `${h.sum.toFixed(0)}ms/${h.n}× ${k.slice(0, 48)}`).join(' | ')}`)
+          }
           const nodes = await evaluate(`document.querySelectorAll('.blk-editor .blk-container').length`)
           const paint = await evaluate(`(() => { const n = performance.getEntriesByType('navigation')[0]; const p = performance.getEntriesByType('paint'); return 'FCP ' + Math.round(p.find((x) => x.name === 'first-contentful-paint')?.startTime ?? -1) + 'ms · DCL ' + Math.round(n?.domContentLoadedEventEnd ?? -1) + 'ms' })()`)
           return `${ok ? '본문 끝까지' : '⚠ 90초 안에 못 봤다'} · 블록 ${nodes} · ${paint}`
