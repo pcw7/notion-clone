@@ -105,6 +105,8 @@ function check(name, ok, detail = '') {
  *   E2E_ONLY="7c-7" npm run e2e            # 그 절과 늘 도는 것(로그인 · 시드 · [전체])만
  *   E2E_ONLY="보관,개인 페이지" npm run e2e   # 여러 절
  *   npm run e2e:affected -- --run            # 바꾼 파일이 닿는 게이트를 골라 돈다(testid · 주소 · 이 파일의 바뀐 줄)
+ *   E2E_PERF=1 npm run e2e                   # 측정 판(10k-2) — 큰 페이지의 열기 · 스크롤 · 입력을 CDP 트레이스로 잰다. 검사는 돌지 않는다.
+ *                                            #   E2E_PERF_BLOCKS="2000,3000" 으로 문단 페이지의 크기를 고른다(기본 2000)
  *
  * 조각마다는 **바꾼 것이 닿는 게이트**만 돈다(`npm run e2e:affected` — 조각 이름으로 고르면 바꾼 부품을 함께 쓰는 다른 절을
  * 놓친다). **전체 판은 4조각마다 · 트랙 끝에** 돈다(2026-10-17 사용자와 정함 · HANDOFF §4 — 문서에 적는 숫자는 마지막
@@ -120,6 +122,8 @@ const E2E_ONLY = (process.env.E2E_ONLY ?? '')
   .filter((s) => s !== '')
 let gatesRun = 0
 let gatesSkipped = 0
+// 측정 판(E2E_PERF)이 돌았다 — 검사 요약 대신 측정이 끝났다고 말한다.
+let perfRan = false
 // 지금 도는 절 — 서버가 오류(⨯)를 찍은 순간의 절을 함께 적는다(전체 판의 "서버에서 오류"가 어느 절에서 났는지 · §3.3-278 ⑥).
 let currentSection = '(준비)'
 function sectionIf(title) {
@@ -728,6 +732,163 @@ async function main() {
     await send('Browser.grantPermissions', { origin: BASE, permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite'] })
     await send('Network.setCookie', { name: 'nc_session', value: session, domain: 'localhost', path: '/', httpOnly: true })
     await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${pageId}` })
+
+    /**
+     * 측정 판(E2E_PERF · 10k-2 · F-01-22) — 큰 페이지의 열기 · 스크롤(휠 30번) · 끝에서 다섯 글자를 CDP 트레이스로 잰다. 검사는 돌지 않는다.
+     *
+     * 장면마다 찍는 것: 벽시계 · **가장 바쁜 렌더러 주 스레드**의 바쁨(맨 바깥 작업의 합) · 50ms 초과 작업 수 · 자기 시간을 묶은 것(접근성 ·
+     * 스타일 · 레이아웃 · 그리기 · 스크립트) · 상위 사건 · **스레드마다의 바쁨**(주 스레드가 놀 때 어디서 기다리는가 — 컴포지터 · 래스터 · GPU ·
+     * 브라우저) · **브라우저 프로세스 주 스레드의 상위 사건**(접근성 · 입력 상태 갱신이 여기서 돈다). 주 스레드만 보면 틀린다 — 문단 3,000 의
+     * 입력은 벽시계 1초에 주 스레드 90ms 였고 나머지는 브라우저 프로세스의 접근성 처리였다(HANDOFF §3.3-458). 입력은 `insertText`(브라우저가
+     * 입력을 처리할 때까지)와 `evaluate`(주 스레드 · 브라우저가 CDP 를 처리할 때까지)로 갈라 적는다.
+     *
+     * 변형을 견줄 때(예: CSS 주입)는 **변형이 걸렸는지를 함께 찍는다** — 걸리지 않은 변형은 같은 조건의 반복이다(10k-2 의 첫 판).
+     * 페이지는 이 판이 만든다 — 문단 N(E2E_PERF_BLOCKS · 기본 2000) · 코드 1만 줄. 본문 한 번의 쓰기 상한은 1MiB 라 문단은 4,000 안에서.
+     */
+    if (process.env.E2E_PERF === '1') {
+      const perfVer = await (await fetch(`http://127.0.0.1:${devtoolsPort}/json/version`)).json()
+      const perfWs = new WebSocket(perfVer.webSocketDebuggerUrl)
+      await new Promise((ok) => { perfWs.onopen = ok })
+      let perfSeq = 0
+      const perfPend = new Map()
+      let perfEvents = []
+      let perfDone = null
+      perfWs.onmessage = (e) => {
+        const m = JSON.parse(e.data)
+        if (m.id && perfPend.has(m.id)) { perfPend.get(m.id)(m); perfPend.delete(m.id) }
+        else if (m.method === 'Tracing.dataCollected') perfEvents.push(...m.params.value)
+        else if (m.method === 'Tracing.tracingComplete') perfDone?.()
+      }
+      const perfSend = (method, params = {}) => new Promise((ok) => { const i = ++perfSeq; perfPend.set(i, ok); perfWs.send(JSON.stringify({ id: i, method, params })) })
+      const CATS = ['devtools.timeline', 'disabled-by-default-devtools.timeline', 'blink', 'toplevel', 'accessibility', 'v8', 'cc', 'loading', 'renderer.scheduler', 'ime', 'input', 'browser', 'gpu', 'viz']
+      const BUCKET = [
+        ['접근성', /^(SerializeLifecycleStage|RunAccessibilitySteps|Blink\.Accessibility|RenderAccessibilityImpl|AXObjectCache|LocalFrameView::RunAccessibilitySteps)/],
+        ['스타일', /^(UpdateLayoutTree|Blink\.Style|Document::UpdateStyle$|StyleEngine|RecalcStyle|Blink\.ForcedStyleAndLayout)/],
+        ['레이아웃', /^(Layout$|LocalFrameView::performLayout|LocalFrameView::layout|Blink\.Layout|InlineNode|LayoutBlock|Document::UpdateStyleAndLayout|LocalFrameView::UpdateStyleAndLayout|LocalFrameView::RunStyleAndLayout)/],
+        ['그리기', /^(Paint|PrePaint|Blink\.Paint|Blink\.PrePaint|PaintArtifactCompositor|Commit$|Blink\.CompositingInputs|Compositing|UpdateLayer|Layerize|ProxyMain::BeginMainFrame|WebFrameWidgetImpl::UpdateLifecycle|LocalFrameView::UpdateLifecyclePhases|Blink\.UpdateLifecycle)/],
+        ['스크립트', /^(FunctionCall|EvaluateScript|v8\.|V8\.|RunMicrotasks|TimerFire|EventDispatch|XHR|ParseHTML|CompileScript|CompileCode|RunPendingMicrotask|AsyncTask|MinorGC|MajorGC|TypingCommand|Editor::|GetSelectionOffsets)/],
+        ['HitTest', /^HitTest/],
+      ]
+      /** 한 스레드의 사건을 시각순으로 걸으며 자기 시간을 이름마다 모은다. 맨 바깥 작업의 수 · 긴 작업 · 바쁨도 센다. */
+      const selfTimes = (evs) => {
+        evs.sort((a, b) => a.ts - b.ts || b.dur - a.dur)
+        const self = new Map()
+        const count = new Map()
+        const stack = []
+        let tasks = 0, longTasks = 0, maxTask = 0, busy = 0
+        for (const e of evs) {
+          while (stack.length > 0 && stack[stack.length - 1].end <= e.ts) stack.pop()
+          const node = { end: e.ts + e.dur, child: 0 }
+          if (stack.length > 0) stack[stack.length - 1].child += e.dur
+          else { busy += e.dur; tasks += 1; if (e.dur > 50_000) longTasks += 1; maxTask = Math.max(maxTask, e.dur) }
+          stack.push(node)
+          e.__node = node
+        }
+        for (const e of evs) { self.set(e.name, (self.get(e.name) ?? 0) + (e.dur - e.__node.child)); count.set(e.name, (count.get(e.name) ?? 0) + 1) }
+        return { self, count, tasks, longTasks, maxTask, busy }
+      }
+      const ms = (us) => Math.round(us / 1000)
+      const top = (self, count, n) => [...self.entries()].sort((a, b) => b[1] - a[1]).slice(0, n).map(([name, us]) => `${name} ${ms(us)}×${count.get(name)}`).join(' · ')
+      const traced = async (label, fn) => {
+        perfEvents = []
+        const complete = new Promise((ok) => { perfDone = ok })
+        await perfSend('Tracing.start', { traceConfig: { includedCategories: CATS }, transferMode: 'ReportEvents' })
+        const t0 = Date.now()
+        const extra = await fn()
+        const wall = Date.now() - t0
+        await perfSend('Tracing.end')
+        await complete
+        const names = new Map()
+        for (const e of perfEvents) if (e.ph === 'M' && e.name === 'thread_name') names.set(`${e.pid}:${e.tid}`, e.args.name)
+        const perThread = new Map()
+        for (const e of perfEvents) {
+          if (e.ph !== 'X' || typeof e.dur !== 'number') continue
+          const k = `${e.pid}:${e.tid}`
+          if (!perThread.has(k)) perThread.set(k, [])
+          perThread.get(k).push(e)
+        }
+        const busiest = (threadName) => { let evs = []; for (const [k, l] of perThread) if (names.get(k) === threadName && l.length > evs.length) evs = l; return evs }
+        const main = selfTimes(busiest('CrRendererMain'))
+        const browserMain = selfTimes(busiest('CrBrowserMain'))
+        const buckets = Object.fromEntries(BUCKET.map(([b]) => [b, 0]))
+        buckets['기타'] = 0
+        for (const [name, us] of main.self) { const b = BUCKET.find(([, re]) => re.test(name)); buckets[b ? b[0] : '기타'] += us }
+        // 스레드마다의 바쁨 — 겹침을 합친 길이
+        const threadBusy = new Map()
+        for (const [k, evs] of perThread) {
+          let end = -1
+          let sum = 0
+          for (const e of evs) { if (e.ts >= end) { sum += e.dur; end = e.ts + e.dur } else if (e.ts + e.dur > end) { sum += e.ts + e.dur - end; end = e.ts + e.dur } }
+          const name = names.get(k) ?? k
+          threadBusy.set(name, (threadBusy.get(name) ?? 0) + sum)
+        }
+        console.log(`      [측정] ${label} — 벽시계 ${wall}ms · 주 스레드 바쁨 ${ms(main.busy)}ms · 작업 ${main.tasks}(50ms 초과 ${main.longTasks} · 최대 ${ms(main.maxTask)}ms)${extra ? ' · ' + extra : ''}`)
+        console.log(`        ${Object.entries(buckets).map(([b, us]) => `${b} ${ms(us)}`).join(' · ')}`)
+        console.log(`        상위: ${top(main.self, main.count, 8)}`)
+        console.log(`        스레드: ${[...threadBusy.entries()].sort((a, b) => b[1] - a[1]).slice(0, 7).map(([n, us]) => `${n} ${ms(us)}`).join(' · ')}`)
+        console.log(`        브라우저 상위: ${top(browserMain.self, browserMain.count, 6)}`)
+      }
+      const newPage = async () => (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: '{}' })).json()).page.id
+      const runs = (text) => { const out = []; for (let i = 0; i < text.length; i += 2000) out.push(textRun(text.slice(i, i + 2000))); return out }
+      const paragraphs = (n) => Array.from({ length: n }, (_, i) => block(randomUUID(), 'paragraph', `문단 ${i} — 여기에 글이 조금 있다. 긴 페이지의 그리기 비용을 잰다.`))
+      const codeLines = Array.from({ length: 10_000 }, (_, i) => `const v${i} = ${i} // c${i}`).join('\n')
+      const pages = [['작은 페이지(블록 5)', pageId, 'D']]
+      for (const raw of (process.env.E2E_PERF_BLOCKS ?? '2000').split(',')) {
+        const n = Number(raw.trim())
+        if (!Number.isInteger(n) || n <= 0) continue
+        const page = await newPage()
+        await saveBody(page, { blocks: paragraphs(n) })
+        pages.push([`문단 ${n}`, page, `문단 ${n - 1} `])
+      }
+      {
+        const codePage = await newPage()
+        await saveBody(codePage, { blocks: [...paragraphs(3), { id: randomUUID(), type: 'code', title: runs(codeLines), properties: { language: 'javascript' }, format: {}, children: [] }] })
+        pages.push(['코드 1만 줄(+문단 3)', codePage, '// c9999'])
+      }
+      for (const [label, page, lastText] of pages) {
+        await traced(`${label} · 열기`, async () => {
+          await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+          const ok = await waitFor(`!!document.querySelector('.blk-editor') && document.querySelector('.blk-editor').textContent.includes(${JSON.stringify(lastText)})`, 90000)
+          await sleep(500)
+          const nodes = await evaluate(`document.querySelectorAll('.blk-editor .blk-container').length`)
+          const paint = await evaluate(`(() => { const n = performance.getEntriesByType('navigation')[0]; const p = performance.getEntriesByType('paint'); return 'FCP ' + Math.round(p.find((x) => x.name === 'first-contentful-paint')?.startTime ?? -1) + 'ms · DCL ' + Math.round(n?.domContentLoadedEventEnd ?? -1) + 'ms' })()`)
+          return `${ok ? '본문 끝까지' : '⚠ 90초 안에 못 봤다'} · 블록 ${nodes} · ${paint}`
+        })
+        await traced(`${label} · 스크롤(휠 30번)`, async () => {
+          const box = await rect('.blk-editor')
+          for (let i = 0; i < 30; i += 1) {
+            await send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: box.x + 100, y: 300, deltaX: 0, deltaY: 800 })
+            await sleep(60)
+          }
+          await sleep(400)
+          return `문서 ${await evaluate('Math.round(document.scrollingElement.scrollTop)')}px`
+        })
+        await traced(`${label} · 끝에서 다섯 글자`, async () => {
+          await evaluate(`(() => {
+            const blocks = document.querySelectorAll('.blk-editor .blk-container')
+            const el = blocks[blocks.length - 1].firstElementChild
+            el.scrollIntoView({ block: 'center' })
+            const r = document.createRange(); r.selectNodeContents(el); r.collapse(false)
+            const s = getSelection(); s.removeAllRanges(); s.addRange(r)
+            document.querySelector('.blk-editor').focus()
+          })()`)
+          await sleep(400)
+          const times = []
+          for (let i = 0; i < 5; i += 1) {
+            const t0 = Date.now()
+            await send('Input.insertText', { text: 'x' })
+            const t1 = Date.now()
+            await evaluate('0')
+            times.push(`${t1 - t0}+${Date.now() - t1}`)
+          }
+          const tail = await evaluate(`(() => { const blocks = document.querySelectorAll('.blk-editor .blk-container'); return blocks[blocks.length - 1].textContent.slice(-12) })()`)
+          return `한 글자(insertText+evaluate) ${times.join(', ')}ms · 끝 ${JSON.stringify(tail)}`
+        })
+      }
+      perfWs.close()
+      perfRan = true
+      return
+    }
 
     // ── 여러 절이 함께 쓰는 도우미 — 게이트(절) 안에 두면 블록 스코프에 갇혀 뒤 절이 못 본다(E2E_ONLY · #127) ──
     /**
@@ -19857,6 +20018,10 @@ try {
   process.exit(2)
 }
 
+if (perfRan) {
+  console.log('\n측정 판(E2E_PERF) — 검사는 돌지 않았다. 숫자는 위의 [측정] 줄이다(HANDOFF §6).')
+  process.exit(0)
+}
 const failed = results.filter((r) => !r.ok).length
 if (E2E_ONLY.length > 0) {
   console.log(`\n⚠ E2E_ONLY=${process.env.E2E_ONLY} — 게이트 ${gatesRun}개 실행 · ${gatesSkipped}개 건너뜀. 전체 판이 아니다 — 문서에 적는 숫자는 필터 없는 판의 것이다.`)
