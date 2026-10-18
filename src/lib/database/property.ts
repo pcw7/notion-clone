@@ -53,6 +53,7 @@ import {
   OPTION_COLORS,
   STATUS_DEFAULT_OPTIONS,
   STATUS_GROUP_KINDS,
+  emptyValue,
   isAppPropertyType,
   isMvpPropertyType,
   isOptionColor,
@@ -216,13 +217,15 @@ export async function lockSchema(
   ctx: SessionContext,
   dataSourceId: string,
   expectedVersion?: string,
+  /** `false` 면 잠그지 않고 같은 판정만 한다 — 읽기 트랜잭션에서 "고칠 수 있는 사람만 보는 것"(옵션을 쓰는 행 수 · 10n-6)을 물을 때. */
+  lock = true,
 ): Promise<DataSourceRow | PropertyResult<never>> {
   const ds = await tx.queryMaybe<DataSourceRow>(
     `SELECT ds.id, ds.schema_version, ds.owner_database_id AS container_id
        FROM data_source ds
        JOIN block b ON b.id = ds.owner_database_id
       WHERE ds.id = $1 AND b.workspace_id = $2 AND b.lifecycle = 'live' AND ds.lifecycle = 'live'
-      FOR UPDATE OF ds`,
+      ${lock ? 'FOR UPDATE OF ds' : ''}`,
     [dataSourceId, ctx.workspaceId],
   )
   if (ds === null) return fail('not_found')
@@ -888,6 +891,203 @@ export async function addSelectOption(
       ok: true,
       value: { option: toSelectOption(existing), created: false, schemaVersion: ds.schema_version },
     } as const
+  })
+}
+
+// ── 옵션 고치기 · 지우기 (10n-6 · 정본 §3.5 [보강] 옵션 고치기 · 지우기) ─────────────
+
+export type UpdateSelectOptionInput = { readonly name?: unknown; readonly color?: unknown }
+
+export type UpdatedSelectOption = { readonly option: SelectOption; readonly schemaVersion: string }
+
+/**
+ * 이 속성의 옵션 하나 — 고치기 · 지우기가 읽는다. 옵션 타입이 아니면 `unsupported_type`.
+ *
+ * 속성 · 옵션 행을 **잠그지 않는다** — 스키마 조작끼리는 `lockSchema` 가 이미 줄을 세운다. 지우기가 셀 쓰기와 줄을 서는 곳은 하나뿐이어야
+ * 한다(`deleteSelectOption` 의 "옵션 행을 먼저 지운다"). 처음엔 둘 다 `FOR UPDATE` 로 잡았다가 반사실 C3(순서를 바꿈)이 두 번 살아남았다
+ * (HANDOFF §3.3-474):
+ *   - 옵션 행의 `FOR UPDATE` 가 쓰기의 `FOR SHARE` 와 먼저 부딪혀 그 순서가 아무 일도 하지 않았다
+ *   - 속성 행의 `FOR UPDATE` 는 셀 쓰기의 INSERT 가 외래 키로 거는 `FOR KEY SHARE` 와 부딪힌다 — 쓰기가 옵션 확인과 INSERT 사이에 있을 때
+ *     지우기가 속성을 잡으면 지우기는 옵션의 공유 잠금을, 쓰기는 속성 잠금을 기다리는 **교착**이 된다
+ */
+async function optionOf(
+  tx: Tx,
+  dataSourceId: string,
+  propertyId: string,
+  optionId: string,
+): Promise<{ type: string; config: Record<string, unknown> | null; option: { id: string; name: string; color: string; group_kind: string | null } } | PropertyResult<never>> {
+  const property = await tx.queryMaybe<{ type: string; config: Record<string, unknown> | null }>(
+    `SELECT type, config FROM property WHERE id = $1 AND data_source_id = $2 AND deleted_at IS NULL`,
+    [propertyId, dataSourceId],
+  )
+  if (property === null) return fail('not_found')
+  if (!isOptionType(property.type)) return fail('unsupported_type')
+  const option = await tx.queryMaybe<{ id: string; name: string; color: string; group_kind: string | null }>(
+    `SELECT o.id, o.name, o.color::text AS color, g.kind::text AS group_kind
+       FROM select_option o
+       LEFT JOIN status_group g ON g.id = o.group_id
+      WHERE o.id = $1 AND o.property_id = $2`,
+    [optionId, propertyId],
+  )
+  if (option === null) return fail('not_found')
+  return { ...property, option }
+}
+
+/**
+ * 옵션의 이름 · 색을 바꾼다 — 03 F-03-04 시나리오 4(정본 [보강] 옵션 고치기 · 지우기 ①).
+ *
+ * 더하기와 같은 문이다(`lockSchema` = `edit_structure` · `schema_version` 을 올린다). 셀은 옵션 id 를 가리키므로 모든 칸 · 필터 · 보드의
+ * 열이 따라온다. **이름이 겹치면 거부한다**(`duplicate_name`) — 더하기는 같은 이름에 수렴하지만(동시 생성), 바꾸기는 한 옵션을 다른
+ * 옵션의 이름으로 만드는 것이라 둘이 하나가 될 수 없다. 대소문자만 바꾸는 것은 된다. 바뀐 것이 없으면 버전을 올리지 않는다.
+ */
+export async function updateSelectOption(
+  ctx: SessionContext,
+  dataSourceId: string,
+  propertyId: string,
+  optionId: string,
+  input: UpdateSelectOptionInput,
+): Promise<PropertyResult<UpdatedSelectOption>> {
+  if (input.name === undefined && input.color === undefined) return fail('invalid_name')
+  const name = input.name === undefined ? undefined : normalizeName(input.name)
+  if (name === null) return fail('invalid_name')
+  if (input.color !== undefined && !isOptionColor(input.color)) return fail('invalid_color')
+  if (!isUuid(optionId)) return fail('not_found')
+
+  return withCommandTransaction(async (tx) => {
+    const ds = await lockSchema(tx, ctx, dataSourceId)
+    if (isFailure(ds)) return ds
+    const found = await optionOf(tx, dataSourceId, propertyId, optionId)
+    if (isSchemaFailure(found)) return found
+    const current = found.option
+
+    const nextName = name ?? current.name
+    const nextColor = (input.color as OptionColor | undefined) ?? current.color
+    if (nextName === current.name && nextColor === current.color) {
+      return { ok: true, value: { option: toSelectOption(current), schemaVersion: ds.schema_version } } as const
+    }
+    if (nextName.toLowerCase() !== current.name.toLowerCase()) {
+      const taken = await tx.queryMaybe<{ one: number }>(
+        `SELECT 1 AS one FROM select_option WHERE property_id = $1 AND lower(name) = lower($2) AND id <> $3`,
+        [propertyId, nextName, optionId],
+      )
+      if (taken !== null) return fail('duplicate_name')
+    }
+    const updated = await tx.queryOne<{ id: string; name: string; color: string }>(
+      `UPDATE select_option SET name = $2, color = $3::option_color WHERE id = $1 RETURNING id, name, color::text AS color`,
+      [optionId, nextName, nextColor],
+    )
+    return {
+      ok: true,
+      value: { option: toSelectOption({ ...updated, group_kind: current.group_kind }), schemaVersion: await bumpSchema(tx, dataSourceId) },
+    } as const
+  })
+}
+
+export type DeletedSelectOption = {
+  /** 비운 셀 수 — 템플릿 · 휴지통의 행까지. */
+  readonly clearedCells: number
+  /** status 의 기본 옵션을 지웠으면 새 기본 옵션(남은 것이 없으면 null). 아니면 없다. */
+  readonly defaultOptionId?: string | null
+  readonly schemaVersion: string
+}
+
+/**
+ * 옵션을 지운다 — 옵션 행을 지우고 **같은 트랜잭션에서 그 옵션을 가리키는 셀을 비운다**(정본 [보강] 옵션 고치기 · 지우기 ②~⑤).
+ *
+ * - soft delete 를 하지 않는다 — 셀에 남긴 id 는 화면(빈 칸)과 사이드카(`text_value`)가 어긋나 필터 · 비어 있음 · 정렬 · 검색 · 집계가
+ *   다른 행을 본다. 지우기 전에 화면이 쓰는 행 수를 묻는다(`countOptionUsage`).
+ * - **옵션 행을 먼저 지운다** — 셀 쓰기의 확인이 그 행을 `FOR SHARE` 로 쥐므로(`options.ts`), 진행 중인 쓰기가 끝나기를 기다리고 그 뒤의
+ *   셀 비우기 문이 그 쓰기까지 본다(③).
+ * - 그 속성의 모든 셀을 비운다(템플릿 · 휴지통의 행도 — 되살린 행이 지운 id 를 들고 돌아오지 않게). 행의 판은 올리지 않는다(스키마
+ *   조작 · 다른 화면은 옵션 · 캐시 트리거의 표 변경 신호로 다시 읽는다).
+ * - status 의 기본 옵션이면 남은 첫 옵션으로 옮긴다(④ — 지운 id 를 가리킨 채 두면 새 행 만들기가 옵션 확인에 걸린다).
+ * - 보드의 그 열의 수동 순서(`row_position.group_key` = 옵션 id)를 지운다(⑤ — 카드는 "값 없음" 열로 간다).
+ */
+export async function deleteSelectOption(
+  ctx: SessionContext,
+  dataSourceId: string,
+  propertyId: string,
+  optionId: string,
+): Promise<PropertyResult<DeletedSelectOption>> {
+  if (!isUuid(optionId)) return fail('not_found')
+
+  return withCommandTransaction(async (tx) => {
+    const ds = await lockSchema(tx, ctx, dataSourceId)
+    if (isFailure(ds)) return ds
+    const found = await optionOf(tx, dataSourceId, propertyId, optionId)
+    if (isSchemaFailure(found)) return found
+
+    await tx.query(`DELETE FROM select_option WHERE id = $1`, [optionId])
+    const cleared = await tx.query<{ page_id: string }>(
+      `UPDATE page_property_value
+          SET value = $3::jsonb, num_value = NULL, text_value = NULL, date_start = NULL, date_end = NULL, bool_value = NULL,
+              updated_at = now()
+        WHERE property_id = $1 AND text_value = $2
+        RETURNING page_id`,
+      [propertyId, optionId, JSON.stringify(emptyValue(found.type as MvpPropertyType))],
+    )
+    await tx.query(
+      `DELETE FROM row_position WHERE group_key = $2 AND view_id IN (SELECT id FROM view WHERE data_source_id = $1)`,
+      [dataSourceId, optionId],
+    )
+
+    let defaultOptionId: string | null | undefined
+    if (found.type === 'status' && found.config?.default_option_id === optionId) {
+      const next = await tx.queryMaybe<{ id: string }>(
+        `SELECT o.id FROM select_option o
+           LEFT JOIN status_group g ON g.id = o.group_id
+          WHERE o.property_id = $1
+          ORDER BY g.kind NULLS FIRST, o.order_idx, o.id
+          LIMIT 1`,
+        [propertyId],
+      )
+      defaultOptionId = next?.id ?? null
+      await tx.query(`UPDATE property SET config = $2::jsonb WHERE id = $1`, [
+        propertyId,
+        JSON.stringify({ default_option_id: defaultOptionId }),
+      ])
+    }
+
+    return {
+      ok: true,
+      value: {
+        clearedCells: cleared.length,
+        ...(defaultOptionId !== undefined ? { defaultOptionId } : {}),
+        schemaVersion: await bumpSchema(tx, dataSourceId),
+      },
+    } as const
+  })
+}
+
+/**
+ * 그 옵션을 쓰는 행 수 — 지우기 전에 화면이 묻는다(정본 ② "지우기 전에 그 옵션을 쓰는 행 수를 보여 주고 한 번 더 묻는다"). 살아 있는
+ * 행만(템플릿 · 휴지통은 세지 않는다 — 지우기는 그것들도 비운다). 지울 수 있는 사람(`edit_structure`)만 묻는다.
+ */
+export async function countOptionUsage(
+  ctx: SessionContext,
+  dataSourceId: string,
+  propertyId: string,
+  optionId: string,
+): Promise<PropertyResult<{ readonly rows: number }>> {
+  if (!isUuid(optionId)) return fail('not_found')
+  return withReadTransaction(async (tx) => {
+    const ds = await lockSchema(tx, ctx, dataSourceId, undefined, false)
+    if (isFailure(ds)) return ds
+    const option = await tx.queryMaybe<{ one: number }>(
+      `SELECT 1 AS one FROM select_option o JOIN property p ON p.id = o.property_id
+        WHERE o.id = $1 AND o.property_id = $2 AND p.data_source_id = $3 AND p.deleted_at IS NULL`,
+      [optionId, propertyId, dataSourceId],
+    )
+    if (option === null) return fail('not_found')
+    const counted = await tx.queryOne<{ n: string }>(
+      `SELECT count(*) AS n
+         FROM page_property_value v
+         JOIN page p ON p.id = v.page_id
+         JOIN block b ON b.id = p.id
+        WHERE v.property_id = $1 AND v.text_value = $2 AND p.is_template = false AND b.lifecycle = 'live'`,
+      [propertyId, optionId],
+    )
+    return { ok: true, value: { rows: Number(counted.n) } } as const
   })
 }
 

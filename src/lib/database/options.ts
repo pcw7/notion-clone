@@ -77,8 +77,12 @@ export async function readOptionsOf(
  * `peopleIssuesIn` 과 같은 자리 · HANDOFF §7 의 구멍).
  *
  * 모양 검사(`validateCellValue`)는 id 의 꼴만 봤다. 없는 id(다른 속성의 옵션 · 아무 uuid)를 API 로 넣으면 읽기에서 빈 값으로 접혀
- * 망가지지는 않았지만, 보드의 열 · 필터 · 집계가 "어느 열에도 없는 값"을 쥐게 됐다. 비우기(`null`)는 그대로 된다. 옵션을 지우는 길은 아직
- * 없다 — 생기면 지운 옵션도 여기서 걸린다.
+ * 망가지지는 않았지만, 보드의 열 · 필터 · 집계가 "어느 열에도 없는 값"을 쥐게 됐다. 비우기(`null`)는 그대로 된다. 지운 옵션도 여기서
+ * 걸린다(10n-6).
+ *
+ * **확인한 옵션 행을 `FOR SHARE` 로 쥔다**(정본 §3.5 [보강] 옵션 고치기 · 지우기 ③) — 옵션 지우기는 그 행을 먼저 지우므로 이 쓰기가
+ * 끝나기를 기다리고, 그 뒤의 셀 비우기가 이 쓰기까지 본다. 쥐지 않으면 확인과 쓰기 사이에 지운 옵션의 id 가 셀에 남는다. 그래서 이
+ * 확인은 쓰기 트랜잭션에서만 부른다.
  */
 export async function optionIssuesIn(
   tx: Tx,
@@ -111,8 +115,9 @@ async function missingOptionRefs(
     if (v.type === 'status' && v.status !== null) refs.push({ propertyId: cell.propertyId, id: v.status.id, kind: 'status' })
   }
   if (refs.length === 0) return []
+  // FOR SHARE — 옵션 지우기와 줄을 선다(`optionIssuesIn` 머리말)
   const known = await tx.query<{ property_id: string; id: string }>(
-    `SELECT property_id, id FROM select_option WHERE id = ANY($1::uuid[])`,
+    `SELECT property_id, id FROM select_option WHERE id = ANY($1::uuid[]) FOR SHARE`,
     [[...new Set(refs.map((r) => r.id))]],
   )
   const ok = new Set(known.map((row) => `${row.property_id}:${row.id}`))
