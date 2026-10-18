@@ -32,6 +32,7 @@
     "test": "node --test \"src/**/*.test.ts\"",
     "e2e": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/e2e-editor.mjs",
     "e2e:affected": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/e2e-affected.mjs",
+    "e2e:full": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/e2e-full.mjs",
     "collab": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/collab-server.mjs",
     "moderation": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/moderation.mjs",
     "perf": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/perf-report.mjs",

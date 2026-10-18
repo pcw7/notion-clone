@@ -72,6 +72,8 @@ const { closePool } = await import(new URL('../src/lib/db/pool.ts', import.meta.
 // 알림은 자기 글에는 오지 않는다 — 인박스를 보려면 동료가 하나 필요하다(코멘트 4조각).
 const { createBareWorkspace, createUser, joinAs, visitAsOutsider } = await import(new URL('../src/lib/testing/db-fixtures.ts', import.meta.url).href)
 const { createDiscussion } = await import(new URL('../src/lib/comment/discussion.ts', import.meta.url).href)
+// 판의 끝 줄 — 느린 절 · 알려진 실패(§7)를 가른 새 실패 · 다시 돌릴 게이트(e2e 도구 2조각)
+const { countsLine, formatSeconds, rerunGates, rerunLine, slowest, splitFailures } = await import(new URL('../src/lib/testing/e2e-report.ts', import.meta.url).href)
 
 const PORT = Number(process.env.E2E_PORT ?? 3100)
 const COLLAB_PORT = Number(process.env.E2E_COLLAB_PORT ?? 3101)
@@ -96,7 +98,7 @@ globalThis.fetch = async (...args) => {
 
 const results = []
 function check(name, ok, detail = '') {
-  results.push({ name, ok })
+  results.push({ name, ok, gate: currentGate })
   console.log(`${ok ? '  o' : '  X'} ${name}${!ok && detail ? `\n      ${detail}` : ''}`)
 }
 /**
@@ -111,7 +113,13 @@ function check(name, ok, detail = '') {
  *
  * 조각마다는 **바꾼 것이 닿는 게이트**만 돈다(`npm run e2e:affected` — 조각 이름으로 고르면 바꾼 부품을 함께 쓰는 다른 절을
  * 놓친다). **전체 판은 4조각마다 · 트랙 끝에** 돈다(2026-10-17 사용자와 정함 · HANDOFF §4 — 문서에 적는 숫자는 마지막
- * 전체 판의 것이다). 데이터베이스 안쪽 절들은 우산 게이트('데이터베이스 표 …') 하나로 묶여 있어 그
+ * 전체 판의 것이다). 전체 판은 **머지된 main 을 복사본에서** 돌린다(`npm run e2e:full` — 따로 DB · 다른 포트 · 그동안 다음
+ * 조각을 한다 · 2026-10-18 사용자와 정함).
+ *
+ * 판의 끝 줄(e2e 도구 2조각) — 느린 절 열둘 · HANDOFF §7 의 알려진 실패(`src/lib/testing/e2e-report.ts` 의 목록 · 종료 코드에 넣지
+ * 않는다) · 새 실패와 그 게이트로 만든 `다시 돌리기: E2E_ONLY="…"` · `새 실패 N개 · 알려진 실패 K개` · 마지막에 `N / M 통과`.
+ *
+ * 데이터베이스 안쪽 절들은 우산 게이트('데이터베이스 표 …') 하나로 묶여 있어 그
  * 제목으로 켠다. 게이트 안의 section() 은 제목만 찍는다 — 필터는 sectionIf 가 달린 게이트에만 있다.
  *
  * ⚠ 골라 돌릴 절은 **자기 데이터를 스스로 만들어야** 한다(7a 이후 절들이 그렇다). 앞 절이 만든 것에 기대는 절을
@@ -127,11 +135,23 @@ let gatesSkipped = 0
 let perfRan = false
 // 지금 도는 절 — 서버가 오류(⨯)를 찍은 순간의 절을 함께 적는다(전체 판의 "서버에서 오류"가 어느 절에서 났는지 · §3.3-278 ⑥).
 let currentSection = '(준비)'
+// 지금 도는 게이트 — 떨어진 검사를 다시 돌릴 단위(E2E_ONLY 가 고르는 것). 앞의 늘 도는 절 · [전체]는 게이트 밖(null)이다.
+let currentGate = null
+// 절마다 걸린 시간 — 다음 절이 시작할 때 앞 절을 닫는다(판 끝에 느린 절 열둘).
+const timings = []
+let sectionStartedAt = performance.now()
+function enterSection(title) {
+  const now = performance.now()
+  timings.push({ title: currentSection, ms: now - sectionStartedAt })
+  sectionStartedAt = now
+  currentSection = title
+}
 function sectionIf(title) {
   const on = E2E_ONLY.length === 0 || E2E_ONLY.some((q) => title.toLowerCase().includes(q))
   if (on) {
     gatesRun += 1
-    currentSection = title
+    enterSection(title)
+    currentGate = title
     console.log(`\n[${title}]`)
   } else {
     gatesSkipped += 1
@@ -141,7 +161,7 @@ function sectionIf(title) {
 }
 
 function section(title) {
-  currentSection = title
+  enterSection(title)
   console.log(`\n[${title}]`)
 }
 
@@ -20080,6 +20100,7 @@ async function main() {
     }
 
     section('전체')
+    currentGate = null // 늘 도는 끝 절 — 떨어져도 고를 게이트가 없다(서버 오류는 난 절을 함께 찍는다)
     check('페이지에서 오류가 나지 않았다', pageErrors.length === 0, pageErrors.join('\n      '))
     const serverErrors = serverOutput.split('\n').filter((l) => l.includes('⨯'))
     check('서버에서 오류가 나지 않았다', serverErrors.length === 0, [...serverErrorSections, ...serverErrors].join('\n      '))
@@ -20114,6 +20135,23 @@ if (perfRan) {
   process.exit(0)
 }
 const failed = results.filter((r) => !r.ok).length
+
+// 느린 절 — 판이 35분을 어디에 쓰는지(e2e 도구 2조각). 줄일 곳은 여기서 고른다.
+enterSection('(끝)')
+const totalMs = timings.reduce((sum, t) => sum + t.ms, 0)
+console.log(`\n느린 절 열둘 — 판 전체 ${formatSeconds(totalMs)} · 절 ${timings.length}개`)
+for (const t of slowest(timings, 12)) console.log(`  ${formatSeconds(t.ms).padStart(8)}  ${t.title}`)
+
+// 알려진 실패(§7)를 가른다 — 판마다 손으로 대조하던 것. 종료 코드는 새 실패만 본다.
+const split = splitFailures(results)
+if (split.known.length > 0) {
+  console.log('\n알려진 실패 — HANDOFF §7 (종료 코드에 넣지 않는다):')
+  for (const k of split.known) console.log(`  · ${k.result.name}\n      ${k.why}`)
+}
+if (split.fresh.length > 0) {
+  console.log('\n새 실패:')
+  for (const r of split.fresh) console.log(`  · ${r.name}  [${r.gate ?? '게이트 밖'}]`)
+}
 if (E2E_ONLY.length > 0) {
   console.log(`\n⚠ E2E_ONLY=${process.env.E2E_ONLY} — 게이트 ${gatesRun}개 실행 · ${gatesSkipped}개 건너뜀. 전체 판이 아니다 — 문서에 적는 숫자는 필터 없는 판의 것이다.`)
   if (gatesRun === 0) {
@@ -20121,5 +20159,9 @@ if (E2E_ONLY.length > 0) {
     process.exit(1)
   }
 }
+console.log(`\n${countsLine(split.fresh.length, split.known.length)}`)
+const rerun = rerunGates(split.fresh)
+if (rerun.gates.length > 0) console.log(rerunLine(rerun.gates))
+if (rerun.outside > 0) console.log(`게이트 밖 실패 ${rerun.outside}개 — 늘 도는 절이라 고를 게이트가 없다(어느 판에서든 함께 돈다)`)
 console.log(`\n${results.length - failed} / ${results.length} 통과`)
-process.exit(failed === 0 ? 0 : 1)
+process.exit(split.fresh.length === 0 ? 0 : 1)
