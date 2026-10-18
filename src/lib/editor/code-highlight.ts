@@ -46,6 +46,21 @@
  * `DEFAULT_WINDOW_LINES` 줄이 창이다.
  *
  * ──────────────────────────────────────────────────────────────────────
+ * 글자 조각 — 큰 글자 노드 하나가 글자마다 접근성 트리를 다시 읽게 한다 (10k-1 · F-01-22)
+ * ──────────────────────────────────────────────────────────────────────
+ *
+ * 코드 본문은 PM 텍스트 노드 하나라 칠하지 않은 부분은 DOM 글자 노드 하나다 — 1만 줄이면 320KB. 편집 영역 안에서 글자 하나를 치면
+ * 브라우저가 접근성 트리를 다시 직렬화하는데, 그 비용이 **가장 큰 글자 노드의 크기에 비례**한다 — 그 노드를 건드리지 않아도(앱 밖 실험 ·
+ * 10k-1: 1만 줄 노드 하나 + 끝의 칠한 span 들은 한 글자에 1.3 ~ 1.9초, 그 노드를 50줄 글자 노드로 가르면 45 ~ 80ms · 줄마다 노드로
+ * 가르면(1만 개) 다시 0.3 ~ 0.5초 — 노드 수도 비용이다). 접근성 트리는 보조 기술이 붙은 사용자(그리고 헤드리스 브라우저)가 쓴다.
+ *
+ * 그래서 `PIECE_MAX_CHARS` 를 넘는 블록의 글자를 **조각**으로 가른다 — 조각마다 속성 없는 인라인 데코레이션. PM 은 데코레이션 경계마다
+ * 글자 노드를 가르고, 속성이 없으니 `span` 을 만들지 않는다(모양 · CSS 가 바뀌지 않는다). 조각은 **줄 머리에서만** 가른다 — 글자 가운데를
+ * 가르면 그 앞에서 치는 동안 뒤의 모든 조각이 한 글자씩 밀려 다시 쓰이지만, 줄 머리는 그 줄 위에서 치는 동안 움직이지 않는다(PM 은 글자가
+ * 같은 조각을 쓰지 않는다 — `TextViewDesc.update`). 한 줄이 상한보다 길면 그 줄 하나가 한 조각이다(압축 코드 — 자르지 않고 받아들인다).
+ * 문법 · 창과 상관없이 가른다 — plain text 의 1만 줄도 같은 비용이다. 창의 칠과 겹치면 PM 이 그 경계에서 한 번 더 가를 뿐이다.
+ *
+ * ──────────────────────────────────────────────────────────────────────
  * 문법은 지연 로드 — 들어오면 다시 그린다
  * ──────────────────────────────────────────────────────────────────────
  *
@@ -79,6 +94,12 @@ export const CONTEXT_MAX_CHARS = 8_000
 export const DEFAULT_WINDOW_LINES = 60
 /** 미룬 블록을 다시 읽기까지 손을 멈춘 시간. */
 export const REFRESH_DELAY_MS = 150
+/** 글자 조각 하나에 담는 줄의 상한(머리말 "글자 조각"). */
+export const PIECE_LINES = 50
+/** 글자 조각 하나의 글자 상한 — 줄이 길면 줄 수보다 먼저 가른다. 블록이 이 안이면 가르지 않는다. 한 줄이 이보다 길면 그 줄이 한 조각이다. */
+export const PIECE_MAX_CHARS = 4_000
+/** 조각 데코레이션의 spec — 옮긴 옛 집합에서 조각을 가려낸다(조각은 늘 새로 센다). */
+const PIECE_SPEC = { piece: true } as const
 
 /** 줄 번호 둘 — 처음과 끝(둘 다 포함). */
 export type Lines = readonly [number, number]
@@ -109,6 +130,26 @@ export function lineStartsOf(text: string): readonly number[] {
   for (let at = text.indexOf('\n'); at !== -1; at = text.indexOf('\n', at + 1)) starts.push(at + 1)
   lastLineStarts = { text, starts }
   return starts
+}
+
+/**
+ * 글자 조각의 머리 오프셋들 — 첫 조각은 0 에서 시작한다. 줄 머리에서만 가르고, 조각이 `PIECE_LINES` 줄에 닿거나 다음 줄을 더하면
+ * `PIECE_MAX_CHARS` 를 넘을 때 가른다(머리말 "글자 조각"). 상한 안의 글자는 `[0]` 하나 — 가르지 않는다.
+ */
+export function pieceStartsOf(text: string): readonly number[] {
+  if (text.length <= PIECE_MAX_CHARS) return [0]
+  const starts = lineStartsOf(text)
+  const pieces = [0]
+  // 지금 조각의 첫 줄. 줄 q 를 더하기 전에 — 조각이 줄 수에 닿았거나 q 의 끝까지 담으면 글자 상한을 넘으면 q 앞에서 가른다.
+  let first = 0
+  for (let q = 1; q < starts.length; q += 1) {
+    const endOfQ = q + 1 < starts.length ? starts[q + 1] : text.length
+    if (q - first >= PIECE_LINES || endOfQ - starts[first] > PIECE_MAX_CHARS) {
+      pieces.push(starts[q])
+      first = q
+    }
+  }
+  return pieces
 }
 
 /** 오프셋 `offset` 이상에서 시작하는 첫 줄. */
@@ -245,6 +286,15 @@ function build(doc: PmNode, input: BuildInput): CodeHighlightState {
   const mappedSet = (): DecorationSet => (mapped ??= input.mapping === null ? input.prev.set : input.prev.set.map(input.mapping, doc))
 
   forEachCodeBlock(doc, (node, contentStart, blockId) => {
+    const text = node.textContent
+    // 글자 조각 — 문법 · 창과 상관없이, 늘 지금 글자로 새로 센다(머리말 "글자 조각"). 마지막 조각이 빈 줄 하나면(끝의 줄바꿈) 비어 있다 — 뺀다.
+    const pieces = pieceStartsOf(text)
+    if (pieces.length > 1) {
+      for (let i = 0; i < pieces.length; i += 1) {
+        const to = i + 1 < pieces.length ? pieces[i + 1] : text.length
+        if (to > pieces[i]) decorations.push(Decoration.inline(contentStart + pieces[i], contentStart + to, {}, PIECE_SPEC))
+      }
+    }
     // props 는 Y attr 이라 무엇이든 될 수 있다(8a-2) — `codeLanguageOf` 는 `?.language` 만 읽고 문자열이 아니면 null 이다.
     const grammar = grammarOf(codeLanguageOf(node.attrs.props as Readonly<Record<string, unknown>> | undefined))
     if (grammar === null) return
@@ -254,15 +304,14 @@ function build(doc: PmNode, input: BuildInput): CodeHighlightState {
       missing.add(grammar)
       return
     }
-    const text = node.textContent
     const seen = input.windows.get(blockId)
     if (seen !== undefined) windows.set(blockId, seen)
     const plan = planHighlight(text, grammar, seen)
     if (plan.lines !== null) windowed.push({ blockId, contentStart, text, lines: plan.lines })
     const old = input.prev.memos.get(blockId)
     if (old !== undefined && old.key === plan.key && old.text !== text && !input.refresh && (input.composing || plan.cost > SYNC_MAX_CHARS)) {
-      // 미룬다 — 옛 데코레이션을 옮겨 그리고 뷰가 손을 멈춘 뒤 다시 읽게 한다(머리말).
-      decorations.push(...mappedSet().find(contentStart, contentStart + node.content.size))
+      // 미룬다 — 옛 데코레이션을 옮겨 그리고 뷰가 손을 멈춘 뒤 다시 읽게 한다(머리말). 조각은 위에서 새로 셌다 — 옮긴 것은 뺀다.
+      decorations.push(...mappedSet().find(contentStart, contentStart + node.content.size, (spec) => spec !== PIECE_SPEC))
       memos.set(blockId, old)
       stale.add(blockId)
       return

@@ -34,6 +34,8 @@ import {
   CONTEXT_MAX_CHARS,
   DEFAULT_WINDOW_LINES,
   FULL_MAX_CHARS,
+  PIECE_LINES,
+  PIECE_MAX_CHARS,
   SYNC_MAX_CHARS,
   WINDOW_MARGIN_LINES,
   WINDOW_MAX_CHARS,
@@ -41,6 +43,7 @@ import {
   codeHighlightPlugin,
   codeHighlightState,
   lineStartsOf,
+  pieceStartsOf,
   planHighlight,
   type Lines,
 } from './code-highlight.ts'
@@ -71,11 +74,21 @@ function contentOf(state: EditorState, id: string): { start: number; size: numbe
 
 type Painted = { from: number; to: number; cls: string }
 
-/** 그려진 데코레이션 — 전부. */
+/** 칠한 데코레이션 — 전부(글자 조각은 칠이 아니다 — `pieces`). */
 function decorations(state: EditorState): Painted[] {
   return codeHighlightState(state)
     .set.find()
-    .map((d) => ({ from: d.from, to: d.to, cls: (d as unknown as { type: { attrs: { class: string } } }).type.attrs.class }))
+    .map((d) => ({ from: d.from, to: d.to, cls: (d as unknown as { type: { attrs: { class?: string } } }).type.attrs.class }))
+    .filter((d): d is Painted => d.cls !== undefined)
+}
+
+/** 그 블록의 글자 조각 — 글자 오프셋 `[from, to)`. */
+function pieces(state: EditorState, id: string): [number, number][] {
+  const { start, size } = contentOf(state, id)
+  return codeHighlightState(state)
+    .set.find(start, start + size, (spec) => (spec as { piece?: boolean }).piece === true)
+    .map((d): [number, number] => [d.from - start, d.to - start])
+    .sort((a, b) => a[0] - b[0])
 }
 
 /** 그 블록에 칠한 (글자, 클래스). */
@@ -473,5 +486,76 @@ describe('⑧ 계획', () => {
   test('줄 머리 — 빈 줄 · 끝의 줄바꿈', () => {
     assert.deepEqual(lineStartsOf(''), [0])
     assert.deepEqual(lineStartsOf('a\n\nb\n'), [0, 2, 3, 5])
+  })
+})
+
+// ── ⑩ ─────────────────────────────────────────────────────────────────
+
+describe('⑩ 글자 조각 — 큰 글자 노드 하나를 두지 않는다(10k-1)', () => {
+  test('상한 안의 글자는 가르지 않는다 — 한 조각', () => {
+    assert.deepEqual(pieceStartsOf(''), [0])
+    assert.deepEqual(pieceStartsOf('x\n'.repeat(PIECE_MAX_CHARS / 2)), [0])
+  })
+
+  test('★ 조각은 줄 머리에서만 · PIECE_LINES 줄 · PIECE_MAX_CHARS 글자 안 — 1만 줄은 200조각', () => {
+    const text = bigPython(10_000)
+    const starts = pieceStartsOf(text)
+    const lineStarts = new Set(lineStartsOf(text))
+    assert.equal(starts[0], 0)
+    for (let i = 0; i < starts.length; i += 1) {
+      assert.ok(lineStarts.has(starts[i]), `줄 머리가 아니다: ${starts[i]}`)
+      const to = i + 1 < starts.length ? starts[i + 1] : text.length
+      assert.ok(to - starts[i] <= PIECE_MAX_CHARS, `${to - starts[i]}자`)
+      assert.ok(text.slice(starts[i], to).split('\n').length - 1 <= PIECE_LINES, '줄 수')
+    }
+    assert.equal(starts.length, 10_000 / PIECE_LINES)
+  })
+
+  test('★ 긴 줄은 줄 수보다 먼저 가른다 · 상한을 넘는 한 줄은 그 줄이 한 조각이다 — 글자 가운데를 가르지 않는다', () => {
+    const long = `# ${'긴 주석 '.repeat(100)}` // ~500자
+    const starts = pieceStartsOf(bigPython(100, () => long))
+    // 500자 줄 — 8줄마다 가른다(9줄이면 4,500자)
+    assert.ok(starts.length > 100 / PIECE_LINES, String(starts.length))
+    assert.equal(starts[1], (long.length + 1) * Math.floor(PIECE_MAX_CHARS / (long.length + 1)))
+    const giant = 'x' + ' = 1'.repeat(PIECE_MAX_CHARS)
+    const text = bigPython(10, (i) => (i === 3 ? giant : pyLine(i)))
+    const giantStart = lineStartsOf(text)[3]
+    const cut = pieceStartsOf(text)
+    assert.ok(cut.includes(giantStart) && cut.includes(giantStart + giant.length + 1), JSON.stringify(cut))
+    assert.ok(!cut.some((s) => s > giantStart && s < giantStart + giant.length + 1), '거대한 줄의 가운데를 갈랐다')
+  })
+
+  test('★ 큰 블록은 조각 데코레이션이 글자 전체를 빈틈없이 덮는다 — 문법이 없어도(plain text) · 작은 블록에는 없다', () => {
+    const python = code(bigPython(10_000), 'python')
+    const plain = code(bigPython(10_000))
+    const small = code(bigPython(100), 'python')
+    const state = stateOf([python, plain, small])
+    for (const block of [python, plain]) {
+      const out = pieces(state, block.id)
+      assert.equal(out.length, 10_000 / PIECE_LINES, block.id)
+      assert.equal(out[0][0], 0)
+      assert.equal(out[out.length - 1][1], contentOf(state, block.id).size)
+      for (let i = 1; i < out.length; i += 1) assert.equal(out[i][0], out[i - 1][1], '빈틈 · 겹침')
+    }
+    assert.deepEqual(pieces(state, small.id), [])
+    // 칠은 그대로 — 조각이 칠을 가리지 않는다
+    assert.ok(has(painted(state, python.id), '# c0', 'hljs-comment'))
+    assert.deepEqual(painted(state, plain.id), [])
+  })
+
+  test('★ 끝에서 치면 앞의 조각은 그대로다(글자가 같은 조각은 다시 쓰이지 않는다) — 미룬 블록도 조각은 새로 세어 겹치지 않는다', () => {
+    const block = code(bigPython(10_000), 'python')
+    // 창을 5000줄 근처로 — 맨 위의 창은 짧은 줄 140개라 SYNC_MAX_CHARS 안이어서 미루지 않는다(⑦ 과 같다)
+    let state = withMeta(stateOf([block]), { windows: [[block.id, [5000, 5040]]] })
+    const before = pieces(state, block.id)
+    state = insertAt(state, block.id, contentOf(state, block.id).size, 'x')
+    assert.deepEqual([...codeHighlightState(state).stale], [block.id], '전제 — 큰 블록은 미뤘다')
+    const after = pieces(state, block.id)
+    assert.equal(after.length, before.length, '조각 수가 다르다 — 옮긴 옛 조각이 겹쳤다')
+    assert.deepEqual(after.slice(0, -1), before.slice(0, -1))
+    assert.deepEqual(after[after.length - 1], [before[before.length - 1][0], before[before.length - 1][1] + 1])
+    // 조각은 글자 뒤에 줄바꿈이 있어도 빈 조각을 만들지 않는다
+    state = insertAt(state, block.id, contentOf(state, block.id).size, '\n')
+    assert.ok(pieces(state, block.id).every(([from, to]) => to > from))
   })
 })
