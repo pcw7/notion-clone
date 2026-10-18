@@ -1322,7 +1322,7 @@ export function DatabaseTable(props: {
                             disabled={addingRow}
                             onMouseDown={(e) => e.stopPropagation()}
                             onClick={() => void addSubItem(row.id)}
-                            className="shrink-0 rounded border border-neutral-200 bg-white px-1.5 text-xs text-neutral-500 opacity-0 hover:bg-neutral-50 group-hover/title:opacity-100 dark:border-neutral-700 dark:bg-neutral-900"
+                            className="shrink-0 rounded border border-neutral-200 bg-white px-1.5 text-xs text-neutral-500 opacity-0 hover:bg-neutral-50 group-hover/title:opacity-100 touch:opacity-100 dark:border-neutral-700 dark:bg-neutral-900"
                           >
                             ＋
                           </button>
@@ -1334,7 +1334,7 @@ export function DatabaseTable(props: {
                           aria-label={`${row.title || '제목 없음'} 열기`}
                           tabIndex={-1}
                           onMouseDown={(e) => e.stopPropagation()}
-                          className="shrink-0 rounded border border-neutral-200 bg-white px-1.5 text-xs text-neutral-500 opacity-0 after:content-['열기'] hover:bg-neutral-50 group-hover/title:opacity-100 dark:border-neutral-700 dark:bg-neutral-900"
+                          className="shrink-0 rounded border border-neutral-200 bg-white px-1.5 text-xs text-neutral-500 opacity-0 after:content-['열기'] hover:bg-neutral-50 group-hover/title:opacity-100 touch:opacity-100 dark:border-neutral-700 dark:bg-neutral-900"
                         />
                       </span>
                     ) : column.type === 'date' && cell.kind === 'cell' ? (

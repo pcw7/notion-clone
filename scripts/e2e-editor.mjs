@@ -18361,6 +18361,171 @@ async function main() {
       }
     }
 
+    if (sectionIf('터치로 블록 옮기기 — 폰 (10m-1 · F-12-12)')) {
+      // 폰(390 · 터치 흉내)에서 블록을 옮긴다 — 탭하면 그 블록의 손잡이가 화면 안에 서고 · 손잡이를 끌면 옮겨지며(페이지가 스크롤로
+      // 가져가지 않는다) · 눌러만 떼면 블록 메뉴가 열린다. 끝에 폭 · 터치를 되돌린다.
+      const ids = { A: randomUUID(), B: randomUUID(), C: randomUUID() }
+      const touchPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
+        method: 'POST', headers: authed, body: JSON.stringify({ title: `터치 ${Date.now()}` }),
+      })).json()).page.id
+      await saveBody(touchPage, {
+        blocks: ['A', 'B', 'C'].map((k) => ({ id: ids[k], type: 'paragraph', title: [textRun(`터치 ${k} 줄`)], properties: {}, format: {}, children: [] })),
+      })
+      const nameOf = Object.fromEntries(Object.entries(ids).map(([k, v]) => [v, k]))
+      const screenOrder = async () => JSON.parse(await evaluate(
+        `JSON.stringify([...document.querySelectorAll('.blk-editor [data-block-id]')].map((e) => e.getAttribute('data-block-id')))`,
+      )).map((id) => nameOf[id] ?? '?').join('')
+      const savedOrder = async () => (await readBody(touchPage)).doc.blocks.map((b) => nameOf[b.id] ?? '?').join('')
+      const boxOf = async (selector) => {
+        const raw = await evaluate(`(() => {
+          const el = document.querySelector(${JSON.stringify(selector)})
+          if (!el) return null
+          const r = el.getBoundingClientRect()
+          return JSON.stringify({ x: r.x, y: r.y, w: r.width, h: r.height })
+        })()`)
+        return raw ? JSON.parse(raw) : null
+      }
+      const lineOf = (key) => boxOf(`[data-block-id="${ids[key]}"] > *:first-child`)
+      const touch = (type, x, y) => send('Input.dispatchTouchEvent', { type, touchPoints: type === 'touchEnd' ? [] : [{ x: Math.round(x), y: Math.round(y) }] })
+      const tap = async (x, y) => {
+        await touch('touchStart', x, y)
+        await touch('touchEnd', x, y)
+      }
+      try {
+        await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true })
+        await send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 })
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${touchPage}` })
+        await waitFor(`document.readyState === 'complete' && !!document.querySelector('[data-block-id="${ids.C}"]')`, 15000)
+        check('전제 — 터치 기기다(hover 없음 · 굵은 포인터)',
+          await evaluate(`matchMedia('(hover: none)').matches && matchMedia('(pointer: coarse)').matches`))
+        // 살아나기 전의 탭은 버려진다 — 손잡이가 설 때까지 다시 탭한다
+        const b = await lineOf('B')
+        for (let i = 0; i < 6 && !(await evaluate(`!!document.querySelector('.blk-gutter-grip')`)); i += 1) {
+          await tap(b.x + b.w / 2, b.y + b.h / 2)
+          await waitFor(`!!document.querySelector('.blk-gutter-grip')`, 1500)
+        }
+        const grip = await boxOf('.blk-gutter-grip')
+        check('★ 블록을 탭하면 그 블록의 손잡이가 선다 — 화면 안에',
+          !!grip && grip.x >= 0 && Math.abs(grip.y + grip.h / 2 - (b.y + b.h / 2)) < b.h, JSON.stringify({ grip, b }))
+        if (grip) {
+          const c = await lineOf('C')
+          const sx = grip.x + grip.w / 2
+          const sy = grip.y + grip.h / 2
+          const ty = c.y + c.h * 0.75
+          await touch('touchStart', sx, sy)
+          for (let i = 1; i <= 8; i += 1) await touch('touchMove', sx, sy + ((ty - sy) * i) / 8)
+          check('★ 끄는 동안 가이드가 보인다 — 페이지가 스크롤로 가져가지 않는다',
+            await waitFor(`!!document.querySelector('.blk-drop-guide')`, 2000),
+            JSON.stringify({ scrollY: await evaluate('scrollY'), dragging: await evaluate(`!!document.querySelector('[data-dragging]')`) }))
+          await touch('touchEnd', sx, ty)
+          check('★ 놓으면 옮겨진다 — A C B', await waitFor(`(() => {
+            const want = ${JSON.stringify([ids.A, ids.C, ids.B])}
+            const got = [...document.querySelectorAll('.blk-editor [data-block-id]')].map((e) => e.getAttribute('data-block-id'))
+            return JSON.stringify(got) === JSON.stringify(want)
+          })()`, 3000), await screenOrder())
+          let saved = ''
+          for (let i = 0; i < 30 && saved !== 'ACB'; i += 1) {
+            saved = await savedOrder()
+            if (saved !== 'ACB') await sleep(200)
+          }
+          check('서버에도 옮겨졌다 — A C B', saved === 'ACB', saved)
+          // 눌러만 떼면 블록 메뉴 — 손잡이를 다시 세운다(옮긴 B)
+          const bNow = await lineOf('B')
+          for (let i = 0; i < 6 && !(await evaluate(`!!document.querySelector('.blk-gutter-grip')`)); i += 1) {
+            await tap(bNow.x + bNow.w / 2, bNow.y + bNow.h / 2)
+            await waitFor(`!!document.querySelector('.blk-gutter-grip')`, 1500)
+          }
+          const grip2 = await boxOf('.blk-gutter-grip')
+          if (grip2) await tap(grip2.x + grip2.w / 2, grip2.y + grip2.h / 2)
+          check('★ 손잡이를 눌러만 떼면 블록 메뉴가 열린다', await waitFor(`!!document.querySelector('[role="menu"]')`, 3000), JSON.stringify({ grip2 }))
+          await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+          await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+        }
+        // hover 로만 보이던 단추는 터치에서 늘 보인다(⑨ⓒ) — 페이지 아이콘 넣기
+        const opacityOf = (selector) => evaluate(`(() => { const el = document.querySelector(${JSON.stringify(selector)}); return el ? getComputedStyle(el).opacity : null })()`)
+        check('★ hover 로만 보이던 "아이콘 넣기" 가 터치에서는 보인다', (await opacityOf('[data-testid="page-icon-add"]')) === '1', String(await opacityOf('[data-testid="page-icon-add"]')))
+
+        // ── 보드 카드 — 길게 눌러 끈다(⑨ⓑ) · 짧게 쓸면 스크롤이다 ──
+        const api = async (method, path, body) => {
+          const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+          return { status: r.status, body: await r.json().catch(() => null) }
+        }
+        const db = (await api('POST', '/databases', { name: `터치 보드 ${Date.now()}` })).body.database
+        const statusProp = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '상태', type: 'select' })).body.property.id
+        const option = async (name) => (await api('POST', `/data-sources/${db.dataSourceId}/properties/${statusProp}/options`, { name })).body.option.id
+        const todo = await option('할 일')
+        const doing = await option('진행 중')
+        const titleProp = (await api('GET', `/views/${db.defaultViewId}`)).body.view.columns.find((col) => col.type === 'title').propertyId
+        const addRow = async (title, status) => (await api('POST', `/views/${db.defaultViewId}/rows`, { cells: [
+          { propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } },
+          { propertyId: statusProp, value: { type: 'select', select: { id: status } } },
+        ] })).body.row.id
+        const swiped = await addRow('쓸어 보는 카드', todo)
+        const held = await addRow('길게 누를 카드', todo)
+        await addRow('진행 중인 카드', doing)
+        const statusOf = async (rowId) => (await api('GET', `/views/${db.defaultViewId}/rows`)).body.rows.find((r) => r.id === rowId)?.properties[statusProp]?.select?.id ?? null
+        const board = (await api('POST', `/databases/${db.id}/views`, { type: 'board', name: '보드' })).body.view
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}?v=${board.id}` })
+        await waitFor(`document.readyState === 'complete' && document.querySelectorAll('[data-testid="db-board-card"]').length === 3`, 15000)
+        const cardBox = (rowId) => boxOf(`[data-testid="db-board-card"][data-row-id="${rowId}"]`)
+        const columnBox = (option) => boxOf(`[data-group-key="${option}"]`)
+        check('★ hover 로만 보이던 카드의 "열기" 가 터치에서는 보인다', (await opacityOf('[data-testid="db-row-open"]')) === '1', String(await opacityOf('[data-testid="db-row-open"]')))
+        // 첫 열은 값이 없는 카드의 열이다 — "할 일" 열을 화면 왼쪽으로 데려온다(폰 폭에서는 둘째 열부터 화면 밖이다)
+        const showTodo = async () => {
+          await evaluate(`document.querySelector('[data-group-key="${todo}"]')?.scrollIntoView({ inline: 'start', block: 'nearest' })`)
+          await sleep(150)
+        }
+        // 카드를 담은 가로 스크롤 틀의 scrollLeft — 쓸기가 실제로 스크롤이 됐는지 본다
+        const boardScroll = () => evaluate(`(() => {
+          let el = document.querySelector('[data-testid="db-board-card"]')
+          while (el && !(el.scrollWidth > el.clientWidth && /auto|scroll/.test(getComputedStyle(el).overflowX))) el = el.parentElement
+          return el ? el.scrollLeft : -1
+        })()`)
+        // 짧게 쓸기 — 누르자마자 왼쪽으로 움직인다. 끌기가 아니라 스크롤이다(카드는 제자리 · 끄는 표시 없음 · 보드가 옆으로 간다)
+        {
+          await showTodo()
+          const from = await cardBox(swiped)
+          const sx = from.x + from.w / 2
+          const sy = from.y + from.h / 2
+          const before = await boardScroll()
+          await touch('touchStart', sx, sy)
+          for (let i = 1; i <= 6; i += 1) await touch('touchMove', sx - 25 * i, sy + 2 * i)
+          const draggingNow = await evaluate(`!!document.querySelector('[data-testid="db-board-card"][data-dragging]')`)
+          await touch('touchEnd', sx - 150, sy + 12)
+          await sleep(300)
+          const after = await boardScroll()
+          check('★ 짧게 쓸면 끌기가 아니다 — 보드가 옆으로 스크롤되고 카드는 제자리 · 끄는 표시도 없다',
+            sx > 0 && sx < 390 && after > before && !draggingNow && (await statusOf(swiped)) === todo,
+            JSON.stringify({ sx, before, after, draggingNow, status: await statusOf(swiped) }))
+        }
+        // 길게 누르기 — 버틴 뒤 움직이면 끈다 · 다른 열에 놓으면 그 값이 된다
+        {
+          await showTodo()
+          const from = await cardBox(held)
+          const sx = from.x + from.w / 2
+          const sy = from.y + from.h / 2
+          await touch('touchStart', sx, sy)
+          await sleep(500)
+          const to = await columnBox(doing)
+          const tx = Math.min(to.x + 30, 380)
+          const ty = to.y + to.h / 2
+          for (let i = 1; i <= 8; i += 1) await touch('touchMove', sx + ((tx - sx) * i) / 8, sy + ((ty - sy) * i) / 8)
+          const draggingNow = await evaluate(`!!document.querySelector('[data-testid="db-board-card"][data-row-id="${held}"][data-dragging]')`)
+          await touch('touchEnd', tx, ty)
+          check('★ 길게 누른 뒤 움직이면 끈다 — 끄는 동안 카드가 흐려진다', draggingNow, JSON.stringify({ from, to }))
+          let status = null
+          for (let i = 0; i < 25 && status !== doing; i += 1) {
+            status = await statusOf(held)
+            if (status !== doing) await sleep(200)
+          }
+          check('★ 다른 열에 놓으면 그 값이 된다 — 서버에도', status === doing, JSON.stringify({ status, doing }))
+        }
+      } finally {
+        await send('Emulation.setTouchEmulationEnabled', { enabled: false })
+        await send('Emulation.clearDeviceMetricsOverride')
+      }
+    }
+
     if (sectionIf('기준점에 붙는 층 — 고르개 (10j-3a · F-12-12)')) {
       // select 칸의 고르개는 몸(body)으로 내보낸 층이다 — 칸 바로 아래 · 왼쪽 맞춤 · 화면 안. 칸 밖(body)에 있어도 포커스는 검색칸에 남는다
       // (칸의 blur 가 층을 칸 안으로 본다). 창을 스크롤하면 칸을 따라간다. 고르면 닫히고 칸에 들어간다.

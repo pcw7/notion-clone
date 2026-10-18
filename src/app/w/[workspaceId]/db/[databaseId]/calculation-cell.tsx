@@ -65,7 +65,7 @@ export function CalculationCell({
         disabled={!canEdit}
         onClick={() => setOpen((v) => !v)}
         className={`w-full truncate rounded px-1 py-0.5 text-right text-xs text-neutral-500 hover:bg-neutral-100 disabled:hover:bg-transparent dark:hover:bg-neutral-800 ${
-          shown ? '' : 'opacity-0 group-hover/calc:opacity-100 focus:opacity-100'
+          shown ? '' : 'opacity-0 group-hover/calc:opacity-100 touch:opacity-100 focus:opacity-100'
         }`}
       >
         {shown ? (

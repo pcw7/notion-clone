@@ -59,6 +59,7 @@ import {
   useRef,
   useState,
   type KeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   type RefObject,
 } from 'react'
@@ -110,7 +111,24 @@ export type GroupProperty = {
 
 /** 이만큼 움직여야 드래그다. 그 전에 놓으면 클릭(포커스)이다. */
 const DRAG_THRESHOLD_PX = 4
+/**
+ * 터치는 **길게 눌러** 끈다(10m-1 · 정본 §3.10 끝 [보강] 좁은 화면 ⑨ⓑ) — 카드 전체에 `touch-action: none` 을 주면 폰의 보드(거의 카드로
+ * 덮인다)를 손가락으로 스크롤할 수 없다. 이 시간을 이 거리 안에서 버티면 끌기, 그 전에 넘게 움직이면 스크롤이다.
+ */
+const LONG_PRESS_MS = 350
+const TOUCH_SLOP_PX = 8
 const UNTITLED = '제목 없음'
+
+/** 터치로 누른 채 기다리는 카드 — 시간이 차면 끌기가 된다(`startTouchDrag`). */
+type Press = {
+  readonly row: RowJson
+  readonly key: string
+  readonly pointerId: number
+  readonly target: HTMLLIElement
+  readonly startX: number
+  readonly startY: number
+  readonly timer: ReturnType<typeof setTimeout>
+}
 
 type Drag = {
   readonly id: string
@@ -213,6 +231,7 @@ export function DatabaseBoard(props: {
 
   const boardRef = useRef<HTMLDivElement>(null)
   const dragRef = useRef<Drag | null>(null)
+  const pressRef = useRef<Press | null>(null)
   const dropRef = useRef<DropTarget | null>(null)
   const titleInputRef = useRef<HTMLInputElement>(null)
 
@@ -286,11 +305,76 @@ export function DatabaseBoard(props: {
     return () => window.removeEventListener('keydown', onKey, true)
   })
 
+  /** 터치로 누른 채 기다리던 것을 거둔다 — 손가락이 움직였거나(스크롤) · 뗐거나 · 브라우저가 가져갔다. */
+  const cancelPress = (): Press | null => {
+    const p = pressRef.current
+    if (p !== null) clearTimeout(p.timer)
+    pressRef.current = null
+    return p
+  }
+
+  // 끄는 동안의 터치 이동은 스크롤로 가지 않게 막는다. 막을 수 있는지는 손가락이 닿는 순간의 처리기로 정해지므로 끌기를 시작할 때 붙이면
+  // 늦다 — 보드가 늘 비수동으로 듣고, 끄는 동안만 막는다(그 밖에는 스크롤 그대로). React 의 터치 사건은 수동이라 막지 못한다.
+  useEffect(() => {
+    const board = boardRef.current
+    if (!board) return
+    const onTouchMove = (event: TouchEvent): void => {
+      if (dragRef.current !== null && event.cancelable) event.preventDefault()
+    }
+    board.addEventListener('touchmove', onTouchMove, { passive: false })
+    return () => {
+      board.removeEventListener('touchmove', onTouchMove)
+      const p = pressRef.current
+      if (p !== null) clearTimeout(p.timer)
+      pressRef.current = null
+    }
+  }, [])
+
+  /** 길게 누르는 동안 · 끄는 동안에는 기기의 길게 누르기 메뉴를 띄우지 않는다. */
+  const onCardContextMenu = (event: ReactMouseEvent<HTMLLIElement>) => {
+    if (pressRef.current !== null || dragRef.current !== null) event.preventDefault()
+  }
+
+  /** 길게 누르기가 찼다 — 끌기로. 좌표는 지금 잰다(손가락은 아직 그 자리다). */
+  const startTouchDrag = (): void => {
+    const p = cancelPress()
+    if (p === null) return
+    try {
+      p.target.setPointerCapture(p.pointerId)
+    } catch {
+      return // 그사이 손가락이 떨어졌다
+    }
+    dragRef.current = {
+      id: p.row.id,
+      fromKey: p.key,
+      startX: p.startX,
+      startY: p.startY,
+      moved: true,
+      layout: measure(),
+      target: null,
+    }
+    setDraggingId(p.row.id)
+  }
+
   const onCardPointerDown = (row: RowJson, key: string, event: ReactPointerEvent<HTMLLIElement>) => {
     if (event.button !== 0 || !access.canEditContent) return
     if (editingRef.current?.rowId === row.id) return
     // 카드 안의 버튼 · 링크는 제 일을 한다.
     if ((event.target as HTMLElement).closest('button, a, input, select, textarea')) return
+    if (event.pointerType === 'touch') {
+      // 막지 않는다 — 곧 움직이면 스크롤이다. 버티면 끌기(머리말의 LONG_PRESS_MS).
+      cancelPress()
+      pressRef.current = {
+        row,
+        key,
+        pointerId: event.pointerId,
+        target: event.currentTarget,
+        startX: event.clientX,
+        startY: event.clientY,
+        timer: setTimeout(startTouchDrag, LONG_PRESS_MS),
+      }
+      return
+    }
     // 끄는 동안 글자가 선택되지 않게. 포커스는 직접 준다.
     event.preventDefault()
     event.currentTarget.focus()
@@ -307,6 +391,12 @@ export function DatabaseBoard(props: {
   }
 
   const onCardPointerMove = (event: ReactPointerEvent<HTMLLIElement>) => {
+    const p = pressRef.current
+    if (p !== null && p.pointerId === event.pointerId) {
+      // 길게 누르기가 차기 전에 움직였다 — 스크롤이다(브라우저가 곧 가져간다)
+      if (Math.hypot(event.clientX - p.startX, event.clientY - p.startY) > TOUCH_SLOP_PX) cancelPress()
+      return
+    }
     const d = dragRef.current
     if (!d) return
     if (!d.moved) {
@@ -323,7 +413,12 @@ export function DatabaseBoard(props: {
     }
   }
 
-  const onCardPointerUp = () => {
+  const onCardPointerUp = (event: ReactPointerEvent<HTMLLIElement>) => {
+    // 길게 누르기가 차기 전에 뗐다 — 탭이다. 마우스의 누르기처럼 카드에 포커스를 준다.
+    if (cancelPress() !== null) {
+      event.currentTarget.focus()
+      return
+    }
     const d = endDrag()
     if (!d || !d.moved || d.target === null) return
     void commitMove(d.id, d.fromKey, d.target)
@@ -601,7 +696,11 @@ export function DatabaseBoard(props: {
                     onPointerDown={onCardPointerDown}
                     onPointerMove={onCardPointerMove}
                     onPointerUp={onCardPointerUp}
-                    onPointerCancel={() => endDrag()}
+                    onPointerCancel={() => {
+                      cancelPress()
+                      endDrag()
+                    }}
+                    onContextMenu={onCardContextMenu}
                   />
                 ))}
                 {isTarget && drop.beforeRowId === null && <DropLine />}
@@ -702,6 +801,7 @@ function BoardCard({
   onPointerMove,
   onPointerUp,
   onPointerCancel,
+  onContextMenu,
 }: {
   row: RowJson
   /** 그 행 페이지(8f-1). */
@@ -723,8 +823,9 @@ function BoardCard({
   onTitleBlur: () => void
   onPointerDown: (row: RowJson, key: string, event: ReactPointerEvent<HTMLLIElement>) => void
   onPointerMove: (event: ReactPointerEvent<HTMLLIElement>) => void
-  onPointerUp: () => void
+  onPointerUp: (event: ReactPointerEvent<HTMLLIElement>) => void
   onPointerCancel: () => void
+  onContextMenu: (event: ReactMouseEvent<HTMLLIElement>) => void
 }) {
   return (
     <>
@@ -738,7 +839,9 @@ function BoardCard({
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerCancel}
-        className={`flex flex-col gap-1 rounded-md border border-neutral-200 bg-white px-2.5 py-2 text-sm shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:border-neutral-700 dark:bg-neutral-950 ${
+        onContextMenu={onContextMenu}
+        // 터치 — 길게 누르는 동안 글자를 고르거나 기기의 미리 보기를 띄우지 않는다(10m-1)
+        className={`flex flex-col gap-1 rounded-md border border-neutral-200 bg-white px-2.5 py-2 text-sm shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-blue-500 touch:select-none [-webkit-touch-callout:none] dark:border-neutral-700 dark:bg-neutral-950 ${
           canDrag ? 'cursor-grab' : ''
         } ${dragging ? 'opacity-40' : ''}`}
       >
@@ -772,7 +875,7 @@ function BoardCard({
               aria-label={`${row.title || UNTITLED} 열기`}
               tabIndex={-1}
               onPointerDown={(e) => e.stopPropagation()}
-              className="shrink-0 rounded border border-neutral-200 bg-white px-1.5 text-xs text-neutral-500 opacity-0 after:content-['열기'] hover:bg-neutral-50 group-hover/title:opacity-100 dark:border-neutral-700 dark:bg-neutral-900"
+              className="shrink-0 rounded border border-neutral-200 bg-white px-1.5 text-xs text-neutral-500 opacity-0 after:content-['열기'] hover:bg-neutral-50 group-hover/title:opacity-100 touch:opacity-100 dark:border-neutral-700 dark:bg-neutral-900"
             />
           </div>
         )}

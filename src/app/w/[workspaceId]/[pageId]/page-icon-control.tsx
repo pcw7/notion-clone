@@ -156,7 +156,7 @@ export function PageIconControl({
           data-testid="page-icon-add"
           disabled={busy}
           onClick={() => void saveRandom(null)}
-          className="rounded px-1.5 py-0.5 text-sm text-neutral-400 opacity-0 hover:bg-neutral-100 hover:text-neutral-600 focus-visible:opacity-100 group-hover/header:opacity-100 disabled:opacity-40 dark:hover:bg-neutral-800"
+          className="rounded px-1.5 py-0.5 text-sm text-neutral-400 opacity-0 hover:bg-neutral-100 hover:text-neutral-600 focus-visible:opacity-100 group-hover/header:opacity-100 touch:not-disabled:opacity-100 disabled:opacity-40 dark:hover:bg-neutral-800"
         >
           ☺ 아이콘 추가
         </button>

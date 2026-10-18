@@ -499,7 +499,7 @@ export function Sidebar({
                           onClick={() => void addTeamspacePage(teamspace.id)}
                           aria-label={`${teamspace.name}에 페이지 추가`}
                           title="이 teamspace 에 페이지 추가"
-                          className="flex-none px-1 text-sm text-neutral-400 opacity-0 group-hover:opacity-100 focus:opacity-100 disabled:opacity-30"
+                          className="flex-none px-1 text-sm text-neutral-400 opacity-0 group-hover:opacity-100 touch:not-disabled:opacity-100 focus:opacity-100 disabled:opacity-30"
                         >
                           +
                         </button>
@@ -510,7 +510,7 @@ export function Sidebar({
                           onClick={() => void addDatabase({ teamspaceId: teamspace.id })}
                           aria-label={`${teamspace.name}에 데이터베이스 추가`}
                           title="이 teamspace 에 데이터베이스 추가"
-                          className="flex-none px-1 text-xs text-neutral-400 opacity-0 group-hover:opacity-100 focus:opacity-100 disabled:opacity-30"
+                          className="flex-none px-1 text-xs text-neutral-400 opacity-0 group-hover:opacity-100 touch:not-disabled:opacity-100 focus:opacity-100 disabled:opacity-30"
                         >
                           ▦
                         </button>
@@ -748,7 +748,7 @@ function TreeItem({
             onClick={() => onAddChild(node.id)}
             aria-label={`${node.title || UNTITLED} 아래에 페이지 추가`}
             title="하위 페이지 추가"
-            className="flex-none px-1 text-sm text-neutral-400 opacity-0 group-hover:opacity-100 focus:opacity-100 disabled:opacity-30"
+            className="flex-none px-1 text-sm text-neutral-400 opacity-0 group-hover:opacity-100 touch:not-disabled:opacity-100 focus:opacity-100 disabled:opacity-30"
           >
             +
           </button>
@@ -763,7 +763,7 @@ function TreeItem({
             aria-label={`${node.title || UNTITLED} 복제`}
             title="복제"
             data-testid="sidebar-duplicate"
-            className="flex-none px-1 text-xs text-neutral-400 opacity-0 group-hover:opacity-100 focus:opacity-100 disabled:opacity-30"
+            className="flex-none px-1 text-xs text-neutral-400 opacity-0 group-hover:opacity-100 touch:not-disabled:opacity-100 focus:opacity-100 disabled:opacity-30"
           >
             ⧉
           </button>
