@@ -16,7 +16,7 @@
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { groupLabel, moveCard, prefillCells, resolveDrop, type ColumnBox, type DropTarget } from './board-drag.ts'
+import { groupLabel, moveCard, moveChoices, prefillCells, resolveDrop, type ColumnBox, type DropTarget } from './board-drag.ts'
 
 const card = (id: string, top: number) => ({ id, top, bottom: top + 40 })
 
@@ -153,6 +153,71 @@ describe('moveCard', () => {
     const before = JSON.stringify(state)
     moveCard(state, 'n1', { key: 'a', beforeRowId: null })
     assert.equal(JSON.stringify(state), before)
+  })
+})
+
+describe('moveChoices — 끌지 않고 옮길 자리 (10m-2)', () => {
+  const row = (id: string) => ({ id })
+  const state = [
+    { key: '', rows: [row('n1')], count: 1 },
+    { key: 'a', rows: [row('a1'), row('a2'), row('a3')], count: 3 },
+    { key: 'b', rows: [row('b1'), row('b2')], count: 4 }, // "더 보기"가 남은 열
+  ]
+  const ids = (columns: readonly { rows: readonly { id: string }[] }[]) => columns.map((c) => c.rows.map((r) => r.id))
+  const apply = (rowId: string, target: DropTarget | null) => {
+    assert.ok(target, '자리가 없다')
+    const moved = moveCard(state, rowId, target)
+    assert.ok(moved)
+    return ids(moved.columns)
+  }
+
+  test('★ 다른 열마다 그 열의 맨 뒤 — 화면의 열 순서대로 · 자기 열은 없다', () => {
+    const c = moveChoices(state, 'a2', true)
+    assert.ok(c)
+    assert.deepEqual(c.others, [
+      { key: '', target: { key: '', beforeRowId: null } },
+      { key: 'b', target: { key: 'b', beforeRowId: null } },
+    ])
+    assert.deepEqual(apply('a2', c.others[1].target), [['n1'], ['a1', 'a3'], ['b1', 'b2', 'a2']])
+  })
+
+  test('★ 위로 · 아래로는 정확히 한 칸 — moveCard 로 옮기면 이웃과 자리를 바꾼다', () => {
+    const c = moveChoices(state, 'a2', true)
+    assert.ok(c)
+    assert.deepEqual(apply('a2', c.up), [['n1'], ['a2', 'a1', 'a3'], ['b1', 'b2']])
+    assert.deepEqual(apply('a2', c.down), [['n1'], ['a1', 'a3', 'a2'], ['b1', 'b2']])
+    // 둘째에서 아래로 — 다음 카드의 다음 카드 앞
+    const first = moveChoices(state, 'a1', true)
+    assert.ok(first)
+    assert.equal(first.up, null, '맨 위에는 위로가 없다')
+    assert.deepEqual(apply('a1', first.down), [['n1'], ['a2', 'a1', 'a3'], ['b1', 'b2']])
+  })
+
+  test('맨 아래에는 아래로가 없다 · 하나뿐인 열에는 둘 다 없다', () => {
+    assert.equal(moveChoices(state, 'a3', true)?.down, null)
+    const only = moveChoices(state, 'n1', true)
+    assert.equal(only?.up, null)
+    assert.equal(only?.down, null)
+  })
+
+  test('★ 불러온 끝인데 더 남은 열("더 보기")의 마지막 카드는 아래로가 없다 — 맨 뒤로 보내면 열 끝까지 간다', () => {
+    const c = moveChoices(state, 'b1', true)
+    assert.ok(c)
+    assert.deepEqual(c.down, null, 'b1 의 다음은 b2(불러온 끝)이고 그 뒤를 모른다')
+    assert.deepEqual(c.up, null)
+    assert.deepEqual(moveChoices(state, 'b2', true)?.up, { key: 'b', beforeRowId: 'b1' })
+  })
+
+  test('정렬된 보드는 열 사이만 — 위로 · 아래로가 없다', () => {
+    const c = moveChoices(state, 'a2', false)
+    assert.ok(c)
+    assert.equal(c.others.length, 2)
+    assert.equal(c.up, null)
+    assert.equal(c.down, null)
+  })
+
+  test('없는 카드는 null', () => {
+    assert.equal(moveChoices(state, 'zz', true), null)
   })
 })
 
