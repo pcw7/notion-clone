@@ -88,7 +88,7 @@ export function ReminderBell(props: {
         }}
         className={`flex items-center rounded px-0.5 ${
           reminder === null
-            ? 'text-neutral-400 opacity-0 hover:text-neutral-700 group-hover/date:opacity-100 focus-visible:opacity-100'
+            ? 'text-neutral-400 opacity-0 hover:text-neutral-700 group-hover/date:opacity-100 touch:opacity-100 focus-visible:opacity-100'
             : passed
               ? 'text-red-500'
               : 'text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200'

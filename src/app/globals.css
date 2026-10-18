@@ -19,6 +19,15 @@
   }
 }
 
+/*
+ * 터치 기기 — 플랫폼 잔여 10m-1 (F-12-12 · 정본 §3.10 끝 [보강] 좁은 화면 ⑨ⓒ)
+ *
+ * Tailwind 의 `hover:` 는 `@media (hover: hover)` 안에서만 걸린다 — `group-hover:opacity-100` 으로만 보이던 단추는 터치 기기에서 영영 보이지
+ * 않는다(그래도 탭은 받는다). `touch:opacity-100` 처럼 그 단추 말고는 길이 없는 것에 단다. `hover:` 의 짝이라 `pointer: coarse` 가 아니라
+ * `hover: none` 이다(편집기의 코드 블록 크롬과 같은 기준 — editor.css).
+ */
+@custom-variant touch (@media (hover: none));
+
 :root {
   --background: #ffffff;
   --foreground: #171717;
