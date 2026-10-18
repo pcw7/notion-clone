@@ -15,6 +15,10 @@
  * 때의 것**만 쓴다 — 다시 그린 서버 화면이 새 시각을 주어도 구독을 다시 열지 않는다(열린 구독이 그 뒤의 신호를 받는다).
  *
  * 부르는 쪽의 함수는 렌더마다 새로 만들어지므로 ref 로 최신 것을 부른다 — 구독을 매번 다시 열지 않는다.
+ *
+ * **뒤로 가기 캐시(bfcache)에 들면 닫고 돌아오면 다시 연다**(10n-7) — 떠난 화면이 캐시에 얼어 있는 동안 구독이 열린 채 남으면, 표 화면을 몇 번
+ * 옮겨 다니는 사이 호스트당 연결 수를 다 차지해 새 화면의 요청이 막힌다. 링크가 보이기만 해도 미리받던 동안은 떠날 때 늘 진행 중인 요청이 있어
+ * 화면이 캐시에 들지 못해 가려져 있었다.
  */
 
 import { useEffect, useRef } from 'react'
@@ -36,21 +40,47 @@ export function useTableChanges(
 
   useEffect(() => {
     if (!enabled || typeof EventSource === 'undefined') return
-    const at = sinceAtMount.current
-    const source = new EventSource(
-      `/api/workspaces/${workspaceId}/data-sources/${dataSourceId}/changes${at === undefined ? '' : `?since=${Math.floor(at)}`}`,
-    )
-    let readyCount = 0
-    source.addEventListener('ready', () => {
-      readyCount += 1
-      if (readyCount > 1) latest.current.onChanged()
-    })
-    source.addEventListener('changed', () => latest.current.onChanged())
-    source.addEventListener('revoked', () => {
+    let source: EventSource | null = null
+    let revoked = false
+    const open = (at: number | undefined) => {
+      const opened = new EventSource(
+        `/api/workspaces/${workspaceId}/data-sources/${dataSourceId}/changes${at === undefined ? '' : `?since=${Math.floor(at)}`}`,
+      )
+      let readyCount = 0
+      opened.addEventListener('ready', () => {
+        readyCount += 1
+        if (readyCount > 1) latest.current.onChanged()
+      })
+      opened.addEventListener('changed', () => latest.current.onChanged())
+      opened.addEventListener('revoked', () => {
+        revoked = true
+        opened.close()
+        source = null
+        latest.current.onRevoked()
+      })
+      source = opened
+    }
+    // 뒤로 가기 캐시(bfcache)에 들면 닫는다 — 얼어 있는 화면의 구독이 열린 채 남아, 쌓이면 호스트당 연결 수(HTTP/1.1 은 6)를 다 차지해 새 화면의
+    // 요청이 서버에 닿지도 못하고 줄을 섰다(10n-7 · HANDOFF §3.3-475). 돌아오면 다시 열고, 숨은 동안의 신호는 지나갔으니 한 번 다시 읽는다 —
+    // 서버의 `since` 로 묻지 않는다(브라우저의 시계로 숨은 때를 재면 서버의 시계와 어긋나 놓칠 수 있다).
+    const onHide = (event: PageTransitionEvent) => {
+      if (!event.persisted || source === null) return
       source.close()
-      latest.current.onRevoked()
-    })
-    return () => source.close()
+      source = null
+    }
+    const onShow = (event: PageTransitionEvent) => {
+      if (!event.persisted || revoked || source !== null) return
+      open(undefined)
+      latest.current.onChanged()
+    }
+    open(sinceAtMount.current)
+    window.addEventListener('pagehide', onHide)
+    window.addEventListener('pageshow', onShow)
+    return () => {
+      window.removeEventListener('pagehide', onHide)
+      window.removeEventListener('pageshow', onShow)
+      source?.close()
+    }
   }, [workspaceId, dataSourceId, enabled])
 }
 
