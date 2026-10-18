@@ -82,6 +82,10 @@ const HOOK_PORT = Number(process.env.E2E_HOOK_PORT ?? 3102)
 const BASE = `http://localhost:${PORT}`
 const COLLAB_URL = `ws://localhost:${COLLAB_PORT}`
 const HEADFUL = process.env.E2E_HEADFUL === '1'
+/** `E2E_CPU_THROTTLE=4` — 렌더러를 4배 느리게. 전체 판의 부하에서만 떨어지는 절을 홀로 재현할 때 쓴다(HANDOFF §6). */
+const E2E_CPU_THROTTLE = Number(process.env.E2E_CPU_THROTTLE ?? 1)
+/** `E2E_NET_LATENCY=300` — 브라우저의 요청마다 300ms 지연. 서버의 답을 기다리는 동안 앞서 가는 검사를 드러낸다(HANDOFF §6). */
+const E2E_NET_LATENCY = Number(process.env.E2E_NET_LATENCY ?? 0)
 
 // 응답의 본문은 늘 끝까지 읽는다 — 상태만 보고 버린 화면 응답은 서버의 스트리밍 도중에 연결을 닫을 수 있다(§3.3-276 ⑤). 그런 검사가
 // 옛 절에 수십 곳이라 하나씩 `.text()` 를 붙이지 않고 여기서 한 번 — 사본(clone)을 끝까지 읽으면 원래 응답의 본문은 그대로 읽을 수
@@ -750,6 +754,10 @@ async function main() {
     await send('Network.enable')
     // 헤드리스는 창에 포커스가 없어서 클립보드 API 가 거부된다. 포커스를 흉내내고 권한을 준다.
     await send('Emulation.setFocusEmulationEnabled', { enabled: true })
+    // 부하 흉내(e2e 도구) — 전체 판에서만 떨어지는 절을 홀로 재현한다. 렌더러의 CPU 를 N 배 느리게(Chrome 의 CPU 감속).
+    if (E2E_CPU_THROTTLE > 1) await send('Emulation.setCPUThrottlingRate', { rate: E2E_CPU_THROTTLE })
+    // 네트워크 지연 흉내 — 요청마다 N ms(서버 · 협업 서버가 느린 판). 화면이 서버의 답을 기다리는 동안 앞서 가는 검사를 드러낸다.
+    if (E2E_NET_LATENCY > 0) await send('Network.emulateNetworkConditions', { offline: false, latency: E2E_NET_LATENCY, downloadThroughput: -1, uploadThroughput: -1 })
     await send('Browser.grantPermissions', { origin: BASE, permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite'] })
     await send('Network.setCookie', { name: 'nc_session', value: session, domain: 'localhost', path: '/', httpOnly: true })
     await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${pageId}` })
@@ -5246,17 +5254,22 @@ async function main() {
       await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${tocPage}` })
       await waitFor(`!!document.querySelector('${NAV} .blk-toc-item') && ${EDITABLE}`, 15000)
       const locked = await fetch(`${pagesUrl}/${tocPage}/lock`, { method: 'PUT', headers: authed })
-      check('전제 — 잠갔고 열어 둔 편집기가 읽기 전용이 됐다', locked.ok && (await waitFor(`document.querySelector('.blk-editor')?.getAttribute('contenteditable') === 'false'`, 15000)),
-        String(locked.status))
+      // 잠그면 협업 서버가 문서 연결을 닫고 브라우저가 **다시 연다** — 편집기는 다시 여는 순간 이미 읽기 전용이다(`reopening`). 다시 열기가
+      // 끝나면 문서가 새로 들어와 목차의 링크가 바뀐다. 그 전에 Tab 으로 링크에 닿아 두면 포커스가 빠진다(전체 판에서만 Enter 가 헤딩으로
+      // 가지 않았다 — 읽은 대상이 비었다 · HANDOFF §3.3). 그래서 **다시 열기가 끝날 때까지** 기다린다: 맞추는 중 안내가 없고 읽기 전용 안내가 섰다.
+      const statuses = `[...document.querySelectorAll('[role="status"]')].map((e) => e.textContent)`
+      check('전제 — 잠갔고 열어 둔 편집기가 다시 열려 읽기 전용이 됐다', locked.ok && (await waitFor(`document.querySelector('.blk-editor')?.getAttribute('contenteditable') === 'false'
+          && !${statuses}.some((t) => t.includes('맞추는 중')) && ${statuses}.some((t) => /읽기 전용입니다|잠긴 페이지입니다/.test(t))`, 15000)),
+        JSON.stringify({ status: locked.status, statuses: await evaluate(statuses) }))
       check('★ 읽기 전용에서도 목차를 그린다', await waitFor(`document.querySelectorAll('${NAV} .blk-toc-item').length === 6`, 5000), JSON.stringify(await tocLines()))
       await evaluate(`document.querySelector('input[aria-label="페이지 제목"]')?.focus()`)
-      let tabbed = false
-      for (let i = 0; i < 20 && !tabbed; i += 1) {
+      // 닿은 순간의 대상을 함께 읽는다 — 따로 읽으면 그 사이의 변화가 검사를 흐린다
+      let target = ''
+      for (let i = 0; i < 20 && target === ''; i += 1) {
         await key('Tab')
-        tabbed = await evaluate(`document.activeElement?.matches?.('${NAV} a.blk-toc-link') === true`)
+        target = await evaluate(`document.activeElement?.matches?.('${NAV} a.blk-toc-link') === true ? (document.activeElement.dataset.tocTarget ?? '') : ''`)
       }
-      check('★ 읽기 전용 — Tab 으로 목차의 링크에 닿는다', tabbed, await evaluate(`document.activeElement?.outerHTML?.slice(0, 120) ?? ''`))
-      const target = await evaluate(`document.activeElement?.dataset?.tocTarget ?? ''`)
+      check('★ 읽기 전용 — Tab 으로 목차의 링크에 닿는다', target !== '', await evaluate(`document.activeElement?.outerHTML?.slice(0, 120) ?? ''`))
       await key('Enter')
       check('★ 읽기 전용 — Enter 로 그 헤딩으로 간다(문서를 바꾸지 않으므로 읽기 전용에서도)', target !== '' && (await waitFor(landed(target), 4000)),
         JSON.stringify(await landedInfo(target)))
@@ -9407,9 +9420,12 @@ async function main() {
       check('★ 본문 위에 속성 묶음 — 스키마 순서 · 뷰에서 숨긴 속성도 · 제목은 빠진다',
         JSON.stringify(await evaluate(propNames)) === JSON.stringify([idOf('수량'), idOf('메모')]),
         JSON.stringify(await evaluate(propNames)))
+      // 편집기는 협업 서버와 문서를 맞춘 뒤에 선다 — 곧바로 재면 서버가 느린 판에서 아직 없다(전체 판에서만 떨어졌다 · `E2E_NET_LATENCY=400
+      // E2E_CPU_THROTTLE=4` 로 홀로 재현했다 · HANDOFF §3.3). 설 때까지 기다린다.
       check('속성 묶음은 본문 편집기보다 위에 선다',
-        await evaluate(`(() => { const p = document.querySelector('[data-testid="row-properties"]'); const e = document.querySelector('.blk-editor[aria-label="페이지 본문"]')
-          return !!p && !!e && (p.compareDocumentPosition(e) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0 })()`))
+        await waitFor(`(() => { const p = document.querySelector('[data-testid="row-properties"]'); const e = document.querySelector('.blk-editor[aria-label="페이지 본문"]')
+          return !!p && !!e && (p.compareDocumentPosition(e) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0 })()`, 15000),
+        await evaluate(`JSON.stringify({ properties: !!document.querySelector('[data-testid="row-properties"]'), editor: !!document.querySelector('.blk-editor[aria-label="페이지 본문"]') })`))
       // 머리 단추 — 보통 페이지에는 서는 것(대조)이 행 페이지에는 없다. 공유 단추는 testid 가 없어 글자로 고른다.
       const headTestIds = ['move-open', 'export-button', 'page-duplicate']
       const plainHtml = await (await fetch(`${BASE}/w/${workspaceId}/${pageId}`, { headers: { cookie: authed.cookie } })).text()
