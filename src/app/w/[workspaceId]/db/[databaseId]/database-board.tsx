@@ -53,7 +53,7 @@
  */
 
 import { rowOpenHref } from '@/lib/database/open-pages'
-import Link from 'next/link'
+import Link from '@/app/link'
 import {
   useEffect,
   useRef,

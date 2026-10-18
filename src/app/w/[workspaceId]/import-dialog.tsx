@@ -12,7 +12,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react'
-import Link from 'next/link'
+import Link from '@/app/link'
 import { useRouter } from 'next/navigation'
 
 import { IMPORT_ACCEPT, importFailureMessage, importedNotice, lossesSummary, skipReasonLabel, skippedNotice } from './import-messages'

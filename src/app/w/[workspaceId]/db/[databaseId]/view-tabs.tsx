@@ -22,7 +22,7 @@
  */
 
 import { useState, type KeyboardEvent } from 'react'
-import Link from 'next/link'
+import Link from '@/app/link'
 import { useRouter } from 'next/navigation'
 
 import type { MvpViewType, ViewSummary } from '@/lib/database/view'

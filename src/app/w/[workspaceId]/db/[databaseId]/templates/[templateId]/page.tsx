@@ -33,7 +33,7 @@
  * 하위 페이지 · 이미지 · 멘션을 넣을 수 있고, 그것이 6c-2 의 복제 엔진을 타고 새 행으로 따라간다.
  */
 
-import Link from 'next/link'
+import Link from '@/app/link'
 import { notFound } from 'next/navigation'
 
 import * as Y from 'yjs'

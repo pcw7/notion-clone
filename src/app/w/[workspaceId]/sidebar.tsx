@@ -36,7 +36,7 @@
  */
 
 import { startTransition, useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react'
-import Link from 'next/link'
+import Link from '@/app/link'
 import { usePathname, useRouter } from 'next/navigation'
 
 import { DATABASE_GLYPH, type PageIcon } from '@/lib/block/page-icon'

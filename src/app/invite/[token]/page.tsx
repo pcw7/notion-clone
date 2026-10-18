@@ -7,7 +7,7 @@
  */
 
 import type { Metadata } from 'next'
-import Link from 'next/link'
+import Link from '@/app/link'
 import { redirect } from 'next/navigation'
 
 import { addAccountHref } from '@/lib/auth/account-set'

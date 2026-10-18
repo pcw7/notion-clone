@@ -27,7 +27,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react'
-import Link from 'next/link'
+import Link from '@/app/link'
 
 import * as api from './table-api'
 import { PageIconView } from '../../page-icon-view'

@@ -9,7 +9,7 @@
  */
 
 import type { Metadata } from 'next'
-import Link from 'next/link'
+import Link from '@/app/link'
 
 import { requirePageSession } from '@/lib/auth/page-session'
 import { groupSidebarRoots, listPageTree } from '@/lib/block/page-tree'

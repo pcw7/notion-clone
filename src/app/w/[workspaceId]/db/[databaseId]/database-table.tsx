@@ -61,7 +61,7 @@
  */
 
 import { rowOpenHref } from '@/lib/database/open-pages'
-import Link from 'next/link'
+import Link from '@/app/link'
 import { useEffect, useMemo, useRef, useState, type FocusEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react'
 import { useRouter } from 'next/navigation'
 
