@@ -1570,7 +1570,7 @@ CREATE VIEW live_block AS SELECT * FROM block WHERE lifecycle = 'live';
 | B9 | 외부 origin 행의 **본문 블록은 언제나 native** 다. block 에 `origin` 컬럼을 두지 않는다(negative requirement) | 15 R4 |
 | B10 | `is_alive`/`alive`/`archived`/`deleted_at`/`position`/`order_idx`(형제 순서 용도)/`path` 컬럼은 존재하지 않는다 | C-1, C-10, X-7 |
 
-**[보강] 코드 블록(`type='code'`)의 저장 모양** ⟨잔여 묶음 8a-1 ①~③ · 8a-2 ④~⑧ · 8a-3 ⑨ · 플랫폼 잔여 10k-1 ⑩ · F-01-14 · F-01-22⟩
+**[보강] 코드 블록(`type='code'`)의 저장 모양** ⟨잔여 묶음 8a-1 ①~③ · 8a-2 ④~⑧ · 8a-3 ⑨ · 플랫폼 잔여 10k-1 · 10k-2 ⑩ · F-01-14 · F-01-22⟩
 
 > 초판은 `properties` 주석에 `language`, `format` 주석에 `code_wrap` 만 적었다. 01 F-01-14 *"공개 API 페이로드: `rich_text[]`(코드
 > 본문), `language`, `caption[]`. 자식 블록 불가"* · 데이터 모델 함의 *"`language` 는 enum 이 아니라 문자열로 저장"*.
@@ -1629,7 +1629,12 @@ CREATE VIEW live_block AS SELECT * FROM block WHERE lifecycle = 'live';
 > `span` 을 만들지 않아 모양 · CSS 가 그대로다. **줄 머리에서만** 가른다(글자 가운데를 가르면 그 앞에서 치는 동안 뒤의 조각이 모두 한 글자씩
 > 밀려 다시 쓰인다 — 줄 머리는 그 줄 위에서 치는 동안 움직이지 않는다) · 한 줄이 상한보다 길면 그 줄이 한 조각이다(압축 코드 — 자르지
 > 않고 받아들인다) · 문법 · 창과 상관없이 가른다(plain text 의 1만 줄도 같은 비용이다). 01 F-01-22 의 *"가상 스크롤보다 `content-visibility:
-> auto` 를 먼저"* 는 그리기 비용의 처방이고 이것은 접근성 트리의 처방이다 — 다른 비용이다(둘 다 재고 정한다 · 그리기는 아직 재지 않았다).
+> auto` 를 먼저"* 는 그리기 비용의 처방이고 이것은 접근성 트리의 처방이다 — 다른 비용이다. **[10k-2] 그리기도 쟀다** — 문단 2,000 · 3,000 ·
+> 코드 1만 줄 페이지의 열기(FCP 0.75~0.9초) · 스크롤(50ms 초과 작업 0)은 괜찬다. 수천 블록의 **입력**은 글자마다 0.5~1초인데 그것은
+> **브라우저 프로세스의 접근성 처리**(`BrowserAccessibilityManager::OnAccessibilityEvents` · 블록 수에 비례 · 보조 기술이 붙은 사용자에게만)라
+> 화면 쪽 처방이 없다. `content-visibility: auto` 는 그 입력을 3~5배 줄이지만 스크롤의 주 스레드를 8~12배 무겁게 하고(IntersectionObserver)
+> 코드 페이지의 첫 그리기를 4배 늦춘다 → **넣지 않는다**(HANDOFF §3.2-258). 처방은 편집기에 한 번에 올리는 블록을 줄이는 부분 로드(01 F-01-22
+> 의 큰 그림) 또는 블록 상한이다. 코드 1만 줄은 창이 옮겨질 때 · 글자를 칠 때 320KB 인라인 서식 문맥을 다시 놓는다 — 조각을 블록 상자로(10k-3 후보).
 
 **[보강] 목차(`type='table_of_contents'`)의 저장 모양** ⟨잔여 묶음 8b-1 · F-01-16⟩
 
