@@ -280,6 +280,17 @@ async function chainInputsMany(
   items: readonly { readonly chain: string[]; readonly teamspaceId: string | null }[],
 ): Promise<ChainInputs[]> {
   if (items.length === 0) return []
+  const rows = await readChainRows(tx, items)
+  return items.map(({ chain }) => inputsOf(chain, rows))
+}
+
+/** 사슬들의 노드 전부에 걸린 행 — ACL 행 · 절단 · 규칙이 합성한 행. 스코프 판정은 이것으로 경계도 가른다(`readScopesWith`). */
+type ChainRows = { acl: AclRow[]; cutSet: ReadonlySet<string>; rules: AclRow[] }
+
+async function readChainRows(
+  tx: Tx,
+  items: readonly { readonly chain: string[]; readonly teamspaceId: string | null }[],
+): Promise<ChainRows> {
   const nodeIds = [...new Set(items.flatMap((item) => item.chain))]
   const teamspaceIds = [...new Set(items.map((item) => item.teamspaceId).filter((id): id is string => id !== null))]
   const [acl, cuts, rules] = await Promise.all([
@@ -305,18 +316,20 @@ async function chainInputsMany(
     ),
     accessRuleEntries(tx, nodeIds),
   ])
+  return { acl, cutSet: new Set(cuts.map((c) => c.node_id)), rules }
+}
 
-  // 사슬마다 자기 노드의 행만 — 답을 바꾸지는 않는다(`resolveCaps` 가 사슬의 노드와 같은 행만 본다 · 반사실 C 가 통과했다). 사슬마다 합집합 전체를
-  // 훑지 않게 하는 것이다(스코프 N × 전체 행). 순서는 사슬마다 따로 읽던 때와 같다(ACL 행 먼저 · 규칙 행 뒤).
-  const cutSet = new Set(cuts.map((c) => c.node_id))
-  return items.map(({ chain }) => {
-    const nodes = new Set(chain)
-    return {
-      chain,
-      cutAt: new Set(chain.filter((id) => cutSet.has(id))),
-      entries: [...acl.filter((row) => nodes.has(row.node_id)), ...rules.filter((row) => nodes.has(row.node_id))],
-    }
-  })
+/**
+ * 사슬마다 자기 노드의 행만 — 답을 바꾸지는 않는다(`resolveCaps` 가 사슬의 노드와 같은 행만 본다 · 반사실 C 가 통과했다). 사슬마다 합집합
+ * 전체를 훑지 않게 하는 것이다(스코프 N × 전체 행). 순서는 사슬마다 따로 읽던 때와 같다(ACL 행 먼저 · 규칙 행 뒤).
+ */
+function inputsOf(chain: string[], rows: ChainRows): ChainInputs {
+  const nodes = new Set(chain)
+  return {
+    chain,
+    cutAt: new Set(chain.filter((id) => rows.cutSet.has(id))),
+    entries: [...rows.acl.filter((row) => nodes.has(row.node_id)), ...rows.rules.filter((row) => nodes.has(row.node_id))],
+  }
 }
 
 /**
@@ -385,15 +398,14 @@ export async function scopesWith(
 }
 
 async function readScopesWith(tx: Tx, ctx: SessionContext, required: readonly Capability[]): Promise<string[]> {
-  const [scopes, teamspaces] = await Promise.all([
-    tx.query<ChainRow>(
-      `SELECT DISTINCT ${CHAIN_COLUMNS}
+  const [candidates, teamspaces] = await Promise.all([
+    // 후보는 **이 워크스페이스의 블록이 가리키는 스코프**다 — `perm_scope_id` 를 겹치지 않게(색인 `ix_block_perm_scope` 만 읽는다 ·
+    // 10l-2). 블록마다 경계인지 묻던 질의(EXISTS 둘)는 블록 수에 비례했고, 절단 표를 통째로 해시하는 바닥 비용(블록 28개에도
+    // 4.6ms)이 있었다 — 개발 DB 의 블록 5,014개 워크스페이스에서 22~29ms → 1ms. teamspace 를 가리키는 값은 블록이 아니라 조인에서 빠진다.
+    tx.query<ChainRow & { workspace_id: string }>(
+      `SELECT ${CHAIN_COLUMNS}, b.workspace_id
          FROM ${CHAIN_FROM}
-        WHERE b.workspace_id = $1
-          AND (EXISTS (SELECT 1 FROM acl_entry a
-                        WHERE a.node_kind = 'block' AND a.node_id = b.id)
-            OR EXISTS (SELECT 1 FROM block_acl_meta m
-                        WHERE m.node_id = b.id AND m.inherits_from_parent = false))`,
+        WHERE b.id IN (SELECT DISTINCT s.perm_scope_id FROM block s WHERE s.workspace_id = $1)`,
       [ctx.workspaceId],
     ),
     tx.query<{ id: string }>(`SELECT id FROM teamspace WHERE workspace_id = $1 AND archived_at IS NULL`, [
@@ -401,16 +413,30 @@ async function readScopesWith(tx: Tx, ctx: SessionContext, required: readonly Ca
     ]),
   ])
 
-  // 주체 집합은 한 번만 읽는다 — 스코프마다 읽으면 스코프 수만큼 질의가 는다. 사슬의 입력도 한 번에(`chainInputsMany` · 10l-1).
+  // 주체 집합은 한 번만 읽는다 — 스코프마다 읽으면 스코프 수만큼 질의가 는다. 사슬의 행도 한 번에(`readChainRows` · 10l-1).
   const principals = await principalsFor(tx, ctx)
+  // 워크스페이스는 여기서 거른다 — SQL 에 `b.workspace_id = $1` 을 넣으면 플래너가 워크스페이스의 블록 전부를 훑는 모양으로 바꾼다
+  // (블록 수에 비례). 스코프는 같은 워크스페이스의 블록만 가리키므로 늘 참이어야 하지만, 어긋난 행이 있어도 남의 노드를 스코프로 내지 않는다.
+  const blocks = candidates
+    .filter((candidate) => candidate.workspace_id === ctx.workspaceId)
+    .map((candidate) => ({ id: candidate.id, ...chainOf(candidate) }))
   const items = [
-    ...scopes.map((scope) => ({ id: scope.id, ...chainOf(scope) })),
+    ...blocks,
     ...teamspaces.map((teamspace) => ({ id: teamspace.id, chain: [teamspace.id], teamspaceId: teamspace.id })),
   ]
-  const inputs = await chainInputsMany(tx, items)
+  if (items.length === 0) return []
+  const rows = await readChainRows(tx, items)
+  // 블록 후보 중 **경계**만 스코프다 — ACL 행이 있거나 끊겼다(정본 §3.11 의 정의 · 지금까지의 질의와 같은 집합). 워크스페이스 직속
+  // 페이지는 행이 없어도 자기 자신을 가리킨다(`acl.ts` 의 `parentScope`) — 그런 후보는 뺀다. 규칙이 합성한 행(`rules`)은 경계를 만들지
+  // 않는다(경계는 ACL 행 · 절단뿐이다). 경계를 가르는 데 질의를 더 쓰지 않는다 — 사슬의 행에 후보 자신의 행이 이미 있다.
+  // 지금은 이 거르기를 빼도 답이 같다(반사실 A · D 통과) — 경계가 아닌 후보의 사슬에는 행이 없어 판정이 아무 권한도 주지 않는다.
+  // 그래도 남긴다: 스코프의 정의(§3.11)를 지켜 옛 질의와 **같은 집합**이게 하는 것이고, 판정에 행 밖의 길이 생기면 그때 드러난다.
+  const aclNodes = new Set(rows.acl.map((row) => row.node_id))
+  const isBoundary = (id: string) => aclNodes.has(id) || rows.cutSet.has(id)
   return items
-    .filter((_, i) => {
-      const caps = resolveCaps({ ...inputs[i], principals })
+    .filter((item, i) => {
+      if (i < blocks.length && !isBoundary(item.id)) return false
+      const caps = resolveCaps({ ...inputsOf(item.chain, rows), principals })
       return required.every((capability) => can(caps, capability))
     })
     .map((item) => item.id)
