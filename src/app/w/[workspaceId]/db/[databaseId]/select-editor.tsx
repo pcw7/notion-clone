@@ -28,13 +28,32 @@
  * 옵션을 누를 때 `mousedown` 의 기본 동작을 막는다. 막지 않으면 입력칸이 먼저 포커스를
  * 잃고, 표가 그것을 "편집을 떠났다"로 읽어 편집기를 닫아서 `click` 이 도착할 곳이
  * 사라진다.
+ *
+ * ──────────────────────────────────────────────────────────────────────
+ * 옵션 고치기 (10n-6 · 03 F-03-04 시나리오 4)
+ * ──────────────────────────────────────────────────────────────────────
+ *
+ * 스키마를 고칠 수 있으면(`edit`) 옵션 줄마다 `···` 가 선다. 누르면 같은 층 안에서 목록 대신 고치기 판이 선다 — 이름(Enter 로
+ * 저장 · Esc 로 목록) · 색 · 지우기. 지우기는 그 옵션을 쓰는 행 수를 먼저 받아 "N개 행에서 이 값이 빠집니다" 라고 한 번 더 묻는다
+ * (지우면 서버가 그 셀을 비운다 — 정본 [보강] 옵션 고치기 · 지우기 ②). 판의 이름 칸도 층 안이라 표는 편집을 닫지 않는다
+ * (`containsAcrossLayers`). 판의 Esc 는 목록으로 돌아가고(`preventDefault` — 표의 Esc 는 편집 취소다) 표에 닿지 않는다.
  */
 
 import { Fragment, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 
-import { STATUS_GROUP_LABEL, type SelectOption } from '@/lib/database/property-types'
+import { colorLabel } from '@/lib/editor/color-names'
+import { OPTION_COLORS, STATUS_GROUP_LABEL, type OptionColor, type SelectOption } from '@/lib/database/property-types'
 import { AnchoredLayer } from '../../anchored-layer'
 import { OptionChip } from './cell-view'
+
+/** 옵션 고치기 — 부르는 쪽(표)이 서버에 보내고 목록 · 칸을 갈아 끼운다. 실패하면 false(null)이고 표가 이유를 말한다. */
+export type OptionEditActions = {
+  readonly rename: (optionId: string, name: string) => Promise<boolean>
+  readonly recolor: (optionId: string, color: OptionColor) => Promise<boolean>
+  /** 그 옵션을 쓰는 살아 있는 행 수. */
+  readonly usage: (optionId: string) => Promise<number | null>
+  readonly remove: (optionId: string) => Promise<boolean>
+}
 
 export function SelectEditor({
   options,
@@ -42,6 +61,7 @@ export function SelectEditor({
   canCreate,
   isStatus = false,
   align = 'left',
+  edit,
   onPick,
   onCreate,
 }: {
@@ -57,16 +77,50 @@ export function SelectEditor({
   isStatus?: boolean
   /** 팝오버를 칸의 어느 쪽에 맞춰 여는가. List 의 속성 칸은 오른쪽에 붙어 있어 `right` 다. */
   align?: 'left' | 'right'
+  /** 옵션 고치기(10n-6) — 있으면 옵션 줄마다 `···`(`edit_structure`). 없으면 고르기만 한다. */
+  edit?: OptionEditActions
   onPick: (optionId: string | null) => void
   onCreate: (name: string) => void
 }) {
   const [query, setQuery] = useState('')
   const [index, setIndex] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
+  /** 고치는 옵션 — 있으면 목록 대신 고치기 판이 선다. */
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [draftName, setDraftName] = useState('')
+  /** 지우기를 묻는 중 — 그 옵션을 쓰는 행 수. */
+  const [asking, setAsking] = useState<number | null>(null)
+  const [busy, setBusy] = useState(false)
+  const nameRef = useRef<HTMLInputElement>(null)
+  const editing = editingId === null ? undefined : options.find((o) => o.id === editingId)
 
   useEffect(() => {
     inputRef.current?.focus()
   }, [])
+
+  // 판이 서면 이름 칸에 · 목록으로 돌아오면 찾기 칸에 포커스
+  useEffect(() => {
+    if (editingId !== null) nameRef.current?.select()
+    else inputRef.current?.focus()
+  }, [editingId])
+
+  const openEdit = (option: SelectOption) => {
+    setEditingId(option.id)
+    setDraftName(option.name)
+    setAsking(null)
+  }
+  const closeEdit = () => {
+    setEditingId(null)
+    setAsking(null)
+  }
+  const run = async (task: () => Promise<boolean>) => {
+    setBusy(true)
+    try {
+      return await task()
+    } finally {
+      setBusy(false)
+    }
+  }
 
   const q = query.trim()
   const lower = q.toLowerCase()
@@ -100,6 +154,126 @@ export function SelectEditor({
       event.preventDefault()
       choose(active)
     }
+  }
+
+  if (edit !== undefined && editing !== undefined) {
+    const onNameKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+      if (event.nativeEvent.isComposing) return
+      if (event.key === 'Enter') {
+        // ★ 표의 Enter 가 아니다 — 이름을 저장하고 목록으로
+        event.preventDefault()
+        const name = draftName.trim()
+        if (name === '' || name === editing.name) return closeEdit()
+        void run(() => edit.rename(editing.id, name)).then((ok) => {
+          if (ok) closeEdit()
+        })
+      } else if (event.key === 'Escape') {
+        // 표의 Esc(편집 취소)가 아니라 목록으로 돌아간다
+        event.preventDefault()
+        closeEdit()
+      }
+    }
+    return (
+      <AnchoredLayer
+        testId="db-select-editor"
+        align={align === 'right' ? 'end' : 'start'}
+        className="w-64 rounded-md border border-neutral-200 bg-white p-2 shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
+      >
+        <div data-testid="db-option-edit" data-option-id={editing.id} className="flex flex-col gap-2">
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              aria-label="옵션 목록으로"
+              data-testid="db-option-edit-back"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={closeEdit}
+              className="rounded px-1 text-neutral-500 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+            >
+              ←
+            </button>
+            <span className="text-xs text-neutral-500">옵션 고치기</span>
+          </div>
+          <input
+            ref={nameRef}
+            value={draftName}
+            onChange={(e) => setDraftName(e.target.value)}
+            onKeyDown={onNameKeyDown}
+            aria-label="옵션 이름"
+            data-testid="db-option-name"
+            autoComplete="off"
+            // disabled 가 아니다 — 포커스가 있는 칸을 끄면 포커스가 빠지고 표가 "편집을 떠났다" 로 읽어 고르개를 닫는다
+            readOnly={busy}
+            className="w-full rounded border border-neutral-200 bg-transparent px-2 py-1 text-sm outline-none focus:border-neutral-400 dark:border-neutral-700"
+          />
+          <div role="group" aria-label="색" className="grid grid-cols-5 gap-1">
+            {OPTION_COLORS.map((color) => (
+              <button
+                key={color}
+                type="button"
+                aria-label={colorLabel(color)}
+                aria-pressed={editing.color === color}
+                data-testid="db-option-color"
+                data-color={color}
+                disabled={busy}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => void run(() => edit.recolor(editing.id, color))}
+                className={`flex justify-center rounded p-1 ${editing.color === color ? 'ring-2 ring-neutral-400' : 'hover:bg-neutral-100 dark:hover:bg-neutral-800'}`}
+              >
+                <OptionChip option={{ ...editing, name: '가', color }} />
+              </button>
+            ))}
+          </div>
+          {asking === null ? (
+            <button
+              type="button"
+              data-testid="db-option-delete"
+              disabled={busy}
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() =>
+                void run(async () => {
+                  const rows = await edit.usage(editing.id)
+                  if (rows === null) return false
+                  setAsking(rows)
+                  return true
+                })
+              }
+              className="rounded px-2 py-1 text-left text-xs text-red-600 hover:bg-red-50 dark:hover:bg-red-950"
+            >
+              옵션 지우기
+            </button>
+          ) : (
+            <div role="alert" data-testid="db-option-delete-ask" className="flex flex-col gap-1 rounded bg-red-50 p-2 text-xs dark:bg-red-950">
+              <p>{asking > 0 ? `${asking}개 행에서 이 값이 빠집니다. 지울까요?` : '이 옵션을 쓰는 행이 없습니다. 지울까요?'}</p>
+              <div className="flex gap-1">
+                <button
+                  type="button"
+                  data-testid="db-option-delete-confirm"
+                  disabled={busy}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() =>
+                    void run(() => edit.remove(editing.id)).then((ok) => {
+                      if (ok) closeEdit()
+                    })
+                  }
+                  className="rounded bg-red-600 px-2 py-0.5 text-white hover:bg-red-700"
+                >
+                  지우기
+                </button>
+                <button
+                  type="button"
+                  data-testid="db-option-delete-cancel"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => setAsking(null)}
+                  className="rounded px-2 py-0.5 hover:bg-white dark:hover:bg-neutral-900"
+                >
+                  취소
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </AnchoredLayer>
+    )
   }
 
   return (
@@ -149,7 +323,28 @@ export function SelectEditor({
             }`}
           >
             <OptionChip option={option} />
-            {option.id === currentId && <span className="text-xs text-neutral-400">선택됨</span>}
+            <span className="flex flex-none items-center gap-1">
+              {option.id === currentId && <span className="text-xs text-neutral-400">선택됨</span>}
+              {edit !== undefined && (
+                <button
+                  type="button"
+                  aria-label={`${option.name} 고치기`}
+                  data-testid="db-option-menu"
+                  onMouseDown={(e) => {
+                    e.preventDefault()
+                    e.stopPropagation()
+                  }}
+                  onClick={(e) => {
+                    // 줄의 click(고르기)에 닿지 않게
+                    e.stopPropagation()
+                    openEdit(option)
+                  }}
+                  className="rounded px-1 text-xs text-neutral-400 hover:bg-neutral-200 hover:text-neutral-700 dark:hover:bg-neutral-700 dark:hover:text-neutral-200"
+                >
+                  ···
+                </button>
+              )}
+            </span>
           </li>
           </Fragment>
         ))}
@@ -180,6 +375,7 @@ export function SelectEditor({
       {currentId !== null && (
         <button
           type="button"
+          data-testid="db-select-clear"
           onMouseDown={(e) => e.preventDefault()}
           onClick={() => onPick(null)}
           className="mt-1 w-full rounded px-2 py-1 text-left text-xs text-neutral-500 hover:bg-neutral-100 dark:hover:bg-neutral-800"
