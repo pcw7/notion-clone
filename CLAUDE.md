@@ -109,6 +109,7 @@ npm run check           # typecheck + lint + license
 npm run check:bundle    # 경로마다 처음 받는 JS(gzip)가 예산 안인가 — build 먼저(CI 는 빌드 바로 뒤에 돈다)
 npm run e2e             # 실제 브라우저(Edge·Chrome 헤드리스)로 에디터 검증. build · db:up 먼저
 npm run e2e:affected    # 바꾼 파일이 닿는 e2e 게이트를 골라 E2E_ONLY 를 만든다(-- --run 이면 바로 돈다) — 전체 판은 4조각마다 · 트랙 끝에
+npm run e2e:full        # 전체 판을 머지된 main 의 복사본(worktree)에서 — 따로 DB · 포트 3200 대 · 그동안 다음 조각을 한다(-- --ref=<커밋>)
 npm run db:reset        # 볼륨 삭제 → 재생성 → 마이그레이션
 npm run dc -- <args>    # 임의의 docker compose 명령
 ```
