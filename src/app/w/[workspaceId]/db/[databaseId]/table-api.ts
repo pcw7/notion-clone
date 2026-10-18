@@ -18,7 +18,7 @@ import type { RowJson } from '@/lib/database/http'
 import type { PageIcon } from '@/lib/block/page-icon'
 import type { DatabaseListItem } from '@/lib/database/database'
 import type { PropertySummary, SchemaSnapshot } from '@/lib/database/property'
-import type { CellValue, MvpPropertyType, SelectOption } from '@/lib/database/property-types'
+import type { CellValue, MvpPropertyType, OptionColor, SelectOption } from '@/lib/database/property-types'
 import type { RowCell } from '@/lib/database/row'
 import type { RollupFunction, RollupPage } from '@/lib/database/rollup-functions'
 import type { MvpViewType, ViewSummary } from '@/lib/database/view'
@@ -57,8 +57,9 @@ function messageOf(status: number, body: ErrorBody): string {
       return '잠겨 있어 고칠 수 없습니다. 잠금을 풀어야 합니다.'
     case 'not_found':
       return '찾을 수 없습니다. 그사이 지워졌을 수 있습니다.'
+    // 속성 · 옵션(10n-6) 이름이 같은 자리에서 겹친다 — 둘 다 이 말이다
     case 'duplicate_name':
-      return '같은 이름의 속성이 이미 있습니다.'
+      return '같은 이름이 이미 있습니다.'
     case 'invalid_name':
       return '이름을 확인하세요.'
     case 'too_many_properties':
@@ -827,6 +828,42 @@ export function addOption(
     { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ name }) },
     (body) => body.option as SelectOption,
   )
+}
+
+const optionPath = (workspaceId: string, dataSourceId: string, propertyId: string, optionId: string) =>
+  `${base(workspaceId)}/data-sources/${dataSourceId}/properties/${propertyId}/options/${optionId}`
+
+/** 옵션의 이름 · 색을 바꾼다(10n-6 · 정본 [보강] 옵션 고치기 · 지우기 ①). 겹치는 이름은 거부된다. */
+export function updateOption(
+  workspaceId: string,
+  dataSourceId: string,
+  propertyId: string,
+  optionId: string,
+  change: { readonly name?: string; readonly color?: OptionColor },
+): Promise<ApiResult<SelectOption>> {
+  return call(
+    optionPath(workspaceId, dataSourceId, propertyId, optionId),
+    { method: 'PATCH', headers: JSON_HEADERS, body: JSON.stringify(change) },
+    (body) => body.option as SelectOption,
+  )
+}
+
+/** 그 옵션을 쓰는 살아 있는 행 수 — 지우기 전에 묻는다(②). */
+export function optionUsage(workspaceId: string, dataSourceId: string, propertyId: string, optionId: string): Promise<ApiResult<number>> {
+  return call(optionPath(workspaceId, dataSourceId, propertyId, optionId), { method: 'GET' }, (body) => Number(body.rows ?? 0))
+}
+
+/** 옵션을 지운다 — 그 옵션을 쓰던 셀은 서버가 같은 트랜잭션에서 비운다(②). status 의 기본이었으면 새 기본을 준다(④). */
+export function deleteOption(
+  workspaceId: string,
+  dataSourceId: string,
+  propertyId: string,
+  optionId: string,
+): Promise<ApiResult<{ readonly clearedCells: number; readonly defaultOptionId?: string | null }>> {
+  return call(optionPath(workspaceId, dataSourceId, propertyId, optionId), { method: 'DELETE' }, (body) => ({
+    clearedCells: Number(body.clearedCells ?? 0),
+    ...(body.defaultOptionId !== undefined ? { defaultOptionId: body.defaultOptionId as string | null } : {}),
+  }))
 }
 
 /**

@@ -20268,6 +20268,101 @@ async function main() {
         await waitFor(`[...document.querySelectorAll('[data-testid="row-properties"] [data-testid="db-person-chip"]')].some((c) => c.textContent === ${JSON.stringify(mateName)})`, 15000))
     }
 
+    if (sectionIf('옵션 고치기 · 지우기 (10n-6 · F-03-04)')) {
+      // 셀 고르개의 옵션 `···` → 고치기 판: 이름을 바꾸면 그 옵션을 든 모든 칸이 따라오고 · 색을 바꾸고 · 지우기는 쓰는 행 수를 묻는다
+      // (취소하면 그대로) · 지우면 그 칸들이 비고 서버의 셀도 비었다 · 다른 옵션의 칸은 그대로다(정본 §3.5 [보강] 옵션 고치기 · 지우기).
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `옵션 고치기 ${stamp}` })).body.database
+      const view = db.defaultViewId
+      const stage = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '단계', type: 'select' })).body.property.id
+      const addOpt = async (name) => (await api('POST', `/data-sources/${db.dataSourceId}/properties/${stage}/options`, { name })).body.option.id
+      const optA = await addOpt('기획')
+      const optB = await addOpt('개발')
+      const titleProp = (await api('GET', `/views/${view}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const mk = async (title, opt) => (await api('POST', `/views/${view}/rows`, { cells: [
+        { propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } },
+        { propertyId: stage, value: { type: 'select', select: { id: opt } } },
+      ] })).body.row.id
+      const r1 = await mk('첫 일', optA)
+      const r2 = await mk('둘째 일', optA)
+      const r3 = await mk('셋째 일', optB)
+      const CELL = (row) => `tr[data-row-id="${row}"] td[data-property-id="${stage}"]`
+      const chipOf = (row) => `document.querySelector('${CELL(row)} [data-testid="db-option-chip"]')`
+      const serverOptions = async () => (await api('GET', `/views/${view}`)).body?.view?.columns?.find((c) => c.propertyId === stage)?.options ?? []
+      const serverCell = async (row) => ((await api('GET', `/views/${view}/rows`)).body?.rows ?? []).find((r) => r.id === row)?.properties?.[stage] ?? null
+      const until = async (fn, ms = 8000) => {
+        for (const end = Date.now() + ms; Date.now() < end; await sleep(150)) if (await fn()) return true
+        return false
+      }
+
+      // 표 변경 신호(SSE)를 막는다 — 지운 뒤 칸을 비우는 것은 화면이 직접 한다. 신호의 다시 읽기도 같은 일을 하므로 열어 두면 화면 쪽을
+      // 빼도 이 절이 통과한다(같은 일을 하는 길이 둘이면 한쪽이 검사되지 않는다). 절 끝에서 푼다.
+      await send('Network.setBlockedURLs', { urls: ['*/changes*'] })
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      await waitFor(`!!${chipOf(r1)} && !!${chipOf(r3)}`, 15000)
+      let opened = false
+      for (let i = 0; i < 5 && !opened; i += 1) {
+        await clickSelector(CELL(r1))
+        await key('Enter')
+        opened = await waitFor(`document.querySelectorAll('[data-testid="db-select-editor"] [data-testid="db-option-menu"]').length === 2`, 2000)
+      }
+      check('전제 — 고르개가 열리고 옵션 줄마다 ··· 가 선다(스키마를 고칠 수 있는 사람)', opened)
+      const MENU = (opt) => `[data-testid="db-option"][data-option-id="${opt}"] [data-testid="db-option-menu"]`
+
+      // ① 이름
+      await clickSelector(MENU(optA))
+      check('··· — 고치기 판이 서고 이름 칸에 포커스', await waitFor(`document.activeElement?.matches('[data-testid="db-option-name"]')`, 3000))
+      await evaluate(`document.querySelector('[data-testid="db-option-name"]')?.select()`)
+      await typeText('설계')
+      await key('Enter')
+      check('★ 이름을 바꾸면 그 옵션을 든 모든 칸이 따라온다 — 서버의 스키마도',
+        (await waitFor(`${chipOf(r1)}?.textContent === '설계' && ${chipOf(r2)}?.textContent === '설계'`, 8000)) &&
+          (await until(async () => (await serverOptions()).find((o) => o.id === optA)?.name === '설계')),
+        `${await evaluate(`${chipOf(r1)}?.textContent ?? null`)} · ${JSON.stringify((await serverOptions()).map((o) => o.name))}`)
+      check('Enter 뒤에는 목록으로 돌아온다(찾기 칸에 포커스)', await waitFor(`document.activeElement?.matches('[data-testid="db-select-input"]')`, 3000))
+
+      // ② 색
+      await clickSelector(MENU(optA))
+      await waitFor(`!!document.querySelector('[data-testid="db-option-edit"]')`, 3000)
+      await clickSelector('[data-testid="db-option-color"][data-color="green"]')
+      check('★ 색을 바꾸면 칸의 칩이 그 색이 된다 — 서버도',
+        (await waitFor(`${chipOf(r1)}?.dataset.color === 'green' && ${chipOf(r2)}?.dataset.color === 'green'`, 8000)) &&
+          (await until(async () => (await serverOptions()).find((o) => o.id === optA)?.color === 'green')),
+        String(await evaluate(`${chipOf(r1)}?.dataset.color ?? null`)))
+
+      // ③ 지우기 — 묻고, 취소하면 그대로
+      await clickSelector('[data-testid="db-option-delete"]')
+      check('★ 지우기는 그 옵션을 쓰는 행 수를 말하고 한 번 더 묻는다',
+        await waitFor(`(document.querySelector('[data-testid="db-option-delete-ask"]')?.textContent ?? '').includes('2개 행')`, 5000),
+        String(await evaluate(`document.querySelector('[data-testid="db-option-delete-ask"]')?.textContent ?? null`)))
+      await clickSelector('[data-testid="db-option-delete-cancel"]')
+      check('취소하면 그대로 — 묻기가 닫히고 칸의 칩이 남는다',
+        (await waitFor(`!document.querySelector('[data-testid="db-option-delete-ask"]')`, 3000)) && (await evaluate(`${chipOf(r1)}?.textContent === '설계'`)))
+      await clickSelector('[data-testid="db-option-delete"]')
+      await waitFor(`!!document.querySelector('[data-testid="db-option-delete-confirm"]')`, 5000)
+      await clickSelector('[data-testid="db-option-delete-confirm"]')
+      check('★ 지우면 그 옵션을 든 칸이 빈다 — 다른 옵션의 칸은 그대로',
+        await waitFor(`!${chipOf(r1)} && !${chipOf(r2)} && ${chipOf(r3)}?.textContent === '개발'`, 8000),
+        `${await evaluate(`${chipOf(r1)}?.textContent ?? '(빈 칸)'`)} · ${await evaluate(`${chipOf(r3)}?.textContent ?? '(빈 칸)'`)}`)
+      // 칩은 열의 옵션 목록에서 이름을 찾으므로 목록에서 빠지기만 해도 사라진다 — 칸의 값까지 비었는지는 고르개가 말한다(값이 있으면
+      // "선택 지우기" 가 선다). 화면이 지운 칸을 비우지 않으면 이 칸은 지운 id 를 든 채 비어 보인다.
+      check('그 칸의 값도 비었다 — 고르개에 "선택 지우기" 가 없다',
+        await waitFor(`!!document.querySelector('[data-testid="db-select-editor"]') && !document.querySelector('[data-testid="db-select-clear"]')`, 3000),
+        String(await evaluate(`!!document.querySelector('[data-testid="db-select-clear"]')`)))
+      check('★ 서버 — 옵션이 없고 그 셀이 비었다(셋째 행의 값은 그대로)',
+        await until(async () => !(await serverOptions()).some((o) => o.id === optA)
+          && (await serverCell(r1))?.select === null && (await serverCell(r2))?.select === null && (await serverCell(r3))?.select?.id === optB),
+        JSON.stringify({ options: (await serverOptions()).map((o) => o.name), r1: await serverCell(r1), r3: await serverCell(r3) }))
+      await key('Escape')
+      await send('Network.setBlockedURLs', { urls: [] })
+    }
+
     if (sectionIf('사람 필터 값 고르개 (6g-2b · F-03-07)')) {
       // 사람 속성의 필터 규칙 — 칩 · 패널이 값을 이름으로 그리고(첫 화면부터 — 서버가 이름을 준다), 값 칸을 누르면 칸의 고르개가 한 사람
       // 모양으로 열린다: 다른 사람을 고르면 바꾸고 닫힌다 · Esc 는 고르개만 닫는다 · 고른 사람을 다시 고르면 값이 빈다(그 규칙은 저장에서 빠진다).

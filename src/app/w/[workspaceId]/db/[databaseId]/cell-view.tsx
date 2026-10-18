@@ -91,6 +91,7 @@ export function OptionChip({ option }: { option: SelectOption }) {
       <span
         data-testid="db-option-chip"
         data-status-group={option.group}
+        data-color={option.color}
         className={`inline-flex max-w-full items-center gap-1 rounded-full px-2 py-0.5 text-xs ${OPTION_CLASS[option.color]}`}
       >
         <span aria-hidden className={`h-1.5 w-1.5 flex-none rounded-full ${DOT_CLASS[option.color]}`} />
@@ -101,6 +102,7 @@ export function OptionChip({ option }: { option: SelectOption }) {
   return (
     <span
       data-testid="db-option-chip"
+      data-color={option.color}
       className={`inline-block max-w-full truncate rounded px-1.5 py-0.5 text-xs ${OPTION_CLASS[option.color]}`}
     >
       {option.name}

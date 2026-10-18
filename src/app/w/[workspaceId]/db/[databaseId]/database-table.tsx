@@ -88,6 +88,9 @@ import {
   readRelationValue,
   type CellValue,
   type MvpPropertyType,
+  type OptionColor,
+  type OptionType,
+  type SelectOption,
 } from '@/lib/database/property-types'
 import { cellText, defaultColumnWidth, draftOf, parseDraft, readCell, sameValue } from '@/lib/database/cell-format'
 import { handleGridKey, type CellPos, type GridMode, type KeyResult } from '@/lib/database/grid-nav'
@@ -112,7 +115,7 @@ import { formulaEvaluator, type FormulaPlan } from '@/lib/database/formula-plan'
 import { NewRowMenu } from './new-row-menu'
 import { useRelationLabels } from './use-relation-labels'
 import { useRollupValues } from './use-rollup-values'
-import { SelectEditor } from './select-editor'
+import { SelectEditor, type OptionEditActions } from './select-editor'
 import { containsAcrossLayers } from '../../anchored-layer'
 import { RelationEditor } from './relation-editor'
 import { AddColumn } from './add-column'
@@ -591,6 +594,61 @@ export function DatabaseTable(props: {
       current.map((c) => (c.propertyId === column.propertyId ? { ...c, options: insertOption(c.options, option) } : c)),
     )
     pickOption(at, option.id)
+  }
+
+  /**
+   * 옵션 고치기(10n-6 · 정본 [보강] 옵션 고치기 · 지우기) — 고르개의 `···` 가 부른다. 스키마를 고칠 수 있을 때만.
+   * 이름 · 색은 그 열의 옵션 목록을 갈아 끼운다(칸은 id 라 따라온다). 지우기는 목록에서 빼고 그 옵션을 든 칸을 비운다 — 서버가 같은
+   * 트랜잭션에서 셀을 비웠고, 다른 화면은 표 변경 신호로 다시 읽는다.
+   */
+  const optionEditFor = (column: CellColumn): OptionEditActions => {
+    const replace = (option: SelectOption) =>
+      setColumns((current) =>
+        current.map((c) =>
+          c.propertyId === column.propertyId ? { ...c, options: c.options.map((o) => (o.id === option.id ? option : o)) } : c,
+        ),
+      )
+    const change = async (optionId: string, patch: { name?: string; color?: OptionColor }) => {
+      const result = await api.updateOption(workspaceId, dataSourceId, column.propertyId, optionId, patch)
+      if (!result.ok) {
+        setError(result.message)
+        return false
+      }
+      setError(null)
+      replace(result.value)
+      return true
+    }
+    return {
+      rename: (optionId, name) => change(optionId, { name }),
+      recolor: (optionId, color) => change(optionId, { color }),
+      usage: async (optionId) => {
+        const result = await api.optionUsage(workspaceId, dataSourceId, column.propertyId, optionId)
+        if (!result.ok) {
+          setError(result.message)
+          return null
+        }
+        return result.value
+      },
+      remove: async (optionId) => {
+        const result = await api.deleteOption(workspaceId, dataSourceId, column.propertyId, optionId)
+        if (!result.ok) {
+          setError(result.message)
+          return false
+        }
+        setError(null)
+        setColumns((current) =>
+          current.map((c) => (c.propertyId === column.propertyId ? { ...c, options: c.options.filter((o) => o.id !== optionId) } : c)),
+        )
+        setRows((current) =>
+          current.map((row) =>
+            optionIdOf(valueAt(row, column)) === optionId
+              ? { ...row, properties: { ...row.properties, [column.propertyId]: optionValue(column.type as OptionType, null) } }
+              : row,
+          ),
+        )
+        return true
+      },
+    }
   }
 
   // ── relation ───────────────────────────────────────────────────────
@@ -1440,6 +1498,7 @@ export function DatabaseTable(props: {
                             // List 의 속성은 오른쪽에 붙어 있다 — 왼쪽 기준으로 열면 화면 밖으로 나간다.
                             align={isList ? 'right' : 'left'}
                             canCreate={access.canEditStructure}
+                            {...(access.canEditStructure ? { edit: optionEditFor(cell.column) } : {})}
                             onPick={(optionId) => pickOption(at, optionId)}
                             onCreate={(name) => void createOption(at, name)}
                           />
