@@ -13986,6 +13986,91 @@ async function main() {
       denied.close()
     }
 
+    if (sectionIf('필터가 걸린 뷰에서 만든 행 (10n-10 · F-04-09)')) {
+      // 필터가 걸린 표에서 "+ 새로 만들기" 로 만든 행은 빈 행이라 필터 밖이었다 — 새로고침하면 사라져 보였다(HANDOFF §7). 서버가 그 필터가
+      // 정하는 값을 채운다(정본 §3.5 [보강] 필터가 걸린 뷰에서 만든 행): 단계 = 가 · 완료 · 담당에 "나". 채운 값은 응답에 실려 곧바로 보이고,
+      // 새로고침해도 행이 남는다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const clickOn = async (selector) => {
+        const p = await evaluate(`(() => {
+          const e = document.querySelector(${JSON.stringify(selector)})
+          if (!e) return null
+          e.scrollIntoView({ block: 'center' })
+          const r = e.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (p) await click(p.x, p.y)
+        return p !== null
+      }
+      const db = (await api('POST', '/databases', { name: `필터 채우기 ${stamp}` })).body.database
+      const view = db.defaultViewId
+      const ds = db.dataSourceId
+      const props = `/data-sources/${ds}/properties`
+      const stage = (await api('POST', props, { name: '단계', type: 'select' })).body.property.id
+      const done = (await api('POST', props, { name: '완료', type: 'checkbox' })).body.property.id
+      const who = (await api('POST', props, { name: '담당', type: 'people' })).body.property.id
+      const opt = async (name) => (await api('POST', `/data-sources/${ds}/properties/${stage}/options`, { name })).body.option.id
+      const ga = await opt('가')
+      const na = await opt('나')
+      const titleProp = (await api('GET', `/views/${view}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      // 필터 밖의 행 하나 — 필터가 실제로 거르는지 본다
+      await api('POST', `/views/${view}/rows`, {
+        cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun('밖의 행')] } }, { propertyId: stage, value: { type: 'select', select: { id: na } } }],
+      })
+      const filtered = await api('PATCH', `/views/${view}`, {
+        filter: {
+          op: 'and',
+          children: [
+            { property_id: stage, operator: 'equals', value: ga },
+            { property_id: done, operator: 'equals', value: true },
+            { property_id: who, operator: 'contains', value: { $context: 'me' } },
+          ],
+        },
+      })
+      const titlesJs = `[...document.querySelectorAll('[data-testid="db-table"] tbody tr')].map((tr) => tr.querySelector('[data-testid="db-row-title"]')?.textContent ?? '').join(',')`
+      const titles = () => evaluate(titlesJs)
+      const cellText = (property) =>
+        evaluate(`[...document.querySelectorAll('[data-testid="db-table"] tbody tr')].map((tr) => tr.querySelector('td[data-property-id="${property}"]')?.textContent?.trim() ?? '').join(',')`)
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      check('전제 — 필터가 걸렸고 밖의 행은 보이지 않는다',
+        filtered.status === 200 && (await waitFor(`!!document.querySelector('[data-testid="db-add-row"]') && ${titlesJs} === ''`, 15000)),
+        JSON.stringify({ status: filtered.status, titles: await titles() }))
+
+      await clickOn('[data-testid="db-add-row"]')
+      await waitFor(`document.activeElement?.matches('[data-testid="db-cell-input"]')`, 8000)
+      const title = `필터 안의 새 행 ${stamp % 100000}`
+      await typeText(title)
+      await key('Enter')
+      check('★ 새 행이 필터가 정하는 값을 받아 곧바로 보인다 — 단계 가 · 완료 체크',
+        await waitFor(`${titlesJs} === ${JSON.stringify(title)}`, 8000)
+          && (await waitFor(`(() => { const td = document.querySelector('[data-testid="db-table"] tbody tr td[data-property-id="${stage}"]'); return td?.textContent?.trim() === '가' })()`, 5000))
+          && (await cellText(done)) === '✓',
+        JSON.stringify({ titles: await titles(), stage: await cellText(stage), done: await cellText(done) }))
+
+      // 제목은 Enter 의 저장이 끝난 뒤에 서버에 있다 — 그 제목의 행이 보일 때까지
+      const serverRow = async () => ((await api('GET', `/views/${view}/rows`)).body?.rows ?? []).find((r) => r.title === title)
+      let saved = await serverRow()
+      for (let i = 0; i < 25 && saved === undefined; i += 1) {
+        await sleep(200)
+        saved = await serverRow()
+      }
+      check('서버에도 — 단계 가 · 완료 · 담당에 만든 사람',
+        saved?.properties?.[stage]?.select?.id === ga && saved?.properties?.[done]?.checkbox === true
+          && JSON.stringify(saved?.properties?.[who]?.people) === JSON.stringify([{ id: ctx.userId }]),
+        JSON.stringify(saved?.properties ?? null))
+
+      await send('Page.reload')
+      check('★ 새로고침해도 새 행이 남는다 — 필터 밖으로 빠지지 않았다',
+        await waitFor(`${titlesJs} === ${JSON.stringify(title)}`, 15000), await titles())
+    }
+
     if (sectionIf('표 변경 알림 — 화면 (2k-2 · F-04-24)')) {
       // 다른 곳(API)에서 바꾸면 새로고침 없이 표가 맞춰진다 — 새 행 · 제목 · 집계 · 뷰 필터. 내가 고쳐 조건 밖이 된 행은 남고 "조건 밖", 남이
       // 고쳐 나간 행은 빠진다. 편집 중에는 미뤘다가 끝나면 맞춘다. 남이 속성을 더하면 표가 새로 선다.
