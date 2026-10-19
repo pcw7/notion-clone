@@ -3490,6 +3490,52 @@ async function main() {
       }
     }
 
+    if (sectionIf('워크스페이스 나가기 (10o-3 · F-14-10)')) {
+      // 설정의 워크스페이스 일반 절 끝의 "나가기"(정본 §3.3 [보강] 멤버 내보내기 ⑨) — 내보내기와 같은 규칙. 브라우저 세션을 장면마다 그
+      // 사람으로 바꾸고 끝에서 주 세션으로 되돌린다. 이 판의 워크스페이스는 모든 절이 함께 쓰므로 새로 만든 사람들만 나간다.
+      const stamp = Date.now() % 100000
+      const leaver = await joinAs(workspaceId, await createUser(`나갈사람 ${stamp}`), 'member')
+      const stuck = await joinAs(workspaceId, await createUser(`못나갈사람 ${stamp}`), 'member')
+      const guest = await joinAs(workspaceId, await createUser(`나가기손님 ${stamp}`), 'guest')
+      const teamName = `나가기 팀 ${stamp}`
+      await fetch(`${BASE}/api/workspaces/${workspaceId}/teamspaces`, {
+        method: 'POST', headers: { ...json, cookie: `nc_session=${stuck.token}` }, body: JSON.stringify({ name: teamName }),
+      })
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const statusOf = async (userId) =>
+        (await dbQuery(`SELECT status FROM workspace_member WHERE workspace_id = $1 AND user_id = $2`, [workspaceId, userId]))[0]?.status ?? null
+      const GENERAL = `${BASE}/w/${workspaceId}/settings?s=workspace.general`
+      const asUser = (who) => send('Network.setCookie', { name: 'nc_session', value: who.token, domain: 'localhost', path: '/', httpOnly: true })
+      const openLeave = async () => {
+        await send('Page.navigate', { url: GENERAL })
+        await waitHydrated('[data-testid="leave-button"]')
+        await clickSelector('[data-testid="leave-button"]')
+        return waitFor(`(document.querySelector('[data-testid="leave-panel"]')?.textContent ?? '').includes('30일 안에 다시 초대받으면')`, 5000)
+      }
+      try {
+        await asUser(stuck)
+        check('나가기는 한 번 더 묻는다 — 무엇을 잃는지 · 다시 초대받으면 돌아온다고 말한다', await openLeave())
+        await clickSelector('[data-testid="leave-confirm"]')
+        check('★ 내가 마지막 소유자인 팀스페이스가 있으면 나가지 못한다 — 그 이름을 말하고 머문다',
+          (await waitFor(`(document.querySelector('[data-testid="leave-error"]')?.textContent ?? '').includes(${JSON.stringify(teamName)})`, 8000))
+            && (await statusOf(stuck.userId)) === 'active' && (await evaluate(`location.pathname.includes('/settings')`)),
+          await evaluate(`document.querySelector('[data-testid="leave-error"]')?.textContent ?? ''`))
+
+        await asUser(leaver)
+        await openLeave()
+        await clickSelector('[data-testid="leave-confirm"]')
+        check('★ 나가면 처음 화면으로 — 서버는 removed(M1) · 그 워크스페이스는 더 열리지 않는다',
+          (await waitFor(`location.pathname === '/'`, 10000)) && (await statusOf(leaver.userId)) === 'removed'
+            && (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { headers: { cookie: `nc_session=${leaver.token}` } })).status >= 400,
+          JSON.stringify({ path: await evaluate('location.pathname'), status: await statusOf(leaver.userId) }))
+
+        const guestGeneral = await (await fetch(GENERAL, { headers: { cookie: `nc_session=${guest.token}` } })).text()
+        check('게스트에게는 나가기 패널이 없다(이 길이 아니다)', !guestGeneral.includes('data-testid="leave-panel"'))
+      } finally {
+        await send('Network.setCookie', { name: 'nc_session', value: session, domain: 'localhost', path: '/', httpOnly: true })
+      }
+    }
+
     if (sectionIf('게스트 관리 — 멤버로 올리기 · 빼기 (7d-3 · F-06-09)')) {
       // 소유자(브라우저 세션)가 설정의 사람 절 "게스트" 패널(8g-2 — 전에는 홈)에서 한 사람은 멤버로 올리고, 한 사람은 뺀다. 둘 다 두 번 누른다. 자기 데이터를
       // 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
