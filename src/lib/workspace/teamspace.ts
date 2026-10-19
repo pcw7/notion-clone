@@ -1158,6 +1158,40 @@ export async function joinDefaultTeamspaces(tx: Tx, workspaceId: string, userId:
 // ── 그룹이 사라질 때 ──────────────────────────────────────────────────
 
 /**
+ * 이 주체(사람 · 그룹)가 **마지막 owner** 인 teamspace — 보관된 것 포함. 이 주체를 빼면 **실제로 행동할 수 있는** owner 가 남지
+ * 않는 것들이다(§3.11 [보강] 고아 teamspace ① — 이 워크스페이스의 활성 · 게스트 아닌 사람, 또는 지워지지 않은 그룹). 그룹 지우기
+ * (7c-10 · 아래)와 멤버 내보내기(10o-1 · 정본 [보강] 멤버 내보내기 ③)가 같은 셈을 쓴다 — 이름순.
+ */
+export async function lastOwnedTeamspaces(
+  tx: Tx,
+  workspaceId: string,
+  principal: TeamspacePrincipal,
+): Promise<{ readonly id: string; readonly name: string }[]> {
+  return tx.query<{ id: string; name: string }>(
+    `SELECT t.id, t.name
+       FROM teamspace_member mine
+       JOIN teamspace t ON t.id = mine.teamspace_id AND t.workspace_id = $3
+      WHERE mine.principal_type = $1 AND mine.principal_id = $2
+        AND mine.role = 'owner' AND mine.removed_at IS NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM teamspace_member other
+           WHERE other.teamspace_id = mine.teamspace_id AND other.role = 'owner' AND other.removed_at IS NULL
+             AND NOT (other.principal_type = $1 AND other.principal_id = $2)
+             AND (
+               (other.principal_type = 'user' AND EXISTS (
+                  SELECT 1 FROM workspace_member m
+                   WHERE m.workspace_id = $3 AND m.user_id = other.principal_id
+                     AND m.status = 'active' AND m.role <> 'guest'))
+               OR (other.principal_type = 'group' AND EXISTS (
+                  SELECT 1 FROM "group" g WHERE g.id = other.principal_id AND g.deleted_at IS NULL))
+             )
+        )
+      ORDER BY lower(t.name), t.id`,
+    [principal.type, principal.id, workspaceId],
+  )
+}
+
+/**
  * 지워지는 그룹을 모든 teamspace 에서 뺀다 — `deleteGroup` 이 같은 트랜잭션에서 부른다(7c-10).
  *
  * 전에는 그룹 삭제가 블록 노드의 부여만 거뒀다(`dropGrantsOf`). teamspace 멤버 행과 teamspace 노드의 owner 부여는
@@ -1176,28 +1210,8 @@ export async function dropGroupFromTeamspaces(
   ctx: SessionContext,
   groupId: string,
 ): Promise<{ readonly ok: true } | { readonly ok: false; readonly teamspaces: number }> {
-  const orphaned = await tx.queryOne<{ n: number }>(
-    `SELECT count(*)::int AS n
-       FROM teamspace_member mine
-       JOIN teamspace t ON t.id = mine.teamspace_id AND t.workspace_id = $2
-      WHERE mine.principal_type = 'group' AND mine.principal_id = $1
-        AND mine.role = 'owner' AND mine.removed_at IS NULL
-        AND NOT EXISTS (
-          SELECT 1 FROM teamspace_member other
-           WHERE other.teamspace_id = mine.teamspace_id AND other.role = 'owner' AND other.removed_at IS NULL
-             AND NOT (other.principal_type = 'group' AND other.principal_id = $1)
-             AND (
-               (other.principal_type = 'user' AND EXISTS (
-                  SELECT 1 FROM workspace_member m
-                   WHERE m.workspace_id = $2 AND m.user_id = other.principal_id
-                     AND m.status = 'active' AND m.role <> 'guest'))
-               OR (other.principal_type = 'group' AND EXISTS (
-                  SELECT 1 FROM "group" g WHERE g.id = other.principal_id AND g.deleted_at IS NULL))
-             )
-        )`,
-    [groupId, ctx.workspaceId],
-  )
-  if (orphaned.n > 0) return { ok: false, teamspaces: orphaned.n }
+  const orphaned = await lastOwnedTeamspaces(tx, ctx.workspaceId, { type: 'group', id: groupId })
+  if (orphaned.length > 0) return { ok: false, teamspaces: orphaned.length }
 
   await tx.query(
     `UPDATE teamspace_member tm SET removed_at = now()

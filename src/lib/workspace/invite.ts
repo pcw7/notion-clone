@@ -85,6 +85,11 @@ export async function createEmailInvite(
   if (!CAN_INVITE.has(input.inviterRole)) {
     return { ok: false, reason: 'forbidden' }
   }
+  // 관리 역할(owner · membership_admin)로 들이는 것은 owner 만(정본 §3.3 [보강] 멤버 내보내기 · 역할 바꾸기 ① · 10o-1) — 전에는
+  // membership_admin 이 다른 사람을 owner 로 초대할 수 있었다(자기보다 높은 역할을 만드는 길)
+  if ((input.role === 'owner' || input.role === 'membership_admin') && input.inviterRole !== 'owner') {
+    return { ok: false, reason: 'forbidden' }
+  }
 
   const email = input.email.trim()
 
