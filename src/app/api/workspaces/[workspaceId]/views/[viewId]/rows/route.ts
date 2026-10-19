@@ -22,8 +22,10 @@
  *
  * 행은 data_source 에 속하지만, 노션은 필터가 걸린 뷰에서 행을 추가하면 그 필터를
  * 만족하는 값을 미리 채워 새 행이 화면에서 사라지지 않게 한다. 그 동작은 "어느
- * 뷰에서 만들었는가" 를 알아야 가능하다. 지금은 미리 채우지 않지만, 주소를
- * data_source 로 두면 나중에 그것을 붙일 자리가 없다.
+ * 뷰에서 만들었는가" 를 알아야 가능하다 — 주소를 data_source 로 두었다면 붙일 자리가
+ * 없었다. 10n-10 이 붙였다: 만드는 사람이 보는 필터(`effectiveFilter` — 개인 필터
+ * 포함)를 세 길(빈 행 · 템플릿 · 하위 항목)에 넘긴다. 무엇을 채우는가는 정본 §3.5
+ * [보강] 필터가 걸린 뷰에서 만든 행(`filter-prefill.ts`).
  */
 
 import { isUuid } from '@/lib/ids'
@@ -151,8 +153,11 @@ export async function POST(request: Request, ctx: Ctx): Promise<Response> {
 
   // 템플릿을 주면 그 행을 복제한다(F-08-02). 안 주면 빈 행이다 — 같은 주소인 이유는 **같은 동작**이어서다:
   // `New ▾` 의 목록에서 무엇을 고르든 사용자에게는 "여기에 새 항목"이고, 응답도 표가 그대로 끼워 넣는 행 하나다.
+  // 이 뷰에서 만든다 — 만드는 사람이 보는 필터가 정하는 값을 채운다(정본 §3.5 [보강] 필터가 걸린 뷰에서 만든 행)
+  const viewFilter = view.value.effectiveFilter
+
   if (typeof body.templateId === 'string') {
-    const made = await createRowFromTemplate(session.ctx, view.value.dataSourceId, body.templateId, { cells })
+    const made = await createRowFromTemplate(session.ctx, view.value.dataSourceId, body.templateId, { cells, viewFilter })
     if (!made.ok) return failureResponse(templateFailureStatus(made.reason), made)
     // 빠진 것은 **말한다**(§3.3-174) — 조용히 성공하면 사용자는 본문에 무엇이 없는지 모른다.
     return Response.json(
@@ -167,12 +172,12 @@ export async function POST(request: Request, ctx: Ctx): Promise<Response> {
   }
 
   if (typeof body.parent === 'string') {
-    const child = await createSubItem(session.ctx, view.value.dataSourceId, body.parent, { cells })
+    const child = await createSubItem(session.ctx, view.value.dataSourceId, body.parent, { cells, viewFilter })
     if (!child.ok) return failureResponse(relationFailureStatus(child.reason), child)
     return Response.json({ ok: true, row: rowJson(child.value) }, { status: 201 })
   }
 
-  const created = await createRow(session.ctx, view.value.dataSourceId, { cells })
+  const created = await createRow(session.ctx, view.value.dataSourceId, { cells, viewFilter })
   if (!created.ok) return failureResponse(rowFailureStatus(created.reason), created)
   return Response.json({ ok: true, row: rowJson(created.value) }, { status: 201 })
 }

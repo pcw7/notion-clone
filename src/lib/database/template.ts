@@ -75,11 +75,13 @@ import {
   isRowFailure,
   openDataSource,
   readRow,
+  viewPrefillIn,
   type CellFiller,
   type RowCell,
   type RowResult,
   type RowSummary,
 } from './row.ts'
+import type { FilterNode } from './filter.ts'
 import { withoutMissingOptions } from './options.ts'
 import { withoutLeftPeople } from './people.ts'
 import type { CellValue } from './property-types.ts'
@@ -332,6 +334,11 @@ export type CreateFromTemplateInput = {
   readonly filledBy?: CellFiller
   /** 쓰기의 출처 — DB automation 이 받을지 정한다(5b-2). */
   readonly origin?: WriteOrigin
+  /**
+   * 이 뷰에서 만든다 — 그 필터가 정하는 값이 **템플릿의 값을 이긴다**(준 셀보다는 진다 · 정본 §3.5 [보강] 필터가 걸린 뷰에서 만든 행 ⑤ —
+   * 목표가 "만든 사람의 화면에서 사라지지 않는다" 다). 필터가 정하지 않는 칸에서는 템플릿이 그대로 이긴다.
+   */
+  readonly viewFilter?: FilterNode | null
 }
 
 export type TemplateRow = {
@@ -395,9 +402,11 @@ export async function createRowFromTemplateIn(
       ctx.workspaceId,
       await withoutMissingOptions(tx, stored.map((s) => ({ propertyId: s.property_id, value: s.value }))),
     )
+    // 뷰의 필터가 정한 값 — 준 셀이 정하지 않은 칸에(정본 §3.5 [보강] 필터가 걸린 뷰에서 만든 행 ⑤ · 맞지 않는 값은 버린다 ⑥)
+    const chosen = [...given, ...(await viewPrefillIn(tx, ctx, gate, input.viewFilter, new Set(given.map((cell) => cell.propertyId))))]
     // 누가 이기나(위 `precedence`) — 진 쪽은 이긴 쪽이 정하지 않은 칸에만 들어간다
-    const winners = input.precedence === 'template' ? fromTemplate : given
-    const losers = input.precedence === 'template' ? given : fromTemplate
+    const winners = input.precedence === 'template' ? fromTemplate : chosen
+    const losers = input.precedence === 'template' ? chosen : fromTemplate
     const taken = new Set(winners.map((cell) => cell.propertyId))
     const cells: RowCell[] = [...losers.filter((cell) => !taken.has(cell.propertyId)), ...winners]
 

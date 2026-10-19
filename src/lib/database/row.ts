@@ -71,8 +71,10 @@ import {
 } from './property-types.ts'
 import { issueUniqueSeq } from './unique-id.ts'
 import { routeCellsEdited, routeRowAdded, type WriteOrigin } from '../automation/trigger-route.ts'
-import { applyPeopleChanges, checkPeopleChanges, peopleIdsOf, peopleIssuesIn } from './people.ts'
-import { optionIssuesIn } from './options.ts'
+import { applyPeopleChanges, checkPeopleChanges, peopleIdsOf, peopleIssuesIn, withoutLeftPeople } from './people.ts'
+import { optionIssuesIn, withoutMissingOptions } from './options.ts'
+import { filterPrefill } from './filter-prefill.ts'
+import type { FilterNode } from './filter.ts'
 
 /** 한 번에 읽는 행 수. 뷰의 "더 보기"는 W8-b 다. */
 export const DEFAULT_ROW_LIMIT = 50
@@ -403,6 +405,40 @@ export type CreateRowInput = {
   readonly origin?: WriteOrigin
   /** 주면 낙관적 잠금이 된다 — 낡은 스키마로 쓰는 것을 막는다. */
   readonly expectedSchemaVersion?: string
+  /**
+   * 이 뷰에서 만든다 — 만드는 사람이 보는 그 뷰의 필터(개인 필터 포함). 필터가 정하는 값을 `cells` 가 정하지 않은 칸에 채운다
+   * (정본 §3.5 [보강] 필터가 걸린 뷰에서 만든 행 · `viewPrefillIn`). 없으면 채우지 않는다.
+   */
+  readonly viewFilter?: FilterNode | null
+}
+
+/**
+ * 뷰의 필터가 정하는 칸 중 지금 쓸 수 있는 것(정본 §3.5 [보강] 필터가 걸린 뷰에서 만든 행 ⑥) — `taken`(요청이 준 칸)은 빼고, 맞지 않는
+ * 값은 **그 칸만 버린다**: 지워진 · 읽기 전용 · 알 수 없는 속성, 그 속성에 없는 옵션, 떠난 사람. 사용자가 고르지 않은 값 때문에 행 추가가
+ * 거부되면 원인을 알 수 없다. 템플릿의 값을 거르는 것과 같은 거르개다(`withoutMissingOptions` · `withoutLeftPeople`).
+ */
+export async function viewPrefillIn(
+  tx: Tx,
+  ctx: SessionContext,
+  gate: DataSourceGate,
+  filter: FilterNode | null | undefined,
+  taken: ReadonlySet<string>,
+): Promise<RowCell[]> {
+  const candidates = filterPrefill(filter, (id) => gate.properties.get(id)?.type, ctx.userId).filter((cell) => {
+    if (taken.has(cell.propertyId)) return false
+    const meta = gate.properties.get(cell.propertyId)
+    return (
+      meta !== undefined &&
+      meta.writable !== 'readonly' &&
+      isMvpPropertyType(meta.type) &&
+      meta.type === cell.value.type &&
+      validateCellValue(meta.type, cell.value, `prefill.${cell.propertyId}`).length === 0
+    )
+  })
+  if (candidates.length === 0) return []
+  const kept = await withoutLeftPeople(tx, ctx.workspaceId, await withoutMissingOptions(tx, candidates))
+  // 떠난 사람만 있던 칸은 비었다 — 적지 않는다
+  return kept.filter((cell) => cell.value.type !== 'people' || cell.value.people.length > 0)
 }
 
 /**
@@ -457,8 +493,11 @@ export async function createRowIn(
       return { ok: false, reason: 'schema_conflict', currentVersion: gate.schemaVersion } as const
     }
 
+    // 요청이 준 칸 > 뷰의 필터가 정한 값 > 기본값(정본 §3.5 [보강] 필터가 걸린 뷰에서 만든 행 ⑤)
     const given = input.cells ?? []
-    const prepared = prepareCells(gate, [...given, ...defaultCells(gate, given)])
+    const prefill = await viewPrefillIn(tx, ctx, gate, input.viewFilter, new Set(given.map((cell) => cell.propertyId)))
+    const chosen = [...given, ...prefill]
+    const prepared = prepareCells(gate, [...chosen, ...defaultCells(gate, chosen)])
     if (isRowFailure(prepared)) return prepared
     // 사람 칸(6g-1) — 이 워크스페이스의 활동 중인 사람만(정본 §3.5 [보강] 사람 속성 ②)
     // 옵션 칸 — 그 속성의 옵션만(`optionIssuesIn` · HANDOFF §7 의 구멍)
