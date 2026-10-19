@@ -3366,6 +3366,52 @@ async function main() {
         toStranger.status === 400 && (await toStranger.json()).error === 'invalid_principal', String(toStranger.status))
     }
 
+    if (sectionIf('멤버 관리 — 서버 (10o-1 · F-06-02)')) {
+      // 멤버 내보내기 · 역할 바꾸기의 라우트(정본 §3.3 [보강] 멤버 내보내기 · 역할 바꾸기). 이 판의 워크스페이스는 모든 절이 함께 쓰므로
+      // 주 세션(owner)은 **새로 만든 사람들만** 다룬다.
+      const base = `${BASE}/api/workspaces/${workspaceId}/members`
+      const as = (who) => ({ ...json, cookie: `nc_session=${who.token}` })
+      const call = async (method, headers, userId, body) => {
+        const r = await fetch(`${base}/${userId}`, { method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const admin = await joinAs(workspaceId, await createUser('멤버관리 관리자'), 'membership_admin')
+      const mate = await joinAs(workspaceId, await createUser('멤버관리 동료'), 'member')
+      const lead = await joinAs(workspaceId, await createUser('멤버관리 팀장'), 'member')
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const roleOf = async (userId) =>
+        (await dbQuery(`SELECT role, status FROM workspace_member WHERE workspace_id = $1 AND user_id = $2`, [workspaceId, userId]))[0] ?? null
+
+      const down = await call('PATCH', as(admin), mate.userId, { role: 'restricted_member' })
+      check('★ membership_admin 이 멤버를 제한 멤버로 — 200 · 전후 역할',
+        down.status === 200 && down.body?.from === 'member' && down.body?.to === 'restricted_member'
+          && (await roleOf(mate.userId))?.role === 'restricted_member', JSON.stringify(down))
+      const up = await call('PATCH', as(admin), mate.userId, { role: 'owner' })
+      check('★ owner 로 올리기는 owner 만 — 403', up.status === 403 && up.body?.error === 'forbidden', JSON.stringify(up))
+      const bad = await call('PATCH', authed, mate.userId, { role: 'guest' })
+      check('게스트로 내리기는 이 길이 아니다 — 400', bad.status === 400 && bad.body?.error === 'invalid_role', JSON.stringify(bad))
+      const self = await call('DELETE', authed, ctx.userId)
+      check('자기 자신은 내보내지 않는다 — 409', self.status === 409 && self.body?.error === 'self', JSON.stringify(self))
+
+      // teamspace 의 마지막 owner — 팀장이 만든 teamspace 의 owner 는 팀장 하나다
+      const teamName = `멤버관리 팀 ${Date.now() % 100000}`
+      const made = await fetch(`${BASE}/api/workspaces/${workspaceId}/teamspaces`, { method: 'POST', headers: as(lead), body: JSON.stringify({ name: teamName }) })
+      const kept = await call('DELETE', authed, lead.userId)
+      check('★ teamspace 의 마지막 owner 는 내보내지 않는다 — 409 · 그 이름',
+        made.status < 300 && kept.status === 409 && kept.body?.error === 'teamspace_last_owner'
+          && JSON.stringify(kept.body?.teamspaces) === JSON.stringify([teamName]),
+        JSON.stringify({ made: made.status, kept }))
+
+      const gone = await call('DELETE', authed, mate.userId)
+      const after = await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { headers: as(mate) })
+      check('★ 내보내면 그 사람은 이 워크스페이스에 들어오지 못한다 — 행은 removed(M1)',
+        gone.status === 200 && gone.body?.role === 'restricted_member' && (await roleOf(mate.userId))?.status === 'removed'
+          && after.status >= 400,
+        JSON.stringify({ gone, after: after.status }))
+      const again = await call('DELETE', authed, mate.userId)
+      check('떠난 사람은 다시 내보내지 않는다 — 404', again.status === 404, JSON.stringify(again))
+    }
+
     if (sectionIf('게스트 관리 — 멤버로 올리기 · 빼기 (7d-3 · F-06-09)')) {
       // 소유자(브라우저 세션)가 설정의 사람 절 "게스트" 패널(8g-2 — 전에는 홈)에서 한 사람은 멤버로 올리고, 한 사람은 뺀다. 둘 다 두 번 누른다. 자기 데이터를
       // 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
