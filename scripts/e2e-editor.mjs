@@ -6055,6 +6055,7 @@ async function main() {
       })()`)
       await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${picker.id}` })
       await waitFor(`!!document.querySelector('[data-testid="db-add-column"]')`, 15000)
+      await waitHydrated('[data-testid="db-add-column"]') // 서버가 그린 단추 — React 가 붙기 전의 클릭은 버려진다(10n-11)
       await clickSelector('[data-testid="db-add-column"]')
       await waitFor(`document.activeElement?.getAttribute('aria-label') === '속성 이름'`, 3000)
       await setSelect('select[aria-label="속성 유형"]', 'relation')
@@ -7511,6 +7512,7 @@ async function main() {
       await waitFor(`!!document.querySelector('[data-testid="db-table"] tbody tr')`, 15000)
 
       // ── 머리 메뉴 ──
+      await waitHydrated(`th[data-property-id="${propIds[0]}"] [data-testid="db-column-menu"]`) // 서버가 그린 단추 — React 가 붙기 전의 클릭은 버려진다(10n-11)
       await clickOn(`th[data-property-id="${propIds[0]}"] [data-testid="db-column-menu"]`)
       check('제목 속성의 머리 메뉴에는 숨기기 · 삭제가 없다',
         await waitFor(`!!document.querySelector('[data-testid="db-column-menu-panel"]')
@@ -8306,6 +8308,7 @@ async function main() {
         // ── 속성 추가 폼에서 관계형을 만든다 ──
         await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${orders.id}` })
         await waitFor(`!!document.querySelector('[data-testid="db-table"] tbody tr')`, 15000)
+        await waitHydrated('[data-testid="db-add-column"]') // 서버가 그린 단추 — React 가 붙기 전의 클릭은 버려진다(10n-11)
         await clickOn('[data-testid="db-add-column"]')
         await waitFor(`document.activeElement?.getAttribute('aria-label') === '속성 이름'`, 3000)
         await typeText('고객')
@@ -8393,6 +8396,7 @@ async function main() {
           `${JSON.stringify(await chipsIn('0:1'))} · ${JSON.stringify(await chipsIn('1:1'))}`)
 
         // ── 하나만 연결 ──
+        await waitHydrated('[data-testid="db-add-column"]') // 서버가 그린 단추 — React 가 붙기 전의 클릭은 버려진다(10n-11)
         await clickOn('[data-testid="db-add-column"]')
         await waitFor(`document.activeElement?.getAttribute('aria-label') === '속성 이름'`, 3000)
         await typeText('담당 고객')
@@ -8562,6 +8566,7 @@ async function main() {
         // 칸이 영영 빈 채로 남는다(`use-rollup-values.ts` 머리말) — 이 절이 그것을 본다.
         await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${tasks.id}` })
         await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === 3`, 15000)
+        await waitHydrated('[data-testid="db-add-column"]') // 서버가 그린 단추 — React 가 붙기 전의 클릭은 버려진다(10n-11)
         await clickOn('[data-testid="db-add-column"]')
         await waitFor(`document.activeElement?.getAttribute('aria-label') === '속성 이름'`, 3000)
         await typeText('프로젝트 수')
@@ -8578,6 +8583,7 @@ async function main() {
         const plain = (await api('POST', '/databases', { name: `롤업 없음 ${stamp}` })).body.database
         await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${plain.id}` })
         await waitFor(`!!document.querySelector('[data-testid="db-add-column"]')`, 15000)
+        await waitHydrated('[data-testid="db-add-column"]') // 서버가 그린 단추 — React 가 붙기 전의 클릭은 버려진다(10n-11)
         await clickOn('[data-testid="db-add-column"]')
         await waitFor(`document.activeElement?.getAttribute('aria-label') === '속성 이름'`, 3000)
         await setSelect('select[aria-label="속성 유형"]', 'rollup')
@@ -9114,6 +9120,7 @@ async function main() {
         s.dispatchEvent(new Event('change', { bubbles: true }))
         return true
       })()`)
+      await waitHydrated('[data-testid="db-add-column"]') // 서버가 그린 단추 — React 가 붙기 전의 클릭은 버려진다(10n-11)
       await clickSelector('[data-testid="db-add-column"]')
       await waitFor(`document.activeElement?.getAttribute('aria-label') === '속성 이름'`, 3000)
       await setSelect('select[aria-label="속성 유형"]', 'relation')
@@ -9224,6 +9231,7 @@ async function main() {
       // 관계형의 반대쪽 이름 기본값 — 소스가 여럿이면 소스 이름
       await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${dbId}?v=${(await evaluate(`new URLSearchParams(location.search).get('v')`))}` })
       await waitFor(`!!document.querySelector('[data-testid="db-add-column"]')`, 15000)
+      await waitHydrated('[data-testid="db-add-column"]') // 서버가 그린 단추 — React 가 붙기 전의 클릭은 버려진다(10n-11)
       await clickSelector('[data-testid="db-add-column"]')
       await waitFor(`document.activeElement?.getAttribute('aria-label') === '속성 이름'`, 3000)
       await evaluate(`(() => { const s = document.querySelector('select[aria-label="속성 유형"]'); s.value = 'relation'
@@ -12270,6 +12278,7 @@ async function main() {
       await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === 3`, 15000)
 
       // ── 속성 추가 폼 ──
+      await waitHydrated('[data-testid="db-add-column"]') // 서버가 그린 단추 — React 가 붙기 전의 클릭은 버려진다(10n-11)
       await clickOn('[data-testid="db-add-column"]')
       await waitFor(`document.activeElement?.getAttribute('aria-label') === '속성 이름'`, 3000)
       await typeText('번호')
@@ -12637,6 +12646,7 @@ async function main() {
       // 행의 칸만 — 표 아래 집계 줄(`tfoot` · 2d-2)의 칸도 같은 `data-property-id` 를 단다.
       const cellsOf = () => evaluate(`[...document.querySelectorAll('tbody td[data-property-id="${memo}"]')].map((td) => td.textContent.trim())`)
 
+      await waitHydrated(`th[data-property-id="${memo}"] [data-testid="db-column-menu"]`) // 서버가 그린 단추 — React 가 붙기 전의 클릭은 버려진다(10n-11)
       await clickOn(`th[data-property-id="${memo}"] [data-testid="db-column-menu"]`)
       await waitFor(`!!document.querySelector('[data-testid="db-column-convert"]')`, 3000)
       await clickOn('[data-testid="db-column-convert"]')
@@ -13493,6 +13503,7 @@ async function main() {
       await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === 2`, 15000)
 
       // ── 만들기 ──
+      await waitHydrated('[data-testid="db-add-column"]') // 서버가 그린 단추 — React 가 붙기 전의 클릭은 버려진다(10n-11)
       await clickOn('[data-testid="db-add-column"]')
       await waitFor(`document.activeElement?.getAttribute('aria-label') === '속성 이름'`, 3000)
       await typeText('금액')
@@ -13612,6 +13623,7 @@ async function main() {
       await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === 1`, 15000)
 
       // ── 치는 동안 검사 ──
+      await waitHydrated('[data-testid="db-add-column"]') // 서버가 그린 단추 — React 가 붙기 전의 클릭은 버려진다(10n-11)
       await clickOn('[data-testid="db-add-column"]')
       await waitFor(`document.activeElement?.getAttribute('aria-label') === '속성 이름'`, 3000)
       await typeText('계산')
@@ -13661,6 +13673,8 @@ async function main() {
 
       // ── 식 고치기 ──
       const openFormulaMenu = async () => {
+        // 새로고침 뒤에도 부른다 — React 가 붙기 전의 클릭은 버려진다(10n-11)
+        await waitHydrated(`th[data-property-id="${calc}"] [data-testid="db-column-menu"]`)
         await clickOn(`th[data-property-id="${calc}"] [data-testid="db-column-menu"]`)
         await clickOn('[data-testid="db-column-formula"]')
         return waitFor(`!!document.querySelector('[data-testid="db-formula-edit"] [data-testid="db-formula-expression"]')`, 5000)
@@ -13739,6 +13753,7 @@ async function main() {
       await waitFor(`!!document.querySelector('[data-testid="db-table"]')`, 15000)
       const noteText = () => evaluate(`document.querySelector('[data-testid="db-column-dependents"]')?.textContent ?? null`)
       const openMenuItem = async (propertyId, item) => {
+        await waitHydrated(`th[data-property-id="${propertyId}"] [data-testid="db-column-menu"]`) // 서버가 그린 단추 — React 가 붙기 전의 클릭은 버려진다(10n-11)
         await clickOn(`th[data-property-id="${propertyId}"] [data-testid="db-column-menu"]`)
         await clickOn(`[data-testid="${item}"]`)
       }
@@ -15264,6 +15279,7 @@ async function main() {
       await waitFor(`!!document.querySelector('[data-testid="db-add-column"]') && document.querySelectorAll('thead th').length >= 3`, 15000)
       // ① 속성 추가에서 "버튼"
       for (let i = 0; i < 6 && !(await evaluate(`!!document.querySelector('[data-testid="db-add-column-form"]')`)); i += 1) {
+        await waitHydrated('[data-testid="db-add-column"]') // 서버가 그린 단추 — React 가 붙기 전의 클릭은 버려진다(10n-11)
         await clickSelector('[data-testid="db-add-column"]')
         await waitFor(`!!document.querySelector('[data-testid="db-add-column-form"]')`, 2000)
       }
@@ -20372,6 +20388,7 @@ async function main() {
       await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
       await waitFor(`!!document.querySelector('[data-testid="db-add-column"]')`, 15000)
       for (let i = 0; i < 6 && !(await evaluate(`!!document.querySelector('[data-testid="db-add-column-form"]')`)); i += 1) {
+        await waitHydrated('[data-testid="db-add-column"]') // 서버가 그린 단추 — React 가 붙기 전의 클릭은 버려진다(10n-11)
         await clickSelector('[data-testid="db-add-column"]')
         await waitFor(`!!document.querySelector('[data-testid="db-add-column-form"]')`, 2000)
       }
