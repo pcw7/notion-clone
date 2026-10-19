@@ -3412,6 +3412,84 @@ async function main() {
       check('떠난 사람은 다시 내보내지 않는다 — 404', again.status === 404, JSON.stringify(again))
     }
 
+    if (sectionIf('멤버 관리 — 화면 (10o-2 · F-06-02)')) {
+      // 설정의 사람 절 멤버 목록(정본 §3.3 [보강] 멤버 내보내기 ⑧) — 다룰 수 있는 줄에만 역할 고르개 · 내보내기(한 번 더 묻는다) · 거부는
+      // 이유를(teamspace 의 이름들). membership_admin 으로 보면 관리 역할은 고를 수 없고 owner 의 줄에는 아무것도 없다. 이 판의
+      // 워크스페이스는 모든 절이 함께 쓰므로 새로 만든 사람들만 다룬다.
+      const stamp = Date.now() % 100000
+      const mate = await joinAs(workspaceId, await createUser(`화면동료 ${stamp}`), 'member')
+      const lead = await joinAs(workspaceId, await createUser(`화면팀장 ${stamp}`), 'member')
+      const hana = await joinAs(workspaceId, await createUser(`화면하나 ${stamp}`), 'member')
+      const admin = await joinAs(workspaceId, await createUser(`화면관리자 ${stamp}`), 'membership_admin')
+      const teamName = `화면 팀 ${stamp}`
+      await fetch(`${BASE}/api/workspaces/${workspaceId}/teamspaces`, {
+        method: 'POST', headers: { ...json, cookie: `nc_session=${lead.token}` }, body: JSON.stringify({ name: teamName }),
+      })
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const roleOf = async (userId) =>
+        (await dbQuery(`SELECT role, status FROM workspace_member WHERE workspace_id = $1 AND user_id = $2`, [workspaceId, userId]))[0] ?? null
+      const row = (userId) => `[data-testid="workspace-members"] [data-testid="member-row"][data-user-id="${userId}"]`
+      const options = (userId) =>
+        evaluate(`[...(document.querySelector('${row(userId)} [data-testid="member-role-select"]')?.options ?? [])].map((o) => o.textContent).join(',')`)
+      const notice = () => evaluate(`document.querySelector('[data-testid="member-notice"]')?.textContent ?? ''`)
+      const problem = () => evaluate(`document.querySelector('[data-testid="member-error"]')?.textContent ?? ''`)
+      const PEOPLE = `${BASE}/w/${workspaceId}/settings?s=workspace.people`
+
+      await send('Page.navigate', { url: PEOPLE })
+      await waitFor(`!!document.querySelector('${row(mate.userId)}')`, 15000)
+      check('★ owner 에게 — 다른 사람의 줄에 역할 고르개(이름 넷) · 자기 줄에는 내보내기가 없다',
+        (await options(mate.userId)) === '소유자,멤버 관리자,멤버,제한된 멤버'
+          && (await evaluate(`!!document.querySelector('${row(mate.userId)} [data-testid="member-remove"]') && !document.querySelector('${row(ctx.userId)} [data-testid="member-remove"]')`)),
+        await options(mate.userId))
+
+      // 고르면 곧바로 바꾼다 — 서버가 그린 고르개는 React 가 붙은 뒤에 바꾼다(10n-11)
+      await waitHydrated(`${row(mate.userId)} [data-testid="member-role-select"]`)
+      await evaluate(`(() => {
+        const s = document.querySelector('${row(mate.userId)} [data-testid="member-role-select"]')
+        s.value = 'restricted_member'
+        s.dispatchEvent(new Event('change', { bubbles: true }))
+      })()`)
+      check('★ 고르면 바꾼다 — 알림 · 서버의 역할 · 고르개의 값',
+        (await waitFor(`(document.querySelector('[data-testid="member-notice"]')?.textContent ?? '').includes('제한된 멤버')`, 8000))
+          && (await roleOf(mate.userId))?.role === 'restricted_member'
+          && (await waitFor(`document.querySelector('${row(mate.userId)} [data-testid="member-role-select"]')?.value === 'restricted_member'`, 8000)),
+        JSON.stringify({ notice: await notice(), error: await problem(), server: await roleOf(mate.userId) }))
+
+      await clickSelector(`${row(lead.userId)} [data-testid="member-remove"]`)
+      check('내보내기는 한 번 더 묻는다 — 들어오지 못하고 30일 안에 다시 초대하면 돌아온다고 말한다',
+        await waitFor(`(document.querySelector('${row(lead.userId)}')?.textContent ?? '').includes('30일 안에 다시 초대하면')`, 5000))
+      await clickSelector(`${row(lead.userId)} [data-testid="member-remove-confirm"]`)
+      check('★ teamspace 의 마지막 owner 는 내보내지 못한다 — 그 이름을 말하고 줄은 남는다',
+        (await waitFor(`(document.querySelector('[data-testid="member-error"]')?.textContent ?? '').includes(${JSON.stringify(teamName)})`, 8000))
+          && (await roleOf(lead.userId))?.status === 'active' && (await evaluate(`!!document.querySelector('${row(lead.userId)}')`)),
+        await problem())
+
+      await clickSelector(`${row(mate.userId)} [data-testid="member-remove"]`)
+      await waitFor(`!!document.querySelector('${row(mate.userId)} [data-testid="member-remove-confirm"]')`, 5000)
+      await clickSelector(`${row(mate.userId)} [data-testid="member-remove-confirm"]`)
+      check('★ 내보내면 알리고 목록에서 빠진다 — 서버는 removed(M1)',
+        (await waitFor(`!document.querySelector('${row(mate.userId)}') && (document.querySelector('[data-testid="member-notice"]')?.textContent ?? '').includes('내보냈습니다')`, 8000))
+          && (await roleOf(mate.userId))?.status === 'removed',
+        JSON.stringify({ notice: await notice(), error: await problem() }))
+
+      // membership_admin 의 눈 — 브라우저의 세션을 잠시 그 사람으로 바꾼다(끝에서 되돌린다)
+      try {
+        await send('Network.setCookie', { name: 'nc_session', value: admin.token, domain: 'localhost', path: '/', httpOnly: true })
+        await send('Page.navigate', { url: PEOPLE })
+        await waitFor(`!!document.querySelector('${row(hana.userId)}')`, 15000)
+        check('★ membership_admin 에게 — 멤버의 고르개는 멤버 · 제한된 멤버뿐 · owner 의 줄에는 고르개도 내보내기도 없다',
+          (await options(hana.userId)) === '멤버,제한된 멤버'
+            && (await evaluate(`!document.querySelector('${row(ctx.userId)} [data-testid="member-role-select"]') && !document.querySelector('${row(ctx.userId)} [data-testid="member-remove"]')`))
+            && (await evaluate(`(document.querySelector('${row(ctx.userId)} [data-testid="member-role"]')?.textContent ?? '') === '소유자'`)),
+          await options(hana.userId))
+        check('초대 폼의 역할도 멤버뿐이다',
+          (await evaluate(`[...(document.querySelector('select[aria-label="초대할 역할"]')?.options ?? [])].map((o) => o.textContent).join(',')`)) === '멤버',
+          await evaluate(`[...(document.querySelector('select[aria-label="초대할 역할"]')?.options ?? [])].map((o) => o.textContent).join(',')`))
+      } finally {
+        await send('Network.setCookie', { name: 'nc_session', value: session, domain: 'localhost', path: '/', httpOnly: true })
+      }
+    }
+
     if (sectionIf('게스트 관리 — 멤버로 올리기 · 빼기 (7d-3 · F-06-09)')) {
       // 소유자(브라우저 세션)가 설정의 사람 절 "게스트" 패널(8g-2 — 전에는 홈)에서 한 사람은 멤버로 올리고, 한 사람은 뺀다. 둘 다 두 번 누른다. 자기 데이터를
       // 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
@@ -3444,15 +3522,21 @@ async function main() {
       }
 
       // 멤버 절은 게스트도 싣는다(역할을 함께 적는다) — "멤버 절에 선다"가 아니라 **그 줄의 역할이 바뀐다**로 본다. 처음 쓴
-      // 검사는 이름만 봐서 서버 렌더를 다시 받지 않아도 통과했다(반사실 E1).
-      const memberRole = (name) => `([...document.querySelectorAll('[data-testid="workspace-members"] li')]
-        .find((li) => li.textContent.includes(${JSON.stringify(name)}))?.textContent ?? '')`
+      // 검사는 이름만 봐서 서버 렌더를 다시 받지 않아도 통과했다(반사실 E1). 10o-2 부터 역할은 이름(다룰 수 없는 줄 — 게스트)이거나
+      // 고르개의 값(다룰 수 있는 줄 — owner 가 보는 멤버)이다
+      const memberRole = (name) => `(() => {
+        const li = [...document.querySelectorAll('[data-testid="workspace-members"] [data-testid="member-row"]')]
+          .find((row) => row.textContent.includes(${JSON.stringify(name)}))
+        if (!li) return ''
+        const select = li.querySelector('[data-testid="member-role-select"]')
+        return select ? select.value : (li.querySelector('[data-testid="member-role"]')?.textContent ?? '')
+      })()`
       await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/settings?s=workspace.people` })
       check('★ 설정의 사람 절 "게스트" 패널에 두 손님이 받은 페이지 수와 함께 선다',
         await waitFor(`(document.querySelector('${row(rise.userId)} [data-testid="guest-pages"]')?.textContent ?? '') === '페이지 1개'
           && !!document.querySelector('${row(leave.userId)}')`, 15000))
 
-      check('전제 — 멤버 절의 그 줄은 아직 guest 다', (await evaluate(memberRole(riseName))).includes('guest'))
+      check('전제 — 멤버 절의 그 줄은 아직 게스트다', (await evaluate(memberRole(riseName))) === '게스트', await evaluate(memberRole(riseName)))
       check('멤버로 올리기는 한 번 더 묻는다 — 좌석을 쓴다고 말한다',
         (await ask(rise.userId, 'guest-promote', 'guest-promote-confirm'))
           && (await evaluate(`(document.querySelector('${row(rise.userId)}')?.textContent ?? '').includes('좌석')`)))
@@ -3460,7 +3544,7 @@ async function main() {
       check('★ 확인하면 게스트 절에서 빠지고 · 멤버 절의 그 줄이 guest 에서 member 로 바뀐다',
         await waitFor(`!document.querySelector('${row(rise.userId)}')
           && (document.querySelector('[data-testid="guest-notice"]')?.textContent ?? '').includes('멤버로 올렸습니다')
-          && ${memberRole(riseName)}.includes('member') && !${memberRole(riseName)}.includes('guest')`, 15000),
+          && ${memberRole(riseName)} === 'member'`, 15000),
         await evaluate(`document.querySelector('[data-testid="guest-error"]')?.textContent ?? ''`))
 
       check('빼기는 한 번 더 묻는다 — 공유가 모두 걷힌다고 말한다',

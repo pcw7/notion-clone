@@ -19,31 +19,8 @@ import type { SessionContext, WorkspaceRole } from '../auth/session-context.ts'
 import { recordForContextIn } from '../audit/audit.ts'
 import { withCommandTransaction, type Tx } from '../db/tx.ts'
 import { DEFAULT_TEAMSPACE_ROLES, joinDefaultTeamspaces, lastOwnedTeamspaces } from './teamspace.ts'
-
-/** 이 명령이 다루는 역할 — 멤버급 넷. 게스트는 따로 있다(⑥). */
-export const MEMBER_ROLES = ['owner', 'membership_admin', 'member', 'restricted_member'] as const
-export type MemberRole = (typeof MEMBER_ROLES)[number]
-
-export function isMemberRole(value: unknown): value is MemberRole {
-  return typeof value === 'string' && (MEMBER_ROLES as readonly string[]).includes(value)
-}
-
-/** 멤버를 내보내고 역할을 바꿀 수 있는 역할인가 — 역할 **이름**으로 묻는다(CLAUDE.md). 초대 · 게스트 관리와 같은 둘이다. */
-export function canManageMembers(role: WorkspaceRole): boolean {
-  return role === 'owner' || role === 'membership_admin'
-}
-
-/** 관리 역할 — 주거나 가진 사람을 건드리는 것은 owner 만이다(①). */
-export function isAdminRole(role: string): boolean {
-  return role === 'owner' || role === 'membership_admin'
-}
-
-/** 이 사람(`actor`)이 이 역할을 가진 사람을 다루고(`from`) 이 역할로 만들 수 있는가(`to` — 내보내기면 없다). 화면도 같은 답을 쓴다. */
-export function mayManage(actor: WorkspaceRole, from: string, to?: string): boolean {
-  if (!canManageMembers(actor)) return false
-  if (actor === 'owner') return true
-  return !isAdminRole(from) && (to === undefined || !isAdminRole(to))
-}
+// 누가 누구를 무엇으로 — 화면과 같은 함수(DB 없는 순수 모듈 · 정본 ⑧)
+import { canManageMembers, isMemberRole, mayManage, type MemberRole } from './member-rules.ts'
 
 export type MemberManageFailure =
   /** 멤버를 다룰 역할이 아니거나, owner 만 할 수 있는 일이다(①). */

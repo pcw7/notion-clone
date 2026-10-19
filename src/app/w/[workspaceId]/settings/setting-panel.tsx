@@ -17,10 +17,12 @@ import type { SettingPanelId } from '@/lib/settings/panels'
 import { canManageGroups, listGroups } from '@/lib/workspace/group'
 import { listGuests } from '@/lib/workspace/guest'
 import { listMembers, listPendingInvites } from '@/lib/workspace/list'
+import { invitableRoles } from '@/lib/workspace/member-rules'
 import { ExportButton } from '../export-button'
 import { GroupPanel } from '../group-panel'
 import { GuestPanel } from '../guest-panel'
 import { InviteForm } from '../invite-form'
+import { MemberPanel } from '../member-panel'
 import { PendingInviteList } from '../pending-invite-list'
 import { readDevicePreferences } from '@/lib/settings/device-preferences-cookie'
 import { AccessibilityPanel } from './accessibility-panel'
@@ -86,23 +88,16 @@ export async function SettingPanelView({ id, ctx }: { id: SettingPanelId; ctx: S
     }
     case 'members': {
       const members = await listMembers(ctx.workspaceId)
+      // 역할 고르개 · 내보내기는 다룰 수 있는 줄에만(10o-2 · 정본 §3.3 [보강] 멤버 내보내기 ⑧) — 판정은 명령과 같은 함수다
       return (
         <section data-testid="workspace-members" className="mt-8">
           <h2 className={HEADING}>멤버 {members.length}명</h2>
-          <ul className="mt-3 divide-y divide-neutral-200 rounded-lg border border-neutral-200 dark:divide-neutral-800 dark:border-neutral-800">
-            {members.map((m) => (
-              <li key={m.userId} className="flex items-center justify-between px-4 py-3">
-                <div>
-                  <p className="text-sm font-medium">{m.name}</p>
-                  <p className="text-xs text-neutral-500">{m.email}</p>
-                </div>
-                <span className="text-xs text-neutral-500">
-                  {m.role}
-                  {m.status !== 'active' && ` · ${m.status}`}
-                </span>
-              </li>
-            ))}
-          </ul>
+          <MemberPanel
+            workspaceId={ctx.workspaceId}
+            viewerId={ctx.userId}
+            viewerRole={ctx.role}
+            members={members.map((m) => ({ userId: m.userId, name: m.name, email: m.email, role: m.role, status: m.status }))}
+          />
         </section>
       )
     }
@@ -111,7 +106,7 @@ export async function SettingPanelView({ id, ctx }: { id: SettingPanelId; ctx: S
       return (
         <section className="mt-8">
           <h2 className={HEADING}>멤버 초대</h2>
-          <InviteForm workspaceId={ctx.workspaceId} />
+          <InviteForm workspaceId={ctx.workspaceId} roles={invitableRoles(ctx.role)} />
           {/* 대기 중인 초대와 취소(7g-3) — 게스트의 대기 초대(7g-1)는 제목 없이 "게스트 · 페이지 하나"로 선다. */}
           <PendingInviteList workspaceId={ctx.workspaceId} initialInvites={[...invites]} />
         </section>

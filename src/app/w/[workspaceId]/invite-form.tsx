@@ -3,12 +3,18 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 
-const ROLES = ['member', 'membership_admin', 'owner'] as const
+import { roleLabel } from '@/lib/settings/registry'
 
-export function InviteForm({ workspaceId }: { workspaceId: string }) {
+type InviteRole = 'member' | 'membership_admin' | 'owner'
+
+/**
+ * 워크스페이스 초대 폼. `roles` 는 이 사람이 고를 수 있는 역할이다 — 서버가 `invitableRoles` 로 정해 넘긴다(관리 역할로 들이는 것은
+ * owner 만 · 정본 §3.3 [보강] 멤버 내보내기 ① ⑧). 서버의 초대 명령이 같은 규칙으로 다시 묻는다.
+ */
+export function InviteForm({ workspaceId, roles }: { workspaceId: string; roles: readonly InviteRole[] }) {
   const router = useRouter()
   const [email, setEmail] = useState('')
-  const [role, setRole] = useState<(typeof ROLES)[number]>('member')
+  const [role, setRole] = useState<InviteRole>(roles[0] ?? 'member')
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
   const [devLink, setDevLink] = useState<string | null>(null)
@@ -62,12 +68,13 @@ export function InviteForm({ workspaceId }: { workspaceId: string }) {
         />
         <select
           value={role}
-          onChange={(e) => setRole(e.target.value as (typeof ROLES)[number])}
+          aria-label="초대할 역할"
+          onChange={(e) => setRole(e.target.value as InviteRole)}
           className="rounded-md border border-neutral-300 px-2 py-2 dark:border-neutral-700 dark:bg-neutral-900"
         >
-          {ROLES.map((r) => (
+          {roles.map((r) => (
             <option key={r} value={r}>
-              {r}
+              {roleLabel(r)}
             </option>
           ))}
         </select>
