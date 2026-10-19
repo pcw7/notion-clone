@@ -395,12 +395,34 @@ async function isAdmissible(tx: Tx, ctx: SessionContext, principal: TeamspacePri
   return group !== null
 }
 
-/** 이 주체를 빼거나 내리면 owner 가 하나도 안 남는가. */
+/**
+ * `other` 라는 teamspace 멤버 행이 **행동할 수 있는** owner 의 행인가 — 이 워크스페이스(`ws` — SQL 식)의 활성 · 게스트 아닌 사람, 또는
+ * 지워지지 않은 그룹(§3.11 [보강] 고아 teamspace ①). 떠난 사람 · 지운 그룹의 행이 남아 있어도 owner 로 세지 않는다. 마지막 owner 를
+ * 묻는 셋(이 teamspace 의 owner 내리기 · 나가기, 그룹 지우기, 멤버 내보내기)이 같은 조각을 쓴다.
+ */
+function actionableOwnerSql(ws: string): string {
+  return `(
+    (other.principal_type = 'user' AND EXISTS (
+       SELECT 1 FROM workspace_member m
+        WHERE m.workspace_id = ${ws} AND m.user_id = other.principal_id
+          AND m.status = 'active' AND m.role <> 'guest'))
+    OR (other.principal_type = 'group' AND EXISTS (
+       SELECT 1 FROM "group" g WHERE g.id = other.principal_id AND g.deleted_at IS NULL))
+  )`
+}
+
+/**
+ * 이 주체를 빼거나 내리면 **행동할 수 있는** owner 가 하나도 안 남는가. 전에는 행만 셌다 — 떠난 사람의 owner 행이 남아 있으면 마지막
+ * owner 가 내려가거나 나가도 막지 못해, teamspace 가 아무도 설정을 고치지 못하는 채로 남았다(HANDOFF §7 · 10o-1 에서 맞췄다).
+ */
 async function wouldLoseLastOwner(tx: Tx, teamspaceId: string, principal: TeamspacePrincipal): Promise<boolean> {
   const others = await tx.queryOne<{ n: number }>(
-    `SELECT count(*)::int AS n FROM teamspace_member
-      WHERE teamspace_id = $1 AND role = 'owner' AND removed_at IS NULL
-        AND NOT (principal_type = $2 AND principal_id = $3)`,
+    `SELECT count(*)::int AS n
+       FROM teamspace_member other
+       JOIN teamspace t ON t.id = other.teamspace_id
+      WHERE other.teamspace_id = $1 AND other.role = 'owner' AND other.removed_at IS NULL
+        AND NOT (other.principal_type = $2 AND other.principal_id = $3)
+        AND ${actionableOwnerSql('t.workspace_id')}`,
     [teamspaceId, principal.type, principal.id],
   )
   return others.n === 0
@@ -1177,14 +1199,7 @@ export async function lastOwnedTeamspaces(
           SELECT 1 FROM teamspace_member other
            WHERE other.teamspace_id = mine.teamspace_id AND other.role = 'owner' AND other.removed_at IS NULL
              AND NOT (other.principal_type = $1 AND other.principal_id = $2)
-             AND (
-               (other.principal_type = 'user' AND EXISTS (
-                  SELECT 1 FROM workspace_member m
-                   WHERE m.workspace_id = $3 AND m.user_id = other.principal_id
-                     AND m.status = 'active' AND m.role <> 'guest'))
-               OR (other.principal_type = 'group' AND EXISTS (
-                  SELECT 1 FROM "group" g WHERE g.id = other.principal_id AND g.deleted_at IS NULL))
-             )
+             AND ${actionableOwnerSql('$3')}
         )
       ORDER BY lower(t.name), t.id`,
     [principal.type, principal.id, workspaceId],
