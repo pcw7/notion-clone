@@ -40,6 +40,11 @@ export function assignableRoles(actor: string, from: string): MemberRole[] {
   return MEMBER_ROLES.filter((to) => mayManage(actor, from, to))
 }
 
+/** 스스로 나갈 수 있는 역할인가 — 게스트 아닌 멤버급 넷(⑨). 마지막 owner 인지는 명령이 센다. */
+export function canLeaveWorkspace(role: string): boolean {
+  return isMemberRole(role)
+}
+
 /** 초대할 때 고를 수 있는 역할 — 관리 역할로 들이는 것은 owner 만(①). 초대 폼의 순서(멤버가 먼저)다. */
 export function invitableRoles(actor: WorkspaceRole | string): ('member' | 'membership_admin' | 'owner')[] {
   if (!canManageMembers(actor)) return []

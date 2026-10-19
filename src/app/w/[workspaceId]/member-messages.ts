@@ -35,6 +35,26 @@ export function roleChangedNotice(name: string, to: string, teamspaces: number):
   return teamspaces > 0 ? `${base} 기본 팀스페이스 ${teamspaces}곳에도 들어갔습니다.` : base
 }
 
+/** 나가기 전에 한 줄 — 무엇을 잃는지, 다시 초대받으면 돌아온다는 것(정본 ⑨ · M1). */
+export const LEAVE_NOTICE =
+  '나가면 이 워크스페이스의 페이지에 더는 들어올 수 없습니다. 30일 안에 다시 초대받으면 받은 페이지 · 그룹 · 팀스페이스가 그대로 돌아옵니다.'
+
+/** 나가기의 거부 — 자기 이야기로 말한다(내보내기의 문구는 "이 사람"이다). */
+export function leaveFailureMessage(reason: unknown, teamspaces?: readonly string[]): string {
+  switch (reason) {
+    case 'last_owner':
+      return '마지막 소유자는 나갈 수 없습니다. 먼저 다른 사람을 소유자로 만드세요.'
+    case 'teamspace_last_owner': {
+      const names = (teamspaces ?? []).join(' · ')
+      return `내가 마지막 소유자인 팀스페이스가 있습니다${names === '' ? '' : `: ${names}`}. 먼저 그 팀스페이스의 소유자를 넘기세요.`
+    }
+    case 'not_found':
+      return '이미 이 워크스페이스에 없습니다.'
+    default:
+      return '나가지 못했습니다.'
+  }
+}
+
 /** 거부를 말한다(서버의 이유 코드 · `member-http.ts`). 팀스페이스의 마지막 소유자면 그 이름들을. */
 export function memberManageFailureMessage(reason: unknown, teamspaces?: readonly string[]): string {
   switch (reason) {

@@ -22,6 +22,7 @@ import { ExportButton } from '../export-button'
 import { GroupPanel } from '../group-panel'
 import { GuestPanel } from '../guest-panel'
 import { InviteForm } from '../invite-form'
+import { LeavePanel } from '../leave-panel'
 import { MemberPanel } from '../member-panel'
 import { PendingInviteList } from '../pending-invite-list'
 import { readDevicePreferences } from '@/lib/settings/device-preferences-cookie'
@@ -152,5 +153,8 @@ export async function SettingPanelView({ id, ctx }: { id: SettingPanelId; ctx: S
           </div>
         </section>
       )
+    case 'leave':
+      // 스스로 나가기(10o-3 · 정본 §3.3 [보강] 멤버 내보내기 ⑨) — 마지막 소유자인지는 명령이 센다
+      return <LeavePanel workspaceId={ctx.workspaceId} />
   }
 }
