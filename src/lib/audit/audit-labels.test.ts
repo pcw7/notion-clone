@@ -31,6 +31,8 @@ test('세부 한 줄 — 종류마다', () => {
   assert.equal(auditDetail(row('workspace.member_invited', { email: 'a@b.c', role: 'member', renewed: true })), 'a@b.c · 멤버 · 다시 보냄')
   assert.equal(auditDetail(row('workspace.member_joined', { role: 'guest', via: 'access_request' })), '게스트 · 접근 요청 허락')
   assert.equal(auditDetail(row('workspace.member_role_changed', { from: 'guest', to: 'member' })), '게스트 → 멤버')
+  assert.equal(auditDetail(row('workspace.member_removed', { role: 'member' })), '멤버')
+  assert.equal(auditDetail(row('workspace.member_removed', { role: 'owner', left: true })), '소유자 · 스스로 나감', '스스로 나간 것(10o-3)')
   assert.equal(
     auditDetail(row('workspace.setting_changed', {}, { setting: { key: 'workspace.allow_publish_sites_and_forms', before: true, after: false } })),
     'workspace.allow_publish_sites_and_forms: true → false',

@@ -76,7 +76,8 @@ export function auditDetail(row: Pick<AuditRow, 'type' | 'metadata' | 'setting'>
     case 'workspace.member_joined':
       return `${pick(ROLE, m.role) ?? str(m.role)} · ${m.via === 'access_request' ? '접근 요청 허락' : '초대'}`
     case 'workspace.member_removed':
-      return pick(ROLE, m.role) ?? str(m.role)
+      // 스스로 나간 것은 같은 종류에 `left` 를 싣는다(10o-3 · 정본 [보강] 멤버 내보내기 ⑨ — 종류를 늘리지 않는다)
+      return `${pick(ROLE, m.role) ?? str(m.role)}${m.left === true ? ' · 스스로 나감' : ''}`
     case 'workspace.member_role_changed':
       return `${pick(ROLE, m.from) ?? str(m.from)} → ${pick(ROLE, m.to) ?? str(m.to)}`
     case 'workspace.setting_changed':

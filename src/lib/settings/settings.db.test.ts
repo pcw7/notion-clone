@@ -139,13 +139,13 @@ describe('④ 거부는 아무것도 쓰지 않는다', () => {
 })
 
 describe('⑤ 패널', () => {
-  test('★ 그 기능의 판정 그대로 — 비밀번호 · 접근성(10d-2 — 이 기기의 값)은 누구나 · 소유자 여덟(감사 로그 — 6d-2 · 이모지 — 7c-2b · 사이트 — 6c-2) · 멤버 관리자 다섯(내보내기 · 감사 로그 없음) · 멤버 셋(목록 · 그룹 · 이모지) · 게스트는 비밀번호뿐', async (t) => {
+  test('★ 그 기능의 판정 그대로 — 비밀번호 · 접근성(10d-2 — 이 기기의 값)은 누구나 · 소유자 여덟(감사 로그 — 6d-2 · 이모지 — 7c-2b · 사이트 — 6c-2) · 멤버 관리자 다섯(내보내기 · 감사 로그 없음) · 멤버 셋(목록 · 그룹 · 이모지) · 나가기는 게스트 아닌 멤버(10o-3) · 게스트는 비밀번호뿐', async (t) => {
     if (skipReason) return t.skip(skipReason)
     const admin = await joinAs(fx.workspaceId, await createUser('설정의 멤버 관리자'), 'membership_admin')
     const ids = (who: Actor) => visiblePanels(who.ctx).map((panel) => panel.id)
-    assert.deepEqual(ids(fx.owner), ['password', 'mfa', 'accessibility', 'members', 'invites', 'guests', 'groups', 'export', 'plan', 'emoji', 'site', 'audit'])
-    assert.deepEqual(ids(admin), ['password', 'mfa', 'accessibility', 'members', 'invites', 'guests', 'groups', 'plan', 'emoji'])
-    assert.deepEqual(ids(member), ['password', 'mfa', 'accessibility', 'members', 'groups', 'emoji'])
+    assert.deepEqual(ids(fx.owner), ['password', 'mfa', 'accessibility', 'members', 'invites', 'guests', 'groups', 'export', 'leave', 'plan', 'emoji', 'site', 'audit'])
+    assert.deepEqual(ids(admin), ['password', 'mfa', 'accessibility', 'members', 'invites', 'guests', 'groups', 'leave', 'plan', 'emoji'])
+    assert.deepEqual(ids(member), ['password', 'mfa', 'accessibility', 'members', 'groups', 'leave', 'emoji'])
     assert.deepEqual(ids(guest), ['password', 'mfa', 'accessibility'])
   })
 })
