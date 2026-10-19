@@ -396,6 +396,24 @@ describe('⑦ 역할', () => {
     assert.ok((await removeTeamspaceMember(fx.owner.ctx, teamspace, user(fx.owner))).ok, '다른 owner 가 있으면 나갈 수 있다')
     assert.deepEqual((await ownerRows(teamspace)).map((r) => r.principal_id), [ian.userId])
   })
+
+  test('★ 떠난 사람의 owner 행은 owner 가 아니다 — 남은 것이 그 행뿐이면 내리지도 나가지도 못한다(10o-1)', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const [jun, kai] = [await member('준'), await member('카이')]
+    const teamspace = await newTeamspace()
+    await join(teamspace, jun)
+    assert.ok((await setTeamspaceMemberRole(fx.owner.ctx, teamspace, user(jun), 'owner')).ok)
+    await query(`UPDATE workspace_member SET status = 'removed', removed_at = now() WHERE workspace_id = $1 AND user_id = $2`, [
+      fx.workspaceId,
+      jun.userId,
+    ])
+    assert.deepEqual(await setTeamspaceMemberRole(fx.owner.ctx, teamspace, user(fx.owner), 'member'), { ok: false, reason: 'last_owner' })
+    assert.deepEqual(await removeTeamspaceMember(fx.owner.ctx, teamspace, user(fx.owner)), { ok: false, reason: 'last_owner' })
+
+    await join(teamspace, kai)
+    assert.ok((await setTeamspaceMemberRole(fx.owner.ctx, teamspace, user(kai), 'owner')).ok)
+    assert.ok((await removeTeamspaceMember(fx.owner.ctx, teamspace, user(fx.owner))).ok, '행동할 수 있는 owner 가 있으면 나간다')
+  })
 })
 
 // ── ⑧ ─────────────────────────────────────────────────────────────────

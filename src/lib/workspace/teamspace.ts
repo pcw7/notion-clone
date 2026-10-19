@@ -395,12 +395,34 @@ async function isAdmissible(tx: Tx, ctx: SessionContext, principal: TeamspacePri
   return group !== null
 }
 
-/** 이 주체를 빼거나 내리면 owner 가 하나도 안 남는가. */
+/**
+ * `other` 라는 teamspace 멤버 행이 **행동할 수 있는** owner 의 행인가 — 이 워크스페이스(`ws` — SQL 식)의 활성 · 게스트 아닌 사람, 또는
+ * 지워지지 않은 그룹(§3.11 [보강] 고아 teamspace ①). 떠난 사람 · 지운 그룹의 행이 남아 있어도 owner 로 세지 않는다. 마지막 owner 를
+ * 묻는 셋(이 teamspace 의 owner 내리기 · 나가기, 그룹 지우기, 멤버 내보내기)이 같은 조각을 쓴다.
+ */
+function actionableOwnerSql(ws: string): string {
+  return `(
+    (other.principal_type = 'user' AND EXISTS (
+       SELECT 1 FROM workspace_member m
+        WHERE m.workspace_id = ${ws} AND m.user_id = other.principal_id
+          AND m.status = 'active' AND m.role <> 'guest'))
+    OR (other.principal_type = 'group' AND EXISTS (
+       SELECT 1 FROM "group" g WHERE g.id = other.principal_id AND g.deleted_at IS NULL))
+  )`
+}
+
+/**
+ * 이 주체를 빼거나 내리면 **행동할 수 있는** owner 가 하나도 안 남는가. 전에는 행만 셌다 — 떠난 사람의 owner 행이 남아 있으면 마지막
+ * owner 가 내려가거나 나가도 막지 못해, teamspace 가 아무도 설정을 고치지 못하는 채로 남았다(HANDOFF §7 · 10o-1 에서 맞췄다).
+ */
 async function wouldLoseLastOwner(tx: Tx, teamspaceId: string, principal: TeamspacePrincipal): Promise<boolean> {
   const others = await tx.queryOne<{ n: number }>(
-    `SELECT count(*)::int AS n FROM teamspace_member
-      WHERE teamspace_id = $1 AND role = 'owner' AND removed_at IS NULL
-        AND NOT (principal_type = $2 AND principal_id = $3)`,
+    `SELECT count(*)::int AS n
+       FROM teamspace_member other
+       JOIN teamspace t ON t.id = other.teamspace_id
+      WHERE other.teamspace_id = $1 AND other.role = 'owner' AND other.removed_at IS NULL
+        AND NOT (other.principal_type = $2 AND other.principal_id = $3)
+        AND ${actionableOwnerSql('t.workspace_id')}`,
     [teamspaceId, principal.type, principal.id],
   )
   return others.n === 0
@@ -1158,6 +1180,33 @@ export async function joinDefaultTeamspaces(tx: Tx, workspaceId: string, userId:
 // ── 그룹이 사라질 때 ──────────────────────────────────────────────────
 
 /**
+ * 이 주체(사람 · 그룹)가 **마지막 owner** 인 teamspace — 보관된 것 포함. 이 주체를 빼면 **실제로 행동할 수 있는** owner 가 남지
+ * 않는 것들이다(§3.11 [보강] 고아 teamspace ① — 이 워크스페이스의 활성 · 게스트 아닌 사람, 또는 지워지지 않은 그룹). 그룹 지우기
+ * (7c-10 · 아래)와 멤버 내보내기(10o-1 · 정본 [보강] 멤버 내보내기 ③)가 같은 셈을 쓴다 — 이름순.
+ */
+export async function lastOwnedTeamspaces(
+  tx: Tx,
+  workspaceId: string,
+  principal: TeamspacePrincipal,
+): Promise<{ readonly id: string; readonly name: string }[]> {
+  return tx.query<{ id: string; name: string }>(
+    `SELECT t.id, t.name
+       FROM teamspace_member mine
+       JOIN teamspace t ON t.id = mine.teamspace_id AND t.workspace_id = $3
+      WHERE mine.principal_type = $1 AND mine.principal_id = $2
+        AND mine.role = 'owner' AND mine.removed_at IS NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM teamspace_member other
+           WHERE other.teamspace_id = mine.teamspace_id AND other.role = 'owner' AND other.removed_at IS NULL
+             AND NOT (other.principal_type = $1 AND other.principal_id = $2)
+             AND ${actionableOwnerSql('$3')}
+        )
+      ORDER BY lower(t.name), t.id`,
+    [principal.type, principal.id, workspaceId],
+  )
+}
+
+/**
  * 지워지는 그룹을 모든 teamspace 에서 뺀다 — `deleteGroup` 이 같은 트랜잭션에서 부른다(7c-10).
  *
  * 전에는 그룹 삭제가 블록 노드의 부여만 거뒀다(`dropGrantsOf`). teamspace 멤버 행과 teamspace 노드의 owner 부여는
@@ -1176,28 +1225,8 @@ export async function dropGroupFromTeamspaces(
   ctx: SessionContext,
   groupId: string,
 ): Promise<{ readonly ok: true } | { readonly ok: false; readonly teamspaces: number }> {
-  const orphaned = await tx.queryOne<{ n: number }>(
-    `SELECT count(*)::int AS n
-       FROM teamspace_member mine
-       JOIN teamspace t ON t.id = mine.teamspace_id AND t.workspace_id = $2
-      WHERE mine.principal_type = 'group' AND mine.principal_id = $1
-        AND mine.role = 'owner' AND mine.removed_at IS NULL
-        AND NOT EXISTS (
-          SELECT 1 FROM teamspace_member other
-           WHERE other.teamspace_id = mine.teamspace_id AND other.role = 'owner' AND other.removed_at IS NULL
-             AND NOT (other.principal_type = 'group' AND other.principal_id = $1)
-             AND (
-               (other.principal_type = 'user' AND EXISTS (
-                  SELECT 1 FROM workspace_member m
-                   WHERE m.workspace_id = $2 AND m.user_id = other.principal_id
-                     AND m.status = 'active' AND m.role <> 'guest'))
-               OR (other.principal_type = 'group' AND EXISTS (
-                  SELECT 1 FROM "group" g WHERE g.id = other.principal_id AND g.deleted_at IS NULL))
-             )
-        )`,
-    [groupId, ctx.workspaceId],
-  )
-  if (orphaned.n > 0) return { ok: false, teamspaces: orphaned.n }
+  const orphaned = await lastOwnedTeamspaces(tx, ctx.workspaceId, { type: 'group', id: groupId })
+  if (orphaned.length > 0) return { ok: false, teamspaces: orphaned.length }
 
   await tx.query(
     `UPDATE teamspace_member tm SET removed_at = now()

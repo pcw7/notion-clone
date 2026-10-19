@@ -1039,6 +1039,36 @@ CREATE TABLE access_request (
 > (g) 목록 · 취소는 워크스페이스 초대와 같은 곳(홈 · owner · membership_admin)이다. 목록은 **페이지 제목을 싣지 않는다** — 보는
 > 사람이 그 페이지를 볼 수 없을 수 있다. 수락 화면도 제목을 싣지 않는다(받기 전에는 볼 수 없는 사람이다).
 
+**[보강] 멤버 내보내기 · 역할 바꾸기 — owner 를 지키고, M1 을 지킨다** ⟨멤버 관리 10o-1 · F-06-02 / 마이그레이션 없음⟩
+
+> 초판은 역할 값과 M1(제거는 `status='removed'` · 30일 복원)만 두었다. 06 F-06-02 는 *"마지막 owner 제거 · 탈퇴 → 차단"* ·
+> *"멤버 → restricted member 강등 → 기존 명시 ACL 은 유지되나 teamspace 자동 접근이 끊김"* · *"멤버 제거 → 팀 페이지는 잔존,
+> private 페이지 이관 · 삭제 정책 `[확인필요]`"* 를 적었다. 게스트를 빼는 길은 [보강] 게스트 ⑧ 이 따로 있다(이것이 아니다).
+>
+> ① **누가 · 누구를 · 무엇으로** — owner 와 `membership_admin`(워크스페이스 초대와 같은 역할). 대상은 이 워크스페이스의 **활성 ·
+> 게스트 아닌** 사람이고 바꿀 수 있는 역할은 `owner` · `membership_admin` · `member` · `restricted_member` 다. **관리 역할(`owner` ·
+> `membership_admin`)을 주거나 가진 사람을 건드리는 것은 owner 만이다** — `membership_admin` 은 `member` ↔ `restricted_member` 와
+> 그 둘의 내보내기만 한다. 같은 규칙을 **초대에도** 건다: `owner` · `membership_admin` 으로 초대하는 것은 owner 만이다(그 전에는
+> `membership_admin` 이 다른 사람을 owner 로 초대할 수 있었다 — 자기보다 높은 역할을 만드는 길이었다).
+> ② **활성 owner 는 늘 하나 이상이다** — owner 를 내보내거나 owner 가 아닌 역할로 바꾸면 남는 활성 owner 가 있어야 한다(없으면
+> `last_owner`). 셀 때 활성 owner 행을 모두 잠근다 — 두 owner 가 서로를 동시에 내리면 둘 다 "다른 owner 가 있다" 를 보고 0 이 된다.
+> 자기 자신을 이 명령으로 내보내지는 않는다(`self` — 나가기는 다른 길이다 · 아직 없다). 자기 역할은 바꿀 수 있다(② 를 지나면).
+> ③ **teamspace 의 마지막 owner 는 내보내지 않는다** — 그 사람이 어느 teamspace(보관된 것 포함)의 마지막 **행동할 수 있는** owner 면
+> 거부하고(`teamspace_last_owner` · 그 teamspace 들의 이름을 준다) 먼저 owner 를 넘기게 한다. 셈은 §3.11 [보강] 고아 teamspace ① 그대로
+> — 활성 · 게스트 아닌 사람 또는 지워지지 않은 그룹. 멤버급 역할 사이의 바꾸기는 그 셈을 바꾸지 않는다(`restricted_member` 도 행동할
+> 수 있는 owner 다).
+> ④ **내보내기는 M1 이다 — 받은 부여 · 그룹 · teamspace 멤버십을 거두지 않는다.** `status='removed'` · `removed_at` 만 쓴다. 30일
+> 안에 다시 들어오면 그대로 돌아온다(M1). 떠난 사람의 행은 0단계 게이트(`can_enter_workspace`)가 쓰지 못하게 한다. 게스트 빼기(⑧)가
+> 부여를 거두는 것과 다른 까닭: 게스트는 페이지에 속한 사람이라 "빼기 = 공유를 걷는다" 로 읽히고, 멤버에게는 M1 의 복원 약속이 있다.
+> 개인 페이지도 남는다(30일 뒤의 처리 — 이관 · 삭제 — 는 아직 · HANDOFF §7).
+> ⑤ **역할만 바꾼다** — `restricted_member` 로 내려도 명시 부여 · 그룹 · teamspace 멤버십은 남는다(그 역할에게는 명시 멤버십이 유일한
+> 길이다 — 06). 끊기는 것은 `workspace_everyone` 의 부여뿐이다(권한 엔진이 역할로 가른다 · P(U)). `restricted_member` 에서 멤버급으로
+> 올리면 **기본 teamspace 에 들어간다**(게스트 올리기와 같다 — `DEFAULT_TEAMSPACE_ROLES`).
+> ⑥ **게스트로 내리기는 이 명령이 아니다** — 게스트는 `full_access` 부여를 가질 수 없고(⑦ 위 게스트 레벨) 그룹 · teamspace 에
+> 들어가지 않으므로, 그것들을 함께 물어야 한다(다음 조각 · HANDOFF §7). `invited` · `suspended` · `removed` · 게스트는 대상이 아니다.
+> ⑦ 바뀌면 그 사람의 권한 세대와 워크스페이스의 `acl_epoch` 를 올리고(게스트 명령과 같다) 협업 서버는 멤버십 행의 트리거(0016)로 알고
+> 닫는다. 감사 로그는 `workspace.member_removed`(역할) · `workspace.member_role_changed`(전 · 후).
+
 **[보강] 접근 요청의 길 — 볼 수 없는 페이지에서, 공유할 수 있는 사람에게** ⟨Teamspace · 게스트 · 그룹 7e-1 / 마이그레이션 0033⟩
 
 > 초판은 표와 상태 넷만 두었다. 06 F-06-15: *"권한 없는 사용자가 페이지 URL 을 연다 → `No access` 화면 → 요청 전송 → 페이지의
