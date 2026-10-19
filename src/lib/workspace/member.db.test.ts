@@ -26,7 +26,7 @@ import { canViewPage } from '../permissions/effective.ts'
 import { createBareWorkspace, createUser, joinAs, probeDatabase, type Actor } from '../testing/db-fixtures.ts'
 import { addGroupMember, createGroup } from './group.ts'
 import { acceptInvite, createEmailInvite } from './invite.ts'
-import { changeMemberRole, removeMember } from './member.ts'
+import { changeMemberRole, leaveWorkspace, removeMember } from './member.ts'
 import { addTeamspaceMember, createTeamspace, setDefaultTeamspace } from './teamspace.ts'
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'
@@ -252,6 +252,43 @@ describe('⑤ 기본 teamspace', () => {
     assert.equal(await inTeam(), 1, '★ 올리면 들어간다')
     unwrapOk(await changeMemberRole(boss.ctx, lim.userId, 'restricted_member'))
     assert.equal(await inTeam(), 1, '내려도 멤버십은 남는다')
+  })
+})
+
+describe('⑦ ★ 스스로 나가기(10o-3)', () => {
+  test('멤버는 나간다 — M1 · 게이트 · 감사 로그에 left(행위자 = 대상) · 게스트 · 이미 나간 사람은 not_found', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { ws, mate } = await office()
+    const guest = await joinAs(ws, await createUser('손님'), 'guest')
+    const left = await leaveWorkspace(mate.ctx)
+    assert.deepEqual(left, { ok: true, value: { role: 'member' } })
+    assert.equal((await memberRow(ws, mate.userId))?.status, 'removed')
+    assert.equal((await resolveSessionContext(mate.token, ws)).ok, false, '★ 나간 사람은 들어오지 못한다')
+    const event = await queryOne<{ actor_user_id: string; target_id: string; metadata: Record<string, unknown> }>(
+      `SELECT actor_user_id, target_id, metadata FROM audit_event WHERE workspace_id = $1 AND event_type = 'workspace.member_removed'`,
+      [ws],
+    )
+    assert.deepEqual([event.actor_user_id, event.target_id, event.metadata], [mate.userId, mate.userId, { role: 'member', left: true }])
+    assert.equal(reasonOf(await leaveWorkspace(mate.ctx)), 'not_found', '이미 나갔다')
+    assert.equal(reasonOf(await leaveWorkspace(guest.ctx)), 'not_found', '게스트는 이 길이 아니다')
+  })
+
+  test('★ 마지막 owner 는 나가지 못한다 · teamspace 의 마지막 owner 도 — 그 이름을', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { ws, boss, mate } = await office()
+    assert.equal(reasonOf(await leaveWorkspace(boss.ctx)), 'last_owner')
+    const name = unique('나의 팀')
+    unwrapOk(await createTeamspace(mate.ctx, { name }))
+    const refused = await leaveWorkspace(mate.ctx)
+    assert.deepEqual(!refused.ok && [refused.reason, refused.teamspaces], ['teamspace_last_owner', [name]])
+    assert.equal((await memberRow(ws, mate.userId))?.status, 'active')
+
+    unwrapOk(await changeMemberRole(boss.ctx, mate.userId, 'owner'))
+    const ownerMate = await joinAs(ws, { userId: mate.userId }, 'owner')
+    const team2 = unwrapOk(await createTeamspace(boss.ctx, { name: unique('대표 팀') }))
+    unwrapOk(await addTeamspaceMember(boss.ctx, team2.id, { type: 'user', id: mate.userId }, 'owner'))
+    assert.equal(reasonOf(await leaveWorkspace(boss.ctx)), 'ok', '다른 owner 가 있고 teamspace 에도 다른 owner 가 있으면 나간다')
+    assert.equal((await memberRow(ws, ownerMate.userId))?.role, 'owner')
   })
 })
 

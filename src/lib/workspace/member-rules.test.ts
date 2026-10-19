@@ -9,7 +9,7 @@
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { MEMBER_ROLES, assignableRoles, invitableRoles, isMemberRole, mayManage } from './member-rules.ts'
+import { MEMBER_ROLES, assignableRoles, canLeaveWorkspace, invitableRoles, isMemberRole, mayManage } from './member-rules.ts'
 
 describe('① 누가 누구를', () => {
   test('owner 는 모두를 무엇으로든', () => {
@@ -42,6 +42,13 @@ describe('② 선택지와 판정이 같다', () => {
         for (const to of MEMBER_ROLES) assert.equal(shown.has(to), mayManage(actor, from, to), `${actor}: ${from} → ${to}`)
       }
     }
+  })
+})
+
+describe('④ 스스로 나가기(10o-3)', () => {
+  test('게스트 아닌 멤버급 넷만', () => {
+    for (const role of MEMBER_ROLES) assert.equal(canLeaveWorkspace(role), true, role)
+    assert.equal(canLeaveWorkspace('guest'), false)
   })
 })
 

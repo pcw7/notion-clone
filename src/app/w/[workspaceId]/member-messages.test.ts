@@ -9,7 +9,24 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { REMOVE_MEMBER_NOTICE, memberManageFailureMessage, memberRoleText, roleChangedNotice } from './member-messages.ts'
+import {
+  LEAVE_NOTICE,
+  REMOVE_MEMBER_NOTICE,
+  leaveFailureMessage,
+  memberManageFailureMessage,
+  memberRoleText,
+  roleChangedNotice,
+} from './member-messages.ts'
+
+test('④ 나가기(10o-3) — 자기 이야기로 · 팀스페이스 이름 · 무엇을 잃는지', () => {
+  assert.equal(
+    leaveFailureMessage('teamspace_last_owner', ['설계']),
+    '내가 마지막 소유자인 팀스페이스가 있습니다: 설계. 먼저 그 팀스페이스의 소유자를 넘기세요.',
+  )
+  assert.match(leaveFailureMessage('last_owner'), /마지막 소유자는 나갈 수 없습니다/)
+  assert.equal(leaveFailureMessage('뭔가'), '나가지 못했습니다.')
+  assert.match(LEAVE_NOTICE, /30일 안에 다시 초대받으면/)
+})
 
 const view = (role: string, status = 'active') => ({ userId: 'u', name: '하나', email: null, role, status })
 
