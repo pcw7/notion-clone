@@ -35,6 +35,7 @@ import { withReadTransaction, type Tx } from '../db/tx.ts'
 import type { EditorBlock, EditorDoc } from '../editor/document.ts'
 import { isUuid } from '../ids.ts'
 import { readableScopes } from '../permissions/effective.ts'
+import { notTemplateRow } from '../search/template-rows.ts'
 import { canListMembers, listMembers } from '../workspace/list.ts'
 import { emojiLabelsIn } from '../emoji/custom-emoji.ts'
 import { plainTitleOf } from './page.ts'
@@ -86,6 +87,7 @@ export async function searchMentionCandidates(
         WHERE s.workspace_id = $1
           AND s.perm_scope_id = ANY($2::uuid[])   -- ★ 권한. 후처리가 아니다
           AND s.in_trash = false
+          AND ${notTemplateRow('s.doc_id')}   -- 템플릿 행은 후보가 아니다(R1 · 10p-1)
           AND ($3 = '' OR s.title_text ILIKE $4)
         ORDER BY coalesce(s.last_edited_at, s.created_at, 'epoch'::timestamptz) DESC, s.doc_id
         LIMIT $5`,
