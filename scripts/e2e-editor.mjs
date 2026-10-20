@@ -11262,6 +11262,70 @@ async function main() {
       await key('Escape')
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('전역 검색의 데이터베이스 행 (10p-1 · F-07-01)')) { try {
+      // 검색 덮개에서 데이터베이스 행을 이름으로 찾는다 — 경로에 데이터베이스가 서고 누르면 그 행의 페이지가 열린다 · 이름을 바꾸면 새
+      // 이름으로 · 같은 말의 템플릿은 나오지 않는다(R1). 자기 데이터를 스스로 만든다(API).
+      const x = String(Date.now()).slice(-7)
+      const api = `${BASE}/api/workspaces/${workspaceId}`
+      const readRes = async (res) => ({ status: res.status, body: await res.json().catch(() => null) })
+      const dbName = `검색표${x}`
+      const created = (await readRes(await fetch(`${api}/databases`, { method: 'POST', headers: authed, body: JSON.stringify({ name: dbName }) }))).body?.database
+      const schema = (await readRes(await fetch(`${api}/data-sources/${created?.dataSourceId}/properties`, { headers: authed }))).body?.schema
+      const titleId = (schema?.properties ?? []).find((p) => p.type === 'title')?.id
+      const titleCells = (text) => [{ propertyId: titleId, value: { type: 'title', title: [textRun(text)] } }]
+      const row = (await readRes(await fetch(`${api}/views/${created?.defaultViewId}/rows`, {
+        method: 'POST', headers: authed, body: JSON.stringify({ cells: titleCells(`행검색${x} 첫이름`) }),
+      }))).body?.row?.id
+      const template = await readRes(await fetch(`${api}/data-sources/${created?.dataSourceId}/templates`, {
+        method: 'POST', headers: authed, body: JSON.stringify({ title: `행검색${x} 틀` }),
+      }))
+      const hitIds = () => evaluate(`[...document.querySelectorAll('[data-testid="search-hit"]')].map((e) => e.dataset.pageId)`)
+      // 막 띄운 서버의 첫 검색은 느릴 수 있다(홀로 돌린 첫 판에서 8초 안에 오지 않았다) — 15초
+      const onlyHit = (id) => waitFor(`(() => {
+        const ids = [...document.querySelectorAll('[data-testid="search-hit"]')].map((e) => e.dataset.pageId)
+        return ids.length === 1 && ids[0] === ${JSON.stringify(id)}
+      })()`, 15000)
+      const openOverlay = async () => {
+        for (let i = 0; i < 6 && !(await evaluate(`!!document.querySelector('[data-testid="search-overlay"]')`)); i += 1) {
+          await key('k', MOD)
+          await waitFor(`!!document.querySelector('[data-testid="search-overlay"]')`, 1500)
+        }
+      }
+      const ask = async (query) => {
+        await evaluate(`(() => { const el = document.querySelector('[data-testid="search-input"]'); el?.focus(); el?.select() })()`)
+        await typeText(query)
+      }
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
+      await waitFor(`!!document.querySelector('[data-testid="sidebar-workspace-switcher"]')`, 15000)
+      await openOverlay()
+      await ask(`행검색${x}`)
+      const overlayState = () => evaluate(`JSON.stringify({ overlay: !!document.querySelector('[data-testid="search-overlay"]'),
+        input: document.querySelector('[data-testid="search-input"]')?.value ?? null,
+        results: (document.querySelector('[data-testid="search-results"]')?.textContent ?? '').slice(0, 120) })`)
+      check('★ 데이터베이스 행을 이름으로 찾는다 — 같은 말의 템플릿은 나오지 않는다',
+        typeof row === 'string' && template.status === 201 && (await onlyHit(row)),
+        JSON.stringify({ hits: await hitIds(), template: template.status, row, state: JSON.parse(await overlayState()) }))
+      const hitText = await evaluate(`document.querySelector('[data-testid="search-hit"][data-page-id="${row}"]')?.textContent ?? ''`)
+      check('결과의 경로에 데이터베이스가 선다', hitText.includes(dbName), hitText)
+
+      await clickSelector(`[data-testid="search-hit"][data-page-id="${row}"]`)
+      check('★ 누르면 그 행의 페이지가 열린다',
+        await waitFor(`location.pathname === ${JSON.stringify(`/w/${workspaceId}/${row}`)} && (document.body?.textContent ?? '').includes(${JSON.stringify(`행검색${x} 첫이름`)})`, 15000),
+        await evaluate('location.pathname'))
+
+      // 이름 바꾸기(셀 고치기) — 새 이름으로 찾고 옛 이름으로는 찾지 않는다
+      const renamed = await readRes(await fetch(`${api}/rows/${row}`, { method: 'PATCH', headers: authed, body: JSON.stringify({ cells: titleCells(`행검색${x} 새이름`) }) }))
+      await openOverlay()
+      await ask(`행검색${x} 새이름`)
+      const foundNew = await onlyHit(row)
+      await ask(`행검색${x} 첫이름`)
+      const goneOld = await waitFor(`!!document.querySelector('[data-testid="search-empty"]') && document.querySelectorAll('[data-testid="search-hit"]').length === 0`, 8000)
+      check('★ 이름을 바꾸면 새 이름으로 찾고 옛 이름으로는 찾지 않는다', renamed.status === 200 && foundNew && goneOld,
+        JSON.stringify({ renamed: renamed.status, foundNew, goneOld, hits: await hitIds() }))
+      await key('Escape')
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('가져오기 — 마크다운 · 텍스트 (8m-1 · F-09-12)')) { try {
       // 사이드바의 "가져오기" → 창 → 파일 둘(마크다운 · 텍스트) → 가져온 페이지의 링크와 옮기지 못한 것(표) → 링크로 연 페이지의 제목과 본문.
       // 받지 않는 형식은 무엇이 왜인지 말하고 아무것도 남기지 않는다. 파일은 임시 폴더에 쓴다.

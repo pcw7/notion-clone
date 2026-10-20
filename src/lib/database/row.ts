@@ -60,6 +60,7 @@ import { orderKeyBetween } from '../block/order-key.ts'
 import { titleFromPlainText } from '../block/page.ts'
 import { readPageIcon, type PageIcon } from '../block/page-icon.ts'
 import { toPlainText, type ValidationIssue } from '../contracts/rich-text.ts'
+import { indexPageTitle } from '../search/index-page.ts'
 import {
   deriveSidecars,
   emptyValue,
@@ -378,6 +379,9 @@ async function projectTitle(
     `UPDATE block SET properties = jsonb_set(properties, '{title}', $2::jsonb, true) WHERE id = $1`,
     [rowId, JSON.stringify(titleFromPlainText(plain))],
   )
+  // 검색 색인의 제목도 같은 자리 · 같은 트랜잭션에서(10p-1 · 정본 §3.9 [보강] 데이터베이스 행의 제목 색인 ①) — 행은 `renamePage` 를
+  // 지나지 않으므로 여기서 쓰지 않으면 전역 검색이 행을 이름으로 찾지 못한다
+  await indexPageTitle(tx, rowId, plain)
 }
 
 /**

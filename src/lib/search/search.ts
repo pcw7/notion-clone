@@ -86,6 +86,7 @@
 import type { SessionContext } from '../auth/session-context.ts'
 import { withReadTransaction, type Tx } from '../db/tx.ts'
 import { readableScopes } from '../permissions/effective.ts'
+import { notTemplateRow } from './template-rows.ts'
 import { plainTitleOf } from '../block/page.ts'
 import { readPageIcon, type PageIcon } from '../block/page-icon.ts'
 import {
@@ -318,6 +319,7 @@ function buildSql(axis: Axis, sort: SearchSort, narrow: Narrow): string {
        WHERE s.workspace_id = $1
          AND s.perm_scope_id = ANY($2::uuid[])   -- ★ 권한. 후처리가 아니다
          AND s.in_trash = false
+         AND ${notTemplateRow('s.doc_id')}   -- 템플릿 행은 나오지 않는다(R1 · 10p-1)
          AND ${axis.match}
          ${narrow.sql}
     ), keyed AS (
@@ -367,8 +369,10 @@ async function loadBreadcrumbs(
   if (ids.size === 0) return new Map()
 
   const titles = await tx.query<{ id: string; properties: { title?: unknown } | null }>(
+    // 데이터베이스도 조상이다(10p-1) — 행 · 행 밑의 페이지의 경로는 그 데이터베이스를 지난다(행 페이지의 머리가 데이터베이스를 세우는 것과
+    // 같다). 데이터베이스의 이름도 `properties.title` 에 있다.
     `SELECT id, properties FROM live_block
-      WHERE id = ANY($1::uuid[]) AND workspace_id = $2 AND type = 'page'
+      WHERE id = ANY($1::uuid[]) AND workspace_id = $2 AND type IN ('page', 'database')
         AND perm_scope_id = ANY($3::uuid[])   -- ★ 권한(8c-2) — 머리의 경로와 같은 규칙`,
     [[...ids], ctx.workspaceId, scopes],
   )
