@@ -73,7 +73,7 @@ const { closePool } = await import(new URL('../src/lib/db/pool.ts', import.meta.
 const { createBareWorkspace, createUser, joinAs, visitAsOutsider } = await import(new URL('../src/lib/testing/db-fixtures.ts', import.meta.url).href)
 const { createDiscussion } = await import(new URL('../src/lib/comment/discussion.ts', import.meta.url).href)
 // 판의 끝 줄 — 느린 절 · 알려진 실패(§7)를 가른 새 실패 · 다시 돌릴 게이트(e2e 도구 2조각)
-const { countsLine, formatSeconds, rerunGates, rerunLine, slowest, splitFailures } = await import(new URL('../src/lib/testing/e2e-report.ts', import.meta.url).href)
+const { countsLine, formatSeconds, rerunGates, rerunLine, SECTION_THREW, slowest, splitFailures, thrownDetail } = await import(new URL('../src/lib/testing/e2e-report.ts', import.meta.url).href)
 
 const PORT = Number(process.env.E2E_PORT ?? 3100)
 const COLLAB_PORT = Number(process.env.E2E_COLLAB_PORT ?? 3101)
@@ -125,6 +125,10 @@ function check(name, ok, detail = '') {
  *
  * 데이터베이스 안쪽 절들은 우산 게이트('데이터베이스 표 …') 하나로 묶여 있어 그
  * 제목으로 켠다. 게이트 안의 section() 은 제목만 찍는다 — 필터는 sectionIf 가 달린 게이트에만 있다.
+ *
+ * 게이트의 몸은 늘 여는 줄 끝의 `{ try {` 로 열고 `} catch (thrown) { await sectionThrew(thrown) } }` 로 닫는다(도구-5) — 한 절의
+ * 예외는 그 절의 실패 하나이고 판은 다음 절로 간다. `e2e-report.test.ts` 가 이 파일을 읽어 지킨다(주석에 게이트 함수를 따옴표 제목과
+ * 함께 쓰지 않는다 — 그 검사와 영향 판이 게이트로 읽는다).
  *
  * ⚠ 골라 돌릴 절은 **자기 데이터를 스스로 만들어야** 한다(7a 이후 절들이 그렇다). 앞 절이 만든 것에 기대는 절을
  * 홀로 켜면 깨진다 — 그런 절은 기대는 절과 함께 켠다.
@@ -443,6 +447,51 @@ function connect(url) {
   return { ws, send, opened, pageErrors, releasePaused, fulfillPaused, pausedCount: () => paused.length, prefetchCount: () => prefetches, rscCount: () => rscStarted }
 }
 
+/**
+ * 평가 · 기다림 한 벌 — 주 탭과 둘째 탭이 같이 쓴다(도구-5 · HANDOFF §3.3-483).
+ *
+ * 평가가 예외를 내면 **그때의 문서**(주소 · readyState · contentType · 루트 요소)를 붙인다 — #388 의 영향 판에서 설정의 접근성 절이
+ * `document.documentElement` 가 null 이라는 예외로 두 번 멈췄는데, 문서 상태가 없어 읽을 수 없었다.
+ *
+ * 기다림은 평가의 예외를 "아직" 으로 읽고 다시 묻는다 — `Page.navigate` 가 돌아온 직후의 새 문서는 파서가 시작하기 전이라 루트 요소가
+ * 없을 수 있고, 평가 도중 이동이 시작되면 컨텍스트가 사라진다. 전에는 그 한 번으로 판 전체가 멈췄다. **끝까지 예외면 마지막 예외를
+ * 던진다** — 조건이 거짓인 것과 물을 수 없었던 것은 다르다(`!(await waitFor(…))` 꼴의 부정 검사가 예외를 통과로 읽지 않게). 브라우저와의
+ * 연결이 끊긴 것은 기다리지 않는다.
+ */
+function evaluator(cdpSend, isOpen, label) {
+  const documentState = async () => {
+    const r = await cdpSend('Runtime.evaluate', {
+      expression: `JSON.stringify({ url: location.href, readyState: document.readyState, contentType: document.contentType, root: document.documentElement?.tagName ?? null })`,
+      returnByValue: true,
+    }).catch((e) => ({ result: { value: `(읽지 못했다 — ${e.message})` } }))
+    return r.result?.value ?? '(읽지 못했다)'
+  }
+  const evaluate = async (expression) => {
+    const r = await cdpSend('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true })
+    if (r.exceptionDetails) {
+      throw new Error(`${label}: ${r.exceptionDetails.exception?.description ?? r.exceptionDetails.text} — 그때 문서 ${await documentState()}`)
+    }
+    return r.result.value
+  }
+  const waitFor = async (expression, ms) => {
+    const end = Date.now() + ms
+    let thrown = null
+    while (Date.now() < end) {
+      try {
+        if (await evaluate(expression)) return true
+        thrown = null
+      } catch (e) {
+        if (!isOpen()) throw e
+        thrown = e
+      }
+      await sleep(40)
+    }
+    if (thrown !== null) throw thrown
+    return false
+  }
+  return { evaluate, waitFor }
+}
+
 async function launchBrowser(executable) {
   const profile = mkdtempSync(join(tmpdir(), 'nc-e2e-'))
   const browser = spawn(
@@ -606,19 +655,9 @@ async function main() {
     await cdp.opened
     const { send, pageErrors, releasePaused, fulfillPaused, pausedCount, prefetchCount, rscCount } = cdp
 
-    const evaluate = async (expression) => {
-      const r = await send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true })
-      if (r.exceptionDetails) throw new Error(`evaluate: ${r.exceptionDetails.exception?.description ?? r.exceptionDetails.text}`)
-      return r.result.value
-    }
-    const waitFor = async (expression, ms = 5000) => {
-      const end = Date.now() + ms
-      while (Date.now() < end) {
-        if (await evaluate(expression)) return true
-        await sleep(40)
-      }
-      return false
-    }
+    const mainTab = evaluator(send, () => cdp.ws.readyState === WebSocket.OPEN, 'evaluate')
+    const evaluate = mainTab.evaluate
+    const waitFor = (expression, ms = 5000) => mainTab.waitFor(expression, ms)
     const move = (x, y, pressed = false) =>
       send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, button: pressed ? 'left' : 'none', buttons: pressed ? 1 : 0 })
     const press = (x, y) => send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', buttons: 1, clickCount: 1 })
@@ -719,22 +758,14 @@ async function main() {
       if (info === null) throw new Error('두 번째 탭에 붙지 못했다')
       const tab = connect(info.webSocketDebuggerUrl)
       await tab.opened
+      // 예외로 끝난 절이 닫지 못한 탭을 `backToBaseline` 이 닫는다
+      tab.targetId = targetId
       tabs.push(tab)
       await tab.send('Runtime.enable')
       await tab.send('Page.enable')
-      const evaluateIn = async (expression) => {
-        const r = await tab.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true })
-        if (r.exceptionDetails) throw new Error(`evaluate(tab): ${r.exceptionDetails.exception?.description ?? r.exceptionDetails.text}`)
-        return r.result.value
-      }
-      const waitForIn = async (expression, ms = 10000) => {
-        const end = Date.now() + ms
-        while (Date.now() < end) {
-          if (await evaluateIn(expression)) return true
-          await sleep(40)
-        }
-        return false
-      }
+      const inTab = evaluator(tab.send, () => tab.ws.readyState === WebSocket.OPEN, 'evaluate(tab)')
+      const evaluateIn = inTab.evaluate
+      const waitForIn = (expression, ms = 10000) => inTab.waitFor(expression, ms)
       return {
         send: tab.send,
         evaluate: evaluateIn,
@@ -1105,6 +1136,64 @@ async function main() {
      * **순서로** 기다린다: 클릭이 끝난 뒤 페이지에 더 긴 타이머를 걸어 그것이 돌면, 먼저 만기되는 포커스 타이머는 이미 돌았다.
      */
     const afterFocusTimer = () => evaluate('new Promise((resolve) => setTimeout(resolve, 40))')
+    /**
+     * 그 요소의 자리가 멈추기를 — 50ms 간격으로 잰 자리가 네 번 잇달아 같을 때(0.2초). 상한 `ms`. 좌표로 누르는 클릭은 잰 뒤에 줄이
+     * 움직이면 다른 것을 누른다.
+     */
+    const waitStill = (sel, ms = 10000) => evaluate(`new Promise((resolve) => {
+      const at = () => { const e = document.querySelector(${JSON.stringify(sel)}); if (!e) return null; const r = e.getBoundingClientRect(); return r.x + ',' + r.y }
+      const stop = Date.now() + ${ms}
+      let last = at()
+      let still = 0
+      const tick = () => {
+        const now = at()
+        still = now !== null && now === last ? still + 1 : 0
+        last = now
+        if (still >= 4) resolve(true)
+        else if (Date.now() > stop) resolve(false)
+        else setTimeout(tick, 50)
+      }
+      setTimeout(tick, 50)
+    })`)
+    /**
+     * React 가 붙고 **자리까지 멈춘 뒤** — 하이드레이션은 서버의 스냅샷으로 그리고, 외부 스토어(사이드바의 펼침 · localStorage)를 읽어
+     * 한 번 더 그리는 것은 그 뒤다(`useSyncExternalStore`). 그때 줄이 움직인다 — 붙은 것만 보고 좌표를 재면 움직인 뒤의 다른 줄을
+     * 누른다(페이지 복제의 사이드바 ⧉ 가 아래 데이터베이스 줄을 눌렀다 — #388 의 영향 판 · HANDOFF §3.3-483).
+     */
+    const waitSteady = async (sel, ms = 10000) => (await waitHydrated(sel, ms)) && (await waitStill(sel, ms))
+    /**
+     * 판의 처음 상태로 — 예외로 끝난 절이 자기 정리(finally)를 못 했을 때, 뒤 절이 그 흔적 위에서 돌지 않게(도구-5). 열어 둔 둘째 탭(앞에
+     * 남으면 주 탭이 프레임을 받지 못한다 — §3.3-456) · 붙잡아 둔 요청 · 미디어 · CPU · 네트워크 흉내 · 세션 쿠키(다른 사람으로 보던 중일
+     * 수 있다) · 내려 둔 협업 서버.
+     */
+    const backToBaseline = async () => {
+      for (const tab of tabs.splice(0)) {
+        await send('Target.closeTarget', { targetId: tab.targetId }).catch(() => undefined)
+        tab.ws.close()
+      }
+      await send('Page.bringToFront').catch(() => undefined)
+      await releasePaused().catch(() => undefined)
+      await send('Fetch.disable').catch(() => undefined)
+      await send('Emulation.setEmulatedMedia', { features: [] }).catch(() => undefined)
+      await send('Emulation.setCPUThrottlingRate', { rate: Math.max(1, E2E_CPU_THROTTLE) }).catch(() => undefined)
+      await send('Network.emulateNetworkConditions', {
+        offline: false, latency: Math.max(0, E2E_NET_LATENCY), downloadThroughput: -1, uploadThroughput: -1,
+      }).catch(() => undefined)
+      await send('Network.setCookie', { name: 'nc_session', value: session, domain: 'localhost', path: '/', httpOnly: true }).catch(() => undefined)
+      await restartCollab().catch(() => undefined)
+      await send('Page.navigate', { url: 'about:blank' }).catch(() => undefined)
+    }
+    /**
+     * 게이트의 몸이 예외로 끝났다 — 그 절의 실패 하나로 세고, 흔적을 거두고, 다음 절로 간다(도구-5 · HANDOFF §3.3-483). 전에는 한 절의
+     * 예외가 판 전체를 끝냈다 — 뒤 절이 하나도 돌지 않고 끝 줄(`N / M 통과`)도 찍히지 않았다(#307 의 5c-3a · #388 의 접근성 절).
+     * 게이트의 몸은 늘 `{ try {` … `} catch (thrown) { await sectionThrew(thrown) } }` 로 감싼다 — `e2e-report.test.ts` 가
+     * 실제 스크립트를 읽어 지킨다. 브라우저와의 연결이 끊긴 것만은 판을 끝낸다 — 뒤 절이 모두 같은 이유로 떨어진다.
+     */
+    const sectionThrew = async (thrown) => {
+      if (cdp.ws.readyState !== WebSocket.OPEN) throw thrown
+      check(SECTION_THREW, false, thrownDetail(thrown))
+      await backToBaseline()
+    }
     // 잠금 버튼은 누를 때의 글자대로 잠그거나 푼다(PUT · DELETE — 둘 다 멱등). 붙기 전의 클릭은 사라지므로 될 때까지 다시 누르되,
     // **글자가 바라는 쪽일 때만** 누른다 — 앞선 클릭의 새로고침이 늦게 와 글자가 막 바뀐 뒤에 누르면 거꾸로 돌린다(1c-2 의 전체 e2e
     // 에서 겪었다 — "잠김"이 선 채로 서버는 풀려 있었다).
@@ -1136,7 +1225,7 @@ async function main() {
     }
 
     // ── 에디터 코어(로드 ~ 두 탭) — 상태를 공유하는 흩어진 절들이라 통째로 게이트다(안의 section 은 제목만 찍는다) ──
-    if (sectionIf('에디터 코어 — 로드 · 핸들 · 드래그 · 키보드 이동 · 접힘 · 블록 메뉴 · 복사 · 붙여넣기 · + 버튼 · 이미지 · 오프라인 보존 · 두 탭 동시 편집 (F-01-* · F-05-*)')) {
+    if (sectionIf('에디터 코어 — 로드 · 핸들 · 드래그 · 키보드 이동 · 접힘 · 블록 메뉴 · 복사 · 붙여넣기 · + 버튼 · 이미지 · 오프라인 보존 · 두 탭 동시 편집 (F-01-* · F-05-*)')) { try {
     section('로드')
     check('에디터가 뜬다', await waitFor(`document.querySelectorAll('.blk-editor [data-block-id]').length === 6`, 15000))
     check('처음 순서', same(await order(), ['A', 'B', 'C', 'T', 't1', 'D']), JSON.stringify(await order()))
@@ -1780,8 +1869,8 @@ async function main() {
       check('★ 둘째 탭을 닫으면 주 탭이 다시 프레임을 받는다(rAF 가 돈다)', await framesRunning())
     }
 
-    }
-    if (sectionIf('공유 패널 (F-06-05)')) {
+    } catch (thrown) { await sectionThrew(thrown) } }
+    if (sectionIf('공유 패널 (F-06-05)')) { try {
     // 새 페이지 + 하위 페이지에서 본다 — 상속 표시와 "따로 관리하기"가 핵심이다.
     const shareParent = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: '{}' })).json()).page.id
     const shareChild = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: JSON.stringify({ parentPageId: shareParent }) })).json()).page.id
@@ -1831,8 +1920,8 @@ async function main() {
       await panelText())
     check('막힌 뒤에도 권한은 그대로다', (await panelText()).includes('워크스페이스 모든 멤버'))
 
-    }
-    if (sectionIf('그룹 — 라우트 · 공유 패널 (7a · F-06-03)')) {
+    } catch (thrown) { await sectionThrew(thrown) } }
+    if (sectionIf('그룹 — 라우트 · 공유 패널 (7a · F-06-03)')) { try {
       // 그룹은 권한의 주체다. 라우트로 만들고 넣고, 공유 패널에서 그룹 행이 **그룹으로** 다뤄지는지 본다 — 사용자가 아니면
       // 모든 멤버로 읽던 옛 규칙이 남아 있으면 그룹 행의 레벨 바꾸기 · 제거가 모든 멤버의 행을 건드린다.
       const groupMate = await joinAs(workspaceId, await createUser('그룹 동료'), 'member')
@@ -1955,9 +2044,9 @@ async function main() {
       check('★ 지운 그룹으로 보던 동료는 이제 못 본다 (404)', (await fetch(accessUrl, { headers: asGroupMate })).status === 404)
       check('지운 그룹에는 줄 수 없다 (400)',
         (await postJson(accessUrl, authed, { action: 'grant', principal: { type: 'group', id: firstGroup }, level: 'view' })).status === 400)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('그룹 화면 (7b · F-06-03)')) {
+    if (sectionIf('그룹 화면 (7b · F-06-03)')) { try {
       // 설정의 사람 절의 "그룹" 패널(8g-2 — 전에는 홈의 절). 넣을 후보(멤버 · 게스트)는 서버 렌더가 싣으므로 화면을 열기 전에 만든다.
       const screenMate = await joinAs(workspaceId, await createUser('화면 동료'), 'member')
       const screenGuest = await joinAs(workspaceId, await createUser('화면 손님'), 'guest')
@@ -2085,9 +2174,9 @@ async function main() {
           !asMember.includes('data-testid="group-create-name"') && !asMember.includes('data-testid="group-delete"'))
       const asGuest = await homeAs(screenGuest)
       check('★ 게스트에게는 그룹 절이 없다', !asGuest.includes('data-testid="group-panel"') && !asGuest.includes(keeperName))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('teamspace — 라우트 · 공유 패널 (7c-1 · F-06-04)')) {
+    if (sectionIf('teamspace — 라우트 · 공유 패널 (7c-1 · F-06-04)')) { try {
       // 화면(사이드바 섹션 · 설정)은 다음 절(7c-2)이 본다. 여기서는 라우트로 만들고, teamspace 의 페이지가 실제 화면에서 열리고
       // 공유 패널이 teamspace 노드의 부여를 "상위에서 상속됨"으로 그리는지 본다.
       const teamMate = await joinAs(workspaceId, await createUser('팀 동료'), 'member')
@@ -2143,9 +2232,9 @@ async function main() {
         (await fetch(memberUrl(teamMate.userId), { method: 'PATCH', headers: asTeamMate, body: JSON.stringify({ role: 'owner' }) })).status === 403)
       check('동료가 스스로 나간다', (await fetch(memberUrl(teamMate.userId), { method: 'DELETE', headers: asTeamMate })).status === 200)
       check('★ 나가면 곧바로 못 본다 (404)', (await fetch(teamAccess, { headers: asTeamMate })).status === 404)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('teamspace 화면 (7c-2 · F-06-04)')) {
+    if (sectionIf('teamspace 화면 (7c-2 · F-06-04)')) { try {
       // 사이드바의 Teamspaces 섹션 · 만들기 폼 · teamspace 화면(멤버 · 역할 · 나가기) · breadcrumb. 넣을 후보는 서버 렌더가
       // 싣으므로 화면을 열기 전에 만든다.
       const uiMate = await joinAs(workspaceId, await createUser('화면 팀원'), 'member')
@@ -2304,9 +2393,9 @@ async function main() {
       check('나간 teamspace 의 화면은 404 다', (await fetch(`${BASE}/w/${workspaceId}/teamspaces/${design}`, { headers: authed })).status === 404)
       // 나가기의 refresh 가 끝나기 전에 다음 절이 화면을 옮기면 서버가 "destination stream closed early" 를 남긴다(§6).
       await sleep(1500)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('옮기기 — teamspace 로 · 밖으로 (7c-3 · F-06-20)')) {
+    if (sectionIf('옮기기 — teamspace 로 · 밖으로 (7c-3 · F-06-20)')) { try {
       // 페이지의 "이동" 피커가 teamspace 최상위와 워크스페이스 최상위를 자리로 준다. 옮기면 누가 보는지가 바뀐다 — 워크스페이스
       // 최상위의 "모든 멤버" 상속 행을 거두고 teamspace 노드에서 물려받는다. 멤버가 아닌 동료의 접근으로 확인한다.
       const moveMate = await joinAs(workspaceId, await createUser('이동 동료'), 'member')
@@ -2388,9 +2477,9 @@ async function main() {
         denied.status === 403 && (await denied.json()).error === 'needs_full_access', String(denied.status))
       // 마지막 이동의 refresh 가 끝나기 전에 다음 절이 화면을 옮기지 않게 한다(§6).
       await sleep(1500)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('데이터베이스를 teamspace 에 (7c-4 · F-04-14 · F-06-04)')) {
+    if (sectionIf('데이터베이스를 teamspace 에 (7c-4 · F-04-14 · F-06-04)')) { try {
       // 사이드바의 teamspace 줄에 "▦"(새 데이터베이스), teamspace 화면에 "+ 새 데이터베이스". 멤버만 보는지는 멤버가 아닌 동료의
       // 세션으로 표 화면을 받아 본다.
       const dbMate = await joinAs(workspaceId, await createUser('표 동료'), 'member')
@@ -2439,9 +2528,9 @@ async function main() {
       check('멤버가 아니면 그 teamspace 에 표를 못 둔다 (404)', denied.status === 404, String(denied.status))
       // 마지막 만들기의 refresh 가 끝나기 전에 다음 절이 화면을 옮기지 않게 한다(§6).
       await sleep(1500)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('공개 범위 · 둘러보기 · 참여 (7c-5 · F-06-04)')) {
+    if (sectionIf('공개 범위 · 둘러보기 · 참여 (7c-5 · F-06-04)')) { try {
       // 만들기 폼의 공개 범위 · 사이드바의 ⌕ · 둘러보기 화면(참여 · 초대 필요 · private 는 없음) · 소유자만 보는 설정.
       // **내가 멤버가 아닌** open teamspace 가 있어야 참여를 눌러볼 수 있으므로 동료의 세션으로 셋을 만든다.
       const browseMate = await joinAs(workspaceId, await createUser('둘러보는 동료'), 'member')
@@ -2556,9 +2645,9 @@ async function main() {
       check('멤버가 아니면 설정을 못 고친다 (404)', mateEdit.status === 404, String(mateEdit.status))
       // 저장의 refresh 가 끝나기 전에 다음 절이 화면을 옮기지 않게 한다(§6).
       await sleep(1500)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('보관 · 복원 (7c-6 · F-06-04)')) {
+    if (sectionIf('보관 · 복원 (7c-6 · F-06-04)')) { try {
       // teamspace 는 지워지지 않고 보관된다. 보관하면 **소유자까지** 못 보고, 되살릴 사람만 둘러보기 화면에서 그 존재를 본다.
       const archiveMate = await joinAs(workspaceId, await createUser('보관 동료'), 'member')
       const mateHeaders = { ...json, cookie: `nc_session=${archiveMate.token}` }
@@ -2639,9 +2728,9 @@ async function main() {
           (await pageAs(archiveMate, `/w/${workspaceId}/${doomedPage}`)).status === 200)
       // 되살리기의 refresh 가 끝나기 전에 다음 절이 화면을 옮기지 않게 한다(§6).
       await sleep(1500)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('개인 페이지 · 공유됨 섹션 (7c-7 · F-02-12 · F-07-16)')) {
+    if (sectionIf('개인 페이지 · 공유됨 섹션 (7c-7 · F-02-12 · F-07-16)')) { try {
       // 사이드바의 개인 페이지 섹션(+ 로 만들기 · 나만 본다) · 이동 피커의 "개인 페이지" · 공유됨 섹션(따로 공유받은 것).
       const privateMate = await joinAs(workspaceId, await createUser('개인 동료'), 'member')
       const mateHeaders = { ...json, cookie: `nc_session=${privateMate.token}` }
@@ -2716,9 +2805,9 @@ async function main() {
       const guestNoPrivate = await joinAs(workspaceId, await createUser('개인 없는 손님'), 'guest')
       const guestHome = await (await pageAs(guestNoPrivate, `/w/${workspaceId}`)).text()
       check('게스트의 사이드바에는 개인 페이지 섹션이 없다', !guestHome.includes('sidebar-private'))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('데이터베이스의 자리 — 개인 표 · 옮기기 (7c-8 · F-04-14 · F-06-20)')) {
+    if (sectionIf('데이터베이스의 자리 — 개인 표 · 옮기기 (7c-8 · F-04-14 · F-06-20)')) { try {
       // 사이드바 개인 섹션의 ▦(개인 표) · 표 화면의 "이동"(워크스페이스 ↔ teamspace ↔ 개인). 이 절은 자기 데이터를
       // 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
       const placeMate = await joinAs(workspaceId, await createUser('표 자리 동료'), 'member')
@@ -2796,9 +2885,9 @@ async function main() {
         intoPage.status === 400 && (await intoPage.json()).error === 'invalid_target', String(intoPage.status))
       // 이동의 refresh 가 끝나기 전에 다음 절이 화면을 옮기지 않게 한다(§6).
       await sleep(1500)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('공개 팀 공간의 열람 (7c-9 · F-06-04)')) {
+    if (sectionIf('공개 팀 공간의 열람 (7c-9 · F-06-04)')) { try {
       // open teamspace 는 참여 전에도 **읽는다**(view) — 링크 · 검색으로 닿고, 사이드바에는 서지 않고, 고치지는 못한다.
       // 좁히면(closed) 참여 안 한 사람이 잃는다. 이 절은 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
       const openMate = await joinAs(workspaceId, await createUser('열람 동료'), 'member')
@@ -2838,9 +2927,9 @@ async function main() {
       const reopen = await fetch(`${tsUrl}/${openTeam}`, { method: 'PATCH', headers: mateHeaders, body: JSON.stringify({ visibility: 'open' }) })
       check('다시 열면 다시 연다',
         reopen.ok && (await fetch(`${BASE}/w/${workspaceId}/${openPage}`, { headers: authed })).status === 200)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('고아 teamspace — 막고 되살린다 (7c-10 · F-06-04)')) {
+    if (sectionIf('고아 teamspace — 막고 되살린다 (7c-10 · F-06-04)')) { try {
       // 그룹 삭제가 teamspace 의 마지막 owner 를 없애면 거부하고, 워크스페이스 owner(브라우저 세션)는 모든 teamspace 를 보고
       // 소유자로 들어가 고아를 되살린다. 이 절은 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
       const orphanMaker = await joinAs(workspaceId, await createUser('고아 만들 사람'), 'member')
@@ -2917,9 +3006,9 @@ async function main() {
         !plainHtml.includes('teamspace-admin') && plainClaim.status === 404, String(plainClaim.status))
       // 들어가기의 refresh 가 끝나기 전에 다음 절이 화면을 옮기지 않게 한다(§6).
       await sleep(1500)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('기본 teamspace (7c-11 · F-06-04)')) {
+    if (sectionIf('기본 teamspace (7c-11 · F-06-04)')) { try {
       // 워크스페이스 owner(브라우저 세션)가 자기 teamspace 를 기본으로 켠다 → 기존 멤버가 들어오고, 초대를 받아들인 사람도
       // 들어온다. 이 절은 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다. 켜면 이 워크스페이스의 사람 전원이 그 멤버가
       // 되므로 끝에 끈다(들어온 사람은 남지만, 뒤 절이 새로 만드는 사람은 들어오지 않는다).
@@ -3025,9 +3114,9 @@ async function main() {
         (await fetch(`${BASE}/w/${workspaceId}/${teamPage}`, { headers: cookieOf(staff) })).status === 200)
       // 해제의 refresh 가 끝나기 전에 다음 절이 화면을 옮기지 않게 한다(§6).
       await sleep(1500)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('멤버 기본 권한 (7c-12 · F-06-04)')) {
+    if (sectionIf('멤버 기본 권한 (7c-12 · F-06-04)')) { try {
       // 소유자(브라우저 세션)가 설정 절에서 멤버 기본 권한을 "읽기"로 낮춘다 → 멤버는 여전히 보지만 최상위에 만들지 못하고,
       // 사이드바의 `+` · teamspace 화면의 만들기가 사라진다. 끝에 전체 권한으로 되돌린다. 이 절은 자기 데이터를 스스로 만든다.
       const tsUrl = `${BASE}/api/workspaces/${workspaceId}/teamspaces`
@@ -3092,9 +3181,9 @@ async function main() {
         back.ok && (await readerHtml()).includes('sidebar-teamspace-add'))
       // 저장의 refresh 가 끝나기 전에 다음 절이 화면을 옮기지 않게 한다(§6).
       await sleep(1500)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('이동 전 영향 미리보기 (7c-13 · F-06-20)')) {
+    if (sectionIf('이동 전 영향 미리보기 (7c-13 · F-06-20)')) { try {
       // 소유자(브라우저 세션)가 teamspace 의 페이지를 개인으로 옮기려 한다 → 미리보기가 누가 못 보게 되는지와, 따로 공유된 하위
       // 페이지가 여전히 열려 있다는 것을 말하고 한 번 더 묻는다. 볼 수 있는 사람이 그대로인 이동은 묻지 않는다. 자기 데이터를
       // 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
@@ -3171,9 +3260,9 @@ async function main() {
           && (await dbQuery(`SELECT parent_id FROM block WHERE id = $1`, [lone]))[0]?.parent_id === home)
       // 옮기기의 refresh 가 끝나기 전에 다음 절이 화면을 옮기지 않게 한다(§6).
       await sleep(1500)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('teamspace 아이콘 (7c-14 · F-06-04)')) {
+    if (sectionIf('teamspace 아이콘 (7c-14 · F-06-04)')) { try {
       // 만들 때 아이콘을 고르고, 설정에서 바꾸고 지운다 — 머리 · 사이드바 · 둘러보기가 함께 바뀐다. 자기 데이터를 스스로 만든다.
       const stamp = Date.now()
       const typeInto = async (sel, text) => {
@@ -3238,9 +3327,9 @@ async function main() {
       check('이모지 한 글자가 아니면 거부한다 (400 invalid_icon)', bad.status === 400 && (await bad.json()).error === 'invalid_icon')
       // 저장의 refresh 가 끝나기 전에 다음 절이 화면을 옮기지 않게 한다(§6).
       await sleep(1500)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('게스트를 들인다 (7d-1 · F-06-09)')) {
+    if (sectionIf('게스트를 들인다 (7d-1 · F-06-09)')) { try {
       // 소유자(브라우저 세션)가 공유 패널에서 외부 사람의 이메일을 넣는다 → 게스트로 들어와 그 페이지만 본다. 이미 멤버인 사람은
       // 멤버로 공유되고, 계정이 없으면 먼저 가입하라고 말한다. 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
       const stamp = Date.now()
@@ -3306,9 +3395,9 @@ async function main() {
       await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
       await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
       await sleep(500)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('게스트에게 새는 목록 · 공유 주체 (7d-2 · F-06-09)')) {
+    if (sectionIf('게스트에게 새는 목록 · 공유 주체 (7d-2 · F-06-09)')) { try {
       // 게스트는 워크스페이스 멤버 목록을 받지 않는다 — 공유 패널 · 코멘트 · `@` · 홈 네 곳. 그리고 워크스페이스 밖의 사람에게는
       // 공유 API 로 줄 수 없다(게스트 초대가 유일한 길). 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
       const stamp = Date.now()
@@ -3364,9 +3453,9 @@ async function main() {
       })
       check('★ 공유 API 는 워크스페이스 밖의 사람에게 주지 않는다 (400 invalid_principal) — 밖의 사람은 이메일로 초대한다',
         toStranger.status === 400 && (await toStranger.json()).error === 'invalid_principal', String(toStranger.status))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('멤버 관리 — 서버 (10o-1 · F-06-02)')) {
+    if (sectionIf('멤버 관리 — 서버 (10o-1 · F-06-02)')) { try {
       // 멤버 내보내기 · 역할 바꾸기의 라우트(정본 §3.3 [보강] 멤버 내보내기 · 역할 바꾸기). 이 판의 워크스페이스는 모든 절이 함께 쓰므로
       // 주 세션(owner)은 **새로 만든 사람들만** 다룬다.
       const base = `${BASE}/api/workspaces/${workspaceId}/members`
@@ -3410,9 +3499,9 @@ async function main() {
         JSON.stringify({ gone, after: after.status }))
       const again = await call('DELETE', authed, mate.userId)
       check('떠난 사람은 다시 내보내지 않는다 — 404', again.status === 404, JSON.stringify(again))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('멤버 관리 — 화면 (10o-2 · F-06-02)')) {
+    if (sectionIf('멤버 관리 — 화면 (10o-2 · F-06-02)')) { try {
       // 설정의 사람 절 멤버 목록(정본 §3.3 [보강] 멤버 내보내기 ⑧) — 다룰 수 있는 줄에만 역할 고르개 · 내보내기(한 번 더 묻는다) · 거부는
       // 이유를(teamspace 의 이름들). membership_admin 으로 보면 관리 역할은 고를 수 없고 owner 의 줄에는 아무것도 없다. 이 판의
       // 워크스페이스는 모든 절이 함께 쓰므로 새로 만든 사람들만 다룬다.
@@ -3488,9 +3577,9 @@ async function main() {
       } finally {
         await send('Network.setCookie', { name: 'nc_session', value: session, domain: 'localhost', path: '/', httpOnly: true })
       }
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('워크스페이스 나가기 (10o-3 · F-14-10)')) {
+    if (sectionIf('워크스페이스 나가기 (10o-3 · F-14-10)')) { try {
       // 설정의 워크스페이스 일반 절 끝의 "나가기"(정본 §3.3 [보강] 멤버 내보내기 ⑨) — 내보내기와 같은 규칙. 브라우저 세션을 장면마다 그
       // 사람으로 바꾸고 끝에서 주 세션으로 되돌린다. 이 판의 워크스페이스는 모든 절이 함께 쓰므로 새로 만든 사람들만 나간다.
       const stamp = Date.now() % 100000
@@ -3534,9 +3623,9 @@ async function main() {
       } finally {
         await send('Network.setCookie', { name: 'nc_session', value: session, domain: 'localhost', path: '/', httpOnly: true })
       }
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('게스트 관리 — 멤버로 올리기 · 빼기 (7d-3 · F-06-09)')) {
+    if (sectionIf('게스트 관리 — 멤버로 올리기 · 빼기 (7d-3 · F-06-09)')) { try {
       // 소유자(브라우저 세션)가 설정의 사람 절 "게스트" 패널(8g-2 — 전에는 홈)에서 한 사람은 멤버로 올리고, 한 사람은 뺀다. 둘 다 두 번 누른다. 자기 데이터를
       // 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
       const stamp = Date.now()
@@ -3611,9 +3700,9 @@ async function main() {
         !mateHome.includes('data-testid="workspace-guests"') && mateList.status === 403, String(mateList.status))
       // 올리기 · 빼기의 refresh 가 끝나기 전에 다음 절이 화면을 옮기지 않게 한다(§6).
       await sleep(1500)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('접근 요청 (7e-1 · F-06-15)')) {
+    if (sectionIf('접근 요청 (7e-1 · F-06-15)')) { try {
       // 동료가(브라우저 세션을 동료로 바꾼다) 볼 수 없는 페이지를 열어 요청하고 → 소유자가 인박스의 그 줄을 눌러 공유 패널에서
       // 허락한다. 둘째 페이지는 무시한다 — 요청한 사람에게는 여전히 "요청했습니다"다. 자기 데이터를 스스로 만든다 — E2E_ONLY 로
       // 홀로 돈다. 브라우저 세션은 끝에 반드시 소유자로 되돌린다(뒤 절이 소유자로 돈다).
@@ -3735,9 +3824,9 @@ async function main() {
       }
       // 허락 · 무시의 refresh 가 끝나기 전에 다음 절이 화면을 옮기지 않게 한다(§6).
       await sleep(1500)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('편집 권한 요청 (7e-2 · F-06-15)')) {
+    if (sectionIf('편집 권한 요청 (7e-2 · F-06-15)')) { try {
       // 읽기만 받은 동료가(브라우저 세션을 동료로 바꾼다) 공유 패널에서 편집 권한을 요청하고 → 소유자가 인박스의 그 줄로 공유 패널을
       // 열어 허락한다(기본 레벨은 요청한 편집). 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다. 브라우저 세션과 소유자의
       // 인박스는 끝에 되돌린다(뒤 절이 소유자로 돌고, 인박스 절은 안 읽은 수를 센다).
@@ -3814,9 +3903,9 @@ async function main() {
         }
       }
       await sleep(1500)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('페이지 잠금 (7f-1 · F-06-16)')) {
+    if (sectionIf('페이지 잠금 (7f-1 · F-06-16)')) { try {
       // 소유자(브라우저)가 본문을 열어 둔 채로 편집자 동료가 잠근다 → 열린 편집기가 곧바로 읽기 전용이 된다(협업 신호). 다시 열면
       // "잠김" · 풀기 버튼 · 제목도 읽기 전용이고, 풀면 다시 고친다. 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
       const stamp = Date.now()
@@ -3878,9 +3967,9 @@ async function main() {
       check('★ 읽기만 받은 사람은 제목을 못 바꾼다 (403) — 7f-1 전에는 권한을 묻지 않았다',
         readerRename.status === 403, String(readerRename.status))
       await sleep(1500)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('데이터베이스 잠금 (7f-2 · F-06-16)')) {
+    if (sectionIf('데이터베이스 잠금 (7f-2 · F-06-16)')) { try {
       // 소유자(브라우저)가 표를 잠그면 구조 화면(뷰 더하기 · 열 더하기)이 사라지고 구조 요청은 409 `locked` 다. 행과 값은 그대로
       // 고친다. 행 페이지를 잠그면 그 행의 셀만 막힌다. 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
       const stamp = Date.now()
@@ -3929,9 +4018,9 @@ async function main() {
       const afterUnlock = await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '풀린 뒤의 속성', type: 'number' })
       check('풀린 뒤에는 속성을 더한다', afterUnlock.status === 200 || afterUnlock.status === 201, String(afterUnlock.status))
       await sleep(1500)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('게스트의 대기 초대 (7g-1 · F-06-09)')) {
+    if (sectionIf('게스트의 대기 초대 (7g-1 · F-06-09)')) { try {
       // 소유자가 가입하지 않은 이메일을 페이지에 초대한다 → 대기 초대 · 메일(개발 링크). 그 사람이 진짜 로그인 흐름으로 가입하고
       // 브라우저로 링크를 열어 받아들이면 그 페이지로 간다 — 그 페이지만 본다. 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
       const stamp = Date.now()
@@ -3983,9 +4072,9 @@ async function main() {
         await send('Network.setCookie', { name: 'nc_session', value: session, domain: 'localhost', path: '/', httpOnly: true })
       }
       await sleep(1500)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('워크스페이스 밖의 사람의 접근 요청 (7g-2 · F-06-15)')) {
+    if (sectionIf('워크스페이스 밖의 사람의 접근 요청 (7g-2 · F-06-15)')) { try {
       // 이 워크스페이스에 멤버십이 없는 사람이(브라우저 세션을 그 사람으로 바꾼다) 페이지 주소를 열어 요청하고 → 소유자가 공유 패널의
       // "워크스페이스 밖" 줄을 허락하면 게스트로 들어와 그 페이지를 연다. 소유자가 정책을 끄면 밖의 사람에게 그 주소는 없는 페이지다 —
       // 설정의 보안 절에서 다시 켠다(8g-1 — 정책은 설정이다). 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다. 브라우저 세션 · 정책 · 소유자의 인박스는
@@ -4110,9 +4199,9 @@ async function main() {
       }
       // 허락 · 정책 저장의 refresh 가 끝나기 전에 다음 절이 화면을 옮기지 않게 한다(§6).
       await sleep(1500)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('대기 초대 취소 (7g-3 · F-14-10)')) {
+    if (sectionIf('대기 초대 취소 (7g-3 · F-14-10)')) { try {
       // 소유자(브라우저 세션)가 멤버 초대와 게스트의 대기 초대를 보내고, 설정의 사람 절 "대기 중인 초대"(8g-2 — 전에는 홈)에서 게스트 초대를 취소한다 — 그 링크는
       // "유효하지 않은 초대"가 되고 멤버 초대의 링크는 그대로 열린다. 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다. 남은
       // 멤버 초대는 끝에 취소한다.
@@ -4188,9 +4277,9 @@ async function main() {
       check('API 로도 취소한다 — 취소한 주소를 돌려준다', cleanup.ok && (await cleanup.json()).email === memberEmail, String(cleanup.status))
       // 취소의 refresh 가 끝나기 전에 다음 절이 화면을 옮기지 않게 한다(§6).
       await sleep(1500)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('코드 블록 (8a-1 · F-01-14)')) {
+    if (sectionIf('코드 블록 (8a-1 · F-01-14)')) { try {
       // 새 페이지의 빈 줄에서 ``` 을 쳐 코드 블록을 만들고, Enter(줄바꿈) · Tab(들여쓰기 글자) · `/`(메뉴 없음)를 친 뒤 Mod+Enter 로
       // 빠져나와 문단을 쓴다. 서버에 저장된 본문(협업 서버 → 투영)이 코드 블록 하나 + 문단 하나인지 본다. 자기 데이터를 스스로
       // 만든다 — E2E_ONLY 로 홀로 돈다.
@@ -4266,9 +4355,9 @@ async function main() {
       check('다시 열어도 코드 블록이다 — 줄바꿈 · 탭 그대로',
         await waitFor(`document.querySelector('[data-block-id="${firstLine}"] pre.blk-code')?.textContent === ${JSON.stringify(expected)}`, 15000))
       await sleep(1500)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('코드 블록 크롬 (8a-2 · F-01-14)')) {
+    if (sectionIf('코드 블록 크롬 (8a-2 · F-01-14)')) { try {
       // 코드 블록의 버튼 줄(언어 · 줄바꿈 · 복사 · 캡션)과 편집기 밖의 두 오버레이(언어 목록 · 캡션 입력)를 진짜 키 · 마우스로 쓴다.
       // 방어 하나마다 그것만 떨어뜨리는 장면을 둔다(8a-2 설계 비평 — 반사실이 겨냥한 검사를 뒤집어야 한다). 읽기 전용은 열어 둔 채로
       // 잠가 만든다 — 편집 가능 여부만 바뀐다. 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
@@ -4978,9 +5067,9 @@ async function main() {
       }))
       check('★ 그 블록이 사라지면 열린 언어 목록이 닫힌다', await waitFor(`!document.querySelector('${LANG_MENU}')`, 8000))
       await sleep(1500)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('코드 블록 강조 (8a-3 · F-01-14)')) {
+    if (sectionIf('코드 블록 강조 (8a-3 · F-01-14)')) { try {
       // 문법 강조는 데코레이션이다 — 화면의 span 을 보고, 글자 · 클립보드에는 섞이지 않는지 본다. 문법은 지연 로드라 처음 보는 언어를
       // 고르면 글자를 더 치지 않아도 들어온 뒤에 칠해야 한다. 1만 줄 붙여넣기는 보이는 줄만 칠한다(가상화). 자기 데이터를 스스로
       // 만든다 — E2E_ONLY 로 홀로 돈다.
@@ -5316,9 +5405,9 @@ async function main() {
         JSON.stringify(await paintedIn(hb.py)))
       await fetch(`${pagesUrl}/${hlPage}/lock`, { method: 'DELETE', headers: authed })
       await sleep(1500)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('목차 (8b-1 · F-01-16)')) {
+    if (sectionIf('목차 (8b-1 · F-01-16)')) { try {
       // 목차는 내용을 저장하지 않고 그릴 때 헤딩에서 계산한다. 헤딩을 고치면 · 다른 참여자가 넣으면 따라가고, 항목을 누르면 그
       // 헤딩으로 간다(접힌 토글은 펼친다 · 같은 항목을 두 번 눌러도 · 읽기 전용에서도 키보드로). 자기 데이터를 스스로 만든다.
       const stamp = Date.now()
@@ -5534,9 +5623,9 @@ async function main() {
         JSON.stringify(await landedInfo(target)))
       await fetch(`${pagesUrl}/${tocPage}/lock`, { method: 'DELETE', headers: authed })
       await sleep(1500)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('이동 경로 블록 (8b-2 · F-01-16)')) {
+    if (sectionIf('이동 경로 블록 (8b-2 · F-01-16)')) { try {
       // breadcrumb 블록은 내용을 저장하지 않고 머리의 경로와 같은 줄을 그린다(볼 수 있는 조상만 · teamspace 는 멤버에게만). 링크는
       // 앱 안에서 옮겨 가고, 제목을 고치면(서버가 다시 그린다) 따라간다. 볼 수 없는 조상은 공유받은 동료의 경로에 없다(브라우저
       // 세션을 동료로 바꾼다 — 끝에 되돌린다). 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
@@ -5662,9 +5751,9 @@ async function main() {
         await browseAs(session)
       }
       await sleep(1000)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('페이지 아이콘 (8c-1 · F-02-05)')) {
+    if (sectionIf('페이지 아이콘 (8c-1 · F-02-05)')) { try {
       // 머리의 "아이콘 추가"는 무작위 이모지를 곧바로 단다 · 아이콘을 누르면 고르개(검색 · 키보드 · 무작위 · 제거) · 고른 아이콘이
       // 사이드바 · 경로(머리와 블록)에 선다 · 새로고침해도 남는다 · 읽기만 받은 사람은 보기만 한다(브라우저 세션을 동료로 바꾼다 — 끝에
       // 되돌린다). 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
@@ -5825,9 +5914,9 @@ async function main() {
       await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${secret}` })
       check('거부한 뒤에도 아이콘은 그대로다', await waitFor(`document.querySelector('${ICON}')?.textContent === '📕'`, 15000), String(await headerIcon()))
       await sleep(500)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('페이지 아이콘이 서는 나머지 자리 (8c-2 · F-02-05)')) {
+    if (sectionIf('페이지 아이콘이 서는 나머지 자리 (8c-2 · F-02-05)')) { try {
       // 본문의 하위 페이지 블록 · 멘션 칩 · `@` 후보, 검색 결과, 백링크, 옮기기 후보, 휴지통, 인박스가 그 페이지의 아이콘을 앞에 단다.
       // 아이콘이 없으면 기본 문서 글리프(그림이라 줄의 글자가 제목 그대로다). 다른 사람이 옮겨 온 하위 페이지의 아이콘은 제목과 함께
       // 다시 읽은 맵에서 온다. 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
@@ -5980,9 +6069,9 @@ async function main() {
         await browseAs(session)
       }
       await sleep(500)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('데이터베이스 행의 아이콘 (8c-3a · F-02-05)')) {
+    if (sectionIf('데이터베이스 행의 아이콘 (8c-3a · F-02-05)')) { try {
       // 행은 페이지라 아이콘의 자리가 같다(`format.page_icon` · `setPageIcon` 이 행을 받는다). 표의 제목 칸 · 보드 카드 · 관계형 칩과
       // 고르개 · 템플릿 목록 · 새 행 메뉴 · 템플릿 편집 화면이 그것을 앞에 단다. 셀을 고친 응답(화면이 그 행으로 갈아 끼운다)도 아이콘을
       // 싣는다. 준비는 서버 명령으로 한다 — 자기 데이터를 스스로 만든다(E2E_ONLY 로 홀로 돈다).
@@ -6143,9 +6232,9 @@ async function main() {
         await waitFor(`document.querySelector('[data-testid="page-icon"]')?.textContent === '📝' && document.querySelector('[data-testid="page-icon"]').tagName === 'BUTTON'`, 15000),
         String(await evaluate(`document.querySelector('[data-testid="page-icon"]')?.outerHTML ?? '(없음)'`)))
       await sleep(500)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('데이터베이스 자신의 아이콘 (8c-3b · F-02-05)')) {
+    if (sectionIf('데이터베이스 자신의 아이콘 (8c-3b · F-02-05)')) { try {
       // 데이터베이스의 아이콘은 정본의 `database.icon` 이다(페이지 아이콘과 같은 모양 · 같은 고르개). 머리의 고르개가 그것을 바꾸고 사이드바 ·
       // 머리의 경로 · 템플릿 화면의 경로 · 관계형의 대상 고르개 · teamspace 화면이 그것을 단다. 아이콘이 없으면 사이드바 · teamspace 화면은
       // 표 글리프(그림 — 전에는 글자 `▦` 였다). 고치는 사람은 이름과 같다(구조 · 데이터베이스 잠금). 자기 데이터를 스스로 만든다 —
@@ -6306,9 +6395,9 @@ async function main() {
       check('★ 사이드바는 표 글리프로 돌아온다', await waitFor(`JSON.stringify(${rowExpr(TREE_ROW)}) === ${JSON.stringify(glyphRow(shelfName))}`, 8000),
         JSON.stringify(await treeRow()))
       await sleep(500)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('이미지 아이콘 (8c-4 · F-02-05)')) {
+    if (sectionIf('이미지 아이콘 (8c-4 · F-02-05)')) { try {
       // 고르개의 "이미지" 탭 — 파일을 올리거나(이미지 블록과 같은 업로드 길) 이미지 주소를 넣는다. 고른 이미지가 머리 · 사이드바 · 부모 본문의
       // 하위 페이지 블록(노드 뷰의 DOM)에 선다. 올린 파일은 그 파일의 참조다(`ref_count`). 불러오지 못한 이미지는 기본 글리프로 바뀐다.
       // 데이터베이스 아이콘도 같다. 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
@@ -6476,9 +6565,9 @@ async function main() {
         JSON.stringify([await evaluate(`document.querySelector('${ICON}')?.outerHTML?.slice(0, 160) ?? null`), await evaluate(`!!document.querySelector('${PICKER}')`),
           await evaluate(`document.querySelector('[role="alert"]')?.textContent ?? null`)]))
       await sleep(500)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('버전 기록 (8d-1 · F-11-01)')) {
+    if (sectionIf('버전 기록 (8d-1 · F-11-01)')) { try {
       // 본문을 고치는 길은 협업 서버다 — 그 쓰기도 본문 세션을 지나므로 버전 판정이 그 페이지의 잠금 안에서 돈다(`history/record.ts`).
       // 2분 쉰 뒤의 첫 쓰기 · 목록 열기가 그 세션의 버전을 남긴다. 시각은 로그의 created_at 을 뒤로 밀어 흉내 낸다. 기록 화면은 다음
       // 조각(8d-2)이다 — 여기서는 라우트를 본다. 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
@@ -6551,9 +6640,9 @@ async function main() {
         gone?.status === 410 && gone.body.error === 'expired' && afterGone.body.versions?.length === 1,
         JSON.stringify([gone?.status, afterGone.body.versions?.length]))
       await sleep(300)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('기록 화면 (8d-2 · F-11-01)')) {
+    if (sectionIf('기록 화면 (8d-2 · F-11-01)')) { try {
       // 머리의 "기록" — 버전 목록(최신순 · 시각 · 고친 사람)과 고른 버전의 읽기 전용 미리보기. 준비는 서버 명령으로 한다: 본문을 세 번
       // 저장하며 로그의 시각을 밀어 버전 둘을 만든다(2분 쉰 뒤의 첫 쓰기가 쓰기 전의 상태를 남긴다 — 8d-1). 둘째 버전은 다른 페이지를
       // 멘션한다 — 미리보기가 그 이름 · 아이콘을 지금의 권한으로 거른 맵에서 그리는지 본다. 자기 데이터를 스스로 만든다.
@@ -6643,9 +6732,9 @@ async function main() {
         shared.ok && viewerHtml.includes('기록화면') && !viewerHtml.includes('data-testid="page-history-open"'),
         JSON.stringify([shared.ok, viewerHtml.length]))
       await sleep(300)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('되돌리기 (8d-3 · F-11-02)')) {
+    if (sectionIf('되돌리기 (8d-3 · F-11-02)')) { try {
       // 기록 창에서 고른 버전으로 되돌린다 — 한 번 더 묻고, 되돌리면 **열린 본문 편집기가 협업 서버가 퍼뜨린 update 로 따라온다**. 되돌리기
       // 전의 상태도 버전으로 남아 그것을 다시 되돌리면 취소다. 하위 페이지는 지금 그대로다(버전 뒤에 만든 자식이 남는다). 잠긴 페이지는
       // 되돌리기가 없다. 준비는 서버 명령으로 한다(로그의 시각을 밀어 버전을 만든다). 자기 데이터를 스스로 만든다.
@@ -6737,9 +6826,9 @@ async function main() {
         await fetch(`${pagesUrl}/${page}/lock`, { method: 'DELETE', headers: authed })
       }
       await sleep(300)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('코멘트 패널 · 인박스 (F-05-08 · F-11-07)')) {
+    if (sectionIf('코멘트 패널 · 인박스 (F-05-08 · F-11-07)')) { try {
       const commentPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
         method: 'POST',
         headers: authed,
@@ -6856,9 +6945,9 @@ async function main() {
         (await clickIn(INBOX_FILTER, '보관')) &&
           (await waitFor(`(document.querySelector('main')?.textContent ?? '').includes('동료가 남긴 코멘트')`, 8000)),
         await inboxText())
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('코멘트 반응 (7c-3d-1 · F-05-08)')) {
+    if (sectionIf('코멘트 반응 (7c-3d-1 · F-05-08)')) { try {
       // 코멘트마다 반응 칩 — 다른 사람이 누른 것(수 · 이름) · 칩을 누르면 토글(aria-pressed) · "반응 추가" 의 빠른 고르개로 새 이모지 ·
       // Esc 는 고르개만 닫는다 · 서버에 남은 것. 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
       const stamp = Date.now().toString(36)
@@ -6916,9 +7005,9 @@ async function main() {
       check('서버에 남은 것 — 👍 은 동료만 · 🎉 은 나',
         JSON.stringify(reactions.map((r) => [r.emoji, r.userIds])) === JSON.stringify([['👍', [pal.userId]], ['🎉', [after.me]]]),
         JSON.stringify(reactions))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('커스텀 이모지 반응 (7c-3d-2 · F-13-16)')) {
+    if (sectionIf('커스텀 이모지 반응 (7c-3d-2 · F-13-16)')) { try {
       // 반응 고르개의 커스텀 줄 — 찾기 · 고르면 그림 칩(키는 custom_emoji:{id}) · 이모지를 지우면 칩은 :이름: 글자 · 지운 뒤에도 빼기는 된다.
       const stamp = Date.now().toString(36)
       const api = async (method, path, body) => {
@@ -6980,9 +7069,9 @@ async function main() {
       const listed = await api('GET', `/pages/${page}/discussions?resolved=false`)
       check('서버에 남은 반응이 없다', JSON.stringify(listed.body?.discussions?.[0]?.comments?.[0]?.reactions) === '[]',
         JSON.stringify(listed.body?.discussions?.[0]?.comments?.[0]?.reactions))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('본문 글자에 단 코멘트 (F-05-07)')) {
+    if (sectionIf('본문 글자에 단 코멘트 (F-05-07)')) { try {
       const anchorBlock = randomUUID()
       const anchorPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
         method: 'POST',
@@ -7082,9 +7171,9 @@ async function main() {
         await panelText())
       check('지워진 원문 스냅샷은 그대로 보여 준다', (await panelText()).includes('마바사'), await panelText())
       await key('Escape')
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('@ 멘션 (F-07-08 · F-07-09 · F-05-09)')) {
+    if (sectionIf('@ 멘션 (F-07-08 · F-07-09 · F-05-09)')) { try {
       const mentionBlock = randomUUID()
       const targetTitle = `멘션대상문서${Date.now() % 100000}`
       const targetPage = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, {
@@ -7162,9 +7251,9 @@ async function main() {
       check('★ 멘션된 페이지에 백링크가 뜬다',
         await waitFor(`(document.querySelector('details[aria-label="백링크"]')?.textContent ?? '').includes('멘션하는문서')`, 8000),
         await evaluate(`document.querySelector('details[aria-label="백링크"]')?.textContent ?? '(없음)'`))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('내비게이션 — 최근 · 즐겨찾기 (W6-a)')) {
+    if (sectionIf('내비게이션 — 최근 · 즐겨찾기 (W6-a)')) { try {
     // 방금까지 여러 페이지를 오갔으므로 사이드바에 "최근"이 있어야 한다.
     await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${pageId}` })
     await waitFor(`!!document.querySelector('nav[aria-label="페이지 트리"]')`, 15000)
@@ -7224,8 +7313,8 @@ async function main() {
       await waitFor(`document.querySelector('section[aria-label="최근"]')?.textContent.includes(${JSON.stringify(renamed)})`, 5000),
       await evaluate(`document.querySelector('section[aria-label="최근"]')?.textContent ?? '(없음)'`))
 
-    }
-    if (sectionIf('검색 오버레이 (W7 · F-07-01)')) {
+    } catch (thrown) { await sectionThrew(thrown) } }
+    if (sectionIf('검색 오버레이 (W7 · F-07-01)')) { try {
     // 이 절이 헤드리스로는 절대 안 보이는 것을 본다: 단축키가 에디터까지 새지
     // 않는가 · 포커스가 돌아오는가 · ↑↓/Enter 가 본문을 건드리지 않는가.
       // 찾을 대상 — 제목에 고유 토큰을 넣은 페이지를 API 로 만든다.
@@ -7374,9 +7463,9 @@ async function main() {
         check('★ 사이드바 버튼으로도 열린다', await waitFor(`!!document.querySelector('[data-testid="search-overlay"]')`, 5000))
         await key('Escape')
       }
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('데이터베이스 표 (W8-b · F-04-14 · F-03-16)')) {
+    if (sectionIf('데이터베이스 표 (W8-b · F-04-14 · F-03-16)')) { try {
     // 이 절이 헤드리스로는 볼 수 없는 것을 본다: 포커스가 칸을 따라 움직이는가 ·
     // 편집기가 쓴 Enter 가 표의 규칙을 한 번 더 타지 않는가 · 표 끝의 Tab 이 표 밖으로
     // 나가는가. 규칙 자체는 `grid-nav.test.ts` · `cell-format.test.ts` 가 본다.
@@ -7928,7 +8017,7 @@ async function main() {
           /* 임시 폴더 */
         }
       }
-      if (sectionIf('데이터베이스 보드 (보드 4b · F-04-03 · F-04-11)')) {
+      if (sectionIf('데이터베이스 보드 (보드 4b · F-04-03 · F-04-11)')) { try {
       // 규칙(드롭 자리 · 상태 · 되돌리기)은 `board-drag.test.ts` 가, 서버(셀 값 + 자리 한 트랜잭션 · 그룹 질의 · 커서)는
       // `group.db.test.ts` 가 본다. 여기서는 **실제 포인터로** 카드를 끌어 놓는 길과, 그 결과가 서버에 남는지를 본다.
       // ⚠ 익스포트 절 **뒤**에 있다 — 그 절의 워크스페이스 요약이 표 개수(1)를 센다. 이 절은 표를 둘 더 만든다.
@@ -8163,8 +8252,8 @@ async function main() {
           await waitFor(`!!document.querySelector('[data-testid="db-board"]') && document.querySelectorAll('[data-testid="db-board-column"]').length === 2`, 10000),
           JSON.stringify(await labelsOf()))
         await clickOn('[data-testid="db-group-button"]')
-      }
-      if (sectionIf('데이터베이스 상태 속성 (보드 4c-1 · F-03-05)')) {
+      } catch (thrown) { await sectionThrew(thrown) } }
+      if (sectionIf('데이터베이스 상태 속성 (보드 4c-1 · F-03-05)')) { try {
       // 값 계약 · 그룹 불변식 · 기본 옵션 · 옵션 순서는 `status.db.test.ts` · `verify-schema` ⑭ 가 본다. 여기서는 화면이
       // 그것을 **보여 주는지**를 본다 — 색 점 칩 · 그룹 머리로 구획된 편집기 · 새 옵션의 자리 · 보드의 자동 선택.
       // ⚠ 익스포트 절 **뒤**에 있다(표를 하나 더 만든다 — 보드 절 머리말과 같은 이유).
@@ -8242,8 +8331,8 @@ async function main() {
         check('새로고침해도 그 열에 있다 — 서버에도 빈 값으로 남았다',
           JSON.stringify(await boardColumns()) === JSON.stringify(['진행 없음:1', '시작 전:0', '검토:1', '진행 중:0', '완료:0']),
           JSON.stringify(await boardColumns()))
-      }
-      if (sectionIf('데이터베이스 List 뷰 (보드 4c-2 · F-04-04)')) {
+      } catch (thrown) { await sectionThrew(thrown) } }
+      if (sectionIf('데이터베이스 List 뷰 (보드 4c-2 · F-04-04)')) { try {
       // 어느 칸을 접는지 · 제목이 앞인지는 `list-layout.test.ts` 가, 서버(그룹 없이 만들어진다 · 모양만 바뀐다)는
       // `view.db.test.ts` 가 본다. 여기서는 **같은 격자가 목록 모양으로 그려지는지**와, 표의 키보드 · 편집이 그 모양에서도
       // 그대로 도는지를 본다 — List 는 별도 컴포넌트가 아니다(F-04-04).
@@ -8329,8 +8418,8 @@ async function main() {
           await waitFor(`document.querySelector('[data-testid="db-table"]')?.dataset.variant === 'table'
             && !!document.querySelector('[data-testid="db-column-menu"]')
             && document.querySelector('td[data-cell="1:1"]')?.textContent === '7'`, 10000))
-      }
-      if (sectionIf('데이터베이스 relation 칸 (relation 5b-1 · F-03-10)')) {
+      } catch (thrown) { await sectionThrew(thrown) } }
+      if (sectionIf('데이터베이스 relation 칸 (relation 5b-1 · F-03-10)')) { try {
       // 엣지 · 거울상 · 권한 · 제목 맵의 규칙은 `relation.db.test.ts` · `verify-schema` ⑮ 가 본다. 여기서는 화면이 그것을
       // **그리는지**를 본다 — 제목 칩 · 휴지통에 간 연결 · "더 보기"로 온 행의 제목 · 목록과 보드의 배지.
       // ⚠ 익스포트 절 **뒤**에 있다(표를 둘 더 만든다).
@@ -8437,9 +8526,9 @@ async function main() {
         check('★ 보드 카드의 배지에도 제목 칩이 선다',
           same(await evaluate(`[...document.querySelectorAll('[data-row-id="${t1}"] [data-testid="db-relation-chip"]')].map((e) => e.textContent.replace('↗', '').trim())`), ['알파', '베타'])
             && (await evaluate(`document.querySelectorAll('[data-row-id="${t3}"] [data-testid="db-relation-chip"]').length`)) === 0)
-      }
+      } catch (thrown) { await sectionThrew(thrown) } }
 
-      if (sectionIf('데이터베이스 relation 고르기 (relation 5b-2 · F-03-10)')) {
+      if (sectionIf('데이터베이스 relation 고르기 (relation 5b-2 · F-03-10)')) { try {
       // 후보 검색의 규칙(이미 연결된 행 제외 · LIKE 글자 그대로 · 권한)은 `relation.db.test.ts` ⑩ 이 본다. 여기서는 사람이
       // 하는 순서를 본다 — 속성 추가 폼에서 관계형을 만들고, 칸에서 찾아 고르고, × 로 빼고, 반대쪽 표에서 본다.
       // ⚠ 익스포트 절 **뒤**에 있다(표를 둘 더 만든다).
@@ -8595,9 +8684,9 @@ async function main() {
         await key('Enter')
         check('★ 다시 고르면 **바뀐다** — 둘이 되지 않는다',
           await chipsAre('0:2', ['다른 곳']), JSON.stringify(await chipsIn('0:2')))
-      }
+      } catch (thrown) { await sectionThrew(thrown) } }
 
-      if (sectionIf('데이터베이스 rollup — 서버 (rollup 5c-1 · F-03-11)')) {
+      if (sectionIf('데이터베이스 rollup — 서버 (rollup 5c-1 · F-03-11)')) { try {
       // 집계 함수 · 권한 · 끊긴 설정의 규칙은 `rollup-functions.test.ts` · `rollup.db.test.ts` 가 본다. 화면은 5c-2 가 붙인다 —
       // 여기서는 빌드된 앱에서 라우트 둘이 실제로 답하는지, 그리고 **rollup 속성이 있어도 표가 열리는지**를 본다.
       // ⚠ 익스포트 절 **뒤**에 있다(표를 둘 더 만든다).
@@ -8767,9 +8856,9 @@ async function main() {
           await waitFor(`!!document.querySelector('[data-testid="db-rollup-no-relation"]')
             && !document.querySelector('[data-testid="db-rollup-relation"]')`, 5000))
         await key('Escape')
-      }
+      } catch (thrown) { await sectionThrew(thrown) } }
 
-      if (sectionIf('데이터베이스 템플릿 — 서버 (템플릿 6c-1 · 6c-2 · F-08-02 · F-08-03)')) {
+      if (sectionIf('데이터베이스 템플릿 — 서버 (템플릿 6c-1 · 6c-2 · F-08-02 · F-08-03)')) { try {
       // 권한 · 상한 · 기본 지정의 규칙은 `template.db.test.ts` 가 본다. 여기서는 빌드된 앱에서 라우트가 실제로 답하는지,
       // 그리고 **불변식 R1 이 화면까지 지켜지는지** — 템플릿을 만들어도 표에 행이 늘지 않는지 — 를 본다.
       // ⚠ 익스포트 절 **뒤**에 있다(표를 하나 더 만든다).
@@ -8861,9 +8950,9 @@ async function main() {
         const asRow = await api('DELETE', `/rows/${templateId}`)
         check('행 라우트로는 템플릿을 버릴 수 없다 — 템플릿의 길은 하나다',
           asRow.status === 404, `${asRow.status} ${JSON.stringify(asRow.body)}`)
-      }
+      } catch (thrown) { await sectionThrew(thrown) } }
 
-      if (sectionIf('데이터베이스 템플릿 — 화면 (템플릿 6c-3 · F-08-02)')) {
+      if (sectionIf('데이터베이스 템플릿 — 화면 (템플릿 6c-3 · F-08-02)')) { try {
       // 만드는 · 채우는 · 버리는 길이 실제 브라우저에서 이어지는지 본다. 속성 목록은 표의 세 번째 모양
       // (`variant="record"`)이라 배치 규칙 자체는 `list-layout.test.ts` 가 DOM 없이 본다.
       // ⚠ 익스포트 절 **뒤**에 있다(표를 하나 더 만든다).
@@ -8966,9 +9055,9 @@ async function main() {
         check('★ "버리기" 를 누르면 목록에서 빠진다',
           await waitFor(`!!document.querySelector('[data-testid="db-templates-empty"]')`, 8000),
           await evaluate(`document.querySelector('[data-testid="db-templates-panel"]')?.textContent ?? '패널 없음'`))
-      }
+      } catch (thrown) { await sectionThrew(thrown) } }
 
-      if (sectionIf('데이터베이스 New ▾ — 템플릿으로 만들기 · 기본 템플릿 (템플릿 6c-4 · F-08-02 · F-08-03)')) {
+      if (sectionIf('데이터베이스 New ▾ — 템플릿으로 만들기 · 기본 템플릿 (템플릿 6c-4 · F-08-02 · F-08-03)')) { try {
       // 문구 규칙은 `new-row.test.ts` 가, 복제 · 덮기 · 빠진 것의 개수는 `template.db.test.ts` 가 본다. 여기서는 표와 보드의
       // 버튼이 실제로 그 길을 타는지, 그리고 **기본 템플릿이 버튼의 글자와 동작을 함께 바꾸는지**를 본다.
       // ⚠ 익스포트 절 **뒤**에 있다(표를 하나 더 만든다).
@@ -9078,10 +9167,10 @@ async function main() {
           await waitFor(`document.querySelector('[data-testid="db-add-row"]')?.textContent.trim() === '+ 새로 만들기'`, 8000),
           await evaluate(`document.querySelector('[data-testid="db-add-row"]')?.textContent`))
         await key('Escape')
-      }
-    }
+      } catch (thrown) { await sectionThrew(thrown) } }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('페이지 복제 (복제 6a · 6b · F-02-09 · F-08-01)')) {
+    if (sectionIf('페이지 복제 (복제 6a · 6b · F-02-09 · F-08-01)')) { try {
     // 재매핑 · 권한 · 상한의 규칙은 `duplicate-remap.test.ts` · `duplicate.db.test.ts` 가 본다. 여기서는 빌드된 앱에서
     // 라우트가 실제로 답하는지, 그리고 **사본이 열리는 진짜 페이지인지**를 본다.
       const newPage = async (title, parent) => {
@@ -9179,9 +9268,13 @@ async function main() {
         `${await landedWhy()} · ${await treeLinks()}`)
 
       // 사이드바의 ⧉ — 원본 옆에 하나 더.
+      const sidebarCopy = `[aria-label=${JSON.stringify(`복제 원본 ${stamp} 복제`)}]`
       await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
       await waitFor(`!!document.querySelector('nav[aria-label="페이지 트리"] a[href$="/${source}"]')`, 15000)
-      await clickOn(`[aria-label=${JSON.stringify(`복제 원본 ${stamp} 복제`)}]`)
+      // 서버가 그린 ⧉ 를 곧바로 누르지 않는다 — 하이드레이션 뒤 사이드바의 펼침(localStorage)이 돌아와 줄이 움직인다(#388 의 영향 판에서
+      // 아래 데이터베이스 줄의 ⧉ 를 눌렀다 · HANDOFF §3.3-483)
+      await waitSteady(sidebarCopy)
+      await clickOn(sidebarCopy)
       check('★ 사이드바의 ⧉ 로도 복제한다 — 사본으로 옮겨 가고 트리에 사본이 선다',
         await waitFor(landedCopy(`/w/${workspaceId}`), 15000),
         `${await landedWhy()} · ${await treeLinks()}`)
@@ -9210,9 +9303,9 @@ async function main() {
       await clickOn('[data-testid="page-duplicate-open"]')
       check('"사본 열기"로 그때 옮겨 간다',
         await waitFor(`!location.pathname.endsWith('/${partial}') && !!document.querySelector('[data-testid="page-duplicate"]')`, 15000))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('볼 수 없는 하위 페이지의 참조 (HANDOFF §3.2-22)')) {
+    if (sectionIf('볼 수 없는 하위 페이지의 참조 (HANDOFF §3.2-22)')) { try {
       // 새 페이지에서 따로 본다 — 앞 절의 페이지에 "소유자도 못 보는 하위 페이지"를 남기지 않는다.
       const createAt = async (parentPageId) =>
         (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: JSON.stringify(parentPageId ? { parentPageId } : {}) })).json()).page.id
@@ -9237,9 +9330,9 @@ async function main() {
       check('★ 볼 수 없는 하위 페이지의 참조는 "접근 권한 없음"으로 그리고 열리지 않는다',
         await waitFor(`[...document.querySelectorAll('.blk-editor .blk-page-link')].some((e) => e.textContent === '접근 권한 없음' && e.disabled)`, 5000))
       check('★ 그 제목은 페이지 어디에도 없다', !(await evaluate(`document.documentElement.outerHTML.includes(${JSON.stringify(hiddenTitle)})`)))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('여러 data source — 서버 (8e-1 · F-04-23)')) {
+    if (sectionIf('여러 data source — 서버 (8e-1 · F-04-23)')) { try {
       // 데이터베이스 하나에 data source 둘. 소스를 더하는 화면은 8e-2 다 — 여기서는 라우트로 더하고, 둘째 소스의 탭이 **그 소스의** 표 ·
       // 새 행 · 템플릿 화면 · 관계형 고르개로 서는지 본다(8e-1 전에는 모두 데이터베이스의 첫 소스를 골랐다). 자기 데이터를 스스로 만든다.
       const stamp = Date.now()
@@ -9329,9 +9422,9 @@ async function main() {
       const blank = await fetch(`${api}/data-sources/${secondSource}`, { method: 'PATCH', headers: authed, body: JSON.stringify({ name: ' ' }) })
       check('소스 이름 바꾸기 — 공백을 접는다 · 빈 이름은 400', renamed.status === 200 && renamed.body?.dataSource?.name === '거래처' && blank.status === 400,
         JSON.stringify([renamed, blank.status]))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('여러 data source — 화면 (8e-2 · F-04-23)')) {
+    if (sectionIf('여러 data source — 화면 (8e-2 · F-04-23)')) { try {
       // 데이터베이스 머리의 "데이터 소스" 창에서 소스를 더하고 이름을 바꾸고 옮겨 다닌다. 소스가 둘 이상이면 탭 줄 위에 지금 뷰의 소스
       // 이름이 서고, "뷰 추가"가 볼 소스를 묻는다. 하나일 때는 소스 이름이 어디에도 없다. 자기 데이터를 스스로 만든다.
       const stamp = Date.now()
@@ -9482,9 +9575,9 @@ async function main() {
         locked.ok && !lockedHtml.includes('data-testid="db-sources-button"') && lockedHtml.includes('data-testid="db-source-name"'),
         JSON.stringify([locked.status, lockedHtml.includes('data-testid="db-sources-button"')]))
       await fetch(`${api}/databases/${dbId}/lock`, { method: 'DELETE', headers: authed })
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('data source 휴지통 (8e-3a · F-04-23)')) {
+    if (sectionIf('data source 휴지통 (8e-3a · F-04-23)')) { try {
       // "데이터 소스" 창에서 소스를 휴지통으로 보내고(한 번 더 묻는다), 사이드바의 휴지통에서 되살리고 영구 삭제한다. 그 소스의 행은 함께
       // 가고 함께 돌아온다 — 휴지통에 있는 동안 행의 주소는 열리지 않는다. 마지막 소스에는 휴지통 단추가 없다. 자기 데이터를 스스로 만든다.
       const stamp = Date.now()
@@ -9574,9 +9667,9 @@ async function main() {
         (await waitFor(`!document.querySelector(${JSON.stringify(entrySel)})`, 15000))
           && (await fetch(`${api}/data-sources/${secondSource}/trash`, { method: 'DELETE', headers: authed })).status === 404,
         JSON.stringify(await purgedTrash()).slice(0, 200))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('뷰 지우기 (8e-3b · F-04-01 · F-04-23)')) {
+    if (sectionIf('뷰 지우기 (8e-3b · F-04-01 · F-04-23)')) { try {
       // 뷰 메뉴의 "뷰 지우기" — 메뉴 안에서 한 번 더 묻고, 지우면 첫 뷰로 옮긴다. 데이터베이스의 마지막 뷰에는 서지 않는다. 그 소스를 보는
       // 마지막 뷰면 "뷰와 소스를 함께 휴지통으로"를 묻는다(되살리면 그 뷰도 돌아온다). 자기 데이터를 스스로 만든다.
       const stamp = Date.now()
@@ -9646,9 +9739,9 @@ async function main() {
       const restored = await fetch(`${api}/data-sources/${secondSource}/trash`, { method: 'DELETE', headers: authed })
       const viewsBack = (await viewsOf()).map((v) => v.id)
       check('되살리면 그 뷰도 돌아온다 — 지우지 않고 숨겼다', restored.ok && viewsBack.includes(added?.viewId), JSON.stringify([restored.status, viewsBack]))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('행 페이지 (8f-1 · F-16-07 · F-16-03)')) {
+    if (sectionIf('행 페이지 (8f-1 · F-16-07 · F-16-03)')) { try {
       // 표의 제목 칸 · 보드 카드의 "열기"로 행 페이지를 연다. 경로는 그 데이터베이스, 제목은 제목 셀, 본문 위에 속성 묶음(스키마 순서 ·
       // 뷰에서 숨긴 것도). 행에 맞지 않는 머리 단추는 서지 않고, 지우면 그 표로 돌아간다. 자기 데이터를 스스로 만든다.
       const stamp = Date.now()
@@ -9773,9 +9866,9 @@ async function main() {
       check('★ 행 페이지에서 지우면 그 데이터베이스로 돌아간다',
         await waitFor(`location.pathname === ${JSON.stringify(`/w/${workspaceId}/db/${dbId}`)}`, 15000),
         String(await evaluate('location.pathname')))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('행 페이지 레이아웃 (8f-2 · F-16-03 · F-16-01)')) {
+    if (sectionIf('행 페이지 레이아웃 (8f-2 · F-16-03 · F-16-01)')) { try {
       // 행 페이지의 "레이아웃 편집"에서 숨기고 순서를 바꾼 뒤 "모든 행에 적용" — 같은 데이터베이스의 다른 행도 따른다. 숨긴 속성은
       // "숨긴 속성 N개"로 펼쳐 채운다. 취소는 아무것도 바꾸지 않고, 남이 먼저 적용했으면 거부된다. 잠긴 데이터베이스에는 단추가 없다.
       // 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
@@ -9930,9 +10023,9 @@ async function main() {
         locked.ok && !lockedHtml.includes('data-testid="row-layout-edit"') && lockedHtml.includes('data-testid="row-hidden-toggle"') && lockedPut.status === 409,
         JSON.stringify([locked.status, lockedHtml.includes('data-testid="row-layout-edit"'), lockedPut.status]))
       await fetch(`${api}/databases/${dbId}/lock`, { method: 'DELETE', headers: authed })
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('설정 화면 (8g-1 · F-17-12)')) {
+    if (sectionIf('설정 화면 (8g-1 · F-17-12)')) { try {
       // 사이드바의 "설정"으로 연다. 왼쪽 내비와 항목은 레지스트리에서 나온다 — 소유자는 내 계정(프로필) · 워크스페이스(일반 · 보안), 멤버는
       // 보안 절이 없고 워크스페이스 이름이 읽기 전용, 게스트는 내 계정만. 내 이름 · 워크스페이스 이름을 고치면 사이드바 · 홈이 따라온다.
       // 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다. 끝에 두 이름을 되돌린다.
@@ -10031,9 +10124,9 @@ async function main() {
       // 되돌린다 — 뒤 절이 이름을 보지 않지만 다음 판을 위해
       await fetch(settingsApi('account.name'), { method: 'PUT', headers: authed, body: JSON.stringify({ value: originalName }) })
       await fetch(settingsApi('workspace.name'), { method: 'PUT', headers: authed, body: JSON.stringify({ value: originalWorkspace }) })
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('휴지통 보관 기간 (4b-3 · F-11-06)')) {
+    if (sectionIf('휴지통 보관 기간 (4b-3 · F-11-06)')) { try {
       // 설정 → 워크스페이스 → 보안의 "휴지통 보관 기간"(1 ~ 3650일)은 Enterprise 만 바꾼다(엔타이틀먼트 `trash.custom_retention`). 이 판의
       // 워크스페이스는 Business 라 처음엔 보이되 읽기 전용("요금제 필요") · 서버도 403 plan_required. Enterprise 로 올리면 숫자 칸이 서고, 범위
       // 밖은 거부 · Esc 는 되돌림 · Enter 로 저장. 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다. 끝에 기간 · 요금제를 되돌린다.
@@ -10117,9 +10210,9 @@ async function main() {
         await dbQuery(`UPDATE workspace SET trash_days = $2 WHERE id = $1`, [workspaceId, originalDays])
         await setWorkspacePlan(workspaceId, 'business')
       }
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('설정 — 사람 · 내보내기 (8g-2 · F-17-12)')) {
+    if (sectionIf('설정 — 사람 · 내보내기 (8g-2 · F-17-12)')) { try {
       // 홈의 관리 절(멤버 · 초대 · 게스트 · 그룹 · 내보내기)이 설정으로 옮겨 갔다 — 사람 절의 패널 넷 · 일반 절의 내보내기. 패널은 그 기능의
       // 판정 그대로 선다(멤버 관리자: 내보내기 · 보안 없음 / 멤버: 목록 · 그룹뿐 / 게스트: 내 계정만). 자기 데이터를 스스로 만든다.
       const stamp = Date.now()
@@ -10166,9 +10259,9 @@ async function main() {
       check('게스트 — 사람 절을 주소로 열어도 내 계정의 프로필 · 홈에 "설정 → 사람" 안내도 없다',
         panelsIn(guestPeople).length === 0 && /data-testid="settings-title"[^>]*>프로필</.test(guestPeople) && !guestHome.includes('settings?s=workspace.people'),
         JSON.stringify(panelsIn(guestPeople)))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('테마 (8h · F-12-03)')) {
+    if (sectionIf('테마 (8h · F-12-03)')) { try {
       // 설정 → 환경설정의 "테마"(시스템 · 밝게 · 어둡게)는 계정의 값이다 — 서버가 첫 HTML 의 `<html data-theme>` 에 싣고(다른 세션에도),
       // CSS 의 dark 변형이 그 속성을 본다(system 이면 OS). Ctrl/Cmd + Shift + L 은 지금 보이는 것의 반대. OS 의 밝기는 CDP 로 정한다.
       // 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다. 끝에 테마 · 에뮬레이션을 되돌린다.
@@ -10269,9 +10362,9 @@ async function main() {
         await fetch(themeApi, { method: 'PUT', headers: authed, body: JSON.stringify({ value: 'system' }) })
         await send('Emulation.setEmulatedMedia', { features: [] })
       }
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('비밀번호 — 서버 (8i-1a · F-14-03)')) {
+    if (sectionIf('비밀번호 — 서버 (8i-1a · F-14-03)')) { try {
       // 화면은 8i-1b 다 — 여기서는 라우트를 실제 서버로 본다. 정하기 → 비밀번호로 로그인(세션 쿠키) → 실패는 모두 같은 말 → 오래된 세션의
       // 바꾸기는 지금 비밀번호를 묻고, 바꾸면 다른 세션이 폐기된다 → 지우면 비밀번호로 못 들어온다. 자기 데이터를 스스로 만든다.
       const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
@@ -10320,9 +10413,9 @@ async function main() {
       const removed = await readRes(await fetch(pwUrl, { method: 'DELETE', headers: asWho, body: JSON.stringify({ currentPassword: NEXT }) }))
       check('지우면 비밀번호로 못 들어온다(로그인 코드로는 들어온다)',
         removed.status === 200 && (await loginWith(who.email, NEXT)).status === 401, JSON.stringify(removed))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('비밀번호 — 화면 (8i-1b · F-14-03)')) {
+    if (sectionIf('비밀번호 — 화면 (8i-1b · F-14-03)')) { try {
       // 설정 → 내 계정 → 보안의 비밀번호 패널(정하기 · 체크리스트 · 바꾸기 · 지우기)과 로그인 화면의 "비밀번호로 로그인". 브라우저 세션을 새
       // 멤버로 바꿔 진행하고 끝에 소유자로 되돌린다(뒤 절이 소유자의 세션을 쓴다). 자기 데이터를 스스로 만든다.
       const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
@@ -10429,9 +10522,9 @@ async function main() {
       } finally {
         await browseAs(session)
       }
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('2단계 인증 — 서버 (8i-2a · F-14-05)')) {
+    if (sectionIf('2단계 인증 — 서버 (8i-2a · F-14-05)')) { try {
       // 화면은 8i-2b 다 — 라우트와 진입 게이트를 실제 서버로 본다. 켜기(시작 · 확정 · 백업 코드) → 비밀번호로 새로 들어오면 둘째 단계가
       // 남는다(화면은 /login?mfa=1 · API 는 401 mfa_required) → 백업 코드로 통과 → 끄기. 코드는 비밀값으로 직접 계산한다. 자기 데이터를 스스로.
       const { totpAt, totpStepAt, base32Decode } = await import(new URL('../src/lib/auth/totp.ts', import.meta.url).href)
@@ -10491,9 +10584,9 @@ async function main() {
       const again = await (await fetch(`${BASE}/api/auth/password-login`, { method: 'POST', headers: json, body: JSON.stringify({ email: who.email, password: PASSWORD }) })).json().catch(() => null)
       check('끄기 — 지금 코드(백업 코드)로 지우면 꺼지고, 그 뒤의 로그인은 둘째 단계가 없다',
         removed.status === 200 && removed.body?.disabled === true && again?.mfaRequired === false, JSON.stringify([removed, again]))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('2단계 인증 — 화면 (8i-2b · F-14-05)')) {
+    if (sectionIf('2단계 인증 — 화면 (8i-2b · F-14-05)')) { try {
       // 설정 → 내 계정 → 보안의 2단계 인증 패널(켜기 · QR · 비밀값 · 백업 코드 · 새로 받기 · 지우기)과 로그인 화면의 둘째 단계. 코드는 화면에
       // 보인 비밀값으로 직접 계산한다. 브라우저 세션을 새 멤버로 바꿔 진행하고 끝에 소유자로 되돌린다. 자기 데이터를 스스로 만든다.
       const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
@@ -10630,9 +10723,9 @@ async function main() {
       } finally {
         await browseAs(session)
       }
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('워크스페이스 스위처 (8j-1 · F-14-09)')) {
+    if (sectionIf('워크스페이스 스위처 (8j-1 · F-14-09)')) { try {
       // 사이드바 머리의 이름 → 스위처(이 계정의 이메일 · 워크스페이스(만든 순서) · 지금 것에 ✓ · 역할) → 고르면 그리로 · Ctrl/Cmd + Shift + 숫자 ·
       // Esc · 사이드바의 "홈". 브라우저 세션을 새 멤버로 바꿔 진행하고 끝에 소유자로 되돌린다. 그 멤버가 둘째 워크스페이스를 만든다(소유자).
       // 자기 데이터를 스스로 만든다.
@@ -10726,9 +10819,9 @@ async function main() {
       } finally {
         await browseAs(session)
       }
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('다중 계정 — 서버 (8j-2 · F-14-09)')) {
+    if (sectionIf('다중 계정 — 서버 (8j-2 · F-14-09)')) { try {
       // 화면은 8j-3 이다 — 라우트를 실제 서버로 본다. 세 사람이 한 "브라우저"(손으로 나르는 쿠키 상자)에 차례로 로그인한다: A 는 코드로,
       // B 는 코드 + 더하기, C 는 비밀번호 + 더하기 → 목록 · 바꾸기 · 지금 계정 로그아웃(다음 계정이 활성) · 끝난 세션은 "다시 로그인" ·
       // 한 계정만 로그아웃 · 모두 로그아웃. 자기 데이터를 스스로 만든다.
@@ -10827,9 +10920,9 @@ async function main() {
       const form = await fetch(`${BASE}/api/auth/logout`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: 'scope=all', redirect: 'manual' })
       check('폼으로 보낸 로그아웃은 화면으로 보낸다 — 아무도 남지 않으면 /login',
         form.status === 303 && new URL(form.headers.get('location') ?? '', BASE).pathname === '/login', JSON.stringify([form.status, form.headers.get('location')]))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('다중 계정 — 화면 (8j-3 · F-14-09)')) {
+    if (sectionIf('다중 계정 — 화면 (8j-3 · F-14-09)')) { try {
       // 스위처의 "다른 계정 더하기" → 로그인 화면의 더하기 모드(비밀번호) → 두 계정이 함께 · 스위처에 다른 계정과 그 워크스페이스 → 고르면 그
       // 계정으로 바꿔 그리로 · 다른 계정만 로그아웃 · 끝난 세션은 "다시 로그인"(이메일을 채운 로그인 화면) · 모든 계정에서 로그아웃. 브라우저
       // 세션을 새 사람들로 바꿔 진행하고 끝에 소유자로 되돌린다(목록 쿠키도 지운다). 자기 데이터를 스스로 만든다.
@@ -10946,9 +11039,9 @@ async function main() {
         await send('Network.deleteCookies', { name: 'nc_accounts', domain: 'localhost' })
         await browseAs(session)
       }
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('요금제 게이트 (8k-2 · F-13-18)')) {
+    if (sectionIf('요금제 게이트 (8k-2 · F-13-18)')) { try {
       // 이 절이 만든 **Free** 워크스페이스에서(주 워크스페이스는 Business 다): private teamspace 를 만들려 하면 요금제의 말이 서고 만들어지지
       // 않는다 · 게스트 한도(10 — 계정 없는 이메일의 대기 초대 열 개로 채운다)에서 이메일 초대가 한도의 말을 하고 초대가 남지 않는다 · 요금제를
       // 올리면(운영자 명령) 같은 초대가 된다. 브라우저 세션을 그 워크스페이스의 소유자로 바꿔 진행하고 끝에 되돌린다.
@@ -11021,9 +11114,9 @@ async function main() {
       } finally {
         await browseAs(session)
       }
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('요금제 패널 (8k-3 · F-13-18)')) {
+    if (sectionIf('요금제 패널 (8k-3 · F-13-18)')) { try {
       // 설정 → 워크스페이스 → 요금제: 지금 요금제 · 게스트 쓴 양 · 네 요금제의 비교 표(값은 표 그대로) — 소유자 · 멤버 관리자만. 요금제를
       // 올리면(운영자 명령) 패널이 따라온다. teamspace 설정의 private 고르개 — 이미 private 인 것은 내려도 그대로 · 닫힌 것은 막힌다. 이 절이
       // 만든 Free 워크스페이스에서 그 소유자로 진행하고 끝에 되돌린다.
@@ -11088,9 +11181,9 @@ async function main() {
       } finally {
         await browseAs(session)
       }
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('검색 쿼리 문법 (8l-1 · F-07-02)')) {
+    if (sectionIf('검색 쿼리 문법 (8l-1 · F-07-02)')) { try {
       // 검색 오버레이에서 한국어 축의 문법 — 공백은 AND(떨어져 있어도) · "구절" 은 붙어 있을 때만 · -제외. 구절은 한 덩이로 강조된다(서버와
       // 같은 파서). 제목으로 찾는다 — 자기 데이터를 스스로 만든다.
       const x = String(Date.now()).slice(-7)
@@ -11125,9 +11218,9 @@ async function main() {
       await ask(`주간 ${x} -회의`)
       check('제외 — 그 말이 있는 문서는 빠진다', await settled([near]), JSON.stringify(await hitIds()))
       await key('Escape')
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('검색 랭킹 · 정렬 (8l-2 · F-07-02)')) {
+    if (sectionIf('검색 랭킹 · 정렬 (8l-2 · F-07-02)')) { try {
       // 검색 오버레이 — 가장 잘 맞는 순(제목이 정확히 같은 것이 먼저 — 더 최근에 고친 것보다)과 정렬 고르개(찾는 동안만 · 만든 때 오름).
       // 색인의 시각은 SQL 로 정한다(검사만의 지름길). 자기 데이터를 스스로 만든다.
       const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
@@ -11167,9 +11260,9 @@ async function main() {
       })()`)
       check('★ 만든 때 — 오래된 순으로 바꾸면 단계를 보지 않고 만든 순서로', await orderIs([second, third, exact]), JSON.stringify(await hitIds()))
       await key('Escape')
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('가져오기 — 마크다운 · 텍스트 (8m-1 · F-09-12)')) {
+    if (sectionIf('가져오기 — 마크다운 · 텍스트 (8m-1 · F-09-12)')) { try {
       // 사이드바의 "가져오기" → 창 → 파일 둘(마크다운 · 텍스트) → 가져온 페이지의 링크와 옮기지 못한 것(표) → 링크로 연 페이지의 제목과 본문.
       // 받지 않는 형식은 무엇이 왜인지 말하고 아무것도 남기지 않는다. 파일은 임시 폴더에 쓴다.
       const x = String(Date.now()).slice(-7)
@@ -11225,9 +11318,9 @@ async function main() {
       } finally {
         rmSync(dir, { recursive: true, force: true })
       }
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('가져오기 — ZIP (8m-2a · F-09-12)')) {
+    if (sectionIf('가져오기 — ZIP (8m-2a · F-09-12)')) { try {
       // 사이드바의 "가져오기"에 ZIP 하나 — 폴더 계층이 페이지 나무가 되고(이름.md + 폴더 · 폴더만의 페이지), 가져올 수 없는 항목(그림)은 이유와
       // 함께 "건너뛴 것"으로 선다. 연 하위 페이지의 경로에 부모가 선다. ZIP 은 우리 쓰기(`export/zip.ts`)로 만들어 임시 폴더에 둔다.
       const { createZipWriter } = await import(new URL('../src/lib/export/zip.ts', import.meta.url).href)
@@ -11280,9 +11373,9 @@ async function main() {
       } finally {
         rmSync(dir, { recursive: true, force: true })
       }
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('가져오기 — ZIP 링크 · 이미지 (8m-2b · F-09-12)')) {
+    if (sectionIf('가져오기 — ZIP 링크 · 이미지 (8m-2b · F-09-12)')) { try {
       // ZIP 안의 상대 주소가 살아난다 — 한 줄짜리 하위 링크는 **그 자리**의 하위 페이지 참조, 글 속의 링크는 페이지 멘션, 언급만 된 하위는 끝의 참조,
       // 이미지는 올린 파일(브라우저가 실제로 그린다). 쓰지 않은 이미지는 이유와 함께 "건너뛴 것"이다. 링크는 노션 · 우리 내보내기처럼 `%20` 으로 쓴다.
       const { createZipWriter } = await import(new URL('../src/lib/export/zip.ts', import.meta.url).href)
@@ -11352,9 +11445,9 @@ async function main() {
       } finally {
         rmSync(dir, { recursive: true, force: true })
       }
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('블록 수식 (Phase 2 1a · F-01-20)')) {
+    if (sectionIf('블록 수식 (Phase 2 1a · F-01-20)')) { try {
       // 빈 줄에서 `/수식` → 입력창이 곧바로 열리고 쓰는 동안 미리 그린다 → Enter 로 저장하면 블록이 KaTeX 로 그려지고(글꼴까지) 서버에
       // `type='equation'` 행이 선다 · 캐럿은 뒤의 빈 문단. 블록을 누르면 다시 열리고 Esc 는 고치지 않는다. 틀린 식은 까닭을 붉게 보이고
       // 그대로 저장된다. 키보드만으로도 연다(블록 선택 → Enter). 자기 데이터를 스스로 만든다.
@@ -11443,9 +11536,9 @@ async function main() {
       await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${eqPage}` })
       check('다시 열어도 그 식이다(틀린 식 그대로)', await waitFor(`document.querySelector('${BLOCK} .blk-equation-error code')?.textContent === ${JSON.stringify('\\frac{a}{')}`, 15000))
       await sleep(1000)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('인라인 수식 (Phase 2 1b · F-01-20)')) {
+    if (sectionIf('인라인 수식 (Phase 2 1b · F-01-20)')) { try {
       // 글 속에서 `$$식$$` 을 치면 닫는 순간 수식이 되고(KaTeX 로 그린다) 이어 쓴다. 누르면 입력창 — 고쳐 저장하면 캐럿은 수식 뒤.
       // 글자를 골라 Ctrl/Cmd+Shift+E 를 치면 그 글자가 식이 되고, 고른 것 없이 치면 빈 수식 + 입력창 — Esc 면 빈 수식은 사라진다.
       const stamp = Date.now()
@@ -11524,9 +11617,9 @@ async function main() {
       await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${iePage}` })
       check('다시 열어도 두 수식이 그려진다', await waitFor(`document.querySelectorAll('${EQ} .katex').length === 2`, 15000))
       await sleep(1000)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('컬럼 (Phase 2 1c · F-01-12)')) {
+    if (sectionIf('컬럼 (Phase 2 1c · F-01-12)')) { try {
       // 빈 줄에서 `/2열` → 그 줄이 첫 컬럼으로 들어가고 두 컬럼이 나란히 선다. 양쪽에 쓰면 서버에 틀(컬럼 목록 → 컬럼 → 문단)이 선다.
       // 컬럼 안의 Enter 는 그 컬럼에 새 블록, Shift+Tab · 둘째 컬럼 맨 앞의 Backspace 는 경계를 넘지 않는다(아무것도 바뀌지 않는다).
       // 핸들은 포인터 쪽 컬럼의 블록을 잡는다. 좁은 화면에서는 세로로 쌓인다.
@@ -11624,9 +11717,9 @@ async function main() {
         return !!a && !!b && b.left >= a.right
       })()`, 15000))
       await sleep(1000)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('컬럼 폭 · 끌어 넣기 (Phase 2 1c-2 · F-01-12)')) {
+    if (sectionIf('컬럼 폭 · 끌어 넣기 (Phase 2 1c-2 · F-01-12)')) { try {
       // 컬럼 사이의 손잡이를 끌면 폭이 바뀌고(놓을 때 한 번 저장 · 합 1), 위 블록을 끌어 둘째 컬럼 안에 놓으면 그 컬럼에 들어간다(차선).
       // 첫 컬럼의 마지막 블록을 끌어내면 그 컬럼이 사라지고 하나 남은 컬럼 목록은 풀린다. 빈 컬럼의 빈 블록에서 Backspace 는 그 컬럼을 지운다.
       const stamp = Date.now()
@@ -11756,9 +11849,9 @@ async function main() {
       const [caretAt, caretGot] = await serverIs(emptyPage, [['column_list', [['column', ['엑스!']], ['column', ['와이']]]]])
       check('캐럿은 앞 컬럼의 끝이다', caretAt, caretGot)
       await sleep(1000)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('컬럼 — 옆에 놓아 만들기 · 경계를 넘는 선택 (Phase 2 1c-3 · F-01-12)')) {
+    if (sectionIf('컬럼 — 옆에 놓아 만들기 · 경계를 넘는 선택 (Phase 2 1c-3 · F-01-12)')) { try {
       // 블록을 다른 블록 줄의 오른쪽 끝으로 끌면 세로 가이드가 서고, 놓으면 두 블록이 나란한 컬럼이 된다. 컬럼 안 블록의 옆에 놓으면 그
       // 목록에 컬럼이 더해진다. 첫 컬럼의 블록에서 Shift+↓ 는 옆 컬럼의 블록을 고르고(틀이 아니다), 위에서 내려오는 Shift+↓ 는 컬럼을
       // 한 줄씩 지나 목록 뒤까지 간다. 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
@@ -11874,9 +11967,9 @@ async function main() {
         down.length === 3 && down[0] === s.top && down[2] === s.end && !Object.values(s).includes(down[1]), JSON.stringify(down))
       await key('Escape')
       await sleep(1000)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('심플 테이블 (Phase 2 1d-1 · F-01-18)')) {
+    if (sectionIf('심플 테이블 (Phase 2 1d-1 · F-01-18)')) { try {
       // 빈 줄에서 `/표` → 그 줄이 3열 × 2행의 표가 되고 캐럿은 첫 셀. Tab 으로 셀을 건너며 쓰고, 마지막 셀의 Tab 은 행을 더한다. 마지막
       // 행의 Enter 는 표를 나가 그 뒤의 새 문단으로. 셀 맨 앞의 Backspace 는 아무것도 바꾸지 않는다. 서버에는 표 → 행(셀) 이 선다.
       const stamp = Date.now()
@@ -11978,9 +12071,9 @@ async function main() {
           return JSON.stringify(rows) === JSON.stringify([['가1', '나1', '다1'], ['가2', '', ''], ['가3', '', '']])
         })()`, 15000), await evaluate(`JSON.stringify([...document.querySelectorAll('[data-block-id="${ids.line}"] .blk-table tr')].map((tr) => [...tr.querySelectorAll('td')].map((td) => td.innerHTML))) + ' | ' + (document.querySelector('[data-block-id="${ids.line}"]')?.outerHTML.slice(0, 300) ?? '(없음)')`))
       await sleep(1000)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('표 — 행 · 열 · 머리 (Phase 2 1d-2 · F-01-18)')) {
+    if (sectionIf('표 — 행 · 열 · 머리 (Phase 2 1d-2 · F-01-18)')) { try {
       // 셀 위에 포인터를 올리면 행 · 열 손잡이와 "+" 막대가 선다. 행 손잡이의 "아래에 행 넣기" · 열 손잡이의 "열 지우기" · 아래 · 오른쪽
       // "+" 가 표를 고친다. 블록 메뉴의 '표' → '머리 줄' 이 첫 행을 머리로 그린다. 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
       const stamp = Date.now()
@@ -12108,9 +12201,9 @@ async function main() {
       }
       check('★ 서버 — 표의 has_column_header', headerGot?.has_column_header === true, JSON.stringify(headerGot))
       await sleep(1000)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('표 — 붙여넣기 · 검색 (Phase 2 1d-3 · F-01-18)')) {
+    if (sectionIf('표 — 붙여넣기 · 검색 (Phase 2 1d-3 · F-01-18)')) { try {
       // 바깥(스프레드시트 · 웹)의 HTML 표를 빈 줄에 붙이면 표가 된다(`<thead>` 면 머리 줄). 셀의 글자는 검색에 걸린다. 셀 안에 글자를
       // 붙이면 그 셀의 글자가 된다. 진짜 클립보드 대신 합성 paste 이벤트를 쓴다 — 이 PC 의 헤드리스 브라우저는 클립보드를 못 쓴다(§6).
       const stamp = Date.now()
@@ -12190,9 +12283,9 @@ async function main() {
       const [inside, insideGot] = await serverTable({ props: { has_column_header: true }, grid: [['품목', '수량'], [word, '3개\n더']] }, true)
       check('★ 셀 안에 글자를 붙이면 그 셀의 글자 — 줄바꿈도 셀 안에', inCell && inside, insideGot)
       await sleep(1000)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('블록 색 — / 명령 · 마지막 색 (Phase 2 1e-1 · F-01-21)')) {
+    if (sectionIf('블록 색 — / 명령 · 마지막 색 (Phase 2 1e-1 · F-01-21)')) { try {
       const toPlainTextOfFirst = (body) => (body.doc.blocks[0]?.title ?? []).map((r) => r.plain_text ?? '').join('')
       // 줄 끝에서 `/빨강 배경` → 그 블록 전체가 빨강 배경. 다른 줄에서 Ctrl/Cmd+Shift+H → 마지막으로 쓴 색(빨강 배경)이 그 블록에.
       // 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
@@ -12241,9 +12334,9 @@ async function main() {
       const [again, againGot] = await colorOnServer(cz.second, 'red_background')
       check('★ Ctrl/Cmd+Shift+H — 마지막으로 쓴 색이 그 블록에', again, String(againGot))
       await sleep(1000)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('서식 툴바 (Phase 2 1e-2 · F-01-03 · F-01-21)')) {
+    if (sectionIf('서식 툴바 (Phase 2 1e-2 · F-01-03 · F-01-21)')) { try {
       // 글자를 고르면 그 위에 툴바가 선다. 굵게 · 색(빨강)이 그 글자에만 걸리고, Ctrl/Cmd+K 로 연 입력칸에 주소를 치면 https:// 링크가
       // 걸린다. `javascript:` 는 거부한다. 캐럿만 남으면 툴바가 접힌다. 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
       const stamp = Date.now()
@@ -12325,9 +12418,9 @@ async function main() {
       await key('End')
       check('캐럿만 남으면 툴바가 접힌다', await waitFor(`!document.querySelector('${TOOLBAR}')`, 3000))
       await sleep(1000)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('링크 소독 (보안 · F-01-03)')) {
+    if (sectionIf('링크 소독 (보안 · F-01-03)')) { try {
       // 저장 계약은 링크 주소의 길이만 본다 — API · 협업 참여자는 `javascript:` 링크를 쓸 수 있다. 편집기는 그런 주소에 href 를 달지
       // 않는다(누르면 그 사람의 세션으로 스크립트가 돈다). 받는 주소는 그대로 링크다. 자기 데이터를 스스로 만든다.
       const stamp = Date.now()
@@ -12344,9 +12437,9 @@ async function main() {
       check('★ 받는 주소는 링크 — href 그대로', anchors[0]?.t === '안전' && anchors[0]?.href === 'https://example.com/a', JSON.stringify(anchors))
       check('★ javascript: 링크에는 href 가 없다 — 글자는 남는다', anchors[1]?.t === '위험' && anchors[1]?.href === null && anchors[1]?.unsafe === 'true', JSON.stringify(anchors))
       await sleep(500)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('고유 ID (2a-1 · F-03-09)')) {
+    if (sectionIf('고유 ID (2a-1 · F-03-09)')) { try {
       // ID 속성을 더하면 있던 행이 만든 순서대로 번호를 받고, 그 뒤의 행은 다음 번호다. 표의 칸은 `접두사-번호` 를 그리고 읽기
       // 전용이다(Enter 로 편집이 열리지 않는다). 접두사를 바꾸면 표시가 따라온다. 자기 데이터를 스스로 만든다.
       const stamp = Date.now()
@@ -12395,9 +12488,9 @@ async function main() {
       await waitFor(`document.querySelectorAll('[data-testid="db-unique-id"]').length === 3 && document.querySelector('[data-testid="db-unique-id"]')?.textContent === 'BUG-1'`, 15000)
       check('★ 접두사를 바꾸면 표시가 따라온다 — 번호는 그대로', JSON.stringify(await ids()) === JSON.stringify(['BUG-1', 'BUG-2', 'BUG-3']), JSON.stringify(await ids()))
       await sleep(500)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('행 동시 추가 (F-03-16)')) {
+    if (sectionIf('행 동시 추가 (F-03-16)')) { try {
       // 같은 표에 행을 동시에 여럿 더해도 모두 201 이다 — 전에는 형제의 마지막 키를 잠금 없이 읽어 한쪽이 500 이었다(HANDOFF §3.3-301).
       const stamp = Date.now()
       const api = async (method, path, body) => {
@@ -12411,9 +12504,9 @@ async function main() {
       check('★ 같은 표에 동시에 행 여섯 — 모두 201', made.every((r) => r.status === 201), JSON.stringify(made.map((r) => r.status)))
       const rows = (await api('GET', `/views/${db.defaultViewId}/rows`)).body?.rows ?? []
       check('여섯 행이 모두 표에 있다', rows.length === 6 && new Set(rows.map((r) => r.id)).size === 6, String(rows.length))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('고유 ID 화면 (2a-2 · F-03-09)')) {
+    if (sectionIf('고유 ID 화면 (2a-2 · F-03-09)')) { try {
       // 속성 추가 폼에서 ID 를 만들고(접두사 · 틀린 접두사는 이유를 말한다) · 머리 메뉴에서 접두사를 바꾸고 · 정렬하고 · 도구줄
       // 필터로 번호를 거른다(`TASK-12` 처럼 보이는 그대로 쳐도 된다). 자기 데이터를 스스로 만든다.
       const stamp = Date.now()
@@ -12515,9 +12608,9 @@ async function main() {
         await waitFor(`[...document.querySelectorAll('[data-testid="db-filter-chip"]')].some((e) => e.textContent === '번호 · 초과 · 1')`, 5000),
         await evaluate(`[...document.querySelectorAll('[data-testid="db-filter-chip"]')].map((e) => e.textContent).join(' | ')`))
       await sleep(500)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('고유 ID 내보내기 · 행 페이지 (2a-2b · F-03-09 · F-09-14)')) {
+    if (sectionIf('고유 ID 내보내기 · 행 페이지 (2a-2b · F-03-09 · F-09-14)')) { try {
       // 행 페이지의 속성 묶음에 ID 가 보이고, 표를 내보낸 ZIP 의 CSV · 행 Markdown 에 보이는 그대로(`TK-1`) 들어간다. ZIP 은 우리가 짜지
       // 않은 구현(python zipfile)으로 읽는다(§3.3-63). 자기 데이터를 스스로 만든다.
       const stamp = Date.now()
@@ -12564,9 +12657,9 @@ async function main() {
       } finally {
         rmSync(dir, { recursive: true, force: true })
       }
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('하위 항목 — 서버 (2b-1 · F-03-18)')) {
+    if (sectionIf('하위 항목 — 서버 (2b-1 · F-03-18)')) { try {
       // 켜기 · 끄기 · 연결의 순환 거부 · 짝을 따로 지우기 거부를 실제 경로로 본다(규칙은 `sub-items.db.test.ts`). 화면은 2b-2.
       const stamp = Date.now()
       const api = async (method, path, body) => {
@@ -12590,9 +12683,9 @@ async function main() {
       check('짝의 한쪽을 따로 지우면 409 managed_property', remove.status === 409 && remove.body?.error === 'managed_property', JSON.stringify(remove))
       const off = await api('DELETE', `/data-sources/${db.dataSourceId}/sub-items`)
       check('★ 끄면 일반 relation 으로 남는다', off.status === 200 && off.body?.schema?.properties?.filter((p) => p.type === 'relation').length === 2, JSON.stringify({ status: off.status }))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('하위 항목 화면 — 트리 (2b-2a · F-03-18)')) {
+    if (sectionIf('하위 항목 화면 — 트리 (2b-2a · F-03-18)')) { try {
       // 도구줄 "속성" 패널의 스위치로 켜고, 표가 최상위 행만 그리다 토글을 펴면 자식을 들여 끼우는지(손자까지) · 접으면 빠지는지 ·
       // 끄면 평평한 표로 돌아오는지 본다. 연결은 API 로 만든다(연결 편집기는 relation 의 것 그대로다). 자기 데이터를 스스로 만든다.
       const stamp = Date.now()
@@ -12669,9 +12762,9 @@ async function main() {
       check('★ 끄면 평평한 표로 돌아온다 — 네 행 · 토글 없음',
         await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === 4 && !document.querySelector('[data-testid="db-subitem-toggle"]')`, 10000),
         JSON.stringify(await shown()))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('하위 항목 + (2b-2b · F-03-18)')) {
+    if (sectionIf('하위 항목 + (2b-2b · F-03-18)')) { try {
       // 제목 칸에 마우스를 올리면 서는 `+` 로 부모 밑에 바로 만든다 — 접혀 있던 부모가 펴지고, 새 행이 한 단계 들여 서며 제목을 바로
       // 편집한다. 서버에서도 그 행의 부모가 그 행이다. 자기 데이터를 스스로 만든다.
       const stamp = Date.now()
@@ -12708,9 +12801,9 @@ async function main() {
       check('★ 서버에서도 그 행의 부모가 그 행이다 — 만들기와 연결이 함께 저장됐다', stored?.items?.[0]?.id === parent, JSON.stringify(stored?.items))
       await send('Page.reload')
       check('새로 열어도 최상위는 부모 하나다', await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === 1`, 15000), JSON.stringify(await shown()))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('종속 관계 (2b-3 · F-03-18)')) {
+    if (sectionIf('종속 관계 (2b-3 · F-03-18)')) { try {
       // 도구줄 "속성" 패널의 스위치로 켜면 선행 작업 · 후행 작업 속성이 서고, 서로를 막는 순환은 이유와 함께 거부되며, 끄면 일반
       // 관계형으로 남는다. 자기 데이터를 스스로 만든다.
       const stamp = Date.now()
@@ -12761,9 +12854,9 @@ async function main() {
       check('종속 관계 스위치가 꺼진 상태로 선다', await setSwitch('db-dependencies-switch', false))
       const off = (await api('GET', `/views/${db.defaultViewId}`)).body.view.columns.filter((c) => c.type === 'relation')
       check('★ 끄면 일반 관계형으로 남는다 — 속성 둘은 그대로 · 표시는 없다', off.length === 2 && off.every((c) => c.relation.dependencies === null), JSON.stringify(off.map((c) => c.relation)))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('속성 타입 바꾸기 — 서버 (2c-1 · F-03-14)')) {
+    if (sectionIf('속성 타입 바꾸기 — 서버 (2c-1 · F-03-14)')) { try {
       // 값이 사라지는 칸이 있으면 409 와 개수 · 확인을 실으면 바뀐다 · 표가 새 타입의 값을 준다 · 제목은 400. 규칙은 DB 검사가 본다.
       const stamp = Date.now()
       const api = async (method, path, body) => {
@@ -12788,9 +12881,9 @@ async function main() {
       check('표가 새 타입의 값을 준다', values.length === 1 && values[0].type === 'number' && values[0].number === 12, JSON.stringify(values))
       const title = await api('POST', `/data-sources/${db.dataSourceId}/properties/${titleProp}/convert`, { type: 'rich_text' })
       check('제목은 바꿀 수 없다 — 400', title.status === 400 && title.body?.error === 'title_immutable', JSON.stringify(title))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('속성 타입 바꾸기 — 화면 (2c-2 · F-03-14)')) {
+    if (sectionIf('속성 타입 바꾸기 — 화면 (2c-2 · F-03-14)')) { try {
       // 머리 메뉴의 "유형 바꾸기" — 값이 사라지는 칸이 있으면 개수와 함께 한 번 더 묻고, 확인하면 바뀌어 칸이 새 타입으로 그려진다.
       // 손실이 없으면 묻지 않고 바뀐다. 자기 데이터를 스스로 만든다.
       const stamp = Date.now()
@@ -12847,9 +12940,9 @@ async function main() {
       check('★ 손실이 없으면 묻지 않고 바뀐다 — 숫자 → 텍스트',
         await waitFor(`(document.querySelector('th[data-property-id="${memo}"]')?.textContent ?? '').includes('텍스트') && !document.querySelector('[data-testid="db-column-convert-confirm"]')`, 10000),
         JSON.stringify({ header: await header(), cells: await cellsOf() }))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('열 집계 — 서버 (2d-1 · F-04-16)')) {
+    if (sectionIf('열 집계 — 서버 (2d-1 · F-04-16)')) { try {
       // 열에 집계 함수를 달면 행 응답의 첫 페이지에 그 값이 실린다(필터를 지난 행 전부) · 고를 수 없는 함수는 400. 규칙은 DB 검사가 본다.
       const stamp = Date.now()
       const api = async (method, path, body) => {
@@ -12873,9 +12966,9 @@ async function main() {
       check('다음 페이지에는 다시 싣지 않는다', next?.calculations === undefined && next?.rows?.length === 1)
       const bad = await api('PATCH', `/views/${db.defaultViewId}/columns/${num}`, { calculation: 'checked' })
       check('타입이 고를 수 없는 함수는 400 invalid_calculation', bad.status === 400 && bad.body?.error === 'invalid_calculation', JSON.stringify(bad))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('열 집계 — 화면 (2d-2 · F-04-16)')) {
+    if (sectionIf('열 집계 — 화면 (2d-2 · F-04-16)')) { try {
       // 표 아래 집계 줄 — "계산"을 눌러 그 타입의 함수를 고르면 값이 서고(필터를 지난 행 전부), 바꾸면 바뀌고, "없음"이면 지워진다.
       const stamp = Date.now()
       const api = async (method, path, body) => {
@@ -12925,9 +13018,9 @@ async function main() {
       check('합계로 바꾸면 "합계 90"', await waitFor(`(document.querySelector('${cell} [data-testid="db-calc-button"]')?.textContent ?? '') === '합계90'`, 10000), await calcText())
       await pick('db-calc-none')
       check('"없음"이면 지워진다', await waitFor(`(document.querySelector('${cell} [data-testid="db-calc-button"]')?.textContent ?? '') === '계산'`, 10000), await calcText())
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('그룹 집계 — 보드 머리 (2d-3 · F-04-16)')) {
+    if (sectionIf('그룹 집계 — 보드 머리 (2d-3 · F-04-16)')) { try {
       // 도구줄 "그룹" 패널의 "머리에"로 속성을 고르면 열 머리의 카드 수 자리에 그 그룹의 계산이 선다(필터를 지난 그 그룹의 행 전부).
       // 카드를 다른 열로 옮기면 두 열의 머리 값을 다시 받는다. "카드 수"로 돌리면 개수가 돌아온다.
       const stamp = Date.now()
@@ -13021,9 +13114,9 @@ async function main() {
       await setSelect('[data-testid="db-group-calc-property"]', '')
       check('"카드 수"로 돌리면 개수가 돌아온다 — 가 1 · 나 2', await headsAre(['#0', '#1', '#2']), await heads())
       await closePanel()
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('뷰 검색 — 서버 (2e-1 · F-04-27)')) {
+    if (sectionIf('뷰 검색 — 서버 (2e-1 · F-04-27)')) { try {
       // `?q=` 로 행 · 열 집계 · 보드가 같이 좁혀진다(뷰에 저장하지 않는다). 하위 항목이 켜진 표는 검색 중에 맞는 행을 평평하게 준다.
       // 찾는 칸 · 필터와의 AND · 탈출 같은 규칙은 DB 검사가 본다.
       const stamp = Date.now()
@@ -13059,9 +13152,9 @@ async function main() {
       const counted = (groups?.groups ?? []).reduce((n, g) => n + g.count, 0)
       check('★ 보드도 ?q= 로 좁혀진다(카드 수 합 1)', counted === 1,
         JSON.stringify({ done: done.status, made: [made.status, made.body?.error], groups: groups?.groups?.map((g) => [g.key, g.count]) ?? groups }))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('뷰 검색 — 화면 (2e-2 · F-04-27)')) {
+    if (sectionIf('뷰 검색 — 화면 (2e-2 · F-04-27)')) { try {
       // 도구줄 "검색"을 눌러 치면 잠깐 뒤 주소의 q 가 바뀌고 표가 좁혀진다. "더 보기" · 열 집계도 같은 검색어다. 맞는 행이 없으면 안내와
       // "검색어 지우기", Esc 로 닫으면 원래대로. 보드는 열을 남기고 카드만 좁힌다.
       const stamp = Date.now()
@@ -13141,9 +13234,9 @@ async function main() {
           && document.querySelector('[data-testid="db-search-input"]')?.value === '회의'`, 15000))
       await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}?v=${board.id}&q=${encodeURIComponent('없는말')}` })
       check('보드에 맞는 카드가 없으면 안내', await waitFor(`!!document.querySelector('[data-testid="db-search-empty"]') && document.querySelectorAll('[data-testid="db-board-column"]').length === 2`, 15000))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('갤러리 뷰 (2f-1 · F-04-05)')) {
+    if (sectionIf('갤러리 뷰 (2f-1 · F-04-05)')) { try {
       // 뷰 추가에서 "갤러리"를 고르면 카드 그리드가 선다 — 카드는 제목(아이콘) + 값이 있는 속성의 배지. 하위 항목이 켜진 표는 부모만.
       // "+ 새로 만들기"는 제목을 바로 받고, 카드의 제목은 그 행 페이지로 간다. 검색 · "더 보기"는 표와 같은 길이다.
       const stamp = Date.now()
@@ -13236,9 +13329,9 @@ async function main() {
         await waitFor(`new URLSearchParams(location.search).get('peek') === ${JSON.stringify(first)} && location.pathname === ${JSON.stringify(`/w/${workspaceId}/db/${db.id}`)}
           && document.querySelector('[data-testid="row-peek"]')?.dataset.mode === 'side'`, 15000),
         await evaluate('location.pathname + location.search'))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('갤러리 — 카드 미리보기 (2f-2 · F-04-05)')) {
+    if (sectionIf('갤러리 — 카드 미리보기 (2f-2 · F-04-05)')) { try {
       // 카드 미리보기는 본문의 첫 이미지다(서버가 행마다 주소를 준다) · 이미지가 없는 카드도 같은 높이의 빈 자리 · 깨진 이미지는 빈 자리로.
       // 도구줄 "카드" 패널로 미리보기 · 크기를 바꾸면 그 키만 저장되고 갤러리가 다시 선다. "더 보기"의 카드도 미리보기를 받는다.
       const stamp = Date.now()
@@ -13325,9 +13418,9 @@ async function main() {
       await setSelect('[data-testid="db-gallery-cover-select"]', 'page_content')
       check('★ 미리보기를 다시 켜면 이미지가 돌아온다(갤러리가 새로 선다)',
         await waitFor(`!!document.querySelector('${card(withImage)} [data-testid="db-gallery-cover-image"]')`, 10000))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('캘린더 — 서버 (2g-1 · F-04-06)')) {
+    if (sectionIf('캘린더 — 서버 (2g-1 · F-04-06)')) { try {
       // 캘린더 뷰는 첫 날짜 속성을 고르고(없으면 400 date_required), 보이는 기간에 걸친 행만 날짜순으로 · 날짜 없는 행은 개수만 준다.
       // 기간 · 조건 · 레이아웃의 규칙은 DB 검사가 본다.
       const stamp = Date.now()
@@ -13360,9 +13453,9 @@ async function main() {
       const range = await api('PATCH', `/views/${made.body.view.id}`, { calendar: { view_range: 'week' } })
       check('레이아웃은 바꿀 키만 — 날짜 속성은 그대로', range.status === 200 && range.body?.view?.calendar?.date_property_id === due && range.body?.view?.calendar?.view_range === 'week',
         JSON.stringify(range.body?.view?.calendar))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('캘린더 — 화면 (2g-2 · F-04-06)')) {
+    if (sectionIf('캘린더 — 화면 (2g-2 · F-04-06)')) { try {
       // 뷰 추가의 "캘린더" → 이번 달 · 주소의 m 으로 달을 옮긴다 · 막대는 그 날짜 칸에 · 주를 넘는 범위는 두 막대 · 날짜 없음 칩 ·
       // 날짜 칸의 "+" 로 그 날의 행을 만들고 제목을 받는다 · "달력" 패널로 날짜 속성을 바꾼다 · 날짜 속성이 지워지면 "고르라".
       const stamp = Date.now()
@@ -13465,9 +13558,9 @@ async function main() {
       await api('DELETE', `/data-sources/${ds}/properties/${begin}`)
       await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}?v=${calId}&m=2026-03` })
       check('날짜 속성이 지워지면 달력 대신 "날짜 속성을 고르라"', await waitFor(`!!document.querySelector('[data-testid="db-cal-needs-date"]')`, 15000))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('캘린더 — 끌어 옮기기 (2g-3 · F-04-06)')) {
+    if (sectionIf('캘린더 — 끌어 옮기기 (2g-3 · F-04-06)')) { try {
       // 막대를 끌어 다른 날짜 칸에 놓으면 그 차이만큼 날짜가 옮겨진다 — 범위는 길이를 지키고 시각은 그대로. 움직이지 않고 놓으면 링크가 열린다.
       const stamp = Date.now()
       const api = async (method, path, body) => {
@@ -13554,9 +13647,9 @@ async function main() {
       check('끌지 않고 누르면 그 행이 사이드 피크로 열린다',
         await waitFor(`new URLSearchParams(location.search).get('peek') === ${JSON.stringify(single)} && !!document.querySelector('[data-testid="row-peek"]')`, 15000),
         await evaluate('location.pathname + location.search'))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('개인 필터 · 정렬 — 서버 (2h-1 · F-04-17)')) {
+    if (sectionIf('개인 필터 · 정렬 — 서버 (2h-1 · F-04-17)')) { try {
       // 나에게만 적용하는 필터 · 정렬 — 걸면 행 응답이 그것으로 좁혀지고(공유 필터를 대체) · 초기화하면 공유 것 · 모두에게 저장하면 공유 것이 된다.
       // 볼 수만 있는 사람 · 보드 · 캘린더 · 권한은 DB 검사가 본다.
       const stamp = Date.now()
@@ -13585,9 +13678,9 @@ async function main() {
       const published = await api('POST', `/views/${view}/personal`)
       check('★ "필터 없음"을 모두에게 저장 — 공유 필터가 지워진다', published.status === 200 && published.body?.view?.filter === null && (await titles()) === '가,나,다',
         JSON.stringify({ status: published.status, filter: published.body?.view?.filter }))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('수식 속성 — 서버 (2i-2 · F-03-12)')) {
+    if (sectionIf('수식 속성 — 서버 (2i-2 · F-03-12)')) { try {
       // 수식을 만들면 행 응답에 그 행의 값이 실리고(읽을 때 계산) · 뷰 컬럼에 사람이 읽는 식이 선다. 틀린 식은 자리와 함께 400 · 순환은 400.
       // 깊이 · 되살리기 고리 · 끊긴 수식 · 권한은 DB 검사가 본다.
       const stamp = Date.now()
@@ -13630,9 +13723,9 @@ async function main() {
       check('★ 식을 고치면 다음 읽기가 새 값(3 + 50) · 그것을 읽는 수식도(+1)',
         fixed.status === 200 && after?.formulas?.values?.[row]?.[amount]?.value === 53 && Object.values(after?.formulas?.values?.[row] ?? {}).some((v) => v?.value === 54),
         JSON.stringify({ status: fixed.status, values: after?.formulas?.values?.[row] }))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('수식 속성 — 화면 (2i-3a · F-03-12)')) {
+    if (sectionIf('수식 속성 — 화면 (2i-3a · F-03-12)')) { try {
       // 속성 추가 폼의 "수식"으로 만들면 표가 다시 서고 값이 칸에 그려진다(화면이 그 행의 칸으로 계산한다 — 숨긴 속성도 읽는다).
       // 칸을 고치면 새로고침 없이 따라 바뀐다. 틀린 식은 폼이 이유와 자리를 말한다. 행 페이지도 같은 값. 읽던 속성이 지워지면 "수식 오류".
       const stamp = Date.now()
@@ -13747,9 +13840,9 @@ async function main() {
       check('★ 읽던 속성(단가)이 지워지면 "수식 오류" — 조용히 비우지 않는다',
         await waitFor(`!!document.querySelector('${formulaCell(first)} [data-testid="db-formula-error"]') && !!document.querySelector('${formulaCell(second)} [data-testid="db-formula-error"]')`, 8000),
         await evaluate(`document.querySelector('${formulaCell(first)}')?.textContent ?? null`))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('수식 — 식 편집기 (2i-3b · F-03-12)')) {
+    if (sectionIf('수식 — 식 편집기 (2i-3b · F-03-12)')) { try {
       // 치는 동안 같은 함수로 검사한다(틀린 자리 밑줄 · 결과 타입 · 첫 행 미리보기) · 속성 · 함수를 눌러 넣는다 · 머리 메뉴의 "식 고치기"
       // (지금 식으로 연다 · 자기 자신은 화면이 막는다 · 다른 수식을 거친 고리는 서버가 이유를 준다).
       const stamp = Date.now()
@@ -13883,9 +13976,9 @@ async function main() {
         await waitFor(`(document.querySelector('[data-testid="db-formula-edit"] [role="alert"]')?.textContent ?? '').includes('돌고 돌아')`, 8000),
         await evaluate(`document.querySelector('[data-testid="db-formula-edit"] [role="alert"]')?.textContent ?? null`))
       await key('Escape')
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('속성 의존 — 지우기 · 유형 바꾸기 전에 알린다 (2j-1 · F-03-13)')) {
+    if (sectionIf('속성 의존 — 지우기 · 유형 바꾸기 전에 알린다 (2j-1 · F-03-13)')) { try {
       // 머리 메뉴의 "속성 삭제" · "유형 바꾸기"를 열면 그 속성을 읽는 수식 · 롤업(다른 표의 것은 그 표 이름과 함께)을 알린다. 읽는 것이
       // 없으면 아무것도 말하지 않는다. 권한(볼 수 없는 표의 롤업은 개수만) · 휴지통 · 순서는 DB 검사가 본다.
       const stamp = Date.now()
@@ -13972,9 +14065,9 @@ async function main() {
       check('★ 지우기 단계에서도 Escape 로 메뉴가 닫힌다(포커스가 패널에 남는다)',
         await waitFor(`!document.querySelector('[data-testid="db-column-menu-panel"]')`, 3000),
         await evaluate(`document.activeElement?.outerHTML.slice(0, 80) ?? null`))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('수식으로 거르기 · 정렬 — 서버 (2j-2 · F-03-13)')) {
+    if (sectionIf('수식으로 거르기 · 정렬 — 서버 (2j-2 · F-03-13)')) { try {
       // 뷰의 필터 · 정렬이 수식을 읽으면 그 값의 캐시(derived_value)로 거른다 — 칸을 고치면 다음 읽기가 맞다. 무효화의 경우 · 보드 · 캘린더 ·
       // 지금을 읽는 수식은 DB 검사가 본다.
       const stamp = Date.now()
@@ -14008,9 +14101,9 @@ async function main() {
       check('오름차순', (await titles()) === '다,나,가', await titles())
       const bad = await api('PATCH', `/views/${view}`, { filter: { property_id: amount, operator: 'contains', value: '1' } })
       check('결과 타입(수)에 없는 연산자는 400', bad.status === 400 && bad.body?.error === 'invalid_filter', JSON.stringify(bad))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('수식으로 거르기 · 정렬 — 화면 (2j-3 · F-03-13)')) {
+    if (sectionIf('수식으로 거르기 · 정렬 — 화면 (2j-3 · F-03-13)')) { try {
       // 도구줄의 필터가 수식 컬럼을 고른다(연산자 · 값 입력은 결과 타입의 칸 것) · 머리 메뉴로 수식 정렬 · 정렬 칩이 도구줄에 남는다 ·
       // 새로고침해도 같은 결과(서버가 수식 값의 캐시로 거른다).
       const stamp = Date.now()
@@ -14094,9 +14187,9 @@ async function main() {
       await send('Page.reload')
       check('새로고침해도 같다(서버가 수식 값의 캐시로 거르고 정렬한다)',
         await waitFor(`${titlesJs} === '다,나'`, 15000), await evaluate(titlesJs))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('표 변경 알림 — 서버 (2k-1 · F-04-24)')) {
+    if (sectionIf('표 변경 알림 — 서버 (2k-1 · F-04-24)')) { try {
       // 표를 보는 사람에게 "바뀌었다"를 흘리는 SSE — 준비됨 · 칸을 고치면 바뀌었다 · 볼 수 없는 표는 404 · 권한이 회수되면 회수됨으로 닫힌다.
       const stamp = Date.now()
       const api = async (method, path, body, headers = authed) => {
@@ -14175,9 +14268,9 @@ async function main() {
       const denied = await openFeed(db.dataSourceId, mateHeaders)
       check('★ 볼 수 없는 표는 404', denied.status === 404, String(denied.status))
       denied.close()
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('필터가 걸린 뷰에서 만든 행 (10n-10 · F-04-09)')) {
+    if (sectionIf('필터가 걸린 뷰에서 만든 행 (10n-10 · F-04-09)')) { try {
       // 필터가 걸린 표에서 "+ 새로 만들기" 로 만든 행은 빈 행이라 필터 밖이었다 — 새로고침하면 사라져 보였다(HANDOFF §7). 서버가 그 필터가
       // 정하는 값을 채운다(정본 §3.5 [보강] 필터가 걸린 뷰에서 만든 행): 단계 = 가 · 완료 · 담당에 "나". 채운 값은 응답에 실려 곧바로 보이고,
       // 새로고침해도 행이 남는다.
@@ -14260,9 +14353,9 @@ async function main() {
       await send('Page.reload')
       check('★ 새로고침해도 새 행이 남는다 — 필터 밖으로 빠지지 않았다',
         await waitFor(`${titlesJs} === ${JSON.stringify(title)}`, 15000), await titles())
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('표 변경 알림 — 화면 (2k-2 · F-04-24)')) {
+    if (sectionIf('표 변경 알림 — 화면 (2k-2 · F-04-24)')) { try {
       // 다른 곳(API)에서 바꾸면 새로고침 없이 표가 맞춰진다 — 새 행 · 제목 · 집계 · 뷰 필터. 내가 고쳐 조건 밖이 된 행은 남고 "조건 밖", 남이
       // 고쳐 나간 행은 빠진다. 편집 중에는 미뤘다가 끝나면 맞춘다. 남이 속성을 더하면 표가 새로 선다.
       const stamp = Date.now()
@@ -14367,9 +14460,64 @@ async function main() {
         await send('Fetch.disable').catch(() => undefined)
         await releasePaused()
       }
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('떠나기 전 대기 — 살아나는 중인 화면 (도구 · F-04-24)')) {
+    if (sectionIf('판 도구 — 기다림의 예외 · 자리가 멈추기 · 흔적 거두기 (도구-5)')) { try {
+      // 판 도구 자신을 본다(HANDOFF §3.3-483). ① 기다림은 평가의 예외를 "아직" 으로 읽는다 — 이동 직후의 빈 문서(루트 요소 없음)를 흉내
+      // 낸다 ② 끝까지 예외면 그 예외를 그때의 문서와 함께 던진다 ③ 자리가 멈추기를 기다린다 ④ 예외로 끝난 절의 흔적을 거둔다.
+      await send('Page.navigate', { url: 'about:blank' })
+      // ① 루트 요소를 떼었다가 0.3초 뒤에 되붙인다 — 그 사이의 평가는 `document.documentElement.dataset` 에서 TypeError 를 낸다
+      await evaluate(`(() => {
+        const html = document.documentElement
+        document.removeChild(html)
+        setTimeout(() => { html.dataset.probe = 'back'; document.appendChild(html) }, 300)
+        return true
+      })()`)
+      check('★ 기다림은 평가의 예외를 "아직" 으로 읽는다 — 루트 요소가 없던 문서가 차면 참(전에는 그 예외 하나가 판 전체를 끝냈다)',
+        await waitFor(`document.documentElement.dataset.probe === 'back'`, 5000))
+
+      // ② 끝까지 예외 — 거짓(false)으로 돌려주지 않는다
+      let surfaced = ''
+      try {
+        await waitFor(`document.querySelector('#e2e-none').dataset.x === '1'`, 400)
+      } catch (e) {
+        surfaced = e instanceof Error ? e.message : String(e)
+      }
+      check('★ 끝까지 예외면 그 예외를 던진다 — 그때의 주소 · 문서 상태와 함께(거짓과 "물을 수 없었다" 는 다르다)',
+        surfaced.includes('TypeError') && surfaced.includes('"url":"about:blank"') && surfaced.includes('"readyState":"complete"') && surfaced.includes('"root":"HTML"'),
+        surfaced || '(던지지 않았다)')
+
+      // ③ 0.48초 동안 80ms 마다 20px 씩 내려가다 멈추는 단추
+      await evaluate(`(() => {
+        const b = document.createElement('button')
+        b.id = 'e2e-moving'
+        b.style.cssText = 'position: absolute; left: 10px; top: 0px'
+        document.body.appendChild(b)
+        let n = 0
+        const t = setInterval(() => { n += 1; b.style.top = n * 20 + 'px'; if (n === 6) clearInterval(t) }, 80)
+        return true
+      })()`)
+      const still = await waitStill('#e2e-moving', 5000)
+      const top = await evaluate(`document.getElementById('e2e-moving').getBoundingClientRect().top`)
+      check('★ 자리가 멈추기를 기다린다 — 움직이던 단추가 멈춘 자리(120px)에서 끝난다', still && top === 120, `멈춤 ${still} · 자리 ${top}`)
+
+      // ④ 둘째 탭 · 미디어 흉내 · 다른 사람의 세션 쿠키를 남긴 채 거둔다
+      const reducedNow = `matchMedia('(prefers-reduced-motion: reduce)').matches`
+      const before = await evaluate(reducedNow)
+      await openTab('about:blank')
+      await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: before ? 'no-preference' : 'reduce' }] })
+      const flipped = (await evaluate(reducedNow)) !== before
+      await send('Network.setCookie', { name: 'nc_session', value: 'e2e-someone-else', domain: 'localhost', path: '/', httpOnly: true })
+      await backToBaseline()
+      const cookie = (await send('Network.getCookies', { urls: [BASE] })).cookies.find((c) => c.name === 'nc_session')?.value
+      const frames = await framesRunning()
+      const reducedAfter = await evaluate(reducedNow)
+      check('★ 예외로 끝난 절의 흔적을 거둔다 — 둘째 탭을 닫고(주 탭이 다시 프레임을 받는다) · 미디어 흉내를 지우고 · 세션 쿠키를 되돌린다',
+        flipped && tabs.length === 0 && frames && reducedAfter === before && cookie === session,
+        JSON.stringify({ flipped, tabs: tabs.length, frames, reducedAfter, before, cookieIsSession: cookie === session }))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
+    if (sectionIf('떠나기 전 대기 — 살아나는 중인 화면 (도구 · F-04-24)')) { try {
       // 판 도구가 떠나기 전에 기다리는 것(`send` 의 대기)을 본다. 서버가 그린 카드만 보고 넘어온 검사가 살아나는 중인 화면을 떠나면, 그 화면이
       // 뒤늦게 구독을 열고 렌더 뒤의 변경을 곧바로 받아 다시 읽기를 시작해 떠나는 이동이 그것을 끊었다("The destination stream closed early"
       // — 갤러리 2f-1 · #380 · #381 의 전체 판). CPU 를 느리게 해 화면이 살아나는 동안 떠나고, **다음 문서를 붙잡아 둔 채** 3초 동안 옛
@@ -14422,9 +14570,9 @@ async function main() {
         await send('Fetch.disable').catch(() => undefined)
         await releasePaused()
       }
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('표 변경 알림 — 보드 · 갤러리 · 캘린더 (2k-3 · F-04-24)')) {
+    if (sectionIf('표 변경 알림 — 보드 · 갤러리 · 캘린더 (2k-3 · F-04-24)')) { try {
       // 다른 곳(API)에서 바꾸면 보드의 카드가 서고 · 열을 옮기고, 갤러리의 카드가 서고, 캘린더의 막대가 선다 — 새로고침 없이.
       const stamp = Date.now()
       const api = async (method, path, body) => {
@@ -14475,9 +14623,9 @@ async function main() {
       await sleep(800)
       const ma = await rowOf('마', false, '2026-03-20')
       check('★ 캘린더 — 다른 곳에서 행을 더하면 그 날에 막대가 선다', await waitFor(`!!document.querySelector('[data-testid="db-cal-event"][data-row-id="${ma}"]')`, 8000))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('연결된 데이터베이스 — 서버 (2l-1 · F-04-13)')) {
+    if (sectionIf('연결된 데이터베이스 — 서버 (2l-1 · F-04-13)')) { try {
       // 다른 데이터베이스의 소스를 붙이면 그 소스를 보는 뷰가 생기고 원본의 행이 보인다 · 두 번 붙이면 409 · 떼면 뷰와 함께 빠진다 · 제 소스는 떼지 않는다.
       // 권한(원본을 못 보면 붙일 수 없음 · 이름을 가림 · 링크로 권한이 오르지 않음)은 DB 검사가 본다.
       const stamp = Date.now()
@@ -14508,9 +14656,9 @@ async function main() {
         detached.status === 200 && (after.body?.dataSources ?? []).map((d) => d.id).join() === container.dataSourceId && gone.status === 404
           && ((await api('GET', `/views/${original.defaultViewId}/rows`)).body?.rows ?? []).length === 1,
         JSON.stringify({ detached: detached.status, after: after.body?.dataSources, gone: gone.status }))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('붙인 뷰의 권한 — 서버 (2l-2 · F-04-13)')) {
+    if (sectionIf('붙인 뷰의 권한 — 서버 (2l-2 · F-04-13)')) { try {
       // 원본을 못 보게 된 동료에게 붙인 뷰는 없는 것과 같다 — 뷰 · 행 API 가 404 이고, 그 뷰를 가리키는 주소는 그릇의 제 뷰로 열린다(원본의
       // 행 · 속성 이름이 화면에 없다). 볼 수 있는 사람에게는 그대로 열린다. 보드 · 캘린더 · 개인 필터 · 뷰 고치기는 DB 검사가 본다.
       const stamp = Date.now()
@@ -14551,9 +14699,9 @@ async function main() {
         JSON.stringify([mateHtml.includes('data-testid="db-view-tab"'), mateHtml.includes(secretRow), mateHtml.includes(secretProp)]))
       const ownerHtml = await (await fetch(`${BASE}/w/${workspaceId}/db/${container.id}?v=${linkedView}`, { headers: { cookie: authed.cookie } })).text()
       check('볼 수 있는 사람에게는 그 뷰가 그대로 열린다 — 원본의 행이 보인다', ownerHtml.includes(secretRow), String(ownerHtml.length))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('연결된 데이터베이스 — 화면 (2l-3 · F-04-13)')) {
+    if (sectionIf('연결된 데이터베이스 — 화면 (2l-3 · F-04-13)')) { try {
       // "데이터 소스" 창에서 다른 데이터베이스의 소스를 골라 붙이면 그 탭으로 옮기고 원본의 행이 보인다 · 연결 표시와 원본으로 가는 길 ·
       // 원본을 볼 수만 있는 동료에게는 칸 · 새 행이 닫힌다(그릇과 원본의 교집합) · 원본을 못 보는 동료에게는 그 탭이 "접근 권한 없음" ·
       // 떼면 그 탭이 사라지고 원본은 그대로다. 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
@@ -14662,9 +14810,9 @@ async function main() {
       check('★ 떼기 — 한 번 더 묻고, 그 탭이 사라지며 그릇의 첫 뷰로 간다 · 원본의 행은 그대로',
         asked && detached && after.map((d) => d.id).join() === container.dataSourceId && originRows.map((r) => r.title).join() === originRow,
         JSON.stringify({ asked, detached, after: after.map((d) => d.id), originRows: originRows.length }))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('제목 아래 고정 — 서버 (3a-1 · F-16-02)')) {
+    if (sectionIf('제목 아래 고정 — 서버 (3a-1 · F-16-02)')) { try {
       // 레이아웃 적용(PUT …/layout)이 고정을 받는다 — 순서대로 서고, 주지 않으면 그대로다 · 16개는 400 too_many_pinned · 제목은 400.
       // 숨김과의 관계 · 지운 속성 · 행 페이지는 DB 검사가 본다.
       const stamp = Date.now()
@@ -14694,9 +14842,9 @@ async function main() {
       check('★ 16개를 고정하면 400 too_many_pinned · 제목을 고정하면 400 invalid_layout',
         tooMany.status === 400 && tooMany.body?.error === 'too_many_pinned' && title.status === 400 && title.body?.error === 'invalid_layout',
         JSON.stringify({ tooMany: [tooMany.status, tooMany.body?.error], title: [title.status, title.body?.error] }))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('제목 아래 고정 — 화면 (3a-2 · F-16-02)')) {
+    if (sectionIf('제목 아래 고정 — 화면 (3a-2 · F-16-02)')) { try {
       // 레이아웃 편집 모드에서 "고정"을 누르면 속성이 "제목 아래" 목록으로 옮겨 가고(포커스가 따라간다), 그 안에서 순서를 바꾼다. 적용하면
       // 제목 아래에 가로 줄로 서고 속성 묶음에서 빠진다 · 그 줄에서 값을 고친다 · 숨긴 속성을 고정하면 보인다 · 풀면 묶음의 스키마 자리로
       // 돌아온다 · 15개가 차면 핀이 꺼지고 까닭을 말한다. 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
@@ -14810,9 +14958,9 @@ async function main() {
           && (await has('[data-testid="row-layout-pin-full"]')),
         JSON.stringify([filled.status, await evaluate(`document.querySelector('[data-testid="row-layout-pin-full"]')?.textContent ?? null`)]))
       await clickSelector('[data-testid="row-layout-cancel"]')
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('페이지 설정 — 서버 (3b-1 · F-16-09 · F-16-10)')) {
+    if (sectionIf('페이지 설정 — 서버 (3b-1 · F-16-09 · F-16-10)')) { try {
       // 레이아웃 적용(PUT …/layout)이 페이지 설정을 받는다 — 준 칸만 바꾸고 나머지는 그대로 · 틀린 값은 400. 기본값 · 머리 · 숨김과의
       // 관계는 DB 검사가 본다.
       const stamp = Date.now()
@@ -14834,9 +14982,9 @@ async function main() {
         JSON.stringify([wide.status, icons.body?.layout?.settings]))
       const bad = await api('PUT', layoutUrl, { version: '2', order: [], hidden: [], settings: { backlinks: 'sometimes' } })
       check('모르는 값은 400 invalid_layout', bad.status === 400 && bad.body?.error === 'invalid_layout', JSON.stringify(bad))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('페이지 설정 — 화면 (3b-2 · F-16-09 · F-16-10)')) {
+    if (sectionIf('페이지 설정 — 화면 (3b-2 · F-16-09 · F-16-10)')) { try {
       // 레이아웃 편집 모드의 "페이지 설정"에서 다섯 칸을 바꾸고 적용하면 행 페이지가 따른다 — 화면 폭 · 백링크 펼침 · 코멘트 단추 없음 ·
       // 속성 아이콘 없음 · 옅은 코멘트 표시. 백링크 "보이지 않음"은 사라지고, 일반 페이지는 그대로다. 자기 데이터를 스스로 만든다.
       const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
@@ -14924,9 +15072,9 @@ async function main() {
       await waitFor(`!!document.querySelector('[data-testid="comment-panel-toggle"]')`, 15000)
       const plain = await evaluate(`[document.querySelector('main')?.getAttribute('data-full-width'), document.querySelector('main')?.getAttribute('data-inline-comments'), !!document.querySelector('[data-testid="comment-panel-toggle"]')].join()`)
       check('일반 페이지는 그대로다 — 레이아웃은 행의 것이다', plain === ',,true', plain)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('본문 모듈 · 상세 패널 — 서버 (3c-1 · F-16-04 · F-16-05)')) {
+    if (sectionIf('본문 모듈 · 상세 패널 — 서버 (3c-1 · F-16-04 · F-16-05)')) { try {
       // 레이아웃 적용(PUT …/layout)이 본문 줄(main — 속성 묶음은 'property_group')과 패널(panel)을 받는다 — 그 순서로 선다 · 관계형을
       // 패널에 놓으면 400 panel_type · 한 속성을 두 자리에 놓으면 400. 자리 옮기기 · 지운 속성 · 행 페이지는 DB 검사가 본다.
       const stamp = Date.now()
@@ -14953,9 +15101,9 @@ async function main() {
       check('★ 관계형을 패널에 놓으면 400 panel_type · 한 속성을 두 자리에 놓으면 400 invalid_layout',
         relInPanel.status === 400 && relInPanel.body?.error === 'panel_type' && twice.status === 400 && twice.body?.error === 'invalid_layout',
         JSON.stringify({ rel: [relInPanel.status, relInPanel.body?.error, rel], twice: [twice.status, twice.body?.error] }))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('본문 모듈 · 상세 패널 — 화면 (3c-2 · F-16-04 · F-16-05)')) {
+    if (sectionIf('본문 모듈 · 상세 패널 — 화면 (3c-2 · F-16-04 · F-16-05)')) { try {
       // 편집 모드에서 속성을 "본문"으로 올려 속성 묶음 위에 두고, 다른 속성을 "패널"로 보낸다(관계형은 패널 단추가 꺼진다). 적용하면 행
       // 페이지가 본문 줄 순서로 모듈을 그리고, 상세 패널은 접힌 채 토글로 펼친다(이 기기에 남는다). 내리면 속성 묶음의 스키마 자리로.
       // 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
@@ -15044,9 +15192,9 @@ async function main() {
       check('★ 패널이 비면 토글이 없다 · 서버에는 본문 모듈 하나만 남는다',
         (await waitFor(`!document.querySelector('[data-testid="row-panel-toggle"]')`, 5000)) && JSON.stringify(saved) === JSON.stringify([`main:${memo}`]),
         JSON.stringify(saved))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('레이아웃 되돌리기 — 서버 (3e-1 · F-16-12)')) {
+    if (sectionIf('레이아웃 되돌리기 — 서버 (3e-1 · F-16-12)')) { try {
       // GET …/layout 이 레이아웃과 되돌릴 수 있는지를 주고, POST …/layout/undo 가 직전 버전을 새 버전으로 되돌린다 — 두 번은 409 no_undo.
       // 한 단계 · 스키마 순서 · 권한은 DB 검사가 본다.
       const stamp = Date.now()
@@ -15072,9 +15220,9 @@ async function main() {
         undone.status === 200 && undone.body?.layout?.version === '2' && JSON.stringify(undone.body?.layout?.hidden) === '[]'
           && undone.body?.layout?.settings?.fullWidth === false && twice.status === 409 && twice.body?.error === 'no_undo',
         JSON.stringify({ undone: [undone.status, undone.body?.layout?.version, undone.body?.layout?.hidden], twice: [twice.status, twice.body?.error] }))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('레이아웃 되돌리기 · 실시간 — 화면 (3e-2 · F-16-12)')) {
+    if (sectionIf('레이아웃 되돌리기 · 실시간 — 화면 (3e-2 · F-16-12)')) { try {
       // 직전 레이아웃으로 되돌리기 단추(되돌릴 수 있을 때만) · 열린 행 페이지가 다른 사람의 적용을 새로고침 없이 따른다 · 편집 중이면
       // 닫은 뒤에 따른다. "다른 사람"은 API 로 적용한다. 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
       const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
@@ -15159,9 +15307,9 @@ async function main() {
         await send('Fetch.disable').catch(() => undefined)
         await releasePaused()
       }
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('리마인더 — 화면 (4c-3 · F-11-10)')) {
+    if (sectionIf('리마인더 — 화면 (4c-3 · F-11-10)')) { try {
       // 날짜 칸의 종 — 없으면 마우스를 올리면 서고, 누르면 값의 모양(날짜만)에 맞는 리드 넷이 메뉴로 선다. 고르면 종이 선다(다시 열어도) ·
       // 지난 날짜는 빨갛다 · "알림 없음"으로 푼다. 울리면(워커 대신 이 판이 울리기를 부른다) 인박스에 리마인더 줄이 선다. 자기 데이터를
       // 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
@@ -15246,9 +15394,9 @@ async function main() {
       await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
       check('울린 리마인더의 종은 빨갛다',
         await waitFor(`document.querySelector(${JSON.stringify(bell(future))})?.dataset.state === 'passed'`, 15000), String(await stateOf(future)))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('업데이트 패널 (4d-3 · F-11-04)')) {
+    if (sectionIf('업데이트 패널 (4d-3 · F-11-04)')) { try {
       // 머리의 "업데이트" — 그 페이지의 활동을 최신순으로. 실제 API 로 만들고 · 이름을 바꾸고 · 옮긴 뒤(4d-2 가 남긴다), 오래된 편집 30개와
       // 보이지 않아야 할 멘션 하나를 DB 에 넣는다. 30개씩 · "더 보기" · Esc 로 닫기 · 활동이 없는 페이지의 빈 상태. 자기 데이터를 스스로
       // 만든다 — E2E_ONLY 로 홀로 돈다.
@@ -15314,9 +15462,9 @@ async function main() {
       await waitFor(`!!document.querySelector('[data-testid="page-updates-open"]')`, 15000)
       await openUpdates()
       check('★ 활동이 없으면 "아직 활동이 없습니다"', await waitFor(`!!document.querySelector('[data-testid="page-updates-empty"]')`, 8000))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('페이지 웹훅 — 화면 (4e-3 · F-11-19)')) {
+    if (sectionIf('페이지 웹훅 — 화면 (4e-3 · F-11-19)')) { try {
       // Updates 패널 아래의 웹훅 칸 — 걸기(거절의 까닭 · 힌트만 보인다) · 활동을 모아 받는 서버로(워커 대신 이 판이 보내기를 부른다) ·
       // 마지막 배달 · 멈추기 · 다시 켜기 · 지우기(한 번 더 묻는다). 받는 서버는 127.0.0.1:HOOK_PORT — 앱은 그 주소만 검사를 비켜 간다.
       // 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
@@ -15416,9 +15564,9 @@ async function main() {
         receiver.closeAllConnections()
         await new Promise((r) => receiver.close(() => r()))
       }
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('버튼 속성 — 화면 (5a-3 · F-03-15)')) {
+    if (sectionIf('버튼 속성 — 화면 (5a-3 · F-03-15)')) { try {
       // 속성 추가에서 "버튼" → 버튼 열(칸은 이름의 단추) · 액션 0개면 "할 일이 없습니다" · 열 머리 메뉴의 "버튼 설정"으로 값 바꾸기 둘을
       // 넣는다 · 누르면 "완료"이고 칸이 바뀐다 · 잠긴 행은 "일부를 건너뛰었습니다" · 지우기는 그 액션만(다른 액션은 남는다). 자기 데이터를
       // 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
@@ -15540,9 +15688,9 @@ async function main() {
       check('★ 지우기는 그 액션만 — 다른 표에 행 추가는 저장해도 남는다',
         both && kept.length === 1 && kept[0].type === 'add_page_to' && kept[0].config.dataSourceId === other.dataSourceId,
         JSON.stringify([both, kept]))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('버튼 속성 — 행 추가 편집기 · 카드 · 템플릿 (5a-4 · F-08-07)')) {
+    if (sectionIf('버튼 속성 — 행 추가 편집기 · 카드 · 템플릿 (5a-4 · F-08-07)')) { try {
       // "버튼 설정"이 그 표의 스키마로 고른다(숨긴 속성도) · "다른 표에 행 추가"를 고친다(대상 표 · 템플릿 — 템플릿 값이 이긴다를 알린다 ·
       // 그 표의 값) · 누르면 그 표에 템플릿 값으로 행이 선다 · 갤러리 카드의 단추는 카드를 열지 않는다 · 템플릿 화면에는 버튼이 없다.
       // 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
@@ -15646,9 +15794,9 @@ async function main() {
       check('★ 템플릿 화면에는 버튼이 서지 않는다 — 템플릿은 누를 행이 아니다',
         loaded && !(await evaluate(`!!document.querySelector('[data-testid="db-button-cell"]')`)),
         String(loaded))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('DB automation — 목록 · 켜고 끄기 · 실행 기록 (5b-3a · F-08-09)')) {
+    if (sectionIf('DB automation — 목록 · 켜고 끄기 · 실행 기록 (5b-3a · F-08-09)')) { try {
       // ⚡ 는 전체 권한이 있는 사람에게만 선다 — 배지는 켜진 수 · 꺼진 까닭이 있으면 `!`. 목록은 트리거(조건은 보기의 칩과 같은 말) · 액션 ·
       // 실행 주체 · 켜고 끄기(배지가 따라간다) · 꺼진 까닭(켜면 지워진다) · 실행 기록(결과 · 트리거된 항목 · 단계) · 지우기는 한 번 더 묻는다.
       // 실행은 워커 대신 판을 직접 부른다(웹훅 화면과 같다). 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
@@ -15763,9 +15911,9 @@ async function main() {
       const listed = (await api('GET', `/data-sources/${ds}/automations`)).body?.automations ?? []
       check('★ 지우기는 한 번 더 묻는다 — 그만두면 남고, 지우면 사라진다(서버도)',
         kept && gone && listed.length === 1 && listed[0].id === auto.id, JSON.stringify([kept, gone, listed.map((a) => a.name)]))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('DB automation — 만들기 · 고치기 (5b-3b · F-08-09)')) {
+    if (sectionIf('DB automation — 만들기 · 고치기 (5b-3b · F-08-09)')) { try {
       // 패널의 "+ 새 자동화"로 만든다 — 이름 · 속성 편집 트리거와 조건(보기의 필터와 같은 칸) · 트리거된 행의 값 바꾸기(숨긴 속성도) → 목록 ·
       // 배지 · 서버. 실행된다. "고치기"는 같은 편집기 — 실행 주체를 말하고 · 조건을 빼고 트리거를 더한다. 조건 값이 비면 · 이름이 비면
       // 저장하지 않고 까닭을 말한다. 자기 데이터를 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
@@ -15889,9 +16037,9 @@ async function main() {
       await waitFor(`!document.querySelector('${EDITOR}')`, 3000)
       check('취소하면 바뀌지 않는다', (await listed())[0]?.name === `${name} 고침`
         && (await evaluate(`document.querySelector('${item} [data-testid="db-automation-name"]')?.textContent`)) === `${name} 고침`)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('웹훅 보내기 — 편집 (5c-3a · F-08-13)')) {
+    if (sectionIf('웹훅 보내기 — 편집 (5c-3a · F-08-13)')) { try {
       // 버튼 설정에서 "+ 웹훅 보내기" — 받는 주소 · 헤더 · 보낼 속성(숨긴 속성도)을 넣고 저장한다. 서버는 주소 · 헤더 값을 돌려주지 않는다 —
       // 다시 열면 힌트만 보이고 비워 둔 채 저장해도 그대로다. 누르면 받는 서버에 그 헤더와 몸이 닿는다(보내기는 이 판에서 부른다). 틀린
       // 헤더는 몇 번째 액션인지 말하고 저장하지 않는다. 받는 서버는 127.0.0.1:HOOK_PORT — 앱은 그 주소만 검사를 비켜 간다.
@@ -16011,9 +16159,9 @@ async function main() {
         receiver.closeAllConnections()
         await new Promise((r) => receiver.close(() => r()))
       }
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('웹훅 보내기 — 배달 상태 · 다시 켜기 (5c-3b · F-08-13)')) {
+    if (sectionIf('웹훅 보내기 — 배달 상태 · 다시 켜기 (5c-3b · F-08-13)')) { try {
       // 받는 서버가 500 을 주면 네 번째 실패에 버튼이 꺼진다 — 누르면 "꺼진 버튼", 버튼 설정이 까닭을 적고 "다시 켜기"로 켠다. DB automation 의
       // 실행 기록은 웹훅 단계의 배달 상태(보냄)를 함께 말한다. 보내기 · 판은 이 판에서 부른다. 받는 서버는 127.0.0.1:HOOK_PORT.
       const stamp = Date.now()
@@ -16100,9 +16248,9 @@ async function main() {
         receiver.closeAllConnections()
         await new Promise((r) => receiver.close(() => r()))
       }
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('값 슬롯 — 화면 (5d-2 · F-08-11)')) {
+    if (sectionIf('값 슬롯 — 화면 (5d-2 · F-08-11)')) { try {
       // 버튼 설정의 값 칸 옆에서 출처를 고른다 — 날짜는 "지금", 숫자는 "누른 행의 수량". 출처 목록은 저장 검사와 같은 규칙(지금은 날짜에만 ·
       // 같은 타입끼리). 저장하면 서버에 동적 값으로 남고, 다시 열면 그대로 보이고, 누르면 그때의 값으로 채워진다.
       const stamp = Date.now()
@@ -16186,9 +16334,9 @@ async function main() {
       check('★ 누르면 그때의 값으로 — 마감은 지금 · 사본은 그 행의 수량(7)',
         filled[copy]?.number === 7 && at >= before - 5000 && at <= Date.now() + 5000,
         JSON.stringify([filled[due], filled[copy]]))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('버튼 블록 (5e-1 · F-08-06)')) {
+    if (sectionIf('버튼 블록 (5e-1 · F-08-06)')) { try {
       // 빈 줄에서 `/버튼` → 그 줄이 버튼 블록이 되고 설정 창이 곧바로 열린다 → 이름과 "다른 표에 행 추가"를 넣고 저장하면 단추에 이름이
       // 서고(본문의 라벨 · 서버의 액션) 누르면 그 표에 행이 선다. 일하는 행이 없어 값 바꾸기는 없다. 다시 열면 그대로. 자기 데이터를 만든다.
       const stamp = Date.now()
@@ -16278,9 +16426,9 @@ async function main() {
       await clickSelector(`${SETTINGS} [data-testid="button-block-cancel"]`)
       const cancelled = await waitFor(`!document.querySelector('${SETTINGS}')`, 3000)
       check('다시 열면 이름과 액션이 그대로', cancelled && reopened.label === `주문 ${stamp}` && reopened.actions === 1, JSON.stringify([cancelled, reopened]))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('블록 넣기 — 화면 (5e-3 · F-08-06)')) {
+    if (sectionIf('블록 넣기 — 화면 (5e-3 · F-08-06)')) { try {
       // 버튼 블록의 ⚙ → "+ 블록 넣기" → 자리(버튼 아래) · 줄 목록(할 일 "물 마시기" · 텍스트 "메모")을 넣고 저장 → 누르면 그 두 블록이 버튼 바로
       // 아래(뒤 문단보다 앞)에 선다 · 다시 누르면 또 · 다시 열면 줄 목록이 그대로. 자기 데이터를 스스로 만든다.
       const stamp = Date.now()
@@ -16356,9 +16504,9 @@ async function main() {
       const rows = await evaluate(`[...document.querySelectorAll('${ROW}')].map((r) => [r.querySelector('[data-testid="button-block-insert-type"]')?.value, r.querySelector('[data-testid="button-block-insert-text"]')?.value ?? null])`)
       await clickSelector(`${SETTINGS} [data-testid="button-block-cancel"]`)
       check('다시 열면 줄 목록이 그대로', JSON.stringify(rows) === JSON.stringify([['to_do', '물 마시기'], ['paragraph', '메모']]), JSON.stringify(rows))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('공개 화면 (6a-2a · F-06-08)')) {
+    if (sectionIf('공개 화면 (6a-2a · F-06-08)')) { try {
       // 게시한 페이지를 **세션 없이** 연다 — 제목 · 본문 · 서식 · 색인 meta · referrer · 열린 하위만 링크 · 닫힌 하위와 공개 밖 멘션은
       // 제목조차 없다 · 하위로 가면 이동 경로 · 닫힌 하위의 주소는 404 · robots.txt · 해제하면 404. 브라우저 세션은 끝에 반드시 되돌린다.
       const stamp = Date.now()
@@ -16451,9 +16599,9 @@ async function main() {
 
       await api('DELETE', `/pages/${root}/publish`)
       check('해제하면 그 주소는 404', (await fetch(`${BASE}/p/${token}`)).status === 404)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('커스텀 이모지 — 라우트 (7c-1 · F-13-16)')) {
+    if (sectionIf('커스텀 이모지 — 라우트 (7c-1 · F-13-16)')) { try {
       // 이모지 라우트 — 이미지를 올린 파일로 이모지를 만든다(이름은 소문자로) · 목록 · 이름 바꾸기 · 거부 코드 · 지우면 목록에서 빠진다.
       const stamp = Date.now().toString(36)
       const api = async (method, path, body) => {
@@ -16486,9 +16634,9 @@ async function main() {
       const removed = await api('DELETE', `/emoji/${made.body.emoji.id}`)
       const after = await api('GET', '/emoji')
       check('지우면 목록에서 빠진다', removed.status === 200 && !after.body?.emoji?.some((e) => e.id === made.body.emoji.id))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('커스텀 이모지 아이콘 (7c-2a · F-13-16)')) {
+    if (sectionIf('커스텀 이모지 아이콘 (7c-2a · F-13-16)')) { try {
       // 커스텀 이모지를 페이지 아이콘으로 — 라우트로 달면 머리 · 사이드바가 이모지의 그림 경로로 그린다(디코드) · 그림 경로의 응답 ·
       // 지운 이모지는 새로 달 수 없고(400) 이미 달린 아이콘은 기본 글리프로 · 공개 화면은 세션 없이 그 그림을 · 지우면 공개 아이콘이 없다.
       const stamp = Date.now().toString(36)
@@ -16566,9 +16714,9 @@ async function main() {
         await send('Network.setCookie', { name: 'nc_session', value: session, domain: 'localhost', path: '/', httpOnly: true })
       }
       await api('DELETE', `/pages/${page}/publish`)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('커스텀 이모지 — 설정 · 고르개 (7c-2b · F-13-16)')) {
+    if (sectionIf('커스텀 이모지 — 설정 · 고르개 (7c-2b · F-13-16)')) { try {
       // 설정 → 이모지: 그림을 고르면 이름을 파일 이름에서 제안하고 · 추가하면 줄이 선다(그림이 디코드) · 너무 큰 그림은 올리기 전에 막는다 ·
       // 이름 바꾸기 · 지우기(한 번 더 묻는다). 아이콘 고르개의 "커스텀" 탭: 이름으로 찾고 고르면 머리의 아이콘이 그 이모지가 된다.
       const stamp = Date.now().toString(36)
@@ -16699,9 +16847,9 @@ async function main() {
       check('★ 확인하면 줄이 빠진다 · 그림 경로는 404',
         (await waitFor(`!document.querySelector('${rowOf(`${name}-2`)}')`, 8000))
           && (await fetch(`${BASE}/api/workspaces/${workspaceId}/emoji/${emojiId}/image`, { headers: { cookie: authed.cookie } })).status === 404)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('커스텀 이모지 — 본문 인라인 (7c-3a · F-13-16)')) {
+    if (sectionIf('커스텀 이모지 — 본문 인라인 (7c-3a · F-13-16)')) { try {
       // 본문의 커스텀 이모지 멘션 — 살아 있으면 그림(alt 는 :이름:) · 지운 것은 :이름: 글자(흐리게) · 이 워크스페이스에 없으면 "이모지" ·
       // 이름을 바꾸면 다시 열 때 따라간다 · 이름 맵 라우트가 emoji 를 준다. 본문은 명령 경로로 준비한다(saveBody).
       const stamp = Date.now().toString(36)
@@ -16757,9 +16905,9 @@ async function main() {
       check('이름 맵 라우트 — emoji 를 준다(지운 것도 이름 · 없으면 null)',
         JSON.stringify(labels.body?.emoji) === JSON.stringify({ [live]: { name: `renamed-${stamp}`, deleted: false }, [gone]: { name: `gone-${stamp}`, deleted: true }, [stranger]: null }),
         JSON.stringify(labels.body?.emoji))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('커스텀 이모지 — : 자동완성 (7c-3b · F-13-16)')) {
+    if (sectionIf('커스텀 이모지 — : 자동완성 (7c-3b · F-13-16)')) { try {
       // 본문에서 `:이름` 을 치면 후보 팝업(앞에서 맞는 것 먼저) · Enter 로 고르면 이모지 멘션(그림) · 닫는 `:` 까지 꼭 맞게 치면 곧바로 바뀐다 ·
       // 글자 뒤의 `:`(10:30)는 열지 않는다 · 맞는 것이 없으면 팝업이 없다 · 저장된 본문은 id 만 실은 멘션 런이다.
       const stamp = Date.now().toString(36)
@@ -16837,9 +16985,9 @@ async function main() {
       check('★ 저장된 본문은 id 만 실은 커스텀 이모지 멘션 둘(고른 순서대로)',
         JSON.stringify(saved) === JSON.stringify([{ type: 'custom_emoji', custom_emoji: { id: second } }, { type: 'custom_emoji', custom_emoji: { id: first } }]),
         JSON.stringify(saved))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('커스텀 이모지 — 공개 화면 (7c-3c · F-13-16)')) {
+    if (sectionIf('커스텀 이모지 — 공개 화면 (7c-3c · F-13-16)')) { try {
       // 게시한 페이지의 인라인 커스텀 이모지 — 세션 없이 그림(블록 id 로 여는 공개 경로 · alt 는 :이름:) · 지운 것은 :이름: 글자 · 페이지
       // 제목의 이모지도 그림 · 그 블록에 없는 이모지 id 로는 열리지 않는다 · 응답은 공개 파일과 같은 머리.
       const stamp = Date.now().toString(36)
@@ -16896,9 +17044,9 @@ async function main() {
       ])
       check('★ 그 블록에 없는 이모지 · 지운 이모지는 404 — 이모지 id 만으로 열지 않는다', wrong.every((w) => w.status === 404), JSON.stringify(wrong.map((w) => w.status)))
       await api('DELETE', `/pages/${page}/publish`)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('워크스페이스 멤버만의 폼 (7b-1 · F-13-02)')) {
+    if (sectionIf('워크스페이스 멤버만의 폼 (7b-1 · F-13-02)')) { try {
       // 편집 화면에서 "워크스페이스 멤버만" 을 고르면 주소가 선다 · 멤버는 /f/{토큰} 에서 응답자 줄과 함께 낸다(행의 만든 사람이 그 사람) ·
       // 로그인하지 않으면 로그인 안내만(제목이 없다) · 게스트 · 다른 워크스페이스는 404 · 로그인 없는 제출은 404.
       const stamp = Date.now().toString(36)
@@ -16952,9 +17100,9 @@ async function main() {
         method: 'POST', headers: { 'content-type': 'application/json', origin: BASE }, body: JSON.stringify({ submission: 'x', answers: {}, website: '' }),
       })
       check('로그인 없는 제출은 404(열 수 없는 폼과 같다)', blind.status === 404, String(blind.status))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('폼의 응답 상한 · 마감 시각 (7b-2 · F-13-02)')) {
+    if (sectionIf('폼의 응답 상한 · 마감 시각 (7b-2 · F-13-02)')) { try {
       // 편집 화면의 "응답 받기" 에서 상한을 1 로 · 한 번 받으면 공개 화면이 "마감했습니다"(404 가 아니다 · 제목은 보인다) · 편집 화면이
       // 받은 수와 닫힌 까닭을 말한다 · 마감 시각이 지나면 닫히고 지우면 다시 연다 — 공유(access)는 그대로다.
       const stamp = Date.now().toString(36)
@@ -17020,9 +17168,9 @@ async function main() {
       check('★ 마감 시각이 지나면 닫히고 지우면 다시 받는다',
         byTime.status === 200 && byTimeHtml.includes('data-testid="public-form-closed"') && (await reopened.text()).includes('data-testid="public-form"'),
         String(byTime.status))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('폼의 한 사람당 한 번 (7b-3 · F-13-02)')) {
+    if (sectionIf('폼의 한 사람당 한 번 (7b-3 · F-13-02)')) { try {
       // 워크스페이스 멤버만의 폼에 편집 화면의 "한 사람당 한 번만 받기" 를 켠다 · 이 판의 사용자(멤버)가 한 번 내면 확인 화면에 "다른 응답
       // 제출" 이 없다 · 다시 열면 폼 대신 "이미 응답했습니다" · 다시 낸 제출은 409 · 그 응답을 휴지통에 넣으면 폼이 돌아온다.
       const stamp = Date.now().toString(36)
@@ -17086,9 +17234,9 @@ async function main() {
       check('★ 그 응답을 휴지통에 넣으면 폼이 돌아온다',
         trashed !== null && trashed.status < 300 && (await waitFor(`!!document.querySelector('[data-testid="public-form-body"]')`, 15000)),
         JSON.stringify([rows.length, trashed?.status ?? null]))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('폼의 응답자 권한 (7b-4 · F-13-02)')) {
+    if (sectionIf('폼의 응답자 권한 (7b-4 · F-13-02)')) { try {
       // 편집 화면의 공유 절에서 "응답자에게 줄 권한" 을 읽기로 · 이 판의 사용자(멤버)가 워크스페이스 멤버만의 폼에 내면 확인 화면에 "내 응답
       // 보기" 가 서고 그 행의 주소다 · 서버에는 그 행에 그 사람의 읽기 ACL 행 하나(준 사람 없음) · 링크를 누르면 행 화면이 열린다.
       const stamp = Date.now().toString(36)
@@ -17146,9 +17294,9 @@ async function main() {
       check('★ "내 응답 보기" 를 누르면 그 행 화면이 열린다 — 제목이 그 응답이다',
         await waitFor(`location.pathname === ${JSON.stringify(`/w/${workspaceId}/${rowId}`)} && ${rowTitle} === ${JSON.stringify(`응답자 응답 ${stamp}`)}`, 15000),
         String(await evaluate(`location.pathname + ' ' + (${rowTitle} ?? '(제목 없음)')`)))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('운영자의 게시 차단 — 소유자가 보는 화면 (6b-3b · F-17-09)')) {
+    if (sectionIf('운영자의 게시 차단 — 소유자가 보는 화면 (6b-3b · F-17-09)')) { try {
       // 새 워크스페이스에 이 판의 사용자를 소유자로 넣고(이 판의 워크스페이스를 막으면 뒤 절의 공개 페이지가 내려간다) 페이지 하나를 게시 ·
       // 폼 하나를 웹에 연 뒤 운영자가 막는다 — 설정의 "웹 게시" 줄 · 공유 패널 · 폼 편집 화면이 "운영 정책" 이라고 말한다. 끝에 푼다.
       const stamp = Date.now().toString(36)
@@ -17207,9 +17355,9 @@ async function main() {
 
       const freed = await unblockWorkspacePublishing(ws, { actor: 'e2e 운영자' })
       check('정리 — 푼다(내린 게시는 그대로 — 주소는 열리지 않는다)', freed.ok && (await fetch(address)).status === 404, JSON.stringify(freed))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('폼의 조건부 보이기 — 편집 화면이 조건을 지킨다 (7b-5a · F-13-03)')) {
+    if (sectionIf('폼의 조건부 보이기 — 편집 화면이 조건을 지킨다 (7b-5a · F-13-03)')) { try {
       // 편집 화면은 질문 목록을 통째로 보낸다 — 조건(API 로 만든)을 싣지 않으면 서버가 "지운다" 로 받는다. "필수" 를 눌러도 조건이 남고,
       // 근거 질문을 빼면 그 조건만 지우고 보낸다(서버는 끊어진 조건을 받지 않는다 — 지우지 않으면 저장이 거부된다).
       const stamp = Date.now().toString(36)
@@ -17258,9 +17406,9 @@ async function main() {
         removed.length === 2 && removed[1]?.propertyId === memo && removed[1]?.showWhen === null && removed[1]?.required === true
           && !(await evaluate(`!!document.querySelector('[data-testid="form-error"]')`)),
         JSON.stringify([removed, await evaluate(`document.querySelector('[data-testid="form-error"]')?.textContent ?? null`)]))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('폼의 조건부 보이기 — 화면 (7b-5b · F-13-03)')) {
+    if (sectionIf('폼의 조건부 보이기 — 화면 (7b-5b · F-13-03)')) { try {
       // 편집 화면에서 메모 질문에 "분류가 개인이면 보인다" 를 고르고(근거 → 연산자 · 옵션이 선다) 옵션을 단체로 바꾼다 · 공개 화면은 분류를
       // 고를 때마다 메모를 보이고 숨긴다 · 숨은 필수 질문은 제출을 막지 않고 그 답은 행에 들어가지 않는다.
       const stamp = Date.now().toString(36)
@@ -17350,9 +17498,9 @@ async function main() {
       const sentAnswers = JSON.parse((await evaluate(`window.__sentBody`)) ?? '{}').answers ?? {}
       check('★ 숨은 질문의 답(써 두었던 메모)은 보내지 않는다 — 서버만 버리는 것이 아니다',
         Object.hasOwn(sentAnswers, kind) && !Object.hasOwn(sentAnswers, memo), JSON.stringify(sentAnswers))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('페이지 열기 모드 — 사이드 피크 (8n-1 · F-02-20)')) {
+    if (sectionIf('페이지 열기 모드 — 사이드 피크 (8n-1 · F-02-20)')) { try {
       // 표의 "열기" 가 행을 사이드 피크로 연다(기본) — 주소는 데이터베이스 그대로 + peek · 뒤의 표가 남는다 · 피크 안은 행 화면 그대로(제목 셀 ·
       // 본문 편집기) · Esc · 닫기 · 전체 페이지로 · 없는 행은 패널 안에서 · 가운데 피크 · 전체 페이지(행 화면으로).
       const stamp = Date.now().toString(36)
@@ -17441,9 +17589,9 @@ async function main() {
         await waitFor(`new URLSearchParams(location.search).get('peek') === ${JSON.stringify(row?.id)} && new URLSearchParams(location.search).get('v') === ${JSON.stringify(board?.id)}
           && document.querySelector('[data-testid="row-peek"]')?.dataset.mode === 'side'`, 8000),
         await evaluate('location.pathname + location.search'))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('페이지 열기 모드 — 고르개 (8n-2 · F-02-20)')) {
+    if (sectionIf('페이지 열기 모드 — 고르개 (8n-2 · F-02-20)')) { try {
       // 도구막대의 "열기" 에서 전체 페이지를 고르면 표의 "열기" 가 행 화면으로 옮겨 가고, 가운데 피크를 고르면 가운데 상자로 연다(고르면 곧바로
       // 저장 · 화면이 다시 읽어 행 링크가 바뀐다).
       const stamp = Date.now().toString(36)
@@ -17502,9 +17650,9 @@ async function main() {
       check('★ 가운데 피크를 고르면 — 서버 · 가운데 상자로 연다',
         center && (await openRow(`document.querySelector('[data-testid="row-peek"]')?.dataset.mode === 'center'`)),
         JSON.stringify([await modeNow(), await evaluate('location.pathname + location.search')]))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('페이지 열기 모드 — 이전 · 다음 행 (8n-3a · F-02-20)')) {
+    if (sectionIf('페이지 열기 모드 — 이전 · 다음 행 (8n-3a · F-02-20)')) { try {
       // 피크 머리의 "이전 행" · "다음 행" — 이 화면이 그린 행의 순서 · 피크를 바꿔 연다 · 끝에서 돌아 감지 않는다 · 검색에 빠진 행이면 둘 다 없다.
       const stamp = Date.now().toString(36)
       const api = async (method, path, body) => {
@@ -17564,9 +17712,9 @@ async function main() {
         await waitFor(`${showing(order[2])} && ${disabled('peek-prev')} && ${disabled('peek-next')}
           && document.querySelectorAll('tr[data-row-id]').length === 1`, 15000),
         await peekState())
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('검색 필터 — 라우트 (10a-1 · F-07-03)')) {
+    if (sectionIf('검색 필터 — 라우트 (10a-1 · F-07-03)')) { try {
       // 검색 라우트가 쿼리의 필터를 명령에 넘긴다 — 이 페이지 아래(검색어 없이도) · 제목만 · 내가 만든 · 틀린 값은 버린다(400 이 아니다).
       const stamp = Date.now().toString(36)
       const api = async (method, path, body) => {
@@ -17584,9 +17732,9 @@ async function main() {
       check('★ 검색 라우트가 필터를 넘긴다 — 이 페이지 아래(검색어 없이) · 제목만 · 내가 만든 · 틀린 값은 버린다',
         JSON.stringify(within) === JSON.stringify([child]) && titled.includes(child) && bad.status === 200 && (bad.body?.results ?? []).length >= 2,
         JSON.stringify([within, titled, bad.status, (bad.body?.results ?? []).length]))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('검색 필터 — 덮개 (10a-2 · F-07-03)')) {
+    if (sectionIf('검색 필터 — 덮개 (10a-2 · F-07-03)')) { try {
       // 덮개의 칩 — 페이지 화면에서 열면 "이 페이지 안에서" 가 서고 그것만으로(입력 없이) 그 아래가 나온다 · 제목만 · 필터 풀기 · 0건이면 필터가
       // 걸려 있다고 · 다른 페이지로 옮겨 가면 "이 페이지 안에서" 는 저절로 풀린다.
       const stamp = Date.now().toString(36)
@@ -17644,9 +17792,9 @@ async function main() {
           && !document.querySelector('[data-testid="search-filter-clear"]')`, 8000),
         String(await evaluate(`document.querySelector('[data-testid="search-filters"]')?.outerHTML?.slice(0, 300) ?? '(없음)'`)))
       await key('Escape')
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('검색 필터 — 사람 · 팀스페이스 덮개 (10a-3b · F-07-03)')) {
+    if (sectionIf('검색 필터 — 사람 · 팀스페이스 덮개 (10a-3b · F-07-03)')) { try {
       // 사람 칩 둘(만든 사람 · 최종 편집자 — 칩 줄 아래 제자리의 사람 고르개 · 맨 위 "나" · Enter 는 고르개의 것 · Esc 는 고르개만) · 팀스페이스
       // 고르개(내 팀스페이스) · 화면을 연 뒤 요금제가 내려가면 그렇게 말한다(조용히 넓히지 않는다) · 다시 그리면 잠긴 칩.
       const stamp = Date.now().toString(36)
@@ -17763,9 +17911,9 @@ async function main() {
       } finally {
         await setWorkspacePlan(workspaceId, before)
       }
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('페이지 안 찾기 (10b · F-07-05)')) {
+    if (sectionIf('페이지 안 찾기 (10b · F-07-05)')) { try {
       // Ctrl/Cmd+F 가 브라우저 찾기 대신 막대를 연다 · 편집기의 문서에서 찾는다(접힌 토글 안 · 방금 친 글자) · n/N · Enter 다음 · Shift+Enter 이전
       // (돌아 감는다) · 접힌 토글 안의 매칭이면 그 토글을 펼친다 · 하이라이트는 데코레이션 · 0건이면 0/0 · Esc 는 그 글자를 골라 둔 채 닫는다 ·
       // 모달이 열려 있으면 비켜선다.
@@ -17872,9 +18020,9 @@ async function main() {
         (await evaluate(`!!document.querySelector('[data-testid="search-overlay"]') && !document.querySelector('[data-testid="find-bar"]')`)) === true,
         await findState())
       await key('Escape')
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('홈 — 성격별 목록 (10c-1 · F-07-19)')) {
+    if (sectionIf('홈 — 성격별 목록 (10c-1 · F-07-19)')) { try {
       // 새 워크스페이스에서 — 비면 시작 카드 · 페이지를 놓으면 섹션이 그 차례로 선다(최근 방문 · 즐겨찾기 · 팀스페이스 · 개인 · 워크스페이스) ·
       // 빈 섹션은 없다 · 같은 페이지가 여러 섹션에 · 처음 6개와 "모두 보기" · 데이터베이스 루트는 데이터베이스 화면으로.
       const stamp = Date.now().toString(36)
@@ -17938,9 +18086,9 @@ async function main() {
       check('데이터베이스 루트의 항목은 데이터베이스 화면으로 연다',
         await waitFor(`(document.querySelector('[data-testid="home-item"][data-page-id="${dbId}"]')?.getAttribute('href') ?? '').endsWith('/db/${dbId}')`, 5000),
         String(await evaluate(`document.querySelector('[data-testid="home-item"][data-page-id="${dbId}"]')?.getAttribute('href') ?? '(없음)'`)))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('라이브러리 (10c-2 · F-07-19)')) {
+    if (sectionIf('라이브러리 (10c-2 · F-07-19)')) { try {
       // 새 워크스페이스에서 — 사이드바의 "라이브러리" · 탭마다 계층을 편 목록과 위치 · 이름으로 찾기(GET 폼 — 주소가 상태) · 탭 링크가
       // 검색어를 지닌다 · 0건이면 그렇다고.
       const stamp = Date.now().toString(36)
@@ -18027,9 +18175,9 @@ async function main() {
         await waitFor(`(document.querySelector('[data-testid="library-empty"]')?.textContent ?? '').includes(${JSON.stringify(`없는이름${stamp}`)})
           && document.querySelectorAll('[data-testid="library-item"]').length === 0`, 15000),
         await libState())
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('이미지의 대체 텍스트 — 그리기 (10d-1a · F-12-13)')) {
+    if (sectionIf('이미지의 대체 텍스트 — 그리기 (10d-1a · F-12-13)')) { try {
       // 형식의 대체 텍스트가 편집기 · 공개 화면의 `<img alt>` 가 된다 — 캡션과 따로 · 장식이면 빈 말 · 없으면 캡션 · 모양이 틀리면 문서 검증이 거부.
       const stamp = Date.now().toString(36)
       const api = async (method, path, body) => {
@@ -18078,9 +18226,9 @@ async function main() {
         refused = String(error).includes('format.alt_text')
       }
       check('대체 텍스트의 모양이 틀리면 문서 검증이 거부한다', refused)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('이미지의 대체 텍스트 — 편집 화면 (10d-1b · F-12-13)')) {
+    if (sectionIf('이미지의 대체 텍스트 — 편집 화면 (10d-1b · F-12-13)')) { try {
       // 그림 아래의 "대체 텍스트" 단추 → 편집기 밖의 대화상자(글 칸 · 장식 이미지) · 저장하면 형식에 쓰여 `<img alt>` 가 바뀐다(캡션은 그대로) ·
       // 새로 읽어도 남는다 · 장식이면 빈 말 · Esc 는 저장하지 않는다.
       const stamp = Date.now().toString(36)
@@ -18141,9 +18289,9 @@ async function main() {
       check('Esc 는 저장하지 않고 닫는다 — 편집기로 포커스가 돌아온다',
         await waitFor(`!document.querySelector('[data-testid="image-alt-dialog"]') && ${altNow} === '' && !!document.activeElement?.closest('.blk-editor')`, 5000),
         await dialogState())
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('이 기기의 고대비 · 움직임 줄이기 (10d-2 · F-12-13)')) {
+    if (sectionIf('이 기기의 고대비 · 움직임 줄이기 (10d-2 · F-12-13)')) { try {
       // 설정 → 환경설정의 "접근성" — 고르면 곧바로 `<html data-contrast | data-motion>` · 회색 글자가 짙어진다 · 전이가 꺼진다 · 쿠키라 새로
       // 읽어도 남는다(서버가 첫 HTML 에 싣는다) · "기기 설정을 따름" 이면 OS 를 따른다 · 끝에 쿠키 · 미디어 흉내를 지운다(다른 절로 번지지 않게).
       // OS 의 설정은 흉내로 고정한다 — 이 PC 처럼 Windows 의 애니메이션을 끈 기계는 system 이 곧 "줄이기" 다.
@@ -18208,9 +18356,9 @@ async function main() {
         await evaluate(`document.cookie = 'nc_contrast=; Path=/; Max-Age=0'; document.cookie = 'nc_motion=; Path=/; Max-Age=0'`)
         await send('Emulation.setEmulatedMedia', { features: [] })
       }
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('편집기 메뉴의 접근성 (10d-3 · F-12-13)')) {
+    if (sectionIf('편집기 메뉴의 접근성 (10d-3 · F-12-13)')) { try {
       // 슬래시 · 멘션 메뉴가 열리면 편집기 루트가 목록과 지금 항목을 가리킨다(aria-controls · aria-activedescendant · aria-autocomplete) — 포커스는
       // 편집기에 남는다 · ↓ 로 지금 항목이 바뀐다 · Esc 로 닫으면 셋 다 없다.
       const stamp = Date.now().toString(36)
@@ -18260,9 +18408,9 @@ async function main() {
         await rootState())
       await key('Escape')
       await waitFor(closedState, 5000)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('성능 계측 — 받는 문 (10e-1a · F-12-18)')) {
+    if (sectionIf('성능 계측 — 받는 문 (10e-1a · F-12-18)')) { try {
       // POST /api/perf — 세션이 없으면 401 · 있으면 204 · 쌓인 경로는 틀만(id · 쿼리 없이) · 모양이 틀린 것은 그 하나만 버린다.
       const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
       const page = randomUUID()
@@ -18279,9 +18427,9 @@ async function main() {
       check('★ 세션이 없으면 401 · 있으면 204 — 경로는 틀만 남고 모양이 틀린 것은 빠진다',
         anonymous.status === 401 && signed.status === 204 && JSON.stringify(rows) === JSON.stringify([{ metric_key: 'LCP', route: '/w/[id]/[id]' }]),
         JSON.stringify({ anonymous: anonymous.status, signed: signed.status, rows }))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('성능 계측 — 브라우저의 수집기 (10e-1b · F-12-18)')) {
+    if (sectionIf('성능 계측 — 브라우저의 수집기 (10e-1b · F-12-18)')) { try {
       // e2e 서버는 표본 비율 1 — 페이지를 새로 읽고 편집기가 서면 화면을 떠나(다른 주소로) 수집기가 보낸 것을 표에서 본다 · 경로는 틀만.
       const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
       const made = await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: JSON.stringify({ title: `계측 ${Date.now()}` }) })
@@ -18303,9 +18451,9 @@ async function main() {
         editor !== undefined && editor.completed === true && editor.route === '/w/[id]/[id]' && metrics.has('TTFB') && metrics.has('FCP')
           && rows.every((r) => r.sample_rate === 1 && !r.route.includes(page) && !r.route.includes('perf')),
         JSON.stringify(rows))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('이 기기의 글자 크기 (10d-4 · F-12-13)')) {
+    if (sectionIf('이 기기의 글자 크기 (10d-4 · F-12-13)')) { try {
       // 설정 → 환경설정의 "접근성" — 글자 크기를 고르면 곧바로 루트의 글자 크기가 그 비율 · 새로 읽어도 남는다 · 끝에 쿠키를 지운다.
       const SETTINGS = `${BASE}/w/${workspaceId}/settings?s=account.preferences`
       const rootSize = `parseFloat(getComputedStyle(document.documentElement).fontSize)`
@@ -18335,9 +18483,9 @@ async function main() {
       } finally {
         await evaluate(`document.cookie = 'nc_font_scale=; Path=/; Max-Age=0'`)
       }
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('블록 색의 팔레트 — 고대비 · 어두운 테마 (10d-5 · 10d-6 · F-12-13)')) {
+    if (sectionIf('블록 색의 팔레트 — 고대비 · 어두운 테마 (10d-5 · 10d-6 · F-12-13)')) { try {
       // 고대비를 켜면 블록 글자색 9개가 바뀐 세트로 — 화면 바탕과 7:1 이상(밝게 · 어둡게 둘 다). 표준은 노션의 값 그대로(밝게 — 노랑은 3:1 도
       // 안 된다 · 어둡게 — 노션의 어두운 값으로 4.5:1 이상 · 10d-6).
       // 테마는 계정의 값이라 여기선 `<html data-theme>` 를 직접 바꿔 CSS 만 본다(테마의 저장 · 첫 HTML 은 8h 절이 본다). 고대비는 쿠키를 넣고
@@ -18433,9 +18581,9 @@ async function main() {
         await send('Emulation.setEmulatedMedia', { features: [] })
         if (published) await api('DELETE', `/pages/${published.pageId}/publish`)
       }
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('새 버전 알림 (10h-1 · F-12-17)')) {
+    if (sectionIf('새 버전 알림 (10h-1 · F-12-17)')) { try {
       // 서버는 지금 도는 배포의 표지를 안다(`APP_RELEASE` · 없으면 `.next/BUILD_ID`) — `/api/release` 가 세션 없이 준다. 워크스페이스 화면은
       // 화면이 다시 보일 때 묻고, 문서가 실려 온 표지와 다르면 띠를 세운다. 바뀐 서버는 그 물음을 붙잡아 다른 표지로 채워 흉내 낸다(`Fetch`).
       const buildId = readFileSync(join(ROOT, '.next', 'BUILD_ID'), 'utf8').trim()
@@ -18480,9 +18628,9 @@ async function main() {
         await send('Fetch.disable').catch(() => undefined)
         await releasePaused()
       }
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('새 버전 알림 — 청크를 못 받으면 (10h-2 · F-12-17)')) {
+    if (sectionIf('새 버전 알림 — 청크를 못 받으면 (10h-2 · F-12-17)')) { try {
       // 이 앱의 청크를 못 받으면(배포 뒤 옛 청크가 지워졌다 — 404) 다시 보이기를 기다리지 않고 곧바로 묻는다. 지연 로드는 `<script>` 를
       // 붙여 받으므로 없는 청크 주소의 스크립트를 붙여 흉내 낸다. 이 앱의 자산이 아니면 묻지 않는다 · 30초에 한 번.
       const stamp = Date.now().toString(36)
@@ -18514,9 +18662,9 @@ async function main() {
         await send('Fetch.disable').catch(() => undefined)
         await releasePaused()
       }
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('문서의 언어 · 화면 제목 (10d-7a · F-12-13)')) {
+    if (sectionIf('문서의 언어 · 화면 제목 (10d-7a · F-12-13)')) { try {
       // 문서의 언어는 한국어(화면 읽기가 발음을 고른다) · 고정 화면의 제목은 `이름 · notion-clone` · 공개 화면은 틀 없이 글 제목만.
       // 로그인 화면은 세션을 잠시 지우고 본다 · 게시는 끝에 거둔다.
       const docState = () => evaluate(`JSON.stringify({ title: document.title, lang: document.documentElement.lang })`)
@@ -18560,9 +18708,9 @@ async function main() {
         await send('Network.setCookie', { name: 'nc_session', value: session, domain: 'localhost', path: '/', httpOnly: true })
         await api('DELETE', `/pages/${pageId}/publish`)
       }
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('내용의 화면 제목 (10d-7b · F-12-13)')) {
+    if (sectionIf('내용의 화면 제목 (10d-7b · F-12-13)')) { try {
       // 페이지 · 행 페이지 · 데이터베이스 · 템플릿 편집 · teamspace 의 탭 제목은 그 이름 — 화면이 읽은 값으로 브라우저에서 쓴다(첫 HTML 의
       // <title> 은 기본값). 제목을 바꾸면 탭도 · 빈 제목은 "제목 없음" · 클라이언트 이동에도 옛 이름이 남지 않는다 · 피크는 탭을 바꾸지 않는다 ·
       // 볼 수 없는 페이지는 이름을 싣지 않는다.
@@ -18644,9 +18792,9 @@ async function main() {
       check('★ 볼 수 없는 페이지는 이름을 싣지 않는다 — 접근 요청 화면 · 첫 제목은 기본값 "notion-clone"',
         html.includes('data-testid="no-access"') && !html.includes(secret) && html.includes('<title>notion-clone</title>'),
         JSON.stringify({ status: res.status, noAccess: html.includes('data-testid="no-access"'), leaked: html.includes(secret), title: /<title>[^<]*<\/title>/.exec(html)?.[0] ?? null }))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('지원 브라우저 안내 (10i-1 · F-12-15)')) {
+    if (sectionIf('지원 브라우저 안내 (10i-1 · F-12-15)')) { try {
       // 기능 감지 — 이 브라우저(지원 범위)에서는 안내가 없다. CSS 기능 감지가 못 미친다고 답하게 흉내 내면(문서마다 먼저 도는 스크립트) 첫 HTML
       // 의 스크립트가 화면 위에 안내 띠를 세운다(무엇이 없는지 · role=alert) · 앱은 그대로 선다. 끝에 흉내를 걷는다.
       const notice = `document.getElementById('nc-unsupported')`
@@ -18673,9 +18821,9 @@ async function main() {
       await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
       check('흉내를 걷으면 다시 없다', await waitFor(`document.readyState === 'complete' && !${notice} && !!document.querySelector('[data-testid="sidebar-home"]')`, 15000),
         await noticeState())
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('좁은 화면 — 사이드바 서랍 (10j-1 · F-12-12)')) {
+    if (sectionIf('좁은 화면 — 사이드바 서랍 (10j-1 · F-12-12)')) { try {
       // 폰 폭(390)에서 — 사이드바는 숨고 "☰" 가 선다 · 누르면 덮개로 서고 뒤가 어두워진다 · 사이드바의 페이지를 누르면 옮기며 닫힌다 · Esc ·
       // 덮인 곳을 누르면 닫힌다. 넓은 화면은 그대로(☰ 가 없고 사이드바가 그 자리). 끝에 폭을 되돌린다.
       const stamp = Date.now()
@@ -18738,9 +18886,9 @@ async function main() {
       check('넓은 화면은 그대로 — ☰ 가 없고 사이드바가 그 자리(덮개가 아니다)',
         await waitFor(`document.readyState === 'complete' && ${shown(NAV)} && !${shown(TOGGLE)}
           && getComputedStyle(document.querySelector(${JSON.stringify(NAV)})).position === 'static'`, 15000), await navState())
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('좁은 화면 — 화면마다 가로 스크롤 없음 (10j-2 · F-12-12)')) {
+    if (sectionIf('좁은 화면 — 화면마다 가로 스크롤 없음 (10j-2 · F-12-12)')) { try {
       // 폰 폭(390)에서 화면마다 문서 폭이 보이는 폭을 넘지 않는다(가로 스크롤 없음). 넓은 표 같은 것은 **자기 틀 안에서** 가로로 흐른다.
       // 넘치면 화면 밖으로 삐져나간 가장 안쪽 요소를 남긴다. 끝에 폭을 되돌린다.
       const stamp = Date.now()
@@ -18820,9 +18968,9 @@ async function main() {
         await send('Emulation.clearDeviceMetricsOverride')
         await api('DELETE', `/pages/${pubPage}/publish`)
       }
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('터치로 블록 옮기기 — 폰 (10m-1 · F-12-12)')) {
+    if (sectionIf('터치로 블록 옮기기 — 폰 (10m-1 · F-12-12)')) { try {
       // 폰(390 · 터치 흉내)에서 블록을 옮긴다 — 탭하면 그 블록의 손잡이가 화면 안에 서고 · 손잡이를 끌면 옮겨지며(페이지가 스크롤로
       // 가져가지 않는다) · 눌러만 떼면 블록 메뉴가 열린다. 끝에 폭 · 터치를 되돌린다.
       const ids = { A: randomUUID(), B: randomUUID(), C: randomUUID() }
@@ -18985,9 +19133,9 @@ async function main() {
         await send('Emulation.setTouchEmulationEnabled', { enabled: false })
         await send('Emulation.clearDeviceMetricsOverride')
       }
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('카드를 끌지 않고 옮기기 — 키보드 (10m-2 · F-04-03 · F-12-13)')) {
+    if (sectionIf('카드를 끌지 않고 옮기기 — 키보드 (10m-2 · F-04-03 · F-12-13)')) { try {
       // 끌기의 대안(WCAG 2.5.7) · 키보드(2.1.1) — 카드에 Tab 으로 "옮기기" 단추가 닿고 · Enter 로 열면 첫 항목에 포커스 · 위로(같은 열 한 칸) ·
       // 옮긴 뒤 그 카드의 단추로 포커스가 돌아온다 · 다른 열로(그 값이 된다 · 서버) · Esc 는 닫고 단추로 돌려준다.
       const api = async (method, path, body) => {
@@ -19070,9 +19218,9 @@ async function main() {
       }
       check('★ 다른 열로 — Tab 으로 그 열을 골라 Enter · 그 값이 된다(서버) · 화면도 그 열에',
         onDoing && status === doing && (await screenOrder(doing)) === 'B', JSON.stringify({ onDoing, status, doingColumn: await screenOrder(doing) }))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('설치할 수 있는 웹 앱 (10m-3 · F-12-12)')) {
+    if (sectionIf('설치할 수 있는 웹 앱 (10m-3 · F-12-12)')) { try {
       // 매니페스트 · 아이콘은 로그인 없이 받는다(브라우저는 쿠키 없이 받는다) · 브라우저가 읽은 매니페스트에 오류가 없다 · 설치를 막는 이유가
       // 없다(Chrome 의 판정) · 머리에 화면 색 · iOS 홈 화면 아이콘. 서비스 워커는 없다(정본 ⑩ⓑ).
       const res = await rawFetch(`${BASE}/manifest.webmanifest`)
@@ -19110,9 +19258,9 @@ async function main() {
       const installable = await send('Page.getInstallabilityErrors', {})
       check('★ 설치할 수 있다 — 브라우저가 설치를 막는 이유가 없다', (installable?.installabilityErrors ?? ['(응답 없음)']).length === 0,
         JSON.stringify(installable))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('기준점에 붙는 층 — 고르개 (10j-3a · F-12-12)')) {
+    if (sectionIf('기준점에 붙는 층 — 고르개 (10j-3a · F-12-12)')) { try {
       // select 칸의 고르개는 몸(body)으로 내보낸 층이다 — 칸 바로 아래 · 왼쪽 맞춤 · 화면 안. 칸 밖(body)에 있어도 포커스는 검색칸에 남는다
       // (칸의 blur 가 층을 칸 안으로 본다). 창을 스크롤하면 칸을 따라간다. 고르면 닫히고 칸에 들어간다.
       const stamp = Date.now()
@@ -19165,9 +19313,9 @@ async function main() {
       await key('Enter')
       check('고르면 닫히고 칸에 들어간다', await waitFor(`!document.querySelector(${JSON.stringify(LAYER)}) && (document.querySelector(${JSON.stringify(CELL)})?.textContent ?? '').includes('진행')`, 5000),
         await evaluate(`document.querySelector(${JSON.stringify(CELL)})?.textContent ?? null`))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('기준점에 붙는 층 — 표의 팝오버 (10j-3b · F-12-12)')) {
+    if (sectionIf('기준점에 붙는 층 — 표의 팝오버 (10j-3b · F-12-12)')) { try {
       // 표의 팝오버(열 메뉴 · 열 추가 · 계산 · 새 행 · 사람)도 몸으로 내보낸 층이다 — 저마다 화면 안 · 열 메뉴는 머리 칸 아래 · 계산은 칸 위 ·
       // 새 행 메뉴는 안을 눌러도 닫히지 않고 고른 대로 만든다 · 층은 원래 자리의 글자 크기를 물려받는다.
       const stamp = Date.now()
@@ -19282,9 +19430,9 @@ async function main() {
       check('★ 새 행 메뉴는 층 — 안(빈 항목)을 누르면 닫히기 전에 고른 대로 만든다(바깥 클릭이 층을 안으로 본다)',
         !!newMenu && newMenu.inLayer && (await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === ${before + 1}`, 8000)),
         JSON.stringify({ newMenu, before, now: await evaluate(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length`) }))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('표는 자기 틀 안에서 흐른다 (10j-3c · F-12-12)')) {
+    if (sectionIf('표는 자기 틀 안에서 흐른다 (10j-3c · F-12-12)')) { try {
       // 표를 가로 스크롤 틀에 넣었다 — 폰 폭에서 문서는 가로로 흐르지 않고 표가 자기 틀 안에서 넘친다. 칸의 마지막 팝오버(날짜 칸의
       // 알림 종 메뉴)도 층이라 틀이 자르지 않는다 — 틀의 맨 오른쪽 · 마지막 행의 칸에서 열어도 끝 항목까지 보이고 눌린다.
       const stamp = Date.now()
@@ -19346,9 +19494,9 @@ async function main() {
       } finally {
         await send('Emulation.clearDeviceMetricsOverride')
       }
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('폼 — 서버 라우트 (7a-1 · F-13-01)')) {
+    if (sectionIf('폼 — 서버 라우트 (7a-1 · F-13-01)')) { try {
       // 폼 뷰의 라우트 — 만들기(첫 질문은 제목) · 질문 바꾸기 · 설정 · 공개(토큰) · 거부 코드 · 표 화면의 탭에 선다(7a-3 부터 — 그 탭은
       // 편집 화면이다).
       const stamp = Date.now()
@@ -19387,9 +19535,9 @@ async function main() {
       await waitFor(`document.querySelectorAll('[data-testid="db-view-tab"]').length > 0`, 15000)
       const tabs = await evaluate(`[...document.querySelectorAll('[data-testid="db-view-tab"]')].map((t) => t.textContent)`)
       check('폼 탭이 표 화면에 선다(7a-3)', tabs.some((t) => t.includes(`신청서 ${stamp}`)), JSON.stringify(tabs))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('폼 편집 화면 (7a-3 · F-13-01)')) {
+    if (sectionIf('폼 편집 화면 (7a-3 · F-13-01)')) { try {
       // 뷰 추가의 "폼 만들기" → 폼 탭의 편집 화면(첫 질문은 제목) · 폼 제목 · 질문 더하기 · 필수 · 옮기기 · 질문 제목 · 웹에 공개(주소가 서고
       // 세션 없이 열린다) · 공개 닫기(주소가 닫힌다) · 폼 탭의 메뉴에는 종류 바꾸기가 없다.
       const stamp = Date.now()
@@ -19472,9 +19620,9 @@ async function main() {
       }
       check('폼 탭의 메뉴에는 종류 바꾸기가 없다',
         await evaluate(`!!document.querySelector('[data-testid="db-view-menu-panel"]') && !document.querySelector('[data-testid^="db-view-type-"]')`))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('공개 폼 (7a-2b · F-13-02)')) {
+    if (sectionIf('공개 폼 (7a-2b · F-13-02)')) { try {
       // 공개한 폼을 **세션 없이** 연다 — 질문 칸 · 너무 빠른 제출은 다시 내라고 · 필수를 비우면 그 질문 아래에 까닭(입력은 남는다) · 받으면
       // 확인 화면 · 응답은 만든 사람 없는 행 · "다른 응답 제출" 은 새 화면. 브라우저 세션은 끝에 반드시 되돌린다.
       const stamp = Date.now()
@@ -19542,9 +19690,9 @@ async function main() {
       } finally {
         await send('Network.setCookie', { name: 'nc_session', value: session, domain: 'localhost', path: '/', httpOnly: true })
       }
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('사이트 주소 (6c-1 · F-13-08)')) {
+    if (sectionIf('사이트 주소 (6c-1 · F-13-08)')) { try {
       // 워크스페이스 주소 + 슬러그 — 게시한 페이지를 `/s/{주소}/{슬러그}` 로 **세션 없이** 연다 · 하위 페이지 링크도 사이트 주소다 · 없는
       // 슬러그는 404 · 슬러그는 소문자로 받는다. 브라우저 세션은 끝에 반드시 되돌린다.
       const stamp = Date.now()
@@ -19586,9 +19734,9 @@ async function main() {
         await send('Network.setCookie', { name: 'nc_session', value: session, domain: 'localhost', path: '/', httpOnly: true })
         await api('PUT', '/site-domain', { name: null })
       }
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('사이트 주소 — 화면 (6c-2 · F-13-08)')) {
+    if (sectionIf('사이트 주소 — 화면 (6c-2 · F-13-08)')) { try {
       // 설정 → 사이트에서 워크스페이스 주소를 정하고(대문자는 소문자로) · 공유 패널의 웹 게시 절에서 슬러그를 정하면 사이트 주소가 서고
       // 세션 없이 열린다 · 남이 쓰는 슬러그는 그렇다고 말한다. 주소는 끝에 반드시 지운다.
       const stamp = Date.now()
@@ -19647,9 +19795,9 @@ async function main() {
       } finally {
         await api('PUT', '/site-domain', { name: null })
       }
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('공개 화면 — 이미지 (6a-2b · F-06-08)')) {
+    if (sectionIf('공개 화면 — 이미지 (6a-2b · F-06-08)')) { try {
       // 게시한 페이지의 이미지 블록 · 이미지 아이콘이 **세션 없이** 보인다 — 블록 id 로 여는 공개 파일 경로 · X-Robots-Tag · 짧은 캐시.
       // 닫힌 하위의 이미지 · 파일 id 로 찍은 주소는 404. 브라우저 세션은 끝에 반드시 되돌린다.
       const stamp = Date.now()
@@ -19720,9 +19868,9 @@ async function main() {
 
       await api('DELETE', `/pages/${root}/publish`)
       check('해제하면 이미지 주소도 404', (await fetch(`${BASE}/p/${token}/blocks/${bodyImage}/image`)).status === 404)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('공유 패널의 웹 게시 (6a-3 · F-06-08)')) {
+    if (sectionIf('공유 패널의 웹 게시 (6a-3 · F-06-08)')) { try {
       // 공유 패널의 "웹에 게시" 절 — 게시하면 주소가 서고 세션 없이 열린다 · 검색 엔진 노출 · 주소 바꾸기(옛 주소는 곧바로 닫힌다) ·
       // 하위 페이지의 패널은 위의 게시로 공개됐다고 말한다 · 보기만 하는 사람은 주소 없이 게시 여부만 · 정책을 끄면 막혔다고 말하고 취소는 된다 ·
       // 게시 취소. 브라우저 세션 · 정책은 끝에 반드시 되돌린다.
@@ -19824,9 +19972,9 @@ async function main() {
       // ⑦ 정책을 다시 켜도 취소한 것은 닫혀 있다
       const after = await api('GET', `/pages/${root}/publish`)
       check('취소한 것은 정책을 켜도 닫혀 있다', after.body?.published === false)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('공개 화면의 신고 (6b-1b · F-17-08)')) {
+    if (sectionIf('공개 화면의 신고 (6b-1b · F-17-08)')) { try {
       // 세션 없이 공개 화면 → "이 페이지 신고" → 사유 · 설명 → 접수. 서버에 신고 한 줄 · 케이스 · reported. 하위 페이지는 그 페이지가
       // 대상 · 사유 없음은 그 까닭을 말한다 · 허니팟은 받은 척하고 남기지 않는다 · 다른 출처는 받지 않는다 · 공개 밖은 404.
       // 브라우저 세션은 끝에 반드시 되돌린다.
@@ -19911,9 +20059,9 @@ async function main() {
       } finally {
         await send('Network.setCookie', { name: 'nc_session', value: session, domain: 'localhost', path: '/', httpOnly: true })
       }
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('운영자 테이크다운 (6b-2 · F-17-09)')) {
+    if (sectionIf('운영자 테이크다운 (6b-2 · F-17-09)')) { try {
       // 운영자 명령(`npm run moderation` — 서버 셸)으로 내리면 공개 주소가 닫히고, 소유자의 공유 패널이 "운영 정책에 따라 내려졌다" 를
       // 말하며 게시 단추가 서지 않는다 · 되살리면 같은 주소로 다시 열린다 · 틀린 까닭은 명령이 거부한다.
       const stamp = Date.now()
@@ -19959,9 +20107,9 @@ async function main() {
       check('되살리면 다시 게시되고 같은 주소로 열린다',
         back.code === 0 && republished.status === 200 && republished.body?.token === token && (await statusOf()) === 200,
         JSON.stringify([back, republished.status]))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('감사 로그 (6d-2 · F-11-12)')) {
+    if (sectionIf('감사 로그 (6d-2 · F-11-12)')) { try {
       // 설정 → 워크스페이스 → 감사 로그 — 요금제가 Enterprise 가 아니면 그렇다고만 말한다(기록은 쌓인다) · Enterprise 면 표 · 종류 거르기 ·
       // CSV · 멤버는 절도 API 도 없다. 요금제는 끝에 반드시 되돌린다.
       const stamp = Date.now()
@@ -20016,9 +20164,9 @@ async function main() {
       } finally {
         await setWorkspacePlan(workspaceId, before)
       }
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('옮기기의 웹 공개 경고 (6a-4 · F-06-08)')) {
+    if (sectionIf('옮기기의 웹 공개 경고 (6a-4 · F-06-08)')) { try {
       // 워크스페이스 최상위의 두 페이지 — 볼 수 있는 사람은 같다. 그래도 게시된 페이지 밑으로 옮기면 웹에 공개되므로 미리보기가 묻고
       // 그렇다고 말한다 · 확인하면 그 공개 주소 아래에서 열린다 · 게시된 페이지를 옮기면 옮겨도 공개된 채라고 묻지 않고 옮긴다.
       const stamp = Date.now()
@@ -20068,9 +20216,9 @@ async function main() {
       const noPreview = !(await evaluate(`!!document.querySelector('[data-testid="move-preview"]')`))
       check('게시된 페이지는 옮겨도 공개된 채 — 바뀌는 것이 없어 묻지 않고 옮긴다 · 주소는 그대로 열린다',
         settled && noPreview && (await fetch(`${BASE}/p/${token}`)).status === 200, String(noPreview))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('보안 정책 — 내보내기 · 게스트 초대 (6e-1 · F-06-11)')) {
+    if (sectionIf('보안 정책 — 내보내기 · 게스트 초대 (6e-1 · F-06-11)')) { try {
       // 소유자의 설정 → 보안 절에 두 토글 · 내보내기를 끄면 멤버의 페이지 내보내기 창이 정책 때문이라고 말한다 · 게스트 초대를 끄면 멤버의
       // 이메일 초대가 403 policy_disabled. 정책 · 브라우저 세션은 끝에 반드시 되돌린다.
       const stamp = Date.now()
@@ -20107,9 +20255,9 @@ async function main() {
         await setting('workspace.allow_export', true)
         await setting('workspace.allow_member_invite_guests', true)
       }
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('데이터베이스의 레벨 — 공유 패널 (6f-1 · F-06-10)')) {
+    if (sectionIf('데이터베이스의 레벨 — 공유 패널 (6f-1 · F-06-10)')) { try {
       // 표 화면에 공유 버튼 → "줄 권한" 에 "내용 편집" · "만들기만"(6f-2c 부터) · 웹 게시 절(6a-2c-2 부터). "내용 편집" 을 받은 동료는 행을 만들고 속성은
       // 못 만든다. 페이지에 "내용 편집" 은 400 invalid_level. 고르개에 없는 "만들기만"(API 로 준 것)은 그 줄에 그대로 보인다("읽기" 로 속이지 않는다).
       const stamp = Date.now()
@@ -20166,9 +20314,9 @@ async function main() {
       const doc = (await api('POST', '/pages', { title: `레벨 문서 ${stamp}` })).body.page.id
       const onPage = await access(doc, { action: 'grant', principal: { type: 'user', id: mate.userId }, level: 'edit_content' })
       check('★ 페이지에 "내용 편집" 은 400 invalid_level', onPage.status === 400 && onPage.body?.error === 'invalid_level', JSON.stringify(onPage.body))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('행 단위 접근 규칙 — 라우트 (6f-2a · F-06-10)')) {
+    if (sectionIf('행 단위 접근 규칙 — 라우트 (6f-2a · F-06-10)')) { try {
       // 라우트의 연결 — 두기 · 목록 · 레벨 바꾸기 · 지우기 · 거부 코드. 판정은 DB 검사(`access-rule.db.test.ts`)가 본다 — 여기서는 규칙으로
       // 열린 행이 실제 요청(그 행의 공유 상태 읽기 — 볼 수 있어야 답한다)에서도 열리는지 하나만 본다.
       const stamp = Date.now()
@@ -20232,9 +20380,9 @@ async function main() {
       const personOff = await api('DELETE', rules, { dataSourceId: db.dataSourceId, source: 'person_property', propertyId: owner })
       check('★ 담당에서 빼면 곧바로 못 연다 · 규칙 지우기도 속성으로', unassigned.status === 404 && personOff.status === 200,
         `${unassigned.status} ${personOff.status}`)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('만들기만 — 표 화면 (6f-2b-1 · F-06-10)')) {
+    if (sectionIf('만들기만 — 표 화면 (6f-2b-1 · F-06-10)')) { try {
       // "만들기만" 을 받은 동료가 표에 행을 더하고, "만든 사람 → 편집" 규칙 뒤에 표를 열면 자기 행만 보인다(남의 행 둘은 없다). 이 화면은
       // 6f-2b-1 전에는 404 였다 — 들어오게 된 화면이 오류 없이 서는지(전체 절의 페이지 · 서버 오류)도 함께 본다. 브라우저 세션은 끝에
       // 반드시 소유자로 되돌린다.
@@ -20274,9 +20422,9 @@ async function main() {
       } finally {
         await browseAs(session)
       }
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('만들기만 · 규칙 사용자의 화면 (6f-2b-2 · F-06-10)')) {
+    if (sectionIf('만들기만 · 규칙 사용자의 화면 (6f-2b-2 · F-06-10)')) { try {
       // "만들기만" 의 표 화면 — "내가 열 수 있는 행만" 안내 · 실패하는 단추(내보내기 · 공유 · 템플릿 · 새로 만들기 ▾)가 서지 않는다 · 변경
       // 알림이 열린다. 규칙만 가진 사람(표를 못 연다)의 행 화면 — 행으로 선다(속성 묶음) · 경로에 표가 없다 · 공유가 없다. 브라우저 세션은
       // 끝에 반드시 소유자로 되돌린다.
@@ -20344,9 +20492,9 @@ async function main() {
       } finally {
         await browseAs(session)
       }
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('공유 패널의 페이지 단위 접근 (6f-2c · F-06-10)')) {
+    if (sectionIf('공유 패널의 페이지 단위 접근 (6f-2c · F-06-10)')) { try {
       // 데이터베이스의 공유 패널 — "페이지 단위 접근" 절의 "만든 사람" 줄에서 레벨을 고르면 규칙이 서고 "없음" 이면 지워진다 · 추가 고르개의
       // "만들기만" 으로 동료를 들인다 · 보는 사람에게는 고르개 없이 레벨만. 브라우저 세션은 끝에 반드시 소유자로 되돌린다.
       const stamp = Date.now()
@@ -20422,9 +20570,9 @@ async function main() {
       } finally {
         await browseAs(session)
       }
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('공유 패널의 사람 규칙 줄 (6g-3b · F-06-10)')) {
+    if (sectionIf('공유 패널의 사람 규칙 줄 (6g-3b · F-06-10)')) { try {
       // 데이터베이스의 공유 패널 — "페이지 단위 접근" 절에 사람 속성마다 줄("담당에 든 사람")이 서고, 레벨을 고르면 사람 규칙이 선다. 원천
       // 속성을 휴지통에 넣으면 그 규칙은 "휴지통" 줄(고르개 없이 지우기만)이 되고, 지우기를 누르면 규칙이 사라진다.
       const stamp = Date.now()
@@ -20485,9 +20633,9 @@ async function main() {
       const removed = await waitFor(`!document.querySelector('${trashedLine}')`, 10000)
       check('지우기를 누르면 규칙이 사라진다', removed && (await rulesOf()) === '', await rulesOf())
       await clickText('공유')
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('데이터베이스 게시 — 공개 표 · 공개 행 (6a-2c-2 · F-06-08)')) {
+    if (sectionIf('데이터베이스 게시 — 공개 표 · 공개 행 (6a-2c-2 · F-06-08)')) { try {
       // 표를 게시하면 `/p/{token}` 이 읽기 전용 표 — 첫 뷰의 공유 필터 · 정렬 · 옵션 칩 · 템플릿 없음. 제목은 그 행의 공개 주소 — 행의 공개
       // 화면은 속성 묶음. 공개 화면은 세션을 읽지 않으므로 로그인한 채로 열어도 같다.
       const stamp = Date.now()
@@ -20536,9 +20684,9 @@ async function main() {
         await evaluate(`document.querySelector('[data-testid="public-row-properties"]')?.textContent ?? location.pathname`))
       check('행의 경로가 표로 돌아간다(이동 경로)', await evaluate(`[...document.querySelectorAll('[data-testid="public-trail"] a')].some((a) => a.getAttribute('href') === '/p/${token}')`))
       await api('DELETE', `/pages/${db.id}/publish`)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('사람 속성 — 칸 · 고르개 (6g-2a · F-03-07)')) {
+    if (sectionIf('사람 속성 — 칸 · 고르개 (6g-2a · F-03-07)')) { try {
       // 속성 추가의 "사람" → 칸에서 Enter 로 고르개 → 이름으로 찾아 고르면 칩 · 서버 값 → × 로 빼면 빈 칸 → 행 화면에도 칩.
       const stamp = Date.now()
       const api = async (method, path, body, headers = authed) => {
@@ -20635,9 +20783,9 @@ async function main() {
       await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${row}` })
       check('행 화면의 속성 묶음에도 이름 칩',
         await waitFor(`[...document.querySelectorAll('[data-testid="row-properties"] [data-testid="db-person-chip"]')].some((c) => c.textContent === ${JSON.stringify(mateName)})`, 15000))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('링크 미리받기 — 뜻을 보일 때만 (10n-7 · F-12-18)')) {
+    if (sectionIf('링크 미리받기 — 뜻을 보일 때만 (10n-7 · F-12-18)')) { try {
       // 보이는 링크마다 미리받지 않는다(`src/app/link.tsx` · HANDOFF §3.2-271) — 사이드바의 링크가 화면에 있어도 요청이 없고, 올려 두면 그
       // 링크를 미리받는다. 전에는 화면이 다시 그려질 때마다 링크마다 나가(갤러리 절 한 판 77번) 떠날 때 끊겨 서버가 오류를 찍었다.
       await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
@@ -20653,9 +20801,9 @@ async function main() {
       for (const end = Date.now() + 5000; Date.now() < end && !hovered; await sleep(100)) hovered = prefetchCount() > before + idle
       check('올려 두면 그 링크를 미리받는다(뜻을 보인 링크만)', hovered, `${prefetchCount() - before - idle}번`)
       await move(5, 5)
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('뒤로 가기 캐시 — 표 변경 구독 (10n-7 · F-04-24)')) {
+    if (sectionIf('뒤로 가기 캐시 — 표 변경 구독 (10n-7 · F-04-24)')) { try {
       // 떠난 표 화면이 뒤로 가기 캐시(bfcache)에 얼어 있는 동안 표 변경 구독(SSE)을 닫는다(`use-table-changes.ts`). 전에는 그 구독이 열린 채
       // 남아 표 화면을 몇 번 옮겨 다니면 호스트당 연결 6개를 다 차지했고, 새 화면의 요청이 서버에 닿지도 못했다(관계형 대상 목록이 8초 넘게
       // 오지 않아 판이 멈췄다 · 링크가 보이기만 해도 미리받던 동안은 떠날 때 진행 중인 요청이 있어 화면이 캐시에 들지 못해 가려졌다).
@@ -20703,9 +20851,9 @@ async function main() {
       check('★ 그리고 다시 구독한다 — 돌아온 뒤에 더한 행도 새로고침 없이 선다',
         await waitFor(`(document.querySelector('[data-testid="db-table"]')?.textContent ?? '').includes(${JSON.stringify(after)})`, 8000))
       await send('Page.removeScriptToEvaluateOnNewDocument', { identifier: restoreWatch })
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('옵션 고치기 · 지우기 (10n-6 · F-03-04)')) {
+    if (sectionIf('옵션 고치기 · 지우기 (10n-6 · F-03-04)')) { try {
       // 셀 고르개의 옵션 `···` → 고치기 판: 이름을 바꾸면 그 옵션을 든 모든 칸이 따라오고 · 색을 바꾸고 · 지우기는 쓰는 행 수를 묻는다
       // (취소하면 그대로) · 지우면 그 칸들이 비고 서버의 셀도 비었다 · 다른 옵션의 칸은 그대로다(정본 §3.5 [보강] 옵션 고치기 · 지우기).
       const stamp = Date.now()
@@ -20798,9 +20946,9 @@ async function main() {
         JSON.stringify({ options: (await serverOptions()).map((o) => o.name), r1: await serverCell(r1), r3: await serverCell(r3) }))
       await key('Escape')
       await send('Network.setBlockedURLs', { urls: [] })
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('사람 필터 값 고르개 (6g-2b · F-03-07)')) {
+    if (sectionIf('사람 필터 값 고르개 (6g-2b · F-03-07)')) { try {
       // 사람 속성의 필터 규칙 — 칩 · 패널이 값을 이름으로 그리고(첫 화면부터 — 서버가 이름을 준다), 값 칸을 누르면 칸의 고르개가 한 사람
       // 모양으로 열린다: 다른 사람을 고르면 바꾸고 닫힌다 · Esc 는 고르개만 닫는다 · 고른 사람을 다시 고르면 값이 빈다(그 규칙은 저장에서 빠진다).
       const stamp = Date.now()
@@ -20877,9 +21025,9 @@ async function main() {
           (await evaluate(`document.querySelector('[data-testid="db-filter-panel"]')?.textContent.includes('값을 넣으면 적용됩니다')`)),
         `${await serverFilter()} · ${await evaluate(rowIds)}`)
       await clickSelector('[data-testid="db-filter-button"]')
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('사람 필터의 나 (6g-2c · F-03-07)')) {
+    if (sectionIf('사람 필터의 나 (6g-2c · F-03-07)')) { try {
       // 사람 필터의 값 고르개 맨 위 "나" — 고르면 값이 컨텍스트 노드가 되고, 같은 뷰가 보는 사람마다 다른 행이다(소유자에게는 소유자의 행 ·
       // 동료에게는 동료의 행). 브라우저 세션은 끝에 반드시 소유자로 되돌린다.
       const stamp = Date.now()
@@ -20931,9 +21079,9 @@ async function main() {
       } finally {
         await browseAs(session)
       }
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('담당 알림 (6h · F-11-08)')) {
+    if (sectionIf('담당 알림 (6h · F-11-08)')) { try {
       // 소유자만 보는 표에 "담당 → 읽기" 사람 규칙 — 소유자가 행의 담당에 동료를 넣으면 동료의 인박스에 "담당" 줄이 선다(스코프 밖의 행이라도
       // 규칙이 열면 보인다 · 정본 §3.8 [보강] 담당 알림 ④). 줄을 누르면 그 행이 열린다. 브라우저 세션은 끝에 반드시 소유자로 되돌린다.
       const stamp = Date.now()
@@ -20970,9 +21118,9 @@ async function main() {
       } finally {
         await browseAs(session)
       }
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
-    if (sectionIf('개인 필터 · 정렬 — 화면 (2h-2 · F-04-17)')) {
+    if (sectionIf('개인 필터 · 정렬 — 화면 (2h-2 · F-04-17)')) { try {
       // 볼 수만 있는 사람(브라우저 세션을 바꾼다)이 도구줄의 필터로 조건을 걸면 **자기 것**으로 저장되고 그 사람의 표만 좁혀진다 — "나만 보는
       // 필터" 표시 · 초기화. 편집자는 자기 개인 것을 "모두에게 저장"한다. 브라우저 세션은 끝에 반드시 소유자로 되돌린다.
       const stamp = Date.now()
@@ -21057,7 +21205,7 @@ async function main() {
           // jsonb 는 키 순서를 다시 매긴다 — 값으로 비교한다
           && ((s) => s?.length === 1 && s[0].property_id === score && s[0].direction === 'desc')((await stored())?.sorts),
         JSON.stringify((await stored())?.sorts))
-    }
+    } catch (thrown) { await sectionThrew(thrown) } }
 
     section('전체')
     currentGate = null // 늘 도는 끝 절 — 떨어져도 고를 게이트가 없다(서버 오류는 난 절을 함께 찍는다)
