@@ -1,6 +1,7 @@
 /**
  * 전체 e2e 판의 보고 — 순수 함수 (e2e 도구 2조각 · DB 없음)
  */
+import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
@@ -15,6 +16,8 @@ import {
   rerunLine,
   slowest,
   splitFailures,
+  thrownDetail,
+  unguardedGates,
   withDatabase,
   withRedisDb,
 } from './e2e-report.ts'
@@ -115,4 +118,46 @@ test('DB 이름은 SQL 에 따옴표 없이 들어가므로 소문자 · 숫자 
   assert.throws(() => withDatabase('postgresql://localhost/notion', 'x; DROP DATABASE notion'), /DB 이름/)
   assert.throws(() => withDatabase('postgresql://localhost/notion', 'Notion'), /DB 이름/)
   assert.throws(() => withRedisDb('redis://localhost:6379', 16), /0~15/)
+})
+
+test('★ 절을 끝낸 예외 한 줄 — 메시지(여러 줄은 편다)와 스크립트 안의 자리', () => {
+  const thrown = new Error('evaluate: TypeError: Cannot read properties of null\n    at <anonymous>:3:45 — 그때 문서 {"readyState":"loading"}')
+  thrown.stack = [
+    'Error: evaluate: …',
+    '    at evaluate (file:///C:/VibeCoding/notion/scripts/e2e-editor.mjs:472:13)',
+    '    at async Object.waitFor (file:///C:/VibeCoding/notion/scripts/e2e-editor.mjs:481:13)',
+    '    at async main (file:///C:/VibeCoding/notion/scripts/e2e-editor.mjs:18175:11)',
+    '    at async file:///C:/VibeCoding/notion/scripts/e2e-editor.mjs:21087:3',
+  ].join('\n')
+  assert.equal(
+    thrownDetail(thrown),
+    'evaluate: TypeError: Cannot read properties of null ⏎ at <anonymous>:3:45 — 그때 문서 {"readyState":"loading"} (e2e-editor.mjs:18175)',
+    '도우미 안의 던진 줄이 아니라 게이트가 사는 main 의 줄',
+  )
+  const helperOnly = new Error('도우미 밖 없음')
+  helperOnly.stack = 'Error\n    at evaluate (file:///C:/x/scripts/e2e-editor.mjs:472:13)\n    at other (file:///C:/x/scripts/other.mjs:9:1)'
+  assert.equal(thrownDetail(helperOnly), '도우미 밖 없음 (e2e-editor.mjs:472)', 'main 의 프레임이 없으면 스크립트의 첫 프레임')
+  assert.equal(thrownDetail(new Error('스택 없음')).startsWith('스택 없음'), true)
+  assert.equal(thrownDetail('문자열'), '문자열')
+})
+
+test('★ 몸을 `{ try {` 로 열지 않는 게이트를 찾는다', () => {
+  const source = [
+    `if (sectionIf('감싼 절 (1a)')) { try {`,
+    '  check()',
+    '} catch (thrown) { await sectionThrew(thrown) } }',
+    `if (sectionIf('맨 절 (1b)')) {`,
+    '}',
+    `function sectionIf(title) {`,
+  ].join('\n')
+  assert.deepEqual(unguardedGates(source), ['맨 절 (1b)'])
+})
+
+test('★ 실제 e2e 스크립트의 게이트는 모두 감쌌다 — 한 절의 예외가 판 전체를 끝내지 않게(도구-5)', () => {
+  const source = readFileSync(new URL('../../../scripts/e2e-editor.mjs', import.meta.url), 'utf8')
+  const gates = [...source.matchAll(/sectionIf\(\s*'([^']+)'/g)].length
+  assert.ok(gates > 200, `게이트 ${gates}개`)
+  assert.deepEqual(unguardedGates(source), [])
+  const closings = source.split('\n').filter((line) => line.trim() === '} catch (thrown) { await sectionThrew(thrown) } }').length
+  assert.equal(closings, gates, '닫는 줄도 게이트마다 하나')
 })

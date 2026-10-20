@@ -65,6 +65,44 @@ export function rerunGates(fresh: readonly CheckResult[]): { readonly gates: rea
   return { gates, outside }
 }
 
+// ── 예외로 끝난 절 — 판을 멈추지 않고 그 절의 실패 하나로 센다(도구-5) ──
+
+/** 예외로 끝난 절이 남기는 검사의 이름 — 그 게이트의 실패로 세어 `다시 돌리기` 줄에 선다. */
+export const SECTION_THREW = '절이 예외로 끝났다 — 이 절의 남은 검사는 돌지 않았다'
+
+/**
+ * 절을 끝낸 예외 한 줄 — 메시지와 스크립트 안의 자리(`e2e-editor.mjs:줄`). 자리는 게이트가 사는 `main` 의 프레임을 먼저 고른다 —
+ * 평가 · 기다림 도우미 안의 던진 줄은 어느 검사였는지 말하지 않는다. 평가의 예외는 페이지의 스택(`at <anonymous>:3:45`)을 여러 줄로
+ * 싣는다 — 보고의 들여쓴 한 줄로 편다.
+ */
+export function thrownDetail(thrown: unknown, script = 'e2e-editor.mjs'): string {
+  if (!(thrown instanceof Error)) return String(thrown)
+  const message = thrown.message.replace(/\s*\n\s*/g, ' ⏎ ')
+  const frames = (thrown.stack ?? '')
+    .split('\n')
+    .map((line) => ({ line, m: line.match(/([\w.-]+\.m?[jt]s):(\d+):\d+\)?\s*$/) }))
+    .filter((f) => f.m !== null && f.m[1] === script)
+  const at = frames.find((f) => /\bmain \(/.test(f.line)) ?? frames[0]
+  return at ? `${message} (${script}:${at.m![2]})` : message
+}
+
+/**
+ * 몸을 `{ try {` 로 열지 않는 게이트 — 예외가 판 전체를 끝낸다. 게이트는 늘 이렇게 연다:
+ *
+ *   if (sectionIf('제목')) { try {
+ *     …
+ *   } catch (thrown) { await sectionThrew(thrown) } }
+ *
+ * 새 게이트도 감싸게 검사(`e2e-report.test.ts`)가 실제 스크립트를 읽어 지킨다.
+ */
+export function unguardedGates(source: string): string[] {
+  const out: string[] = []
+  for (const m of source.matchAll(/sectionIf\(\s*'([^']+)'([^\n]*)/g)) {
+    if (m[2].trim() !== ')) { try {') out.push(m[1])
+  }
+  return out
+}
+
 export interface SectionTiming {
   readonly title: string
   readonly ms: number
