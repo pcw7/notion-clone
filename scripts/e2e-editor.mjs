@@ -12116,9 +12116,30 @@ async function main() {
         await click(second.x + 4, second.y + second.h / 2)
         inSecond = await waitFor(`(() => { const s = window.getSelection(); const cell = document.querySelectorAll('${CELLS}')[1]; return !!cell && cell.contains(s?.anchorNode ?? null) })()`, 500)
       }
-      await key('End')
+      // 캐럿이 둘째 셀의 어디인가 — 셀 글자 안의 자리(앞 0 · 끝 = 글자 수). 둘째 셀 밖이면 null
+      const offsetInSecond = `(() => {
+        const s = window.getSelection()
+        const cell = document.querySelectorAll('${CELLS}')[1]
+        if (!s || !s.isCollapsed || !cell || !cell.contains(s.anchorNode)) return null
+        const r = document.createRange()
+        r.selectNodeContents(cell)
+        r.setEnd(s.anchorNode, s.anchorOffset)
+        return r.toString().length
+      })()`
+      // 클릭의 늦은 선택 쓰기가 돈 뒤에 키를 친다 — ProseMirror 의 마우스 업은 `setTimeout(0)` 으로 자기 선택(누른 자리 · 셀 맨 앞)을 DOM 에
+      // 다시 쓰고(`MouseDown.done` 의 `delayedSelectionSync`), Chrome 은 입력 사건을 타이머보다 먼저 돌린다. 부하 아래에서 End 가 그 타이머보다
+      // 먼저 돌면 끝에 섰던 캐럿이 셀 맨 앞으로 돌아가고 ← 둘이 앞 셀 끝으로 넘어가 Backspace 둘이 `가1` 을 지웠다(#390 의 영향 판 · 지연
+      // 400ms · CPU 4배에서 네 판 중 셋 — 그 사이 웹소켓 프레임은 없었다 · HANDOFF §3.3-485). 포커스 타이머와 같은 처방(`afterFocusTimer`) — 이것과
+      // 아래의 "끝에 섰다 · 맨 앞에 섰다" 확인으로 13판 중 하나로 줄었다. 남은 하나는 끝에 선 것을 본 뒤에 되돌아갔다(원인을 아직 모른다 · §7)
+      await afterFocusTimer()
+      let ends = 0
+      for (; ends < 6 && (await evaluate(offsetInSecond)) !== 2; ends += 1) {
+        await key('End')
+        await waitFor(`${offsetInSecond} === 2`, 700)
+      }
       await key('ArrowLeft')
       await key('ArrowLeft')
+      const atStart = await waitFor(`${offsetInSecond} === 0`, 3000)
       await key('Backspace')
       await key('Backspace')
       let afterBackspace = beforeBackspace
@@ -12126,7 +12147,8 @@ async function main() {
         await sleep(150)
         afterBackspace = await serverShape()
       }
-      check('★ 셀 맨 앞의 Backspace 는 아무것도 바꾸지 않는다', inSecond && afterBackspace === beforeBackspace, `${beforeBackspace} → ${afterBackspace}`)
+      check('★ 셀 맨 앞의 Backspace 는 아무것도 바꾸지 않는다', inSecond && atStart && afterBackspace === beforeBackspace,
+        `End ${ends}번 · 셀 맨 앞 ${atStart} · ${beforeBackspace} → ${afterBackspace}`)
 
       await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${tPage}` })
       check('다시 열어도 표 — 3행 × 3열 · 쓴 글자',
