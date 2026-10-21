@@ -60,7 +60,13 @@
  */
 
 import * as Y from 'yjs'
-import { HocuspocusProvider, HocuspocusProviderWebsocket, type HocuspocusProviderWebsocketConfiguration } from '@hocuspocus/provider'
+import {
+  HocuspocusProvider,
+  HocuspocusProviderWebsocket,
+  MessageType,
+  type HocuspocusProviderWebsocketConfiguration,
+  type onMessageParameters,
+} from '@hocuspocus/provider'
 
 import { collabDocumentName, confirmationRequest, parseConfirmationReply } from './collab-protocol.ts'
 
@@ -177,6 +183,20 @@ export type CollabConnection = {
 }
 
 /** 서버가 준 첫 상태 · 되살린 보존본을 적용하는 Y 트랜잭션의 origin — 로컬 편집으로 쌓지 않는다. */
+/** y-protocols/sync 의 SyncStep1 — 서버의 state vector 다. 이것에 답하는 SyncStep2 가 이 클라이언트가 가진 것 중 서버에 없는 것을 모두 싣는다. */
+const SYNC_STEP_1 = 0
+
+/** 받은 메시지가 서버의 SyncStep1 인가. 사건이 주는 메시지는 provider 가 처리할 것과 따로 만든 것이라 읽어도 처리에는 상관없다. */
+function isServerSyncStepOne(message: onMessageParameters['message']): boolean {
+  try {
+    message.readVarString() // 문서 이름
+    if (message.readVarUint() !== MessageType.Sync) return false
+    return message.readVarUint() === SYNC_STEP_1
+  } catch {
+    return false
+  }
+}
+
 const INITIAL = Symbol('collab-connection:initial')
 const RESTORED = Symbol('collab-connection:restored')
 const MAX_RETRY_DELAY_MS = 30_000
@@ -317,11 +337,16 @@ export async function openCollabConnection(options: CollabConnectionOptions): Pr
 
   // ── provider ────────────────────────────────────────────────────────
 
+  /** 지금 provider 에 붙인 차례 지키기(`connect`) 를 뗀다. */
+  let unbindSender: (() => void) | null = null
+
   const dropProvider = (): void => {
     const current = provider
     provider = null
     awaiting = null
     online = false
+    unbindSender?.()
+    unbindSender = null
     // **곧바로** 내린다. 소켓은 provider 를 문서 이름 하나로 기억하므로(`providerMap`), 새 provider 를 붙인 뒤에 옛 것을
     // 내리면 그 `detach` 가 새 provider 의 자리를 지운다. 소켓도 함께 내리고 되살아나지 못하게 막는다(머리말).
     if (current !== null) {
@@ -347,7 +372,24 @@ export async function openCollabConnection(options: CollabConnectionOptions): Pr
     provider = next
     const mine = (): boolean => provider === next && !destroyed
 
+    // ── 의존보다 먼저 가는 update 를 막는다(정본 §3.7 [보강] — 10n-13) ──
+    // provider 는 연결을 다시 시도할 때 못 보낸 큐를 비우고, 소켓이 열린 뒤 서버의 첫 메시지 전까지는 새 update 를 곧바로 보내 큐의
+    // 옛 update 를 앞지른다 — 서버는 의존이 없는 update 를 닫는다. 그래서 provider 가 스스로 보내는 길을 떼고, **이 연결이 서버의
+    // SyncStep1 에 답한 뒤에만** 보낸다. 그 답(SyncStep2)이 그때까지의 편집을 모두 싣는다. 연결이 끊기면 다시 "답하기 전" 이다.
+    let answered = false
+    target.off('update', next.boundDocumentUpdateHandler)
+    const sendInOrder = (update: Uint8Array, origin: unknown): void => {
+      if (answered) next.documentUpdateHandler(update, origin)
+    }
+    target.on('update', sendInOrder)
+    unbindSender = () => target.off('update', sendInOrder)
+    // 받은 메시지가 서버의 SyncStep1 이면 provider 가 같은 흐름에서 곧바로 SyncStep2 로 답한다 — 그 사이에 로컬 편집이 끼지 않는다
+    next.on('message', ({ message }: onMessageParameters) => {
+      if (isServerSyncStepOne(message)) answered = true
+    })
+
     next.on('status', ({ status }: { status: string }) => {
+      if (status !== 'connected') answered = false
       if (!mine()) return
       online = status === 'connected'
       if (!online) awaiting = null // 끊긴 소켓의 답은 오지 않는다

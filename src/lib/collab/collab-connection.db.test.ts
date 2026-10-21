@@ -42,7 +42,7 @@ import type { EditorBlock } from '../editor/document.ts'
 import { grantAccess, revokeAccess, stopInheriting } from '../permissions/acl.ts'
 import type { Level } from '../permissions/levels.ts'
 import { edit, findBlock } from '../testing/collab-peers.ts'
-import { APP_ORIGIN, cookieOf, docSignal, holdableFeed, join, ready, startServer, waitFor, type Running } from '../testing/collab-server-harness.ts'
+import { APP_ORIGIN, cookieOf, holdableFeed, join, ready, startServer, waitFor, type Running } from '../testing/collab-server-harness.ts'
 import { createBareWorkspace, createUser, joinAs, probeDatabase, type Actor } from '../testing/db-fixtures.ts'
 import {
   memoryPendingEditStore,
@@ -79,11 +79,12 @@ after(async () => {
 
 /** 닫힌 포트 — 끊긴 연결. */
 const DEAD_URL = 'ws://127.0.0.1:9'
-/** y-protocols 가 아닌 Hocuspocus 메시지 종류 — 서버의 update 확인. */
-const SYNC_STATUS = 8
 
-/** `offline` 이면 닫힌 포트로(곧 끊긴다), `hang` 이 있으면 그 주소로(받기만 하고 답하지 않는 서버 — 시도가 끝나지 않는다). */
-type Gate = { offline: boolean; hang?: string }
+/**
+ * `offline` 이면 닫힌 포트로(곧 끊긴다), `hang` 이 있으면 그 주소로(받기만 하고 답하지 않는 서버 — 시도가 끝나지 않는다). `onOpen` 은 소켓이
+ * 열리는 순간 provider 보다 **먼저** 부른다(생성자에서 단 처리기가 먼저 돈다) — 서버의 첫 메시지가 오기 전의 편집을 만든다(10n-13).
+ */
+type Gate = { offline: boolean; hang?: string; onOpen?: () => void }
 
 /** 받은 메시지를 세는 소켓 기록. */
 type Wire = { readonly sockets: WebSocket[]; readonly received: Uint8Array[]; readonly sent: Uint8Array[] }
@@ -94,6 +95,7 @@ function socketFor(actor: Actor, gate: Gate, wire: Wire) {
     constructor(address: string | URL) {
       super(gate.offline ? DEAD_URL : (gate.hang ?? address), { headers: cookieOf(actor, { origin: APP_ORIGIN }) } as unknown as string[])
       wire.sockets.push(this)
+      this.addEventListener('open', () => gate.onOpen?.())
       this.addEventListener('message', (event) => {
         if (event.data instanceof ArrayBuffer) wire.received.push(new Uint8Array(event.data))
       })
@@ -125,20 +127,6 @@ async function hangingServer(t: TestContext): Promise<string> {
 }
 
 const includesText = (bytes: Uint8Array, text: string): boolean => Buffer.from(bytes).includes(Buffer.from(text, 'utf8'))
-
-/** Hocuspocus 메시지의 종류 — 문서 이름(varString) 다음의 varUint. */
-function messageType(bytes: Uint8Array): number {
-  let offset = 0
-  let length = 0
-  let shift = 0
-  for (;;) {
-    const byte = bytes[offset++]
-    length |= (byte & 0x7f) << shift
-    shift += 7
-    if (byte < 0x80) break
-  }
-  return bytes[offset + length]
-}
 
 const para = (text: string, id: string = randomUUID()): EditorBlock => ({ id, type: 'paragraph', title: [textRun(text)] })
 
@@ -291,7 +279,7 @@ describe('② 끊긴 채 친 편집 (F-05-04)', () => {
 // ── ③ provider 의 셈 ────────────────────────────────────────────────
 
 describe('③ 다시 붙을 때의 확인 (HANDOFF §3.3-120)', () => {
-  test('★ 끊긴 동안 쌓인 update 둘 가운데 첫째의 확인이 와 provider 의 셈이 0 이 되어도, 둘째가 확인되기 전에는 지우지 않는다', async (t) => {
+  test('★ 끊긴 동안 친 update 둘은 다시 붙을 때 SyncStep2 에 함께 실려 한 행으로 쌓이고(10n-13), 확인되기 전에는 보존본을 지우지 않는다', async (t) => {
     if (skipReason) return t.skip(skipReason)
     const { workspaceId, owner, pageId, blockId } = await fixture()
     const feed = holdableFeed()
@@ -301,7 +289,9 @@ describe('③ 다시 붙을 때의 확인 (HANDOFF §3.3-120)', () => {
     const me = await open(t, running, owner, { workspaceId, pageId }, store)
     await waitFor('연결', settled(me))
 
-    // 끊는다 — provider 가 스스로 다시 붙으려 하지만 닫힌 포트다. 그동안 친 update 둘은 소켓의 큐에 쌓인다.
+    // 끊는다 — provider 가 스스로 다시 붙으려 하지만 닫힌 포트다. 그동안 친 update 둘은 보내지 않는다(이 연결이 서버의 SyncStep1 에
+    // 답하기 전이다 — 정본 §3.7 [보강] 의존보다 먼저 가는 update). 10n-13 전에는 소켓의 큐에 쌓였다가 첫째만 동기화 응답보다 먼저 나갔다
+    // (§3.3-120 — 그 장면에서 provider 의 셈이 0 이 되어도 지우지 않는 것을 이 검사가 지켰다).
     me.gate.offline = true
     me.wire.sockets.at(-1)?.close()
     await waitFor('끊겼다', () => !me.connection.snapshot().online)
@@ -310,19 +300,13 @@ describe('③ 다시 붙을 때의 확인 (HANDOFF §3.3-120)', () => {
 
     feed.hold()
     const before = await logLength(pageId)
-    const receivedBefore = me.wire.received.length
     me.gate.offline = false
-    await waitFor('첫째가 쌓였다', async () => (await logLength(pageId)) >= before + 1)
-    const firstSeq = await lastSeq(pageId)
-    assert.equal(await logLength(pageId), before + 1, '전제: 첫째만 쌓였다(확인은 신호를 기다린다)')
-    assert.equal(await payloadHas(pageId, firstSeq, '첫째 '), true, '전제: 큐의 첫째가 동기화 응답보다 먼저 나갔다')
-    assert.equal(await payloadHas(pageId, firstSeq, '둘째 '), false)
-    feed.release(docSignal(pageId, firstSeq))
-    await waitFor('첫째의 확인이 왔다', () => me.wire.received.slice(receivedBefore).some((bytes) => messageType(bytes) === SYNC_STATUS))
-    // 다시 붙을 때 provider 는 셈을 1 로 두고, 큐의 첫째가 먼저 나가 그 확인이 왔다 — 셈은 0 이다. 둘째를 담은 메시지는 아직 서버에 있다.
-    await waitFor('둘째가 쌓였다(확인은 신호를 기다린다)', async () => await logTexts(pageId, '둘째 '))
+    await waitFor('쌓였다', async () => (await logLength(pageId)) >= before + 1)
+    const seq = await lastSeq(pageId)
+    assert.equal(await logLength(pageId), before + 1, '한 행')
+    assert.equal((await payloadHas(pageId, seq, '첫째 ')) && (await payloadHas(pageId, seq, '둘째 ')), true, 'SyncStep2 가 둘 다 실었다')
     await new Promise((resolve) => setTimeout(resolve, 0))
-    assert.ok(store.entries.size === 1, '둘째가 확인되기 전에 보존본을 지웠다')
+    assert.ok(store.entries.size === 1, '확인되기 전에 보존본을 지웠다')
 
     feed.release()
     await waitFor('확인되어 지웠다', () => store.entries.size === 0)
@@ -663,5 +647,76 @@ describe('⑩ 첫 연결을 기다리는 동안 (F-12-16)', () => {
     await waitFor('시간이 지나 끝났다', () => !me.connection.snapshot().connecting, 3000)
     assert.equal(me.connection.snapshot().online, false)
     assert.ok(changes.some((s) => !s.connecting), '끝났다고 알리지 않았다 — 화면이 바뀌지 않는다')
+  })
+})
+
+// ── ⑪ 의존보다 먼저 가는 update ──────────────────────────────────────
+
+describe('⑪ 의존보다 먼저 가는 update (10n-13 · 정본 §3.7 [보강])', () => {
+  test('★ 소켓이 열리기 전 · 열린 직후(서버의 첫 메시지 전)의 편집이 순서를 어기지 않는다 — 버리지 않고 둘 다 쌓인다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { workspaceId, owner, pageId, blockId } = await fixture()
+    const running = await startServer(t)
+    const store = memoryPendingEditStore()
+    // 둘째('나')는 첫째('가') 바로 뒤에 친다 — 첫째에 기댄다
+    let second: (() => void) | null = null
+    const gate: Gate = {
+      offline: false,
+      onOpen: () => {
+        const run = second
+        second = null
+        run?.()
+      },
+    }
+    const me = await open(t, running, owner, { workspaceId, pageId }, store, gate)
+    // ① 소켓이 열리기 전 — 10n-13 전에는 provider 의 큐에 쌓였다가 서버의 첫 메시지에 흘렀다
+    edit(me.doc(), typeAt(blockId, '가'))
+    // ② 소켓이 열리는 순간(provider 보다 먼저) — 10n-13 전에는 곧바로 나가 큐의 첫째를 앞질렀고, 서버가 `missing_dependencies` 로 닫았다
+    second = () => edit(me.doc(), (tr, doc) => tr.insertText('나', findBlock(doc, blockId).pos + 3))
+    await waitFor('연결', settled(me))
+
+    await waitFor('둘 다 쌓였다', async () => (await logTexts(pageId, '가')) && (await logTexts(pageId, '나')))
+    assert.equal(second, null, '전제: 소켓이 열리는 순간에 둘째를 쳤다')
+    assert.deepEqual(me.discarded, [], '문서를 버렸다')
+    assert.equal(me.connection.snapshot().closed, null)
+    await waitFor('확인되어 지웠다', () => store.entries.size === 0)
+    assert.equal(textOf(me.doc(), pageId), '가나원문')
+  })
+
+  test('★ 다시 붙을 때도 — 끊긴 동안 · 다시 열린 순간의 편집이 순서를 어기지 않는다(끊기면 "답하기 전" 으로 돌아간다)', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { workspaceId, owner, pageId, blockId } = await fixture()
+    const running = await startServer(t)
+    const store = memoryPendingEditStore()
+    let atOpen: (() => void) | null = null
+    const gate: Gate = {
+      offline: false,
+      onOpen: () => {
+        const run = atOpen
+        atOpen = null
+        run?.()
+      },
+    }
+    const me = await open(t, running, owner, { workspaceId, pageId }, store, gate)
+    await waitFor('연결', settled(me))
+    // 첫 연결이 서버의 SyncStep1 에 답한 뒤다 — 그 뒤의 편집은 곧바로 간다(여기서 끊어야 "끊기면 답하기 전으로" 를 본다)
+    edit(me.doc(), typeAt(blockId, '앞'))
+    await waitFor('첫 연결에서 쌓였다', async () => await logTexts(pageId, '앞'))
+
+    // 끊는다 — 포트는 그대로라 다시 붙는 첫 시도가 붙는다(실패한 시도는 provider 의 큐를 비워 순서 문제를 가린다 — 정본 ①ⓐ)
+    const sockets = me.wire.sockets.length
+    me.wire.sockets.at(-1)?.close()
+    await waitFor('끊겼다', () => !me.connection.snapshot().online)
+    edit(me.doc(), typeAt(blockId, '가'))
+    atOpen = () => edit(me.doc(), (tr, doc) => tr.insertText('나', findBlock(doc, blockId).pos + 3))
+    const before = await logLength(pageId)
+    await waitFor('다시 붙었다', () => settled(me)() && me.wire.sockets.length > sockets)
+
+    await waitFor('둘 다 쌓였다', async () => (await logTexts(pageId, '가')) && (await logTexts(pageId, '나')))
+    assert.equal(atOpen, null, '전제: 다시 열리는 순간에 둘째를 쳤다')
+    assert.equal(await logLength(pageId), before + 1, '둘 다 다시 붙은 연결의 SyncStep2 한 행으로 갔다')
+    assert.deepEqual(me.discarded, [], '문서를 버렸다')
+    await waitFor('확인되어 지웠다', () => store.entries.size === 0)
+    assert.equal(textOf(me.doc(), pageId), '가나앞원문')
   })
 })
