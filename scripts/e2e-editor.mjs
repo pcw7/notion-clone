@@ -6013,6 +6013,8 @@ async function main() {
       check('★ 백링크가 멘션한 페이지의 아이콘을 앞에 단다',
         (await evaluate(`[...document.querySelectorAll('details[aria-label="백링크"] a')].find((a) => a.getAttribute('href') === '/w/${workspaceId}/${parent}')?.querySelector('[data-page-icon]')?.getAttribute('data-page-icon') ?? null`)) === '🌳',
         String(await evaluate(`document.querySelector('details[aria-label="백링크"]')?.innerHTML?.slice(0, 300)`)))
+      // 이동 직후 서버가 그린 단추다 — React 가 붙기 전의 클릭은 버려져 후보 목록이 서지 않는다(#393 의 전체 판 · `[null,null]` · 홀로 3/3)
+      await waitHydrated('[data-testid="move-open"]')
       await clickSelector('[data-testid="move-open"]')
       const OPTION = (id) => `[data-testid="move-to-page"][data-page-id="${id}"]`
       check('★ 옮기기 후보가 그 페이지의 아이콘을 앞에 단다 — 없으면 기본 글리프',
@@ -12130,15 +12132,25 @@ async function main() {
       // 다시 쓰고(`MouseDown.done` 의 `delayedSelectionSync`), Chrome 은 입력 사건을 타이머보다 먼저 돌린다. 부하 아래에서 End 가 그 타이머보다
       // 먼저 돌면 끝에 섰던 캐럿이 셀 맨 앞으로 돌아가고 ← 둘이 앞 셀 끝으로 넘어가 Backspace 둘이 `가1` 을 지웠다(#390 의 영향 판 · 지연
       // 400ms · CPU 4배에서 네 판 중 셋 — 그 사이 웹소켓 프레임은 없었다 · HANDOFF §3.3-485). 포커스 타이머와 같은 처방(`afterFocusTimer`) — 이것과
-      // 아래의 "끝에 섰다 · 맨 앞에 섰다" 확인으로 13판 중 하나로 줄었다. 남은 하나는 끝에 선 것을 본 뒤에 되돌아갔다(원인을 아직 모른다 · §7)
+      // 아래의 "끝에 섰다 · 맨 앞에 섰다" 확인으로 13판 중 하나로 줄었다. 남은 것은 끝에 선 것을 본 뒤에 되돌아갔다 — 전체 판에서 40~50%
+      // (#392 · §7). End · ← 는 브라우저가 DOM 의 캐럿만 옮기고, ProseMirror 는 그 `selectionchange` 에서야 자기 상태로 읽는다. 읽기 전에
+      // 편집기가 갱신되면 상태의 옛 선택(클릭한 셀 맨 앞)을 DOM 에 다시 쓴다 — 그러면 ← 둘이 앞 셀 끝으로 넘어가 Backspace 둘이 `가1` 을
+      // 지운다(실패 값 "End 1번 · 맨 앞 false" 와 지워진 두 글자가 이 순서와 맞는다). 그래서 키마다 그 선택 바뀜이 알려지기를 기다린다 —
+      // 일회용 리스너는 키 직전에 걸리고 편집기의 리스너는 편집기를 만들 때 걸렸으므로, 이것이 불렸으면 편집기는 이미 읽었다.
       await afterFocusTimer()
+      const keyRead = async (name) => {
+        await evaluate(`window.__caretRead = false; document.addEventListener('selectionchange', () => { window.__caretRead = true }, { once: true })`)
+        await key(name)
+        return waitFor('window.__caretRead === true', 1500)
+      }
       let ends = 0
+      const read = []
       for (; ends < 6 && (await evaluate(offsetInSecond)) !== 2; ends += 1) {
-        await key('End')
+        read.push(await keyRead('End'))
         await waitFor(`${offsetInSecond} === 2`, 700)
       }
-      await key('ArrowLeft')
-      await key('ArrowLeft')
+      read.push(await keyRead('ArrowLeft'))
+      read.push(await keyRead('ArrowLeft'))
       const atStart = await waitFor(`${offsetInSecond} === 0`, 3000)
       await key('Backspace')
       await key('Backspace')
@@ -12148,7 +12160,7 @@ async function main() {
         afterBackspace = await serverShape()
       }
       check('★ 셀 맨 앞의 Backspace 는 아무것도 바꾸지 않는다', inSecond && atStart && afterBackspace === beforeBackspace,
-        `End ${ends}번 · 셀 맨 앞 ${atStart} · ${beforeBackspace} → ${afterBackspace}`)
+        `End ${ends}번 · 읽힘 ${JSON.stringify(read)} · 셀 맨 앞 ${atStart} · ${beforeBackspace} → ${afterBackspace}`)
 
       await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${tPage}` })
       check('다시 열어도 표 — 3행 × 3열 · 쓴 글자',
@@ -19972,9 +19984,11 @@ async function main() {
       const browseAs = (token) => send('Network.setCookie', { name: 'nc_session', value: token, domain: 'localhost', path: '/', httpOnly: true })
       const policyUrl = `${BASE}/api/workspaces/${workspaceId}/settings/workspace.allow_publish_sites_and_forms`
       const SECTION = '[role="dialog"][aria-label="공유 설정"] [data-testid="publish-section"]'
+      // 공유 단추는 서버가 그린 HTML 로 먼저 서고 처리기는 하이드레이션 뒤에 붙는다 — 그 전의 클릭은 버려진다(보는 사람의 패널이 열리지
+      // 않아 절이 없었다 — #392 의 전체 판 · 홀로 3/3 · HANDOFF §7). 단추에 React 가 붙은 뒤 누른다(`waitHydrated` 와 같은 표지).
       const openShare = async (pageId) => {
         await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${pageId}` })
-        await waitFor(`[...document.querySelectorAll('button')].some((b) => b.textContent.trim() === '공유')`, 15000)
+        await waitFor(`[...document.querySelectorAll('button')].some((b) => b.textContent.trim() === '공유' && Object.keys(b).some((k) => k.startsWith('__reactProps')))`, 15000)
         await clickText('공유')
         return waitFor(`!!document.querySelector('${SECTION}')`, 8000)
       }
@@ -20029,8 +20043,10 @@ async function main() {
 
         // ⑤ 보기만 하는 사람 — 주소 없이
         await browseAs(viewer.token)
-        await openShare(root)
+        const viewerSection = await openShare(root)
         const viewerSees = await evaluate(`({
+          panel: !!document.querySelector('[role="dialog"][aria-label="공유 설정"]'),
+          section: ${viewerSection},
           published: !!document.querySelector('${SECTION} [data-testid="publish-published"]'),
           url: !!document.querySelector('${SECTION} [data-testid="publish-url"]'),
           buttons: !!document.querySelector('${SECTION} [data-testid="publish-unpublish"]'),
