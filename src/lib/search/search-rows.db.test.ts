@@ -84,6 +84,15 @@ const hitsOf = async (actor: Actor, query: string, filters?: Parameters<typeof s
   return out.ok ? out.results.results : []
 }
 const idsOf = async (actor: Actor, query: string) => (await hitsOf(actor, query)).map((h) => h.pageId)
+/**
+ * 맞는 결과만 — 오타 대체(10p-3)의 결과는 빈 목록으로 본다. "옛 이름 · 비운 색인으로는 맞는 것이 없다" 를 물을 때 쓴다(대체는 비슷한 제목을
+ * 보여 줄 수 있다 — 그 결과는 이름이 걸린 것이 아니다).
+ */
+const exactIdsOf = async (actor: Actor, q: string) => {
+  const out = await searchPages(actor.ctx, { query: q })
+  assert.equal(out.ok, true, `검색이 거부됐다: ${out.ok === false ? out.reason : ''}`)
+  return out.ok && !out.fuzzy ? out.results.results.map((h) => h.pageId) : []
+}
 
 /** 데이터베이스를 소유자만 보게 한다 — 순서가 중요하다(search.db.test.ts 의 `makePrivate` 와 같다). 셋 다 단언한다. */
 const makePrivate = async (nodeId: string): Promise<void> => {
@@ -121,7 +130,7 @@ describe('데이터베이스 행의 제목 색인 (10p-1)', () => {
     assert.equal(renamed.ok, true, `셀 고치기 실패: ${renamed.ok === false ? renamed.reason : ''}`)
 
     assert.deepEqual(await idsOf(fx.owner, `새이름행 ${stamp}`), [row])
-    assert.deepEqual(await idsOf(fx.owner, `옛이름행 ${stamp}`), [], '옛 이름은 색인에 남지 않는다')
+    assert.deepEqual(await exactIdsOf(fx.owner, `옛이름행 ${stamp}`), [], '옛 이름은 색인에 남지 않는다(맞는 결과가 없다)')
   })
 
   test('★ ③ 템플릿 행은 나오지 않는다 — 전역 검색 · 필터만의 검색 · @ 후보(R1)', async (t) => {
@@ -134,7 +143,7 @@ describe('데이터베이스 행의 제목 색인 (10p-1)', () => {
     if (!template.ok) throw new Error('unreachable')
 
     assert.deepEqual(await idsOf(fx.owner, `주간회의 ${stamp}`), [row], '이름이 겹쳐도 템플릿은 빠진다')
-    assert.deepEqual(await idsOf(fx.owner, `주간회의 틀 ${stamp}`), [])
+    assert.ok(!(await idsOf(fx.owner, `주간회의 틀 ${stamp}`)).includes(template.value.id), '템플릿은 오타 대체에도 없다')
     // 필터만의 검색(10a-1 ③) — 내가 만든 모든 것에도 템플릿은 없다
     const mine = (await hitsOf(fx.owner, '', { createdBy: 'me' })).map((h) => h.pageId)
     assert.ok(mine.includes(row), '내가 만든 행은 있다')
@@ -150,7 +159,7 @@ describe('데이터베이스 행의 제목 색인 (10p-1)', () => {
     const hidden = await newRow(secret, `연봉협상 ${stamp}`)
     await makePrivate(secret.databaseId)
     assert.deepEqual(await idsOf(fx.owner, `연봉협상 ${stamp}`), [hidden], '소유자는 찾는다')
-    assert.deepEqual(await idsOf(other, `연봉협상 ${stamp}`), [], '볼 수 없는 데이터베이스의 행은 없다')
+    assert.ok(!(await idsOf(other, `연봉협상 ${stamp}`)).includes(hidden), '볼 수 없는 데이터베이스의 행은 없다(오타 대체에도)')
 
     const open = await newTable(`열린 표 ${stamp}`)
     const visible = await newRow(open, `인사평가 공개 ${stamp}`)
@@ -169,7 +178,7 @@ describe('데이터베이스 행의 제목 색인 (10p-1)', () => {
     // 0107 전의 모양 — 색인의 제목이 비어 있다. 하나는 블록의 제목이 배열이 아니다(옛 모양) — 질의 전체가 던지면 안 된다
     await query(`UPDATE search_document SET title_text = NULL WHERE doc_id = ANY($1::uuid[])`, [[row, odd]])
     await query(`UPDATE block SET properties = jsonb_set(properties, '{title}', '"평문 제목"'::jsonb) WHERE id = $1`, [odd])
-    assert.deepEqual(await idsOf(fx.owner, `백필행 ${stamp}`), [], '비운 뒤에는 찾지 못한다(전제)')
+    assert.deepEqual(await exactIdsOf(fx.owner, `백필행 ${stamp}`), [], '비운 뒤에는 찾지 못한다(전제 — 맞는 결과가 없다)')
 
     const sql = readFileSync(new URL('../../../db/migrations/0107_search_row_titles.sql', import.meta.url), 'utf8')
     await query(sql)

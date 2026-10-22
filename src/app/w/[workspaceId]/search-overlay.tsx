@@ -137,7 +137,8 @@ const DEBOUNCE_MS = 200
  */
 type QueryResult =
   | { kind: 'loading' }
-  | { kind: 'results'; rows: SearchHitRow[] }
+  // `fuzzy` — 오타 대체의 결과(10p-3 · 맞는 결과가 0건이라 제목의 낱말 유사도로 찾았다)
+  | { kind: 'results'; rows: SearchHitRow[]; fuzzy: boolean }
   | { kind: 'too_short'; minLength: number }
   | { kind: 'error' }
   /** 요금제가 팀스페이스 필터를 허락하지 않는다(10a-3b — 화면이 연 뒤 요금제가 내려갔다). 조용히 넓히지 않고 말한다. */
@@ -330,11 +331,12 @@ export function SearchOverlay({
             tooShort?: boolean
             minLength?: number
             results?: SearchHitRow[]
+            fuzzy?: boolean
           }
           setResult(
             data.tooShort
               ? { kind: 'too_short', minLength: data.minLength ?? 2 }
-              : { kind: 'results', rows: data.results ?? [] },
+              : { kind: 'results', rows: data.results ?? [], fuzzy: data.fuzzy === true },
           )
           setIndex(0)
         })
@@ -642,6 +644,13 @@ export function SearchOverlay({
         <div className="min-h-0 flex-1 overflow-auto" data-testid="search-results">
           {!searching && rows.length > 0 && (
             <p className="px-4 pt-3 text-xs font-medium text-neutral-400">최근 방문</p>
+          )}
+
+          {/* 오타 대체(10p-3 · 정본 §3.9 [보강] 검색 오타 대체 ⑤) — 맞는 결과가 아니라는 것을 먼저 말한다 */}
+          {mode.kind === 'results' && mode.fuzzy && rows.length > 0 && (
+            <p className="px-4 pt-3 text-xs text-neutral-500 dark:text-neutral-400" data-testid="search-fuzzy">
+              일치하는 결과가 없어 비슷한 제목을 보여 줍니다.
+            </p>
           )}
 
           {rows.length > 0 && (

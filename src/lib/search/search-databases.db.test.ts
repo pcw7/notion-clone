@@ -67,6 +67,15 @@ const hitsOf = async (actor: Actor, q: string, filters?: Parameters<typeof searc
   return out.ok ? out.results.results : []
 }
 const idsOf = async (actor: Actor, q: string) => (await hitsOf(actor, q)).map((h) => h.pageId)
+/**
+ * 맞는 결과만 — 오타 대체(10p-3)의 결과는 빈 목록으로 본다. "옛 이름 · 비운 색인으로는 맞는 것이 없다" 를 물을 때 쓴다(대체는 비슷한 제목을
+ * 보여 줄 수 있다 — 그 결과는 이름이 걸린 것이 아니다).
+ */
+const exactIdsOf = async (actor: Actor, q: string) => {
+  const out = await searchPages(actor.ctx, { query: q })
+  assert.equal(out.ok, true, `검색이 거부됐다: ${out.ok === false ? out.reason : ''}`)
+  return out.ok && !out.fuzzy ? out.results.results.map((h) => h.pageId) : []
+}
 
 /** 노드를 소유자만 보게 한다(search-rows.db.test.ts 의 `makePrivate` 와 같다 — 순서가 중요하다). */
 const makePrivate = async (nodeId: string): Promise<void> => {
@@ -103,7 +112,7 @@ describe('데이터베이스 자신의 이름 색인 (10p-2)', () => {
     assert.equal(renamed.ok, true, `이름 바꾸기 실패: ${renamed.ok === false ? renamed.reason : ''}`)
 
     assert.deepEqual(await idsOf(fx.owner, `새표이름 ${stamp}`), [db.id])
-    assert.deepEqual(await idsOf(fx.owner, `옛표이름 ${stamp}`), [], '옛 이름은 색인에 남지 않는다')
+    assert.deepEqual(await exactIdsOf(fx.owner, `옛표이름 ${stamp}`), [], '옛 이름은 색인에 남지 않는다(맞는 결과가 없다)')
   })
 
   test('③ 결과의 아이콘은 database.icon 이다', async (t) => {
@@ -123,11 +132,11 @@ describe('데이터베이스 자신의 이름 색인 (10p-2)', () => {
     const secret = await newDatabase(`비밀예산표 ${stamp}`)
     await makePrivate(secret.id)
     assert.deepEqual(await idsOf(fx.owner, `비밀예산표 ${stamp}`), [secret.id], '소유자는 찾는다')
-    assert.deepEqual(await idsOf(other, `비밀예산표 ${stamp}`), [], '볼 수 없는 데이터베이스는 결과에 없다')
+    assert.ok(!(await idsOf(other, `비밀예산표 ${stamp}`)).includes(secret.id), '볼 수 없는 데이터베이스는 결과에 없다(오타 대체에도)')
 
     const mine = await newDatabase(`개인독서표 ${stamp}`, { privateTop: true })
     assert.deepEqual(await idsOf(fx.owner, `개인독서표 ${stamp}`), [mine.id], '주인은 찾는다')
-    assert.deepEqual(await idsOf(other, `개인독서표 ${stamp}`), [], '남의 개인 최상위 데이터베이스는 없다')
+    assert.ok(!(await idsOf(other, `개인독서표 ${stamp}`)).includes(mine.id), '남의 개인 최상위 데이터베이스는 없다(오타 대체에도)')
   })
 
   test('★ ⑤ @ 후보에는 데이터베이스가 없다 — 그 행은 그대로 있다', async (t) => {
@@ -170,7 +179,7 @@ describe('데이터베이스 자신의 이름 색인 (10p-2)', () => {
     await query(`DELETE FROM search_document WHERE doc_id = ANY($1::uuid[])`, [[missing.id, odd.id]])
     await query(`UPDATE block SET properties = jsonb_set(properties, '{title}', '"평문 제목"'::jsonb) WHERE id = $1`, [odd.id])
     await query(`UPDATE search_document SET title_text = $2 WHERE doc_id = $1`, [kept.id, `앱이쓴이름 ${stamp}`])
-    assert.deepEqual(await idsOf(fx.owner, `백필표 ${stamp}`), [], '지운 뒤에는 찾지 못한다(전제)')
+    assert.deepEqual(await exactIdsOf(fx.owner, `백필표 ${stamp}`), [], '지운 뒤에는 찾지 못한다(전제 — 맞는 결과가 없다)')
 
     // 0108 전체는 다시 돌 수 없다(옛 CHECK 을 뗀다) — 백필 문장만 꺼내 돌린다
     const sql = readFileSync(new URL('../../../db/migrations/0108_search_database_names.sql', import.meta.url), 'utf8')
