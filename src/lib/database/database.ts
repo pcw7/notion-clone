@@ -52,6 +52,7 @@ import { orderKeyBetween } from '../block/order-key.ts'
 import { nextSiblingKey, titleFromPlainText, plainTitleOf } from '../block/page.ts'
 import { pageIconJson, parsePageIconInput, readPageIcon, samePageIcon, type PageIcon } from '../block/page-icon.ts'
 import { isUsableIcon, moveIconFileReference } from '../file/icon-reference.ts'
+import { indexPageTitle } from '../search/index-page.ts'
 import { insertOwnedDataSource, readDataSources, type DataSourceSummary } from './data-source.ts'
 
 export { DEFAULT_TITLE_PROPERTY_NAME } from './data-source.ts'
@@ -212,6 +213,10 @@ export async function createDatabase(
       ],
     )
 
+    // 검색 색인의 이름(10p-2 · 정본 §3.9 [보강] 데이터베이스 자신의 이름 색인 ②) — 색인 행은 위 INSERT 에서 트리거가 만들었다(메타는
+    // 트리거가 · 이름은 여기서). 페이지를 만들 때와 같은 함수다.
+    await indexPageTitle(tx, id, name)
+
     // 워크스페이스 최상위 노드는 ACL 을 갖고 태어난다(W6-b 의 규칙) — 최상위 페이지와 같은 함수다. teamspace 최상위는
     // teamspace 노드에서 물려받고, 개인 최상위는 내 행 하나다(7c-8 — createPage 와 같은 갈림).
     if (privateTop) await enterPrivateRoot(tx, ctx, id)
@@ -258,10 +263,12 @@ export async function createDatabase(
  *
  * 이름이 **두 곳**에 있다 — `block.properties.title`(사이드바 · breadcrumb · 최근
  * 방문이 읽는 블록 제목)과 `database.title_rich`(정본 §3.5 의 DB 제목). 같은
- * 트랜잭션에서 둘 다 쓴다. 하나만 쓰면 사이드바와 표 머리의 이름이 갈린다.
+ * 트랜잭션에서 둘 다 쓴다. 하나만 쓰면 사이드바와 표 머리의 이름이 갈린다. 검색
+ * 색인의 이름도 같은 트랜잭션에서 쓴다(10p-2 — 0108 부터 색인 행은 데이터베이스
+ * 노드에도 있다 · `renamePage` 와 같은 함수 `indexPageTitle`).
  *
- * `renamePage` 를 빌려 쓰지 않는다. 그 함수는 `type='page'` 만 받고 검색 색인을
- * 함께 쓰는데, `search_document` 는 페이지만 담는다(CHECK 로 승격돼 있다).
+ * `renamePage` 를 빌려 쓰지 않는다. 그 함수는 `type='page'` 만 받는다 — 묻는
+ * 권한(`edit_structure`)과 잠금의 뜻이 다르다.
  *
  * `edit_structure` 를 묻는다. 표의 이름은 모두가 보는 표의 모양이다 — 뷰 설정이
  * 같은 capability 를 묻는 이유와 같다(`view.ts` 머리말).
@@ -295,6 +302,7 @@ export async function renameDatabase(
       databaseId,
       title,
     ])
+    await indexPageTitle(tx, databaseId, name)
 
     return {
       ok: true,

@@ -81,6 +81,8 @@ export async function GET(
     maxLimit: MAX_SEARCH_LIMIT,
     results: results.results.map((hit) => ({
       pageId: hit.pageId,
+      // 페이지 · 데이터베이스(10p-2) — 화면이 여는 주소를 고른다
+      kind: hit.kind,
       title: hit.title,
       icon: hit.icon,
       snippet: hit.snippet,

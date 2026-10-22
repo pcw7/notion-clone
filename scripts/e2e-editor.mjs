@@ -11328,6 +11328,72 @@ async function main() {
       await key('Escape')
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('전역 검색의 데이터베이스 이름 (10p-2 · F-07-01)')) { try {
+      // 검색 덮개에서 데이터베이스를 이름으로 찾는다 — 결과는 데이터베이스(아이콘이 없으면 표 글리프 · 경로 없음) · 누르면 그 데이터베이스의
+      // 화면(`/db/{id}` — 페이지 주소는 데이터베이스를 받지 않는다)이 열린다 · 이름을 바꾸면 새 이름으로 · `@` 후보에는 없다(칩이 열지
+      // 못한다 — 정본 §3.9 [보강] 데이터베이스 자신의 이름 색인 ⑤). 자기 데이터를 스스로 만든다(API).
+      const x = String(Date.now()).slice(-7)
+      const api = `${BASE}/api/workspaces/${workspaceId}`
+      const readRes = async (res) => ({ status: res.status, body: await res.json().catch(() => null) })
+      const dbName = `예산표${x}`
+      const created = await readRes(await fetch(`${api}/databases`, { method: 'POST', headers: authed, body: JSON.stringify({ name: dbName }) }))
+      const dbId = created.body?.database?.id
+      const HIT = `[data-testid="search-hit"][data-page-id="${dbId}"]`
+      const hitIds = () => evaluate(`[...document.querySelectorAll('[data-testid="search-hit"]')].map((e) => e.dataset.pageId)`)
+      // 막 띄운 서버의 첫 검색은 느릴 수 있다(10p-1 의 첫 판) — 15초
+      const onlyHit = (id) => waitFor(`(() => {
+        const ids = [...document.querySelectorAll('[data-testid="search-hit"]')].map((e) => e.dataset.pageId)
+        return ids.length === 1 && ids[0] === ${JSON.stringify(id)}
+      })()`, 15000)
+      const openOverlay = async () => {
+        for (let i = 0; i < 6 && !(await evaluate(`!!document.querySelector('[data-testid="search-overlay"]')`)); i += 1) {
+          await key('k', MOD)
+          await waitFor(`!!document.querySelector('[data-testid="search-overlay"]')`, 1500)
+        }
+      }
+      const ask = async (query) => {
+        await evaluate(`(() => { const el = document.querySelector('[data-testid="search-input"]'); el?.focus(); el?.select() })()`)
+        await typeText(query)
+      }
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
+      await waitFor(`!!document.querySelector('[data-testid="sidebar-workspace-switcher"]')`, 15000)
+      await openOverlay()
+      await ask(dbName)
+      const found = typeof dbId === 'string' && (await onlyHit(dbId))
+      const shown = await evaluate(`(() => {
+        const hit = document.querySelector('${HIT}')
+        return JSON.stringify({ kind: hit?.dataset.kind ?? null, href: hit?.getAttribute('href') ?? null,
+          glyph: !!hit?.querySelector('svg[data-page-icon] path[d="M2 6.5h12"]'), text: hit?.textContent ?? '' })
+      })()`)
+      const hit = JSON.parse(shown)
+      check('★ 데이터베이스를 이름으로 찾는다 — 결과는 데이터베이스(표 글리프 · 자기 주소 · 경로 없음)',
+        created.status === 201 && found && hit.kind === 'database' && hit.glyph && hit.href === `/w/${workspaceId}/db/${dbId}` && hit.text === dbName,
+        JSON.stringify({ created: created.status, found, hits: await hitIds(), hit }))
+
+      await clickSelector(HIT)
+      check('★ 누르면 그 데이터베이스가 열린다',
+        await waitFor(`location.pathname === ${JSON.stringify(`/w/${workspaceId}/db/${dbId}`)} && (document.body?.textContent ?? '').includes(${JSON.stringify(dbName)})`, 15000),
+        await evaluate('location.pathname'))
+
+      // 이름 바꾸기 — 새 이름으로 찾고 옛 이름으로는 찾지 않는다(두 이름은 겹치지 않는다 — 한쪽이 다른 쪽을 품으면 옛 이름으로도 걸린다)
+      const newName = `결산장${x}`
+      const renamed = await readRes(await fetch(`${api}/databases/${dbId}`, { method: 'PATCH', headers: authed, body: JSON.stringify({ name: newName }) }))
+      await openOverlay()
+      await ask(newName)
+      const foundNew = await onlyHit(dbId)
+      await ask(dbName)
+      const goneOld = await waitFor(`!!document.querySelector('[data-testid="search-empty"]') && document.querySelectorAll('[data-testid="search-hit"]').length === 0`, 8000)
+      check('★ 이름을 바꾸면 새 이름으로 찾고 옛 이름으로는 찾지 않는다', renamed.status === 200 && foundNew && goneOld,
+        JSON.stringify({ renamed: renamed.status, foundNew, goneOld, hits: await hitIds() }))
+      await key('Escape')
+
+      const mention = await readRes(await fetch(`${api}/mention-candidates?q=${encodeURIComponent(newName)}`, { headers: authed }))
+      check('`@` 후보에는 데이터베이스가 없다(칩이 데이터베이스를 열지 못한다)',
+        mention.status === 200 && Array.isArray(mention.body?.candidates) && !mention.body.candidates.some((c) => c.id === dbId),
+        JSON.stringify(mention.body))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('가져오기 — 마크다운 · 텍스트 (8m-1 · F-09-12)')) { try {
       // 사이드바의 "가져오기" → 창 → 파일 둘(마크다운 · 텍스트) → 가져온 페이지의 링크와 옮기지 못한 것(표) → 링크로 연 페이지의 제목과 본문.
       // 받지 않는 형식은 무엇이 왜인지 말하고 아무것도 남기지 않는다. 파일은 임시 폴더에 쓴다.

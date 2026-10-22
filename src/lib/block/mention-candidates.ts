@@ -88,6 +88,9 @@ export async function searchMentionCandidates(
           AND s.perm_scope_id = ANY($2::uuid[])   -- ★ 권한. 후처리가 아니다
           AND s.in_trash = false
           AND ${notTemplateRow('s.doc_id')}   -- 템플릿 행은 후보가 아니다(R1 · 10p-1)
+          -- 페이지만(10p-2 · 정본 §3.9 [보강] 데이터베이스 자신의 이름 색인 ⑤) — 0108 부터 색인에 데이터베이스도 있다. 멘션 칩은 페이지
+          -- 주소로 열므로(\`openPage\`) 데이터베이스를 후보에 넣으면 칩이 열리지 않는다 — 칩이 종류를 아는 조각과 함께 넣는다
+          AND s.type = 'page'
           AND ($3 = '' OR s.title_text ILIKE $4)
         ORDER BY coalesce(s.last_edited_at, s.created_at, 'epoch'::timestamptz) DESC, s.doc_id
         LIMIT $5`,

@@ -127,9 +127,15 @@ export type BreadcrumbEntry = {
 }
 
 export type SearchHit = {
+  /** 찾은 노드의 id — 페이지 또는 데이터베이스(`kind`). */
   readonly pageId: string
+  /**
+   * 노드의 종류(10p-2 · 정본 §3.9 [보강] 데이터베이스 자신의 이름 색인 ④) — 데이터베이스는 자기 주소(`/db/{id}`)로 연다. 페이지 주소는
+   * 데이터베이스를 받지 않는다(사이드바와 같은 갈림).
+   */
+  readonly kind: 'page' | 'database'
   readonly title: string
-  /** 페이지 아이콘(8c-2) — 없으면 null. 결과는 이미 볼 수 있는 페이지뿐이다. */
+  /** 아이콘(8c-2) — 페이지는 블록의 `format.page_icon`, 데이터베이스는 `database.icon`(8c-3b). 없으면 null. 결과는 이미 볼 수 있는 것뿐이다. */
   readonly icon: PageIcon | null
   /** 본문에서 뽑은 1~2줄. 일치 지점이 없으면 본문 앞부분. */
   readonly snippet: string
@@ -254,6 +260,7 @@ function axisOf(script: Script, query: string, parsed: ParsedQuery, titleOnly: b
 
 type HitRow = {
   doc_id: string
+  type: string
   title_text: string | null
   page_icon: unknown
   ancestor_ids: string[]
@@ -302,7 +309,7 @@ function buildSql(axis: Axis, sort: SearchSort, narrow: Narrow): string {
   const ascending = isAscending(sort)
   return `
     WITH matched AS (
-      SELECT s.doc_id, s.title_text, s.body_text, s.ancestor_ids,
+      SELECT s.doc_id, s.type, s.title_text, s.body_text, s.ancestor_ids,
              -- 두 감사 컬럼이 모두 NULL 이면 정렬 키가 NULL 이 되고 그 행이
              -- 결과에서 조용히 빠진다. 바닥값을 둔다.
              coalesce(s.last_edited_at, s.created_at, 'epoch'::timestamptz) AS edited_at,
@@ -326,8 +333,12 @@ function buildSql(axis: Axis, sort: SearchSort, narrow: Narrow): string {
       SELECT m.*, ${SORT_KEY[sort]} AS sort_key
         FROM matched m
     )
-    SELECT k.doc_id, k.title_text, k.ancestor_ids, k.edited_at, k.title_hit, k.sort_key,
-           (SELECT b.format -> 'page_icon' FROM block b WHERE b.id = k.doc_id) AS page_icon,
+    SELECT k.doc_id, k.type, k.title_text, k.ancestor_ids, k.edited_at, k.title_hit, k.sort_key,
+           -- 데이터베이스의 아이콘은 \`database.icon\` 이다(8c-3b · 10p-2 — 블록의 \`format\` 은 페이지 행만 갖는다)
+           CASE WHEN k.type = 'database'
+                THEN (SELECT d.icon FROM database d WHERE d.id = k.doc_id)
+                ELSE (SELECT b.format -> 'page_icon' FROM block b WHERE b.id = k.doc_id)
+           END AS page_icon,
            CASE
              WHEN k.body_text IS NULL OR k.body_text = '' THEN ''
              -- 일치 지점 주변을 자른다. 닻($3)은 쿼리의 첫 말이다(8l-1 — 쿼리 전체로
@@ -469,6 +480,7 @@ export async function searchPages(
 
     const results: SearchHit[] = page.map((row) => ({
       pageId: row.doc_id,
+      kind: row.type === 'database' ? ('database' as const) : ('page' as const),
       title: row.title_text ?? '',
       icon: readPageIcon(row.page_icon),
       snippet: row.snippet,
