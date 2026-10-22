@@ -15676,6 +15676,47 @@ async function main() {
         await waitFor(`document.querySelector(${JSON.stringify(bell(future))})?.dataset.state === 'passed'`, 15000), String(await stateOf(future)))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('리마인더 — 다른 곳에서 걸고 풀면 (10n-17 · F-11-10 · F-04-24)')) { try {
+      // 표를 열어 둔 채 다른 곳(API — 다른 사람 · 다른 탭과 같은 길)에서 리마인더를 걸고 · 울리고 · 풀면 새로 열지 않아도 종이 따라 바뀐다 —
+      // 리마인더 표의 트리거가 표 변경 신호를 보내고(0109) 표가 다시 읽기마다 리마인더도 다시 읽는다. 행의 판은 그대로다. 정본 §3.8 [보강]
+      // 리마인더 ⑩. 자기 데이터를 스스로 만든다.
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `리마인더 신호 ${Date.now()}` })).body.database
+      const view = db.defaultViewId
+      const due = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '마감', type: 'date' })).body.property.id
+      const titleProp = (await api('GET', `/views/${view}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const row = (await api('POST', `/views/${view}/rows`, {
+        cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun('신호 일')] } }, { propertyId: due, value: { type: 'date', date: { start: '2031-05-01' } } }],
+      })).body.row.id
+      const bell = `tr[data-row-id="${row}"] td[data-property-id="${due}"] [data-testid="db-reminder-bell"]`
+      const stateOf = () => evaluate(`document.querySelector(${JSON.stringify(bell)})?.dataset.state ?? null`)
+      const becomes = (state) => waitFor(`document.querySelector(${JSON.stringify(bell)})?.dataset.state === ${JSON.stringify(state)}`, 15000)
+      const versionOf = async () => (await dbQuery(`SELECT version FROM block WHERE id = $1`, [row]))[0]?.version ?? null
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      check('전제 — 표에 종의 자리가 서고 리마인더는 없다', (await waitFor(`!!document.querySelector(${JSON.stringify(bell)})`, 15000)) && (await stateOf()) === 'none'
+        && (await waitHydrated(bell)), String(await stateOf()))
+      // 표 변경 알림의 구독이 붙기를 — 서버 렌더 뒤에 붙는다(붙기 전의 신호는 다음 신호가 맞춘다 — §3.2-135)
+      await sleep(1500)
+      const before = await versionOf()
+
+      const set = await api('PUT', `/rows/${row}/reminders/${due}`, { leadMinutes: 1440, timeZone: 'Asia/Seoul' })
+      check('★ 다른 곳에서 걸면 새로 열지 않아도 종이 선다', set.status === 200 && (await becomes('armed')), JSON.stringify([set.status, await stateOf()]))
+
+      await dbQuery(`UPDATE reminder SET fired_at = now() WHERE page_id = $1`, [row])
+      check('★ 울리면 새로 열지 않아도 종이 빨갛게 바뀐다', await becomes('passed'), String(await stateOf()))
+
+      const off = await api('DELETE', `/rows/${row}/reminders/${due}`)
+      check('★ 다른 곳에서 풀면 새로 열지 않아도 종이 사라진다 · 행의 판은 그대로', off.status === 200 && (await becomes('none')) && (await versionOf()) === before,
+        JSON.stringify([off.status, await stateOf(), before, await versionOf()]))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('업데이트 패널 (4d-3 · F-11-04)')) { try {
       // 머리의 "업데이트" — 그 페이지의 활동을 최신순으로. 실제 API 로 만들고 · 이름을 바꾸고 · 옮긴 뒤(4d-2 가 남긴다), 오래된 편집 30개와
       // 보이지 않아야 할 멘션 하나를 DB 에 넣는다. 30개씩 · "더 보기" · Esc 로 닫기 · 활동이 없는 페이지의 빈 상태. 자기 데이터를 스스로
