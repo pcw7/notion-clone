@@ -657,16 +657,16 @@ try {
       else fail('삭제된 블록의 색인 행이 남아 있다')
     }
 
-    // ⑨ 페이지 단위 색인의 불변식이 실제로 거부하는가
+    // ⑨ 노드 단위 색인의 불변식이 실제로 거부하는가(0108 — 페이지 · 데이터베이스 노드만 · 그 전은 페이지만)
     const anyPage = randomUUID()
     await insertBlock(anyPage, 'page', parentId, 'a9', anyPage)
     await mustReject(
-      'ck_search_page_scoped: type <> page 인 색인 행',
+      'ck_search_node_scoped: 페이지 · 데이터베이스가 아닌 색인 행',
       `UPDATE search_document SET type = 'paragraph' WHERE doc_id = $1`,
       [anyPage],
     )
     await mustReject(
-      'ck_search_page_scoped: page_id <> doc_id',
+      'ck_search_node_scoped: page_id <> doc_id',
       `UPDATE search_document SET page_id = $2 WHERE doc_id = $1`,
       [anyPage, parentId],
     )
@@ -706,6 +706,13 @@ try {
       [dbBlockId, dsId],
     )
     ok('3계층 생성 — block(database) → database → data_source → 부착')
+    // 데이터베이스 노드도 색인 행을 갖는다(0108 · 정본 §3.9 [보강] 데이터베이스 자신의 이름 색인 ①) — 트리거의 WHEN 이 넓어졌는가
+    {
+      const { rows } = await client.query(`SELECT type, page_id, perm_scope_id FROM search_document WHERE doc_id = $1`, [dbBlockId])
+      if (rows.length === 1 && rows[0].type === 'database' && rows[0].page_id === dbBlockId && rows[0].perm_scope_id === rootId) {
+        ok('데이터베이스 INSERT → 색인 행 1건 (0108 — 노드 단위 색인 · perm_scope_id 동기)')
+      } else fail(`데이터베이스를 만들었는데 색인 행이 ${JSON.stringify(rows)} 다 — 트리거의 WHEN 이 데이터베이스를 받지 않는다`)
+    }
 
     // ── 프로퍼티 ──
     const pid = (n) => `p${String(n).padStart(20, '0')}` // nanoid(21) 자리 흉내

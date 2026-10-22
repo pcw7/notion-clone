@@ -71,7 +71,7 @@ import { usePathname, useRouter } from 'next/navigation'
 
 import { LEFT_USER } from '@/lib/database/cell-format'
 import { splitHighlight } from '@/lib/search/highlight'
-import type { PageIcon } from '@/lib/block/page-icon'
+import { DATABASE_GLYPH, type PageIcon } from '@/lib/block/page-icon'
 import type { PeopleNames } from './db/[databaseId]/cell-view'
 import { PeopleEditor } from './db/[databaseId]/people-editor'
 import { PageIconView } from './page-icon-view'
@@ -91,6 +91,8 @@ export function openSearchOverlay(): void {
 
 export type SearchHitRow = {
   pageId: string
+  /** 페이지 · 데이터베이스(10p-2) — 데이터베이스는 자기 주소로 연다(`rowHref`). 최근 방문은 페이지뿐이다. */
+  kind: 'page' | 'database'
   title: string
   /** 페이지 아이콘(8c-2) — 없으면 null(기본 글리프). */
   icon: PageIcon | null
@@ -101,6 +103,11 @@ export type SearchHitRow = {
 }
 
 export type RecentRow = { id: string; title: string; icon: PageIcon | null }
+
+/** 줄이 여는 주소 — 데이터베이스는 `/db/{id}`(페이지 주소는 데이터베이스를 받지 않는다 · 사이드바와 같은 갈림 · 10p-2). */
+function rowHref(workspaceId: string, row: Pick<SearchHitRow, 'pageId' | 'kind'>): string {
+  return row.kind === 'database' ? `/w/${workspaceId}/db/${row.pageId}` : `/w/${workspaceId}/${row.pageId}`
+}
 
 /** 팀스페이스 필터의 후보(10a-3b) — 내가 멤버인 보관되지 않은 팀스페이스. */
 export type SearchTeamspace = { id: string; name: string }
@@ -224,6 +231,7 @@ export function SearchOverlay({
     if (!searching) {
       return recent.map((r) => ({
         pageId: r.id,
+        kind: 'page' as const,
         title: r.title,
         icon: r.icon,
         snippet: '',
@@ -346,11 +354,11 @@ export function SearchOverlay({
 
   // ── 열려 있는 동안의 키 ─────────────────────────────────────────────
   const openRow = useCallback(
-    (pageId: string) => {
+    (row: SearchHitRow) => {
       // 닫기가 포커스를 되돌리므로 이동보다 먼저 부른다 — 순서를 바꾸면
       // 새 페이지가 마운트된 뒤에 옛 요소로 포커스를 주려다 아무 일도 안 된다.
       close()
-      router.push(`/w/${workspaceId}/${pageId}`)
+      router.push(rowHref(workspaceId, row))
     },
     [close, router, workspaceId],
   )
@@ -405,7 +413,7 @@ export function SearchOverlay({
       } else if (event.key === 'Enter') {
         event.preventDefault()
         const row = rows[Math.min(index, rows.length - 1)]
-        if (row) openRow(row.pageId)
+        if (row) openRow(row)
       }
     }
     window.addEventListener('keydown', onKeyDown, true)
@@ -641,11 +649,12 @@ export function SearchOverlay({
               {rows.map((row, i) => (
                 <li key={row.pageId}>
                   <a
-                    href={`/w/${workspaceId}/${row.pageId}`}
+                    href={rowHref(workspaceId, row)}
                     role="option"
                     aria-selected={i === index}
                     data-testid="search-hit"
                     data-page-id={row.pageId}
+                    data-kind={row.kind}
                     // 마우스가 지나가면 선택을 옮긴다 — 키보드 선택과 마우스
                     // 호버가 따로 보이면 Enter 가 어디로 갈지 알 수 없다.
                     onMouseEnter={() => setIndex(i)}
@@ -653,14 +662,19 @@ export function SearchOverlay({
                       // `cmd+click`(새 탭)은 브라우저에게 맡긴다(F-07-01).
                       if (event.metaKey || event.ctrlKey || event.shiftKey) return
                       event.preventDefault()
-                      openRow(row.pageId)
+                      openRow(row)
                     }}
                     className={`block px-4 py-2 ${
                       i === index ? 'bg-neutral-100 dark:bg-neutral-800' : ''
                     }`}
                   >
                     <span className="block truncate text-sm">
-                      <PageIconView icon={row.icon} fallback className="mr-1.5 align-[-0.125em]" />
+                      <PageIconView
+                        icon={row.icon}
+                        fallback
+                        glyph={row.kind === 'database' ? DATABASE_GLYPH : undefined}
+                        className="mr-1.5 align-[-0.125em]"
+                      />
                       <Highlighted text={row.title || UNTITLED} query={searching ? query : ''} />
                     </span>
 

@@ -3,9 +3,9 @@
  *
  * 정본: 00-canonical-data-model.md §3.5 `database.title_rich` · `database.icon`([보강] 데이터베이스 아이콘 · 8c-3b)
  *
- * 페이지 제목 라우트(`pages/[pageId]`)를 쓰지 않는다. 그쪽은 `type='page'` 만 받고
- * 검색 색인을 함께 쓴다 — 데이터베이스는 이름이 두 곳(`block.properties.title` ·
- * `database.title_rich`)에 있고 `search_document` 에 행이 없다(`renameDatabase` 머리말).
+ * 페이지 제목 라우트(`pages/[pageId]`)를 쓰지 않는다. 그쪽은 `type='page'` 만 받는다 —
+ * 데이터베이스는 이름이 두 곳(`block.properties.title` · `database.title_rich`)에 있고
+ * 묻는 권한이 다르다(`renameDatabase` 머리말 — 검색 색인의 이름도 거기서 함께 쓴다 · 10p-2).
  *
  * 몸체: `{ name?: string, icon?: 아이콘 | null }` — 하나는 있어야 한다(아이콘은 페이지 라우트와 같은 네 모양 — 이모지 · 올린 이미지 ·
  * 이미지 주소 · 커스텀 이모지). 둘 다 오면 아이콘을
