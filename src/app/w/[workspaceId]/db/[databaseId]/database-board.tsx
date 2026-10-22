@@ -76,6 +76,7 @@ import {
   groupLabel,
   moveCard,
   moveChoices,
+  MOVED_OUT_OF_VIEW_NOTICE,
   prefillCells,
   resolveDrop,
   type ColumnBox,
@@ -441,12 +442,15 @@ export function DatabaseBoard(props: {
     const moved = moveCard(groupsRef.current, rowId, target)
     if (moved === null) return
     setError(null)
+    setNotice(null)
     update(() => moved.columns)
 
     const result = await api.moveCard(workspaceId, viewId, {
       rowId,
       groupKey: target.key,
       beforeRowId: target.beforeRowId,
+      // 서버가 "아직 이 보드에 서는가" 를 내가 보는 검색어까지 넣어 판정한다(10n-15)
+      search: props.search ?? null,
     })
     if (!result.ok) {
       // 롤백 단위 = 서버 API 단위(머리말). 그사이 다른 갱신이 있었어도 이 카드만 제자리로.
@@ -455,6 +459,9 @@ export function DatabaseBoard(props: {
       return
     }
     takeRow(result.value.row)
+    // 조건(필터 · 검색) 밖으로 옮겼다 — 그 까닭을 말한다(10n-15 · F-04-03). 카드는 표 변경 알림의 다시 읽기(정렬된 보드는 아래의 열 다시
+    // 읽기)에서 곧 빠진다 — 여기서 지우지 않는다(서버의 답이 화면을 정한다)
+    if (!result.value.inView) setNotice(MOVED_OUT_OF_VIEW_NOTICE)
     // 열 사이로 옮겼으면 두 열의 머리 값이 바뀐다(2d-3). 열 안 이동은 값이 그대로다.
     if (target.key !== fromKey) void refreshCalculations()
     // 정렬된 보드: 옮긴 카드의 자리는 정렬이 정한다(머리말). 열 안 이동은 여기 오지 않는다(resolveDrop 이 null).

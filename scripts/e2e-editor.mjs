@@ -19439,6 +19439,60 @@ async function main() {
         onDoing && status === doing && (await screenOrder(doing)) === 'B', JSON.stringify({ onDoing, status, doingColumn: await screenOrder(doing) }))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
+      // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
+      // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).
+      // 정본 §3.6 [보강] 옮긴 카드가 보드의 조건 밖으로 나가면. 자기 데이터를 스스로 만든다(API).
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `조건 보드 ${Date.now()}` })).body.database
+      const statusProp = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '상태', type: 'select' })).body.property.id
+      const option = async (name) => (await api('POST', `/data-sources/${db.dataSourceId}/properties/${statusProp}/options`, { name })).body.option.id
+      const todo = await option('할 일')
+      const doing = await option('진행 중')
+      const done = await option('완료')
+      const titleProp = (await api('GET', `/views/${db.defaultViewId}`)).body.view.columns.find((col) => col.type === 'title').propertyId
+      const card = (await api('POST', `/views/${db.defaultViewId}/rows`, { cells: [
+        { propertyId: titleProp, value: { type: 'title', title: [textRun('조건 카드')] } },
+        { propertyId: statusProp, value: { type: 'select', select: { id: todo } } },
+      ] })).body.row.id
+      const board = (await api('POST', `/databases/${db.id}/views`, { type: 'board', name: '보드' })).body.view
+      const filtered = await api('PATCH', `/views/${board.id}`, { filter: { property_id: statusProp, operator: 'does_not_equal', value: done } })
+      const MOVE = `[data-row-id="${card}"] [data-testid="db-card-move"]`
+      const notice = `(document.querySelector('[data-testid="db-notice"]')?.textContent ?? '')`
+      const where = () => evaluate(`JSON.stringify({ column: document.querySelector('[data-row-id="${card}"]')?.closest('[data-group-key]')?.getAttribute('data-group-key') ?? null,
+        notice: ${notice}, menu: !!document.querySelector('[data-testid="db-card-move-menu"]') })`)
+      const moveTo = async (key) => {
+        // 카드의 "옮기기" 단추는 서버가 그린 것 — React 가 붙은 뒤 누르고, 목록이 설 때까지 다시 누른다(첫 클릭이 버려지는 부류 — §7)
+        await waitHydrated(MOVE)
+        await clickUntil(MOVE, `!!document.querySelector('[data-testid="db-card-move-to"][data-group-key="${key}"]')`)
+        await clickSelector(`[data-testid="db-card-move-to"][data-group-key="${key}"]`)
+      }
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}?v=${board.id}` })
+      check('전제 — 필터(상태 ≠ 완료)가 걸린 보드에 카드가 할 일 열에 선다', filtered.status === 200
+        && (await waitFor(`document.readyState === 'complete' && !!document.querySelector('[data-group-key="${todo}"] [data-row-id="${card}"]')`, 15000)),
+        JSON.stringify({ filtered: filtered.status, where: JSON.parse(await where()) }))
+
+      await moveTo(doing)
+      check('필터 안의 열로 옮기면 안내가 없다',
+        (await waitFor(`!!document.querySelector('[data-group-key="${doing}"] [data-row-id="${card}"]') && !document.querySelector('[data-testid="db-card-move-menu"]')`, 5000))
+          && (await sleep(500), !(await evaluate(notice)).includes('조건')),
+        await where())
+
+      await moveTo(done)
+      check('★ 조건 밖으로 옮기면 그 까닭을 말한다 — 카드는 곧 보기에서 빠진다',
+        await waitFor(`${notice}.includes('조건(필터 · 검색)에 맞지 않아 보기에서 빠졌습니다') && !document.querySelector('[data-row-id="${card}"]')`, 8000),
+        await where())
+
+      await send('Page.reload', {})
+      check('★ 다시 열어도 없다 — 서버에 옮겨졌다(안내와 같은 답)',
+        await waitFor(`document.readyState === 'complete' && !!document.querySelector('[data-group-key="${doing}"]') && !document.querySelector('[data-row-id="${card}"]')`, 15000),
+        await where())
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('설치할 수 있는 웹 앱 (10m-3 · F-12-12)')) { try {
       // 매니페스트 · 아이콘은 로그인 없이 받는다(브라우저는 쿠키 없이 받는다) · 브라우저가 읽은 매니페스트에 오류가 없다 · 설치를 막는 이유가
       // 없다(Chrome 의 판정) · 머리에 화면 색 · iOS 홈 화면 아이콘. 서비스 워커는 없다(정본 ⑩ⓑ).
