@@ -22,11 +22,15 @@
  *
  * 사람 칸은 통째 값 대신 **더하기 · 빼기**(`peopleChanges: [{ propertyId, add, remove }]`)로도 고친다 — 행을 잠근 채 지금 값에
  * 적용하므로 두 사람이 같은 칸에 동시에 더해도 둘 다 남는다(정본 [보강] 사람 속성 ⑫ · 칸의 고르개가 이것을 쓴다).
+ *
+ * `view: { id, search }` 를 주면(선택 · 10n-16) 쓰기 뒤에 "아직 이 뷰에 서는가"(`inView`)를 싣는다 — 쓰기와 따로다(정본 §3.6 [보강]
+ * 고친 카드가 뷰의 조건 밖으로 나가면). 판정하지 못하면 싣지 않는다.
  */
 
 import { isUuid } from '@/lib/ids'
 import { readJsonBody, requireWorkspaceSession } from '@/lib/auth/route-session'
 import { trashRow, updateCells } from '@/lib/database/row'
+import { rowStandsInView } from '@/lib/database/row-in-view'
 import {
   failureResponse,
   parseCells,
@@ -45,7 +49,10 @@ export async function PATCH(request: Request, ctx: Ctx): Promise<Response> {
 
   const parsed = await readJsonBody(request)
   if (!parsed.ok) return parsed.response
-  const body = (parsed.body ?? {}) as { cells?: unknown; peopleChanges?: unknown; expectedVersion?: unknown }
+  const body = (parsed.body ?? {}) as { cells?: unknown; peopleChanges?: unknown; expectedVersion?: unknown; view?: unknown }
+  // 판정을 물을 뷰(10n-16) — 모양이 틀리면 묻지 않는다(쓰기는 그대로 — 판정은 덤이다)
+  const view = typeof body.view === 'object' && body.view !== null ? (body.view as { id?: unknown; search?: unknown }) : null
+  const viewId = view !== null && typeof view.id === 'string' && isUuid(view.id) ? view.id : null
 
   const cells = parseCells(body.cells)
   const peopleChanges = parsePeopleChanges(body.peopleChanges)
@@ -64,7 +71,8 @@ export async function PATCH(request: Request, ctx: Ctx): Promise<Response> {
     ...(typeof body.expectedVersion === 'string' ? { expectedVersion: body.expectedVersion } : {}),
   })
   if (!updated.ok) return failureResponse(rowFailureStatus(updated.reason), updated)
-  return Response.json({ ok: true, row: rowJson(updated.value) })
+  const inView = viewId === null ? null : await rowStandsInView(session.ctx, viewId, rowId, view?.search ?? null)
+  return Response.json({ ok: true, row: rowJson(updated.value), ...(inView === null ? {} : { inView }) })
 }
 
 export async function DELETE(_request: Request, ctx: Ctx): Promise<Response> {

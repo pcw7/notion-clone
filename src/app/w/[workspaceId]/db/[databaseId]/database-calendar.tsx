@@ -49,6 +49,7 @@ import { cellDays, daysBetween, layoutWeek, monthGrid, shiftDateValue, shiftMont
 import { cellText, parseDraft, readCell, sameValue } from '@/lib/database/cell-format'
 import { PageIconView } from '../../page-icon-view'
 import * as api from './table-api'
+import { EDITED_OUT_OF_VIEW_NOTICE, MOVED_OUT_OF_VIEW_NOTICE } from '@/lib/database/out-of-view'
 import { SearchEmpty } from './view-search'
 import { useAdoptServerValue, useLiveServerRefresh } from './use-table-changes'
 
@@ -119,6 +120,8 @@ export function DatabaseCalendar(props: {
   const [rows, setRows] = useState<readonly RowJson[]>(props.rows)
   const [busyDay, setBusyDay] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  /** 알릴 것 — 고치거나 옮긴 카드가 이 보기의 조건 밖이 되었을 때(10n-16). 오류가 아니므로 `error` 와 따로 둔다. */
+  const [notice, setNotice] = useState<string | null>(null)
   const [editing, setEditingState] = useState<Editing | null>(null)
   const editingRef = useRef<Editing | null>(null)
   const setEditing = (next: Editing | null) => {
@@ -194,13 +197,15 @@ export function DatabaseCalendar(props: {
       properties: { ...r.properties, [titlePropertyId]: value },
     })
     setRows((current) => current.map((r) => (r.id === e.rowId ? withValue(r, parsed.value) : r)))
-    const result = await api.updateCell(workspaceId, e.rowId, titlePropertyId, parsed.value)
+    // 뷰를 실어 보낸다 — 고친 카드가 조건 밖이면 곧 빠지므로 그 까닭을 말한다(10n-16)
+    const result = await api.updateCellInView(workspaceId, e.rowId, titlePropertyId, parsed.value, { id: viewId, search: props.search ?? null })
     if (!result.ok) {
       setRows((current) => current.map((r) => (r.id === e.rowId ? withValue(r, previous) : r)))
       setError(result.message)
       return
     }
-    const saved = result.value
+    const saved = result.value.row
+    if (result.value.inView === false) setNotice(EDITED_OUT_OF_VIEW_NOTICE)
     setRows((current) => current.map((r) => (r.id === saved.id && notOlder(saved.version, r.version) ? saved : r)))
   }
 
@@ -292,14 +297,17 @@ export function DatabaseCalendar(props: {
     const put = (value: unknown) =>
       setRows((current) => current.map((r) => (r.id === rowId ? { ...r, properties: { ...r.properties, [datePropertyId]: value } } : r)))
     setError(null)
+    setNotice(null)
     put(after)
-    const result = await api.updateCell(workspaceId, rowId, datePropertyId, after)
+    // 뷰를 실어 보낸다 — 필터에 걸리는 날짜로 끌면 카드가 곧 빠지므로 그 까닭을 말한다(10n-16 · 04 *"필터에 걸리는 날짜로 드래그"*)
+    const result = await api.updateCellInView(workspaceId, rowId, datePropertyId, after, { id: viewId, search: props.search ?? null })
     if (!result.ok) {
       put(before)
       setError(result.message)
       return
     }
-    const saved = result.value
+    const saved = result.value.row
+    if (result.value.inView === false) setNotice(MOVED_OUT_OF_VIEW_NOTICE)
     setRows((current) => current.map((r) => (r.id === saved.id && notOlder(saved.version, r.version) ? saved : r)))
   }
 
@@ -472,6 +480,11 @@ export function DatabaseCalendar(props: {
       {props.truncated && (
         <p role="status" data-testid="db-cal-truncated" className="text-sm text-amber-700 dark:text-amber-300">
           이 달에 행이 너무 많아 일부만 보입니다. 필터로 좁혀 보세요.
+        </p>
+      )}
+      {notice && (
+        <p role="status" data-testid="db-notice" className="text-sm text-amber-700 dark:text-amber-300">
+          {notice}
         </p>
       )}
       {error && (

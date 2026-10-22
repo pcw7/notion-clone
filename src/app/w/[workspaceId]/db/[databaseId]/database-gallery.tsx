@@ -33,6 +33,7 @@ import type { GalleryLayout } from '@/lib/database/gallery'
 import { templateRowNote, type DefaultTemplate } from '@/lib/database/new-row'
 import { PageIconView } from '../../page-icon-view'
 import * as api from './table-api'
+import { EDITED_OUT_OF_VIEW_NOTICE } from '@/lib/database/out-of-view'
 import type { PeopleNames, RelationIcons, RelationLabels } from './cell-view'
 import { CardBadges } from './card-badges'
 import { NewRowMenu } from './new-row-menu'
@@ -193,13 +194,15 @@ export function DatabaseGallery(props: {
       properties: { ...r.properties, [titleColumn.propertyId]: value },
     })
     setRows((current) => current.map((r) => (r.id === e.rowId ? withValue(r, parsed.value) : r)))
-    const result = await api.updateCell(workspaceId, e.rowId, titleColumn.propertyId, parsed.value)
+    // 뷰를 실어 보낸다 — 고친 카드가 조건 밖이면 곧 빠지므로 그 까닭을 말한다(10n-16)
+    const result = await api.updateCellInView(workspaceId, e.rowId, titleColumn.propertyId, parsed.value, { id: viewId, search: props.search ?? null })
     if (!result.ok) {
       setRows((current) => current.map((r) => (r.id === e.rowId ? withValue(r, previous) : r)))
       setError(result.message)
       return
     }
-    takeRow(result.value)
+    takeRow(result.value.row)
+    if (result.value.inView === false) setNotice(EDITED_OUT_OF_VIEW_NOTICE)
   }
 
   const onTitleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
