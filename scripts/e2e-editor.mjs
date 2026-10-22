@@ -7423,7 +7423,8 @@ async function main() {
       check('★ Mod+P 로도 열린다', await waitFor(`!!document.querySelector('[data-testid="search-overlay"]')`, 5000))
 
       // ── 0건 상태 ──
-      await typeText(`없는말${Date.now()}`)
+      // 어떤 제목과도 닮지 않은 글자다 — 숫자(도장)가 든 말은 오타 대체(10p-3)가 숫자가 비슷한 다른 제목을 데려와 결과가 없지 않다
+      await typeText('꿻뜗쀍쀏휁')
       check('결과가 없으면 그렇게 말한다',
         await waitFor(`!!document.querySelector('[data-testid="search-empty"]')`, 8000),
         await evaluate(`document.querySelector('[data-testid="search-results"]')?.textContent?.slice(0, 80) ?? '(없음)'`))
@@ -11322,8 +11323,11 @@ async function main() {
       await ask(`행검색${x} 새이름`)
       const foundNew = await onlyHit(row)
       await ask(`행검색${x} 첫이름`)
-      const goneOld = await waitFor(`!!document.querySelector('[data-testid="search-empty"]') && document.querySelectorAll('[data-testid="search-hit"]').length === 0`, 8000)
-      check('★ 이름을 바꾸면 새 이름으로 찾고 옛 이름으로는 찾지 않는다', renamed.status === 200 && foundNew && goneOld,
+      // 옛 이름으로는 맞는 결과가 없다 — 결과 없음이거나 오타 대체(10p-3)의 안내가 선다(대체는 비슷한 새 이름을 보여 줄 수 있다 — 안내는
+      // 대체의 응답에서만 서므로 앞 질의의 결과가 남은 것과 가른다). 어느 쪽이든 옛 이름의 결과는 없다
+      const goneOld = await waitFor(`(!!document.querySelector('[data-testid="search-empty"]') || !!document.querySelector('[data-testid="search-fuzzy"]'))
+        && ![...document.querySelectorAll('[data-testid="search-hit"]')].some((e) => (e.textContent ?? '').includes(${JSON.stringify(`행검색${x} 첫이름`)}))`, 8000)
+      check('★ 이름을 바꾸면 새 이름으로 찾고 옛 이름으로는 맞는 결과가 없다', renamed.status === 200 && foundNew && goneOld,
         JSON.stringify({ renamed: renamed.status, foundNew, goneOld, hits: await hitIds() }))
       await key('Escape')
     } catch (thrown) { await sectionThrew(thrown) } }
@@ -11383,8 +11387,11 @@ async function main() {
       await ask(newName)
       const foundNew = await onlyHit(dbId)
       await ask(dbName)
-      const goneOld = await waitFor(`!!document.querySelector('[data-testid="search-empty"]') && document.querySelectorAll('[data-testid="search-hit"]').length === 0`, 8000)
-      check('★ 이름을 바꾸면 새 이름으로 찾고 옛 이름으로는 찾지 않는다', renamed.status === 200 && foundNew && goneOld,
+      // 옛 이름으로는 맞는 결과가 없다 — 결과 없음이거나 오타 대체(10p-3)의 안내가 선다(대체는 비슷한 새 이름을 보여 줄 수 있다 — 안내는
+      // 대체의 응답에서만 서므로 앞 질의의 결과가 남은 것과 가른다). 어느 쪽이든 옛 이름의 결과는 없다
+      const goneOld = await waitFor(`(!!document.querySelector('[data-testid="search-empty"]') || !!document.querySelector('[data-testid="search-fuzzy"]'))
+        && ![...document.querySelectorAll('[data-testid="search-hit"]')].some((e) => (e.textContent ?? '').includes(${JSON.stringify(dbName)}))`, 8000)
+      check('★ 이름을 바꾸면 새 이름으로 찾고 옛 이름으로는 맞는 결과가 없다', renamed.status === 200 && foundNew && goneOld,
         JSON.stringify({ renamed: renamed.status, foundNew, goneOld, hits: await hitIds() }))
       await key('Escape')
 
@@ -11392,6 +11399,53 @@ async function main() {
       check('`@` 후보에는 데이터베이스가 없다(칩이 데이터베이스를 열지 못한다)',
         mention.status === 200 && Array.isArray(mention.body?.candidates) && !mention.body.candidates.some((c) => c.id === dbId),
         JSON.stringify(mention.body))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
+    if (sectionIf('검색 오타 대체 (10p-3 · F-07-02)')) { try {
+      // 맞는 결과가 0건이면 제목의 낱말 유사도로 찾는다 — 덮개가 "비슷한 제목" 이라고 먼저 말하고 가장 닮은 것이 맨 위 · 누르면 열린다 · 맞는
+      // 결과가 있으면 그 안내가 없다(정본 §3.9 [보강] 검색 오타 대체). 자기 데이터를 스스로 만든다(API). 표지는 숫자 대신 글자다 — 숫자가 든
+      // 말은 다른 제목의 숫자(도장)와 비슷해 대체가 그것들을 데려온다. 앞 판들이 같은 머리의 페이지를 남겨도 표지가 같은 것은 이것뿐이다.
+      const nonce = String(Date.now()).slice(-7).split('').map((d) => 'abcdefghij'[Number(d)]).join('')
+      const api = `${BASE}/api/workspaces/${workspaceId}`
+      const readRes = async (res) => ({ status: res.status, body: await res.json().catch(() => null) })
+      const title = `분기보고서 ${nonce}`
+      const created = await readRes(await fetch(`${api}/pages`, { method: 'POST', headers: authed, body: JSON.stringify({ title }) }))
+      const pageId = created.body?.page?.id
+      // 괄호로 감싼다 — 이 식을 `&&` 옆에 끼우는데, `&&` 와 `??` 를 괄호 없이 섞으면 문법 오류다
+      const firstHit = `(document.querySelector('[data-testid="search-hit"]')?.dataset.pageId ?? null)`
+      const view = () => evaluate(`JSON.stringify({ first: ${firstHit}, fuzzy: !!document.querySelector('[data-testid="search-fuzzy"]'),
+        hits: document.querySelectorAll('[data-testid="search-hit"]').length, text: (document.querySelector('[data-testid="search-results"]')?.textContent ?? '').slice(0, 120) })`)
+      const openOverlay = async () => {
+        for (let i = 0; i < 6 && !(await evaluate(`!!document.querySelector('[data-testid="search-overlay"]')`)); i += 1) {
+          await key('k', MOD)
+          await waitFor(`!!document.querySelector('[data-testid="search-overlay"]')`, 1500)
+        }
+      }
+      const ask = async (query) => {
+        await evaluate(`(() => { const el = document.querySelector('[data-testid="search-input"]'); el?.focus(); el?.select() })()`)
+        await typeText(query)
+      }
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
+      await waitFor(`!!document.querySelector('[data-testid="sidebar-workspace-switcher"]')`, 15000)
+      await openOverlay()
+      await ask(`분기보고사 ${nonce}`)
+      // 막 띄운 서버의 첫 검색은 느릴 수 있다(10p-1 의 첫 판) — 15초
+      const shown = typeof pageId === 'string'
+        && (await waitFor(`!!document.querySelector('[data-testid="search-fuzzy"]') && ${firstHit} === ${JSON.stringify(pageId)}`, 15000))
+      check('★ 맞는 결과가 없으면 비슷한 제목을 보여 준다 — 그렇다고 먼저 말하고 가장 닮은 것이 맨 위', shown,
+        JSON.stringify({ created: created.status, pageId, view: JSON.parse(await view()) }))
+
+      await clickSelector(`[data-testid="search-hit"][data-page-id="${pageId}"]`)
+      check('누르면 그 페이지가 열린다',
+        await waitFor(`location.pathname === ${JSON.stringify(`/w/${workspaceId}/${pageId}`)}`, 15000), await evaluate('location.pathname'))
+
+      await openOverlay()
+      await ask(title)
+      const exact = await waitFor(`${firstHit} === ${JSON.stringify(pageId)} && document.querySelectorAll('[data-testid="search-hit"]').length === 1
+        && !document.querySelector('[data-testid="search-fuzzy"]')`, 15000)
+      check('★ 맞는 결과가 있으면 비슷한 제목의 안내가 없다', exact, await view())
+      await key('Escape')
     } catch (thrown) { await sectionThrew(thrown) } }
 
     if (sectionIf('가져오기 — 마크다운 · 텍스트 (8m-1 · F-09-12)')) { try {
@@ -17930,7 +17984,8 @@ async function main() {
         String(await evaluate(`JSON.stringify(${hits})`)))
 
       // ② 제목만 + 없는 말 — 0건이면 필터가 걸려 있다고 · 필터 풀기
-      await typeText(`없는말${stamp}`)
+      // 어떤 제목과도 닮지 않은 글자다 — 숫자(도장)가 든 말은 오타 대체(10p-3)가 숫자가 비슷한 다른 제목을 데려와 결과가 없지 않다
+      await typeText('꿻뜗쀍쀏휁')
       await clickSelector('[data-testid="search-filter-title"]')
       const emptyWithFilters = await waitFor(`(document.querySelector('[data-testid="search-empty"]')?.textContent ?? '').includes('필터 2개')`, 8000)
       await clickSelector('[data-testid="search-filter-clear"]')

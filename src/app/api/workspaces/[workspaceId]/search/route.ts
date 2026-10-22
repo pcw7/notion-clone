@@ -78,6 +78,8 @@ export async function GET(
   return Response.json({
     ok: true,
     tooShort: false,
+    // 오타 대체의 결과인가(10p-3) — 맞는 결과가 0건이라 제목의 낱말 유사도로 찾았다. 화면이 그렇게 말한다
+    fuzzy: outcome.fuzzy,
     maxLimit: MAX_SEARCH_LIMIT,
     results: results.results.map((hit) => ({
       pageId: hit.pageId,

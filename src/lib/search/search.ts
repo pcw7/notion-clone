@@ -121,6 +121,14 @@ export const MAX_QUERY_LENGTH = 200
 const SNIPPET_LENGTH = 160
 const SNIPPET_LEAD = 40
 
+/**
+ * 오타 대체(10p-3 · 정본 §3.9 [보강] 검색 오타 대체 ③)의 낱말 유사도 하한 — `word_similarity(검색어, 제목)`. 이 PC 에서 잰 값: 걸려야 하는
+ * 것 0.38~0.71 · 아니어야 하는 것 0~0.25.
+ */
+export const FUZZY_WORD_SIMILARITY = 0.35
+/** 오타 대체를 돌리는 찾는 말의 최소 길이(공백 뺀) — 두 글자는 무엇과도 비슷하다(②). */
+export const FUZZY_MIN_CHARS = 3
+
 export type BreadcrumbEntry = {
   readonly id: string
   readonly title: string
@@ -161,7 +169,15 @@ export type SearchInput = {
 }
 
 export type SearchOutcome =
-  | { readonly ok: true; readonly results: ListEnvelope<SearchHit> }
+  | {
+      readonly ok: true
+      readonly results: ListEnvelope<SearchHit>
+      /**
+       * 오타 대체의 결과인가(10p-3 · 정본 §3.9 [보강] 검색 오타 대체 ⑤) — 맞는 결과가 0건이라 제목의 낱말 유사도로 찾았다. 화면이 그렇게
+       * 말한다. 다음 쪽이 없다.
+       */
+      readonly fuzzy: boolean
+    }
   /**
    * 쿼리가 짧아 질의하지 않았다.
    *
@@ -305,6 +321,43 @@ function narrowOf(filters: SearchFilters, me: string, first: number): Narrow {
   return { sql: lines.join('\n         '), params }
 }
 
+/** 색인 문서(`alias`)의 아이콘 — 데이터베이스는 `database.icon`(8c-3b · 10p-2 — 블록의 `format` 은 페이지 행만 갖는다), 페이지는 블록의 `format`. */
+function nodeIconSql(alias: string): string {
+  return `CASE WHEN ${alias}.type = 'database'
+                THEN (SELECT d.icon FROM database d WHERE d.id = ${alias}.doc_id)
+                ELSE (SELECT b.format -> 'page_icon' FROM block b WHERE b.id = ${alias}.doc_id)
+           END`
+}
+
+/**
+ * 오타 대체(10p-3 · 정본 §3.9 [보강] 검색 오타 대체) — 제목의 낱말 유사도로 찾는다. 권한 · 휴지통 · 템플릿 · 필터는 맞는 결과의 질의와 같은
+ * 술어다(④). 유사도 높은 순 → 최근 편집 순 · 한 쪽만(⑤). $1 워크스페이스 · $2 스코프 · $3 검색어 · $4 한도 · $5 부터 필터.
+ */
+function buildFuzzySql(narrow: Narrow): string {
+  return `
+    SELECT s.doc_id, s.type, s.title_text, s.ancestor_ids,
+           coalesce(s.last_edited_at, s.created_at, 'epoch'::timestamptz) AS edited_at,
+           false AS title_hit, '' AS sort_key,
+           ${nodeIconSql('s')} AS page_icon,
+           coalesce(left(s.body_text, ${SNIPPET_LENGTH}), '') AS snippet
+      FROM search_document s
+     WHERE s.workspace_id = $1
+       AND s.perm_scope_id = ANY($2::uuid[])   -- ★ 권한. 후처리가 아니다
+       AND s.in_trash = false
+       AND ${notTemplateRow('s.doc_id')}
+       AND s.title_text IS NOT NULL
+       AND word_similarity($3, s.title_text) >= ${FUZZY_WORD_SIMILARITY}
+       ${narrow.sql}
+     ORDER BY word_similarity($3, s.title_text) DESC, edited_at DESC, s.doc_id
+     LIMIT $4`
+}
+
+/** 오타 대체에 쓸 말 — 대안 · 제외가 없고(`exactTitleTarget`) 공백을 뺀 길이가 하한 이상일 때만(정본 ②). 아니면 null. */
+function fuzzyTarget(parsed: ParsedQuery): string | null {
+  const target = exactTitleTarget(parsed)
+  return target !== null && target.replace(/\s/g, '').length >= FUZZY_MIN_CHARS ? target : null
+}
+
 function buildSql(axis: Axis, sort: SearchSort, narrow: Narrow): string {
   const ascending = isAscending(sort)
   return `
@@ -334,11 +387,7 @@ function buildSql(axis: Axis, sort: SearchSort, narrow: Narrow): string {
         FROM matched m
     )
     SELECT k.doc_id, k.type, k.title_text, k.ancestor_ids, k.edited_at, k.title_hit, k.sort_key,
-           -- 데이터베이스의 아이콘은 \`database.icon\` 이다(8c-3b · 10p-2 — 블록의 \`format\` 은 페이지 행만 갖는다)
-           CASE WHEN k.type = 'database'
-                THEN (SELECT d.icon FROM database d WHERE d.id = k.doc_id)
-                ELSE (SELECT b.format -> 'page_icon' FROM block b WHERE b.id = k.doc_id)
-           END AS page_icon,
+           ${nodeIconSql('k')} AS page_icon,
            CASE
              WHEN k.body_text IS NULL OR k.body_text = '' THEN ''
              -- 일치 지점 주변을 자른다. 닻($3)은 쿼리의 첫 말이다(8l-1 — 쿼리 전체로
@@ -448,13 +497,13 @@ export async function searchPages(
     const scopes = await readableScopes(tx, ctx)
     // 볼 수 있는 스코프가 없으면 질의 자체가 무의미하다. `= ANY('{}')` 는
     // 어차피 0건이지만, 한 왕복을 아낀다.
-    if (scopes.length === 0) return { ok: true, results: listEnvelope<SearchHit>([]) }
+    if (scopes.length === 0) return { ok: true, fuzzy: false, results: listEnvelope<SearchHit>([]) }
 
     // 팀스페이스 필터(10a-3a · 정본 ⑥) — 요금제는 질의를 만드는 곳에서 묻는다(07 *"UI 에서 칩만 숨기면 우회된다"*). 고를 수 있는 것은 내가
     // 멤버인 보관되지 않은 팀스페이스 — 아니면 없는 팀스페이스와 같은 답(0건)이다.
     if (filters.teamspace !== null) {
       if (!(await entitlement(ctx.workspaceId, 'search.teamspace_filter', tx))) return { ok: false, reason: 'plan_required' } as const
-      if (!(await isMyTeamspaceIn(tx, ctx, filters.teamspace))) return { ok: true, results: listEnvelope<SearchHit>([]) }
+      if (!(await isMyTeamspaceIn(tx, ctx, filters.teamspace))) return { ok: true, fuzzy: false, results: listEnvelope<SearchHit>([]) }
     }
 
     // 한 건 더 읽어 "다음 페이지가 있는가"를 판단한다. 전체 개수를 세지 않는다 —
@@ -474,8 +523,19 @@ export async function searchPages(
       ...narrow.params,
     ])
 
-    const hasMore = rows.length > limit
-    const page = hasMore ? rows.slice(0, limit) : rows
+    // 오타 대체(10p-3 · 정본 §3.9 [보강] 검색 오타 대체 ①②) — 첫 쪽이 비었고 검색어가 있을 때만, 대안 · 제외 없는 3자 이상의 말로. 같은
+    // 권한 · 휴지통 · 템플릿 · 필터 술어 위에서 제목의 낱말 유사도로 다시 찾는다. 한 쪽만이다(다음 쪽이 없다).
+    const target = rows.length === 0 && cursor === null && !filterOnly ? fuzzyTarget(parsed) : null
+    let fuzzy = false
+    let found = rows
+    if (target !== null) {
+      const fuzzyNarrow = narrowOf(filters, ctx.userId, 5)
+      found = await tx.query<HitRow>(buildFuzzySql(fuzzyNarrow), [ctx.workspaceId, scopes, target, limit, ...fuzzyNarrow.params])
+      fuzzy = found.length > 0
+    }
+
+    const hasMore = !fuzzy && found.length > limit
+    const page = hasMore ? found.slice(0, limit) : found
     const breadcrumbs = await loadBreadcrumbs(tx, ctx, page, scopes)
 
     const results: SearchHit[] = page.map((row) => ({
@@ -492,6 +552,7 @@ export async function searchPages(
     const last = page[page.length - 1]
     return {
       ok: true,
+      fuzzy,
       results: listEnvelope(results, {
         nextCursor:
           hasMore && last ? encodeCursor({ sortKey: cursorKeyOf(sort, last.sort_key), id: last.doc_id }) : null,
