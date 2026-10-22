@@ -76,12 +76,12 @@ import {
   groupLabel,
   moveCard,
   moveChoices,
-  MOVED_OUT_OF_VIEW_NOTICE,
   prefillCells,
   resolveDrop,
   type ColumnBox,
   type DropTarget,
 } from '@/lib/database/board-drag'
+import { EDITED_OUT_OF_VIEW_NOTICE, MOVED_OUT_OF_VIEW_NOTICE } from '@/lib/database/out-of-view'
 import { AnchoredLayer, containsAcrossLayers } from '../../anchored-layer'
 import { templateRowNote, UNTITLED_TEMPLATE, type DefaultTemplate } from '@/lib/database/new-row'
 import { CALCULATION_LABEL, formatCalculation, type Calculation, type CalculationResult } from '@/lib/database/calculations'
@@ -563,13 +563,15 @@ export function DatabaseBoard(props: {
       properties: { ...r.properties, [titleColumn.propertyId]: value },
     })
     update((current) => mapRow(current, e.rowId, (r) => withValue(r, parsed.value)))
-    const result = await api.updateCell(workspaceId, e.rowId, titleColumn.propertyId, parsed.value)
+    // 뷰를 실어 보낸다 — 고친 카드가 조건 밖이면 곧 빠지므로 그 까닭을 말한다(10n-16)
+    const result = await api.updateCellInView(workspaceId, e.rowId, titleColumn.propertyId, parsed.value, { id: viewId, search: props.search ?? null })
     if (!result.ok) {
       update((current) => mapRow(current, e.rowId, (r) => withValue(r, previous)))
       setError(result.message)
       return
     }
-    takeRow(result.value)
+    takeRow(result.value.row)
+    if (result.value.inView === false) setNotice(EDITED_OUT_OF_VIEW_NOTICE)
     // 제목의 계산(값 세기 · 고유 값)이면 머리 값이 바뀐다(2d-3).
     if (calculation?.propertyId === titleColumn.propertyId) void refreshCalculations()
   }

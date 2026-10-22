@@ -202,6 +202,28 @@ export function updateCell(
 }
 
 /**
+ * 셀 하나를 고치고 "아직 이 뷰에 서는가" 를 함께 받는다(10n-16 · 정본 §3.6 [보강] 고친 카드가 뷰의 조건 밖으로 나가면) — 보드 · 갤러리 ·
+ * 캘린더가 쓴다(카드가 곧 빠지는 화면). `inView` 를 모르면(서버가 판정하지 못했다) null — 화면은 아무 말도 하지 않는다.
+ */
+export function updateCellInView(
+  workspaceId: string,
+  rowId: string,
+  propertyId: string,
+  value: CellValue,
+  view: { readonly id: string; readonly search?: string | null },
+): Promise<ApiResult<{ readonly row: RowJson; readonly inView: boolean | null }>> {
+  return call(
+    `${base(workspaceId)}/rows/${rowId}`,
+    {
+      method: 'PATCH',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ cells: [{ propertyId, value }], view: { id: view.id, search: view.search ?? null } }),
+    },
+    (body) => ({ row: body.row as RowJson, inView: typeof body.inView === 'boolean' ? body.inView : null }),
+  )
+}
+
+/**
  * 사람 칸에 더하고 뺀다(정본 [보강] 사람 속성 ⑫) — 서버가 행을 잠근 채 지금 값에 적용한다. 그사이 다른 사람이 더한 사람도 남는다.
  * 답은 합친 행이다.
  */

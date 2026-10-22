@@ -84,6 +84,10 @@ export type QueryRowsInput = {
    * 뷰 검색어(2e-1 · F-04-27) — 필터와 AND 로 붙는다(`search.ts`). `normalizeSearch` 를 지난 값만. 뷰에 저장하지 않는다.
    */
   readonly search?: string | null
+  /**
+   * 이 행들로만 좁힌다(10n-16 — "고친 행이 아직 이 뷰에 서는가" · `row-in-view.ts`). 다른 술어(권한 · 필터 · 검색어)는 그대로 건다.
+   */
+  readonly onlyRowIds?: readonly string[]
 }
 
 export type QueryPage = {
@@ -187,6 +191,7 @@ export async function queryRows(
 
     const treeSql = input.tree === undefined ? null : compileTree(input.tree, params)
     const searchSql = input.search === undefined || input.search === null ? null : compileSearch(input.search, types, params)
+    const onlySql = input.onlyRowIds === undefined ? null : `p.id = ANY(${params.bind([...input.onlyRowIds])}::uuid[])`
 
     const where = [
       'p.data_source_id = $1',
@@ -196,6 +201,7 @@ export async function queryRows(
       filterSql,
       searchSql,
       treeSql,
+      onlySql,
       cursorSql,
     ].filter((s): s is string => s !== null)
 

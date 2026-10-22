@@ -13867,6 +13867,68 @@ async function main() {
         await evaluate('location.pathname + location.search'))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('캘린더 — 조건 밖으로 끈 카드의 안내 (10n-16 · F-04-24 · F-04-03)')) { try {
+      // 날짜 필터(마감이 3/15 전)가 걸린 캘린더에서 카드를 끈다 — 필터 안의 날이면 안내가 없고, 밖의 날이면 셀 쓰기의 답(`inView`)으로 화면이
+      // 그 까닭을 말한다 · 카드는 곧 빠진다(다시 읽기) · 다시 열어도 없다(서버에 옮겨졌다). 정본 §3.6 [보강] 고친 카드가 뷰의 조건 밖으로
+      // 나가면. 자기 데이터를 스스로 만든다(API).
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, {
+          method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `조건 캘린더 ${Date.now()}` })).body.database
+      const due = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '마감', type: 'date' })).body.property.id
+      const titleProp = (await api('GET', `/views/${db.defaultViewId}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const card = (await api('POST', `/views/${db.defaultViewId}/rows`, {
+        cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun('조건 일')] } }, { propertyId: due, value: { type: 'date', date: { start: '2026-03-10' } } }],
+      })).body.row.id
+      const cal = (await api('POST', `/databases/${db.id}/views`, { type: 'calendar' })).body.view
+      const filtered = await api('PATCH', `/views/${cal.id}`, { filter: { property_id: due, operator: 'before', value: '2026-03-15' } })
+      const BAR = `[data-testid="db-cal-event"][data-row-id="${card}"]`
+      const notice = `(document.querySelector('[data-testid="db-notice"]')?.textContent ?? '')`
+      const center = (selector) => evaluate(`(() => { const e = document.querySelector(${JSON.stringify(selector)})
+        if (!e) return null; const r = e.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 } })()`)
+      const dragTo = async (sx, sy, tx, ty) => {
+        await move(sx, sy)
+        await press(sx, sy)
+        for (let i = 1; i <= 10; i += 1) {
+          await move(sx + ((tx - sx) * i) / 10, sy + ((ty - sy) * i) / 10, true)
+          await sleep(16)
+        }
+        await release(tx, ty)
+        await sleep(80)
+      }
+      const dragToDay = async (day) => {
+        const from = await center(BAR)
+        const to = await center(`[data-testid="db-cal-day"][data-day="${day}"]`)
+        if (from === null || to === null) return false
+        await dragTo(from.x, from.y, to.x, to.y)
+        return true
+      }
+      const state = () => evaluate(`JSON.stringify({ bar: !!document.querySelector('${BAR}'), notice: ${notice} })`)
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}?v=${cal.id}&m=2026-03` })
+      // 막대는 서버가 그린 것 — React 가 붙은 뒤 끈다(첫 입력이 버려지는 부류 — §7)
+      check('전제 — 날짜 필터(3/15 전)가 걸린 캘린더에 카드가 3/10 에 선다', filtered.status === 200
+        && (await waitFor(`!!document.querySelector('${BAR}')`, 15000)) && (await waitHydrated(BAR)), await state())
+
+      const inside = await dragToDay('2026-03-12')
+      check('필터 안의 날로 끌면 안내가 없다', inside
+        && (await waitFor(`!!document.querySelector('${BAR}') && !document.querySelector('${BAR}').dataset.dragging`, 5000))
+        && (await sleep(800), !(await evaluate(notice)).includes('조건')), await state())
+
+      const outside = await dragToDay('2026-03-20')
+      check('★ 필터 밖의 날로 끌면 그 까닭을 말한다 — 카드는 곧 빠진다',
+        outside && (await waitFor(`${notice}.includes('옮긴 카드가 이 보기의 조건(필터 · 검색)에 맞지 않아 보기에서 빠졌습니다') && !document.querySelector('${BAR}')`, 10000)),
+        await state())
+
+      await send('Page.reload', {})
+      check('★ 다시 열어도 없다 — 서버에 옮겨졌다(안내와 같은 답)',
+        await waitFor(`document.readyState === 'complete' && document.querySelectorAll('[data-testid="db-cal-day"]').length === 42 && !document.querySelector('${BAR}')`, 15000),
+        await state())
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('개인 필터 · 정렬 — 서버 (2h-1 · F-04-17)')) { try {
       // 나에게만 적용하는 필터 · 정렬 — 걸면 행 응답이 그것으로 좁혀지고(공유 필터를 대체) · 초기화하면 공유 것 · 모두에게 저장하면 공유 것이 된다.
       // 볼 수만 있는 사람 · 보드 · 캘린더 · 권한은 DB 검사가 본다.
