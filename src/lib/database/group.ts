@@ -241,6 +241,8 @@ export type MoveRowInput = {
   readonly groupKey: string
   /** 이 행 **앞**에 놓는다. `null` 이면 열의 맨 뒤. 정렬이 걸린 뷰에서는 무시된다. */
   readonly beforeRowId?: string | null
+  /** 화면이 쓰고 있는 뷰 검색어(2e-1) — 옮긴 뒤 "아직 이 보드에 서는가"(`inView`)를 물을 때만 쓴다. 이동 자체에는 상관없다. */
+  readonly search?: string | null
 }
 
 export type MoveOutcome = {
@@ -248,6 +250,11 @@ export type MoveOutcome = {
   readonly groupKey: string
   /** 순서를 저장했는가. 정렬이 걸린 뷰면 false — 셀 값만 바뀌었다. */
   readonly positioned: boolean
+  /**
+   * 옮긴 행이 아직 이 보드에 서는가(10n-15 · 정본 §3.6 [보강] 옮긴 카드가 보드의 조건 밖으로 나가면) — 보드가 행을 고르는 술어 그대로
+   * (권한 · 이 사람이 실제로 보는 필터 · 하위 항목 · 화면이 보낸 검색어). 거짓이면 화면이 안내한다(F-04-03 · F-04-24).
+   */
+  readonly inView: boolean
 }
 
 export type GroupFailure = RowFailure | 'not_grouped'
@@ -654,7 +661,8 @@ export async function moveRow(
 ): Promise<GroupResult<MoveOutcome>> {
   // 거부를 돌려주면 롤백된다(`withCommandTransaction` 머리말) — 아래의 "쓰기 전에 검사"가 깨져도 반쯤 옮긴 카드는 없다.
   return withCommandTransaction(async (tx) => {
-    const board = await openBoard(tx, ctx, viewId, 'edit_content')
+    // 검색어는 끝의 "아직 이 보드에 서는가" 에만 닿는다 — 아래의 자리 계산(`isInGroup` · `placeIn`)은 보드 질의를 쓰지 않는다.
+    const board = await openBoard(tx, ctx, viewId, 'edit_content', input.search ?? null)
     if (isFailure(board)) return board
     if (!catalogOf(board).some((g) => g.key === input.groupKey)) return fail('invalid_value')
     if (input.beforeRowId === input.rowId) return fail('invalid_value')
@@ -695,8 +703,25 @@ export async function moveRow(
 
     const summary = await readRow(tx, input.rowId)
     if (summary === null) return fail('not_found')
-    return { ok: true, value: { row: summary, groupKey: input.groupKey, positioned: manual } } as const
+    // ── ③ 아직 이 보드에 서는가(10n-15) — 판정은 서버의 컴파일러 하나에 있다(화면이 필터를 다시 풀지 않는다) ──
+    const inView = await standsInBoard(tx, board, input.rowId)
+    return { ok: true, value: { row: summary, groupKey: input.groupKey, positioned: manual, inView } } as const
   })
+}
+
+/**
+ * 그 행이 이 보드에 서는가 — 보드가 카드를 고르는 WHERE 그대로(`compileBoard` — 권한 · 실제로 보는 필터 · 하위 항목 · 검색어). 수식 ·
+ * rollup 의 필터는 지금 저장된 파생 값으로 판정한다(읽기가 새로 계산하므로 틀릴 수 있다 — 다음 읽기가 정한다 · 정본 ③).
+ */
+async function standsInBoard(tx: Tx, board: Board, rowId: string): Promise<boolean> {
+  const params = new ParamBag(2)
+  const q = compileBoard(board, params, false)
+  const rowParam = params.bind(rowId)
+  const hit = await tx.queryMaybe<{ one: number }>(
+    `SELECT 1 AS one ${q.from} WHERE ${q.where} AND p.id = ${rowParam}`,
+    [board.dataSourceId, ...params.values],
+  )
+  return hit !== null
 }
 
 async function currentKeyOf(tx: Tx, board: Board, rowId: string): Promise<string> {

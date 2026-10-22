@@ -340,7 +340,13 @@ export function loadGroupCalculations(
   )
 }
 
-export type MoveResult = { readonly row: RowJson; readonly groupKey: string; readonly positioned: boolean }
+export type MoveResult = {
+  readonly row: RowJson
+  readonly groupKey: string
+  readonly positioned: boolean
+  /** 옮긴 카드가 아직 이 보드에 서는가(10n-15) — 거짓이면 화면이 안내한다. 모르면(옛 서버) 참으로 본다. */
+  readonly inView: boolean
+}
 
 /**
  * 카드 이동 — **요청 하나**다. 셀 값과 열 안 자리를 서버가 한 트랜잭션으로 쓴다(마스터 문서 §5.2 4번 · §3.3-148).
@@ -349,7 +355,13 @@ export type MoveResult = { readonly row: RowJson; readonly groupKey: string; rea
 export function moveCard(
   workspaceId: string,
   viewId: string,
-  input: { readonly rowId: string; readonly groupKey: string; readonly beforeRowId: string | null },
+  input: {
+    readonly rowId: string
+    readonly groupKey: string
+    readonly beforeRowId: string | null
+    /** 화면이 쓰는 뷰 검색어 — 서버가 "아직 이 보드에 서는가" 를 물을 때 넣는다(10n-15). */
+    readonly search?: string | null
+  },
 ): Promise<ApiResult<MoveResult>> {
   return call(
     `${base(workspaceId)}/views/${viewId}/groups`,
@@ -358,6 +370,7 @@ export function moveCard(
       row: body.row as RowJson,
       groupKey: body.groupKey as string,
       positioned: body.positioned === true,
+      inView: body.inView !== false,
     }),
   )
 }

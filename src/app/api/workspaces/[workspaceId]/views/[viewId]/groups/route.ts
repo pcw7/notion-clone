@@ -87,6 +87,7 @@ export async function POST(request: Request, ctx: Ctx): Promise<Response> {
     rowId?: unknown
     groupKey?: unknown
     beforeRowId?: unknown
+    search?: unknown
   }
   if (body.action !== 'move') return invalid()
   if (typeof body.rowId !== 'string' || !isUuid(body.rowId)) return invalid()
@@ -99,6 +100,8 @@ export async function POST(request: Request, ctx: Ctx): Promise<Response> {
     rowId: body.rowId,
     groupKey: body.groupKey,
     beforeRowId: (body.beforeRowId as string | null | undefined) ?? null,
+    // 화면이 쓰는 뷰 검색어(10n-15) — "아직 이 보드에 서는가" 에만 쓰인다. 문자열이 아니면 없는 것으로
+    search: typeof body.search === 'string' ? body.search : null,
   })
   if (!moved.ok) return failureResponse(groupFailureStatus(moved.reason), moved)
   return Response.json({
@@ -106,5 +109,6 @@ export async function POST(request: Request, ctx: Ctx): Promise<Response> {
     row: rowJson(moved.value.row),
     groupKey: moved.value.groupKey,
     positioned: moved.value.positioned,
+    inView: moved.value.inView,
   })
 }

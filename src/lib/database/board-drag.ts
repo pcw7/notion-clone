@@ -221,3 +221,10 @@ export function groupLabel(
   if (propertyType === 'checkbox') return group.key === 'true' ? '체크됨' : '체크 안 됨'
   return group.option?.name ?? `${propertyName} 없음`
 }
+
+/**
+ * 옮긴 카드가 보드의 조건(필터 · 검색) 밖으로 나갔을 때의 안내(10n-15 · 정본 §3.6 [보강] 옮긴 카드가 보드의 조건 밖으로 나가면 ②). 카드는
+ * 곧 빠진다 — 화면이 지우지 않아도 표 변경 알림의 다시 읽기(2k-2)가 서버의 답으로 바꾼다. 자기 편집으로 말없이 사라지면 버그로 보인다(04
+ * F-04-03 · F-04-24) — 이 말이 까닭이다.
+ */
+export const MOVED_OUT_OF_VIEW_NOTICE = '옮긴 카드가 이 보기의 조건(필터 · 검색)에 맞지 않아 보기에서 빠졌습니다.'
