@@ -252,6 +252,8 @@ export function DatabaseTable(props: {
   // 트리거가 시각 · "지남"을 바꾼다. 날짜 속성이 없는 표는 읽지 않는다.
   const [reminders, setReminders] = useState<api.ReminderMap>({})
   const reminderKey = columns.some((c) => c.type === 'date') ? rows.map((r) => `${r.id}:${r.version}`).join(',') : ''
+  // 다시 읽기(표 변경 알림)마다 올린다 — 남이 걸고 푼 리마인더 · 울림은 행의 판을 바꾸지 않는다(정본 §3.8 [보강] 리마인더 ⑩ · 10n-17)
+  const [reminderTick, setReminderTick] = useState(0)
   useEffect(() => {
     if (reminderKey === '') return
     let stale = false
@@ -268,7 +270,7 @@ export function DatabaseTable(props: {
     return () => {
       stale = true
     }
-  }, [reminderKey, workspaceId, dataSourceId])
+  }, [reminderKey, reminderTick, workspaceId, dataSourceId])
   const putReminder = (rowId: string, propertyId: string, next: DateReminderJson | null) =>
     setReminders((current) => {
       const byProperty = { ...(current[rowId] ?? {}) }
@@ -1116,6 +1118,8 @@ export function DatabaseTable(props: {
       if (calc !== undefined) setCalculations(calc)
       // rollup 은 행에 없다 — 보이는 행 전부의 것을 다시 묻는다(그사이 연결된 행이 바뀌었을 수 있다)
       refreshRollups(merged.rows.map((r) => r.id))
+      // 리마인더도 행에 없다 — 걸기 · 풀기 · 울림의 신호(0109)로 온 다시 읽기면 행은 그대로다(10n-17)
+      setReminderTick((tick) => tick + 1)
     } finally {
       reloading.current = false
     }
