@@ -155,3 +155,11 @@ describe('③ AND 로 닿는 조건만', () => {
     assert.deepEqual(fill(null), [])
   })
 })
+
+describe('status 의 그룹 단위 (10n-23)', () => {
+  test('그룹 조건은 채우지 않는다 — 그 그룹의 옵션이 여럿이다(②)', () => {
+    const typeOf = (id: string) => (id === 'progress' ? 'status' : undefined)
+    assert.deepEqual(filterPrefill({ property_id: 'progress', operator: 'group_is', value: 'complete' }, typeOf, null), [])
+    assert.deepEqual(filterPrefill({ property_id: 'progress', operator: 'group_is_not', value: 'todo' }, typeOf, null), [])
+  })
+})

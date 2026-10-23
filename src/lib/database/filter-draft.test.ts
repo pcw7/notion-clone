@@ -273,3 +273,37 @@ describe('정렬', () => {
     assert.ok(validateSorts([asc('gone'), asc('qty')], types).length > 0, '빼지 않으면 서버가 거부한다')
   })
 })
+
+describe('status 의 그룹 단위 (10n-23)', () => {
+  const statusCatalog: OperatorCatalogEntry[] = [
+    { propertyType: 'status', operator: 'equals', arity: 1, label: '같음' },
+    { propertyType: 'status', operator: 'is_empty', arity: 0, label: '비어 있음' },
+    { propertyType: 'status', operator: 'group_is', arity: 1, label: '그룹이 같음' },
+    { propertyType: 'status', operator: 'group_is_not', arity: 1, label: '그룹이 같지 않음' },
+  ]
+  const progress: RuleColumn = {
+    propertyId: 'progress',
+    name: '진행',
+    type: 'status',
+    options: [{ id: 'opt-1', name: '진행 중', color: 'blue', group: 'in_progress' }],
+  }
+
+  test('★ 옵션 ↔ 그룹으로 연산자를 바꾸면 값을 버린다 — 옵션 id 가 그룹 자리에 남지 않는다', () => {
+    assert.deepEqual(withOperator({ property_id: 'progress', operator: 'equals', value: 'opt-1' }, 'group_is', 'status', statusCatalog),
+      { property_id: 'progress', operator: 'group_is' })
+    assert.deepEqual(withOperator({ property_id: 'progress', operator: 'group_is', value: 'complete' }, 'equals', 'status', statusCatalog),
+      { property_id: 'progress', operator: 'equals' })
+  })
+
+  test('그룹 ↔ 그룹이면 값을 둔다', () => {
+    assert.deepEqual(withOperator({ property_id: 'progress', operator: 'group_is', value: 'complete' }, 'group_is_not', 'status', statusCatalog),
+      { property_id: 'progress', operator: 'group_is_not', value: 'complete' })
+  })
+
+  test('칩 — 그룹 이름으로 말한다', () => {
+    assert.equal(describeRule({ property_id: 'progress', operator: 'group_is', value: 'complete' }, progress, statusCatalog), '진행 · 그룹이 같음 · 완료')
+    assert.equal(describeRule({ property_id: 'progress', operator: 'group_is_not', value: 'todo' }, progress, statusCatalog), '진행 · 그룹이 같지 않음 · 할 일')
+    // 옵션 연산자는 그대로 옵션 이름
+    assert.equal(describeRule({ property_id: 'progress', operator: 'equals', value: 'opt-1' }, progress, statusCatalog), '진행 · 같음 · 진행 중')
+  })
+})

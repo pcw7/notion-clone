@@ -523,3 +523,40 @@ describe('⑥ "나"(6g-2c)', () => {
     assert.equal(isMeNode(['me']), false)
   })
 })
+
+describe('status 의 그룹 단위 (10n-23)', () => {
+  const STATUS = new Map<string, string>([...TYPES, ['pStatus', 'status']])
+  const compileStatus = (node: FilterNode) => {
+    const params = new ParamBag(1)
+    return { sql: compileFilter(node, STATUS, params, NO_VIEWER), values: params.values }
+  }
+
+  test('status 는 select 의 넷 + 그룹 둘 · select 에는 그룹이 없다', () => {
+    assert.deepEqual(operatorsFor('status').sort(), ['does_not_equal', 'equals', 'group_is', 'group_is_not', 'is_empty', 'is_not_empty'])
+    assert.ok(!operatorsFor('select').includes('group_is'))
+    assert.equal(operatorArity('status', 'group_is'), 1)
+  })
+
+  test('★ 쓰기 경로 — 값은 그룹이어야 한다(옵션 id · 모르는 말은 거부)', () => {
+    assert.deepEqual(validateFilter({ property_id: 'pStatus', operator: 'group_is', value: 'complete' }, STATUS), [])
+    assert.deepEqual(validateFilter({ property_id: 'pStatus', operator: 'group_is_not', value: 'todo' }, STATUS), [])
+    for (const value of ['done', '00000000-0000-4000-8000-000000000000', 1, ''] as const) {
+      assert.equal(validateFilter({ property_id: 'pStatus', operator: 'group_is', value }, STATUS).length, 1, `값 ${String(value)}`)
+    }
+    assert.equal(validateFilter({ property_id: 'pSel', operator: 'group_is', value: 'todo' }, STATUS).length, 1, 'select 에는 없는 연산자')
+    // 옵션 연산자는 그대로 옵션 id 를 받는다
+    assert.deepEqual(validateFilter({ property_id: 'pStatus', operator: 'equals', value: 'opt-1' }, STATUS), [])
+  })
+
+  test('★ group_is 는 EXISTS · group_is_not 은 NOT EXISTS(빈 셀도 "그 그룹이 아니다")', () => {
+    assert.ok(compileStatus({ property_id: 'pStatus', operator: 'group_is', value: 'complete' }).sql?.startsWith('EXISTS'))
+    assert.ok(compileStatus({ property_id: 'pStatus', operator: 'group_is_not', value: 'complete' }).sql?.startsWith('NOT EXISTS'))
+  })
+
+  test('★ 값은 바인딩한다 · 그룹은 글자로 견준다(ENUM 캐스트 없음 — 모르는 값이 와도 예외가 아니다)', () => {
+    const { sql, values } = compileStatus({ property_id: 'pStatus', operator: 'group_is', value: "x' OR 1=1 --" })
+    assert.ok(sql !== null && !sql.includes('OR 1=1'), `${sql}`)
+    assert.deepEqual(values, ['pStatus', "x' OR 1=1 --"])
+    assert.ok(sql.includes('g.kind::text = $2') && !sql.includes('::status_group_kind'), sql)
+  })
+})

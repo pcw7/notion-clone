@@ -33,7 +33,7 @@ import { useMemo, useRef, useState, type ReactNode } from 'react'
 import { useRouter } from 'next/navigation'
 
 import { parseDraft } from '@/lib/database/cell-format'
-import { MAX_SORT_KEYS, type FilterNode, type SortKey } from '@/lib/database/filter'
+import { MAX_SORT_KEYS, isStatusGroupOperator, type FilterNode, type SortKey } from '@/lib/database/filter'
 import {
   addSort,
   describeRule,
@@ -49,7 +49,7 @@ import {
 import type { GroupBy } from '@/lib/database/group'
 import type { OperatorCatalogEntry } from '@/lib/database/operator-catalog'
 import type { FilterableType } from '@/lib/database/filter'
-import { isGroupableType, isMvpPropertyType } from '@/lib/database/property-types'
+import { STATUS_GROUP_KINDS, STATUS_GROUP_LABEL, isGroupableType, isMvpPropertyType } from '@/lib/database/property-types'
 import {
   CALCULATION_LABEL,
   calculationsFor,
@@ -535,6 +535,7 @@ function FilterPanel({
                     <RuleValue
                       key={rule.property_id}
                       column={column}
+                      operator={rule.operator}
                       value={rule.value}
                       people={{ workspaceId, names, onKnown }}
                       disabled={!canEdit}
@@ -586,6 +587,7 @@ function FilterPanel({
 /** 필터 규칙의 값 칸 — 타입마다. DB automation 의 트리거 조건(5b-3b)도 이 부품을 쓴다(보기의 필터와 같은 말 · 같은 모양). */
 export function RuleValue({
   column,
+  operator,
   value,
   people,
   disabled,
@@ -593,6 +595,8 @@ export function RuleValue({
 }: {
   /** 타입과 선택지만 본다 — 트리거 조건은 보기의 컬럼이 아니라 스키마의 속성을 준다. */
   column: Pick<FilterableColumn, 'type' | 'options'>
+  /** 규칙의 연산자 — status 의 그룹 단위(10n-23)면 값 칸이 옵션이 아니라 그룹 셋이다. */
+  operator: string
   value: unknown
   /** 사람 값의 고르개가 쓰는 것(6g-2b) — 보기의 필터만 준다(자동화의 조건은 사람 속성을 받지 않는다 · 정본 [보강] 사람 속성 ⑤). */
   people?: { readonly workspaceId: string; readonly names: PeopleNames; readonly onKnown: (known: PeopleNames) => void }
@@ -611,6 +615,26 @@ export function RuleValue({
         onKnown={people.onKnown}
         onChange={onChange}
       />
+    )
+  }
+  // status 의 그룹 단위(10n-23) — 값은 그룹 셋 중 하나
+  if (column.type === 'status' && isStatusGroupOperator(operator)) {
+    return (
+      <select
+        aria-label="필터 값"
+        data-testid="db-filter-value"
+        value={typeof value === 'string' ? value : ''}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.value === '' ? undefined : e.target.value)}
+        className={FIELD}
+      >
+        <option value="">그룹 선택…</option>
+        {STATUS_GROUP_KINDS.map((kind) => (
+          <option key={kind} value={kind}>
+            {STATUS_GROUP_LABEL[kind]}
+          </option>
+        ))}
+      </select>
     )
   }
   switch (column.type) {

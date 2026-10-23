@@ -50,7 +50,7 @@
  * 부르는 쪽의 일이다 — 거르기 직전에 `refreshDerivedValues`(읽기는 READ ONLY 다).
  */
 
-import { MVP_PROPERTY_TYPES, isMvpPropertyType, type MvpPropertyType } from './property-types.ts'
+import { MVP_PROPERTY_TYPES, isMvpPropertyType, isStatusGroupKind, type MvpPropertyType } from './property-types.ts'
 import type { ValidationIssue } from '../contracts/rich-text.ts'
 
 /**
@@ -340,6 +340,30 @@ const SELECT_OPERATORS: Readonly<Record<string, OperatorSpec>> = Object.freeze({
   is_not_empty: TEXT_OPERATORS.is_not_empty,
 })
 
+/** status 의 그룹 단위 연산자(10n-23) — 값은 옵션 id 가 아니라 그룹(`todo` · `in_progress` · `complete`)이다. */
+export const STATUS_GROUP_OPERATORS: readonly string[] = Object.freeze(['group_is', 'group_is_not'])
+
+export function isStatusGroupOperator(operator: unknown): boolean {
+  return typeof operator === 'string' && STATUS_GROUP_OPERATORS.includes(operator)
+}
+
+/**
+ * 셀의 옵션이 **지금** 그 그룹에 드는가(정본 §3.5 status 절 [보강 10n-23]). 옵션 id 집합으로 펴서 저장하지 않으므로 옵션을 옮기거나
+ * 그 그룹에 새 옵션을 만들면 필터가 따라온다. `kind::text` 로 견준다 — 읽기 경로는 검증하지 않으므로(머리말) 모르는 값이 와도 ENUM
+ * 캐스트의 예외 대신 0행이다. `v.property_id` 는 `compileFilter` 의 `EXISTS` 가 묶은 그 속성이다(그 속성의 옵션만 본다).
+ */
+const inStatusGroup = (c: string, p: string) =>
+  `${c} IN (SELECT o.id::text FROM select_option o JOIN status_group g ON g.id = o.group_id
+            WHERE o.property_id = v.property_id AND g.kind::text = ${p})`
+
+/** status — select 의 넷 + 그룹 단위 둘(10n-23 · 마이그레이션 0110). */
+const STATUS_OPERATORS: Readonly<Record<string, OperatorSpec>> = Object.freeze({
+  ...SELECT_OPERATORS,
+  group_is: { arity: 1, predicate: inStatusGroup },
+  // 빈 셀도 "그 그룹이 아니다" — `does_not_equal` 과 같은 `NOT EXISTS`
+  group_is_not: { arity: 1, negate: true, predicate: inStatusGroup },
+})
+
 /**
  * 고유 ID 는 숫자의 비교 여섯이다 — 비어 있음 · 비어 있지 않음이 없다(정본 §3.5 [보강] 고유 ID ⑧: ID 프로퍼티가 살아 있는 동안
  * 목록의 모든 행이 번호를 가진다). 셀이 없으므로 `negate` 는 `NOT EXISTS` 가 아니라 `IS NOT TRUE` 로 접는다(`compileFilter`).
@@ -376,7 +400,7 @@ const BY_TYPE: Readonly<Record<FilterableType, Readonly<Record<string, OperatorS
     rich_text: TEXT_OPERATORS,
     number: NUMBER_OPERATORS,
     select: SELECT_OPERATORS,
-    status: SELECT_OPERATORS,
+    status: STATUS_OPERATORS,
     checkbox: CHECKBOX_OPERATORS,
     date: DATE_OPERATORS,
     unique_id: UNIQUE_ID_OPERATORS,
@@ -465,6 +489,10 @@ export function validateFilter(
   }
   if (spec.arity === 1 && (obj.value === undefined || obj.value === null)) {
     return [{ path: `${path}.value`, message: '값이 필요합니다' }]
+  }
+  // status 의 그룹 단위(10n-23) — 값은 그룹이다(옵션 id 가 아니다)
+  if (resolved.type === 'status' && isStatusGroupOperator(obj.operator) && !isStatusGroupKind(obj.value)) {
+    return [{ path: `${path}.value`, message: "'todo' · 'in_progress' · 'complete' 중 하나여야 합니다" }]
   }
   // 사람(6g-1 · 6g-2c) — 값은 사람 id 하나 또는 "나"(컨텍스트 노드)
   if (resolved.type === 'people' && spec.arity === 1 && !isMeNode(obj.value) && !(typeof obj.value === 'string' && UUID_RE.test(obj.value))) {
