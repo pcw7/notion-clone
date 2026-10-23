@@ -19588,6 +19588,56 @@ async function main() {
       check('"오른쪽으로" — 한 칸 뒤로(가 다 나)', await orderIs('가다나'), await order())
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('뷰 탭 끌기 (10n-19 · F-04-01)')) { try {
+      // 탭을 잡고 끌면 놓을 자리에 세로 줄이 서고, 놓으면 그 차례가 된다 · 끌기를 마친 놓기는 탭을 열지 않는다 · 4px 안에서 놓으면 탭을 여는
+      // 클릭 그대로다 · 다시 열어도 그 차례다. 정본 §3.6 [보강] 뷰 탭 순서 바꾸기 ⑤. 자기 데이터를 스스로 만든다(API).
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `탭 끌기 ${Date.now()}` })).body.database
+      const a = db.defaultViewId
+      const b = (await api('POST', `/databases/${db.id}/views`, { type: 'table', name: '나 탭' })).body.view.id
+      const c = (await api('POST', `/databases/${db.id}/views`, { type: 'table', name: '다 탭' })).body.view.id
+      const names = JSON.stringify({ [a]: '가', [b]: '나', [c]: '다' })
+      const orderExpr = `[...document.querySelectorAll('[data-testid="db-view-tab"]')].map((t) => (${names})[t.dataset.viewId] ?? '?').join('')`
+      const order = () => evaluate(orderExpr)
+      const orderIs = (expected) => waitFor(`${orderExpr} === ${JSON.stringify(expected)}`, 10000)
+      const tabBox = (id) => evaluate(`(() => { const r = document.querySelector('[data-testid="db-view-tab"][data-view-id="${id}"]')?.getBoundingClientRect()
+        return r ? { x: r.x, y: r.y + r.height / 2, w: r.width } : null })()`)
+      const currentView = () => evaluate(`new URL(location.href).searchParams.get('v')`)
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}?v=${a}` })
+      check('전제 — 탭 셋(가 나 다) · 지금 탭은 가', (await orderIs('가나다')) && (await waitHydrated(`[data-testid="db-view-tab"][data-view-id="${c}"]`)), await order())
+
+      // 다를 잡아 가의 왼쪽 끝 근처로 — 가운데(가)를 넘지 않은 자리 = 맨 앞
+      const from = await tabBox(c)
+      const to = await tabBox(a)
+      await move(from.x + from.w / 2, from.y)
+      await press(from.x + from.w / 2, from.y)
+      for (let i = 1; i <= 10; i += 1) {
+        await move(from.x + from.w / 2 + ((to.x + 6) - (from.x + from.w / 2)) * i / 10, from.y, true)
+        await sleep(16)
+      }
+      const line = await waitFor(`!!document.querySelector('[data-testid="db-view-drop-line"]') && document.querySelector('[data-testid="db-view-tab"][data-view-id="${c}"]')?.dataset.dragging === 'true'`, 3000)
+      await release(to.x + 6, from.y)
+      check('★ 끄는 동안 놓일 자리에 세로 줄 — 놓으면 그 차례(다 가 나) · 끌기를 마친 놓기는 탭을 열지 않는다',
+        line && (await orderIs('다가나')) && (await currentView()) === a && !(await evaluate(`!!document.querySelector('[data-testid="db-view-drop-line"]')`)),
+        JSON.stringify({ line, order: await order(), current: await currentView() }))
+
+      // 4px 안에서 놓으면 클릭 — 나 탭을 연다
+      const nb = await tabBox(b)
+      await move(nb.x + nb.w / 2, nb.y)
+      await press(nb.x + nb.w / 2, nb.y)
+      await move(nb.x + nb.w / 2 + 2, nb.y, true)
+      await release(nb.x + nb.w / 2 + 2, nb.y)
+      check('★ 4px 안에서 놓으면 탭을 여는 클릭 그대로다 · 차례는 그대로', (await waitFor(`new URL(location.href).searchParams.get('v') === ${JSON.stringify(b)}`, 10000)) && (await order()) === '다가나',
+        JSON.stringify({ current: await currentView(), order: await order() }))
+
+      await send('Page.reload', {})
+      check('다시 열어도 그 차례다 — 서버에 남았다', await orderIs('다가나'), await order())
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

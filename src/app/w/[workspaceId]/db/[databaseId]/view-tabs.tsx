@@ -18,17 +18,21 @@
  * 지우기"(주인 없는 소스를 남기기)는 두지 않는다 — 뷰가 없는 소스는 어느 탭에서도 열 수 없다. 지우면 데이터베이스의 첫 뷰로 옮긴다.
  *
  * 탭 옮기기(10n-18 · F-04-01 *"탭 드래그 재정렬"*) — 뷰 메뉴의 "왼쪽으로 · 오른쪽으로". 끌기의 대안이 먼저다(키보드로 닿는다 · WCAG
- * 2.5.7). 옮기면 서버 렌더를 다시 부른다(탭 목록은 서버가 순서대로 읽는다). 탭 끌기는 다음이다.
+ * 2.5.7). 옮기면 서버 렌더를 다시 부른다(탭 목록은 서버가 순서대로 읽는다).
+ *
+ * 탭 끌기(10n-19 · 정본 [보강] 뷰 탭 순서 바꾸기 ⑤) — 탭을 잡고 4px 넘게 움직이면 끌기다(그 전에 놓으면 탭을 여는 클릭 그대로). 놓을
+ * 자리는 `tab-drag.ts` 가 정하고(가운데를 넘은 탭의 다음) 끄는 동안 그 자리에 세로 줄을 그린다. 끌기를 마친 놓기는 탭을 열지 않는다.
  *
  * 데이터베이스가 소스를 둘 이상 가지면(8e-2 · F-04-23 *"뷰 생성 시 어떤 data source 를 볼지 선택"*) "뷰 추가" 창이 볼 소스를 묻는다 —
  * 처음 값은 지금 뷰의 소스다. 소스가 하나면 묻지 않는다(서버가 그것을 고른다).
  */
 
-import { useState, type KeyboardEvent } from 'react'
+import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import Link from '@/app/link'
 import { useRouter } from 'next/navigation'
 
 import type { MvpViewType, ViewSummary } from '@/lib/database/view'
+import { TAB_DRAG_THRESHOLD, tabDropBefore, tabDropLineX, type TabBox } from '@/lib/database/tab-drag'
 import * as api from './table-api'
 
 /** 탭의 종류 아이콘. 장식이다 — 이름이 곧 종류를 말한다. */
@@ -139,9 +143,12 @@ export function ViewTabs({
     if (at < 0) return
     const before = direction < 0 ? views[at - 1]?.id : (views[at + 2]?.id ?? null)
     if (before === undefined) return
+    await moveTabTo(currentId, before)
+  }
+  const moveTabTo = async (viewId: string, before: string | null) => {
     setBusy(true)
     setError(null)
-    const result = await api.moveViewTab(workspaceId, currentId, before)
+    const result = await api.moveViewTab(workspaceId, viewId, before)
     setBusy(false)
     if (!result.ok) {
       setError(result.message)
@@ -173,6 +180,60 @@ export function ViewTabs({
     router.push(`/w/${workspaceId}/db/${databaseId}`)
   }
 
+  // ── 탭 끌기(10n-19) ────────────────────────────────────────────────
+  const rowRef = useRef<HTMLDivElement>(null)
+  /** 잡은 탭 · 잡은 x · 끌기가 시작됐는가(4px 를 넘었다). */
+  const grab = useRef<{ id: string; startX: number; active: boolean } | null>(null)
+  /** 끌기를 마친 놓기 뒤의 클릭은 탭을 열지 않는다. */
+  const swallowClick = useRef(false)
+  const [dragging, setDragging] = useState<string | null>(null)
+  /** 놓일 자리의 세로 줄 — 탭 줄의 왼쪽에서 잰 x. */
+  const [lineX, setLineX] = useState<number | null>(null)
+  const boxes = (): TabBox[] =>
+    [...(rowRef.current?.querySelectorAll<HTMLElement>('[data-testid="db-view-tab"]') ?? [])].map((el) => {
+      const r = el.getBoundingClientRect()
+      return { id: el.dataset.viewId ?? '', left: r.left, width: r.width }
+    })
+  const onTabPointerDown = (event: ReactPointerEvent<HTMLAnchorElement>, viewId: string) => {
+    if (!canEdit || event.button !== 0 || busy) return
+    grab.current = { id: viewId, startX: event.clientX, active: false }
+  }
+  useEffect(() => {
+    const onMove = (event: PointerEvent) => {
+      const g = grab.current
+      if (g === null) return
+      if (!g.active && Math.abs(event.clientX - g.startX) <= TAB_DRAG_THRESHOLD) return
+      if (!g.active) {
+        g.active = true
+        setDragging(g.id)
+      }
+      const x = tabDropLineX(boxes(), g.id, event.clientX)
+      const left = rowRef.current?.getBoundingClientRect().left ?? 0
+      setLineX(x === null ? null : x - left)
+    }
+    const onUp = (event: PointerEvent) => {
+      const g = grab.current
+      grab.current = null
+      if (g === null || !g.active) return
+      // 놓기 직후의 클릭만 막는다 — 클릭은 놓기 바로 뒤에 동기로 온다(타이머보다 먼저). 다른 탭 위에서 놓으면 클릭이 두 탭의 공통 조상에
+      // 떨어져 탭의 onClick 이 불리지 않으므로, 표시를 남겨 두면 다음 진짜 클릭을 삼킨다(e2e 가 잡았다)
+      swallowClick.current = true
+      setTimeout(() => {
+        swallowClick.current = false
+      }, 0)
+      setDragging(null)
+      setLineX(null)
+      const before = tabDropBefore(boxes(), g.id, event.clientX)
+      if (before !== undefined) void moveTabTo(g.id, before)
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+    return () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+    }
+  })
+
   const onMenuKeyDown = (event: KeyboardEvent) => {
     if (event.key === 'Escape' && !event.nativeEvent.isComposing) {
       event.preventDefault()
@@ -182,7 +243,10 @@ export function ViewTabs({
 
   return (
     <nav aria-label="뷰" className="flex flex-col gap-1">
-      <div className="flex items-center gap-1 border-b border-neutral-200 dark:border-neutral-800">
+      <div ref={rowRef} className="relative flex items-center gap-1 border-b border-neutral-200 dark:border-neutral-800">
+        {lineX !== null && (
+          <span aria-hidden data-testid="db-view-drop-line" style={{ left: lineX }} className="pointer-events-none absolute bottom-0 top-0 w-0.5 bg-blue-500" />
+        )}
         {views.map((tab) => (
           <Link
             key={tab.id}
@@ -190,7 +254,17 @@ export function ViewTabs({
             aria-current={tab.id === currentId ? 'page' : undefined}
             data-testid="db-view-tab"
             data-view-type={tab.type}
-            className={`-mb-px border-b-2 px-3 py-1.5 text-sm ${
+            data-view-id={tab.id}
+            data-dragging={dragging === tab.id ? 'true' : undefined}
+            // 링크의 브라우저 끌기(주소 끌어 놓기)는 끈다 — 탭 끌기와 겹친다
+            draggable={false}
+            onPointerDown={(event) => onTabPointerDown(event, tab.id)}
+            onClick={(event) => {
+              if (!swallowClick.current) return
+              swallowClick.current = false
+              event.preventDefault()
+            }}
+            className={`-mb-px border-b-2 px-3 py-1.5 text-sm ${dragging === tab.id ? 'opacity-50 ' : ''}${
               tab.id === currentId
                 ? 'border-neutral-900 font-medium dark:border-neutral-100'
                 : 'border-transparent text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200'
