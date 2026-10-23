@@ -19542,6 +19542,52 @@ async function main() {
         onDoing && status === doing && (await screenOrder(doing)) === 'B', JSON.stringify({ onDoing, status, doingColumn: await screenOrder(doing) }))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('뷰 탭 순서 바꾸기 (10n-18 · F-04-01)')) { try {
+      // 뷰 메뉴의 "왼쪽으로 · 오른쪽으로"(끌기의 대안 — 키보드로 닿는다)로 지금 탭을 옮기면 탭 차례가 바뀌고 다시 열어도 그대로다 · 맨 앞이면
+      // "왼쪽으로" 가 없다. 정본 §3.6 [보강] 뷰 탭 순서 바꾸기. 자기 데이터를 스스로 만든다(API).
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `탭 순서 ${Date.now()}` })).body.database
+      const a = db.defaultViewId
+      const b = (await api('POST', `/databases/${db.id}/views`, { type: 'table', name: '나 탭' })).body.view.id
+      const c = (await api('POST', `/databases/${db.id}/views`, { type: 'table', name: '다 탭' })).body.view.id
+      const name = { [a]: '가', [b]: '나', [c]: '다' }
+      const order = async () => (await evaluate(`[...document.querySelectorAll('[data-testid="db-view-tab"]')].map((t) => new URL(t.href).searchParams.get('v'))`))
+        .map((id) => name[id] ?? '?').join('')
+      const orderIs = (expected) => waitFor(`[...document.querySelectorAll('[data-testid="db-view-tab"]')].map((t) => new URL(t.href).searchParams.get('v')).map((id) => ({ ${JSON.stringify(a)}: '가', ${JSON.stringify(b)}: '나', ${JSON.stringify(c)}: '다' })[id] ?? '?').join('') === ${JSON.stringify(expected)}`, 10000)
+      const MENU = '[data-testid="db-view-menu"]'
+      const openMenu = async () => {
+        // 뷰 메뉴 단추는 서버가 그린 것 — React 가 붙은 뒤 누르고, 패널이 설 때까지 다시 누른다(첫 클릭이 버려지는 부류 — §7)
+        await waitHydrated(MENU)
+        return clickUntil(MENU, `!!document.querySelector('[data-testid="db-view-menu-panel"]')`)
+      }
+      const move = async (testid) => {
+        if (!(await openMenu())) return false
+        return clickSelector(`[data-testid="${testid}"]`)
+      }
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}?v=${c}` })
+      check('전제 — 탭 셋이 만든 차례(가 나 다) · 지금 탭은 다', (await orderIs('가나다')), await order())
+
+      const left = await move('db-view-move-left')
+      check('★ "왼쪽으로" — 지금 탭이 한 칸 앞으로(가 다 나)', left && (await orderIs('가다나')), await order())
+      await move('db-view-move-left')
+      const atFront = await orderIs('다가나')
+      await openMenu()
+      check('★ 한 번 더 — 맨 앞(다 가 나) · 맨 앞에서는 "왼쪽으로" 가 없다',
+        atFront && !(await evaluate(`!!document.querySelector('[data-testid="db-view-move-left"]')`)) && (await evaluate(`!!document.querySelector('[data-testid="db-view-move-right"]')`)),
+        await order())
+      await key('Escape')
+
+      await send('Page.reload', {})
+      check('★ 다시 열어도 그 차례다 — 서버에 남았다', await orderIs('다가나'), await order())
+
+      await move('db-view-move-right')
+      check('"오른쪽으로" — 한 칸 뒤로(가 다 나)', await orderIs('가다나'), await order())
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

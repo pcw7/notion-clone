@@ -193,6 +193,7 @@ export function viewFailureStatus(reason: ViewFailure): number {
     case 'invalid_calculation':
     case 'invalid_layout':
     case 'date_required':
+    case 'invalid_position':
       return 400
   }
 }

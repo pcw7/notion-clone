@@ -173,6 +173,8 @@ export type ViewFailure =
   | 'date_required'
   /** 데이터베이스(구조) · 행 페이지가 잠겼다(7f-2 · F-06-16) — 풀어야 고친다. */
   | 'locked'
+  /** 탭을 옮길 자리(`before`)가 이 데이터베이스의 다른 탭이 아니다(10n-18). */
+  | 'invalid_position'
 
 export type ViewResult<T> =
   | { readonly ok: true; readonly value: T }
@@ -605,6 +607,8 @@ export async function createView(
     const calendar = type === 'calendar' ? await resolveCalendarLayout(tx, dataSourceId, readCalendarLayout(null)) : null
     if (type === 'calendar' && calendar === null) return fail('date_required')
 
+    // 맨 뒤 키 — 동시에 만들거나 옮기는 다른 쓰기와 한 줄로(10n-18 `lockTabs` — 그렇지 않으면 같은 키가 둘 생긴다)
+    await lockTabs(tx, databaseId)
     const last = await tx.queryMaybe<{ order_idx: string }>(
       `SELECT order_idx FROM view
         WHERE database_id = $1 AND owner_kind = 'database_view'
@@ -1125,6 +1129,58 @@ export async function deleteView(ctx: SessionContext, viewId: string): Promise<V
 
     await tx.query(`DELETE FROM view WHERE id = $1`, [viewId])
     return { ok: true, value: null } as const
+  })
+}
+
+/**
+ * 그 데이터베이스의 탭 순서를 바꾸는 쓰기를 한 줄로 세운다 — 데이터베이스 행의 잠금(10n-18). 탭을 옮기기 · 새 탭(맨 뒤 키)이 쓴다. 잠근 뒤
+ * 탭을 읽는 것은 **다음 문장**이어야 한다(그 문장의 스냅샷이 앞선 쓰기를 본다).
+ */
+async function lockTabs(tx: Tx, databaseId: string): Promise<void> {
+  await tx.query(`SELECT id FROM database WHERE id = $1 FOR UPDATE`, [databaseId])
+}
+
+/**
+ * 뷰 탭을 옮긴다 — "이 뷰를 `before` 앞에"(null 이면 맨 뒤) · §7 정리 10n-18 (F-04-01 *"탭 드래그 재정렬"*).
+ *
+ * 정본: §3.6 [보강] 뷰 탭 순서 바꾸기 — 그 데이터베이스의 탭(폼 포함) 사이의 키를 새로 낸다. 권한은 `edit_structure`(잠기면 막는다).
+ * 그 데이터베이스의 뷰 행을 잠근 뒤 이웃을 읽는다 — 두 사람이 같은 자리로 옮겨도 키가 겹치지 않는다. 이미 그 자리면 쓰지 않는다.
+ * 답은 옮긴 뒤의 탭 순서(id 들)다.
+ */
+export async function moveView(
+  ctx: SessionContext,
+  viewId: string,
+  before: string | null,
+): Promise<ViewResult<readonly string[]>> {
+  return withCommandTransaction(async (tx) => {
+    const gate = await openView(tx, ctx, viewId, 'edit_structure')
+    if (isFailure(gate)) return gate
+
+    // 그 데이터베이스의 탭 바꾸기를 한 줄로 세운다 — 잠근 **다음 문장**의 스냅샷이 앞선 옮기기를 모두 본다(READ COMMITTED 는 문장마다 새
+    // 스냅샷). 뷰 행을 `FOR UPDATE` 로 잠그는 것으로는 모자랐다 — 기다린 뒤 값은 새것이 오지만 정렬은 옛 값으로 이미 끝나, 여럿이 같은
+    // 이웃을 보고 같은 키를 냈다(탭 여덟을 한꺼번에 옮긴 검사 · HANDOFF §3.3)
+    await lockTabs(tx, gate.databaseId)
+    // 자기 자신을 `before` 로 주면 아래의 이웃(자기를 뺀 탭)에서 찾지 못해 거부된다
+    const tabs = await tx.query<{ id: string; order_idx: string }>(
+      `SELECT id, order_idx FROM view
+        WHERE database_id = $1 AND owner_kind = 'database_view'
+        ORDER BY order_idx, id`,
+      [gate.databaseId],
+    )
+    const others = tabs.filter((t) => t.id !== viewId)
+    const at = before === null ? others.length : others.findIndex((t) => t.id === before)
+    if (at < 0) return fail('invalid_position')
+
+    // 이미 그 자리 — 옮긴 뒤의 차례가 지금과 같다
+    const order = [...others.slice(0, at).map((t) => t.id), viewId, ...others.slice(at).map((t) => t.id)]
+    if (order.every((id, i) => tabs[i]?.id === id)) return { ok: true, value: order } as const
+
+    const prev = others[at - 1]?.order_idx ?? null
+    const next = others[at]?.order_idx ?? null
+    // 같은 키가 둘이면(옛 자료 · 동시 쓰기의 흔적) 그 사이에 낼 수 없다 — 뒤의 키를 기준으로만 낸다
+    const key = prev !== null && next !== null && prev >= next ? orderKeyBetween(prev, null) : orderKeyBetween(prev, next)
+    await tx.query(`UPDATE view SET order_idx = $2, updated_at = now() WHERE id = $1`, [viewId, key])
+    return { ok: true, value: order } as const
   })
 }
 
