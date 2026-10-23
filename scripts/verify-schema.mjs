@@ -135,6 +135,13 @@ const fail = (m) => { failed = true; console.error(`  x ${m}`) }
 const ok = (m) => console.log(`  o ${m}`)
 
 /** 이 쿼리는 반드시 실패해야 한다. 성공하면 제약이 없는 것이다. */
+/**
+ * 불변식이 거부했다고 볼 오류 코드 — 무결성 위반(23xxx: CHECK · UNIQUE · FK · NOT NULL · 트리거의 23514) · ENUM 의 모르는 값(22P02) ·
+ * 트리거의 RAISE(P0001 — R3). 그 밖(42703 없는 컬럼 · 42601 문법 · 42P01 없는 표 …)은 **프로브의 오타**라 거부로 세지 않는다 — 셌더라면
+ * 불변식이 없어도 통과하는 검사가 된다. 10n-25 의 스키마 반사실이 지연 프로브에서 같은 약점(42704 를 거부로 셈)을 찾았다(HANDOFF §3.3-500).
+ */
+const REJECTION_CODE = /^(23[0-9A-Z]{3}|22P02|P0001)$/
+
 async function mustReject(label, sql, params = []) {
   await client.query('SAVEPOINT probe')
   try {
@@ -143,7 +150,8 @@ async function mustReject(label, sql, params = []) {
     fail(`${label} — 거부되어야 하는데 통과했다`)
   } catch (e) {
     await client.query('ROLLBACK TO SAVEPOINT probe')
-    ok(`${label} — 거부됨 (${e.code})`)
+    if (REJECTION_CODE.test(String(e.code))) ok(`${label} — 거부됨 (${e.code})`)
+    else fail(`${label} — 불변식이 아닌 까닭으로 떨어졌다 (${e.code} ${String(e.message).split('\n')[0]})`)
   }
 }
 
@@ -2521,7 +2529,9 @@ try {
       await immediate()
       fail('★ DSL1: 휴지통 소스에 살아 있는 행을 만든다 — 거부되어야 하는데 통과했다')
     } catch (e) {
-      ok(`★ DSL1: 휴지통 소스에 살아 있는 행을 만든다 — 거부됨 (${e.code})`)
+      // 이 묶음의 제약 이름으로 떨어져야 거부다(10n-26 — 다른 오류도 "거부됨" 으로 셌다)
+      if (checks.includes(e.constraint)) ok(`★ DSL1: 휴지통 소스에 살아 있는 행을 만든다 — 거부됨 (${e.code})`)
+      else fail(`★ DSL1: 휴지통 소스에 살아 있는 행을 만든다 — 다른 까닭으로 떨어졌다 (${e.code} ${String(e.message).split('\n')[0]})`)
     }
     await client.query('ROLLBACK TO SAVEPOINT newrow')
     await deferred()
