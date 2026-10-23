@@ -36,6 +36,11 @@ type ColumnBase = {
    */
   readonly options: readonly SelectOption[]
   /**
+   * status 컬럼의 기본 옵션(10n-21 · `config.default_option_id` — 새 행의 초깃값). 고르개가 "기본" 을 표시한다. 다른 타입에는 없다 —
+   * config 를 통째로 싣지 않는다(화면이 읽는 것은 이것 하나).
+   */
+  readonly defaultOptionId?: string | null
+  /**
    * 이 뷰에서 이 열의 집계 함수(2d-1 · `view_property.calculation`). 없으면 null. 타입에 맞지 않는 저장값(타입을 바꾼 뒤)도 그대로
    * 싣는다 — 계산하는 쪽(`calculate.ts`)이 맞지 않으면 빼고, 화면은 그 열의 고를 수 있는 목록으로 다시 고르게 한다.
    */

@@ -52,6 +52,8 @@ export type OptionEditActions = {
   readonly recolor: (optionId: string, color: OptionColor) => Promise<boolean>
   /** status 옵션의 그룹을 바꾼다(10n-20) — 새 그룹의 맨 뒤에 선다. status 칸에만 준다. */
   readonly regroup?: (optionId: string, group: StatusGroupKind) => Promise<boolean>
+  /** status 의 기본 옵션(새 행의 초깃값)으로 둔다(10n-21). status 칸에만 준다. */
+  readonly makeDefault?: (optionId: string) => Promise<boolean>
   /** 그 옵션을 쓰는 살아 있는 행 수. */
   readonly usage: (optionId: string) => Promise<number | null>
   readonly remove: (optionId: string) => Promise<boolean>
@@ -62,6 +64,7 @@ export function SelectEditor({
   currentId,
   canCreate,
   isStatus = false,
+  defaultOptionId = null,
   align = 'left',
   edit,
   onPick,
@@ -77,6 +80,8 @@ export function SelectEditor({
    * 머리는 옵션이 아니라서 ↑↓ 의 색인에 들지 않는다.
    */
   isStatus?: boolean
+  /** status 의 기본 옵션(10n-21) — 그 줄에 "기본" 을 표시하고 고치기 판의 단추가 눌린 채 선다. */
+  defaultOptionId?: string | null
   /** 팝오버를 칸의 어느 쪽에 맞춰 여는가. List 의 속성 칸은 오른쪽에 붙어 있어 `right` 다. */
   align?: 'left' | 'right'
   /** 옵션 고치기(10n-6) — 있으면 옵션 줄마다 `···`(`edit_structure`). 없으면 고르기만 한다. */
@@ -247,6 +252,19 @@ export function SelectEditor({
               </div>
             </div>
           )}
+          {isStatus && edit.makeDefault !== undefined && (
+            <button
+              type="button"
+              aria-pressed={editing.id === defaultOptionId}
+              data-testid="db-option-default"
+              disabled={busy || editing.id === defaultOptionId}
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => void run(() => edit.makeDefault!(editing.id))}
+              className="rounded px-2 py-1 text-left text-xs hover:bg-neutral-100 disabled:cursor-default disabled:text-neutral-400 disabled:hover:bg-transparent dark:hover:bg-neutral-800"
+            >
+              {editing.id === defaultOptionId ? '새 행의 기본값입니다' : '새 행의 기본값으로'}
+            </button>
+          )}
           {asking === null ? (
             <button
               type="button"
@@ -348,6 +366,11 @@ export function SelectEditor({
           >
             <OptionChip option={option} />
             <span className="flex flex-none items-center gap-1">
+              {isStatus && option.id === defaultOptionId && (
+                <span data-testid="db-option-default-mark" title="새 행의 기본값" className="text-xs text-neutral-400">
+                  기본
+                </span>
+              )}
               {option.id === currentId && <span className="text-xs text-neutral-400">선택됨</span>}
               {edit !== undefined && (
                 <button
