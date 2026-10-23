@@ -1277,7 +1277,8 @@ try {
           `SELECT operator FROM filter_operator WHERE property_type = 'status' ORDER BY order_idx`,
         )
         const got = rows.map((r) => r.operator).join(',')
-        if (got === 'equals,does_not_equal,is_empty,is_not_empty') ok('status 의 필터 연산자 넷이 시딩됐다 (select 와 같다)')
+        // select 와 같은 넷(0023) + 그룹 단위 둘(0110 · 10n-23)
+        if (got === 'equals,does_not_equal,is_empty,is_not_empty,group_is,group_is_not') ok('status 의 필터 연산자 — select 와 같은 넷 + 그룹 단위 둘')
         else fail(`status 연산자: ${got}`)
       }
 
