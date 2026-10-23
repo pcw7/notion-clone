@@ -36,7 +36,7 @@
  */
 
 import type { RowCell } from './row.ts'
-import { optionValue, type GroupableType, type SelectOption } from './property-types.ts'
+import { STATUS_GROUP_LABEL, optionValue, type GroupableType, type SelectOption, type StatusGroupKind } from './property-types.ts'
 
 // ── 좌표 ──────────────────────────────────────────────────────────────
 
@@ -212,12 +212,25 @@ export function prefillCells(propertyType: GroupableType, propertyId: string, ke
   return [{ propertyId, value: optionValue(propertyType, key) }]
 }
 
-/** 열 머리의 이름. 노션의 "No Status" 자리. */
+/**
+ * 열의 `+` 가 채울 키 — 범주 열(10n-27)이면 서버가 정한 옵션(`fillOptionId` — 없으면 null: 그 열에는 만들 수 없다), 그 밖은 열의 키.
+ */
+export function fillKeyOf(group: {
+  readonly key: string
+  readonly statusGroup?: StatusGroupKind | null
+  readonly fillOptionId?: string | null
+}): string | null {
+  if (group.statusGroup !== undefined && group.statusGroup !== null) return group.fillOptionId ?? null
+  return group.key
+}
+
+/** 열 머리의 이름. 노션의 "No Status" 자리. 범주 열(10n-27)은 그룹 이름. */
 export function groupLabel(
   propertyType: GroupableType,
   propertyName: string,
-  group: { readonly key: string; readonly option: SelectOption | null },
+  group: { readonly key: string; readonly option: SelectOption | null; readonly statusGroup?: StatusGroupKind | null },
 ): string {
   if (propertyType === 'checkbox') return group.key === 'true' ? '체크됨' : '체크 안 됨'
+  if (group.statusGroup !== undefined && group.statusGroup !== null) return STATUS_GROUP_LABEL[group.statusGroup]
   return group.option?.name ?? `${propertyName} 없음`
 }

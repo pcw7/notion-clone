@@ -966,6 +966,31 @@ function GroupPanel({
         </p>
       )}
 
+      {current !== null && !dead && groupable.find((c) => c.propertyId === current.property_id)?.type === 'status' && (
+        // status 의 묶는 단위(10n-27) — 옵션별 · 그룹별. 단위를 바꾸면 키 공간이 달라 숨김 목록은 버린다(그룹 기준을 바꿀 때와 같다)
+        <label className="flex items-center gap-2 text-sm">
+          묶는 단위
+          <select
+            aria-label="묶는 단위"
+            data-testid="db-group-status-by"
+            value={current.status_by === 'group' ? 'group' : 'option'}
+            disabled={locked}
+            onChange={(e) =>
+              void onSave({
+                property_id: current.property_id,
+                ...(current.hide_empty ? { hide_empty: true } : {}),
+                ...(current.calculation ? { calculation: current.calculation } : {}),
+                ...(e.target.value === 'group' ? { status_by: 'group' as const } : {}),
+              })
+            }
+            className={FIELD}
+          >
+            <option value="option">옵션별</option>
+            <option value="group">그룹별(할 일 · 진행 중 · 완료)</option>
+          </select>
+        </label>
+      )}
+
       {current !== null && !dead && (
         <>
           <label className="flex items-center gap-2 text-sm">

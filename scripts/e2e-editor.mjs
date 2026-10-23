@@ -20092,6 +20092,114 @@ async function main() {
       await key('Escape')
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('보드 — status 범주 단위 열 (10n-27 · F-03-05 · F-04-11)')) { try {
+      // 그룹 패널의 "묶는 단위" 를 그룹별로 바꾸면 보드의 열이 진행 없음 · 할 일 · 진행 중 · 완료가 되고 카드가 옵션의 그룹으로 모인다 · 카드를
+      // "옮기기" 로 완료 열에 보내면 그 범주의 옵션(완료)을 받는다 · 열의 + 는 그 범주의 옵션으로 만든다 · 옵션이 없는 범주에는 + 가 없다 · 옵션별로
+      // 되돌리면 옵션 열이다. 정본 §3.6 [보강] `view.group_by` — status 의 범주 단위 열. 자기 데이터를 스스로 만든다(API).
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const clickOn = async (selector) => {
+        const p = await evaluate(`(() => {
+          const e = document.querySelector(${JSON.stringify(selector)})
+          if (!e) return null
+          e.scrollIntoView({ block: 'center' })
+          const r = e.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (p) await click(p.x, p.y)
+        return p !== null
+      }
+      const setSelect = (selector, value) => evaluate(`(() => {
+        const s = document.querySelector(${JSON.stringify(selector)})
+        if (!s) return false
+        s.value = ${JSON.stringify(value)}
+        s.dispatchEvent(new Event('change', { bubbles: true }))
+        return true
+      })()`)
+      const db = (await api('POST', '/databases', { name: `범주 보드 ${stamp}` })).body.database
+      const progress = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '진행', type: 'status' })).body.property.id
+      const review = (await api('POST', `/data-sources/${db.dataSourceId}/properties/${progress}/options`, { name: '검토', group: 'in_progress' })).body.option.id
+      const columns = (await api('GET', `/views/${db.defaultViewId}`)).body.view.columns
+      const optionId = (name) => columns.find((c) => c.propertyId === progress).options.find((o) => o.name === name).id
+      const titleProp = columns.find((c) => c.type === 'title').propertyId
+      const mk = async (title, opt) => (await api('POST', `/views/${db.defaultViewId}/rows`, { cells: [
+        { propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } },
+        { propertyId: progress, value: { type: 'status', status: { id: opt } } },
+      ] })).body.row.id
+      const a = await mk('가', optionId('시작 전'))
+      const b = await mk('나', optionId('진행 중'))
+      const c = await mk('다', review)
+      const board = (await api('POST', `/databases/${db.id}/views`, { type: 'board', name: '보드', groupBy: { property_id: progress } })).body.view.id
+      const keys = () => evaluate(`[...document.querySelectorAll('[data-testid="db-board-column"]')].map((col) => col.dataset.groupKey).join(',')`)
+      const cardsIn = (key) => evaluate(`[...document.querySelectorAll('[data-testid="db-board-column"][data-group-key="${key}"] [data-row-id]')].map((e) => e.dataset.rowId)`)
+      const serverCell = async (rowId) =>
+        ((await api('GET', `/views/${db.defaultViewId}/rows`)).body?.rows ?? []).find((r) => r.id === rowId)?.properties?.[progress]?.status?.id ?? null
+      const until = async (fn, ms = 8000) => {
+        for (const end = Date.now() + ms; Date.now() < end; await sleep(150)) if (await fn()) return true
+        return false
+      }
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}?v=${board}` })
+      await waitFor(`document.querySelectorAll('[data-testid="db-board-column"]').length > 0`, 15000)
+      await waitHydrated('[data-testid="db-group-button"]', 20000) // 서버가 그린 단추 — React 가 붙기 전의 클릭은 버려진다(10n-11)
+      await clickOn('[data-testid="db-group-button"]')
+      check('★ status 로 묶인 보드의 그룹 패널에 "묶는 단위" 가 선다 — 처음은 옵션별',
+        await waitFor(`document.querySelector('[data-testid="db-group-status-by"]')?.value === 'option'`, 5000))
+      await setSelect('[data-testid="db-group-status-by"]', 'group')
+      check('★ 그룹별로 바꾸면 열이 없음 · 할 일 · 진행 중 · 완료',
+        await waitFor(`[...document.querySelectorAll('[data-testid="db-board-column"]')].map((col) => col.dataset.groupKey).join(',') === ',todo,in_progress,complete'`, 10000),
+        String(await keys()))
+      check('열 머리는 그룹 이름', await evaluate(`(() => { const t = [...document.querySelectorAll('[data-testid="db-board-column"] header')].map((h) => h.textContent)
+          return t[1]?.includes('할 일') && t[2]?.includes('진행 중') && t[3]?.includes('완료') })()`))
+      check('★ 카드가 옵션의 그룹으로 모인다 — 진행 중 열에 진행 중 · 검토', await until(async () => {
+        const ids = await cardsIn('in_progress')
+        return ids.length === 2 && ids.includes(b) && ids.includes(c)
+      }), JSON.stringify(await cardsIn('in_progress')))
+      // 패널은 단추를 다시 눌러 닫는다 — Esc 로는 닫히지 않고, 열린 패널이 뒤의 클릭을 가로챈다(빈 그룹 숨기기 · 그룹별 보이기 칸)
+      await clickOn('[data-testid="db-group-button"]')
+      await waitFor(`!document.querySelector('[data-testid="db-group-panel"]')`, 5000)
+
+      await waitHydrated(`[data-row-id="${a}"] [data-testid="db-card-move"]`, 10000)
+      await clickOn(`[data-row-id="${a}"] [data-testid="db-card-move"]`)
+      await waitFor(`!!document.querySelector('[data-testid="db-card-move-to"][data-group-key="complete"]')`, 5000)
+      await clickOn('[data-testid="db-card-move-to"][data-group-key="complete"]')
+      check('★ 완료 열로 옮기면 그 범주의 옵션(완료)을 받는다',
+        (await waitFor(`[...document.querySelectorAll('[data-testid="db-board-column"][data-group-key="complete"] [data-row-id]')].some((e) => e.dataset.rowId === ${JSON.stringify(a)})`, 8000))
+          && (await until(async () => (await serverCell(a)) === optionId('완료'))),
+        JSON.stringify({ cards: await cardsIn('complete'), cell: await serverCell(a) }))
+
+      // 가를 완료로 보냈으니 할 일 열은 비었다 — + 로 만든 카드 하나만 선다
+      await clickOn('[data-testid="db-board-column"][data-group-key="todo"] [data-testid="db-board-add"]')
+      check('열의 + 는 그 범주의 옵션으로 만든다 — 할 일 열 · 기본(시작 전)',
+        await waitFor(`document.activeElement?.matches('[data-testid="db-board-title-input"]') && document.querySelectorAll('[data-group-key="todo"] [data-row-id]').length === 1`, 8000))
+      const freshId = await evaluate(`document.querySelector('[data-group-key="todo"] [data-row-id]')?.dataset.rowId ?? null`)
+      const fresh = [a, b, c].includes(freshId) ? null : freshId
+      await key('Escape')
+      check('★ 서버 — 새 카드의 상태는 시작 전', fresh !== null && (await until(async () => (await serverCell(fresh)) === optionId('시작 전'))),
+        String(fresh === null ? '(없음)' : await serverCell(fresh)))
+
+      // 완료 범주의 옵션을 지운다 — 그 열은 남고 + 가 없다
+      await api('DELETE', `/data-sources/${db.dataSourceId}/properties/${progress}/options/${optionId('완료')}`)
+      await send('Page.reload', {})
+      await waitFor(`document.querySelectorAll('[data-testid="db-board-column"]').length === 4`, 15000)
+      check('★ 옵션이 없는 범주 — 열은 남고 + 가 없다',
+        await evaluate(`!!document.querySelector('[data-testid="db-board-column"][data-group-key="complete"]')
+          && !document.querySelector('[data-testid="db-board-column"][data-group-key="complete"] [data-testid="db-board-add"]')
+          && !!document.querySelector('[data-testid="db-board-column"][data-group-key="todo"] [data-testid="db-board-add"]')`))
+
+      await waitHydrated('[data-testid="db-group-button"]', 20000)
+      await clickOn('[data-testid="db-group-button"]')
+      await waitFor(`!!document.querySelector('[data-testid="db-group-status-by"]')`, 5000)
+      // 빈 "없음" 열이 서 있어야 한다 — 빈 그룹 숨기기가 꺼져 있다(위의 패널 클릭이 그것을 건드리지 않았다)
+      await setSelect('[data-testid="db-group-status-by"]', 'option')
+      check('옵션별로 되돌리면 옵션 열', await waitFor(`[...document.querySelectorAll('[data-testid="db-board-column"]')].map((col) => col.dataset.groupKey).join(',') === ${JSON.stringify(['', optionId('시작 전'), optionId('진행 중'), review].join(','))}`, 10000),
+        String(await keys()))
+      await clickOn('[data-testid="db-group-button"]')
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

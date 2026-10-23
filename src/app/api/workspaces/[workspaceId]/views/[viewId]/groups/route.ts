@@ -70,6 +70,7 @@ export async function GET(request: Request, ctx: Ctx): Promise<Response> {
     propertyType: value.propertyType,
     manualOrder: value.manualOrder,
     calculation: value.calculation,
+    statusBy: value.statusBy,
     groups: value.groups.map((g) => ({ ...g, rows: g.rows.map(rowJson) })),
   })
 }
