@@ -34,10 +34,10 @@
  * 프로퍼티 삭제 → 해당 sort 엔트리 제거."*
  */
 
-import { MAX_SORT_KEYS, isGroup, isMeNode, type FilterLeaf, type FilterNode, type FilterableType, type SortKey } from './filter.ts'
+import { MAX_SORT_KEYS, isGroup, isMeNode, isStatusGroupOperator, type FilterLeaf, type FilterNode, type FilterableType, type SortKey } from './filter.ts'
 import { LEFT_USER, formatDate } from './cell-format.ts'
 import type { OperatorCatalogEntry } from './operator-catalog.ts'
-import type { SelectOption } from './property-types.ts'
+import { STATUS_GROUP_LABEL, isStatusGroupKind, type SelectOption } from './property-types.ts'
 
 export type FilterRule = FilterLeaf
 
@@ -147,6 +147,10 @@ export function withOperator(
 ): FilterRule {
   const entry = entryOf(catalog, type, operator)
   if (entry?.arity === 0) return { property_id: rule.property_id, operator }
+  // status 의 옵션 ↔ 그룹(10n-23) — 값의 종류가 바뀌면 버린다(옵션 id 가 그룹 자리에 남으면 저장이 거부된다)
+  if (type === 'status' && isStatusGroupOperator(rule.operator) !== isStatusGroupOperator(operator)) {
+    return { property_id: rule.property_id, operator }
+  }
   return { ...rule, operator }
 }
 
@@ -168,10 +172,12 @@ export function describeRule(
   const op = entry?.label ?? rule.operator
   if (entry?.arity === 0) return `${column.name} · ${op}`
   if (rule.value === undefined || rule.value === null || rule.value === '') return `${column.name} · ${op} · …`
-  return `${column.name} · ${op} · ${valueLabel(rule.value, column, names)}`
+  return `${column.name} · ${op} · ${valueLabel(rule.value, rule.operator, column, names)}`
 }
 
-function valueLabel(value: unknown, column: RuleColumn, names: PeopleNameMap): string {
+function valueLabel(value: unknown, operator: string, column: RuleColumn, names: PeopleNameMap): string {
+  // status 의 그룹 단위(10n-23) — 값은 그룹이다
+  if (column.type === 'status' && isStatusGroupOperator(operator)) return isStatusGroupKind(value) ? STATUS_GROUP_LABEL[value] : String(value)
   switch (column.type) {
     case 'select':
     case 'status':

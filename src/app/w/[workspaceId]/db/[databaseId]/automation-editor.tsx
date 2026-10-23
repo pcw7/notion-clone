@@ -191,6 +191,7 @@ export function AutomationEditor({
                     <RuleValue
                       key={trigger.propertyId}
                       column={column}
+                      operator={trigger.condition.operator}
                       value={trigger.condition.value}
                       disabled={false}
                       onChange={(value) => {

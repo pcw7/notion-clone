@@ -19913,6 +19913,102 @@ async function main() {
       await key('Escape')
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('status 의 그룹 단위 필터 (10n-23 · F-03-05)')) { try {
+      // 필터 패널 — status 속성의 연산자에 "그룹이 같음 · 그룹이 같지 않음"(카탈로그) · 고르면 값 칸이 그룹 셋 · 진행 중 그룹이면 그 그룹의 옵션 둘의
+      // 행이 남는다 · 칩은 그룹 이름 · "같음" 으로 바꾸면 값이 비고(옵션 고르개) 필터가 풀린다 · 같지 않음 · 완료 · 옵션을 완료로 옮기면 필터가
+      // 따라온다(펴서 저장하지 않는다). 정본 §3.5 status 절 [보강 10n-23]. 자기 데이터를 스스로 만든다(API).
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `그룹 필터 ${stamp}` })).body.database
+      const view = db.defaultViewId
+      const progress = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '진행', type: 'status' })).body.property.id
+      const review = (await api('POST', `/data-sources/${db.dataSourceId}/properties/${progress}/options`, { name: '검토', group: 'in_progress' })).body.option.id
+      const columns = (await api('GET', `/views/${view}`)).body.view.columns
+      const titleProp = columns.find((c) => c.type === 'title').propertyId
+      const optionId = (name) => columns.find((c) => c.propertyId === progress).options.find((o) => o.name === name).id
+      const mk = async (title, opt) => (await api('POST', `/views/${view}/rows`, { cells: [
+        { propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } },
+        { propertyId: progress, value: { type: 'status', status: { id: opt } } },
+      ] })).body.row.id
+      const rowsByName = { 가: await mk('가', optionId('시작 전')), 나: await mk('나', optionId('진행 중')), 다: await mk('다', review), 라: await mk('라', optionId('완료')) }
+      const nameOf = new Map(Object.entries(rowsByName).map(([k, v]) => [v, k]))
+      const shown = async () => (await evaluate(`[...document.querySelectorAll('[data-testid="db-table"] tbody tr[data-row-id]')].map((tr) => tr.dataset.rowId)`))
+        .map((id) => nameOf.get(id) ?? '?').sort().join('')
+      const rowsAre = (names) => waitFor(`(() => { const ids = [...document.querySelectorAll('[data-testid="db-table"] tbody tr[data-row-id]')].map((tr) => tr.dataset.rowId)
+          const want = ${JSON.stringify(names.map((n) => rowsByName[n]))}
+          return ids.length === want.length && want.every((id) => ids.includes(id)) })()`, 10000)
+      const clickOn = async (selector) => {
+        const p = await evaluate(`(() => {
+          const e = document.querySelector(${JSON.stringify(selector)})
+          if (!e) return null
+          e.scrollIntoView({ block: 'center' })
+          const r = e.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (p) await click(p.x, p.y)
+        return p !== null
+      }
+      const setSelect = (selector, value) => evaluate(`(() => {
+        const s = document.querySelector(${JSON.stringify(selector)})
+        if (!s) return false
+        s.value = ${JSON.stringify(value)}
+        s.dispatchEvent(new Event('change', { bubbles: true }))
+        return true
+      })()`)
+      const RULE = '[data-testid="db-filter-rule"]'
+      const OP = `${RULE} select[aria-label="필터 조건"]`
+      const VALUE = `${RULE} [data-testid="db-filter-value"]`
+      const valueOptions = () => evaluate(`[...document.querySelectorAll('${VALUE} option')].map((o) => o.value + '=' + o.textContent).join(',')`)
+      const chips = () => evaluate(`[...document.querySelectorAll('[data-testid="db-filter-chip"]')].map((e) => e.textContent).join(' | ')`)
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr[data-row-id]').length === 4`, 15000)
+      await waitHydrated('[data-testid="db-filter-button"]', 20000) // 서버가 그린 단추 — React 가 붙기 전의 클릭은 버려진다(10n-11)
+      await clickOn('[data-testid="db-filter-button"]')
+      await waitFor(`!!document.querySelector('[data-testid="db-filter-panel"]')`, 3000)
+      await clickOn('[data-testid="db-filter-add"]')
+      await waitFor(`!!document.querySelector('${RULE}')`, 3000)
+      await setSelect(`${RULE} select[aria-label="필터 속성"]`, progress)
+      check('★ status 의 연산자에 그룹 단위 둘이 선다 — 카탈로그의 라벨',
+        await waitFor(`(() => { const l = [...document.querySelectorAll('${OP} option')].map((o) => o.textContent)
+          return l.includes('그룹이 같음') && l.includes('그룹이 같지 않음') && l.includes('같음') })()`, 5000),
+        String(await evaluate(`[...document.querySelectorAll('${OP} option')].map((o) => o.textContent).join(',')`)))
+
+      await setSelect(OP, 'group_is')
+      check('★ 그룹 연산자면 값 칸이 그룹 셋이다(옵션이 아니다)',
+        await waitFor(`[...document.querySelectorAll('${VALUE} option')].map((o) => o.value).join(',') === ',todo,in_progress,complete'`, 3000),
+        String(await valueOptions()))
+      await setSelect(VALUE, 'in_progress')
+      check('★ 진행 중 그룹 — 그 그룹의 옵션 둘(진행 중 · 검토)의 행이 남는다', await rowsAre(['나', '다']), await shown())
+      check('칩은 그룹 이름으로 말한다', await waitFor(`[...document.querySelectorAll('[data-testid="db-filter-chip"]')].some((e) => e.textContent === '진행 · 그룹이 같음 · 진행 중')`, 5000),
+        String(await chips()))
+
+      await setSelect(OP, 'equals')
+      check('★ "같음" 으로 바꾸면 값이 빈다 — 값 칸은 옵션 고르개 · 덜 찬 규칙이라 필터가 풀린다',
+        (await waitFor(`(() => { const s = document.querySelector('${VALUE}'); return !!s && s.value === '' && [...s.options].some((o) => o.textContent === '검토') })()`, 3000))
+          && (await rowsAre(['가', '나', '다', '라'])),
+        `${await valueOptions()} · ${await shown()}`)
+
+      await setSelect(OP, 'group_is_not')
+      await waitFor(`[...document.querySelectorAll('${VALUE} option')].map((o) => o.value).join(',') === ',todo,in_progress,complete'`, 3000)
+      await setSelect(VALUE, 'complete')
+      check('그룹이 같지 않음 · 완료 — 완료 그룹의 행만 빠진다', await rowsAre(['가', '나', '다']), await shown())
+
+      // 옵션을 완료로 옮긴다 — 필터는 그룹으로 저장되어 따라온다
+      await api('PATCH', `/data-sources/${db.dataSourceId}/properties/${progress}/options/${review}`, { group: 'complete' })
+      await send('Page.reload', {})
+      await waitFor(`!!document.querySelector('[data-testid="db-table"]')`, 15000)
+      check('★ 옵션을 완료 그룹으로 옮기면 필터가 따라온다 — 그 옵션의 행도 빠진다', await rowsAre(['가', '나']), await shown())
+      const saved = (await api('GET', `/views/${view}`)).body?.view?.filter
+      const leaf = saved?.children?.[0] ?? saved
+      // jsonb 는 키 순서를 바꾼다 — 키별로 견준다
+      check('저장된 필터는 그룹이다 — 옵션 id 로 펴지 않았다',
+        leaf?.property_id === progress && leaf?.operator === 'group_is_not' && leaf?.value === 'complete', JSON.stringify(saved))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).
