@@ -20203,6 +20203,47 @@ async function main() {
       await clickOn('[data-testid="db-group-button"]')
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('도구줄 팝오버의 포커스 (10n-28 · F-12-13)')) { try {
+      // 도구줄의 패널(필터 · 정렬 …)을 열면 포커스가 패널 안의 첫 조작 요소로 간다 · Esc 로 닫으면 연 단추로 돌아온다 — 마우스로 열 때 · 키보드
+      // (단추에서 Enter)로 열 때 모두. 전에는 포커스가 단추에 남아 Esc 가 패널에 닿지 않았다(10n-27 에서 찾았다). ARIA 대화상자 · WCAG 2.4.3.
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `팝오버 포커스 ${Date.now()}` })).body.database
+      await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '단계', type: 'select' })
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      await waitFor(`!!document.querySelector('[data-testid="db-table"]')`, 15000)
+      await waitHydrated('[data-testid="db-filter-button"]', 20000) // 서버가 그린 단추 — React 가 붙기 전의 클릭은 버려진다(10n-11)
+      const activeIn = (panel) => `!!document.activeElement?.closest('[data-testid="${panel}"]')`
+      const activeIs = (button) => `document.activeElement?.matches('[data-testid="${button}"]') === true`
+      // 단추를 누르는 Enter — `key()` 는 rawKeyDown 뿐이라 단추가 눌리지 않는다. 문자(\r)를 실어 실제 키보드처럼 보낸다
+      const pressEnter = async () => {
+        const base = { key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 }
+        await send('Input.dispatchKeyEvent', { type: 'keyDown', ...base, text: '\r', unmodifiedText: '\r' })
+        await send('Input.dispatchKeyEvent', { type: 'keyUp', ...base })
+      }
+
+      await clickSelector('[data-testid="db-filter-button"]')
+      check('★ 마우스로 열면 포커스가 패널 안으로 간다', await waitFor(`!!document.querySelector('[data-testid="db-filter-panel"]') && ${activeIn('db-filter-panel')}`, 5000),
+        String(await evaluate(`document.activeElement?.dataset?.testid ?? document.activeElement?.tagName ?? null`)))
+      await key('Escape')
+      check('★ Esc 로 닫으면 연 단추로 포커스가 돌아온다', await waitFor(`!document.querySelector('[data-testid="db-filter-panel"]') && ${activeIs('db-filter-button')}`, 5000),
+        String(await evaluate(`document.activeElement?.dataset?.testid ?? document.activeElement?.tagName ?? null`)))
+
+      await evaluate(`document.querySelector('[data-testid="db-sort-button"]')?.focus()`)
+      await pressEnter()
+      check('★ 키보드(단추에서 Enter)로 열어도 포커스가 패널 안', await waitFor(`!!document.querySelector('[data-testid="db-sort-panel"]') && ${activeIn('db-sort-panel')}`, 5000),
+        String(await evaluate(`document.activeElement?.dataset?.testid ?? document.activeElement?.tagName ?? null`)))
+      await key('Escape')
+      check('Esc — 정렬 단추로 돌아온다', await waitFor(`!document.querySelector('[data-testid="db-sort-panel"]') && ${activeIs('db-sort-button')}`, 5000),
+        String(await evaluate(`document.activeElement?.dataset?.testid ?? document.activeElement?.tagName ?? null`)))
+      await pressEnter()
+      check('돌아온 단추에서 Enter 로 다시 연다', await waitFor(`!!document.querySelector('[data-testid="db-sort-panel"]')`, 5000))
+      await clickSelector('[data-testid="db-sort-button"]')
+      check('단추를 다시 누르면 닫힌다(전과 같다)', await waitFor(`!document.querySelector('[data-testid="db-sort-panel"]')`, 5000))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).
