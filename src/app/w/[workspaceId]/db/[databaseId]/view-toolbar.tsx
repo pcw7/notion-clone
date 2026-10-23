@@ -29,7 +29,7 @@
  * 렌더로 초안을 덮어쓰면 아직 값을 넣지 않은(그래서 저장되지 않은) 규칙이 사라진다.
  */
 
-import { useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useRouter } from 'next/navigation'
 
 import { parseDraft } from '@/lib/database/cell-format'
@@ -182,6 +182,14 @@ export function ViewToolbar({
     setError(null)
     setPanel((current) => (current === next ? null : next))
   }
+  // 패널을 닫으면 연 단추로 포커스를 돌려준다(10n-28 · ARIA 대화상자 · WCAG 2.4.3) — 안 돌려주면 Esc 뒤 포커스가 문서 처음으로 간다.
+  // 단추는 이 도구줄 안에서 `data-panel` 로 찾는다(닫기는 이벤트 처리 안에서만 불린다)
+  const rootRef = useRef<HTMLDivElement>(null)
+  const close = () => {
+    const was = panel
+    setPanel(null)
+    if (was !== null) rootRef.current?.querySelector<HTMLButtonElement>(`[data-panel="${was}"]`)?.focus()
+  }
 
   const filterChips =
     filter === null
@@ -193,12 +201,12 @@ export function ViewToolbar({
         : ['고급 필터 (여기서 고칠 수 없음)']
 
   return (
-    <div className="flex flex-col gap-2" data-testid="db-toolbar">
+    <div ref={rootRef} className="flex flex-col gap-2" data-testid="db-toolbar">
       <div className="relative flex flex-wrap items-center gap-1 text-sm">
-        <ToolbarButton label="필터" count={filterChips.length} active={panel === 'filter'} testId="db-filter-button" onClick={() => toggle('filter')} />
-        <ToolbarButton label="정렬" count={sorts.length} active={panel === 'sort'} testId="db-sort-button" onClick={() => toggle('sort')} />
+        <ToolbarButton label="필터" count={filterChips.length} active={panel === 'filter'} testId="db-filter-button" panel="filter" onClick={() => toggle('filter')} />
+        <ToolbarButton label="정렬" count={sorts.length} active={panel === 'sort'} testId="db-sort-button" panel="sort" onClick={() => toggle('sort')} />
         {canEdit && (
-          <ToolbarButton label="속성" count={hidden} active={panel === 'properties'} testId="db-properties-button" onClick={() => toggle('properties')} />
+          <ToolbarButton label="속성" count={hidden} active={panel === 'properties'} testId="db-properties-button" panel="properties" onClick={() => toggle('properties')} />
         )}
         {board !== undefined && (
           <ToolbarButton
@@ -206,17 +214,18 @@ export function ViewToolbar({
             count={board.groups.filter((g) => g.hidden).length}
             active={panel === 'group'}
             testId="db-group-button"
+            panel="group"
             onClick={() => toggle('group')}
           />
         )}
         {gallery !== undefined && (
-          <ToolbarButton label="카드" count={0} active={panel === 'gallery'} testId="db-gallery-layout-button" onClick={() => toggle('gallery')} />
+          <ToolbarButton label="카드" count={0} active={panel === 'gallery'} testId="db-gallery-layout-button" panel="gallery" onClick={() => toggle('gallery')} />
         )}
         {calendar !== undefined && (
-          <ToolbarButton label="달력" count={0} active={panel === 'calendar'} testId="db-cal-layout-button" onClick={() => toggle('calendar')} />
+          <ToolbarButton label="달력" count={0} active={panel === 'calendar'} testId="db-cal-layout-button" panel="calendar" onClick={() => toggle('calendar')} />
         )}
         {canEdit && openPagesIn !== undefined && (
-          <ToolbarButton label="열기" count={0} active={panel === 'open'} testId="db-open-mode-button" onClick={() => toggle('open')} />
+          <ToolbarButton label="열기" count={0} active={panel === 'open'} testId="db-open-mode-button" panel="open" onClick={() => toggle('open')} />
         )}
         {busy && <span className="text-xs text-neutral-400">저장하는 중…</span>}
         {personal && (
@@ -263,7 +272,7 @@ export function ViewToolbar({
             onSave={(next) =>
               run(() => (canEdit ? updateView(workspaceId, viewId, { filter: next }) : setPersonalView(workspaceId, viewId, { filter: next })))
             }
-            onClose={() => setPanel(null)}
+            onClose={close}
           />
         )}
         {panel === 'sort' && (
@@ -274,7 +283,7 @@ export function ViewToolbar({
             onSave={(next) =>
               run(() => (canEdit ? updateView(workspaceId, viewId, { sorts: next }) : setPersonalView(workspaceId, viewId, { sorts: next })))
             }
-            onClose={() => setPanel(null)}
+            onClose={close}
           />
         )}
         {panel === 'properties' && canEdit && (
@@ -284,7 +293,7 @@ export function ViewToolbar({
             onToggle={(propertyId, visible) => run(() => setColumnVisible(workspaceId, viewId, propertyId, visible))}
             onSubItems={(on) => run(() => (on ? enableSubItems : disableSubItems)(workspaceId, dataSourceId))}
             onDependencies={(on) => run(() => setDependencies(workspaceId, dataSourceId, on))}
-            onClose={() => setPanel(null)}
+            onClose={close}
           />
         )}
         {panel === 'open' && openPagesIn !== undefined && (
@@ -292,7 +301,7 @@ export function ViewToolbar({
             value={openPagesIn}
             locked={busy}
             onSave={(mode) => run(() => updateView(workspaceId, viewId, { openPagesIn: mode }))}
-            onClose={() => setPanel(null)}
+            onClose={close}
           />
         )}
         {panel === 'gallery' && gallery !== undefined && (
@@ -300,7 +309,7 @@ export function ViewToolbar({
             layout={gallery}
             locked={!canEdit || busy}
             onSave={(patch) => run(() => updateView(workspaceId, viewId, { gallery: patch }))}
-            onClose={() => setPanel(null)}
+            onClose={close}
           />
         )}
         {panel === 'calendar' && calendar !== undefined && (
@@ -309,7 +318,7 @@ export function ViewToolbar({
             layout={calendar}
             locked={!canEdit || busy}
             onSave={(patch) => run(() => updateView(workspaceId, viewId, { calendar: patch }))}
-            onClose={() => setPanel(null)}
+            onClose={close}
           />
         )}
         {panel === 'group' && board !== undefined && (
@@ -319,7 +328,7 @@ export function ViewToolbar({
             canEdit={canEdit}
             busy={busy}
             onSave={(next) => run(() => updateView(workspaceId, viewId, { groupBy: next }))}
-            onClose={() => setPanel(null)}
+            onClose={close}
           />
         )}
       </div>
@@ -353,16 +362,20 @@ function ToolbarButton({
   count,
   active,
   testId,
+  panel,
   onClick,
 }: {
   label: string
   count: number
   active: boolean
   testId: string
+  /** 이 단추가 여는 패널 — 패널이 닫히면 포커스를 돌려받는다(10n-28 · `data-panel`). */
+  panel: Panel
   onClick: () => void
 }) {
   return (
     <button
+      data-panel={panel}
       type="button"
       data-testid={testId}
       aria-expanded={active}
@@ -388,8 +401,19 @@ function Popover({
   onClose: () => void
   children: ReactNode
 }) {
+  const ref = useRef<HTMLDivElement>(null)
+  // 열리면 안의 첫 조작 요소로 포커스를 옮긴다(10n-28 · ARIA 대화상자 · WCAG 2.4.3) — 단추로 연 직후의 Esc 가 닿는다(전에는 포커스가 단추에
+  // 남아 Esc 가 이 요소의 onKeyDown 에 닿지 않았다). 조작할 것이 없으면(잠긴 패널) 대화상자 자체로. 한 번만 — 다시 그려도 포커스를 빼앗지 않는다
+  useEffect(() => {
+    const root = ref.current
+    if (root === null) return
+    const first = root.querySelector<HTMLElement>('select:not([disabled]), input:not([disabled]), textarea:not([disabled]), button:not([disabled])')
+    ;(first ?? root).focus()
+  }, [])
   return (
     <div
+      ref={ref}
+      tabIndex={-1}
       role="dialog"
       aria-label={label}
       data-testid={testId}
