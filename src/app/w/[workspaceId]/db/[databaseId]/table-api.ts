@@ -18,7 +18,7 @@ import type { RowJson } from '@/lib/database/http'
 import type { PageIcon } from '@/lib/block/page-icon'
 import type { DatabaseListItem } from '@/lib/database/database'
 import type { PropertySummary, SchemaSnapshot } from '@/lib/database/property'
-import type { CellValue, MvpPropertyType, OptionColor, SelectOption } from '@/lib/database/property-types'
+import type { CellValue, MvpPropertyType, OptionColor, SelectOption, StatusGroupKind } from '@/lib/database/property-types'
 import type { RowCell } from '@/lib/database/row'
 import type { RollupFunction, RollupPage } from '@/lib/database/rollup-functions'
 import type { MvpViewType, ViewSummary } from '@/lib/database/view'
@@ -877,13 +877,13 @@ export function addOption(
 const optionPath = (workspaceId: string, dataSourceId: string, propertyId: string, optionId: string) =>
   `${base(workspaceId)}/data-sources/${dataSourceId}/properties/${propertyId}/options/${optionId}`
 
-/** 옵션의 이름 · 색을 바꾼다(10n-6 · 정본 [보강] 옵션 고치기 · 지우기 ①). 겹치는 이름은 거부된다. */
+/** 옵션의 이름 · 색 · (status 면) 그룹을 바꾼다(10n-6 · 10n-20 · 정본 [보강] 옵션 고치기 · 지우기 ① · ⑧). 겹치는 이름은 거부된다. */
 export function updateOption(
   workspaceId: string,
   dataSourceId: string,
   propertyId: string,
   optionId: string,
-  change: { readonly name?: string; readonly color?: OptionColor },
+  change: { readonly name?: string; readonly color?: OptionColor; readonly group?: StatusGroupKind },
 ): Promise<ApiResult<SelectOption>> {
   return call(
     optionPath(workspaceId, dataSourceId, propertyId, optionId),

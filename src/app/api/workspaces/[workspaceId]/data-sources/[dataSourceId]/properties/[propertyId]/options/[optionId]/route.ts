@@ -34,10 +34,11 @@ export async function PATCH(request: Request, ctx: Ctx): Promise<Response> {
 
   const parsed = await readJsonBody(request)
   if (!parsed.ok) return parsed.response
-  const body = (parsed.body ?? {}) as { name?: unknown; color?: unknown }
+  const body = (parsed.body ?? {}) as { name?: unknown; color?: unknown; group?: unknown }
 
   // 값 검사는 라이브러리가 한다(`invalid_name` · `invalid_color`).
-  const updated = await updateSelectOption(session.ctx, dataSourceId, propertyId, optionId, { name: body.name, color: body.color })
+  // 그룹(10n-20)은 status 옵션만 — 틀린 값 · select 는 라이브러리가 `invalid_group` 으로 거부한다
+  const updated = await updateSelectOption(session.ctx, dataSourceId, propertyId, optionId, { name: body.name, color: body.color, group: body.group })
   if (!updated.ok) return failureResponse(propertyFailureStatus(updated.reason), updated)
   return Response.json({ ok: true, option: updated.value.option, schemaVersion: updated.value.schemaVersion })
 }
