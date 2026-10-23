@@ -91,6 +91,7 @@ import {
   type OptionColor,
   type OptionType,
   type SelectOption,
+  type StatusGroupKind,
 } from '@/lib/database/property-types'
 import { cellText, defaultColumnWidth, draftOf, parseDraft, readCell, sameValue } from '@/lib/database/cell-format'
 import { handleGridKey, type CellPos, type GridMode, type KeyResult } from '@/lib/database/grid-nav'
@@ -604,13 +605,19 @@ export function DatabaseTable(props: {
    * 트랜잭션에서 셀을 비웠고, 다른 화면은 표 변경 신호로 다시 읽는다.
    */
   const optionEditFor = (column: CellColumn): OptionEditActions => {
+    // 그룹이 바뀌었으면 빼고 새 그룹의 끝에 다시 끼운다(서버가 그 자리로 옮겼다 — 10n-20 · `insertOption`)
     const replace = (option: SelectOption) =>
       setColumns((current) =>
-        current.map((c) =>
-          c.propertyId === column.propertyId ? { ...c, options: c.options.map((o) => (o.id === option.id ? option : o)) } : c,
-        ),
+        current.map((c) => {
+          if (c.propertyId !== column.propertyId) return c
+          const before = c.options.find((o) => o.id === option.id)
+          if (before !== undefined && before.group !== option.group) {
+            return { ...c, options: insertOption(c.options.filter((o) => o.id !== option.id), option) }
+          }
+          return { ...c, options: c.options.map((o) => (o.id === option.id ? option : o)) }
+        }),
       )
-    const change = async (optionId: string, patch: { name?: string; color?: OptionColor }) => {
+    const change = async (optionId: string, patch: { name?: string; color?: OptionColor; group?: StatusGroupKind }) => {
       const result = await api.updateOption(workspaceId, dataSourceId, column.propertyId, optionId, patch)
       if (!result.ok) {
         setError(result.message)
@@ -623,6 +630,8 @@ export function DatabaseTable(props: {
     return {
       rename: (optionId, name) => change(optionId, { name }),
       recolor: (optionId, color) => change(optionId, { color }),
+      // status 칸에만 — 고르개가 status 일 때만 그룹 단추를 그린다
+      ...(column.type === 'status' ? { regroup: (optionId: string, group: StatusGroupKind) => change(optionId, { group }) } : {}),
       usage: async (optionId) => {
         const result = await api.optionUsage(workspaceId, dataSourceId, column.propertyId, optionId)
         if (!result.ok) {

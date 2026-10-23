@@ -896,7 +896,12 @@ export async function addSelectOption(
 
 // ── 옵션 고치기 · 지우기 (10n-6 · 정본 §3.5 [보강] 옵션 고치기 · 지우기) ─────────────
 
-export type UpdateSelectOptionInput = { readonly name?: unknown; readonly color?: unknown }
+export type UpdateSelectOptionInput = {
+  readonly name?: unknown
+  readonly color?: unknown
+  /** status 옵션의 그룹(10n-20 · 정본 [보강] 옵션 고치기 · 지우기 ⑧) — 옮긴 옵션은 새 그룹의 맨 뒤에 선다. select 에 주면 `invalid_group`. */
+  readonly group?: unknown
+}
 
 export type UpdatedSelectOption = { readonly option: SelectOption; readonly schemaVersion: string }
 
@@ -947,10 +952,11 @@ export async function updateSelectOption(
   optionId: string,
   input: UpdateSelectOptionInput,
 ): Promise<PropertyResult<UpdatedSelectOption>> {
-  if (input.name === undefined && input.color === undefined) return fail('invalid_name')
+  if (input.name === undefined && input.color === undefined && input.group === undefined) return fail('invalid_name')
   const name = input.name === undefined ? undefined : normalizeName(input.name)
   if (name === null) return fail('invalid_name')
   if (input.color !== undefined && !isOptionColor(input.color)) return fail('invalid_color')
+  if (input.group !== undefined && !isStatusGroupKind(input.group)) return fail('invalid_group')
   if (!isUuid(optionId)) return fail('not_found')
 
   return withCommandTransaction(async (tx) => {
@@ -959,10 +965,14 @@ export async function updateSelectOption(
     const found = await optionOf(tx, dataSourceId, propertyId, optionId)
     if (isSchemaFailure(found)) return found
     const current = found.option
+    // 그룹은 status 옵션에만 있다(SG3) — select 옵션에 주면 거부한다
+    if (input.group !== undefined && found.type !== 'status') return fail('invalid_group')
 
     const nextName = name ?? current.name
     const nextColor = (input.color as OptionColor | undefined) ?? current.color
-    if (nextName === current.name && nextColor === current.color) {
+    const nextGroup = (input.group as StatusGroupKind | undefined) ?? (current.group_kind as StatusGroupKind | null)
+    const regroup = nextGroup !== current.group_kind
+    if (nextName === current.name && nextColor === current.color && !regroup) {
       return { ok: true, value: { option: toSelectOption(current), schemaVersion: ds.schema_version } } as const
     }
     if (nextName.toLowerCase() !== current.name.toLowerCase()) {
@@ -972,13 +982,26 @@ export async function updateSelectOption(
       )
       if (taken !== null) return fail('duplicate_name')
     }
+    // 그룹을 바꾸면 새 그룹의 맨 뒤 — 순서 키를 그 속성의 맨 뒤로(목록 · 보드의 열은 그룹 → 순서 키로 읽는다 · 화면의 `insertOption` 과 같은 자리)
+    const placed = regroup
+      ? await (async () => {
+          const group = await tx.queryOne<{ id: string }>(
+            `SELECT id FROM status_group WHERE property_id = $1 AND kind = $2::status_group_kind`,
+            [propertyId, nextGroup],
+          )
+          const last = await tx.queryOne<{ last: string | null }>(`SELECT max(order_idx) AS last FROM select_option WHERE property_id = $1`, [propertyId])
+          return { groupId: group.id, orderIdx: orderKeyBetween(last.last, null) }
+        })()
+      : null
     const updated = await tx.queryOne<{ id: string; name: string; color: string }>(
-      `UPDATE select_option SET name = $2, color = $3::option_color WHERE id = $1 RETURNING id, name, color::text AS color`,
-      [optionId, nextName, nextColor],
+      `UPDATE select_option SET name = $2, color = $3::option_color,
+                               group_id = coalesce($4::uuid, group_id), order_idx = coalesce($5, order_idx)
+        WHERE id = $1 RETURNING id, name, color::text AS color`,
+      [optionId, nextName, nextColor, placed?.groupId ?? null, placed?.orderIdx ?? null],
     )
     return {
       ok: true,
-      value: { option: toSelectOption({ ...updated, group_kind: current.group_kind }), schemaVersion: await bumpSchema(tx, dataSourceId) },
+      value: { option: toSelectOption({ ...updated, group_kind: nextGroup }), schemaVersion: await bumpSchema(tx, dataSourceId) },
     } as const
   })
 }

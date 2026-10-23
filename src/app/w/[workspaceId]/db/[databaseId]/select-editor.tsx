@@ -42,7 +42,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 
 import { colorLabel } from '@/lib/editor/color-names'
-import { OPTION_COLORS, STATUS_GROUP_LABEL, type OptionColor, type SelectOption } from '@/lib/database/property-types'
+import { OPTION_COLORS, STATUS_GROUP_KINDS, STATUS_GROUP_LABEL, type OptionColor, type SelectOption, type StatusGroupKind } from '@/lib/database/property-types'
 import { AnchoredLayer } from '../../anchored-layer'
 import { OptionChip } from './cell-view'
 
@@ -50,6 +50,8 @@ import { OptionChip } from './cell-view'
 export type OptionEditActions = {
   readonly rename: (optionId: string, name: string) => Promise<boolean>
   readonly recolor: (optionId: string, color: OptionColor) => Promise<boolean>
+  /** status 옵션의 그룹을 바꾼다(10n-20) — 새 그룹의 맨 뒤에 선다. status 칸에만 준다. */
+  readonly regroup?: (optionId: string, group: StatusGroupKind) => Promise<boolean>
   /** 그 옵션을 쓰는 살아 있는 행 수. */
   readonly usage: (optionId: string) => Promise<number | null>
   readonly remove: (optionId: string) => Promise<boolean>
@@ -223,6 +225,28 @@ export function SelectEditor({
               </button>
             ))}
           </div>
+          {isStatus && edit.regroup !== undefined && editing.group !== undefined && (
+            <div role="group" aria-label="그룹" className="flex flex-col gap-1">
+              <span className="text-xs text-neutral-500">그룹</span>
+              <div className="flex gap-1">
+                {STATUS_GROUP_KINDS.map((kind) => (
+                  <button
+                    key={kind}
+                    type="button"
+                    aria-pressed={editing.group === kind}
+                    data-testid="db-option-group"
+                    data-group={kind}
+                    disabled={busy || editing.group === kind}
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => void run(() => edit.regroup!(editing.id, kind))}
+                    className={`flex-1 rounded px-1.5 py-1 text-xs ${editing.group === kind ? 'bg-neutral-200 font-medium dark:bg-neutral-700' : 'hover:bg-neutral-100 dark:hover:bg-neutral-800'}`}
+                  >
+                    {STATUS_GROUP_LABEL[kind]}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
           {asking === null ? (
             <button
               type="button"
