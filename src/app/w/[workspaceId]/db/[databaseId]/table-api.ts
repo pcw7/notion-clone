@@ -875,15 +875,17 @@ export function setStatusDefault(
   )
 }
 
+/** 옵션을 만든다. status 면 그룹을 줄 수 있다(10n-22 — 없으면 서버가 할 일에). 같은 이름이면 서버가 기존 옵션을 준다(수렴). */
 export function addOption(
   workspaceId: string,
   dataSourceId: string,
   propertyId: string,
   name: string,
+  group?: StatusGroupKind,
 ): Promise<ApiResult<SelectOption>> {
   return call(
     `${base(workspaceId)}/data-sources/${dataSourceId}/properties/${propertyId}/options`,
-    { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ name }) },
+    { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify(group === undefined ? { name } : { name, group }) },
     (body) => body.option as SelectOption,
   )
 }

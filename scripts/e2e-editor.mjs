@@ -19822,6 +19822,97 @@ async function main() {
       await key('Escape')
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('status 의 새 옵션 — 그룹 고르기 (10n-22 · F-03-05)')) { try {
+      // status 칸의 고르개에 없는 이름을 치면 "만들기" 줄이 그룹마다 하나(할 일 · 진행 중 · 완료) · 첫 줄이 할 일 · ↓ 로 진행 중을 골라 Enter 면
+      // 그 그룹의 끝에 생기고 칸이 그 값이 된다 · 완료 줄을 누르면 완료에 · 서버도 그 그룹 · 다시 열어도 그 자리 · select 칸은 만들기 줄이 하나(그룹
+      // 없음). 정본 §3.5 [보강 10n-22]. 자기 데이터를 스스로 만든다(API).
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `새 옵션 그룹 ${stamp}` })).body.database
+      const view = db.defaultViewId
+      const progress = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '진행', type: 'status' })).body.property.id
+      const stage = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '단계', type: 'select' })).body.property.id
+      const titleProp = (await api('GET', `/views/${view}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const mk = async (title) => (await api('POST', `/views/${view}/rows`, { cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } }] })).body.row.id
+      const r1 = await mk(`첫 ${stamp}`)
+      const r2 = await mk(`둘 ${stamp}`)
+      const CELL = (r, prop) => `tr[data-row-id="${r}"] td[data-property-id="${prop}"]`
+      const chipOf = (r, prop) => `document.querySelector('${CELL(r, prop)} [data-testid="db-option-chip"]')`
+      const listed = () => evaluate(`[...document.querySelectorAll('[data-testid="db-select-editor"] [role="listbox"] > li')].map((li) =>
+        li.dataset.testid === 'db-status-group' ? '#' + li.textContent : (li.querySelector('[data-testid="db-option-chip"]')?.textContent ?? '?')).join(' · ')`)
+      const creates = () => evaluate(`[...document.querySelectorAll('[data-testid="db-create-option"]')].map((li) => (li.dataset.group ?? '-') + ':' + li.getAttribute('aria-selected')).join(',')`)
+      const openEditor = async (r, prop) => {
+        let opened = false
+        for (let i = 0; i < 5 && !opened; i += 1) {
+          await clickSelector(CELL(r, prop))
+          await key('Enter')
+          opened = await waitFor(`document.activeElement?.matches('[data-testid="db-select-input"]')`, 2000)
+        }
+        return opened
+      }
+      const serverOptions = async () =>
+        ((await api('GET', `/views/${view}`)).body?.view?.columns?.find((c) => c.propertyId === progress)?.options ?? []).map((o) => `${o.name}:${o.group}`).join(' · ')
+      const until = async (fn, ms = 8000) => {
+        for (const end = Date.now() + ms; Date.now() < end; await sleep(150)) if (await fn()) return true
+        return false
+      }
+      const AFTER = '#할 일 · 시작 전 · #진행 중 · 진행 중 · 검토 대기 · #완료 · 완료 · 보류'
+
+      // 표 변경 신호(SSE)를 막는다 — 새 옵션을 그 그룹의 끝에 끼우는 것은 화면이 직접 한다(`insertOption`). 신호의 다시 읽기도 서버 차례로
+      // 같은 일을 하므로 열어 두면 화면 쪽을 빼도 이 절이 통과한다. 다시 열기 전에 푼다.
+      await send('Network.setBlockedURLs', { urls: ['*/changes*'] })
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      await waitFor(`!!document.querySelector('${CELL(r2, progress)}')`, 15000)
+      await waitHydrated('[data-testid="db-add-column"]', 20000) // 서버가 그린 표 — React 가 붙기 전의 클릭은 버려진다(10n-11)
+
+      check('전제 — status 고르개가 열린다', await openEditor(r1, progress))
+      await typeText('검토 대기')
+      check('★ 없는 이름이면 "만들기" 줄이 그룹마다 하나 — 첫 줄(할 일)이 골라져 있다',
+        await waitFor(`[...document.querySelectorAll('[data-testid="db-create-option"]')].map((li) => li.dataset.group + ':' + li.getAttribute('aria-selected')).join(',') === 'todo:true,in_progress:false,complete:false'`, 3000),
+        String(await creates()))
+      check('줄마다 그 그룹을 말한다', await evaluate(`[...document.querySelectorAll('[data-testid="db-create-option"]')].map((li) => li.textContent).join('|')`)
+        .then((t) => t.includes('할 일 그룹에') && t.includes('진행 중 그룹에') && t.includes('완료 그룹에')))
+      await key('ArrowDown')
+      check('↓ 로 진행 중 줄을 고른다', await waitFor(`document.querySelector('[data-testid="db-create-option"][aria-selected="true"]')?.dataset.group === 'in_progress'`, 3000),
+        String(await creates()))
+      await key('Enter')
+      check('★ Enter — 진행 중 그룹에 생기고 칸이 그 값이 된다', await waitFor(`${chipOf(r1, progress)}?.textContent === '검토 대기'`, 8000),
+        String(await evaluate(`${chipOf(r1, progress)}?.textContent ?? '(빈 칸)'`)))
+
+      check('전제 — 다른 행의 고르개가 열린다', await openEditor(r2, progress))
+      await typeText('보류')
+      await waitFor(`document.querySelectorAll('[data-testid="db-create-option"]').length === 3`, 3000)
+      await clickSelector('[data-testid="db-create-option"][data-group="complete"]')
+      check('완료 줄을 누르면 완료 그룹에 생긴다', await waitFor(`${chipOf(r2, progress)}?.textContent === '보류'`, 8000),
+        String(await evaluate(`${chipOf(r2, progress)}?.textContent ?? '(빈 칸)'`)))
+      check('★ 서버 — 두 옵션이 고른 그룹에', await until(async () => {
+        const s = await serverOptions()
+        return s.includes('검토 대기:in_progress') && s.includes('보류:complete')
+      }), await serverOptions())
+
+      check('전제 — 고르개가 다시 열린다', await openEditor(r1, progress))
+      check('★ 목록 — 새 옵션은 그 그룹의 끝에 선다', await until(async () => (await listed()) === AFTER, 5000), await listed())
+      await key('Escape')
+
+      await send('Network.setBlockedURLs', { urls: [] })
+      await send('Page.reload', {})
+      await waitFor(`!!${chipOf(r1, progress)}`, 15000)
+      await waitHydrated('[data-testid="db-add-column"]', 20000)
+      check('다시 열어도 그 자리다', (await openEditor(r1, progress)) && (await until(async () => (await listed()) === AFTER, 5000)), await listed())
+      await key('Escape')
+
+      check('전제 — select 고르개가 열린다', await openEditor(r1, stage))
+      await typeText('가나')
+      check('select 는 만들기 줄이 하나 — 그룹이 없다',
+        await waitFor(`(() => { const c = [...document.querySelectorAll('[data-testid="db-create-option"]')]
+          return c.length === 1 && c[0].dataset.group === undefined && !c[0].textContent.includes('그룹에') })()`, 3000),
+        String(await creates()))
+      await key('Escape')
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).
