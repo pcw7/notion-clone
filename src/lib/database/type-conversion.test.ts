@@ -99,12 +99,14 @@ describe('④ 오가기', () => {
 })
 
 describe('⑤ 바꿀 수 있는 쌍', () => {
-  test('다섯 타입 사이 — 제목 · 상태는 아니다 · 같은 타입은 아니다', () => {
+  test('여섯 타입 사이(상태는 10n-24 부터) — 제목 · relation 은 아니다 · 같은 타입은 아니다', () => {
     assert.equal(canConvert('rich_text', 'number'), true)
     assert.equal(canConvert('select', 'checkbox'), true)
     assert.equal(canConvert('title', 'rich_text'), false)
     assert.equal(canConvert('rich_text', 'title'), false)
-    assert.equal(canConvert('select', 'status'), false)
+    assert.equal(canConvert('select', 'status'), true)
+    assert.equal(canConvert('status', 'rich_text'), true)
+    assert.equal(canConvert('status', 'people'), false)
     assert.equal(canConvert('relation', 'number'), false)
     assert.equal(canConvert('number', 'number'), false)
   })

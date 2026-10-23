@@ -29,10 +29,18 @@ import type { SessionContext } from '../auth/session-context.ts'
 import { withCommandTransaction } from '../db/tx.ts'
 import { orderKeysBetween } from '../block/order-key.ts'
 import { readCell } from './cell-format.ts'
-import { withoutProperty, type FilterNode } from './filter.ts'
+import { operatorsFor, withoutRules, type FilterNode } from './filter.ts'
 import { readOptionsOf } from './options.ts'
 import { bumpSchema, isSchemaFailure, lockSchema, readSchema, type PropertyFailure, type SchemaSnapshot } from './property.ts'
-import { OPTION_COLORS, deriveSidecars, isMvpPropertyType, type CellValue } from './property-types.ts'
+import {
+  OPTION_COLORS,
+  STATUS_DEFAULT_OPTIONS,
+  STATUS_GROUP_KINDS,
+  deriveSidecars,
+  isMvpPropertyType,
+  type CellValue,
+  type StatusGroupKind,
+} from './property-types.ts'
 import { canConvert, convertCell, isBlank, type ConvertibleType } from './type-conversion.ts'
 
 /** 한 번에 바꿀 수 있는 칸 수(정본 ⑦). 그 위는 백그라운드 잡이 필요하다(03 · 아직 없다). */
@@ -127,6 +135,21 @@ export async function convertProperty(
       `UPDATE property SET type = $3::property_type, config = '{}'::jsonb, updated_at = now() WHERE id = $1 AND data_source_id = $2`,
       [propertyId, dataSourceId, to],
     )
+    // ── 상태의 그룹(정본 ⑧ · 10n-24) — 타입을 바꾼 **뒤에** 한다: 그룹은 status 에만 생기고(SG4) status 옵션은 그룹이 있어야 한다(SG3) ──
+    const groupIds = new Map<StatusGroupKind, string>()
+    if (to === 'status') {
+      for (const kind of STATUS_GROUP_KINDS) {
+        const id = randomUUID()
+        groupIds.set(kind, id)
+        await tx.query(`INSERT INTO status_group (id, property_id, kind) VALUES ($1, $2, $3::status_group_kind)`, [id, propertyId, kind])
+      }
+      // 있던 옵션은 모두 할 일에(03 F-03-05 *"전부 To-do 로"*) — 그룹은 바꾼 뒤 옵션 고치기로 옮긴다
+      await tx.query(`UPDATE select_option SET group_id = $2 WHERE property_id = $1`, [propertyId, groupIds.get('todo')])
+    } else if (from === 'status') {
+      // 상태에서 나간다 — 옵션은 지우지 않고(③) 그룹만 비운 뒤 그룹 행을 지운다(옵션의 복합 FK 가 그룹을 가리킨다)
+      await tx.query(`UPDATE select_option SET group_id = NULL WHERE property_id = $1`, [propertyId])
+      await tx.query(`DELETE FROM status_group WHERE property_id = $1`, [propertyId])
+    }
     if (created.length > 0) {
       const last = await tx.queryOne<{ last: string | null; n: string }>(
         `SELECT max(order_idx COLLATE "C") AS last, count(*) AS n FROM select_option WHERE property_id = $1`,
@@ -135,10 +158,30 @@ export async function convertProperty(
       const keys = orderKeysBetween(last.last, null, created.length)
       for (const [i, option] of created.entries()) {
         await tx.query(
-          `INSERT INTO select_option (id, property_id, name, color, group_id, order_idx) VALUES ($1, $2, $3, $4::option_color, NULL, $5)`,
-          [option.id, propertyId, option.name, OPTION_COLORS[(Number(last.n) + i) % OPTION_COLORS.length], keys[i]],
+          `INSERT INTO select_option (id, property_id, name, color, group_id, order_idx) VALUES ($1, $2, $3, $4::option_color, $6, $5)`,
+          [option.id, propertyId, option.name, OPTION_COLORS[(Number(last.n) + i) % OPTION_COLORS.length], keys[i], groupIds.get('todo') ?? null],
         )
       }
+    }
+    if (to === 'status') {
+      // 옵션이 하나도 없으면 새 상태 속성처럼 기본 셋(정본 ⑧ — `seedStatus` 와 같은 이름 · 색 · 그룹)
+      const count = await tx.queryOne<{ n: string }>(`SELECT count(*) AS n FROM select_option WHERE property_id = $1`, [propertyId])
+      if (Number(count.n) === 0) {
+        const keys = orderKeysBetween(null, null, STATUS_DEFAULT_OPTIONS.length)
+        for (const [i, option] of STATUS_DEFAULT_OPTIONS.entries()) {
+          await tx.query(
+            `INSERT INTO select_option (id, property_id, name, color, group_id, order_idx) VALUES ($1, $2, $3, $4::option_color, $5, $6)`,
+            [randomUUID(), propertyId, option.name, option.color, groupIds.get(option.group), keys[i]],
+          )
+        }
+      }
+      // 기본 옵션은 첫 옵션(새 상태 속성 · 옵션 지우기 ④ 와 같은 규칙) — 새 행의 초깃값일 뿐 있던 행은 그대로다
+      const first = await tx.queryMaybe<{ id: string }>(
+        `SELECT o.id FROM select_option o JOIN status_group g ON g.id = o.group_id
+          WHERE o.property_id = $1 ORDER BY g.kind, o.order_idx, o.id LIMIT 1`,
+        [propertyId],
+      )
+      await tx.query(`UPDATE property SET config = $2::jsonb WHERE id = $1`, [propertyId, JSON.stringify({ default_option_id: first?.id ?? null })])
     }
     await tx.query(`DELETE FROM page_property_value WHERE property_id = $1`, [propertyId])
     if (next.length > 0) {
@@ -162,13 +205,16 @@ export async function convertProperty(
     }
 
     // ── 필터 — 이 속성의 규칙은 지운다(값의 뜻이 바뀌었다 · 정본 ⑤) ──
+    // 선택 ↔ 상태는 값이 같은 옵션 id 라 두 타입에 다 있는 연산자의 규칙은 남기고, 새 타입에 없는 것(그룹 단위)만 지운다(⑧)
+    const optionPair = (from === 'select' || from === 'status') && (to === 'select' || to === 'status')
+    const kept = new Set(optionPair ? operatorsFor(to as 'select' | 'status') : [])
     let filtersRemoved = 0
     const views = await tx.query<{ id: string; filter: FilterNode | null }>(
       `SELECT id, filter FROM view WHERE data_source_id = $1 AND filter IS NOT NULL`,
       [dataSourceId],
     )
     for (const view of views) {
-      const pruned = withoutProperty(view.filter, propertyId)
+      const pruned = withoutRules(view.filter, (leaf) => leaf.property_id === propertyId && !kept.has(leaf.operator))
       if (pruned.removed === 0) continue
       filtersRemoved += pruned.removed
       await tx.query(`UPDATE view SET filter = $2::jsonb, updated_at = now() WHERE id = $1`, [

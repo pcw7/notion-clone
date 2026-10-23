@@ -27,8 +27,8 @@
 import { textRun, toPlainText } from '../contracts/rich-text.ts'
 import type { CellValue, DateValue, MvpPropertyType } from './property-types.ts'
 
-/** 서로 바꿀 수 있는 타입(정본 ②). 제목은 바꿀 수도 바꿔 올 수도 없다 · 상태 · relation · rollup · 고유 ID 는 아직. */
-export const CONVERTIBLE_TYPES = ['rich_text', 'number', 'select', 'checkbox', 'date'] as const
+/** 서로 바꿀 수 있는 타입(정본 ② · 상태는 ⑧ — 10n-24). 제목은 바꿀 수도 바꿔 올 수도 없다 · relation · rollup · 고유 ID 는 아직. */
+export const CONVERTIBLE_TYPES = ['rich_text', 'number', 'select', 'status', 'checkbox', 'date'] as const
 export type ConvertibleType = (typeof CONVERTIBLE_TYPES)[number]
 
 export function isConvertibleType(t: unknown): t is ConvertibleType {
@@ -87,6 +87,11 @@ export function textToCell(raw: string, to: ConvertibleType, optionIdFor: (name:
       if (empty) return { value: null, lost: false }
       // 옵션 이름은 프로퍼티 이름과 같은 상한(200자) — 넘으면 잘라 이름으로 쓴다(값이 사라지지 않는다).
       return { value: { type: 'select', select: { id: optionIdFor(text.slice(0, 200)) } }, lost: false }
+    }
+    case 'status': {
+      if (empty) return { value: null, lost: false }
+      // 상태도 이름이 곧 옵션 — 새 옵션의 그룹(할 일)은 명령이 정한다(정본 ⑧ · 10n-24)
+      return { value: { type: 'status', status: { id: optionIdFor(text.slice(0, 200)) } }, lost: false }
     }
     case 'checkbox': {
       const word = text.toLowerCase()

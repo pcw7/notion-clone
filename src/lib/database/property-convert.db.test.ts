@@ -9,7 +9,7 @@
  *   ② ★ 바뀐 칸은 새 타입의 봉투 · 사이드카로 — 그 타입의 필터가 걸린다 · id 는 그대로 · 스키마 버전이 오른다
  *   ③ ★ 선택으로 — 이름마다 옵션 하나(대소문자 무시) · 선택에서 글로 갔다 돌아오면 같은 옵션(지우지 않는다)
  *   ④ ★ 그 속성의 필터 규칙은 지운다 — 다른 속성의 규칙은 남는다 · 지운 수를 말한다
- *   ⑤ 바꿀 수 없는 쌍 — 제목(`title_immutable`) · relation · 상태(`unsupported_type`) · 같은 타입은 아무 일 없음
+ *   ⑤ 바꿀 수 없는 쌍 — 제목(`title_immutable`) · relation · 사람(`unsupported_type`) · 같은 타입은 아무 일 없음(상태와 오가는 것은 10n-24 — `status-convert.db.test.ts`)
  *
  * ⚠ skip 은 테스트마다 `ctx.skip` 으로 건다(`describe` 의 skip 옵션은 등록 시점에 평가된다 — HANDOFF §5).
  */
@@ -164,12 +164,12 @@ describe('④ 필터', () => {
 })
 
 describe('⑤ 바꿀 수 없는 쌍', () => {
-  test('제목 · relation · 상태 — 거부 · 같은 타입은 아무 일 없음', async (t) => {
+  test('제목 · relation · 사람 — 거부 · 같은 타입은 아무 일 없음', async (t) => {
     if (skipReason) return t.skip(skipReason)
     const { ds, titleId, memo } = await table('쌍', ['x'])
     assert.equal(((r) => !r.ok && r.reason)(await convertProperty(fx.owner.ctx, ds, titleId, { type: 'rich_text' })), 'title_immutable')
     assert.equal(((r) => !r.ok && r.reason)(await convertProperty(fx.owner.ctx, ds, memo, { type: 'title' })), 'title_immutable')
-    assert.equal(((r) => !r.ok && r.reason)(await convertProperty(fx.owner.ctx, ds, memo, { type: 'status' })), 'unsupported_type')
+    assert.equal(((r) => !r.ok && r.reason)(await convertProperty(fx.owner.ctx, ds, memo, { type: 'people' })), 'unsupported_type')
     const rel = unwrap(await addRelationProperty(fx.owner.ctx, ds, { name: '관계', targetDataSourceId: ds })).propertyId
     assert.equal(((r) => !r.ok && r.reason)(await convertProperty(fx.owner.ctx, ds, rel, { type: 'number' })), 'unsupported_type')
     const same = unwrap(await convertProperty(fx.owner.ctx, ds, memo, { type: 'rich_text' }))
