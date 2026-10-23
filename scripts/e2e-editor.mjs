@@ -22127,7 +22127,8 @@ async function main() {
       // 편집자 — 자기 개인 것을 모두에게
       await api('PATCH', `/views/${view}/personal`, { sorts: [{ property_id: score, direction: 'desc' }] })
       await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
-      await waitFor(`!!document.querySelector('[data-testid="db-personal-publish"]')`, 15000)
+      // 서버가 그린 단추 — React 가 붙기 전의 클릭은 버려진다(10n-11). 전체 판의 부하에서 저장된 정렬이 비어 떨어졌다(10n-25)
+      await waitHydrated('[data-testid="db-personal-publish"]', 15000)
       await clickOn('[data-testid="db-personal-publish"]')
       const stored = async () => (await api('GET', `/views/${view}`)).body?.view
       check('★ 편집자의 "모두에게 저장" — 개인 정렬이 공유 정렬이 되고 표시는 사라진다',
