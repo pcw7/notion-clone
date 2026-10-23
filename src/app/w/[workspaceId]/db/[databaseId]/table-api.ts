@@ -188,6 +188,15 @@ export function loadPeopleNames(workspaceId: string, ids: readonly string[]): Pr
   return call(`${base(workspaceId)}/people?ids=${ids.map(encodeURIComponent).join(',')}`, {}, (body) => (body.names as Record<string, string>) ?? {})
 }
 
+/** 뷰 탭을 옮긴다 — 이 뷰를 `before` 앞에(null 이면 맨 뒤) · 10n-18. 답은 옮긴 뒤의 탭 순서(id 들). */
+export function moveViewTab(workspaceId: string, viewId: string, before: string | null): Promise<ApiResult<readonly string[]>> {
+  return call(
+    `${base(workspaceId)}/views/${viewId}`,
+    { method: 'PATCH', headers: JSON_HEADERS, body: JSON.stringify({ position: { before } }) },
+    (body) => (Array.isArray(body.order) ? (body.order as string[]) : []),
+  )
+}
+
 export function updateCell(
   workspaceId: string,
   rowId: string,

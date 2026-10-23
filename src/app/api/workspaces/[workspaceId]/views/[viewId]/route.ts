@@ -16,7 +16,7 @@
 
 import { requireWorkspaceSession } from '@/lib/auth/route-session'
 import type { OpenPagesIn } from '@/lib/database/open-pages'
-import { deleteView, getView, updateView, type MvpViewType } from '@/lib/database/view'
+import { deleteView, getView, moveView, updateView, type MvpViewType } from '@/lib/database/view'
 import type { GalleryLayout } from '@/lib/database/gallery'
 import type { CalendarLayout } from '@/lib/database/calendar'
 import { viewFailureStatus } from '@/lib/database/http'
@@ -51,6 +51,19 @@ export async function PATCH(request: Request, ctx: Ctx): Promise<Response> {
     defaultTemplateId?: unknown
     gallery?: unknown
     calendar?: unknown
+    position?: unknown
+  }
+
+  // 탭 옮기기(10n-18) — `{ position: { before: 뷰 id | null } }`. 다른 칸과 함께 보내지 않는다(따로 쓰는 명령이다)
+  if ('position' in body) {
+    const position = body.position as { before?: unknown } | null
+    const before = position?.before
+    if (typeof position !== 'object' || position === null || (before !== null && typeof before !== 'string')) {
+      return Response.json({ error: 'invalid_position' }, { status: 400 })
+    }
+    const moved = await moveView(session.ctx, viewId, before)
+    if (!moved.ok) return Response.json({ error: moved.reason }, { status: viewFailureStatus(moved.reason) })
+    return Response.json({ ok: true, order: moved.value })
   }
 
   // ★ `filter` · `groupBy` 는 `null` 과 "안 보냄"을 구분해야 한다 — 전자는 "없애라",
