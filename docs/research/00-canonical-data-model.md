@@ -2605,6 +2605,11 @@ ALTER TABLE select_option ADD FOREIGN KEY (property_id, group_id)
   `group_id` 가 NULL 인 select 옵션은 검사를 건너뛴다). **SG3** `status` 프로퍼티의 옵션은 `group_id NOT NULL`, 그 밖의
   옵션은 `group_id IS NULL`. **SG4** 그룹은 `status` 프로퍼티에만 생긴다. SG3 · SG4 는 `property.type` 을 봐야 해서
   CHECK 으로 쓸 수 없다 — 트리거로 지킨다(R2 와 같은 방식).
+  **[보강 10n-25 · 마이그레이션 0111]** 옵션 · 그룹 행의 트리거는 **속성의 타입 바꾸기를 보지 않는다** — 타입을 status 로 바꿔도 있던
+  옵션은 다시 검사되지 않는다(상태 변환 10n-24 의 반사실에서 그룹 없는 status 옵션이 조용히 남았다). `property` 의 `UPDATE OF type`
+  에 **지연 제약 트리거**(`tg_property_status_shape` · `DEFERRABLE INITIALLY DEFERRED`)를 건다 — 커밋 때 그 속성이 status 면 그룹 없는
+  옵션이 없는지, 아니면 그룹을 가진 옵션 · 그룹 행이 없는지 본다. 지연인 까닭: 타입을 **먼저** 바꿔야 그룹을 만들고(SG4) 옵션에 그룹을
+  줄 수 있어(SG3) 그 UPDATE 의 순간에는 늘 어긋나 있다 — 같은 트랜잭션의 정리가 끝난 뒤에 본다(E1 의 `tg_relation_edge_mirror` 와 같다).
 - **status 는 "그룹이 강제되는 select" 다**(F-03-05 의 현실적 대안). 셀 값의 봉투만 다르고
   (`{"type":"status","status":{"id":…}}`) 사이드카(`text_value` = 옵션 id) · 필터 연산자 넷(+ 그룹 단위 둘 — 10n-23) · 보드의 그룹 키가 select 와
   같다. **옵션 순서는 그룹 순서가 먼저다**(`todo → in_progress → complete`, 그 안에서 `order_idx`) — ENUM 의 선언
