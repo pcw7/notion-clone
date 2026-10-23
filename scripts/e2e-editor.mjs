@@ -20009,6 +20009,89 @@ async function main() {
         leaf?.property_id === progress && leaf?.operator === 'group_is_not' && leaf?.value === 'complete', JSON.stringify(saved))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('선택 ↔ 상태 변환 (10n-24 · F-03-05 · F-03-14)')) { try {
+      // 선택 칸의 머리 메뉴 "유형 바꾸기" 에 상태가 선다 · 손실이 없어 묻지 않고 바뀐다 · 칸은 같은 옵션 그대로 · 고르개가 그 옵션을 할 일
+      // 그룹 아래에 둔다 · 새 행은 첫 옵션(기본)으로 시작한다 · 선택으로 되돌리면 그룹 머리가 사라진다. 정본 §3.5 [보강] 타입 바꾸기 ⑧.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const clickOn = async (selector) => {
+        const p = await evaluate(`(() => {
+          const e = document.querySelector(${JSON.stringify(selector)})
+          if (!e) return null
+          e.scrollIntoView({ block: 'center' })
+          const r = e.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (p) await click(p.x, p.y)
+        return p !== null
+      }
+      const db = (await api('POST', '/databases', { name: `상태 변환 ${stamp}` })).body.database
+      const view = db.defaultViewId
+      const stage = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '단계', type: 'select' })).body.property.id
+      const optA = (await api('POST', `/data-sources/${db.dataSourceId}/properties/${stage}/options`, { name: '가' })).body.option.id
+      const optB = (await api('POST', `/data-sources/${db.dataSourceId}/properties/${stage}/options`, { name: '나' })).body.option.id
+      const mk = async (opt) => (await api('POST', `/views/${view}/rows`, { cells: [{ propertyId: stage, value: { type: 'select', select: { id: opt } } }] })).body.row.id
+      const r1 = await mk(optA)
+      const r2 = await mk(optB)
+      const CELL = (r) => `tr[data-row-id="${r}"] td[data-property-id="${stage}"]`
+      const chipOf = (r) => `document.querySelector('${CELL(r)} [data-testid="db-option-chip"]')`
+      const header = () => evaluate(`document.querySelector('th[data-property-id="${stage}"]')?.textContent ?? ''`)
+      const LISTED = `[...document.querySelectorAll('[data-testid="db-select-editor"] [role="listbox"] > li')].map((li) =>
+        li.dataset.testid === 'db-status-group' ? '#' + li.textContent : (li.querySelector('[data-testid="db-option-chip"]')?.textContent ?? '?')).join(' · ')`
+      const listed = () => evaluate(LISTED)
+      const openEditor = async (r) => {
+        let opened = false
+        for (let i = 0; i < 5 && !opened; i += 1) {
+          await clickSelector(CELL(r))
+          await key('Enter')
+          opened = await waitFor(`document.activeElement?.matches('[data-testid="db-select-input"]')`, 2000)
+        }
+        return opened
+      }
+      const convertTo = async (type) => {
+        await clickOn(`th[data-property-id="${stage}"] [data-testid="db-column-menu"]`)
+        await waitFor(`!!document.querySelector('[data-testid="db-column-convert"]')`, 3000)
+        await clickOn('[data-testid="db-column-convert"]')
+        await waitFor(`!!document.querySelector('[data-testid="db-column-convert-${type}"]')`, 3000)
+        return clickOn(`[data-testid="db-column-convert-${type}"]`)
+      }
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      await waitFor(`!!${chipOf(r1)} && !!${chipOf(r2)}`, 15000)
+      await waitHydrated(`th[data-property-id="${stage}"] [data-testid="db-column-menu"]`, 20000) // 서버가 그린 단추 — React 가 붙기 전의 클릭은 버려진다(10n-11)
+
+      check('★ 선택 칸의 "유형 바꾸기" 에 상태가 선다', await convertTo('status'))
+      check('★ 손실이 없어 묻지 않고 바뀐다 — 머리가 상태 · 칸은 같은 옵션 그대로',
+        await waitFor(`(document.querySelector('th[data-property-id="${stage}"]')?.textContent ?? '').includes('상태')
+          && !document.querySelector('[data-testid="db-column-convert-confirm"]')
+          && ${chipOf(r1)}?.textContent === '가' && ${chipOf(r2)}?.textContent === '나'`, 10000),
+        JSON.stringify({ header: await header(), r1: await evaluate(`${chipOf(r1)}?.textContent ?? null`) }))
+      await waitHydrated(`th[data-property-id="${stage}"] [data-testid="db-column-menu"]`, 20000)
+      check('★ 고르개 — 옵션이 모두 할 일 그룹 아래에', (await openEditor(r1)) && (await waitFor(`${LISTED} === '#할 일 · 가 · 나'`, 5000)),
+        String(await listed()))
+      await key('Escape')
+
+      const rowIds = () => evaluate(`[...document.querySelectorAll('[data-testid="db-table"] tr[data-row-id]')].map((tr) => tr.dataset.rowId)`)
+      const known = await rowIds()
+      await clickSelector('[data-testid="db-add-row"]')
+      await waitFor(`document.querySelectorAll('[data-testid="db-table"] tr[data-row-id]').length === ${known.length + 1}`, 8000)
+      const fresh = (await rowIds()).find((id) => !known.includes(id))
+      await key('Escape')
+      check('새 행은 첫 옵션(기본)으로 시작한다', fresh !== undefined && (await waitFor(`${chipOf(fresh)}?.textContent === '가'`, 8000)),
+        String(fresh === undefined ? '(새 행 없음)' : await evaluate(`${chipOf(fresh)}?.textContent ?? '(빈 칸)'`)))
+
+      check('전제 — 다시 유형 바꾸기', await convertTo('select'))
+      check('선택으로 되돌리면 — 머리가 선택 · 칸은 그대로',
+        await waitFor(`(document.querySelector('th[data-property-id="${stage}"]')?.textContent ?? '').includes('선택') && ${chipOf(r2)}?.textContent === '나'`, 10000),
+        await header())
+      await waitHydrated(`th[data-property-id="${stage}"] [data-testid="db-column-menu"]`, 20000)
+      check('★ 고르개에 그룹 머리가 없다', (await openEditor(r1)) && (await waitFor(`${LISTED} === '가 · 나'`, 5000)), String(await listed()))
+      await key('Escape')
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

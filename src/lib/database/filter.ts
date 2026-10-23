@@ -173,12 +173,17 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  * 남는 것이 없으면 null(필터 없음). `removed` 는 뺀 규칙 수다 — 명령이 "필터 N개를 지웠다"고 말한다.
  */
 export function withoutProperty(node: FilterNode | null, propertyId: string): { filter: FilterNode | null; removed: number } {
+  return withoutRules(node, (leaf) => leaf.property_id === propertyId)
+}
+
+/** `drop` 이 참인 규칙을 뺀다 — 비는 묶음은 빠진다. 타입 바꾸기가 선택 ↔ 상태에서 새 타입에 없는 연산자의 규칙만 뺄 때 쓴다(10n-24). */
+export function withoutRules(node: FilterNode | null, drop: (leaf: FilterLeaf) => boolean): { filter: FilterNode | null; removed: number } {
   if (node === null) return { filter: null, removed: 0 }
-  if (!isGroup(node)) return node.property_id === propertyId ? { filter: null, removed: 1 } : { filter: node, removed: 0 }
+  if (!isGroup(node)) return drop(node) ? { filter: null, removed: 1 } : { filter: node, removed: 0 }
   let removed = 0
   const children: FilterNode[] = []
   for (const child of node.children) {
-    const kept = withoutProperty(child, propertyId)
+    const kept = withoutRules(child, drop)
     removed += kept.removed
     if (kept.filter !== null) children.push(kept.filter)
   }
