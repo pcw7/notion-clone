@@ -73,12 +73,15 @@ import {
 } from './filter.ts'
 import { refreshDerivedForView } from './derived-values.ts'
 import {
+  STATUS_GROUP_KINDS,
   isGroupableType,
   isOptionType,
   optionValue,
+  readStatusDefault,
   type CellValue,
   type GroupableType,
   type SelectOption,
+  type StatusGroupKind,
 } from './property-types.ts'
 import { readOptionsOf } from './options.ts'
 import { readSubItemPair } from './sub-items.ts'
@@ -128,6 +131,11 @@ export type GroupBy = {
    * (`ck_view_group_by_calculation` · 0055)이 막는다. `null` 은 저장하지 않는다(받으면 "없음"으로 접는다).
    */
   readonly calculation?: GroupCalculation | null
+  /**
+   * status 를 범주(그룹) 단위로 묶는다(10n-27 · 정본 §3.6 [보강] `view.group_by` · 03 F-03-05) — 열이 할 일 · 진행 중 · 완료이고 키가 그룹
+   * kind 다. 없으면 옵션 단위. status 가 아닌 속성에 주면 거부한다.
+   */
+  readonly status_by?: 'group'
 }
 
 /** 그룹 머리의 계산 — 어느 속성의 칸으로 어느 함수를. */
@@ -154,6 +162,10 @@ export function validateGroupBy(raw: unknown, types: PropertyTypes): ValidationI
   if (g.hide_empty !== undefined && typeof g.hide_empty !== 'boolean') {
     issues.push({ path: 'groupBy.hide_empty', message: 'boolean 이어야 합니다' })
   }
+  // 범주 단위(10n-27) — status 에만 'group'
+  if (g.status_by !== undefined && !(g.status_by === 'group' && typeof g.property_id === 'string' && types.get(g.property_id) === 'status')) {
+    issues.push({ path: 'groupBy.status_by', message: "status 속성에만 'group' 을 줄 수 있습니다" })
+  }
   // 그룹 머리의 계산(2d-3) — null 은 "없음"(카드 수). 고를 때는 살아 있고 그 함수를 고를 수 있는 타입이어야 한다.
   if (g.calculation !== undefined && g.calculation !== null) {
     const c = g.calculation as Record<string, unknown>
@@ -178,6 +190,7 @@ export function normalizeGroupBy(raw: GroupBy): GroupBy {
     property_id: raw.property_id,
     ...(hidden.length > 0 ? { hidden } : {}),
     ...(raw.hide_empty ? { hide_empty: true } : {}),
+    ...(raw.status_by === 'group' ? { status_by: 'group' as const } : {}),
     ...(calculation !== undefined && calculation !== null
       ? { calculation: { property_id: calculation.property_id, function: calculation.function } }
       : {}),
@@ -199,8 +212,15 @@ export function liveGroupCalculation(groupBy: GroupBy, types: PropertyTypes): Gr
 
 export type BoardGroup = {
   readonly key: string
-  /** select · status 그룹의 옵션. `''` 그룹 · checkbox 그룹은 null. */
+  /** select · status 그룹의 옵션. `''` 그룹 · checkbox 그룹 · 범주 열은 null. */
   readonly option: SelectOption | null
+  /** 범주 열의 그룹(10n-27) — `status_by: 'group'` 일 때만. 그 밖은 null. */
+  readonly statusGroup: StatusGroupKind | null
+  /**
+   * 이 열에 놓거나 이 열의 `+` 로 만든 카드가 받는 옵션 — 옵션 열은 그 옵션, 범주 열은 "기본 옵션이 그 범주면 그것, 아니면 그 범주의
+   * 첫 옵션"(10n-27). 범주에 옵션이 없거나 `''` · checkbox 열이면 null.
+   */
+  readonly fillOptionId: string | null
   /** 필터를 지난 행 수. 숨긴 그룹도 센다(숨긴 그룹 목록에 개수를 보여 준다). */
   readonly count: number
   readonly hidden: boolean
@@ -219,6 +239,8 @@ export type GroupsPage = {
   readonly manualOrder: boolean
   /** 살아 있는 그룹 머리의 계산(2d-3 · `liveGroupCalculation`). 없으면 null — 머리는 카드 수. */
   readonly calculation: GroupCalculation | null
+  /** 묶는 단위(10n-27) — status 의 범주 단위면 `'group'`. */
+  readonly statusBy: 'option' | 'group'
   readonly groups: readonly BoardGroup[]
 }
 
@@ -302,6 +324,10 @@ type Board = {
   readonly access: RowsAccess
   /** 필터의 "나"(6g-2c) — 보드를 연 세션의 사람. */
   readonly context: FilterContext
+  /** status 를 범주 단위로 묶는다(10n-27) — 열 · 키가 그룹 kind 다. */
+  readonly statusByGroup: boolean
+  /** 범주 단위일 때 그 속성의 기본 옵션 — 범주 열에 놓은 카드가 받을 옵션을 정한다. 그 밖은 null. */
+  readonly defaultOptionId: string | null
 }
 
 /** 보드를 읽는 요청의 공통 입력 — 뷰 검색어(2e-1). */
@@ -358,6 +384,11 @@ async function openBoard(
   const types = await readPropertyTypes(tx, view.data_source_id)
   const propertyType = types.get(groupBy.property_id)
   if (!isGroupableType(propertyType)) return fail('not_grouped')
+  // 범주 단위(10n-27) — status 에서만 산다(타입을 바꾼 뒤의 저장값은 옵션 단위로 읽는다)
+  const statusByGroup = propertyType === 'status' && groupBy.status_by === 'group'
+  const defaultOptionId = statusByGroup
+    ? readStatusDefault((await tx.queryOne<{ config: unknown }>(`SELECT config FROM property WHERE id = $1`, [groupBy.property_id])).config)
+    : null
 
   return {
     viewId,
@@ -374,6 +405,8 @@ async function openBoard(
     search,
     access,
     context: { me: ctx.userId },
+    statusByGroup,
+    defaultOptionId,
   }
 }
 
@@ -386,14 +419,30 @@ async function readOptions(tx: Tx, propertyId: string): Promise<SelectOption[]> 
  * 그룹 목록(순서대로). `''` 가 **맨 앞**이다 — 노션 보드의 "No X" 열이 왼쪽 끝에 있다.
  * checkbox 는 안 된 것 → 된 것(할 일 보드의 자연스러운 순서).
  */
-function catalogOf(board: Board): { key: string; option: SelectOption | null }[] {
+type CatalogEntry = { key: string; option: SelectOption | null; statusGroup: StatusGroupKind | null; fillOptionId: string | null }
+
+function catalogOf(board: Board): CatalogEntry[] {
+  const none = { option: null, statusGroup: null, fillOptionId: null }
   if (board.propertyType === 'checkbox') {
     return [
-      { key: 'false', option: null },
-      { key: 'true', option: null },
+      { key: 'false', ...none },
+      { key: 'true', ...none },
     ]
   }
-  return [{ key: NO_VALUE_KEY, option: null }, ...board.options.map((o) => ({ key: o.id, option: o }))]
+  // 범주 단위(10n-27) — 열은 그룹 순서 · 옵션이 없는 범주도 열이다
+  if (board.statusByGroup) {
+    return [
+      { key: NO_VALUE_KEY, ...none },
+      ...STATUS_GROUP_KINDS.map((kind) => ({ key: kind, option: null, statusGroup: kind, fillOptionId: fillOptionOf(board, kind) })),
+    ]
+  }
+  return [{ key: NO_VALUE_KEY, ...none }, ...board.options.map((o) => ({ key: o.id, option: o, statusGroup: null, fillOptionId: o.id }))]
+}
+
+/** 범주 열에 들어오는 카드가 받는 옵션 — 기본 옵션이 그 범주면 그것, 아니면 그 범주의 첫 옵션(옵션 순서). 없으면 null(10n-27). */
+function fillOptionOf(board: Board, kind: StatusGroupKind): string | null {
+  const inGroup = board.options.filter((o) => o.group === kind)
+  return inGroup.find((o) => o.id === board.defaultOptionId)?.id ?? inGroup[0]?.id ?? null
 }
 
 // ── SQL 조각 ──────────────────────────────────────────────────────────
@@ -409,6 +458,11 @@ function keyExprOf(board: Board, params: ParamBag): string {
     return `(CASE WHEN gv.bool_value THEN 'true' ELSE 'false' END)`
   }
   const ids = params.bind(board.options.map((o) => o.id))
+  // 범주 단위(10n-27) — 셀의 옵션을 그 옵션의 그룹으로. 옵션 id ↔ kind 표를 묶는다(옵션은 이미 읽었다 · 지워진 옵션 · 빈 셀은 '')
+  if (board.statusByGroup) {
+    const kinds = params.bind(board.options.map((o) => o.group ?? ''))
+    return `coalesce((SELECT m.k FROM unnest(${ids}::text[], ${kinds}::text[]) AS m(id, k) WHERE m.id = gv.text_value), '')`
+  }
   return `(CASE WHEN gv.text_value = ANY(${ids}::text[]) THEN gv.text_value ELSE '' END)`
 }
 
@@ -528,6 +582,8 @@ export async function queryGroups(ctx: SessionContext, viewId: string, input: Bo
       return {
         key: g.key,
         option: g.option,
+        statusGroup: g.statusGroup,
+        fillOptionId: g.fillOptionId,
         count: g.count,
         hidden: g.hidden,
         calculation: groupCalculationOf(board, counted.get(g.key)),
@@ -544,6 +600,7 @@ export async function queryGroups(ctx: SessionContext, viewId: string, input: Bo
         propertyType: board.propertyType,
         manualOrder: q.manual,
         calculation: board.calculation,
+        statusBy: board.statusByGroup ? 'group' : 'option',
         groups,
       },
     } as const
@@ -646,9 +703,15 @@ export async function queryGroupRows(
 
 // ── 이동 ──────────────────────────────────────────────────────────────
 
-function cellValueFor(board: Board, groupKey: string): CellValue {
+/** 그 열에 놓은 카드의 셀 값. 범주 열에 옵션이 없으면 null — 놓을 수 없다(10n-27). */
+function cellValueFor(board: Board, groupKey: string): CellValue | null {
   if (board.propertyType === 'checkbox') return { type: 'checkbox', checkbox: groupKey === 'true' }
-  return optionValue(board.propertyType, groupKey === NO_VALUE_KEY ? null : groupKey)
+  if (groupKey === NO_VALUE_KEY) return optionValue(board.propertyType, null)
+  if (board.statusByGroup) {
+    const fill = fillOptionOf(board, groupKey as StatusGroupKind)
+    return fill === null ? null : optionValue('status', fill)
+  }
+  return optionValue(board.propertyType, groupKey)
 }
 
 /**
@@ -684,8 +747,11 @@ export async function moveRow(
     // ── ① 셀 값. 이미 그 그룹이면 건드리지 않는다 ──
     const current = await currentKeyOf(tx, board, input.rowId)
     if (current !== input.groupKey) {
+      const value = cellValueFor(board, input.groupKey)
+      // 옵션이 없는 범주 열에는 놓을 수 없다(10n-27) — 받을 옵션이 없다
+      if (value === null) return fail('invalid_value')
       const written = await updateCellsIn(tx, ctx, input.rowId, {
-        cells: [{ propertyId: board.groupBy.property_id, value: cellValueFor(board, input.groupKey) }],
+        cells: [{ propertyId: board.groupBy.property_id, value }],
       })
       if (!written.ok) return written
     }

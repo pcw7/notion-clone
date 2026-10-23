@@ -16,7 +16,7 @@
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { groupLabel, moveCard, moveChoices, prefillCells, resolveDrop, type ColumnBox, type DropTarget } from './board-drag.ts'
+import { fillKeyOf, groupLabel, moveCard, moveChoices, prefillCells, resolveDrop, type ColumnBox, type DropTarget } from './board-drag.ts'
 
 const card = (id: string, top: number) => ({ id, top, bottom: top + 40 })
 
@@ -243,5 +243,21 @@ describe('prefillCells · groupLabel', () => {
     assert.equal(groupLabel('select', '상태', { key: '', option: null }), '상태 없음')
     assert.equal(groupLabel('checkbox', '완료', { key: 'true', option: null }), '체크됨')
     assert.equal(groupLabel('checkbox', '완료', { key: 'false', option: null }), '체크 안 됨')
+  })
+})
+
+describe('범주 열 (10n-27)', () => {
+  test('열 이름은 그룹 이름 — 옵션 열 · 없음 열은 그대로', () => {
+    assert.equal(groupLabel('status', '진행', { key: 'complete', option: null, statusGroup: 'complete' }), '완료')
+    assert.equal(groupLabel('status', '진행', { key: 'todo', option: null, statusGroup: 'todo' }), '할 일')
+    assert.equal(groupLabel('status', '진행', { key: '', option: null, statusGroup: null }), '진행 없음')
+  })
+
+  test('★ `+` 의 키 — 범주 열은 서버가 정한 옵션 · 없으면 null(만들 수 없다) · 그 밖은 열의 키', () => {
+    assert.equal(fillKeyOf({ key: 'complete', statusGroup: 'complete', fillOptionId: 'opt-done' }), 'opt-done')
+    assert.equal(fillKeyOf({ key: 'complete', statusGroup: 'complete', fillOptionId: null }), null)
+    assert.equal(fillKeyOf({ key: 'opt-1', statusGroup: null, fillOptionId: 'opt-1' }), 'opt-1')
+    assert.equal(fillKeyOf({ key: '', statusGroup: null, fillOptionId: null }), '', '없음 열은 빈 값으로 만든다')
+    assert.equal(fillKeyOf({ key: 'true' }), 'true', 'checkbox')
   })
 })

@@ -70,9 +70,10 @@ import type { RowJson } from '@/lib/database/http'
 import { PageIconView } from '../../page-icon-view'
 import type { GroupBy } from '@/lib/database/group'
 import type { ViewColumn } from '@/lib/database/view'
-import type { GroupableType, SelectOption } from '@/lib/database/property-types'
+import type { GroupableType, SelectOption, StatusGroupKind } from '@/lib/database/property-types'
 import { cellText, parseDraft, readCell, sameValue } from '@/lib/database/cell-format'
 import {
+  fillKeyOf,
   groupLabel,
   moveCard,
   moveChoices,
@@ -97,6 +98,10 @@ import { useAdoptServerValue, useLiveServerRefresh } from './use-table-changes'
 export type BoardGroupJson = {
   readonly key: string
   readonly option: SelectOption | null
+  /** 범주 열의 그룹(10n-27). 옵션 열 · `''` · checkbox 는 null. */
+  readonly statusGroup: StatusGroupKind | null
+  /** 이 열의 `+` · 드롭이 채울 옵션(10n-27 — 범주 열은 서버가 정한다). 없으면 null. */
+  readonly fillOptionId: string | null
   readonly count: number
   readonly hidden: boolean
   /** 그룹 머리의 계산 값(2d-3). 계산이 없으면 null — 머리는 카드 수. */
@@ -522,7 +527,8 @@ export function DatabaseBoard(props: {
     // 템플릿으로 만들어도 이 값이 **템플릿의 값을 덮는다**(08 F-08-03 — 서버가 호출자의 셀을 나중에 쓴다).
     const result = await api.createRowFrom(workspaceId, viewId, {
       templateId,
-      cells: prefillCells(property.type, property.id, group.key),
+      // 범주 열(10n-27)은 서버가 정한 옵션으로 — `+` 는 그 옵션이 있을 때만 선다
+      cells: prefillCells(property.type, property.id, fillKeyOf(group) ?? group.key),
     })
     setBusyKey(null)
     if (!result.ok) {
@@ -666,7 +672,7 @@ export function DatabaseBoard(props: {
                   </span>
                 )}
                 <span className="ml-auto flex items-center">
-                  {access.canCreateRows && (
+                  {access.canCreateRows && fillKeyOf(group) !== null && (
                     <NewRowMenu
                       workspaceId={workspaceId}
                       viewId={viewId}
