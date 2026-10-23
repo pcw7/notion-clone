@@ -75,8 +75,9 @@ export function SelectEditor({
   /** 새 옵션을 만들 수 있는가(`edit_structure`). 없으면 "만들기" 항목을 그리지 않는다. */
   canCreate: boolean
   /**
-   * status 칸인가. 목록을 그룹 머리(할 일 · 진행 중 · 완료)로 구획하고(F-03-05 시나리오 2), 새 옵션은 **할 일**
-   * 그룹에 만든다고 말한다. 옵션은 이미 그룹 순서로 온다(`options.ts`) — 여기서는 그룹이 바뀌는 자리에 머리만 끼운다.
+   * status 칸인가. 목록을 그룹 머리(할 일 · 진행 중 · 완료)로 구획하고(F-03-05 시나리오 2), 새 옵션의 "만들기" 줄을
+   * 그룹마다 하나씩 세운다(10n-22 · 시나리오 3 — 첫 줄이 할 일). 옵션은 이미 그룹 순서로 온다(`options.ts`) — 여기서는 그룹이
+   * 바뀌는 자리에 머리만 끼운다.
    * 머리는 옵션이 아니라서 ↑↓ 의 색인에 들지 않는다.
    */
   isStatus?: boolean
@@ -87,7 +88,8 @@ export function SelectEditor({
   /** 옵션 고치기(10n-6) — 있으면 옵션 줄마다 `···`(`edit_structure`). 없으면 고르기만 한다. */
   edit?: OptionEditActions
   onPick: (optionId: string | null) => void
-  onCreate: (name: string) => void
+  /** 새 옵션 — status 면 고른 그룹(10n-22). select 는 그룹 없이. */
+  onCreate: (name: string, group?: StatusGroupKind) => void
 }) {
   const [query, setQuery] = useState('')
   const [index, setIndex] = useState(0)
@@ -139,13 +141,15 @@ export function SelectEditor({
   // "만들기"를 보여주지 않는다 — 눌러도 서버가 기존 옵션으로 수렴시킬 뿐이다.
   const exact = options.some((o) => o.name.toLowerCase() === lower)
   const showCreate = canCreate && q !== '' && !exact
-  const count = matches.length + (showCreate ? 1 : 0)
+  // "만들기" 줄 — status 는 그룹마다 하나(10n-22 · 첫 줄이 할 일이라 Enter 만 누르면 전과 같다) · select 는 하나
+  const createGroups: readonly (StatusGroupKind | undefined)[] = showCreate ? (isStatus ? STATUS_GROUP_KINDS : [undefined]) : []
+  const count = matches.length + createGroups.length
   const active = count === 0 ? -1 : Math.min(index, count - 1)
 
   const choose = (i: number) => {
     if (i < 0) return
     if (i < matches.length) onPick(matches[i].id)
-    else onCreate(q)
+    else onCreate(q, createGroups[i - matches.length])
   }
 
   const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
@@ -396,21 +400,23 @@ export function SelectEditor({
           </Fragment>
         ))}
 
-        {showCreate && (
+        {createGroups.map((group, k) => (
           <li
+            key={group ?? 'plain'}
             role="option"
-            aria-selected={active === matches.length}
+            aria-selected={active === matches.length + k}
             data-testid="db-create-option"
-            onMouseEnter={() => setIndex(matches.length)}
+            data-group={group}
+            onMouseEnter={() => setIndex(matches.length + k)}
             onMouseDown={(e) => e.preventDefault()}
-            onClick={() => choose(matches.length)}
+            onClick={() => choose(matches.length + k)}
             className={`cursor-pointer rounded px-2 py-1 text-sm ${
-              active === matches.length ? 'bg-neutral-100 dark:bg-neutral-800' : ''
+              active === matches.length + k ? 'bg-neutral-100 dark:bg-neutral-800' : ''
             }`}
           >
-            ‘{q}’ 만들기{isStatus ? ` — ${STATUS_GROUP_LABEL.todo} 그룹에` : ''}
+            ‘{q}’ 만들기{group !== undefined ? ` — ${STATUS_GROUP_LABEL[group]} 그룹에` : ''}
           </li>
-        )}
+        ))}
 
         {count === 0 && (
           <li className="px-2 py-1 text-sm text-neutral-400">

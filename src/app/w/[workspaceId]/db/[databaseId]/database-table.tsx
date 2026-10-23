@@ -582,10 +582,11 @@ export function DatabaseTable(props: {
     )
   }
 
-  const createOption = async (at: CellPos, name: string) => {
+  const createOption = async (at: CellPos, name: string, group?: StatusGroupKind) => {
     const column = columns[at.col]
     if (column === undefined) return
-    const result = await api.addOption(workspaceId, dataSourceId, column.propertyId, name)
+    // status 는 고른 그룹에(10n-22) — 서버가 그 그룹의 끝에 둔다
+    const result = await api.addOption(workspaceId, dataSourceId, column.propertyId, name, group)
     if (!result.ok) {
       setError(result.message)
       return
@@ -1538,7 +1539,7 @@ export function DatabaseTable(props: {
                             canCreate={access.canEditStructure}
                             {...(access.canEditStructure ? { edit: optionEditFor(cell.column) } : {})}
                             onPick={(optionId) => pickOption(at, optionId)}
-                            onCreate={(name) => void createOption(at, name)}
+                            onCreate={(name, group) => void createOption(at, name, group)}
                           />
                         </>
                       ) : isEditing && cell.kind === 'cell' && cell.value.type === 'people' ? (
