@@ -64,7 +64,7 @@ import {
   type CalendarLayout,
   type LiveCalendarLayout,
 } from './calendar.ts'
-import { isMvpPropertyType, isOptionType } from './property-types.ts'
+import { isMvpPropertyType, isOptionType, readStatusDefault } from './property-types.ts'
 import { calculationsFor, isCalculation } from './calculations.ts'
 import { relationOf, rollupOf, type ViewColumn } from './view-columns.ts'
 import { readOptionsOf } from './options.ts'
@@ -367,6 +367,8 @@ async function toColumns(tx: Tx, rows: readonly ColumnRow[]): Promise<ViewColumn
       wrap: r.wrap,
       options: optionsOf.get(r.property_id) ?? [],
       calculation: isCalculation(r.calculation) ? r.calculation : null,
+      // status 의 기본 옵션(10n-21) — 고르개의 "기본" 표
+      ...(r.type === 'status' ? { defaultOptionId: readStatusDefault(r.config) } : {}),
     }
     if (isMvpPropertyType(r.type)) {
       columns.push({ ...base, type: r.type })

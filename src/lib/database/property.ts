@@ -526,6 +526,11 @@ export type UpdatePropertyInput = {
   readonly config?: Record<string, unknown>
   /** 고유 ID 의 접두사(2a-1). `null` · 빈 문자열이면 지운다. ID 프로퍼티가 아니면 `invalid_config`. */
   readonly prefix?: unknown
+  /**
+   * status 의 기본 옵션(10n-21 · 정본 [보강] 옵션 고치기 · 지우기 ⑨) — 그 속성의 옵션 id 또는 null. status 가 아니거나 `config` 와
+   * 함께 보내면 `invalid_config`. 라우트가 config 를 통째로 열지 않고 이것만 연다(다른 타입의 config 는 검사하지 않는다).
+   */
+  readonly defaultOptionId?: unknown
   readonly expectedVersion?: string
 }
 
@@ -579,6 +584,13 @@ export async function updateProperty(
     if (target.type === 'status' && input.config !== undefined) {
       if (!(await isValidStatusConfig(tx, propertyId, input.config))) return fail('invalid_config')
     }
+    // 기본 옵션(10n-21) — status 만 · 같은 칸을 두 길(config 와 이것)로 함께 쓰지 않는다
+    if (input.defaultOptionId !== undefined) {
+      if (target.type !== 'status' || input.config !== undefined) return fail('invalid_config')
+      if (!(await isValidStatusConfig(tx, propertyId, { default_option_id: input.defaultOptionId }))) return fail('invalid_config')
+    }
+    // status 의 config 는 기본 옵션 하나다(`isValidStatusConfig`) — 통째로 갈아 끼워도 잃는 키가 없다
+    const config = input.defaultOptionId !== undefined ? { default_option_id: input.defaultOptionId } : input.config
 
     if (name !== undefined) {
       const dup = await tx.queryMaybe<{ one: number }>(
@@ -606,7 +618,7 @@ export async function updateProperty(
         name ?? null,
         input.description !== undefined,
         input.description ?? null,
-        input.config === undefined ? null : JSON.stringify(input.config),
+        config === undefined ? null : JSON.stringify(config),
       ],
     )
 

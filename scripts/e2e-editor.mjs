@@ -19720,6 +19720,108 @@ async function main() {
       await key('Escape')
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('status 의 기본 옵션 (10n-21 · F-03-05)')) { try {
+      // status 칸의 고르개 — 기본 옵션 줄에 "기본" 표 · 옵션 ··· 의 "새 행의 기본값으로" 를 누르면 표가 그 줄로 옮고 서버의 열도 따라온다 ·
+      // 이미 있는 행은 그대로 · 새 행은 새 기본으로 시작한다 · 기본 옵션을 지우면 표가 남은 첫 옵션으로 옮는다(서버의 답) · 다시 열어도 그대로 ·
+      // select 의 고치기 판에는 그 단추가 없다. 정본 §3.5 [보강] 옵션 고치기 · 지우기 ⑨. 자기 데이터를 스스로 만든다(API).
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `기본 옵션 ${stamp}` })).body.database
+      const view = db.defaultViewId
+      const progress = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '진행', type: 'status' })).body.property.id
+      const stage = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '단계', type: 'select' })).body.property.id
+      const plain = (await api('POST', `/data-sources/${db.dataSourceId}/properties/${stage}/options`, { name: '가' })).body.option.id
+      const columnOf = async (prop) => (await api('GET', `/views/${view}`)).body?.view?.columns?.find((c) => c.propertyId === prop) ?? null
+      const idOf = async (name) => (await columnOf(progress))?.options?.find((o) => o.name === name)?.id
+      const waiting = await idOf('시작 전')
+      const doing = await idOf('진행 중')
+      const titleProp = (await api('GET', `/views/${view}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      // 진행을 보내지 않는다 — 서버가 기본(시작 전)을 넣는다
+      const row = (await api('POST', `/views/${view}/rows`, { cells: [
+        { propertyId: titleProp, value: { type: 'title', title: [textRun(`기본 ${stamp}`)] } },
+        { propertyId: stage, value: { type: 'select', select: { id: plain } } },
+      ] })).body.row.id
+      const CELL = (r, prop) => `tr[data-row-id="${r}"] td[data-property-id="${prop}"]`
+      const chipOf = (r, prop) => `document.querySelector('${CELL(r, prop)} [data-testid="db-option-chip"]')`
+      const MENU = (opt) => `[data-testid="db-option"][data-option-id="${opt}"] [data-testid="db-option-menu"]`
+      // "기본" 표가 선 줄들의 옵션 이름
+      const marked = () => evaluate(`[...document.querySelectorAll('[data-testid="db-select-editor"] [data-testid="db-option"]')]
+        .filter((li) => !!li.querySelector('[data-testid="db-option-default-mark"]')).map((li) => li.querySelector('[data-testid="db-option-chip"]')?.textContent).join(',')`)
+      const openEditor = async (r, prop, menus) => {
+        let opened = false
+        for (let i = 0; i < 5 && !opened; i += 1) {
+          await clickSelector(CELL(r, prop))
+          await key('Enter')
+          opened = await waitFor(`document.querySelectorAll('[data-testid="db-select-editor"] [data-testid="db-option-menu"]').length === ${menus}`, 2000)
+        }
+        return opened
+      }
+      const until = async (fn, ms = 8000) => {
+        for (const end = Date.now() + ms; Date.now() < end; await sleep(150)) if (await fn()) return true
+        return false
+      }
+
+      // 표 변경 신호(SSE)를 막는다 — "기본" 표를 옮기는 것은 화면이 직접 한다(바꾸기는 바꾼 값 · 지우기는 서버의 답으로). 신호의 다시 읽기도
+      // 서버의 열로 같은 일을 하므로 열어 두면 화면 쪽을 빼도 이 절이 통과한다. 다시 열기 전에 푼다.
+      await send('Network.setBlockedURLs', { urls: ['*/changes*'] })
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      await waitFor(`!!${chipOf(row, progress)}`, 15000)
+      await waitHydrated('[data-testid="db-add-column"]', 20000) // 서버가 그린 표 — React 가 붙기 전의 클릭은 버려진다(10n-11)
+      check('전제 — 만든 행은 서버의 기본(시작 전)으로 시작했다 · 열의 기본도 그것',
+        (await evaluate(`${chipOf(row, progress)}?.textContent === '시작 전'`)) && (await columnOf(progress))?.defaultOptionId === waiting)
+      check('★ 고르개 — 기본 옵션 줄에만 "기본" 이 선다', (await openEditor(row, progress, 3)) && (await marked()) === '시작 전', String(await marked()))
+
+      await clickSelector(MENU(doing))
+      await waitFor(`!!document.querySelector('[data-testid="db-option-edit"]')`, 3000)
+      check('고치기 판의 단추 — 기본이 아니면 눌리지 않았다',
+        await waitFor(`document.querySelector('[data-testid="db-option-default"]')?.getAttribute('aria-pressed') === 'false'`, 3000))
+      await clickSelector('[data-testid="db-option-default"]')
+      check('★ 누르면 눌린 채 꺼진다 — 이미 기본이다',
+        await waitFor(`(() => { const b = document.querySelector('[data-testid="db-option-default"]'); return b?.getAttribute('aria-pressed') === 'true' && b.disabled })()`, 8000))
+      await clickSelector('[data-testid="db-option-edit-back"]')
+      check('★ 목록의 "기본" 표가 그 줄로 옮는다', await until(async () => (await marked()) === '진행 중', 5000), String(await marked()))
+      check('★ 서버 — 열의 기본 옵션도 그것', await until(async () => (await columnOf(progress))?.defaultOptionId === doing),
+        JSON.stringify((await columnOf(progress))?.defaultOptionId ?? null))
+      await key('Escape')
+      check('이미 있는 행은 그대로 — 기본은 새 행의 초깃값일 뿐이다', await evaluate(`${chipOf(row, progress)}?.textContent === '시작 전'`))
+
+      const rowIds = () => evaluate(`[...document.querySelectorAll('[data-testid="db-table"] tr[data-row-id]')].map((tr) => tr.dataset.rowId)`)
+      const known = await rowIds()
+      await clickSelector('[data-testid="db-add-row"]')
+      await waitFor(`document.querySelectorAll('[data-testid="db-table"] tr[data-row-id]').length === ${known.length + 1}`, 8000)
+      const fresh = (await rowIds()).find((id) => !known.includes(id))
+      await key('Escape')
+      check('★ 새 행은 새 기본(진행 중)으로 시작한다', fresh !== undefined && (await waitFor(`${chipOf(fresh, progress)}?.textContent === '진행 중'`, 8000)),
+        String(fresh === undefined ? '(새 행 없음)' : await evaluate(`${chipOf(fresh, progress)}?.textContent ?? '(빈 칸)'`)))
+
+      // 기본 옵션을 지운다 — 서버가 남은 첫 옵션(시작 전)으로 옮기고, 화면은 그 답으로 표를 옮긴다
+      check('전제 — 고르개가 다시 열린다', await openEditor(row, progress, 3))
+      await clickSelector(MENU(doing))
+      await waitFor(`!!document.querySelector('[data-testid="db-option-delete"]')`, 3000)
+      await clickSelector('[data-testid="db-option-delete"]')
+      await waitFor(`!!document.querySelector('[data-testid="db-option-delete-confirm"]')`, 5000)
+      await clickSelector('[data-testid="db-option-delete-confirm"]')
+      check('★ 기본 옵션을 지우면 "기본" 표가 남은 첫 옵션으로 옮는다', await until(async () => (await marked()) === '시작 전', 8000), String(await marked()))
+      await key('Escape')
+
+      await send('Network.setBlockedURLs', { urls: [] })
+      await send('Page.reload', {})
+      await waitFor(`!!${chipOf(row, progress)}`, 15000)
+      await waitHydrated('[data-testid="db-add-column"]', 20000)
+      check('다시 열어도 그대로 — 서버의 열이 싣는다', (await openEditor(row, progress, 2)) && (await marked()) === '시작 전', String(await marked()))
+      await key('Escape')
+
+      check('전제 — select 고르개가 열린다', await openEditor(row, stage, 1))
+      check('select 에는 "기본" 표가 없다', (await marked()) === '', String(await marked()))
+      await clickSelector(MENU(plain))
+      check('select 의 고치기 판에는 기본값 단추가 없다 — 기본 옵션은 status 에만 있다',
+        (await waitFor(`!!document.querySelector('[data-testid="db-option-edit"]')`, 3000)) && (await evaluate(`!document.querySelector('[data-testid="db-option-default"]')`)))
+      await key('Escape')
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

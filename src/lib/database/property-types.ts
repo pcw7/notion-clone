@@ -254,6 +254,13 @@ export function isStatusGroupKind(v: unknown): v is StatusGroupKind {
   return typeof v === 'string' && (STATUS_GROUP_KINDS as readonly string[]).includes(v)
 }
 
+/** status 의 `config.default_option_id`(10n-21) — 없거나 모양이 틀리면 null. 값의 검사는 쓰는 쪽(`isValidStatusConfig`)이 했다. */
+export function readStatusDefault(config: unknown): string | null {
+  if (typeof config !== 'object' || config === null) return null
+  const id = (config as { default_option_id?: unknown }).default_option_id
+  return typeof id === 'string' && id.length > 0 ? id : null
+}
+
 export const STATUS_GROUP_LABEL: Readonly<Record<StatusGroupKind, string>> = Object.freeze({
   todo: '할 일',
   in_progress: '진행 중',

@@ -630,8 +630,22 @@ export function DatabaseTable(props: {
     return {
       rename: (optionId, name) => change(optionId, { name }),
       recolor: (optionId, color) => change(optionId, { color }),
-      // status 칸에만 — 고르개가 status 일 때만 그룹 단추를 그린다
-      ...(column.type === 'status' ? { regroup: (optionId: string, group: StatusGroupKind) => change(optionId, { group }) } : {}),
+      // status 칸에만 — 고르개가 status 일 때만 그룹 단추 · 기본값 단추를 그린다
+      ...(column.type === 'status'
+        ? {
+            regroup: (optionId: string, group: StatusGroupKind) => change(optionId, { group }),
+            makeDefault: async (optionId: string) => {
+              const result = await api.setStatusDefault(workspaceId, dataSourceId, column.propertyId, optionId)
+              if (!result.ok) {
+                setError(result.message)
+                return false
+              }
+              setError(null)
+              setColumns((current) => current.map((c) => (c.propertyId === column.propertyId ? { ...c, defaultOptionId: optionId } : c)))
+              return true
+            },
+          }
+        : {}),
       usage: async (optionId) => {
         const result = await api.optionUsage(workspaceId, dataSourceId, column.propertyId, optionId)
         if (!result.ok) {
@@ -647,8 +661,18 @@ export function DatabaseTable(props: {
           return false
         }
         setError(null)
+        // 기본 옵션을 지웠으면 서버가 남은 첫 옵션으로 옮겼다(정본 ④) — 그 답으로 "기본" 표를 옮긴다(10n-21)
+        const movedDefault = result.value.defaultOptionId
         setColumns((current) =>
-          current.map((c) => (c.propertyId === column.propertyId ? { ...c, options: c.options.filter((o) => o.id !== optionId) } : c)),
+          current.map((c) =>
+            c.propertyId === column.propertyId
+              ? {
+                  ...c,
+                  options: c.options.filter((o) => o.id !== optionId),
+                  ...(movedDefault !== undefined ? { defaultOptionId: movedDefault } : {}),
+                }
+              : c,
+          ),
         )
         setRows((current) =>
           current.map((row) =>
@@ -1508,6 +1532,7 @@ export function DatabaseTable(props: {
                             options={column.options}
                             currentId={optionIdOf(cell.value)}
                             isStatus={column.type === 'status'}
+                            defaultOptionId={column.defaultOptionId ?? null}
                             // List 의 속성은 오른쪽에 붙어 있다 — 왼쪽 기준으로 열면 화면 밖으로 나간다.
                             align={isList ? 'right' : 'left'}
                             canCreate={access.canEditStructure}

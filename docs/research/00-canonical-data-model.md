@@ -2640,6 +2640,13 @@ ALTER TABLE select_option ADD FOREIGN KEY (property_id, group_id)
   자리와 같다). 셀 · 필터는 옵션 id 라 그대로다. 그룹이 비어도 된다(지우기와 같다 — 그룹마다 옵션이 하나 이상이라는 규칙은 두지
   않았다). 기본 옵션이어도 옮긴다(기본은 그룹을 묻지 않는다). 이미 그 그룹이면 쓰지 않는다. 화면 — 옵션 고치기 판의 "그룹" 셋(할 일 ·
   진행 중 · 완료 — status 칸에만). 끌어 옮기기는 두지 않았다.
+- ⑨ **[보강 10n-21] status 의 기본 옵션을 화면에서 바꾸기**(03 F-03-05 *"노션에서 유일하게 기본 옵션을 갖는 프로퍼티"*) — 명령은
+  이미 있던 `updateProperty` 다. 라우트는 `config` 를 통째로 받지 않고 **좁은 키 `defaultOptionId` 하나**를 받는다 — `updateProperty` 는
+  status 밖의 MVP 타입 config 를 검사하지 않으므로 config 를 그대로 열면 아무 JSON 이나 쓰는 길이 된다. `defaultOptionId` 는 status
+  에만(다른 타입 · `config` 와 함께 보내면 `invalid_config`) · 그 속성의 옵션 id 또는 null(`isValidStatusConfig`). null 은 API 의 몫이고
+  화면은 비우지 않는다. 뷰의 status 열이 `defaultOptionId` 를 싣는다(config 를 통째로 싣지 않는다 — 화면이 읽는 것은 이것 하나).
+  화면 — 고르개의 status 옵션 줄에 "기본" 표 · 고치기 판의 "새 행의 기본값으로" 단추(이미 기본이면 눌린 채 꺼진다). 기본 옵션을
+  지우면 서버가 옮긴 기본(④)을 응답에서 받아 표를 옮긴다. 이미 있는 행의 값은 바뀌지 않는다(기본은 새 행의 초깃값일 뿐 — 위 절).
 
 **[보강] 데이터베이스 아이콘(`database.icon`)** ⟨잔여 묶음 8c-3b · F-02-05 / 마이그레이션 0038⟩
 

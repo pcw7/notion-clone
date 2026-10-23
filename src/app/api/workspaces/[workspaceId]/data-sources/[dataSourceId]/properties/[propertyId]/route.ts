@@ -13,6 +13,9 @@
  *
  * `prefix` 는 고유 ID 프로퍼티의 접두사다(2a-1 · F-03-09 — 저장은 data source). `null` · 빈 문자열은 지우기, 영숫자 2~7자가
  * 아니거나 ID 프로퍼티가 아니면 `invalid_config`(400).
+ *
+ * `defaultOptionId` 는 status 의 기본 옵션이다(10n-21 · 새 행의 초깃값). 그 속성의 옵션 id 또는 null — status 가 아니면 `invalid_config`.
+ * **config 를 통째로 받지 않는다** — `updateProperty` 는 status 밖의 config 를 검사하지 않는다(정본 [보강] 옵션 고치기 · 지우기 ⑨).
  */
 
 import { isUuid } from '@/lib/ids'
@@ -35,6 +38,7 @@ export async function PATCH(request: Request, ctx: Ctx): Promise<Response> {
     name?: unknown
     description?: unknown
     prefix?: unknown
+    defaultOptionId?: unknown
     expression?: unknown
     expectedVersion?: unknown
   }
@@ -54,7 +58,8 @@ export async function PATCH(request: Request, ctx: Ctx): Promise<Response> {
   const hasDescription = typeof body.description === 'string' || body.description === null
   // 접두사도 `null` 이 "비워라"다. 모양은 라이브러리가 판정한다(`normalizeUniqueIdPrefix`).
   const hasPrefix = 'prefix' in body
-  if (!hasName && !hasDescription && !hasPrefix) {
+  const hasDefault = 'defaultOptionId' in body
+  if (!hasName && !hasDescription && !hasPrefix && !hasDefault) {
     return Response.json({ error: 'invalid_name' }, { status: 400 })
   }
 
@@ -62,6 +67,7 @@ export async function PATCH(request: Request, ctx: Ctx): Promise<Response> {
     ...(hasName ? { name: body.name as string } : {}),
     ...(hasDescription ? { description: body.description as string | null } : {}),
     ...(hasPrefix ? { prefix: body.prefix } : {}),
+    ...(hasDefault ? { defaultOptionId: body.defaultOptionId } : {}),
     ...(typeof body.expectedVersion === 'string' ? { expectedVersion: body.expectedVersion } : {}),
   })
   if (!updated.ok) return failureResponse(propertyFailureStatus(updated.reason), updated)

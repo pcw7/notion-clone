@@ -861,6 +861,20 @@ export function setUniqueIdPrefix(
   )
 }
 
+/** status 의 기본 옵션(새 행의 초깃값)을 바꾼다(10n-21 · 정본 [보강] 옵션 고치기 · 지우기 ⑨). 그 속성의 옵션이 아니면 거부된다. */
+export function setStatusDefault(
+  workspaceId: string,
+  dataSourceId: string,
+  propertyId: string,
+  optionId: string,
+): Promise<ApiResult<null>> {
+  return call(
+    `${base(workspaceId)}/data-sources/${dataSourceId}/properties/${propertyId}`,
+    { method: 'PATCH', headers: JSON_HEADERS, body: JSON.stringify({ defaultOptionId: optionId }) },
+    () => null,
+  )
+}
+
 export function addOption(
   workspaceId: string,
   dataSourceId: string,
