@@ -10,6 +10,7 @@
  *   ③ 글 → 상태 — 이름마다 할 일의 옵션 · 옵션이 하나도 없으면 기본 셋
  *   ④ ★ 필터 — 선택 ↔ 상태는 두 타입에 다 있는 연산자의 규칙을 남기고 그룹 단위만 지운다 · 글 → 상태는 모두 지운다(⑤)
  *   ⑤ 되돌아와도 SG3 — 상태 → 선택 → 상태면 옵션이 다시 모두 할 일(그룹 없는 status 옵션이 없다)
+ *   ⑥ ★ 타입만 바꾸고 커밋하면 DB 가 막는다(0111 · 10n-25 — 지연 제약) — 명령의 정리를 빠뜨려도 어긋난 속성이 남지 않는다
  */
 
 import { test, describe, before, after } from 'node:test'
@@ -17,6 +18,7 @@ import assert from 'node:assert/strict'
 
 import { createBareWorkspace, createUser, joinAs, probeDatabase, type Actor } from '../testing/db-fixtures.ts'
 import { query } from '../db/pool.ts'
+import { withTransaction } from '../db/tx.ts'
 import { textRun } from '../contracts/rich-text.ts'
 import { createDatabase } from './database.ts'
 import { addProperty, addSelectOption, getSchema } from './property.ts'
@@ -160,5 +162,33 @@ describe('상태와 오가는 타입 변환 (10n-24)', () => {
     const loose = await query<{ n: string }>(`SELECT count(*) AS n FROM select_option WHERE property_id = $1 AND group_id IS NULL`, [progress])
     assert.equal(Number(loose[0]!.n), 0, '그룹 없는 status 옵션이 없다')
     assert.equal(await s.groupRows(progress), 3)
+  })
+})
+
+describe('타입 바꾸기의 SG3 · SG4 를 DB 가 지킨다 (10n-25)', () => {
+  test('★ ⑥ 타입만 바꾸고 커밋하면 지연 제약이 막는다 — 아무것도 남지 않는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const s = await setup()
+    const stage = await s.add('단계', 'select')
+    unwrap(await addSelectOption(s.boss.ctx, s.ds, stage, { name: '가' }))
+    const refused = await withTransaction((tx) => tx.query(`UPDATE property SET type = 'status' WHERE id = $1`, [stage])).then(
+      () => null,
+      (e: { constraint?: string; code?: string }) => e,
+    )
+    assert.equal(refused?.constraint, 'tg_property_status_shape', '커밋 때 그 제약으로 떨어진다')
+    assert.equal(refused?.code, '23514')
+    assert.equal((await s.prop('단계')).type, 'select', '되돌아갔다 — 타입이 그대로')
+
+    const progress = await s.add('진행', 'status')
+    const refusedBack = await withTransaction(async (tx) => {
+      await tx.query(`UPDATE property SET type = 'select' WHERE id = $1`, [progress])
+      await tx.query(`UPDATE select_option SET group_id = NULL WHERE property_id = $1`, [progress])
+    }).then(() => null, (e: { constraint?: string }) => e)
+    assert.equal(refusedBack?.constraint, 'tg_property_status_shape', '그룹 행이 남았다 — SG4')
+    assert.equal(await s.groupRows(progress), 3, '되돌아갔다 — 그룹 그대로')
+
+    // 명령은 정리까지 한 트랜잭션이라 통과한다
+    unwrap(await convertProperty(s.boss.ctx, s.ds, stage, { type: 'status' }))
+    unwrap(await convertProperty(s.boss.ctx, s.ds, progress, { type: 'select' }))
   })
 })

@@ -1272,6 +1272,52 @@ try {
         [statusProp],
       )
 
+      // 타입 바꾸기의 SG3 · SG4 (0111 · 10n-25) — 지연 제약이라 `SET CONSTRAINTS … IMMEDIATE` 로 그 자리에서 돌려 본다
+      {
+        const mustRejectShape = async (label, statements) => {
+          await client.query('SAVEPOINT probe')
+          try {
+            for (const [sql, params] of statements) await client.query(sql, params)
+            await client.query('SET CONSTRAINTS tg_property_status_shape IMMEDIATE')
+            await client.query('ROLLBACK TO SAVEPOINT probe')
+            fail(`${label} — 거부되어야 하는데 통과했다`)
+          } catch (e) {
+            await client.query('ROLLBACK TO SAVEPOINT probe')
+            // 그 제약 이름으로 떨어져야 거부다 — 트리거가 없으면 `SET CONSTRAINTS` 가 42704 로 떨어져 "거부됨" 으로 보였다(스키마 반사실이 잡았다)
+            if (e.constraint === 'tg_property_status_shape') ok(`${label} — 거부됨 (${e.code})`)
+            else fail(`${label} — 다른 까닭으로 떨어졌다 (${e.code} ${String(e.message).split('\n')[0]})`)
+          }
+        }
+        await client.query(
+          `INSERT INTO select_option (id, property_id, name, color, order_idx) VALUES ($1, $2, '고를 것', 'gray', 'a0')`,
+          [randomUUID(), selectProp],
+        )
+        await mustRejectShape('SG3: 타입을 status 로 바꾸고 옵션을 그룹에 넣지 않았다', [
+          [`UPDATE property SET type = 'status' WHERE id = $1`, [selectProp]],
+        ])
+        await mustRejectShape('SG3: status 를 select 로 바꾸고 옵션의 그룹을 남겼다', [
+          [`UPDATE property SET type = 'select' WHERE id = $1`, [statusProp]],
+        ])
+        await mustRejectShape('SG4: status 를 select 로 바꾸고 옵션의 그룹만 비웠다(그룹 행이 남았다)', [
+          [`UPDATE property SET type = 'select' WHERE id = $1`, [statusProp]],
+          [`UPDATE select_option SET group_id = NULL WHERE property_id = $1`, [statusProp]],
+        ])
+        await client.query('SAVEPOINT shape')
+        try {
+          await client.query(`UPDATE property SET type = 'select' WHERE id = $1`, [statusProp])
+          await client.query(`UPDATE select_option SET group_id = NULL WHERE property_id = $1`, [statusProp])
+          await client.query(`DELETE FROM status_group WHERE property_id = $1`, [statusProp])
+          await client.query('SET CONSTRAINTS tg_property_status_shape IMMEDIATE')
+          await client.query('SET CONSTRAINTS tg_property_status_shape DEFERRED')
+          ok('SG3 · SG4: 타입을 바꾸고 그룹을 비우고 지우면 통과한다(변환 명령의 순서)')
+        } catch (e) {
+          fail(`SG3 · SG4: 바르게 정리한 타입 바꾸기가 거부됐다 (${e.code})`)
+        }
+        // 뒤의 CASCADE 검사가 status 프로퍼티를 쓴다 — 되돌린다(위에서 떨어졌어도 이 저장점으로 트랜잭션이 산다)
+        await client.query('ROLLBACK TO SAVEPOINT shape')
+        await client.query('RELEASE SAVEPOINT shape')
+      }
+
       {
         const { rows } = await client.query(
           `SELECT operator FROM filter_operator WHERE property_type = 'status' ORDER BY order_idx`,
@@ -1375,7 +1421,9 @@ try {
           fail(`${label} — 거부되어야 하는데 통과했다`)
         } catch (e) {
           await client.query('ROLLBACK TO SAVEPOINT probe')
-          ok(`${label} — 거부됨 (${e.code})`)
+          // 그 제약 이름으로 떨어져야 거부다 — 트리거가 없으면 `SET CONSTRAINTS` 의 42704 도 "거부됨" 으로 보인다(10n-25)
+          if (e.constraint === 'tg_relation_edge_mirror') ok(`${label} — 거부됨 (${e.code})`)
+          else fail(`${label} — 다른 까닭으로 떨어졌다 (${e.code} ${String(e.message).split('\n')[0]})`)
         }
       }
       await mustRejectDeferred('E1: 짝이 있는 프로퍼티의 엣지에 거울상이 없다', [[edge, [pairA, from, to, 'a0']]])
@@ -2329,7 +2377,9 @@ try {
         fail(`${label} — 거부되어야 하는데 통과했다`)
       } catch (e) {
         await client.query('ROLLBACK TO SAVEPOINT probe')
-        ok(`${label} — 거부됨 (${e.code})`)
+        // 이 묶음의 제약 이름으로 떨어져야 거부다 — 트리거가 없으면 `SET CONSTRAINTS` 의 42704 도 "거부됨" 으로 보인다(10n-25)
+        if (checks.includes(e.constraint)) ok(`${label} — 거부됨 (${e.code})`)
+        else fail(`${label} — 다른 까닭으로 떨어졌다 (${e.code} ${String(e.message).split('\n')[0]})`)
       }
       await deferred()
     }
@@ -2434,7 +2484,9 @@ try {
         fail(`${label} — 거부되어야 하는데 통과했다`)
       } catch (e) {
         await client.query('ROLLBACK TO SAVEPOINT probe')
-        ok(`${label} — 거부됨 (${e.code})`)
+        // 이 묶음의 제약 이름으로 떨어져야 거부다 — 트리거가 없으면 `SET CONSTRAINTS` 의 42704 도 "거부됨" 으로 보인다(10n-25)
+        if (checks.includes(e.constraint)) ok(`${label} — 거부됨 (${e.code})`)
+        else fail(`${label} — 다른 까닭으로 떨어졌다 (${e.code} ${String(e.message).split('\n')[0]})`)
       }
       await deferred()
     }
