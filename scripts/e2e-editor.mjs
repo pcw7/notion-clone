@@ -7600,6 +7600,9 @@ async function main() {
       check('제목이 서버에 저장된다', await poll(async () => (await rowsApi()).rows[0]?.title === title1))
 
       // ── 틀린 값 · 취소 ──
+      // 저장을 기다리는 동안 다시 그리기가 칸의 포커스를 옮길 수 있다 — 남아 있지 않으면 그 칸을 눌러 고른다(10n-27 의 전체 판에서 Enter 가
+      // 편집을 시작하지 못해 뒤의 둘까지 떨어졌다 · 홀로 3/3)
+      if (!(await waitFor(`document.activeElement?.dataset?.cell === '0:1'`, 1000))) await clickOn('td[data-cell="0:1"]')
       await key('Enter')
       check('선택 칸의 Enter 는 편집을 시작한다',
         await waitFor(`document.querySelector('td[data-editing]')?.dataset.cell === '0:1'`, 3000))
