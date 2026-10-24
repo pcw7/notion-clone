@@ -12,6 +12,7 @@
  *   ④ **비어 있어도 파일이다** — 헤더만 있는 CSV, `null` 이라는 글자는 없다
  *   ⑤ **수식 열**(10n-35) — 결과 타입대로 같은 칸의 모양 · 값이 없으면 빈 칸 · 글 결과만 수식 막기
  *   ⑥ **relation 열**(10n-36) — 제목을 `, ` 로 · 빈 제목은 "제목 없음" · 볼 수 없는 개수 · 캐시 봉투는 읽지 않는다 · 수식 막기
+ *   ⑦ **rollup 열**(10n-37) — 화면과 같은 모양 · 없음은 빈 칸 · 원본 보기는 대상 칸의 글자 · 볼 수 없는 개수 · 너무 많음 · 글 값만 수식 막기
  */
 
 import { test, describe, before, after } from 'node:test'
@@ -222,5 +223,43 @@ describe('⑥ relation 열 (10n-36)', () => {
     const { csv, guardedFormulas } = tableToCsv([R], [row({ 'p-r': rel(['=위험', '안전']) })])
     assert.equal(guardedFormulas, 1)
     assert.equal(csv, '\uFEFF작업들\r\n"\'=위험, 안전"\r\n')
+  })
+})
+
+describe('⑦ rollup 열 (10n-37)', () => {
+  const U: CsvColumn = { propertyId: 'p-u', name: '합', type: 'rollup' }
+  const rolled = (result: unknown, hidden = 0, targetType = 'number', targetOptions: unknown[] = []) =>
+    ({ type: 'rollup_export', cell: { state: 'ok', result, hidden }, targetType, targetOptions })
+
+  test('★ 화면과 같은 모양 — 수 · 비율 · 날짜(적힌 시작) · 날짜 범위(N일)', () => {
+    assert.equal(cellPlainText(U, rolled({ kind: 'number', number: 6 })), '6')
+    assert.equal(cellPlainText(U, rolled({ kind: 'number', number: 0 })), '0', '0 은 값이다')
+    assert.equal(cellPlainText(U, rolled({ kind: 'percent', percent: 0.6667 })), '66.7%')
+    assert.equal(cellPlainText(U, rolled({ kind: 'date', date: '2026-10-24' })), '2026-10-24')
+    assert.equal(cellPlainText(U, rolled({ kind: 'days', days: 20 })), '20일')
+  })
+
+  test('★ 없음은 빈 칸 · 볼 수 없는 것은 뒤에 개수 · 너무 많으면 그렇다고 · 모양이 아니면 빈 칸', () => {
+    assert.equal(cellPlainText(U, rolled({ kind: 'number', number: null })), '')
+    assert.equal(cellPlainText(U, rolled({ kind: 'number', number: 6 }, 2)), '6 (볼 수 없는 항목 2개)')
+    assert.equal(cellPlainText(U, rolled({ kind: 'percent', percent: null }, 1)), '(볼 수 없는 항목 1개)')
+    assert.equal(cellPlainText(U, { type: 'rollup_export', cell: { state: 'too_many' }, targetType: 'number', targetOptions: [] }), '(연결이 너무 많아 계산하지 않음)')
+    assert.equal(cellPlainText(U, undefined), '')
+    assert.equal(cellPlainText(U, { type: 'number', number: 6 }), '')
+  })
+
+  test('★ 원본 보기 — 대상 칸의 글자를 , 로 · 옵션은 이름 · 넘치면 +N', () => {
+    const values = [{ type: 'select', select: { id: 'opt-doing' } }, { type: 'select', select: { id: 'gone' } }]
+    assert.equal(cellPlainText(U, rolled({ kind: 'values', values, count: 2 }, 0, 'select', OPTIONS)), '진행 중', '지워진 옵션은 빈 칸이라 빠진다')
+    assert.equal(cellPlainText(U, rolled({ kind: 'values', values: [{ type: 'checkbox', checkbox: false }], count: 30 }, 0, 'checkbox')), 'No +29')
+  })
+
+  test('★ 글 값의 원본 보기만 수식 막기 — 수는 그대로', () => {
+    const { csv, guardedFormulas } = tableToCsv([U], [
+      row({ 'p-u': rolled({ kind: 'values', values: [text('=위험')], count: 1 }, 0, 'rich_text') }),
+      row({ 'p-u': rolled({ kind: 'number', number: -5 }) }),
+    ])
+    assert.equal(guardedFormulas, 1)
+    assert.equal(csv, "\uFEFF합\r\n'=위험\r\n-5\r\n")
   })
 })

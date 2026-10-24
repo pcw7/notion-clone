@@ -49,7 +49,8 @@ import { withReadTransaction, type Tx } from '../db/tx.ts'
 import { rowsToDoc, type BodyRow, type EditorBlock, type EditorDoc } from '../editor/document.ts'
 import { isUuid } from '../ids.ts'
 import { readableScopes } from '../permissions/effective.ts'
-import type { CsvColumn, ExportRelationCell } from './csv.ts'
+import type { CsvColumn, ExportRelationCell, ExportRollupCell } from './csv.ts'
+import { computeRollupsIn } from '../database/rollup.ts'
 import type { ExportFile, ExportNode, ExportSnapshot } from './plan.ts'
 import { peopleNamesIn } from '../database/people.ts'
 import { compileLiveFormulas, evaluateRowFormulas, type FormulaSourceProperty } from '../database/formula-schema.ts'
@@ -222,16 +223,32 @@ export async function readExportSnapshot(
     // 행은 자기 data source 의 표의 식으로 계산한다(8e-1 — 소스마다 속성이 다르다).
     // relation 칸(10n-36) — 캐시(앞 25개 · 걸러지지 않은 id)가 아니라 엣지를 읽어 권한으로 가른 제목 · 볼 수 없는 개수를 끼운다. 연결이
     // 없는 칸도 빈 묶음을 끼운다 — 캐시의 봉투를 남기지 않는다.
+    // rollup 칸(10n-37) — 저장하지 않는 값이다. 같은 트랜잭션에서 표 화면과 같은 함수(`computeRollupsIn`)로 **내보내는 사람의 권한으로**
+    // 계산해 끼운다(볼 수 없는 연결은 빼고 개수만). 설정이 끊긴 rollup 은 끼우지 않는다(빈 칸).
     const relationTitles = await readRelationTitles(tx, ctx.workspaceId, scopes, rowIds, [...tables.values()].flat())
     for (const databaseId of databaseIds) {
       for (const table of tables.get(databaseId) ?? []) {
         const relations = table.columns.filter((c) => c.type === 'relation').map((c) => c.propertyId)
-        if (table.formulasOf === null && relations.length === 0) continue
-        for (const row of rowsOf.get(databaseId) ?? []) {
-          if (row.parent_id !== table.dataSourceId) continue
+        const rollupColumns = table.columns.filter((c) => c.type === 'rollup').map((c) => c.propertyId)
+        if (table.formulasOf === null && relations.length === 0 && rollupColumns.length === 0) continue
+        const tableRows = (rowsOf.get(databaseId) ?? []).filter((row) => row.parent_id === table.dataSourceId)
+        const computed =
+          rollupColumns.length === 0 || tableRows.length === 0
+            ? null
+            : await computeRollupsIn(tx, ctx, table.dataSourceId, tableRows.map((row) => row.id))
+        const rollups = computed !== null && computed.ok ? computed.value : null
+        for (const row of tableRows) {
           const cells = cellsOf.get(row.id) ?? {}
           const linked = Object.fromEntries(relations.map((p) => [p, relationTitles.get(`${row.id} ${p}`) ?? EMPTY_RELATION]))
-          cellsOf.set(row.id, { ...cells, ...linked, ...(table.formulasOf?.(cells) ?? {}) })
+          const rolled: Record<string, ExportRollupCell> = {}
+          for (const p of rollupColumns) {
+            const info = rollups?.columns[p]
+            const cell = rollups?.values[row.id]?.[p]
+            if (info?.state === 'ok' && cell !== undefined) {
+              rolled[p] = { type: 'rollup_export', cell, targetType: info.targetType, targetOptions: info.targetOptions }
+            }
+          }
+          cellsOf.set(row.id, { ...cells, ...linked, ...rolled, ...(table.formulasOf?.(cells) ?? {}) })
         }
       }
     }
@@ -375,17 +392,7 @@ async function readTables(tx: Tx, workspaceId: string, databaseIds: readonly str
         .map((p) => ({
           propertyId: p.id,
           name: p.name,
-          // 스키마 ENUM 은 24종이다. 읽기는 관대하게 — `property.ts` 의 `toSummary` 와 같은 규칙. 고유 ID 는 그대로 둔다(값은 ③ 이 끼운다).
-          // 수식(10n-35)도 그대로 둔다 — 값은 스냅숏이 계산해 끼운다.
-          type: isMvpPropertyType(p.type)
-            ? p.type
-            : p.type === 'unique_id'
-              ? ('unique_id' as const)
-              : p.type === 'formula'
-                ? ('formula' as const)
-                : p.type === 'relation'
-                  ? ('relation' as const)
-                  : DEFAULT_PROPERTY_TYPE,
+          type: columnTypeOf(p.type),
           ...(isOptionType(p.type) ? { options: optionsOf.get(p.id) ?? [] } : {}),
           ...(p.type === 'people' ? { names } : {}),
         })),
@@ -409,6 +416,18 @@ function formulasFor(
   const optionNames = new Map<string, string>()
   for (const p of own) for (const o of optionsOf.get(p.id) ?? []) optionNames.set(o.id, o.name)
   return (cells) => evaluateRowFormulas(formulas, (id) => typeOf.get(id) ?? null, cells, (id) => optionNames.get(id) ?? null, { now })
+}
+
+/** 스냅숏이 값을 끼우는 셀 아닌 열 — 고유 ID(③) · 수식(10n-35) · relation(10n-36) · rollup(10n-37). */
+const COMPUTED_COLUMNS: readonly CsvColumn['type'][] = ['unique_id', 'formula', 'relation', 'rollup']
+
+/**
+ * 열의 타입. 스키마 ENUM 은 24종이다 — 읽기는 관대하게(`property.ts` 의 `toSummary` 와 같은 규칙). 스냅숏이 값을 끼우는 열은 그대로 두고,
+ * 그 밖의 모르는 타입은 글로 읽는다(값이 없어 빈 칸이다 — 버튼 등).
+ */
+function columnTypeOf(type: string): CsvColumn['type'] {
+  if (isMvpPropertyType(type)) return type
+  return COMPUTED_COLUMNS.find((t) => t === type) ?? DEFAULT_PROPERTY_TYPE
 }
 
 const EMPTY_RELATION: ExportRelationCell = { type: 'relation_titles', titles: [], hidden: 0 }

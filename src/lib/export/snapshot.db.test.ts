@@ -9,6 +9,7 @@
  *   ④ **실제 스냅샷을 조립에 넣으면 던지지 않는다** — 계약(`ExportSnapshot`)이 맞는다
  *   ⑤ **수식 칸**(10n-35) — 같은 트랜잭션에서 계산해 칸 묶음에 끼운다 · CSV · 행 Markdown 에 보이는 그대로 · 식이 읽히지 않으면 빈 칸
  *   ⑥ **relation 칸**(10n-36) — 엣지에서 읽는다 · 볼 수 없는 표의 행은 개수만 · 휴지통은 빠진다 · 연결이 없으면 빈 칸
+ *   ⑦ **rollup 칸**(10n-37) — 같은 트랜잭션에서 내보내는 사람의 권한으로 계산한다 · 볼 수 없는 연결은 빼고 개수만 · 없음은 빈 칸
  */
 
 import { test, describe, before, after } from 'node:test'
@@ -30,6 +31,7 @@ import { planExport, type ExportDatabaseNode, type ExportPageNode, type ExportSn
 import { readExportSnapshot, type ExportScopeInput } from './snapshot.ts'
 import { addFormulaProperty } from '../database/formula-property.ts'
 import { addRelationProperty, linkRows } from '../database/relation.ts'
+import { addRollupProperty } from '../database/rollup.ts'
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'
 let skipReason = ''
@@ -346,6 +348,67 @@ describe('⑥ relation 칸 (10n-36 · F-03-10)', () => {
     assert.equal(lines[0], '이름,작업들,비밀들')
     assert.ok(lines.includes('집,"시공, 설계, 제목 없음",(볼 수 없는 항목 1개)'), JSON.stringify(lines))
     assert.ok(lines.includes('빈 집,,'), JSON.stringify(lines))
+  })
+})
+
+describe('⑦ rollup 칸 (10n-37 · F-03-11)', () => {
+  test('★ 내보내는 사람의 권한으로 계산한다 — 볼 수 없는 연결은 빼고 개수만 · 없음은 빈 칸 · 휴지통은 빠진다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { owner, member } = await freshWorkspace()
+    const table = async (name: string) => {
+      const created = await createDatabase(owner.ctx, { name })
+      if (!created.ok) throw new Error('unreachable')
+      const schema = await getSchema(owner.ctx, created.value.dataSourceId)
+      if (!schema.ok) throw new Error('unreachable')
+      return { ...created.value, titleId: schema.value.properties.find((p) => p.type === 'title')!.id }
+    }
+    const projects = await table('계획')
+    const open = await table('공개 작업')
+    const closed = await table('비공개 작업')
+    const hoursOf = async (t: { dataSourceId: string }) => {
+      const added = await addProperty(owner.ctx, t.dataSourceId, { name: '시간', type: 'number' })
+      if (!added.ok) throw new Error(added.reason)
+      return added.value.properties.find((p) => p.name === '시간')!.id
+    }
+    const openHours = await hoursOf(open)
+    const closedHours = await hoursOf(closed)
+    const toOpen = await addRelationProperty(owner.ctx, projects.dataSourceId, { name: '공개', targetDataSourceId: open.dataSourceId })
+    const toClosed = await addRelationProperty(owner.ctx, projects.dataSourceId, { name: '비공개', targetDataSourceId: closed.dataSourceId })
+    if (!toOpen.ok || !toClosed.ok) throw new Error('relation')
+    const sumOpen = await addRollupProperty(owner.ctx, projects.dataSourceId, { name: '공개 합', relationPropertyId: toOpen.value.propertyId, targetPropertyId: openHours, function: 'sum' })
+    const avgOpen = await addRollupProperty(owner.ctx, projects.dataSourceId, { name: '공개 평균', relationPropertyId: toOpen.value.propertyId, targetPropertyId: openHours, function: 'average' })
+    const sumClosed = await addRollupProperty(owner.ctx, projects.dataSourceId, { name: '비공개 합', relationPropertyId: toClosed.value.propertyId, targetPropertyId: closedHours, function: 'sum' })
+    if (!sumOpen.ok || !avgOpen.ok || !sumClosed.ok) throw new Error('rollup')
+    const row = async (t: { dataSourceId: string; titleId: string }, title: string, cells: { propertyId: string; value: unknown }[] = []) => {
+      const made = await createRow(owner.ctx, t.dataSourceId, { cells: [{ propertyId: t.titleId, value: { type: 'title', title: [textRun(title)] } }, ...cells] as never })
+      if (!made.ok) throw new Error(made.reason)
+      return made.value.id
+    }
+    const hours = (p: string, n: number) => ({ propertyId: p, value: { type: 'number', number: n } })
+    const plan = await row(projects, '이사')
+    await row(projects, '빈 계획')
+    const [a, b, gone] = [await row(open, '짐', [hours(openHours, 2)]), await row(open, '청소', [hours(openHours, 4)]), await row(open, '버린 일', [hours(openHours, 100)])]
+    const secret = await row(closed, '숨은 일', [hours(closedHours, 7)])
+    assert.equal((await linkRows(owner.ctx, plan, toOpen.value.propertyId, { add: [a, b, gone] })).ok, true)
+    assert.equal((await linkRows(owner.ctx, plan, toClosed.value.propertyId, { add: [secret] })).ok, true)
+    assert.equal((await trashRow(owner.ctx, gone)).ok, true)
+    assert.equal((await stopInheriting(owner.ctx, closed.id)).ok, true)
+    assert.equal((await grantAccess(owner.ctx, closed.id, { type: 'user', id: owner.userId }, 'full_access')).ok, true)
+    assert.equal((await revokeAccess(owner.ctx, closed.id, { type: 'workspace_everyone', id: null })).ok, true)
+
+    const snapshot = await snap(member, { kind: 'workspace' })
+    const source = (snapshot.nodes.get(projects.id) as ExportDatabaseNode).sources[0]
+    assert.deepEqual(source.columns.filter((c) => c.type === 'rollup').map((c) => c.name), ['공개 합', '공개 평균', '비공개 합'])
+    const cells = pageOf(snapshot, plan).cells ?? {}
+    assert.deepEqual((cells[sumOpen.value.propertyId] as { cell?: unknown })?.cell, { state: 'ok', result: { kind: 'number', number: 6 }, hidden: 0 }, '휴지통은 빠진다')
+    assert.deepEqual((cells[sumClosed.value.propertyId] as { cell?: unknown })?.cell, { state: 'ok', result: { kind: 'number', number: 0 }, hidden: 1 }, '볼 수 없는 연결은 빼고 개수만')
+
+    const csv = planExport(snapshot, { untitled: '제목 없음' }).entries.find((e) => e.path === '계획.csv')
+    assert.ok(csv?.kind === 'text', JSON.stringify(csv))
+    const lines = csv.text.replace('\uFEFF', '').split('\r\n')
+    assert.equal(lines[0], '이름,공개,비공개,공개 합,공개 평균,비공개 합')
+    assert.ok(lines.includes('이사,"짐, 청소",(볼 수 없는 항목 1개),6,3,0 (볼 수 없는 항목 1개)'), JSON.stringify(lines))
+    assert.ok(lines.includes('빈 계획,,,0,,0'), '연결이 없으면 합 0 · 평균은 없음(빈 칸)')
   })
 })
 
