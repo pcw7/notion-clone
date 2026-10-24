@@ -62,7 +62,17 @@
 
 import { rowOpenHref } from '@/lib/database/open-pages'
 import Link from '@/app/link'
-import { useEffect, useMemo, useRef, useState, type FocusEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react'
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FocusEvent,
+  type KeyboardEvent,
+  type MouseEvent,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from 'react'
 import { useRouter } from 'next/navigation'
 
 import type { DatabaseAccess } from '@/lib/database/database'
@@ -122,6 +132,8 @@ import { RelationEditor } from './relation-editor'
 import { AddColumn } from './add-column'
 import { useTableChanges } from './use-table-changes'
 import { mergeReloaded } from '@/lib/database/live-rows'
+import { reorderRows, rowDropBefore, rowDropLineY, stepTarget, type RowBox } from '@/lib/database/row-drag'
+import { TAB_DRAG_THRESHOLD } from '@/lib/database/tab-drag'
 import { FormulaEditForm } from './formula-editor'
 import { ColumnMenu } from './column-menu'
 import { ButtonCell } from './button-cell'
@@ -483,6 +495,22 @@ export function DatabaseTable(props: {
     // (`select-editor.tsx` 머리말).
     if (event.defaultPrevented) return
     const before = modeRef.current
+    // 행 옮기기(10n-60) — 칸을 고른 채 Alt+↑ · Alt+↓. 표의 키 규칙은 Alt 조합을 쓰지 않는다(`grid-nav.ts`)
+    if (
+      canReorder &&
+      before.kind === 'selected' &&
+      event.altKey &&
+      !event.shiftKey &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      (event.key === 'ArrowUp' || event.key === 'ArrowDown')
+    ) {
+      event.preventDefault()
+      const ids = rowsRef.current.map((r) => r.id)
+      const target = stepTarget(ids, before.at.row, event.key === 'ArrowUp' ? 'up' : 'down', hasMore)
+      if (target !== undefined) moveRowTo(ids[before.at.row]!, target)
+      return
+    }
     const result = handleGridKey(
       before,
       {
@@ -1258,6 +1286,101 @@ export function DatabaseTable(props: {
     setHasMore(result.value.hasMore)
   }
 
+  // ── 행 끌기(10n-60 · F-04-01 · HANDOFF §3.2-296) ──────────────────
+  /**
+   * 손으로 둔 차례를 바꿀 수 있는가 — 고칠 수 있고 · 정렬이 없고(정렬이 차례를 정한다 · 서버도 `sorted` 로 거부) · 표 · 목록이고 · 하위 항목
+   * 트리가 아니다(펼친 자식 묶음을 함께 옮기는 규칙은 아직 없다 — §7). 서버는 이 뷰의 `row_position('*')` 에 둔다(10n-59).
+   */
+  const canReorder = access.canEditContent && props.sorts.length === 0 && (variant === 'table' || variant === 'list') && subItems === null
+  const scrollRef = useRef<HTMLDivElement>(null)
+  /** 잡은 행 · 잡은 y · 끌기가 시작됐는가(4px 를 넘었다). */
+  const rowGrab = useRef<{ id: string; startY: number; active: boolean } | null>(null)
+  const [draggingRow, setDraggingRow] = useState<string | null>(null)
+  /** 놓일 자리의 가로 줄 — 표 틀의 위에서 잰 y. */
+  const [rowLineY, setRowLineY] = useState<number | null>(null)
+  /**
+   * 보낼 옮기기의 줄 — 누를 때마다 화면은 바로 그 차례로 그리고, 요청은 차례로 보낸다(Alt+↓ 를 연달아 눌러도 버리지 않는다 · 서버가 받는
+   * 차례가 화면의 차례와 같다). 보내는 동안 표에 `aria-busy` 를 단다.
+   */
+  const moveChain = useRef<Promise<void>>(Promise.resolve())
+  const [pendingMoves, setPendingMoves] = useState(0)
+  const rowBoxes = (): RowBox[] =>
+    [...(scrollRef.current?.querySelectorAll<HTMLElement>('tbody tr[data-row-id]') ?? [])].map((el) => {
+      const r = el.getBoundingClientRect()
+      return { id: el.dataset.rowId ?? '', top: r.top, height: r.height }
+    })
+  /**
+   * 이 행을 `before` 앞에 — 화면을 먼저 그 차례로 그리고 보낸다. 거절되면 까닭을 말하고 서버의 차례를 다시 읽는다(뒤에 줄 선 옮기기가 있을 수
+   * 있어 "직전 화면으로 되돌리기" 는 틀린다). 새 차례는 표 변경 신호의 다시 읽기도 확인한다.
+   */
+  const moveRowTo = (rowId: string, before: string | null) => {
+    const previous = rowsRef.current
+    const next = reorderRows(previous, rowId, before)
+    if (next === previous) return
+    // 그사이 돌던 다시 읽기(옛 차례)를 버린다 · 선택은 행으로 지킨다(다시 읽기와 같다)
+    localWrites.current += 1
+    const current = modeRef.current
+    const selectedId = current.kind === 'selected' ? previous[current.at.row]?.id : undefined
+    const shown = [...next]
+    // 다음 키는 새 차례에서 센다 — 키(이산 입력)가 만든 효과는 커밋 끝에 바로 돌아 `rowsRef` 가 그 전에 맞춰진다(React 18)
+    setRows(shown)
+    if (current.kind === 'selected' && selectedId !== undefined) {
+      setMode({ kind: 'selected', at: { row: shown.findIndex((r) => r.id === selectedId), col: current.at.col } })
+    }
+    setPendingMoves((n) => n + 1)
+    moveChain.current = moveChain.current.then(async () => {
+      const result = await api.moveTableRow(workspaceId, viewId, rowId, before)
+      setPendingMoves((n) => n - 1)
+      if (!result.ok) {
+        setError(result.message)
+        void reload()
+      }
+    })
+  }
+  const onGripPointerDown = (event: ReactPointerEvent<HTMLButtonElement>, rowId: string) => {
+    if (!canReorder || event.button !== 0) return
+    // 칸 고르기(mousedown) · 글자 고르기로 번지지 않게
+    event.preventDefault()
+    rowGrab.current = { id: rowId, startY: event.clientY, active: false }
+  }
+  useEffect(() => {
+    if (!canReorder) return
+    const onPointerMove = (event: PointerEvent) => {
+      const g = rowGrab.current
+      if (g === null) return
+      if (!g.active && Math.abs(event.clientY - g.startY) <= TAB_DRAG_THRESHOLD) return
+      if (!g.active) {
+        g.active = true
+        setDraggingRow(g.id)
+      }
+      const y = rowDropLineY(rowBoxes(), g.id, event.clientY, hasMore)
+      const top = scrollRef.current?.getBoundingClientRect().top ?? 0
+      setRowLineY(y === null ? null : y - top)
+    }
+    const onPointerUp = (event: PointerEvent) => {
+      const g = rowGrab.current
+      rowGrab.current = null
+      if (g === null || !g.active) return
+      setDraggingRow(null)
+      setRowLineY(null)
+      const before = rowDropBefore(rowBoxes(), g.id, event.clientY, hasMore)
+      if (before !== undefined) moveRowTo(g.id, before)
+    }
+    const onPointerCancel = () => {
+      rowGrab.current = null
+      setDraggingRow(null)
+      setRowLineY(null)
+    }
+    window.addEventListener('pointermove', onPointerMove)
+    window.addEventListener('pointerup', onPointerUp)
+    window.addEventListener('pointercancel', onPointerCancel)
+    return () => {
+      window.removeEventListener('pointermove', onPointerMove)
+      window.removeEventListener('pointerup', onPointerUp)
+      window.removeEventListener('pointercancel', onPointerCancel)
+    }
+  })
+
   // ── 그리기 ─────────────────────────────────────────────────────────
 
   const focusTarget: CellPos | null =
@@ -1278,12 +1401,22 @@ export function DatabaseTable(props: {
         자손**은 자르지도 스크롤하지도 않는다. 칸의 스크린 리더 글자(`sr-only` — absolute)가 그렇게 틀을 빠져나가
         표 폭만큼 문서를 넓혔다.
       */}
-      <div className="relative overflow-x-auto" data-testid="db-table-scroll">
+      <div ref={scrollRef} className="relative overflow-x-auto" data-testid="db-table-scroll">
+        {rowLineY !== null && (
+          <div
+            aria-hidden
+            data-testid="db-row-drop-line"
+            style={{ top: rowLineY - 1 }}
+            className="pointer-events-none absolute left-0 right-0 z-10 h-0.5 bg-blue-500"
+          />
+        )}
         <table
           role="grid"
           aria-label={tableName || '제목 없음'}
           aria-rowcount={rows.length + 1}
           data-testid="db-table"
+          // 행 옮기기를 보내는 중(10n-60)
+          aria-busy={pendingMoves > 0 || undefined}
           data-variant={variant}
           onKeyDown={onKeyDown}
           style={isList || isRecordRow ? undefined : { width: totalWidth }}
@@ -1353,6 +1486,8 @@ export function DatabaseTable(props: {
                 role="row"
                 data-row-id={row.id}
                 data-depth={subItems === null ? undefined : (depthOf.get(row.id) ?? 0)}
+                data-dragging={draggingRow === row.id ? 'true' : undefined}
+                style={draggingRow === row.id ? { opacity: 0.5 } : undefined}
                 className={
                   isList
                     ? 'flex items-center gap-1 border-b border-neutral-100 hover:bg-neutral-50 dark:border-neutral-900 dark:hover:bg-neutral-900/60'
@@ -1452,6 +1587,20 @@ export function DatabaseTable(props: {
                         // 하위 항목의 깊이만큼 들인다(2b-2). 토글이 없는 행도 같은 폭을 비워 제목이 줄을 맞춘다.
                         style={subItems === null ? undefined : { paddingLeft: (depthOf.get(row.id) ?? 0) * 20 }}
                       >
+                        {canReorder && (
+                          // 끌기 손잡이(10n-60) — 마우스를 올리면 선다. 키보드는 칸을 고르고 Alt+↑ · Alt+↓(표의 onKeyDown). 칸 고르기로 번지지 않게 막는다.
+                          // 글리프는 CSS 로 그린다("열기" 와 같다) — 칸의 글자(textContent)에 섞이지 않게.
+                          <button
+                            type="button"
+                            data-testid="db-row-grip"
+                            aria-label={`${row.title || '제목 없음'} 끌어서 옮기기`}
+                            title="끌어서 옮기기 · 칸을 고르고 Alt+↑ · Alt+↓"
+                            tabIndex={-1}
+                            onMouseDown={(e) => e.stopPropagation()}
+                            onPointerDown={(e) => onGripPointerDown(e, row.id)}
+                            className="-ml-1 w-3 shrink-0 cursor-grab touch-none text-xs leading-none text-neutral-400 opacity-0 after:content-['⋮⋮'] hover:text-neutral-700 group-hover/title:opacity-100 touch:opacity-100 dark:hover:text-neutral-200"
+                          />
+                        )}
                         {subItems !== null &&
                           (childCount(row) > 0 || expanded.has(row.id) ? (
                             <button

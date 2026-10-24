@@ -112,6 +112,9 @@ function messageOf(status: number, body: ErrorBody): string {
       return '지원하지 않는 뷰 종류입니다.'
     case 'invalid_value':
       return '요청 값을 확인하세요.'
+    // ── 행 차례 (10n-60) ──
+    case 'sorted':
+      return '정렬이 걸린 뷰에서는 행을 끌어 옮길 수 없습니다. 정렬을 지우면 손으로 둔 차례가 돌아옵니다.'
     // ── 템플릿 (6c) ──
     case 'too_many':
       return '템플릿을 더 만들 수 없습니다.'
@@ -194,6 +197,15 @@ export function moveViewTab(workspaceId: string, viewId: string, before: string 
     `${base(workspaceId)}/views/${viewId}`,
     { method: 'PATCH', headers: JSON_HEADERS, body: JSON.stringify({ position: { before } }) },
     (body) => (Array.isArray(body.order) ? (body.order as string[]) : []),
+  )
+}
+
+/** 행의 차례를 바꾼다 — 이 행을 `before` 앞에(null 이면 맨 뒤) · 10n-60(서버는 10n-59 `moveViewRow`). */
+export function moveTableRow(workspaceId: string, viewId: string, rowId: string, before: string | null): Promise<ApiResult<null>> {
+  return call(
+    `${base(workspaceId)}/views/${viewId}/rows`,
+    { method: 'PATCH', headers: JSON_HEADERS, body: JSON.stringify({ rowId, beforeRowId: before }) },
+    () => null,
   )
 }
 
