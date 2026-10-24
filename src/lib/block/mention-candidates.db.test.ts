@@ -17,6 +17,8 @@ import { createBareWorkspace, createUser, joinAs, probeDatabase, type Actor } fr
 import { loadMentionLabels, mentionIdsOf, searchMentionCandidates } from './mention-candidates.ts'
 import { createPage, titleFromPlainText } from './page.ts'
 import { trashPage } from './trash.ts'
+import { recordVisit } from '../nav/recent.ts'
+import { MENTION_PEOPLE_EMPTY } from './mention-rank.ts'
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'
 let skipReason = ''
@@ -99,6 +101,46 @@ describe('후보', () => {
     assert.deepEqual(labelsOf((await searchMentionCandidates(owner.ctx, '지워질')).filter((c) => c.kind === 'page')), [])
     assert.deepEqual(labelsOf((await searchMentionCandidates(owner.ctx, '50%')).filter((c) => c.kind === 'page')), ['50% 할인'])
     assert.deepEqual(labelsOf((await searchMentionCandidates(owner.ctx, '5_%')).filter((c) => c.kind === 'page')), [], '`_` 는 와일드카드가 아니다')
+  })
+})
+
+describe('차례 (10n-71)', () => {
+  const pagesOf = (list: readonly { kind: string; label: string }[]) => list.filter((c) => c.kind === 'page').map((c) => c.label)
+
+  test('★ 빈 @ — 내가 최근 연 페이지가 먼저(나중에 고친 페이지보다) · 연 적 없는 것은 그 뒤에 최근 고친 순서 · 남의 방문은 차례에 없다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { owner, member } = await workspace()
+    const a = await mk(owner, '가 문서')
+    const b = await mk(owner, '나 문서')
+    await mk(owner, '다 문서') // 가장 나중에 만들었다(고친 시각이 가장 늦다)
+    const d = await mk(owner, '라 문서')
+    await recordVisit(owner.ctx, a)
+    await recordVisit(owner.ctx, b)
+    await recordVisit(member.ctx, d) // 남의 방문
+    assert.deepEqual(pagesOf(await searchMentionCandidates(owner.ctx, '')), ['나 문서', '가 문서', '라 문서', '다 문서'])
+  })
+
+  test('★ 글자 — 제목이 그 글자로 시작하는 것이 먼저(연 적 없어도) · 같은 무리 안에서는 최근 연 순서', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { owner } = await workspace()
+    const inner = await mk(owner, '새 온보딩')
+    await mk(owner, '온보딩 가이드')
+    const check = await mk(owner, '온보딩 체크')
+    await recordVisit(owner.ctx, inner)
+    await recordVisit(owner.ctx, check)
+    assert.deepEqual(pagesOf(await searchMentionCandidates(owner.ctx, '온보')), ['온보딩 체크', '온보딩 가이드', '새 온보딩'])
+  })
+
+  test('★ 멤버가 많아도 빈 @ 에 페이지가 보인다 — 사람은 몇 명까지만 · 이름순', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { owner } = await workspace()
+    for (let i = 0; i < 24; i += 1) await joinAs(owner.ctx.workspaceId, await createUser(`사람${String(i).padStart(2, '0')}`), 'member')
+    await mk(owner, '최근 문서')
+    const empty = await searchMentionCandidates(owner.ctx, '')
+    const people = empty.filter((c) => c.kind === 'user').map((c) => c.label)
+    assert.equal(people.length, MENTION_PEOPLE_EMPTY)
+    assert.deepEqual(people, [...people].sort((x, y) => x.localeCompare(y, 'ko')), '이름순')
+    assert.ok(pagesOf(empty).includes('최근 문서'), '사람이 자리를 다 채웠다')
   })
 })
 

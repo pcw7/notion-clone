@@ -16,6 +16,14 @@
  * 사람 후보는 워크스페이스 멤버 목록이다(`listMembers` — 나간 사람은 빠진다). 이름 · 이메일 부분 일치.
  *
  * ──────────────────────────────────────────────────────────────────────
+ * 차례 (10n-71 · HANDOFF §3.2-304)
+ * ──────────────────────────────────────────────────────────────────────
+ *
+ * 07 *"최근 항목이 기본 노출"*. 페이지는 ① 글자가 있으면 제목이 그 글자로 시작하는 것 먼저 ② **내가 최근 연 순서**(`recent_visit` —
+ * 사이드바의 최근과 같은 기록) ③ 연 적 없으면 최근 고친 순서. 사람은 그 글자로 시작하는 이름 먼저 · 이름순이고 몇 명까지만 앞에 선다
+ * (`mention-rank.ts` — 사람이 상한을 다 채우면 페이지가 안 보인다).
+ *
+ * ──────────────────────────────────────────────────────────────────────
  * 이름 맵 — 노드에는 id 뿐이다
  * ──────────────────────────────────────────────────────────────────────
  *
@@ -40,6 +48,7 @@ import { canListMembers, listMembers } from '../workspace/list.ts'
 import { emojiLabelsIn } from '../emoji/custom-emoji.ts'
 import { plainTitleOf } from './page.ts'
 import { readPageIcon, type PageIcon } from './page-icon.ts'
+import { mentionPeopleCap, rankMentionPeople } from './mention-rank.ts'
 
 /** 07 F-07-08: "후보 조회는 반드시 상한(예: 20건)". */
 export const MENTION_CANDIDATE_LIMIT = 20
@@ -56,11 +65,20 @@ export type MentionCandidate = {
 
 /** `%` · `_` · `\` 를 이스케이프한 부분 일치 패턴. 사용자 입력이 패턴 문법으로 읽히지 않게 한다. */
 function containsPattern(query: string): string {
-  return `%${query.replace(/[\\%_]/g, (c) => `\\${c}`)}%`
+  return `%${escapeLike(query)}%`
+}
+
+/** 그 글자로 시작하는 패턴(10n-71 — 차례의 첫 열쇠). */
+function prefixPattern(query: string): string {
+  return `${escapeLike(query)}%`
+}
+
+function escapeLike(query: string): string {
+  return query.replace(/[\\%_]/g, (c) => `\\${c}`)
 }
 
 /**
- * `@` 뒤의 쿼리로 후보를 찾는다. 빈 쿼리면 사람 전부(상한까지)와 최근 고친 페이지다 — 07: *"최근 항목이 기본 노출"*.
+ * `@` 뒤의 쿼리로 후보를 찾는다. 빈 쿼리면 사람 몇 명과 내가 최근 연 페이지다 — 07: *"최근 항목이 기본 노출"*(차례는 머리말).
  */
 export async function searchMentionCandidates(
   ctx: SessionContext,
@@ -72,9 +90,8 @@ export async function searchMentionCandidates(
 
   // 게스트는 사람 후보를 받지 않는다(7d-2) — 멤버 목록을 받을 수 없는 사람에게 `@` 가 그 목록을 흘리면 안 된다. 페이지 후보는
   // 원래 권한으로 거른다(아래).
-  const members = (canListMembers(ctx.role) ? await listMembers(ctx.workspaceId) : [])
-    .filter((m) => query === '' || m.name.toLowerCase().includes(query) || (m.email ?? '').toLowerCase().includes(query))
-    .slice(0, cap)
+  const members = rankMentionPeople(canListMembers(ctx.role) ? await listMembers(ctx.workspaceId) : [], query)
+    .slice(0, Math.min(cap, mentionPeopleCap(query)))
     .map((m): MentionCandidate => ({ kind: 'user', id: m.userId, label: m.name, icon: null }))
 
   const pages = await withReadTransaction(async (tx) => {
@@ -84,6 +101,8 @@ export async function searchMentionCandidates(
       `SELECT s.doc_id, s.title_text,
               (SELECT b.format -> 'page_icon' FROM block b WHERE b.id = s.doc_id) AS page_icon
          FROM search_document s
+         -- 내가 최근 연 기록(10n-71) — 차례에만 쓴다(거르지 않는다)
+         LEFT JOIN recent_visit rv ON rv.user_id = $6 AND rv.workspace_id = s.workspace_id AND rv.block_id = s.doc_id
         WHERE s.workspace_id = $1
           AND s.perm_scope_id = ANY($2::uuid[])   -- ★ 권한. 후처리가 아니다
           AND s.in_trash = false
@@ -92,9 +111,11 @@ export async function searchMentionCandidates(
           -- 주소로 열므로(\`openPage\`) 데이터베이스를 후보에 넣으면 칩이 열리지 않는다 — 칩이 종류를 아는 조각과 함께 넣는다
           AND s.type = 'page'
           AND ($3 = '' OR s.title_text ILIKE $4)
-        ORDER BY coalesce(s.last_edited_at, s.created_at, 'epoch'::timestamptz) DESC, s.doc_id
+        ORDER BY ($3 <> '' AND s.title_text ILIKE $7) DESC,   -- 그 글자로 시작하는 제목 먼저
+                 rv.last_visited_at DESC NULLS LAST,          -- 내가 최근 연 순서
+                 coalesce(s.last_edited_at, s.created_at, 'epoch'::timestamptz) DESC, s.doc_id
         LIMIT $5`,
-      [ctx.workspaceId, scopes, query, containsPattern(query), cap],
+      [ctx.workspaceId, scopes, query, containsPattern(query), cap, ctx.userId, prefixPattern(query)],
     )
     return rows.map((r): MentionCandidate => ({ kind: 'page', id: r.doc_id, label: r.title_text ?? '', icon: readPageIcon(r.page_icon) }))
   })
