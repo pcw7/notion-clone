@@ -325,9 +325,13 @@ export function RollupDisplay({ cell, info }: { cell: RollupCell | undefined; in
         ? result.percent === null
           ? ''
           : `${Math.round(result.percent * 1000) / 10}%`
-        : result.date === null
-          ? ''
-          : cellText({ type: 'date', date: { start: result.date } })
+        : result.kind === 'days'
+          ? result.days === null
+            ? ''
+            : `${result.days}일`
+          : result.date === null
+            ? ''
+            : cellText({ type: 'date', date: { start: result.date } })
 
   if (text === '' && hidden === null) return null
   return (

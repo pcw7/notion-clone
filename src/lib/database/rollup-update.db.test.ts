@@ -115,7 +115,7 @@ describe('rollup 고치기 (10n-31)', () => {
   test('④ 거부 — 모르는 계산 · 롤업이 아닌 속성', async (t) => {
     if (skipReason) return t.skip(skipReason)
     const w = await world()
-    assert.equal(reasonOf(await updateRollupProperty(w.boss.ctx, w.projects.dataSourceId, w.rollup, { function: 'median' })), 'invalid_config')
+    assert.equal(reasonOf(await updateRollupProperty(w.boss.ctx, w.projects.dataSourceId, w.rollup, { function: 'p99' })), 'invalid_config')
     assert.equal(reasonOf(await updateRollupProperty(w.boss.ctx, w.projects.dataSourceId, w.toNotes, { function: 'count' })), 'not_found', 'relation 속성')
     assert.deepEqual(await w.result(), { kind: 'number', number: 6 }, '그대로')
   })

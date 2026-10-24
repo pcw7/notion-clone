@@ -3,7 +3,8 @@
  *
  * 이 파일이 지키는 것.
  *
- *   ① 함수 11종 — 대상 타입이 고를 수 있는 것을 정하고, 맞지 않는 함수는 읽을 때 `show_original` 로 접힌다
+ *   ① 함수 23종(03 의 22종 + 완료 비율 · 나머지 11종은 10n-32) — 대상 타입이 고를 수 있는 것을 정하고, 맞지 않는 함수는 읽을 때
+ *      `show_original` 로 접힌다
  *   ② **0 과 "없음"은 다르다**(F-03-11 엣지 케이스 표) — 연결 0개의 sum 은 0, average · min · max · percent 는 없음
  *   ③ null 이 섞이면 sum · average 는 무시한다 · count 는 전체, count_values 는 빈 값이 아닌 것만
  *   ④ 체크박스의 `false` 는 빈 값이 아니다 — count_values 에 세고, percent 의 분모에 든다
@@ -39,22 +40,23 @@ const day = (start: string | null): CellValue => ({ type: 'date', date: start ==
 const text = (s: string): CellValue => ({ type: 'rich_text', rich_text: s === '' ? [] : [textRun(s)] })
 
 describe('① 함수와 대상 타입', () => {
-  test('함수는 12종이다(완료 비율은 10n-29)', () => {
-    assert.equal(ROLLUP_FUNCTIONS.length, 12)
+  test('함수는 23종이다 — 03 의 22종(API enum) + 완료 비율(10n-29) · 나머지 11종은 10n-32', () => {
+    assert.equal(ROLLUP_FUNCTIONS.length, 23)
     assert.equal(isRollupFunction('sum'), true)
-    assert.equal(isRollupFunction('median'), false)
+    assert.equal(isRollupFunction('median'), true)
+    assert.equal(isRollupFunction('p99'), false)
     assert.equal(isRollupFunction(null), false)
   })
 
   test('★ 타입이 고를 수 있는 함수를 정한다 — 공통 셋 + 타입별', () => {
-    const common = ['show_original', 'count', 'count_values']
+    const common = ['show_original', 'show_unique', 'count', 'count_values', 'unique', 'empty', 'not_empty', 'percent_empty', 'percent_not_empty']
     assert.deepEqual(rollupFunctionsFor('rich_text'), common)
     assert.deepEqual(rollupFunctionsFor('title'), common)
     assert.deepEqual(rollupFunctionsFor('select'), common)
     assert.deepEqual(rollupFunctionsFor('status'), [...common, 'percent_complete'], 'status 는 완료 비율(10n-29)')
-    assert.deepEqual(rollupFunctionsFor('number'), [...common, 'sum', 'average', 'min', 'max'])
-    assert.deepEqual(rollupFunctionsFor('checkbox'), [...common, 'checked', 'percent_checked'])
-    assert.deepEqual(rollupFunctionsFor('date'), [...common, 'earliest_date', 'latest_date'])
+    assert.deepEqual(rollupFunctionsFor('number'), [...common, 'sum', 'average', 'median', 'min', 'max', 'range'])
+    assert.deepEqual(rollupFunctionsFor('checkbox'), [...common, 'checked', 'unchecked', 'percent_checked', 'percent_unchecked'])
+    assert.deepEqual(rollupFunctionsFor('date'), [...common, 'earliest_date', 'latest_date', 'date_range'])
   })
 
   test('모든 함수는 어느 타입에선가 고를 수 있다 — 고를 수 없는 함수는 죽은 코드다', () => {
@@ -219,7 +221,7 @@ describe('⑦ config 읽기', () => {
   })
 
   test('★ 모르는 함수는 기본 함수로 읽는다 — 카탈로그를 줄이는 날에도 표가 열린다', () => {
-    assert.equal(readRollupConfig({ relation_property_id: 'r', target_property_id: 't', function: 'median' })?.function, 'show_original')
+    assert.equal(readRollupConfig({ relation_property_id: 'r', target_property_id: 't', function: 'p99' })?.function, 'show_original')
     assert.equal(readRollupConfig({ relation_property_id: 'r', target_property_id: 't' })?.function, 'show_original')
   })
 
@@ -283,5 +285,97 @@ describe('완료 비율 (10n-29)', () => {
   test('select 에는 고를 수 없다 — 읽을 때 원본 보기로 접힌다', () => {
     assert.equal(effectiveRollupFunction('percent_complete', 'select'), 'show_original')
     assert.equal(effectiveRollupFunction('percent_complete', 'status'), 'percent_complete')
+  })
+})
+
+describe('나머지 함수 11종 (10n-32)', () => {
+  const sel = (id: string | null): CellValue => ({ type: 'select', select: id === null ? null : { id } })
+
+  test('★ 고유 값 보기 — 빈 값을 빼고 처음 나온 순서로 · 같은 값의 두 번째부터 뺀다', () => {
+    assert.deepEqual(aggregate('show_unique', [text('나'), text(''), text('가'), text('나'), text('가')]), {
+      kind: 'values',
+      values: [text('나'), text('가')],
+      count: 2,
+    })
+    assert.deepEqual(aggregate('show_unique', []), { kind: 'values', values: [], count: 0 })
+  })
+
+  test(`고유 값 보기도 앞 ${ROLLUP_SHOW_LIMIT}개만 — 개수는 고유한 것 전체`, () => {
+    const many = Array.from({ length: ROLLUP_SHOW_LIMIT + 3 }, (_, i) => num(i))
+    const result = aggregate('show_unique', [...many, ...many])
+    assert.equal(result.kind === 'values' ? result.values.length : -1, ROLLUP_SHOW_LIMIT)
+    assert.equal(result.kind === 'values' ? result.count : -1, ROLLUP_SHOW_LIMIT + 3)
+  })
+
+  test('★ 고유 값 개수 — 적힌 값으로 가른다: 옵션은 id · 날짜는 적힌 그대로 · 체크박스는 참 · 거짓', () => {
+    assert.deepEqual(aggregate('unique', [sel('a'), sel('b'), sel('a'), sel(null)]), { kind: 'number', number: 2 })
+    assert.deepEqual(aggregate('unique', [day('2026-01-05'), day('2026-01-05T00:00:00Z'), day('2026-01-05')]), { kind: 'number', number: 2 })
+    assert.deepEqual(aggregate('unique', [box(false), box(false), box(true)]), { kind: 'number', number: 2 }, 'false 도 값이다')
+    assert.deepEqual(aggregate('unique', [num(0), num(0), num(null)]), { kind: 'number', number: 1 }, '0 은 값 · 빈 칸은 아니다')
+    assert.deepEqual(aggregate('unique', []), { kind: 'number', number: 0 })
+  })
+
+  test('★ 빈 칸 · 값이 있는 개수 · 그 비율 — 비율은 연결 0개면 없음', () => {
+    const values = [num(1), num(null), num(null), num(0)]
+    assert.deepEqual(aggregate('empty', values), { kind: 'number', number: 2 })
+    assert.deepEqual(aggregate('not_empty', values), { kind: 'number', number: 2 })
+    assert.deepEqual(aggregate('percent_empty', values), { kind: 'percent', percent: 0.5 })
+    assert.deepEqual(aggregate('percent_not_empty', [num(1), num(null), num(2)]), { kind: 'percent', percent: 0.666666666666667 })
+    assert.deepEqual(aggregate('percent_empty', []), { kind: 'percent', percent: null })
+    assert.deepEqual(aggregate('percent_not_empty', []), { kind: 'percent', percent: null })
+    assert.deepEqual(aggregate('empty', [box(false)]), { kind: 'number', number: 0 }, '체크박스에는 빈 값이 없다')
+  })
+
+  test('값 개수는 값의 수 — 칸당 값 하나인 타입에서는 값이 있는 개수와 같다 · 사람은 하나씩', () => {
+    const values = [text('가'), text(''), text('나')]
+    assert.deepEqual(aggregate('count_values', values), aggregate('not_empty', values))
+    const people = (n: number): CellValue => ({ type: 'people', people: Array.from({ length: n }, (_, i) => ({ id: `u${i}` })) })
+    assert.deepEqual(aggregate('count_values', [people(2), people(0), people(1)]), { kind: 'number', number: 3 })
+    assert.deepEqual(aggregate('not_empty', [people(2), people(0), people(1)]), { kind: 'number', number: 2 })
+  })
+
+  test('★ 중앙값 — 가운데 · 짝수면 가운데 둘의 평균 · 빈 칸은 무시 · 값이 없으면 없음', () => {
+    assert.deepEqual(aggregate('median', [num(10), num(1), num(2)]), { kind: 'number', number: 2 })
+    assert.deepEqual(aggregate('median', [num(10), num(1), num(null), num(2), num(4)]), { kind: 'number', number: 3 })
+    assert.deepEqual(aggregate('median', [num(0.1), num(0.2)]), { kind: 'number', number: 0.15 })
+    assert.deepEqual(aggregate('median', [num(-5)]), { kind: 'number', number: -5 })
+    assert.deepEqual(aggregate('median', [num(null)]), { kind: 'number', number: null })
+    assert.deepEqual(aggregate('median', []), { kind: 'number', number: null })
+  })
+
+  test('★ 범위 — 최댓값 − 최솟값 · 하나면 0 · 값이 없으면 없음', () => {
+    assert.deepEqual(aggregate('range', [num(4), num(-1), num(null), num(10)]), { kind: 'number', number: 11 })
+    assert.deepEqual(aggregate('range', [num(7)]), { kind: 'number', number: 0 })
+    assert.deepEqual(aggregate('range', [num(0.3), num(0.1)]), { kind: 'number', number: 0.2 })
+    assert.deepEqual(aggregate('range', []), { kind: 'number', number: null })
+  })
+
+  test('★ 체크 안 된 개수 · 비율 — 비율은 연결 0개면 없음', () => {
+    const values = [box(true), box(false), box(false), box(true), box(false)]
+    assert.deepEqual(aggregate('unchecked', values), { kind: 'number', number: 3 })
+    assert.deepEqual(aggregate('percent_unchecked', values), { kind: 'percent', percent: 0.6 })
+    assert.deepEqual(aggregate('unchecked', []), { kind: 'number', number: 0 })
+    assert.deepEqual(aggregate('percent_unchecked', []), { kind: 'percent', percent: null })
+  })
+
+  test('★ 날짜 범위 — 가장 늦은 시작 − 가장 이른 시작(일) · 끝은 보지 않는다 · 날짜가 없으면 없음', () => {
+    assert.deepEqual(aggregate('date_range', [day('2026-03-10'), day(null), day('2026-01-05'), day('2026-02-01')]), { kind: 'days', days: 64 })
+    assert.deepEqual(aggregate('date_range', [day('2026-01-05')]), { kind: 'days', days: 0 }, '하나면 0일')
+    const long: CellValue = { type: 'date', date: { start: '2026-01-01', end: '2026-12-31' } }
+    assert.deepEqual(aggregate('date_range', [long, day('2026-01-03')]), { kind: 'days', days: 2 }, '끝(12-31)은 보지 않는다')
+    assert.deepEqual(aggregate('date_range', [day('2026-01-05T00:00:00Z'), day('2026-01-06T23:00:00Z')]), { kind: 'days', days: 2 }, '47시간은 2일로 반올림')
+    assert.deepEqual(aggregate('date_range', []), { kind: 'days', days: null })
+  })
+
+  test('날짜 범위의 없음은 비었고 0일은 값이다', () => {
+    assert.equal(rollupIsEmpty({ state: 'ok', result: { kind: 'days', days: null }, hidden: 0 }), true)
+    assert.equal(rollupIsEmpty({ state: 'ok', result: { kind: 'days', days: 0 }, hidden: 0 }), false)
+  })
+
+  test('타입에 맞지 않으면 읽을 때 접힌다 — 중앙값 × 글 · 날짜 범위 × 숫자', () => {
+    assert.equal(effectiveRollupFunction('median', 'rich_text'), 'show_original')
+    assert.equal(effectiveRollupFunction('date_range', 'number'), 'show_original')
+    assert.equal(effectiveRollupFunction('percent_unchecked', 'checkbox'), 'percent_unchecked')
+    assert.equal(effectiveRollupFunction('show_unique', 'select'), 'show_unique')
   })
 })

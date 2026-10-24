@@ -20421,6 +20421,67 @@ async function main() {
       await key('Escape')
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('롤업의 나머지 계산 (10n-32 · F-03-11)')) { try {
+      // 03 의 22종(API enum)이 모두 선다 — 날짜 범위의 칸은 "N일" · 고유 값 보기는 같은 글을 한 번만 · 숫자 대상의 "계산 바꾸기" 목록에
+      // 중앙값 · 범위(날짜 범위는 없다) · 중앙값을 고르면 칸이 중앙값. 정본 §3.5 [보강] rollup v1 — [보강 10n-32].
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const clickOn = async (selector) => {
+        const p = await evaluate(`(() => {
+          const e = document.querySelector(${JSON.stringify(selector)})
+          if (!e) return null
+          e.scrollIntoView({ block: 'center' })
+          const r = e.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (p) await click(p.x, p.y)
+        return p !== null
+      }
+      const projects = (await api('POST', '/databases', { name: `나머지 계산 프로젝트 ${stamp}` })).body.database
+      const tasks = (await api('POST', '/databases', { name: `나머지 계산 작업 ${stamp}` })).body.database
+      const prop = async (name, type) => (await api('POST', `/data-sources/${tasks.dataSourceId}/properties`, { name, type })).body.property.id
+      const hours = await prop('시간', 'number')
+      const memo = await prop('메모', 'rich_text')
+      const due = await prop('마감', 'date')
+      const made = (await api('POST', `/data-sources/${tasks.dataSourceId}/relations`, { name: '프로젝트', targetDataSourceId: projects.dataSourceId, twoWay: { name: '작업들' } })).body
+      const rollupOf = async (name, targetPropertyId, fn) =>
+        (await api('POST', `/data-sources/${projects.dataSourceId}/rollups`, { name, relationPropertyId: made.syncedPropertyId, targetPropertyId, function: fn })).body.property.id
+      const sum = await rollupOf('시간 합', hours, 'sum')
+      const span = await rollupOf('기간', due, 'date_range')
+      const memos = await rollupOf('메모들', memo, 'show_unique')
+      const project = (await api('POST', `/views/${projects.defaultViewId}/rows`, { cells: [] })).body.row.id
+      const linked = []
+      for (const [h, m, d] of [[1, '가', '2026-01-05'], [10, '나', '2026-01-25'], [2, '가', '2026-01-15']]) {
+        linked.push((await api('POST', `/views/${tasks.defaultViewId}/rows`, { cells: [
+          { propertyId: hours, value: { type: 'number', number: h } },
+          { propertyId: memo, value: { type: 'rich_text', rich_text: [textRun(m)] } },
+          { propertyId: due, value: { type: 'date', date: { start: d } } },
+        ] })).body.row.id)
+      }
+      await api('POST', `/rows/${project}/relations/${made.syncedPropertyId}`, { add: linked })
+      const cell = (p) => `tr[data-row-id="${project}"] td[data-property-id="${p}"]`
+      const valueOf = (p) => `(document.querySelector('${cell(p)} [data-testid="db-rollup-value"]')?.textContent.trim() ?? null)`
+      const chipsOf = (p) => `[...document.querySelectorAll('${cell(p)} [data-testid="db-rollup-chip"]')].map((e) => e.textContent.trim()).sort().join(',')`
+      const MENU = `th[data-property-id="${sum}"] [data-testid="db-column-menu"]`
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${projects.id}` })
+      await waitFor(`${valueOf(sum)} === '13'`, 15000)
+      check('★ 날짜 범위의 칸은 "N일" — 01-05 ~ 01-25 → 20일', await waitFor(`${valueOf(span)} === '20일'`, 10000), String(await evaluate(valueOf(span))))
+      check('★ 고유 값 보기는 같은 글을 한 번만 — 가 · 나 · 가 → 칩 둘', await waitFor(`${chipsOf(memos)} === '가,나'`, 10000), String(await evaluate(chipsOf(memos))))
+      await waitHydrated(MENU, 20000) // 서버가 그린 단추 — React 가 붙기 전의 클릭은 버려진다(10n-11)
+      await clickOn(MENU)
+      await waitFor(`!!document.querySelector('[data-testid="db-column-rollup-function"]')`, 3000)
+      await clickOn('[data-testid="db-column-rollup-function"]')
+      check('숫자 대상의 목록에 중앙값 · 범위가 선다 — 날짜 범위는 없다',
+        await waitFor(`!!document.querySelector('[data-testid="db-column-rollup-fn-median"]') && !!document.querySelector('[data-testid="db-column-rollup-fn-range"]')
+          && !document.querySelector('[data-testid="db-column-rollup-fn-date_range"]')`, 3000))
+      await clickOn('[data-testid="db-column-rollup-fn-median"]')
+      check('★ 중앙값을 고르면 칸이 중앙값 — 1 · 2 · 10 → 2', await waitFor(`${valueOf(sum)} === '2'`, 10000), String(await evaluate(valueOf(sum))))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).
