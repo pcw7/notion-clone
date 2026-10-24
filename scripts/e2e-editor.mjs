@@ -21055,6 +21055,66 @@ async function main() {
         String(await limitOnServer()))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('열 머리 메뉴의 포커스 (10n-43 · F-12-13)')) { try {
+      // 열 머리 메뉴를 열면 첫 항목으로 포커스 · ↑↓ · Home · End 로 항목 사이를 돈다 · Esc 로 닫히고 연 단추로 돌아온다 · 키보드(Enter)로도
+      // 연다 · 이름 바꾸기 칸에서 Esc 도 연 단추로. 전에는 '메뉴' 단계의 포커스가 연 단추에 남아 Esc 가 패널에 닿지 않았다(#424).
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const clickOn = async (selector) => {
+        const p = await evaluate(`(() => {
+          const e = document.querySelector(${JSON.stringify(selector)})
+          if (!e) return null
+          e.scrollIntoView({ block: 'center' })
+          const r = e.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (p) await click(p.x, p.y)
+        return p !== null
+      }
+      const pressEnter = async () => {
+        const base = { key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 }
+        await send('Input.dispatchKeyEvent', { type: 'keyDown', ...base, text: '\r', unmodifiedText: '\r' })
+        await send('Input.dispatchKeyEvent', { type: 'keyUp', ...base })
+      }
+      const db = (await api('POST', '/databases', { name: `머리 메뉴 포커스 ${stamp}` })).body.database
+      const qty = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '수량', type: 'number' })).body.property.id
+      const MENU = `th[data-property-id="${qty}"] [data-testid="db-column-menu"]`
+      const PANEL = '[data-testid="db-column-menu-panel"]'
+      const focusedItem = `(() => { const a = document.activeElement; const items = [...document.querySelectorAll('${PANEL} [role^="menuitem"]:not([disabled])')]; return items.indexOf(a) })()`
+      const itemCount = `document.querySelectorAll('${PANEL} [role^="menuitem"]:not([disabled])').length`
+      const onTrigger = `document.activeElement === document.querySelector('${MENU}') && !document.querySelector('${PANEL}')`
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      await waitHydrated(MENU, 20000) // 서버가 그린 단추 — React 가 붙기 전의 클릭은 버려진다(10n-11)
+      await clickOn(MENU)
+      check('★ 열면 첫 항목으로 포커스', await waitFor(`${focusedItem} === 0`, 3000), String(await evaluate(focusedItem)))
+      const count = await evaluate(itemCount)
+      await key('ArrowDown')
+      const afterDown = await evaluate(focusedItem)
+      await key('ArrowUp')
+      const afterUp = await evaluate(focusedItem)
+      await key('End')
+      const afterEnd = await evaluate(focusedItem)
+      await key('ArrowDown')
+      const wrapped = await evaluate(focusedItem)
+      check('★ ↓ · ↑ · End 로 항목 사이를 돈다 — 마지막에서 ↓ 는 처음', count > 2 && afterDown === 1 && afterUp === 0 && afterEnd === count - 1 && wrapped === 0,
+        JSON.stringify({ count, afterDown, afterUp, afterEnd, wrapped }))
+      await key('Escape')
+      check('★ Esc 로 닫히고 연 단추로 돌아온다', await waitFor(onTrigger, 3000))
+      await pressEnter()
+      check('키보드(Enter)로도 열고 첫 항목으로', await waitFor(`!!document.querySelector('${PANEL}') && ${focusedItem} === 0`, 3000))
+      // 이름 바꾸기까지 ↓ 로 옮겨 가 들어가면 입력칸 — 거기서 Esc 도 연 단추로(첫 항목은 정렬이다)
+      const renameAt = await evaluate(`[...document.querySelectorAll('${PANEL} [role^="menuitem"]:not([disabled])')].findIndex((e) => e.dataset.testid === 'db-column-rename')`)
+      for (let i = 0; i < renameAt; i += 1) await key('ArrowDown')
+      await pressEnter()
+      await waitFor(`document.activeElement?.tagName === 'INPUT' && !!document.activeElement.closest('${PANEL}')`, 3000)
+      await key('Escape')
+      check('이름 바꾸기 칸에서 Esc 도 닫고 연 단추로', await waitFor(onTrigger, 3000))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

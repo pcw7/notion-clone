@@ -41,6 +41,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { SortKey } from '@/lib/database/filter'
 import type { PropertyDependents } from '@/lib/database/property-dependents'
 import { AnchoredLayer } from '../../anchored-layer'
+import { nextMenuIndex } from '@/lib/ui/menu-nav'
 
 export function ColumnMenu({
   name,
@@ -122,13 +123,26 @@ export function ColumnMenu({
   }
 
   const panelRef = useRef<HTMLDivElement>(null)
+  /** 연 단추 — 메뉴가 닫히면 포커스를 돌려받는다(10n-43 · 안 돌려주면 Esc 뒤 포커스가 문서 처음으로 간다). */
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  // 닫히면(열려 있다가 꺼지면) 연 단추로 돌려준다 — 메뉴는 바깥을 눌러 닫히지 않는다(단추 · Esc · 항목 실행)라 늘 돌려줘도 된다. `close` 는 렌더 중에
+  // 편집기에 넘겨지므로 거기서 ref 를 읽지 않고 여기서 한다
+  const wasOpen = useRef(false)
   useEffect(() => {
-    if (step === 'rename') inputRef.current?.focus()
+    if (wasOpen.current && !open) triggerRef.current?.focus()
+    wasOpen.current = open
+  }, [open])
+  useEffect(() => {
+    if (!open) return
+    // '메뉴' 단계는 첫 항목으로(10n-43 · ARIA 메뉴 단추) — 전에는 포커스가 연 단추에 남아 패널의 Esc 가 닿지 않았고, 열린 패널이 첫 행의 칸을
+    // 덮은 채 남았다(#424 의 e2e 가 겪었다)
+    if (step === 'menu') panelRef.current?.querySelector<HTMLElement>('[role^="menuitem"]:not([disabled])')?.focus()
+    else if (step === 'rename') inputRef.current?.focus()
     else if (step === 'prefix') prefixRef.current?.focus()
     // 입력칸이 없는 단계(지우기 · 유형 바꾸기 · 손실 확인)는 누른 항목이 사라지면서 포커스가 패널 밖(body)으로 간다 — 그러면 패널의
     // Escape 가 닿지 않아 키보드로 닫을 수 없다(2j-1 의 검사가 찾았다). 패널로 옮긴다. 식 고치기는 편집기가 스스로 잡는다.
-    else if (step !== 'menu' && step !== 'formula' && step !== 'button' && step !== 'rollup-source') panelRef.current?.focus()
-  }, [step])
+    else if (step !== 'formula' && step !== 'button' && step !== 'rollup-source') panelRef.current?.focus()
+  }, [open, step])
 
   const close = () => {
     setOpen(false)
@@ -165,6 +179,7 @@ export function ColumnMenu({
   return (
     <span className="relative flex-none">
       <button
+        ref={triggerRef}
         type="button"
         aria-label={`${name} 속성 메뉴`}
         aria-expanded={open}
@@ -187,7 +202,16 @@ export function ColumnMenu({
             if (e.key === 'Escape' && !e.nativeEvent.isComposing) {
               e.preventDefault()
               close()
+              return
             }
+            // 항목 사이의 ↑↓ · Home · End(10n-43) — 포커스가 항목에 있을 때만(입력칸 · 편집기의 키는 그대로 둔다)
+            const items = [...(panelRef.current?.querySelectorAll<HTMLElement>('[role^="menuitem"]:not([disabled])') ?? [])]
+            const at = items.indexOf(document.activeElement as HTMLElement)
+            if (at < 0) return
+            const next = nextMenuIndex(at, items.length, e.key)
+            if (next === null) return
+            e.preventDefault()
+            items[next]?.focus()
           }}
           className={`flex ${
             step === 'formula' ? 'w-80' : step === 'button' ? 'w-96' : 'w-56'
