@@ -253,7 +253,7 @@ export function planExport(snapshot: ExportSnapshot, options: { readonly untitle
       },
     }
 
-    const doc = rowColumns === null ? page.doc : withPropertyLines(page.doc, rowColumns, page.cells ?? {})
+    const doc = rowColumns === null ? page.doc : withPropertyLines(page.doc, rowColumns, page.cells ?? {}, untitled)
     const result = pageToMarkdown({ title: page.title, doc }, links, { untitled })
     for (const key of Object.keys(losses) as (keyof Counters)[]) losses[key] += result.losses[key]
     entries.push({ kind: 'text', path: `${path}.md`, text: result.markdown })
@@ -301,7 +301,7 @@ export function planExport(snapshot: ExportSnapshot, options: { readonly untitle
       return row
     })
 
-    const table = tableToCsv(columns, rows.map((row) => ({ cells: row.cells ?? {} })))
+    const table = tableToCsv(columns, rows.map((row) => ({ cells: row.cells ?? {} })), untitled)
     guardedFormulas += table.guardedFormulas
     entries.push({ kind: 'text', path: `${path}.csv`, text: table.csv })
 
@@ -392,11 +392,12 @@ function withPropertyLines(
   doc: EditorDoc,
   columns: readonly CsvColumn[],
   cells: Readonly<Record<string, unknown>>,
+  untitled: string,
 ): EditorDoc {
   const runs: RichTextRun[] = []
   for (const column of columns) {
     if (column.type === 'title') continue
-    const value = cellPlainText(column, cells[column.propertyId])
+    const value = cellPlainText(column, cells[column.propertyId], untitled)
     if (value === '') continue
     if (runs.length > 0) runs.push(textRun('\n'))
     runs.push(textRun(column.name, { bold: true }), textRun(`: ${value}`))

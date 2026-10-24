@@ -8,6 +8,7 @@
  *   ③ **볼 수 있는 페이지는 빠지지 않는다** — 볼 수 없는 페이지 밑에 따로 공유된 페이지는 위로 올라온다
  *   ④ **실제 스냅샷을 조립에 넣으면 던지지 않는다** — 계약(`ExportSnapshot`)이 맞는다
  *   ⑤ **수식 칸**(10n-35) — 같은 트랜잭션에서 계산해 칸 묶음에 끼운다 · CSV · 행 Markdown 에 보이는 그대로 · 식이 읽히지 않으면 빈 칸
+ *   ⑥ **relation 칸**(10n-36) — 엣지에서 읽는다 · 볼 수 없는 표의 행은 개수만 · 휴지통은 빠진다 · 연결이 없으면 빈 칸
  */
 
 import { test, describe, before, after } from 'node:test'
@@ -21,13 +22,14 @@ import { trashPage } from '../block/trash.ts'
 import { textRun, toPlainText } from '../contracts/rich-text.ts'
 import { createDatabase } from '../database/database.ts'
 import { addProperty, addSelectOption, getSchema } from '../database/property.ts'
-import { createRow } from '../database/row.ts'
+import { createRow, trashRow } from '../database/row.ts'
 import type { EditorBlock, EditorDoc } from '../editor/document.ts'
 import { uploadFile } from '../file/file.ts'
 import { grantAccess, revokeAccess, stopInheriting } from '../permissions/acl.ts'
 import { planExport, type ExportDatabaseNode, type ExportPageNode, type ExportSnapshot } from './plan.ts'
 import { readExportSnapshot, type ExportScopeInput } from './snapshot.ts'
 import { addFormulaProperty } from '../database/formula-property.ts'
+import { addRelationProperty, linkRows } from '../database/relation.ts'
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'
 let skipReason = ''
@@ -291,6 +293,59 @@ describe('⑤ 수식 칸 (10n-35 · F-03-12)', () => {
     const rowMd = plan.entries.find((e) => e.kind === 'text' && e.path.endsWith('.md') && e.text.includes('가구'))
     assert.ok(rowMd?.kind === 'text' && rowMd.text.includes('**금액**: 150') && rowMd.text.includes('**큰 건**: No') && !rowMd.text.includes('**임시 수식**'),
       JSON.stringify(rowMd))
+  })
+})
+
+describe('⑥ relation 칸 (10n-36 · F-03-10)', () => {
+  test('★ 엣지에서 읽는다 — 볼 수 없는 표의 행은 개수만 · 휴지통은 빠진다 · 빈 제목 · 연결이 없으면 빈 칸', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { owner, member } = await freshWorkspace()
+    const table = async (name: string) => {
+      const created = await createDatabase(owner.ctx, { name })
+      if (!created.ok) throw new Error('unreachable')
+      const schema = await getSchema(owner.ctx, created.value.dataSourceId)
+      if (!schema.ok) throw new Error('unreachable')
+      return { ...created.value, titleId: schema.value.properties.find((p) => p.type === 'title')!.id }
+    }
+    const projects = await table('프로젝트')
+    const tasks = await table('작업')
+    const secrets = await table('비밀')
+    const row = async (t: { dataSourceId: string; titleId: string }, title: string) => {
+      const made = await createRow(owner.ctx, t.dataSourceId, { cells: title === '' ? [] : [{ propertyId: t.titleId, value: { type: 'title', title: [textRun(title)] } }] })
+      if (!made.ok) throw new Error(made.reason)
+      return made.value.id
+    }
+    const toTasks = await addRelationProperty(owner.ctx, projects.dataSourceId, { name: '작업들', targetDataSourceId: tasks.dataSourceId })
+    const toSecrets = await addRelationProperty(owner.ctx, projects.dataSourceId, { name: '비밀들', targetDataSourceId: secrets.dataSourceId })
+    if (!toTasks.ok || !toSecrets.ok) throw new Error('relation')
+    const project = await row(projects, '집')
+    const lonely = await row(projects, '빈 집')
+    const [a, b, gone, untitled] = [await row(tasks, '설계'), await row(tasks, '시공'), await row(tasks, '버린 일'), await row(tasks, '')]
+    const s = await row(secrets, '숨은 일')
+    assert.equal((await linkRows(owner.ctx, project, toTasks.value.propertyId, { add: [b, a, gone, untitled] })).ok, true)
+    assert.equal((await linkRows(owner.ctx, project, toSecrets.value.propertyId, { add: [s] })).ok, true)
+    assert.equal((await trashRow(owner.ctx, gone)).ok, true)
+    // "비밀" 표를 소유자만 보게 — 멤버에게는 개수만
+    assert.equal((await stopInheriting(owner.ctx, secrets.id)).ok, true)
+    assert.equal((await grantAccess(owner.ctx, secrets.id, { type: 'user', id: owner.userId }, 'full_access')).ok, true)
+    assert.equal((await revokeAccess(owner.ctx, secrets.id, { type: 'workspace_everyone', id: null })).ok, true)
+
+    const snapshot = await snap(member, { kind: 'workspace' })
+    const source = (snapshot.nodes.get(projects.id) as ExportDatabaseNode).sources[0]
+    assert.deepEqual(source.columns.filter((c) => c.type === 'relation').map((c) => c.name), ['작업들', '비밀들'])
+    const cells = pageOf(snapshot, project).cells ?? {}
+    assert.deepEqual(cells[toTasks.value.propertyId], { type: 'relation_titles', titles: ['시공', '설계', ''], hidden: 0 }, '칩 순서 · 휴지통은 빠진다')
+    assert.deepEqual(cells[toSecrets.value.propertyId], { type: 'relation_titles', titles: [], hidden: 1 }, '볼 수 없는 표의 행은 개수만')
+    assert.deepEqual(pageOf(snapshot, lonely).cells?.[toTasks.value.propertyId], { type: 'relation_titles', titles: [], hidden: 0 }, '연결이 없어도 캐시를 남기지 않는다')
+    assert.ok(!dump(snapshot).includes('숨은 일'), '볼 수 없는 제목은 스냅샷 어디에도 없다')
+
+    const plan = planExport(snapshot, { untitled: '제목 없음' })
+    const csv = plan.entries.find((e) => e.path === '프로젝트.csv')
+    assert.ok(csv?.kind === 'text', JSON.stringify(csv))
+    const lines = csv.text.replace('\uFEFF', '').split('\r\n')
+    assert.equal(lines[0], '이름,작업들,비밀들')
+    assert.ok(lines.includes('집,"시공, 설계, 제목 없음",(볼 수 없는 항목 1개)'), JSON.stringify(lines))
+    assert.ok(lines.includes('빈 집,,'), JSON.stringify(lines))
   })
 })
 
