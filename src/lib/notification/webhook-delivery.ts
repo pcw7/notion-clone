@@ -23,6 +23,7 @@ import { postJson, type OutboundResult } from '../net/outbound.ts'
 import { unsealWebhookUrl } from '../net/url-seal.ts'
 import { isPageActivityType } from './page-activity-types.ts'
 import { buildWebhookPayload, type PayloadEvent, type WebhookPayload } from './webhook-payload.ts'
+import { webhooksAllowedIn } from './webhook-switch.ts'
 
 /** 한 판에 잡는 묶음의 수. */
 export const DELIVERY_BATCH = 20
@@ -123,6 +124,8 @@ async function prepare(
     [delivery.webhook_id],
   )
   if (hook === undefined) return { drop: 'webhook_gone' }
+  // 워크스페이스 스위치(10n-70) — 끈 뒤에 이미 쌓인 것도 나가지 않는다
+  if (!(await webhooksAllowedIn({ query }, hook.workspace_id))) return { drop: 'webhooks_disabled' }
   if (hook.paused_at !== null) return { drop: 'paused' }
   if (hook.lifecycle !== 'live') return { drop: 'page_not_live' }
   const url = unsealWebhookUrl(hook.url_sealed)

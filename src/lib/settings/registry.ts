@@ -204,6 +204,19 @@ export const SETTINGS = [
     editors: OWNER,
   },
   {
+    // 웹훅 스위치(10n-70 · F-08-13) — 판정은 `notification/webhook-switch.ts` 가 읽는다(걸기 · 쌓기 · 보내기)
+    key: 'workspace.allow_webhooks',
+    scope: 'workspace',
+    section: 'workspace.security',
+    label: '웹훅',
+    description:
+      '페이지 웹훅과 자동화 · 버튼의 "웹훅 보내기" 가 이 워크스페이스의 활동을 바깥 주소로 보냅니다. 끄면 새로 걸 수 없고, 이미 건 웹훅도 ' +
+      '보내지 않습니다. 다시 켜면 그 뒤의 활동부터 보냅니다(꺼진 동안의 것은 보내지 않습니다).',
+    control: { kind: 'toggle' },
+    viewers: OWNER,
+    editors: OWNER,
+  },
+  {
     key: 'workspace.trash_days',
     scope: 'workspace',
     section: 'workspace.security',

@@ -4087,6 +4087,14 @@ CREATE INDEX ON reminder (target_at) WHERE fired_at IS NULL;
 >    것이다(08 F-08-13 *"짧은 재시도 3회 후 정지"*). 사람이 다시 켠다. 멈춘 동안의 활동은 보내지 않는다(쌓았다가 몰아 보내지 않는다).
 > ⑧ 페이지가 휴지통에 가면 보내지 않고 웹훅은 남는다(되살리면 다시) · 페이지 행이 지워지면 함께 지워진다(FK CASCADE · 11 *"삭제된 참조"*).
 > ⑨ 화면(4e-3)은 Updates 패널 안이다 — 노션은 그 패널의 "Connect Slack channel" 토글이다.
+> ⑩ **[10n-70] 워크스페이스의 웹훅 스위치**(08 F-08-13 *"Enterprise 소유자는 Settings > Connections 에서 전면 비활성화 가능"*) — 설정
+>    `workspace.allow_webhooks`(`setting_value` 의 한 줄 · 행이 없으면 켜짐 · 고치는 사람은 소유자 · 설정 → 보안). 거짓이면 이 워크스페이스에서
+>    바깥으로 나가는 웹훅이 **모두** 선다 — 페이지 웹훅과 자동화 · 버튼의 `send_webhook`(DB automation ⑫). **새로 걸 수 없고**(걸기 ·
+>    `send_webhook` 이 든 액션 저장 → `webhooks_disabled`) **걸린 것도 보내지 않는다** — 쌓지 않고(묶음 · 배달을 만드는 문장이 같은 자리에서
+>    거른다) 이미 쌓인 것은 보낼 때 버린다(`dropped` · `webhooks_disabled`). 다시 켜도 꺼진 동안의 활동을 몰아 보내지 않는다(⑦ 의 멈춤과 같은
+>    규칙). 걸린 웹훅 · 액션 정의는 그대로 남고 멈추기 · 지우기는 꺼져 있어도 된다. 요금제 게이트는 두지 않는다 — 끄는 것은 안전 장치라
+>    모든 요금제의 소유자에게 준다(노션은 Enterprise 만 · 켜는 쪽의 게이트는 `automation.webhook` 이 따로 한다). 판정은 읽을 때마다 DB 에
+>    묻는다(캐시 없음 — 끈 순간부터 막혀야 한다).
 >
 > **보내기 — 4e-2 에서 정한 것** ⟨마이그레이션 0076⟩
 >
@@ -5024,6 +5032,8 @@ CREATE TABLE external_sync_source (            -- 구 external_binding. 정본 �
 >      버튼 property 는 전송 필드로 선택 불가"* → `unknown_property`) 50개까지 · 0개면 행의 id 와 주소만 간다.
 >    - **요금제** — 유료 요금제만(08 *"`Send webhook` … 유료 플랜 전용"*) — 엔타이틀먼트 `automation.webhook`(Free false · 나머지 true). 저장할
 >      때 막는다(`plan_required`). 실행 때도 다시 묻는다 — 요금제를 내린 뒤에는 그 액션을 **건너뛴다**(`skipped` · `plan` — 실패가 아니다).
+>    - **[10n-70] 워크스페이스 스위치** — 소유자가 웹훅을 껐으면(§3.8 [보강] 페이지 웹훅 ⑩) 저장할 때 막고(`webhooks_disabled`) 실행 때는
+>      쌓지 않고 **건너뛴다**(`skipped` · `webhooks_disabled`). 요금제와 같은 자리 · 같은 모양이다.
 >    - **실행은 쌓기만** — 엔진은 바깥으로 나가지 않는다. 트랜잭션 안에서 네트워크를 타지 않고(락을 쥔 채 10초를 기다리지 않는다) · 되돌린
 >      실행이 이미 보낸 요청을 되돌릴 수 없어서다. 같은 트랜잭션에서 **배달 한 줄**(`automation_delivery` — 그때의 봉인된 URL · 헤더를 옮겨
 >      싣는다: 나중에 고쳐도 쌓인 배달은 그때의 것)을 쌓고 단계는 `done`(`deliveryId`). 실행이 되돌려지면 배달도 함께 사라진다. 몸(payload)은
@@ -5035,7 +5045,8 @@ CREATE TABLE external_sync_source (            -- 구 external_binding. 정본 �
 >      죽으면 임대가 지나 다시 보낸다 — **적어도 한 번**이고, 받는 쪽은 몸의 `run_id` 로 겹친 것을 거른다.
 >    - **다시 보기** — automation 이 꺼졌으면(사람이 껐든 실패로 멈췄든) 보내지 않고 `dropped`(`paused`) — 멈춘 뒤에도 쌓여 있던 것이
 >      상대 서버를 계속 두드리지 않게. 봉인을 풀지 못하면 `dropped`(`unseal_failed`). 요금제는 다시 묻지 않는다(쌓을 때 물었다 — 이미
->      실행된 일이다).
+>      실행된 일이다). **워크스페이스 스위치는 다시 묻는다**(10n-70) — 꺼졌으면 `dropped`(`webhooks_disabled`): 끈 뒤에 이미 쌓인 것이
+>      나가면 끈 것이 아니다.
 >    - **보내기** — 트랜잭션 밖에서 `net/outbound.ts` 의 한 길로(`postJson` — 주소 고정 · 리다이렉트 없음 · 10초). 헤더는 봉인을 풀어
 >      싣는다. 몸은 쌓을 때의 것 그대로.
 >    - **적기** — 내 임대일 때만. 성공(2xx)이면 `sent`. 실패면 1 · 2 · 4분 뒤 다시, 네 번째도 실패면 `failed` 로 끝내고 **automation 을

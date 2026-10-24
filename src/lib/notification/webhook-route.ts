@@ -11,12 +11,14 @@
  *     웹훅으로 새지 않게(ⓑ).
  *   - 가장 가까운 페이지의 웹훅이 모두 멈췄으면 아무 데도 가지 않는다 — 더 위로 올라가지 않는다(⑤ *"가장 가까운 연결 하나만"*).
  *   - 웹훅이 하나도 없는 워크스페이스는 질의 한 번으로 끝난다(`page_webhook` 의 그 페이지들만 본다).
+ *   - 소유자가 워크스페이스의 웹훅을 껐으면 쌓지 않는다(10n-70 · `webhook-switch.ts`) — 다시 켜도 꺼진 동안의 것을 몰아 보내지 않게.
  *
  * 로그를 나중에 거꾸로 훑지 않는 까닭: 커밋 순서와 시각이 어긋나면 훑는 쪽이 이벤트를 건너뛴다. 같은 트랜잭션이면 이벤트와 묶음이
  * 함께 커밋되거나 함께 사라진다.
  */
 
 import type { Tx } from '../db/tx.ts'
+import { webhooksOffSql } from './webhook-switch.ts'
 
 /** 모으는 창(정본 ⑥ — 11 *"시간 윈도우(5분)"*). */
 export const WEBHOOK_WINDOW_MINUTES = 5
@@ -41,6 +43,7 @@ export async function routeToWebhooks(tx: Tx, input: { readonly eventId: string;
        FROM page_webhook w
        JOIN nearest n ON n.page_id = w.page_id
       WHERE w.paused_at IS NULL
+        AND NOT ${webhooksOffSql('w.workspace_id')}
      ON CONFLICT (webhook_id) WHERE status = 'collecting'
      DO UPDATE SET event_ids = webhook_delivery.event_ids || EXCLUDED.event_ids
      RETURNING webhook_id`,
