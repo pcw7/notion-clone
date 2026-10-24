@@ -22468,6 +22468,12 @@ async function main() {
       }
       const favs = made.slice(0, 7)
       for (const id of favs) await fetch(`${pagesUrl}/${id}/favorite`, { method: 'POST', headers: authed })
+      // 앞 절이 남긴 즐겨찾기가 있으면 이 절의 것은 그 뒤에 선다 — 일곱을 거꾸로 하나씩 맨 앞에 놓아 1~7 이 맨 앞에 서게 한다(전체 판이 찾았다)
+      const moveFav = async (id, before) => (await (await fetch(`${pagesUrl}/${id}/favorite`, { method: 'PATCH', headers: authed, body: JSON.stringify({ before }) })).json()).order
+      let favOrder = await moveFav(favs[6], null)
+      for (let i = favs.length - 1; i >= 0; i -= 1) {
+        if (favOrder[0] !== favs[i]) favOrder = await moveFav(favs[i], favOrder[0])
+      }
       const names = Object.fromEntries(made.map((id, i) => [id, String(i + 1)]))
       const FAV = 'section[aria-label="즐겨찾기"]'
       const REC = 'section[aria-label="최근"]'
