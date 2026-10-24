@@ -77,7 +77,16 @@ export type MarkdownLinks = {
   readonly page: (pageId: string) => PageLinkTarget | null
   /** 이미지 주소. `null` 이면 그 이미지를 뺀다. */
   readonly image: (source: ImageSource) => string | null
+  /**
+   * 본문 글자에 건 링크의 주소를 바꾼다(10n-66) — 이 앱의 주소가 이 내보내기 안의 페이지를 가리키면 ZIP 안의 상대 경로로(`plan.ts`). 주지
+   * 않으면 그대로. 안전한 주소인지는 바꾼 **뒤에** 본다(상대 경로는 안전하다 · 바꾸지 못한 `javascript:` 는 여전히 뺀다).
+   */
+  readonly href?: (url: string) => string
 }
+
+/** 글자 링크의 주소를 바꾸는 함수 — 기본은 그대로. */
+type LinkRewrite = (url: string) => string
+const keepLink: LinkRewrite = (url) => url
 
 /** Markdown 으로 옮기지 못한 것. 전부 0 이면 무손실이다. */
 export type MarkdownLosses = {
@@ -124,7 +133,7 @@ export function pageToMarkdown(
 ): MarkdownResult {
   const losses = emptyLosses() as Counters
   let toc: readonly TocEntry[] | null = null
-  const ctx: Ctx = { links, losses, toc: () => (toc ??= tocEntries(headingsOfBlocks(page.doc.blocks))) }
+  const ctx: Ctx = { links, losses, rewrite: links.href ?? keepLink, toc: () => (toc ??= tocEntries(headingsOfBlocks(page.doc.blocks))) }
 
   const title = toPlainText(page.title).trim() === '' ? [textRun(options.untitled)] : page.title
   const body = renderSiblings(page.doc.blocks, ctx).lines
@@ -274,7 +283,7 @@ type RunParts = {
   readonly link: string | null
 }
 
-function partsOf(run: RichTextRun, losses: Counters): RunParts | null {
+function partsOf(run: RichTextRun, losses: Counters, rewrite: LinkRewrite = keepLink): RunParts | null {
   const annotations = { ...DEFAULT_ANNOTATIONS, ...run.annotations }
   let code = annotations.code
   let content: string
@@ -294,6 +303,8 @@ function partsOf(run: RichTextRun, losses: Counters): RunParts | null {
   if (annotations.color !== 'default') losses.color += 1
 
   let link = run.type === 'text' ? (run.text?.link?.url ?? null) : null
+  // 앱 안의 링크를 ZIP 안의 상대 경로로(10n-66) — 안전한지는 바꾼 뒤에 본다
+  if (link !== null) link = rewrite(link)
   if (link !== null && !isSafeLinkUrl(link)) {
     losses.unsafeLink += 1
     link = null
@@ -370,9 +381,10 @@ function delimitersHold(
 export function richTextToMarkdown(
   runs: readonly RichTextRun[],
   losses: MarkdownLosses = emptyLosses(),
+  rewrite: LinkRewrite = keepLink,
 ): string {
   const counters = losses as Counters
-  const parts = runs.map((run) => partsOf(run, counters)).filter((p): p is RunParts => p !== null)
+  const parts = runs.map((run) => partsOf(run, counters, rewrite)).filter((p): p is RunParts => p !== null)
 
   let out = ''
   parts.forEach((p, i) => {
@@ -410,13 +422,14 @@ export function richTextToMarkdown(
 export function richTextToHtml(
   runs: readonly RichTextRun[],
   losses: MarkdownLosses = emptyLosses(),
+  rewrite: LinkRewrite = keepLink,
 ): string {
   const counters = losses as Counters
   const text = (s: string): string => escapeHtml(s).replace(/\n/g, '<br>')
 
   let out = ''
   for (const run of runs) {
-    const p = partsOf(run, counters)
+    const p = partsOf(run, counters, rewrite)
     if (p === null) continue
     let body = p.code ? `<code>${escapeHtml(p.core.replace(/\n/g, ' '))}</code>` : text(p.core)
     for (const e of [...p.emphasis].reverse()) body = `<${HTML_TAG[e]}>${body}</${HTML_TAG[e]}>`
@@ -432,6 +445,8 @@ export function richTextToHtml(
 type Ctx = {
   readonly links: MarkdownLinks
   readonly losses: Counters
+  /** 글자 링크의 주소 바꾸기(10n-66 — `links.href` · 없으면 그대로). */
+  readonly rewrite: LinkRewrite
   /** 이 페이지의 목차 줄(8b-1) — 목차 블록이 있을 때만 한 번 센다. 편집기와 같은 규칙이다(`block/toc.ts`). */
   readonly toc: () => readonly TocEntry[]
 }
@@ -463,8 +478,8 @@ const NESTS: ReadonlySet<string> = new Set([
  * 표 셀 하나의 Markdown — 한 줄이어야 한다. 줄바꿈(강제 줄바꿈 포함)은 `<br>`, 이스케이프되지 않은 `|` 는 `\|`(코드 스팬 안도 —
  * GFM 은 표 칸을 나누기 전에 `\|` 를 푼다).
  */
-function tableCellMarkdown(runs: readonly RichTextRun[], losses: Counters): string {
-  return richTextToMarkdown(runs, losses)
+function tableCellMarkdown(runs: readonly RichTextRun[], losses: Counters, rewrite: LinkRewrite): string {
+  return richTextToMarkdown(runs, losses, rewrite)
     .replace(/\\\n/g, '<br>')
     .replace(/\n/g, '<br>')
     .replace(/\\?\|/g, (m) => (m === '|' ? '\\|' : m))
@@ -543,13 +558,13 @@ function renderSiblings(blocks: readonly EditorBlock[], ctx: Ctx): Rendered {
 
 /** 블록 제목을 줄 단위 Markdown 으로. 비었으면 빈 배열. */
 function textLines(block: EditorBlock, ctx: Ctx): string[] {
-  const inline = trimBreaks(richTextToMarkdown(block.title ?? [], ctx.losses))
+  const inline = trimBreaks(richTextToMarkdown(block.title ?? [], ctx.losses, ctx.rewrite))
   return inline === '' ? [] : escapeLineStarts(inline).split('\n')
 }
 
 function headingLine(level: number, title: readonly RichTextRun[], ctx: Ctx): string {
   // ATX 제목은 한 줄이다. 줄바꿈은 공백으로 접는다.
-  const inline = richTextToMarkdown(title, ctx.losses).replace(/\\\n/g, ' ').trim()
+  const inline = richTextToMarkdown(title, ctx.losses, ctx.rewrite).replace(/\\\n/g, ' ').trim()
   const hashes = '#'.repeat(level)
   if (inline === '') return hashes
   // 끝의 ` #` 은 닫는 표지로 읽혀 사라진다(`# C #` → "C").
@@ -604,7 +619,7 @@ function renderBlock(block: EditorBlock, ctx: Ctx, number: number): string[] {
     }
 
     case 'toggle': {
-      const summary = `<summary>${richTextToHtml(block.title ?? [], losses)}</summary>`
+      const summary = `<summary>${richTextToHtml(block.title ?? [], losses, ctx.rewrite)}</summary>`
       const children = renderSiblings(block.children ?? [], ctx).lines
       // 자식은 빈 줄로 HTML 블록과 떨어져야 마크다운으로 해석된다.
       return children.length === 0
@@ -649,7 +664,7 @@ function renderBlock(block: EditorBlock, ctx: Ctx, number: number): string[] {
     case TABLE_TYPE: {
       // 심플 테이블(Phase 2 1d · F-01-18 *"호환 내보내기는 GFM"*) — GFM 파이프 표. GFM 은 머리 줄이 필수라 첫 행을 머리로 쓴다(머리
       // 줄을 끈 표도). 머리 열은 표현할 수 없지만 내용은 다 있다 — 세지 않는다. 행이 없는 표는 검증이 막는다.
-      const rows = (block.children ?? []).map((row) => cellsOf(row.properties).map((cell) => tableCellMarkdown(cell, losses)))
+      const rows = (block.children ?? []).map((row) => cellsOf(row.properties).map((cell) => tableCellMarkdown(cell, losses, ctx.rewrite)))
       if (rows.length === 0) return []
       const width = Math.max(1, ...rows.map((cells) => cells.length))
       const line = (cells: readonly string[]): string => `| ${Array.from({ length: width }, (_, i) => cells[i] ?? '').join(' | ')} |`
@@ -684,7 +699,7 @@ function renderBlock(block: EditorBlock, ctx: Ctx, number: number): string[] {
       // 코드 블록(8a-1) — 울타리 · 언어. 글자는 이스케이프하지 않는다(코드 안은 마크다운이 아니다). 울타리는 코드 안의 가장
       // 긴 백틱 줄보다 길다(`markdownFence`). 캡션(8a-2)은 울타리 뒤의 문단이다 — 이스케이프를 지난다(버리면 losses 없이 잃는다).
       const fence = fencedCode(toPlainText(block.title ?? []), codeLanguageOf(block.properties))
-      const caption = trimBreaks(richTextToMarkdown(codeCaptionRuns(block.properties), ctx.losses))
+      const caption = trimBreaks(richTextToMarkdown(codeCaptionRuns(block.properties), ctx.losses, ctx.rewrite))
       return caption === '' ? fence : [...fence, '', ...escapeLineStarts(caption).split('\n')]
     }
 

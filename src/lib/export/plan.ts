@@ -21,7 +21,9 @@
  *     _export_report.json
  *
  * 이름은 `names.ts` 가 폴더마다 정한다. 본문의 하위 페이지 참조 · 이미지는 그 이름으로 **상대 링크**가
- * 된다 — ZIP 을 풀면 링크가 그대로 열린다(F-09-14: *"내부 링크는 상대 경로로 재작성"*).
+ * 된다 — ZIP 을 풀면 링크가 그대로 열린다(F-09-14: *"내부 링크는 상대 경로로 재작성"*). 본문 글자에 건 앱 링크도 그 페이지 ·
+ * 데이터베이스가 이 ZIP 안에 있으면 상대 링크가 된다(10n-66 · `internal-links.ts`) — 그래서 페이지의 Markdown 은 모든 경로가 정해진
+ * 뒤에 짓는다(다른 폴더의 페이지 이름은 그 폴더를 걸어야 정해진다).
  *
  * ──────────────────────────────────────────────────────────────────────
  * 백업이다 — 빠진 것을 조용히 두지 않는다
@@ -41,6 +43,7 @@ import { extensionFor, isAllowedMime } from '../file/limits.ts'
 import { cellPlainText, tableToCsv, type CsvColumn } from './csv.ts'
 import { pageToMarkdown, type MarkdownLinks, type MarkdownLosses } from './markdown.ts'
 import { encodeHrefSegment, resolveNames, safeFileName, type NameRequest } from './names.ts'
+import { internalTargetOf, relativeHref } from './internal-links.ts'
 import { MAX_ZIP_BYTES, MAX_ZIP_ENTRIES } from './zip.ts'
 
 export const REPORT_PATH = '_export_report.json'
@@ -165,6 +168,10 @@ export function planExport(snapshot: ExportSnapshot, options: { readonly untitle
   const counts = { pages: 0, databases: 0, rows: 0, attachments: 0 }
   let renamedFiles = 0
   let guardedFormulas = 0
+  /** 노드의 ZIP 경로(10n-66) — 페이지는 `.md` · 소스가 하나인 데이터베이스는 `.csv` · 여럿이면 그 폴더. 글자 링크를 상대 경로로 바꾸려고 모은다. */
+  const zipPathOf = new Map<string, string>()
+  /** 경로가 다 정해진 뒤에 짓는 페이지의 Markdown(10n-66) — 항목의 자리는 걸을 때 잡아 두고 글자는 나중에 채운다(ZIP 의 차례는 그대로). */
+  const deferred: (() => void)[] = []
 
   const nodeOf = (id: string): ExportNode => {
     const found = snapshot.nodes.get(id)
@@ -231,6 +238,7 @@ export function planExport(snapshot: ExportSnapshot, options: { readonly untitle
     else counts.rows += 1
 
     const path = joinPath(folder, base)
+    zipPathOf.set(page.id, `${path}.md`)
     const children = page.childIds.map(nodeOf)
     const files = attachmentsOf(page.doc, snapshot.files)
     const names = nameFolder(children, files)
@@ -251,12 +259,22 @@ export function planExport(snapshot: ExportSnapshot, options: { readonly untitle
         const file = snapshot.files.get(source.fileId)
         return file === undefined ? null : inFolder(fileName(names, file))
       },
+      // 글자에 건 앱 링크(10n-66) — 이 ZIP 안의 페이지 · 데이터베이스면 이 파일이 있는 폴더(`folder`)에서의 상대 경로 · 해시(블록)는 뗀다
+      href: (url) => {
+        const target = internalTargetOf(url)
+        const to = target === null ? undefined : zipPathOf.get(target)
+        return to === undefined ? url : relativeHref(folder, to)
+      },
     }
 
-    const doc = rowColumns === null ? page.doc : withPropertyLines(page.doc, rowColumns, page.cells ?? {}, untitled)
-    const result = pageToMarkdown({ title: page.title, doc }, links, { untitled })
-    for (const key of Object.keys(losses) as (keyof Counters)[]) losses[key] += result.losses[key]
-    entries.push({ kind: 'text', path: `${path}.md`, text: result.markdown })
+    const at = entries.length
+    entries.push({ kind: 'text', path: `${path}.md`, text: '' })
+    deferred.push(() => {
+      const doc = rowColumns === null ? page.doc : withPropertyLines(page.doc, rowColumns, page.cells ?? {}, untitled)
+      const result = pageToMarkdown({ title: page.title, doc }, links, { untitled })
+      for (const key of Object.keys(losses) as (keyof Counters)[]) losses[key] += result.losses[key]
+      entries[at] = { kind: 'text', path: `${path}.md`, text: result.markdown }
+    })
 
     for (const file of files) {
       entries.push({ kind: 'file', path: `${path}/${fileName(names, file)}`, fileId: file.id, sizeBytes: file.sizeBytes })
@@ -271,11 +289,13 @@ export function planExport(snapshot: ExportSnapshot, options: { readonly untitle
 
     const only = database.sources.length === 1 ? database.sources[0] : undefined
     if (only !== undefined) {
+      zipPathOf.set(database.id, `${joinPath(folder, base)}.csv`)
       emitTable(only, folder, base)
       return
     }
     // 소스가 여럿이면 데이터베이스 이름의 폴더 안에 소스마다 한 벌 — 이름은 그 폴더 안에서 짓는다(같은 이름 · 금지 글자 규칙이 같다).
     const path = joinPath(folder, base)
+    zipPathOf.set(database.id, path)
     const names = resolveNames(
       database.sources.map((source) => ({
         key: `source:${source.id}`,
@@ -312,6 +332,8 @@ export function planExport(snapshot: ExportSnapshot, options: { readonly untitle
   const roots = snapshot.rootIds.map(nodeOf)
   const rootNames = nameFolder(roots, [], [REPORT_PATH])
   for (const root of roots) emitNode(root, '', nameIn(rootNames, `node:${root.id}`))
+  // 모든 경로가 정해졌다 — 페이지의 Markdown 을 짓는다(10n-66)
+  for (const render of deferred) render()
 
   return {
     entries,
