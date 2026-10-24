@@ -12,6 +12,7 @@ test('★ 거절 — 주소 모양은 까닭마다 · 나머지는 오류마다'
   assert.equal(webhookErrorMessage('invalid_url', 'private_host'), '내부 주소로는 보낼 수 없습니다.')
   assert.equal(webhookErrorMessage('invalid_url', '모르는 까닭'), '올바른 주소가 아닙니다.')
   assert.equal(webhookErrorMessage('too_many', undefined), '이 페이지에는 웹훅을 5개까지 걸 수 있습니다.')
+  assert.match(webhookErrorMessage('webhooks_disabled', undefined), /^이 워크스페이스는 웹훅을 껐습니다/, '10n-70 — 소유자가 껐다')
   assert.equal(webhookErrorMessage(undefined, undefined), '웹훅을 바꾸지 못했습니다.')
 })
 

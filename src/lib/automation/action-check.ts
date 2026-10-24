@@ -21,6 +21,7 @@ import { isRowFailure, openDataSource } from '../database/row.ts'
 import { isAutomationCellType, validateCellValue } from '../database/property-types.ts'
 import { readLiveTemplate } from '../database/template.ts'
 import { entitlement } from '../billing/entitlement.ts'
+import { webhooksAllowedIn } from '../notification/webhook-switch.ts'
 import { sealWebhookUrl, webhookUrlHint } from '../net/url-seal.ts'
 import {
   isDynamicCell,
@@ -45,6 +46,8 @@ export type ActionSchemaProblem =
   | 'unknown_ref'
   /** `send_webhook` 을 이 워크스페이스의 요금제가 허락하지 않는다(`automation.webhook`). */
   | 'plan_required'
+  /** `send_webhook` 을 소유자가 이 워크스페이스에서 껐다(`workspace.allow_webhooks` — 10n-70). */
+  | 'webhooks_disabled'
   /** 동적 값의 짝이 맞지 않는다 — "지금"은 날짜 속성에만 · 일하는 행의 속성은 같은 타입(선택지 · 상태 제외 · 정본 ⑯). */
   | 'invalid_dynamic'
   /** 이 자리에서 쓸 수 없는 액션 — `insert_blocks` 는 버튼 블록에서만(정본 ⑱). */
@@ -121,6 +124,7 @@ export async function checkActions(
 ): Promise<{ readonly problem: ActionSchemaProblem; readonly index: number } | null> {
   const firstWebhook = actions.findIndex((a) => a.type === 'send_webhook')
   if (firstWebhook >= 0 && !(await entitlement(ctx.workspaceId, 'automation.webhook', tx))) return { problem: 'plan_required', index: firstWebhook }
+  if (firstWebhook >= 0 && !(await webhooksAllowedIn(tx, ctx.workspaceId))) return { problem: 'webhooks_disabled', index: firstWebhook }
   const stored = firstWebhook >= 0 ? await storedWebhooks(tx, automationId) : new Map<string, SendWebhookStored>()
   for (const [index, action] of actions.entries()) {
     if (action.type === 'insert_blocks') {

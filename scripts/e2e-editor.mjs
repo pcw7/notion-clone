@@ -22602,6 +22602,54 @@ async function main() {
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('워크스페이스의 웹훅 스위치 (10n-70 · F-08-13 · F-11-19)')) { try {
+      // 소유자가 설정 → 보안의 "웹훅" 을 끄면 페이지 웹훅 칸이 그 까닭을 말하고 "연결" 칸을 거둔다 · 주소로 걸어도 400 webhooks_disabled ·
+      // 다시 켜면 돌아온다. 쌓기 · 보내기 · 자동화의 막힘은 DB 검사가 본다(webhook-switch.db.test.ts). HANDOFF §3.2-303. 끝에 반드시 켠다.
+      const stamp = Date.now()
+      const setting = (value) => fetch(`${BASE}/api/workspaces/${workspaceId}/settings/workspace.allow_webhooks`, { method: 'PUT', headers: authed, body: JSON.stringify({ value }) })
+      const CONTROL = '[data-testid="setting-row"][data-setting-key="workspace.allow_webhooks"] [data-testid="setting-control"]'
+      const page = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: JSON.stringify({ title: `스위치 ${stamp}` }) })).json()).page.id
+      const hooksUrl = `${BASE}/api/workspaces/${workspaceId}/pages/${page}/webhooks`
+      const SECTION = '[data-testid="page-webhooks"]'
+      const openWebhooks = async () => {
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+        await waitHydrated('[data-testid="page-updates-open"]')
+        for (let tries = 0; tries < 6; tries += 1) {
+          await clickSelector('[data-testid="page-updates-open"]')
+          if (await waitFor(`!!document.querySelector('${SECTION}')`, 3000)) return true
+          if (await evaluate(`!!document.querySelector('[data-testid="page-updates"]')`)) await key('Escape')
+        }
+        return false
+      }
+      try {
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/settings?s=workspace.security` })
+        await waitFor(`!!document.querySelector('${CONTROL}')`, 15000)
+        await waitHydrated(CONTROL)
+        const onByDefault = await evaluate(`document.querySelector('${CONTROL}').checked === true`)
+        await clickSelector(CONTROL)
+        const savedOff = await waitFor(`document.querySelector('${CONTROL}')?.checked === false && !document.querySelector('${CONTROL}[aria-busy]')`, 10000)
+        const listed = await (await fetch(hooksUrl, { headers: authed })).json()
+        check('★ 설정 → 보안의 "웹훅" 은 처음에 켜짐 · 누르면 꺼지고 서버도 꺼짐으로 답한다',
+          onByDefault && savedOff && listed.disabled === true, JSON.stringify({ onByDefault, savedOff, disabled: listed.disabled }))
+
+        const opened = await openWebhooks()
+        const offShown = opened && await waitFor(`!!document.querySelector('${SECTION} [data-testid="page-webhooks-off"]') && !document.querySelector('${SECTION} [data-testid="page-webhook-url"]')`, 10000)
+        check('★ 꺼진 워크스페이스의 페이지 웹훅 칸은 그 까닭을 말하고 "연결" 칸이 없다',
+          offShown, await evaluate(`document.querySelector('${SECTION}')?.textContent ?? '(칸 없음)'`))
+
+        const refused = await fetch(hooksUrl, { method: 'POST', headers: authed, body: JSON.stringify({ url: 'https://hooks.example.com/services/off' }) })
+        const refusedBody = await refused.json()
+        check('주소로 걸어도 400 webhooks_disabled', refused.status === 400 && refusedBody.error === 'webhooks_disabled', JSON.stringify({ status: refused.status, refusedBody }))
+
+        await setting(true)
+        const reopened = await openWebhooks()
+        const back = reopened && await waitFor(`!!document.querySelector('${SECTION} [data-testid="page-webhook-url"]') && !document.querySelector('${SECTION} [data-testid="page-webhooks-off"]')`, 10000)
+        check('다시 켜면 "연결" 칸이 돌아오고 안내가 사라진다', back, await evaluate(`document.querySelector('${SECTION}')?.textContent ?? '(칸 없음)'`))
+      } finally {
+        await setting(true)
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

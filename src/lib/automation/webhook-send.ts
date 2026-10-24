@@ -7,7 +7,8 @@
  *
  *   ① 잡기 — 보낼 차례(`pending` · `next_attempt_at` 이 지났다)를 `FOR UPDATE SKIP LOCKED` 로 잡아 임대를 걸고 **커밋한다**.
  *   ② 다시 보기 — automation 이 꺼졌으면 `dropped`(`paused` — 멈춘 뒤에도 쌓인 것이 상대 서버를 두드리지 않게). 봉인을 풀지 못하면
- *     `dropped`(`unseal_failed`). 요금제는 다시 묻지 않는다(쌓을 때 물었다 — 이미 실행된 일이다).
+ *     `dropped`(`unseal_failed`). 요금제는 다시 묻지 않는다(쌓을 때 물었다 — 이미 실행된 일이다). 워크스페이스 스위치는 다시 묻는다
+ *     (10n-70) — 꺼졌으면 `dropped`(`webhooks_disabled`): 끈 뒤에 이미 쌓인 것이 나가면 끈 것이 아니다.
  *   ③ 보내기 — **트랜잭션 밖에서**(바깥 요청이 행 잠금을 쥐지 않게) `net/outbound.ts` 의 한 길로. 헤더는 봉인을 풀어 싣는다.
  *   ④ 적기 — 내 임대일 때만. 성공이면 `sent`. 실패면 1 · 2 · 4분 뒤 다시(`pending`), 네 번째도 실패면 `failed` 로 끝내고 **automation 을
  *     멈춘다**(`webhook_failed` — 08 *"자동 일시정지 + 수동 재개"*).
@@ -20,6 +21,7 @@ import { withTransaction } from '../db/tx.ts'
 import { postJson, type OutboundResult } from '../net/outbound.ts'
 import { unsealWebhookUrl } from '../net/url-seal.ts'
 import { MAX_DELIVERY_ATTEMPTS, retryDelayMs } from '../notification/webhook-delivery.ts'
+import { webhooksOffSql } from '../notification/webhook-switch.ts'
 
 /** 한 판에 잡는 배달의 수. */
 export const SEND_BATCH = 20
@@ -39,6 +41,8 @@ type Claimed = {
   headers: { name: string; valueSealed: string }[]
   payload: Record<string, unknown>
   enabled: boolean
+  /** 소유자가 워크스페이스의 웹훅을 껐다(10n-70). */
+  switched_off: boolean
 }
 
 /**
@@ -56,7 +60,7 @@ export async function runAutomationWebhooks(
   // ① 잡기
   const claimed = await withTransaction(async (tx) => {
     const due = await tx.query<Claimed>(
-      `SELECT d.id, d.automation_id, d.attempts, d.url_sealed, d.headers, d.payload, a.enabled
+      `SELECT d.id, d.automation_id, d.attempts, d.url_sealed, d.headers, d.payload, a.enabled, ${webhooksOffSql('d.workspace_id')} AS switched_off
          FROM automation_delivery d
          JOIN automation a ON a.id = d.automation_id
         WHERE d.status = 'pending' AND d.next_attempt_at <= $1
@@ -78,6 +82,11 @@ export async function runAutomationWebhooks(
   let dropped = 0
   for (const delivery of claimed) {
     // ② 다시 보기
+    if (delivery.switched_off) {
+      await finish(delivery.id, lease, { status: 'dropped', now, error: 'webhooks_disabled' })
+      dropped += 1
+      continue
+    }
     if (!delivery.enabled) {
       await finish(delivery.id, lease, { status: 'dropped', now, error: 'paused' })
       dropped += 1

@@ -146,6 +146,8 @@ const STORES: { readonly [K in SettingKey]: Store<SettingValueOf<K>> } = {
   },
   // 커스텀 이모지(7c-1) — 기본은 멤버도 올린다
   'workspace.emoji_owners_only': storedWorkspaceSetting('workspace.emoji_owners_only', false, isBoolean),
+  // 웹훅 스위치(10n-70) — 기본은 켜짐. 끄면 걸기 · 쌓기 · 보내기가 모두 선다(`notification/webhook-switch.ts`)
+  'workspace.allow_webhooks': storedWorkspaceSetting('workspace.allow_webhooks', true, isBoolean),
   'workspace.allow_member_invite_guests': {
     read: async (tx, ctx) => (await readSecurityPolicyIn(tx, ctx.workspaceId)).allowMemberInviteGuests,
     write: (tx, ctx, value) => writeMemberInviteGuestsPolicyIn(tx, ctx.workspaceId, value),

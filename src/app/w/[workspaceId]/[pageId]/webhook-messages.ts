@@ -9,6 +9,9 @@ import type { OutboundUrlProblem } from '@/lib/net/outbound'
 /** 걸기 전에 알리는 한 줄(정본 ⓘ — 11 *"연결 시 경고 필수"*). */
 export const WEBHOOK_NOTICE = '이 페이지와 아래 페이지(권한이 같은 곳)의 활동이 — 제목 · 사람 이름 · 무엇을 했는지 — 이 주소로 나갑니다.'
 
+/** 소유자가 워크스페이스의 웹훅을 껐다(10n-70) — 칸 위의 안내 · 걸기 거절이 같은 말이다. */
+export const WEBHOOKS_OFF_NOTICE = '이 워크스페이스는 웹훅을 껐습니다 — 걸린 웹훅도 보내지 않습니다. 소유자가 설정 → 보안에서 다시 켤 수 있습니다.'
+
 const PROBLEMS: Record<OutboundUrlProblem, string> = {
   invalid: '올바른 주소가 아닙니다.',
   too_long: '주소가 너무 깁니다.',
@@ -23,6 +26,7 @@ const ERRORS: Record<string, string> = {
   forbidden: '이 페이지의 전체 권한이 있어야 웹훅을 다룰 수 있습니다.',
   not_found: '이 페이지를 찾을 수 없습니다.',
   row_page: '데이터베이스 행에는 웹훅을 걸 수 없습니다.',
+  webhooks_disabled: WEBHOOKS_OFF_NOTICE,
 }
 
 /** 거절의 까닭 — 주소 모양이면 그 까닭을, 아니면 오류를. */

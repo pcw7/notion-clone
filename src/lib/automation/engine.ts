@@ -27,6 +27,7 @@ import { createRowIn, isRowFailure, openDataSource, readRow, updateCellsIn, type
 import { emptyValue, isAutomationCellType, type CellValue } from '../database/property-types.ts'
 import { createRowFromTemplateIn, readLiveTemplate } from '../database/template.ts'
 import { entitlement } from '../billing/entitlement.ts'
+import { webhooksAllowedIn } from '../notification/webhook-switch.ts'
 import { can } from '../permissions/levels.ts'
 import { effectiveCaps } from '../permissions/effective.ts'
 import { isDynamicCell, type ActionCell, type ActionType, type InsertBlocksConfig, type SendWebhookStored, type StoredAction } from './actions.ts'
@@ -155,6 +156,8 @@ const rejected = (reason: string): never => {
 async function queueWebhook(tx: Tx, ctx: SessionContext, config: SendWebhookStored, context: RunContext, env: RunEnv): Promise<Done> {
   // 요금제를 내렸으면 건너뛴다 — 실패가 아니다(정본 ⑫)
   if (!(await entitlement(ctx.workspaceId, 'automation.webhook', tx))) throw new StepSkipped('plan')
+  // 소유자가 워크스페이스의 웹훅을 껐으면 쌓지 않고 건너뛴다 — 요금제와 같은 모양(10n-70)
+  if (!(await webhooksAllowedIn(tx, ctx.workspaceId))) throw new StepSkipped('webhooks_disabled')
   // 그 행을 실행하는 사람이 볼 수 있어야 값을 싣는다
   if (!can(await effectiveCaps(tx, ctx, context.triggerPageId), 'view')) throw new StepSkipped('not_found')
   const row = await readRow(tx, context.triggerPageId)

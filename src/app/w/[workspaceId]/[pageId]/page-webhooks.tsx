@@ -16,7 +16,7 @@
 import { useEffect, useState } from 'react'
 
 import { formatVersionTime } from '@/lib/history/format'
-import { lastDeliveryLabel, WEBHOOK_NOTICE, webhookErrorMessage, webhookStateLabel } from './webhook-messages'
+import { lastDeliveryLabel, WEBHOOK_NOTICE, WEBHOOKS_OFF_NOTICE, webhookErrorMessage, webhookStateLabel } from './webhook-messages'
 
 type Hook = {
   readonly id: string
@@ -31,6 +31,8 @@ type ErrorBody = { error?: string; problem?: string }
 export function PageWebhooks({ workspaceId, pageId }: { workspaceId: string; pageId: string }) {
   // null — 아직 읽는 중이거나 서버가 거절했다(칸을 그리지 않는다)
   const [hooks, setHooks] = useState<readonly Hook[] | null>(null)
+  /** 소유자가 워크스페이스의 웹훅을 껐다(10n-70) — 안내를 띄우고 "연결" 을 거둔다(서버가 다시 묻는다). */
+  const [off, setOff] = useState(false)
   const [url, setUrl] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -44,8 +46,10 @@ export function PageWebhooks({ workspaceId, pageId }: { workspaceId: string; pag
     let alive = true
     fetch(base)
       .then(async (res) => {
-        const body = res.ok ? ((await res.json().catch(() => ({}))) as { webhooks?: Hook[] }) : {}
-        if (alive) setHooks(Array.isArray(body.webhooks) ? body.webhooks : null)
+        const body = res.ok ? ((await res.json().catch(() => ({}))) as { webhooks?: Hook[]; disabled?: boolean }) : {}
+        if (!alive) return
+        setHooks(Array.isArray(body.webhooks) ? body.webhooks : null)
+        setOff(body.disabled === true)
       })
       .catch(() => {
         if (alive) setHooks(null)
@@ -79,7 +83,13 @@ export function PageWebhooks({ workspaceId, pageId }: { workspaceId: string; pag
   return (
     <section data-testid="page-webhooks" aria-label="웹훅" className="mt-2 flex flex-col gap-2 border-t border-neutral-200 pt-3 dark:border-neutral-700">
       <h3 className="text-xs font-semibold">웹훅</h3>
-      <p className="text-xs text-neutral-500">{WEBHOOK_NOTICE}</p>
+      {off ? (
+        <p role="status" data-testid="page-webhooks-off" className="rounded bg-amber-50 px-2 py-1 text-xs text-amber-900 dark:bg-amber-950 dark:text-amber-200">
+          {WEBHOOKS_OFF_NOTICE}
+        </p>
+      ) : (
+        <p className="text-xs text-neutral-500">{WEBHOOK_NOTICE}</p>
+      )}
       {hooks.length > 0 && (
         <ul className="flex flex-col gap-2">
           {hooks.map((hook) => (
@@ -149,6 +159,7 @@ export function PageWebhooks({ workspaceId, pageId }: { workspaceId: string; pag
           ))}
         </ul>
       )}
+      {!off && (
       <form
         className="flex gap-1"
         onSubmit={(e) => {
@@ -177,6 +188,7 @@ export function PageWebhooks({ workspaceId, pageId }: { workspaceId: string; pag
           연결
         </button>
       </form>
+      )}
       {error !== null && (
         <p role="alert" data-testid="page-webhook-error" className="text-xs text-red-600 dark:text-red-400">
           {error}

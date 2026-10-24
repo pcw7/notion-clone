@@ -10,6 +10,7 @@
  *   - 데이터베이스 행에는 걸지 않는다(`row_page`) — 행의 공유는 데이터베이스가 정한다.
  *   - URL 은 모양을 보고(`checkOutboundUrl` — 이름 풀이는 보낼 때) 봉인해 둔다. 화면에는 힌트만 · 원문을 다시 주지 않는다.
  *   - 페이지마다 5개 — 페이지 행을 잠그고 센다(동시에 걸어도 넘지 않는다).
+ *   - 소유자가 워크스페이스의 웹훅을 껐으면 걸 수 없다(`webhooks_disabled` — 10n-70 · `webhook-switch.ts`). 멈추기 · 지우기는 된다.
  */
 
 import { randomUUID } from 'node:crypto'
@@ -21,6 +22,7 @@ import { checkOutboundUrl, type OutboundUrlProblem } from '../net/outbound.ts'
 import { sealWebhookUrl, webhookUrlHint } from '../net/url-seal.ts'
 import { can } from '../permissions/levels.ts'
 import { effectiveCaps } from '../permissions/effective.ts'
+import { webhooksAllowedIn } from './webhook-switch.ts'
 
 /** 페이지마다 이만큼까지(정본 ④ — 08 *"automation 당 최대 5개"* 와 같은 수). */
 export const MAX_WEBHOOKS_PER_PAGE = 5
@@ -41,7 +43,7 @@ export type PageWebhook = {
 
 export type DeliveryEnd = 'sent' | 'failed' | 'dropped'
 
-export type WebhookFailure = 'not_found' | 'forbidden' | 'row_page' | 'invalid_url' | 'too_many'
+export type WebhookFailure = 'not_found' | 'forbidden' | 'row_page' | 'invalid_url' | 'too_many' | 'webhooks_disabled'
 
 export type WebhookResult<T> =
   | { readonly ok: true; readonly value: T }
@@ -122,6 +124,8 @@ export async function addPageWebhook(ctx: SessionContext, pageId: string, rawUrl
   return withTransaction(async (tx) => {
     const denied = await gate(tx, ctx, pageId, true)
     if (denied !== null) return fail(denied)
+    // 워크스페이스 스위치(10n-70) — 권한 다음에 묻는다(볼 수 없는 사람에게 설정을 알려 주지 않는다)
+    if (!(await webhooksAllowedIn(tx, ctx.workspaceId))) return fail('webhooks_disabled')
     if (!checked.ok) return fail('invalid_url', checked.problem)
     const count = await tx.queryOne<{ n: number }>(`SELECT count(*)::int AS n FROM page_webhook WHERE page_id = $1`, [pageId])
     if (count.n >= MAX_WEBHOOKS_PER_PAGE) return fail('too_many')
@@ -170,7 +174,7 @@ export async function removePageWebhook(ctx: SessionContext, pageId: string, web
   })
 }
 
-/** 실패를 HTTP 로 — 없음 404 · 권한 403 · 행 · URL · 상한 400. */
+/** 실패를 HTTP 로 — 없음 404 · 권한 403 · 행 · URL · 상한 · 꺼진 워크스페이스 400. */
 export function webhookFailureStatus(reason: WebhookFailure): number {
   return reason === 'not_found' ? 404 : reason === 'forbidden' ? 403 : 400
 }
