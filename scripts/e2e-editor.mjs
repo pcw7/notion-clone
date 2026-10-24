@@ -9652,10 +9652,24 @@ async function main() {
 
       // 사이드바의 휴지통 — 소스 한 줄 · 되살리기
       const entrySel = `[data-testid="trash-entry"][data-trash-id="${secondSource}"]`
+      // 휴지통은 사이드바 맨 아래("최근" 바로 밑)다 — 늦은 다시 그리기로 "최근" 이 한 줄 늘면 밀려, 잰 자리를 누르면 그 위의 "최근" 링크(제목
+      // 없는 페이지)로 갔다(#443 · #444 의 영향 판에서 늘 · 그 앞 커밋의 같은 판도 — 홀로는 통과). 그 자리에 그 단추가 있고 두 번 재도 같은
+      // 자리일 때 누른다
+      const clickSteady = async (sel) => {
+        const at = `(() => { const el = document.querySelector(${JSON.stringify(sel)}); if (!el) return null
+          el.scrollIntoView({ block: 'center' }); const r = el.getBoundingClientRect(); const x = r.x + r.width / 2; const y = r.y + r.height / 2
+          const hit = document.elementFromPoint(x, y); return hit === el || el.contains(hit) ? { x, y } : null })()`
+        for (let i = 0; i < 20; i += 1) {
+          const a = await evaluate(at)
+          await sleep(150)
+          const b = await evaluate(at)
+          if (a !== null && b !== null && a.x === b.x && a.y === b.y) return click(b.x, b.y)
+        }
+      }
       await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${dbId}` })
       await waitFor(`!!document.querySelector('[data-testid="trash-toggle"]')`, 15000)
       for (let i = 0; i < 6 && !(await evaluate(`!!document.querySelector(${JSON.stringify(entrySel)})`)); i += 1) {
-        await clickSelector('[data-testid="trash-toggle"]')
+        await clickSteady('[data-testid="trash-toggle"]')
         await waitFor(`!!document.querySelector(${JSON.stringify(entrySel)})`, 1500)
       }
       check('★ 사이드바의 휴지통에 소스가 한 줄로 선다 — 데이터 소스 · 데이터베이스 이름 · 함께 간 항목 수',
@@ -9664,10 +9678,14 @@ async function main() {
             && e.textContent.includes(${JSON.stringify(`데이터 소스 · ${dbName}`)}) && e.textContent.includes('항목 1개 포함') })()`, 5000),
         String(await evaluate(`document.querySelector(${JSON.stringify(entrySel)})?.textContent ?? null`)))
       check('함께 간 행은 따로 줄을 갖지 않는다', !(await evaluate(`!!document.querySelector('[data-testid="trash-entry"][data-trash-id="${secondRow}"]')`)))
-      await clickSelector(`${entrySel} [data-testid="trash-restore"]`)
+      const restoreAt = await evaluate(`location.pathname`)
+      await clickSteady(`${entrySel} [data-testid="trash-restore"]`)
       check('★ 휴지통에서 되살리면 탭 · 소스 이름이 돌아온다',
         await waitFor(`!document.querySelector(${JSON.stringify(entrySel)}) && document.querySelectorAll('[data-testid="db-view-tab"]').length === 2`, 15000),
-        String(await evaluate(`document.querySelectorAll('[data-testid="db-view-tab"]').length`)))
+        // 실패하면 그때의 화면을 싣는다 — 영향 판에서 두 번 "탭 0개" 로 떨어졌다(#443 · #444 · 홀로는 통과)
+        JSON.stringify(await evaluate(`({ before: ${JSON.stringify(restoreAt)}, tabs: document.querySelectorAll('[data-testid="db-view-tab"]').length, at: location.pathname + location.search,
+          entry: !!document.querySelector(${JSON.stringify(entrySel)}), table: !!document.querySelector('[data-testid="db-table"]'), title: document.title,
+          message: document.querySelector('[data-testid="trash-panel"] [role="status"], [data-testid="trash-message"]')?.textContent ?? null })`)))
       check('★ 행도 함께 돌아왔다 — 행의 주소가 다시 열린다', (await rowStatus()) === 200, String(await rowStatus()))
 
       // 영구 삭제 — 확인 창을 받아들이고
