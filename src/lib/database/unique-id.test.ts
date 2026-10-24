@@ -138,7 +138,7 @@ describe('⑤ 셀이 아니다', () => {
     assert.equal(isMvpPropertyType('unique_id'), false)
     assert.equal(isFilterableType('unique_id'), true)
     assert.equal(isFilterableType('rollup'), false)
-    assert.equal(isFilterableType('relation'), false)
+    assert.equal(isFilterableType('relation'), true) // 10n-44 — 칸이 아니라 relation_edge 로 거른다
   })
 })
 
@@ -164,11 +164,11 @@ describe('⑥ 화면', () => {
     }
   })
 
-  test('★ 도구줄이 거를 수 있는 컬럼 — 셀 컬럼 + 고유 ID', () => {
+  test('★ 도구줄이 거를 수 있는 컬럼 — 셀 컬럼 + 고유 ID + relation(10n-44)', () => {
     assert.equal(isFilterableColumn(columnOf('unique_id')), true)
     assert.equal(isFilterableColumn(columnOf('number')), true)
     assert.equal(isFilterableColumn(columnOf('rollup')), false)
-    assert.equal(isFilterableColumn(columnOf('relation')), false)
+    assert.equal(isFilterableColumn(columnOf('relation')), true)
   })
 
   test('★ 정렬 판정 — 고유 ID 는 되고, rollup · relation · 옵션 타입은 안 된다', () => {

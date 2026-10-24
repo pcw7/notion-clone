@@ -150,8 +150,11 @@ export function showsParentsOnly(viewType: string): boolean {
   return viewType === 'gallery'
 }
 
-/** 거르고 정렬할 수 있는 컬럼 — 셀 컬럼 + 고유 ID(2a-2 · `filter.ts` `FILTERABLE_TYPES` 와 같은 목록). */
-export type FilterableColumn = CellColumn | UniqueIdColumn
+/**
+ * 거를 수 있는 컬럼 — 셀 컬럼 + 고유 ID(2a-2) + relation(10n-44 · 비어 있음 · 비어 있지 않음) — `filter.ts` `FILTERABLE_TYPES` 와 같은 목록.
+ * 정렬은 따로 묻는다(`isSortable` — relation · 사람은 거를 수만 있다).
+ */
+export type FilterableColumn = CellColumn | UniqueIdColumn | RelationColumn
 
 /** 그 타입 그대로 거를 수 있는 컬럼인가(셀 · 고유 ID). 수식까지 고르려면 `filterColumnOf` 를 쓴다. */
 export function isFilterableColumn(column: ViewColumn): column is FilterableColumn {
@@ -167,7 +170,7 @@ export function filterColumnOf(column: ViewColumn): FilterableColumn | null {
   if (isFilterableColumn(column)) return column
   if (column.type !== 'formula') return null
   const type = formulaFilterType(column.formula.resultType)
-  if (type === null || type === 'unique_id') return null
+  if (type === null || type === 'unique_id' || type === 'relation') return null
   return {
     propertyId: column.propertyId,
     name: column.name,
@@ -243,6 +246,7 @@ export function isSortable(column: ViewColumn): boolean {
   // 서버가 정렬할 수 있는 타입으로 묻는다(`filterColumnOf` — 셀 타입 + 고유 ID + 수식(결과 타입 · 2j-3)). relation 은 사이드카가
   // 없고(값이 엣지다), rollup 은 저장된 값이 없다(정본 D1) — 전에는 "relation 이 아니다"로 물어서 rollup 머리에 정렬이 섰고, 누르면
   // 서버가 그 키를 조용히 건너뛰어 아무 일도 없었다(2a-2 에서 바로잡았다).
+  // relation 은 10n-44 부터 거를 수 있지만(비어 있음 · 비어 있지 않음) 정렬은 아니다 — 값이 집합이다(서버의 `validateSorts` 도 거부한다)
   const f = filterColumnOf(column)
-  return f !== null && !isOptionType(f.type)
+  return f !== null && !isOptionType(f.type) && f.type !== 'relation'
 }
