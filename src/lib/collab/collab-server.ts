@@ -55,6 +55,11 @@
  *   - 권한 검사(`onAuthenticate`)와 연결 등록 사이에는 문서 불러오기가 끼어 있다. 그 사이에 커밋된 회수는 다시 판정할 연결이 아직
  *     없어 지나간다 — 그래서 **첫 동기화(SyncStep1)에 답하기 전에** 한 번 더 판정한다. 그보다 뒤에 커밋된 회수는 이미 등록된 연결을
  *     권한 신호가 잡는다
+ *   - **첫 판정을 지나기 전의 연결에는 방송하지 않는다**(10n-55). Hocuspocus 는 문서가 준비되면 곧바로 연결을 문서에 등록하고
+ *     (`addConnection`) 그 뒤에 쌓인 첫 메시지를 처리한다 — 첫 판정(DB 를 기다린다)이 끝나기 전에 문서의 갱신 방송(다른 참여자의 편집 ·
+ *     꼬리 적용 · 불러오기 때 모아 둔 갱신의 `flush`)이 그 연결에도 간다. 회수된 연결이 판정에 닫히기 전에 본문을 받은 적이 있다(#437 의
+ *     검사가 한 번 잡았다). 그래서 문서의 방송(`broadcast`)을 감싸 첫 판정을 지난 연결에만 보낸다. 지나면 SyncStep2 가 그때의 상태를
+ *     통째로 주므로 건너뛴 방송을 잃지 않는다
  *
  * ──────────────────────────────────────────────────────────────────────
  * 받은 뒤에 권한이 바뀌면 (F-05-19 · 5c)
@@ -116,6 +121,8 @@ export type CollabServerOptions = {
   readonly openFeed?: (handlers: ChangeFeedHandlers) => Promise<ChangeFeed>
   /** 밀린 투영의 창. 없으면 `projectPendingBody` 를 기본 창(`PROJECTION_DELAY_MS`)으로. 검사가 창을 길게 두고 `flush` 로 돌린다. */
   readonly projector?: ProjectionScheduler
+  /** 첫 동기화의 판정 직전에 기다린다 — 검사가 "등록됐지만 아직 판정 전" 인 창을 붙잡아 둔다(10n-55). 없으면 기다리지 않는다. */
+  readonly beforeFirstSyncVerdict?: (context: CollabContext) => Promise<void>
 }
 
 export type CollabContext = {
@@ -159,6 +166,8 @@ export function createCollabServer(options: CollabServerOptions): Server<CollabC
   const catchingUp = new WeakMap<Document, Promise<void>>()
   /** 쌓은 참여자 update 가 꼬리로 적용되기를 기다리는 쪽(머리말). */
   const waiters = new WeakMap<Document, Waiter[]>()
+  /** 첫 동기화의 판정을 지난 연결 — 문서의 방송은 이들에게만 간다(머리말 "연결을 받을 때" · 10n-55). */
+  const passedFirstSync = new WeakSet<Connection>()
   /** 다시 판정할 범위 — `ws:{id}` · `user:{id}` — 와 다시 붙은 뒤의 전부 다시 맞추기. */
   let pending = { scopes: new Set<string>(), resync: false }
   /** 지금 도는 다시 판정. 꼬리 적용은 이것이 끝난 뒤에 한다(머리말). */
@@ -336,6 +345,7 @@ export function createCollabServer(options: CollabServerOptions): Server<CollabC
       const loadedState = await loadDocState(context.session, context.pageId)
       if (!loadedState.ok) throw rejection('not_found')
       appliedSeq.set(document, BigInt(loadedState.value.seq))
+      gateBroadcasts(document, (connection) => passedFirstSync.has(connection))
       return loadedState.value.ydoc
     },
 
@@ -369,9 +379,11 @@ export function createCollabServer(options: CollabServerOptions): Server<CollabC
 
     async beforeSync({ type, payload, connection, context, document }) {
       if (type === SYNC_STEP_1) {
-        // 첫 동기화에 본문을 답하기 전에 다시 판정한다(머리말 "연결을 받을 때").
+        // 첫 동기화에 본문을 답하기 전에 다시 판정한다(머리말 "연결을 받을 때"). 지나야 방송도 받는다 — 곧이은 SyncStep2 가 그때의 상태를 준다.
+        await options.beforeFirstSyncVerdict?.(context)
         const verdict = await connectionVerdict(context, connection.readOnly)
         if (verdict !== null) throw rejection(verdict)
+        passedFirstSync.add(connection)
         return
       }
       if (type !== SYNC_STEP_2 && type !== SYNC_UPDATE) return
@@ -387,6 +399,21 @@ export function createCollabServer(options: CollabServerOptions): Server<CollabC
       await appliedThrough(document, BigInt(appended.seq))
     },
   })
+}
+
+/** Hocuspocus `Document` 의 방송 — 갱신 · awareness · stateless 가 모두 이것을 지난다(타입은 private 이라 이 모양으로만 만진다). */
+type Broadcaster = { broadcast(encode: (address: string) => Uint8Array, filter?: (connection: Connection) => boolean): void }
+
+/**
+ * 문서의 방송을 감싼다 — `allowed` 를 지난 연결에만 보낸다(머리말 "연결을 받을 때" · 10n-55). Hocuspocus 는 연결을 등록한 뒤에 첫 메시지를
+ * 처리하므로 첫 판정 전의 연결이 그사이 방송을 받는다. 판정을 지나면 SyncStep2 가 상태를 통째로 주므로 건너뛴 방송을 잃지 않는다.
+ * ⚠ private 메서드를 감싼다 — Hocuspocus 를 올리면 `collab-server.db.test` ⑭ 가 이 감쌈이 듣는지 본다.
+ */
+function gateBroadcasts(document: Document, allowed: (connection: Connection) => boolean): void {
+  const target = document as unknown as Broadcaster
+  if (typeof target.broadcast !== 'function') throw new Error('Hocuspocus Document.broadcast 가 없다 — 첫 판정 전 연결을 막을 수 없다')
+  const broadcast = target.broadcast.bind(document)
+  target.broadcast = (encode, filter) => broadcast(encode, (connection) => allowed(connection) && (filter === undefined || filter(connection)))
 }
 
 /** 이 연결이 지금 권한으로도 그대로 있어도 되는가 — 아니면 닫을 이유. 연결을 받을 때와 같은 판정이다. */
