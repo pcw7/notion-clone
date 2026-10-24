@@ -7,6 +7,7 @@
  *   ④ ★ 다른 타입으로 바뀌면 대체 텍스트의 두 키가 사라진다(`normalizeFormat`)
  *   ⑤ ★ 캡션(10n-62) — 평문 런 · 다른 props 는 그대로 · 지금 값을 읽는다
  *   ⑥ 캡션 — 같은 글자면 쓰지 않는다(받은 서식을 지킨다) · 비우면 키를 지운다 · 이미지가 아니면 거절
+ *   ⑦ ★ 폭 · 정렬(10n-63) — 주지 않은 쪽은 그대로 · 왼쪽 · 없는 폭은 키를 지운다 · 같은 값이면 거절
  */
 
 import { test } from 'node:test'
@@ -17,7 +18,7 @@ import { textRun } from '../contracts/rich-text.ts'
 import { docToPm } from './pm-adapter.ts'
 import { blockSchema } from './schema.ts'
 import { findContainerById } from './pm-blocks.ts'
-import { imageBlockInfo, imageCaptionInfo, setImageAltCommand, setImageCaptionCommand } from './image-block.ts'
+import { imageBlockInfo, imageCaptionInfo, setImageAltCommand, setImageCaptionCommand, setImageLayoutCommand } from './image-block.ts'
 import { normalizeFormat } from '../block/types.ts'
 
 const IMAGE = '0190a3f1-1111-7000-8000-000000000001'
@@ -107,4 +108,19 @@ test('⑥ 같은 글자면 쓰지 않는다(받은 서식을 지킨다) · 비�
   assert.equal('caption' in propsOf(cleared.next), false)
   assert.equal(run(state, setImageCaptionCommand(PARA, '말')).ok, false)
   assert.equal(imageCaptionInfo(state, PARA), null)
+})
+
+// ── 폭 · 정렬 (10n-63) ──
+
+test('⑦ ★ 폭 · 정렬 — 주지 않은 쪽은 그대로 · 왼쪽 · 없는 폭은 키를 지운다 · 같은 값이면 거절 · 이미지가 아니면 거절', () => {
+  const state = stateWith({ alt_text: '말', block_width: 0.5 })
+  const centered = run(state, setImageLayoutCommand(IMAGE, { align: 'center' }))
+  assert.equal(centered.ok, true)
+  assert.deepEqual(formatOf(centered.next), { alt_text: '말', block_width: 0.5, block_align: 'center' }, '폭은 그대로')
+  const narrower = run(centered.next, setImageLayoutCommand(IMAGE, { width: 0.333 }))
+  assert.deepEqual(formatOf(narrower.next), { alt_text: '말', block_width: 0.33, block_align: 'center' }, '정렬은 그대로 · 폭은 둥근다')
+  assert.equal(run(narrower.next, setImageLayoutCommand(IMAGE, { align: 'center' })).ok, false, '같은 값')
+  const reset = run(narrower.next, setImageLayoutCommand(IMAGE, { width: null, align: 'left' }))
+  assert.deepEqual(formatOf(reset.next), { alt_text: '말' })
+  assert.equal(run(state, setImageLayoutCommand(PARA, { align: 'center' })).ok, false)
 })

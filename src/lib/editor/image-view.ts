@@ -39,9 +39,13 @@ import {
   isSafeImageUrl,
   readCaption,
   readImageSource,
+  readImageLayout,
   withImageSource,
+  IMAGE_ALIGNS,
+  type ImageAlign,
   type ImageSource,
 } from '../block/image.ts'
+import { setImageLayoutCommand } from './image-block.ts'
 import { ALLOWED_IMAGE_MIME } from '../file/limits.ts'
 import type { UploadOutcome } from '../file/upload-client.ts'
 import { takeQueuedUpload } from './image-drop.ts'
@@ -60,6 +64,9 @@ export type ImageViewDeps = {
   /** 캡션 입력을 연다(10n-62) — 편집기 밖의 입력칸(코드 캡션과 같은 것). 읽기 전용 편집기는 아무것도 하지 않는다. */
   readonly openImageCaption: (blockId: string) => void
 }
+
+/** 정렬 단추의 말(10n-63). */
+const ALIGN_LABEL: Readonly<Record<ImageAlign, string>> = { left: '왼쪽', center: '가운데', right: '오른쪽' }
 
 /** 대체 텍스트 단추의 말(10d-1b) — 장식이면 "장식 이미지" · 말이 있으면 ✓ · 없으면 "대체 텍스트". */
 function altButtonLabel(format: unknown): string {
@@ -254,6 +261,18 @@ export function imageNodeView(
     const props = current.attrs.props as Record<string, unknown>
     const source = readImageSource(props)
 
+    // 폭 · 정렬(10n-63 · 정본 §3.4 [보강 10n-63]) — 그림이 있을 때만 뜻이 있다. CSS 가 그림 · 캡션에 건다(`editor.css`)
+    const layout = readImageLayout(current.attrs.format)
+    if (source !== null && layout.width !== null) {
+      dom.dataset.width = String(layout.width)
+      dom.style.setProperty('--blk-image-width', `${layout.width * 100}%`)
+    } else {
+      delete dom.dataset.width
+      dom.style.removeProperty('--blk-image-width')
+    }
+    if (source !== null && layout.align !== 'left') dom.dataset.align = layout.align
+    else delete dom.dataset.align
+
     if (uploading) {
       dom.dataset.state = 'uploading'
       controls.append(element('span', 'blk-image-status', '올리는 중'), progress)
@@ -284,6 +303,24 @@ export function imageNodeView(
         if (id !== '') deps.openImageCaption(id)
       })
       controls.append(captionButton)
+      // 정렬(10n-63) — 단추 셋 · 고른 것이 눌려 있다 · 편집할 수 있을 때만 쓴다(읽기 전용 편집기에서는 CSS 가 숨긴다)
+      const alignGroup = element('span', 'blk-image-align')
+      alignGroup.setAttribute('role', 'group')
+      alignGroup.setAttribute('aria-label', '그림 정렬')
+      for (const align of IMAGE_ALIGNS) {
+        const button = element('button', 'blk-image-align-button', ALIGN_LABEL[align])
+        button.type = 'button'
+        button.setAttribute('data-testid', `image-align-${align}`)
+        button.setAttribute('aria-pressed', String(layout.align === align))
+        button.addEventListener('mousedown', (event) => event.preventDefault())
+        button.addEventListener('click', () => {
+          if (!view.editable) return
+          const id = containerIdAt(view, getPos)
+          if (id !== '') setImageLayoutCommand(id, { align })(view.state, view.dispatch.bind(view))
+        })
+        alignGroup.append(button)
+      }
+      controls.append(alignGroup)
     } else {
       dom.dataset.state = 'empty'
       renderEmpty()

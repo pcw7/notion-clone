@@ -10,10 +10,10 @@
  */
 
 import katex from 'katex'
-import type { ReactNode } from 'react'
+import type { CSSProperties, ReactNode } from 'react'
 
 import { codeCaptionRuns, codeLanguageOf } from '@/lib/block/code'
-import { imageAltText, readCaption, readImageSource } from '@/lib/block/image'
+import { imageAltText, readCaption, readImageLayout, readImageSource } from '@/lib/block/image'
 import { EQUATION_TYPE, equationExpressionOf } from '@/lib/block/equation'
 import { cellsOf, COLUMN_HEADER_KEY, ROW_HEADER_KEY, TABLE_TYPE } from '@/lib/block/table'
 import { TOC_TYPE, headingsOfBlocks, tocEntries } from '@/lib/block/toc'
@@ -300,8 +300,15 @@ function Block({ block, view }: { block: EditorBlock; view: PublicPageView }): R
       if (source === null) return null
       const caption = readCaption(props).trim()
       const src = source.kind === 'file' ? publicFileHref(view, block.id, 'image') : source.url
+      // 폭 · 정렬(10n-63) — 편집기와 같은 규칙(`readImageLayout` · `public.css`)
+      const layout = readImageLayout(block.format)
       return (
-        <figure className="pub-block pub-image">
+        <figure
+          className="pub-block pub-image"
+          data-width={layout.width ?? undefined}
+          data-align={layout.align === 'left' ? undefined : layout.align}
+          style={layout.width === null ? undefined : ({ '--pub-image-width': `${layout.width * 100}%` } as CSSProperties)}
+        >
           {/* eslint-disable-next-line @next/next/no-img-element -- 공개 화면은 최적화 경로를 거치지 않는다(바깥 주소 · 토큰 경로) */}
           <img src={src} alt={imageAltText(block.format, props)} loading="lazy" referrerPolicy="no-referrer" />
           {caption !== '' && <figcaption>{caption}</figcaption>}
