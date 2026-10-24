@@ -2912,7 +2912,9 @@ CREATE INDEX ON row_position (view_id, group_key, order_idx);
 
 - ① 값은 함수 이름 하나다 — 모든 타입: `count_all` · `count_values` · `count_empty` · `count_unique` · `percent_empty` · `percent_not_empty` /
   숫자: `sum` · `average` · `median` · `min` · `max` · `range` / 날짜: `earliest_date` · `latest_date` · `date_range` / 체크박스(빈 값이
-  없다 — 세기 계열 대신): `count_all` · `checked` · `unchecked` · `percent_checked` · `percent_unchecked`. 목록 밖의 이름은 CHECK 이
+  없다 — 세기 계열 대신): `count_all` · `checked` · `unchecked` · `percent_checked` · `percent_unchecked` / 상태: 모든 타입의 것 +
+  `percent_complete`(**[보강 10n-30 · 마이그레이션 0112]** 완료 비율 — 행 중 셀의 옵션이 지금 완료 그룹에 든 것의 비율 · 빈 상태도 분모 ·
+  rollup 의 완료 비율(10n-29)과 같은 뜻 · 완료 그룹의 옵션 id 를 질의에 묶어 상태 열에만 센다). 목록 밖의 이름은 CHECK 이
   막는다(`ck_view_property_calculation`). 타입에 맞는지는 고를 때 명령이 보고, 읽을 때 맞지 않으면(타입을 바꾼 뒤) **무시한다**(rollup 의
   접기와 같은 태도 — 저장값은 남긴다).
 - ② 대상은 **필터를 지난 행 전부**다 — 페이지에 들어오지 않은 행도(04 *"반드시 서버측 계산"*). 템플릿 · 휴지통은 뺀다(R1). 하위 항목이 켜진
