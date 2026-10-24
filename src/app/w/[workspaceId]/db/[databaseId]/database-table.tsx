@@ -465,6 +465,10 @@ export function DatabaseTable(props: {
         if (row && column && isCellColumn(column) && access.canEditContent) {
           void saveCell(row.id, column, emptyValue(column.type), valueAt(row, column))
         }
+        // relation(10n-38) — 값이 셀이 아니라 엣지라 셀 쓰기로 비울 수 없다. 보이는 연결을 모두 빼는 명령을 보낸다(볼 수 없는 연결은 남는다)
+        if (row && column?.type === 'relation' && access.canEditContent && readRelationValue(row.properties[column.propertyId]).count > 0) {
+          void clearRelation(row, column.propertyId)
+        }
         setMode(result.mode)
         return
       }
@@ -697,6 +701,17 @@ export function DatabaseTable(props: {
     setRows((current) => current.map((r) => (r.id === row.id && notOlder(row.version, r.version) ? row : r)))
     // ★ 이 행이 **무엇을 모으는지**가 바뀌었다 — rollup 은 연결을 타고 계산한다. 그 행만 다시 묻는다.
     refreshRollups([row.id])
+  }
+
+  /** relation 칸을 비운다(10n-38 · `Delete`) — 답은 바뀐 행이다. 연결이 바뀐 것과 같은 길로 받는다(`onRelationChange` — rollup 을 다시 묻는다). */
+  const clearRelation = async (row: RowJson, propertyId: string) => {
+    setError(null)
+    const result = await api.linkRows(workspaceId, row.id, propertyId, { clear: true })
+    if (!result.ok) {
+      setError(result.message)
+      return
+    }
+    onRelationChange(result.value, {}, {})
   }
 
   // ── 행 · 컬럼 ──────────────────────────────────────────────────────
