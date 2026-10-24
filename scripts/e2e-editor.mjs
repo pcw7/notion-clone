@@ -22696,6 +22696,43 @@ async function main() {
       await key('Escape')
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('사이드바 최근에 지금 연 페이지가 곧바로 (10n-72 · F-07-16)')) { try {
+      // 앱 안에서 다른 페이지로 옮겨 가면(트리를 누른다 — 새로 읽지 않는다) 사이드바의 최근 맨 앞이 그 페이지다 · 처음 여는 페이지도 ·
+      // 새로 읽어도 같은 차례(서버의 기록). HANDOFF §3.2-305.
+      const stamp = Date.now().toString(36)
+      const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
+      const mk = async (title) => (await (await fetch(pagesUrl, { method: 'POST', headers: authed, body: JSON.stringify({ title }) })).json()).page.id
+      const a = await mk(`곧바로 가 ${stamp}`)
+      const b = await mk(`곧바로 나 ${stamp}`)
+      const REC = 'section[aria-label="최근"]'
+      const firstRecent = (n) => evaluate(`[...document.querySelectorAll('${REC} li a[href]')].slice(0, ${n}).map((el) => el.getAttribute('href').split('/').pop())`)
+      const openFromTree = async (id) => {
+        const link = `nav[aria-label="페이지 트리"] section:not([aria-label="즐겨찾기"]):not([aria-label="최근"]) a[href="/w/${workspaceId}/${id}"]`
+        await waitFor(`!!document.querySelector('${link}')`, 10000)
+        await evaluate(`document.querySelector('${link}').scrollIntoView({ block: 'center' })`)
+        await clickSelector(link)
+        return waitFor(`location.pathname.endsWith('/${id}') && !!document.querySelector('input[aria-label="페이지 제목"]')`, 15000)
+      }
+      // 홈에서 시작한다(새로 읽는다) — 둘 다 아직 연 적이 없다
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
+      await waitHydrated(`nav[aria-label="페이지 트리"] a[href="/w/${workspaceId}/${a}"]`)
+      const before = await firstRecent(20)
+      const marker = await evaluate(`window.__noReload = '${stamp}'`)
+      const toA = await openFromTree(a)
+      const afterA = await waitFor(`[...document.querySelectorAll('${REC} li a[href]')][0]?.getAttribute('href')?.endsWith('/${a}') === true`, 5000)
+      check('★ 트리에서 처음 여는 페이지 — 새로 읽지 않아도 최근의 맨 앞에 선다',
+        !before.includes(a) && toA && afterA && (await evaluate(`window.__noReload`)) === marker, JSON.stringify({ before: before.slice(0, 3), now: await firstRecent(3) }))
+
+      const toB = await openFromTree(b)
+      const afterB = await waitFor(`(() => { const ids = [...document.querySelectorAll('${REC} li a[href]')].slice(0, 2).map((el) => el.getAttribute('href').split('/').pop()); return ids[0] === '${b}' && ids[1] === '${a}' })()`, 5000)
+      check('★ 이어서 다른 페이지 — 그 페이지가 맨 앞 · 앞서 연 페이지가 그다음(이 탭에서 연 차례) · 새로 읽지 않았다',
+        toB && afterB && (await evaluate(`window.__noReload`)) === marker, JSON.stringify(await firstRecent(3)))
+
+      await send('Page.reload', {})
+      const reloaded = await waitFor(`(() => { const ids = [...document.querySelectorAll('${REC} li a[href]')].slice(0, 2).map((el) => el.getAttribute('href').split('/').pop()); return ids[0] === '${b}' && ids[1] === '${a}' })()`, 15000)
+      check('새로 읽어도 같은 차례 — 서버의 기록과 화면의 덧댐이 같은 말을 한다', reloaded, JSON.stringify(await firstRecent(3)))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

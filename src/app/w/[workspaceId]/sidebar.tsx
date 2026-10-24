@@ -56,11 +56,13 @@ import { ImportButton } from './import-dialog'
 import { teamspaceIcon } from './teamspace-messages'
 import { TrashPanel, type TrashRow } from './trash-panel'
 import { getSidebarStore } from './sidebar-state'
+import { getVisitHistory } from './visit-history'
 import { openSearchOverlay } from './search-overlay'
 import { PageIconView } from './page-icon-view'
 import { requestDuplicate } from './duplicate-page'
 import { TAB_DRAG_THRESHOLD, tabDropBefore, tabDropLineX, type TabBox } from '@/lib/database/tab-drag'
-import { SECTION_COUNT_OPTIONS, sectionCount, sectionCountLabel, visibleRowCount, type NavSectionKey, type SectionCounts } from '@/lib/nav/section-count'
+import { RECENT_FETCH_LIMIT, SECTION_COUNT_OPTIONS, sectionCount, sectionCountLabel, visibleRowCount, type NavSectionKey, type SectionCounts } from '@/lib/nav/section-count'
+import { overlayVisits } from '@/lib/nav/recent-overlay'
 import { AnchoredLayer, containsAcrossLayers } from './anchored-layer'
 
 export type SidebarNode = {
@@ -205,6 +207,31 @@ export function Sidebar({
     store.subscribe,
     store.getSnapshot,
     store.getServerSnapshot,
+  )
+
+  // 최근에 이 탭의 방문을 덧댄다(10n-72 · HANDOFF §3.2-305) — 레이아웃은 앱 안 이동에서 다시 그려지지 않아 서버가 준 최근이 낡는다.
+  // 연 페이지를 맨 앞에 세우고, 서버 목록에 없으면 사이드바가 아는 줄(트리 · 즐겨찾기)의 제목 · 아이콘을 빌린다(모르는 페이지는 건너뛴다).
+  const history = useMemo(() => getVisitHistory(workspaceId), [workspaceId])
+  const visits = useSyncExternalStore(history.subscribe, history.getSnapshot, history.getServerSnapshot)
+  useEffect(() => {
+    if (currentPageId !== null) history.visit(currentPageId)
+  }, [currentPageId, history])
+  const knownRows = useMemo(() => {
+    const rows = new Map<string, NavRow>()
+    const walk = (nodes: readonly SidebarNode[]): void => {
+      for (const node of nodes) {
+        // 최근은 페이지만 싣는다(`listRecent` — `type = 'page'`) — 풀페이지 데이터베이스는 넣지 않는다
+        if (node.kind === 'page') rows.set(node.id, { id: node.id, title: node.title, icon: node.icon })
+        walk(node.children)
+      }
+    }
+    walk(allNodes)
+    for (const row of favorites) rows.set(row.id, row)
+    return rows
+  }, [allNodes, favorites])
+  const shownRecent = useMemo(
+    () => overlayVisits(recent, visits, (id) => knownRows.get(id) ?? null, RECENT_FETCH_LIMIT),
+    [recent, visits, knownRows],
   )
 
   // 현재 페이지가 접힌 가지 안에 있으면 보이지 않는다. 조상을 펼친다.
@@ -709,7 +736,7 @@ export function Sidebar({
         </button>
       </div>
 
-      <NavSection label="최근" rows={recent} workspaceId={workspaceId} currentPageId={currentPageId} countKey="recent" counts={counts} onCount={store.setCount} />
+      <NavSection label="최근" rows={shownRecent} workspaceId={workspaceId} currentPageId={currentPageId} countKey="recent" counts={counts} onCount={store.setCount} />
 
       <TrashPanel workspaceId={workspaceId} entries={trash} />
     </nav>
