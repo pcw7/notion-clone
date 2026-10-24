@@ -1,5 +1,5 @@
 /**
- * 즐겨찾기 토글 — POST/DELETE `/api/workspaces/[workspaceId]/pages/[pageId]/favorite`
+ * 즐겨찾기 토글 · 순서 — POST/DELETE · PATCH(순서 · 10n-57) `/api/workspaces/[workspaceId]/pages/[pageId]/favorite`
  *
  * 정본: 07-search-navigation.md F-07-16 ("사용자별 개인 목록")
  *
@@ -8,9 +8,9 @@
  * 조회 시점 필터가 목록에서 빼 준다(`nav/recent.ts`).
  */
 
-import { asBlockId } from '@/lib/ids'
-import { requireWorkspaceSession } from '@/lib/auth/route-session'
-import { addFavorite, removeFavorite } from '@/lib/nav/recent'
+import { asBlockId, isUuid } from '@/lib/ids'
+import { readJsonBody, requireWorkspaceSession } from '@/lib/auth/route-session'
+import { addFavorite, moveFavorite, removeFavorite } from '@/lib/nav/recent'
 import { canViewPage } from '@/lib/permissions/effective'
 
 type Ctx = RouteContext<'/api/workspaces/[workspaceId]/pages/[pageId]/favorite'>
@@ -40,6 +40,24 @@ export async function POST(_request: Request, ctx: Ctx): Promise<Response> {
 
   await addFavorite(resolved.ctx, resolved.pageId)
   return Response.json({ ok: true, favorite: true })
+}
+
+/**
+ * 즐겨찾기 순서 바꾸기(10n-57) — PATCH `{ before: string | null }`(이 즐겨찾기를 `before` 앞에 · null 이면 맨 뒤) → `{ order }`. 자기 즐겨찾기가
+ * 아니면(옮길 것도 `before` 도) 404 · `before` 의 모양이 틀리면 400.
+ */
+export async function PATCH(request: Request, ctx: Ctx): Promise<Response> {
+  const { workspaceId, pageId: raw } = await ctx.params
+  const resolved = await resolve(ctx, workspaceId, raw)
+  if (!resolved.ok) return resolved.response
+  const parsed = await readJsonBody(request)
+  if (!parsed.ok) return parsed.response
+  const before = (parsed.body as { before?: unknown } | null)?.before
+  if (before !== null && (typeof before !== 'string' || !isUuid(before))) return Response.json({ error: 'invalid_input' }, { status: 400 })
+
+  const moved = await moveFavorite(resolved.ctx, resolved.pageId, before)
+  if (!moved.ok) return Response.json({ error: moved.reason }, { status: 404 })
+  return Response.json({ ok: true, order: moved.value })
 }
 
 export async function DELETE(_request: Request, ctx: Ctx): Promise<Response> {

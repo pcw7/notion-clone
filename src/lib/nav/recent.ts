@@ -163,6 +163,37 @@ export async function addFavorite(ctx: SessionContext, pageId: string): Promise<
   })
 }
 
+export type MoveFavoriteResult = { readonly ok: true; readonly value: readonly string[] } | { readonly ok: false; readonly reason: 'not_found' }
+
+/**
+ * 즐겨찾기를 `before` 앞으로 옮긴다(null 이면 맨 뒤) — 정본 즐겨찾기 [보강 10n-57] · 07 F-07-16. 자기 즐겨찾기만(이 워크스페이스의 이 사람의
+ * 행이 아니면 not_found — 옮길 것도 `before` 도). 볼 수 없게 된 행도 차례에는 남는다(목록이 거를 뿐). 그 사람의 행을 잠근 뒤 이웃을 읽는다 ·
+ * 이미 그 자리면 쓰지 않는다. 답은 옮긴 뒤의 차례(블록 id — 볼 수 없는 것도 든다).
+ */
+export async function moveFavorite(ctx: SessionContext, pageId: string, before: string | null): Promise<MoveFavoriteResult> {
+  return withTransaction(async (tx) => {
+    const rows = await tx.query<{ block_id: string; order_key: string }>(
+      `SELECT block_id, order_key FROM favorite
+        WHERE user_id = $1 AND workspace_id = $2
+        ORDER BY order_key, block_id
+          FOR UPDATE`,
+      [ctx.userId, ctx.workspaceId],
+    )
+    const order = rows.map((r) => r.block_id)
+    if (!order.includes(pageId) || (before !== null && !order.includes(before))) return { ok: false, reason: 'not_found' } as const
+    const others = rows.filter((r) => r.block_id !== pageId)
+    const at = before === null ? others.length : others.findIndex((r) => r.block_id === before)
+    // 제자리 — 자기 앞으로 · 이미 그 이웃 사이
+    if (before === pageId || order.indexOf(pageId) === at) return { ok: true, value: order } as const
+    const prev = at > 0 ? others[at - 1]!.order_key : null
+    const next = at < others.length ? others[at]!.order_key : null
+    await tx.query(`UPDATE favorite SET order_key = $3 WHERE user_id = $1 AND block_id = $2`, [ctx.userId, pageId, orderKeyBetween(prev, next)])
+    const moved = others.map((r) => r.block_id)
+    moved.splice(at, 0, pageId)
+    return { ok: true, value: moved } as const
+  })
+}
+
 export async function removeFavorite(ctx: SessionContext, pageId: string): Promise<void> {
   await withTransaction(async (tx) => {
     await tx.query(`DELETE FROM favorite WHERE user_id = $1 AND block_id = $2`, [

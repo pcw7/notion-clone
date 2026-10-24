@@ -35,7 +35,17 @@
  * 사이드바에 세울 수 없으니(그러면 "내 teamspace" 의 뜻이 흐려진다) 화면을 따로 둔다.
  */
 
-import { startTransition, useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react'
+import {
+  startTransition,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+} from 'react'
 import Link from '@/app/link'
 import { usePathname, useRouter } from 'next/navigation'
 
@@ -49,6 +59,7 @@ import { getSidebarStore } from './sidebar-state'
 import { openSearchOverlay } from './search-overlay'
 import { PageIconView } from './page-icon-view'
 import { requestDuplicate } from './duplicate-page'
+import { TAB_DRAG_THRESHOLD, tabDropBefore, tabDropLineX, type TabBox } from '@/lib/database/tab-drag'
 
 export type SidebarNode = {
   id: string
@@ -139,6 +150,21 @@ export function Sidebar({
 }) {
   const router = useRouter()
   const pathname = usePathname()
+  /** 즐겨찾기 순서 바꾸기(10n-57 · F-07-16) — 이 즐겨찾기를 `before` 앞에(null 이면 맨 뒤). 서버가 거절하면 false(화면은 원래 차례로). */
+  const moveFavoriteTo = async (id: string, before: string | null): Promise<boolean> => {
+    try {
+      const res = await fetch(`/api/workspaces/${workspaceId}/pages/${id}/favorite`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ before }),
+      })
+      if (!res.ok) return false
+      router.refresh()
+      return true
+    } catch {
+      return false
+    }
+  }
   /**
    * 좁은 화면의 서랍(10j-1 · F-12-12) — **연 주소**를 기억한다. 화면을 옮기면 주소가 달라져 저절로 닫힌다(효과 안의 setState 가 없다).
    * 넓은 화면에서는 쓰지 않는다(단추가 `md` 이상에서 숨는다).
@@ -428,7 +454,7 @@ export function Sidebar({
         최근 방문은 아래 — 둘 다 서버가 권한으로 걸러서 준다(`nav/recent.ts`).
         빈 섹션은 그리지 않는다. 아무것도 없는 제목만 남으면 공간만 먹는다.
       */}
-      <NavSection label="즐겨찾기" rows={favorites} workspaceId={workspaceId} currentPageId={currentPageId} />
+      <NavSection label="즐겨찾기" rows={favorites} workspaceId={workspaceId} currentPageId={currentPageId} onMove={moveFavoriteTo} />
 
       <div className="flex flex-1 flex-col gap-2 overflow-auto">
         {showTeamspaces && (
@@ -798,32 +824,142 @@ function TreeItem({
  * 트리가 아니라 **평평한 목록**이다 — 정본 F-07-16 이 상단 진입점과 트리 섹션을
  * 성격이 다른 두 층으로 나눈 그대로다. 여기에 펼침/접힘을 넣으면 트리와 같은
  * 상태를 두 벌 관리하게 된다.
+ *
+ * `onMove` 가 있으면(즐겨찾기 · 10n-57) 줄을 끌어 순서를 바꾼다 — 뷰 탭 끌기(10n-19)와 같은 규칙을 세로로(`tabDropBefore` 에 위 · 높이를
+ * 넘긴다). 끌 수 없는 손을 위해 Alt+↑ · Alt+↓ 도. 놓으면 서버가 새 목록을 줄 때까지 그 차례로 먼저 그린다.
  */
 function NavSection({
   label,
   rows,
   workspaceId,
   currentPageId,
+  onMove,
 }: {
   label: string
   rows: NavRow[]
   workspaceId: string
   currentPageId: string | null
+  onMove?: (id: string, before: string | null) => Promise<boolean>
 }) {
+  const listRef = useRef<HTMLUListElement>(null)
+  /** 잡은 줄 · 잡은 y · 끌기가 시작됐는가(4px 를 넘었다). */
+  const grab = useRef<{ id: string; startY: number; active: boolean } | null>(null)
+  /** 끌기를 마친 놓기 뒤의 클릭은 페이지를 열지 않는다. */
+  const swallowClick = useRef(false)
+  const [dragging, setDragging] = useState<string | null>(null)
+  /** 놓일 자리의 가로 줄 — 목록의 위에서 잰 y. */
+  const [lineY, setLineY] = useState<number | null>(null)
+  /** 옮긴 뒤 서버의 새 목록이 올 때까지의 차례 — 그때의 `rows` 에 매인다(새 `rows` 가 오면 저절로 버려진다 · 효과가 필요 없다). */
+  const [pending, setPending] = useState<{ base: NavRow[]; order: readonly string[] } | null>(null)
+  /** 서버에 보내는 중 — 그동안은 다음 옮기기를 받지 않는다(차례가 엇갈리지 않게). 목록의 `aria-busy` 로도 알린다. */
+  const busy = useRef(false)
+  const [moving, setMoving] = useState(false)
+
+  const shown = useMemo(() => {
+    if (pending === null || pending.base !== rows) return rows
+    const byId = new Map(rows.map((row) => [row.id, row]))
+    return pending.order.map((id) => byId.get(id)).filter((row): row is NavRow => row !== undefined)
+  }, [pending, rows])
+
+  const move = async (id: string, before: string | null) => {
+    if (onMove === undefined || busy.current) return
+    const order = shown.map((row) => row.id).filter((other) => other !== id)
+    order.splice(before === null ? order.length : order.indexOf(before), 0, id)
+    busy.current = true
+    setMoving(true)
+    setPending({ base: rows, order })
+    const ok = await onMove(id, before)
+    busy.current = false
+    setMoving(false)
+    if (!ok) setPending(null)
+  }
+
+  const boxes = (): TabBox[] =>
+    [...(listRef.current?.querySelectorAll<HTMLElement>('[data-nav-id]') ?? [])].map((el) => {
+      const r = el.getBoundingClientRect()
+      return { id: el.dataset.navId ?? '', left: r.top, width: r.height }
+    })
+  const onRowPointerDown = (event: ReactPointerEvent<HTMLAnchorElement>, id: string) => {
+    if (onMove === undefined || event.button !== 0 || busy.current) return
+    grab.current = { id, startY: event.clientY, active: false }
+  }
+  useEffect(() => {
+    if (onMove === undefined) return
+    const onPointerMove = (event: PointerEvent) => {
+      const g = grab.current
+      if (g === null) return
+      if (!g.active && Math.abs(event.clientY - g.startY) <= TAB_DRAG_THRESHOLD) return
+      if (!g.active) {
+        g.active = true
+        setDragging(g.id)
+      }
+      const y = tabDropLineX(boxes(), g.id, event.clientY)
+      const top = listRef.current?.getBoundingClientRect().top ?? 0
+      setLineY(y === null ? null : y - top)
+    }
+    const onPointerUp = (event: PointerEvent) => {
+      const g = grab.current
+      grab.current = null
+      if (g === null || !g.active) return
+      // 놓기 직후의 클릭만 막는다 — 뷰 탭과 같은 까닭(다른 줄 위에서 놓으면 클릭이 공통 조상에 떨어진다)
+      swallowClick.current = true
+      setTimeout(() => {
+        swallowClick.current = false
+      }, 0)
+      setDragging(null)
+      setLineY(null)
+      const before = tabDropBefore(boxes(), g.id, event.clientY)
+      if (before !== undefined) void move(g.id, before)
+    }
+    window.addEventListener('pointermove', onPointerMove)
+    window.addEventListener('pointerup', onPointerUp)
+    return () => {
+      window.removeEventListener('pointermove', onPointerMove)
+      window.removeEventListener('pointerup', onPointerUp)
+    }
+  })
+
+  const onRowKeyDown = (event: ReactKeyboardEvent<HTMLAnchorElement>, index: number) => {
+    if (onMove === undefined || !event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return
+    if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return
+    event.preventDefault()
+    const id = shown[index]!.id
+    // ↑ 는 바로 위 줄의 앞 · ↓ 는 바로 아래 줄의 다음 줄 앞(없으면 맨 뒤). 끝에서는 그대로다.
+    if (event.key === 'ArrowUp' ? index === 0 : index === shown.length - 1) return
+    const before = event.key === 'ArrowUp' ? shown[index - 1]!.id : (shown[index + 2]?.id ?? null)
+    // 초점은 따로 돌려주지 않는다 — 줄이 DOM 에서 옮겨지며 잠깐 빠져도 React 가 커밋 뒤에 원래 초점으로 돌려준다(e2e 가 본다)
+    void move(id, before)
+  }
+
   if (rows.length === 0) return null
 
   return (
     <section aria-label={label} className="flex flex-col gap-0.5">
       <h2 className="px-2 text-xs font-medium text-neutral-400">{label}</h2>
-      <ul>
-        {rows.map((row) => (
+      <ul ref={listRef} aria-busy={moving || undefined} className="relative">
+        {lineY !== null && (
+          <li aria-hidden data-testid="nav-drop-line" style={{ top: lineY - 1 }} className="pointer-events-none absolute left-0 right-0 h-0.5 bg-blue-500" />
+        )}
+        {shown.map((row, index) => (
           <li key={row.id}>
             <Link
               href={`/w/${workspaceId}/${row.id}`}
               aria-current={row.id === currentPageId ? 'page' : undefined}
+              data-nav-id={onMove === undefined ? undefined : row.id}
+              data-dragging={dragging === row.id ? 'true' : undefined}
+              aria-keyshortcuts={onMove === undefined ? undefined : 'Alt+ArrowUp Alt+ArrowDown'}
+              // 링크의 브라우저 끌기(주소 끌어 놓기)는 끈다 — 줄 끌기와 겹친다
+              draggable={onMove === undefined ? undefined : false}
+              onPointerDown={(event) => onRowPointerDown(event, row.id)}
+              onKeyDown={(event) => onRowKeyDown(event, index)}
+              onClick={(event) => {
+                if (!swallowClick.current) return
+                swallowClick.current = false
+                event.preventDefault()
+              }}
               className={`block truncate rounded px-2 py-1 text-sm hover:bg-neutral-100 dark:hover:bg-neutral-800 ${
                 row.id === currentPageId ? 'bg-neutral-100 dark:bg-neutral-800' : ''
-              }`}
+              }${dragging === row.id ? ' opacity-50' : ''}`}
             >
               <PageIconView icon={row.icon} fallback className="mr-1 align-[-0.125em]" />
               {row.title || UNTITLED}
