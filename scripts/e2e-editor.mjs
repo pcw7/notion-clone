@@ -21782,6 +21782,42 @@ async function main() {
         JSON.stringify(await look()))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('콜아웃의 색 파생 (10n-54 · F-01-21)')) { try {
+      // 콜아웃 — 글자색(배경색이 아닌 색)이면 흰 바탕 + 연회색 테두리 · 배경색이면 그 바탕(같은 색의 문단과 같다) · 색이 없으면 연회색 바탕(테두리
+      // 없음). 편집기와 공개 화면이 같은 규칙이다. 정본 [보강] 블록 색 ⑤.
+      const stamp = Date.now()
+      const page = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: JSON.stringify({ title: `콜아웃 색 ${stamp}` }) })).json()).page.id
+      const ids = { plain: randomUUID(), text: randomUUID(), bg: randomUUID(), para: randomUUID() }
+      const blockOf = (id, type, title, color) => ({ id, type, title: [textRun(title)], properties: {}, format: color === null ? {} : { block_color: color }, children: [] })
+      await saveBody(page, { blocks: [
+        blockOf(ids.plain, 'callout', '기본 콜아웃', null),
+        blockOf(ids.text, 'callout', '빨간 글자 콜아웃', 'red'),
+        blockOf(ids.bg, 'callout', '빨간 바탕 콜아웃', 'red_background'),
+        blockOf(ids.para, 'paragraph', '빨간 바탕 문단', 'red_background'),
+      ] })
+      const styles = (selectorOf) => evaluate(`(() => {
+        const css = (key) => { const e = document.querySelector((${selectorOf})(key)); if (!e) return null; const s = getComputedStyle(e); return { bg: s.backgroundColor, border: s.borderTopColor } }
+        return { plain: css('plain'), text: css('text'), bg: css('bg'), para: css('para') }
+      })()`)
+      const editorSel = `(key) => '[data-block-id="' + (${JSON.stringify(ids)})[key] + '"] > [data-block-type]'`
+      const judge = (s) => s.plain?.bg === 'rgba(135, 131, 120, 0.12)' && s.plain?.border === 'rgba(0, 0, 0, 0)'
+        && s.text?.bg === 'rgb(255, 255, 255)' && s.text?.border === 'rgba(55, 53, 47, 0.16)'
+        && s.bg?.bg === s.para?.bg && s.bg?.bg !== s.plain?.bg
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+      await waitFor(`!!document.querySelector('[data-block-id="${ids.para}"] > [data-block-type]')`, 15000)
+      const editor = await styles(editorSel)
+      check('★ 편집기 — 기본은 연회색 바탕 · 글자색이면 흰 바탕 + 연회색 테두리 · 배경색이면 그 바탕(같은 색 문단과 같다)', judge(editor), JSON.stringify(editor))
+
+      const token = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages/${page}/publish`, { method: 'PUT', headers: authed })).json())?.token
+      await send('Page.navigate', { url: `${BASE}/p/${token}` })
+      await waitFor(`document.querySelectorAll('.pub-callout').length === 3`, 15000)
+      // 공개 화면에는 블록 id 가 없다 — 차례로 고른다(기본 · 글자색 · 배경색 · 문단)
+      const publicSel = `(key) => ({ plain: '.pub-callout:nth-of-type(1)', text: '.pub-callout:not([data-color$="_background"])[data-color]', bg: '.pub-callout[data-color="red_background"]', para: 'p[data-color="red_background"], .pub-block[data-color="red_background"]:not(.pub-callout)' })[key]`
+      const pub = await styles(publicSel)
+      check('★ 공개 화면도 같은 규칙 — 배경색 콜아웃이 기본 바탕에 덮이지 않는다', judge(pub), JSON.stringify(pub))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).
