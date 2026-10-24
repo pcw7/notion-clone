@@ -3390,7 +3390,7 @@ async function main() {
       check('이미 멤버인 사람은 멤버로 공유했다고 말한다 — 게스트가 되지 않는다',
         (await panelSays('멤버로 공유했습니다')) && !(await evaluate(`[...document.querySelectorAll('${DIALOG} li')].some((li) => li.textContent.includes(${JSON.stringify(`${memberName} (${mate.email}) · 게스트`)}))`)))
       await invite(`nobody-${stamp}@example.com`) // ASCII — type="email" 칸은 한글 주소를 브라우저가 먼저 막는다
-      check('계정이 없는 이메일에는 초대 메일을 보냈다고 말한다 (7g-1 전에는 "먼저 가입하라")', await panelSays('초대 메일을 보냈습니다'))
+      check('계정이 없는 이메일에는 초대 메일을 보냈다고 말한다 (7g-1 전에는 "먼저 가입하라")', await panelSays('초대 메일을 보냈습니다'), await panelText())
 
       // 게스트에게 전체 권한은 줄 수 없다 — 사람 고르개로 줘도
       const grantFull = await fetch(`${pagesUrl}/${doc}/access`, {
@@ -6695,12 +6695,17 @@ async function main() {
       await waitFor(`!!document.querySelector('[data-testid="page-history-open"]')`, 15000)
       check('전제 — 버전 둘을 만들었다', made === 2, String(made))
       check('★ 머리의 "기록"을 누르면 기록 창이 열린다', await openHistory())
-      const newestFirst = (await dbQuery(`SELECT id FROM page_version WHERE page_id = $1 ORDER BY through_seq DESC`, [page])).map((r) => r.id)
+      const versionRows = await dbQuery(`SELECT id, created_at FROM page_version WHERE page_id = $1 ORDER BY through_seq DESC`, [page])
+      const newestFirst = versionRows.map((r) => r.id)
+      // 시각의 앞 — 오늘 만든 버전이면 "오늘 ", 아니면 "10월 24일 "(`formatVersionTime`). 자정을 넘는 판에서는 3분 앞당긴 버전이 어제다(#441 판)
+      const createdAts = JSON.stringify(versionRows.map((r) => r.created_at.toISOString()))
       const ownerName = (await dbQuery(`SELECT name FROM "user" WHERE id = $1`, [ctx.userId]))[0]?.name ?? ''
       check('★ 목록은 최신순 · 시각(오늘) · 고친 사람의 이름 — 가장 최근 것을 골라 둔다',
         ownerName !== '' && (await waitFor(`(() => { const items = [...document.querySelectorAll('${ITEMS}')]
           return JSON.stringify(items.map((b) => b.dataset.versionId)) === ${JSON.stringify(JSON.stringify(newestFirst))}
-            && items.every((b) => b.textContent.startsWith('오늘 ') && b.textContent.includes(${JSON.stringify(ownerName)}))
+            && items.every((b, i) => { const at = new Date(${createdAts}[i])
+              const prefix = at.toDateString() === new Date().toDateString() ? '오늘 ' : new Intl.DateTimeFormat('ko-KR', { month: 'long', day: 'numeric' }).format(at) + ' '
+              return b.textContent.startsWith(prefix) && b.textContent.includes(${JSON.stringify(ownerName)}) })
             && items[0].getAttribute('aria-current') === 'true' })()`, 8000)),
         String(await evaluate(`[...document.querySelectorAll('${ITEMS}')].map((b) => b.textContent).join(' | ')`)))
       check('★ 처음에는 가장 최근 버전을 보여 준다 — 그 시점의 본문(지금 글은 없다) · 읽기 전용',
@@ -21890,6 +21895,49 @@ async function main() {
       const stranger = await joinAs(workspaceId, await createUser(`즐겨 남 ${stamp}`), 'member')
       const strangerMove = await fetch(`${BASE}/api/workspaces/${workspaceId}/pages/${na}/favorite`, { method: 'PATCH', headers: { ...json, cookie: `nc_session=${stranger.token}` }, body: JSON.stringify({ before: null }) })
       check('남의 즐겨찾기는 옮길 수 없다 — 404', strangerMove.status === 404, String(strangerMove.status))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
+    if (sectionIf('주소의 id 정규화 — 32자리 hex (10n-58 · F-07-17)')) { try {
+      // 하이픈 없는 32자리 hex · `제목-32자리 hex` 로 연 `/w/` 주소는 하이픈 있는 uuid 의 주소로 옮겨 간다(308 · 쿼리 그대로) — 페이지 ·
+      // 데이터베이스 · 워크스페이스 조각 모두 · 대문자도 · 정본 주소와 id 가 아닌 조각 · 모양이 틀린 hex(31자리) · API 는 옮기지 않는다 · 브라우저로
+      // hex 주소를 열면 그 페이지가 열리고 주소창은 정본 주소. HANDOFF §3.2-295. 자기 데이터를 스스로 만든다(API).
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const page = (await api('POST', '/pages', { title: `주소 ${stamp}` })).body.page.id
+      const db = (await api('POST', '/databases', { name: `주소 DB ${stamp}` })).body.database
+      const hex = (id) => id.replaceAll('-', '')
+      // 서버의 답을 따라가지 않고 본다
+      const answer = async (path) => {
+        const r = await fetch(`${BASE}${path}`, { headers: authed, redirect: 'manual' })
+        const location = r.headers.get('location')
+        return { status: r.status, to: location === null ? null : (({ pathname, search }) => pathname + search)(new URL(location, BASE)) }
+      }
+
+      const pageHex = await answer(`/w/${workspaceId}/${hex(page)}?x=1`)
+      check('★ 32자리 hex 의 페이지 주소 — 308 로 하이픈 있는 주소 · 쿼리는 그대로',
+        pageHex.status === 308 && pageHex.to === `/w/${workspaceId}/${page}?x=1`, JSON.stringify(pageHex))
+      const slug = await answer(`/w/${hex(workspaceId)}/${encodeURIComponent('회의록')}-${hex(page).toUpperCase()}`)
+      check('★ 제목-hex · 대문자 · 워크스페이스 조각까지 — 한 번에 정본 주소로',
+        slug.status === 308 && slug.to === `/w/${workspaceId}/${page}`, JSON.stringify(slug))
+      const dbHex = await answer(`/w/${workspaceId}/db/${hex(db.id)}?v=${db.defaultViewId}`)
+      check('데이터베이스 주소도 — ?v= 는 그대로', dbHex.status === 308 && dbHex.to === `/w/${workspaceId}/db/${db.id}?v=${db.defaultViewId}`, JSON.stringify(dbHex))
+      const untouched = {
+        canonical: await answer(`/w/${workspaceId}/${page}`),
+        settings: await answer(`/w/${workspaceId}/settings`),
+        short: await answer(`/w/${workspaceId}/${hex(page).slice(1)}`),
+        api: (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages/${hex(page)}/favorite`, { method: 'POST', headers: authed, redirect: 'manual' })).status,
+      }
+      check('정본 주소 · id 가 아닌 조각 · 31자리 hex · API 는 옮기지 않는다',
+        untouched.canonical.status === 200 && untouched.settings.status !== 308 && untouched.short.status !== 308 && untouched.short.to === null && untouched.api === 404,
+        JSON.stringify(untouched))
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${hex(page)}` })
+      check('★ 브라우저 — hex 주소로 열면 그 페이지 · 주소창은 정본 주소',
+        await waitFor(`location.pathname === '/w/${workspaceId}/${page}' && document.querySelector('input[aria-label="페이지 제목"]')?.value === '주소 ${stamp}'`, 15000),
+        await evaluate(`location.pathname`))
     } catch (thrown) { await sectionThrew(thrown) } }
 
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
