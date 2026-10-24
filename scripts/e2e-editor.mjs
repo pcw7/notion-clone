@@ -20736,6 +20736,50 @@ async function main() {
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('relation 칸 비우기 (10n-38 · F-03-10)')) { try {
+      // 표에서 relation 칸을 골라 Delete 를 누르면 보이는 연결이 모두 빠진다(전에는 아무 일도 없었다 — 셀 쓰기로는 엣지를 못 비운다) ·
+      // 다시 열어도 비어 있다 · 서버의 칸도 비었다. 볼 수 없는 연결이 남는 규칙은 `relation-clear.db.test` 가 본다. 정본 [보강 10n-38].
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const clickOn = async (selector) => {
+        const p = await evaluate(`(() => {
+          const e = document.querySelector(${JSON.stringify(selector)})
+          if (!e) return null
+          e.scrollIntoView({ block: 'center' })
+          const r = e.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (p) await click(p.x, p.y)
+        return p !== null
+      }
+      const projects = (await api('POST', '/databases', { name: `비우기 프로젝트 ${stamp}` })).body.database
+      const tasks = (await api('POST', '/databases', { name: `비우기 작업 ${stamp}` })).body.database
+      const taskTitle = (await api('GET', `/views/${tasks.defaultViewId}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const relation = (await api('POST', `/data-sources/${projects.dataSourceId}/relations`, { name: '작업들', targetDataSourceId: tasks.dataSourceId })).body?.property?.id
+      const project = (await api('POST', `/views/${projects.defaultViewId}/rows`, { cells: [] })).body.row.id
+      const task = async (t) => (await api('POST', `/views/${tasks.defaultViewId}/rows`, { cells: [{ propertyId: taskTitle, value: { type: 'title', title: [textRun(t)] } }] })).body.row.id
+      const linked = await api('POST', `/rows/${project}/relations/${relation}`, { add: [await task('설계'), await task('시공')] })
+      check('전제 — 둘을 잇는다', linked.status === 200, JSON.stringify(linked))
+      const CELL = `tr[data-row-id="${project}"] td[data-property-id="${relation}"]`
+      const chips = () => evaluate(`document.querySelectorAll('${CELL} [data-testid="db-relation-chip"]').length`)
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${projects.id}` })
+      await waitFor(`document.querySelectorAll('${CELL} [data-testid="db-relation-chip"]').length === 2`, 15000)
+      await waitHydrated(CELL, 20000) // 서버가 그린 칸 — React 가 붙기 전의 클릭은 버려진다(10n-11)
+      await clickOn(CELL)
+      check('전제 — 칸을 고르면(한 번 누름) 그 칸에 포커스', await waitFor(`document.activeElement === document.querySelector('${CELL}')`, 3000))
+      await key('Delete')
+      check('★ Delete 를 누르면 칸의 연결이 모두 빠진다', await waitFor(`document.querySelectorAll('${CELL} [data-testid="db-relation-chip"]').length === 0`, 8000), String(await chips()))
+      const after = await api('GET', `/rows/${project}/relations/${relation}`)
+      check('★ 서버의 칸도 비었다', after.body?.items?.length === 0 && after.body?.total === 0, JSON.stringify(after.body))
+      await send('Page.reload', {})
+      await waitFor(`!!document.querySelector('${CELL}')`, 15000)
+      check('다시 열어도 비어 있다', (await chips()) === 0, String(await chips()))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

@@ -5,6 +5,7 @@
  *
  *   GET  ?cursor=&limit=          볼 수 있고 살아 있는 연결(제목과 함께) · 전체 개수 · 볼 수 없는 개수
  *   POST { add?: [], remove?: [] } 연결을 더하고 뺀다
+ *   POST { clear: true }          보이는 연결을 모두 뺀다(10n-38 · 표의 Delete — 볼 수 없는 연결 · 휴지통의 연결은 남는다)
  *
  * ★ 셀 PATCH(`rows/[rowId]`)로는 relation 을 쓸 수 없다 — 값이 셀이 아니라 엣지다(C2). **"이 목록으로 바꿔라"도 받지
  * 않는다**: 값이 집합이라 통째로 덮으면 동시에 더한 남의 연결이 사라진다(`relation.ts` 머리말).
@@ -39,12 +40,13 @@ export async function POST(request: Request, ctx: Ctx): Promise<Response> {
 
   const parsed = await readJsonBody(request)
   if (!parsed.ok) return parsed.response
-  const body = (parsed.body ?? {}) as { add?: unknown; remove?: unknown }
+  const body = (parsed.body ?? {}) as { add?: unknown; remove?: unknown; clear?: unknown }
 
   // 모양 검사는 라이브러리가 한다(`invalid_value` + 어느 필드인지).
   const linked = await linkRows(session.ctx, rowId, propertyId, {
     ...(body.add !== undefined ? { add: body.add as string[] } : {}),
     ...(body.remove !== undefined ? { remove: body.remove as string[] } : {}),
+    ...(body.clear !== undefined ? { clear: body.clear as boolean } : {}),
   })
   if (!linked.ok) return failureResponse(relationFailureStatus(linked.reason), linked)
   return Response.json({ ok: true, row: rowJson(linked.value) })

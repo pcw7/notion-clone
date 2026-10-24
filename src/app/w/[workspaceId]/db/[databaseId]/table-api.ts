@@ -465,7 +465,8 @@ export function linkRows(
   workspaceId: string,
   rowId: string,
   propertyId: string,
-  change: { readonly add?: readonly string[]; readonly remove?: readonly string[] },
+  /** `clear` 는 보이는 연결을 모두 뺀다(10n-38 · 표의 Delete). */
+  change: { readonly add?: readonly string[]; readonly remove?: readonly string[]; readonly clear?: boolean },
 ): Promise<ApiResult<RowJson>> {
   return call(
     `${base(workspaceId)}/rows/${rowId}/relations/${encodeURIComponent(propertyId)}`,

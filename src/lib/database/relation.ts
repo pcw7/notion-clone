@@ -250,6 +250,11 @@ function isFailure<T>(v: T | RelationResult<never>): v is RelationResult<never> 
 export type LinkInput = {
   readonly add?: readonly string[]
   readonly remove?: readonly string[]
+  /**
+   * 칸을 비운다(10n-38 · 표의 `Delete`) — **보이는 연결**(대상 표를 볼 수 있고 살아 있는 행)을 모두 뺀다. 볼 수 없는 연결과 휴지통의 연결은
+   * 남는다 — 화면이 보여 준 것만 지운다(보지 못한 것을 지우면 되돌릴 수 없는 일을 모르고 한다). 더하기 · 빼기와 함께 보내지 않는다.
+   */
+  readonly clear?: boolean
 }
 
 type OpenRelation = {
@@ -338,11 +343,41 @@ export async function linkRows(
   if (add.length + remove.length > MAX_LINKS_PER_REQUEST) {
     return fail('invalid_value', [{ path: 'add', message: `한 번에 ${MAX_LINKS_PER_REQUEST}개까지 바꿀 수 있습니다` }])
   }
+  if (input.clear !== undefined && typeof input.clear !== 'boolean') return fail('invalid_value', [{ path: 'clear', message: '참거짓이어야 합니다' }])
+  if (input.clear === true && add.length + remove.length > 0) {
+    return fail('invalid_value', [{ path: 'clear', message: '비우기는 더하기 · 빼기와 함께 보낼 수 없습니다' }])
+  }
   if (!isUuid(rowId)) return fail('not_found')
   const both = add.filter((id) => remove.includes(id))
   if (both.length > 0) return fail('invalid_value', [{ path: 'add', message: '같은 행을 더하면서 뺄 수 없습니다' }])
 
+  if (input.clear === true) {
+    // 보이는 연결을 같은 트랜잭션에서 읽어 뺀다 — 빼기의 규칙(권한 · 잠금 · 거울상 · 버전)은 `linkRowsIn` 하나다
+    return withCommandTransaction(async (tx) => {
+      const visible = await visibleLinksOf(tx, ctx, rowId, propertyId)
+      return isFailure(visible) ? visible : linkRowsIn(tx, ctx, rowId, propertyId, [], visible)
+    })
+  }
   return withCommandTransaction((tx) => linkRowsIn(tx, ctx, rowId, propertyId, add, remove))
+}
+
+/**
+ * 이 칸의 **보이는** 연결 — 대상 표를 볼 수 있으면 살아 있는(템플릿이 아닌) 행 전부, 못 보면 없다(행 단위 권한이 없어 표에 대해 한 번 · 10n-38).
+ * 열지 못하면(없는 행 · 볼 수 없다 · relation 이 아니다) 그 실패를 그대로 준다.
+ */
+async function visibleLinksOf(tx: Tx, ctx: SessionContext, rowId: string, propertyId: string): Promise<string[] | RelationResult<never>> {
+  const open = await openRelation(tx, ctx, rowId, propertyId, 'view')
+  if (isFailure(open)) return open
+  if (!open.canViewTarget) return []
+  const rows = await tx.query<{ id: string }>(
+    `SELECT p.id FROM relation_edge e
+       JOIN page p ON p.id = e.to_page_id
+       JOIN block b ON b.id = p.id
+      WHERE e.property_id = $1 AND e.from_page_id = $2
+        AND b.workspace_id = $3 AND b.lifecycle = 'live' AND p.is_template = false`,
+    [propertyId, rowId, ctx.workspaceId],
+  )
+  return rows.map((r) => r.id)
 }
 
 /**
