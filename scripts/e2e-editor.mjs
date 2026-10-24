@@ -9652,10 +9652,24 @@ async function main() {
 
       // 사이드바의 휴지통 — 소스 한 줄 · 되살리기
       const entrySel = `[data-testid="trash-entry"][data-trash-id="${secondSource}"]`
+      // 휴지통은 사이드바 맨 아래("최근" 바로 밑)다 — 늦은 다시 그리기로 "최근" 이 한 줄 늘면 밀려, 잰 자리를 누르면 그 위의 "최근" 링크(제목
+      // 없는 페이지)로 갔다(#443 · #444 의 영향 판에서 늘 · 그 앞 커밋의 같은 판도 — 홀로는 통과). 그 자리에 그 단추가 있고 두 번 재도 같은
+      // 자리일 때 누른다
+      const clickSteady = async (sel) => {
+        const at = `(() => { const el = document.querySelector(${JSON.stringify(sel)}); if (!el) return null
+          el.scrollIntoView({ block: 'center' }); const r = el.getBoundingClientRect(); const x = r.x + r.width / 2; const y = r.y + r.height / 2
+          const hit = document.elementFromPoint(x, y); return hit === el || el.contains(hit) ? { x, y } : null })()`
+        for (let i = 0; i < 20; i += 1) {
+          const a = await evaluate(at)
+          await sleep(150)
+          const b = await evaluate(at)
+          if (a !== null && b !== null && a.x === b.x && a.y === b.y) return click(b.x, b.y)
+        }
+      }
       await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${dbId}` })
       await waitFor(`!!document.querySelector('[data-testid="trash-toggle"]')`, 15000)
       for (let i = 0; i < 6 && !(await evaluate(`!!document.querySelector(${JSON.stringify(entrySel)})`)); i += 1) {
-        await clickSelector('[data-testid="trash-toggle"]')
+        await clickSteady('[data-testid="trash-toggle"]')
         await waitFor(`!!document.querySelector(${JSON.stringify(entrySel)})`, 1500)
       }
       check('★ 사이드바의 휴지통에 소스가 한 줄로 선다 — 데이터 소스 · 데이터베이스 이름 · 함께 간 항목 수',
@@ -9664,10 +9678,14 @@ async function main() {
             && e.textContent.includes(${JSON.stringify(`데이터 소스 · ${dbName}`)}) && e.textContent.includes('항목 1개 포함') })()`, 5000),
         String(await evaluate(`document.querySelector(${JSON.stringify(entrySel)})?.textContent ?? null`)))
       check('함께 간 행은 따로 줄을 갖지 않는다', !(await evaluate(`!!document.querySelector('[data-testid="trash-entry"][data-trash-id="${secondRow}"]')`)))
-      await clickSelector(`${entrySel} [data-testid="trash-restore"]`)
+      const restoreAt = await evaluate(`location.pathname`)
+      await clickSteady(`${entrySel} [data-testid="trash-restore"]`)
       check('★ 휴지통에서 되살리면 탭 · 소스 이름이 돌아온다',
         await waitFor(`!document.querySelector(${JSON.stringify(entrySel)}) && document.querySelectorAll('[data-testid="db-view-tab"]').length === 2`, 15000),
-        String(await evaluate(`document.querySelectorAll('[data-testid="db-view-tab"]').length`)))
+        // 실패하면 그때의 화면을 싣는다 — 영향 판에서 두 번 "탭 0개" 로 떨어졌다(#443 · #444 · 홀로는 통과)
+        JSON.stringify(await evaluate(`({ before: ${JSON.stringify(restoreAt)}, tabs: document.querySelectorAll('[data-testid="db-view-tab"]').length, at: location.pathname + location.search,
+          entry: !!document.querySelector(${JSON.stringify(entrySel)}), table: !!document.querySelector('[data-testid="db-table"]'), title: document.title,
+          message: document.querySelector('[data-testid="trash-panel"] [role="status"], [data-testid="trash-message"]')?.textContent ?? null })`)))
       check('★ 행도 함께 돌아왔다 — 행의 주소가 다시 열린다', (await rowStatus()) === 200, String(await rowStatus()))
 
       // 영구 삭제 — 확인 창을 받아들이고
@@ -22067,6 +22085,82 @@ async function main() {
       await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}?v=${view}` })
       const sortedNone = (await orderIs('다나가')) && (await evaluate(`document.querySelectorAll('[data-testid="db-row-grip"]').length`)) === 0
       check('목록에도 손잡이(제 차례) · 정렬이 걸린 표에는 손잡이가 없다', listGrips && sortedNone, JSON.stringify({ listGrips, sortedNone, order: await order() }))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
+    if (sectionIf('갤러리의 카드 끌기 (10n-61 · F-04-01)')) { try {
+      // 카드의 손잡이를 끌면 놓을 자리에 세로 막대가 서고, 놓으면 그 차례가 된다(읽는 차례로 포인터 뒤의 첫 카드 앞) · 다시 열어도 그 차례 · 제목에서
+      // Alt+→ · Alt+← 로 한 칸씩 · 보내는 중에 누른 키도 버리지 않는다(첫 요청을 붙잡아 둔 채) · 정렬이 걸린 갤러리에는 손잡이가 없다.
+      // HANDOFF §3.2-297 · 정본 §3.6 [보강 10n-59]. 자기 데이터를 스스로 만든다(API).
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `카드 끌기 ${stamp}` })).body.database
+      const table = db.defaultViewId
+      const titleProp = (await api('GET', `/views/${table}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const rowOf = async (title) =>
+        (await api('POST', `/views/${table}/rows`, { cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } }] })).body.row.id
+      const [ga, na, da] = [await rowOf('가'), await rowOf('나'), await rowOf('다')]
+      const gallery = (await api('POST', `/databases/${db.id}/views`, { type: 'gallery', name: '갤러리' })).body.view.id
+      const names = { [ga]: '가', [na]: '나', [da]: '다' }
+      const orderExpr = `[...document.querySelectorAll('[data-testid="db-gallery-card"]')].map((li) => (${JSON.stringify(names)})[li.dataset.rowId] ?? '').join('')`
+      const order = () => evaluate(orderExpr)
+      // 화면의 차례 + 보내기가 끝났다(격자의 aria-busy 가 내려갔다)
+      const orderIs = (expected) => waitFor(`${orderExpr} === ${JSON.stringify(expected)} && !document.querySelector('[data-testid="db-gallery"][aria-busy]')`, 10000)
+      const CARD = (id) => `[data-testid="db-gallery-card"][data-row-id="${id}"]`
+      const focused = () => evaluate(`document.activeElement?.closest('[data-testid="db-gallery-card"]')?.dataset.rowId ?? null`)
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}?v=${gallery}` })
+      check('전제 — 카드 셋(가 나 다) · 손잡이가 카드마다', (await orderIs('가나다')) && (await waitHydrated(`${CARD(da)} [data-testid="db-gallery-grip"]`))
+        && (await evaluate(`document.querySelectorAll('[data-testid="db-gallery-grip"]').length`)) === 3, await order())
+
+      // 다의 손잡이를 잡아 가의 왼쪽 반으로 — 읽는 차례로 포인터 뒤의 첫 카드(가)의 앞
+      const from = await rect(`${CARD(da)} [data-testid="db-gallery-grip"]`)
+      const to = await rect(CARD(ga))
+      const fx = from.x + from.w / 2
+      const fy = from.y + from.h / 2
+      const tx = to.x + 10
+      const ty = to.y + to.h / 2
+      await move(fx, fy)
+      await press(fx, fy)
+      for (let i = 1; i <= 10; i += 1) {
+        await move(fx + (tx - fx) * i / 10, fy + (ty - fy) * i / 10, true)
+        await sleep(16)
+      }
+      const mark = await waitFor(`!!document.querySelector('[data-testid="db-gallery-drop-mark"]') && document.querySelector('${CARD(da)}')?.dataset.dragging === 'true'`, 3000)
+      await release(tx, ty)
+      check('★ 손잡이를 끄는 동안 세로 막대 — 놓으면 그 차례(다 가 나) · 막대는 사라진다',
+        mark && (await orderIs('다가나')) && !(await evaluate(`!!document.querySelector('[data-testid="db-gallery-drop-mark"]')`)),
+        JSON.stringify({ mark, order: await order() }))
+      await send('Page.reload', {})
+      check('★ 다시 열어도 그 차례다 — 서버에 남았다', (await orderIs('다가나')) && (await waitHydrated(`${CARD(ga)} [data-testid="db-gallery-open"]`)), await order())
+
+      // 키보드 — 가의 제목에서 Alt+→(나의 뒤 = 맨 뒤). 그다음 Alt+← 두 번 — 첫 요청을 붙잡아 둔 채 둘째를 누른다(둘째를 버리면 끝 차례가 다르다)
+      await evaluate(`document.querySelector('${CARD(ga)} [data-testid="db-gallery-open"]').focus()`)
+      await key('ArrowRight', 1)
+      const right = (await orderIs('다나가')) && (await focused()) === ga
+      let shown = false
+      await send('Fetch.enable', { patterns: [{ urlPattern: `*/views/${gallery}/rows`, requestStage: 'Request' }] })
+      try {
+        await key('ArrowLeft', 1)
+        for (let i = 0; i < 100 && pausedCount() === 0; i += 1) await sleep(50)
+        await key('ArrowLeft', 1)
+        shown = pausedCount() > 0 && (await waitFor(`${orderExpr} === '가다나' && !!document.querySelector('[data-testid="db-gallery"][aria-busy]')`, 3000))
+      } finally {
+        await send('Fetch.disable').catch(() => undefined)
+        await releasePaused()
+      }
+      const left = (await orderIs('가다나')) && (await focused()) === ga
+      check('★ 제목에서 Alt+→ · Alt+← 로 한 칸씩 — 초점은 옮긴 카드에 남는다 · 보내는 중에 누른 키도 버리지 않는다', right && shown && left,
+        JSON.stringify({ right, shown, left, order: await order(), focused: names[await focused()] ?? null }))
+      await send('Page.reload', {})
+      check('키로 옮긴 차례도 서버에 남았다', await orderIs('가다나'), await order())
+
+      await api('PATCH', `/views/${gallery}`, { sorts: [{ property_id: titleProp, direction: 'desc' }] })
+      await send('Page.reload', {})
+      const sortedNone = (await orderIs('다나가')) && (await evaluate(`document.querySelectorAll('[data-testid="db-gallery-grip"]').length`)) === 0
+      check('정렬이 걸린 갤러리에는 손잡이가 없다', sortedNone, await order())
     } catch (thrown) { await sectionThrew(thrown) } }
 
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {

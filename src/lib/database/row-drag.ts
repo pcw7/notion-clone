@@ -8,6 +8,9 @@
  *
  * **더 볼 행이 남았으면(`hasMore`) 맨 뒤에 놓지 않는다** — 서버의 "맨 뒤" 는 아직 받지 않은 행들까지 지난 끝이라, 놓은 행이 화면에서
  * 사라진다. 그때는 놓을 자리를 주지 않는다(undefined — 줄도 그리지 않는다).
+ *
+ * 갤러리(10n-61)는 카드가 격자라 `cardDropBefore` 가 읽는 차례(왼쪽 → 오른쪽, 위 → 아래)로 놓을 자리를 정한다 — 키로 한 칸(`stepTarget`)과
+ * 먼저 그리기(`reorderRows`)는 표와 같다.
  */
 
 import { tabDropBefore, tabDropLineX } from './tab-drag.ts'
@@ -47,4 +50,43 @@ export function reorderRows<T extends { readonly id: string }>(rows: readonly T[
   const at = before === null ? rest.length : rest.findIndex((r) => r.id === before)
   if (at < 0) return rows
   return [...rest.slice(0, at), moving, ...rest.slice(at)]
+}
+
+// ── 갤러리(10n-61) — 카드는 격자다 ──────────────────────────────────
+
+/** 카드 하나의 자리 — 화면의 `getBoundingClientRect` 에서. 목록은 읽는 차례(왼쪽 → 오른쪽, 위 → 아래)다. */
+export type CardBox = { readonly id: string; readonly left: number; readonly top: number; readonly width: number; readonly height: number }
+
+/**
+ * 카드를 놓을 자리 — 끌고 있는 카드를 뺀 나머지에서 **읽는 차례로 포인터보다 뒤에 오는 첫 카드**의 앞. 뒤에 온다 = 아래 줄이거나(위가 포인터보다
+ * 아래) 같은 줄(아래가 포인터보다 아래)에서 가운데가 포인터보다 오른쪽. 없으면 맨 뒤(null · 더 볼 카드가 남았으면 undefined). 제자리는 undefined.
+ */
+export function cardDropBefore(cards: readonly CardBox[], draggedId: string, x: number, y: number, hasMore: boolean): string | null | undefined {
+  const from = cards.findIndex((c) => c.id === draggedId)
+  if (from < 0) return undefined
+  const others = cards.filter((c) => c.id !== draggedId)
+  const at = others.findIndex((c) => c.top + c.height > y && (c.top > y || c.left + c.width / 2 > x))
+  const index = at < 0 ? others.length : at
+  if (index === from) return undefined
+  const before = others[index]?.id ?? null
+  return before === null && hasMore ? undefined : before
+}
+
+/** 끄는 동안 세로 막대를 그릴 자리 — 놓일 카드의 왼쪽 경계(맨 뒤면 마지막 카드의 오른쪽 경계)에서 `gap / 2` 바깥 · 그 카드의 높이. 없으면 null. */
+export function cardDropMark(
+  cards: readonly CardBox[],
+  draggedId: string,
+  x: number,
+  y: number,
+  hasMore: boolean,
+  gap: number,
+): { readonly x: number; readonly top: number; readonly height: number } | null {
+  const before = cardDropBefore(cards, draggedId, x, y, hasMore)
+  if (before === undefined) return null
+  if (before === null) {
+    const last = cards.filter((c) => c.id !== draggedId).at(-1)
+    return last === undefined ? null : { x: last.left + last.width + gap / 2, top: last.top, height: last.height }
+  }
+  const target = cards.find((c) => c.id === before)!
+  return { x: target.left - gap / 2, top: target.top, height: target.height }
 }
