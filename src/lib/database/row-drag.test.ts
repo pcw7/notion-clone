@@ -6,12 +6,14 @@
  *   ③ 가로 줄의 y — 놓일 행의 위 경계 · 맨 뒤면 마지막 행의 아래 경계
  *   ④ 키로 한 칸 — 끝에서는 그대로 · ↓ 의 다음이 없으면 맨 뒤(더 볼 행이 남았으면 없음)
  *   ⑤ 화면의 목록을 먼저 그 차례로 — 모르는 `before` · 자기 앞은 그대로
+ *   ⑥ ★ 갤러리(10n-61) — 읽는 차례로 포인터 뒤의 첫 카드 앞(같은 줄은 가운데 · 아래 줄은 위) · 제자리는 undefined
+ *   ⑦ 갤러리 — 더 볼 카드가 남았으면 맨 뒤에 놓지 않는다 · 세로 막대의 자리
  */
 
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { reorderRows, rowDropBefore, rowDropLineY, stepTarget, type RowBox } from './row-drag.ts'
+import { cardDropBefore, cardDropMark, reorderRows, rowDropBefore, rowDropLineY, stepTarget, type RowBox } from './row-drag.ts'
 
 // 가 · 나 · 다 — 높이 30 씩(가 0~30 · 나 30~60 · 다 60~90)
 const ROWS: RowBox[] = [
@@ -61,5 +63,33 @@ describe('표 · 목록의 행 끌기 규칙 (10n-60)', () => {
     assert.equal(ids(reorderRows(rows, 'ga', 'nope')), 'ga,na,da', '모르는 before — 그대로')
     assert.equal(ids(reorderRows(rows, 'na', 'na')), 'ga,na,da', '자기 앞 — 그대로')
     assert.equal(ids(reorderRows(rows, 'nope', null)), 'ga,na,da')
+  })
+})
+
+// 갤러리(10n-61) — 두 줄 격자: 가 나 다 / 라 (폭 100 · 높이 80 · 간격 20)
+const CARDS = [
+  { id: 'ga', left: 0, top: 0, width: 100, height: 80 },
+  { id: 'na', left: 120, top: 0, width: 100, height: 80 },
+  { id: 'da', left: 240, top: 0, width: 100, height: 80 },
+  { id: 'ra', left: 0, top: 100, width: 100, height: 80 },
+]
+
+describe('갤러리의 카드 끌기 규칙 (10n-61)', () => {
+  test('★ ⑥ 읽는 차례로 포인터 뒤의 첫 카드 앞 — 같은 줄은 가운데 · 아래 줄은 위', () => {
+    assert.equal(cardDropBefore(CARDS, 'da', 10, 40, false), 'ga', '가의 왼쪽 반 → 가의 앞')
+    assert.equal(cardDropBefore(CARDS, 'da', 90, 40, false), 'na', '가의 오른쪽 반 → 나의 앞')
+    assert.equal(cardDropBefore(CARDS, 'ga', 300, 40, false), 'ra', '다의 오른쪽 반 → 아래 줄의 첫 카드(라)의 앞')
+    assert.equal(cardDropBefore(CARDS, 'ga', 10, 90, false), 'ra', '줄 사이의 틈 → 아래 줄의 첫 카드 앞')
+    assert.equal(cardDropBefore(CARDS, 'ga', 90, 140, false), null, '라의 오른쪽 반 → 맨 뒤')
+    assert.equal(cardDropBefore(CARDS, 'na', 130, 40, false), undefined, '나 자신의 왼쪽 반 → 제자리')
+    assert.equal(cardDropBefore(CARDS, 'ra', 90, 140, false), undefined, '마지막 카드를 맨 뒤로 → 제자리')
+  })
+
+  test('⑦ 더 볼 카드가 남았으면 맨 뒤에 놓지 않는다 · 막대의 자리', () => {
+    assert.equal(cardDropBefore(CARDS, 'ga', 90, 140, true), undefined)
+    assert.equal(cardDropMark(CARDS, 'ga', 90, 140, true, 20), null)
+    assert.deepEqual(cardDropMark(CARDS, 'da', 10, 40, false, 20), { x: -10, top: 0, height: 80 }, '가의 왼쪽 경계 바깥')
+    assert.deepEqual(cardDropMark(CARDS, 'ga', 90, 140, false, 20), { x: 110, top: 100, height: 80 }, '맨 뒤 — 라의 오른쪽 경계 바깥')
+    assert.equal(cardDropMark(CARDS, 'na', 130, 40, false, 20), null, '제자리')
   })
 })

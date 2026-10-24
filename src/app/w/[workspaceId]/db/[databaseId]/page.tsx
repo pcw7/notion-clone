@@ -703,6 +703,8 @@ export default async function DatabasePage({
             formulaPlan={formulaPlan}
             peekBase={peekBase}
             renderedAt={renderedAt}
+            // 살아 있는 정렬이 없으면 손으로 둔 차례 — 카드 끌기를 연다(10n-61)
+            manualOrder={sorts.length === 0}
           />
         )
       ) : (

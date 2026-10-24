@@ -14,7 +14,8 @@
  * 레이아웃이다. 고르는 곳은 도구줄의 "카드" 패널이다.
  *
  * 행은 표와 같은 길로 읽는다(`queryRows` · 필터 · 정렬 · 검색 · "더 보기"). 하위 항목이 켜진 표면 **부모만**이다(03 F-03-18 — 행 라우트 ·
- * 서버 렌더가 `showsParentsOnly` 로 고른다). 카드를 누르면 그 행 페이지가 열린다(8f-1). 수동 재정렬(카드 끌기)은 아직이다(§7).
+ * 서버 렌더가 `showsParentsOnly` 로 고른다). 카드를 누르면 그 행 페이지가 열린다(8f-1). 카드의 손잡이를 끌거나 제목에서 Alt+← · Alt+→
+ * 로 손으로 둔 차례를 바꾼다(10n-61 · 정렬이 없을 때만 — 서버는 표와 같은 `moveViewRow`).
  *
  * "+ 새로 만들기"는 그리드 끝의 카드다(노션처럼). 만들면 그 카드의 제목을 바로 받는다 — 이름 없는 카드가 쌓이지 않게(표 · 보드와 같은
  * 규칙). 템플릿 · 기본 템플릿은 `NewRowMenu` 가 맡는다.
@@ -22,7 +23,8 @@
 
 import { rowOpenHref } from '@/lib/database/open-pages'
 import Link from '@/app/link'
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
+import { useRouter } from 'next/navigation'
 
 import type { DatabaseAccess } from '@/lib/database/database'
 import type { RowJson } from '@/lib/database/http'
@@ -44,6 +46,8 @@ import { EMPTY_ROLLUP_PAGE, type RollupPage } from '@/lib/database/rollup-functi
 import { formulaEvaluator, formulaValuesByRow, type FormulaPlan } from '@/lib/database/formula-plan'
 import { usePeopleNames } from './use-people-names'
 import { useAdoptServerValue, useLiveServerRefresh } from './use-table-changes'
+import { cardDropBefore, cardDropMark, reorderRows, stepTarget, type CardBox } from '@/lib/database/row-drag'
+import { TAB_DRAG_THRESHOLD } from '@/lib/database/tab-drag'
 
 const UNTITLED = '제목 없음'
 
@@ -55,6 +59,9 @@ const CARD_GRID: Readonly<Record<GalleryLayout['cover_size'], string>> = {
   medium: 'grid-cols-[repeat(auto-fill,minmax(14rem,1fr))]',
   large: 'grid-cols-[repeat(auto-fill,minmax(20rem,1fr))]',
 }
+
+/** 카드 사이의 간격(px) — 격자의 `gap-3`. 끄는 동안의 막대가 그 가운데에 선다. */
+const CARD_GAP = 12
 
 /** 표시 순서가 뒤에 오는 응답인가. 버전은 bigint 문자열이다. */
 const notOlder = (incoming: string, current: string): boolean => BigInt(incoming) >= BigInt(current)
@@ -89,8 +96,11 @@ export function DatabaseGallery(props: {
   rollupValues?: RollupPage
   /** 수식의 계획(10n-34 · 서버 렌더가 뷰의 컬럼 전부로 만든다) — 카드의 수식 배지를 그 카드의 칸으로 계산한다. */
   formulaPlan?: FormulaPlan | null
+  /** 손으로 둔 차례로 서는가 — 살아 있는 정렬이 없다(10n-61). 참이면 고칠 수 있는 사람에게 카드 끌기를 연다. */
+  manualOrder?: boolean
 }) {
   const { workspaceId, viewId, dataSourceId, tableName, columns, access } = props
+  const router = useRouter()
   const [rows, setRows] = useState<readonly RowJson[]>(props.rows)
   const [cursor, setCursor] = useState<string | null>(props.hasMore ? props.nextCursor : null)
   const [loadingMore, setLoadingMore] = useState(false)
@@ -99,13 +109,16 @@ export function DatabaseGallery(props: {
   const [notice, setNotice] = useState<string | null>(null)
   const [editing, setEditingState] = useState<Editing | null>(null)
   const [defaultTemplate, setDefaultTemplate] = useState<DefaultTemplate | null>(props.defaultTemplate ?? null)
+  /** 보낼 카드 옮기기의 줄(10n-61) — 보내는 동안은 서버 렌더를 받아들이지 않는다(옛 차례로 튀지 않게). */
+  const moveChain = useRef<Promise<void>>(Promise.resolve())
+  const [pendingMoves, setPendingMoves] = useState(0)
   const [covers, setCovers] = useState<Readonly<Record<string, string>>>(props.covers)
   /** 불러오다 깨진 이미지 — 빈 자리로 돌린다(같은 주소를 다시 묻지 않는다). */
   const [broken, setBroken] = useState<ReadonlySet<string>>(() => new Set())
   const markBroken = (src: string) => setBroken((current) => (current.has(src) ? current : new Set(current).add(src)))
   // 표 변경 알림(2k-3 · F-04-24) — 다른 곳에서 바뀌면 서버 렌더를 다시 부르고 첫 페이지 · 미리보기를 받아들인다. 만들기 · 편집 · 더 보기
   // 중이면 끝난 뒤에. "더 보기"로 더 읽은 카드는 첫 페이지로 돌아간다(§7).
-  const galleryBusy = loadingMore || busy || editing !== null
+  const galleryBusy = loadingMore || busy || editing !== null || pendingMoves > 0
   useLiveServerRefresh(workspaceId, dataSourceId, galleryBusy, props.renderedAt)
   useAdoptServerValue(props.rows, galleryBusy, (next) => {
     setRows(next)
@@ -230,20 +243,122 @@ export function DatabaseGallery(props: {
     }
   }
 
+  // ── 카드 끌기(10n-61 · F-04-01 · HANDOFF §3.2-297) ─────────────────
+  /** 손으로 둔 차례를 바꿀 수 있는가 — 고칠 수 있고 정렬이 없다(서버 렌더가 `manualOrder` 로 준다 · 서버도 `sorted` 로 거부). */
+  const canReorder = access.canEditContent && props.manualOrder === true
+  const gridRef = useRef<HTMLUListElement>(null)
+  const cardGrab = useRef<{ id: string; x: number; y: number; active: boolean } | null>(null)
+  const [draggingCard, setDraggingCard] = useState<string | null>(null)
+  /** 놓일 자리의 세로 막대 — 격자의 왼쪽 위에서 잰 자리. */
+  const [cardMark, setCardMark] = useState<{ x: number; top: number; height: number } | null>(null)
+  const cardBoxes = (): CardBox[] =>
+    [...(gridRef.current?.querySelectorAll<HTMLElement>('[data-testid="db-gallery-card"]') ?? [])].map((el) => {
+      const r = el.getBoundingClientRect()
+      return { id: el.dataset.rowId ?? '', left: r.left, top: r.top, width: r.width, height: r.height }
+    })
+  /** 이 카드를 `before` 앞에 — 화면을 먼저 그 차례로 그리고 요청은 줄 세워 차례로(표 10n-60 과 같다). 거절되면 까닭을 말하고 서버 렌더를 다시 부른다. */
+  const moveCardTo = (rowId: string, before: string | null) => {
+    setRows((current) => reorderRows(current, rowId, before))
+    setPendingMoves((n) => n + 1)
+    moveChain.current = moveChain.current.then(async () => {
+      const result = await api.moveTableRow(workspaceId, viewId, rowId, before)
+      setPendingMoves((n) => n - 1)
+      if (!result.ok) {
+        setError(result.message)
+        router.refresh()
+      }
+    })
+  }
+  const onGripPointerDown = (event: ReactPointerEvent<HTMLButtonElement>, rowId: string) => {
+    if (!canReorder || event.button !== 0) return
+    event.preventDefault()
+    cardGrab.current = { id: rowId, x: event.clientX, y: event.clientY, active: false }
+  }
+  useEffect(() => {
+    if (!canReorder) return
+    const onPointerMove = (event: PointerEvent) => {
+      const g = cardGrab.current
+      if (g === null) return
+      if (!g.active && Math.hypot(event.clientX - g.x, event.clientY - g.y) <= TAB_DRAG_THRESHOLD) return
+      if (!g.active) {
+        g.active = true
+        setDraggingCard(g.id)
+      }
+      const mark = cardDropMark(cardBoxes(), g.id, event.clientX, event.clientY, cursor !== null, CARD_GAP)
+      const origin = gridRef.current?.getBoundingClientRect()
+      setCardMark(mark === null || origin === undefined ? null : { x: mark.x - origin.left, top: mark.top - origin.top, height: mark.height })
+    }
+    const onPointerUp = (event: PointerEvent) => {
+      const g = cardGrab.current
+      cardGrab.current = null
+      if (g === null || !g.active) return
+      setDraggingCard(null)
+      setCardMark(null)
+      const before = cardDropBefore(cardBoxes(), g.id, event.clientX, event.clientY, cursor !== null)
+      if (before !== undefined) moveCardTo(g.id, before)
+    }
+    const onPointerCancel = () => {
+      cardGrab.current = null
+      setDraggingCard(null)
+      setCardMark(null)
+    }
+    window.addEventListener('pointermove', onPointerMove)
+    window.addEventListener('pointerup', onPointerUp)
+    window.addEventListener('pointercancel', onPointerCancel)
+    return () => {
+      window.removeEventListener('pointermove', onPointerMove)
+      window.removeEventListener('pointerup', onPointerUp)
+      window.removeEventListener('pointercancel', onPointerCancel)
+    }
+  })
+  /** 카드 제목에서 Alt+← · Alt+→ — 읽는 차례로 한 칸. 초점은 React 가 커밋 뒤에 돌려준다(10n-57). */
+  const onCardKeyDown = (event: KeyboardEvent<HTMLAnchorElement>, rowId: string) => {
+    if (!canReorder || !event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+    event.preventDefault()
+    const ids = rows.map((r) => r.id)
+    const target = stepTarget(ids, ids.indexOf(rowId), event.key === 'ArrowLeft' ? 'up' : 'down', cursor !== null)
+    if (target !== undefined) moveCardTo(rowId, target)
+  }
+
   return (
     <section className="flex min-w-0 flex-col gap-3" aria-label={tableName || UNTITLED}>
       <ul
         data-testid="db-gallery"
         data-card-size={layout.cover_size}
-        className={`grid gap-3 ${CARD_GRID[layout.cover_size]}`}
+        ref={gridRef}
+        aria-busy={pendingMoves > 0 || undefined}
+        className={`relative grid gap-3 ${CARD_GRID[layout.cover_size]}`}
       >
+        {cardMark !== null && (
+          <li
+            aria-hidden
+            data-testid="db-gallery-drop-mark"
+            style={{ left: cardMark.x - 1, top: cardMark.top, height: cardMark.height }}
+            className="pointer-events-none absolute z-10 w-0.5 bg-blue-500"
+          />
+        )}
         {rows.map((row) => (
           <li
             key={row.id}
             data-row-id={row.id}
             data-testid="db-gallery-card"
-            className="flex min-h-24 flex-col overflow-hidden rounded-md border border-neutral-200 bg-white text-sm shadow-sm dark:border-neutral-700 dark:bg-neutral-950"
+            data-dragging={draggingCard === row.id ? 'true' : undefined}
+            style={draggingCard === row.id ? { opacity: 0.5 } : undefined}
+            className="group relative flex min-h-24 flex-col overflow-hidden rounded-md border border-neutral-200 bg-white text-sm shadow-sm dark:border-neutral-700 dark:bg-neutral-950"
           >
+            {canReorder && (
+              // 끌기 손잡이(10n-61) — 마우스를 올리면 선다(터치는 늘). 글리프는 CSS(표의 손잡이와 같다). 키보드는 제목에서 Alt+← · Alt+→
+              <button
+                type="button"
+                data-testid="db-gallery-grip"
+                aria-label={`${row.title || UNTITLED} 끌어서 옮기기`}
+                title="끌어서 옮기기 · 제목에서 Alt+← · Alt+→"
+                tabIndex={-1}
+                onPointerDown={(e) => onGripPointerDown(e, row.id)}
+                className="absolute right-1 top-1 z-10 cursor-grab touch-none rounded bg-white/80 px-1 text-xs leading-none text-neutral-400 opacity-0 after:content-['⋮⋮'] hover:text-neutral-700 group-hover:opacity-100 touch:opacity-100 dark:bg-neutral-900/80 dark:hover:text-neutral-200"
+              />
+            )}
             {showCover && (
               <div data-testid="db-gallery-cover" className="h-32 w-full shrink-0 bg-neutral-100 dark:bg-neutral-900">
                 {covers[row.id] !== undefined && !broken.has(covers[row.id]!) && (
@@ -284,6 +399,8 @@ export function DatabaseGallery(props: {
                   href={rowOpenHref(workspaceId, row.id, props.peekBase ?? null)}
                   scroll={false}
                   data-testid="db-gallery-open"
+                  aria-keyshortcuts={canReorder ? 'Alt+ArrowLeft Alt+ArrowRight' : undefined}
+                  onKeyDown={(e) => onCardKeyDown(e, row.id)}
                   className={`flex min-w-0 items-start gap-1.5 font-medium hover:underline ${row.title ? 'break-words' : 'text-neutral-400'}`}
                 >
                   <PageIconView icon={row.icon} fallback className="mt-[0.2em]" />
