@@ -22411,6 +22411,51 @@ async function main() {
       check('손잡이를 두 번 누르면 원래 크기 — 폭이 지워진다', natural && (await state())?.ratio < 1, JSON.stringify(await state()))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('볼 수만 있던 연결의 권한이 오르면 (10n-67 · F-05-19)')) { try {
+      // 동료가 볼 수만 있는 페이지를 연다 — 편집기는 읽기 전용 · 소유자가 고칠 수 있게 올리면 새로 읽지 않아도 편집기가 고칠 수 있게 바뀐다
+      // (서버가 `upgraded` 로 닫고 연결이 같은 문서로 곧바로 다시 붙는다) · 그때 친 글자는 서버에 남는다. HANDOFF §3.2-300. 브라우저를 동료로
+      // 바꿔 진행하고 끝에 소유자로 되돌린다. 자기 데이터를 스스로 만든다(API).
+      const stamp = Date.now().toString(36)
+      const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
+      const page = (await (await fetch(pagesUrl, { method: 'POST', headers: authed, body: JSON.stringify({ title: `권한 오름 ${stamp}`, privateTop: true }) })).json()).page.id
+      const para = randomUUID()
+      await saveBody(page, { blocks: [{ id: para, type: 'paragraph', title: [textRun('원문')], properties: {}, format: {}, children: [] }] })
+      const mate = await joinAs(workspaceId, await createUser(`오를 동료 ${stamp}`), 'member')
+      const grant = (level) => fetch(`${pagesUrl}/${page}/access`, {
+        method: 'POST', headers: authed, body: JSON.stringify({ action: 'grant', principal: { type: 'user', id: mate.userId }, level }),
+      })
+      const browseAs = (token) => send('Network.setCookie', { name: 'nc_session', value: token, domain: 'localhost', path: '/', httpOnly: true })
+      const editable = `document.querySelector('.blk-editor')?.getAttribute('contenteditable')`
+      const LINE = `[data-block-id="${para}"] > [data-block-type]`
+      try {
+        const shared = await grant('view')
+        await browseAs(mate.token)
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+        const readOnly = await waitFor(`${editable} === 'false' && (document.querySelector('${LINE}')?.textContent ?? '') === '원문'`, 15000)
+        check('전제 — 동료는 볼 수만 있다: 편집기가 읽기 전용', shared.ok && readOnly, JSON.stringify({ status: shared.status, editable: await evaluate(editable) }))
+
+        const raised = await grant('edit')
+        const nowEditable = await waitFor(`${editable} === 'true'`, 15000)
+        check('★ 고칠 수 있게 올리면 새로 읽지 않아도 편집기가 고칠 수 있게 바뀐다 — 본문은 그대로',
+          raised.ok && nowEditable && (await evaluate(`(document.querySelector('${LINE}')?.textContent ?? '') === '원문'`)),
+          JSON.stringify({ status: raised.status, editable: await evaluate(editable) }))
+
+        // 그때 친 글자는 서버에 남는다 — 문단 끝에 붙인다
+        const r = await rect(LINE)
+        await click(r.x + r.w - 4, r.y + r.h / 2)
+        await key('End')
+        await typeText(` 올라간 뒤 ${stamp}`)
+        await waitFor(`(document.querySelector('${LINE}')?.textContent ?? '').includes(${JSON.stringify(`올라간 뒤 ${stamp}`)})`, 5000)
+        await sleep(2000)
+        await send('Page.reload', {})
+        check('★ 올라간 뒤에 친 글자가 서버에 남는다 — 새로 읽어도 있다',
+          await waitFor(`(document.querySelector('${LINE}')?.textContent ?? '') === ${JSON.stringify(`원문 올라간 뒤 ${stamp}`)} && ${editable} === 'true'`, 15000),
+          await evaluate(`document.querySelector('${LINE}')?.textContent ?? null`))
+      } finally {
+        await browseAs(session)
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

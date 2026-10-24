@@ -458,6 +458,13 @@ export function BodyEditor({
   const [canComment, setCanComment] = useState(false)
 
   const editable = canEdit && link.readOnly !== true && !link.reopening && link.closed === null
+  // 권한이 올랐다(10n-67 · HANDOFF §3.2-300) — 협업 연결이 읽기 전용에서 고칠 수 있는 연결로 다시 붙었는데 서버 렌더가 준 `canEdit` 는 아직
+  // 옛 값이다. 화면을 다시 그려 그 값(과 메뉴 · 공유 같은 나머지)을 맞춘다 — 새로 읽지 않아도 고칠 수 있게 된다.
+  const upgradedFrom = useRef<boolean | null>(null)
+  useEffect(() => {
+    if (upgradedFrom.current === true && link.readOnly === false && !canEdit) router.refresh()
+    upgradedFrom.current = link.readOnly
+  }, [link.readOnly, canEdit, router])
   /** 물을 때마다 판단한다 — `createEditor` 가 이 함수를 그대로 쓴다. */
   const editableRef = useRef(editable)
   editableRef.current = editable
