@@ -54,14 +54,16 @@ import { MVP_PROPERTY_TYPES, isMvpPropertyType, isStatusGroupKind, type MvpPrope
 import type { ValidationIssue } from '../contracts/rich-text.ts'
 
 /**
- * 거르고 정렬할 수 있는 타입 — 셀 타입 + 고유 ID(2a-1).
+ * 거를 수 있는 타입 — 셀 타입 + 고유 ID(2a-1) + relation(10n-44).
  *
  * 고유 ID 는 셀이 아니지만 값이 **행에 저장돼 있다**(`page.unique_seq`) — 사이드카 대신 그 열을 바로 본다(아래
- * `UNIQUE_ID_COLUMN`). relation · rollup 은 여기 없다: relation 은 엣지이고, rollup 은 저장된 값이 없다(정본 D1).
+ * `UNIQUE_ID_COLUMN`). relation 은 칸이 아니라 엣지다 — 사이드카 대신 `relation_edge` 를 본다(비어 있음 · 비어 있지 않음 · 정본 [보강]
+ * `relation_edge` — [보강 10n-44]). relation 으로는 **정렬하지 않는다**(값이 집합이다 — `validateSorts` 가 거부하고 `compileSorts` 가 건너뛴다).
+ * rollup 은 여기 없다: 저장된 값이 없다(정본 D1).
  */
-export type FilterableType = MvpPropertyType | 'unique_id'
+export type FilterableType = MvpPropertyType | 'unique_id' | 'relation'
 
-export const FILTERABLE_TYPES: readonly FilterableType[] = [...MVP_PROPERTY_TYPES, 'unique_id']
+export const FILTERABLE_TYPES: readonly FilterableType[] = [...MVP_PROPERTY_TYPES, 'unique_id', 'relation']
 
 /** 수식의 결과 타입 → 거를 때 쓰는 칸 타입(2j-2). 연산자 · 축 · 캐스트가 그 칸 타입의 것이다. */
 const FORMULA_FILTER_TYPE: Readonly<Record<string, FilterableType>> = Object.freeze({
@@ -111,7 +113,7 @@ export function propertyIdsIn(filter: FilterNode | null | undefined, sorts: read
 }
 
 export function isFilterableType(t: unknown): t is FilterableType {
-  return isMvpPropertyType(t) || t === 'unique_id'
+  return isMvpPropertyType(t) || t === 'unique_id' || t === 'relation'
 }
 
 /** 고유 ID 가 보는 열과 캐스트. `::numeric` 인 이유: 숫자 축과 같은 바인딩(`Number(value)`)이 NaN · 소수를 주어도 질의가 죽지 않는다. */
@@ -398,6 +400,15 @@ const PEOPLE_OPERATORS: Readonly<Record<string, OperatorSpec>> = Object.freeze({
   is_not_empty: TEXT_OPERATORS.is_not_empty,
 })
 
+/**
+ * relation(10n-44) — 이어진 행이 있는가. 칸이 아니라 엣지를 본다(`compileFilter` 의 따로 된 길 — 여기 `predicate` 는 쓰지 않는다). 살아 있는 ·
+ * 템플릿이 아닌 대상 행만 센다 — 칸이 보여 주는 것(칩 · "볼 수 없는 연결 N개")과 같다. 휴지통의 행만 이어진 칸은 비어 있다.
+ */
+const RELATION_OPERATORS: Readonly<Record<string, OperatorSpec>> = Object.freeze({
+  is_empty: { arity: 0, negate: true, predicate: () => 'TRUE' },
+  is_not_empty: { arity: 0, predicate: () => 'TRUE' },
+})
+
 /** 타입별 연산자. **축이 아니라 타입에 달린다**(select 이 텍스트와 다르기 때문). */
 const BY_TYPE: Readonly<Record<FilterableType, Readonly<Record<string, OperatorSpec>>>> =
   Object.freeze({
@@ -410,6 +421,7 @@ const BY_TYPE: Readonly<Record<FilterableType, Readonly<Record<string, OperatorS
     date: DATE_OPERATORS,
     unique_id: UNIQUE_ID_OPERATORS,
     people: PEOPLE_OPERATORS,
+    relation: RELATION_OPERATORS,
   })
 
 /** 이 타입이 노출하는 연산자 목록. 카탈로그와 같아야 한다(테스트가 확인). */
@@ -526,6 +538,10 @@ export function validateSorts(sorts: unknown, types: PropertyTypes): ValidationI
     if (types.get(key.property_id) === 'people') {
       issues.push({ path: `sorts[${i}].property_id`, message: '사람으로는 정렬할 수 없습니다' })
     }
+    // relation(10n-44)도 — 거를 수는 있지만 값이 집합이라 순서가 없다
+    if (types.get(key.property_id) === 'relation') {
+      issues.push({ path: `sorts[${i}].property_id`, message: '관계형 속성으로는 정렬할 수 없습니다' })
+    }
     // 같은 프로퍼티로 두 번 정렬하면 두 번째 키가 아무 일도 하지 않는다.
     // 조용히 무시하면 사용자는 자기 설정이 먹은 줄 안다.
     if (seen.has(key.property_id)) {
@@ -564,6 +580,8 @@ export class ParamBag {
 /** 사이드카 값으로 바인딩할 모양으로 바꾼다. 고유 ID 는 번호다(숫자 축과 같다). */
 function bindValue(type: FilterableType, value: unknown): unknown {
   if (type === 'unique_id') return typeof value === 'number' ? value : Number(value)
+  // relation(10n-44)의 연산자는 값을 받지 않는다 — 행 고르개와 함께 "포함" 이 들어오면 행 id 다
+  if (type === 'relation') return String(value)
   switch (AXIS[type]) {
     case 'num':
       return typeof value === 'number' ? value : Number(value)
@@ -613,6 +631,15 @@ export function compileFilter(
   // 모르는 연산자도 무시한다. 여기서 던지면 카탈로그를 줄이는 날 기존 뷰가
   // 통째로 열리지 않는다(정본: 읽기 경로에 검증을 걸지 않는 이유와 같다).
   if (spec === undefined) return null
+
+  // relation(10n-44) — 칸이 아니라 엣지를 본다. 살아 있는 · 템플릿이 아닌 대상 행이 하나라도 이어져 있는가(칸이 보여 주는 것과 같다)
+  if (rawType === 'relation') {
+    const linked = `EXISTS (SELECT 1 FROM relation_edge e
+          JOIN page tp ON tp.id = e.to_page_id JOIN block tb ON tb.id = tp.id
+          WHERE e.from_page_id = p.id AND e.property_id = ${params.bind(node.property_id)}
+            AND tb.lifecycle = 'live' AND tp.is_template = false)`
+    return spec.negate ? `NOT ${linked}` : linked
+  }
 
   // 고유 ID — 값이 행에 있다. 셀이 없으니 EXISTS 로 감싸지 않고, 부정은 `IS NOT TRUE` 다(번호가 없는 행 — 템플릿뿐이지만 — 도
   // "5 가 아니다"에 걸린다. 셀 타입의 `NOT EXISTS` 와 같은 뜻).
@@ -680,6 +707,8 @@ export function compileSorts(
     const resolved = filterTypeOf(types.get(sort.property_id))
     if (resolved === null) continue // 지워진 프로퍼티 · 거를 수 없는 타입
     const rawType = resolved.type
+    // relation(10n-44)은 거를 수만 있다 — 정렬 키는 건너뛴다(저장 경로는 `validateSorts` 가 막는다)
+    if (rawType === 'relation') continue
     // 고유 ID — 행의 열을 그대로 정렬한다(서브쿼리가 없다).
     if (rawType === 'unique_id') {
       keys.push({ expr: UNIQUE_ID_COLUMN, direction: sort.direction, cast: UNIQUE_ID_CAST })

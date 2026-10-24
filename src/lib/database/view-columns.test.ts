@@ -133,15 +133,16 @@ describe('④ 거르고 정렬할 때의 모양 (2j-3)', () => {
     assert.deepEqual([f.propertyId, f.name], ['f-number', '수식 number'], 'id · 이름은 그대로(서버는 그 id 의 캐시를 거른다)')
   })
 
-  test('셀 · 고유 ID 는 그대로 · relation · rollup 은 없다 · 정렬은 선택 · 상태만 빼고', () => {
+  test('셀 · 고유 ID · relation(10n-44) 은 그대로 · rollup 은 없다 · 정렬은 선택 · 상태 · relation 을 빼고', () => {
     const cell = columnOf('number')
     assert.equal(filterColumnOf(cell), cell)
     assert.equal(filterColumnOf(columnOf('unique_id'))?.type, 'unique_id')
-    assert.equal(filterColumnOf(columnOf('relation')), null)
+    assert.equal(filterColumnOf(columnOf('relation'))?.type, 'relation', '거를 수 있다 — 비어 있음 · 비어 있지 않음')
     assert.equal(filterColumnOf(columnOf('rollup')), null)
     assert.deepEqual(filterColumnsOf([cell, columnOf('rollup'), formula('text')]).map((c) => c.type), ['number', 'rich_text'])
     assert.equal(isSortable(formula('date')), true, '수식은 정렬할 수 있다')
     assert.equal(isSortable(columnOf('select')), false)
     assert.equal(isSortable(columnOf('rollup')), false)
+    assert.equal(isSortable(columnOf('relation')), false, '거를 수는 있어도 정렬은 아니다 — 값이 집합이다')
   })
 })
