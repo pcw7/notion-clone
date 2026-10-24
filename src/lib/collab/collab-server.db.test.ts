@@ -818,25 +818,25 @@ describe('⑯ 편집 확인 요청 (6c)', () => {
 
 // ── ⑭ 첫 판정 전의 연결에는 방송하지 않는다 ──────────────────────────────
 
-describe('⑭ 첫 판정 전의 연결에는 방송하지 않는다 (10n-55)', () => {
-  /** 멤버의 첫 판정만 붙잡는 서버 — 등록됐지만 아직 판정 전인 창을 만든다. */
-  async function holdingServer(t: TestContext, memberId: string) {
-    let release = (): void => undefined
-    const held = new Promise<void>((resolve) => {
-      release = resolve
-    })
-    const waiting: string[] = []
-    const server = await startServer(t, {
-      beforeFirstSyncVerdict: async (context) => {
-        if (context.session.userId !== memberId) return
-        waiting.push(context.pageId)
-        await held
-      },
-    })
-    t.after(() => release())
-    return { server, waiting, release: () => release() }
-  }
+/** 멤버의 첫 판정만 붙잡는 서버 — 등록됐지만 아직 판정 전인 창을 만든다(⑭ · ⑮). */
+async function holdingServer(t: TestContext, memberId: string) {
+  let release = (): void => undefined
+  const held = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  const waiting: string[] = []
+  const server = await startServer(t, {
+    beforeFirstSyncVerdict: async (context) => {
+      if (context.session.userId !== memberId) return
+      waiting.push(context.pageId)
+      await held
+    },
+  })
+  t.after(() => release())
+  return { server, waiting, release: () => release() }
+}
 
+describe('⑭ 첫 판정 전의 연결에는 방송하지 않는다 (10n-55)', () => {
   test('★ 판정을 기다리는 사이의 편집 방송을 받지 않는다 — 그사이 회수되면 본문을 한 번도 받지 못하고 닫힌다', async (t) => {
     if (skipReason) return t.skip(skipReason)
     const { owner, member, pageId, ids, name } = await pageFixture(['원문'])
@@ -877,5 +877,50 @@ describe('⑭ 첫 판정 전의 연결에는 방송하지 않는다 (10n-55)', (
     assert.deepEqual(textsOf(bodyOf(late.doc, pageId)), ['앞 원문'])
     edit(writer.doc, insertAtStart(ids[0], '더 '))
     await waitFor('지난 뒤의 방송은 받는다', () => textsOf(bodyOf(late.doc, pageId))[0] === '더 앞 원문')
+  })
+})
+
+// ── ⑮ 처음 awareness 도 첫 판정 뒤로 ─────────────────────────────────────
+
+describe('⑮ 등록할 때의 awareness 도 첫 판정 뒤로 (10n-56)', () => {
+  /** 이 참여자가 보는 다른 사람의 이름들(awareness 의 user.name). */
+  const namesSeenBy = (p: Participant): string[] =>
+    [...p.provider.awareness!.getStates().entries()]
+      .filter(([clientId]) => clientId !== p.doc.clientID)
+      .map(([, state]) => (state as { user?: { name?: string } }).user?.name ?? '')
+
+  test('★ 판정을 기다리는 동안 다른 참여자의 이름 · 커서를 받지 않는다 — 그사이 회수되면 받지 못하고 닫힌다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { owner, member, pageId, name } = await pageFixture(['원문'])
+    const { server, waiting, release } = await holdingServer(t, member.userId)
+    const [writer, witness] = [join(t, server.url, name, cookieOf(owner)), join(t, server.url, name, cookieOf(owner))]
+    await ready(writer, witness)
+    writer.provider.setAwarenessField('user', { name: '비밀 이름' })
+    await waitFor('먼저 붙은 연결은 이름을 본다', () => namesSeenBy(witness).includes('비밀 이름'))
+
+    const late = join(t, server.url, name, cookieOf(member))
+    await waitFor('늦은 연결이 첫 판정에서 기다린다', () => waiting.length === 1)
+    await new Promise((resolve) => setTimeout(resolve, 300)) // 보냈다면 닿을 시간
+    assert.deepEqual(namesSeenBy(late), [], '판정 전의 연결이 awareness 를 받았다')
+
+    await restrict(owner, pageId, [])
+    release()
+    await waitUntil(() => late.closed.length > 0)
+    assert.deepEqual(late.closed, ['not_found'])
+    assert.deepEqual(namesSeenBy(late), [], '회수된 연결이 awareness 를 받았다')
+  })
+
+  test('판정을 지나면 그때의 awareness 를 받는다 — 미뤄 둔 것을 잃지 않는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { owner, member, name } = await pageFixture(['원문'])
+    const { server, waiting, release } = await holdingServer(t, member.userId)
+    const writer = join(t, server.url, name, cookieOf(owner))
+    await ready(writer)
+    writer.provider.setAwarenessField('user', { name: '함께 쓰는 이' })
+    const late = join(t, server.url, name, cookieOf(member))
+    await waitFor('늦은 연결이 첫 판정에서 기다린다', () => waiting.length === 1)
+    release()
+    await ready(late)
+    await waitFor('지나면 이름을 본다', () => namesSeenBy(late).includes('함께 쓰는 이'))
   })
 })

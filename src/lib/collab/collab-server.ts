@@ -60,6 +60,9 @@
  *     꼬리 적용 · 불러오기 때 모아 둔 갱신의 `flush`)이 그 연결에도 간다. 회수된 연결이 판정에 닫히기 전에 본문을 받은 적이 있다(#437 의
  *     검사가 한 번 잡았다). 그래서 문서의 방송(`broadcast`)을 감싸 첫 판정을 지난 연결에만 보낸다. 지나면 SyncStep2 가 그때의 상태를
  *     통째로 주므로 건너뛴 방송을 잃지 않는다
+ *   - **등록할 때 곧바로 보내는 awareness(다른 참여자의 이름 · 커서)도 첫 판정 뒤로 미룬다**(10n-56). Hocuspocus 는 연결의 생성자에서
+ *     지금의 awareness 를 방송이 아니라 직접 보낸다(`sendCurrentAwareness`) — 위의 감싸기에 걸리지 않는다. 그 메서드를 감싸 판정 전에는
+ *     보내지 않고, 판정을 지나는 순간 한 번 보낸다
  *
  * ──────────────────────────────────────────────────────────────────────
  * 받은 뒤에 권한이 바뀌면 (F-05-19 · 5c)
@@ -87,7 +90,7 @@
  */
 
 import * as Y from 'yjs'
-import { Server, type Connection, type Document, type LocalTransactionOrigin } from '@hocuspocus/server'
+import { Connection, Server, type Document, type LocalTransactionOrigin } from '@hocuspocus/server'
 
 import { SESSION_COOKIE } from '../auth/constants.ts'
 import { resolveSessionContext, type SessionContext, type SessionDenialReason } from '../auth/session-context.ts'
@@ -166,8 +169,7 @@ export function createCollabServer(options: CollabServerOptions): Server<CollabC
   const catchingUp = new WeakMap<Document, Promise<void>>()
   /** 쌓은 참여자 update 가 꼬리로 적용되기를 기다리는 쪽(머리말). */
   const waiters = new WeakMap<Document, Waiter[]>()
-  /** 첫 동기화의 판정을 지난 연결 — 문서의 방송은 이들에게만 간다(머리말 "연결을 받을 때" · 10n-55). */
-  const passedFirstSync = new WeakSet<Connection>()
+  gateInitialAwareness()
   /** 다시 판정할 범위 — `ws:{id}` · `user:{id}` — 와 다시 붙은 뒤의 전부 다시 맞추기. */
   let pending = { scopes: new Set<string>(), resync: false }
   /** 지금 도는 다시 판정. 꼬리 적용은 이것이 끝난 뒤에 한다(머리말). */
@@ -384,6 +386,8 @@ export function createCollabServer(options: CollabServerOptions): Server<CollabC
         const verdict = await connectionVerdict(context, connection.readOnly)
         if (verdict !== null) throw rejection(verdict)
         passedFirstSync.add(connection)
+        // 등록할 때 미뤄 둔 지금의 awareness 를 이제 보낸다(머리말 · 10n-56)
+        ;(Connection.prototype as unknown as InitialAwareness).sendCurrentAwareness.call(connection)
         return
       }
       if (type !== SYNC_STEP_2 && type !== SYNC_UPDATE) return
@@ -399,6 +403,33 @@ export function createCollabServer(options: CollabServerOptions): Server<CollabC
       await appliedThrough(document, BigInt(appended.seq))
     },
   })
+}
+
+/**
+ * 첫 동기화의 판정을 지난 연결 — 문서의 방송과 처음의 awareness 는 이들에게만 간다(머리말 "연결을 받을 때" · 10n-55 · 10n-56). 모듈에
+ * 하나다 — `Connection` 의 프로토타입을 감싼 함수가 이것을 본다(연결은 객체마다 하나라 서버가 여럿이어도 섞이지 않는다).
+ */
+const passedFirstSync = new WeakSet<Connection>()
+
+/** Hocuspocus `Connection` 의 처음 awareness 보내기 — 타입은 private 이라 이 모양으로만 만진다. */
+type InitialAwareness = { sendCurrentAwareness(this: Connection): void }
+
+let initialAwarenessGated = false
+
+/**
+ * 연결이 등록될 때 곧바로 보내는 지금의 awareness 를 첫 판정 뒤로 미룬다(10n-56). Hocuspocus 는 연결의 생성자에서 그것을 방송이 아니라
+ * 직접 보내므로 방송의 감싸기(`gateBroadcasts`)에 걸리지 않는다. 판정을 지나는 순간에는 `beforeSync` 가 한 번 부른다. 프로토타입을 한 번만
+ * 감싼다 · 없으면 던진다(Hocuspocus 를 올리면 `collab-server.db.test` ⑮ 가 본다).
+ */
+function gateInitialAwareness(): void {
+  if (initialAwarenessGated) return
+  const proto = Connection.prototype as unknown as InitialAwareness
+  const original = proto.sendCurrentAwareness
+  if (typeof original !== 'function') throw new Error('Hocuspocus Connection.sendCurrentAwareness 가 없다 — 첫 판정 전 awareness 를 막을 수 없다')
+  proto.sendCurrentAwareness = function (this: Connection) {
+    if (passedFirstSync.has(this)) original.call(this)
+  }
+  initialAwarenessGated = true
 }
 
 /** Hocuspocus `Document` 의 방송 — 갱신 · awareness · stateless 가 모두 이것을 지난다(타입은 private 이라 이 모양으로만 만진다). */
