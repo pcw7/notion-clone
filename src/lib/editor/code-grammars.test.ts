@@ -19,6 +19,7 @@ import {
   GRAMMAR_LOADERS,
   GRAMMAR_REQUIRES,
   HIGHLIGHT_GRAMMARS,
+  codeSegments,
   flattenTokens,
   grammarClosure,
   grammarOf,
@@ -193,5 +194,23 @@ describe('⑤ 토큰', () => {
       { from: 12, to: 15, className: 'k' },
       { from: 15, to: 16, className: 'n' },
     ])
+  })
+})
+
+describe('codeSegments — 공개 화면이 그릴 조각 (10n-51)', () => {
+  test('★ 이어 붙이면 원문 · 키워드 · 문자열은 칠하고 사이는 칠하지 않는다', async () => {
+    await loadGrammar('javascript')
+    const text = 'const greeting = "안녕"\n// 끝'
+    const segments = codeSegments('javascript', text)
+    assert.equal(segments.map((s) => s.text).join(''), text)
+    assert.deepEqual(segments.find((s) => s.text === 'const'), { text: 'const', className: 'hljs-keyword' })
+    assert.equal(segments.find((s) => s.text === '"안녕"')?.className, 'hljs-string')
+    assert.equal(segments.find((s) => s.text === '// 끝')?.className, 'hljs-comment')
+    assert.ok(segments.some((s) => s.className === null), '칠하지 않은 사이')
+  })
+
+  test('문법이 준비되지 않았거나 빈 글자 — 원문 한 조각', () => {
+    assert.deepEqual(codeSegments('없는-문법', 'x = 1'), [{ text: 'x = 1', className: null }])
+    assert.deepEqual(codeSegments('javascript', ''), [{ text: '', className: null }])
   })
 })

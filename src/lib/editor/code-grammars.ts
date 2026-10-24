@@ -349,3 +349,23 @@ export function highlightTokens(grammar: string, text: string, range: { readonly
   }
   return out
 }
+
+/** 글자 한 조각 — 칠하지 않은 조각은 `className` 이 null 이다. */
+export type CodeSegment = { readonly text: string; readonly className: string | null }
+
+/**
+ * 코드 글자 전체를 칠한 조각들로 나눈다(10n-51 · 공개 화면 — HANDOFF §3.2-294) — 범위 밖의 글자는 칠하지 않은 조각이다. 이어 붙이면 원문 그대로다.
+ * 문법이 준비되지 않았으면(`highlightTokens` 가 빈 배열) 원문 한 조각.
+ */
+export function codeSegments(grammar: string, text: string): CodeSegment[] {
+  const tokens = highlightTokens(grammar, text, { scanFrom: 0, from: 0, to: text.length })
+  const out: CodeSegment[] = []
+  let at = 0
+  for (const token of tokens) {
+    if (token.from > at) out.push({ text: text.slice(at, token.from), className: null })
+    out.push({ text: text.slice(token.from, token.to), className: token.className })
+    at = token.to
+  }
+  if (at < text.length || out.length === 0) out.push({ text: text.slice(at), className: null })
+  return out
+}

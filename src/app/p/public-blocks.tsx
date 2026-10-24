@@ -22,11 +22,33 @@ import { COLUMN_RATIO_KEY, PAGE_TYPE } from '@/lib/block/types'
 import { isSafeLinkUrl } from '@/lib/contracts/link-url'
 import { customEmojiIdOfRun, mentionTarget, toPlainText, type RichTextRun } from '@/lib/contracts/rich-text'
 import type { EditorBlock } from '@/lib/editor/document'
+import { codeSegments, grammarOf, loadGrammar } from '@/lib/editor/code-grammars'
 import { renderEquation } from '@/lib/editor/equation-render'
 import type { PublicPageView } from '@/lib/publish/public-read'
 
 /** 제목 없는 페이지의 이름. */
 export const UNTITLED = '제목 없음'
+
+/** 공개 화면이 칠하는 코드의 상한(10n-51 · HANDOFF §3.2-294 ③) — 편집기는 창으로 나눠 칠하지만 여기는 한 번에 그린다. 넘으면 평문. */
+export const MAX_PUBLIC_HIGHLIGHT = 100_000
+
+/**
+ * 코드 블록의 글자 — 서버가 칠한다(10n-51 · HANDOFF §3.2-294). 편집기와 같은 문법 표 · 토큰 펴기를 쓰고 조각마다 `<span class>` 를 단다(글자는
+ * React 가 이스케이프한다). 목록 밖 · 문법이 없는 언어 · 불러오기 실패 · 상한을 넘는 코드는 평문 — 공개 화면을 멈추지 않는다. 문법은 한 번
+ * 불리면 이 서버에 남는다(`code-grammars.ts` 의 lowlight 인스턴스는 모듈에 하나).
+ */
+async function CodeText({ text, language }: { text: string; language: string | null }): Promise<ReactNode> {
+  const grammar = grammarOf(language)
+  if (grammar === null || text === '' || text.length > MAX_PUBLIC_HIGHLIGHT) return text
+  try {
+    await loadGrammar(grammar)
+  } catch {
+    return text
+  }
+  return codeSegments(grammar, text).map((segment, i) =>
+    segment.className === null ? segment.text : <span key={i} className={segment.className}>{segment.text}</span>,
+  )
+}
 
 /** 공개 화면 안의 주소 — 같은 기준 경로 아래(토큰 주소 · 사이트 주소 — 6c-1). 루트는 기준 경로 그대로다. */
 export function publicHref(view: Pick<PublicPageView, 'base' | 'target'>, pageId: string): string {
@@ -215,7 +237,7 @@ function Block({ block, view }: { block: EditorBlock; view: PublicPageView }): R
       const language = codeLanguageOf(props)
       return (
         <figure className="pub-block pub-code">
-          <pre data-language={language ?? undefined}><code>{toPlainText(block.title)}</code></pre>
+          <pre data-language={language ?? undefined}><code><CodeText text={toPlainText(block.title)} language={language} /></code></pre>
           {caption.length > 0 && <figcaption><RichText runs={caption} view={view} /></figcaption>}
         </figure>
       )
