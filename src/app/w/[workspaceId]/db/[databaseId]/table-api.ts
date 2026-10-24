@@ -1008,6 +1008,20 @@ export function setColumnVisible(
   )
 }
 
+/** relation 의 "하나만" 제한을 켜고 끈다(10n-42) — 켜도 이미 여럿이 이어진 칸은 그대로다. */
+export function setRelationLimit(
+  workspaceId: string,
+  dataSourceId: string,
+  propertyId: string,
+  limit: 'one' | 'none',
+): Promise<ApiResult<null>> {
+  return call(
+    `${base(workspaceId)}/data-sources/${dataSourceId}/relations/${encodeURIComponent(propertyId)}`,
+    { method: 'PATCH', headers: JSON_HEADERS, body: JSON.stringify({ limit }) },
+    () => null,
+  )
+}
+
 export function renameColumn(
   workspaceId: string,
   dataSourceId: string,

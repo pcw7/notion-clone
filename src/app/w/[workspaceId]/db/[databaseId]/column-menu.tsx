@@ -60,6 +60,8 @@ export function ColumnMenu({
   rollupFunction,
   onRollupFunction,
   rollupSourceEdit,
+  relationLimitOne,
+  onRelationLimit,
   loadDependents,
 }: {
   name: string
@@ -91,6 +93,10 @@ export function ColumnMenu({
   onRollupFunction?: (fn: string) => Promise<string | null>
   /** 롤업의 "관계 · 대상 바꾸기"(10n-39) — 편집기를 그린다. 끝나면(바꿈 · 취소) `close` 를 부른다. 없으면 항목이 서지 않는다. */
   rollupSourceEdit?: (close: () => void) => ReactNode
+  /** relation 이 "하나만" 연결하는가(10n-42). 없으면(relation 이 아니다 · 하위 항목 · 종속 관계의 짝) 항목이 서지 않는다. */
+  relationLimitOne?: boolean
+  /** 켜고 끈다 — 실패하면 이유, 성공하면 null. */
+  onRelationLimit?: (one: boolean) => Promise<string | null>
 }) {
   const [open, setOpen] = useState(false)
   const [step, setStep] = useState<
@@ -226,6 +232,19 @@ export function ColumnMenu({
                 <MenuItem testId="db-column-rollup-function" disabled={busy} onClick={() => setStep('rollup')}>
                   계산 바꾸기
                 </MenuItem>
+              )}
+              {relationLimitOne !== undefined && onRelationLimit !== undefined && (
+                <button
+                  type="button"
+                  role="menuitemcheckbox"
+                  aria-checked={relationLimitOne}
+                  data-testid="db-column-relation-limit"
+                  disabled={busy}
+                  onClick={() => void run(() => onRelationLimit(!relationLimitOne))}
+                  className="rounded px-2 py-1 text-left hover:bg-neutral-100 disabled:opacity-40 dark:hover:bg-neutral-800"
+                >
+                  {relationLimitOne ? '✓ ' : ''}하나만 연결
+                </button>
               )}
               {rollupSourceEdit !== undefined && (
                 <MenuItem testId="db-column-rollup-source" disabled={busy} onClick={() => setStep('rollup-source')}>

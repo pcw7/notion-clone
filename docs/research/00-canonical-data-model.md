@@ -2401,6 +2401,12 @@ CREATE INDEX ON derived_value (property_id, num_value) WHERE NOT stale AND num_v
   어느 쪽이 거부하면 행도 연결도 남지 않는다. 대상 표를 볼 수 없으면 만들지 않는다(만든 사람도 그 행을 볼 수 없다). 제한 `one` 이면
   잇기의 규칙대로 있던 연결을 새 행으로 바꾼다 · 양방향이면 거울상도 선다. 제목은 공백을 접고 비면 거부한다. 라우트는 칸의 주소
   (`…/rows/{rowId}/relations/{propertyId}/create`)라 대상 표를 요청이 말하지 않는다(후보 찾기와 같다).
+- **[보강 10n-42] "하나만" 제한 바꾸기** — `config.limit` 을 만든 뒤에 켜고 끈다(`PATCH …/data-sources/{id}/relations/{propertyId}`
+  `{ limit: 'one' | 'none' }` · 열 머리 메뉴의 "하나만 연결"). **켜도 이미 여럿이 이어진 칸은 그대로다** — 03 F-03-10 *"기존 값 유지 +
+  신규 입력만 제한"* · 그 뒤에 하나를 더하면 그것으로 바뀐다(잇기의 규칙). 끄면 더 고를 수 있다. 저장된 config 의 다른 키(대상 · 짝)는
+  다시 쓰지 않고 `limit` 만 넣거나 뺀다 · 역방향 프로퍼티는 따로다(만들 때도 물려받지 않는다). 하위 항목 · 종속 관계의 짝은 받지 않는다
+  (부모 하나 · 순환이 그 칸의 개수를 정한다 — `invalid_config`). 구조 고치기(`edit_structure`) · 스키마 잠금 · 판 올림은 다른 속성 명령과
+  같고, 이미 그 값이면 쓰지 않는다. 설정을 통째로 덮어쓰는 길(`updateProperty` 의 config)은 여전히 relation 을 받지 않는다.
 
 **[보강] 하위 항목(sub-item) — 같은 표의 relation 짝 · 엣지의 `role` · 부모 하나 · 순환 없음** ⟨DB 심화 2b-1조각 · F-03-18 / 마이그레이션 0051⟩
 
