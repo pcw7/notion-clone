@@ -26,6 +26,7 @@ import { isUuid } from '../ids.ts'
 import { effectiveCaps } from '../permissions/effective.ts'
 import { can } from '../permissions/levels.ts'
 import { readSecurityPolicyIn } from '../workspace/security-policy.ts'
+import { entitlement } from '../billing/entitlement.ts'
 import { openablePagesIn } from './public-access.ts'
 import { isRobotsDirective, newPublicToken, type AiCrawler, type RobotsDirective } from './public-token.ts'
 import { normalizeSlug, readSiteDomainIn } from './site.ts'
@@ -42,6 +43,11 @@ export type PublishState = {
   readonly robots: RobotsDirective
   readonly aiCrawler: AiCrawler
   readonly expiresAt: string | null
+  /**
+   * 이 사람이 만료를 정할 수 있는가(10n-50 · 정본 ⑬) — 게시를 바꿀 수 있고(`manage_perm`) 요금제가 허락할 때(`publish.link_expiry`). 화면이
+   * 미리 막는다 — 명령이 다시 묻는다. 지우기는 요금제와 무관하다.
+   */
+  readonly expiryAllowed: boolean
   /** 워크스페이스 정책이 게시를 허용하는가 — 끄면 게시된 주소도 열리지 않는다(정본 ③ ⑨). */
   readonly policyAllows: boolean
   /** 운영자가 이 워크스페이스의 웹 게시를 막았는가(6b-3b · 정본 [보강] 모더레이션 조치 ⑦) — 정책 줄이 "운영 정책" 이라고 말한다. */
@@ -87,6 +93,8 @@ export type PublishFailure =
   | 'invalid_slug'
   /** 이 워크스페이스의 다른 페이지가 그 슬러그를 쓴다(6c-1). */
   | 'slug_taken'
+  /** 요금제가 만료를 정하는 것을 허락하지 않는다(10n-50 · `publish.link_expiry`) — 지우기는 된다. */
+  | 'plan_required'
 
 export type PublishResult =
   | { readonly ok: true; readonly value: PublishState }
@@ -98,6 +106,7 @@ export function publishFailureStatus(reason: PublishFailure): number {
     case 'not_found':
       return 404
     case 'forbidden':
+    case 'plan_required':
       return 403
     case 'not_page':
     case 'trashed':
@@ -188,6 +197,7 @@ async function stateIn(
 ): Promise<PublishState> {
   return {
     ...stateOf(link, policyAllows, canManage),
+    expiryAllowed: canManage && (await entitlement(ctx.workspaceId, 'publish.link_expiry', tx)),
     publishingBlocked: (await readSecurityPolicyIn(tx, ctx.workspaceId)).publishingBlocked,
     coveredBy: await coveredByIn(tx, ctx, node, policyAllows),
     moderation: await moderationIn(tx, node),
@@ -199,7 +209,7 @@ function stateOf(
   link: LinkRow | null,
   policyAllows: boolean,
   canManage: boolean,
-): Omit<PublishState, 'coveredBy' | 'moderation' | 'siteDomain' | 'publishingBlocked'> {
+): Omit<PublishState, 'coveredBy' | 'moderation' | 'siteDomain' | 'publishingBlocked' | 'expiryAllowed'> {
   return {
     published: link?.enabled ?? false,
     token: canManage ? (link?.token ?? null) : null,
@@ -310,6 +320,10 @@ export async function updatePublicLink(ctx: SessionContext, pageId: string, patc
 
     // 게시된 링크에만 — 다른 거부(슬러그가 쓰인다 등)보다 먼저 말한다
     if ((await loadLink(tx, pageId))?.enabled !== true) return { ok: false, reason: 'not_published' } as const
+    // 만료를 정하는 것만 요금제가 막는다(10n-50 · 정본 ⑬) — 지우기는 언제나 된다
+    if (input.expiresAt instanceof Date && !(await entitlement(ctx.workspaceId, 'publish.link_expiry', tx))) {
+      return { ok: false, reason: 'plan_required' } as const
+    }
     // 슬러그 — 이 워크스페이스의 다른 페이지가 쓰면 거부한다(UNIQUE 에 부딪혀 500 이 되기 전에)
     if (input.slug !== undefined && input.slug !== null) {
       const other = await tx.queryMaybe<{ node_id: string }>(
@@ -324,16 +338,28 @@ export async function updatePublicLink(ctx: SessionContext, pageId: string, patc
           SET robots_directive = coalesce($2, robots_directive),
               token = CASE WHEN $3 THEN $4 ELSE token END,
               slug = CASE WHEN $6 THEN $7 ELSE slug END,
+              expires_at = CASE WHEN $8 THEN $9::timestamptz ELSE expires_at END,
               updated_by = $5, updated_at = now()
         WHERE node_id = $1 AND enabled
         RETURNING enabled, token, robots_directive, ai_crawler, expires_at, slug`,
-      [pageId, input.robots ?? null, input.rotateToken, newPublicToken(), ctx.userId, input.slug !== undefined, input.slug ?? null],
+      [
+        pageId,
+        input.robots ?? null,
+        input.rotateToken,
+        newPublicToken(),
+        ctx.userId,
+        input.slug !== undefined,
+        input.slug ?? null,
+        input.expiresAt !== undefined,
+        input.expiresAt ?? null,
+      ],
     )
     if (link === null) return { ok: false, reason: 'not_published' } as const
     await auditPublish(tx, ctx, pageId, {
       change: 'settings',
       ...(input.robots === undefined ? {} : { robots: input.robots }),
       ...(input.slug === undefined ? {} : { slug: input.slug }),
+      ...(input.expiresAt === undefined ? {} : { expiresAt: input.expiresAt?.toISOString() ?? null }),
       rotated: input.rotateToken,
     })
     const policy = await readSecurityPolicyIn(tx, ctx.workspaceId)
@@ -351,17 +377,36 @@ function auditPublish(tx: Tx, ctx: SessionContext, pageId: string, metadata: Rec
   return recordForContextIn(tx, ctx, 'page.publish_changed', { target: { type: 'page', id: pageId }, metadata })
 }
 
-type LinkPatch = { robots?: RobotsDirective; rotateToken: boolean; slug?: string | null }
+type LinkPatch = { robots?: RobotsDirective; rotateToken: boolean; slug?: string | null; expiresAt?: Date | null }
+
+/** 만료의 상한(10n-50 · 정본 ⑬) — 1년. 멤버의 임시 만료와 같은 상한이다. */
+export const MAX_LINK_EXPIRY_MS = 366 * 24 * 60 * 60 * 1000
+
+/** 만료 값 — ISO 시각이고 지금보다 뒤 · 1년 안이어야 한다(정본 ⑬). 아니면 null. */
+function parseExpiry(raw: string, now: number): Date | null {
+  if (!/^\d{4}-\d{2}-\d{2}T/.test(raw)) return null
+  const at = new Date(raw)
+  const ms = at.getTime()
+  if (!Number.isFinite(ms) || ms <= now || ms > now + MAX_LINK_EXPIRY_MS) return null
+  return at
+}
 
 /** 고치기의 몸체 — 모양이 틀리면 null · 슬러그만 틀리면 'invalid_slug'(화면이 그 칸에 말한다). */
-function parsePatch(raw: unknown): LinkPatch | 'invalid_slug' | null {
+function parsePatch(raw: unknown, now = Date.now()): LinkPatch | 'invalid_slug' | null {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null
-  const { robots, rotateToken, slug, ...rest } = raw as { robots?: unknown; rotateToken?: unknown; slug?: unknown }
+  const { robots, rotateToken, slug, expiresAt, ...rest } = raw as { robots?: unknown; rotateToken?: unknown; slug?: unknown; expiresAt?: unknown }
   if (Object.keys(rest).length > 0) return null
   if (robots !== undefined && !isRobotsDirective(robots)) return null
   if (rotateToken !== undefined && rotateToken !== true) return null
   if (slug !== undefined && slug !== null && typeof slug !== 'string') return null
-  if (robots === undefined && rotateToken === undefined && slug === undefined) return null
+  if (expiresAt !== undefined && expiresAt !== null && typeof expiresAt !== 'string') return null
+  if (robots === undefined && rotateToken === undefined && slug === undefined && expiresAt === undefined) return null
+  // 만료(10n-50) — null 은 지우기 · 시각은 지금보다 뒤 · 1년 안
+  let expiry: Date | null | undefined = undefined
+  if (expiresAt !== undefined) {
+    expiry = expiresAt === null ? null : parseExpiry(expiresAt, now)
+    if (expiry === null && expiresAt !== null) return null
+  }
   // 슬러그 — 빈 글자는 지우기다(null 과 같다) · 소문자로 받는다
   let normalized: string | null | undefined = undefined
   if (slug !== undefined) {
@@ -372,5 +417,6 @@ function parsePatch(raw: unknown): LinkPatch | 'invalid_slug' | null {
     ...(robots === undefined ? {} : { robots }),
     rotateToken: rotateToken === true,
     ...(normalized === undefined ? {} : { slug: normalized }),
+    ...(expiry === undefined ? {} : { expiresAt: expiry }),
   }
 }

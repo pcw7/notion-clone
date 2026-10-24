@@ -6,6 +6,9 @@
  * 서버의 실패 까닭(`PublishFailure`)을 사람의 말로. 모르는 까닭은 일반 문구다.
  */
 
+/** 요금제가 만료를 허락하지 않을 때(10n-50 · 정본 [정정] 웹 게시 ⑬) — 지우기는 된다. */
+export const EXPIRY_PLAN_NOTICE = '공개 링크의 만료는 Plus 이상의 요금제에서 정할 수 있습니다.'
+
 const FAILURE: Readonly<Record<string, string>> = {
   not_found: '이 페이지를 찾을 수 없습니다.',
   forbidden: '전체 권한이 있어야 웹에 게시할 수 있습니다.',
@@ -18,6 +21,36 @@ const FAILURE: Readonly<Record<string, string>> = {
   moderated: '운영 정책에 따라 공개가 내려진 페이지는 다시 게시할 수 없습니다.',
   invalid_slug: '슬러그는 영문 소문자 · 숫자 · 하이픈으로 60자까지입니다(예: about-us).',
   slug_taken: '이 워크스페이스의 다른 페이지가 쓰는 슬러그입니다.',
+  plan_required: EXPIRY_PLAN_NOTICE,
+}
+
+const pad = (n: number) => String(n).padStart(2, '0')
+
+/** 시각 → 그 시각의 이 브라우저 날짜(`YYYY-MM-DD`) — 날짜 칸의 값. */
+export function localDayOf(iso: string): string {
+  const at = new Date(iso)
+  return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`
+}
+
+/** 날짜 칸의 값(`YYYY-MM-DD`) → 그날의 끝(이 브라우저의 23:59:59.999)의 ISO 시각 — "그날까지 열린다". 모양이 틀리면 null. */
+export function endOfLocalDay(day: string): string | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(day)
+  if (m === null) return null
+  const at = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 23, 59, 59, 999)
+  return Number.isFinite(at.getTime()) ? at.toISOString() : null
+}
+
+/** 날짜 칸이 고를 수 있는 범위 — 오늘부터 365일 뒤까지(서버의 상한 1년 안 · 정본 ⑬). */
+export function expiryDayRange(now: Date): { readonly min: string; readonly max: string } {
+  const max = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 365)
+  return { min: localDayOf(now.toISOString()), max: localDayOf(max.toISOString()) }
+}
+
+/** 만료 한 줄 — 없음 · 그날까지 · 지났다(게시되어 있어도 열리지 않는다 · 새로 정하거나 없애면 같은 주소로 다시 열린다). */
+export function expiryLine(expiresAt: string | null, now: number): string {
+  if (expiresAt === null) return '만료 없음 — 해제할 때까지 열립니다.'
+  if (Date.parse(expiresAt) <= now) return '만료되었습니다 — 공개 주소가 열리지 않습니다. 새로 정하거나 없애면 같은 주소로 다시 열립니다.'
+  return `${localDayOf(expiresAt)} 까지 열립니다.`
 }
 
 /** 운영자가 공개를 내렸을 때 — 소유자가 아는 길(정본 [보강] 모더레이션 조치 ⑤). 이의는 운영자에게(17 — 이의제기는 이메일). */

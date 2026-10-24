@@ -39,6 +39,8 @@ export const ENTITLEMENTS = {
   'form.logic': 'boolean',
   /** 검색을 팀스페이스로 좁힐 수 있는가(F-07-03 · 10a-3a) — Plus · Business · Enterprise. 질의를 만들 때 묻는다(허락하지 않으면 `plan_required`). */
   'search.teamspace_filter': 'boolean',
+  /** 공개 링크의 만료를 정할 수 있는가(F-06-08 · 10n-50 — 06 *"만료는 유료 플랜 기능"*) — Plus · Business · Enterprise. 지우기는 무관하다. */
+  'publish.link_expiry': 'boolean',
 } as const
 
 export type EntitlementKey = keyof typeof ENTITLEMENTS

@@ -28,6 +28,8 @@ export function entitlementLabel(key: EntitlementKey | string): string {
       return '폼의 조건부 질문'
     case 'search.teamspace_filter':
       return '검색의 팀스페이스 필터'
+    case 'publish.link_expiry':
+      return '공개 링크의 만료'
     default:
       return key
   }

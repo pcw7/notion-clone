@@ -10,10 +10,12 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
+import { ENTITLEMENTS } from '../../../../lib/billing/entitlement.ts'
 import { entitlementLabel, formatEntitlement, formatPrice, guestUsageLine } from './plan-messages.ts'
 
-test('① 줄 이름', () => {
-  const keys = ['history.days', 'guests.max', 'teamspace.private', 'import.max_bytes', 'trash.custom_retention', 'automation.webhook', 'audit.log', 'form.logic', 'search.teamspace_filter']
+test('① 줄 이름 — 엔타이틀먼트의 모든 키에 이름이 있다(손으로 적은 목록은 새 키를 놓쳤다 · 10n-50)', () => {
+  const keys = Object.keys(ENTITLEMENTS)
+  assert.ok(keys.includes('publish.link_expiry'))
   assert.equal(new Set(keys.map(entitlementLabel)).size, keys.length)
   assert.ok(keys.every((k) => entitlementLabel(k) !== k))
   assert.equal(entitlementLabel('charts.max'), 'charts.max')
