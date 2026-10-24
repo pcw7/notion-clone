@@ -21174,8 +21174,8 @@ async function main() {
       await clickOn('[data-testid="db-filter-add"]')
       await waitFor(`!!document.querySelector('${RULE}')`, 3000)
       await setSelect(`${RULE} select[aria-label="필터 속성"]`, relation)
-      check('★ 관계형 속성의 연산자는 "비어 있음 · 비어 있지 않음" 둘 — 값 칸이 없다',
-        (await waitFor(`[...document.querySelectorAll('${OP} option')].map((o) => o.textContent).join(',') === '비어 있음,비어 있지 않음'`, 5000))
+      check('★ 관계형 속성의 연산자는 "비어 있음 · 비어 있지 않음" 이 먼저(포함 · 포함하지 않음은 10n-45) — 첫 연산자에는 값 칸이 없다',
+        (await waitFor(`[...document.querySelectorAll('${OP} option')].map((o) => o.textContent).join(',').startsWith('비어 있음,비어 있지 않음')`, 5000))
           && (await evaluate(`!document.querySelector('${RULE} [data-testid="db-filter-value"]')`)),
         String(await opLabels()))
       await setSelect(OP, 'is_not_empty')
@@ -21194,6 +21194,107 @@ async function main() {
           return values.includes('${titleProp}') && !values.includes('${relation}') })()`, 3000),
         String(await evaluate(`[...document.querySelectorAll('[data-testid="db-sort-rule"] option')].map((o) => o.textContent).join(',')`)))
       await key('Escape')
+    } catch (thrown) { await sectionThrew(thrown) } }
+
+    if (sectionIf('relation 의 포함 · 포함하지 않음 (10n-45 · F-04-09 · F-03-10)')) { try {
+      // 필터 패널의 relation "포함" — 값 칸이 행 고르개다(찾기 칸 · 이어진 것도 후보 · Esc 는 고르개만 닫는다). 고르면 그 행으로 이어진
+      // 행만 · 포함하지 않음은 그 반대(아무것도 없는 행도). 칩은 행의 제목 — 새로고침해도(서버의 제목 맵) · 그 행을 휴지통에 보내면 "지워진 행".
+      // 정본 [보강] relation_edge — [보강 10n-45] · 0114.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const clickOn = async (selector) => {
+        const p = await evaluate(`(() => {
+          const e = document.querySelector(${JSON.stringify(selector)})
+          if (!e) return null
+          e.scrollIntoView({ block: 'center' })
+          const r = e.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (p) await click(p.x, p.y)
+        return p !== null
+      }
+      const setSelect = (selector, value) => evaluate(`(() => {
+        const s = document.querySelector(${JSON.stringify(selector)})
+        if (!s) return false
+        s.value = ${JSON.stringify(value)}
+        s.dispatchEvent(new Event('change', { bubbles: true }))
+        return true
+      })()`)
+      const projects = (await api('POST', '/databases', { name: `관계 포함 프로젝트 ${stamp}` })).body.database
+      const tasks = (await api('POST', '/databases', { name: `관계 포함 작업 ${stamp}` })).body.database
+      const titleOf = async (db) => (await api('GET', `/views/${db.defaultViewId}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const [projectTitle, taskTitle] = [await titleOf(projects), await titleOf(tasks)]
+      const relation = (await api('POST', `/data-sources/${projects.dataSourceId}/relations`, { name: '작업들', targetDataSourceId: tasks.dataSourceId })).body?.property?.id
+      const row = async (db, prop, t) => (await api('POST', `/views/${db.defaultViewId}/rows`, { cells: [{ propertyId: prop, value: { type: 'title', title: [textRun(t)] } }] })).body.row.id
+      const design = await row(tasks, taskTitle, '설계')
+      const build = await row(tasks, taskTitle, '구현')
+      await row(tasks, taskTitle, '시험')
+      const ids = { 가: await row(projects, projectTitle, '가'), 나: await row(projects, projectTitle, '나'), 다: await row(projects, projectTitle, '다'), 라: await row(projects, projectTitle, '라') }
+      await api('POST', `/rows/${ids['가']}/relations/${relation}`, { add: [design] })
+      await api('POST', `/rows/${ids['나']}/relations/${relation}`, { add: [design, build] })
+      await api('POST', `/rows/${ids['라']}/relations/${relation}`, { add: [build] })
+      check('전제 — 관계와 프로젝트 넷(설계 · 설계와 구현 · 없음 · 구현)', typeof relation === 'string')
+      const shown = () => evaluate(`[...document.querySelectorAll('[data-testid="db-table"] tbody tr[data-row-id]')].map((tr) => tr.dataset.rowId)`)
+      const rowsAre = (names) => waitFor(`(() => { const got = [...document.querySelectorAll('[data-testid="db-table"] tbody tr[data-row-id]')].map((tr) => tr.dataset.rowId)
+        const want = ${JSON.stringify(names.map((n) => ids[n]))}
+        return got.length === want.length && want.every((id) => got.includes(id)) })()`, 8000)
+      const RULE = '[data-testid="db-filter-rule"]'
+      const OP = `${RULE} select[aria-label="필터 조건"]`
+      const VALUE = `${RULE} [data-testid="db-filter-value"]`
+      const OPTION = '[data-testid="db-filter-row-option"]'
+      const options = () => evaluate(`[...document.querySelectorAll('${OPTION}')].map((o) => o.textContent.replace('✓', '').trim()).join(',')`)
+      const chips = () => evaluate(`[...document.querySelectorAll('[data-testid="db-filter-chip"]')].map((e) => e.textContent).join(' | ')`)
+      const chipHas = (words) => waitFor(`[...document.querySelectorAll('[data-testid="db-filter-chip"]')].some((e) => ${JSON.stringify(words)}.every((w) => e.textContent.includes(w)))`, 8000)
+      const openPanel = async () => {
+        await waitHydrated('[data-testid="db-filter-button"]', 20000) // 서버가 그린 단추 — React 가 붙기 전의 클릭은 버려진다(10n-11)
+        await clickOn('[data-testid="db-filter-button"]')
+        return waitFor(`!!document.querySelector('[data-testid="db-filter-panel"]')`, 3000)
+      }
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${projects.id}` })
+      await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr[data-row-id]').length === 4`, 15000)
+      await openPanel()
+      await clickOn('[data-testid="db-filter-add"]')
+      await waitFor(`!!document.querySelector('${RULE}')`, 3000)
+      await setSelect(`${RULE} select[aria-label="필터 속성"]`, relation)
+      await waitFor(`[...document.querySelectorAll('${OP} option')].length === 4`, 5000)
+      await setSelect(OP, 'contains')
+      check('★ 관계형의 연산자는 넷 — 포함을 고르면 값 칸이 행 고르개 단추("행 선택…")다',
+        (await evaluate(`[...document.querySelectorAll('${OP} option')].map((o) => o.textContent).join(',')`)) === '비어 있음,비어 있지 않음,포함,포함하지 않음'
+          && (await waitFor(`document.querySelector('${VALUE}')?.tagName === 'BUTTON' && document.querySelector('${VALUE}').textContent.trim() === '행 선택…'`, 5000)),
+        String(await evaluate(`document.querySelector('${VALUE}')?.outerHTML ?? '없음'`)))
+      await clickOn(VALUE)
+      check('★ 고르개 — 찾기 칸에 포커스 · 대상 표의 행이 모두 후보(이어진 것도 · 표의 순서)',
+        (await waitFor(`document.activeElement?.matches('[data-testid="db-filter-row-input"]')`, 5000))
+          && (await waitFor(`[...document.querySelectorAll('${OPTION}')].map((o) => o.textContent.replace('✓', '').trim()).join(',') === '설계,구현,시험'`, 8000)),
+        String(await options()))
+      await key('Escape')
+      check('Esc 는 고르개만 닫는다 — 필터 패널은 남는다',
+        await waitFor(`!document.querySelector('[data-testid="db-filter-row-picker"]') && !!document.querySelector('[data-testid="db-filter-panel"]')`, 3000))
+      await clickOn(VALUE)
+      await waitFor(`document.activeElement?.matches('[data-testid="db-filter-row-input"]')`, 5000)
+      await typeText('설')
+      await waitFor(`[...document.querySelectorAll('${OPTION}')].map((o) => o.textContent.replace('✓', '').trim()).join(',') === '설계'`, 8000)
+      await key('Enter')
+      check('★ 찾아서 Enter — 설계로 이어진 가 · 나만 · 단추와 칩이 행의 제목으로 말한다',
+        (await rowsAre(['가', '나'])) && (await waitFor(`document.querySelector('${VALUE}')?.textContent.trim() === '설계'`, 5000)) && (await chipHas(['작업들', '포함', '설계'])),
+        `${JSON.stringify(await shown())} · ${await chips()}`)
+      await setSelect(OP, 'does_not_contain')
+      check('★ 포함하지 않음 — 다(아무것도 없다) · 라(구현만)', await rowsAre(['다', '라']), JSON.stringify(await shown()))
+
+      await send('Page.reload')
+      await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr[data-row-id]').length === 2`, 15000)
+      check('★ 새로고침해도 칩이 제목으로 — 서버가 필터의 행 id 로 제목 맵을 준다', await chipHas(['작업들', '포함하지 않음', '설계']), String(await chips()))
+
+      await api('DELETE', `/rows/${design}`)
+      await send('Page.reload')
+      await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr[data-row-id]').length === 4`, 15000)
+      check('그 행을 휴지통에 보내면 칩은 "지워진 행" — 규칙은 남고 그 행으로는 아무도 포함하지 않는다(넷 모두)',
+        (await chipHas(['작업들', '포함하지 않음', '지워진 행'])) && (await rowsAre(['가', '나', '다', '라'])),
+        `${await chips()} · ${JSON.stringify(await shown())}`)
     } catch (thrown) { await sectionThrew(thrown) } }
 
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {

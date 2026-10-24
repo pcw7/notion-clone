@@ -16,11 +16,13 @@ import {
   addSort,
   describeRule,
   filterPeopleIds,
+  filterRowIds,
   isComplete,
   liveSorts,
   moveSort,
   readRules,
   ruleFor,
+  rowTitleLabel,
   sortFirst,
   toFilter,
   withOperator,
@@ -305,5 +307,46 @@ describe('status 의 그룹 단위 (10n-23)', () => {
     assert.equal(describeRule({ property_id: 'progress', operator: 'group_is_not', value: 'todo' }, progress, statusCatalog), '진행 · 그룹이 같지 않음 · 할 일')
     // 옵션 연산자는 그대로 옵션 이름
     assert.equal(describeRule({ property_id: 'progress', operator: 'equals', value: 'opt-1' }, progress, statusCatalog), '진행 · 같음 · 진행 중')
+  })
+})
+
+describe('relation 의 포함 — 칩은 행의 제목으로 (10n-45)', () => {
+  const tasks: RuleColumn = { propertyId: 'tasks', name: '작업들', type: 'relation', options: [] }
+  const relationCatalog: OperatorCatalogEntry[] = [
+    { propertyType: 'relation', operator: 'is_empty', arity: 0, label: '비어 있음' },
+    { propertyType: 'relation', operator: 'contains', arity: 1, label: '포함' },
+  ]
+  const titles = { r1: '설계', r2: '', r3: null }
+
+  test('★ 제목 맵의 셋 — 볼 수 있음 · 볼 수 없음 · 지워짐(규칙은 남는다)', () => {
+    assert.equal(rowTitleLabel('r1', titles), '설계')
+    assert.equal(rowTitleLabel('r2', titles), '제목 없음')
+    assert.equal(rowTitleLabel('r3', titles), '볼 수 없는 행')
+    assert.equal(rowTitleLabel('r9', titles), '지워진 행')
+    assert.equal(rowTitleLabel(42, titles), '지워진 행')
+  })
+
+  test('★ 칩 — 속성 · 연산자 · 행의 제목', () => {
+    assert.equal(describeRule({ property_id: 'tasks', operator: 'contains', value: 'r1' }, tasks, relationCatalog, {}, titles), '작업들 · 포함 · 설계')
+    assert.equal(describeRule({ property_id: 'tasks', operator: 'contains', value: 'r9' }, tasks, relationCatalog, {}, titles), '작업들 · 포함 · 지워진 행')
+    assert.equal(describeRule({ property_id: 'tasks', operator: 'contains' }, tasks, relationCatalog, {}, titles), '작업들 · 포함 · …')
+    assert.equal(describeRule({ property_id: 'tasks', operator: 'is_empty' }, tasks, relationCatalog), '작업들 · 비어 있음')
+  })
+
+  test('filterRowIds — relation 속성의 값만 · 겹치지 않게', () => {
+    const types = new Map([['tasks', 'relation'], ['who', 'people'], ['name', 'title']] as const)
+    assert.deepEqual(
+      filterRowIds(
+        [
+          { property_id: 'tasks', operator: 'contains', value: 'r1' },
+          { property_id: 'tasks', operator: 'does_not_contain', value: 'r1' },
+          { property_id: 'tasks', operator: 'is_empty' },
+          { property_id: 'who', operator: 'contains', value: 'u1' },
+          { property_id: 'name', operator: 'equals', value: 'r2' },
+        ],
+        new Map(types),
+      ),
+      ['r1'],
+    )
   })
 })

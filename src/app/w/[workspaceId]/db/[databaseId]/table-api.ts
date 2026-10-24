@@ -466,6 +466,20 @@ export function searchCandidates(
   )
 }
 
+/** 필터 값으로 고를 행을 제목으로 찾는다(10n-45) — 행이 없는 자리라 그 표의 relation 속성으로 묻는다. 이어진 것을 빼지 않는다. */
+export function searchFilterRows(
+  workspaceId: string,
+  dataSourceId: string,
+  propertyId: string,
+  query: string,
+): Promise<ApiResult<RelatedRow[]>> {
+  return call(
+    `${base(workspaceId)}/data-sources/${dataSourceId}/relations/${encodeURIComponent(propertyId)}/candidates?q=${encodeURIComponent(query)}`,
+    { method: 'GET' },
+    (body) => (body.items ?? []) as RelatedRow[],
+  )
+}
+
 /**
  * 연결을 더하고 뺀다 — **"이 목록으로 바꿔라"는 없다**(값이 집합이라 통째로 덮으면 동시에 더한 남의 연결이 사라진다 ·
  * `relation.ts` 머리말). 답은 바뀐 행이다(캐시의 relation 칸이 갱신돼 있다).
