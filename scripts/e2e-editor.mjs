@@ -20361,6 +20361,66 @@ async function main() {
         await calcText(progress))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('롤업의 계산 바꾸기 (10n-31 · F-03-11)')) { try {
+      // 롤업 열의 머리 메뉴에 "계산 바꾸기" — 대상 타입이 고를 수 있는 계산 목록 · 지금 것(합계)이 눌려 있다 · 평균을 고르면 칸이 새 계산으로 ·
+      // 다시 열어도 남는다(같은 속성 — 지우고 다시 만들지 않는다). 숫자가 아닌 열(제목)에는 그 항목이 없다. 정본 §3.5 [보강] rollup v1 — 고치기.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const clickOn = async (selector) => {
+        const p = await evaluate(`(() => {
+          const e = document.querySelector(${JSON.stringify(selector)})
+          if (!e) return null
+          e.scrollIntoView({ block: 'center' })
+          const r = e.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (p) await click(p.x, p.y)
+        return p !== null
+      }
+      const projects = (await api('POST', '/databases', { name: `계산 바꾸기 프로젝트 ${stamp}` })).body.database
+      const tasks = (await api('POST', '/databases', { name: `계산 바꾸기 작업 ${stamp}` })).body.database
+      const hours = (await api('POST', `/data-sources/${tasks.dataSourceId}/properties`, { name: '시간', type: 'number' })).body.property.id
+      const made = (await api('POST', `/data-sources/${tasks.dataSourceId}/relations`, { name: '프로젝트', targetDataSourceId: projects.dataSourceId, twoWay: { name: '작업들' } })).body
+      const rollup = (await api('POST', `/data-sources/${projects.dataSourceId}/rollups`, { name: '시간', relationPropertyId: made.syncedPropertyId, targetPropertyId: hours, function: 'sum' })).body.property.id
+      const project = (await api('POST', `/views/${projects.defaultViewId}/rows`, { cells: [] })).body.row.id
+      const taskRow = async (h) => (await api('POST', `/views/${tasks.defaultViewId}/rows`, { cells: [{ propertyId: hours, value: { type: 'number', number: h } }] })).body.row.id
+      const t1 = await taskRow(2)
+      const t2 = await taskRow(4)
+      await api('POST', `/rows/${project}/relations/${made.syncedPropertyId}`, { add: [t1, t2] })
+      const rollupCell = `tr[data-row-id="${project}"] td[data-property-id="${rollup}"] [data-testid="db-rollup-value"]`
+      const rollupText = () => evaluate(`document.querySelector('${rollupCell}')?.textContent.trim() ?? null`)
+      const MENU = `th[data-property-id="${rollup}"] [data-testid="db-column-menu"]`
+
+      // 표 변경 신호(SSE)를 막는다 — 계산을 바꾸면 스키마 판이 올라 신호의 다시 읽기도 롤업 값을 다시 묻는다. 열어 두면 화면이 직접 다시
+      // 묻는 쪽을 빼도 이 절이 통과한다(화면 반사실이 그렇게 빠져나갔다). 다시 열기 전에 푼다.
+      await send('Network.setBlockedURLs', { urls: ['*/changes*'] })
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${projects.id}` })
+      await waitFor(`(document.querySelector('${rollupCell}')?.textContent.trim() ?? null) === '6'`, 15000)
+      await waitHydrated(MENU, 20000) // 서버가 그린 단추 — React 가 붙기 전의 클릭은 버려진다(10n-11)
+      await clickOn(MENU)
+      check('★ 롤업 열의 머리 메뉴에 "계산 바꾸기" 가 선다', await waitFor(`!!document.querySelector('[data-testid="db-column-rollup-function"]')`, 3000))
+      await clickOn('[data-testid="db-column-rollup-function"]')
+      check('목록은 대상(숫자)이 고를 수 있는 계산 · 지금 것(합계)이 눌려 있다',
+        await waitFor(`(() => { const sum = document.querySelector('[data-testid="db-column-rollup-fn-sum"]')
+          return sum?.getAttribute('aria-checked') === 'true' && !!document.querySelector('[data-testid="db-column-rollup-fn-average"]')
+            && !document.querySelector('[data-testid="db-column-rollup-fn-percent_checked"]') })()`, 3000))
+      await clickOn('[data-testid="db-column-rollup-fn-average"]')
+      check('★ 평균을 고르면 칸이 새 계산으로 — 2 · 4 → 3', await waitFor(`(document.querySelector('${rollupCell}')?.textContent.trim() ?? null) === '3'`, 10000), String(await rollupText()))
+      await send('Network.setBlockedURLs', { urls: [] })
+      await send('Page.reload', {})
+      check('다시 열어도 남는다 — 같은 속성(지우고 다시 만들지 않았다)', await waitFor(`(document.querySelector('${rollupCell}')?.textContent.trim() ?? null) === '3'`, 15000)
+        && (await api('GET', `/views/${projects.defaultViewId}`)).body?.view?.columns?.some((c) => c.propertyId === rollup), String(await rollupText()))
+      const titleMenu = `th[data-property-id]:first-of-type [data-testid="db-column-menu"]`
+      await waitHydrated(titleMenu, 20000)
+      await clickOn(titleMenu)
+      check('롤업이 아닌 열에는 "계산 바꾸기" 가 없다', (await waitFor(`!!document.querySelector('[data-testid="db-column-menu-panel"]')`, 3000))
+        && (await evaluate(`!document.querySelector('[data-testid="db-column-rollup-function"]')`)))
+      await key('Escape')
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

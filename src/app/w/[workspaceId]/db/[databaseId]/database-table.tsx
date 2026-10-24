@@ -96,7 +96,7 @@ import {
 import { cellText, defaultColumnWidth, draftOf, parseDraft, readCell, sameValue } from '@/lib/database/cell-format'
 import { handleGridKey, type CellPos, type GridMode, type KeyResult } from '@/lib/database/grid-nav'
 import { isCollapsed, isRelationCollapsed, isRollupCollapsed, listColumns, type TableVariant } from '@/lib/database/list-layout'
-import { rollupIsEmpty, type RollupPage } from '@/lib/database/rollup-functions'
+import { ROLLUP_FUNCTION_LABEL, rollupFunctionsFor, rollupIsEmpty, type RollupPage } from '@/lib/database/rollup-functions'
 import { newRowLabel, templateRowNote, type DefaultTemplate } from '@/lib/database/new-row'
 import * as api from './table-api'
 import {
@@ -991,6 +991,23 @@ export function DatabaseTable(props: {
               : PREFIX_RULE,
         }
       : {}),
+    // 계산 바꾸기(10n-31) — 롤업에만 · 설정이 살아 있을 때(대상 타입을 안다). 바꾸면 컬럼 설정은 서버 렌더로, 값은 보이는 행 전부를 다시 묻는다
+    ...((): Record<string, unknown> => {
+      if (column.type !== 'rollup') return {}
+      const info = rollups.columns[column.propertyId]
+      if (info === undefined || info.state !== 'ok') return {}
+      return {
+        rollupFunctions: rollupFunctionsFor(info.targetType).map((fn) => ({ value: fn, label: ROLLUP_FUNCTION_LABEL[fn] })),
+        rollupFunction: info.function,
+        onRollupFunction: async (fn: string) => {
+          const result = await api.updateRollup(workspaceId, dataSourceId, column.propertyId, { function: fn })
+          if (!result.ok) return result.message
+          router.refresh()
+          refreshRollups(rows.map((r) => r.id))
+          return null
+        },
+      }
+    })(),
     // 식 고치기(2i-3b) — 수식에만. 편집기는 이 표가 그린다(계산 계획 · 첫 행을 들고 있다). 저장하면 다시 읽는다(계획이 새로 선다).
     ...(column.type === 'formula' && formulaPlan !== null
       ? {

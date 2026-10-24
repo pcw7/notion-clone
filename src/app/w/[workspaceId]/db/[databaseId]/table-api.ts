@@ -847,6 +847,20 @@ export async function convertColumn(
   }
 }
 
+/** rollup 의 계산(함수)을 바꾼다(10n-31 · 정본 [보강] rollup v1 — 고치기). 대상 타입이 고를 수 없는 함수면 거부된다. */
+export function updateRollup(
+  workspaceId: string,
+  dataSourceId: string,
+  propertyId: string,
+  change: { readonly function: string },
+): Promise<ApiResult<null>> {
+  return call(
+    `${base(workspaceId)}/data-sources/${dataSourceId}/rollups/${propertyId}`,
+    { method: 'PATCH', headers: JSON_HEADERS, body: JSON.stringify(change) },
+    () => null,
+  )
+}
+
 /** 고유 ID 의 접두사를 바꾼다(2a-2). 빈 글자는 "접두사 없음"이다. 모양은 서버가 판정한다(`normalizeUniqueIdPrefix`). */
 export function setUniqueIdPrefix(
   workspaceId: string,

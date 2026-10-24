@@ -31,6 +31,8 @@
  *
  * "버튼 설정"(자동화 5a-3 · F-03-15) — 버튼 속성에만 선다. 식 고치기와 같은 꼴이다(`buttonEdit` — 편집기는 표가 그린다).
  *
+ * "계산 바꾸기"(10n-31 · F-03-11) — 롤업 속성에만 선다. 대상 타입이 고를 수 있는 함수 목록 · 지금 것이 눌려 있다.
+ *
  * 이 메뉴는 `edit_structure` 가 있을 때만 그려진다(표가 정한다).
  */
 
@@ -54,6 +56,9 @@ export function ColumnMenu({
   onDelete,
   formulaEdit,
   buttonEdit,
+  rollupFunctions,
+  rollupFunction,
+  onRollupFunction,
   loadDependents,
 }: {
   name: string
@@ -78,9 +83,14 @@ export function ColumnMenu({
   buttonEdit?: (close: () => void) => ReactNode
   /** 이 속성을 읽는 수식 · 롤업(2j-1). 못 읽으면 null(알리지 못할 뿐 지우기 · 바꾸기는 그대로). 없으면 묻지 않는다. */
   loadDependents?: () => Promise<PropertyDependents | null>
+  /** 롤업의 고를 수 있는 계산(10n-31). 없으면 "계산 바꾸기" 가 서지 않는다. */
+  rollupFunctions?: readonly { readonly value: string; readonly label: string }[]
+  /** 지금 계산. */
+  rollupFunction?: string
+  onRollupFunction?: (fn: string) => Promise<string | null>
 }) {
   const [open, setOpen] = useState(false)
-  const [step, setStep] = useState<'menu' | 'rename' | 'prefix' | 'convert' | 'confirm-loss' | 'delete' | 'formula' | 'button'>('menu')
+  const [step, setStep] = useState<'menu' | 'rename' | 'prefix' | 'convert' | 'confirm-loss' | 'delete' | 'formula' | 'button' | 'rollup'>('menu')
   /** 손실 확인을 기다리는 변환 — 고른 타입과 서버가 센 칸 수. */
   const [pending, setPending] = useState<{ type: string; label: string; lost: number } | null>(null)
   const [draft, setDraft] = useState(name)
@@ -207,6 +217,11 @@ export function ColumnMenu({
                   버튼 설정
                 </MenuItem>
               )}
+              {rollupFunctions !== undefined && rollupFunctions.length > 0 && onRollupFunction !== undefined && (
+                <MenuItem testId="db-column-rollup-function" disabled={busy} onClick={() => setStep('rollup')}>
+                  계산 바꾸기
+                </MenuItem>
+              )}
               {!isTitle && (
                 <MenuItem testId="db-column-hide" disabled={busy} onClick={() => void run(onHide)}>
                   보기에서 숨기기
@@ -314,6 +329,28 @@ export function ColumnMenu({
                 바꾸기
               </button>
             </form>
+          )}
+          {step === 'rollup' && rollupFunctions !== undefined && onRollupFunction !== undefined && (
+            <div className="flex flex-col p-1" data-testid="db-column-rollup-list">
+              <p className="px-1 pb-1 text-xs text-neutral-500">계산</p>
+              {rollupFunctions.map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={option.value === rollupFunction}
+                  data-testid={`db-column-rollup-fn-${option.value}`}
+                  disabled={busy || option.value === rollupFunction}
+                  onClick={() => void run(() => onRollupFunction(option.value))}
+                  className={`rounded px-2 py-1 text-left hover:bg-neutral-100 disabled:cursor-default dark:hover:bg-neutral-800 ${
+                    option.value === rollupFunction ? 'font-medium' : ''
+                  }`}
+                >
+                  {option.value === rollupFunction ? '✓ ' : ''}
+                  {option.label}
+                </button>
+              ))}
+            </div>
           )}
           {step === 'formula' && formulaEdit !== undefined && formulaEdit(close)}
           {step === 'button' && buttonEdit !== undefined && buttonEdit(close)}
