@@ -21736,6 +21736,52 @@ async function main() {
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('할 일 · 토글의 블록 색 (10n-53 · F-01-21)')) { try {
+      // 노드 뷰가 그리는 할 일 · 토글도 블록 색을 보인다 — 저장된 색으로 열 때(만들 때) · `/` 명령으로 바꿀 때(갱신) 모두. 색은 문단(toDOM 이 다는 것)과
+      // 같은 팔레트다. 전에는 저장만 되고 보이지 않았다(HANDOFF §7).
+      const stamp = Date.now()
+      const page = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: JSON.stringify({ title: `할 일 색 ${stamp}` }) })).json()).page.id
+      const ids = { todo: randomUUID(), toggle: randomUUID(), red: randomUUID(), blue: randomUUID() }
+      const blockOf = (id, type, title, color, properties = {}) => ({ id, type, title: [textRun(title)], properties, format: color === null ? {} : { block_color: color }, children: [] })
+      await saveBody(page, { blocks: [
+        blockOf(ids.todo, 'to_do', '빨간 할 일', 'red', { checked: false }),
+        blockOf(ids.toggle, 'toggle', '파란 바탕 토글', 'blue_background'),
+        blockOf(ids.red, 'paragraph', '빨간 문단', 'red'),
+        blockOf(ids.blue, 'paragraph', '파란 바탕 문단', 'blue_background'),
+      ] })
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+      await waitFor(`!!document.querySelector('[data-block-id="${ids.todo}"] .blk-to_do') && document.querySelector('.blk-editor')?.getAttribute('contenteditable') === 'true'`, 15000)
+      const look = () => evaluate(`(() => {
+        const el = (id) => document.querySelector('[data-block-id="' + id + '"] > [data-block-type]')
+        const css = (id, prop) => { const e = el(id); return e ? getComputedStyle(e)[prop] : null }
+        return {
+          todo: el(${JSON.stringify(ids.todo)})?.getAttribute('data-color') ?? null,
+          toggle: el(${JSON.stringify(ids.toggle)})?.getAttribute('data-color') ?? null,
+          todoColor: css(${JSON.stringify(ids.todo)}, 'color'), redColor: css(${JSON.stringify(ids.red)}, 'color'),
+          toggleBg: css(${JSON.stringify(ids.toggle)}, 'backgroundColor'), blueBg: css(${JSON.stringify(ids.blue)}, 'backgroundColor'),
+        }
+      })()`)
+      const first = await look()
+      check('★ 저장된 색으로 열면 — 할 일은 빨간 글자 · 토글은 파란 바탕(문단과 같은 팔레트)',
+        first.todo === 'red' && first.toggle === 'blue_background' && first.todoColor === first.redColor && first.toggleBg === first.blueBg && first.toggleBg !== 'rgba(0, 0, 0, 0)',
+        JSON.stringify(first))
+
+      // 갱신 — 할 일 끝에서 `/초록배경`
+      let inside = false
+      for (let i = 0; i < 20 && !inside; i += 1) {
+        await clickSelector(`[data-block-id="${ids.todo}"] .blk-text`)
+        inside = await waitFor(`document.activeElement?.classList.contains('ProseMirror') && document.querySelector('[data-block-id="${ids.todo}"]')?.contains(window.getSelection()?.anchorNode ?? null)`, 500)
+      }
+      await key('End')
+      await typeText(' /')
+      await typeText('초록배경')
+      await waitFor(`!!document.querySelector('[role="listbox"][aria-label="블록 삽입"]')`, 3000)
+      await key('Enter')
+      check('★ / 명령으로 색을 바꾸면 할 일도 곧바로 — 초록 바탕(노드가 바뀔 때 다시 단다)',
+        inside && (await waitFor(`document.querySelector('[data-block-id="${ids.todo}"] > [data-block-type]')?.getAttribute('data-color') === 'green_background'`, 5000)),
+        JSON.stringify(await look()))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

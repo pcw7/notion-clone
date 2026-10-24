@@ -26,6 +26,7 @@ import type { Decoration, EditorView, NodeView } from '@tiptap/pm/view'
 import type { TocEntry } from '../block/toc.ts'
 import type { MentionKind } from './mention-label.ts'
 import { tocEntriesFrom, tocEntryText } from './toc-plugin.ts'
+import { paintBlockColor } from './paint-block-color.ts'
 
 export type TocViewDeps = {
   /** 목차 항목을 눌렀다 — 그 블록을 보여 준다(접힌 조상을 펼치고 그리로 굴리고 주소의 해시를 그 블록으로). */
@@ -53,15 +54,8 @@ export function tocNodeView(initial: PmNode, view: EditorView, decorations: read
   dom.setAttribute('aria-label', '목차')
   dom.contentEditable = 'false'
 
-  /** 블록 색 — 노드 뷰가 그리는 블록은 스키마의 toDOM 이 다는 `data-color` 를 직접 단다(할 일 · 토글은 빠뜨렸다 · HANDOFF §7). */
-  const paintColor = (current: PmNode): void => {
-    const color = (current.attrs.format as { block_color?: unknown } | null | undefined)?.block_color
-    if (typeof color === 'string' && color !== '') {
-      if (dom.dataset.color !== color) dom.dataset.color = color
-    } else if (dom.dataset.color !== undefined) {
-      delete dom.dataset.color
-    }
-  }
+  /** 블록 색 — 노드 뷰가 그리는 블록은 스키마의 toDOM 이 다는 `data-color` 를 직접 단다(`paint-block-color.ts` — 할 일 · 토글과 같은 함수). */
+  const paintColor = (current: PmNode): void => paintBlockColor(dom, current)
 
   const render = (entries: readonly TocEntry[]): void => {
     if (entries === shown) return
