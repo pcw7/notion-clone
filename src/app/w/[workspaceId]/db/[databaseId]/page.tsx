@@ -65,6 +65,7 @@ import { queryGroups } from '@/lib/database/group'
 import { loadRelationLabels, relationIdsIn } from '@/lib/database/relation'
 import { loadPeopleNames, peopleIdsOf } from '@/lib/database/people'
 import { computeRollups, EMPTY_ROLLUP_PAGE } from '@/lib/database/rollup'
+import { MAX_ROLLUP_ROWS } from '@/lib/database/rollup-functions'
 import { formulaPlanOf } from '@/lib/database/formula-plan'
 import { groupLabel } from '@/lib/database/board-drag'
 import { listColumns, variantOf } from '@/lib/database/list-layout'
@@ -433,11 +434,12 @@ export default async function DatabasePage({
   // ── rollup 칸의 값 ──
   // 값은 행에 없다 — 어디에도 저장하지 않고 **읽을 때 계산한다**(정본 §3.5 [보강] rollup v1 · 보는 사람마다 다르다).
   // 제목 맵과 같은 자리에서 첫 화면 것을 함께 계산한다. 그 뒤에 온 행("더 보기" · 새 행)의 것은 화면이
-  // `POST /rollup-values` 로 받는다(`use-rollup-values.ts`). 보드는 아직 rollup 배지를 그리지 않는다(§7).
+  // `POST /rollup-values` 로 받는다(`use-rollup-values.ts`). 보드 · 갤러리의 카드 배지도 이 값으로 선다(10n-33) — 보드는 열마다 첫 페이지라
+  // 한 번에 물을 수 있는 수(`MAX_ROLLUP_ROWS`)를 넘을 수 있다 — 넘는 것은 화면이 묻는다(답에 없는 행은 아직 묻지 않은 행이다).
   const computed =
-    tablePage === null || !visibleColumns.some((c) => c.type === 'rollup')
+    (tablePage === null && !isBoard) || !visibleColumns.some((c) => c.type === 'rollup')
       ? null
-      : await computeRollups(ctx, view.value.dataSourceId, firstRows.map((row) => row.id))
+      : await computeRollups(ctx, view.value.dataSourceId, firstRows.slice(0, MAX_ROLLUP_ROWS).map((row) => row.id))
   const rollupValues = computed !== null && computed.ok ? computed.value : EMPTY_ROLLUP_PAGE
 
   // ── 수식 칸의 값(2i-3a) ── 서버가 계산해 주지 않는다 — 계획(표의 속성 **전부** · 저장된 식 · 옵션 이름 · 지금)만 내려주고 화면이 그 행의
@@ -631,6 +633,7 @@ export default async function DatabasePage({
             access={contentAccess}
             defaultTemplate={defaultTemplate}
             calculation={groupCalculation}
+            rollupValues={rollupValues}
             search={search}
             peekBase={peekBase}
             renderedAt={renderedAt}
@@ -690,6 +693,7 @@ export default async function DatabasePage({
             search={search}
             layout={view.value.gallery}
             covers={galleryCovers}
+            rollupValues={rollupValues}
             peekBase={peekBase}
             renderedAt={renderedAt}
           />

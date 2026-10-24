@@ -30,6 +30,8 @@ import {
   rollupFunctionsFor,
   ROLLUP_FUNCTIONS,
   ROLLUP_SHOW_LIMIT,
+  showsRollupBadge,
+  type RollupColumnInfo,
 } from './rollup-functions.ts'
 import { MVP_PROPERTY_TYPES, type CellValue } from './property-types.ts'
 import { textRun } from '../contracts/rich-text.ts'
@@ -377,5 +379,29 @@ describe('나머지 함수 11종 (10n-32)', () => {
     assert.equal(effectiveRollupFunction('date_range', 'number'), 'show_original')
     assert.equal(effectiveRollupFunction('percent_unchecked', 'checkbox'), 'percent_unchecked')
     assert.equal(effectiveRollupFunction('show_unique', 'select'), 'show_unique')
+  })
+})
+
+describe('카드의 rollup 배지 (10n-33)', () => {
+  const ok: RollupColumnInfo = { state: 'ok', function: 'sum', relationPropertyId: 'r', targetPropertyId: 't', targetType: 'number', targetOptions: [] }
+
+  test('★ 설정이 살아 있고 그릴 것이 있으면 선다 — 0 · 0% 도 값이다', () => {
+    assert.equal(showsRollupBadge(ok, { state: 'ok', result: { kind: 'number', number: 6 }, hidden: 0 }), true)
+    assert.equal(showsRollupBadge(ok, { state: 'ok', result: { kind: 'number', number: 0 }, hidden: 0 }), true, '0 은 값이다')
+    assert.equal(showsRollupBadge(ok, { state: 'ok', result: { kind: 'percent', percent: 0 }, hidden: 0 }), true, '0% 는 값이다')
+    assert.equal(showsRollupBadge(ok, { state: 'too_many' }), true, '너무 많다고 말한다')
+  })
+
+  test('★ 그릴 것이 없으면 서지 않는다 — 받지 못했다 · 없음 · 빈 목록', () => {
+    assert.equal(showsRollupBadge(ok, undefined), false, '아직 받지 못했다')
+    assert.equal(showsRollupBadge(ok, { state: 'ok', result: { kind: 'number', number: null }, hidden: 0 }), false)
+    assert.equal(showsRollupBadge(ok, { state: 'ok', result: { kind: 'values', values: [], count: 0 }, hidden: 0 }), false)
+  })
+
+  test('★ 설정이 끊긴 rollup 은 서지 않는다 — 값이 남아 있어도 · 컬럼 정보를 아직 받지 못했어도', () => {
+    const six = { state: 'ok', result: { kind: 'number', number: 6 }, hidden: 0 } as const
+    assert.equal(showsRollupBadge({ state: 'relation_missing' }, six), false)
+    assert.equal(showsRollupBadge({ state: 'target_missing' }, six), false)
+    assert.equal(showsRollupBadge(undefined, six), false)
   })
 })

@@ -92,6 +92,8 @@ import { NewRowMenu } from './new-row-menu'
 import { CardBadges } from './card-badges'
 import { useRelationLabels } from './use-relation-labels'
 import { usePeopleNames } from './use-people-names'
+import { useRollupValues } from './use-rollup-values'
+import { EMPTY_ROLLUP_PAGE, type RollupPage } from '@/lib/database/rollup-functions'
 import { useAdoptServerValue, useLiveServerRefresh } from './use-table-changes'
 
 /** `GET /groups` 의 그룹 하나 — 행은 `rowJson`. 서버 렌더(`page.tsx`)도 같은 모양으로 내려준다. */
@@ -185,6 +187,8 @@ export function DatabaseBoard(props: {
   /** 행을 여는 주소의 바탕(8n-1 · F-02-20) — 지금 데이터베이스 화면의 주소면 피크로, null 이면 행 화면으로(전체 페이지). */
   peekBase?: string | null
   renderedAt?: number
+  /** 첫 화면의 rollup 값(10n-33 · 서버 렌더가 계산해 준다) — 카드의 배지. 그 뒤에 온 카드의 것은 `useRollupValues` 가 받는다. */
+  rollupValues?: RollupPage
 }) {
   const { workspaceId, viewId, dataSourceId, tableName, columns, property, groupBy, manualOrder, access } = props
   const router = useRouter()
@@ -619,6 +623,10 @@ export function DatabaseBoard(props: {
   )
   // 사람 칸의 이름(6g-2) — 카드의 배지
   const { names: peopleNames } = usePeopleNames(workspaceId, props.peopleNames ?? {}, groups.flatMap((g) => g.rows), columns)
+  // rollup 칸의 값(10n-33) — 카드의 배지. 신호로 서버 렌더를 다시 부르면 다시 계산된 것을 받아들인다(카드와 같은 때 · `use-rollup-values.ts` ③)
+  const serverRollups = props.rollupValues ?? EMPTY_ROLLUP_PAGE
+  const { page: rollups, adopt: adoptRollups } = useRollupValues(workspaceId, dataSourceId, serverRollups, groups.flatMap((g) => g.rows), columns)
+  useAdoptServerValue(serverRollups, boardBusy, adoptRollups)
 
   const visible = groups.filter((g) => !g.hidden)
   const hiddenGroups = groups.filter((g) => g.hidden)
@@ -720,6 +728,7 @@ export function DatabaseBoard(props: {
                     relationLabels={labels}
                     peopleNames={peopleNames}
                     relationIcons={relationIcons}
+                    rollups={rollups}
                     dragging={draggingId === row.id}
                     dropBefore={isTarget && drop.beforeRowId === row.id}
                     editing={editing?.rowId === row.id ? editing : null}
@@ -826,6 +835,7 @@ function BoardCard({
   relationLabels,
   peopleNames,
   relationIcons,
+  rollups,
   dragging,
   dropBefore,
   editing,
@@ -852,6 +862,7 @@ function BoardCard({
   relationLabels: RelationLabels
   relationIcons: RelationIcons
   peopleNames: PeopleNames
+  rollups: RollupPage
   dragging: boolean
   dropBefore: boolean
   editing: Editing | null
@@ -928,6 +939,7 @@ function BoardCard({
           relationLabels={relationLabels}
           relationIcons={relationIcons}
           peopleNames={peopleNames}
+          rollups={rollups}
           testId="db-board-badge"
           button={button}
         />

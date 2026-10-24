@@ -1,7 +1,7 @@
 'use client'
 
 /**
- * rollup 칸의 값을 들고 있는다 — 표 · 목록이 쓴다 (rollup 5c-2조각)
+ * rollup 칸의 값을 들고 있는다 — 표 · 목록이 쓴다 (rollup 5c-2조각) · 보드 · 갤러리의 카드 배지도(10n-33)
  *
  * 값은 행에 없다. 어디에도 저장하지 않고 **읽을 때 계산한다**(정본 §3.5 [보강] rollup v1) — 결과가 보는 사람마다 다르기
  * 때문이다(볼 수 없는 행을 집계에서 뺀다). 그래서 행을 받을 때마다 그 행들의 칸을 따로 묻는다. 첫 화면의 것은 서버
@@ -13,6 +13,9 @@
  *   ① **컬럼이 바뀌면 전부 다시 묻는다.** rollup 속성을 방금 만들었으면 이미 불러온 행들에도 그 칸이 생긴다 —
  *      새 행만 물으면 먼저 있던 행의 새 칸이 영영 빈 채로 남는다
  *   ② **`refresh(rowIds)`** — relation 을 고치면 그 행이 무엇을 모으는지가 바뀐다. 고친 행만 다시 묻는다
+ *   ③ **`adopt(page)`** — 서버 렌더가 다시 계산해 준 값을 받아들인다(10n-33). 보드 · 갤러리는 표 변경 신호에 서버 렌더를 다시 부르고
+ *      새 카드를 받아들인다(`useAdoptServerValue`) — 이 훅은 첫 값만 상태로 들고 있어서, 받아들이지 않으면 카드가 새로 그려져도 rollup 은
+ *      옛 값이다. 표는 스스로 다시 읽고 `refresh` 로 묻는다
  *
  * ⚠ 이 훅이 다시 묻지 **않는** 경우가 하나 있다: 같은 표를 가리키는 relation 의 rollup(하위 작업의 합 같은 것)에서 대상
  *   행의 셀을 고친 때다. 새로고침 전까지 옛 값이다 — 셀 쓰기마다 왕복을 하나 더 만드는 값이 아니라고 봤다(HANDOFF §7).
@@ -32,7 +35,11 @@ export function useRollupValues(
   initial: RollupPage,
   rows: readonly RowJson[],
   columns: readonly ViewColumn[],
-): { readonly page: RollupPage; readonly refresh: (rowIds: readonly string[]) => void } {
+): {
+  readonly page: RollupPage
+  readonly refresh: (rowIds: readonly string[]) => void
+  readonly adopt: (next: RollupPage) => void
+} {
   const [page, setPage] = useState<RollupPage>(initial)
   /**
    * 물어 본 행 id. **서버가 계산해 준 행으로 시작한다**(`initial.values` 의 키) — 그것이 이미 물은 것이다.
@@ -93,5 +100,11 @@ export function useRollupValues(
     ask(rowIds)
   }
 
-  return { page, refresh }
+  /** 서버 렌더가 다시 계산해 준 값(머리말 ③). 그 행들은 물은 것이다 — 효과가 같은 행을 다시 묻지 않는다. */
+  const adopt = (next: RollupPage) => {
+    for (const id of Object.keys(next.values)) asked.current.add(id)
+    setPage((current) => ({ columns: { ...current.columns, ...next.columns }, values: { ...current.values, ...next.values } }))
+  }
+
+  return { page, refresh, adopt }
 }
