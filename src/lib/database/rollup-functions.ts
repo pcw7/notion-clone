@@ -8,13 +8,14 @@
  * 속성 추가 폼도 "이 타입에 고를 수 있는 함수"를 여기서 읽는다.
  *
  * ──────────────────────────────────────────────────────────────────────
- * 함수는 11종이고, 대상 타입이 고를 수 있는 것을 정한다
+ * 함수는 12종이고, 대상 타입이 고를 수 있는 것을 정한다
  * ──────────────────────────────────────────────────────────────────────
  *
  *   모든 타입    show_original · count · count_values
  *   number       + sum · average · min · max
  *   checkbox     + checked · percent_checked
  *   date         + earliest_date · latest_date   (시작일만 본다 — 03: 종료일은 rollup 이 직접 읽지 못한다)
+ *   status       + percent_complete              (완료 그룹에 든 연결의 비율 — 10n-29 · 그룹은 부르는 쪽이 옵션에서 넘긴다)
  *
  * 맞지 않는 조합(`sum` × 글)은 만들 때 거부한다. 읽을 때는 **접는다**(`effectiveRollupFunction`) — 03: *"대상 프로퍼티
  * 타입 변경 → 선택된 집계 함수가 무효 → 기본 함수로 폴백."* 읽기가 던지면 표 전체가 안 열린다.
@@ -49,6 +50,7 @@ export const ROLLUP_FUNCTIONS = [
   'max',
   'checked',
   'percent_checked',
+  'percent_complete',
   'earliest_date',
   'latest_date',
 ] as const
@@ -69,6 +71,7 @@ export const ROLLUP_FUNCTION_LABEL: Readonly<Record<RollupFunction, string>> = O
   max: '최댓값',
   checked: '체크된 개수',
   percent_checked: '체크된 비율',
+  percent_complete: '완료 비율',
   earliest_date: '가장 이른 날짜',
   latest_date: '가장 늦은 날짜',
 })
@@ -80,6 +83,7 @@ const COMMON: readonly RollupFunction[] = ['show_original', 'count', 'count_valu
 const EXTRA: Readonly<Partial<Record<MvpPropertyType, readonly RollupFunction[]>>> = Object.freeze({
   number: ['sum', 'average', 'min', 'max'],
   checkbox: ['checked', 'percent_checked'],
+  status: ['percent_complete'],
   date: ['earliest_date', 'latest_date'],
 })
 
@@ -133,7 +137,7 @@ export const ROLLUP_SHOW_LIMIT = 25
 export type RollupResult =
   /** count · count_values · sum · average · min · max · checked. `null` 은 "없음"이다(머리말) — 0 이 아니다. */
   | { readonly kind: 'number'; readonly number: number | null }
-  /** percent_checked. 0..1. */
+  /** percent_checked · percent_complete. 0..1. */
   | { readonly kind: 'percent'; readonly percent: number | null }
   /** earliest_date · latest_date. 이긴 값의 `start` 를 **적힌 그대로** 준다(날짜만 적은 값에 시각을 붙이지 않는다). */
   | { readonly kind: 'date'; readonly date: string | null }
@@ -215,7 +219,10 @@ const numbersIn = (values: readonly CellValue[]): number[] =>
  * 함수가 값의 타입과 맞지 않으면(`sum` 에 글) 맞는 값이 하나도 없는 것과 같은 답이 나온다. 그 조합은 호출자가
  * `effectiveRollupFunction` 으로 이미 접었어야 한다 — 여기서 던지지 않는 것은 읽기 경로라서다.
  */
-export function aggregate(fn: RollupFunction, values: readonly CellValue[]): RollupResult {
+/** 집계에 값 말고 더 필요한 것 — 완료 비율(10n-29)은 어느 옵션이 완료 그룹인지 알아야 한다(값은 옵션 id 뿐이다). */
+export type RollupContext = { readonly completeOptionIds?: ReadonlySet<string> }
+
+export function aggregate(fn: RollupFunction, values: readonly CellValue[], context: RollupContext = {}): RollupResult {
   switch (fn) {
     case 'show_original': {
       const filled = values.filter((v) => !isEmptyValue(v))
@@ -247,6 +254,13 @@ export function aggregate(fn: RollupFunction, values: readonly CellValue[]): Rol
       if (values.length === 0) return { kind: 'percent', percent: null }
       const checked = values.filter((v) => v.type === 'checkbox' && v.checkbox).length
       return { kind: 'percent', percent: clean(checked / values.length) }
+    }
+    case 'percent_complete': {
+      // 완료 그룹에 든 연결의 비율(10n-29) — 상태가 빈 연결도 분모에 든다("아직 완료가 아니다") · 연결 0개면 없음
+      if (values.length === 0) return { kind: 'percent', percent: null }
+      const done = context.completeOptionIds ?? new Set<string>()
+      const complete = values.filter((v) => v.type === 'status' && v.status !== null && done.has(v.status.id)).length
+      return { kind: 'percent', percent: clean(complete / values.length) }
     }
 
     case 'earliest_date':

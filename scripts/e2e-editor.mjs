@@ -16745,6 +16745,8 @@ async function main() {
       // ③ 다시 열면 그대로
       await clickSelector(`${BLOCK} [data-testid="blk-button-settings"]`)
       await waitFor(`!!document.querySelector('${SETTINGS} [data-testid="button-block-action"]')`, 8000)
+      // 창이 저장된 값을 다 채운 뒤에 읽고 누른다 — 채우는 중의 다시 그리기에 취소 클릭이 먹지 않아 흔들렸다(10n-29 의 전체 판 · 홀로 2/3)
+      await waitFor(`document.querySelector('${SETTINGS} [data-testid="button-block-label"]')?.value === ${JSON.stringify(`주문 ${stamp}`)}`, 8000)
       const reopened = await evaluate(`({ label: document.querySelector('${SETTINGS} [data-testid="button-block-label"]')?.value,
         actions: document.querySelectorAll('${SETTINGS} [data-testid="button-block-action"]').length })`)
       await clickSelector(`${SETTINGS} [data-testid="button-block-cancel"]`)
@@ -20242,6 +20244,73 @@ async function main() {
       check('돌아온 단추에서 Enter 로 다시 연다', await waitFor(`!!document.querySelector('[data-testid="db-sort-panel"]')`, 5000))
       await clickSelector('[data-testid="db-sort-button"]')
       check('단추를 다시 누르면 닫힌다(전과 같다)', await waitFor(`!document.querySelector('[data-testid="db-sort-panel"]')`, 5000))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
+    if (sectionIf('rollup 의 완료 비율 (10n-29 · F-03-05 · F-03-11)')) { try {
+      // 속성 추가 폼의 "롤업" — 모을 속성이 상태면 계산 목록에 "완료 비율" 이 선다(글에는 없다) · 고르면 칸이 완료 그룹에 든 연결의 비율을
+      // 그린다(빈 상태도 분모 · 연결이 없으면 빈 칸) · 옵션을 완료 그룹으로 옮기면 다시 열었을 때 비율이 따라온다. 정본 §3.5 [보강] rollup v1.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const clickOn = async (selector) => {
+        const p = await evaluate(`(() => {
+          const e = document.querySelector(${JSON.stringify(selector)})
+          if (!e) return null
+          e.scrollIntoView({ block: 'center' })
+          const r = e.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (p) await click(p.x, p.y)
+        return p !== null
+      }
+      const setSelect = (selector, value) => evaluate(`(() => {
+        const s = document.querySelector(${JSON.stringify(selector)})
+        if (!s) return false
+        s.value = ${JSON.stringify(value)}
+        s.dispatchEvent(new Event('change', { bubbles: true }))
+        return true
+      })()`)
+      const projects = (await api('POST', '/databases', { name: `진행률 프로젝트 ${stamp}` })).body.database
+      const tasks = (await api('POST', '/databases', { name: `진행률 작업 ${stamp}` })).body.database
+      const progress = (await api('POST', `/data-sources/${tasks.dataSourceId}/properties`, { name: '진행', type: 'status' })).body.property.id
+      const review = (await api('POST', `/data-sources/${tasks.dataSourceId}/properties/${progress}/options`, { name: '검토', group: 'in_progress' })).body.option.id
+      const made = (await api('POST', `/data-sources/${tasks.dataSourceId}/relations`, { name: '프로젝트', targetDataSourceId: projects.dataSourceId, twoWay: { name: '작업들' } })).body
+      const taskColumns = (await api('GET', `/views/${tasks.defaultViewId}`)).body.view.columns
+      const done = taskColumns.find((c) => c.propertyId === progress).options.find((o) => o.name === '완료').id
+      const rowIn = async (db, cells = []) => (await api('POST', `/views/${db.defaultViewId}/rows`, { cells })).body.row.id
+      const p1 = await rowIn(projects)
+      await rowIn(projects)
+      const status = (id) => ({ propertyId: progress, value: { type: 'status', status: { id } } })
+      const t1 = await rowIn(tasks, [status(done)])
+      const t2 = await rowIn(tasks, [status(review)])
+      await api('POST', `/rows/${p1}/relations/${made.syncedPropertyId}`, { add: [t1, t2] })
+      const rollupIs = (cell, expected, ms = 8000) =>
+        waitFor(`(document.querySelector('td[data-cell="${cell}"] [data-testid="db-rollup-value"]')?.textContent.trim() ?? null) === ${JSON.stringify(expected)}`, ms)
+      const rollupIn = (cell) => evaluate(`document.querySelector('td[data-cell="${cell}"] [data-testid="db-rollup-value"]')?.textContent.trim() ?? null`)
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${projects.id}` })
+      await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === 2`, 15000)
+      await waitHydrated('[data-testid="db-add-column"]', 20000) // 서버가 그린 단추 — React 가 붙기 전의 클릭은 버려진다(10n-11)
+      await clickOn('[data-testid="db-add-column"]')
+      await waitFor(`document.activeElement?.getAttribute('aria-label') === '속성 이름'`, 3000)
+      await typeText('진행률')
+      await setSelect('select[aria-label="속성 유형"]', 'rollup')
+      await waitFor(`!!document.querySelector('[data-testid="db-rollup-target"]') && !document.querySelector('[data-testid="db-rollup-target"]').disabled`, 8000)
+      await setSelect('[data-testid="db-rollup-target"]', progress)
+      check('★ 모을 속성이 상태면 계산 목록에 "완료 비율" 이 선다', await waitFor(`[...(document.querySelector('[data-testid="db-rollup-function"]')?.options ?? [])].some((o) => o.value === 'percent_complete' && o.textContent === '완료 비율')`, 5000),
+        String(await evaluate(`[...(document.querySelector('[data-testid="db-rollup-function"]')?.options ?? [])].map((o) => o.textContent).join()`)))
+      await setSelect('[data-testid="db-rollup-function"]', 'percent_complete')
+      await clickOn('[data-testid="db-add-column-form"] button[type="submit"]')
+      check('★ 만들면 칸이 완료 그룹에 든 연결의 비율을 그린다 — 완료 하나 · 검토 하나 → 50%', (await waitFor(`!document.querySelector('[data-testid="db-add-column-form"]')`, 8000)) && (await rollupIs('0:2', '50%')),
+        String(await rollupIn('0:2')))
+      check('연결이 없는 행은 빈 칸 — 0% 가 아니다', (await rollupIn('1:2')) === null, String(await rollupIn('1:2')))
+
+      await api('PATCH', `/data-sources/${tasks.dataSourceId}/properties/${progress}/options/${review}`, { group: 'complete' })
+      await send('Page.reload', {})
+      await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === 2`, 15000)
+      check('★ 옵션을 완료 그룹으로 옮기면 비율이 따라온다 — 100%', await rollupIs('0:2', '100%', 10000), String(await rollupIn('0:2')))
     } catch (thrown) { await sectionThrew(thrown) } }
 
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {

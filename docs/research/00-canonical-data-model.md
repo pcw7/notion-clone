@@ -2478,8 +2478,12 @@ CREATE INDEX ON derived_value (property_id, num_value) WHERE NOT stale AND num_v
   (`relation_missing` · `target_missing`). 복원하면 되살아난다 — 함께 지우면 복원이 rollup 을 되살리지 못한다.
 - 한 칸의 연결이 **1,000개를 넘으면 계산하지 않고 그렇다고 답한다**(`too_many`). 앞 1,000개만 더한 합은 틀린 숫자이고,
   틀린 숫자는 빈칸보다 나쁘다. 이 상한이 `derived_value` 캐시를 들일 시점의 신호다.
-- 함수는 11종(03 의 현실적 대안): `show_original` · `count` · `count_values`(모든 타입) / `sum` · `average` · `min` ·
-  `max`(number) / `checked` · `percent_checked`(checkbox) / `earliest_date` · `latest_date`(date — 시작일만 본다).
+- 함수는 12종(03 의 현실적 대안): `show_original` · `count` · `count_values`(모든 타입) / `sum` · `average` · `min` ·
+  `max`(number) / `checked` · `percent_checked`(checkbox) / `earliest_date` · `latest_date`(date — 시작일만 본다) /
+  `percent_complete`(status — **[보강 10n-29]** 03 F-03-05 *"'완료' 판정(`Complete` 그룹 소속 여부)은 진행률 계산의 기준"*).
+  완료 비율 = 연결 중 셀의 옵션이 **지금** 완료 그룹에 든 것의 비율이다 — 그룹은 읽을 때 옵션에서 본다(옵션을 옮기면 따라온다). 상태가
+  빈 연결도 분모에 든다("아직 완료가 아니다" — `percent_checked` 가 체크 안 된 칸을 세는 것과 같다) · 연결 0개면 없음(0% 가 아니다).
+  읽을 수 없는 연결은 빠진다(다른 함수와 같다 — 비율이 새는 것이 없다).
   대상 타입에 맞지 않는 함수는 만들 때 거부하고, 읽을 때(타입이 나중에 바뀌었다면) `show_original` 로 접는다.
 
 **[보강] 수식 1단계 — 식은 `⟦id⟧` 자리로 · `property_dependency` 를 들인다 · 값은 읽을 때 계산한다** ⟨DB 심화 2i-1 · 2i-2조각 · F-03-12 / 마이그레이션 0060⟩

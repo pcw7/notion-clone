@@ -270,17 +270,25 @@ export async function computeRollups(
       })
     }
 
+    // 옵션 — 이름은 그 표를 볼 수 있을 때만 싣는다(원본 보기). 완료 비율(10n-29)은 어느 옵션이 완료 그룹인지 알아야 해서 그 대상의 것도 읽는다
     const optionsOf = await readOptionsOf(tx, [
-      ...new Set(live.filter((c) => isOptionType(c.targetType) && visibleTables.has(c.table)).map((c) => c.targetPropertyId)),
+      ...new Set(
+        live
+          .filter((c) => (isOptionType(c.targetType) && visibleTables.has(c.table)) || c.function === 'percent_complete')
+          .map((c) => c.targetPropertyId),
+      ),
     ])
+    const completeOf = new Map<string, ReadonlySet<string>>()
     for (const c of live) {
+      const options = optionsOf.get(c.targetPropertyId) ?? []
+      if (c.function === 'percent_complete') completeOf.set(c.id, new Set(options.filter((o) => o.group === 'complete').map((o) => o.id)))
       columns[c.id] = {
         state: 'ok',
         function: c.function,
         relationPropertyId: c.relationPropertyId,
         targetPropertyId: c.targetPropertyId,
         targetType: c.targetType,
-        targetOptions: optionsOf.get(c.targetPropertyId) ?? [],
+        targetOptions: isOptionType(c.targetType) && visibleTables.has(c.table) ? options : [],
       }
     }
 
@@ -343,7 +351,11 @@ export async function computeRollups(
         const inputs: CellValue[] = readable.map((e) =>
           readCell(column.targetType, cellOf.get(`${e.to_page_id}:${column.targetPropertyId}`)),
         )
-        out[column.id] = { state: 'ok', result: aggregate(column.function, inputs), hidden: linked.length - readable.length }
+        out[column.id] = {
+          state: 'ok',
+          result: aggregate(column.function, inputs, { completeOptionIds: completeOf.get(column.id) }),
+          hidden: linked.length - readable.length,
+        }
       }
       values[row.id] = out
     }

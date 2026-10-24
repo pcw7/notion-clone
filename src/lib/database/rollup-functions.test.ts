@@ -39,8 +39,8 @@ const day = (start: string | null): CellValue => ({ type: 'date', date: start ==
 const text = (s: string): CellValue => ({ type: 'rich_text', rich_text: s === '' ? [] : [textRun(s)] })
 
 describe('① 함수와 대상 타입', () => {
-  test('함수는 11종이다', () => {
-    assert.equal(ROLLUP_FUNCTIONS.length, 11)
+  test('함수는 12종이다(완료 비율은 10n-29)', () => {
+    assert.equal(ROLLUP_FUNCTIONS.length, 12)
     assert.equal(isRollupFunction('sum'), true)
     assert.equal(isRollupFunction('median'), false)
     assert.equal(isRollupFunction(null), false)
@@ -51,7 +51,7 @@ describe('① 함수와 대상 타입', () => {
     assert.deepEqual(rollupFunctionsFor('rich_text'), common)
     assert.deepEqual(rollupFunctionsFor('title'), common)
     assert.deepEqual(rollupFunctionsFor('select'), common)
-    assert.deepEqual(rollupFunctionsFor('status'), common)
+    assert.deepEqual(rollupFunctionsFor('status'), [...common, 'percent_complete'], 'status 는 완료 비율(10n-29)')
     assert.deepEqual(rollupFunctionsFor('number'), [...common, 'sum', 'average', 'min', 'max'])
     assert.deepEqual(rollupFunctionsFor('checkbox'), [...common, 'checked', 'percent_checked'])
     assert.deepEqual(rollupFunctionsFor('date'), [...common, 'earliest_date', 'latest_date'])
@@ -260,5 +260,28 @@ describe('⑧ 화면이 묻는 것 (5c-2)', () => {
   test('★ 말할 것이 있으면 비어 있지 않다 — 볼 수 없는 항목 · 너무 많음', () => {
     assert.equal(rollupIsEmpty({ state: 'ok', result: { kind: 'number', number: null }, hidden: 2 }), false)
     assert.equal(rollupIsEmpty({ state: 'too_many' }), false)
+  })
+})
+
+describe('완료 비율 (10n-29)', () => {
+  const status = (id: string | null): CellValue => ({ type: 'status', status: id === null ? null : { id } })
+  const done = new Set(['opt-done', 'opt-held'])
+
+  test('★ 연결 중 옵션이 완료 그룹에 든 것의 비율 — 빈 상태도 분모에 든다', () => {
+    assert.deepEqual(aggregate('percent_complete', [status('opt-done'), status('opt-doing'), status(null), status('opt-held')], { completeOptionIds: done }),
+      { kind: 'percent', percent: 0.5 })
+  })
+
+  test('연결 0개면 없음 — 0% 가 아니다', () => {
+    assert.deepEqual(aggregate('percent_complete', [], { completeOptionIds: done }), { kind: 'percent', percent: null })
+  })
+
+  test('완료 그룹을 모르면(넘기지 않으면) 0 — 던지지 않는다', () => {
+    assert.deepEqual(aggregate('percent_complete', [status('opt-done')]), { kind: 'percent', percent: 0 })
+  })
+
+  test('select 에는 고를 수 없다 — 읽을 때 원본 보기로 접힌다', () => {
+    assert.equal(effectiveRollupFunction('percent_complete', 'select'), 'show_original')
+    assert.equal(effectiveRollupFunction('percent_complete', 'status'), 'percent_complete')
   })
 })
