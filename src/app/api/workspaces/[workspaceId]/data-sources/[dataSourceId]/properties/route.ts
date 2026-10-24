@@ -11,7 +11,7 @@
 
 import { isUuid } from '@/lib/ids'
 import { readJsonBody, requireWorkspaceSession } from '@/lib/auth/route-session'
-import { addProperty, getSchema, type AddPropertyInput } from '@/lib/database/property'
+import { addProperty, canEditSchema, getSchema, type AddPropertyInput } from '@/lib/database/property'
 import { failureResponse, propertyFailureStatus } from '@/lib/database/http'
 import { addFormulaProperty } from '@/lib/database/formula-property'
 
@@ -31,7 +31,8 @@ export async function GET(_request: Request, ctx: Ctx): Promise<Response> {
 
   const schema = await getSchema(session.ctx, dataSourceId)
   if (!schema.ok) return failureResponse(propertyFailureStatus(schema.reason), schema)
-  return Response.json({ ok: true, schema: schema.value })
+  // 구조를 고칠 수 있나(10n-49) — 관계형 폼이 "반대쪽에도 표시"를 미리 끈다(HANDOFF §3.2-293 · 명령은 저마다 다시 묻는다)
+  return Response.json({ ok: true, schema: schema.value, canEditStructure: await canEditSchema(session.ctx, dataSourceId) })
 }
 
 export async function POST(request: Request, ctx: Ctx): Promise<Response> {
