@@ -1025,6 +1025,15 @@ export function DatabaseTable(props: {
         },
       }
     })(),
+    // "하나만 연결"(10n-42) — 관계형 열에만 · 하위 항목 · 종속 관계의 짝은 아니다(그 규칙이 제한을 정한다). 바꾸면 서버 렌더를 다시 받는다
+    // (열의 제한이 행 고르기의 닫기를 정한다)
+    ...(column.type === 'relation' && column.relation.subItems === null && column.relation.dependencies === null
+      ? {
+          relationLimitOne: column.relation.limit === 'one',
+          onRelationLimit: async (one: boolean) =>
+            afterStructure(await api.setRelationLimit(workspaceId, dataSourceId, column.propertyId, one ? 'one' : 'none')),
+        }
+      : {}),
     // 관계 · 대상 바꾸기(10n-39) — 롤업에만 · 설정이 끊긴 것에도(다시 잇는 자리다). 편집기는 지금 설정으로 열리고, 바꾸면 계산 바꾸기와 같은 길로 받는다
     ...(column.type === 'rollup'
       ? {

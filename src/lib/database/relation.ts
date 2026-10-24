@@ -264,6 +264,47 @@ type OpenRelation = {
   readonly canViewTarget: boolean
 }
 
+// ── 제한 바꾸기(10n-42) ───────────────────────────────────────────────
+
+/**
+ * relation 의 "하나만" 제한을 만든 뒤에 켜고 끈다(10n-42 · 정본 [보강] `relation_edge` — [보강 10n-42]). 켜도 이미 여럿이 이어진 칸은
+ * 그대로다 — 03 F-03-10 *"기존 값 유지 + 신규 입력만 제한"*(그 뒤에 하나를 더하면 그것으로 바뀐다 · `linkRowsIn`). 끄면 더 고를 수 있다.
+ * 역방향 프로퍼티는 따로다(만들 때도 물려받지 않는다). 하위 항목 · 종속 관계의 짝은 받지 않는다 — 그 규칙(부모 하나 · 순환)이 제한을
+ * 정한다. 구조 고치기(`edit_structure`)와 스키마 잠금 · 판 올림은 다른 속성 명령과 같다. 이미 그 값이면 쓰지 않는다.
+ */
+export async function setRelationLimit(
+  ctx: SessionContext,
+  dataSourceId: string,
+  propertyId: string,
+  input: { readonly limit?: unknown; readonly expectedVersion?: string },
+): Promise<PropertyResult<SchemaSnapshot>> {
+  if (input.limit !== 'one' && input.limit !== 'none') return { ok: false, reason: 'invalid_config' }
+  const limit = input.limit
+  return withCommandTransaction(async (tx) => {
+    const own = await lockSchema(tx, ctx, dataSourceId, input.expectedVersion)
+    if (isSchemaFailure(own)) return own
+    const row = await tx.queryMaybe<{ config: Record<string, unknown> | null }>(
+      `SELECT config FROM property WHERE id = $1 AND data_source_id = $2 AND type = 'relation' AND deleted_at IS NULL`,
+      [propertyId, dataSourceId],
+    )
+    const config = row === null ? null : readRelationConfig(row.config)
+    if (row === null || config === null) return { ok: false, reason: 'not_found' } as const
+    if (config.sub_items !== undefined || config.dependencies !== undefined) return { ok: false, reason: 'invalid_config' } as const
+    if ((config.limit === 'one') === (limit === 'one')) return { ok: true, value: await readSchema(tx, dataSourceId) } as const
+    // 저장된 모양 그대로 두고 `limit` 만 넣거나 뺀다 — 다른 키(대상 · 짝)를 다시 쓰지 않는다
+    const next: Record<string, unknown> = { ...(row.config ?? {}) }
+    delete next.limit
+    if (limit === 'one') next.limit = 'one'
+    await tx.query(`UPDATE property SET config = $3::jsonb, updated_at = now() WHERE id = $1 AND data_source_id = $2`, [
+      propertyId,
+      dataSourceId,
+      JSON.stringify(next),
+    ])
+    await bumpSchema(tx, dataSourceId)
+    return { ok: true, value: await readSchema(tx, dataSourceId) } as const
+  })
+}
+
 /**
  * 행과 relation 프로퍼티를 열고 권한을 본다. 행은 아직 잠그지 않는다 — 잠금은 `lockRows` 가 id 순으로 한다.
  *

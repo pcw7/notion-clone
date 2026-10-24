@@ -20983,6 +20983,78 @@ async function main() {
       check('편집을 닫으면 칸에 칩 둘', await waitFor(`document.querySelectorAll('${CELL} [data-testid="db-relation-chip"]').length === 2`, 8000))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('relation 의 하나만 연결 (10n-42 · F-03-10)')) { try {
+      // 관계형 열의 머리 메뉴에 "하나만 연결" — 켜도 이미 둘이 이어진 칸은 그대로 · 그 뒤에 고르면 그것으로 바뀌고 고르개가 닫힌다 · 끈다.
+      // 정본 [보강] relation_edge — [보강 10n-42].
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const clickOn = async (selector) => {
+        const p = await evaluate(`(() => {
+          const e = document.querySelector(${JSON.stringify(selector)})
+          if (!e) return null
+          e.scrollIntoView({ block: 'center' })
+          const r = e.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (p) await click(p.x, p.y)
+        return p !== null
+      }
+      const projects = (await api('POST', '/databases', { name: `하나만 프로젝트 ${stamp}` })).body.database
+      const tasks = (await api('POST', '/databases', { name: `하나만 작업 ${stamp}` })).body.database
+      const taskTitle = (await api('GET', `/views/${tasks.defaultViewId}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const relation = (await api('POST', `/data-sources/${projects.dataSourceId}/relations`, { name: '작업들', targetDataSourceId: tasks.dataSourceId })).body?.property?.id
+      const project = (await api('POST', `/views/${projects.defaultViewId}/rows`, { cells: [] })).body.row.id
+      const task = async (t) => (await api('POST', `/views/${tasks.defaultViewId}/rows`, { cells: [{ propertyId: taskTitle, value: { type: 'title', title: [textRun(t)] } }] })).body.row.id
+      const [design, build] = [await task('설계'), await task('시공')]
+      const third = await task('감리')
+      const linked = await api('POST', `/rows/${project}/relations/${relation}`, { add: [design, build] })
+      check('전제 — 둘을 잇는다', linked.status === 200, JSON.stringify(linked.body?.error ?? null))
+      const MENU = `th[data-property-id="${relation}"] [data-testid="db-column-menu"]`
+      const CELL = `tr[data-row-id="${project}"] td[data-property-id="${relation}"]`
+      const chips = () => evaluate(`document.querySelectorAll('${CELL} [data-testid="db-relation-chip"]').length`)
+      const openMenu = async () => {
+        await waitHydrated(MENU, 20000) // 서버가 그린 단추 — React 가 붙기 전의 클릭은 버려진다(10n-11)
+        await clickOn(MENU)
+        return waitFor(`!!document.querySelector('[data-testid="db-column-relation-limit"]')`, 3000)
+      }
+      const checked = () => evaluate(`document.querySelector('[data-testid="db-column-relation-limit"]')?.getAttribute('aria-checked') ?? null`)
+      const limitOnServer = async () => (await api('GET', `/views/${projects.defaultViewId}`)).body?.view?.columns?.find((c) => c.propertyId === relation)?.relation?.limit
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${projects.id}` })
+      await waitFor(`document.querySelectorAll('${CELL} [data-testid="db-relation-chip"]').length === 2`, 15000)
+      check('★ 관계형 열의 머리 메뉴에 "하나만 연결" — 꺼져 있다', (await openMenu()) && (await checked()) === 'false', String(await checked()))
+      await clickOn('[data-testid="db-column-relation-limit"]')
+      check('★ 누르면 켜진다 — 서버의 열이 하나만', await (async () => { for (let i = 0; i < 30; i += 1) { if ((await limitOnServer()) === 'one') return true; await sleep(200) } return false })(),
+        String(await limitOnServer()))
+      check('켜도 이미 둘이 이어진 칸은 그대로 — 칩 둘', await waitFor(`document.querySelectorAll('${CELL} [data-testid="db-relation-chip"]').length === 2`, 5000), String(await chips()))
+      await key('Escape')
+      await send('Page.reload', {})
+      check('다시 열면 메뉴의 항목이 켜져 있다', (await waitFor(`!!document.querySelector('${MENU}')`, 15000)) && (await openMenu()) && (await checked()) === 'true', String(await checked()))
+      // 메뉴는 단추를 한 번 더 눌러 닫는다 — '메뉴' 단계에서는 포커스가 단추에 있어 Escape 가 패널에 닿지 않는다(열린 패널이 첫 행의 칸을 덮는다)
+      await clickOn(MENU)
+      await waitFor(`!document.querySelector('[data-testid="db-column-menu-panel"]')`, 3000)
+      await waitHydrated(CELL, 20000)
+      await clickOn(CELL)
+      await waitFor(`document.activeElement === document.querySelector('${CELL}')`, 3000)
+      await key('Enter')
+      check('전제 — 칸을 열면 고르개에 감리가 후보로 선다',
+        await waitFor(`!!document.querySelector('[data-testid="db-relation-candidate"][data-row-id="${third}"]')`, 8000),
+        `편집기 ${await evaluate(`!!document.querySelector('[data-testid="db-relation-editor"]')`)} · 포커스 ${await evaluate(`document.activeElement?.dataset?.cell ?? document.activeElement?.dataset?.testid ?? document.activeElement?.tagName`)}`)
+      await clickOn(`[data-testid="db-relation-candidate"][data-row-id="${third}"]`)
+      check('★ 그 뒤에 고르면 그것으로 바뀌고 고르개가 닫힌다 — 칩 하나',
+        await waitFor(`!document.querySelector('[data-testid="db-relation-editor"]') && document.querySelectorAll('${CELL} [data-testid="db-relation-chip"]').length === 1`, 8000),
+        String(await chips()))
+      const server = (await api('GET', `/rows/${project}/relations/${relation}`)).body
+      check('서버의 칸도 감리 하나', server?.total === 1 && server?.items?.[0]?.title === '감리', JSON.stringify(server?.items?.map((i) => i.title)))
+      await openMenu()
+      await clickOn('[data-testid="db-column-relation-limit"]')
+      check('★ 다시 누르면 꺼진다', await (async () => { for (let i = 0; i < 30; i += 1) { if ((await limitOnServer()) !== 'one') return true; await sleep(200) } return false })(),
+        String(await limitOnServer()))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).
