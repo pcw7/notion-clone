@@ -394,6 +394,17 @@ describe('평문 — 나가는 쪽과 들어오는 쪽', () => {
     assert.equal(plainTextForBlocks(blocks), '# 제목\n- 항목\n  - [x] 할 일\n---')
   })
 
+  test('★ 이미지 — 출처(`source`)의 바깥 주소 · 말은 대체 텍스트(없으면 캡션 · 장식이면 빈 말) · 올린 파일의 주소는 싣지 않는다(10n-65)', () => {
+    const external = { ...blk(nextId(), 'image', '', [], { source: { type: 'external', url: 'https://example.com/a.png' }, caption: [textRun('바다')] }) }
+    const withAlt = { ...blk(nextId(), 'image', '', [], { source: { type: 'external', url: 'https://example.com/b.png' } }), format: { alt_text: '고양이' } }
+    const decorative = { ...blk(nextId(), 'image', '', [], { source: { type: 'external', url: 'https://example.com/c.png' }, caption: [textRun('설명')] }), format: { alt_decorative: true } }
+    const uploaded = blk(nextId(), 'image', '', [], { source: { type: 'file', file_id: '0190a3f1-1111-7000-8000-0000000000aa' }, caption: [textRun('올린 그림')] })
+    assert.equal(
+      plainTextForBlocks([external, withAlt, decorative, uploaded]),
+      '![바다](https://example.com/a.png)\n![고양이](https://example.com/b.png)\n![](https://example.com/c.png)\n![올린 그림]()',
+    )
+  })
+
   test('★ 한 줄이 한 블록이다 — 목록을 복사해 붙이는 흔한 경우', () => {
     const blocks = textToBlocks('첫 줄\n둘째 줄\n\n넷째 줄', nextId)
     assert.equal(blocks.length, 4)
