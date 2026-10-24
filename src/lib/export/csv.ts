@@ -15,7 +15,8 @@
  * select 는 옵션 **id** 를 이름으로 바꾼다(HANDOFF §3.2-8 — 셀은 id 를 담는다). 지워진 옵션은 빈
  * 칸이다(F-03-04). 날짜는 적힌 ISO 그대로 쓴다 — 화면용 `formatDate`("2026년 9월 13일")는 다시
  * 읽을 수 없다. 체크박스는 노션 CSV 와 같은 `Yes` · `No` 다. 고유 ID 는 표에 보이는 그대로(`TASK-12`)다 — 셀이 아니라 스냅숏이 행에서
- * 읽어 칸 묶음에 끼운 값(`uniqueIdCell`)이다(2a-2b).
+ * 읽어 칸 묶음에 끼운 값(`uniqueIdCell`)이다(2a-2b). 수식도 셀이 아니다 — 스냅숏이 같은 트랜잭션에서 계산해 칸 묶음에 끼운 값
+ * (`FormulaValue`)이고, 결과 타입대로 같은 모양의 글자가 된다(참거짓은 `Yes` · `No` · 값이 없으면 빈 칸 · 10n-35).
  *
  * ──────────────────────────────────────────────────────────────────────
  * 사람이 Excel 로 여는 파일이다
@@ -27,7 +28,8 @@
  *     워크스페이스의 다른 멤버가 쓴 칸(`=HYPERLINK(...)`)이 내보낸 사람의 PC 에서 실행되는
  *     경로다. 사용자가 쓴 글자(제목 · 글 · select 이름 · 열 이름)에만 `'` 를 앞에 붙이고 센다
  *     (OWASP CSV Injection 권고). 우리가 만드는 값(숫자 `-5` · 날짜)에는 붙이지 않는다 —
- *     `-5` 는 수식이 아니라 숫자이고, 붙이면 숫자 열이 글자 열이 된다
+ *     `-5` 는 수식이 아니라 숫자이고, 붙이면 숫자 열이 글자 열이 된다. 수식 열은 **글 결과만** 막는다 — 글 결과는 사용자가 쓴
+ *     글자를 잇는다(`concat`)
  *
  * ──────────────────────────────────────────────────────────────────────
  * 어떤 열 · 어떤 행을 담을지는 호출자가 정한다
@@ -42,12 +44,13 @@ import { toPlainText } from '../contracts/rich-text.ts'
 import { LEFT_USER, readCell } from '../database/cell-format.ts'
 import { optionIdOf, type MvpPropertyType, type SelectOption } from '../database/property-types.ts'
 import { uniqueIdCellText } from '../database/unique-id-format.ts'
+import type { FormulaValue } from '../formula/formula.ts'
 
 export type CsvColumn = {
   readonly propertyId: string
   readonly name: string
-  /** 셀 타입 + 고유 ID(2a-2b — 값은 셀이 아니라 행의 번호다). */
-  readonly type: MvpPropertyType | 'unique_id'
+  /** 셀 타입 + 고유 ID(2a-2b — 값은 셀이 아니라 행의 번호다) + 수식(10n-35 — 값은 스냅숏이 계산해 끼운 `FormulaValue`). */
+  readonly type: MvpPropertyType | 'unique_id' | 'formula'
   /** select 의 옵션. 셀은 id 를 담으므로 이름을 여기서 찾는다. */
   readonly options?: readonly SelectOption[]
   /** 사람 칸(6g-1)의 이름 — 사람 id → 이름(이 워크스페이스의 활동 중인 사람만). 없는 id 는 "떠난 사용자". */
@@ -85,7 +88,7 @@ export function tableToCsv(columns: readonly CsvColumn[], rows: readonly CsvRow[
   for (const row of rows) {
     const cells = columns.map((column) => {
       const text = cellPlainText(column, row.cells[column.propertyId])
-      return field(USER_TEXT.has(column.type) ? userText(text) : text)
+      return field(guardsUserText(column, row.cells[column.propertyId]) ? userText(text) : text)
     })
     lines.push(cells.join(','))
   }
@@ -95,6 +98,41 @@ export function tableToCsv(columns: readonly CsvColumn[], rows: readonly CsvRow[
 /** 사용자가 쓴 글자를 담는 타입. 수식 막기는 이것에만 건다(머리말). */
 const USER_TEXT: ReadonlySet<CsvColumn['type']> = new Set(['title', 'rich_text', 'select', 'status', 'people'])
 
+/** 이 칸에 수식 막기를 거는가 — 사용자가 쓴 글자의 타입이거나, 수식의 **글 결과**(10n-35 · 머리말). */
+function guardsUserText(column: CsvColumn, raw: unknown): boolean {
+  if (column.type === 'formula') return readFormulaValue(raw)?.type === 'text'
+  return USER_TEXT.has(column.type)
+}
+
+/** 스냅숏이 끼운 수식 값 — 모양이 아니면 null(값이 없다 · 식이 읽히지 않는다). */
+function readFormulaValue(raw: unknown): FormulaValue {
+  if (typeof raw !== 'object' || raw === null) return null
+  const v = raw as { type?: unknown; value?: unknown }
+  if (v.type === 'number' && typeof v.value === 'number') return { type: 'number', value: v.value }
+  if (v.type === 'text' && typeof v.value === 'string') return { type: 'text', value: v.value }
+  if (v.type === 'boolean' && typeof v.value === 'boolean') return { type: 'boolean', value: v.value }
+  if (v.type === 'date' && typeof v.value === 'object' && v.value !== null && typeof (v.value as { start?: unknown }).start === 'string') {
+    return { type: 'date', value: v.value as { start: string; end?: string } }
+  }
+  return null
+}
+
+/** 수식 값의 글자 — 결과 타입대로 같은 칸의 모양(참거짓은 체크박스처럼 · 날짜 범위는 ` → `). 값이 없으면 빈 칸(거짓 `No` 와 가른다). */
+function formulaPlainText(raw: unknown): string {
+  const v = readFormulaValue(raw)
+  if (v === null) return ''
+  switch (v.type) {
+    case 'number':
+      return String(v.value)
+    case 'text':
+      return v.value
+    case 'boolean':
+      return v.value ? 'Yes' : 'No'
+    case 'date':
+      return v.value.end ? `${v.value.start} → ${v.value.end}` : v.value.start
+  }
+}
+
 /**
  * 칸 하나의 글자. CSV 와 행 Markdown 의 속성 줄(`plan.ts`)이 **같은 규칙**을 쓴다.
  *
@@ -103,6 +141,8 @@ const USER_TEXT: ReadonlySet<CsvColumn['type']> = new Set(['title', 'rich_text',
 export function cellPlainText(column: CsvColumn, raw: unknown): string {
   // 고유 ID 는 우리가 만든 값이다(접두사는 영숫자) — 수식 막기 대상이 아니다(`USER_TEXT` 밖).
   if (column.type === 'unique_id') return uniqueIdCellText(raw)
+  // 수식(10n-35) — 스냅숏이 계산해 끼운 값. 셀 읽기(`readCell`)를 거치지 않는다
+  if (column.type === 'formula') return formulaPlainText(raw)
   const value = readCell(column.type, raw)
   switch (value.type) {
     case 'title':

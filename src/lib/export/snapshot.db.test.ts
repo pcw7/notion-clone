@@ -7,6 +7,7 @@
  *   ② **볼 수 없는 것은 스냅샷에 없다** — 제목도 본문도. 자리만 남아 조립이 센다
  *   ③ **볼 수 있는 페이지는 빠지지 않는다** — 볼 수 없는 페이지 밑에 따로 공유된 페이지는 위로 올라온다
  *   ④ **실제 스냅샷을 조립에 넣으면 던지지 않는다** — 계약(`ExportSnapshot`)이 맞는다
+ *   ⑤ **수식 칸**(10n-35) — 같은 트랜잭션에서 계산해 칸 묶음에 끼운다 · CSV · 행 Markdown 에 보이는 그대로 · 식이 읽히지 않으면 빈 칸
  */
 
 import { test, describe, before, after } from 'node:test'
@@ -26,6 +27,7 @@ import { uploadFile } from '../file/file.ts'
 import { grantAccess, revokeAccess, stopInheriting } from '../permissions/acl.ts'
 import { planExport, type ExportDatabaseNode, type ExportPageNode, type ExportSnapshot } from './plan.ts'
 import { readExportSnapshot, type ExportScopeInput } from './snapshot.ts'
+import { addFormulaProperty } from '../database/formula-property.ts'
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'
 let skipReason = ''
@@ -226,6 +228,69 @@ describe('① 고유 ID (2a-2b · F-03-09)', () => {
     const after = await snap(owner, { kind: 'workspace' })
     assert.deepEqual((after.nodes.get(databaseId) as ExportDatabaseNode).sources[0].columns.map((c) => c.type), ['title'])
     assert.equal(pageOf(after, rows[0]).cells?.[idProp], undefined)
+  })
+})
+
+describe('⑤ 수식 칸 (10n-35 · F-03-12)', () => {
+  test('★ 같은 트랜잭션에서 계산해 끼운다 — CSV · 행 Markdown 에 보이는 그대로 · 옵션은 이름 · 식이 읽히지 않으면 빈 칸', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { owner } = await freshWorkspace()
+    const created = await createDatabase(owner.ctx, { name: '견적' })
+    if (!created.ok) throw new Error('unreachable')
+    const { id: databaseId, dataSourceId } = created.value
+    const prop = async (name: string, type: 'number' | 'select') => {
+      const added = await addProperty(owner.ctx, dataSourceId, { name, type })
+      if (!added.ok) throw new Error(added.reason)
+      return added.value.properties.find((p) => p.name === name)!.id
+    }
+    const qty = await prop('수량', 'number')
+    const price = await prop('단가', 'number')
+    const stage = await prop('단계', 'select')
+    const temp = await prop('임시', 'number')
+    const review = await addSelectOption(owner.ctx, dataSourceId, stage, { name: '검토' })
+    if (!review.ok) throw new Error(review.reason)
+    const formula = async (name: string, expression: string) => {
+      const added = await addFormulaProperty(owner.ctx, dataSourceId, { name, expression })
+      if (!added.ok) throw new Error(`${name}: ${added.reason}`)
+      return added.value.propertyId
+    }
+    const amount = await formula('금액', 'prop("수량") * prop("단가")')
+    const label = await formula('표시', '"=" + prop("단계")')
+    const big = await formula('큰 건', 'prop("수량") > 5')
+    const broken = await formula('임시 수식', 'prop("임시") + 1')
+    const schema = await getSchema(owner.ctx, dataSourceId)
+    if (!schema.ok) throw new Error('unreachable')
+    const titleId = schema.value.properties.find((p) => p.type === 'title')!.id
+    const row = await createRow(owner.ctx, dataSourceId, { cells: [
+      { propertyId: titleId, value: { type: 'title', title: [textRun('가구')] } },
+      { propertyId: qty, value: { type: 'number', number: 3 } },
+      { propertyId: price, value: { type: 'number', number: 50 } },
+      { propertyId: stage, value: { type: 'select', select: { id: review.value.option.id } } },
+      { propertyId: temp, value: { type: 'number', number: 1 } },
+    ] })
+    if (!row.ok) throw new Error(row.reason)
+    // "임시" 를 지운다 — 그것을 읽던 수식은 식이 읽히지 않는다
+    const { deleteProperty } = await import('../database/property.ts')
+    assert.equal((await deleteProperty(owner.ctx, dataSourceId, temp)).ok, true)
+
+    const snapshot = await snap(owner, { kind: 'workspace' })
+    const table = (snapshot.nodes.get(databaseId) as ExportDatabaseNode).sources[0]
+    assert.deepEqual(table.columns.filter((c) => c.type === 'formula').map((c) => c.name), ['금액', '표시', '큰 건', '임시 수식'])
+    const cells = pageOf(snapshot, row.value.id).cells ?? {}
+    assert.deepEqual(cells[amount], { type: 'number', value: 150 })
+    assert.deepEqual(cells[label], { type: 'text', value: '=검토' }, '옵션은 이름으로 읽는다')
+    assert.deepEqual(cells[big], { type: 'boolean', value: false })
+    assert.equal(cells[broken], null, '식이 읽히지 않으면 값이 없다')
+
+    const plan = planExport(snapshot, { untitled: '제목 없음' })
+    const csv = plan.entries.find((e) => e.path === '견적.csv')
+    assert.ok(csv?.kind === 'text', JSON.stringify(csv))
+    const [head, line] = csv.text.replace('\uFEFF', '').split('\r\n')
+    assert.equal(head, '이름,수량,단가,단계,금액,표시,큰 건,임시 수식')
+    assert.equal(line, "가구,3,50,검토,150,'=검토,No,", '글 결과만 수식 막기 · 거짓은 No · 읽히지 않는 수식은 빈 칸')
+    const rowMd = plan.entries.find((e) => e.kind === 'text' && e.path.endsWith('.md') && e.text.includes('가구'))
+    assert.ok(rowMd?.kind === 'text' && rowMd.text.includes('**금액**: 150') && rowMd.text.includes('**큰 건**: No') && !rowMd.text.includes('**임시 수식**'),
+      JSON.stringify(rowMd))
   })
 })
 

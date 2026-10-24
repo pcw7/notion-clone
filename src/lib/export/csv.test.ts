@@ -10,6 +10,7 @@
  *   ② **Excel 이 수식으로 실행하지 않는다** — 사용자가 쓴 글자만 막고, 숫자 열은 건드리지 않는다
  *   ③ **표 화면과 같은 값이다** — select 이름 · 지워진 옵션 · 계약을 어긴 옛 셀
  *   ④ **비어 있어도 파일이다** — 헤더만 있는 CSV, `null` 이라는 글자는 없다
+ *   ⑤ **수식 열**(10n-35) — 결과 타입대로 같은 칸의 모양 · 값이 없으면 빈 칸 · 글 결과만 수식 막기
  */
 
 import { test, describe, before, after } from 'node:test'
@@ -20,7 +21,7 @@ import { join } from 'node:path'
 
 import { textRun } from '../contracts/rich-text.ts'
 import { findPython, runPythonJson, unavailable } from '../testing/external-tools.ts'
-import { tableToCsv, type CsvColumn, type CsvRow } from './csv.ts'
+import { cellPlainText, tableToCsv, type CsvColumn, type CsvRow } from './csv.ts'
 
 const OPTIONS = [
   { id: 'opt-doing', name: '진행 중', color: 'blue' as const },
@@ -163,5 +164,37 @@ describe('① 우리가 짜지 않은 구현(python csv)이 같은 칸으로 읽
       ['제목, 쉼표', '메모 "따옴표"'],
       ...tricky.map((s) => [s, `${s}!`]),
     ])
+  })
+})
+
+describe('⑤ 수식 열 (10n-35)', () => {
+  const F: CsvColumn = { propertyId: 'p-f', name: '계산', type: 'formula' }
+
+  test('★ 결과 타입대로 — 수 · 글 · 참거짓(Yes/No) · 날짜(범위는 →)', () => {
+    assert.equal(cellPlainText(F, { type: 'number', value: 150 }), '150')
+    assert.equal(cellPlainText(F, { type: 'number', value: -5 }), '-5')
+    assert.equal(cellPlainText(F, { type: 'text', value: '가나' }), '가나')
+    assert.equal(cellPlainText(F, { type: 'boolean', value: true }), 'Yes')
+    assert.equal(cellPlainText(F, { type: 'boolean', value: false }), 'No')
+    assert.equal(cellPlainText(F, { type: 'date', value: { start: '2026-10-24' } }), '2026-10-24')
+    assert.equal(cellPlainText(F, { type: 'date', value: { start: '2026-10-24', end: '2026-10-31' } }), '2026-10-24 → 2026-10-31')
+  })
+
+  test('★ 값이 없으면 빈 칸 — 거짓(No)과 가른다 · 모양이 아니면 빈 칸', () => {
+    assert.equal(cellPlainText(F, null), '')
+    assert.equal(cellPlainText(F, undefined), '')
+    assert.equal(cellPlainText(F, { type: 'number', number: 3 }), '', '셀 봉투는 수식 값이 아니다')
+    assert.equal(cellPlainText(F, { type: 'boolean', value: 'yes' }), '')
+    assert.equal(cellPlainText(F, 'x'), '')
+  })
+
+  test('★ 글 결과만 수식 막기 — 수 결과의 -5 는 숫자로 남는다', () => {
+    const { csv, guardedFormulas } = tableToCsv([F], [
+      row({ 'p-f': { type: 'text', value: '=HYPERLINK("x")' } }),
+      row({ 'p-f': { type: 'number', value: -5 } }),
+      row({ 'p-f': { type: 'text', value: '평범' } }),
+    ])
+    assert.equal(guardedFormulas, 1)
+    assert.equal(csv, '\uFEFF계산\r\n"\'=HYPERLINK(""x"")"\r\n-5\r\n평범\r\n')
   })
 })

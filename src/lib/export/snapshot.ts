@@ -52,6 +52,9 @@ import { readableScopes } from '../permissions/effective.ts'
 import type { CsvColumn } from './csv.ts'
 import type { ExportFile, ExportNode, ExportSnapshot } from './plan.ts'
 import { peopleNamesIn } from '../database/people.ts'
+import { compileLiveFormulas, evaluateRowFormulas, type FormulaSourceProperty } from '../database/formula-schema.ts'
+import type { SelectOption } from '../database/property-types.ts'
+import type { FormulaValue } from '../formula/formula.ts'
 
 /**
  * 한 번에 읽는 블록 상한. 넘으면 읽기를 멈추고 `too_large` 다 — 전부 메모리에 올린 뒤에 ZIP 크기로
@@ -213,6 +216,21 @@ export async function readExportSnapshot(
       if (owner !== null) push(bodyRows, owner, { ...placeholder, type: PAGE_TYPE, properties: null, format: null })
     }
 
+    const databaseIds = nodeRows.filter((b) => b.type === 'database').map((b) => b.id)
+    const tables = await readTables(tx, ctx.workspaceId, databaseIds, now)
+    // 수식 칸(10n-35) — 셀이 아니다(C1). 같은 트랜잭션에서 표 화면과 같은 함수로 계산해 그 행의 칸 묶음에 끼운다(고유 ID 와 같은 자리).
+    // 행은 자기 data source 의 표의 식으로 계산한다(8e-1 — 소스마다 속성이 다르다).
+    for (const databaseId of databaseIds) {
+      for (const table of tables.get(databaseId) ?? []) {
+        if (table.formulasOf === null) continue
+        for (const row of rowsOf.get(databaseId) ?? []) {
+          if (row.parent_id !== table.dataSourceId) continue
+          const cells = cellsOf.get(row.id) ?? {}
+          cellsOf.set(row.id, { ...cells, ...table.formulasOf(cells) })
+        }
+      }
+    }
+
     const nodes = new Map<string, ExportNode>()
     for (const node of nodeRows) {
       if (node.type !== PAGE_TYPE) continue
@@ -227,8 +245,6 @@ export async function readExportSnapshot(
       })
     }
 
-    const databaseIds = nodeRows.filter((b) => b.type === 'database').map((b) => b.id)
-    const tables = await readTables(tx, ctx.workspaceId, databaseIds)
     for (const database of nodeRows.filter((b) => b.type === 'database')) {
       // 행은 자기 data source 의 표에 놓인다(8e-1) — 소스가 여럿이면 표도 여럿이다. 어느 소스에도 들지 않는 행은 없다(R3 · DS1).
       const rows = rowsOf.get(database.id) ?? []
@@ -291,13 +307,19 @@ function inDocumentOrder(children: readonly BlockRow[], doc: EditorDoc): string[
     .map((child) => child.id)
 }
 
-type Table = { readonly dataSourceId: string; readonly name: string; readonly columns: CsvColumn[] }
+type Table = {
+  readonly dataSourceId: string
+  readonly name: string
+  readonly columns: CsvColumn[]
+  /** 이 표의 수식을 한 행의 칸으로 계산한다(10n-35) — 수식이 없으면 null. */
+  readonly formulasOf: ((cells: Readonly<Record<string, unknown>>) => Record<string, FormulaValue>) | null
+}
 
 /**
  * 표마다 **소유한** data source 들(부착 순서 · 8e-1)의 살아 있는 프로퍼티 · 옵션. 붙인 것(linked)은 넣지 않는다 — 그 행은 원본 데이터베이스의
  * 표로 나간다(두 번 내보내지 않는다).
  */
-async function readTables(tx: Tx, workspaceId: string, databaseIds: readonly string[]): Promise<Map<string, Table[]>> {
+async function readTables(tx: Tx, workspaceId: string, databaseIds: readonly string[], now: Date): Promise<Map<string, Table[]>> {
   if (databaseIds.length === 0) return new Map()
 
   const sources = await tx.query<{ id: string; owner_database_id: string; name: string }>(
@@ -309,8 +331,9 @@ async function readTables(tx: Tx, workspaceId: string, databaseIds: readonly str
     [databaseIds],
   )
   const sourceIds = sources.map((s) => s.id)
-  const properties = await tx.query<{ id: string; data_source_id: string; name: string; type: string }>(
-    `SELECT id, data_source_id, name, type::text AS type
+  // config 는 수식의 식 · 결과 타입을 읽는다(10n-35)
+  const properties = await tx.query<{ id: string; data_source_id: string; name: string; type: string; config: unknown }>(
+    `SELECT id, data_source_id, name, type::text AS type, config
        FROM property
       WHERE data_source_id = ANY($1::uuid[]) AND deleted_at IS NULL
       ORDER BY data_source_id, order_idx, id`,
@@ -338,22 +361,47 @@ async function readTables(tx: Tx, workspaceId: string, databaseIds: readonly str
 
   const tables = new Map<string, Table[]>()
   for (const source of sources) {
+    const own = properties.filter((p) => p.data_source_id === source.id)
     push(tables, source.owner_database_id, {
       dataSourceId: source.id,
       name: source.name,
-      columns: properties
-        .filter((p) => p.data_source_id === source.id)
+      formulasOf: formulasFor(own, optionsOf, now),
+      columns: own
         .map((p) => ({
           propertyId: p.id,
           name: p.name,
           // 스키마 ENUM 은 24종이다. 읽기는 관대하게 — `property.ts` 의 `toSummary` 와 같은 규칙. 고유 ID 는 그대로 둔다(값은 ③ 이 끼운다).
-          type: isMvpPropertyType(p.type) ? p.type : p.type === 'unique_id' ? ('unique_id' as const) : DEFAULT_PROPERTY_TYPE,
+          // 수식(10n-35)도 그대로 둔다 — 값은 스냅숏이 계산해 끼운다.
+          type: isMvpPropertyType(p.type)
+            ? p.type
+            : p.type === 'unique_id'
+              ? ('unique_id' as const)
+              : p.type === 'formula'
+                ? ('formula' as const)
+                : DEFAULT_PROPERTY_TYPE,
           ...(isOptionType(p.type) ? { options: optionsOf.get(p.id) ?? [] } : {}),
           ...(p.type === 'people' ? { names } : {}),
         })),
     })
   }
   return tables
+}
+
+/**
+ * 한 표의 수식 계산기(10n-35) — 표 화면 · 서버의 `computeFormulaValues` 와 같은 함수다. 그 표의 살아 있는 속성 **전부**(숨긴 것이 없다 —
+ * 내보내기는 뷰가 아니다) · 옵션 이름 · 내보낸 시각(`now()`). 수식이 없으면 null.
+ */
+function formulasFor(
+  own: readonly FormulaSourceProperty[],
+  optionsOf: ReadonlyMap<string, readonly SelectOption[]>,
+  now: Date,
+): Table['formulasOf'] {
+  if (!own.some((p) => p.type === 'formula')) return null
+  const formulas = compileLiveFormulas(own)
+  const typeOf = new Map(own.map((p) => [p.id, p.type]))
+  const optionNames = new Map<string, string>()
+  for (const p of own) for (const o of optionsOf.get(p.id) ?? []) optionNames.set(o.id, o.name)
+  return (cells) => evaluateRowFormulas(formulas, (id) => typeOf.get(id) ?? null, cells, (id) => optionNames.get(id) ?? null, { now })
 }
 
 /** 본문이 가리키는 우리 파일 중 **이 워크스페이스** 것의 메타. 다른 워크스페이스의 id 는 없는 것과 같다. */
