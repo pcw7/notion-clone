@@ -31,6 +31,7 @@ import {
   ROLLUP_FUNCTIONS,
   ROLLUP_SHOW_LIMIT,
   showsRollupBadge,
+  resolveRollupSource,
   type RollupColumnInfo,
 } from './rollup-functions.ts'
 import { MVP_PROPERTY_TYPES, type CellValue } from './property-types.ts'
@@ -403,5 +404,50 @@ describe('카드의 rollup 배지 (10n-33)', () => {
     assert.equal(showsRollupBadge({ state: 'relation_missing' }, six), false)
     assert.equal(showsRollupBadge({ state: 'target_missing' }, six), false)
     assert.equal(showsRollupBadge(undefined, six), false)
+  })
+})
+
+describe('관계 → 대상 → 계산 고르기 (10n-39)', () => {
+  const relations = [
+    { propertyId: 'r-tasks', name: '작업들', targetDataSourceId: 'ds-tasks' },
+    { propertyId: 'r-notes', name: '메모들', targetDataSourceId: 'ds-notes' },
+  ]
+  const targets = [
+    { id: 't-title', type: 'title' },
+    { id: 't-hours', type: 'number' },
+    { id: 't-who', type: 'people' },
+    { id: 't-link', type: 'relation' },
+    { id: 't-done', type: 'checkbox' },
+  ]
+
+  test('★ 고른 것이 목록에 있으면 그것 · 계산은 대상이 고를 수 있으면 그대로', () => {
+    const r = resolveRollupSource({ relations, relationId: 'r-notes', targets, targetId: 't-hours', fn: 'sum' })
+    assert.equal(r.relation?.propertyId, 'r-notes')
+    assert.equal(r.target?.id, 't-hours')
+    assert.equal(r.fn, 'sum')
+    assert.ok(r.functions.includes('median'))
+  })
+
+  test('★ 대상은 모을 수 있는 셀 타입만 — 사람 · relation 은 빠진다(서버와 같은 술어)', () => {
+    const r = resolveRollupSource({ relations, relationId: 'r-tasks', targets, targetId: '', fn: 'count' })
+    assert.deepEqual(r.targetChoices.map((t) => t.id), ['t-title', 't-hours', 't-done'])
+    assert.equal(resolveRollupSource({ relations, relationId: 'r-tasks', targets, targetId: 't-who', fn: 'count' }).target?.id, 't-title', '사람은 고를 수 없다 — 첫째로')
+  })
+
+  test('★ 목록에 없으면 첫째 — 관계를 바꿔 대상이 바뀌었다 · 계산이 맞지 않으면 기본으로 접힌다', () => {
+    const r = resolveRollupSource({ relations, relationId: 'gone', targets, targetId: 'gone', fn: 'sum' })
+    assert.equal(r.relation?.propertyId, 'r-tasks')
+    assert.equal(r.target?.id, 't-title')
+    assert.equal(r.fn, 'show_original', '제목에 합계는 없다')
+    assert.equal(resolveRollupSource({ relations, relationId: 'r-tasks', targets, targetId: 't-done', fn: 'sum' }).fn, 'show_original')
+    assert.equal(resolveRollupSource({ relations, relationId: 'r-tasks', targets, targetId: 't-done', fn: 'percent_checked' }).fn, 'percent_checked')
+  })
+
+  test('대상을 아직 받지 못했으면 대상 · 계산 목록이 없다 — 계산은 고른 그대로', () => {
+    const r = resolveRollupSource({ relations, relationId: 'r-tasks', targets: null, targetId: 't-hours', fn: 'median' })
+    assert.equal(r.target, undefined)
+    assert.deepEqual(r.functions, [])
+    assert.equal(r.fn, 'median')
+    assert.equal(resolveRollupSource({ relations: [], relationId: '', targets: null, targetId: '', fn: 'sum' }).relation, undefined)
   })
 })

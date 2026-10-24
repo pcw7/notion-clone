@@ -143,6 +143,32 @@ export function effectiveRollupFunction(fn: RollupFunction, type: MvpPropertyTyp
   return rollupFunctionsFor(type).includes(fn) ? fn : DEFAULT_ROLLUP_FUNCTION
 }
 
+/**
+ * 롤업의 관계 → 대상 → 계산 고르기 — 추가 폼과 "관계 · 대상 바꾸기"(10n-39)가 같은 규칙을 쓴다. 고른 것이 목록에 없으면(아직 고르지 않았다 ·
+ * 관계를 바꿔 대상 목록이 바뀌었다) 첫째다(`<select>` 가 그렇게 보인다). 대상은 **모을 수 있는 셀 타입만**(`isRollupTargetType` — 서버가
+ * 같은 술어로 다시 본다) · 계산은 대상 타입이 고를 수 있으면 그대로, 아니면 기본으로 접는다(`effectiveRollupFunction`). 대상 목록을 아직
+ * 받지 못했으면(`null`) 대상도 계산 목록도 없다.
+ */
+export function resolveRollupSource<R extends { readonly propertyId: string }, T extends { readonly id: string; readonly type: string }>(input: {
+  readonly relations: readonly R[]
+  readonly relationId: string
+  readonly targets: readonly T[] | null
+  readonly targetId: string
+  readonly fn: RollupFunction
+}): {
+  readonly relation: R | undefined
+  readonly targetChoices: readonly (T & { readonly type: MvpPropertyType })[]
+  readonly target: (T & { readonly type: MvpPropertyType }) | undefined
+  readonly functions: readonly RollupFunction[]
+  readonly fn: RollupFunction
+} {
+  const relation = input.relations.find((r) => r.propertyId === input.relationId) ?? input.relations[0]
+  const targetChoices = (input.targets ?? []).filter((p): p is T & { readonly type: MvpPropertyType } => isRollupTargetType(p.type))
+  const target = targetChoices.find((p) => p.id === input.targetId) ?? targetChoices[0]
+  const functions = target === undefined ? [] : rollupFunctionsFor(target.type)
+  return { relation, targetChoices, target, functions, fn: target === undefined ? input.fn : effectiveRollupFunction(input.fn, target.type) }
+}
+
 // ── config ────────────────────────────────────────────────────────────
 
 /** `property.config` — rollup. snake_case 로 저장한다(정본의 키 이름 그대로). */

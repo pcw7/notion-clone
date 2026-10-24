@@ -853,7 +853,8 @@ export function updateRollup(
   workspaceId: string,
   dataSourceId: string,
   propertyId: string,
-  change: { readonly function: string },
+  /** 보낸 것만 바뀐다 — 계산 바꾸기(10n-31)는 계산만, 관계 · 대상 바꾸기(10n-39)는 셋 다. */
+  change: { readonly function?: string; readonly relationPropertyId?: string; readonly targetPropertyId?: string },
 ): Promise<ApiResult<null>> {
   return call(
     `${base(workspaceId)}/data-sources/${dataSourceId}/rollups/${propertyId}`,

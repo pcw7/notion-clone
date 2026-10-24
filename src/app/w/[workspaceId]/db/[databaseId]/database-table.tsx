@@ -126,6 +126,7 @@ import { FormulaEditForm } from './formula-editor'
 import { ColumnMenu } from './column-menu'
 import { ButtonCell } from './button-cell'
 import { ButtonEditForm } from './button-editor'
+import { RollupSourceEditor } from './rollup-source-editor'
 import { ReminderBell } from './reminder-bell'
 import type { DateReminderJson } from '@/lib/database/reminder'
 
@@ -971,6 +972,11 @@ export function DatabaseTable(props: {
   }
 
   const formulaPlan = props.formulaPlan ?? null
+  /** 이 표의 보이는 관계형 열 — 롤업을 만들 때(추가 폼)와 관계 · 대상을 바꿀 때(10n-39) 고르는 목록. */
+  const relationChoices = columns.flatMap((c) =>
+    c.type === 'relation' ? [{ propertyId: c.propertyId, name: c.name, targetDataSourceId: c.relation.targetDataSourceId }] : [],
+  )
+
   const columnActions = (column: ViewColumn) => ({
     onSort: async (direction: SortKey['direction']) =>
       afterStructure(
@@ -1019,6 +1025,26 @@ export function DatabaseTable(props: {
         },
       }
     })(),
+    // 관계 · 대상 바꾸기(10n-39) — 롤업에만 · 설정이 끊긴 것에도(다시 잇는 자리다). 편집기는 지금 설정으로 열리고, 바꾸면 계산 바꾸기와 같은 길로 받는다
+    ...(column.type === 'rollup'
+      ? {
+          rollupSourceEdit: (close: () => void) => (
+            <RollupSourceEditor
+              workspaceId={workspaceId}
+              relations={relationChoices}
+              current={column.rollup}
+              onSave={async (next) => {
+                const result = await api.updateRollup(workspaceId, dataSourceId, column.propertyId, next)
+                if (!result.ok) return result.message
+                router.refresh()
+                refreshRollups(rows.map((r) => r.id))
+                return null
+              }}
+              onClose={close}
+            />
+          ),
+        }
+      : {}),
     // 식 고치기(2i-3b) — 수식에만. 편집기는 이 표가 그린다(계산 계획 · 첫 행을 들고 있다). 저장하면 다시 읽는다(계획이 새로 선다).
     ...(column.type === 'formula' && formulaPlan !== null
       ? {
@@ -1295,11 +1321,7 @@ export function DatabaseTable(props: {
                     workspaceId={workspaceId}
                     dataSourceId={dataSourceId}
                     tableName={tableName}
-                    relations={columns.flatMap((c) =>
-                      c.type === 'relation'
-                        ? [{ propertyId: c.propertyId, name: c.name, targetDataSourceId: c.relation.targetDataSourceId }]
-                        : [],
-                    )}
+                    relations={relationChoices}
                     hasUniqueId={columns.some((c) => c.type === 'unique_id')}
                     onAdd={addColumn}
                     onAddRelation={addRelationColumn}
