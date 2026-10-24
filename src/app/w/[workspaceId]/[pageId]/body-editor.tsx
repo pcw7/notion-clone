@@ -1253,7 +1253,7 @@ export function BodyEditor({
     const deps: EditorDeps = {
       workspaceId,
       // 업로드는 XHR 로 한다(진행률). 자세한 이유는 `upload-client.ts`.
-      uploadImage: (file, onProgress) => uploadImageFile(workspaceId, file, { onProgress }),
+      uploadImage: (file, onProgress, signal) => uploadImageFile(workspaceId, file, { onProgress, signal }),
       isCollapsed: (id) => collapsedRef.current.has(id),
       expand: expandBlock,
       toggleCollapsed: (id) => {

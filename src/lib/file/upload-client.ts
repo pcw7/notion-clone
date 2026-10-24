@@ -20,13 +20,33 @@
  * 한도는 `limits.ts` 한 곳에 있고 서버와 클라이언트가 같은 함수를 부른다.
  * 클라이언트 검사는 **서버 검사의 대체가 아니라 왕복 절약**이다 — 20 MB 파일을
  * 다 올려놓고 413 을 받으면 사용자는 그 시간을 그냥 버린다.
+ *
+ * ──────────────────────────────────────────────────────────────────────
+ * 취소 · 다시 해 볼 만한가 (10n-73 · HANDOFF §3.2-306)
+ * ──────────────────────────────────────────────────────────────────────
+ *
+ * `signal` 을 주면 그것이 끊길 때 요청을 끊는다(`cancelled`). 실패에는 **다시 해 볼 만한가**(`retryable`)를 싣는다 — 연결이 끊겼거나
+ * 서버가 넘어졌거나(5xx) 기다리라고 했으면(408 · 429) 같은 파일을 다시 보내면 될 수 있다. 크기 · 형식 · 권한 거절은 다시 보내도 같다 —
+ * 화면이 "다시 올리기" 를 세우지 않는다.
  */
 
 import { MAX_UPLOAD_BYTES, validateUpload, type UploadRejection } from './limits.ts'
 
 export type UploadOutcome =
   | { readonly ok: true; readonly fileId: string }
-  | { readonly ok: false; readonly message: string }
+  | {
+      readonly ok: false
+      readonly message: string
+      /** 같은 파일을 다시 보내면 될 수 있는 실패(10n-73) — 연결 · 5xx · 408 · 429. 없으면 다시 보내도 같다. */
+      readonly retryable?: true
+      /** 부르는 쪽이 끊었다(`signal`). */
+      readonly cancelled?: true
+    }
+
+/** 그 HTTP 상태의 실패가 다시 해 볼 만한가 — 서버가 넘어졌거나(5xx) 기다리라고 했다(408 · 429). 4xx 의 거절은 다시 보내도 같다. */
+export function retryableStatus(status: number): boolean {
+  return status >= 500 || status === 408 || status === 429
+}
 
 /** 업로드 엔드포인트. 라우트 경로를 문자열로 흩뿌리지 않는다. */
 export function uploadUrl(workspaceId: string): string {
@@ -61,6 +81,8 @@ export function failureMessage(status: number, payload: unknown): string {
 export type UploadHandlers = {
   /** 0~1. 진행률을 알 수 없는 구간에서는 부르지 않는다. */
   readonly onProgress?: (fraction: number) => void
+  /** 끊기면 요청을 끊는다(10n-73 — 올리는 중의 "취소"). */
+  readonly signal?: AbortSignal
 }
 
 /**
@@ -84,6 +106,8 @@ export function uploadImageFile(
     return Promise.resolve({ ok: false, message: REJECTION_MESSAGE[rejection] })
   }
 
+  if (handlers.signal?.aborted === true) return Promise.resolve({ ok: false, message: '업로드를 취소했습니다.', cancelled: true })
+
   return new Promise((resolve) => {
     const form = new FormData()
     // 필드명은 `file` 이다 (F-09-08).
@@ -106,14 +130,15 @@ export function uploadImageFile(
         resolve({ ok: true, fileId })
         return
       }
-      resolve({ ok: false, message: failureMessage(xhr.status, payload) })
+      resolve({ ok: false, message: failureMessage(xhr.status, payload), ...(retryableStatus(xhr.status) ? { retryable: true as const } : {}) })
     })
 
     // 네트워크가 끊기거나 사용자가 페이지를 떠난 경우. 둘 다 "실패"로 같다.
     xhr.addEventListener('error', () =>
-      resolve({ ok: false, message: '연결에 실패했습니다. 다시 시도해 주세요.' }),
+      resolve({ ok: false, message: '연결에 실패했습니다. 다시 시도해 주세요.', retryable: true }),
     )
-    xhr.addEventListener('abort', () => resolve({ ok: false, message: '업로드를 취소했습니다.' }))
+    xhr.addEventListener('abort', () => resolve({ ok: false, message: '업로드를 취소했습니다.', cancelled: true }))
+    handlers.signal?.addEventListener('abort', () => xhr.abort(), { once: true })
 
     xhr.send(form)
   })
