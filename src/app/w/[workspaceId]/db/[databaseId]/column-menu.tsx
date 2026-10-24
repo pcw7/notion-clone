@@ -59,6 +59,7 @@ export function ColumnMenu({
   rollupFunctions,
   rollupFunction,
   onRollupFunction,
+  rollupSourceEdit,
   loadDependents,
 }: {
   name: string
@@ -88,9 +89,13 @@ export function ColumnMenu({
   /** 지금 계산. */
   rollupFunction?: string
   onRollupFunction?: (fn: string) => Promise<string | null>
+  /** 롤업의 "관계 · 대상 바꾸기"(10n-39) — 편집기를 그린다. 끝나면(바꿈 · 취소) `close` 를 부른다. 없으면 항목이 서지 않는다. */
+  rollupSourceEdit?: (close: () => void) => ReactNode
 }) {
   const [open, setOpen] = useState(false)
-  const [step, setStep] = useState<'menu' | 'rename' | 'prefix' | 'convert' | 'confirm-loss' | 'delete' | 'formula' | 'button' | 'rollup'>('menu')
+  const [step, setStep] = useState<
+    'menu' | 'rename' | 'prefix' | 'convert' | 'confirm-loss' | 'delete' | 'formula' | 'button' | 'rollup' | 'rollup-source'
+  >('menu')
   /** 손실 확인을 기다리는 변환 — 고른 타입과 서버가 센 칸 수. */
   const [pending, setPending] = useState<{ type: string; label: string; lost: number } | null>(null)
   const [draft, setDraft] = useState(name)
@@ -116,7 +121,7 @@ export function ColumnMenu({
     else if (step === 'prefix') prefixRef.current?.focus()
     // 입력칸이 없는 단계(지우기 · 유형 바꾸기 · 손실 확인)는 누른 항목이 사라지면서 포커스가 패널 밖(body)으로 간다 — 그러면 패널의
     // Escape 가 닿지 않아 키보드로 닫을 수 없다(2j-1 의 검사가 찾았다). 패널로 옮긴다. 식 고치기는 편집기가 스스로 잡는다.
-    else if (step !== 'menu' && step !== 'formula' && step !== 'button') panelRef.current?.focus()
+    else if (step !== 'menu' && step !== 'formula' && step !== 'button' && step !== 'rollup-source') panelRef.current?.focus()
   }, [step])
 
   const close = () => {
@@ -220,6 +225,11 @@ export function ColumnMenu({
               {rollupFunctions !== undefined && rollupFunctions.length > 0 && onRollupFunction !== undefined && (
                 <MenuItem testId="db-column-rollup-function" disabled={busy} onClick={() => setStep('rollup')}>
                   계산 바꾸기
+                </MenuItem>
+              )}
+              {rollupSourceEdit !== undefined && (
+                <MenuItem testId="db-column-rollup-source" disabled={busy} onClick={() => setStep('rollup-source')}>
+                  관계 · 대상 바꾸기
                 </MenuItem>
               )}
               {!isTitle && (
@@ -354,6 +364,7 @@ export function ColumnMenu({
           )}
           {step === 'formula' && formulaEdit !== undefined && formulaEdit(close)}
           {step === 'button' && buttonEdit !== undefined && buttonEdit(close)}
+          {step === 'rollup-source' && rollupSourceEdit !== undefined && rollupSourceEdit(close)}
           {step === 'delete' && (
             <div className="flex flex-col gap-1 p-1">
               <p className="text-xs text-neutral-500">

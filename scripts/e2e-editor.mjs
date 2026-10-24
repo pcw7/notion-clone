@@ -20780,6 +20780,97 @@ async function main() {
       check('다시 열어도 비어 있다', (await chips()) === 0, String(await chips()))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('롤업의 관계 · 대상 바꾸기 (10n-39 · F-03-11)')) { try {
+      // 롤업 열의 머리 메뉴에 "관계 · 대상 바꾸기" — 지금 설정으로 열린다 · 관계를 바꾸면 속성 목록이 그 표의 것으로 · 바꾸면 칸이 새 값 ·
+      // 다시 열어도 남는다 · 설정이 끊긴 롤업도 다시 잇는다. 표 변경 신호(SSE)를 막고 돈다 — 열어 두면 스키마 판이 올라 온 신호의 다시 읽기가
+      // 롤업 값을 대신 다시 묻는다(10n-31). 정본 rollup v1 — [보강 10n-39].
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const clickOn = async (selector) => {
+        const p = await evaluate(`(() => {
+          const e = document.querySelector(${JSON.stringify(selector)})
+          if (!e) return null
+          e.scrollIntoView({ block: 'center' })
+          const r = e.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (p) await click(p.x, p.y)
+        return p !== null
+      }
+      const choose = (selector, value) => evaluate(`(() => {
+        const s = document.querySelector(${JSON.stringify(selector)})
+        if (!s) return false
+        Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(s, ${JSON.stringify(value)})
+        s.dispatchEvent(new Event('change', { bubbles: true }))
+        return true
+      })()`)
+      const projects = (await api('POST', '/databases', { name: `잇기 프로젝트 ${stamp}` })).body.database
+      const tasks = (await api('POST', '/databases', { name: `잇기 작업 ${stamp}` })).body.database
+      const notes = (await api('POST', '/databases', { name: `잇기 메모 ${stamp}` })).body.database
+      const hours = (await api('POST', `/data-sources/${tasks.dataSourceId}/properties`, { name: '시간', type: 'number' })).body.property.id
+      const size = (await api('POST', `/data-sources/${notes.dataSourceId}/properties`, { name: '크기', type: 'number' })).body.property.id
+      const relationTo = async (name, ds) => (await api('POST', `/data-sources/${projects.dataSourceId}/relations`, { name, targetDataSourceId: ds })).body?.property?.id
+      const toTasks = await relationTo('작업들', tasks.dataSourceId)
+      const toNotes = await relationTo('메모들', notes.dataSourceId)
+      const rollup = (await api('POST', `/data-sources/${projects.dataSourceId}/rollups`, { name: '합', relationPropertyId: toTasks, targetPropertyId: hours, function: 'sum' })).body?.property?.id
+      const project = (await api('POST', `/views/${projects.defaultViewId}/rows`, { cells: [] })).body.row.id
+      const rowIn = async (db, prop, n) => (await api('POST', `/views/${db.defaultViewId}/rows`, { cells: [{ propertyId: prop, value: { type: 'number', number: n } }] })).body.row.id
+      await api('POST', `/rows/${project}/relations/${toTasks}`, { add: [await rowIn(tasks, hours, 2), await rowIn(tasks, hours, 4)] })
+      await api('POST', `/rows/${project}/relations/${toNotes}`, { add: [await rowIn(notes, size, 10)] })
+      check('전제 — 관계 둘과 롤업을 만든다', [toTasks, toNotes, rollup].every((id) => typeof id === 'string'), JSON.stringify({ toTasks, toNotes, rollup }))
+      const valueCell = `tr[data-row-id="${project}"] td[data-property-id="${rollup}"] [data-testid="db-rollup-value"]`
+      const valueOf = `(document.querySelector('${valueCell}')?.textContent.trim() ?? null)`
+      const MENU = `th[data-property-id="${rollup}"] [data-testid="db-column-menu"]`
+      const openEditor = async () => {
+        await waitHydrated(MENU, 20000) // 서버가 그린 단추 — React 가 붙기 전의 클릭은 버려진다(10n-11)
+        await clickOn(MENU)
+        const item = await waitFor(`!!document.querySelector('[data-testid="db-column-rollup-source"]')`, 3000)
+        await clickOn('[data-testid="db-column-rollup-source"]')
+        return item
+      }
+      const selectValue = (testId) => evaluate(`document.querySelector('[data-testid="${testId}"]')?.value ?? null`)
+
+      await send('Network.setBlockedURLs', { urls: ['*/changes*'] })
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${projects.id}` })
+      await waitFor(`${valueOf} === '6'`, 15000)
+      check('★ 롤업 열의 머리 메뉴에 "관계 · 대상 바꾸기" 가 선다', await openEditor())
+      check('편집기가 지금 설정으로 열린다 — 작업들 · 시간 · 합계',
+        await waitFor(`document.querySelector('[data-testid="db-rollup-source-relation"]')?.value === '${toTasks}'
+          && document.querySelector('[data-testid="db-rollup-source-target"]')?.value === '${hours}'
+          && document.querySelector('[data-testid="db-rollup-source-fn"]')?.value === 'sum'`, 8000),
+        `${await selectValue('db-rollup-source-relation')} · ${await selectValue('db-rollup-source-target')} · ${await selectValue('db-rollup-source-fn')}`)
+      await choose('[data-testid="db-rollup-source-relation"]', toNotes)
+      check('★ 관계를 바꾸면 속성 목록이 그 표의 것으로 — 크기가 서고 시간은 없다',
+        await waitFor(`(() => { const s = document.querySelector('[data-testid="db-rollup-source-target"]')
+          return !!s && !s.disabled && [...s.options].some((o) => o.value === '${size}') && ![...s.options].some((o) => o.value === '${hours}') })()`, 8000))
+      await choose('[data-testid="db-rollup-source-target"]', size)
+      await clickOn('[data-testid="db-rollup-source-save"]')
+      check('★ 바꾸면 칸이 새 관계 · 대상의 값으로 — 메모의 크기 10', await waitFor(`${valueOf} === '10'`, 10000), String(await evaluate(valueOf)))
+      await send('Network.setBlockedURLs', { urls: [] })
+      await send('Page.reload', {})
+      const column = (await api('GET', `/views/${projects.defaultViewId}`)).body?.view?.columns?.find((c) => c.propertyId === rollup)
+      check('다시 열어도 남는다 — 같은 속성 · 메모들 · 크기',
+        (await waitFor(`${valueOf} === '10'`, 15000)) && column?.rollup?.relationPropertyId === toNotes && column?.rollup?.targetPropertyId === size,
+        JSON.stringify(column?.rollup))
+
+      // 메모들을 지운다 — 롤업의 설정이 끊긴다. 그래도 항목이 서고, 다른 관계로 다시 이을 수 있다
+      await api('DELETE', `/data-sources/${projects.dataSourceId}/properties/${toNotes}`)
+      await send('Network.setBlockedURLs', { urls: ['*/changes*'] })
+      await send('Page.reload', {})
+      await waitFor(`!!document.querySelector('${MENU}')`, 15000)
+      const reopened = await openEditor()
+      await waitFor(`!document.querySelector('[data-testid="db-rollup-source-target"]')?.disabled`, 8000)
+      await choose('[data-testid="db-rollup-source-relation"]', toTasks)
+      await waitFor(`[...(document.querySelector('[data-testid="db-rollup-source-target"]')?.options ?? [])].some((o) => o.value === '${hours}')`, 8000)
+      await choose('[data-testid="db-rollup-source-target"]', hours)
+      await clickOn('[data-testid="db-rollup-source-save"]')
+      check('★ 설정이 끊긴 롤업도 다시 잇는다 — 관계를 지운 뒤 작업들 · 시간으로 → 6', reopened && (await waitFor(`${valueOf} === '6'`, 10000)), String(await evaluate(valueOf)))
+      await send('Network.setBlockedURLs', { urls: [] })
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

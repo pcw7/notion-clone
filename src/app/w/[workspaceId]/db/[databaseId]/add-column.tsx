@@ -52,13 +52,8 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 
-import { isMvpPropertyType, MVP_PROPERTY_TYPES, type MvpPropertyType } from '@/lib/database/property-types'
-import {
-  rollupFunctionsFor,
-  DEFAULT_ROLLUP_FUNCTION,
-  ROLLUP_FUNCTION_LABEL,
-  type RollupFunction,
-} from '@/lib/database/rollup-functions'
+import { MVP_PROPERTY_TYPES, type MvpPropertyType } from '@/lib/database/property-types'
+import { DEFAULT_ROLLUP_FUNCTION, ROLLUP_FUNCTION_LABEL, resolveRollupSource, type RollupFunction } from '@/lib/database/rollup-functions'
 import type { DatabaseListItem } from '@/lib/database/database'
 import type { PropertySummary } from '@/lib/database/property'
 import * as api from './table-api'
@@ -213,15 +208,14 @@ export function AddColumn({
   // ── 롤업: 관계 → 속성 → 계산 ──
   // 고르지 않았으면 각 목록의 첫째다(`<select>` 가 그렇게 보인다).
   const isRollup = type === 'rollup'
-  const relation = relations.find((r) => r.propertyId === relationId) ?? relations[0]
-  // 모을 수 있는 것은 **셀 타입**뿐이다 — relation · rollup 은 안 된다(rollup 의 rollup 금지 · 정본).
-  const targetChoices = (targets ?? []).filter(
-    (p): p is PropertySummary & { type: MvpPropertyType } => isMvpPropertyType(p.type),
-  )
-  const targetProp = targetChoices.find((p) => p.id === targetPropId) ?? targetChoices[0]
-  // 대상 타입이 고를 수 있는 함수만 — 서버가 같은 규칙으로 다시 검사한다(`rollupFunctionsFor`).
-  const functions = targetProp === undefined ? [] : rollupFunctionsFor(targetProp.type)
-  const chosenFn = functions.includes(fn) ? fn : (functions[0] ?? DEFAULT_ROLLUP_FUNCTION)
+  // 모을 수 있는 것은 **셀 타입**뿐이다 — relation · rollup · 사람은 안 된다(rollup 의 rollup 금지 · 정본). 계산은 대상 타입이 고를 수
+  // 있는 것만 — 서버가 같은 규칙으로 다시 검사한다. 관계 · 대상 바꾸기(10n-39)와 같은 함수다(`resolveRollupSource`).
+  const source = resolveRollupSource({ relations, relationId, targets, targetId: targetPropId, fn })
+  const relation = source.relation
+  const targetChoices = source.targetChoices
+  const targetProp = source.target
+  const functions = source.functions
+  const chosenFn = source.target === undefined ? DEFAULT_ROLLUP_FUNCTION : source.fn
 
   // ── 수식: 치는 동안 같은 함수로 검사한다 ──
   const formulaCheck = useMemo(
