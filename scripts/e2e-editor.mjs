@@ -21623,6 +21623,41 @@ async function main() {
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('공개 화면의 코드 강조 (10n-51 · F-01-14 · F-06-08)')) { try {
+      // 게시한 페이지의 코드 블록 — 서버가 칠한다(공개 화면은 브라우저 스크립트가 없다): 공개 HTML 에 이미 강조 조각이 있고, 편집기와 같은 색이
+      // 입혀진다 · 노션 목록 밖의 언어(tsx)는 평문. HANDOFF §3.2-294.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const code = (text, language) => ({ id: randomUUID(), type: 'code', title: [textRun(text)], properties: { language }, format: {}, children: [] })
+      const page = (await api('POST', '/pages', { title: `코드 문서 ${stamp}` })).body.page.id
+      await saveBody(page, { blocks: [code('const greeting = "안녕" // 인사', 'javascript'), code('const plain = 1', 'tsx'), code('def f():\n    return 1', 'python')] })
+      const token = (await api('PUT', `/pages/${page}/publish`)).body?.token
+      const html = await (await fetch(`${BASE}/p/${token}`)).text()
+      check('전제 — 코드 블록 셋이 든 페이지를 게시했다', typeof token === 'string' && html.includes('pub-code'), String(token))
+      check('★ 서버가 칠한다 — 공개 HTML 에 이미 강조 조각(키워드 · 문자열 · 주석)',
+        html.includes('<span class="hljs-keyword">const</span>') && /<span class="hljs-string">(&quot;|")안녕(&quot;|")<\/span>/.test(html) && html.includes('<span class="hljs-comment">// 인사</span>'),
+        (html.match(/<pre data-language="javascript">.*?<\/pre>/s)?.[0] ?? '(없음)').slice(0, 300))
+      check('노션 목록 밖의 언어(tsx)는 평문 — 어림해 칠하지 않는다',
+        // 비동기 서버 컴포넌트의 글자 뒤에 React 가 `<!-- -->` 표지를 붙인다 — 글자와 "강조 조각이 없다" 만 본다
+        (() => { const pre = html.match(/<pre data-language="tsx">.*?<\/pre>/s)?.[0] ?? ''; return pre.replace(/<!-- -->/g, '').includes('<code>const plain = 1</code>') && !pre.includes('hljs') })(),
+        (html.match(/<pre data-language="tsx">.*?<\/pre>/s)?.[0] ?? '(없음)'))
+
+      await send('Page.navigate', { url: `${BASE}/p/${token}` })
+      await waitFor(`!!document.querySelector('.pub-code pre .hljs-keyword')`, 15000)
+      const colors = await evaluate(`(() => {
+        const pre = document.querySelector('.pub-code pre[data-language="javascript"]')
+        const color = (sel) => { const e = pre?.querySelector(sel); return e ? getComputedStyle(e).color : null }
+        return { plain: pre ? getComputedStyle(pre).color : null, keyword: color('.hljs-keyword'), string: color('.hljs-string'), comment: color('.hljs-comment') }
+      })()`)
+      check('★ 편집기와 같은 색이 입혀진다 — 키워드 · 문자열 · 주석이 저마다 · 본문 색과 다르다(밝은 · 어두운 테마의 값)',
+        ['rgb(207, 34, 46)', 'rgb(255, 123, 114)'].includes(colors.keyword) && colors.string !== colors.keyword && colors.comment !== colors.plain && colors.keyword !== colors.plain,
+        JSON.stringify(colors))
+      check('파이썬도 — 같은 문법 표를 쓴다', await evaluate(`!!document.querySelector('.pub-code pre[data-language="python"] .hljs-keyword')`))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

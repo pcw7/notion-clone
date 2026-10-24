@@ -599,8 +599,11 @@ span.blk-equation {
  * 것은 **이 규칙들의 순서**다 — 특정도가 같으면 뒤의 것이 이긴다. 감싸는 범위(메타 · 문자열 · 문자열 안의 식)를 앞에, 글자의 범위
  * (키워드 · 숫자 · 이름 …)를 뒤에 둔다. 알려진 틈: 문자열 안의 식 안의 문자열(`${"x"}`)은 식의 색(본문 색)이 된다.
  * 색은 변수다 — 테마(F-12-03)가 바꾼다. 값은 highlight.js 의 github · github-dark 테마(BSD-3)의 색을 옮겼다.
+ * 공개 화면의 코드 블록(`.pub-code pre` — 서버가 칠한다 · 10n-51 · HANDOFF §3.2-294)도 같은 규칙 · 같은 변수다. `:is()` 의 특정도는 그 안의 가장
+ * 높은 것(편집기 쪽)이라 위의 "순서가 이긴다" 가 그대로 듣는다.
  */
-.blk-editor {
+.blk-editor,
+.pub-code {
   --code-keyword: #cf222e;
   --code-title: #8250df;
   --code-constant: #0550ae;
@@ -615,43 +618,43 @@ span.blk-equation {
   --code-deletion-bg: #ffebe9;
 }
 
-.blk-editor pre.blk-code .hljs-meta { color: var(--code-constant); }
-.blk-editor pre.blk-code .hljs-section { color: var(--code-constant); font-weight: 600; }
-.blk-editor pre.blk-code .hljs-string,
-.blk-editor pre.blk-code .hljs-regexp { color: var(--code-string); }
+:is(.blk-editor pre.blk-code, .pub-code pre) .hljs-meta { color: var(--code-constant); }
+:is(.blk-editor pre.blk-code, .pub-code pre) .hljs-section { color: var(--code-constant); font-weight: 600; }
+:is(.blk-editor pre.blk-code, .pub-code pre) .hljs-string,
+:is(.blk-editor pre.blk-code, .pub-code pre) .hljs-regexp { color: var(--code-string); }
 /* 문자열 안의 식(템플릿 · f-string) — 본문 색으로 되돌린다. 그 안의 키워드 · 숫자는 아래 규칙이 다시 칠한다. */
-.blk-editor pre.blk-code .hljs-subst { color: inherit; }
-.blk-editor pre.blk-code .hljs-comment,
-.blk-editor pre.blk-code .hljs-code,
-.blk-editor pre.blk-code .hljs-formula { color: var(--code-comment); }
-.blk-editor pre.blk-code .hljs-attr,
-.blk-editor pre.blk-code .hljs-attribute,
-.blk-editor pre.blk-code .hljs-literal,
-.blk-editor pre.blk-code .hljs-number,
-.blk-editor pre.blk-code .hljs-operator,
-.blk-editor pre.blk-code .hljs-variable,
-.blk-editor pre.blk-code .hljs-selector-attr,
-.blk-editor pre.blk-code .hljs-selector-class,
-.blk-editor pre.blk-code .hljs-selector-id { color: var(--code-constant); }
-.blk-editor pre.blk-code .hljs-keyword,
-.blk-editor pre.blk-code .hljs-doctag,
-.blk-editor pre.blk-code .hljs-template-tag,
-.blk-editor pre.blk-code .hljs-template-variable,
-.blk-editor pre.blk-code .hljs-type,
-.blk-editor pre.blk-code .hljs-variable.language_ { color: var(--code-keyword); }
-.blk-editor pre.blk-code .hljs-title { color: var(--code-title); }
-.blk-editor pre.blk-code .hljs-built_in,
-.blk-editor pre.blk-code .hljs-symbol { color: var(--code-builtin); }
-.blk-editor pre.blk-code .hljs-name,
-.blk-editor pre.blk-code .hljs-quote,
-.blk-editor pre.blk-code .hljs-selector-tag,
-.blk-editor pre.blk-code .hljs-selector-pseudo { color: var(--code-tag); }
-.blk-editor pre.blk-code .hljs-bullet { color: var(--code-bullet); }
-.blk-editor pre.blk-code .hljs-emphasis { font-style: italic; }
-.blk-editor pre.blk-code .hljs-strong { font-weight: 600; }
-.blk-editor pre.blk-code .hljs-link { text-decoration: underline; }
-.blk-editor pre.blk-code .hljs-addition { color: var(--code-addition); background: var(--code-addition-bg); }
-.blk-editor pre.blk-code .hljs-deletion { color: var(--code-deletion); background: var(--code-deletion-bg); }
+:is(.blk-editor pre.blk-code, .pub-code pre) .hljs-subst { color: inherit; }
+:is(.blk-editor pre.blk-code, .pub-code pre) .hljs-comment,
+:is(.blk-editor pre.blk-code, .pub-code pre) .hljs-code,
+:is(.blk-editor pre.blk-code, .pub-code pre) .hljs-formula { color: var(--code-comment); }
+:is(.blk-editor pre.blk-code, .pub-code pre) .hljs-attr,
+:is(.blk-editor pre.blk-code, .pub-code pre) .hljs-attribute,
+:is(.blk-editor pre.blk-code, .pub-code pre) .hljs-literal,
+:is(.blk-editor pre.blk-code, .pub-code pre) .hljs-number,
+:is(.blk-editor pre.blk-code, .pub-code pre) .hljs-operator,
+:is(.blk-editor pre.blk-code, .pub-code pre) .hljs-variable,
+:is(.blk-editor pre.blk-code, .pub-code pre) .hljs-selector-attr,
+:is(.blk-editor pre.blk-code, .pub-code pre) .hljs-selector-class,
+:is(.blk-editor pre.blk-code, .pub-code pre) .hljs-selector-id { color: var(--code-constant); }
+:is(.blk-editor pre.blk-code, .pub-code pre) .hljs-keyword,
+:is(.blk-editor pre.blk-code, .pub-code pre) .hljs-doctag,
+:is(.blk-editor pre.blk-code, .pub-code pre) .hljs-template-tag,
+:is(.blk-editor pre.blk-code, .pub-code pre) .hljs-template-variable,
+:is(.blk-editor pre.blk-code, .pub-code pre) .hljs-type,
+:is(.blk-editor pre.blk-code, .pub-code pre) .hljs-variable.language_ { color: var(--code-keyword); }
+:is(.blk-editor pre.blk-code, .pub-code pre) .hljs-title { color: var(--code-title); }
+:is(.blk-editor pre.blk-code, .pub-code pre) .hljs-built_in,
+:is(.blk-editor pre.blk-code, .pub-code pre) .hljs-symbol { color: var(--code-builtin); }
+:is(.blk-editor pre.blk-code, .pub-code pre) .hljs-name,
+:is(.blk-editor pre.blk-code, .pub-code pre) .hljs-quote,
+:is(.blk-editor pre.blk-code, .pub-code pre) .hljs-selector-tag,
+:is(.blk-editor pre.blk-code, .pub-code pre) .hljs-selector-pseudo { color: var(--code-tag); }
+:is(.blk-editor pre.blk-code, .pub-code pre) .hljs-bullet { color: var(--code-bullet); }
+:is(.blk-editor pre.blk-code, .pub-code pre) .hljs-emphasis { font-style: italic; }
+:is(.blk-editor pre.blk-code, .pub-code pre) .hljs-strong { font-weight: 600; }
+:is(.blk-editor pre.blk-code, .pub-code pre) .hljs-link { text-decoration: underline; }
+:is(.blk-editor pre.blk-code, .pub-code pre) .hljs-addition { color: var(--code-addition); background: var(--code-addition-bg); }
+:is(.blk-editor pre.blk-code, .pub-code pre) .hljs-deletion { color: var(--code-deletion); background: var(--code-deletion-bg); }
 
 /*
  * 목차(8b-1 · F-01-16) — 노드 뷰가 그리는 `nav.blk-table_of_contents`(`toc-view.ts`). 줄은 쓰인 헤딩 수준의 순위만큼 들여 쓴다
@@ -1030,7 +1033,8 @@ span.blk-equation {
     .blk-editor .blk-breadcrumb { color: #a3a3a3; }
     .blk-editor .blk-breadcrumb-current,
     .blk-editor .blk-breadcrumb-item + .blk-breadcrumb-item::before { color: #737373; }
-    .blk-editor {
+    .blk-editor,
+    .pub-code {
       --code-keyword: #ff7b72;
       --code-title: #d2a8ff;
       --code-constant: #79c0ff;
