@@ -11,13 +11,19 @@
  *      하나를 지웠을 때 남은 하나가 깨지면 안 된다.
  *   ④ ★ **대체 텍스트는 캡션과 따로다**(10d-1a · F-12-13) — `<img alt>` 는 장식이면 빈 말 · 있으면 그것 · 없으면 캡션 · 쓰기는 빈 말을 지운다 ·
  *      검증은 문서 검증에서
+ *   ⑤ ★ **폭 · 정렬**(10n-63) — 폭은 칸 폭의 비율(0.1 ~ 1 · 둘째 자리) · 정렬은 셋 · 없으면 원래 크기 · 왼쪽 · 쓰기는 없음을 지운다 · 검증은
+ *      문서 검증에서 · 다른 타입으로 바뀌면 사라진다
  */
 
 import { test, describe } from 'node:test'
+import { normalizeFormat } from './types.ts'
 import assert from 'node:assert/strict'
 
 import {
   MAX_ALT_TEXT,
+  readImageLayout,
+  roundImageWidth,
+  withImageLayout,
   captionToJson,
   imageAltText,
   readImageAlt,
@@ -208,5 +214,36 @@ describe('④ ★ 대체 텍스트(10d-1a · F-12-13)', () => {
     assert.deepEqual(validateImageFormat({ alt_decorative: 'true' }, 'f').map((i) => i.path), ['f.alt_decorative'])
     const doc = { blocks: [{ id: '0190a3f1-1111-7000-8000-000000000001', type: 'image', title: [], properties: {}, format: { alt_text: 7 }, children: [] }] }
     assert.ok(validateDoc(doc as never).some((i) => i.path.endsWith('format.alt_text')), JSON.stringify(validateDoc(doc as never)))
+  })
+})
+
+describe('이미지의 폭 · 정렬 (10n-63)', () => {
+  test('★ 읽기 — 없으면 원래 크기 · 왼쪽 · 모양이 아니면 없는 것으로', () => {
+    assert.deepEqual(readImageLayout({}), { width: null, align: 'left' })
+    assert.deepEqual(readImageLayout({ block_width: 0.5, block_align: 'center' }), { width: 0.5, align: 'center' })
+    assert.deepEqual(readImageLayout({ block_width: 1.5, block_align: 'middle' }), { width: null, align: 'left' })
+    assert.deepEqual(readImageLayout({ block_width: '0.5' }), { width: null, align: 'left' })
+    assert.deepEqual(readImageLayout(null), { width: null, align: 'left' })
+  })
+
+  test('★ 쓰기 — 없는 폭 · 왼쪽은 키를 지운다 · 폭은 둘째 자리로 둥글고 범위 안에 · 모르는 키는 그대로', () => {
+    assert.deepEqual(withImageLayout({ alt_text: '말', block_width: 0.4, block_align: 'right' }, { width: null, align: 'left' }), { alt_text: '말' })
+    assert.deepEqual(withImageLayout({}, { width: 0.456, align: 'center' }), { block_width: 0.46, block_align: 'center' })
+    assert.equal(roundImageWidth(0.01), 0.1)
+    assert.equal(roundImageWidth(1.7), 1)
+    assert.equal(roundImageWidth(0.333), 0.33)
+  })
+
+  test('검증 — 범위 밖 · 수가 아닌 폭 · 셋이 아닌 정렬은 거부 · 문서 검증이 거른다 · 다른 타입으로 바뀌면 사라진다', () => {
+    assert.deepEqual(validateImageFormat({ block_width: 0.1, block_align: 'right' }, 'f'), [])
+    assert.deepEqual(validateImageFormat({ block_width: 1 }, 'f'), [])
+    for (const bad of [0, 0.05, 1.01, '0.5', Number.NaN]) {
+      assert.deepEqual(validateImageFormat({ block_width: bad }, 'f').map((i) => i.path), ['f.block_width'], String(bad))
+    }
+    assert.deepEqual(validateImageFormat({ block_align: 'middle' }, 'f').map((i) => i.path), ['f.block_align'])
+    const doc = { blocks: [{ id: '0190a3f1-1111-7000-8000-000000000001', type: 'image', title: [], properties: {}, format: { block_width: 3 }, children: [] }] }
+    assert.ok(validateDoc(doc as never).some((i) => i.path.endsWith('format.block_width')), JSON.stringify(validateDoc(doc as never)))
+    assert.deepEqual(normalizeFormat('paragraph', { block_width: 0.5, block_align: 'center', future: 1 }), { future: 1 })
+    assert.deepEqual(normalizeFormat('image', { block_width: 0.5, block_align: 'center' }), { block_width: 0.5, block_align: 'center' })
   })
 })

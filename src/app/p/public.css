@@ -83,6 +83,12 @@
 /* 6a-2b — 이미지 · 이미지 아이콘 */
 .pub-image img { display: block; max-width: 100%; height: auto; border-radius: 2px; }
 .pub-image figcaption { font-size: 0.875rem; color: #6b7280; margin-top: 0.25rem; }
+/* 폭 · 정렬(10n-63) — 편집기(`editor.css`)와 같은 규칙 */
+.pub-image[data-width] img, .pub-image[data-width] figcaption { width: var(--pub-image-width); }
+.pub-image[data-align='center'] img, .pub-image[data-align='center'] figcaption { margin-inline: auto; }
+.pub-image[data-align='center'] figcaption { text-align: center; }
+.pub-image[data-align='right'] img, .pub-image[data-align='right'] figcaption { margin-left: auto; }
+.pub-image[data-align='right'] figcaption { text-align: right; }
 .pub-icon-image { width: 4.5rem; height: 4.5rem; object-fit: cover; border-radius: 4px; margin-bottom: 0.5rem; }
 
 /* 6b-1b — 신고 */

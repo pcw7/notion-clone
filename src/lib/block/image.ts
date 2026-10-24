@@ -150,15 +150,62 @@ export function withImageAlt(format: Readonly<Record<string, unknown>> | null | 
   return next
 }
 
-/** 형식의 대체 텍스트 검증 — 화면에서만 막으면 API 로 직접 저장하는 경로가 열려 있다(`validateDoc`). */
+// ── 폭 · 정렬 (10n-63 · F-01-15 · 정본 §3.4 [보강 10n-63] 이미지의 폭 · 정렬) ─────────────────────────────
+
+/** 폭의 아래 끝 — 칸 폭의 10%. 그보다 좁은 그림은 고를 수도 · 볼 수도 없다. */
+export const MIN_IMAGE_WIDTH = 0.1
+
+export const IMAGE_ALIGNS = ['left', 'center', 'right'] as const
+export type ImageAlign = (typeof IMAGE_ALIGNS)[number]
+
+/**
+ * 그림의 폭 · 정렬 — 형식의 두 키.
+ *
+ *   · `format.block_width` — 그 블록이 놓인 칸 폭에 대한 비율(0.1 ~ 1). 없으면 null — 원래 크기로, 칸 폭을 넘지 않는다
+ *   · `format.block_align` — 칸 안에서 서는 자리. 없으면 왼쪽
+ */
+export type ImageLayout = { readonly width: number | null; readonly align: ImageAlign }
+
+const isAlign = (value: unknown): value is ImageAlign => typeof value === 'string' && (IMAGE_ALIGNS as readonly string[]).includes(value)
+const isWidth = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isFinite(value) && value >= MIN_IMAGE_WIDTH && value <= 1
+
+/** 읽기는 관대하게 — 모양이 아닌 값은 없는 것으로 읽는다(검증이 쓰기를 막는다). */
+export function readImageLayout(format: unknown): ImageLayout {
+  const raw = (format as { block_width?: unknown; block_align?: unknown } | null | undefined) ?? {}
+  return { width: isWidth(raw.block_width) ? raw.block_width : null, align: isAlign(raw.block_align) ? raw.block_align : 'left' }
+}
+
+/** 폭을 소수 둘째 자리로 맞추고 범위 안에 둔다 — 끌어서 고른 폭(10n-64)이 이것을 지난다. */
+export function roundImageWidth(width: number): number {
+  return Math.min(1, Math.max(MIN_IMAGE_WIDTH, Math.round(width * 100) / 100))
+}
+
+/** 형식에 폭 · 정렬을 쓴다 — 없는 폭 · 왼쪽은 키를 지운다(없음은 키가 없다) · 폭은 둥근다 · 모르는 키는 그대로. */
+export function withImageLayout(format: Readonly<Record<string, unknown>> | null | undefined, layout: ImageLayout): Record<string, unknown> {
+  const next: Record<string, unknown> = { ...(format ?? {}) }
+  if (layout.width === null) delete next.block_width
+  else next.block_width = roundImageWidth(layout.width)
+  if (layout.align === 'left') delete next.block_align
+  else next.block_align = layout.align
+  return next
+}
+
+/** 형식의 대체 텍스트 · 폭 · 정렬 검증 — 화면에서만 막으면 API 로 직접 저장하는 경로가 열려 있다(`validateDoc`). */
 export function validateImageFormat(format: unknown, path: string): { path: string; message: string }[] {
-  const raw = (format as { alt_text?: unknown; alt_decorative?: unknown } | null | undefined) ?? {}
+  const raw = (format as { alt_text?: unknown; alt_decorative?: unknown; block_width?: unknown; block_align?: unknown } | null | undefined) ?? {}
   const issues: { path: string; message: string }[] = []
   if (raw.alt_text !== undefined && (typeof raw.alt_text !== 'string' || raw.alt_text.length > MAX_ALT_TEXT)) {
     issues.push({ path: `${path}.alt_text`, message: `${MAX_ALT_TEXT}자 이하의 글자여야 합니다` })
   }
   if (raw.alt_decorative !== undefined && typeof raw.alt_decorative !== 'boolean') {
     issues.push({ path: `${path}.alt_decorative`, message: '참거짓이어야 합니다' })
+  }
+  if (raw.block_width !== undefined && !isWidth(raw.block_width)) {
+    issues.push({ path: `${path}.block_width`, message: `${MIN_IMAGE_WIDTH} 이상 1 이하의 수여야 합니다` })
+  }
+  if (raw.block_align !== undefined && !isAlign(raw.block_align)) {
+    issues.push({ path: `${path}.block_align`, message: `${IMAGE_ALIGNS.join(' · ')} 중 하나여야 합니다` })
   }
   return issues
 }

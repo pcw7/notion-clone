@@ -1,5 +1,5 @@
 /**
- * 이미지 블록의 편집 명령 — 대체 텍스트 쓰기 (플랫폼 잔여 10d-1b · F-12-13) · 캡션 쓰기 (10n-62 · F-01-15)
+ * 이미지 블록의 편집 명령 — 대체 텍스트 쓰기 (플랫폼 잔여 10d-1b · F-12-13) · 캡션 쓰기 (10n-62 · F-01-15) · 폭 · 정렬 (10n-63)
  *
  * 정본: 00-canonical-data-model.md §3.4 [보강] 이미지의 대체 텍스트 ⑤
  *
@@ -10,7 +10,7 @@
 import type { Node as PmNode } from '@tiptap/pm/model'
 import type { Command, EditorState } from '@tiptap/pm/state'
 
-import { IMAGE_TYPE, readImageAlt, withImageAlt, type ImageAlt } from '../block/image.ts'
+import { IMAGE_TYPE, readImageAlt, readImageLayout, withImageAlt, withImageLayout, type ImageAlt, type ImageLayout } from '../block/image.ts'
 import { codeCaptionText, isCaptionFormatted, withCodeCaption } from '../block/code.ts'
 import { sameJsonValue } from '../contracts/json-safe.ts'
 import { separateUndoStep } from './code-block.ts'
@@ -77,6 +77,36 @@ export function setImageCaptionCommand(blockId: string, text: string): Command {
     let tr
     try {
       tr = state.tr.setNodeMarkup(current.pos, undefined, { ...current.node.attrs, props: next })
+    } catch {
+      // 수선이 오기 전 스키마를 어긴 협업 문서 — 대체 텍스트의 명령과 같은 까닭으로 삼킨다.
+      return false
+    }
+    if (dispatch) {
+      separateUndoStep(state)
+      dispatch(tr)
+      separateUndoStep(state)
+    }
+    return true
+  }
+}
+
+// ── 폭 · 정렬 (10n-63 · 정본 §3.4 [보강 10n-63]) ─────────────────────────────
+
+/**
+ * 폭 · 정렬을 바꾼다 — 주지 않은 쪽은 지금 값 그대로(`withImageLayout` — 왼쪽 · 없는 폭은 키를 지운다 · 폭은 둥근다). 같은 값이면 거절(되돌리기
+ * 기록을 더럽히지 않게). 정렬 단추(10n-63)와 끌어서 폭 바꾸기(10n-64)가 쓴다.
+ */
+export function setImageLayoutCommand(blockId: string, change: Partial<ImageLayout>): Command {
+  return (state, dispatch) => {
+    const current = imageBlockInfo(state, blockId)
+    if (current === null) return false
+    const format = (current.node.attrs.format ?? {}) as Record<string, unknown>
+    const now = readImageLayout(format)
+    const next = withImageLayout(format, { width: change.width !== undefined ? change.width : now.width, align: change.align ?? now.align })
+    if (sameJsonValue(next, format)) return false
+    let tr
+    try {
+      tr = state.tr.setNodeMarkup(current.pos, undefined, { ...current.node.attrs, format: next })
     } catch {
       // 수선이 오기 전 스키마를 어긴 협업 문서 — 대체 텍스트의 명령과 같은 까닭으로 삼킨다.
       return false

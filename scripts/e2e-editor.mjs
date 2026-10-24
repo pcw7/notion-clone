@@ -22269,6 +22269,64 @@ async function main() {
         warned && (await waitFor(`!document.querySelector('${INPUT}') && ${capOf(boldImg)} === '굵은 설명'`, 3000)), JSON.stringify({ warned, state: await stateOf(boldImg) }))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('이미지의 폭 · 정렬 (10n-63 · F-01-15)')) { try {
+      // `format.block_width`(칸 폭의 비율)가 있으면 그림 · 캡션이 그 폭으로 · 없으면 원래 크기 · 정렬 단추 셋(고른 것이 눌려 있다) — 가운데 ·
+      // 오른쪽으로 서고 새로 읽어도 남는다 · 공개 화면도 같은 규칙. 정본 §3.4 [보강 10n-63]. 자기 데이터를 스스로 만든다(API).
+      const stamp = Date.now().toString(36)
+      const made = await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: JSON.stringify({ title: `그림 폭 ${stamp}` }) })
+      const page = (await made.json()).page.id
+      const half = randomUUID()
+      await saveBody(page, {
+        blocks: [
+          { id: half, type: 'image', title: [], properties: { source: { type: 'external', url: `${BASE}/globe.svg` }, caption: [textRun('반쪽 그림')] }, format: { block_width: 0.5 }, children: [] },
+          block(randomUUID(), 'paragraph', '그림 뒤 문단'),
+        ],
+      })
+      // 그림 · 캡션 · 칸(figure)의 자리 — 폭의 비율 · 왼쪽 · 가운데 · 오른쪽의 틈
+      const geometry = (figureSel) => evaluate(`(() => {
+        const fig = document.querySelector(${JSON.stringify(figureSel)}); if (!fig) return null
+        const img = fig.querySelector('img'); const cap = fig.querySelector('figcaption'); if (!img) return null
+        const f = fig.getBoundingClientRect(); const i = img.getBoundingClientRect(); const c = cap?.getBoundingClientRect()
+        return { ratio: Math.round((i.width / f.width) * 100) / 100, capRatio: c ? Math.round((c.width / f.width) * 100) / 100 : null,
+          left: Math.round(i.left - f.left), right: Math.round(f.right - i.right), align: fig.dataset.align ?? 'left' }
+      })()`)
+      const FIG = `[data-block-id="${half}"] figure.blk-image`
+      const pressed = () => evaluate(`[...document.querySelectorAll('${FIG} [data-testid^="image-align-"]')].filter((b) => b.getAttribute('aria-pressed') === 'true').map((b) => b.dataset.testid)`)
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+      await waitFor(`!!document.querySelector('${FIG} img') && !!document.querySelector('${FIG} [data-testid="image-align-center"]')`, 15000)
+      const start = await geometry(FIG)
+      check('★ 폭이 있으면 그림 · 캡션이 칸 폭의 그 비율(0.5) — 처음은 왼쪽 · "왼쪽" 이 눌려 있다',
+        start !== null && start.ratio === 0.5 && start.capRatio === 0.5 && start.left <= 1 && same(await pressed(), ['image-align-left']),
+        JSON.stringify({ start, pressed: await pressed() }))
+
+      await clickSelector(`${FIG} [data-testid="image-align-center"]`)
+      await waitFor(`document.querySelector('${FIG}')?.dataset.align === 'center'`, 5000)
+      const centered = await geometry(FIG)
+      await sleep(1500)
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+      await waitFor(`document.querySelector('${FIG}')?.dataset.align === 'center' && !!document.querySelector('${FIG} img')`, 15000)
+      const reloaded = await geometry(FIG)
+      check('★ "가운데" 를 누르면 그림 · 캡션이 가운데 — 좌우 틈이 같다 · 새로 읽어도 남는다',
+        centered !== null && Math.abs(centered.left - centered.right) <= 2 && centered.ratio === 0.5
+          && reloaded !== null && Math.abs(reloaded.left - reloaded.right) <= 2 && same(await pressed(), ['image-align-center']),
+        JSON.stringify({ centered, reloaded, pressed: await pressed() }))
+
+      await clickSelector(`${FIG} [data-testid="image-align-right"]`)
+      const right = await waitFor(`document.querySelector('${FIG}')?.dataset.align === 'right'`, 5000)
+      const atRight = await geometry(FIG)
+      check('"오른쪽" 을 누르면 오른쪽에 붙는다 — 오른쪽 틈이 없다',
+        right && atRight !== null && atRight.right <= 1 && atRight.left > 10, JSON.stringify(atRight))
+
+      // 공개 화면 — 같은 규칙(폭 0.5 · 오른쪽)
+      await sleep(1500)
+      const token = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages/${page}/publish`, { method: 'PUT', headers: authed })).json())?.token
+      await send('Page.navigate', { url: `${BASE}/p/${token}` })
+      await waitFor(`!!document.querySelector('figure.pub-image img')`, 15000)
+      const pub = await geometry('figure.pub-image')
+      check('★ 공개 화면도 같은 규칙 — 폭 0.5 · 오른쪽', pub !== null && pub.ratio === 0.5 && pub.align === 'right' && pub.right <= 1, JSON.stringify(pub))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

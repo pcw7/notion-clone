@@ -345,6 +345,9 @@ export function normalizeFormat(type: BlockType, format: unknown): BlockFormat {
   if (type !== 'image') {
     delete out.alt_text
     delete out.alt_decorative
+    // 폭 · 정렬(10n-63)도 이미지의 것이다(정본 §3.4 [보강 10n-63] ③)
+    delete out.block_width
+    delete out.block_align
   }
   // 페이지 아이콘(8c-1)은 **페이지 행의 것**이다 — 본문(Y.Doc · 편집기 · 투영)의 format 에는 없다. 하위 페이지 참조도 타입이 `page` 라
   // 타입으로 가르지 않고 늘 버린다: 행에서 본문을 지을 때(`rowsToDoc` → `docToPm`) 참조 노드가 자식 행의 format 을 받아 와, 볼 수
