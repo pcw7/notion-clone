@@ -16745,6 +16745,8 @@ async function main() {
       // ③ 다시 열면 그대로
       await clickSelector(`${BLOCK} [data-testid="blk-button-settings"]`)
       await waitFor(`!!document.querySelector('${SETTINGS} [data-testid="button-block-action"]')`, 8000)
+      // 창이 저장된 값을 다 채운 뒤에 읽고 누른다 — 채우는 중의 다시 그리기에 취소 클릭이 먹지 않아 흔들렸다(10n-29 의 전체 판 · 홀로 2/3)
+      await waitFor(`document.querySelector('${SETTINGS} [data-testid="button-block-label"]')?.value === ${JSON.stringify(`주문 ${stamp}`)}`, 8000)
       const reopened = await evaluate(`({ label: document.querySelector('${SETTINGS} [data-testid="button-block-label"]')?.value,
         actions: document.querySelectorAll('${SETTINGS} [data-testid="button-block-action"]').length })`)
       await clickSelector(`${SETTINGS} [data-testid="button-block-cancel"]`)
