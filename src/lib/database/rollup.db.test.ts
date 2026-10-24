@@ -233,7 +233,7 @@ describe('① 만들기', () => {
         targetPropertyId,
         function: fn as RollupFunction,
       })
-    for (const [target, fn] of [[w.tasks.titleId, 'sum'], [w.hours, 'percent_checked'], [w.done, 'earliest_date'], [w.hours, 'median']] as const) {
+    for (const [target, fn] of [[w.tasks.titleId, 'sum'], [w.hours, 'percent_checked'], [w.done, 'earliest_date'], [w.hours, 'p99']] as const) {
       const r = await attempt(target, fn)
       assert.equal(r.ok === false && r.reason, 'invalid_config', `${fn}`)
     }
