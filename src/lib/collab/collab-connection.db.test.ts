@@ -372,6 +372,26 @@ describe('⑤ 읽기 전용', () => {
     )
   })
 
+  test('★ 볼 수만 있던 연결이 고칠 수 있게 되면 버리지 않고 곧바로 다시 붙는다 — 같은 문서 · 고칠 수 있다(10n-67)', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { workspaceId, owner, member, pageId, blockId } = await fixture()
+    await restrict(owner, pageId, member, 'view')
+    const running = await startServer(t)
+    const me = await open(t, running, member, { workspaceId, pageId }, memoryPendingEditStore())
+    await waitFor('연결', settled(me))
+    assert.equal(me.connection.snapshot().readOnly, true)
+    const first = me.doc()
+
+    assert.equal((await grantAccess(owner.ctx, pageId, { type: 'user', id: member.userId }, 'edit')).ok, true)
+    await waitFor('고칠 수 있는 연결로 다시 붙었다', () => me.connection.snapshot().readOnly === false && settled(me)())
+    assert.equal(me.doc(), first, '문서를 버리지 않았다')
+    assert.deepEqual(me.discarded, [], '버린 것이 없다')
+    assert.equal(me.connection.snapshot().closed, null)
+
+    edit(me.doc(), typeAt(blockId, '올라간 '))
+    await waitFor('올라간 뒤의 편집이 쌓였다', () => logTexts(pageId, '올라간 '))
+  })
+
   test('★ 읽기 전용으로 받았는데 보존본에 편집이 있으면 보낼 수 없다 — 버리고 알린다', async (t) => {
     if (skipReason) return t.skip(skipReason)
     const { workspaceId, owner, member, pageId, blockId } = await fixture()
@@ -481,6 +501,7 @@ describe('닫힌 이유 → 하는 일', () => {
     assert.equal(rejectionAction('unauthenticated'), 'login')
     assert.equal(rejectionAction('sso_required'), 'login')
     assert.equal(rejectionAction('unavailable'), 'retry')
+    assert.equal(rejectionAction('upgraded'), 'upgrade', '권한이 올랐다 — 버리지 않고 곧바로(10n-67)')
     assert.equal(rejectionAction('forbidden_origin'), 'misconfigured')
   })
 })

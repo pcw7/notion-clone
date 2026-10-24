@@ -18,6 +18,8 @@
  *   - **`not_found`** — 닫는다(볼 수 없는 페이지와 없는 페이지를 가르지 않는다). 보낼 수 없는 편집이므로 보존본도 지우고 알린다
  *   - **`unauthenticated` · `sso_required`** — 닫는다(로그인). 보존본은 남긴다 — 다시 로그인하면 보낸다
  *   - **`unavailable`** — 서버가 권한을 다시 판정하지 못했다. 거부된 편집이 아니므로 **로컬을 버리지 않고** 잠시 뒤 다시 붙는다
+ *   - **`upgraded`**(10n-67) — 볼 수만 있던 연결이 고칠 수 있게 됐다. 읽기 전용이라 서버가 버린 편집이 없으므로 **로컬을 버리지 않고 곧바로**
+ *     다시 붙는다 — 새 연결은 고칠 수 있는 연결로 받는다(`readOnly` 가 풀린다)
  *   - **`forbidden_origin`** — 설정이 틀렸다. 닫고 보존본은 남긴다
  *   - 모르는 이유 — 쓰기 거부로 본다(버리고 다시 연다). 서버가 문서를 닫았다는 것은 받은 update 를 쌓지 않았다는 뜻이다
  *
@@ -99,7 +101,7 @@ export function memoryPendingEditStore(): PendingEditStore & { readonly entries:
 export type CollabClosed = 'not_found' | 'login' | 'misconfigured'
 
 /** 서버가 닫은 이유에 따라 하는 일(머리말). */
-export type RejectionAction = 'reopen' | 'retry' | 'not_found' | 'login' | 'misconfigured'
+export type RejectionAction = 'reopen' | 'retry' | 'upgrade' | 'not_found' | 'login' | 'misconfigured'
 
 export function rejectionAction(reason: string): RejectionAction {
   switch (reason) {
@@ -110,6 +112,8 @@ export function rejectionAction(reason: string): RejectionAction {
       return 'login'
     case 'unavailable':
       return 'retry'
+    case 'upgraded':
+      return 'upgrade'
     case 'forbidden_origin':
       return 'misconfigured'
     default:
@@ -439,6 +443,12 @@ export async function openCollabConnection(options: CollabConnectionOptions): Pr
           if (!destroyed && closed === null) connect(reopening ? new Y.Doc() : doc, reopening)
         }, retryDelayMs)
         retryDelayMs = Math.min(retryDelayMs * 2, MAX_RETRY_DELAY_MS)
+        emit()
+        return
+      case 'upgrade':
+        // 권한이 올랐다(10n-67) — 버릴 편집이 없다. 기다리지 않고 같은 문서로 다시 붙는다(새 연결의 인증이 고칠 수 있는 scope 를 준다)
+        dropProvider()
+        if (!destroyed && closed === null) connect(reopening ? new Y.Doc() : doc, reopening)
         emit()
         return
       case 'not_found':

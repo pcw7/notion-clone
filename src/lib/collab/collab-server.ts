@@ -75,7 +75,9 @@
  *   - 고칠 수 있던 연결이 볼 수만 있게 됐으면 `forbidden` 으로 **닫는다** — 읽기 전용으로 바꾸지 않는다. Hocuspocus 의 읽기 전용
  *     연결은 보낸 update 를 닫지 않고 조용히 버리고(`MessageReceiver` — 4.7.0 소스), provider 는 자기가 읽기 전용이 된 것을 모른다.
  *     쓰기 거부(5a)와 같은 이유로 닫아야 참여자가 알고 읽기 전용으로 다시 연다(6조각)
- *   - 볼 수만 있던 연결은 권한이 올라가도 그대로다 — 다시 열면 고칠 수 있다(HANDOFF §7)
+ *   - 볼 수만 있던 연결이 고칠 수 있게 됐으면 `upgraded` 로 닫는다(10n-67 · HANDOFF §3.2-300) — 읽기 전용 플래그를 그 자리에서 풀지
+ *     않는다(읽기 전용 동안 서버가 버린 update 에 기대는 다음 update 가 `missing_dependencies` 로 닫힌다). 참여자는 문서를 버리지 않고
+ *     곧바로 다시 붙어 고칠 수 있는 연결로 받는다(`collab-connection.ts` — 읽기 전용이라 버릴 편집이 없다)
  *   - 판정하지 못하면(DB 오류) `unavailable` 로 닫는다 — 회수를 모른 채 두지 않는다. 판정 중 DB 오류를 끼우는 검사는 없다
  *
  * 거부 이유(`CollabRejection`)가 provider 와의 계약이다: 연결을 받을 때는 `authenticationFailed` 로, 받은 뒤에는 `close` 로 간다.
@@ -144,6 +146,8 @@ export type CollabRejection =
   | 'forbidden_origin'
   /** 권한 신호를 받고 다시 판정하지 못했다 — 닫는 쪽으로 기운다. */
   | 'unavailable'
+  /** 볼 수만 있던 연결이 고칠 수 있게 됐다(10n-67) — 거부가 아니라 다시 붙으라는 뜻이다. 다시 붙으면 고칠 수 있는 연결로 받는다. */
+  | 'upgraded'
   | AppendFailure
 
 export { collabDocumentName }
@@ -454,6 +458,8 @@ async function connectionVerdict(context: CollabContext, readOnly: boolean): Pro
   const access = await pageAccess(resolved.context, context.pageId)
   if (access === 'none') return 'not_found'
   if (access === 'view' && !readOnly) return 'forbidden'
+  // 올라갔다(10n-67) — 읽기 전용 플래그를 그 자리에서 풀지 않고 닫는다(머리말). 받을 때는 지금 권한으로 정하므로 첫 동기화에서는 드물다
+  if (access === 'edit' && readOnly) return 'upgraded'
   return null
 }
 

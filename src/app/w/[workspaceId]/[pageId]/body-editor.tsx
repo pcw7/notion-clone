@@ -457,7 +457,10 @@ export function BodyEditor({
   const canCommentRef = useRef(false)
   const [canComment, setCanComment] = useState(false)
 
-  const editable = canEdit && link.readOnly !== true && !link.reopening && link.closed === null
+  // 고칠 수 있는가 — 서버 렌더의 권한(`canEdit`)이거나 **협업 연결이 고칠 수 있는 연결로 붙었다**(권한이 올라 다시 붙었다 · 10n-67 ·
+  // HANDOFF §3.2-300). 둘은 같은 판정이다(`pageAccess` — 잠기면 view). 화면을 다시 그리지 않는다 — 내 잠금 풀기 · 공유 같은 동작이 이미
+  // 다시 그리고, 겹친 다시 그리기는 떠나는 이동에 끊긴다(전체 판이 잡았다).
+  const editable = (canEdit || link.readOnly === false) && link.readOnly !== true && !link.reopening && link.closed === null
   /** 물을 때마다 판단한다 — `createEditor` 가 이 함수를 그대로 쓴다. */
   const editableRef = useRef(editable)
   editableRef.current = editable
