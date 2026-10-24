@@ -1174,6 +1174,8 @@ async function main() {
       await send('Page.bringToFront').catch(() => undefined)
       await releasePaused().catch(() => undefined)
       await send('Fetch.disable').catch(() => undefined)
+      // 주소 막기(신호 · 값을 묻는 라우트 — 10n-31 · 10n-33 …)는 절이 끝에서 푼다 — 예외로 끝나면 그 줄을 지나지 못해 뒤 절까지 막힌다
+      await send('Network.setBlockedURLs', { urls: [] }).catch(() => undefined)
       await send('Emulation.setEmulatedMedia', { features: [] }).catch(() => undefined)
       await send('Emulation.setCPUThrottlingRate', { rate: Math.max(1, E2E_CPU_THROTTLE) }).catch(() => undefined)
       await send('Network.emulateNetworkConditions', {
@@ -20480,6 +20482,57 @@ async function main() {
           && !document.querySelector('[data-testid="db-column-rollup-fn-date_range"]')`, 3000))
       await clickOn('[data-testid="db-column-rollup-fn-median"]')
       check('★ 중앙값을 고르면 칸이 중앙값 — 1 · 2 · 10 → 2', await waitFor(`${valueOf(sum)} === '2'`, 10000), String(await evaluate(valueOf(sum))))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
+    if (sectionIf('카드의 rollup 배지 (10n-33 · F-03-11 · F-04-03 · F-04-05)')) { try {
+      // 보드 · 갤러리의 카드에도 rollup 이 선다 — 첫 화면의 값은 서버 렌더가 · 빈 것(평균 없음)은 서지 않고 0 은 선다 · 표 변경 신호로 다시
+      // 그리면 다시 계산된 값을 받아들인다 · 갤러리도. 정본 §3.5 [보강] rollup v1 — [보강 10n-33].
+      // 값을 묻는 라우트(`rollup-values`)를 막고 돈다 — 열어 두면 화면이 마운트 뒤에 물어 채워, 서버 렌더 · 받아들이기 쪽을 빼도 통과한다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const projects = (await api('POST', '/databases', { name: `카드 롤업 프로젝트 ${stamp}` })).body.database
+      const tasks = (await api('POST', '/databases', { name: `카드 롤업 작업 ${stamp}` })).body.database
+      const hours = (await api('POST', `/data-sources/${tasks.dataSourceId}/properties`, { name: '시간', type: 'number' })).body.property.id
+      const archived = (await api('POST', `/data-sources/${projects.dataSourceId}/properties`, { name: '보관', type: 'checkbox' })).body.property.id
+      const made = (await api('POST', `/data-sources/${tasks.dataSourceId}/relations`, { name: '프로젝트', targetDataSourceId: projects.dataSourceId, twoWay: { name: '작업들' } })).body
+      const rollupOf = async (name, fn) =>
+        (await api('POST', `/data-sources/${projects.dataSourceId}/rollups`, { name, relationPropertyId: made.syncedPropertyId, targetPropertyId: hours, function: fn })).body.property.id
+      await rollupOf('시간 합', 'sum')
+      await rollupOf('시간 평균', 'average')
+      const projectRow = async () => (await api('POST', `/views/${projects.defaultViewId}/rows`, { cells: [] })).body.row.id
+      const linkedA = await projectRow()
+      const lonely = await projectRow()
+      const taskRow = async (h) => (await api('POST', `/views/${tasks.defaultViewId}/rows`, { cells: [{ propertyId: hours, value: { type: 'number', number: h } }] })).body.row.id
+      const t1 = await taskRow(2)
+      const t2 = await taskRow(4)
+      const t3 = await taskRow(6)
+      await api('POST', `/rows/${linkedA}/relations/${made.syncedPropertyId}`, { add: [t1, t2] })
+      // 뷰는 rollup 을 만든 뒤에 — 새 뷰는 그때의 속성을 모두 보이게 시작한다
+      const board = (await api('POST', `/databases/${projects.id}/views`, { type: 'board', name: '보드', groupBy: { property_id: archived } })).body.view
+      const gallery = (await api('POST', `/databases/${projects.id}/views`, { type: 'gallery', name: '갤러리' })).body.view
+      const badge = (testId, row, name) => `(document.querySelector('[data-row-id="${row}"] [data-testid="${testId}"][title="${name}"]')?.textContent.trim() ?? null)`
+
+      await send('Network.setBlockedURLs', { urls: ['*/rollup-values*'] })
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${projects.id}?v=${board.id}` })
+      check('★ 보드 카드에 rollup 배지 — 첫 화면의 값은 서버 렌더가 준다(묻는 라우트를 막아도 2 · 4 → 6)',
+        await waitFor(`${badge('db-board-badge', linkedA, '시간 합')} === '6'`, 15000), String(await evaluate(badge('db-board-badge', linkedA, '시간 합'))))
+      check('평균도 선다 — 3', await evaluate(`${badge('db-board-badge', linkedA, '시간 평균')} === '3'`), String(await evaluate(badge('db-board-badge', linkedA, '시간 평균'))))
+      check('★ 빈 것은 서지 않고 0 은 선다 — 연결 없는 카드: 합 0 · 평균 없음',
+        await evaluate(`${badge('db-board-badge', lonely, '시간 합')} === '0' && ${badge('db-board-badge', lonely, '시간 평균')} === null`),
+        `${await evaluate(badge('db-board-badge', lonely, '시간 합'))} / ${await evaluate(badge('db-board-badge', lonely, '시간 평균'))}`)
+      // 다른 곳에서 연결을 하나 더 — 표 변경 신호로 서버 렌더를 다시 부르면 카드와 함께 다시 계산된 값을 받아들인다(라우트는 여전히 막혀 있다)
+      await api('POST', `/rows/${linkedA}/relations/${made.syncedPropertyId}`, { add: [t3] })
+      check('★ 신호로 다시 그리면 다시 계산된 값으로 — 2 · 4 · 6 → 12',
+        await waitFor(`${badge('db-board-badge', linkedA, '시간 합')} === '12'`, 15000), String(await evaluate(badge('db-board-badge', linkedA, '시간 합'))))
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${projects.id}?v=${gallery.id}` })
+      check('★ 갤러리 카드에도 — 12 · 연결 없는 카드의 평균은 서지 않는다',
+        (await waitFor(`${badge('db-gallery-badge', linkedA, '시간 합')} === '12'`, 15000))
+          && (await evaluate(`${badge('db-gallery-badge', lonely, '시간 합')} === '0' && ${badge('db-gallery-badge', lonely, '시간 평균')} === null`)),
+        String(await evaluate(badge('db-gallery-badge', linkedA, '시간 합'))))
+      await send('Network.setBlockedURLs', { urls: [] })
     } catch (thrown) { await sectionThrew(thrown) } }
 
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {

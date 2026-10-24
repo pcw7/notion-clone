@@ -246,6 +246,14 @@ export function rollupIsEmpty(cell: RollupCell | undefined): boolean {
 }
 
 /**
+ * 카드(보드 · 갤러리)에 rollup 배지를 세우는가(10n-33) — 설정이 살아 있고 그릴 것이 있을 때만. 다른 배지처럼 빈 것은 세우지 않고, 설정이
+ * 끊긴 것(관계 · 대상이 지워졌다)도 세우지 않는다 — 표의 칸이 그렇다고 말한다(정본 [보강 10n-33]).
+ */
+export function showsRollupBadge(info: RollupColumnInfo | undefined, cell: RollupCell | undefined): boolean {
+  return info?.state === 'ok' && !rollupIsEmpty(cell)
+}
+
+/**
  * 부동소수점 찌꺼기를 턴다 — `0.1 + 0.2` 는 `0.30000000000000004` 다. 유효 숫자 15자리로 자르면 double 이 정확히 담는
  * 범위 안의 값은 그대로이고 덧셈이 만든 끝자리만 사라진다.
  */
