@@ -57,6 +57,7 @@ import type { EditorView } from '@tiptap/pm/view'
 import { codeCaptionText, codeLanguageOf, fencedCode } from '../block/code.ts'
 import { equationDisplayLines } from '../block/equation.ts'
 import { buttonPlainText } from '../block/button.ts'
+import { imageAltText, readImageSource } from '../block/image.ts'
 import { cellsOf, TABLE_TYPE } from '../block/table.ts'
 import { isKnownBlockType, specOf, PAGE_TYPE } from '../block/types.ts'
 import { textRun, toPlainText } from '../contracts/rich-text.ts'
@@ -134,7 +135,6 @@ export function plainTextForBlocks(blocks: readonly EditorBlock[]): string {
       }
       const text = toPlainText(block.title ?? [])
       const checked = (block.properties as { checked?: boolean } | undefined)?.checked === true
-      const url = (block.properties as { url?: string } | undefined)?.url ?? ''
       switch (block.type) {
         case 'heading_1':
           lines.push(`${indent}# ${text}`)
@@ -166,9 +166,14 @@ export function plainTextForBlocks(blocks: readonly EditorBlock[]): string {
         case 'breadcrumb':
           // 목차(8b-1) · breadcrumb(8b-2)은 내용을 저장하지 않는다 — 고른 블록만으로는 페이지의 헤딩 · 경로를 모른다. 줄을 남기지 않는다.
           break
-        case 'image':
-          lines.push(`${indent}![](${url})`)
+        case 'image': {
+          // 이미지(10n-65) — 출처는 `properties.source` 다(#36 · 전에는 없는 `properties.url` 을 읽어 늘 `![]()` 였다). 말은 내보내기와 같은
+          // `imageAltText`(장식이면 빈 말 · 대체 텍스트 · 없으면 캡션). 올린 파일의 주소는 싣지 않는다 — 앱 안의 주소라 세션 없이는 열리지
+          // 않는다(평문은 바깥으로 나가는 모양이다 · 앱 안의 붙여넣기는 블록 MIME 을 쓴다)
+          const source = readImageSource(block.properties)
+          lines.push(`${indent}![${imageAltText(block.format, block.properties)}](${source?.kind === 'external' ? source.url : ''})`)
           break
+        }
         case 'equation':
           // 블록 수식(Phase 2 1a) — 내보내기와 같은 `$$` 울타리.
           lines.push(...equationDisplayLines((block.properties ?? {}) as Record<string, unknown>).map((line) => `${indent}${line}`))
