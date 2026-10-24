@@ -42,6 +42,8 @@ export type CodeCaptionEditorProps = {
   closeRef?: MutableRefObject<((restoreFocus: boolean) => void) | null>
   /** 이 입력을 연 트리거인가 — 바깥 누르기가 건너뛴다(트리거의 click 이 닫는다). */
   isTrigger?: (target: EventTarget | null) => boolean
+  /** 입력칸의 이름(스크린 리더) — 기본은 "코드 캡션". 이미지의 캡션(10n-62)도 이 입력을 쓴다. */
+  label?: string
 }
 
 export function CodeCaptionEditor({
@@ -55,6 +57,7 @@ export function CodeCaptionEditor({
   onClose,
   closeRef,
   isTrigger,
+  label = '코드 캡션',
 }: CodeCaptionEditorProps) {
   const doneRef = useRef(false)
   const dirtyRef = useRef(false)
@@ -126,7 +129,7 @@ export function CodeCaptionEditor({
       <textarea
         ref={inputRef}
         data-testid="code-caption-input"
-        aria-label="코드 캡션"
+        aria-label={label}
         aria-describedby={formatted ? noticeId : undefined}
         autoFocus
         rows={1}

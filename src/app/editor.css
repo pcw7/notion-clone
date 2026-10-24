@@ -187,8 +187,9 @@
   background: rgba(0, 0, 0, 0.04);
 }
 
-/* 대체 텍스트 단추(10d-1b · F-12-13) — 그림 아래 · 머물거나 키보드로 오면 보인다 · 읽기 전용 편집기에서는 없다. */
-.blk-image .blk-image-alt {
+/* 대체 텍스트 단추(10d-1b · F-12-13) · 캡션 단추(10n-62) — 그림 아래 · 머물거나 키보드로 오면 보인다 · 읽기 전용 편집기에서는 없다. */
+.blk-image .blk-image-alt,
+.blk-image .blk-image-caption-open {
   margin-top: 0.25rem;
   border: 1px solid #e5e7eb;
   border-radius: 0.25rem;
@@ -201,10 +202,13 @@
   opacity: 0;
 }
 .blk-image:hover .blk-image-alt,
-.blk-image .blk-image-alt:focus-visible {
+.blk-image .blk-image-alt:focus-visible,
+.blk-image:hover .blk-image-caption-open,
+.blk-image .blk-image-caption-open:focus-visible {
   opacity: 1;
 }
-.blk-editor[contenteditable='false'] .blk-image-alt {
+.blk-editor[contenteditable='false'] .blk-image-alt,
+.blk-editor[contenteditable='false'] .blk-image-caption-open {
   display: none;
 }
 
