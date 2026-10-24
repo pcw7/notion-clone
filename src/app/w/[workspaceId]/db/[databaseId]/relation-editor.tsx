@@ -23,7 +23,8 @@
  * ──────────────────────────────────────────────────────────────────────
  *
  * 열 때 `GET …/relations/{propertyId}` 로 지금 연결을 **다시** 읽는다 — 칸의 칩은 캐시의 앞 25개뿐이고(그 뒤의 연결은
- * 여기서만 보인다), 볼 수 없는 연결은 제목 없이 개수만 온다(`hidden`). 방금 고른 행의 제목은 후보 목록이 갖고 있었으므로
+ * 여기서만 보인다), 볼 수 없는 연결은 제목 없이 개수만 온다(`hidden`). 한 번에 50개씩 — 더 있으면 "더 보기" 가 다음 페이지를 붙인다
+ * (10n-40 · 전에는 50개 뒤의 연결을 볼 수도 끊을 수도 없었다 · `appendRelatedPage` 가 이미 있는 행을 거른다). 방금 고른 행의 제목은 후보 목록이 갖고 있었으므로
  * 부모의 제목 맵에 바로 넣는다(`onChange` 의 둘째 인자) — 다시 묻지 않는다.
  *
  * 한글 조합 중에는 찾지 않는다 — 조합이 끝난 글자로 찾는다(멘션 메뉴와 같은 규칙 · HANDOFF §3.3-144).
@@ -34,6 +35,7 @@ import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import type { RowJson } from '@/lib/database/http'
 import type { PageIcon } from '@/lib/block/page-icon'
 import * as api from './table-api'
+import { appendRelatedPage } from '@/lib/database/related-page'
 import { PageIconView } from '../../page-icon-view'
 import { AnchoredLayer } from '../../anchored-layer'
 
@@ -65,6 +67,9 @@ export function RelationEditor({
 }) {
   const [linked, setLinked] = useState<readonly api.RelatedRow[] | null>(null)
   const [hidden, setHidden] = useState(0)
+  /** 지금 연결의 다음 페이지 — 없으면 null("더 보기" 가 서지 않는다 · 10n-40). */
+  const [cursor, setCursor] = useState<string | null>(null)
+  const [loadingMore, setLoadingMore] = useState(false)
   const [candidates, setCandidates] = useState<readonly api.RelatedRow[] | null>(null)
   const [query, setQuery] = useState('')
   const [index, setIndex] = useState(0)
@@ -102,6 +107,7 @@ export function RelationEditor({
       }
       setLinked(result.value.items)
       setHidden(result.value.hidden)
+      setCursor(result.value.nextCursor)
     })
     return () => {
       alive = false
@@ -134,7 +140,7 @@ export function RelationEditor({
       onDone()
       return
     }
-    setLinked((current) => [...(current ?? []), candidate])
+    setLinked((current) => appendRelatedPage(current ?? [], [candidate]))
     setCandidates((current) => (current ?? []).filter((c) => c.id !== candidate.id))
     inputRef.current?.focus()
   }
@@ -153,6 +159,21 @@ export function RelationEditor({
     setLinked((current) => (current ?? []).filter((l) => l.id !== item.id))
     // 뺀 행은 다시 고를 수 있는 후보다.
     void search(query)
+    inputRef.current?.focus()
+  }
+
+  /** 지금 연결의 다음 페이지를 붙인다(10n-40). */
+  const loadMore = async () => {
+    if (cursor === null || loadingMore) return
+    setLoadingMore(true)
+    const result = await api.readRelation(workspaceId, rowId, propertyId, cursor)
+    setLoadingMore(false)
+    if (!result.ok) {
+      setError(result.message)
+      return
+    }
+    setLinked((current) => appendRelatedPage(current ?? [], result.value.items))
+    setCursor(result.value.nextCursor)
     inputRef.current?.focus()
   }
 
@@ -213,6 +234,20 @@ export function RelationEditor({
               </button>
             </li>
           ))}
+          {cursor !== null && (
+            <li>
+              <button
+                type="button"
+                data-testid="db-relation-linked-more"
+                disabled={loadingMore}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => void loadMore()}
+                className="w-full rounded px-1.5 py-0.5 text-left text-xs text-neutral-500 hover:bg-neutral-100 disabled:opacity-40 dark:hover:bg-neutral-800"
+              >
+                {loadingMore ? '불러오는 중…' : '더 보기'}
+              </button>
+            </li>
+          )}
           {hidden > 0 && (
             <li data-testid="db-relation-editor-hidden" className="px-1.5 py-0.5 text-xs text-neutral-400">
               볼 수 없는 연결 {hidden}개
