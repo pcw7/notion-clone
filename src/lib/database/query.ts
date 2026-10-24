@@ -39,6 +39,7 @@ import { readPageIcon, type PageIcon } from '../block/page-icon.ts'
 import {
   compileCursor,
   compileFilter,
+  compileManualOrder,
   compileSorts,
   formulaTypeKey,
   propertyIdsIn,
@@ -88,6 +89,11 @@ export type QueryRowsInput = {
    * 이 행들로만 좁힌다(10n-16 — "고친 행이 아직 이 뷰에 서는가" · `row-in-view.ts`). 다른 술어(권한 · 필터 · 검색어)는 그대로 건다.
    */
   readonly onlyRowIds?: readonly string[]
+  /**
+   * 이 뷰의 수동 순서(10n-59 · 정본 §3.6 [보강 10n-59]) — 살아 있는 정렬이 없을 때만 쓴다(자리 있는 행 → 자리 없는 행의 트리 순서).
+   * 주지 않으면 트리 순서뿐이다. 보드는 자기 질의(`group.ts`)가 열마다의 자리를 읽는다.
+   */
+  readonly manualOrderViewId?: string
 }
 
 export type QueryPage = {
@@ -180,7 +186,10 @@ export async function queryRows(
     const accessSql = restrictedRowsSql(access, params)
     // "나"(6g-2c)는 이 세션의 사람이다
     const filterSql = compileFilter(input.filter ?? null, types, params, { me: ctx.userId })
-    const compiledSort = compileSorts(sorts, types, params)
+    const sorted = compileSorts(sorts, types, params)
+    // 살아 있는 정렬이 없으면 이 뷰의 수동 순서(10n-59) — 지워진 속성의 정렬 키는 `compileSorts` 가 이미 뺐다
+    const compiledSort =
+      sorted.keys.length === 0 && input.manualOrderViewId !== undefined ? compileManualOrder(params.bind(input.manualOrderViewId)) : sorted
 
     // 커서는 정렬 키 값 + order_key 를 담는다. 정렬 구성이 바뀌면 길이가 달라져
     // `compileCursor` 가 `null` 을 주고, 그때는 처음부터 읽는다 —

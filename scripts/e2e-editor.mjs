@@ -21940,6 +21940,51 @@ async function main() {
         await evaluate(`location.pathname`))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('표 · 목록의 수동 순서 — 서버 (10n-59 · F-04-01)')) { try {
+      // 행의 차례를 바꾸면(PATCH /views/[viewId]/rows) 표가 그 차례로 선다 · 행 API 도 같은 차례 · 다른 뷰(목록)는 제 차례 · 목록에서 맨 뒤로
+      // 옮기면 목록만 · 다시 열어도 그 차례 · 정렬이 걸린 뷰는 409 sorted. 정본 §3.6 [보강 10n-59]. 화면의 끌기는 다음 조각이다. 자기 데이터를
+      // 스스로 만든다(API).
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `수동 순서 ${stamp}` })).body.database
+      const view = db.defaultViewId
+      const titleProp = (await api('GET', `/views/${view}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const rowOf = async (title) =>
+        (await api('POST', `/views/${view}/rows`, { cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } }] })).body.row.id
+      const [ga, na, da] = [await rowOf('가'), await rowOf('나'), await rowOf('다')]
+      const list = (await api('POST', `/databases/${db.id}/views`, { type: 'list', name: '목록' })).body.view.id
+      const names = { [ga]: '가', [na]: '나', [da]: '다' }
+      const orderExpr = `[...document.querySelectorAll('tbody tr[data-row-id]')].map((tr) => (${JSON.stringify(names)})[tr.dataset.rowId] ?? '').join('')`
+      const order = () => evaluate(orderExpr)
+      const orderIs = (expected) => waitFor(`${orderExpr} === ${JSON.stringify(expected)}`, 15000)
+      const move = (v, rowId, beforeRowId) => api('PATCH', `/views/${v}/rows`, { rowId, beforeRowId })
+      const apiOrder = async (v) => ((await api('GET', `/views/${v}/rows`)).body?.rows ?? []).map((r) => names[r.id] ?? '').join('')
+
+      // 표 변경 신호(SSE)를 막는다 — 열리기 직전의 쓰기(행 만들기 · 옮기기) 신호에 화면이 행 API 로 다시 읽으면, 서버가 그린 차례가 틀려도
+      // 통과한다(화면 반사실에서 첫 검사가 살아남았다). 끝에서 푼다
+      await send('Network.setBlockedURLs', { urls: ['*/changes*'] })
+      const moved = await move(view, da, ga)
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}?v=${view}` })
+      check('★ 차례를 바꾸면 표가 그 차례로 선다(다 가 나) · 행 API 도 같은 차례',
+        moved.status === 200 && (await orderIs('다가나')) && (await apiOrder(view)) === '다가나',
+        JSON.stringify({ status: moved.status, order: await order(), api: await apiOrder(view) }))
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}?v=${list}` })
+      check('다른 뷰(목록)는 제 차례 — 자리는 뷰의 것이다', await orderIs('가나다'), await order())
+      const toEnd = await move(list, ga, null)
+      await send('Page.reload', {})
+      check('★ 목록에서 맨 뒤로 — 목록만 바뀐다 · 다시 열어도 그 차례',
+        toEnd.status === 200 && (await orderIs('나다가')) && (await apiOrder(view)) === '다가나',
+        JSON.stringify({ status: toEnd.status, order: await order(), table: await apiOrder(view) }))
+
+      await api('PATCH', `/views/${view}`, { sorts: [{ property_id: titleProp, direction: 'desc' }] })
+      const refused = await move(view, ga, null)
+      check('정렬이 걸린 뷰에서는 옮기지 않는다 — 409 sorted', refused.status === 409 && refused.body?.error === 'sorted', JSON.stringify(refused))
+    } catch (thrown) { await sectionThrew(thrown) } finally { await send('Network.setBlockedURLs', { urls: [] }) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).
