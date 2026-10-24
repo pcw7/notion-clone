@@ -119,11 +119,19 @@
 }
 
 .blk-callout {
-  border: 1px solid #e5e7eb;
+  border: 1px solid transparent;
   border-radius: 0.375rem;
-  background: #f9fafb;
+  background: rgba(135, 131, 120, 0.12);
   padding: 0.75rem 0.875rem;
   margin: 0.5rem 0;
+}
+/*
+ * 콜아웃의 파생(10n-54 · F-01-21 · 정본 [보강] 블록 색 ⑤) — 글자색(배경색이 아닌 색)이면 흰 바탕 + 연회색 테두리. 배경색이면 아래 팔레트가
+ * 바탕을 칠하고(같은 특정도 · 뒤의 규칙), 색이 없으면 위의 연회색 바탕이다. 저장은 `format.block_color` 하나 — 표시 규칙이다.
+ */
+.blk-callout[data-color]:not([data-color$='_background']) {
+  background: #ffffff;
+  border-color: rgba(55, 53, 47, 0.16);
 }
 
 .blk-divider {
@@ -993,7 +1001,8 @@ span.blk-equation {
     .blk-menu { border-color: #262626; background: #171717; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5); }
     .blk-menu-item:focus { background: rgba(255, 255, 255, 0.08); }
     .blk-menu-swatch { border-color: #404040; }
-    .blk-callout { border-color: #262626; background: #171717; }
+    .blk-callout { border-color: transparent; background: #171717; }
+    .blk-callout[data-color]:not([data-color$='_background']) { background: transparent; border-color: #404040; }
     .blk-editor .blk-table td { border-color: #333333; }
     .blk-editor .blk-table[data-column-header='true'] tr:first-child td,
     .blk-editor .blk-table[data-row-header='true'] td:first-child { background: #202020; }
