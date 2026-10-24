@@ -3390,7 +3390,7 @@ async function main() {
       check('이미 멤버인 사람은 멤버로 공유했다고 말한다 — 게스트가 되지 않는다',
         (await panelSays('멤버로 공유했습니다')) && !(await evaluate(`[...document.querySelectorAll('${DIALOG} li')].some((li) => li.textContent.includes(${JSON.stringify(`${memberName} (${mate.email}) · 게스트`)}))`)))
       await invite(`nobody-${stamp}@example.com`) // ASCII — type="email" 칸은 한글 주소를 브라우저가 먼저 막는다
-      check('계정이 없는 이메일에는 초대 메일을 보냈다고 말한다 (7g-1 전에는 "먼저 가입하라")', await panelSays('초대 메일을 보냈습니다'))
+      check('계정이 없는 이메일에는 초대 메일을 보냈다고 말한다 (7g-1 전에는 "먼저 가입하라")', await panelSays('초대 메일을 보냈습니다'), await panelText())
 
       // 게스트에게 전체 권한은 줄 수 없다 — 사람 고르개로 줘도
       const grantFull = await fetch(`${pagesUrl}/${doc}/access`, {
@@ -6695,12 +6695,17 @@ async function main() {
       await waitFor(`!!document.querySelector('[data-testid="page-history-open"]')`, 15000)
       check('전제 — 버전 둘을 만들었다', made === 2, String(made))
       check('★ 머리의 "기록"을 누르면 기록 창이 열린다', await openHistory())
-      const newestFirst = (await dbQuery(`SELECT id FROM page_version WHERE page_id = $1 ORDER BY through_seq DESC`, [page])).map((r) => r.id)
+      const versionRows = await dbQuery(`SELECT id, created_at FROM page_version WHERE page_id = $1 ORDER BY through_seq DESC`, [page])
+      const newestFirst = versionRows.map((r) => r.id)
+      // 시각의 앞 — 오늘 만든 버전이면 "오늘 ", 아니면 "10월 24일 "(`formatVersionTime`). 자정을 넘는 판에서는 3분 앞당긴 버전이 어제다(#441 판)
+      const createdAts = JSON.stringify(versionRows.map((r) => r.created_at.toISOString()))
       const ownerName = (await dbQuery(`SELECT name FROM "user" WHERE id = $1`, [ctx.userId]))[0]?.name ?? ''
       check('★ 목록은 최신순 · 시각(오늘) · 고친 사람의 이름 — 가장 최근 것을 골라 둔다',
         ownerName !== '' && (await waitFor(`(() => { const items = [...document.querySelectorAll('${ITEMS}')]
           return JSON.stringify(items.map((b) => b.dataset.versionId)) === ${JSON.stringify(JSON.stringify(newestFirst))}
-            && items.every((b) => b.textContent.startsWith('오늘 ') && b.textContent.includes(${JSON.stringify(ownerName)}))
+            && items.every((b, i) => { const at = new Date(${createdAts}[i])
+              const prefix = at.toDateString() === new Date().toDateString() ? '오늘 ' : new Intl.DateTimeFormat('ko-KR', { month: 'long', day: 'numeric' }).format(at) + ' '
+              return b.textContent.startsWith(prefix) && b.textContent.includes(${JSON.stringify(ownerName)}) })
             && items[0].getAttribute('aria-current') === 'true' })()`, 8000)),
         String(await evaluate(`[...document.querySelectorAll('${ITEMS}')].map((b) => b.textContent).join(' | ')`)))
       check('★ 처음에는 가장 최근 버전을 보여 준다 — 그 시점의 본문(지금 글은 없다) · 읽기 전용',
