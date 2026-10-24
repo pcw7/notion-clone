@@ -17,7 +17,8 @@
  * 읽을 수 없다. 체크박스는 노션 CSV 와 같은 `Yes` · `No` 다. 고유 ID 는 표에 보이는 그대로(`TASK-12`)다 — 셀이 아니라 스냅숏이 행에서
  * 읽어 칸 묶음에 끼운 값(`uniqueIdCell`)이다(2a-2b). 수식도 셀이 아니다 — 스냅숏이 같은 트랜잭션에서 계산해 칸 묶음에 끼운 값
  * (`FormulaValue`)이고, 결과 타입대로 같은 모양의 글자가 된다(참거짓은 `Yes` · `No` · 값이 없으면 빈 칸 · 10n-35). relation 도 캐시를
- * 읽지 않는다 — 스냅숏이 엣지를 읽어 권한으로 가른 제목 · 볼 수 없는 개수(`ExportRelationCell`)를 끼운다(10n-36).
+ * 읽지 않는다 — 스냅숏이 엣지를 읽어 권한으로 가른 제목 · 볼 수 없는 개수(`ExportRelationCell`)를 끼운다(10n-36). rollup 도 셀이 아니다 —
+ * 스냅숏이 표 화면과 같은 함수로 계산한 칸(`ExportRollupCell`)을 화면과 같은 모양의 글자로(10n-37).
  *
  * ──────────────────────────────────────────────────────────────────────
  * 사람이 Excel 로 여는 파일이다
@@ -46,12 +47,13 @@ import { LEFT_USER, readCell } from '../database/cell-format.ts'
 import { optionIdOf, type MvpPropertyType, type SelectOption } from '../database/property-types.ts'
 import { uniqueIdCellText } from '../database/unique-id-format.ts'
 import type { FormulaValue } from '../formula/formula.ts'
+import type { RollupCell } from '../database/rollup-functions.ts'
 
 export type CsvColumn = {
   readonly propertyId: string
   readonly name: string
   /** 셀 타입 + 고유 ID(2a-2b — 값은 셀이 아니라 행의 번호다) + 수식(10n-35 — 값은 스냅숏이 계산해 끼운 `FormulaValue`). */
-  readonly type: MvpPropertyType | 'unique_id' | 'formula' | 'relation'
+  readonly type: MvpPropertyType | 'unique_id' | 'formula' | 'relation' | 'rollup'
   /** select 의 옵션. 셀은 id 를 담으므로 이름을 여기서 찾는다. */
   readonly options?: readonly SelectOption[]
   /** 사람 칸(6g-1)의 이름 — 사람 id → 이름(이 워크스페이스의 활동 중인 사람만). 없는 id 는 "떠난 사용자". */
@@ -113,6 +115,56 @@ export type ExportRelationCell = {
   readonly hidden: number
 }
 
+/** 내보내기의 rollup 칸(10n-37) — 스냅숏이 계산한 칸 · 원본 보기를 그릴 대상 타입과 (볼 수 있는 표의) 옵션. */
+export type ExportRollupCell = {
+  readonly type: 'rollup_export'
+  readonly cell: RollupCell
+  readonly targetType: MvpPropertyType
+  readonly targetOptions: readonly SelectOption[]
+}
+
+function readRollupCell(raw: unknown): ExportRollupCell | null {
+  if (typeof raw !== 'object' || raw === null || (raw as { type?: unknown }).type !== 'rollup_export') return null
+  const cell = (raw as { cell?: unknown }).cell
+  return typeof cell === 'object' && cell !== null ? (raw as ExportRollupCell) : null
+}
+
+/**
+ * rollup 칸의 글자 — 화면(`RollupDisplay`)과 같은 모양(정본 rollup v1 [보강 10n-37]). 없음은 빈 칸(0 과 가른다) · 원본 보기는 대상 칸의
+ * 글자를 `, ` 로(넘으면 `+N`) · 볼 수 없는 것이 있으면 뒤에 개수 · 너무 많으면 그렇다고. 모양이 아니면(설정이 끊겼다) 빈 칸.
+ */
+function rollupPlainText(raw: unknown, untitled: string): string {
+  const exported = readRollupCell(raw)
+  if (exported === null) return ''
+  const { cell } = exported
+  if (cell.state === 'too_many') return '(연결이 너무 많아 계산하지 않음)'
+  const r = cell.result
+  let text = ''
+  switch (r.kind) {
+    case 'number':
+      text = r.number === null ? '' : String(r.number)
+      break
+    case 'percent':
+      text = r.percent === null ? '' : `${Math.round(r.percent * 1000) / 10}%`
+      break
+    case 'date':
+      text = r.date ?? ''
+      break
+    case 'days':
+      text = r.days === null ? '' : `${r.days}일`
+      break
+    case 'values': {
+      const column: CsvColumn = { propertyId: '', name: '', type: exported.targetType, options: exported.targetOptions }
+      const shown = r.values.map((v) => cellPlainText(column, v, untitled)).filter((t) => t !== '').join(', ')
+      const beyond = r.count - r.values.length
+      text = [shown, beyond > 0 ? `+${beyond}` : ''].filter((part) => part !== '').join(' ')
+      break
+    }
+  }
+  const hidden = cell.hidden > 0 ? `(볼 수 없는 항목 ${cell.hidden}개)` : ''
+  return [text, hidden].filter((part) => part !== '').join(' ')
+}
+
 /** relation 칸의 글자 — 제목을 `, ` 로 · 볼 수 없는 것이 있으면 뒤에 개수(정본 [보강 10n-36]). 모양이 아니면 빈 칸. */
 function relationPlainText(raw: unknown, untitled: string): string {
   if (typeof raw !== 'object' || raw === null || (raw as { type?: unknown }).type !== 'relation_titles') return ''
@@ -125,6 +177,11 @@ function relationPlainText(raw: unknown, untitled: string): string {
 /** 이 칸에 수식 막기를 거는가 — 사용자가 쓴 글자의 타입이거나, 수식의 **글 결과**(10n-35 · 머리말). */
 function guardsUserText(column: CsvColumn, raw: unknown): boolean {
   if (column.type === 'formula') return readFormulaValue(raw)?.type === 'text'
+  // rollup(10n-37) — 원본 보기 · 고유 값 보기가 사람이 쓴 글자(글 · 선택 · 상태)를 싣을 때만
+  if (column.type === 'rollup') {
+    const cell = readRollupCell(raw)
+    return cell !== null && cell.cell.state === 'ok' && cell.cell.result.kind === 'values' && USER_TEXT.has(cell.targetType)
+  }
   return USER_TEXT.has(column.type)
 }
 
@@ -169,6 +226,8 @@ export function cellPlainText(column: CsvColumn, raw: unknown, untitled: string 
   if (column.type === 'formula') return formulaPlainText(raw)
   // relation(10n-36) — 스냅숏이 엣지에서 읽어 끼운 제목 · 볼 수 없는 개수
   if (column.type === 'relation') return relationPlainText(raw, untitled)
+  // rollup(10n-37) — 스냅숏이 계산한 칸
+  if (column.type === 'rollup') return rollupPlainText(raw, untitled)
   const value = readCell(column.type, raw)
   switch (value.type) {
     case 'title':

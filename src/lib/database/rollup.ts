@@ -286,162 +286,175 @@ export async function computeRollups(
   const wanted = [...new Set(rowIds)]
   if (wanted.length > MAX_ROLLUP_ROWS) return { ok: false, reason: 'invalid_value' }
 
-  return withReadTransaction(async (tx) => {
-    if (!(await canViewDataSource(tx, ctx, dataSourceId))) return { ok: false, reason: 'not_found' } as const
+  return withReadTransaction((tx) => computeRollupsIn(tx, ctx, dataSourceId, wanted, maxLinks))
+}
 
-    // ── 스키마: rollup → relation → 대상 ──
-    const rollups = await tx.query<{ id: string; config: unknown }>(
-      `SELECT id, config FROM property
-        WHERE data_source_id = $1 AND type = 'rollup' AND deleted_at IS NULL`,
-      [dataSourceId],
-    )
-    if (rollups.length === 0) return { ok: true, value: { columns: {}, values: {} } } as const
+/**
+ * `computeRollups` 의 안쪽 — **부르는 쪽의 트랜잭션에서** 계산한다(10n-37). 내보내기 스냅샷은 한 읽기 트랜잭션 안에서 모든 것을 읽어야
+ * 해서(시점이 하나) 제 트랜잭션을 여는 바깥을 부를 수 없다. 행 수 상한(`MAX_ROLLUP_ROWS`)은 화면의 요청을 막는 바깥의 일이다 — 스냅샷은
+ * 표의 행 전부를 한 번에 넘긴다. 칸 하나의 연결 상한(`maxLinks` — `too_many`)은 여기서도 같다. id 의 모양은 부르는 쪽이 보았다.
+ */
+export async function computeRollupsIn(
+  tx: Tx,
+  ctx: SessionContext,
+  dataSourceId: string,
+  wanted: readonly string[],
+  maxLinks: number = MAX_ROLLUP_LINKS,
+): Promise<RollupReadResult> {
+  if (!(await canViewDataSource(tx, ctx, dataSourceId))) return { ok: false, reason: 'not_found' } as const
 
-    const configs = new Map(rollups.map((r) => [r.id, readRollupConfig(r.config)] as const))
-    const relationIds = [...new Set([...configs.values()].flatMap((c) => (c === null ? [] : [c.relation_property_id])))]
-    const targetIds = [...new Set([...configs.values()].flatMap((c) => (c === null ? [] : [c.target_property_id])))]
+  // ── 스키마: rollup → relation → 대상 ──
+  const rollups = await tx.query<{ id: string; config: unknown }>(
+    `SELECT id, config FROM property
+      WHERE data_source_id = $1 AND type = 'rollup' AND deleted_at IS NULL`,
+    [dataSourceId],
+  )
+  if (rollups.length === 0) return { ok: true, value: { columns: {}, values: {} } } as const
 
-    // relation 은 **이 표의 것**이어야 한다 — 다른 표의 relation 을 가리키는 config 는 끊긴 것으로 읽는다.
-    const relations = await tx.query<{ id: string; config: unknown }>(
-      `SELECT id, config FROM property
-        WHERE id = ANY($1::text[]) AND data_source_id = $2 AND type = 'relation' AND deleted_at IS NULL`,
-      [relationIds, dataSourceId],
-    )
-    const targetTableOf = new Map<string, string>()
-    for (const r of relations) {
-      const config = readRelationConfig(r.config)
-      if (config !== null) targetTableOf.set(r.id, config.target_data_source_id)
+  const configs = new Map(rollups.map((r) => [r.id, readRollupConfig(r.config)] as const))
+  const relationIds = [...new Set([...configs.values()].flatMap((c) => (c === null ? [] : [c.relation_property_id])))]
+  const targetIds = [...new Set([...configs.values()].flatMap((c) => (c === null ? [] : [c.target_property_id])))]
+
+  // relation 은 **이 표의 것**이어야 한다 — 다른 표의 relation 을 가리키는 config 는 끊긴 것으로 읽는다.
+  const relations = await tx.query<{ id: string; config: unknown }>(
+    `SELECT id, config FROM property
+      WHERE id = ANY($1::text[]) AND data_source_id = $2 AND type = 'relation' AND deleted_at IS NULL`,
+    [relationIds, dataSourceId],
+  )
+  const targetTableOf = new Map<string, string>()
+  for (const r of relations) {
+    const config = readRelationConfig(r.config)
+    if (config !== null) targetTableOf.set(r.id, config.target_data_source_id)
+  }
+
+  const targets = await tx.query<{ id: string; data_source_id: string; type: string }>(
+    `SELECT id, data_source_id, type FROM property WHERE id = ANY($1::text[]) AND deleted_at IS NULL`,
+    [targetIds],
+  )
+  const targetOf = new Map(targets.map((t) => [t.id, t] as const))
+
+  // 옵션 이름은 그 표의 내용이다 — 볼 수 있는 표의 것만 읽는다.
+  const visibleTables = new Set<string>([dataSourceId])
+  for (const table of new Set(targetTableOf.values())) {
+    if (table !== dataSourceId && (await canViewDataSource(tx, ctx, table))) visibleTables.add(table)
+  }
+
+  type Live = Omit<Extract<RollupColumnInfo, { state: 'ok' }>, 'state' | 'targetOptions'> & {
+    readonly id: string
+    readonly table: string
+  }
+  const columns: Record<string, RollupColumnInfo> = {}
+  const live: Live[] = []
+  for (const [propertyId, config] of configs) {
+    const table = config === null ? undefined : targetTableOf.get(config.relation_property_id)
+    if (config === null || table === undefined) {
+      columns[propertyId] = { state: 'relation_missing' }
+      continue
     }
-
-    const targets = await tx.query<{ id: string; data_source_id: string; type: string }>(
-      `SELECT id, data_source_id, type FROM property WHERE id = ANY($1::text[]) AND deleted_at IS NULL`,
-      [targetIds],
-    )
-    const targetOf = new Map(targets.map((t) => [t.id, t] as const))
-
-    // 옵션 이름은 그 표의 내용이다 — 볼 수 있는 표의 것만 읽는다.
-    const visibleTables = new Set<string>([dataSourceId])
-    for (const table of new Set(targetTableOf.values())) {
-      if (table !== dataSourceId && (await canViewDataSource(tx, ctx, table))) visibleTables.add(table)
+    const target = targetOf.get(config.target_property_id)
+    // 대상은 **그 relation 의 대상 표의** 프로퍼티여야 한다.
+    if (target === undefined || target.data_source_id !== table || !isRollupTargetType(target.type)) {
+      columns[propertyId] = { state: 'target_missing' }
+      continue
     }
+    live.push({
+      id: propertyId,
+      table,
+      function: effectiveRollupFunction(config.function, target.type),
+      relationPropertyId: config.relation_property_id,
+      targetPropertyId: config.target_property_id,
+      targetType: target.type,
+    })
+  }
 
-    type Live = Omit<Extract<RollupColumnInfo, { state: 'ok' }>, 'state' | 'targetOptions'> & {
-      readonly id: string
-      readonly table: string
+  // 옵션 — 이름은 그 표를 볼 수 있을 때만 싣는다(원본 보기). 완료 비율(10n-29)은 어느 옵션이 완료 그룹인지 알아야 해서 그 대상의 것도 읽는다
+  const optionsOf = await readOptionsOf(tx, [
+    ...new Set(
+      live
+        .filter((c) => (isOptionType(c.targetType) && visibleTables.has(c.table)) || c.function === 'percent_complete')
+        .map((c) => c.targetPropertyId),
+    ),
+  ])
+  const completeOf = new Map<string, ReadonlySet<string>>()
+  for (const c of live) {
+    const options = optionsOf.get(c.targetPropertyId) ?? []
+    if (c.function === 'percent_complete') completeOf.set(c.id, new Set(options.filter((o) => o.group === 'complete').map((o) => o.id)))
+    columns[c.id] = {
+      state: 'ok',
+      function: c.function,
+      relationPropertyId: c.relationPropertyId,
+      targetPropertyId: c.targetPropertyId,
+      targetType: c.targetType,
+      targetOptions: isOptionType(c.targetType) && visibleTables.has(c.table) ? options : [],
     }
-    const columns: Record<string, RollupColumnInfo> = {}
-    const live: Live[] = []
-    for (const [propertyId, config] of configs) {
-      const table = config === null ? undefined : targetTableOf.get(config.relation_property_id)
-      if (config === null || table === undefined) {
-        columns[propertyId] = { state: 'relation_missing' }
+  }
+
+  if (live.length === 0 || wanted.length === 0) return { ok: true, value: { columns, values: {} } } as const
+
+  // ── 행: 이 표의 · 살아 있는 · 템플릿이 아닌 것만 ──
+  const rows = await tx.query<{ id: string }>(
+    `SELECT p.id FROM page p JOIN block b ON b.id = p.id
+      WHERE p.id = ANY($1::uuid[]) AND p.data_source_id = $2 AND b.workspace_id = $3
+        AND b.lifecycle = 'live' AND p.is_template = false`,
+    [wanted, dataSourceId, ctx.workspaceId],
+  )
+
+  // ── 엣지 한 번. 휴지통 · 템플릿은 여기서 빠지고, 읽을 수 있는지는 표시만 해 둔다(hidden 을 세야 한다) ──
+  const scopes = await readableScopes(tx, ctx)
+  const edges = await tx.query<EdgeRow>(
+    `SELECT from_page_id, property_id, to_page_id, readable
+       FROM (SELECT e.from_page_id, e.property_id, e.to_page_id,
+                    (b.perm_scope_id = ANY($4::uuid[])) AS readable,
+                    row_number() OVER (PARTITION BY e.from_page_id, e.property_id
+                                           ORDER BY e.order_idx COLLATE "C", e.to_page_id) AS rn
+               FROM relation_edge e
+               JOIN page p ON p.id = e.to_page_id
+               JOIN block b ON b.id = p.id
+              WHERE e.property_id = ANY($1::text[]) AND e.from_page_id = ANY($2::uuid[])
+                AND b.workspace_id = $3 AND b.lifecycle = 'live' AND p.is_template = false) t
+      WHERE rn <= $5
+      ORDER BY from_page_id, property_id, rn`,
+    // 상한보다 하나 더 읽는다 — "넘었다"를 알려면 넘은 하나가 필요하다.
+    [[...new Set(live.map((c) => c.relationPropertyId))], rows.map((r) => r.id), ctx.workspaceId, scopes, maxLinks + 1],
+  )
+  const edgesOf = new Map<string, EdgeRow[]>()
+  for (const e of edges) {
+    const key = `${e.from_page_id}:${e.property_id}`
+    const list = edgesOf.get(key)
+    if (list === undefined) edgesOf.set(key, [e])
+    else list.push(e)
+  }
+
+  // ── 대상 값 한 번. **읽을 수 있는 행의 것만** 읽는다 — 읽지 않은 값은 샐 수 없다 ──
+  const readableTargets = [...new Set(edges.filter((e) => e.readable).map((e) => e.to_page_id))]
+  const cells = await tx.query<{ page_id: string; property_id: string; value: unknown }>(
+    `SELECT page_id, property_id, value FROM page_property_value
+      WHERE page_id = ANY($1::uuid[]) AND property_id = ANY($2::text[])`,
+    [readableTargets, [...new Set(live.map((c) => c.targetPropertyId))]],
+  )
+  const cellOf = new Map(cells.map((c) => [`${c.page_id}:${c.property_id}`, c.value] as const))
+
+  const values: Record<string, Record<string, RollupCell>> = {}
+  for (const row of rows) {
+    const out: Record<string, RollupCell> = {}
+    for (const column of live) {
+      const linked = edgesOf.get(`${row.id}:${column.relationPropertyId}`) ?? []
+      if (linked.length > maxLinks) {
+        out[column.id] = { state: 'too_many' }
         continue
       }
-      const target = targetOf.get(config.target_property_id)
-      // 대상은 **그 relation 의 대상 표의** 프로퍼티여야 한다.
-      if (target === undefined || target.data_source_id !== table || !isRollupTargetType(target.type)) {
-        columns[propertyId] = { state: 'target_missing' }
-        continue
-      }
-      live.push({
-        id: propertyId,
-        table,
-        function: effectiveRollupFunction(config.function, target.type),
-        relationPropertyId: config.relation_property_id,
-        targetPropertyId: config.target_property_id,
-        targetType: target.type,
-      })
-    }
-
-    // 옵션 — 이름은 그 표를 볼 수 있을 때만 싣는다(원본 보기). 완료 비율(10n-29)은 어느 옵션이 완료 그룹인지 알아야 해서 그 대상의 것도 읽는다
-    const optionsOf = await readOptionsOf(tx, [
-      ...new Set(
-        live
-          .filter((c) => (isOptionType(c.targetType) && visibleTables.has(c.table)) || c.function === 'percent_complete')
-          .map((c) => c.targetPropertyId),
-      ),
-    ])
-    const completeOf = new Map<string, ReadonlySet<string>>()
-    for (const c of live) {
-      const options = optionsOf.get(c.targetPropertyId) ?? []
-      if (c.function === 'percent_complete') completeOf.set(c.id, new Set(options.filter((o) => o.group === 'complete').map((o) => o.id)))
-      columns[c.id] = {
+      const readable = linked.filter((e) => e.readable)
+      // 칸이 없는 행은 그 타입의 빈 값이다(`readCell`) — count 는 세고 count_values 는 세지 않는다.
+      const inputs: CellValue[] = readable.map((e) =>
+        readCell(column.targetType, cellOf.get(`${e.to_page_id}:${column.targetPropertyId}`)),
+      )
+      out[column.id] = {
         state: 'ok',
-        function: c.function,
-        relationPropertyId: c.relationPropertyId,
-        targetPropertyId: c.targetPropertyId,
-        targetType: c.targetType,
-        targetOptions: isOptionType(c.targetType) && visibleTables.has(c.table) ? options : [],
+        result: aggregate(column.function, inputs, { completeOptionIds: completeOf.get(column.id) }),
+        hidden: linked.length - readable.length,
       }
     }
-
-    if (live.length === 0 || wanted.length === 0) return { ok: true, value: { columns, values: {} } } as const
-
-    // ── 행: 이 표의 · 살아 있는 · 템플릿이 아닌 것만 ──
-    const rows = await tx.query<{ id: string }>(
-      `SELECT p.id FROM page p JOIN block b ON b.id = p.id
-        WHERE p.id = ANY($1::uuid[]) AND p.data_source_id = $2 AND b.workspace_id = $3
-          AND b.lifecycle = 'live' AND p.is_template = false`,
-      [wanted, dataSourceId, ctx.workspaceId],
-    )
-
-    // ── 엣지 한 번. 휴지통 · 템플릿은 여기서 빠지고, 읽을 수 있는지는 표시만 해 둔다(hidden 을 세야 한다) ──
-    const scopes = await readableScopes(tx, ctx)
-    const edges = await tx.query<EdgeRow>(
-      `SELECT from_page_id, property_id, to_page_id, readable
-         FROM (SELECT e.from_page_id, e.property_id, e.to_page_id,
-                      (b.perm_scope_id = ANY($4::uuid[])) AS readable,
-                      row_number() OVER (PARTITION BY e.from_page_id, e.property_id
-                                             ORDER BY e.order_idx COLLATE "C", e.to_page_id) AS rn
-                 FROM relation_edge e
-                 JOIN page p ON p.id = e.to_page_id
-                 JOIN block b ON b.id = p.id
-                WHERE e.property_id = ANY($1::text[]) AND e.from_page_id = ANY($2::uuid[])
-                  AND b.workspace_id = $3 AND b.lifecycle = 'live' AND p.is_template = false) t
-        WHERE rn <= $5
-        ORDER BY from_page_id, property_id, rn`,
-      // 상한보다 하나 더 읽는다 — "넘었다"를 알려면 넘은 하나가 필요하다.
-      [[...new Set(live.map((c) => c.relationPropertyId))], rows.map((r) => r.id), ctx.workspaceId, scopes, maxLinks + 1],
-    )
-    const edgesOf = new Map<string, EdgeRow[]>()
-    for (const e of edges) {
-      const key = `${e.from_page_id}:${e.property_id}`
-      const list = edgesOf.get(key)
-      if (list === undefined) edgesOf.set(key, [e])
-      else list.push(e)
-    }
-
-    // ── 대상 값 한 번. **읽을 수 있는 행의 것만** 읽는다 — 읽지 않은 값은 샐 수 없다 ──
-    const readableTargets = [...new Set(edges.filter((e) => e.readable).map((e) => e.to_page_id))]
-    const cells = await tx.query<{ page_id: string; property_id: string; value: unknown }>(
-      `SELECT page_id, property_id, value FROM page_property_value
-        WHERE page_id = ANY($1::uuid[]) AND property_id = ANY($2::text[])`,
-      [readableTargets, [...new Set(live.map((c) => c.targetPropertyId))]],
-    )
-    const cellOf = new Map(cells.map((c) => [`${c.page_id}:${c.property_id}`, c.value] as const))
-
-    const values: Record<string, Record<string, RollupCell>> = {}
-    for (const row of rows) {
-      const out: Record<string, RollupCell> = {}
-      for (const column of live) {
-        const linked = edgesOf.get(`${row.id}:${column.relationPropertyId}`) ?? []
-        if (linked.length > maxLinks) {
-          out[column.id] = { state: 'too_many' }
-          continue
-        }
-        const readable = linked.filter((e) => e.readable)
-        // 칸이 없는 행은 그 타입의 빈 값이다(`readCell`) — count 는 세고 count_values 는 세지 않는다.
-        const inputs: CellValue[] = readable.map((e) =>
-          readCell(column.targetType, cellOf.get(`${e.to_page_id}:${column.targetPropertyId}`)),
-        )
-        out[column.id] = {
-          state: 'ok',
-          result: aggregate(column.function, inputs, { completeOptionIds: completeOf.get(column.id) }),
-          hidden: linked.length - readable.length,
-        }
-      }
-      values[row.id] = out
-    }
-    return { ok: true, value: { columns, values } } as const
-  })
+    values[row.id] = out
+  }
+  return { ok: true, value: { columns, values } } as const
 }

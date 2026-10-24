@@ -20685,6 +20685,57 @@ async function main() {
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('내보내기의 rollup 칸 (10n-37 · F-03-11 · F-09-14)')) { try {
+      // 표를 내보낸 ZIP 의 CSV · 행 Markdown 에 rollup 칸이 화면과 같은 값으로 들어간다(전에는 빈 칸) — 합 · 비율 · 없음은 빈 칸.
+      // ZIP 은 python zipfile 로 읽는다(§3.3-63). 정본 rollup v1 — [보강 10n-37].
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const projects = (await api('POST', '/databases', { name: `롤업 내보내기 프로젝트 ${stamp}` })).body.database
+      const tasks = (await api('POST', '/databases', { name: `롤업 내보내기 작업 ${stamp}` })).body.database
+      const projectTitle = (await api('GET', `/views/${projects.defaultViewId}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const hours = (await api('POST', `/data-sources/${tasks.dataSourceId}/properties`, { name: '시간', type: 'number' })).body.property.id
+      const done = (await api('POST', `/data-sources/${tasks.dataSourceId}/properties`, { name: '끝남', type: 'checkbox' })).body.property.id
+      const relation = (await api('POST', `/data-sources/${projects.dataSourceId}/relations`, { name: '작업들', targetDataSourceId: tasks.dataSourceId })).body?.property?.id
+      const rollupOf = async (name, targetPropertyId, fn) =>
+        (await api('POST', `/data-sources/${projects.dataSourceId}/rollups`, { name, relationPropertyId: relation, targetPropertyId, function: fn })).body?.property?.id
+      const made = [await rollupOf('합', hours, 'sum'), await rollupOf('끝난 비율', done, 'percent_checked'), await rollupOf('평균', hours, 'average')]
+      check('전제 — relation 과 rollup 셋을 만든다', relation !== undefined && made.every((id) => typeof id === 'string'), JSON.stringify({ relation, made }))
+      const project = (await api('POST', `/views/${projects.defaultViewId}/rows`, { cells: [{ propertyId: projectTitle, value: { type: 'title', title: [textRun('집')] } }] })).body.row.id
+      await api('POST', `/views/${projects.defaultViewId}/rows`, { cells: [{ propertyId: projectTitle, value: { type: 'title', title: [textRun('빈 집')] } }] })
+      const task = async (h, d) => (await api('POST', `/views/${tasks.defaultViewId}/rows`, { cells: [
+        { propertyId: hours, value: { type: 'number', number: h } }, { propertyId: done, value: { type: 'checkbox', checkbox: d } },
+      ] })).body.row.id
+      await api('POST', `/rows/${project}/relations/${relation}`, { add: [await task(2, true), await task(4, false)] })
+
+      const zipRes = await fetch(`${BASE}/api/workspaces/${workspaceId}/export?root=${projects.id}`, { headers: authed })
+      check('표를 내보낸다 — 200', zipRes.status === 200, String(zipRes.status))
+      const dir = mkdtempSync(join(tmpdir(), 'nc-e2e-rollup-export-'))
+      try {
+        const file = join(dir, 'export.zip')
+        writeFileSync(file, Buffer.from(await zipRes.arrayBuffer()))
+        const { findPython, runPythonJson } = await import(new URL('../src/lib/testing/external-tools.ts', import.meta.url).href)
+        const python = findPython()
+        const zip = python === null
+          ? { names: [], texts: {}, error: 'python 을 찾지 못했다' }
+          : runPythonJson(python, [
+              'import sys, json, zipfile',
+              'z = zipfile.ZipFile(sys.argv[1])',
+              "print(json.dumps({'names': z.namelist(), 'texts': {n: z.read(n).decode('utf-8') for n in z.namelist() if n.endswith(('.md', '.csv'))}}))",
+            ].join('\n'), [file])
+        const texts = zip.texts ?? {}
+        const lines = (Object.entries(texts).find(([n]) => n.endsWith('.csv'))?.[1] ?? '').replace('\uFEFF', '').split('\r\n')
+        check('★ CSV 의 rollup 칸 — 합 6 · 비율 50% · 평균 3 · 연결 없는 행은 합 0 · 비율과 평균은 빈 칸',
+          lines[0] === '이름,작업들,합,끝난 비율,평균' && lines.includes('집,"제목 없음, 제목 없음",6,50%,3') && lines.includes('빈 집,,0,,'), JSON.stringify(lines))
+        const rowMd = Object.entries(texts).find(([n, t]) => n.endsWith('.md') && t.includes('# 집'))?.[1] ?? ''
+        check('★ 행 Markdown 의 속성 줄에도 — **합**: 6 · **끝난 비율**: 50%', rowMd.includes('**합**: 6') && rowMd.includes('**끝난 비율**: 50%'), JSON.stringify(rowMd.slice(0, 300)))
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).
