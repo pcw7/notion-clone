@@ -13,6 +13,7 @@
  *      검증은 문서 검증에서
  *   ⑤ ★ **폭 · 정렬**(10n-63) — 폭은 칸 폭의 비율(0.1 ~ 1 · 둘째 자리) · 정렬은 셋 · 없으면 원래 크기 · 왼쪽 · 쓰기는 없음을 지운다 · 검증은
  *      문서 검증에서 · 다른 타입으로 바뀌면 사라진다
+ *   ⑥ ★ **끌어서 폭 바꾸기**(10n-64) — 끈 거리 → 칸 폭의 비율(가운데는 두 배 · 범위 안) · 손잡이의 키(5%씩 · Home · End)
  */
 
 import { test, describe } from 'node:test'
@@ -23,6 +24,8 @@ import {
   MAX_ALT_TEXT,
   readImageLayout,
   roundImageWidth,
+  draggedImageWidth,
+  steppedImageWidth,
   withImageLayout,
   captionToJson,
   imageAltText,
@@ -245,5 +248,28 @@ describe('이미지의 폭 · 정렬 (10n-63)', () => {
     assert.ok(validateDoc(doc as never).some((i) => i.path.endsWith('format.block_width')), JSON.stringify(validateDoc(doc as never)))
     assert.deepEqual(normalizeFormat('paragraph', { block_width: 0.5, block_align: 'center', future: 1 }), { future: 1 })
     assert.deepEqual(normalizeFormat('image', { block_width: 0.5, block_align: 'center' }), { block_width: 0.5, block_align: 'center' })
+  })
+})
+
+describe('끌어서 폭 바꾸기 (10n-64)', () => {
+  test('★ 끈 거리 → 칸 폭의 비율 — 오른쪽 손잡이는 오른쪽으로 · 왼쪽 손잡이는 왼쪽으로 넓어진다 · 가운데는 두 배 · 범위 안', () => {
+    assert.equal(draggedImageWidth(400, -100, 800, 'right', 'left'), 0.38, '400-100 = 300 → 0.375 → 0.38')
+    assert.equal(draggedImageWidth(400, -100, 800, 'left', 'left'), 0.63, '왼쪽 손잡이를 왼쪽으로 — 넓어진다')
+    assert.equal(draggedImageWidth(400, 100, 800, 'right', 'center'), 0.75, '가운데 — 양쪽으로 함께(두 배)')
+    assert.equal(draggedImageWidth(400, -1000, 800, 'right', 'left'), 0.1, '가장 좁게')
+    assert.equal(draggedImageWidth(400, 1000, 800, 'right', 'left'), 1, '칸 폭까지')
+    assert.equal(draggedImageWidth(400, 10, 0, 'right', 'left'), 1, '칸 폭을 모르면 1')
+  })
+
+  test('손잡이의 키 — ←↓ 좁게 · →↑ 넓게 · Home · End · 그 밖은 받지 않는다', () => {
+    assert.equal(steppedImageWidth(0.5, 'ArrowLeft'), 0.45)
+    assert.equal(steppedImageWidth(0.5, 'ArrowUp'), 0.55)
+    assert.equal(steppedImageWidth(0.12, 'ArrowDown'), 0.1, '가장 좁은 데서 멈춘다')
+    assert.equal(steppedImageWidth(0.98, 'ArrowRight'), 1)
+    assert.equal(steppedImageWidth(0.5, 'Home'), 0.1)
+    assert.equal(steppedImageWidth(0.5, 'End'), 1)
+    assert.equal(steppedImageWidth(0.1, 'End'), 1, '어디서든 칸 폭 — 한 걸음이 아니다')
+    assert.equal(steppedImageWidth(0.9, 'Home'), 0.1, '어디서든 가장 좁게')
+    assert.equal(steppedImageWidth(0.5, 'Enter'), null)
   })
 })

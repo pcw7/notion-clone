@@ -323,3 +323,42 @@ export function validateImageProperties(
 
   return issues
 }
+
+// ── 끌어서 폭 바꾸기 (10n-64) ─────────────────────────────
+
+export type ImageHandleSide = 'left' | 'right'
+
+/**
+ * 손잡이를 끌어 고른 폭 — 잡을 때의 그림 폭(px) · 포인터가 옆으로 움직인 거리 · 칸 폭(px) · 잡은 손잡이 · 정렬 → 칸 폭에 대한 비율(둥근다 · 범위
+ * 안 · `roundImageWidth`). 오른쪽 손잡이는 오른쪽으로, 왼쪽 손잡이는 왼쪽으로 끌면 넓어진다. **가운데 정렬은 양쪽으로 함께 늘어** 움직인 거리의
+ * 두 배다(손잡이가 포인터를 따라간다). 칸 폭이 0 이면(그리기 전) 지금 폭 그대로 1.
+ */
+export function draggedImageWidth(startPx: number, dx: number, columnPx: number, side: ImageHandleSide, align: ImageAlign): number {
+  if (!(columnPx > 0)) return 1
+  const grow = (side === 'right' ? dx : -dx) * (align === 'center' ? 2 : 1)
+  return roundImageWidth((startPx + grow) / columnPx)
+}
+
+/** 키로 바꾸는 한 걸음 — 칸 폭의 5%. */
+export const IMAGE_WIDTH_STEP = 0.05
+
+/**
+ * 손잡이(슬라이더)의 키 — ←/↓ 는 좁게 · →/↑ 는 넓게(한 걸음) · Home 은 가장 좁게 · End 는 칸 폭. 그 밖의 키는 null(받지 않는다). `current` 는 지금
+ * 그려진 폭의 비율(폭이 없는 그림은 원래 크기를 칸 폭으로 나눈 값).
+ */
+export function steppedImageWidth(current: number, key: string): number | null {
+  switch (key) {
+    case 'ArrowLeft':
+    case 'ArrowDown':
+      return roundImageWidth(current - IMAGE_WIDTH_STEP)
+    case 'ArrowRight':
+    case 'ArrowUp':
+      return roundImageWidth(current + IMAGE_WIDTH_STEP)
+    case 'Home':
+      return MIN_IMAGE_WIDTH
+    case 'End':
+      return 1
+    default:
+      return null
+  }
+}

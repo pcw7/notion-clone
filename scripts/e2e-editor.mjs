@@ -22327,6 +22327,90 @@ async function main() {
       check('★ 공개 화면도 같은 규칙 — 폭 0.5 · 오른쪽', pub !== null && pub.ratio === 0.5 && pub.align === 'right' && pub.right <= 1, JSON.stringify(pub))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('이미지의 폭 손잡이 (10n-64 · F-01-15)')) { try {
+      // 그림 양쪽의 손잡이 — 끄는 동안 미리 보이고 놓으면 그 폭(칸 폭의 비율)이 된다 · 새로 읽어도 남는다 · 가운데 정렬은 양쪽으로 함께(끈 거리의
+      // 두 배) · 손잡이는 슬라이더(←/→ 5%씩 · End 는 칸 폭 · 포커스는 손잡이에 남는다) · 두 번 누르면 원래 크기. 정본 §3.4 [보강 10n-63] ④.
+      // 자기 데이터를 스스로 만든다(API).
+      const stamp = Date.now().toString(36)
+      const made = await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: JSON.stringify({ title: `그림 손잡이 ${stamp}` }) })
+      const page = (await made.json()).page.id
+      const img = randomUUID()
+      await saveBody(page, {
+        blocks: [
+          { id: img, type: 'image', title: [], properties: { source: { type: 'external', url: `${BASE}/globe.svg` } }, format: { block_width: 0.6 }, children: [] },
+          block(randomUUID(), 'paragraph', '그림 뒤 문단'),
+        ],
+      })
+      const FIG = `[data-block-id="${img}"] figure.blk-image`
+      const HANDLE = (side) => `${FIG} [data-testid="image-resize-${side}"]`
+      const state = () => evaluate(`(() => {
+        const fig = document.querySelector('${FIG}'); const frame = fig?.querySelector('.blk-image-frame'); if (!fig || !frame) return null
+        const f = fig.getBoundingClientRect(); const r = frame.getBoundingClientRect()
+        return { width: fig.dataset.width ?? null, ratio: Math.round((r.width / f.width) * 100) / 100, column: f.width, align: fig.dataset.align ?? 'left',
+          value: document.querySelector('${HANDLE('right')}')?.getAttribute('aria-valuenow') ?? null,
+          focused: document.activeElement?.getAttribute('data-testid') ?? null }
+      })()`)
+      const dragHandle = async (side, dx) => {
+        const h = await rect(HANDLE(side))
+        const x = h.x + h.w / 2
+        const y = h.y + h.h / 2
+        await move(x, y)
+        await press(x, y)
+        for (let i = 1; i <= 10; i += 1) {
+          await move(x + (dx * i) / 10, y, true)
+          await sleep(16)
+        }
+        await release(x + dx, y)
+      }
+      const widthIs = (w) => waitFor(`document.querySelector('${FIG}')?.dataset.width === ${JSON.stringify(String(w))}`, 5000)
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+      await waitFor(`!!document.querySelector('${HANDLE('right')}') && !!document.querySelector('${FIG} img')`, 15000)
+      const start = await state()
+      check('전제 — 폭 0.6 · 손잡이 둘(슬라이더 · 지금 폭 60%)', start !== null && start.width === '0.6' && start.ratio === 0.6 && start.value === '60', JSON.stringify(start))
+
+      // ① 왼쪽 정렬 — 오른쪽 손잡이를 칸 폭의 20% 만큼 왼쪽으로 → 0.4 · 새로 읽어도 남는다
+      await dragHandle('right', -start.column * 0.2)
+      const narrowed = (await widthIs(0.4)) && (await state())
+      await sleep(1500)
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+      await waitFor(`!!document.querySelector('${HANDLE('right')}')`, 15000)
+      const reloaded = (await widthIs(0.4)) && (await state())
+      check('★ 오른쪽 손잡이를 칸 폭의 20% 만큼 왼쪽으로 끌면 폭 0.4 — 그림이 그 폭 · 새로 읽어도 남는다',
+        narrowed !== false && narrowed.ratio === 0.4 && reloaded !== false && reloaded.ratio === 0.4, JSON.stringify({ narrowed, reloaded }))
+
+      // ② 가운데 정렬 — 끈 거리의 두 배: 오른쪽 손잡이를 10% 오른쪽으로 → 0.6
+      await clickSelector(`${FIG} [data-testid="image-align-center"]`)
+      await waitFor(`document.querySelector('${FIG}')?.dataset.align === 'center'`, 5000)
+      const col = (await state()).column
+      await dragHandle('right', col * 0.1)
+      const doubled = (await widthIs(0.6)) && (await state())
+      check('★ 가운데 정렬은 양쪽으로 함께 — 오른쪽 손잡이를 10% 끌면 폭이 20% 넓어진다(0.4 → 0.6) · 정렬은 그대로',
+        doubled !== false && doubled.ratio === 0.6 && doubled.align === 'center', JSON.stringify(doubled))
+
+      // ③ 키 — 손잡이에 포커스 · ← 는 5% 좁게 · End 는 칸 폭 · 포커스는 손잡이에 남는다
+      await evaluate(`document.querySelector('${HANDLE('right')}').focus()`)
+      await key('ArrowLeft')
+      const stepped = (await widthIs(0.55)) && (await state())
+      await key('End')
+      const full = (await widthIs(1)) && (await state())
+      check('★ 손잡이는 슬라이더 — ← 는 5% 좁게(0.55) · End 는 칸 폭(1) · 포커스는 손잡이에 남는다 · 값도 따라간다',
+        stepped !== false && stepped.focused === 'image-resize-right' && full !== false && full.ratio === 1 && full.value === '100' && full.focused === 'image-resize-right',
+        JSON.stringify({ stepped, full }))
+
+      // ④ 두 번 누르면 원래 크기 — 폭을 지운다
+      const h = await rect(HANDLE('left'))
+      const hx = h.x + h.w / 2
+      const hy = h.y + h.h / 2
+      await move(hx, hy)
+      await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: hx, y: hy, button: 'left', buttons: 1, clickCount: 1 })
+      await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: hx, y: hy, button: 'left', buttons: 0, clickCount: 1 })
+      await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: hx, y: hy, button: 'left', buttons: 1, clickCount: 2 })
+      await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: hx, y: hy, button: 'left', buttons: 0, clickCount: 2 })
+      const natural = await waitFor(`!('width' in (document.querySelector('${FIG}')?.dataset ?? { width: 1 }))`, 5000)
+      check('손잡이를 두 번 누르면 원래 크기 — 폭이 지워진다', natural && (await state())?.ratio < 1, JSON.stringify(await state()))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).
