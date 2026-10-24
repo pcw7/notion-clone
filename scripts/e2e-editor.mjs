@@ -22733,6 +22733,71 @@ async function main() {
       check('새로 읽어도 같은 차례 — 서버의 기록과 화면의 덧댐이 같은 말을 한다', reloaded, JSON.stringify(await firstRecent(3)))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('이미지 올리기의 취소 · 다시 올리기 (10n-73 · F-01-15)')) { try {
+      // 올리는 중의 "취소" 는 요청을 끊고 빈 블록으로 · 서버가 넘어지면(503) "다시 올리기" 가 같은 파일을 다시 보낸다 · 다시 보내도 같은
+      // 거절(413)에는 그 단추가 없다. 업로드 요청을 붙잡아(`Fetch`) 흉내 낸다. HANDOFF §3.2-306.
+      const stamp = Date.now().toString(36)
+      const page = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: JSON.stringify({ title: `올리기 ${stamp}` }) })).json()).page.id
+      const img = randomUUID()
+      const img2 = randomUUID()
+      const emptyImage = (id) => ({ id, type: 'image', title: [], properties: {}, format: {}, children: [] })
+      await saveBody(page, { blocks: [emptyImage(img), emptyImage(img2)] })
+      const dir = mkdtempSync(join(tmpdir(), 'nc-upload-'))
+      const pngPath = join(dir, `retry-${stamp}.png`)
+      writeFileSync(pngPath, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64'))
+      const fig = (id) => `[data-block-id="${id}"] .blk-image`
+      const pick = async (id) => {
+        await send('DOM.enable')
+        const root = (await send('DOM.getDocument', { depth: -1 })).root.nodeId
+        const node = (await send('DOM.querySelector', { nodeId: root, selector: `[data-block-id="${id}"] .blk-image-file` })).nodeId
+        await send('DOM.setFileInputFiles', { files: [pngPath], nodeId: node })
+      }
+      const heldUpload = async () => {
+        for (let i = 0; i < 100 && pausedCount() === 0; i += 1) await sleep(50)
+        return pausedCount() > 0
+      }
+      const stateOf = (id) => evaluate(`(() => { const f = document.querySelector('${fig(id)}'); return { state: f?.dataset.state ?? null, alert: f?.querySelector('[role="alert"]')?.textContent ?? '', retry: !!f?.querySelector('[data-testid="image-upload-retry"]'), cancel: !!f?.querySelector('[data-testid="image-upload-cancel"]') } })()`)
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+      await waitFor(`!!document.querySelector('[data-block-id="${img}"] .blk-image-pick') && document.querySelector('.ProseMirror')?.getAttribute('contenteditable') === 'true'`, 15000)
+      await waitHydrated(`[data-block-id="${img}"] .blk-image-pick`)
+      await send('Fetch.enable', { patterns: [{ urlPattern: `*/api/workspaces/${workspaceId}/files`, requestStage: 'Request' }] })
+      try {
+        // ① 취소
+        await pick(img)
+        const held = await heldUpload()
+        const uploading = held && await waitFor(`document.querySelector('${fig(img)}')?.dataset.state === 'uploading' && !!document.querySelector('${fig(img)} [data-testid="image-upload-cancel"]')`, 5000)
+        await clickSelector(`${fig(img)} [data-testid="image-upload-cancel"]`)
+        const emptied = await waitFor(`document.querySelector('${fig(img)}')?.dataset.state === 'empty' && !document.querySelector('${fig(img)} [role="alert"]')`, 5000)
+        await releasePaused()
+        check('★ 올리는 중의 "취소" — 요청을 끊고 빈 블록으로(실패라고 말하지 않는다)', uploading && emptied, JSON.stringify(await stateOf(img)))
+
+        // ② 503 — 다시 올리기
+        await pick(img)
+        await heldUpload()
+        await fulfillPaused(503, { message: '서버가 잠시 바쁩니다.' })
+        const failed = await waitFor(`(() => { const f = document.querySelector('${fig(img)}'); return f?.dataset.state === 'empty' && (f.querySelector('[role="alert"]')?.textContent ?? '').includes('서버가 잠시 바쁩니다') && !!f.querySelector('[data-testid="image-upload-retry"]') })()`, 5000)
+        check('★ 서버가 넘어지면(503) 까닭과 "다시 올리기" 가 선다', failed, JSON.stringify(await stateOf(img)))
+        await send('Fetch.disable')
+        await clickSelector(`${fig(img)} [data-testid="image-upload-retry"]`)
+        const uploaded = await waitFor(`(() => { const i = document.querySelector('${fig(img)} img'); return !!i && i.complete && i.naturalWidth > 0 })()`, 10000)
+        check('★ "다시 올리기" — 같은 파일을 다시 보내 그 자리에 그려진다(파일을 다시 고르지 않는다)', uploaded, JSON.stringify(await stateOf(img)))
+
+        // ③ 413 — 다시 보내도 같은 거절에는 단추가 없다
+        await send('Fetch.enable', { patterns: [{ urlPattern: `*/api/workspaces/${workspaceId}/files`, requestStage: 'Request' }] })
+        await pick(img2)
+        await heldUpload()
+        await fulfillPaused(413, { message: '파일이 너무 큽니다.' })
+        const refused = await waitFor(`(document.querySelector('${fig(img2)} [role="alert"]')?.textContent ?? '').includes('파일이 너무 큽니다')`, 5000)
+        const second = await stateOf(img2)
+        check('다시 보내도 같은 거절(413)에는 "다시 올리기" 가 없다 — 까닭만 말한다', refused && !second.retry, JSON.stringify(second))
+      } finally {
+        await send('Fetch.disable').catch(() => undefined)
+        await releasePaused().catch(() => undefined)
+        rmSync(dir, { recursive: true, force: true })
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

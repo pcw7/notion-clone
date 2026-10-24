@@ -61,6 +61,8 @@ export type ImageViewDeps = {
   readonly uploadImage: (
     file: File,
     onProgress: (fraction: number) => void,
+    /** 끊기면 올리기를 그만둔다(10n-73 — "취소"). */
+    signal?: AbortSignal,
   ) => Promise<UploadOutcome>
   /** 대체 텍스트 대화상자를 연다(10d-1b · F-12-13) — 편집기 밖의 오버레이. 읽기 전용 편집기는 아무것도 하지 않는다. */
   readonly openImageAlt: (blockId: string) => void
@@ -118,6 +120,12 @@ export function imageNodeView(
   /** 업로드 중에는 문서에 아직 아무것도 없다 — 뷰 안에서만 사는 상태다. */
   let uploading = false
   let failure = ''
+  /**
+   * 다시 올릴 파일 · 지금 올리기를 끊을 손잡이(10n-73 · HANDOFF §3.2-306). 다시 해 볼 만한 실패(연결 · 5xx)에만 파일을 남긴다 —
+   * 크기 · 형식 거절은 다시 보내도 같다. 뷰 안에만 산다(문서에 쓰지 않는다 · 새로 읽으면 사라진다 — 다시 고르면 된다).
+   */
+  let retryFile: File | null = null
+  let controller: AbortController | null = null
 
   // ── 문서에 쓰기 ─────────────────────────────────────────────────────
 
@@ -158,21 +166,29 @@ export function imageNodeView(
   const startUpload = async (file: File): Promise<void> => {
     uploading = true
     failure = ''
+    retryFile = null
+    progress.value = 0
+    progress.textContent = '0%'
+    const mine = new AbortController()
+    controller = mine
     render()
 
     const result = await deps.uploadImage(file, (fraction) => {
       // 렌더를 다시 돌리지 않는다 — 진행률 막대 하나만 움직인다.
       progress.value = fraction
       progress.textContent = `${Math.round(fraction * 100)}%`
-    })
+    }, mine.signal)
 
+    if (controller === mine) controller = null
     uploading = false
     if (result.ok) {
       // 썼으면 트랜잭션이 `update` 를 불러 다시 그린다. 못 썼으면 여기서 그린다.
       if (!setSource({ kind: 'file', fileId: result.fileId })) notWritten()
       return
     }
-    failure = result.message
+    // 끊었으면 빈 블록으로 — 실패가 아니다(다시 고르면 된다)
+    failure = result.cancelled === true ? '' : result.message
+    retryFile = result.retryable === true ? file : null
     render()
   }
 
@@ -358,7 +374,13 @@ export function imageNodeView(
 
     if (uploading) {
       dom.dataset.state = 'uploading'
-      controls.append(element('span', 'blk-image-status', '올리는 중'), progress)
+      // 취소(10n-73) — 요청을 끊고 빈 블록으로. 편집할 수 있을 때만 뜻이 있다(읽기 전용은 올리지 않는다)
+      const cancel = element('button', 'blk-image-upload-cancel', '취소')
+      cancel.type = 'button'
+      cancel.setAttribute('data-testid', 'image-upload-cancel')
+      cancel.addEventListener('mousedown', (event) => event.preventDefault())
+      cancel.addEventListener('click', () => controller?.abort())
+      controls.append(element('span', 'blk-image-status', '올리는 중'), progress, cancel)
     } else if (source !== null) {
       dom.dataset.state = 'ready'
       renderImage(source, readCaption(props), imageAltText(current.attrs.format, props))
@@ -413,6 +435,16 @@ export function imageNodeView(
       // `role="alert"` — 업로드 실패는 스크린리더에도 알려야 한다.
       const box = element('div', 'blk-image-failure', failure)
       box.setAttribute('role', 'alert')
+      // 다시 올리기(10n-73) — 다시 해 볼 만한 실패에만 · 같은 파일을 다시 보낸다
+      const again = retryFile
+      if (again !== null && view.editable) {
+        const retry = element('button', 'blk-image-upload-retry', '다시 올리기')
+        retry.type = 'button'
+        retry.setAttribute('data-testid', 'image-upload-retry')
+        retry.addEventListener('mousedown', (event) => event.preventDefault())
+        retry.addEventListener('click', () => void startUpload(again))
+        box.append(' ', retry)
+      }
       controls.append(box)
     }
 

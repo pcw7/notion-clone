@@ -288,6 +288,21 @@
   display: none;
 }
 
+/* 올리기 취소 · 다시 올리기(10n-73) — 상태 줄 · 실패 줄 옆에 늘 보인다(머물 때만이 아니다 — 지금 할 일이다). 읽기 전용 편집기는 올리지 않아
+   서지 않는다. */
+.blk-image .blk-image-upload-cancel,
+.blk-image .blk-image-upload-retry {
+  margin-left: 0.25rem;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.25rem;
+  background: none;
+  padding: 0.125rem 0.5rem;
+  color: #374151;
+  font: inherit;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
 .blk-image-url {
   display: flex;
   gap: 0.25rem;
@@ -1102,6 +1117,7 @@ span.blk-equation {
     .blk-image-pick:hover, .blk-image-url-add:hover { background: rgba(255, 255, 255, 0.08); }
     .blk-image figcaption { color: #a3a3a3; }
     .blk-image-failure, .blk-image-error { color: #fca5a5; }
+    .blk-image .blk-image-upload-cancel, .blk-image .blk-image-upload-retry { border-color: #404040; color: #d4d4d4; }
     .blk-image-error { border-color: #7f1d1d; }
     .blk-mention, span.blk-equation, .blk-editor code { background: #262626; }
     .blk-editor[contenteditable='true'] div.blk-equation:hover { background: rgba(255, 255, 255, 0.06); }
