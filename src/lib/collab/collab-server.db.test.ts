@@ -37,7 +37,7 @@
  * 퍼뜨리므로, 막았어야 할 update 가 퍼졌다면 뒤에 보낸 것보다 먼저 닿았다.
  */
 
-import { test, describe, before, after } from 'node:test'
+import { test, describe, before, after, type TestContext } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 
@@ -813,5 +813,69 @@ describe('⑯ 편집 확인 요청 (6c)', () => {
     feed.release()
     await waitFor('고칠 수 있는 연결이 답을 받았다', () => toWriter.length === 1)
     assert.deepEqual(toWriter, [{ token: 'w1', confirmed: true }])
+  })
+})
+
+// ── ⑭ 첫 판정 전의 연결에는 방송하지 않는다 ──────────────────────────────
+
+describe('⑭ 첫 판정 전의 연결에는 방송하지 않는다 (10n-55)', () => {
+  /** 멤버의 첫 판정만 붙잡는 서버 — 등록됐지만 아직 판정 전인 창을 만든다. */
+  async function holdingServer(t: TestContext, memberId: string) {
+    let release = (): void => undefined
+    const held = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const waiting: string[] = []
+    const server = await startServer(t, {
+      beforeFirstSyncVerdict: async (context) => {
+        if (context.session.userId !== memberId) return
+        waiting.push(context.pageId)
+        await held
+      },
+    })
+    t.after(() => release())
+    return { server, waiting, release: () => release() }
+  }
+
+  test('★ 판정을 기다리는 사이의 편집 방송을 받지 않는다 — 그사이 회수되면 본문을 한 번도 받지 못하고 닫힌다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { owner, member, pageId, ids, name } = await pageFixture(['원문'])
+    const { server, waiting, release } = await holdingServer(t, member.userId)
+    const [writer, witness] = [join(t, server.url, name, cookieOf(owner)), join(t, server.url, name, cookieOf(owner))]
+    await ready(writer, witness)
+    const late = join(t, server.url, name, cookieOf(member))
+    await waitFor('늦은 연결이 등록돼 첫 판정에서 기다린다', () => waiting.length === 1)
+
+    edit(writer.doc, insertAtStart(ids[0], '비밀 '))
+    await waitFor('방송이 났다 — 먼저 붙은 다른 연결이 받는다', () => textsOf(bodyOf(witness.doc, pageId))[0] === '비밀 원문')
+    await new Promise((resolve) => setTimeout(resolve, 300)) // 늦은 연결에도 갔다면 닿을 시간
+    // 바탕(SyncStep2)이 없는 연결은 편집 update 를 적용하지 못하고 "의존이 빠진 대기" 로 쌓는다 — 본문에는 보이지 않아도 바이트(편집한 글자)는
+    // 이미 받은 것이다. 그래서 본문만이 아니라 대기도 본다(처음 쓴 검사는 본문만 봐서 감싸기를 빼는 반사실에서 통과했다).
+    const store = late.doc.store as unknown as { pendingStructs: unknown; pendingDs: unknown }
+    assert.deepEqual([store.pendingStructs, store.pendingDs], [null, null], '판정 전의 연결이 방송을 받았다(대기 중인 update)')
+    assert.deepEqual(bodyOf(late.doc, pageId).blocks, [], '판정 전의 연결이 방송을 받았다')
+
+    await restrict(owner, pageId, [])
+    release()
+    await waitUntil(() => late.closed.length > 0)
+    assert.deepEqual(late.closed, ['not_found'])
+    assert.deepEqual(bodyOf(late.doc, pageId).blocks, [], '회수된 연결이 본문을 받았다')
+  })
+
+  test('판정을 지나면 SyncStep2 가 그사이 편집까지 준다 — 건너뛴 방송을 잃지 않는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { owner, member, pageId, ids, name } = await pageFixture(['원문'])
+    const { server, waiting, release } = await holdingServer(t, member.userId)
+    const writer = join(t, server.url, name, cookieOf(owner))
+    await ready(writer)
+    const late = join(t, server.url, name, cookieOf(member))
+    await waitFor('늦은 연결이 첫 판정에서 기다린다', () => waiting.length === 1)
+    edit(writer.doc, insertAtStart(ids[0], '앞 '))
+    await waitFor('쌓였다', async () => textsOf((await storedBody(owner, pageId)).doc)[0] === '앞 원문')
+    release()
+    await ready(late)
+    assert.deepEqual(textsOf(bodyOf(late.doc, pageId)), ['앞 원문'])
+    edit(writer.doc, insertAtStart(ids[0], '더 '))
+    await waitFor('지난 뒤의 방송은 받는다', () => textsOf(bodyOf(late.doc, pageId))[0] === '더 앞 원문')
   })
 })

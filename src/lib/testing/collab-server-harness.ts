@@ -34,7 +34,7 @@ export type Running = {
  * 밀린 투영의 창은 길게 둔다 — 행을 보는 검사는 그 전에 `projector.flush()` 한다. 창이 지나기를 시간으로 기다리지 않는다.
  * 창 자체가 도는지는 ⑮ 이 본다.
  */
-export async function startServer(t: TestContext, extra: Pick<CollabServerOptions, 'openFeed' | 'projector'> = {}): Promise<Running> {
+export async function startServer(t: TestContext, extra: Pick<CollabServerOptions, 'openFeed' | 'projector' | 'beforeFirstSyncVerdict'> = {}): Promise<Running> {
   const projector =
     extra.projector ?? createProjectionScheduler({ project: (pageId, ctx) => projectPendingBody(ctx, pageId), delayMs: 600_000 })
   const server = createCollabServer({ port: 0, allowedOrigins: [APP_ORIGIN], quiet: true, stopOnSignals: false, ...extra, projector })
