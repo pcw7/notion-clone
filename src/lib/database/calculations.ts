@@ -43,6 +43,7 @@ export const CALCULATIONS = [
   'unchecked',
   'percent_checked',
   'percent_unchecked',
+  'percent_complete',
 ] as const
 export type Calculation = (typeof CALCULATIONS)[number]
 
@@ -70,6 +71,7 @@ export const CALCULATION_LABEL: Readonly<Record<Calculation, string>> = {
   unchecked: '체크 안 됨',
   percent_checked: '체크 비율',
   percent_unchecked: '체크 안 됨 비율',
+  percent_complete: '완료 비율',
 }
 
 const COMMON: readonly Calculation[] = ['count_all', 'count_values', 'count_empty', 'count_unique', 'percent_empty', 'percent_not_empty']
@@ -83,6 +85,9 @@ export function calculationsFor(type: MvpPropertyType): readonly Calculation[] {
       return [...COMMON, 'earliest_date', 'latest_date', 'date_range']
     case 'checkbox':
       return ['count_all', 'checked', 'unchecked', 'percent_checked', 'percent_unchecked']
+    // 상태(10n-30) — 세기 계열 + 완료 비율(완료 그룹에 든 행의 비율 · rollup 의 완료 비율과 같은 뜻)
+    case 'status':
+      return [...COMMON, 'percent_complete']
     // 사람(6g-1) — 세기만. 고유 값 세기는 사이드카(사람 id 의 이음)의 조합을 세게 되어 뜻이 없다(정본 [보강] 사람 속성 ⑤)
     case 'people':
       return ['count_all', 'count_values', 'count_empty', 'percent_empty', 'percent_not_empty']
@@ -132,6 +137,8 @@ export type ColumnStats = {
   readonly dateMin: string | null
   readonly dateMax: string | null
   readonly checked: number
+  /** 상태 열에서 옵션이 완료 그룹에 든 칸 수(10n-30). 상태가 아니면 0. */
+  readonly complete: number
 }
 
 /** 화면이 그리는 값 — 종류가 모양을 정한다(비율은 %, 날짜는 날짜, 기간은 일). */
@@ -189,6 +196,9 @@ export function calculationResult(fn: Calculation, s: ColumnStats): CalculationR
       return percent(s.checked, s.total)
     case 'percent_unchecked':
       return percent(s.total - s.checked, s.total)
+    case 'percent_complete':
+      // 빈 상태도 분모 — "아직 끝나지 않았다"(rollup 의 완료 비율과 같다) · 행이 0개면 빈 값
+      return percent(s.complete, s.total)
   }
 }
 

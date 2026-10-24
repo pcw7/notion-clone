@@ -97,7 +97,7 @@ import {
 import { readRow, updateCellsIn, type RowFailure, type RowSummary } from './row.ts'
 import { MAX_QUERY_LIMIT } from './limits.ts'
 import { calculationResult, canCalculate, isCalculation, type Calculation, type CalculationResult } from './calculations.ts'
-import { columnStatsOf, EMPTY_STATS_ROW, statsJsonSql, type StatsRow } from './calculate.ts'
+import { columnStatsOf, completeIdsOf, EMPTY_STATS_ROW, statsJsonSql, type StatsRow } from './calculate.ts'
 import { compileSearch } from './search.ts'
 import { canViewOwnerDatabase } from './source-access.ts'
 import { restrictedRowsSql, rowsAccessIn, type RowsAccess } from './row-access.ts'
@@ -642,8 +642,11 @@ async function readGroupCounts(tx: Tx, board: Board): Promise<Map<string, GroupC
   const params = new ParamBag(2)
   const c = compileBoard(board, params, false)
   const calc = board.calculation === null ? null : params.bind(board.calculation.property_id)
+  // 상태 속성의 머리 계산이면 완료 그룹(10n-30 — 완료 비율)
+  const statusCalc = board.calculation !== null && board.types.get(board.calculation.property_id) === 'status' ? board.calculation.property_id : null
+  const completeParam = statusCalc === null ? null : params.bind((await completeIdsOf(tx, [statusCalc])).get(statusCalc) ?? [])
   const counted = await tx.query<{ key: string; n: number; s: StatsRow | null }>(
-    `SELECT ${c.keyExpr} AS key, count(*)::int AS n${calc === null ? '' : `, ${statsJsonSql('cv')} AS s`}
+    `SELECT ${c.keyExpr} AS key, count(*)::int AS n${calc === null ? '' : `, ${statsJsonSql('cv', completeParam)} AS s`}
        ${c.from}${calc === null ? '' : `
        LEFT JOIN page_property_value cv ON cv.page_id = p.id AND cv.property_id = ${calc}`}
       WHERE ${c.where} GROUP BY 1`,

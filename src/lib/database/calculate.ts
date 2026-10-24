@@ -17,6 +17,7 @@ import { calculationResult, canCalculate, type Calculation, type CalculationResu
 import { compileFilter, ParamBag, propertyIdsIn, type FilterContext, type FilterNode } from './filter.ts'
 import { refreshDerivedValues } from './derived-values.ts'
 import { readPropertyTypes } from './query.ts'
+import { readOptionsOf } from './options.ts'
 import { compileSearch } from './search.ts'
 import { restrictedRowsSql, rowsAccessForDataSource, type RowsAccess } from './row-access.ts'
 
@@ -69,6 +70,8 @@ export type StatsRow = {
   dmin: string | null
   dmax: string | null
   checked: number
+  /** 완료 그룹에 든 칸 수(10n-30) — 상태 열에만 센다(그 밖은 0). */
+  complete: number
 }
 
 /**
@@ -77,7 +80,7 @@ export type StatsRow = {
  *
  * LEFT JOIN 으로 칸이 없는 행(NULL)이 섞여도 같은 답이다 — 세기는 `FILTER` 가, 합 · 평균 · 중앙값 · 최소 · 최대는 집계 함수가 NULL 을 뺀다.
  */
-export function statsJsonSql(v: string): string {
+export function statsJsonSql(v: string, completeIds: string | null = null): string {
   return `json_build_object(
                'filled', count(*) FILTER (WHERE ${v}.num_value IS NOT NULL OR ${v}.text_value IS NOT NULL OR ${v}.date_start IS NOT NULL OR ${v}.bool_value),
                'distinct', count(DISTINCT coalesce(${v}.num_value::text, ${v}.text_value, ${v}.date_start::text)),
@@ -85,12 +88,22 @@ export function statsJsonSql(v: string): string {
                'median', percentile_cont(0.5) WITHIN GROUP (ORDER BY ${v}.num_value),
                'min', min(${v}.num_value), 'max', max(${v}.num_value),
                'dmin', min(${v}.date_start), 'dmax', max(coalesce(${v}.date_end, ${v}.date_start)),
-               'checked', count(*) FILTER (WHERE ${v}.bool_value))`
+               'checked', count(*) FILTER (WHERE ${v}.bool_value),
+               'complete', ${completeIds === null ? '0' : `count(*) FILTER (WHERE ${v}.text_value = ANY(${completeIds}::text[]))`})`
+}
+
+/**
+ * 상태 속성마다 완료 그룹의 옵션 id(10n-30) — 완료 비율을 셀 열에만 묶는다. 그 밖의 열에 하위 질의를 돌리지 않으려고 질의에 목록을
+ * 넣는다(옵션은 한 번에 읽는다 · 그룹은 지금 것이라 옵션을 옮기면 따라온다).
+ */
+export async function completeIdsOf(tx: Tx, statusPropertyIds: readonly string[]): Promise<Map<string, string[]>> {
+  const options = await readOptionsOf(tx, statusPropertyIds)
+  return new Map(statusPropertyIds.map((id) => [id, (options.get(id) ?? []).filter((o) => o.group === 'complete').map((o) => o.id)]))
 }
 
 /** 행이 하나도 없는 묶음의 통계(보드의 빈 그룹 — `GROUP BY` 가 줄을 내지 않는다). */
 export const EMPTY_STATS_ROW: StatsRow = {
-  filled: 0, distinct: 0, sum: null, avg: null, median: null, min: null, max: null, dmin: null, dmax: null, checked: 0,
+  filled: 0, distinct: 0, sum: null, avg: null, median: null, min: null, max: null, dmin: null, dmax: null, checked: 0, complete: 0,
 }
 
 /** `statsJsonSql` 의 JSON 한 줄 + 그 묶음의 행 수 → `ColumnStats`. */
@@ -108,6 +121,7 @@ export function columnStatsOf(total: number, s: StatsRow): ColumnStats {
     dateMin: s.dmin === null ? null : new Date(s.dmin).toISOString(),
     dateMax: s.dmax === null ? null : new Date(s.dmax).toISOString(),
     checked: Number(s.checked),
+    complete: Number(s.complete ?? 0),
   }
 }
 
@@ -126,9 +140,13 @@ async function readStats(
   const accessSql = restrictedRowsSql(access, params)
   const filterSql = compileFilter(filter, types, params, context)
   const searchSql = search === null ? null : compileSearch(search, types, params)
+  // 상태 열의 완료 그룹(10n-30) — 그 열에만 완료 개수를 센다
+  const completeOf = await completeIdsOf(tx, propertyIds.filter((id) => types.get(id) === 'status'))
   const columns = propertyIds.map((id, i) => {
     const p = params.bind(id)
-    return `(SELECT ${statsJsonSql('v')}
+    const complete = completeOf.get(id)
+    const completeParam = complete === undefined ? null : params.bind(complete)
+    return `(SELECT ${statsJsonSql('v', completeParam)}
              FROM r JOIN page_property_value v ON v.page_id = r.id AND v.property_id = ${p}) AS c${i}`
   })
   const row = await tx.queryOne<Record<string, unknown>>(
