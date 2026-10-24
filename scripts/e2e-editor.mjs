@@ -20927,6 +20927,62 @@ async function main() {
       await key('Escape')
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('relation 편집기의 새로 만들기 (10n-41 · F-03-10)')) { try {
+      // 행 고르기에서 찾은 글자가 없으면 "+ ‘글자’ 새로 만들기" — 누르면 대상 표에 그 제목의 행이 생기고 이 칸에 이어진다 · 후보가 없을 때의
+      // Enter 도 같다. 정본 [보강] relation_edge — [보강 10n-41].
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const clickOn = async (selector) => {
+        const p = await evaluate(`(() => {
+          const e = document.querySelector(${JSON.stringify(selector)})
+          if (!e) return null
+          e.scrollIntoView({ block: 'center' })
+          const r = e.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (p) await click(p.x, p.y)
+        return p !== null
+      }
+      const projects = (await api('POST', '/databases', { name: `만들며 잇기 프로젝트 ${stamp}` })).body.database
+      const tasks = (await api('POST', '/databases', { name: `만들며 잇기 작업 ${stamp}` })).body.database
+      const relation = (await api('POST', `/data-sources/${projects.dataSourceId}/relations`, { name: '작업들', targetDataSourceId: tasks.dataSourceId })).body?.property?.id
+      const project = (await api('POST', `/views/${projects.defaultViewId}/rows`, { cells: [] })).body.row.id
+      check('전제 — 관계와 행을 만든다', typeof relation === 'string' && typeof project === 'string')
+      const CELL = `tr[data-row-id="${project}"] td[data-property-id="${relation}"]`
+      const linkedTitles = () => evaluate(`[...document.querySelectorAll('[data-testid="db-relation-linked"]')].map((e) => e.textContent.replace('×', '').replace('↗', '').trim())`)
+      const serverTitles = async () => ((await api('GET', `/rows/${project}/relations/${relation}`)).body?.items ?? []).map((it) => it.title)
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${projects.id}` })
+      await waitFor(`!!document.querySelector('${CELL}')`, 15000)
+      await waitHydrated(CELL, 20000) // 서버가 그린 칸 — React 가 붙기 전의 클릭은 버려진다(10n-11)
+      await clickOn(CELL)
+      await waitFor(`document.activeElement === document.querySelector('${CELL}')`, 3000)
+      await key('Enter')
+      await waitFor(`document.activeElement?.dataset?.testid === 'db-relation-input'`, 8000)
+      await typeText('지붕 수리')
+      check('★ 찾은 글자가 없으면 "+ ‘지붕 수리’ 새로 만들기" 가 선다',
+        await waitFor(`document.querySelector('[data-testid="db-relation-create"]')?.textContent.includes('‘지붕 수리’ 새로 만들기')
+          && !!document.querySelector('[data-testid="db-relation-empty"]')`, 8000),
+        String(await evaluate(`document.querySelector('[data-testid="db-relation-create"]')?.textContent ?? null`)))
+      await clickOn('[data-testid="db-relation-create"]')
+      check('★ 누르면 지금 연결에 그 행이 선다 · 찾는 칸은 비워진다',
+        await waitFor(`[...document.querySelectorAll('[data-testid="db-relation-linked"]')].some((e) => e.textContent.includes('지붕 수리'))
+          && document.querySelector('[data-testid="db-relation-input"]')?.value === ''`, 8000),
+        JSON.stringify(await linkedTitles()))
+      check('★ 서버 — 작업 표에 그 제목의 행이 생기고 이 칸에 이어졌다', JSON.stringify(await serverTitles()) === JSON.stringify(['지붕 수리']), JSON.stringify(await serverTitles()))
+      await typeText('배관 점검')
+      await waitFor(`!!document.querySelector('[data-testid="db-relation-empty"]') && !!document.querySelector('[data-testid="db-relation-create"]')`, 8000)
+      await key('Enter')
+      check('후보가 없을 때의 Enter 도 만들며 잇는다 — 둘',
+        await (async () => { for (let i = 0; i < 30; i += 1) { if ((await serverTitles()).length === 2) return true; await sleep(200) } return false })(),
+        JSON.stringify(await serverTitles()))
+      await key('Escape')
+      check('편집을 닫으면 칸에 칩 둘', await waitFor(`document.querySelectorAll('${CELL} [data-testid="db-relation-chip"]').length === 2`, 8000))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

@@ -484,6 +484,20 @@ export function linkRows(
   )
 }
 
+/** 이 칸에서 새 행을 만들며 잇는다(10n-41 · 행 고르기의 "+ 새로 만들기") — 답은 바뀐 이 행과 새로 만든 행. */
+export function createLinkedRow(
+  workspaceId: string,
+  rowId: string,
+  propertyId: string,
+  title: string,
+): Promise<ApiResult<{ readonly row: RowJson; readonly created: RowJson }>> {
+  return call(
+    `${base(workspaceId)}/rows/${rowId}/relations/${encodeURIComponent(propertyId)}/create`,
+    { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ title }) },
+    (body) => ({ row: body.row as RowJson, created: body.created as RowJson }),
+  )
+}
+
 /** 볼 수 있는 데이터베이스 — relation 의 대상을 고를 때. */
 export function listDatabases(workspaceId: string): Promise<ApiResult<DatabaseListItem[]>> {
   return call(`${base(workspaceId)}/databases`, { method: 'GET' }, (body) => (body.databases ?? []) as DatabaseListItem[])

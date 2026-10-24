@@ -362,6 +362,17 @@ export async function linkRows(
 }
 
 /**
+ * 이 칸의 대상 표 — 칸을 고칠 수 있고(`edit_content` · 잠금 · 읽기 전용 속성까지 `openRelation` 이 본다) 대상 표를 볼 수 있을 때만(10n-41 ·
+ * 새 행을 만들며 잇는다 — 볼 수 없는 표에는 만들 수 없다). 열지 못하면 그 실패를 준다.
+ */
+export async function relationTargetIn(tx: Tx, ctx: SessionContext, rowId: string, propertyId: string): Promise<string | RelationResult<never>> {
+  const open = await openRelation(tx, ctx, rowId, propertyId, 'edit_content')
+  if (isFailure(open)) return open
+  if (!open.canViewTarget) return fail('invalid_value', [{ path: 'propertyId', message: '볼 수 없는 표에는 만들 수 없습니다' }])
+  return open.config.target_data_source_id
+}
+
+/**
  * 이 칸의 **보이는** 연결 — 대상 표를 볼 수 있으면 살아 있는(템플릿이 아닌) 행 전부, 못 보면 없다(행 단위 권한이 없어 표에 대해 한 번 · 10n-38).
  * 열지 못하면(없는 행 · 볼 수 없다 · relation 이 아니다) 그 실패를 그대로 준다.
  */
