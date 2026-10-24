@@ -42,7 +42,10 @@ import {
   readImageLayout,
   withImageSource,
   IMAGE_ALIGNS,
+  draggedImageWidth,
+  steppedImageWidth,
   type ImageAlign,
+  type ImageHandleSide,
   type ImageSource,
 } from '../block/image.ts'
 import { setImageLayoutCommand } from './image-block.ts'
@@ -227,17 +230,94 @@ export function imageNodeView(
     controls.append(pick, form)
   }
 
+  /**
+   * 폭 손잡이(10n-64 · 정본 §3.4 [보강 10n-63] ④) — 슬라이더다(`role="slider"` · 지금 폭의 % · ←→ 5%씩 · Home · End). 끄는 동안은 CSS 변수로만
+   * 미리 보이고(문서를 고치지 않는다 — 끄는 걸음마다 Y.Doc 에 쓰면 되돌리기 · 협업이 걸음 수만큼 늘어난다) 놓을 때 한 번 쓴다
+   * (`setImageLayoutCommand` — 정렬은 그대로). 두 번 누르면 원래 크기(폭을 지운다).
+   */
+  const resizeHandle = (side: ImageHandleSide, frame: HTMLElement): HTMLElement => {
+    const handle = element('span', 'blk-image-handle')
+    handle.dataset.side = side
+    handle.setAttribute('data-testid', `image-resize-${side}`)
+    handle.setAttribute('role', 'slider')
+    handle.setAttribute('aria-label', side === 'left' ? '그림 폭(왼쪽 손잡이)' : '그림 폭')
+    handle.setAttribute('aria-valuemin', '10')
+    handle.setAttribute('aria-valuemax', '100')
+    handle.tabIndex = 0
+    const ratioNow = (): number => {
+      const column = dom.getBoundingClientRect().width
+      return column > 0 ? Math.min(1, frame.getBoundingClientRect().width / column) : 1
+    }
+    const syncValue = (): void => handle.setAttribute('aria-valuenow', String(Math.round(ratioNow() * 100)))
+    // 그림이 다 불러와지면 원래 크기의 폭을 안다
+    queueMicrotask(syncValue)
+    frame.querySelector('img')?.addEventListener('load', syncValue)
+    const commit = (width: number | null): void => {
+      const id = containerIdAt(view, getPos)
+      if (id === '' || !view.editable) return
+      // 같은 값이면 명령이 거절한다 — 미리보기를 지우려 그 자리에서 다시 그린다
+      const refocus = document.activeElement === handle
+      if (!setImageLayoutCommand(id, { width })(view.state, view.dispatch.bind(view))) render()
+      // 다시 그리며 손잡이가 새로 섰다 — 키로 바꾸던 손잡이면 같은 쪽에 포커스를 돌려준다
+      if (refocus) dom.querySelector<HTMLElement>(`.blk-image-handle[data-side="${side}"]`)?.focus()
+    }
+    let drag: { startX: number; startPx: number; column: number; align: ImageAlign; width: number } | null = null
+    handle.addEventListener('mousedown', (event) => event.preventDefault())
+    handle.addEventListener('pointerdown', (event) => {
+      if (!view.editable || event.button !== 0) return
+      event.preventDefault()
+      handle.setPointerCapture(event.pointerId)
+      const align = readImageLayout(current.attrs.format).align
+      drag = { startX: event.clientX, startPx: frame.getBoundingClientRect().width, column: dom.getBoundingClientRect().width, align, width: ratioNow() }
+      dom.dataset.resizing = 'true'
+    })
+    handle.addEventListener('pointermove', (event) => {
+      if (drag === null) return
+      drag.width = draggedImageWidth(drag.startPx, event.clientX - drag.startX, drag.column, side, drag.align)
+      dom.dataset.width = String(drag.width)
+      dom.style.setProperty('--blk-image-width', `${drag.width * 100}%`)
+      handle.setAttribute('aria-valuenow', String(Math.round(drag.width * 100)))
+    })
+    const finish = (event: PointerEvent): void => {
+      if (drag === null) return
+      const moved = Math.abs(event.clientX - drag.startX) > 2
+      const width = drag.width
+      drag = null
+      delete dom.dataset.resizing
+      if (moved) commit(width)
+    }
+    handle.addEventListener('pointerup', finish)
+    handle.addEventListener('pointercancel', () => {
+      drag = null
+      delete dom.dataset.resizing
+      render()
+    })
+    handle.addEventListener('dblclick', (event) => {
+      event.preventDefault()
+      commit(null)
+    })
+    handle.addEventListener('keydown', (event) => {
+      const next = steppedImageWidth(ratioNow(), event.key)
+      if (next === null) return
+      event.preventDefault()
+      commit(next)
+    })
+    return handle
+  }
+
   const renderImage = (source: ImageSource, caption: string, alt: string): void => {
     const url = imageDisplayUrl(deps.workspaceId, source)
     if (url === null) return
 
+    // 틀(10n-64) — 폭 · 정렬은 틀에 걸리고 그림은 틀을 채운다. 손잡이가 그림의 양쪽 가장자리에 붙는다
+    const frame = element('span', 'blk-image-frame')
     const img = document.createElement('img')
     img.src = url
     // 대체 텍스트(10d-1a · F-12-13) — 장식이면 빈 말 · 있으면 그것 · 없으면 캡션(`imageAltText` — 공개 화면 · 내보내기와 같은 함수).
     img.alt = alt
     img.addEventListener('error', () => {
-      // 정본 엣지 케이스: *"깨진 이미지 대신 '불러올 수 없음' + 원본 링크."*
-      img.remove()
+      // 정본 엣지 케이스: *"깨진 이미지 대신 '불러올 수 없음' + 원본 링크."* 손잡이도 함께 걷는다(틀째)
+      frame.remove()
       const box = element('div', 'blk-image-error', '이미지를 불러올 수 없습니다. ')
       const link = element('a', 'blk-image-origin', '원본 열기')
       link.href = url
@@ -246,7 +326,10 @@ export function imageNodeView(
       box.append(link)
       dom.prepend(box)
     })
-    dom.prepend(img)
+    frame.append(img)
+    // 손잡이는 늘 단다 — 읽기 전용 편집기에서는 CSS 가 숨기고 눌러도 쓰지 않는다(편집할 수 있게 바뀌어도 다시 그리지 않는다)
+    for (const side of ['left', 'right'] as const) frame.append(resizeHandle(side, frame))
+    dom.prepend(frame)
 
     if (caption !== '') {
       const figcaption = element('figcaption', 'blk-image-caption', caption)
@@ -358,7 +441,8 @@ export function imageNodeView(
     // 블록 선택이 되게 둔다.
     stopEvent: (event) => {
       const target = event.target
-      return target instanceof Node && controls.contains(target)
+      // 아래 단추 줄 · 폭 손잡이(10n-64 — 키 · 끌기를 편집기가 선택 옮기기로 받지 않게)
+      return target instanceof Node && (controls.contains(target) || (target instanceof Element && target.closest('.blk-image-handle') !== null))
     },
 
     // 이 안의 DOM 변화는 전부 우리가 만든 것이다. `contentDOM` 이 없는 동안은
