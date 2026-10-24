@@ -42,6 +42,7 @@ import { readableScopes } from '../permissions/effective.ts'
 import { ruleOpensRowSql } from '../database/row-access.ts'
 import { canListMembers } from '../workspace/list.ts'
 import { readEvents } from './activity.ts'
+import { decodeInboxCursor, encodeInboxCursor } from './inbox-cursor.ts'
 import type { NotificationKind } from './fanout.ts'
 
 /** 정본 §3.8 이 `read_at` · `archived_at` 을 따로 둔 이유 — 인박스 필터가 넷이다. */
@@ -49,6 +50,12 @@ export const INBOX_FILTERS = ['all', 'unread', 'read', 'archived'] as const
 export type InboxFilter = (typeof INBOX_FILTERS)[number]
 
 export const INBOX_PAGE_SIZE = 30
+
+/**
+ * 한 번에 줄 수 있는 줄의 상한(10n-69) — 읽음 · 보관 뒤의 다시 읽기가 지금까지 펼친 만큼을 한 번에 받는다(쪽 하나는 `INBOX_PAGE_SIZE`).
+ * 그보다 많이 펼쳤으면 그 뒤는 다시 "더 보기" 로 받는다.
+ */
+export const INBOX_MAX_LIMIT = 300
 
 /** 미리보기 길이 — 인박스는 글을 읽는 곳이 아니다. */
 export const MAX_PREVIEW = 140
@@ -93,6 +100,8 @@ type GroupRow = {
   group_key: string
   page_id: string
   last_at: Date
+  /** 마지막 시각의 DB 글자 그대로 — 커서가 마이크로초까지 싣는다(`inbox-cursor.ts` 머리말). */
+  last_at_text: string
   total: number
   unread: number
   kind: string
@@ -116,12 +125,31 @@ const CAN_SEE = `(b.perm_scope_id = ANY($3::uuid[]) OR (p.id IS NOT NULL AND p.i
 export type ListInboxOptions = {
   readonly filter?: InboxFilter
   readonly limit?: number
+  /** 지난 쪽이 준 `next`(10n-69) — 그 줄의 뒤부터. 없으면 처음부터. */
+  readonly after?: string
 }
 
-/** 내 인박스. 볼 수 없게 된 페이지의 알림은 빠진다(머리말). */
+export type InboxPage = {
+  readonly items: InboxItem[]
+  /** 다음 쪽의 커서 — 더 없으면 null(빈 쪽을 한 번 더 부르지 않게 하나를 더 읽어 본다). */
+  readonly next: string | null
+}
+
+/** 내 인박스. 볼 수 없게 된 페이지의 알림은 빠진다(머리말). 첫 쪽만 — 쪽을 넘기려면 `listInboxPage`. */
 export async function listInbox(ctx: SessionContext, options: ListInboxOptions = {}): Promise<InboxItem[]> {
+  return (await listInboxPage(ctx, options)).items
+}
+
+/**
+ * 인박스의 한 쪽(10n-69 · HANDOFF §3.2-302) — 차례는 묶음의 마지막 시각이 새 것부터, 같으면 `group_key` · `page_id` 가 큰 것부터.
+ * `after` 는 지난 쪽의 마지막 줄이고 이 쪽은 그보다 뒤(작은) 줄이다 — 권한 재검사 · 필터와 같은 쿼리 안에서 자른다(밖에서 자르면
+ * 쪽이 빈다). 망가진 커서는 던진다(라우트가 먼저 거른다).
+ */
+export async function listInboxPage(ctx: SessionContext, options: ListInboxOptions = {}): Promise<InboxPage> {
   const filter = options.filter ?? 'all'
-  const limit = Math.min(Math.max(options.limit ?? INBOX_PAGE_SIZE, 1), 100)
+  const limit = Math.min(Math.max(options.limit ?? INBOX_PAGE_SIZE, 1), INBOX_MAX_LIMIT)
+  const after = options.after === undefined ? null : decodeInboxCursor(options.after)
+  if (options.after !== undefined && after === null) throw new Error('인박스 커서의 모양이 틀렸다')
 
   return withReadTransaction(async (tx) => {
     const scopes = await readableScopes(tx, ctx)
@@ -129,6 +157,7 @@ export async function listInbox(ctx: SessionContext, options: ListInboxOptions =
     const groups = await tx.query<GroupRow>(
       `SELECT n.group_key, n.page_id,
               max(n.created_at) AS last_at,
+              max(n.created_at)::text AS last_at_text,
               count(*)::int AS total,
               count(*) FILTER (WHERE n.read_at IS NULL)::int AS unread,
               (array_agg(n.kind ORDER BY n.created_at DESC))[1] AS kind,
@@ -141,11 +170,17 @@ export async function listInbox(ctx: SessionContext, options: ListInboxOptions =
           AND ${CAN_SEE}
           AND ${WHERE[filter]}
         GROUP BY n.group_key, n.page_id
-        ORDER BY max(n.created_at) DESC
+       HAVING $5::timestamptz IS NULL OR (max(n.created_at), n.group_key, n.page_id) < ($5::timestamptz, $6::text, $7::uuid)
+        ORDER BY max(n.created_at) DESC, n.group_key DESC, n.page_id DESC
         LIMIT $4`,
-      [ctx.userId, ctx.workspaceId, scopes, limit],
+      // 하나를 더 읽어 다음 쪽이 있는지 본다 — 남은 줄이 쪽 크기와 꼭 같을 때 빈 쪽을 부르지 않게
+      [ctx.userId, ctx.workspaceId, scopes, limit + 1, after?.at ?? null, after?.groupKey ?? null, after?.pageId ?? null],
     )
-    if (groups.length === 0) return []
+    const more = groups.length > limit
+    if (more) groups.length = limit
+    const last = groups.at(-1)
+    const next = more && last !== undefined ? encodeInboxCursor({ at: last.last_at_text, groupKey: last.group_key, pageId: last.page_id }) : null
+    if (groups.length === 0) return { items: [], next: null }
 
     const events = await readEvents(
       tx,
@@ -177,7 +212,7 @@ export async function listInbox(ctx: SessionContext, options: ListInboxOptions =
         .filter((id): id is string => typeof id === 'string'),
     )
 
-    return groups.map((g): InboxItem => {
+    const items = groups.map((g): InboxItem => {
       const event = g.latest_event === null ? undefined : events.get(g.latest_event)
       const commentId = typeof event?.payload.comment_id === 'string' ? event.payload.comment_id : null
       const comment = commentId === null ? undefined : comments.get(commentId)
@@ -222,6 +257,7 @@ export async function listInbox(ctx: SessionContext, options: ListInboxOptions =
             : null,
       }
     })
+    return { items, next }
   })
 }
 

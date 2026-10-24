@@ -10,7 +10,7 @@
 
 import type { Metadata } from 'next'
 import { requirePageSession } from '@/lib/auth/page-session'
-import { listInbox, unreadCount } from '@/lib/notification/inbox'
+import { listInboxPage, unreadCount } from '@/lib/notification/inbox'
 import { InboxList, type InboxRow } from './inbox-list'
 import { SCREEN_TITLES } from '@/lib/nav/screen-title'
 
@@ -21,21 +21,22 @@ export default async function InboxView({ params }: PageProps<'/w/[workspaceId]/
   const { workspaceId } = await params
   const ctx = await requirePageSession(workspaceId)
 
-  const [items, unread] = await Promise.all([listInbox(ctx), unreadCount(ctx)])
+  const [page, unread] = await Promise.all([listInboxPage(ctx), unreadCount(ctx)])
 
   return (
     <main className="mx-auto flex min-h-screen max-w-3xl flex-col gap-6 px-6 py-12">
       <h1 className="text-2xl font-semibold">인박스</h1>
       <InboxList
         workspaceId={workspaceId}
-        initialItems={items.map(toRow)}
+        initialItems={page.items.map(toRow)}
+        initialNext={page.next}
         initialUnread={unread}
       />
     </main>
   )
 }
 
-function toRow(item: Awaited<ReturnType<typeof listInbox>>[number]): InboxRow {
+function toRow(item: Awaited<ReturnType<typeof listInboxPage>>['items'][number]): InboxRow {
   return {
     groupKey: item.groupKey,
     kind: item.kind,
