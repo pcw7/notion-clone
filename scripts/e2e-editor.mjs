@@ -449,7 +449,19 @@ function connect(url) {
     }
     return ids.length
   }
-  return { ws, send, opened, pageErrors, releasePaused, fulfillPaused, pausedCount: () => paused.length, prefetchCount: () => prefetches, rscCount: () => rscStarted }
+  return {
+    ws,
+    send,
+    opened,
+    pageErrors,
+    releasePaused,
+    fulfillPaused,
+    pausedCount: () => paused.length,
+    prefetchCount: () => prefetches,
+    rscCount: () => rscStarted,
+    // 진행 중인 fetch · XHR(EventSource 는 빼고) — `clickSelector` 가 누르기 전에 끝나기를 잠깐 기다린다(도구-7)
+    inflightCount: () => inflight.size,
+  }
 }
 
 /**
@@ -658,7 +670,7 @@ async function main() {
     const devtoolsPort = launched.port
     cdp = connect(launched.url)
     await cdp.opened
-    const { send, pageErrors, releasePaused, fulfillPaused, pausedCount, prefetchCount, rscCount } = cdp
+    const { send, pageErrors, releasePaused, fulfillPaused, pausedCount, prefetchCount, rscCount, inflightCount } = cdp
 
     const mainTab = evaluator(send, () => cdp.ws.readyState === WebSocket.OPEN, 'evaluate')
     const evaluate = mainTab.evaluate
@@ -1102,15 +1114,45 @@ async function main() {
     }
     const panelText = () => evaluate(`document.querySelector('[role="dialog"][aria-label="공유 설정"]')?.textContent ?? '(패널 없음)'`)
     /** 화면에 있는 요소를 셀렉터로 누른다 — aria-label 로 고른다. */
+    /**
+     * 누른다 — **누를 자리에 그 요소가 있고 자리가 멈췄을 때**(도구-7). 잰 자리를 바로 누르면 앞 동작의 늦은 다시 그리기(진행 중이던 RSC ·
+     * fetch 의 답)가 그 사이에 레이아웃을 밀어 다른 링크 · 단추에 떨어졌다 — 사이드바 맨 아래의 휴지통 열기가 "최근" 링크로(8e-3a · #443 ·
+     * #444 의 영향 판에서 늘) · 공유 창의 초대 제출이 빗나가 초대가 가지 않았다(7d-1 · #441 · #445 의 전체 판). 그래서 ① 진행 중인 fetch ·
+     * XHR 이 끝나기를 잠깐(1.5초까지) 기다리고 ② 화면 가운데로 굴린 뒤 그 점의 맨 위 요소가 그것(또는 그 안)인지 ③ 한 프레임 뒤에도 같은
+     * 자리인지 본다. 끝내 맞지 않으면(일부러 덮인 요소를 누르는 검사) 마지막에 잰 자리를 그대로 누른다 — 예전 동작이다.
+     */
     const clickSelector = async (sel) => {
-      const box = await evaluate(`(() => {
+      for (let waited = 0; inflightCount() > 0 && waited < 1500; waited += 50) await sleep(50)
+      const measure = `new Promise((resolve) => {
         const el = document.querySelector(${JSON.stringify(sel)})
-        if (!el) return null
+        if (!el) return resolve(null)
         el.scrollIntoView({ block: 'center' })
-        const r = el.getBoundingClientRect()
-        return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
-      })()`)
-      if (!box) return false
+        const at = () => {
+          const r = el.getBoundingClientRect()
+          const x = r.x + r.width / 2
+          const y = r.y + r.height / 2
+          const hit = document.elementFromPoint(x, y)
+          return { x, y, on: hit !== null && (hit === el || el.contains(hit)) }
+        }
+        const first = at()
+        let done = false
+        const next = () => {
+          if (done) return
+          done = true
+          const second = at()
+          resolve({ x: second.x, y: second.y, steady: first.on && second.on && first.x === second.x && first.y === second.y })
+        }
+        // 프레임이 오지 않는 탭에서도 멈추지 않게 — 50ms 뒤에는 그대로 잰다
+        requestAnimationFrame(next)
+        setTimeout(next, 50)
+      })`
+      let box = null
+      for (let i = 0; i < 8; i += 1) {
+        box = await evaluate(measure)
+        if (box === null) return false
+        if (box.steady) break
+        await sleep(50)
+      }
       await click(box.x, box.y)
       await sleep(120)
       return true
@@ -9652,24 +9694,12 @@ async function main() {
 
       // 사이드바의 휴지통 — 소스 한 줄 · 되살리기
       const entrySel = `[data-testid="trash-entry"][data-trash-id="${secondSource}"]`
-      // 휴지통은 사이드바 맨 아래("최근" 바로 밑)다 — 늦은 다시 그리기로 "최근" 이 한 줄 늘면 밀려, 잰 자리를 누르면 그 위의 "최근" 링크(제목
-      // 없는 페이지)로 갔다(#443 · #444 의 영향 판에서 늘 · 그 앞 커밋의 같은 판도 — 홀로는 통과). 그 자리에 그 단추가 있고 두 번 재도 같은
-      // 자리일 때 누른다
-      const clickSteady = async (sel) => {
-        const at = `(() => { const el = document.querySelector(${JSON.stringify(sel)}); if (!el) return null
-          el.scrollIntoView({ block: 'center' }); const r = el.getBoundingClientRect(); const x = r.x + r.width / 2; const y = r.y + r.height / 2
-          const hit = document.elementFromPoint(x, y); return hit === el || el.contains(hit) ? { x, y } : null })()`
-        for (let i = 0; i < 20; i += 1) {
-          const a = await evaluate(at)
-          await sleep(150)
-          const b = await evaluate(at)
-          if (a !== null && b !== null && a.x === b.x && a.y === b.y) return click(b.x, b.y)
-        }
-      }
+      // 휴지통은 사이드바 맨 아래("최근" 바로 밑)다 — 늦은 다시 그리기로 밀린 자리를 누르면 "최근" 링크(제목 없는 페이지)로 갔다(#443 ·
+      // #444 의 영향 판) — 누르기(`clickSelector`)가 자리가 멈췄을 때 누른다(도구-7)
       await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${dbId}` })
       await waitFor(`!!document.querySelector('[data-testid="trash-toggle"]')`, 15000)
       for (let i = 0; i < 6 && !(await evaluate(`!!document.querySelector(${JSON.stringify(entrySel)})`)); i += 1) {
-        await clickSteady('[data-testid="trash-toggle"]')
+        await clickSelector('[data-testid="trash-toggle"]')
         await waitFor(`!!document.querySelector(${JSON.stringify(entrySel)})`, 1500)
       }
       check('★ 사이드바의 휴지통에 소스가 한 줄로 선다 — 데이터 소스 · 데이터베이스 이름 · 함께 간 항목 수',
@@ -9679,7 +9709,7 @@ async function main() {
         String(await evaluate(`document.querySelector(${JSON.stringify(entrySel)})?.textContent ?? null`)))
       check('함께 간 행은 따로 줄을 갖지 않는다', !(await evaluate(`!!document.querySelector('[data-testid="trash-entry"][data-trash-id="${secondRow}"]')`)))
       const restoreAt = await evaluate(`location.pathname`)
-      await clickSteady(`${entrySel} [data-testid="trash-restore"]`)
+      await clickSelector(`${entrySel} [data-testid="trash-restore"]`)
       check('★ 휴지통에서 되살리면 탭 · 소스 이름이 돌아온다',
         await waitFor(`!document.querySelector(${JSON.stringify(entrySel)}) && document.querySelectorAll('[data-testid="db-view-tab"]').length === 2`, 15000),
         // 실패하면 그때의 화면을 싣는다 — 영향 판에서 두 번 "탭 0개" 로 떨어졌다(#443 · #444 · 홀로는 통과)
