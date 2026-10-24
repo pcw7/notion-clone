@@ -60,6 +60,8 @@ import { openSearchOverlay } from './search-overlay'
 import { PageIconView } from './page-icon-view'
 import { requestDuplicate } from './duplicate-page'
 import { TAB_DRAG_THRESHOLD, tabDropBefore, tabDropLineX, type TabBox } from '@/lib/database/tab-drag'
+import { SECTION_COUNT_OPTIONS, sectionCount, sectionCountLabel, visibleRowCount, type NavSectionKey, type SectionCounts } from '@/lib/nav/section-count'
+import { AnchoredLayer, containsAcrossLayers } from './anchored-layer'
 
 export type SidebarNode = {
   id: string
@@ -199,7 +201,7 @@ export function Sidebar({
   // 펼침·접힘은 React 밖(localStorage)에 산다. useSyncExternalStore 가 서버·
   // 클라이언트 스냅샷을 따로 주므로 하이드레이션 불일치도, effect 안 setState 도 없다.
   const store = useMemo(() => getSidebarStore(workspaceId), [workspaceId])
-  const { expanded, collapsed } = useSyncExternalStore(
+  const { expanded, collapsed, counts } = useSyncExternalStore(
     store.subscribe,
     store.getSnapshot,
     store.getServerSnapshot,
@@ -454,7 +456,16 @@ export function Sidebar({
         최근 방문은 아래 — 둘 다 서버가 권한으로 걸러서 준다(`nav/recent.ts`).
         빈 섹션은 그리지 않는다. 아무것도 없는 제목만 남으면 공간만 먹는다.
       */}
-      <NavSection label="즐겨찾기" rows={favorites} workspaceId={workspaceId} currentPageId={currentPageId} onMove={moveFavoriteTo} />
+      <NavSection
+        label="즐겨찾기"
+        rows={favorites}
+        workspaceId={workspaceId}
+        currentPageId={currentPageId}
+        onMove={moveFavoriteTo}
+        countKey="favorites"
+        counts={counts}
+        onCount={store.setCount}
+      />
 
       <div className="flex flex-1 flex-col gap-2 overflow-auto">
         {showTeamspaces && (
@@ -698,7 +709,7 @@ export function Sidebar({
         </button>
       </div>
 
-      <NavSection label="최근" rows={recent} workspaceId={workspaceId} currentPageId={currentPageId} />
+      <NavSection label="최근" rows={recent} workspaceId={workspaceId} currentPageId={currentPageId} countKey="recent" counts={counts} onCount={store.setCount} />
 
       <TrashPanel workspaceId={workspaceId} entries={trash} />
     </nav>
@@ -834,12 +845,19 @@ function NavSection({
   workspaceId,
   currentPageId,
   onMove,
+  countKey,
+  counts,
+  onCount,
 }: {
   label: string
   rows: NavRow[]
   workspaceId: string
   currentPageId: string | null
   onMove?: (id: string, before: string | null) => Promise<boolean>
+  /** 표시 개수를 고를 수 있는 섹션(10n-68 · HANDOFF §3.2-301) — 머리의 "···" 고르개 · 고른 수까지만 그린다. */
+  countKey?: NavSectionKey
+  counts?: SectionCounts
+  onCount?: (section: NavSectionKey, count: number | null) => void
 }) {
   const listRef = useRef<HTMLUListElement>(null)
   /** 잡은 줄 · 잡은 y · 끌기가 시작됐는가(4px 를 넘었다). */
@@ -860,6 +878,21 @@ function NavSection({
     const byId = new Map(rows.map((row) => [row.id, row]))
     return pending.order.map((id) => byId.get(id)).filter((row): row is NavRow => row !== undefined)
   }, [pending, rows])
+
+  // 표시 개수(10n-68) — 고른 수까지만 그린다(보이는 줄은 늘 앞쪽이라 키 · 끌기의 차례가 그대로다)
+  const count = countKey === undefined ? null : sectionCount(counts ?? {}, countKey)
+  const visible = shown.slice(0, visibleRowCount(shown.length, count))
+  const [countOpen, setCountOpen] = useState(false)
+  const countRef = useRef<HTMLSpanElement>(null)
+  useEffect(() => {
+    if (!countOpen) return
+    // 바깥을 누르면 닫는다 — 고르개는 몸으로 나간 층이라 층 안의 누르기도 이 자리의 것으로 본다
+    const onDown = (event: MouseEvent) => {
+      if (countRef.current !== null && !containsAcrossLayers(countRef.current, event.target as Node)) setCountOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [countOpen])
 
   const move = async (id: string, before: string | null) => {
     if (onMove === undefined || busy.current) return
@@ -908,7 +941,9 @@ function NavSection({
       }, 0)
       setDragging(null)
       setLineY(null)
-      const before = tabDropBefore(boxes(), g.id, event.clientY)
+      let before = tabDropBefore(boxes(), g.id, event.clientY)
+      // 숨은 줄이 있으면(표시 개수 · 10n-68) 보이는 끝은 첫 숨은 줄의 앞이다 — 맨 뒤로 보내면 숨은 줄들 뒤로 사라진다
+      if (before === null && shown.length > visible.length) before = shown[visible.length]!.id
       if (before !== undefined) void move(g.id, before)
     }
     window.addEventListener('pointermove', onPointerMove)
@@ -935,12 +970,64 @@ function NavSection({
 
   return (
     <section aria-label={label} className="flex flex-col gap-0.5">
-      <h2 className="px-2 text-xs font-medium text-neutral-400">{label}</h2>
+      <div className="group/section flex items-center justify-between px-2">
+        <h2 className="text-xs font-medium text-neutral-400">{label}</h2>
+        {countKey !== undefined && onCount !== undefined && (
+          <span ref={countRef} className="relative">
+            <button
+              type="button"
+              data-testid={`nav-count-${countKey}`}
+              aria-label={`${label} 표시 개수 — 지금 ${sectionCountLabel(count)}`}
+              aria-haspopup="menu"
+              aria-expanded={countOpen}
+              onClick={() => setCountOpen((open) => !open)}
+              className={`rounded px-1 text-xs text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700 focus-visible:opacity-100 group-hover/section:opacity-100 touch:opacity-100 dark:hover:bg-neutral-800 ${countOpen ? 'opacity-100' : 'opacity-0'}`}
+            >
+              ···
+            </button>
+            {countOpen && (
+              <AnchoredLayer align="end" testId={`nav-count-menu-${countKey}`}>
+                <div
+                  role="menu"
+                  aria-label={`${label} 표시 개수`}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Escape' && !event.nativeEvent.isComposing) {
+                      event.preventDefault()
+                      setCountOpen(false)
+                    }
+                  }}
+                  className="w-32 rounded-md border border-neutral-200 bg-white p-1 text-sm shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
+                >
+                  {SECTION_COUNT_OPTIONS.map((option) => (
+                    <button
+                      key={option ?? 'all'}
+                      type="button"
+                      role="menuitemradio"
+                      aria-checked={count === option}
+                      data-testid="nav-count-option"
+                      data-count={option ?? 'all'}
+                      autoFocus={count === option}
+                      onClick={() => {
+                        onCount(countKey, option)
+                        setCountOpen(false)
+                      }}
+                      className="flex w-full items-center justify-between rounded px-2 py-1 text-left hover:bg-neutral-100 dark:hover:bg-neutral-800"
+                    >
+                      {option === null ? '모두 표시' : `${option}개 표시`}
+                      {count === option && <span aria-hidden>✓</span>}
+                    </button>
+                  ))}
+                </div>
+              </AnchoredLayer>
+            )}
+          </span>
+        )}
+      </div>
       <ul ref={listRef} aria-busy={moving || undefined} className="relative">
         {lineY !== null && (
           <li aria-hidden data-testid="nav-drop-line" style={{ top: lineY - 1 }} className="pointer-events-none absolute left-0 right-0 h-0.5 bg-blue-500" />
         )}
-        {shown.map((row, index) => (
+        {visible.map((row, index) => (
           <li key={row.id}>
             <Link
               href={`/w/${workspaceId}/${row.id}`}

@@ -24,6 +24,7 @@ import { entitlement } from '@/lib/billing/entitlement'
 import { groupSidebarRoots, listPageTree } from '@/lib/block/page-tree'
 import { listTrash } from '@/lib/block/trash'
 import { listFavorites, listRecent } from '@/lib/nav/recent'
+import { RECENT_FETCH_LIMIT } from '@/lib/nav/section-count'
 import { unreadCount } from '@/lib/notification/inbox'
 import { switcherOf, withWorkspaces, workspaceNameOf } from '@/lib/workspace/list'
 import { canBrowseTeamspaces, canCreateTeamspace, listMyTeamspaces } from '@/lib/workspace/teamspace'
@@ -64,7 +65,8 @@ export default async function WorkspaceLayout({
     listPageTree(ctx),
     listMyTeamspaces(ctx),
     listTrash(ctx),
-    listRecent(ctx),
+    // 최근(10n-68) — 고를 수 있는 가장 큰 수까지 보내고 화면이 자른다(기본 표시는 7 그대로 · 사이드바의 "···")
+    listRecent(ctx, RECENT_FETCH_LIMIT),
     listFavorites(ctx),
     unreadCount(ctx),
     workspaceNameOf(ctx),
