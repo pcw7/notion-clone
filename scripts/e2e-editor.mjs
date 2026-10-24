@@ -22456,6 +22456,84 @@ async function main() {
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('사이드바 섹션의 표시 개수 (10n-68 · F-07-16 · F-07-04)')) { try {
+      // 즐겨찾기 · 최근 섹션 머리의 "···" 에서 5 · 10 · 20 · 모두를 고른다 — 고른 수까지만 선다 · 새로 읽어도 남는다(기기별 — localStorage) ·
+      // 고르지 않으면 지금 그대로(즐겨찾기 모두 · 최근 7) · 숨은 줄이 있을 때 끝에 놓으면 첫 숨은 줄의 앞. HANDOFF §3.2-301. 자기 데이터를 스스로
+      // 만들고, 끝에 표시 개수를 지운다(다른 절로 번지지 않게).
+      const stamp = Date.now().toString(36)
+      const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
+      const made = []
+      for (let i = 1; i <= 9; i += 1) {
+        made.push((await (await fetch(pagesUrl, { method: 'POST', headers: authed, body: JSON.stringify({ title: `개수 ${i} ${stamp}` }) })).json()).page.id)
+      }
+      const favs = made.slice(0, 7)
+      for (const id of favs) await fetch(`${pagesUrl}/${id}/favorite`, { method: 'POST', headers: authed })
+      const names = Object.fromEntries(made.map((id, i) => [id, String(i + 1)]))
+      const FAV = 'section[aria-label="즐겨찾기"]'
+      const REC = 'section[aria-label="최근"]'
+      // 이 절의 페이지만 센다 — 앞 절이 남긴 즐겨찾기 · 최근이 있어도
+      const mine = (sectionSel) => evaluate(`[...document.querySelectorAll('${sectionSel} li a[href]')].map((a) => (${JSON.stringify(names)})[a.getAttribute('href').split('/').pop()] ?? '').filter(Boolean).join('')`)
+      const choose = async (key, count) => {
+        for (let i = 0; i < 6 && !(await evaluate(`!!document.querySelector('[data-testid="nav-count-menu-${key}"]')`)); i += 1) {
+          await clickSelector(`[data-testid="nav-count-${key}"]`)
+          await waitFor(`!!document.querySelector('[data-testid="nav-count-menu-${key}"]')`, 1500)
+        }
+        await clickSelector(`[data-testid="nav-count-menu-${key}"] [data-count="${count}"]`)
+        return waitFor(`!document.querySelector('[data-testid="nav-count-menu-${key}"]')`, 3000)
+      }
+      try {
+        // 최근을 아홉 개로 — 페이지를 차례로 연다(나중에 연 것이 위)
+        for (const id of made) {
+          await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${id}` })
+          await waitFor(`!!document.querySelector('input[aria-label="페이지 제목"]')`, 15000)
+        }
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
+        await waitFor(`!!document.querySelector('${FAV}') && !!document.querySelector('${REC}')`, 15000)
+        const favAll = await mine(FAV)
+        const recentDefault = await mine(REC)
+        check('전제 — 고르지 않으면 지금 그대로: 즐겨찾기 모두(일곱) · 최근 일곱(아홉 중 나중의 것)',
+          favAll === '1234567' && recentDefault.length === 7 && recentDefault.startsWith('9'), JSON.stringify({ favAll, recentDefault }))
+
+        await waitHydrated(`[data-testid="nav-count-favorites"]`)
+        const chose5 = await choose('favorites', 5)
+        const fav5 = await mine(FAV)
+        await send('Page.reload', {})
+        // 서버 렌더는 이 기기의 설정을 모른다(모두를 그린다) — 살아난 뒤에 다섯으로 준다(펼침 상태와 같은 저장소 · `useSyncExternalStore`)
+        await waitFor(`!!document.querySelector('${FAV}')`, 15000)
+        await waitFor(`[...document.querySelectorAll('${FAV} li a[href]')].filter((a) => (${JSON.stringify(names)})[a.getAttribute('href').split('/').pop()]).length === 5`, 10000)
+        const fav5Reloaded = await mine(FAV)
+        check('★ 즐겨찾기에서 "5개 표시" — 다섯만 선다 · 새로 읽어도 남는다(이 기기)',
+          chose5 && fav5 === '12345' && fav5Reloaded === '12345', JSON.stringify({ fav5, fav5Reloaded }))
+
+        // 숨은 줄이 있을 때 끝에 놓기 — 1 을 보이는 끝(5 의 아래)으로 끌면 숨은 6 의 앞에 선다(보이는 줄의 끝에 남는다)
+        await waitHydrated(`${FAV} [data-nav-id="${favs[0]}"]`)
+        const from = await rect(`${FAV} [data-nav-id="${favs[0]}"]`)
+        const last = await rect(`${FAV} [data-nav-id="${favs[4]}"]`)
+        const fx = from.x + 20
+        const fy = from.y + from.h / 2
+        const ty = last.y + last.h - 2
+        await move(fx, fy)
+        await press(fx, fy)
+        for (let i = 1; i <= 10; i += 1) {
+          await move(fx, fy + (ty - fy) * i / 10, true)
+          await sleep(16)
+        }
+        await release(fx, ty)
+        const droppedVisible = await waitFor(`(${JSON.stringify(names)}) && [...document.querySelectorAll('${FAV} li a[href]')].map((a) => (${JSON.stringify(names)})[a.getAttribute('href').split('/').pop()] ?? '').filter(Boolean).join('') === '23451' && !document.querySelector('${FAV} ul[aria-busy]')`, 10000)
+        await choose('favorites', 'all')
+        const afterAll = await mine(FAV)
+        check('★ 숨은 줄이 있을 때 보이는 끝에 놓으면 첫 숨은 줄의 앞 — 보이는 끝에 남는다 · "모두" 로 펴면 2345 1 67',
+          droppedVisible && afterAll === '2345167', JSON.stringify({ visible: await mine(FAV), afterAll }))
+
+        const chose10 = await choose('recent', 10)
+        const recent10 = await mine(REC)
+        check('최근에서 "10개 표시" — 아홉이 다 선다(서버가 스물까지 보낸다)', chose10 && recent10.length === 9 && recent10.startsWith('9'), recent10)
+      } finally {
+        // 표시 개수만 지운다 — 펼침 상태는 그대로
+        await evaluate(`(() => { const key = 'nc:sidebar:${workspaceId}'; try { const v = JSON.parse(localStorage.getItem(key) ?? '{}'); delete v.counts; localStorage.setItem(key, JSON.stringify(v)) } catch {} })()`).catch(() => undefined)
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

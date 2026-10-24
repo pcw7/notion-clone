@@ -19,9 +19,13 @@
  * (라우트 이동 등) 같은 스토어를 보므로 펼침 상태가 살아 있다.
  */
 
+import { readSectionCounts, type NavSectionKey, type SectionCounts } from '@/lib/nav/section-count'
+
 export type SidebarState = {
   readonly expanded: ReadonlySet<string>
   readonly collapsed: boolean
+  /** 즐겨찾기 · 최근 섹션의 표시 개수(10n-68) — 고른 것만. 없는 섹션은 기본(`section-count.ts`). */
+  readonly counts: SectionCounts
 }
 
 export type SidebarStore = {
@@ -31,10 +35,12 @@ export type SidebarStore = {
   toggleExpanded(id: string): void
   expandAll(ids: readonly string[]): void
   toggleCollapsed(): void
+  /** 섹션의 표시 개수를 고른다(10n-68) — null 은 모두. */
+  setCount(section: NavSectionKey, count: number | null): void
 }
 
 /** 서버에는 저장된 값이 없다. 항상 같은 객체를 돌려줘야 무한 렌더가 안 난다. */
-const SERVER_STATE: SidebarState = { expanded: new Set(), collapsed: false }
+const SERVER_STATE: SidebarState = { expanded: new Set(), collapsed: false, counts: {} }
 
 const stores = new Map<string, SidebarStore>()
 
@@ -42,7 +48,7 @@ function storageKey(workspaceId: string): string {
   return `nc:sidebar:${workspaceId}`
 }
 
-type Persisted = { expanded?: unknown; collapsed?: unknown }
+type Persisted = { expanded?: unknown; collapsed?: unknown; counts?: unknown }
 
 function load(workspaceId: string): SidebarState {
   try {
@@ -52,7 +58,7 @@ function load(workspaceId: string): SidebarState {
     const expanded = Array.isArray(parsed.expanded)
       ? new Set(parsed.expanded.filter((v): v is string => typeof v === 'string'))
       : new Set<string>()
-    return { expanded, collapsed: parsed.collapsed === true }
+    return { expanded, collapsed: parsed.collapsed === true, counts: readSectionCounts(parsed.counts) }
   } catch {
     // 사생활 보호 모드·용량 초과·손상된 값. 사이드바가 안 뜨는 것보다
     // 기본 상태로라도 뜨는 편이 낫다.
@@ -64,7 +70,7 @@ function save(workspaceId: string, state: SidebarState): void {
   try {
     window.localStorage.setItem(
       storageKey(workspaceId),
-      JSON.stringify({ expanded: [...state.expanded], collapsed: state.collapsed }),
+      JSON.stringify({ expanded: [...state.expanded], collapsed: state.collapsed, counts: state.counts }),
     )
   } catch {
     // 저장 실패가 조작을 막지는 않는다 — 이번 세션에서만 유지된다.
@@ -114,6 +120,11 @@ export function getSidebarStore(workspaceId: string): SidebarStore {
     toggleCollapsed() {
       const current = store.getSnapshot()
       emit({ ...current, collapsed: !current.collapsed })
+    },
+    setCount(section, count) {
+      const current = store.getSnapshot()
+      if (current.counts[section] === count) return
+      emit({ ...current, counts: { ...current.counts, [section]: count } })
     },
   }
 
