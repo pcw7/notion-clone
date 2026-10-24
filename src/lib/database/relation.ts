@@ -787,27 +787,62 @@ export async function searchCandidates(
     const open = await openRelation(tx, ctx, rowId, propertyId, 'view')
     if (isFailure(open)) return open
     if (!open.canViewTarget) return { ok: true, value: { items: [] } } as const
-
-    const target = open.config.target_data_source_id
-    const rows = await tx.query<{ id: string; title: unknown; page_icon: unknown }>(
-      `SELECT p.id, b.properties->'title' AS title, b.format -> 'page_icon' AS page_icon
-         FROM page p
-         JOIN block b ON b.id = p.id
-         LEFT JOIN property tp ON tp.data_source_id = p.data_source_id AND tp.type = 'title' AND tp.deleted_at IS NULL
-         LEFT JOIN page_property_value tv ON tv.page_id = p.id AND tv.property_id = tp.id
-        WHERE p.data_source_id = $1 AND p.is_template = false
-          AND b.workspace_id = $2 AND b.lifecycle = 'live'
-          AND ($3 = '' OR tv.text_value ILIKE '%' || $4 || '%')
-          AND NOT EXISTS (SELECT 1 FROM relation_edge e
-                           WHERE e.property_id = $5 AND e.from_page_id = $6 AND e.to_page_id = p.id)
-        ORDER BY b.order_key COLLATE "C", p.id
-        LIMIT $7`,
-      // LIKE 의 와일드카드(% · _ · \)를 글자로 만든다 — "100%" 를 찾으면 전부가 아니라 그 글자가 든 행이 나와야 한다.
-      [target, ctx.workspaceId, q, escapeLike(q), propertyId, rowId, MAX_RELATION_CANDIDATES],
-    )
-    return {
-      ok: true,
-      value: { items: rows.map((r) => ({ id: r.id, title: plainTitle(r.title), icon: readPageIcon(r.page_icon) })) },
-    } as const
+    const items = await candidateRowsIn(tx, ctx, open.config.target_data_source_id, q, { propertyId, rowId })
+    return { ok: true, value: { items } } as const
   })
+}
+
+/**
+ * 필터 값의 행 고르개가 고를 행(10n-45 · 정본 [보강 10n-45] ③) — 행이 없는 자리다. 주소가 그 표의 relation 속성이고
+ * (`data-sources/{id}/relations/{propertyId}/candidates`) 대상 표는 서버가 config 에서 읽는다. 이어진 칸이 없으니 빼는 것도 없다.
+ * 표를 볼 수 있어야 하고(못 보면 not_found), 대상 표를 못 보면 빈 목록이다 — 칸의 후보와 같은 집합 · 순서 · 상한.
+ */
+export async function searchFilterCandidates(
+  ctx: SessionContext,
+  dataSourceId: string,
+  propertyId: string,
+  query: string,
+): Promise<RelationResult<{ readonly items: readonly RelatedRow[] }>> {
+  // 프로퍼티 id 는 uuid 가 아니다(nanoid · 정본 C-4) — 표 id 만 모양을 본다
+  if (!isUuid(dataSourceId)) return fail('not_found')
+  const q = query.trim().slice(0, 200)
+  return withReadTransaction(async (tx) => {
+    if (!(await canViewDataSource(tx, ctx, dataSourceId))) return fail('not_found')
+    const property = await tx.queryMaybe<{ type: string; config: unknown }>(
+      `SELECT type, config FROM property WHERE id = $1 AND data_source_id = $2 AND deleted_at IS NULL`,
+      [propertyId, dataSourceId],
+    )
+    const config = property === null || property.type !== 'relation' ? null : readRelationConfig(property.config)
+    if (config === null) return fail('unknown_property')
+    const target = config.target_data_source_id
+    if (target !== dataSourceId && !(await canViewDataSource(tx, ctx, target))) return { ok: true, value: { items: [] } } as const
+    return { ok: true, value: { items: await candidateRowsIn(tx, ctx, target, q, null) } } as const
+  })
+}
+
+/** 대상 표의 · 살아 있는 · 템플릿이 아닌 행을 제목으로 — `except` 가 있으면 그 칸에 이미 이어진 것을 뺀다. 권한은 부르는 쪽이 봤다. */
+async function candidateRowsIn(
+  tx: Tx,
+  ctx: SessionContext,
+  target: string,
+  q: string,
+  except: { readonly propertyId: string; readonly rowId: string } | null,
+): Promise<RelatedRow[]> {
+  const rows = await tx.query<{ id: string; title: unknown; page_icon: unknown }>(
+    `SELECT p.id, b.properties->'title' AS title, b.format -> 'page_icon' AS page_icon
+       FROM page p
+       JOIN block b ON b.id = p.id
+       LEFT JOIN property tp ON tp.data_source_id = p.data_source_id AND tp.type = 'title' AND tp.deleted_at IS NULL
+       LEFT JOIN page_property_value tv ON tv.page_id = p.id AND tv.property_id = tp.id
+      WHERE p.data_source_id = $1 AND p.is_template = false
+        AND b.workspace_id = $2 AND b.lifecycle = 'live'
+        AND ($3 = '' OR tv.text_value ILIKE '%' || $4 || '%')
+        AND ($5::text IS NULL OR NOT EXISTS (SELECT 1 FROM relation_edge e
+                                              WHERE e.property_id = $5::text AND e.from_page_id = $6::uuid AND e.to_page_id = p.id))
+      ORDER BY b.order_key COLLATE "C", p.id
+      LIMIT $7`,
+    // LIKE 의 와일드카드(% · _ · \)를 글자로 만든다 — "100%" 를 찾으면 전부가 아니라 그 글자가 든 행이 나와야 한다.
+    [target, ctx.workspaceId, q, escapeLike(q), except?.propertyId ?? null, except?.rowId ?? null, MAX_RELATION_CANDIDATES],
+  )
+  return rows.map((r) => ({ id: r.id, title: plainTitle(r.title), icon: readPageIcon(r.page_icon) }))
 }

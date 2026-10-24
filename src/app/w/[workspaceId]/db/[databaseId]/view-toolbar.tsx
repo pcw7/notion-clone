@@ -45,6 +45,7 @@ import {
   toFilter,
   withOperator,
   type FilterRule,
+  type RowTitleMap,
 } from '@/lib/database/filter-draft'
 import type { GroupBy } from '@/lib/database/group'
 import type { OperatorCatalogEntry } from '@/lib/database/operator-catalog'
@@ -72,6 +73,7 @@ import {
 } from './table-api'
 import { TYPE_ICON, type PeopleNames } from './cell-view'
 import { PeopleValue } from './people-value'
+import { RelationValue } from './relation-value'
 import { ViewSearch } from './view-search'
 import { GALLERY_ASPECTS, GALLERY_COVERS, GALLERY_SIZES, type GalleryLayout } from '@/lib/database/gallery'
 import { OPEN_PAGES_IN, openPagesInLabel, type OpenPagesIn } from '@/lib/database/open-pages'
@@ -113,6 +115,7 @@ export function ViewToolbar({
   calendar,
   personal,
   peopleNames = {},
+  rowTitles = {},
   openPagesIn,
 }: {
   workspaceId: string
@@ -144,6 +147,11 @@ export function ViewToolbar({
    * 떠난 사람이다.
    */
   peopleNames?: PeopleNames
+  /**
+   * 필터에 든 행의 제목(10n-45) — relation "포함" 의 값은 행 id 다. 서버 렌더가 제목 맵(`loadRelationLabels`)으로 준다: `null` 은 볼 수 없는
+   * 행 · 키가 없으면 지워진 행.
+   */
+  rowTitles?: RowTitleMap
   /** 행을 여는 방식(8n-2 · F-02-20) — 행을 그리는 뷰에만 온다(폼은 없다). 구조를 고치는 사람에게 "열기" 단추와 패널이 선다. */
   openPagesIn?: OpenPagesIn
 }) {
@@ -152,8 +160,8 @@ export function ViewToolbar({
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
-  // 필터 · 정렬은 **거를 수 있는 컬럼만** 받는다(셀 컬럼 + 고유 ID + 수식 — 수식은 결과 타입의 칸 컬럼 모양으로 · 2j-3). relation ·
-  // rollup 은 거를 축이 없다 — 패널에 아예 나오지 않는다.
+  // 필터 · 정렬은 **거를 수 있는 컬럼만** 받는다(셀 컬럼 + 고유 ID + 수식 — 수식은 결과 타입의 칸 컬럼 모양으로 · 2j-3 + relation —
+  // 엣지로 거른다 · 10n-44 · 정렬은 아니다). rollup 은 거를 축이 없다 — 패널에 아예 나오지 않는다.
   const filterColumns = useMemo(() => filterColumnsOf(columns), [columns])
   const types = useMemo(
     () => new Map<string, FilterableType>(filterColumns.map((c) => [c.propertyId, c.type])),
@@ -164,6 +172,9 @@ export function ViewToolbar({
   // 패널에서 방금 고른 사람의 이름 — 저장 뒤 refresh 가 서버의 이름을 주기 전까지 칩이 이것으로 그린다
   const [pickedNames, setPickedNames] = useState<PeopleNames>({})
   const names: PeopleNames = { ...pickedNames, ...peopleNames }
+  // 패널에서 방금 고른 행의 제목(10n-45) — 같은 까닭. 서버의 답(볼 수 없음 · 지워짐 포함)이 이긴다
+  const [pickedTitles, setPickedTitles] = useState<RowTitleMap>({})
+  const titles: RowTitleMap = { ...pickedTitles, ...rowTitles }
 
   const run = async (request: () => Promise<ApiResult<null>>): Promise<boolean> => {
     setBusy(true)
@@ -196,7 +207,7 @@ export function ViewToolbar({
       ? []
       : read.editable
         ? read.rules.map((rule) =>
-            describeRule(rule, filterColumns.find((c) => c.propertyId === rule.property_id), catalog, names),
+            describeRule(rule, filterColumns.find((c) => c.propertyId === rule.property_id), catalog, names, titles),
           )
         : ['고급 필터 (여기서 고칠 수 없음)']
 
@@ -268,6 +279,11 @@ export function ViewToolbar({
             types={types}
             names={names}
             onKnown={(known) => setPickedNames((current) => ({ ...current, ...known }))}
+            relation={{
+              dataSourceId,
+              titles,
+              onKnown: (known) => setPickedTitles((current) => ({ ...current, ...known })),
+            }}
             canEdit
             onSave={(next) =>
               run(() => (canEdit ? updateView(workspaceId, viewId, { filter: next }) : setPersonalView(workspaceId, viewId, { filter: next })))
@@ -445,6 +461,7 @@ function FilterPanel({
   types,
   names,
   onKnown,
+  relation,
   canEdit,
   onSave,
   onClose,
@@ -457,6 +474,8 @@ function FilterPanel({
   /** 사람 값의 이름(6g-2b). */
   names: PeopleNames
   onKnown: (known: PeopleNames) => void
+  /** relation 값의 행 고르개가 쓰는 것(10n-45) — 이 뷰의 표 · 고른 행의 제목. */
+  relation: { readonly dataSourceId: string; readonly titles: RowTitleMap; readonly onKnown: (known: RowTitleMap) => void }
   canEdit: boolean
   onSave: (next: FilterNode | null) => Promise<boolean>
   onClose: () => void
@@ -562,6 +581,7 @@ function FilterPanel({
                       operator={rule.operator}
                       value={rule.value}
                       people={{ workspaceId, names, onKnown }}
+                      relation={{ workspaceId, propertyId: rule.property_id, ...relation }}
                       disabled={!canEdit}
                       onChange={(value) =>
                         replace(
@@ -614,6 +634,7 @@ export function RuleValue({
   operator,
   value,
   people,
+  relation,
   disabled,
   onChange,
 }: {
@@ -624,6 +645,14 @@ export function RuleValue({
   value: unknown
   /** 사람 값의 고르개가 쓰는 것(6g-2b) — 보기의 필터만 준다(자동화의 조건은 사람 속성을 받지 않는다 · 정본 [보강] 사람 속성 ⑤). */
   people?: { readonly workspaceId: string; readonly names: PeopleNames; readonly onKnown: (known: PeopleNames) => void }
+  /** relation 값의 행 고르개가 쓰는 것(10n-45) — 보기의 필터만 준다(자동화의 조건은 relation 속성을 받지 않는다 — 셀 타입만). */
+  relation?: {
+    readonly workspaceId: string
+    readonly dataSourceId: string
+    readonly propertyId: string
+    readonly titles: RowTitleMap
+    readonly onKnown: (known: RowTitleMap) => void
+  }
   disabled: boolean
   /** `undefined` 는 "값 없음"이다 — 그 규칙은 저장 트리에서 빠진다. */
   onChange: (value: unknown) => void
@@ -637,6 +666,21 @@ export function RuleValue({
         disabled={disabled}
         className={FIELD}
         onKnown={people.onKnown}
+        onChange={onChange}
+      />
+    )
+  }
+  if (column.type === 'relation' && relation !== undefined) {
+    return (
+      <RelationValue
+        workspaceId={relation.workspaceId}
+        dataSourceId={relation.dataSourceId}
+        propertyId={relation.propertyId}
+        value={value}
+        titles={relation.titles}
+        disabled={disabled}
+        className={FIELD}
+        onKnown={relation.onKnown}
         onChange={onChange}
       />
     )

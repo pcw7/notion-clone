@@ -1112,8 +1112,8 @@ try {
            FROM filter_operator GROUP BY property_type ORDER BY property_type`,
       )
       const byType = new Map(rows.map((r) => [r.t, r.n]))
-      // MVP 6종 + relation(0113 · 10n-44 — 비어 있음 · 비어 있지 않음)이 시딩됐는가. TS 맵과의 일치는 filter.db.test.ts 가 본다.
-      const expected = { title: 8, rich_text: 8, number: 8, select: 4, checkbox: 2, date: 7, relation: 2 }
+      // MVP 6종 + relation(0113 · 0114 — 비어 있음 · 비어 있지 않음 · 포함 · 포함하지 않음)이 시딩됐는가. TS 맵과의 일치는 filter.db.test.ts 가 본다.
+      const expected = { title: 8, rich_text: 8, number: 8, select: 4, checkbox: 2, date: 7, relation: 4 }
       const wrong = Object.entries(expected).filter(([t, n]) => byType.get(t) !== n)
       if (wrong.length === 0) ok(`연산자 카탈로그 7종 시딩 (${rows.reduce((a, r) => a + r.n, 0)}행)`)
       else fail(`카탈로그 개수가 다르다: ${wrong.map(([t, n]) => `${t} ${byType.get(t)}≠${n}`).join(', ')}`)

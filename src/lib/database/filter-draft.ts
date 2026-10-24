@@ -158,13 +158,28 @@ export function withOperator(
 export type PeopleNameMap = Readonly<Record<string, string>>
 
 /**
+ * 행 id → 제목(10n-45 · 정본 [보강 10n-45] ②) — `loadRelationLabels` 의 답 그대로: 문자열은 볼 수 있는 행(빈 문자열은 제목 없음) ·
+ * `null` 은 살아 있지만 볼 수 없는 행 · 키가 없으면 휴지통이거나 없는 행.
+ */
+export type RowTitleMap = Readonly<Record<string, string | null>>
+
+/** relation 필터 값(행 id)의 이름 — 칩과 값 고르개의 단추가 같은 말을 쓴다. 지워진 행의 규칙도 남는다(지운 옵션과 같은 태도 · F-03-17). */
+export function rowTitleLabel(id: unknown, titles: RowTitleMap): string {
+  if (typeof id !== 'string' || !Object.hasOwn(titles, id)) return '지워진 행'
+  const title = titles[id]
+  return title === null || title === undefined ? '볼 수 없는 행' : title === '' ? '제목 없음' : title
+}
+
+/**
  * 칩에 쓰는 한 줄 요약. `상태 · 같음 · 진행 중`. 사람 값은 이름으로(`names` — 없으면 "떠난 사용자" · 정본 §3.5 [보강] 사람 속성 ⑩).
+ * relation 의 값은 행의 제목으로(`titles` · 10n-45).
  */
 export function describeRule(
   rule: FilterRule,
   column: RuleColumn | undefined,
   catalog: readonly OperatorCatalogEntry[],
   names: PeopleNameMap = {},
+  titles: RowTitleMap = {},
 ): string {
   // F-03-17: 지워진 속성의 규칙은 "비활성 표시하고 무시". 조용히 사라지게 두지 않는다.
   if (column === undefined) return '지워진 속성 (무시됨)'
@@ -172,6 +187,7 @@ export function describeRule(
   const op = entry?.label ?? rule.operator
   if (entry?.arity === 0) return `${column.name} · ${op}`
   if (rule.value === undefined || rule.value === null || rule.value === '') return `${column.name} · ${op} · …`
+  if (column.type === 'relation') return `${column.name} · ${op} · ${rowTitleLabel(rule.value, titles)}`
   return `${column.name} · ${op} · ${valueLabel(rule.value, rule.operator, column, names)}`
 }
 
@@ -201,6 +217,14 @@ function valueLabel(value: unknown, operator: string, column: RuleColumn, names:
 export function filterPeopleIds(rules: readonly FilterRule[], types: ReadonlyMap<string, FilterableType>): string[] {
   const ids = rules.flatMap((rule) =>
     types.get(rule.property_id) === 'people' && typeof rule.value === 'string' && rule.value !== '' ? [rule.value] : [],
+  )
+  return [...new Set(ids)]
+}
+
+/** 필터 규칙들에 든 행 id — relation 속성의 값이 있는 규칙만(칩 · 패널이 제목을 물을 것 · 10n-45). */
+export function filterRowIds(rules: readonly FilterRule[], types: ReadonlyMap<string, FilterableType>): string[] {
+  const ids = rules.flatMap((rule) =>
+    types.get(rule.property_id) === 'relation' && typeof rule.value === 'string' && rule.value !== '' ? [rule.value] : [],
   )
   return [...new Set(ids)]
 }

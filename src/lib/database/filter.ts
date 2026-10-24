@@ -403,10 +403,13 @@ const PEOPLE_OPERATORS: Readonly<Record<string, OperatorSpec>> = Object.freeze({
 /**
  * relation(10n-44) — 이어진 행이 있는가. 칸이 아니라 엣지를 본다(`compileFilter` 의 따로 된 길 — 여기 `predicate` 는 쓰지 않는다). 살아 있는 ·
  * 템플릿이 아닌 대상 행만 센다 — 칸이 보여 주는 것(칩 · "볼 수 없는 연결 N개")과 같다. 휴지통의 행만 이어진 칸은 비어 있다.
+ * 포함 · 포함하지 않음(10n-45)은 값이 대상 행 id 하나다 — 같은 길에 "그 행으로" 를 더한다. 포함하지 않음은 아무것도 이어지지 않은 칸도 맞는다.
  */
 const RELATION_OPERATORS: Readonly<Record<string, OperatorSpec>> = Object.freeze({
   is_empty: { arity: 0, negate: true, predicate: () => 'TRUE' },
   is_not_empty: { arity: 0, predicate: () => 'TRUE' },
+  contains: { arity: 1, predicate: () => 'TRUE' },
+  does_not_contain: { arity: 1, negate: true, predicate: () => 'TRUE' },
 })
 
 /** 타입별 연산자. **축이 아니라 타입에 달린다**(select 이 텍스트와 다르기 때문). */
@@ -515,6 +518,10 @@ export function validateFilter(
   if (resolved.type === 'people' && spec.arity === 1 && !isMeNode(obj.value) && !(typeof obj.value === 'string' && UUID_RE.test(obj.value))) {
     return [{ path: `${path}.value`, message: '사람 id 또는 { "$context": "me" } 여야 합니다' }]
   }
+  // relation 의 포함(10n-45) — 값은 대상 표의 행 id 하나(그 표의 행인지는 묻지 않는다 — 아니면 맞는 칸이 없을 뿐이다)
+  if (resolved.type === 'relation' && spec.arity === 1 && !(typeof obj.value === 'string' && UUID_RE.test(obj.value))) {
+    return [{ path: `${path}.value`, message: '행 id(uuid) 여야 합니다' }]
+  }
   return []
 }
 
@@ -580,8 +587,8 @@ export class ParamBag {
 /** 사이드카 값으로 바인딩할 모양으로 바꾼다. 고유 ID 는 번호다(숫자 축과 같다). */
 function bindValue(type: FilterableType, value: unknown): unknown {
   if (type === 'unique_id') return typeof value === 'number' ? value : Number(value)
-  // relation(10n-44)의 연산자는 값을 받지 않는다 — 행 고르개와 함께 "포함" 이 들어오면 행 id 다
-  if (type === 'relation') return String(value)
+  // relation 의 포함(10n-45) — 행 id. 읽기 경로는 검사를 다시 하지 않으므로 uuid 가 아니면 아무 행도 아닌 id 로 묶는다(뷰를 깨지 않는다)
+  if (type === 'relation') return typeof value === 'string' && UUID_RE.test(value) ? value : NOBODY
   switch (AXIS[type]) {
     case 'num':
       return typeof value === 'number' ? value : Number(value)
@@ -632,11 +639,14 @@ export function compileFilter(
   // 통째로 열리지 않는다(정본: 읽기 경로에 검증을 걸지 않는 이유와 같다).
   if (spec === undefined) return null
 
-  // relation(10n-44) — 칸이 아니라 엣지를 본다. 살아 있는 · 템플릿이 아닌 대상 행이 하나라도 이어져 있는가(칸이 보여 주는 것과 같다)
+  // relation(10n-44) — 칸이 아니라 엣지를 본다. 살아 있는 · 템플릿이 아닌 대상 행이 하나라도 이어져 있는가(칸이 보여 주는 것과 같다).
+  // 포함(10n-45)은 그 행 하나로 — 휴지통의 행이면 칸이 보여 주지 않으므로 포함도 아니다.
   if (rawType === 'relation') {
+    const prop = params.bind(node.property_id)
+    const which = spec.arity === 1 ? `\n            AND e.to_page_id = ${params.bind(bindValue(rawType, node.value))}::uuid` : ''
     const linked = `EXISTS (SELECT 1 FROM relation_edge e
           JOIN page tp ON tp.id = e.to_page_id JOIN block tb ON tb.id = tp.id
-          WHERE e.from_page_id = p.id AND e.property_id = ${params.bind(node.property_id)}
+          WHERE e.from_page_id = p.id AND e.property_id = ${prop}${which}
             AND tb.lifecycle = 'live' AND tp.is_template = false)`
     return spec.negate ? `NOT ${linked}` : linked
   }
