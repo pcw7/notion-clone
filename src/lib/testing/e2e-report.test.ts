@@ -9,6 +9,8 @@ import {
   countsLine,
   databaseOf,
   formatSeconds,
+  gateParents,
+  gatePick,
   KNOWN_FAILURES,
   parseDotEnv,
   parseRunSummary,
@@ -160,4 +162,62 @@ test('★ 실제 e2e 스크립트의 게이트는 모두 감쌌다 — 한 절�
   assert.deepEqual(unguardedGates(source), [])
   const closings = source.split('\n').filter((line) => line.trim() === '} catch (thrown) { await sectionThrew(thrown) } }').length
   assert.equal(closings, gates, '닫는 줄도 게이트마다 하나')
+})
+
+const OPEN = (title: string, indent: string) => `${indent}if (sectionIf('${title}')) { try {`
+const CLOSE = (indent: string) => `${indent}} catch (thrown) { await sectionThrew(thrown) } }`
+
+test('★ 안긴 게이트의 바깥을 찾는다 — 닫는 줄이 한 겹씩 바깥으로 돌아온다(도구-6)', () => {
+  const source = [
+    OPEN('바깥 (1a)', '    '),
+    '      check()',
+    OPEN('안 하나 (1b)', '      '),
+    CLOSE('      '),
+    OPEN('안 둘 (1c)', '      '),
+    OPEN('더 안 (1d)', '        '),
+    CLOSE('        '),
+    CLOSE('      '),
+    CLOSE('    '),
+    OPEN('다음 (2a)', '    '),
+    CLOSE('    '),
+  ].join('\r\n')
+  assert.deepEqual(Object.fromEntries(gateParents(source)), {
+    '바깥 (1a)': [],
+    '안 하나 (1b)': ['바깥 (1a)'],
+    '안 둘 (1c)': ['바깥 (1a)'],
+    '더 안 (1d)': ['바깥 (1a)', '안 둘 (1c)'],
+    '다음 (2a)': [],
+  })
+})
+
+test('★ 골라 돌리기 — 안긴 절을 고르면 바깥도 켠다 · 형제와 이웃은 켜지 않는다(도구-6)', () => {
+  const parents = new Map<string, string[]>([
+    ['바깥 (1a)', []],
+    ['안 하나 (1b)', ['바깥 (1a)']],
+    ['안 둘 (1c)', ['바깥 (1a)']],
+    ['더 안 (1d)', ['바깥 (1a)', '안 둘 (1c)']],
+    ['다음 (2a)', []],
+  ])
+  const pick = (title: string, only: string[]) => gatePick(title, only, parents)
+  assert.equal(pick('안 하나 (1b)', []), 'self', '고른 것이 없으면 모두')
+  assert.equal(pick('더 안 (1d)', ['1d']), 'self')
+  assert.equal(pick('안 둘 (1c)', ['1d']), 'inner')
+  assert.equal(pick('바깥 (1a)', ['1d']), 'inner', '두 겹 바깥도')
+  assert.equal(pick('안 하나 (1b)', ['1d']), null, '형제는 저마다 다시 묻는다')
+  assert.equal(pick('다음 (2a)', ['1d']), null)
+  assert.equal(pick('안 하나 (1b)', ['바깥']), null, '바깥만 고르면 안긴 절은 돌지 않는다')
+  assert.equal(pick('바깥 (1a)', ['안 하나 (1B)']), 'inner', '대소문자는 가리지 않는다')
+})
+
+test('★ 실제 e2e 스크립트 — 모든 게이트가 읽히고, relation 5b-1 은 표 게이트 안에 있다(도구-6)', () => {
+  const source = readFileSync(new URL('../../../scripts/e2e-editor.mjs', import.meta.url), 'utf8')
+  const titles = [...source.matchAll(/sectionIf\(\s*'([^']+)'/g)].map((m) => m[1])
+  const parents = gateParents(source)
+  assert.equal(parents.size, titles.length, '제목이 겹치지 않고 모두 읽혔다')
+  const table = '데이터베이스 표 (W8-b · F-04-14 · F-03-16)'
+  assert.deepEqual(parents.get('데이터베이스 relation 칸 (relation 5b-1 · F-03-10)'), [table])
+  assert.deepEqual(parents.get(table), [])
+  const nested = [...parents].filter(([, outer]) => outer.length > 0)
+  assert.ok(nested.length >= 9, `안긴 게이트 ${nested.length}개`)
+  assert.equal(gatePick(table, ['relation 5b-1'], parents), 'inner', '#426 의 다시 돌리기 줄이 이제 돈다')
 })

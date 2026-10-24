@@ -103,6 +103,45 @@ export function unguardedGates(source: string): string[] {
   return out
 }
 
+const GATE_OPEN = /^\s*if \(sectionIf\(\s*'([^']+)'\)\) \{ try \{\s*$/
+const GATE_CLOSE = '} catch (thrown) { await sectionThrew(thrown) } }'
+
+/**
+ * 게이트마다 그것을 품은 바깥 게이트들(바깥부터) — 데이터베이스 표 게이트 안에 보드 · relation · rollup · 템플릿 절 아홉이 안겨 있다.
+ * 안긴 절은 바깥의 몸 안에서 불리므로 골라 돌리기가 안쪽만 고르면 아무것도 돌지 않았다(#426 — 새 실패의 다시 돌리기 줄 그대로가
+ * 게이트 0개). 여닫는 줄은 위의 모양 그대로다 — `unguardedGates` 와 닫는 줄의 개수 검사가 지킨다.
+ */
+export function gateParents(source: string): Map<string, string[]> {
+  const out = new Map<string, string[]>()
+  const open: string[] = []
+  for (const line of source.split('\n')) {
+    const m = GATE_OPEN.exec(line)
+    if (m) {
+      out.set(m[1], [...open])
+      open.push(m[1])
+    } else if (line.trim() === GATE_CLOSE) {
+      open.pop()
+    }
+  }
+  return out
+}
+
+/**
+ * 골라 돌리기(E2E_ONLY)가 이 게이트를 켜는가 — 제목이 골렸으면 'self', 안긴 게이트 하나가 골렸으면 'inner'(안쪽은 바깥의 몸 안에서
+ * 불리고 바깥이 만든 데이터에 기대므로 바깥의 몸도 돈다 · 안긴 다른 절은 저마다 다시 묻는다), 아니면 null. 고른 것이 없으면 모두 켠다.
+ */
+export function gatePick(
+  title: string,
+  queries: readonly string[],
+  parents: ReadonlyMap<string, readonly string[]>,
+): 'self' | 'inner' | null {
+  if (queries.length === 0) return 'self'
+  const hit = (t: string) => queries.some((q) => t.toLowerCase().includes(q.toLowerCase()))
+  if (hit(title)) return 'self'
+  for (const [inner, outer] of parents) if (outer.includes(title) && hit(inner)) return 'inner'
+  return null
+}
+
 export interface SectionTiming {
   readonly title: string
   readonly ms: number
