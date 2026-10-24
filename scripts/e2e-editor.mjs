@@ -22540,6 +22540,66 @@ async function main() {
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('인박스의 무한 스크롤 (10n-69 · F-11-07)')) { try {
+      // 인박스는 첫 쪽(30줄)만 그리고, 목록 끝의 "더 보기" 가 화면에 들어오면 저절로 다음 쪽을 받는다 · 읽음 · 보관 뒤의 다시 읽기는 펼친 만큼 ·
+      // 망가진 커서는 400. HANDOFF §3.2-302. 알림 35개를 DB 에 바로 넣는다(시각을 앞 절의 알림보다 뒤로 — 첫 쪽이 이 절의 것) · 끝에 지운다.
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const stamp = Date.now().toString(36)
+      const prefix = `more-${stamp}-`
+      const pageId = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: JSON.stringify({ title: `알림 ${stamp}` }) })).json()).page.id
+      const meId = (await dbQuery(`SELECT user_id FROM user_email WHERE email = $1`, [email]))[0].user_id
+      try {
+        await dbQuery(
+          `INSERT INTO notification (id, recipient_id, workspace_id, page_id, event_ids, kind, group_key, created_at)
+           SELECT gen_random_uuid(), $1, $2, $3, ARRAY[gen_random_uuid()], 'page_update', $4 || i::text, now() + interval '1 hour' - (36 - i) * interval '1 second'
+             FROM generate_series(1, 35) AS i`,
+          [meId, workspaceId, pageId, prefix],
+        )
+        // 이 절의 줄 번호를 위에서부터 — 다른 줄은 빼고 · 줄 전체의 겹침도 함께 센다
+        const mine = () => evaluate(`(() => {
+          const rows = [...document.querySelectorAll('[data-testid="inbox-item"]')].map((li) => li.dataset.group + ':' + li.querySelector('a')?.getAttribute('href'))
+          const nums = [...document.querySelectorAll('[data-testid="inbox-item"]')].map((li) => li.dataset.group).filter((g) => g.startsWith(${JSON.stringify(prefix)})).map((g) => Number(g.slice(${prefix.length})))
+          return { nums, rows: rows.length, unique: new Set(rows).size, more: !!document.querySelector('[data-testid="inbox-more"]') }
+        })()`)
+        const desc = (from, to) => Array.from({ length: from - to + 1 }, (_, i) => from - i)
+
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/inbox` })
+        await waitFor(`!!document.querySelector('[data-testid="inbox-item"]')`, 15000)
+        const first = await mine()
+        check('전제 — 첫 쪽은 30줄(이 절의 35 ~ 6) · 끝에 "더 보기"',
+          JSON.stringify(first.nums) === JSON.stringify(desc(35, 6)) && first.more, JSON.stringify(first))
+
+        // 끝까지 내리면 저절로 — 누르지 않는다
+        await waitHydrated('[data-testid="inbox-more"]')
+        await evaluate(`document.querySelector('[data-testid="inbox-more"]').scrollIntoView({ block: 'center' })`)
+        const grown = await waitFor(`[...document.querySelectorAll('[data-testid="inbox-item"]')].filter((li) => li.dataset.group.startsWith(${JSON.stringify(prefix)})).length === 35`, 10000)
+        const all = await mine()
+        check('★ 목록 끝이 화면에 들어오면 저절로 다음 쪽 — 이 절의 35줄이 차례대로 · 겹치는 줄이 없다',
+          grown && JSON.stringify(all.nums) === JSON.stringify(desc(35, 1)) && all.rows === all.unique, JSON.stringify(all))
+
+        // 둘째 쪽의 줄(3)을 읽음으로 — 다시 읽기가 펼친 만큼을 받는다. 위가 떨어졌어도 이 검사는 따로 보게 "더 보기" 를 눌러 채운다
+        for (let i = 0; i < 3 && (await mine()).nums.length < 35 && (await mine()).more; i += 1) {
+          await clickSelector('[data-testid="inbox-more"]')
+          await waitFor(`!document.querySelector('[data-testid="inbox-more"][aria-busy]')`, 5000)
+        }
+        const row3 = `[data-testid="inbox-item"][data-group="${prefix}3"]`
+        await evaluate(`document.querySelector('${row3}').scrollIntoView({ block: 'center' })`)
+        await clickSelector(`${row3} [data-testid="inbox-read"]`)
+        const marked = await waitFor(`document.querySelector('${row3} [data-testid="inbox-read"]')?.textContent === '안 읽음으로'`, 10000)
+        const afterMark = await mine()
+        check('★ 둘째 쪽의 줄을 읽음으로 — 다시 읽어도 펼친 만큼 그대로(35줄) · 그 줄은 "안 읽음으로"',
+          marked && JSON.stringify(afterMark.nums) === JSON.stringify(desc(35, 1)), JSON.stringify({ marked, afterMark }))
+
+        const broken = await fetch(`${BASE}/api/workspaces/${workspaceId}/inbox?after=garbage`, { headers: authed })
+        const page2 = await (await fetch(`${BASE}/api/workspaces/${workspaceId}/inbox?filter=unread`, { headers: authed })).json()
+        check('망가진 커서는 400 · 첫 쪽의 답에 다음 커서가 있다(안 읽음 필터 — 이 절의 34줄이 30을 넘는다)',
+          broken.status === 400 && (await broken.json()).error === 'invalid_cursor' && typeof page2.next === 'string' && page2.items.length === 30,
+          JSON.stringify({ status: broken.status, next: page2.next, n: page2.items?.length }))
+      } finally {
+        await dbQuery(`DELETE FROM notification WHERE recipient_id = $1 AND group_key LIKE $2`, [meId, `${prefix}%`]).catch(() => undefined)
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

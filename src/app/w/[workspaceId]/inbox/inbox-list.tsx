@@ -25,9 +25,18 @@
  *
  * "읽음"을 누르고 곧바로 다른 필터를 누르면 두 다시 읽기가 엇갈린다 — 늦게 온 옛 필터의 답이 지금 필터의 목록을 덮으면 "안 읽음"에
  * 읽은 알림이 선다(전체 e2e 가 찾았다). 다시 읽기마다 번호를 매겨 마지막 것만 받고, 표시 뒤의 다시 읽기는 **지금** 필터로 한다.
+ *
+ * ──────────────────────────────────────────────────────────────────────
+ * 무한 스크롤 (10n-69 · HANDOFF §3.2-302)
+ * ──────────────────────────────────────────────────────────────────────
+ *
+ * 11 *"패널 … 무한 스크롤"*. 목록 끝의 "더 보기" 단추가 화면에 들어오면 저절로 다음 쪽을 받는다(눌러도 된다 — 키보드 · 보조 기술).
+ * 다음 쪽은 다시 읽기 번호를 **올리지 않는다** — 다시 읽기(필터 · 읽음 · 보관)가 그 사이에 오면 늦게 온 다음 쪽은 버린다(옛 목록의 뒤다).
+ * 읽음 · 보관 뒤의 다시 읽기는 **펼친 만큼**을 받는다 — 첫 쪽만 다시 받으면 읽던 자리가 사라진다. 같은 줄이 두 번 오면(쪽 사이에 새
+ * 알림이 와 줄이 밀렸다) 한 번만 둔다.
  */
 
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import Link from '@/app/link'
 
 import type { PageIcon } from '@/lib/block/page-icon'
@@ -81,36 +90,48 @@ const when = (iso: string): string => new Date(iso).toLocaleString('ko-KR', { da
 export function InboxList({
   workspaceId,
   initialItems,
+  initialNext,
   initialUnread,
 }: {
   workspaceId: string
   initialItems: InboxRow[]
+  /** 다음 쪽의 커서(10n-69) — null 이면 더 없다. */
+  initialNext: string | null
   initialUnread: number
 }) {
   const [filter, setFilter] = useState('all')
   const [items, setItems] = useState(initialItems)
+  const [next, setNext] = useState(initialNext)
+  const [loadingMore, setLoadingMore] = useState(false)
   const [unread, setUnread] = useState(initialUnread)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   /** 지금 필터 · 마지막 다시 읽기의 번호 — 늦게 온 답이 지금 목록을 덮지 않게(머리말). */
   const filterRef = useRef(filter)
   const latestLoad = useRef(0)
+  /** 다음 쪽을 받은 적이 있는가 — 읽음 · 보관 뒤의 다시 읽기가 펼친 만큼을 받게(머리말). */
+  const grownRef = useRef(false)
+  const moreRef = useRef<HTMLButtonElement>(null)
+  const moreBusy = useRef(false)
 
   const url = `/api/workspaces/${workspaceId}/inbox`
 
+  /** 첫 쪽부터 다시 — `extent` 를 주면 그만큼(읽음 · 보관 뒤 — 펼친 만큼). 필터를 바꾸면 첫 쪽만. */
   const load = useCallback(
-    async (next: string) => {
+    async (nextFilter: string, extent?: number) => {
       const ticket = ++latestLoad.current
+      if (extent === undefined) grownRef.current = false
       try {
-        const res = await fetch(`${url}?filter=${next}`)
+        const res = await fetch(`${url}?filter=${nextFilter}${extent === undefined ? '' : `&limit=${extent}`}`)
         if (ticket !== latestLoad.current) return
         if (!res.ok) {
           setError('인박스를 불러오지 못했습니다.')
           return
         }
-        const data = (await res.json()) as { items: InboxRow[]; unread: number }
+        const data = (await res.json()) as { items: InboxRow[]; next: string | null; unread: number }
         if (ticket !== latestLoad.current) return
         setItems(data.items)
+        setNext(data.next)
         setUnread(data.unread)
       } catch {
         if (ticket === latestLoad.current) setError('연결에 실패했습니다.')
@@ -130,15 +151,59 @@ export function InboxList({
           body: JSON.stringify({ ids, ...patch }),
         })
         if (!res.ok) setError('처리하지 못했습니다.')
-        await load(filterRef.current)
+        await load(filterRef.current, grownRef.current ? Math.max(items.length, 1) : undefined)
       } catch {
         setError('연결에 실패했습니다.')
       } finally {
         setBusy(false)
       }
     },
-    [load, url],
+    [load, url, items.length],
   )
+
+  /** 다음 쪽 — 다시 읽기 번호를 올리지 않는다: 그 사이에 다시 읽기가 오면 이 답은 옛 목록의 뒤라 버린다(머리말). */
+  const loadMore = useCallback(async () => {
+    if (next === null || moreBusy.current) return
+    moreBusy.current = true
+    setLoadingMore(true)
+    const ticket = latestLoad.current
+    try {
+      const res = await fetch(`${url}?filter=${filterRef.current}&after=${encodeURIComponent(next)}`)
+      if (ticket !== latestLoad.current) return
+      if (!res.ok) {
+        setError('알림을 더 불러오지 못했습니다.')
+        return
+      }
+      const data = (await res.json()) as { items: InboxRow[]; next: string | null; unread: number }
+      if (ticket !== latestLoad.current) return
+      grownRef.current = true
+      setItems((current) => {
+        const seen = new Set(current.map((i) => `${i.groupKey}:${i.pageId}`))
+        return [...current, ...data.items.filter((i) => !seen.has(`${i.groupKey}:${i.pageId}`))]
+      })
+      setNext(data.next)
+      setUnread(data.unread)
+    } catch {
+      if (ticket === latestLoad.current) setError('연결에 실패했습니다.')
+    } finally {
+      moreBusy.current = false
+      setLoadingMore(false)
+    }
+  }, [next, url])
+
+  // 목록 끝이 화면에 들어오면 저절로 — 다음 쪽이 바뀔 때마다 다시 단다(받은 뒤에도 끝이 보이면 곧바로 한 쪽 더)
+  useEffect(() => {
+    const target = moreRef.current
+    if (next === null || target === null || typeof IntersectionObserver === 'undefined') return
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) void loadMore()
+      },
+      { rootMargin: '200px 0px' },
+    )
+    observer.observe(target)
+    return () => observer.disconnect()
+  }, [next, loadMore])
 
   const allIds = items.flatMap((i) => i.notificationIds)
 
@@ -198,7 +263,7 @@ export function InboxList({
           className="flex flex-col divide-y divide-neutral-200 rounded-lg border border-neutral-200 dark:divide-neutral-800 dark:border-neutral-800"
         >
           {items.map((item) => (
-            <li key={item.groupKey} className="flex flex-col gap-1 px-4 py-3">
+            <li key={`${item.groupKey}:${item.pageId}`} data-testid="inbox-item" data-group={item.groupKey} className="flex flex-col gap-1 px-4 py-3">
               <div className="flex items-center justify-between gap-2">
                 <Link
                   href={inboxHref(workspaceId, item.pageId, item.kind)}
@@ -225,6 +290,7 @@ export function InboxList({
                 <span className="text-xs text-neutral-400">{when(item.lastAt)}</span>
                 <button
                   type="button"
+                  data-testid="inbox-read"
                   disabled={busy}
                   onClick={() => void mark(item.notificationIds, { read: item.unreadCount > 0 })}
                   className={SMALL_BUTTON}
@@ -243,6 +309,20 @@ export function InboxList({
             </li>
           ))}
         </ul>
+      )}
+
+      {next !== null && items.length > 0 && (
+        <button
+          ref={moreRef}
+          type="button"
+          data-testid="inbox-more"
+          disabled={loadingMore}
+          aria-busy={loadingMore || undefined}
+          onClick={() => void loadMore()}
+          className="self-center rounded border border-neutral-300 px-3 py-1 text-sm hover:bg-neutral-50 disabled:opacity-50 dark:border-neutral-700 dark:hover:bg-neutral-800"
+        >
+          {loadingMore ? '불러오는 중…' : '더 보기'}
+        </button>
       )}
     </div>
   )
