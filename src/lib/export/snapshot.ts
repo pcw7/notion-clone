@@ -49,7 +49,7 @@ import { withReadTransaction, type Tx } from '../db/tx.ts'
 import { rowsToDoc, type BodyRow, type EditorBlock, type EditorDoc } from '../editor/document.ts'
 import { isUuid } from '../ids.ts'
 import { readableScopes } from '../permissions/effective.ts'
-import type { CsvColumn } from './csv.ts'
+import type { CsvColumn, ExportRelationCell } from './csv.ts'
 import type { ExportFile, ExportNode, ExportSnapshot } from './plan.ts'
 import { peopleNamesIn } from '../database/people.ts'
 import { compileLiveFormulas, evaluateRowFormulas, type FormulaSourceProperty } from '../database/formula-schema.ts'
@@ -220,13 +220,18 @@ export async function readExportSnapshot(
     const tables = await readTables(tx, ctx.workspaceId, databaseIds, now)
     // 수식 칸(10n-35) — 셀이 아니다(C1). 같은 트랜잭션에서 표 화면과 같은 함수로 계산해 그 행의 칸 묶음에 끼운다(고유 ID 와 같은 자리).
     // 행은 자기 data source 의 표의 식으로 계산한다(8e-1 — 소스마다 속성이 다르다).
+    // relation 칸(10n-36) — 캐시(앞 25개 · 걸러지지 않은 id)가 아니라 엣지를 읽어 권한으로 가른 제목 · 볼 수 없는 개수를 끼운다. 연결이
+    // 없는 칸도 빈 묶음을 끼운다 — 캐시의 봉투를 남기지 않는다.
+    const relationTitles = await readRelationTitles(tx, ctx.workspaceId, scopes, rowIds, [...tables.values()].flat())
     for (const databaseId of databaseIds) {
       for (const table of tables.get(databaseId) ?? []) {
-        if (table.formulasOf === null) continue
+        const relations = table.columns.filter((c) => c.type === 'relation').map((c) => c.propertyId)
+        if (table.formulasOf === null && relations.length === 0) continue
         for (const row of rowsOf.get(databaseId) ?? []) {
           if (row.parent_id !== table.dataSourceId) continue
           const cells = cellsOf.get(row.id) ?? {}
-          cellsOf.set(row.id, { ...cells, ...table.formulasOf(cells) })
+          const linked = Object.fromEntries(relations.map((p) => [p, relationTitles.get(`${row.id} ${p}`) ?? EMPTY_RELATION]))
+          cellsOf.set(row.id, { ...cells, ...linked, ...(table.formulasOf?.(cells) ?? {}) })
         }
       }
     }
@@ -378,7 +383,9 @@ async function readTables(tx: Tx, workspaceId: string, databaseIds: readonly str
               ? ('unique_id' as const)
               : p.type === 'formula'
                 ? ('formula' as const)
-                : DEFAULT_PROPERTY_TYPE,
+                : p.type === 'relation'
+                  ? ('relation' as const)
+                  : DEFAULT_PROPERTY_TYPE,
           ...(isOptionType(p.type) ? { options: optionsOf.get(p.id) ?? [] } : {}),
           ...(p.type === 'people' ? { names } : {}),
         })),
@@ -402,6 +409,43 @@ function formulasFor(
   const optionNames = new Map<string, string>()
   for (const p of own) for (const o of optionsOf.get(p.id) ?? []) optionNames.set(o.id, o.name)
   return (cells) => evaluateRowFormulas(formulas, (id) => typeOf.get(id) ?? null, cells, (id) => optionNames.get(id) ?? null, { now })
+}
+
+const EMPTY_RELATION: ExportRelationCell = { type: 'relation_titles', titles: [], hidden: 0 }
+
+/**
+ * 내보내는 행들의 relation 칸(10n-36 · 정본 [보강] `relation_edge` — [보강 10n-36]). 엣지를 칩 순서로 한 번에 읽고 표 화면과 같은 규칙
+ * (`loadRelationLabels`)으로 가른다 — 볼 수 있으면 제목 · 살아 있지만 볼 수 없으면 개수만 · 휴지통 · 템플릿 행은 빠진다. 열쇠는
+ * `"<행 id> <프로퍼티 id>"`.
+ */
+async function readRelationTitles(
+  tx: Tx,
+  workspaceId: string,
+  scopes: readonly string[],
+  rowIds: readonly string[],
+  tables: readonly Table[],
+): Promise<Map<string, ExportRelationCell>> {
+  const propertyIds = tables.flatMap((t) => t.columns.filter((c) => c.type === 'relation').map((c) => c.propertyId))
+  if (propertyIds.length === 0 || rowIds.length === 0) return new Map()
+  const edges = await tx.query<{ property_id: string; from_page_id: string; title: unknown; readable: boolean }>(
+    `SELECT e.property_id, e.from_page_id, b.properties -> 'title' AS title, (b.perm_scope_id = ANY($3::uuid[])) AS readable
+       FROM relation_edge e
+       JOIN page p ON p.id = e.to_page_id
+       JOIN block b ON b.id = p.id
+      WHERE e.property_id = ANY($1::text[]) AND e.from_page_id = ANY($2::uuid[])
+        AND b.workspace_id = $4 AND b.lifecycle = 'live' AND p.is_template = false
+      ORDER BY e.from_page_id, e.property_id, e.order_idx COLLATE "C", p.id`,
+    [propertyIds, rowIds, scopes, workspaceId],
+  )
+  const grouped = new Map<string, { titles: string[]; hidden: number }>()
+  for (const edge of edges) {
+    const key = `${edge.from_page_id} ${edge.property_id}`
+    const cell = grouped.get(key) ?? { titles: [], hidden: 0 }
+    if (edge.readable) cell.titles.push(plainTitleOf({ title: edge.title }))
+    else cell.hidden += 1
+    grouped.set(key, cell)
+  }
+  return new Map([...grouped].map(([key, cell]) => [key, { type: 'relation_titles', titles: cell.titles, hidden: cell.hidden }]))
 }
 
 /** 본문이 가리키는 우리 파일 중 **이 워크스페이스** 것의 메타. 다른 워크스페이스의 id 는 없는 것과 같다. */

@@ -11,6 +11,7 @@
  *   ③ **표 화면과 같은 값이다** — select 이름 · 지워진 옵션 · 계약을 어긴 옛 셀
  *   ④ **비어 있어도 파일이다** — 헤더만 있는 CSV, `null` 이라는 글자는 없다
  *   ⑤ **수식 열**(10n-35) — 결과 타입대로 같은 칸의 모양 · 값이 없으면 빈 칸 · 글 결과만 수식 막기
+ *   ⑥ **relation 열**(10n-36) — 제목을 `, ` 로 · 빈 제목은 "제목 없음" · 볼 수 없는 개수 · 캐시 봉투는 읽지 않는다 · 수식 막기
  */
 
 import { test, describe, before, after } from 'node:test'
@@ -196,5 +197,30 @@ describe('⑤ 수식 열 (10n-35)', () => {
     ])
     assert.equal(guardedFormulas, 1)
     assert.equal(csv, '\uFEFF계산\r\n"\'=HYPERLINK(""x"")"\r\n-5\r\n평범\r\n')
+  })
+})
+
+describe('⑥ relation 열 (10n-36)', () => {
+  const R: CsvColumn = { propertyId: 'p-r', name: '작업들', type: 'relation' }
+  const rel = (titles: string[], hidden = 0) => ({ type: 'relation_titles', titles, hidden })
+
+  test('★ 제목을 칩 순서로 잇는다 · 빈 제목은 넘겨받은 이름 · 볼 수 없는 것은 개수만', () => {
+    assert.equal(cellPlainText(R, rel(['가', '나'])), '가, 나')
+    assert.equal(cellPlainText(R, rel(['가', ''])), '가, 제목 없음')
+    assert.equal(cellPlainText(R, rel(['가', ''], 0), 'Untitled'), '가, Untitled', '부르는 쪽의 이름')
+    assert.equal(cellPlainText(R, rel(['가'], 2)), '가 (볼 수 없는 항목 2개)')
+    assert.equal(cellPlainText(R, rel([], 1)), '(볼 수 없는 항목 1개)')
+    assert.equal(cellPlainText(R, rel([])), '')
+  })
+
+  test('★ 캐시의 relation 봉투는 읽지 않는다 — 걸러지지 않은 id 다', () => {
+    assert.equal(cellPlainText(R, { type: 'relation', relation: [{ id: 'x' }], count: 1 }), '')
+    assert.equal(cellPlainText(R, undefined), '')
+  })
+
+  test('제목은 사람이 쓴 글자 — 수식 막기', () => {
+    const { csv, guardedFormulas } = tableToCsv([R], [row({ 'p-r': rel(['=위험', '안전']) })])
+    assert.equal(guardedFormulas, 1)
+    assert.equal(csv, '\uFEFF작업들\r\n"\'=위험, 안전"\r\n')
   })
 })

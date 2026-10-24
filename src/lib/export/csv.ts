@@ -16,7 +16,8 @@
  * 칸이다(F-03-04). 날짜는 적힌 ISO 그대로 쓴다 — 화면용 `formatDate`("2026년 9월 13일")는 다시
  * 읽을 수 없다. 체크박스는 노션 CSV 와 같은 `Yes` · `No` 다. 고유 ID 는 표에 보이는 그대로(`TASK-12`)다 — 셀이 아니라 스냅숏이 행에서
  * 읽어 칸 묶음에 끼운 값(`uniqueIdCell`)이다(2a-2b). 수식도 셀이 아니다 — 스냅숏이 같은 트랜잭션에서 계산해 칸 묶음에 끼운 값
- * (`FormulaValue`)이고, 결과 타입대로 같은 모양의 글자가 된다(참거짓은 `Yes` · `No` · 값이 없으면 빈 칸 · 10n-35).
+ * (`FormulaValue`)이고, 결과 타입대로 같은 모양의 글자가 된다(참거짓은 `Yes` · `No` · 값이 없으면 빈 칸 · 10n-35). relation 도 캐시를
+ * 읽지 않는다 — 스냅숏이 엣지를 읽어 권한으로 가른 제목 · 볼 수 없는 개수(`ExportRelationCell`)를 끼운다(10n-36).
  *
  * ──────────────────────────────────────────────────────────────────────
  * 사람이 Excel 로 여는 파일이다
@@ -50,7 +51,7 @@ export type CsvColumn = {
   readonly propertyId: string
   readonly name: string
   /** 셀 타입 + 고유 ID(2a-2b — 값은 셀이 아니라 행의 번호다) + 수식(10n-35 — 값은 스냅숏이 계산해 끼운 `FormulaValue`). */
-  readonly type: MvpPropertyType | 'unique_id' | 'formula'
+  readonly type: MvpPropertyType | 'unique_id' | 'formula' | 'relation'
   /** select 의 옵션. 셀은 id 를 담으므로 이름을 여기서 찾는다. */
   readonly options?: readonly SelectOption[]
   /** 사람 칸(6g-1)의 이름 — 사람 id → 이름(이 워크스페이스의 활동 중인 사람만). 없는 id 는 "떠난 사용자". */
@@ -69,6 +70,8 @@ export type CsvResult = {
 }
 
 const BOM = '\uFEFF'
+/** 제목이 빈 행의 이름 — 부르는 쪽(`planExport`)이 제 것을 넘긴다. 이것은 넘기지 않았을 때다. */
+const UNTITLED_ROW = '제목 없음'
 const FORMULA_LEAD = /^[=+\-@\t\r]/
 
 /**
@@ -76,7 +79,7 @@ const FORMULA_LEAD = /^[=+\-@\t\r]/
  *
  * 행이 없어도 헤더 줄은 쓴다 — 파일이 비어 있으면 사용자는 실패로 읽는다(F-04-26).
  */
-export function tableToCsv(columns: readonly CsvColumn[], rows: readonly CsvRow[]): CsvResult {
+export function tableToCsv(columns: readonly CsvColumn[], rows: readonly CsvRow[], untitled: string = UNTITLED_ROW): CsvResult {
   let guardedFormulas = 0
   const userText = (value: string): string => {
     if (!FORMULA_LEAD.test(value)) return value
@@ -87,7 +90,7 @@ export function tableToCsv(columns: readonly CsvColumn[], rows: readonly CsvRow[
   const lines = [columns.map((column) => field(userText(column.name))).join(',')]
   for (const row of rows) {
     const cells = columns.map((column) => {
-      const text = cellPlainText(column, row.cells[column.propertyId])
+      const text = cellPlainText(column, row.cells[column.propertyId], untitled)
       return field(guardsUserText(column, row.cells[column.propertyId]) ? userText(text) : text)
     })
     lines.push(cells.join(','))
@@ -96,7 +99,28 @@ export function tableToCsv(columns: readonly CsvColumn[], rows: readonly CsvRow[
 }
 
 /** 사용자가 쓴 글자를 담는 타입. 수식 막기는 이것에만 건다(머리말). */
-const USER_TEXT: ReadonlySet<CsvColumn['type']> = new Set(['title', 'rich_text', 'select', 'status', 'people'])
+const USER_TEXT: ReadonlySet<CsvColumn['type']> = new Set(['title', 'rich_text', 'select', 'status', 'people', 'relation'])
+
+/**
+ * 내보내기의 relation 칸(10n-36) — 스냅숏이 엣지에서 읽어 끼운다. 캐시의 relation 봉투(`type: 'relation'`)와 태그가 다르다 — 캐시는
+ * 걸러지지 않은 id 라 그대로 읽으면 안 된다(정본 [보강] `relation_edge` ★).
+ */
+export type ExportRelationCell = {
+  readonly type: 'relation_titles'
+  /** 볼 수 있는 연결의 제목 — 칩 순서. 빈 제목은 빈 문자열(글자로 바꿀 때 "제목 없음"). */
+  readonly titles: readonly string[]
+  /** 살아 있지만 볼 수 없는 연결의 수. */
+  readonly hidden: number
+}
+
+/** relation 칸의 글자 — 제목을 `, ` 로 · 볼 수 없는 것이 있으면 뒤에 개수(정본 [보강 10n-36]). 모양이 아니면 빈 칸. */
+function relationPlainText(raw: unknown, untitled: string): string {
+  if (typeof raw !== 'object' || raw === null || (raw as { type?: unknown }).type !== 'relation_titles') return ''
+  const cell = raw as ExportRelationCell
+  const titles = (Array.isArray(cell.titles) ? cell.titles : []).map((t) => (typeof t === 'string' && t !== '' ? t : untitled)).join(', ')
+  const hidden = typeof cell.hidden === 'number' && cell.hidden > 0 ? `(볼 수 없는 항목 ${cell.hidden}개)` : ''
+  return [titles, hidden].filter((part) => part !== '').join(' ')
+}
 
 /** 이 칸에 수식 막기를 거는가 — 사용자가 쓴 글자의 타입이거나, 수식의 **글 결과**(10n-35 · 머리말). */
 function guardsUserText(column: CsvColumn, raw: unknown): boolean {
@@ -138,11 +162,13 @@ function formulaPlainText(raw: unknown): string {
  *
  * 수식 막기는 여기 없다 — Excel 이 여는 CSV 만의 일이다.
  */
-export function cellPlainText(column: CsvColumn, raw: unknown): string {
+export function cellPlainText(column: CsvColumn, raw: unknown, untitled: string = UNTITLED_ROW): string {
   // 고유 ID 는 우리가 만든 값이다(접두사는 영숫자) — 수식 막기 대상이 아니다(`USER_TEXT` 밖).
   if (column.type === 'unique_id') return uniqueIdCellText(raw)
   // 수식(10n-35) — 스냅숏이 계산해 끼운 값. 셀 읽기(`readCell`)를 거치지 않는다
   if (column.type === 'formula') return formulaPlainText(raw)
+  // relation(10n-36) — 스냅숏이 엣지에서 읽어 끼운 제목 · 볼 수 없는 개수
+  if (column.type === 'relation') return relationPlainText(raw, untitled)
   const value = readCell(column.type, raw)
   switch (value.type) {
     case 'title':

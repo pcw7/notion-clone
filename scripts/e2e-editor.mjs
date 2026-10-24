@@ -20636,6 +20636,55 @@ async function main() {
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('내보내기의 relation 칸 (10n-36 · F-03-10 · F-09-14)')) { try {
+      // 표를 내보낸 ZIP 의 CSV · 행 Markdown 에 relation 칸이 연결된 행의 제목으로 들어간다(전에는 빈 칸) — 칩 순서 · 휴지통의 행은 빠진다.
+      // 캐시가 아니라 엣지를 읽는다. ZIP 은 python zipfile 로 읽는다(§3.3-63). 정본 [보강] relation_edge — [보강 10n-36].
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const projects = (await api('POST', '/databases', { name: `관계 내보내기 프로젝트 ${stamp}` })).body.database
+      const tasks = (await api('POST', '/databases', { name: `관계 내보내기 작업 ${stamp}` })).body.database
+      const titleOf = async (db) => (await api('GET', `/views/${db.defaultViewId}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const projectTitle = await titleOf(projects)
+      const taskTitle = await titleOf(tasks)
+      const relation = (await api('POST', `/data-sources/${projects.dataSourceId}/relations`, { name: '작업들', targetDataSourceId: tasks.dataSourceId })).body?.property?.id
+      const project = (await api('POST', `/views/${projects.defaultViewId}/rows`, { cells: [{ propertyId: projectTitle, value: { type: 'title', title: [textRun('집')] } }] })).body.row.id
+      const task = async (t) => (await api('POST', `/views/${tasks.defaultViewId}/rows`, { cells: [{ propertyId: taskTitle, value: { type: 'title', title: [textRun(t)] } }] })).body.row.id
+      const build = await task('시공')
+      const design = await task('설계')
+      const dropped = await task('버린 일')
+      const linked = await api('POST', `/rows/${project}/relations/${relation}`, { add: [build, design, dropped] })
+      check('전제 — 셋을 잇는다', linked.status === 200, JSON.stringify(linked))
+      await api('DELETE', `/rows/${dropped}`)
+
+      const zipRes = await fetch(`${BASE}/api/workspaces/${workspaceId}/export?root=${projects.id}`, { headers: authed })
+      check('표를 내보낸다 — 200', zipRes.status === 200, String(zipRes.status))
+      const dir = mkdtempSync(join(tmpdir(), 'nc-e2e-relation-export-'))
+      try {
+        const file = join(dir, 'export.zip')
+        writeFileSync(file, Buffer.from(await zipRes.arrayBuffer()))
+        const { findPython, runPythonJson } = await import(new URL('../src/lib/testing/external-tools.ts', import.meta.url).href)
+        const python = findPython()
+        const zip = python === null
+          ? { names: [], texts: {}, error: 'python 을 찾지 못했다' }
+          : runPythonJson(python, [
+              'import sys, json, zipfile',
+              'z = zipfile.ZipFile(sys.argv[1])',
+              "print(json.dumps({'names': z.namelist(), 'texts': {n: z.read(n).decode('utf-8') for n in z.namelist() if n.endswith(('.md', '.csv'))}}))",
+            ].join('\n'), [file])
+        const texts = zip.texts ?? {}
+        const csv = (Object.entries(texts).find(([n]) => n.endsWith('.csv'))?.[1] ?? '').replace('\uFEFF', '')
+        check('★ CSV 의 relation 칸 — 연결된 행의 제목을 칩 순서로 · 휴지통의 행은 빠진다',
+          csv.split('\r\n')[0] === '이름,작업들' && csv.split('\r\n')[1] === '집,"시공, 설계"', JSON.stringify(csv.slice(0, 200)))
+        const rowMd = Object.entries(texts).find(([n, t]) => n.endsWith('.md') && t.includes('# 집'))?.[1] ?? ''
+        check('★ 행 Markdown 의 속성 줄에도 — **작업들**: 시공, 설계', rowMd.includes('**작업들**: 시공, 설계'), JSON.stringify(rowMd.slice(0, 300)))
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).
