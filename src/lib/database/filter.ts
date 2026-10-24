@@ -724,6 +724,23 @@ export function compileSorts(
       keys.push({ expr: UNIQUE_ID_COLUMN, direction: sort.direction, cast: UNIQUE_ID_CAST })
       continue
     }
+    // select · status(10n-46) — 사이드카는 옵션 id 라 그 순서는 뜻이 없다. 옵션의 순서(`order_idx` · 이진 순서)로 잇는다. status 는 범주
+    // (할 일 → 진행 중 → 완료)가 먼저 — 커서가 키 하나를 비교하므로 범주의 순번 한 글자와 order_idx 를 이은 글자다. 지운 옵션 · 빈 칸은 NULL(맨 뒤).
+    if (rawType === 'select' || rawType === 'status') {
+      const param = params.bind(sort.property_id)
+      const status = rawType === 'status'
+      const key = status
+        ? `(CASE g.kind WHEN 'todo' THEN '1' WHEN 'in_progress' THEN '2' WHEN 'complete' THEN '3' ELSE '4' END || o.order_idx)`
+        : 'o.order_idx'
+      keys.push({
+        expr: `(SELECT ${key} COLLATE "C" FROM ${SOURCE_TABLE[resolved.table]} sv
+                  JOIN select_option o ON o.property_id = sv.property_id AND o.id::text = sv.text_value${status ? '\n                  LEFT JOIN status_group g ON g.id = o.group_id' : ''}
+                WHERE sv.page_id = p.id AND sv.property_id = ${param})`,
+        direction: sort.direction,
+        cast: '::text',
+      })
+      continue
+    }
     const column = COLUMN[AXIS[rawType]].replace('v.', 'sv.')
     const param = params.bind(sort.property_id)
     keys.push({

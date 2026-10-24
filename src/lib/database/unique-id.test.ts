@@ -171,11 +171,12 @@ describe('⑥ 화면', () => {
     assert.equal(isFilterableColumn(columnOf('relation')), true)
   })
 
-  test('★ 정렬 판정 — 고유 ID 는 되고, rollup · relation · 옵션 타입은 안 된다', () => {
+  test('★ 정렬 판정 — 고유 ID · 옵션 타입(10n-46)은 되고, rollup · relation · 사람은 안 된다', () => {
     assert.equal(isSortable({ type: 'unique_id' }), true)
     assert.equal(isSortable({ type: 'number' }), true)
     assert.equal(isSortable({ type: 'title' }), true)
-    for (const type of ['rollup', 'relation', 'select', 'status'] as const) assert.equal(isSortable({ type }), false, type)
+    for (const type of ['select', 'status'] as const) assert.equal(isSortable({ type }), true, type)
+    for (const type of ['rollup', 'relation', 'people'] as const) assert.equal(isSortable({ type }), false, type)
   })
 
   test('필터 초안 — 고유 ID 규칙을 만들고 칩에 번호를 적는다', () => {

@@ -73,7 +73,7 @@ export function ColumnMenu({
   convertTo?: readonly { readonly type: string; readonly label: string }[]
   /** 타입을 바꾼다 — 바뀌었으면 `done`, 값이 사라지는 칸이 있으면 그 개수(`lost` — 확인을 받아 다시 부른다), 실패면 이유. */
   onConvert?: (type: string, confirmLoss: boolean) => Promise<{ readonly done: true } | { readonly lost: number } | { readonly error: string }>
-  /** select · relation · rollup 은 정렬할 수 없다(`view-columns.ts` 의 `isSortable`). */
+  /** relation · rollup · 사람은 정렬할 수 없다(`view-columns.ts` 의 `isSortable` — select · status 는 10n-46 부터 옵션의 순서로 정렬한다). */
   sortable: boolean
   /** 실패하면 사람이 읽을 이유를, 성공하면 `null` 을 돌려준다. */
   onSort: (direction: SortKey['direction']) => Promise<string | null>
