@@ -20535,6 +20535,58 @@ async function main() {
       await send('Network.setBlockedURLs', { urls: [] })
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('카드의 수식 배지 (10n-34 · F-03-12 · F-04-03 · F-04-05)')) { try {
+      // 보드 · 갤러리의 카드에도 수식이 선다 — 카드에 숨긴 속성을 읽는 수식도 계산된다(계획은 컬럼 전부로) · 참은 "☑ 이름" · 거짓 · 빈 값 ·
+      // 식 오류는 서지 않는다 · 다른 곳에서 칸을 고치면 신호로 다시 그린 카드의 수식도 새 값 · 갤러리도. 정본 수식 1단계 ⑥ [보강 10n-34].
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const tasks = (await api('POST', '/databases', { name: `카드 수식 작업 ${stamp}` })).body.database
+      const props = `/data-sources/${tasks.dataSourceId}/properties`
+      const prop = async (name, type) => (await api('POST', props, { name, type })).body.property.id
+      const hours = await prop('시간', 'number')
+      const done = await prop('완료', 'checkbox')
+      const temp = await prop('임시', 'number')
+      await api('POST', props, { name: '두 배', type: 'formula', expression: 'prop("시간") * 2' })
+      await api('POST', props, { name: '끝남', type: 'formula', expression: 'prop("완료")' })
+      await api('POST', props, { name: '임시 수식', type: 'formula', expression: 'prop("임시") + 1' })
+      const row = async (h, d) => (await api('POST', `/views/${tasks.defaultViewId}/rows`, { cells: [
+        ...(h === null ? [] : [{ propertyId: hours, value: { type: 'number', number: h } }]),
+        { propertyId: done, value: { type: 'checkbox', checkbox: d } },
+        { propertyId: temp, value: { type: 'number', number: 1 } },
+      ] })).body.row.id
+      const finished = await row(3, true)
+      const waiting = await row(null, false)
+      // 뷰는 수식을 만든 뒤에 — 새 뷰는 그때의 속성을 모두 보이게 시작한다. "시간" 은 보드에서 숨긴다(수식은 여전히 읽는다)
+      const board = (await api('POST', `/databases/${tasks.id}/views`, { type: 'board', name: '보드', groupBy: { property_id: done } })).body.view
+      const gallery = (await api('POST', `/databases/${tasks.id}/views`, { type: 'gallery', name: '갤러리' })).body.view
+      await api('PATCH', `/views/${board.id}/columns/${hours}`, { visible: false })
+      // "임시" 를 지운다 — 그것을 읽던 수식은 식이 읽히지 않는다(표의 칸은 "수식 오류")
+      await api('DELETE', `${props}/${temp}`)
+      const badge = (testId, r, name) => `(document.querySelector('[data-row-id="${r}"] [data-testid="${testId}"][title="${name}"]')?.textContent.trim() ?? null)`
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${tasks.id}?v=${board.id}` })
+      check('★ 보드 카드에 수식 배지 — 카드에 숨긴 "시간" 을 읽어도 3 → 6',
+        await waitFor(`${badge('db-board-badge', finished, '두 배')} === '6'`, 15000), String(await evaluate(badge('db-board-badge', finished, '두 배'))))
+      check('★ 참은 "☑ 끝남" — 거짓 · 빈 값은 서지 않는다',
+        (await evaluate(`${badge('db-board-badge', finished, '끝남')} === '☑ 끝남'`))
+          && (await evaluate(`${badge('db-board-badge', waiting, '끝남')} === null && ${badge('db-board-badge', waiting, '두 배')} === null`)),
+        `${await evaluate(badge('db-board-badge', finished, '끝남'))} / ${await evaluate(badge('db-board-badge', waiting, '끝남'))} / ${await evaluate(badge('db-board-badge', waiting, '두 배'))}`)
+      check('★ 식이 읽히지 않는 수식은 카드에 서지 않는다 — 지운 "임시" 를 읽는다',
+        await evaluate(`${badge('db-board-badge', finished, '임시 수식')} === null && !document.querySelector('[data-testid="db-board-card"] [data-testid="db-formula-error"]')`))
+      // 다른 곳에서 칸을 고친다 — 표 변경 신호로 다시 그린 카드(이제 "완료" 열)의 수식도 그 칸으로
+      await api('PATCH', `/rows/${waiting}`, { cells: [{ propertyId: hours, value: { type: 'number', number: 5 } }, { propertyId: done, value: { type: 'checkbox', checkbox: true } }] })
+      check('★ 다른 곳에서 칸을 고치면 신호로 다시 그린 카드의 수식도 새 값 — 5 → 10 · ☑ 끝남',
+        await waitFor(`${badge('db-board-badge', waiting, '두 배')} === '10' && ${badge('db-board-badge', waiting, '끝남')} === '☑ 끝남'`, 15000),
+        `${await evaluate(badge('db-board-badge', waiting, '두 배'))} / ${await evaluate(badge('db-board-badge', waiting, '끝남'))}`)
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${tasks.id}?v=${gallery.id}` })
+      check('★ 갤러리 카드에도 — 6 · ☑ 끝남',
+        await waitFor(`${badge('db-gallery-badge', finished, '두 배')} === '6' && ${badge('db-gallery-badge', finished, '끝남')} === '☑ 끝남'`, 15000),
+        String(await evaluate(badge('db-gallery-badge', finished, '두 배'))))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

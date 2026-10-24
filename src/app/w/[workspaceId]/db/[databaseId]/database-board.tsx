@@ -56,6 +56,7 @@ import { rowOpenHref } from '@/lib/database/open-pages'
 import Link from '@/app/link'
 import {
   useEffect,
+  useMemo,
   useRef,
   useState,
   type KeyboardEvent,
@@ -94,6 +95,8 @@ import { useRelationLabels } from './use-relation-labels'
 import { usePeopleNames } from './use-people-names'
 import { useRollupValues } from './use-rollup-values'
 import { EMPTY_ROLLUP_PAGE, type RollupPage } from '@/lib/database/rollup-functions'
+import { formulaEvaluator, formulaValuesByRow, type FormulaPlan } from '@/lib/database/formula-plan'
+import type { FormulaValue } from '@/lib/formula/formula'
 import { useAdoptServerValue, useLiveServerRefresh } from './use-table-changes'
 
 /** `GET /groups` 의 그룹 하나 — 행은 `rowJson`. 서버 렌더(`page.tsx`)도 같은 모양으로 내려준다. */
@@ -189,6 +192,8 @@ export function DatabaseBoard(props: {
   renderedAt?: number
   /** 첫 화면의 rollup 값(10n-33 · 서버 렌더가 계산해 준다) — 카드의 배지. 그 뒤에 온 카드의 것은 `useRollupValues` 가 받는다. */
   rollupValues?: RollupPage
+  /** 수식의 계획(10n-34 · 서버 렌더가 뷰의 컬럼 전부로 만든다) — 카드의 수식 배지를 그 카드의 칸으로 계산한다. */
+  formulaPlan?: FormulaPlan | null
 }) {
   const { workspaceId, viewId, dataSourceId, tableName, columns, property, groupBy, manualOrder, access } = props
   const router = useRouter()
@@ -627,6 +632,9 @@ export function DatabaseBoard(props: {
   const serverRollups = props.rollupValues ?? EMPTY_ROLLUP_PAGE
   const { page: rollups, adopt: adoptRollups } = useRollupValues(workspaceId, dataSourceId, serverRollups, groups.flatMap((g) => g.rows), columns)
   useAdoptServerValue(serverRollups, boardBusy, adoptRollups)
+  // 수식 칸의 값(10n-34) — 카드의 배지. 그 카드의 칸으로 여기서 계산한다(표와 같은 함수 — 열을 옮겨 칸이 바뀌면 따라 바뀐다)
+  const formulas = useMemo(() => (props.formulaPlan ? formulaEvaluator(props.formulaPlan) : null), [props.formulaPlan])
+  const formulaValues = useMemo(() => formulaValuesByRow(formulas, groups.flatMap((g) => g.rows), columns), [formulas, groups, columns])
 
   const visible = groups.filter((g) => !g.hidden)
   const hiddenGroups = groups.filter((g) => g.hidden)
@@ -729,6 +737,8 @@ export function DatabaseBoard(props: {
                     peopleNames={peopleNames}
                     relationIcons={relationIcons}
                     rollups={rollups}
+                    formulaValues={formulaValues?.get(row.id)}
+                    formulaErrors={formulas?.errors}
                     dragging={draggingId === row.id}
                     dropBefore={isTarget && drop.beforeRowId === row.id}
                     editing={editing?.rowId === row.id ? editing : null}
@@ -836,6 +846,8 @@ function BoardCard({
   peopleNames,
   relationIcons,
   rollups,
+  formulaValues,
+  formulaErrors,
   dragging,
   dropBefore,
   editing,
@@ -863,6 +875,8 @@ function BoardCard({
   relationIcons: RelationIcons
   peopleNames: PeopleNames
   rollups: RollupPage
+  formulaValues: Readonly<Record<string, FormulaValue>> | undefined
+  formulaErrors: Readonly<Record<string, string | null>> | undefined
   dragging: boolean
   dropBefore: boolean
   editing: Editing | null
@@ -940,6 +954,8 @@ function BoardCard({
           relationIcons={relationIcons}
           peopleNames={peopleNames}
           rollups={rollups}
+          formulaValues={formulaValues}
+          formulaErrors={formulaErrors}
           testId="db-board-badge"
           button={button}
         />

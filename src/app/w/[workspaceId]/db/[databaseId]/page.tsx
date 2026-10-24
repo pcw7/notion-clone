@@ -443,7 +443,7 @@ export default async function DatabasePage({
   const rollupValues = computed !== null && computed.ok ? computed.value : EMPTY_ROLLUP_PAGE
 
   // ── 수식 칸의 값(2i-3a) ── 서버가 계산해 주지 않는다 — 계획(표의 속성 **전부** · 저장된 식 · 옵션 이름 · 지금)만 내려주고 화면이 그 행의
-  // 칸으로 계산한다(`formula-plan.ts` 머리말 — 같은 행만 읽으므로 새로 알려 주는 것이 없다). 보드 · 갤러리 · 캘린더의 카드는 아직이다(§7).
+  // 칸으로 계산한다(`formula-plan.ts` 머리말 — 같은 행만 읽으므로 새로 알려 주는 것이 없다). 보드 · 갤러리의 카드 배지도 이 계획으로 선다(10n-34).
   const formulaPlan = formulaPlanOf(columns, new Date())
 
   // ── 열 집계(2d-2 · F-04-16) ── 필터를 지난 행 전부로 계산한다(첫 페이지와 무관 · `calculate.ts`). 표 모양만 그린다.
@@ -634,6 +634,7 @@ export default async function DatabasePage({
             defaultTemplate={defaultTemplate}
             calculation={groupCalculation}
             rollupValues={rollupValues}
+            formulaPlan={formulaPlan}
             search={search}
             peekBase={peekBase}
             renderedAt={renderedAt}
@@ -694,6 +695,7 @@ export default async function DatabasePage({
             layout={view.value.gallery}
             covers={galleryCovers}
             rollupValues={rollupValues}
+            formulaPlan={formulaPlan}
             peekBase={peekBase}
             renderedAt={renderedAt}
           />

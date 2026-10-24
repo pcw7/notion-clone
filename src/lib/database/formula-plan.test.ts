@@ -7,6 +7,7 @@
  *   ④ 지금은 계획의 시각이다(서버 렌더와 브라우저가 같은 값을 낸다)
  *   ⑤ 수식 값 → 칸 값(칸을 그리는 함수로 그린다)
  *   ⑥ 쓰는 동안 검사(2i-3b) — 비었다 · 틀린 자리 · 자기 자신 · 결과 타입 · 첫 행 미리보기(다른 수식을 거쳐도)
+ *   ⑦ 행마다 수식 값 · 카드의 수식 배지(10n-34) — 빈 값 · 거짓 · 식 오류는 세우지 않는다
  */
 
 import { test, describe } from 'node:test'
@@ -15,7 +16,7 @@ import assert from 'node:assert/strict'
 import { textRun } from '../contracts/rich-text.ts'
 import type { CellValue, SelectOption } from './property-types.ts'
 import type { ViewColumn } from './view-columns.ts'
-import { checkFormulaDraft, formulaCell, formulaEvaluator, formulaPlanOf } from './formula-plan.ts'
+import { checkFormulaDraft, formulaBadgeCell, formulaCell, formulaEvaluator, formulaPlanOf, formulaValuesByRow } from './formula-plan.ts'
 
 const NOW = new Date('2026-10-10T09:00:00Z')
 const slot = (id: string) => `⟦${id}⟧`
@@ -156,5 +157,43 @@ describe('⑥ 쓰는 동안 검사', () => {
       resultType: 'number',
       preview: { type: 'number', value: 103 },
     })
+  })
+})
+
+describe('⑦ 행마다 · 카드의 배지 (10n-34)', () => {
+  test('★ 행마다 그 행의 칸으로 — 수식 컬럼이 없으면 null', () => {
+    const columns = [col('h', '시간', 'number'), formula('f', '두 배', `${slot('h')} * 2`, 'number')]
+    const evaluator = formulaEvaluator(formulaPlanOf(columns, NOW))
+    const rows = [
+      { id: 'a', properties: { h: cell({ type: 'number', number: 2 }) } },
+      { id: 'b', properties: {} },
+    ]
+    const values = formulaValuesByRow(evaluator, rows, columns)
+    assert.deepEqual(values?.get('a'), { f: { type: 'number', value: 4 } })
+    assert.deepEqual(values?.get('b'), { f: null }, '빈 칸은 흐른다')
+    assert.equal(formulaValuesByRow(evaluator, rows, columns.slice(0, 1)), null, '수식 컬럼이 없다')
+    assert.equal(formulaValuesByRow(null, rows, columns), null, '계획이 없다')
+  })
+
+  test('계획 뒤에 만든 옵션은 지금 컬럼에서 이름을 찾는다', () => {
+    const plan = formulaPlanOf([col('s', '단계', 'select'), formula('f', '이름', `${slot('s')}`, 'text')], NOW)
+    const live = [col('s', '단계', 'select', { options: [{ id: 'new', name: '새 단계', color: 'default' }] }), formula('f', '이름', `${slot('s')}`, 'text')]
+    const values = formulaValuesByRow(formulaEvaluator(plan), [{ id: 'a', properties: { s: cell({ type: 'select', select: { id: 'new' } }) } }], live)
+    assert.deepEqual(values?.get('a'), { f: { type: 'text', value: '새 단계' } })
+  })
+
+  test('★ 카드의 배지 — 값이 있으면 그 칸 · 참은 체크된 칸', () => {
+    assert.deepEqual(formulaBadgeCell({ type: 'number', value: 0 }, null), { type: 'number', number: 0 }, '0 은 값이다')
+    assert.deepEqual(formulaBadgeCell({ type: 'text', value: '가' }, null), { type: 'rich_text', rich_text: [textRun('가')] })
+    assert.deepEqual(formulaBadgeCell({ type: 'boolean', value: true }, null), { type: 'checkbox', checkbox: true })
+    assert.deepEqual(formulaBadgeCell({ type: 'date', value: { start: '2026-10-10' } }, null), { type: 'date', date: { start: '2026-10-10' } })
+  })
+
+  test('★ 세우지 않는다 — 없음 · 빈 글 · 거짓 · 식 오류', () => {
+    assert.equal(formulaBadgeCell(null, null), null)
+    assert.equal(formulaBadgeCell(undefined, null), null)
+    assert.equal(formulaBadgeCell({ type: 'text', value: '' }, null), null, '빈 글')
+    assert.equal(formulaBadgeCell({ type: 'boolean', value: false }, null), null, '거짓 — 체크박스 배지처럼')
+    assert.equal(formulaBadgeCell({ type: 'number', value: 3 }, '지워진 속성을 읽는다'), null, '식 오류는 표의 칸이 말한다')
   })
 })

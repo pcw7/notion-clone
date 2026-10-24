@@ -31,7 +31,7 @@
 
 import { textRun } from '../contracts/rich-text.ts'
 import { compileFormula, type FormulaError, type FormulaType, type FormulaValue } from '../formula/formula.ts'
-import type { CellValue } from './property-types.ts'
+import { isEmptyValue, type CellValue } from './property-types.ts'
 import type { ViewColumn } from './view-columns.ts'
 import { compileLiveFormulas, evaluateRowFormulas, formulaSchemaOf, type FormulaSourceProperty } from './formula-schema.ts'
 
@@ -102,6 +102,33 @@ export function formulaCell(value: FormulaValue | undefined): CellValue | null {
     case 'date':
       return { type: 'date', date: value.value.end === undefined ? { start: value.value.start } : { start: value.value.start, end: value.value.end } }
   }
+}
+
+/**
+ * 행마다 수식 값 — 표 · 보드 · 갤러리가 같은 함수로 계산한다(10n-34). 수식 컬럼이 없으면 null. 계획 뒤에 이 화면에서 생긴 옵션(방금 만든
+ * 것)은 지금 컬럼에서 이름을 찾는다.
+ */
+export function formulaValuesByRow(
+  evaluator: FormulaEvaluator | null,
+  rows: readonly { readonly id: string; readonly properties: Readonly<Record<string, unknown>> }[],
+  columns: readonly ViewColumn[],
+): ReadonlyMap<string, Record<string, FormulaValue>> | null {
+  if (evaluator === null || !columns.some((c) => c.type === 'formula')) return null
+  const liveOptions = new Map(columns.flatMap((c) => c.options.map((o) => [o.id, o.name] as const)))
+  return new Map(rows.map((row) => [row.id, evaluator.valuesOf(row.properties, (id) => liveOptions.get(id) ?? null)]))
+}
+
+/**
+ * 카드(보드 · 갤러리)에 세울 수식 배지의 칸 — 세우지 않으면 null(10n-34 · 정본 수식 1단계 ⑥ [보강 10n-34]).
+ *
+ * 다른 배지와 같은 규칙이다 — 빈 값(없음 · 빈 글)은 서지 않고 참거짓은 참일 때만(체크박스 배지처럼 `☑ 이름`). 식이 읽히지 않는 수식도
+ * 세우지 않는다 — 표의 칸이 "수식 오류" 라고 말한다(rollup 의 끊긴 설정과 같다 — 10n-33).
+ */
+export function formulaBadgeCell(value: FormulaValue | undefined, error: string | null): CellValue | null {
+  if (error !== null) return null
+  const cell = formulaCell(value)
+  if (cell === null) return null
+  return (cell.type === 'checkbox' ? cell.checkbox : !isEmptyValue(cell)) ? cell : null
 }
 
 // ── 쓰는 동안 검사 (2i-3b) ──────────────────────────────────────────
