@@ -7798,8 +7798,8 @@ async function main() {
       await clickOn(`th[data-property-id="${propIds[0]}"] [data-testid="db-column-menu"]`)
 
       await clickOn(`th[data-property-id="${selectProp}"] [data-testid="db-column-menu"]`)
-      check('★ select 머리 메뉴에는 정렬이 없다 — 옵션 id 순서를 정렬처럼 보여주지 않는다',
-        await waitFor(`!!document.querySelector('[data-testid="db-column-menu-panel"]') && !document.querySelector('[data-testid="db-column-sort-asc"]')`, 3000))
+      check('★ select 머리 메뉴에 정렬이 선다 — 옵션 id 가 아니라 옵션의 순서로 정렬한다(10n-46 · 전에는 없었다)',
+        await waitFor(`!!document.querySelector('[data-testid="db-column-menu-panel"]') && !!document.querySelector('[data-testid="db-column-sort-asc"]')`, 3000))
       await clickOn(`th[data-property-id="${selectProp}"] [data-testid="db-column-menu"]`)
 
       await clickOn(`th[data-property-id="${numberProp}"] [data-testid="db-column-menu"]`)
@@ -21295,6 +21295,82 @@ async function main() {
       check('그 행을 휴지통에 보내면 칩은 "지워진 행" — 규칙은 남고 그 행으로는 아무도 포함하지 않는다(넷 모두)',
         (await chipHas(['작업들', '포함하지 않음', '지워진 행'])) && (await rowsAre(['가', '나', '다', '라'])),
         `${await chips()} · ${JSON.stringify(await shown())}`)
+    } catch (thrown) { await sectionThrew(thrown) } }
+
+    if (sectionIf('select · status 로 정렬 (10n-46 · F-04-10)')) { try {
+      // 머리 메뉴의 정렬이 select · status 에도 선다 — status 는 범주(할 일 → 진행 중 → 완료)가 먼저(뒤에 더한 할 일 옵션도 할 일 자리) ·
+      // select 는 옵션의 순서 · 빈 칸은 맨 뒤 · 새로고침해도 같은 차례(서버가 정렬한다) · 사람 머리에는 정렬이 없다(서버가 거부한다).
+      // 정본 §3.6 [보강] select · status 로 정렬.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const clickOn = async (selector) => {
+        const p = await evaluate(`(() => {
+          const e = document.querySelector(${JSON.stringify(selector)})
+          if (!e) return null
+          e.scrollIntoView({ block: 'center' })
+          const r = e.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (p) await click(p.x, p.y)
+        return p !== null
+      }
+      const db = (await api('POST', '/databases', { name: `옵션 정렬 ${stamp}` })).body.database
+      const view = db.defaultViewId
+      const props = `/data-sources/${db.dataSourceId}/properties`
+      const progress = (await api('POST', props, { name: '진행', type: 'status' })).body.property.id
+      const stage = (await api('POST', props, { name: '단계', type: 'select' })).body.property.id
+      const owner = (await api('POST', props, { name: '담당', type: 'people' })).body.property.id
+      const option = async (prop, body) => (await api('POST', `${props}/${prop}/options`, body)).body.option.id
+      const [high, mid, low] = [await option(stage, { name: '높음' }), await option(stage, { name: '중간' }), await option(stage, { name: '낮음' })]
+      const review = await option(progress, { name: '검토 대기', group: 'todo' })
+      const columns = (await api('GET', `/views/${view}`)).body.view.columns
+      const titleProp = columns.find((c) => c.type === 'title').propertyId
+      const statusOptions = columns.find((c) => c.propertyId === progress).options
+      const firstOf = (group) => statusOptions.find((o) => o.group === group && o.id !== review).id
+      const row = async (name, statusId, stageId) => (await api('POST', `/views/${view}/rows`, { cells: [
+        { propertyId: titleProp, value: { type: 'title', title: [textRun(name)] } },
+        { propertyId: progress, value: { type: 'status', status: { id: statusId } } },
+        ...(stageId === null ? [] : [{ propertyId: stage, value: { type: 'select', select: { id: stageId } } }]),
+      ] })).body.row.id
+      const ids = {
+        완료: await row('완료', firstOf('complete'), low),
+        검토: await row('검토', review, high),
+        진행: await row('진행', firstOf('in_progress'), mid),
+        시작: await row('시작', firstOf('todo'), null),
+      }
+      check('전제 — 진행(status) · 단계(select) · 담당(사람)과 행 넷', [progress, stage, owner, ...Object.values(ids)].every((x) => typeof x === 'string'))
+      const order = () => evaluate(`[...document.querySelectorAll('[data-testid="db-table"] tbody tr[data-row-id]')].map((tr) => tr.dataset.rowId)`)
+      const named = async () => {
+        const got = await order()
+        return got.map((id) => Object.keys(ids).find((k) => ids[k] === id) ?? '?').join(',')
+      }
+      const orderIs = (names) => waitFor(`JSON.stringify([...document.querySelectorAll('[data-testid="db-table"] tbody tr[data-row-id]')].map((tr) => tr.dataset.rowId)) === ${JSON.stringify(JSON.stringify(names.map((n) => ids[n])))}`, 10000)
+      const MENU = (prop) => `th[data-property-id="${prop}"] [data-testid="db-column-menu"]`
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr[data-row-id]').length === 4`, 15000)
+      await waitHydrated(MENU(progress), 20000) // 서버가 그린 단추 — React 가 붙기 전의 클릭은 버려진다(10n-11)
+      await clickOn(MENU(progress))
+      check('★ status 머리 메뉴에 정렬이 선다', await waitFor(`!!document.querySelector('[data-testid="db-column-sort-asc"]')`, 3000))
+      await clickOn('[data-testid="db-column-sort-asc"]')
+      check('★ status 오름차순 — 범주가 먼저: 시작 · 검토(뒤에 더한 할 일 옵션) · 진행 · 완료', await orderIs(['시작', '검토', '진행', '완료']), await named())
+      await send('Page.reload')
+      await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr[data-row-id]').length === 4`, 15000)
+      check('★ 새로고침해도 같은 차례 — 서버가 옵션의 순서로 정렬한다', await orderIs(['시작', '검토', '진행', '완료']), await named())
+
+      await api('PATCH', `/views/${view}`, { sorts: [{ property_id: stage, direction: 'desc' }] })
+      await send('Page.reload')
+      await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr[data-row-id]').length === 4`, 15000)
+      check('★ select 내림차순 — 낮음 · 중간 · 높음, 빈 칸은 그래도 맨 뒤', await orderIs(['완료', '진행', '검토', '시작']), await named())
+
+      await waitHydrated(MENU(owner), 20000)
+      await clickOn(MENU(owner))
+      check('사람 머리 메뉴에는 정렬이 없다 — 서버가 받지 않는 정렬을 내밀지 않는다',
+        await waitFor(`!!document.querySelector('[data-testid="db-column-menu-panel"]') && !document.querySelector('[data-testid="db-column-sort-asc"]')`, 3000))
+      await key('Escape')
     } catch (thrown) { await sectionThrew(thrown) } }
 
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {

@@ -9,7 +9,6 @@
 
 import {
   isMvpPropertyType,
-  isOptionType,
   readRelationConfig,
   type MvpPropertyType,
   type RelationLimit,
@@ -237,16 +236,15 @@ export function isCellColumn(column: ViewColumn): column is CellColumn {
 /**
  * 정렬할 수 있는 컬럼.
  *
- * ⚠ select 를 뺀다. 지금의 컴파일러는 select 를 사이드카(`text_value` = **옵션 id**)로
- *   정렬해서 사용자에게는 아무 규칙 없는 순서로 보인다. F-04-10 이 요구하는 것은
- *   **옵션 정의 순서**(`select_option.order_idx` 조인)이고 그것이 들어올 때 연다.
- *   status 도 같은 사이드카라 같이 뺀다(`OPTION_TYPES`).
+ * select · status 는 10n-46 부터 정렬한다 — 컴파일러가 옵션 id 가 아니라 옵션의 순서(status 는 범주가 먼저)로 잇는다(정본 [보강] select ·
+ * status 로 정렬). 그 전에는 id 순서가 아무 규칙 없는 순서로 보여서 뺐다.
  */
 export function isSortable(column: ViewColumn): boolean {
   // 서버가 정렬할 수 있는 타입으로 묻는다(`filterColumnOf` — 셀 타입 + 고유 ID + 수식(결과 타입 · 2j-3)). relation 은 사이드카가
   // 없고(값이 엣지다), rollup 은 저장된 값이 없다(정본 D1) — 전에는 "relation 이 아니다"로 물어서 rollup 머리에 정렬이 섰고, 누르면
   // 서버가 그 키를 조용히 건너뛰어 아무 일도 없었다(2a-2 에서 바로잡았다).
-  // relation 은 10n-44 부터 거를 수 있지만(비어 있음 · 비어 있지 않음) 정렬은 아니다 — 값이 집합이다(서버의 `validateSorts` 도 거부한다)
+  // 저장 경로(`validateSorts`)가 거부하는 둘을 같이 뺀다 — relation(10n-44 부터 거를 수 있지만 값이 집합이다) · 사람(사이드카가 사람 id 라
+  // 순서에 뜻이 없다 · 정본 [보강] 사람 속성 ⑤). 사람은 10n-46 에서 더했다 — 그 전에는 사람 머리에 정렬이 서고 누르면 서버가 거부했다.
   const f = filterColumnOf(column)
-  return f !== null && !isOptionType(f.type) && f.type !== 'relation'
+  return f !== null && f.type !== 'relation' && f.type !== 'people'
 }
