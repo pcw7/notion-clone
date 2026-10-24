@@ -9,8 +9,9 @@
  * 상태(켜졌는가 · 수단 · 남은 백업 코드 · 비밀번호가 있는가)는 서버가 준다(`mfaStatus`). 이 화면이 판정하지 않는다.
  *
  *   · 켜기 — 이름 → QR(`uqr` 로 그린 SVG — 의존성 없음 · MIT)과 base32 비밀값 → 앱의 코드로 확정. 비밀값은 **이 응답에서 한 번만** 온다
- *   · 처음 켜면 백업 코드 6개 — 복사 · 내려받기 · "안전한 곳에 저장했습니다"를 고르기 전에는 닫히지 않는다(다시 보는 길이 없다)
- *   · 켠 뒤 — 수단 목록 · 지우기(지금 코드로) · 앱 더하기(둘까지) · 백업 코드 새로 받기(지금 코드로)
+ *   · 처음 켜면 백업 코드 6개 — 복사 · 내려받기 · 인쇄(10n-52 — 인쇄 스타일이 이 상자만 남긴다) · "안전한 곳에 저장했습니다"를 고르기 전에는
+ *     닫히지 않는다(다시 보는 길이 없다)
+ *   · 켠 뒤 — 수단 목록 · 이름 바꾸기(10n-52 — 지금 코드 없이 · 정본 ⑦) · 지우기(지금 코드로) · 앱 더하기(둘까지) · 백업 코드 새로 받기(지금 코드로)
  *
  * QR 은 밝은 바탕에 검은 점으로 그린다 — 어두운 테마에서도 인증 앱의 카메라가 읽게.
  */
@@ -29,6 +30,7 @@ type Mode =
   | { readonly kind: 'scan'; readonly enrollment: Enrollment }
   | { readonly kind: 'codes'; readonly codes: readonly string[] }
   | { readonly kind: 'remove'; readonly methodId: string }
+  | { readonly kind: 'rename'; readonly methodId: string }
   | { readonly kind: 'regenerate' }
 type Status = { readonly kind: 'saved' | 'error'; readonly text: string }
 
@@ -63,7 +65,7 @@ export function MfaPanel(props: {
   }
 
   /** 요청 하나 — 실패면 이유를 말하고 null. */
-  const call = async (url: string, method: 'POST' | 'DELETE', body: Record<string, unknown>) => {
+  const call = async (url: string, method: 'POST' | 'DELETE' | 'PATCH', body: Record<string, unknown>) => {
     setBusy(true)
     setStatus(null)
     try {
@@ -109,6 +111,15 @@ export function MfaPanel(props: {
     router.refresh()
   }
 
+  /** 이름 바꾸기(10n-52 · 정본 ⑦) — 지금 코드를 묻지 않는다. */
+  const rename = async (methodId: string) => {
+    const data = await call(`${base}/${methodId}`, 'PATCH', { label })
+    if (data === null) return
+    go({ kind: 'idle' })
+    setStatus({ kind: 'saved', text: `이름을 "${String(data.label)}"(으)로 바꿨습니다.` })
+    router.refresh()
+  }
+
   const regenerate = async () => {
     const data = await call(`${base}/backup-codes`, 'POST', { code })
     if (data === null) return
@@ -150,15 +161,57 @@ export function MfaPanel(props: {
         <ul data-testid="mfa-methods" className="flex flex-col divide-y divide-neutral-100 rounded-md border border-neutral-200 text-sm dark:divide-neutral-900 dark:border-neutral-800">
           {props.methods.map((m) => (
             <li key={m.id} data-testid="mfa-method" data-method-id={m.id} className="flex items-center justify-between gap-3 px-3 py-2">
-              <span className="min-w-0 truncate">
-                {m.label}
-                <span className="ml-2 text-xs text-neutral-400">
-                  {dateOf(m.createdAt)} 더함{m.lastUsedAt !== null && ` · 마지막 사용 ${dateOf(m.lastUsedAt)}`}
-                </span>
-              </span>
-              <button type="button" data-testid="mfa-remove-open" onClick={() => go({ kind: 'remove', methodId: m.id })} className={BUTTON}>
-                지우기
-              </button>
+              {mode.kind === 'rename' && mode.methodId === m.id ? (
+                <form
+                  data-testid="mfa-rename-form"
+                  className="flex min-w-0 flex-1 items-center gap-2"
+                  onSubmit={(e) => {
+                    e.preventDefault()
+                    void rename(m.id)
+                  }}
+                >
+                  <input
+                    data-testid="mfa-rename-input"
+                    aria-label="인증 앱 이름"
+                    value={label}
+                    maxLength={40}
+                    autoFocus
+                    onChange={(e) => setLabel(e.target.value)}
+                    className={INPUT}
+                  />
+                  <button type="submit" data-testid="mfa-rename-save" disabled={busy} className={PRIMARY}>
+                    저장
+                  </button>
+                  <button type="button" data-testid="mfa-rename-cancel" onClick={() => go({ kind: 'idle' })} className={BUTTON}>
+                    취소
+                  </button>
+                </form>
+              ) : (
+                <>
+                  <span className="min-w-0 truncate">
+                    {m.label}
+                    <span className="ml-2 text-xs text-neutral-400">
+                      {dateOf(m.createdAt)} 더함{m.lastUsedAt !== null && ` · 마지막 사용 ${dateOf(m.lastUsedAt)}`}
+                    </span>
+                  </span>
+                  <span className="flex shrink-0 gap-2">
+                    <button
+                      type="button"
+                      data-testid="mfa-rename-open"
+                      onClick={() => {
+                        go({ kind: 'rename', methodId: m.id })
+                        setLabel(m.label)
+                      }}
+                      className={BUTTON}
+                    >
+                      이름 바꾸기
+                    </button>
+                    <button type="button" data-testid="mfa-remove-open" onClick={() => go({ kind: 'remove', methodId: m.id })} className={BUTTON}>
+                      지우기
+                    </button>
+                  </span>
+                </>
+              )}
             </li>
           ))}
         </ul>
@@ -241,7 +294,8 @@ export function MfaPanel(props: {
       )}
 
       {mode.kind === 'codes' && (
-        <div data-testid="mfa-codes" className="flex max-w-sm flex-col gap-3 rounded-md border border-neutral-200 p-3 dark:border-neutral-800">
+        // `data-print-only` — 인쇄하면 이 상자만 남는다(10n-52 · `globals.css`). 단추 · 체크는 `data-print-hide` 로 인쇄에서 뺀다
+        <div data-testid="mfa-codes" data-print-only className="flex max-w-sm flex-col gap-3 rounded-md border border-neutral-200 p-3 dark:border-neutral-800">
           <p className="text-xs text-neutral-600 dark:text-neutral-400">
             백업 코드입니다 — <strong>지금 한 번만 보입니다.</strong> 인증 앱을 쓸 수 없을 때 하나씩 한 번 쓸 수 있습니다.
           </p>
@@ -250,7 +304,10 @@ export function MfaPanel(props: {
               <li key={c}>{c}</li>
             ))}
           </ul>
-          <div className="flex gap-2">
+          <div className="flex gap-2" data-print-hide>
+            <button type="button" data-testid="mfa-codes-print" onClick={() => window.print()} className={BUTTON}>
+              인쇄
+            </button>
             <button type="button" data-testid="mfa-codes-copy" onClick={() => void navigator.clipboard?.writeText(mode.codes.join('\n'))} className={BUTTON}>
               복사
             </button>
@@ -263,11 +320,11 @@ export function MfaPanel(props: {
               내려받기
             </a>
           </div>
-          <label className="flex items-center gap-2 text-xs">
+          <label className="flex items-center gap-2 text-xs" data-print-hide>
             <input type="checkbox" data-testid="mfa-codes-saved" checked={saved} onChange={(e) => setSaved(e.target.checked)} />
             안전한 곳에 저장했습니다
           </label>
-          <button type="button" data-testid="mfa-codes-close" disabled={!saved} onClick={closeCodes} className={PRIMARY}>
+          <button type="button" data-testid="mfa-codes-close" data-print-hide disabled={!saved} onClick={closeCodes} className={PRIMARY}>
             닫기
           </button>
         </div>

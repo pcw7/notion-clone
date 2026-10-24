@@ -15,7 +15,7 @@ export function mfaFailureMessage(reason: unknown): string {
     case 'not_found':
       return '등록이 끝났거나 30분이 지났습니다. 처음부터 다시 하세요.'
     case 'invalid_label':
-      return '이름은 40자까지 적을 수 있습니다.'
+      return '이름은 비울 수 없고 40자까지 적을 수 있습니다.'
   }
   return '저장하지 못했습니다.'
 }
