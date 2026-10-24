@@ -21550,6 +21550,79 @@ async function main() {
       await api('DELETE', `/databases/${locked.id}/lock`)
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('공개 링크의 만료 (10n-50 · F-06-08)')) { try {
+      // 공유 패널의 웹 게시 절에 "만료" 줄 — 날짜를 고르면 그날의 끝까지 열린다 · 지나면 공개 주소가 만료 안내를 그리고 패널은 "만료되었습니다" ·
+      // "만료 없애기" 로 같은 주소가 다시 열린다 · Free 요금제는 날짜 칸이 막히고 까닭이 선다(지우기는 된다). 정본 [정정] 웹 게시 ⑬ · 0115.
+      // 주 워크스페이스는 Business 다 — Free 는 잠시 바꾸고 끝에 반드시 되돌린다.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const { setWorkspacePlan } = await import(new URL('../src/lib/billing/plan.ts', import.meta.url).href)
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const SECTION = '[role="dialog"][aria-label="공유 설정"] [data-testid="publish-section"]'
+      const openShare = async (pageId) => {
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${pageId}` })
+        await waitFor(`[...document.querySelectorAll('button')].some((b) => b.textContent.trim() === '공유' && Object.keys(b).some((k) => k.startsWith('__reactProps')))`, 15000)
+        await clickText('공유')
+        return waitFor(`!!document.querySelector('${SECTION} [data-testid="publish-expiry"]')`, 8000)
+      }
+      const line = () => evaluate(`document.querySelector('${SECTION} [data-testid="publish-expiry-state"]')?.textContent.trim() ?? null`)
+      const DAY = `${SECTION} [data-testid="publish-expiry-day"]`
+      // 날짜 칸에 값을 넣는다 — React 가 듣는 길(원형의 setter + input 이벤트)
+      const setDay = (value) => evaluate(`(() => {
+        const input = document.querySelector('${DAY}')
+        if (!input) return false
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, ${JSON.stringify(value)})
+        input.dispatchEvent(new Event('input', { bubbles: true }))
+        return true
+      })()`)
+      const pad = (n) => String(n).padStart(2, '0')
+      const later = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
+      const day = `${later.getFullYear()}-${pad(later.getMonth() + 1)}-${pad(later.getDate())}`
+
+      const page = (await api('POST', '/pages', { title: `만료할 문서 ${stamp}` })).body.page.id
+      const token = (await api('PUT', `/pages/${page}/publish`)).body?.token
+      const address = `${BASE}/p/${token}`
+      check('전제 — 게시된 페이지 · 공개 주소가 열린다', typeof token === 'string' && (await fetch(address)).status === 200, String(token))
+      try {
+        check('★ 웹 게시 절에 만료 줄 — 처음은 "만료 없음" · 날짜 칸이 열려 있다',
+          (await openShare(page)) && (await line())?.startsWith('만료 없음') && (await evaluate(`document.querySelector('${DAY}')?.disabled === false`)),
+          String(await line()))
+        await setDay(day)
+        await clickSelector(`${SECTION} [data-testid="publish-expiry-save"]`)
+        const saved = await waitFor(`(document.querySelector('${SECTION} [data-testid="publish-expiry-state"]')?.textContent.trim() ?? '') === ${JSON.stringify(`${day} 까지 열립니다.`)}`, 8000)
+        const stored = (await api('GET', `/pages/${page}/publish`)).body?.expiresAt ?? null
+        const storedAt = stored === null ? null : new Date(stored)
+        check('★ 날짜를 고르고 정하면 — 그날의 끝까지(이 브라우저 23:59) · 그때까지 열린다',
+          saved && storedAt !== null && storedAt.getDate() === later.getDate() && storedAt.getHours() === 23 && storedAt.getMinutes() === 59 && (await fetch(address)).status === 200,
+          JSON.stringify({ line: await line(), stored }))
+
+        // 시간이 흘렀다 — 만료 시각을 지난 것으로 옮긴다(명령은 지난 시각을 받지 않는다)
+        await dbQuery(`UPDATE public_link SET expires_at = now() - interval '1 minute' WHERE node_id = $1`, [page])
+        const expiredHtml = await (await fetch(address)).text()
+        await openShare(page)
+        check('★ 지나면 공개 주소는 만료 안내 · 패널은 "만료되었습니다"',
+          expiredHtml.includes('data-testid="public-expired"') && (await line())?.startsWith('만료되었습니다') === true,
+          String(await line()))
+        await clickSelector(`${SECTION} [data-testid="publish-expiry-clear"]`)
+        check('★ "만료 없애기" — 같은 주소가 다시 열린다',
+          (await waitFor(`(document.querySelector('${SECTION} [data-testid="publish-expiry-state"]')?.textContent.trim() ?? '').startsWith('만료 없음')`, 8000)) && (await fetch(address)).status === 200,
+          String(await line()))
+
+        await setWorkspacePlan(workspaceId, 'free')
+        await openShare(page)
+        check('Free 요금제 — 날짜 칸이 막히고 까닭이 선다(Plus 이상)',
+          (await evaluate(`document.querySelector('${DAY}')?.disabled === true`))
+            && ((await evaluate(`document.querySelector('${SECTION} [data-testid="publish-expiry-plan"]')?.textContent ?? ''`)) ?? '').includes('Plus 이상'),
+          String(await evaluate(`document.querySelector('${SECTION} [data-testid="publish-expiry"]')?.textContent ?? null`)))
+        await key('Escape')
+      } finally {
+        await setWorkspacePlan(workspaceId, 'business')
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

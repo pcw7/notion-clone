@@ -22,11 +22,16 @@ import { useCallback, useEffect, useState } from 'react'
 import { SITE_DOMAIN_MISSING, siteUrlOf } from '../settings/site-messages'
 
 import {
+  EXPIRY_PLAN_NOTICE,
   MODERATED_NOTICE,
   PUBLISH_DATABASE_HINT,
   PUBLISH_HINT,
   ROTATE_WARNING,
   coveredMessage,
+  endOfLocalDay,
+  expiryDayRange,
+  expiryLine,
+  localDayOf,
   publicUrlOf,
   publishFailureMessage,
   publishPolicyNotice,
@@ -46,6 +51,10 @@ type PublishState = {
   slug: string | null
   /** 워크스페이스의 사이트 주소(6c-1). */
   siteDomain: string | null
+  /** 만료(10n-50) — 없으면 null. 지났으면 게시되어 있어도 열리지 않는다. */
+  expiresAt: string | null
+  /** 이 사람이 만료를 정할 수 있는가(요금제 · `manage_perm`) — 지우기는 무관하다. */
+  expiryAllowed: boolean
 }
 
 export function PublishSection({
@@ -212,6 +221,14 @@ export function PublishSection({
             onSave={(slug) => void call('PATCH', { slug }, slug === null ? '슬러그를 지웠습니다. 사이트 주소로는 열리지 않습니다.' : '슬러그를 저장했습니다.')}
             onCopy={(address) => void copy(address)}
           />
+          <LinkExpiry
+            // 서버의 만료가 바뀌면 초안을 새로 세운다(효과 안의 setState 없이)
+            key={state.expiresAt ?? ''}
+            expiresAt={state.expiresAt}
+            allowed={state.expiryAllowed}
+            busy={busy}
+            onSave={(expiresAt, done) => void call('PATCH', { expiresAt }, done)}
+          />
           <div className="flex flex-wrap items-center gap-2 text-xs">
             {confirmRotate ? (
               <span data-testid="publish-rotate-confirm" className="flex items-center gap-1">
@@ -367,6 +384,74 @@ function SiteAddress({
             열기
           </a>
         </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * 공개 링크의 만료(10n-50 · 정본 [정정] 웹 게시 ⑬) — 날짜를 고르면 그날의 끝까지 열린다. 요금제가 허락하지 않으면 날짜 칸이 막히고 까닭이 선다 ·
+ * 지우기("만료 없애기")는 요금제와 무관하다. 지난 만료는 "만료되었습니다" — 새로 정하거나 없애면 같은 주소로 다시 열린다.
+ */
+function LinkExpiry({
+  expiresAt,
+  allowed,
+  busy,
+  onSave,
+}: {
+  expiresAt: string | null
+  allowed: boolean
+  busy: boolean
+  onSave: (expiresAt: string | null, done: string) => void
+}) {
+  // 처음 그릴 때의 시각 — 범위와 "지났다" 를 그 시각으로 잰다(렌더마다 시계를 읽지 않는다)
+  const [now] = useState(() => Date.now())
+  const [day, setDay] = useState(expiresAt === null ? '' : localDayOf(expiresAt))
+  const range = expiryDayRange(new Date(now))
+  const expired = expiresAt !== null && Date.parse(expiresAt) <= now
+  const chosen = endOfLocalDay(day)
+  return (
+    <div data-testid="publish-expiry" className="flex flex-col gap-1 text-xs">
+      <span data-testid="publish-expiry-state" data-expired={expired || undefined} className={expired ? 'text-amber-700 dark:text-amber-400' : 'text-neutral-600 dark:text-neutral-400'}>
+        {expiryLine(expiresAt, now)}
+      </span>
+      <div className="flex flex-wrap items-center gap-1">
+        <input
+          type="date"
+          aria-label="만료일"
+          data-testid="publish-expiry-day"
+          value={day}
+          min={range.min}
+          max={range.max}
+          disabled={busy || !allowed}
+          onChange={(e) => setDay(e.target.value)}
+          className="rounded border border-neutral-300 px-1.5 py-0.5 dark:border-neutral-700 dark:bg-neutral-900"
+        />
+        <button
+          type="button"
+          data-testid="publish-expiry-save"
+          disabled={busy || !allowed || chosen === null}
+          onClick={() => chosen !== null && onSave(chosen, `${day} 까지 열립니다.`)}
+          className="rounded border border-neutral-300 px-2 py-0.5 hover:bg-neutral-50 disabled:opacity-50 dark:border-neutral-700 dark:hover:bg-neutral-800"
+        >
+          만료 정하기
+        </button>
+        {expiresAt !== null && (
+          <button
+            type="button"
+            data-testid="publish-expiry-clear"
+            disabled={busy}
+            onClick={() => onSave(null, '만료를 없앴습니다 — 해제할 때까지 열립니다.')}
+            className="rounded px-2 py-0.5 underline disabled:opacity-50"
+          >
+            만료 없애기
+          </button>
+        )}
+      </div>
+      {!allowed && (
+        <p data-testid="publish-expiry-plan" className="text-neutral-500">
+          {EXPIRY_PLAN_NOTICE}
+        </p>
       )}
     </div>
   )
