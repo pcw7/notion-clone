@@ -13,7 +13,7 @@
 
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 
 import {
   CALCULATIONS,
@@ -82,17 +82,25 @@ describe('④ 글자', () => {
 })
 
 describe('⑤ 저장 CHECK 과 같은 목록', () => {
-  test('마이그레이션 0054 의 이름들과 같다', () => {
+  test('마이그레이션 0054 의 이름은 모두 지금 목록 안이다 — 이름은 더하기만 한다', () => {
     const sql = readFileSync(new URL('../../../db/migrations/0054_view_calculation.sql', import.meta.url), 'utf8')
     const inSql = [...sql.matchAll(/'([a-z_]+)'/g)].map((m) => m[1])
-    assert.deepEqual([...inSql].sort(), [...CALCULATIONS].sort())
+    assert.deepEqual(inSql.filter((name) => !(CALCULATIONS as readonly string[]).includes(name!)), [])
   })
 
-  test('0055 의 `is_calculation_name` 의 이름들과 같다 — 지금 두 CHECK 이 보는 목록', () => {
-    const sql = readFileSync(new URL('../../../db/migrations/0055_group_calculation.sql', import.meta.url), 'utf8')
-    const body = sql.slice(sql.indexOf('CREATE FUNCTION is_calculation_name'), sql.indexOf('$$;'))
+  test('`is_calculation_name` 의 **가장 늦은 정의**와 같다 — 지금 두 CHECK 이 보는 목록(0055 · 10n-30 의 0112 …)', () => {
+    // 함수를 다시 정의한 마이그레이션이 늘 수 있다 — 이름이 가장 늦은 파일의 정의가 지금 DB 의 것이다
+    const dir = new URL('../../../db/migrations/', import.meta.url)
+    const latest = readdirSync(dir)
+      .filter((f) => f.endsWith('.sql'))
+      .sort()
+      .filter((f) => readFileSync(new URL(f, dir), 'utf8').includes('FUNCTION is_calculation_name'))
+      .at(-1)!
+    const sql = readFileSync(new URL(latest, dir), 'utf8')
+    const start = sql.indexOf('FUNCTION is_calculation_name')
+    const body = sql.slice(start, sql.indexOf('$$;', start))
     const inSql = [...body.matchAll(/'([a-z_]+)'/g)].map((m) => m[1])
-    assert.deepEqual([...inSql].sort(), [...CALCULATIONS].sort())
+    assert.deepEqual([...inSql].sort(), [...CALCULATIONS].sort(), latest)
   })
 })
 
@@ -115,5 +123,22 @@ describe('⑥ 고를 수 있는가 · 기본 함수', () => {
       assert.ok(canCalculate(type, fn), `${type} → ${fn}`)
       assert.notEqual(fn, 'count_all', `${type} 의 기본이 카드 수와 같다`)
     }
+  })
+})
+
+describe('완료 비율 (10n-30)', () => {
+  const stats = (total: number, complete: number): ColumnStats => ({
+    total, filled: total, distinct: 0, sum: null, avg: null, median: null, min: null, max: null, dateMin: null, dateMax: null, checked: 0, complete,
+  })
+
+  test('상태만 고를 수 있다 — 세기 계열 + 완료 비율', () => {
+    assert.ok(calculationsFor('status').includes('percent_complete'))
+    assert.ok(!calculationsFor('select').includes('percent_complete'))
+    assert.equal(canCalculate('select', 'percent_complete'), false)
+  })
+
+  test('★ 완료 그룹에 든 칸의 비율 — 행이 0개면 빈 값', () => {
+    assert.deepEqual(calculationResult('percent_complete', stats(4, 1)), { kind: 'percent', value: 25 })
+    assert.deepEqual(calculationResult('percent_complete', stats(0, 0)), { kind: 'percent', value: null })
   })
 })

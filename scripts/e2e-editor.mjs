@@ -20313,6 +20313,54 @@ async function main() {
       check('★ 옵션을 완료 그룹으로 옮기면 비율이 따라온다 — 100%', await rollupIs('0:2', '100%', 10000), String(await rollupIn('0:2')))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('열 집계의 완료 비율 (10n-30 · F-04-16 · F-03-05)')) { try {
+      // 표 아래 줄 — 상태 열의 계산 목록에 "완료 비율" 이 선다(선택 열에는 없다) · 고르면 완료 그룹에 든 행의 비율(빈 상태도 분모) · 다시 열어도
+      // 남는다(뷰에 저장 — CHECK 이 받는다). 정본 §3.6 [보강] 열 집계 ①. 자기 데이터를 스스로 만든다(API).
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const clickOn = async (selector) => {
+        const p = await evaluate(`(() => {
+          const e = document.querySelector(${JSON.stringify(selector)})
+          if (!e) return null
+          e.scrollIntoView({ block: 'center' })
+          const r = e.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (p) await click(p.x, p.y)
+        return p !== null
+      }
+      const db = (await api('POST', '/databases', { name: `완료 비율 집계 ${Date.now()}` })).body.database
+      const progress = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '진행', type: 'status' })).body.property.id
+      const stage = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '단계', type: 'select' })).body.property.id
+      const options = (await api('GET', `/views/${db.defaultViewId}`)).body.view.columns.find((c) => c.propertyId === progress).options
+      const opt = (name) => options.find((o) => o.name === name).id
+      for (const id of [opt('완료'), opt('진행 중'), opt('시작 전'), null]) {
+        await api('POST', `/views/${db.defaultViewId}/rows`, { cells: [{ propertyId: progress, value: { type: 'status', status: id === null ? null : { id } } }] })
+      }
+      const cell = (prop) => `td[data-testid="db-calc-cell"][data-property-id="${prop}"]`
+      const calcText = (prop) => evaluate(`document.querySelector('${cell(prop)} [data-testid="db-calc-button"]')?.textContent ?? '(없음)'`)
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === 4`, 15000)
+      await waitHydrated(`${cell(progress)} [data-testid="db-calc-button"]`, 20000) // 서버가 그린 단추 — React 가 붙기 전의 클릭은 버려진다(10n-11)
+      await clickOn(`${cell(stage)} [data-testid="db-calc-button"]`)
+      check('선택 열의 목록에는 "완료 비율" 이 없다', (await waitFor(`!!document.querySelector('[data-testid="db-calc-menu"]')`, 3000))
+        && (await evaluate(`!document.querySelector('[data-testid="db-calc-menu"] [data-testid="db-calc-percent_complete"]')`)))
+      await key('Escape')
+      await waitFor(`!document.querySelector('[data-testid="db-calc-menu"]')`, 3000)
+      await clickOn(`${cell(progress)} [data-testid="db-calc-button"]`)
+      check('★ 상태 열의 목록에 "완료 비율" 이 선다', await waitFor(`(document.querySelector('[data-testid="db-calc-menu"] [data-testid="db-calc-percent_complete"]')?.textContent ?? '') === '완료 비율'`, 3000))
+      await clickOn('[data-testid="db-calc-menu"] [data-testid="db-calc-percent_complete"]')
+      check('★ 고르면 완료 그룹에 든 행의 비율 — 넷 중 하나(빈 상태도 분모) → 25%', await waitFor(`(document.querySelector('${cell(progress)} [data-testid="db-calc-button"]')?.textContent ?? '').includes('25%')`, 10000),
+        await calcText(progress))
+      await send('Page.reload', {})
+      await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr').length === 4`, 15000)
+      check('다시 열어도 남는다 — 뷰에 저장됐다', await waitFor(`(document.querySelector('${cell(progress)} [data-testid="db-calc-button"]')?.textContent ?? '').includes('25%')`, 10000),
+        await calcText(progress))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).
