@@ -21892,6 +21892,49 @@ async function main() {
       check('남의 즐겨찾기는 옮길 수 없다 — 404', strangerMove.status === 404, String(strangerMove.status))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('주소의 id 정규화 — 32자리 hex (10n-58 · F-07-17)')) { try {
+      // 하이픈 없는 32자리 hex · `제목-32자리 hex` 로 연 `/w/` 주소는 하이픈 있는 uuid 의 주소로 옮겨 간다(308 · 쿼리 그대로) — 페이지 ·
+      // 데이터베이스 · 워크스페이스 조각 모두 · 대문자도 · 정본 주소와 id 가 아닌 조각 · 모양이 틀린 hex(31자리) · API 는 옮기지 않는다 · 브라우저로
+      // hex 주소를 열면 그 페이지가 열리고 주소창은 정본 주소. HANDOFF §3.2-295. 자기 데이터를 스스로 만든다(API).
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const page = (await api('POST', '/pages', { title: `주소 ${stamp}` })).body.page.id
+      const db = (await api('POST', '/databases', { name: `주소 DB ${stamp}` })).body.database
+      const hex = (id) => id.replaceAll('-', '')
+      // 서버의 답을 따라가지 않고 본다
+      const answer = async (path) => {
+        const r = await fetch(`${BASE}${path}`, { headers: authed, redirect: 'manual' })
+        const location = r.headers.get('location')
+        return { status: r.status, to: location === null ? null : (({ pathname, search }) => pathname + search)(new URL(location, BASE)) }
+      }
+
+      const pageHex = await answer(`/w/${workspaceId}/${hex(page)}?x=1`)
+      check('★ 32자리 hex 의 페이지 주소 — 308 로 하이픈 있는 주소 · 쿼리는 그대로',
+        pageHex.status === 308 && pageHex.to === `/w/${workspaceId}/${page}?x=1`, JSON.stringify(pageHex))
+      const slug = await answer(`/w/${hex(workspaceId)}/${encodeURIComponent('회의록')}-${hex(page).toUpperCase()}`)
+      check('★ 제목-hex · 대문자 · 워크스페이스 조각까지 — 한 번에 정본 주소로',
+        slug.status === 308 && slug.to === `/w/${workspaceId}/${page}`, JSON.stringify(slug))
+      const dbHex = await answer(`/w/${workspaceId}/db/${hex(db.id)}?v=${db.defaultViewId}`)
+      check('데이터베이스 주소도 — ?v= 는 그대로', dbHex.status === 308 && dbHex.to === `/w/${workspaceId}/db/${db.id}?v=${db.defaultViewId}`, JSON.stringify(dbHex))
+      const untouched = {
+        canonical: await answer(`/w/${workspaceId}/${page}`),
+        settings: await answer(`/w/${workspaceId}/settings`),
+        short: await answer(`/w/${workspaceId}/${hex(page).slice(1)}`),
+        api: (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages/${hex(page)}/favorite`, { method: 'POST', headers: authed, redirect: 'manual' })).status,
+      }
+      check('정본 주소 · id 가 아닌 조각 · 31자리 hex · API 는 옮기지 않는다',
+        untouched.canonical.status === 200 && untouched.settings.status !== 308 && untouched.short.status !== 308 && untouched.short.to === null && untouched.api === 404,
+        JSON.stringify(untouched))
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${hex(page)}` })
+      check('★ 브라우저 — hex 주소로 열면 그 페이지 · 주소창은 정본 주소',
+        await waitFor(`location.pathname === '/w/${workspaceId}/${page}' && document.querySelector('input[aria-label="페이지 제목"]')?.value === '주소 ${stamp}'`, 15000),
+        await evaluate(`location.pathname`))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).
