@@ -20587,6 +20587,55 @@ async function main() {
         String(await evaluate(badge('db-gallery-badge', finished, '두 배'))))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('내보내기의 수식 칸 (10n-35 · F-03-12 · F-09-14)')) { try {
+      // 표를 내보낸 ZIP 의 CSV · 행 Markdown 에 수식 칸이 보이는 그대로 들어간다(전에는 빈 칸) — 참거짓은 Yes/No · 글 결과만 수식 막기.
+      // ZIP 은 우리가 짜지 않은 구현(python zipfile)으로 읽는다(§3.3-63). 정본 수식 1단계 ⑥ [보강 10n-35].
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `수식 내보내기 ${stamp}` })).body.database
+      const props = `/data-sources/${db.dataSourceId}/properties`
+      const titleProp = (await api('GET', `/views/${db.defaultViewId}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const qty = (await api('POST', props, { name: '수량', type: 'number' })).body.property.id
+      const price = (await api('POST', props, { name: '단가', type: 'number' })).body.property.id
+      await api('POST', props, { name: '금액', type: 'formula', expression: 'prop("수량") * prop("단가")' })
+      await api('POST', props, { name: '큰 건', type: 'formula', expression: 'prop("수량") > 5' })
+      const tag = await api('POST', props, { name: '꼬리표', type: 'formula', expression: '"=" + prop("이름")' })
+      check('전제 — 글 결과 수식을 만든다(201)', tag.status === 201, JSON.stringify(tag))
+      await api('POST', `/views/${db.defaultViewId}/rows`, { cells: [
+        { propertyId: titleProp, value: { type: 'title', title: [textRun('가구')] } },
+        { propertyId: qty, value: { type: 'number', number: 3 } },
+        { propertyId: price, value: { type: 'number', number: 50 } },
+      ] })
+
+      const zipRes = await fetch(`${BASE}/api/workspaces/${workspaceId}/export?root=${db.id}`, { headers: authed })
+      check('표를 내보낸다 — 200', zipRes.status === 200, String(zipRes.status))
+      const dir = mkdtempSync(join(tmpdir(), 'nc-e2e-formula-export-'))
+      try {
+        const file = join(dir, 'export.zip')
+        writeFileSync(file, Buffer.from(await zipRes.arrayBuffer()))
+        const { findPython, runPythonJson } = await import(new URL('../src/lib/testing/external-tools.ts', import.meta.url).href)
+        const python = findPython()
+        const zip = python === null
+          ? { names: [], texts: {}, error: 'python 을 찾지 못했다' }
+          : runPythonJson(python, [
+              'import sys, json, zipfile',
+              'z = zipfile.ZipFile(sys.argv[1])',
+              "print(json.dumps({'names': z.namelist(), 'texts': {n: z.read(n).decode('utf-8') for n in z.namelist() if n.endswith(('.md', '.csv'))}}))",
+            ].join('\n'), [file])
+        const texts = zip.texts ?? {}
+        const csv = (Object.entries(texts).find(([n]) => n.endsWith('.csv'))?.[1] ?? '').replace('\uFEFF', '')
+        check('★ CSV 에 수식 열과 보이는 그대로의 값 — 3 × 50 = 150 · 거짓은 No · 글 결과는 수식 막기',
+          csv.split('\r\n')[0] === '이름,수량,단가,금액,큰 건,꼬리표' && csv.split('\r\n')[1] === "가구,3,50,150,No,'=가구", JSON.stringify(csv.slice(0, 200)))
+        const rowMd = Object.entries(texts).find(([n, t]) => n.endsWith('.md') && t.includes('가구'))?.[1] ?? ''
+        check('★ 행 Markdown 의 속성 줄에도 — **금액**: 150 · **큰 건**: No', rowMd.includes('**금액**: 150') && rowMd.includes('**큰 건**: No'), JSON.stringify(rowMd.slice(0, 300)))
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).
