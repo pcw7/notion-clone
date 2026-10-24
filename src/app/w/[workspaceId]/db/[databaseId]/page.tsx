@@ -272,6 +272,8 @@ export default async function DatabasePage({
           // 이 사람이 실제로 보는 필터 · 정렬(2h-1 — 개인 것이 공유 것을 대체한다)
           filter: view.value.effectiveFilter,
           sorts: view.value.effectiveSorts,
+          // 정렬이 없으면 이 뷰의 수동 순서(10n-59)
+          manualOrderViewId: view.value.id,
           limit: view.value.loadLimit,
           ...(subItems === null ? {} : { tree: { parentPropertyId: subItems.parentPropertyId, under: null } }),
           ...(parentsOnly === null ? {} : { tree: { parentPropertyId: parentsOnly.parentPropertyId, under: null } }),

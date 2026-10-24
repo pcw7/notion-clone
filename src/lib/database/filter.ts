@@ -760,6 +760,26 @@ export function compileSorts(
 }
 
 /**
+ * 묶지 않는 뷰(표 · 목록 · 갤러리)의 수동 순서 키 — 정본 §3.6 [보강 10n-59]. 보드의 "값 없음" 열(`''`)과 섞이지 않는 글자다(옵션 id 는
+ * uuid · checkbox · status 범주 · 값 없음 어느 것도 될 수 없다).
+ */
+export const UNGROUPED_ORDER_KEY = '*'
+
+/**
+ * 살아 있는 정렬이 없는 뷰의 순서 — 자리 있는 행(`row_position.order_idx` · 이진 순서) → 자리 없는 행(트리 순서). 정렬 키 하나로 싣으므로
+ * 커서(`compileCursor`)가 그대로 돈다(자리 없는 행은 NULL — NULLS LAST 의 맨 뒤 · 그 안은 타이브레이커 `order_key`). `viewParam` 은 뷰 id 의
+ * 파라미터. 바깥 질의에 `page p` · `block b` 가 있다고 전제한다.
+ */
+export function compileManualOrder(viewParam: string): CompiledSort {
+  const expr = `(SELECT rp.order_idx FROM row_position rp
+                  WHERE rp.view_id = ${viewParam}::uuid AND rp.group_key = '${UNGROUPED_ORDER_KEY}' AND rp.row_id = p.id) COLLATE "C"`
+  return {
+    orderBy: `${expr} ASC NULLS LAST, b.order_key COLLATE "C" ASC`,
+    keys: [{ expr, direction: 'asc', cast: '::text' }],
+  }
+}
+
+/**
  * keyset 커서 술어.
  *
  * OFFSET 을 쓰지 않는 이유는 정본의 페이지네이션 규칙이다 — 뒤 페이지로 갈수록

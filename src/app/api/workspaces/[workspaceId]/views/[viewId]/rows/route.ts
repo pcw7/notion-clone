@@ -1,5 +1,5 @@
 /**
- * 뷰의 행 — GET/POST `/api/workspaces/[workspaceId]/views/[viewId]/rows`
+ * 뷰의 행 — GET/POST · PATCH(차례 · 10n-59) `/api/workspaces/[workspaceId]/views/[viewId]/rows`
  *
  * 정본: 00-canonical-data-model.md §3.5 불변식 R1 · 03-database-core.md F-03-17
  *
@@ -38,6 +38,7 @@ import { normalizeSearch } from '@/lib/database/search'
 import { readCardCovers } from '@/lib/database/gallery-covers'
 import { computeFormulaValues } from '@/lib/database/formula-property'
 import { createRowInView } from '@/lib/database/view-row'
+import { moveViewRow, type MoveViewRowFailure } from '@/lib/database/row-order'
 import { createRowFromTemplate } from '@/lib/database/template'
 import { createSubItem } from '@/lib/database/sub-item-rows'
 import {
@@ -82,6 +83,8 @@ export async function GET(request: Request, ctx: Ctx): Promise<Response> {
     // 이 사람이 실제로 보는 필터 · 정렬 — 개인 것이 있으면 그것(2h-1 · F-04-17)
     filter: view.value.effectiveFilter,
     sorts: view.value.effectiveSorts,
+    // 정렬이 없으면 이 뷰의 수동 순서(10n-59)
+    manualOrderViewId: view.value.id,
     // 뷰의 `load_limit` 이 기본값이다. 요청이 더 작은 값을 주면 그것을 쓴다 —
     // F-03-17 의 권고("page_size 를 낮추면 빨라진다")와 같은 방향이다.
     limit: Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : view.value.loadLimit,
@@ -181,4 +184,28 @@ export async function POST(request: Request, ctx: Ctx): Promise<Response> {
   const created = await createRowInView(session.ctx, view.value.dataSourceId, { cells, viewFilter })
   if (!created.ok) return failureResponse(rowFailureStatus(created.reason), created)
   return Response.json({ ok: true, row: rowJson(created.value) }, { status: 201 })
+}
+
+const MOVE_STATUS: Record<MoveViewRowFailure, number> = { not_found: 404, forbidden: 403, invalid_value: 400, sorted: 409 }
+
+/**
+ * 행의 차례 바꾸기(10n-59 · 정본 §3.6 [보강 10n-59]) — PATCH `{ rowId, beforeRowId }`(이 행을 `beforeRowId` 앞에 · null 이면 맨 뒤). 표 ·
+ * 목록 · 갤러리 뷰에서만(아니면 400) · 살아 있는 정렬이 있으면 409 `sorted` · 이 뷰 그릇의 `edit_content` 가 없으면 403.
+ */
+export async function PATCH(request: Request, ctx: Ctx): Promise<Response> {
+  const { workspaceId, viewId } = await ctx.params
+  const session = await requireWorkspaceSession(workspaceId)
+  if (!session.ok) return session.response
+  if (!isUuid(viewId)) return notFound()
+
+  const body = (await request.json().catch(() => null)) as { rowId?: unknown; beforeRowId?: unknown } | null
+  const rowId = body?.rowId
+  const before = body?.beforeRowId ?? null
+  if (typeof rowId !== 'string' || !isUuid(rowId) || (before !== null && (typeof before !== 'string' || !isUuid(before)))) {
+    return Response.json({ error: 'invalid_value' }, { status: 400 })
+  }
+
+  const moved = await moveViewRow(session.ctx, viewId, { rowId, beforeRowId: before })
+  if (!moved.ok) return Response.json({ error: moved.reason }, { status: MOVE_STATUS[moved.reason] })
+  return Response.json({ ok: true, rowId: moved.value.rowId, beforeRowId: moved.value.beforeRowId })
 }
