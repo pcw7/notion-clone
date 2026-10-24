@@ -11,7 +11,7 @@
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { filterPrefill } from './filter-prefill.ts'
+import { filterPrefill, filterRelationPrefill } from './filter-prefill.ts'
 import { ME_NODE, type FilterNode } from './filter.ts'
 
 const ME = '11111111-1111-4111-8111-111111111111'
@@ -161,5 +161,43 @@ describe('status 의 그룹 단위 (10n-23)', () => {
     const typeOf = (id: string) => (id === 'progress' ? 'status' : undefined)
     assert.deepEqual(filterPrefill({ property_id: 'progress', operator: 'group_is', value: 'complete' }, typeOf, null), [])
     assert.deepEqual(filterPrefill({ property_id: 'progress', operator: 'group_is_not', value: 'todo' }, typeOf, null), [])
+  })
+})
+
+describe('relation 의 포함 — 이을 연결 (10n-47 · ⑧)', () => {
+  const A = '00000000-0000-4000-8000-00000000000a'
+  const B = '00000000-0000-4000-8000-00000000000b'
+  const typeOf = (id: string) => (id === 'tasks' || id === 'notes' ? 'relation' : id === 'name' ? 'title' : undefined)
+  const has = (property_id: string, value: unknown): FilterNode => ({ property_id, operator: 'contains', value }) as FilterNode
+
+  test('★ 포함만 정한다 — 같은 칸의 여럿은 모두 · 다른 칸은 따로 · 같은 값은 한 번', () => {
+    const filter = { op: 'and', children: [has('tasks', A), has('tasks', B), has('tasks', A), has('notes', B)] } as FilterNode
+    assert.deepEqual(filterRelationPrefill(filter, typeOf), [
+      { propertyId: 'tasks', ids: [A, B] },
+      { propertyId: 'notes', ids: [B] },
+    ])
+  })
+
+  test('채우지 않는 것 — 포함하지 않음 · 비어 있음 · 자식이 둘인 OR · uuid 가 아닌 값 · relation 이 아닌 칸', () => {
+    const filter = {
+      op: 'and',
+      children: [
+        { property_id: 'tasks', operator: 'does_not_contain', value: A },
+        { property_id: 'notes', operator: 'is_empty' },
+        { op: 'or', children: [has('tasks', A), has('tasks', B)] },
+        has('notes', '엑스'),
+        has('name', A),
+      ],
+    } as FilterNode
+    assert.deepEqual(filterRelationPrefill(filter, typeOf), [])
+    assert.deepEqual(filterRelationPrefill(null, typeOf), [])
+  })
+
+  test('자식이 하나뿐인 OR 은 AND 와 같다', () => {
+    assert.deepEqual(filterRelationPrefill({ op: 'or', children: [has('tasks', A)] } as FilterNode, typeOf), [{ propertyId: 'tasks', ids: [A] }])
+  })
+
+  test('칸 채우기에는 들지 않는다 — relation 은 엣지다', () => {
+    assert.deepEqual(filterPrefill(has('tasks', A), typeOf, null), [])
   })
 })

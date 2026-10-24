@@ -37,7 +37,7 @@ import { computeCalculations } from '@/lib/database/calculate'
 import { normalizeSearch } from '@/lib/database/search'
 import { readCardCovers } from '@/lib/database/gallery-covers'
 import { computeFormulaValues } from '@/lib/database/formula-property'
-import { createRow } from '@/lib/database/row'
+import { createRowInView } from '@/lib/database/view-row'
 import { createRowFromTemplate } from '@/lib/database/template'
 import { createSubItem } from '@/lib/database/sub-item-rows'
 import {
@@ -177,7 +177,8 @@ export async function POST(request: Request, ctx: Ctx): Promise<Response> {
     return Response.json({ ok: true, row: rowJson(child.value) }, { status: 201 })
   }
 
-  const created = await createRow(session.ctx, view.value.dataSourceId, { cells, viewFilter })
+  // 칸은 넣으며 채우고 relation 은 넣은 뒤 잇는다 — 한 트랜잭션(10n-47 · [보강] 필터가 걸린 뷰에서 만든 행 ⑧)
+  const created = await createRowInView(session.ctx, view.value.dataSourceId, { cells, viewFilter })
   if (!created.ok) return failureResponse(rowFailureStatus(created.reason), created)
   return Response.json({ ok: true, row: rowJson(created.value) }, { status: 201 })
 }

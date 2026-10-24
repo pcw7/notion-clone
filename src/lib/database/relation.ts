@@ -76,7 +76,8 @@ import { orderKeysBetween } from '../block/order-key.ts'
 import { readPageIcon, type PageIcon } from '../block/page-icon.ts'
 import { isUuid } from '../ids.ts'
 import type { ValidationIssue } from '../contracts/rich-text.ts'
-import { escapeLike } from './filter.ts'
+import { escapeLike, type FilterNode } from './filter.ts'
+import { filterRelationPrefill } from './filter-prefill.ts'
 import {
   bumpSchema,
   checkPropertySlots,
@@ -757,6 +758,49 @@ export function relationIdsIn(
     }
   }
   return [...ids]
+}
+
+// ── 필터가 걸린 뷰에서 만든 행의 relation (10n-47) ─────────────────────
+
+/** 이을 수 없는 연결 — savepoint 를 되돌리려고 던진다. `linkPrefilledIn` 밖으로 나가지 않는다. */
+class PrefillLinkRefused extends Error {}
+
+/**
+ * 뷰의 필터가 정하는 relation 연결을 방금 넣은 행에 잇는다(정본 [보강] 필터가 걸린 뷰에서 만든 행 ⑧ · [보강 10n-47]). 행을 넣은 **같은
+ * 트랜잭션**에서 부른다. 잇기는 연결하기(`linkRowsIn`) 그대로라 그 규칙(내용 고치기 · 대상 행 · 하나만 · 거울상 · 순환)이 다 걸리고,
+ * 걸리면 **그 칸만 빠진다**(⑥ — savepoint 로 그 잇기만 되돌린다 · 행 추가는 실패시키지 않는다). `skip` 은 요청이 따로 정한 relation
+ * (하위 항목으로 만들 때의 상위 항목 칸 — ⑤ 요청이 이긴다). 답은 이은 뒤의 행(이은 것이 없으면 받은 그대로).
+ */
+export async function linkPrefilledIn(
+  tx: Tx,
+  ctx: SessionContext,
+  row: RowSummary,
+  dataSourceId: string,
+  filter: FilterNode | null | undefined,
+  skip: ReadonlySet<string> = new Set(),
+): Promise<RowSummary> {
+  if (filter === null || filter === undefined) return row
+  const relations = new Set(
+    (
+      await tx.query<{ id: string }>(`SELECT id FROM property WHERE data_source_id = $1 AND type = 'relation' AND deleted_at IS NULL`, [
+        dataSourceId,
+      ])
+    ).map((r) => r.id),
+  )
+  const links = filterRelationPrefill(filter, (id) => (relations.has(id) ? 'relation' : undefined)).filter((l) => !skip.has(l.propertyId))
+  let current = row
+  for (const [i, link] of links.entries()) {
+    try {
+      current = await tx.savepoint(`prefill_link_${i}`, async () => {
+        const linked = await linkRowsIn(tx, ctx, row.id, link.propertyId, link.ids, [])
+        if (!linked.ok) throw new PrefillLinkRefused(linked.reason)
+        return linked.value
+      })
+    } catch (e) {
+      if (!(e instanceof PrefillLinkRefused)) throw e
+    }
+  }
+  return current
 }
 
 // ── 고를 후보 — 행 고르기 팝오버가 읽는다 (relation 5b-2) ─────────────────
