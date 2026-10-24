@@ -28,6 +28,10 @@
  * 부모의 제목 맵에 바로 넣는다(`onChange` 의 둘째 인자) — 다시 묻지 않는다.
  *
  * 한글 조합 중에는 찾지 않는다 — 조합이 끝난 글자로 찾는다(멘션 메뉴와 같은 규칙 · HANDOFF §3.3-144).
+ *
+ * 찾은 글자가 있으면 후보 아래에 "+ ‘글자’ 새로 만들기" 가 선다(10n-41 · F-03-10 *"셀에서 + 새 페이지"*) — 그 글자를 제목으로 대상 표에 행을
+ * 만들고 이 칸에 잇는다(서버의 한 트랜잭션 · `relation-create.ts`). 후보가 없을 때의 Enter 도 그것이다. 대상 표에 만들 수 없으면 서버의
+ * 이유를 보인다(행도 연결도 남지 않는다).
  */
 
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
@@ -177,6 +181,29 @@ export function RelationEditor({
     inputRef.current?.focus()
   }
 
+  /** 찾은 글자로 새 행을 만들며 잇는다(10n-41). 제목은 후보 목록이 아니라 답이 준다 — 서버가 공백을 접는다. */
+  const create = async () => {
+    const title = query.trim()
+    if (title === '' || busy) return
+    setBusy(true)
+    setError(null)
+    const result = await api.createLinkedRow(workspaceId, rowId, propertyId, title)
+    setBusy(false)
+    if (!result.ok) {
+      setError(result.message)
+      return
+    }
+    const { row, created } = result.value
+    onChange(row, { [created.id]: created.title }, {})
+    if (limit === 'one') {
+      onDone()
+      return
+    }
+    setLinked((current) => appendRelatedPage(current ?? [], [{ id: created.id, title: created.title, icon: null }]))
+    setQuery('')
+    inputRef.current?.focus()
+  }
+
   const list = candidates ?? []
   const active = list.length === 0 ? -1 : Math.min(index, list.length - 1)
 
@@ -190,6 +217,8 @@ export function RelationEditor({
       // ★ 표의 Enter(저장하고 아래 칸)가 아니라 이 목록의 Enter 다(`select-editor.tsx` 머리말).
       event.preventDefault()
       if (active >= 0) void pick(list[active])
+      // 고를 후보가 없으면 찾은 글자로 만든다(10n-41)
+      else if (query.trim() !== '' && candidates !== null) void create()
     }
   }
 
@@ -301,6 +330,19 @@ export function RelationEditor({
           </li>
         )}
       </ul>
+
+      {query.trim() !== '' && candidates !== null && (
+        <button
+          type="button"
+          data-testid="db-relation-create"
+          disabled={busy}
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => void create()}
+          className="truncate rounded px-2 py-1 text-left text-sm text-neutral-600 hover:bg-neutral-100 disabled:opacity-40 dark:text-neutral-300 dark:hover:bg-neutral-800"
+        >
+          + ‘{query.trim()}’ 새로 만들기
+        </button>
+      )}
 
       {error && (
         <p role="alert" data-testid="db-relation-error" className="px-1.5 text-xs text-red-600 dark:text-red-400">
