@@ -112,7 +112,7 @@ import {
 } from './cell-view'
 import { PeopleEditor } from './people-editor'
 import { usePeopleNames } from './use-people-names'
-import { formulaEvaluator, type FormulaPlan } from '@/lib/database/formula-plan'
+import { formulaEvaluator, formulaValuesByRow, type FormulaPlan } from '@/lib/database/formula-plan'
 import { NewRowMenu } from './new-row-menu'
 import { useRelationLabels } from './use-relation-labels'
 import { useRollupValues } from './use-rollup-values'
@@ -340,11 +340,7 @@ export function DatabaseTable(props: {
   // 수식 칸의 값 — 행에 없다. **그 행의 칸으로 여기서 계산한다**(`formula-plan.ts` 머리말 — 1단계의 수식은 같은 행만 읽는다). 칸을
   // 고치면(낙관적으로 칠한 값 그대로) 수식이 따라 바뀐다. 계획 뒤에 이 화면에서 만든 옵션은 지금 컬럼에서 이름을 찾는다.
   const formulas = useMemo(() => (props.formulaPlan ? formulaEvaluator(props.formulaPlan) : null), [props.formulaPlan])
-  const formulaValues = useMemo(() => {
-    if (formulas === null || !columns.some((c) => c.type === 'formula')) return null
-    const liveOptions = new Map(columns.flatMap((c) => c.options.map((o) => [o.id, o.name] as const)))
-    return new Map(rows.map((row) => [row.id, formulas.valuesOf(row.properties, (id) => liveOptions.get(id) ?? null)]))
-  }, [formulas, rows, columns])
+  const formulaValues = useMemo(() => formulaValuesByRow(formulas, rows, columns), [formulas, rows, columns])
 
   // ── 저장 ───────────────────────────────────────────────────────────
 
