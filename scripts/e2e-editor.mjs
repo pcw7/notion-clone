@@ -73,7 +73,7 @@ const { closePool } = await import(new URL('../src/lib/db/pool.ts', import.meta.
 const { createBareWorkspace, createUser, joinAs, visitAsOutsider } = await import(new URL('../src/lib/testing/db-fixtures.ts', import.meta.url).href)
 const { createDiscussion } = await import(new URL('../src/lib/comment/discussion.ts', import.meta.url).href)
 // 판의 끝 줄 — 느린 절 · 알려진 실패(§7)를 가른 새 실패 · 다시 돌릴 게이트(e2e 도구 2조각)
-const { countsLine, formatSeconds, rerunGates, rerunLine, SECTION_THREW, slowest, splitFailures, thrownDetail } = await import(new URL('../src/lib/testing/e2e-report.ts', import.meta.url).href)
+const { countsLine, formatSeconds, gateParents, gatePick, rerunGates, rerunLine, SECTION_THREW, slowest, splitFailures, thrownDetail } = await import(new URL('../src/lib/testing/e2e-report.ts', import.meta.url).href)
 
 const PORT = Number(process.env.E2E_PORT ?? 3100)
 const COLLAB_PORT = Number(process.env.E2E_COLLAB_PORT ?? 3101)
@@ -110,6 +110,7 @@ function check(name, ok, detail = '') {
  *
  *   E2E_ONLY="7c-7" npm run e2e            # 그 절과 늘 도는 것(로그인 · 시드 · [전체])만
  *   E2E_ONLY="보관,개인 페이지" npm run e2e   # 여러 절
+ *   E2E_ONLY="relation 5b-1" npm run e2e     # 안긴 절(데이터베이스 표 게이트 안의 아홉) — 바깥 게이트의 몸도 함께 돈다(도구-6 · 안긴 다른 절은 건너뛴다)
  *   npm run e2e:affected -- --run            # 바꾼 파일이 닿는 게이트를 골라 돈다(testid · 주소 · 이 파일의 바뀐 줄)
  *   E2E_PERF=1 npm run e2e                   # 측정 판(10k-2) — 큰 페이지의 열기 · 스크롤 · 입력을 CDP 트레이스로 잰다. 검사는 돌지 않는다.
  *                                            #   E2E_PERF_BLOCKS="2000,3000" 으로 문단 페이지의 크기를 고른다(기본 2000)
@@ -154,15 +155,19 @@ function enterSection(title) {
   sectionStartedAt = now
   currentSection = title
 }
+// 게이트마다 그것을 품은 바깥 게이트들 — 안긴 절은 바깥의 몸 안에서 불리므로 안쪽을 고르면 바깥도 켠다(도구-6).
+const GATE_PARENTS = gateParents(readFileSync(fileURLToPath(import.meta.url), 'utf8'))
 function sectionIf(title) {
-  const on = E2E_ONLY.length === 0 || E2E_ONLY.some((q) => title.toLowerCase().includes(q))
+  const pick = gatePick(title, E2E_ONLY, GATE_PARENTS)
+  const on = pick !== null
   if (on) {
     gatesRun += 1
     enterSection(title)
     currentGate = title
-    console.log(`\n[${title}]`)
+    console.log(`\n[${title}]${pick === 'inner' ? ' — 안긴 절을 골라 바깥도 켠다' : ''}`)
   } else {
-    gatesSkipped += 1
+    // 꺼진 바깥 안의 절은 불리지 않는다 — 함께 건너뜀으로 센다(실행 + 건너뜀 = 게이트 수)
+    gatesSkipped += 1 + [...GATE_PARENTS.values()].filter((outer) => outer.includes(title)).length
     console.log(`\n[${title}] — 건너뜀 (E2E_ONLY)`)
   }
   return on
