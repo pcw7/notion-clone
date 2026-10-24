@@ -325,3 +325,48 @@ describe('④ 스냅샷이 틀리면 조용히 넘기지 않는다', () => {
     assert.throws(() => plan(snapshot([root.id], [root, cyclic])), /두 번 나온다/)
   })
 })
+
+describe('본문 글자에 건 앱 링크 → 상대 경로 (10n-66)', () => {
+  const linked = (text: string, url: string): EditorBlock => ({
+    id: randomUUID(),
+    type: 'paragraph',
+    title: [{ ...textRun(text), text: { content: text, link: { url } } }],
+  })
+  const WS = '0f3a1c2e-5b6d-4e7f-8a9b-0c1d2e3f4a5b'
+
+  test('★ 이 ZIP 안의 페이지 · 데이터베이스면 그 파일이 있는 폴더에서의 상대 경로 — 다른 갈래 · 위 · 해시는 뗀다 · 밖의 페이지는 그대로', () => {
+    const outside = randomUUID()
+    const deep = pageNode('깊은 쪽')
+    const branch = pageNode('갈래', [ref(deep)], [deep.id])
+    const table: ExportDatabaseNode = { kind: 'database', id: randomUUID(), name: '표', sources: [{ id: randomUUID(), name: '표', columns: [], rowIds: [] }] }
+    const root = pageNode(
+      '루트',
+      [
+        linked('깊이', `https://app.example.com/w/${WS}/${deep.id}#${randomUUID()}`),
+        linked('표로', `/w/${WS}/db/${table.id}?v=x`),
+        linked('밖으로', `/w/${WS}/${outside}`),
+        ref(branch),
+      ],
+      [branch.id],
+    )
+    const back = pageNode('되짚기', [linked('루트로', `/w/${WS}/${root.id}`), linked('깊이로', `/w/${WS}/${deep.id}`)])
+    const p = plan(snapshot([root.id, table.id, back.id], [root, branch, deep, table, back]))
+    const rootMd = textAt(p, '루트.md')
+    assert.ok(rootMd.includes('[깊이](루트/갈래/깊은%20쪽.md)'), rootMd)
+    assert.ok(rootMd.includes('[표로](표.csv)'), rootMd)
+    assert.ok(rootMd.includes(`[밖으로](/w/${WS}/${outside})`), '밖의 페이지는 그대로 — ' + rootMd)
+    // 아래 폴더의 페이지가 위 · 건너편을 가리킨다
+    const deepFromBack = textAt(p, '되짚기.md')
+    assert.ok(deepFromBack.includes('[루트로](루트.md)') && deepFromBack.includes('[깊이로](루트/갈래/깊은%20쪽.md)'), deepFromBack)
+    assert.equal(p.report.markdown_losses.unsafe_link, 0)
+  })
+
+  test('아래 폴더의 페이지에서 위로 — ../ · 항목의 차례는 그대로(경로가 정해진 뒤에 지어도)', () => {
+    const child = pageNode('아이', [])
+    const root = pageNode('부모', [ref(child)], [child.id])
+    const childWithLink: ExportPageNode = { ...child, doc: { blocks: [linked('부모로', `/w/${WS}/${root.id}`)] } }
+    const p = plan(snapshot([root.id], [root, childWithLink]))
+    assert.deepEqual(paths(p), ['부모.md', '부모/아이.md'])
+    assert.ok(textAt(p, '부모/아이.md').includes('[부모로](../부모.md)'), textAt(p, '부모/아이.md'))
+  })
+})

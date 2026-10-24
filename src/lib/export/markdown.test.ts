@@ -539,3 +539,28 @@ describe('파일 머리', () => {
     assert.ok(a.markdown.endsWith('\n') && !a.markdown.endsWith('\n\n'), JSON.stringify(a.markdown))
   })
 })
+
+describe('글자 링크의 주소 바꾸기 — links.href (10n-66)', () => {
+  const run = (text: string, url: string): RichTextRun => ({ ...textRun(text), text: { content: text, link: { url } } })
+  const rewrite = (url: string): string => (url === '/w/ws/target' ? '../그 페이지.md' : url)
+
+  test('★ 문단 · 제목 · 토글 머리의 링크가 바뀐다 · 주지 않으면 그대로', () => {
+    const blocks = [
+      block('paragraph', [run('문단', '/w/ws/target')]),
+      block('heading_2', [run('제목', '/w/ws/target')]),
+      block('toggle', [run('토글', '/w/ws/target')]),
+    ]
+    const { markdown } = convert(blocks, { ...NO_LINKS, href: rewrite })
+    assert.ok(markdown.includes('[문단](../그%20페이지.md)'), markdown)
+    assert.ok(markdown.includes('## [제목](../그%20페이지.md)'), markdown)
+    assert.ok(markdown.includes('<a href="../그%20페이지.md">토글</a>'), markdown)
+    assert.ok(convert(blocks).markdown.includes('[문단](/w/ws/target)'), '갈고리가 없으면 그대로')
+  })
+
+  test('안전한지는 바꾼 뒤에 본다 — 바꾸지 못한 javascript: 는 여전히 빠진다', () => {
+    const { markdown, losses } = convert([block('paragraph', [run('위험', 'javascript:alert(1)'), run(' 안전', '/w/ws/target')])], { ...NO_LINKS, href: rewrite })
+    assert.ok(!markdown.includes('javascript'), markdown)
+    assert.ok(markdown.includes('[안전](../그%20페이지.md)') || markdown.includes('[ 안전](../그%20페이지.md)'), markdown)
+    assert.equal(losses.unsafeLink, 1)
+  })
+})
