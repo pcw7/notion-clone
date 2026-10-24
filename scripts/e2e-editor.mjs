@@ -21433,6 +21433,61 @@ async function main() {
       check('★ 새로고침해도 행이 남는다 — 필터를 지난다', await waitFor(`${titlesJs} === ${JSON.stringify(title)}`, 15000), String(await evaluate(titlesJs)))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('같은 표를 모으는 rollup 의 갱신 (10n-48 · F-03-11)')) { try {
+      // 같은 표를 가리키는 relation 의 rollup — 다른 행의 칸을 고치면 이 행의 rollup 이 새로고침 없이 따라온다(§7 의 "새로고침 전까지 옛 값").
+      // 내가 고친 칸(칸 편집)과 남이 고친 칸(서버에 바로 쓴 것) 둘 다 표 변경 알림(2k-2)이 다시 읽기를 부르고, 다시 읽기가 보이는 행의 rollup 을
+      // 다시 묻는다. 정본 §3.5 [보강] rollup v1(읽을 때 계산).
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await api('POST', '/databases', { name: `같은 표 롤업 ${stamp}` })).body.database
+      const view = db.defaultViewId
+      const props = `/data-sources/${db.dataSourceId}/properties`
+      const score = (await api('POST', props, { name: '점수', type: 'number' })).body.property.id
+      const link = (await api('POST', `/data-sources/${db.dataSourceId}/relations`, { name: '연결', targetDataSourceId: db.dataSourceId })).body?.property?.id
+      const sum = (await api('POST', `/data-sources/${db.dataSourceId}/rollups`, { name: '합', relationPropertyId: link, targetPropertyId: score, function: 'sum' })).body?.property?.id
+      const titleProp = (await api('GET', `/views/${view}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const row = async (name, n) => (await api('POST', `/views/${view}/rows`, { cells: [
+        { propertyId: titleProp, value: { type: 'title', title: [textRun(name)] } },
+        ...(n === null ? [] : [{ propertyId: score, value: { type: 'number', number: n } }]),
+      ] })).body.row.id
+      const a = await row('모으는 행', null)
+      const b = await row('모이는 행', 3)
+      await api('POST', `/rows/${a}/relations/${link}`, { add: [b] })
+      check('전제 — 같은 표의 연결 · 점수 · 합(rollup)', [score, link, sum].every((x) => typeof x === 'string'), JSON.stringify({ score, link, sum }))
+      const rollupOf = (rowId) => `(document.querySelector('tr[data-row-id="${rowId}"] td[data-property-id="${sum}"] [data-testid="db-rollup-value"]')?.textContent.trim() ?? null)`
+      const SCORE_CELL = `tr[data-row-id="${b}"] td[data-property-id="${score}"]`
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr[data-row-id]').length === 2`, 15000)
+      check('처음 — 모으는 행의 합은 3', await waitFor(`${rollupOf(a)} === '3'`, 8000), String(await evaluate(rollupOf(a))))
+
+      await waitHydrated(SCORE_CELL, 20000) // 서버가 그린 칸 — React 가 붙기 전의 클릭은 버려진다(10n-11)
+      await clickSelector(SCORE_CELL)
+      await key('Enter')
+      const editing = await waitFor(`document.activeElement?.matches('[data-testid="db-cell-input"]')`, 5000)
+      if (editing) {
+        await evaluate(`document.querySelector('[data-testid="db-cell-input"]').select()`)
+        await typeText('5')
+        await key('Enter')
+      }
+      check('★ 같은 표의 다른 행 칸을 고치면 — 새로고침 없이 합이 5 로 따라온다', editing && (await waitFor(`${rollupOf(a)} === '5'`, 10000)),
+        JSON.stringify({ editing, sum: await evaluate(rollupOf(a)) }))
+
+      await api('PATCH', `/rows/${b}`, { cells: [{ propertyId: score, value: { type: 'number', number: 8 } }] })
+      check('★ 남이 고친 것도(서버에 바로 쓴 값) — 표 변경 알림이 다시 읽어 합이 8', await waitFor(`${rollupOf(a)} === '8'`, 10000), String(await evaluate(rollupOf(a))))
+
+      // 카드의 배지(10n-33)도 — 갤러리는 서버 렌더를 다시 받아 그 값을 쓴다(`useAdoptServerValue`)
+      const gallery = (await api('POST', `/databases/${db.id}/views`, { type: 'gallery', name: '갤러리' })).body.view
+      const badgeOf = (rowId) => `(document.querySelector('[data-row-id="${rowId}"] [data-testid="db-gallery-badge"][title="합"]')?.textContent.trim() ?? null)`
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}?v=${gallery.id}` })
+      await waitFor(`${badgeOf(a)} === '8'`, 15000)
+      await api('PATCH', `/rows/${b}`, { cells: [{ propertyId: score, value: { type: 'number', number: 13 } }] })
+      check('★ 갤러리 카드의 합 배지도 새로고침 없이 13 으로', await waitFor(`${badgeOf(a)} === '13'`, 10000), String(await evaluate(badgeOf(a))))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).
