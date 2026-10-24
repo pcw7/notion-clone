@@ -22650,6 +22650,52 @@ async function main() {
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('멘션 후보의 차례 (10n-71 · F-07-08)')) { try {
+      // 빈 @ 의 페이지 후보는 내가 최근 연 순서 · 글자를 치면 제목이 그 글자로 시작하는 것 중 최근 연 순서(연 적 없는 것은 그 뒤). HANDOFF
+      // §3.2-304. 멤버가 많은 워크스페이스(이 판의 주 워크스페이스)에서도 빈 @ 에 페이지가 보인다 — 사람은 몇 명까지만 앞에 선다.
+      const { textRun } = await import(new URL('../src/lib/contracts/rich-text.ts', import.meta.url).href)
+      const stamp = Date.now().toString(36)
+      const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
+      const mk = async (title) => (await (await fetch(pagesUrl, { method: 'POST', headers: authed, body: JSON.stringify({ title }) })).json()).page.id
+      const names = { a: `차례${stamp}가`, b: `차례${stamp}나`, c: `차례${stamp}다`, host: `차례${stamp}본문` }
+      const a = await mk(names.a)
+      const b = await mk(names.b)
+      await mk(names.c) // 연 적 없다
+      const host = await mk(names.host)
+      const line = randomUUID()
+      await saveBody(host, { blocks: [{ id: line, type: 'paragraph', title: [textRun('여기')], properties: {}, format: {}, children: [] }] })
+      // 방문 순서 — 나 · 가 · 본문(마지막)
+      for (const id of [b, a]) {
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${id}` })
+        await waitFor(`!!document.querySelector('input[aria-label="페이지 제목"]')`, 15000)
+      }
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${host}` })
+      await waitFor(`!!document.querySelector('[data-block-id="${line}"]') && document.querySelector('.ProseMirror')?.getAttribute('contenteditable') === 'true'`, 15000)
+      const MENTION = '[role="listbox"][aria-label="멘션"]'
+      const options = () => evaluate(`[...document.querySelectorAll('${MENTION} [role="option"]')].map((o) => ({ kind: o.firstElementChild?.textContent ?? '', label: o.lastElementChild?.textContent ?? '' }))`)
+      const mine = (list) => list.filter((o) => o.kind === '페이지' && o.label.startsWith(`차례${stamp}`)).map((o) => o.label.slice(`차례${stamp}`.length))
+      let inside = false
+      for (let i = 0; i < 20 && !inside; i += 1) {
+        await clickSelector(`[data-block-id="${line}"] p`)
+        inside = await waitFor(`document.activeElement?.classList.contains('ProseMirror') && document.querySelector('[data-block-id="${line}"]')?.contains(window.getSelection()?.anchorNode ?? null)`, 500)
+      }
+      await key('End')
+      for (const ch of ' @') await typeText(ch) // 한 글자씩 — 입력 규칙이 @ 를 따로 봐야 메뉴가 열린다
+      await waitFor(`[...document.querySelectorAll('${MENTION} [role="option"]')].some((o) => (o.lastElementChild?.textContent ?? '').startsWith(${JSON.stringify(`차례${stamp}`)}))`, 8000)
+      const empty = await options()
+      const pageRows = empty.filter((o) => o.kind === '페이지')
+      check('★ 빈 @ — 페이지 후보의 맨 앞이 내가 최근 연 순서(본문 · 가 · 나) · 사람이 자리를 다 채우지 않는다',
+        JSON.stringify(pageRows.slice(0, 3).map((o) => o.label)) === JSON.stringify([names.host, names.a, names.b]) && empty.filter((o) => o.kind === '사람').length <= 5,
+        JSON.stringify(empty))
+
+      for (const ch of `차례${stamp}`) await typeText(ch)
+      const typed = await waitFor(`[...document.querySelectorAll('${MENTION} [role="option"]')].filter((o) => (o.lastElementChild?.textContent ?? '').startsWith(${JSON.stringify(`차례${stamp}`)})).length === 4`, 8000)
+      const narrowed = mine(await options())
+      check('★ 글자를 치면 그 글자로 시작하는 것 중 최근 연 순서 — 연 적 없는 것(다)은 끝',
+        typed && JSON.stringify(narrowed) === JSON.stringify(['본문', '가', '나', '다']), JSON.stringify(await options()))
+      await key('Escape')
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).
