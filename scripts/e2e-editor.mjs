@@ -22542,7 +22542,8 @@ async function main() {
 
     if (sectionIf('인박스의 무한 스크롤 (10n-69 · F-11-07)')) { try {
       // 인박스는 첫 쪽(30줄)만 그리고, 목록 끝의 "더 보기" 가 화면에 들어오면 저절로 다음 쪽을 받는다 · 읽음 · 보관 뒤의 다시 읽기는 펼친 만큼 ·
-      // 망가진 커서는 400. HANDOFF §3.2-302. 알림 35개를 DB 에 바로 넣는다(시각을 앞 절의 알림보다 뒤로 — 첫 쪽이 이 절의 것) · 끝에 지운다.
+      // 망가진 커서는 400. HANDOFF §3.2-302. 알림 35개를 DB 에 바로 넣는다(시각을 받는 사람의 가장 늦은 알림보다 뒤로 — 앞 절이 지금보다 뒤의
+      // 알림을 남겨도 첫 쪽이 이 절의 것 · 전체 판이 찾았다) · 끝에 지운다.
       const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
       const stamp = Date.now().toString(36)
       const prefix = `more-${stamp}-`
@@ -22551,7 +22552,8 @@ async function main() {
       try {
         await dbQuery(
           `INSERT INTO notification (id, recipient_id, workspace_id, page_id, event_ids, kind, group_key, created_at)
-           SELECT gen_random_uuid(), $1, $2, $3, ARRAY[gen_random_uuid()], 'page_update', $4 || i::text, now() + interval '1 hour' - (36 - i) * interval '1 second'
+           SELECT gen_random_uuid(), $1, $2, $3, ARRAY[gen_random_uuid()], 'page_update', $4 || i::text,
+                  (SELECT GREATEST(now(), coalesce(max(created_at), now())) FROM notification WHERE recipient_id = $1) + interval '1 hour' - (36 - i) * interval '1 second'
              FROM generate_series(1, 35) AS i`,
           [meId, workspaceId, pageId, prefix],
         )
