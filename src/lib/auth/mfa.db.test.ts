@@ -29,6 +29,7 @@ import {
   mfaStatus,
   regenerateBackupCodes,
   removeMfaMethod,
+  renameMfaMethod,
   startTotpEnrollment,
   verifySecondFactor,
 } from './mfa.ts'
@@ -233,5 +234,32 @@ describe('⑦ 백업 코드 새로 받기', () => {
     const other = await pendingSession(user.userId)
     assert.deepEqual(await second(other, oldCodes![1]!), { ok: false, reason: 'invalid_code' })
     assert.deepEqual(await second(other, fresh[0]!), { ok: true, value: { via: 'backup' } })
+  })
+})
+
+describe('⑧ 수단 이름 바꾸기 (10n-52 · 정본 ⑦)', () => {
+  test('★ 지금 코드 없이 바꾼다 · 다듬는다 · 상태에 실린다 · 기록을 남기지 않는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { user, who } = await person()
+    const { methodId } = await enable(who, '처음 이름')
+    const events = async () => Number((await query<{ n: string }>(`SELECT count(*)::text AS n FROM auth_event WHERE user_id = $1`, [user.userId]))[0]!.n)
+    const before = await events()
+    assert.deepEqual(await renameMfaMethod(who.ctx, methodId, '  회사   휴대폰 '), { ok: true, value: { label: '회사 휴대폰' } })
+    assert.equal((await mfaStatus(who.ctx)).methods.find((m) => m.id === methodId)?.label, '회사 휴대폰')
+    assert.equal(await events(), before, '보안 사건이 아니다 — auth_event 를 남기지 않는다')
+  })
+
+  test('비었거나 40자를 넘으면 invalid_label · 남의 수단 · 확정 전 · 없는 수단은 not_found', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { who } = await person()
+    const { methodId } = await enable(who)
+    for (const label of ['', '   ', 'x'.repeat(41), 42, undefined]) {
+      assert.deepEqual(await renameMfaMethod(who.ctx, methodId, label), { ok: false, reason: 'invalid_label' }, String(label))
+    }
+    const { who: stranger } = await person('남')
+    assert.deepEqual(await renameMfaMethod(stranger.ctx, methodId, '훔친 이름'), { ok: false, reason: 'not_found' })
+    const pending = unwrap(await startTotpEnrollment(who.ctx, { label: '확정 전' }))
+    assert.deepEqual(await renameMfaMethod(who.ctx, pending.methodId, '아직'), { ok: false, reason: 'not_found' })
+    assert.deepEqual(await renameMfaMethod(who.ctx, '00000000-0000-4000-8000-000000000000', '없음'), { ok: false, reason: 'not_found' })
   })
 })

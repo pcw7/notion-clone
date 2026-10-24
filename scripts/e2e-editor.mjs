@@ -21658,6 +21658,84 @@ async function main() {
       check('파이썬도 — 같은 문법 표를 쓴다', await evaluate(`!!document.querySelector('.pub-code pre[data-language="python"] .hljs-keyword')`))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('2단계 인증 — 수단 이름 바꾸기 · 백업 코드 인쇄 (10n-52 · F-14-05)')) { try {
+      // 설정 → 보안의 2단계 인증 패널 — 수단의 "이름 바꾸기"(지금 코드 없이 · 빈 이름은 거부) · 백업 코드 상자의 "인쇄"(인쇄 스타일이 그 상자만
+      // 남기고 단추 · 체크는 뺀다). 정본 [보강] 2단계 인증 ⑦. 새 멤버로 켜서 진행하고 끝에 소유자 세션 · 화면 매체를 되돌린다.
+      const { totpAt, totpStepAt, base32Decode } = await import(new URL('../src/lib/auth/totp.ts', import.meta.url).href)
+      const stamp = Date.now()
+      const browseAs = (token) => send('Network.setCookie', { name: 'nc_session', value: token, domain: 'localhost', path: '/', httpOnly: true })
+      const mate = await joinAs(workspaceId, await createUser(`이름 바꾸는 사람 ${stamp}`), 'member')
+      const account = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}/account${path}`, { method, headers: { ...json, cookie: `nc_session=${mate.token}` }, body: JSON.stringify(body) })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      await account('PUT', '/password', { newPassword: `correct horse ${stamp}` })
+      const started = (await account('POST', '/mfa', { label: '처음 이름' })).body
+      const confirmed = (await account('POST', `/mfa/${started?.methodId}/confirm`, { code: totpAt(base32Decode(started?.secret ?? ''), totpStepAt(Date.now())) })).body
+      check('전제 — 2단계 인증을 켠 멤버(백업 코드 6개)', confirmed?.backupCodes?.length === 6, JSON.stringify(confirmed))
+      const has = (sel) => evaluate(`!!document.querySelector(${JSON.stringify(sel)})`)
+      const textOf = (sel) => evaluate(`document.querySelector(${JSON.stringify(sel)})?.textContent ?? null`)
+      const openUntil = async (button, target) => {
+        for (let i = 0; i < 6; i += 1) {
+          if (await has(target)) return true
+          await clickSelector(button)
+          if (await waitFor(`!!document.querySelector(${JSON.stringify(target)})`, 1500)) return true
+        }
+        return false
+      }
+      const setInput = (sel, value) => evaluate(`(() => {
+        const input = document.querySelector(${JSON.stringify(sel)})
+        if (!input) return false
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, ${JSON.stringify(value)})
+        input.dispatchEvent(new Event('input', { bubbles: true }))
+        return true
+      })()`)
+      const statusHas = (text) => waitFor(`(document.querySelector('[data-testid="mfa-status"]')?.textContent ?? '').includes(${JSON.stringify(text)})`, 10000)
+
+      try {
+        await browseAs(mate.token)
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/settings?s=account.security` })
+        await waitFor(`!!document.querySelector('[data-testid="mfa-rename-open"]')`, 15000)
+        const opened = await openUntil('[data-testid="mfa-rename-open"]', '[data-testid="mfa-rename-form"]')
+        check('★ "이름 바꾸기" — 지금 이름이 든 칸이 선다 · 코드 칸은 없다(지금 코드를 묻지 않는다)',
+          opened && (await evaluate(`document.querySelector('[data-testid="mfa-rename-input"]')?.value ?? null`)) === '처음 이름' && !(await has('[data-testid="mfa-code"]')),
+          String(await textOf('[data-testid="mfa-methods"]')))
+        await setInput('[data-testid="mfa-rename-input"]', '   ')
+        await clickSelector('[data-testid="mfa-rename-save"]')
+        check('빈 이름은 거부하고 까닭을 말한다', await statusHas('비울 수 없고'), String(await textOf('[data-testid="mfa-status"]')))
+        await setInput('[data-testid="mfa-rename-input"]', '회사   휴대폰')
+        await clickSelector('[data-testid="mfa-rename-save"]')
+        check('★ 저장하면 다듬은 이름이 목록에 선다',
+          (await statusHas('회사 휴대폰')) && (await waitFor(`(document.querySelector('[data-testid="mfa-method"]')?.textContent ?? '').includes('회사 휴대폰') && !document.querySelector('[data-testid="mfa-rename-form"]')`, 10000)),
+          String(await textOf('[data-testid="mfa-methods"]')))
+
+        // 백업 코드 새로 받기 — 지금 창의 TOTP 는 켤 때 썼으니(재사용 막기) 백업 코드로
+        await openUntil('[data-testid="mfa-regenerate-open"]', '[data-testid="mfa-regenerate-form"]')
+        await setInput('[data-testid="mfa-confirm-code"]', confirmed.backupCodes[0])
+        await clickSelector('[data-testid="mfa-confirm-action"]')
+        await waitFor(`document.querySelectorAll('[data-testid="mfa-backup-codes"] li').length === 6`, 10000)
+        await evaluate(`window.__printed = 0; window.print = () => { window.__printed += 1 }`)
+        await clickSelector('[data-testid="mfa-codes-print"]')
+        check('★ 백업 코드 상자에 "인쇄" — 누르면 브라우저 인쇄를 부른다', (await evaluate('window.__printed')) === 1, String(await evaluate('window.__printed')))
+        await send('Emulation.setEmulatedMedia', { media: 'print' })
+        const printed = await evaluate(`(() => {
+          const vis = (sel) => { const e = document.querySelector(sel); return e ? getComputedStyle(e).visibility : null }
+          // 그려지는가 — 숨긴 부모 안의 자식은 제 display 값을 돌려주므로 상자(rect)로 묻는다
+          const drawn = (sel) => { const e = document.querySelector(sel); return e ? e.getClientRects().length > 0 : null }
+          return { codes: vis('[data-testid="mfa-backup-codes"] li'), state: vis('[data-testid="mfa-state"]'), print: drawn('[data-testid="mfa-codes-print"]'), close: drawn('[data-testid="mfa-codes-close"]'), saved: drawn('[data-testid="mfa-codes-saved"]') }
+        })()`)
+        check('★ 인쇄하면 코드 상자만 남는다 — 코드는 보이고 패널의 다른 글은 숨고 단추 · 체크는 그려지지 않는다',
+          printed.codes === 'visible' && printed.state === 'hidden' && printed.print === false && printed.close === false && printed.saved === false, JSON.stringify(printed))
+        await send('Emulation.setEmulatedMedia', { media: '' })
+        await clickSelector('[data-testid="mfa-codes-saved"]')
+        await waitFor(`document.querySelector('[data-testid="mfa-codes-close"]')?.disabled === false`, 3000)
+        await clickSelector('[data-testid="mfa-codes-close"]')
+      } finally {
+        await send('Emulation.setEmulatedMedia', { media: '' })
+        await browseAs(session)
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

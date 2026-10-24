@@ -263,6 +263,25 @@ export async function removeMfaMethod(
   })
 }
 
+/**
+ * 수단의 이름을 바꾼다(10n-52 · 정본 [보강] 2단계 인증 ⑦) — 이름은 비밀이 아니고 보안 상태를 바꾸지 않으므로 지금 코드를 묻지 않는다(이 세션은
+ * 이미 둘째 단계를 지났다). 만들 때와 같은 다듬기지만 빈 이름은 기본값으로 메우지 않는다(`invalid_label`). 확정된 자기 수단만 · 기록을 남기지 않는다.
+ */
+export async function renameMfaMethod(ctx: SessionContext, methodId: string, raw: unknown): Promise<MfaResult<{ readonly label: string }>> {
+  if (typeof raw !== 'string' || raw.trim() === '') return fail('invalid_label')
+  const label = normalizeLabel(raw)
+  if (label === null) return fail('invalid_label')
+  return withCommandTransaction(async (tx) => {
+    const renamed = await tx.query<{ id: string }>(
+      `UPDATE mfa_method SET label = $3
+        WHERE id = $1 AND user_id = $2 AND kind = 'totp' AND confirmed_at IS NOT NULL
+        RETURNING id`,
+      [methodId, ctx.userId, label],
+    )
+    return renamed.length === 0 ? fail('not_found') : ({ ok: true, value: { label } } as const)
+  })
+}
+
 /** 백업 코드를 새로 받는다 — 지금 코드로. 옛 묶음은 지운다. */
 export async function regenerateBackupCodes(ctx: SessionContext, code: unknown): Promise<MfaResult<{ readonly backupCodes: readonly string[] }>> {
   return withCommandTransaction(async (tx) => {

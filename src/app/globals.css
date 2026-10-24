@@ -131,3 +131,15 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/*
+ * 인쇄 — 한 상자만 남긴다(10n-52 · 2단계 인증의 백업 코드 · 정본 [보강] 2단계 인증 ⑦). 화면에 `data-print-only` 가 있을 때만 듣는다 —
+ * 다른 인쇄(페이지 본문 등)는 그대로다. 그 상자 안의 `data-print-hide`(단추 · 체크)는 인쇄에서 뺀다.
+ */
+@media print {
+  body:has([data-print-only]) * { visibility: hidden; }
+  body:has([data-print-only]) [data-print-only],
+  body:has([data-print-only]) [data-print-only] * { visibility: visible; }
+  body:has([data-print-only]) [data-print-only] { position: absolute; left: 0; top: 0; border: none; }
+  [data-print-only] [data-print-hide] { display: none !important; }
+}
