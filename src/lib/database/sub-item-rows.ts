@@ -13,7 +13,7 @@
 import type { SessionContext } from '../auth/session-context.ts'
 import { withCommandTransaction } from '../db/tx.ts'
 import { isUuid } from '../ids.ts'
-import { linkRowsIn, type RelationResult } from './relation.ts'
+import { linkPrefilledIn, linkRowsIn, type RelationResult } from './relation.ts'
 import { createRowIn, type CreateRowInput, type RowSummary } from './row.ts'
 import { readSubItemPair } from './sub-items.ts'
 
@@ -40,6 +40,8 @@ export async function createSubItem(
       const reason = created.reason === 'schema_conflict' || created.reason === 'version_conflict' ? 'invalid_value' : created.reason
       return { ok: false, reason, ...(created.issues ? { issues: created.issues } : {}) } as const
     }
+    // 뷰의 필터가 정하는 relation 도 잇는다(10n-47 · [보강] 필터가 걸린 뷰에서 만든 행 ⑧) — 하위 항목 짝은 이 요청이 정한다(⑤ 요청이 이긴다)
+    await linkPrefilledIn(tx, ctx, created.value, dataSourceId, input.viewFilter, new Set([pair.parentPropertyId, pair.childrenPropertyId]))
     return linkRowsIn(tx, ctx, created.value.id, pair.parentPropertyId, [parentId], [])
   })
 }

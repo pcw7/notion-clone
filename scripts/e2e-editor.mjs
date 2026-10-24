@@ -21373,6 +21373,66 @@ async function main() {
       await key('Escape')
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('relation 포함이 걸린 뷰에서 만든 행 (10n-47 · F-04-09 · F-03-10)')) { try {
+      // "작업들 포함 설계" 가 걸린 표에서 "+ 새로 만들기" 로 만든 행은 빈 relation 이라 필터 밖이었다(§7). 서버가 행을 넣은 같은 트랜잭션에서
+      // 그 행에 잇는다 — 칸에 설계 칩이 곧바로 서고 새로고침해도 행이 남는다. 정본 [보강] 필터가 걸린 뷰에서 만든 행 ⑧ · [보강 10n-47].
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const clickOn = async (selector) => {
+        const p = await evaluate(`(() => {
+          const e = document.querySelector(${JSON.stringify(selector)})
+          if (!e) return null
+          e.scrollIntoView({ block: 'center' })
+          const r = e.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (p) await click(p.x, p.y)
+        return p !== null
+      }
+      const projects = (await api('POST', '/databases', { name: `포함 채우기 프로젝트 ${stamp}` })).body.database
+      const tasks = (await api('POST', '/databases', { name: `포함 채우기 작업 ${stamp}` })).body.database
+      const titleOf = async (db) => (await api('GET', `/views/${db.defaultViewId}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const [projectTitle, taskTitle] = [await titleOf(projects), await titleOf(tasks)]
+      const relation = (await api('POST', `/data-sources/${projects.dataSourceId}/relations`, { name: '작업들', targetDataSourceId: tasks.dataSourceId })).body?.property?.id
+      const design = (await api('POST', `/views/${tasks.defaultViewId}/rows`, { cells: [{ propertyId: taskTitle, value: { type: 'title', title: [textRun('설계')] } }] })).body.row.id
+      // 필터 밖의 행 하나 — 필터가 실제로 거르는지 본다
+      await api('POST', `/views/${projects.defaultViewId}/rows`, { cells: [{ propertyId: projectTitle, value: { type: 'title', title: [textRun('밖의 행')] } }] })
+      const filtered = await api('PATCH', `/views/${projects.defaultViewId}`, { filter: { property_id: relation, operator: 'contains', value: design } })
+      const titlesJs = `[...document.querySelectorAll('[data-testid="db-table"] tbody tr')].map((tr) => tr.querySelector('[data-testid="db-row-title"]')?.textContent ?? '').join(',')`
+      const chipsJs = `[...document.querySelectorAll('[data-testid="db-table"] tbody tr td[data-property-id="${relation}"] [data-testid="db-relation-chip"]')].map((e) => e.textContent.replace('↗', '').trim()).join(',')`
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${projects.id}` })
+      check('전제 — "작업들 포함 설계" 가 걸렸고 밖의 행은 보이지 않는다',
+        filtered.status === 200 && (await waitFor(`!!document.querySelector('[data-testid="db-add-row"]') && ${titlesJs} === ''`, 15000)),
+        JSON.stringify({ status: filtered.status, titles: await evaluate(titlesJs) }))
+
+      await waitHydrated('[data-testid="db-add-row"]', 20000) // 서버가 그린 단추 — React 가 붙기 전의 클릭은 버려진다(10n-11)
+      await clickOn('[data-testid="db-add-row"]')
+      await waitFor(`document.activeElement?.matches('[data-testid="db-cell-input"]')`, 8000)
+      const title = `포함 안의 새 행 ${stamp % 100000}`
+      await typeText(title)
+      await key('Enter')
+      check('★ 새 행이 설계에 이어져 곧바로 보인다 — relation 칸에 설계 칩',
+        (await waitFor(`${titlesJs} === ${JSON.stringify(title)}`, 8000)) && (await waitFor(`${chipsJs} === '설계'`, 8000)),
+        JSON.stringify({ titles: await evaluate(titlesJs), chips: await evaluate(chipsJs) }))
+
+      // 제목은 Enter 의 저장이 끝난 뒤에 서버에 있다 — 그 제목의 행이 보일 때까지
+      const serverRow = async () => ((await api('GET', `/views/${projects.defaultViewId}/rows`)).body?.rows ?? []).find((r) => r.title === title)
+      let saved = await serverRow()
+      for (let i = 0; i < 25 && saved === undefined; i += 1) {
+        await sleep(200)
+        saved = await serverRow()
+      }
+      check('서버에도 — 새 행의 작업들에 설계', JSON.stringify((saved?.properties?.[relation]?.relation ?? []).map((r) => r.id)) === JSON.stringify([design]),
+        JSON.stringify(saved?.properties?.[relation] ?? null))
+
+      await send('Page.reload')
+      check('★ 새로고침해도 행이 남는다 — 필터를 지난다', await waitFor(`${titlesJs} === ${JSON.stringify(title)}`, 15000), String(await evaluate(titlesJs)))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

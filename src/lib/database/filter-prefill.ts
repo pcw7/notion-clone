@@ -33,18 +33,7 @@ export function filterPrefill(
   typeOf: (propertyId: string) => string | undefined,
   me: string | null,
 ): PrefillCell[] {
-  if (filter === null || filter === undefined) return []
-
-  // ③ AND 로 닿는 조건만 — 자식이 하나뿐인 OR 은 AND 와 같다. 자식이 둘 이상인 OR 은 어느 쪽을 채울지 정할 수 없어 통째로 건너뛴다.
-  const leaves: FilterLeaf[] = []
-  const walk = (node: FilterNode): void => {
-    if (!isGroup(node)) {
-      leaves.push(node)
-      return
-    }
-    if (node.op === 'and' || node.children.length === 1) node.children.forEach(walk)
-  }
-  walk(filter)
+  const leaves = andLeaves(filter)
 
   // 속성마다 모은다 — null 은 "서로 다른 값을 정하는 조건이 둘"(만족할 수 없는 필터)이라 채우지 않는다는 표시다
   const needs = new Map<string, Need | null>()
@@ -64,6 +53,43 @@ export function filterPrefill(
   }
   return cells
 }
+
+/** ③ AND 로 닿는 조건만 — 자식이 하나뿐인 OR 은 AND 와 같다. 자식이 둘 이상인 OR 은 어느 쪽을 채울지 정할 수 없어 통째로 건너뛴다. */
+function andLeaves(filter: FilterNode | null | undefined): FilterLeaf[] {
+  if (filter === null || filter === undefined) return []
+  const leaves: FilterLeaf[] = []
+  const walk = (node: FilterNode): void => {
+    if (!isGroup(node)) {
+      leaves.push(node)
+      return
+    }
+    if (node.op === 'and' || node.children.length === 1) node.children.forEach(walk)
+  }
+  walk(filter)
+  return leaves
+}
+
+/** 이을 relation 하나 — 그 속성에 이 행들을(⑧). */
+export type PrefillLink = { readonly propertyId: string; readonly ids: readonly string[] }
+
+/**
+ * 이 필터가 정하는 relation 연결(정본 [보강 10n-47] — [보강] 필터가 걸린 뷰에서 만든 행 ⑧). relation 의 값은 칸이 아니라 엣지라
+ * `filterPrefill` 의 칸에 들지 않는다 — 부르는 쪽이 행을 넣은 뒤 연결하기로 잇는다. `contains` 만 정한다(값은 대상 행 id) · 같은 칸에
+ * 여럿이면 모두(사람과 같다) · AND 로 닿는 조건만(③). 그 행이 지금도 이을 수 있는지는 연결하기가 묻는다(⑥ — 걸리면 그 칸만 빠진다).
+ */
+export function filterRelationPrefill(filter: FilterNode | null | undefined, typeOf: (propertyId: string) => string | undefined): PrefillLink[] {
+  const links = new Map<string, string[]>()
+  for (const leaf of andLeaves(filter)) {
+    if (typeOf(leaf.property_id) !== 'relation' || leaf.operator !== 'contains') continue
+    if (typeof leaf.value !== 'string' || !UUID.test(leaf.value)) continue
+    const ids = links.get(leaf.property_id) ?? []
+    if (!ids.includes(leaf.value)) ids.push(leaf.value)
+    links.set(leaf.property_id, ids)
+  }
+  return [...links].map(([propertyId, ids]) => ({ propertyId, ids }))
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 /** 조건 하나가 정하는 것. 정하지 않으면(② — 범위 · 부분 일치 · 부정 · 수식 …) null. */
 function needOf(type: string | undefined, leaf: FilterLeaf, me: string | null): Need | null {
