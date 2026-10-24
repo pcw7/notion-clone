@@ -20871,6 +20871,62 @@ async function main() {
       await send('Network.setBlockedURLs', { urls: [] })
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('relation 편집기의 더 보기 (10n-40 · F-03-10)')) { try {
+      // 연결이 50개를 넘는 칸 — 편집기는 첫 50개와 "더 보기" 를 보이고, 누르면 나머지가 붙는다 · 붙은 연결도 끊을 수 있다(전에는 50개 뒤는
+      // 볼 수도 끊을 수도 없었다). 정본 [보강] relation_edge — [보강 10n-40].
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const clickOn = async (selector) => {
+        const p = await evaluate(`(() => {
+          const e = document.querySelector(${JSON.stringify(selector)})
+          if (!e) return null
+          e.scrollIntoView({ block: 'center' })
+          const r = e.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (p) await click(p.x, p.y)
+        return p !== null
+      }
+      const projects = (await api('POST', '/databases', { name: `더 보기 프로젝트 ${stamp}` })).body.database
+      const tasks = (await api('POST', '/databases', { name: `더 보기 작업 ${stamp}` })).body.database
+      const taskTitle = (await api('GET', `/views/${tasks.defaultViewId}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const relation = (await api('POST', `/data-sources/${projects.dataSourceId}/relations`, { name: '작업들', targetDataSourceId: tasks.dataSourceId })).body?.property?.id
+      const project = (await api('POST', `/views/${projects.defaultViewId}/rows`, { cells: [] })).body.row.id
+      const ids = []
+      for (let i = 1; i <= 55; i += 1) {
+        ids.push((await api('POST', `/views/${tasks.defaultViewId}/rows`, { cells: [{ propertyId: taskTitle, value: { type: 'title', title: [textRun(`일 ${String(i).padStart(2, '0')}`)] } }] })).body.row.id)
+      }
+      const linked = await api('POST', `/rows/${project}/relations/${relation}`, { add: ids })
+      check('전제 — 55개를 잇는다', linked.status === 200, JSON.stringify({ status: linked.status, error: linked.body?.error }))
+      const CELL = `tr[data-row-id="${project}"] td[data-property-id="${relation}"]`
+      const rowsShown = () => evaluate(`document.querySelectorAll('[data-testid="db-relation-linked"]').length`)
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${projects.id}` })
+      await waitFor(`!!document.querySelector('${CELL} [data-testid="db-relation-more"]')`, 15000)
+      await waitHydrated(CELL, 20000) // 서버가 그린 칸 — React 가 붙기 전의 클릭은 버려진다(10n-11)
+      await clickOn(CELL)
+      await waitFor(`document.activeElement === document.querySelector('${CELL}')`, 3000)
+      await key('Enter')
+      check('★ 편집기는 첫 50개와 "더 보기" 를 보인다',
+        await waitFor(`document.querySelectorAll('[data-testid="db-relation-linked"]').length === 50 && !!document.querySelector('[data-testid="db-relation-linked-more"]')`, 8000),
+        String(await rowsShown()))
+      await clickOn('[data-testid="db-relation-linked-more"]')
+      check('★ 더 보기를 누르면 나머지가 붙는다 — 55개 · 더 보기는 사라진다',
+        await waitFor(`document.querySelectorAll('[data-testid="db-relation-linked"]').length === 55 && !document.querySelector('[data-testid="db-relation-linked-more"]')`, 8000),
+        String(await rowsShown()))
+      check('붙은 순서는 칩 순서 — 마지막 줄이 "일 55"',
+        await evaluate(`[...document.querySelectorAll('[data-testid="db-relation-linked"]')].at(-1)?.textContent.includes('일 55')`))
+      await clickOn('[data-testid="db-relation-linked"]:last-of-type [data-testid="db-relation-unlink"]')
+      const after = async () => (await api('GET', `/rows/${project}/relations/${relation}?limit=100`)).body
+      check('★ 붙은 연결도 끊을 수 있다 — 서버의 칸이 54개 · "일 55" 가 빠졌다',
+        await (async () => { for (let i = 0; i < 20; i += 1) { const b = await after(); if (b?.total === 54) return !b.items.some((it) => it.title === '일 55'); await sleep(250) } return false })(),
+        JSON.stringify({ total: (await after())?.total }))
+      await key('Escape')
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

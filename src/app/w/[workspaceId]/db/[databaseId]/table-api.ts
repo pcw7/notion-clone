@@ -431,15 +431,24 @@ export type RelationPage = {
   /** 대상 표를 볼 수 없어 제목을 받지 못한 개수. */
   readonly hidden: number
   readonly hasMore: boolean
+  /** 다음 페이지의 커서 — 없으면 null(10n-40 · 편집기의 "더 보기"). */
+  readonly nextCursor: string | null
 }
 
-/** 한 칸의 연결을 제목과 함께 — 행 고르기 팝오버의 위쪽. 권한 · 휴지통은 서버가 걸렀다. */
-export function readRelation(workspaceId: string, rowId: string, propertyId: string): Promise<ApiResult<RelationPage>> {
-  return call(`${base(workspaceId)}/rows/${rowId}/relations/${encodeURIComponent(propertyId)}`, { method: 'GET' }, (body) => ({
+/** 한 칸의 연결을 제목과 함께 — 행 고르기 팝오버의 위쪽. 권한 · 휴지통은 서버가 걸렀다. `cursor` 면 그 다음 페이지(10n-40). */
+export function readRelation(
+  workspaceId: string,
+  rowId: string,
+  propertyId: string,
+  cursor: string | null = null,
+): Promise<ApiResult<RelationPage>> {
+  const query = cursor === null ? '' : `?cursor=${encodeURIComponent(cursor)}`
+  return call(`${base(workspaceId)}/rows/${rowId}/relations/${encodeURIComponent(propertyId)}${query}`, { method: 'GET' }, (body) => ({
     items: (body.items ?? []) as RelatedRow[],
     total: typeof body.total === 'number' ? body.total : 0,
     hidden: typeof body.hidden === 'number' ? body.hidden : 0,
     hasMore: body.hasMore === true,
+    nextCursor: typeof body.nextCursor === 'string' ? body.nextCursor : null,
   }))
 }
 
