@@ -32,6 +32,7 @@ import { pageIconElement } from './page-icon-dom.ts'
 import { customEmojiImagePath, type PageIcon } from '../block/page-icon.ts'
 import { nodeNameOf } from './schema.ts'
 import { tocNodeView, type TocViewDeps } from './toc-view.ts'
+import { paintBlockColor } from './paint-block-color.ts'
 
 export type NodeViewDeps = ImageViewDeps & CodeViewDeps & TocViewDeps & BreadcrumbViewDeps & EquationViewDeps & InlineEquationViewDeps & ButtonViewDeps & {
   isCollapsed: (blockId: string) => boolean
@@ -81,7 +82,10 @@ function containerIdAt(view: EditorView, getPos: () => number | undefined): stri
 function todoNodeView(node: PmNode, view: EditorView, getPos: () => number | undefined): NodeView {
   const dom = document.createElement('li')
   dom.className = 'blk blk-to_do'
+  dom.dataset.blockType = 'to_do'
   dom.setAttribute('role', 'listitem')
+  // 블록 색(10n-53) — toDOM 이 다는 `data-color` 를 직접 단다. 빠뜨려서 색이 저장만 되고 보이지 않았다
+  paintBlockColor(dom, node)
 
   const box = document.createElement('input')
   box.type = 'checkbox'
@@ -118,6 +122,7 @@ function todoNodeView(node: PmNode, view: EditorView, getPos: () => number | und
     update: (updated) => {
       if (updated.type.name !== 'to_do') return false
       box.checked = Boolean((updated.attrs.props as { checked?: boolean })?.checked)
+      paintBlockColor(dom, updated)
       return true
     },
     // 체크박스 클릭은 ProseMirror 가 아니라 우리가 처리한다.
@@ -141,6 +146,8 @@ function toggleNodeView(
 ): NodeView {
   const dom = document.createElement('div')
   dom.className = 'blk blk-toggle'
+  dom.dataset.blockType = 'toggle'
+  paintBlockColor(dom, node)
 
   const arrow = document.createElement('button')
   arrow.type = 'button'
@@ -174,6 +181,7 @@ function toggleNodeView(
     update: (updated) => {
       if (updated.type.name !== 'toggle') return false
       sync()
+      paintBlockColor(dom, updated)
       return true
     },
     stopEvent: (event) => event.target === arrow,
