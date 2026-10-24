@@ -57,6 +57,8 @@ export type ImageViewDeps = {
   ) => Promise<UploadOutcome>
   /** 대체 텍스트 대화상자를 연다(10d-1b · F-12-13) — 편집기 밖의 오버레이. 읽기 전용 편집기는 아무것도 하지 않는다. */
   readonly openImageAlt: (blockId: string) => void
+  /** 캡션 입력을 연다(10n-62) — 편집기 밖의 입력칸(코드 캡션과 같은 것). 읽기 전용 편집기는 아무것도 하지 않는다. */
+  readonly openImageCaption: (blockId: string) => void
 }
 
 /** 대체 텍스트 단추의 말(10d-1b) — 장식이면 "장식 이미지" · 말이 있으면 ✓ · 없으면 "대체 텍스트". */
@@ -268,6 +270,20 @@ export function imageNodeView(
         if (id !== '') deps.openImageAlt(id)
       })
       controls.append(altButton)
+      // 캡션(10n-62) — 편집기 밖의 입력칸으로 고친다(원자 노드 안에 편집 영역을 두지 않는다 · 캐럿 · 선택이 두 개가 된다). 트리거 표시
+      // (`data-code-ui`)는 코드 블록의 오버레이와 같은 것 — 열린 입력칸의 바깥 누르기가 이 단추를 건너뛰고 이 단추의 click 이 닫는다.
+      const captionButton = element('button', 'blk-image-caption-open', readCaption(props) === '' ? '캡션 추가' : '캡션 고치기')
+      captionButton.type = 'button'
+      captionButton.setAttribute('data-testid', 'image-caption-open')
+      captionButton.setAttribute('data-code-ui', 'image_caption')
+      // 누르는 동안 편집기의 선택을 옮기지 않는다(코드 블록의 크롬 단추와 같다)
+      captionButton.addEventListener('mousedown', (event) => event.preventDefault())
+      captionButton.addEventListener('click', () => {
+        if (!view.editable) return
+        const id = containerIdAt(view, getPos)
+        if (id !== '') deps.openImageCaption(id)
+      })
+      controls.append(captionButton)
     } else {
       dom.dataset.state = 'empty'
       renderEmpty()

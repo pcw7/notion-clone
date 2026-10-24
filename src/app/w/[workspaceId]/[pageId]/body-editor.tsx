@@ -36,7 +36,7 @@ import { textRun } from '@/lib/contracts/rich-text'
 import { blockIdFromHash, revealBlockCommand } from '@/lib/editor/block-menu'
 import { plainTextForBlocks } from '@/lib/editor/block-clipboard'
 import { BlockSelection, selectedBlockCount } from '@/lib/editor/block-selection'
-import { codeBlockInfo, setCodeCaptionCommand, setCodeLanguageCommand } from '@/lib/editor/code-block'
+import { codeBlockInfo, setCodeCaptionCommand, setCodeLanguageCommand, type CodeBlockInfo } from '@/lib/editor/code-block'
 import { equationBlockInfo, setEquationExpressionCommand } from '@/lib/editor/equation-block'
 import {
   findInlineEquation,
@@ -81,7 +81,7 @@ import { CodeLanguageMenu } from './code-language-menu'
 import { EquationEditor } from './equation-editor'
 import { ButtonBlockSettings } from './button-block-settings'
 import { ImageAltDialog } from './image-alt-dialog'
-import { imageBlockInfo, setImageAltCommand } from '@/lib/editor/image-block'
+import { imageBlockInfo, imageCaptionInfo, setImageAltCommand, setImageCaptionCommand } from '@/lib/editor/image-block'
 import type { ImageAlt } from '@/lib/block/image'
 import { FindBar } from './find-bar'
 import { perfEditorReady, perfEditorStarted } from '../perf-reporter'
@@ -175,7 +175,8 @@ function mentionIdsIn(view: EditorView): { users: string[]; pages: string[]; emo
  * 코드를 늘리거나 위에 블록을 넣으면 블록이 움직인다.
  */
 type CodeUi = CodeUiGeometry & {
-  kind: 'language' | 'caption'
+  /** `image_caption` — 이미지 블록의 캡션(10n-62 · 같은 입력칸 · 같은 열고 닫기 · 자리 다시 재기). */
+  kind: 'language' | 'caption' | 'image_caption'
   blockId: string
   language: string | null
   caption: string
@@ -200,10 +201,34 @@ function isCodeUiTrigger(target: EventTarget | null, ui: Pick<CodeUi, 'kind' | '
   return trigger?.dataset.codeUi === ui.kind && trigger.closest<HTMLElement>('[data-block-id]')?.dataset.blockId === ui.blockId
 }
 
+/**
+ * 오버레이가 붙는 블록의 지금 값 — 코드 블록(언어 · 캡션) 또는 이미지(캡션 · 10n-62). 없거나 그 종류의 블록이 아니면(타입이 바뀌었다)
+ * null. 이미지에는 언어가 없다.
+ */
+function codeUiTarget(
+  state: EditorView['state'],
+  kind: CodeUi['kind'],
+  blockId: string,
+): Pick<CodeBlockInfo, 'pos' | 'node' | 'language' | 'caption' | 'captionFormatted'> | null {
+  if (kind !== 'image_caption') return codeBlockInfo(state, blockId)
+  const info = imageCaptionInfo(state, blockId)
+  return info === null ? null : { pos: info.pos, node: info.node, language: null, caption: info.caption, captionFormatted: info.captionFormatted }
+}
+
 /** 코드 블록 오버레이의 자리를 잰다 — 그 블록의 노드 뷰가 없으면 null. */
 function measureCodeUi(view: EditorView, frame: HTMLElement, kind: CodeUi['kind'], contentPos: number): CodeUiGeometry | null {
   const box = view.nodeDOM(contentPos)
   if (!(box instanceof HTMLElement)) return null
+  if (kind === 'image_caption') {
+    // 이미지의 캡션 자리(10n-62) — 그림 바로 아래, 같은 폭. 캡션이 있으면 그 글자를 다 가린다(코드 캡션과 같다)
+    const img = box.querySelector<HTMLElement>('img')
+    if (!img) return null
+    const fr = frame.getBoundingClientRect()
+    const i = img.getBoundingClientRect()
+    const shown = box.querySelector<HTMLElement>('.blk-image-caption')
+    const c = shown === null ? null : shown.getBoundingClientRect()
+    return { top: (c?.top ?? i.bottom + 4) - fr.top, left: i.left - fr.left, width: i.width, minHeight: c?.height ?? 0 }
+  }
   const pre = box.querySelector<HTMLElement>('pre.blk-code')
   if (!pre) return null
   const f = frame.getBoundingClientRect()
@@ -1126,7 +1151,7 @@ export function BodyEditor({
    * 언어 목록 · 캡션 입력을 연다 — 노드 뷰의 버튼(deps)과 블록 메뉴의 코드 항목이 부른다. 편집할 수 없거나 코드 블록이 아니면 열지
    * 않는다. 슬래시 · 멘션 메뉴가 열려 있으면 닫는다 — 그 메뉴의 window 키 리스너가 오버레이의 키를 가로채지 않게(리스너 가드와 두 겹).
    */
-  const openCodeUi = useCallback((kind: 'language' | 'caption', blockId: string) => {
+  const openCodeUi = useCallback((kind: CodeUi['kind'], blockId: string) => {
     // 같은 트리거를 다시 눌렀다 — 닫는다(쓰던 캡션은 저장한다 · 오버레이가 스스로 닫는다).
     const open = codeUiRef.current
     if (open !== null && open.kind === kind && open.blockId === blockId) {
@@ -1136,7 +1161,7 @@ export function BodyEditor({
     const view = viewRef.current
     const frame = frameRef.current
     if (!view || !frame || !view.editable) return
-    const info = codeBlockInfo(view.state, blockId)
+    const info = codeUiTarget(view.state, kind, blockId)
     if (info === null) return
     const geometry = measureCodeUi(view, frame, kind, info.pos)
     if (geometry === null) return
@@ -1170,7 +1195,7 @@ export function BodyEditor({
     if (!view || current === null || !view.editable) return
     if (!restoreFocus && !(outside instanceof Node && view.dom.contains(outside))) return
     view.focus()
-    const info = codeBlockInfo(view.state, current.blockId)
+    const info = codeUiTarget(view.state, current.kind, current.blockId)
     if (info === null || current.hadFocus) return
     const { selection } = view.state
     const inside = selection.from > info.pos && selection.to <= info.pos + info.node.nodeSize
@@ -1183,7 +1208,7 @@ export function BodyEditor({
     const current = codeUiRef.current
     const frame = frameRef.current
     if (current === null || !frame) return
-    const info = codeBlockInfo(view.state, current.blockId)
+    const info = codeUiTarget(view.state, current.kind, current.blockId)
     const geometry = info === null ? null : measureCodeUi(view, frame, current.kind, info.pos)
     if (info === null || geometry === null) {
       codeUiRef.current = null
@@ -1244,6 +1269,8 @@ export function BodyEditor({
       // 코드 블록의 크롬 버튼(8a-2) — 목록 · 입력칸은 편집기 밖의 오버레이다.
       openCodeLanguageMenu: (id) => openCodeUi('language', id),
       openCodeCaption: (id) => openCodeUi('caption', id),
+      // 이미지의 캡션(10n-62) — 코드 캡션과 같은 입력칸 · 같은 열고 닫기
+      openImageCaption: (id) => openCodeUi('image_caption', id),
       // 블록 수식(Phase 2 1a) — 누르거나 골라서 Enter 를 치면 입력창.
       openEquation: (id) => openEquationUi(id),
       // 버튼 블록(자동화 5e-1) — 누르면 서버가 실행하고 결과를 한 줄로(버튼 속성과 같은 말). ⚙ 는 설정 창.
@@ -1718,8 +1745,10 @@ export function BodyEditor({
             isTrigger={(target) => isCodeUiTrigger(target, codeUi)}
           />
         )}
-        {editable && codeUi?.kind === 'caption' && (
+        {editable && (codeUi?.kind === 'caption' || codeUi?.kind === 'image_caption') && (
           <CodeCaptionEditor
+            key={`${codeUi.kind}:${codeUi.blockId}`}
+            label={codeUi.kind === 'image_caption' ? '이미지 캡션' : '코드 캡션'}
             initial={codeUi.caption}
             formatted={codeUi.captionFormatted}
             top={codeUi.top}
@@ -1728,7 +1757,9 @@ export function BodyEditor({
             minHeight={codeUi.minHeight}
             onSave={(text) => {
               const view = viewRef.current
-              if (view?.editable) setCodeCaptionCommand(codeUi.blockId, text)(view.state, view.dispatch.bind(view))
+              if (!view?.editable) return
+              const save = codeUi.kind === 'image_caption' ? setImageCaptionCommand : setCodeCaptionCommand
+              save(codeUi.blockId, text)(view.state, view.dispatch.bind(view))
             }}
             onClose={closeCodeUi}
             closeRef={codeUiCloseRef}

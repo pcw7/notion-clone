@@ -22163,6 +22163,82 @@ async function main() {
       check('정렬이 걸린 갤러리에는 손잡이가 없다', sortedNone, await order())
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('이미지의 캡션 편집 (10n-62 · F-01-15)')) { try {
+      // 그림 아래의 "캡션 추가" 단추 → 편집기 밖의 입력칸(코드 캡션과 같은 것 · 이름은 "이미지 캡션") · Enter 로 저장하면 그림 아래에 캡션 ·
+      // 대체 텍스트가 없으면 `<img alt>` 도 그 말 · 단추는 "캡션 고치기" · 새로 읽어도 남는다 · Esc 는 저장하지 않는다 · 비우면 캡션이 사라진다 ·
+      // 받은 캡션에 서식이 있으면 고치면 평문이 된다고 먼저 말한다. 정본 §3.4 [보강 10n-62]. 자기 데이터를 스스로 만든다(API).
+      const stamp = Date.now().toString(36)
+      const made = await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: JSON.stringify({ title: `캡션 편집 ${stamp}` }) })
+      const page = (await made.json()).page.id
+      const img = randomUUID()
+      const boldImg = randomUUID()
+      const bold = { ...textRun('굵은 설명'), annotations: { bold: true, italic: false, strikethrough: false, underline: false, code: false, color: 'default' } }
+      await saveBody(page, {
+        blocks: [
+          { id: img, type: 'image', title: [], properties: { source: { type: 'external', url: `${BASE}/globe.svg` } }, format: {}, children: [] },
+          block(randomUUID(), 'paragraph', '그림 사이 문단'),
+          { id: boldImg, type: 'image', title: [], properties: { source: { type: 'external', url: `${BASE}/globe.svg` }, caption: [bold] }, format: {}, children: [] },
+        ],
+      })
+      const INPUT = '[data-testid="code-caption-input"]'
+      const capOf = (id) => `(document.querySelector('[data-block-id="${id}"] figcaption')?.textContent ?? '')`
+      const altOf = (id) => `document.querySelector('[data-block-id="${id}"] img')?.getAttribute('alt')`
+      const buttonOf = (id) => `(document.querySelector('[data-block-id="${id}"] [data-testid="image-caption-open"]')?.textContent ?? null)`
+      const stateOf = (id) => evaluate(`JSON.stringify({ caption: ${capOf(id)}, alt: ${altOf(id)}, button: ${buttonOf(id)},
+        input: document.querySelector('${INPUT}')?.value ?? null, label: document.querySelector('${INPUT}')?.getAttribute('aria-label') ?? null,
+        active: document.activeElement?.getAttribute('data-testid') ?? null })`)
+      const openFor = async (id) => {
+        for (let i = 0; i < 6 && !(await evaluate(`!!document.querySelector('${INPUT}')`)); i += 1) {
+          await clickSelector(`[data-block-id="${id}"] [data-testid="image-caption-open"]`)
+          await waitFor(`!!document.querySelector('${INPUT}')`, 2000)
+        }
+        return waitFor(`document.activeElement?.getAttribute('data-testid') === 'code-caption-input'`, 3000)
+      }
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+      await waitFor(`${buttonOf(img)} === '캡션 추가' && ${buttonOf(boldImg)} === '캡션 고치기'`, 15000)
+
+      // ① 단추가 입력칸을 연다 — 포커스 · 이름은 "이미지 캡션" · 비어 있다
+      const opened = await openFor(img)
+      check('★ 그림의 "캡션 추가" 단추가 입력칸을 연다 — 포커스 · 이름은 "이미지 캡션" · 비어 있다',
+        opened && (await evaluate(`document.querySelector('${INPUT}')?.getAttribute('aria-label') === '이미지 캡션' && document.querySelector('${INPUT}')?.value === ''`)),
+        await stateOf(img))
+
+      // ② 쓰고 Enter — 그림 아래에 캡션 · alt 도 그 말(대체 텍스트가 없다) · 단추는 "캡션 고치기" · 새로 읽어도 남는다
+      await typeText(`바다 사진 ${stamp}`)
+      await key('Enter')
+      const saved = await waitFor(`!document.querySelector('${INPUT}') && ${capOf(img)} === ${JSON.stringify(`바다 사진 ${stamp}`)}
+        && ${altOf(img)} === ${JSON.stringify(`바다 사진 ${stamp}`)} && ${buttonOf(img)} === '캡션 고치기'`, 8000)
+      await sleep(1500)
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+      check('★ Enter 로 저장하면 그림 아래에 캡션 — 대체 텍스트가 없으니 <img alt> 도 그 말 · 단추는 "캡션 고치기" · 새로 읽어도 남는다',
+        saved && (await waitFor(`${capOf(img)} === ${JSON.stringify(`바다 사진 ${stamp}`)}`, 15000)), await stateOf(img))
+
+      // ③ Esc 는 저장하지 않는다 — 친 글자는 버리고 편집기로
+      await openFor(img)
+      await typeText(' 덧붙임')
+      await key('Escape')
+      check('Esc 는 저장하지 않고 닫는다 — 캡션은 그대로 · 편집기로 포커스',
+        await waitFor(`!document.querySelector('${INPUT}') && ${capOf(img)} === ${JSON.stringify(`바다 사진 ${stamp}`)} && !!document.activeElement?.closest('.blk-editor')`, 5000),
+        await stateOf(img))
+
+      // ④ 비우고 Enter — 캡션이 사라진다 · 단추는 다시 "캡션 추가"
+      await openFor(img)
+      await evaluate(`document.querySelector('${INPUT}').select()`)
+      await key('Backspace')
+      await key('Enter')
+      check('비우고 저장하면 캡션이 사라진다 — 단추는 다시 "캡션 추가"',
+        await waitFor(`!document.querySelector('${INPUT}') && !document.querySelector('[data-block-id="${img}"] figcaption') && ${buttonOf(img)} === '캡션 추가'`, 8000),
+        await stateOf(img))
+
+      // ⑤ 서식이 있는 캡션 — 열면 "평문이 된다" 를 먼저 말한다(같은 글자면 쓰지 않아 서식을 지키는 것은 단위 검사 — image-block.test ⑥)
+      await openFor(boldImg)
+      const warned = await waitFor(`!!document.querySelector('[data-testid="code-caption-formatted"]') && document.querySelector('${INPUT}')?.value === '굵은 설명'`, 3000)
+      await key('Escape')
+      check('서식이 있는 캡션 — 열면 지금 글자와 함께 "고치면 평문이 된다" 를 먼저 말한다',
+        warned && (await waitFor(`!document.querySelector('${INPUT}') && ${capOf(boldImg)} === '굵은 설명'`, 3000)), JSON.stringify({ warned, state: await stateOf(boldImg) }))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).
