@@ -341,6 +341,15 @@ export async function getSchema(
   })
 }
 
+/**
+ * 이 표의 구조를 고칠 수 있나(10n-49 · HANDOFF §3.2-293) — 고치는 명령이 지나는 문과 같은 판정이다(`lockSchema` 를 잠그지 않고:
+ * `edit_structure` + 데이터베이스 잠금). 볼 수 없거나 없는 표도 false. 화면이 미리 끄는 데만 쓴다 — 명령은 저마다 다시 묻는다.
+ */
+export async function canEditSchema(ctx: SessionContext, dataSourceId: string): Promise<boolean> {
+  if (!isUuid(dataSourceId)) return false
+  return withReadTransaction(async (tx) => !isSchemaFailure(await lockSchema(tx, ctx, dataSourceId, undefined, false)))
+}
+
 // ── 추가 ──────────────────────────────────────────────────────────────
 
 export type AddPropertyInput = {

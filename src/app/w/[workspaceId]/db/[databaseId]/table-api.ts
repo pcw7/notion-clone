@@ -561,6 +561,11 @@ export function readProperties(workspaceId: string, dataSourceId: string): Promi
   )
 }
 
+/** 그 표의 구조를 고칠 수 있나(10n-49) — 관계형 폼이 "반대쪽에도 표시"를 미리 끈다. 볼 수 없는 표면 실패(그 표를 알려 주지 않는다). */
+export function canEditStructureOf(workspaceId: string, dataSourceId: string): Promise<ApiResult<boolean>> {
+  return call(`${base(workspaceId)}/data-sources/${dataSourceId}/properties`, { method: 'GET' }, (body) => body.canEditStructure === true)
+}
+
 export type AddRollupInput = {
   readonly name: string
   readonly relationPropertyId: string

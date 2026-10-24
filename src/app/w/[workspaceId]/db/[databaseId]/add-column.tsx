@@ -141,6 +141,8 @@ export function AddColumn({
   const [twoWay, setTwoWay] = useState(false)
   const [inverseName, setInverseName] = useState(tableName)
   const [limitOne, setLimitOne] = useState(false)
+  // 표마다 "구조를 고칠 수 있나"(10n-49 · HANDOFF §3.2-293) — 대상을 고를 때 한 번 묻는다. 모르는 동안은 막지 않는다(서버가 다시 묻는다)
+  const [structureOf, setStructureOf] = useState<Readonly<Record<string, boolean>>>({})
 
   // 고유 ID
   const [prefix, setPrefix] = useState('')
@@ -205,6 +207,21 @@ export function AddColumn({
   const targetId = target !== '' ? target : (databases?.[0]?.dataSourceId ?? '')
   const isRelation = type === 'relation'
 
+  // "반대쪽에도 표시"는 대상 표에 속성을 만든다 — 그 표의 구조를 고칠 수 없으면 미리 끈다(10n-49). 같은 표는 묻지 않는다(이 폼을 연 사람은 고칠 수 있다)
+  const asksStructure = isRelation && targetId !== '' && targetId !== dataSourceId
+  useEffect(() => {
+    if (!asksStructure || Object.hasOwn(structureOf, targetId)) return
+    let live = true
+    void api.canEditStructureOf(workspaceId, targetId).then((result) => {
+      if (live) setStructureOf((current) => ({ ...current, [targetId]: result.ok && result.value }))
+    })
+    return () => {
+      live = false
+    }
+  }, [asksStructure, structureOf, targetId, workspaceId])
+  const twoWayBlocked = asksStructure && structureOf[targetId] === false
+  const sendsTwoWay = twoWay && !twoWayBlocked
+
   // ── 롤업: 관계 → 속성 → 계산 ──
   // 고르지 않았으면 각 목록의 첫째다(`<select>` 가 그렇게 보인다).
   const isRollup = type === 'rollup'
@@ -225,7 +242,7 @@ export function AddColumn({
 
   const incomplete =
     name.trim() === '' ||
-    (isRelation && (targetId === '' || (twoWay && inverseName.trim() === ''))) ||
+    (isRelation && (targetId === '' || (sendsTwoWay && inverseName.trim() === ''))) ||
     (isRollup && (relation === undefined || targetProp === undefined)) ||
     (type === 'formula' && formulaCheck?.kind !== 'ok')
 
@@ -277,7 +294,7 @@ export function AddColumn({
                 ? await onAddRelation({
                     name,
                     targetDataSourceId: targetId,
-                    ...(twoWay ? { twoWay: { name: inverseName } } : {}),
+                    ...(sendsTwoWay ? { twoWay: { name: inverseName } } : {}),
                     ...(limitOne ? { limit: 'one' as const } : {}),
                   })
                 : await onAdd(name, type)
@@ -338,13 +355,19 @@ export function AddColumn({
               <label className="flex items-center gap-2 text-sm text-neutral-700 dark:text-neutral-300">
                 <input
                   type="checkbox"
-                  checked={twoWay}
+                  checked={sendsTwoWay}
+                  disabled={twoWayBlocked}
                   onChange={(e) => setTwoWay(e.target.checked)}
                   data-testid="db-relation-twoway"
                 />
                 반대쪽에도 표시
               </label>
-              {twoWay && (
+              {twoWayBlocked && (
+                <p data-testid="db-relation-twoway-blocked" className="text-xs text-neutral-500">
+                  그 표의 구조를 고칠 수 없어(권한 또는 잠금) 반대쪽에 속성을 만들 수 없습니다
+                </p>
+              )}
+              {sendsTwoWay && (
                 <input
                   value={inverseName}
                   onChange={(e) => setInverseName(e.target.value)}

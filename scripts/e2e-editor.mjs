@@ -21488,6 +21488,68 @@ async function main() {
       check('★ 갤러리 카드의 합 배지도 새로고침 없이 13 으로', await waitFor(`${badgeOf(a)} === '13'`, 10000), String(await evaluate(badgeOf(a))))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('관계형의 반대쪽 표시를 미리 끈다 (10n-49 · F-03-10)')) { try {
+      // 속성 추가 폼의 관계형 — "반대쪽에도 표시" 는 대상 표에 속성을 만든다. 그 표의 구조를 고칠 수 없으면(여기서는 잠금) 고르는 순간 체크가
+      // 꺼지고 까닭이 선다 · 열린 표는 다시 켤 수 있다 · 같은 표는 묻지 않는다 · 꺼진 채로 만들면 단방향(대상 표에 속성이 생기지 않는다).
+      // HANDOFF §3.2-293.
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const clickOn = async (selector) => {
+        const p = await evaluate(`(() => {
+          const e = document.querySelector(${JSON.stringify(selector)})
+          if (!e) return null
+          e.scrollIntoView({ block: 'center' })
+          const r = e.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (p) await click(p.x, p.y)
+        return p !== null
+      }
+      const setSelect = (selector, value) => evaluate(`(() => {
+        const s = document.querySelector(${JSON.stringify(selector)})
+        if (!s) return false
+        s.value = ${JSON.stringify(value)}
+        s.dispatchEvent(new Event('change', { bubbles: true }))
+        return true
+      })()`)
+      const here = (await api('POST', '/databases', { name: `반대쪽 이 표 ${stamp}` })).body.database
+      const open = (await api('POST', '/databases', { name: `반대쪽 열린 표 ${stamp}` })).body.database
+      const locked = (await api('POST', '/databases', { name: `반대쪽 잠긴 표 ${stamp}` })).body.database
+      const lockedStatus = (await api('PUT', `/databases/${locked.id}/lock`)).status
+      check('전제 — 표 셋(이 표 · 열린 표 · 잠긴 표)', lockedStatus === 200, String(lockedStatus))
+      const TWOWAY = '[data-testid="db-relation-twoway"]'
+      const BLOCKED = '[data-testid="db-relation-twoway-blocked"]'
+      const state = () => evaluate(`JSON.stringify({ checked: document.querySelector('${TWOWAY}')?.checked ?? null, disabled: document.querySelector('${TWOWAY}')?.disabled ?? null, blocked: !!document.querySelector('${BLOCKED}'), inverse: !!document.querySelector('[data-testid="db-relation-inverse-name"]') })`)
+      const stateIs = (want) => waitFor(`JSON.stringify({ checked: document.querySelector('${TWOWAY}')?.checked ?? null, disabled: document.querySelector('${TWOWAY}')?.disabled ?? null, blocked: !!document.querySelector('${BLOCKED}'), inverse: !!document.querySelector('[data-testid="db-relation-inverse-name"]') }) === ${JSON.stringify(JSON.stringify(want))}`, 8000)
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${here.id}` })
+      await waitHydrated('[data-testid="db-add-column"]', 20000) // 서버가 그린 단추 — React 가 붙기 전의 클릭은 버려진다(10n-11)
+      await clickOn('[data-testid="db-add-column"]')
+      await waitFor(`document.activeElement?.getAttribute('aria-label') === '속성 이름'`, 3000)
+      await typeText('잠긴 표의 행')
+      await setSelect('select[aria-label="속성 유형"]', 'relation')
+      await waitFor(`[...(document.querySelector('[data-testid="db-relation-target"]')?.options ?? [])].some((o) => o.value === ${JSON.stringify(locked.dataSourceId)})`, 8000)
+      await setSelect('[data-testid="db-relation-target"]', open.dataSourceId)
+      await clickOn(TWOWAY)
+      check('열린 표 — 반대쪽에도 표시를 켜면 반대쪽 이름 칸이 선다', await stateIs({ checked: true, disabled: false, blocked: false, inverse: true }), String(await state()))
+      await setSelect('[data-testid="db-relation-target"]', locked.dataSourceId)
+      check('★ 잠긴 표를 고르면 — 체크가 꺼지고 막히며 까닭이 선다 · 반대쪽 이름 칸도 없다', await stateIs({ checked: false, disabled: true, blocked: true, inverse: false }), String(await state()))
+      await setSelect('[data-testid="db-relation-target"]', here.dataSourceId)
+      check('같은 표는 묻지 않는다 — 다시 켜진 채로 열린다(고른 것이 남아 있다)', await stateIs({ checked: true, disabled: false, blocked: false, inverse: true }), String(await state()))
+      await setSelect('[data-testid="db-relation-target"]', locked.dataSourceId)
+      await stateIs({ checked: false, disabled: true, blocked: true, inverse: false })
+      await clickOn('[data-testid="db-add-column-form"] button[type="submit"]')
+      const lockedSchema = async () => ((await api('GET', `/data-sources/${locked.dataSourceId}/properties`)).body?.schema?.properties ?? []).map((p) => p.name)
+      check('★ 꺼진 채로 만들면 단방향 — 이 표에 열이 서고 잠긴 표에는 속성이 생기지 않는다',
+        (await waitFor(`!document.querySelector('[data-testid="db-add-column-form"]') && [...document.querySelectorAll('th')].some((th) => th.textContent.includes('잠긴 표의 행'))`, 8000))
+          && !(await lockedSchema()).some((n) => n.includes('반대쪽')) && (await lockedSchema()).length === 1,
+        JSON.stringify(await lockedSchema()))
+      await api('DELETE', `/databases/${locked.id}/lock`)
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).
