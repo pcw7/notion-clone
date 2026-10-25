@@ -1308,13 +1308,15 @@ async function main() {
     await move(a.x + 30, a.y + a.h / 2)
     check('hover 하면 핸들이 나타난다', await waitFor(`!!document.querySelector('.blk-gutter')`))
     const grip = await rect('.blk-gutter-grip')
-    check('핸들은 그 줄 왼쪽 여백에 있다', !!grip && Math.abs(grip.y - a.y) < 8 && grip.x + grip.w <= a.x, JSON.stringify({ grip, a }))
+    // 핸들은 그 블록의 첫 줄에 선다(디자인-4b) — 블록 요소의 위쪽 끝(안쪽 여백 위)이 아니라 블록 안에 드는지 본다.
+    const inRow = (g, row) => !!g && g.y >= row.y - 1 && g.y + g.h <= row.y + row.h + 1
+    check('핸들은 그 줄 왼쪽 여백에 있다', inRow(grip, a) && grip.x + grip.w <= a.x, JSON.stringify({ grip, a }))
     check('핸들은 편집기 DOM 바깥에 그려진다', await evaluate(`!document.querySelector('.blk-gutter').closest('.blk-editor')`))
     const t1 = await line(ids.t1)
     await move(t1.x + 10, t1.y + t1.h / 2)
     await sleep(60)
     const grip2 = await rect('.blk-gutter-grip')
-    check('들여쓴 줄에서는 그 줄의 블록을 잡는다(부모가 아니라)', !!grip2 && Math.abs(grip2.y - t1.y) < 8 && grip2.x > grip.x, JSON.stringify({ grip2, t1 }))
+    check('들여쓴 줄에서는 그 줄의 블록을 잡는다(부모가 아니라)', inRow(grip2, t1) && grip2.x > grip.x, JSON.stringify({ grip2, t1 }))
 
     section('드래그')
     const c = await line(ids.C)
@@ -23157,6 +23159,80 @@ async function main() {
         m.box === `16 16 ${m.edge} rgb(56, 56, 54) 1.5px` && m.done === 'rgb(39, 131, 222) line-through 0.7', JSON.stringify(m))
       check('★ 토글 단추 24px · 둥글기 4px · 인용 선 3px 은 문단 글자 선에 서고 위아래 여백에 걸치지 않는다',
         m.arrow === '24 24 4px' && m.quoteLine !== null && near(m.quoteLine.left, 0) && m.quoteLine.width === '3px' && m.quoteLine.textOnly, JSON.stringify(m))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
+    if (sectionIf('디자인 — 블록 손잡이 (디자인-4b)')) { try {
+      // 손잡이가 노션 앱 실측과 같다 — `+` 24×24 와 끌기 18×24 가 붙어 있다 · 둥글기 4px · 아이콘 20px rgb(173, 169, 163) · 끌기의 오른쪽 끝이
+      // 문단 글자보다 18px 왼쪽 · 위는 첫 줄과 같은 선(제목은 첫 줄의 가운데) · 마우스를 올리면 따뜻한 회색 5% · 오른쪽 컬럼 블록의 손잡이는 폭 손잡이와
+      // 겹치지 않는다.
+      const { textRun } = await import(new URL('../src/lib/contracts/rich-text.ts', import.meta.url).href)
+      const stamp = Date.now().toString(36)
+      const page = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: JSON.stringify({ title: `손잡이 ${stamp}` }) })).json()).page.id
+      const blk = (id, type, words, children = []) => ({ id, type, title: words === '' ? [] : [textRun(words)], properties: {}, format: {}, children })
+      const id = { p: randomUUID(), h: randomUUID(), list: randomUUID(), left: randomUUID(), right: randomUUID(), l: randomUUID(), r: randomUUID() }
+      await saveBody(page, { blocks: [
+        blk(id.p, 'paragraph', '손잡이 문단'),
+        blk(id.h, 'heading_1', '손잡이 제목'),
+        blk(id.list, 'column_list', '', [blk(id.left, 'column', '', [blk(id.l, 'paragraph', '왼쪽')]), blk(id.right, 'column', '', [blk(id.r, 'paragraph', '오른쪽')])]),
+      ] })
+      await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false })
+      try {
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+        await waitFor(`!!document.querySelector('[data-block-id="${id.r}"]') && document.querySelector('.ProseMirror')?.getAttribute('contenteditable') === 'true'`, 15000)
+        const rowOf = (bid) => rect(`[data-block-id="${bid}"] > *:first-child`)
+        const gripIn = (bid) => `(() => { const g = document.querySelector('.blk-gutter-grip')?.getBoundingClientRect(); const b = document.querySelector('[data-block-id="${bid}"] > *:first-child')?.getBoundingClientRect()
+          return !!g && !!b && g.top >= b.top - 1 && g.bottom <= b.bottom + 1 })()`
+        // 첫 줄의 위 · 높이 — 블록 요소의 위 + 안쪽 여백 · 줄 높이
+        const lineOf = (bid) => `(() => { const b = document.querySelector('[data-block-id="${bid}"] > *:first-child'); const c = getComputedStyle(b)
+          return { top: b.getBoundingClientRect().top + parseFloat(c.paddingTop), height: parseFloat(c.lineHeight) } })()`
+
+        const p = await rowOf(id.p)
+        await move(p.x + 30, p.y + p.h / 2)
+        await waitFor(gripIn(id.p), 3000)
+        const g = await evaluate(`(() => {
+          const grip = document.querySelector('.blk-gutter-grip')
+          const plus = document.querySelector('.blk-gutter-button:not(.blk-gutter-grip)')
+          const gr = grip.getBoundingClientRect(), pr = plus.getBoundingClientRect()
+          const row = document.querySelector('[data-block-id="${id.p}"] > *:first-child')
+          const walk = document.createTreeWalker(row, NodeFilter.SHOW_TEXT); const n = walk.nextNode(); const r = document.createRange(); r.setStart(n, 0); r.setEnd(n, 1)
+          const line = ${lineOf(id.p)}
+          const svg = grip.querySelector('svg')
+          return {
+            size: [Math.round(pr.width), Math.round(pr.height), Math.round(gr.width), Math.round(gr.height)].join(' '),
+            touch: Math.round(gr.left - pr.right),
+            look: [getComputedStyle(grip).borderRadius, getComputedStyle(grip).color, svg ? Math.round(svg.getBoundingClientRect().width) : null].join(' '),
+            fromText: Math.round(r.getBoundingClientRect().left - gr.right),
+            fromLine: Math.round(gr.top - line.top),
+          }
+        })()`)
+        check('★ 손잡이 — + 24×24 와 끌기 18×24 가 붙는다 · 둥글기 4px · 아이콘 20px rgb(173, 169, 163)',
+          g.size === '24 24 18 24' && g.touch === 0 && g.look === '4px rgb(173, 169, 163) 20', JSON.stringify(g))
+        check('★ 끌기의 오른쪽 끝은 문단 글자보다 18px 왼쪽 · 위는 첫 줄과 같은 선', Math.abs(g.fromText - 18) <= 1 && Math.abs(g.fromLine) <= 1, JSON.stringify(g))
+
+        const gr = await rect('.blk-gutter-grip')
+        await move(gr.x + gr.w / 2, gr.y + gr.h / 2)
+        const warm = await waitFor(`getComputedStyle(document.querySelector('.blk-gutter-grip')).backgroundColor === 'rgba(33, 27, 23, 0.05)'`, 2000)
+
+        const h = await rowOf(id.h)
+        await move(h.x + 30, h.y + h.h / 2)
+        await waitFor(gripIn(id.h), 3000)
+        const headCenter = await evaluate(`(() => { const g = document.querySelector('.blk-gutter-grip').getBoundingClientRect(); const line = ${lineOf(id.h)}
+          return Math.round((g.top + g.height / 2) - (line.top + line.height / 2)) })()`)
+
+        const r = await rowOf(id.r)
+        await move(r.x + 30, r.y + r.h / 2)
+        await waitFor(gripIn(id.r), 3000)
+        const clear = await evaluate(`(() => {
+          const plus = document.querySelector('.blk-gutter-button:not(.blk-gutter-grip)').getBoundingClientRect()
+          const resize = document.querySelector('[data-block-id="${id.right}"] > .blk-column-resize')?.getBoundingClientRect()
+          const leftRow = document.querySelector('[data-block-id="${id.l}"] > *:first-child').getBoundingClientRect()
+          return { resize: !!resize, fromResize: resize ? Math.round(plus.left - resize.right) : null, fromLeftColumn: Math.round(plus.left - leftRow.right) }
+        })()`)
+        check('★ 마우스를 올리면 따뜻한 회색 5% · 제목에서는 첫 줄의 가운데 · 오른쪽 컬럼 블록의 손잡이는 폭 손잡이 · 왼쪽 컬럼과 겹치지 않는다',
+          warm && Math.abs(headCenter) <= 1 && clear.resize && clear.fromResize >= 0 && clear.fromLeftColumn >= 0, JSON.stringify({ warm, headCenter, clear }))
+      } finally {
+        await send('Emulation.clearDeviceMetricsOverride')
+      }
     } catch (thrown) { await sectionThrew(thrown) } }
 
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
