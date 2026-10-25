@@ -21934,7 +21934,8 @@ async function main() {
         const css = (key) => { const e = document.querySelector((${selectorOf})(key)); if (!e) return null; const s = getComputedStyle(e); return { bg: s.backgroundColor, border: s.borderTopColor } }
         return { plain: css('plain'), text: css('text'), bg: css('bg'), para: css('para') }
       })()`)
-      const editorSel = `(key) => '[data-block-id="' + (${JSON.stringify(ids)})[key] + '"] > [data-block-type]'`
+      // 편집기의 콜아웃은 컨테이너가 상자를 그린다(디자인-4d — 자식이 상자 안에 서도록) · 문단은 그 줄이 칠해진다.
+      const editorSel = `(key) => '[data-block-id="' + (${JSON.stringify(ids)})[key] + '"]' + (key === 'para' ? ' > [data-block-type]' : '')`
       const judge = (s) => s.plain?.bg === 'rgba(135, 131, 120, 0.12)' && s.plain?.border === 'rgba(0, 0, 0, 0)'
         && s.text?.bg === 'rgb(255, 255, 255)' && s.text?.border === 'rgba(55, 53, 47, 0.16)'
         && s.bg?.bg === s.para?.bg && s.bg?.bg !== s.plain?.bg
@@ -23309,6 +23310,40 @@ async function main() {
       const [removed, removedGot] = await serverIconIs(id.c, null)
       check('★ 새로 읽어도 남는다 · "제거" 는 💡 로 돌아가고 저장된 키가 없다', reloaded && removedUi && removed, JSON.stringify({ reloaded, removedUi, removedGot }))
       }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
+    if (sectionIf('디자인 — 콜아웃의 자식은 상자 안 (디자인-4d)')) { try {
+      // 노션처럼 콜아웃의 자식 블록은 상자 안에 서고, 자식의 글자는 콜아웃 글자와 같은 x 다. 상자(바탕 · 둥글기)는 컨테이너가 그리고 줄은 투명하다.
+      const { textRun } = await import(new URL('../src/lib/contracts/rich-text.ts', import.meta.url).href)
+      const stamp = Date.now().toString(36)
+      const page = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: JSON.stringify({ title: `콜아웃 자식 ${stamp}` }) })).json()).page.id
+      const blk = (id, type, words, children = []) => ({ id, type, title: [textRun(words)], properties: {}, format: {}, children })
+      const id = { c: randomUUID(), k: randomUUID(), after: randomUUID() }
+      await saveBody(page, { blocks: [blk(id.c, 'callout', '콜아웃', [blk(id.k, 'paragraph', '자식')]), blk(id.after, 'paragraph', '뒤')] })
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+      await waitFor(`!!document.querySelector('[data-block-id="${id.k}"]') && document.querySelector('.ProseMirror')?.getAttribute('contenteditable') === 'true'`, 15000)
+      const m = await evaluate(`(() => {
+        const firstLeft = (root) => {
+          const walk = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, { acceptNode: (n) => n.textContent.trim() ? 1 : 3 })
+          const n = walk.nextNode(); const r = document.createRange(); r.setStart(n, 0); r.setEnd(n, 1); return r.getBoundingClientRect().left
+        }
+        const box = document.querySelector('[data-block-id="${id.c}"]')
+        const line = box.querySelector(':scope > .blk-callout')
+        const words = line.querySelector(':scope > .blk-text')
+        const child = document.querySelector('[data-block-id="${id.k}"] > *:first-child')
+        const after = document.querySelector('[data-block-id="${id.after}"] > *:first-child')
+        const b = box.getBoundingClientRect(), k = child.getBoundingClientRect(), a = after.getBoundingClientRect()
+        const bc = getComputedStyle(box)
+        return {
+          inside: k.top >= b.top && k.bottom <= b.bottom && k.left >= b.left && k.right <= b.right,
+          afterOutside: a.top >= b.bottom,
+          sameX: Math.round(firstLeft(child) - firstLeft(words)),
+          box: [bc.backgroundColor, bc.borderTopLeftRadius].join(' '),
+          line: getComputedStyle(line).backgroundColor,
+        }
+      })()`)
+      check('★ 콜아웃의 자식은 상자 안 · 자식의 글자는 콜아웃 글자와 같은 x · 상자는 컨테이너(연회색 · 둥글기 10px) · 줄은 투명 · 뒤 블록은 상자 밖',
+        m.inside && m.afterOutside && Math.abs(m.sameX) <= 1 && m.box === 'rgba(135, 131, 120, 0.12) 10px' && m.line === 'rgba(0, 0, 0, 0)', JSON.stringify(m))
     } catch (thrown) { await sectionThrew(thrown) } }
 
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
