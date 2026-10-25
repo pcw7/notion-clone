@@ -28,15 +28,21 @@
  */
 @custom-variant touch (@media (hover: none));
 
+/*
+ * 글자색 — 디자인-1(노션 실측 · `docs/design/notion-measurements.md`). 기본 글자는 순흑이 아니라 따뜻한 짙은 회색 · 흐린 글자(목차 · 속성
+ * 이름 · 보조 설명)는 그보다 옅은 회갈색. 어두운 테마는 어두운 테마 조각에서 잰다(지금 값 그대로).
+ */
 :root {
   --background: #ffffff;
-  --foreground: #171717;
+  --foreground: rgb(44, 44, 43);
+  --foreground-muted: rgb(125, 122, 117);
   /* 스크롤바 · 입력칸 같은 브라우저의 기본 모양도 테마를 따른다. */
   color-scheme: light;
 
   @variant dark {
     --background: #0a0a0a;
     --foreground: #ededed;
+    --foreground-muted: #a3a3a3;
     color-scheme: dark;
   }
 }
@@ -119,17 +125,22 @@
   }
 }
 
+/*
+ * 글꼴 — 디자인-1. 노션과 같은 **시스템 글꼴 묶음**이다(운영체제에 있는 글꼴 — 내려받지 않는다 · 사용권 문제가 없다). 한글은 묶음에 없어
+ * 브라우저가 운영체제의 한글 글꼴로 넘긴다(Windows 맑은 고딕 · macOS Apple SD 산돌고딕 Neo — 노션과 같다). Tailwind 의 `font-sans` ·
+ * `font-mono` 와 편집기의 코드가 이 둘을 쓴다.
+ */
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --font-sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI Variable Display", "Segoe UI", Helvetica, "Apple Color Emoji", Arial, sans-serif, "Segoe UI Emoji", "Segoe UI Symbol";
+  --font-mono: SFMono-Regular, Menlo, Consolas, "PT Mono", "Liberation Mono", Courier, monospace;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-sans);
 }
 
 /*

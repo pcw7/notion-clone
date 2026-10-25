@@ -1,5 +1,4 @@
 import type { Metadata, Viewport } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
 import { readSessionToken } from "@/lib/auth/session-cookie";
 import { themeOfSessionToken } from "@/lib/settings/theme";
 import { readDevicePreferences } from "@/lib/settings/device-preferences-cookie";
@@ -7,15 +6,7 @@ import { APP_NAME, ROOT_TITLE } from "@/lib/nav/screen-title";
 import { supportCheckScript } from "@/lib/platform/browser-support";
 import "./globals.css";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
+// 글꼴은 시스템 글꼴 묶음이다(디자인-1 · `globals.css` 의 `--font-sans` · `--font-mono`) — 웹 글꼴을 내려받지 않는다.
 
 // 화면 제목(10d-7a · F-12-13) — 틀을 정하고 화면이 이름을 준다(`nav/screen-title.ts`). 공개 화면은 틀을 씌우지 않는다.
 export const metadata: Metadata = {
@@ -49,7 +40,7 @@ export default async function RootLayout({ children }: LayoutProps<"/">) {
       data-contrast={device.contrast}
       data-motion={device.motion}
       data-font-scale={device.fontScale}
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      className="h-full antialiased"
     >
       <head>
         {/* 지원 브라우저(10i-1 · F-12-15) — 기능 감지 · 못 미치면 안내 띠(앱은 막지 않는다). 앱의 JS 보다 먼저 · ES5 */}

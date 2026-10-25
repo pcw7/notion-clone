@@ -91,7 +91,8 @@ export function PageTitle({
         readOnly={readOnly}
         maxLength={2000}
         aria-label="페이지 제목"
-        className="w-full bg-transparent text-4xl font-bold tracking-tight outline-none placeholder:text-neutral-300 dark:placeholder:text-neutral-700"
+        // 제목 — 디자인-1(노션 실측: 40px · 700 · 줄 높이 1.2 · 글자 간격 없음)
+        className="w-full bg-transparent text-[40px] leading-[1.2] font-bold outline-none placeholder:text-neutral-300 dark:placeholder:text-neutral-700"
       />
       {error && (
         <p role="alert" className="mt-1 text-sm text-red-600">
