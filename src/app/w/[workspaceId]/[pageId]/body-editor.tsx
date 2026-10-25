@@ -1695,11 +1695,11 @@ export function BodyEditor({
       )}
 
       {/*
-        프레임: 왼쪽으로 3rem 넓혀 핸들이 들어갈 여백을 hover 영역에 포함시킨다.
-        -ml-12 와 pl-12 가 상쇄하므로 에디터의 위치는 그대로다 — 슬래시 메뉴는
+        프레임: 왼쪽으로 4rem 넓혀 핸들(블록 왼쪽 58px — 디자인-4b)이 들어갈 여백을 hover 영역에 포함시킨다.
+        -ml-16 과 pl-16 이 상쇄하므로 에디터의 위치는 그대로다 — 슬래시 메뉴는
         섹션 기준 좌표를 쓰므로 영향이 없다.
       */}
-      <div ref={frameRef} className="relative -ml-12 pl-12">
+      <div ref={frameRef} className="relative -ml-16 pl-16">
         <div ref={mountRef} />
         <BlockGutter
           viewRef={viewRef}

@@ -61,6 +61,7 @@ import { isBlockSelection } from '@/lib/editor/block-selection'
 import type { CommandDeps } from '@/lib/editor/commands'
 import { findContainerById } from '@/lib/editor/pm-blocks'
 import { BlockMenu } from './block-menu'
+import { GripVertical, Plus } from 'lucide-react'
 
 /** 한 단 들여쓰기 = `.blk-group` 의 margin-left(1.5rem). 둘이 어긋나면 자식 드롭 판정이 틀린다. */
 const INDENT_PX = 24
@@ -68,8 +69,11 @@ const INDENT_PX = 24
 const DRAG_THRESHOLD_PX = 4
 /** 컬럼이 세로로 쌓이는 화면 — `editor.css` 의 같은 미디어 쿼리. 여기서는 옆에 놓아 컬럼을 만들지 않는다(1c-3). */
 const STACKED_COLUMNS_QUERY = '(max-width: 640px)'
-/** `+` 와 `⋮⋮` 두 버튼의 폭 + 내용과의 간격. */
-const GUTTER_WIDTH_PX = 46
+/**
+ * `+`(24) 와 끌기(18) 두 단추의 폭 + 블록과의 간격 16px — 노션 실측: 끌기의 오른쪽 끝이 문단 글자보다 18px 왼쪽(디자인-4b). 우리 블록은
+ * 글자가 2px 안이라 블록 왼쪽에서 16px 이다. 컬럼 틈(`editor.css` 4rem)이 이것과 폭 손잡이(6px)를 담는다.
+ */
+const GUTTER_WIDTH_PX = 58
 
 type Hover = { blockId: string; top: number; left: number }
 /** 가로 가이드(위 · 아래 · 자식 자리) — `height` 가 있으면 옆에 놓기의 세로 가이드(1c-3). */
@@ -134,7 +138,18 @@ function lineAt(view: EditorView, frame: HTMLElement, clientX: number, clientY: 
   const content = (container.firstElementChild as HTMLElement | null) ?? container
   const rect = content.getBoundingClientRect()
   const box = frame.getBoundingClientRect()
-  return { blockId, top: rect.top - box.top, left: rect.left - box.left }
+  return { blockId, top: firstLineTop(content, rect) - box.top, left: rect.left - box.left }
+}
+
+/**
+ * 핸들의 위쪽 끝 — 블록의 **첫 줄**과 같은 선(노션 실측 · 디자인-4b). 블록 요소의 위쪽 끝이 아니다: 블록은 안쪽 여백(문단 8px · 제목은 더)을
+ * 가지므로 거기에 맞추면 핸들이 글자보다 위에 뜬다. 줄 높이가 핸들(24px)보다 크면(제목) 그 줄의 가운데에 둔다.
+ */
+function firstLineTop(content: HTMLElement, rect: DOMRect): number {
+  const style = getComputedStyle(content)
+  const inset = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.borderTopWidth) || 0)
+  const line = parseFloat(style.lineHeight)
+  return rect.top + inset + (Number.isFinite(line) ? Math.max(0, (line - GUTTER_HEIGHT_PX) / 2) : 0)
 }
 
 /** 드롭 후보 줄들의 좌표를 잰다. 문서 쪽 정보는 `dropCandidates` 가 준다. */
@@ -390,7 +405,7 @@ export function BlockGutter({
     if (!content) return
     const rect = content.getBoundingClientRect()
     const box = frame.getBoundingClientRect()
-    setMenu({ top: rect.top - box.top + GUTTER_HEIGHT_PX, left: rect.left - box.left - GUTTER_WIDTH_PX, view })
+    setMenu({ top: firstLineTop(content, rect) - box.top + GUTTER_HEIGHT_PX, left: rect.left - box.left - GUTTER_WIDTH_PX, view })
   }, [viewRef, frameRef])
 
   useEffect(() => {
@@ -437,7 +452,7 @@ export function BlockGutter({
             onMouseDown={(event) => event.preventDefault()}
             onClick={onAdd}
           >
-            +
+            <Plus aria-hidden strokeWidth={1.75} />
           </button>
           <button
             type="button"
@@ -451,7 +466,7 @@ export function BlockGutter({
             onPointerCancel={() => endDrag()}
             onContextMenu={onContextMenu}
           >
-            ⋮⋮
+            <GripVertical aria-hidden strokeWidth={1.75} />
           </button>
         </div>
       )}
