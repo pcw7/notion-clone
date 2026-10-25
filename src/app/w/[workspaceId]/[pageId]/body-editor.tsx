@@ -80,6 +80,10 @@ import { CodeCaptionEditor } from './code-caption-editor'
 import { CodeLanguageMenu } from './code-language-menu'
 import { EquationEditor } from './equation-editor'
 import { ButtonBlockSettings } from './button-block-settings'
+import { EmojiPicker } from './emoji-picker'
+import { loadEmojiCatalog } from './emoji-catalog-loader'
+import { randomEmoji } from '@/lib/emoji/catalog'
+import { calloutIconAt, setCalloutIconCommand } from '@/lib/editor/callout-block'
 import { ImageAltDialog } from './image-alt-dialog'
 import { imageBlockInfo, imageCaptionInfo, setImageAltCommand, setImageCaptionCommand } from '@/lib/editor/image-block'
 import type { ImageAlt } from '@/lib/block/image'
@@ -440,6 +444,24 @@ export function BodyEditor({
   const [equationUi, setEquationUi] = useState<EquationUi | null>(null)
   /** 버튼 블록의 설정 창(자동화 5e-1) — 연 블록과 그때의 라벨. */
   const [buttonUi, setButtonUi] = useState<{ readonly blockId: string; readonly label: string } | null>(null)
+  /** 콜아웃 아이콘의 고르개(디자인-4c) — 연 블록 · 아이콘 칸의 자리(프레임 좌표) · 연 순간의 저장된 이모지(없으면 null — 화면은 💡). */
+  const [calloutIconUi, setCalloutIconUi] = useState<{
+    readonly blockId: string
+    readonly top: number
+    readonly left: number
+    readonly current: string | null
+  } | null>(null)
+  /** 고르개를 닫는다 — `restoreFocus` 면 그 콜아웃의 아이콘 칸으로 포커스를 돌려준다(키보드로 연 사람이 자리를 잃지 않게). */
+  const closeCalloutIcon = useCallback((blockId: string, restoreFocus: boolean) => {
+    setCalloutIconUi(null)
+    if (restoreFocus) frameRef.current?.querySelector<HTMLElement>(`[data-block-id="${blockId}"] > .blk-callout > .blk-callout-icon`)?.focus()
+  }, [])
+  /** 고른 아이콘을 쓴다 — 편집기 명령으로 본문의 `properties.icon` 에(`null` 이면 지운다 · 💡). 같은 값이면 쓰지 않는다. */
+  const applyCalloutIcon = useCallback((blockId: string, emoji: string | null) => {
+    const view = viewRef.current
+    if (view?.editable) setCalloutIconCommand(blockId, emoji)(view.state, view.dispatch.bind(view))
+    closeCalloutIcon(blockId, true)
+  }, [closeCalloutIcon])
   /** 이미지의 대체 텍스트 대화상자(10d-1b · F-12-13) — 연 블록과 연 순간의 값. */
   const [imageAltUi, setImageAltUi] = useState<{ readonly blockId: string; readonly alt: ImageAlt } | null>(null)
   const equationUiRef = useRef<EquationUi | null>(null)
@@ -1276,6 +1298,17 @@ export function BodyEditor({
       openImageCaption: (id) => openCodeUi('image_caption', id),
       // 블록 수식(Phase 2 1a) — 누르거나 골라서 Enter 를 치면 입력창.
       openEquation: (id) => openEquationUi(id),
+      // 콜아웃 아이콘(디자인-4c) — 누르면 이모지 고르개(편집기 밖 · 아이콘 칸 아래). 같은 콜아웃을 다시 누르면 닫는다.
+      openCalloutIcon: (blockId) => {
+        const current = viewRef.current
+        const frame = frameRef.current
+        const at = current ? calloutIconAt(current.state, blockId) : undefined
+        const button = frame?.querySelector<HTMLElement>(`[data-block-id="${blockId}"] > .blk-callout > .blk-callout-icon`)
+        if (!current?.editable || !frame || at === undefined || !button) return
+        const r = button.getBoundingClientRect()
+        const box = frame.getBoundingClientRect()
+        setCalloutIconUi((prev) => (prev?.blockId === blockId ? null : { blockId, top: r.top - box.top, left: r.left - box.left, current: at.emoji }))
+      },
       // 버튼 블록(자동화 5e-1) — 누르면 서버가 실행하고 결과를 한 줄로(버튼 속성과 같은 말). ⚙ 는 설정 창.
       pressButtonBlock: async (id) => {
         try {
@@ -1785,6 +1818,29 @@ export function BodyEditor({
               viewRef.current?.focus()
             }}
           />
+        )}
+        {/* 콜아웃 아이콘의 고르개(디자인-4c) — 편집기 밖 · 아이콘 칸(24px) 자리의 상자 아래에 선다(고르개는 `top-full`). */}
+        {editable && calloutIconUi !== null && (
+          <div className="absolute z-30 h-6 w-6" style={{ top: calloutIconUi.top, left: calloutIconUi.left }}>
+            <EmojiPicker
+              key={calloutIconUi.blockId}
+              current={calloutIconUi.current}
+              removable={calloutIconUi.current !== null}
+              onPick={(emoji) => applyCalloutIcon(calloutIconUi.blockId, emoji)}
+              onRandom={() => {
+                const { blockId, current } = calloutIconUi
+                void loadEmojiCatalog()
+                  .then((catalog) => {
+                    const entry = randomEmoji(catalog, current)
+                    if (entry !== null) applyCalloutIcon(blockId, entry.emoji)
+                  })
+                  .catch(() => closeCalloutIcon(blockId, true))
+              }}
+              onRemove={() => applyCalloutIcon(calloutIconUi.blockId, null)}
+              onClose={(restoreFocus) => closeCalloutIcon(calloutIconUi.blockId, restoreFocus)}
+              isTrigger={(target) => target instanceof Element && target.closest('.blk-callout-icon') !== null}
+            />
+          </div>
         )}
         {/* 버튼 블록의 설정 창(자동화 5e-1) — 편집기 밖. 라벨은 저장할 때 편집기 명령으로 본문에 쓴다. */}
         {editable && buttonUi !== null && (
