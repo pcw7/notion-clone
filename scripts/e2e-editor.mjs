@@ -23665,6 +23665,40 @@ async function main() {
         look.light === 'rgb(118, 115, 110)' && look.dark === 'rgb(65, 64, 61)' && look.high !== look.light, JSON.stringify(look))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('디자인 — 어두운 메뉴 표면 (디자인-8b)')) { try {
+      // 어두운 테마의 메뉴는 페이지(#191919)보다 밝은 #252525 · 1px 고리 #383836 + 짙은 그림자(노션 색 변수 --c-popBac · --c-shaOutLg).
+      // 메뉴 안에서만 어두운 회색 단계가 표면이 올라간 만큼 밝다(neutral-800 #363534 — 밖은 #272625). 고대비는 메뉴 안의 글자 회색도 덮는다.
+      // 테마 · 고대비는 `<html>` 의 속성만 바꿔 CSS 를 본다(저장은 8h · 10d-2 절이 본다).
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${pageId}` })
+      await waitHydrated('[data-testid="page-menu"]')
+      const was = await evaluate(`JSON.stringify({ theme: document.documentElement.dataset.theme ?? null, contrast: document.documentElement.dataset.contrast ?? null })`)
+      await evaluate(`(() => { document.documentElement.dataset.theme = 'dark'; document.documentElement.dataset.contrast = 'normal'; return true })()`)
+      await clickSelector('[data-testid="page-menu"]')
+      await waitFor(`(() => { const l = document.querySelector('[data-testid="page-menu-list"]'); return !!l && !l.hidden })()`, 5000)
+      const look = await evaluate(`(() => {
+        const html = document.documentElement
+        const list = document.querySelector('[data-testid="page-menu-list"]')
+        const s = getComputedStyle(list)
+        const inside = s.getPropertyValue('--color-neutral-800').trim()
+        const outside = getComputedStyle(document.body).getPropertyValue('--color-neutral-800').trim()
+        html.dataset.contrast = 'high'
+        // 고대비의 값은 빌드가 표기를 바꾼다(oklch → lab) — 메뉴 밖의 고대비 값과 같은지로 본다
+        const high = getComputedStyle(list).getPropertyValue('--color-neutral-500').trim()
+        const highOutside = getComputedStyle(document.body).getPropertyValue('--color-neutral-500').trim()
+        html.dataset.contrast = 'normal'
+        return { bg: s.backgroundColor, ring: s.boxShadow.split(', rgba')[0], inside, outside, high, highOutside }
+      })()`)
+      await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+      await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+      await evaluate(`(() => { const w = ${was}; const h = document.documentElement
+        if (w.theme === null) delete h.dataset.theme; else h.dataset.theme = w.theme
+        if (w.contrast === null) delete h.dataset.contrast; else h.dataset.contrast = w.contrast
+        return true })()`)
+      check('★ 어두운 메뉴 — 바탕 #252525 · 고리 #383836 · 안의 회색 단계가 밝다(#363534 · 밖은 #272625) · 고대비가 글자 회색을 덮는다',
+        look.bg === 'rgb(37, 37, 37)' && look.ring === 'rgb(56, 56, 54) 0px 0px 0px 1px' && look.inside === '#363534' && look.outside === '#272625'
+          && look.high === look.highOutside && look.high !== '#88857f', JSON.stringify(look))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).
