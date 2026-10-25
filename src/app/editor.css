@@ -16,6 +16,9 @@
 .blk-editor {
   outline: none;
   min-height: 8rem;
+  /* 본문 글자 — 디자인-1(노션 실측: 16px · 줄 높이 24px · 글자 간격 없음). */
+  font-size: 16px;
+  line-height: 1.5;
   /* ① soft break. */
   white-space: pre-wrap;
 }
@@ -37,14 +40,31 @@
   display: none;
 }
 
+/*
+ * 블록 간격 — 디자인-1(노션 실측 · `docs/design/notion-measurements.md`). 노션은 블록 사이에 바깥 여백이 없고 간격이 모두 안쪽 여백이다
+ * (감싸개 6px + 글자 칸 2px — 한 줄 문단의 블록 높이 40px). 우리 블록은 한 겹이라 둘을 더한 값을 쓴다. 목록 · 할 일은 아래가 좁다(1+2px).
+ * 제목은 위가 넓다(제목1 30+2 · 제목2 26+2 · 제목3 22+2) — 앞 블록과 떨어지고 뒤 블록과 붙는다.
+ */
 .blk {
-  margin: 0.125rem 0;
-  padding: 0.125rem 0;
+  margin: 0;
+  padding: 8px 2px;
 }
 
-.blk-heading_1 { font-size: 1.75rem; font-weight: 700; margin-top: 1.25rem; letter-spacing: -0.02em; }
-.blk-heading_2 { font-size: 1.4rem;  font-weight: 700; margin-top: 1rem;    letter-spacing: -0.01em; }
-.blk-heading_3 { font-size: 1.15rem; font-weight: 600; margin-top: 0.75rem; }
+.blk-bulleted_list_item,
+.blk-numbered_list_item,
+.blk-to_do {
+  padding-bottom: 3px;
+}
+
+.blk-heading_1 { font-size: 30px; font-weight: 600; line-height: 1.3; padding-top: 32px; }
+.blk-heading_2 { font-size: 24px; font-weight: 600; line-height: 1.3; padding-top: 28px; }
+.blk-heading_3 { font-size: 20px; font-weight: 600; line-height: 1.3; padding-top: 24px; }
+
+/* 그림은 칸 폭을 다 쓴다 — 폭 비율(10n-63)이 칸 폭의 비율이라 좌우 안쪽 여백을 두지 않는다(두면 끝까지 늘려도 0.99 가 된다). */
+.blk.blk-image {
+  padding-left: 0;
+  padding-right: 0;
+}
 
 /* 리스트 — 마커를 직접 그린다. <ul>/<ol> 래퍼가 없기 때문이다. */
 .blk-bulleted_list_item,
@@ -61,7 +81,7 @@
   flex: none;
   width: 1rem;
   text-align: center;
-  line-height: 1.6;
+  line-height: 1.5;
 }
 
 .blk-numbered_list_item {
@@ -73,7 +93,7 @@
   flex: none;
   min-width: 1rem;
   text-align: right;
-  line-height: 1.6;
+  line-height: 1.5;
   font-variant-numeric: tabular-nums;
 }
 
@@ -108,7 +128,7 @@
   background: none;
   cursor: pointer;
   color: inherit;
-  line-height: 1.6;
+  line-height: 1.5;
   padding: 0;
 }
 
@@ -118,12 +138,13 @@
   margin: 0.5rem 0;
 }
 
+/* 콜아웃 상자 — 디자인-1(노션 실측: 둥글기 10px · 안쪽 12px · 블록 감싸개 8px 는 바깥 여백으로). */
 .blk-callout {
   border: 1px solid transparent;
-  border-radius: 0.375rem;
+  border-radius: 10px;
   background: rgba(135, 131, 120, 0.12);
-  padding: 0.75rem 0.875rem;
-  margin: 0.5rem 0;
+  padding: 12px;
+  margin: 8px 0;
 }
 /*
  * 콜아웃의 파생(10n-54 · F-01-21 · 정본 [보강] 블록 색 ⑤) — 글자색(배경색이 아닌 색)이면 흰 바탕 + 연회색 테두리. 배경색이면 아래 팔레트가
@@ -134,10 +155,12 @@
   border-color: rgba(55, 53, 47, 0.16);
 }
 
+/* 구분선 — 노션 실측의 색(1px · 따뜻한 회색 11%). 선은 상자의 위 테두리라 안쪽 여백을 빼고 바깥 여백으로 띄운다. */
 .blk-divider {
   border: 0;
-  border-top: 1px solid #e5e7eb;
-  margin: 0.75rem 0;
+  border-top: 1px solid rgba(28, 19, 1, 0.11);
+  margin: 12px 0;
+  padding: 0;
 }
 
 .blk-image img {
@@ -552,8 +575,8 @@ span.blk-equation {
   border-radius: 0.25rem;
   background: #f3f4f6;
   padding: 0.075rem 0.3rem;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.9em;
+  font-family: var(--font-mono);
+  font-size: 0.85em;
 }
 
 .blk-editor a {
@@ -565,16 +588,17 @@ span.blk-equation {
  * 코드 블록(F-01-14 · 8a-1) — `<pre class="blk-code"><code>`. 위의 인라인 코드 모양(`.blk-editor code`)이 안쪽 `<code>` 에도
  * 걸리므로 되돌린다. 공백은 그대로(`pre`), 긴 줄은 가로로 스크롤한다(줄바꿈 토글은 8a-2). 탭 폭은 둘.
  */
+/* 코드 상자 — 디자인-1(노션 실측: 둥글기 10px · 바탕 따뜻한 회색 3% · 글자 0.85em · 줄 높이 1.5 · 코드 글꼴 묶음). */
 .blk-editor pre.blk-code {
-  margin: 0.25rem 0;
-  border-radius: 0.375rem;
-  background: #f7f6f3;
-  padding: 0.75rem 1rem;
+  margin: 0;
+  border-radius: 10px;
+  background: rgba(66, 35, 3, 0.03);
+  padding: 1rem 1.375rem;
   overflow-x: auto;
   white-space: pre;
   tab-size: 2;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.875rem;
+  font-family: var(--font-mono);
+  font-size: 0.85em;
   line-height: 1.5;
 }
 

@@ -22848,6 +22848,35 @@ async function main() {
       check('★ 누르면 그 행이 열린다', await waitFor(`location.pathname.endsWith('/${made}')`, 15000), await evaluate('location.pathname'))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('디자인 — 글꼴 · 본문 치수가 노션 실측과 같다 (디자인-1)')) { try {
+      // 시스템 글꼴 묶음 · 글자색 · 블록 높이(감싸개 + 글자 칸) · 제목 단계 · 페이지 제목이 노션 실측값(docs/design/notion-measurements.md)과
+      // 같다. 블록 높이는 한 줄일 때의 것 — 창 폭 1440 에서 잰다(두 줄로 꺾이지 않게 글을 짧게 둔다).
+      const { textRun } = await import(new URL('../src/lib/contracts/rich-text.ts', import.meta.url).href)
+      const stamp = Date.now().toString(36)
+      const page = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: JSON.stringify({ title: `치수 ${stamp}` }) })).json()).page.id
+      const b = (type, text) => ({ id: randomUUID(), type, title: [textRun(text)], properties: {}, format: {}, children: [] })
+      const blocks = [b('paragraph', '문단'), b('heading_1', '제목 하나'), b('heading_2', '제목 둘'), b('heading_3', '제목 셋'), b('bulleted_list_item', '글머리'), b('numbered_list_item', '번호'), b('toggle', '토글')]
+      await saveBody(page, { blocks })
+      await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false })
+      try {
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+        await waitFor(`!!document.querySelector('[data-block-id="${blocks.at(-1).id}"]') && document.fonts.status === 'loaded'`, 15000)
+        const measured = await evaluate(`(() => {
+          const h = (id) => Math.round(document.querySelector('[data-block-id="' + id + '"] .blk').getBoundingClientRect().height)
+          const ids = ${JSON.stringify(blocks.map((x) => x.id))}
+          const title = getComputedStyle(document.querySelector('input[aria-label="페이지 제목"]'))
+          const p = getComputedStyle(document.querySelector('[data-block-id="' + ids[0] + '"] .blk'))
+          return { heights: ids.map(h), title: [title.fontSize, title.lineHeight, title.fontWeight].join(' '), text: [p.fontSize, p.lineHeight, p.color].join(' '), font: getComputedStyle(document.body).fontFamily.split(',')[0] }
+        })()`)
+        check('★ 블록 높이(한 줄) — 문단 40 · 제목1 79 · 제목2 67 · 제목3 58 · 글머리 35 · 번호 35 · 토글 40(노션 실측)',
+          JSON.stringify(measured.heights) === JSON.stringify([40, 79, 67, 58, 35, 35, 40]), JSON.stringify(measured))
+        check('글꼴은 시스템 묶음 · 본문 16px/24px · 글자색 rgb(44, 44, 43) · 제목 40px/48px/700',
+          measured.font === 'ui-sans-serif' && measured.text === '16px 24px rgb(44, 44, 43)' && measured.title === '40px 48px 700', JSON.stringify(measured))
+      } finally {
+        await send('Emulation.clearDeviceMetricsOverride')
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).
