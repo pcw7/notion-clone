@@ -23235,6 +23235,82 @@ async function main() {
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('디자인 — 콜아웃 아이콘 (디자인-4c · F-01-02)')) { try {
+      // 콜아웃은 아이콘 칸을 그린다 — 저장된 아이콘이 없으면 💡 · 칸 24×24 · 이모지 21.6px · 글자는 문단보다 45px 안 · 아이콘은 첫 줄과 같은 선.
+      // 누르면 이모지 고르개 → 고르면 본문의 properties.icon 에 저장(서버) · 새로 읽어도 남는다 · "제거" 는 💡 로(키를 지운다).
+      // 정본 §3.4 [보강] 콜아웃 아이콘.
+      const { textRun } = await import(new URL('../src/lib/contracts/rich-text.ts', import.meta.url).href)
+      const stamp = Date.now().toString(36)
+      const page = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: JSON.stringify({ title: `콜아웃 ${stamp}` }) })).json()).page.id
+      const blk = (id, type, words, properties = {}) => ({ id, type, title: [textRun(words)], properties, format: {}, children: [] })
+      const id = { p: randomUUID(), c: randomUUID(), fire: randomUUID() }
+      await saveBody(page, { blocks: [
+        blk(id.p, 'paragraph', '문단'),
+        blk(id.c, 'callout', '콜아웃'),
+        blk(id.fire, 'callout', '불꽃', { icon: { type: 'emoji', emoji: '🔥' } }),
+      ] })
+      const ICON = (bid) => `[data-block-id="${bid}"] > .blk-callout > .blk-callout-icon`
+      const PICKER = '[data-testid="emoji-picker"]'
+      const SEARCH = '[data-testid="emoji-search"]'
+      const ACTIVE_OPTION = `${PICKER} [role="option"][aria-selected="true"]`
+      const iconOnServer = async (bid) => ((await readBody(page)).doc.blocks.find((b) => b.id === bid)?.properties ?? {}).icon ?? null
+      const serverIconIs = async (bid, want) => {
+        let got = null
+        for (let i = 0; i < 40; i += 1) {
+          got = await iconOnServer(bid)
+          if (JSON.stringify(got) === JSON.stringify(want)) return [true, got]
+          await sleep(150)
+        }
+        return [false, got]
+      }
+      const editorReady = `document.querySelector('.ProseMirror')?.getAttribute('contenteditable') === 'true'`
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+      const drawn = await waitFor(`!!document.querySelector('${ICON(id.fire)}') && ${editorReady}`, 15000)
+      const look = await evaluate(`(() => {
+        const firstLeft = (root) => {
+          const walk = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, { acceptNode: (n) => n.textContent.trim() ? 1 : 3 })
+          const n = walk.nextNode(); const r = document.createRange(); r.setStart(n, 0); r.setEnd(n, 1); return r.getBoundingClientRect().left
+        }
+        const P = firstLeft(document.querySelector('[data-block-id="${id.p}"] > *:first-child'))
+        const icon = document.querySelector('${ICON(id.c)}')
+        const words = document.querySelector('[data-block-id="${id.c}"] > .blk-callout > .blk-text')
+        if (!icon || !words) return null
+        const ic = getComputedStyle(icon), ir = icon.getBoundingClientRect()
+        const lineTop = words.getBoundingClientRect().top + parseFloat(getComputedStyle(words).paddingTop)
+        return {
+          glyphs: [icon.textContent, document.querySelector('${ICON(id.fire)}').textContent].join(' '),
+          box: [Math.round(ir.width), Math.round(ir.height), ic.fontSize].join(' '),
+          textFromP: Math.round(firstLeft(words) - P),
+          iconFromLine: Math.round(ir.top - lineTop),
+        }
+      })()`)
+      check('★ 콜아웃 아이콘 — 없으면 💡 · 저장된 🔥 · 칸 24×24 · 이모지 21.6px · 글자는 문단보다 45px 안 · 아이콘은 첫 줄과 같은 선',
+        drawn && look !== null && look.glyphs === '💡 🔥' && look.box === '24 24 21.6px' && Math.abs(look.textFromP - 45) <= 1 && Math.abs(look.iconFromLine) <= 1,
+        JSON.stringify({ drawn, look }))
+
+      if (look !== null) {
+      await clickSelector(ICON(id.c))
+      const opened = await waitFor(`!!document.querySelector('${PICKER} [role="option"]') && document.activeElement === document.querySelector('${SEARCH}')`, 8000)
+      await typeText('새싹')
+      await waitFor(`document.querySelector('${ACTIVE_OPTION}')?.dataset.emoji === '🌱'`, 3000)
+      await key('Enter')
+      const picked = await waitFor(`!document.querySelector('${PICKER}') && document.querySelector('${ICON(id.c)}')?.textContent === '🌱'`, 5000)
+      const [saved, savedGot] = await serverIconIs(id.c, { type: 'emoji', emoji: '🌱' })
+      check('★ 누르면 고르개 · 검색으로 고르면 아이콘이 바뀌고 본문의 properties.icon 에 저장된다',
+        opened && picked && saved, JSON.stringify({ opened, picked, savedGot }))
+
+      await send('Page.reload', {})
+      const reloaded = await waitFor(`document.querySelector('${ICON(id.c)}')?.textContent === '🌱' && ${editorReady}`, 15000)
+      await clickSelector(ICON(id.c))
+      await waitFor(`!!document.querySelector('[data-testid="page-icon-remove"]')`, 5000)
+      await clickSelector('[data-testid="page-icon-remove"]')
+      const removedUi = await waitFor(`!document.querySelector('${PICKER}') && document.querySelector('${ICON(id.c)}')?.textContent === '💡'`, 5000)
+      const [removed, removedGot] = await serverIconIs(id.c, null)
+      check('★ 새로 읽어도 남는다 · "제거" 는 💡 로 돌아가고 저장된 키가 없다', reloaded && removedUi && removed, JSON.stringify({ reloaded, removedUi, removedGot }))
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

@@ -46,6 +46,14 @@ describe('validateDoc', () => {
     )
   })
 
+  test('콜아웃 아이콘(디자인-4c) — 이모지 아이콘이면 통과 · 모양이 틀리면 거부한다', () => {
+    const callout = (icon: unknown): EditorBlock => ({ ...block('callout', '알림'), properties: { icon } })
+    assert.deepEqual(validateDoc({ blocks: [callout({ type: 'emoji', emoji: '🌱' })] }), [])
+    const issues = validateDoc({ blocks: [callout({ type: 'emoji', emoji: '글자' })] })
+    assert.equal(issues.length, 1)
+    assert.match(issues[0].path, /\.properties\.icon$/)
+  })
+
   test('id 가 uuid 가 아니면 거부한다', () => {
     const issues = validateDoc({ blocks: [{ id: 'not-a-uuid', type: 'paragraph', title: [] }] })
     assert.equal(issues.length, 1)
