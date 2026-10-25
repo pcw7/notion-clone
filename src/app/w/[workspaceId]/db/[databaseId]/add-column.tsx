@@ -304,7 +304,7 @@ export function AddColumn({
           }}
           className={`flex ${
             type === 'formula' ? 'w-80' : 'w-64'
-          } flex-col gap-2 rounded-md border border-neutral-200 bg-white p-3 text-left font-normal shadow-lg dark:border-neutral-700 dark:bg-neutral-900`}
+          } flex-col gap-2 popover-surface p-3 text-left font-normal`}
         >
           <input
             ref={nameRef}

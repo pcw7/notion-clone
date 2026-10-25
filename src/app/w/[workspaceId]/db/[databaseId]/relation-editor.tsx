@@ -229,7 +229,7 @@ export function RelationEditor({
       role="dialog"
       aria-label={`${propertyName} 연결`}
       data-testid="db-relation-editor"
-      className="flex w-72 flex-col gap-1 rounded-md border border-neutral-200 bg-white p-1.5 shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
+      className="flex w-72 flex-col gap-1 popover-surface p-1.5"
     >
       {linked !== null && (linked.length > 0 || hidden > 0) && (
         <ul aria-label="지금 연결" className="flex max-h-40 flex-col gap-0.5 overflow-auto">

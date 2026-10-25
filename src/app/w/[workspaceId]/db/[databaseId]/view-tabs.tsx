@@ -243,7 +243,7 @@ export function ViewTabs({
 
   return (
     <nav aria-label="뷰" className="flex flex-col gap-1">
-      <div ref={rowRef} className="relative flex items-center gap-1 border-b border-neutral-200 dark:border-neutral-800">
+      <div ref={rowRef} className="relative flex items-center gap-1 border-b border-[rgba(42,28,0,0.07)] pb-1 dark:border-neutral-800">
         {lineX !== null && (
           <span aria-hidden data-testid="db-view-drop-line" style={{ left: lineX }} className="pointer-events-none absolute bottom-0 top-0 w-0.5 bg-blue-500" />
         )}
@@ -264,10 +264,11 @@ export function ViewTabs({
               swallowClick.current = false
               event.preventDefault()
             }}
-            className={`-mb-px border-b-2 px-3 py-1.5 text-sm ${dragging === tab.id ? 'opacity-50 ' : ''}${
+            // 보기 탭 — 디자인-6d(노션 실측: 높이 32px · 14px · 500 · 고른 탭은 따뜻한 회색 5% 바탕 · 둥글기 8px — 밑줄이 아니다)
+            className={`flex h-8 items-center rounded-lg px-2 text-sm font-medium ${dragging === tab.id ? 'opacity-50 ' : ''}${
               tab.id === currentId
-                ? 'border-neutral-900 font-medium dark:border-neutral-100'
-                : 'border-transparent text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200'
+                ? 'bg-[rgba(33,27,23,0.05)] text-[rgb(44,44,43)] dark:bg-white/5 dark:text-neutral-100'
+                : 'text-[rgb(125,122,117)] hover:bg-[rgba(33,27,23,0.05)] dark:text-neutral-400 dark:hover:bg-white/5 dark:hover:text-neutral-200'
             }`}
           >
             <span aria-hidden className="mr-1 text-neutral-400">
@@ -295,7 +296,7 @@ export function ViewTabs({
                 aria-label="뷰 메뉴"
                 data-testid="db-view-menu-panel"
                 onKeyDown={onMenuKeyDown}
-                className="absolute left-0 top-full z-30 mt-1 w-64 rounded-md border border-neutral-200 bg-white p-1 shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
+                className="absolute left-0 top-full z-30 mt-1 w-64 popover-surface p-1"
               >
                 {/* 폼(7a-1)은 다른 종류로 바꾸지 않는다 — 설정 · 공개 주소가 남은 채 행을 그리는 뷰가 되면 안 된다 */}
                 {(current.type === 'form' ? [] : CREATABLE.filter((type) => type !== current.type)).map((type) => (
@@ -408,7 +409,7 @@ export function ViewTabs({
                 aria-label="뷰 추가"
                 data-testid="db-view-add-panel"
                 onKeyDown={onMenuKeyDown}
-                className="absolute left-0 top-full z-30 mt-1 w-56 rounded-md border border-neutral-200 bg-white p-1 shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
+                className="absolute left-0 top-full z-30 mt-1 w-56 popover-surface p-1"
               >
                 {sources.length > 1 && (
                   <label className="flex flex-col gap-1 px-2 pb-1.5 pt-1 text-xs text-neutral-500">

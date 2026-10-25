@@ -113,7 +113,7 @@ export function TemplatePanel(props: {
       {open && (
         <div
           data-testid="db-templates-panel"
-          className="absolute left-0 top-full z-20 mt-1 w-80 rounded-lg border border-neutral-200 bg-white p-2 text-sm shadow-lg dark:border-neutral-800 dark:bg-neutral-950"
+          className="absolute left-0 top-full z-20 mt-1 w-80 popover-surface p-2 text-sm dark:bg-neutral-950"
         >
           <p className="px-2 py-1 text-xs text-neutral-500">
             템플릿은 표에 보이지 않습니다. 새 항목을 만들 때 골라 씁니다.

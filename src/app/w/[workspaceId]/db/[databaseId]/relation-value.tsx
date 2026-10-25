@@ -145,7 +145,7 @@ function RowPicker({
     <AnchoredLayer align="start">
       <div
         data-testid="db-filter-row-picker"
-        className="w-72 rounded-md border border-neutral-200 bg-white p-1 shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
+        className="w-72 popover-surface p-1"
       >
         <input
           ref={inputRef}

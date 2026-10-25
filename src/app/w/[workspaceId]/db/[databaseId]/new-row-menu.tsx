@@ -156,7 +156,7 @@ export function NewRowMenu(props: {
         <AnchoredLayer align={props.align === 'right' ? 'end' : 'start'}>
         <div
           data-testid="db-new-menu"
-          className="w-72 rounded-lg border border-neutral-200 bg-white p-1 text-left text-sm font-normal shadow-lg dark:border-neutral-800 dark:bg-neutral-950"
+          className="w-72 popover-surface p-1 text-left text-sm font-normal dark:bg-neutral-950"
         >
           <button
             type="button"

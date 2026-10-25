@@ -217,7 +217,7 @@ export function DataSourcePanel(props: {
           aria-label="데이터 소스"
           data-testid="db-sources-panel"
           onKeyDown={onKeyDown}
-          className="absolute right-0 top-full z-20 mt-1 w-80 rounded-lg border border-neutral-200 bg-white p-2 text-sm shadow-lg dark:border-neutral-800 dark:bg-neutral-950"
+          className="absolute right-0 top-full z-20 mt-1 w-80 popover-surface p-2 text-sm dark:bg-neutral-950"
         >
           <p className="px-2 py-1 text-xs text-neutral-500">
             데이터 소스마다 속성과 항목이 따로입니다. 뷰는 그중 하나를 봅니다.

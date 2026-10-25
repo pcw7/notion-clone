@@ -161,7 +161,7 @@ export function AutomationPanel(props: {
       {open && (
         <div
           data-testid="db-automations-panel"
-          className={`absolute right-0 top-full z-20 mt-1 ${editing === null ? 'w-96' : 'w-[32rem]'} rounded-lg border border-neutral-200 bg-white p-2 text-sm shadow-lg dark:border-neutral-800 dark:bg-neutral-950`}
+          className={`absolute right-0 top-full z-20 mt-1 ${editing === null ? 'w-96' : 'w-[32rem]'} popover-surface p-2 text-sm dark:bg-neutral-950`}
         >
           <p className="px-2 py-1 text-xs text-neutral-500">자동화는 만든 사람의 권한으로 돕니다. 바뀐 뒤 몇 초 안에 실행됩니다.</p>
           {locked && (
