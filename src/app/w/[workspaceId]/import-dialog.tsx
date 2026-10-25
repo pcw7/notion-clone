@@ -11,6 +11,8 @@
  * 왜인지 말하고 아무 페이지도 남지 않는다(전부이거나 아무것도).
  */
 
+import { Import } from 'lucide-react'
+import { SIDEBAR_ICON, SIDEBAR_ICON_STROKE, SIDEBAR_ROW } from './sidebar-style'
 import { useEffect, useRef, useState } from 'react'
 import Link from '@/app/link'
 import { useRouter } from 'next/navigation'
@@ -81,9 +83,9 @@ export function ImportButton({ workspaceId }: { workspaceId: string }) {
           reset()
           setOpen(true)
         }}
-        className="flex items-center gap-1.5 rounded-md px-2 py-1 text-left text-sm text-neutral-500 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+        className={SIDEBAR_ROW}
       >
-        <span aria-hidden>⤓</span>
+        <Import aria-hidden className={SIDEBAR_ICON} strokeWidth={SIDEBAR_ICON_STROKE} />
         <span>가져오기</span>
       </button>
 
