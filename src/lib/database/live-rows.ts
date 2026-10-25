@@ -15,6 +15,15 @@
  * 사라지면 버그로 인식된다)"*. 이 화면에서 고친 행(`touched`)이 다시 읽은 결과에 없으면 **옛 자리에 남기고** `outside` 로 알린다(화면이
  * "이 뷰의 조건에 맞지 않습니다"를 단다). 다른 사람이 고쳐 나간 행은 빠진다. 남긴 행은 다음에 다시 읽어도 남는다 — 사용자가 새로 열 때
  * 빠진다(그때는 이 화면의 기억이 없다).
+ *
+ * ──────────────────────────────────────────────────────────────────────
+ * 늦게 온 옛 결과는 새 행을 덮지 않는다
+ * ──────────────────────────────────────────────────────────────────────
+ *
+ * 다시 읽기는 셀 저장과 겹칠 수 있다 — 저장이 서버에 닿기 전에 DB 를 읽은 결과가, 저장 응답(새 `version`)으로 이미 바뀐 화면의 행보다
+ * 늦게 도착한다. 그대로 덮으면 칸이 옛 값으로 돌아가고, 내 쓰기의 알림은 나에게 오지 않아 그대로 남는다(e2e 8c-3a 가 3번 중 1번 보았다 —
+ * 서버에는 새 제목 · 칸에는 옛 제목). 그래서 **화면의 행이 더 새 버전이면 그 행을 지킨다**(셀 저장 응답의 `notOlder` 와 같은 규칙 —
+ * 같은 버전이면 다시 읽은 것). 버전은 행의 단조 증가 값이다(X-6).
  */
 
 import type { RowJson } from './http.ts'
@@ -45,9 +54,13 @@ export function mergeReloaded(input: {
   const depthOf = new Map<string, number>()
   const expanded = new Set<string>()
   const seen = new Set<string>()
+  const shown = new Map(input.previous.map((row) => [row.id, row]))
 
-  const place = (row: RowJson, depth: number) => {
-    if (seen.has(row.id)) return // 한 행이 두 자리에 서지 않는다(부모가 바뀐 사이에 읽혔다)
+  const place = (incoming: RowJson, depth: number) => {
+    if (seen.has(incoming.id)) return // 한 행이 두 자리에 서지 않는다(부모가 바뀐 사이에 읽혔다)
+    // 화면의 행이 더 새 버전이면 지킨다 — 늦게 온 옛 결과(머리말)
+    const current = shown.get(incoming.id)
+    const row = current !== undefined && newerVersion(current.version, incoming.version) ? current : incoming
     seen.add(row.id)
     rows.push(row)
     depthOf.set(row.id, depth)
@@ -78,4 +91,13 @@ export function mergeReloaded(input: {
   })
 
   return { rows, depthOf, expanded, outside }
+}
+
+/** `a` 가 `b` 보다 새 버전인가 — 버전은 정수 문자열(bigint)이다. 읽을 수 없으면 새롭다고 하지 않는다(다시 읽은 것을 쓴다). */
+function newerVersion(a: string, b: string): boolean {
+  try {
+    return BigInt(a) > BigInt(b)
+  } catch {
+    return false
+  }
 }
