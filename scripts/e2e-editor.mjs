@@ -1270,6 +1270,8 @@ async function main() {
     // 에서 겪었다 — "잠김"이 선 채로 서버는 풀려 있었다).
     const pressLockToggle = async (label, done) => {
       for (let i = 0; i < 10; i += 1) {
+        // 잠그기 단추는 페이지 메뉴("···") 안이다(디자인-2b)
+        await revealInPageMenu('[data-testid="page-lock-toggle"]')
         const box = await evaluate(`(() => {
           const el = document.querySelector('[data-testid="page-lock-toggle"]')
           if (!el || el.disabled || el.textContent !== ${JSON.stringify(label)}) return null
@@ -22964,7 +22966,8 @@ async function main() {
           const r = bar.getBoundingClientRect()
           const title = document.querySelector('input[aria-label="페이지 제목"]').getBoundingClientRect()
           const nav = bar.querySelector('nav[aria-label="상위 경로"]').getBoundingClientRect()
-          const buttons = [...bar.querySelectorAll('button')].map((b) => { const c = getComputedStyle(b); return [Math.round(b.getBoundingClientRect().height), c.borderTopWidth, c.borderRadius].join(' ') })
+          // 닫힌 페이지 메뉴(디자인-2b) 안의 단추는 빼고 — 숨어 있어 높이가 0 이다
+          const buttons = [...bar.querySelectorAll('button')].filter((b) => !b.closest('[data-testid="page-menu-list"]')).map((b) => { const c = getComputedStyle(b); return [Math.round(b.getBoundingClientRect().height), c.borderTopWidth, c.borderRadius].join(' ') })
           return { height: Math.round(r.height), top: Math.round(r.top), aboveTitle: r.bottom <= title.top, navLeft: Math.round(nav.left - r.left), buttons: [...new Set(buttons)] }
         })()`)
         check('★ 상단 바 — 높이 44 · 제목 위 · 경로가 왼쪽 끝 · 단추는 높이 28 · 테두리 없음 · 둥글기 6px',
