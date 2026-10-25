@@ -131,6 +131,8 @@ function todoNodeView(node: PmNode, view: EditorView, getPos: () => number | und
   }
 }
 
+const SVG_NS = 'http://www.w3.org/2000/svg'
+
 /**
  * toggle — 접기 화살표.
  *
@@ -154,6 +156,14 @@ function toggleNodeView(
   arrow.className = 'blk-toggle-arrow'
   arrow.contentEditable = 'false'
   arrow.setAttribute('aria-label', '접기/펼치기')
+  // 채운 삼각형(아래를 가리킨다) — 접힌 방향은 CSS 가 돌린다(`aria-expanded='false'` · 디자인-4a). 노션의 그림이 아니라 단순한 도형이다.
+  const caret = document.createElementNS(SVG_NS, 'svg')
+  caret.setAttribute('viewBox', '0 0 16 16')
+  caret.setAttribute('aria-hidden', 'true')
+  const shape = document.createElementNS(SVG_NS, 'path')
+  shape.setAttribute('d', 'M2.5 4.75h11L8 12.25z')
+  caret.append(shape)
+  arrow.append(caret)
 
   const content = document.createElement('div')
   content.className = 'blk-text'
@@ -161,7 +171,6 @@ function toggleNodeView(
   const sync = (): void => {
     const id = containerIdAt(view, getPos)
     const collapsed = id !== '' && deps.isCollapsed(id)
-    arrow.textContent = collapsed ? '▸' : '▾'
     arrow.setAttribute('aria-expanded', String(!collapsed))
   }
 

@@ -66,12 +66,15 @@
   padding-right: 0;
 }
 
-/* 리스트 — 마커를 직접 그린다. <ul>/<ol> 래퍼가 없기 때문이다. */
+/*
+ * 리스트 — 마커를 직접 그린다. <ul>/<ol> 래퍼가 없기 때문이다. 디자인-4a(노션 실측): 기호 칸은 폭 24px 로 문단 글자와 같은 선에서
+ * 시작하고, 칸과 글자 사이는 6px 다 — 목록 · 할 일 · 토글의 글자는 문단보다 30px 안에 선다. 글머리 기호는 24px 의 •.
+ */
 .blk-bulleted_list_item,
 .blk-numbered_list_item,
 .blk-to_do {
   display: flex;
-  gap: 0.5rem;
+  gap: 6px;
   list-style: none;
   align-items: flex-start;
 }
@@ -79,9 +82,10 @@
 .blk-bulleted_list_item::before {
   content: '•';
   flex: none;
-  width: 1rem;
+  width: 24px;
   text-align: center;
-  line-height: 1.5;
+  font-size: 24px;
+  line-height: 24px;
 }
 
 .blk-numbered_list_item {
@@ -91,16 +95,35 @@
 .blk-numbered_list_item::before {
   content: counter(blk-number) '.';
   flex: none;
-  min-width: 1rem;
-  text-align: right;
+  min-width: 24px;
+  text-align: center;
+  white-space: nowrap;
   line-height: 1.5;
-  font-variant-numeric: tabular-nums;
 }
 
+/* 체크박스 — 노션 실측: 16px · 테두리 1.5px · 둥글기 1.5px · 기호 칸(24px)의 가운데. 완료는 파랑 바탕에 흰 체크(Lucide check · ISC). */
 .blk-to_do .blk-checkbox {
+  appearance: none;
   flex: none;
-  margin-top: 0.35rem;
-  accent-color: #171717;
+  box-sizing: border-box;
+  width: 16px;
+  height: 16px;
+  margin: 4px;
+  border: 1.5px solid rgb(56, 56, 54);
+  border-radius: 1.5px;
+  background: transparent center / 14px no-repeat;
+  cursor: pointer;
+}
+
+.blk-to_do .blk-checkbox:checked {
+  border-color: rgb(39, 131, 222);
+  background-color: rgb(39, 131, 222);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 6 9 17l-5-5'/%3E%3C/svg%3E");
+}
+
+.blk-to_do .blk-checkbox:focus-visible {
+  outline: 2px solid rgba(35, 131, 226, 0.6);
+  outline-offset: 1px;
 }
 
 .blk-to_do .blk-text,
@@ -109,33 +132,66 @@
   min-width: 0;
 }
 
-/* 완료한 할 일에 취소선. :has() 는 최신 브라우저 전용이라 없어도 기능은 멀쩡하다. */
+/* 완료한 할 일 — 노션 실측: 취소선(글자색 50%) · 글자 흐리게(0.7). :has() 는 최신 브라우저 전용이라 없어도 기능은 멀쩡하다. */
 .blk-to_do:has(.blk-checkbox:checked) .blk-text {
-  color: #9ca3af;
   text-decoration: line-through;
+  text-decoration-color: rgba(44, 44, 43, 0.5);
+  opacity: 0.7;
 }
 
+/* 토글 — 노션 실측: 화살표 단추 24px · 둥글기 4px · 채운 삼각형 0.8em(펼치면 아래 · 접으면 오른쪽) · 단추와 글자 사이 6px. */
 .blk-toggle {
   display: flex;
-  gap: 0.25rem;
+  gap: 6px;
   align-items: flex-start;
 }
 
 .blk-toggle-arrow {
+  display: flex;
   flex: none;
-  width: 1.25rem;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
   border: 0;
+  border-radius: 4px;
   background: none;
   cursor: pointer;
   color: inherit;
-  line-height: 1.5;
   padding: 0;
 }
 
+.blk-toggle-arrow:hover {
+  background: rgba(33, 27, 23, 0.05);
+}
+
+.blk-toggle-arrow svg {
+  width: 0.8em;
+  height: 0.8em;
+  fill: currentColor;
+}
+
+.blk-toggle-arrow[aria-expanded='false'] svg {
+  transform: rotate(-90deg);
+}
+
+/*
+ * 인용 — 노션 실측: 선 3px(글자색)은 문단 글자와 같은 선에 서고 높이는 글자만큼이다(위아래 여백에 걸치지 않는다). 글자는 문단보다
+ * 25px 안. 선을 테두리로 그리면 안쪽 여백까지 늘어나므로 위치를 정한 가상 요소로 그린다.
+ */
 .blk-quote {
-  border-left: 3px solid currentColor;
-  padding-left: 0.875rem;
-  margin: 0.5rem 0;
+  position: relative;
+  padding-left: 27px;
+}
+
+.blk-quote::before {
+  content: '';
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  left: 2px;
+  width: 3px;
+  background: currentColor;
 }
 
 /* 콜아웃 상자 — 디자인-1(노션 실측: 둥글기 10px · 안쪽 12px · 블록 감싸개 8px 는 바깥 여백으로). */
@@ -1177,7 +1233,10 @@ span.blk-equation {
       --code-deletion: #ffdcd7;
       --code-deletion-bg: #67060c;
     }
-    .blk-to_do .blk-checkbox { accent-color: #ededed; }
+    .blk-to_do .blk-checkbox { border-color: rgba(255, 255, 255, 0.6); }
+    .blk-to_do .blk-checkbox:checked { border-color: rgb(39, 131, 222); }
+    .blk-to_do:has(.blk-checkbox:checked) .blk-text { text-decoration-color: rgba(255, 255, 255, 0.5); }
+    .blk-toggle-arrow:hover { background: rgba(255, 255, 255, 0.08); }
 
     /* 글자색 9개 — 노션의 어두운 값(배경 9색과 같은 출처). 어두운 바탕과 4.5:1 이상(10d-6 · `block-color-palette.test.ts`). */
     --block-text-gray: #9b9b9b;
