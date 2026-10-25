@@ -156,7 +156,7 @@ export function CommentReactions({
           role="menu"
           aria-label="반응 고르기"
           data-testid="reaction-picker"
-          className="absolute left-0 top-full z-30 mt-1 flex w-72 flex-col gap-1 rounded-lg border border-neutral-200 bg-white p-1 shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
+          className="absolute left-0 top-full z-30 mt-1 flex w-72 flex-col gap-1 popover-surface p-1"
         >
           <div className="flex gap-0.5">
             {QUICK_REACTIONS.map((emoji) => (

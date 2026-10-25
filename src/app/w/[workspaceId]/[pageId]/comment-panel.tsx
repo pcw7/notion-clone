@@ -228,7 +228,7 @@ export function CommentPanel({
         <div
           role="dialog"
           aria-label="코멘트"
-          className="absolute right-0 z-20 mt-2 flex max-h-[32rem] w-96 flex-col gap-3 overflow-y-auto rounded-lg border border-neutral-200 bg-white p-4 shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
+          className="absolute right-0 z-20 mt-2 flex max-h-[32rem] w-96 flex-col gap-3 overflow-y-auto popover-surface p-4"
         >
           <div className="flex items-center justify-between gap-2">
             <div className="flex gap-1" role="group" aria-label="코멘트 필터">

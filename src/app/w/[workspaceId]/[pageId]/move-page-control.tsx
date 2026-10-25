@@ -163,7 +163,7 @@ export function MovePageControl({
       {open && (
         <div
           data-testid="move-picker"
-          className={`${menu ? MENU_PANEL_PLACE : 'absolute right-0 z-10 mt-1'} w-72 rounded-lg border border-neutral-200 bg-white p-2 shadow-lg dark:border-neutral-700 dark:bg-neutral-900`}
+          className={`${menu ? MENU_PANEL_PLACE : 'absolute right-0 z-10 mt-1'} w-72 popover-surface p-2`}
         >
           {pending !== null ? (
             <div data-testid="move-preview" className="flex flex-col gap-2 p-1">

@@ -122,7 +122,7 @@ export function PageUpdatesButton({ workspaceId, pageId }: { workspaceId: string
           role="dialog"
           aria-label="업데이트"
           data-testid="page-updates"
-          className={`${menu ? MENU_PANEL_PLACE : 'absolute right-0 z-20 mt-2'} flex max-h-[32rem] w-80 flex-col gap-2 overflow-y-auto rounded-lg border border-neutral-200 bg-white p-4 shadow-lg dark:border-neutral-700 dark:bg-neutral-900`}
+          className={`${menu ? MENU_PANEL_PLACE : 'absolute right-0 z-20 mt-2'} flex max-h-[32rem] w-80 flex-col gap-2 overflow-y-auto popover-surface p-4`}
         >
           <h2 className="text-sm font-semibold">업데이트</h2>
           {error !== null && (

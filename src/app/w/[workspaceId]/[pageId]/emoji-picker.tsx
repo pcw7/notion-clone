@@ -179,7 +179,7 @@ export function EmojiPicker({
           onClose(true)
         }
       }}
-      className="absolute left-0 top-full z-30 mt-2 flex w-[22rem] max-w-[calc(100vw-2rem)] flex-col gap-2 rounded-lg border border-neutral-200 bg-white p-2 shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
+      className="absolute left-0 top-full z-30 mt-2 flex w-[22rem] max-w-[calc(100vw-2rem)] flex-col gap-2 popover-surface p-2"
     >
       <div className="flex items-center justify-between px-1">
         {onPickImage === undefined ? (

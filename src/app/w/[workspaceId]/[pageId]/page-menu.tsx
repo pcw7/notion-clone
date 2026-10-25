@@ -132,7 +132,7 @@ export function PageMenu({ children }: { children: ReactNode }) {
         className={`absolute right-0 top-full z-40 mt-1 w-64 ${
           held
             ? ''
-            : 'rounded-[10px] bg-white p-1 shadow-[0_20px_24px_0_rgba(25,25,25,0.05),0_5px_8px_0_rgba(25,25,25,0.027),0_0_0_1px_rgba(42,28,0,0.07)] dark:bg-neutral-900 dark:shadow-[0_8px_24px_rgba(0,0,0,0.5),0_0_0_1px_rgba(255,255,255,0.08)]'
+            : 'popover-surface p-1'
         }`}
       >
         <PageMenuContext.Provider value={api}>

@@ -108,7 +108,7 @@ export function CodeLanguageMenu({ current, top, left, onPick, onClose, closeRef
         if (e.target !== inputRef.current) e.preventDefault()
       }}
       data-testid="code-language-menu"
-      className="absolute z-30 flex w-64 flex-col rounded-lg border border-neutral-200 bg-white shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
+      className="absolute z-30 flex w-64 flex-col popover-surface"
       style={{ top, left }}
     >
       <input
