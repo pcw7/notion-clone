@@ -117,6 +117,19 @@ test('② 이미지 캡션도 같은 규칙 · 문단의 code_wrap 은 버린다
   assert.deepEqual(para.format, {})
 })
 
+test('★ 콜아웃 아이콘(디자인-4c) — 이모지 아이콘 모양이 아니면 지운다 · 멀쩡하면 같은 객체 · 다른 타입의 icon 은 그대로', () => {
+  const ok = { icon: { type: 'emoji', emoji: '🌱' } }
+  const clean = sanitizeBlockAttrs('callout', ok, {})
+  assert.equal(clean.changed, false)
+  assert.equal(clean.props, ok)
+  for (const icon of [{ type: 'emoji', emoji: 'abc' }, { type: 'file', file_id: 'x' }, '🌱', null, { type: 'emoji', emoji: '🌱', extra: 1 }]) {
+    const bad = sanitizeBlockAttrs('callout', { icon, keep: 1 }, {})
+    assert.equal(bad.changed, true, JSON.stringify(icon))
+    assert.deepEqual(bad.props, { keep: 1 }, JSON.stringify(icon))
+  }
+  assert.deepEqual(sanitizeBlockAttrs('paragraph', { icon: 'x' }, {}).props, { icon: 'x' }, '콜아웃이 아닌 타입의 뜻이 아니다')
+})
+
 test('★ ③ JSON 으로 나타낼 수 없는 값은 모든 타입에서 뺀다 · 던지지 않는다', () => {
   for (const type of ['code', 'image', 'paragraph', 'page', 'unsupported'] as const) {
     const out = sanitizeBlockAttrs(type, { keep: 'x', big: 5n, nested: { n: 1n, ok: true } }, { weird: 3n } as never)

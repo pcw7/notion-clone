@@ -40,6 +40,7 @@ export function readOnlyEditorDeps(workspaceId: string, labels: PreviewLabels): 
     openCodeLanguageMenu: nothing,
     openCodeCaption: nothing,
     openEquation: nothing,
+    openCalloutIcon: nothing,
     openInlineEquation: nothing,
     openButtonBlock: nothing,
     openImageAlt: nothing,

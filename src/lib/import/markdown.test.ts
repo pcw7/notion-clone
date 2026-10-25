@@ -81,6 +81,17 @@ test('★ ④ 우리 내보내기의 꼴 — 토글 · 콜아웃(자식과 함�
   assert.equal(losses.html, 0)
 })
 
+test('★ 콜아웃 아이콘 — 첫 글자가 이모지 한 글자 + 공백이면 아이콘(디자인-4c · 노션의 내보내기를 되읽는다)', () => {
+  const md = ['<aside>', '', '🌱 새싹', '', '</aside>', '', '<aside>', '', '🌱새싹', '', '</aside>', '', '<aside>', '', '💡', '', '</aside>'].join('\n')
+  const { doc } = markdownToDoc(md)
+  assert.deepEqual(doc.blocks[0]?.properties, { icon: { type: 'emoji', emoji: '🌱' } })
+  assert.equal(toPlainText(doc.blocks[0]!.title), '새싹')
+  assert.equal(doc.blocks[1]?.properties, undefined, '공백이 없으면 글이다')
+  assert.equal(toPlainText(doc.blocks[1]!.title), '🌱새싹')
+  assert.deepEqual(doc.blocks[2]?.properties, { icon: { type: 'emoji', emoji: '💡' } }, '이모지뿐인 콜아웃')
+  assert.deepEqual(doc.blocks[2]?.title, [])
+})
+
 test('★ ⑤ 옮기지 못한 것은 센다 — HTML · 로컬 이미지 · 위험한 링크 · 주석은 세지 않는다 · 표는 이제 옮긴다(1d-3)', () => {
   const md = ['| a | b |', '|---|---|', '| 1 | 2 |', '', '<div>블록 HTML</div>', '', '![로컬](./img.png)', '',
     '[나쁜](javascript:alert(1))', '', '<!-- unsupported block type="x" -->'].join('\n')

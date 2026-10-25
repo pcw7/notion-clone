@@ -15,6 +15,7 @@ import type { CSSProperties, ReactNode } from 'react'
 import { codeCaptionRuns, codeLanguageOf } from '@/lib/block/code'
 import { imageAltText, readCaption, readImageLayout, readImageSource } from '@/lib/block/image'
 import { EQUATION_TYPE, equationExpressionOf } from '@/lib/block/equation'
+import { calloutGlyph } from '@/lib/block/callout'
 import { cellsOf, COLUMN_HEADER_KEY, ROW_HEADER_KEY, TABLE_TYPE } from '@/lib/block/table'
 import { TOC_TYPE, headingsOfBlocks, tocEntries } from '@/lib/block/toc'
 import { BREADCRUMB_TYPE } from '@/lib/block/breadcrumb'
@@ -226,8 +227,13 @@ function Block({ block, view }: { block: EditorBlock; view: PublicPageView }): R
     case 'callout':
       return (
         <aside className="pub-block pub-callout" data-color={color}>
-          <RichText runs={block.title} view={view} blockId={block.id} />
-          <Children block={block} view={view} />
+          <span className="pub-callout-icon" aria-hidden>
+            {calloutGlyph(props)}
+          </span>
+          <div className="pub-callout-body">
+            <RichText runs={block.title} view={view} blockId={block.id} />
+            <Children block={block} view={view} />
+          </div>
         </aside>
       )
     case 'divider':

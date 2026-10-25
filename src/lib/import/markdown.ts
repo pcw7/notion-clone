@@ -29,6 +29,7 @@ import { Marked, type Token, type TokenizerExtension, type Tokens } from 'marked
 
 import { CODE_LANGUAGES, PLAIN_TEXT_LANGUAGE } from '../block/code.ts'
 import { clampExpression, displayMathOf } from '../block/equation.ts'
+import { CALLOUT_ICON_KEY, liftCalloutIcon } from '../block/callout.ts'
 import {
   DEFAULT_ANNOTATIONS,
   equationRun,
@@ -372,9 +373,14 @@ function blocksOf(tokens: readonly Token[], cx: Convert): EditorBlock[] {
             const children = blocksOf(inner, cx)
             out.push(block('toggle', plainRuns(stripTags(summary).trim(), cx), children.length > 0 ? { children } : {}))
           } else {
-            const { title, rest } = splitHead(inner, cx)
+            const { title: head, rest } = splitHead(inner, cx)
+            // 첫 글자가 이모지 한 글자 + 공백이면 아이콘(디자인-4c — 노션의 내보내기를 되읽는다).
+            const { emoji, title } = liftCalloutIcon(head)
             const children = blocksOf(rest, cx)
-            out.push(block('callout', title, children.length > 0 ? { children } : {}))
+            out.push(block('callout', title, {
+              ...(children.length > 0 ? { children } : {}),
+              ...(emoji !== null ? { properties: { [CALLOUT_ICON_KEY]: { type: 'emoji', emoji } } } : {}),
+            }))
           }
           i = selfClosed ? i : j
           break

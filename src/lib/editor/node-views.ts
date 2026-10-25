@@ -33,8 +33,9 @@ import { customEmojiImagePath, type PageIcon } from '../block/page-icon.ts'
 import { nodeNameOf } from './schema.ts'
 import { tocNodeView, type TocViewDeps } from './toc-view.ts'
 import { paintBlockColor } from './paint-block-color.ts'
+import { calloutNodeView, type CalloutViewDeps } from './callout-view.ts'
 
-export type NodeViewDeps = ImageViewDeps & CodeViewDeps & TocViewDeps & BreadcrumbViewDeps & EquationViewDeps & InlineEquationViewDeps & ButtonViewDeps & {
+export type NodeViewDeps = ImageViewDeps & CodeViewDeps & TocViewDeps & BreadcrumbViewDeps & EquationViewDeps & InlineEquationViewDeps & ButtonViewDeps & CalloutViewDeps & {
   isCollapsed: (blockId: string) => boolean
   toggleCollapsed: (blockId: string) => void
   /** 하위 페이지로 이동. */
@@ -320,6 +321,8 @@ export function createNodeViews(deps: NodeViewDeps): Record<
   return {
     to_do: (node, view, getPos) => todoNodeView(node, view, getPos),
     toggle: (node, view, getPos) => toggleNodeView(node, view, getPos, deps),
+    // 콜아웃(디자인-4c) — 아이콘 칸 · 고르개는 편집기 밖의 오버레이.
+    callout: (node, view, getPos) => calloutNodeView(node, view, getPos, deps),
     image: (node, view, getPos) => imageNodeView(node, view, getPos, deps),
     // 키는 노드 이름이다 — 코드 블록의 노드는 `code_block`(8a-1).
     [nodeNameOf(CODE_TYPE)]: (node, view, getPos) => codeNodeView(node, view, getPos, deps),

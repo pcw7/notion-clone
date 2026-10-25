@@ -194,13 +194,53 @@
   background: currentColor;
 }
 
-/* 콜아웃 상자 — 디자인-1(노션 실측: 둥글기 10px · 안쪽 12px · 블록 감싸개 8px 는 바깥 여백으로). */
+/*
+ * 콜아웃 상자 — 디자인-1(노션 실측: 둥글기 10px · 안쪽 12px · 블록 감싸개 8px 는 바깥 여백으로) · 디자인-4c: 상자의 왼쪽 끝은 문단 글자와
+ * 같은 선(좌우 2px) · 아이콘 칸 24×24(이모지 21.6px · 위는 첫 줄과 같은 선) · 글 칸은 아이콘 바로 옆에서 안쪽 8px — 글자는 문단보다 45px 안.
+ */
 .blk-callout {
+  display: flex;
+  align-items: flex-start;
   border: 1px solid transparent;
   border-radius: 10px;
   background: rgba(135, 131, 120, 0.12);
   padding: 12px;
-  margin: 8px 0;
+  margin: 8px 2px;
+}
+
+.blk-callout-icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  margin-top: 8px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  font-family: 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif;
+  font-size: 21.6px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.blk-callout-icon:hover {
+  background: rgba(33, 27, 23, 0.05);
+}
+
+.blk-editor[contenteditable='false'] .blk-callout-icon {
+  cursor: default;
+}
+
+.blk-editor[contenteditable='false'] .blk-callout-icon:hover {
+  background: none;
+}
+
+.blk-callout > .blk-text {
+  flex: 1;
+  min-width: 0;
+  padding: 8px;
 }
 /*
  * 콜아웃의 파생(10n-54 · F-01-21 · 정본 [보강] 블록 색 ⑤) — 글자색(배경색이 아닌 색)이면 흰 바탕 + 연회색 테두리. 배경색이면 아래 팔레트가
@@ -1245,6 +1285,7 @@ span.blk-equation {
     .blk-to_do .blk-checkbox:checked { border-color: rgb(39, 131, 222); }
     .blk-to_do:has(.blk-checkbox:checked) .blk-text { text-decoration-color: rgba(255, 255, 255, 0.5); }
     .blk-toggle-arrow:hover { background: rgba(255, 255, 255, 0.08); }
+    .blk-callout-icon:hover { background: rgba(255, 255, 255, 0.08); }
 
     /* 글자색 9개 — 노션의 어두운 값(배경 9색과 같은 출처). 어두운 바탕과 4.5:1 이상(10d-6 · `block-color-palette.test.ts`). */
     --block-text-gray: #9b9b9b;

@@ -16,6 +16,8 @@
  *     (지우면 쓴 식을 통째로 잃는다 — 넘는 것은 입력칸을 거치지 않은 쓰기뿐이다)
  *   · 표의 머리 플래그(레지스트리 `childrenInContent` — 심플 테이블 · Phase 2 1d): `has_column_header` · `has_row_header` 가 참 거짓이
  *     아니면 지운다(거짓과 같다)
+ *   · 콜아웃 아이콘(디자인-4c — 정본 §3.4 [보강] 콜아웃 아이콘 ③): 콜아웃의 `icon` 이 이모지 아이콘 모양이 아니면 지운다(화면은 💡).
+ *     다른 타입의 `icon` 은 건드리지 않는다
  *   · format: `normalizeFormat`(타입이 받지 않는 색 · 코드가 아닌 타입의 `code_wrap` · `true` 가 아닌 `code_wrap`)
  *   · 하위 페이지 참조 · `unsupported` 는 JSON 안전만 — 앞은 다른 페이지의 것이고, 뒤는 모르는 타입의 원본 보존이다. 하나 예외:
  *     하위 페이지 참조의 `format` 에서 **페이지 아이콘**(`page_icon` · 8c-1)은 뺀다 — 아이콘은 그 페이지 행의 것이고 본문은 싣지
@@ -32,6 +34,7 @@ import { MAX_CODE_LANGUAGE_LENGTH } from './code.ts'
 import { clampExpression } from './equation.ts'
 import { clampButtonLabel } from './button.ts'
 import { COLUMN_HEADER_KEY, ROW_HEADER_KEY } from './table.ts'
+import { CALLOUT_ICON_KEY, CALLOUT_TYPE, isCalloutIcon } from './callout.ts'
 import { normalizeFormat, PAGE_TYPE, specOf, UNSUPPORTED_TYPE, type BlockFormat, type BlockType } from './types.ts'
 import { PAGE_ICON_KEY } from './page-icon.ts'
 
@@ -101,6 +104,10 @@ export function sanitizeBlockAttrs(type: BlockType, props: Record<string, unknow
     for (const key of [COLUMN_HEADER_KEY, ROW_HEADER_KEY]) {
       if (key in nextProps && typeof nextProps[key] !== 'boolean') delete edit()[key]
     }
+  }
+
+  if (type === CALLOUT_TYPE && CALLOUT_ICON_KEY in nextProps && !isCalloutIcon(nextProps[CALLOUT_ICON_KEY])) {
+    delete edit()[CALLOUT_ICON_KEY]
   }
 
   const normalized = normalizeFormat(type, safeFormat)

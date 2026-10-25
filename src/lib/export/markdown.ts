@@ -51,6 +51,7 @@ import { TOC_TYPE, headingsOfBlocks, tocEntries, type TocEntry } from '../block/
 import { BREADCRUMB_TYPE } from '../block/breadcrumb.ts'
 import { EQUATION_TYPE, equationDisplayLines } from '../block/equation.ts'
 import { BUTTON_TYPE, buttonPlainText } from '../block/button.ts'
+import { calloutEmojiOf } from '../block/callout.ts'
 import { cellsOf, TABLE_TYPE } from '../block/table.ts'
 import { isSafeLinkUrl } from '../contracts/link-url.ts'
 import { PAGE_TYPE, UNSUPPORTED_TYPE } from '../block/types.ts'
@@ -635,7 +636,10 @@ function renderBlock(block: EditorBlock, ctx: Ctx, number: number): string[] {
     }
 
     case 'callout': {
-      const text = textLines(block, ctx)
+      // 아이콘(디자인-4c) — **저장된 것만** 첫 줄 앞에 이모지와 공백(노션의 내보내기와 같다). 기본 💡 는 쓰지 않는다(없는 값을 만들지 않는다).
+      const lines = textLines(block, ctx)
+      const emoji = calloutEmojiOf(block.properties)
+      const text = emoji === null ? lines : lines.length > 0 ? [`${emoji} ${lines[0]}`, ...lines.slice(1)] : [emoji]
       const children = renderSiblings(block.children ?? [], ctx).lines
       const body = text.length > 0 && children.length > 0 ? [...text, '', ...children] : [...text, ...children]
       return body.length === 0 ? ['<aside>', '</aside>'] : ['<aside>', '', ...body, '', '</aside>']

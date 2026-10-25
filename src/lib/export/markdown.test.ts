@@ -409,6 +409,13 @@ describe('③ 구조가 렌더러에서 유지된다', () => {
     assert.equal(html, '<aside><p>콜아웃</p><ul><li>자식</li></ul></aside>')
   })
 
+  test('콜아웃 아이콘 — 저장된 것만 첫 줄 앞에 이모지와 공백(디자인-4c) · 기본 💡 는 쓰지 않는다', () => {
+    const icon = { icon: { type: 'emoji', emoji: '🌱' } }
+    assert.equal(convert([block('callout', '새싹', { properties: icon })]).html, '<aside><p>🌱 새싹</p></aside>')
+    assert.equal(convert([block('callout', '', { properties: icon })]).html, '<aside><p>🌱</p></aside>', '글이 빈 콜아웃은 이모지만')
+    assert.equal(convert([block('callout', '기본')]).html, '<aside><p>기본</p></aside>', '아이콘이 없으면 없는 값을 만들지 않는다')
+  })
+
   test('인용의 자식은 인용 안에 남는다', () => {
     const { html } = convert([block('quote', '인용', { children: [block('paragraph', '자식')] })])
     assert.equal(html, '<blockquote><p>인용</p><p>자식</p></blockquote>')
