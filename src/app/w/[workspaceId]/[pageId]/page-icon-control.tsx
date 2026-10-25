@@ -50,6 +50,7 @@ export function PageIconControl({
   kind = 'page',
   initialIcon,
   readOnly = false,
+  header = false,
 }: {
   workspaceId: string
   /** 아이콘의 주인 — 페이지(행 · 템플릿 포함) 또는 데이터베이스의 id. */
@@ -58,6 +59,12 @@ export function PageIconControl({
   initialIcon: PageIcon | null
   /** 고칠 수 없다 — 볼 수만 있거나 잠긴 페이지 · 데이터베이스. */
   readOnly?: boolean
+  /**
+   * 페이지 머리의 노션 배치(디자인-4e · 노션 실측) — 아이콘이 있으면 위 48px(본문 칸의 위 48px 과 더해 상단 바 아래 96px) · 78px · 아래 12px,
+   * 없으면 36px 의 빈 자리(본문 칸의 위와 더해 제목 위 84px — 고칠 수 없어도 같다). "아이콘 추가" 는 그 자리 안에 겹쳐 선다(자리를 차지하지
+   * 않는다 — 마우스를 올려 보여도 제목이 움직이지 않는다). 데이터베이스의 머리는 쓰지 않는다(그 화면의 조각에서).
+   */
+  header?: boolean
 }) {
   const router = useRouter()
   const [icon, setIcon] = useState<PageIcon | null>(initialIcon)
@@ -139,16 +146,21 @@ export function PageIconControl({
   const face = (shown: PageIcon) => (shown.type === 'emoji' ? shown.emoji : <PageIconView icon={shown} fallback glyph={glyph} />)
 
   if (readOnly) {
-    if (icon === null) return null
+    if (icon === null) return header ? <div aria-hidden className="h-9" /> : null
     return (
-      <div data-testid="page-icon" role="img" aria-label={`${OWNER_LABEL[kind]} 아이콘 ${pageIconLabel(icon)}`} className="w-fit text-6xl leading-none">
+      <div
+        data-testid="page-icon"
+        role="img"
+        aria-label={`${OWNER_LABEL[kind]} 아이콘 ${pageIconLabel(icon)}`}
+        className={`w-fit leading-none ${header ? 'mb-3 mt-12 text-[78px]' : 'text-6xl'}`}
+      >
         {face(icon)}
       </div>
     )
   }
 
   return (
-    <div className="relative w-fit">
+    <div className={header ? (icon === null ? 'relative h-9' : 'relative mb-3 mt-12 w-fit') : 'relative w-fit'}>
       {icon === null ? (
         <button
           ref={triggerRef}
@@ -156,7 +168,7 @@ export function PageIconControl({
           data-testid="page-icon-add"
           disabled={busy}
           onClick={() => void saveRandom(null)}
-          className="rounded px-1.5 py-0.5 text-sm text-neutral-400 opacity-0 hover:bg-neutral-100 hover:text-neutral-600 focus-visible:opacity-100 group-hover/header:opacity-100 touch:not-disabled:opacity-100 disabled:opacity-40 dark:hover:bg-neutral-800"
+          className={`${header ? 'absolute bottom-1 left-0 ' : ''}rounded px-1.5 py-0.5 text-sm text-neutral-400 opacity-0 hover:bg-neutral-100 hover:text-neutral-600 focus-visible:opacity-100 group-hover/header:opacity-100 touch:not-disabled:opacity-100 disabled:opacity-40 dark:hover:bg-neutral-800`}
         >
           ☺ 아이콘 추가
         </button>
@@ -169,7 +181,7 @@ export function PageIconControl({
           aria-haspopup="dialog"
           aria-expanded={open}
           onClick={() => setOpen((v) => !v)}
-          className="rounded text-6xl leading-none hover:bg-neutral-100 dark:hover:bg-neutral-800"
+          className={`rounded leading-none hover:bg-neutral-100 dark:hover:bg-neutral-800 ${header ? 'text-[78px]' : 'text-6xl'}`}
         >
           {face(icon)}
         </button>
