@@ -221,10 +221,11 @@ export function InboxList({
                 setFilter(f.value)
                 void load(f.value)
               }}
-              className={`rounded px-2 py-1 text-sm ${
+              // 필터 — 데이터베이스의 보기 탭과 같은 모양(디자인-7c · 6d 실측: 28px · 14px · 500 · 고른 것은 따뜻한 회색 5% 바탕 · 둥글기 8px)
+              className={`h-7 rounded-lg px-2 text-sm font-medium ${
                 filter === f.value
-                  ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900'
-                  : 'border border-neutral-300 dark:border-neutral-700'
+                  ? 'bg-[rgba(33,27,23,0.05)] text-[rgb(44,44,43)] dark:bg-white/5 dark:text-[#f0efed]'
+                  : 'text-[rgb(125,122,117)] hover:bg-[rgba(33,27,23,0.05)] dark:text-[#ada9a3] dark:hover:bg-white/5'
               }`}
             >
               {f.label}
@@ -260,10 +261,11 @@ export function InboxList({
       ) : (
         <ul
           aria-label="알림 목록"
-          className="flex flex-col divide-y divide-neutral-200 rounded-lg border border-neutral-200 dark:divide-neutral-800 dark:border-neutral-800"
+          // 목록 — 상자 대신 줄(마우스를 올리면 따뜻한 회색 5% · 둥글기 6px) · 줄 사이는 옅은 선(디자인-7c)
+          className="flex flex-col divide-y divide-[rgb(240,239,237)] dark:divide-[#2c2c2b]"
         >
           {items.map((item) => (
-            <li key={`${item.groupKey}:${item.pageId}`} data-testid="inbox-item" data-group={item.groupKey} className="flex flex-col gap-1 px-4 py-3">
+            <li key={`${item.groupKey}:${item.pageId}`} data-testid="inbox-item" data-group={item.groupKey} className="flex flex-col gap-1 rounded-md px-3 py-3 hover:bg-[rgba(33,27,23,0.05)] dark:hover:bg-white/5">
               <div className="flex items-center justify-between gap-2">
                 <Link
                   href={inboxHref(workspaceId, item.pageId, item.kind)}
@@ -272,14 +274,14 @@ export function InboxList({
                   <PageIconView icon={item.pageIcon} fallback className="mr-1.5 align-[-0.125em]" />
                   {item.pageTitle || UNTITLED}
                 </Link>
-                <span className="flex-none text-xs text-neutral-500">
+                <span className="flex-none text-xs text-[rgb(125,122,117)] dark:text-[#ada9a3]">
                   {KIND_LABEL[item.kind] ?? item.kind}
                   {item.count > 1 && ` ${item.count}`}
                   {item.unreadCount > 0 && <span className="ml-1 text-neutral-900 dark:text-neutral-100">●</span>}
                 </span>
               </div>
 
-              <p className="text-sm text-neutral-600 dark:text-neutral-400">
+              <p className="text-sm text-[rgb(95,94,89)] dark:text-[rgb(188,186,182)]">
                 {accessInboxLine(item.kind, item.access) ??
                   reminderInboxLine(item.reminder) ??
                   assignmentInboxLine(item.assignment) ??
@@ -287,7 +289,7 @@ export function InboxList({
               </p>
 
               <div className="flex items-center gap-2">
-                <span className="text-xs text-neutral-400">{when(item.lastAt)}</span>
+                <span className="text-xs text-[rgb(161,158,153)] dark:text-[#7d7a75]">{when(item.lastAt)}</span>
                 <button
                   type="button"
                   data-testid="inbox-read"

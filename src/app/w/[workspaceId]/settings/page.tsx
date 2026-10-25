@@ -47,7 +47,8 @@ export default async function SettingsPage({ params, searchParams }: PageProps<'
       <nav aria-label="설정" data-testid="settings-nav" className="flex w-44 flex-none flex-col gap-5">
         {groups.map((group) => (
           <section key={group.scope} aria-label={group.label} className="flex flex-col gap-1">
-            <h2 className="px-2 text-xs font-medium text-neutral-400">{group.label}</h2>
+            {/* 섹션 머리 · 줄은 사이드바와 같은 모양(디자인-7c — 사이드바 실측: 30px · 14px · 흐린 글자 · 마우스를 올리면 따뜻한 회색 5%) */}
+            <h2 className="px-2 text-xs font-medium text-[rgb(161,158,153)] dark:text-[#7d7a75]">{group.label}</h2>
             <ul className="flex flex-col gap-0.5">
               {group.sections.map((section) => (
                 <li key={section.id}>
@@ -56,8 +57,10 @@ export default async function SettingsPage({ params, searchParams }: PageProps<'
                     data-testid="settings-nav-link"
                     data-section={section.id}
                     aria-current={section.id === current.id ? 'page' : undefined}
-                    className={`block rounded-md px-2 py-1 text-sm hover:bg-neutral-100 dark:hover:bg-neutral-800 ${
-                      section.id === current.id ? 'bg-neutral-100 font-medium dark:bg-neutral-800' : 'text-neutral-600 dark:text-neutral-400'
+                    className={`flex h-[30px] items-center rounded-md px-2 text-sm hover:bg-[rgba(33,27,23,0.05)] dark:hover:bg-white/5 ${
+                      section.id === current.id
+                        ? 'bg-[rgba(33,27,23,0.05)] font-medium text-[rgb(44,44,43)] dark:bg-white/5 dark:text-[#f0efed]'
+                        : 'text-[rgb(95,94,89)] dark:text-[rgb(188,186,182)]'
                     }`}
                   >
                     {section.label}
@@ -70,7 +73,7 @@ export default async function SettingsPage({ params, searchParams }: PageProps<'
       </nav>
 
       <section aria-labelledby="settings-title" className="flex min-w-0 flex-1 flex-col">
-        <h1 id="settings-title" data-testid="settings-title" className="border-b border-neutral-200 pb-3 text-lg font-semibold dark:border-neutral-800">
+        <h1 id="settings-title" data-testid="settings-title" className="border-b border-[rgb(240,239,237)] pb-3 text-lg font-semibold dark:border-[#2c2c2b]">
           {current.label}
         </h1>
         {items.map((item) => {
