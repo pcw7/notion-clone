@@ -1372,7 +1372,10 @@ async function main() {
     const arrowState = () =>
       evaluate(`(() => { const c = document.querySelector('[data-block-id="${ids.T}"]'); const a = c.querySelector('.blk-toggle-arrow')
         const child = document.querySelector('[data-block-id="${ids.t1}"]')
-        return { collapsed: c.getAttribute('data-collapsed'), glyph: a.textContent, expanded: a.getAttribute('aria-expanded'),
+        // 방향은 SVG 의 회전으로 읽는다(디자인-4a — 글자 ▸ · ▾ 를 걷었다). -90° 면 오른쪽(접힘), 돌지 않았으면 아래(펼침).
+        const turn = getComputedStyle(a.querySelector('svg')).transform
+        const glyph = turn === 'none' ? '▾' : Math.round(Number(turn.slice(7, -1).split(',')[1])) === -1 ? '▸' : turn
+        return { collapsed: c.getAttribute('data-collapsed'), glyph, expanded: a.getAttribute('aria-expanded'),
                  childVisible: child.getBoundingClientRect().height > 0 } })()`)
     const arrow = await rect(`[data-block-id="${ids.T}"] .blk-toggle-arrow`)
     await click(arrow.x + arrow.w / 2, arrow.y + arrow.h / 2)
@@ -23092,6 +23095,68 @@ async function main() {
       } finally {
         await send('Emulation.clearDeviceMetricsOverride')
       }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
+    if (sectionIf('디자인 — 블록 세부 (디자인-4a)')) { try {
+      // 목록 · 할 일 · 토글 · 인용이 노션 실측과 같다 — 글자는 문단보다 30px(목록 · 할 일 · 토글) · 25px(인용) 안 · 글머리 기호 24px ·
+      // 체크박스 16px(테두리 1.5px · 둥글기 1.5px · 완료는 파랑 + 취소선 + 0.7) · 토글 단추 24px(둥글기 4px) · 인용 선은 문단 글자 선에서 글자 높이만큼.
+      const { textRun } = await import(new URL('../src/lib/contracts/rich-text.ts', import.meta.url).href)
+      const stamp = Date.now().toString(36)
+      const page = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: JSON.stringify({ title: `블록 세부 ${stamp}` }) })).json()).page.id
+      const mk = (type, words, extra = {}) => ({ id: randomUUID(), type, title: [textRun(words)], properties: {}, format: {}, children: [], ...extra })
+      const B = {
+        p: mk('paragraph', '문단'),
+        ul: mk('bulleted_list_item', '글머리'),
+        ol: mk('numbered_list_item', '번호'),
+        todo: mk('to_do', '할 일', { properties: { checked: false } }),
+        done: mk('to_do', '끝낸 일', { properties: { checked: true } }),
+        tg: mk('toggle', '토글'),
+        q: mk('quote', '인용'),
+      }
+      await saveBody(page, { blocks: Object.values(B) })
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+      await waitFor(`!!document.querySelector('[data-block-id="${B.q.id}"] .blk-quote') && !!document.querySelector('[data-block-id="${B.done.id}"] .blk-checkbox')`, 15000)
+      const ids = Object.fromEntries(Object.entries(B).map(([k, v]) => [k, v.id]))
+      const m = await evaluate(`(() => {
+        const ids = ${JSON.stringify(ids)}
+        const at = (k, sel = '') => document.querySelector('[data-block-id="' + ids[k] + '"]' + (sel ? ' ' + sel : ''))
+        const firstChar = (k) => {
+          const walk = document.createTreeWalker(at(k), NodeFilter.SHOW_TEXT, { acceptNode: (n) => n.textContent.trim() ? 1 : 3 })
+          const n = walk.nextNode(); const r = document.createRange(); r.setStart(n, 0); r.setEnd(n, 1); return r.getBoundingClientRect()
+        }
+        const P = firstChar('p').left
+        const off = (k) => Math.round(firstChar(k).left - P)
+        const look = (k, sel) => { const e = at(k, sel); return { c: getComputedStyle(e), r: e.getBoundingClientRect() } }
+        const cb = look('todo', '.blk-checkbox')
+        const cd = look('done', '.blk-checkbox')
+        const doneText = getComputedStyle(at('done', '.blk-text'))
+        const arrow = look('tg', '.blk-toggle-arrow')
+        const quote = at('q', '.blk-quote')
+        const qc = getComputedStyle(quote)
+        const line = getComputedStyle(quote, '::before')
+        const bullet = getComputedStyle(at('ul', '.blk-bulleted_list_item'), '::before')
+        return {
+          offsets: [off('ul'), off('ol'), off('todo'), off('tg'), off('q')],
+          bullet: [bullet.content, bullet.fontSize].join(' '),
+          box: [Math.round(cb.r.width), Math.round(cb.r.height), cb.c.borderTopWidth, cb.c.borderTopColor, cb.c.borderRadius].join(' '),
+          // 1.5px 테두리는 장치 화소에 맞춰 내려간다(배율 1 → 1px · 노션을 잰 배율 2 → 1.5px). 화면 배율을 흉내 내도 Chrome 은 1px 로 그렸다.
+          edge: Math.floor(1.5 * devicePixelRatio) / devicePixelRatio + 'px',
+          done: [cd.c.backgroundColor, doneText.textDecorationLine, doneText.opacity].join(' '),
+          arrow: [Math.round(arrow.r.width), Math.round(arrow.r.height), arrow.c.borderRadius].join(' '),
+          quoteLine: line.content === 'none' ? null : {
+            left: Math.round(quote.getBoundingClientRect().left + parseFloat(line.left) - P),
+            width: line.width,
+            textOnly: line.top === qc.paddingTop && line.bottom === qc.paddingBottom,
+          },
+        }
+      })()`)
+      const near = (a, b) => Math.abs(a - b) <= 1
+      check('★ 목록 · 할 일 · 토글의 글자는 문단보다 30px 안 · 인용은 25px 안 · 글머리 기호는 24px •',
+        [30, 30, 30, 30, 25].every((want, i) => near(m.offsets[i], want)) && m.bullet === '"•" 24px', JSON.stringify(m))
+      check('★ 체크박스 — 16px · 테두리 1.5px rgb(56, 56, 54) · 둥글기 1.5px · 완료는 파랑 rgb(39, 131, 222) · 글자는 취소선 · 0.7',
+        m.box === `16 16 ${m.edge} rgb(56, 56, 54) 1.5px` && m.done === 'rgb(39, 131, 222) line-through 0.7', JSON.stringify(m))
+      check('★ 토글 단추 24px · 둥글기 4px · 인용 선 3px 은 문단 글자 선에 서고 위아래 여백에 걸치지 않는다',
+        m.arrow === '24 24 4px' && m.quoteLine !== null && near(m.quoteLine.left, 0) && m.quoteLine.width === '3px' && m.quoteLine.textOnly, JSON.stringify(m))
     } catch (thrown) { await sectionThrew(thrown) } }
 
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
