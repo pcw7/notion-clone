@@ -54,30 +54,33 @@ export const TYPE_ICON: Readonly<Record<AppPropertyType, string>> = {
  * (`bg-${color}-100`) 스타일이 빌드에 들어가지 않는다.
  */
 const OPTION_CLASS: Readonly<Record<OptionColor, string>> = {
-  default: 'bg-neutral-100 text-neutral-800 dark:bg-neutral-800 dark:text-neutral-200',
-  gray: 'bg-neutral-200 text-neutral-800 dark:bg-neutral-700 dark:text-neutral-100',
-  brown: 'bg-stone-200 text-stone-800 dark:bg-stone-700 dark:text-stone-100',
-  orange: 'bg-orange-100 text-orange-800 dark:bg-orange-900/60 dark:text-orange-100',
-  yellow: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/60 dark:text-yellow-100',
-  green: 'bg-green-100 text-green-800 dark:bg-green-900/60 dark:text-green-100',
-  blue: 'bg-blue-100 text-blue-800 dark:bg-blue-900/60 dark:text-blue-100',
-  purple: 'bg-purple-100 text-purple-800 dark:bg-purple-900/60 dark:text-purple-100',
-  pink: 'bg-pink-100 text-pink-800 dark:bg-pink-900/60 dark:text-pink-100',
-  red: 'bg-red-100 text-red-800 dark:bg-red-900/60 dark:text-red-100',
+  // 디자인-6b(노션 앱 실측 — 바탕은 색을 띤 반투명 · 글자는 같은 계열의 짙은 색). default · purple 은 재지 못해 같은 규칙의 가까운 값이다
+  // (`docs/design/notion-measurements.md`). 어두운 테마는 어두운 테마 조각에서 잰다(지금 값 그대로). 글자색은 `!` — 칩의 `data-color` 를
+  // 편집기 CSS 의 블록 글자색 팔레트(`[data-color='gray']` 같은 속성 선택자)가 잡아 덮는다(같은 특정도 · 그 CSS 가 뒤에 실린다).
+  default: 'bg-[rgba(28,19,1,0.06)] text-[rgb(73,72,70)]! dark:bg-neutral-800 dark:text-neutral-200',
+  gray: 'bg-[rgba(28,19,1,0.11)] text-[rgb(73,72,70)]! dark:bg-neutral-700 dark:text-neutral-100',
+  brown: 'bg-[rgba(127,51,0,0.157)] text-[rgb(88,68,55)]! dark:bg-stone-700 dark:text-stone-100',
+  orange: 'bg-[rgba(196,88,0,0.204)] text-[rgb(106,66,34)]! dark:bg-orange-900/60 dark:text-orange-100',
+  yellow: 'bg-[rgba(209,156,0,0.282)] text-[rgb(101,81,33)]! dark:bg-yellow-900/60 dark:text-yellow-100',
+  green: 'bg-[rgba(0,96,38,0.157)] text-[rgb(42,83,60)]! dark:bg-green-900/60 dark:text-green-100',
+  blue: 'bg-[rgba(0,118,217,0.204)] text-[rgb(38,74,114)]! dark:bg-blue-900/60 dark:text-blue-100',
+  purple: 'bg-[rgba(102,0,178,0.157)] text-[rgb(89,60,112)]! dark:bg-purple-900/60 dark:text-purple-100',
+  pink: 'bg-[rgba(183,0,78,0.153)] text-[rgb(104,53,78)]! dark:bg-pink-900/60 dark:text-pink-100',
+  red: 'bg-[rgba(206,24,0,0.165)] text-[rgb(109,53,49)]! dark:bg-red-900/60 dark:text-red-100',
 }
 
-/** status 칩의 점. 칩 배경과 같은 색 계열의 진한 쪽이다. */
+/** status 칩의 점 — 같은 색 계열의 진한 쪽(노션 앱 실측 6색 · default · brown · orange · purple 은 재지 못해 가까운 값). */
 const DOT_CLASS: Readonly<Record<OptionColor, string>> = {
-  default: 'bg-neutral-400',
-  gray: 'bg-neutral-500',
-  brown: 'bg-stone-500',
-  orange: 'bg-orange-500',
-  yellow: 'bg-yellow-500',
-  green: 'bg-green-500',
-  blue: 'bg-blue-500',
-  purple: 'bg-purple-500',
-  pink: 'bg-pink-500',
-  red: 'bg-red-500',
+  default: 'bg-[rgb(166,163,158)]',
+  gray: 'bg-[rgb(142,139,134)]',
+  brown: 'bg-[rgb(186,133,111)]',
+  orange: 'bg-[rgb(224,124,57)]',
+  yellow: 'bg-[rgb(216,163,47)]',
+  green: 'bg-[rgb(70,161,113)]',
+  blue: 'bg-[rgb(39,131,222)]',
+  purple: 'bg-[rgb(157,104,211)]',
+  pink: 'bg-[rgb(219,105,153)]',
+  red: 'bg-[rgb(229,100,88)]',
 }
 
 /**
@@ -92,9 +95,10 @@ export function OptionChip({ option }: { option: SelectOption }) {
         data-testid="db-option-chip"
         data-status-group={option.group}
         data-color={option.color}
-        className={`inline-flex max-w-full items-center gap-1 rounded-full px-2 py-0.5 text-xs ${OPTION_CLASS[option.color]}`}
+        // 디자인-6b(노션 실측: 높이 20px · 둥글기 10px · 왼쪽 7px · 오른쪽 9px · 14px · 점 8px 과 글자 사이 5px)
+        className={`inline-flex h-5 max-w-full items-center rounded-[10px] pl-[7px] pr-[9px] text-sm leading-[1.2] ${OPTION_CLASS[option.color]}`}
       >
-        <span aria-hidden className={`h-1.5 w-1.5 flex-none rounded-full ${DOT_CLASS[option.color]}`} />
+        <span aria-hidden className={`mr-[5px] size-2 flex-none rounded-full ${DOT_CLASS[option.color]}`} />
         <span className="truncate">{option.name}</span>
       </span>
     )
@@ -103,7 +107,8 @@ export function OptionChip({ option }: { option: SelectOption }) {
     <span
       data-testid="db-option-chip"
       data-color={option.color}
-      className={`inline-block max-w-full truncate rounded px-1.5 py-0.5 text-xs ${OPTION_CLASS[option.color]}`}
+      // 디자인-6b(노션 실측: 높이 20px · 둥글기 4px · 좌우 6px · 14px)
+      className={`inline-block h-5 max-w-full truncate rounded px-1.5 text-sm leading-5 ${OPTION_CLASS[option.color]}`}
     >
       {option.name}
     </span>
