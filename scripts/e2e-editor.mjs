@@ -23452,6 +23452,66 @@ async function main() {
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('디자인 — 태그 · 상태 알약 (디자인-6b)')) { try {
+      // 선택 태그 · 상태 알약이 노션 앱 실측과 같다 — 선택: 20px · 둥글기 4px · 좌우 6px · 14px / 상태: 둥글기 10px · 7px/9px · 점 8px(글자와 5px) ·
+      // 색은 잰 8색(바탕 반투명 · 글자 짙은 같은 계열).
+      const { textRun } = await import(new URL('../src/lib/contracts/rich-text.ts', import.meta.url).href)
+      const stamp = Date.now().toString(36)
+      const api6 = `${BASE}/api/workspaces/${workspaceId}`
+      const created = (await (await fetch(`${api6}/databases`, { method: 'POST', headers: authed, body: JSON.stringify({ name: `태그 ${stamp}` }) })).json()).database
+      const ds = created.dataSourceId
+      const view = created.defaultViewId
+      const addProp = async (name, type) => (await (await fetch(`${api6}/data-sources/${ds}/properties`, { method: 'POST', headers: authed, body: JSON.stringify({ name, type }) })).json())
+      await addProp('태그', 'select')
+      const schema = await addProp('상태', 'status')
+      const props = schema?.schema?.properties ?? []
+      const prop = (name) => props.find((p) => p.name === name)
+      const titleId = props.find((p) => p.type === 'title')?.id
+      const COLORS = {
+        gray: ['rgba(28, 19, 1, 0.11)', 'rgb(73, 72, 70)', 'rgb(142, 139, 134)'],
+        brown: ['rgba(127, 51, 0, 0.157)', 'rgb(88, 68, 55)', null],
+        orange: ['rgba(196, 88, 0, 0.204)', 'rgb(106, 66, 34)', null],
+        yellow: ['rgba(209, 156, 0, 0.282)', 'rgb(101, 81, 33)', 'rgb(216, 163, 47)'],
+        green: ['rgba(0, 96, 38, 0.157)', 'rgb(42, 83, 60)', 'rgb(70, 161, 113)'],
+        blue: ['rgba(0, 118, 217, 0.204)', 'rgb(38, 74, 114)', 'rgb(39, 131, 222)'],
+        pink: ['rgba(183, 0, 78, 0.153)', 'rgb(104, 53, 78)', 'rgb(219, 105, 153)'],
+        red: ['rgba(206, 24, 0, 0.165)', 'rgb(109, 53, 49)', 'rgb(229, 100, 88)'],
+      }
+      const tagProp = prop('태그').id
+      const optionOf = {}
+      for (const color of Object.keys(COLORS)) {
+        optionOf[color] = (await (await fetch(`${api6}/data-sources/${ds}/properties/${tagProp}/options`, { method: 'POST', headers: authed, body: JSON.stringify({ name: `${color}태그`, color }) })).json()).option.id
+      }
+      const statusOptions = prop('상태').options ?? prop('상태').config?.options ?? []
+      let k = 0
+      for (const color of Object.keys(COLORS)) {
+        const status = statusOptions[k % statusOptions.length]
+        await fetch(`${api6}/views/${view}/rows`, { method: 'POST', headers: authed, body: JSON.stringify({ cells: [
+          { propertyId: titleId, value: { type: 'title', title: [textRun(`행 ${color}`)] } },
+          { propertyId: tagProp, value: { type: 'select', select: { id: optionOf[color] } } },
+          ...(status ? [{ propertyId: prop('상태').id, value: { type: 'status', status: { id: status.id } } }] : []),
+        ] }) })
+        k += 1
+      }
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${created.id}` })
+      await waitFor(`document.querySelectorAll('[data-testid="db-option-chip"]').length >= ${Object.keys(COLORS).length + 3}`, 15000)
+      const chips = await evaluate(`[...document.querySelectorAll('[data-testid="db-option-chip"]')].map((e) => {
+        const c = getComputedStyle(e), r = e.getBoundingClientRect()
+        const dot = e.dataset.statusGroup !== undefined ? e.querySelector('span[aria-hidden]') : null
+        const d = dot ? getComputedStyle(dot) : null
+        return { color: e.dataset.color, status: e.dataset.statusGroup !== undefined, h: Math.round(r.height), radius: c.borderTopLeftRadius, pad: c.paddingLeft + '/' + c.paddingRight,
+          font: c.fontSize, bg: c.backgroundColor, text: c.color, dot: d ? [Math.round(dot.getBoundingClientRect().width), d.backgroundColor, d.marginRight].join(' ') : null }
+      })`)
+      const selects = chips.filter((c) => !c.status)
+      const statuses = chips.filter((c) => c.status)
+      const colorOk = (c) => COLORS[c.color] !== undefined && c.bg === COLORS[c.color][0] && c.text === COLORS[c.color][1]
+      check('★ 선택 태그 — 20px · 둥글기 4px · 좌우 6px · 14px · 잰 8색(바탕 · 글자)',
+        selects.length >= 8 && selects.every((c) => c.h === 20 && c.radius === '4px' && c.pad === '6px/6px' && c.font === '14px' && colorOk(c)), JSON.stringify(selects))
+      check('★ 상태 알약 — 20px · 둥글기 10px · 7px/9px · 14px · 점 8px(글자와 5px) · 잰 색',
+        statuses.length >= 3 && statuses.every((c) => c.h === 20 && c.radius === '10px' && c.pad === '7px/9px' && c.font === '14px' && colorOk(c)
+          && c.dot === `8 ${COLORS[c.color][2]} 5px`), JSON.stringify(statuses))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).
