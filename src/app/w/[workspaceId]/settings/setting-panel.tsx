@@ -149,7 +149,7 @@ export async function SettingPanelView({ id, ctx }: { id: SettingPanelId; ctx: S
             데이터베이스 화면에서 각각 내보냅니다.
           </p>
           <div className="mt-3">
-            <ExportButton workspaceId={ctx.workspaceId} label="워크스페이스 내보내기" align="left" />
+            <ExportButton workspaceId={ctx.workspaceId} label="워크스페이스 내보내기" align="left" variant="bordered" />
           </div>
         </section>
       )

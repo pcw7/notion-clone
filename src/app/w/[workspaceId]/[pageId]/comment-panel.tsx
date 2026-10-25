@@ -23,6 +23,7 @@
  * 맥락이 그 자리에 있기 때문이다. 마지막 살아 있는 코멘트를 지우면 스레드째 사라진다(서버가 한다).
  */
 
+import { TOPBAR_BUTTON } from '../topbar-style'
 import { useCallback, useEffect, useState } from 'react'
 
 import { CommentReactions, type EmojiLabel, type ReactionView } from './comment-reactions'
@@ -217,7 +218,7 @@ export function CommentPanel({
             }
           }}
           aria-expanded={open}
-          className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
+          className={TOPBAR_BUTTON}
         >
           코멘트{openCount > 0 ? ` ${openCount}` : ''}
         </button>

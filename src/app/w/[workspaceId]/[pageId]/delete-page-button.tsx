@@ -8,6 +8,7 @@
  * 먼저 알려준다(그건 사용자가 모르고 있을 수 있는 정보다).
  */
 
+import { TOPBAR_BUTTON } from '../topbar-style'
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 
@@ -65,7 +66,7 @@ export function DeletePageButton({
         type="button"
         onClick={() => void remove()}
         disabled={busy}
-        className="rounded-md border border-neutral-300 px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-100 disabled:opacity-40 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+        className={TOPBAR_BUTTON}
       >
         {busy ? '삭제 중…' : '삭제'}
       </button>

@@ -191,28 +191,35 @@ export async function PageContent({
   const Frame = frame === 'page' ? 'main' : 'div'
   return (
     <Frame
-      className={
-        frame === 'page'
-          ? `mx-auto flex min-h-screen ${settings?.fullWidth ? 'max-w-none' : 'max-w-3xl'} flex-col gap-6 px-6 py-12`
-          : 'flex flex-col gap-6 px-8 py-6'
-      }
+      // 페이지는 상단 바(본문 칸 밖 · 디자인-2a) + 본문 칸 · 피크는 패널 안에 그대로(본문 칸이 `contents` 라 머리와 같은 줄에 선다)
+      className={frame === 'page' ? 'flex min-h-screen flex-col' : 'flex flex-col gap-6 px-8 py-6'}
       data-testid={frame === 'peek' ? 'peek-page' : undefined}
       data-full-width={settings?.fullWidth ? 'true' : undefined}
       data-inline-comments={settings?.inlineComments}
     >
       {/* 탭 제목(10d-7b) — 그 페이지의 평문 제목(행 페이지도). 피크는 탭을 바꾸지 않는다(화면은 데이터베이스다) */}
       {frame === 'page' && <DocumentTitle title={contentTitle(page.plainTitle)} />}
-      {/* 좁은 화면(md 미만 · 10j-1)에서는 경로 위 · 단추 아래로 쌓고 단추는 감는다 — 한 줄이면 폰에서 문서 폭이 715px 로 늘었다 */}
-      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+      {/*
+        상단 바(디자인-2a · 노션 실측: 높이 44px · 배경과 같은 바탕 · 아래 선 없음) — 왼쪽 경로 · 오른쪽 머리 단추. 페이지는 본문 칸 밖에서
+        위에 고정한다(스크롤해도 남는다). 좁은 화면(md 미만 · 10j-1)에서는 감는다 — 한 줄이면 폰에서 문서 폭이 715px 로 늘었다.
+      */}
+      <div
+        data-testid="page-topbar"
+        className={
+          frame === 'page'
+            ? 'sticky top-0 z-30 flex min-h-11 flex-wrap items-center justify-between gap-x-2 gap-y-1 bg-[var(--background)] px-3 py-1'
+            : 'flex flex-wrap items-center justify-between gap-2'
+        }
+      >
         <nav
           aria-label="상위 경로"
-          className="flex flex-wrap items-center gap-1 text-sm text-neutral-500"
+          className="flex min-w-0 flex-wrap items-center gap-0.5 text-sm text-[rgb(44,44,43)] dark:text-neutral-200"
         >
           {trail.map((item, i) => (
             <span key={`${item.kind}:${item.id}`} className="flex items-center gap-1">
-              {i > 0 && <span aria-hidden>/</span>}
+              {i > 0 && <span aria-hidden className="text-neutral-300 dark:text-neutral-600">/</span>}
               {item.href === null ? (
-                <span className="text-neutral-400">
+                <span className="rounded-md px-1.5 py-0.5 text-neutral-400">
                   <PageIconView icon={item.icon} className="mr-1" />
                   {item.label}
                 </span>
@@ -220,7 +227,7 @@ export async function PageContent({
                 <Link
                   href={item.href}
                   data-testid={item.kind === 'teamspace' ? 'breadcrumb-teamspace' : undefined}
-                  className="hover:underline underline-offset-4"
+                  className="rounded-md px-1.5 py-0.5 hover:bg-[rgba(33,27,23,0.05)] dark:hover:bg-white/5"
                 >
                   <PageIconView icon={item.icon} className="mr-1" />
                   {item.label}
@@ -230,7 +237,7 @@ export async function PageContent({
           ))}
         </nav>
 
-        <div className="flex flex-wrap items-start gap-2 md:flex-none md:flex-nowrap">
+        <div className="flex flex-wrap items-center gap-0.5 md:flex-none md:flex-nowrap">
           <LockButton
             lockUrl={`/api/workspaces/${workspaceId}/pages/${page.id}/lock`}
             locked={lock?.locked ?? false}
@@ -280,6 +287,14 @@ export async function PageContent({
         </div>
       </div>
 
+      {/* 본문 칸 — 페이지는 가운데 720px(전체 폭이면 넓게) · 피크는 패널의 줄 그대로(`contents`) */}
+      <div
+        className={
+          frame === 'page'
+            ? `mx-auto flex w-full ${settings?.fullWidth ? 'max-w-none' : 'max-w-3xl'} flex-1 flex-col gap-6 px-6 pb-12 pt-12`
+            : 'contents'
+        }
+      >
       {/* 아이콘(8c-1)은 제목 위에 선다 — "아이콘 추가"는 이 머리에 마우스를 올리면 보인다(`group/header`). */}
       <div className="group/header flex flex-col gap-2">
         <PageIconControl workspaceId={workspaceId} pageId={page.id} initialIcon={page.icon} readOnly={access !== 'edit'} />
@@ -398,6 +413,7 @@ export async function PageContent({
         )}
         <NewPageButton workspaceId={workspaceId} parentPageId={page.id} label="하위 페이지" />
       </section>
+      </div>
     </Frame>
   )
 }
