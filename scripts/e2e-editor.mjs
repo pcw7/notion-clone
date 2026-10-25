@@ -23024,6 +23024,43 @@ async function main() {
       check('Esc 면 패널 · 메뉴가 닫히고 포커스는 "···" 단추로', closed, String(await evaluate(`document.activeElement?.getAttribute('data-testid') ?? document.activeElement?.tagName`)))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('디자인 — 사이드바 (디자인-3)')) { try {
+      // 사이드바가 노션 앱 실측과 같다 — 바탕 rgb(249, 248, 247) · 줄 30px · 글자 14px rgb(95, 94, 89) · 아이콘 20px 단색 rgb(142, 139, 134) ·
+      // 섹션 머리 12px · 본문이 스크롤해도 사이드바는 화면에 남는다(데스크톱).
+      const { textRun } = await import(new URL('../src/lib/contracts/rich-text.ts', import.meta.url).href)
+      const stamp = Date.now().toString(36)
+      const page = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: JSON.stringify({ title: `사이드바 ${stamp}` }) })).json()).page.id
+      const blocks = Array.from({ length: 40 }, (_, i) => ({ id: randomUUID(), type: 'paragraph', title: [textRun(`줄 ${i + 1}`)], properties: {}, format: {}, children: [] }))
+      await saveBody(page, { blocks })
+      await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false })
+      try {
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+        await waitFor(`!!document.querySelector('[data-testid="sidebar-home"]') && !!document.querySelector('[data-block-id="${blocks.at(-1).id}"]')`, 15000)
+        const look = await evaluate(`(() => {
+          const home = document.querySelector('[data-testid="sidebar-home"]')
+          const nav = home.closest('nav')
+          const icon = home.querySelector('svg')
+          const head = [...nav.querySelectorAll('h2, div, span')].find((e) => e.childElementCount === 0 && e.textContent.trim() === '최근')
+          const hc = head ? getComputedStyle(head) : null
+          const c = getComputedStyle(home)
+          return {
+            bg: getComputedStyle(nav).backgroundColor,
+            row: [Math.round(home.getBoundingClientRect().height), c.fontSize, c.color].join(' '),
+            icon: icon ? [Math.round(icon.getBoundingClientRect().width), getComputedStyle(icon).color].join(' ') : null,
+            head: hc ? [hc.fontSize, hc.fontWeight, hc.color].join(' ') : null,
+          }
+        })()`)
+        check('★ 사이드바 — 바탕 rgb(249, 248, 247) · 줄 30px · 14px rgb(95, 94, 89) · 아이콘 20px 단색 rgb(142, 139, 134) · 섹션 머리 12px 500',
+          look.bg === 'rgb(249, 248, 247)' && look.row === '30 14px rgb(95, 94, 89)' && look.icon === '20 rgb(142, 139, 134)'
+            && (look.head === null || look.head === '12px 500 rgb(161, 158, 153)'), JSON.stringify(look))
+        await evaluate(`document.querySelector('[data-block-id="${blocks.at(-1).id}"]').scrollIntoView({ block: 'end' })`)
+        const stays = await waitFor(`window.scrollY > 300 && Math.round(document.querySelector('[data-testid="sidebar-home"]').closest('nav').getBoundingClientRect().top) === 0`, 3000)
+        check('★ 본문을 끝까지 내려도 사이드바는 화면에 남는다', stays, String(await evaluate(`Math.round(document.querySelector('[data-testid="sidebar-home"]').closest('nav').getBoundingClientRect().top)`)))
+      } finally {
+        await send('Emulation.clearDeviceMetricsOverride')
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

@@ -57,6 +57,8 @@ import { teamspaceIcon } from './teamspace-messages'
 import { TrashPanel, type TrashRow } from './trash-panel'
 import { getSidebarStore } from './sidebar-state'
 import { getVisitHistory } from './visit-history'
+import { ChevronRight, Home, Inbox, Library, Search, Settings } from 'lucide-react'
+import { SIDEBAR_ICON, SIDEBAR_ICON_STROKE, SIDEBAR_ROW, SIDEBAR_ROW_CURRENT, SIDEBAR_SECTION_HEAD } from './sidebar-style'
 import { openSearchOverlay } from './search-overlay'
 import { PageIconView } from './page-icon-view'
 import { requestDuplicate } from './duplicate-page'
@@ -360,8 +362,9 @@ export function Sidebar({
     </>
   )
   // 서랍으로 열린 사이드바는 좁은 화면에서 덮개로 선다 · 넓은 화면에서는 늘 그 자리(접혔으면 넓은 화면에서 숨는다 — 레일이 선다)
-  const navPlacement = `${drawerOpen ? 'flex' : 'hidden'} fixed inset-y-0 left-0 z-40 w-72 max-w-[85vw] overflow-y-auto bg-white pt-12 shadow-xl dark:bg-neutral-950 ${
-    collapsed ? 'md:hidden' : 'md:static md:z-auto md:flex md:w-64 md:max-w-none md:overflow-visible md:bg-transparent md:pt-3 md:shadow-none'
+  const navPlacement = `${drawerOpen ? 'flex' : 'hidden'} fixed inset-y-0 left-0 z-40 w-72 max-w-[85vw] overflow-y-auto bg-[rgb(249,248,247)] pt-12 shadow-xl dark:bg-neutral-950 ${
+    // 데스크톱은 화면에 고정(디자인-3 — 노션: 본문이 스크롤해도 사이드바는 남는다) · 노션 바탕 · 넘치면 안에서 스크롤
+    collapsed ? 'md:hidden' : 'md:sticky md:top-0 md:z-auto md:flex md:h-screen md:w-64 md:max-w-none md:overflow-y-auto md:bg-[rgb(249,248,247)] md:pt-3 md:shadow-none dark:md:bg-neutral-900'
   }`
 
   if (collapsed && !drawerOpen) {
@@ -390,7 +393,7 @@ export function Sidebar({
       aria-label="페이지 트리"
       data-testid="sidebar-nav"
       data-drawer={drawerOpen ? 'open' : undefined}
-      className={`${navPlacement} flex-none flex-col gap-2 border-r border-neutral-200 p-3 dark:border-neutral-800`}
+      className={`${navPlacement} flex-none flex-col gap-0.5 border-r border-[rgb(240,239,237)] px-2 py-3 dark:border-neutral-800`}
     >
       <div className="flex items-center justify-between">
         {/* 이름을 누르면 스위처가 열린다(8j-1 · F-14-09). 홈은 아래의 "홈"이다. */}
@@ -422,9 +425,9 @@ export function Sidebar({
         type="button"
         onClick={openSearchOverlay}
         title="검색 (Ctrl/Cmd + K)"
-        className="flex items-center gap-1.5 rounded-md px-2 py-1 text-left text-sm text-neutral-500 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+        className={SIDEBAR_ROW}
       >
-        <span aria-hidden>🔍</span>
+        <Search aria-hidden className={SIDEBAR_ICON} strokeWidth={SIDEBAR_ICON_STROKE} />
         <span>검색</span>
       </button>
 
@@ -432,9 +435,9 @@ export function Sidebar({
       <Link
         href={`/w/${workspaceId}`}
         data-testid="sidebar-home"
-        className="flex items-center gap-1.5 rounded-md px-2 py-1 text-left text-sm text-neutral-500 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+        className={SIDEBAR_ROW}
       >
-        <span aria-hidden>🏠</span>
+        <Home aria-hidden className={SIDEBAR_ICON} strokeWidth={SIDEBAR_ICON_STROKE} />
         <span>홈</span>
       </Link>
 
@@ -442,23 +445,23 @@ export function Sidebar({
       <Link
         href={`/w/${workspaceId}/library`}
         data-testid="sidebar-library"
-        className="flex items-center gap-1.5 rounded-md px-2 py-1 text-left text-sm text-neutral-500 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+        className={SIDEBAR_ROW}
       >
-        <span aria-hidden>📚</span>
+        <Library aria-hidden className={SIDEBAR_ICON} strokeWidth={SIDEBAR_ICON_STROKE} />
         <span>라이브러리</span>
       </Link>
 
       {/* 인박스 — F-11-07. 배지는 "지금 안 읽은 수"이고 서버가 권한으로 걸러 센다. */}
       <Link
         href={`/w/${workspaceId}/inbox`}
-        className="flex items-center gap-1.5 rounded-md px-2 py-1 text-left text-sm text-neutral-500 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+        className={SIDEBAR_ROW}
       >
-        <span aria-hidden>📥</span>
+        <Inbox aria-hidden className={SIDEBAR_ICON} strokeWidth={SIDEBAR_ICON_STROKE} />
         <span>인박스</span>
         {inboxUnread > 0 && (
           <span
             aria-label={`안 읽은 알림 ${inboxUnread}개`}
-            className="ml-auto rounded-full bg-neutral-900 px-1.5 text-xs text-white dark:bg-neutral-100 dark:text-neutral-900"
+            className="ml-auto rounded-full bg-[rgb(235,87,87)] px-1.5 text-xs leading-[18px] text-white"
           >
             {inboxUnread}
           </span>
@@ -469,9 +472,9 @@ export function Sidebar({
       <Link
         href={`/w/${workspaceId}/settings`}
         data-testid="sidebar-settings"
-        className="flex items-center gap-1.5 rounded-md px-2 py-1 text-left text-sm text-neutral-500 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+        className={SIDEBAR_ROW}
       >
-        <span aria-hidden>⚙</span>
+        <Settings aria-hidden className={SIDEBAR_ICON} strokeWidth={SIDEBAR_ICON_STROKE} />
         <span>설정</span>
       </Link>
 
@@ -498,7 +501,7 @@ export function Sidebar({
         {showTeamspaces && (
           <section aria-label="Teamspaces" data-testid="sidebar-teamspaces" className="flex flex-col gap-0.5">
             <div className="flex items-center justify-between px-2">
-              <h2 className="text-xs font-medium text-neutral-400">Teamspaces</h2>
+              <h2 className={SIDEBAR_SECTION_HEAD}>Teamspaces</h2>
               <span className="flex items-center">
               {canBrowseTeamspaces && (
                 <Link
@@ -612,7 +615,7 @@ export function Sidebar({
 
         {shared.length > 0 && (
           <section aria-label="공유됨" data-testid="sidebar-shared" className="flex flex-col gap-0.5">
-            <h2 className="px-2 text-xs font-medium text-neutral-400">공유됨</h2>
+            <h2 className={`px-2 ${SIDEBAR_SECTION_HEAD}`}>공유됨</h2>
             <ul>
               {shared.map((node) => (
                 <TreeItem
@@ -635,7 +638,7 @@ export function Sidebar({
         {canCreatePrivatePage && (
           <section aria-label="개인 페이지" data-testid="sidebar-private" className="flex flex-col gap-0.5">
             <div className="flex items-center justify-between px-2">
-              <h2 className="text-xs font-medium text-neutral-400">개인 페이지</h2>
+              <h2 className={SIDEBAR_SECTION_HEAD}>개인 페이지</h2>
               <span className="flex items-center">
                 <button
                   type="button"
@@ -683,7 +686,7 @@ export function Sidebar({
 
         <section aria-label="워크스페이스 페이지" className="flex flex-col gap-0.5">
           {(showTeamspaces || shared.length > 0 || canCreatePrivatePage) && (
-            <h2 className="px-2 text-xs font-medium text-neutral-400">워크스페이스 페이지</h2>
+            <h2 className={`px-2 ${SIDEBAR_SECTION_HEAD}`}>워크스페이스 페이지</h2>
           )}
           <ul>
             {tree.map((node) => (
@@ -771,8 +774,8 @@ function TreeItem({
   return (
     <li>
       <div
-        className={`group flex items-center gap-0.5 rounded px-1 ${
-          isCurrent ? 'bg-neutral-100 dark:bg-neutral-800' : 'hover:bg-neutral-100 dark:hover:bg-neutral-800'
+        className={`group flex h-[30px] items-center gap-0.5 rounded-md px-1 text-[rgb(95,94,89)] dark:text-neutral-400 ${
+          isCurrent ? SIDEBAR_ROW_CURRENT : 'hover:bg-[rgba(33,27,23,0.05)] dark:hover:bg-white/5'
         }`}
         style={{ paddingLeft: `${depth * 12 + 4}px` }}
       >
@@ -782,12 +785,12 @@ function TreeItem({
             onClick={() => onToggle(node.id)}
             aria-label={isOpen ? '접기' : '펼치기'}
             aria-expanded={isOpen}
-            className="w-4 flex-none text-xs text-neutral-400"
+            className="flex size-5 flex-none items-center justify-center rounded text-[rgb(142,139,134)] hover:bg-[rgba(33,27,23,0.08)] dark:text-neutral-500 dark:hover:bg-white/10"
           >
-            {isOpen ? '▾' : '▸'}
+            <ChevronRight aria-hidden className={`size-4 transition-transform ${isOpen ? 'rotate-90' : ''}`} strokeWidth={2} />
           </button>
         ) : (
-          <span className="w-4 flex-none" aria-hidden />
+          <span className="w-5 flex-none" aria-hidden />
         )}
 
         <Link
@@ -998,7 +1001,7 @@ function NavSection({
   return (
     <section aria-label={label} className="flex flex-col gap-0.5">
       <div className="group/section flex items-center justify-between px-2">
-        <h2 className="text-xs font-medium text-neutral-400">{label}</h2>
+        <h2 className={SIDEBAR_SECTION_HEAD}>{label}</h2>
         {countKey !== undefined && onCount !== undefined && (
           <span ref={countRef} className="relative">
             <button
@@ -1071,8 +1074,8 @@ function NavSection({
                 swallowClick.current = false
                 event.preventDefault()
               }}
-              className={`block truncate rounded px-2 py-1 text-sm hover:bg-neutral-100 dark:hover:bg-neutral-800 ${
-                row.id === currentPageId ? 'bg-neutral-100 dark:bg-neutral-800' : ''
+              className={`block h-[30px] truncate rounded-md px-2 text-sm leading-[30px] ${
+                row.id === currentPageId ? SIDEBAR_ROW_CURRENT : 'text-[rgb(95,94,89)] hover:bg-[rgba(33,27,23,0.05)] dark:text-neutral-400 dark:hover:bg-white/5'
               }${dragging === row.id ? ' opacity-50' : ''}`}
             >
               <PageIconView icon={row.icon} fallback className="mr-1 align-[-0.125em]" />

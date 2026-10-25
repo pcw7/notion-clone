@@ -13,6 +13,8 @@
  * 주소(`/data-sources/{id}/trash`)로 보낸다. 함께 들어간 행은 소스 한 줄로 묶여 따로 나오지 않는다(삭제 루트만).
  */
 
+import { Trash2 } from 'lucide-react'
+import { SIDEBAR_ICON, SIDEBAR_ICON_STROKE, SIDEBAR_ROW } from './sidebar-style'
 import { useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 
@@ -103,9 +105,10 @@ export function TrashPanel({
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
         data-testid="trash-toggle"
-        className="self-start text-sm font-medium text-neutral-500 hover:underline underline-offset-4"
+        className={SIDEBAR_ROW}
       >
-        휴지통 {entries.length > 0 && `(${entries.length})`}
+        <Trash2 aria-hidden className={SIDEBAR_ICON} strokeWidth={SIDEBAR_ICON_STROKE} />
+        <span>휴지통 {entries.length > 0 && `(${entries.length})`}</span>
       </button>
 
       {open && (
