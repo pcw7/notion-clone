@@ -486,6 +486,11 @@ export function Sidebar({
         최근 방문은 아래 — 둘 다 서버가 권한으로 걸러서 준다(`nav/recent.ts`).
         빈 섹션은 그리지 않는다. 아무것도 없는 제목만 남으면 공간만 먹는다.
       */}
+      {/*
+        스크롤 영역(디자인-3) — 위의 바로가기만 고정하고 즐겨찾기부터 휴지통까지 한 영역에서 스크롤한다(노션과 같다). 사이드바가 화면 높이로
+        고정된 뒤로 즐겨찾기 · 최근이 길면 트리만 스크롤하는 영역이 눌려 0 에 가까워졌다(전체 판이 찾았다).
+      */}
+      <div data-testid="sidebar-scroll" className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto">
       <NavSection
         label="즐겨찾기"
         rows={favorites}
@@ -497,7 +502,7 @@ export function Sidebar({
         onCount={store.setCount}
       />
 
-      <div className="flex flex-1 flex-col gap-2 overflow-auto">
+      <div className="flex flex-col gap-2">
         {showTeamspaces && (
           <section aria-label="Teamspaces" data-testid="sidebar-teamspaces" className="flex flex-col gap-0.5">
             <div className="flex items-center justify-between px-2">
@@ -742,6 +747,7 @@ export function Sidebar({
       <NavSection label="최근" rows={shownRecent} workspaceId={workspaceId} currentPageId={currentPageId} countKey="recent" counts={counts} onCount={store.setCount} />
 
       <TrashPanel workspaceId={workspaceId} entries={trash} />
+      </div>
     </nav>
     </>
   )
