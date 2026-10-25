@@ -23572,6 +23572,46 @@ async function main() {
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('디자인 — 공개 화면 (디자인-7b)')) { try {
+      // 공개 화면(/p/)이 편집기와 같은 값이다 — 본문 칸 720px · 16px/24px · 제목 40px/700 · 아이콘 78px · 제목1 30px/600 · 블록 안쪽 8px · 인용 선 ·
+      // 콜아웃 둥글기 10px · 체크박스 16px(완료는 파랑).
+      const { textRun } = await import(new URL('../src/lib/contracts/rich-text.ts', import.meta.url).href)
+      const stamp = Date.now().toString(36)
+      const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
+      const page = (await (await fetch(pagesUrl, { method: 'POST', headers: authed, body: JSON.stringify({ title: `공개 모양 ${stamp}` }) })).json()).page.id
+      await fetch(`${pagesUrl}/${page}`, { method: 'PATCH', headers: authed, body: JSON.stringify({ icon: { type: 'emoji', emoji: '🌿' } }) })
+      const blk = (type, words, properties = {}) => ({ id: randomUUID(), type, title: [textRun(words)], properties, format: {}, children: [] })
+      await saveBody(page, { blocks: [blk('paragraph', '공개 문단'), blk('heading_1', '공개 제목'), blk('quote', '공개 인용'), blk('callout', '공개 콜아웃'), blk('to_do', '끝낸 일', { checked: true })] })
+      const token = (await (await fetch(`${pagesUrl}/${page}/publish`, { method: 'PUT', headers: authed })).json())?.token
+      await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false })
+      try {
+        await send('Page.navigate', { url: `${BASE}/p/${token}` })
+        await waitFor(`!!document.querySelector('[data-testid="public-title"]') && !!document.querySelector('.pub-todo')`, 15000)
+        const m = await evaluate(`(() => {
+          const cs = (sel) => getComputedStyle(document.querySelector(sel))
+          const pageEl = document.querySelector('.pub-page')
+          const pc = getComputedStyle(pageEl)
+          const content = pageEl.getBoundingClientRect().width - parseFloat(pc.paddingLeft) - parseFloat(pc.paddingRight)
+          const p = document.querySelector('.pub-body > .pub-block')
+          const box = cs('.pub-todo-box')
+          return {
+            page: [Math.round(content), cs('.pub-body').lineHeight === 'normal' ? pc.lineHeight : cs('.pub-body').lineHeight].join(' '),
+            head: [cs('.pub-title').fontSize, cs('.pub-title').fontWeight, cs('.pub-icon').fontSize].join(' '),
+            h1: [cs('.pub-heading_1').fontSize, cs('.pub-heading_1').fontWeight].join(' '),
+            block: [getComputedStyle(p).paddingTop, getComputedStyle(p).paddingLeft].join(' '),
+            quote: getComputedStyle(document.querySelector('.pub-quote'), '::before').width,
+            callout: cs('.pub-callout').borderTopLeftRadius,
+            todo: [box.width, box.backgroundColor].join(' '),
+          }
+        })()`)
+        check('★ 공개 화면 — 칸 720 · 24px 줄 · 제목 40px 700 · 아이콘 78px · 제목1 30px 600 · 블록 8px/2px · 인용 선 3px · 콜아웃 10px · 체크박스 16px 파랑',
+          m.page === '720 24px' && m.head === '40px 700 78px' && m.h1 === '30px 600' && m.block === '8px 2px' && m.quote === '3px' && m.callout === '10px'
+            && m.todo === '16px rgb(39, 131, 222)', JSON.stringify(m))
+      } finally {
+        await send('Emulation.clearDeviceMetricsOverride')
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).
