@@ -1121,7 +1121,29 @@ async function main() {
      * XHR 이 끝나기를 잠깐(1.5초까지) 기다리고 ② 화면 가운데로 굴린 뒤 그 점의 맨 위 요소가 그것(또는 그 안)인지 ③ 한 프레임 뒤에도 같은
      * 자리인지 본다. 끝내 맞지 않으면(일부러 덮인 요소를 누르는 검사) 마지막에 잰 자리를 그대로 누른다 — 예전 동작이다.
      */
+    /**
+     * 페이지 메뉴("···" · 디자인-2b) 안의 단추는 메뉴를 열고 누른다 — 메뉴 카드는 늘 DOM 에 있고 닫히면 숨는다(`hidden`). 누르려는 것이
+     * 닫힌 카드 안이면 "···" 을 먼저 누른다. 아니면 아무것도 하지 않는다.
+     */
+    const revealInPageMenu = async (sel) => {
+      const inClosed = await evaluate(`(() => { const el = document.querySelector(${JSON.stringify(sel)}); return !!el && !!el.closest('[data-testid="page-menu-list"][hidden]') })()`).catch(() => false)
+      if (!inClosed) return
+      for (let i = 0; i < 3; i += 1) {
+        const box = await evaluate(`(() => {
+          const el = document.querySelector(${JSON.stringify(sel)})
+          const b = el?.closest('[data-testid="page-menu-list"]')?.parentElement?.querySelector('[data-testid="page-menu"]')
+          if (!b) return null
+          b.scrollIntoView({ block: 'center' })
+          const r = b.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (!box) return
+        await click(box.x, box.y)
+        if (await waitFor(`!document.querySelector(${JSON.stringify(sel)})?.closest('[data-testid="page-menu-list"][hidden]')`, 2000)) return
+      }
+    }
     const clickSelector = async (sel) => {
+      await revealInPageMenu(sel)
       for (let waited = 0; inflightCount() > 0 && waited < 1500; waited += 50) await sleep(50)
       const measure = `new Promise((resolve) => {
         const el = document.querySelector(${JSON.stringify(sel)})
@@ -2104,6 +2126,7 @@ async function main() {
       const row = (id) => `[data-testid="group-row"][data-group-id="${id}"]`
       const panelMessage = () => evaluate(`document.querySelector('[data-testid="group-panel"] [role="alert"], [data-testid="group-panel"] [role="status"]')?.textContent ?? ''`)
       const clickOnSel = async (sel) => {
+        await revealInPageMenu(sel)
         const box = await evaluate(`(() => {
           const el = document.querySelector(${JSON.stringify(sel)})
           if (!el || el.disabled) return null
@@ -2296,6 +2319,7 @@ async function main() {
       const pageAs = (actor, path) => fetch(`${BASE}${path}`, { headers: { cookie: `nc_session=${actor.token}` } })
       const tsMessage = () => evaluate(`document.querySelector('[data-testid="teamspace-error"]')?.textContent ?? ''`)
       const clickOnSel = async (sel) => {
+        await revealInPageMenu(sel)
         const box = await evaluate(`(() => {
           const el = document.querySelector(${JSON.stringify(sel)})
           if (!el || el.disabled) return null
@@ -2459,6 +2483,7 @@ async function main() {
       const docAccess = `${BASE}/api/workspaces/${workspaceId}/pages/${doc}/access`
       const tsRow = `[data-testid="sidebar-teamspace"][data-teamspace-id="${moveTeam}"]`
       const clickOnSel = async (sel) => {
+        await revealInPageMenu(sel)
         const box = await evaluate(`(() => {
           const el = document.querySelector(${JSON.stringify(sel)})
           if (!el || el.disabled) return null
@@ -2538,6 +2563,7 @@ async function main() {
       const tsRow = `[data-testid="sidebar-teamspace"][data-teamspace-id="${dbTeam}"]`
       const dbPageAs = (actor, id) => fetch(`${BASE}/w/${workspaceId}/db/${id}`, { headers: { cookie: `nc_session=${actor.token}` } })
       const clickOnSel = async (sel) => {
+        await revealInPageMenu(sel)
         const box = await evaluate(`(() => {
           const el = document.querySelector(${JSON.stringify(sel)})
           if (!el || el.disabled) return null
@@ -2596,6 +2622,7 @@ async function main() {
       const mateSecret = await makeTeamspace(mateHeaders, secretName, 'private')
       const row = (id) => `[data-testid="teamspace-browse-row"][data-teamspace-id="${id}"]`
       const clickOnSel = async (sel) => {
+        await revealInPageMenu(sel)
         const box = await evaluate(`(() => {
           const el = document.querySelector(${JSON.stringify(sel)})
           if (!el || el.disabled) return null
@@ -2711,6 +2738,7 @@ async function main() {
         method: 'POST', headers: authed, body: JSON.stringify({ principal: { type: 'user', id: archiveMate.userId } }),
       })
       const clickOnSel = async (sel) => {
+        await revealInPageMenu(sel)
         const box = await evaluate(`(() => {
           const el = document.querySelector(${JSON.stringify(sel)})
           if (!el || el.disabled) return null
@@ -2785,6 +2813,7 @@ async function main() {
       const mateHeaders = { ...json, cookie: `nc_session=${privateMate.token}` }
       const pageAs = (actor, path) => fetch(`${BASE}${path}`, { headers: { cookie: `nc_session=${actor.token}` } })
       const clickOnSel = async (sel) => {
+        await revealInPageMenu(sel)
         const box = await evaluate(`(() => {
           const el = document.querySelector(${JSON.stringify(sel)})
           if (!el || el.disabled) return null
@@ -2862,6 +2891,7 @@ async function main() {
       const placeMate = await joinAs(workspaceId, await createUser('표 자리 동료'), 'member')
       const dbPageAs = (actor, id) => fetch(`${BASE}/w/${workspaceId}/db/${id}`, { headers: { cookie: `nc_session=${actor.token}` } })
       const clickOnSel = async (sel) => {
+        await revealInPageMenu(sel)
         const box = await evaluate(`(() => {
           const el = document.querySelector(${JSON.stringify(sel)})
           if (!el || el.disabled) return null
@@ -2987,6 +3017,7 @@ async function main() {
       const groupsUrl = `${BASE}/api/workspaces/${workspaceId}/groups`
       const stamp = Date.now()
       const clickOnSel = async (sel) => {
+        await revealInPageMenu(sel)
         const box = await evaluate(`(() => {
           const el = document.querySelector(${JSON.stringify(sel)})
           if (!el || el.disabled) return null
@@ -3065,6 +3096,7 @@ async function main() {
       const stamp = Date.now()
       const cookieOf = (actor) => ({ cookie: `nc_session=${actor.token}` })
       const clickOnSel = async (sel) => {
+        await revealInPageMenu(sel)
         const box = await evaluate(`(() => {
           const el = document.querySelector(${JSON.stringify(sel)})
           if (!el || el.disabled) return null
@@ -6176,6 +6208,7 @@ async function main() {
       const board = must(await viewMod.createView(ctx, tasks.id, { type: 'board', name: '보드', groupBy: { property_id: doneId } }), '보드')
 
       const clickOn = async (selector) => {
+        await revealInPageMenu(selector)
         const p = await evaluate(`(() => {
           const e = document.querySelector(${JSON.stringify(selector)})
           if (!e) return null
@@ -6766,8 +6799,9 @@ async function main() {
           && document.querySelectorAll('${ITEMS}')[1].getAttribute('aria-current') === 'true'`, 8000),
         String(await previewText()))
       await key('Escape')
-      check('★ Esc 로 닫고 포커스는 "기록" 단추로 돌아간다 · 본문은 그대로다',
-        await waitFor(`!document.querySelector('${DIALOG}') && document.activeElement?.getAttribute('data-testid') === 'page-history-open'
+      // 기록 단추는 페이지 메뉴("···") 안이라(디자인-2b) 닫힌 카드의 줄은 포커스를 받을 수 없다 — 그 메뉴를 연 "···" 단추로 돌아간다
+      check('★ Esc 로 닫고 포커스는 "···"(페이지 메뉴) 단추로 돌아간다 · 본문은 그대로다',
+        await waitFor(`!document.querySelector('${DIALOG}') && document.activeElement?.getAttribute('data-testid') === 'page-menu'
           && (document.querySelector('.blk-editor')?.textContent ?? '').includes('지금 글')`, 5000),
         JSON.stringify([await evaluate(`!!document.querySelector('${DIALOG}')`), await evaluate('document.activeElement?.outerHTML?.slice(0, 80) ?? null')]))
 
@@ -7534,6 +7568,7 @@ async function main() {
         return false
       }
       const clickOn = async (selector) => {
+        await revealInPageMenu(selector)
         const p = await evaluate(`(() => {
           const e = document.querySelector(${JSON.stringify(selector)})
           if (!e) return null
@@ -9251,6 +9286,7 @@ async function main() {
       }
       // `clickOn` 은 데이터베이스 절의 블록 안에만 있다 — 여기서도 쓰려고 같은 것을 둔다(좌표로 진짜 클릭한다).
       const clickOn = async (selector) => {
+        await revealInPageMenu(selector)
         const p = await evaluate(`(() => {
           const e = document.querySelector(${JSON.stringify(selector)})
           if (!e) return null
@@ -9928,7 +9964,7 @@ async function main() {
 
       // 지우기 — 그 표로 돌아간다
       await evaluate(`window.confirm = () => true`)
-      await clickText('삭제')
+      await clickSelector('[data-testid="page-delete"]')
       check('★ 행 페이지에서 지우면 그 데이터베이스로 돌아간다',
         await waitFor(`location.pathname === ${JSON.stringify(`/w/${workspaceId}/db/${dbId}`)}`, 15000),
         String(await evaluate('location.pathname')))
@@ -12798,6 +12834,7 @@ async function main() {
         return { status: r.status, body: await r.json().catch(() => null) }
       }
       const clickOn = async (selector) => {
+        await revealInPageMenu(selector)
         const p = await evaluate(`(() => {
           const e = document.querySelector(${JSON.stringify(selector)})
           if (!e) return null
@@ -12977,6 +13014,7 @@ async function main() {
         return { status: r.status, body: await r.json().catch(() => null) }
       }
       const clickOn = async (selector) => {
+        await revealInPageMenu(selector)
         const p = await evaluate(`(() => {
           const e = document.querySelector(${JSON.stringify(selector)})
           if (!e) return null
@@ -13095,6 +13133,7 @@ async function main() {
         return { status: r.status, body: await r.json().catch(() => null) }
       }
       const clickOn = async (selector) => {
+        await revealInPageMenu(selector)
         const p = await evaluate(`(() => {
           const e = document.querySelector(${JSON.stringify(selector)})
           if (!e) return null
@@ -13175,6 +13214,7 @@ async function main() {
         return { status: r.status, body: await r.json().catch(() => null) }
       }
       const clickOn = async (selector) => {
+        await revealInPageMenu(selector)
         const p = await evaluate(`(() => {
           const e = document.querySelector(${JSON.stringify(selector)})
           if (!e) return null
@@ -13259,6 +13299,7 @@ async function main() {
         return { status: r.status, body: await r.json().catch(() => null) }
       }
       const clickOn = async (selector) => {
+        await revealInPageMenu(selector)
         const p = await evaluate(`(() => {
           const e = document.querySelector(${JSON.stringify(selector)})
           if (!e) return null
@@ -13312,6 +13353,7 @@ async function main() {
         return { status: r.status, body: await r.json().catch(() => null) }
       }
       const clickOn = async (selector) => {
+        await revealInPageMenu(selector)
         const p = await evaluate(`(() => {
           const e = document.querySelector(${JSON.stringify(selector)})
           if (!e) return null
@@ -13446,6 +13488,7 @@ async function main() {
         return { status: r.status, body: await r.json().catch(() => null) }
       }
       const clickOn = async (selector) => {
+        await revealInPageMenu(selector)
         const p = await evaluate(`(() => {
           const e = document.querySelector(${JSON.stringify(selector)})
           if (!e) return null
@@ -13528,6 +13571,7 @@ async function main() {
         return { status: r.status, body: await r.json().catch(() => null) }
       }
       const clickOn = async (selector) => {
+        await revealInPageMenu(selector)
         const p = await evaluate(`(() => {
           const e = document.querySelector(${JSON.stringify(selector)})
           if (!e) return null
@@ -13623,6 +13667,7 @@ async function main() {
         return { status: r.status, body: await r.json().catch(() => null) }
       }
       const clickOn = async (selector) => {
+        await revealInPageMenu(selector)
         const p = await evaluate(`(() => {
           const e = document.querySelector(${JSON.stringify(selector)})
           if (!e) return null
@@ -13747,6 +13792,7 @@ async function main() {
         return { status: r.status, body: await r.json().catch(() => null) }
       }
       const clickOn = async (selector) => {
+        await revealInPageMenu(selector)
         const p = await evaluate(`(() => {
           const e = document.querySelector(${JSON.stringify(selector)})
           if (!e) return null
@@ -14079,6 +14125,7 @@ async function main() {
         return { status: r.status, body: await r.json().catch(() => null) }
       }
       const clickOn = async (selector) => {
+        await revealInPageMenu(selector)
         const p = await evaluate(`(() => {
           const e = document.querySelector(${JSON.stringify(selector)})
           if (!e) return null
@@ -14196,6 +14243,7 @@ async function main() {
         return { status: r.status, body: await r.json().catch(() => null) }
       }
       const clickOn = async (selector) => {
+        await revealInPageMenu(selector)
         const p = await evaluate(`(() => {
           const e = document.querySelector(${JSON.stringify(selector)})
           if (!e) return null
@@ -14332,6 +14380,7 @@ async function main() {
         return { status: r.status, body: await r.json().catch(() => null) }
       }
       const clickOn = async (selector) => {
+        await revealInPageMenu(selector)
         const p = await evaluate(`(() => {
           const e = document.querySelector(${JSON.stringify(selector)})
           if (!e) return null
@@ -14457,6 +14506,7 @@ async function main() {
         return { status: r.status, body: await r.json().catch(() => null) }
       }
       const clickOn = async (selector) => {
+        await revealInPageMenu(selector)
         const p = await evaluate(`(() => {
           const e = document.querySelector(${JSON.stringify(selector)})
           if (!e) return null
@@ -14625,6 +14675,7 @@ async function main() {
         return { status: r.status, body: await r.json().catch(() => null) }
       }
       const clickOn = async (selector) => {
+        await revealInPageMenu(selector)
         const p = await evaluate(`(() => {
           const e = document.querySelector(${JSON.stringify(selector)})
           if (!e) return null
@@ -14709,6 +14760,7 @@ async function main() {
         return { status: r.status, body: await r.json().catch(() => null) }
       }
       const clickOn = async (selector) => {
+        await revealInPageMenu(selector)
         const p = await evaluate(`(() => {
           const e = document.querySelector(${JSON.stringify(selector)})
           if (!e) return null
@@ -15835,8 +15887,9 @@ async function main() {
         JSON.stringify((await types()).length))
       check('겹친 항목이 없다', new Set(await evaluate(`[...document.querySelectorAll('${DIALOG} time')].map((t) => t.dateTime)`)).size === 33)
       await key('Escape')
-      check('★ Esc 로 닫고 포커스는 "업데이트" 단추로 돌아간다',
-        await waitFor(`!document.querySelector('${DIALOG}') && document.activeElement?.getAttribute('data-testid') === 'page-updates-open'`, 5000),
+      // 업데이트 단추는 페이지 메뉴("···") 안이다(디자인-2b) — 그 메뉴를 연 "···" 단추로 돌아간다
+      check('★ Esc 로 닫고 포커스는 "···"(페이지 메뉴) 단추로 돌아간다',
+        await waitFor(`!document.querySelector('${DIALOG}') && document.activeElement?.getAttribute('data-testid') === 'page-menu'`, 5000),
         String(await evaluate('document.activeElement?.outerHTML?.slice(0, 80) ?? null')))
 
       // 활동이 없는 페이지(4d-2 전에 만든 것처럼) — 빈 상태를 말한다
@@ -20006,6 +20059,7 @@ async function main() {
           const want = ${JSON.stringify(names.map((n) => rowsByName[n]))}
           return ids.length === want.length && want.every((id) => ids.includes(id)) })()`, 10000)
       const clickOn = async (selector) => {
+        await revealInPageMenu(selector)
         const p = await evaluate(`(() => {
           const e = document.querySelector(${JSON.stringify(selector)})
           if (!e) return null
@@ -20083,6 +20137,7 @@ async function main() {
         return { status: r.status, body: await r.json().catch(() => null) }
       }
       const clickOn = async (selector) => {
+        await revealInPageMenu(selector)
         const p = await evaluate(`(() => {
           const e = document.querySelector(${JSON.stringify(selector)})
           if (!e) return null
@@ -20167,6 +20222,7 @@ async function main() {
         return { status: r.status, body: await r.json().catch(() => null) }
       }
       const clickOn = async (selector) => {
+        await revealInPageMenu(selector)
         const p = await evaluate(`(() => {
           const e = document.querySelector(${JSON.stringify(selector)})
           if (!e) return null
@@ -20315,6 +20371,7 @@ async function main() {
         return { status: r.status, body: await r.json().catch(() => null) }
       }
       const clickOn = async (selector) => {
+        await revealInPageMenu(selector)
         const p = await evaluate(`(() => {
           const e = document.querySelector(${JSON.stringify(selector)})
           if (!e) return null
@@ -20381,6 +20438,7 @@ async function main() {
         return { status: r.status, body: await r.json().catch(() => null) }
       }
       const clickOn = async (selector) => {
+        await revealInPageMenu(selector)
         const p = await evaluate(`(() => {
           const e = document.querySelector(${JSON.stringify(selector)})
           if (!e) return null
@@ -20430,6 +20488,7 @@ async function main() {
         return { status: r.status, body: await r.json().catch(() => null) }
       }
       const clickOn = async (selector) => {
+        await revealInPageMenu(selector)
         const p = await evaluate(`(() => {
           const e = document.querySelector(${JSON.stringify(selector)})
           if (!e) return null
@@ -20490,6 +20549,7 @@ async function main() {
         return { status: r.status, body: await r.json().catch(() => null) }
       }
       const clickOn = async (selector) => {
+        await revealInPageMenu(selector)
         const p = await evaluate(`(() => {
           const e = document.querySelector(${JSON.stringify(selector)})
           if (!e) return null
@@ -20803,6 +20863,7 @@ async function main() {
         return { status: r.status, body: await r.json().catch(() => null) }
       }
       const clickOn = async (selector) => {
+        await revealInPageMenu(selector)
         const p = await evaluate(`(() => {
           const e = document.querySelector(${JSON.stringify(selector)})
           if (!e) return null
@@ -20848,6 +20909,7 @@ async function main() {
         return { status: r.status, body: await r.json().catch(() => null) }
       }
       const clickOn = async (selector) => {
+        await revealInPageMenu(selector)
         const p = await evaluate(`(() => {
           const e = document.querySelector(${JSON.stringify(selector)})
           if (!e) return null
@@ -20938,6 +21000,7 @@ async function main() {
         return { status: r.status, body: await r.json().catch(() => null) }
       }
       const clickOn = async (selector) => {
+        await revealInPageMenu(selector)
         const p = await evaluate(`(() => {
           const e = document.querySelector(${JSON.stringify(selector)})
           if (!e) return null
@@ -20994,6 +21057,7 @@ async function main() {
         return { status: r.status, body: await r.json().catch(() => null) }
       }
       const clickOn = async (selector) => {
+        await revealInPageMenu(selector)
         const p = await evaluate(`(() => {
           const e = document.querySelector(${JSON.stringify(selector)})
           if (!e) return null
@@ -21050,6 +21114,7 @@ async function main() {
         return { status: r.status, body: await r.json().catch(() => null) }
       }
       const clickOn = async (selector) => {
+        await revealInPageMenu(selector)
         const p = await evaluate(`(() => {
           const e = document.querySelector(${JSON.stringify(selector)})
           if (!e) return null
@@ -21122,6 +21187,7 @@ async function main() {
         return { status: r.status, body: await r.json().catch(() => null) }
       }
       const clickOn = async (selector) => {
+        await revealInPageMenu(selector)
         const p = await evaluate(`(() => {
           const e = document.querySelector(${JSON.stringify(selector)})
           if (!e) return null
@@ -21182,6 +21248,7 @@ async function main() {
         return { status: r.status, body: await r.json().catch(() => null) }
       }
       const clickOn = async (selector) => {
+        await revealInPageMenu(selector)
         const p = await evaluate(`(() => {
           const e = document.querySelector(${JSON.stringify(selector)})
           if (!e) return null
@@ -21259,6 +21326,7 @@ async function main() {
         return { status: r.status, body: await r.json().catch(() => null) }
       }
       const clickOn = async (selector) => {
+        await revealInPageMenu(selector)
         const p = await evaluate(`(() => {
           const e = document.querySelector(${JSON.stringify(selector)})
           if (!e) return null
@@ -21360,6 +21428,7 @@ async function main() {
         return { status: r.status, body: await r.json().catch(() => null) }
       }
       const clickOn = async (selector) => {
+        await revealInPageMenu(selector)
         const p = await evaluate(`(() => {
           const e = document.querySelector(${JSON.stringify(selector)})
           if (!e) return null
@@ -21435,6 +21504,7 @@ async function main() {
         return { status: r.status, body: await r.json().catch(() => null) }
       }
       const clickOn = async (selector) => {
+        await revealInPageMenu(selector)
         const p = await evaluate(`(() => {
           const e = document.querySelector(${JSON.stringify(selector)})
           if (!e) return null
@@ -21551,6 +21621,7 @@ async function main() {
         return { status: r.status, body: await r.json().catch(() => null) }
       }
       const clickOn = async (selector) => {
+        await revealInPageMenu(selector)
         const p = await evaluate(`(() => {
           const e = document.querySelector(${JSON.stringify(selector)})
           if (!e) return null
@@ -22904,6 +22975,50 @@ async function main() {
       } finally {
         await send('Emulation.clearDeviceMetricsOverride')
       }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
+    if (sectionIf('디자인 — 페이지 메뉴 "···" (디자인-2b)')) { try {
+      // 상단 바에는 코멘트 · 공유 · 즐겨찾기 · "···" 만 · 나머지(잠그기 · 옮기기 · 복제 · 버전 기록 · 업데이트 · 내보내기 · 휴지통으로 이동)는
+      // "···" 메뉴 안(노션 앱 실측: 폭 256 · 둥글기 10 · 줄 28). 줄을 누르면 목록 대신 그 패널이 카드 자리에 · Esc 면 닫고 포커스는 "···".
+      const stamp = Date.now().toString(36)
+      const page = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: JSON.stringify({ title: `메뉴 ${stamp}` }) })).json()).page.id
+      const LIST = '[data-testid="page-menu-list"]'
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+      await waitFor(`!!document.querySelector('[data-testid="page-menu"]') && !!document.querySelector('${LIST}')`, 15000)
+      await waitHydrated('[data-testid="page-menu"]')
+      const bar = await evaluate(`(() => {
+        const bar = document.querySelector('[data-testid="page-topbar"]')
+        const visible = [...bar.querySelectorAll('button')].filter((b) => !b.closest('${LIST}')).map((b) => b.getAttribute('data-testid') || b.textContent.trim())
+        return { visible, closedHidden: document.querySelector('${LIST}').hidden }
+      })()`)
+      check('★ 상단 바에는 코멘트 · 공유 · 즐겨찾기 · "···" 만 — 이동 · 기록 · 내보내기 · 복제 · 삭제는 닫힌 메뉴 안',
+        bar.closedHidden && bar.visible.includes('page-menu') && !bar.visible.some((v) => ['move-open', 'page-history-open', 'export-button', 'page-duplicate', 'page-delete', 'page-updates-open'].includes(v)),
+        JSON.stringify(bar))
+
+      await clickSelector('[data-testid="page-menu"]')
+      const opened = await waitFor(`!document.querySelector('${LIST}').hidden`, 3000)
+      const card = await evaluate(`(() => {
+        const c = document.querySelector('${LIST}'); const cs = getComputedStyle(c); const r = c.getBoundingClientRect()
+        const rows = [...c.querySelectorAll('button')].filter((b) => b.getBoundingClientRect().height > 0)
+        return { width: Math.round(r.width), radius: cs.borderRadius, shadow: cs.boxShadow !== 'none', rowHeights: [...new Set(rows.map((b) => Math.round(b.getBoundingClientRect().height)))], labels: rows.map((b) => b.textContent.trim()) }
+      })()`)
+      check('★ "···" 을 누르면 메뉴 — 폭 256 · 둥글기 10px · 그림자 · 줄 높이 28 · 옮기기 · 복제 · 버전 기록 · 업데이트 · 내보내기 · 휴지통으로 이동',
+        opened && card.width === 256 && card.radius === '10px' && card.shadow && JSON.stringify(card.rowHeights) === '[28]'
+          && ['옮기기', '복제', '버전 기록', '업데이트', '내보내기', '휴지통으로 이동'].every((l) => card.labels.includes(l)), JSON.stringify(card))
+
+      await clickSelector('[data-testid="move-open"]')
+      const swapped = await waitFor(`(() => {
+        const list = document.querySelector('${LIST}'); const picker = document.querySelector('[data-testid="move-picker"]')
+        if (!picker || list.hidden) return false
+        const row = document.querySelector('[data-testid="move-open"]')
+        return list.hasAttribute('data-holding') && getComputedStyle(row).visibility === 'hidden' && getComputedStyle(picker).visibility === 'visible' && picker.getBoundingClientRect().height > 0
+      })()`, 3000)
+      check('★ 줄(옮기기)을 누르면 목록 대신 그 패널이 메뉴 자리에 — 줄은 감춰지고 고르개가 보인다', swapped,
+        JSON.stringify(await evaluate(`({ holding: document.querySelector('${LIST}').getAttribute('data-holding'), picker: !!document.querySelector('[data-testid="move-picker"]') })`)))
+
+      await key('Escape')
+      const closed = await waitFor(`document.querySelector('${LIST}').hidden && !document.querySelector('[data-testid="move-picker"]') && document.activeElement?.getAttribute('data-testid') === 'page-menu'`, 3000)
+      check('Esc 면 패널 · 메뉴가 닫히고 포커스는 "···" 단추로', closed, String(await evaluate(`document.activeElement?.getAttribute('data-testid') ?? document.activeElement?.tagName`)))
     } catch (thrown) { await sectionThrew(thrown) } }
 
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
@@ -24875,6 +24990,7 @@ async function main() {
         return { status: r.status, body: await r.json().catch(() => null) }
       }
       const clickOn = async (selector) => {
+        await revealInPageMenu(selector)
         const p = await evaluate(`(() => {
           const e = document.querySelector(${JSON.stringify(selector)})
           if (!e) return null

@@ -20,7 +20,8 @@
  */
 
 import { TOPBAR_BUTTON } from '../topbar-style'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { MENU_PANEL_PLACE, MENU_ROW, usePageMenu } from './page-menu'
 import { useRouter } from 'next/navigation'
 
 import type { PageIcon } from '@/lib/block/page-icon'
@@ -72,6 +73,16 @@ export function MovePageControl({
   const [error, setError] = useState<string | null>(null)
   /** 확인을 기다리는 이동 — 미리보기가 볼 수 있는 사람이 바뀐다고 했다. */
   const [pending, setPending] = useState<{ body: MoveBody; preview: MovePreviewView } | null>(null)
+  // 페이지 메뉴("···") 안이면 줄 모양 · 패널은 카드 자리(디자인-2b · `page-menu.tsx`)
+  const menu = usePageMenu()
+  useEffect(() => menu?.register('move', () => {
+    setOpen(false)
+    setPending(null)
+  }), [menu])
+  useEffect(() => {
+    menu?.hold('move', open)
+  }, [menu, open])
+  useEffect(() => () => menu?.hold('move', false), [menu])
 
   // ⚠ 개인 최상위도 부모는 워크스페이스다(판결문 C-9) — 주인까지 봐야 "현재 위치"가 맞는다(7c-7).
   const atWorkspaceRoot = currentParentId === null && currentTeamspaceId === null && !currentPrivate
@@ -135,7 +146,7 @@ export function MovePageControl({
     })
 
   return (
-    <div className="relative">
+    <div className={menu ? '' : 'relative'}>
       <button
         type="button"
         onClick={() => {
@@ -144,15 +155,15 @@ export function MovePageControl({
         }}
         aria-expanded={open}
         data-testid="move-open"
-        className={TOPBAR_BUTTON}
+        className={menu ? MENU_ROW : TOPBAR_BUTTON}
       >
-        이동
+        {menu ? '옮기기' : '이동'}
       </button>
 
       {open && (
         <div
           data-testid="move-picker"
-          className="absolute right-0 z-10 mt-1 w-72 rounded-lg border border-neutral-200 bg-white p-2 shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
+          className={`${menu ? MENU_PANEL_PLACE : 'absolute right-0 z-10 mt-1'} w-72 rounded-lg border border-neutral-200 bg-white p-2 shadow-lg dark:border-neutral-700 dark:bg-neutral-900`}
         >
           {pending !== null ? (
             <div data-testid="move-preview" className="flex flex-col gap-2 p-1">

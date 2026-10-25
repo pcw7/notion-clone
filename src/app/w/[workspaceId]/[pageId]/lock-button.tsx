@@ -12,7 +12,8 @@
  */
 
 import { TOPBAR_BUTTON } from '../topbar-style'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { MENU_PANEL_PLACE, MENU_ROW, usePageMenu } from './page-menu'
 import { useRouter } from 'next/navigation'
 
 export function LockButton({
@@ -21,6 +22,7 @@ export function LockButton({
   canToggle,
   reloadOnUnlock,
   hint,
+  part = 'both',
 }: {
   /** `PUT` 이 잠그고 `DELETE` 가 푼다 — `…/pages/{id}/lock` · `…/databases/{id}/lock`. */
   lockUrl: string
@@ -30,10 +32,21 @@ export function LockButton({
   reloadOnUnlock: boolean
   /** "잠김"에 걸어 두는 설명 — 무엇이 막히는가. */
   hint: string
+  /** 무엇을 그리나(디자인-2b) — 상단 바의 "잠김" 표시(`badge`) · 페이지 메뉴의 단추(`toggle`) · 둘 다(데이터베이스 화면). */
+  part?: 'badge' | 'toggle' | 'both'
 }) {
   const router = useRouter()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // 페이지 메뉴("···") 안이면 줄 모양 · 패널은 카드 자리(디자인-2b · `page-menu.tsx`)
+  const menu = usePageMenu()
+  useEffect(() => menu?.register('lock', () => {
+    setError(null)
+  }), [menu])
+  useEffect(() => {
+    menu?.hold('lock', error !== null)
+  }, [menu, error])
+  useEffect(() => () => menu?.hold('lock', false), [menu])
 
   async function toggle(): Promise<void> {
     setBusy(true)
@@ -54,27 +67,29 @@ export function LockButton({
   }
 
   if (!canToggle && !locked) return null
+  if (part === 'toggle' && !canToggle) return null
+  if (part === 'badge' && !locked) return null
   return (
-    <span className="flex flex-none items-center gap-1">
-      {locked && (
+    <span className={menu ? 'flex w-full flex-col' : 'flex flex-none items-center gap-1'}>
+      {locked && part !== 'toggle' && (
         <span data-testid="page-locked" className="text-xs text-neutral-500" title={hint}>
           🔒 잠김
         </span>
       )}
-      {canToggle && (
+      {canToggle && part !== 'badge' && (
         <button
           type="button"
           data-testid="page-lock-toggle"
           aria-pressed={locked}
           disabled={busy}
           onClick={() => void toggle()}
-          className={TOPBAR_BUTTON}
+          className={menu ? MENU_ROW : TOPBAR_BUTTON}
         >
           {locked ? '잠금 풀기' : '잠그기'}
         </button>
       )}
       {error !== null && (
-        <span role="alert" className="text-xs text-red-600">
+        <span role="alert" className={menu ? `${MENU_PANEL_PLACE} w-64 rounded-lg border border-neutral-200 bg-white p-3 text-xs text-red-600 shadow-lg dark:border-neutral-700 dark:bg-neutral-900` : 'text-xs text-red-600'}>
           {error}
         </span>
       )}

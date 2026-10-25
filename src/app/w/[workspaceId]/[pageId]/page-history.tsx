@@ -17,6 +17,7 @@
 
 import { TOPBAR_BUTTON } from '../topbar-style'
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { MENU_ROW, usePageMenu } from './page-menu'
 
 import type { VersionSummary } from '@/lib/history/version'
 import type { EditorDoc } from '@/lib/editor/document'
@@ -42,10 +43,21 @@ type Preview = { readonly id: string; readonly doc: EditorDoc; readonly labels: 
 export function PageHistoryButton({ workspaceId, pageId }: { workspaceId: string; pageId: string }) {
   const [open, setOpen] = useState(false)
   const triggerRef = useRef<HTMLButtonElement | null>(null)
+  // 페이지 메뉴("···") 안이면 줄 모양 · 패널은 카드 자리(디자인-2b · `page-menu.tsx`)
+  const menu = usePageMenu()
+  useEffect(() => menu?.register('history', () => {
+    setOpen(false)
+  }), [menu])
+  useEffect(() => {
+    menu?.hold('history', open)
+  }, [menu, open])
+  useEffect(() => () => menu?.hold('history', false), [menu])
   const close = useCallback(() => {
     setOpen(false)
-    triggerRef.current?.focus()
-  }, [])
+    // 메뉴 안의 줄은 닫힌 카드 안이라 포커스를 받을 수 없다 — "···" 단추로
+    if (menu) menu.focusTrigger()
+    else triggerRef.current?.focus()
+  }, [menu])
   return (
     <>
       <button
@@ -55,9 +67,9 @@ export function PageHistoryButton({ workspaceId, pageId }: { workspaceId: string
         aria-haspopup="dialog"
         aria-expanded={open}
         onClick={() => setOpen(true)}
-        className={TOPBAR_BUTTON}
+        className={menu ? MENU_ROW : TOPBAR_BUTTON}
       >
-        기록
+        {menu ? '버전 기록' : '기록'}
       </button>
       {open && <PageHistoryDialog workspaceId={workspaceId} pageId={pageId} onClose={close} />}
     </>
@@ -196,7 +208,7 @@ function PageHistoryDialog({ workspaceId, pageId, onClose }: { workspaceId: stri
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) onClose()
       }}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
+      className="visible fixed inset-0 z-50 flex items-center justify-center bg-black/30"
     >
       <div
         role="dialog"

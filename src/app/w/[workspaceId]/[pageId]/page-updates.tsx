@@ -14,6 +14,7 @@
 
 import { TOPBAR_BUTTON } from '../topbar-style'
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { MENU_PANEL_PLACE, MENU_ROW, usePageMenu } from './page-menu'
 
 import type { PageActivityType } from '@/lib/notification/page-activity'
 import { formatVersionTime } from '@/lib/history/format'
@@ -37,6 +38,17 @@ export function PageUpdatesButton({ workspaceId, pageId }: { workspaceId: string
   const [error, setError] = useState<string | null>(null)
   const ticket = useRef(0)
   const triggerRef = useRef<HTMLButtonElement | null>(null)
+  // 페이지 메뉴("···") 안이면 줄 모양 · 패널은 카드 자리(디자인-2b · `page-menu.tsx`)
+  const menu = usePageMenu()
+  useEffect(() => menu?.register('updates', () => {
+    ticket.current++
+    setOpen(false)
+    setLoading(false)
+  }), [menu])
+  useEffect(() => {
+    menu?.hold('updates', open)
+  }, [menu, open])
+  useEffect(() => () => menu?.hold('updates', false), [menu])
 
   const load = useCallback(
     async (cursor: string | null) => {
@@ -70,8 +82,9 @@ export function PageUpdatesButton({ workspaceId, pageId }: { workspaceId: string
     ticket.current++
     setOpen(false)
     setLoading(false)
-    triggerRef.current?.focus()
-  }, [])
+    if (menu) menu.focusTrigger()
+    else triggerRef.current?.focus()
+  }, [menu])
 
   useEffect(() => {
     if (!open) return
@@ -83,7 +96,7 @@ export function PageUpdatesButton({ workspaceId, pageId }: { workspaceId: string
   }, [open, close])
 
   return (
-    <div className="relative">
+    <div className={menu ? '' : 'relative'}>
       <button
         ref={triggerRef}
         type="button"
@@ -99,7 +112,7 @@ export function PageUpdatesButton({ workspaceId, pageId }: { workspaceId: string
           setListed(null)
           void load(null)
         }}
-        className={TOPBAR_BUTTON}
+        className={menu ? MENU_ROW : TOPBAR_BUTTON}
       >
         업데이트
       </button>
@@ -109,7 +122,7 @@ export function PageUpdatesButton({ workspaceId, pageId }: { workspaceId: string
           role="dialog"
           aria-label="업데이트"
           data-testid="page-updates"
-          className="absolute right-0 z-20 mt-2 flex max-h-[32rem] w-80 flex-col gap-2 overflow-y-auto rounded-lg border border-neutral-200 bg-white p-4 shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
+          className={`${menu ? MENU_PANEL_PLACE : 'absolute right-0 z-20 mt-2'} flex max-h-[32rem] w-80 flex-col gap-2 overflow-y-auto rounded-lg border border-neutral-200 bg-white p-4 shadow-lg dark:border-neutral-700 dark:bg-neutral-900`}
         >
           <h2 className="text-sm font-semibold">업데이트</h2>
           {error !== null && (
