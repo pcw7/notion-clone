@@ -4,6 +4,7 @@
  *   ① 다시 읽은 것으로 바꾼다 — 새 행이 서고 빠진 행은 빠진다 · 값이 바뀐 행은 새 값
  *   ② 펼쳐 둔 행의 자식이 다시 선다(펼침이 풀리지 않는다) · 사라진 행의 펼침은 빠진다
  *   ③ 내가 고친 행이 결과에 없으면 옛 자리에 남기고 알린다 · 다른 사람이 고쳐 나간 행은 빠진다
+ *   ④ 늦게 온 옛 결과는 화면의 새 행(더 새 버전)을 덮지 않는다
  */
 
 import { test, describe } from 'node:test'
@@ -71,5 +72,32 @@ describe('③ 내가 고친 행', () => {
     const merged = flat([row('mine')], [row('mine', '고침')], new Set(['mine']))
     assert.deepEqual([...merged.outside], [])
     assert.equal(merged.rows[0]!.title, '고침')
+  })
+})
+
+describe('④ 늦게 온 옛 결과', () => {
+  const at = (id: string, title: string, version: string): RowJson => ({ ...row(id, title), version })
+
+  test('★ 화면의 행이 더 새 버전이면 지킨다 — 저장 응답이 먼저 왔고 저장 전에 읽은 결과가 늦게 왔다', () => {
+    const merged = flat([at('a', '새 제목', '5'), at('b', 'B', '1')], [at('a', '옛 제목', '4'), at('b', 'B!', '2')], new Set(['a']))
+    assert.deepEqual(merged.rows.map((r) => [r.id, r.title, r.version]), [['a', '새 제목', '5'], ['b', 'B!', '2']])
+  })
+
+  test('같은 버전이거나 다시 읽은 것이 더 새면 다시 읽은 것 · 읽을 수 없는 버전도 다시 읽은 것', () => {
+    assert.equal(flat([at('a', '화면', '3')], [at('a', '서버', '3')]).rows[0]!.title, '서버')
+    assert.equal(flat([at('a', '화면', '3')], [at('a', '서버', '7')]).rows[0]!.title, '서버')
+    assert.equal(flat([at('a', '화면', 'x')], [at('a', '서버', '1')]).rows[0]!.title, '서버')
+  })
+
+  test('펼쳐 둔 자식에도 같다', () => {
+    const merged = mergeReloaded({
+      previous: [at('p', 'P', '1'), at('c', '새 자식', '9')],
+      depthOf: new Map([['p', 0], ['c', 1]]),
+      top: [at('p', 'P', '1')],
+      childrenOf: new Map([['p', [at('c', '옛 자식', '8')]]]),
+      expanded: new Set(['p']),
+      touched: none,
+    })
+    assert.deepEqual(merged.rows.map((r) => r.title), ['P', '새 자식'])
   })
 })
