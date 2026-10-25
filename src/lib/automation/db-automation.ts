@@ -370,7 +370,8 @@ export type DbAutomationRun = {
 
 /**
  * 실행 기록 — 새것부터 보관 상한(50)만큼. 트리거된 행의 제목은 **보는 사람의 권한으로** 읽는다(정본 화면 ⓓ — relation 의 제목 맵과 같은
- * 셋: 제목 · 볼 수 없음(null) · 키 없음(지워짐)). 문은 정의와 같다.
+ * 셋: 제목 · 볼 수 없음(null) · 키 없음(지워짐)). `add_page_to` 단계가 만든 행(`pageId` — ⑥)도 같은 맵에 싣는다(10n-74 · HANDOFF §3.2-307 —
+ * 화면이 그 행을 열어 준다 · 다른 표의 행이어도 보는 사람의 권한이다). 문은 정의와 같다.
  */
 /** 웹훅 단계의 배달 상태(정본 [보강] 자동화 엔진 ⑮) — 주소 · 몸 · 응답 본문은 싣지 않는다. */
 export type DeliveryState = { readonly status: string; readonly lastStatus: number | null }
@@ -417,7 +418,12 @@ export async function listDbAutomationRuns(
     return { ok: true, value: { runs, deliveries } } as const
   })
   if (!listed.ok) return listed
-  const { labels } = await loadRelationLabels(ctx, listed.value.runs.flatMap((r) => (r.triggerPageId === null ? [] : [r.triggerPageId])))
+  // 트리거된 행 · 단계가 만든 행(10n-74) — 한 맵에
+  const ids = listed.value.runs.flatMap((r) => [
+    ...(r.triggerPageId === null ? [] : [r.triggerPageId]),
+    ...r.steps.flatMap((s) => (typeof s.pageId === 'string' ? [s.pageId] : [])),
+  ])
+  const { labels } = await loadRelationLabels(ctx, [...new Set(ids)])
   return { ok: true, value: { runs: listed.value.runs, titles: labels, deliveries: listed.value.deliveries } }
 }
 
