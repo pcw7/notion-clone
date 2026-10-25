@@ -23346,6 +23346,47 @@ async function main() {
         m.inside && m.afterOutside && Math.abs(m.sameX) <= 1 && m.box === 'rgba(135, 131, 120, 0.12) 10px' && m.line === 'rgba(0, 0, 0, 0)', JSON.stringify(m))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('디자인 — 페이지 머리 (디자인-4e)')) { try {
+      // 페이지 머리가 노션 실측과 같다 — 아이콘이 있으면 상단 바 아래 96px · 78px · 제목까지 12px, 없으면 제목 위 84px. "아이콘 추가" 를 보여도
+      // 제목은 움직이지 않는다(그 자리 안에 겹쳐 선다).
+      const stamp = Date.now().toString(36)
+      const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
+      const mk = async (title) => (await (await fetch(pagesUrl, { method: 'POST', headers: authed, body: JSON.stringify({ title }) })).json()).page.id
+      const withIcon = await mk(`머리 아이콘 ${stamp}`)
+      const bare = await mk(`머리 없음 ${stamp}`)
+      await fetch(`${pagesUrl}/${withIcon}`, { method: 'PATCH', headers: authed, body: JSON.stringify({ icon: { type: 'emoji', emoji: '🌱' } }) })
+      const TITLE = 'input[aria-label="페이지 제목"]'
+      const measure = () => evaluate(`(() => {
+        const bar = document.querySelector('[data-testid="page-topbar"]').getBoundingClientRect()
+        const title = document.querySelector('${TITLE}').getBoundingClientRect()
+        const icon = document.querySelector('[data-testid="page-icon"]')?.getBoundingClientRect() ?? null
+        return {
+          titleFromBar: Math.round(title.top - bar.bottom),
+          icon: icon && [Math.round(icon.top - bar.bottom), Math.round(icon.height), Math.round(title.top - icon.bottom)].join(' '),
+        }
+      })()`)
+      await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false })
+      try {
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${withIcon}` })
+        await waitFor(`!!document.querySelector('[data-testid="page-icon"]') && !!document.querySelector('${TITLE}')`, 15000)
+        const a = await measure()
+        check('★ 아이콘이 있는 페이지 — 상단 바 아래 96px · 아이콘 78px · 제목까지 12px', a.icon === '96 78 12', JSON.stringify(a))
+
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${bare}` })
+        await waitFor(`!!document.querySelector('[data-testid="page-icon-add"]') && !!document.querySelector('${TITLE}')`, 15000)
+        await waitHydrated('[data-testid="page-icon-add"]')
+        const b = await measure()
+        const t = await rect(TITLE)
+        await move(t.x + 20, t.y + t.h / 2)
+        const shown = await waitFor(`getComputedStyle(document.querySelector('[data-testid="page-icon-add"]')).opacity === '1'`, 2000)
+        const c = await measure()
+        check('★ 아이콘이 없는 페이지 — 제목 위 84px · "아이콘 추가" 를 보여도 제목이 움직이지 않는다',
+          b.icon === null && Math.abs(b.titleFromBar - 84) <= 1 && shown && c.titleFromBar === b.titleFromBar, JSON.stringify({ b, shown, c }))
+      } finally {
+        await send('Emulation.clearDeviceMetricsOverride')
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).
@@ -24327,7 +24368,10 @@ async function main() {
           JSON.stringify(details))
 
         await evaluate(`(() => { const s = document.querySelector('${PANEL} [data-testid="audit-type"]'); s.value = 'workspace.setting_changed'; s.dispatchEvent(new Event('change', { bubbles: true })); return true })()`)
-        const filtered = await waitFor(`(() => { const rows = [...document.querySelectorAll('${PANEL} [data-testid="audit-row"]')]; return rows.length > 0 && rows.every((r) => r.dataset.type === 'workspace.setting_changed') })()`, 8000)
+        // 줄이 모두 그 종류인 것만으로는 거르기가 반영됐다고 할 수 없다 — 쌓인 기록이 이미 모두 설정 변경이면 바꾸기 전에도 참이다(전체 판 #466 이
+        // 링크가 바뀌기 전의 `/audit/csv` 를 읽었다). CSV 링크가 그 거르기를 담을 때까지 기다린다.
+        const filtered = await waitFor(`(() => { const rows = [...document.querySelectorAll('${PANEL} [data-testid="audit-row"]')]; return rows.length > 0 && rows.every((r) => r.dataset.type === 'workspace.setting_changed')
+          && (document.querySelector('${PANEL} [data-testid="audit-csv"]')?.getAttribute('href') ?? '').endsWith('?type=workspace.setting_changed') })()`, 8000)
         const csvHref = await evaluate(`document.querySelector('${PANEL} [data-testid="audit-csv"]')?.getAttribute('href')`)
         const csv = await fetch(`${BASE}${csvHref}`, { headers: authed })
         // `text()` 는 UTF-8 BOM 을 떼고 읽는다 — BOM 은 바이트로 본다

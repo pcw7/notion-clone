@@ -313,9 +313,12 @@ export async function PageContent({
             : 'contents'
         }
       >
-      {/* 아이콘(8c-1)은 제목 위에 선다 — "아이콘 추가"는 이 머리에 마우스를 올리면 보인다(`group/header`). */}
-      <div className="group/header flex flex-col gap-2">
-        <PageIconControl workspaceId={workspaceId} pageId={page.id} initialIcon={page.icon} readOnly={access !== 'edit'} />
+      {/*
+        아이콘(8c-1)은 제목 위에 선다 — "아이콘 추가"는 이 머리에 마우스를 올리면 보인다(`group/header`). 간격은 아이콘 칸이 쥔다(디자인-4e —
+        노션 실측: 아이콘이 있으면 상단 바 아래 96px · 78px · 제목까지 12px, 없으면 제목 위 84px). 피크는 패널의 줄 그대로(간격 없이).
+      */}
+      <div className={`group/header flex flex-col ${frame === 'page' ? '' : 'gap-2'}`}>
+        <PageIconControl workspaceId={workspaceId} pageId={page.id} initialIcon={page.icon} readOnly={access !== 'edit'} header={frame === 'page'} />
         {rowPage !== null && rowAccess !== null ? (
           <RowTitle
             workspaceId={workspaceId}
