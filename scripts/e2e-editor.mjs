@@ -6249,6 +6249,8 @@ async function main() {
 
       // ③ 셀을 고친 응답도 아이콘을 싣는다 — 서버가 받은 뒤에도 그대로(화면이 응답의 행으로 갈아 끼운다)
       const renamed = `${foxTitle}고침`
+      // 앞의 검사들은 서버 HTML 만 읽는다 — 하이드레이션 전에 누르면 클릭이 사라져 편집 칸이 열리지 않는다(#468 이 5번 중 1번 보았다).
+      await waitHydrated('td[data-cell="0:0"]')
       await clickOn('td[data-cell="0:0"]')
       await key('Enter')
       const editing = await waitFor(`document.activeElement?.matches('[data-testid="db-cell-input"]')`, 5000)
