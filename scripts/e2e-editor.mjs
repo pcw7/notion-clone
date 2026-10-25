@@ -7382,9 +7382,14 @@ async function main() {
     })()`)
     check('별 버튼이 있다 — 상태를 이름으로도 알린다', !!starBox)
     if (starBox) {
+      // 진단 — 전체 판에서만 가끔 별이 칠해지지 않는다(#462 · #472 · 하이드레이션 대기로는 남았다). 클릭이 안 먹었는지(기록이 비었다) · 요청이
+      // 거절돼 되돌렸는지(코드가 남는다)를 가른다. 상태는 바꾸지 않는다 — 페이지의 fetch 를 감싸 응답 코드만 적는다.
+      await evaluate(`(() => { window.__favLog = []; const f = window.fetch; window.fetch = async (...a) => { const r = await f(...a); if (String(a[0]).includes('/favorite')) window.__favLog.push((a[1]?.method ?? 'GET') + ' ' + r.status); return r }; return true })()`)
       await click(starBox.x, starBox.y)
-      check('★ 별을 누르면 즐겨찾기 섹션이 나타난다',
-        await waitFor(`!!document.querySelector('section[aria-label="즐겨찾기"] a[href$="/${pageId}"]')`, 10000))
+      const starred = await waitFor(`!!document.querySelector('section[aria-label="즐겨찾기"] a[href$="/${pageId}"]')`, 10000)
+      const starDiag = starred ? '' : JSON.stringify(await evaluate(`({ log: window.__favLog ?? null, label: document.querySelector('[aria-label^="즐겨찾기에"]')?.getAttribute('aria-label') ?? null,
+        top: (() => { const e = document.elementFromPoint(${starBox.x}, ${starBox.y}); return e ? e.tagName + ' ' + (e.getAttribute('aria-label') ?? e.className?.toString().slice(0, 40)) : null })() })`))
+      check('★ 별을 누르면 즐겨찾기 섹션이 나타난다', starred, starDiag)
       check('별의 상태가 바뀐다 (aria-pressed)',
         await waitFor(`document.querySelector('button[aria-label="즐겨찾기에서 빼기"]')?.getAttribute('aria-pressed') === 'true'`, 5000))
 
@@ -10388,7 +10393,7 @@ async function main() {
       const htmlTheme = () => evaluate(`document.documentElement?.dataset.theme ?? null`)
       const bodyBg = () => evaluate(`(document.body ? getComputedStyle(document.body).backgroundColor : null)`)
       const LIGHT_BG = 'rgb(255, 255, 255)'
-      const DARK_BG = 'rgb(10, 10, 10)'
+      const DARK_BG = 'rgb(25, 25, 25)' // 디자인-7a — 노션의 어두운 바탕 #191919
       const choose = (value) => evaluate(`(() => {
         const s = document.querySelector(${JSON.stringify(THEME)})
         if (!s) return false
@@ -18993,14 +18998,14 @@ async function main() {
           await waitFor(`JSON.parse(${ratios}).yellow < 3`, 5000), await evaluate(ratios))
         await setRoot('theme', 'dark')
         check('★ 표준 · 어둡게는 어두운 세트 — 9개 모두 어두운 바탕과 4.5:1 이상(10d-6 · 밝은 테마의 값이면 4.3:1 인 색이 있다)',
-          await waitFor(`getComputedStyle(document.body).backgroundColor === 'rgb(10, 10, 10)' && ${lowest} >= 4.5`, 5000), await evaluate(ratios))
+          await waitFor(`getComputedStyle(document.body).backgroundColor === 'rgb(25, 25, 25)' && ${lowest} >= 4.5`, 5000), await evaluate(ratios))
         const high = await openWithContrast('high')
         await setRoot('theme', 'light')
         check('★ 고대비 · 밝게 — 블록 글자색 9개가 모두 화면 바탕과 7:1 이상',
           high && (await waitFor(`${lowest} >= 7`, 5000)), JSON.stringify({ panel, high, ratios: JSON.parse(await evaluate(ratios)) }))
         await setRoot('theme', 'dark')
         check('★ 고대비 · 어둡게 — 9개 모두 화면 바탕과 7:1 이상(밝은 세트로 바뀐다)',
-          await waitFor(`getComputedStyle(document.body).backgroundColor === 'rgb(10, 10, 10)' && ${lowest} >= 7`, 5000), await evaluate(ratios))
+          await waitFor(`getComputedStyle(document.body).backgroundColor === 'rgb(25, 25, 25)' && ${lowest} >= 7`, 5000), await evaluate(ratios))
         const back = await openWithContrast('standard')
         await setRoot('theme', 'dark')
         check('표준으로 되돌리면 노션의 팔레트(어둡게 — 7:1 에 못 미치는 색이 다시 있다)',
@@ -23532,6 +23537,41 @@ async function main() {
         tab === '32 14px 500 rgba(33, 27, 23, 0.05) 8px 0px' && panel === '10px 0px true', JSON.stringify({ tab, panel }))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('디자인 — 어두운 테마의 핵심 값 (디자인-7a)')) { try {
+      // 어두운 테마가 노션의 색 변수와 같다 — 바탕 #191919 · 글자 #f0efed · 사이드바 #202020 · 사이드바 글자 rgb(188, 186, 182) · 아이콘 #ada9a3 ·
+      // 표의 선 rgba(255, 255, 243, 0.082) · 머리 글자 #ada9a3. 테마는 `<html data-theme>` 를 바꿔 CSS 만 본다(저장은 8h 절이 본다).
+      const stamp = Date.now().toString(36)
+      const api6 = `${BASE}/api/workspaces/${workspaceId}`
+      const created = (await (await fetch(`${api6}/databases`, { method: 'POST', headers: authed, body: JSON.stringify({ name: `어두운 표 ${stamp}` }) })).json()).database
+      await fetch(`${api6}/views/${created.defaultViewId}/rows`, { method: 'POST', headers: authed, body: '{}' })
+      await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false })
+      try {
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${created.id}` })
+        await waitFor(`!!document.querySelector('[data-testid="sidebar-home"]') && !!document.querySelector('td[data-cell="0:0"]')`, 15000)
+        await evaluate(`(document.documentElement.dataset.theme = 'dark') === 'dark'`)
+        await sleep(100)
+        const m = await evaluate(`(() => {
+          const home = document.querySelector('[data-testid="sidebar-home"]')
+          const nav = home.closest('nav')
+          const icon = home.querySelector('svg')
+          const th = getComputedStyle(document.querySelector('thead th[data-property-id]'))
+          const td = getComputedStyle(document.querySelector('td[data-cell="0:0"]'))
+          return {
+            body: [getComputedStyle(document.body).backgroundColor, getComputedStyle(document.body).color].join(' '),
+            sidebar: [getComputedStyle(nav).backgroundColor, getComputedStyle(home).color, icon ? getComputedStyle(icon).color : null].join(' '),
+            table: [th.color, th.borderBottomColor, td.borderRightColor].join(' '),
+          }
+        })()`)
+        await evaluate(`(document.documentElement.dataset.theme = 'light') === 'light'`)
+        check('★ 어두운 테마 — 바탕 #191919 · 글자 #f0efed · 사이드바 #202020 · 글자 rgb(188, 186, 182) · 아이콘 #ada9a3 · 표의 선 · 머리 글자',
+          m.body === 'rgb(25, 25, 25) rgb(240, 239, 237)'
+            && m.sidebar === 'rgb(32, 32, 32) rgb(188, 186, 182) rgb(173, 169, 163)'
+            && m.table === 'rgb(173, 169, 163) rgba(255, 255, 243, 0.082) rgba(255, 255, 243, 0.082)', JSON.stringify(m))
+      } finally {
+        await send('Emulation.clearDeviceMetricsOverride')
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).
@@ -23616,7 +23656,7 @@ async function main() {
         apple: document.querySelector('link[rel="apple-touch-icon"]')?.getAttribute('href') ?? null,
       })`).then(JSON.parse)
       check('머리 — 매니페스트 링크 · 밝은 · 어두운 화면 색 · iOS 홈 화면 아이콘',
-        head.manifest === '/manifest.webmanifest' && head.theme.length === 2 && head.theme.some((t) => t.includes('#0a0a0a'))
+        head.manifest === '/manifest.webmanifest' && head.theme.length === 2 && head.theme.some((t) => t.includes('#191919'))
           && typeof head.apple === 'string' && head.apple.startsWith('/apple-icon'), JSON.stringify(head))
       const read = await send('Page.getAppManifest', {})
       check('★ 브라우저가 읽은 매니페스트에 오류가 없다', read?.url?.endsWith('/manifest.webmanifest') && (read.errors ?? []).length === 0,

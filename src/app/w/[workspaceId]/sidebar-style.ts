@@ -8,16 +8,16 @@
 
 /** 바로가기 · 섹션 줄(검색 · 홈 · 인박스 · 즐겨찾기 · 최근 …). */
 export const SIDEBAR_ROW =
-  'flex h-[30px] w-full flex-none items-center gap-2 rounded-md px-2 text-left text-sm text-[rgb(95,94,89)] hover:bg-[rgba(33,27,23,0.05)] dark:text-neutral-400 dark:hover:bg-white/5'
+  'flex h-[30px] w-full flex-none items-center gap-2 rounded-md px-2 text-left text-sm text-[rgb(95,94,89)] hover:bg-[rgba(33,27,23,0.05)] dark:text-[rgb(188,186,182)] dark:hover:bg-white/5'
 
 /** 지금 페이지의 줄 — 바탕이 남고 글자가 짙다. */
-export const SIDEBAR_ROW_CURRENT = 'bg-[rgba(33,27,23,0.05)] font-medium text-[rgb(44,44,43)] dark:bg-white/5 dark:text-neutral-100'
+export const SIDEBAR_ROW_CURRENT = 'bg-[rgba(33,27,23,0.05)] font-medium text-[rgb(44,44,43)] dark:bg-white/5 dark:text-[#f0efed]'
 
 /** 줄 아이콘(20px 단색). Lucide 아이콘의 `className` 으로 준다. */
-export const SIDEBAR_ICON = 'size-5 flex-none text-[rgb(142,139,134)] dark:text-neutral-500'
+export const SIDEBAR_ICON = 'size-5 flex-none text-[rgb(142,139,134)] dark:text-[#ada9a3]'
 
 /** 아이콘의 선 굵기 — 노션의 가는 선에 맞춘다(Lucide 기본 2). */
 export const SIDEBAR_ICON_STROKE = 1.75
 
 /** 섹션 머리(Teamspaces · 즐겨찾기 · 개인 페이지 …). */
-export const SIDEBAR_SECTION_HEAD = 'text-xs font-medium text-[rgb(161,158,153)] dark:text-neutral-500'
+export const SIDEBAR_SECTION_HEAD = 'text-xs font-medium text-[rgb(161,158,153)] dark:text-[#7d7a75]'

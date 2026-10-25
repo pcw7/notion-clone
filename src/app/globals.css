@@ -30,7 +30,8 @@
 
 /*
  * 글자색 — 디자인-1(노션 실측 · `docs/design/notion-measurements.md`). 기본 글자는 순흑이 아니라 따뜻한 짙은 회색 · 흐린 글자(목차 · 속성
- * 이름 · 보조 설명)는 그보다 옅은 회갈색. 어두운 테마는 어두운 테마 조각에서 잰다(지금 값 그대로).
+ * 이름 · 보조 설명)는 그보다 옅은 회갈색. 어두운 테마 — 디자인-7a(노션 색 변수 실측: 바탕 `--c-bacPri` #191919 · 글자 `--c-texPri` #f0efed ·
+ * 흐린 글자 `--c-texSec` #ada9a3). 메뉴 표면의 어두운 값은 재지 못했다(그대로).
  */
 :root {
   --background: #ffffff;
@@ -43,9 +44,9 @@
   color-scheme: light;
 
   @variant dark {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-    --foreground-muted: #a3a3a3;
+    --background: #191919;
+    --foreground: #f0efed;
+    --foreground-muted: #ada9a3;
     --popover-bg: #171717;
     --popover-shadow: 0 8px 24px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.08);
     color-scheme: dark;
