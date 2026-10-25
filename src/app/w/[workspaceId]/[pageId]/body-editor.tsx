@@ -1903,7 +1903,7 @@ export function BodyEditor({
           role="dialog"
           aria-label="고른 글자에 코멘트"
           style={{ left: composing.left, top: composing.top + 24 }}
-          className="absolute z-20 flex w-72 flex-col gap-2 rounded-lg border border-neutral-200 bg-white p-3 shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
+          className="absolute z-20 flex w-72 flex-col gap-2 popover-surface p-3"
         >
           {/* 무엇에 다는지 보여 준다 — 앵커가 나중에 풀리지 않아도 이 글이 패널에 남는다(quoted_text). */}
           <p className="truncate text-xs text-neutral-500">“{composing.quoted}”</p>
@@ -1947,7 +1947,7 @@ export function BodyEditor({
           role="listbox"
           aria-label="멘션"
           style={{ left: mentionUi.left, top: mentionUi.top }}
-          className="absolute z-10 max-h-72 w-64 overflow-auto rounded-lg border border-neutral-200 bg-white py-1 shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
+          className="absolute z-10 max-h-72 w-64 overflow-auto popover-surface py-1"
         >
           {mentionCandidates.length === 0 && (
             // 07 F-07-08: 후보 0건이어도 팝업을 닫지 않는다 — 비어 있다고 말해 준다.
@@ -1986,7 +1986,7 @@ export function BodyEditor({
           aria-label="커스텀 이모지"
           data-testid="emoji-menu"
           style={{ left: emojiUi.left, top: emojiUi.top }}
-          className="absolute z-10 max-h-72 w-64 overflow-auto rounded-lg border border-neutral-200 bg-white py-1 shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
+          className="absolute z-10 max-h-72 w-64 overflow-auto popover-surface py-1"
         >
           {emojiCandidates.map((entry, i) => (
             <li key={entry.id}>
@@ -2019,7 +2019,7 @@ export function BodyEditor({
           role="listbox"
           aria-label="블록 삽입"
           style={{ left: menu.left, top: menu.top }}
-          className="absolute z-10 max-h-72 w-64 overflow-auto rounded-lg border border-neutral-200 bg-white py-1 shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
+          className="absolute z-10 max-h-72 w-64 overflow-auto popover-surface py-1"
         >
           {items.map((command, i) => (
             <li key={command.id}>

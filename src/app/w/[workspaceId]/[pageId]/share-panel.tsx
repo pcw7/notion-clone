@@ -325,7 +325,7 @@ export function SharePanel({
         <div
           role="dialog"
           aria-label="공유 설정"
-          className="absolute right-0 z-20 mt-2 w-96 rounded-lg border border-neutral-200 bg-white p-4 shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
+          className="absolute right-0 z-20 mt-2 w-96 popover-surface p-4"
         >
           {state === null && !error && <p className="text-sm text-neutral-500">불러오는 중…</p>}
 

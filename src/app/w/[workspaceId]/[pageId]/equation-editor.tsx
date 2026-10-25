@@ -134,7 +134,7 @@ export function EquationEditor({ inline = false, initial, top, left, width, onSa
         if (e.target !== inputRef.current && !(e.target instanceof HTMLButtonElement)) e.preventDefault()
       }}
       data-testid="equation-editor"
-      className="absolute z-30 flex flex-col gap-2 rounded-md border border-neutral-200 bg-white p-2 shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
+      className="absolute z-30 flex flex-col gap-2 popover-surface p-2"
       style={{ top, left, width: Math.max(Math.min(width, 560), 280) }}
     >
       <div className="flex items-start gap-2">

@@ -38,7 +38,7 @@ export function FindBar({
         role="search"
         aria-label="페이지 안 찾기"
         data-testid="find-bar"
-        className="absolute right-0 top-0 flex items-center gap-1 rounded-md border border-neutral-200 bg-white px-2 py-1 text-sm shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
+        className="absolute right-0 top-0 flex items-center gap-1 popover-surface px-2 py-1 text-sm"
       >
         <input
           ref={inputRef}

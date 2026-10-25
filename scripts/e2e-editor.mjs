@@ -23389,6 +23389,39 @@ async function main() {
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('디자인 — 메뉴 · 팝오버의 표면 (디자인-5)')) { try {
+      // 메뉴 · 팝오버가 노션 실측과 같은 표면이다 — 둥글기 10px · 테두리 없음 · 그림자 세 겹(셋째가 1px 고리 rgba(42, 28, 0, 0.07)).
+      // 슬래시 메뉴(React) · 블록 메뉴(편집기 CSS)가 같은 값(`globals.css` 의 변수 한 곳) · 블록 메뉴의 줄은 28px.
+      const { textRun } = await import(new URL('../src/lib/contracts/rich-text.ts', import.meta.url).href)
+      const stamp = Date.now().toString(36)
+      const page = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: JSON.stringify({ title: `메뉴 ${stamp}` }) })).json()).page.id
+      const p = randomUUID()
+      await saveBody(page, { blocks: [{ id: p, type: 'paragraph', title: [textRun('메뉴 문단')], properties: {}, format: {}, children: [] }] })
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+      await waitFor(`!!document.querySelector('[data-block-id="${p}"]') && document.querySelector('.ProseMirror')?.getAttribute('contenteditable') === 'true'`, 15000)
+      const surface = (sel) => evaluate(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); if (!e) return null; const c = getComputedStyle(e)
+        return [c.borderTopLeftRadius, c.borderTopWidth, c.boxShadow.includes('rgba(42, 28, 0, 0.07) 0px 0px 0px 1px') && c.boxShadow.includes('0px 20px 24px')].join(' ') })()`)
+
+      await clickSelector(`[data-block-id="${p}"] p`)
+      await key('End')
+      await typeText(' /')
+      const SLASH = '[role="listbox"][aria-label="블록 삽입"]'
+      await waitFor(`!!document.querySelector('${SLASH}')`, 3000)
+      const slash = await surface(SLASH)
+      await key('Escape')
+
+      const line = await rect(`[data-block-id="${p}"] > *:first-child`)
+      await move(line.x + 30, line.y + line.h / 2)
+      await waitFor(`!!document.querySelector('.blk-gutter-grip')`, 3000)
+      await clickSelector('.blk-gutter-grip')
+      await waitFor(`!!document.querySelector('.blk-menu .blk-menu-item')`, 3000)
+      const menu = await surface('.blk-menu')
+      const row = await evaluate(`Math.round(document.querySelector('.blk-menu .blk-menu-item').getBoundingClientRect().height)`)
+      await key('Escape')
+      check('★ 슬래시 메뉴 · 블록 메뉴 — 둥글기 10px · 테두리 없음 · 그림자 세 겹(1px 고리) · 블록 메뉴의 줄 28px',
+        slash === '10px 0px true' && menu === '10px 0px true' && row === 28, JSON.stringify({ slash, menu, row }))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

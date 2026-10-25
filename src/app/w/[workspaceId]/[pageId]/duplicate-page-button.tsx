@@ -68,7 +68,7 @@ export function DuplicatePageButton({ workspaceId, pageId }: { workspaceId: stri
         {busy ? '복제 중…' : '복제'}
       </button>
       {done?.note.text && (
-        <p role="status" data-testid="page-duplicate-note" className={menu ? `${MENU_PANEL_PLACE} w-64 rounded-lg border border-neutral-200 bg-white p-3 text-xs text-neutral-600 shadow-lg dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300` : 'max-w-64 text-right text-xs text-neutral-500'}>
+        <p role="status" data-testid="page-duplicate-note" className={menu ? `${MENU_PANEL_PLACE} w-64 popover-surface p-3 text-xs text-neutral-600 dark:text-neutral-300` : 'max-w-64 text-right text-xs text-neutral-500'}>
           {done.note.text}{' '}
           <button
             type="button"
@@ -81,7 +81,7 @@ export function DuplicatePageButton({ workspaceId, pageId }: { workspaceId: stri
         </p>
       )}
       {error && (
-        <p role="alert" data-testid="page-duplicate-error" className={menu ? `${MENU_PANEL_PLACE} w-64 rounded-lg border border-neutral-200 bg-white p-3 text-xs text-red-600 shadow-lg dark:border-neutral-700 dark:bg-neutral-900` : 'max-w-64 text-right text-xs text-red-600'}>
+        <p role="alert" data-testid="page-duplicate-error" className={menu ? `${MENU_PANEL_PLACE} w-64 popover-surface p-3 text-xs text-red-600` : 'max-w-64 text-right text-xs text-red-600'}>
           {error}
         </p>
       )}

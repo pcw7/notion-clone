@@ -82,7 +82,7 @@ export function DeletePageButton({
         {busy ? '삭제 중…' : menu ? '휴지통으로 이동' : '삭제'}
       </button>
       {error && (
-        <p role="alert" className={menu ? `${MENU_PANEL_PLACE} w-64 rounded-lg border border-neutral-200 bg-white p-3 text-xs text-red-600 shadow-lg dark:border-neutral-700 dark:bg-neutral-900` : 'text-xs text-red-600'}>
+        <p role="alert" className={menu ? `${MENU_PANEL_PLACE} w-64 popover-surface p-3 text-xs text-red-600` : 'text-xs text-red-600'}>
           {error}
         </p>
       )}
