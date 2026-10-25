@@ -19325,9 +19325,10 @@ async function main() {
         await send('Emulation.clearDeviceMetricsOverride')
       }
       await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${pageA}` })
-      check('넓은 화면은 그대로 — ☰ 가 없고 사이드바가 그 자리(덮개가 아니다)',
+      // 디자인-3 부터 데스크톱 사이드바는 화면에 고정(`sticky`)이다 — 덮개(`fixed`)가 아니면 된다
+      check('넓은 화면은 그대로 — ☰ 가 없고 사이드바가 그 자리(덮개가 아니다 · 화면에 고정)',
         await waitFor(`document.readyState === 'complete' && ${shown(NAV)} && !${shown(TOGGLE)}
-          && getComputedStyle(document.querySelector(${JSON.stringify(NAV)})).position === 'static'`, 15000), await navState())
+          && getComputedStyle(document.querySelector(${JSON.stringify(NAV)})).position === 'sticky'`, 15000), await navState())
     } catch (thrown) { await sectionThrew(thrown) } }
 
     if (sectionIf('좁은 화면 — 화면마다 가로 스크롤 없음 (10j-2 · F-12-12)')) { try {
@@ -23056,6 +23057,35 @@ async function main() {
         await evaluate(`document.querySelector('[data-block-id="${blocks.at(-1).id}"]').scrollIntoView({ block: 'end' })`)
         const stays = await waitFor(`window.scrollY > 300 && Math.round(document.querySelector('[data-testid="sidebar-home"]').closest('nav').getBoundingClientRect().top) === 0`, 3000)
         check('★ 본문을 끝까지 내려도 사이드바는 화면에 남는다', stays, String(await evaluate(`Math.round(document.querySelector('[data-testid="sidebar-home"]').closest('nav').getBoundingClientRect().top)`)))
+
+        // 즐겨찾기가 많아도 트리의 줄을 누를 수 있다 — 즐겨찾기 · 트리 · 최근 · 휴지통이 한 스크롤 영역이다. 트리만 스크롤하던 때는 화면에 고정된
+        // 사이드바에서 즐겨찾기가 길면 트리 영역이 0 에 가깝게 눌려, 누른 자리에 다른 줄이 있었다(전체 판이 찾았다).
+        const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
+        const favs = []
+        for (let i = 0; i < 24; i += 1) favs.push((await (await fetch(pagesUrl, { method: 'POST', headers: authed, body: JSON.stringify({ title: `즐겨 ${stamp} ${i}` }) })).json()).page.id)
+        for (const id of favs) await fetch(`${pagesUrl}/${id}/favorite`, { method: 'POST', headers: authed })
+        try {
+          await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 640, deviceScaleFactor: 1, mobile: false })
+          await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+          const link = `nav[aria-label="페이지 트리"] section:not([aria-label="즐겨찾기"]):not([aria-label="최근"]) a[href="/w/${workspaceId}/${page}"]`
+          const shown = await waitFor(`!!document.querySelector('${link}') && document.querySelectorAll('section[aria-label="즐겨찾기"] li').length >= 24`, 15000)
+          const reach = shown ? await evaluate(`(() => {
+            const a = document.querySelector('${link}')
+            a.scrollIntoView({ block: 'center' })
+            const r = a.getBoundingClientRect()
+            const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)
+            const scroll = document.querySelector('[data-testid="sidebar-scroll"]')
+            return {
+              hit: hit?.closest('a') === a,
+              inScroll: !!scroll && scroll.contains(a) && !!scroll.querySelector('section[aria-label="즐겨찾기"]') && !!scroll.querySelector('section[aria-label="최근"]'),
+              scrollH: scroll ? scroll.clientHeight : null,
+            }
+          })()`) : null
+          check('★ 즐겨찾기가 24개라도 트리의 줄을 누를 수 있다 — 즐겨찾기 · 트리 · 최근이 한 스크롤 영역',
+            reach?.hit === true && reach.inScroll === true, JSON.stringify({ shown, reach }))
+        } finally {
+          for (const id of favs) await fetch(`${pagesUrl}/${id}/favorite`, { method: 'DELETE', headers: authed })
+        }
       } finally {
         await send('Emulation.clearDeviceMetricsOverride')
       }
