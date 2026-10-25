@@ -23512,6 +23512,26 @@ async function main() {
           && c.dot === `8 ${COLORS[c.color][2]} 5px`), JSON.stringify(statuses))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('디자인 — 보기 탭 · 데이터베이스 메뉴 (디자인-6d)')) { try {
+      // 보기 탭이 노션 앱 실측과 같다 — 고른 탭은 높이 32px · 14px · 500 · 따뜻한 회색 5% 바탕 · 둥글기 8px(밑줄이 아니다) · 뷰 메뉴는 메뉴 ·
+      // 팝오버의 표면(둥글기 10px · 테두리 없음 · 1px 고리).
+      const stamp = Date.now().toString(36)
+      const api6 = `${BASE}/api/workspaces/${workspaceId}`
+      const created = (await (await fetch(`${api6}/databases`, { method: 'POST', headers: authed, body: JSON.stringify({ name: `보기 탭 ${stamp}` }) })).json()).database
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${created.id}` })
+      await waitFor(`!!document.querySelector('[data-testid="db-view-tab"]') && !!document.querySelector('[data-testid="db-view-menu"]')`, 15000)
+      await waitHydrated('[data-testid="db-view-menu"]')
+      const tab = await evaluate(`(() => { const e = document.querySelector('[data-testid="db-view-tab"][data-view-id="${created.defaultViewId}"]'); const c = getComputedStyle(e)
+        return [Math.round(e.getBoundingClientRect().height), c.fontSize, c.fontWeight, c.backgroundColor, c.borderTopLeftRadius, c.borderBottomWidth].join(' ') })()`)
+      await clickSelector('[data-testid="db-view-menu"]')
+      await waitFor(`!!document.querySelector('[data-testid="db-view-menu-panel"]')`, 3000)
+      const panel = await evaluate(`(() => { const c = getComputedStyle(document.querySelector('[data-testid="db-view-menu-panel"]'))
+        return [c.borderTopLeftRadius, c.borderTopWidth, c.boxShadow.includes('rgba(42, 28, 0, 0.07) 0px 0px 0px 1px')].join(' ') })()`)
+      await key('Escape')
+      check('★ 보기 탭 — 고른 탭 32px · 14px · 500 · 바탕 5% · 둥글기 8px · 밑줄 없음 · 뷰 메뉴는 공통 표면',
+        tab === '32 14px 500 rgba(33, 27, 23, 0.05) 8px 0px' && panel === '10px 0px true', JSON.stringify({ tab, panel }))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).
