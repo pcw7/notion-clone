@@ -60,6 +60,12 @@
 .blk-heading_2 { font-size: 24px; font-weight: 600; line-height: 1.3; padding-top: 28px; }
 .blk-heading_3 { font-size: 20px; font-weight: 600; line-height: 1.3; padding-top: 24px; }
 
+/* 그림은 칸 폭을 다 쓴다 — 폭 비율(10n-63)이 칸 폭의 비율이라 좌우 안쪽 여백을 두지 않는다(두면 끝까지 늘려도 0.99 가 된다). */
+.blk.blk-image {
+  padding-left: 0;
+  padding-right: 0;
+}
+
 /* 리스트 — 마커를 직접 그린다. <ul>/<ol> 래퍼가 없기 때문이다. */
 .blk-bulleted_list_item,
 .blk-numbered_list_item,
