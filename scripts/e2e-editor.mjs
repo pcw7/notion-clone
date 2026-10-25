@@ -23636,6 +23636,35 @@ async function main() {
           && (inbox.listBorder === '0px' || inbox.listBorder === 'none'), JSON.stringify({ settings, inbox }))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('디자인 — 따뜻한 회색 단계 (디자인-8a)')) { try {
+      // Tailwind 의 neutral 을 노션의 따뜻한 회색으로 바꿔 끼웠다(밝기는 그대로). 화면의 `text-neutral-500` 은 #76736e · 어두운 테마의
+      // `dark:border-neutral-700` 은 #41403d 다. 고대비는 그 위에서 다시 바꿔 끼운다(회색 글자가 그 값이 아니게 된다). 테마 · 고대비는
+      // `<html>` 의 속성만 바꿔 CSS 를 본다(저장은 8h · 10d-2 절이 본다).
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/settings` })
+      const MUTED = `[...document.querySelectorAll('[class~="text-neutral-500"]')].find((e) => e.getClientRects().length > 0)`
+      const DARK_BORDER = `[...document.querySelectorAll('[class~="dark:border-neutral-700"]')].find((e) => e.getClientRects().length > 0)`
+      await waitFor(`!!(${MUTED}) && !!(${DARK_BORDER})`, 15000)
+      const look = await evaluate(`(() => {
+        const html = document.documentElement
+        const was = { theme: html.dataset.theme, contrast: html.dataset.contrast }
+        const muted = ${MUTED}
+        const border = ${DARK_BORDER}
+        html.dataset.theme = 'light'
+        html.dataset.contrast = 'normal'
+        const light = getComputedStyle(muted).color
+        html.dataset.contrast = 'high'
+        const high = getComputedStyle(muted).color
+        html.dataset.contrast = 'normal'
+        html.dataset.theme = 'dark'
+        const dark = getComputedStyle(border).borderTopColor
+        if (was.theme === undefined) delete html.dataset.theme; else html.dataset.theme = was.theme
+        if (was.contrast === undefined) delete html.dataset.contrast; else html.dataset.contrast = was.contrast
+        return { light, high, dark }
+      })()`)
+      check('★ 회색 단계가 따뜻하다 — 흐린 글자 #76736e · 어두운 테마의 테두리 #41403d · 고대비는 그 위에서 바꿔 끼운다',
+        look.light === 'rgb(118, 115, 110)' && look.dark === 'rgb(65, 64, 61)' && look.high !== look.light, JSON.stringify(look))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

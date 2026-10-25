@@ -54,6 +54,27 @@
 }
 
 /*
+ * 회색 단계 — 디자인-8a. Tailwind 의 neutral 은 색조가 없는 차가운 회색이고, 노션의 회색은 누런 쪽으로 아주 살짝 기운 따뜻한 회색이다(색 변수
+ * 실측 — `docs/design/notion-measurements.md` 의 색 변수 표: OKLCH 색조 약 81° · 채도 0.002 ~ 0.008). 화면 곳곳의 `*-neutral-*`(밝은 ·
+ * 어두운 테마 모두)를 한 번에 노션 쪽으로 옮긴다.
+ *
+ * **밝기(OKLCH L)는 Tailwind 그대로다** — 색조만 얹는다. 그래서 글자와 바탕의 대비가 바뀌지 않는다(흰 바탕 · #191919 바탕 모두 차이 0.05 안 —
+ * 접근성 검사가 본 대비가 그대로 선다). 200 은 노션의 테두리 `--c-borPri` 와 같은 값이 된다. 900 · 950 은 노션의 어두운 바탕처럼 색조가
+ * 없어 Tailwind 그대로다. 고대비(아래)는 이 위에서 단계를 다시 바꿔 끼운다.
+ */
+@theme {
+  --color-neutral-50: #fbfaf9;
+  --color-neutral-100: #f6f5f3;
+  --color-neutral-200: #e6e5e3;
+  --color-neutral-300: #d5d4d1;
+  --color-neutral-400: #a3a09b;
+  --color-neutral-500: #76736e;
+  --color-neutral-600: #54524d;
+  --color-neutral-700: #41403d;
+  --color-neutral-800: #272625;
+}
+
+/*
  * 고대비 · 움직임 줄이기 — 플랫폼 잔여 10d-2 (F-12-13 · 정본 §3.1 [보강] 설정 값 표 · 테마 ⑥)
  *
  * `<html data-contrast>` · `data-motion` 은 이 기기의 값이다(쿠키 — 루트 레이아웃이 첫 HTML 에 싣는다). system 이면 OS 의 설정을 따른다 —
