@@ -9,7 +9,8 @@
  */
 
 import { TOPBAR_BUTTON } from '../topbar-style'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { MENU_PANEL_PLACE, MENU_ROW, usePageMenu } from './page-menu'
 import { useRouter } from 'next/navigation'
 
 export function DeletePageButton({
@@ -31,6 +32,15 @@ export function DeletePageButton({
   const router = useRouter()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // 페이지 메뉴("···") 안이면 줄 모양 · 패널은 카드 자리(디자인-2b · `page-menu.tsx`)
+  const menu = usePageMenu()
+  useEffect(() => menu?.register('delete', () => {
+    setError(null)
+  }), [menu])
+  useEffect(() => {
+    menu?.hold('delete', error !== null)
+  }, [menu, error])
+  useEffect(() => () => menu?.hold('delete', false), [menu])
 
   async function remove() {
     if (childCount > 0) {
@@ -61,17 +71,18 @@ export function DeletePageButton({
   }
 
   return (
-    <div className="flex flex-col items-end gap-1">
+    <div className={menu ? 'flex flex-col' : 'flex flex-col items-end gap-1'}>
       <button
         type="button"
+        data-testid="page-delete"
         onClick={() => void remove()}
         disabled={busy}
-        className={TOPBAR_BUTTON}
+        className={menu ? MENU_ROW : TOPBAR_BUTTON}
       >
-        {busy ? '삭제 중…' : '삭제'}
+        {busy ? '삭제 중…' : menu ? '휴지통으로 이동' : '삭제'}
       </button>
       {error && (
-        <p role="alert" className="text-xs text-red-600">
+        <p role="alert" className={menu ? `${MENU_PANEL_PLACE} w-64 rounded-lg border border-neutral-200 bg-white p-3 text-xs text-red-600 shadow-lg dark:border-neutral-700 dark:bg-neutral-900` : 'text-xs text-red-600'}>
           {error}
         </p>
       )}

@@ -44,6 +44,7 @@ import { DuplicatePageButton } from './duplicate-page-button'
 import { DeletePageButton } from './delete-page-button'
 import { NoAccess } from './no-access'
 import { LockButton } from './lock-button'
+import { PageMenu, PageMenuDivider } from './page-menu'
 import { PageHistoryButton } from './page-history'
 import { PageUpdatesButton } from './page-updates'
 import { canViewPageHistory } from '@/lib/history/version'
@@ -238,14 +239,15 @@ export async function PageContent({
         </nav>
 
         <div className="flex flex-wrap items-center gap-0.5 md:flex-none md:flex-nowrap">
+          {/* 잠김 표시는 상단 바에 · 잠그기 단추는 페이지 메뉴에(디자인-2b) */}
           <LockButton
             lockUrl={`/api/workspaces/${workspaceId}/pages/${page.id}/lock`}
             locked={lock?.locked ?? false}
             canToggle={lock?.canToggle ?? false}
             reloadOnUnlock
             hint="잠긴 페이지 — 본문과 제목을 고칠 수 없습니다"
+            part="badge"
           />
-          <FavoriteButton workspaceId={workspaceId} pageId={page.id} initial={favorite} />
           <CommentPanel
             workspaceId={workspaceId}
             pageId={page.id}
@@ -254,36 +256,52 @@ export async function PageContent({
           />
           {/* 행의 권한 · 자리는 데이터베이스가 정한다 — 공유 · 옮기기 · 내보내기 · 복제는 행에 세우지 않는다(8f-1 · §7). */}
           {rowPage === null && <SharePanel workspaceId={workspaceId} pageId={page.id} initialOpen={shareOpen} />}
-          {rowPage === null && (
-          <MovePageControl
-            workspaceId={workspaceId}
-            pageId={page.id}
-            currentParentId={page.parentPageId}
-            currentTeamspaceId={page.teamspaceId}
-            currentPrivate={page.ownerUserId !== null && page.ownerUserId === ctx.userId}
-            targets={moveTargets.map((t) => ({
-              id: t.id,
-              title: t.title,
-              icon: t.icon,
-              path: [...t.path],
-            }))}
-            teamspaces={moveTeamspaces}
-          />
-          )}
-          {history && <PageHistoryButton workspaceId={workspaceId} pageId={page.id} />}
-          {/* 업데이트(4d-3 · F-11-04) — 볼 수 있는 사람 모두 · 행도 */}
-          <PageUpdatesButton workspaceId={workspaceId} pageId={page.id} />
-          {rowPage === null && <ExportButton workspaceId={workspaceId} rootId={page.id} />}
-          {/* 복제는 원본을 고치지 않는다 — 볼 수만 있는 사람도 누를 수 있다(자리가 없으면 서버가 거부한다). */}
-          {rowPage === null && <DuplicatePageButton workspaceId={workspaceId} pageId={page.id} />}
-          <DeletePageButton
-            workspaceId={workspaceId}
-            pageId={page.id}
-            childCount={children.length}
-            parentPageId={page.parentPageId}
-            // 행을 지우면 그 표로 돌아간다(행에는 부모 페이지가 없다).
-            returnHref={rowPage === null || !rowPage.databaseOpenable ? undefined : `/w/${workspaceId}/db/${rowPage.databaseId}`}
-          />
+          <FavoriteButton workspaceId={workspaceId} pageId={page.id} initial={favorite} />
+          {/*
+            페이지 메뉴(디자인-2b · 노션: 복제 · 옮기기 · 버전 기록 · 잠금 · 휴지통은 "···" 안) — 안의 부품은 메뉴 줄 모양이 되고 패널은
+            카드 자리에 연다(`page-menu.tsx`).
+          */}
+          <PageMenu>
+            <LockButton
+              lockUrl={`/api/workspaces/${workspaceId}/pages/${page.id}/lock`}
+              locked={lock?.locked ?? false}
+              canToggle={lock?.canToggle ?? false}
+              reloadOnUnlock
+              hint="잠긴 페이지 — 본문과 제목을 고칠 수 없습니다"
+              part="toggle"
+            />
+            {rowPage === null && (
+              <MovePageControl
+                workspaceId={workspaceId}
+                pageId={page.id}
+                currentParentId={page.parentPageId}
+                currentTeamspaceId={page.teamspaceId}
+                currentPrivate={page.ownerUserId !== null && page.ownerUserId === ctx.userId}
+                targets={moveTargets.map((t) => ({
+                  id: t.id,
+                  title: t.title,
+                  icon: t.icon,
+                  path: [...t.path],
+                }))}
+                teamspaces={moveTeamspaces}
+              />
+            )}
+            {/* 복제는 원본을 고치지 않는다 — 볼 수만 있는 사람도 누를 수 있다(자리가 없으면 서버가 거부한다). */}
+            {rowPage === null && <DuplicatePageButton workspaceId={workspaceId} pageId={page.id} />}
+            {history && <PageHistoryButton workspaceId={workspaceId} pageId={page.id} />}
+            {/* 업데이트(4d-3 · F-11-04) — 볼 수 있는 사람 모두 · 행도 */}
+            <PageUpdatesButton workspaceId={workspaceId} pageId={page.id} />
+            {rowPage === null && <ExportButton workspaceId={workspaceId} rootId={page.id} />}
+            <PageMenuDivider />
+            <DeletePageButton
+              workspaceId={workspaceId}
+              pageId={page.id}
+              childCount={children.length}
+              parentPageId={page.parentPageId}
+              // 행을 지우면 그 표로 돌아간다(행에는 부모 페이지가 없다).
+              returnHref={rowPage === null || !rowPage.databaseOpenable ? undefined : `/w/${workspaceId}/db/${rowPage.databaseId}`}
+            />
+          </PageMenu>
         </div>
       </div>
 

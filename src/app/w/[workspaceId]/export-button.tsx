@@ -23,6 +23,7 @@ import { TOPBAR_BUTTON } from './topbar-style'
 const BORDERED_BUTTON =
   'rounded-md border border-neutral-300 px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800'
 import { useEffect, useState } from 'react'
+import { MENU_PANEL_PLACE, MENU_ROW, usePageMenu } from './[pageId]/page-menu'
 
 type Counts = { pages: number; databases: number; rows: number; attachments: number }
 
@@ -86,6 +87,15 @@ export function ExportButton({
   const [open, setOpen] = useState(false)
   const [panel, setPanel] = useState<PanelState>({ kind: 'loading' })
   const [started, setStarted] = useState(false)
+  // 페이지 메뉴("···") 안이면 줄 모양 · 패널은 카드 자리(디자인-2b · `page-menu.tsx`)
+  const menu = usePageMenu()
+  useEffect(() => menu?.register('export', () => {
+    setOpen(false)
+  }), [menu])
+  useEffect(() => {
+    menu?.hold('export', open)
+  }, [menu, open])
+  useEffect(() => () => menu?.hold('export', false), [menu])
 
   const query = rootId === null ? '' : `?root=${encodeURIComponent(rootId)}`
   const downloadUrl = `/api/workspaces/${workspaceId}/export${query}`
@@ -131,14 +141,14 @@ export function ExportButton({
   }
 
   return (
-    <div className="relative">
+    <div className={menu ? '' : 'relative'}>
       <button
         type="button"
         onClick={toggle}
         aria-expanded={open}
         aria-haspopup="dialog"
         data-testid="export-button"
-        className={variant === 'bordered' ? BORDERED_BUTTON : TOPBAR_BUTTON}
+        className={menu ? MENU_ROW : variant === 'bordered' ? BORDERED_BUTTON : TOPBAR_BUTTON}
       >
         {label}
       </button>
@@ -148,7 +158,7 @@ export function ExportButton({
           role="dialog"
           aria-label="내보내기"
           data-testid="export-panel"
-          className={`absolute ${align === 'right' ? 'right-0' : 'left-0'} z-10 mt-1 w-72 rounded-lg border border-neutral-200 bg-white p-3 text-sm shadow-lg dark:border-neutral-700 dark:bg-neutral-900`}
+          className={`${menu ? MENU_PANEL_PLACE : `absolute ${align === 'right' ? 'right-0' : 'left-0'} z-10 mt-1`} w-72 rounded-lg border border-neutral-200 bg-white p-3 text-sm shadow-lg dark:border-neutral-700 dark:bg-neutral-900`}
         >
           <p className="font-medium">Markdown &amp; CSV · ZIP</p>
           <p className="mt-1 text-xs text-neutral-500">
