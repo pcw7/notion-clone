@@ -317,6 +317,8 @@ export function AutomationPanel(props: {
                                   <span key={step.index} data-testid="db-automation-step" className="pl-2 text-neutral-500">
                                     {stepLine(step)}
                                     {delivery !== undefined && <span data-testid="db-automation-delivery"> · {deliveryLabel(delivery)}</span>}
+                                    {/* 만든 행(10n-74 · `add_page_to`) — 보는 사람이 볼 수 있으면 그 행으로 */}
+                                    {step.pageId !== undefined && <CreatedRow workspaceId={workspaceId} pageId={step.pageId} titles={runs.titles} />}
                                   </span>
                                 )
                               })}
@@ -353,5 +355,24 @@ export function AutomationPanel(props: {
         </div>
       )}
     </div>
+  )
+}
+
+/** 단계가 만든 행(10n-74 · HANDOFF §3.2-307) — 볼 수 있으면 그 행으로 · 볼 수 없거나 지워졌으면 그렇게 말한다(트리거된 행과 같은 말). */
+function CreatedRow({ workspaceId, pageId, titles }: { workspaceId: string; pageId: string; titles: Readonly<Record<string, string | null>> }) {
+  const row = runRowLabel(pageId, titles)
+  return (
+    <>
+      {' · '}
+      {row.linkable ? (
+        <Link href={`/w/${workspaceId}/${pageId}`} data-testid="db-automation-step-row" className="text-neutral-700 hover:underline underline-offset-4 dark:text-neutral-300">
+          {row.text}
+        </Link>
+      ) : (
+        <span data-testid="db-automation-step-row" className="text-neutral-400">
+          {row.text}
+        </span>
+      )}
+    </>
   )
 }

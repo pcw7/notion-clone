@@ -25,7 +25,8 @@ import { withTransaction } from '../db/tx.ts'
 import { resolveDelegatedContext } from '../auth/session-context.ts'
 import { asWorkspaceId } from '../ids.ts'
 import { createDatabase } from '../database/database.ts'
-import { addProperty } from '../database/property.ts'
+import { addProperty, getSchema } from '../database/property.ts'
+import { textRun } from '../contracts/rich-text.ts'
 import { createRow, trashRow, updateCellsIn } from '../database/row.ts'
 import { AUTOMATION_RUN_CAP } from '../notification/retention.ts'
 import { grantAccess, revokeAccess, stopInheriting } from '../permissions/acl.ts'
@@ -238,6 +239,32 @@ describe('⑦ 화면 — 배지 · 실행 기록', () => {
     assert.deepEqual(await dbAutomationBadge(admin.ctx, tb.ds), { enabled: 1, attention: 1 })
     assert.equal(await dbAutomationBadge(editor.ctx, tb.ds), null, '고치기만 받았으면 ⚡ 가 서지 않는다')
     assert.equal(await dbAutomationBadge(outsider.ctx, tb.ds), null)
+  })
+
+  test('★ 실행 기록 — 단계가 만든 행(add_page_to)도 같은 제목 맵에 · 보는 사람의 권한으로(볼 수 없음 · 지워짐) (10n-74)', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const tb = await table('만든 행 표')
+    const target = await table('만든 행이 가는 표')
+    const auto = unwrap(await createDbAutomation(fx.owner.ctx, tb.ds, definition(tb)))
+    const titleId = unwrap(await getSchema(fx.owner.ctx, target.ds)).properties.find((p) => p.type === 'title')!.id
+    const made = unwrap(await createRow(fx.owner.ctx, target.ds, { cells: [{ propertyId: titleId, value: { type: 'title', title: [textRun('만든 행')] } }] })).id
+    const hiddenMade = unwrap(await createRow(fx.owner.ctx, target.ds)).id
+    assert.equal((await stopInheriting(fx.owner.ctx, hiddenMade)).ok, true)
+    await revokeAccess(fx.owner.ctx, hiddenMade, { type: 'user', id: admin.userId })
+    const trashedMade = unwrap(await createRow(fx.owner.ctx, target.ds)).id
+    unwrap(await trashRow(fx.owner.ctx, trashedMade))
+    const steps = [made, hiddenMade, trashedMade].map((pageId, index) => ({ index, type: 'add_page_to', status: 'done', pageId }))
+    await query(
+      `INSERT INTO automation_run (id, automation_id, workspace_id, trigger_page_id, actor_id, origin, depth, status, steps, started_at, finished_at)
+       VALUES (gen_random_uuid(), $1, $2, $3, $4, 'automation', 1, 'success', $5::jsonb, now(), now())`,
+      [auto.id, fx.workspaceId, tb.row, fx.owner.userId, JSON.stringify(steps)],
+    )
+    const seen = unwrap(await listDbAutomationRuns(admin.ctx, tb.ds, auto.id))
+    assert.deepEqual(seen.runs[0].steps.map((s) => s.pageId), [made, hiddenMade, trashedMade], '단계는 만든 행의 id 를 그대로 준다')
+    assert.equal(seen.titles[made], '만든 행', '볼 수 있는 만든 행 — 제목(다른 표의 행이어도)')
+    assert.equal(seen.titles[hiddenMade], null, '★ 볼 수 없는 만든 행의 제목은 주지 않는다')
+    assert.equal(trashedMade in seen.titles, false, '지워진 만든 행은 키가 없다')
+    assert.equal(seen.titles[tb.row], '', '트리거된 행도 그대로 같은 맵에')
   })
 
   test('★ 실행 기록 — 새것부터 상한만큼 · 트리거된 행의 제목은 보는 사람의 권한으로(볼 수 없음 · 지워짐)', async (t) => {

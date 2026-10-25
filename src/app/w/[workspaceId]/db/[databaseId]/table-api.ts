@@ -1214,9 +1214,10 @@ export type DbAutomationRunsJson = {
     readonly startedAt: string
     readonly finishedAt: string | null
     readonly triggerPageId: string | null
-    readonly steps: readonly { readonly index: number; readonly type: string; readonly status: string; readonly reason?: string; readonly deliveryId?: string }[]
+    /** `pageId` — `add_page_to` 가 만든 행(10n-74 · 제목은 `titles` 에) · `deliveryId` — 웹훅 단계의 배달. */
+    readonly steps: readonly { readonly index: number; readonly type: string; readonly status: string; readonly reason?: string; readonly pageId?: string; readonly deliveryId?: string }[]
   }[]
-  /** 보는 사람의 권한으로 — 볼 수 없으면 null · 지워졌으면 키가 없다. */
+  /** 보는 사람의 권한으로 — 트리거된 행 · 만든 행(10n-74). 볼 수 없으면 null · 지워졌으면 키가 없다. */
   readonly titles: Readonly<Record<string, string | null>>
   /** 웹훅 단계의 배달 상태(5c-3b) — 단계의 `deliveryId` 로 찾는다. */
   readonly deliveries: Readonly<Record<string, { readonly status: string; readonly lastStatus: number | null }>>

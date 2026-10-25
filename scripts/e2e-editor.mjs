@@ -22798,6 +22798,56 @@ async function main() {
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('자동화 실행 기록의 만든 행 (10n-74 · F-08-09)')) { try {
+      // DB automation 의 실행 기록에서 "행 추가" 단계가 만든 행을 열어 준다 — 볼 수 있으면 제목 링크 · 지워졌으면 그렇게 말한다. 실행 기록은
+      // DB 에 바로 쓴다(만드는 길은 서버 검사가 지킨다). HANDOFF §3.2-307.
+      const stamp = Date.now().toString(36)
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const db = (await api('POST', '/databases', { name: `만든 행 ${stamp}` })).body.database
+      const target = (await api('POST', '/databases', { name: `가는 곳 ${stamp}` })).body.database
+      const mark = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '표시', type: 'checkbox' })).body.property.id
+      const auto = (await api('POST', `/data-sources/${db.dataSourceId}/automations`, {
+        name: `행 추가 ${stamp}`, triggers: [{ type: 'page_added' }],
+        actions: [{ type: 'edit_property', config: { v: 1, cells: [{ propertyId: mark, value: { type: 'checkbox', checkbox: true } }] } }],
+      })).body.automation
+      const trigger = (await api('POST', `/views/${db.defaultViewId}/rows`, { cells: [] })).body.row.id
+      const lib = (p) => import(new URL(`../src/lib/${p}`, import.meta.url).href)
+      const { getSchema } = await lib('database/property.ts')
+      const { createRow } = await lib('database/row.ts')
+      const { textRun } = await lib('contracts/rich-text.ts')
+      const titleId = (await getSchema(ctx, target.dataSourceId)).value.properties.find((p) => p.type === 'title').id
+      const made = (await createRow(ctx, target.dataSourceId, { cells: [{ propertyId: titleId, value: { type: 'title', title: [textRun(`만든 행 ${stamp}`)] } }] })).value.id
+      const gone = (await api('POST', `/views/${target.defaultViewId}/rows`, { cells: [] })).body.row.id
+      await api('DELETE', `/rows/${gone}`)
+      const steps = [{ index: 0, type: 'add_page_to', status: 'done', pageId: made }, { index: 1, type: 'add_page_to', status: 'done', pageId: gone }]
+      const ownerId = (await dbQuery(`SELECT created_by FROM automation WHERE id = $1`, [auto.id]))[0].created_by
+      await dbQuery(
+        `INSERT INTO automation_run (id, automation_id, workspace_id, trigger_page_id, actor_id, origin, depth, status, steps, started_at, finished_at)
+         VALUES (gen_random_uuid(), $1, $2, $3, $4, 'automation', 1, 'success', $5::jsonb, now(), now())`,
+        [auto.id, workspaceId, trigger, ownerId, JSON.stringify(steps)],
+      )
+      const ITEM = `[data-testid="db-automation-item"][data-automation-id="${auto.id}"]`
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      await waitHydrated('[data-testid="db-automations-button"]')
+      await clickSelector('[data-testid="db-automations-button"]')
+      await waitFor(`!!document.querySelector('${ITEM}')`, 8000)
+      await clickSelector(`${ITEM} [data-testid="db-automation-runs-button"]`)
+      await waitFor(`document.querySelectorAll('${ITEM} [data-testid="db-automation-step"]').length === 2`, 8000)
+      const stepsShown = await evaluate(`[...document.querySelectorAll('${ITEM} [data-testid="db-automation-step"]')].map((s) => {
+        const r = s.querySelector('[data-testid="db-automation-step-row"]')
+        return { text: s.textContent, row: r?.textContent ?? null, href: r?.tagName === 'A' ? r.getAttribute('href') : null }
+      })`)
+      check('★ "행 추가" 단계의 만든 행 — 볼 수 있으면 그 제목으로 그 행을 연다',
+        stepsShown[0]?.row === `만든 행 ${stamp}` && (stepsShown[0]?.href ?? '').endsWith(`/${made}`), JSON.stringify(stepsShown))
+      check('지워진 만든 행은 링크 없이 "지워진 항목"', stepsShown[1]?.row === '지워진 항목' && stepsShown[1]?.href === null, JSON.stringify(stepsShown))
+      await clickSelector(`${ITEM} a[data-testid="db-automation-step-row"]`)
+      check('★ 누르면 그 행이 열린다', await waitFor(`location.pathname.endsWith('/${made}')`, 15000), await evaluate('location.pathname'))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).
