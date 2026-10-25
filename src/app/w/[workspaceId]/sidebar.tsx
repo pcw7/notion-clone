@@ -362,9 +362,9 @@ export function Sidebar({
     </>
   )
   // 서랍으로 열린 사이드바는 좁은 화면에서 덮개로 선다 · 넓은 화면에서는 늘 그 자리(접혔으면 넓은 화면에서 숨는다 — 레일이 선다)
-  const navPlacement = `${drawerOpen ? 'flex' : 'hidden'} fixed inset-y-0 left-0 z-40 w-72 max-w-[85vw] overflow-y-auto bg-[rgb(249,248,247)] pt-12 shadow-xl dark:bg-neutral-950 ${
+  const navPlacement = `${drawerOpen ? 'flex' : 'hidden'} fixed inset-y-0 left-0 z-40 w-72 max-w-[85vw] overflow-y-auto bg-[rgb(249,248,247)] pt-12 shadow-xl dark:bg-[#202020] ${
     // 데스크톱은 화면에 고정(디자인-3 — 노션: 본문이 스크롤해도 사이드바는 남는다) · 노션 바탕 · 넘치면 안에서 스크롤
-    collapsed ? 'md:hidden' : 'md:sticky md:top-0 md:z-auto md:flex md:h-screen md:w-64 md:max-w-none md:overflow-y-auto md:bg-[rgb(249,248,247)] md:pt-3 md:shadow-none dark:md:bg-neutral-900'
+    collapsed ? 'md:hidden' : 'md:sticky md:top-0 md:z-auto md:flex md:h-screen md:w-64 md:max-w-none md:overflow-y-auto md:bg-[rgb(249,248,247)] md:pt-3 md:shadow-none dark:md:bg-[#202020]'
   }`
 
   if (collapsed && !drawerOpen) {
@@ -393,7 +393,7 @@ export function Sidebar({
       aria-label="페이지 트리"
       data-testid="sidebar-nav"
       data-drawer={drawerOpen ? 'open' : undefined}
-      className={`${navPlacement} flex-none flex-col gap-0.5 border-r border-[rgb(240,239,237)] px-2 py-3 dark:border-neutral-800`}
+      className={`${navPlacement} flex-none flex-col gap-0.5 border-r border-[rgb(240,239,237)] px-2 py-3 dark:border-[#2c2c2b]`}
     >
       <div className="flex items-center justify-between">
         {/* 이름을 누르면 스위처가 열린다(8j-1 · F-14-09). 홈은 아래의 "홈"이다. */}
@@ -780,7 +780,7 @@ function TreeItem({
   return (
     <li>
       <div
-        className={`group flex h-[30px] items-center gap-0.5 rounded-md px-1 text-[rgb(95,94,89)] dark:text-neutral-400 ${
+        className={`group flex h-[30px] items-center gap-0.5 rounded-md px-1 text-[rgb(95,94,89)] dark:text-[rgb(188,186,182)] ${
           isCurrent ? SIDEBAR_ROW_CURRENT : 'hover:bg-[rgba(33,27,23,0.05)] dark:hover:bg-white/5'
         }`}
         style={{ paddingLeft: `${depth * 12 + 4}px` }}
@@ -1081,7 +1081,7 @@ function NavSection({
                 event.preventDefault()
               }}
               className={`block h-[30px] truncate rounded-md px-2 text-sm leading-[30px] ${
-                row.id === currentPageId ? SIDEBAR_ROW_CURRENT : 'text-[rgb(95,94,89)] hover:bg-[rgba(33,27,23,0.05)] dark:text-neutral-400 dark:hover:bg-white/5'
+                row.id === currentPageId ? SIDEBAR_ROW_CURRENT : 'text-[rgb(95,94,89)] hover:bg-[rgba(33,27,23,0.05)] dark:text-[rgb(188,186,182)] dark:hover:bg-white/5'
               }${dragging === row.id ? ' opacity-50' : ''}`}
             >
               <PageIconView icon={row.icon} fallback className="mr-1 align-[-0.125em]" />

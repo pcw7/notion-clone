@@ -1269,7 +1269,7 @@ span.blk-equation {
     .blk-table-handle { border-color: #404040; background: #171717; }
     .blk-format-button:hover, .blk-format-color:hover, .blk-format-color[aria-checked='true'] { background: rgba(255, 255, 255, 0.08); }
     .blk-format-sep { background: #333333; }
-    .blk-format-link-input { border-color: #404040; background: #0a0a0a; }
+    .blk-format-link-input { border-color: #404040; background: var(--background); }
     .blk-format-link-error { color: #fca5a5; }
     .blk-table-add:hover { background: rgba(255, 255, 255, 0.08); color: #d4d4d4; }
     .blk-divider { border-top-color: #262626; }
@@ -1329,7 +1329,8 @@ span.blk-equation {
     --block-text-yellow: #ca984d;
     --block-text-green: #529e72;
     --block-text-blue: #5e87c9;
-    --block-text-purple: #9d68d3;
+    /* 어두운 바탕이 #191919 가 되며(디자인-7a) 노션 값 #9d68d3 은 4.48:1 — 같은 색상을 조금 밝혀 4.5:1 을 넘긴다 */
+    --block-text-purple: #9f6bd5;
     --block-text-pink: #d15796;
     --block-text-red: #df5452;
 
@@ -1348,7 +1349,7 @@ span.blk-equation {
 /*
  * 블록 색의 고대비 팔레트 — 플랫폼 잔여 10d-5 (F-12-13 · 정본 §3.1 [보강] 설정 값 표 · 테마 ⑧)
  *
- * 글자색 9개를 바꿔 끼운다 — 화면 바탕(밝게 #ffffff · 어둡게 #0a0a0a)과 7:1 이상(WCAG AAA) · 같은 테마의 배경 9색 위에서도 4.5:1 이상.
+ * 글자색 9개를 바꿔 끼운다 — 화면 바탕(밝게 #ffffff · 어둡게 #191919 — 디자인-7a)과 7:1 이상(WCAG AAA) · 같은 테마의 배경 9색 위에서도 4.5:1 이상.
  * 밝은 테마는 같은 색상을 짙게, 어두운 테마는 밝게. 배경 9색은 그대로다 — 기본 글자와 이미 7:1 이상이다.
  * 이 수치는 `lib/editor/block-color-palette.test.ts` 가 이 파일을 읽어 강제한다.
  */
