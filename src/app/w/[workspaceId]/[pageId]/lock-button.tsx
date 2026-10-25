@@ -11,6 +11,7 @@
  * 수 있으려면 새로 붙어야 한다. 데이터베이스의 구조는 협업 연결이 아니라 요청으로 고치므로 서버 렌더만 다시 받는다.
  */
 
+import { TOPBAR_BUTTON } from '../topbar-style'
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 
@@ -67,7 +68,7 @@ export function LockButton({
           aria-pressed={locked}
           disabled={busy}
           onClick={() => void toggle()}
-          className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm hover:bg-neutral-50 disabled:opacity-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
+          className={TOPBAR_BUTTON}
         >
           {locked ? '잠금 풀기' : '잠그기'}
         </button>

@@ -22877,6 +22877,35 @@ async function main() {
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('디자인 — 페이지 상단 바 (디자인-2a)')) { try {
+      // 머리가 본문 칸 밖의 얇은 상단 바다(노션 실측: 높이 44px · 단추 28px · 테두리 없음 · 둥글기 6px) · 스크롤해도 위에 남는다 · 경로가 왼쪽 끝.
+      const { textRun } = await import(new URL('../src/lib/contracts/rich-text.ts', import.meta.url).href)
+      const stamp = Date.now().toString(36)
+      const page = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: JSON.stringify({ title: `상단 바 ${stamp}` }) })).json()).page.id
+      const blocks = Array.from({ length: 40 }, (_, i) => ({ id: randomUUID(), type: 'paragraph', title: [textRun(`줄 ${i + 1}`)], properties: {}, format: {}, children: [] }))
+      await saveBody(page, { blocks })
+      await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false })
+      try {
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+        await waitFor(`!!document.querySelector('[data-testid="page-topbar"]') && !!document.querySelector('[data-block-id="${blocks.at(-1).id}"]')`, 15000)
+        const shape = await evaluate(`(() => {
+          const bar = document.querySelector('[data-testid="page-topbar"]')
+          const r = bar.getBoundingClientRect()
+          const title = document.querySelector('input[aria-label="페이지 제목"]').getBoundingClientRect()
+          const nav = bar.querySelector('nav[aria-label="상위 경로"]').getBoundingClientRect()
+          const buttons = [...bar.querySelectorAll('button')].map((b) => { const c = getComputedStyle(b); return [Math.round(b.getBoundingClientRect().height), c.borderTopWidth, c.borderRadius].join(' ') })
+          return { height: Math.round(r.height), top: Math.round(r.top), aboveTitle: r.bottom <= title.top, navLeft: Math.round(nav.left - r.left), buttons: [...new Set(buttons)] }
+        })()`)
+        check('★ 상단 바 — 높이 44 · 제목 위 · 경로가 왼쪽 끝 · 단추는 높이 28 · 테두리 없음 · 둥글기 6px',
+          shape.height === 44 && shape.top === 0 && shape.aboveTitle && shape.navLeft <= 16 && shape.buttons.length > 0 && shape.buttons.every((b) => b === '28 0px 6px'), JSON.stringify(shape))
+        await evaluate(`document.querySelector('[data-block-id="${blocks.at(-1).id}"]').scrollIntoView({ block: 'end' })`)
+        const stuck = await waitFor(`window.scrollY > 300 && Math.round(document.querySelector('[data-testid="page-topbar"]').getBoundingClientRect().top) === 0`, 3000)
+        check('★ 끝까지 내려도 상단 바가 위에 남는다(고정)', stuck, String(await evaluate('window.scrollY')))
+      } finally {
+        await send('Emulation.clearDeviceMetricsOverride')
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

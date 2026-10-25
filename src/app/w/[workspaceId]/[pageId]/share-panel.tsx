@@ -20,6 +20,7 @@
  * "이제 이 페이지는 따로 관리됩니다".
  */
 
+import { TOPBAR_BUTTON } from '../topbar-style'
 import { useCallback, useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 
@@ -315,7 +316,7 @@ export function SharePanel({
           }
         }}
         aria-expanded={open}
-        className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
+        className={TOPBAR_BUTTON}
       >
         공유
       </button>

@@ -17,6 +17,11 @@
  * - 대가로 준비(스냅샷 읽기 · 조립)를 두 번 한다. 무엇이 몇 개 들어가는지 보고 누르게 하는 값이다
  */
 
+import { TOPBAR_BUTTON } from './topbar-style'
+
+/** 설정 화면의 테두리 단추(디자인-2a 전의 모양). */
+const BORDERED_BUTTON =
+  'rounded-md border border-neutral-300 px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800'
 import { useEffect, useState } from 'react'
 
 type Counts = { pages: number; databases: number; rows: number; attachments: number }
@@ -67,6 +72,7 @@ export function ExportButton({
   rootId = null,
   label = '내보내기',
   align = 'right',
+  variant = 'topbar',
 }: {
   workspaceId: string
   /** 페이지 · 데이터베이스 id. 없으면 워크스페이스 전체(소유자만 — 서버가 다시 판정한다). */
@@ -74,6 +80,8 @@ export function ExportButton({
   label?: string
   /** 패널을 버튼의 어느 끝에 맞출지. 화면 오른쪽 끝의 버튼이면 `right`. */
   align?: 'left' | 'right'
+  /** 단추 모양 — 머리의 상단 바(기본 · 디자인-2a) · 설정 화면의 테두리 단추. */
+  variant?: 'topbar' | 'bordered'
 }) {
   const [open, setOpen] = useState(false)
   const [panel, setPanel] = useState<PanelState>({ kind: 'loading' })
@@ -130,7 +138,7 @@ export function ExportButton({
         aria-expanded={open}
         aria-haspopup="dialog"
         data-testid="export-button"
-        className="rounded-md border border-neutral-300 px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+        className={variant === 'bordered' ? BORDERED_BUTTON : TOPBAR_BUTTON}
       >
         {label}
       </button>

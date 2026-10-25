@@ -15,6 +15,7 @@
  * 협업 서버가 퍼뜨린 update 로 따라온다.
  */
 
+import { TOPBAR_BUTTON } from '../topbar-style'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import type { VersionSummary } from '@/lib/history/version'
@@ -54,7 +55,7 @@ export function PageHistoryButton({ workspaceId, pageId }: { workspaceId: string
         aria-haspopup="dialog"
         aria-expanded={open}
         onClick={() => setOpen(true)}
-        className="rounded-md border border-neutral-300 px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+        className={TOPBAR_BUTTON}
       >
         기록
       </button>

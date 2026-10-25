@@ -56,10 +56,9 @@ export function FavoriteButton({
       aria-pressed={on}
       aria-label={on ? '즐겨찾기에서 빼기' : '즐겨찾기에 넣기'}
       title={on ? '즐겨찾기에서 빼기' : '즐겨찾기에 넣기'}
-      className={`rounded-md border px-2 py-1.5 text-sm ${
-        on
-          ? 'border-amber-300 text-amber-500 dark:border-amber-800'
-          : 'border-neutral-300 text-neutral-400 hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-900'
+      // 상단 바의 아이콘 단추(디자인-2a — 28×28 · 테두리 없음) — 켜지면 별이 노랗다
+      className={`inline-flex h-7 w-7 flex-none items-center justify-center rounded-md text-base hover:bg-[rgba(33,27,23,0.05)] disabled:opacity-40 dark:hover:bg-white/5 ${
+        on ? 'text-amber-500' : 'text-neutral-400'
       }`}
     >
       {on ? '★' : '☆'}

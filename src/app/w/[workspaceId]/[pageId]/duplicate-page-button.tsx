@@ -10,6 +10,7 @@
  * 그 이유가 여기 뜬다.
  */
 
+import { TOPBAR_BUTTON } from '../topbar-style'
 import { startTransition, useState } from 'react'
 import { useRouter } from 'next/navigation'
 
@@ -51,7 +52,7 @@ export function DuplicatePageButton({ workspaceId, pageId }: { workspaceId: stri
         onClick={() => void duplicate()}
         disabled={busy}
         data-testid="page-duplicate"
-        className="rounded-md border border-neutral-300 px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-100 disabled:opacity-40 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+        className={TOPBAR_BUTTON}
       >
         {busy ? '복제 중…' : '복제'}
       </button>

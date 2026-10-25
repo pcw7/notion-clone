@@ -12,6 +12,7 @@
  * 아래에 페이지 웹훅 칸(`page-webhooks.tsx` — 4e-3)이 선다 — 노션의 "Connect Slack channel" 자리.
  */
 
+import { TOPBAR_BUTTON } from '../topbar-style'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import type { PageActivityType } from '@/lib/notification/page-activity'
@@ -98,7 +99,7 @@ export function PageUpdatesButton({ workspaceId, pageId }: { workspaceId: string
           setListed(null)
           void load(null)
         }}
-        className="rounded-md border border-neutral-300 px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+        className={TOPBAR_BUTTON}
       >
         업데이트
       </button>
