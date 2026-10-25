@@ -1431,7 +1431,8 @@ export function DatabaseTable(props: {
                   scope="col"
                   data-property-id={column.propertyId}
                   style={{ width: column.width ?? defaultColumnWidth(column.type) }}
-                  className="border border-neutral-200 px-2 py-1.5 text-left text-xs font-medium text-neutral-500 dark:border-neutral-800"
+                  // 머리 칸 — 디자인-6a(노션 실측: 높이 36px · 14px · 굵기 400 · 흐린 글자 · 아래 선만 — 머리에는 세로선이 없다)
+                  className="h-9 border-b border-[rgba(42,28,0,0.07)] px-2 text-left text-sm font-normal text-[rgb(125,122,117)] dark:border-neutral-800 dark:text-neutral-400"
                 >
                   {/*
                     `th` 에 truncate(overflow: hidden)를 걸지 않는다 — 머리 메뉴 팝오버가
@@ -1439,7 +1440,7 @@ export function DatabaseTable(props: {
                   */}
                   <div className="flex items-center gap-1">
                     <span className="min-w-0 flex-1 truncate">
-                      <span aria-hidden className="mr-1.5 text-neutral-400">
+                      <span aria-hidden className="mr-1.5 text-[rgb(142,139,134)] dark:text-neutral-500">
                         {TYPE_ICON[column.type]}
                       </span>
                       {column.name}
@@ -1458,7 +1459,7 @@ export function DatabaseTable(props: {
                 </th>
               ))}
               {access.canEditStructure && isGrid && (
-                <th className="w-11 border border-neutral-200 p-0 dark:border-neutral-800">
+                <th className="w-11 border-b border-[rgba(42,28,0,0.07)] p-0 dark:border-neutral-800">
                   <AddColumn
                     workspaceId={workspaceId}
                     dataSourceId={dataSourceId}
@@ -1711,7 +1712,8 @@ export function DatabaseTable(props: {
                             ? `flex h-9 items-center gap-2 rounded outline-none ${
                                 isSelected ? 'shadow-[inset_0_0_0_2px_theme(colors.blue.500)]' : ''
                               }`
-                            : `relative h-9 border border-neutral-200 px-2 align-middle outline-none dark:border-neutral-800 ${
+                            // 칸 — 디자인-6a(노션 실측: 오른쪽 · 아래 선만 · 옅은 따뜻한 회색 · 줄 37px — 겹친 선(border-collapse)은 칸 높이에 든다)
+                            : `relative h-[37px] border-b border-r border-[rgba(42,28,0,0.07)] px-2 align-middle outline-none dark:border-neutral-800 ${
                                 isSelected ? 'shadow-[inset_0_0_0_2px_theme(colors.blue.500)]' : ''
                               }`
                       }
@@ -1802,7 +1804,7 @@ export function DatabaseTable(props: {
                   )
                 })}
                 {access.canEditStructure && isGrid && (
-                  <td aria-hidden className="border border-neutral-200 dark:border-neutral-800" />
+                  <td aria-hidden className="border-b border-[rgba(42,28,0,0.07)] dark:border-neutral-800" />
                 )}
               </tr>
             ))}
