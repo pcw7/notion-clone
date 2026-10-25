@@ -7363,6 +7363,9 @@ async function main() {
     // 즐겨찾기는 아직 없다 — 빈 섹션은 그리지 않는다.
     check('즐겨찾기가 없으면 그 섹션도 없다', !(await evaluate(`!!document.querySelector('section[aria-label="즐겨찾기"]')`)))
 
+    // 새로 읽은 직후라 서버 HTML 의 별은 아직 손이 없을 수 있다 — 하이드레이션 전에 누르면 클릭이 사라진다. 전체 판(#462 · 페이지와 트리가 큰 때)에서
+    // 별이 칠해지지 않은 채 떨어졌다(홀로 · 부하 6배로는 재현하지 못했다).
+    await waitHydrated('button[aria-label="즐겨찾기에 넣기"]')
     const starBox = await evaluate(`(() => {
       const b = document.querySelector('button[aria-label="즐겨찾기에 넣기"]')
       if (!b) return null
