@@ -1,11 +1,15 @@
-/* 공개 화면(6a-2a) — 편집기 없이 읽는 본문. 색 팔레트는 editor.css 의 [data-color] 를 쓴다. */
+/*
+ * 공개 화면(6a-2a) — 편집기 없이 읽는 본문. 색 팔레트는 editor.css 의 [data-color] 를 쓴다.
+ * 디자인-7b — 편집기와 같은 값(노션 실측 · `docs/design/notion-measurements.md`): 본문 칸 720px · 16px/24px · 제목 40px/700 · 아이콘 78px ·
+ * 블록은 안쪽 여백(위아래 8px · 좌우 2px — 사이 간격 없음) · 제목 단계 30/24/20px · 600 · 1.3 · 인용 선 · 콜아웃 · 체크박스 · 구분선.
+ */
 
 .pub-page {
   width: 100%;
-  max-width: 46rem;
+  max-width: 768px;
   margin: 0 auto;
-  padding: 3rem 1.5rem 6rem;
-  line-height: 1.6;
+  padding: 48px 24px 96px;
+  line-height: 1.5;
   word-break: keep-all;
   overflow-wrap: anywhere;
 }
@@ -15,40 +19,49 @@
 .pub-trail a:hover, .pub-breadcrumb-block a:hover { text-decoration: underline; }
 .pub-trail-sep { margin: 0 0.25rem; color: #d1d5db; }
 
-.pub-icon { font-size: 3rem; line-height: 1; margin-bottom: 0.5rem; }
-.pub-title { font-size: 2.25rem; font-weight: 700; line-height: 1.2; margin-bottom: 1.5rem; }
+/* 머리 — 아이콘이 있으면 위 48px(본문 칸의 위 48px 과 더해 96px) · 78px · 제목까지 12px, 없으면 제목 위 36px(합 84px) — 편집기의 머리와 같다 */
+.pub-icon { font-size: 78px; line-height: 1; margin: 48px 0 12px; }
+.pub-title { font-size: 40px; font-weight: 700; line-height: 1.2; margin: 36px 0 8px; padding: 0 2px; }
+.pub-icon + .pub-title, .pub-icon-image + .pub-title { margin-top: 0; }
 .pub-note { color: #6b7280; }
 
-.pub-body { display: flex; flex-direction: column; gap: 0.25rem; }
-.pub-block { min-height: 1.6em; }
+.pub-body { display: flex; flex-direction: column; gap: 0; }
+.pub-block { min-height: 1.5em; padding: 8px 2px; }
+/* 그림은 칸 폭을 다 쓴다 — 폭 비율(10n-63)이 칸 폭의 비율이라 좌우 여백을 두지 않는다(편집기의 `.blk.blk-image` 와 같다) */
+.pub-block.pub-image { padding-left: 0; padding-right: 0; }
 .pub-children { padding-left: 1.5rem; }
 .pub-body p { margin: 0; }
 .pub-body a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
 
-.pub-heading_1 { font-size: 1.875rem; font-weight: 700; margin-top: 1.5rem; }
-.pub-heading_2 { font-size: 1.5rem; font-weight: 600; margin-top: 1.25rem; }
-.pub-heading_3 { font-size: 1.25rem; font-weight: 600; margin-top: 1rem; }
+.pub-heading_1 { font-size: 30px; font-weight: 600; line-height: 1.3; padding-top: 32px; }
+.pub-heading_2 { font-size: 24px; font-weight: 600; line-height: 1.3; padding-top: 28px; }
+.pub-heading_3 { font-size: 20px; font-weight: 600; line-height: 1.3; padding-top: 24px; }
 
 .pub-body ul { list-style: disc; padding-left: 1.5rem; }
 .pub-body ol { list-style: decimal; padding-left: 1.5rem; }
 
-.pub-todo { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.375rem; }
+/* 할 일 — 편집기와 같은 체크박스(16px · 테두리 1.5px · 둥글기 1.5px · 완료는 파랑에 흰 체크 — Lucide check · ISC) · 완료 글자는 취소선 50% + 0.7 */
+.pub-todo { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px; padding-bottom: 3px; }
 .pub-todo > .pub-children { flex-basis: 100%; }
-.pub-todo[data-checked='true'] .pub-todo-text { text-decoration: line-through; color: #9ca3af; }
+.pub-todo-box { flex: none; box-sizing: border-box; width: 16px; height: 16px; margin: 4px; border: 1.5px solid rgb(56, 56, 54); border-radius: 1.5px; }
+.pub-todo[data-checked='true'] .pub-todo-box { border-color: rgb(39, 131, 222); background: rgb(39, 131, 222) center / 14px no-repeat; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 6 9 17l-5-5'/%3E%3C/svg%3E"); }
+.pub-todo[data-checked='true'] .pub-todo-text { text-decoration: line-through; text-decoration-color: rgba(44, 44, 43, 0.5); opacity: 0.7; }
 
 .pub-toggle > summary { cursor: pointer; }
-.pub-quote { border-left: 3px solid currentColor; padding-left: 0.875rem; }
+/* 인용 — 선 3px(글자색)은 글자 높이만큼(편집기와 같은 가상 요소) · 글자는 25px 안 */
+.pub-quote { position: relative; padding-left: 27px; }
+.pub-quote::before { content: ''; position: absolute; top: 8px; bottom: 8px; left: 2px; width: 3px; background: currentColor; }
 /* 콜아웃 — 아이콘 칸 24px(이모지 21.6px · 디자인-4c) · 글과 자식은 그 옆의 칸 */
-.pub-callout { display: flex; align-items: flex-start; gap: 0.5rem; border: 1px solid transparent; border-radius: 4px; padding: 0.75rem 1rem; }
+.pub-callout { display: flex; align-items: flex-start; gap: 8px; border: 1px solid transparent; border-radius: 10px; margin: 8px 2px; padding: 12px; }
 .pub-callout-icon { flex: none; width: 24px; height: 24px; font-family: 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif; font-size: 21.6px; line-height: 24px; text-align: center; }
 .pub-callout-body { flex: 1; min-width: 0; }
 /* 기본 바탕은 색이 없을 때만 — 이 파일은 편집기 CSS 뒤에 실려 같은 특정도면 팔레트의 배경색을 덮는다(10n-54) */
 .pub-callout:not([data-color]) { background: rgba(135, 131, 120, 0.12); }
 /* 콜아웃의 파생(10n-54 · F-01-21) — 글자색이면 흰 바탕 + 연회색 테두리(편집기와 같은 규칙) */
 .pub-callout[data-color]:not([data-color$='_background']) { background: #ffffff; border-color: rgba(55, 53, 47, 0.16); }
-.pub-divider { border: 0; border-top: 1px solid rgba(55, 53, 47, 0.16); margin: 0.75rem 0; }
+.pub-divider { border: 0; border-top: 1px solid rgba(28, 19, 1, 0.11); margin: 12px 0; }
 
-.pub-code pre { overflow-x: auto; border-radius: 4px; padding: 1rem; background: rgba(135, 131, 120, 0.12); font-size: 0.875rem; }
+.pub-code pre { overflow-x: auto; border-radius: 10px; padding: 24px 22px; background: rgba(135, 131, 120, 0.12); font-size: 0.85em; line-height: 1.5; }
 .pub-code figcaption { font-size: 0.875rem; color: #6b7280; margin-top: 0.25rem; }
 .pub-code-inline { border-radius: 3px; padding: 0.1em 0.3em; background: rgba(135, 131, 120, 0.15); font-size: 0.875em; }
 

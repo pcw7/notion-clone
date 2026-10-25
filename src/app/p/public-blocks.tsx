@@ -204,7 +204,8 @@ function Block({ block, view }: { block: EditorBlock; view: PublicPageView }): R
       const checked = props.checked === true
       return (
         <div className="pub-block pub-todo" data-color={color} data-checked={checked}>
-          <span className="pub-todo-box" role="img" aria-label={checked ? '완료' : '할 일'}>{checked ? '☑' : '☐'}</span>
+          {/* 상자는 CSS 가 그린다(디자인-7b — 편집기와 같은 체크박스) · 뜻은 이름으로 */}
+          <span className="pub-todo-box" role="img" aria-label={checked ? '완료' : '할 일'} />
           <span className="pub-todo-text"><RichText runs={block.title} view={view} blockId={block.id} /></span>
           <Children block={block} view={view} />
         </div>
