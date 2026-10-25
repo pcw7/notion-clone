@@ -95,7 +95,7 @@ export function PeopleEditor({
       className={
         inline
           ? 'w-full rounded-md border border-neutral-200 bg-white p-1 dark:border-neutral-700 dark:bg-neutral-900'
-          : 'w-72 rounded-md border border-neutral-200 bg-white p-1 shadow-lg dark:border-neutral-700 dark:bg-neutral-900'
+          : 'w-72 popover-surface p-1'
       }
     >
       {leading}

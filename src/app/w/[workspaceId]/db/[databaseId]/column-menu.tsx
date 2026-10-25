@@ -215,7 +215,7 @@ export function ColumnMenu({
           }}
           className={`flex ${
             step === 'formula' ? 'w-80' : step === 'button' ? 'w-96' : 'w-56'
-          } flex-col rounded-md border border-neutral-200 bg-white p-1 text-left text-sm font-normal text-neutral-800 shadow-lg dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100`}
+          } flex-col popover-surface p-1 text-left text-sm font-normal text-neutral-800 dark:text-neutral-100`}
         >
           {step === 'menu' && (
             <>

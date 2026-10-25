@@ -112,7 +112,7 @@ export function ReminderBell(props: {
               setOpen(false)
             }
           }}
-          className="w-44 rounded-md border border-neutral-200 bg-white p-1 text-sm shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
+          className="w-44 popover-surface p-1 text-sm"
         >
           <p className="px-2 py-1 text-xs text-neutral-500">알림</p>
           {start !== null &&

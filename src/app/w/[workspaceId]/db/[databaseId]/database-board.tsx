@@ -1034,7 +1034,7 @@ function CardMoveMenu({ title, move, onMove }: { title: string; move: CardMove; 
             role="group"
             aria-label={`${title} 옮길 자리`}
             data-testid="db-card-move-menu"
-            className="w-52 rounded-lg border border-neutral-200 bg-white p-1 text-left text-sm font-normal shadow-lg dark:border-neutral-800 dark:bg-neutral-950"
+            className="w-52 popover-surface p-1 text-left text-sm font-normal dark:bg-neutral-950"
           >
             {move.up !== null && (
               <button type="button" data-testid="db-card-move-up" className={item} onClick={() => pick(move.up!)}>

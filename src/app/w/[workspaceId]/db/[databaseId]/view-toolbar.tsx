@@ -439,7 +439,7 @@ function Popover({
           onClose()
         }
       }}
-      className="absolute left-0 top-full z-30 mt-1 flex w-[36rem] max-w-[90vw] flex-col gap-2 rounded-md border border-neutral-200 bg-white p-3 shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
+      className="absolute left-0 top-full z-30 mt-1 flex w-[36rem] max-w-[90vw] flex-col gap-2 popover-surface p-3"
     >
       {children}
     </div>

@@ -88,7 +88,7 @@ export function CalculationCell({
           onKeyDown={(e) => {
             if (e.key === 'Escape') setOpen(false)
           }}
-          className="flex max-h-72 w-44 flex-col overflow-y-auto rounded-md border border-neutral-200 bg-white p-1 text-left text-sm shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
+          className="flex max-h-72 w-44 flex-col overflow-y-auto popover-surface p-1 text-left text-sm"
         >
           <button
             type="button"

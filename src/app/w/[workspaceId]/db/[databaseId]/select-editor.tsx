@@ -188,7 +188,7 @@ export function SelectEditor({
       <AnchoredLayer
         testId="db-select-editor"
         align={align === 'right' ? 'end' : 'start'}
-        className="w-64 rounded-md border border-neutral-200 bg-white p-2 shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
+        className="w-64 popover-surface p-2"
       >
         <div data-testid="db-option-edit" data-option-id={editing.id} className="flex flex-col gap-2">
           <div className="flex items-center gap-1">
@@ -327,7 +327,7 @@ export function SelectEditor({
     <AnchoredLayer
       testId="db-select-editor"
       align={align === 'right' ? 'end' : 'start'}
-      className="w-64 rounded-md border border-neutral-200 bg-white p-1 shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
+      className="w-64 popover-surface p-1"
     >
       <input
         ref={inputRef}
