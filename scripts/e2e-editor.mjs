@@ -23422,6 +23422,36 @@ async function main() {
         slash === '10px 0px true' && menu === '10px 0px true' && row === 28, JSON.stringify({ slash, menu, row }))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('디자인 — 데이터베이스 표 (디자인-6a)')) { try {
+      // 표가 노션 앱 실측과 같다 — 머리 칸 36px · 14px · 굵기 400 · rgb(125, 122, 117) · 아래 선만(세로선 없음) · 칸은 오른쪽 · 아래 선
+      // rgba(42, 28, 0, 0.07) · 줄 37px.
+      const stamp = Date.now().toString(36)
+      const api6 = `${BASE}/api/workspaces/${workspaceId}`
+      const created = (await (await fetch(`${api6}/databases`, { method: 'POST', headers: authed, body: JSON.stringify({ name: `표 모양 ${stamp}` }) })).json()).database
+      const dbId = created.id
+      await fetch(`${api6}/views/${created.defaultViewId}/rows`, { method: 'POST', headers: authed, body: '{}' })
+      await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false })
+      try {
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${dbId}` })
+        await waitFor(`!!document.querySelector('thead th[data-property-id]') && !!document.querySelector('td[data-cell="0:0"]')`, 15000)
+        const m = await evaluate(`(() => {
+          const th = getComputedStyle(document.querySelector('thead th[data-property-id]'))
+          const thBox = document.querySelector('thead th[data-property-id]').getBoundingClientRect()
+          const tdEl = document.querySelector('td[data-cell="0:0"]')
+          const td = getComputedStyle(tdEl)
+          const tr = tdEl.closest('tr').getBoundingClientRect()
+          return {
+            head: [Math.round(thBox.height), th.fontSize, th.fontWeight, th.color, th.borderBottomWidth, th.borderBottomColor, th.borderRightWidth].join(' '),
+            cell: [td.borderRightWidth, td.borderRightColor, td.borderBottomWidth, Math.round(tr.height)].join(' '),
+          }
+        })()`)
+        check('★ 표 — 머리 36px · 14px · 400 · 흐린 글자 · 아래 선만 · 칸은 오른쪽 · 아래 선 rgba(42, 28, 0, 0.07) · 줄 37px',
+          m.head === '36 14px 400 rgb(125, 122, 117) 1px rgba(42, 28, 0, 0.07) 0px' && m.cell === '1px rgba(42, 28, 0, 0.07) 1px 37', JSON.stringify(m))
+      } finally {
+        await send('Emulation.clearDeviceMetricsOverride')
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).
@@ -23614,9 +23644,11 @@ async function main() {
       await openUntil(`${TH} [data-testid="db-column-menu"]`, '[data-testid="db-column-menu-panel"]')
       const menu = await layerOf('[data-testid="db-column-menu-panel"]')
       const th = await evaluate(`JSON.stringify(document.querySelector(${JSON.stringify(TH)}).getBoundingClientRect())`).then(JSON.parse)
-      check('★ 열 메뉴는 층 — 머리 칸 아래 · 화면 안 · 머리 칸의 글자 크기(12px)를 물려받는다',
+      // 머리 칸의 글자 크기는 디자인이 정한다(디자인-6a 가 12 → 14px) — 숫자를 적지 않고 머리 칸의 것과 같은지 본다
+      const thFont = await evaluate(`getComputedStyle(document.querySelector(${JSON.stringify(TH)})).fontSize`)
+      check('★ 열 메뉴는 층 — 머리 칸 아래 · 화면 안 · 머리 칸의 글자 크기를 물려받는다',
         // 기준점은 머리 칸 안의 위치를 가진 틀(옛 `top-full` 의 기준)이라 머리 칸의 아래보다 조금 위일 수 있다 — 가운데보다 아래면 머리 칸 아래다
-        !!menu && menu.inLayer && menu.inView && menu.top >= th.top + th.height / 2 && menu.font === '12px', JSON.stringify({ menu, th }))
+        !!menu && menu.inLayer && menu.inView && menu.top >= th.top + th.height / 2 && menu.font === thFont, JSON.stringify({ menu, th, thFont }))
       await escape()
       await waitFor(`!document.querySelector('[data-testid="db-column-menu-panel"]')`, 3000)
 
