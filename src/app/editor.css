@@ -448,8 +448,11 @@
 .blk-editor .blk-column { display: none; }
 .blk-editor .blk-container:has(> .blk-column_list) > .blk-group {
   display: flex;
-  /* 틈은 블록 핸들(+ · 끌기 — 46px)과 폭 손잡이가 겹치지 않고 들어갈 만큼 — 오른쪽 컬럼 블록의 핸들이 틈에 선다(1c-2). */
-  gap: 3.5rem;
+  /*
+   * 틈은 블록 핸들과 폭 손잡이가 겹치지 않고 들어갈 만큼 — 오른쪽 컬럼 블록의 핸들이 틈에 선다(1c-2). 핸들은 블록 왼쪽 16px 부터 42px(디자인-4b
+   * · `GUTTER_WIDTH_PX` 58) · 폭 손잡이 6px — 64px. 노션의 틈은 46px 이고 핸들이 왼쪽 컬럼에 6px 들어가지만, 노션에는 틈 안의 폭 손잡이가 없다.
+   */
+  gap: 4rem;
   margin-left: 0;
 }
 .blk-editor .blk-container:has(> .blk-column) {
@@ -466,7 +469,7 @@
   position: absolute;
   top: 0;
   bottom: 0;
-  left: -3.5rem;
+  left: -4rem;
   width: 6px;
   cursor: col-resize;
   border-radius: 3px;
@@ -972,37 +975,42 @@ span.blk-equation {
  * 블록 핸들 (F-01-08). 프레임 기준 절대 위치 — 편집기 DOM 밖에 그린다
  * (`block-gutter.tsx` 머리말).
  */
+/* 디자인-4b(노션 앱 실측): `+` 24×24 와 끌기 18×24 가 붙어 있다 · 둥글기 4px · 아이콘 20px 단색 · 마우스를 올리면 따뜻한 회색 5%. */
 .blk-gutter {
   position: absolute;
   z-index: 5;
   display: flex;
-  gap: 2px;
   align-items: center;
-  height: 1.5rem;
+  height: 24px;
 }
 
 .blk-gutter-button {
   display: grid;
   place-items: center;
-  width: 20px;
-  height: 22px;
+  width: 24px;
+  height: 24px;
+  padding: 0;
   border: 0;
   border-radius: 4px;
   background: none;
-  color: #a3a3a3;
-  font-size: 14px;
+  color: rgb(173, 169, 163);
   line-height: 1;
   cursor: pointer;
 }
 
+.blk-gutter-button svg {
+  flex: none;
+  width: 20px;
+  height: 20px;
+}
+
 .blk-gutter-button:hover {
-  background: rgba(0, 0, 0, 0.06);
-  color: #525252;
+  background: rgba(33, 27, 23, 0.05);
 }
 
 .blk-gutter-grip {
+  width: 18px;
   cursor: grab;
-  letter-spacing: -2px;
   /* 터치에서 끄는 동안 브라우저가 페이지를 스크롤하지 않게. 포인터 이벤트 드래그의 전제다. */
   touch-action: none;
 }

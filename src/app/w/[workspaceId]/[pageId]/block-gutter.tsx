@@ -61,6 +61,7 @@ import { isBlockSelection } from '@/lib/editor/block-selection'
 import type { CommandDeps } from '@/lib/editor/commands'
 import { findContainerById } from '@/lib/editor/pm-blocks'
 import { BlockMenu } from './block-menu'
+import { GripVertical, Plus } from 'lucide-react'
 
 /** 한 단 들여쓰기 = `.blk-group` 의 margin-left(1.5rem). 둘이 어긋나면 자식 드롭 판정이 틀린다. */
 const INDENT_PX = 24
@@ -68,10 +69,16 @@ const INDENT_PX = 24
 const DRAG_THRESHOLD_PX = 4
 /** 컬럼이 세로로 쌓이는 화면 — `editor.css` 의 같은 미디어 쿼리. 여기서는 옆에 놓아 컬럼을 만들지 않는다(1c-3). */
 const STACKED_COLUMNS_QUERY = '(max-width: 640px)'
-/** `+` 와 `⋮⋮` 두 버튼의 폭 + 내용과의 간격. */
-const GUTTER_WIDTH_PX = 46
+/**
+ * `+`(24) 와 끌기(18) 두 단추의 폭 + 블록과의 간격 16px — 노션 실측: 끌기의 오른쪽 끝이 문단 글자보다 18px 왼쪽(디자인-4b). 우리 블록은
+ * 글자가 2px 안이라 블록 왼쪽에서 16px 이다. 컬럼 틈(`editor.css` 4rem)이 이것과 폭 손잡이(6px)를 담는다.
+ */
+const GUTTER_WIDTH_PX = 58
+/** `+` 단추의 폭 — 좁은 화면에서 끌기 단추를 화면 안에 둘 때 쓴다(`gutterLeft`). */
+const PLUS_WIDTH_PX = 24
 
-type Hover = { blockId: string; top: number; left: number }
+/** `left` 는 블록의 왼쪽 끝 · `gutter` 는 핸들의 왼쪽 끝(프레임 기준 — `gutterLeft`). */
+type Hover = { blockId: string; top: number; left: number; gutter: number }
 /** 가로 가이드(위 · 아래 · 자식 자리) — `height` 가 있으면 옆에 놓기의 세로 가이드(1c-3). */
 type Guide = { top: number; left: number; width?: number; height?: number }
 /**
@@ -134,7 +141,28 @@ function lineAt(view: EditorView, frame: HTMLElement, clientX: number, clientY: 
   const content = (container.firstElementChild as HTMLElement | null) ?? container
   const rect = content.getBoundingClientRect()
   const box = frame.getBoundingClientRect()
-  return { blockId, top: rect.top - box.top, left: rect.left - box.left }
+  const left = rect.left - box.left
+  return { blockId, top: firstLineTop(content, rect) - box.top, left, gutter: gutterLeft(left, box) }
+}
+
+/**
+ * 핸들의 왼쪽 끝(프레임 기준) — 블록 왼쪽 58px. 다만 **끌기 단추는 화면 안에** 둔다: 좁은 화면(폰 — 본문 여백 24px)에서는 58px 이 화면
+ * 밖이라, 끌기 단추의 왼쪽 끝이 화면 왼쪽 끝에 닿을 만큼만 물린다(`+` 는 밖으로 나간다 — 폰은 탭한 블록의 끌기로 옮기고 메뉴를 연다 · 10m-1).
+ * 디자인-4b 의 첫 전체 판이 찾았다(폰에서 끌기 단추가 x −10).
+ */
+function gutterLeft(blockLeft: number, box: DOMRect): number {
+  return Math.max(blockLeft - GUTTER_WIDTH_PX, -box.left - PLUS_WIDTH_PX)
+}
+
+/**
+ * 핸들의 위쪽 끝 — 블록의 **첫 줄**과 같은 선(노션 실측 · 디자인-4b). 블록 요소의 위쪽 끝이 아니다: 블록은 안쪽 여백(문단 8px · 제목은 더)을
+ * 가지므로 거기에 맞추면 핸들이 글자보다 위에 뜬다. 줄 높이가 핸들(24px)보다 크면(제목) 그 줄의 가운데에 둔다.
+ */
+function firstLineTop(content: HTMLElement, rect: DOMRect): number {
+  const style = getComputedStyle(content)
+  const inset = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.borderTopWidth) || 0)
+  const line = parseFloat(style.lineHeight)
+  return rect.top + inset + (Number.isFinite(line) ? Math.max(0, (line - GUTTER_HEIGHT_PX) / 2) : 0)
 }
 
 /** 드롭 후보 줄들의 좌표를 잰다. 문서 쪽 정보는 `dropCandidates` 가 준다. */
@@ -241,7 +269,7 @@ export function BlockGutter({
       // 줄 사이 틈 — 직전 줄을 유지한다. 없애면 핸들로 가는 도중에 사라진다.
       if (next === null) return
       const cur = hoverRef.current
-      if (cur && cur.blockId === next.blockId && cur.top === next.top && cur.left === next.left) return
+      if (cur && cur.blockId === next.blockId && cur.top === next.top && cur.left === next.left && cur.gutter === next.gutter) return
       show(next)
     }
     const onLeave = (): void => {
@@ -360,7 +388,7 @@ export function BlockGutter({
     const current = hoverRef.current
     const view = viewRef.current
     if (!current || !view) return
-    setMenu({ top: current.top + GUTTER_HEIGHT_PX, left: current.left - GUTTER_WIDTH_PX, view })
+    setMenu({ top: current.top + GUTTER_HEIGHT_PX, left: current.gutter, view })
   }
 
   /** 우클릭 — 정본 F-12-01: "우클릭 또는 cmd/ctrl + / 로 블록 컨텍스트 메뉴." */
@@ -390,7 +418,7 @@ export function BlockGutter({
     if (!content) return
     const rect = content.getBoundingClientRect()
     const box = frame.getBoundingClientRect()
-    setMenu({ top: rect.top - box.top + GUTTER_HEIGHT_PX, left: rect.left - box.left - GUTTER_WIDTH_PX, view })
+    setMenu({ top: firstLineTop(content, rect) - box.top + GUTTER_HEIGHT_PX, left: gutterLeft(rect.left - box.left, box), view })
   }, [viewRef, frameRef])
 
   useEffect(() => {
@@ -421,7 +449,7 @@ export function BlockGutter({
       {hover && (
         <div
           className="blk-gutter"
-          style={{ top: hover.top, left: hover.left - GUTTER_WIDTH_PX }}
+          style={{ top: hover.top, left: hover.gutter }}
         >
           {/*
             tabIndex -1: 핸들은 hover 로만 나타나는 마우스용 보조 UI 다. 키보드에는
@@ -437,7 +465,7 @@ export function BlockGutter({
             onMouseDown={(event) => event.preventDefault()}
             onClick={onAdd}
           >
-            +
+            <Plus aria-hidden strokeWidth={1.75} />
           </button>
           <button
             type="button"
@@ -451,7 +479,7 @@ export function BlockGutter({
             onPointerCancel={() => endDrag()}
             onContextMenu={onContextMenu}
           >
-            ⋮⋮
+            <GripVertical aria-hidden strokeWidth={1.75} />
           </button>
         </div>
       )}
