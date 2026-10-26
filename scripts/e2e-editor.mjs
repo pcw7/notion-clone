@@ -1142,9 +1142,10 @@ async function main() {
         if (await waitFor(`!document.querySelector(${JSON.stringify(sel)})?.closest('[data-testid="page-menu-list"][hidden]')`, 2000)) return
       }
     }
-    const clickSelector = async (sel) => {
+    // `settle: false` — 진행 중 요청을 기다리지 않는다(맨 위 요소 · 자리만 본다 · `clickReady` — 끝나지 않는 요청이 있는 화면에서 클릭마다 1.5초를 다 썼다)
+    const clickSelector = async (sel, { settle = true } = {}) => {
       await revealInPageMenu(sel)
-      for (let waited = 0; inflightCount() > 0 && waited < 1500; waited += 50) await sleep(50)
+      if (settle) for (let waited = 0; inflightCount() > 0 && waited < 1500; waited += 50) await sleep(50)
       const measure = `new Promise((resolve) => {
         const el = document.querySelector(${JSON.stringify(sel)})
         if (!el) return resolve(null)
@@ -1178,6 +1179,17 @@ async function main() {
       await click(box.x, box.y)
       await sleep(120)
       return true
+    }
+    /**
+     * 절마다 따로 두던 손 클릭(`clickOnSel` 10벌 — 잰 좌표를 곧바로 눌렀다 · 하이드레이션도 맨 위 요소도 보지 않았다)의 자리(도구-9). 없거나 꺼진
+     * 단추면 누르지 않고 false · 누르기는 `clickSelector` 의 맨 위 요소 · 한 프레임 뒤의 자리 확인(도구-7)을 거친다. 진행 중 요청은 기다리지 않는다 —
+     * 옛 손 클릭도 기다리지 않았고, 끝나지 않는 요청이 있는 화면(그룹 화면)에서는 클릭마다 1.5초를 다 써 절이 6.8초 → 28.8초가 됐다. teamspace
+     * 화면(7c-2)이 전체 판에서 첫 + 를 놓쳐 절 전체(22개)가 떨어진 적이 있다(#478).
+     */
+    const clickReady = async (sel) => {
+      const ok = await evaluate(`(() => { const el = document.querySelector(${JSON.stringify(sel)}); return !!el && !el.disabled })()`)
+      if (!ok) return false
+      return clickSelector(sel, { settle: false })
     }
     /**
      * 누른 뒤 `until` 이 참이 될 때까지 다시 누른다 — 막 연 편집기가 살아나기 전의 클릭은 버려진다(액션 편집기의 "+ 액션" 이 그랬다 —
@@ -2132,20 +2144,7 @@ async function main() {
       const serverGroups = async () => (await (await fetch(groupsUrl, { headers: authed })).json()).groups
       const row = (id) => `[data-testid="group-row"][data-group-id="${id}"]`
       const panelMessage = () => evaluate(`document.querySelector('[data-testid="group-panel"] [role="alert"], [data-testid="group-panel"] [role="status"]')?.textContent ?? ''`)
-      const clickOnSel = async (sel) => {
-        await revealInPageMenu(sel)
-        const box = await evaluate(`(() => {
-          const el = document.querySelector(${JSON.stringify(sel)})
-          if (!el || el.disabled) return null
-          el.scrollIntoView({ block: 'center' })
-          const r = el.getBoundingClientRect()
-          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
-        })()`)
-        if (!box) return false
-        await click(box.x, box.y)
-        await sleep(120)
-        return true
-      }
+      const clickOnSel = clickReady // 도구-9 — 공용 도우미(맨 위 요소 · 자리 멈춤을 본다)
       const typeInto = async (sel, text) => {
         await clickOnSel(sel)
         await evaluate(`document.querySelector(${JSON.stringify(sel)})?.select()`)
@@ -2325,20 +2324,7 @@ async function main() {
       const tsUrl = `${BASE}/api/workspaces/${workspaceId}/teamspaces`
       const pageAs = (actor, path) => fetch(`${BASE}${path}`, { headers: { cookie: `nc_session=${actor.token}` } })
       const tsMessage = () => evaluate(`document.querySelector('[data-testid="teamspace-error"]')?.textContent ?? ''`)
-      const clickOnSel = async (sel) => {
-        await revealInPageMenu(sel)
-        const box = await evaluate(`(() => {
-          const el = document.querySelector(${JSON.stringify(sel)})
-          if (!el || el.disabled) return null
-          el.scrollIntoView({ block: 'center' })
-          const r = el.getBoundingClientRect()
-          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
-        })()`)
-        if (!box) return false
-        await click(box.x, box.y)
-        await sleep(120)
-        return true
-      }
+      const clickOnSel = clickReady // 도구-9 — 공용 도우미(맨 위 요소 · 자리 멈춤을 본다)
       const typeInto = async (sel, text) => {
         await clickOnSel(sel)
         await evaluate(`document.querySelector(${JSON.stringify(sel)})?.select()`)
@@ -2358,6 +2344,8 @@ async function main() {
       check('사이드바에 Teamspaces 섹션과 만들기 버튼이 있고 · 나머지는 "워크스페이스 페이지" 머리 아래다',
         await evaluate(`!!document.querySelector('[data-testid="teamspace-create-open"]') && document.querySelector('section[aria-label="워크스페이스 페이지"] h2')?.textContent === '워크스페이스 페이지'`))
       const designName = `디자인팀 ${Date.now()}`
+      // 막 연 화면 — React 가 붙고 자리가 멈춘 뒤에 누른다(전체 판에서 이 클릭을 놓쳐 폼이 열리지 않았다 · #478 · 도구-9)
+      await waitSteady('[data-testid="teamspace-create-open"]')
       await clickOnSel('[data-testid="teamspace-create-open"]')
       await waitFor(`!!document.querySelector('[data-testid="teamspace-create-name"]')`, 5000)
       await typeInto('[data-testid="teamspace-create-name"]', designName)
@@ -2489,20 +2477,7 @@ async function main() {
       })).json()).page.id
       const docAccess = `${BASE}/api/workspaces/${workspaceId}/pages/${doc}/access`
       const tsRow = `[data-testid="sidebar-teamspace"][data-teamspace-id="${moveTeam}"]`
-      const clickOnSel = async (sel) => {
-        await revealInPageMenu(sel)
-        const box = await evaluate(`(() => {
-          const el = document.querySelector(${JSON.stringify(sel)})
-          if (!el || el.disabled) return null
-          el.scrollIntoView({ block: 'center' })
-          const r = el.getBoundingClientRect()
-          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
-        })()`)
-        if (!box) return false
-        await click(box.x, box.y)
-        await sleep(120)
-        return true
-      }
+      const clickOnSel = clickReady // 도구-9 — 공용 도우미(맨 위 요소 · 자리 멈춤을 본다)
       const openPicker = async () => {
         await clickOnSel('[data-testid="move-open"]')
         return waitFor(`!!document.querySelector('[data-testid="move-picker"]')`, 5000)
@@ -2569,20 +2544,7 @@ async function main() {
       const dbTeam = (await (await fetch(tsUrl, { method: 'POST', headers: authed, body: JSON.stringify({ name: dbTeamName }) })).json()).teamspace.id
       const tsRow = `[data-testid="sidebar-teamspace"][data-teamspace-id="${dbTeam}"]`
       const dbPageAs = (actor, id) => fetch(`${BASE}/w/${workspaceId}/db/${id}`, { headers: { cookie: `nc_session=${actor.token}` } })
-      const clickOnSel = async (sel) => {
-        await revealInPageMenu(sel)
-        const box = await evaluate(`(() => {
-          const el = document.querySelector(${JSON.stringify(sel)})
-          if (!el || el.disabled) return null
-          el.scrollIntoView({ block: 'center' })
-          const r = el.getBoundingClientRect()
-          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
-        })()`)
-        if (!box) return false
-        await click(box.x, box.y)
-        await sleep(120)
-        return true
-      }
+      const clickOnSel = clickReady // 도구-9 — 공용 도우미(맨 위 요소 · 자리 멈춤을 본다)
 
       await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
       await waitFor(`!!document.querySelector('${tsRow} [data-testid="sidebar-teamspace-add-database"]')`, 15000)
@@ -2628,20 +2590,7 @@ async function main() {
       const mateClosed = await makeTeamspace(mateHeaders, closedName, 'closed')
       const mateSecret = await makeTeamspace(mateHeaders, secretName, 'private')
       const row = (id) => `[data-testid="teamspace-browse-row"][data-teamspace-id="${id}"]`
-      const clickOnSel = async (sel) => {
-        await revealInPageMenu(sel)
-        const box = await evaluate(`(() => {
-          const el = document.querySelector(${JSON.stringify(sel)})
-          if (!el || el.disabled) return null
-          el.scrollIntoView({ block: 'center' })
-          const r = el.getBoundingClientRect()
-          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
-        })()`)
-        if (!box) return false
-        await click(box.x, box.y)
-        await sleep(120)
-        return true
-      }
+      const clickOnSel = clickReady // 도구-9 — 공용 도우미(맨 위 요소 · 자리 멈춤을 본다)
       const typeInto = async (sel, text) => {
         await clickOnSel(sel)
         await evaluate(`document.querySelector(${JSON.stringify(sel)})?.select()`)
@@ -2744,20 +2693,7 @@ async function main() {
       await fetch(`${tsUrl}/${doomed}/members`, {
         method: 'POST', headers: authed, body: JSON.stringify({ principal: { type: 'user', id: archiveMate.userId } }),
       })
-      const clickOnSel = async (sel) => {
-        await revealInPageMenu(sel)
-        const box = await evaluate(`(() => {
-          const el = document.querySelector(${JSON.stringify(sel)})
-          if (!el || el.disabled) return null
-          el.scrollIntoView({ block: 'center' })
-          const r = el.getBoundingClientRect()
-          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
-        })()`)
-        if (!box) return false
-        await click(box.x, box.y)
-        await sleep(120)
-        return true
-      }
+      const clickOnSel = clickReady // 도구-9 — 공용 도우미(맨 위 요소 · 자리 멈춤을 본다)
 
       // ① 그 teamspace 에 페이지를 하나 두고, 보관 전에 둘 다 볼 수 있음을 확인한다(만들기는 라우트로 — 이 절이
       //    보려는 것은 보관이다).
@@ -2819,20 +2755,7 @@ async function main() {
       const privateMate = await joinAs(workspaceId, await createUser('개인 동료'), 'member')
       const mateHeaders = { ...json, cookie: `nc_session=${privateMate.token}` }
       const pageAs = (actor, path) => fetch(`${BASE}${path}`, { headers: { cookie: `nc_session=${actor.token}` } })
-      const clickOnSel = async (sel) => {
-        await revealInPageMenu(sel)
-        const box = await evaluate(`(() => {
-          const el = document.querySelector(${JSON.stringify(sel)})
-          if (!el || el.disabled) return null
-          el.scrollIntoView({ block: 'center' })
-          const r = el.getBoundingClientRect()
-          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
-        })()`)
-        if (!box) return false
-        await click(box.x, box.y)
-        await sleep(120)
-        return true
-      }
+      const clickOnSel = clickReady // 도구-9 — 공용 도우미(맨 위 요소 · 자리 멈춤을 본다)
 
       // ① 새 개인 페이지 — 사이드바의 +
       await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
@@ -2897,20 +2820,7 @@ async function main() {
       // 스스로 만든다 — E2E_ONLY 로 홀로 돈다.
       const placeMate = await joinAs(workspaceId, await createUser('표 자리 동료'), 'member')
       const dbPageAs = (actor, id) => fetch(`${BASE}/w/${workspaceId}/db/${id}`, { headers: { cookie: `nc_session=${actor.token}` } })
-      const clickOnSel = async (sel) => {
-        await revealInPageMenu(sel)
-        const box = await evaluate(`(() => {
-          const el = document.querySelector(${JSON.stringify(sel)})
-          if (!el || el.disabled) return null
-          el.scrollIntoView({ block: 'center' })
-          const r = el.getBoundingClientRect()
-          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
-        })()`)
-        if (!box) return false
-        await click(box.x, box.y)
-        await sleep(120)
-        return true
-      }
+      const clickOnSel = clickReady // 도구-9 — 공용 도우미(맨 위 요소 · 자리 멈춤을 본다)
       const tsUrl = `${BASE}/api/workspaces/${workspaceId}/teamspaces`
       const placeTeam = (await (await fetch(tsUrl, {
         method: 'POST', headers: authed, body: JSON.stringify({ name: `표자리팀 ${Date.now()}` }),
@@ -3023,20 +2933,7 @@ async function main() {
       const tsUrl = `${BASE}/api/workspaces/${workspaceId}/teamspaces`
       const groupsUrl = `${BASE}/api/workspaces/${workspaceId}/groups`
       const stamp = Date.now()
-      const clickOnSel = async (sel) => {
-        await revealInPageMenu(sel)
-        const box = await evaluate(`(() => {
-          const el = document.querySelector(${JSON.stringify(sel)})
-          if (!el || el.disabled) return null
-          el.scrollIntoView({ block: 'center' })
-          const r = el.getBoundingClientRect()
-          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
-        })()`)
-        if (!box) return false
-        await click(box.x, box.y)
-        await sleep(120)
-        return true
-      }
+      const clickOnSel = clickReady // 도구-9 — 공용 도우미(맨 위 요소 · 자리 멈춤을 본다)
 
       // ① 막기 — 그룹이 마지막 owner 면 그 그룹을 지우지 못한다
       const ownedBy = (await (await fetch(tsUrl, {
@@ -3102,20 +2999,7 @@ async function main() {
       const tsUrl = `${BASE}/api/workspaces/${workspaceId}/teamspaces`
       const stamp = Date.now()
       const cookieOf = (actor) => ({ cookie: `nc_session=${actor.token}` })
-      const clickOnSel = async (sel) => {
-        await revealInPageMenu(sel)
-        const box = await evaluate(`(() => {
-          const el = document.querySelector(${JSON.stringify(sel)})
-          if (!el || el.disabled) return null
-          el.scrollIntoView({ block: 'center' })
-          const r = el.getBoundingClientRect()
-          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
-        })()`)
-        if (!box) return false
-        await click(box.x, box.y)
-        await sleep(120)
-        return true
-      }
+      const clickOnSel = clickReady // 도구-9 — 공용 도우미(맨 위 요소 · 자리 멈춤을 본다)
 
       const team = (await (await fetch(tsUrl, {
         method: 'POST', headers: authed, body: JSON.stringify({ name: `전사 ${stamp}`, visibility: 'closed' }),
