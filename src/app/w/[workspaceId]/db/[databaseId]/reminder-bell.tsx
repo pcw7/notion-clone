@@ -18,6 +18,38 @@ import { isDateOnlyStart, leadLabel, leadsFor } from '@/lib/database/reminder-le
 import { AnchoredLayer, containsAcrossLayers } from '../../anchored-layer'
 import * as api from './table-api'
 
+/** 종 그림 — 칸의 종과 카드의 종이 같이 쓴다. */
+function BellGlyph() {
+  return (
+    <svg aria-hidden viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.5">
+      <path d="M8 2.5a3.5 3.5 0 0 0-3.5 3.5v2.5L3 10.5h10l-1.5-2V6A3.5 3.5 0 0 0 8 2.5Z" strokeLinejoin="round" />
+      <path d="M6.5 12.5a1.5 1.5 0 0 0 3 0" strokeLinecap="round" />
+    </svg>
+  )
+}
+
+/**
+ * 카드(보드 · 갤러리)의 날짜 옆 종 — **보이기만 한다**(10n-76). 걸고 푸는 것은 표 · 행 페이지의 칸에서 한다(카드는 좁고, 누르면 카드가 열린다).
+ * 칸의 종과 같은 말 · 같은 색 — 지난 것(울렸다)은 빨갛다.
+ */
+export function ReminderMark({ reminder, propertyName, start }: { reminder: DateReminderJson; propertyName: string; start: string | null }) {
+  const dateOnly = start === null || isDateOnlyStart(start)
+  const passed = reminder.firedAt !== null
+  const title = `알림 — ${leadLabel(reminder.leadMinutes, dateOnly)}${passed ? ' · 지남' : ''}`
+  return (
+    <span
+      role="img"
+      data-testid="db-reminder-mark"
+      data-state={passed ? 'passed' : 'armed'}
+      aria-label={`${propertyName} ${title}`}
+      title={title}
+      className={`inline-flex flex-none items-center ${passed ? 'text-red-500' : 'text-neutral-500 dark:text-neutral-400'}`}
+    >
+      <BellGlyph />
+    </span>
+  )
+}
+
 export function ReminderBell(props: {
   workspaceId: string
   rowId: string
@@ -94,10 +126,7 @@ export function ReminderBell(props: {
               : 'text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200'
         } ${props.canEdit ? '' : 'cursor-default'}`}
       >
-        <svg aria-hidden viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.5">
-          <path d="M8 2.5a3.5 3.5 0 0 0-3.5 3.5v2.5L3 10.5h10l-1.5-2V6A3.5 3.5 0 0 0 8 2.5Z" strokeLinejoin="round" />
-          <path d="M6.5 12.5a1.5 1.5 0 0 0 3 0" strokeLinecap="round" />
-        </svg>
+        <BellGlyph />
       </button>
       {open && (
         <AnchoredLayer align={props.align === 'right' ? 'end' : 'start'}>

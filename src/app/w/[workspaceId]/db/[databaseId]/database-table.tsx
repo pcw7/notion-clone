@@ -140,6 +140,7 @@ import { ButtonCell } from './button-cell'
 import { ButtonEditForm } from './button-editor'
 import { RollupSourceEditor } from './rollup-source-editor'
 import { ReminderBell } from './reminder-bell'
+import { useRowReminders } from './use-row-reminders'
 import type { DateReminderJson } from '@/lib/database/reminder'
 
 const keyOf = (at: CellPos): string => `${at.row}:${at.col}`
@@ -262,29 +263,10 @@ export function DatabaseTable(props: {
   const [outside, setOutside] = useState<ReadonlySet<string>>(new Set())
 
   // ── 날짜 칸의 리마인더(4c-3 · F-11-10) ──
-  // 행의 읽기에 싣지 않고 보이는 행들의 것을 따로 읽는다(정본 §3.8 [보강] 리마인더 ⑨ ⓑ). 행의 판이 바뀌면 다시 읽는다 — 날짜를 옮기면
-  // 트리거가 시각 · "지남"을 바꾼다. 날짜 속성이 없는 표는 읽지 않는다.
-  const [reminders, setReminders] = useState<api.ReminderMap>({})
-  const reminderKey = columns.some((c) => c.type === 'date') ? rows.map((r) => `${r.id}:${r.version}`).join(',') : ''
+  // 보이는 행들의 리마인더 — 행의 읽기에 싣지 않고 따로 읽는다(정본 §3.8 [보강] 리마인더 ⑨ ⓑ · `use-row-reminders.ts` — 보드 · 갤러리와 같은 훅).
   // 다시 읽기(표 변경 알림)마다 올린다 — 남이 걸고 푼 리마인더 · 울림은 행의 판을 바꾸지 않는다(정본 §3.8 [보강] 리마인더 ⑩ · 10n-17)
   const [reminderTick, setReminderTick] = useState(0)
-  useEffect(() => {
-    if (reminderKey === '') return
-    let stale = false
-    const ids = reminderKey.split(',').map((entry) => entry.slice(0, entry.indexOf(':')))
-    void (async () => {
-      const merged: Record<string, Readonly<Record<string, DateReminderJson>>> = {}
-      for (let i = 0; i < ids.length; i += 200) {
-        const read = await api.loadReminders(workspaceId, dataSourceId, ids.slice(i, i + 200))
-        if (!read.ok) return
-        Object.assign(merged, read.value)
-      }
-      if (!stale) setReminders(merged)
-    })()
-    return () => {
-      stale = true
-    }
-  }, [reminderKey, reminderTick, workspaceId, dataSourceId])
+  const [reminders, setReminders] = useRowReminders(workspaceId, dataSourceId, rows, columns.some((c) => c.type === 'date'), reminderTick)
   const putReminder = (rowId: string, propertyId: string, next: DateReminderJson | null) =>
     setReminders((current) => {
       const byProperty = { ...(current[rowId] ?? {}) }

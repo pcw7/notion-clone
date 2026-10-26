@@ -42,6 +42,7 @@ import { NewRowMenu } from './new-row-menu'
 import { SearchEmpty } from './view-search'
 import { useRelationLabels } from './use-relation-labels'
 import { useRollupValues } from './use-rollup-values'
+import { useRowReminders } from './use-row-reminders'
 import { EMPTY_ROLLUP_PAGE, type RollupPage } from '@/lib/database/rollup-functions'
 import { formulaEvaluator, formulaValuesByRow, type FormulaPlan } from '@/lib/database/formula-plan'
 import { usePeopleNames } from './use-people-names'
@@ -146,6 +147,8 @@ export function DatabaseGallery(props: {
   // rollup 칸의 값(10n-33) — 카드의 배지. 신호로 서버 렌더를 다시 부르면 다시 계산된 것을 받아들인다(카드와 같은 때)
   const serverRollups = props.rollupValues ?? EMPTY_ROLLUP_PAGE
   const { page: rollups, adopt: adoptRollups } = useRollupValues(workspaceId, dataSourceId, serverRollups, rows, columns)
+  // 카드의 날짜 종(10n-76) — 서버가 다시 그릴 때마다(`renderedAt`) 다시 읽는다
+  const [reminders] = useRowReminders(workspaceId, dataSourceId, rows, columns.some((c) => c.type === 'date'), props.renderedAt)
   useAdoptServerValue(serverRollups, galleryBusy, adoptRollups)
   // 수식 칸의 값(10n-34) — 카드의 배지. 그 카드의 칸으로 여기서 계산한다(표와 같은 함수)
   const formulas = useMemo(() => (props.formulaPlan ? formulaEvaluator(props.formulaPlan) : null), [props.formulaPlan])
@@ -418,6 +421,7 @@ export function DatabaseGallery(props: {
                 rollups={rollups}
                 formulaValues={formulaValues?.get(row.id)}
                 formulaErrors={formulas?.errors}
+                reminders={reminders[row.id]}
                 testId="db-gallery-badge"
                 button={{ workspaceId, canPress: access.canEditContent }}
               />
