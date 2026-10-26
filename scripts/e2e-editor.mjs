@@ -7371,8 +7371,10 @@ async function main() {
     check('즐겨찾기가 없으면 그 섹션도 없다', !(await evaluate(`!!document.querySelector('section[aria-label="즐겨찾기"]')`)))
 
     // 새로 읽은 직후라 서버 HTML 의 별은 아직 손이 없을 수 있다 — 하이드레이션 전에 누르면 클릭이 사라진다. 전체 판(#462 · 페이지와 트리가 큰 때)에서
-    // 별이 칠해지지 않은 채 떨어졌다(홀로 · 부하 6배로는 재현하지 못했다).
-    await waitHydrated('button[aria-label="즐겨찾기에 넣기"]')
+    // 별이 칠해지지 않은 채 떨어졌다(홀로 · 부하 6배로는 재현하지 못했다). 하이드레이션을 기다려도 남았다 — 진단(아래)이 보인 것은 **클릭이 별을
+    // 빗나간 것**이다(요청 없음 · 그 좌표의 요소가 별이 아니라 상단 바 묶음 · #479 의 전체 판). 상단 바는 감기는 칸이라 잰 뒤에 별이 움직인다 —
+    // 미리 잰 좌표가 아니라 `clickSelector`(누르기 직전에 그 자리의 요소가 별인지 · 자리가 멈췄는지 본다)로 누른다(도구-8).
+    await waitSteady('button[aria-label="즐겨찾기에 넣기"]')
     const starBox = await evaluate(`(() => {
       const b = document.querySelector('button[aria-label="즐겨찾기에 넣기"]')
       if (!b) return null
@@ -7385,7 +7387,7 @@ async function main() {
       // 진단 — 전체 판에서만 가끔 별이 칠해지지 않는다(#462 · #472 · 하이드레이션 대기로는 남았다). 클릭이 안 먹었는지(기록이 비었다) · 요청이
       // 거절돼 되돌렸는지(코드가 남는다)를 가른다. 상태는 바꾸지 않는다 — 페이지의 fetch 를 감싸 응답 코드만 적는다.
       await evaluate(`(() => { window.__favLog = []; const f = window.fetch; window.fetch = async (...a) => { const r = await f(...a); if (String(a[0]).includes('/favorite')) window.__favLog.push((a[1]?.method ?? 'GET') + ' ' + r.status); return r }; return true })()`)
-      await click(starBox.x, starBox.y)
+      await clickSelector('button[aria-label="즐겨찾기에 넣기"]')
       const starred = await waitFor(`!!document.querySelector('section[aria-label="즐겨찾기"] a[href$="/${pageId}"]')`, 10000)
       const starDiag = starred ? '' : JSON.stringify(await evaluate(`({ log: window.__favLog ?? null, label: document.querySelector('[aria-label^="즐겨찾기에"]')?.getAttribute('aria-label') ?? null,
         top: (() => { const e = document.elementFromPoint(${starBox.x}, ${starBox.y}); return e ? e.tagName + ' ' + (e.getAttribute('aria-label') ?? e.className?.toString().slice(0, 40)) : null })() })`))
@@ -7394,14 +7396,7 @@ async function main() {
         await waitFor(`document.querySelector('button[aria-label="즐겨찾기에서 빼기"]')?.getAttribute('aria-pressed') === 'true'`, 5000))
 
       // 다시 누르면 사라진다.
-      const unstar = await evaluate(`(() => {
-        const b = document.querySelector('button[aria-label="즐겨찾기에서 빼기"]')
-        if (!b) return null
-        const r = b.getBoundingClientRect()
-        return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
-      })()`)
-      if (unstar) {
-        await click(unstar.x, unstar.y)
+      if (await clickSelector('button[aria-label="즐겨찾기에서 빼기"]')) {
         check('다시 누르면 즐겨찾기에서 빠진다',
           await waitFor(`!document.querySelector('section[aria-label="즐겨찾기"]')`, 10000))
       }
