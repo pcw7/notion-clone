@@ -23806,6 +23806,51 @@ async function main() {
       check('넓은 화면 · 마우스에서는 굴리지 않는다', !!desk && deskBefore > 350 && deskAfter === deskBefore, JSON.stringify({ desk, deskBefore, deskAfter }))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('카드의 날짜에 리마인더 종 (10n-76 · F-11-10)')) { try {
+      // 보드 · 갤러리 카드의 날짜 배지 옆에 리마인더 종이 선다 — 보이기만 한다(누를 수 없다) · 걸린 것과 울린 것(빨강)을 가른다 · 리마인더가 없는
+      // 날짜에는 없다. 자기 데이터를 스스로 만든다.
+      const stamp = Date.now()
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const api76 = `${BASE}/api/workspaces/${workspaceId}`
+      const call = async (method, path, body) => {
+        const r = await fetch(`${api76}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return r.json().catch(() => null)
+      }
+      const made = (await call('POST', '/databases', { name: `카드 종 ${stamp}` })).database
+      const props = `/data-sources/${made.dataSourceId}/properties`
+      const status = (await call('POST', props, { name: '상태', type: 'status' })).property.id
+      const due = (await call('POST', props, { name: '마감', type: 'date' })).property.id
+      const titleProp = (await call('GET', `/views/${made.defaultViewId}`)).view.columns.find((c) => c.type === 'title').propertyId
+      const rowOf = async (title, date) => (await call('POST', `/views/${made.defaultViewId}/rows`, { cells: [
+        { propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } },
+        { propertyId: due, value: { type: 'date', date: { start: date } } },
+      ] })).row.id
+      const armed = await rowOf('걸린 행', '2030-06-01')
+      const fired = await rowOf('울린 행', '2030-06-02')
+      const bare = await rowOf('종 없는 행', '2030-06-03')
+      const tz = 'Asia/Seoul'
+      await call('PUT', `/rows/${armed}/reminders/${encodeURIComponent(due)}`, { leadMinutes: 1440, timeZone: tz })
+      await call('PUT', `/rows/${fired}/reminders/${encodeURIComponent(due)}`, { leadMinutes: 0, timeZone: tz })
+      await dbQuery(`UPDATE reminder SET fired_at = now() WHERE page_id = $1`, [fired])
+      const board = await call('POST', `/databases/${made.id}/views`, { name: '보드', type: 'board', groupBy: { property_id: status } })
+      const boardView = board?.view?.id ?? board?.viewId ?? board?.id
+      const gallery = await call('POST', `/databases/${made.id}/views`, { name: '갤러리', type: 'gallery' })
+      const galleryView = gallery?.view?.id ?? gallery?.viewId ?? gallery?.id
+      const marks = (badge) => evaluate(`Object.fromEntries([...document.querySelectorAll('[data-row-id]')].map((card) => [card.dataset.rowId,
+        [...card.querySelectorAll('[data-testid="${badge}"] [data-testid="db-reminder-mark"]')].map((m) => m.dataset.state + (m.closest('button, a') ? ':누름' : '')).join(',')]))`)
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${made.id}?v=${boardView}` })
+      const boardShown = await waitFor(`document.querySelectorAll('[data-testid="db-reminder-mark"]').length >= 2`, 15000)
+      const onBoard = await marks('db-board-badge')
+      check('★ 보드 카드의 날짜에 종 — 걸린 것 · 울린 것(빨강)을 가르고 · 없는 날짜에는 없다 · 누르는 단추가 아니다',
+        boardShown && onBoard[armed] === 'armed' && onBoard[fired] === 'passed' && onBoard[bare] === '', JSON.stringify(onBoard))
+      check('울린 종은 빨갛다', await evaluate(`(() => { const m = document.querySelector('[data-row-id="${fired}"] [data-testid="db-reminder-mark"]')
+        return !!m && /^(rgb|oklch|lab)/.test(getComputedStyle(m).color) && getComputedStyle(m).color !== getComputedStyle(document.querySelector('[data-row-id="${armed}"] [data-testid="db-reminder-mark"]')).color })()`))
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${made.id}?v=${galleryView}` })
+      const galleryShown = await waitFor(`document.querySelectorAll('[data-testid="db-reminder-mark"]').length >= 2`, 15000)
+      const onGallery = await marks('db-gallery-badge')
+      check('★ 갤러리 카드에도 같은 종', galleryShown && onGallery[armed] === 'armed' && onGallery[fired] === 'passed' && onGallery[bare] === '', JSON.stringify(onGallery))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

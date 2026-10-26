@@ -94,6 +94,8 @@ import { CardBadges } from './card-badges'
 import { useRelationLabels } from './use-relation-labels'
 import { usePeopleNames } from './use-people-names'
 import { useRollupValues } from './use-rollup-values'
+import { useRowReminders } from './use-row-reminders'
+import type { DateReminderJson } from '@/lib/database/reminder'
 import { EMPTY_ROLLUP_PAGE, type RollupPage } from '@/lib/database/rollup-functions'
 import { formulaEvaluator, formulaValuesByRow, type FormulaPlan } from '@/lib/database/formula-plan'
 import type { FormulaValue } from '@/lib/formula/formula'
@@ -255,6 +257,8 @@ export function DatabaseBoard(props: {
   const titleColumn = columns.find((c) => c.type === 'title') ?? null
   /** 카드의 배지 — 제목과 그룹 프로퍼티(열이 곧 그 값이다)는 뺀다. */
   const badgeColumns = columns.filter((c) => c.type !== 'title' && c.propertyId !== property.id)
+  // 카드의 날짜 종(10n-76) — 서버가 다시 그릴 때마다(`renderedAt`) 다시 읽는다(남이 건 리마인더는 행의 판을 바꾸지 않는다)
+  const [reminders] = useRowReminders(workspaceId, dataSourceId, groups.flatMap((g) => g.rows), badgeColumns.some((c) => c.type === 'date'), props.renderedAt)
   const labelOf = (group: BoardGroupJson) => groupLabel(property.type, property.name, group)
 
   useEffect(() => {
@@ -739,6 +743,7 @@ export function DatabaseBoard(props: {
                     rollups={rollups}
                     formulaValues={formulaValues?.get(row.id)}
                     formulaErrors={formulas?.errors}
+                    reminders={reminders[row.id]}
                     dragging={draggingId === row.id}
                     dropBefore={isTarget && drop.beforeRowId === row.id}
                     editing={editing?.rowId === row.id ? editing : null}
@@ -848,6 +853,7 @@ function BoardCard({
   rollups,
   formulaValues,
   formulaErrors,
+  reminders,
   dragging,
   dropBefore,
   editing,
@@ -877,6 +883,7 @@ function BoardCard({
   rollups: RollupPage
   formulaValues: Readonly<Record<string, FormulaValue>> | undefined
   formulaErrors: Readonly<Record<string, string | null>> | undefined
+  reminders: Readonly<Record<string, DateReminderJson>> | undefined
   dragging: boolean
   dropBefore: boolean
   editing: Editing | null
@@ -956,6 +963,7 @@ function BoardCard({
           rollups={rollups}
           formulaValues={formulaValues}
           formulaErrors={formulaErrors}
+          reminders={reminders}
           testId="db-board-badge"
           button={button}
         />

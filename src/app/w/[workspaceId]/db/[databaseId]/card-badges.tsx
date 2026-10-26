@@ -12,6 +12,9 @@
  * rollup 배지(10n-33) — 값이 행에 없어서 부르는 쪽이 따로 받아 넘긴다(`useRollupValues` · 표 · 목록과 같은 훅). 그릴 것이 없으면
  * (`rollupIsEmpty` — 받지 못했다 · 없음 · 빈 목록) 서지 않는다 — 다른 배지와 같은 규칙이다. 설정이 끊긴 rollup(관계 · 대상이 지워졌다)도
  * 카드에는 세우지 않는다 — 표의 칸이 그렇다고 말하고, 좁은 카드에 고장 안내가 쌓이면 값이 묻힌다.
+ *
+ * 날짜의 종(10n-76) — 리마인더가 걸린 날짜 배지 옆에 종이 선다(보이기만 · `ReminderMark`). 값은 행에 없어서 부르는 쪽이 따로 받아 넘긴다
+ * (`useRowReminders` — 표와 같은 훅).
  */
 
 import type { RowJson } from '@/lib/database/http'
@@ -24,6 +27,8 @@ import { formulaBadgeCell } from '@/lib/database/formula-plan'
 import type { FormulaValue } from '@/lib/formula/formula'
 import { CellDisplay, RelationChips, RollupDisplay, type RelationIcons, type RelationLabels, type PeopleNames } from './cell-view'
 import { ButtonCell } from './button-cell'
+import { ReminderMark } from './reminder-bell'
+import type { DateReminderJson } from '@/lib/database/reminder'
 
 export function CardBadges({
   row,
@@ -36,6 +41,7 @@ export function CardBadges({
   rollups,
   formulaValues,
   formulaErrors,
+  reminders,
 }: {
   row: RowJson
   columns: readonly ViewColumn[]
@@ -47,6 +53,8 @@ export function CardBadges({
   formulaValues?: Readonly<Record<string, FormulaValue>>
   /** 수식 컬럼마다 식이 읽히지 않는 이유(없으면 null) — 그런 수식은 카드에 세우지 않는다. */
   formulaErrors?: Readonly<Record<string, string | null>>
+  /** 이 카드의 날짜 리마인더(속성 → 리마인더 · 10n-76) — 없으면 종은 서지 않는다. */
+  reminders?: Readonly<Record<string, DateReminderJson>>
   /** 사람 칸의 이름(6g-2) — 없으면 빈 지도(칩은 "떠난 사용자"). */
   peopleNames?: PeopleNames
   /** 버튼 칸(5a-4)을 세울 때 — 워크스페이스와 누를 수 있는가. 없으면 버튼은 서지 않는다. */
@@ -129,6 +137,11 @@ export function CardBadges({
               <CellDisplay value={value} options={column.options} names={peopleNames} />
             ) : value.type === 'checkbox' ? (
               `☑ ${column.name}`
+            ) : value.type === 'date' && reminders?.[column.propertyId] !== undefined ? (
+              <span className="inline-flex max-w-full items-center gap-0.5">
+                <span className="truncate">{cellText(value)}</span>
+                <ReminderMark reminder={reminders[column.propertyId]!} propertyName={column.name} start={value.date?.start ?? null} />
+              </span>
             ) : (
               cellText(value)
             )}
