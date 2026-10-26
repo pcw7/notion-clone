@@ -21943,7 +21943,7 @@ async function main() {
       })()`)
       // 편집기의 콜아웃은 컨테이너가 상자를 그린다(디자인-4d — 자식이 상자 안에 서도록) · 문단은 그 줄이 칠해진다.
       const editorSel = `(key) => '[data-block-id="' + (${JSON.stringify(ids)})[key] + '"]' + (key === 'para' ? ' > [data-block-type]' : '')`
-      const judge = (s) => s.plain?.bg === 'rgba(135, 131, 120, 0.12)' && s.plain?.border === 'rgba(0, 0, 0, 0)'
+      const judge = (s) => s.plain?.bg === 'rgb(249, 248, 247)' && s.plain?.border === 'rgba(0, 0, 0, 0)'
         && s.text?.bg === 'rgb(255, 255, 255)' && s.text?.border === 'rgba(55, 53, 47, 0.16)'
         && s.bg?.bg === s.para?.bg && s.bg?.bg !== s.plain?.bg
 
@@ -23350,7 +23350,7 @@ async function main() {
         }
       })()`)
       check('★ 콜아웃의 자식은 상자 안 · 자식의 글자는 콜아웃 글자와 같은 x · 상자는 컨테이너(연회색 · 둥글기 10px) · 줄은 투명 · 뒤 블록은 상자 밖',
-        m.inside && m.afterOutside && Math.abs(m.sameX) <= 1 && m.box === 'rgba(135, 131, 120, 0.12) 10px' && m.line === 'rgba(0, 0, 0, 0)', JSON.stringify(m))
+        m.inside && m.afterOutside && Math.abs(m.sameX) <= 1 && m.box === 'rgb(249, 248, 247) 10px' && m.line === 'rgba(0, 0, 0, 0)', JSON.stringify(m))
     } catch (thrown) { await sectionThrew(thrown) } }
 
     if (sectionIf('디자인 — 페이지 머리 (디자인-4e)')) { try {
@@ -23697,6 +23697,41 @@ async function main() {
       check('★ 어두운 메뉴 — 바탕 #252525 · 고리 #383836 · 안의 회색 단계가 밝다(#363534 · 밖은 #272625) · 고대비가 글자 회색을 덮는다',
         look.bg === 'rgb(37, 37, 37)' && look.ring === 'rgb(56, 56, 54) 0px 0px 0px 1px' && look.inside === '#363534' && look.outside === '#272625'
           && look.high === look.highOutside && look.high !== '#88857f', JSON.stringify(look))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
+    if (sectionIf('디자인 — 블록의 바탕 (디자인-8c)')) { try {
+      // 콜아웃 · 코드 블록 · 인라인 코드 · 구분선의 바탕이 노션 값이다(밝게 / 어둡게 — globals.css 의 변수 한 곳). 기본 콜아웃 #f9f8f7 / #202020 ·
+      // 코드 블록 rgba(66,35,3,0.03) / rgba(252,252,252,0.03) · 인라인 코드 바탕은 마우스 올림과 같고 글자 #cf5148(코드 블록 안의 글자는 그 색을
+      // 받지 않는다) · 구분선은 어둡게 #383836. 테마는 `<html>` 의 속성만 바꿔 CSS 를 본다(저장은 8h 절이 본다). 자기 데이터를 스스로 만든다.
+      const stamp = Date.now()
+      const page = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: JSON.stringify({ title: `블록 바탕 ${stamp}` }) })).json()).page.id
+      const ids = { callout: randomUUID(), para: randomUUID(), code: randomUUID(), divider: randomUUID() }
+      await saveBody(page, { blocks: [
+        { id: ids.callout, type: 'callout', title: [textRun('콜아웃')], properties: {}, format: {}, children: [] },
+        { id: ids.para, type: 'paragraph', title: [textRun('앞 '), textRun('코드', { code: true }), textRun(' 뒤')], properties: {}, format: {}, children: [] },
+        { id: ids.code, type: 'code', title: [textRun('const a = 1')], properties: { language: 'plain text' }, format: {}, children: [] },
+        { id: ids.divider, type: 'divider', title: [], properties: {}, format: {}, children: [] },
+      ] })
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+      await waitFor(`!!document.querySelector('[data-block-id="${ids.divider}"] .blk-divider') && !!document.querySelector('[data-block-id="${ids.para}"] code')`, 15000)
+      const read = `(() => {
+        const box = getComputedStyle(document.querySelector('[data-block-id="${ids.callout}"]')).backgroundColor
+        const inline = getComputedStyle(document.querySelector('[data-block-id="${ids.para}"] code'))
+        const pre = document.querySelector('[data-block-id="${ids.code}"] pre.blk-code')
+        const preCode = getComputedStyle(pre.querySelector('code') ?? pre).color
+        const line = getComputedStyle(document.querySelector('[data-block-id="${ids.divider}"] .blk-divider')).borderTopColor
+        return { box, inline: inline.backgroundColor + ' ' + inline.color, pre: getComputedStyle(pre).backgroundColor, preCode, line }
+      })()`
+      const was = await evaluate(`document.documentElement.dataset.theme ?? null`)
+      await evaluate(`(() => { document.documentElement.dataset.theme = 'light'; return true })()`)
+      const light = await evaluate(read)
+      await evaluate(`(() => { document.documentElement.dataset.theme = 'dark'; return true })()`)
+      const dark = await evaluate(read)
+      await evaluate(`(() => { const w = ${JSON.stringify(was)}; if (w === null) delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = w; return true })()`)
+      check('★ 블록의 바탕 — 콜아웃 #f9f8f7 / #202020 · 코드 블록 3% · 인라인 코드 바탕은 마우스 올림 · 글자 #cf5148(코드 블록 안은 아니다) · 어두운 구분선 #383836',
+        light.box === 'rgb(249, 248, 247)' && light.inline === 'rgba(33, 27, 23, 0.05) rgb(207, 81, 72)' && light.pre === 'rgba(66, 35, 3, 0.03)' && light.preCode !== 'rgb(207, 81, 72)'
+          && dark.box === 'rgb(32, 32, 32)' && dark.inline === 'rgba(255, 255, 255, 0.055) rgb(207, 81, 72)' && dark.pre === 'rgba(252, 252, 252, 0.03)' && dark.line === 'rgb(56, 56, 54)',
+        JSON.stringify({ light, dark }))
     } catch (thrown) { await sectionThrew(thrown) } }
 
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
