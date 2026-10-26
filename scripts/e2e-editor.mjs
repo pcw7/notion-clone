@@ -438,6 +438,12 @@ function connect(url) {
     for (const requestId of ids) await rawSend('Fetch.continueRequest', { requestId }).catch(() => undefined)
     return ids.length
   }
+  /** 붙잡힌 요청을 **나중 것부터** 놓아 준다 — 서버가 받는 차례가 보낸 차례와 거꾸로인 경우를 흉내 낸다(10n-75) · 놓은 수. */
+  const releasePausedReversed = async () => {
+    const ids = paused.splice(0).reverse()
+    for (const requestId of ids) await rawSend('Fetch.continueRequest', { requestId }).catch(() => undefined)
+    return ids.length
+  }
   /** 붙잡힌 요청을 모두 이 JSON 응답으로 채운다 — 서버에 닿지 않는다 · 채운 수(새 버전 알림 10h-1 — 바뀐 서버를 흉내 낸다). */
   const fulfillPaused = async (status, json) => {
     const ids = paused.splice(0)
@@ -455,6 +461,7 @@ function connect(url) {
     opened,
     pageErrors,
     releasePaused,
+    releasePausedReversed,
     fulfillPaused,
     pausedCount: () => paused.length,
     prefetchCount: () => prefetches,
@@ -670,7 +677,7 @@ async function main() {
     const devtoolsPort = launched.port
     cdp = connect(launched.url)
     await cdp.opened
-    const { send, pageErrors, releasePaused, fulfillPaused, pausedCount, prefetchCount, rscCount, inflightCount } = cdp
+    const { send, pageErrors, releasePaused, releasePausedReversed, fulfillPaused, pausedCount, prefetchCount, rscCount, inflightCount } = cdp
 
     const mainTab = evaluator(send, () => cdp.ws.readyState === WebSocket.OPEN, 'evaluate')
     const evaluate = mainTab.evaluate
@@ -23671,6 +23678,62 @@ async function main() {
       check('★ 블록 배경색 — 파랑 #e5f2fc / #233850 · 빨강 #fce9e7 / #502c29(노션 BacSec)',
         light.blue === 'rgb(229, 242, 252)' && light.red === 'rgb(252, 233, 231)' && dark.blue === 'rgb(35, 56, 80)' && dark.red === 'rgb(80, 44, 41)',
         JSON.stringify({ light, dark }))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
+    if (sectionIf('보기 설정의 저장은 차례대로 (10n-75 · F-04-09)')) { try {
+      // 필터 패널은 고칠 때마다 저장한다. 앞 저장이 끝나기 전에는 다음 저장을 보내지 않는다 — 앞 저장을 붙잡아 두면 다음 저장은 나가지 않고, 놓으면
+      // 차례대로 가서 마지막으로 고른 것이 저장된다(붙잡힌 것을 거꾸로 놓아도). 전에는 둘이 함께 나가 늦게 닿은 옛 값이 남을 수 있었다(10n-44 의 전체 판).
+      const stamp = Date.now()
+      const api75 = `${BASE}/api/workspaces/${workspaceId}`
+      const made = (await (await fetch(`${api75}/databases`, { method: 'POST', headers: authed, body: JSON.stringify({ name: `저장 차례 ${stamp}` }) })).json()).database
+      const schema = await (await fetch(`${api75}/data-sources/${made.dataSourceId}/properties`, { method: 'POST', headers: authed, body: JSON.stringify({ name: '메모', type: 'rich_text' }) })).json()
+      const memo = (schema?.schema?.properties ?? []).find((p) => p.name === '메모')?.id
+      const RULE = '[data-testid="db-filter-rule"]'
+      const OP = `${RULE} select[aria-label="필터 조건"]`
+      const setSelect = (selector, value) => evaluate(`(() => {
+        const s = document.querySelector(${JSON.stringify(selector)})
+        if (!s) return false
+        s.value = ${JSON.stringify(value)}
+        s.dispatchEvent(new Event('change', { bubbles: true }))
+        return true
+      })()`)
+      const idle = () => waitFor(`!document.body.textContent.includes('저장하는 중…')`, 8000)
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${made.id}` })
+      await waitSteady('[data-testid="db-filter-button"]', 20000)
+      await clickSelector('[data-testid="db-filter-button"]')
+      await waitFor(`!!document.querySelector('[data-testid="db-filter-panel"]')`, 3000)
+      await clickSelector('[data-testid="db-filter-add"]')
+      await waitFor(`!!document.querySelector('${RULE}')`, 3000)
+      await setSelect(`${RULE} select[aria-label="필터 속성"]`, memo)
+      await waitFor(`[...document.querySelectorAll('${OP} option')].some((o) => o.value === 'is_not_empty')`, 5000)
+      await idle()
+      await sleep(300)
+      // 이 뷰의 PATCH 만 붙잡는다(행 읽기 `/views/<id>/rows` 와 화면 새로 읽기는 지나간다)
+      await send('Fetch.enable', { patterns: [{ urlPattern: `*/views/${made.defaultViewId}`, requestStage: 'Request' }] })
+      let held = -1
+      try {
+        await setSelect(OP, 'is_empty')
+        for (let i = 0; i < 60 && pausedCount() === 0; i += 1) await sleep(50)
+        await setSelect(OP, 'is_not_empty')
+        await sleep(1000)
+        held = pausedCount()
+        // 거꾸로 놓는다 — 둘이 함께 나갔다면 나중 것이 먼저 닿는다
+        await releasePausedReversed()
+        // 차례를 기다리던 다음 저장도 붙잡힌다 — 끝날 때까지 놓아 준다
+        for (let i = 0; i < 100; i += 1) {
+          if (pausedCount() > 0) await releasePaused()
+          else if (await evaluate(`!document.body.textContent.includes('저장하는 중…')`)) break
+          await sleep(50)
+        }
+      } finally {
+        await send('Fetch.disable').catch(() => undefined)
+        await releasePaused().catch(() => undefined)
+      }
+      await idle()
+      const saved = (await (await fetch(`${api75}/views/${made.defaultViewId}`, { headers: authed })).json())?.view?.filter
+      const ops = JSON.stringify(saved ?? null).match(/"operator":"[a-z_]+"/g) ?? []
+      check('★ 앞 저장이 끝나기 전에는 다음 저장을 보내지 않는다 — 붙잡아 둔 동안 나간 저장은 하나', held === 1, `붙잡힌 저장 ${held}개`)
+      check('★ 저장된 것은 마지막으로 고른 것 — 거꾸로 놓아도 "비어 있지 않음"', ops.length === 1 && ops[0] === '"operator":"is_not_empty"', JSON.stringify(saved))
     } catch (thrown) { await sectionThrew(thrown) } }
 
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
