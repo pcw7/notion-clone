@@ -23736,6 +23736,76 @@ async function main() {
       check('★ 저장된 것은 마지막으로 고른 것 — 거꾸로 놓아도 "비어 있지 않음"', ops.length === 1 && ops[0] === '"operator":"is_not_empty"', JSON.stringify(saved))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('소프트 키보드 — 캐럿을 보이게 (10j-4 · F-12-12)')) { try {
+      // ⓐ 뷰포트 머리표에 interactive-widget=resizes-content ⓑ 보이는 영역만 줄이는 브라우저(iOS Safari)를 흉내 — 폰 폭 · 터치에서 아래쪽 문단에
+      // 캐럿을 두고 visualViewport 의 높이를 키보드만큼(350) 줄인 것처럼 알리면, 캐럿이 줄어든 영역 안(아래 여백 16px)으로 올라온다 ⓒ 마우스(넓은
+      // 화면)에서는 같은 흉내에도 굴리지 않는다. 자기 데이터를 스스로 만든다.
+      const stamp = Date.now()
+      const page = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: JSON.stringify({ title: `키보드 ${stamp}` }) })).json()).page.id
+      const ids = Array.from({ length: 40 }, () => randomUUID())
+      await saveBody(page, { blocks: ids.map((id, i) => ({ id, type: 'paragraph', title: [textRun(`문단 ${i + 1}`)], properties: {}, format: {}, children: [] })) })
+      const caretBottom = () => evaluate(`(() => { const s = getSelection(); if (!s || !s.rangeCount) return null; const r = s.getRangeAt(0).cloneRange(); r.collapse(false)
+        return Math.round(r.getBoundingClientRect().bottom) })()`)
+      // 화면의 [lo, hi] 사이에 선 문단의 끝에 캐럿을 둔다 — 그 문단의 id
+      const caretNear = (lo, hi) => evaluate(`(() => {
+        const blocks = ${JSON.stringify(ids)}.map((id) => document.querySelector('[data-block-id="' + id + '"] > [data-block-type]')).filter(Boolean)
+        const hit = blocks.find((b) => { const r = b.getBoundingClientRect(); return r.top > ${lo} && r.bottom < ${hi} })
+        if (!hit) return null
+        document.querySelector('.blk-editor').focus()
+        // 글자 노드의 끝에 — 요소 경계의 접힌 범위는 상자가 0이다
+        const walker = document.createTreeWalker(hit, NodeFilter.SHOW_TEXT)
+        let last = null
+        for (let n = walker.nextNode(); n; n = walker.nextNode()) last = n
+        if (!last) return null
+        const range = document.createRange()
+        range.setStart(last, last.length)
+        range.collapse(true)
+        const s = getSelection()
+        s.removeAllRanges()
+        s.addRange(range)
+        return hit.closest('[data-block-id]').dataset.blockId
+      })()`)
+      const keyboard = (height) => evaluate(`(() => { Object.defineProperty(window.visualViewport, 'height', { configurable: true, get: () => ${height} })
+        window.visualViewport.dispatchEvent(new Event('resize')); return true })()`)
+      const noKeyboard = () => evaluate(`(() => { delete window.visualViewport.height; return true })()`)
+      try {
+        await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 700, deviceScaleFactor: 1, mobile: true })
+        await send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 })
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+        await waitFor(`document.readyState === 'complete' && !!document.querySelector('[data-block-id="${ids[39]}"]')`, 15000)
+        await waitHydrated('.blk-editor')
+        check('★ 뷰포트 머리표 — 키보드가 레이아웃을 줄인다(interactive-widget=resizes-content)',
+          await evaluate(`document.querySelector('meta[name="viewport"]')?.content.includes('interactive-widget=resizes-content') === true`),
+          await evaluate(`document.querySelector('meta[name="viewport"]')?.content ?? null`))
+        const placed = await caretNear(500, 690)
+        await sleep(200)
+        const before = await caretBottom()
+        await keyboard(350)
+        const raised = await waitFor(`(() => { const s = getSelection(); if (!s || !s.rangeCount) return false; const r = s.getRangeAt(0).cloneRange(); r.collapse(false)
+          const b = r.getBoundingClientRect().bottom; return b <= 350 - 16 + 1 && b > 16 })()`, 3000)
+        check('★ 보이는 영역만 줄어도(iOS 흉내) 캐럿이 그 안으로 올라온다 — 아래 여백 16px', !!placed && before > 350 && raised,
+          JSON.stringify({ placed, before, after: await caretBottom() }))
+        await noKeyboard()
+      } finally {
+        await noKeyboard().catch(() => undefined)
+        await send('Emulation.setTouchEmulationEnabled', { enabled: false })
+        await send('Emulation.clearDeviceMetricsOverride')
+      }
+      // ⓒ 마우스 — 같은 흉내에도 굴리지 않는다(창 크기 · 확대를 키보드로 오해하지 않는다)
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+      await waitFor(`document.readyState === 'complete' && !!document.querySelector('[data-block-id="${ids[39]}"]')`, 15000)
+      await waitHydrated('.blk-editor')
+      const height = await evaluate('innerHeight')
+      const desk = await caretNear(height - 200, height - 10)
+      await sleep(200)
+      const deskBefore = await caretBottom()
+      await keyboard(350)
+      await sleep(800)
+      const deskAfter = await caretBottom()
+      await noKeyboard()
+      check('넓은 화면 · 마우스에서는 굴리지 않는다', !!desk && deskBefore > 350 && deskAfter === deskBefore, JSON.stringify({ desk, deskBefore, deskAfter }))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

@@ -19,7 +19,10 @@ export const metadata: Metadata = {
 
 // 화면 머리(주소 줄 · 설치한 앱의 제목 막대)의 색 — 밝은 · 어두운 테마의 배경(`globals.css` 의 --background). OS 의 설정을 따른다 — 계정의
 // 테마(data-theme)는 서버가 HTML 에 싣지만 이 머리표는 미디어 쿼리로만 고를 수 있다.
+// 소프트 키보드(10j-4 · F-12-12 · 정본 §3.10 끝 [보강] 좁은 화면 ⑪ⓐ) — 키보드가 레이아웃 뷰포트를 줄인다(안드로이드의 Chrome · Firefox).
+// 본문의 틀이 함께 줄어 브라우저가 캐럿을 보이게 한다. 이 머리표를 모르는 브라우저(iOS Safari)는 `KeyboardCaret` 이 맡는다.
 export const viewport: Viewport = {
+  interactiveWidget: "resizes-content",
   themeColor: [
     { media: "(prefers-color-scheme: light)", color: "#ffffff" },
     { media: "(prefers-color-scheme: dark)", color: "#191919" },

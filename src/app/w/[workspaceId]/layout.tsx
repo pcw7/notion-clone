@@ -35,6 +35,7 @@ import { normalizeSampleRate } from '@/lib/perf/perf-reporter'
 import { currentRelease } from '@/lib/platform/release-server'
 import { ReleaseWatcher } from './release-watcher'
 import { ThemeShortcut } from './theme-shortcut'
+import { KeyboardCaret } from './keyboard-caret'
 import { WorkspaceShortcut } from './workspace-shortcut'
 
 /**
@@ -131,6 +132,8 @@ export default async function WorkspaceLayout({
       */}
       {/* 테마 단축키(8h · F-12-03) — 어디서든 Ctrl/Cmd + Shift + L. 계정의 설정이라 워크스페이스 안이면 어디서나 같다. */}
       <ThemeShortcut workspaceId={workspaceId} />
+      {/* 소프트 키보드(10j-4 · F-12-12) — 보이는 영역만 줄이는 브라우저(iOS Safari)에서 캐럿이 키보드 아래에 남지 않게. 터치 기기에서만 듣는다 */}
+      <KeyboardCaret />
       {/* 워크스페이스 단축키(8j-1 · F-14-09) — Ctrl/Cmd + Shift + 1~9 가 스위처 목록의 그 자리로. 같은 이유로 사이드바 밖에 둔다. */}
       <WorkspaceShortcut workspaceId={workspaceId} workspaceIds={switcher.workspaces.map((w) => w.workspaceId)} />
       {/* 성능 계측(10e-1b · F-12-18) — 이 문서의 수집기. 표본 비율은 환경 변수(기본 0.2 · 0 이면 끈다) */}
