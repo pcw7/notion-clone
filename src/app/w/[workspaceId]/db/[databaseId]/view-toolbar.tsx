@@ -176,17 +176,30 @@ export function ViewToolbar({
   const [pickedTitles, setPickedTitles] = useState<RowTitleMap>({})
   const titles: RowTitleMap = { ...pickedTitles, ...rowTitles }
 
-  const run = async (request: () => Promise<ApiResult<null>>): Promise<boolean> => {
+  /*
+   * 저장은 차례대로(10n-75) — 패널은 고칠 때마다 저장하고 저장하는 동안에도 잠기지 않는다. 앞 저장이 끝나기 전에 다음을 보내면 서버가 받는 차례가
+   * 바뀌어 **먼저 보낸 옛 값이 나중에 저장될 수 있다**(관계형 거르기 10n-44 가 전체 판에서 속성을 고른 순간의 "비어 있음" 결과를 8초 동안 보였다 —
+   * 그 뒤에 고른 "비어 있지 않음" 보다 늦게 닿았다). 그래서 앞 저장 뒤에 보내고, 화면 새로 읽기는 그때 줄의 마지막 저장 뒤에만 한다.
+   */
+  const saving = useRef<Promise<unknown>>(Promise.resolve())
+  const saveSeq = useRef(0)
+  const run = (request: () => Promise<ApiResult<null>>): Promise<boolean> => {
+    const ticket = ++saveSeq.current
     setBusy(true)
     setError(null)
-    const result = await request()
-    setBusy(false)
-    if (!result.ok) {
-      setError(result.message)
-      return false
-    }
-    router.refresh()
-    return true
+    const next = saving.current.then(async () => {
+      const result = await request()
+      const last = ticket === saveSeq.current
+      if (last) setBusy(false)
+      if (!result.ok) {
+        setError(result.message)
+        return false
+      }
+      if (last) router.refresh()
+      return true
+    })
+    saving.current = next.catch(() => undefined)
+    return next
   }
 
   const toggle = (next: Panel) => {
