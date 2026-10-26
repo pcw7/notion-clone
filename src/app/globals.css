@@ -41,6 +41,16 @@
   /* 메뉴 · 팝오버의 표면 — 디자인-5(노션 실측: 그림자 세 겹 · 셋째가 1px 테 — 테두리를 따로 두지 않는다). `popover-surface` · 편집기 CSS 가 쓴다. */
   --popover-bg: #ffffff;
   --popover-shadow: 0 20px 24px 0 rgba(25, 25, 25, 0.05), 0 5px 8px 0 rgba(25, 25, 25, 0.027), 0 0 0 1px rgba(42, 28, 0, 0.07);
+  /*
+   * 블록의 바탕 — 디자인-8c(노션 색 변수 · `docs/design/notion-measurements.md`). 기본 콜아웃은 `--c-graBacPri`(배경색을 고른 콜아웃은 그 색의
+   * `BacSec` — 아래 팔레트) · 코드 블록은 요소에서 잰 값 · 인라인 코드는 바탕이 마우스 올림과 같은 `--ca-graBacIntTra` · 글자는 `--c-redTexSec` ·
+   * 구분선은 밝은 값이 `--c-borPri` 와 같아 어둡게는 그 변수의 값. 편집기(`editor.css`)와 공개 화면(`p/public.css`)이 이 변수를 함께 쓴다.
+   */
+  --callout-bg: #f9f8f7;
+  --code-block-bg: rgba(66, 35, 3, 0.03);
+  --inline-code-bg: rgba(33, 27, 23, 0.05);
+  --inline-code-color: #cf5148;
+  --divider-color: rgba(28, 19, 1, 0.11);
   /* 스크롤바 · 입력칸 같은 브라우저의 기본 모양도 테마를 따른다. */
   color-scheme: light;
 
@@ -50,6 +60,10 @@
     --foreground-muted: #ada9a3;
     --popover-bg: #252525;
     --popover-shadow: 0 0 0 1px #383836, 0 14px 28px -6px rgba(25, 25, 25, 0.2), 0 2px 4px -1px rgba(25, 25, 25, 0.118);
+    --callout-bg: #202020;
+    --code-block-bg: rgba(252, 252, 252, 0.03);
+    --inline-code-bg: rgba(255, 255, 255, 0.055);
+    --divider-color: #383836;
     color-scheme: dark;
   }
 }

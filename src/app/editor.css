@@ -203,7 +203,7 @@
   align-items: flex-start;
   border: 1px solid transparent;
   border-radius: 10px;
-  background: rgba(135, 131, 120, 0.12);
+  background: var(--callout-bg);
   padding: 12px;
   margin: 8px 2px;
 }
@@ -253,7 +253,7 @@
   margin: 8px 2px;
   border: 1px solid transparent;
   border-radius: 10px;
-  background: rgba(135, 131, 120, 0.12);
+  background: var(--callout-bg);
   padding: 12px;
 }
 
@@ -285,7 +285,7 @@
 /* 구분선 — 노션 실측의 색(1px · 따뜻한 회색 11%). 선은 상자의 위 테두리라 안쪽 여백을 빼고 바깥 여백으로 띄운다. */
 .blk-divider {
   border: 0;
-  border-top: 1px solid rgba(28, 19, 1, 0.11);
+  border-top: 1px solid var(--divider-color);
   margin: 12px 0;
   padding: 0;
 }
@@ -704,7 +704,8 @@ span.blk-equation {
 
 .blk-editor code {
   border-radius: 0.25rem;
-  background: #f3f4f6;
+  background: var(--inline-code-bg);
+  color: var(--inline-code-color);
   padding: 0.075rem 0.3rem;
   font-family: var(--font-mono);
   font-size: 0.85em;
@@ -723,7 +724,7 @@ span.blk-equation {
 .blk-editor pre.blk-code {
   margin: 0;
   border-radius: 10px;
-  background: rgba(66, 35, 3, 0.03);
+  background: var(--code-block-bg);
   padding: 1rem 1.375rem;
   overflow-x: auto;
   white-space: pre;
@@ -735,6 +736,7 @@ span.blk-equation {
 
 .blk-editor pre.blk-code code {
   background: none;
+  color: inherit;
   padding: 0;
   font-size: inherit;
   white-space: inherit;
@@ -1259,13 +1261,11 @@ span.blk-equation {
     .blk-gutter-button:hover { background: rgba(255, 255, 255, 0.055); color: #d4d4d4; }
     .blk-menu-item:focus { background: rgba(255, 255, 255, 0.055); }
     .blk-menu-swatch { border-color: #404040; }
-    .blk-callout { border-color: transparent; background: #171717; }
     .blk-callout[data-color]:not([data-color$='_background']) { background: transparent; border-color: #404040; }
-    .blk-editor .blk-container:has(> .blk-callout) { background: #171717; }
     .blk-editor .blk-container:has(> .blk-callout[data-color]:not([data-color$='_background'])) { background: transparent; border-color: #404040; }
     .blk-editor .blk-table td { border-color: #333333; }
     .blk-editor .blk-table[data-column-header='true'] tr:first-child td,
-    .blk-editor .blk-table[data-row-header='true'] td:first-child { background: #202020; }
+    .blk-editor .blk-table[data-row-header='true'] td:first-child { background: rgba(255, 255, 255, 0.03); }
     .blk-editor .blk-table td.selectedCell { background: rgba(35, 131, 226, 0.28); }
     .blk-table-handle { border-color: #404040; background: #171717; }
     .blk-format-button:hover, .blk-format-color:hover, .blk-format-color[aria-checked='true'] { background: rgba(255, 255, 255, 0.055); }
@@ -1273,7 +1273,6 @@ span.blk-equation {
     .blk-format-link-input { border-color: #404040; background: var(--background); }
     .blk-format-link-error { color: #fca5a5; }
     .blk-table-add:hover { background: rgba(255, 255, 255, 0.055); color: #d4d4d4; }
-    .blk-divider { border-top-color: #262626; }
     .blk-image[data-state='empty'] .blk-image-controls,
     .blk-image[data-state='uploading'] .blk-image-controls,
     .blk-unsupported { border-color: #404040; }
@@ -1283,13 +1282,12 @@ span.blk-equation {
     .blk-image-failure, .blk-image-error { color: #fca5a5; }
     .blk-image .blk-image-upload-cancel, .blk-image .blk-image-upload-retry { border-color: #404040; color: #d4d4d4; }
     .blk-image-error { border-color: #7f1d1d; }
-    .blk-mention, span.blk-equation, .blk-editor code { background: #262626; }
+    .blk-mention, span.blk-equation { background: #262626; }
     .blk-editor[contenteditable='true'] div.blk-equation:hover { background: rgba(255, 255, 255, 0.06); }
     .blk-editor .blk-equation-placeholder, .blk-editor .blk-equation-source { color: #737373; }
     .blk-editor .blk-equation-error code, .blk-editor .blk-equation-error-message { color: #fca5a5; }
     .blk-editor span.blk-equation-invalid { color: #fca5a5; }
     .blk-editor span.blk-equation-empty { color: #737373; }
-    .blk-editor pre.blk-code { background: #1f1f1f; }
     .blk-editor pre.blk-code code { background: none; }
     .blk-editor .blk-code-bar button,
     .blk-editor .blk-code-bar .blk-code-readonly { background: rgba(23, 23, 23, 0.92); color: #a3a3a3; }
