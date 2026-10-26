@@ -19029,7 +19029,7 @@ async function main() {
         const shown = opened ? JSON.parse(await evaluate(`JSON.stringify({ tint: ${tint}, osDark: matchMedia('(prefers-color-scheme: dark)').matches,
           sheets: [...document.styleSheets].map((sheet) => (sheet.href ?? 'inline').split('/').pop()) })`)) : null
         check('★ 공개 화면 — OS 가 어두워도 테마가 "밝게"면 배경색 블록은 밝은 칠(편집기 CSS 를 다시 싣지 않는다)',
-          shown?.osDark === true && shown.tint === 'rgb(241, 241, 239)', JSON.stringify(shown))
+          shown?.osDark === true && shown.tint === 'rgb(240, 239, 237)', JSON.stringify(shown))
         await setRoot('contrast', 'high')
         check('공개 화면의 고대비 — 같은 세트(9개 모두 바탕과 7:1 이상)', await waitFor(`${lowest} >= 7`, 5000), await evaluate(ratios))
       } finally {
@@ -23766,6 +23766,32 @@ async function main() {
       check('★ 태그의 어두운 색 — 회색 #5f5e59 / #f0efed · 파랑 #355f8b / #e5f2fc · 보라 #674d7b / #f3ebf9 · 보라의 밝은 글자 #553b69',
         dark.gray === 'rgb(95, 94, 89) rgb(240, 239, 237)' && dark.blue === 'rgb(53, 95, 139) rgb(229, 242, 252)' && dark.purple === 'rgb(103, 77, 123) rgb(243, 235, 249)'
           && light.purple.endsWith(' rgb(85, 59, 105)'), JSON.stringify({ light, dark }))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
+    if (sectionIf('디자인 — 블록 배경색 (디자인-8e)')) { try {
+      // 블록 배경색 9색은 노션 --c-<색>BacSec 의 밝은 · 어두운 값이다 — 파랑 #e5f2fc / #233850 · 빨강 #fce9e7 / #502c29. 테마는 `<html>` 의 속성만 바꾼다.
+      const stamp = Date.now()
+      const page = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: JSON.stringify({ title: `배경색 ${stamp}` }) })).json()).page.id
+      const ids = { blue: randomUUID(), red: randomUUID() }
+      await saveBody(page, { blocks: [
+        { id: ids.blue, type: 'paragraph', title: [textRun('파란 배경')], properties: {}, format: { block_color: 'blue_background' }, children: [] },
+        { id: ids.red, type: 'paragraph', title: [textRun('빨간 배경')], properties: {}, format: { block_color: 'red_background' }, children: [] },
+      ] })
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+      await waitFor(`!!document.querySelector('[data-block-id="${ids.red}"] > [data-block-type]')`, 15000)
+      const read = `(() => ({
+        blue: getComputedStyle(document.querySelector('[data-block-id="${ids.blue}"] > [data-block-type]')).backgroundColor,
+        red: getComputedStyle(document.querySelector('[data-block-id="${ids.red}"] > [data-block-type]')).backgroundColor,
+      }))()`
+      const was = await evaluate(`document.documentElement.dataset.theme ?? null`)
+      await evaluate(`(() => { document.documentElement.dataset.theme = 'light'; return true })()`)
+      const light = await evaluate(read)
+      await evaluate(`(() => { document.documentElement.dataset.theme = 'dark'; return true })()`)
+      const dark = await evaluate(read)
+      await evaluate(`(() => { const w = ${JSON.stringify(was)}; if (w === null) delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = w; return true })()`)
+      check('★ 블록 배경색 — 파랑 #e5f2fc / #233850 · 빨강 #fce9e7 / #502c29(노션 BacSec)',
+        light.blue === 'rgb(229, 242, 252)' && light.red === 'rgb(252, 233, 231)' && dark.blue === 'rgb(35, 56, 80)' && dark.red === 'rgb(80, 44, 41)',
+        JSON.stringify({ light, dark }))
     } catch (thrown) { await sectionThrew(thrown) } }
 
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
