@@ -54,19 +54,20 @@ export const TYPE_ICON: Readonly<Record<AppPropertyType, string>> = {
  * (`bg-${color}-100`) 스타일이 빌드에 들어가지 않는다.
  */
 const OPTION_CLASS: Readonly<Record<OptionColor, string>> = {
-  // 디자인-6b(노션 앱 실측 — 바탕은 색을 띤 반투명 · 글자는 같은 계열의 짙은 색). default · purple 은 재지 못해 같은 규칙의 가까운 값이다
-  // (`docs/design/notion-measurements.md`). 어두운 테마는 어두운 테마 조각에서 잰다(지금 값 그대로). 글자색은 `!` — 칩의 `data-color` 를
-  // 편집기 CSS 의 블록 글자색 팔레트(`[data-color='gray']` 같은 속성 선택자)가 잡아 덮는다(같은 특정도 · 그 CSS 가 뒤에 실린다).
-  default: 'bg-[rgba(28,19,1,0.06)] text-[rgb(73,72,70)]! dark:bg-neutral-800 dark:text-neutral-200',
-  gray: 'bg-[rgba(28,19,1,0.11)] text-[rgb(73,72,70)]! dark:bg-neutral-700 dark:text-neutral-100',
-  brown: 'bg-[rgba(127,51,0,0.157)] text-[rgb(88,68,55)]! dark:bg-stone-700 dark:text-stone-100',
-  orange: 'bg-[rgba(196,88,0,0.204)] text-[rgb(106,66,34)]! dark:bg-orange-900/60 dark:text-orange-100',
-  yellow: 'bg-[rgba(209,156,0,0.282)] text-[rgb(101,81,33)]! dark:bg-yellow-900/60 dark:text-yellow-100',
-  green: 'bg-[rgba(0,96,38,0.157)] text-[rgb(42,83,60)]! dark:bg-green-900/60 dark:text-green-100',
-  blue: 'bg-[rgba(0,118,217,0.204)] text-[rgb(38,74,114)]! dark:bg-blue-900/60 dark:text-blue-100',
-  purple: 'bg-[rgba(102,0,178,0.157)] text-[rgb(89,60,112)]! dark:bg-purple-900/60 dark:text-purple-100',
-  pink: 'bg-[rgba(183,0,78,0.153)] text-[rgb(104,53,78)]! dark:bg-pink-900/60 dark:text-pink-100',
-  red: 'bg-[rgba(206,24,0,0.165)] text-[rgb(109,53,49)]! dark:bg-red-900/60 dark:text-red-100',
+  // 디자인-6b(노션 앱 실측 — 바탕은 색을 띤 반투명 · 글자는 같은 계열의 짙은 색). 어두운 테마 — 디자인-8d(노션 색 변수: 바탕 `--c-<색>BacTer` ·
+  // 글자 `--c-<색>TexPri` 의 어두운 값 — 그 변수의 밝은 값이 6b 의 실측과 같아 같은 자리임을 확인했다 · 보라 글자도 그때 실제 값 #553b69 로).
+  // default 는 회색 한 단계 옅은 `--c-graBacSec`(`docs/design/notion-measurements.md`). 글자색은 `!` — 칩의 `data-color` 를 편집기 CSS 의
+  // 블록 글자색 팔레트(`[data-color='gray']` 같은 속성 선택자)가 잡아 덮는다(같은 특정도 · 그 CSS 가 뒤에 실린다 · 어두운 테마도 같다).
+  default: 'bg-[rgba(28,19,1,0.06)] text-[rgb(73,72,70)]! dark:bg-[#383836] dark:text-[#f0efed]!',
+  gray: 'bg-[rgba(28,19,1,0.11)] text-[rgb(73,72,70)]! dark:bg-[#5f5e59] dark:text-[#f0efed]!',
+  brown: 'bg-[rgba(127,51,0,0.157)] text-[rgb(88,68,55)]! dark:bg-[#6d5340] dark:text-[#f5ede9]!',
+  orange: 'bg-[rgba(196,88,0,0.204)] text-[rgb(106,66,34)]! dark:bg-[#88522f] dark:text-[#fbebde]!',
+  yellow: 'bg-[rgba(209,156,0,0.282)] text-[rgb(101,81,33)]! dark:bg-[#836426] dark:text-[#f9f3dc]!',
+  green: 'bg-[rgba(0,96,38,0.157)] text-[rgb(42,83,60)]! dark:bg-[#37674c] dark:text-[#e8f1ec]!',
+  blue: 'bg-[rgba(0,118,217,0.204)] text-[rgb(38,74,114)]! dark:bg-[#355f8b] dark:text-[#e5f2fc]!',
+  purple: 'bg-[rgba(102,0,178,0.157)] text-[rgb(85,59,105)]! dark:bg-[#674d7b] dark:text-[#f3ebf9]!',
+  pink: 'bg-[rgba(183,0,78,0.153)] text-[rgb(104,53,78)]! dark:bg-[#7b4760] dark:text-[#fae9f1]!',
+  red: 'bg-[rgba(206,24,0,0.165)] text-[rgb(109,53,49)]! dark:bg-[#924943] dark:text-[#fce9e7]!',
 }
 
 /** status 칩의 점 — 같은 색 계열의 진한 쪽(노션 앱 실측 6색 · default · brown · orange · purple 은 재지 못해 가까운 값). */

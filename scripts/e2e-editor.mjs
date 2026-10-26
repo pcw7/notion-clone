@@ -23734,6 +23734,40 @@ async function main() {
         JSON.stringify({ light, dark }))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('디자인 — 태그의 어두운 색 (디자인-8d)')) { try {
+      // 태그의 어두운 색은 노션 색 변수(바탕 --c-<색>BacTer · 글자 --c-<색>TexPri 의 어두운 값)다 — 회색 #5f5e59 / #f0efed · 파랑 #355f8b / #e5f2fc ·
+      // 보라 #674d7b / #f3ebf9. 보라의 밝은 글자는 실제 값 #553b69. 글자는 편집기의 블록 글자색 팔레트가 덮지 못한다. 테마는 `<html>` 의 속성만 바꾼다.
+      const stamp = Date.now()
+      const api8 = `${BASE}/api/workspaces/${workspaceId}`
+      const made = (await (await fetch(`${api8}/databases`, { method: 'POST', headers: authed, body: JSON.stringify({ name: `어두운 태그 ${stamp}` }) })).json()).database
+      const schema = await (await fetch(`${api8}/data-sources/${made.dataSourceId}/properties`, { method: 'POST', headers: authed, body: JSON.stringify({ name: '태그', type: 'select' }) })).json()
+      const props = schema?.schema?.properties ?? []
+      const tag = props.find((p) => p.name === '태그')?.id
+      const titleId = props.find((p) => p.type === 'title')?.id
+      for (const color of ['gray', 'blue', 'purple']) {
+        const option = (await (await fetch(`${api8}/data-sources/${made.dataSourceId}/properties/${tag}/options`, { method: 'POST', headers: authed, body: JSON.stringify({ name: `${color}태그`, color }) })).json()).option.id
+        await fetch(`${api8}/views/${made.defaultViewId}/rows`, { method: 'POST', headers: authed, body: JSON.stringify({ cells: [
+          { propertyId: titleId, value: { type: 'title', title: [textRun(`행 ${color}`)] } },
+          { propertyId: tag, value: { type: 'select', select: { id: option } } },
+        ] }) })
+      }
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${made.id}` })
+      await waitFor(`document.querySelectorAll('[data-testid="db-option-chip"]').length >= 3`, 15000)
+      const read = `(() => Object.fromEntries(['gray', 'blue', 'purple'].map((c) => {
+        const s = getComputedStyle(document.querySelector('[data-testid="db-option-chip"][data-color="' + c + '"]'))
+        return [c, s.backgroundColor + ' ' + s.color]
+      })))()`
+      const was = await evaluate(`document.documentElement.dataset.theme ?? null`)
+      await evaluate(`(() => { document.documentElement.dataset.theme = 'light'; return true })()`)
+      const light = await evaluate(read)
+      await evaluate(`(() => { document.documentElement.dataset.theme = 'dark'; return true })()`)
+      const dark = await evaluate(read)
+      await evaluate(`(() => { const w = ${JSON.stringify(was)}; if (w === null) delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = w; return true })()`)
+      check('★ 태그의 어두운 색 — 회색 #5f5e59 / #f0efed · 파랑 #355f8b / #e5f2fc · 보라 #674d7b / #f3ebf9 · 보라의 밝은 글자 #553b69',
+        dark.gray === 'rgb(95, 94, 89) rgb(240, 239, 237)' && dark.blue === 'rgb(53, 95, 139) rgb(229, 242, 252)' && dark.purple === 'rgb(103, 77, 123) rgb(243, 235, 249)'
+          && light.purple.endsWith(' rgb(85, 59, 105)'), JSON.stringify({ light, dark }))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).
