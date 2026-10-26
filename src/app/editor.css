@@ -1219,7 +1219,8 @@ span.blk-equation {
  * **존재하지 않는다** — 배경이 없는 상태라서 값이 불필요할 뿐이다.
  * 인라인 색(`.blk-color`)과 블록 색(`[data-color]`)이 같은 팔레트를 쓴다.
  * 글자색 9개는 변수다(`--block-text-<색>` · 10d-5) — 어두운 테마(10d-6 · 아래 `dark` 변형) · 고대비(아래 "블록 색의 고대비 팔레트")가
- * 그 값을 바꿔 끼운다.
+ * 그 값을 바꿔 끼운다. 배경색 9개는 노션 색 변수 `--c-<색>BacSec` 의 밝은 · 어두운 값이다(디자인-8e — 템플릿의 파란 콜아웃이 `--c-bluBacSec` 와
+ * 같았다 · `docs/design/notion-measurements.md`). 글자색은 노션의 어두운 값이 어두운 바탕과 4.5:1 에 못 미쳐(⑦) 우리 값 그대로다.
  */
 :root {
   --block-text-gray: #787774;
@@ -1242,15 +1243,15 @@ span.blk-equation {
 .blk-color[data-color='pink'],   [data-color='pink']   { color: var(--block-text-pink); }
 .blk-color[data-color='red'],    [data-color='red']    { color: var(--block-text-red); }
 
-.blk-editor .blk-container:has(> .blk-callout[data-color='gray_background']), .blk-color[data-color='gray_background'],   [data-color='gray_background']   { background: #f1f1ef; }
-.blk-editor .blk-container:has(> .blk-callout[data-color='brown_background']), .blk-color[data-color='brown_background'],  [data-color='brown_background']  { background: #f4eeee; }
-.blk-editor .blk-container:has(> .blk-callout[data-color='orange_background']), .blk-color[data-color='orange_background'], [data-color='orange_background'] { background: #fbecdd; }
-.blk-editor .blk-container:has(> .blk-callout[data-color='yellow_background']), .blk-color[data-color='yellow_background'], [data-color='yellow_background'] { background: #fbf3db; }
-.blk-editor .blk-container:has(> .blk-callout[data-color='green_background']), .blk-color[data-color='green_background'],  [data-color='green_background']  { background: #edf3ec; }
-.blk-editor .blk-container:has(> .blk-callout[data-color='blue_background']), .blk-color[data-color='blue_background'],   [data-color='blue_background']   { background: #e7f3f8; }
-.blk-editor .blk-container:has(> .blk-callout[data-color='purple_background']), .blk-color[data-color='purple_background'], [data-color='purple_background'] { background: #f6f3f9; }
-.blk-editor .blk-container:has(> .blk-callout[data-color='pink_background']), .blk-color[data-color='pink_background'],   [data-color='pink_background']   { background: #faf1f5; }
-.blk-editor .blk-container:has(> .blk-callout[data-color='red_background']), .blk-color[data-color='red_background'],    [data-color='red_background']    { background: #fdebec; }
+.blk-editor .blk-container:has(> .blk-callout[data-color='gray_background']), .blk-color[data-color='gray_background'],   [data-color='gray_background']   { background: #f0efed; }
+.blk-editor .blk-container:has(> .blk-callout[data-color='brown_background']), .blk-color[data-color='brown_background'],  [data-color='brown_background']  { background: #f5ede9; }
+.blk-editor .blk-container:has(> .blk-callout[data-color='orange_background']), .blk-color[data-color='orange_background'], [data-color='orange_background'] { background: #fbebde; }
+.blk-editor .blk-container:has(> .blk-callout[data-color='yellow_background']), .blk-color[data-color='yellow_background'], [data-color='yellow_background'] { background: #f9f3dc; }
+.blk-editor .blk-container:has(> .blk-callout[data-color='green_background']), .blk-color[data-color='green_background'],  [data-color='green_background']  { background: #e8f1ec; }
+.blk-editor .blk-container:has(> .blk-callout[data-color='blue_background']), .blk-color[data-color='blue_background'],   [data-color='blue_background']   { background: #e5f2fc; }
+.blk-editor .blk-container:has(> .blk-callout[data-color='purple_background']), .blk-color[data-color='purple_background'], [data-color='purple_background'] { background: #f3ebf9; }
+.blk-editor .blk-container:has(> .blk-callout[data-color='pink_background']), .blk-color[data-color='pink_background'],   [data-color='pink_background']   { background: #fae9f1; }
+.blk-editor .blk-container:has(> .blk-callout[data-color='red_background']), .blk-color[data-color='red_background'],    [data-color='red_background']    { background: #fce9e7; }
 
 /* 어두운 테마 — 8h 부터 미디어 쿼리가 아니라 `dark` 변형이다(`globals.css` — dark 이거나 system 인데 OS 가 어두울 때). 마우스 올림은
    노션의 `--ca-graBacIntTra`(어둡게 rgba(255, 255, 255, 0.055) — 디자인-8b). */
@@ -1333,15 +1334,15 @@ span.blk-equation {
     --block-text-pink: #d15796;
     --block-text-red: #df5452;
 
-    .blk-editor .blk-container:has(> .blk-callout[data-color='gray_background']), .blk-color[data-color='gray_background'],   [data-color='gray_background']   { background: #2f2f2f; }
-    .blk-editor .blk-container:has(> .blk-callout[data-color='brown_background']), .blk-color[data-color='brown_background'],  [data-color='brown_background']  { background: #4a3228; }
-    .blk-editor .blk-container:has(> .blk-callout[data-color='orange_background']), .blk-color[data-color='orange_background'], [data-color='orange_background'] { background: #5c3b23; }
-    .blk-editor .blk-container:has(> .blk-callout[data-color='yellow_background']), .blk-color[data-color='yellow_background'], [data-color='yellow_background'] { background: #56452f; }
-    .blk-editor .blk-container:has(> .blk-callout[data-color='green_background']), .blk-color[data-color='green_background'],  [data-color='green_background']  { background: #243d30; }
-    .blk-editor .blk-container:has(> .blk-callout[data-color='blue_background']), .blk-color[data-color='blue_background'],   [data-color='blue_background']   { background: #143a4e; }
-    .blk-editor .blk-container:has(> .blk-callout[data-color='purple_background']), .blk-color[data-color='purple_background'], [data-color='purple_background'] { background: #3c2d49; }
-    .blk-editor .blk-container:has(> .blk-callout[data-color='pink_background']), .blk-color[data-color='pink_background'],   [data-color='pink_background']   { background: #4e2c3c; }
-    .blk-editor .blk-container:has(> .blk-callout[data-color='red_background']), .blk-color[data-color='red_background'],    [data-color='red_background']    { background: #522e2a; }
+    .blk-editor .blk-container:has(> .blk-callout[data-color='gray_background']), .blk-color[data-color='gray_background'],   [data-color='gray_background']   { background: #383836; }
+    .blk-editor .blk-container:has(> .blk-callout[data-color='brown_background']), .blk-color[data-color='brown_background'],  [data-color='brown_background']  { background: #45362d; }
+    .blk-editor .blk-container:has(> .blk-callout[data-color='orange_background']), .blk-color[data-color='orange_background'], [data-color='orange_background'] { background: #53361f; }
+    .blk-editor .blk-container:has(> .blk-callout[data-color='yellow_background']), .blk-color[data-color='yellow_background'], [data-color='yellow_background'] { background: #504425; }
+    .blk-editor .blk-container:has(> .blk-callout[data-color='green_background']), .blk-color[data-color='green_background'],  [data-color='green_background']  { background: #263d30; }
+    .blk-editor .blk-container:has(> .blk-callout[data-color='blue_background']), .blk-color[data-color='blue_background'],   [data-color='blue_background']   { background: #233850; }
+    .blk-editor .blk-container:has(> .blk-callout[data-color='purple_background']), .blk-color[data-color='purple_background'], [data-color='purple_background'] { background: #3c2d47; }
+    .blk-editor .blk-container:has(> .blk-callout[data-color='pink_background']), .blk-color[data-color='pink_background'],   [data-color='pink_background']   { background: #4e2b3c; }
+    .blk-editor .blk-container:has(> .blk-callout[data-color='red_background']), .blk-color[data-color='red_background'],    [data-color='red_background']    { background: #502c29; }
   }
 }
 
