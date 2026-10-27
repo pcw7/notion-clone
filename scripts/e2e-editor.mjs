@@ -24326,6 +24326,56 @@ async function main() {
       check('★ 다시 열어도 그 덩이 · 그 차례다 — 값이 그 그룹의 것이 됐다', await settled('나', '라가마'), JSON.stringify(await look()))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('날짜로 묶기 (B-1 · F-04-11)')) { try {
+      // 날짜 속성으로 묶으면 그룹은 데이터에서 나온다 — 행이 든 달들(오름차순) · 값 없음이 맨 앞 · 머리는 "2026년 10월" · 그 덩이의 "새로
+      // 만들기"는 그 달의 첫 날을 채운다 · 그룹 패널에서 단위를 년으로 바꾸면 한 해로 묶인다. 정본 §3.6 [보강 B-1]. 자기 데이터를 스스로 만든다.
+      const stamp = Date.now()
+      const apiC = `${BASE}/api/workspaces/${workspaceId}`
+      const call = async (method, path, body) => {
+        const r = await fetch(`${apiC}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return r.json().catch(() => null)
+      }
+      const made = (await call('POST', '/databases', { name: `날짜 그룹 ${stamp}` })).database
+      const due = (await call('POST', `/data-sources/${made.dataSourceId}/properties`, { name: '마감', type: 'date' })).property.id
+      const props = (await call('GET', `/data-sources/${made.dataSourceId}/properties`)).schema.properties
+      const titleProp = props.find((p) => p.type === 'title').id
+      const view = made.defaultViewId
+      for (const [title, start] of [['가', '2026-10-05'], ['나', '2026-10-20'], ['다', '2026-12-01'], ['라', null]]) {
+        await call('POST', `/views/${view}/rows`, { cells: [
+          { propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } },
+          ...(start === null ? [] : [{ propertyId: due, value: { type: 'date', date: { start } } }]),
+        ] })
+      }
+      await call('PATCH', `/views/${view}`, { groupBy: { property_id: due } })
+      const heads = () => evaluate(`[...document.querySelectorAll('[data-testid="db-group"]')].map((g) => [g.dataset.groupKey,
+        g.querySelector('[data-testid="db-group-label"]')?.textContent?.trim() ?? '', g.querySelectorAll('[data-testid="db-table"] tbody tr[data-row-id]').length])`)
+      const headsAre = (expected) => waitFor(`JSON.stringify([...document.querySelectorAll('[data-testid="db-group"]')].map((g) => [g.dataset.groupKey,
+        g.querySelector('[data-testid="db-group-label"]')?.textContent?.trim() ?? '', g.querySelectorAll('[data-testid="db-table"] tbody tr[data-row-id]').length]))
+        === ${JSON.stringify(JSON.stringify(expected))}`, 15000)
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${made.id}?v=${view}` })
+      check('★ 날짜로 묶으면 행이 든 달들 — 값 없음이 맨 앞 · 머리는 "2026년 10월" · 행이 없는 11월은 그룹이 아니다',
+        await headsAre([['', '마감 없음', 1], ['2026-10-01', '2026년 10월', 2], ['2026-12-01', '2026년 12월', 1]]), JSON.stringify(await heads()))
+
+      const dec = `[data-testid="db-group"][data-group-key="2026-12-01"]`
+      await waitHydrated(`${dec} [data-testid="db-add-row"]`)
+      await clickSelector(`${dec} [data-testid="db-add-row"]`)
+      const added = await waitFor(`document.querySelectorAll('${dec} [data-testid="db-table"] tbody tr[data-row-id]').length === 2`, 8000)
+      await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+      await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+      const starts = ((await call('GET', `/views/${view}/rows`))?.rows ?? []).map((r) => r.properties?.[due]?.date?.start ?? null)
+      check('★ 그 덩이의 "새로 만들기"는 그 달의 첫 날을 채운다(2026-12-01)', added && starts.filter((s) => s === '2026-12-01').length === 2,
+        JSON.stringify({ added, starts }))
+
+      await waitHydrated('[data-testid="db-group-button"]')
+      await clickSelector('[data-testid="db-group-button"]')
+      await waitFor(`!!document.querySelector('[data-testid="db-group-date-unit"]')`, 5000)
+      await evaluate(`(() => { const s = document.querySelector('[data-testid="db-group-date-unit"]')
+        const set = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set
+        set.call(s, 'year'); s.dispatchEvent(new Event('change', { bubbles: true })); return true })()`)
+      check('그룹 패널에서 단위를 년으로 — 한 해로 묶인다("2026년")', await headsAre([['', '마감 없음', 1], ['2026-01-01', '2026년', 4]]), JSON.stringify(await heads()))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

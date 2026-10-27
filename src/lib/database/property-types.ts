@@ -215,16 +215,17 @@ export function readRelationValue(raw: unknown): RelationValue {
 }
 
 /**
- * 그룹(보드)으로 묶을 수 있는 타입. F-04-11 의 9종 중 셋 — 규칙은 `group.ts` 머리말.
+ * 그룹(보드)으로 묶을 수 있는 타입. F-04-11 의 9종 중 넷 — 규칙은 `group.ts` 머리말 · 날짜는 `date-group.ts`.
  *
  * 여기(클라이언트에서도 읽는 계약 모듈)에 두는 이유: 도구줄의 "그룹" 패널이 고를 수 있는 속성을 거르는데, `group.ts` 는
  * DB 모듈을 끌어오므로 클라이언트 번들이 가져갈 수 없다.
  */
-export const GROUPABLE_TYPES = ['select', 'status', 'checkbox'] as const
+// 날짜(B-1 · 정본 §3.6 [보강 B-1]) — 일 · 주 · 월 · 년 단위의 버킷(`date-group.ts`)
+export const GROUPABLE_TYPES = ['select', 'status', 'checkbox', 'date'] as const
 export type GroupableType = (typeof GROUPABLE_TYPES)[number]
 
 export function isGroupableType(t: unknown): t is GroupableType {
-  return t === 'select' || t === 'status' || t === 'checkbox'
+  return typeof t === 'string' && (GROUPABLE_TYPES as readonly string[]).includes(t)
 }
 
 /**

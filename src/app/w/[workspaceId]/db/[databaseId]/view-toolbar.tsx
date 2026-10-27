@@ -51,6 +51,7 @@ import type { GroupBy } from '@/lib/database/group'
 import type { OperatorCatalogEntry } from '@/lib/database/operator-catalog'
 import type { FilterableType } from '@/lib/database/filter'
 import { STATUS_GROUP_KINDS, STATUS_GROUP_LABEL, isGroupableType, isMvpPropertyType } from '@/lib/database/property-types'
+import { DATE_UNITS, DATE_UNIT_LABEL, DEFAULT_DATE_UNIT, type DateUnit } from '@/lib/database/date-group'
 import {
   CALCULATION_LABEL,
   calculationsFor,
@@ -1058,7 +1059,7 @@ function GroupPanel({
 
       {groupable.length === 0 && (
         <p className="text-sm text-neutral-400" data-testid="db-group-none">
-          선택 · 상태 · 체크박스 속성이 없습니다. 속성을 먼저 만드세요.
+          선택 · 상태 · 체크박스 · 날짜 속성이 없습니다. 속성을 먼저 만드세요.
         </p>
       )}
 
@@ -1083,6 +1084,34 @@ function GroupPanel({
           >
             <option value="option">옵션별</option>
             <option value="group">그룹별(할 일 · 진행 중 · 완료)</option>
+          </select>
+        </label>
+      )}
+
+      {current !== null && !dead && groupable.find((c) => c.propertyId === current.property_id)?.type === 'date' && (
+        // 날짜를 묶는 단위(B-1) — 일 · 주 · 월 · 년. 단위를 바꾸면 키 공간이 달라 숨김 목록은 버린다(status 의 묶는 단위와 같다)
+        <label className="flex items-center gap-2 text-sm">
+          묶는 단위
+          <select
+            aria-label="날짜를 묶는 단위"
+            data-testid="db-group-date-unit"
+            value={current.date_unit ?? DEFAULT_DATE_UNIT}
+            disabled={locked}
+            onChange={(e) =>
+              void onSave({
+                property_id: current.property_id,
+                ...(current.hide_empty ? { hide_empty: true } : {}),
+                ...(current.calculation ? { calculation: current.calculation } : {}),
+                date_unit: e.target.value as DateUnit,
+              })
+            }
+            className={FIELD}
+          >
+            {DATE_UNITS.map((unit) => (
+              <option key={unit} value={unit}>
+                {DATE_UNIT_LABEL[unit]}
+              </option>
+            ))}
           </select>
         </label>
       )}
