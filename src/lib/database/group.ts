@@ -86,7 +86,16 @@ import {
   type StatusGroupKind,
 } from './property-types.ts'
 import { readOptionsOf } from './options.ts'
-import { DEFAULT_DATE_UNIT, isBucketKey, isDateUnit, shiftDateValue, type DateUnit } from './date-group.ts'
+import {
+  DEFAULT_DATE_UNIT,
+  RELATIVE_KEYS,
+  isBucketKey,
+  isDateUnit,
+  relativeDayOf,
+  shiftDateValue,
+  todayIn,
+  type DateUnit,
+} from './date-group.ts'
 import { DEFAULT_NUMBER_SIZE, isNumberBucketKey, isNumberSize, shiftNumber } from './number-group.ts'
 import { DEFAULT_TEXT_MODE, FOLDED_CHOSEONG, OTHER_INITIAL, compareTextKeys, isInitialKey, isTextMode, type TextMode } from './text-group.ts'
 import { readSubItemPair } from './sub-items.ts'
@@ -290,6 +299,8 @@ export type GroupsPage = {
   readonly numberSize: number | null
   /** 글로 묶으면 그 방식(B-2b) — 그 밖은 null. 화면이 머리의 이름과 받을 수 있는 덩이(첫 글자면 없다)를 이것으로 정한다. */
   readonly textMode: TextMode | null
+  /** 상대 날짜로 묶으면(B-3) 서버가 쓴 오늘(`YYYY-MM-DD` — 보는 사람의 시간대) — 화면이 "새로 만들기"의 날짜를 이것으로 채운다. 그 밖은 null. */
+  readonly today: string | null
   readonly groups: readonly BoardGroup[]
 }
 
@@ -319,6 +330,8 @@ export type MoveRowInput = {
    * 화면이 낡았다). 표는 고쳐서 다른 그룹 값이 된 행을 고친 덩이에 남기므로(④), 그 행을 덩이 안에서 끌면 보드의 규칙으론 값이 되돌아간다.
    */
   readonly within?: boolean
+  /** 보는 사람의 오늘(B-3 · `YYYY-MM-DD`) — 상대 날짜 그룹의 키를 셀 때. 없으면 UTC 의 오늘. */
+  readonly today?: string | null
 }
 
 export type MoveOutcome = {
@@ -388,10 +401,12 @@ type Board = {
   readonly numberSize: number | null
   /** 글로 묶는 방식(B-2b) — 글 속성이면 저장값(없으면 글 그대로), 그 밖은 null. 그룹은 데이터에서 나온다(`catalogOf`). */
   readonly textMode: TextMode | null
+  /** 보는 사람의 오늘(B-3 · `YYYY-MM-DD`) — 상대 날짜 그룹의 키가 이것에서 며칠 떨어졌나다. */
+  readonly today: string
 }
 
-/** 보드를 읽는 요청의 공통 입력 — 뷰 검색어(2e-1). */
-export type BoardReadInput = { readonly search?: string | null }
+/** 보드를 읽는 요청의 공통 입력 — 뷰 검색어(2e-1) · 보는 사람의 오늘(B-3 — 상대 날짜 그룹 · 없으면 UTC 의 오늘). */
+export type BoardReadInput = { readonly search?: string | null; readonly today?: string | null }
 
 /**
  * 그룹이 걸린 뷰를 열고 권한 · 그룹 프로퍼티를 읽는다.
@@ -405,6 +420,7 @@ async function openBoard(
   viewId: string,
   need: 'view' | 'edit_content',
   search: string | null = null,
+  today: string | null = null,
 ): Promise<Board | GroupResult<never>> {
   const view = await tx.queryMaybe<{
     database_id: string
@@ -470,6 +486,8 @@ async function openBoard(
     dateUnit: propertyType === 'date' ? (isDateUnit(groupBy.date_unit) ? groupBy.date_unit : DEFAULT_DATE_UNIT) : null,
     numberSize: propertyType === 'number' ? (isNumberSize(groupBy.number_size) ? groupBy.number_size : DEFAULT_NUMBER_SIZE) : null,
     textMode: propertyType === 'rich_text' ? (isTextMode(groupBy.text_by) ? groupBy.text_by : DEFAULT_TEXT_MODE) : null,
+    // 상대 날짜(B-3)의 오늘 — 부르는 쪽이 보는 사람의 시간대로 셈해 준다(`readViewerToday`). 모양이 틀리면 UTC 의 오늘
+    today: typeof today === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(today) ? today : todayIn('UTC'),
   }
 }
 
@@ -492,12 +510,15 @@ function catalogOf(board: Board, counted: ReadonlyMap<string, unknown> = new Map
   if (board.dateUnit !== null || board.numberSize !== null || board.textMode !== null) {
     const keys = [...counted.keys()].filter((k) => k !== NO_VALUE_KEY)
     const { textMode } = board
+    const relativeOrder: readonly string[] = RELATIVE_KEYS
     const buckets =
       board.numberSize !== null
         ? keys.sort((a, b) => Number(a) - Number(b))
         : textMode !== null
           ? keys.sort((a, b) => compareTextKeys(a, b, textMode))
-          : keys.sort()
+          : board.dateUnit === 'relative'
+            ? keys.sort((a, b) => relativeOrder.indexOf(a) - relativeOrder.indexOf(b))
+            : keys.sort()
     return [{ key: NO_VALUE_KEY, ...none }, ...buckets.map((key) => ({ key, ...none }))]
   }
   if (board.propertyType === 'checkbox') {
@@ -543,6 +564,16 @@ function fillOptionOf(board: Board, kind: StatusGroupKind): string | null {
  */
 function keyExprOf(board: Board, params: ParamBag): string {
   // 날짜(B-1) — 값에 적힌 달력 날짜(`start` 의 앞 열 자)가 든 버킷의 첫 날 · 값 없음은 ''(시간대로 옮기지 않는다 — `date-group.ts`)
+  // 상대 날짜(B-3) — 적힌 날짜가 오늘에서 며칠 떨어졌나(`date - date` 는 날수) · 이름은 `date-group.ts` 의 `relativeOf` 와 같은 경계
+  if (board.dateUnit === 'relative') {
+    const today = params.bind(board.today)
+    return `(SELECT CASE WHEN r.n IS NULL THEN ''
+                     WHEN r.n = 0 THEN 'today' WHEN r.n = 1 THEN 'tomorrow' WHEN r.n = -1 THEN 'yesterday'
+                     WHEN r.n BETWEEN 2 AND 7 THEN 'next_7' WHEN r.n BETWEEN -7 AND -2 THEN 'last_7'
+                     WHEN r.n BETWEEN 8 AND 30 THEN 'next_30' WHEN r.n BETWEEN -30 AND -8 THEN 'last_30'
+                     WHEN r.n > 30 THEN 'later' ELSE 'earlier' END
+               FROM (SELECT (left(gv.value -> 'date' ->> 'start', 10))::date - ${today}::date AS n) r)`
+  }
   if (board.dateUnit !== null) {
     const date = `(left(gv.value -> 'date' ->> 'start', 10))::date`
     const bucket = board.dateUnit === 'day' ? date : `date_trunc('${board.dateUnit}', ${date})`
@@ -647,7 +678,7 @@ export async function queryGroups(ctx: SessionContext, viewId: string, input: Bo
   // 뷰를 읽기 트랜잭션 안에서 연다 — 수식으로 거르거나 정렬하면 그 캐시를 먼저 채운다(2j-2 · 이 사람의 실제 필터로)
   await refreshDerivedForView(ctx, viewId)
   return withReadTransaction(async (tx) => {
-    const board = await openBoard(tx, ctx, viewId, 'view', input.search ?? null)
+    const board = await openBoard(tx, ctx, viewId, 'view', input.search ?? null, input.today ?? null)
     if (isFailure(board)) return board
 
     // ── ① 카운트 (+ 그룹 머리의 계산) ──
@@ -715,6 +746,7 @@ export async function queryGroups(ctx: SessionContext, viewId: string, input: Bo
         dateUnit: board.dateUnit,
         numberSize: board.numberSize,
         textMode: board.textMode,
+        today: board.dateUnit === 'relative' ? board.today : null,
         groups,
       },
     } as const
@@ -732,7 +764,7 @@ export async function queryGroupCalculations(
 ): Promise<GroupResult<GroupCalculationsPage>> {
   await refreshDerivedForView(ctx, viewId)
   return withReadTransaction(async (tx) => {
-    const board = await openBoard(tx, ctx, viewId, 'view', input.search ?? null)
+    const board = await openBoard(tx, ctx, viewId, 'view', input.search ?? null, input.today ?? null)
     if (isFailure(board)) return board
     if (board.calculation === null) return { ok: true, value: { calculation: null, values: {} } } as const
     const counted = await readGroupCounts(tx, board)
@@ -763,7 +795,7 @@ export async function queryGroupColumnCalculations(
   )
   await refreshDerivedForView(ctx, viewId)
   return withReadTransaction(async (tx) => {
-    const board = await openBoard(tx, ctx, viewId, 'view', input.search ?? null)
+    const board = await openBoard(tx, ctx, viewId, 'view', input.search ?? null, input.today ?? null)
     if (isFailure(board)) return board
     if (input.groupKey !== undefined && !isGroupKeyOf(board, input.groupKey)) return fail('invalid_value')
     // 날짜(B-1)의 그룹은 데이터에서 나온다 — 아래 질의가 낸 키를 더한다
@@ -852,7 +884,7 @@ export async function queryGroupRows(
 ): Promise<GroupResult<GroupRowsPage>> {
   await refreshDerivedForView(ctx, viewId)
   return withReadTransaction(async (tx) => {
-    const board = await openBoard(tx, ctx, viewId, 'view', input.search ?? null)
+    const board = await openBoard(tx, ctx, viewId, 'view', input.search ?? null, input.today ?? null)
     if (isFailure(board)) return board
     if (!isGroupKeyOf(board, groupKey)) return fail('invalid_value')
 
@@ -887,12 +919,18 @@ export async function queryGroupRows(
  * 날짜 버킷 사이로 옮긴 행의 새 값(B-1) — 지금 값을 버킷 차이만큼 민다(시각 · 끝 날짜 · 시간대를 지킨다 · `shiftDateValue`).
  * 칸을 그사이 읽을 수 없으면(지금 키가 있는데 값이 없다 — 일어나지 않아야 한다) 그 버킷의 첫 날로.
  */
-async function shiftedDateOf(tx: Tx, board: Board, rowId: string, from: string, to: string): Promise<CellValue> {
+async function shiftedDateOf(tx: Tx, board: Board, rowId: string, from: string, to: string): Promise<CellValue | null> {
   const cell = await tx.queryMaybe<{ value: { date?: DateValue | null } }>(
     `SELECT value FROM page_property_value WHERE page_id = $1 AND property_id = $2`,
     [rowId, board.groupBy.property_id],
   )
   const date = cell?.value.date ?? null
+  // 상대 날짜(B-3) — 어제 · 오늘 · 내일이면 그 날로(적힌 날에서 그 날까지의 날수만큼 민다) · 범위 덩이는 받을 날이 없다
+  if (board.dateUnit === 'relative') {
+    const day = relativeDayOf(to, board.today)
+    if (day === null) return null
+    return { type: 'date', date: date === null ? { start: day } : shiftDateValue(date, date.start.slice(0, 10), day, 'day') }
+  }
   if (date === null || board.dateUnit === null) return { type: 'date', date: { start: to } }
   return { type: 'date', date: shiftDateValue(date, from, to, board.dateUnit) }
 }
@@ -910,7 +948,15 @@ async function shiftedNumberOf(tx: Tx, board: Board, rowId: string, from: string
 /** 그 열에 놓은 카드의 셀 값. 범주 열에 옵션이 없으면 null — 놓을 수 없다(10n-27). */
 function cellValueFor(board: Board, groupKey: string): CellValue | null {
   // 날짜(B-1) — 값이 없던 행은 그 버킷의 첫 날(날짜만) · 값 없음 열은 비운다. 값이 있던 행은 `moveRow` 가 단위만큼 민다
-  if (board.propertyType === 'date') return { type: 'date', date: groupKey === NO_VALUE_KEY ? null : { start: groupKey } }
+  if (board.propertyType === 'date') {
+    if (groupKey === NO_VALUE_KEY) return { type: 'date', date: null }
+    // 상대 날짜(B-3) — 어제 · 오늘 · 내일만 그 날 · 범위 덩이는 받을 날이 없다
+    if (board.dateUnit === 'relative') {
+      const day = relativeDayOf(groupKey, board.today)
+      return day === null ? null : { type: 'date', date: { start: day } }
+    }
+    return { type: 'date', date: { start: groupKey } }
+  }
   // 숫자(B-2) — 값이 없던 행은 구간의 아래 끝 · 값 없음 열은 비운다. 값이 있던 행은 `moveRow` 가 구간 차이만큼 더한다
   if (board.propertyType === 'number') return { type: 'number', number: groupKey === NO_VALUE_KEY ? null : Number(groupKey) }
   // 글(B-2b) — 글 그대로면 그 글(서식 없이) · 값 없음 열은 비운다. 첫 글자면 받을 값이 없다(첫 글자만 정할 수는 없다 — 범주 열과 같다)
@@ -938,7 +984,7 @@ export async function moveRow(
   // 거부를 돌려주면 롤백된다(`withCommandTransaction` 머리말) — 아래의 "쓰기 전에 검사"가 깨져도 반쯤 옮긴 카드는 없다.
   return withCommandTransaction(async (tx) => {
     // 검색어는 끝의 "아직 이 보드에 서는가" 에만 닿는다 — 아래의 자리 계산(`isInGroup` · `placeIn`)은 보드 질의를 쓰지 않는다.
-    const board = await openBoard(tx, ctx, viewId, 'edit_content', input.search ?? null)
+    const board = await openBoard(tx, ctx, viewId, 'edit_content', input.search ?? null, input.today ?? null)
     if (isFailure(board)) return board
     if (!isGroupKeyOf(board, input.groupKey)) return fail('invalid_value')
     if (input.beforeRowId === input.rowId) return fail('invalid_value')

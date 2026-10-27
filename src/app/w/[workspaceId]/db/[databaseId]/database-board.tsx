@@ -130,6 +130,8 @@ export type GroupProperty = {
   readonly numberSize?: number | null
   /** 글로 묶는 방식(B-2b) — 첫 글자면 어느 열에도 새로 만들거나 끌어 놓지 못한다(`fillKeyOf`). 글이 아니면 없다. */
   readonly textMode?: TextMode | null
+  /** 상대 날짜 그룹(B-3) — 서버가 쓴 오늘. 어제 · 오늘 · 내일 열의 "새로 만들기"가 이 날로 그 날을 셈한다(`fillKeyOf`). */
+  readonly today?: string | null
 }
 
 /** 이만큼 움직여야 드래그다. 그 전에 놓으면 클릭(포커스)이다. */

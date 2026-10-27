@@ -24473,6 +24473,53 @@ async function main() {
         JSON.stringify({ heads: await evaluate(headsExpr), noAdd }))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('상대 날짜로 묶기 (B-3 · F-04-11)')) { try {
+      // 날짜 속성을 "오늘 기준"으로 묶으면 보는 사람의 오늘(브라우저의 시간대 — 쿠키)에서 며칠 떨어졌나로 — 지난 7일 · 오늘 · 내일 · 값 없음이
+      // 맨 앞 · "내일" 덩이의 "새로 만들기"는 내일의 날짜를 채운다 · 범위 덩이(지난 7일)에는 "새로 만들기"가 서지 않는다. 정본 [보강 B-3].
+      const stamp = Date.now()
+      const apiC = `${BASE}/api/workspaces/${workspaceId}`
+      const call = async (method, path, body) => {
+        const r = await fetch(`${apiC}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return r.json().catch(() => null)
+      }
+      // 브라우저의 오늘 — 서버도 쿠키로 같은 시간대를 쓴다
+      const today = await evaluate(`new Intl.DateTimeFormat('en-CA', { year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())`)
+      const shiftDay = (n) => {
+        const [y, m, d] = today.split('-').map(Number)
+        return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10)
+      }
+      const made = (await call('POST', '/databases', { name: `상대 날짜 ${stamp}` })).database
+      const due = (await call('POST', `/data-sources/${made.dataSourceId}/properties`, { name: '마감', type: 'date' })).property.id
+      const props = (await call('GET', `/data-sources/${made.dataSourceId}/properties`)).schema.properties
+      const titleProp = props.find((p) => p.type === 'title').id
+      const view = made.defaultViewId
+      for (const [title, start] of [['가', shiftDay(0)], ['나', shiftDay(1)], ['다', shiftDay(-4)], ['라', null]]) {
+        await call('POST', `/views/${view}/rows`, { cells: [
+          { propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } },
+          ...(start === null ? [] : [{ propertyId: due, value: { type: 'date', date: { start } } }]),
+        ] })
+      }
+      await call('PATCH', `/views/${view}`, { groupBy: { property_id: due, date_unit: 'relative' } })
+      const headsExpr = `JSON.stringify([...document.querySelectorAll('[data-testid="db-group"]')].map((g) => [g.dataset.groupKey,
+        g.querySelector('[data-testid="db-group-label"]')?.textContent?.trim() ?? '', g.querySelectorAll('[data-testid="db-table"] tbody tr[data-row-id]').length]))`
+      const headsAre = (expected) => waitFor(`${headsExpr} === ${JSON.stringify(JSON.stringify(expected))}`, 15000)
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${made.id}?v=${view}` })
+      check('★ "오늘 기준"으로 묶으면 오늘에서 며칠 — 지난 7일 · 오늘 · 내일 · 값 없음이 맨 앞',
+        await headsAre([['', '마감 없음', 1], ['last_7', '지난 7일', 1], ['today', '오늘', 1], ['tomorrow', '내일', 1]]), await evaluate(headsExpr))
+
+      const tomorrow = `[data-testid="db-group"][data-group-key="tomorrow"]`
+      await waitHydrated(`${tomorrow} [data-testid="db-add-row"]`)
+      await clickSelector(`${tomorrow} [data-testid="db-add-row"]`)
+      const added = await waitFor(`document.querySelectorAll('${tomorrow} [data-testid="db-table"] tbody tr[data-row-id]').length === 2`, 8000)
+      await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+      await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+      const starts = ((await call('GET', `/views/${view}/rows`))?.rows ?? []).map((r) => r.properties?.[due]?.date?.start ?? null)
+      const noRangeAdd = await evaluate(`!document.querySelector('[data-testid="db-group"][data-group-key="last_7"] [data-testid="db-add-row"]')`)
+      check('★ "내일" 덩이의 "새로 만들기"는 내일의 날짜 · 범위 덩이(지난 7일)에는 "새로 만들기"가 없다',
+        added && starts.filter((s) => s === shiftDay(1)).length === 2 && noRangeAdd, JSON.stringify({ added, starts, noRangeAdd, tomorrow: shiftDay(1) }))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).
