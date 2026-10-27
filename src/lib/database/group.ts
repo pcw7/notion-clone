@@ -58,7 +58,7 @@ import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.t
 import { can } from '../permissions/levels.ts'
 import { effectiveCaps } from '../permissions/effective.ts'
 import { orderKeyBetween, orderKeysBetween } from '../block/order-key.ts'
-import type { ValidationIssue } from '../contracts/rich-text.ts'
+import { textRun, type ValidationIssue } from '../contracts/rich-text.ts'
 import {
   compileCursor,
   compileFilter,
@@ -88,6 +88,7 @@ import {
 import { readOptionsOf } from './options.ts'
 import { DEFAULT_DATE_UNIT, isBucketKey, isDateUnit, shiftDateValue, type DateUnit } from './date-group.ts'
 import { DEFAULT_NUMBER_SIZE, isNumberBucketKey, isNumberSize, shiftNumber } from './number-group.ts'
+import { DEFAULT_TEXT_MODE, FOLDED_CHOSEONG, OTHER_INITIAL, compareTextKeys, isInitialKey, isTextMode, type TextMode } from './text-group.ts'
 import { readSubItemPair } from './sub-items.ts'
 import {
   compileTree,
@@ -158,6 +159,11 @@ export type GroupBy = {
    * 키는 구간의 아래 끝(`number-group.ts`)이다.
    */
   readonly number_size?: number
+  /**
+   * 글을 묶는 방식(B-2b · 정본 §3.6 [보강 B-2b]) — `exact`(글 그대로 · 없으면 이것) · `first`(첫 글자 — 한글은 초성). 글(`rich_text`)
+   * 속성에만 — 아니면 거부한다.
+   */
+  readonly text_by?: TextMode
 }
 
 /** 그룹 머리의 계산 — 어느 속성의 칸으로 어느 함수를. */
@@ -172,7 +178,7 @@ export function validateGroupBy(raw: unknown, types: PropertyTypes): ValidationI
   if (typeof g.property_id !== 'string' || !types.has(g.property_id)) {
     issues.push({ path: 'groupBy.property_id', message: '없는 프로퍼티입니다' })
   } else if (!isGroupableType(types.get(g.property_id))) {
-    issues.push({ path: 'groupBy.property_id', message: 'select · status · checkbox · 날짜 · 숫자 프로퍼티만 그룹으로 묶을 수 있습니다' })
+    issues.push({ path: 'groupBy.property_id', message: 'select · status · checkbox · 날짜 · 숫자 · 글 프로퍼티만 그룹으로 묶을 수 있습니다' })
   }
   if (g.hidden !== undefined) {
     if (!Array.isArray(g.hidden) || g.hidden.some((k) => typeof k !== 'string')) {
@@ -195,6 +201,10 @@ export function validateGroupBy(raw: unknown, types: PropertyTypes): ValidationI
   // 숫자의 구간 크기(B-2) — 숫자 속성에만 · 0 보다 크고 소수 여섯 자리까지
   if (g.number_size !== undefined && !(isNumberSize(g.number_size) && typeof g.property_id === 'string' && types.get(g.property_id) === 'number')) {
     issues.push({ path: 'groupBy.number_size', message: '숫자 속성에만 0 보다 큰 구간 크기(소수 여섯 자리까지)를 줄 수 있습니다' })
+  }
+  // 글을 묶는 방식(B-2b) — 글 속성에만 · 글 그대로 · 첫 글자
+  if (g.text_by !== undefined && !(isTextMode(g.text_by) && typeof g.property_id === 'string' && types.get(g.property_id) === 'rich_text')) {
+    issues.push({ path: 'groupBy.text_by', message: "글 속성에만 'exact' · 'first' 를 줄 수 있습니다" })
   }
   // 그룹 머리의 계산(2d-3) — null 은 "없음"(카드 수). 고를 때는 살아 있고 그 함수를 고를 수 있는 타입이어야 한다.
   if (g.calculation !== undefined && g.calculation !== null) {
@@ -223,6 +233,7 @@ export function normalizeGroupBy(raw: GroupBy): GroupBy {
     ...(raw.status_by === 'group' ? { status_by: 'group' as const } : {}),
     ...(isDateUnit(raw.date_unit) ? { date_unit: raw.date_unit } : {}),
     ...(isNumberSize(raw.number_size) ? { number_size: raw.number_size } : {}),
+    ...(isTextMode(raw.text_by) ? { text_by: raw.text_by } : {}),
     ...(calculation !== undefined && calculation !== null
       ? { calculation: { property_id: calculation.property_id, function: calculation.function } }
       : {}),
@@ -277,6 +288,8 @@ export type GroupsPage = {
   readonly dateUnit: DateUnit | null
   /** 숫자로 묶으면 그 구간의 크기(B-2) — 그 밖은 null. 화면이 머리의 이름(`numberGroupLabel`)을 이것으로 만든다. */
   readonly numberSize: number | null
+  /** 글로 묶으면 그 방식(B-2b) — 그 밖은 null. 화면이 머리의 이름과 받을 수 있는 덩이(첫 글자면 없다)를 이것으로 정한다. */
+  readonly textMode: TextMode | null
   readonly groups: readonly BoardGroup[]
 }
 
@@ -373,6 +386,8 @@ type Board = {
   readonly dateUnit: DateUnit | null
   /** 숫자로 묶는 구간의 크기(B-2) — 숫자 속성이면 저장값(없으면 10), 그 밖은 null. 그룹은 데이터에서 나온다(`catalogOf`). */
   readonly numberSize: number | null
+  /** 글로 묶는 방식(B-2b) — 글 속성이면 저장값(없으면 글 그대로), 그 밖은 null. 그룹은 데이터에서 나온다(`catalogOf`). */
+  readonly textMode: TextMode | null
 }
 
 /** 보드를 읽는 요청의 공통 입력 — 뷰 검색어(2e-1). */
@@ -454,6 +469,7 @@ async function openBoard(
     defaultOptionId,
     dateUnit: propertyType === 'date' ? (isDateUnit(groupBy.date_unit) ? groupBy.date_unit : DEFAULT_DATE_UNIT) : null,
     numberSize: propertyType === 'number' ? (isNumberSize(groupBy.number_size) ? groupBy.number_size : DEFAULT_NUMBER_SIZE) : null,
+    textMode: propertyType === 'rich_text' ? (isTextMode(groupBy.text_by) ? groupBy.text_by : DEFAULT_TEXT_MODE) : null,
   }
 }
 
@@ -472,9 +488,16 @@ function catalogOf(board: Board, counted: ReadonlyMap<string, unknown> = new Map
   const none = { option: null, statusGroup: null, fillOptionId: null }
   // 날짜(B-1) — 그룹은 옵션이 아니라 데이터에서 나온다: 필터 · 검색 · 권한을 지난 행이 든 버킷들(날짜 오름차순) · 값 없음이 맨 앞
   // 숫자(B-2)도 그렇다 — 구간들은 **숫자 오름차순**(글자 순이면 -10 · 100 · 20)
-  if (board.dateUnit !== null || board.numberSize !== null) {
+  // 글(B-2b)도 그렇다 — 글 그대로는 한국어 순서 · 첫 글자는 ㄱ ~ ㅎ · A ~ Z · #
+  if (board.dateUnit !== null || board.numberSize !== null || board.textMode !== null) {
     const keys = [...counted.keys()].filter((k) => k !== NO_VALUE_KEY)
-    const buckets = board.numberSize !== null ? keys.sort((a, b) => Number(a) - Number(b)) : keys.sort()
+    const { textMode } = board
+    const buckets =
+      board.numberSize !== null
+        ? keys.sort((a, b) => Number(a) - Number(b))
+        : textMode !== null
+          ? keys.sort((a, b) => compareTextKeys(a, b, textMode))
+          : keys.sort()
     return [{ key: NO_VALUE_KEY, ...none }, ...buckets.map((key) => ({ key, ...none }))]
   }
   if (board.propertyType === 'checkbox') {
@@ -499,6 +522,8 @@ function catalogOf(board: Board, counted: ReadonlyMap<string, unknown> = new Map
 function isGroupKeyOf(board: Board, key: string): boolean {
   if (board.dateUnit !== null) return key === NO_VALUE_KEY || isBucketKey(key, board.dateUnit)
   if (board.numberSize !== null) return key === NO_VALUE_KEY || isNumberBucketKey(key, board.numberSize)
+  // 글 그대로(B-2b)는 아무 글이나 키다(놓으면 그 글이 된다) · 첫 글자는 그 머리들만
+  if (board.textMode !== null) return board.textMode === 'exact' || key === NO_VALUE_KEY || isInitialKey(key)
   return catalogOf(board).some((g) => g.key === key)
 }
 
@@ -524,6 +549,18 @@ function keyExprOf(board: Board, params: ParamBag): string {
     return `coalesce(to_char(${bucket}, 'YYYY-MM-DD'), '')`
   }
   // 숫자(B-2) — 구간의 아래 끝을 numeric 으로 정확히 · 글자는 trim_scale 의 것(`number-group.ts`) · 값 없음은 ''
+  // 글(B-2b) — 글 그대로는 사이드카 그대로 · 첫 글자는 첫 비공백 글자의 머리(한글은 초성 — 표는 `text-group.ts` 의 것 · 음절은 코드
+  // 포인트로 가른다 — ko 콜레이션의 BETWEEN 은 자음 낱자를 음절 사이에 넣는다)
+  if (board.textMode === 'exact') return `coalesce(gv.text_value, '')`
+  if (board.textMode === 'first') {
+    const table = params.bind(FOLDED_CHOSEONG)
+    const other = params.bind(OTHER_INITIAL)
+    return `(SELECT CASE WHEN f.c IS NULL THEN ''
+                     WHEN ascii(f.c) BETWEEN 44032 AND 55203 THEN substr(${table}::text, (ascii(f.c) - 44032) / 588 + 1, 1)
+                     WHEN f.c ~ '^[A-Za-z]$' THEN upper(f.c)
+                     ELSE ${other}::text END
+               FROM (SELECT substring(gv.text_value from '\\S') AS c) f)`
+  }
   if (board.numberSize !== null) {
     const size = params.bind(String(board.numberSize))
     return `coalesce(trim_scale(floor(gv.num_value / ${size}::numeric) * ${size}::numeric)::text, '')`
@@ -677,6 +714,7 @@ export async function queryGroups(ctx: SessionContext, viewId: string, input: Bo
         statusBy: board.statusByGroup ? 'group' : 'option',
         dateUnit: board.dateUnit,
         numberSize: board.numberSize,
+        textMode: board.textMode,
         groups,
       },
     } as const
@@ -754,7 +792,7 @@ export async function queryGroupColumnCalculations(
       [board.dataSourceId, ...params.values],
     )
     const byKey = new Map(rows.map((r) => [r.key, r]))
-    if ((board.dateUnit !== null || board.numberSize !== null) && input.groupKey === undefined) {
+    if ((board.dateUnit !== null || board.numberSize !== null || board.textMode !== null) && input.groupKey === undefined) {
       for (const r of rows) if (!keys.includes(r.key)) keys.push(r.key)
     }
     for (const key of keys) {
@@ -875,6 +913,11 @@ function cellValueFor(board: Board, groupKey: string): CellValue | null {
   if (board.propertyType === 'date') return { type: 'date', date: groupKey === NO_VALUE_KEY ? null : { start: groupKey } }
   // 숫자(B-2) — 값이 없던 행은 구간의 아래 끝 · 값 없음 열은 비운다. 값이 있던 행은 `moveRow` 가 구간 차이만큼 더한다
   if (board.propertyType === 'number') return { type: 'number', number: groupKey === NO_VALUE_KEY ? null : Number(groupKey) }
+  // 글(B-2b) — 글 그대로면 그 글(서식 없이) · 값 없음 열은 비운다. 첫 글자면 받을 값이 없다(첫 글자만 정할 수는 없다 — 범주 열과 같다)
+  if (board.propertyType === 'rich_text') {
+    if (board.textMode === 'first') return null
+    return { type: 'rich_text', rich_text: groupKey === NO_VALUE_KEY ? [] : [textRun(groupKey)] }
+  }
   if (board.propertyType === 'checkbox') return { type: 'checkbox', checkbox: groupKey === 'true' }
   if (groupKey === NO_VALUE_KEY) return optionValue(board.propertyType, null)
   if (board.statusByGroup) {
@@ -925,7 +968,7 @@ export async function moveRow(
           : shifts && board.numberSize !== null
             ? await shiftedNumberOf(tx, board, input.rowId, current, input.groupKey)
             : cellValueFor(board, input.groupKey)
-      // 옵션이 없는 범주 열에는 놓을 수 없다(10n-27) — 받을 옵션이 없다
+      // 옵션이 없는 범주 열 · 첫 글자 열(B-2b)에는 놓을 수 없다(10n-27) — 받을 값이 없다
       if (value === null) return fail('invalid_value')
       const written = await updateCellsIn(tx, ctx, input.rowId, {
         cells: [{ propertyId: board.groupBy.property_id, value }],

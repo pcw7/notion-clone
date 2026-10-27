@@ -39,6 +39,8 @@ import type { RowCell } from './row.ts'
 import { STATUS_GROUP_LABEL, optionValue, type GroupableType, type SelectOption, type StatusGroupKind } from './property-types.ts'
 import { DEFAULT_DATE_UNIT, dateGroupLabel, type DateUnit } from './date-group.ts'
 import { DEFAULT_NUMBER_SIZE, numberGroupLabel } from './number-group.ts'
+import { DEFAULT_TEXT_MODE, textGroupLabel, type TextMode } from './text-group.ts'
+import { textRun } from '../contracts/rich-text.ts'
 
 // ── 좌표 ──────────────────────────────────────────────────────────────
 
@@ -212,6 +214,8 @@ export function prefillCells(propertyType: GroupableType, propertyId: string, ke
   if (propertyType === 'date') return key === '' ? [] : [{ propertyId, value: { type: 'date', date: { start: key } } }]
   // 숫자(B-2) — 그 구간의 아래 끝
   if (propertyType === 'number') return key === '' ? [] : [{ propertyId, value: { type: 'number', number: Number(key) } }]
+  // 글(B-2b · 글 그대로) — 그 글. 첫 글자 열은 `fillKeyOf` 가 null 이라 여기 오지 않는다
+  if (propertyType === 'rich_text') return key === '' ? [] : [{ propertyId, value: { type: 'rich_text', rich_text: [textRun(key)] } }]
   // status 는 새 행이 기본 옵션을 받는다(`row.ts` `defaultCells`). "상태 없음" 열의 `+` 는 빈 값을 **명시해** 보내야
   // 카드가 그 열에 남는다. select 는 기본값이 없어 안 보내는 것이 곧 빈 값이다.
   if (key === '') return propertyType === 'status' ? [{ propertyId, value: optionValue('status', null) }] : []
@@ -220,12 +224,17 @@ export function prefillCells(propertyType: GroupableType, propertyId: string, ke
 
 /**
  * 열의 `+` 가 채울 키 — 범주 열(10n-27)이면 서버가 정한 옵션(`fillOptionId` — 없으면 null: 그 열에는 만들 수 없다), 그 밖은 열의 키.
+ * 첫 글자로 묶은 열(B-2b)은 null — 첫 글자만 정할 수는 없다. null 이면 그 열에 만들지도, 다른 열에서 끌어 놓지도 못한다.
  */
-export function fillKeyOf(group: {
-  readonly key: string
-  readonly statusGroup?: StatusGroupKind | null
-  readonly fillOptionId?: string | null
-}): string | null {
+export function fillKeyOf(
+  group: {
+    readonly key: string
+    readonly statusGroup?: StatusGroupKind | null
+    readonly fillOptionId?: string | null
+  },
+  bucket: { readonly textMode?: TextMode | null } = {},
+): string | null {
+  if (bucket.textMode === 'first') return null
   if (group.statusGroup !== undefined && group.statusGroup !== null) return group.fillOptionId ?? null
   return group.key
 }
@@ -238,11 +247,12 @@ export function groupLabel(
   propertyType: GroupableType,
   propertyName: string,
   group: { readonly key: string; readonly option: SelectOption | null; readonly statusGroup?: StatusGroupKind | null },
-  bucket: { readonly dateUnit?: DateUnit | null; readonly numberSize?: number | null } = {},
+  bucket: { readonly dateUnit?: DateUnit | null; readonly numberSize?: number | null; readonly textMode?: TextMode | null } = {},
 ): string {
   if (propertyType === 'checkbox') return group.key === 'true' ? '체크됨' : '체크 안 됨'
   if (propertyType === 'date') return group.key === '' ? `${propertyName} 없음` : dateGroupLabel(group.key, bucket.dateUnit ?? DEFAULT_DATE_UNIT)
   if (propertyType === 'number') return group.key === '' ? `${propertyName} 없음` : numberGroupLabel(group.key, bucket.numberSize ?? DEFAULT_NUMBER_SIZE)
+  if (propertyType === 'rich_text') return group.key === '' ? `${propertyName} 없음` : textGroupLabel(group.key, bucket.textMode ?? DEFAULT_TEXT_MODE)
   if (group.statusGroup !== undefined && group.statusGroup !== null) return STATUS_GROUP_LABEL[group.statusGroup]
   return group.option?.name ?? `${propertyName} 없음`
 }

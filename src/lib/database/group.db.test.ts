@@ -139,12 +139,12 @@ describe('★ 보드는 그룹이 필수다', () => {
     assert.equal(unwrap(await createView(fx.owner.ctx, bare.id, {})).groupBy, null)
   })
 
-  test('checkbox 로 묶을 수 있고, 글자 · 지워진 프로퍼티는 invalid_group', async (t) => {
+  test('checkbox 로 묶을 수 있고, 사람 · 지워진 프로퍼티는 invalid_group', async (t) => {
     if (skipReason) return t.skip(skipReason)
     const table = await newTable([
       { name: '끝', type: 'checkbox' },
-      // 숫자(B-2) · 날짜(B-1)는 묶을 수 있게 됐다 — 아직 못 묶는 것은 글자
-      { name: '메모', type: 'rich_text' },
+      // 날짜(B-1) · 숫자(B-2) · 글(B-2b)은 묶을 수 있게 됐다 — 사람은 묶지 않는다(정본 [보강] 사람 속성 ⑤)
+      { name: '담당', type: 'people' },
     ])
     const schema = unwrap(await getSchema(fx.owner.ctx, table.dataSourceId))
     const id = (n: string) => schema.properties.find((p) => p.name === n)!.id
@@ -152,7 +152,7 @@ describe('★ 보드는 그룹이 필수다', () => {
     const byCheck = unwrap(await createView(fx.owner.ctx, table.databaseId, { type: 'board', groupBy: { property_id: id('끝') } }))
     assert.equal(byCheck.groupBy?.property_id, id('끝'))
 
-    const bad = await createView(fx.owner.ctx, table.databaseId, { type: 'board', groupBy: { property_id: id('메모') } })
+    const bad = await createView(fx.owner.ctx, table.databaseId, { type: 'board', groupBy: { property_id: id('담당') } })
     assert.equal(bad.ok, false)
     if (!bad.ok) {
       assert.equal(bad.reason, 'invalid_group')

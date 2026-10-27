@@ -73,6 +73,7 @@ import type { GroupBy } from '@/lib/database/group'
 import type { ViewColumn } from '@/lib/database/view'
 import type { GroupableType, SelectOption, StatusGroupKind } from '@/lib/database/property-types'
 import type { DateUnit } from '@/lib/database/date-group'
+import type { TextMode } from '@/lib/database/text-group'
 import { cellText, parseDraft, readCell, sameValue } from '@/lib/database/cell-format'
 import {
   fillKeyOf,
@@ -127,6 +128,8 @@ export type GroupProperty = {
   readonly dateUnit?: DateUnit | null
   /** 숫자로 묶는 구간의 크기(B-2) — 머리의 이름(20 ~ 30)을 만든다. 숫자가 아니면 없다. */
   readonly numberSize?: number | null
+  /** 글로 묶는 방식(B-2b) — 첫 글자면 어느 열에도 새로 만들거나 끌어 놓지 못한다(`fillKeyOf`). 글이 아니면 없다. */
+  readonly textMode?: TextMode | null
 }
 
 /** 이만큼 움직여야 드래그다. 그 전에 놓으면 클릭(포커스)이다. */
@@ -432,7 +435,9 @@ export function DatabaseBoard(props: {
       d.layout = measure()
       setDraggingId(d.id)
     }
-    d.target = resolveDrop(d.layout, { id: d.id, fromKey: d.fromKey }, event.clientX, event.clientY, manualOrder)
+    // 받을 수 없는 열(첫 글자 열 · 옵션이 없는 범주 열 — `fillKeyOf` 가 null)에는 끌어 놓지 못한다(B-2b ③) · 제 열 안의 차례는 바꾼다
+    const layout = d.layout.filter((c) => c.key === d.fromKey || accepting.has(c.key))
+    d.target = resolveDrop(layout, { id: d.id, fromKey: d.fromKey }, event.clientX, event.clientY, manualOrder)
     if (!sameTarget(dropRef.current, d.target)) {
       dropRef.current = d.target
       setDrop(d.target)
@@ -546,7 +551,7 @@ export function DatabaseBoard(props: {
     const result = await api.createRowFrom(workspaceId, viewId, {
       templateId,
       // 범주 열(10n-27)은 서버가 정한 옵션으로 — `+` 는 그 옵션이 있을 때만 선다
-      cells: prefillCells(property.type, property.id, fillKeyOf(group) ?? group.key),
+      cells: prefillCells(property.type, property.id, fillKeyOf(group, property) ?? group.key),
     })
     setBusyKey(null)
     if (!result.ok) {
@@ -647,12 +652,17 @@ export function DatabaseBoard(props: {
 
   const visible = groups.filter((g) => !g.hidden)
   const hiddenGroups = groups.filter((g) => g.hidden)
+  /** 카드를 받을 수 있는 열 — 채울 값이 있다(`fillKeyOf`). 끌기 · "옮기기" 메뉴가 다른 열로 옮길 때 묻는다(B-2b ③). */
+  const accepting = new Set(visible.filter((g) => fillKeyOf(g, property) !== null).map((g) => g.key))
   /** 카드의 "옮기기"가 고를 자리(10m-2) — 화면에 선 열만(숨긴 그룹으로는 옮기지 않는다 — 끌기와 같다). */
   const cardMove = (rowId: string): CardMove | null => {
     const choices = moveChoices(visible, rowId, manualOrder)
     if (choices === null) return null
     const labelByKey = new Map(visible.map((g) => [g.key, labelOf(g)]))
-    return { ...choices, others: choices.others.map((o) => ({ ...o, label: labelByKey.get(o.key) ?? o.key })) }
+    return {
+      ...choices,
+      others: choices.others.filter((o) => accepting.has(o.key)).map((o) => ({ ...o, label: labelByKey.get(o.key) ?? o.key })),
+    }
   }
 
   return (
@@ -697,7 +707,7 @@ export function DatabaseBoard(props: {
                   </span>
                 )}
                 <span className="ml-auto flex items-center">
-                  {access.canCreateRows && fillKeyOf(group) !== null && (
+                  {access.canCreateRows && fillKeyOf(group, property) !== null && (
                     <NewRowMenu
                       workspaceId={workspaceId}
                       viewId={viewId}

@@ -339,6 +339,8 @@ export default async function DatabasePage({
           dateUnit: board !== null && board.ok ? board.value.dateUnit : null,
           // 숫자로 묶는 구간의 크기(B-2)
           numberSize: board !== null && board.ok ? board.value.numberSize : null,
+          // 글로 묶는 방식(B-2b)
+          textMode: board !== null && board.ok ? board.value.textMode : null,
         }
       : null
   const groups: BoardGroupJson[] =
