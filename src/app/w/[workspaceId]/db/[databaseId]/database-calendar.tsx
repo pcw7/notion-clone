@@ -52,6 +52,8 @@ import * as api from './table-api'
 import { EDITED_OUT_OF_VIEW_NOTICE, MOVED_OUT_OF_VIEW_NOTICE } from '@/lib/database/out-of-view'
 import { SearchEmpty } from './view-search'
 import { useAdoptServerValue, useLiveServerRefresh } from './use-table-changes'
+import { useRowReminders } from './use-row-reminders'
+import { ReminderMark } from './reminder-bell'
 
 const UNTITLED = '제목 없음'
 const WEEKDAYS = ['일', '월', '화', '수', '목', '금', '토']
@@ -101,6 +103,8 @@ export function DatabaseCalendar(props: {
   /** 보이는 달(`YYYY-MM`). */
   month: string
   datePropertyId: string
+  /** 그 날짜 속성의 이름 — 막대의 리마인더 종이 말한다(10n-77). 없으면 "날짜". */
+  datePropertyName?: string
   /** 제목 컬럼 — 새 행의 제목을 받는다. */
   titlePropertyId: string | null
   rows: RowJson[]
@@ -139,6 +143,8 @@ export function DatabaseCalendar(props: {
   // 중이면 끝난 뒤에.
   const calendarBusy = draggingId !== null || editing !== null || busyDay !== null
   useLiveServerRefresh(workspaceId, props.dataSourceId, calendarBusy, props.renderedAt)
+  // 막대의 리마인더 종(10n-77) — 보드 · 갤러리와 같은 훅 · 서버가 다시 그릴 때마다(`renderedAt`) 다시 읽는다. 캘린더는 늘 날짜 속성이 있다
+  const [reminders] = useRowReminders(workspaceId, props.dataSourceId, rows, true, props.renderedAt)
   useAdoptServerValue(props.rows, calendarBusy, setRows)
   useEffect(() => {
     if (editing !== null) titleInputRef.current?.focus()
@@ -467,6 +473,14 @@ export function DatabaseCalendar(props: {
                           {row.title || UNTITLED}
                         </span>
                       </Link>
+                    )}
+                    {/* 리마인더 종(10n-77) — 보이기만 · 주를 넘어 잘린 막대는 시작하는 조각에만 */}
+                    {!isEditing && !p.continuesBefore && reminders[row.id]?.[datePropertyId] !== undefined && (
+                      <ReminderMark
+                        reminder={reminders[row.id]![datePropertyId]!}
+                        propertyName={props.datePropertyName ?? '날짜'}
+                        start={(row.properties[datePropertyId] as { date?: { start?: string } } | undefined)?.date?.start ?? null}
+                      />
                     )}
                   </div>
                 )

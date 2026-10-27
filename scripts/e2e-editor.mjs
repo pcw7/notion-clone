@@ -23851,6 +23851,44 @@ async function main() {
       check('★ 갤러리 카드에도 같은 종', galleryShown && onGallery[armed] === 'armed' && onGallery[fired] === 'passed' && onGallery[bare] === '', JSON.stringify(onGallery))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('캘린더 막대의 리마인더 종 (10n-77 · F-11-10)')) { try {
+      // 캘린더의 막대에도 그 보기의 날짜 속성의 리마인더 종이 선다(보이기만) — 걸린 것 · 울린 것을 가르고, 없는 막대에는 없다. 주를 넘어 잘린 막대는
+      // 시작하는 조각에만 선다. 자기 데이터를 스스로 만든다.
+      const stamp = Date.now()
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const api77 = `${BASE}/api/workspaces/${workspaceId}`
+      const call = async (method, path, body) => {
+        const r = await fetch(`${api77}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return r.json().catch(() => null)
+      }
+      const made = (await call('POST', '/databases', { name: `막대 종 ${stamp}` })).database
+      const due = (await call('POST', `/data-sources/${made.dataSourceId}/properties`, { name: '마감', type: 'date' })).property.id
+      const titleProp = (await call('GET', `/views/${made.defaultViewId}`)).view.columns.find((c) => c.type === 'title').propertyId
+      const rowOf = async (title, date) => (await call('POST', `/views/${made.defaultViewId}/rows`, { cells: [
+        { propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } },
+        { propertyId: due, value: { type: 'date', date } },
+      ] })).row.id
+      const armed = await rowOf('걸린 일', { start: '2030-06-04' })
+      const fired = await rowOf('울린 일', { start: '2030-06-05' })
+      const bare = await rowOf('종 없는 일', { start: '2030-06-06' })
+      const span = await rowOf('주를 넘는 일', { start: '2030-06-13', end: '2030-06-18' })
+      const tz = 'Asia/Seoul'
+      for (const row of [armed, fired, span]) await call('PUT', `/rows/${row}/reminders/${encodeURIComponent(due)}`, { leadMinutes: 1440, timeZone: tz })
+      await dbQuery(`UPDATE reminder SET fired_at = now() WHERE page_id = $1`, [fired])
+      const cal = (await call('POST', `/databases/${made.id}/views`, { type: 'calendar' }))?.view
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${made.id}?v=${cal?.id}&m=2030-06` })
+      const shown = await waitFor(`document.querySelectorAll('[data-testid="db-cal-event"] [data-testid="db-reminder-mark"]').length >= 3`, 15000)
+      const look = await evaluate(`(() => {
+        const of = (id) => [...document.querySelectorAll('[data-testid="db-cal-event"][data-row-id="' + id + '"]')]
+          .sort((a, b) => a.dataset.week.localeCompare(b.dataset.week))
+          .map((bar) => [...bar.querySelectorAll('[data-testid="db-reminder-mark"]')].map((m) => m.dataset.state + (m.closest('button, a') ? ':누름' : '')).join(','))
+        return { armed: of(${JSON.stringify(armed)}), fired: of(${JSON.stringify(fired)}), bare: of(${JSON.stringify(bare)}), span: of(${JSON.stringify(span)}) }
+      })()`)
+      check('★ 캘린더 막대에 종 — 걸린 것 · 울린 것을 가르고 · 없는 막대에는 없다 · 누르는 단추가 아니다',
+        shown && JSON.stringify(look.armed) === '["armed"]' && JSON.stringify(look.fired) === '["passed"]' && JSON.stringify(look.bare) === '[""]', JSON.stringify(look))
+      check('★ 주를 넘어 잘린 막대는 시작하는 조각에만 종이 선다', JSON.stringify(look.span) === '["armed",""]', JSON.stringify(look.span))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

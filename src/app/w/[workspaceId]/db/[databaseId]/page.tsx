@@ -662,6 +662,7 @@ export default async function DatabasePage({
             tableName={tableName}
             month={calendarMonth}
             datePropertyId={calendarPage.value.datePropertyId}
+            datePropertyName={columns.find((c) => c.propertyId === calendarPage.value.datePropertyId)?.name}
             titlePropertyId={columns.find((c) => c.type === 'title')?.propertyId ?? null}
             rows={calendarPage.value.rows.map(rowJson)}
             undated={calendarPage.value.undated}
