@@ -34,6 +34,7 @@
     "e2e:affected": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/e2e-affected.mjs",
     "e2e:full": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/e2e-full.mjs",
     "collab": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/collab-server.mjs",
+    "search:reindex": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/search-reindex.mjs",
     "moderation": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/moderation.mjs",
     "perf": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/perf-report.mjs",
     "worker": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/worker.mjs"

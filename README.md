@@ -157,6 +157,7 @@ npm run e2e:full -- --ref=<커밋>      # 그 커밋의 복사본(worktree)에�
 ```bash
 npm run plan:set -- <워크스페이스 id> <free|plus|business|enterprise>   # 요금제 바꾸기(결제 연동 없음)
 npm run moderation -- list            # 신고 케이스 · 테이크다운 · 기각 · 복구 · 게시 차단
+npm run search:reindex -- [워크스페이스 id]  # 검색 색인을 행에서 다시 쓴다(옛 백필 · 색인 규칙이 바뀐 뒤)
 npm run perf -- [일수]                # 성능 계측 보고(경로마다 p50 · p75 · p95)
 ```
 
