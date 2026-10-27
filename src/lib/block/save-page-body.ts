@@ -176,6 +176,11 @@ export async function readBodyScope(tx: Tx, ctx: SessionContext, pageId: string)
  * 페이지의 자손까지 딸려 와서 **다른 문서의 블록을 지우게 된다.**
  */
 async function readScope(tx: Tx, ctx: SessionContext, pageId: string): Promise<ScopeRow[]> {
+  return readScopeIn(tx, ctx.workspaceId, pageId)
+}
+
+/** `readScope` 의 질의 — 워크스페이스만 쓴다. 세션이 없는 재색인(`reindexPageFromRows`)이 같은 범위 규칙을 쓰려고 나눴다. */
+async function readScopeIn(tx: Tx, workspaceId: string, pageId: string): Promise<ScopeRow[]> {
   return tx.query<ScopeRow>(
     `WITH RECURSIVE doc_scope AS (
          SELECT b.id, b.type, b.parent_id, b.order_key, b.properties, b.format,
@@ -190,8 +195,29 @@ async function readScope(tx: Tx, ctx: SessionContext, pageId: string): Promise<S
           WHERE s.type <> $3 AND c.workspace_id = $2
      )
      SELECT * FROM doc_scope`,
-    [pageId, ctx.workspaceId, PAGE_TYPE],
+    [pageId, workspaceId, PAGE_TYPE],
   )
+}
+
+/**
+ * 한 페이지의 검색 색인을 **행에서** 다시 쓴다 — 운영 명령(`npm run search:reindex` · 10p-4 · F-07-06) 전용.
+ *
+ * 세션이 없다(서버 셸 — 요금제 · 신고 명령과 같다). 권한을 묻지 않고 그 페이지의 워크스페이스로 범위를 읽는다 — 화면 · API 의 경로에서 부르지
+ * 않는다. 본문은 저장 경로(`savePageBody` 의 색인)와 **같은 규칙**으로 모은다: 문서 범위(`readScopeIn` — 하위 페이지에서 멈춘다) · 살아 있는 행 ·
+ * 투영의 문서 순서(`projectDocument`). 행은 Y.Doc 의 투영이라 조금 늦을 수 있다(투영 디바운스 5d) — 그 다음 저장이 다시 쓴다.
+ * 페이지가 없으면 false.
+ */
+export async function reindexPageFromRows(tx: Tx, pageId: string): Promise<boolean> {
+  const page = await tx.queryMaybe<{ workspace_id: string; ancestor_path: string[]; properties: Record<string, unknown> | null }>(
+    `SELECT workspace_id, ancestor_path, properties FROM block WHERE id = $1 AND type = $2`,
+    [pageId, PAGE_TYPE],
+  )
+  if (page === null) return false
+  const scope = await readScopeIn(tx, page.workspace_id, pageId)
+  const doc = rowsToDoc(pageId, scope.filter((r) => r.lifecycle === 'live'))
+  const projection = projectDocument(pageId, page.ancestor_path, doc)
+  await indexPageText(tx, pageId, { title: plainTitleOf(page.properties), blocks: projection.blocks })
+  return true
 }
 
 /**
