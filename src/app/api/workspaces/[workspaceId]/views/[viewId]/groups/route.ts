@@ -4,7 +4,8 @@
  * 정본: 00-canonical-data-model.md §3.6 · 04-database-views.md F-04-11 · F-04-03
  *
  *   GET                       그룹 전부(카운트 · 숨김) + 보이는 그룹의 첫 페이지 행
- *   GET ?group=<key>&cursor=  한 그룹의 다음 페이지 — 그룹별 독립 커서(F-04-15)
+ *   GET ?group=<key>&cursor=  한 그룹의 다음 페이지 — 그룹별 독립 커서(F-04-15). 첫 페이지(커서 없음)는 표 뷰면 그 그룹의 열 집계를
+ *                             함께 싣는다(`calculations` — 덩이의 집계 줄 · G-2d · 평평한 표의 행 라우트와 같은 모양)
  *   GET ?calculations=1       그룹 머리의 계산만(2d-3 · F-04-16) — 카드를 옮기거나 만든 뒤. 행은 읽지 않는다
  *
  *   셋 다 `q`(뷰 검색어 · 2e-1 · F-04-27)를 받는다 — 카드 · 개수 · 머리 값이 같이 좁혀진다. 뷰에 저장하지 않는다.
@@ -21,7 +22,8 @@
 
 import { isUuid } from '@/lib/ids'
 import { readJsonBody, requireWorkspaceSession } from '@/lib/auth/route-session'
-import { moveRow, queryGroupCalculations, queryGroupRows, queryGroups } from '@/lib/database/group'
+import { moveRow, queryGroupCalculations, queryGroupColumnCalculations, queryGroupRows, queryGroups } from '@/lib/database/group'
+import { getView } from '@/lib/database/view'
 import { failureResponse, groupFailureStatus, rowJson } from '@/lib/database/http'
 import { normalizeSearch } from '@/lib/database/search'
 
@@ -54,11 +56,21 @@ export async function GET(request: Request, ctx: Ctx): Promise<Response> {
       search,
     })
     if (!page.ok) return failureResponse(groupFailureStatus(page.reason), page)
+    // 덩이의 열 집계(G-2d) — 첫 페이지에만 · 표 뷰만(목록 · 보드는 집계 줄을 그리지 않는다). 대상은 그 그룹의 행 전부라 페이지마다 같다
+    let calculations: Readonly<Record<string, unknown>> | undefined
+    if (params.get('cursor') === null) {
+      const view = await getView(session.ctx, viewId)
+      if (view.ok && view.value.type === 'table') {
+        const calculated = await queryGroupColumnCalculations(session.ctx, viewId, view.value.columns, { search, groupKey: group })
+        if (calculated.ok) calculations = calculated.value[group] ?? {}
+      }
+    }
     return Response.json({
       ok: true,
       rows: page.value.rows.map(rowJson),
       hasMore: page.value.hasMore,
       nextCursor: page.value.nextCursor,
+      ...(calculations === undefined ? {} : { calculations }),
     })
   }
 

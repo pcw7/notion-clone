@@ -61,7 +61,7 @@ import { filterColumnsOf, nestsSubItems, showsParentsOnly, subItemPairOf } from 
 import { queryRows } from '@/lib/database/query'
 import { computeCalculations } from '@/lib/database/calculate'
 import { normalizeSearch } from '@/lib/database/search'
-import { queryGroups } from '@/lib/database/group'
+import { queryGroupColumnCalculations, queryGroups } from '@/lib/database/group'
 import { loadRelationLabels, relationIdsIn } from '@/lib/database/relation'
 import { loadPeopleNames, peopleIdsOf } from '@/lib/database/people'
 import { computeRollups, EMPTY_ROLLUP_PAGE } from '@/lib/database/rollup'
@@ -461,6 +461,11 @@ export default async function DatabasePage({
     tablePage === null || variant !== 'table' || isGallery
       ? {}
       : await computeCalculations(ctx, view.value.dataSourceId, view.value.effectiveFilter, view.value.columns, search)
+  // 그룹 덩이마다(G-2d · 정본 [보강 G-1] ⑨) — 그 그룹의 행 전부로. 한 질의로 모든 그룹의 값을 · 표 모양만
+  const groupColumnCalculations =
+    isGroupedRows && variant === 'table'
+      ? await queryGroupColumnCalculations(ctx, view.value.id, view.value.columns, { search }).then((r) => (r.ok ? r.value : {}))
+      : {}
 
   // ── 기본 템플릿(F-08-03) ──
   // 뷰는 **살아 있는 템플릿일 때만** id 를 준다(`readView` · §3.3-176). 버튼이 그 이름을 말하므로 이름까지 읽는다 —
@@ -721,6 +726,7 @@ export default async function DatabasePage({
           property={groupProperty}
           groups={groups}
           calculation={groupCalculation}
+          columnCalculations={groupColumnCalculations}
           table={{
             workspaceId,
             viewId: view.value.id,

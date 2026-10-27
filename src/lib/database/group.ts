@@ -98,7 +98,15 @@ import {
 import { readRow, updateCellsIn, type RowFailure, type RowSummary } from './row.ts'
 import { MAX_QUERY_LIMIT } from './limits.ts'
 import { calculationResult, canCalculate, isCalculation, type Calculation, type CalculationResult } from './calculations.ts'
-import { columnStatsOf, completeIdsOf, EMPTY_STATS_ROW, statsJsonSql, type StatsRow } from './calculate.ts'
+import {
+  columnStatsOf,
+  completeIdsOf,
+  EMPTY_STATS_ROW,
+  statsJsonSql,
+  type CalculatedColumn,
+  type Calculations,
+  type StatsRow,
+} from './calculate.ts'
 import { compileSearch } from './search.ts'
 import { canViewOwnerDatabase } from './source-access.ts'
 import { restrictedRowsSql, rowsAccessIn, type RowsAccess } from './row-access.ts'
@@ -634,6 +642,64 @@ export async function queryGroupCalculations(
       if (result !== null) values[g.key] = result
     }
     return { ok: true, value: { calculation: board.calculation, values } } as const
+  })
+}
+
+/**
+ * 그룹마다 열 집계(표 · 목록의 그룹 G-2d · 정본 §3.6 [보강 G-1] ⑨) — 덩이 아래의 집계 줄. 그 그룹의 행 전부(머리의 개수와 같은 행 —
+ * 권한 · 필터 · 검색어 · 하위 항목의 부모만)로 계산한다. 질의는 열 · 그룹 수와 무관하게 하나 — 행과 그룹 키를 CTE 로 한 번 고르고 그룹마다 ·
+ * 열마다 그 행들의 칸을 모은다(평평한 표의 `computeCalculations` 와 같은 통계 식). `groupKey` 를 주면 그 그룹만(덩이의 다시 읽기).
+ * 행이 없는 그룹은 빈 통계다. 계산이 없거나 타입에 맞지 않는 열은 빠진다.
+ */
+export async function queryGroupColumnCalculations(
+  ctx: SessionContext,
+  viewId: string,
+  columns: readonly CalculatedColumn[],
+  input: BoardReadInput & { readonly groupKey?: string } = {},
+): Promise<GroupResult<Readonly<Record<string, Calculations>>>> {
+  const wanted = columns.filter(
+    (c): c is CalculatedColumn & { calculation: Calculation } =>
+      c.calculation !== null && c.calculation !== undefined && canCalculate(c.type, c.calculation),
+  )
+  await refreshDerivedForView(ctx, viewId)
+  return withReadTransaction(async (tx) => {
+    const board = await openBoard(tx, ctx, viewId, 'view', input.search ?? null)
+    if (isFailure(board)) return board
+    const keys = catalogOf(board)
+      .map((g) => g.key)
+      .filter((k) => input.groupKey === undefined || k === input.groupKey)
+    if (keys.length === 0 && input.groupKey !== undefined) return fail('invalid_value')
+    const out: Record<string, Calculations> = Object.fromEntries(keys.map((k) => [k, {}]))
+    if (wanted.length === 0) return { ok: true, value: out } as const
+
+    const params = new ParamBag(2)
+    const c = compileBoard(board, params, false)
+    const only = input.groupKey === undefined ? null : params.bind(input.groupKey)
+    // 상태 열의 완료 그룹(10n-30) — 그 열에만 완료 개수를 센다
+    const completeOf = await completeIdsOf(tx, wanted.filter((w) => w.type === 'status').map((w) => w.propertyId))
+    const select = wanted.map((w, i) => {
+      const p = params.bind(w.propertyId)
+      const complete = completeOf.get(w.propertyId)
+      const completeParam = complete === undefined ? null : params.bind(complete)
+      return `(SELECT ${statsJsonSql('v', completeParam)}
+                 FROM r JOIN page_property_value v ON v.page_id = r.id AND v.property_id = ${p} WHERE r.key = k.key) AS c${i}`
+    })
+    const rows = await tx.query<Record<string, unknown> & { key: string; n: number }>(
+      `WITH r AS (SELECT p.id, ${c.keyExpr} AS key ${c.from} WHERE ${c.where}${only === null ? '' : ` AND ${c.keyExpr} = ${only}`})
+       SELECT k.key, k.n, ${select.join(', ')} FROM (SELECT key, count(*)::int AS n FROM r GROUP BY key) k`,
+      [board.dataSourceId, ...params.values],
+    )
+    const byKey = new Map(rows.map((r) => [r.key, r]))
+    for (const key of keys) {
+      const row = byKey.get(key)
+      const values: Record<string, CalculationResult> = {}
+      for (const [i, w] of wanted.entries()) {
+        const stats = (row?.[`c${i}`] as StatsRow | null | undefined) ?? EMPTY_STATS_ROW
+        values[w.propertyId] = calculationResult(w.calculation, columnStatsOf(row?.n ?? 0, stats))
+      }
+      out[key] = values
+    }
+    return { ok: true, value: out } as const
   })
 }
 

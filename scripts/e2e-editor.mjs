@@ -23916,7 +23916,7 @@ async function main() {
     } catch (thrown) { await sectionThrew(thrown) } }
 
     if (sectionIf('표 · 목록의 그룹 (G-1 · F-04-04 · F-04-11)')) { try {
-      // 표 · 목록도 view.group_by 로 묶는다 — 그룹마다 한 덩이(머리 · 개수 · 그 그룹의 표) · 순서는 옵션 순서 · 그룹 모드에서는 열 집계 줄이 없다 ·
+      // 표 · 목록도 view.group_by 로 묶는다 — 그룹마다 한 덩이(머리 · 개수 · 그 그룹의 표) · 순서는 옵션 순서 · 덩이마다 열 집계 줄(G-2d — 값은 G-2d 절이 본다) ·
       // 그 그룹의 "새로 만들기"는 그 그룹의 값을 채운다 · 다른 곳의 변경을 따라온다 · 표 변경 구독은 덩이들이 하나를 나눠 쓴다(EventSource 의
       // 수가 평평한 표와 같다) · "그룹 없애기"로 평평한 표로 돌아온다. 자기 데이터를 스스로 만든다.
       const stamp = Date.now()
@@ -23964,7 +23964,8 @@ async function main() {
           JSON.stringify(look) === JSON.stringify([
             { key: '', count: '0', rows: 0 }, { key: opt['시작 전'], count: '1', rows: 1 }, { key: opt['진행 중'], count: '2', rows: 2 }, { key: opt['완료'], count: '1', rows: 1 },
           ]), JSON.stringify(look))
-        check('그룹 모드에서는 열 집계 줄이 없다(뷰 전체의 값이 덩이 아래에 서지 않게)', await evaluate(`!document.querySelector('[data-testid="db-calc-row"]')`))
+        check('덩이마다 열 집계 줄이 선다(G-2d — 그 그룹의 값 · 뷰 전체의 줄 하나가 아니다)',
+          await evaluate(`document.querySelectorAll('[data-testid="db-group"] [data-testid="db-calc-row"]').length === 4 && document.querySelectorAll('[data-testid="db-calc-row"]').length === 4`))
         const groupedSources = await evaluate('window.__esCount')
         check('★ 표 변경 구독은 덩이들이 하나를 나눠 쓴다 — EventSource 의 수가 평평한 표와 같다', groupedSources === flatSources && flatSources >= 1,
           JSON.stringify({ flatSources, groupedSources }))
@@ -24175,6 +24176,48 @@ async function main() {
         && document.querySelector('${done} [data-testid="db-group-count"]')?.textContent === '3'`, 10000), JSON.stringify(await state()))
       await send('Page.reload', {})
       check('★ 다시 열어도 그 덩이 · 그 차례다 — 값이 그 그룹의 것이 됐다', await settled('나', '라가마'), JSON.stringify(await state()))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
+    if (sectionIf('표 · 목록의 그룹 — 덩이마다 열 집계 (G-2d · F-04-16 · F-04-04)')) { try {
+      // 덩이 아래에 집계 줄이 서고 값은 그 그룹의 행의 것이다(뷰 전체의 값이 아니다) · 다른 사람이 칸을 고치면 그 덩이의 값이 따라간다(다시
+      // 읽기 — 그룹 행 라우트의 첫 페이지가 싣는다). 정본 [보강 G-1] ⑨. 자기 데이터를 스스로 만든다(API).
+      const stamp = Date.now()
+      const apiC = `${BASE}/api/workspaces/${workspaceId}`
+      const call = async (method, path, body) => {
+        const r = await fetch(`${apiC}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return r.json().catch(() => null)
+      }
+      const made = (await call('POST', '/databases', { name: `덩이 집계 ${stamp}` })).database
+      const status = (await call('POST', `/data-sources/${made.dataSourceId}/properties`, { name: '상태', type: 'status' })).property.id
+      const score = (await call('POST', `/data-sources/${made.dataSourceId}/properties`, { name: '점수', type: 'number' })).property.id
+      const props = (await call('GET', `/data-sources/${made.dataSourceId}/properties`)).schema.properties
+      const opt = Object.fromEntries(props.find((p) => p.id === status).options.map((o) => [o.name, o.id]))
+      const titleProp = props.find((p) => p.type === 'title').id
+      const view = made.defaultViewId
+      const ids = {}
+      for (const [title, option, n] of [['가', '진행 중', 1], ['나', '진행 중', 2], ['라', '완료', 5]]) {
+        ids[title] = (await call('POST', `/views/${view}/rows`, { cells: [
+          { propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } },
+          { propertyId: status, value: { type: 'status', status: { id: opt[option] } } },
+          { propertyId: score, value: { type: 'number', number: n } },
+        ] })).row.id
+      }
+      await call('PATCH', `/views/${view}/columns/${score}`, { calculation: 'sum' })
+      await call('PATCH', `/views/${view}`, { groupBy: { property_id: status, hide_empty: true } })
+      const doing = `[data-testid="db-group"][data-group-key="${opt['진행 중']}"]`
+      const done = `[data-testid="db-group"][data-group-key="${opt['완료']}"]`
+      const valueOf = (chunk) => `(document.querySelector('${chunk} [data-testid="db-calc-cell"][data-property-id="${score}"] [data-testid="db-calc-value"]')?.textContent ?? null)`
+      const values = () => evaluate(`({ doing: ${valueOf(doing)}, done: ${valueOf(done)} })`)
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${made.id}?v=${view}` })
+      check('★ 덩이 아래에 집계 줄 — 그 그룹의 행의 합(3 · 5), 뷰 전체의 합(8)이 아니다',
+        await waitFor(`${valueOf(doing)} === '3' && ${valueOf(done)} === '5'`, 15000), JSON.stringify(await values()))
+      await waitHydrated(`${doing} [data-testid="db-calc-cell"]`)
+
+      // 다른 곳(API)에서 가의 점수를 10 으로 — 표 변경 신호로 덩이가 다시 읽고 그 덩이의 합이 따라간다
+      await call('PATCH', `/rows/${ids['가']}`, { cells: [{ propertyId: score, value: { type: 'number', number: 10 } }] })
+      check('★ 칸이 바뀌면 그 덩이의 합이 따라간다(12) — 다른 덩이는 그대로(5)',
+        await waitFor(`${valueOf(doing)} === '12' && ${valueOf(done)} === '5'`, 15000), JSON.stringify(await values()))
     } catch (thrown) { await sectionThrew(thrown) } }
 
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {

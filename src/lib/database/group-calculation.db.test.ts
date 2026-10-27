@@ -9,6 +9,7 @@
  *   ② ★ 카드 수와 같은 행들 — 필터 · 템플릿 · 휴지통 · 하위 항목의 "부모만" · 숨긴 그룹도 계산한다
  *   ③ ★ 고를 수 없는 계산은 거부(`invalid_group`) · 없는 속성도 · 타입을 바꾸면 머리는 카드 수로(저장값은 남는다)
  *   ④ 계산만 다시 받기(`queryGroupCalculations`) — 카드를 옮긴 뒤의 값 · 계산이 없으면 빈 답
+ *   ⑤ ★ 덩이마다 열 집계(G-2d) — 그룹마다 · 열마다 그 그룹의 행으로 · 행 없는 그룹은 빈 통계 · 필터를 따른다 · 한 그룹만 · 틀린 키는 거부
  *
  * ⚠ skip 은 테스트마다 `ctx.skip` 으로 건다(`describe` 의 skip 옵션은 등록 시점에 평가된다 — HANDOFF §5).
  */
@@ -23,7 +24,7 @@ import type { CellValue } from './property-types.ts'
 import { createRow, trashRow, updateCells } from './row.ts'
 import { createTemplate } from './template.ts'
 import { createView, getView, updateView, type ViewDetail } from './view.ts'
-import { moveRow, queryGroupCalculations, queryGroups, type GroupBy } from './group.ts'
+import { moveRow, queryGroupCalculations, queryGroupColumnCalculations, queryGroups, type GroupBy } from './group.ts'
 import { convertProperty } from './property-convert.ts'
 import { enableSubItems } from './sub-items.ts'
 import { createSubItem } from './sub-item-rows.ts'
@@ -195,6 +196,38 @@ describe('③ 고를 수 있는 것만', () => {
     // "없음" — null 을 보내면 지운다
     unwrap(await updateView(fx.owner.ctx, view.id, { groupBy: { property_id: s, calculation: null } }))
     assert.equal(unwrap(await getView(fx.owner.ctx, view.id)).groupBy?.calculation, undefined)
+  })
+})
+
+describe('⑤ 덩이마다 열 집계 (G-2d)', () => {
+  test('★ 그룹마다 · 열마다 그 그룹의 행으로 — 행 없는 그룹은 빈 통계 · 필터를 따른다 · 한 그룹만 · 틀린 키는 거부', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const g = await board()
+    unwrap(await updateView(fx.owner.ctx, g.view.id, { type: 'table' }))
+    const columns = [
+      { propertyId: g.n, type: 'number', calculation: 'sum' as const },
+      { propertyId: g.n, type: 'number', calculation: null },
+      { propertyId: g.s, type: 'select', calculation: 'count_values' as const },
+    ]
+    const all = unwrap(await queryGroupColumnCalculations(fx.owner.ctx, g.view.id, columns))
+    assert.deepEqual(all, {
+      '': { [g.n]: { kind: 'number', value: 60 }, [g.s]: { kind: 'count', value: 0 } },
+      [g.a]: { [g.n]: { kind: 'number', value: 30 }, [g.s]: { kind: 'count', value: 2 } },
+      [g.b]: { [g.n]: { kind: 'number', value: 0 }, [g.s]: { kind: 'count', value: 1 } },
+      [g.c]: { [g.n]: { kind: 'number', value: 0 }, [g.s]: { kind: 'count', value: 0 } },
+    }, '계산이 없는 열은 빠진다 · 행이 없는 그룹(다)은 빈 통계')
+
+    // 필터를 따른다 — 수량 > 15 면 가는 20 하나
+    unwrap(await updateView(fx.owner.ctx, g.view.id, { filter: { property_id: g.n, operator: 'greater_than', value: 15 } }))
+    const filtered = unwrap(await queryGroupColumnCalculations(fx.owner.ctx, g.view.id, columns))
+    assert.deepEqual(filtered[g.a]![g.n], { kind: 'number', value: 20 })
+
+    // 한 그룹만(덩이의 다시 읽기)
+    assert.deepEqual(unwrap(await queryGroupColumnCalculations(fx.owner.ctx, g.view.id, columns, { groupKey: g.a })), {
+      [g.a]: { [g.n]: { kind: 'number', value: 20 }, [g.s]: { kind: 'count', value: 1 } },
+    })
+    const wrong = await queryGroupColumnCalculations(fx.owner.ctx, g.view.id, columns, { groupKey: 'nope' })
+    assert.equal(wrong.ok === false && wrong.reason, 'invalid_value')
   })
 })
 

@@ -20,6 +20,7 @@ import { useRouter } from 'next/navigation'
 
 import { fillKeyOf, groupLabel, prefillCells } from '@/lib/database/board-drag'
 import { CALCULATION_LABEL, formatCalculation, type Calculation } from '@/lib/database/calculations'
+import type { Calculations } from '@/lib/database/calculate'
 import { OptionChip } from './cell-view'
 import { DatabaseTable } from './database-table'
 import type { BoardGroupJson, GroupProperty } from './database-board'
@@ -33,12 +34,15 @@ export function GroupedRows({
   property,
   groups,
   calculation,
+  columnCalculations,
   table,
 }: {
   property: GroupProperty
   groups: readonly BoardGroupJson[]
   /** 그룹 머리의 계산(보드와 같다) — 없으면 머리는 개수. */
   calculation: { readonly propertyId: string; readonly propertyName: string; readonly fn: Calculation } | null
+  /** 덩이마다 열 집계(G-2d · ⑨) — 그룹 키 → 그 그룹의 행 전부로 계산한 값. 표 모양만 온다. */
+  columnCalculations?: Readonly<Record<string, Calculations>>
   /** 덩이마다 같은 표의 재료 — 행 · 커서 · 그룹 · 신호는 여기서 넣는다. */
   table: Omit<TableProps, 'rows' | 'hasMore' | 'nextCursor' | 'group' | 'liveTick' | 'calculations' | 'subItems' | 'key'>
 }) {
@@ -127,6 +131,7 @@ export function GroupedRows({
               group={{ key: group.key, cells: fill === null ? [] : prefillCells(property.type, property.id, fill), accepts: fill !== null }}
               liveTick={tick}
               subItems={null}
+              calculations={columnCalculations?.[group.key]}
             />
             </div>
           </section>

@@ -237,7 +237,7 @@ export function DatabaseTable(props: {
    * 그룹 덩이(G-1 · 정본 [보강 G-1]) — 있으면 이 표는 **그 그룹의 행만** 읽고(그룹 행 라우트 · 그룹별 커서 F-04-15), "새로 만들기"는 그
    * 그룹의 값을 채운다(`cells` — 보드 열의 `+` 와 같은 값). 행 끌기는 덩이 안의 차례(G-2b ⑦ — 보드 열의 자리 · `moveRowTo`)이고, 다른
    * 덩이에 놓으면 그 그룹의 값이 된다(G-2c ⑧ — `moveRowToLane` · `group-lanes.ts`). `accepts` 가 거짓이면(채울 값이 없는 범주) 이 덩이에
-   * 놓지 못한다. 열 집계 줄은 그룹 모드에서 아직 없다(⑤).
+   * 놓지 못한다. 열 집계 줄은 그 그룹의 행 전부의 값이다(G-2d ⑨ — 첫 화면은 서버 렌더 · 다시 읽기는 그룹 행 라우트의 첫 페이지가 싣는다).
    */
   group?: { readonly key: string; readonly cells: readonly RowCell[]; readonly accepts?: boolean } | null
   /**
@@ -1922,8 +1922,8 @@ export function DatabaseTable(props: {
             ))}
           </tbody>
           {/* 열 집계(2d-2 · F-04-16) — 표 모양에서만. 마우스를 올리면 계산이 없는 칸에 "계산"이 보인다. */}
-          {/* 그룹 덩이(G-1 ⑤)에서는 아직 없다 — 값이 뷰 전체의 것이라 덩이 아래에 서면 그 그룹의 값으로 읽힌다 */}
-          {isGrid && !props.group && (
+          {/* 그룹 덩이(G-2d ⑨)에서는 그 그룹의 행 전부의 값이다 — 뷰 전체의 값을 두면 그 그룹의 값으로 읽힌다 */}
+          {isGrid && (
             <tfoot className="group/calc" data-testid="db-calc-row">
               <tr>
                 {columns.map((column) => (
