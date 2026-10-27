@@ -24052,6 +24052,70 @@ async function main() {
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('표 · 목록의 그룹 — 덩이 안의 행 끌기 (G-2b · F-04-01 · F-04-04)')) { try {
+      // 덩이 안에서 손잡이를 끌면 그 덩이의 차례가 바뀐다 · 다른 덩이는 그대로 · 다시 열어도 그 차례(보드 열의 자리 — 서버) · 칸을 고르고 Alt+↓ 로
+      // 한 칸. 정본 [보강 G-1] ⑦. 자기 데이터를 스스로 만든다(API).
+      const stamp = Date.now()
+      const apiC = `${BASE}/api/workspaces/${workspaceId}`
+      const call = async (method, path, body) => {
+        const r = await fetch(`${apiC}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return r.json().catch(() => null)
+      }
+      const made = (await call('POST', '/databases', { name: `덩이 끌기 ${stamp}` })).database
+      const status = (await call('POST', `/data-sources/${made.dataSourceId}/properties`, { name: '상태', type: 'status' })).property.id
+      const props = (await call('GET', `/data-sources/${made.dataSourceId}/properties`)).schema.properties
+      const opt = Object.fromEntries(props.find((p) => p.id === status).options.map((o) => [o.name, o.id]))
+      const titleProp = props.find((p) => p.type === 'title').id
+      const view = made.defaultViewId
+      const ids = {}
+      for (const [title, option] of [['가', '진행 중'], ['나', '진행 중'], ['다', '진행 중'], ['라', '완료']]) {
+        ids[title] = (await call('POST', `/views/${view}/rows`, { cells: [
+          { propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } },
+          { propertyId: status, value: { type: 'status', status: { id: opt[option] } } },
+        ] })).row.id
+      }
+      await call('PATCH', `/views/${view}`, { groupBy: { property_id: status, hide_empty: true } })
+      const names = Object.fromEntries(Object.entries(ids).map(([k, v]) => [v, k]))
+      const doing = `[data-testid="db-group"][data-group-key="${opt['진행 중']}"]`
+      const done = `[data-testid="db-group"][data-group-key="${opt['완료']}"]`
+      const orderExprOf = (chunk) => `[...document.querySelectorAll('${chunk} tbody tr[data-row-id]')].map((tr) => (${JSON.stringify(names)})[tr.dataset.rowId] ?? '').join('')`
+      const orders = () => evaluate(`({ doing: ${orderExprOf(doing)}, done: ${orderExprOf(done)} })`)
+      // 화면의 차례 + 보내기가 끝났다(표의 aria-busy 가 내려갔다)
+      const orderIs = (expected) => waitFor(`${orderExprOf(doing)} === ${JSON.stringify(expected)} && ${orderExprOf(done)} === '라'
+        && !document.querySelector('[data-testid="db-table"][aria-busy]')`, 10000)
+      const GRIP = (id) => `${doing} tbody tr[data-row-id="${id}"] [data-testid="db-row-grip"]`
+      const TITLE = (id) => `${doing} tbody tr[data-row-id="${id}"] td[data-property-id="${titleProp}"]`
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${made.id}?v=${view}` })
+      check('전제 — 덩이 둘(가나다 · 라) · 손잡이가 행마다', (await orderIs('가나다')) && (await waitHydrated(GRIP(ids['다'])))
+        && (await evaluate(`document.querySelectorAll('[data-testid="db-row-grip"]').length`)) === 4, JSON.stringify(await orders()))
+
+      // 다의 손잡이를 잡아 가의 위쪽 가장자리 근처로 — 가의 앞
+      const from = await rect(GRIP(ids['다']))
+      const to = await rect(TITLE(ids['가']))
+      const fx = from.x + from.w / 2
+      const fy = from.y + from.h / 2
+      await move(fx, fy)
+      await press(fx, fy)
+      for (let i = 1; i <= 10; i += 1) {
+        await move(fx, fy + ((to.y + 3) - fy) * i / 10, true)
+        await sleep(16)
+      }
+      const line = await waitFor(`!!document.querySelector('${doing} [data-testid="db-row-drop-line"]')`, 3000)
+      await release(fx, to.y + 3)
+      check('★ 덩이 안에서 손잡이를 끌어 놓으면 그 덩이의 차례(다 가 나) — 다른 덩이는 그대로', line && (await orderIs('다가나')),
+        JSON.stringify({ line, ...(await orders()) }))
+      await send('Page.reload', {})
+      check('★ 다시 열어도 그 차례다 — 덩이의 자리가 서버에 남았다', (await orderIs('다가나')) && (await waitHydrated(GRIP(ids['가']))), JSON.stringify(await orders()))
+
+      await clickSelector(TITLE(ids['가']))
+      await waitFor(`document.querySelector('${TITLE(ids['가'])}')?.getAttribute('aria-selected') === 'true'`, 3000)
+      await key('ArrowDown', 1)
+      const down = await orderIs('다나가')
+      await send('Page.reload', {})
+      check('칸을 고르고 Alt+↓ 로 덩이 안에서 한 칸 — 다시 열어도 그 차례', down && (await orderIs('다나가')), JSON.stringify(await orders()))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

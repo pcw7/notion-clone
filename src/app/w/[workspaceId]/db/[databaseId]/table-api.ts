@@ -404,6 +404,8 @@ export function moveCard(
     readonly beforeRowId: string | null
     /** 화면이 쓰는 뷰 검색어 — 서버가 "아직 이 보드에 서는가" 를 물을 때 넣는다(10n-15). */
     readonly search?: string | null
+    /** 덩이 안의 차례만(표의 그룹 G-2b) — 그 행이 그사이 다른 그룹 값이 됐으면 셀을 쓰지 않고 거부된다. */
+    readonly within?: boolean
   },
 ): Promise<ApiResult<MoveResult>> {
   return call(

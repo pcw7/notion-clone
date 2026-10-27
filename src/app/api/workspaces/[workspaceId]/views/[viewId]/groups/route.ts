@@ -8,8 +8,9 @@
  *   GET ?calculations=1       그룹 머리의 계산만(2d-3 · F-04-16) — 카드를 옮기거나 만든 뒤. 행은 읽지 않는다
  *
  *   셋 다 `q`(뷰 검색어 · 2e-1 · F-04-27)를 받는다 — 카드 · 개수 · 머리 값이 같이 좁혀진다. 뷰에 저장하지 않는다.
- *   POST { action: 'move', rowId, groupKey, beforeRowId? }
- *                             카드 이동. 셀 값 + 열 안 자리를 **한 트랜잭션**으로(마스터 문서 §5.2 4번)
+ *   POST { action: 'move', rowId, groupKey, beforeRowId?, within? }
+ *                             카드 이동. 셀 값 + 열 안 자리를 **한 트랜잭션**으로(마스터 문서 §5.2 4번). `within` 이면 덩이 안의
+ *                             차례만(표의 그룹 G-2b) — 그 행이 지금 그 그룹이 아니면 셀을 쓰지 않고 not_found
  *
  * `rows` 라우트처럼 필터 · 정렬 · 그룹은 요청에서 받지 않는다 — 뷰에 저장된 것을 쓴다. 그룹을 바꾸는 것은
  * `PATCH /views/[viewId]` 의 `groupBy` 이고 그쪽은 `edit_structure` 를 묻는다. 이동은 `edit_content` 다
@@ -89,6 +90,7 @@ export async function POST(request: Request, ctx: Ctx): Promise<Response> {
     groupKey?: unknown
     beforeRowId?: unknown
     search?: unknown
+    within?: unknown
   }
   if (body.action !== 'move') return invalid()
   if (typeof body.rowId !== 'string' || !isUuid(body.rowId)) return invalid()
@@ -103,6 +105,8 @@ export async function POST(request: Request, ctx: Ctx): Promise<Response> {
     beforeRowId: (body.beforeRowId as string | null | undefined) ?? null,
     // 화면이 쓰는 뷰 검색어(10n-15) — "아직 이 보드에 서는가" 에만 쓰인다. 문자열이 아니면 없는 것으로
     search: typeof body.search === 'string' ? body.search : null,
+    // 참일 때만 — 보드는 보내지 않는다(다른 열로 옮기는 것이 셀을 바꾸는 일이다)
+    within: body.within === true,
   })
   if (!moved.ok) return failureResponse(groupFailureStatus(moved.reason), moved)
   return Response.json({

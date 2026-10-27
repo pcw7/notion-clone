@@ -12,6 +12,7 @@
  *   ⑦ 권한: 못 보면 카운트도 없고, 볼 수만 있으면 이동은 안 된다. "내용 편집"(`edit_content` 레벨 · 6f-1)은 이동은 되고 그룹
  *      설정은 forbidden 이다(`openBoard` 는 edit_content · `updateView` 는 edit_structure)
  *   ⑧ 그룹 프로퍼티가 지워지면 `groupBy` 가 null 이고 복원하면 돌아온다 — 저장값은 건드리지 않는다
+ *   ⑨ 그룹된 표의 덩이 안 끌기(G-2b) — `within` 이면 다른 그룹이 된 행의 셀을 되돌리지 않는다 · 이동이 평평한 표의 자리(`'*'`)를 지우지 않는다
  */
 
 import { test, describe, before, after } from 'node:test'
@@ -27,6 +28,7 @@ import { addProperty, addSelectOption, deleteProperty, getSchema, restorePropert
 import { createRow, updateCells, type RowSummary } from './row.ts'
 import { createView, getView, updateView } from './view.ts'
 import { moveRow, queryGroupRows, queryGroups, type GroupsPage } from './group.ts'
+import { moveViewRow } from './row-order.ts'
 import type { MvpPropertyType } from './property-types.ts'
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'
@@ -425,6 +427,57 @@ describe('★ 거부된 이동은 아무것도 바꾸지 않는다 (#103)', () =
     assert.deepEqual(await positionsIn(board.id), positionsBefore, '자리도 그대로다')
     const rowA = page.groups.find((g) => g.key === table.todo)!.rows.find((r) => r.id === a.id)!
     assert.equal(rowA.version, placed.row.version, '버전이 오르지 않았다')
+  })
+})
+
+describe('★ 그룹된 표의 덩이 안 끌기 (G-2b)', () => {
+  test('★ within — 그사이 다른 그룹 값이 된 행은 셀을 되돌리지 않고 not_found · 제 그룹의 행은 차례만 바뀐다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const table = await newTable()
+    const a = await table.row('A', table.todo)
+    const b = await table.row('B', table.todo)
+    const view = unwrap(await createView(fx.owner.ctx, table.databaseId, { type: 'table' }))
+    unwrap(await updateView(fx.owner.ctx, view.id, { groupBy: { property_id: table.statusId } }))
+
+    // 화면은 A 를 아직 "할 일" 덩이에 둔다(고친 덩이에 남는다 · ④) — 그 덩이 안에서 끌었다
+    unwrap(await updateCells(fx.owner.ctx, a.id, { cells: [{ propertyId: table.statusId, value: { type: 'select', select: { id: table.doing } } }] }))
+    const stale = await moveRow(fx.owner.ctx, view.id, { rowId: a.id, groupKey: table.todo, beforeRowId: b.id, within: true })
+    assert.equal(stale.ok === false && stale.reason, 'not_found')
+    const page = unwrap(await queryGroups(fx.owner.ctx, view.id))
+    assert.deepEqual(titlesOf(page, table.doing), ['A'], '고친 값 그대로다 — 이 덩이 것으로 되돌리지 않았다')
+    assert.deepEqual(await positionsIn(view.id), [], '자리도 쓰지 않았다')
+
+    // 제 그룹의 행은 차례만 — 셀을 쓰지 않는다(버전 그대로)
+    const c = await table.row('C', table.todo)
+    const moved = unwrap(await moveRow(fx.owner.ctx, view.id, { rowId: c.id, groupKey: table.todo, beforeRowId: b.id, within: true }))
+    assert.equal(moved.positioned, true)
+    assert.equal(moved.row.version, c.version, '같은 그룹 — 셀을 쓰지 않는다')
+    assert.deepEqual(titlesOf(unwrap(await queryGroups(fx.owner.ctx, view.id)), table.todo), ['C', 'B'])
+  })
+
+  test('★ 덩이 안에서 옮겨도 평평한 표의 자리(`*`)는 남는다 — 그룹을 풀면 그 차례가 돌아온다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const table = await newTable()
+    const a = await table.row('A', table.todo)
+    const b = await table.row('B', table.todo)
+    const c = await table.row('C', table.todo)
+    const view = unwrap(await createView(fx.owner.ctx, table.databaseId, { type: 'table' }))
+    // 평평한 표의 차례: C · A · B(B 는 자리 없이 트리 순서로 뒤)
+    unwrap(await moveViewRow(fx.owner.ctx, view.id, { rowId: c.id, beforeRowId: a.id }))
+    const flat = async () => (await positionsIn(view.id)).filter((p) => p.group_key === '*').map((p) => p.row_id)
+    assert.deepEqual(await flat(), [c.id, a.id], 'B 는 자리가 없다 — 트리 순서로 뒤에 선다')
+
+    unwrap(await updateView(fx.owner.ctx, view.id, { groupBy: { property_id: table.statusId } }))
+    unwrap(await moveRow(fx.owner.ctx, view.id, { rowId: a.id, groupKey: table.todo, beforeRowId: null, within: true }))
+    assert.deepEqual(titlesOf(unwrap(await queryGroups(fx.owner.ctx, view.id)), table.todo), ['B', 'C', 'A'], '덩이 안의 차례는 그룹의 자리다')
+    assert.deepEqual(await flat(), [c.id, a.id], '★ 평평한 표의 자리는 그대로다')
+
+    // 다른 그룹으로 옮겨도(보드의 이동) 옛 그룹의 자리만 지운다
+    unwrap(await moveRow(fx.owner.ctx, view.id, { rowId: a.id, groupKey: table.done }))
+    assert.deepEqual(
+      (await positionsIn(view.id)).filter((p) => p.row_id === a.id).map((p) => p.group_key).sort(),
+      ['*', table.done].sort(),
+    )
   })
 })
 

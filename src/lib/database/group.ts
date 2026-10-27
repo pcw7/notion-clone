@@ -65,6 +65,7 @@ import {
   compileSorts,
   filterTypeOf,
   ParamBag,
+  UNGROUPED_ORDER_KEY,
   type CompiledSort,
   type FilterContext,
   type FilterNode,
@@ -265,6 +266,11 @@ export type MoveRowInput = {
   readonly beforeRowId?: string | null
   /** 화면이 쓰고 있는 뷰 검색어(2e-1) — 옮긴 뒤 "아직 이 보드에 서는가"(`inView`)를 물을 때만 쓴다. 이동 자체에는 상관없다. */
   readonly search?: string | null
+  /**
+   * 덩이 안의 차례만 바꾼다(표의 그룹 G-2b · 정본 [보강 G-1] ⑦) — 그 행이 지금 이 그룹이 아니면 셀을 쓰지 않고 거부한다(`not_found` —
+   * 화면이 낡았다). 표는 고쳐서 다른 그룹 값이 된 행을 고친 덩이에 남기므로(④), 그 행을 덩이 안에서 끌면 보드의 규칙으론 값이 되돌아간다.
+   */
+  readonly within?: boolean
 }
 
 export type MoveOutcome = {
@@ -749,6 +755,7 @@ export async function moveRow(
 
     // ── ① 셀 값. 이미 그 그룹이면 건드리지 않는다 ──
     const current = await currentKeyOf(tx, board, input.rowId)
+    if (input.within === true && current !== input.groupKey) return fail('not_found')
     if (current !== input.groupKey) {
       const value = cellValueFor(board, input.groupKey)
       // 옵션이 없는 범주 열에는 놓을 수 없다(10n-27) — 받을 옵션이 없다
@@ -759,8 +766,9 @@ export async function moveRow(
       if (!written.ok) return written
     }
 
-    // ── ② 자리. 옛 그룹의 자리는 지운다 — PK 가 (뷰, 그룹, 행)이라 두 열에 남을 수 있다 ──
-    await tx.query(`DELETE FROM row_position WHERE view_id = $1 AND row_id = $2`, [viewId, input.rowId])
+    // ── ② 자리. 옛 그룹의 자리는 지운다 — PK 가 (뷰, 그룹, 행)이라 두 열에 남을 수 있다. 평평한 표의 자리(`'*'` · 10n-59)는 남긴다 —
+    //    그룹을 풀면 그 차례가 돌아와야 한다(정본 [보강 G-1] ⑦) ──
+    await tx.query(`DELETE FROM row_position WHERE view_id = $1 AND row_id = $2 AND group_key <> $3`, [viewId, input.rowId, UNGROUPED_ORDER_KEY])
 
     if (manual) {
       const orderIdx = await placeIn(tx, board, input)
