@@ -31,6 +31,7 @@ import type { BoardGroupJson, GroupProperty } from './database-board'
 import { useTableChanges } from './use-table-changes'
 import { getGroupCollapseStore } from './group-collapse'
 import { createGroupLanes, GroupLanesContext } from './group-lanes'
+import { useViewerToday } from './use-viewer-today'
 
 type TableProps = ComponentProps<typeof DatabaseTable>
 type GalleryProps = ComponentProps<typeof DatabaseGallery>
@@ -58,6 +59,8 @@ export function GroupedRows({
   const router = useRouter()
   const [tick, setTick] = useState(0)
   const [lanes] = useState(createGroupLanes)
+  // 상대 날짜 그룹(B-3) — 서버의 오늘이 이 기기의 오늘과 다르면 쿠키를 맞추고 한 번 새로 받는다
+  useViewerToday(property.today)
   useTableChanges(
     base.workspaceId,
     base.dataSourceId,

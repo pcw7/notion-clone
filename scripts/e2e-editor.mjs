@@ -10963,7 +10963,9 @@ async function main() {
       }
       const otherAccounts = () => evaluate(`[...document.querySelectorAll('[data-testid="switcher-account"]')].map((s) => s.getAttribute('aria-label') + ':' + s.dataset.state
         + ':' + [...s.querySelectorAll('[data-testid="switcher-account-workspace"]')].map((b) => b.dataset.workspaceId).join(','))`)
-      const browserCookies = async () => (await send('Network.getCookies', { urls: [BASE] })).cookies.map((c) => c.name).filter((n) => n.startsWith('nc_')).sort()
+      // 로그인 쿠키만 본다 — 기기의 쿠키(시간대 `nc_tz` · 접근성)는 계정의 것이 아니라 로그아웃이 지우지 않는다(B-3 · 정본 [보강 B-3] ①)
+      const browserCookies = async () =>
+        (await send('Network.getCookies', { urls: [BASE] })).cookies.map((c) => c.name).filter((n) => n === 'nc_accounts' || n === 'nc_session').sort()
       const liveSession = async (token) => Number((await dbQuery(`SELECT count(*)::int AS n FROM user_session WHERE token_hash = $1 AND revoked_at IS NULL`, [hashSessionToken(token)]))[0]?.n) === 1
 
       try {

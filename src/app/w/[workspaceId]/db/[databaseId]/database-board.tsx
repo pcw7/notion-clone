@@ -102,6 +102,7 @@ import { EMPTY_ROLLUP_PAGE, type RollupPage } from '@/lib/database/rollup-functi
 import { formulaEvaluator, formulaValuesByRow, type FormulaPlan } from '@/lib/database/formula-plan'
 import type { FormulaValue } from '@/lib/formula/formula'
 import { useAdoptServerValue, useLiveServerRefresh } from './use-table-changes'
+import { useViewerToday } from './use-viewer-today'
 
 /** `GET /groups` 의 그룹 하나 — 행은 `rowJson`. 서버 렌더(`page.tsx`)도 같은 모양으로 내려준다. */
 export type BoardGroupJson = {
@@ -652,6 +653,8 @@ export function DatabaseBoard(props: {
   const formulas = useMemo(() => (props.formulaPlan ? formulaEvaluator(props.formulaPlan) : null), [props.formulaPlan])
   const formulaValues = useMemo(() => formulaValuesByRow(formulas, groups.flatMap((g) => g.rows), columns), [formulas, groups, columns])
 
+  // 상대 날짜 그룹(B-3) — 서버의 오늘이 이 기기의 오늘과 다르면 쿠키를 맞추고 한 번 새로 받는다
+  useViewerToday(property.today)
   const visible = groups.filter((g) => !g.hidden)
   const hiddenGroups = groups.filter((g) => g.hidden)
   /** 카드를 받을 수 있는 열 — 채울 값이 있다(`fillKeyOf`). 끌기 · "옮기기" 메뉴가 다른 열로 옮길 때 묻는다(B-2b ③). */
