@@ -53,6 +53,7 @@ import { resolveSessionContext, type SessionContext } from '../auth/session-cont
 import { plainTitleOf } from '../block/page.ts'
 import { textRun, type ValidationIssue } from '../contracts/rich-text.ts'
 import { withReadTransaction, withTransaction, type Tx } from '../db/tx.ts'
+import { isAllowedOrigin } from '../platform/allowed-origins.ts'
 import type { WorkspaceId } from '../ids.ts'
 import { claimOnce, consume, type RateLimitRule } from '../rate-limit.ts'
 import { grantToFormRespondentIn } from '../permissions/acl.ts'
@@ -337,9 +338,9 @@ export type SubmitInput = {
   readonly answers: unknown
   /** 허니팟 — 사람에게 보이지 않는 칸. 차 있으면 받은 척한다. */
   readonly trap: unknown
-  /** 요청의 `Origin` 헤더(없으면 null) · 이 서버의 출처. */
+  /** 요청의 `Origin` 헤더(없으면 null) · 받는 출처들(`allowedOrigins` — 요청이 닿은 주소 · 설정한 공개 주소 · 10n-78). */
   readonly origin: string | null
-  readonly serverOrigin: string
+  readonly allowedOrigins: readonly string[]
   readonly submitter: RequestMeta
   /** 로그인 세션의 토큰(쿠키) — 워크스페이스 멤버만의 폼(7b-1)에서만 읽는다. 웹 공개 폼은 보지 않는다. */
   readonly sessionToken?: string | null
@@ -367,7 +368,7 @@ export function submitFailureStatus(reason: SubmitFailure): number {
 
 /** 공개 폼의 응답을 받는다(정본 ⑥ ⓐ 의 순서). 허니팟에 걸리면 받은 척한다(`pageId: null`). */
 export async function submitFormResponse(input: SubmitInput, now: number = Date.now()): Promise<SubmitResult> {
-  if (input.origin !== null && input.origin !== input.serverOrigin) return { ok: false, reason: 'bad_origin' }
+  if (!isAllowedOrigin(input.origin, input.allowedOrigins)) return { ok: false, reason: 'bad_origin' }
   // 허니팟 — 받은 척한다(봇이 실패를 보고 고쳐 오지 않게 · 신고와 같다)
   if (typeof input.trap === 'string' && input.trap.trim() !== '') return { ok: true, value: { pageId: null, responsePath: null } }
 

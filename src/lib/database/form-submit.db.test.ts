@@ -127,7 +127,7 @@ const submit = (fx: Fx, patch: Partial<SubmitInput> = {}, now = Date.now()) =>
       answers: goodAnswers(fx),
       trap: '',
       origin: null,
-      serverOrigin: 'http://localhost:3000',
+      allowedOrigins: ['http://localhost:3000', 'https://forms.example'],
       submitter: submitter(),
       ...patch,
     },
@@ -194,6 +194,10 @@ describe('② ★ 방어', () => {
     const other = await publicForm()
     const now = Date.now()
     assert.deepEqual(await submit(fx, { origin: 'https://evil.example' }), { ok: false, reason: 'bad_origin' })
+    // 설정한 공개 주소의 출처(목록의 둘째)는 받는다 — 프록시 뒤의 배포(10n-78). 허니팟을 채워 보낸다 — 출처를 지나면 "받은 척"(행 없음),
+    // 막히면 bad_origin 이다(행을 만들지 않고 출처만 본다)
+    assert.deepEqual(await submit(fx, { origin: 'https://forms.example', trap: 'x' }), { ok: true, value: { pageId: null, responsePath: null } })
+    assert.deepEqual(await submit(fx, { origin: 'https://evil.example', trap: 'x' }), { ok: false, reason: 'bad_origin' })
     assert.deepEqual(await submit(fx, { origin: 'http://localhost:3000' }).then((r) => r.ok), true, '같은 출처는 받는다')
     assert.deepEqual(await submit(fx, { trap: 'http://spam.example' }), { ok: true, value: { pageId: null, responsePath: null } }, '허니팟 — 받은 척')
     assert.equal((await rowsOf(fx.ds)).length, 1, '허니팟은 아무것도 남기지 않는다')
