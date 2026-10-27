@@ -13,6 +13,9 @@
  * 덩이 접기(G-2a · ⑥) — 머리의 펼침 단추. 접은 키는 보는 사람의 이 기기에(`group-collapse.ts`). 접어도 표는 숨기기만 한다(상태 · 다시 읽기 그대로).
  *
  * 덩이 사이의 행 끌기(G-2c · ⑧) — 덩이들이 서로를 찾는 자리(`group-lanes.ts`)를 여기 하나 두고 덩이들에 나눠 준다.
+ *
+ * 갤러리의 그룹(G-3a · 정본 [보강 G-3]) — 표 대신 덩이마다 카드 격자(`gallery`). 머리 · 접기 · 숨긴 그룹 · 구독 하나는 같다 — 갤러리는
+ * 신호에 서버 렌더를 다시 불러 제 그룹의 첫 페이지를 받아들인다(`liveTick` 을 쓰지 않는다).
  */
 
 import { useState, useSyncExternalStore, type ComponentProps } from 'react'
@@ -23,12 +26,14 @@ import { CALCULATION_LABEL, formatCalculation, type Calculation } from '@/lib/da
 import type { Calculations } from '@/lib/database/calculate'
 import { OptionChip } from './cell-view'
 import { DatabaseTable } from './database-table'
+import { DatabaseGallery } from './database-gallery'
 import type { BoardGroupJson, GroupProperty } from './database-board'
 import { useTableChanges } from './use-table-changes'
 import { getGroupCollapseStore } from './group-collapse'
 import { createGroupLanes, GroupLanesContext } from './group-lanes'
 
 type TableProps = ComponentProps<typeof DatabaseTable>
+type GalleryProps = ComponentProps<typeof DatabaseGallery>
 
 export function GroupedRows({
   property,
@@ -36,6 +41,7 @@ export function GroupedRows({
   calculation,
   columnCalculations,
   table,
+  gallery,
 }: {
   property: GroupProperty
   groups: readonly BoardGroupJson[]
@@ -43,15 +49,18 @@ export function GroupedRows({
   calculation: { readonly propertyId: string; readonly propertyName: string; readonly fn: Calculation } | null
   /** 덩이마다 열 집계(G-2d · ⑨) — 그룹 키 → 그 그룹의 행 전부로 계산한 값. 표 모양만 온다. */
   columnCalculations?: Readonly<Record<string, Calculations>>
-  /** 덩이마다 같은 표의 재료 — 행 · 커서 · 그룹 · 신호는 여기서 넣는다. */
-  table: Omit<TableProps, 'rows' | 'hasMore' | 'nextCursor' | 'group' | 'liveTick' | 'calculations' | 'subItems' | 'key'>
+  /** 덩이마다 같은 표의 재료 — 행 · 커서 · 그룹 · 신호는 여기서 넣는다. `gallery` 와 둘 중 하나. */
+  table?: Omit<TableProps, 'rows' | 'hasMore' | 'nextCursor' | 'group' | 'liveTick' | 'calculations' | 'subItems' | 'key'>
+  /** 갤러리의 그룹(G-3a) — 덩이마다 같은 갤러리의 재료. 행 · 커서 · 그룹은 여기서 넣는다. */
+  gallery?: Omit<GalleryProps, 'rows' | 'hasMore' | 'nextCursor' | 'group' | 'live' | 'key'>
 }) {
+  const base = (table ?? gallery)!
   const router = useRouter()
   const [tick, setTick] = useState(0)
   const [lanes] = useState(createGroupLanes)
   useTableChanges(
-    table.workspaceId,
-    table.dataSourceId,
+    base.workspaceId,
+    base.dataSourceId,
     {
       onChanged: () => {
         setTick((n) => n + 1)
@@ -60,10 +69,10 @@ export function GroupedRows({
       onRevoked: () => router.refresh(),
     },
     true,
-    table.renderedAt,
+    base.renderedAt,
   )
 
-  const collapseStore = getGroupCollapseStore(table.viewId)
+  const collapseStore = getGroupCollapseStore(base.viewId)
   const collapsed = useSyncExternalStore(collapseStore.subscribe, collapseStore.getSnapshot, collapseStore.getServerSnapshot)
   const shown = groups.filter((g) => !g.hidden)
   const hiddenCount = groups.length - shown.length
@@ -121,6 +130,7 @@ export function GroupedRows({
             </h3>
             {/* 접어도 표는 살아 있다 — 숨기기만 한다(불러온 행 · 편집 · 실시간 다시 읽기 그대로) */}
             <div hidden={folded} data-testid="db-group-body">
+            {table !== undefined && (
             <DatabaseTable
               {...table}
               // 채울 값이 없는 범주(10n-27 — 범주에 옵션이 없다)에는 만들 수 없다 — "새로 만들기"를 세우지 않는다
@@ -133,6 +143,18 @@ export function GroupedRows({
               subItems={null}
               calculations={columnCalculations?.[group.key]}
             />
+            )}
+            {table === undefined && gallery !== undefined && (
+              <DatabaseGallery
+                {...gallery}
+                access={fill === null ? { ...gallery.access, canCreateRows: false } : gallery.access}
+                rows={[...group.rows]}
+                hasMore={group.hasMore}
+                nextCursor={group.nextCursor}
+                group={{ key: group.key, cells: fill === null ? [] : prefillCells(property.type, property.id, fill) }}
+                live={false}
+              />
+            )}
             </div>
           </section>
         )

@@ -24220,6 +24220,53 @@ async function main() {
         await waitFor(`${valueOf(doing)} === '12' && ${valueOf(done)} === '5'`, 15000), JSON.stringify(await values()))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('갤러리의 그룹 (G-3a · F-04-05 · F-04-04)')) { try {
+      // 갤러리도 view.group_by 로 묶는다 — 그룹마다 한 덩이의 카드 격자(그 그룹의 카드만) · 그 그룹의 "새로 만들기"는 그 그룹의 값을 채운다 ·
+      // 다른 곳의 변경을 따라온다(덩이들이 구독 하나를 나눠 쓴다). 정본 [보강 G-3]. 자기 데이터를 스스로 만든다(API).
+      const stamp = Date.now()
+      const apiC = `${BASE}/api/workspaces/${workspaceId}`
+      const call = async (method, path, body) => {
+        const r = await fetch(`${apiC}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return r.json().catch(() => null)
+      }
+      const made = (await call('POST', '/databases', { name: `갤러리 그룹 ${stamp}` })).database
+      const status = (await call('POST', `/data-sources/${made.dataSourceId}/properties`, { name: '상태', type: 'status' })).property.id
+      const props = (await call('GET', `/data-sources/${made.dataSourceId}/properties`)).schema.properties
+      const opt = Object.fromEntries(props.find((p) => p.id === status).options.map((o) => [o.name, o.id]))
+      const titleProp = props.find((p) => p.type === 'title').id
+      const rowOf = (title, option) => call('POST', `/views/${made.defaultViewId}/rows`, { cells: [
+        { propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } },
+        { propertyId: status, value: { type: 'status', status: { id: opt[option] } } },
+      ] })
+      for (const [title, option] of [['가', '진행 중'], ['나', '진행 중'], ['라', '완료']]) await rowOf(title, option)
+      const gallery = (await call('POST', `/databases/${made.id}/views`, { type: 'gallery', name: '갤러리' })).view.id
+      await call('PATCH', `/views/${gallery}`, { groupBy: { property_id: status, hide_empty: true } })
+      const doing = `[data-testid="db-group"][data-group-key="${opt['진행 중']}"]`
+      const done = `[data-testid="db-group"][data-group-key="${opt['완료']}"]`
+      const cardsExpr = (chunk) => `[...document.querySelectorAll('${chunk} [data-testid="db-gallery-card"] [data-testid="db-gallery-card-title"]')].map((t) => t.textContent.trim()).join('')`
+      const look = () => evaluate(`({ groups: document.querySelectorAll('[data-testid="db-group"]').length, doing: ${cardsExpr(doing)}, done: ${cardsExpr(done)},
+        galleries: document.querySelectorAll('[data-testid="db-group"] [data-testid="db-gallery"]').length })`)
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${made.id}?v=${gallery}` })
+      check('★ 갤러리가 그룹마다 한 덩이 — 그 그룹의 카드만(가나 · 라)',
+        await waitFor(`document.querySelectorAll('[data-testid="db-group"]').length === 2 && ${cardsExpr(doing)} === '가나' && ${cardsExpr(done)} === '라'
+          && document.querySelectorAll('[data-testid="db-group"] [data-testid="db-gallery"]').length === 2`, 15000), JSON.stringify(await look()))
+
+      await waitHydrated(`${done} [data-testid="db-gallery-add"]`)
+      await clickSelector(`${done} [data-testid="db-gallery-add"]`)
+      await waitFor(`document.activeElement?.getAttribute('data-testid') === 'db-gallery-title-input'`, 8000)
+      await typeText('바')
+      await key('Enter')
+      await waitFor(`${cardsExpr(done)} === '라바'`, 8000)
+      await send('Page.reload', {})
+      check('★ 그 그룹의 "새로 만들기"는 그 그룹의 값을 채운다 — 다시 열어도 그 덩이(라바)',
+        await waitFor(`${cardsExpr(done)} === '라바' && ${cardsExpr(doing)} === '가나'`, 15000), JSON.stringify(await look()))
+
+      await waitHydrated(`${doing} [data-testid="db-gallery-add"]`)
+      await rowOf('사', '진행 중')
+      check('다른 곳의 변경을 따라온다 — 진행 중 덩이에 카드가 선다(가나사)', await waitFor(`${cardsExpr(doing)} === '가나사'`, 15000), JSON.stringify(await look()))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

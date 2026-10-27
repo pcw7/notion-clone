@@ -89,7 +89,7 @@ export function useTableChanges(
  * (보드의 그룹 · 캘린더의 달) — 표처럼 따로 읽는 길을 두지 않는다. 끌기 · 편집 · 추가 중(`busy`)이면 미뤘다가 끝나면 부른다. 새 값은
  * `useAdoptServerValue` 가 상태로 받아들인다.
  */
-export function useLiveServerRefresh(workspaceId: string, dataSourceId: string, busy: boolean, since?: number): void {
+export function useLiveServerRefresh(workspaceId: string, dataSourceId: string, busy: boolean, since?: number, enabled = true): void {
   const router = useRouter()
   const pending = useRef(false)
   const busyRef = useRef(busy)
@@ -106,7 +106,8 @@ export function useLiveServerRefresh(workspaceId: string, dataSourceId: string, 
       },
       onRevoked: () => router.refresh(),
     },
-    true,
+    // 그룹 덩이(G-3a)는 바깥이 하나로 구독한다 — 덩이마다 열면 그룹 수만큼 연결이 열린다
+    enabled,
     since,
   )
   useEffect(() => {

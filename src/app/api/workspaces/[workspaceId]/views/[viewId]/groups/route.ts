@@ -5,7 +5,8 @@
  *
  *   GET                       그룹 전부(카운트 · 숨김) + 보이는 그룹의 첫 페이지 행
  *   GET ?group=<key>&cursor=  한 그룹의 다음 페이지 — 그룹별 독립 커서(F-04-15). 첫 페이지(커서 없음)는 표 뷰면 그 그룹의 열 집계를
- *                             함께 싣는다(`calculations` — 덩이의 집계 줄 · G-2d · 평평한 표의 행 라우트와 같은 모양)
+ *                             함께 싣는다(`calculations` — 덩이의 집계 줄 · G-2d · 평평한 표의 행 라우트와 같은 모양). 갤러리면 그 페이지
+ *                             카드의 미리보기를 싣는다(`covers` — 본문의 첫 이미지일 때 · G-3a)
  *   GET ?calculations=1       그룹 머리의 계산만(2d-3 · F-04-16) — 카드를 옮기거나 만든 뒤. 행은 읽지 않는다
  *
  *   셋 다 `q`(뷰 검색어 · 2e-1 · F-04-27)를 받는다 — 카드 · 개수 · 머리 값이 같이 좁혀진다. 뷰에 저장하지 않는다.
@@ -24,6 +25,7 @@ import { isUuid } from '@/lib/ids'
 import { readJsonBody, requireWorkspaceSession } from '@/lib/auth/route-session'
 import { moveRow, queryGroupCalculations, queryGroupColumnCalculations, queryGroupRows, queryGroups } from '@/lib/database/group'
 import { getView } from '@/lib/database/view'
+import { readCardCovers } from '@/lib/database/gallery-covers'
 import { failureResponse, groupFailureStatus, rowJson } from '@/lib/database/http'
 import { normalizeSearch } from '@/lib/database/search'
 
@@ -56,21 +58,25 @@ export async function GET(request: Request, ctx: Ctx): Promise<Response> {
       search,
     })
     if (!page.ok) return failureResponse(groupFailureStatus(page.reason), page)
-    // 덩이의 열 집계(G-2d) — 첫 페이지에만 · 표 뷰만(목록 · 보드는 집계 줄을 그리지 않는다). 대상은 그 그룹의 행 전부라 페이지마다 같다
+    // 뷰의 모양에 따라 함께 싣는 것 — 표면 첫 페이지에 덩이의 열 집계(G-2d · 대상은 그 그룹의 행 전부라 페이지마다 같다) · 갤러리면 그
+    // 페이지 카드의 미리보기(G-3a ②). 목록 · 보드는 싣지 않는다
+    const view = await getView(session.ctx, viewId)
     let calculations: Readonly<Record<string, unknown>> | undefined
-    if (params.get('cursor') === null) {
-      const view = await getView(session.ctx, viewId)
-      if (view.ok && view.value.type === 'table') {
-        const calculated = await queryGroupColumnCalculations(session.ctx, viewId, view.value.columns, { search, groupKey: group })
-        if (calculated.ok) calculations = calculated.value[group] ?? {}
-      }
+    if (view.ok && view.value.type === 'table' && params.get('cursor') === null) {
+      const calculated = await queryGroupColumnCalculations(session.ctx, viewId, view.value.columns, { search, groupKey: group })
+      if (calculated.ok) calculations = calculated.value[group] ?? {}
     }
+    const covers =
+      view.ok && view.value.type === 'gallery' && view.value.gallery.cover === 'page_content'
+        ? await readCardCovers(session.ctx, page.value.rows.map((r) => r.id))
+        : undefined
     return Response.json({
       ok: true,
       rows: page.value.rows.map(rowJson),
       hasMore: page.value.hasMore,
       nextCursor: page.value.nextCursor,
       ...(calculations === undefined ? {} : { calculations }),
+      ...(covers === undefined ? {} : { covers }),
     })
   }
 

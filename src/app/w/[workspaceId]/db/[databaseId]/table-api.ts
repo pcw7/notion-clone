@@ -369,6 +369,8 @@ export function loadGroupRows(
     nextCursor: typeof body.nextCursor === 'string' ? body.nextCursor : null,
     // 덩이의 열 집계(G-2d) — 표 뷰의 첫 페이지에만 온다
     ...(typeof body.calculations === 'object' && body.calculations !== null ? { calculations: body.calculations as Calculations } : {}),
+    // 갤러리 덩이의 카드 미리보기(G-3a) — 그 페이지의 것
+    ...(typeof body.covers === 'object' && body.covers !== null ? { covers: body.covers as Record<string, string> } : {}),
   }))
 }
 
