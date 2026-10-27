@@ -9,9 +9,11 @@
  * 표 변경 신호의 구독은 **여기서 하나** — 덩이마다 구독하면 그룹 수만큼 연결이 열린다(브라우저의 서버당 동시 연결 상한 · ④). 신호가 오면
  * 덩이들에 다시 읽기를 알리고(`liveTick`) 화면을 다시 그려 머리(개수 · 그룹 목록)를 맞춘다. 덩이는 그룹 키로 붙어 있어 다시 그려도 불러온
  * 행 · 편집 상태를 잃지 않는다.
+ *
+ * 덩이 접기(G-2a · ⑥) — 머리의 펼침 단추. 접은 키는 보는 사람의 이 기기에(`group-collapse.ts`). 접어도 표는 숨기기만 한다(상태 · 다시 읽기 그대로).
  */
 
-import { useState, type ComponentProps } from 'react'
+import { useState, useSyncExternalStore, type ComponentProps } from 'react'
 import { useRouter } from 'next/navigation'
 
 import { fillKeyOf, groupLabel, prefillCells } from '@/lib/database/board-drag'
@@ -20,6 +22,7 @@ import { OptionChip } from './cell-view'
 import { DatabaseTable } from './database-table'
 import type { BoardGroupJson, GroupProperty } from './database-board'
 import { useTableChanges } from './use-table-changes'
+import { getGroupCollapseStore } from './group-collapse'
 
 type TableProps = ComponentProps<typeof DatabaseTable>
 
@@ -52,6 +55,8 @@ export function GroupedRows({
     table.renderedAt,
   )
 
+  const collapseStore = getGroupCollapseStore(table.viewId)
+  const collapsed = useSyncExternalStore(collapseStore.subscribe, collapseStore.getSnapshot, collapseStore.getServerSnapshot)
   const shown = groups.filter((g) => !g.hidden)
   const hiddenCount = groups.length - shown.length
   return (
@@ -59,9 +64,29 @@ export function GroupedRows({
       {shown.map((group) => {
         const fill = fillKeyOf(group)
         const label = groupLabel(property.type, property.name, group)
+        const folded = collapsed.has(group.key)
         return (
-          <section key={group.key} data-testid="db-group" data-group-key={group.key} aria-label={label} className="flex flex-col gap-1">
-            <h3 className="flex items-center gap-2 px-1 text-sm font-medium">
+          <section
+            key={group.key}
+            data-testid="db-group"
+            data-group-key={group.key}
+            data-collapsed={folded || undefined}
+            aria-label={label}
+            className="flex flex-col gap-1"
+          >
+            <h3 className="flex items-center gap-1 px-1 text-sm font-medium">
+              <button
+                type="button"
+                data-testid="db-group-toggle"
+                aria-expanded={!folded}
+                aria-label={`${label} ${folded ? '펼치기' : '접기'}`}
+                onClick={() => collapseStore.toggle(group.key)}
+                className="flex size-6 flex-none items-center justify-center rounded-md text-[rgb(173,169,163)] hover:bg-[rgba(33,27,23,0.05)] dark:hover:bg-white/5"
+              >
+                <svg aria-hidden viewBox="0 0 16 16" width="12" height="12" fill="currentColor" className={folded ? '-rotate-90' : ''}>
+                  <path d="M2.5 4.75h11L8 12.25z" />
+                </svg>
+              </button>
               {group.option !== null && group.statusGroup === null ? (
                 <span data-testid="db-group-label">
                   <OptionChip option={group.option} />
@@ -85,6 +110,8 @@ export function GroupedRows({
                 </span>
               )}
             </h3>
+            {/* 접어도 표는 살아 있다 — 숨기기만 한다(불러온 행 · 편집 · 실시간 다시 읽기 그대로) */}
+            <div hidden={folded} data-testid="db-group-body">
             <DatabaseTable
               {...table}
               // 채울 값이 없는 범주(10n-27 — 범주에 옵션이 없다)에는 만들 수 없다 — "새로 만들기"를 세우지 않는다
@@ -96,6 +123,7 @@ export function GroupedRows({
               liveTick={tick}
               subItems={null}
             />
+            </div>
           </section>
         )
       })}
