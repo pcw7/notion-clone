@@ -80,11 +80,13 @@ import {
   optionValue,
   readStatusDefault,
   type CellValue,
+  type DateValue,
   type GroupableType,
   type SelectOption,
   type StatusGroupKind,
 } from './property-types.ts'
 import { readOptionsOf } from './options.ts'
+import { DEFAULT_DATE_UNIT, isBucketKey, isDateUnit, shiftDateValue, type DateUnit } from './date-group.ts'
 import { readSubItemPair } from './sub-items.ts'
 import {
   compileTree,
@@ -145,6 +147,11 @@ export type GroupBy = {
    * kind 다. 없으면 옵션 단위. status 가 아닌 속성에 주면 거부한다.
    */
   readonly status_by?: 'group'
+  /**
+   * 날짜를 묶는 단위(B-1 · 정본 §3.6 [보강 B-1] · F-04-11) — 일 · 주 · 월 · 년. 없으면 월(`DEFAULT_DATE_UNIT`). 날짜가 아닌 속성에 주면
+   * 거부한다. 키는 버킷의 첫 날(`YYYY-MM-DD` · `date-group.ts`)이다.
+   */
+  readonly date_unit?: DateUnit
 }
 
 /** 그룹 머리의 계산 — 어느 속성의 칸으로 어느 함수를. */
@@ -159,7 +166,7 @@ export function validateGroupBy(raw: unknown, types: PropertyTypes): ValidationI
   if (typeof g.property_id !== 'string' || !types.has(g.property_id)) {
     issues.push({ path: 'groupBy.property_id', message: '없는 프로퍼티입니다' })
   } else if (!isGroupableType(types.get(g.property_id))) {
-    issues.push({ path: 'groupBy.property_id', message: 'select · status · checkbox 프로퍼티만 그룹으로 묶을 수 있습니다' })
+    issues.push({ path: 'groupBy.property_id', message: 'select · status · checkbox · 날짜 프로퍼티만 그룹으로 묶을 수 있습니다' })
   }
   if (g.hidden !== undefined) {
     if (!Array.isArray(g.hidden) || g.hidden.some((k) => typeof k !== 'string')) {
@@ -174,6 +181,10 @@ export function validateGroupBy(raw: unknown, types: PropertyTypes): ValidationI
   // 범주 단위(10n-27) — status 에만 'group'
   if (g.status_by !== undefined && !(g.status_by === 'group' && typeof g.property_id === 'string' && types.get(g.property_id) === 'status')) {
     issues.push({ path: 'groupBy.status_by', message: "status 속성에만 'group' 을 줄 수 있습니다" })
+  }
+  // 날짜의 단위(B-1) — 날짜 속성에만 · 일 · 주 · 월 · 년
+  if (g.date_unit !== undefined && !(isDateUnit(g.date_unit) && typeof g.property_id === 'string' && types.get(g.property_id) === 'date')) {
+    issues.push({ path: 'groupBy.date_unit', message: "날짜 속성에만 'day' · 'week' · 'month' · 'year' 를 줄 수 있습니다" })
   }
   // 그룹 머리의 계산(2d-3) — null 은 "없음"(카드 수). 고를 때는 살아 있고 그 함수를 고를 수 있는 타입이어야 한다.
   if (g.calculation !== undefined && g.calculation !== null) {
@@ -200,6 +211,7 @@ export function normalizeGroupBy(raw: GroupBy): GroupBy {
     ...(hidden.length > 0 ? { hidden } : {}),
     ...(raw.hide_empty ? { hide_empty: true } : {}),
     ...(raw.status_by === 'group' ? { status_by: 'group' as const } : {}),
+    ...(isDateUnit(raw.date_unit) ? { date_unit: raw.date_unit } : {}),
     ...(calculation !== undefined && calculation !== null
       ? { calculation: { property_id: calculation.property_id, function: calculation.function } }
       : {}),
@@ -250,6 +262,8 @@ export type GroupsPage = {
   readonly calculation: GroupCalculation | null
   /** 묶는 단위(10n-27) — status 의 범주 단위면 `'group'`. */
   readonly statusBy: 'option' | 'group'
+  /** 날짜로 묶으면 그 단위(B-1) — 그 밖은 null. 화면이 머리의 이름(`dateGroupLabel`)과 새 행의 날짜를 이것으로 만든다. */
+  readonly dateUnit: DateUnit | null
   readonly groups: readonly BoardGroup[]
 }
 
@@ -342,6 +356,8 @@ type Board = {
   readonly statusByGroup: boolean
   /** 범주 단위일 때 그 속성의 기본 옵션 — 범주 열에 놓은 카드가 받을 옵션을 정한다. 그 밖은 null. */
   readonly defaultOptionId: string | null
+  /** 날짜로 묶는 단위(B-1) — 날짜 속성이면 저장값(없으면 월), 그 밖은 null. 그룹은 옵션이 아니라 데이터에서 나온다(`catalogOf`). */
+  readonly dateUnit: DateUnit | null
 }
 
 /** 보드를 읽는 요청의 공통 입력 — 뷰 검색어(2e-1). */
@@ -421,6 +437,7 @@ async function openBoard(
     context: { me: ctx.userId },
     statusByGroup,
     defaultOptionId,
+    dateUnit: propertyType === 'date' ? (isDateUnit(groupBy.date_unit) ? groupBy.date_unit : DEFAULT_DATE_UNIT) : null,
   }
 }
 
@@ -435,8 +452,13 @@ async function readOptions(tx: Tx, propertyId: string): Promise<SelectOption[]> 
  */
 type CatalogEntry = { key: string; option: SelectOption | null; statusGroup: StatusGroupKind | null; fillOptionId: string | null }
 
-function catalogOf(board: Board): CatalogEntry[] {
+function catalogOf(board: Board, counted: ReadonlyMap<string, unknown> = new Map()): CatalogEntry[] {
   const none = { option: null, statusGroup: null, fillOptionId: null }
+  // 날짜(B-1) — 그룹은 옵션이 아니라 데이터에서 나온다: 필터 · 검색 · 권한을 지난 행이 든 버킷들(날짜 오름차순) · 값 없음이 맨 앞
+  if (board.dateUnit !== null) {
+    const buckets = [...counted.keys()].filter((k) => k !== NO_VALUE_KEY).sort()
+    return [{ key: NO_VALUE_KEY, ...none }, ...buckets.map((key) => ({ key, ...none }))]
+  }
   if (board.propertyType === 'checkbox') {
     return [
       { key: 'false', ...none },
@@ -451,6 +473,14 @@ function catalogOf(board: Board): CatalogEntry[] {
     ]
   }
   return [{ key: NO_VALUE_KEY, ...none }, ...board.options.map((o) => ({ key: o.id, option: o, statusGroup: null, fillOptionId: o.id }))]
+}
+
+/**
+ * 이 보드의 그룹 키인가 — 놓을 열 · 읽을 열을 받을 때. 날짜(B-1)는 데이터에 없어도 그 단위의 버킷 키면 된다(빈 달에도 놓을 수 있다).
+ */
+function isGroupKeyOf(board: Board, key: string): boolean {
+  if (board.dateUnit !== null) return key === NO_VALUE_KEY || isBucketKey(key, board.dateUnit)
+  return catalogOf(board).some((g) => g.key === key)
 }
 
 /** 범주 열에 들어오는 카드가 받는 옵션 — 기본 옵션이 그 범주면 그것, 아니면 그 범주의 첫 옵션(옵션 순서). 없으면 null(10n-27). */
@@ -468,6 +498,12 @@ function fillOptionOf(board: Board, kind: StatusGroupKind): string | null {
  * checkbox: NULL(셀 없음)은 false 다 — `checkbox` 의 빈 값이 false 이기 때문(`emptyValue`).
  */
 function keyExprOf(board: Board, params: ParamBag): string {
+  // 날짜(B-1) — 값에 적힌 달력 날짜(`start` 의 앞 열 자)가 든 버킷의 첫 날 · 값 없음은 ''(시간대로 옮기지 않는다 — `date-group.ts`)
+  if (board.dateUnit !== null) {
+    const date = `(left(gv.value -> 'date' ->> 'start', 10))::date`
+    const bucket = board.dateUnit === 'day' ? date : `date_trunc('${board.dateUnit}', ${date})`
+    return `coalesce(to_char(${bucket}, 'YYYY-MM-DD'), '')`
+  }
   if (board.propertyType === 'checkbox') {
     return `(CASE WHEN gv.bool_value THEN 'true' ELSE 'false' END)`
   }
@@ -558,7 +594,7 @@ export async function queryGroups(ctx: SessionContext, viewId: string, input: Bo
     const countOf = new Map([...counted].map(([key, r]) => [key, r.n]))
 
     const hidden = new Set(board.groupBy.hidden ?? [])
-    const catalog = catalogOf(board)
+    const catalog = catalogOf(board, counted)
       .map((g) => ({ ...g, count: countOf.get(g.key) ?? 0, hidden: hidden.has(g.key) }))
       // 빈 그룹 숨김은 옵션 단위의 개념이다 — `''` 그룹도 행이 0개면 빠진다.
       .filter((g) => !(board.groupBy.hide_empty && g.count === 0))
@@ -615,6 +651,7 @@ export async function queryGroups(ctx: SessionContext, viewId: string, input: Bo
         manualOrder: q.manual,
         calculation: board.calculation,
         statusBy: board.statusByGroup ? 'group' : 'option',
+        dateUnit: board.dateUnit,
         groups,
       },
     } as const
@@ -637,7 +674,7 @@ export async function queryGroupCalculations(
     if (board.calculation === null) return { ok: true, value: { calculation: null, values: {} } } as const
     const counted = await readGroupCounts(tx, board)
     const values: Record<string, CalculationResult> = {}
-    for (const g of catalogOf(board)) {
+    for (const g of catalogOf(board, counted)) {
       const result = groupCalculationOf(board, counted.get(g.key))
       if (result !== null) values[g.key] = result
     }
@@ -665,10 +702,12 @@ export async function queryGroupColumnCalculations(
   return withReadTransaction(async (tx) => {
     const board = await openBoard(tx, ctx, viewId, 'view', input.search ?? null)
     if (isFailure(board)) return board
+    if (input.groupKey !== undefined && !isGroupKeyOf(board, input.groupKey)) return fail('invalid_value')
+    // 날짜(B-1)의 그룹은 데이터에서 나온다 — 아래 질의가 낸 키를 더한다
     const keys = catalogOf(board)
       .map((g) => g.key)
       .filter((k) => input.groupKey === undefined || k === input.groupKey)
-    if (keys.length === 0 && input.groupKey !== undefined) return fail('invalid_value')
+    if (input.groupKey !== undefined && keys.length === 0) keys.push(input.groupKey)
     const out: Record<string, Calculations> = Object.fromEntries(keys.map((k) => [k, {}]))
     if (wanted.length === 0) return { ok: true, value: out } as const
 
@@ -690,6 +729,9 @@ export async function queryGroupColumnCalculations(
       [board.dataSourceId, ...params.values],
     )
     const byKey = new Map(rows.map((r) => [r.key, r]))
+    if (board.dateUnit !== null && input.groupKey === undefined) {
+      for (const r of rows) if (!keys.includes(r.key)) keys.push(r.key)
+    }
     for (const key of keys) {
       const row = byKey.get(key)
       const values: Record<string, CalculationResult> = {}
@@ -749,7 +791,7 @@ export async function queryGroupRows(
   return withReadTransaction(async (tx) => {
     const board = await openBoard(tx, ctx, viewId, 'view', input.search ?? null)
     if (isFailure(board)) return board
-    if (!catalogOf(board).some((g) => g.key === groupKey)) return fail('invalid_value')
+    if (!isGroupKeyOf(board, groupKey)) return fail('invalid_value')
 
     const limit = Math.min(Math.max(1, Math.floor(input.limit ?? board.loadLimit)), MAX_QUERY_LIMIT)
     const params = new ParamBag(2)
@@ -778,8 +820,24 @@ export async function queryGroupRows(
 
 // ── 이동 ──────────────────────────────────────────────────────────────
 
+/**
+ * 날짜 버킷 사이로 옮긴 행의 새 값(B-1) — 지금 값을 버킷 차이만큼 민다(시각 · 끝 날짜 · 시간대를 지킨다 · `shiftDateValue`).
+ * 칸을 그사이 읽을 수 없으면(지금 키가 있는데 값이 없다 — 일어나지 않아야 한다) 그 버킷의 첫 날로.
+ */
+async function shiftedDateOf(tx: Tx, board: Board, rowId: string, from: string, to: string): Promise<CellValue> {
+  const cell = await tx.queryMaybe<{ value: { date?: DateValue | null } }>(
+    `SELECT value FROM page_property_value WHERE page_id = $1 AND property_id = $2`,
+    [rowId, board.groupBy.property_id],
+  )
+  const date = cell?.value.date ?? null
+  if (date === null || board.dateUnit === null) return { type: 'date', date: { start: to } }
+  return { type: 'date', date: shiftDateValue(date, from, to, board.dateUnit) }
+}
+
 /** 그 열에 놓은 카드의 셀 값. 범주 열에 옵션이 없으면 null — 놓을 수 없다(10n-27). */
 function cellValueFor(board: Board, groupKey: string): CellValue | null {
+  // 날짜(B-1) — 값이 없던 행은 그 버킷의 첫 날(날짜만) · 값 없음 열은 비운다. 값이 있던 행은 `moveRow` 가 단위만큼 민다
+  if (board.propertyType === 'date') return { type: 'date', date: groupKey === NO_VALUE_KEY ? null : { start: groupKey } }
   if (board.propertyType === 'checkbox') return { type: 'checkbox', checkbox: groupKey === 'true' }
   if (groupKey === NO_VALUE_KEY) return optionValue(board.propertyType, null)
   if (board.statusByGroup) {
@@ -802,7 +860,7 @@ export async function moveRow(
     // 검색어는 끝의 "아직 이 보드에 서는가" 에만 닿는다 — 아래의 자리 계산(`isInGroup` · `placeIn`)은 보드 질의를 쓰지 않는다.
     const board = await openBoard(tx, ctx, viewId, 'edit_content', input.search ?? null)
     if (isFailure(board)) return board
-    if (!catalogOf(board).some((g) => g.key === input.groupKey)) return fail('invalid_value')
+    if (!isGroupKeyOf(board, input.groupKey)) return fail('invalid_value')
     if (input.beforeRowId === input.rowId) return fail('invalid_value')
 
     // 행을 잠근다 — 같은 카드를 두 사람이 끌면 순서가 정해진다(셀은 LWW, 자리는 나중 것).
@@ -823,7 +881,10 @@ export async function moveRow(
     const current = await currentKeyOf(tx, board, input.rowId)
     if (input.within === true && current !== input.groupKey) return fail('not_found')
     if (current !== input.groupKey) {
-      const value = cellValueFor(board, input.groupKey)
+      const value =
+        board.dateUnit !== null && current !== NO_VALUE_KEY && input.groupKey !== NO_VALUE_KEY
+          ? await shiftedDateOf(tx, board, input.rowId, current, input.groupKey)
+          : cellValueFor(board, input.groupKey)
       // 옵션이 없는 범주 열에는 놓을 수 없다(10n-27) — 받을 옵션이 없다
       if (value === null) return fail('invalid_value')
       const written = await updateCellsIn(tx, ctx, input.rowId, {

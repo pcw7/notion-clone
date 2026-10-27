@@ -72,6 +72,7 @@ import { PageIconView } from '../../page-icon-view'
 import type { GroupBy } from '@/lib/database/group'
 import type { ViewColumn } from '@/lib/database/view'
 import type { GroupableType, SelectOption, StatusGroupKind } from '@/lib/database/property-types'
+import type { DateUnit } from '@/lib/database/date-group'
 import { cellText, parseDraft, readCell, sameValue } from '@/lib/database/cell-format'
 import {
   fillKeyOf,
@@ -122,6 +123,8 @@ export type GroupProperty = {
   readonly id: string
   readonly name: string
   readonly type: GroupableType
+  /** 날짜로 묶는 단위(B-1) — 머리의 이름(2026년 10월)을 만든다. 날짜가 아니면 없다. */
+  readonly dateUnit?: DateUnit | null
 }
 
 /** 이만큼 움직여야 드래그다. 그 전에 놓으면 클릭(포커스)이다. */
@@ -259,7 +262,7 @@ export function DatabaseBoard(props: {
   const badgeColumns = columns.filter((c) => c.type !== 'title' && c.propertyId !== property.id)
   // 카드의 날짜 종(10n-76) — 서버가 다시 그릴 때마다(`renderedAt`) 다시 읽는다(남이 건 리마인더는 행의 판을 바꾸지 않는다)
   const [reminders] = useRowReminders(workspaceId, dataSourceId, groups.flatMap((g) => g.rows), badgeColumns.some((c) => c.type === 'date'), props.renderedAt)
-  const labelOf = (group: BoardGroupJson) => groupLabel(property.type, property.name, group)
+  const labelOf = (group: BoardGroupJson) => groupLabel(property.type, property.name, group, property.dateUnit ?? null)
 
   useEffect(() => {
     if (editing !== null) titleInputRef.current?.focus()

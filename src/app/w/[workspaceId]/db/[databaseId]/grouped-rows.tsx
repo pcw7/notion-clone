@@ -81,7 +81,7 @@ export function GroupedRows({
     <div data-testid="db-grouped" className="flex flex-col gap-6">
       {shown.map((group) => {
         const fill = fillKeyOf(group)
-        const label = groupLabel(property.type, property.name, group)
+        const label = groupLabel(property.type, property.name, group, property.dateUnit ?? null)
         const folded = collapsed.has(group.key)
         return (
           <section

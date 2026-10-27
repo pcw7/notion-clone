@@ -37,6 +37,7 @@
 
 import type { RowCell } from './row.ts'
 import { STATUS_GROUP_LABEL, optionValue, type GroupableType, type SelectOption, type StatusGroupKind } from './property-types.ts'
+import { DEFAULT_DATE_UNIT, dateGroupLabel, type DateUnit } from './date-group.ts'
 
 // ── 좌표 ──────────────────────────────────────────────────────────────
 
@@ -206,6 +207,8 @@ export function prefillCells(propertyType: GroupableType, propertyId: string, ke
   if (propertyType === 'checkbox') {
     return [{ propertyId, value: { type: 'checkbox', checkbox: key === 'true' } }]
   }
+  // 날짜(B-1) — 그 버킷의 첫 날(키 그대로 · 날짜만). 값 없음 그룹은 안 보내는 것이 곧 빈 값이다
+  if (propertyType === 'date') return key === '' ? [] : [{ propertyId, value: { type: 'date', date: { start: key } } }]
   // status 는 새 행이 기본 옵션을 받는다(`row.ts` `defaultCells`). "상태 없음" 열의 `+` 는 빈 값을 **명시해** 보내야
   // 카드가 그 열에 남는다. select 는 기본값이 없어 안 보내는 것이 곧 빈 값이다.
   if (key === '') return propertyType === 'status' ? [{ propertyId, value: optionValue('status', null) }] : []
@@ -224,13 +227,15 @@ export function fillKeyOf(group: {
   return group.key
 }
 
-/** 열 머리의 이름. 노션의 "No Status" 자리. 범주 열(10n-27)은 그룹 이름. */
+/** 열 머리의 이름. 노션의 "No Status" 자리. 범주 열(10n-27)은 그룹 이름. 날짜(B-1)는 그 단위의 버킷 이름(2026년 10월). */
 export function groupLabel(
   propertyType: GroupableType,
   propertyName: string,
   group: { readonly key: string; readonly option: SelectOption | null; readonly statusGroup?: StatusGroupKind | null },
+  dateUnit: DateUnit | null = null,
 ): string {
   if (propertyType === 'checkbox') return group.key === 'true' ? '체크됨' : '체크 안 됨'
+  if (propertyType === 'date') return group.key === '' ? `${propertyName} 없음` : dateGroupLabel(group.key, dateUnit ?? DEFAULT_DATE_UNIT)
   if (group.statusGroup !== undefined && group.statusGroup !== null) return STATUS_GROUP_LABEL[group.statusGroup]
   return group.option?.name ?? `${propertyName} 없음`
 }

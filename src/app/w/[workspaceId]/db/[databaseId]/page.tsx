@@ -331,7 +331,13 @@ export default async function DatabasePage({
   const groupColumn = groupBy === null ? undefined : columns.find((c) => c.propertyId === groupBy.property_id)
   const groupProperty: GroupProperty | null =
     groupColumn !== undefined && isGroupableType(groupColumn.type)
-      ? { id: groupColumn.propertyId, name: groupColumn.name, type: groupColumn.type }
+      ? {
+          id: groupColumn.propertyId,
+          name: groupColumn.name,
+          type: groupColumn.type,
+          // 날짜로 묶는 단위(B-1) — 서버가 읽은 것(저장값 · 없으면 월)
+          dateUnit: board !== null && board.ok ? board.value.dateUnit : null,
+        }
       : null
   const groups: BoardGroupJson[] =
     board !== null && board.ok ? board.value.groups.map((g) => ({ ...g, rows: g.rows.map(rowJson) })) : []
@@ -355,7 +361,7 @@ export default async function DatabasePage({
             ? []
             : groups.map((g) => ({
                 key: g.key,
-                label: groupLabel(groupProperty.type, groupProperty.name, g),
+                label: groupLabel(groupProperty.type, groupProperty.name, g, groupProperty.dateUnit ?? null),
                 count: g.count,
                 hidden: g.hidden,
               })),
