@@ -78,6 +78,7 @@ import { withReadTransaction } from '@/lib/db/tx'
 import { ExportButton } from '../../export-button'
 import { DatabaseTitle } from './database-title'
 import { DatabaseTable } from './database-table'
+import { GroupedRows } from './grouped-rows'
 import { DatabaseBoard, type BoardGroupJson, type GroupProperty } from './database-board'
 import { listTeamspaceDestinations } from '@/lib/block/move-page'
 import { MovePageControl } from '../../[pageId]/move-page-control'
@@ -252,6 +253,9 @@ export default async function DatabasePage({
   const peekRow = peekId !== null && isUuid(peekId) ? asBlockId(peekId) : null
 
   const isBoard = view.value.type === 'board'
+  // 표 · 목록의 그룹(G-1 · 정본 [보강 G-1]) — 그룹 기준이 있으면 보드와 같은 읽기로 그룹마다 첫 페이지를 받는다
+  const isTableLike = view.value.type === 'table' || view.value.type === 'list'
+  const isGroupedRows = isTableLike && view.value.groupBy !== null
   const isGallery = view.value.type === 'gallery'
   const isCalendar = view.value.type === 'calendar'
   // 폼(7a-3) — 행을 그리지 않는다. 도구막대 · 표 자리에 편집 화면이 선다(정본 §3.6 끝 [보강] 폼 ⑧)
@@ -281,7 +285,7 @@ export default async function DatabasePage({
         }),
     // 필터 패널의 연산자 드롭다운이 이것을 그린다 — 코드에 박지 않는다(F-03-17).
     readOperatorCatalog(),
-    isBoard ? queryGroups(ctx, view.value.id, { search }) : null,
+    isBoard || isGroupedRows ? queryGroups(ctx, view.value.id, { search }) : null,
   ])
   if (tablePage !== null && !tablePage.ok) notFound()
   // 그룹 프로퍼티가 지워진 보드(`not_grouped`)는 아래에서 "그룹 기준을 고르라"로 그린다. 다른 실패는 못 보는 것과 같다.
@@ -339,8 +343,10 @@ export default async function DatabasePage({
           propertyName: columns.find((c) => c.propertyId === liveCalculation.property_id)?.name ?? '',
           fn: liveCalculation.function,
         }
-  const boardSettings: BoardSettings | undefined = isBoard
+  // 표 · 목록도 그룹 패널을 연다(G-1) — 그룹이 없어도 된다(`allowNone` — "그룹 없애기")
+  const boardSettings: BoardSettings | undefined = isBoard || isTableLike
     ? {
+        allowNone: !isBoard,
         groupBy,
         groups:
           groupProperty === null
@@ -708,6 +714,33 @@ export default async function DatabasePage({
             manualOrder={sorts.length === 0}
           />
         )
+      ) : isGroupedRows && groupProperty !== null && board !== null && board.ok ? (
+        // 표 · 목록의 그룹(G-1) — 그룹마다 한 덩이. 그룹 속성이 지워졌으면(`not_grouped`) 아래의 평평한 표로 그린다(설정은 남는다)
+        <GroupedRows
+          key={contentKey}
+          property={groupProperty}
+          groups={groups}
+          calculation={groupCalculation}
+          table={{
+            workspaceId,
+            viewId: view.value.id,
+            dataSourceId: view.value.dataSourceId,
+            tableName,
+            variant,
+            columns: listColumns(variant, visibleColumns),
+            relationLabels: relation.labels,
+            peopleNames,
+            relationIcons: relation.icons,
+            rollupValues,
+            formulaPlan,
+            access: contentAccess,
+            sorts,
+            defaultTemplate,
+            search,
+            peekBase,
+            renderedAt,
+          }}
+        />
       ) : (
         tablePage !== null && (
           <DatabaseTable

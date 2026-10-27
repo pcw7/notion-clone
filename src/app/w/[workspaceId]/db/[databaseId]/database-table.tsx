@@ -109,6 +109,7 @@ import { isCollapsed, isRelationCollapsed, isRollupCollapsed, listColumns, type 
 import { ROLLUP_FUNCTION_LABEL, rollupFunctionsFor, rollupIsEmpty, type RollupPage } from '@/lib/database/rollup-functions'
 import { newRowLabel, templateRowNote, type DefaultTemplate } from '@/lib/database/new-row'
 import * as api from './table-api'
+import type { RowCell } from '@/lib/database/row'
 import {
   CellDisplay,
   FormulaDisplay,
@@ -221,6 +222,16 @@ export function DatabaseTable(props: {
   recordAxis?: 'column' | 'row' | 'module'
   /** 레코드 모양에서 속성 이름 앞의 유형 아이콘을 보인다(3b-2 · F-16-10 · 기본 참). 행 페이지의 레이아웃이 끈다. */
   showPropertyIcons?: boolean
+  /**
+   * 그룹 덩이(G-1 · 정본 [보강 G-1]) — 있으면 이 표는 **그 그룹의 행만** 읽고(그룹 행 라우트 · 그룹별 커서 F-04-15), "새로 만들기"는 그
+   * 그룹의 값을 채운다(`cells` — 보드 열의 `+` 와 같은 값). 열 집계 줄 · 행 끌기는 그룹 모드에서 아직 없다(⑤).
+   */
+  group?: { readonly key: string; readonly cells: readonly RowCell[] } | null
+  /**
+   * 바깥이 표 변경 신호를 나눠 줄 때(G-1 ④) — 있으면 이 표는 스스로 구독하지 않고 이 값이 바뀔 때마다 다시 읽는다. 덩이마다 구독하면
+   * 그룹 수만큼 연결이 열려 브라우저의 서버당 동시 연결 상한에 다른 요청이 막힌다.
+   */
+  liveTick?: number
 }) {
   const { workspaceId, viewId, dataSourceId, tableName, access } = props
   const variant: TableVariant = props.variant ?? 'table'
@@ -732,7 +743,8 @@ export function DatabaseTable(props: {
     setAddingRow(true)
     setError(null)
     setNotice(null)
-    const result = await api.createRowFrom(workspaceId, viewId, { templateId })
+    // 그룹 덩이(G-1 ③)면 그 그룹의 값을 채운다 — 템플릿의 값을 덮는다(F-08-03)
+    const result = await api.createRowFrom(workspaceId, viewId, { templateId, ...(props.group ? { cells: props.group.cells } : {}) })
     setAddingRow(false)
     if (!result.ok) {
       setError(result.message)
@@ -1147,6 +1159,12 @@ export function DatabaseTable(props: {
       ]),
     )
 
+  /** 최상위 행 한 페이지 — 그룹 덩이(G-1)면 그 그룹의 행. 다시 읽기 · 더 보기가 같이 쓴다. */
+  const loadTop = (from: string | null) =>
+    props.group
+      ? api.loadGroupRows(workspaceId, viewId, props.group.key, from, props.search)
+      : api.loadRows(workspaceId, viewId, from, undefined, props.search)
+
   /** 그 행의 자식을 조용히 읽는다(화면의 "읽는 중"을 세우지 않는다). 실패하면 null. */
   const fetchChildren = async (rowId: string): Promise<RowJson[] | null> => {
     const children: RowJson[] = []
@@ -1175,7 +1193,7 @@ export function DatabaseTable(props: {
       let first = true
       let calc: Calculations | undefined
       do {
-        const page = await api.loadRows(workspaceId, viewId, next, undefined, props.search)
+        const page = await loadTop(next)
         if (!page.ok) return
         if (first) {
           first = false
@@ -1245,15 +1263,22 @@ export function DatabaseTable(props: {
       // 더 볼 수 없다 — 화면을 다시 읽으면 서버 렌더가 "없음"을 보인다
       onRevoked: () => router.refresh(),
     },
-    // 행 페이지 · 템플릿 편집(레코드 모양)은 그 한 행이다 — 구독하지 않는다
-    variant !== 'record',
+    // 행 페이지 · 템플릿 편집(레코드 모양)은 그 한 행이다 — 구독하지 않는다. 바깥이 신호를 나눠 주면(그룹 덩이 G-1 ④) 그것을 듣는다
+    variant !== 'record' && props.liveTick === undefined,
     props.renderedAt,
   )
+  // 바깥이 나눠 주는 신호(G-1 ④) — 첫 값은 건너뛴다(첫 화면은 서버가 읽었다)
+  const tickSeen = useRef(props.liveTick)
+  useEffect(() => {
+    if (props.liveTick === undefined || props.liveTick === tickSeen.current) return
+    tickSeen.current = props.liveTick
+    void reload()
+  })
 
   const loadMore = async () => {
     if (cursor === null || loadingMore || reachedCap) return
     setLoadingMore(true)
-    const result = await api.loadRows(workspaceId, viewId, cursor, undefined, props.search)
+    const result = await loadTop(cursor)
     setLoadingMore(false)
     if (!result.ok) {
       setError(result.message)
@@ -1273,7 +1298,8 @@ export function DatabaseTable(props: {
    * 손으로 둔 차례를 바꿀 수 있는가 — 고칠 수 있고 · 정렬이 없고(정렬이 차례를 정한다 · 서버도 `sorted` 로 거부) · 표 · 목록이고 · 하위 항목
    * 트리가 아니다(펼친 자식 묶음을 함께 옮기는 규칙은 아직 없다 — §7). 서버는 이 뷰의 `row_position('*')` 에 둔다(10n-59).
    */
-  const canReorder = access.canEditContent && props.sorts.length === 0 && (variant === 'table' || variant === 'list') && subItems === null
+  // 그룹 덩이(G-1 ⑤)에서는 아직 끌지 않는다 — 덩이 안의 차례는 보드 열의 자리(`group_key`)라 표의 `'*'` 자리와 다르다
+  const canReorder = access.canEditContent && props.sorts.length === 0 && (variant === 'table' || variant === 'list') && subItems === null && !props.group
   const scrollRef = useRef<HTMLDivElement>(null)
   /** 잡은 행 · 잡은 y · 끌기가 시작됐는가(4px 를 넘었다). */
   const rowGrab = useRef<{ id: string; startY: number; active: boolean } | null>(null)
@@ -1792,7 +1818,8 @@ export function DatabaseTable(props: {
             ))}
           </tbody>
           {/* 열 집계(2d-2 · F-04-16) — 표 모양에서만. 마우스를 올리면 계산이 없는 칸에 "계산"이 보인다. */}
-          {isGrid && (
+          {/* 그룹 덩이(G-1 ⑤)에서는 아직 없다 — 값이 뷰 전체의 것이라 덩이 아래에 서면 그 그룹의 값으로 읽힌다 */}
+          {isGrid && !props.group && (
             <tfoot className="group/calc" data-testid="db-calc-row">
               <tr>
                 {columns.map((column) => (
