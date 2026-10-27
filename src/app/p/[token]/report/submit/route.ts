@@ -7,13 +7,15 @@
  * (접수 · 실패 까닭을 쿼리로). 세션을 읽지 않는다.
  *
  *   · **같은 출처만** — `Origin` 이 있으면 이 서버의 것이어야 한다. 다른 사이트의 방문자를 시켜 신고를 퍼붓는 길을 막는다(없으면
- *     브라우저가 아니다 — 받되 레이트리밋이 지킨다)
+ *     브라우저가 아니다 — 받되 레이트리밋이 지킨다). "이 서버"는 요청이 닿은 주소 · 설정한 공개 주소 · 더 받을 출처다(`allowedOrigins` ·
+ *     10n-78 — 프록시가 호스트 · 스킴을 바꾸는 배포)
  *   · **허니팟** — 사람에게 보이지 않는 칸(`website`)이 차 있으면 받은 척하고 남기지 않는다(F-17-10 *"허니팟"*)
  *   · 없는 페이지 · 열 수 없는 페이지는 404 화면으로(이유를 말하지 않는다)
  */
 
 import { requestMeta } from '@/lib/auth/request-meta'
 import { submitReport } from '@/lib/moderation/report'
+import { allowedOrigins, isAllowedOrigin } from '@/lib/platform/allowed-origins'
 
 const back = (request: Request, token: string, params: Record<string, string>): Response => {
   const url = new URL(`/p/${token}/report`, request.url)
@@ -28,7 +30,7 @@ export async function POST(request: Request, ctx: RouteContext<'/p/[token]/repor
   const keep: Record<string, string> = pageId === undefined ? {} : { page: pageId }
 
   const origin = request.headers.get('origin')
-  if (origin !== null && origin !== new URL(request.url).origin) return back(request, token, { ...keep, error: 'bad_origin' })
+  if (!isAllowedOrigin(origin, allowedOrigins(request.url))) return back(request, token, { ...keep, error: 'bad_origin' })
   if (form === null) return back(request, token, { ...keep, error: 'invalid_reason' })
 
   // 허니팟 — 받은 척한다(봇이 실패를 보고 고쳐 오지 않게)

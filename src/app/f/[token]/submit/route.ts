@@ -15,6 +15,7 @@
 import { requestMeta } from '@/lib/auth/request-meta'
 import { readSessionToken } from '@/lib/auth/session-cookie'
 import { submitFailureStatus, submitFormResponse } from '@/lib/database/form-submit'
+import { allowedOrigins } from '@/lib/platform/allowed-origins'
 
 const HEADERS = { 'x-robots-tag': 'noindex', 'cache-control': 'no-store' }
 
@@ -30,7 +31,7 @@ export async function POST(request: Request, ctx: RouteContext<'/f/[token]/submi
     answers: body.answers,
     trap: body.website,
     origin: request.headers.get('origin'),
-    serverOrigin: new URL(request.url).origin,
+    allowedOrigins: allowedOrigins(request.url),
     submitter: requestMeta(request),
     sessionToken: await readSessionToken(),
   })

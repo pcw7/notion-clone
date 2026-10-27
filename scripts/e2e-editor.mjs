@@ -23889,6 +23889,32 @@ async function main() {
       check('★ 주를 넘어 잘린 막대는 시작하는 조각에만 종이 선다', JSON.stringify(look.span) === '["armed",""]', JSON.stringify(look.span))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('익명 쓰기의 출처 — 설정한 공개 주소 (10n-78 · F-17-10)')) { try {
+      // 공개 신고 폼은 Origin 이 "이 서버"여야 한다 — 요청이 닿은 주소(이 판의 서버)뿐 아니라 설정한 공개 주소(NEXT_PUBLIC_APP_URL — 프록시 뒤의
+      // 배포에서 브라우저가 보내는 출처)도 받는다. 이 판은 서버가 BASE 에서 돌고 공개 주소는 .env 의 값이라 그 배포를 그대로 흉내 낸다. 다른 사이트는
+      // 여전히 받지 않는다. 자기 데이터를 스스로 만든다.
+      const publicOrigin = new URL(process.env.NEXT_PUBLIC_APP_URL ?? BASE).origin
+      check('전제 — 설정한 공개 주소가 이 판의 서버 주소와 다르다(프록시 뒤를 흉내)', publicOrigin !== new URL(BASE).origin, `${publicOrigin} · ${BASE}`)
+      const stamp = Date.now()
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const api78 = `${BASE}/api/workspaces/${workspaceId}`
+      const page = (await (await fetch(`${api78}/pages`, { method: 'POST', headers: authed, body: JSON.stringify({ title: `출처 신고 ${stamp}` }) })).json()).page.id
+      const token = (await (await fetch(`${api78}/pages/${page}/publish`, { method: 'PUT', headers: authed })).json())?.token
+      const post = (origin) => fetch(`${BASE}/p/${token}/report/submit`, {
+        method: 'POST',
+        redirect: 'manual',
+        headers: { 'content-type': 'application/x-www-form-urlencoded', origin, 'user-agent': `e2e-origin-${stamp}-${randomUUID()}` },
+        body: new URLSearchParams({ reason: 'other', detail: `공개 주소에서 ${stamp}` }).toString(),
+      })
+      const fromPublic = await post(publicOrigin)
+      const fromEvil = await post('https://evil.example')
+      const reports = await dbQuery(`SELECT detail FROM abuse_report WHERE target_id = $1`, [page])
+      check('★ 설정한 공개 주소의 출처는 받는다 — 신고가 남는다(프록시 뒤의 배포에서 정상 제출이 막히지 않는다)',
+        (fromPublic.headers.get('location') ?? '').includes('sent=1') && reports.length === 1,
+        JSON.stringify({ location: fromPublic.headers.get('location'), reports: reports.length }))
+      check('다른 사이트의 출처는 여전히 받지 않는다', (fromEvil.headers.get('location') ?? '').includes('error=bad_origin'), fromEvil.headers.get('location') ?? '')
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).
