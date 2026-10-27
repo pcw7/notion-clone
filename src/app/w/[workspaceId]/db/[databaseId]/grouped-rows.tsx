@@ -80,7 +80,7 @@ export function GroupedRows({
     <GroupLanesContext.Provider value={lanes}>
     <div data-testid="db-grouped" className="flex flex-col gap-6">
       {shown.map((group) => {
-        const fill = fillKeyOf(group)
+        const fill = fillKeyOf(group, property)
         const label = groupLabel(property.type, property.name, group, property)
         const folded = collapsed.has(group.key)
         return (

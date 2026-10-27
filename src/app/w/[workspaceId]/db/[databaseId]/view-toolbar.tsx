@@ -53,6 +53,7 @@ import type { FilterableType } from '@/lib/database/filter'
 import { STATUS_GROUP_KINDS, STATUS_GROUP_LABEL, isGroupableType, isMvpPropertyType } from '@/lib/database/property-types'
 import { DATE_UNITS, DATE_UNIT_LABEL, DEFAULT_DATE_UNIT, type DateUnit } from '@/lib/database/date-group'
 import { DEFAULT_NUMBER_SIZE, isNumberSize } from '@/lib/database/number-group'
+import { DEFAULT_TEXT_MODE, TEXT_MODES, TEXT_MODE_LABEL, type TextMode } from '@/lib/database/text-group'
 import {
   CALCULATION_LABEL,
   calculationsFor,
@@ -1060,7 +1061,7 @@ function GroupPanel({
 
       {groupable.length === 0 && (
         <p className="text-sm text-neutral-400" data-testid="db-group-none">
-          선택 · 상태 · 체크박스 · 날짜 · 숫자 속성이 없습니다. 속성을 먼저 만드세요.
+          선택 · 상태 · 체크박스 · 날짜 · 숫자 · 글 속성이 없습니다. 속성을 먼저 만드세요.
         </p>
       )}
 
@@ -1111,6 +1112,34 @@ function GroupPanel({
             {DATE_UNITS.map((unit) => (
               <option key={unit} value={unit}>
                 {DATE_UNIT_LABEL[unit]}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+
+      {current !== null && !dead && groupable.find((c) => c.propertyId === current.property_id)?.type === 'rich_text' && (
+        // 글을 묶는 방식(B-2b) — 글 그대로 · 첫 글자. 바꾸면 키 공간이 달라 숨김 목록은 버린다(날짜의 단위와 같다)
+        <label className="flex items-center gap-2 text-sm">
+          묶는 방식
+          <select
+            aria-label="글을 묶는 방식"
+            data-testid="db-group-text-by"
+            value={current.text_by ?? DEFAULT_TEXT_MODE}
+            disabled={locked}
+            onChange={(e) =>
+              void onSave({
+                property_id: current.property_id,
+                ...(current.hide_empty ? { hide_empty: true } : {}),
+                ...(current.calculation ? { calculation: current.calculation } : {}),
+                text_by: e.target.value as TextMode,
+              })
+            }
+            className={FIELD}
+          >
+            {TEXT_MODES.map((mode) => (
+              <option key={mode} value={mode}>
+                {TEXT_MODE_LABEL[mode]}
               </option>
             ))}
           </select>

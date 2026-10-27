@@ -17,6 +17,7 @@ import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 
 import { fillKeyOf, groupLabel, moveCard, moveChoices, prefillCells, resolveDrop, type ColumnBox, type DropTarget } from './board-drag.ts'
+import { textRun } from '../contracts/rich-text.ts'
 
 const card = (id: string, top: number) => ({ id, top, bottom: top + 40 })
 
@@ -241,6 +242,10 @@ describe('prefillCells · groupLabel', () => {
     // 숫자(B-2) — 구간의 아래 끝
     assert.deepEqual(prefillCells('number', 'p', '0.5'), [{ propertyId: 'p', value: { type: 'number', number: 0.5 } }])
     assert.deepEqual(prefillCells('number', 'p', ''), [])
+    // 글(B-2b) — 그 글 · 첫 글자 열은 채울 키가 없다(`fillKeyOf`)
+    assert.deepEqual(prefillCells('rich_text', 'p', '사과'), [{ propertyId: 'p', value: { type: 'rich_text', rich_text: [textRun('사과')] } }])
+    assert.equal(fillKeyOf({ key: 'ㅅ' }, { textMode: 'first' }), null)
+    assert.equal(fillKeyOf({ key: '사과' }, { textMode: 'exact' }), '사과')
   })
 
   test('열 이름 — 옵션 이름 · "{속성} 없음" · 체크됨/체크 안 됨', () => {
@@ -255,6 +260,10 @@ describe('prefillCells · groupLabel', () => {
     assert.equal(groupLabel('number', '점수', { key: '20', option: null }, { numberSize: 5 }), '20 ~ 25')
     assert.equal(groupLabel('number', '점수', { key: '-10', option: null }), '-10 ~ 0')
     assert.equal(groupLabel('number', '점수', { key: '', option: null }), '점수 없음')
+    // 글(B-2b) — 글 그대로는 그 글 · 첫 글자의 #는 "그 밖"
+    assert.equal(groupLabel('rich_text', '메모', { key: '사과', option: null }), '사과')
+    assert.equal(groupLabel('rich_text', '메모', { key: '#', option: null }, { textMode: 'first' }), '그 밖')
+    assert.equal(groupLabel('rich_text', '메모', { key: '', option: null }), '메모 없음')
     assert.equal(groupLabel('checkbox', '완료', { key: 'true', option: null }), '체크됨')
     assert.equal(groupLabel('checkbox', '완료', { key: 'false', option: null }), '체크 안 됨')
   })
