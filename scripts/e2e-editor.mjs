@@ -24376,6 +24376,53 @@ async function main() {
       check('그룹 패널에서 단위를 년으로 — 한 해로 묶인다("2026년")', await headsAre([['', '마감 없음', 1], ['2026-01-01', '2026년', 4]]), JSON.stringify(await heads()))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('숫자 구간으로 묶기 (B-2 · F-04-11)')) { try {
+      // 숫자 속성으로 묶으면 행이 든 구간들 — 숫자 오름차순 · 값 없음이 맨 앞 · 머리는 "20 ~ 30" · 그 덩이의 "새로 만들기"는 구간의 아래 끝을
+      // 채운다 · 그룹 패널에서 구간 크기를 50 으로 바꾸면 다시 묶인다. 정본 §3.6 [보강 B-2]. 자기 데이터를 스스로 만든다.
+      const stamp = Date.now()
+      const apiC = `${BASE}/api/workspaces/${workspaceId}`
+      const call = async (method, path, body) => {
+        const r = await fetch(`${apiC}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return r.json().catch(() => null)
+      }
+      const made = (await call('POST', '/databases', { name: `숫자 그룹 ${stamp}` })).database
+      const score = (await call('POST', `/data-sources/${made.dataSourceId}/properties`, { name: '점수', type: 'number' })).property.id
+      const props = (await call('GET', `/data-sources/${made.dataSourceId}/properties`)).schema.properties
+      const titleProp = props.find((p) => p.type === 'title').id
+      const view = made.defaultViewId
+      for (const [title, n] of [['가', 23], ['나', 27], ['다', 5], ['라', null]]) {
+        await call('POST', `/views/${view}/rows`, { cells: [
+          { propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } },
+          ...(n === null ? [] : [{ propertyId: score, value: { type: 'number', number: n } }]),
+        ] })
+      }
+      await call('PATCH', `/views/${view}`, { groupBy: { property_id: score } })
+      const headsExpr = `JSON.stringify([...document.querySelectorAll('[data-testid="db-group"]')].map((g) => [g.dataset.groupKey,
+        g.querySelector('[data-testid="db-group-label"]')?.textContent?.trim() ?? '', g.querySelectorAll('[data-testid="db-table"] tbody tr[data-row-id]').length]))`
+      const headsAre = (expected) => waitFor(`${headsExpr} === ${JSON.stringify(JSON.stringify(expected))}`, 15000)
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${made.id}?v=${view}` })
+      check('★ 숫자로 묶으면 행이 든 구간들 — 숫자 오름차순 · 값 없음이 맨 앞 · 머리는 "20 ~ 30"',
+        await headsAre([['', '점수 없음', 1], ['0', '0 ~ 10', 1], ['20', '20 ~ 30', 2]]), await evaluate(headsExpr))
+
+      const twenty = `[data-testid="db-group"][data-group-key="20"]`
+      await waitHydrated(`${twenty} [data-testid="db-add-row"]`)
+      await clickSelector(`${twenty} [data-testid="db-add-row"]`)
+      const added = await waitFor(`document.querySelectorAll('${twenty} [data-testid="db-table"] tbody tr[data-row-id]').length === 3`, 8000)
+      await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+      await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+      const numbers = ((await call('GET', `/views/${view}/rows`))?.rows ?? []).map((r) => r.properties?.[score]?.number ?? null)
+      check('★ 그 덩이의 "새로 만들기"는 구간의 아래 끝(20)을 채운다', added && numbers.filter((n) => n === 20).length === 1, JSON.stringify({ added, numbers }))
+
+      await waitHydrated('[data-testid="db-group-button"]')
+      await clickSelector('[data-testid="db-group-button"]')
+      await waitFor(`!!document.querySelector('[data-testid="db-group-number-size"]')`, 5000)
+      await evaluate(`(() => { const s = document.querySelector('[data-testid="db-group-number-size"]'); s.focus()
+        const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set
+        set.call(s, '50'); s.dispatchEvent(new Event('input', { bubbles: true })); s.blur(); return true })()`)
+      check('그룹 패널에서 구간 크기를 50 으로 — 다시 묶인다("0 ~ 50")', await headsAre([['', '점수 없음', 1], ['0', '0 ~ 50', 4]]), await evaluate(headsExpr))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

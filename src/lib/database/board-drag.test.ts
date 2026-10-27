@@ -238,6 +238,9 @@ describe('prefillCells · groupLabel', () => {
     // 날짜(B-1) — 그 버킷의 첫 날 · 값 없음은 안 보낸다
     assert.deepEqual(prefillCells('date', 'p', '2026-10-01'), [{ propertyId: 'p', value: { type: 'date', date: { start: '2026-10-01' } } }])
     assert.deepEqual(prefillCells('date', 'p', ''), [])
+    // 숫자(B-2) — 구간의 아래 끝
+    assert.deepEqual(prefillCells('number', 'p', '0.5'), [{ propertyId: 'p', value: { type: 'number', number: 0.5 } }])
+    assert.deepEqual(prefillCells('number', 'p', ''), [])
   })
 
   test('열 이름 — 옵션 이름 · "{속성} 없음" · 체크됨/체크 안 됨', () => {
@@ -245,9 +248,13 @@ describe('prefillCells · groupLabel', () => {
     assert.equal(groupLabel('select', '상태', { key: 'o', option }), '진행 중')
     assert.equal(groupLabel('select', '상태', { key: '', option: null }), '상태 없음')
     // 날짜(B-1) — 그 단위의 버킷 이름 · 값 없음 · 단위를 모르면 월
-    assert.equal(groupLabel('date', '마감', { key: '2026-10-26', option: null }, 'week'), '2026년 10월 26일 주')
+    assert.equal(groupLabel('date', '마감', { key: '2026-10-26', option: null }, { dateUnit: 'week' }), '2026년 10월 26일 주')
     assert.equal(groupLabel('date', '마감', { key: '2026-10-01', option: null }), '2026년 10월')
-    assert.equal(groupLabel('date', '마감', { key: '', option: null }, 'year'), '마감 없음')
+    assert.equal(groupLabel('date', '마감', { key: '', option: null }, { dateUnit: 'year' }), '마감 없음')
+    // 숫자(B-2) — 구간 · 값 없음 · 크기를 모르면 10
+    assert.equal(groupLabel('number', '점수', { key: '20', option: null }, { numberSize: 5 }), '20 ~ 25')
+    assert.equal(groupLabel('number', '점수', { key: '-10', option: null }), '-10 ~ 0')
+    assert.equal(groupLabel('number', '점수', { key: '', option: null }), '점수 없음')
     assert.equal(groupLabel('checkbox', '완료', { key: 'true', option: null }), '체크됨')
     assert.equal(groupLabel('checkbox', '완료', { key: 'false', option: null }), '체크 안 됨')
   })
