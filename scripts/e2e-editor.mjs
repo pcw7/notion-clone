@@ -24000,6 +24000,58 @@ async function main() {
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('표 · 목록의 그룹 — 덩이 접기 (G-2a · F-04-04)')) { try {
+      // 머리의 펼침 단추로 그 덩이의 표를 접는다 — 머리 · 개수는 남고 · 다른 덩이는 그대로 · 새로 읽어도 접힌 채(보는 사람의 이 기기 —
+      // localStorage) · 다시 누르면 펼쳐진다. 자기 데이터를 스스로 만든다.
+      const stamp = Date.now()
+      const apiC = `${BASE}/api/workspaces/${workspaceId}`
+      const call = async (method, path, body) => {
+        const r = await fetch(`${apiC}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return r.json().catch(() => null)
+      }
+      const made = (await call('POST', '/databases', { name: `접는 그룹 ${stamp}` })).database
+      const status = (await call('POST', `/data-sources/${made.dataSourceId}/properties`, { name: '상태', type: 'status' })).property.id
+      const props = (await call('GET', `/data-sources/${made.dataSourceId}/properties`)).schema.properties
+      const opt = Object.fromEntries(props.find((p) => p.id === status).options.map((o) => [o.name, o.id]))
+      const titleProp = props.find((p) => p.type === 'title').id
+      const view = made.defaultViewId
+      for (const [title, option] of [['하는 중', '진행 중'], ['끝난 것', '완료']]) {
+        await call('POST', `/views/${view}/rows`, { cells: [
+          { propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } },
+          { propertyId: status, value: { type: 'status', status: { id: opt[option] } } },
+        ] })
+      }
+      await call('PATCH', `/views/${view}`, { groupBy: { property_id: status, hide_empty: true } })
+      const page = `${BASE}/w/${workspaceId}/db/${made.id}?v=${view}`
+      const doing = `[data-testid="db-group"][data-group-key="${opt['진행 중']}"]`
+      const done = `[data-testid="db-group"][data-group-key="${opt['완료']}"]`
+      const state = () => evaluate(`(() => ({
+        doing: { expanded: document.querySelector('${doing} [data-testid="db-group-toggle"]')?.getAttribute('aria-expanded'),
+          body: document.querySelector('${doing} [data-testid="db-group-body"]')?.hidden, count: document.querySelector('${doing} [data-testid="db-group-count"]')?.textContent },
+        done: { expanded: document.querySelector('${done} [data-testid="db-group-toggle"]')?.getAttribute('aria-expanded'),
+          body: document.querySelector('${done} [data-testid="db-group-body"]')?.hidden },
+      }))()`)
+      try {
+        await send('Page.navigate', { url: page })
+        await waitSteady(`${doing} [data-testid="db-group-toggle"]`)
+        await clickSelector(`${doing} [data-testid="db-group-toggle"]`)
+        await waitFor(`document.querySelector('${doing} [data-testid="db-group-body"]')?.hidden === true`, 5000)
+        const folded = await state()
+        check('★ 펼침 단추로 그 덩이의 표를 접는다 — 머리 · 개수는 남고 다른 덩이는 그대로',
+          folded.doing.expanded === 'false' && folded.doing.body === true && folded.doing.count === '1' && folded.done.expanded === 'true' && folded.done.body === false,
+          JSON.stringify(folded))
+        await send('Page.reload')
+        check('★ 새로 읽어도 접힌 채다(보는 사람의 이 기기)', await waitFor(`document.querySelector('${doing} [data-testid="db-group-body"]')?.hidden === true
+          && document.querySelector('${done} [data-testid="db-group-body"]')?.hidden === false`, 15000), JSON.stringify(await state()))
+        await waitSteady(`${doing} [data-testid="db-group-toggle"]`)
+        await clickSelector(`${doing} [data-testid="db-group-toggle"]`)
+        check('다시 누르면 펼쳐진다', await waitFor(`document.querySelector('${doing} [data-testid="db-group-body"]')?.hidden === false
+          && document.querySelector('${doing} [data-testid="db-group-toggle"]')?.getAttribute('aria-expanded') === 'true'`, 5000), JSON.stringify(await state()))
+      } finally {
+        await evaluate(`(() => { try { localStorage.removeItem('nc:group-collapsed:${view}') } catch {} return true })()`).catch(() => undefined)
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).
