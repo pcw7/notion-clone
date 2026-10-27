@@ -24116,6 +24116,67 @@ async function main() {
       check('칸을 고르고 Alt+↓ 로 덩이 안에서 한 칸 — 다시 열어도 그 차례', down && (await orderIs('다나가')), JSON.stringify(await orders()))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('표 · 목록의 그룹 — 덩이 사이의 행 끌기 (G-2c · F-04-03 · F-04-04)')) { try {
+      // 손잡이로 행을 다른 덩이에 끌면 그 덩이에 줄이 서고, 놓으면 그 덩이의 그 자리에 선다 — 값이 그 그룹의 것이 된다(다시 열어도 그 덩이 ·
+      // 그 차례) · 머리의 개수도 따라간다. 정본 [보강 G-1] ⑧. 자기 데이터를 스스로 만든다(API).
+      const stamp = Date.now()
+      const apiC = `${BASE}/api/workspaces/${workspaceId}`
+      const call = async (method, path, body) => {
+        const r = await fetch(`${apiC}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return r.json().catch(() => null)
+      }
+      const made = (await call('POST', '/databases', { name: `덩이 사이 ${stamp}` })).database
+      const status = (await call('POST', `/data-sources/${made.dataSourceId}/properties`, { name: '상태', type: 'status' })).property.id
+      const props = (await call('GET', `/data-sources/${made.dataSourceId}/properties`)).schema.properties
+      const opt = Object.fromEntries(props.find((p) => p.id === status).options.map((o) => [o.name, o.id]))
+      const titleProp = props.find((p) => p.type === 'title').id
+      const view = made.defaultViewId
+      const ids = {}
+      for (const [title, option] of [['가', '진행 중'], ['나', '진행 중'], ['라', '완료'], ['마', '완료']]) {
+        ids[title] = (await call('POST', `/views/${view}/rows`, { cells: [
+          { propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } },
+          { propertyId: status, value: { type: 'status', status: { id: opt[option] } } },
+        ] })).row.id
+      }
+      await call('PATCH', `/views/${view}`, { groupBy: { property_id: status, hide_empty: true } })
+      const names = Object.fromEntries(Object.entries(ids).map(([k, v]) => [v, k]))
+      const doing = `[data-testid="db-group"][data-group-key="${opt['진행 중']}"]`
+      const done = `[data-testid="db-group"][data-group-key="${opt['완료']}"]`
+      const orderExprOf = (chunk) => `[...document.querySelectorAll('${chunk} tbody tr[data-row-id]')].map((tr) => (${JSON.stringify(names)})[tr.dataset.rowId] ?? '').join('')`
+      const state = () => evaluate(`({ doing: ${orderExprOf(doing)}, done: ${orderExprOf(done)},
+        doingCount: document.querySelector('${doing} [data-testid="db-group-count"]')?.textContent ?? null,
+        doneCount: document.querySelector('${done} [data-testid="db-group-count"]')?.textContent ?? null })`)
+      const settled = (d, n) => waitFor(`${orderExprOf(doing)} === ${JSON.stringify(d)} && ${orderExprOf(done)} === ${JSON.stringify(n)}
+        && !document.querySelector('[data-testid="db-table"][aria-busy]')`, 10000)
+      const GRIP = (id) => `${doing} tbody tr[data-row-id="${id}"] [data-testid="db-row-grip"]`
+      const TITLE_DONE = (id) => `${done} tbody tr[data-row-id="${id}"] td[data-property-id="${titleProp}"]`
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${made.id}?v=${view}` })
+      check('전제 — 덩이 둘(가나 · 라마)', (await settled('가나', '라마')) && (await waitHydrated(GRIP(ids['가']))), JSON.stringify(await state()))
+
+      // 가의 손잡이를 잡아 "완료" 덩이의 마 위쪽 가장자리 근처로 — 마의 앞
+      const from = await rect(GRIP(ids['가']))
+      const to = await rect(TITLE_DONE(ids['마']))
+      const fx = from.x + from.w / 2
+      const fy = from.y + from.h / 2
+      await move(fx, fy)
+      await press(fx, fy)
+      for (let i = 1; i <= 12; i += 1) {
+        await move(fx, fy + ((to.y + 3) - fy) * i / 12, true)
+        await sleep(16)
+      }
+      const line = await waitFor(`!!document.querySelector('${done} [data-testid="db-row-drop-line"]') && !document.querySelector('${doing} [data-testid="db-row-drop-line"]')`, 3000)
+      await release(fx, to.y + 3)
+      const dropped = await settled('나', '라가마')
+      const cleared = !(await evaluate(`!!document.querySelector('[data-testid="db-row-drop-line"]')`))
+      check('★ 다른 덩이에 끌면 그 덩이에 줄 — 놓으면 그 덩이의 그 자리(라 가 마) · 줄은 사라진다', line && dropped && cleared,
+        JSON.stringify({ line, dropped, cleared, ...(await state()) }))
+      check('머리의 개수도 따라간다(1 · 3)', await waitFor(`document.querySelector('${doing} [data-testid="db-group-count"]')?.textContent === '1'
+        && document.querySelector('${done} [data-testid="db-group-count"]')?.textContent === '3'`, 10000), JSON.stringify(await state()))
+      await send('Page.reload', {})
+      check('★ 다시 열어도 그 덩이 · 그 차례다 — 값이 그 그룹의 것이 됐다', await settled('나', '라가마'), JSON.stringify(await state()))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

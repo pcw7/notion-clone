@@ -11,6 +11,8 @@
  * 행 · 편집 상태를 잃지 않는다.
  *
  * 덩이 접기(G-2a · ⑥) — 머리의 펼침 단추. 접은 키는 보는 사람의 이 기기에(`group-collapse.ts`). 접어도 표는 숨기기만 한다(상태 · 다시 읽기 그대로).
+ *
+ * 덩이 사이의 행 끌기(G-2c · ⑧) — 덩이들이 서로를 찾는 자리(`group-lanes.ts`)를 여기 하나 두고 덩이들에 나눠 준다.
  */
 
 import { useState, useSyncExternalStore, type ComponentProps } from 'react'
@@ -23,6 +25,7 @@ import { DatabaseTable } from './database-table'
 import type { BoardGroupJson, GroupProperty } from './database-board'
 import { useTableChanges } from './use-table-changes'
 import { getGroupCollapseStore } from './group-collapse'
+import { createGroupLanes, GroupLanesContext } from './group-lanes'
 
 type TableProps = ComponentProps<typeof DatabaseTable>
 
@@ -41,6 +44,7 @@ export function GroupedRows({
 }) {
   const router = useRouter()
   const [tick, setTick] = useState(0)
+  const [lanes] = useState(createGroupLanes)
   useTableChanges(
     table.workspaceId,
     table.dataSourceId,
@@ -60,6 +64,7 @@ export function GroupedRows({
   const shown = groups.filter((g) => !g.hidden)
   const hiddenCount = groups.length - shown.length
   return (
+    <GroupLanesContext.Provider value={lanes}>
     <div data-testid="db-grouped" className="flex flex-col gap-6">
       {shown.map((group) => {
         const fill = fillKeyOf(group)
@@ -119,7 +124,7 @@ export function GroupedRows({
               rows={[...group.rows]}
               hasMore={group.hasMore}
               nextCursor={group.nextCursor}
-              group={{ key: group.key, cells: fill === null ? [] : prefillCells(property.type, property.id, fill) }}
+              group={{ key: group.key, cells: fill === null ? [] : prefillCells(property.type, property.id, fill), accepts: fill !== null }}
               liveTick={tick}
               subItems={null}
             />
@@ -133,5 +138,6 @@ export function GroupedRows({
         </p>
       )}
     </div>
+    </GroupLanesContext.Provider>
   )
 }

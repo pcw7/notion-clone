@@ -11,6 +11,8 @@
  *
  * 갤러리(10n-61)는 카드가 격자라 `cardDropBefore` 가 읽는 차례(왼쪽 → 오른쪽, 위 → 아래)로 놓을 자리를 정한다 — 키로 한 칸(`stepTarget`)과
  * 먼저 그리기(`reorderRows`)는 표와 같다.
+ *
+ * 그룹 덩이 사이(G-2c · 정본 [보강 G-1] ⑧)는 끄는 행이 놓을 목록에 없다 — `foreignDropBefore` · `foreignDropLineY` · `insertRow`.
  */
 
 import { tabDropBefore, tabDropLineX } from './tab-drag.ts'
@@ -50,6 +52,33 @@ export function reorderRows<T extends { readonly id: string }>(rows: readonly T[
   const at = before === null ? rest.length : rest.findIndex((r) => r.id === before)
   if (at < 0) return rows
   return [...rest.slice(0, at), moving, ...rest.slice(at)]
+}
+
+// ── 그룹 덩이 사이(G-2c) — 끄는 행이 다른 목록에서 온다 ─────────────────
+
+/** 다른 덩이에 놓을 자리 — 가운데가 포인터보다 아래인 첫 행의 앞 · 없으면 맨 뒤(null · 더 볼 행이 남았으면 undefined). 제자리가 없다. */
+export function foreignDropBefore(rows: readonly RowBox[], pointerY: number, hasMore: boolean): string | null | undefined {
+  const at = rows.find((r) => r.top + r.height / 2 > pointerY)
+  if (at !== undefined) return at.id
+  return hasMore ? undefined : null
+}
+
+/** 다른 덩이에 끄는 동안 가로 줄의 y — 놓일 행의 위 경계 · 맨 뒤면 마지막 행의 아래 경계 · 행이 없으면 `emptyY`. 놓을 수 없으면 null. */
+export function foreignDropLineY(rows: readonly RowBox[], pointerY: number, hasMore: boolean, emptyY: number | null): number | null {
+  const before = foreignDropBefore(rows, pointerY, hasMore)
+  if (before === undefined) return null
+  if (before === null) {
+    const last = rows.at(-1)
+    return last === undefined ? emptyY : last.top + last.height
+  }
+  return rows.find((r) => r.id === before)!.top
+}
+
+/** 다른 덩이에서 온 행을 `before` 앞에 — null 이거나 목록에 없으면 맨 뒤. 이미 있으면 그 자리를 옮긴다. */
+export function insertRow<T extends { readonly id: string }>(rows: readonly T[], row: T, before: string | null): readonly T[] {
+  const rest = rows.filter((r) => r.id !== row.id)
+  const at = before === null ? -1 : rest.findIndex((r) => r.id === before)
+  return at < 0 ? [...rest, row] : [...rest.slice(0, at), row, ...rest.slice(at)]
 }
 
 // ── 갤러리(10n-61) — 카드는 격자다 ──────────────────────────────────
