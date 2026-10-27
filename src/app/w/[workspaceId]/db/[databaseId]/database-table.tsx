@@ -63,6 +63,7 @@
 import { rowOpenHref } from '@/lib/database/open-pages'
 import Link from '@/app/link'
 import {
+  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -133,7 +134,17 @@ import { RelationEditor } from './relation-editor'
 import { AddColumn } from './add-column'
 import { useTableChanges } from './use-table-changes'
 import { mergeReloaded } from '@/lib/database/live-rows'
-import { reorderRows, rowDropBefore, rowDropLineY, stepTarget, type RowBox } from '@/lib/database/row-drag'
+import {
+  foreignDropBefore,
+  foreignDropLineY,
+  insertRow,
+  reorderRows,
+  rowDropBefore,
+  rowDropLineY,
+  stepTarget,
+  type RowBox,
+} from '@/lib/database/row-drag'
+import { GroupLanesContext, type GroupLane } from './group-lanes'
 import { TAB_DRAG_THRESHOLD } from '@/lib/database/tab-drag'
 import { FormulaEditForm } from './formula-editor'
 import { ColumnMenu } from './column-menu'
@@ -224,10 +235,11 @@ export function DatabaseTable(props: {
   showPropertyIcons?: boolean
   /**
    * 그룹 덩이(G-1 · 정본 [보강 G-1]) — 있으면 이 표는 **그 그룹의 행만** 읽고(그룹 행 라우트 · 그룹별 커서 F-04-15), "새로 만들기"는 그
-   * 그룹의 값을 채운다(`cells` — 보드 열의 `+` 와 같은 값). 행 끌기는 덩이 안의 차례다(G-2b ⑦ — 보드 열의 자리 · `moveRowTo`). 열 집계 줄은
-   * 그룹 모드에서 아직 없다(⑤).
+   * 그룹의 값을 채운다(`cells` — 보드 열의 `+` 와 같은 값). 행 끌기는 덩이 안의 차례(G-2b ⑦ — 보드 열의 자리 · `moveRowTo`)이고, 다른
+   * 덩이에 놓으면 그 그룹의 값이 된다(G-2c ⑧ — `moveRowToLane` · `group-lanes.ts`). `accepts` 가 거짓이면(채울 값이 없는 범주) 이 덩이에
+   * 놓지 못한다. 열 집계 줄은 그룹 모드에서 아직 없다(⑤).
    */
-  group?: { readonly key: string; readonly cells: readonly RowCell[] } | null
+  group?: { readonly key: string; readonly cells: readonly RowCell[]; readonly accepts?: boolean } | null
   /**
    * 바깥이 표 변경 신호를 나눠 줄 때(G-1 ④) — 있으면 이 표는 스스로 구독하지 않고 이 값이 바뀔 때마다 다시 읽는다. 덩이마다 구독하면
    * 그룹 수만큼 연결이 열려 브라우저의 서버당 동시 연결 상한에 다른 요청이 막힌다.
@@ -1309,11 +1321,15 @@ export function DatabaseTable(props: {
    */
   const heldOutside = (rowId: string) => props.group != null && outside.has(rowId)
   const scrollRef = useRef<HTMLDivElement>(null)
-  /** 잡은 행 · 잡은 y · 끌기가 시작됐는가(4px 를 넘었다). */
-  const rowGrab = useRef<{ id: string; startY: number; active: boolean } | null>(null)
+  /** 잡은 행 · 잡은 y · 끌기가 시작됐는가(4px 를 넘었다) · 지금 줄을 그리게 한 다른 덩이(G-2c — 떠나면 그 줄을 지운다). */
+  const rowGrab = useRef<{ id: string; startY: number; active: boolean; lane: GroupLane | null } | null>(null)
   const [draggingRow, setDraggingRow] = useState<string | null>(null)
   /** 놓일 자리의 가로 줄 — 표 틀의 위에서 잰 y. */
   const [rowLineY, setRowLineY] = useState<number | null>(null)
+  /** 그룹 덩이들이 서로를 찾는 자리(G-2c) — 그룹 화면 밖이면 null. */
+  const lanes = useContext(GroupLanesContext)
+  /** 다른 덩이에서 끌어 오는 행이 놓일 가로 줄(G-2c) — 표 틀의 위에서 잰 y. */
+  const [laneLineY, setLaneLineY] = useState<number | null>(null)
   /**
    * 보낼 옮기기의 줄 — 누를 때마다 화면은 바로 그 차례로 그리고, 요청은 차례로 보낸다(Alt+↓ 를 연달아 눌러도 버리지 않는다 · 서버가 받는
    * 차례가 화면의 차례와 같다). 보내는 동안 표에 `aria-busy` 를 단다.
@@ -1357,11 +1373,43 @@ export function DatabaseTable(props: {
       }
     })
   }
+  /**
+   * 다른 덩이로(G-2c · 정본 [보강 G-1] ⑧) — 그 그룹의 값이 된다(보드 카드를 다른 열에 놓는 것과 같다 · `within` 없이). 이 덩이에서 먼저 빼고,
+   * 서버의 답(새 값의 행)을 그 덩이가 받는다. 거절되면 까닭을 말하고 두 덩이가 다시 읽는다. 옮기기 줄(`moveChain`)에 선다 — 덩이 안 옮기기와
+   * 보내는 차례가 섞이지 않는다.
+   */
+  const moveRowToLane = (rowId: string, key: string, lane: GroupLane, before: string | null) => {
+    const previous = rowsRef.current
+    if (!previous.some((r) => r.id === rowId)) return
+    localWrites.current += 1
+    // 이제 이 덩이의 행이 아니다 — 다시 읽기가 "내가 고친 행"으로 되살리지 않게
+    touched.current.delete(rowId)
+    const next = previous.filter((r) => r.id !== rowId)
+    const current = modeRef.current
+    setRows(next)
+    if (current.kind === 'selected') {
+      const id = previous[current.at.row]?.id
+      const at = id === undefined ? -1 : next.findIndex((r) => r.id === id)
+      setMode(at < 0 ? { kind: 'idle' } : { kind: 'selected', at: { row: at, col: current.at.col } })
+    }
+    setPendingMoves((n) => n + 1)
+    moveChain.current = moveChain.current.then(async () => {
+      const result = await api.moveCard(workspaceId, viewId, { rowId, groupKey: key, beforeRowId: before, search: props.search ?? null })
+      setPendingMoves((n) => n - 1)
+      if (!result.ok) {
+        setError(result.message)
+        void reload()
+        lane.reload()
+        return
+      }
+      lane.receive(result.value.row, before, result.value.inView)
+    })
+  }
   const onGripPointerDown = (event: ReactPointerEvent<HTMLButtonElement>, rowId: string) => {
     if (!canReorder || event.button !== 0) return
     // 칸 고르기(mousedown) · 글자 고르기로 번지지 않게
     event.preventDefault()
-    rowGrab.current = { id: rowId, startY: event.clientY, active: false }
+    rowGrab.current = { id: rowId, startY: event.clientY, active: false, lane: null }
   }
   useEffect(() => {
     if (!canReorder) return
@@ -1373,6 +1421,16 @@ export function DatabaseTable(props: {
         g.active = true
         setDraggingRow(g.id)
       }
+      // 다른 덩이 위면(G-2c) 그 덩이에 줄을 — 이 덩이의 줄은 지운다
+      const foreign = lanes !== null && props.group ? lanes.laneAt(event.clientY, props.group.key) : null
+      if (g.lane !== null && g.lane !== foreign?.lane) g.lane.showLine(null)
+      g.lane = foreign?.lane ?? null
+      if (foreign !== null) {
+        setRowLineY(null)
+        const { lane } = foreign
+        lane.showLine(lane.accepts ? foreignDropLineY(lane.boxes(), event.clientY, lane.hasMore(), lane.emptyLineY()) : null)
+        return
+      }
       const y = rowDropLineY(rowBoxes(), g.id, event.clientY, hasMore)
       const top = scrollRef.current?.getBoundingClientRect().top ?? 0
       setRowLineY(y === null ? null : y - top)
@@ -1383,10 +1441,19 @@ export function DatabaseTable(props: {
       if (g === null || !g.active) return
       setDraggingRow(null)
       setRowLineY(null)
+      g.lane?.showLine(null)
+      const foreign = lanes !== null && props.group ? lanes.laneAt(event.clientY, props.group.key) : null
+      if (foreign !== null) {
+        const { key, lane } = foreign
+        const into = lane.accepts ? foreignDropBefore(lane.boxes(), event.clientY, lane.hasMore()) : undefined
+        if (into !== undefined) moveRowToLane(g.id, key, lane, into)
+        return
+      }
       const before = rowDropBefore(rowBoxes(), g.id, event.clientY, hasMore)
       if (before !== undefined) moveRowTo(g.id, before)
     }
     const onPointerCancel = () => {
+      rowGrab.current?.lane?.showLine(null)
       rowGrab.current = null
       setDraggingRow(null)
       setRowLineY(null)
@@ -1399,6 +1466,30 @@ export function DatabaseTable(props: {
       window.removeEventListener('pointerup', onPointerUp)
       window.removeEventListener('pointercancel', onPointerCancel)
     }
+  })
+
+  // 이 덩이를 차선으로 올린다(G-2c) — 끄는 표가 이 덩이에 줄을 그리게 하고 옮긴 행을 넘긴다. 렌더마다 다시 올린다(지금의 행 · 더 보기 ·
+  // 조건 밖을 그대로 읽게 — 위의 포인터 듣기와 같다)
+  useEffect(() => {
+    if (lanes === null || !props.group || !canReorder) return
+    const frameTop = () => scrollRef.current?.getBoundingClientRect().top ?? 0
+    return lanes.register(props.group.key, {
+      bounds: () => scrollRef.current?.closest<HTMLElement>('[data-testid="db-group"]')?.getBoundingClientRect() ?? null,
+      boxes: rowBoxes,
+      // 행이 없으면 몸의 위(머리 행 아래)에
+      emptyLineY: () => scrollRef.current?.querySelector('tbody')?.getBoundingClientRect().top ?? null,
+      hasMore: () => hasMore,
+      accepts: props.group.accepts !== false,
+      showLine: (y) => setLaneLineY(y === null ? null : y - frameTop()),
+      receive: (row, before, inView) => {
+        // 내가 옮겨 온 행 — 다시 읽었더니 조건 밖이어도 남긴다(④ · 10n-15). 그사이 돌던 다시 읽기(옛 목록)는 버린다
+        markTouched(row.id)
+        setRows((current) => [...insertRow(current, row, before)])
+        if (!inView) setOutside((current) => new Set(current).add(row.id))
+        refreshRollups([row.id])
+      },
+      reload: () => void reload(),
+    })
   })
 
   // ── 그리기 ─────────────────────────────────────────────────────────
@@ -1422,11 +1513,12 @@ export function DatabaseTable(props: {
         표 폭만큼 문서를 넓혔다.
       */}
       <div ref={scrollRef} className="relative overflow-x-auto" data-testid="db-table-scroll">
-        {rowLineY !== null && (
+        {/* 놓을 자리 — 이 표의 행을 끌 때(`rowLineY`) · 다른 덩이의 행을 이리로 끌 때(`laneLineY` · G-2c) */}
+        {(rowLineY ?? laneLineY) !== null && (
           <div
             aria-hidden
             data-testid="db-row-drop-line"
-            style={{ top: rowLineY - 1 }}
+            style={{ top: (rowLineY ?? laneLineY ?? 0) - 1 }}
             className="pointer-events-none absolute left-0 right-0 z-10 h-0.5 bg-blue-500"
           />
         )}

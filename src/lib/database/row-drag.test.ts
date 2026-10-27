@@ -8,12 +8,25 @@
  *   ⑤ 화면의 목록을 먼저 그 차례로 — 모르는 `before` · 자기 앞은 그대로
  *   ⑥ ★ 갤러리(10n-61) — 읽는 차례로 포인터 뒤의 첫 카드 앞(같은 줄은 가운데 · 아래 줄은 위) · 제자리는 undefined
  *   ⑦ 갤러리 — 더 볼 카드가 남았으면 맨 뒤에 놓지 않는다 · 세로 막대의 자리
+ *   ⑧ ★ 그룹 덩이 사이(G-2c) — 끄는 행이 목록에 없다: 첫 행의 앞 · 맨 뒤 · 더 볼 행이 남았으면 맨 뒤 없음 · 빈 덩이의 줄
+ *   ⑨ 다른 덩이에서 온 행을 넣는다 — `before` 앞 · 모르면 맨 뒤 · 이미 있으면 옮긴다
  */
 
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { cardDropBefore, cardDropMark, reorderRows, rowDropBefore, rowDropLineY, stepTarget, type RowBox } from './row-drag.ts'
+import {
+  cardDropBefore,
+  cardDropMark,
+  foreignDropBefore,
+  foreignDropLineY,
+  insertRow,
+  reorderRows,
+  rowDropBefore,
+  rowDropLineY,
+  stepTarget,
+  type RowBox,
+} from './row-drag.ts'
 
 // 가 · 나 · 다 — 높이 30 씩(가 0~30 · 나 30~60 · 다 60~90)
 const ROWS: RowBox[] = [
@@ -63,6 +76,30 @@ describe('표 · 목록의 행 끌기 규칙 (10n-60)', () => {
     assert.equal(ids(reorderRows(rows, 'ga', 'nope')), 'ga,na,da', '모르는 before — 그대로')
     assert.equal(ids(reorderRows(rows, 'na', 'na')), 'ga,na,da', '자기 앞 — 그대로')
     assert.equal(ids(reorderRows(rows, 'nope', null)), 'ga,na,da')
+  })
+})
+
+describe('그룹 덩이 사이의 행 끌기 규칙 (G-2c)', () => {
+  test('★ ⑧ 끄는 행이 목록에 없다 — 첫 행의 앞 · 사이 · 맨 뒤 · 더 볼 행이 남았으면 맨 뒤 없음 · 빈 덩이의 줄', () => {
+    assert.equal(foreignDropBefore(ROWS, 5, false), 'ga', '가의 가운데(15) 위 → 가의 앞')
+    assert.equal(foreignDropBefore(ROWS, -40, false), 'ga', '덩이 머리 쪽 → 맨 앞')
+    assert.equal(foreignDropBefore(ROWS, 50, false), 'da', '나의 가운데(45) 아래 · 다의 가운데 위 → 다의 앞')
+    assert.equal(foreignDropBefore(ROWS, 80, false), null, '다의 가운데(75) 아래 → 맨 뒤')
+    assert.equal(foreignDropBefore(ROWS, 80, true), undefined, '더 볼 행이 남았으면 맨 뒤에 놓지 않는다')
+    assert.equal(foreignDropBefore([], 10, false), null, '빈 덩이 — 맨 뒤')
+    assert.equal(foreignDropLineY(ROWS, 50, false, null), 60)
+    assert.equal(foreignDropLineY(ROWS, 80, false, null), 90, '맨 뒤 — 마지막 행(다)의 아래')
+    assert.equal(foreignDropLineY(ROWS, 80, true, null), null)
+    assert.equal(foreignDropLineY([], 10, false, 120), 120, '빈 덩이 — 받은 자리')
+  })
+
+  test('⑨ 다른 덩이에서 온 행을 넣는다', () => {
+    const rows = [{ id: 'ga' }, { id: 'na' }]
+    const ids = (list: readonly { id: string }[]) => list.map((r) => r.id).join(',')
+    assert.equal(ids(insertRow(rows, { id: 'da' }, 'na')), 'ga,da,na')
+    assert.equal(ids(insertRow(rows, { id: 'da' }, null)), 'ga,na,da')
+    assert.equal(ids(insertRow(rows, { id: 'da' }, 'nope')), 'ga,na,da', '모르는 before — 맨 뒤')
+    assert.equal(ids(insertRow(rows, { id: 'na' }, 'ga')), 'na,ga', '이미 있으면 옮긴다(겹치지 않는다)')
   })
 })
 
