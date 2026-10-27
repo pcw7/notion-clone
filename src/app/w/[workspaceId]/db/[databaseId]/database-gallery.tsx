@@ -19,6 +19,9 @@
  *
  * "+ 새로 만들기"는 그리드 끝의 카드다(노션처럼). 만들면 그 카드의 제목을 바로 받는다 — 이름 없는 카드가 쌓이지 않게(표 · 보드와 같은
  * 규칙). 템플릿 · 기본 템플릿은 `NewRowMenu` 가 맡는다.
+ *
+ * 그룹 덩이(G-3a · 정본 [보강 G-3]) — `group` 이 있으면 그 그룹의 카드만: "더 보기"는 그룹 행 라우트 · "새로 만들기"는 그 그룹의 값을
+ * 채운다 · 카드 끌기는 덩이 안의 차례(보드 열의 자리 · `within`). 구독은 바깥이 하나로 한다(`live` 거짓).
  */
 
 import { rowOpenHref } from '@/lib/database/open-pages'
@@ -35,6 +38,7 @@ import type { GalleryLayout } from '@/lib/database/gallery'
 import { templateRowNote, type DefaultTemplate } from '@/lib/database/new-row'
 import { PageIconView } from '../../page-icon-view'
 import * as api from './table-api'
+import type { RowCell } from '@/lib/database/row'
 import { EDITED_OUT_OF_VIEW_NOTICE } from '@/lib/database/out-of-view'
 import type { PeopleNames, RelationIcons, RelationLabels } from './cell-view'
 import { CardBadges } from './card-badges'
@@ -99,6 +103,10 @@ export function DatabaseGallery(props: {
   formulaPlan?: FormulaPlan | null
   /** 손으로 둔 차례로 서는가 — 살아 있는 정렬이 없다(10n-61). 참이면 고칠 수 있는 사람에게 카드 끌기를 연다. */
   manualOrder?: boolean
+  /** 그룹 덩이(G-3a) — 그 그룹의 카드만 읽고 · "새로 만들기"는 그 그룹의 값(`cells`)을 채운다 · 끌기는 덩이 안의 차례. */
+  group?: { readonly key: string; readonly cells: readonly RowCell[] } | null
+  /** 표 변경을 스스로 구독하는가(기본 참) — 그룹 덩이는 바깥이 하나로 한다(G-3a ③). */
+  live?: boolean
 }) {
   const { workspaceId, viewId, dataSourceId, tableName, columns, access } = props
   const router = useRouter()
@@ -120,7 +128,7 @@ export function DatabaseGallery(props: {
   // 표 변경 알림(2k-3 · F-04-24) — 다른 곳에서 바뀌면 서버 렌더를 다시 부르고 첫 페이지 · 미리보기를 받아들인다. 만들기 · 편집 · 더 보기
   // 중이면 끝난 뒤에. "더 보기"로 더 읽은 카드는 첫 페이지로 돌아간다(§7).
   const galleryBusy = loadingMore || busy || editing !== null || pendingMoves > 0
-  useLiveServerRefresh(workspaceId, dataSourceId, galleryBusy, props.renderedAt)
+  useLiveServerRefresh(workspaceId, dataSourceId, galleryBusy, props.renderedAt, props.live !== false)
   useAdoptServerValue(props.rows, galleryBusy, (next) => {
     setRows(next)
     setCursor(props.hasMore ? props.nextCursor : null)
@@ -165,7 +173,10 @@ export function DatabaseGallery(props: {
     if (cursor === null || loadingMore || reachedCap) return
     setLoadingMore(true)
     setError(null)
-    const result = await api.loadRows(workspaceId, viewId, cursor, undefined, props.search)
+    // 그룹 덩이(G-3a)면 그 그룹의 다음 페이지 — 그룹별 커서(F-04-15)
+    const result = props.group
+      ? await api.loadGroupRows(workspaceId, viewId, props.group.key, cursor, props.search)
+      : await api.loadRows(workspaceId, viewId, cursor, undefined, props.search)
     setLoadingMore(false)
     if (!result.ok) {
       setError(result.message)
@@ -189,7 +200,8 @@ export function DatabaseGallery(props: {
     setBusy(true)
     setError(null)
     setNotice(null)
-    const result = await api.createRowFrom(workspaceId, viewId, { templateId, cells: [] })
+    // 그룹 덩이(G-3a)면 그 그룹의 값을 채운다 — 템플릿의 값을 덮는다(표의 그룹과 같다)
+    const result = await api.createRowFrom(workspaceId, viewId, { templateId, cells: props.group ? [...props.group.cells] : [] })
     setBusy(false)
     if (!result.ok) {
       setError(result.message)
@@ -263,8 +275,12 @@ export function DatabaseGallery(props: {
   const moveCardTo = (rowId: string, before: string | null) => {
     setRows((current) => reorderRows(current, rowId, before))
     setPendingMoves((n) => n + 1)
+    const group = props.group
     moveChain.current = moveChain.current.then(async () => {
-      const result = await api.moveTableRow(workspaceId, viewId, rowId, before)
+      // 그룹 덩이면 덩이 안의 차례 — 보드 열의 자리 · 셀은 쓰지 않는다(`within` · G-3a ④)
+      const result = group
+        ? await api.moveCard(workspaceId, viewId, { rowId, groupKey: group.key, beforeRowId: before, search: props.search ?? null, within: true })
+        : await api.moveTableRow(workspaceId, viewId, rowId, before)
       setPendingMoves((n) => n - 1)
       if (!result.ok) {
         setError(result.message)

@@ -257,6 +257,8 @@ export default async function DatabasePage({
   const isTableLike = view.value.type === 'table' || view.value.type === 'list'
   const isGroupedRows = isTableLike && view.value.groupBy !== null
   const isGallery = view.value.type === 'gallery'
+  // 갤러리의 그룹(G-3a · 정본 [보강 G-3]) — 그룹마다 한 덩이의 카드 격자
+  const isGroupedGallery = isGallery && view.value.groupBy !== null
   const isCalendar = view.value.type === 'calendar'
   // 폼(7a-3) — 행을 그리지 않는다. 도구막대 · 표 자리에 편집 화면이 선다(정본 §3.6 끝 [보강] 폼 ⑧)
   const isForm = view.value.type === 'form'
@@ -285,7 +287,7 @@ export default async function DatabasePage({
         }),
     // 필터 패널의 연산자 드롭다운이 이것을 그린다 — 코드에 박지 않는다(F-03-17).
     readOperatorCatalog(),
-    isBoard || isGroupedRows ? queryGroups(ctx, view.value.id, { search }) : null,
+    isBoard || isGroupedRows || isGroupedGallery ? queryGroups(ctx, view.value.id, { search }) : null,
   ])
   if (tablePage !== null && !tablePage.ok) notFound()
   // 그룹 프로퍼티가 지워진 보드(`not_grouped`)는 아래에서 "그룹 기준을 고르라"로 그린다. 다른 실패는 못 보는 것과 같다.
@@ -343,8 +345,8 @@ export default async function DatabasePage({
           propertyName: columns.find((c) => c.propertyId === liveCalculation.property_id)?.name ?? '',
           fn: liveCalculation.function,
         }
-  // 표 · 목록도 그룹 패널을 연다(G-1) — 그룹이 없어도 된다(`allowNone` — "그룹 없애기")
-  const boardSettings: BoardSettings | undefined = isBoard || isTableLike
+  // 표 · 목록 · 갤러리도 그룹 패널을 연다(G-1 · G-3a) — 그룹이 없어도 된다(`allowNone` — "그룹 없애기")
+  const boardSettings: BoardSettings | undefined = isBoard || isTableLike || isGallery
     ? {
         allowNone: !isBoard,
         groupBy,
@@ -400,10 +402,13 @@ export default async function DatabasePage({
       ? await queryCalendar(ctx, view.value.id, { from: calendarGrid.from, to: calendarGrid.to, search })
       : null
   // 갤러리의 카드 미리보기(2f-2) — 첫 페이지의 행마다 본문의 첫 이미지. 그 뒤("더 보기")의 것은 행 라우트가 함께 준다.
+  // 그룹 덩이(G-3a ②)면 모든 그룹의 첫 페이지 카드의 것을 한 번에
+  const galleryCardIds =
+    isGroupedGallery && board !== null && board.ok
+      ? board.value.groups.flatMap((g) => g.rows.map((r) => r.id))
+      : (tablePage?.value.rows.map((r) => r.id) ?? [])
   const galleryCovers =
-    isGallery && tablePage !== null && view.value.gallery.cover === 'page_content'
-      ? await readCardCovers(ctx, tablePage.value.rows.map((r) => r.id))
-      : {}
+    isGallery && view.value.gallery.cover === 'page_content' ? await readCardCovers(ctx, galleryCardIds) : {}
   const variant = variantOf(view.value.type)
 
   // ── relation 칸의 제목 ──
@@ -692,7 +697,36 @@ export default async function DatabasePage({
           </p>
         )
       ) : isGallery ? (
-        tablePage !== null && (
+        isGroupedGallery && groupProperty !== null && board !== null && board.ok ? (
+          // 갤러리의 그룹(G-3a) — 그룹마다 한 덩이의 카드 격자. 그룹 속성이 지워졌으면 아래의 평평한 갤러리로 그린다(설정은 남는다)
+          <GroupedRows
+            key={contentKey}
+            property={groupProperty}
+            groups={groups}
+            calculation={groupCalculation}
+            gallery={{
+              workspaceId,
+              viewId: view.value.id,
+              dataSourceId: view.value.dataSourceId,
+              tableName,
+              columns: visibleColumns,
+              relationLabels: relation.labels,
+              peopleNames,
+              relationIcons: relation.icons,
+              access: contentAccess,
+              defaultTemplate,
+              search,
+              layout: view.value.gallery,
+              covers: galleryCovers,
+              rollupValues,
+              formulaPlan,
+              peekBase,
+              renderedAt,
+              // 덩이 안의 차례(보드 열의 자리) — 살아 있는 정렬이 없을 때
+              manualOrder: board.value.manualOrder,
+            }}
+          />
+        ) : tablePage !== null && (
           <DatabaseGallery
             key={contentKey}
             workspaceId={workspaceId}
