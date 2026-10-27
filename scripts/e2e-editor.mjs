@@ -23916,7 +23916,7 @@ async function main() {
     } catch (thrown) { await sectionThrew(thrown) } }
 
     if (sectionIf('표 · 목록의 그룹 (G-1 · F-04-04 · F-04-11)')) { try {
-      // 표 · 목록도 view.group_by 로 묶는다 — 그룹마다 한 덩이(머리 · 개수 · 그 그룹의 표) · 순서는 옵션 순서 · 그룹 모드에서는 열 집계 줄이 없다 ·
+      // 표 · 목록도 view.group_by 로 묶는다 — 그룹마다 한 덩이(머리 · 개수 · 그 그룹의 표) · 순서는 옵션 순서 · 덩이마다 열 집계 줄(G-2d — 값은 G-2d 절이 본다) ·
       // 그 그룹의 "새로 만들기"는 그 그룹의 값을 채운다 · 다른 곳의 변경을 따라온다 · 표 변경 구독은 덩이들이 하나를 나눠 쓴다(EventSource 의
       // 수가 평평한 표와 같다) · "그룹 없애기"로 평평한 표로 돌아온다. 자기 데이터를 스스로 만든다.
       const stamp = Date.now()
@@ -23964,7 +23964,8 @@ async function main() {
           JSON.stringify(look) === JSON.stringify([
             { key: '', count: '0', rows: 0 }, { key: opt['시작 전'], count: '1', rows: 1 }, { key: opt['진행 중'], count: '2', rows: 2 }, { key: opt['완료'], count: '1', rows: 1 },
           ]), JSON.stringify(look))
-        check('그룹 모드에서는 열 집계 줄이 없다(뷰 전체의 값이 덩이 아래에 서지 않게)', await evaluate(`!document.querySelector('[data-testid="db-calc-row"]')`))
+        check('덩이마다 열 집계 줄이 선다(G-2d — 그 그룹의 값 · 뷰 전체의 줄 하나가 아니다)',
+          await evaluate(`document.querySelectorAll('[data-testid="db-group"] [data-testid="db-calc-row"]').length === 4 && document.querySelectorAll('[data-testid="db-calc-row"]').length === 4`))
         const groupedSources = await evaluate('window.__esCount')
         check('★ 표 변경 구독은 덩이들이 하나를 나눠 쓴다 — EventSource 의 수가 평평한 표와 같다', groupedSources === flatSources && flatSources >= 1,
           JSON.stringify({ flatSources, groupedSources }))
