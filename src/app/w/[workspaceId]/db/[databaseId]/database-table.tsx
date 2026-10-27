@@ -499,9 +499,11 @@ export function DatabaseTable(props: {
       (event.key === 'ArrowUp' || event.key === 'ArrowDown')
     ) {
       event.preventDefault()
-      const ids = rowsRef.current.map((r) => r.id)
-      const target = stepTarget(ids, before.at.row, event.key === 'ArrowUp' ? 'up' : 'down', hasMore)
-      if (target !== undefined) moveRowTo(ids[before.at.row]!, target)
+      // 덩이에 남은 "조건 밖" 행(G-2b)은 한 칸에 세지 않는다 — 옮길 수도, 그 앞에 놓을 수도 없다
+      const ids = rowsRef.current.filter((r) => !heldOutside(r.id)).map((r) => r.id)
+      const at = ids.indexOf(rowsRef.current[before.at.row]?.id ?? '')
+      const target = at < 0 ? undefined : stepTarget(ids, at, event.key === 'ArrowUp' ? 'up' : 'down', hasMore)
+      if (target !== undefined) moveRowTo(ids[at]!, target)
       return
     }
     const result = handleGridKey(
@@ -1298,8 +1300,13 @@ export function DatabaseTable(props: {
    * 손으로 둔 차례를 바꿀 수 있는가 — 고칠 수 있고 · 정렬이 없고(정렬이 차례를 정한다 · 서버도 `sorted` 로 거부) · 표 · 목록이고 · 하위 항목
    * 트리가 아니다(펼친 자식 묶음을 함께 옮기는 규칙은 아직 없다 — §7). 서버는 이 뷰의 `row_position('*')` 에 둔다(10n-59).
    */
-  // 그룹 덩이(G-1 ⑤)에서는 아직 끌지 않는다 — 덩이 안의 차례는 보드 열의 자리(`group_key`)라 표의 `'*'` 자리와 다르다
-  const canReorder = access.canEditContent && props.sorts.length === 0 && (variant === 'table' || variant === 'list') && subItems === null && !props.group
+  // 그룹 덩이(G-2b · 정본 [보강 G-1] ⑦)에서는 덩이 안의 차례 — 보드 열의 자리(`group_key`)라 표의 `'*'` 자리와 따로다(`moveRowTo`)
+  const canReorder = access.canEditContent && props.sorts.length === 0 && (variant === 'table' || variant === 'list') && subItems === null
+  /**
+   * 덩이에 남은 "조건 밖" 행(G-1 ④) — 고쳐서 다른 그룹 값이 됐다. 덩이 안에서 옮기면 값이 이 덩이 것으로 되돌아가므로 손잡이를 그리지 않고
+   * 놓을 자리 · 키의 한 칸에서 건너뛴다(그사이를 서버의 `within` 이 막는다). 평평한 표의 조건 밖 행은 옮겨도 된다 — 셀이 없다.
+   */
+  const heldOutside = (rowId: string) => props.group != null && outside.has(rowId)
   const scrollRef = useRef<HTMLDivElement>(null)
   /** 잡은 행 · 잡은 y · 끌기가 시작됐는가(4px 를 넘었다). */
   const rowGrab = useRef<{ id: string; startY: number; active: boolean } | null>(null)
@@ -1316,7 +1323,7 @@ export function DatabaseTable(props: {
     [...(scrollRef.current?.querySelectorAll<HTMLElement>('tbody tr[data-row-id]') ?? [])].map((el) => {
       const r = el.getBoundingClientRect()
       return { id: el.dataset.rowId ?? '', top: r.top, height: r.height }
-    })
+    }).filter((box) => !heldOutside(box.id))
   /**
    * 이 행을 `before` 앞에 — 화면을 먼저 그 차례로 그리고 보낸다. 거절되면 까닭을 말하고 서버의 차례를 다시 읽는다(뒤에 줄 선 옮기기가 있을 수
    * 있어 "직전 화면으로 되돌리기" 는 틀린다). 새 차례는 표 변경 신호의 다시 읽기도 확인한다.
@@ -1336,8 +1343,12 @@ export function DatabaseTable(props: {
       setMode({ kind: 'selected', at: { row: shown.findIndex((r) => r.id === selectedId), col: current.at.col } })
     }
     setPendingMoves((n) => n + 1)
+    const group = props.group
     moveChain.current = moveChain.current.then(async () => {
-      const result = await api.moveTableRow(workspaceId, viewId, rowId, before)
+      // 덩이 안이면 보드 열의 자리 — 보드의 이동 명령에 "덩이 안 차례만"(셀을 쓰지 않는다 · G-2b)
+      const result = group
+        ? await api.moveCard(workspaceId, viewId, { rowId, groupKey: group.key, beforeRowId: before, search: props.search ?? null, within: true })
+        : await api.moveTableRow(workspaceId, viewId, rowId, before)
       setPendingMoves((n) => n - 1)
       if (!result.ok) {
         setError(result.message)
@@ -1596,7 +1607,7 @@ export function DatabaseTable(props: {
                         // 하위 항목의 깊이만큼 들인다(2b-2). 토글이 없는 행도 같은 폭을 비워 제목이 줄을 맞춘다.
                         style={subItems === null ? undefined : { paddingLeft: (depthOf.get(row.id) ?? 0) * 20 }}
                       >
-                        {canReorder && (
+                        {canReorder && !heldOutside(row.id) && (
                           // 끌기 손잡이(10n-60) — 마우스를 올리면 선다. 키보드는 칸을 고르고 Alt+↑ · Alt+↓(표의 onKeyDown). 칸 고르기로 번지지 않게 막는다.
                           // 글리프는 CSS 로 그린다("열기" 와 같다) — 칸의 글자(textContent)에 섞이지 않게.
                           <button
