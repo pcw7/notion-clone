@@ -62,6 +62,7 @@ import { queryRows } from '@/lib/database/query'
 import { computeCalculations } from '@/lib/database/calculate'
 import { normalizeSearch } from '@/lib/database/search'
 import { queryGroupColumnCalculations, queryGroups } from '@/lib/database/group'
+import { readViewerToday } from '@/lib/settings/time-zone-cookie'
 import { loadRelationLabels, relationIdsIn } from '@/lib/database/relation'
 import { loadPeopleNames, peopleIdsOf } from '@/lib/database/people'
 import { computeRollups, EMPTY_ROLLUP_PAGE } from '@/lib/database/rollup'
@@ -287,7 +288,8 @@ export default async function DatabasePage({
         }),
     // 필터 패널의 연산자 드롭다운이 이것을 그린다 — 코드에 박지 않는다(F-03-17).
     readOperatorCatalog(),
-    isBoard || isGroupedRows || isGroupedGallery ? queryGroups(ctx, view.value.id, { search }) : null,
+    // 상대 날짜 그룹(B-3)의 오늘 — 보는 사람의 시간대(쿠키 · `time-zone-cookie.tsx` 가 쓴다)
+    isBoard || isGroupedRows || isGroupedGallery ? readViewerToday().then((today) => queryGroups(ctx, view.value.id, { search, today })) : null,
   ])
   if (tablePage !== null && !tablePage.ok) notFound()
   // 그룹 프로퍼티가 지워진 보드(`not_grouped`)는 아래에서 "그룹 기준을 고르라"로 그린다. 다른 실패는 못 보는 것과 같다.
@@ -341,6 +343,8 @@ export default async function DatabasePage({
           numberSize: board !== null && board.ok ? board.value.numberSize : null,
           // 글로 묶는 방식(B-2b)
           textMode: board !== null && board.ok ? board.value.textMode : null,
+          // 상대 날짜 그룹(B-3) — 서버가 쓴 오늘("새로 만들기"의 날짜)
+          today: board !== null && board.ok ? board.value.today : null,
         }
       : null
   const groups: BoardGroupJson[] =
@@ -479,7 +483,9 @@ export default async function DatabasePage({
   // 그룹 덩이마다(G-2d · 정본 [보강 G-1] ⑨) — 그 그룹의 행 전부로. 한 질의로 모든 그룹의 값을 · 표 모양만
   const groupColumnCalculations =
     isGroupedRows && variant === 'table'
-      ? await queryGroupColumnCalculations(ctx, view.value.id, view.value.columns, { search }).then((r) => (r.ok ? r.value : {}))
+      ? await queryGroupColumnCalculations(ctx, view.value.id, view.value.columns, { search, today: await readViewerToday() }).then((r) =>
+          r.ok ? r.value : {},
+        )
       : {}
 
   // ── 기본 템플릿(F-08-03) ──

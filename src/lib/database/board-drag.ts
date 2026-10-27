@@ -37,7 +37,7 @@
 
 import type { RowCell } from './row.ts'
 import { STATUS_GROUP_LABEL, optionValue, type GroupableType, type SelectOption, type StatusGroupKind } from './property-types.ts'
-import { DEFAULT_DATE_UNIT, dateGroupLabel, type DateUnit } from './date-group.ts'
+import { DEFAULT_DATE_UNIT, dateGroupLabel, relativeDayOf, type DateUnit } from './date-group.ts'
 import { DEFAULT_NUMBER_SIZE, numberGroupLabel } from './number-group.ts'
 import { DEFAULT_TEXT_MODE, textGroupLabel, type TextMode } from './text-group.ts'
 import { textRun } from '../contracts/rich-text.ts'
@@ -224,7 +224,8 @@ export function prefillCells(propertyType: GroupableType, propertyId: string, ke
 
 /**
  * 열의 `+` 가 채울 키 — 범주 열(10n-27)이면 서버가 정한 옵션(`fillOptionId` — 없으면 null: 그 열에는 만들 수 없다), 그 밖은 열의 키.
- * 첫 글자로 묶은 열(B-2b)은 null — 첫 글자만 정할 수는 없다. null 이면 그 열에 만들지도, 다른 열에서 끌어 놓지도 못한다.
+ * 첫 글자로 묶은 열(B-2b)은 null — 첫 글자만 정할 수는 없다. null 이면 그 열에 만들지도, 다른 열에서 끌어 놓지도 못한다. 상대 날짜(B-3)는
+ * 어제 · 오늘 · 내일 열만 그 날(서버가 쓴 오늘 `today` 로 셈한다) · 범위 열(지난 7일 …)은 null.
  */
 export function fillKeyOf(
   group: {
@@ -232,9 +233,10 @@ export function fillKeyOf(
     readonly statusGroup?: StatusGroupKind | null
     readonly fillOptionId?: string | null
   },
-  bucket: { readonly textMode?: TextMode | null } = {},
+  bucket: { readonly textMode?: TextMode | null; readonly dateUnit?: DateUnit | null; readonly today?: string | null } = {},
 ): string | null {
   if (bucket.textMode === 'first') return null
+  if (bucket.dateUnit === 'relative' && group.key !== '') return bucket.today ? relativeDayOf(group.key, bucket.today) : null
   if (group.statusGroup !== undefined && group.statusGroup !== null) return group.fillOptionId ?? null
   return group.key
 }

@@ -5,12 +5,13 @@
  *   ② 그 단위의 버킷 키인가 — 첫 날만 · 달력에 없는 날은 아니다
  *   ③ ★ 옮기면 단위만큼 민다 — 날수 · 달수 · 끝 날짜도 같은 만큼 · 시각 · 시간대를 지킨다 · 없는 날은 그 달의 끝으로
  *   ④ 머리의 이름
+ *   ⑤ ★ 상대 단위(B-3) — 오늘에서 며칠 떨어졌나 · 겹치지 않는 경계 · 하루짜리 키의 그 날 · 그 시간대의 오늘
  */
 
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { bucketOf, dateGroupLabel, isBucketKey, isDateUnit, shiftDateValue } from './date-group.ts'
+import { bucketOf, dateGroupLabel, isBucketKey, isDateUnit, relativeDayOf, relativeOf, shiftDateValue, todayIn } from './date-group.ts'
 
 describe('날짜로 묶기 (B-1)', () => {
   test('★ ① 버킷의 첫 날이 키', () => {
@@ -37,7 +38,8 @@ describe('날짜로 묶기 (B-1)', () => {
     assert.equal(isBucketKey('', 'day'), false, '값 없음은 부르는 쪽이 따로 본다')
     assert.equal(isBucketKey('2026-10-01T00:00', 'day'), false, '키는 날짜 글자 열 자다')
     assert.equal(isDateUnit('month'), true)
-    assert.equal(isDateUnit('relative'), false)
+    assert.equal(isDateUnit('relative'), true, '상대 단위(B-3)')
+    assert.equal(isDateUnit('hour'), false)
   })
 
   test('★ ③ 옮기면 단위만큼 민다', () => {
@@ -59,5 +61,40 @@ describe('날짜로 묶기 (B-1)', () => {
     assert.equal(dateGroupLabel('2026-01-01', 'year'), '2026년')
     assert.equal(dateGroupLabel('2026-10-05', 'day'), '2026년 10월 5일')
     assert.equal(dateGroupLabel('2026-10-26', 'week'), '2026년 10월 26일 주')
+  })
+
+  test('★ ⑤ 상대 단위(B-3)', () => {
+    const today = '2026-10-31'
+    const at = (n: number) => {
+      const d = new Date(Date.UTC(2026, 9, 31 + n))
+      return d.toISOString().slice(0, 10)
+    }
+    assert.equal(relativeOf(at(0), today), 'today')
+    assert.equal(relativeOf(at(1), today), 'tomorrow', '해를 넘지 않아도 달을 넘는다(11월 1일)')
+    assert.equal(relativeOf(at(-1), today), 'yesterday')
+    assert.equal(relativeOf(at(2), today), 'next_7')
+    assert.equal(relativeOf(at(7), today), 'next_7')
+    assert.equal(relativeOf(at(8), today), 'next_30')
+    assert.equal(relativeOf(at(30), today), 'next_30')
+    assert.equal(relativeOf(at(31), today), 'later')
+    assert.equal(relativeOf(at(-2), today), 'last_7')
+    assert.equal(relativeOf(at(-7), today), 'last_7')
+    assert.equal(relativeOf(at(-8), today), 'last_30')
+    assert.equal(relativeOf(at(-30), today), 'last_30')
+    assert.equal(relativeOf(at(-31), today), 'earlier')
+    assert.equal(relativeOf('2026-10-31T23:30:00+09:00', today), 'today', '적힌 날짜로')
+    assert.equal(bucketOf(at(1), 'relative', today), 'tomorrow')
+    assert.equal(bucketOf(at(1), 'relative'), null, '오늘을 모르면 셀 수 없다')
+    assert.equal(isBucketKey('next_7', 'relative'), true)
+    assert.equal(isBucketKey('2026-10-01', 'relative'), false)
+    assert.equal(relativeDayOf('tomorrow', today), '2026-11-01')
+    assert.equal(relativeDayOf('yesterday', today), '2026-10-30')
+    assert.equal(relativeDayOf('last_7', today), null, '범위 덩이는 그 날이 없다')
+    assert.equal(dateGroupLabel('earlier', 'relative'), '그 전')
+    // 2026-10-31 15:30 UTC — 서울은 11월 1일 0시 30분
+    const now = new Date('2026-10-31T15:30:00Z')
+    assert.equal(todayIn('Asia/Seoul', now), '2026-11-01')
+    assert.equal(todayIn('UTC', now), '2026-10-31')
+    assert.equal(todayIn('Nowhere/Fake', now), '2026-10-31', '틀린 시간대는 UTC')
   })
 })

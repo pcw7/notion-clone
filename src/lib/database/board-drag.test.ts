@@ -246,6 +246,12 @@ describe('prefillCells · groupLabel', () => {
     assert.deepEqual(prefillCells('rich_text', 'p', '사과'), [{ propertyId: 'p', value: { type: 'rich_text', rich_text: [textRun('사과')] } }])
     assert.equal(fillKeyOf({ key: 'ㅅ' }, { textMode: 'first' }), null)
     assert.equal(fillKeyOf({ key: '사과' }, { textMode: 'exact' }), '사과')
+    // 상대 날짜(B-3) — 어제 · 오늘 · 내일 열은 그 날 · 범위 열은 없다 · 값 없음 열은 '' · 오늘을 모르면 없다
+    assert.equal(fillKeyOf({ key: 'tomorrow' }, { dateUnit: 'relative', today: '2026-10-31' }), '2026-11-01')
+    assert.equal(fillKeyOf({ key: 'last_7' }, { dateUnit: 'relative', today: '2026-10-31' }), null)
+    assert.equal(fillKeyOf({ key: '' }, { dateUnit: 'relative', today: '2026-10-31' }), '')
+    assert.equal(fillKeyOf({ key: 'today' }, { dateUnit: 'relative' }), null)
+    assert.equal(groupLabel('date', '마감', { key: 'next_7', option: null }, { dateUnit: 'relative' }), '앞으로 7일')
   })
 
   test('열 이름 — 옵션 이름 · "{속성} 없음" · 체크됨/체크 안 됨', () => {

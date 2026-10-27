@@ -26,6 +26,7 @@ import { readJsonBody, requireWorkspaceSession } from '@/lib/auth/route-session'
 import { moveRow, queryGroupCalculations, queryGroupColumnCalculations, queryGroupRows, queryGroups } from '@/lib/database/group'
 import { getView } from '@/lib/database/view'
 import { readCardCovers } from '@/lib/database/gallery-covers'
+import { readViewerToday } from '@/lib/settings/time-zone-cookie'
 import { failureResponse, groupFailureStatus, rowJson } from '@/lib/database/http'
 import { normalizeSearch } from '@/lib/database/search'
 
@@ -43,9 +44,11 @@ export async function GET(request: Request, ctx: Ctx): Promise<Response> {
   const params = new URL(request.url).searchParams
   const group = params.get('group')
   const search = normalizeSearch(params.get('q'))
+  // 상대 날짜 그룹(B-3)의 오늘 — 보는 사람의 시간대(쿠키)
+  const today = await readViewerToday()
 
   if (params.get('calculations') === '1') {
-    const calculated = await queryGroupCalculations(session.ctx, viewId, { search })
+    const calculated = await queryGroupCalculations(session.ctx, viewId, { search, today })
     if (!calculated.ok) return failureResponse(groupFailureStatus(calculated.reason), calculated)
     return Response.json({ ok: true, calculation: calculated.value.calculation, values: calculated.value.values })
   }
@@ -56,6 +59,7 @@ export async function GET(request: Request, ctx: Ctx): Promise<Response> {
       cursor: params.get('cursor'),
       ...(Number.isFinite(rawLimit) && rawLimit > 0 ? { limit: rawLimit } : {}),
       search,
+      today,
     })
     if (!page.ok) return failureResponse(groupFailureStatus(page.reason), page)
     // 뷰의 모양에 따라 함께 싣는 것 — 표면 첫 페이지에 덩이의 열 집계(G-2d · 대상은 그 그룹의 행 전부라 페이지마다 같다) · 갤러리면 그
@@ -63,7 +67,7 @@ export async function GET(request: Request, ctx: Ctx): Promise<Response> {
     const view = await getView(session.ctx, viewId)
     let calculations: Readonly<Record<string, unknown>> | undefined
     if (view.ok && view.value.type === 'table' && params.get('cursor') === null) {
-      const calculated = await queryGroupColumnCalculations(session.ctx, viewId, view.value.columns, { search, groupKey: group })
+      const calculated = await queryGroupColumnCalculations(session.ctx, viewId, view.value.columns, { search, groupKey: group, today })
       if (calculated.ok) calculations = calculated.value[group] ?? {}
     }
     const covers =
@@ -80,7 +84,7 @@ export async function GET(request: Request, ctx: Ctx): Promise<Response> {
     })
   }
 
-  const groups = await queryGroups(session.ctx, viewId, { search })
+  const groups = await queryGroups(session.ctx, viewId, { search, today })
   if (!groups.ok) return failureResponse(groupFailureStatus(groups.reason), groups)
   const { value } = groups
   return Response.json({
@@ -125,6 +129,8 @@ export async function POST(request: Request, ctx: Ctx): Promise<Response> {
     search: typeof body.search === 'string' ? body.search : null,
     // 참일 때만 — 보드는 보내지 않는다(다른 열로 옮기는 것이 셀을 바꾸는 일이다)
     within: body.within === true,
+    // 상대 날짜 그룹(B-3)의 오늘 — 보는 사람의 시간대(쿠키)
+    today: await readViewerToday(),
   })
   if (!moved.ok) return failureResponse(groupFailureStatus(moved.reason), moved)
   return Response.json({

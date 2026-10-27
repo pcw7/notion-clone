@@ -10,6 +10,8 @@
  *   ③ ★ 옮기면 단위만큼 민다 — 시각 · 끝 날짜를 지킨다 · 값이 없던 행은 버킷의 첫 날 · 값 없음 그룹은 비운다 · 빈 달에도 놓는다 ·
  *        버킷 키가 아니면 거부
  *   ④ 단위는 날짜 속성에만 · 일 · 주 · 월 · 년만
+ *   ⑤ ★ 상대 날짜(B-3) — 보는 사람의 오늘에서 며칠 · 날짜 순 · 결과가 오늘을 싣는다 · 어제 · 오늘 · 내일로 옮기면 그 날(시각을 지킨다) ·
+ *        범위 덩이로는 못 옮긴다 · 오늘이 바뀌면 같은 행의 덩이가 바뀐다
  *
  * ⚠ skip 은 테스트마다 `t.skip` 으로 건다(HANDOFF §5).
  */
@@ -180,9 +182,60 @@ describe('④ 단위는 날짜 속성에만', () => {
     const g = await table([['가', { start: '2026-10-15' }]])
     const onSelect = await updateView(fx.owner.ctx, g.viewId, { groupBy: { property_id: g.status, date_unit: 'month' } })
     assert.equal(onSelect.ok, false)
-    const relative = await updateView(fx.owner.ctx, g.viewId, { groupBy: { property_id: g.due, date_unit: 'relative' } })
-    assert.equal(relative.ok, false)
+    const hour = await updateView(fx.owner.ctx, g.viewId, { groupBy: { property_id: g.due, date_unit: 'hour' } })
+    assert.equal(hour.ok, false)
     const saved = unwrap(await updateView(fx.owner.ctx, g.viewId, { groupBy: { property_id: g.due, date_unit: 'day' } }))
     assert.deepEqual(saved.groupBy, { property_id: g.due, date_unit: 'day' })
+  })
+})
+
+describe('⑤ 상대 날짜 (B-3)', () => {
+  test('★ 오늘에서 며칠 · 날짜 순 · 오늘을 싣는다 · 어제 · 오늘 · 내일로 옮기면 그 날 · 범위로는 못 옮긴다 · 오늘이 바뀌면 덩이가 바뀐다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const g = await table([
+      ['오늘', { start: '2026-10-31T09:30' }],
+      ['내일', { start: '2026-11-01' }],
+      ['어제', { start: '2026-10-30' }],
+      ['나흘전', { start: '2026-10-27' }],
+      ['닷새뒤', { start: '2026-11-05' }],
+      ['스무날전', { start: '2026-10-11' }],
+      ['먼옛날', { start: '2026-08-01' }],
+      ['먼훗날', { start: '2027-01-01' }],
+      ['없음', null],
+    ])
+    unwrap(await updateView(fx.owner.ctx, g.viewId, { groupBy: { property_id: g.due, date_unit: 'relative' } }))
+    const today = '2026-10-31'
+    const page = unwrap(await queryGroups(fx.owner.ctx, g.viewId, { today }))
+    assert.equal(page.dateUnit, 'relative')
+    assert.equal(page.today, today)
+    assert.deepEqual(shape(page), [
+      ['', 1, '없음'],
+      ['earlier', 1, '먼옛날'],
+      ['last_30', 1, '스무날전'],
+      ['last_7', 1, '나흘전'],
+      ['yesterday', 1, '어제'],
+      ['today', 1, '오늘'],
+      ['tomorrow', 1, '내일'],
+      ['next_7', 1, '닷새뒤'],
+      ['later', 1, '먼훗날'],
+    ])
+
+    const dateOf = (r: { properties: Record<string, unknown> }) => (r.properties[g.due] as { date: DateValue | null }).date
+    const a = unwrap(await moveRow(fx.owner.ctx, g.viewId, { rowId: g.ids['나흘전']!, groupKey: 'tomorrow', today }))
+    assert.deepEqual(dateOf(a.row), { start: '2026-11-01' }, '내일이 된다')
+    const b = unwrap(await moveRow(fx.owner.ctx, g.viewId, { rowId: g.ids['오늘']!, groupKey: 'yesterday', today }))
+    assert.deepEqual(dateOf(b.row), { start: '2026-10-30T09:30' }, '시각을 지킨다')
+    const c = unwrap(await moveRow(fx.owner.ctx, g.viewId, { rowId: g.ids['없음']!, groupKey: 'today', today }))
+    assert.deepEqual(dateOf(c.row), { start: '2026-10-31' }, '값이 없던 행은 그 날')
+    const refused = await Promise.all([
+      moveRow(fx.owner.ctx, g.viewId, { rowId: g.ids['내일']!, groupKey: 'next_7', today }),
+      moveRow(fx.owner.ctx, g.viewId, { rowId: g.ids['내일']!, groupKey: 'earlier', today }),
+      moveRow(fx.owner.ctx, g.viewId, { rowId: g.ids['내일']!, groupKey: '2026-11-01', today }),
+    ])
+    assert.deepEqual(refused.map((r) => (r.ok ? 'ok' : r.reason)), ['invalid_value', 'invalid_value', 'invalid_value'], '범위 덩이 · 날짜 키는 받지 않는다')
+
+    // 오늘이 하루 지나면 — 같은 행의 덩이가 바뀐다(내일 → 오늘)
+    const next = unwrap(await queryGroups(fx.owner.ctx, g.viewId, { today: '2026-11-01' }))
+    assert.deepEqual(next.groups.find((x) => x.key === 'today')!.rows.map((r) => r.title).sort(), ['나흘전', '내일'])
   })
 })
