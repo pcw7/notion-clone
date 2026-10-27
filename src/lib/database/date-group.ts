@@ -5,7 +5,7 @@
  *
  * - **키는 버킷의 첫 날**(`YYYY-MM-DD`) — 값에 **적힌 달력 날짜**(`start` 글자의 앞 열 자)로 센다. 시간대로 옮기지 않는다: 사람이
  *   10월 31일이라고 적었으면 그 행은 10월이다(사이드카의 UTC 시각으로 세면 시각이 붙은 값이 하루 밀린다). 값 없음은 `''`.
- * - **주는 월요일에 시작한다**(ISO — `date_trunc('week')` 와 같다). 시작 요일 고르기는 §7.
+ * - **주는 월요일에 시작한다**(ISO — `date_trunc('week')` 와 같다) — 일요일 시작도 고른다(`WeekStart` · B-3b).
  * - **옮기면 단위만큼 민다** — 다른 버킷에 놓은 행의 날짜는 그 버킷 차이만큼(일 · 주는 날수, 월 · 년은 달수) 앞뒤로 간다. 시각 · 끝 날짜 ·
  *   시간대는 지킨다(끝도 같은 만큼 — 기간이 그대로다). 달을 밀어 그 날이 없으면 그 달의 끝 날로(1월 31일 + 1달 = 2월 28일).
  * - 서버의 키 식(`group.ts` `keyExprOf`)과 화면의 이름 · 새 행 채우기가 이 규칙 하나를 쓴다.
@@ -49,6 +49,16 @@ export function isRelativeKey(v: unknown): v is RelativeKey {
   return typeof v === 'string' && (RELATIVE_KEYS as readonly string[]).includes(v)
 }
 
+/** 주의 시작 요일(B-3b · 정본 [보강 B-3] B-3b) — 없으면 월요일(ISO). */
+export const WEEK_STARTS = ['monday', 'sunday'] as const
+export type WeekStart = (typeof WEEK_STARTS)[number]
+export const DEFAULT_WEEK_START: WeekStart = 'monday'
+export const WEEK_START_LABEL: Readonly<Record<WeekStart, string>> = { monday: '월요일', sunday: '일요일' }
+
+export function isWeekStart(v: unknown): v is WeekStart {
+  return v === 'monday' || v === 'sunday'
+}
+
 export function isDateUnit(v: unknown): v is DateUnit {
   return typeof v === 'string' && (DATE_UNITS as readonly string[]).includes(v)
 }
@@ -85,15 +95,16 @@ function addMonths({ y, m, d }: Ymd, months: number): Ymd {
   return { y: ny, m: nm, d: Math.min(d, daysInMonth(ny, nm)) }
 }
 
-function startOf(date: Ymd, unit: Exclude<DateUnit, 'relative'>): Ymd {
+function startOf(date: Ymd, unit: Exclude<DateUnit, 'relative'>, weekStart: WeekStart): Ymd {
   switch (unit) {
     case 'day':
       return date
     case 'week': {
-      // 월요일 = 0
+      // 주의 첫 날에서 며칠 지났나 — 월요일 시작이면 월요일 = 0, 일요일 시작이면 일요일 = 0(`getUTCDay` 가 일요일 = 0)
       const days = toDays(date)
-      const fromMonday = (new Date(days * DAY_MS).getUTCDay() + 6) % 7
-      return fromDays(days - fromMonday)
+      const weekday = new Date(days * DAY_MS).getUTCDay()
+      const fromStart = weekStart === 'sunday' ? weekday : (weekday + 6) % 7
+      return fromDays(days - fromStart)
     }
     case 'month':
       return { y: date.y, m: date.m, d: 1 }
@@ -104,12 +115,12 @@ function startOf(date: Ymd, unit: Exclude<DateUnit, 'relative'>): Ymd {
 
 /**
  * 그 날짜(값의 `start` 글자 — 앞 열 자만 본다)가 드는 버킷의 키. 날짜가 아니면 null. 상대 단위는 오늘(`today` — `YYYY-MM-DD`)이 있어야
- * 한다(없으면 null).
+ * 한다(없으면 null). 주는 시작 요일(`weekStart` — 없으면 월요일)의 날이 키다.
  */
-export function bucketOf(start: string, unit: DateUnit, today?: string): string | null {
+export function bucketOf(start: string, unit: DateUnit, today?: string, weekStart: WeekStart = DEFAULT_WEEK_START): string | null {
   if (unit === 'relative') return today === undefined ? null : relativeOf(start, today)
   const date = ymdOf(start)
-  return date === null ? null : format(startOf(date, unit))
+  return date === null ? null : format(startOf(date, unit, weekStart))
 }
 
 /** 오늘에서 며칠 떨어졌나로 — 상대 키. 날짜가 아니면 null. */
@@ -149,9 +160,9 @@ export function todayIn(timeZone: string, now: Date = new Date()): string {
 /**
  * 그 단위의 버킷 키인가 — 달력에 있는 날이고 버킷의 첫 날이다 · 상대 단위면 상대 키(`''` 는 아니다 — 값 없음은 부르는 쪽이 따로 본다).
  */
-export function isBucketKey(key: string, unit: DateUnit): boolean {
+export function isBucketKey(key: string, unit: DateUnit, weekStart: WeekStart = DEFAULT_WEEK_START): boolean {
   if (unit === 'relative') return isRelativeKey(key)
-  return key.length === 10 && bucketOf(key, unit) === key
+  return key.length === 10 && bucketOf(key, unit, undefined, weekStart) === key
 }
 
 /**

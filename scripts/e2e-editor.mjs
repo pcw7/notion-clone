@@ -24522,6 +24522,43 @@ async function main() {
         added && starts.filter((s) => s === shiftDay(1)).length === 2 && noRangeAdd, JSON.stringify({ added, starts, noRangeAdd, tomorrow: shiftDay(1) }))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('주의 시작 요일 (B-3b · F-04-11)')) { try {
+      // 날짜를 주로 묶으면 월요일 시작(일요일은 앞 주) — 그룹 패널의 "주의 시작"에서 일요일로 바꾸면 일요일이 그 주의 첫 날이다. 정본 [보강 B-3] B-3b.
+      const stamp = Date.now()
+      const apiC = `${BASE}/api/workspaces/${workspaceId}`
+      const call = async (method, path, body) => {
+        const r = await fetch(`${apiC}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return r.json().catch(() => null)
+      }
+      const made = (await call('POST', '/databases', { name: `주 시작 ${stamp}` })).database
+      const due = (await call('POST', `/data-sources/${made.dataSourceId}/properties`, { name: '마감', type: 'date' })).property.id
+      const props = (await call('GET', `/data-sources/${made.dataSourceId}/properties`)).schema.properties
+      const titleProp = props.find((p) => p.type === 'title').id
+      const view = made.defaultViewId
+      for (const [title, start] of [['일', '2026-10-25'], ['월', '2026-10-26']]) {
+        await call('POST', `/views/${view}/rows`, { cells: [
+          { propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } },
+          { propertyId: due, value: { type: 'date', date: { start } } },
+        ] })
+      }
+      await call('PATCH', `/views/${view}`, { groupBy: { property_id: due, date_unit: 'week', hide_empty: true } })
+      const headsExpr = `JSON.stringify([...document.querySelectorAll('[data-testid="db-group"]')].map((g) => [g.dataset.groupKey,
+        g.querySelector('[data-testid="db-group-label"]')?.textContent?.trim() ?? '', g.querySelectorAll('[data-testid="db-table"] tbody tr[data-row-id]').length]))`
+      const headsAre = (expected) => waitFor(`${headsExpr} === ${JSON.stringify(JSON.stringify(expected))}`, 15000)
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${made.id}?v=${view}` })
+      check('주로 묶으면 월요일 시작 — 일요일(25일)은 앞 주',
+        await headsAre([['2026-10-19', '2026년 10월 19일 주', 1], ['2026-10-26', '2026년 10월 26일 주', 1]]), await evaluate(headsExpr))
+      await waitHydrated('[data-testid="db-group-button"]')
+      await clickSelector('[data-testid="db-group-button"]')
+      await waitFor(`!!document.querySelector('[data-testid="db-group-week-start"]')`, 5000)
+      await evaluate(`(() => { const s = document.querySelector('[data-testid="db-group-week-start"]')
+        const set = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set
+        set.call(s, 'sunday'); s.dispatchEvent(new Event('change', { bubbles: true })); return true })()`)
+      check('★ "주의 시작"을 일요일로 — 일요일이 그 주의 첫 날(한 주로 묶인다)',
+        await headsAre([['2026-10-25', '2026년 10월 25일 주', 2]]), await evaluate(headsExpr))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

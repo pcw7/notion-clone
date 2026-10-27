@@ -6,12 +6,13 @@
  *   ③ ★ 옮기면 단위만큼 민다 — 날수 · 달수 · 끝 날짜도 같은 만큼 · 시각 · 시간대를 지킨다 · 없는 날은 그 달의 끝으로
  *   ④ 머리의 이름
  *   ⑤ ★ 상대 단위(B-3) — 오늘에서 며칠 떨어졌나 · 겹치지 않는 경계 · 하루짜리 키의 그 날 · 그 시간대의 오늘
+ *   ⑥ 주의 시작 요일(B-3b) — 일요일 시작이면 그 주의 일요일이 키
  */
 
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { bucketOf, dateGroupLabel, isBucketKey, isDateUnit, relativeDayOf, relativeOf, shiftDateValue, todayIn } from './date-group.ts'
+import { bucketOf, dateGroupLabel, isBucketKey, isDateUnit, isWeekStart, relativeDayOf, relativeOf, shiftDateValue, todayIn } from './date-group.ts'
 
 describe('날짜로 묶기 (B-1)', () => {
   test('★ ① 버킷의 첫 날이 키', () => {
@@ -96,5 +97,16 @@ describe('날짜로 묶기 (B-1)', () => {
     assert.equal(todayIn('Asia/Seoul', now), '2026-11-01')
     assert.equal(todayIn('UTC', now), '2026-10-31')
     assert.equal(todayIn('Nowhere/Fake', now), '2026-10-31', '틀린 시간대는 UTC')
+  })
+
+  test('⑥ 주의 시작 요일(B-3b)', () => {
+    // 2026-10-28 은 수요일 — 월요일 시작이면 26일(월), 일요일 시작이면 25일(일)
+    assert.equal(bucketOf('2026-10-28', 'week', undefined, 'sunday'), '2026-10-25')
+    assert.equal(bucketOf('2026-10-25', 'week', undefined, 'sunday'), '2026-10-25', '일요일은 제 주의 첫 날')
+    assert.equal(bucketOf('2026-10-25', 'week'), '2026-10-19', '월요일 시작이면 일요일은 앞 주')
+    assert.equal(isBucketKey('2026-10-25', 'week', 'sunday'), true)
+    assert.equal(isBucketKey('2026-10-26', 'week', 'sunday'), false)
+    assert.equal(isWeekStart('sunday'), true)
+    assert.equal(isWeekStart('saturday'), false)
   })
 })
