@@ -23915,6 +23915,91 @@ async function main() {
       check('다른 사이트의 출처는 여전히 받지 않는다', (fromEvil.headers.get('location') ?? '').includes('error=bad_origin'), fromEvil.headers.get('location') ?? '')
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('표 · 목록의 그룹 (G-1 · F-04-04 · F-04-11)')) { try {
+      // 표 · 목록도 view.group_by 로 묶는다 — 그룹마다 한 덩이(머리 · 개수 · 그 그룹의 표) · 순서는 옵션 순서 · 그룹 모드에서는 열 집계 줄이 없다 ·
+      // 그 그룹의 "새로 만들기"는 그 그룹의 값을 채운다 · 다른 곳의 변경을 따라온다 · 표 변경 구독은 덩이들이 하나를 나눠 쓴다(EventSource 의
+      // 수가 평평한 표와 같다) · "그룹 없애기"로 평평한 표로 돌아온다. 자기 데이터를 스스로 만든다.
+      const stamp = Date.now()
+      const apiG = `${BASE}/api/workspaces/${workspaceId}`
+      const call = async (method, path, body) => {
+        const r = await fetch(`${apiG}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return r.json().catch(() => null)
+      }
+      const made = (await call('POST', '/databases', { name: `그룹 표 ${stamp}` })).database
+      const statusProp = await call('POST', `/data-sources/${made.dataSourceId}/properties`, { name: '상태', type: 'status' })
+      const status = statusProp.property.id
+      const props = (await call('GET', `/data-sources/${made.dataSourceId}/properties`)).schema.properties
+      const options = props.find((p) => p.id === status).options
+      const opt = Object.fromEntries(options.map((o) => [o.name, o.id]))
+      const titleProp = props.find((p) => p.type === 'title').id
+      const view = made.defaultViewId
+      const rowOf = async (title, option) => (await call('POST', `/views/${view}/rows`, { cells: [
+        { propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } },
+        { propertyId: status, value: { type: 'status', status: { id: option } } },
+      ] })).row.id
+      await rowOf('할 일 하나', opt['시작 전'])
+      await rowOf('하는 중 하나', opt['진행 중'])
+      await rowOf('하는 중 둘', opt['진행 중'])
+      await rowOf('끝난 것', opt['완료'])
+      // EventSource 를 세는 스크립트 — 화면의 스크립트보다 먼저 선다
+      const counter = await send('Page.addScriptToEvaluateOnNewDocument', { source: `(() => { window.__esCount = 0; const O = window.EventSource; if (!O) return
+        const W = function (url, init) { window.__esCount += 1; return new O(url, init) }; W.prototype = O.prototype; window.EventSource = W })()` })
+      try {
+        const page = `${BASE}/w/${workspaceId}/db/${made.id}?v=${view}`
+        await send('Page.navigate', { url: page })
+        await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr[data-row-id]').length === 4`, 15000)
+        await sleep(800)
+        const flatSources = await evaluate('window.__esCount')
+
+        await call('PATCH', `/views/${view}`, { groupBy: { property_id: status } })
+        await send('Page.navigate', { url: page })
+        await waitFor(`document.querySelectorAll('[data-testid="db-group"]').length === 4`, 15000)
+        await sleep(800)
+        const look = await evaluate(`(() => [...document.querySelectorAll('[data-testid="db-group"]')].map((g) => ({
+          key: g.dataset.groupKey,
+          count: g.querySelector('[data-testid="db-group-count"]')?.textContent ?? null,
+          rows: g.querySelectorAll('[data-testid="db-table"] tbody tr[data-row-id]').length,
+        })))()`)
+        check('★ 표가 그룹마다 한 덩이 — 값 없음 · 옵션 순서(시작 전 · 진행 중 · 완료) · 개수 · 그 그룹의 행만',
+          JSON.stringify(look) === JSON.stringify([
+            { key: '', count: '0', rows: 0 }, { key: opt['시작 전'], count: '1', rows: 1 }, { key: opt['진행 중'], count: '2', rows: 2 }, { key: opt['완료'], count: '1', rows: 1 },
+          ]), JSON.stringify(look))
+        check('그룹 모드에서는 열 집계 줄이 없다(뷰 전체의 값이 덩이 아래에 서지 않게)', await evaluate(`!document.querySelector('[data-testid="db-calc-row"]')`))
+        const groupedSources = await evaluate('window.__esCount')
+        check('★ 표 변경 구독은 덩이들이 하나를 나눠 쓴다 — EventSource 의 수가 평평한 표와 같다', groupedSources === flatSources && flatSources >= 1,
+          JSON.stringify({ flatSources, groupedSources }))
+
+        // 완료 덩이의 "새로 만들기" — 그 그룹의 값을 채운다
+        const doneSection = `[data-testid="db-group"][data-group-key="${opt['완료']}"]`
+        await waitHydrated(`${doneSection} [data-testid="db-add-row"]`)
+        await clickSelector(`${doneSection} [data-testid="db-add-row"]`)
+        const added = await waitFor(`document.querySelectorAll('${doneSection} [data-testid="db-table"] tbody tr[data-row-id]').length === 2`, 8000)
+        await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+        await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+        const rows = (await call('GET', `/views/${view}/rows`))?.rows ?? []
+        const doneCount = rows.filter((r) => r.properties?.[status]?.status?.id === opt['완료'] || r.properties?.[status]?.id === opt['완료']).length
+        check('★ 그룹의 "새로 만들기"는 그 그룹의 값을 채운다 — 완료 덩이에 서고 · 서버에도 완료', added && doneCount === 2, JSON.stringify({ added, doneCount }))
+
+        // 다른 곳의 변경 — 시작 전에 하나 더 만들면 그 덩이가 따라온다
+        await rowOf('밖에서 만든 일', opt['시작 전'])
+        const todoSection = `[data-testid="db-group"][data-group-key="${opt['시작 전']}"]`
+        check('다른 곳에서 만든 행을 따라온다 — 그 그룹의 덩이에 서고 개수도 맞다',
+          await waitFor(`document.querySelectorAll('${todoSection} [data-testid="db-table"] tbody tr[data-row-id]').length === 2
+            && document.querySelector('${todoSection} [data-testid="db-group-count"]')?.textContent === '2'`, 15000))
+
+        // 그룹 없애기 — 평평한 표로
+        await waitHydrated('[data-testid="db-group-button"]')
+        await clickSelector('[data-testid="db-group-button"]')
+        await waitFor(`!!document.querySelector('[data-testid="db-group-clear"]')`, 5000)
+        await clickSelector('[data-testid="db-group-clear"]')
+        check('★ "그룹 없애기"로 평평한 표로 돌아온다 — 서버에도 그룹이 없다',
+          await waitFor(`!document.querySelector('[data-testid="db-grouped"]') && document.querySelectorAll('[data-testid="db-table"] tbody tr[data-row-id]').length === 6`, 15000)
+            && (await call('GET', `/views/${view}`))?.view?.groupBy === null)
+      } finally {
+        await send('Page.removeScriptToEvaluateOnNewDocument', { identifier: counter.identifier }).catch(() => undefined)
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

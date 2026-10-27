@@ -88,6 +88,8 @@ type Panel = 'filter' | 'sort' | 'properties' | 'group' | 'gallery' | 'calendar'
  * 렌더를 다시 받는다(보드가 `groupBy` 를 담은 key 로 새로 마운트된다).
  */
 export type BoardSettings = {
+  /** 그룹을 없앨 수 있다 — 표 · 목록(G-1). 보드는 늘 묶는다(`group_required`). */
+  readonly allowNone?: boolean
   readonly groupBy: GroupBy | null
   readonly groups: readonly {
     readonly key: string
@@ -992,7 +994,7 @@ function GroupPanel({
   board: BoardSettings
   canEdit: boolean
   busy: boolean
-  onSave: (next: GroupBy) => Promise<boolean>
+  onSave: (next: GroupBy | null) => Promise<boolean>
   onClose: () => void
 }) {
   const groupable = columns.filter((c) => isGroupableType(c.type))
@@ -1040,6 +1042,19 @@ function GroupPanel({
           ))}
         </select>
       </label>
+
+      {/* 표 · 목록은 그룹을 없앨 수 있다(G-1) — 평평한 표로 돌아간다 */}
+      {board.allowNone === true && current !== null && (
+        <button
+          type="button"
+          data-testid="db-group-clear"
+          disabled={locked}
+          onClick={() => void onSave(null)}
+          className="self-start rounded-md px-2 py-1 text-sm text-neutral-600 hover:bg-[rgba(33,27,23,0.05)] disabled:opacity-50 dark:text-neutral-300 dark:hover:bg-white/5"
+        >
+          그룹 없애기
+        </button>
+      )}
 
       {groupable.length === 0 && (
         <p className="text-sm text-neutral-400" data-testid="db-group-none">
