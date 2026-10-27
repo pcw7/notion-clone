@@ -1421,14 +1421,13 @@ export function DatabaseTable(props: {
         g.active = true
         setDraggingRow(g.id)
       }
-      // 다른 덩이 위면(G-2c) 그 덩이에 줄을 — 이 덩이의 줄은 지운다
+      // 다른 덩이 위면(G-2c) 그 덩이가 제 자리 표시를 그린다 — 이 덩이의 줄은 지운다
       const foreign = lanes !== null && props.group ? lanes.laneAt(event.clientY, props.group.key) : null
-      if (g.lane !== null && g.lane !== foreign?.lane) g.lane.showLine(null)
+      if (g.lane !== null && g.lane !== foreign?.lane) g.lane.preview(null)
       g.lane = foreign?.lane ?? null
       if (foreign !== null) {
         setRowLineY(null)
-        const { lane } = foreign
-        lane.showLine(lane.accepts ? foreignDropLineY(lane.boxes(), event.clientY, lane.hasMore(), lane.emptyLineY()) : null)
+        foreign.lane.preview({ x: event.clientX, y: event.clientY })
         return
       }
       const y = rowDropLineY(rowBoxes(), g.id, event.clientY, hasMore)
@@ -1441,11 +1440,11 @@ export function DatabaseTable(props: {
       if (g === null || !g.active) return
       setDraggingRow(null)
       setRowLineY(null)
-      g.lane?.showLine(null)
+      g.lane?.preview(null)
       const foreign = lanes !== null && props.group ? lanes.laneAt(event.clientY, props.group.key) : null
       if (foreign !== null) {
         const { key, lane } = foreign
-        const into = lane.accepts ? foreignDropBefore(lane.boxes(), event.clientY, lane.hasMore()) : undefined
+        const into = lane.dropAt({ x: event.clientX, y: event.clientY })
         if (into !== undefined) moveRowToLane(g.id, key, lane, into)
         return
       }
@@ -1453,7 +1452,7 @@ export function DatabaseTable(props: {
       if (before !== undefined) moveRowTo(g.id, before)
     }
     const onPointerCancel = () => {
-      rowGrab.current?.lane?.showLine(null)
+      rowGrab.current?.lane?.preview(null)
       rowGrab.current = null
       setDraggingRow(null)
       setRowLineY(null)
@@ -1472,15 +1471,18 @@ export function DatabaseTable(props: {
   // 조건 밖을 그대로 읽게 — 위의 포인터 듣기와 같다)
   useEffect(() => {
     if (lanes === null || !props.group || !canReorder) return
+    // 채울 값이 없는 범주(10n-27)에는 놓지 못한다 — 줄도 서지 않는다
+    const accepts = props.group.accepts !== false
     const frameTop = () => scrollRef.current?.getBoundingClientRect().top ?? 0
+    // 행이 없으면 몸의 위(머리 행 아래)에
+    const emptyLineY = () => scrollRef.current?.querySelector('tbody')?.getBoundingClientRect().top ?? null
     return lanes.register(props.group.key, {
       bounds: () => scrollRef.current?.closest<HTMLElement>('[data-testid="db-group"]')?.getBoundingClientRect() ?? null,
-      boxes: rowBoxes,
-      // 행이 없으면 몸의 위(머리 행 아래)에
-      emptyLineY: () => scrollRef.current?.querySelector('tbody')?.getBoundingClientRect().top ?? null,
-      hasMore: () => hasMore,
-      accepts: props.group.accepts !== false,
-      showLine: (y) => setLaneLineY(y === null ? null : y - frameTop()),
+      dropAt: (point) => (accepts ? foreignDropBefore(rowBoxes(), point.y, hasMore) : undefined),
+      preview: (point) => {
+        const y = point === null || !accepts ? null : foreignDropLineY(rowBoxes(), point.y, hasMore, emptyLineY())
+        setLaneLineY(y === null ? null : y - frameTop())
+      },
       receive: (row, before, inView) => {
         // 내가 옮겨 온 행 — 다시 읽었더니 조건 밖이어도 남긴다(④ · 10n-15). 그사이 돌던 다시 읽기(옛 목록)는 버린다
         markTouched(row.id)

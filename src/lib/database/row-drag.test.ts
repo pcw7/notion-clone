@@ -10,6 +10,7 @@
  *   ⑦ 갤러리 — 더 볼 카드가 남았으면 맨 뒤에 놓지 않는다 · 세로 막대의 자리
  *   ⑧ ★ 그룹 덩이 사이(G-2c) — 끄는 행이 목록에 없다: 첫 행의 앞 · 맨 뒤 · 더 볼 행이 남았으면 맨 뒤 없음 · 빈 덩이의 줄
  *   ⑨ 다른 덩이에서 온 행을 넣는다 — `before` 앞 · 모르면 맨 뒤 · 이미 있으면 옮긴다
+ *   ⑩ ★ 갤러리 덩이 사이(G-3b) — 끄는 카드가 격자에 없다: 읽는 차례로 포인터 뒤의 첫 카드 앞 · 맨 뒤 · 더 볼 카드 · 막대 · 빈 덩이
  */
 
 import { test, describe } from 'node:test'
@@ -18,6 +19,8 @@ import assert from 'node:assert/strict'
 import {
   cardDropBefore,
   cardDropMark,
+  foreignCardDropBefore,
+  foreignCardDropMark,
   foreignDropBefore,
   foreignDropLineY,
   insertRow,
@@ -128,5 +131,20 @@ describe('갤러리의 카드 끌기 규칙 (10n-61)', () => {
     assert.deepEqual(cardDropMark(CARDS, 'da', 10, 40, false, 20), { x: -10, top: 0, height: 80 }, '가의 왼쪽 경계 바깥')
     assert.deepEqual(cardDropMark(CARDS, 'ga', 90, 140, false, 20), { x: 110, top: 100, height: 80 }, '맨 뒤 — 라의 오른쪽 경계 바깥')
     assert.equal(cardDropMark(CARDS, 'na', 130, 40, false, 20), null, '제자리')
+  })
+})
+
+describe('갤러리 덩이 사이의 카드 끌기 규칙 (G-3b)', () => {
+  test('★ ⑩ 끄는 카드가 격자에 없다 — 포인터 뒤의 첫 카드 앞 · 맨 뒤 · 더 볼 카드 · 막대 · 빈 덩이', () => {
+    assert.equal(foreignCardDropBefore(CARDS, 10, 40, false), 'ga', '가의 왼쪽 반 → 가의 앞')
+    assert.equal(foreignCardDropBefore(CARDS, 200, 40, false), 'da', '나의 오른쪽 반 → 다의 앞')
+    assert.equal(foreignCardDropBefore(CARDS, 300, 40, false), 'ra', '윗줄 끝(다의 오른쪽 반) → 아랫줄 라의 앞')
+    assert.equal(foreignCardDropBefore(CARDS, 200, 140, false), null, '아랫줄 라 뒤 → 맨 뒤')
+    assert.equal(foreignCardDropBefore(CARDS, 200, 140, true), undefined, '더 볼 카드가 남았으면 맨 뒤에 놓지 않는다')
+    assert.equal(foreignCardDropBefore([], 0, 0, false), null, '빈 덩이 — 맨 뒤')
+    assert.deepEqual(foreignCardDropMark(CARDS, 10, 40, false, 20, null), { x: -10, top: 0, height: 80 })
+    assert.deepEqual(foreignCardDropMark(CARDS, 200, 140, false, 20, null), { x: 110, top: 100, height: 80 }, '맨 뒤 — 라의 오른쪽')
+    assert.equal(foreignCardDropMark(CARDS, 200, 140, true, 20, null), null)
+    assert.deepEqual(foreignCardDropMark([], 0, 0, false, 20, { x: 5, top: 6, height: 96 }), { x: 5, top: 6, height: 96 }, '빈 덩이 — 격자의 머리')
   })
 })
