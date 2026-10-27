@@ -110,6 +110,11 @@ export type ViewDetail = {
    */
   readonly groupBy: GroupBy | null
   /**
+   * 하위 그룹(B-4a · 보드의 가로줄 · 정본 §3.6 [보강 B-4]) — 보드이고 살아 있는 · 묶을 수 있는 · 그룹 기준과 다른 속성을 가리킬 때만 값이
+   * 있다(아니면 저장값은 두고 null — `groupBy` 와 같은 규칙). 머리의 계산은 없다.
+   */
+  readonly subGroupBy: GroupBy | null
+  /**
    * 이 뷰의 `New` 가 쓸 기본 템플릿(F-08-03). **살아 있는 템플릿을 가리킬 때만** 값이 있다 — 템플릿을 휴지통에
    * 보내면 저장된 값은 그대로 두고 여기서 null 로 준다(`liveDefaultTemplate`). `groupBy` 와 같은 규칙이다:
    * 복원하면 지정이 돌아온다. 화면이 null 을 받으면 `New` 는 빈 행을 만든다.
@@ -282,6 +287,7 @@ type ViewRow = {
   filter: unknown
   sorts: unknown
   group_by: unknown
+  sub_group_by: unknown
   load_limit: number
   open_pages_in: OpenPagesIn
   default_template_page_id: string | null
@@ -418,7 +424,7 @@ async function toColumns(tx: Tx, rows: readonly ColumnRow[]): Promise<ViewColumn
 async function readView(tx: Tx, viewId: string, userId: string | null = null): Promise<ViewDetail | null> {
   const row = await tx.queryMaybe<ViewRow>(
     `SELECT v.id, v.database_id, v.data_source_id, v.name, v.type, v.order_idx,
-            v.filter, v.sorts, v.group_by, v.load_limit, v.configuration, v.open_pages_in,
+            v.filter, v.sorts, v.group_by, v.sub_group_by, v.load_limit, v.configuration, v.open_pages_in,
             -- 이 사람의 개인 필터 · 정렬(2h-1) — NULL 이면 덮어쓰지 않았다
             o.filter AS personal_filter, o.sorts AS personal_sorts,
             -- 살아 있는 템플릿을 가리킬 때만 준다(ViewDetail.defaultTemplateId). 0026 의 트리거가 "이 표의
@@ -452,6 +458,7 @@ async function readView(tx: Tx, viewId: string, userId: string | null = null): P
     loadLimit: row.load_limit,
     openPagesIn: row.open_pages_in,
     groupBy: liveGroupBy(row.group_by, columns),
+    subGroupBy: liveSubGroupBy(row.type, row.group_by, row.sub_group_by, columns),
     defaultTemplateId: row.default_template_page_id,
     columns,
     gallery: readGalleryLayout(row.configuration),
@@ -483,6 +490,18 @@ async function resolveCalendarLayout(tx: Tx, dataSourceId: string, stored: LiveC
     [dataSourceId],
   )
   return first === null ? null : { date_property_id: first.id, view_range: stored.view_range }
+}
+
+/** 저장된 `sub_group_by` 가 보드의 · 살아 있는 · 그룹 기준과 다른 컬럼을 가리킬 때만(B-4a · `ViewDetail.subGroupBy` 주석). 계산은 뺀다. */
+function liveSubGroupBy(type: string, groupRaw: unknown, raw: unknown, columns: readonly ViewColumn[]): GroupBy | null {
+  if (type !== 'board') return null
+  const sub = liveGroupBy(raw, columns)
+  if (sub === null) return null
+  const group = typeof groupRaw === 'object' && groupRaw !== null ? (groupRaw as GroupBy) : null
+  if (group !== null && group.property_id === sub.property_id) return null
+  const { calculation: _calculation, ...rest } = sub
+  void _calculation
+  return rest
 }
 
 /** 저장된 `group_by` 가 살아 있는 · 묶을 수 있는 컬럼을 가리킬 때만 돌려준다(`ViewDetail.groupBy` 주석). */
@@ -702,6 +721,11 @@ export type UpdateViewInput = {
   /** `null` 을 주면 그룹을 없앤다(보드는 거부 — `group_required`). 생략하면 그대로 둔다. */
   readonly groupBy?: GroupBy | null
   /**
+   * 하위 그룹(B-4a · 정본 [보강 B-4]) — 보드에서만 · 그룹 기준과 다른 속성 · `group_by` 와 같은 모양(계산은 버린다). `null` 이면 없앤다 ·
+   * 생략하면 그대로 둔다.
+   */
+  readonly subGroupBy?: GroupBy | null
+  /**
    * 이 뷰의 `New` 가 쓸 기본 템플릿(F-08-03). `null` 이 "빈 페이지로 돌려라"이고, 생략하면 그대로 둔다.
    *
    * 값은 **이 뷰가 보는 표의 살아 있는 템플릿**이어야 한다 — 아니면 `invalid_template`. 0026 의 트리거가 같은
@@ -831,6 +855,24 @@ export async function updateView(
       ? await resolveGroupBy(tx, gate.dataSourceId, type, input.groupBy, current.group_by)
       : null
     if (isFailure(grouped)) return grouped
+    // 하위 그룹(B-4a) — 주었을 때만 본다. 보드에서만 · 그룹 기준(이번에 바꾼 것 또는 지금 것)과 다른 속성 · 계산은 버린다
+    const touchesSub = input.subGroupBy !== undefined
+    let subGrouped: GroupBy | null = null
+    if (input.subGroupBy !== undefined && input.subGroupBy !== null) {
+      if (type !== 'board') return fail('invalid_group', [{ path: 'subGroupBy', message: '보드에서만 하위 그룹을 둘 수 있습니다' }])
+      const issues = validateGroupBy(input.subGroupBy, await readPropertyTypes(tx, gate.dataSourceId)).map((i) => ({
+        ...i,
+        path: i.path.replace(/^groupBy/, 'subGroupBy'),
+      }))
+      if (issues.length > 0) return fail('invalid_group', issues)
+      const groupNow = touchesGroup ? grouped : (current.group_by as GroupBy | null)
+      if (groupNow !== null && groupNow.property_id === input.subGroupBy.property_id) {
+        return fail('invalid_group', [{ path: 'subGroupBy.property_id', message: '그룹 기준과 다른 속성이어야 합니다' }])
+      }
+      const { calculation: _calculation, ...rest } = normalizeGroupBy(input.subGroupBy)
+      void _calculation
+      subGrouped = rest
+    }
 
     // 기본 템플릿(F-08-03). 0026 의 트리거와 **같은 조건**을 먼저 묻는다 — 트리거까지 가면 예외라 화면이 받을
     // 말이 없다. 휴지통은 트리거가 보지 못하므로 그것까지 여기서 본다(`readLiveTemplate`).
@@ -853,6 +895,7 @@ export async function updateView(
                 CASE WHEN $11::boolean THEN $12::uuid ELSE default_template_page_id END,
               configuration = configuration || $13::jsonb,
               open_pages_in = coalesce($14, open_pages_in),
+              sub_group_by = CASE WHEN $15::boolean THEN $16::jsonb ELSE sub_group_by END,
               updated_at = now()
         WHERE id = $1`,
       [
@@ -870,6 +913,8 @@ export async function updateView(
         input.defaultTemplateId ?? null,
         JSON.stringify(configurationPatch),
         input.openPagesIn ?? null,
+        touchesSub,
+        subGrouped === null ? null : JSON.stringify(subGrouped),
       ],
     )
 

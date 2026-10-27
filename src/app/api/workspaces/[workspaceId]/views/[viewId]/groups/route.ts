@@ -4,7 +4,7 @@
  * 정본: 00-canonical-data-model.md §3.6 · 04-database-views.md F-04-11 · F-04-03
  *
  *   GET                       그룹 전부(카운트 · 숨김) + 보이는 그룹의 첫 페이지 행
- *   GET ?group=<key>&cursor=  한 그룹의 다음 페이지 — 그룹별 독립 커서(F-04-15). 첫 페이지(커서 없음)는 표 뷰면 그 그룹의 열 집계를
+ *   GET ?group=<key>&cursor=  한 그룹의 다음 페이지 — 그룹별 독립 커서(F-04-15). 하위 그룹이 있는 보드면 `sub=<가로줄 키>` 로 그 칸(B-4a). 첫 페이지(커서 없음)는 표 뷰면 그 그룹의 열 집계를
  *                             함께 싣는다(`calculations` — 덩이의 집계 줄 · G-2d · 평평한 표의 행 라우트와 같은 모양). 갤러리면 그 페이지
  *                             카드의 미리보기를 싣는다(`covers` — 본문의 첫 이미지일 때 · G-3a)
  *   GET ?calculations=1       그룹 머리의 계산만(2d-3 · F-04-16) — 카드를 옮기거나 만든 뒤. 행은 읽지 않는다
@@ -60,6 +60,8 @@ export async function GET(request: Request, ctx: Ctx): Promise<Response> {
       ...(Number.isFinite(rawLimit) && rawLimit > 0 ? { limit: rawLimit } : {}),
       search,
       today,
+      // 하위 그룹(B-4a)의 칸 — `sub` 가 있으면 그 가로줄만(`''` 도 키다)
+      ...(params.get('sub') !== null ? { subKey: params.get('sub') ?? '' } : {}),
     })
     if (!page.ok) return failureResponse(groupFailureStatus(page.reason), page)
     // 뷰의 모양에 따라 함께 싣는 것 — 표면 첫 페이지에 덩이의 열 집계(G-2d · 대상은 그 그룹의 행 전부라 페이지마다 같다) · 갤러리면 그
@@ -113,10 +115,12 @@ export async function POST(request: Request, ctx: Ctx): Promise<Response> {
     beforeRowId?: unknown
     search?: unknown
     within?: unknown
+    subGroupKey?: unknown
   }
   if (body.action !== 'move') return invalid()
   if (typeof body.rowId !== 'string' || !isUuid(body.rowId)) return invalid()
   if (typeof body.groupKey !== 'string') return invalid()
+  if (body.subGroupKey !== undefined && typeof body.subGroupKey !== 'string') return invalid()
   if (body.beforeRowId !== undefined && body.beforeRowId !== null) {
     if (typeof body.beforeRowId !== 'string' || !isUuid(body.beforeRowId)) return invalid()
   }
@@ -129,6 +133,8 @@ export async function POST(request: Request, ctx: Ctx): Promise<Response> {
     search: typeof body.search === 'string' ? body.search : null,
     // 참일 때만 — 보드는 보내지 않는다(다른 열로 옮기는 것이 셀을 바꾸는 일이다)
     within: body.within === true,
+    // 하위 그룹(B-4a) — 놓을 가로줄. 주지 않으면 그 행의 지금 가로줄에 남는다
+    ...(typeof body.subGroupKey === 'string' ? { subGroupKey: body.subGroupKey } : {}),
     // 상대 날짜 그룹(B-3)의 오늘 — 보는 사람의 시간대(쿠키)
     today: await readViewerToday(),
   })
@@ -137,6 +143,7 @@ export async function POST(request: Request, ctx: Ctx): Promise<Response> {
     ok: true,
     row: rowJson(moved.value.row),
     groupKey: moved.value.groupKey,
+    subGroupKey: moved.value.subGroupKey,
     positioned: moved.value.positioned,
     inView: moved.value.inView,
   })
