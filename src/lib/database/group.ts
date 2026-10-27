@@ -88,13 +88,16 @@ import {
 import { readOptionsOf } from './options.ts'
 import {
   DEFAULT_DATE_UNIT,
+  DEFAULT_WEEK_START,
   RELATIVE_KEYS,
   isBucketKey,
   isDateUnit,
+  isWeekStart,
   relativeDayOf,
   shiftDateValue,
   todayIn,
   type DateUnit,
+  type WeekStart,
 } from './date-group.ts'
 import { DEFAULT_NUMBER_SIZE, isNumberBucketKey, isNumberSize, shiftNumber } from './number-group.ts'
 import { DEFAULT_TEXT_MODE, FOLDED_CHOSEONG, OTHER_INITIAL, compareTextKeys, isInitialKey, isTextMode, type TextMode } from './text-group.ts'
@@ -163,6 +166,8 @@ export type GroupBy = {
    * 거부한다. 키는 버킷의 첫 날(`YYYY-MM-DD` · `date-group.ts`)이다.
    */
   readonly date_unit?: DateUnit
+  /** 주의 시작 요일(B-3b) — 없으면 월요일. 날짜 속성의 단위 "주"에서만 읽는다(날짜가 아닌 속성이면 거부). */
+  readonly week_start?: WeekStart
   /**
    * 숫자를 묶는 구간의 크기(B-2 · 정본 §3.6 [보강 B-2]) — 0 보다 크고 소수 여섯 자리까지. 없으면 10. 숫자가 아닌 속성에 주면 거부한다.
    * 키는 구간의 아래 끝(`number-group.ts`)이다.
@@ -207,6 +212,10 @@ export function validateGroupBy(raw: unknown, types: PropertyTypes): ValidationI
   if (g.date_unit !== undefined && !(isDateUnit(g.date_unit) && typeof g.property_id === 'string' && types.get(g.property_id) === 'date')) {
     issues.push({ path: 'groupBy.date_unit', message: "날짜 속성에만 'day' · 'week' · 'month' · 'year' 를 줄 수 있습니다" })
   }
+  // 주의 시작 요일(B-3b) — 날짜 속성에만 · 월요일 · 일요일
+  if (g.week_start !== undefined && !(isWeekStart(g.week_start) && typeof g.property_id === 'string' && types.get(g.property_id) === 'date')) {
+    issues.push({ path: 'groupBy.week_start', message: "날짜 속성에만 'monday' · 'sunday' 를 줄 수 있습니다" })
+  }
   // 숫자의 구간 크기(B-2) — 숫자 속성에만 · 0 보다 크고 소수 여섯 자리까지
   if (g.number_size !== undefined && !(isNumberSize(g.number_size) && typeof g.property_id === 'string' && types.get(g.property_id) === 'number')) {
     issues.push({ path: 'groupBy.number_size', message: '숫자 속성에만 0 보다 큰 구간 크기(소수 여섯 자리까지)를 줄 수 있습니다' })
@@ -241,6 +250,7 @@ export function normalizeGroupBy(raw: GroupBy): GroupBy {
     ...(raw.hide_empty ? { hide_empty: true } : {}),
     ...(raw.status_by === 'group' ? { status_by: 'group' as const } : {}),
     ...(isDateUnit(raw.date_unit) ? { date_unit: raw.date_unit } : {}),
+    ...(isWeekStart(raw.week_start) && raw.week_start !== DEFAULT_WEEK_START ? { week_start: raw.week_start } : {}),
     ...(isNumberSize(raw.number_size) ? { number_size: raw.number_size } : {}),
     ...(isTextMode(raw.text_by) ? { text_by: raw.text_by } : {}),
     ...(calculation !== undefined && calculation !== null
@@ -403,6 +413,8 @@ type Board = {
   readonly textMode: TextMode | null
   /** 보는 사람의 오늘(B-3 · `YYYY-MM-DD`) — 상대 날짜 그룹의 키가 이것에서 며칠 떨어졌나다. */
   readonly today: string
+  /** 주의 시작 요일(B-3b) — 날짜를 주로 묶을 때 키가 그 요일의 날이다. */
+  readonly weekStart: WeekStart
 }
 
 /** 보드를 읽는 요청의 공통 입력 — 뷰 검색어(2e-1) · 보는 사람의 오늘(B-3 — 상대 날짜 그룹 · 없으면 UTC 의 오늘). */
@@ -488,6 +500,7 @@ async function openBoard(
     textMode: propertyType === 'rich_text' ? (isTextMode(groupBy.text_by) ? groupBy.text_by : DEFAULT_TEXT_MODE) : null,
     // 상대 날짜(B-3)의 오늘 — 부르는 쪽이 보는 사람의 시간대로 셈해 준다(`readViewerToday`). 모양이 틀리면 UTC 의 오늘
     today: typeof today === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(today) ? today : todayIn('UTC'),
+    weekStart: isWeekStart(groupBy.week_start) ? groupBy.week_start : DEFAULT_WEEK_START,
   }
 }
 
@@ -541,7 +554,7 @@ function catalogOf(board: Board, counted: ReadonlyMap<string, unknown> = new Map
  * 이 보드의 그룹 키인가 — 놓을 열 · 읽을 열을 받을 때. 날짜(B-1)는 데이터에 없어도 그 단위의 버킷 키면 된다(빈 달에도 놓을 수 있다).
  */
 function isGroupKeyOf(board: Board, key: string): boolean {
-  if (board.dateUnit !== null) return key === NO_VALUE_KEY || isBucketKey(key, board.dateUnit)
+  if (board.dateUnit !== null) return key === NO_VALUE_KEY || isBucketKey(key, board.dateUnit, board.weekStart)
   if (board.numberSize !== null) return key === NO_VALUE_KEY || isNumberBucketKey(key, board.numberSize)
   // 글 그대로(B-2b)는 아무 글이나 키다(놓으면 그 글이 된다) · 첫 글자는 그 머리들만
   if (board.textMode !== null) return board.textMode === 'exact' || key === NO_VALUE_KEY || isInitialKey(key)
@@ -576,7 +589,13 @@ function keyExprOf(board: Board, params: ParamBag): string {
   }
   if (board.dateUnit !== null) {
     const date = `(left(gv.value -> 'date' ->> 'start', 10))::date`
-    const bucket = board.dateUnit === 'day' ? date : `date_trunc('${board.dateUnit}', ${date})`
+    // 일요일 시작의 주(B-3b) — 그 주의 일요일(`dow` 는 일요일 = 0). 월요일 시작은 date_trunc('week')(ISO)
+    const bucket =
+      board.dateUnit === 'day'
+        ? date
+        : board.dateUnit === 'week' && board.weekStart === 'sunday'
+          ? `(${date} - extract(dow from ${date})::int)`
+          : `date_trunc('${board.dateUnit}', ${date})`
     return `coalesce(to_char(${bucket}, 'YYYY-MM-DD'), '')`
   }
   // 숫자(B-2) — 구간의 아래 끝을 numeric 으로 정확히 · 글자는 trim_scale 의 것(`number-group.ts`) · 값 없음은 ''

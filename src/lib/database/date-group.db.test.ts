@@ -12,6 +12,7 @@
  *   ④ 단위는 날짜 속성에만 · 일 · 주 · 월 · 년만
  *   ⑤ ★ 상대 날짜(B-3) — 보는 사람의 오늘에서 며칠 · 날짜 순 · 결과가 오늘을 싣는다 · 어제 · 오늘 · 내일로 옮기면 그 날(시각을 지킨다) ·
  *        범위 덩이로는 못 옮긴다 · 오늘이 바뀌면 같은 행의 덩이가 바뀐다
+ *   ⑥ 주의 시작 요일(B-3b) — 일요일 시작이면 그 주의 일요일이 키 · 그 키로만 놓는다 · 날짜가 아닌 속성이면 거부
  *
  * ⚠ skip 은 테스트마다 `t.skip` 으로 건다(HANDOFF §5).
  */
@@ -237,5 +238,27 @@ describe('⑤ 상대 날짜 (B-3)', () => {
     // 오늘이 하루 지나면 — 같은 행의 덩이가 바뀐다(내일 → 오늘)
     const next = unwrap(await queryGroups(fx.owner.ctx, g.viewId, { today: '2026-11-01' }))
     assert.deepEqual(next.groups.find((x) => x.key === 'today')!.rows.map((r) => r.title).sort(), ['나흘전', '내일'])
+  })
+})
+
+describe('⑥ 주의 시작 요일 (B-3b)', () => {
+  test('일요일 시작이면 그 주의 일요일이 키 · 그 키로만 놓는다 · 날짜가 아닌 속성이면 거부', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const g = await table([
+      ['일', { start: '2026-10-25' }],
+      ['월', { start: '2026-10-26' }],
+      ['토', { start: '2026-10-31' }],
+    ])
+    unwrap(await updateView(fx.owner.ctx, g.viewId, { groupBy: { property_id: g.due, date_unit: 'week' } }))
+    assert.deepEqual(unwrap(await queryGroups(fx.owner.ctx, g.viewId)).groups.map((x) => [x.key, x.count]), [['', 0], ['2026-10-19', 1], ['2026-10-26', 2]],
+      '월요일 시작 — 일요일(25일)은 앞 주')
+    const saved = unwrap(await updateView(fx.owner.ctx, g.viewId, { groupBy: { property_id: g.due, date_unit: 'week', week_start: 'sunday' } }))
+    assert.deepEqual(saved.groupBy, { property_id: g.due, date_unit: 'week', week_start: 'sunday' })
+    assert.deepEqual(unwrap(await queryGroups(fx.owner.ctx, g.viewId)).groups.map((x) => [x.key, x.count]), [['', 0], ['2026-10-25', 3]],
+      '일요일 시작 — 한 주')
+    const ok = await moveRow(fx.owner.ctx, g.viewId, { rowId: g.ids['토']!, groupKey: '2026-11-01' })
+    const bad = await moveRow(fx.owner.ctx, g.viewId, { rowId: g.ids['토']!, groupKey: '2026-11-02' })
+    assert.deepEqual([ok.ok, bad.ok === false && bad.reason], [true, 'invalid_value'], '일요일 시작이면 월요일은 키가 아니다')
+    assert.equal((await updateView(fx.owner.ctx, g.viewId, { groupBy: { property_id: g.status, week_start: 'sunday' } })).ok, false, '날짜가 아닌 속성')
   })
 })

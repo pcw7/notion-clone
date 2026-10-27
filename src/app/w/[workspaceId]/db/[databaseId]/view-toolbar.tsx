@@ -51,7 +51,16 @@ import type { GroupBy } from '@/lib/database/group'
 import type { OperatorCatalogEntry } from '@/lib/database/operator-catalog'
 import type { FilterableType } from '@/lib/database/filter'
 import { STATUS_GROUP_KINDS, STATUS_GROUP_LABEL, isGroupableType, isMvpPropertyType } from '@/lib/database/property-types'
-import { DATE_UNITS, DATE_UNIT_LABEL, DEFAULT_DATE_UNIT, type DateUnit } from '@/lib/database/date-group'
+import {
+  DATE_UNITS,
+  DATE_UNIT_LABEL,
+  DEFAULT_DATE_UNIT,
+  DEFAULT_WEEK_START,
+  WEEK_STARTS,
+  WEEK_START_LABEL,
+  type DateUnit,
+  type WeekStart,
+} from '@/lib/database/date-group'
 import { DEFAULT_NUMBER_SIZE, isNumberSize } from '@/lib/database/number-group'
 import { DEFAULT_TEXT_MODE, TEXT_MODES, TEXT_MODE_LABEL, type TextMode } from '@/lib/database/text-group'
 import {
@@ -1105,6 +1114,8 @@ function GroupPanel({
                 ...(current.hide_empty ? { hide_empty: true } : {}),
                 ...(current.calculation ? { calculation: current.calculation } : {}),
                 date_unit: e.target.value as DateUnit,
+                // 주의 시작 요일은 단위를 바꿔도 남긴다 — 주로 다시 돌아오면 그대로
+                ...(current.week_start ? { week_start: current.week_start } : {}),
               })
             }
             className={FIELD}
@@ -1112,6 +1123,35 @@ function GroupPanel({
             {DATE_UNITS.map((unit) => (
               <option key={unit} value={unit}>
                 {DATE_UNIT_LABEL[unit]}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+
+      {current !== null && !dead && groupable.find((c) => c.propertyId === current.property_id)?.type === 'date' && current.date_unit === 'week' && (
+        // 주의 시작 요일(B-3b) — 월요일 · 일요일. 바꾸면 키 공간이 달라 숨김 목록은 버린다(단위와 같다)
+        <label className="flex items-center gap-2 text-sm">
+          주의 시작
+          <select
+            aria-label="주의 시작 요일"
+            data-testid="db-group-week-start"
+            value={current.week_start ?? DEFAULT_WEEK_START}
+            disabled={locked}
+            onChange={(e) =>
+              void onSave({
+                property_id: current.property_id,
+                ...(current.hide_empty ? { hide_empty: true } : {}),
+                ...(current.calculation ? { calculation: current.calculation } : {}),
+                date_unit: 'week',
+                week_start: e.target.value as WeekStart,
+              })
+            }
+            className={FIELD}
+          >
+            {WEEK_STARTS.map((start) => (
+              <option key={start} value={start}>
+                {WEEK_START_LABEL[start]}
               </option>
             ))}
           </select>
