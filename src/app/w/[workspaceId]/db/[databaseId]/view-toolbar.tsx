@@ -52,6 +52,7 @@ import type { OperatorCatalogEntry } from '@/lib/database/operator-catalog'
 import type { FilterableType } from '@/lib/database/filter'
 import { STATUS_GROUP_KINDS, STATUS_GROUP_LABEL, isGroupableType, isMvpPropertyType } from '@/lib/database/property-types'
 import { DATE_UNITS, DATE_UNIT_LABEL, DEFAULT_DATE_UNIT, type DateUnit } from '@/lib/database/date-group'
+import { DEFAULT_NUMBER_SIZE, isNumberSize } from '@/lib/database/number-group'
 import {
   CALCULATION_LABEL,
   calculationsFor,
@@ -1059,7 +1060,7 @@ function GroupPanel({
 
       {groupable.length === 0 && (
         <p className="text-sm text-neutral-400" data-testid="db-group-none">
-          선택 · 상태 · 체크박스 · 날짜 속성이 없습니다. 속성을 먼저 만드세요.
+          선택 · 상태 · 체크박스 · 날짜 · 숫자 속성이 없습니다. 속성을 먼저 만드세요.
         </p>
       )}
 
@@ -1114,6 +1115,23 @@ function GroupPanel({
             ))}
           </select>
         </label>
+      )}
+
+      {current !== null && !dead && groupable.find((c) => c.propertyId === current.property_id)?.type === 'number' && (
+        // 숫자를 묶는 구간의 크기(B-2) — 바꾸면 키 공간이 달라 숨김 목록은 버린다(날짜의 단위와 같다). 칸을 떠나거나 Enter 로 저장한다
+        <NumberSizeField
+          key={current.number_size ?? DEFAULT_NUMBER_SIZE}
+          size={current.number_size ?? DEFAULT_NUMBER_SIZE}
+          disabled={locked}
+          onCommit={(size) =>
+            void onSave({
+              property_id: current.property_id,
+              ...(current.hide_empty ? { hide_empty: true } : {}),
+              ...(current.calculation ? { calculation: current.calculation } : {}),
+              number_size: size,
+            })
+          }
+        />
       )}
 
       {current !== null && !dead && (
@@ -1192,6 +1210,40 @@ function GroupPanel({
         </>
       )}
     </Popover>
+  )
+}
+
+/** 숫자 그룹의 구간 크기(B-2) — 고치는 동안은 칸의 글자, 떠나거나 Enter 면 맞는 크기일 때만 저장한다(아니면 되돌린다). */
+function NumberSizeField({ size, disabled, onCommit }: { size: number; disabled: boolean; onCommit: (size: number) => void }) {
+  const [draft, setDraft] = useState(String(size))
+  const commit = () => {
+    const next = Number(draft)
+    if (draft.trim() !== '' && isNumberSize(next) && next !== size) onCommit(next)
+    else setDraft(String(size))
+  }
+  return (
+    <label className="flex items-center gap-2 text-sm">
+      구간 크기
+      <input
+        type="number"
+        min="0"
+        step="any"
+        inputMode="decimal"
+        aria-label="숫자를 묶는 구간 크기"
+        data-testid="db-group-number-size"
+        value={draft}
+        disabled={disabled}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault()
+            commit()
+          }
+        }}
+        className={`${FIELD} w-24`}
+      />
+    </label>
   )
 }
 

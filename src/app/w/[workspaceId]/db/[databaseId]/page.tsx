@@ -337,6 +337,8 @@ export default async function DatabasePage({
           type: groupColumn.type,
           // 날짜로 묶는 단위(B-1) — 서버가 읽은 것(저장값 · 없으면 월)
           dateUnit: board !== null && board.ok ? board.value.dateUnit : null,
+          // 숫자로 묶는 구간의 크기(B-2)
+          numberSize: board !== null && board.ok ? board.value.numberSize : null,
         }
       : null
   const groups: BoardGroupJson[] =
@@ -361,7 +363,7 @@ export default async function DatabasePage({
             ? []
             : groups.map((g) => ({
                 key: g.key,
-                label: groupLabel(groupProperty.type, groupProperty.name, g, groupProperty.dateUnit ?? null),
+                label: groupLabel(groupProperty.type, groupProperty.name, g, groupProperty),
                 count: g.count,
                 hidden: g.hidden,
               })),
