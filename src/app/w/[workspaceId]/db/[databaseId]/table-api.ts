@@ -367,6 +367,8 @@ export function loadGroupRows(
     rows: body.rows as RowJson[],
     hasMore: body.hasMore === true,
     nextCursor: typeof body.nextCursor === 'string' ? body.nextCursor : null,
+    // 덩이의 열 집계(G-2d) — 표 뷰의 첫 페이지에만 온다
+    ...(typeof body.calculations === 'object' && body.calculations !== null ? { calculations: body.calculations as Calculations } : {}),
   }))
 }
 
