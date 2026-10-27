@@ -224,7 +224,8 @@ export function DatabaseTable(props: {
   showPropertyIcons?: boolean
   /**
    * 그룹 덩이(G-1 · 정본 [보강 G-1]) — 있으면 이 표는 **그 그룹의 행만** 읽고(그룹 행 라우트 · 그룹별 커서 F-04-15), "새로 만들기"는 그
-   * 그룹의 값을 채운다(`cells` — 보드 열의 `+` 와 같은 값). 열 집계 줄 · 행 끌기는 그룹 모드에서 아직 없다(⑤).
+   * 그룹의 값을 채운다(`cells` — 보드 열의 `+` 와 같은 값). 행 끌기는 덩이 안의 차례다(G-2b ⑦ — 보드 열의 자리 · `moveRowTo`). 열 집계 줄은
+   * 그룹 모드에서 아직 없다(⑤).
    */
   group?: { readonly key: string; readonly cells: readonly RowCell[] } | null
   /**
