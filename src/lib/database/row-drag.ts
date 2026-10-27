@@ -12,7 +12,8 @@
  * 갤러리(10n-61)는 카드가 격자라 `cardDropBefore` 가 읽는 차례(왼쪽 → 오른쪽, 위 → 아래)로 놓을 자리를 정한다 — 키로 한 칸(`stepTarget`)과
  * 먼저 그리기(`reorderRows`)는 표와 같다.
  *
- * 그룹 덩이 사이(G-2c · 정본 [보강 G-1] ⑧)는 끄는 행이 놓을 목록에 없다 — `foreignDropBefore` · `foreignDropLineY` · `insertRow`.
+ * 그룹 덩이 사이(G-2c · 정본 [보강 G-1] ⑧)는 끄는 행이 놓을 목록에 없다 — `foreignDropBefore` · `foreignDropLineY` · `insertRow`. 갤러리의
+ * 덩이 사이(G-3b)는 격자다 — `foreignCardDropBefore` · `foreignCardDropMark`.
  */
 
 import { tabDropBefore, tabDropLineX } from './tab-drag.ts'
@@ -115,6 +116,38 @@ export function cardDropMark(
   if (before === null) {
     const last = cards.filter((c) => c.id !== draggedId).at(-1)
     return last === undefined ? null : { x: last.left + last.width + gap / 2, top: last.top, height: last.height }
+  }
+  const target = cards.find((c) => c.id === before)!
+  return { x: target.left - gap / 2, top: target.top, height: target.height }
+}
+
+/**
+ * 다른 덩이의 격자에 놓을 자리(G-3b) — 끄는 카드가 그 목록에 없다. 읽는 차례로 포인터보다 뒤에 오는 첫 카드의 앞(`cardDropBefore` 와 같은
+ * 규칙) · 없으면 맨 뒤(null · 더 볼 카드가 남았으면 undefined). 제자리가 없다.
+ */
+export function foreignCardDropBefore(cards: readonly CardBox[], x: number, y: number, hasMore: boolean): string | null | undefined {
+  const at = cards.find((c) => c.top + c.height > y && (c.top > y || c.left + c.width / 2 > x))
+  if (at !== undefined) return at.id
+  return hasMore ? undefined : null
+}
+
+/**
+ * 다른 덩이의 격자에 끄는 동안 세로 막대 — 놓일 카드의 왼쪽 경계(맨 뒤면 마지막 카드의 오른쪽 경계)에서 `gap / 2` 바깥 · 그 카드의 높이.
+ * 카드가 없으면 `empty`(격자의 머리). 놓을 수 없으면 null.
+ */
+export function foreignCardDropMark(
+  cards: readonly CardBox[],
+  x: number,
+  y: number,
+  hasMore: boolean,
+  gap: number,
+  empty: { readonly x: number; readonly top: number; readonly height: number } | null,
+): { readonly x: number; readonly top: number; readonly height: number } | null {
+  const before = foreignCardDropBefore(cards, x, y, hasMore)
+  if (before === undefined) return null
+  if (before === null) {
+    const last = cards.at(-1)
+    return last === undefined ? empty : { x: last.left + last.width + gap / 2, top: last.top, height: last.height }
   }
   const target = cards.find((c) => c.id === before)!
   return { x: target.left - gap / 2, top: target.top, height: target.height }

@@ -151,7 +151,7 @@ export function GroupedRows({
                 rows={[...group.rows]}
                 hasMore={group.hasMore}
                 nextCursor={group.nextCursor}
-                group={{ key: group.key, cells: fill === null ? [] : prefillCells(property.type, property.id, fill) }}
+                group={{ key: group.key, cells: fill === null ? [] : prefillCells(property.type, property.id, fill), accepts: fill !== null }}
                 live={false}
               />
             )}

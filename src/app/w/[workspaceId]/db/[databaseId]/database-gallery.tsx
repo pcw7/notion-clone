@@ -21,12 +21,13 @@
  * 규칙). 템플릿 · 기본 템플릿은 `NewRowMenu` 가 맡는다.
  *
  * 그룹 덩이(G-3a · 정본 [보강 G-3]) — `group` 이 있으면 그 그룹의 카드만: "더 보기"는 그룹 행 라우트 · "새로 만들기"는 그 그룹의 값을
- * 채운다 · 카드 끌기는 덩이 안의 차례(보드 열의 자리 · `within`). 구독은 바깥이 하나로 한다(`live` 거짓).
+ * 채운다 · 카드 끌기는 덩이 안의 차례(보드 열의 자리 · `within`) · 다른 덩이에 놓으면 그 그룹의 값이 된다(G-3b · 덩이들이 서로를 찾는
+ * 자리 `group-lanes.ts` — 표의 덩이 사이 끌기와 같다). 구독은 바깥이 하나로 한다(`live` 거짓).
  */
 
 import { rowOpenHref } from '@/lib/database/open-pages'
 import Link from '@/app/link'
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
+import { useContext, useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { useRouter } from 'next/navigation'
 
 import type { DatabaseAccess } from '@/lib/database/database'
@@ -51,7 +52,17 @@ import { EMPTY_ROLLUP_PAGE, type RollupPage } from '@/lib/database/rollup-functi
 import { formulaEvaluator, formulaValuesByRow, type FormulaPlan } from '@/lib/database/formula-plan'
 import { usePeopleNames } from './use-people-names'
 import { useAdoptServerValue, useLiveServerRefresh } from './use-table-changes'
-import { cardDropBefore, cardDropMark, reorderRows, stepTarget, type CardBox } from '@/lib/database/row-drag'
+import {
+  cardDropBefore,
+  cardDropMark,
+  foreignCardDropBefore,
+  foreignCardDropMark,
+  insertRow,
+  reorderRows,
+  stepTarget,
+  type CardBox,
+} from '@/lib/database/row-drag'
+import { GroupLanesContext, type GroupLane } from './group-lanes'
 import { TAB_DRAG_THRESHOLD } from '@/lib/database/tab-drag'
 
 const UNTITLED = '제목 없음'
@@ -104,7 +115,7 @@ export function DatabaseGallery(props: {
   /** 손으로 둔 차례로 서는가 — 살아 있는 정렬이 없다(10n-61). 참이면 고칠 수 있는 사람에게 카드 끌기를 연다. */
   manualOrder?: boolean
   /** 그룹 덩이(G-3a) — 그 그룹의 카드만 읽고 · "새로 만들기"는 그 그룹의 값(`cells`)을 채운다 · 끌기는 덩이 안의 차례. */
-  group?: { readonly key: string; readonly cells: readonly RowCell[] } | null
+  group?: { readonly key: string; readonly cells: readonly RowCell[]; readonly accepts?: boolean } | null
   /** 표 변경을 스스로 구독하는가(기본 참) — 그룹 덩이는 바깥이 하나로 한다(G-3a ③). */
   live?: boolean
 }) {
@@ -262,7 +273,12 @@ export function DatabaseGallery(props: {
   /** 손으로 둔 차례를 바꿀 수 있는가 — 고칠 수 있고 정렬이 없다(서버 렌더가 `manualOrder` 로 준다 · 서버도 `sorted` 로 거부). */
   const canReorder = access.canEditContent && props.manualOrder === true
   const gridRef = useRef<HTMLUListElement>(null)
-  const cardGrab = useRef<{ id: string; x: number; y: number; active: boolean } | null>(null)
+  /** 잡은 카드 · 잡은 자리 · 끌기가 시작됐는가 · 지금 표시를 그리게 한 다른 덩이(G-3b — 떠나면 그 표시를 지운다). */
+  const cardGrab = useRef<{ id: string; x: number; y: number; active: boolean; lane: GroupLane | null } | null>(null)
+  /** 그룹 덩이들이 서로를 찾는 자리(G-3b) — 그룹 화면 밖이면 null. */
+  const lanes = useContext(GroupLanesContext)
+  /** 다른 덩이에서 끌어 오는 카드가 놓일 세로 막대(G-3b) — 격자의 왼쪽 위에서 잰 자리. */
+  const [laneMark, setLaneMark] = useState<{ x: number; top: number; height: number } | null>(null)
   const [draggingCard, setDraggingCard] = useState<string | null>(null)
   /** 놓일 자리의 세로 막대 — 격자의 왼쪽 위에서 잰 자리. */
   const [cardMark, setCardMark] = useState<{ x: number; top: number; height: number } | null>(null)
@@ -288,10 +304,29 @@ export function DatabaseGallery(props: {
       }
     })
   }
+  /**
+   * 다른 덩이로(G-3b · 정본 [보강 G-3] ⑤) — 그 그룹의 값이 된다(`within` 없이 · 표의 덩이 사이 끌기와 같다). 이 덩이에서 먼저 빼고, 서버의
+   * 답(새 값의 카드)을 그 덩이가 받는다. 거절되면 까닭을 말하고 서버 렌더를 다시 부른다(덩이들이 제 첫 페이지를 받아들인다).
+   */
+  const moveCardToLane = (rowId: string, key: string, lane: GroupLane, before: string | null) => {
+    if (!rows.some((r) => r.id === rowId)) return
+    setRows((current) => current.filter((r) => r.id !== rowId))
+    setPendingMoves((n) => n + 1)
+    moveChain.current = moveChain.current.then(async () => {
+      const result = await api.moveCard(workspaceId, viewId, { rowId, groupKey: key, beforeRowId: before, search: props.search ?? null })
+      setPendingMoves((n) => n - 1)
+      if (!result.ok) {
+        setError(result.message)
+        lane.reload()
+        return
+      }
+      lane.receive(result.value.row, before, result.value.inView)
+    })
+  }
   const onGripPointerDown = (event: ReactPointerEvent<HTMLButtonElement>, rowId: string) => {
     if (!canReorder || event.button !== 0) return
     event.preventDefault()
-    cardGrab.current = { id: rowId, x: event.clientX, y: event.clientY, active: false }
+    cardGrab.current = { id: rowId, x: event.clientX, y: event.clientY, active: false, lane: null }
   }
   useEffect(() => {
     if (!canReorder) return
@@ -303,6 +338,15 @@ export function DatabaseGallery(props: {
         g.active = true
         setDraggingCard(g.id)
       }
+      // 다른 덩이 위면(G-3b) 그 덩이가 제 막대를 그린다 — 이 덩이의 막대는 지운다
+      const foreign = lanes !== null && props.group ? lanes.laneAt(event.clientY, props.group.key) : null
+      if (g.lane !== null && g.lane !== foreign?.lane) g.lane.preview(null)
+      g.lane = foreign?.lane ?? null
+      if (foreign !== null) {
+        setCardMark(null)
+        foreign.lane.preview({ x: event.clientX, y: event.clientY })
+        return
+      }
       const mark = cardDropMark(cardBoxes(), g.id, event.clientX, event.clientY, cursor !== null, CARD_GAP)
       const origin = gridRef.current?.getBoundingClientRect()
       setCardMark(mark === null || origin === undefined ? null : { x: mark.x - origin.left, top: mark.top - origin.top, height: mark.height })
@@ -313,10 +357,18 @@ export function DatabaseGallery(props: {
       if (g === null || !g.active) return
       setDraggingCard(null)
       setCardMark(null)
+      g.lane?.preview(null)
+      const foreign = lanes !== null && props.group ? lanes.laneAt(event.clientY, props.group.key) : null
+      if (foreign !== null) {
+        const into = foreign.lane.dropAt({ x: event.clientX, y: event.clientY })
+        if (into !== undefined) moveCardToLane(g.id, foreign.key, foreign.lane, into)
+        return
+      }
       const before = cardDropBefore(cardBoxes(), g.id, event.clientX, event.clientY, cursor !== null)
       if (before !== undefined) moveCardTo(g.id, before)
     }
     const onPointerCancel = () => {
+      cardGrab.current?.lane?.preview(null)
       cardGrab.current = null
       setDraggingCard(null)
       setCardMark(null)
@@ -330,6 +382,33 @@ export function DatabaseGallery(props: {
       window.removeEventListener('pointercancel', onPointerCancel)
     }
   })
+  // 이 덩이를 차선으로 올린다(G-3b) — 끄는 덩이가 이 격자에 막대를 그리게 하고 옮긴 카드를 넘긴다. 렌더마다 다시 올린다(지금의 카드 · 더 보기를
+  // 그대로 읽게 — 표의 차선과 같다)
+  useEffect(() => {
+    if (lanes === null || !props.group || !canReorder) return
+    // 채울 값이 없는 범주(10n-27)에는 놓지 못한다 — 막대도 서지 않는다
+    const accepts = props.group.accepts !== false
+    const more = cursor !== null
+    return lanes.register(props.group.key, {
+      bounds: () => gridRef.current?.closest<HTMLElement>('[data-testid="db-group"]')?.getBoundingClientRect() ?? null,
+      dropAt: (point) => (accepts ? foreignCardDropBefore(cardBoxes(), point.x, point.y, more) : undefined),
+      preview: (point) => {
+        const origin = gridRef.current?.getBoundingClientRect()
+        // 카드가 없으면 격자의 머리에(새 카드 칸의 높이)
+        const empty = origin === undefined ? null : { x: origin.left + CARD_GAP / 2, top: origin.top, height: 96 }
+        const mark = point === null || !accepts ? null : foreignCardDropMark(cardBoxes(), point.x, point.y, more, CARD_GAP, empty)
+        setLaneMark(mark === null || origin === undefined ? null : { x: mark.x - origin.left, top: mark.top - origin.top, height: mark.height })
+      },
+      receive: (row, before, inView) => {
+        setRows((current) => [...insertRow(current, row, before)])
+        // 옮긴 카드가 뷰의 조건 밖이 됐다 — 곧 빠지므로 까닭을 말한다(10n-16 과 같은 말)
+        if (!inView) setNotice(EDITED_OUT_OF_VIEW_NOTICE)
+      },
+      reload: () => router.refresh(),
+    })
+  })
+  const dropMark = cardMark ?? laneMark
+
   /** 카드 제목에서 Alt+← · Alt+→ — 읽는 차례로 한 칸. 초점은 React 가 커밋 뒤에 돌려준다(10n-57). */
   const onCardKeyDown = (event: KeyboardEvent<HTMLAnchorElement>, rowId: string) => {
     if (!canReorder || !event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return
@@ -349,11 +428,12 @@ export function DatabaseGallery(props: {
         aria-busy={pendingMoves > 0 || undefined}
         className={`relative grid gap-3 ${CARD_GRID[layout.cover_size]}`}
       >
-        {cardMark !== null && (
+        {/* 놓을 자리 — 이 덩이의 카드를 끌 때(`cardMark`) · 다른 덩이의 카드를 이리로 끌 때(`laneMark` · G-3b) */}
+        {dropMark !== null && (
           <li
             aria-hidden
             data-testid="db-gallery-drop-mark"
-            style={{ left: cardMark.x - 1, top: cardMark.top, height: cardMark.height }}
+            style={{ left: dropMark.x - 1, top: dropMark.top, height: dropMark.height }}
             className="pointer-events-none absolute z-10 w-0.5 bg-blue-500"
           />
         )}
