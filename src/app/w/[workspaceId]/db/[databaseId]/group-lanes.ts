@@ -40,6 +40,8 @@ export type GroupLanes<L extends LaneBase = GroupLane> = {
   register(key: string, lane: L): () => void
   /** 포인터 아래의 **다른** 덩이(세로로만 잰다 — 덩이는 위아래로 쌓인다). 없으면 null. */
   laneAt(y: number, except: string): { readonly key: string; readonly lane: L } | null
+  /** 올라온 차선 모두 — 화면의 위에서 아래 순(자리를 재지 못한 것은 뒤 · B-4e 의 메뉴가 쓴다). */
+  list(): readonly { readonly key: string; readonly lane: L }[]
 }
 
 export function createGroupLanes<L extends LaneBase = GroupLane>(): GroupLanes<L> {
@@ -59,6 +61,10 @@ export function createGroupLanes<L extends LaneBase = GroupLane>(): GroupLanes<L
       }
       return null
     },
+    list() {
+      const top = (lane: L) => lane.bounds()?.top ?? Number.POSITIVE_INFINITY
+      return [...lanes].map(([key, lane]) => ({ key, lane, at: top(lane) })).sort((a, b) => a.at - b.at).map(({ key, lane }) => ({ key, lane }))
+    },
   }
 }
 
@@ -71,6 +77,12 @@ export const GroupLanesContext = createContext<GroupLanes | null>(null)
  */
 export type BoardLane = {
   readonly bounds: () => DOMRect | null
+  /** 가로줄의 이름(B-4e — 카드 메뉴의 "다른 가로줄로"). */
+  readonly label: string
+  /** 이 가로줄의 그 열이 카드를 받는가 — 채울 값이 있고 · 접히지 않았고 · 그 열이 받는다(끌기의 `dropAt` 과 같은 규칙). */
+  readonly takes: (columnKey: string) => boolean
+  /** 옮겨 온 카드의 "옮기기" 단추에 포커스를 둔다(B-4e — 키보드로 이어서 옮기게). */
+  readonly focus: (rowId: string) => void
   readonly dropAt: (point: LanePoint) => DropTarget | null
   readonly preview: (point: LanePoint | null) => void
   /** 옮긴 카드를 받는다 — 서버의 답(새 값) · 그 자리에. */

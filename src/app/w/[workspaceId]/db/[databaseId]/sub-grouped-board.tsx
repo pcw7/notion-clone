@@ -107,6 +107,7 @@ export function SubGroupedBoard({
                 live={false}
                 lane={{
                   key: lane.key,
+                  label,
                   propertyId: subProperty.id,
                   cells: fill === null ? [] : prefillCells(subProperty.type, subProperty.id, fill),
                   // 채울 값이 없는 가로줄에는 다른 가로줄의 카드를 놓지 못한다(B-4d)

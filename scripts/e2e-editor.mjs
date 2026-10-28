@@ -24753,6 +24753,69 @@ async function main() {
         JSON.stringify({ stayed, lanes: await evaluate(lanesExpr) }))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('보드의 옮기기 메뉴 — 다른 가로줄로 (B-4e · F-04-11)')) { try {
+      // 가로줄 모드의 카드 메뉴는 다른 열 아래에 "다른 가로줄로"를 둔다 — 같은 열의 맨 뒤 · 옮기면 포커스는 새 가로줄의 그 카드의 "옮기기"
+      // 단추. 접힌 가로줄은 고를 수 없다. 정본 [보강 B-4] ⑧. 자기 데이터를 스스로 만든다(API).
+      const stamp = Date.now()
+      const apiC = `${BASE}/api/workspaces/${workspaceId}`
+      const call = async (method, path, body) => {
+        const r = await fetch(`${apiC}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return r.json().catch(() => null)
+      }
+      const made = (await call('POST', '/databases', { name: `가로줄 메뉴 ${stamp}` })).database
+      const status = (await call('POST', `/data-sources/${made.dataSourceId}/properties`, { name: '상태', type: 'status' })).property.id
+      const owner = (await call('POST', `/data-sources/${made.dataSourceId}/properties`, { name: '담당', type: 'select' })).property.id
+      const ga = (await call('POST', `/data-sources/${made.dataSourceId}/properties/${owner}/options`, { name: '가' })).option.id
+      const na = (await call('POST', `/data-sources/${made.dataSourceId}/properties/${owner}/options`, { name: '나' })).option.id
+      const props = (await call('GET', `/data-sources/${made.dataSourceId}/properties`)).schema.properties
+      const opt = Object.fromEntries(props.find((p) => p.id === status).options.map((o) => [o.name, o.id]))
+      const titleProp = props.find((p) => p.type === 'title').id
+      const ids = {}
+      for (const [title, st, ow] of [['A', '진행 중', ga], ['B', '완료', ga], ['C', '진행 중', na], ['D', '완료', na]]) {
+        ids[title] = (await call('POST', `/views/${made.defaultViewId}/rows`, { cells: [
+          { propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } },
+          { propertyId: status, value: { type: 'status', status: { id: opt[st] } } },
+          { propertyId: owner, value: { type: 'select', select: { id: ow } } },
+        ] })).row.id
+      }
+      const boardView = (await call('POST', `/databases/${made.id}/views`, { type: 'board', name: '보드' })).view.id
+      await call('PATCH', `/views/${boardView}`, { groupBy: { property_id: status, hide_empty: true }, subGroupBy: { property_id: owner, hide_empty: true } })
+      const lanesExpr = `JSON.stringify([...document.querySelectorAll('[data-testid="db-lane"]')].map((l) => [l.dataset.laneKey,
+        [...l.querySelectorAll('[data-testid="db-board-column"]')].map((c) => [...c.querySelectorAll('[data-testid="db-board-card-title"]')].map((t) => t.textContent.trim()).join('')).join('|')]))`
+      const lanesAre = (expected) => waitFor(`${lanesExpr} === ${JSON.stringify(JSON.stringify(expected))}`, 15000)
+      const menuItems = () => evaluate(`JSON.stringify([...document.querySelectorAll('[data-testid="db-card-move-menu"] button')].map((b) => [b.dataset.testid, b.dataset.laneKey ?? b.dataset.groupKey ?? '']))`)
+      const MOVE = (lane, id) => `[data-testid="db-lane"][data-lane-key="${lane}"] [data-row-id="${id}"] [data-testid="db-card-move"]`
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${made.id}?v=${boardView}` })
+      check('전제 — 가로줄 둘(가: A|B · 나: C|D)', await lanesAre([[ga, 'A|B'], [na, 'C|D']]), await evaluate(lanesExpr))
+      await waitHydrated(MOVE(ga, ids['A']))
+      await clickUntil(MOVE(ga, ids['A']), `!!document.querySelector('[data-testid="db-card-move-menu"]')`)
+      const items = await menuItems()
+      check('★ 가로줄 모드의 메뉴 — 다른 열(완료) 아래에 "다른 가로줄로"(나) · 제 가로줄은 없다',
+        items === JSON.stringify([['db-card-move-to', opt['완료']], ['db-card-move-lane', na]]), items)
+
+      await clickSelector(`[data-testid="db-card-move-lane"][data-lane-key="${na}"]`)
+      const moved = await lanesAre([[ga, '|B'], [na, 'CA|D']])
+      const focused = await waitFor(`document.activeElement?.getAttribute('data-testid') === 'db-card-move'
+        && document.activeElement.closest('[data-row-id]')?.getAttribute('data-row-id') === '${ids['A']}'
+        && document.activeElement.closest('[data-testid="db-lane"]')?.dataset.laneKey === '${na}'`, 5000)
+      check('★ 고르면 새 가로줄의 같은 열 맨 뒤(나 · 진행 중: C A) — 포커스는 그 카드의 "옮기기" 단추', moved && focused,
+        JSON.stringify({ focused, lanes: await evaluate(lanesExpr), active: await evaluate(`document.activeElement?.outerHTML?.slice(0, 120) ?? ''`) }))
+      const row = ((await call('GET', `/views/${made.defaultViewId}/rows`))?.rows ?? []).find((r) => r.id === ids['A'])
+      check('★ 저장 — 가로줄의 값만 바뀌었다(나 · 진행 중 그대로)',
+        row?.properties?.[owner]?.select?.id === na && row?.properties?.[status]?.status?.id === opt['진행 중'], JSON.stringify(row?.properties ?? null))
+
+      // 접힌 가로줄은 고를 수 없다 — 가를 접으면 C(나)의 메뉴에 가로줄이 없다
+      const gaToggle = `[data-testid="db-lane"][data-lane-key="${ga}"] [data-testid="db-lane-toggle"]`
+      await clickSelector(gaToggle)
+      await waitFor(`!!document.querySelector('[data-testid="db-lane"][data-lane-key="${ga}"][data-collapsed]')`, 5000)
+      await clickUntil(MOVE(na, ids['C']), `!!document.querySelector('[data-testid="db-card-move-menu"]')`)
+      const folded = await menuItems()
+      // C 아래에 A 가 왔으니 "아래로"가 선다(수동 순서) — 가로줄 항목만 없다
+      check('접힌 가로줄은 고를 수 없다 — 가를 접으면 C 의 메뉴에 가로줄이 없다',
+        folded === JSON.stringify([['db-card-move-down', ''], ['db-card-move-to', opt['완료']]]), folded)
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).
