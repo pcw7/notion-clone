@@ -25375,6 +25375,39 @@ async function main() {
       check('★ 컬럼 안의 이미지도', await waitFor(`document.querySelector('${coverOf(inColumn)}')?.getAttribute('src') === ${JSON.stringify(want)}`, 8000), await srcOf(inColumn))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('목차의 스크롤 스파이 (T-1 · F-01-16)')) { try {
+      // 페이지를 굴려 헤딩이 기준선(창 위 30% · 160px 까지)을 지나면 목차에서 그 헤딩의 항목이 현재 위치(aria-current="location")가 된다 —
+      // 늘 하나만 · 맨 위로 돌아가면 뒤의 헤딩은 현재 위치가 아니다. 정본 §3.4 [보강] 목차 ⑤. 자기 데이터를 스스로 만든다(API · 본문은 서버 함수).
+      const stamp = Date.now()
+      const apiC = `${BASE}/api/workspaces/${workspaceId}`
+      const call = async (method, path, body) => {
+        const r = await fetch(`${apiC}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return r.json().catch(() => null)
+      }
+      const page = (await call('POST', '/pages', { title: `스크롤 스파이 ${stamp}` }))?.page?.id
+      const block = (type, text = '') => ({ id: randomUUID(), type, title: text === '' ? [] : [textRun(text)], properties: {}, format: {}, children: [] })
+      const filler = (n, tag) => Array.from({ length: n }, (_, i) => block('paragraph', `${tag} 문단 ${i + 1} — 굴릴 만큼 길게 채운다.`))
+      const toc = block('table_of_contents')
+      const h = { 첫째: block('heading_1', '첫째'), 둘째: block('heading_1', '둘째'), 셋째: block('heading_1', '셋째') }
+      await saveBody(page, { blocks: [toc, h['첫째'], ...filler(40, '첫째'), h['둘째'], ...filler(40, '둘째'), h['셋째'], ...filler(40, '셋째')] })
+      const current = () => evaluate(`JSON.stringify([...document.querySelectorAll('a.blk-toc-link[aria-current="location"]')].map((a) => a.textContent))`)
+      const scrollTo = (id) => evaluate(`document.querySelector('[data-block-id="${id}"]')?.scrollIntoView({ block: 'start' }) ?? null`)
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+      check('전제 — 목차에 항목 셋(첫째 · 둘째 · 셋째)',
+        await waitFor(`[...document.querySelectorAll('a.blk-toc-link')].map((a) => a.textContent).join(',') === '첫째,둘째,셋째'`, 15000),
+        String(await evaluate(`[...document.querySelectorAll('a.blk-toc-link')].map((a) => a.textContent).join(',')`)))
+      await waitHydrated('a.blk-toc-link')
+      await scrollTo(h['둘째'].id)
+      check('★ 둘째 헤딩까지 굴리면 목차의 "둘째" 가 현재 위치 — 하나만', await waitFor(`JSON.stringify([...document.querySelectorAll('a.blk-toc-link[aria-current="location"]')].map((a) => a.textContent)) === '["둘째"]'`, 5000), await current())
+      await scrollTo(h['셋째'].id)
+      check('★ 셋째까지 굴리면 "셋째"', await waitFor(`JSON.stringify([...document.querySelectorAll('a.blk-toc-link[aria-current="location"]')].map((a) => a.textContent)) === '["셋째"]'`, 5000), await current())
+      await scrollTo(toc.id)
+      check('맨 위로 돌아가면 둘째 · 셋째는 현재 위치가 아니다',
+        await waitFor(`![...document.querySelectorAll('a.blk-toc-link[aria-current="location"]')].some((a) => a.textContent === '둘째' || a.textContent === '셋째')`, 5000),
+        await current())
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).
