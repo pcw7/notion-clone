@@ -65,6 +65,7 @@ import { queryGroupColumnCalculations, queryGroups } from '@/lib/database/group'
 import { readViewerToday } from '@/lib/settings/time-zone-cookie'
 import { usesRelativeDate } from '@/lib/database/relative-date'
 import { ViewerTodaySync } from './viewer-today-sync'
+import { SearchTermProvider } from './search-term'
 import { loadRelationLabels, relationIdsIn } from '@/lib/database/relation'
 import { loadPeopleNames, peopleIdsOf } from '@/lib/database/people'
 import { computeRollups, EMPTY_ROLLUP_PAGE } from '@/lib/database/rollup'
@@ -543,6 +544,8 @@ export default async function DatabasePage({
   const defaultTemplate = defaultRow === null ? null : { id: defaultRow.id, title: defaultRow.title }
 
   return (
+    // 맞은 글자 강조(V-3) — 지금의 검색어를 칸 · 카드 제목에 내려 준다
+    <SearchTermProvider term={search}>
     <main className="flex min-h-screen min-w-0 flex-col gap-6 px-10 py-12">
       {/* 탭 제목(10d-7b) — 그 데이터베이스의 이름(피크로 연 행이 있어도 그대로) */}
       <DocumentTitle title={contentTitle(database.value.name)} />
@@ -921,5 +924,6 @@ export default async function DatabasePage({
         </RowPeek>
       )}
     </main>
+    </SearchTermProvider>
   )
 }

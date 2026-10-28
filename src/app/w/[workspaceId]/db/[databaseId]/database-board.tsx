@@ -106,6 +106,7 @@ import type { FormulaValue } from '@/lib/formula/formula'
 import { useAdoptServerValue, useLiveServerRefresh } from './use-table-changes'
 import { BoardLanesContext, type BoardLane, type LanePoint } from './group-lanes'
 import { insertRow } from '@/lib/database/row-drag'
+import { Highlighted } from './search-term'
 import { useViewerToday } from './use-viewer-today'
 
 /** `GET /groups` 의 그룹 하나 — 행은 `rowJson`. 서버 렌더(`page.tsx`)도 같은 모양으로 내려준다. */
@@ -1086,7 +1087,7 @@ function BoardCard({
               className={`flex min-w-0 flex-1 items-start gap-1.5 ${row.title ? 'break-words' : 'text-neutral-400'}`}
             >
               <PageIconView icon={row.icon} fallback className="mt-[0.2em]" />
-              <span className="min-w-0">{row.title || UNTITLED}</span>
+              <span className="min-w-0">{row.title ? <Highlighted text={row.title} /> : UNTITLED}</span>
             </div>
             {/* 그 행 페이지를 연다(8f-1) — 카드를 끄는 누르기로 번지지 않게 막는다. 제목 옆에 둔다(제목의 글자에 섞이지 않게). */}
             <Link

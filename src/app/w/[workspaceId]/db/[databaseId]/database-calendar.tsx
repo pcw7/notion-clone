@@ -72,6 +72,7 @@ import { useAdoptServerValue, useLiveServerRefresh } from './use-table-changes'
 import { useRowReminders } from './use-row-reminders'
 import { ReminderMark } from './reminder-bell'
 import { AnchoredLayer, containsAcrossLayers } from '../../anchored-layer'
+import { Highlighted } from './search-term'
 
 const UNTITLED = '제목 없음'
 /** 한 주에 그리는 막대 줄 수. 넘치면 칸마다 "+N". */
@@ -564,7 +565,7 @@ export function DatabaseCalendar(props: {
                       >
                         <PageIconView icon={row.icon} fallback />
                         <span className="truncate" data-testid="db-cal-event-title">
-                          {row.title || UNTITLED}
+                          {row.title ? <Highlighted text={row.title} /> : UNTITLED}
                         </span>
                       </Link>
                     )}
