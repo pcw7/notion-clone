@@ -1211,6 +1211,34 @@ function BucketControls({
   axisLabel: string
   onChange: (patch: Partial<GroupBy>) => void
 }) {
+  // 순서(S-1)는 단위 · 방식 · 구간을 바꿔도 남긴다 — 방향은 키 공간과 상관없다
+  const change = (patch: Partial<GroupBy>) => onChange({ ...(value.sort === 'descending' ? { sort: 'descending' as const } : {}), ...patch })
+  // 순서를 바꾸면 키 공간이 그대로다 — 지금의 단위 · 방식 · 구간 · 숨김을 그대로 싣는다
+  const order = (
+    <label className="flex items-center gap-2 text-sm">
+      순서
+      <select
+        aria-label={`${axisLabel}그룹 순서`}
+        data-testid={`${testPrefix}-sort`}
+        value={value.sort === 'descending' ? 'descending' : 'ascending'}
+        disabled={locked}
+        onChange={(e) =>
+          onChange({
+            ...(value.hidden && value.hidden.length > 0 ? { hidden: value.hidden } : {}),
+            ...(value.date_unit ? { date_unit: value.date_unit } : {}),
+            ...(value.week_start ? { week_start: value.week_start } : {}),
+            ...(value.number_size !== undefined ? { number_size: value.number_size } : {}),
+            ...(value.text_by ? { text_by: value.text_by } : {}),
+            ...(e.target.value === 'descending' ? { sort: 'descending' as const } : {}),
+          })
+        }
+        className={FIELD}
+      >
+        <option value="ascending">오름차순</option>
+        <option value="descending">내림차순</option>
+      </select>
+    </label>
+  )
   if (type === 'status') {
     return (
       <label className="flex items-center gap-2 text-sm">
@@ -1240,7 +1268,7 @@ function BucketControls({
             value={value.date_unit ?? DEFAULT_DATE_UNIT}
             disabled={locked}
             // 주의 시작 요일은 단위를 바꿔도 남긴다 — 주로 다시 돌아오면 그대로
-            onChange={(e) => onChange({ date_unit: e.target.value as DateUnit, ...(value.week_start ? { week_start: value.week_start } : {}) })}
+            onChange={(e) => change({ date_unit: e.target.value as DateUnit, ...(value.week_start ? { week_start: value.week_start } : {}) })}
             className={FIELD}
           >
             {DATE_UNITS.map((unit) => (
@@ -1258,7 +1286,7 @@ function BucketControls({
               data-testid={`${testPrefix}-week-start`}
               value={value.week_start ?? DEFAULT_WEEK_START}
               disabled={locked}
-              onChange={(e) => onChange({ date_unit: 'week', week_start: e.target.value as WeekStart })}
+              onChange={(e) => change({ date_unit: 'week', week_start: e.target.value as WeekStart })}
               className={FIELD}
             >
               {WEEK_STARTS.map((start) => (
@@ -1269,11 +1297,13 @@ function BucketControls({
             </select>
           </label>
         )}
+        {order}
       </>
     )
   }
   if (type === 'rich_text') {
     return (
+      <>
       <label className="flex items-center gap-2 text-sm">
         묶는 방식
         <select
@@ -1281,7 +1311,7 @@ function BucketControls({
           data-testid={`${testPrefix}-text-by`}
           value={value.text_by ?? DEFAULT_TEXT_MODE}
           disabled={locked}
-          onChange={(e) => onChange({ text_by: e.target.value as TextMode })}
+          onChange={(e) => change({ text_by: e.target.value as TextMode })}
           className={FIELD}
         >
           {TEXT_MODES.map((mode) => (
@@ -1291,19 +1321,24 @@ function BucketControls({
           ))}
         </select>
       </label>
+      {order}
+      </>
     )
   }
   if (type === 'number') {
     return (
-      // 칸을 떠나거나 Enter 로 저장한다
+      <>
+      {/* 칸을 떠나거나 Enter 로 저장한다 */}
       <NumberSizeField
         key={value.number_size ?? DEFAULT_NUMBER_SIZE}
         size={value.number_size ?? DEFAULT_NUMBER_SIZE}
         disabled={locked}
         testId={`${testPrefix}-number-size`}
         label={`${axisLabel}숫자를 묶는 구간 크기`}
-        onCommit={(size) => onChange({ number_size: size })}
+        onCommit={(size) => change({ number_size: size })}
       />
+      {order}
+      </>
     )
   }
   return null

@@ -54,7 +54,7 @@ import {
   type SortKey,
 } from './filter.ts'
 import { readPropertyTypes } from './query.ts'
-import { isGroupableType, normalizeGroupBy, validateGroupBy, type GroupBy } from './group.ts'
+import { fitGroupByToType, isGroupableType, normalizeGroupBy, validateGroupBy, type GroupBy } from './group.ts'
 import { mergeGalleryLayout, readGalleryLayout, validateGalleryPatch, type GalleryLayout } from './gallery.ts'
 import { readFormulaConfig } from './formula-schema.ts'
 import { displayFormula } from '../formula/formula.ts'
@@ -511,7 +511,8 @@ function liveGroupBy(raw: unknown, columns: readonly ViewColumn[]): GroupBy | nu
   if (typeof g.property_id !== 'string') return null
   const column = columns.find((c) => c.propertyId === g.property_id)
   if (column === undefined || !isGroupableType(column.type)) return null
-  return normalizeGroupBy(g)
+  // 지금 타입의 키만(S-1 ④) — 타입을 바꾼 뒤의 낡은 단위 · 순서가 화면의 저장을 막지 않게
+  return normalizeGroupBy(fitGroupByToType(g, column.type))
 }
 
 /**

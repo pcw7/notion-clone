@@ -178,7 +178,23 @@ export type GroupBy = {
    * 속성에만 — 아니면 거부한다.
    */
   readonly text_by?: TextMode
+  /**
+   * 그룹의 순서(S-1 · 정본 §3.6 [보강 S-1] · 04 F-04-11 `group_by.sort`) — 데이터에서 나온 그룹(날짜 · 숫자 · 글)만 오름 · 내림. 없으면
+   * 오름차순(`descending` 만 저장한다). 선택 · 상태 · 체크박스에 주면 거부한다 — 그 순서는 옵션 순서다(뷰별 `group_order` 를 두지 않는다).
+   */
+  readonly sort?: GroupSort
 }
+
+/** 그룹의 순서(S-1). 값 없음 그룹은 어느 쪽이든 맨 앞이다(노션 보드의 "No X" 열 — 왼쪽 끝). */
+export const GROUP_SORTS = ['ascending', 'descending'] as const
+export type GroupSort = (typeof GROUP_SORTS)[number]
+
+export function isGroupSort(value: unknown): value is GroupSort {
+  return typeof value === 'string' && (GROUP_SORTS as readonly string[]).includes(value)
+}
+
+/** 순서를 고를 수 있는 그룹 — 그룹이 옵션이 아니라 데이터에서 나오는 타입(B-1 · B-2 · B-2b). */
+const SORTABLE_GROUP_TYPES: readonly string[] = ['date', 'number', 'rich_text']
 
 /** 그룹 머리의 계산 — 어느 속성의 칸으로 어느 함수를. */
 export type GroupCalculation = { readonly property_id: string; readonly function: Calculation }
@@ -224,6 +240,13 @@ export function validateGroupBy(raw: unknown, types: PropertyTypes): ValidationI
   if (g.text_by !== undefined && !(isTextMode(g.text_by) && typeof g.property_id === 'string' && types.get(g.property_id) === 'rich_text')) {
     issues.push({ path: 'groupBy.text_by', message: "글 속성에만 'exact' · 'first' 를 줄 수 있습니다" })
   }
+  // 그룹의 순서(S-1) — 데이터에서 나온 그룹(날짜 · 숫자 · 글)에만 · 오름 · 내림
+  if (
+    g.sort !== undefined &&
+    !(isGroupSort(g.sort) && typeof g.property_id === 'string' && SORTABLE_GROUP_TYPES.includes(types.get(g.property_id) ?? ''))
+  ) {
+    issues.push({ path: 'groupBy.sort', message: "날짜 · 숫자 · 글 속성에만 'ascending' · 'descending' 을 줄 수 있습니다(선택 · 상태는 옵션 순서)" })
+  }
   // 그룹 머리의 계산(2d-3) — null 은 "없음"(카드 수). 고를 때는 살아 있고 그 함수를 고를 수 있는 타입이어야 한다.
   if (g.calculation !== undefined && g.calculation !== null) {
     const c = g.calculation as Record<string, unknown>
@@ -240,6 +263,23 @@ export function validateGroupBy(raw: unknown, types: PropertyTypes): ValidationI
   return issues
 }
 
+/**
+ * 지금 타입에 맞는 버킷 키만 남긴다(S-1 · 정본 [보강 S-1] ④) — 타입을 바꾼 뒤의 저장값(날짜의 단위 · 순서 …)은 지우지 않지만 화면에는 그
+ * 타입의 키만 보인다(`ViewDetail.groupBy`). 화면이 지금 설정에 얹어 저장해도 검사에 걸리지 않고, 그 저장이 낡은 키를 정리한다.
+ */
+export function fitGroupByToType(g: GroupBy, type: string): GroupBy {
+  const { status_by, date_unit, week_start, number_size, text_by, sort, ...rest } = g
+  return {
+    ...rest,
+    ...(type === 'status' && status_by !== undefined ? { status_by } : {}),
+    ...(type === 'date' && date_unit !== undefined ? { date_unit } : {}),
+    ...(type === 'date' && week_start !== undefined ? { week_start } : {}),
+    ...(type === 'number' && number_size !== undefined ? { number_size } : {}),
+    ...(type === 'rich_text' && text_by !== undefined ? { text_by } : {}),
+    ...(SORTABLE_GROUP_TYPES.includes(type) && sort !== undefined ? { sort } : {}),
+  }
+}
+
 /** 저장할 모양으로 정리한다 — 모르는 키를 버리고 중복 hidden 을 접는다. `validateGroupBy` 를 지난 값만. */
 export function normalizeGroupBy(raw: GroupBy): GroupBy {
   const hidden = [...new Set(raw.hidden ?? [])]
@@ -253,6 +293,7 @@ export function normalizeGroupBy(raw: GroupBy): GroupBy {
     ...(isWeekStart(raw.week_start) && raw.week_start !== DEFAULT_WEEK_START ? { week_start: raw.week_start } : {}),
     ...(isNumberSize(raw.number_size) ? { number_size: raw.number_size } : {}),
     ...(isTextMode(raw.text_by) ? { text_by: raw.text_by } : {}),
+    ...(raw.sort === 'descending' ? { sort: 'descending' as const } : {}),
     ...(calculation !== undefined && calculation !== null
       ? { calculation: { property_id: calculation.property_id, function: calculation.function } }
       : {}),
@@ -452,6 +493,8 @@ type Board = {
   readonly today: string
   /** 주의 시작 요일(B-3b) — 날짜를 주로 묶을 때 키가 그 요일의 날이다. */
   readonly weekStart: WeekStart
+  /** 그룹의 순서(S-1) — 데이터에서 나온 그룹을 오름 · 내림으로. 옵션 · 체크박스 축은 읽지 않는다(늘 오름). */
+  readonly sort: GroupSort
   /** 하위 그룹(B-4a · 보드의 가로줄) — 보드이고 `sub_group_by` 가 살아 있는 · 그룹 기준과 다른 속성을 가리킬 때만. */
   readonly sub: GroupAxis | null
 }
@@ -462,7 +505,17 @@ type Board = {
  */
 type GroupAxis = Pick<
   Board,
-  'groupBy' | 'propertyType' | 'options' | 'statusByGroup' | 'defaultOptionId' | 'dateUnit' | 'numberSize' | 'textMode' | 'today' | 'weekStart'
+  | 'groupBy'
+  | 'propertyType'
+  | 'options'
+  | 'statusByGroup'
+  | 'defaultOptionId'
+  | 'dateUnit'
+  | 'numberSize'
+  | 'textMode'
+  | 'today'
+  | 'weekStart'
+  | 'sort'
 >
 
 /** 보드를 읽는 요청의 공통 입력 — 뷰 검색어(2e-1) · 보는 사람의 오늘(B-3 — 상대 날짜 그룹 · 없으면 UTC 의 오늘). */
@@ -569,6 +622,8 @@ async function readAxis(tx: Tx, groupBy: GroupBy, types: PropertyTypes, today: s
     textMode: propertyType === 'rich_text' ? (isTextMode(groupBy.text_by) ? groupBy.text_by : DEFAULT_TEXT_MODE) : null,
     today,
     weekStart: isWeekStart(groupBy.week_start) ? groupBy.week_start : DEFAULT_WEEK_START,
+    // 그룹의 순서(S-1) — 데이터에서 나온 그룹만(타입을 바꾼 뒤의 저장값은 오름으로 읽는다)
+    sort: SORTABLE_GROUP_TYPES.includes(propertyType) && groupBy.sort === 'descending' ? 'descending' : 'ascending',
   }
 }
 
@@ -600,6 +655,8 @@ function catalogOf(board: GroupAxis, counted: ReadonlyMap<string, unknown> = new
           : board.dateUnit === 'relative'
             ? keys.sort((a, b) => relativeOrder.indexOf(a) - relativeOrder.indexOf(b))
             : keys.sort()
+    // 내림(S-1)이면 뒤집는다 — 값 없음은 그래도 맨 앞
+    if (board.sort === 'descending') buckets.reverse()
     return [{ key: NO_VALUE_KEY, ...none }, ...buckets.map((key) => ({ key, ...none }))]
   }
   if (board.propertyType === 'checkbox') {

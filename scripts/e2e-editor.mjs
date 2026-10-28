@@ -24904,6 +24904,63 @@ async function main() {
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('그룹의 순서 — 오름 · 내림 (S-1 · F-04-11)')) { try {
+      // 날짜로 묶은 보드의 그룹 패널에서 "순서"를 내림차순으로 고르면 열이 거꾸로(값 없음은 맨 앞) · 다시 열어도 · 단위를 바꿔도 순서는 남는다 ·
+      // 가로줄(숫자 구간)도 같은 고르개. 정본 §3.6 [보강 S-1]. 자기 데이터를 스스로 만든다(API).
+      const stamp = Date.now()
+      const apiC = `${BASE}/api/workspaces/${workspaceId}`
+      const call = async (method, path, body) => {
+        const r = await fetch(`${apiC}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return r.json().catch(() => null)
+      }
+      const made = (await call('POST', '/databases', { name: `그룹 순서 ${stamp}` })).database
+      const due = (await call('POST', `/data-sources/${made.dataSourceId}/properties`, { name: '마감', type: 'date' })).property.id
+      const score = (await call('POST', `/data-sources/${made.dataSourceId}/properties`, { name: '점수', type: 'number' })).property.id
+      const props = (await call('GET', `/data-sources/${made.dataSourceId}/properties`)).schema.properties
+      const titleProp = props.find((p) => p.type === 'title').id
+      for (const [title, day, n] of [['A', '2026-01-10', 5], ['B', '2026-03-10', 25], ['C', '2026-02-10', 15], ['D', null, null]]) {
+        await call('POST', `/views/${made.defaultViewId}/rows`, { cells: [
+          { propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } },
+          ...(day === null ? [] : [{ propertyId: due, value: { type: 'date', date: { start: day } } }]),
+          ...(n === null ? [] : [{ propertyId: score, value: { type: 'number', number: n } }]),
+        ] })
+      }
+      // 선택 · 상태가 없는 표라 보드가 고를 그룹이 없다 — 만들 때 날짜로 묶는다
+      const boardView = (await call('POST', `/databases/${made.id}/views`, { type: 'board', name: '보드', groupBy: { property_id: due } })).view.id
+      const columnsExpr = `JSON.stringify([...document.querySelectorAll('[data-testid="db-board"] [data-group-key]')].map((c) => c.dataset.groupKey))`
+      const columnsAre = (keys) => waitFor(`${columnsExpr} === ${JSON.stringify(JSON.stringify(keys))}`, 15000)
+      const lanesExpr = `JSON.stringify([...document.querySelectorAll('[data-testid="db-lane"]')].map((l) => l.dataset.laneKey))`
+      const setSelect = (sel, value) => evaluate(`(() => { const s = document.querySelector('${sel}')
+        const set = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set
+        set.call(s, ${JSON.stringify(value)}); s.dispatchEvent(new Event('change', { bubbles: true })); return true })()`)
+      const openPanel = async (inner) => {
+        await waitHydrated('[data-testid="db-group-button"]')
+        if (!(await evaluate(`!!document.querySelector('${inner}')`))) await clickSelector('[data-testid="db-group-button"]')
+        return waitFor(`!!document.querySelector('${inner}')`, 5000)
+      }
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${made.id}?v=${boardView}` })
+      check('전제 — 달로 묶은 열은 오름차순(값 없음 · 1월 · 2월 · 3월)', await columnsAre(['', '2026-01-01', '2026-02-01', '2026-03-01']), await evaluate(columnsExpr))
+      await openPanel('[data-testid="db-group-sort"]')
+      await setSelect('[data-testid="db-group-sort"]', 'descending')
+      check('★ 순서를 내림차순으로 — 3월 · 2월 · 1월(값 없음은 그래도 맨 앞)', await columnsAre(['', '2026-03-01', '2026-02-01', '2026-01-01']), await evaluate(columnsExpr))
+      await send('Page.reload', {})
+      check('다시 열어도 내림차순', await columnsAre(['', '2026-03-01', '2026-02-01', '2026-01-01']), await evaluate(columnsExpr))
+      await openPanel('[data-testid="db-group-date-unit"]')
+      await setSelect('[data-testid="db-group-date-unit"]', 'week')
+      check('단위를 주로 바꿔도 순서는 남는다 — 주의 월요일들이 거꾸로',
+        (await columnsAre(['', '2026-03-09', '2026-02-09', '2026-01-05'])) && (await evaluate(`document.querySelector('[data-testid="db-group-sort"]')?.value ?? ''`)) === 'descending',
+        await evaluate(columnsExpr))
+
+      // 가로줄(숫자 구간)도 같은 고르개
+      await call('PATCH', `/views/${boardView}`, { subGroupBy: { property_id: score } })
+      await send('Page.reload', {})
+      await waitFor(`${lanesExpr} === ${JSON.stringify(JSON.stringify(['', '0', '10', '20']))}`, 15000)
+      await openPanel('[data-testid="db-sub-group-sort"]')
+      await setSelect('[data-testid="db-sub-group-sort"]', 'descending')
+      check('★ 가로줄도 — 내림차순이면 20 · 10 · 0(값 없음이 맨 위)', await waitFor(`${lanesExpr} === ${JSON.stringify(JSON.stringify(['', '20', '10', '0']))}`, 15000), await evaluate(lanesExpr))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).
