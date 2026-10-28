@@ -69,7 +69,15 @@ export type QueriedRow = {
   readonly createdAt: Date
   readonly lastEditedAt: Date
   readonly version: string
+  /** 검색 중 하위 항목 트리(H-1)에서만 — 스스로 맞았는가 · 아래에 맞은 행이 있는가. 그 밖의 질의에는 없다. */
+  readonly searchHit?: SearchHit
 }
+
+/**
+ * 검색 중 하위 항목 트리의 표시(H-1 · 정본 §3.6 [보강] 뷰 검색 ⑧). `matched` 가 false 면 맥락 행(맞은 자손 때문에 선 조상)이다 —
+ * 그때 `below` 는 늘 true 다.
+ */
+export type SearchHit = { readonly matched: boolean; readonly below: boolean }
 
 export type QueryRowsInput = {
   readonly filter?: FilterNode | null
@@ -86,6 +94,12 @@ export type QueryRowsInput = {
    * 뷰 검색어(2e-1 · F-04-27) — 필터와 AND 로 붙는다(`search.ts`). `normalizeSearch` 를 지난 값만. 뷰에 저장하지 않는다.
    */
   readonly search?: string | null
+  /**
+   * 검색 중 하위 항목 트리(H-1 · 정본 §3.6 [보강] 뷰 검색 ⑧) — 상위 항목 프로퍼티. 주면 검색어에 맞은 행뿐 아니라 **맞은 자손을 가진 행**
+   * (맥락 행)도 싣고 행마다 `searchHit` 을 단다. 검색어가 없으면 쓰지 않는다. 조상의 사슬은 권한 · 필터를 지난 살아 있는 행으로만
+   * 잇는다 — 그 밖의 부모 밑에 선 자식은 트리에 보일 자리가 없다(필터가 층마다 걸리는 것과 같다 · 휴지통 부모에서 멈춘다).
+   */
+  readonly searchAncestors?: { readonly parentPropertyId: string }
   /**
    * 이 행들로만 좁힌다(10n-16 — "고친 행이 아직 이 뷰에 서는가" · `row-in-view.ts`). 다른 술어(권한 · 필터 · 검색어)는 그대로 건다.
    */
@@ -131,6 +145,9 @@ export type RowRow = {
   created_at: Date
   last_edited_at: Date
   version: string
+  /** 검색 중 하위 항목 트리(H-1)에서만 — 스스로 맞았는가 · 아래에 맞은 행이 있는가. */
+  search_hit?: boolean
+  search_below?: boolean
   /** 커서를 만들기 위한 정렬 값들. `sort_0`, `sort_1`, … */
   [k: string]: unknown
 }
@@ -209,13 +226,41 @@ export async function queryRows(
       input.search === undefined || input.search === null ? null : compileSearch(input.search, types, params, await readableScopes(tx, ctx))
     const onlySql = input.onlyRowIds === undefined ? null : `p.id = ANY(${params.bind([...input.onlyRowIds])}::uuid[])`
 
-    const where = [
+    // 이 행이 뷰에 설 수 있는가 — 같은 표 · 템플릿 아님 · 살아 있음 · 권한 · 필터. 검색 중 트리(H-1)의 조상 사슬도 이것으로 잇는다.
+    const visible = [
       'p.data_source_id = $1',
       'p.is_template = false', // 불변식 R1
       "b.lifecycle = 'live'",
       accessSql, // 권한이 필터보다 먼저다(F-03-17)
       filterSql,
-      searchSql,
+    ].filter((s): s is string => s !== null)
+
+    // 검색 중 하위 항목 트리(H-1) — 맞은 행(sx_hit)과, 그 위로 설 수 있는 조상(sx_up)을 먼저 모은다. 층의 질의는 둘 중 하나에 든 행을
+    // 고르고, 행마다 어느 쪽인지 싣는다.
+    const ancestorProperty =
+      searchSql !== null && input.searchAncestors !== undefined ? params.bind(input.searchAncestors.parentPropertyId) : null
+    const withSql =
+      ancestorProperty === null
+        ? ''
+        : `WITH RECURSIVE sx_hit AS (
+             SELECT p.id FROM page p JOIN block b ON b.id = p.id WHERE ${[...visible, searchSql].join(' AND ')}
+           ), sx_up AS (
+             SELECT p.id FROM sx_hit sh
+               JOIN relation_edge se ON se.from_page_id = sh.id AND se.property_id = ${ancestorProperty}
+               JOIN page p ON p.id = se.to_page_id JOIN block b ON b.id = p.id
+              WHERE ${visible.join(' AND ')}
+             UNION
+             SELECT p.id FROM sx_up su
+               JOIN relation_edge se ON se.from_page_id = su.id AND se.property_id = ${ancestorProperty}
+               JOIN page p ON p.id = se.to_page_id JOIN block b ON b.id = p.id
+              WHERE ${visible.join(' AND ')}
+           ) `
+    const hitColumns =
+      ancestorProperty === null ? '' : ', p.id IN (SELECT id FROM sx_hit) AS search_hit, p.id IN (SELECT id FROM sx_up) AS search_below'
+
+    const where = [
+      ...visible,
+      ancestorProperty === null ? searchSql : '(p.id IN (SELECT id FROM sx_hit) OR p.id IN (SELECT id FROM sx_up))',
       treeSql,
       onlySql,
       cursorSql,
@@ -230,8 +275,8 @@ export async function queryRows(
     const limitParam = params.bind(limit + 1)
 
     const rows = await tx.query<RowRow>(
-      `SELECT b.id, b.order_key, p.properties_cache, b.properties, b.format -> 'page_icon' AS page_icon,
-              p.unique_seq, b.created_at, b.last_edited_at, b.version${sortColumns}
+      `${withSql}SELECT b.id, b.order_key, p.properties_cache, b.properties, b.format -> 'page_icon' AS page_icon,
+              p.unique_seq, b.created_at, b.last_edited_at, b.version${sortColumns}${hitColumns}
          FROM page p
          JOIN block b ON b.id = p.id
         WHERE ${where.join(' AND ')}
@@ -291,6 +336,7 @@ export function toQueriedRow(row: RowRow): QueriedRow {
     createdAt: row.created_at,
     lastEditedAt: row.last_edited_at,
     version: row.version,
+    ...(typeof row.search_hit === 'boolean' ? { searchHit: { matched: row.search_hit, below: row.search_below === true } } : {}),
   }
 }
 

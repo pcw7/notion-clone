@@ -21,6 +21,7 @@ import type { RelationFailure } from './relation.ts'
 import type { GroupFailure } from './group.ts'
 import type { TemplateFailure } from './template.ts'
 import type { ViewFailure } from './view.ts'
+import type { SearchHit } from './query.ts'
 
 export function rowFailureStatus(reason: RowFailure): number {
   switch (reason) {
@@ -266,6 +267,8 @@ export type RowJson = {
   readonly uniqueSeq: number | null
   readonly lastEditedAt: string
   readonly version: string
+  /** 검색 중 하위 항목 트리(H-1)의 읽기에서만 — 맥락 행인가 · 아래에 맞은 행이 있는가. 쓰기 응답에는 없다. */
+  readonly searchHit?: SearchHit
 }
 
 /** 표가 그리는 행 한 줄. 읽기(`GET /rows`)와 쓰기 응답이 **같은 모양**이어야 화면이 그대로 갈아 끼운다. */
@@ -277,6 +280,7 @@ export function rowJson(row: {
   readonly uniqueSeq: number | null
   readonly lastEditedAt: Date
   readonly version: string
+  readonly searchHit?: SearchHit
 }): RowJson {
   return {
     id: row.id,
@@ -286,5 +290,6 @@ export function rowJson(row: {
     uniqueSeq: row.uniqueSeq,
     lastEditedAt: row.lastEditedAt.toISOString(),
     version: row.version,
+    ...(row.searchHit === undefined ? {} : { searchHit: row.searchHit }),
   }
 }

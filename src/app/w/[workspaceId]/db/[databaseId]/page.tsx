@@ -272,8 +272,8 @@ export default async function DatabasePage({
   // 캘린더의 보이는 달(2g-2) — 주소의 `m`(`YYYY-MM`). 없으면 이번 달(UTC — 화면의 "오늘" 단추가 보는 사람의 달로 옮긴다).
   const calendarMonth = isYm(m) ? m : new Date().toISOString().slice(0, 7)
   // 하위 항목이 켜진 표 · 목록은 최상위 행만 먼저 읽는다 — 자식은 토글을 펼 때 읽는다(2b-2 · 행 라우트와 같은 규칙).
-  // 검색 중에는 트리를 펴지 않는다 — 맞는 행을 평평하게(2e-1 · 행 라우트와 같은 규칙).
-  const subItems = nestsSubItems(view.value.type) && search === null ? subItemPairOf(view.value.columns) : null
+  // 검색 중에도 트리다 — 맞은 자손을 가진 행이 맥락 행으로 선다(H-1 · 행 라우트와 같은 규칙).
+  const subItems = nestsSubItems(view.value.type) ? subItemPairOf(view.value.columns) : null
   // 갤러리는 부모만(2f-1 · 행 라우트와 같은 규칙) — 펴지 않는다.
   const parentsOnly = showsParentsOnly(view.value.type) ? subItemPairOf(view.value.columns) : null
   // 보는 사람의 오늘(시간대 쿠키 · `time-zone-cookie.tsx` 가 쓴다) — 상대 날짜 그룹(B-3)과 상대 날짜 필터(R-1)가 같은 날을 쓴다
@@ -289,6 +289,7 @@ export default async function DatabasePage({
           manualOrderViewId: view.value.id,
           limit: view.value.loadLimit,
           ...(subItems === null ? {} : { tree: { parentPropertyId: subItems.parentPropertyId, under: null } }),
+          ...(subItems === null || search === null ? {} : { searchAncestors: { parentPropertyId: subItems.parentPropertyId } }),
           ...(parentsOnly === null ? {} : { tree: { parentPropertyId: parentsOnly.parentPropertyId, under: null } }),
           search,
           today: viewerToday,

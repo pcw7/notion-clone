@@ -13345,7 +13345,8 @@ async function main() {
     } catch (thrown) { await sectionThrew(thrown) } }
 
     if (sectionIf('뷰 검색 — 서버 (2e-1 · F-04-27)')) { try {
-      // `?q=` 로 행 · 열 집계 · 보드가 같이 좁혀진다(뷰에 저장하지 않는다). 하위 항목이 켜진 표는 검색 중에 맞는 행을 평평하게 준다.
+      // `?q=` 로 행 · 열 집계 · 보드가 같이 좁혀진다(뷰에 저장하지 않는다). 하위 항목이 켜진 표는 검색 중에도 트리다 — 맞은 자식의 부모가
+      // 맥락 행으로 선다(H-1 · 처음엔 맞는 행을 평평하게 줬다).
       // 찾는 칸 · 필터와의 AND · 탈출 같은 규칙은 DB 검사가 본다.
       const stamp = Date.now()
       const api = async (method, path, body) => {
@@ -13368,10 +13369,14 @@ async function main() {
       const all = (await api('GET', `/views/${view}/rows`)).body
       check('검색어가 없으면 트리의 최상위 행만(자식은 부모 밑에)', titlesOf(all) === ['분기 계획', '회의록'].sort().join(','), titlesOf(all))
       const found = (await api('GET', `/views/${view}/rows?q=${encodeURIComponent('보고')}`)).body
-      check('★ ?q= 로 맞는 행만 — 하위 항목이 켜진 표라도 자식이 평평하게 나온다', titlesOf(found) === '주간 보고서', titlesOf(found))
+      check('★ ?q= — 하위 항목이 켜진 표는 검색 중에도 트리: 맞은 자식의 부모가 맥락 행으로(스스로는 맞지 않음 · 아래에 맞은 행)',
+        titlesOf(found) === '분기 계획' && found.rows[0]?.searchHit?.matched === false && found.rows[0]?.searchHit?.below === true,
+        JSON.stringify((found?.rows ?? []).map((r) => [r.title, r.searchHit])))
       check('★ 열 집계도 검색에 맞는 행으로(모두 세기 1)', found?.calculations?.[titleProp]?.value === 1, JSON.stringify(found?.calculations))
       const nested = await api('GET', `/views/${view}/rows?q=${encodeURIComponent('보고')}&parent=${parentRow}`)
-      check('검색 중에 parent 를 주면 400 — 트리를 펴지 않는다', nested.status === 400, String(nested.status))
+      check('검색 중에 parent 를 주면 그 행의 맞은 자식(H-1)',
+        nested.status === 200 && titlesOf(nested.body) === '주간 보고서' && nested.body.rows[0]?.searchHit?.matched === true,
+        JSON.stringify([nested.status, (nested.body?.rows ?? []).map((r) => [r.title, r.searchHit])]))
 
       const done = await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '완료', type: 'checkbox' })
       const made = await api('POST', `/databases/${db.id}/views`, { type: 'board', groupBy: { property_id: done.body?.property?.id } })
@@ -25508,6 +25513,67 @@ async function main() {
         actions: [{ type: 'edit_property', config: { v: 1, cells: [{ propertyId: done, value: { type: 'checkbox', checkbox: true } }] } }],
       })
       check('★ "다음 1주 안" 조건의 자동화를 저장하면 받는다(201 — 처음엔 invalid_condition 이었다)', made.status === 201, JSON.stringify(made.body))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
+    if (sectionIf('뷰 검색 — 하위 항목 트리 (H-1 · F-04-27 · F-04-22)')) { try {
+      // 하위 항목이 켜진 표에서 검색하면 맞은 손자가 조상 밑에 트리로 선다 — 맞지 않는 조상은 회색 · 저절로 펴진다 · 접으면 그대로 ·
+      // 맥락 행을 고쳐도 "조건 밖"이 아니다 · 열 집계는 맞은 행만. 정본 §3.6 [보강] 뷰 검색 ⑧. 자기 데이터를 스스로 만든다(API).
+      const stamp = Date.now()
+      const apiC = `${BASE}/api/workspaces/${workspaceId}`
+      const call = async (method, path, body) => {
+        const r = await fetch(`${apiC}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return r.json().catch(() => null)
+      }
+      const made = (await call('POST', '/databases', { name: `검색 트리 ${stamp}` })).database
+      const view = made.defaultViewId
+      const titleProp = (await call('GET', `/data-sources/${made.dataSourceId}/properties`)).schema.properties.find((p) => p.type === 'title').id
+      const cell = (text) => ({ propertyId: titleProp, value: { type: 'title', title: [textRun(text)] } })
+      const ids = {}
+      for (const t of ['프로젝트 A', '보고 체계', '예산']) ids[t] = (await call('POST', `/views/${view}/rows`, { cells: [cell(t)] })).row.id
+      await call('POST', `/data-sources/${made.dataSourceId}/sub-items`)
+      ids['설계'] = (await call('POST', `/views/${view}/rows`, { cells: [cell('설계')], parent: ids['프로젝트 A'] })).row.id
+      ids['보고서 초안'] = (await call('POST', `/views/${view}/rows`, { cells: [cell('보고서 초안')], parent: ids['설계'] })).row.id
+      ids['회의'] = (await call('POST', `/views/${view}/rows`, { cells: [cell('회의')], parent: ids['보고 체계'] })).row.id
+      await call('PATCH', `/views/${view}/columns/${titleProp}`, { calculation: 'count_all' })
+      const ROWS = `[...document.querySelectorAll('[data-testid="db-table"] tbody tr[data-row-id]')]`
+      const titleOf = `(tr) => (tr.querySelector('[data-testid="db-row-title"]')?.textContent ?? '').trim()`
+      const shapeJs = `${ROWS}.map((tr) => (${titleOf})(tr) + ':' + tr.dataset.depth).join('|')`
+      const greyJs = `${ROWS}.filter((tr) => tr.dataset.searchContext === 'true').map((tr) => (${titleOf})(tr) + (tr.querySelector('[data-testid="db-row-context"]')?.textContent ?? '')).join('|')`
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${made.id}?q=${encodeURIComponent('보고')}` })
+      const WANT = '프로젝트 A:0|설계:1|보고서 초안:2|보고 체계:0'
+      check('★ 검색 중에도 트리 — 맞은 손자가 조상 밑에 깊이 2 로 서고(조상은 저절로 펴진다) · 맞은 것이 없는 행은 서지 않는다',
+        await waitFor(`${shapeJs} === ${JSON.stringify(WANT)}`, 15000), await evaluate(shapeJs))
+      check('★ 맞지 않는 조상만 회색 — 읽는 사람에게 "검색어와 맞지 않는 상위 항목" 이라고 말한다',
+        (await evaluate(greyJs)) === '프로젝트 A검색어와 맞지 않는 상위 항목|설계검색어와 맞지 않는 상위 항목', await evaluate(greyJs))
+      check('맞은 행 아래에 맞은 것이 없으면 토글이 없다(자식 "회의" 가 있어도)',
+        (await evaluate(`document.querySelector('tr[data-row-id="${ids['보고 체계']}"] [data-testid="db-subitem-toggle"]') === null`)) === true)
+
+      // 사람이 접으면 그대로 — 저절로 다시 펴지 않는다
+      const toggle = await evaluate(`(() => {
+        const e = document.querySelector('tr[data-row-id="${ids['설계']}"] [data-testid="db-subitem-toggle"]')
+        if (!e) return null
+        const r = e.getBoundingClientRect()
+        return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+      })()`)
+      if (toggle) await click(toggle.x, toggle.y)
+      const folded = await waitFor(`${shapeJs} === ${JSON.stringify('프로젝트 A:0|설계:1|보고 체계:0')}`, 10000)
+      await new Promise((r) => setTimeout(r, 1200))
+      check('★ 접으면 그대로 — 저절로 다시 펴지 않는다', folded && (await evaluate(shapeJs)) === '프로젝트 A:0|설계:1|보고 체계:0', await evaluate(shapeJs))
+
+      // 맥락 행을 고쳐도 이 뷰에 선다 · 맞지 않는 잎은 서지 않는다(10n-16 의 판정이 트리와 같은 규칙)
+      const patch = async (rowId, text) => {
+        const r = await fetch(`${apiC}/rows/${rowId}`, {
+          method: 'PATCH', headers: authed, body: JSON.stringify({ cells: [cell(text)], view: { id: view, search: '보고' } }),
+        })
+        return (await r.json().catch(() => null))?.inView
+      }
+      const contextStays = await patch(ids['설계'], '설계 단계')
+      const leafLeaves = await patch(ids['회의'], '회의 메모')
+      check('★ 맥락 행을 고쳐도 이 뷰에 선다(조건 밖이 아니다) · 맞지 않는 잎은 서지 않는다', contextStays === true && leafLeaves === false,
+        JSON.stringify({ contextStays, leafLeaves }))
+      const top = await call('GET', `/views/${view}/rows?q=${encodeURIComponent('보고')}`)
+      check('열 집계는 맞은 행만 센다 — 모두 세기 2(맥락 행은 결과가 아니다)', top?.calculations?.[titleProp]?.value === 2, JSON.stringify(top?.calculations))
     } catch (thrown) { await sectionThrew(thrown) } }
 
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
