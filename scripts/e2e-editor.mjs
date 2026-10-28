@@ -13370,13 +13370,13 @@ async function main() {
       check('검색어가 없으면 트리의 최상위 행만(자식은 부모 밑에)', titlesOf(all) === ['분기 계획', '회의록'].sort().join(','), titlesOf(all))
       const found = (await api('GET', `/views/${view}/rows?q=${encodeURIComponent('보고')}`)).body
       check('★ ?q= — 하위 항목이 켜진 표는 검색 중에도 트리: 맞은 자식의 부모가 맥락 행으로(스스로는 맞지 않음 · 아래에 맞은 행)',
-        titlesOf(found) === '분기 계획' && found.rows[0]?.searchHit?.matched === false && found.rows[0]?.searchHit?.below === true,
-        JSON.stringify((found?.rows ?? []).map((r) => [r.title, r.searchHit])))
+        titlesOf(found) === '분기 계획' && found.rows[0]?.treeMatch?.matched === false && found.rows[0]?.treeMatch?.below === true,
+        JSON.stringify((found?.rows ?? []).map((r) => [r.title, r.treeMatch])))
       check('★ 열 집계도 검색에 맞는 행으로(모두 세기 1)', found?.calculations?.[titleProp]?.value === 1, JSON.stringify(found?.calculations))
       const nested = await api('GET', `/views/${view}/rows?q=${encodeURIComponent('보고')}&parent=${parentRow}`)
       check('검색 중에 parent 를 주면 그 행의 맞은 자식(H-1)',
-        nested.status === 200 && titlesOf(nested.body) === '주간 보고서' && nested.body.rows[0]?.searchHit?.matched === true,
-        JSON.stringify([nested.status, (nested.body?.rows ?? []).map((r) => [r.title, r.searchHit])]))
+        nested.status === 200 && titlesOf(nested.body) === '주간 보고서' && nested.body.rows[0]?.treeMatch?.matched === true,
+        JSON.stringify([nested.status, (nested.body?.rows ?? []).map((r) => [r.title, r.treeMatch])]))
 
       const done = await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '완료', type: 'checkbox' })
       const made = await api('POST', `/databases/${db.id}/views`, { type: 'board', groupBy: { property_id: done.body?.property?.id } })
@@ -25544,8 +25544,8 @@ async function main() {
       const WANT = '프로젝트 A:0|설계:1|보고서 초안:2|보고 체계:0'
       check('★ 검색 중에도 트리 — 맞은 손자가 조상 밑에 깊이 2 로 서고(조상은 저절로 펴진다) · 맞은 것이 없는 행은 서지 않는다',
         await waitFor(`${shapeJs} === ${JSON.stringify(WANT)}`, 15000), await evaluate(shapeJs))
-      check('★ 맞지 않는 조상만 회색 — 읽는 사람에게 "검색어와 맞지 않는 상위 항목" 이라고 말한다',
-        (await evaluate(greyJs)) === '프로젝트 A검색어와 맞지 않는 상위 항목|설계검색어와 맞지 않는 상위 항목', await evaluate(greyJs))
+      check('★ 맞지 않는 조상만 회색 — 읽는 사람에게 "조건에 맞지 않는 상위 항목" 이라고 말한다',
+        (await evaluate(greyJs)) === '프로젝트 A조건에 맞지 않는 상위 항목|설계조건에 맞지 않는 상위 항목', await evaluate(greyJs))
       check('맞은 행 아래에 맞은 것이 없으면 토글이 없다(자식 "회의" 가 있어도)',
         (await evaluate(`document.querySelector('tr[data-row-id="${ids['보고 체계']}"] [data-testid="db-subitem-toggle"]') === null`)) === true)
 
@@ -25574,6 +25574,78 @@ async function main() {
         JSON.stringify({ contextStays, leafLeaves }))
       const top = await call('GET', `/views/${view}/rows?q=${encodeURIComponent('보고')}`)
       check('열 집계는 맞은 행만 센다 — 모두 세기 2(맥락 행은 결과가 아니다)', top?.calculations?.[titleProp]?.value === 2, JSON.stringify(top?.calculations))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
+    if (sectionIf('하위 항목의 표시 범위 (P-1 · F-04-22 · F-03-18)')) { try {
+      // 필터가 걸린 하위 항목 표 — 부모와 하위(기본)는 필터에 걸린 부모가 맞는 자식의 회색 맥락 행으로 서고(저절로 펴진다), 부모만은
+      // 최상위에만 · 하위만은 자식에만 필터가 걸린다. 열 집계는 범위의 층에서. 정본 §3.5 [보강 P-1]. 자기 데이터를 스스로 만든다(API).
+      const stamp = Date.now()
+      const apiC = `${BASE}/api/workspaces/${workspaceId}`
+      const call = async (method, path, body) => {
+        const r = await fetch(`${apiC}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const made = (await call('POST', '/databases', { name: `표시 범위 ${stamp}` })).body.database
+      const view = made.defaultViewId
+      const titleProp = (await call('GET', `/data-sources/${made.dataSourceId}/properties`)).body.schema.properties.find((p) => p.type === 'title').id
+      const cell = (text) => ({ propertyId: titleProp, value: { type: 'title', title: [textRun(text)] } })
+      const ids = {}
+      for (const t of ['가', '나 끝', '다']) ids[t] = (await call('POST', `/views/${view}/rows`, { cells: [cell(t)] })).body.row.id
+      await call('POST', `/data-sources/${made.dataSourceId}/sub-items`)
+      for (const [t, parent] of [['가-1 끝', '가'], ['가-2', '가'], ['나-1', '나 끝']]) {
+        ids[t] = (await call('POST', `/views/${view}/rows`, { cells: [cell(t)], parent: ids[parent] })).body.row.id
+      }
+      await call('PATCH', `/views/${view}`, { filter: { property_id: titleProp, operator: 'contains', value: '끝' } })
+      await call('PATCH', `/views/${view}/columns/${titleProp}`, { calculation: 'count_all' })
+      const ROWS = `[...document.querySelectorAll('[data-testid="db-table"] tbody tr[data-row-id]')]`
+      const titleOf = `(tr) => (tr.querySelector('[data-testid="db-row-title"]')?.textContent ?? '').trim()`
+      const shapeJs = `${ROWS}.map((tr) => (${titleOf})(tr) + ':' + tr.dataset.depth).join('|')`
+      const greyJs = `${ROWS}.filter((tr) => tr.dataset.searchContext === 'true').map((tr) => (${titleOf})(tr)).join('|')`
+      const togglesJs = `${ROWS}.filter((tr) => tr.querySelector('[data-testid="db-subitem-toggle"]')).map((tr) => (${titleOf})(tr)).join('|')`
+      const open = async () => {
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${made.id}` })
+        await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr[data-row-id]').length > 0`, 15000)
+      }
+      const clickToggle = async (rowId) => {
+        const at = await evaluate(`(() => {
+          const e = document.querySelector('tr[data-row-id="${rowId}"] [data-testid="db-subitem-toggle"]')
+          if (!e) return null
+          const r = e.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (at) await click(at.x, at.y)
+        return at !== null
+      }
+
+      await open()
+      check('★ 부모와 하위(기본) — 필터에 걸린 부모가 맞는 자식의 맥락 행으로 서고 저절로 펴진다 · 맞은 것이 없는 행은 서지 않는다',
+        await waitFor(`${shapeJs} === ${JSON.stringify('가:0|가-1 끝:1|나 끝:0')}`, 15000), await evaluate(shapeJs))
+      check('★ 필터에 걸린 조상만 회색 — 맞은 행(나 끝 · 가-1 끝)은 아니다', (await evaluate(greyJs)) === '가', await evaluate(greyJs))
+
+      await call('PATCH', `/views/${view}`, { subItemFilterScope: 'parents' })
+      await open()
+      const parentsTop = await waitFor(`${shapeJs} === ${JSON.stringify('나 끝:0')}`, 15000)
+      const parentsOpened = parentsTop && (await clickToggle(ids['나 끝'])) && (await waitFor(`${shapeJs} === ${JSON.stringify('나 끝:0|나-1:1')}`, 10000))
+      check('★ 부모만 — 최상위에만 필터(가 · 다는 서지 않는다) · 펴면 자식은 필터와 상관없이 다 선다', parentsOpened, await evaluate(shapeJs))
+
+      await call('PATCH', `/views/${view}`, { subItemFilterScope: 'sub_items' })
+      await open()
+      const subTop = await waitFor(`${shapeJs} === ${JSON.stringify('가:0|나 끝:0|다:0')}`, 15000)
+      const subToggles = await evaluate(togglesJs)
+      const subOpened = subTop && (await clickToggle(ids['가'])) && (await waitFor(`${shapeJs} === ${JSON.stringify('가:0|가-1 끝:1|나 끝:0|다:0')}`, 10000))
+      check('★ 하위만 — 최상위는 다 서고 자식에만 필터(토글은 맞은 자식이 있는 가에만 · 펴면 가-1 끝만)',
+        subOpened && subToggles === '가' && (await evaluate(greyJs)) === '', JSON.stringify({ shape: await evaluate(shapeJs), subToggles }))
+
+      const countOf = async (scope) => {
+        await call('PATCH', `/views/${view}`, { subItemFilterScope: scope })
+        return (await call('GET', `/views/${view}/rows`)).body?.calculations?.[titleProp]?.value
+      }
+      const counts = [await countOf('both'), await countOf('parents'), await countOf('sub_items')]
+      check('★ 열 집계는 범위의 층에서 — 부모와 하위 2 · 부모만 1(최상위) · 하위만 1(최상위가 아닌 행)', JSON.stringify(counts) === '[2,1,1]', JSON.stringify(counts))
+      const read = (await call('GET', `/views/${view}`)).body?.view?.subItemFilterScope
+      const wrong = await call('PATCH', `/views/${view}`, { subItemFilterScope: 'sideways' })
+      check('범위를 읽는다 · 모르는 범위는 400(invalid_layout)', read === 'sub_items' && wrong.status === 400 && wrong.body?.error === 'invalid_layout',
+        JSON.stringify({ read, wrong: [wrong.status, wrong.body?.error] }))
     } catch (thrown) { await sectionThrew(thrown) } }
 
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {

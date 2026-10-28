@@ -5,11 +5,11 @@
  *
  * 이 파일이 지키는 것.
  *
- *   ① ★ 층마다 맞은 행과 맞은 자손을 가진 행 — 맞은 손자의 조상 사슬이 최상위 · 자식 · 손자 층에 선다. 행마다 `searchHit`(스스로
+ *   ① ★ 층마다 맞은 행과 맞은 자손을 가진 행 — 맞은 손자의 조상 사슬이 최상위 · 자식 · 손자 층에 선다. 행마다 `treeMatch`(스스로
  *        맞았는가 · 아래에 맞은 행이 있는가) · 맞은 것이 없는 행은 서지 않는다(자식이 있어도)
- *   ② ★ 사슬은 필터를 지난 행으로만 — 가운데 행이 필터에 걸리면 그 위의 조상도 서지 않는다(손자는 보일 자리가 없다)
+ *   ② ★ 사슬은 읽을 수 있는 살아 있는 행으로 — 가운데 행이 필터에 걸려도 회색으로 선다(P-1 이 바꿨다 — 처음엔 사슬이 끊겼다)
  *   ③ 휴지통 부모에서 멈춘다 — 그 자식이 최상위로 서고(스스로 맞으면) 휴지통 부모의 조상은 맥락 행이 아니다
- *   ④ 조상을 묻지 않으면(부모만 그리는 뷰) 예전 그대로 — 맞은 최상위 행만 · `searchHit` 이 없다
+ *   ④ 맞춤을 묻지 않으면(부모만 그리는 뷰) 예전 그대로 — 맞은 최상위 행만 · `treeMatch` 가 없다
  *
  * ⚠ skip 은 테스트마다 `ctx.skip` 으로 건다(`describe` 의 skip 옵션은 등록 시점에 평가된다 — HANDOFF §5).
  */
@@ -81,10 +81,10 @@ async function forest(name: string) {
       await queryRows(fx.owner.ctx, ds, {
         tree: { parentPropertyId, under },
         search: '보고',
-        searchAncestors: { parentPropertyId },
+        treeScope: { parentPropertyId, scope: 'both' },
         ...extra,
       }),
-    ).rows.map((r) => [r.title, r.searchHit?.matched, r.searchHit?.below])
+    ).rows.map((r) => [r.title, r.treeMatch?.matched, r.treeMatch?.below])
   return { ds, titleId, parentPropertyId, project, design, draft, system, level }
 }
 
@@ -102,13 +102,17 @@ describe('① 층마다 맞은 행과 맞은 자손을 가진 행', () => {
   })
 })
 
-describe('② 사슬은 필터를 지난 행으로만', () => {
-  test('★ 가운데 행이 필터에 걸리면 그 위의 조상도 서지 않는다', async (t) => {
+describe('② 사슬은 읽을 수 있는 살아 있는 행으로', () => {
+  test('★ 가운데 행이 필터에 걸려도 회색으로 선다(P-1 — 필터의 조상 강제 포함)', async (t) => {
     if (skipReason) return t.skip(skipReason)
     const f = await forest('검색 트리 ②')
     const filter = { property_id: f.titleId, operator: 'does_not_equal', value: '설계' } as const
-    assert.deepEqual(await f.level(null, { filter }), [['보고 체계', true, false]])
-    assert.deepEqual(await f.level(f.project, { filter }), [], '설계가 걸려 프로젝트 밑에는 아무것도 없다')
+    assert.deepEqual(await f.level(null, { filter }), [
+      ['프로젝트', false, true],
+      ['보고 체계', true, false],
+    ])
+    assert.deepEqual(await f.level(f.project, { filter }), [['설계', false, true]], '설계는 필터에 걸렸지만 맞은 손자의 맥락 행')
+    assert.deepEqual(await f.level(f.design, { filter }), [['보고서 초안', true, false]])
   })
 })
 
@@ -122,11 +126,11 @@ describe('③ 휴지통 부모에서 멈춘다', () => {
   })
 })
 
-describe('④ 조상을 묻지 않으면 예전 그대로', () => {
-  test('맞은 최상위 행만 · searchHit 이 없다', async (t) => {
+describe('④ 맞춤을 묻지 않으면 예전 그대로', () => {
+  test('맞은 최상위 행만 · treeMatch 가 없다', async (t) => {
     if (skipReason) return t.skip(skipReason)
     const f = await forest('검색 트리 ④')
     const rows = unwrap(await queryRows(fx.owner.ctx, f.ds, { tree: { parentPropertyId: f.parentPropertyId, under: null }, search: '보고' })).rows
-    assert.deepEqual(rows.map((r) => [r.title, r.searchHit]), [['보고 체계', undefined]])
+    assert.deepEqual(rows.map((r) => [r.title, r.treeMatch]), [['보고 체계', undefined]])
   })
 })

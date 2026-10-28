@@ -80,7 +80,7 @@ import type { DatabaseAccess } from '@/lib/database/database'
 import type { SortKey } from '@/lib/database/filter'
 import { sortFirst } from '@/lib/database/filter-draft'
 import type { RowJson } from '@/lib/database/http'
-import type { SearchHit } from '@/lib/database/query'
+import type { TreeMatch } from '@/lib/database/query'
 import { PageIconView } from '../../page-icon-view'
 import { isCellColumn, isSortable, relationOf, rollupOf, type CellColumn, type ViewColumn } from '@/lib/database/view-columns'
 import { formatUniqueId, normalizeUniqueIdPrefix } from '@/lib/database/unique-id-format'
@@ -173,9 +173,9 @@ function CellSlot({ active, children }: { active: boolean; children: ReactNode }
 /** 표시 순서가 뒤에 오는 응답인가. 버전은 bigint 문자열이다. */
 const notOlder = (incoming: string, current: string): boolean => BigInt(incoming) >= BigInt(current)
 
-/** 읽기가 준 행들의 검색 표시(H-1) — 표시가 없는 행은 싣지 않는다. */
-const hitsOf = (list: readonly RowJson[]): Map<string, SearchHit> =>
-  new Map(list.flatMap((r) => (r.searchHit === undefined ? [] : [[r.id, r.searchHit] as const])))
+/** 읽기가 준 행들의 트리 맞춤 표시(H-1 · P-1) — 표시가 없는 행은 싣지 않는다. */
+const hitsOf = (list: readonly RowJson[]): Map<string, TreeMatch> =>
+  new Map(list.flatMap((r) => (r.treeMatch === undefined ? [] : [[r.id, r.treeMatch] as const])))
 
 /** 틀린 접두사의 이유 — 저장 CHECK(0050)과 같은 규칙을 사람 말로. */
 const PREFIX_RULE = '접두사는 영숫자 2~7자입니다(비우면 번호만 보입니다).'
@@ -311,15 +311,18 @@ export function DatabaseTable(props: {
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set())
   const [loadingChildren, setLoadingChildren] = useState<string | null>(null)
   /**
-   * 검색 중 하위 항목 트리(H-1 · 정본 §3.6 [보강] 뷰 검색 ⑧) — 읽기가 준 행마다의 `searchHit`(맥락 행인가 · 아래에 맞은 행이 있는가).
-   * 행 안에 두지 않는다 — 쓰기 응답이 행을 갈아 끼우면(검색 표시가 없다) 회색 · 토글이 사라진다. 읽기 길만 이 지도를 고친다.
+   * 하위 항목 트리의 맞춤(H-1 검색 · P-1 표시 범위의 필터 — 정본 §3.6 [보강] 뷰 검색 ⑧ · §3.5 [보강 P-1]) — 읽기가 준 행마다의
+   * `treeMatch`(맥락 행인가 · 아래에 맞은 행이 있는가). 서버는 맞춤이 걸린 질의에만 싣는다(검색어 · 범위의 층에 걸린 필터).
+   * 행 안에 두지 않는다 — 쓰기 응답이 행을 갈아 끼우면(표시가 없다) 회색 · 토글이 사라진다. 읽기 길만 이 지도를 고친다.
    */
   const searchTree = subItems !== null && Boolean(props.search)
-  const [searchHits, setSearchHits] = useState<ReadonlyMap<string, SearchHit>>(() => hitsOf(props.rows))
+  const [treeHits, setTreeHits] = useState<ReadonlyMap<string, TreeMatch>>(() => hitsOf(props.rows))
   const noteHits = (list: readonly RowJson[]) => {
     const found = hitsOf(list)
-    if (found.size > 0) setSearchHits((current) => new Map([...current, ...found]))
+    if (found.size > 0) setTreeHits((current) => new Map([...current, ...found]))
   }
+  /** 맥락 행인가 — 맞지 않는데 아래에 맞은 행이 있어 선 조상(회색). */
+  const isContextRow = (rowId: string): boolean => treeHits.get(rowId)?.matched === false
   /** 저절로 편 행 — 한 번만 편다(사람이 접으면 그대로 둔다). */
   const autoOpened = useRef<Set<string>>(new Set())
 
@@ -969,11 +972,15 @@ export function DatabaseTable(props: {
     setExpanded((current) => new Set([...current, rowId]))
   }
 
-  // 검색 중 하위 항목 트리(H-1) — 아래에 맞은 행이 있는 행은 처음 한 번 저절로 편다. 펴지 않으면 회색 맥락 행만 보이고 맞은 행이 숨는다.
-  // 한 번에 하나씩(펼치기가 끝나면 다음) · 사람이 접은 행은 다시 펴지 않는다 · 편집 중에는 기다린다(행 자리가 바뀌면 편집 칸이 어긋난다).
+  // 맥락 행은 처음 한 번 저절로 편다 — 아래를 보여 주려고 선 행이라 펴지 않으면 회색 행만 보이고 맞은 행이 숨는다(P-1 ④). 검색 중에는
+  // 아래에 맞은 행이 있는 맞은 행도 편다(H-1 — 검색은 잠깐 찾는 것이고 필터는 늘 보는 모양이다). 한 번에 하나씩(펼치기가 끝나면 다음) ·
+  // 사람이 접은 행은 다시 펴지 않는다 · 편집 중에는 기다린다(행 자리가 바뀌면 편집 칸이 어긋난다).
   useEffect(() => {
-    if (!searchTree || loadingChildren !== null || mode.kind === 'editing') return
-    const next = rows.find((r) => searchHits.get(r.id)?.below === true && !expanded.has(r.id) && !autoOpened.current.has(r.id))
+    if (subItems === null || loadingChildren !== null || mode.kind === 'editing') return
+    const next = rows.find((r) => {
+      const hit = treeHits.get(r.id)
+      return hit?.below === true && (searchTree || !hit.matched) && !expanded.has(r.id) && !autoOpened.current.has(r.id)
+    })
     if (next === undefined) return
     autoOpened.current.add(next.id)
     void toggleSubItems(next.id)
@@ -1632,11 +1639,9 @@ export function DatabaseTable(props: {
                 data-row-id={row.id}
                 data-depth={subItems === null ? undefined : (depthOf.get(row.id) ?? 0)}
                 data-dragging={draggingRow === row.id ? 'true' : undefined}
-                // 검색 중 맥락 행(H-1 — 맞은 자손 때문에 선 조상)은 회색 — 결과가 아니라 자리라는 표시. 열기 · 고치기는 그대로다
-                data-search-context={searchTree && searchHits.get(row.id)?.matched === false ? 'true' : undefined}
-                style={
-                  draggingRow === row.id ? { opacity: 0.5 } : searchTree && searchHits.get(row.id)?.matched === false ? { opacity: 0.55 } : undefined
-                }
+                // 맥락 행(H-1 · P-1 — 맞은 자손 때문에 선 조상)은 회색 — 결과가 아니라 자리라는 표시. 열기 · 고치기는 그대로다
+                data-search-context={isContextRow(row.id) ? 'true' : undefined}
+                style={draggingRow === row.id ? { opacity: 0.5 } : isContextRow(row.id) ? { opacity: 0.55 } : undefined}
                 className={
                   isList
                     ? 'flex items-center gap-1 border-b border-neutral-100 hover:bg-neutral-50 dark:border-neutral-900 dark:hover:bg-neutral-900/60'
@@ -1751,8 +1756,8 @@ export function DatabaseTable(props: {
                           />
                         )}
                         {subItems !== null &&
-                          // 검색 중(H-1)에는 아래에 맞은 행이 있을 때만 — 자식이 있어도 맞은 것이 없으면 펼 것이 없다
-                          ((searchTree ? searchHits.get(row.id)?.below === true : childCount(row) > 0) || expanded.has(row.id) ? (
+                          // 맞춤 표시가 있는 행(H-1 · P-1)은 아래에 맞은 행이 있을 때만 — 자식이 있어도 맞은 것이 없으면 펼 것이 없다
+                          ((treeHits.has(row.id) ? treeHits.get(row.id)?.below === true : childCount(row) > 0) || expanded.has(row.id) ? (
                             <button
                               type="button"
                               data-testid="db-subitem-toggle"
@@ -1782,10 +1787,10 @@ export function DatabaseTable(props: {
                           <PageIconView icon={row.icon} fallback />
                           <span className="min-w-0 flex-1">{content}</span>
                         </span>
-                        {searchTree && searchHits.get(row.id)?.matched === false && (
-                          // 맥락 행(H-1) — 회색은 눈으로만 보인다. 읽는 사람에게는 말로(제목 칸의 글자에는 섞지 않는다)
+                        {isContextRow(row.id) && (
+                          // 맥락 행(H-1 · P-1) — 회색은 눈으로만 보인다. 읽는 사람에게는 말로(제목 칸의 글자에는 섞지 않는다)
                           <span className="sr-only" data-testid="db-row-context">
-                            검색어와 맞지 않는 상위 항목
+                            조건에 맞지 않는 상위 항목
                           </span>
                         )}
                         {subItems !== null && !searchTree && access.canCreateRows && (
