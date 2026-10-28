@@ -25648,6 +25648,59 @@ async function main() {
         JSON.stringify({ read, wrong: [wrong.status, wrong.body?.error] }))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('하위 항목의 표시 범위 — 고르개 (P-2 · F-04-22)')) { try {
+      // 도구줄 "속성" 패널의 하위 항목 스위치 밑 "필터 적용" — 고르면 뷰에 저장되고 표가 그 범위로 다시 선다 · 밑의 한 줄이 범위를 따른다 ·
+      // 하위 항목이 꺼져 있으면 없다. 정본 §3.5 [보강 P-1] ④. 자기 데이터를 스스로 만든다(API).
+      const stamp = Date.now()
+      const apiC = `${BASE}/api/workspaces/${workspaceId}`
+      const call = async (method, path, body) => {
+        const r = await fetch(`${apiC}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return r.json().catch(() => null)
+      }
+      const made = (await call('POST', '/databases', { name: `범위 고르개 ${stamp}` })).database
+      const view = made.defaultViewId
+      const titleProp = (await call('GET', `/data-sources/${made.dataSourceId}/properties`)).schema.properties.find((p) => p.type === 'title').id
+      const cell = (text) => ({ propertyId: titleProp, value: { type: 'title', title: [textRun(text)] } })
+      const ids = {}
+      for (const t of ['가', '나 끝', '다']) ids[t] = (await call('POST', `/views/${view}/rows`, { cells: [cell(t)] })).row.id
+      await call('PATCH', `/views/${view}`, { filter: { property_id: titleProp, operator: 'contains', value: '끝' } })
+      const PICKER = '[data-testid="db-subitems-filter-scope"]'
+      const HINT = '[data-testid="db-subitems-filter-scope-hint"]'
+      const openPanel = async () => {
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${made.id}` })
+        await waitFor(`!!document.querySelector('[data-testid="db-properties-button"]')`, 15000)
+        await waitHydrated('[data-testid="db-properties-button"]')
+        await clickSelector('[data-testid="db-properties-button"]')
+        return waitFor(`!!document.querySelector('[data-testid="db-subitems-switch"]')`, 5000)
+      }
+
+      const offOpened = await openPanel()
+      const noPickerOff = (await evaluate(`document.querySelector('${PICKER}') === null`)) === true
+      await call('POST', `/data-sources/${made.dataSourceId}/sub-items`)
+      ids['가-1 끝'] = (await call('POST', `/views/${view}/rows`, { cells: [cell('가-1 끝')], parent: ids['가'] })).row.id
+      await openPanel()
+      const shown = await waitFor(`document.querySelector('${PICKER}')?.value === 'both'`, 5000)
+      check('★ 하위 항목이 켜진 표의 속성 패널에 "필터 적용" — 지금 값은 부모와 하위 항목 · 꺼져 있으면 없다',
+        offOpened && noPickerOff && shown, JSON.stringify({ offOpened, noPickerOff, value: await evaluate(`document.querySelector('${PICKER}')?.value ?? null`) }))
+
+      const shapeJs = `[...document.querySelectorAll('[data-testid="db-table"] tbody tr[data-row-id]')].map((tr) => (tr.querySelector('[data-testid="db-row-title"]')?.textContent ?? '').trim() + ':' + tr.dataset.depth).join('|')`
+      const before = await waitFor(`${shapeJs} === ${JSON.stringify('가:0|가-1 끝:1|나 끝:0')}`, 10000)
+      await evaluate(`(() => {
+        const s = document.querySelector('${PICKER}')
+        if (!s) return false
+        s.value = 'parents'
+        s.dispatchEvent(new Event('change', { bubbles: true }))
+        return true
+      })()`)
+      const redrawn = await waitFor(`${shapeJs} === ${JSON.stringify('나 끝:0')}`, 10000)
+      const saved = (await call('GET', `/views/${view}`))?.view?.subItemFilterScope
+      check('★ "부모만"을 고르면 뷰에 저장되고 표가 최상위에만 필터로 다시 선다', before && redrawn && saved === 'parents',
+        JSON.stringify({ before, shape: await evaluate(shapeJs), saved }))
+      check('밑의 한 줄이 범위를 따른다 — 부모만이면 "최상위 행에만"',
+        await waitFor(`(document.querySelector('${HINT}')?.textContent ?? '').startsWith('최상위 행에만')`, 5000),
+        await evaluate(`document.querySelector('${HINT}')?.textContent ?? null`))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

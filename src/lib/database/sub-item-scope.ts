@@ -21,6 +21,28 @@ export function readSubItemFilterScope(stored: unknown): SubItemFilterScope {
   return stored === 'parents' || stored === 'sub_items' ? stored : DEFAULT_SUB_ITEM_FILTER_SCOPE
 }
 
+/** 고르개의 이름(P-2) — 노션의 *Filter options* 와 같은 셋. */
+const SUB_ITEM_FILTER_SCOPE_LABEL: Readonly<Record<SubItemFilterScope, string>> = {
+  both: '부모와 하위 항목',
+  parents: '부모만',
+  sub_items: '하위 항목만',
+}
+
+export function subItemFilterScopeLabel(scope: SubItemFilterScope): string {
+  return SUB_ITEM_FILTER_SCOPE_LABEL[scope]
+}
+
+/** 고르개 밑의 한 줄(P-2) — 그 범위에서 무엇이 보이는지. */
+const SUB_ITEM_FILTER_SCOPE_HINT: Readonly<Record<SubItemFilterScope, string>> = {
+  both: '모든 층에 필터 — 맞는 하위 항목이 있으면 상위 항목은 회색으로 함께 보입니다',
+  parents: '최상위 행에만 필터 — 펼치면 하위 항목은 모두 보입니다',
+  sub_items: '하위 항목에만 필터 — 최상위 행은 모두 보입니다',
+}
+
+export function subItemFilterScopeHint(scope: SubItemFilterScope): string {
+  return SUB_ITEM_FILTER_SCOPE_HINT[scope]
+}
+
 /** 범위 → 저장값. 기본은 NULL(같은 뜻의 표기를 둘 두지 않는다). */
 export function storedSubItemFilterScope(scope: SubItemFilterScope): string | null {
   return scope === DEFAULT_SUB_ITEM_FILTER_SCOPE ? null : scope
