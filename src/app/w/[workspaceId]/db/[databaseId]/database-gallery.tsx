@@ -64,6 +64,7 @@ import {
 } from '@/lib/database/row-drag'
 import { GroupLanesContext, type GroupLane } from './group-lanes'
 import { TAB_DRAG_THRESHOLD } from '@/lib/database/tab-drag'
+import { Highlighted } from './search-term'
 
 const UNTITLED = '제목 없음'
 
@@ -504,7 +505,7 @@ export function DatabaseGallery(props: {
                 >
                   <PageIconView icon={row.icon} fallback className="mt-[0.2em]" />
                   <span className="min-w-0" data-testid="db-gallery-card-title">
-                    {row.title || UNTITLED}
+                    {row.title ? <Highlighted text={row.title} /> : UNTITLED}
                   </span>
                 </Link>
               )}

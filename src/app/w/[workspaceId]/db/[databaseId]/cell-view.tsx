@@ -12,6 +12,7 @@ import { LEFT_USER } from '@/lib/database/cell-format'
 import type { RollupCell, RollupColumnInfo } from '@/lib/database/rollup-functions'
 import type { FormulaValue } from '@/lib/formula/formula'
 import { formulaCell } from '@/lib/database/formula-plan'
+import { Highlighted } from './search-term'
 import type { AppPropertyType, CellValue, OptionColor, RelationValue, SelectOption } from '@/lib/database/property-types'
 
 export const TYPE_LABEL: Readonly<Record<AppPropertyType, string>> = {
@@ -169,7 +170,12 @@ export function CellDisplay({ value, options, names = {} }: { value: CellValue; 
     case 'number':
       return <span className="block truncate text-right tabular-nums">{cellText(value)}</span>
     default:
-      return <span className="block truncate">{cellText(value, options)}</span>
+      // 제목 · 글 · 날짜 · URL 류 — 검색 중이면 맞은 글자를 강조한다(V-3 · 화면의 글자만 감싼다)
+      return (
+        <span className="block truncate">
+          {value.type === 'title' || value.type === 'rich_text' ? <Highlighted text={cellText(value, options)} /> : cellText(value, options)}
+        </span>
+      )
   }
 }
 

@@ -25302,6 +25302,45 @@ async function main() {
       check('대상 행을 휴지통으로 보내면 맞지 않는다(칸이 그 연결을 보여 주지 않는다)', await rowsFor('엑스', []), await shown())
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('뷰 검색 — 맞은 글자 강조 (V-3 · F-04-27)')) { try {
+      // 검색 중이면 표의 제목 · 글 칸과 갤러리 카드 제목에서 검색어와 맞은 부분이 강조된다(대소문자 무시) · 검색어가 없으면 강조도 없다.
+      // 정본 §3.6 [보강] 뷰 검색 ⑦. 자기 데이터를 스스로 만든다(API).
+      const stamp = Date.now()
+      const apiC = `${BASE}/api/workspaces/${workspaceId}`
+      const call = async (method, path, body) => {
+        const r = await fetch(`${apiC}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return r.json().catch(() => null)
+      }
+      const made = (await call('POST', '/databases', { name: `강조 ${stamp}` })).database
+      const memo = (await call('POST', `/data-sources/${made.dataSourceId}/properties`, { name: '메모', type: 'rich_text' })).property.id
+      const titleProp = (await call('GET', `/data-sources/${made.dataSourceId}/properties`)).schema.properties.find((p) => p.type === 'title').id
+      const ids = {}
+      for (const [title, note] of [['주간 보고서', '초안'], ['회의록', 'Alpha 보고서를 검토']]) {
+        ids[title] = (await call('POST', `/views/${made.defaultViewId}/rows`, { cells: [
+          { propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } },
+          { propertyId: memo, value: { type: 'rich_text', rich_text: [textRun(note)] } },
+        ] })).row.id
+      }
+      const gallery = (await call('POST', `/databases/${made.id}/views`, { type: 'gallery', name: '갤러리' })).view.id
+      const marksIn = (sel) => evaluate(`JSON.stringify([...document.querySelectorAll('${sel} [data-testid="db-search-mark"]')].map((m) => m.textContent))`)
+      const TITLE = `tr[data-row-id="${ids['주간 보고서']}"] [data-testid="db-row-title"]`
+      const MEMO_ROW = `tr[data-row-id="${ids['회의록']}"]`
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${made.id}?q=${encodeURIComponent('보고')}` })
+      const titled = await waitFor(`JSON.stringify([...document.querySelectorAll('${TITLE} [data-testid="db-search-mark"]')].map((m) => m.textContent)) === '["보고"]'`, 15000)
+      check('★ 표의 제목 칸 — "주간 보고서" 의 "보고" 가 강조된다(글자는 그대로)',
+        titled && (await evaluate(`document.querySelector('${TITLE}')?.textContent?.trim()`)) === '주간 보고서', await marksIn(TITLE))
+      check('★ 글 칸도 — "Alpha 보고서를 검토" 의 "보고"', (await marksIn(MEMO_ROW)) === '["보고"]', await marksIn(MEMO_ROW))
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${made.id}` })
+      check('검색어가 없으면 강조도 없다',
+        (await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr[data-row-id]').length === 2`, 15000)) && (await marksIn('[data-testid="db-table"]')) === '[]',
+        await marksIn('[data-testid="db-table"]'))
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${made.id}?v=${gallery}&q=${encodeURIComponent('주간')}` })
+      check('갤러리 카드 제목도 — "주간"',
+        await waitFor(`JSON.stringify([...document.querySelectorAll('[data-testid="db-gallery-card-title"] [data-testid="db-search-mark"]')].map((m) => m.textContent)) === '["주간"]'`, 15000),
+        await marksIn('[data-testid="db-gallery-card-title"]'))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).
