@@ -3846,6 +3846,18 @@ try {
     await tryReject('★ 종류와 주인 칸이 맞지 않는다(DB automation 인데 속성)', 'ck_automation_host', putAutomation,
       [randomUUID(), wsId, 'db_automation', buttonProp, null, null, userId])
     await tryReject('주인이 없다', 'ck_automation_host', putAutomation, [randomUUID(), wsId, 'button_block', null, null, null, userId])
+    // 저장한 사람의 시간대(0118 · A-1) — 모양만 막는다
+    await client.query('SAVEPOINT probe')
+    try {
+      await client.query(`UPDATE automation SET time_zone = 'Asia/Seoul' WHERE id = $1`, [automationId])
+      await client.query(`UPDATE automation SET time_zone = 'Etc/GMT+9' WHERE id = $1`, [automationId])
+      ok('시간대 이름(Asia/Seoul · Etc/GMT+9) — 정상 경로가 통과한다(0118)')
+    } catch (e) {
+      fail(`정상 경로가 거부됐다 (${e.constraint ?? e.code})`)
+    }
+    await client.query('ROLLBACK TO SAVEPOINT probe')
+    await tryReject('★ 시간대에 따옴표 · 공백(0118)', 'ck_automation_time_zone', `UPDATE automation SET time_zone = $2 WHERE id = $1`, [automationId, "Asia/Seoul'; --"])
+    await tryReject('시간대가 빈 글(0118)', 'ck_automation_time_zone', `UPDATE automation SET time_zone = $2 WHERE id = $1`, [automationId, ''])
 
     const putAction = `INSERT INTO automation_action (id, automation_id, order_idx, type, config) VALUES ($1, $2, $3, $4, $5::jsonb)`
     await client.query(putAction, [randomUUID(), automationId, '0000', 'edit_property', '{"v":1,"cells":[]}'])

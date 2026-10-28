@@ -10,6 +10,7 @@
 
 import { readJsonBody, requireWorkspaceSession } from '@/lib/auth/route-session'
 import { createDbAutomation, dbAutomationFailureStatus, listDbAutomations, type DbAutomationResult } from '@/lib/automation/db-automation'
+import { readViewerTimeZone } from '@/lib/settings/time-zone-cookie'
 
 type Ctx = RouteContext<'/api/workspaces/[workspaceId]/data-sources/[dataSourceId]/automations'>
 
@@ -35,7 +36,13 @@ export async function POST(request: Request, ctx: Ctx): Promise<Response> {
   const parsed = await readJsonBody(request)
   if (!parsed.ok) return parsed.response
   const body = typeof parsed.body === 'object' && parsed.body !== null ? (parsed.body as Record<string, unknown>) : {}
-  const made = await createDbAutomation(session.ctx, dataSourceId, { name: body.name, triggers: body.triggers, actions: body.actions })
+  // 저장하는 사람의 시간대(A-1) — 상대 날짜 조건을 그 날로 판정한다
+  const made = await createDbAutomation(session.ctx, dataSourceId, {
+    name: body.name,
+    triggers: body.triggers,
+    actions: body.actions,
+    timeZone: await readViewerTimeZone(),
+  })
   if (!made.ok) return failure(made)
   return Response.json({ ok: true, automation: made.value }, { status: 201 })
 }

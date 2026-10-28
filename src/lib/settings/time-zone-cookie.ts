@@ -11,6 +11,13 @@ import { todayIn } from '../database/date-group.ts'
 import { TIME_ZONE_COOKIE, normalizeTimeZone } from './time-zone.ts'
 
 /** 보는 사람의 시간대의 오늘(`YYYY-MM-DD`) — 쿠키가 없거나 틀리면 UTC 의 오늘. */
+/** 보는 사람의 시간대(A-1) — 쿠키의 이름(맞지 않으면 UTC). 자동화를 저장할 때 그 사람의 날로 조건을 판정하려고 적는다. */
+export async function readViewerTimeZone(): Promise<string> {
+  const jar = await cookies()
+  const raw = jar.get(TIME_ZONE_COOKIE)?.value
+  return normalizeTimeZone(raw === undefined ? undefined : safeDecode(raw))
+}
+
 export async function readViewerToday(): Promise<string> {
   const jar = await cookies()
   const raw = jar.get(TIME_ZONE_COOKIE)?.value
