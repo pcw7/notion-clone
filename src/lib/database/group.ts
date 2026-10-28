@@ -56,7 +56,7 @@
 import type { SessionContext } from '../auth/session-context.ts'
 import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
 import { can } from '../permissions/levels.ts'
-import { effectiveCaps } from '../permissions/effective.ts'
+import { effectiveCaps, readableScopes } from '../permissions/effective.ts'
 import { orderKeyBetween, orderKeysBetween } from '../block/order-key.ts'
 import { textRun, type ValidationIssue } from '../contracts/rich-text.ts'
 import {
@@ -497,6 +497,8 @@ type Board = {
   readonly sort: GroupSort
   /** 하위 그룹(B-4a · 보드의 가로줄) — 보드이고 `sub_group_by` 가 살아 있는 · 그룹 기준과 다른 속성을 가리킬 때만. */
   readonly sub: GroupAxis | null
+  /** 뷰 검색의 relation 제목(V-2)을 찾을 읽기 범위 — 검색어가 있을 때만(`readableScopes`) · 없으면 null. */
+  readonly searchScopes: readonly string[] | null
 }
 
 /**
@@ -599,6 +601,8 @@ async function openBoard(
     context: { me: ctx.userId, today: todayKey },
     ...axis,
     sub,
+    // 뷰 검색의 relation 제목(V-2) — 검색어가 있을 때만 읽기 범위를 묻는다
+    searchScopes: search === null ? null : await readableScopes(tx, ctx),
   }
 }
 
@@ -824,7 +828,7 @@ function compileBoard(board: Board, params: ParamBag, withOrder = true): Compile
   const accessSql = restrictedRowsSql(board.access, params)
   const filterSql = compileFilter(board.filter, board.types, params, board.context)
   const treeSql = board.subItemsParent === null ? null : compileTree({ parentPropertyId: board.subItemsParent, under: null }, params)
-  const searchSql = board.search === null ? null : compileSearch(board.search, board.types, params)
+  const searchSql = board.search === null ? null : compileSearch(board.search, board.types, params, board.searchScopes)
   return {
     keyExpr,
     subKeyExpr: cell.subKeyExpr,

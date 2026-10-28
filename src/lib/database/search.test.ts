@@ -68,6 +68,21 @@ describe('③ 찾는 칸', () => {
   })
 })
 
+describe('⑤ relation 의 제목 (V-2)', () => {
+  test('★ 읽기 범위를 넘기면 이어진 대상 행의 제목을 본다 — 살아 있고 템플릿이 아니고 그 범위 안 · 범위가 없으면 보지 않는다', () => {
+    const withRelation = new Map([...TYPES, ['pRel', 'relation']])
+    const params = new ParamBag(2)
+    const sql = compileSearch('엑스', withRelation, params, ['00000000-0000-0000-0000-00000000000a'])
+    assert.match(sql, /FROM relation_edge e/)
+    assert.match(sql, /tb\.perm_scope_id = ANY\(\$\d+::uuid\[\]\)/)
+    assert.match(sql, /tb\.lifecycle = 'live' AND tp\.is_template = false/)
+    assert.match(sql, /NOT \(rp\.config \? 'sub_items'\) AND NOT \(rp\.config \? 'dependencies'\)/, '하위 항목 · 종속 관계의 짝은 아니다')
+    assert.ok(params.values.some((v) => Array.isArray(v) && v[0] === 'pRel'), JSON.stringify(params.values))
+    assert.ok(!compileSearch('엑스', withRelation, new ParamBag(2)).includes('relation_edge'), '범위가 없으면 relation 을 보지 않는다')
+    assert.ok(compileSearch('엑스', new Map([['pRel', 'relation']]), new ParamBag(2), []).includes('relation_edge'), 'relation 만 있어도')
+  })
+})
+
 describe('④ 고유 ID · 숫자 (V-1)', () => {
   test('★ 수인 검색어는 숫자 칸의 같은 값도 — 글 찾기와 OR · 부분 일치가 아니다', () => {
     const { sql, values } = compile('42')

@@ -33,7 +33,7 @@
 
 import type { SessionContext } from '../auth/session-context.ts'
 import { withReadTransaction, type Tx } from '../db/tx.ts'
-import { effectiveCaps } from '../permissions/effective.ts'
+import { effectiveCaps, readableScopes } from '../permissions/effective.ts'
 import { plainTitleOf } from '../block/page.ts'
 import { readPageIcon, type PageIcon } from '../block/page-icon.ts'
 import {
@@ -204,7 +204,9 @@ export async function queryRows(
       cursorValues === null ? null : compileCursor(compiledSort, cursorValues, params)
 
     const treeSql = input.tree === undefined ? null : compileTree(input.tree, params)
-    const searchSql = input.search === undefined || input.search === null ? null : compileSearch(input.search, types, params)
+    // relation 의 제목(V-2)은 보는 사람이 읽을 수 있는 대상만 — 검색어가 있을 때만 범위를 묻는다
+    const searchSql =
+      input.search === undefined || input.search === null ? null : compileSearch(input.search, types, params, await readableScopes(tx, ctx))
     const onlySql = input.onlyRowIds === undefined ? null : `p.id = ANY(${params.bind([...input.onlyRowIds])}::uuid[])`
 
     const where = [

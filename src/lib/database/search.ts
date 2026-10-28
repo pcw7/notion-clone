@@ -21,8 +21,9 @@
  *   - 선택 · 상태(`select` · `status`) — 사이드카는 **옵션 id** 라(0014 머리말) 옵션 **이름**으로 찾는다
  *
  *   - 고유 ID · 숫자(V-1) — 검색어의 **모양**이 고른다: `접두사-번호` · `번호` 면 그 번호의 행(행 자신의 열) · 수면 그 값과 같은 숫자 칸
+ *   - relation(V-2) — 이어진 대상 행의 **제목**. 보는 사람이 읽을 수 있는 행만(부르는 쪽이 `readableScopes` 를 넘긴다 — 없으면 보지 않는다)
  *
- * 날짜 · 체크박스 · 관계형 · 롤업은 찾지 않는다(§7). 본문 블록도 아니다(04 *"본문 블록은 검색 대상이 아니다"*).
+ * 날짜 · 체크박스 · 롤업은 찾지 않는다(§7). 본문 블록도 아니다(04 *"본문 블록은 검색 대상이 아니다"*).
  * 대소문자는 무시하고(필터의 글 비교와 같은 `lower()`), 부분 일치다 — 한국어도 조사를 넘는다(LIKE 는 글자 단위다). 사용자가 친
  * `%` · `_` · `\` 는 글자 그대로다(`escapeLike` — #211).
  *
@@ -66,19 +67,28 @@ export function uniqueIdTerm(term: string): { readonly prefix: string | null; re
  * `p.id IN (…)` 모양이다 — 상관 서브쿼리(`EXISTS … v.page_id = p.id`)로 쓰면 행마다 칸을 찾아 bigm 인덱스를 쓰지 못한다.
  * 맞는 칸의 행 id 를 인덱스로 한 번에 모으고 바깥 질의가 그것과 맞춘다.
  */
-export function compileSearch(term: string, types: PropertyTypes, params: ParamBag): string {
+export function compileSearch(
+  term: string,
+  types: PropertyTypes,
+  params: ParamBag,
+  /** 보는 사람이 읽을 수 있는 권한 범위(V-2 · `readableScopes`) — relation 의 대상 제목을 이 안에서만 찾는다. null 이면 relation 을 보지 않는다. */
+  relationScopes: readonly string[] | null = null,
+): string {
   const textIds: string[] = []
   const optionIds: string[] = []
   const numberIds: string[] = []
+  const relationIds: string[] = []
   let hasUniqueId = false
   for (const [id, type] of types) {
     if (TEXT_SEARCH_TYPES.has(type)) textIds.push(id)
     else if (isOptionType(type)) optionIds.push(id)
     else if (type === 'number') numberIds.push(id)
     else if (type === 'unique_id') hasUniqueId = true
+    else if (type === 'relation') relationIds.push(id)
   }
   const parts: string[] = []
-  const pattern = textIds.length > 0 || optionIds.length > 0 ? params.bind(escapeLike(term)) : ''
+  const lookRelation = relationIds.length > 0 && relationScopes !== null
+  const pattern = textIds.length > 0 || optionIds.length > 0 || lookRelation ? params.bind(escapeLike(term)) : ''
   if (textIds.length > 0) {
     parts.push(`SELECT sv.page_id FROM page_property_value sv
         WHERE sv.property_id = ANY(${params.bind(textIds)}::text[])
@@ -89,6 +99,20 @@ export function compileSearch(term: string, types: PropertyTypes, params: ParamB
          JOIN select_option so ON so.property_id = sv.property_id AND so.id::text = sv.text_value
         WHERE sv.property_id = ANY(${params.bind(optionIds)}::text[])
           AND lower(so.name) LIKE '%' || lower(${pattern}) || '%'`)
+  }
+  // relation 의 제목(V-2) — 이어진 대상 행 중 살아 있고 템플릿이 아니며 보는 사람이 읽을 수 있는 것의 제목(칸이 칩으로 보여 주는 것)
+  if (lookRelation) {
+    // 하위 항목 · 종속 관계의 짝은 아니다 — 트리 · 화살표로 보이는 칸이고, 검색은 트리를 평평하게 펴므로 부모가 자식의 제목으로 끌려 나오면 뜻밖이다
+    parts.push(`SELECT e.from_page_id FROM relation_edge e
+         JOIN property rp ON rp.id = e.property_id AND NOT (rp.config ? 'sub_items') AND NOT (rp.config ? 'dependencies')
+         JOIN page tp ON tp.id = e.to_page_id
+         JOIN block tb ON tb.id = tp.id
+         JOIN property tprop ON tprop.data_source_id = tp.data_source_id AND tprop.type = 'title'
+         JOIN page_property_value tv ON tv.page_id = tp.id AND tv.property_id = tprop.id
+        WHERE e.property_id = ANY(${params.bind(relationIds)}::text[])
+          AND tb.lifecycle = 'live' AND tp.is_template = false
+          AND tb.perm_scope_id = ANY(${params.bind([...relationScopes])}::uuid[])
+          AND lower(tv.text_value) LIKE '%' || lower(${pattern}) || '%'`)
   }
   // 숫자(V-1) — 검색어가 수면 그 값과 같은 칸(부분 일치가 아니다)
   if (numberIds.length > 0 && NUMBER_TERM.test(term)) {

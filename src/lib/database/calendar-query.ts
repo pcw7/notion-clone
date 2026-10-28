@@ -23,6 +23,7 @@ import { refreshDerivedValues } from './derived-values.ts'
 import { compileTree, queryRows, readPropertyTypes, toQueriedRow, type QueryPage, type QueriedRow, type RowRow } from './query.ts'
 import { compileSearch } from './search.ts'
 import { restrictedRowsSql, rowsAccessForDataSource } from './row-access.ts'
+import { readableScopes } from '../permissions/effective.ts'
 import { getView } from './view.ts'
 import { subItemPairOf } from './view-columns.ts'
 
@@ -117,7 +118,7 @@ export async function queryCalendar(
     // 권한이 필터보다 먼저다(F-03-17) — 달력의 행과 "날짜 없음" 의 수가 같은 WHERE 를 쓴다
     const accessSql = restrictedRowsSql(access, params)
     const filterSql = compileFilter(filter, types, params, { me: ctx.userId, today: todayOrUtc(input.today) })
-    const searchSql = input.search ? compileSearch(input.search, types, params) : null
+    const searchSql = input.search ? compileSearch(input.search, types, params, await readableScopes(tx, ctx)) : null
     const pair = subItemPairOf(columns)
     const treeSql = pair === null ? null : compileTree({ parentPropertyId: pair.parentPropertyId, under: null }, params)
     const where = ['p.data_source_id = $1', 'p.is_template = false', "b.lifecycle = 'live'", accessSql, filterSql, searchSql, treeSql]
