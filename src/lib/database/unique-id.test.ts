@@ -30,7 +30,7 @@ import { cellPlainText, tableToCsv } from '../export/csv.ts'
 import { isFilterableColumn, isSortable, type ViewColumn } from './view-columns.ts'
 import { describeRule, ruleFor, toFilter } from './filter-draft.ts'
 import type { OperatorCatalogEntry } from './operator-catalog.ts'
-import { compileCursor, compileFilter, compileSorts, isFilterableType, NO_VIEWER, operatorArity, operatorsFor, ParamBag, validateFilter } from './filter.ts'
+import { compileCursor, compileFilter, compileSorts, isFilterableType, noViewer, operatorArity, operatorsFor, ParamBag, validateFilter } from './filter.ts'
 import { isMvpPropertyType, isAppPropertyType } from './property-types.ts'
 
 const TYPES = new Map<string, string>([
@@ -71,7 +71,7 @@ describe('② 표시', () => {
 
 const compile = (node: Parameters<typeof compileFilter>[0]) => {
   const params = new ParamBag(1)
-  return { sql: compileFilter(node, TYPES, params, NO_VIEWER), values: params.values }
+  return { sql: compileFilter(node, TYPES, params, noViewer()), values: params.values }
 }
 
 describe('③ 필터', () => {

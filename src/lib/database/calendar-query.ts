@@ -18,6 +18,7 @@ import type { SessionContext } from '../auth/session-context.ts'
 import { withReadTransaction } from '../db/tx.ts'
 import { isValidSpan, MAX_CALENDAR_ROWS } from './calendar.ts'
 import { compileFilter, ParamBag, propertyIdsIn } from './filter.ts'
+import { todayOrUtc } from './relative-date.ts'
 import { refreshDerivedValues } from './derived-values.ts'
 import { compileTree, readPropertyTypes, toQueriedRow, type QueriedRow, type RowRow } from './query.ts'
 import { compileSearch } from './search.ts'
@@ -53,7 +54,8 @@ const fail = (reason: CalendarFailure): CalendarResult => ({ ok: false, reason }
 export async function queryCalendar(
   ctx: SessionContext,
   viewId: string,
-  input: { readonly from: string; readonly to: string; readonly search?: string | null },
+  /** `today` — 보는 사람의 오늘(R-1 · 상대 날짜 필터 · 없으면 UTC). */
+  input: { readonly from: string; readonly to: string; readonly search?: string | null; readonly today?: string | null },
 ): Promise<CalendarResult> {
   if (!isValidSpan(input.from, input.to)) return fail('invalid_value')
   // 뷰를 여는 것은 데이터베이스 단위다 — 행의 범위("만들기만" 이면 자기가 열 수 있는 행만 · 6f-2b-1)는 아래 트랜잭션에서 정한다.
@@ -74,7 +76,7 @@ export async function queryCalendar(
     const params = new ParamBag(2)
     // 권한이 필터보다 먼저다(F-03-17) — 달력의 행과 "날짜 없음" 의 수가 같은 WHERE 를 쓴다
     const accessSql = restrictedRowsSql(access, params)
-    const filterSql = compileFilter(filter, types, params, { me: ctx.userId })
+    const filterSql = compileFilter(filter, types, params, { me: ctx.userId, today: todayOrUtc(input.today) })
     const searchSql = input.search ? compileSearch(input.search, types, params) : null
     const pair = subItemPairOf(columns)
     const treeSql = pair === null ? null : compileTree({ parentPropertyId: pair.parentPropertyId, under: null }, params)

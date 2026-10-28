@@ -126,11 +126,13 @@ describe('카탈로그 자체의 건강', () => {
     assert.deepEqual(ops, ['does_not_equal', 'equals', 'is_empty', 'is_not_empty'])
   })
 
-  test('상대 날짜 연산자는 아직 없다 (평가 시점 의존 — 불변식 VW1)', async (t) => {
+  test('상대 날짜 연산자는 날짜에만 일곱 — 값 없음 · `today` 는 없다 (R-1 · 0116 · 결과 캐시는 아직 없다 — 불변식 VW1)', async (t) => {
     if (skipReason) return t.skip(skipReason)
-    const ops = catalogFor('date').map((r) => r.operator)
-    for (const relative of ['past_week', 'this_week', 'today', 'next_month']) {
-      assert.ok(!ops.includes(relative), `${relative} 가 카탈로그에 있다`)
+    const date = catalogFor('date')
+    for (const relative of ['past_week', 'past_month', 'past_year', 'this_week', 'next_week', 'next_month', 'next_year']) {
+      assert.equal(date.find((r) => r.operator === relative)?.arity, 0, `${relative} 가 날짜에 값 없이 있다`)
     }
+    assert.ok(!date.some((r) => r.operator === 'today'), 'F-03-17 의 일곱 뿐이다')
+    assert.ok(!catalogFor('number').some((r) => r.operator === 'past_week'), '날짜가 아닌 타입에는 없다')
   })
 })

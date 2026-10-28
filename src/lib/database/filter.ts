@@ -52,6 +52,8 @@
 
 import { MVP_PROPERTY_TYPES, isMvpPropertyType, isStatusGroupKind, type MvpPropertyType } from './property-types.ts'
 import type { ValidationIssue } from '../contracts/rich-text.ts'
+import { todayIn } from './date-group.ts'
+import { relativeRange, type RelativeDateOperator } from './relative-date.ts'
 
 /**
  * 거를 수 있는 타입 — 셀 타입 + 고유 ID(2a-1) + relation(10n-44).
@@ -146,16 +148,19 @@ export function isGroup(node: FilterNode): node is FilterGroup {
   return 'op' in node
 }
 
-// ── 평가 컨텍스트 (6g-2c · 정본 VW1 · §3.5 [보강] 사람 속성 ⑪) ────────────
+// ── 평가 컨텍스트 (6g-2c · R-1 · 정본 VW1 · §3.5 [보강] 사람 속성 ⑪ · [보강 R-1]) ────────────
 
 /**
- * 필터를 SQL 로 바꿀 때 묶는 것 — 지금은 "나" 뿐이다(`today` · `current_page` 는 같은 자리에 선다 · 16 R3). **컴파일러는 이것을 반드시
- * 받는다** — 빠뜨린 길은 타입이 막는다. 세션이 있으면 그 사람, 없으면(공개 화면 — 익명) `null` 이다.
+ * 필터를 SQL 로 바꿀 때 묶는 것 — "나" 와 "오늘"(`current_page` 는 같은 자리에 선다 · 16 R3). **컴파일러는 이것을 반드시 받는다** —
+ * 빠뜨린 길은 타입이 막는다. `me` 는 세션이 있으면 그 사람, 없으면(공개 화면 — 익명) `null`. `today` 는 보는 사람의 오늘(`YYYY-MM-DD` —
+ * 시간대 쿠키 · `readViewerToday`) · 보는 사람이 없으면 UTC 의 오늘 — 상대 날짜 규칙(R-1)이 여기서 범위를 편다.
  */
-export type FilterContext = { readonly me: string | null }
+export type FilterContext = { readonly me: string | null; readonly today: string }
 
-/** 보는 사람이 없는 길(공개 화면 · 자동화의 조건) — "나" 는 아무도 아니다. */
-export const NO_VIEWER: FilterContext = Object.freeze({ me: null })
+/** 보는 사람이 없는 길(공개 화면 · 자동화의 조건) — "나" 는 아무도 아니고 오늘은 UTC 의 것이다(보는 사람마다 달라지지 않는다). */
+export function noViewer(today: string = todayIn('UTC')): FilterContext {
+  return { me: null, today }
+}
 
 /** 사람 값의 컨텍스트 노드 — "보는 사람". 16 R3 의 `{ "$context": "current_page" }` 와 같은 모양이다. */
 export const ME_NODE = Object.freeze({ $context: 'me' }) as { readonly $context: 'me' }
@@ -257,6 +262,10 @@ type OperatorSpec = {
    */
   readonly predicate: (col: string, param: string, cast: string) => string
   /**
+   * 상대 날짜(R-1) — 값이 없고, 컴파일이 보는 사람의 오늘에서 편 범위를 `param` 자리에 넣는다(`$a::timestamptz AND $b::timestamptz`).
+   */
+  readonly relative?: true
+  /**
    * 값이 LIKE 패턴에 들어간다 — 바인딩할 때 `escapeLike` 로 `%` · `_` · `\` 를 글자로 만든다. 없으면 `contains '%'` 가 모든 행에,
    * `contains '_'` 가 아무 글자 하나에 맞는다(사용자가 친 글자가 와일드카드가 된다 — 뷰 검색(2e)을 짜다 찾았다).
    */
@@ -322,6 +331,9 @@ const CHECKBOX_OPERATORS: Readonly<Record<string, OperatorSpec>> = Object.freeze
     does_not_equal: { arity: 1, negate: true, predicate: (c, p, k) => `${c} = ${p}${k}` },
 })
 
+/** 상대 날짜의 술어 — `range` 는 컴파일이 넣는 `$from::timestamptz AND $to::timestamptz`. */
+const RELATIVE: OperatorSpec = Object.freeze({ arity: 0, relative: true, predicate: (c: string, range: string) => `date_trunc('day', ${c}) BETWEEN ${range}` })
+
 const DATE_OPERATORS: Readonly<Record<string, OperatorSpec>> = Object.freeze({
     // 날짜 비교는 **하루 단위**다. `equals '2026-03-01'` 이 09:30 에 시작하는 일정을
     // 놓치면 안 된다 — 사용자가 고른 것은 날짜이고 시각이 아니다.
@@ -332,6 +344,14 @@ const DATE_OPERATORS: Readonly<Record<string, OperatorSpec>> = Object.freeze({
     on_or_after: { arity: 1, predicate: (c, p, k) => `date_trunc('day', ${c}) >= date_trunc('day', ${p}${k})` },
     is_empty: { arity: 0, negate: true, predicate: (c) => `${c} IS NOT NULL` },
     is_not_empty: { arity: 0, predicate: (c) => `${c} IS NOT NULL` },
+    // 상대 날짜(R-1 · 정본 [보강 R-1]) — 보는 사람의 오늘에서 편 범위(`relative-date.ts`) · 양 끝 포함 · 위와 같은 하루 단위
+    past_week: RELATIVE,
+    past_month: RELATIVE,
+    past_year: RELATIVE,
+    this_week: RELATIVE,
+    next_week: RELATIVE,
+    next_month: RELATIVE,
+    next_year: RELATIVE,
 })
 
 /**
@@ -663,7 +683,11 @@ export function compileFilter(
   // "나"(6g-2c) — 지금 보는 사람으로 묶는다. 보는 사람이 없으면 아무도 아니다(포함은 0행 · 포함하지 않음은 모든 행)
   const raw = rawType === 'people' && isMeNode(node.value) ? (context.me ?? NOBODY) : node.value
   const value = spec.arity === 1 ? bindValue(rawType, raw) : undefined
-  const valueParam = spec.arity === 1 ? params.bind(spec.like ? escapeLike(String(value)) : value) : ''
+  const valueParam = spec.relative
+    ? relativeBounds(node.operator as RelativeDateOperator, context.today, params)
+    : spec.arity === 1
+      ? params.bind(spec.like ? escapeLike(String(value)) : value)
+      : ''
   const inner = spec.predicate(COLUMN[axis], valueParam, CAST[axis])
 
   // 칸이면 `page_property_value`, 수식이면 그 캐시(`derived_value` — 같은 사이드카 축 · 2j-2)
@@ -671,6 +695,12 @@ export function compileFilter(
           WHERE v.page_id = p.id AND v.property_id = ${propParam} AND ${inner})`
 
   return spec.negate ? `NOT ${exists}` : exists
+}
+
+/** 상대 날짜의 범위를 묶는다 — 하루의 시작끼리 비교하므로 양 끝 날짜를 그대로(`::timestamptz` 는 그날 0시). */
+function relativeBounds(operator: RelativeDateOperator, today: string, params: ParamBag): string {
+  const { from, to } = relativeRange(operator, today)
+  return `date_trunc('day', ${params.bind(from)}::timestamptz) AND date_trunc('day', ${params.bind(to)}::timestamptz)`
 }
 
 export type CompiledSort = {

@@ -63,6 +63,8 @@ import { computeCalculations } from '@/lib/database/calculate'
 import { normalizeSearch } from '@/lib/database/search'
 import { queryGroupColumnCalculations, queryGroups } from '@/lib/database/group'
 import { readViewerToday } from '@/lib/settings/time-zone-cookie'
+import { usesRelativeDate } from '@/lib/database/relative-date'
+import { ViewerTodaySync } from './viewer-today-sync'
 import { loadRelationLabels, relationIdsIn } from '@/lib/database/relation'
 import { loadPeopleNames, peopleIdsOf } from '@/lib/database/people'
 import { computeRollups, EMPTY_ROLLUP_PAGE } from '@/lib/database/rollup'
@@ -273,6 +275,8 @@ export default async function DatabasePage({
   const subItems = nestsSubItems(view.value.type) && search === null ? subItemPairOf(view.value.columns) : null
   // 갤러리는 부모만(2f-1 · 행 라우트와 같은 규칙) — 펴지 않는다.
   const parentsOnly = showsParentsOnly(view.value.type) ? subItemPairOf(view.value.columns) : null
+  // 보는 사람의 오늘(시간대 쿠키 · `time-zone-cookie.tsx` 가 쓴다) — 상대 날짜 그룹(B-3)과 상대 날짜 필터(R-1)가 같은 날을 쓴다
+  const viewerToday = await readViewerToday()
   const [tablePage, catalog, board] = await Promise.all([
     isBoard || isCalendar || isForm
       ? null
@@ -286,11 +290,11 @@ export default async function DatabasePage({
           ...(subItems === null ? {} : { tree: { parentPropertyId: subItems.parentPropertyId, under: null } }),
           ...(parentsOnly === null ? {} : { tree: { parentPropertyId: parentsOnly.parentPropertyId, under: null } }),
           search,
+          today: viewerToday,
         }),
     // 필터 패널의 연산자 드롭다운이 이것을 그린다 — 코드에 박지 않는다(F-03-17).
     readOperatorCatalog(),
-    // 상대 날짜 그룹(B-3)의 오늘 — 보는 사람의 시간대(쿠키 · `time-zone-cookie.tsx` 가 쓴다)
-    isBoard || isGroupedRows || isGroupedGallery ? readViewerToday().then((today) => queryGroups(ctx, view.value.id, { search, today })) : null,
+    isBoard || isGroupedRows || isGroupedGallery ? queryGroups(ctx, view.value.id, { search, today: viewerToday }) : null,
   ])
   if (tablePage !== null && !tablePage.ok) notFound()
   // 그룹 프로퍼티가 지워진 보드(`not_grouped`)는 아래에서 "그룹 기준을 고르라"로 그린다. 다른 실패는 못 보는 것과 같다.
@@ -444,7 +448,7 @@ export default async function DatabasePage({
   const calendarGrid = monthGrid(calendarMonth)
   const calendarPage =
     isCalendar && view.value.calendar.date_property_id !== null
-      ? await queryCalendar(ctx, view.value.id, { from: calendarGrid.from, to: calendarGrid.to, search })
+      ? await queryCalendar(ctx, view.value.id, { from: calendarGrid.from, to: calendarGrid.to, search, today: viewerToday })
       : null
   // 갤러리의 카드 미리보기(2f-2) — 첫 페이지의 행마다 본문의 첫 이미지. 그 뒤("더 보기")의 것은 행 라우트가 함께 준다.
   // 그룹 덩이(G-3a ②)면 모든 그룹의 첫 페이지 카드의 것을 한 번에
@@ -510,11 +514,11 @@ export default async function DatabasePage({
   const calculations =
     tablePage === null || variant !== 'table' || isGallery
       ? {}
-      : await computeCalculations(ctx, view.value.dataSourceId, view.value.effectiveFilter, view.value.columns, search)
+      : await computeCalculations(ctx, view.value.dataSourceId, view.value.effectiveFilter, view.value.columns, search, viewerToday)
   // 그룹 덩이마다(G-2d · 정본 [보강 G-1] ⑨) — 그 그룹의 행 전부로. 한 질의로 모든 그룹의 값을 · 표 모양만
   const groupColumnCalculations =
     isGroupedRows && variant === 'table'
-      ? await queryGroupColumnCalculations(ctx, view.value.id, view.value.columns, { search, today: await readViewerToday() }).then((r) =>
+      ? await queryGroupColumnCalculations(ctx, view.value.id, view.value.columns, { search, today: viewerToday }).then((r) =>
           r.ok ? r.value : {},
         )
       : {}
@@ -533,6 +537,8 @@ export default async function DatabasePage({
     <main className="flex min-h-screen min-w-0 flex-col gap-6 px-10 py-12">
       {/* 탭 제목(10d-7b) — 그 데이터베이스의 이름(피크로 연 행이 있어도 그대로) */}
       <DocumentTitle title={contentTitle(database.value.name)} />
+      {/* 상대 날짜 필터(R-1)면 서버의 오늘을 이 기기의 오늘에 맞춘다 — 처음 방문(쿠키 없음)이면 한 번 새로 받는다 */}
+      <ViewerTodaySync today={usesRelativeDate(view.value.effectiveFilter) ? viewerToday : null} />
       <div className="flex items-start justify-between gap-3">
         <nav aria-label="상위 경로" className="flex flex-wrap items-center gap-1 text-sm text-neutral-500">
           <Link href={`/w/${workspaceId}`} className="hover:underline underline-offset-4">

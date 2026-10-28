@@ -29,7 +29,7 @@ import {
   compileManualOrder,
   compileSorts,
   formulaTypeKey,
-  NO_VIEWER,
+  noViewer,
   ParamBag,
   type FilterNode,
   type SortKey,
@@ -123,7 +123,8 @@ export async function readPublicTableIn(tx: Tx, target: PublicTarget): Promise<P
   // `$1` 은 data source — 2번부터 발급한다
   const params = new ParamBag(2)
   // 공개 화면은 보는 사람이 없다 — "나"(6g-2c)는 아무도 아니다(포함은 0행 · 포함하지 않음은 모든 행)
-  const filterSql = compileFilter((view.filter as FilterNode | null) ?? null, types, params, NO_VIEWER)
+  // 보는 사람이 없다(익명) — 오늘도 UTC 의 것(R-1 · 쿠키를 읽으면 같은 게시 페이지가 보는 사람마다 달라진다)
+  const filterSql = compileFilter((view.filter as FilterNode | null) ?? null, types, params, noViewer())
   const byKeys = compileSorts(Array.isArray(view.sorts) ? (view.sorts as SortKey[]) : [], types, params)
   // 정렬이 없으면 그 뷰의 수동 순서(10n-59 — 편집 화면과 같은 차례)
   const sorted = byKeys.keys.length === 0 ? compileManualOrder(params.bind(view.id)) : byKeys

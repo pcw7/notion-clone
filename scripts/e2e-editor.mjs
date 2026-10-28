@@ -24816,6 +24816,94 @@ async function main() {
         folded === JSON.stringify([['db-card-move-down', ''], ['db-card-move-to', opt['완료']]]), folded)
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('상대 날짜로 거르기 (R-1 · F-04-09 · F-03-17)')) { try {
+      // 필터 패널에서 날짜 속성을 고르면 비어 있지 않음 뒤에 상대 날짜 일곱(값 칸 없음) — "다음 1주 안" 은 보는 사람의 오늘(시간대 쿠키 —
+      // 레이아웃이 브라우저의 시간대로 쓴다)에서 편 범위의 행만 · 칩은 그 이름. 시간대가 바뀌면 서버의 오늘이 달라 한 번 새로 받고 그 오늘로
+      // 거른다. 정본 §3.5 [보강 R-1] · 0116. 브라우저의 시간대는 흉내 낸다(UTC+14 키리티마티 → UTC−11 파고파고 — 날짜가 늘 다르다).
+      const stamp = Date.now()
+      const api = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const clickOn = async (selector) => {
+        await revealInPageMenu(selector)
+        const p = await evaluate(`(() => {
+          const e = document.querySelector(${JSON.stringify(selector)})
+          if (!e) return null
+          e.scrollIntoView({ block: 'center' })
+          const r = e.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (p) await click(p.x, p.y)
+        return p !== null
+      }
+      const setSelect = (selector, value) => evaluate(`(() => {
+        const s = document.querySelector(${JSON.stringify(selector)})
+        if (!s) return false
+        s.value = ${JSON.stringify(value)}
+        s.dispatchEvent(new Event('change', { bubbles: true }))
+        return true
+      })()`)
+      // 그 시간대의 오늘 · 그날에서 n 일 뒤(달력 — 시각 없음)
+      const todayInZone = (zone) => new Intl.DateTimeFormat('en-CA', { timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
+      const plusDays = (day, n) => { const d = new Date(`${day}T00:00:00Z`); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10) }
+      const EAST = 'Pacific/Kiritimati'
+      const WEST = 'Pacific/Pago_Pago'
+      const k = todayInZone(EAST)
+      const db = (await api('POST', '/databases', { name: `상대 날짜 ${stamp}` })).body.database
+      const titleProp = (await api('GET', `/views/${db.defaultViewId}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const due = (await api('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '마감', type: 'date' })).body.property.id
+      const ids = {}
+      for (const [title, day] of [['오늘', k], ['이레뒤', plusDays(k, 7)], ['여드레뒤', plusDays(k, 8)], ['없음', null]]) {
+        ids[title] = (await api('POST', `/views/${db.defaultViewId}/rows`, { cells: [
+          { propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } },
+          ...(day === null ? [] : [{ propertyId: due, value: { type: 'date', date: { start: day } } }]),
+        ] })).body.row.id
+      }
+      check('전제 — 마감(날짜)과 행 넷(키리티마티의 오늘 · +7 · +8 · 없음)', typeof due === 'string' && Object.keys(ids).length === 4)
+      const shown = () => evaluate(`[...document.querySelectorAll('[data-testid="db-table"] tbody tr[data-row-id]')].map((tr) => tr.dataset.rowId)`)
+      const named = async () => { const got = await shown(); return Object.keys(ids).filter((n) => got.includes(ids[n])).join(',') }
+      const rowsAre = (names) => waitFor(`(() => { const got = [...document.querySelectorAll('[data-testid="db-table"] tbody tr[data-row-id]')].map((tr) => tr.dataset.rowId)
+        const want = ${JSON.stringify(names.map((n) => ids[n]))}
+        return got.length === want.length && want.every((id) => got.includes(id)) })()`, 10000)
+      const RULE = '[data-testid="db-filter-rule"]'
+      const OP = `${RULE} select[aria-label="필터 조건"]`
+      const opLabels = () => evaluate(`[...document.querySelectorAll('${OP} option')].map((o) => o.textContent).join(',')`)
+      try {
+        await send('Emulation.setTimezoneOverride', { timezoneId: EAST })
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+        await waitFor(`document.querySelectorAll('[data-testid="db-table"] tbody tr[data-row-id]').length === 4`, 15000)
+        // 레이아웃이 이 브라우저의 시간대를 쿠키에 쓴다(흉내 낸 시간대)
+        await waitFor(`document.cookie.includes('nc_tz=${encodeURIComponent(EAST)}')`, 8000)
+        await waitHydrated('[data-testid="db-filter-button"]', 20000)
+        await clickOn('[data-testid="db-filter-button"]')
+        await waitFor(`!!document.querySelector('[data-testid="db-filter-panel"]')`, 3000)
+        await clickOn('[data-testid="db-filter-add"]')
+        await waitFor(`!!document.querySelector('${RULE}')`, 3000)
+        await setSelect(`${RULE} select[aria-label="필터 속성"]`, due)
+        const labels = await waitFor(`[...document.querySelectorAll('${OP} option')].map((o) => o.textContent).join(',').endsWith('비어 있지 않음,지난 1주 안,지난 1개월 안,지난 1년 안,이번 주,다음 1주 안,다음 1개월 안,다음 1년 안')`, 5000)
+        check('★ 날짜 속성의 연산자 — 비어 있지 않음 뒤에 상대 날짜 일곱', labels, String(await opLabels()))
+        await setSelect(OP, 'next_week')
+        const noValue = await waitFor(`!document.querySelector('${RULE} [data-testid="db-filter-value"]')`, 3000)
+        check('★ 다음 1주 안 — 값 칸이 없고 보는 사람의 오늘(키리티마티)에서 7일 안의 행만(오늘 · 이레뒤)', noValue && (await rowsAre(['오늘', '이레뒤'])), await named())
+        check('칩은 속성과 연산자 이름으로 말한다', await waitFor(`[...document.querySelectorAll('[data-testid="db-filter-chip"]')].some((e) => e.textContent.includes('마감') && e.textContent.includes('다음 1주 안'))`, 5000),
+          String(await evaluate(`[...document.querySelectorAll('[data-testid="db-filter-chip"]')].map((e) => e.textContent).join(' | ')`)))
+        await key('Escape')
+        // 다시 열어도 그 필터 — 저장됐다
+        await send('Page.reload', {})
+        check('다시 열어도 그 필터 · 그 행', await rowsAre(['오늘', '이레뒤']), await named())
+
+        // 시간대가 바뀌면(파고파고 — 키리티마티보다 하루 이상 늦다) 서버의 오늘이 이 기기와 달라 한 번 새로 받고, 그 오늘로 거른다
+        await send('Emulation.setTimezoneOverride', { timezoneId: WEST })
+        await send('Page.reload', {})
+        check('★ 시간대가 바뀌면 그 오늘로 — 한 번 새로 받아 파고파고의 다음 1주(오늘만 · 이레뒤는 8일 뒤)', await rowsAre(['오늘']), JSON.stringify({ rows: await named(), today: todayInZone(WEST) }))
+      } finally {
+        // 다음 절을 위해 — 흉내를 풀고 쿠키를 이 브라우저의 시간대로 돌려놓는다
+        await send('Emulation.setTimezoneOverride', { timezoneId: '' }).catch(() => undefined)
+        await evaluate(`document.cookie = 'nc_tz=' + encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone) + '; Path=/; Max-Age=31536000; SameSite=Lax'`).catch(() => undefined)
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

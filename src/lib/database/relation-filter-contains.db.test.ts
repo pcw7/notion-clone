@@ -121,7 +121,7 @@ describe('relation 으로 거르기 — 포함 · 포함하지 않음 (10n-45)',
     // 읽기 경로 — 저장된 뷰의 필터는 다시 검사하지 않는다(카탈로그를 줄여도 뷰가 열려야 한다)
     const run = async (operator: string) => {
       const params = new ParamBag(2) // $1 은 표 id
-      const predicate = compileFilter({ property_id: w.toTasks, operator, value: 'not-a-uuid' }, types, params, { me: null })
+      const predicate = compileFilter({ property_id: w.toTasks, operator, value: 'not-a-uuid' }, types, params, { me: null, today: '2026-01-01' })
       return withReadTransaction(async (tx) =>
         (await tx.query<{ id: string }>(`SELECT p.id FROM page p WHERE p.data_source_id = $1 AND ${predicate}`, [w.projects.dataSourceId, ...params.values]))
           .map((r) => r.id)

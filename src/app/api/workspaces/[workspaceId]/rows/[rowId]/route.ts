@@ -31,6 +31,7 @@ import { isUuid } from '@/lib/ids'
 import { readJsonBody, requireWorkspaceSession } from '@/lib/auth/route-session'
 import { trashRow, updateCells } from '@/lib/database/row'
 import { rowStandsInView } from '@/lib/database/row-in-view'
+import { readViewerToday } from '@/lib/settings/time-zone-cookie'
 import {
   failureResponse,
   parseCells,
@@ -71,7 +72,8 @@ export async function PATCH(request: Request, ctx: Ctx): Promise<Response> {
     ...(typeof body.expectedVersion === 'string' ? { expectedVersion: body.expectedVersion } : {}),
   })
   if (!updated.ok) return failureResponse(rowFailureStatus(updated.reason), updated)
-  const inView = viewId === null ? null : await rowStandsInView(session.ctx, viewId, rowId, view?.search ?? null)
+  // 그 사람이 보는 그 뷰 — 보는 사람의 오늘로(R-1 · 상대 날짜 필터)
+  const inView = viewId === null ? null : await rowStandsInView(session.ctx, viewId, rowId, view?.search ?? null, await readViewerToday())
   return Response.json({ ok: true, row: rowJson(updated.value), ...(inView === null ? {} : { inView }) })
 }
 
