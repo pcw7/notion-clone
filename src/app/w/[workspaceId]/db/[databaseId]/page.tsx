@@ -388,6 +388,20 @@ export default async function DatabasePage({
                 count: g.count,
                 hidden: g.hidden,
               })),
+        // 하위 그룹(B-4c) — 보드에서만 그룹 패널에 "하위 그룹" 칸이 선다
+        ...(isBoard
+          ? {
+              sub: {
+                subGroupBy: view.value.subGroupBy,
+                lanes: lanes.map((l) => ({
+                  key: l.key,
+                  label: subProperty === null ? l.key : groupLabel(subProperty.type, subProperty.name, l, subProperty),
+                  count: l.count,
+                  hidden: l.hidden,
+                })),
+              },
+            }
+          : {}),
       }
     : undefined
 

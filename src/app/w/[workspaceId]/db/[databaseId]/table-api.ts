@@ -1019,6 +1019,8 @@ export function updateView(
     readonly filter?: FilterNode | null
     readonly sorts?: readonly SortKey[]
     readonly groupBy?: GroupBy | null
+    /** 하위 그룹(B-4c · 보드의 가로줄). `null` 이 "없애라"다. */
+    readonly subGroupBy?: GroupBy | null
     /** 이 뷰의 기본 템플릿(F-08-03). `null` 이 "빈 항목으로 돌려라"다. */
     readonly defaultTemplateId?: string | null
     /** 갤러리 레이아웃의 바꿀 키만(2f-2). */

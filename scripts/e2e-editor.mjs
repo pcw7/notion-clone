@@ -24619,6 +24619,62 @@ async function main() {
       await evaluate(`(() => { try { localStorage.removeItem('nc:group-collapsed:${boardView}:lanes') } catch {} return true })()`)
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('그룹 패널의 하위 그룹 (B-4c · F-04-11)')) { try {
+      // 보드의 그룹 패널에서 "하위 그룹"을 고르면 가로줄이 서고 · 가로줄을 숨기면 그 줄이 빠지고 아래에 그 수를 말하고 · "없음"이면 가로줄 없는
+      // 보드로 돌아온다. 정본 [보강 B-4] ⑥. 자기 데이터를 스스로 만든다(API).
+      const stamp = Date.now()
+      const apiC = `${BASE}/api/workspaces/${workspaceId}`
+      const call = async (method, path, body) => {
+        const r = await fetch(`${apiC}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return r.json().catch(() => null)
+      }
+      const made = (await call('POST', '/databases', { name: `하위 그룹 패널 ${stamp}` })).database
+      const status = (await call('POST', `/data-sources/${made.dataSourceId}/properties`, { name: '상태', type: 'status' })).property.id
+      const owner = (await call('POST', `/data-sources/${made.dataSourceId}/properties`, { name: '담당', type: 'select' })).property.id
+      const ga = (await call('POST', `/data-sources/${made.dataSourceId}/properties/${owner}/options`, { name: '가' })).option.id
+      const na = (await call('POST', `/data-sources/${made.dataSourceId}/properties/${owner}/options`, { name: '나' })).option.id
+      const props = (await call('GET', `/data-sources/${made.dataSourceId}/properties`)).schema.properties
+      const opt = Object.fromEntries(props.find((p) => p.id === status).options.map((o) => [o.name, o.id]))
+      const titleProp = props.find((p) => p.type === 'title').id
+      for (const [title, ow] of [['A', ga], ['B', na]]) {
+        await call('POST', `/views/${made.defaultViewId}/rows`, { cells: [
+          { propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } },
+          { propertyId: status, value: { type: 'status', status: { id: opt['진행 중'] } } },
+          { propertyId: owner, value: { type: 'select', select: { id: ow } } },
+        ] })
+      }
+      const boardView = (await call('POST', `/databases/${made.id}/views`, { type: 'board', name: '보드' })).view.id
+      await call('PATCH', `/views/${boardView}`, { groupBy: { property_id: status, hide_empty: true } })
+      const lanesExpr = `JSON.stringify([...document.querySelectorAll('[data-testid="db-lane"]')].map((l) => l.dataset.laneKey))`
+      const setSelect = (sel, value) => evaluate(`(() => { const s = document.querySelector('${sel}')
+        const set = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set
+        set.call(s, ${JSON.stringify(value)}); s.dispatchEvent(new Event('change', { bubbles: true })); return true })()`)
+      const openPanel = async () => {
+        await waitHydrated('[data-testid="db-group-button"]')
+        if (!(await evaluate(`!!document.querySelector('[data-testid="db-sub-group-property"]')`))) await clickSelector('[data-testid="db-group-button"]')
+        return waitFor(`!!document.querySelector('[data-testid="db-sub-group-property"]')`, 5000)
+      }
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${made.id}?v=${boardView}` })
+      await openPanel()
+      await setSelect('[data-testid="db-sub-group-property"]', owner)
+      check('★ 그룹 패널에서 "하위 그룹"을 고르면 가로줄이 선다(값 없음 · 가 · 나)',
+        await waitFor(`${lanesExpr} === ${JSON.stringify(JSON.stringify(['', ga, na]))}`, 15000), await evaluate(lanesExpr))
+
+      await openPanel()
+      await waitFor(`!!document.querySelector('[data-testid="db-sub-group-visible"][data-lane-key="${na}"]')`, 5000)
+      await clickSelector(`[data-testid="db-sub-group-visible"][data-lane-key="${na}"]`)
+      check('가로줄을 숨기면 그 줄이 빠지고 아래에 그 수를 말한다',
+        await waitFor(`${lanesExpr} === ${JSON.stringify(JSON.stringify(['', ga]))} && (document.querySelector('[data-testid="db-lane-hidden"]')?.textContent ?? '').includes('숨긴 가로줄 1개')`, 15000),
+        await evaluate(lanesExpr))
+
+      await openPanel()
+      await setSelect('[data-testid="db-sub-group-property"]', '')
+      check('★ "없음"이면 가로줄 없는 보드로 돌아온다',
+        await waitFor(`!document.querySelector('[data-testid="db-lane"]') && document.querySelectorAll('[data-testid="db-board-column"]').length >= 1`, 15000),
+        await evaluate(lanesExpr))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).
