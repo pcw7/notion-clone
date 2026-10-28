@@ -24961,6 +24961,57 @@ async function main() {
       check('★ 가로줄도 — 내림차순이면 20 · 10 · 0(값 없음이 맨 위)', await waitFor(`${lanesExpr} === ${JSON.stringify(JSON.stringify(['', '20', '10', '0']))}`, 15000), await evaluate(lanesExpr))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('캘린더 — 하루에 넘치는 카드 (C-1 · F-04-06)')) { try {
+      // 한 날에 카드가 넘치면 그 칸의 "+N" 을 눌러 그날의 카드 전부(여러 날에 걸친 것도)의 목록을 연다 — 열면 첫 항목에 포커스 · Esc 는 단추로 ·
+      // 항목은 그 행을 연다. 정본 §3.6 [보강] 캘린더 ⑤. 자기 데이터를 스스로 만든다(API).
+      const stamp = Date.now()
+      const apiC = `${BASE}/api/workspaces/${workspaceId}`
+      const call = async (method, path, body) => {
+        const r = await fetch(`${apiC}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return r.json().catch(() => null)
+      }
+      const made = (await call('POST', '/databases', { name: `넘치는 날 ${stamp}` })).database
+      const due = (await call('POST', `/data-sources/${made.dataSourceId}/properties`, { name: '마감', type: 'date' })).property.id
+      const titleProp = (await call('GET', `/data-sources/${made.dataSourceId}/properties`)).schema.properties.find((p) => p.type === 'title').id
+      const ids = {}
+      for (const [title, date] of [['긴 일', { start: '2026-03-16', end: '2026-03-20' }], ['가', { start: '2026-03-18' }], ['나', { start: '2026-03-18' }],
+        ['다', { start: '2026-03-18' }], ['라', { start: '2026-03-18' }], ['마', { start: '2026-03-18' }]]) {
+        ids[title] = (await call('POST', `/views/${made.defaultViewId}/rows`, { cells: [
+          { propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } },
+          { propertyId: due, value: { type: 'date', date } },
+        ] })).row.id
+      }
+      const calView = (await call('POST', `/databases/${made.id}/views`, { type: 'calendar', name: '달력' })).view.id
+      const DAY = '[data-testid="db-cal-day"][data-day="2026-03-18"]'
+      const MORE = `${DAY} [data-testid="db-cal-more"]`
+      const items = () => evaluate(`JSON.stringify([...document.querySelectorAll('[data-testid="db-cal-day-list"] [data-testid="db-cal-day-item"]')].map((a) => a.textContent.trim()))`)
+      const named = Object.fromEntries(Object.entries(ids).map(([k, v]) => [v, k]))
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${made.id}?v=${calView}&m=2026-03` })
+      const more = await waitFor(`(document.querySelector('${MORE}')?.textContent ?? '') === '+3'`, 15000)
+      check('★ 한 날에 여섯 — 막대 셋 · 그 칸에 "+3"', more, String(await evaluate(`document.querySelector('${MORE}')?.textContent ?? '없음'`)))
+      await waitHydrated(MORE)
+      await clickSelector(MORE)
+      const opened = await waitFor(`document.querySelectorAll('[data-testid="db-cal-day-list"] [data-testid="db-cal-day-item"]').length === 6`, 5000)
+      const list = JSON.parse(await items())
+      const focused = await waitFor(`document.activeElement?.getAttribute('data-testid') === 'db-cal-day-item'
+        && document.activeElement === document.querySelector('[data-testid="db-cal-day-item"]')`, 3000)
+      check('★ "+3" 을 누르면 그날의 카드 전부(여러 날에 걸친 긴 일이 먼저 · 막대로 보이는 것도) — 첫 항목에 포커스',
+        opened && focused && list[0] === '긴 일' && [...list].sort().join(',') === ['가', '긴 일', '나', '다', '라', '마'].sort().join(','),
+        JSON.stringify({ list, focused }))
+      await key('Escape')
+      check('Esc 는 목록을 닫고 "+3" 으로 포커스를 돌려준다',
+        await waitFor(`!document.querySelector('[data-testid="db-cal-day-list"]') && document.activeElement === document.querySelector('${MORE}')`, 3000),
+        String(await evaluate(`document.activeElement?.outerHTML?.slice(0, 80) ?? ''`)))
+      await clickSelector(MORE)
+      await waitFor(`!!document.querySelector('[data-testid="db-cal-day-item"][data-row-id="${ids['라']}"]')`, 5000)
+      await clickSelector(`[data-testid="db-cal-day-item"][data-row-id="${ids['라']}"]`)
+      const openedRow = await waitFor(`location.href.includes('${ids['라']}')`, 8000)
+      check('항목은 그 행을 연다(막대의 링크와 같은 곳) · 목록은 닫힌다',
+        openedRow && (await waitFor(`!document.querySelector('[data-testid="db-cal-day-list"]')`, 3000)),
+        JSON.stringify({ href: await evaluate('location.href'), row: named[ids['라']] }))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

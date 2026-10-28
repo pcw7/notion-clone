@@ -160,6 +160,11 @@ export type PlacedEvent = {
   readonly continuesAfter: boolean
 }
 
+/** 그날에 걸친 일정 — 들어온 차례(서버의 날짜순) 그대로(C-1 · "+N" 의 목록 · 정본 [보강] 캘린더 ⑤). */
+export function eventsOn(day: string, events: readonly CalendarEvent[]): CalendarEvent[] {
+  return events.filter((e) => e.start <= day && day <= e.end)
+}
+
 /**
  * 한 주의 막대 배치 — 그 주에 걸친 일정을 주 안으로 자르고, **시작이 이른 것 · 긴 것 · 들어온 순서**로 줄(lane)을 탐욕적으로 잡는다
  * (04 *"multi-day 이벤트 lane packing"*). `maxLanes` 를 넘는 일정은 그리지 않고 그 날짜마다 센다(`hidden` — 칸의 "+N").
