@@ -126,6 +126,8 @@ import {
 import { compileSearch } from './search.ts'
 import { canViewOwnerDatabase } from './source-access.ts'
 import { restrictedRowsSql, rowsAccessIn, type RowsAccess } from './row-access.ts'
+import { isCardView } from './view-columns.ts'
+import { readSubItemDisplay } from './sub-item-scope.ts'
 
 // ── 계약 ──────────────────────────────────────────────────────────────
 
@@ -547,11 +549,12 @@ async function openBoard(
     sub_group_by: unknown
     type: string
     load_limit: number
+    sub_item_display: string | null
   }>(
     // 필터 · 정렬은 이 사람이 실제로 보는 것 — 개인 것이 있으면 그것이 공유 것을 대체한다(2h-1 · F-04-17 · `view.ts` `effectiveFilter`).
     `SELECT v.database_id, v.data_source_id, ds.owner_database_id AS owner,
             coalesce(o.filter, v.filter) AS filter, coalesce(o.sorts, v.sorts) AS sorts,
-            v.group_by, v.sub_group_by, v.type, v.load_limit
+            v.group_by, v.sub_group_by, v.type, v.load_limit, v.sub_item_display
        FROM view v
        JOIN block b ON b.id = v.database_id
        JOIN data_source ds ON ds.id = v.data_source_id
@@ -593,7 +596,11 @@ async function openBoard(
     sorts: Array.isArray(view.sorts) ? (view.sorts as SortKey[]) : [],
     loadLimit: view.load_limit,
     types,
-    subItemsParent: (await readSubItemPair(tx, view.data_source_id))?.parentPropertyId ?? null,
+    // 카드 뷰(보드 · 갤러리)가 평평한 목록이면 하위 항목도 따로 카드로 — 부모만을 풀다(K-1). 그룹이 걸린 표 · 목록은 늘 부모만(G-1)
+    subItemsParent:
+      isCardView(view.type) && readSubItemDisplay(view.sub_item_display) === 'flattened'
+        ? null
+        : ((await readSubItemPair(tx, view.data_source_id))?.parentPropertyId ?? null),
     calculation: liveGroupCalculation(groupBy, types),
     search,
     access,

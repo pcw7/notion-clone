@@ -25,7 +25,7 @@ import { compileSearch } from './search.ts'
 import { restrictedRowsSql, rowsAccessForDataSource } from './row-access.ts'
 import { readableScopes } from '../permissions/effective.ts'
 import { getView } from './view.ts'
-import { subItemPairOf } from './view-columns.ts'
+import { cardParentsOnlyPair } from './view-columns.ts'
 
 export type CalendarPage = {
   readonly datePropertyId: string
@@ -77,7 +77,8 @@ export async function queryUndatedRows(
   // 수와 같은 조건 — 날짜 칸이 비어 있다(필터의 "비어 있음" 과 같은 술어 · 사이드카의 `date_start` 가 없다)
   const undated: FilterNode = { property_id: dateProperty, operator: 'is_empty' }
   const filter: FilterNode = view.value.effectiveFilter === null ? undated : { op: 'and', children: [view.value.effectiveFilter, undated] }
-  const pair = subItemPairOf(view.value.columns)
+  // 카드 속성이면 부모만 · 평평한 목록이면 모든 행(K-1)
+  const pair = cardParentsOnlyPair(view.value.columns, view.value.subItemDisplay)
   const page = await queryRows(ctx, view.value.dataSourceId, {
     filter,
     sorts: view.value.effectiveSorts,
@@ -119,7 +120,8 @@ export async function queryCalendar(
     const accessSql = restrictedRowsSql(access, params)
     const filterSql = compileFilter(filter, types, params, { me: ctx.userId, today: todayOrUtc(input.today) })
     const searchSql = input.search ? compileSearch(input.search, types, params, await readableScopes(tx, ctx)) : null
-    const pair = subItemPairOf(columns)
+    // 카드 속성이면 부모만 · 평평한 목록이면 모든 행(K-1 — "날짜 없음" 과 같은 조건)
+    const pair = cardParentsOnlyPair(columns, view.value.subItemDisplay)
     const treeSql = pair === null ? null : compileTree({ parentPropertyId: pair.parentPropertyId, under: null }, params)
     const where = ['p.data_source_id = $1', 'p.is_template = false', "b.lifecycle = 'live'", accessSql, filterSql, searchSql, treeSql]
       .filter((s): s is string => s !== null)

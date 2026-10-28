@@ -18,6 +18,7 @@ import { readRollupConfig, type RollupFunction } from './rollup-functions.ts'
 import type { FormulaType } from '../formula/values.ts'
 import type { Calculation } from './calculations.ts'
 import { formulaFilterType, isFilterableType } from './filter.ts'
+import type { SubItemDisplay } from './sub-item-scope.ts'
 
 type ColumnBase = {
   readonly propertyId: string
@@ -147,6 +148,22 @@ export function nestsSubItems(viewType: string): boolean {
  */
 export function showsParentsOnly(viewType: string): boolean {
   return viewType === 'gallery'
+}
+
+/** 카드 뷰인가 — 보드 · 갤러리 · 캘린더(K-1). 하위 항목의 표시 방식이 카드 속성 · 평평한 목록이고 범위 고르개가 없다. */
+export function isCardView(viewType: string): boolean {
+  return viewType === 'board' || viewType === 'gallery' || viewType === 'calendar'
+}
+
+/**
+ * 카드 뷰가 부모만 그릴 때의 하위 항목 짝(K-1 · 정본 §3.5 [보강 P-1] ⑧) — 카드 속성(기본)이면 짝, 평평한 목록이면 null(하위 항목도 따로
+ * 카드로 · 모든 행). 하위 항목이 꺼져 있어도 null.
+ */
+export function cardParentsOnlyPair(
+  columns: readonly ViewColumn[],
+  display: SubItemDisplay,
+): { readonly parentPropertyId: string; readonly childrenPropertyId: string } | null {
+  return display === 'flattened' ? null : subItemPairOf(columns)
 }
 
 /**

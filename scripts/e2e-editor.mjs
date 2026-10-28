@@ -25756,6 +25756,50 @@ async function main() {
       check('포함 = 부모만 — 최상위 행만 · 열 집계도 들어온 행(3)', parentsOnly && calc === 3, JSON.stringify({ titles: await evaluate(titlesJs), calc }))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('카드 뷰의 표시 방식 (K-1 · F-04-22)')) { try {
+      // 하위 항목이 켜진 표의 갤러리 — 속성 패널에 "표시"(카드 속성 · 평평한 목록)만 서고 범위 고르개는 없다 · 카드 속성(기본)이면 부모만
+      // 카드로, 평평한 목록이면 하위 항목도 따로 카드로. 정본 §3.5 [보강 P-1] ⑧. 자기 데이터를 스스로 만든다(API).
+      const stamp = Date.now()
+      const apiC = `${BASE}/api/workspaces/${workspaceId}`
+      const call = async (method, path, body) => {
+        const r = await fetch(`${apiC}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return r.json().catch(() => null)
+      }
+      const made = (await call('POST', '/databases', { name: `카드 표시 ${stamp}` })).database
+      const titleProp = (await call('GET', `/data-sources/${made.dataSourceId}/properties`)).schema.properties.find((p) => p.type === 'title').id
+      const cell = (text) => ({ propertyId: titleProp, value: { type: 'title', title: [textRun(text)] } })
+      const ids = {}
+      for (const t of ['가', '나']) ids[t] = (await call('POST', `/views/${made.defaultViewId}/rows`, { cells: [cell(t)] })).row.id
+      await call('POST', `/data-sources/${made.dataSourceId}/sub-items`)
+      ids['가-1'] = (await call('POST', `/views/${made.defaultViewId}/rows`, { cells: [cell('가-1')], parent: ids['가'] })).row.id
+      const gallery = (await call('POST', `/databases/${made.id}/views`, { type: 'gallery', name: '갤러리' })).view.id
+      const cardsJs = `[...document.querySelectorAll('[data-testid="db-gallery-card-title"]')].map((e) => e.textContent.trim()).sort().join('|')`
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${made.id}?v=${gallery}` })
+      const parentsOnly = await waitFor(`${cardsJs} === '가|나'`, 15000)
+      await waitHydrated('[data-testid="db-properties-button"]')
+      await clickSelector('[data-testid="db-properties-button"]')
+      await waitFor(`!!document.querySelector('[data-testid="db-subitems-display"]')`, 5000)
+      const labels = await evaluate(`[...document.querySelectorAll('[data-testid="db-subitems-display"] option')].map((o) => o.textContent).join('|')`)
+      const noScope = (await evaluate(`document.querySelector('[data-testid="db-subitems-filter-scope"]') === null`)) === true
+      check('★ 갤러리의 속성 패널 — "표시"(카드 속성 · 평평한 목록)만 · 범위 고르개는 없다 · 카드 속성이면 부모만 카드로',
+        parentsOnly && labels === '카드 속성|평평한 목록' && noScope, JSON.stringify({ cards: await evaluate(cardsJs), labels, noScope }))
+
+      await evaluate(`(() => {
+        const s = document.querySelector('[data-testid="db-subitems-display"]')
+        if (!s) return false
+        s.value = 'flattened'
+        s.dispatchEvent(new Event('change', { bubbles: true }))
+        return true
+      })()`)
+      const flat = await waitFor(`${cardsJs} === '가|가-1|나'`, 10000)
+      const saved = (await call('GET', `/views/${gallery}`))?.view?.subItemDisplay
+      check('★ 평평한 목록을 고르면 하위 항목도 따로 카드로 선다(서버에도)', flat && saved === 'flattened', JSON.stringify({ cards: await evaluate(cardsJs), saved }))
+      check('밑의 한 줄이 방식을 따른다 — "하위 항목도 따로 카드로"',
+        await waitFor(`(document.querySelector('[data-testid="db-subitems-display-hint"]')?.textContent ?? '').startsWith('하위 항목도 따로 카드로')`, 5000),
+        await evaluate(`document.querySelector('[data-testid="db-subitems-display-hint"]')?.textContent ?? null`))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).
