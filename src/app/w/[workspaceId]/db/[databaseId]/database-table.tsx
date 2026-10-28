@@ -80,6 +80,7 @@ import type { DatabaseAccess } from '@/lib/database/database'
 import type { SortKey } from '@/lib/database/filter'
 import { sortFirst } from '@/lib/database/filter-draft'
 import type { RowJson } from '@/lib/database/http'
+import type { SearchHit } from '@/lib/database/query'
 import { PageIconView } from '../../page-icon-view'
 import { isCellColumn, isSortable, relationOf, rollupOf, type CellColumn, type ViewColumn } from '@/lib/database/view-columns'
 import { formatUniqueId, normalizeUniqueIdPrefix } from '@/lib/database/unique-id-format'
@@ -172,6 +173,10 @@ function CellSlot({ active, children }: { active: boolean; children: ReactNode }
 /** 표시 순서가 뒤에 오는 응답인가. 버전은 bigint 문자열이다. */
 const notOlder = (incoming: string, current: string): boolean => BigInt(incoming) >= BigInt(current)
 
+/** 읽기가 준 행들의 검색 표시(H-1) — 표시가 없는 행은 싣지 않는다. */
+const hitsOf = (list: readonly RowJson[]): Map<string, SearchHit> =>
+  new Map(list.flatMap((r) => (r.searchHit === undefined ? [] : [[r.id, r.searchHit] as const])))
+
 /** 틀린 접두사의 이유 — 저장 CHECK(0050)과 같은 규칙을 사람 말로. */
 const PREFIX_RULE = '접두사는 영숫자 2~7자입니다(비우면 번호만 보입니다).'
 
@@ -216,8 +221,8 @@ export function DatabaseTable(props: {
    */
   calculations?: Calculations
   /**
-   * 뷰 검색어(2e-2 · F-04-27) — 서버 렌더가 이것으로 첫 페이지를 읽었다. "더 보기"도 같은 검색어를 싣는다. 검색 중에는 하위 항목 트리를
-   * 펴지 않는다(부르는 쪽이 `subItems` 를 주지 않는다 — 결과는 평평하다).
+   * 뷰 검색어(2e-2 · F-04-27) — 서버 렌더가 이것으로 첫 페이지를 읽었다. "더 보기" · 자식 읽기도 같은 검색어를 싣는다. 하위 항목 트리와
+   * 함께면(H-1) 맞지 않는 조상(맥락 행)을 회색으로 그리고, 아래에 맞은 행이 있는 행을 처음 한 번 저절로 편다.
    */
   search?: string | null
   /** 서버 화면이 읽기 전의 시각(ms) — 구독이 붙기 전의 변경을 메운다(#250 · `use-table-changes.ts`). */
@@ -305,6 +310,18 @@ export function DatabaseTable(props: {
   const [depthOf, setDepthOf] = useState<ReadonlyMap<string, number>>(new Map())
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set())
   const [loadingChildren, setLoadingChildren] = useState<string | null>(null)
+  /**
+   * 검색 중 하위 항목 트리(H-1 · 정본 §3.6 [보강] 뷰 검색 ⑧) — 읽기가 준 행마다의 `searchHit`(맥락 행인가 · 아래에 맞은 행이 있는가).
+   * 행 안에 두지 않는다 — 쓰기 응답이 행을 갈아 끼우면(검색 표시가 없다) 회색 · 토글이 사라진다. 읽기 길만 이 지도를 고친다.
+   */
+  const searchTree = subItems !== null && Boolean(props.search)
+  const [searchHits, setSearchHits] = useState<ReadonlyMap<string, SearchHit>>(() => hitsOf(props.rows))
+  const noteHits = (list: readonly RowJson[]) => {
+    const found = hitsOf(list)
+    if (found.size > 0) setSearchHits((current) => new Map([...current, ...found]))
+  }
+  /** 저절로 편 행 — 한 번만 편다(사람이 접으면 그대로 둔다). */
+  const autoOpened = useRef<Set<string>>(new Set())
 
   /**
    * 지금 상태를 **동기적으로** 들고 있는 사본.
@@ -906,13 +923,13 @@ export function DatabaseTable(props: {
   const childCount = (row: RowJson): number =>
     subItems === null ? 0 : readRelationValue(row.properties[subItems.childrenPropertyId]).count
 
-  /** 이 행의 자식을 끝까지 읽는다(상한에서 멈춘다). 실패하면 이유를 걸고 null. */
+  /** 이 행의 자식을 끝까지 읽는다(상한에서 멈춘다 · 검색 중이면 맞은 자식과 맥락 행만 — H-1). 실패하면 이유를 걸고 null. */
   const loadChildren = async (rowId: string): Promise<RowJson[] | null> => {
     setLoadingChildren(rowId)
     const children: RowJson[] = []
     let next: string | null = null
     do {
-      const result = await api.loadRows(workspaceId, viewId, next, rowId)
+      const result = await api.loadRows(workspaceId, viewId, next, rowId, props.search)
       if (!result.ok) {
         setLoadingChildren(null)
         setError(result.message)
@@ -922,6 +939,7 @@ export function DatabaseTable(props: {
       next = result.value.hasMore ? result.value.nextCursor : null
     } while (next !== null && children.length < MAX_QUERY_PAGINATION)
     setLoadingChildren(null)
+    noteHits(children)
     return children
   }
 
@@ -950,6 +968,16 @@ export function DatabaseTable(props: {
     setDepthOf((current) => new Map([...current, ...children.map((c) => [c.id, depth + 1] as const)]))
     setExpanded((current) => new Set([...current, rowId]))
   }
+
+  // 검색 중 하위 항목 트리(H-1) — 아래에 맞은 행이 있는 행은 처음 한 번 저절로 편다. 펴지 않으면 회색 맥락 행만 보이고 맞은 행이 숨는다.
+  // 한 번에 하나씩(펼치기가 끝나면 다음) · 사람이 접은 행은 다시 펴지 않는다 · 편집 중에는 기다린다(행 자리가 바뀌면 편집 칸이 어긋난다).
+  useEffect(() => {
+    if (!searchTree || loadingChildren !== null || mode.kind === 'editing') return
+    const next = rows.find((r) => searchHits.get(r.id)?.below === true && !expanded.has(r.id) && !autoOpened.current.has(r.id))
+    if (next === undefined) return
+    autoOpened.current.add(next.id)
+    void toggleSubItems(next.id)
+  })
 
   /**
    * 하위 항목 `+`(2b-2b) — 그 행 밑에 새 행을 만든다(만들기와 연결이 한 트랜잭션 · `sub-item-rows.ts`). 접혀 있었으면 펴서 다시 읽고
@@ -1185,7 +1213,7 @@ export function DatabaseTable(props: {
     const children: RowJson[] = []
     let next: string | null = null
     do {
-      const result = await api.loadRows(workspaceId, viewId, next, rowId)
+      const result = await api.loadRows(workspaceId, viewId, next, rowId, props.search)
       if (!result.ok) return null
       children.push(...result.value.rows)
       next = result.value.hasMore ? result.value.nextCursor : null
@@ -1249,6 +1277,7 @@ export function DatabaseTable(props: {
         const at = id === undefined ? -1 : merged.rows.findIndex((r) => r.id === id)
         setMode(at < 0 ? { kind: 'idle' } : { kind: 'selected', at: { row: at, col: current.at.col } })
       }
+      noteHits([...top, ...[...childrenOf.values()].flat()])
       setRows(merged.rows)
       setDepthOf(merged.depthOf)
       setExpanded(merged.expanded)
@@ -1299,6 +1328,7 @@ export function DatabaseTable(props: {
       setError(result.message)
       return
     }
+    noteHits(result.value.rows)
     setRows((current) => {
       // 그사이 "+ 새로 만들기"로 붙인 행이 다음 페이지에 또 올 수 있다.
       const seen = new Set(current.map((row) => row.id))
@@ -1602,7 +1632,11 @@ export function DatabaseTable(props: {
                 data-row-id={row.id}
                 data-depth={subItems === null ? undefined : (depthOf.get(row.id) ?? 0)}
                 data-dragging={draggingRow === row.id ? 'true' : undefined}
-                style={draggingRow === row.id ? { opacity: 0.5 } : undefined}
+                // 검색 중 맥락 행(H-1 — 맞은 자손 때문에 선 조상)은 회색 — 결과가 아니라 자리라는 표시. 열기 · 고치기는 그대로다
+                data-search-context={searchTree && searchHits.get(row.id)?.matched === false ? 'true' : undefined}
+                style={
+                  draggingRow === row.id ? { opacity: 0.5 } : searchTree && searchHits.get(row.id)?.matched === false ? { opacity: 0.55 } : undefined
+                }
                 className={
                   isList
                     ? 'flex items-center gap-1 border-b border-neutral-100 hover:bg-neutral-50 dark:border-neutral-900 dark:hover:bg-neutral-900/60'
@@ -1717,7 +1751,8 @@ export function DatabaseTable(props: {
                           />
                         )}
                         {subItems !== null &&
-                          (childCount(row) > 0 || expanded.has(row.id) ? (
+                          // 검색 중(H-1)에는 아래에 맞은 행이 있을 때만 — 자식이 있어도 맞은 것이 없으면 펼 것이 없다
+                          ((searchTree ? searchHits.get(row.id)?.below === true : childCount(row) > 0) || expanded.has(row.id) ? (
                             <button
                               type="button"
                               data-testid="db-subitem-toggle"
@@ -1747,7 +1782,13 @@ export function DatabaseTable(props: {
                           <PageIconView icon={row.icon} fallback />
                           <span className="min-w-0 flex-1">{content}</span>
                         </span>
-                        {subItems !== null && access.canCreateRows && (
+                        {searchTree && searchHits.get(row.id)?.matched === false && (
+                          // 맥락 행(H-1) — 회색은 눈으로만 보인다. 읽는 사람에게는 말로(제목 칸의 글자에는 섞지 않는다)
+                          <span className="sr-only" data-testid="db-row-context">
+                            검색어와 맞지 않는 상위 항목
+                          </span>
+                        )}
+                        {subItems !== null && !searchTree && access.canCreateRows && (
                           // 하위 항목 `+`(2b-2b) — 마우스를 올리면 "열기" 옆에 선다. 칸을 고르는 누르기로 번지지 않게 막는다.
                           <button
                             type="button"
