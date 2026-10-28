@@ -89,6 +89,12 @@ import { RelationValue } from './relation-value'
 import { ViewSearch } from './view-search'
 import { GALLERY_ASPECTS, GALLERY_COVERS, GALLERY_SIZES, type GalleryLayout } from '@/lib/database/gallery'
 import { OPEN_PAGES_IN, openPagesInLabel, type OpenPagesIn } from '@/lib/database/open-pages'
+import {
+  SUB_ITEM_FILTER_SCOPES,
+  subItemFilterScopeHint,
+  subItemFilterScopeLabel,
+  type SubItemFilterScope,
+} from '@/lib/database/sub-item-scope'
 import type { CalendarLayout, LiveCalendarLayout } from '@/lib/database/calendar'
 
 type Panel = 'filter' | 'sort' | 'properties' | 'group' | 'gallery' | 'calendar' | 'open'
@@ -136,6 +142,7 @@ export function ViewToolbar({
   peopleNames = {},
   rowTitles = {},
   openPagesIn,
+  subItemFilterScope,
 }: {
   workspaceId: string
   viewId: string
@@ -173,6 +180,11 @@ export function ViewToolbar({
   rowTitles?: RowTitleMap
   /** 행을 여는 방식(8n-2 · F-02-20) — 행을 그리는 뷰에만 온다(폼은 없다). 구조를 고치는 사람에게 "열기" 단추와 패널이 선다. */
   openPagesIn?: OpenPagesIn
+  /**
+   * 하위 항목의 표시 범위(P-2 · 정본 §3.5 [보강 P-1]) — 하위 항목을 펴는 표 · 목록에만 온다(보드 · 갤러리 · 캘린더 · 그룹이 걸린 표는 늘
+   * 부모만이라 없다). 하위 항목이 켜져 있으면 "속성" 패널의 스위치 밑에 "필터 적용" 고르개가 선다.
+   */
+  subItemFilterScope?: SubItemFilterScope
 }) {
   const router = useRouter()
   const [panel, setPanel] = useState<Panel | null>(null)
@@ -340,6 +352,8 @@ export function ViewToolbar({
             busy={busy}
             onToggle={(propertyId, visible) => run(() => setColumnVisible(workspaceId, viewId, propertyId, visible))}
             onSubItems={(on) => run(() => (on ? enableSubItems : disableSubItems)(workspaceId, dataSourceId))}
+            filterScope={subItemFilterScope}
+            onFilterScope={(scope) => run(() => updateView(workspaceId, viewId, { subItemFilterScope: scope }))}
             onDependencies={(on) => run(() => setDependencies(workspaceId, dataSourceId, on))}
             onClose={close}
           />
@@ -1690,6 +1704,8 @@ function PropertiesPanel({
   busy,
   onToggle,
   onSubItems,
+  filterScope,
+  onFilterScope,
   onDependencies,
   onClose,
 }: {
@@ -1698,6 +1714,9 @@ function PropertiesPanel({
   onToggle: (propertyId: string, visible: boolean) => Promise<boolean>
   /** 하위 항목 켜기 · 끄기(2b-2). 끄면 짝은 일반 relation 으로 남는다(연결은 그대로). */
   onSubItems: (on: boolean) => Promise<boolean>
+  /** 하위 항목의 표시 범위(P-2) — 하위 항목을 펴는 표 · 목록에만 온다. 없으면 고르개를 세우지 않는다. */
+  filterScope?: SubItemFilterScope
+  onFilterScope: (scope: SubItemFilterScope) => Promise<boolean>
   /** 종속 관계 켜기 · 끄기(2b-3). 날짜는 옮기지 않는다. */
   onDependencies: (on: boolean) => Promise<boolean>
   onClose: () => void
@@ -1740,6 +1759,30 @@ function PropertiesPanel({
         하위 항목
         <span className="text-xs text-neutral-400">{subItemsOn ? '끄면 일반 관계형 속성으로 남습니다' : '행 안에 행을 둡니다'}</span>
       </label>
+      {/* 하위 항목의 표시 범위(P-2 · 정본 §3.5 [보강 P-1]) — 필터를 거는 층. 뷰의 공유 설정이다(필터와 같이). */}
+      {subItemsOn && filterScope !== undefined && (
+        <label className="flex flex-col gap-1 pl-6 text-sm">
+          <span className="flex items-center gap-2">
+            필터 적용
+            <select
+              value={filterScope}
+              disabled={busy}
+              onChange={(e) => void onFilterScope(e.target.value as SubItemFilterScope)}
+              data-testid="db-subitems-filter-scope"
+              className="rounded border border-neutral-200 bg-white px-1.5 py-0.5 text-sm dark:border-neutral-700 dark:bg-neutral-900"
+            >
+              {SUB_ITEM_FILTER_SCOPES.map((scope) => (
+                <option key={scope} value={scope}>
+                  {subItemFilterScopeLabel(scope)}
+                </option>
+              ))}
+            </select>
+          </span>
+          <span className="text-xs text-neutral-400" data-testid="db-subitems-filter-scope-hint">
+            {subItemFilterScopeHint(filterScope)}
+          </span>
+        </label>
+      )}
       {/* 종속 관계(2b-3 · F-03-18) — "선행 작업" · "후행 작업" 속성이 생긴다. 서로를 막는 순환은 거부한다. */}
       <label className="flex items-center gap-2 text-sm">
         <input

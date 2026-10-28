@@ -652,6 +652,8 @@ export default async function DatabasePage({
             catalog={catalog}
             // 행을 여는 방식(8n-2) — 행을 그리는 뷰에만(폼은 도구막대가 없다)
             openPagesIn={view.value.openPagesIn}
+            // 하위 항목의 표시 범위(P-2) — 하위 항목을 펴는 표 · 목록에만(그룹이 걸린 표는 부모만 평평하게라 없다)
+            {...(nestsSubItems(view.value.type) && !isGroupedRows ? { subItemFilterScope: view.value.subItemFilterScope } : {})}
             canEdit={access.canEditStructure}
             board={boardSettings}
             search={search}
