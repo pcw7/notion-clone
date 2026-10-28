@@ -22,7 +22,7 @@ import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.t
 import { isRowFailure, openDataSource } from '../database/row.ts'
 import { isAutomationCellType } from '../database/property-types.ts'
 import { validateFilter, type FilterLeaf } from '../database/filter.ts'
-import { isRelativeDateOperator } from '../database/relative-date.ts'
+import { normalizeTimeZone } from '../settings/time-zone.ts'
 import { isUuid } from '../ids.ts'
 import { can } from '../permissions/levels.ts'
 import { effectiveCaps } from '../permissions/effective.ts'
@@ -129,13 +129,8 @@ function checkTriggers(gate: SchemaGate, triggers: readonly TriggerInput[]): { r
     if (trigger.type !== 'property_edited') continue
     const meta = gate.properties.get(trigger.propertyId)
     if (meta === undefined || !isAutomationCellType(meta.type)) return { problem: 'unknown_property', index }
-    // 상대 날짜(R-1)는 받지 않는다 — 판정하는 워커에는 보는 사람이 없어 "오늘"의 시간대가 없다(사람 속성을 받지 않는 것과 같은 까닭)
-    if (
-      trigger.condition !== null &&
-      (validateFilter(trigger.condition, types).length > 0 ||
-        !conditionValueOk(meta.type, trigger.condition.value) ||
-        isRelativeDateOperator(trigger.condition.operator))
-    ) {
+    // 상대 날짜(R-1)도 받는다(A-1) — 워커가 저장한 사람의 시간대(`automation.time_zone`)로 오늘을 편다
+    if (trigger.condition !== null && (validateFilter(trigger.condition, types).length > 0 || !conditionValueOk(meta.type, trigger.condition.value))) {
       return { problem: 'invalid_condition', index }
     }
   }
@@ -230,7 +225,13 @@ export async function listDbAutomations(ctx: SessionContext, dataSourceId: strin
   })
 }
 
-export type DbAutomationInput = { readonly name: unknown; readonly triggers: unknown; readonly actions: unknown }
+export type DbAutomationInput = {
+  readonly name: unknown
+  readonly triggers: unknown
+  readonly actions: unknown
+  /** 저장하는 사람의 시간대(A-1 · 요청의 시간대 쿠키) — 상대 날짜 조건을 그 날로 판정한다. 없거나 틀리면 UTC. */
+  readonly timeZone?: unknown
+}
 
 /** 만든다 — 만든 사람이 실행 주체다(정본 ①). */
 export async function createDbAutomation(
@@ -259,8 +260,9 @@ export async function createDbAutomation(
 
     const id = randomUUID()
     await tx.query(
-      `INSERT INTO automation (id, workspace_id, kind, host_data_source_id, name, created_by) VALUES ($1, $2, 'db_automation', $3, $4, $5)`,
-      [id, ctx.workspaceId, dataSourceId, name, ctx.userId],
+      `INSERT INTO automation (id, workspace_id, kind, host_data_source_id, name, created_by, time_zone)
+       VALUES ($1, $2, 'db_automation', $3, $4, $5, $6)`,
+      [id, ctx.workspaceId, dataSourceId, name, ctx.userId, normalizeTimeZone(typeof input.timeZone === 'string' ? input.timeZone : undefined)],
     )
     await writeTriggers(tx, id, triggers.triggers)
     await writeActions(tx, id, actions.actions)
@@ -273,6 +275,8 @@ export type DbAutomationPatch = {
   readonly name?: unknown
   readonly triggers?: unknown
   readonly actions?: unknown
+  /** 저장하는 사람의 시간대(A-1) — 트리거를 다시 저장할 때만 적는다(조건을 마지막으로 정한 사람의 날). */
+  readonly timeZone?: unknown
   readonly enabled?: unknown
 }
 
@@ -322,9 +326,16 @@ export async function updateDbAutomation(
           SET name = coalesce($2, name),
               enabled = coalesce($3::boolean, enabled),
               disabled_reason = CASE WHEN $3::boolean IS NULL THEN disabled_reason ELSE NULL END,
+              time_zone = coalesce($4, time_zone),
               updated_at = now()
         WHERE id = $1`,
-      [automationId, name ?? null, patch.enabled === undefined ? null : patch.enabled],
+      [
+        automationId,
+        name ?? null,
+        patch.enabled === undefined ? null : patch.enabled,
+        // 트리거를 다시 저장하면 그 사람의 시간대(A-1) — 켜고 끄기 · 이름만 바꾸기는 그대로
+        triggers === undefined ? null : normalizeTimeZone(typeof patch.timeZone === 'string' ? patch.timeZone : undefined),
+      ],
     )
     if (triggers !== undefined) await writeTriggers(tx, automationId, triggers)
     if (actions !== undefined) await writeActions(tx, automationId, actions)

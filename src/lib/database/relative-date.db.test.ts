@@ -7,7 +7,7 @@
  *
  *   ① ★ 연산자 일곱이 보는 사람의 오늘에서 편 범위의 행만 — 양 끝 포함 · 날짜 없는 행은 어디에도 없다
  *   ② ★ 오늘은 컨텍스트의 것 — 같은 필터도 오늘이 하루 다르면 다른 행 · 열 집계도 같은 행을 센다 · 넘기지 않으면 UTC 의 오늘
- *   ③ ★ 자동화의 조건은 상대 날짜를 받지 않는다(보는 사람이 없다)
+ *   ③ ★ 자동화의 조건도 상대 날짜를 받는다(A-1 — 저장한 사람의 시간대로 · 판정은 automation-relative.db.test.ts)
  *   ④ 카탈로그 — 날짜의 일곱 · 값 없음 · 비어 있지 않음 뒤에
  */
 
@@ -157,7 +157,7 @@ describe('② 오늘은 컨텍스트의 것', () => {
 })
 
 describe('③ 자동화의 조건', () => {
-  test('★ 상대 날짜는 받지 않는다 — 판정하는 워커에 보는 사람의 오늘이 없다(보기의 필터로는 맞는 규칙이다)', async (t) => {
+  test('★ 상대 날짜도 받는다(A-1) — 저장한 사람의 시간대로 판정한다(처음엔 받지 않았다)', async (t) => {
     if (skipReason) return t.skip(skipReason)
     const w = await world()
     const condition = { property_id: w.due, operator: 'next_week' }
@@ -166,8 +166,9 @@ describe('③ 자동화의 조건', () => {
       name: '다음 주 마감',
       triggers: [{ type: 'property_edited', propertyId: w.due, condition }],
       actions: [{ type: 'edit_property', config: { v: 1, cells: [{ propertyId: w.titleId, value: { type: 'title', title: [textRun('곧')] } }] } }],
+      timeZone: 'Asia/Seoul',
     })
-    assert.deepEqual(r, { ok: false, reason: 'invalid_trigger', problem: 'invalid_condition', index: 0 })
+    assert.equal(r.ok, true, JSON.stringify(r))
   })
 })
 

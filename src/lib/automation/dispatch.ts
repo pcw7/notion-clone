@@ -21,6 +21,7 @@ import { query } from '../db/pool.ts'
 import { withReadTransaction, withTransaction } from '../db/tx.ts'
 import { resolveDelegatedContext } from '../auth/session-context.ts'
 import { compileFilter, noViewer, ParamBag, type FilterLeaf } from '../database/filter.ts'
+import { todayIn } from '../database/date-group.ts'
 import { isEmptyValue, type CellValue } from '../database/property-types.ts'
 import { isLocked } from '../permissions/lock.ts'
 import { readActions } from './action-check.ts'
@@ -119,7 +120,9 @@ async function dispatchOne(event: Claimed): Promise<'ran' | 'no_match' | 'droppe
 
   // ② 다시 보기 · ③ 판정 — 한 읽기 트랜잭션에서
   const judged = await withReadTransaction(async (tx) => {
-    const automation = await tx.queryMaybe<{ enabled: boolean }>(`SELECT enabled FROM automation WHERE id = $1`, [event.automation_id])
+    const automation = await tx.queryMaybe<{ enabled: boolean; time_zone: string | null }>(`SELECT enabled, time_zone FROM automation WHERE id = $1`, [
+      event.automation_id,
+    ])
     if (automation === null || !automation.enabled) return 'dropped' as const
     const row = await tx.queryMaybe<{ data_source_id: string; is_template: boolean; lifecycle: string; container_id: string }>(
       `SELECT p.data_source_id, p.is_template, b.lifecycle, ds.owner_database_id AS container_id
@@ -160,8 +163,8 @@ async function dispatchOne(event: Claimed): Promise<'ran' | 'no_match' | 'droppe
       // 조건 — 보기와 같은 필터 컴파일러가 그 행 하나에 묻는다
       const params = new ParamBag(2)
       // 조건은 사람 속성을 받지 않는다(정본 §3.5 [보강] 사람 속성 ⑤) — "나" 도 없다
-      // 보는 사람이 없다 — "나" 는 아무도 아니고 오늘은 UTC(상대 날짜는 조건이 받지 않는다 · R-1)
-      const predicate = compileFilter(trigger.condition, live, params, noViewer())
+      // 보는 사람이 없다 — "나" 는 아무도 아니다 · 오늘은 자동화를 저장한 사람의 시간대의 것(A-1 · 없으면 UTC)
+      const predicate = compileFilter(trigger.condition, live, params, noViewer(todayIn(automation.time_zone ?? 'UTC')))
       if (predicate === null) continue
       const hit = await tx.queryMaybe<{ one: number }>(`SELECT 1 AS one FROM page p WHERE p.id = $1 AND ${predicate}`, [event.page_id, ...params.values])
       if (hit !== null) return 'match' as const

@@ -9,6 +9,7 @@
 
 import { readJsonBody, requireWorkspaceSession } from '@/lib/auth/route-session'
 import { dbAutomationFailureStatus, deleteDbAutomation, updateDbAutomation } from '@/lib/automation/db-automation'
+import { readViewerTimeZone } from '@/lib/settings/time-zone-cookie'
 
 type Ctx = RouteContext<'/api/workspaces/[workspaceId]/data-sources/[dataSourceId]/automations/[automationId]'>
 
@@ -24,6 +25,8 @@ export async function PATCH(request: Request, ctx: Ctx): Promise<Response> {
     triggers: body.triggers,
     actions: body.actions,
     enabled: body.enabled,
+    // 트리거를 다시 저장하면 그 사람의 시간대(A-1)
+    timeZone: await readViewerTimeZone(),
   })
   if (!updated.ok) {
     const { ok: _ok, ...rest } = updated
