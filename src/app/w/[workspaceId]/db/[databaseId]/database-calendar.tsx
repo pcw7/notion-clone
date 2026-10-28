@@ -51,6 +51,7 @@ import {
   eventsOn,
   layoutWeek,
   monthGrid,
+  resizeDateValue,
   shiftDateValue,
   shiftMonth,
   visibleDays,
@@ -82,6 +83,8 @@ const DRAG_THRESHOLD_PX = 4
 
 type Drag = {
   readonly rowId: string
+  /** 옮기기(2g-3) · 가장자리로 시작 · 끝 바꾸기(C-4). */
+  readonly mode: 'move' | 'start' | 'end'
   /** 막대를 잡은 날짜 — 놓은 날짜와의 차이가 옮길 일수다. */
   readonly grabDay: string
   readonly startX: number
@@ -269,7 +272,27 @@ export function DatabaseCalendar(props: {
     const cells = measureDays()
     const grabDay = dayAt(cells, event.clientX, event.clientY)
     if (grabDay === null) return
-    dragRef.current = { rowId: row.id, grabDay, startX: event.clientX, startY: event.clientY, moved: false, cells, target: null }
+    dragRef.current = { rowId: row.id, mode: 'move', grabDay, startX: event.clientX, startY: event.clientY, moved: false, cells, target: null }
+    listenDrag()
+  }
+
+  /**
+   * 막대의 가장자리 손잡이(C-4 · 정본 [보강] 캘린더 ⑧) — 끌어 놓은 날이 새 시작 · 끝이다. 막대의 끌기(옮기기)와 같은 창 듣기 · 같은 칸 재기.
+   * 막대로 이벤트를 넘기지 않는다(옮기기가 시작되지 않게).
+   */
+  const onEdgePointerDown = (row: RowJson, edge: 'start' | 'end', event: ReactPointerEvent<HTMLSpanElement>) => {
+    event.stopPropagation()
+    swallowClick.current = false
+    if (!access.canEditContent || editingRef.current !== null || event.button !== 0) return
+    event.preventDefault()
+    const cells = measureDays()
+    const grabDay = dayAt(cells, event.clientX, event.clientY) ?? ''
+    dragRef.current = { rowId: row.id, mode: edge, grabDay, startX: event.clientX, startY: event.clientY, moved: false, cells, target: null }
+    listenDrag()
+  }
+
+  /** 누른 뒤 창에서 움직임을 듣는다 — 옮기기 · 가장자리가 같이 쓴다. */
+  const listenDrag = () => {
 
     const onMove = (e: PointerEvent) => {
       const d = dragRef.current
@@ -295,7 +318,12 @@ export function DatabaseCalendar(props: {
       const d = endDrag()
       if (d === null || !d.moved) return
       swallowClick.current = true
-      if (d.target === null || d.target === d.grabDay) return
+      if (d.target === null) return
+      if (d.mode !== 'move') {
+        void resizeRow(d.rowId, d.mode, d.target)
+        return
+      }
+      if (d.target === d.grabDay) return
       void moveRow(d.rowId, daysBetween(d.grabDay, d.target))
     }
     const onCancel = () => {
@@ -316,11 +344,22 @@ export function DatabaseCalendar(props: {
   }
 
   /** 날짜 값을 며칠 옮긴다 — 먼저 옮기고, 거부되면 제자리로. */
-  const moveRow = async (rowId: string, days: number) => {
+  const moveRow = (rowId: string, days: number) => writeDate(rowId, (date) => shiftDateValue(date, days))
+
+  /** 가장자리로 시작 · 끝을 바꾼다(C-4) — 바뀌지 않으면 쓰지 않는다. */
+  const resizeRow = (rowId: string, edge: 'start' | 'end', day: string) => writeDate(rowId, (date) => resizeDateValue(date, edge, day))
+
+  /** 날짜 칸 하나를 고친다 — 먼저 바꾸고, 거부되면 제자리로(옮기기 · 가장자리가 같이 쓴다). */
+  const writeDate = async (
+    rowId: string,
+    next: (date: { start: string; end?: string | null }) => { start: string; end?: string } | null,
+  ) => {
     const row = rows.find((r) => r.id === rowId)
     const before = row?.properties[datePropertyId] as { type: 'date'; date: { start: string; end?: string | null } } | undefined
     if (row === undefined || before?.type !== 'date' || typeof before.date?.start !== 'string') return
-    const after = { type: 'date' as const, date: shiftDateValue(before.date, days) }
+    const date = next(before.date)
+    if (date === null) return
+    const after = { type: 'date' as const, date }
     const put = (value: unknown) =>
       setRows((current) => current.map((r) => (r.id === rowId ? { ...r, properties: { ...r.properties, [datePropertyId]: value } } : r)))
     setError(null)
@@ -497,6 +536,23 @@ export function DatabaseCalendar(props: {
                           {row.title || UNTITLED}
                         </span>
                       </Link>
+                    )}
+                    {/* 가장자리 손잡이(C-4) — 첫 조각의 왼쪽 · 마지막 조각의 오른쪽(주를 넘어 이어진 쪽에는 없다) */}
+                    {access.canEditContent && !isEditing && !p.continuesBefore && (
+                      <span
+                        aria-hidden
+                        data-testid="db-cal-resize-start"
+                        onPointerDown={(e) => onEdgePointerDown(row, 'start', e)}
+                        className="absolute inset-y-0 left-0 w-1.5 cursor-ew-resize rounded-l hover:bg-blue-400/50"
+                      />
+                    )}
+                    {access.canEditContent && !isEditing && !p.continuesAfter && (
+                      <span
+                        aria-hidden
+                        data-testid="db-cal-resize-end"
+                        onPointerDown={(e) => onEdgePointerDown(row, 'end', e)}
+                        className="absolute inset-y-0 right-0 w-1.5 cursor-ew-resize rounded-r hover:bg-blue-400/50"
+                      />
                     )}
                     {/* 리마인더 종(10n-77) — 보이기만 · 주를 넘어 잘린 막대는 시작하는 조각에만 */}
                     {!isEditing && !p.continuesBefore && reminders[row.id]?.[datePropertyId] !== undefined && (

@@ -263,6 +263,31 @@ export function layoutWeek(
  * (04 *"드래그 이동 시 range 의 duration 을 유지하며 start/end 를 동시 이동"*). 칸에 놓는 기준이 날짜 글자라(`cellDays`) 옮기는 기준도
  * 같다 — `09:30+09:00` 은 옮겨도 `09:30+09:00` 이다.
  */
+/**
+ * 가장자리로 기간을 바꾼다(C-4 · 정본 [보강] 캘린더 ⑧) — 그 쪽의 **날짜 글자만** 놓은 날로(시각 · 시간대는 그대로 · 끝이 없던 값의 끝은
+ * 시작의 시각을 빌린다). 시작은 끝을 넘지 않고 끝은 시작 앞으로 가지 않는다(그 날에서 멈춘다). 시작과 끝이 같은 날이 되면 끝을 지운다.
+ * 바뀌지 않으면 null.
+ */
+export function resizeDateValue(
+  date: { readonly start: string; readonly end?: string | null },
+  edge: 'start' | 'end',
+  day: string,
+): { start: string; end?: string } | null {
+  const startDay = date.start.slice(0, 10)
+  const endText = typeof date.end === 'string' ? date.end : null
+  const endDay = endText === null ? startDay : endText.slice(0, 10)
+  if (edge === 'end') {
+    const next = day < startDay ? startDay : day
+    if (next === endDay) return null
+    if (next === startDay) return { start: date.start }
+    return { start: date.start, end: `${next}${(endText ?? date.start).slice(10)}` }
+  }
+  const next = day > endDay ? endDay : day
+  if (next === startDay) return null
+  const start = `${next}${date.start.slice(10)}`
+  return endText === null || next === endDay ? { start } : { start, end: endText }
+}
+
 export function shiftDateValue(
   date: { readonly start: string; readonly end?: string | null },
   days: number,
