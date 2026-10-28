@@ -25059,6 +25059,60 @@ async function main() {
         String(await evaluate('location.href')))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('캘린더 — 주의 시작 · 주말 숨기기 (C-3 · F-04-06)')) { try {
+      // "달력" 패널에서 주의 시작을 월요일로 고르면 격자가 그 달 1일 앞의 월요일부터 · 머리도 월 ~ 일 · 주말 보이기를 끄면 다섯 칸(월 ~ 금) —
+      // 금 ~ 월 일정은 금 · 월 칸에 이어 그리고 주말에만 걸친 일정은 그리지 않는다 · 다시 열어도 그대로. 정본 §3.6 [보강] 캘린더 ⑦ · 0117.
+      const stamp = Date.now()
+      const apiC = `${BASE}/api/workspaces/${workspaceId}`
+      const call = async (method, path, body) => {
+        const r = await fetch(`${apiC}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return r.json().catch(() => null)
+      }
+      const made = (await call('POST', '/databases', { name: `주의 시작 ${stamp}` })).database
+      const due = (await call('POST', `/data-sources/${made.dataSourceId}/properties`, { name: '마감', type: 'date' })).property.id
+      const titleProp = (await call('GET', `/data-sources/${made.dataSourceId}/properties`)).schema.properties.find((p) => p.type === 'title').id
+      const ids = {}
+      for (const [title, date] of [['금월', { start: '2026-03-13', end: '2026-03-16' }], ['주말', { start: '2026-03-14' }], ['수', { start: '2026-03-11' }]]) {
+        ids[title] = (await call('POST', `/views/${made.defaultViewId}/rows`, { cells: [
+          { propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } },
+          { propertyId: due, value: { type: 'date', date } },
+        ] })).row.id
+      }
+      const calView = (await call('POST', `/databases/${made.id}/views`, { type: 'calendar', name: '달력' })).view.id
+      const head = () => evaluate(`[...document.querySelectorAll('[data-testid="db-cal-weekdays"] > div')].map((d) => d.textContent.trim()).join(',')`)
+      const firstDay = () => evaluate(`document.querySelector('[data-testid="db-cal-day"]')?.dataset.day ?? ''`)
+      const barsOf = (title) => evaluate(`document.querySelectorAll('[data-testid="db-cal-event"][data-row-id="${ids[title]}"]').length`)
+      const setSelect = (sel, value) => evaluate(`(() => { const s = document.querySelector('${sel}')
+        const set = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set
+        set.call(s, ${JSON.stringify(value)}); s.dispatchEvent(new Event('change', { bubbles: true })); return true })()`)
+      const openPanel = async (inner) => {
+        await waitHydrated('[data-testid="db-cal-layout-button"]')
+        if (!(await evaluate(`!!document.querySelector('${inner}')`))) await clickSelector('[data-testid="db-cal-layout-button"]')
+        return waitFor(`!!document.querySelector('${inner}')`, 5000)
+      }
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${made.id}?v=${calView}&m=2026-03` })
+      check('전제 — 일요일 시작(3/1 이 첫 칸 · 일 ~ 토)',
+        (await waitFor(`(document.querySelector('[data-testid="db-cal-day"]')?.dataset.day ?? '') === '2026-03-01'`, 15000)) && (await head()) === '일,월,화,수,목,금,토',
+        JSON.stringify({ head: await head(), first: await firstDay() }))
+      await openPanel('[data-testid="db-cal-week-start"]')
+      await setSelect('[data-testid="db-cal-week-start"]', 'monday')
+      check('★ 주의 시작을 월요일로 — 격자가 2/23(월)부터 · 머리도 월 ~ 일',
+        (await waitFor(`(document.querySelector('[data-testid="db-cal-day"]')?.dataset.day ?? '') === '2026-02-23'`, 15000)) && (await head()) === '월,화,수,목,금,토,일',
+        JSON.stringify({ head: await head(), first: await firstDay() }))
+      await openPanel('[data-testid="db-cal-show-weekends"]')
+      await clickSelector('[data-testid="db-cal-show-weekends"]')
+      const fiveCols = await waitFor(`[...document.querySelectorAll('[data-testid="db-cal-weekdays"] > div')].map((d) => d.textContent.trim()).join(',') === '월,화,수,목,금'`, 15000)
+      check('★ 주말 보이기를 끄면 다섯 칸 — 토 · 일 칸이 없고 금 ~ 월 일정은 금 · 월 두 칸에 · 주말에만 걸친 일정은 없다',
+        fiveCols && !(await evaluate(`!!document.querySelector('[data-testid="db-cal-day"][data-day="2026-03-14"]')`)) && (await barsOf('금월')) === 2 && (await barsOf('주말')) === 0 && (await barsOf('수')) === 1,
+        JSON.stringify({ head: await head(), 금월: await barsOf('금월'), 주말: await barsOf('주말') }))
+      await send('Page.reload', {})
+      check('다시 열어도 그대로 — 월요일 시작 · 다섯 칸',
+        (await waitFor(`[...document.querySelectorAll('[data-testid="db-cal-weekdays"] > div')].map((d) => d.textContent.trim()).join(',') === '월,화,수,목,금'`, 15000))
+          && (await firstDay()) === '2026-02-23',
+        JSON.stringify({ head: await head(), first: await firstDay() }))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

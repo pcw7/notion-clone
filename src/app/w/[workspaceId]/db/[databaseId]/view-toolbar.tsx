@@ -1639,6 +1639,31 @@ function CalendarPanel({
           ))}
         </select>
       </label>
+      {/* 주의 시작 요일 · 주말 숨기기(C-3) — 그 키만 저장한다 */}
+      <label className="flex items-center gap-2 text-sm">
+        주의 시작
+        <select
+          aria-label="달력의 주의 시작 요일"
+          data-testid="db-cal-week-start"
+          value={layout.week_start}
+          disabled={locked}
+          onChange={(e) => void onSave({ week_start: e.target.value === 'monday' ? 'monday' : 'sunday' })}
+          className={FIELD}
+        >
+          <option value="sunday">일요일</option>
+          <option value="monday">월요일</option>
+        </select>
+      </label>
+      <label className="flex items-center gap-2 text-sm">
+        <input
+          type="checkbox"
+          data-testid="db-cal-show-weekends"
+          checked={layout.show_weekends}
+          disabled={locked}
+          onChange={(e) => void onSave({ show_weekends: e.target.checked })}
+        />
+        주말 보이기
+      </label>
     </Popover>
   )
 }

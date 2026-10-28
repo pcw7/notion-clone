@@ -26,16 +26,26 @@ import type { ValidationIssue } from '../contracts/rich-text.ts'
 export const CALENDAR_RANGES = ['month', 'week'] as const
 export type CalendarRange = (typeof CALENDAR_RANGES)[number]
 
+/** 주의 시작 요일(C-3) — 그룹의 주 시작(B-3b)과 같은 두 값. 없으면 일요일(지금까지의 격자). */
+export const CALENDAR_WEEK_STARTS = ['sunday', 'monday'] as const
+export type CalendarWeekStart = (typeof CALENDAR_WEEK_STARTS)[number]
+
 /** 저장 모양. `date_property_id` 는 늘 있다(만들 때 고른다). */
 export type CalendarLayout = {
   readonly date_property_id: string
   readonly view_range: CalendarRange
+  /** 주의 시작 요일(C-3) — 월요일일 때만 저장한다(없으면 일요일). */
+  readonly week_start?: CalendarWeekStart
+  /** 주말을 그리는가(C-3) — 숨길 때만(`false`) 저장한다(없으면 그린다). */
+  readonly show_weekends?: boolean
 }
 
 /** 읽은 모양 — 날짜 속성이 살아 있지 않으면 null. */
 export type LiveCalendarLayout = {
   readonly date_property_id: string | null
   readonly view_range: CalendarRange
+  readonly week_start: CalendarWeekStart
+  readonly show_weekends: boolean
 }
 
 /** 한 번에 그리는 기간의 상한(일) — 달 격자는 6주(42일)다. 그보다 긴 기간을 묻는 요청은 거부한다(전체 로드 금지 · 04). */
@@ -49,10 +59,12 @@ const isOneOf = <T extends string>(list: readonly T[], v: unknown): v is T => ty
 /** 저장된 `configuration` 에서 캘린더 레이아웃을 읽는다. 없으면 날짜 속성 null · 달. 살아 있는지는 부르는 쪽이 본다. */
 export function readCalendarLayout(configuration: unknown): LiveCalendarLayout {
   const c = (configuration as { calendar?: unknown } | null | undefined)?.calendar as Record<string, unknown> | undefined
-  if (typeof c !== 'object' || c === null) return { date_property_id: null, view_range: 'month' }
+  if (typeof c !== 'object' || c === null) return { date_property_id: null, view_range: 'month', week_start: 'sunday', show_weekends: true }
   return {
     date_property_id: typeof c.date_property_id === 'string' ? c.date_property_id : null,
     view_range: isOneOf(CALENDAR_RANGES, c.view_range) ? c.view_range : 'month',
+    week_start: c.week_start === 'monday' ? 'monday' : 'sunday',
+    show_weekends: c.show_weekends !== false,
   }
 }
 
@@ -70,6 +82,10 @@ export function validateCalendarPatch(raw: unknown, types: ReadonlyMap<string, s
       }
     } else if (key === 'view_range') {
       if (!isOneOf(CALENDAR_RANGES, c.view_range)) issues.push({ path: 'calendar.view_range', message: `${CALENDAR_RANGES.join(' · ')} 중 하나여야 합니다` })
+    } else if (key === 'week_start') {
+      if (!isOneOf(CALENDAR_WEEK_STARTS, c.week_start)) issues.push({ path: 'calendar.week_start', message: `${CALENDAR_WEEK_STARTS.join(' · ')} 중 하나여야 합니다` })
+    } else if (key === 'show_weekends') {
+      if (typeof c.show_weekends !== 'boolean') issues.push({ path: 'calendar.show_weekends', message: 'true · false 여야 합니다' })
     } else {
       issues.push({ path: `calendar.${key}`, message: '모르는 키입니다' })
     }
@@ -138,19 +154,41 @@ export function shiftMonth(month: string, delta: number): string {
  * 한 달의 격자 — **일요일에 시작하는 6주**(42칸). 노션 · 한국 달력의 기본처럼 주는 일요일에 시작한다(주 시작 요일 설정은 아직 · §7).
  * 늘 6주라 달마다 격자의 높이가 같다.
  */
-export function monthGrid(month: string): { readonly from: string; readonly to: string; readonly weeks: readonly (readonly string[])[] } {
+export function monthGrid(
+  month: string,
+  /** 주의 시작 요일(C-3) — 격자의 첫 칸. */
+  weekStart: CalendarWeekStart = 'sunday',
+): { readonly from: string; readonly to: string; readonly weeks: readonly (readonly string[])[] } {
   const first = `${month}-01`
   const weekday = new Date(`${first}T00:00:00Z`).getUTCDay()
-  const from = addDays(first, -weekday)
+  // 그 달 1일에서 주의 시작 요일까지 뒤로(월요일 시작이면 일요일은 6일 뒤로)
+  const from = addDays(first, -(weekStart === 'monday' ? (weekday + 6) % 7 : weekday))
   const weeks = Array.from({ length: 6 }, (_, w) => Array.from({ length: 7 }, (_, d) => addDays(from, w * 7 + d)))
   return { from, to: addDays(from, 41), weeks }
+}
+
+/** 그리는 날(C-3) — 주말을 숨기면 토 · 일을 뺀다. 차례는 그대로다. */
+export function visibleDays(week: readonly string[], showWeekends: boolean): string[] {
+  if (showWeekends) return [...week]
+  return week.filter((day) => {
+    const w = new Date(`${day}T00:00:00Z`).getUTCDay()
+    return w !== 0 && w !== 6
+  })
+}
+
+const WEEKDAY_NAMES = ['일', '월', '화', '수', '목', '금', '토'] as const
+
+/** 머리의 요일 이름(C-3) — 주의 시작 요일부터 · 주말을 숨기면 뺀다. */
+export function weekdayLabels(weekStart: CalendarWeekStart, showWeekends: boolean): string[] {
+  const order = weekStart === 'monday' ? [1, 2, 3, 4, 5, 6, 0] : [0, 1, 2, 3, 4, 5, 6]
+  return order.filter((w) => showWeekends || (w !== 0 && w !== 6)).map((w) => WEEKDAY_NAMES[w]!)
 }
 
 export type CalendarEvent = { readonly id: string; readonly start: string; readonly end: string }
 
 export type PlacedEvent = {
   readonly id: string
-  /** 그 주에서의 첫 칸(0 = 일요일). */
+  /** 그 주에서의 첫 칸(그리는 날의 차례 — 0 이 주의 첫 칸). */
   readonly col: number
   /** 그 주에서 차지하는 칸 수. */
   readonly span: number
@@ -180,10 +218,19 @@ export function layoutWeek(
     .map((e, order) => ({ e, order }))
     .filter(({ e }) => e.start <= weekEnd && e.end >= weekStart)
     .map(({ e, order }) => {
-      const start = e.start < weekStart ? weekStart : e.start
-      const end = e.end > weekEnd ? weekEnd : e.end
-      return { e, order, col: daysBetween(weekStart, start), span: daysBetween(start, end) + 1 }
+      // 칸은 그리는 날의 차례다(C-3) — 주말을 숨기면 날이 띄엄띄엄이어도 걸친 칸을 이어 그린다
+      const col = week.findIndex((day) => day >= e.start)
+      let last = -1
+      for (let i = week.length - 1; i >= 0; i -= 1) {
+        if (week[i]! <= e.end) {
+          last = i
+          break
+        }
+      }
+      return { e, order, col, span: last - col + 1 }
     })
+    // 숨긴 주말에만 걸친 일정은 그 주에 그릴 칸이 없다
+    .filter((item) => item.col >= 0 && item.span > 0)
     .sort((a, b) => a.col - b.col || b.span - a.span || a.order - b.order)
 
   const laneEnds: number[] = [] // 줄마다 마지막으로 찬 칸

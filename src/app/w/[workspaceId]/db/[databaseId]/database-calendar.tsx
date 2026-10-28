@@ -45,7 +45,19 @@ import {
 
 import type { DatabaseAccess } from '@/lib/database/database'
 import type { RowJson } from '@/lib/database/http'
-import { cellDays, daysBetween, eventsOn, layoutWeek, monthGrid, shiftDateValue, shiftMonth, type CalendarEvent } from '@/lib/database/calendar'
+import {
+  cellDays,
+  daysBetween,
+  eventsOn,
+  layoutWeek,
+  monthGrid,
+  shiftDateValue,
+  shiftMonth,
+  visibleDays,
+  weekdayLabels,
+  type CalendarEvent,
+  type CalendarWeekStart,
+} from '@/lib/database/calendar'
 import { cellText, parseDraft, readCell, sameValue } from '@/lib/database/cell-format'
 import { PageIconView } from '../../page-icon-view'
 import * as api from './table-api'
@@ -57,7 +69,6 @@ import { ReminderMark } from './reminder-bell'
 import { AnchoredLayer, containsAcrossLayers } from '../../anchored-layer'
 
 const UNTITLED = '제목 없음'
-const WEEKDAYS = ['일', '월', '화', '수', '목', '금', '토']
 /** 한 주에 그리는 막대 줄 수. 넘치면 칸마다 "+N". */
 const MAX_LANES = 3
 /** 막대 한 줄의 높이(px) · 날짜 숫자 줄의 높이(px). */
@@ -103,6 +114,10 @@ export function DatabaseCalendar(props: {
   tableName: string
   /** 보이는 달(`YYYY-MM`). */
   month: string
+  /** 주의 시작 요일(C-3 · 뷰의 설정) — 없으면 일요일. */
+  weekStart?: CalendarWeekStart
+  /** 주말을 그리는가(C-3 · 뷰의 설정) — 없으면 그린다. */
+  showWeekends?: boolean
   datePropertyId: string
   /** 그 날짜 속성의 이름 — 막대의 리마인더 종이 말한다(10n-77). 없으면 "날짜". */
   datePropertyName?: string
@@ -151,7 +166,12 @@ export function DatabaseCalendar(props: {
     if (editing !== null) titleInputRef.current?.focus()
   }, [editing?.rowId]) // eslint-disable-line react-hooks/exhaustive-deps -- 새 행이 설 때만 포커스를 준다
 
-  const grid = monthGrid(month)
+  // 주의 시작 요일 · 주말 숨기기(C-3) — 격자의 첫 칸과 그리는 칸 수
+  const weekStart = props.weekStart ?? 'sunday'
+  const showWeekends = props.showWeekends !== false
+  const columnCount = showWeekends ? 7 : 5
+  const columnsStyle = { gridTemplateColumns: `repeat(${columnCount}, minmax(0, 1fr))` }
+  const grid = monthGrid(month, weekStart)
   const events: CalendarEvent[] = []
   const rowById = new Map<string, RowJson>()
   for (const row of rows) {
@@ -359,8 +379,8 @@ export function DatabaseCalendar(props: {
         )}
       </div>
 
-      <div className="grid grid-cols-7 text-center text-xs text-neutral-500" aria-hidden>
-        {WEEKDAYS.map((d) => (
+      <div data-testid="db-cal-weekdays" className="grid text-center text-xs text-neutral-500" style={columnsStyle} aria-hidden>
+        {weekdayLabels(weekStart, showWeekends).map((d) => (
           <div key={d} className="py-1">
             {d}
           </div>
@@ -368,10 +388,12 @@ export function DatabaseCalendar(props: {
       </div>
 
       <div role="grid" aria-label={`${Number(year)}년 ${Number(monthNumber)}월`} className="flex flex-col border-l border-t border-neutral-200 dark:border-neutral-800">
-        {grid.weeks.map((week) => {
+        {grid.weeks.map((fullWeek) => {
+          // 그리는 날(주말을 숨기면 다섯) — 막대의 칸도 이 차례로 센다
+          const week = visibleDays(fullWeek, showWeekends)
           const { placed, hidden } = layoutWeek(week, events, MAX_LANES)
           return (
-            <div key={week[0]} role="row" className="relative grid grid-cols-7" style={{ minHeight: HEAD_PX + MAX_LANES * LANE_PX + 22 }}>
+            <div key={week[0]} role="row" className="relative grid" style={{ ...columnsStyle, minHeight: HEAD_PX + MAX_LANES * LANE_PX + 22 }}>
               {week.map((day, i) => {
                 const outside = day.slice(0, 7) !== month
                 return (
@@ -441,8 +463,8 @@ export function DatabaseCalendar(props: {
                       draggingId === row.id ? 'opacity-40' : ''
                     }`}
                     style={{
-                      left: `calc(${(p.col * 100) / 7}% + 2px)`,
-                      width: `calc(${(p.span * 100) / 7}% - 4px)`,
+                      left: `calc(${(p.col * 100) / columnCount}% + 2px)`,
+                      width: `calc(${(p.span * 100) / columnCount}% - 4px)`,
                       top: HEAD_PX + p.lane * LANE_PX,
                       height: LANE_PX - 3,
                     }}

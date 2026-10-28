@@ -99,7 +99,8 @@ describe('① 레이아웃', () => {
     if (skipReason) return t.skip(skipReason)
     const { databaseId, due, start, memo } = await table()
     const view = unwrap(await createView(fx.owner.ctx, databaseId, { type: 'calendar' }))
-    assert.deepEqual(view.calendar, { date_property_id: due, view_range: 'month' }, '스키마 순서의 첫 날짜 속성')
+    // 주의 시작 · 주말(C-3)도 읽는다 — 만들 때는 기본값(일요일 · 그린다)
+    assert.deepEqual(view.calendar, { date_property_id: due, view_range: 'month', week_start: 'sunday', show_weekends: true }, '스키마 순서의 첫 날짜 속성')
 
     const bare = unwrap(await createDatabase(fx.owner.ctx, { name: `날짜 없는 표 ${Date.now()}` }))
     const refused = await createView(fx.owner.ctx, bare.id, { type: 'calendar' })

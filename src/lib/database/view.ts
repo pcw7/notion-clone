@@ -480,16 +480,25 @@ function liveCalendarLayout(configuration: unknown, columns: readonly ViewColumn
  * 캘린더로 만들거나 바꿀 때의 레이아웃 — 저장된 날짜 속성이 살아 있으면 그대로, 아니면 **첫 날짜 속성**(스키마 순서), 그것도 없으면
  * null(호출자가 `date_required` 로 거부한다). 보드가 첫 select 를 고르는 것과 같은 태도다.
  */
-async function resolveCalendarLayout(tx: Tx, dataSourceId: string, stored: LiveCalendarLayout): Promise<CalendarLayout | null> {
+async function resolveCalendarLayout(
+  tx: Tx,
+  dataSourceId: string,
+  stored: Pick<LiveCalendarLayout, 'date_property_id' | 'view_range'> & Partial<Pick<LiveCalendarLayout, 'week_start' | 'show_weekends'>>,
+): Promise<CalendarLayout | null> {
   const types = await readPropertyTypes(tx, dataSourceId)
+  // 주의 시작 · 주말(C-3) — 기본값(일요일 · 그린다)은 싣지 않는다
+  const week = {
+    ...(stored.week_start === 'monday' ? { week_start: 'monday' as const } : {}),
+    ...(stored.show_weekends === false ? { show_weekends: false } : {}),
+  }
   if (stored.date_property_id !== null && types.get(stored.date_property_id) === 'date') {
-    return { date_property_id: stored.date_property_id, view_range: stored.view_range }
+    return { date_property_id: stored.date_property_id, view_range: stored.view_range, ...week }
   }
   const first = await tx.queryMaybe<{ id: string }>(
     `SELECT id FROM property WHERE data_source_id = $1 AND deleted_at IS NULL AND type = 'date' ORDER BY order_idx, id LIMIT 1`,
     [dataSourceId],
   )
-  return first === null ? null : { date_property_id: first.id, view_range: stored.view_range }
+  return first === null ? null : { date_property_id: first.id, view_range: stored.view_range, ...week }
 }
 
 /** 저장된 `sub_group_by` 가 보드의 · 살아 있는 · 그룹 기준과 다른 컬럼을 가리킬 때만(B-4a · `ViewDetail.subGroupBy` 주석). 계산은 뺀다. */

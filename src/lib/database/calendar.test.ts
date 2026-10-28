@@ -24,6 +24,8 @@ import {
   isYmd,
   layoutWeek,
   monthGrid,
+  visibleDays,
+  weekdayLabels,
   readCalendarLayout,
   shiftDateValue,
   shiftMonth,
@@ -34,8 +36,15 @@ const TYPES = new Map([['pDate', 'date'], ['pText', 'rich_text']])
 
 describe('① 읽기', () => {
   test('없으면 null · 달 — 모르는 단위는 달', () => {
-    assert.deepEqual(readCalendarLayout({}), { date_property_id: null, view_range: 'month' })
-    assert.deepEqual(readCalendarLayout({ calendar: { date_property_id: 'pDate', view_range: 'year' } }), { date_property_id: 'pDate', view_range: 'month' })
+    // 주의 시작 · 주말(C-3)도 읽는다 — 없으면 일요일 · 그린다
+    const week = { week_start: 'sunday', show_weekends: true }
+    assert.deepEqual(readCalendarLayout({}), { date_property_id: null, view_range: 'month', ...week })
+    assert.deepEqual(readCalendarLayout({ calendar: { date_property_id: 'pDate', view_range: 'year' } }), { date_property_id: 'pDate', view_range: 'month', ...week })
+    assert.deepEqual(
+      readCalendarLayout({ calendar: { date_property_id: 'pDate', view_range: 'month', week_start: 'monday', show_weekends: false } }),
+      { date_property_id: 'pDate', view_range: 'month', week_start: 'monday', show_weekends: false },
+    )
+    assert.equal(readCalendarLayout({ calendar: { date_property_id: 'pDate', week_start: 'friday', show_weekends: 'no' } }).show_weekends, true, '모르는 값은 기본')
   })
 })
 
@@ -46,6 +55,9 @@ describe('② 바꿀 키만', () => {
     assert.equal(validateCalendarPatch({ date_property_id: 'nope' }, TYPES)[0]?.path, 'calendar.date_property_id')
     assert.equal(validateCalendarPatch({ view_range: 'day' }, TYPES)[0]?.path, 'calendar.view_range')
     assert.equal(validateCalendarPatch({ color: 'red' }, TYPES)[0]?.path, 'calendar.color')
+    assert.deepEqual(validateCalendarPatch({ week_start: 'monday', show_weekends: false }, TYPES), [], 'C-3 의 두 키')
+    assert.equal(validateCalendarPatch({ week_start: 'friday' }, TYPES)[0]?.path, 'calendar.week_start')
+    assert.equal(validateCalendarPatch({ show_weekends: 'no' }, TYPES)[0]?.path, 'calendar.show_weekends')
     assert.equal(validateCalendarPatch({}, TYPES).length, 1)
   })
 })
@@ -119,6 +131,41 @@ describe('⑥ 달 격자 · 막대 배치 (2g-2)', () => {
     assert.deepEqual([by.a?.lane, by.c?.lane], [1, 2])
     assert.equal(by.d, undefined, '세 줄을 넘는다')
     assert.equal(hidden[1], 1, '3/9 에 하나가 숨었다')
+  })
+})
+
+describe('⑨ 주의 시작 · 주말 숨기기 (C-3)', () => {
+  test('★ 월요일 시작이면 격자가 그 달 1일 앞의 월요일부터 · 머리의 요일도 그 차례', () => {
+    // 2026-03-01 은 일요일 — 일요일 시작이면 그날, 월요일 시작이면 2/23(월)
+    assert.equal(monthGrid('2026-03').from, '2026-03-01')
+    const monday = monthGrid('2026-03', 'monday')
+    assert.deepEqual([monday.from, monday.to, monday.weeks[0]![0]], ['2026-02-23', '2026-04-05', '2026-02-23'])
+    assert.equal(monthGrid('2026-04', 'monday').from, '2026-03-30', '4/1 은 수요일 — 그 주의 월요일')
+    assert.deepEqual(weekdayLabels('monday', true), ['월', '화', '수', '목', '금', '토', '일'])
+    assert.deepEqual(weekdayLabels('sunday', false), ['월', '화', '수', '목', '금'])
+  })
+
+  test('★ 주말을 숨기면 다섯 칸 — 금 ~ 월 일정은 금 · 월 두 칸에 이어 그리고 주말에만 걸친 일정은 그리지 않는다', () => {
+    const week = visibleDays(monthGrid('2026-03', 'monday').weeks[2]!, false) // 3/9(월) ~ 3/13(금) · 3/16(월) 은 다음 주
+    assert.deepEqual(week, ['2026-03-09', '2026-03-10', '2026-03-11', '2026-03-12', '2026-03-13'])
+    const { placed, hidden } = layoutWeek(
+      week,
+      [
+        { id: 'friToMon', start: '2026-03-13', end: '2026-03-16' },
+        { id: 'weekend', start: '2026-03-14', end: '2026-03-15' },
+        { id: 'wed', start: '2026-03-11', end: '2026-03-11' },
+      ],
+      3,
+    )
+    const by = Object.fromEntries(placed.map((p) => [p.id, p]))
+    assert.deepEqual([by.friToMon?.col, by.friToMon?.span, by.friToMon?.continuesAfter], [4, 1, true], '금요일 칸 · 다음 주로 이어진다')
+    assert.equal(by.weekend, undefined, '숨긴 주말에만 걸친 일정')
+    assert.deepEqual([by.wed?.col, by.wed?.span], [2, 1])
+    assert.deepEqual(hidden, [0, 0, 0, 0, 0])
+    // 일요일 시작 · 주말 숨김 — 금(3/13) ~ 월(3/16)이 같은 주에 없으므로 다음 주에서 월요일 칸 하나로 이어 받는다
+    const next = visibleDays(monthGrid('2026-03').weeks[2]!, false) // 3/16(월) ~ 3/20(금)
+    const cont = layoutWeek(next, [{ id: 'friToMon', start: '2026-03-13', end: '2026-03-16' }], 3).placed[0]
+    assert.deepEqual([cont?.col, cont?.span, cont?.continuesBefore], [0, 1, true])
   })
 })
 
