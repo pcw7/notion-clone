@@ -96,7 +96,7 @@ import { ViewToolbar, type BoardSettings } from './view-toolbar'
 import { SearchEmpty } from './view-search'
 import { DatabaseGallery } from './database-gallery'
 import { DatabaseCalendar } from './database-calendar'
-import { isYm, monthGrid } from '@/lib/database/calendar'
+import { isYm, isYmd, monthGrid, weekGrid, weekStartOf } from '@/lib/database/calendar'
 import { queryCalendar } from '@/lib/database/calendar-query'
 import { readCardCovers } from '@/lib/database/gallery-covers'
 import { TemplatePanel } from './template-panel'
@@ -147,7 +147,7 @@ export default async function DatabasePage({
   searchParams,
 }: PageProps<'/w/[workspaceId]/db/[databaseId]'>) {
   const { workspaceId, databaseId } = await params
-  const { v, q, m, peek } = await searchParams
+  const { v, q, m, w, peek } = await searchParams
   // 읽기 전의 시각 — 화면이 구독할 때 들고 가 그 사이의 변경을 메운다(#250 · `use-table-changes.ts`)
   const renderedAt = feedClock()
   // 뷰 검색어(2e · F-04-27) — 주소의 `q`. 뷰에 저장하지 않는다. 서버가 다듬는다(빈 글 · 상한).
@@ -441,12 +441,17 @@ export default async function DatabasePage({
     // 갤러리 레이아웃(2f-2) — 미리보기를 켜고 끄면 서버 렌더가 미리보기를 다시 읽는다. 갤러리 컴포넌트는 미리보기를 상태로 든다.
     isGallery ? view.value.gallery : null,
     // 캘린더(2g-2) — 보이는 달 · 날짜 속성이 바뀌면 읽은 행이 무효다.
-    isCalendar ? [calendarMonth, view.value.calendar] : null,
+    isCalendar ? [calendarMonth, view.value.calendar, isYmd(w) ? w : null] : null,
   ])
   const visibleColumns = columns.filter((column) => column.visible)
   // 캘린더의 행 — 그 달의 격자(6주) 기간에 걸친 것만(2g-1 `queryCalendar`). 날짜 속성이 지워졌으면 읽지 않고 "고르라"를 그린다.
   // 격자는 주의 시작 요일부터(C-3) — 서버가 읽는 기간과 화면의 격자가 같다
-  const calendarGrid = monthGrid(calendarMonth, view.value.calendar.week_start)
+  // 주 보기(C-5)면 그 주 — 주소의 `w`, 없으면 보는 사람의 오늘이 든 주
+  const calendarWeek = weekStartOf(isYmd(w) ? w : viewerToday, view.value.calendar.week_start)
+  const calendarGrid =
+    view.value.calendar.view_range === 'week'
+      ? weekGrid(calendarWeek, view.value.calendar.week_start)
+      : monthGrid(calendarMonth, view.value.calendar.week_start)
   const calendarPage =
     isCalendar && view.value.calendar.date_property_id !== null
       ? await queryCalendar(ctx, view.value.id, { from: calendarGrid.from, to: calendarGrid.to, search, today: viewerToday })
@@ -760,6 +765,8 @@ export default async function DatabasePage({
             tableName={tableName}
             month={calendarMonth}
             weekStart={view.value.calendar.week_start}
+            range={view.value.calendar.view_range}
+            week={calendarWeek}
             showWeekends={view.value.calendar.show_weekends}
             datePropertyId={calendarPage.value.datePropertyId}
             datePropertyName={columns.find((c) => c.propertyId === calendarPage.value.datePropertyId)?.name}

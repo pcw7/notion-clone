@@ -1639,6 +1639,21 @@ function CalendarPanel({
           ))}
         </select>
       </label>
+      {/* 보기 단위(C-5) — 달 · 주 */}
+      <label className="flex items-center gap-2 text-sm">
+        보기 단위
+        <select
+          aria-label="달력의 보기 단위"
+          data-testid="db-cal-range"
+          value={layout.view_range}
+          disabled={locked}
+          onChange={(e) => void onSave({ view_range: e.target.value === 'week' ? 'week' : 'month' })}
+          className={FIELD}
+        >
+          <option value="month">달</option>
+          <option value="week">주</option>
+        </select>
+      </label>
       {/* 주의 시작 요일 · 주말 숨기기(C-3) — 그 키만 저장한다 */}
       <label className="flex items-center gap-2 text-sm">
         주의 시작

@@ -56,6 +56,10 @@ import {
   shiftMonth,
   visibleDays,
   weekdayLabels,
+  weekGrid,
+  weekStartOf,
+  weekTitle,
+  addDays,
   type CalendarEvent,
   type CalendarWeekStart,
 } from '@/lib/database/calendar'
@@ -72,6 +76,8 @@ import { AnchoredLayer, containsAcrossLayers } from '../../anchored-layer'
 const UNTITLED = '제목 없음'
 /** 한 주에 그리는 막대 줄 수. 넘치면 칸마다 "+N". */
 const MAX_LANES = 3
+/** 주 보기(C-5)는 한 줄이라 막대를 더 그린다. */
+const WEEK_LANES = 8
 /** 막대 한 줄의 높이(px) · 날짜 숫자 줄의 높이(px). */
 const LANE_PX = 22
 const HEAD_PX = 26
@@ -117,6 +123,10 @@ export function DatabaseCalendar(props: {
   tableName: string
   /** 보이는 달(`YYYY-MM`). */
   month: string
+  /** 보기 단위(C-5) — 주면 한 주(`week`)를 그린다. 없으면 달. */
+  range?: 'month' | 'week'
+  /** 주 보기의 그 주(첫 날 · 주소의 `w`). */
+  week?: string
   /** 주의 시작 요일(C-3 · 뷰의 설정) — 없으면 일요일. */
   weekStart?: CalendarWeekStart
   /** 주말을 그리는가(C-3 · 뷰의 설정) — 없으면 그린다. */
@@ -174,7 +184,10 @@ export function DatabaseCalendar(props: {
   const showWeekends = props.showWeekends !== false
   const columnCount = showWeekends ? 7 : 5
   const columnsStyle = { gridTemplateColumns: `repeat(${columnCount}, minmax(0, 1fr))` }
-  const grid = monthGrid(month, weekStart)
+  // 주 보기(C-5) — 보이는 기간이 한 주(주소의 `w`) · 달 보기는 6주(주소의 `m`)
+  const isWeek = props.range === 'week'
+  const grid = isWeek ? weekGrid(props.week ?? `${month}-01`, weekStart) : monthGrid(month, weekStart)
+  const lanes = isWeek ? WEEK_LANES : MAX_LANES
   const events: CalendarEvent[] = []
   const rowById = new Map<string, RowJson>()
   for (const row of rows) {
@@ -187,6 +200,12 @@ export function DatabaseCalendar(props: {
   const goMonth = (next: string) => {
     const query = new URLSearchParams(window.location.search)
     query.set('m', next)
+    router.replace(`${pathname}?${query.toString()}`, { scroll: false })
+  }
+  /** 주 보기(C-5)의 이동 — 주소의 `w`(그 주의 첫 날). */
+  const goWeek = (next: string) => {
+    const query = new URLSearchParams(window.location.search)
+    query.set('w', weekStartOf(next, weekStart))
     router.replace(`${pathname}?${query.toString()}`, { scroll: false })
   }
 
@@ -387,25 +406,36 @@ export function DatabaseCalendar(props: {
       aria-label={tableName || UNTITLED}
       data-testid="db-calendar"
       data-month={month}
+      data-range={isWeek ? 'week' : 'month'}
     >
       <div className="flex flex-wrap items-center gap-2 px-1">
         <h2 className="text-base font-semibold" data-testid="db-cal-title">
-          {Number(year)}년 {Number(monthNumber)}월
+          {isWeek ? weekTitle(grid.from, grid.to) : `${Number(year)}년 ${Number(monthNumber)}월`}
         </h2>
         <span className="flex items-center gap-1 text-sm">
-          <button type="button" data-testid="db-cal-prev" aria-label="이전 달" onClick={() => goMonth(shiftMonth(month, -1))} className="rounded px-2 py-0.5 hover:bg-neutral-100 dark:hover:bg-neutral-800">
+          <button
+            type="button"
+            data-testid="db-cal-prev"
+            aria-label={isWeek ? '이전 주' : '이전 달'}
+            onClick={() => (isWeek ? goWeek(addDays(grid.from, -7)) : goMonth(shiftMonth(month, -1)))}
+            className="rounded px-2 py-0.5 hover:bg-neutral-100 dark:hover:bg-neutral-800">
             ‹
           </button>
           <button
             type="button"
             data-testid="db-cal-today"
             disabled={todayMonth === null}
-            onClick={() => todayMonth !== null && goMonth(todayMonth)}
+            onClick={() => (isWeek ? today !== null && goWeek(today) : todayMonth !== null && goMonth(todayMonth))}
             className="rounded px-2 py-0.5 hover:bg-neutral-100 disabled:opacity-40 dark:hover:bg-neutral-800"
           >
             오늘
           </button>
-          <button type="button" data-testid="db-cal-next" aria-label="다음 달" onClick={() => goMonth(shiftMonth(month, 1))} className="rounded px-2 py-0.5 hover:bg-neutral-100 dark:hover:bg-neutral-800">
+          <button
+            type="button"
+            data-testid="db-cal-next"
+            aria-label={isWeek ? '다음 주' : '다음 달'}
+            onClick={() => (isWeek ? goWeek(addDays(grid.from, 7)) : goMonth(shiftMonth(month, 1)))}
+            className="rounded px-2 py-0.5 hover:bg-neutral-100 dark:hover:bg-neutral-800">
             ›
           </button>
         </span>
@@ -430,11 +460,12 @@ export function DatabaseCalendar(props: {
         {grid.weeks.map((fullWeek) => {
           // 그리는 날(주말을 숨기면 다섯) — 막대의 칸도 이 차례로 센다
           const week = visibleDays(fullWeek, showWeekends)
-          const { placed, hidden } = layoutWeek(week, events, MAX_LANES)
+          const { placed, hidden } = layoutWeek(week, events, lanes)
           return (
-            <div key={week[0]} role="row" className="relative grid" style={{ ...columnsStyle, minHeight: HEAD_PX + MAX_LANES * LANE_PX + 22 }}>
+            <div key={week[0]} role="row" className="relative grid" style={{ ...columnsStyle, minHeight: HEAD_PX + lanes * LANE_PX + 22 }}>
               {week.map((day, i) => {
-                const outside = day.slice(0, 7) !== month
+                // 그 달 밖의 날은 흐리게 — 주 보기에는 "그 달"이 없다
+                const outside = !isWeek && day.slice(0, 7) !== month
                 return (
                   <div
                     key={day}
