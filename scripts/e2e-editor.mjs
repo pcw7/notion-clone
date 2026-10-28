@@ -25233,6 +25233,44 @@ async function main() {
         await title())
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('뷰 검색 — 고유 ID · 숫자 (V-1 · F-04-27)')) { try {
+      // 검색어가 `접두사-번호` 면 그 번호의 행(대소문자 무시 · 다른 접두사는 아니다) · 수면 숫자 칸의 같은 값(42 는 420 이 아니다).
+      // 정본 §3.6 [보강] 뷰 검색 ⑤. 자기 데이터를 스스로 만든다(API).
+      const stamp = Date.now()
+      const apiC = `${BASE}/api/workspaces/${workspaceId}`
+      const call = async (method, path, body) => {
+        const r = await fetch(`${apiC}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return r.json().catch(() => null)
+      }
+      const made = (await call('POST', '/databases', { name: `검색 번호 ${stamp}` })).database
+      await call('POST', `/data-sources/${made.dataSourceId}/properties`, { name: '번호', type: 'unique_id', prefix: 'TSK' })
+      const score = (await call('POST', `/data-sources/${made.dataSourceId}/properties`, { name: '점수', type: 'number' })).property.id
+      const titleProp = (await call('GET', `/data-sources/${made.dataSourceId}/properties`)).schema.properties.find((p) => p.type === 'title').id
+      const ids = {}
+      for (const [title, n] of [['하나', null], ['둘', null], ['셋', 42], ['넷', 420]]) {
+        ids[title] = (await call('POST', `/views/${made.defaultViewId}/rows`, { cells: [
+          { propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } },
+          ...(n === null ? [] : [{ propertyId: score, value: { type: 'number', number: n } }]),
+        ] })).row.id
+      }
+      const shown = () => evaluate(`JSON.stringify([...document.querySelectorAll('[data-testid="db-table"] tbody tr[data-row-id]')].map((tr) => tr.dataset.rowId))`)
+      const rowsFor = async (q, names) => {
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${made.id}?q=${encodeURIComponent(q)}` })
+        const want = JSON.stringify(names.map((n) => ids[n]).sort())
+        return waitFor(`JSON.stringify([...document.querySelectorAll('[data-testid="db-table"] tbody tr[data-row-id]')].map((tr) => tr.dataset.rowId).sort()) === ${JSON.stringify(want)}
+          && document.readyState === 'complete'`, 15000)
+      }
+      const named = async () => { const got = JSON.parse(await shown()); return Object.keys(ids).filter((n) => got.includes(ids[n])).join(',') }
+
+      check('★ "TSK-2" 로 찾으면 2번 행(둘)만', await rowsFor('TSK-2', ['둘']), await named())
+      check('대소문자 무시 — "tsk-2" 도 둘', await rowsFor('tsk-2', ['둘']), await named())
+      check('★ "42" 로 찾으면 점수 42 인 행(셋)만 — 420 은 아니다', await rowsFor('42', ['셋']), await named())
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${made.id}?q=${encodeURIComponent('ABC-2')}` })
+      check('다른 접두사("ABC-2")는 맞는 행이 없다',
+        await waitFor(`!!document.querySelector('[data-testid="db-search-empty"]') && !document.querySelector('[data-testid="db-table"] tbody tr[data-row-id]')`, 15000),
+        await named())
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

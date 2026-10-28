@@ -5,7 +5,8 @@
  *
  * 이 파일이 지키는 것.
  *
- *   ① ★ 찾는 칸 — 제목 · 글(부분 · 대소문자 무시 · 한국어 조사를 넘는다) · 선택 · 상태(옵션 이름). 숫자는 아니다 · % 는 글자다
+ *   ① ★ 찾는 칸 — 제목 · 글(부분 · 대소문자 무시 · 한국어 조사를 넘는다) · 선택 · 상태(옵션 이름) · 숫자는 같은 값만(V-1) · % 는 글자다
+ *   ④ ★ 고유 ID(V-1) — `접두사-번호` · `번호` · 대소문자 무시 · 다른 접두사는 아니다
  *   ② ★ 필터와 AND · 템플릿 · 휴지통은 뺀다 · 지워진 속성의 칸으로는 찾지 않는다
  *   ③ ★ 열 집계 · 보드(카드 · 개수 · 머리 값 · 다음 페이지)가 같은 행을 본다 — 그룹(열)은 남는다
  *
@@ -108,14 +109,15 @@ const titles = async (ds: string, search: string | null, filter: FilterNode | nu
   unwrap(await queryRows(fx.owner.ctx, ds, { search, filter })).rows.map((r) => r.title).sort()
 
 describe('① 찾는 칸', () => {
-  test('★ 제목 · 글 · 선택 · 상태의 옵션 이름 — 숫자는 아니다 · % 는 글자다', async (t) => {
+  test('★ 제목 · 글 · 선택 · 상태의 옵션 이름 — 숫자는 같은 값만(V-1) · % 는 글자다', async (t) => {
     if (skipReason) return t.skip(skipReason)
     const { ds } = await table()
     assert.deepEqual(await titles(ds, '보고서'), ['주간 보고서', '회의록'], '제목 · 글(조사를 넘는다 — "보고서를")')
     assert.deepEqual(await titles(ds, 'alpha'), ['회의록'], '대소문자 무시')
     assert.deepEqual(await titles(ds, '기획'), ['주간 보고서'], '선택의 옵션 이름')
     assert.deepEqual(await titles(ds, '진행'), ['회의록'], '상태의 옵션 이름')
-    assert.deepEqual(await titles(ds, '42'), [], '숫자 칸은 찾지 않는다')
+    assert.deepEqual(await titles(ds, '42'), ['주간 보고서'], '숫자 칸의 같은 값(V-1)')
+    assert.deepEqual(await titles(ds, '4'), [], '부분 일치가 아니다 — 4 는 42 가 아니다')
     assert.deepEqual(await titles(ds, '%'), ['예산'], '% 는 모든 행이 아니다')
     assert.deepEqual(await titles(ds, null), ['잡무', '예산', '주간 보고서', '회의록'].sort(), '검색어가 없으면 전부')
   })
@@ -165,5 +167,23 @@ describe('③ 열 집계 · 보드가 같은 행을 본다', () => {
     const heads = unwrap(await queryGroupCalculations(fx.owner.ctx, board.id, { search: '할인' }))
     assert.deepEqual(heads.values[''], { kind: 'count', value: 1 }, '머리 값만 다시 받을 때도')
     assert.deepEqual(heads.values[plan], { kind: 'count', value: 0 })
+  })
+})
+
+describe('④ 고유 ID (V-1)', () => {
+  test('★ 접두사-번호 · 번호로 그 행 — 대소문자 무시 · 다른 접두사는 아니다 · 글로도 맞으면 맞는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const created = unwrap(await createDatabase(fx.owner.ctx, { name: `검색 번호 ${Date.now()}` }))
+    const ds = created.dataSourceId
+    unwrap(await addProperty(fx.owner.ctx, ds, { name: '번호', type: 'unique_id', prefix: 'TSK' }))
+    const titleId = unwrap(await getSchema(fx.owner.ctx, ds)).properties.find((p) => p.type === 'title')!.id
+    for (const title of ['하나', '둘', '셋', '넷 3호']) {
+      unwrap(await createRow(fx.owner.ctx, ds, { cells: [{ propertyId: titleId, value: { type: 'title', title: [textRun(title)] } }] }))
+    }
+    assert.deepEqual(await titles(ds, 'TSK-2'), ['둘'])
+    assert.deepEqual(await titles(ds, 'tsk-2'), ['둘'], '대소문자 무시')
+    assert.deepEqual(await titles(ds, 'ABC-2'), [], '다른 접두사')
+    assert.deepEqual(await titles(ds, '3'), ['넷 3호', '셋'], '번호만 — 3번 행 · 글에 3 이 든 행도')
+    assert.deepEqual(await titles(ds, 'TSK-9'), [], '없는 번호')
   })
 })

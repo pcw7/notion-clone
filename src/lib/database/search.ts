@@ -20,7 +20,9 @@
  *   - 제목 · 글(`title` · `rich_text`) — 사이드카 `text_value` 가 사람이 쓴 글이다
  *   - 선택 · 상태(`select` · `status`) — 사이드카는 **옵션 id** 라(0014 머리말) 옵션 **이름**으로 찾는다
  *
- * 숫자 · 날짜 · 체크박스 · 관계형 · 롤업 · 고유 ID 는 찾지 않는다(§7). 본문 블록도 아니다(04 *"본문 블록은 검색 대상이 아니다"*).
+ *   - 고유 ID · 숫자(V-1) — 검색어의 **모양**이 고른다: `접두사-번호` · `번호` 면 그 번호의 행(행 자신의 열) · 수면 그 값과 같은 숫자 칸
+ *
+ * 날짜 · 체크박스 · 관계형 · 롤업은 찾지 않는다(§7). 본문 블록도 아니다(04 *"본문 블록은 검색 대상이 아니다"*).
  * 대소문자는 무시하고(필터의 글 비교와 같은 `lower()`), 부분 일치다 — 한국어도 조사를 넘는다(LIKE 는 글자 단위다). 사용자가 친
  * `%` · `_` · `\` 는 글자 그대로다(`escapeLike` — #211).
  *
@@ -44,6 +46,20 @@ export function normalizeSearch(raw: unknown): string | null {
 /** 글로 찾는 타입(사이드카가 사람이 쓴 글). */
 const TEXT_SEARCH_TYPES: ReadonlySet<string> = new Set(['title', 'rich_text'])
 
+/** 수로 읽히는 검색어(V-1) — `-` · 소수점은 받고 지수 표기는 아니다. 숫자 칸의 같은 값을 찾는다. */
+const NUMBER_TERM = /^-?\d{1,15}(?:\.\d{1,15})?$/
+
+/** 고유 ID 로 읽히는 검색어(V-1) — `접두사-번호`(접두사는 영숫자 2 ~ 7자 · 0050 과 같은 길이) 또는 `번호`. */
+const UNIQUE_ID_TERM = /^(?:([A-Za-z0-9]{2,7})-)?(\d{1,15})$/
+
+/** 검색어를 고유 ID 로 읽는다(V-1) — 접두사는 대문자로(저장이 대문자다). 아니면 null. */
+export function uniqueIdTerm(term: string): { readonly prefix: string | null; readonly seq: number } | null {
+  const m = UNIQUE_ID_TERM.exec(term)
+  if (m === null) return null
+  const seq = Number(m[2])
+  return Number.isSafeInteger(seq) && seq > 0 ? { prefix: m[1] === undefined ? null : m[1].toUpperCase(), seq } : null
+}
+
 /**
  * 검색 술어 — 바깥 질의에 `page p` 가 있다고 전제한다. 살아 있는 프로퍼티(`types`)만 본다 — 지워진 프로퍼티의 칸으로는 찾지 않는다.
  *
@@ -53,14 +69,16 @@ const TEXT_SEARCH_TYPES: ReadonlySet<string> = new Set(['title', 'rich_text'])
 export function compileSearch(term: string, types: PropertyTypes, params: ParamBag): string {
   const textIds: string[] = []
   const optionIds: string[] = []
+  const numberIds: string[] = []
+  let hasUniqueId = false
   for (const [id, type] of types) {
     if (TEXT_SEARCH_TYPES.has(type)) textIds.push(id)
     else if (isOptionType(type)) optionIds.push(id)
+    else if (type === 'number') numberIds.push(id)
+    else if (type === 'unique_id') hasUniqueId = true
   }
-  // 모든 표에 제목이 있다 — 그래도 찾을 칸이 없으면 아무 행도 맞지 않는다(검색어를 버리고 전부를 주지 않는다).
-  if (textIds.length === 0 && optionIds.length === 0) return 'false'
-  const pattern = params.bind(escapeLike(term))
   const parts: string[] = []
+  const pattern = textIds.length > 0 || optionIds.length > 0 ? params.bind(escapeLike(term)) : ''
   if (textIds.length > 0) {
     parts.push(`SELECT sv.page_id FROM page_property_value sv
         WHERE sv.property_id = ANY(${params.bind(textIds)}::text[])
@@ -72,5 +90,25 @@ export function compileSearch(term: string, types: PropertyTypes, params: ParamB
         WHERE sv.property_id = ANY(${params.bind(optionIds)}::text[])
           AND lower(so.name) LIKE '%' || lower(${pattern}) || '%'`)
   }
-  return `p.id IN (${parts.join('\n        UNION ALL\n        ')})`
+  // 숫자(V-1) — 검색어가 수면 그 값과 같은 칸(부분 일치가 아니다)
+  if (numberIds.length > 0 && NUMBER_TERM.test(term)) {
+    parts.push(`SELECT sv.page_id FROM page_property_value sv
+        WHERE sv.property_id = ANY(${params.bind(numberIds)}::text[])
+          AND sv.num_value = ${params.bind(term)}::numeric`)
+  }
+  const conditions: string[] = []
+  if (parts.length > 0) conditions.push(`p.id IN (${parts.join('\n        UNION ALL\n        ')})`)
+  // 고유 ID(V-1) — 행 자신의 열이라 칸 찾기 옆에 OR 로(인덱스 길을 해치지 않는다)
+  const id = hasUniqueId ? uniqueIdTerm(term) : null
+  if (id !== null) {
+    const seq = `p.unique_seq = ${params.bind(id.seq)}`
+    conditions.push(
+      id.prefix === null
+        ? seq
+        : `(${seq} AND EXISTS (SELECT 1 FROM data_source uds WHERE uds.id = p.data_source_id AND uds.unique_id_prefix = ${params.bind(id.prefix)}))`,
+    )
+  }
+  // 모든 표에 제목이 있다 — 그래도 찾을 칸이 없으면 아무 행도 맞지 않는다(검색어를 버리고 전부를 주지 않는다).
+  if (conditions.length === 0) return 'false'
+  return conditions.length === 1 ? conditions[0]! : `(${conditions.join(' OR ')})`
 }
