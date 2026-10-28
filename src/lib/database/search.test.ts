@@ -12,7 +12,7 @@ import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 
 import { ParamBag } from './filter.ts'
-import { compileSearch, MAX_SEARCH_LENGTH, normalizeSearch } from './search.ts'
+import { compileSearch, MAX_SEARCH_LENGTH, normalizeSearch, uniqueIdTerm } from './search.ts'
 
 const TYPES = new Map<string, string>([
   ['pTitle', 'title'],
@@ -54,7 +54,7 @@ describe('② 사용자 입력이 SQL 에 들어가지 않는다', () => {
 })
 
 describe('③ 찾는 칸', () => {
-  test('제목 · 글은 글로, 선택 · 상태는 옵션 이름으로 — 숫자 · 날짜 · 체크박스는 아니다', () => {
+  test('제목 · 글은 글로, 선택 · 상태는 옵션 이름으로 — 수가 아닌 검색어는 숫자 칸을 보지 않는다 · 날짜 · 체크박스는 아니다', () => {
     const { sql, values } = compile('x')
     const ids = values.filter(Array.isArray) as string[][]
     assert.deepEqual(ids, [['pTitle', 'pText'], ['pSel', 'pStat']])
@@ -65,5 +65,28 @@ describe('③ 찾는 칸', () => {
     const onlyTitle = compile('x', new Map([['pTitle', 'title']]))
     assert.ok(!onlyTitle.sql.includes('select_option'))
     assert.equal(compile('x', new Map([['pNum', 'number']])).sql, 'false')
+  })
+})
+
+describe('④ 고유 ID · 숫자 (V-1)', () => {
+  test('★ 수인 검색어는 숫자 칸의 같은 값도 — 글 찾기와 OR · 부분 일치가 아니다', () => {
+    const { sql, values } = compile('42')
+    assert.deepEqual(values.filter(Array.isArray), [['pTitle', 'pText'], ['pSel', 'pStat'], ['pNum']])
+    assert.match(sql, /sv\.num_value = \$\d+::numeric/)
+    assert.equal(compile('42', new Map([['pNum', 'number']])).sql.includes('num_value'), true, '숫자 칸만 있어도')
+    for (const notNumber of ['4 2', '1e3', '42원', '.5']) assert.ok(!compile(notNumber).sql.includes('num_value'), notNumber)
+  })
+
+  test('★ 고유 ID — 접두사-번호 · 번호 · 그 표에 고유 ID 가 있을 때만 · 행 자신의 열로', () => {
+    assert.deepEqual(uniqueIdTerm('TASK-12'), { prefix: 'TASK', seq: 12 })
+    assert.deepEqual(uniqueIdTerm('task-12'), { prefix: 'TASK', seq: 12 }, '대소문자 무시')
+    assert.deepEqual(uniqueIdTerm('12'), { prefix: null, seq: 12 })
+    for (const no of ['T-12', 'TOOLONGX-1', 'TASK-', 'TASK-0', '0', 'TASK 12']) assert.equal(uniqueIdTerm(no), null, no)
+    const withId = new Map([...TYPES, ['pId', 'unique_id']])
+    const prefixed = compile('TASK-12', withId)
+    assert.match(prefixed.sql, /p\.unique_seq = \$\d+ AND EXISTS \(SELECT 1 FROM data_source uds/)
+    assert.ok(prefixed.values.includes(12) && prefixed.values.includes('TASK'), JSON.stringify(prefixed.values))
+    assert.ok(!compile('TASK-12').sql.includes('unique_seq'), '고유 ID 속성이 없으면 보지 않는다')
+    assert.ok(compile('12', withId).sql.includes('p.unique_seq') && !compile('12', withId).sql.includes('uds'), '번호만이면 접두사를 묻지 않는다')
   })
 })
