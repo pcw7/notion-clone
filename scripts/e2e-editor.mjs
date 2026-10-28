@@ -25180,6 +25180,59 @@ async function main() {
       check('끝을 시작 날로 접으면 끝이 지워진다(하루짜리)', folded === '2026-03-11~', folded)
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('캘린더 — 주 보기 (C-5 · F-04-06)')) { try {
+      // "달력" 패널의 보기 단위를 주로 고르면 한 주(주소의 `w`)를 그린다 — 일곱 칸 · 제목은 그 주 · 막대는 여덟 줄까지(달 보기에서 "+2" 였던
+      // 다섯이 다 선다) · 다음은 7일 뒤 · 다시 열어도 주 보기. 정본 §3.6 [보강] 캘린더 ⑨. 자기 데이터를 스스로 만든다(API).
+      const stamp = Date.now()
+      const apiC = `${BASE}/api/workspaces/${workspaceId}`
+      const call = async (method, path, body) => {
+        const r = await fetch(`${apiC}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return r.json().catch(() => null)
+      }
+      const made = (await call('POST', '/databases', { name: `주 보기 ${stamp}` })).database
+      const due = (await call('POST', `/data-sources/${made.dataSourceId}/properties`, { name: '마감', type: 'date' })).property.id
+      const titleProp = (await call('GET', `/data-sources/${made.dataSourceId}/properties`)).schema.properties.find((p) => p.type === 'title').id
+      const ids = {}
+      for (const [title, day] of [['가', '2026-03-18'], ['나', '2026-03-18'], ['다', '2026-03-18'], ['라', '2026-03-18'], ['마', '2026-03-18'], ['다음 주', '2026-03-25']]) {
+        ids[title] = (await call('POST', `/views/${made.defaultViewId}/rows`, { cells: [
+          { propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } },
+          { propertyId: due, value: { type: 'date', date: { start: day } } },
+        ] })).row.id
+      }
+      const calView = (await call('POST', `/databases/${made.id}/views`, { type: 'calendar', name: '달력' })).view.id
+      const title = () => evaluate(`document.querySelector('[data-testid="db-cal-title"]')?.textContent?.trim() ?? ''`)
+      const bars = (names) => evaluate(`${JSON.stringify(names.map((n) => ids[n]))}.filter((id) => !!document.querySelector('[data-testid="db-cal-event"][data-row-id="' + id + '"]')).length`)
+      const setSelect = (sel, value) => evaluate(`(() => { const s = document.querySelector('${sel}')
+        const set = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set
+        set.call(s, ${JSON.stringify(value)}); s.dispatchEvent(new Event('change', { bubbles: true })); return true })()`)
+      const five = ['가', '나', '다', '라', '마']
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${made.id}?v=${calView}&m=2026-03` })
+      check('전제 — 달 보기에서 3/18 의 다섯은 막대 셋 · "+2"',
+        await waitFor(`(document.querySelector('[data-testid="db-cal-day"][data-day="2026-03-18"] [data-testid="db-cal-more"]')?.textContent ?? '') === '+2'`, 15000))
+      await waitHydrated('[data-testid="db-cal-layout-button"]')
+      await clickSelector('[data-testid="db-cal-layout-button"]')
+      await waitFor(`!!document.querySelector('[data-testid="db-cal-range"]')`, 5000)
+      await setSelect('[data-testid="db-cal-range"]', 'week')
+      const switched = await waitFor(`document.querySelector('[data-testid="db-calendar"]')?.dataset.range === 'week' && document.querySelectorAll('[data-testid="db-cal-day"]').length === 7`, 15000)
+      // 주소의 w 로 그 주를 연다(보기 단위를 바꾼 직후는 오늘의 주다)
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${made.id}?v=${calView}&w=2026-03-18` })
+      const weekShown = await waitFor(`(document.querySelector('[data-testid="db-cal-title"]')?.textContent ?? '').trim() === '2026년 3월 15일 – 21일'`, 15000)
+      check('★ 보기 단위를 주로 — 일곱 칸 · 제목은 그 주(3/15 ~ 21) · 다섯이 다 선다("+N" 없음)',
+        switched && weekShown && (await evaluate(`document.querySelector('[data-testid="db-cal-day"]')?.dataset.day`)) === '2026-03-15'
+          && (await bars(five)) === 5 && !(await evaluate(`!!document.querySelector('[data-testid="db-cal-more"]')`)),
+        JSON.stringify({ switched, title: await title(), bars: await bars(five) }))
+      await waitHydrated('[data-testid="db-cal-next"]')
+      await clickSelector('[data-testid="db-cal-next"]')
+      const next = await waitFor(`(document.querySelector('[data-testid="db-cal-title"]')?.textContent ?? '').trim() === '2026년 3월 22일 – 28일' && location.search.includes('w=2026-03-22')`, 15000)
+      check('★ 다음은 7일 뒤 — 3/22 ~ 28 · 그 주의 일정', next && (await waitFor(`!!document.querySelector('[data-testid="db-cal-event"][data-row-id="${ids['다음 주']}"]')`, 8000)),
+        JSON.stringify({ title: await title(), search: await evaluate('location.search') }))
+      await send('Page.reload', {})
+      check('다시 열어도 주 보기 — 그 주',
+        await waitFor(`document.querySelector('[data-testid="db-calendar"]')?.dataset.range === 'week' && (document.querySelector('[data-testid="db-cal-title"]')?.textContent ?? '').trim() === '2026년 3월 22일 – 28일'`, 15000),
+        await title())
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

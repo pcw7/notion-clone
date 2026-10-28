@@ -167,6 +167,30 @@ export function monthGrid(
   return { from, to: addDays(from, 41), weeks }
 }
 
+/** 그 날이 든 주의 첫 날(C-5) — 주의 시작 요일부터. */
+export function weekStartOf(day: string, weekStart: CalendarWeekStart = 'sunday'): string {
+  const weekday = new Date(`${day}T00:00:00Z`).getUTCDay()
+  return addDays(day, -(weekStart === 'monday' ? (weekday + 6) % 7 : weekday))
+}
+
+/** 주 보기의 격자(C-5 · 정본 [보강] 캘린더 ⑨) — 그 날이 든 한 주. 달 격자와 같은 모양(주 하나)이라 화면 · 서버가 같은 길을 쓴다. */
+export function weekGrid(
+  day: string,
+  weekStart: CalendarWeekStart = 'sunday',
+): { readonly from: string; readonly to: string; readonly weeks: readonly (readonly string[])[] } {
+  const from = weekStartOf(day, weekStart)
+  return { from, to: addDays(from, 6), weeks: [Array.from({ length: 7 }, (_, d) => addDays(from, d))] }
+}
+
+/** 주 보기의 제목(C-5) — "2026년 3월 15일 – 21일" · 달을 넘으면 "3월 29일 – 4월 4일" · 해를 넘으면 두 해 다. */
+export function weekTitle(from: string, to: string): string {
+  const [fy, fm, fd] = from.split('-').map(Number)
+  const [ty, tm, td] = to.split('-').map(Number)
+  if (fy !== ty) return `${fy}년 ${fm}월 ${fd}일 – ${ty}년 ${tm}월 ${td}일`
+  if (fm !== tm) return `${fy}년 ${fm}월 ${fd}일 – ${tm}월 ${td}일`
+  return `${fy}년 ${fm}월 ${fd}일 – ${td}일`
+}
+
 /** 그리는 날(C-3) — 주말을 숨기면 토 · 일을 뺀다. 차례는 그대로다. */
 export function visibleDays(week: readonly string[], showWeekends: boolean): string[] {
   if (showWeekends) return [...week]

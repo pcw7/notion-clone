@@ -27,6 +27,9 @@ import {
   resizeDateValue,
   visibleDays,
   weekdayLabels,
+  weekGrid,
+  weekStartOf,
+  weekTitle,
   readCalendarLayout,
   shiftDateValue,
   shiftMonth,
@@ -196,6 +199,19 @@ describe('⑩ 가장자리로 기간 바꾸기 (C-4)', () => {
     assert.deepEqual(resizeDateValue({ start: '2026-03-10' }, 'start', '2026-03-07'), { start: '2026-03-07' }, '하루짜리 값의 시작을 당기면 그 날로 옮긴다')
     assert.deepEqual(resizeDateValue({ start: '2026-03-10T09:30' }, 'start', '2026-03-09'), { start: '2026-03-09T09:30' })
     assert.equal(resizeDateValue({ start: '2026-03-10' }, 'start', '2026-03-10'), null)
+  })
+})
+
+describe('⑪ 주 보기 (C-5)', () => {
+  test('★ 그 날이 든 한 주 — 주의 시작 요일부터 · 제목은 달 · 해를 넘으면 그것도', () => {
+    assert.equal(weekStartOf('2026-03-18'), '2026-03-15', '수요일 → 그 주의 일요일')
+    assert.equal(weekStartOf('2026-03-18', 'monday'), '2026-03-16')
+    assert.equal(weekStartOf('2026-03-15', 'monday'), '2026-03-09', '일요일은 월요일 시작이면 그 주의 끝')
+    const grid = weekGrid('2026-03-18')
+    assert.deepEqual([grid.from, grid.to, grid.weeks.length, grid.weeks[0]!.length], ['2026-03-15', '2026-03-21', 1, 7])
+    assert.equal(weekTitle('2026-03-15', '2026-03-21'), '2026년 3월 15일 – 21일')
+    assert.equal(weekTitle('2026-03-29', '2026-04-04'), '2026년 3월 29일 – 4월 4일')
+    assert.equal(weekTitle('2026-12-27', '2027-01-02'), '2026년 12월 27일 – 2027년 1월 2일')
   })
 })
 
