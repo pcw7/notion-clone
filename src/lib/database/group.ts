@@ -312,6 +312,39 @@ export type GroupsPage = {
   /** 상대 날짜로 묶으면(B-3) 서버가 쓴 오늘(`YYYY-MM-DD` — 보는 사람의 시간대) — 화면이 "새로 만들기"의 날짜를 이것으로 채운다. 그 밖은 null. */
   readonly today: string | null
   readonly groups: readonly BoardGroup[]
+  /** 하위 그룹(B-4a · 보드의 가로줄) — 없으면 null. 있으면 열(`groups`)의 행은 비어 있고 칸(`sub.groups[].cells`)이 행을 싣는다. */
+  readonly sub: SubGroupsPage | null
+}
+
+/** 하위 그룹(B-4a)의 칸 하나 — (가로줄, 열). 행은 그 칸의 첫 페이지 · 칸마다 커서(`queryGroupRows` 의 `subKey`). */
+export type SubGroupCell = {
+  readonly count: number
+  readonly rows: readonly QueriedRow[]
+  readonly hasMore: boolean
+  readonly nextCursor: string | null
+}
+
+/** 가로줄 하나 — 열과 같은 머리(옵션 · 범주 · 채울 옵션) · 그 줄의 행 수 · 숨김 · 열 키 → 칸. */
+export type SubGroup = {
+  readonly key: string
+  readonly option: SelectOption | null
+  readonly statusGroup: StatusGroupKind | null
+  readonly fillOptionId: string | null
+  readonly count: number
+  readonly hidden: boolean
+  readonly cells: Readonly<Record<string, SubGroupCell>>
+}
+
+/** 하위 그룹(B-4a) — 가로줄 축의 설정(화면이 이름 · 새 행 채우기를 이것으로) · 가로줄들(순서대로). */
+export type SubGroupsPage = {
+  readonly propertyId: string
+  readonly propertyType: GroupableType
+  readonly statusBy: 'option' | 'group'
+  readonly dateUnit: DateUnit | null
+  readonly numberSize: number | null
+  readonly textMode: TextMode | null
+  readonly today: string | null
+  readonly groups: readonly SubGroup[]
 }
 
 /** 그룹 머리의 계산만(2d-3) — 카드를 옮긴 뒤 머리의 값을 다시 받는다. 행은 읽지 않는다. */
@@ -342,11 +375,15 @@ export type MoveRowInput = {
   readonly within?: boolean
   /** 보는 사람의 오늘(B-3 · `YYYY-MM-DD`) — 상대 날짜 그룹의 키를 셀 때. 없으면 UTC 의 오늘. */
   readonly today?: string | null
+  /** 놓을 가로줄(B-4a · 하위 그룹이 있는 보드). 주지 않으면 그 행의 지금 가로줄에 남는다. */
+  readonly subGroupKey?: string
 }
 
 export type MoveOutcome = {
   readonly row: RowSummary
   readonly groupKey: string
+  /** 놓인 가로줄(B-4a) — 하위 그룹이 없으면 null. */
+  readonly subGroupKey: string | null
   /** 순서를 저장했는가. 정렬이 걸린 뷰면 false — 셀 값만 바뀌었다. */
   readonly positioned: boolean
   /**
@@ -415,7 +452,18 @@ type Board = {
   readonly today: string
   /** 주의 시작 요일(B-3b) — 날짜를 주로 묶을 때 키가 그 요일의 날이다. */
   readonly weekStart: WeekStart
+  /** 하위 그룹(B-4a · 보드의 가로줄) — 보드이고 `sub_group_by` 가 살아 있는 · 그룹 기준과 다른 속성을 가리킬 때만. */
+  readonly sub: GroupAxis | null
 }
+
+/**
+ * 그룹 축 하나의 설정(B-4a) — 열(`group_by`)과 가로줄(`sub_group_by`)이 같은 규칙(키 식 · 목록 · 키 판정 · 놓을 때의 값)을 쓴다. 보드는
+ * 열의 축이기도 하다(`Board` 가 이 필드를 다 갖는다).
+ */
+type GroupAxis = Pick<
+  Board,
+  'groupBy' | 'propertyType' | 'options' | 'statusByGroup' | 'defaultOptionId' | 'dateUnit' | 'numberSize' | 'textMode' | 'today' | 'weekStart'
+>
 
 /** 보드를 읽는 요청의 공통 입력 — 뷰 검색어(2e-1) · 보는 사람의 오늘(B-3 — 상대 날짜 그룹 · 없으면 UTC 의 오늘). */
 export type BoardReadInput = { readonly search?: string | null; readonly today?: string | null }
@@ -441,12 +489,14 @@ async function openBoard(
     filter: unknown
     sorts: unknown
     group_by: unknown
+    sub_group_by: unknown
+    type: string
     load_limit: number
   }>(
     // 필터 · 정렬은 이 사람이 실제로 보는 것 — 개인 것이 있으면 그것이 공유 것을 대체한다(2h-1 · F-04-17 · `view.ts` `effectiveFilter`).
     `SELECT v.database_id, v.data_source_id, ds.owner_database_id AS owner,
             coalesce(o.filter, v.filter) AS filter, coalesce(o.sorts, v.sorts) AS sorts,
-            v.group_by, v.load_limit
+            v.group_by, v.sub_group_by, v.type, v.load_limit
        FROM view v
        JOIN block b ON b.id = v.database_id
        JOIN data_source ds ON ds.id = v.data_source_id
@@ -470,13 +520,16 @@ async function openBoard(
     return fail('not_grouped')
   }
   const types = await readPropertyTypes(tx, view.data_source_id)
-  const propertyType = types.get(groupBy.property_id)
-  if (!isGroupableType(propertyType)) return fail('not_grouped')
-  // 범주 단위(10n-27) — status 에서만 산다(타입을 바꾼 뒤의 저장값은 옵션 단위로 읽는다)
-  const statusByGroup = propertyType === 'status' && groupBy.status_by === 'group'
-  const defaultOptionId = statusByGroup
-    ? readStatusDefault((await tx.queryOne<{ config: unknown }>(`SELECT config FROM property WHERE id = $1`, [groupBy.property_id])).config)
-    : null
+  // 상대 날짜(B-3)의 오늘 — 부르는 쪽이 보는 사람의 시간대로 셈해 준다(`readViewerToday`). 모양이 틀리면 UTC 의 오늘
+  const todayKey = typeof today === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(today) ? today : todayIn('UTC')
+  const axis = await readAxis(tx, groupBy, types, todayKey)
+  if (axis === null) return fail('not_grouped')
+  // 하위 그룹(B-4a) — 보드에서만 · 살아 있는 · 그룹 기준과 다른 속성일 때만(아니면 저장값은 두고 읽지 않는다)
+  const rawSub = view.sub_group_by as GroupBy | null
+  const sub =
+    view.type === 'board' && rawSub !== null && typeof rawSub === 'object' && typeof rawSub.property_id === 'string' && rawSub.property_id !== groupBy.property_id
+      ? await readAxis(tx, rawSub, types, todayKey)
+      : null
 
   return {
     viewId,
@@ -484,22 +537,36 @@ async function openBoard(
     filter: (view.filter as FilterNode | null) ?? null,
     sorts: Array.isArray(view.sorts) ? (view.sorts as SortKey[]) : [],
     loadLimit: view.load_limit,
-    groupBy,
-    propertyType,
-    options: isOptionType(propertyType) ? await readOptions(tx, groupBy.property_id) : [],
     types,
     subItemsParent: (await readSubItemPair(tx, view.data_source_id))?.parentPropertyId ?? null,
     calculation: liveGroupCalculation(groupBy, types),
     search,
     access,
     context: { me: ctx.userId },
+    ...axis,
+    sub,
+  }
+}
+
+/** 축 하나를 읽는다 — 묶을 수 없는 속성(지워졌거나 타입이 바뀌었다)이면 null. */
+async function readAxis(tx: Tx, groupBy: GroupBy, types: PropertyTypes, today: string): Promise<GroupAxis | null> {
+  const propertyType = types.get(groupBy.property_id)
+  if (!isGroupableType(propertyType)) return null
+  // 범주 단위(10n-27) — status 에서만 산다(타입을 바꾼 뒤의 저장값은 옵션 단위로 읽는다)
+  const statusByGroup = propertyType === 'status' && groupBy.status_by === 'group'
+  const defaultOptionId = statusByGroup
+    ? readStatusDefault((await tx.queryOne<{ config: unknown }>(`SELECT config FROM property WHERE id = $1`, [groupBy.property_id])).config)
+    : null
+  return {
+    groupBy,
+    propertyType,
+    options: isOptionType(propertyType) ? await readOptions(tx, groupBy.property_id) : [],
     statusByGroup,
     defaultOptionId,
     dateUnit: propertyType === 'date' ? (isDateUnit(groupBy.date_unit) ? groupBy.date_unit : DEFAULT_DATE_UNIT) : null,
     numberSize: propertyType === 'number' ? (isNumberSize(groupBy.number_size) ? groupBy.number_size : DEFAULT_NUMBER_SIZE) : null,
     textMode: propertyType === 'rich_text' ? (isTextMode(groupBy.text_by) ? groupBy.text_by : DEFAULT_TEXT_MODE) : null,
-    // 상대 날짜(B-3)의 오늘 — 부르는 쪽이 보는 사람의 시간대로 셈해 준다(`readViewerToday`). 모양이 틀리면 UTC 의 오늘
-    today: typeof today === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(today) ? today : todayIn('UTC'),
+    today,
     weekStart: isWeekStart(groupBy.week_start) ? groupBy.week_start : DEFAULT_WEEK_START,
   }
 }
@@ -515,7 +582,7 @@ async function readOptions(tx: Tx, propertyId: string): Promise<SelectOption[]> 
  */
 type CatalogEntry = { key: string; option: SelectOption | null; statusGroup: StatusGroupKind | null; fillOptionId: string | null }
 
-function catalogOf(board: Board, counted: ReadonlyMap<string, unknown> = new Map()): CatalogEntry[] {
+function catalogOf(board: GroupAxis, counted: ReadonlyMap<string, unknown> = new Map()): CatalogEntry[] {
   const none = { option: null, statusGroup: null, fillOptionId: null }
   // 날짜(B-1) — 그룹은 옵션이 아니라 데이터에서 나온다: 필터 · 검색 · 권한을 지난 행이 든 버킷들(날짜 오름차순) · 값 없음이 맨 앞
   // 숫자(B-2)도 그렇다 — 구간들은 **숫자 오름차순**(글자 순이면 -10 · 100 · 20)
@@ -553,7 +620,7 @@ function catalogOf(board: Board, counted: ReadonlyMap<string, unknown> = new Map
 /**
  * 이 보드의 그룹 키인가 — 놓을 열 · 읽을 열을 받을 때. 날짜(B-1)는 데이터에 없어도 그 단위의 버킷 키면 된다(빈 달에도 놓을 수 있다).
  */
-function isGroupKeyOf(board: Board, key: string): boolean {
+function isGroupKeyOf(board: GroupAxis, key: string): boolean {
   if (board.dateUnit !== null) return key === NO_VALUE_KEY || isBucketKey(key, board.dateUnit, board.weekStart)
   if (board.numberSize !== null) return key === NO_VALUE_KEY || isNumberBucketKey(key, board.numberSize)
   // 글 그대로(B-2b)는 아무 글이나 키다(놓으면 그 글이 된다) · 첫 글자는 그 머리들만
@@ -562,7 +629,7 @@ function isGroupKeyOf(board: Board, key: string): boolean {
 }
 
 /** 범주 열에 들어오는 카드가 받는 옵션 — 기본 옵션이 그 범주면 그것, 아니면 그 범주의 첫 옵션(옵션 순서). 없으면 null(10n-27). */
-function fillOptionOf(board: Board, kind: StatusGroupKind): string | null {
+function fillOptionOf(board: GroupAxis, kind: StatusGroupKind): string | null {
   const inGroup = board.options.filter((o) => o.group === kind)
   return inGroup.find((o) => o.id === board.defaultOptionId)?.id ?? inGroup[0]?.id ?? null
 }
@@ -575,7 +642,7 @@ function fillOptionOf(board: Board, kind: StatusGroupKind): string | null {
  * select: 살아 있는 옵션 id 면 그것, 아니면(빈 셀 · 지워진 옵션) `''`.
  * checkbox: NULL(셀 없음)은 false 다 — `checkbox` 의 빈 값이 false 이기 때문(`emptyValue`).
  */
-function keyExprOf(board: Board, params: ParamBag): string {
+function keyExprOf(board: GroupAxis, params: ParamBag, alias = 'gv'): string {
   // 날짜(B-1) — 값에 적힌 달력 날짜(`start` 의 앞 열 자)가 든 버킷의 첫 날 · 값 없음은 ''(시간대로 옮기지 않는다 — `date-group.ts`)
   // 상대 날짜(B-3) — 적힌 날짜가 오늘에서 며칠 떨어졌나(`date - date` 는 날수) · 이름은 `date-group.ts` 의 `relativeOf` 와 같은 경계
   if (board.dateUnit === 'relative') {
@@ -585,10 +652,10 @@ function keyExprOf(board: Board, params: ParamBag): string {
                      WHEN r.n BETWEEN 2 AND 7 THEN 'next_7' WHEN r.n BETWEEN -7 AND -2 THEN 'last_7'
                      WHEN r.n BETWEEN 8 AND 30 THEN 'next_30' WHEN r.n BETWEEN -30 AND -8 THEN 'last_30'
                      WHEN r.n > 30 THEN 'later' ELSE 'earlier' END
-               FROM (SELECT (left(gv.value -> 'date' ->> 'start', 10))::date - ${today}::date AS n) r)`
+               FROM (SELECT (left(${alias}.value -> 'date' ->> 'start', 10))::date - ${today}::date AS n) r)`
   }
   if (board.dateUnit !== null) {
-    const date = `(left(gv.value -> 'date' ->> 'start', 10))::date`
+    const date = `(left(${alias}.value -> 'date' ->> 'start', 10))::date`
     // 일요일 시작의 주(B-3b) — 그 주의 일요일(`dow` 는 일요일 = 0). 월요일 시작은 date_trunc('week')(ISO)
     const bucket =
       board.dateUnit === 'day'
@@ -601,7 +668,7 @@ function keyExprOf(board: Board, params: ParamBag): string {
   // 숫자(B-2) — 구간의 아래 끝을 numeric 으로 정확히 · 글자는 trim_scale 의 것(`number-group.ts`) · 값 없음은 ''
   // 글(B-2b) — 글 그대로는 사이드카 그대로 · 첫 글자는 첫 비공백 글자의 머리(한글은 초성 — 표는 `text-group.ts` 의 것 · 음절은 코드
   // 포인트로 가른다 — ko 콜레이션의 BETWEEN 은 자음 낱자를 음절 사이에 넣는다)
-  if (board.textMode === 'exact') return `coalesce(gv.text_value, '')`
+  if (board.textMode === 'exact') return `coalesce(${alias}.text_value, '')`
   if (board.textMode === 'first') {
     const table = params.bind(FOLDED_CHOSEONG)
     const other = params.bind(OTHER_INITIAL)
@@ -609,22 +676,22 @@ function keyExprOf(board: Board, params: ParamBag): string {
                      WHEN ascii(f.c) BETWEEN 44032 AND 55203 THEN substr(${table}::text, (ascii(f.c) - 44032) / 588 + 1, 1)
                      WHEN f.c ~ '^[A-Za-z]$' THEN upper(f.c)
                      ELSE ${other}::text END
-               FROM (SELECT substring(gv.text_value from '\\S') AS c) f)`
+               FROM (SELECT substring(${alias}.text_value from '\\S') AS c) f)`
   }
   if (board.numberSize !== null) {
     const size = params.bind(String(board.numberSize))
-    return `coalesce(trim_scale(floor(gv.num_value / ${size}::numeric) * ${size}::numeric)::text, '')`
+    return `coalesce(trim_scale(floor(${alias}.num_value / ${size}::numeric) * ${size}::numeric)::text, '')`
   }
   if (board.propertyType === 'checkbox') {
-    return `(CASE WHEN gv.bool_value THEN 'true' ELSE 'false' END)`
+    return `(CASE WHEN ${alias}.bool_value THEN 'true' ELSE 'false' END)`
   }
   const ids = params.bind(board.options.map((o) => o.id))
   // 범주 단위(10n-27) — 셀의 옵션을 그 옵션의 그룹으로. 옵션 id ↔ kind 표를 묶는다(옵션은 이미 읽었다 · 지워진 옵션 · 빈 셀은 '')
   if (board.statusByGroup) {
     const kinds = params.bind(board.options.map((o) => o.group ?? ''))
-    return `coalesce((SELECT m.k FROM unnest(${ids}::text[], ${kinds}::text[]) AS m(id, k) WHERE m.id = gv.text_value), '')`
+    return `coalesce((SELECT m.k FROM unnest(${ids}::text[], ${kinds}::text[]) AS m(id, k) WHERE m.id = ${alias}.text_value), '')`
   }
-  return `(CASE WHEN gv.text_value = ANY(${ids}::text[]) THEN gv.text_value ELSE '' END)`
+  return `(CASE WHEN ${alias}.text_value = ANY(${ids}::text[]) THEN ${alias}.text_value ELSE '' END)`
 }
 
 /** 수동 순서. `rp` 는 이 (뷰, 그룹)의 자리(LEFT JOIN — 없으면 NULL → 맨 뒤). */
@@ -633,8 +700,44 @@ const MANUAL_ORDER: CompiledSort = {
   keys: [{ expr: 'rp.order_idx COLLATE "C"', direction: 'asc', cast: '::text' }],
 }
 
+/** 칸 키의 구분 글자(B-4a) — 열 키 + 이것 + 가로줄 키. 제어 문자라 어떤 그룹 키(옵션 id · 날짜 · 숫자 · 글)에도 들지 않는다. SQL 은 `chr(31)`. */
+const CELL_SEPARATOR = '\u001f'
+
+/** 그 칸의 키 — 하위 그룹이 없으면 열 키 그대로. */
+function cellKeyOf(board: Board, groupKey: string, subKey: string | null): string {
+  return board.sub === null ? groupKey : `${groupKey}${CELL_SEPARATOR}${subKey ?? NO_VALUE_KEY}`
+}
+
+/** 칸 키를 열 키 · 가로줄 키로 — 하위 그룹이 없으면 가로줄은 null. */
+function splitCell(board: Board, cell: string): readonly [string, string | null] {
+  if (board.sub === null) return [cell, null]
+  const at = cell.indexOf(CELL_SEPARATOR)
+  return at < 0 ? [cell, NO_VALUE_KEY] : [cell.slice(0, at), cell.slice(at + 1)]
+}
+
+/**
+ * 열 · 가로줄의 셀을 잇는 JOIN 과 키 식(B-4a) — 열은 `gv` · 가로줄은 `sv`. 칸 키 식(`cellExpr`)이 자리(`row_position.group_key`) · 칸 소속에
+ * 쓰인다 — 하위 그룹이 없으면 열 키 식 그대로.
+ */
+function cellSql(board: Board, params: ParamBag): { joins: string; keyExpr: string; subKeyExpr: string | null; cellExpr: string } {
+  const gp = params.bind(board.groupBy.property_id)
+  const keyExpr = keyExprOf(board, params)
+  const gvJoin = `LEFT JOIN page_property_value gv ON gv.page_id = p.id AND gv.property_id = ${gp}`
+  if (board.sub === null) return { joins: gvJoin, keyExpr, subKeyExpr: null, cellExpr: keyExpr }
+  const sp = params.bind(board.sub.groupBy.property_id)
+  const subKeyExpr = keyExprOf(board.sub, params, 'sv')
+  return {
+    joins: `${gvJoin}\n       LEFT JOIN page_property_value sv ON sv.page_id = p.id AND sv.property_id = ${sp}`,
+    keyExpr,
+    subKeyExpr,
+    cellExpr: `(${keyExpr} || chr(31) || ${subKeyExpr})`,
+  }
+}
+
 type Compiled = {
   readonly keyExpr: string
+  /** 가로줄 키 식(B-4a) — 하위 그룹이 없으면 null. */
+  readonly subKeyExpr: string | null
   readonly from: string
   readonly where: string
   readonly order: CompiledSort
@@ -654,8 +757,8 @@ function hasLiveSort(board: Board): boolean {
  * 바인딩하면 pg 가 "bind message supplies N parameters" 로 거부한다(테스트가 잡았다).
  */
 function compileBoard(board: Board, params: ParamBag, withOrder = true): Compiled {
-  const gp = params.bind(board.groupBy.property_id)
-  const keyExpr = keyExprOf(board, params)
+  const cell = cellSql(board, params)
+  const keyExpr = cell.keyExpr
   const viewParam = params.bind(board.viewId)
   const manual = !hasLiveSort(board)
   const order = manual ? MANUAL_ORDER : withOrder ? compileSorts(board.sorts, board.types, params) : MANUAL_ORDER
@@ -666,10 +769,11 @@ function compileBoard(board: Board, params: ParamBag, withOrder = true): Compile
   const searchSql = board.search === null ? null : compileSearch(board.search, board.types, params)
   return {
     keyExpr,
+    subKeyExpr: cell.subKeyExpr,
     from: `FROM page p
        JOIN block b ON b.id = p.id
-       LEFT JOIN page_property_value gv ON gv.page_id = p.id AND gv.property_id = ${gp}
-       LEFT JOIN row_position rp ON rp.view_id = ${viewParam} AND rp.row_id = p.id AND rp.group_key = ${keyExpr}`,
+       ${cell.joins}
+       LEFT JOIN row_position rp ON rp.view_id = ${viewParam} AND rp.row_id = p.id AND rp.group_key = ${cell.cellExpr}`,
     where: ['p.data_source_id = $1', 'p.is_template = false', "b.lifecycle = 'live'", accessSql, filterSql, searchSql, treeSql]
       .filter((s): s is string => s !== null)
       .join(' AND '),
@@ -710,49 +814,98 @@ export async function queryGroups(ctx: SessionContext, viewId: string, input: Bo
       // 빈 그룹 숨김은 옵션 단위의 개념이다 — `''` 그룹도 행이 0개면 빠진다.
       .filter((g) => !(board.groupBy.hide_empty && g.count === 0))
 
-    // ── ② 보이는 그룹의 상위 N행 — 그룹마다 load_limit + 1 ──
+    // ── ①' 하위 그룹(B-4a) — 칸마다 카운트 · 가로줄 목록(열과 같은 규칙 — 숨김 · 빈 줄 숨기기) ──
+    const sub = board.sub
+    const cellCounts = sub === null ? [] : await readCellCounts(tx, board)
+    const cellCount = new Map(cellCounts.map((c) => [cellKeyOf(board, c.key, c.sub), c.n]))
+    const laneTotals = new Map<string, number>()
+    for (const c of cellCounts) laneTotals.set(c.sub, (laneTotals.get(c.sub) ?? 0) + c.n)
+    const laneHidden = new Set(sub?.groupBy.hidden ?? [])
+    const lanes =
+      sub === null
+        ? []
+        : catalogOf(sub, laneTotals)
+            .map((l) => ({ ...l, count: laneTotals.get(l.key) ?? 0, hidden: laneHidden.has(l.key) }))
+            .filter((l) => !(sub.groupBy.hide_empty && l.count === 0))
+
+    // ── ② 보이는 그룹(칸)의 상위 N행 — 그룹(칸)마다 load_limit + 1 ──
     const visibleKeys = catalog.filter((g) => !g.hidden && g.count > 0).map((g) => g.key)
+    const visibleLanes = lanes.filter((l) => !l.hidden && l.count > 0).map((l) => l.key)
     const rowsByKey = new Map<string, RowRow[]>()
     const params = new ParamBag(2)
     const q = compileBoard(board, params)
-    if (visibleKeys.length > 0) {
+    if (visibleKeys.length > 0 && (sub === null || visibleLanes.length > 0)) {
       const keysParam = params.bind(visibleKeys)
+      const lanesParam = q.subKeyExpr === null ? null : params.bind(visibleLanes)
       const limitParam = params.bind(board.loadLimit + 1)
-      const rows = await tx.query<RowRow & { group_key: string; rn: string }>(
+      // 하위 그룹이면 칸(열 · 가로줄)마다 — 칸 키로 모은다
+      const partition = q.subKeyExpr === null ? q.keyExpr : `${q.keyExpr}, ${q.subKeyExpr}`
+      const rows = await tx.query<RowRow & { group_key: string; sub_key: string | null; rn: string }>(
         `SELECT t.* FROM (
-           SELECT ${ROW_COLUMNS}, ${q.keyExpr} AS group_key${q.sortColumns},
-                  row_number() OVER (PARTITION BY ${q.keyExpr} ORDER BY ${q.order.orderBy}) AS rn
+           SELECT ${ROW_COLUMNS}, ${q.keyExpr} AS group_key, ${q.subKeyExpr ?? 'NULL::text'} AS sub_key${q.sortColumns},
+                  row_number() OVER (PARTITION BY ${partition} ORDER BY ${q.order.orderBy}) AS rn
              ${q.from}
-            WHERE ${q.where} AND ${q.keyExpr} = ANY(${keysParam}::text[])
+            WHERE ${q.where} AND ${q.keyExpr} = ANY(${keysParam}::text[])${
+              lanesParam === null ? '' : ` AND ${q.subKeyExpr} = ANY(${lanesParam}::text[])`
+            }
          ) t
          WHERE t.rn <= ${limitParam}
-         ORDER BY t.group_key, t.rn`,
+         ORDER BY t.group_key, t.sub_key, t.rn`,
         [board.dataSourceId, ...params.values],
       )
       for (const row of rows) {
-        const list = rowsByKey.get(row.group_key) ?? []
+        const key = cellKeyOf(board, row.group_key, row.sub_key)
+        const list = rowsByKey.get(key) ?? []
         list.push(row)
-        rowsByKey.set(row.group_key, list)
+        rowsByKey.set(key, list)
       }
     }
-
-    const groups: BoardGroup[] = catalog.map((g) => {
-      const fetched = rowsByKey.get(g.key) ?? []
+    /** 그 칸(하위 그룹이 없으면 열)의 첫 페이지. */
+    const pageOf = (cell: string) => {
+      const fetched = rowsByKey.get(cell) ?? []
       const hasMore = fetched.length > board.loadLimit
       const page = fetched.slice(0, board.loadLimit)
-      return {
-        key: g.key,
-        option: g.option,
-        statusGroup: g.statusGroup,
-        fillOptionId: g.fillOptionId,
-        count: g.count,
-        hidden: g.hidden,
-        calculation: groupCalculationOf(board, counted.get(g.key)),
-        rows: page.map(toQueriedRow),
-        hasMore,
-        nextCursor: nextCursorOf(q.order, page[page.length - 1], hasMore),
-      }
-    })
+      return { rows: page.map(toQueriedRow), hasMore, nextCursor: nextCursorOf(q.order, page[page.length - 1], hasMore) }
+    }
+
+    const groups: BoardGroup[] = catalog.map((g) => ({
+      key: g.key,
+      option: g.option,
+      statusGroup: g.statusGroup,
+      fillOptionId: g.fillOptionId,
+      count: g.count,
+      hidden: g.hidden,
+      calculation: groupCalculationOf(board, counted.get(g.key)),
+      // 하위 그룹이면 열의 행은 비어 있다 — 칸이 싣는다
+      ...(sub === null ? pageOf(g.key) : { rows: [], hasMore: false, nextCursor: null }),
+    }))
+
+    const subPage: SubGroupsPage | null =
+      sub === null
+        ? null
+        : {
+            propertyId: sub.groupBy.property_id,
+            propertyType: sub.propertyType,
+            statusBy: sub.statusByGroup ? 'group' : 'option',
+            dateUnit: sub.dateUnit,
+            numberSize: sub.numberSize,
+            textMode: sub.textMode,
+            today: sub.dateUnit === 'relative' ? sub.today : null,
+            groups: lanes.map((l) => ({
+              key: l.key,
+              option: l.option,
+              statusGroup: l.statusGroup,
+              fillOptionId: l.fillOptionId,
+              count: l.count,
+              hidden: l.hidden,
+              cells: Object.fromEntries(
+                catalog.map((g) => {
+                  const cell = cellKeyOf(board, g.key, l.key)
+                  return [g.key, { count: cellCount.get(cell) ?? 0, ...pageOf(cell) }]
+                }),
+              ),
+            })),
+          }
 
     return {
       ok: true,
@@ -767,6 +920,7 @@ export async function queryGroups(ctx: SessionContext, viewId: string, input: Bo
         textMode: board.textMode,
         today: board.dateUnit === 'relative' ? board.today : null,
         groups,
+        sub: subPage,
       },
     } as const
   })
@@ -883,6 +1037,17 @@ async function readGroupCounts(tx: Tx, board: Board): Promise<Map<string, GroupC
   return new Map(counted.map((r) => [r.key, { n: r.n, stats: r.s ?? null }]))
 }
 
+/** 칸(열 · 가로줄)마다 행 수(B-4a) — 카드를 고르는 조건이 카운트와 같은 한 WHERE(`compileBoard`)다. 하위 그룹이 있을 때만 부른다. */
+async function readCellCounts(tx: Tx, board: Board): Promise<{ key: string; sub: string; n: number }[]> {
+  const params = new ParamBag(2)
+  const c = compileBoard(board, params, false)
+  if (c.subKeyExpr === null) return []
+  return tx.query<{ key: string; sub: string; n: number }>(
+    `SELECT ${c.keyExpr} AS key, ${c.subKeyExpr} AS sub, count(*)::int AS n ${c.from} WHERE ${c.where} GROUP BY 1, 2`,
+    [board.dataSourceId, ...params.values],
+  )
+}
+
 /** 그룹 하나의 머리 값. 행이 없는 그룹(`GROUP BY` 가 줄을 내지 않는다)은 빈 통계로 — 세기 · 합은 0, 평균은 빈 값. */
 function groupCalculationOf(board: Board, counted: GroupCount | undefined): CalculationResult | null {
   if (board.calculation === null) return null
@@ -899,18 +1064,21 @@ export async function queryGroupRows(
   ctx: SessionContext,
   viewId: string,
   groupKey: string,
-  input: { readonly cursor?: string | null; readonly limit?: number } & BoardReadInput = {},
+  input: { readonly cursor?: string | null; readonly limit?: number; readonly subKey?: string } & BoardReadInput = {},
 ): Promise<GroupResult<GroupRowsPage>> {
   await refreshDerivedForView(ctx, viewId)
   return withReadTransaction(async (tx) => {
     const board = await openBoard(tx, ctx, viewId, 'view', input.search ?? null, input.today ?? null)
     if (isFailure(board)) return board
     if (!isGroupKeyOf(board, groupKey)) return fail('invalid_value')
+    // 하위 그룹(B-4a)이면 칸 — 가로줄 키를 주면 그 칸만(칸마다 커서)
+    if (input.subKey !== undefined && (board.sub === null || !isGroupKeyOf(board.sub, input.subKey))) return fail('invalid_value')
 
     const limit = Math.min(Math.max(1, Math.floor(input.limit ?? board.loadLimit)), MAX_QUERY_LIMIT)
     const params = new ParamBag(2)
     const q = compileBoard(board, params)
     const keyParam = params.bind(groupKey)
+    const subParam = input.subKey === undefined || q.subKeyExpr === null ? null : params.bind(input.subKey)
     const cursorValues = decodeCursorValues(input.cursor)
     const cursorSql = cursorValues === null ? null : compileCursor(q.order, cursorValues, params)
     const limitParam = params.bind(limit + 1)
@@ -918,7 +1086,9 @@ export async function queryGroupRows(
     const rows = await tx.query<RowRow>(
       `SELECT ${ROW_COLUMNS}${q.sortColumns}
          ${q.from}
-        WHERE ${q.where} AND ${q.keyExpr} = ${keyParam}${cursorSql === null ? '' : ` AND ${cursorSql}`}
+        WHERE ${q.where} AND ${q.keyExpr} = ${keyParam}${subParam === null ? '' : ` AND ${q.subKeyExpr} = ${subParam}`}${
+          cursorSql === null ? '' : ` AND ${cursorSql}`
+        }
         ORDER BY ${q.order.orderBy}
         LIMIT ${limitParam}`,
       [board.dataSourceId, ...params.values],
@@ -938,7 +1108,7 @@ export async function queryGroupRows(
  * 날짜 버킷 사이로 옮긴 행의 새 값(B-1) — 지금 값을 버킷 차이만큼 민다(시각 · 끝 날짜 · 시간대를 지킨다 · `shiftDateValue`).
  * 칸을 그사이 읽을 수 없으면(지금 키가 있는데 값이 없다 — 일어나지 않아야 한다) 그 버킷의 첫 날로.
  */
-async function shiftedDateOf(tx: Tx, board: Board, rowId: string, from: string, to: string): Promise<CellValue | null> {
+async function shiftedDateOf(tx: Tx, board: GroupAxis, rowId: string, from: string, to: string): Promise<CellValue | null> {
   const cell = await tx.queryMaybe<{ value: { date?: DateValue | null } }>(
     `SELECT value FROM page_property_value WHERE page_id = $1 AND property_id = $2`,
     [rowId, board.groupBy.property_id],
@@ -955,7 +1125,7 @@ async function shiftedDateOf(tx: Tx, board: Board, rowId: string, from: string, 
 }
 
 /** 숫자 구간 사이로 옮긴 행의 새 값(B-2) — 지금 값에 구간 차이만큼 더한다(`shiftNumber` · 소수 오차 없이). 값을 못 읽으면 아래 끝. */
-async function shiftedNumberOf(tx: Tx, board: Board, rowId: string, from: string, to: string): Promise<CellValue> {
+async function shiftedNumberOf(tx: Tx, board: GroupAxis, rowId: string, from: string, to: string): Promise<CellValue> {
   const cell = await tx.queryMaybe<{ value: { number?: number | null } }>(
     `SELECT value FROM page_property_value WHERE page_id = $1 AND property_id = $2`,
     [rowId, board.groupBy.property_id],
@@ -965,7 +1135,7 @@ async function shiftedNumberOf(tx: Tx, board: Board, rowId: string, from: string
 }
 
 /** 그 열에 놓은 카드의 셀 값. 범주 열에 옵션이 없으면 null — 놓을 수 없다(10n-27). */
-function cellValueFor(board: Board, groupKey: string): CellValue | null {
+function cellValueFor(board: GroupAxis, groupKey: string): CellValue | null {
   // 날짜(B-1) — 값이 없던 행은 그 버킷의 첫 날(날짜만) · 값 없음 열은 비운다. 값이 있던 행은 `moveRow` 가 단위만큼 민다
   if (board.propertyType === 'date') {
     if (groupKey === NO_VALUE_KEY) return { type: 'date', date: null }
@@ -1006,6 +1176,9 @@ export async function moveRow(
     const board = await openBoard(tx, ctx, viewId, 'edit_content', input.search ?? null, input.today ?? null)
     if (isFailure(board)) return board
     if (!isGroupKeyOf(board, input.groupKey)) return fail('invalid_value')
+    // 하위 그룹(B-4a) — 가로줄 키를 주면 그 축의 키여야 한다
+    const sub = board.sub
+    if (input.subGroupKey !== undefined && (sub === null || !isGroupKeyOf(sub, input.subGroupKey))) return fail('invalid_value')
     if (input.beforeRowId === input.rowId) return fail('invalid_value')
 
     // 행을 잠근다 — 같은 카드를 두 사람이 끌면 순서가 정해진다(셀은 LWW, 자리는 나중 것).
@@ -1017,27 +1190,33 @@ export async function moveRow(
     )
     if (row === null) return fail('not_found')
 
-    // ★ **쓰기 전에** 놓을 자리를 검사한다. 화면이 낡아 `beforeRowId` 의 카드가 그사이 다른 열로 갔을 수 있다 — 셀을 쓴
+    // 지금 칸 · 놓을 칸(B-4a — 하위 그룹이면 열 + 가로줄 · 가로줄 키를 주지 않으면 지금 가로줄에 남는다)
+    const currentCell = await currentCellOf(tx, board, input.rowId)
+    const [current, currentSub] = splitCell(board, currentCell)
+    const subTarget = sub === null ? null : (input.subGroupKey ?? currentSub ?? NO_VALUE_KEY)
+    const targetCell = cellKeyOf(board, input.groupKey, subTarget)
+
+    // ★ **쓰기 전에** 놓을 자리를 검사한다. 화면이 낡아 `beforeRowId` 의 카드가 그사이 다른 열(칸)로 갔을 수 있다 — 셀을 쓴
     //   뒤에 알면 "값은 바뀌었는데 거부된" 이동이 된다(#103).
     const manual = !hasLiveSort(board)
-    if (manual && !(await isInGroup(tx, board, input.beforeRowId ?? null, input.groupKey))) return fail('not_found')
+    if (manual && !(await isInCell(tx, board, input.beforeRowId ?? null, targetCell))) return fail('not_found')
 
-    // ── ① 셀 값. 이미 그 그룹이면 건드리지 않는다 ──
-    const current = await currentKeyOf(tx, board, input.rowId)
-    if (input.within === true && current !== input.groupKey) return fail('not_found')
+    // ── ① 셀 값. 이미 그 그룹(가로줄)이면 건드리지 않는다 · 두 축을 한 번에 쓴다(B-4a) ──
+    if (input.within === true && currentCell !== targetCell) return fail('not_found')
+    const cells: { propertyId: string; value: CellValue }[] = []
     if (current !== input.groupKey) {
-      const shifts = current !== NO_VALUE_KEY && input.groupKey !== NO_VALUE_KEY
-      const value =
-        shifts && board.dateUnit !== null
-          ? await shiftedDateOf(tx, board, input.rowId, current, input.groupKey)
-          : shifts && board.numberSize !== null
-            ? await shiftedNumberOf(tx, board, input.rowId, current, input.groupKey)
-            : cellValueFor(board, input.groupKey)
-      // 옵션이 없는 범주 열 · 첫 글자 열(B-2b)에는 놓을 수 없다(10n-27) — 받을 값이 없다
+      const value = await movedValueOf(tx, board, input.rowId, current, input.groupKey)
+      // 옵션이 없는 범주 열 · 첫 글자 열(B-2b) · 상대 날짜의 범위(B-3)에는 놓을 수 없다(10n-27) — 받을 값이 없다
       if (value === null) return fail('invalid_value')
-      const written = await updateCellsIn(tx, ctx, input.rowId, {
-        cells: [{ propertyId: board.groupBy.property_id, value }],
-      })
+      cells.push({ propertyId: board.groupBy.property_id, value })
+    }
+    if (sub !== null && subTarget !== null && currentSub !== subTarget) {
+      const value = await movedValueOf(tx, sub, input.rowId, currentSub ?? NO_VALUE_KEY, subTarget)
+      if (value === null) return fail('invalid_value')
+      cells.push({ propertyId: sub.groupBy.property_id, value })
+    }
+    if (cells.length > 0) {
+      const written = await updateCellsIn(tx, ctx, input.rowId, { cells })
       if (!written.ok) return written
     }
 
@@ -1046,10 +1225,10 @@ export async function moveRow(
     await tx.query(`DELETE FROM row_position WHERE view_id = $1 AND row_id = $2 AND group_key <> $3`, [viewId, input.rowId, UNGROUPED_ORDER_KEY])
 
     if (manual) {
-      const orderIdx = await placeIn(tx, board, input)
+      const orderIdx = await placeIn(tx, board, targetCell, input.rowId, input.beforeRowId ?? null)
       await tx.query(
         `INSERT INTO row_position (view_id, group_key, row_id, order_idx) VALUES ($1, $2, $3, $4)`,
-        [viewId, input.groupKey, input.rowId, orderIdx],
+        [viewId, targetCell, input.rowId, orderIdx],
       )
     }
 
@@ -1057,7 +1236,7 @@ export async function moveRow(
     if (summary === null) return fail('not_found')
     // ── ③ 아직 이 보드에 서는가(10n-15) — 판정은 서버의 컴파일러 하나에 있다(화면이 필터를 다시 풀지 않는다) ──
     const inView = await standsInBoard(tx, board, input.rowId)
-    return { ok: true, value: { row: summary, groupKey: input.groupKey, positioned: manual, inView } } as const
+    return { ok: true, value: { row: summary, groupKey: input.groupKey, subGroupKey: subTarget, positioned: manual, inView } } as const
   })
 }
 
@@ -1076,14 +1255,22 @@ async function standsInBoard(tx: Tx, board: Board, rowId: string): Promise<boole
   return hit !== null
 }
 
-async function currentKeyOf(tx: Tx, board: Board, rowId: string): Promise<string> {
+/** 옮긴 행이 받을 한 축의 값 — 날짜 · 숫자는 민다(B-1 · B-2) · 그 밖은 그 그룹의 값. 받을 값이 없으면 null(범주 · 첫 글자 · 상대 날짜의 범위). */
+async function movedValueOf(tx: Tx, axis: GroupAxis, rowId: string, from: string, to: string): Promise<CellValue | null> {
+  const shifts = from !== NO_VALUE_KEY && to !== NO_VALUE_KEY
+  if (shifts && axis.dateUnit !== null) return shiftedDateOf(tx, axis, rowId, from, to)
+  if (shifts && axis.numberSize !== null) return shiftedNumberOf(tx, axis, rowId, from, to)
+  return cellValueFor(axis, to)
+}
+
+/** 그 행의 지금 칸 키(하위 그룹이 없으면 열 키). */
+async function currentCellOf(tx: Tx, board: Board, rowId: string): Promise<string> {
   const params = new ParamBag(3)
-  const gp = params.bind(board.groupBy.property_id)
-  const keyExpr = keyExprOf(board, params)
+  const cell = cellSql(board, params)
   const row = await tx.queryOne<{ key: string }>(
-    `SELECT ${keyExpr} AS key
+    `SELECT ${cell.cellExpr} AS key
        FROM page p
-       LEFT JOIN page_property_value gv ON gv.page_id = p.id AND gv.property_id = ${gp}
+       ${cell.joins}
       WHERE p.id = $1 AND p.data_source_id = $2`,
     [rowId, board.dataSourceId, ...params.values],
   )
@@ -1097,21 +1284,19 @@ async function currentKeyOf(tx: Tx, board: Board, rowId: string): Promise<string
  *   null            → 열의 맨 뒤. 자리 없는 행이 있으면 그것들에 먼저 자리를 준다 —
  *                     안 그러면 "맨 뒤"로 놓은 카드가 자리 없는 행들 **앞**에 그려진다
  */
-/** `before` 가 그 그룹의 살아 있는 카드인가. null(맨 뒤)이면 언제나 참이다. `moveRow` 가 **쓰기 전에** 묻는다. */
-async function isInGroup(tx: Tx, board: Board, before: string | null, groupKey: string): Promise<boolean> {
+/** `before` 가 그 칸(하위 그룹이 없으면 열)의 살아 있는 카드인가. null(맨 뒤)이면 언제나 참이다. `moveRow` 가 **쓰기 전에** 묻는다. */
+async function isInCell(tx: Tx, board: Board, before: string | null, cell: string): Promise<boolean> {
   if (before === null) return true
   const target = await tx.queryMaybe<{ one: number }>(
     `SELECT 1 AS one FROM page p JOIN block b ON b.id = p.id
       WHERE p.id = $1 AND p.data_source_id = $2 AND p.is_template = false AND b.lifecycle = 'live'`,
     [before, board.dataSourceId],
   )
-  return target !== null && (await currentKeyOf(tx, board, before)) === groupKey
+  return target !== null && (await currentCellOf(tx, board, before)) === cell
 }
 
-/** 그 그룹에서의 새 자리 키. `beforeRowId` 는 `moveRow` 가 이미 검사했다(`isInGroup`). */
-async function placeIn(tx: Tx, board: Board, input: MoveRowInput): Promise<string> {
-  const { groupKey, rowId } = input
-  const before = input.beforeRowId ?? null
+/** 그 칸(하위 그룹이 없으면 열)에서의 새 자리 키. `before` 는 `moveRow` 가 이미 검사했다(`isInCell`). */
+async function placeIn(tx: Tx, board: Board, groupKey: string, rowId: string, before: string | null): Promise<string> {
 
   await materializePositions(tx, board, groupKey, rowId, before)
 
@@ -1149,16 +1334,16 @@ async function materializePositions(
   upTo: string | null,
 ): Promise<void> {
   const params = new ParamBag(4)
-  const gp = params.bind(board.groupBy.property_id)
-  const keyExpr = keyExprOf(board, params)
+  // 칸 키(B-4a — 하위 그룹이면 열 + 가로줄)로 묻는다 — `groupKey` 도 칸 키다
+  const cell = cellSql(board, params)
   const unpositioned = await tx.query<{ id: string }>(
     `SELECT p.id
        FROM page p
        JOIN block b ON b.id = p.id
-       LEFT JOIN page_property_value gv ON gv.page_id = p.id AND gv.property_id = ${gp}
+       ${cell.joins}
        LEFT JOIN row_position rp ON rp.view_id = $1 AND rp.row_id = p.id AND rp.group_key = $2
       WHERE p.data_source_id = $3 AND p.is_template = false AND b.lifecycle = 'live'
-        AND ${keyExpr} = $2 AND rp.row_id IS NULL AND p.id <> ${params.bind(movingRowId)}
+        AND ${cell.cellExpr} = $2 AND rp.row_id IS NULL AND p.id <> ${params.bind(movingRowId)}
       ORDER BY b.order_key COLLATE "C"`,
     [board.viewId, groupKey, board.dataSourceId, ...params.values],
   )

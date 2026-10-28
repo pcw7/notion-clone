@@ -48,6 +48,7 @@ export async function PATCH(request: Request, ctx: Ctx): Promise<Response> {
     sorts?: unknown
     loadLimit?: unknown
     groupBy?: unknown
+    subGroupBy?: unknown
     defaultTemplateId?: unknown
     gallery?: unknown
     calendar?: unknown
@@ -75,6 +76,8 @@ export async function PATCH(request: Request, ctx: Ctx): Promise<Response> {
     ...('sorts' in body ? { sorts: body.sorts as SortKey[] } : {}),
     ...(typeof body.loadLimit === 'number' ? { loadLimit: body.loadLimit } : {}),
     ...('groupBy' in body ? { groupBy: body.groupBy as GroupBy | null } : {}),
+    // 하위 그룹(B-4a)도 `null`(없애라)과 "안 보냄"을 가른다
+    ...('subGroupBy' in body ? { subGroupBy: body.subGroupBy as GroupBy | null } : {}),
     // 기본 템플릿도 `null`(빈 페이지로 돌려라)과 "안 보냄"을 구분한다(F-08-03).
     ...('defaultTemplateId' in body ? { defaultTemplateId: body.defaultTemplateId as string | null } : {}),
     // 갤러리 레이아웃(2f-2) — 바꿀 키만. 모양은 명령이 본다(`validateGalleryPatch`).
