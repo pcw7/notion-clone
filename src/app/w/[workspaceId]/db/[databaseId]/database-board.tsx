@@ -73,6 +73,7 @@ import type { GroupBy } from '@/lib/database/group'
 import type { ViewColumn } from '@/lib/database/view'
 import type { GroupableType, SelectOption, StatusGroupKind } from '@/lib/database/property-types'
 import type { DateUnit } from '@/lib/database/date-group'
+import type { RowCell } from '@/lib/database/row'
 import type { TextMode } from '@/lib/database/text-group'
 import { cellText, parseDraft, readCell, sameValue } from '@/lib/database/cell-format'
 import {
@@ -207,6 +208,13 @@ export function DatabaseBoard(props: {
   rollupValues?: RollupPage
   /** 수식의 계획(10n-34 · 서버 렌더가 뷰의 컬럼 전부로 만든다) — 카드의 수식 배지를 그 카드의 칸으로 계산한다. */
   formulaPlan?: FormulaPlan | null
+  /**
+   * 가로줄 모드(B-4b · 정본 [보강 B-4] ⑤) — 하위 그룹이 있는 보드의 가로줄 하나. 열의 "더 보기" · 다시 읽기는 그 칸(가로줄 키), `+` 는 가로줄의
+   * 값(`cells`)도 채우고, 옮기기는 그 가로줄 안에서(`subGroupKey`). 카드에 가로줄 속성의 배지를 그리지 않는다(줄이 말한다).
+   */
+  lane?: { readonly key: string; readonly propertyId: string; readonly cells: readonly RowCell[] } | null
+  /** 표 변경을 스스로 구독하는가(기본 참) — 가로줄들은 바깥이 하나로 한다(B-4b). */
+  live?: boolean
 }) {
   const { workspaceId, viewId, dataSourceId, tableName, columns, property, groupBy, manualOrder, access } = props
   const router = useRouter()
@@ -241,7 +249,7 @@ export function DatabaseBoard(props: {
   // 표 변경 알림(2k-3 · F-04-24) — 다른 곳에서 바뀌면 서버 렌더를 다시 부르고 새 그룹을 받아들인다. 끌기 · 편집 · 만들기 · 더 보기
   // 중이면 끝난 뒤에. "더 보기"로 더 읽은 카드는 첫 페이지로 돌아간다(§7).
   const boardBusy = draggingId !== null || editing !== null || busyKey !== null || loadingKey !== null
-  useLiveServerRefresh(workspaceId, dataSourceId, boardBusy, props.renderedAt)
+  useLiveServerRefresh(workspaceId, dataSourceId, boardBusy, props.renderedAt, props.live !== false)
   useAdoptServerValue(props.groups, boardBusy, (next) => update(() => next))
 
   /** 머리 값을 다시 받은 횟수 — 늦게 온 옛 답을 버린다(머리말). */
@@ -267,7 +275,7 @@ export function DatabaseBoard(props: {
 
   const titleColumn = columns.find((c) => c.type === 'title') ?? null
   /** 카드의 배지 — 제목과 그룹 프로퍼티(열이 곧 그 값이다)는 뺀다. */
-  const badgeColumns = columns.filter((c) => c.type !== 'title' && c.propertyId !== property.id)
+  const badgeColumns = columns.filter((c) => c.type !== 'title' && c.propertyId !== property.id && c.propertyId !== props.lane?.propertyId)
   // 카드의 날짜 종(10n-76) — 서버가 다시 그릴 때마다(`renderedAt`) 다시 읽는다(남이 건 리마인더는 행의 판을 바꾸지 않는다)
   const [reminders] = useRowReminders(workspaceId, dataSourceId, groups.flatMap((g) => g.rows), badgeColumns.some((c) => c.type === 'date'), props.renderedAt)
   const labelOf = (group: BoardGroupJson) => groupLabel(property.type, property.name, group, property)
@@ -482,6 +490,8 @@ export function DatabaseBoard(props: {
       beforeRowId: target.beforeRowId,
       // 서버가 "아직 이 보드에 서는가" 를 내가 보는 검색어까지 넣어 판정한다(10n-15)
       search: props.search ?? null,
+      // 가로줄 모드(B-4b) — 그 가로줄 안에서
+      ...(props.lane ? { subGroupKey: props.lane.key } : {}),
     })
     if (!result.ok) {
       // 롤백 단위 = 서버 API 단위(머리말). 그사이 다른 갱신이 있었어도 이 카드만 제자리로.
@@ -502,7 +512,7 @@ export function DatabaseBoard(props: {
   // ── 읽기 ────────────────────────────────────────────────────────────
 
   const reloadColumn = async (key: string) => {
-    const result = await api.loadGroupRows(workspaceId, viewId, key, null, props.search)
+    const result = await api.loadGroupRows(workspaceId, viewId, key, null, props.search, props.lane?.key)
     if (!result.ok) {
       setError(result.message)
       return
@@ -520,7 +530,7 @@ export function DatabaseBoard(props: {
     if (group.nextCursor === null || loadingKey !== null) return
     setLoadingKey(group.key)
     setError(null)
-    const result = await api.loadGroupRows(workspaceId, viewId, group.key, group.nextCursor, props.search)
+    const result = await api.loadGroupRows(workspaceId, viewId, group.key, group.nextCursor, props.search, props.lane?.key)
     setLoadingKey(null)
     if (!result.ok) {
       setError(result.message)
@@ -554,7 +564,8 @@ export function DatabaseBoard(props: {
     const result = await api.createRowFrom(workspaceId, viewId, {
       templateId,
       // 범주 열(10n-27)은 서버가 정한 옵션으로 — `+` 는 그 옵션이 있을 때만 선다
-      cells: prefillCells(property.type, property.id, fillKeyOf(group, property) ?? group.key),
+      // 가로줄 모드(B-4b)면 가로줄의 값도 — 두 값이 곧 칸이라 그 칸에서 사라지지 않는다
+      cells: [...prefillCells(property.type, property.id, fillKeyOf(group, property) ?? group.key), ...(props.lane?.cells ?? [])],
     })
     setBusyKey(null)
     if (!result.ok) {
@@ -807,13 +818,14 @@ export function DatabaseBoard(props: {
         })}
       </div>
 
-      {visible.length === 0 && (
+      {visible.length === 0 && !props.lane && (
         <p className="px-2 text-sm text-neutral-400" data-testid="db-board-empty">
           보이는 그룹이 없습니다.
         </p>
       )}
 
-      {hiddenGroups.length > 0 && (
+      {/* 가로줄 모드(B-4b)면 숨긴 열은 보드 아래 한 번만 말한다(가로줄마다 되풀이하지 않는다 — `sub-grouped-board.tsx`) */}
+      {hiddenGroups.length > 0 && !props.lane && (
         <div data-testid="db-board-hidden" className="flex flex-wrap items-center gap-2 text-xs text-neutral-500">
           <span>숨긴 그룹</span>
           {hiddenGroups.map((group) => {
