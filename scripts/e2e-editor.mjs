@@ -25701,6 +25701,61 @@ async function main() {
         await evaluate(`document.querySelector('${HINT}')?.textContent ?? null`))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('하위 항목의 평평한 목록 (P-3 · F-04-22)')) { try {
+      // 속성 패널의 "표시" 를 평평한 목록으로 — 트리 · 토글 · 들여쓰기 없이 모든 행이 평평하게 · 범위 고르개가 "포함" 이 되어 들어오는 행을
+      // 정한다(부모만 · 하위만). 열 집계는 들어온 행. 정본 §3.5 [보강 P-1] ⑦. 자기 데이터를 스스로 만든다(API).
+      const stamp = Date.now()
+      const apiC = `${BASE}/api/workspaces/${workspaceId}`
+      const call = async (method, path, body) => {
+        const r = await fetch(`${apiC}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const made = (await call('POST', '/databases', { name: `평평한 목록 ${stamp}` })).body.database
+      const view = made.defaultViewId
+      const titleProp = (await call('GET', `/data-sources/${made.dataSourceId}/properties`)).body.schema.properties.find((p) => p.type === 'title').id
+      const cell = (text) => ({ propertyId: titleProp, value: { type: 'title', title: [textRun(text)] } })
+      const ids = {}
+      for (const t of ['가', '나', '다']) ids[t] = (await call('POST', `/views/${view}/rows`, { cells: [cell(t)] })).body.row.id
+      await call('POST', `/data-sources/${made.dataSourceId}/sub-items`)
+      for (const [t, parent] of [['가-1', '가'], ['나-1', '나']]) {
+        ids[t] = (await call('POST', `/views/${view}/rows`, { cells: [cell(t)], parent: ids[parent] })).body.row.id
+      }
+      await call('PATCH', `/views/${view}/columns/${titleProp}`, { calculation: 'count_all' })
+      const ROWS = `[...document.querySelectorAll('[data-testid="db-table"] tbody tr[data-row-id]')]`
+      const titlesJs = `${ROWS}.map((tr) => (tr.querySelector('[data-testid="db-row-title"]')?.textContent ?? '').trim()).join('|')`
+      const treeMarksJs = `${ROWS}.filter((tr) => tr.dataset.depth !== undefined || tr.querySelector('[data-testid="db-subitem-toggle"]')).length`
+      const setPick = (testId, value) => evaluate(`(() => {
+        const s = document.querySelector('[data-testid="${testId}"]')
+        if (!s) return false
+        s.value = ${JSON.stringify(value)}
+        s.dispatchEvent(new Event('change', { bubbles: true }))
+        return true
+      })()`)
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${made.id}` })
+      await waitFor(`${titlesJs} === '가|나|다'`, 15000)
+      await waitHydrated('[data-testid="db-properties-button"]')
+      await clickSelector('[data-testid="db-properties-button"]')
+      await waitFor(`!!document.querySelector('[data-testid="db-subitems-display"]')`, 5000)
+      const captionBefore = await evaluate(`document.querySelector('[data-testid="db-subitems-filter-scope-caption"]')?.textContent ?? null`)
+      await setPick('db-subitems-display', 'flattened')
+      const flat = await waitFor(`${titlesJs} === '가|나|다|가-1|나-1'`, 10000)
+      check('★ 평평한 목록 — 상위 · 하위 항목이 모두 평평하게(만든 차례) · 토글 · 들여쓰기가 없다',
+        flat && (await evaluate(treeMarksJs)) === 0, JSON.stringify({ titles: await evaluate(titlesJs), marks: await evaluate(treeMarksJs) }))
+      const captionAfter = await evaluate(`document.querySelector('[data-testid="db-subitems-filter-scope-caption"]')?.textContent ?? null`)
+      const savedDisplay = (await call('GET', `/views/${view}`)).body?.view?.subItemDisplay
+      check('범위 고르개의 이름이 "필터 적용" → "포함" · 서버에도 평평한 목록', captionBefore === '필터 적용' && captionAfter === '포함' && savedDisplay === 'flattened',
+        JSON.stringify({ captionBefore, captionAfter, savedDisplay }))
+
+      await setPick('db-subitems-filter-scope', 'sub_items')
+      const subOnly = await waitFor(`${titlesJs} === '가-1|나-1'`, 10000)
+      check('★ 포함 = 하위 항목만 — 최상위 행은 들어오지 않는다', subOnly, await evaluate(titlesJs))
+      await setPick('db-subitems-filter-scope', 'parents')
+      const parentsOnly = await waitFor(`${titlesJs} === '가|나|다'`, 10000)
+      const calc = (await call('GET', `/views/${view}/rows`)).body?.calculations?.[titleProp]?.value
+      check('포함 = 부모만 — 최상위 행만 · 열 집계도 들어온 행(3)', parentsOnly && calc === 3, JSON.stringify({ titles: await evaluate(titlesJs), calc }))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

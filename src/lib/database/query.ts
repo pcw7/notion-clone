@@ -103,6 +103,12 @@ export type QueryRowsInput = {
    */
   readonly treeScope?: { readonly parentPropertyId: string; readonly scope: SubItemFilterScope }
   /**
+   * 평평한 목록의 포함(P-3 · 정본 §3.5 [보강 P-1] ⑦) — 하위 항목이 켜진 표 · 목록을 트리 없이 그릴 때, 표시 범위가 어떤 행이 들어오는지를
+   * 정한다(부모만: 최상위 행만 · 하위만: 최상위가 아닌 행만 · 부모와 하위: 모든 행). 필터 · 검색어는 들어온 행에 그대로 건다. `tree` ·
+   * `treeScope` 와 함께 주지 않는다.
+   */
+  readonly flatScope?: { readonly parentPropertyId: string; readonly scope: SubItemFilterScope }
+  /**
    * 이 행들로만 좁힌다(10n-16 — "고친 행이 아직 이 뷰에 서는가" · `row-in-view.ts`). 다른 술어(권한 · 필터 · 검색어)는 그대로 건다.
    */
   readonly onlyRowIds?: readonly string[]
@@ -261,10 +267,14 @@ export async function queryRows(
     const hitColumns =
       withSql === '' ? '' : ', p.id IN (SELECT id FROM sx_hit) AS tree_matched, p.id IN (SELECT id FROM sx_up) AS tree_below'
 
+    // 평평한 목록의 포함(P-3) — 범위의 층에 든 행만
+    const flatSql = input.flatScope === undefined ? null : levelSql(input.flatScope, params)
+
     const where = [
       ...visible,
       scoped === null ? searchSql : withSql === '' ? null : '(p.id IN (SELECT id FROM sx_hit) OR p.id IN (SELECT id FROM sx_up))',
       treeSql,
+      flatSql,
       onlySql,
       cursorSql,
     ].filter((s): s is string => s !== null)
@@ -332,6 +342,18 @@ export function compileTree(tree: NonNullable<QueryRowsInput['tree']>, params: P
 export function rootSql(property: string): string {
   return `NOT EXISTS (SELECT 1 FROM relation_edge te JOIN block tb ON tb.id = te.to_page_id
                        WHERE te.property_id = ${property} AND te.from_page_id = p.id AND tb.lifecycle = 'live')`
+}
+
+/**
+ * 표시 범위의 층(P-1 ⑤ · P-3 ⑦) — 부모만이면 최상위 행, 하위만이면 최상위가 아닌 행, 부모와 하위면 null(모든 행). 열 집계의 결과 행과
+ * 평평한 목록의 포함이 같은 술어를 쓴다. 바깥 질의에 `page p` 가 있다고 전제한다.
+ */
+export function levelSql(
+  level: { readonly parentPropertyId: string; readonly scope: SubItemFilterScope },
+  params: ParamBag,
+): string | null {
+  if (level.scope === 'both') return null
+  return `${level.scope === 'sub_items' ? 'NOT ' : ''}${rootSql(params.bind(level.parentPropertyId))}`
 }
 
 /**

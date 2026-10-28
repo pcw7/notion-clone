@@ -90,9 +90,13 @@ import { ViewSearch } from './view-search'
 import { GALLERY_ASPECTS, GALLERY_COVERS, GALLERY_SIZES, type GalleryLayout } from '@/lib/database/gallery'
 import { OPEN_PAGES_IN, openPagesInLabel, type OpenPagesIn } from '@/lib/database/open-pages'
 import {
+  SUB_ITEM_DISPLAYS,
   SUB_ITEM_FILTER_SCOPES,
-  subItemFilterScopeHint,
+  subItemDisplayLabel,
   subItemFilterScopeLabel,
+  subItemScopeCaption,
+  subItemScopeHintFor,
+  type SubItemDisplay,
   type SubItemFilterScope,
 } from '@/lib/database/sub-item-scope'
 import type { CalendarLayout, LiveCalendarLayout } from '@/lib/database/calendar'
@@ -143,6 +147,7 @@ export function ViewToolbar({
   rowTitles = {},
   openPagesIn,
   subItemFilterScope,
+  subItemDisplay = 'nested',
 }: {
   workspaceId: string
   viewId: string
@@ -185,6 +190,8 @@ export function ViewToolbar({
    * 부모만이라 없다). 하위 항목이 켜져 있으면 "속성" 패널의 스위치 밑에 "필터 적용" 고르개가 선다.
    */
   subItemFilterScope?: SubItemFilterScope
+  /** 하위 항목의 표시 방식(P-3) — 토글로 중첩 · 평평한 목록. 표시 범위와 함께 온다(평평한 목록이면 범위 고르개가 "포함" 이 된다). */
+  subItemDisplay?: SubItemDisplay
 }) {
   const router = useRouter()
   const [panel, setPanel] = useState<Panel | null>(null)
@@ -354,6 +361,8 @@ export function ViewToolbar({
             onSubItems={(on) => run(() => (on ? enableSubItems : disableSubItems)(workspaceId, dataSourceId))}
             filterScope={subItemFilterScope}
             onFilterScope={(scope) => run(() => updateView(workspaceId, viewId, { subItemFilterScope: scope }))}
+            display={subItemDisplay}
+            onDisplay={(display) => run(() => updateView(workspaceId, viewId, { subItemDisplay: display }))}
             onDependencies={(on) => run(() => setDependencies(workspaceId, dataSourceId, on))}
             onClose={close}
           />
@@ -1706,6 +1715,8 @@ function PropertiesPanel({
   onSubItems,
   filterScope,
   onFilterScope,
+  display,
+  onDisplay,
   onDependencies,
   onClose,
 }: {
@@ -1717,6 +1728,9 @@ function PropertiesPanel({
   /** 하위 항목의 표시 범위(P-2) — 하위 항목을 펴는 표 · 목록에만 온다. 없으면 고르개를 세우지 않는다. */
   filterScope?: SubItemFilterScope
   onFilterScope: (scope: SubItemFilterScope) => Promise<boolean>
+  /** 하위 항목의 표시 방식(P-3) — 표시 범위가 올 때만 고르개가 선다. */
+  display: SubItemDisplay
+  onDisplay: (display: SubItemDisplay) => Promise<boolean>
   /** 종속 관계 켜기 · 끄기(2b-3). 날짜는 옮기지 않는다. */
   onDependencies: (on: boolean) => Promise<boolean>
   onClose: () => void
@@ -1759,11 +1773,30 @@ function PropertiesPanel({
         하위 항목
         <span className="text-xs text-neutral-400">{subItemsOn ? '끄면 일반 관계형 속성으로 남습니다' : '행 안에 행을 둡니다'}</span>
       </label>
-      {/* 하위 항목의 표시 범위(P-2 · 정본 §3.5 [보강 P-1]) — 필터를 거는 층. 뷰의 공유 설정이다(필터와 같이). */}
+      {/* 하위 항목의 표시 방식(P-3 · 정본 §3.5 [보강 P-1] ⑦) — 토글로 중첩 · 평평한 목록. 뷰의 공유 설정이다. */}
+      {subItemsOn && filterScope !== undefined && (
+        <label className="flex items-center gap-2 pl-6 text-sm">
+          표시
+          <select
+            value={display}
+            disabled={busy}
+            onChange={(e) => void onDisplay(e.target.value as SubItemDisplay)}
+            data-testid="db-subitems-display"
+            className="rounded border border-neutral-200 bg-white px-1.5 py-0.5 text-sm dark:border-neutral-700 dark:bg-neutral-900"
+          >
+            {SUB_ITEM_DISPLAYS.map((d) => (
+              <option key={d} value={d}>
+                {subItemDisplayLabel(d)}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+      {/* 하위 항목의 표시 범위(P-2 · 정본 §3.5 [보강 P-1]) — 필터를 거는 층(평평한 목록이면 들어오는 행 — "포함"). 뷰의 공유 설정이다. */}
       {subItemsOn && filterScope !== undefined && (
         <label className="flex flex-col gap-1 pl-6 text-sm">
           <span className="flex items-center gap-2">
-            필터 적용
+            <span data-testid="db-subitems-filter-scope-caption">{subItemScopeCaption(display)}</span>
             <select
               value={filterScope}
               disabled={busy}
@@ -1779,7 +1812,7 @@ function PropertiesPanel({
             </select>
           </span>
           <span className="text-xs text-neutral-400" data-testid="db-subitems-filter-scope-hint">
-            {subItemFilterScopeHint(filterScope)}
+            {subItemScopeHintFor(display, filterScope)}
           </span>
         </label>
       )}
