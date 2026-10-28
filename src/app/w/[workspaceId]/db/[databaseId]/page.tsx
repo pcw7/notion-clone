@@ -438,6 +438,9 @@ export default async function DatabasePage({
     subItems?.parentPropertyId ?? null,
     // 검색어(2e-2) — 바뀌면 읽은 행 · 커서가 무효다(필터와 같은 이유).
     search,
+    // 상대 날짜 필터(R-1)의 오늘 — 시간대가 바뀌거나 날이 넘어 서버가 새 오늘로 거르면 읽은 행이 무효다. 표는 읽은 행을 자기 상태로
+    // 들어(`useState(props.rows)`) 새로 받은 서버 렌더의 행을 그대로는 받지 않는다 — 오늘이 바뀌면 다시 선다(R-1b · 판이 잡은 흔들림)
+    usesRelativeDate(view.value.effectiveFilter) ? viewerToday : null,
     // 갤러리 레이아웃(2f-2) — 미리보기를 켜고 끄면 서버 렌더가 미리보기를 다시 읽는다. 갤러리 컴포넌트는 미리보기를 상태로 든다.
     isGallery ? view.value.gallery : null,
     // 캘린더(2g-2) — 보이는 달 · 날짜 속성이 바뀌면 읽은 행이 무효다.
