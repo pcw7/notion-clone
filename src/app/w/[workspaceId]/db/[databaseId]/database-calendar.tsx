@@ -363,6 +363,24 @@ export function DatabaseCalendar(props: {
     return d
   }
 
+  /**
+   * 날짜 없는 행에 날짜를 준다(D-1 · 정본 [보강] 캘린더 ⑩) — "날짜 없음" 목록에서 날짜 칸으로 끌어 놓은 날. 셀 쓰기 하나(뷰를 실어 "조건 밖"
+   * 판정) · 서버의 답(새 날짜의 행)을 달력에 더하고, 머리의 수 · 그 달의 행은 서버 렌더가 다시 센다.
+   */
+  const placeUndated = async (row: RowJson, day: string) => {
+    setError(null)
+    setNotice(null)
+    const result = await api.updateCellInView(workspaceId, row.id, datePropertyId, { type: 'date', date: { start: day } }, { id: viewId, search: props.search ?? null })
+    if (!result.ok) {
+      setError(result.message)
+      return
+    }
+    if (result.value.inView === false) setNotice(MOVED_OUT_OF_VIEW_NOTICE)
+    const saved = result.value.row
+    setRows((current) => [...current.filter((r) => r.id !== saved.id), saved])
+    router.refresh()
+  }
+
   /** 날짜 값을 며칠 옮긴다 — 먼저 옮기고, 거부되면 제자리로. */
   const moveRow = (rowId: string, days: number) => writeDate(rowId, (date) => shiftDateValue(date, days))
 
@@ -445,6 +463,19 @@ export function DatabaseCalendar(props: {
             count={props.undated}
             load={(cursor) => api.loadUndatedRows(workspaceId, viewId, cursor, props.search ?? null)}
             hrefOf={(rowId) => rowOpenHref(workspaceId, rowId, props.peekBase ?? null)}
+            // 목록에서 달력으로 끌어 날짜 주기(D-1) — 고칠 수 있을 때만 · 막대 끌기와 같은 칸 재기 · 같은 표시
+            place={
+              access.canEditContent
+                ? {
+                    start: () => {
+                      const cells = measureDays()
+                      return (x: number, y: number) => dayAt(cells, x, y)
+                    },
+                    hover: setDropDay,
+                    drop: (row, day) => void placeUndated(row, day),
+                  }
+                : undefined
+            }
           />
         )}
       </div>
@@ -720,10 +751,20 @@ function UndatedChip({
   count,
   load,
   hrefOf,
+  place,
 }: {
   count: number
   load: (cursor: string | null) => Promise<api.ApiResult<api.RowPage>>
   hrefOf: (rowId: string) => string
+  /**
+   * 항목을 달력으로 끌어 날짜 주기(D-1) — `start` 가 칸을 재 "그 자리의 날" 함수를 주고, `hover` 가 놓일 칸을 표시하고, `drop` 이 그 날을
+   * 쓴다. 없으면(고칠 수 없다) 끌리지 않는다.
+   */
+  place?: {
+    readonly start: () => (x: number, y: number) => string | null
+    readonly hover: (day: string | null) => void
+    readonly drop: (row: RowJson, day: string) => void
+  }
 }) {
   const [open, setOpen] = useState(false)
   const [rows, setRows] = useState<readonly RowJson[] | null>(null)
@@ -734,6 +775,51 @@ function UndatedChip({
   const buttonRef = useRef<HTMLButtonElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const firstLoad = rows === null
+  /** 끈 뒤에 따라오는 누르기는 삼킨다(행을 열지 않는다). */
+  const swallowClick = useRef(false)
+
+  /** 항목을 누르면 창에서 움직임을 듣는다 — 4px 넘게 움직이면 끌기(막대 끌기와 같은 문턱) · 아니면 누르기(행을 연다). */
+  const onItemPointerDown = (row: RowJson, event: ReactPointerEvent<HTMLAnchorElement>) => {
+    swallowClick.current = false
+    if (place === undefined || event.button !== 0) return
+    const locate = place.start()
+    const sx = event.clientX
+    const sy = event.clientY
+    let moved = false
+    let target: string | null = null
+    const onMove = (e: PointerEvent) => {
+      if (!moved) {
+        if (Math.hypot(e.clientX - sx, e.clientY - sy) < DRAG_THRESHOLD_PX) return
+        moved = true
+      }
+      const day = locate(e.clientX, e.clientY)
+      if (day !== target) {
+        target = day
+        place.hover(day)
+      }
+    }
+    const stop = () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      window.removeEventListener('pointercancel', onCancel)
+    }
+    const onUp = () => {
+      stop()
+      place.hover(null)
+      if (!moved) return
+      swallowClick.current = true
+      if (target === null) return
+      setOpen(false)
+      place.drop(row, target)
+    }
+    const onCancel = () => {
+      stop()
+      place.hover(null)
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+    window.addEventListener('pointercancel', onCancel)
+  }
 
   useEffect(() => {
     if (!open) return
@@ -829,7 +915,18 @@ function UndatedChip({
                 scroll={false}
                 data-testid="db-cal-undated-item"
                 data-row-id={row.id}
-                onClick={() => setOpen(false)}
+                // 끌기(D-1) — 링크의 기본 끌기(주소 끌기)를 막는다 · 끈 뒤의 누르기는 행을 열지 않는다
+                draggable={false}
+                onDragStart={(e) => e.preventDefault()}
+                onPointerDown={(e) => onItemPointerDown(row, e)}
+                onClick={(e) => {
+                  if (swallowClick.current) {
+                    swallowClick.current = false
+                    e.preventDefault()
+                    return
+                  }
+                  setOpen(false)
+                }}
                 className="flex min-w-0 items-center gap-1 rounded px-2 py-1.5 hover:bg-neutral-100 focus:bg-neutral-100 focus:outline-none dark:hover:bg-neutral-800 dark:focus:bg-neutral-800"
               >
                 <PageIconView icon={row.icon} fallback />

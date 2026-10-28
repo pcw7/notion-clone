@@ -25408,6 +25408,62 @@ async function main() {
         await current())
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('캘린더 — 날짜 없는 행을 달력으로 (D-1 · F-04-06)')) { try {
+      // "날짜 없음" 목록의 항목을 끌어 달력의 날짜 칸에 놓으면 그 날이 날짜 값이 되고 그 날에 막대가 선다 · 머리의 "날짜 없음" 이 사라진다.
+      // 정본 §3.6 [보강] 캘린더 ⑩. 자기 데이터를 스스로 만든다(API).
+      const stamp = Date.now()
+      const apiC = `${BASE}/api/workspaces/${workspaceId}`
+      const call = async (method, path, body) => {
+        const r = await fetch(`${apiC}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return r.json().catch(() => null)
+      }
+      const made = (await call('POST', '/databases', { name: `날짜 주기 ${stamp}` })).database
+      const due = (await call('POST', `/data-sources/${made.dataSourceId}/properties`, { name: '마감', type: 'date' })).property.id
+      const titleProp = (await call('GET', `/data-sources/${made.dataSourceId}/properties`)).schema.properties.find((p) => p.type === 'title').id
+      const ids = {}
+      for (const [title, date] of [['있음', { start: '2026-03-10' }], ['정할 일', null]]) {
+        ids[title] = (await call('POST', `/views/${made.defaultViewId}/rows`, { cells: [
+          { propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } },
+          ...(date === null ? [] : [{ propertyId: due, value: { type: 'date', date } }]),
+        ] })).row.id
+      }
+      const calView = (await call('POST', `/databases/${made.id}/views`, { type: 'calendar', name: '달력' })).view.id
+      const serverDate = async () => ((await call('GET', `/views/${made.defaultViewId}/rows`))?.rows ?? []).find((r) => r.id === ids['정할 일'])?.properties?.[due]?.date?.start ?? null
+      const CHIP = '[data-testid="db-cal-undated"]'
+      const ITEM = `[data-testid="db-cal-undated-item"][data-row-id="${ids['정할 일']}"]`
+      const rectOf = (sel) => evaluate(`(() => { const r = document.querySelector('${sel}')?.getBoundingClientRect(); return r ? { x: r.left, y: r.top, w: r.width, h: r.height } : null })()`)
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${made.id}?v=${calView}&m=2026-03` })
+      check('전제 — 머리에 "날짜 없음 1개"', await waitFor(`(document.querySelector('${CHIP}')?.textContent ?? '') === '날짜 없음 1개'`, 15000))
+      await waitHydrated(CHIP)
+      await clickSelector(CHIP)
+      await waitFor(`!!document.querySelector('${ITEM}')`, 8000)
+      const from = await rectOf(ITEM)
+      const to = await rectOf('[data-testid="db-cal-day"][data-day="2026-03-18"]')
+      const sx = from.x + from.w / 2
+      const sy = from.y + from.h / 2
+      const tx = to.x + to.w / 2
+      const ty = to.y + to.h / 2
+      await move(sx, sy)
+      await press(sx, sy)
+      for (let i = 1; i <= 12; i += 1) {
+        await move(sx + ((tx - sx) * i) / 12, sy + ((ty - sy) * i) / 12, true)
+        await sleep(16)
+      }
+      const marked = await waitFor(`!!document.querySelector('[data-testid="db-cal-day"][data-day="2026-03-18"][data-drop-target]')`, 3000)
+      await release(tx, ty)
+      let saved = null
+      for (let i = 0; i < 25 && saved !== '2026-03-18'; i += 1) {
+        saved = await serverDate()
+        if (saved !== '2026-03-18') await sleep(200)
+      }
+      const bar = await waitFor(`!!document.querySelector('[data-testid="db-cal-event"][data-row-id="${ids['정할 일']}"]')`, 8000)
+      check('★ 3/18 칸에 끌어 놓으면 그 날이 날짜 — 끄는 동안 그 칸에 표시 · 놓으면 그 날에 막대', marked && saved === '2026-03-18' && bar,
+        JSON.stringify({ marked, saved, bar }))
+      check('★ 머리의 "날짜 없음" 이 사라진다(서버 렌더가 다시 센다)', await waitFor(`!document.querySelector('${CHIP}')`, 10000),
+        String(await evaluate(`document.querySelector('${CHIP}')?.textContent ?? '(없음)'`)))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).
