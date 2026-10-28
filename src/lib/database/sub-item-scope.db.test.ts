@@ -13,6 +13,8 @@
  *   ⑤ ★ 열 집계는 범위의 층에서 — 부모와 하위: 모든 층 · 부모만: 최상위 · 하위만: 최상위가 아닌 행
  *   ⑥ ★ 필터 · 검색어가 없으면 맞춤이 걸리지 않는다 — 예전 트리 그대로(표시 없음 · 범위마다 · 질의가 죽지 않는다 — e2e 가 잡았다:
  *        쓰지 않는 자리표를 묶으면 Postgres 가 그 타입을 정하지 못한다)
+ *   ⑦ ★ 평평한 목록의 포함(P-3 · ⑦) — 부모만: 최상위 행만 · 하위만: 최상위가 아닌 행만 · 부모와 하위: 모든 행 · 필터는 들어온 행에 ·
+ *        표시 방식의 저장(기본 `nested` 는 NULL)
  *
  * ⚠ skip 은 테스트마다 `ctx.skip` 으로 건다(`describe` 의 skip 옵션은 등록 시점에 평가된다 — HANDOFF §5).
  */
@@ -31,7 +33,7 @@ import { linkRows } from './relation.ts'
 import { enableSubItems } from './sub-items.ts'
 import { getView, updateView } from './view.ts'
 import { computeCalculations } from './calculate.ts'
-import type { SubItemFilterScope } from './sub-item-scope.ts'
+import type { SubItemDisplay, SubItemFilterScope } from './sub-item-scope.ts'
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'
 
@@ -177,5 +179,37 @@ describe('⑥ 필터 · 검색어가 없으면 맞춤이 걸리지 않는다', (
       ).rows
       assert.deepEqual(rows.map((r) => [r.title, r.treeMatch]), [['가', undefined], ['나 끝', undefined], ['다', undefined]], scope)
     }
+  })
+})
+
+describe('⑦ 평평한 목록의 포함(P-3)', () => {
+  test('★ 부모만: 최상위 행만 · 하위만: 최상위가 아닌 행만 · 부모와 하위: 모든 행 — 필터는 들어온 행에 · 표시가 없다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const f = await forest('평평한 목록 ⑦')
+    const flat = async (scope: SubItemFilterScope, filter: typeof f.filter | null = null) => {
+      const rows = unwrap(await queryRows(fx.owner.ctx, f.ds, { filter, flatScope: { parentPropertyId: f.parentPropertyId, scope } })).rows
+      assert.ok(rows.every((r) => r.treeMatch === undefined), '평평한 목록에는 맥락 행이 없다')
+      return rows.map((r) => r.title).sort()
+    }
+    assert.deepEqual(await flat('both'), ['가', '가-1 끝', '가-2', '나 끝', '나-1', '다'].sort())
+    assert.deepEqual(await flat('parents'), ['가', '나 끝', '다'].sort())
+    assert.deepEqual(await flat('sub_items'), ['가-1 끝', '가-2', '나-1'].sort())
+    assert.deepEqual(await flat('parents', f.filter), ['나 끝'])
+    assert.deepEqual(await flat('sub_items', f.filter), ['가-1 끝'])
+  })
+
+  test('표시 방식 저장 — 기본은 nested · flattened 는 그대로 · nested 는 NULL · 틀린 값은 invalid_layout', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const f = await forest('평평한 목록 ⑦ 저장')
+    const stored = async () =>
+      (await withReadTransaction((tx) => tx.queryOne<{ d: string | null }>(`SELECT sub_item_display AS d FROM view WHERE id = $1`, [f.viewId]))).d
+    assert.equal(unwrap(await getView(fx.owner.ctx, f.viewId)).subItemDisplay, 'nested')
+    unwrap(await updateView(fx.owner.ctx, f.viewId, { subItemDisplay: 'flattened' }))
+    assert.equal(unwrap(await getView(fx.owner.ctx, f.viewId)).subItemDisplay, 'flattened')
+    assert.equal(await stored(), 'flattened')
+    unwrap(await updateView(fx.owner.ctx, f.viewId, { subItemDisplay: 'nested' }))
+    assert.equal(await stored(), null, '기본은 NULL 하나로 적는다')
+    const wrong = await updateView(fx.owner.ctx, f.viewId, { subItemDisplay: 'card' as SubItemDisplay })
+    assert.equal(wrong.ok === false ? wrong.reason : null, 'invalid_layout')
   })
 })

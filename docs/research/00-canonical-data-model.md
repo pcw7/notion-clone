@@ -2591,7 +2591,18 @@ board, calendar, and gallery views, only the Parents only filter option is suppo
   최상위가 아닌 행). 맥락 행과 필터가 걸리지 않는 층의 행은 결과가 아니다. "조건 밖"(10n-16)은 "화면에 서는가" 를 묻는다 — 맥락 행도
   선다(같은 질의 · 같은 범위).
 - ⑥ **API** — 뷰의 `subItemFilterScope`(`parents` · `both` · `sub_items` — 읽기는 늘 셋 중 하나) · `PATCH /views/{id}` 가 받는다(틀리면
-  `invalid_layout`). 평평한 목록(`sub_item_display` · 노션 *"Flattened list"*)은 P-3.
+  `invalid_layout`). 평평한 목록은 ⑦.
+- ⑦ **[P-3] 평평한 목록 — 표시 범위가 "포함" 이 된다** ⟨23번 트랙 P-3 / 마이그레이션 0120⟩ — 노션 *"Flattened list: This will show all of
+  your parent and sub-items in a flat list"* · *"sub-items won't be indented in the list to distinguish them from parent items"* · 범위 고르개의
+  이름이 *Include* 가 된다. `view.sub_item_display`(0015 의 칸 · CHECK `ck_view_sub_item_display` 0120): `flattened` · NULL(토글로 중첩 — 기본 ·
+  ① 과 같은 까닭으로 따로 적지 않는다 · API 는 `nested` · `flattened`). 하위 항목이 켜진 표 · 목록에서만 — 보드 · 갤러리 · 캘린더의 표시
+  방식(*Card property · Flattened list*)은 뒤로(지금은 늘 부모만).
+  - **트리가 없다** — 들여쓰기 · 토글 · 맥락 행 · 하위 항목 `+` 가 없다. 행 질의는 트리가 아닌 표와 같다(페이지 · 커서 · 수동 순서 — 정렬이
+    없으면 행 끌기 손잡이도 선다 · 10n-60).
+  - **포함** — 부모만: 최상위 행만 · 하위만: 최상위가 아닌 행만 · 부모와 하위: 모든 행. 필터 · 검색어는 들어온 행에 그대로 건다(층을 가리지
+    않는다 — 들어온 행이 곧 결과다). 열 집계는 ⑤ 의 층 규칙 그대로(들어온 행 = 범위의 층) · "조건 밖" 판정도 같은 포함으로.
+  - **화면** — 속성 패널의 하위 항목 스위치 밑에 "표시"(토글로 중첩 · 평평한 목록) · 평평한 목록이면 범위 고르개의 이름이 "포함" 이 되고
+    밑의 한 줄도 들어오는 행을 말한다. 바꾸면 표가 다시 선다(다시 마운트 기준).
 
 **[보강] 종속 관계(dependency) — 같은 표의 relation 짝 · `role='dependency'` · 순환 없음 · 날짜는 옮기지 않는다** ⟨DB 심화 2b-3조각 · F-03-18 / 마이그레이션 0052⟩
 

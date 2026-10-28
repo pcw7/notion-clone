@@ -77,8 +77,11 @@ export async function GET(request: Request, ctx: Ctx): Promise<Response> {
   const parent = params.get('parent')
   if (parent !== null && !isUuid(parent)) return Response.json({ error: 'invalid_value' }, { status: 400 })
   const search = normalizeSearch(params.get('q'))
-  // 검색 중에도 트리다(H-1) · 필터는 표시 범위의 층에(P-1) — 맞은 자손을 가진 행이 맥락 행으로 선다
-  const pair = nestsSubItems(view.value.type) ? subItemPairOf(view.value.columns) : null
+  // 검색 중에도 트리다(H-1) · 필터는 표시 범위의 층에(P-1) — 맞은 자손을 가진 행이 맥락 행으로 선다. 평평한 목록(P-3)이면 트리가 없고
+  // 표시 범위가 어떤 행이 들어오는지를 정한다.
+  const nest = nestsSubItems(view.value.type) ? subItemPairOf(view.value.columns) : null
+  const pair = nest !== null && view.value.subItemDisplay === 'nested' ? nest : null
+  const flat = nest !== null && pair === null ? nest : null
   if (parent !== null && pair === null) return Response.json({ error: 'invalid_value' }, { status: 400 })
   // 갤러리는 부모만(2f-1) — 트리를 펴지 않고 최상위 행만 읽는다. 검색 중에도 그렇다.
   const parentsOnly = showsParentsOnly(view.value.type) ? subItemPairOf(view.value.columns) : null
@@ -97,6 +100,7 @@ export async function GET(request: Request, ctx: Ctx): Promise<Response> {
     cursor: params.get('cursor'),
     ...(pair === null ? {} : { tree: { parentPropertyId: pair.parentPropertyId, under: parent } }),
     ...(pair === null ? {} : { treeScope: { parentPropertyId: pair.parentPropertyId, scope: view.value.subItemFilterScope } }),
+    ...(flat === null ? {} : { flatScope: { parentPropertyId: flat.parentPropertyId, scope: view.value.subItemFilterScope } }),
     ...(parentsOnly === null ? {} : { tree: { parentPropertyId: parentsOnly.parentPropertyId, under: null } }),
     search,
     today,
@@ -111,7 +115,7 @@ export async function GET(request: Request, ctx: Ctx): Promise<Response> {
   const first = params.get('cursor') === null && parent === null
   const calculations = first
     ? await computeCalculations(session.ctx, view.value.dataSourceId, view.value.effectiveFilter, view.value.columns, search, today,
-        pair === null ? null : { parentPropertyId: pair.parentPropertyId, scope: view.value.subItemFilterScope })
+        nest === null ? null : { parentPropertyId: nest.parentPropertyId, scope: view.value.subItemFilterScope })
     : undefined
 
   // 갤러리의 카드 미리보기(2f-2) — 이 페이지의 행마다 본문의 첫 이미지. 미리보기를 끈 갤러리 · 다른 뷰에는 싣지 않는다.

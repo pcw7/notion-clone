@@ -3170,6 +3170,19 @@ try {
     await client.query('ROLLBACK TO SAVEPOINT probe')
     await rejectBy('★ 기본을 따로 적는다(both — 기본은 NULL 하나)', 'ck_view_sub_item_filter_scope', setScope, [viewId, 'both'])
     await rejectBy('모르는 표시 범위', 'ck_view_sub_item_filter_scope', setScope, [viewId, 'children'])
+    // 표시 방식(0120 · P-3) — 평평한 목록 하나 · 기본(토글로 중첩)은 NULL
+    const setDisplay = `UPDATE view SET sub_item_display = $2 WHERE id = $1`
+    await client.query('SAVEPOINT probe')
+    try {
+      await client.query(setDisplay, [viewId, 'flattened'])
+      await client.query(setDisplay, [viewId, null])
+      ok('평평한 목록 · NULL(토글로 중첩) — 정상 경로가 통과한다(0120)')
+    } catch (e) {
+      fail(`정상 경로가 거부됐다 (${e.constraint ?? e.code})`)
+    }
+    await client.query('ROLLBACK TO SAVEPOINT probe')
+    await rejectBy('★ 기본을 따로 적는다(nested — 기본은 NULL 하나 · 0120)', 'ck_view_sub_item_display', setDisplay, [viewId, 'nested'])
+    await rejectBy('모르는 표시 방식(0120)', 'ck_view_sub_item_display', setDisplay, [viewId, 'card'])
 
     console.log('\n[42] 개인 필터 · 정렬 (0059 / §3.6 view_user_override · 2h-1조각)')
     const someUser = (await client.query(`SELECT id FROM "user" LIMIT 1`)).rows[0].id

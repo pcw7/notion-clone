@@ -9,7 +9,7 @@
  */
 
 import type { OpenPagesIn } from '@/lib/database/open-pages'
-import type { SubItemFilterScope } from '@/lib/database/sub-item-scope'
+import type { SubItemDisplay, SubItemFilterScope } from '@/lib/database/sub-item-scope'
 import type { FilterLeaf, FilterNode, SortKey } from '@/lib/database/filter'
 import type { GroupBy } from '@/lib/database/group'
 import type { CalculationResult } from '@/lib/database/calculations'
@@ -1044,6 +1044,8 @@ export function updateView(
     readonly openPagesIn?: OpenPagesIn
     /** 하위 항목의 표시 범위(P-2 · 정본 §3.5 [보강 P-1]) — 필터를 거는 층. */
     readonly subItemFilterScope?: SubItemFilterScope
+    /** 하위 항목의 표시 방식(P-3) — 토글로 중첩 · 평평한 목록. */
+    readonly subItemDisplay?: SubItemDisplay
   },
 ): Promise<ApiResult<null>> {
   return call(

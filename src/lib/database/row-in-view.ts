@@ -32,11 +32,13 @@ export async function rowStandsInView(
   // 그 뷰가 보는 data source 의 행인가 — 아니면 "서지 않는다" 가 아니라 물을 수 없는 것이다
   const owner = await query<{ data_source_id: string }>(`SELECT data_source_id FROM page WHERE id = $1`, [rowId])
   if (owner[0]?.data_source_id !== view.value.dataSourceId) return null
+  // 하위 항목이 켜진 표 · 목록 — 트리면 표시 범위의 맞춤(P-1), 평평한 목록이면 포함(P-3)
   const pair = nestsSubItems(view.value.type) ? subItemPairOf(view.value.columns) : null
+  const scope = pair === null ? null : { parentPropertyId: pair.parentPropertyId, scope: view.value.subItemFilterScope }
   const page = await queryRows(ctx, view.value.dataSourceId, {
     filter: view.value.effectiveFilter,
     search: normalizeSearch(rawSearch),
-    ...(pair === null ? {} : { treeScope: { parentPropertyId: pair.parentPropertyId, scope: view.value.subItemFilterScope } }),
+    ...(scope === null ? {} : view.value.subItemDisplay === 'flattened' ? { flatScope: scope } : { treeScope: scope }),
     onlyRowIds: [rowId],
     limit: 1,
     today,

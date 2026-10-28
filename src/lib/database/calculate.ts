@@ -17,7 +17,7 @@ import { calculationResult, canCalculate, type Calculation, type CalculationResu
 import { compileFilter, ParamBag, propertyIdsIn, type FilterContext, type FilterNode } from './filter.ts'
 import { todayOrUtc } from './relative-date.ts'
 import { refreshDerivedValues } from './derived-values.ts'
-import { readPropertyTypes, rootSql } from './query.ts'
+import { levelSql, readPropertyTypes } from './query.ts'
 import type { SubItemFilterScope } from './sub-item-scope.ts'
 import { readOptionsOf } from './options.ts'
 import { compileSearch } from './search.ts'
@@ -155,10 +155,7 @@ async function readStats(
   const filterSql = compileFilter(filter, types, params, context)
   const searchSql = search === null ? null : compileSearch(search, types, params, searchScopes)
   // 표시 범위의 층(P-1 ⑤) — 부모만이면 최상위만, 하위만이면 최상위가 아닌 행만 결과다
-  const levelSql =
-    level === null || level.scope === 'both'
-      ? null
-      : `${level.scope === 'sub_items' ? 'NOT ' : ''}${rootSql(params.bind(level.parentPropertyId))}`
+  const levelPart = level === null ? null : levelSql(level, params)
   // 상태 열의 완료 그룹(10n-30) — 그 열에만 완료 개수를 센다
   const completeOf = await completeIdsOf(tx, propertyIds.filter((id) => types.get(id) === 'status'))
   const columns = propertyIds.map((id, i) => {
@@ -176,7 +173,7 @@ async function readStats(
         }${
           searchSql === null ? '' : ` AND ${searchSql}`
         }${
-          levelSql === null ? '' : ` AND ${levelSql}`
+          levelPart === null ? '' : ` AND ${levelPart}`
         }
      )
      SELECT (SELECT count(*) FROM r)::int AS total, ${columns.join(', ')}`,
