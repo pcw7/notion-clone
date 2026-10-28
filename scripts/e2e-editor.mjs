@@ -25113,6 +25113,73 @@ async function main() {
         JSON.stringify({ head: await head(), first: await firstDay() }))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('캘린더 — 가장자리로 기간 바꾸기 (C-4 · F-04-06)')) { try {
+      // 막대의 오른쪽 끝을 끌어 놓은 날이 새 끝 · 왼쪽 끝은 새 시작 — 날짜 글자만 바뀐다 · 끝을 시작 날로 접으면 끝이 지워진다(하루짜리) ·
+      // 막대의 링크는 열리지 않는다. 정본 §3.6 [보강] 캘린더 ⑧. 자기 데이터를 스스로 만든다(API).
+      const stamp = Date.now()
+      const apiC = `${BASE}/api/workspaces/${workspaceId}`
+      const call = async (method, path, body) => {
+        const r = await fetch(`${apiC}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return r.json().catch(() => null)
+      }
+      const made = (await call('POST', '/databases', { name: `기간 바꾸기 ${stamp}` })).database
+      const due = (await call('POST', `/data-sources/${made.dataSourceId}/properties`, { name: '마감', type: 'date' })).property.id
+      const titleProp = (await call('GET', `/data-sources/${made.dataSourceId}/properties`)).schema.properties.find((p) => p.type === 'title').id
+      const rowId = (await call('POST', `/views/${made.defaultViewId}/rows`, { cells: [
+        { propertyId: titleProp, value: { type: 'title', title: [textRun('기간')] } },
+        { propertyId: due, value: { type: 'date', date: { start: '2026-03-10' } } },
+      ] })).row.id
+      const calView = (await call('POST', `/databases/${made.id}/views`, { type: 'calendar', name: '달력' })).view.id
+      const serverDate = async () => {
+        const row = ((await call('GET', `/views/${made.defaultViewId}/rows`))?.rows ?? []).find((r) => r.id === rowId)
+        const d = row?.properties?.[due]?.date
+        return d ? `${d.start}~${d.end ?? ''}` : ''
+      }
+      const waitServer = async (want) => {
+        let got = ''
+        for (let i = 0; i < 25 && got !== want; i += 1) {
+          got = await serverDate()
+          if (got !== want) await sleep(200)
+        }
+        return got
+      }
+      const BAR = `[data-testid="db-cal-event"][data-row-id="${rowId}"]`
+      const rectOf = (sel) => evaluate(`(() => { const r = document.querySelector('${sel}')?.getBoundingClientRect(); return r ? { x: r.left, y: r.top, w: r.width, h: r.height } : null })()`)
+      const dragTo = async (handleSel, day) => {
+        const from = await rectOf(handleSel)
+        const to = await rectOf(`[data-testid="db-cal-day"][data-day="${day}"]`)
+        const sx = from.x + from.w / 2
+        const sy = from.y + from.h / 2
+        const tx = to.x + to.w / 2
+        const ty = to.y + to.h / 2
+        await move(sx, sy)
+        await press(sx, sy)
+        for (let i = 1; i <= 10; i += 1) {
+          await move(sx + ((tx - sx) * i) / 10, sy + ((ty - sy) * i) / 10, true)
+          await sleep(16)
+        }
+        await release(tx, ty)
+      }
+      const before = await evaluate('location.href')
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${made.id}?v=${calView}&m=2026-03` })
+      await waitFor(`!!document.querySelector('${BAR} [data-testid="db-cal-resize-end"]')`, 15000)
+      await waitHydrated(`${BAR} [data-testid="db-cal-resize-end"]`)
+      const page = await evaluate('location.href')
+      await dragTo(`${BAR} [data-testid="db-cal-resize-end"]`, '2026-03-12')
+      const widened = await waitServer('2026-03-10~2026-03-12')
+      const cell = await rectOf('[data-testid="db-cal-day"][data-day="2026-03-10"]')
+      const wide = await waitFor(`(document.querySelector('${BAR}')?.getBoundingClientRect().width ?? 0) > ${cell.w * 2.5}`, 5000)
+      check('★ 오른쪽 끝을 3/12 로 끌면 끝이 3/12(셋째 날까지 막대) · 링크는 열리지 않는다',
+        widened === '2026-03-10~2026-03-12' && wide && (await evaluate('location.href')) === page, JSON.stringify({ widened, wide, before }))
+      await dragTo(`${BAR} [data-testid="db-cal-resize-start"]`, '2026-03-11')
+      const moved = await waitServer('2026-03-11~2026-03-12')
+      check('★ 왼쪽 끝을 3/11 로 끌면 시작만 3/11 — 끝은 그대로', moved === '2026-03-11~2026-03-12', moved)
+      await dragTo(`${BAR} [data-testid="db-cal-resize-end"]`, '2026-03-11')
+      const folded = await waitServer('2026-03-11~')
+      check('끝을 시작 날로 접으면 끝이 지워진다(하루짜리)', folded === '2026-03-11~', folded)
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

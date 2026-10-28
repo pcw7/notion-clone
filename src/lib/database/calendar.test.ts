@@ -24,6 +24,7 @@ import {
   isYmd,
   layoutWeek,
   monthGrid,
+  resizeDateValue,
   visibleDays,
   weekdayLabels,
   readCalendarLayout,
@@ -166,6 +167,35 @@ describe('⑨ 주의 시작 · 주말 숨기기 (C-3)', () => {
     const next = visibleDays(monthGrid('2026-03').weeks[2]!, false) // 3/16(월) ~ 3/20(금)
     const cont = layoutWeek(next, [{ id: 'friToMon', start: '2026-03-13', end: '2026-03-16' }], 3).placed[0]
     assert.deepEqual([cont?.col, cont?.span, cont?.continuesBefore], [0, 1, true])
+  })
+})
+
+describe('⑩ 가장자리로 기간 바꾸기 (C-4)', () => {
+  test('★ 끝을 늘이고 줄인다 — 날짜 글자만 · 끝이 없던 값은 시작의 시각을 빌린다 · 시작과 같은 날이면 끝을 지운다', () => {
+    assert.deepEqual(resizeDateValue({ start: '2026-03-10' }, 'end', '2026-03-12'), { start: '2026-03-10', end: '2026-03-12' })
+    assert.deepEqual(resizeDateValue({ start: '2026-03-10', end: '2026-03-12' }, 'end', '2026-03-11'), { start: '2026-03-10', end: '2026-03-11' })
+    assert.deepEqual(resizeDateValue({ start: '2026-03-10', end: '2026-03-12' }, 'end', '2026-03-10'), { start: '2026-03-10' }, '같은 날 — 끝을 지운다')
+    assert.deepEqual(resizeDateValue({ start: '2026-03-10', end: '2026-03-12' }, 'end', '2026-03-01'), { start: '2026-03-10' }, '시작 앞 — 시작에서 멈춘다')
+    assert.deepEqual(
+      resizeDateValue({ start: '2026-03-10T09:30:00+09:00' }, 'end', '2026-03-11'),
+      { start: '2026-03-10T09:30:00+09:00', end: '2026-03-11T09:30:00+09:00' },
+      '시작의 시각을 빌린다',
+    )
+    assert.deepEqual(
+      resizeDateValue({ start: '2026-03-10T09:00', end: '2026-03-12T18:00' }, 'end', '2026-03-14'),
+      { start: '2026-03-10T09:00', end: '2026-03-14T18:00' },
+      '끝의 시각은 그대로',
+    )
+    assert.equal(resizeDateValue({ start: '2026-03-10', end: '2026-03-12' }, 'end', '2026-03-12'), null, '바뀌지 않으면 null')
+  })
+
+  test('★ 시작을 옮긴다 — 끝을 넘지 않고 · 끝과 같은 날이면 끝을 지운다', () => {
+    assert.deepEqual(resizeDateValue({ start: '2026-03-10', end: '2026-03-12' }, 'start', '2026-03-08'), { start: '2026-03-08', end: '2026-03-12' })
+    assert.deepEqual(resizeDateValue({ start: '2026-03-10', end: '2026-03-12' }, 'start', '2026-03-12'), { start: '2026-03-12' })
+    assert.deepEqual(resizeDateValue({ start: '2026-03-10', end: '2026-03-12' }, 'start', '2026-03-20'), { start: '2026-03-12' }, '끝 뒤 — 끝에서 멈춘다')
+    assert.deepEqual(resizeDateValue({ start: '2026-03-10' }, 'start', '2026-03-07'), { start: '2026-03-07' }, '하루짜리 값의 시작을 당기면 그 날로 옮긴다')
+    assert.deepEqual(resizeDateValue({ start: '2026-03-10T09:30' }, 'start', '2026-03-09'), { start: '2026-03-09T09:30' })
+    assert.equal(resizeDateValue({ start: '2026-03-10' }, 'start', '2026-03-10'), null)
   })
 })
 
