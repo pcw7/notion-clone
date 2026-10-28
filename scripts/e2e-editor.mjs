@@ -25341,6 +25341,40 @@ async function main() {
         await marksIn('[data-testid="db-gallery-card-title"]'))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('갤러리 — 토글 · 컬럼 안의 첫 이미지 (Y-1 · F-04-05)')) { try {
+      // 카드 미리보기가 본문을 깊이 우선 차례로 걸어 첫 이미지를 고른다 — 토글 안 · 컬럼 안의 이미지도(그 뒤의 최상위 이미지보다 먼저).
+      // 정본 §3.6 [보강] 갤러리 ⑤. 자기 데이터를 스스로 만든다(API · 본문은 서버 함수).
+      const stamp = Date.now()
+      const apiC = `${BASE}/api/workspaces/${workspaceId}`
+      const call = async (method, path, body) => {
+        const r = await fetch(`${apiC}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return r.json().catch(() => null)
+      }
+      const form = new FormData()
+      form.append('file', new Blob([Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64')], { type: 'image/png' }), '안쪽.png')
+      const uploaded = await (await fetch(`${apiC}/files`, { method: 'POST', headers: { cookie: authed.cookie, origin: BASE }, body: form })).json()
+      const made = (await call('POST', '/databases', { name: `안쪽 미리보기 ${stamp}` })).database
+      const titleProp = (await call('GET', `/data-sources/${made.dataSourceId}/properties`)).schema.properties.find((p) => p.type === 'title').id
+      const row = async (title) => (await call('POST', `/views/${made.defaultViewId}/rows`, { cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } }] })).row.id
+      const block = (type, extra = {}) => ({ id: randomUUID(), type, title: [], properties: {}, format: {}, children: [], ...extra })
+      const fileImage = () => block('image', { properties: { source: { type: 'file', file_id: uploaded.file.id } } })
+      const outerImage = () => block('image', { properties: { source: { type: 'external', url: `http://127.0.0.1:9/outer-${stamp}.png` } } })
+      const inToggle = await row('토글 사진')
+      const inColumn = await row('컬럼 사진')
+      await saveBody(inToggle, { blocks: [block('toggle', { title: [textRun('펼치기')], children: [fileImage()] }), outerImage()] })
+      await saveBody(inColumn, { blocks: [block('paragraph', { title: [textRun('앞')] }),
+        block('column_list', { children: [block('column', { children: [block('paragraph', { title: [textRun('왼쪽')] })] }), block('column', { children: [fileImage()] })] })] })
+      const gallery = (await call('POST', `/databases/${made.id}/views`, { type: 'gallery', name: '갤러리' })).view.id
+      const want = `/api/workspaces/${workspaceId}/files/${uploaded.file.id}/content`
+      const coverOf = (id) => `[data-testid="db-gallery-card"][data-row-id="${id}"] [data-testid="db-gallery-cover-image"]`
+      const srcOf = (id) => evaluate(`document.querySelector('${coverOf(id)}')?.getAttribute('src') ?? '(없음)'`)
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${made.id}?v=${gallery}` })
+      check('★ 토글 안의 이미지가 카드 미리보기 — 그 뒤의 최상위 이미지보다 먼저',
+        await waitFor(`document.querySelector('${coverOf(inToggle)}')?.getAttribute('src') === ${JSON.stringify(want)}`, 15000), await srcOf(inToggle))
+      check('★ 컬럼 안의 이미지도', await waitFor(`document.querySelector('${coverOf(inColumn)}')?.getAttribute('src') === ${JSON.stringify(want)}`, 8000), await srcOf(inColumn))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).
