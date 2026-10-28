@@ -69,6 +69,12 @@ import { calculationsFor, isCalculation } from './calculations.ts'
 import { relationOf, rollupOf, type ViewColumn } from './view-columns.ts'
 import { readOptionsOf } from './options.ts'
 import { isOpenPagesIn, type OpenPagesIn } from './open-pages.ts'
+import {
+  isSubItemFilterScope,
+  readSubItemFilterScope,
+  storedSubItemFilterScope,
+  type SubItemFilterScope,
+} from './sub-item-scope.ts'
 import { readLiveTemplate } from './template.ts'
 import { canViewOwnerDatabase } from './source-access.ts'
 import type { ValidationIssue } from '../contracts/rich-text.ts'
@@ -143,6 +149,11 @@ export type ViewDetail = {
   readonly effectiveSorts: readonly SortKey[]
   /** 행을 여는 방식(8n-1 · F-02-20 · `open_pages_in`) — 사이드 피크(기본) · 가운데 피크 · 전체 페이지. */
   readonly openPagesIn: OpenPagesIn
+  /**
+   * 하위 항목의 표시 범위(P-1 · `sub_item_filter_scope` · 정본 §3.5 [보강 P-1]) — 필터를 거는 층. 하위 항목이 켜진 표 · 목록에서만 뜻이
+   * 있다(보드 · 갤러리 · 캘린더는 늘 부모만). 읽기는 늘 셋 중 하나다(NULL 은 `both`).
+   */
+  readonly subItemFilterScope: SubItemFilterScope
 }
 
 export type ViewSummary = {
@@ -290,6 +301,7 @@ type ViewRow = {
   sub_group_by: unknown
   load_limit: number
   open_pages_in: OpenPagesIn
+  sub_item_filter_scope: string | null
   default_template_page_id: string | null
   configuration: unknown
   personal_filter: unknown
@@ -425,6 +437,7 @@ async function readView(tx: Tx, viewId: string, userId: string | null = null): P
   const row = await tx.queryMaybe<ViewRow>(
     `SELECT v.id, v.database_id, v.data_source_id, v.name, v.type, v.order_idx,
             v.filter, v.sorts, v.group_by, v.sub_group_by, v.load_limit, v.configuration, v.open_pages_in,
+            v.sub_item_filter_scope,
             -- 이 사람의 개인 필터 · 정렬(2h-1) — NULL 이면 덮어쓰지 않았다
             o.filter AS personal_filter, o.sorts AS personal_sorts,
             -- 살아 있는 템플릿을 가리킬 때만 준다(ViewDetail.defaultTemplateId). 0026 의 트리거가 "이 표의
@@ -457,6 +470,7 @@ async function readView(tx: Tx, viewId: string, userId: string | null = null): P
     sorts: sharedSorts,
     loadLimit: row.load_limit,
     openPagesIn: row.open_pages_in,
+    subItemFilterScope: readSubItemFilterScope(row.sub_item_filter_scope),
     groupBy: liveGroupBy(row.group_by, columns),
     subGroupBy: liveSubGroupBy(row.type, row.group_by, row.sub_group_by, columns),
     defaultTemplateId: row.default_template_page_id,
@@ -754,6 +768,8 @@ export type UpdateViewInput = {
   readonly calendar?: Partial<CalendarLayout>
   /** 행을 여는 방식(8n-1 · F-02-20) — 사이드 피크 · 가운데 피크 · 전체 페이지. 생략하면 그대로 둔다. */
   readonly openPagesIn?: OpenPagesIn
+  /** 하위 항목의 표시 범위(P-1) — 부모만 · 부모와 하위 · 하위만. 생략하면 그대로 둔다. `both` 는 NULL 로 저장한다. */
+  readonly subItemFilterScope?: SubItemFilterScope
 }
 
 /**
@@ -813,6 +829,7 @@ export async function updateView(
     return fail('invalid_sorts')
   }
   if (input.openPagesIn !== undefined && !isOpenPagesIn(input.openPagesIn)) return fail('invalid_layout')
+  if (input.subItemFilterScope !== undefined && !isSubItemFilterScope(input.subItemFilterScope)) return fail('invalid_layout')
 
   return withCommandTransaction(async (tx) => {
     const gate = await openView(tx, ctx, viewId, 'edit_structure')
@@ -906,6 +923,7 @@ export async function updateView(
               configuration = configuration || $13::jsonb,
               open_pages_in = coalesce($14, open_pages_in),
               sub_group_by = CASE WHEN $15::boolean THEN $16::jsonb ELSE sub_group_by END,
+              sub_item_filter_scope = CASE WHEN $17::boolean THEN $18::text ELSE sub_item_filter_scope END,
               updated_at = now()
         WHERE id = $1`,
       [
@@ -925,6 +943,8 @@ export async function updateView(
         input.openPagesIn ?? null,
         touchesSub,
         subGrouped === null ? null : JSON.stringify(subGrouped),
+        input.subItemFilterScope !== undefined,
+        input.subItemFilterScope === undefined ? null : storedSubItemFilterScope(input.subItemFilterScope),
       ],
     )
 

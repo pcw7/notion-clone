@@ -3156,6 +3156,21 @@ try {
     await rejectBy('★ 주의 시작이 null(키가 있으면 값이 있어야 한다 · 0117)', 'ck_view_calendar_layout', setConfig, [viewId, calendar({ week_start: null })])
     await rejectBy('주말 보이기가 참 · 거짓이 아니다(0117)', 'ck_view_calendar_layout', setConfig, [viewId, calendar({ show_weekends: 'no' })])
 
+    console.log('\n[41b] 하위 항목의 표시 범위 (0119 / §3.5 [보강 P-1] ① · 23번 트랙)')
+    const setScope = `UPDATE view SET sub_item_filter_scope = $2 WHERE id = $1`
+    await client.query('SAVEPOINT probe')
+    try {
+      await client.query(setScope, [viewId, 'parents'])
+      await client.query(setScope, [viewId, 'sub_items'])
+      await client.query(setScope, [viewId, null])
+      ok('부모만 · 하위만 · NULL(부모와 하위) — 정상 경로가 통과한다')
+    } catch (e) {
+      fail(`정상 경로가 거부됐다 (${e.constraint ?? e.code})`)
+    }
+    await client.query('ROLLBACK TO SAVEPOINT probe')
+    await rejectBy('★ 기본을 따로 적는다(both — 기본은 NULL 하나)', 'ck_view_sub_item_filter_scope', setScope, [viewId, 'both'])
+    await rejectBy('모르는 표시 범위', 'ck_view_sub_item_filter_scope', setScope, [viewId, 'children'])
+
     console.log('\n[42] 개인 필터 · 정렬 (0059 / §3.6 view_user_override · 2h-1조각)')
     const someUser = (await client.query(`SELECT id FROM "user" LIMIT 1`)).rows[0].id
     const putOverride = `INSERT INTO view_user_override (view_id, user_id, filter, sorts) VALUES ($1, $2, $3::jsonb, $4::jsonb)`

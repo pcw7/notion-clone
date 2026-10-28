@@ -52,6 +52,7 @@ import { todayOrUtc } from './relative-date.ts'
 import { refreshDerivedValues } from './derived-values.ts'
 import { compileSearch } from './search.ts'
 import { restrictedRowsSql, rowsAccessIn } from './row-access.ts'
+import type { SubItemFilterScope } from './sub-item-scope.ts'
 // 상수는 화면과 나눠 쓴다(`limits.ts` 머리말). 기존 import 경로를 깨지 않게 다시 내보낸다.
 import { DEFAULT_QUERY_LIMIT, MAX_QUERY_LIMIT, MAX_QUERY_PAGINATION } from './limits.ts'
 
@@ -69,15 +70,15 @@ export type QueriedRow = {
   readonly createdAt: Date
   readonly lastEditedAt: Date
   readonly version: string
-  /** 검색 중 하위 항목 트리(H-1)에서만 — 스스로 맞았는가 · 아래에 맞은 행이 있는가. 그 밖의 질의에는 없다. */
-  readonly searchHit?: SearchHit
+  /** 하위 항목 트리의 맞춤(H-1 · P-1)이 걸린 질의에서만 — 스스로 맞았는가 · 아래에 맞은 행이 있는가. 그 밖의 질의에는 없다. */
+  readonly treeMatch?: TreeMatch
 }
 
 /**
- * 검색 중 하위 항목 트리의 표시(H-1 · 정본 §3.6 [보강] 뷰 검색 ⑧). `matched` 가 false 면 맥락 행(맞은 자손 때문에 선 조상)이다 —
- * 그때 `below` 는 늘 true 다.
+ * 하위 항목 트리의 맞춤 표시(H-1 · P-1 — 정본 §3.6 [보강] 뷰 검색 ⑧ · §3.5 [보강 P-1] ③). `matched` 가 false 면 맥락 행(맞은 자손
+ * 때문에 선 조상)이다 — 그때 `below` 는 늘 true 다.
  */
-export type SearchHit = { readonly matched: boolean; readonly below: boolean }
+export type TreeMatch = { readonly matched: boolean; readonly below: boolean }
 
 export type QueryRowsInput = {
   readonly filter?: FilterNode | null
@@ -95,11 +96,12 @@ export type QueryRowsInput = {
    */
   readonly search?: string | null
   /**
-   * 검색 중 하위 항목 트리(H-1 · 정본 §3.6 [보강] 뷰 검색 ⑧) — 상위 항목 프로퍼티. 주면 검색어에 맞은 행뿐 아니라 **맞은 자손을 가진 행**
-   * (맥락 행)도 싣고 행마다 `searchHit` 을 단다. 검색어가 없으면 쓰지 않는다. 조상의 사슬은 권한 · 필터를 지난 살아 있는 행으로만
-   * 잇는다 — 그 밖의 부모 밑에 선 자식은 트리에 보일 자리가 없다(필터가 층마다 걸리는 것과 같다 · 휴지통 부모에서 멈춘다).
+   * 하위 항목 트리의 맞춤(H-1 · P-1 — 정본 §3.5 [보강 P-1]) — 상위 항목 프로퍼티와 표시 범위. 주면 필터가 범위의 층에만 걸리고(②),
+   * 맞은 행뿐 아니라 **맞은 자손을 가진 행**(맥락 행)도 싣고 행마다 `treeMatch` 를 단다(③). 조상의 사슬은 읽을 수 있는 살아 있는 행으로
+   * 잇는다(볼 수 없는 부모 · 휴지통 부모에서 멈춘다 · 부모만의 최상위는 필터를 지나야 한다). 하위 항목을 펴는 표 · 목록만 준다 — 부모만
+   * 그리는 뷰(보드 · 갤러리 · 캘린더)는 주지 않는다(필터 · 검색어를 모든 행에 — 예전 그대로).
    */
-  readonly searchAncestors?: { readonly parentPropertyId: string }
+  readonly treeScope?: { readonly parentPropertyId: string; readonly scope: SubItemFilterScope }
   /**
    * 이 행들로만 좁힌다(10n-16 — "고친 행이 아직 이 뷰에 서는가" · `row-in-view.ts`). 다른 술어(권한 · 필터 · 검색어)는 그대로 건다.
    */
@@ -145,9 +147,9 @@ export type RowRow = {
   created_at: Date
   last_edited_at: Date
   version: string
-  /** 검색 중 하위 항목 트리(H-1)에서만 — 스스로 맞았는가 · 아래에 맞은 행이 있는가. */
-  search_hit?: boolean
-  search_below?: boolean
+  /** 하위 항목 트리의 맞춤(H-1 · P-1)에서만 — 스스로 맞았는가 · 아래에 맞은 행이 있는가. */
+  tree_matched?: boolean
+  tree_below?: boolean
   /** 커서를 만들기 위한 정렬 값들. `sort_0`, `sort_1`, … */
   [k: string]: unknown
 }
@@ -226,41 +228,42 @@ export async function queryRows(
       input.search === undefined || input.search === null ? null : compileSearch(input.search, types, params, await readableScopes(tx, ctx))
     const onlySql = input.onlyRowIds === undefined ? null : `p.id = ANY(${params.bind([...input.onlyRowIds])}::uuid[])`
 
-    // 이 행이 뷰에 설 수 있는가 — 같은 표 · 템플릿 아님 · 살아 있음 · 권한 · 필터. 검색 중 트리(H-1)의 조상 사슬도 이것으로 잇는다.
-    const visible = [
+    // 행의 바탕 — 같은 표 · 템플릿 아님 · 살아 있음 · 권한
+    const base = [
       'p.data_source_id = $1',
       'p.is_template = false', // 불변식 R1
       "b.lifecycle = 'live'",
       accessSql, // 권한이 필터보다 먼저다(F-03-17)
-      filterSql,
     ].filter((s): s is string => s !== null)
 
-    // 검색 중 하위 항목 트리(H-1) — 맞은 행(sx_hit)과, 그 위로 설 수 있는 조상(sx_up)을 먼저 모은다. 층의 질의는 둘 중 하나에 든 행을
-    // 고르고, 행마다 어느 쪽인지 싣는다.
-    const ancestorProperty =
-      searchSql !== null && input.searchAncestors !== undefined ? params.bind(input.searchAncestors.parentPropertyId) : null
+    // 하위 항목 트리의 맞춤(H-1 · P-1) — 범위가 필터를 거는 층을 정한다: 문(gate — 설 수 있는가)과 맞음(match — 결과인가). 맞음이 있으면
+    // 맞은 행(sx_hit)과 그 위로 설 수 있는 조상(sx_up)을 먼저 모으고, 층의 질의는 둘 중 하나에 든 행을 고르며 어느 쪽인지 싣는다.
+    // 맞춤 밖이면 예전 그대로 — 필터 · 검색어를 모든 행에.
+    const scoped = input.treeScope === undefined ? null : compileTreeScope(input.treeScope, filterSql, searchSql, params)
+    const visible = scoped === null ? [...base, ...(filterSql === null ? [] : [filterSql])] : [...base, ...(scoped.gate === null ? [] : [scoped.gate])]
+    const matchSql = scoped === null ? null : scoped.match
     const withSql =
-      ancestorProperty === null
+      scoped === null || matchSql === null
         ? ''
         : `WITH RECURSIVE sx_hit AS (
-             SELECT p.id FROM page p JOIN block b ON b.id = p.id WHERE ${[...visible, searchSql].join(' AND ')}
+             SELECT p.id FROM page p JOIN block b ON b.id = p.id WHERE ${[...visible, matchSql].join(' AND ')}
            ), sx_up AS (
              SELECT p.id FROM sx_hit sh
-               JOIN relation_edge se ON se.from_page_id = sh.id AND se.property_id = ${ancestorProperty}
+               JOIN relation_edge se ON se.from_page_id = sh.id AND se.property_id = ${scoped.parent}
                JOIN page p ON p.id = se.to_page_id JOIN block b ON b.id = p.id
               WHERE ${visible.join(' AND ')}
              UNION
              SELECT p.id FROM sx_up su
-               JOIN relation_edge se ON se.from_page_id = su.id AND se.property_id = ${ancestorProperty}
+               JOIN relation_edge se ON se.from_page_id = su.id AND se.property_id = ${scoped.parent}
                JOIN page p ON p.id = se.to_page_id JOIN block b ON b.id = p.id
               WHERE ${visible.join(' AND ')}
            ) `
     const hitColumns =
-      ancestorProperty === null ? '' : ', p.id IN (SELECT id FROM sx_hit) AS search_hit, p.id IN (SELECT id FROM sx_up) AS search_below'
+      withSql === '' ? '' : ', p.id IN (SELECT id FROM sx_hit) AS tree_matched, p.id IN (SELECT id FROM sx_up) AS tree_below'
 
     const where = [
       ...visible,
-      ancestorProperty === null ? searchSql : '(p.id IN (SELECT id FROM sx_hit) OR p.id IN (SELECT id FROM sx_up))',
+      scoped === null ? searchSql : withSql === '' ? null : '(p.id IN (SELECT id FROM sx_hit) OR p.id IN (SELECT id FROM sx_up))',
       treeSql,
       onlySql,
       cursorSql,
@@ -317,12 +320,50 @@ export async function queryRows(
  */
 export function compileTree(tree: NonNullable<QueryRowsInput['tree']>, params: ParamBag): string {
   const property = params.bind(tree.parentPropertyId)
-  if (tree.under === null) {
-    return `NOT EXISTS (SELECT 1 FROM relation_edge te JOIN block tb ON tb.id = te.to_page_id
-                         WHERE te.property_id = ${property} AND te.from_page_id = p.id AND tb.lifecycle = 'live')`
-  }
+  if (tree.under === null) return rootSql(property)
   return `EXISTS (SELECT 1 FROM relation_edge te
                    WHERE te.property_id = ${property} AND te.from_page_id = p.id AND te.to_page_id = ${params.bind(tree.under)}::uuid)`
+}
+
+/**
+ * 최상위 행인가 — 살아 있는 부모가 없다(부모가 휴지통이면 최상위 · 정본 [보강] 하위 항목 ⑥). `property` 는 상위 항목 프로퍼티의 자리표.
+ * 바깥 질의에 `page p` 가 있다고 전제한다. 트리의 최상위 층 · 표시 범위의 층(P-1) · 열 집계의 층이 같은 술어를 쓴다.
+ */
+export function rootSql(property: string): string {
+  return `NOT EXISTS (SELECT 1 FROM relation_edge te JOIN block tb ON tb.id = te.to_page_id
+                       WHERE te.property_id = ${property} AND te.from_page_id = p.id AND tb.lifecycle = 'live')`
+}
+
+/**
+ * 표시 범위의 문 · 맞음(P-1 · 정본 §3.5 [보강 P-1] ② ③) — 바깥 질의에 `page p` 가 있다고 전제한다.
+ *
+ *   부모만      문 = 최상위면 필터   맞음 = 검색어
+ *   부모와 하위  문 = 없음           맞음 = 필터 ∧ 검색어
+ *   하위만      문 = 없음           맞음 = (최상위거나 필터) ∧ 검색어
+ *
+ * 맞음이 늘 참이면(검색어가 없고 범위의 층에 필터가 걸리지 않는다) `match` 는 null — 맥락 행이 생기지 않는다.
+ */
+export function compileTreeScope(
+  treeScope: NonNullable<QueryRowsInput['treeScope']>,
+  filterSql: string | null,
+  searchSql: string | null,
+  params: ParamBag,
+): { readonly parent: string; readonly gate: string | null; readonly match: string | null } {
+  // 자리표는 쓸 때만 묶는다 — 묶고 SQL 에 쓰지 않으면 Postgres 가 그 타입을 정하지 못해 질의가 죽는다(필터 · 검색어가 없는 트리)
+  let bound: string | null = null
+  const parent = (): string => (bound ??= params.bind(treeScope.parentPropertyId))
+  const gate = treeScope.scope === 'parents' && filterSql !== null ? `(NOT ${rootSql(parent())} OR ${filterSql})` : null
+  const filterPart =
+    filterSql === null || treeScope.scope === 'parents'
+      ? null
+      : treeScope.scope === 'sub_items'
+        ? `(${rootSql(parent())} OR ${filterSql})`
+        : filterSql
+  const parts = [filterPart, searchSql].filter((s): s is string => s !== null)
+  const match = parts.length === 0 ? null : parts.join(' AND ')
+  // 맞음이 있으면 조상 사슬(sx_up)이 상위 항목 프로퍼티를 쓴다
+  if (match !== null) parent()
+  return { parent: bound ?? '', gate, match }
 }
 
 export function toQueriedRow(row: RowRow): QueriedRow {
@@ -336,7 +377,7 @@ export function toQueriedRow(row: RowRow): QueriedRow {
     createdAt: row.created_at,
     lastEditedAt: row.last_edited_at,
     version: row.version,
-    ...(typeof row.search_hit === 'boolean' ? { searchHit: { matched: row.search_hit, below: row.search_below === true } } : {}),
+    ...(typeof row.tree_matched === 'boolean' ? { treeMatch: { matched: row.tree_matched, below: row.tree_below === true } } : {}),
   }
 }
 

@@ -14,8 +14,9 @@
  *
  * 받는 것은 페이지네이션뿐이다: `cursor` · `limit`. 그리고 **뷰 검색어** `q`(2e-1 · F-04-27) — 필터와 AND 로 붙는 임시 조건이고 뷰에
  * 저장하지 않는다(04 *"검색은 임시 상태"*). 공유 상태(필터)를 바꾸지 않으므로 위의 원칙과 부딪히지 않는다. 검색 중에도 하위 항목
- * 트리로 읽는다 — 층마다 맞은 행과 **맞은 자손을 가진 행**(맥락 행 · 화면이 회색으로 그린다)을 주고 행마다 `searchHit` 을 단다(H-1 ·
- * 정본 §3.6 [보강] 뷰 검색 ⑧ — 처음엔 맞는 행을 평평하게 줬다).
+ * 트리로 읽는다 — 층마다 맞은 행과 **맞은 자손을 가진 행**(맥락 행 · 화면이 회색으로 그린다)을 주고 행마다 `treeMatch` 를 단다(H-1 ·
+ * 정본 §3.6 [보강] 뷰 검색 ⑧ — 처음엔 맞는 행을 평평하게 줬다). 필터도 같다 — 뷰의 표시 범위(P-1 · 부모만 · 부모와 하위 · 하위만)가
+ * 필터를 거는 층을 정하고, 맞은 자손을 가진 조상이 맥락 행으로 선다(정본 §3.5 [보강 P-1]).
  *
  * ──────────────────────────────────────────────────────────────────────
  * 행 추가도 **뷰의 주소**로 받는다
@@ -76,7 +77,7 @@ export async function GET(request: Request, ctx: Ctx): Promise<Response> {
   const parent = params.get('parent')
   if (parent !== null && !isUuid(parent)) return Response.json({ error: 'invalid_value' }, { status: 400 })
   const search = normalizeSearch(params.get('q'))
-  // 검색 중에도 트리다(H-1) — 맞은 자손을 가진 행이 맥락 행으로 선다
+  // 검색 중에도 트리다(H-1) · 필터는 표시 범위의 층에(P-1) — 맞은 자손을 가진 행이 맥락 행으로 선다
   const pair = nestsSubItems(view.value.type) ? subItemPairOf(view.value.columns) : null
   if (parent !== null && pair === null) return Response.json({ error: 'invalid_value' }, { status: 400 })
   // 갤러리는 부모만(2f-1) — 트리를 펴지 않고 최상위 행만 읽는다. 검색 중에도 그렇다.
@@ -95,7 +96,7 @@ export async function GET(request: Request, ctx: Ctx): Promise<Response> {
     limit: Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : view.value.loadLimit,
     cursor: params.get('cursor'),
     ...(pair === null ? {} : { tree: { parentPropertyId: pair.parentPropertyId, under: parent } }),
-    ...(pair === null || search === null ? {} : { searchAncestors: { parentPropertyId: pair.parentPropertyId } }),
+    ...(pair === null ? {} : { treeScope: { parentPropertyId: pair.parentPropertyId, scope: view.value.subItemFilterScope } }),
     ...(parentsOnly === null ? {} : { tree: { parentPropertyId: parentsOnly.parentPropertyId, under: null } }),
     search,
     today,
@@ -106,10 +107,11 @@ export async function GET(request: Request, ctx: Ctx): Promise<Response> {
   }
 
   // 열 집계(2d-1 · F-04-16) — 첫 페이지에만 함께 싣는다(04 *"행 쿼리 응답에 aggregates 를 함께 담아 1회 왕복"*). 다음 페이지 · 자식 행
-  // 읽기에는 다시 계산하지 않는다 — 대상은 필터를 지난 행 전부라 페이지마다 같다.
+  // 읽기에는 다시 계산하지 않는다 — 대상은 필터를 지난 행 전부라 페이지마다 같다. 트리면 표시 범위의 층에서만(P-1 ⑤).
   const first = params.get('cursor') === null && parent === null
   const calculations = first
-    ? await computeCalculations(session.ctx, view.value.dataSourceId, view.value.effectiveFilter, view.value.columns, search, today)
+    ? await computeCalculations(session.ctx, view.value.dataSourceId, view.value.effectiveFilter, view.value.columns, search, today,
+        pair === null ? null : { parentPropertyId: pair.parentPropertyId, scope: view.value.subItemFilterScope })
     : undefined
 
   // 갤러리의 카드 미리보기(2f-2) — 이 페이지의 행마다 본문의 첫 이미지. 미리보기를 끈 갤러리 · 다른 뷰에는 싣지 않는다.

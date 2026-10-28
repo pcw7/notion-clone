@@ -17,7 +17,8 @@ import { calculationResult, canCalculate, type Calculation, type CalculationResu
 import { compileFilter, ParamBag, propertyIdsIn, type FilterContext, type FilterNode } from './filter.ts'
 import { todayOrUtc } from './relative-date.ts'
 import { refreshDerivedValues } from './derived-values.ts'
-import { readPropertyTypes } from './query.ts'
+import { readPropertyTypes, rootSql } from './query.ts'
+import type { SubItemFilterScope } from './sub-item-scope.ts'
 import { readOptionsOf } from './options.ts'
 import { compileSearch } from './search.ts'
 import { restrictedRowsSql, rowsAccessForDataSource, type RowsAccess } from './row-access.ts'
@@ -40,6 +41,11 @@ export async function computeCalculations(
   search: string | null = null,
   /** 보는 사람의 오늘(R-1 · 상대 날짜 필터 · 없으면 UTC) — 표에 보이는 행과 같은 행을 센다. */
   today: string | null = null,
+  /**
+   * 하위 항목 트리의 표시 범위(P-1 · 정본 §3.5 [보강 P-1] ⑤) — 결과 행은 범위가 필터를 거는 층의 행이다(부모만: 최상위 · 하위만: 최상위가
+   * 아닌 행 · 부모와 하위: 모든 층). 맥락 행 · 필터가 걸리지 않는 층의 행은 세지 않는다. 트리가 아닌 뷰는 null.
+   */
+  level: { readonly parentPropertyId: string; readonly scope: SubItemFilterScope } | null = null,
 ): Promise<Calculations> {
   const wanted = columns.filter(
     (c): c is CalculatedColumn & { calculation: Calculation } =>
@@ -54,7 +60,7 @@ export async function computeCalculations(
     if (access === null) return {}
     // relation 의 제목(V-2)을 찾을 읽기 범위 — 검색어가 있을 때만
     const scopes = search === null ? null : await readableScopes(tx, ctx)
-    const stats = await readStats(tx, dataSourceId, access, filter, { me: ctx.userId, today: todayOrUtc(today) }, search, wanted.map((c) => c.propertyId), scopes)
+    const stats = await readStats(tx, dataSourceId, access, filter, { me: ctx.userId, today: todayOrUtc(today) }, search, wanted.map((c) => c.propertyId), scopes, level)
     const out: Record<string, CalculationResult> = {}
     for (const column of wanted) {
       const s = stats.get(column.propertyId)
@@ -141,12 +147,18 @@ async function readStats(
   search: string | null,
   propertyIds: readonly string[],
   searchScopes: readonly string[] | null = null,
+  level: { readonly parentPropertyId: string; readonly scope: SubItemFilterScope } | null = null,
 ): Promise<Map<string, ColumnStats>> {
   const types = await readPropertyTypes(tx, dataSourceId)
   const params = new ParamBag(2)
   const accessSql = restrictedRowsSql(access, params)
   const filterSql = compileFilter(filter, types, params, context)
   const searchSql = search === null ? null : compileSearch(search, types, params, searchScopes)
+  // 표시 범위의 층(P-1 ⑤) — 부모만이면 최상위만, 하위만이면 최상위가 아닌 행만 결과다
+  const levelSql =
+    level === null || level.scope === 'both'
+      ? null
+      : `${level.scope === 'sub_items' ? 'NOT ' : ''}${rootSql(params.bind(level.parentPropertyId))}`
   // 상태 열의 완료 그룹(10n-30) — 그 열에만 완료 개수를 센다
   const completeOf = await completeIdsOf(tx, propertyIds.filter((id) => types.get(id) === 'status'))
   const columns = propertyIds.map((id, i) => {
@@ -163,6 +175,8 @@ async function readStats(
           filterSql === null ? '' : ` AND ${filterSql}`
         }${
           searchSql === null ? '' : ` AND ${searchSql}`
+        }${
+          levelSql === null ? '' : ` AND ${levelSql}`
         }
      )
      SELECT (SELECT count(*) FROM r)::int AS total, ${columns.join(', ')}`,

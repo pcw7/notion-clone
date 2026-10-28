@@ -16,6 +16,7 @@
 
 import { requireWorkspaceSession } from '@/lib/auth/route-session'
 import type { OpenPagesIn } from '@/lib/database/open-pages'
+import type { SubItemFilterScope } from '@/lib/database/sub-item-scope'
 import { deleteView, getView, moveView, updateView, type MvpViewType } from '@/lib/database/view'
 import type { GalleryLayout } from '@/lib/database/gallery'
 import type { CalendarLayout } from '@/lib/database/calendar'
@@ -86,6 +87,8 @@ export async function PATCH(request: Request, ctx: Ctx): Promise<Response> {
     ...('calendar' in body ? { calendar: body.calendar as Partial<CalendarLayout> } : {}),
     // 행을 여는 방식(8n-1 · F-02-20) — 값은 명령이 본다(틀리면 invalid_layout)
     ...('openPagesIn' in body ? { openPagesIn: body.openPagesIn as OpenPagesIn } : {}),
+    // 하위 항목의 표시 범위(P-1) — 값은 명령이 본다(틀리면 invalid_layout)
+    ...('subItemFilterScope' in body ? { subItemFilterScope: body.subItemFilterScope as SubItemFilterScope } : {}),
   })
 
   if (!updated.ok) {
