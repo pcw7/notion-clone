@@ -25271,6 +25271,37 @@ async function main() {
         await named())
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('뷰 검색 — relation 의 제목 (V-2 · F-04-27)')) { try {
+      // 검색어가 relation 칸이 보여 주는 대상 행의 제목에 들면 그 행이 맞는다 · 대상 행을 휴지통으로 보내면 맞지 않는다(칸이 보여 주지 않는다).
+      // 정본 §3.6 [보강] 뷰 검색 ⑥. 자기 데이터를 스스로 만든다(API).
+      const stamp = Date.now()
+      const apiC = `${BASE}/api/workspaces/${workspaceId}`
+      const call = async (method, path, body) => {
+        const r = await fetch(`${apiC}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return r.json().catch(() => null)
+      }
+      const projects = (await call('POST', '/databases', { name: `검색 프로젝트 ${stamp}` })).database
+      const tasks = (await call('POST', '/databases', { name: `검색 작업 ${stamp}` })).database
+      const titleOf = async (db) => (await call('GET', `/data-sources/${db.dataSourceId}/properties`)).schema.properties.find((p) => p.type === 'title').id
+      const [pTitle, tTitle] = [await titleOf(projects), await titleOf(tasks)]
+      const relation = (await call('POST', `/data-sources/${projects.dataSourceId}/relations`, { name: '작업들', targetDataSourceId: tasks.dataSourceId }))?.property?.id
+      const row = async (db, titleProp, title) => (await call('POST', `/views/${db.defaultViewId}/rows`, { cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } }] })).row.id
+      const ids = { 가: await row(projects, pTitle, '가'), 나: await row(projects, pTitle, '나') }
+      const x = await row(tasks, tTitle, '엑스 작업')
+      await call('POST', `/rows/${ids['가']}/relations/${relation}`, { add: [x] })
+      const rowsFor = async (q, names) => {
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${projects.id}?q=${encodeURIComponent(q)}` })
+        const want = JSON.stringify(names.map((n) => ids[n]).sort())
+        return waitFor(`document.readyState === 'complete' && JSON.stringify([...document.querySelectorAll('[data-testid="db-table"] tbody tr[data-row-id]')].map((tr) => tr.dataset.rowId).sort()) === ${JSON.stringify(want)}
+          && (${names.length} > 0 || !!document.querySelector('[data-testid="db-search-empty"]'))`, 15000)
+      }
+      const shown = () => evaluate(`JSON.stringify([...document.querySelectorAll('[data-testid="db-table"] tbody tr[data-row-id]')].map((tr) => tr.dataset.rowId))`)
+
+      check('★ "엑스" 로 찾으면 엑스 작업으로 이어진 가 — 자기 칸에 엑스가 없어도', typeof relation === 'string' && (await rowsFor('엑스', ['가'])), await shown())
+      await call('DELETE', `/rows/${x}`)
+      check('대상 행을 휴지통으로 보내면 맞지 않는다(칸이 그 연결을 보여 주지 않는다)', await rowsFor('엑스', []), await shown())
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

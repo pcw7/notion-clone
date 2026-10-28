@@ -21,6 +21,7 @@ import { readPropertyTypes } from './query.ts'
 import { readOptionsOf } from './options.ts'
 import { compileSearch } from './search.ts'
 import { restrictedRowsSql, rowsAccessForDataSource, type RowsAccess } from './row-access.ts'
+import { readableScopes } from '../permissions/effective.ts'
 
 /** 계산을 단 열 — 컬럼의 `calculation` 과 타입. */
 export type CalculatedColumn = { readonly propertyId: string; readonly type: string; readonly calculation?: Calculation | null }
@@ -51,7 +52,9 @@ export async function computeCalculations(
     // "만들기만" 이면 자기가 열 수 있는 행만 센다(6f-2b-1) — 표에 보이는 행과 같은 행이다. 남의 행이 합 · 개수로 새지 않는다.
     const access = await rowsAccessForDataSource(tx, ctx, dataSourceId)
     if (access === null) return {}
-    const stats = await readStats(tx, dataSourceId, access, filter, { me: ctx.userId, today: todayOrUtc(today) }, search, wanted.map((c) => c.propertyId))
+    // relation 의 제목(V-2)을 찾을 읽기 범위 — 검색어가 있을 때만
+    const scopes = search === null ? null : await readableScopes(tx, ctx)
+    const stats = await readStats(tx, dataSourceId, access, filter, { me: ctx.userId, today: todayOrUtc(today) }, search, wanted.map((c) => c.propertyId), scopes)
     const out: Record<string, CalculationResult> = {}
     for (const column of wanted) {
       const s = stats.get(column.propertyId)
@@ -137,12 +140,13 @@ async function readStats(
   context: FilterContext,
   search: string | null,
   propertyIds: readonly string[],
+  searchScopes: readonly string[] | null = null,
 ): Promise<Map<string, ColumnStats>> {
   const types = await readPropertyTypes(tx, dataSourceId)
   const params = new ParamBag(2)
   const accessSql = restrictedRowsSql(access, params)
   const filterSql = compileFilter(filter, types, params, context)
-  const searchSql = search === null ? null : compileSearch(search, types, params)
+  const searchSql = search === null ? null : compileSearch(search, types, params, searchScopes)
   // 상태 열의 완료 그룹(10n-30) — 그 열에만 완료 개수를 센다
   const completeOf = await completeIdsOf(tx, propertyIds.filter((id) => types.get(id) === 'status'))
   const columns = propertyIds.map((id, i) => {
