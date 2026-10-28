@@ -3142,7 +3142,8 @@ try {
     try {
       await client.query(setConfig, [viewId, calendar({})])
       await client.query(setConfig, [viewId, calendar({ view_range: 'week' })])
-      ok('날짜 속성 · 달 · 주 — 정상 경로가 통과한다(갤러리 키와 함께)')
+      await client.query(setConfig, [viewId, calendar({ week_start: 'monday', show_weekends: false })])
+      ok('날짜 속성 · 달 · 주 · 월요일 시작 · 주말 숨김(0117) — 정상 경로가 통과한다(갤러리 키와 함께)')
     } catch (e) {
       fail(`정상 경로가 거부됐다 (${e.constraint ?? e.code})`)
     }
@@ -3151,6 +3152,9 @@ try {
       [viewId, JSON.stringify({ calendar: { view_range: 'month' } })])
     await rejectBy('★ 모르는 보기 단위', 'ck_view_calendar_layout', setConfig, [viewId, calendar({ view_range: 'year' })])
     await rejectBy('날짜 속성이 글이 아니다', 'ck_view_calendar_layout', setConfig, [viewId, calendar({ date_property_id: 7 })])
+    await rejectBy('★ 모르는 주의 시작(0117)', 'ck_view_calendar_layout', setConfig, [viewId, calendar({ week_start: 'friday' })])
+    await rejectBy('★ 주의 시작이 null(키가 있으면 값이 있어야 한다 · 0117)', 'ck_view_calendar_layout', setConfig, [viewId, calendar({ week_start: null })])
+    await rejectBy('주말 보이기가 참 · 거짓이 아니다(0117)', 'ck_view_calendar_layout', setConfig, [viewId, calendar({ show_weekends: 'no' })])
 
     console.log('\n[42] 개인 필터 · 정렬 (0059 / §3.6 view_user_override · 2h-1조각)')
     const someUser = (await client.query(`SELECT id FROM "user" LIMIT 1`)).rows[0].id

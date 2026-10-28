@@ -3158,7 +3158,7 @@ CREATE INDEX ON row_position (view_id, group_key, order_idx);
 
 - ① `view.type = 'calendar'`(CHECK 은 그대로 · 명령이 받는다). 레이아웃은 `view.configuration.calendar = { date_property_id, view_range }`
   — 갤러리와 같은 규칙(한 키 · 두 키를 늘 함께 · 바뀐 키만 `configuration || patch` 로 덮는다 · CHECK `ck_view_calendar_layout` · `IS TRUE`).
-  `view_range` = month · week(주 보기는 화면이 아직). `show_weekends` 는 아직 없다.
+  `view_range` = month · week(주 보기는 화면이 아직). 주의 시작 · 주말은 ⑦(C-3 · 0117).
 - ② **날짜 속성은 필수다** — 만들거나 캘린더로 바꿀 때 저장된 것이 살아 있으면 그대로, 아니면 **첫 날짜 속성**(스키마 순서), 없으면 거부
   (`date_required` — 보드의 `group_required` 와 같은 태도). 지워지면 읽기가 null 을 준다(저장값은 남아 복원하면 돌아온다 · 04 의 "다른
   날짜 속성으로 자동 폴백"은 하지 않는다 — 그룹 속성과 같은 이유 §3.6 [보강] `view.group_by`).
@@ -3176,6 +3176,14 @@ CREATE INDEX ON row_position (view_id, group_key, order_idx);
   준다(수와 같은 조건 — 필터 · 뷰 검색 · 권한 · 템플릿 · 휴지통 · 하위 항목은 부모만 · 보는 사람의 오늘). 차례는 표와 같다(정렬 · 없으면 그
   뷰의 수동 순서) · 50개씩 커서로("더 보기"). 열 때마다 처음부터 읽는다(그사이 날짜가 생긴 행이 남지 않게). 항목은 그 행을 연다(⑤ 와
   같은 층 규칙). 목록에서 달력으로 끌어 날짜를 주는 것은 뒤로(§7).
+- ⑦ **[C-3] 주의 시작 요일 · 주말 숨기기** ⟨캘린더의 나머지 트랙 C-3 / 마이그레이션 0117⟩ — 04 의 `show_weekends` 와 주의 시작을
+  `configuration.calendar` 에 키로 둔다: `week_start` = `sunday`(없으면 · 지금까지의 격자) · `monday`(그룹의 주 시작 [보강 B-3] B-3b 와
+  같은 두 값) · `show_weekends` = `true`(없으면) · `false`. **기본값이면 싣지 않는다** — 저장 명령이 지금 값 위에 바꿀 키를 얹고 기본값은
+  빼고 쓴다(① 의 "바뀐 키만"). CHECK `ck_view_calendar_layout` 을 같은 이름으로 다시 건다(키가 있으면 그 값이어야 한다 — null 도 거부).
+  - 격자는 그 요일부터 6주다(서버가 읽는 기간 ③ 과 화면의 격자가 같은 함수 `monthGrid`). 머리의 요일 이름도 그 차례.
+  - 주말을 숨기면 토 · 일 칸을 그리지 않는다(다섯 칸) — 막대는 **그리는 날의 차례**로 칸을 센다: 금요일 ~ 월요일 일정은 금 · 월 두 칸에
+    이어 그린다 · 숨긴 주말에만 걸친 일정은 그 주에 그리지 않는다("+N" 에도 들지 않는다). 날짜 값은 그대로다(보기의 설정일 뿐).
+  - 보기의 설정이라 `edit_structure` 다(날짜 속성 고르기와 같은 패널).
 
 **[보강] 갤러리 — 카드 그리드부터** ⟨DB 심화 2f-1조각 · F-04-05 / 마이그레이션 없음⟩
 

@@ -445,7 +445,8 @@ export default async function DatabasePage({
   ])
   const visibleColumns = columns.filter((column) => column.visible)
   // 캘린더의 행 — 그 달의 격자(6주) 기간에 걸친 것만(2g-1 `queryCalendar`). 날짜 속성이 지워졌으면 읽지 않고 "고르라"를 그린다.
-  const calendarGrid = monthGrid(calendarMonth)
+  // 격자는 주의 시작 요일부터(C-3) — 서버가 읽는 기간과 화면의 격자가 같다
+  const calendarGrid = monthGrid(calendarMonth, view.value.calendar.week_start)
   const calendarPage =
     isCalendar && view.value.calendar.date_property_id !== null
       ? await queryCalendar(ctx, view.value.id, { from: calendarGrid.from, to: calendarGrid.to, search, today: viewerToday })
@@ -758,6 +759,8 @@ export default async function DatabasePage({
             viewId={view.value.id}
             tableName={tableName}
             month={calendarMonth}
+            weekStart={view.value.calendar.week_start}
+            showWeekends={view.value.calendar.show_weekends}
             datePropertyId={calendarPage.value.datePropertyId}
             datePropertyName={columns.find((c) => c.propertyId === calendarPage.value.datePropertyId)?.name}
             titlePropertyId={columns.find((c) => c.type === 'title')?.propertyId ?? null}
