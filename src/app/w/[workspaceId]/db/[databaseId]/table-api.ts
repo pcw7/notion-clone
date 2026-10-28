@@ -377,6 +377,18 @@ export function loadGroupRows(
   }))
 }
 
+/** 캘린더의 날짜 없는 행(C-2) — 머리의 "날짜 없음 N개" 가 여는 목록. `cursor` 가 null 이면 첫 페이지. */
+export function loadUndatedRows(workspaceId: string, viewId: string, cursor: string | null, search?: string | null): Promise<ApiResult<RowPage>> {
+  const query = new URLSearchParams()
+  if (cursor !== null) query.set('cursor', cursor)
+  if (search) query.set('q', search)
+  return call(`${base(workspaceId)}/views/${viewId}/calendar/undated?${query}`, { method: 'GET' }, (body) => ({
+    rows: body.rows as RowJson[],
+    hasMore: body.hasMore === true,
+    nextCursor: typeof body.nextCursor === 'string' ? body.nextCursor : null,
+  }))
+}
+
 /** 보드 그룹 머리의 계산만 다시 받는다(2d-3 · F-04-16) — 카드를 옮기거나 만든 뒤. 그룹 키 → 값(계산이 없으면 비어 있다). */
 export function loadGroupCalculations(
   workspaceId: string,

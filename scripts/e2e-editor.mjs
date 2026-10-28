@@ -25012,6 +25012,53 @@ async function main() {
         JSON.stringify({ href: await evaluate('location.href'), row: named[ids['라']] }))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('캘린더 — 날짜 없는 행 (C-2 · F-04-06)')) { try {
+      // 머리의 "날짜 없음 N개" 를 누르면 그 행들(뷰의 필터를 지난 것만)의 목록 — 열면 첫 항목에 포커스 · 항목은 그 행을 연다 · 다시 열면 그사이
+      // 날짜가 생긴 행은 빠진다. 정본 §3.6 [보강] 캘린더 ⑥. 자기 데이터를 스스로 만든다(API).
+      const stamp = Date.now()
+      const apiC = `${BASE}/api/workspaces/${workspaceId}`
+      const call = async (method, path, body) => {
+        const r = await fetch(`${apiC}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return r.json().catch(() => null)
+      }
+      const made = (await call('POST', '/databases', { name: `날짜 없는 행 ${stamp}` })).database
+      const due = (await call('POST', `/data-sources/${made.dataSourceId}/properties`, { name: '마감', type: 'date' })).property.id
+      const titleProp = (await call('GET', `/data-sources/${made.dataSourceId}/properties`)).schema.properties.find((p) => p.type === 'title').id
+      const ids = {}
+      for (const [title, date] of [['있음', { start: '2026-03-18' }], ['하나', null], ['둘', null], ['셋', null]]) {
+        ids[title] = (await call('POST', `/views/${made.defaultViewId}/rows`, { cells: [
+          { propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } },
+          ...(date === null ? [] : [{ propertyId: due, value: { type: 'date', date } }]),
+        ] })).row.id
+      }
+      const calView = (await call('POST', `/databases/${made.id}/views`, { type: 'calendar', name: '달력' })).view.id
+      const CHIP = '[data-testid="db-cal-undated"]'
+      const listed = () => evaluate(`JSON.stringify([...document.querySelectorAll('[data-testid="db-cal-undated-list"] [data-testid="db-cal-undated-item"]')].map((a) => a.textContent.trim()).sort())`)
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${made.id}?v=${calView}&m=2026-03` })
+      check('전제 — 머리에 "날짜 없음 3개"', await waitFor(`(document.querySelector('${CHIP}')?.textContent ?? '') === '날짜 없음 3개'`, 15000),
+        String(await evaluate(`document.querySelector('${CHIP}')?.textContent ?? '없음'`)))
+      await waitHydrated(CHIP)
+      await clickSelector(CHIP)
+      const opened = await waitFor(`document.querySelectorAll('[data-testid="db-cal-undated-list"] [data-testid="db-cal-undated-item"]').length === 3`, 8000)
+      const focused = await waitFor(`document.activeElement === document.querySelector('[data-testid="db-cal-undated-item"]')`, 3000)
+      check('★ 누르면 날짜 없는 행들(하나 · 둘 · 셋 — 날짜 있는 행은 없다) · 첫 항목에 포커스',
+        opened && focused && (await listed()) === JSON.stringify(['둘', '셋', '하나']), JSON.stringify({ list: await listed(), focused }))
+      await key('Escape')
+      await waitFor(`!document.querySelector('[data-testid="db-cal-undated-list"]')`, 3000)
+
+      // 그사이 '둘' 에 날짜가 생긴다 — 다시 열면 빠진다(열 때마다 처음부터)
+      await call('PATCH', `/rows/${ids['둘']}`, { cells: [{ propertyId: due, value: { type: 'date', date: { start: '2026-03-20' } } }] })
+      await clickSelector(CHIP)
+      check('다시 열면 처음부터 — 그사이 날짜가 생긴 행은 빠진다',
+        await waitFor(`JSON.stringify([...document.querySelectorAll('[data-testid="db-cal-undated-item"]')].map((a) => a.textContent.trim()).sort()) === ${JSON.stringify(JSON.stringify(['셋', '하나']))}`, 8000),
+        await listed())
+      await clickSelector(`[data-testid="db-cal-undated-item"][data-row-id="${ids['셋']}"]`)
+      check('★ 항목은 그 행을 연다 · 목록은 닫힌다',
+        (await waitFor(`location.href.includes('${ids['셋']}')`, 8000)) && (await waitFor(`!document.querySelector('[data-testid="db-cal-undated-list"]')`, 3000)),
+        String(await evaluate('location.href')))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).
