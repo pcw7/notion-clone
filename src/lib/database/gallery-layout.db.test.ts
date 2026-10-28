@@ -27,6 +27,7 @@ import { createRow, trashRow } from './row.ts'
 import { createView, getView, updateView } from './view.ts'
 import { DEFAULT_GALLERY_LAYOUT, type GalleryLayout } from './gallery.ts'
 import { readCardCovers } from './gallery-covers.ts'
+import { createPage } from '../block/page.ts'
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'
 
@@ -81,11 +82,13 @@ describe('① 레이아웃', () => {
 })
 
 describe('② 카드 미리보기 — 본문의 첫 이미지', () => {
-  test('★ 최상위의 첫 이미지 · 없으면 빠진다 · 첫 이미지가 비면 없음 · 토글 안은 보지 않는다 · 휴지통의 행은 빠진다', async (t) => {
+  test('★ 본문의 첫 이미지(깊이 우선 — 토글 · 컬럼 안도 · Y-1) · 없으면 빠진다 · 첫 이미지가 비면 없음 · 하위 페이지 안은 아니다 · 휴지통의 행은 빠진다', async (t) => {
     if (skipReason) return t.skip(skipReason)
     const db = unwrap(await createDatabase(fx.owner.ctx, { name: `미리보기 ${Date.now()}` }))
     const row = async () => unwrap(await createRow(fx.owner.ctx, db.dataSourceId, {})).id
-    const [withFile, withUrl, plain, emptyFirst, inToggle, trashed] = [await row(), await row(), await row(), await row(), await row(), await row()]
+    const [withFile, withUrl, plain, emptyFirst, inToggle, trashed, inColumn, afterToggle, inSubPage] = [
+      await row(), await row(), await row(), await row(), await row(), await row(), await row(), await row(), await row(),
+    ]
 
     const uploaded = await uploadFile(fx.owner.ctx, { bytes: randomBytes(64), mime: 'image/png', originalName: 'a.png' })
     assert.ok(uploaded.ok)
@@ -103,12 +106,29 @@ describe('② 카드 미리보기 — 본문의 첫 이미지', () => {
     await save(emptyFirst, [image(null), image({ type: 'external', url: 'https://example.com/later.png' })])
     await save(inToggle, [{ id: randomUUID(), type: 'toggle', title: [], children: [image({ type: 'external', url: 'https://example.com/inner.png' })] }])
     await save(trashed, [image({ type: 'external', url: 'https://example.com/trashed.png' })])
+    // 깊이 우선 차례(Y-1) — 컬럼 안 · 토글 안의 것이 그 뒤의 최상위 이미지보다 먼저 · 하위 페이지 안으로는 내려가지 않는다
+    const column = (...kids: EditorBlock[]): EditorBlock => ({ id: randomUUID(), type: 'column', title: [], children: kids })
+    await save(inColumn, [
+      para(),
+      { id: randomUUID(), type: 'column_list', title: [], children: [column(para()), column(image({ type: 'external', url: 'https://example.com/column.png' }))] },
+    ])
+    await save(afterToggle, [
+      { id: randomUUID(), type: 'toggle', title: [], children: [image({ type: 'external', url: 'https://example.com/first.png' })] },
+      image({ type: 'external', url: 'https://example.com/top-later.png' }),
+    ])
+    await save(inSubPage, [para()])
+    const sub = await createPage(fx.owner.ctx, { parentPageId: inSubPage as never })
+    await save(sub.id, [image({ type: 'external', url: 'https://example.com/sub-page.png' })])
     unwrap(await trashRow(fx.owner.ctx, trashed))
 
-    const covers = await readCardCovers(fx.owner.ctx, [withFile, withUrl, plain, emptyFirst, inToggle, trashed])
+    const covers = await readCardCovers(fx.owner.ctx, [withFile, withUrl, plain, emptyFirst, inToggle, trashed, inColumn, afterToggle, inSubPage])
     assert.deepEqual(covers, {
       [withFile]: `/api/workspaces/${fx.owner.ctx.workspaceId}/files/${uploaded.file.id}/content`,
       [withUrl]: 'https://example.com/a.png',
+      // 토글 · 컬럼 안도(Y-1 — 처음엔 최상위만 봤다) · 깊이 우선 차례 · 하위 페이지의 본문은 아니다(inSubPage 는 없다)
+      [inToggle]: 'https://example.com/inner.png',
+      [inColumn]: 'https://example.com/column.png',
+      [afterToggle]: 'https://example.com/first.png',
     })
   })
 
