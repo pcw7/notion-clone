@@ -11,6 +11,7 @@
 import { createContext } from 'react'
 
 import type { RowJson } from '@/lib/database/http'
+import type { DropTarget } from '@/lib/database/board-drag'
 
 /** 포인터의 자리(화면). */
 export type LanePoint = { readonly x: number; readonly y: number }
@@ -31,15 +32,18 @@ export type GroupLane = {
   readonly reload: () => void
 }
 
-export type GroupLanes = {
+/** 차선의 공통 — 덩이의 자리(화면). 표 · 갤러리의 덩이(`GroupLane`)와 보드의 가로줄(`BoardLane`)이 같은 등록소를 쓴다. */
+type LaneBase = { readonly bounds: () => DOMRect | null }
+
+export type GroupLanes<L extends LaneBase = GroupLane> = {
   /** 덩이의 차선을 올린다 — 돌려준 함수로 내린다(그사이 다시 올라온 것은 지우지 않는다). */
-  register(key: string, lane: GroupLane): () => void
+  register(key: string, lane: L): () => void
   /** 포인터 아래의 **다른** 덩이(세로로만 잰다 — 덩이는 위아래로 쌓인다). 없으면 null. */
-  laneAt(y: number, except: string): { readonly key: string; readonly lane: GroupLane } | null
+  laneAt(y: number, except: string): { readonly key: string; readonly lane: L } | null
 }
 
-export function createGroupLanes(): GroupLanes {
-  const lanes = new Map<string, GroupLane>()
+export function createGroupLanes<L extends LaneBase = GroupLane>(): GroupLanes<L> {
+  const lanes = new Map<string, L>()
   return {
     register(key, lane) {
       lanes.set(key, lane)
@@ -60,3 +64,19 @@ export function createGroupLanes(): GroupLanes {
 
 /** 그룹 화면 밖(평평한 표 · 행 페이지의 표)에서는 없다. */
 export const GroupLanesContext = createContext<GroupLanes | null>(null)
+
+/**
+ * 보드의 가로줄 하나(B-4d · 정본 [보강 B-4] ⑦) — 놓을 자리가 (열, 앞 카드)다(보드의 `resolveDrop`). 받는 가로줄이 제 열 · 카드로 자리를 세고
+ * 표시한다 · 받을 수 없는 가로줄 · 열이면 null.
+ */
+export type BoardLane = {
+  readonly bounds: () => DOMRect | null
+  readonly dropAt: (point: LanePoint) => DropTarget | null
+  readonly preview: (point: LanePoint | null) => void
+  /** 옮긴 카드를 받는다 — 서버의 답(새 값) · 그 자리에. */
+  readonly receive: (row: RowJson, target: DropTarget) => void
+  readonly reload: () => void
+}
+
+/** 하위 그룹이 있는 보드 밖에서는 없다. */
+export const BoardLanesContext = createContext<GroupLanes<BoardLane> | null>(null)

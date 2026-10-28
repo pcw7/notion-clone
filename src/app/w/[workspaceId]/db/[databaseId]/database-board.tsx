@@ -55,6 +55,7 @@
 import { rowOpenHref } from '@/lib/database/open-pages'
 import Link from '@/app/link'
 import {
+  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -103,6 +104,8 @@ import { EMPTY_ROLLUP_PAGE, type RollupPage } from '@/lib/database/rollup-functi
 import { formulaEvaluator, formulaValuesByRow, type FormulaPlan } from '@/lib/database/formula-plan'
 import type { FormulaValue } from '@/lib/formula/formula'
 import { useAdoptServerValue, useLiveServerRefresh } from './use-table-changes'
+import { BoardLanesContext, type BoardLane, type LanePoint } from './group-lanes'
+import { insertRow } from '@/lib/database/row-drag'
 import { useViewerToday } from './use-viewer-today'
 
 /** `GET /groups` 의 그룹 하나 — 행은 `rowJson`. 서버 렌더(`page.tsx`)도 같은 모양으로 내려준다. */
@@ -165,6 +168,8 @@ type Drag = {
   moved: boolean
   layout: readonly ColumnBox[]
   target: DropTarget | null
+  /** 지금 표시를 그리게 한 다른 가로줄(B-4d) — 떠나면 그 표시를 지운다. */
+  foreign: { readonly key: string; readonly lane: BoardLane } | null
 }
 
 type Editing = { readonly rowId: string; readonly draft: string }
@@ -212,12 +217,14 @@ export function DatabaseBoard(props: {
    * 가로줄 모드(B-4b · 정본 [보강 B-4] ⑤) — 하위 그룹이 있는 보드의 가로줄 하나. 열의 "더 보기" · 다시 읽기는 그 칸(가로줄 키), `+` 는 가로줄의
    * 값(`cells`)도 채우고, 옮기기는 그 가로줄 안에서(`subGroupKey`). 카드에 가로줄 속성의 배지를 그리지 않는다(줄이 말한다).
    */
-  lane?: { readonly key: string; readonly propertyId: string; readonly cells: readonly RowCell[] } | null
+  lane?: { readonly key: string; readonly propertyId: string; readonly cells: readonly RowCell[]; readonly accepts?: boolean } | null
   /** 표 변경을 스스로 구독하는가(기본 참) — 가로줄들은 바깥이 하나로 한다(B-4b). */
   live?: boolean
 }) {
   const { workspaceId, viewId, dataSourceId, tableName, columns, property, groupBy, manualOrder, access } = props
   const router = useRouter()
+  /** 가로줄들이 서로를 찾는 자리(B-4d) — 하위 그룹이 있는 보드 밖이면 null. */
+  const boardLanes = useContext(BoardLanesContext)
 
   const [groups, setGroupsState] = useState<readonly BoardGroupJson[]>(props.groups)
   const [error, setError] = useState<string | null>(null)
@@ -327,6 +334,8 @@ export function DatabaseBoard(props: {
 
   const endDrag = (): Drag | null => {
     const d = dragRef.current
+    // 다른 가로줄에 그리게 한 표시도 지운다(B-4d)
+    d?.foreign?.lane.preview(null)
     dragRef.current = null
     dropRef.current = null
     setDrop(null)
@@ -392,6 +401,7 @@ export function DatabaseBoard(props: {
       moved: true,
       layout: measure(),
       target: null,
+      foreign: null,
     }
     setDraggingId(p.row.id)
   }
@@ -427,6 +437,7 @@ export function DatabaseBoard(props: {
       moved: false,
       layout: [],
       target: null,
+      foreign: null,
     }
   }
 
@@ -446,6 +457,19 @@ export function DatabaseBoard(props: {
       d.layout = measure()
       setDraggingId(d.id)
     }
+    // 다른 가로줄 위면(B-4d) 그 가로줄이 제 자리를 세고 표시한다 — 이 보드의 표시는 지운다
+    const foreign = boardLanes !== null && props.lane ? boardLanes.laneAt(event.clientY, props.lane.key) : null
+    if (d.foreign !== null && d.foreign.lane !== foreign?.lane) d.foreign.lane.preview(null)
+    d.foreign = foreign
+    if (foreign !== null) {
+      d.target = null
+      if (dropRef.current !== null) {
+        dropRef.current = null
+        setDrop(null)
+      }
+      foreign.lane.preview({ x: event.clientX, y: event.clientY })
+      return
+    }
     // 받을 수 없는 열(첫 글자 열 · 옵션이 없는 범주 열 — `fillKeyOf` 가 null)에는 끌어 놓지 못한다(B-2b ③) · 제 열 안의 차례는 바꾼다
     const layout = d.layout.filter((c) => c.key === d.fromKey || accepting.has(c.key))
     d.target = resolveDrop(layout, { id: d.id, fromKey: d.fromKey }, event.clientX, event.clientY, manualOrder)
@@ -462,7 +486,14 @@ export function DatabaseBoard(props: {
       return
     }
     const d = endDrag()
-    if (!d || !d.moved || d.target === null) return
+    if (!d || !d.moved) return
+    // 다른 가로줄에 놓았다(B-4d) — 그 가로줄이 센 자리로 두 축을 한 번에
+    if (d.foreign !== null) {
+      const into = d.foreign.lane.dropAt({ x: event.clientX, y: event.clientY })
+      if (into !== null) void moveToLane(d.id, d.foreign.key, d.foreign.lane, into)
+      return
+    }
+    if (d.target === null) return
     void commitMove(d.id, d.fromKey, d.target)
   }
 
@@ -507,6 +538,33 @@ export function DatabaseBoard(props: {
     if (target.key !== fromKey) void refreshCalculations()
     // 정렬된 보드: 옮긴 카드의 자리는 정렬이 정한다(머리말). 열 안 이동은 여기 오지 않는다(resolveDrop 이 null).
     if (!manualOrder && target.key !== fromKey) await reloadColumn(target.key)
+  }
+
+  /**
+   * 다른 가로줄로(B-4d · 정본 [보강 B-4] ⑦) — 두 축을 한 번에(놓은 열 · 그 가로줄). 이 가로줄에서 먼저 빼고, 서버의 답(새 값의 카드)을 그
+   * 가로줄이 받는다. 거절되면 까닭을 말하고 서버 렌더를 다시 부른다(가로줄들이 제 칸을 받아들인다).
+   */
+  const moveToLane = async (rowId: string, laneKey: string, lane: BoardLane, target: DropTarget) => {
+    if (findRow(rowId) === null) return
+    setError(null)
+    setNotice(null)
+    update((current) =>
+      current.map((g) => (g.rows.some((r) => r.id === rowId) ? { ...g, count: Math.max(0, g.count - 1), rows: g.rows.filter((r) => r.id !== rowId) } : g)),
+    )
+    const result = await api.moveCard(workspaceId, viewId, {
+      rowId,
+      groupKey: target.key,
+      beforeRowId: target.beforeRowId,
+      search: props.search ?? null,
+      subGroupKey: laneKey,
+    })
+    if (!result.ok) {
+      setError(result.message)
+      lane.reload()
+      return
+    }
+    lane.receive(result.value.row, target)
+    if (!result.value.inView) setNotice(MOVED_OUT_OF_VIEW_NOTICE)
   }
 
   // ── 읽기 ────────────────────────────────────────────────────────────
@@ -670,6 +728,31 @@ export function DatabaseBoard(props: {
   const hiddenGroups = groups.filter((g) => g.hidden)
   /** 카드를 받을 수 있는 열 — 채울 값이 있다(`fillKeyOf`). 끌기 · "옮기기" 메뉴가 다른 열로 옮길 때 묻는다(B-2b ③). */
   const accepting = new Set(visible.filter((g) => fillKeyOf(g, property) !== null).map((g) => g.key))
+  // 가로줄(B-4d) — 다른 가로줄에서 끌어 오는 카드를 받는 차선으로 올린다. 렌더마다 다시 올린다(지금의 열 · 받을 수 있는 열을 그대로 읽게)
+  useEffect(() => {
+    if (boardLanes === null || !props.lane) return
+    const laneAccepts = props.lane.accepts !== false
+    // 끄는 카드는 이 가로줄에 없다 — 자리 세기에서 뺄 카드 · 제자리 열이 없다. 접힌 가로줄(본문이 숨었다)에는 놓지 못한다 — 보이지 않는 칸으로 옮기지 않는다
+    const shown = () => boardRef.current !== null && boardRef.current.closest('[hidden]') === null
+    const foreignDrop = (point: LanePoint): DropTarget | null =>
+      laneAccepts && shown() ? resolveDrop(measure().filter((c) => accepting.has(c.key)), { id: '', fromKey: '\u0000' }, point.x, point.y, manualOrder) : null
+    return boardLanes.register(props.lane.key, {
+      bounds: () => boardRef.current?.closest<HTMLElement>('[data-testid="db-lane"]')?.getBoundingClientRect() ?? null,
+      dropAt: foreignDrop,
+      preview: (point) => {
+        const target = point === null ? null : foreignDrop(point)
+        if (!sameTarget(dropRef.current, target)) {
+          dropRef.current = target
+          setDrop(target)
+        }
+      },
+      receive: (row, target) =>
+        update((current) =>
+          current.map((g) => (g.key === target.key ? { ...g, count: g.count + 1, rows: [...insertRow(g.rows, row, target.beforeRowId)] } : g)),
+        ),
+      reload: () => router.refresh(),
+    })
+  })
   /** 카드의 "옮기기"가 고를 자리(10m-2) — 화면에 선 열만(숨긴 그룹으로는 옮기지 않는다 — 끌기와 같다). */
   const cardMove = (rowId: string): CardMove | null => {
     const choices = moveChoices(visible, rowId, manualOrder)

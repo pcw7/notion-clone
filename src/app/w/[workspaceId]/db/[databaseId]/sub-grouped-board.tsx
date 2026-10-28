@@ -10,7 +10,7 @@
  * 칸들을 받아들인다. 가로줄 접기는 보는 사람의 이 기기에(열의 접기와 따로 — `group-collapse.ts` 의 다른 키).
  */
 
-import { useSyncExternalStore, type ComponentProps } from 'react'
+import { useState, useSyncExternalStore, type ComponentProps } from 'react'
 
 import { fillKeyOf, groupLabel, prefillCells } from '@/lib/database/board-drag'
 import type { RowJson } from '@/lib/database/http'
@@ -18,6 +18,7 @@ import type { SelectOption, StatusGroupKind } from '@/lib/database/property-type
 import { OptionChip } from './cell-view'
 import { DatabaseBoard, type BoardGroupJson, type GroupProperty } from './database-board'
 import { getGroupCollapseStore } from './group-collapse'
+import { BoardLanesContext, createGroupLanes, type BoardLane } from './group-lanes'
 import { useLiveServerRefresh } from './use-table-changes'
 import { useViewerToday } from './use-viewer-today'
 
@@ -49,12 +50,15 @@ export function SubGroupedBoard({
   // 상대 날짜(B-3)로 묶은 축이 있으면 서버의 오늘이 이 기기의 오늘과 다를 때 한 번 새로 받는다
   useViewerToday(subProperty.today ?? board.property.today)
 
+  // 가로줄들이 서로를 찾는 자리(B-4d) — 가로줄 사이로 끈 카드를 받는 가로줄이 자리를 센다
+  const [boardLanes] = useState(() => createGroupLanes<BoardLane>())
   const store = getGroupCollapseStore(`${board.viewId}:lanes`)
   const collapsed = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getServerSnapshot)
   const shown = lanes.filter((l) => !l.hidden)
   const hiddenLanes = lanes.length - shown.length
   const hiddenColumns = board.groups.filter((g) => g.hidden).length
   return (
+    <BoardLanesContext.Provider value={boardLanes}>
     <div data-testid="db-sub-grouped" className="flex flex-col gap-5">
       {shown.map((lane) => {
         const fill = fillKeyOf(lane, subProperty)
@@ -101,7 +105,13 @@ export function SubGroupedBoard({
                 groups={laneGroups}
                 calculation={null}
                 live={false}
-                lane={{ key: lane.key, propertyId: subProperty.id, cells: fill === null ? [] : prefillCells(subProperty.type, subProperty.id, fill) }}
+                lane={{
+                  key: lane.key,
+                  propertyId: subProperty.id,
+                  cells: fill === null ? [] : prefillCells(subProperty.type, subProperty.id, fill),
+                  // 채울 값이 없는 가로줄에는 다른 가로줄의 카드를 놓지 못한다(B-4d)
+                  accepts: fill !== null,
+                }}
               />
             </div>
           </section>
@@ -114,5 +124,6 @@ export function SubGroupedBoard({
         </p>
       )}
     </div>
+    </BoardLanesContext.Provider>
   )
 }
