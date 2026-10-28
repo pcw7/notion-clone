@@ -45,7 +45,7 @@ import {
 
 import type { DatabaseAccess } from '@/lib/database/database'
 import type { RowJson } from '@/lib/database/http'
-import { cellDays, daysBetween, layoutWeek, monthGrid, shiftDateValue, shiftMonth, type CalendarEvent } from '@/lib/database/calendar'
+import { cellDays, daysBetween, eventsOn, layoutWeek, monthGrid, shiftDateValue, shiftMonth, type CalendarEvent } from '@/lib/database/calendar'
 import { cellText, parseDraft, readCell, sameValue } from '@/lib/database/cell-format'
 import { PageIconView } from '../../page-icon-view'
 import * as api from './table-api'
@@ -54,6 +54,7 @@ import { SearchEmpty } from './view-search'
 import { useAdoptServerValue, useLiveServerRefresh } from './use-table-changes'
 import { useRowReminders } from './use-row-reminders'
 import { ReminderMark } from './reminder-bell'
+import { AnchoredLayer, containsAcrossLayers } from '../../anchored-layer'
 
 const UNTITLED = '제목 없음'
 const WEEKDAYS = ['일', '월', '화', '수', '목', '금', '토']
@@ -409,9 +410,12 @@ export function DatabaseCalendar(props: {
                       </span>
                     </div>
                     {hidden[i]! > 0 && (
-                      <span data-testid="db-cal-more" className="absolute bottom-0.5 left-1.5 text-[11px] text-neutral-500">
-                        +{hidden[i]}
-                      </span>
+                      <DayOverflow
+                        day={day}
+                        count={hidden[i]!}
+                        rows={eventsOn(day, events).map((e) => rowById.get(e.id)!)}
+                        hrefOf={(rowId) => rowOpenHref(workspaceId, rowId, props.peekBase ?? null)}
+                      />
                     )}
                   </div>
                 )
@@ -507,5 +511,95 @@ export function DatabaseCalendar(props: {
         </p>
       )}
     </section>
+  )
+}
+
+/**
+ * 하루에 넘치는 카드(C-1 · 정본 [보강] 캘린더 ⑤) — "+N"(그날 그려지지 않은 수) 단추가 그날에 걸친 카드 **전부**의 목록을 연다(날짜순 — 막대로
+ * 보이는 것도 함께). 항목은 행을 연다(막대의 링크와 같은 곳). 목록은 몸으로 내보낸 층(`AnchoredLayer`)이라 DOM 의 탭 순서가 단추 뒤로 잇지
+ * 않는다 — 열 때 첫 항목에 포커스 · Esc 는 단추로 · 바깥을 누르거나 포커스가 층과 단추 밖으로 나가면 닫는다(보드의 "옮기기"와 같다).
+ */
+function DayOverflow({
+  day,
+  count,
+  rows,
+  hrefOf,
+}: {
+  day: string
+  count: number
+  rows: readonly RowJson[]
+  hrefOf: (rowId: string) => string
+}) {
+  const [open, setOpen] = useState(false)
+  const boxRef = useRef<HTMLSpanElement>(null)
+  const buttonRef = useRef<HTMLButtonElement>(null)
+  const listRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    listRef.current?.querySelector<HTMLElement>('a')?.focus()
+    const onDown = (e: MouseEvent) => {
+      if (boxRef.current === null || !containsAcrossLayers(boxRef.current, e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [open])
+
+  const label = `${Number(day.slice(5, 7))}월 ${Number(day.slice(8))}일`
+  return (
+    <span
+      ref={boxRef}
+      className="absolute bottom-0.5 left-1"
+      onKeyDown={(e) => {
+        if (e.key === 'Escape' && open) {
+          e.stopPropagation()
+          setOpen(false)
+          buttonRef.current?.focus()
+        }
+      }}
+      onBlur={(e) => {
+        if (open && boxRef.current !== null && !(e.relatedTarget instanceof Node && containsAcrossLayers(boxRef.current, e.relatedTarget))) setOpen(false)
+      }}
+    >
+      <button
+        ref={buttonRef}
+        type="button"
+        data-testid="db-cal-more"
+        aria-haspopup="true"
+        aria-expanded={open}
+        aria-label={`${label}의 카드 ${count}개 더 — 그날의 카드 모두 보기`}
+        onClick={() => setOpen((o) => !o)}
+        className="rounded px-0.5 text-[11px] text-neutral-500 hover:bg-neutral-100 hover:text-neutral-700 aria-expanded:bg-neutral-100 dark:hover:bg-neutral-800 dark:hover:text-neutral-300 dark:aria-expanded:bg-neutral-800"
+      >
+        +{count}
+      </button>
+      {open && (
+        <AnchoredLayer align="start">
+          <div
+            ref={listRef}
+            role="group"
+            aria-label={`${label}의 카드`}
+            data-testid="db-cal-day-list"
+            className="w-60 popover-surface p-1 text-left text-sm font-normal dark:bg-neutral-950"
+          >
+            <p className="px-2 pb-1 pt-0.5 text-xs text-neutral-400">{label}</p>
+            {rows.map((row) => (
+              <Link
+                key={row.id}
+                href={hrefOf(row.id)}
+                scroll={false}
+                data-testid="db-cal-day-item"
+                data-row-id={row.id}
+                onClick={() => setOpen(false)}
+                className="flex min-w-0 items-center gap-1 rounded px-2 py-1.5 hover:bg-neutral-100 focus:bg-neutral-100 focus:outline-none dark:hover:bg-neutral-800 dark:focus:bg-neutral-800"
+              >
+                <PageIconView icon={row.icon} fallback />
+                <span className={`truncate ${row.title ? '' : 'text-neutral-400'}`}>{row.title || UNTITLED}</span>
+              </Link>
+            ))}
+          </div>
+        </AnchoredLayer>
+      )}
+    </span>
   )
 }

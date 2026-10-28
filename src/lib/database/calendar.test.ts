@@ -18,6 +18,7 @@ import {
   addDays,
   CALENDAR_RANGES,
   cellDays,
+  eventsOn,
   isValidSpan,
   isYm,
   isYmd,
@@ -118,6 +119,21 @@ describe('⑥ 달 격자 · 막대 배치 (2g-2)', () => {
     assert.deepEqual([by.a?.lane, by.c?.lane], [1, 2])
     assert.equal(by.d, undefined, '세 줄을 넘는다')
     assert.equal(hidden[1], 1, '3/9 에 하나가 숨었다')
+  })
+})
+
+describe('⑧ 하루에 넘치는 카드 (C-1)', () => {
+  test('★ 그날에 걸친 일정 전부 — 여러 날에 걸친 것도 · 들어온 차례 그대로', () => {
+    const events = [
+      { id: 'long', start: '2026-03-16', end: '2026-03-20' },
+      { id: 'a', start: '2026-03-18', end: '2026-03-18' },
+      { id: 'before', start: '2026-03-17', end: '2026-03-17' },
+      { id: 'b', start: '2026-03-18', end: '2026-03-18' },
+      { id: 'edge', start: '2026-03-18', end: '2026-03-19' },
+    ]
+    assert.deepEqual(eventsOn('2026-03-18', events).map((e) => e.id), ['long', 'a', 'b', 'edge'])
+    assert.deepEqual(eventsOn('2026-03-20', events).map((e) => e.id), ['long'], '끝나는 날도 든다')
+    assert.deepEqual(eventsOn('2026-03-21', events), [])
   })
 })
 
