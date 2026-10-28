@@ -91,6 +91,7 @@ import { GALLERY_ASPECTS, GALLERY_COVERS, GALLERY_SIZES, type GalleryLayout } fr
 import { OPEN_PAGES_IN, openPagesInLabel, type OpenPagesIn } from '@/lib/database/open-pages'
 import {
   SUB_ITEM_DISPLAYS,
+  cardDisplayHint,
   SUB_ITEM_FILTER_SCOPES,
   subItemDisplayLabel,
   subItemFilterScopeLabel,
@@ -148,6 +149,7 @@ export function ViewToolbar({
   openPagesIn,
   subItemFilterScope,
   subItemDisplay = 'nested',
+  subItemCardView = false,
 }: {
   workspaceId: string
   viewId: string
@@ -192,6 +194,8 @@ export function ViewToolbar({
   subItemFilterScope?: SubItemFilterScope
   /** 하위 항목의 표시 방식(P-3) — 토글로 중첩 · 평평한 목록. 표시 범위와 함께 온다(평평한 목록이면 범위 고르개가 "포함" 이 된다). */
   subItemDisplay?: SubItemDisplay
+  /** 카드 뷰(보드 · 갤러리 · 캘린더 — K-1)인가 — 그러면 "표시" 는 카드 속성 · 평평한 목록이고 범위 고르개가 없다(늘 부모만의 필터). */
+  subItemCardView?: boolean
 }) {
   const router = useRouter()
   const [panel, setPanel] = useState<Panel | null>(null)
@@ -362,6 +366,7 @@ export function ViewToolbar({
             filterScope={subItemFilterScope}
             onFilterScope={(scope) => run(() => updateView(workspaceId, viewId, { subItemFilterScope: scope }))}
             display={subItemDisplay}
+            displayKind={subItemFilterScope !== undefined ? 'tree' : subItemCardView ? 'card' : null}
             onDisplay={(display) => run(() => updateView(workspaceId, viewId, { subItemDisplay: display }))}
             onDependencies={(on) => run(() => setDependencies(workspaceId, dataSourceId, on))}
             onClose={close}
@@ -1716,6 +1721,7 @@ function PropertiesPanel({
   filterScope,
   onFilterScope,
   display,
+  displayKind,
   onDisplay,
   onDependencies,
   onClose,
@@ -1730,6 +1736,8 @@ function PropertiesPanel({
   onFilterScope: (scope: SubItemFilterScope) => Promise<boolean>
   /** 하위 항목의 표시 방식(P-3) — 표시 범위가 올 때만 고르개가 선다. */
   display: SubItemDisplay
+  /** 표시 고르개의 종류 — 표 · 목록(토글로 중첩 · 평평한 목록 + 범위) · 카드 뷰(카드 속성 · 평평한 목록 — K-1) · 없음. */
+  displayKind: 'tree' | 'card' | null
   onDisplay: (display: SubItemDisplay) => Promise<boolean>
   /** 종속 관계 켜기 · 끄기(2b-3). 날짜는 옮기지 않는다. */
   onDependencies: (on: boolean) => Promise<boolean>
@@ -1774,7 +1782,7 @@ function PropertiesPanel({
         <span className="text-xs text-neutral-400">{subItemsOn ? '끄면 일반 관계형 속성으로 남습니다' : '행 안에 행을 둡니다'}</span>
       </label>
       {/* 하위 항목의 표시 방식(P-3 · 정본 §3.5 [보강 P-1] ⑦) — 토글로 중첩 · 평평한 목록. 뷰의 공유 설정이다. */}
-      {subItemsOn && filterScope !== undefined && (
+      {subItemsOn && displayKind !== null && (
         <label className="flex items-center gap-2 pl-6 text-sm">
           표시
           <select
@@ -1786,11 +1794,16 @@ function PropertiesPanel({
           >
             {SUB_ITEM_DISPLAYS.map((d) => (
               <option key={d} value={d}>
-                {subItemDisplayLabel(d)}
+                {subItemDisplayLabel(d, displayKind === 'card')}
               </option>
             ))}
           </select>
         </label>
+      )}
+      {subItemsOn && displayKind === 'card' && (
+        <span className="pl-6 text-xs text-neutral-400" data-testid="db-subitems-display-hint">
+          {cardDisplayHint(display)}
+        </span>
       )}
       {/* 하위 항목의 표시 범위(P-2 · 정본 §3.5 [보강 P-1]) — 필터를 거는 층(평평한 목록이면 들어오는 행 — "포함"). 뷰의 공유 설정이다. */}
       {subItemsOn && filterScope !== undefined && (

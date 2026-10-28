@@ -6,6 +6,7 @@
  *   ① ★ 기본은 NULL 하나 — 읽기는 NULL · 모르는 값을 `both` 로, 쓰기는 `both` 를 NULL 로(CHECK 0119 와 같은 규칙)
  *   ② 고르개 — 셋 모두 이름과 한 줄이 있고, 이름은 노션의 셋 그대로
  *   ③ ★ 표시 방식(P-3) — 기본(토글로 중첩)은 NULL 하나 · 평평한 목록이면 범위 고르개가 "포함" 이고 한 줄이 들어오는 행을 말한다
+ *   ④ 카드 뷰(K-1) — 이름은 카드 속성 · 평평한 목록(노션 그대로) · 한 줄이 둘 다 있다
  */
 
 import { test } from 'node:test'
@@ -20,6 +21,8 @@ import {
   storedSubItemDisplay,
   storedSubItemFilterScope,
   subItemScopeCaption,
+  subItemDisplayLabel,
+  cardDisplayHint,
   subItemScopeHintFor,
   subItemFilterScopeHint,
   subItemFilterScopeLabel,
@@ -56,4 +59,11 @@ test('③ ★ 표시 방식(P-3) — 기본은 NULL 하나 · 평평한 목록�
   assert.equal(subItemScopeCaption('flattened'), '포함')
   assert.equal(subItemScopeHintFor('flattened', 'sub_items'), '하위 항목만 보입니다')
   assert.notEqual(subItemScopeHintFor('nested', 'sub_items'), subItemScopeHintFor('flattened', 'sub_items'))
+})
+
+test('④ 카드 뷰(K-1) — 카드 속성 · 평평한 목록', () => {
+  assert.equal(subItemDisplayLabel('nested'), '토글로 중첩')
+  assert.equal(subItemDisplayLabel('nested', true), '카드 속성')
+  assert.equal(subItemDisplayLabel('flattened', true), '평평한 목록')
+  assert.ok(cardDisplayHint('nested').length > 0 && cardDisplayHint('flattened').length > 0)
 })

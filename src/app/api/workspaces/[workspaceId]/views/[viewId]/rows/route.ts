@@ -33,7 +33,7 @@
 import { isUuid } from '@/lib/ids'
 import { requireWorkspaceSession } from '@/lib/auth/route-session'
 import { getView } from '@/lib/database/view'
-import { nestsSubItems, showsParentsOnly, subItemPairOf } from '@/lib/database/view-columns'
+import { cardParentsOnlyPair, nestsSubItems, showsParentsOnly, subItemPairOf } from '@/lib/database/view-columns'
 import { queryRows } from '@/lib/database/query'
 import { computeCalculations } from '@/lib/database/calculate'
 import { normalizeSearch } from '@/lib/database/search'
@@ -84,7 +84,7 @@ export async function GET(request: Request, ctx: Ctx): Promise<Response> {
   const flat = nest !== null && pair === null ? nest : null
   if (parent !== null && pair === null) return Response.json({ error: 'invalid_value' }, { status: 400 })
   // 갤러리는 부모만(2f-1) — 트리를 펴지 않고 최상위 행만 읽는다. 검색 중에도 그렇다.
-  const parentsOnly = showsParentsOnly(view.value.type) ? subItemPairOf(view.value.columns) : null
+  const parentsOnly = showsParentsOnly(view.value.type) ? cardParentsOnlyPair(view.value.columns, view.value.subItemDisplay) : null
 
   // 보는 사람의 오늘(R-1) — 상대 날짜 필터가 이것으로 범위를 편다(서버 렌더와 같은 날)
   const today = await readViewerToday()

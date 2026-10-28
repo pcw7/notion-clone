@@ -76,8 +76,24 @@ const SUB_ITEM_DISPLAY_LABEL: Readonly<Record<SubItemDisplay, string>> = {
   flattened: '평평한 목록',
 }
 
-export function subItemDisplayLabel(display: SubItemDisplay): string {
-  return SUB_ITEM_DISPLAY_LABEL[display]
+/** 카드 뷰(보드 · 갤러리 · 캘린더 — K-1)의 이름 — 노션 *Card property* · *Flattened list*. */
+const CARD_DISPLAY_LABEL: Readonly<Record<SubItemDisplay, string>> = {
+  nested: '카드 속성',
+  flattened: '평평한 목록',
+}
+
+export function subItemDisplayLabel(display: SubItemDisplay, card = false): string {
+  return (card ? CARD_DISPLAY_LABEL : SUB_ITEM_DISPLAY_LABEL)[display]
+}
+
+/** 카드 뷰의 고르개 밑의 한 줄(K-1) — 그 방식에서 무엇이 보이는지. */
+const CARD_DISPLAY_HINT: Readonly<Record<SubItemDisplay, string>> = {
+  nested: '상위 항목만 카드로 — 하위 항목은 카드의 "하위 항목" 속성으로 보입니다',
+  flattened: '하위 항목도 따로 카드로 보입니다',
+}
+
+export function cardDisplayHint(display: SubItemDisplay): string {
+  return CARD_DISPLAY_HINT[display]
 }
 
 /** 평평한 목록에서 범위 고르개 밑의 한 줄 — 어떤 행이 들어오는지. */
