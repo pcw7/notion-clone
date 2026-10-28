@@ -58,7 +58,7 @@ export function GroupedRows({
   const base = (table ?? gallery)!
   const router = useRouter()
   const [tick, setTick] = useState(0)
-  const [lanes] = useState(createGroupLanes)
+  const [lanes] = useState(() => createGroupLanes())
   // 상대 날짜 그룹(B-3) — 서버의 오늘이 이 기기의 오늘과 다르면 쿠키를 맞추고 한 번 새로 받는다
   useViewerToday(property.today)
   useTableChanges(
