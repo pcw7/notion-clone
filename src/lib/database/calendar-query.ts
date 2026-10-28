@@ -17,10 +17,10 @@
 import type { SessionContext } from '../auth/session-context.ts'
 import { withReadTransaction } from '../db/tx.ts'
 import { isValidSpan, MAX_CALENDAR_ROWS } from './calendar.ts'
-import { compileFilter, ParamBag, propertyIdsIn } from './filter.ts'
+import { compileFilter, ParamBag, propertyIdsIn, type FilterNode } from './filter.ts'
 import { todayOrUtc } from './relative-date.ts'
 import { refreshDerivedValues } from './derived-values.ts'
-import { compileTree, readPropertyTypes, toQueriedRow, type QueriedRow, type RowRow } from './query.ts'
+import { compileTree, queryRows, readPropertyTypes, toQueriedRow, type QueryPage, type QueriedRow, type RowRow } from './query.ts'
 import { compileSearch } from './search.ts'
 import { restrictedRowsSql, rowsAccessForDataSource } from './row-access.ts'
 import { getView } from './view.ts'
@@ -50,6 +50,46 @@ export type CalendarResult =
   | { readonly ok: false; readonly reason: CalendarFailure }
 
 const fail = (reason: CalendarFailure): CalendarResult => ({ ok: false, reason })
+
+/** 날짜 없는 행을 한 번에 읽는 수(C-2). */
+export const UNDATED_PAGE_SIZE = 50
+
+export type UndatedResult =
+  | { readonly ok: true; readonly value: QueryPage }
+  | { readonly ok: false; readonly reason: Exclude<CalendarFailure, 'invalid_value'> }
+
+/**
+ * 날짜 없는 행(C-2 · 정본 §3.6 [보강] 캘린더 ⑥) — 머리의 "날짜 없음 N개" 가 여는 목록. 행 질의(`queryRows`)에 날짜 칸의 "비어 있음" 규칙을
+ * AND 로 붙인다 — 수(`undated`)와 같은 조건(필터 · 뷰 검색 · 권한 · 템플릿 · 휴지통 · 하위 항목은 부모만). 차례는 표와 같다(정렬 · 없으면 그
+ * 뷰의 수동 순서) · 커서로 이어 읽는다.
+ */
+export async function queryUndatedRows(
+  ctx: SessionContext,
+  viewId: string,
+  input: { readonly search?: string | null; readonly today?: string | null; readonly cursor?: string | null } = {},
+): Promise<UndatedResult> {
+  const view = await getView(ctx, viewId)
+  if (!view.ok) return { ok: false, reason: 'not_found' }
+  if (view.value.type !== 'calendar') return { ok: false, reason: 'not_calendar' }
+  const dateProperty = view.value.calendar.date_property_id
+  if (dateProperty === null) return { ok: false, reason: 'no_date_property' }
+  // 수와 같은 조건 — 날짜 칸이 비어 있다(필터의 "비어 있음" 과 같은 술어 · 사이드카의 `date_start` 가 없다)
+  const undated: FilterNode = { property_id: dateProperty, operator: 'is_empty' }
+  const filter: FilterNode = view.value.effectiveFilter === null ? undated : { op: 'and', children: [view.value.effectiveFilter, undated] }
+  const pair = subItemPairOf(view.value.columns)
+  const page = await queryRows(ctx, view.value.dataSourceId, {
+    filter,
+    sorts: view.value.effectiveSorts,
+    manualOrderViewId: view.value.id,
+    limit: UNDATED_PAGE_SIZE,
+    cursor: input.cursor ?? null,
+    search: input.search ?? null,
+    today: input.today ?? null,
+    // 달력과 같이 부모만(③)
+    ...(pair === null ? {} : { tree: { parentPropertyId: pair.parentPropertyId, under: null } }),
+  })
+  return page.ok ? page : { ok: false, reason: 'not_found' }
+}
 
 export async function queryCalendar(
   ctx: SessionContext,

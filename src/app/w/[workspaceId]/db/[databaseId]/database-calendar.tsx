@@ -351,13 +351,11 @@ export function DatabaseCalendar(props: {
           </button>
         </span>
         {props.undated > 0 && (
-          <span
-            data-testid="db-cal-undated"
-            title="날짜 속성이 비어 있는 행은 달력에 놓이지 않습니다"
-            className="rounded-full bg-amber-50 px-2 py-0.5 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-200"
-          >
-            날짜 없음 {props.undated}개
-          </span>
+          <UndatedChip
+            count={props.undated}
+            load={(cursor) => api.loadUndatedRows(workspaceId, viewId, cursor, props.search ?? null)}
+            hrefOf={(rowId) => rowOpenHref(workspaceId, rowId, props.peekBase ?? null)}
+          />
         )}
       </div>
 
@@ -597,6 +595,149 @@ function DayOverflow({
                 <span className={`truncate ${row.title ? '' : 'text-neutral-400'}`}>{row.title || UNTITLED}</span>
               </Link>
             ))}
+          </div>
+        </AnchoredLayer>
+      )}
+    </span>
+  )
+}
+
+/**
+ * 날짜 없는 행(C-2 · 정본 [보강] 캘린더 ⑥) — 머리의 "날짜 없음 N개" 단추가 그 행들의 목록을 연다. 열 때마다 처음부터 읽고(`…/calendar/undated`
+ * — 수와 같은 조건 · 표의 차례 · 50개씩) "더 보기"로 이어 읽는다. 항목은 그 행을 연다. 층 규칙은 "+N" 의 목록과 같다(`DayOverflow`).
+ */
+function UndatedChip({
+  count,
+  load,
+  hrefOf,
+}: {
+  count: number
+  load: (cursor: string | null) => Promise<api.ApiResult<api.RowPage>>
+  hrefOf: (rowId: string) => string
+}) {
+  const [open, setOpen] = useState(false)
+  const [rows, setRows] = useState<readonly RowJson[] | null>(null)
+  const [next, setNext] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const boxRef = useRef<HTMLSpanElement>(null)
+  const buttonRef = useRef<HTMLButtonElement>(null)
+  const listRef = useRef<HTMLDivElement>(null)
+  const firstLoad = rows === null
+
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e: MouseEvent) => {
+      if (boxRef.current === null || !containsAcrossLayers(boxRef.current, e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [open])
+
+  // 첫 페이지가 오면 첫 항목에 포커스(키보드로 연 사람이 이어서 고르게)
+  useEffect(() => {
+    if (open && !firstLoad) listRef.current?.querySelector<HTMLElement>('a')?.focus()
+  }, [open, firstLoad])
+
+  const fetchPage = async (cursor: string | null) => {
+    setBusy(true)
+    setError(null)
+    const result = await load(cursor)
+    setBusy(false)
+    if (!result.ok) {
+      setError(result.message)
+      return
+    }
+    setRows((current) => (cursor === null ? result.value.rows : [...(current ?? []), ...result.value.rows]))
+    setNext(result.value.hasMore ? result.value.nextCursor : null)
+  }
+
+  const toggle = () => {
+    if (open) {
+      setOpen(false)
+      return
+    }
+    // 열 때마다 처음부터 — 그사이 날짜가 생긴 행이 남지 않게
+    setRows(null)
+    setNext(null)
+    setOpen(true)
+    void fetchPage(null)
+  }
+
+  return (
+    <span
+      ref={boxRef}
+      className="relative"
+      onKeyDown={(e) => {
+        if (e.key === 'Escape' && open) {
+          e.stopPropagation()
+          setOpen(false)
+          buttonRef.current?.focus()
+        }
+      }}
+      onBlur={(e) => {
+        if (open && boxRef.current !== null && !(e.relatedTarget instanceof Node && containsAcrossLayers(boxRef.current, e.relatedTarget))) setOpen(false)
+      }}
+    >
+      <button
+        ref={buttonRef}
+        type="button"
+        data-testid="db-cal-undated"
+        aria-haspopup="true"
+        aria-expanded={open}
+        title="날짜 속성이 비어 있어 달력에 놓이지 않은 행 — 눌러 보기"
+        onClick={toggle}
+        className="rounded-full bg-amber-50 px-2 py-0.5 text-xs text-amber-800 hover:bg-amber-100 aria-expanded:bg-amber-100 dark:bg-amber-950 dark:text-amber-200 dark:hover:bg-amber-900 dark:aria-expanded:bg-amber-900"
+      >
+        날짜 없음 {count}개
+      </button>
+      {open && (
+        <AnchoredLayer align="start">
+          <div
+            ref={listRef}
+            role="group"
+            aria-label="날짜 없는 행"
+            aria-busy={busy}
+            data-testid="db-cal-undated-list"
+            className="max-h-80 w-64 overflow-y-auto popover-surface p-1 text-left text-sm font-normal dark:bg-neutral-950"
+          >
+            <p className="px-2 pb-1 pt-0.5 text-xs text-neutral-400">날짜가 비어 있어 달력에 놓이지 않은 행</p>
+            {firstLoad && busy && (
+              <p role="status" className="px-2 py-1.5 text-neutral-400">
+                불러오는 중…
+              </p>
+            )}
+            {error && (
+              <p role="alert" className="px-2 py-1.5 text-red-600 dark:text-red-400">
+                {error}
+              </p>
+            )}
+            {rows?.map((row) => (
+              <Link
+                key={row.id}
+                href={hrefOf(row.id)}
+                scroll={false}
+                data-testid="db-cal-undated-item"
+                data-row-id={row.id}
+                onClick={() => setOpen(false)}
+                className="flex min-w-0 items-center gap-1 rounded px-2 py-1.5 hover:bg-neutral-100 focus:bg-neutral-100 focus:outline-none dark:hover:bg-neutral-800 dark:focus:bg-neutral-800"
+              >
+                <PageIconView icon={row.icon} fallback />
+                <span className={`truncate ${row.title ? '' : 'text-neutral-400'}`}>{row.title || UNTITLED}</span>
+              </Link>
+            ))}
+            {rows !== null && rows.length === 0 && <p className="px-2 py-1.5 text-neutral-400">날짜 없는 행이 없습니다</p>}
+            {next !== null && (
+              <button
+                type="button"
+                data-testid="db-cal-undated-more"
+                disabled={busy}
+                onClick={() => void fetchPage(next)}
+                className="mt-0.5 w-full rounded px-2 py-1.5 text-left text-neutral-500 hover:bg-neutral-100 disabled:opacity-50 dark:hover:bg-neutral-800"
+              >
+                {busy ? '불러오는 중…' : '더 보기'}
+              </button>
+            )}
           </div>
         </AnchoredLayer>
       )}
