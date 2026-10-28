@@ -23,7 +23,7 @@
 import type { Node as PmNode } from '@tiptap/pm/model'
 import type { Decoration, EditorView, NodeView } from '@tiptap/pm/view'
 
-import type { TocEntry } from '../block/toc.ts'
+import { currentTocIndex, TOC_SPY_LINE_MAX_PX, type TocEntry } from '../block/toc.ts'
 import type { MentionKind } from './mention-label.ts'
 import { tocEntriesFrom, tocEntryText } from './toc-plugin.ts'
 import { paintBlockColor } from './paint-block-color.ts'
@@ -57,6 +57,29 @@ export function tocNodeView(initial: PmNode, view: EditorView, decorations: read
   /** 블록 색 — 노드 뷰가 그리는 블록은 스키마의 toDOM 이 다는 `data-color` 를 직접 단다(`paint-block-color.ts` — 할 일 · 토글과 같은 함수). */
   const paintColor = (current: PmNode): void => paintBlockColor(dom, current)
 
+  // 스크롤 스파이(T-1 · 정본 [보강] 목차 ⑤) — 기준선을 지난 마지막 헤딩의 항목에 `aria-current="location"`. 스크롤(어느 조상이 굴러도 —
+  // 잡는 단계로 듣는다) · 창 크기 바꿈을 한 프레임에 한 번 묶어 다시 센다. 접힌 토글 안의 헤딩(그려지지 않았다)은 건너뛴다.
+  let frame = 0
+  const spy = (): void => {
+    frame = 0
+    const links = [...dom.querySelectorAll<HTMLAnchorElement>('a.blk-toc-link')]
+    const tops = links.map((link) => {
+      const id = link.dataset.tocTarget
+      const target = id ? view.dom.querySelector<HTMLElement>(`[data-block-id="${CSS.escape(id)}"]`) : null
+      return target === null || target.getClientRects().length === 0 ? null : target.getBoundingClientRect().top
+    })
+    const current = currentTocIndex(tops, Math.min(TOC_SPY_LINE_MAX_PX, window.innerHeight * 0.3))
+    links.forEach((link, i) => {
+      if (i === current) link.setAttribute('aria-current', 'location')
+      else link.removeAttribute('aria-current')
+    })
+  }
+  const schedule = (): void => {
+    if (frame === 0) frame = requestAnimationFrame(spy)
+  }
+  document.addEventListener('scroll', schedule, { capture: true, passive: true })
+  window.addEventListener('resize', schedule, { passive: true })
+
   const render = (entries: readonly TocEntry[]): void => {
     if (entries === shown) return
     shown = entries
@@ -86,6 +109,7 @@ export function tocNodeView(initial: PmNode, view: EditorView, decorations: read
       list.append(item)
     }
     dom.replaceChildren(list)
+    schedule()
   }
 
   // 링크를 누르는 순간 포커스 · 캐럿을 옮기지 않는다 — 다른 노드 뷰(하위 페이지 · 멘션)와 같은 모양. ⚠ **증명하지 못한 방어** — 빼도
@@ -117,5 +141,10 @@ export function tocNodeView(initial: PmNode, view: EditorView, decorations: read
     stopEvent: (event) => linkOf(event.target) !== null,
     // 목록은 우리가 다시 그린다 — PM 이 문서로 읽지 않는다. 선택 기록은 PM 이 읽는다(원자 블록의 선택).
     ignoreMutation: (mutation) => mutation.type !== 'selection',
+    destroy() {
+      if (frame !== 0) cancelAnimationFrame(frame)
+      document.removeEventListener('scroll', schedule, { capture: true })
+      window.removeEventListener('resize', schedule)
+    },
   }
 }

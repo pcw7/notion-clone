@@ -13,7 +13,7 @@ import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 
 import { DEFAULT_ANNOTATIONS, textRun, type RichTextRun } from '../contracts/rich-text.ts'
-import { headingLevelOf, headingsOfBlocks, hasTocLabel, tocEntries, type TocHeading } from './toc.ts'
+import { headingLevelOf, headingsOfBlocks, hasTocLabel, tocEntries, type TocHeading, currentTocIndex } from './toc.ts'
 
 let counter = 0
 const nextId = () => `00000000-0000-4000-8000-${String(++counter).padStart(12, '0')}`
@@ -94,5 +94,16 @@ describe('④ 자리', () => {
     const a = heading(1, '같은 제목')
     const b = heading(1, '같은 제목')
     assert.deepEqual(tocEntries([a, b]).map((e) => e.id), [a.id, b.id])
+  })
+})
+
+describe('스크롤 스파이 (T-1)', () => {
+  test('★ 기준선을 지난 마지막 헤딩 · 아무것도 지나지 않았으면 -1 · 그려지지 않은 헤딩은 건너뛴다', () => {
+    assert.equal(currentTocIndex([200, 900, 1600], 160), -1, '아직 아무 헤딩도 기준선 위로 오지 않았다')
+    assert.equal(currentTocIndex([-500, 120, 800], 160), 1, '둘째가 기준선을 막 지났다')
+    assert.equal(currentTocIndex([-900, -300, -10], 160), 2, '모두 지났으면 마지막')
+    assert.equal(currentTocIndex([-900, null, 400], 160), 0, '접힌 토글 안(null)은 건너뛴다')
+    assert.equal(currentTocIndex([], 160), -1)
+    assert.equal(currentTocIndex([160], 160), 0, '기준선에 딱 닿으면 지났다')
   })
 })

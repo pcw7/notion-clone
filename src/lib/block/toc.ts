@@ -35,6 +35,23 @@ export type TocHeading = {
 }
 
 /** 목차의 한 줄 — 헤딩과 들여쓰기 칸 수(0 부터). */
+/**
+ * 스크롤 스파이의 판정(T-1 · 정본 [보강] 목차 ⑤) — 헤딩들(문서 차례)의 위쪽 끝(화면 기준 · 그려지지 않은 헤딩은 null)과 기준선을 받아
+ * 기준선을 지난 **마지막** 헤딩의 차례. 아무것도 지나지 않았으면 -1. DOM 을 모르는 함수라 노드 뷰가 재서 넘긴다.
+ */
+export function currentTocIndex(tops: readonly (number | null)[], line: number): number {
+  let current = -1
+  for (const [i, top] of tops.entries()) {
+    if (top === null) continue
+    if (top <= line) current = i
+    else break
+  }
+  return current
+}
+
+/** 스크롤 스파이의 기준선(T-1) — 창 높이의 30% · 이만큼을 넘지 않는다(상단 바 아래의 첫 줄 근처). */
+export const TOC_SPY_LINE_MAX_PX = 160
+
 export type TocEntry = TocHeading & { readonly depth: number }
 
 const LEVEL_OF: ReadonlyMap<string, HeadingLevel> = new Map<string, HeadingLevel>([
