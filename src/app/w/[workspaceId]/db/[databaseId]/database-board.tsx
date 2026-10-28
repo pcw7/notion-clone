@@ -217,7 +217,14 @@ export function DatabaseBoard(props: {
    * 가로줄 모드(B-4b · 정본 [보강 B-4] ⑤) — 하위 그룹이 있는 보드의 가로줄 하나. 열의 "더 보기" · 다시 읽기는 그 칸(가로줄 키), `+` 는 가로줄의
    * 값(`cells`)도 채우고, 옮기기는 그 가로줄 안에서(`subGroupKey`). 카드에 가로줄 속성의 배지를 그리지 않는다(줄이 말한다).
    */
-  lane?: { readonly key: string; readonly propertyId: string; readonly cells: readonly RowCell[]; readonly accepts?: boolean } | null
+  lane?: {
+    readonly key: string
+    /** 가로줄의 이름 — 다른 가로줄의 카드 메뉴가 부른다(B-4e). */
+    readonly label: string
+    readonly propertyId: string
+    readonly cells: readonly RowCell[]
+    readonly accepts?: boolean
+  } | null
   /** 표 변경을 스스로 구독하는가(기본 참) — 가로줄들은 바깥이 하나로 한다(B-4b). */
   live?: boolean
 }) {
@@ -544,7 +551,7 @@ export function DatabaseBoard(props: {
    * 다른 가로줄로(B-4d · 정본 [보강 B-4] ⑦) — 두 축을 한 번에(놓은 열 · 그 가로줄). 이 가로줄에서 먼저 빼고, 서버의 답(새 값의 카드)을 그
    * 가로줄이 받는다. 거절되면 까닭을 말하고 서버 렌더를 다시 부른다(가로줄들이 제 칸을 받아들인다).
    */
-  const moveToLane = async (rowId: string, laneKey: string, lane: BoardLane, target: DropTarget) => {
+  const moveToLane = async (rowId: string, laneKey: string, lane: BoardLane, target: DropTarget, focus = false) => {
     if (findRow(rowId) === null) return
     setError(null)
     setNotice(null)
@@ -564,6 +571,8 @@ export function DatabaseBoard(props: {
       return
     }
     lane.receive(result.value.row, target)
+    // 메뉴로 옮겼으면(B-4e) 새 가로줄의 그 카드로 포커스를 넘긴다
+    if (focus) lane.focus(rowId)
     if (!result.value.inView) setNotice(MOVED_OUT_OF_VIEW_NOTICE)
   }
 
@@ -734,10 +743,15 @@ export function DatabaseBoard(props: {
     const laneAccepts = props.lane.accepts !== false
     // 끄는 카드는 이 가로줄에 없다 — 자리 세기에서 뺄 카드 · 제자리 열이 없다. 접힌 가로줄(본문이 숨었다)에는 놓지 못한다 — 보이지 않는 칸으로 옮기지 않는다
     const shown = () => boardRef.current !== null && boardRef.current.closest('[hidden]') === null
+    const takes = (columnKey: string) => laneAccepts && shown() && accepting.has(columnKey)
     const foreignDrop = (point: LanePoint): DropTarget | null =>
       laneAccepts && shown() ? resolveDrop(measure().filter((c) => accepting.has(c.key)), { id: '', fromKey: '\u0000' }, point.x, point.y, manualOrder) : null
     return boardLanes.register(props.lane.key, {
       bounds: () => boardRef.current?.closest<HTMLElement>('[data-testid="db-lane"]')?.getBoundingClientRect() ?? null,
+      label: props.lane.label,
+      takes,
+      focus: (rowId) =>
+        requestAnimationFrame(() => boardRef.current?.querySelector<HTMLElement>(`[data-row-id="${rowId}"] [data-testid="db-card-move"]`)?.focus()),
       dropAt: foreignDrop,
       preview: (point) => {
         const target = point === null ? null : foreignDrop(point)
@@ -746,10 +760,13 @@ export function DatabaseBoard(props: {
           setDrop(target)
         }
       },
-      receive: (row, target) =>
+      receive: (row, target) => {
         update((current) =>
           current.map((g) => (g.key === target.key ? { ...g, count: g.count + 1, rows: [...insertRow(g.rows, row, target.beforeRowId)] } : g)),
-        ),
+        )
+        // 정렬된 보드는 정렬이 자리를 정한다 — 그 칸을 다시 읽는다(가로줄 안의 끌기와 같다)
+        if (!manualOrder) void reloadColumn(target.key)
+      },
       reload: () => router.refresh(),
     })
   })
@@ -758,8 +775,22 @@ export function DatabaseBoard(props: {
     const choices = moveChoices(visible, rowId, manualOrder)
     if (choices === null) return null
     const labelByKey = new Map(visible.map((g) => [g.key, labelOf(g)]))
+    const self = props.lane
+    const column = visible.find((g) => g.rows.some((r) => r.id === rowId))
     return {
       ...choices,
+      // 다른 가로줄의 같은 열 맨 뒤(B-4e) — 열 때 센다(그때의 접힘 · 받는 열)
+      lanes: () =>
+        boardLanes === null || !self || column === undefined
+          ? []
+          : boardLanes
+              .list()
+              .filter((e) => e.key !== self.key && e.lane.takes(column.key))
+              .map((e) => ({
+                key: e.key,
+                label: e.lane.label,
+                go: () => void moveToLane(rowId, e.key, e.lane, { key: column.key, beforeRowId: null }, true),
+              })),
       others: choices.others.filter((o) => accepting.has(o.key)).map((o) => ({ ...o, label: labelByKey.get(o.key) ?? o.key })),
     }
   }
@@ -1090,6 +1121,8 @@ function BoardCard({
 /** 카드의 "옮기기"가 고를 자리 — 열의 이름을 붙였다(`moveChoices` 의 것). */
 type CardMove = {
   readonly others: readonly { readonly key: string; readonly label: string; readonly target: DropTarget }[]
+  /** 다른 가로줄로(B-4e) — 가로줄 모드에서만 있다 · 열 때 센다. */
+  readonly lanes: () => readonly { readonly key: string; readonly label: string; readonly go: () => void }[]
   readonly up: DropTarget | null
   readonly down: DropTarget | null
 }
@@ -1121,6 +1154,8 @@ function CardMoveMenu({ title, move, onMove }: { title: string; move: CardMove; 
     setOpen(false)
     onMove(target)
   }
+  // 다른 가로줄(B-4e) — 열 때 센다
+  const lanes = open ? move.lanes() : []
   const item = 'flex w-full items-center rounded px-2 py-1.5 text-left hover:bg-neutral-100 focus:bg-neutral-100 focus:outline-none dark:hover:bg-neutral-800 dark:focus:bg-neutral-800'
 
   return (
@@ -1179,6 +1214,27 @@ function CardMoveMenu({ title, move, onMove }: { title: string; move: CardMove; 
                 onClick={() => pick(o.target)}
               >
                 → {o.label}
+              </button>
+            ))}
+            {lanes.length > 0 && (
+              <p aria-hidden className="px-2 pb-0.5 pt-1.5 text-xs text-neutral-400">
+                다른 가로줄로
+              </p>
+            )}
+            {lanes.map((l) => (
+              <button
+                key={`lane:${l.key}`}
+                type="button"
+                data-testid="db-card-move-lane"
+                data-lane-key={l.key}
+                aria-label={`가로줄 ${l.label} — 같은 열의 맨 뒤로`}
+                className={item}
+                onClick={() => {
+                  setOpen(false)
+                  l.go()
+                }}
+              >
+                ↳ {l.label}
               </button>
             ))}
           </div>
