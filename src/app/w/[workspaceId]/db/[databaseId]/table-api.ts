@@ -359,8 +359,11 @@ export function loadGroupRows(
   groupKey: string,
   cursor: string | null,
   search?: string | null,
+  /** 하위 그룹(B-4b)의 칸 — 가로줄 키(`''` 도 키다). 없으면 열 전체. */
+  sub?: string | null,
 ): Promise<ApiResult<RowPage>> {
   const query = new URLSearchParams({ group: groupKey })
+  if (sub !== undefined && sub !== null) query.set('sub', sub)
   if (cursor !== null) query.set('cursor', cursor)
   if (search) query.set('q', search)
   return call(`${base(workspaceId)}/views/${viewId}/groups?${query}`, { method: 'GET' }, (body) => ({
@@ -410,6 +413,8 @@ export function moveCard(
     readonly search?: string | null
     /** 덩이 안의 차례만(표의 그룹 G-2b) — 그 행이 그사이 다른 그룹 값이 됐으면 셀을 쓰지 않고 거부된다. */
     readonly within?: boolean
+    /** 하위 그룹(B-4b)의 가로줄 — 그 칸으로. 주지 않으면 그 행의 지금 가로줄. */
+    readonly subGroupKey?: string
   },
 ): Promise<ApiResult<MoveResult>> {
   return call(

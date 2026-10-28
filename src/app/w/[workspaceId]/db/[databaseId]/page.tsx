@@ -80,6 +80,7 @@ import { ExportButton } from '../../export-button'
 import { DatabaseTitle } from './database-title'
 import { DatabaseTable } from './database-table'
 import { GroupedRows } from './grouped-rows'
+import { SubGroupedBoard, type LaneJson } from './sub-grouped-board'
 import { DatabaseBoard, type BoardGroupJson, type GroupProperty } from './database-board'
 import { listTeamspaceDestinations } from '@/lib/block/move-page'
 import { MovePageControl } from '../../[pageId]/move-page-control'
@@ -347,6 +348,20 @@ export default async function DatabasePage({
           today: board !== null && board.ok ? board.value.today : null,
         }
       : null
+  // 하위 그룹(B-4b · 보드의 가로줄) — 가로줄 속성 · 가로줄들(칸의 행은 JSON 으로)
+  const subPage = board !== null && board.ok ? board.value.sub : null
+  const subColumn = subPage === null ? undefined : columns.find((c) => c.propertyId === subPage.propertyId)
+  const subProperty: GroupProperty | null =
+    subPage !== null && subColumn !== undefined && isGroupableType(subColumn.type)
+      ? { id: subColumn.propertyId, name: subColumn.name, type: subColumn.type, dateUnit: subPage.dateUnit, numberSize: subPage.numberSize, textMode: subPage.textMode, today: subPage.today }
+      : null
+  const lanes: LaneJson[] =
+    subPage === null
+      ? []
+      : subPage.groups.map((l) => ({
+          ...l,
+          cells: Object.fromEntries(Object.entries(l.cells).map(([k, c]) => [k, { ...c, rows: c.rows.map(rowJson) }])),
+        }))
   const groups: BoardGroupJson[] =
     board !== null && board.ok ? board.value.groups.map((g) => ({ ...g, rows: g.rows.map(rowJson) })) : []
   // 그룹 머리의 계산(2d-3) — 서버가 살아 있다고 본 것만(`liveGroupCalculation`). 이름은 숨긴 컬럼에서도 찾는다.
@@ -386,6 +401,8 @@ export default async function DatabasePage({
     view.value.effectiveFilter,
     view.value.effectiveSorts,
     groupBy,
+    // 하위 그룹(B-4b)도 — 바꾸면 보드가 가로줄째 다시 선다
+    view.value.subGroupBy,
     // 타입도 넣는다(2c-2) — 표는 컬럼을 자기 상태로 들고 있어서, 타입을 바꾼 뒤에도 옛 타입으로 칸을 그린다.
     // 집계 함수도(2d-2) — 바꾸면 표가 새 값으로 다시 선다(값은 서버 렌더가 준다).
     // 수식의 식도(2i-3a) — 고치면 표가 새 계획으로 다시 선다(표는 컬럼을 자기 상태로 든다).
@@ -652,7 +669,35 @@ export default async function DatabasePage({
         <SearchEmpty search={search} />
       )}
       {isBoard ? (
-        groupBy !== null && groupProperty !== null && board !== null && board.ok ? (
+        groupBy !== null && groupProperty !== null && board !== null && board.ok && subProperty !== null ? (
+          // 하위 그룹이 있는 보드(B-4b) — 가로줄마다 보드 하나
+          <SubGroupedBoard
+            key={contentKey}
+            subProperty={subProperty}
+            lanes={lanes}
+            board={{
+              workspaceId,
+              viewId: view.value.id,
+              dataSourceId: view.value.dataSourceId,
+              tableName,
+              columns: visibleColumns,
+              property: groupProperty,
+              groupBy,
+              manualOrder: board.value.manualOrder,
+              groups,
+              relationLabels: relation.labels,
+              peopleNames,
+              relationIcons: relation.icons,
+              access: contentAccess,
+              defaultTemplate,
+              rollupValues,
+              formulaPlan,
+              search,
+              peekBase,
+              renderedAt,
+            }}
+          />
+        ) : groupBy !== null && groupProperty !== null && board !== null && board.ok ? (
           <DatabaseBoard
             key={contentKey}
             workspaceId={workspaceId}

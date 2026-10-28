@@ -24559,6 +24559,66 @@ async function main() {
         await headsAre([['2026-10-25', '2026년 10월 25일 주', 2]]), await evaluate(headsExpr))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('보드의 하위 그룹 — 가로줄 (B-4b · F-04-11)')) { try {
+      // 하위 그룹을 걸면 가로줄마다 보드 하나 — 가로줄(값 없음 · 가 · 나)의 행 수 · 그 칸의 카드 · 칸의 "+" 는 두 값(열 · 가로줄)을 채운다 ·
+      // 가로줄을 접으면 그 줄의 보드가 숨는다. 정본 [보강 B-4] ⑤. 자기 데이터를 스스로 만든다(API).
+      const stamp = Date.now()
+      const apiC = `${BASE}/api/workspaces/${workspaceId}`
+      const call = async (method, path, body) => {
+        const r = await fetch(`${apiC}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return r.json().catch(() => null)
+      }
+      const made = (await call('POST', '/databases', { name: `가로줄 ${stamp}` })).database
+      const status = (await call('POST', `/data-sources/${made.dataSourceId}/properties`, { name: '상태', type: 'status' })).property.id
+      const owner = (await call('POST', `/data-sources/${made.dataSourceId}/properties`, { name: '담당', type: 'select' })).property.id
+      const ga = (await call('POST', `/data-sources/${made.dataSourceId}/properties/${owner}/options`, { name: '가' })).option.id
+      const na = (await call('POST', `/data-sources/${made.dataSourceId}/properties/${owner}/options`, { name: '나' })).option.id
+      const props = (await call('GET', `/data-sources/${made.dataSourceId}/properties`)).schema.properties
+      const opt = Object.fromEntries(props.find((p) => p.id === status).options.map((o) => [o.name, o.id]))
+      const titleProp = props.find((p) => p.type === 'title').id
+      for (const [title, st, ow] of [['A', '진행 중', ga], ['B', '완료', ga], ['C', '진행 중', na], ['D', '진행 중', null]]) {
+        await call('POST', `/views/${made.defaultViewId}/rows`, { cells: [
+          { propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } },
+          { propertyId: status, value: { type: 'status', status: { id: opt[st] } } },
+          ...(ow === null ? [] : [{ propertyId: owner, value: { type: 'select', select: { id: ow } } }]),
+        ] })
+      }
+      const boardView = (await call('POST', `/databases/${made.id}/views`, { type: 'board', name: '보드' })).view.id
+      await call('PATCH', `/views/${boardView}`, { groupBy: { property_id: status, hide_empty: true }, subGroupBy: { property_id: owner } })
+      const lanesExpr = `JSON.stringify([...document.querySelectorAll('[data-testid="db-lane"]')].map((l) => [l.dataset.laneKey,
+        l.querySelector('[data-testid="db-lane-count"]')?.textContent ?? '',
+        [...l.querySelectorAll('[data-testid="db-board-column"]')].map((c) => [...c.querySelectorAll('[data-testid="db-board-card-title"]')].map((t) => t.textContent.trim()).join('')).join('|')]))`
+      const lanesAre = (expected) => waitFor(`${lanesExpr} === ${JSON.stringify(JSON.stringify(expected))}`, 15000)
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${made.id}?v=${boardView}` })
+      // 열은 빈 그룹 숨기기라 진행 중 · 완료 둘(가로줄마다 같은 열)
+      check('★ 하위 그룹을 걸면 가로줄마다 보드 — 값 없음 · 가 · 나의 행 수와 그 칸의 카드',
+        await lanesAre([['', '1', 'D|'], [ga, '2', 'A|B'], [na, '1', 'C|']]), await evaluate(lanesExpr))
+
+      const naLane = `[data-testid="db-lane"][data-lane-key="${na}"]`
+      const doneColumn = `${naLane} [data-testid="db-board-column"]:nth-of-type(2)`
+      await waitHydrated(`${doneColumn} [data-testid="db-board-add"]`)
+      await clickSelector(`${doneColumn} [data-testid="db-board-add"]`)
+      await waitFor(`!!document.activeElement && document.activeElement.tagName === 'INPUT'`, 8000)
+      await typeText('E')
+      await key('Enter')
+      const rows = async () => ((await call('GET', `/views/${made.defaultViewId}/rows`))?.rows ?? [])
+      let made2 = null
+      for (let i = 0; i < 30 && made2 === null; i += 1) {
+        made2 = (await rows()).find((r) => r.title === 'E') ?? null
+        if (made2 === null) await sleep(200)
+      }
+      const both = made2 !== null && made2.properties?.[status]?.status?.id === opt['완료'] && made2.properties?.[owner]?.select?.id === na
+      check('★ 칸의 "+" 는 두 값(완료 · 나)을 채운다 — 그 칸에 선다', both && (await lanesAre([['', '1', 'D|'], [ga, '2', 'A|B'], [na, '2', 'C|E']])),
+        JSON.stringify({ both, lanes: await evaluate(lanesExpr) }))
+
+      await clickSelector(`[data-testid="db-lane"][data-lane-key="${ga}"] [data-testid="db-lane-toggle"]`)
+      check('가로줄을 접으면 그 줄의 보드가 숨는다 — 머리 · 행 수는 남는다',
+        await waitFor(`document.querySelector('[data-testid="db-lane"][data-lane-key="${ga}"] [data-testid="db-lane-body"]')?.hidden === true
+          && document.querySelector('[data-testid="db-lane"][data-lane-key="${ga}"] [data-testid="db-lane-count"]')?.textContent === '2'`, 5000))
+      await evaluate(`(() => { try { localStorage.removeItem('nc:group-collapsed:${boardView}:lanes') } catch {} return true })()`)
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).
