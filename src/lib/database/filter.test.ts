@@ -21,7 +21,7 @@ import {
   MAX_FILTER_GROUP_ITEMS,
   MAX_SORT_KEYS,
   ME_NODE,
-  NO_VIEWER,
+  noViewer,
   ParamBag,
   compileCursor,
   compileFilter,
@@ -50,7 +50,7 @@ const TYPES = new Map<string, string>([
 
 const compile = (node: FilterNode | null, me: string | null = null): { sql: string | null; values: unknown[] } => {
   const params = new ParamBag(1)
-  const sql = compileFilter(node, TYPES, params, me === null ? NO_VIEWER : { me })
+  const sql = compileFilter(node, TYPES, params, me === null ? noViewer() : { me, today: '2026-03-15' })
   return { sql, values: params.values }
 }
 
@@ -75,11 +75,19 @@ describe('연산자 목록', () => {
     assert.ok(operatorsFor('number').includes('greater_than_or_equal_to'))
   })
 
-  test('date 는 상대 날짜를 뺀 7개', () => {
-    assert.equal(operatorsFor('date').length, 7)
-    // 상대 날짜는 평가 시점 의존이라 캐시 키가 쪼개진다(불변식 VW1) — 미룬다.
-    assert.ok(!operatorsFor('date').includes('past_week'))
-    assert.ok(!operatorsFor('date').includes('today'))
+  test('date 는 14개 — 비교 7 + 상대 날짜 7(R-1 · 값 없음)', () => {
+    assert.equal(operatorsFor('date').length, 14)
+    // 상대 날짜(R-1) — 평가 시점 의존이지만 결과 캐시가 아직 없다(불변식 VW1 의 캐시 키는 캐시를 둘 때)
+    assert.ok(operatorsFor('date').includes('past_week'))
+    assert.equal(operatorArity('date', 'this_week'), 0)
+    assert.ok(!operatorsFor('date').includes('today'), 'F-03-17 의 일곱 뿐')
+  })
+
+  test('상대 날짜는 보는 사람의 오늘에서 편 범위로 묶는다 — 값을 받지 않는다(R-1)', () => {
+    const params = new ParamBag(1)
+    const sql = compileFilter({ property_id: 'pDate', operator: 'past_week' }, TYPES, params, { me: null, today: '2026-03-18' })
+    assert.match(sql ?? '', /date_trunc\('day', v\.date_start\) BETWEEN date_trunc\('day', \$\d+::timestamptz\) AND date_trunc\('day', \$\d+::timestamptz\)/)
+    assert.ok(params.values.includes('2026-03-11') && params.values.includes('2026-03-18'), JSON.stringify(params.values))
   })
 
   test('arity — is_empty 는 0, 나머지는 1', () => {
@@ -528,7 +536,7 @@ describe('status 의 그룹 단위 (10n-23)', () => {
   const STATUS = new Map<string, string>([...TYPES, ['pStatus', 'status']])
   const compileStatus = (node: FilterNode) => {
     const params = new ParamBag(1)
-    return { sql: compileFilter(node, STATUS, params, NO_VIEWER), values: params.values }
+    return { sql: compileFilter(node, STATUS, params, noViewer()), values: params.values }
   }
 
   test('status 는 select 의 넷 + 그룹 둘 · select 에는 그룹이 없다', () => {

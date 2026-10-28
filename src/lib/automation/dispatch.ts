@@ -20,7 +20,7 @@ import { asWorkspaceId } from '../ids.ts'
 import { query } from '../db/pool.ts'
 import { withReadTransaction, withTransaction } from '../db/tx.ts'
 import { resolveDelegatedContext } from '../auth/session-context.ts'
-import { compileFilter, NO_VIEWER, ParamBag, type FilterLeaf } from '../database/filter.ts'
+import { compileFilter, noViewer, ParamBag, type FilterLeaf } from '../database/filter.ts'
 import { isEmptyValue, type CellValue } from '../database/property-types.ts'
 import { isLocked } from '../permissions/lock.ts'
 import { readActions } from './action-check.ts'
@@ -160,7 +160,8 @@ async function dispatchOne(event: Claimed): Promise<'ran' | 'no_match' | 'droppe
       // 조건 — 보기와 같은 필터 컴파일러가 그 행 하나에 묻는다
       const params = new ParamBag(2)
       // 조건은 사람 속성을 받지 않는다(정본 §3.5 [보강] 사람 속성 ⑤) — "나" 도 없다
-      const predicate = compileFilter(trigger.condition, live, params, NO_VIEWER)
+      // 보는 사람이 없다 — "나" 는 아무도 아니고 오늘은 UTC(상대 날짜는 조건이 받지 않는다 · R-1)
+      const predicate = compileFilter(trigger.condition, live, params, noViewer())
       if (predicate === null) continue
       const hit = await tx.queryMaybe<{ one: number }>(`SELECT 1 AS one FROM page p WHERE p.id = $1 AND ${predicate}`, [event.page_id, ...params.values])
       if (hit !== null) return 'match' as const

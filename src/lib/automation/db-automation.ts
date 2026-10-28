@@ -22,6 +22,7 @@ import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.t
 import { isRowFailure, openDataSource } from '../database/row.ts'
 import { isAutomationCellType } from '../database/property-types.ts'
 import { validateFilter, type FilterLeaf } from '../database/filter.ts'
+import { isRelativeDateOperator } from '../database/relative-date.ts'
 import { isUuid } from '../ids.ts'
 import { can } from '../permissions/levels.ts'
 import { effectiveCaps } from '../permissions/effective.ts'
@@ -128,7 +129,13 @@ function checkTriggers(gate: SchemaGate, triggers: readonly TriggerInput[]): { r
     if (trigger.type !== 'property_edited') continue
     const meta = gate.properties.get(trigger.propertyId)
     if (meta === undefined || !isAutomationCellType(meta.type)) return { problem: 'unknown_property', index }
-    if (trigger.condition !== null && (validateFilter(trigger.condition, types).length > 0 || !conditionValueOk(meta.type, trigger.condition.value))) {
+    // 상대 날짜(R-1)는 받지 않는다 — 판정하는 워커에는 보는 사람이 없어 "오늘"의 시간대가 없다(사람 속성을 받지 않는 것과 같은 까닭)
+    if (
+      trigger.condition !== null &&
+      (validateFilter(trigger.condition, types).length > 0 ||
+        !conditionValueOk(meta.type, trigger.condition.value) ||
+        isRelativeDateOperator(trigger.condition.operator))
+    ) {
       return { problem: 'invalid_condition', index }
     }
   }

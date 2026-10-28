@@ -35,6 +35,7 @@ import { nestsSubItems, showsParentsOnly, subItemPairOf } from '@/lib/database/v
 import { queryRows } from '@/lib/database/query'
 import { computeCalculations } from '@/lib/database/calculate'
 import { normalizeSearch } from '@/lib/database/search'
+import { readViewerToday } from '@/lib/settings/time-zone-cookie'
 import { readCardCovers } from '@/lib/database/gallery-covers'
 import { computeFormulaValues } from '@/lib/database/formula-property'
 import { createRowInView } from '@/lib/database/view-row'
@@ -79,6 +80,8 @@ export async function GET(request: Request, ctx: Ctx): Promise<Response> {
   // 갤러리는 부모만(2f-1) — 트리를 펴지 않고 최상위 행만 읽는다. 검색 중에도 그렇다.
   const parentsOnly = showsParentsOnly(view.value.type) ? subItemPairOf(view.value.columns) : null
 
+  // 보는 사람의 오늘(R-1) — 상대 날짜 필터가 이것으로 범위를 편다(서버 렌더와 같은 날)
+  const today = await readViewerToday()
   const page = await queryRows(session.ctx, view.value.dataSourceId, {
     // 이 사람이 실제로 보는 필터 · 정렬 — 개인 것이 있으면 그것(2h-1 · F-04-17)
     filter: view.value.effectiveFilter,
@@ -92,6 +95,7 @@ export async function GET(request: Request, ctx: Ctx): Promise<Response> {
     ...(pair === null ? {} : { tree: { parentPropertyId: pair.parentPropertyId, under: parent } }),
     ...(parentsOnly === null ? {} : { tree: { parentPropertyId: parentsOnly.parentPropertyId, under: null } }),
     search,
+    today,
   })
 
   if (!page.ok) {
@@ -102,7 +106,7 @@ export async function GET(request: Request, ctx: Ctx): Promise<Response> {
   // 읽기에는 다시 계산하지 않는다 — 대상은 필터를 지난 행 전부라 페이지마다 같다.
   const first = params.get('cursor') === null && parent === null
   const calculations = first
-    ? await computeCalculations(session.ctx, view.value.dataSourceId, view.value.effectiveFilter, view.value.columns, search)
+    ? await computeCalculations(session.ctx, view.value.dataSourceId, view.value.effectiveFilter, view.value.columns, search, today)
     : undefined
 
   // 갤러리의 카드 미리보기(2f-2) — 이 페이지의 행마다 본문의 첫 이미지. 미리보기를 끈 갤러리 · 다른 뷰에는 싣지 않는다.

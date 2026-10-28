@@ -22,6 +22,7 @@ import { useState } from 'react'
 import type { OperatorCatalogEntry } from '@/lib/database/operator-catalog'
 import { isComplete, operatorsOf, ruleFor, withOperator, type FilterRule, type RuleColumn } from '@/lib/database/filter-draft'
 import { isAutomationCellType } from '@/lib/database/property-types'
+import { isRelativeDateOperator } from '@/lib/database/relative-date'
 import * as api from './table-api'
 import { ActionListEditor, toAction, toDraft, type ActionDraft } from './action-editor'
 import { RuleValue } from './view-toolbar'
@@ -44,7 +45,7 @@ export function AutomationEditor({
   workspaceId,
   dataSourceId,
   columns,
-  catalog,
+  catalog: fullCatalog,
   initial,
   onSaved,
   onCancel,
@@ -59,6 +60,8 @@ export function AutomationEditor({
   onSaved: (automation: api.DbAutomationJson) => void
   onCancel: () => void
 }) {
+  // 조건은 상대 날짜를 받지 않는다(R-1 — 판정하는 워커에 보는 사람의 오늘이 없다) · 저장 검사도 거부한다
+  const catalog = fullCatalog.filter((e) => !isRelativeDateOperator(e.operator))
   const fields = columns.filter((c) => isAutomationCellType(c.type))
   const [name, setName] = useState(initial?.name ?? '새 자동화')
   const [triggers, setTriggers] = useState<readonly TriggerDraft[]>(() => initial?.triggers.map(toTriggerDraft) ?? [{ kind: 'page_added' }])

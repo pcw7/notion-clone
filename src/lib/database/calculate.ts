@@ -15,6 +15,7 @@ import type { SessionContext } from '../auth/session-context.ts'
 import { withReadTransaction, type Tx } from '../db/tx.ts'
 import { calculationResult, canCalculate, type Calculation, type CalculationResult, type ColumnStats } from './calculations.ts'
 import { compileFilter, ParamBag, propertyIdsIn, type FilterContext, type FilterNode } from './filter.ts'
+import { todayOrUtc } from './relative-date.ts'
 import { refreshDerivedValues } from './derived-values.ts'
 import { readPropertyTypes } from './query.ts'
 import { readOptionsOf } from './options.ts'
@@ -36,6 +37,8 @@ export async function computeCalculations(
   filter: FilterNode | null,
   columns: readonly CalculatedColumn[],
   search: string | null = null,
+  /** 보는 사람의 오늘(R-1 · 상대 날짜 필터 · 없으면 UTC) — 표에 보이는 행과 같은 행을 센다. */
+  today: string | null = null,
 ): Promise<Calculations> {
   const wanted = columns.filter(
     (c): c is CalculatedColumn & { calculation: Calculation } =>
@@ -48,7 +51,7 @@ export async function computeCalculations(
     // "만들기만" 이면 자기가 열 수 있는 행만 센다(6f-2b-1) — 표에 보이는 행과 같은 행이다. 남의 행이 합 · 개수로 새지 않는다.
     const access = await rowsAccessForDataSource(tx, ctx, dataSourceId)
     if (access === null) return {}
-    const stats = await readStats(tx, dataSourceId, access, filter, { me: ctx.userId }, search, wanted.map((c) => c.propertyId))
+    const stats = await readStats(tx, dataSourceId, access, filter, { me: ctx.userId, today: todayOrUtc(today) }, search, wanted.map((c) => c.propertyId))
     const out: Record<string, CalculationResult> = {}
     for (const column of wanted) {
       const s = stats.get(column.propertyId)

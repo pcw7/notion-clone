@@ -12,6 +12,7 @@ import { requireWorkspaceSession } from '@/lib/auth/route-session'
 import { queryCalendar, type CalendarFailure } from '@/lib/database/calendar-query'
 import { rowJson } from '@/lib/database/http'
 import { normalizeSearch } from '@/lib/database/search'
+import { readViewerToday } from '@/lib/settings/time-zone-cookie'
 
 type Ctx = RouteContext<'/api/workspaces/[workspaceId]/views/[viewId]/calendar'>
 
@@ -33,6 +34,8 @@ export async function GET(request: Request, ctx: Ctx): Promise<Response> {
     from: params.get('from') ?? '',
     to: params.get('to') ?? '',
     search: normalizeSearch(params.get('q')),
+    // 보는 사람의 오늘(R-1 · 상대 날짜 필터)
+    today: await readViewerToday(),
   })
   if (!result.ok) return Response.json({ error: result.reason }, { status: STATUS[result.reason] })
   return Response.json({

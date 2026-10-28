@@ -542,7 +542,8 @@ async function openBoard(
     calculation: liveGroupCalculation(groupBy, types),
     search,
     access,
-    context: { me: ctx.userId },
+    // 상대 날짜 필터(R-1)도 그 오늘로 — 상대 날짜 그룹(B-3)과 같은 날
+    context: { me: ctx.userId, today: todayKey },
     ...axis,
     sub,
   }

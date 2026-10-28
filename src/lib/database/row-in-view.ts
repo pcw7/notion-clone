@@ -22,6 +22,8 @@ export async function rowStandsInView(
   viewId: string,
   rowId: string,
   rawSearch: unknown = null,
+  /** 보는 사람의 오늘(R-1) — 화면이 그 오늘로 거른다(상대 날짜 필터). */
+  today: string | null = null,
 ): Promise<boolean | null> {
   const view = await getView(ctx, viewId)
   if (!view.ok) return null
@@ -33,6 +35,7 @@ export async function rowStandsInView(
     search: normalizeSearch(rawSearch),
     onlyRowIds: [rowId],
     limit: 1,
+    today,
   })
   return page.ok ? page.value.rows.length > 0 : null
 }

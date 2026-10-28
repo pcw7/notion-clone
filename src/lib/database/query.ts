@@ -48,6 +48,7 @@ import {
   type PropertyTypes,
   type SortKey,
 } from './filter.ts'
+import { todayOrUtc } from './relative-date.ts'
 import { refreshDerivedValues } from './derived-values.ts'
 import { compileSearch } from './search.ts'
 import { restrictedRowsSql, rowsAccessIn } from './row-access.ts'
@@ -94,6 +95,10 @@ export type QueryRowsInput = {
    * 주지 않으면 트리 순서뿐이다. 보드는 자기 질의(`group.ts`)가 열마다의 자리를 읽는다.
    */
   readonly manualOrderViewId?: string
+  /**
+   * 보는 사람의 오늘(R-1 · `YYYY-MM-DD` — `readViewerToday`) — 상대 날짜 필터가 이것으로 범위를 편다. 주지 않으면 UTC 의 오늘.
+   */
+  readonly today?: string | null
 }
 
 export type QueryPage = {
@@ -185,7 +190,7 @@ export async function queryRows(
     const params = new ParamBag(2)
     const accessSql = restrictedRowsSql(access, params)
     // "나"(6g-2c)는 이 세션의 사람이다
-    const filterSql = compileFilter(input.filter ?? null, types, params, { me: ctx.userId })
+    const filterSql = compileFilter(input.filter ?? null, types, params, { me: ctx.userId, today: todayOrUtc(input.today) })
     const sorted = compileSorts(sorts, types, params)
     // 살아 있는 정렬이 없으면 이 뷰의 수동 순서(10n-59) — 지워진 속성의 정렬 키는 `compileSorts` 가 이미 뺐다
     const compiledSort =
