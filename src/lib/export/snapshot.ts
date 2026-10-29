@@ -41,7 +41,7 @@
 import type { SessionContext } from '../auth/session-context.ts'
 import { readImageSource } from '../block/image.ts'
 import { plainTitleOf, readTitle } from '../block/page.ts'
-import { PAGE_TYPE } from '../block/types.ts'
+import { PAGE_TYPE, isRefType } from '../block/types.ts'
 import { DEFAULT_PROPERTY_TYPE, isMvpPropertyType, isOptionType } from '../database/property-types.ts'
 import { uniqueIdCell } from '../database/unique-id-format.ts'
 import { readOptionsOf } from '../database/options.ts'
@@ -207,8 +207,9 @@ export async function readExportSnapshot(
     ])
     const bodyRows = new Map<string, BodyRow[]>()
     for (const block of blocks) {
-      // 행 · 최상위 노드 · 표는 어느 본문에도 들어가지 않는다.
-      if (block.parent_type !== 'block' || block.type === 'database') continue
+      // 행 · 최상위 노드는 어느 본문에도 들어가지 않는다. 페이지 밑의 데이터베이스(인라인 — I-4a)는 그 페이지 본문의 **참조**로 든다 —
+      // 하위 페이지 참조와 같다(본문의 자리에 표로의 링크 · 표 자체는 노드로 따로 나간다). 정본 §3.5 [보강 I-1] ⑥.
+      if (block.parent_type !== 'block') continue
       const owner = nearestIn(block.ancestor_path, pageIds)
       if (owner !== null) push(bodyRows, owner, block)
     }
@@ -304,14 +305,14 @@ function push<T>(map: Map<string, T[]>, key: string, value: T): void {
 }
 
 /**
- * 자식의 순서 — 본문에 참조가 있는 것은 **본문에 보이는 순서**(토글 안까지), 참조가 없는 것
+ * 자식의 순서 — 본문에 참조가 있는 것(하위 페이지 · 인라인 데이터베이스)은 **본문에 보이는 순서**(토글 안까지), 참조가 없는 것
  * (볼 수 없는 페이지 밑에서 올라온 것)은 그 뒤에 `order_key` 순.
  */
 function inDocumentOrder(children: readonly BlockRow[], doc: EditorDoc): string[] {
   const position = new Map<string, number>()
   const walk = (blocks: readonly EditorBlock[]): void => {
     for (const block of blocks) {
-      if (block.type === PAGE_TYPE && !position.has(block.id)) position.set(block.id, position.size)
+      if (isRefType(block.type) && !position.has(block.id)) position.set(block.id, position.size)
       walk(block.children ?? [])
     }
   }

@@ -54,7 +54,7 @@ import { BUTTON_TYPE, buttonPlainText } from '../block/button.ts'
 import { calloutEmojiOf } from '../block/callout.ts'
 import { cellsOf, TABLE_TYPE } from '../block/table.ts'
 import { isSafeLinkUrl } from '../contracts/link-url.ts'
-import { PAGE_TYPE, UNSUPPORTED_TYPE } from '../block/types.ts'
+import { DATABASE_TYPE, PAGE_TYPE, UNSUPPORTED_TYPE } from '../block/types.ts'
 import {
   DEFAULT_ANNOTATIONS,
   textRun,
@@ -74,7 +74,7 @@ export type PageLinkTarget = {
 }
 
 export type MarkdownLinks = {
-  /** 하위 페이지 참조를 어디로 잇는가. `null` 이면 그 참조를 문서에서 **뺀다**. */
+  /** 하위 페이지 · 인라인 데이터베이스(I-4a) 참조를 어디로 잇는가. `null` 이면 그 참조를 문서에서 **뺀다**. */
   readonly page: (pageId: string) => PageLinkTarget | null
   /** 이미지 주소. `null` 이면 그 이미지를 뺀다. */
   readonly image: (source: ImageSource) => string | null
@@ -99,7 +99,7 @@ export type MarkdownLosses = {
   readonly unsafeLink: number
   /** 이 앱이 모르는 블록. 타입과 id 를 주석으로 남겼다. */
   readonly unsupported: number
-  /** `links.page` 가 뺀 하위 페이지 참조. */
+  /** `links.page` 가 뺀 하위 페이지 · 인라인 데이터베이스 참조. */
   readonly omittedPages: number
   /** `links.image` 가 뺀 이미지. 출처가 없는 빈 이미지 블록은 세지 않는다. */
   readonly omittedImages: number
@@ -721,7 +721,9 @@ function renderBlock(block: EditorBlock, ctx: Ctx, number: number): string[] {
       return [`![${alt}](${linkDestination(href)})`]
     }
 
-    case PAGE_TYPE: {
+    // 인라인 데이터베이스(I-4a)도 하위 페이지와 같이 링크 한 줄 — 표는 그 옆의 CSV 다(노션의 Markdown & CSV 내보내기와 같다)
+    case PAGE_TYPE:
+    case DATABASE_TYPE: {
       const target = links.page(block.id)
       if (target === null) {
         losses.omittedPages += 1

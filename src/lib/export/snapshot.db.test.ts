@@ -10,6 +10,8 @@
  *   ⑤ **수식 칸**(10n-35) — 같은 트랜잭션에서 계산해 칸 묶음에 끼운다 · CSV · 행 Markdown 에 보이는 그대로 · 식이 읽히지 않으면 빈 칸
  *   ⑥ **relation 칸**(10n-36) — 엣지에서 읽는다 · 볼 수 없는 표의 행은 개수만 · 휴지통은 빠진다 · 연결이 없으면 빈 칸
  *   ⑦ **rollup 칸**(10n-37) — 같은 트랜잭션에서 내보내는 사람의 권한으로 계산한다 · 볼 수 없는 연결은 빼고 개수만 · 없음은 빈 칸
+ *   ⑧ **인라인 데이터베이스**(I-4a) — 그 페이지 본문의 자리에 참조로 들고 · 페이지 폴더 안에 CSV 로 나가며 · Markdown 은 그 자리에 CSV 로의
+ *      링크 한 줄이다(하위 페이지와 같은 규칙 · 본문 순서대로)
  */
 
 import { test, describe, before, after } from 'node:test'
@@ -21,7 +23,7 @@ import { createPage, titleFromPlainText } from '../block/page.ts'
 import { loadPageBody, savePageBody } from '../block/save-page-body.ts'
 import { trashPage } from '../block/trash.ts'
 import { textRun, toPlainText } from '../contracts/rich-text.ts'
-import { createDatabase } from '../database/database.ts'
+import { createDatabase, createInlineDatabase } from '../database/database.ts'
 import { addProperty, addSelectOption, getSchema } from '../database/property.ts'
 import { createRow, trashRow } from '../database/row.ts'
 import type { EditorBlock, EditorDoc } from '../editor/document.ts'
@@ -522,5 +524,46 @@ describe('휴지통 · 파일 · 상한', () => {
       ok: false,
       reason: 'not_found',
     })
+  })
+})
+
+// ── ⑧ 인라인 데이터베이스 (I-4a) ─────────────────────────────────────
+
+describe('⑧ 인라인 데이터베이스 (I-4a · F-04-14)', () => {
+  test('★ 본문의 자리에 참조 · 페이지 폴더 안에 CSV · Markdown 은 그 자리에 CSV 로의 링크', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { owner } = await freshWorkspace()
+    const host = (await mkPage(owner, '호스트')).id as string
+    const front = para('앞 글')
+    const back = para('뒤 글')
+    await saveBody(owner, host, () => ({ blocks: [front, back] }))
+    const created = await createInlineDatabase(owner.ctx, { parentPageId: host, name: '할 일', at: front.id })
+    assert.equal(created.ok, true, JSON.stringify(created))
+    if (!created.ok) return
+    const dbId = created.value.id
+    const schema = await getSchema(owner.ctx, created.value.dataSourceId)
+    assert.equal(schema.ok, true)
+    if (!schema.ok) return
+    const titleProp = schema.value.properties.find((p) => p.type === 'title')!.id
+    const row = await createRow(owner.ctx, created.value.dataSourceId, { cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun('첫 행')] } }] })
+    assert.equal(row.ok, true, JSON.stringify(row))
+
+    const snapshot = await snap(owner, { kind: 'page', rootId: host })
+    const page = pageOf(snapshot, host)
+    assert.deepEqual(page.doc.blocks.map((b) => b.type), ['paragraph', 'database', 'paragraph'], '본문의 자리(앞 글 바로 뒤)에 참조')
+    assert.deepEqual(page.childIds, [dbId], '표는 그 페이지의 자식 노드')
+    assert.equal(snapshot.nodes.get(dbId)?.kind, 'database')
+
+    const plan = planExport(snapshot, { untitled: '제목 없음' })
+    const paths = plan.entries.map((e) => e.path)
+    assert.ok(paths.includes('호스트.md') && paths.includes('호스트/할 일.csv'), JSON.stringify(paths))
+    const csv = plan.entries.find((e) => e.path === '호스트/할 일.csv')
+    assert.ok(csv?.kind === 'text' && csv.text.includes('첫 행'), JSON.stringify(csv))
+    const md = plan.entries.find((e) => e.path === '호스트.md')
+    assert.ok(md?.kind === 'text', JSON.stringify(md))
+    const lines = md.text.split('\n').filter((l) => l.trim() !== '')
+    const at = lines.findIndex((l) => l.includes('앞 글'))
+    assert.equal(lines[at + 1], '[할 일](호스트/할%20일.csv)', JSON.stringify(lines))
+    assert.ok(lines[at + 2]?.includes('뒤 글'), JSON.stringify(lines))
   })
 })
