@@ -76,7 +76,7 @@ export async function POST(request: Request, ctx: Ctx): Promise<Response> {
   try {
     const result = await duplicatePage(session.ctx, pageId, { ...parent, ...title })
     return Response.json(
-      { ok: true, page: result.page, pages: result.pages, skipped: result.skipped },
+      { ok: true, page: result.page, pages: result.pages, skipped: result.skipped, skippedDatabases: result.skippedDatabases },
       { status: 201 },
     )
   } catch (error) {

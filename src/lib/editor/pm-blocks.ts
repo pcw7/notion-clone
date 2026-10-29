@@ -14,7 +14,7 @@
 
 import type { Node as PmNode, ResolvedPos } from '@tiptap/pm/model'
 
-import { specOf, PAGE_TYPE, type BlockFormat, type BlockType } from '../block/types.ts'
+import { isRefType, specOf, type BlockFormat, type BlockType } from '../block/types.ts'
 import type { RuleBlock } from './block-rules.ts'
 import { inlineToRuns } from './pm-adapter.ts'
 import { blockTypeOfNode, TABLE_CELL_NODE } from './schema.ts'
@@ -113,7 +113,8 @@ export function blockTypeOf(contentNode: PmNode): BlockType {
  */
 export function canNestUnder(info: ContainerInfo): boolean {
   const type = blockTypeOf(info.contentNode)
-  if (type === PAGE_TYPE) return false
+  // 참조(하위 페이지 · 인라인 데이터베이스 — I-1b) 밑으로는 들이지 않는다 — 그 밑은 그 블록의 것이다
+  if (isRefType(type)) return false
   // 컬럼의 틀(Phase 2 1c) 밑으로는 들여쓰지 않는다 — 컬럼 목록의 자식은 컬럼뿐이고, 컬럼은 블록의 형제가 아니다.
   if (specOf(type).layout) return false
   // 표(Phase 2 1d) — 행은 내용 노드 안에 산다. 다른 블록이 표의 자식이 될 수 없다.

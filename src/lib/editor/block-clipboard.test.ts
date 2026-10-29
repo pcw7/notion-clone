@@ -259,6 +259,13 @@ describe('하위 페이지는 복사되지 않는다', () => {
     assert.equal(parsed.blocks[0].type, 'paragraph')
   })
 
+  test('★ stripPageRefs 는 인라인 데이터베이스 참조도 뺀다(I-1b — 붙여넣어 같은 데이터베이스의 참조가 둘이 되지 않게)', () => {
+    const [a, db] = [nextId(), nextId()]
+    const { blocks, dropped } = stripPageRefs([blk(a, 'paragraph', 'A'), { id: db, type: 'database', title: [] }])
+    assert.equal(dropped, 1)
+    assert.deepEqual(blocks.map((b) => b.id), [a])
+  })
+
   test('stripPageRefs 는 자손을 유지한다', () => {
     const [a, a1] = [nextId(), nextId()]
     const { blocks, dropped } = stripPageRefs([blk(a, 'toggle', 'A', [blk(a1, 'paragraph', 'a1')])])

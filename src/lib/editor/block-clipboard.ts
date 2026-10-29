@@ -59,7 +59,7 @@ import { equationDisplayLines } from '../block/equation.ts'
 import { buttonPlainText } from '../block/button.ts'
 import { imageAltText, readImageSource } from '../block/image.ts'
 import { cellsOf, TABLE_TYPE } from '../block/table.ts'
-import { isKnownBlockType, specOf, PAGE_TYPE } from '../block/types.ts'
+import { isKnownBlockType, isRefType, specOf } from '../block/types.ts'
 import { textRun, toPlainText } from '../contracts/rich-text.ts'
 import {
   isBlockSelection,
@@ -94,7 +94,8 @@ export function stripPageRefs(blocks: readonly EditorBlock[]): {
   let dropped = 0
   const walk = (list: readonly EditorBlock[]): EditorBlock[] =>
     list.flatMap((block) => {
-      if (block.type === PAGE_TYPE) {
+      // 인라인 데이터베이스 참조(I-1b)도 뺀다 — 붙여넣어 같은 데이터베이스의 참조가 둘이 되면 안 된다
+      if (isRefType(block.type)) {
         dropped += 1
         return []
       }

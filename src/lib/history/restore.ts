@@ -26,7 +26,7 @@ import { effectiveCaps } from '../permissions/effective.ts'
 import { isLocked } from '../permissions/lock.ts'
 import { openPageBody } from '../block/body-write.ts'
 import { readBodyScope } from '../block/save-page-body.ts'
-import { PAGE_TYPE } from '../block/types.ts'
+import { isRefType, PAGE_TYPE } from '../block/types.ts'
 import { readBodyYDoc } from '../collab/ydoc.ts'
 import { docToPm } from '../editor/pm-adapter.ts'
 import { wrapUnknownTypes, type EditorBlock, type EditorDoc } from '../editor/document.ts'
@@ -89,7 +89,8 @@ export async function restoreVersion(ctx: SessionContext, pageId: string, versio
     // ② 여는 순간의 버전 판정이 먼저 돈다.
     const body = await openPageBody(tx, ctx, pageId, 'restore')
     const scope = await readBodyScope(tx, ctx, pageId)
-    const children = new Set(scope.filter((r) => r.type === PAGE_TYPE && r.lifecycle === 'live').map((r) => r.id))
+    // 인라인 데이터베이스(I-1b)도 하위 페이지와 같다 — 되돌리기의 대상이 아니다(지금 상태로 둔다)
+    const children = new Set(scope.filter((r) => isRefType(r.type) && r.lifecycle === 'live').map((r) => r.id))
 
     // ③ 하위 페이지 규칙으로 고친 본문으로 갈아 끼운다. 되돌리기 전의 상태는 그 전에 떠 둔다(④ 에서 남길지 모른다).
     const before = Y.encodeStateAsUpdate(body.ydoc)
@@ -140,7 +141,7 @@ export function keepCurrentChildren(target: EditorDoc, current: EditorDoc, child
   const kept = new Set<string>()
   const prune = (blocks: readonly EditorBlock[]): EditorBlock[] =>
     blocks.flatMap((block) => {
-      if (block.type === PAGE_TYPE) {
+      if (isRefType(block.type)) {
         if (!children.has(block.id) || kept.has(block.id)) return []
         kept.add(block.id)
         return [block]
@@ -152,7 +153,7 @@ export function keepCurrentChildren(target: EditorDoc, current: EditorDoc, child
   const missing: EditorBlock[] = []
   const collect = (list: readonly EditorBlock[]): void => {
     for (const block of list) {
-      if (block.type === PAGE_TYPE && children.has(block.id) && !kept.has(block.id)) {
+      if (isRefType(block.type) && children.has(block.id) && !kept.has(block.id)) {
         kept.add(block.id)
         missing.push(block)
       }
