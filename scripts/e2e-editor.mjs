@@ -25800,6 +25800,62 @@ async function main() {
         await evaluate(`document.querySelector('[data-testid="db-subitems-display-hint"]')?.textContent ?? null`))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('트리에서 부모 바꾸기 (M-1 · F-03-18 · F-04-24)')) { try {
+      // 펼친 트리에서 행의 "상위 항목" 을 접힌 다른 부모로 고르면 그 행이 옛 자리에서 사라진다 — "조건 밖" 이 서지 않는다(조건에 맞지 않아 빠진
+      // 것이 아니라 자리가 바뀌었다) · 새 부모를 펴면 그 밑에 선다. 정본 §3.6 [보강] 10n-16 ④. 자기 데이터를 스스로 만든다(API).
+      const stamp = Date.now()
+      const apiC = `${BASE}/api/workspaces/${workspaceId}`
+      const call = async (method, path, body) => {
+        const r = await fetch(`${apiC}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return r.json().catch(() => null)
+      }
+      const made = (await call('POST', '/databases', { name: `부모 바꾸기 ${stamp}` })).database
+      const view = made.defaultViewId
+      const titleProp = (await call('GET', `/data-sources/${made.dataSourceId}/properties`)).schema.properties.find((p) => p.type === 'title').id
+      const cell = (text) => ({ propertyId: titleProp, value: { type: 'title', title: [textRun(text)] } })
+      const ids = {}
+      for (const t of ['가', '나', '다']) ids[t] = (await call('POST', `/views/${view}/rows`, { cells: [cell(t)] })).row.id
+      await call('POST', `/data-sources/${made.dataSourceId}/sub-items`)
+      ids['옮길 것'] = (await call('POST', `/views/${view}/rows`, { cells: [cell('옮길 것')], parent: ids['가'] })).row.id
+      ids['나의 것'] = (await call('POST', `/views/${view}/rows`, { cells: [cell('나의 것')], parent: ids['나'] })).row.id
+      const ROWS = `[...document.querySelectorAll('[data-testid="db-table"] tbody tr[data-row-id]')]`
+      const shapeJs = `${ROWS}.map((tr) => (tr.querySelector('[data-testid="db-row-title"]')?.textContent ?? '').trim() + ':' + tr.dataset.depth).join('|')`
+      const outsideJs = `document.querySelectorAll('[data-testid="db-row-outside"]').length`
+      const clickAt = async (selector) => {
+        const at = await evaluate(`(() => {
+          const e = document.querySelector(${JSON.stringify(selector)})
+          if (!e) return null
+          e.scrollIntoView({ block: 'center' })
+          const r = e.getBoundingClientRect()
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+        })()`)
+        if (at) await click(at.x, at.y)
+        return at !== null
+      }
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${made.id}` })
+      await waitFor(`${shapeJs} === '가:0|나:0|다:0'`, 15000)
+      await waitHydrated(`tr[data-row-id="${ids['가']}"] [data-testid="db-subitem-toggle"]`)
+      await clickAt(`tr[data-row-id="${ids['가']}"] [data-testid="db-subitem-toggle"]`)
+      const opened = await waitFor(`${shapeJs} === '가:0|옮길 것:1|나:0|다:0'`, 10000)
+      // "옮길 것" 의 상위 항목 칸을 열어 "나" 를 고른다(하나만 — 고르면 바뀌고 닫힌다)
+      const col = await evaluate(`[...document.querySelectorAll('[data-testid="db-table"] thead th')].findIndex((th) => (th.textContent ?? '').includes('상위 항목'))`)
+      const rowAt = await evaluate(`${ROWS}.findIndex((tr) => tr.dataset.rowId === ${JSON.stringify(ids['옮길 것'])})`)
+      const CELL = `td[data-cell="${rowAt}:${col}"]`
+      await clickAt(CELL)
+      await clickAt(CELL)
+      const picker = await waitFor(`!!document.querySelector('[data-testid="db-relation-candidate"][data-row-id="${ids['나']}"]')`, 8000)
+      await clickAt(`[data-testid="db-relation-candidate"][data-row-id="${ids['나']}"]`)
+      // 다시 읽기(표 변경 알림 — 자기 쓰기에도 온다)가 끝날 때까지 — 옛 자리에서 사라지거나 "조건 밖" 이 서거나
+      const settled = await waitFor(`!document.querySelector('tr[data-row-id="${ids['옮길 것']}"]') || ${outsideJs} > 0`, 10000)
+      await new Promise((r) => setTimeout(r, 1500))
+      check('★ 접힌 다른 부모로 옮기면 옛 자리에서 사라진다 — "조건 밖" 이 서지 않는다',
+        opened && picker && settled && (await evaluate(shapeJs)) === '가:0|나:0|다:0' && (await evaluate(outsideJs)) === 0,
+        JSON.stringify({ opened, picker, settled, shape: await evaluate(shapeJs), outside: await evaluate(outsideJs) }))
+      await clickAt(`tr[data-row-id="${ids['나']}"] [data-testid="db-subitem-toggle"]`)
+      check('새 부모를 펴면 그 밑에 선다', await waitFor(`${shapeJs} === '가:0|나:0|옮길 것:1|나의 것:1|다:0'`, 10000), await evaluate(shapeJs))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

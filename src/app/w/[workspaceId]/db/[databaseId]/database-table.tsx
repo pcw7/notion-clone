@@ -1276,6 +1276,10 @@ export function DatabaseTable(props: {
         childrenOf,
         expanded: expandedRef.current,
         touched: touched.current,
+        // 트리면 행의 지금 부모 — 부모를 바꿔 접힌 다른 부모 밑으로 옮긴 행에 "조건 밖" 을 달지 않는다(M-1)
+        ...(subItems === null
+          ? {}
+          : { parentOf: (row: RowJson) => readRelationValue(row.properties[subItems.parentPropertyId]).relation[0]?.id ?? null }),
       })
       // 선택은 행으로 지킨다 — 자리가 바뀌어도 같은 행에 선다
       const current = modeRef.current

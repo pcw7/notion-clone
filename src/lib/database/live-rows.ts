@@ -17,6 +17,14 @@
  * 빠진다(그때는 이 화면의 기억이 없다).
  *
  * ──────────────────────────────────────────────────────────────────────
+ * 부모를 바꾼 행은 조건 밖이 아니다(M-1)
+ * ──────────────────────────────────────────────────────────────────────
+ *
+ * 트리에서 "상위 항목" 을 고쳐 행이 접힌 다른 부모 밑으로 옮겨 가면 다시 읽은 결과의 옛 자리에 그 행이 없다. 위 규칙대로면 옛 자리에 남고
+ * "조건 밖" 이 붙는데, 조건에 맞지 않아 빠진 것이 아니라 자리가 바뀐 것이다. 부르는 쪽이 행의 지금 부모(`parentOf`)를 주면, 화면의 트리에서
+ * 서 있던 자리의 부모와 다를 때 남기지 않는다. 새 부모가 펼쳐져 있으면 다시 읽기가 이미 그 밑에 둔다.
+ *
+ * ──────────────────────────────────────────────────────────────────────
  * 늦게 온 옛 결과는 새 행을 덮지 않는다
  * ──────────────────────────────────────────────────────────────────────
  *
@@ -49,6 +57,11 @@ export function mergeReloaded(input: {
   readonly expanded: ReadonlySet<string>
   /** 이 화면에서 고친 행. */
   readonly touched: ReadonlySet<string>
+  /**
+   * 하위 항목 트리면 그 행의 지금 부모(상위 항목 값 · 없으면 null — M-1). 주면 내가 고친 행이 결과에 없을 때 **부모가 바뀌었는지** 먼저 본다 —
+   * 화면의 트리에서 서 있던 자리의 부모와 다르면 다른 부모 밑으로 옮겨 간 것이라(새 부모가 접혀 있거나 아직 읽지 않았다) 남기지 않는다.
+   */
+  readonly parentOf?: (row: RowJson) => string | null
 }): ReloadedRows {
   const rows: RowJson[] = []
   const depthOf = new Map<string, number>()
@@ -75,6 +88,8 @@ export function mergeReloaded(input: {
   const outside = new Set<string>()
   input.previous.forEach((row, i) => {
     if (seen.has(row.id) || !input.touched.has(row.id)) return
+    // 부모를 바꿔 옮겨 간 행 — 조건 밖이 아니라 자리가 바뀐 것이다(M-1 · 정본 [보강] 10n-16 ④). 말없이 옛 자리에서 뺀다
+    if (input.parentOf !== undefined && input.parentOf(row) !== treeParentAt(input.previous, input.depthOf, i)) return
     let anchor = -1
     for (let j = i - 1; j >= 0; j--) {
       const at = rows.findIndex((r) => r.id === input.previous[j]!.id)
@@ -91,6 +106,16 @@ export function mergeReloaded(input: {
   })
 
   return { rows, depthOf, expanded, outside }
+}
+
+/** 평평한 목록에서 `i` 번째 행이 서 있던 자리의 부모 — 앞쪽으로 처음 만나는 한 단계 얕은 행. 최상위면 null. */
+function treeParentAt(rows: readonly RowJson[], depthOf: ReadonlyMap<string, number>, i: number): string | null {
+  const depth = depthOf.get(rows[i]!.id) ?? 0
+  if (depth === 0) return null
+  for (let j = i - 1; j >= 0; j--) {
+    if ((depthOf.get(rows[j]!.id) ?? 0) === depth - 1) return rows[j]!.id
+  }
+  return null
 }
 
 /** `a` 가 `b` 보다 새 버전인가 — 버전은 정수 문자열(bigint)이다. 읽을 수 없으면 새롭다고 하지 않는다(다시 읽은 것을 쓴다). */
