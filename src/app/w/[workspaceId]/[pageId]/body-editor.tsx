@@ -55,6 +55,7 @@ import { createEditor, type EditorDeps } from '@/lib/editor/create-editor'
 import { createNodeViews } from '@/lib/editor/node-views'
 import { containerAt, findContainerById } from '@/lib/editor/pm-blocks'
 import { isRefNodeName } from '@/lib/editor/schema'
+import { INLINE_PREVIEW_ROWS, inlinePreviewOf, inlinePreviewSource } from '@/lib/database/inline-preview'
 import {
   closeSlashMenu,
   filterSlashCommands,
@@ -1296,6 +1297,21 @@ export function BodyEditor({
       openPage: (id) => router.push(`/w/${workspaceId}/${id}`),
       // 인라인 데이터베이스(I-2) — 데이터베이스 화면으로
       openDatabase: (id) => router.push(`/w/${workspaceId}/db/${id}`),
+      // 본문 안의 표(I-3) — 그 데이터베이스의 첫 뷰(탭 순서)의 처음 몇 행. 권한은 그 읽기가 묻는다(볼 수 없으면 null)
+      inlineDatabasePreview: inlinePreviewSource(async (id) => {
+        try {
+          const views = await fetch(`/api/workspaces/${workspaceId}/databases/${id}/views`)
+          if (!views.ok) return null
+          const first = ((await views.json()).views as { id: string }[] | undefined)?.[0]
+          if (first === undefined) return null
+          const res = await fetch(`/api/workspaces/${workspaceId}/views/${first.id}/rows?limit=${INLINE_PREVIEW_ROWS}`)
+          if (!res.ok) return null
+          const page = await res.json()
+          return inlinePreviewOf(page.columns ?? [], page.rows ?? [], page.hasMore === true)
+        } catch {
+          return null
+        }
+      }),
       pageRefTitle: (id) => pageRefTitlesRef.current.get(id),
       pageIcon: (id) => pageIconsRef.current.get(id) ?? null,
       mentionLabel: (kind, id) => (kind === 'user' ? mentionLabelsRef.current.users : mentionLabelsRef.current.pages).get(id),

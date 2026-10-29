@@ -13,6 +13,7 @@
  * ⚠ 이 파일은 브라우저에서만 로드된다(`document` 를 쓴다).
  */
 
+import type { InlinePreview, InlinePreviewSource } from '../database/inline-preview.ts'
 import type { Node as PmNode } from '@tiptap/pm/model'
 import type { Decoration, EditorView, NodeView } from '@tiptap/pm/view'
 
@@ -44,6 +45,11 @@ export type NodeViewDeps = ImageViewDeps & CodeViewDeps & TocViewDeps & Breadcru
    * 인라인 데이터베이스(I-2)를 연다 — 데이터베이스 화면으로. 없으면(읽기 전용 미리보기 · 검사) 단추가 꺼진다.
    */
   openDatabase?: (databaseId: string) => void
+  /**
+   * 인라인 데이터베이스의 미리보기(I-3) — 그 데이터베이스의 첫 뷰를 읽어 본문 안의 작은 표로(`inline-preview.ts`). 못 읽으면 null.
+   * 없으면(읽기 전용 미리보기 · 검사) 표를 그리지 않는다.
+   */
+  inlineDatabasePreview?: InlinePreviewSource
   /**
    * 하위 페이지 참조의 제목 — 볼 수 있으면 평문, 볼 수 없으면 `null`, 모르면 `undefined`. 참조 노드는 제목을 싣지 않는다
    * (`schema.ts`) — 서버가 권한으로 거른 맵에서 읽는다(`loadPageBody` 의 `pageRefTitles`).
@@ -243,7 +249,8 @@ function pageRefNodeView(
 /**
  * database_ref — 인라인 데이터베이스(26번 트랙 I-2 · 정본 §3.5 [보강 I-1]). 하위 페이지 링크와 같은 규칙이다: 이름 · 아이콘은 노드에 없고
  * 권한으로 거른 맵(하위 페이지와 같은 맵 — 서버의 `pageRefLabelsOf` 가 데이터베이스도 싣는다)에서 읽는다. 볼 수 없으면 자리만("접근 권한
- * 없음") · 누르면 데이터베이스 화면으로. 본문 안에 표를 그리는 것은 I-3 이다.
+ * 없음") · 누르면 데이터베이스 화면으로. 그 아래에 첫 뷰의 처음 몇 행을 읽기 전용 표로 그린다(I-3 — 화면에 들 때 읽는다 ·
+ * `inline-preview.ts`).
  */
 function databaseRefNodeView(
   node: PmNode,
@@ -284,7 +291,96 @@ function databaseRefNodeView(
   })
 
   dom.append(link)
-  return { dom, stopEvent: () => true }
+
+  // 본문 안의 표(I-3) — 볼 수 있을 때만 · 화면에 들 때 한 번 읽는다(04 F-04-14 *"뷰포트 진입 시에만 쿼리"* — 한 페이지에 여럿이면 다 읽지 않는다)
+  let observer: IntersectionObserver | null = null
+  const source = deps.inlineDatabasePreview
+  if (title !== null && source !== undefined && id !== '') {
+    const box = document.createElement('div')
+    box.className = 'blk-database-preview'
+    dom.append(box)
+    // 이미 읽은 것이 있으면 곧바로 — 맵이 바뀌어 노드 뷰가 다시 만들어질 때 표가 비었다 다시 차지 않게
+    const known = source.peek(id)
+    if (known !== undefined) renderInlinePreview(box, known, id, deps)
+    else {
+      box.dataset.state = 'loading'
+      box.textContent = '불러오는 중…'
+    }
+    const start = (): void => {
+      void source.load(id).then((preview) => renderInlinePreview(box, preview, id, deps))
+    }
+    if (typeof IntersectionObserver === 'undefined') start()
+    else {
+      observer = new IntersectionObserver((entries) => {
+        if (entries.some((e) => e.isIntersecting)) {
+          observer?.disconnect()
+          start()
+        }
+      })
+      observer.observe(box)
+    }
+  }
+  return { dom, stopEvent: () => true, destroy: () => observer?.disconnect() }
+}
+
+/** 미리보기 표를 그린다 — 머리 · 행(제목을 누르면 그 행 페이지) · 더 보기(데이터베이스 화면) · 비었으면 그렇다고 · 못 읽으면 그렇다고. */
+function renderInlinePreview(box: HTMLElement, preview: InlinePreview | null, databaseId: string, deps: NodeViewDeps): void {
+  box.replaceChildren()
+  if (preview === null) {
+    box.dataset.state = 'error'
+    box.textContent = '표를 불러오지 못했습니다'
+    return
+  }
+  box.dataset.state = 'ready'
+  if (preview.rows.length === 0) {
+    const empty = document.createElement('p')
+    empty.className = 'blk-database-empty'
+    empty.textContent = '비어 있습니다'
+    box.append(empty)
+    return
+  }
+  const table = document.createElement('table')
+  table.className = 'blk-database-table'
+  const head = document.createElement('tr')
+  for (const name of preview.headers) {
+    const th = document.createElement('th')
+    th.textContent = name
+    head.append(th)
+  }
+  const thead = document.createElement('thead')
+  thead.append(head)
+  const tbody = document.createElement('tbody')
+  for (const row of preview.rows) {
+    const tr = document.createElement('tr')
+    tr.dataset.rowId = row.id
+    row.cells.forEach((text, i) => {
+      const td = document.createElement('td')
+      if (i === preview.openAt) {
+        // 제목 칸을 누르면 그 행 페이지 — 행도 페이지다
+        const open = document.createElement('button')
+        open.type = 'button'
+        open.className = 'blk-database-row-open'
+        open.textContent = text
+        open.addEventListener('mousedown', (event) => event.preventDefault())
+        open.addEventListener('click', () => deps.openPage(row.id))
+        td.append(open)
+      } else td.textContent = text
+      tr.append(td)
+    })
+    tbody.append(tr)
+  }
+  table.append(thead, tbody)
+  box.append(table)
+  if (preview.more) {
+    const more = document.createElement('button')
+    more.type = 'button'
+    more.className = 'blk-database-more'
+    more.textContent = '더 보기 — 데이터베이스 열기'
+    more.disabled = deps.openDatabase === undefined
+    more.addEventListener('mousedown', (event) => event.preventDefault())
+    more.addEventListener('click', () => deps.openDatabase?.(databaseId))
+    box.append(more)
+  }
 }
 
 /**
