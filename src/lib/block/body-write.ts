@@ -55,7 +55,7 @@ import { effectiveCaps } from '../permissions/effective.ts'
 import { isLocked } from '../permissions/lock.ts'
 import { recordCoalescedActivity } from '../notification/activity.ts'
 import { can } from '../permissions/levels.ts'
-import { MAX_TREE_DEPTH, PAGE_TYPE } from './types.ts'
+import { isRefType, MAX_TREE_DEPTH } from './types.ts'
 import {
   projectBodyRows,
   readBodyScope,
@@ -165,7 +165,8 @@ export async function openPageBody(
       // 본문에 둘 수 있는 하위 페이지는 이 본문 범위의 살아 있는 페이지뿐이다(§3.2-24). 다른 참조(같은 참조를 둘이 동시에 옮겨 생긴
       // 둘째 · 휴지통에 간 페이지 · 다른 본문으로 간 페이지 · 없는 페이지)는 읽기가 빼고 수선이 Y.Doc 에서 뺀다 — 투영은 페이지
       // 행을 만들거나 옮기지 않는다.
-      const pageRefs = new Set(scope.filter((r) => r.type === PAGE_TYPE && r.lifecycle === 'live').map((r) => r.id))
+      // 인라인 데이터베이스 참조(I-1)도 같은 집합이다 — 이 본문 범위의 살아 있는 데이터베이스만.
+      const pageRefs = new Set(scope.filter((r) => isRefType(r.type) && r.lifecycle === 'live').map((r) => r.id))
       const first = session.read({ pageRefs })
       const dropping = first.fixes.includes('page_ref_dropped')
       const limits =
@@ -271,7 +272,7 @@ async function pageRefDepthLimits(
   const refs: { readonly id: string; readonly depth: number }[] = []
   const walk = (blocks: readonly EditorBlock[], depth: number): void => {
     for (const b of blocks) {
-      if (b.type === PAGE_TYPE) refs.push({ id: b.id, depth })
+      if (isRefType(b.type)) refs.push({ id: b.id, depth })
       walk(b.children ?? [], depth + 1)
     }
   }
@@ -281,7 +282,7 @@ async function pageRefDepthLimits(
 
   const base = page.ancestor_path.length
   // 문서의 참조는 이미 이 범위의 살아 있는 하위 페이지뿐이다(`pageRefs` 로 읽었다).
-  const rowDepthOf = new Map(scope.filter((r) => r.type === PAGE_TYPE).map((r) => [r.id, r.ancestor_path.length]))
+  const rowDepthOf = new Map(scope.filter((r) => isRefType(r.type)).map((r) => [r.id, r.ancestor_path.length]))
   const deepening = refs.filter((r) => {
     const rowDepth = rowDepthOf.get(r.id)
     return rowDepth !== undefined && base + r.depth > rowDepth

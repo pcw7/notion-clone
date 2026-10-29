@@ -53,7 +53,7 @@
 import type { Node as PmNode } from '@tiptap/pm/model'
 
 import { sanitizeBlockAttrs } from '../block/props.ts'
-import { MAX_TREE_DEPTH, MIN_COLUMNS, PAGE_TYPE, specOf, type BlockFormat, type BlockType } from '../block/types.ts'
+import { isRefType, MAX_TREE_DEPTH, MIN_COLUMNS, specOf, type BlockFormat, type BlockType } from '../block/types.ts'
 import { isPlainRecord, jsonSafe, sameJsonValue, withoutNul } from '../contracts/json-safe.ts'
 import { isUuid } from '../ids.ts'
 import { ATOM_MARKS_ATTR, atomMarksAttr, INLINE_ATOM_NODES } from '../editor/atom-marks.ts'
@@ -62,7 +62,7 @@ import {
   blockTypeOfNode,
   EQUATION_NODE,
   isPlainTextNode,
-  PAGE_REF_NODE,
+  isRefNodeName,
   TABLE_CELL_NODE,
   TABLE_NODE,
   TABLE_ROW_NODE,
@@ -160,8 +160,8 @@ export type NormalizeOptions = {
    */
   readonly pageRefDepth?: ReadonlyMap<string, number>
   /**
-   * 이 본문에 둘 수 있는 하위 페이지 — 이 본문 범위의 **살아 있는** 페이지 id. 다른 id 의 참조는 뺀다(`page_ref_dropped`). 없으면
-   * 보지 않는다.
+   * 이 본문에 둘 수 있는 참조 — 이 본문 범위의 **살아 있는** 하위 페이지 · 인라인 데이터베이스(I-1) id. 다른 id 의 참조는 뺀다
+   * (`page_ref_dropped` — 두 참조 노드 모두). 없으면 보지 않는다.
    *
    * 페이지가 있는지 · 어디 사는지 · 휴지통에 갔는지는 행이 정한다 — 문서의 참조가 페이지를 만들거나 옮기거나 되살리지 않는다.
    * 같은 참조를 둘이 동시에 옮기면 둘째가 새 id 를 받고(위의 id 규칙) 그 id 는 어떤 페이지도 아니다. 투영과 그 수선만
@@ -228,11 +228,12 @@ function cleanInline(child: PmNode): PmNode | null {
 
 /** 내용 노드가 자식 블록을 가질 수 있는가. 하위 페이지 참조 밑은 그 페이지의 문서라 안 된다. */
 function canNest(content: PmNode): boolean {
-  if (content.type.name === PAGE_REF_NODE) return false
+  // 참조(하위 페이지 · 인라인 데이터베이스 — I-1) 밑은 그 블록의 것이라 안 된다
+  if (isRefNodeName(content.type.name)) return false
   // 노드 이름은 타입 이름이 아닐 수 있다(`code_block` → `code`) — 이름을 그대로 `specOf` 에 넣으면 undefined 다(8a-1).
   const type = blockTypeOfNode(content.type.name)
   // 표의 행은 내용 노드 안에 산다(Phase 2 1d) — 컨테이너의 자식 그룹이 아니다. 그룹에 온 자식은 뒤 형제로 올린다.
-  return specOf(type).canHaveChildren && !specOf(type).childrenInContent && type !== PAGE_TYPE
+  return specOf(type).canHaveChildren && !specOf(type).childrenInContent && !isRefType(type)
 }
 
 export function normalizeBody(input: PmNode, options: NormalizeOptions): NormalizeResult {
@@ -517,7 +518,7 @@ export function normalizeBody(input: PmNode, options: NormalizeOptions): Normali
     }
 
     // 둘 수 없는 참조는 컨테이너째 뺀다. 참조는 자식을 갖지 못하므로 자식은 이미 이 깊이로 올라와 있다 — 잃지 않는다.
-    if (content.type.name === PAGE_REF_NODE && options.pageRefs !== undefined && !options.pageRefs.has(blockId)) {
+    if (isRefNodeName(content.type.name) && options.pageRefs !== undefined && !options.pageRefs.has(blockId)) {
       fixes.push('page_ref_dropped')
       return children
     }
@@ -542,7 +543,7 @@ export function normalizeBody(input: PmNode, options: NormalizeOptions): Normali
   /** 이 컨테이너가 `depth` 에 놓이면 받은 깊이를 넘는 하위 페이지 참조인가. */
   const deeperThanAllowed = (container: PmNode, depth: number): boolean => {
     const limit = options.pageRefDepth?.get(String(container.attrs.blockId))
-    return limit !== undefined && depth > limit && container.firstChild?.type.name === PAGE_REF_NODE
+    return limit !== undefined && depth > limit && isRefNodeName(container.firstChild?.type.name ?? '')
   }
 
   const top: PmNode[] = []

@@ -165,6 +165,7 @@ export function databaseFailureStatus(reason: DatabaseFailure): number {
       return 409
     case 'invalid_name':
     case 'invalid_icon':
+    case 'too_deep':
       return 400
   }
 }
