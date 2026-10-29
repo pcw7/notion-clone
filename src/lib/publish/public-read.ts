@@ -86,14 +86,20 @@ export async function readPublicPage(token: string, pageId?: string, options: { 
     const draft = rowsToDoc(target.pageId, scope.filter((row) => row.lifecycle === 'live'))
     const mentions = mentionsOf(draft.blocks)
     const openable = await openablePagesIn(tx, target.workspaceId, target.rootId, [...refIds, ...mentions.pages])
-    const doc: EditorDoc = { blocks: withoutClosedRefs(draft.blocks, openable) }
-    // 본문 안의 인라인 데이터베이스(I-4b) — 열 수 있는 것마다 공개 표(공개 표와 같은 규칙 · 서버가 한 번에 그린다)
+    // 본문 안의 인라인 데이터베이스(I-4b) — 열 수 있는 것마다 공개 표(공개 표와 같은 규칙 · 서버가 한 번에 그린다). 소유한 소스가 없는
+    // 그릇(본문 안의 연결된 데이터베이스)은 그리지 않는다 — 이름 줄도 · 이름도 싣지 않는다(정본 [보강 L-1] ④)
     const inlineDatabases = new Map<string, PublicTable>()
+    const hidden = new Set<string>()
     for (const row of scope) {
-      if (row.type === DATABASE_TYPE && row.lifecycle === 'live' && openable.has(row.id)) inlineDatabases.set(row.id, await publicTableOf(tx, row.id))
+      if (row.type !== DATABASE_TYPE || row.lifecycle !== 'live' || !openable.has(row.id)) continue
+      const table = await publicTableOf(tx, row.id)
+      if (table === null) hidden.add(row.id)
+      else inlineDatabases.set(row.id, table)
     }
+    const shown: ReadonlySet<string> = hidden.size === 0 ? openable : new Set([...openable].filter((id) => !hidden.has(id)))
+    const doc: EditorDoc = { blocks: withoutClosedRefs(draft.blocks, shown) }
 
-    const titled = [...new Set([...target.chain, ...openable])]
+    const titled = [...new Set([...target.chain, ...shown])]
     const titles = await tx.query<{ id: string; properties: Record<string, unknown> | null }>(
       `SELECT id, properties FROM block WHERE id = ANY($1::uuid[])`,
       [titled],

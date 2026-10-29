@@ -177,9 +177,13 @@ export async function readExportSnapshot(
       ]),
     )
 
+    // 표 — 데이터베이스마다 **소유한** 소스의 표(붙인 것은 원본에서 한 번 나간다). 노드를 고르기 전에 읽는다: 소유한 소스가 없는 그릇
+    // (본문 안의 연결된 데이터베이스 — 정본 [보강 L-1] ④)은 표가 없으므로 노드가 아니다 — 본문의 참조는 뺀 참조로 빠진다.
+    const tables = await readTables(tx, ctx.workspaceId, blocks.filter((b) => b.type === 'database').map((b) => b.id), now)
+
     // ── ④ 노드와 트리 ──
     const nodeRows = blocks.filter(
-      (b) => (b.type === PAGE_TYPE && !templates.has(b.id)) || b.type === 'database',
+      (b) => (b.type === PAGE_TYPE && !templates.has(b.id)) || (b.type === 'database' && (tables.get(b.id)?.length ?? 0) > 0),
     )
     const nodeIds = new Set(nodeRows.map((b) => b.id))
     const typeOf = new Map(nodeRows.map((b) => [b.id, b.type]))
@@ -219,7 +223,6 @@ export async function readExportSnapshot(
     }
 
     const databaseIds = nodeRows.filter((b) => b.type === 'database').map((b) => b.id)
-    const tables = await readTables(tx, ctx.workspaceId, databaseIds, now)
     // 수식 칸(10n-35) — 셀이 아니다(C1). 같은 트랜잭션에서 표 화면과 같은 함수로 계산해 그 행의 칸 묶음에 끼운다(고유 ID 와 같은 자리).
     // 행은 자기 data source 의 표의 식으로 계산한다(8e-1 — 소스마다 속성이 다르다).
     // relation 칸(10n-36) — 캐시(앞 25개 · 걸러지지 않은 id)가 아니라 엣지를 읽어 권한으로 가른 제목 · 볼 수 없는 개수를 끼운다. 연결이

@@ -26034,6 +26034,48 @@ async function main() {
       check('★ 행 페이지의 경로 — 그 표 위에 표가 놓인 페이지', rowTrailOk, await evaluate(`JSON.stringify(${crumbs})`))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('본문 안의 연결된 데이터베이스 — 서버 (L-1 · F-04-13)')) { try {
+      // 다른 데이터베이스의 소스를 붙인 그릇을 본문에 만든다(라우트 · `linkedDataSourceId`) — 이름 줄은 원본의 이름 · 미리보기는 원본의 행 ·
+      // 이름 줄을 누르면 그 그릇의 데이터베이스 화면(붙인 뷰가 원본의 행을 보인다). 정본 §3.5 [보강 L-1]. 자기 데이터를 스스로 만든다(API).
+      const stamp = Date.now()
+      const apiL = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const sourceName = `연결 원본 ${stamp}`
+      const source = (await apiL('POST', '/databases', { name: sourceName })).body.database
+      const titleProp = (await apiL('GET', `/views/${source.defaultViewId}`)).body.view.columns.find((col) => col.type === 'title').propertyId
+      const rowIds = []
+      for (const title of ['원본 가', '원본 나']) {
+        rowIds.push((await apiL('POST', `/views/${source.defaultViewId}/rows`, { cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } }] })).body.row.id)
+      }
+      const host = (await apiL('POST', '/pages', { title: `연결 호스트 ${stamp}` })).body.page.id
+      const made = await apiL('POST', `/pages/${host}/databases`, { linkedDataSourceId: source.dataSourceId })
+      const missing = await apiL('POST', `/pages/${host}/databases`, { linkedDataSourceId: randomUUID() })
+      check('★ 라우트 — 원본의 소스를 붙인 그릇(201 · 소유하지 않은 소스 하나) · 없는 소스는 404',
+        made.status === 201 && made.body?.database?.dataSources?.length === 1 && made.body.database.dataSources[0].owned === false
+          && made.body.database.dataSources[0].id === source.dataSourceId && missing.status === 404,
+        JSON.stringify({ made: made.status, sources: made.body?.database?.dataSources, missing: missing.status }))
+
+      const container = made.body.database.id
+      const BOX = `[data-block-id="${container}"] .blk-database-preview`
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${host}` })
+      const ready = await waitFor(`document.querySelector('${BOX}')?.dataset.state === 'ready'`, 15000)
+      const seen = JSON.parse(await evaluate(`JSON.stringify({
+        name: document.querySelector('[data-block-id="${container}"] .blk-database-link')?.textContent ?? null,
+        rows: [...document.querySelectorAll('${BOX} tbody tr')].map((e) => e.dataset.rowId),
+      })`))
+      check('★ 본문의 이름 줄은 원본의 이름 · 미리보기는 원본의 행',
+        ready && (seen.name ?? '').includes(sourceName) && seen.rows.length === 2 && seen.rows.every((id) => rowIds.includes(id)), JSON.stringify(seen))
+
+      const LINK = `[data-block-id="${container}"] .blk-database-link`
+      await waitHydrated(LINK)
+      await clickSelector(LINK)
+      check('이름 줄을 누르면 그릇의 데이터베이스 화면 — 붙인 뷰가 원본의 행을 보인다',
+        await waitFor(`location.pathname === ${JSON.stringify(`/w/${workspaceId}/db/${container}`)} && ${JSON.stringify(rowIds)}.every((id) => !!document.querySelector('[data-row-id="' + id + '"]'))`, 15000),
+        await evaluate('location.pathname'))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

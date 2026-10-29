@@ -92,14 +92,15 @@ type ColumnRow = { property_id: string; name: string; type: string; unique_id_pr
 export async function readPublicTableIn(tx: Tx, target: PublicTarget): Promise<PublicTable | null> {
   const node = await tx.queryMaybe<{ type: string }>(`SELECT type FROM block WHERE id = $1`, [target.pageId])
   if (node?.type !== 'database') return null
-  return publicTableOf(tx, target.pageId)
+  // 소유한 소스가 없는 그릇(본문 안의 연결된 데이터베이스 — 정본 [보강 L-1] ④)을 직접 열면 빈 표
+  return (await publicTableOf(tx, target.pageId)) ?? { viewName: '', columns: [], rows: [], truncated: false }
 }
 
 /**
  * 데이터베이스 하나의 공개 표. 부르는 쪽이 그 데이터베이스가 열린다는 것을 같은 트랜잭션에서 확인했다(`resolvePublicPageIn` ·
  * `openablePagesIn` — 공개 본문의 인라인 데이터베이스 · I-4b). 이 함수는 판정을 다시 하지 않고 **행마다의 공개 조건**만 건다.
  */
-export async function publicTableOf(tx: Tx, databaseId: string): Promise<PublicTable> {
+export async function publicTableOf(tx: Tx, databaseId: string): Promise<PublicTable | null> {
 
   // 소유한 data source 의 첫 뷰 — 붙인 소스(linked)는 다른 데이터베이스의 행이다(그 데이터베이스는 게시되지 않았다)
   const view = await tx.queryMaybe<{ id: string; name: string | null; data_source_id: string; filter: unknown; sorts: unknown }>(
@@ -111,7 +112,8 @@ export async function publicTableOf(tx: Tx, databaseId: string): Promise<PublicT
       LIMIT 1`,
     [databaseId],
   )
-  if (view === null) return { viewName: '', columns: [], rows: [], truncated: false }
+  // 소유한 살아 있는 소스가 없다(붙인 소스만 가진 그릇 · 정본 [보강 L-1] ④) — 그릴 공개 표가 없다
+  if (view === null) return null
 
   const columns = await publicColumns(
     tx,

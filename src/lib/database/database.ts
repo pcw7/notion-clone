@@ -56,7 +56,8 @@ import { appendPageRef, placePageRefAt } from '../block/page-refs.ts'
 import { pageIconJson, parsePageIconInput, readPageIcon, samePageIcon, type PageIcon } from '../block/page-icon.ts'
 import { isUsableIcon, moveIconFileReference } from '../file/icon-reference.ts'
 import { indexPageTitle } from '../search/index-page.ts'
-import { insertOwnedDataSource, readDataSources, type DataSourceSummary } from './data-source.ts'
+import { insertLinkedAttachment, insertOwnedDataSource, readDataSources, type DataSourceSummary } from './data-source.ts'
+import { canViewOwnerDatabase } from './source-access.ts'
 
 export { DEFAULT_TITLE_PROPERTY_NAME } from './data-source.ts'
 
@@ -272,6 +273,50 @@ async function insertDatabaseRows(
 }
 
 /**
+ * 붙일 소스 — 살아 있고 이 사람이 원본을 볼 수 있으면 그 이름들(정본 [보강 L-1] ②). 아니면 null(없는 것과 같다).
+ * `displayName` 은 그릇의 처음 이름이다 — 원본의 소스가 하나면 원본 데이터베이스의 지금 이름(소스 이름은 하나일 때 화면에 나오지 않아 낡을
+ * 수 있다 — §3.6 [보강] 다중 data source ③), 여럿이면 그 소스의 이름.
+ */
+async function linkableSource(
+  tx: Tx,
+  ctx: SessionContext,
+  dataSourceId: string,
+): Promise<{ readonly name: string; readonly owner: string; readonly displayName: string } | null> {
+  const source = await tx.queryMaybe<{ name: string; owner: string; owner_properties: Record<string, unknown> | null; attached: number }>(
+    `SELECT ds.name, ds.owner_database_id AS owner, b.properties AS owner_properties,
+            (SELECT count(*)::int FROM database_data_source x WHERE x.database_id = ds.owner_database_id) AS attached
+       FROM data_source ds JOIN block b ON b.id = ds.owner_database_id
+      WHERE ds.id = $1 AND ds.lifecycle = 'live' AND b.workspace_id = $2`,
+    [dataSourceId, ctx.workspaceId],
+  )
+  if (source === null || !(await canViewOwnerDatabase(tx, ctx, source.owner))) return null
+  const ownerName = plainTitleOf(source.owner_properties)
+  return { name: source.name, owner: source.owner, displayName: source.attached <= 1 && ownerName !== '' ? ownerName : source.name }
+}
+
+/** 소유한 소스 없이 붙인 소스 하나를 가진 데이터베이스의 행(정본 [보강 L-1] ①). */
+async function insertLinkedDatabaseRows(
+  tx: Tx,
+  input: { readonly id: string; readonly name: string; readonly dataSourceId: string; readonly source: { readonly name: string; readonly owner: string } },
+): Promise<Omit<CreatedDatabase, 'teamspaceId' | 'ownerUserId'>> {
+  await tx.query(
+    `INSERT INTO database (id, title_rich, is_inline, created_at, updated_at)
+     VALUES ($1, $2::jsonb, true, now(), now())`,
+    [input.id, JSON.stringify(titleFromPlainText(input.name))],
+  )
+  const added = await insertLinkedAttachment(tx, input.id, input.dataSourceId, input.source)
+  return {
+    id: input.id,
+    name: input.name,
+    icon: null,
+    dataSources: [added.dataSource],
+    dataSourceId: input.dataSourceId,
+    isInline: true,
+    defaultViewId: added.viewId,
+  }
+}
+
+/**
  * 인라인 데이터베이스를 만든다(26번 트랙 I-1 · 정본 §3.5 [보강 I-1] ①) — 부모 페이지 본문 안의 데이터베이스.
  *
  * 하위 페이지를 만드는 것과 같은 순서다(`page.ts` `createPageIn`): 부모 페이지를 잠그고(권한 `create_child` · 깊이 — 하위 페이지와 같은
@@ -284,12 +329,27 @@ async function insertDatabaseRows(
  */
 export async function createInlineDatabase(
   ctx: SessionContext,
-  input: { readonly parentPageId: string; readonly name?: string; readonly at?: string },
+  input: {
+    readonly parentPageId: string
+    readonly name?: string
+    readonly at?: string
+    /**
+     * 본문 안의 연결된 데이터베이스(27번 트랙 L-1 · 정본 [보강 L-1]) — 주면 소유한 소스 없이 이 소스를 붙인 그릇을 만든다(붙이기와 같은
+     * 몸 — 부착 행 하나 + 그 소스를 보는 표 뷰 하나). 원본을 볼 수 없거나 없는 · 휴지통의 소스면 `not_found`.
+     */
+    readonly linkedDataSourceId?: string
+  },
 ): Promise<DatabaseResult<CreatedDatabase>> {
-  const name = normalizeName(input.name)
+  let name = normalizeName(input.name)
   // uuid 가 아니면 없는 것과 같이 답한다(존재를 알리지 않는다 · asBlockId 는 던진다)
   if (!isUuid(input.parentPageId)) return { ok: false, reason: 'not_found' }
+  if (input.linkedDataSourceId !== undefined && !isUuid(input.linkedDataSourceId)) return { ok: false, reason: 'not_found' }
   return withCommandTransaction(async (tx) => {
+    // 붙일 소스 — 행을 넣기 **전에** 묻는다(실패하면 아무것도 쓰지 않는다). 원본을 볼 수 없으면 없는 것과 같은 답(정본 ⑪)
+    const linked = input.linkedDataSourceId === undefined ? null : await linkableSource(tx, ctx, input.linkedDataSourceId)
+    if (input.linkedDataSourceId !== undefined && linked === null) return { ok: false, reason: 'not_found' } as const
+    // 이름을 주지 않으면 원본의 이름(정본 [보강 L-1] ① — 그 뒤 그릇의 이름은 그릇의 것)
+    if (linked !== null && name === '') name = linked.displayName
     let placement: Awaited<ReturnType<typeof lockParentPage>>
     try {
       placement = await lockParentPage(tx, ctx, asBlockId(input.parentPageId))
@@ -314,7 +374,9 @@ export async function createInlineDatabase(
       [id, ctx.workspaceId, placement.parentId, orderKey, placement.ancestorPath, placement.permScopeId, JSON.stringify({ title: titleFromPlainText(name) }), ctx.userId],
     )
     await indexPageTitle(tx, id, name)
-    const value = await insertDatabaseRows(tx, { id, name, isInline: true })
+    const value = linked === null
+      ? await insertDatabaseRows(tx, { id, name, isInline: true })
+      : await insertLinkedDatabaseRows(tx, { id, name, dataSourceId: input.linkedDataSourceId!, source: linked })
 
     parentBody.change(input.at ? placePageRefAt(id, input.at, 'database') : appendPageRef(null, id, 'database'))
     const result = await parentBody.finish()
