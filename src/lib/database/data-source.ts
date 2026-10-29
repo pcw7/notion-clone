@@ -520,51 +520,55 @@ export async function attachLinkedDataSource(
     )
     if (attached !== null) return fail('already_attached')
 
-    const lastSource = await tx.queryMaybe<{ order_idx: string }>(
-      `SELECT order_idx FROM database_data_source WHERE database_id = $1 ORDER BY order_idx DESC LIMIT 1`,
-      [databaseId],
-    )
-    const lastView = await tx.queryMaybe<{ order_idx: string }>(
-      `SELECT order_idx FROM view WHERE database_id = $1 AND owner_kind = 'database_view' ORDER BY order_idx DESC LIMIT 1`,
-      [databaseId],
-    )
-    const sourceOrder = orderKeyBetween(lastSource?.order_idx ?? null, null)
-    await tx.query(`INSERT INTO database_data_source (database_id, data_source_id, order_idx) VALUES ($1, $2, $3)`, [
-      databaseId,
-      dataSourceId,
-      sourceOrder,
-    ])
-    // 뷰 하나 — 이 데이터베이스의 것이다(뷰 · 필터 · 정렬은 붙인 곳의 것 · 머리말). 컬럼은 원본의 스키마 순서를 물려받는다(`createView` 와 같다).
-    const viewId = randomUUID()
-    await tx.query(
-      `INSERT INTO view (id, owner_kind, database_id, data_source_id, name, type, order_idx, configuration, created_at, updated_at)
-       VALUES ($1, 'database_view', $2, $3, $4, 'table', $5, '{}'::jsonb, now(), now())`,
-      [viewId, databaseId, dataSourceId, source.name, orderKeyBetween(lastView?.order_idx ?? null, null)],
-    )
-    await tx.query(
-      `INSERT INTO view_property (view_id, property_id, visible, order_idx)
-       SELECT $1, p.id, true, p.order_idx FROM property p WHERE p.data_source_id = $2 AND p.deleted_at IS NULL`,
-      [viewId, dataSourceId],
-    )
+    const added = await insertLinkedAttachment(tx, databaseId, dataSourceId, source)
     await tx.query(
       `UPDATE block SET last_edited_by = $2, last_edited_at = now(), version = version + 1 WHERE id = $1`,
       [databaseId, ctx.userId],
     )
-    return {
-      ok: true,
-      value: {
-        dataSource: {
-          id: dataSourceId,
-          name: source.name,
-          owned: false,
-          orderKey: sourceOrder,
-          readable: true,
-          ownerDatabaseId: source.owner,
-        },
-        viewId,
-      },
-    } as const
+    return { ok: true, value: added } as const
   })
+}
+
+/**
+ * 붙이기의 몸 — 부착 행(부착 순서의 끝) 하나와 그 소스를 보는 표 뷰(탭의 끝) 하나. 묻지 않는다 — 부르는 쪽이 이 데이터베이스의 권한과
+ * 원본을 볼 수 있는지를 이미 물었다(`attachLinkedDataSource` · 본문 안의 연결된 데이터베이스 `createInlineDatabase` — 정본 [보강 L-1]).
+ */
+export async function insertLinkedAttachment(
+  tx: Tx,
+  databaseId: string,
+  dataSourceId: string,
+  source: { readonly name: string; readonly owner: string },
+): Promise<AddedDataSource> {
+  const lastSource = await tx.queryMaybe<{ order_idx: string }>(
+    `SELECT order_idx FROM database_data_source WHERE database_id = $1 ORDER BY order_idx DESC LIMIT 1`,
+    [databaseId],
+  )
+  const lastView = await tx.queryMaybe<{ order_idx: string }>(
+    `SELECT order_idx FROM view WHERE database_id = $1 AND owner_kind = 'database_view' ORDER BY order_idx DESC LIMIT 1`,
+    [databaseId],
+  )
+  const sourceOrder = orderKeyBetween(lastSource?.order_idx ?? null, null)
+  await tx.query(`INSERT INTO database_data_source (database_id, data_source_id, order_idx) VALUES ($1, $2, $3)`, [
+    databaseId,
+    dataSourceId,
+    sourceOrder,
+  ])
+  // 뷰 하나 — 이 데이터베이스의 것이다(뷰 · 필터 · 정렬은 붙인 곳의 것 · 머리말). 컬럼은 원본의 스키마 순서를 물려받는다(`createView` 와 같다).
+  const viewId = randomUUID()
+  await tx.query(
+    `INSERT INTO view (id, owner_kind, database_id, data_source_id, name, type, order_idx, configuration, created_at, updated_at)
+     VALUES ($1, 'database_view', $2, $3, $4, 'table', $5, '{}'::jsonb, now(), now())`,
+    [viewId, databaseId, dataSourceId, source.name, orderKeyBetween(lastView?.order_idx ?? null, null)],
+  )
+  await tx.query(
+    `INSERT INTO view_property (view_id, property_id, visible, order_idx)
+     SELECT $1, p.id, true, p.order_idx FROM property p WHERE p.data_source_id = $2 AND p.deleted_at IS NULL`,
+    [viewId, dataSourceId],
+  )
+  return {
+    dataSource: { id: dataSourceId, name: source.name, owned: false, orderKey: sourceOrder, readable: true, ownerDatabaseId: source.owner },
+    viewId,
+  }
 }
 
 /**

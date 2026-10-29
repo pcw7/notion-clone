@@ -24,14 +24,19 @@ export async function POST(
   if (!session.ok) return session.response
   if (!isUuid(pageId)) return Response.json({ error: 'not_found' }, { status: 404 })
 
-  const body = (await request.json().catch(() => ({}))) as { name?: unknown; at?: unknown }
+  const body = (await request.json().catch(() => ({}))) as { name?: unknown; at?: unknown; linkedDataSourceId?: unknown }
   if (body.at != null && (typeof body.at !== 'string' || !isUuid(body.at))) {
+    return Response.json({ error: 'invalid_value' }, { status: 400 })
+  }
+  // 본문 안의 연결된 데이터베이스(L-1 · 정본 [보강 L-1] ②) — 붙일 소스. 글이 아니면 형식이 틀렸다 · 없거나 볼 수 없으면 404(명령이 답한다)
+  if (body.linkedDataSourceId != null && typeof body.linkedDataSourceId !== 'string') {
     return Response.json({ error: 'invalid_value' }, { status: 400 })
   }
   const created = await createInlineDatabase(session.ctx, {
     parentPageId: pageId,
     ...(typeof body.name === 'string' ? { name: body.name } : {}),
     ...(typeof body.at === 'string' ? { at: body.at } : {}),
+    ...(typeof body.linkedDataSourceId === 'string' ? { linkedDataSourceId: body.linkedDataSourceId } : {}),
   })
   if (!created.ok) return Response.json({ error: created.reason }, { status: databaseFailureStatus(created.reason) })
   return Response.json({ ok: true, database: created.value }, { status: 201 })
