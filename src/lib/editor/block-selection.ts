@@ -68,14 +68,14 @@ import { applyTurnInto, type CommandDeps } from './commands.ts'
 import { newBlockId } from './pm-adapter.ts'
 import { tidyColumns } from './column-edit.ts'
 import { containerAt, findContainerById, inTableCell, isLayoutContainer, visibleBlocks } from './pm-blocks.ts'
-import { blockSchema, PAGE_REF_NODE } from './schema.ts'
+import { blockSchema, isRefNodeName } from './schema.ts'
 
 const CONTAINER = 'blockContainer'
 const GROUP = 'blockGroup'
 
-/** 하위 페이지가 섞인 선택을 파괴적으로 다루려 할 때 보여줄 이유. */
+/** 하위 페이지 · 인라인 데이터베이스(I-1b)가 섞인 선택을 파괴적으로 다루려 할 때 보여줄 이유. */
 export const PAGE_REF_REFUSAL =
-  '선택에 하위 페이지가 들어 있어 그대로 두었습니다. 하위 페이지는 휴지통으로만 삭제합니다.'
+  '선택에 하위 페이지나 데이터베이스가 들어 있어 그대로 두었습니다. 하위 페이지 · 데이터베이스는 휴지통으로만 삭제합니다.'
 
 // ── 위치 유틸 ─────────────────────────────────────────────────────────
 
@@ -127,12 +127,12 @@ function wholeColumnList(node: PmNode, pos: number, from: number, to: number): b
   return pos === from || pos === to || pos + node.nodeSize <= to
 }
 
-/** 이 컨테이너(자손 포함)가 하위 페이지 참조를 품고 있는가. */
+/** 이 컨테이너(자손 포함)가 참조(하위 페이지 · 인라인 데이터베이스 — I-1b)를 품고 있는가. */
 export function containsPageRef(container: PmNode): boolean {
   let found = false
   container.descendants((node) => {
     if (found) return false
-    if (node.type.name === PAGE_REF_NODE) {
+    if (isRefNodeName(node.type.name)) {
       found = true
       return false
     }

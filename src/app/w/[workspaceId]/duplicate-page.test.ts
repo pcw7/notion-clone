@@ -35,6 +35,16 @@ describe('① · ② 복제한 뒤 할 말', () => {
   test('하나만 빠져도 말한다 — 개수는 그대로 쓴다', () => {
     assert.match(duplicateNote(1).text ?? '', /1개/)
   })
+
+  test('★ 싣지 않은 인라인 데이터베이스도 멈춰서 말한다(I-1b) — 하위 페이지와 함께면 둘 다', () => {
+    const only = duplicateNote(0, 2)
+    assert.equal(only.navigate, false)
+    assert.match(only.text ?? '', /인라인 데이터베이스 2개는 복제하지 않았습니다/)
+    const both = duplicateNote(1, 1)
+    assert.match(both.text ?? '', /하위 페이지 1개/)
+    assert.match(both.text ?? '', /인라인 데이터베이스 1개/)
+    assert.equal(duplicateNote(0, Number.NaN).navigate, true, 'NaN 은 없음')
+  })
 })
 
 describe('③ 실패의 이유', () => {

@@ -319,6 +319,11 @@ async function planMove(tx: Tx, ctx: SessionContext, pageId: BlockId, destinatio
     const caps = await effectiveCaps(tx, ctx, moving.id)
     if (!can(caps, 'view')) throw new MoveError('not_found', '페이지를 찾을 수 없습니다.')
     if (!can(caps, 'edit_content')) throw new MoveError('forbidden', '이 페이지를 옮길 권한이 없습니다.')
+    // 인라인 데이터베이스(I-1b · 정본 §3.5 [보강 I-1])는 이 명령으로 옮기지 않는다 — 자리는 부모 본문의 참조이고, 본문 안에서 끌어 옮기면
+    // 투영이 서브트리째 옮긴다. 최상위로 꺼내는 것은 풀페이지로 바꾸는 일이다(v2 · 04 *"상호 전환은 v2"*). 볼 수 있는 사람에게만 말한다.
+    if (moving.type === 'database' && moving.parent_type === 'block') {
+      throw new MoveError('invalid_target', '인라인 데이터베이스는 페이지 본문 안에서만 옮길 수 있습니다.')
+    }
     if (placeOnly) {
       // 볼 수 있는 사람에게만 타입을 말한다(위 주석).
       throw new MoveError('invalid_target', '풀페이지 데이터베이스는 워크스페이스 · teamspace · 개인 최상위로만 옮길 수 있습니다.')

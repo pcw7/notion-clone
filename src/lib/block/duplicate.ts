@@ -109,6 +109,11 @@ export type DuplicateResult = {
   readonly pages: number
   /** 볼 수 없어서 복제하지 않은 하위 페이지 수(그 자손 포함). */
   readonly skipped: number
+  /**
+   * 싣지 않은 인라인 데이터베이스 수(I-1b · 정본 §3.5 [보강 I-1] ⑤) — 복제본에 데이터베이스(속성 · 뷰 · 행)를 깊이 복사하지 않는다(v1).
+   * 사본의 본문에서 그 참조가 빠진다. 화면이 "인라인 데이터베이스 N개는 복제하지 않았습니다" 를 말한다.
+   */
+  readonly skippedDatabases: number
 }
 
 export type SubtreeRow = {
@@ -152,6 +157,8 @@ export type SubtreeCopy = {
   readonly pages: number
   /** 볼 수 없어서 복제하지 않은 하위 페이지 수(그 자손 포함). */
   readonly skipped: number
+  /** 싣지 않은 인라인 데이터베이스 수(I-1b). */
+  readonly skippedDatabases: number
 }
 
 export async function duplicatePage(
@@ -219,7 +226,7 @@ export async function duplicatePage(
     })
     if (root === null) throw new Error(`복제할 원본이 서브트리에 없다: ${pageId}`)
 
-    return { page: root, pages: copied.pages, skipped: copied.skipped }
+    return { page: root, pages: copied.pages, skipped: copied.skipped, skippedDatabases: copied.skippedDatabases }
   })
 }
 
@@ -314,7 +321,7 @@ export async function duplicateSubtree(
     }
   }
 
-  return { rootId, pages: subtree.length, skipped: totalPages - subtree.length }
+  return { rootId, pages: subtree.length, skipped: totalPages - subtree.length, skippedDatabases: await countInlineDatabases(tx, ctx, source.id) }
 }
 
 /** 이 행의 부모 **페이지**의 사본. 부모가 본문 안의 블록이면 조상 경로에서 가장 가까운 복제 대상이 부모다. */
@@ -348,12 +355,17 @@ async function readSubtree(
 ): Promise<{ subtree: SubtreeRow[]; totalPages: number }> {
   // 권한을 **걸지 않고** 먼저 읽는다 — 누가 누구의 부모인지는 볼 수 없는 페이지까지 알아야 정해진다(아래).
   // 제목 · 내용은 읽지 않는다: 여기서 쓰는 것은 구조와 "볼 수 있는가"뿐이다.
+  // 이 서브트리 **안의** 인라인 데이터베이스(I-1b)에 든 페이지(행 · 그 하위)는 싣지 않는다 — 원본 자신이 데이터베이스의 행 · 템플릿이면
+  // 그 경로에도 데이터베이스가 있으므로 서브트리 안의 것만 본다(템플릿 검사가 잡았다). 데이터베이스를 복제하지 않으므로 행이 그 사본의 하위 페이지로
+  // 붙으면 원본에 없던 부모-자식이 생기고 본문에 그 참조가 없어 투영이 거부한다(I-1 의 길 지도가 짚었다).
   const rows = await tx.query<SubtreeRow & { readable: boolean }>(
-    `SELECT id, parent_id, ancestor_path, properties, format,
-            (perm_scope_id = ANY($4::uuid[])) AS readable
-       FROM block
-      WHERE workspace_id = $1 AND type = $2 AND lifecycle = 'live'
-        AND ancestor_path @> ARRAY[$3]::uuid[]
+    `SELECT b.id, b.parent_id, b.ancestor_path, b.properties, b.format,
+            (b.perm_scope_id = ANY($4::uuid[])) AS readable
+       FROM block b
+      WHERE b.workspace_id = $1 AND b.type = $2 AND b.lifecycle = 'live'
+        AND b.ancestor_path @> ARRAY[$3]::uuid[]
+        AND NOT EXISTS (SELECT 1 FROM block db WHERE db.id = ANY(b.ancestor_path) AND db.type = 'database'
+                          AND db.ancestor_path @> ARRAY[$3]::uuid[])
       ORDER BY array_length(ancestor_path, 1), order_key COLLATE "C"`,
     [ctx.workspaceId, PAGE_TYPE, source.id, await readableScopes(tx, ctx)],
   )
@@ -370,6 +382,15 @@ async function readSubtree(
   }
   // 빠진 수는 여기서 바로 나온다 — 다시 세지 않는다(제목은 읽지 않았다 · 개수만 말한다).
   return { subtree: [...kept.values()], totalPages: rows.length + 1 }
+}
+
+/** 서브트리의 살아 있는 인라인 데이터베이스 수(I-1b) — 사본에 싣지 않는다. 볼 수 없는 것도 센다(볼 수 없는 하위 페이지의 수와 같이 수만 말한다). */
+async function countInlineDatabases(tx: Tx, ctx: SessionContext, sourceId: string): Promise<number> {
+  const row = await tx.queryOne<{ n: string }>(
+    `SELECT count(*) AS n FROM block WHERE workspace_id = $1 AND type = 'database' AND lifecycle = 'live' AND ancestor_path @> ARRAY[$2]::uuid[]`,
+    [ctx.workspaceId, sourceId],
+  )
+  return Number(row.n)
 }
 
 /** 서브트리의 살아 있는 블록 수 — 본문 블록까지. 상한 검사용이라 세기만 한다. */

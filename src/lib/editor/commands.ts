@@ -62,7 +62,7 @@ import {
   inTableCell,
   isLayoutContainer,
 } from './pm-blocks.ts'
-import { blockSchema, isPlainTextNode, nodeNameOf, PAGE_REF_NODE } from './schema.ts'
+import { blockSchema, isPlainTextNode, isRefNodeName, nodeNameOf } from './schema.ts'
 import type { RichTextRun } from '../contracts/rich-text.ts'
 
 /**
@@ -202,7 +202,7 @@ export function splitBlockCommand(deps: CommandDeps = NO_COLLAPSE): Command {
     if (!info || info.id === '') return false
 
     // 자식 페이지 참조는 그 페이지의 것이다. Enter 로 쪼개지 않는다.
-    if (info.contentNode.type.name === PAGE_REF_NODE) return false
+    if (isRefNodeName(info.contentNode.type.name)) return false
 
     const offset = info.contentNode.isTextblock ? $from.parentOffset : 0
     const plan = planSplit(toRuleBlock(info, deps.isCollapsed), offset)
@@ -543,7 +543,7 @@ export function applyTurnInto(
 ): boolean {
   const info = findContainerById(tr.doc, blockId)
   if (!info || info.id === '') return false
-  if (info.contentNode.type.name === PAGE_REF_NODE) return false
+  if (isRefNodeName(info.contentNode.type.name)) return false
   // 표(Phase 2 1d)는 다른 타입으로 바꾸지 않는다 — 셀(행)이 갈 곳이 없다. 조용히 버리지 않는다.
   if (specOf(blockTypeOf(info.contentNode)).childrenInContent) return false
 

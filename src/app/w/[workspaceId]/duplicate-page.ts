@@ -21,14 +21,15 @@ export type DuplicateNote = {
   readonly navigate: boolean
 }
 
-export function duplicateNote(skipped: number): DuplicateNote {
+export function duplicateNote(skipped: number, skippedDatabases = 0): DuplicateNote {
   // ★ `skipped > 0` 을 **부정으로** 묻는다. `<= 0` 은 `NaN` 에서 false 라 "NaN개는 복제하지 못했습니다"가 샌다
   //   (검사가 잡았다 — 서버가 그 값을 주지 않는 날이 오면 그렇게 된다).
-  if (!(skipped > 0)) return { text: null, navigate: true }
-  return {
-    text: `사본을 만들었습니다. 볼 수 없는 하위 페이지 ${skipped}개는 복제하지 못했습니다.`,
-    navigate: false,
-  }
+  const parts: string[] = []
+  if (skipped > 0) parts.push(`볼 수 없는 하위 페이지 ${skipped}개는 복제하지 못했습니다.`)
+  // 인라인 데이터베이스(I-1b)는 사본에 싣지 않는다(v1 — 데이터베이스를 깊이 복사하지 않는다)
+  if (skippedDatabases > 0) parts.push(`인라인 데이터베이스 ${skippedDatabases}개는 복제하지 않았습니다.`)
+  if (parts.length === 0) return { text: null, navigate: true }
+  return { text: `사본을 만들었습니다. ${parts.join(' ')}`, navigate: false }
 }
 
 /** 실패의 이유를 사람의 말로. 서버의 코드(`DuplicateErrorCode`)와 같은 어휘를 쓴다. */
@@ -60,11 +61,11 @@ export async function requestDuplicate(workspaceId: string, pageId: string): Pro
       headers: { 'content-type': 'application/json' },
       body: '{}',
     })
-    const body = (await res.json().catch(() => null)) as { page?: { id?: string }; skipped?: number; error?: unknown } | null
+    const body = (await res.json().catch(() => null)) as { page?: { id?: string }; skipped?: number; skippedDatabases?: number; error?: unknown } | null
     if (!res.ok || typeof body?.page?.id !== 'string') {
       return { ok: false, message: duplicateError(res.status, body?.error) }
     }
-    return { ok: true, pageId: body.page.id, note: duplicateNote(Number(body.skipped ?? 0)) }
+    return { ok: true, pageId: body.page.id, note: duplicateNote(Number(body.skipped ?? 0), Number(body.skippedDatabases ?? 0)) }
   } catch {
     return { ok: false, message: '연결에 실패했습니다.' }
   }

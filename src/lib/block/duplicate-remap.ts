@@ -39,7 +39,7 @@
 import { mentionTarget, pageMentionRun, sanitizeRichText, type RichTextRun } from '../contracts/rich-text.ts'
 import type { EditorBlock, EditorDoc } from '../editor/document.ts'
 import { TABLE_CELLS_KEY } from './table.ts'
-import { PAGE_TYPE } from './types.ts'
+import { isRefType } from './types.ts'
 
 /** 원본 페이지 id → 사본 페이지 id. 이 맵에 있는 것이 "서브트리 안"이다. */
 export type PageIdMap = ReadonlyMap<string, string>
@@ -102,8 +102,9 @@ function remapBlocks(
 ): EditorBlock[] {
   const out: EditorBlock[] = []
   for (const block of blocks) {
-    if (block.type === PAGE_TYPE) {
-      // 하위 페이지 참조. 복제한 것만 남기고, 그 자리는 **사본의 id** 를 받는다.
+    if (isRefType(block.type)) {
+      // 하위 페이지 참조. 복제한 것만 남기고, 그 자리는 **사본의 id** 를 받는다. 인라인 데이터베이스 참조(I-1b)는 복제하지 않으므로 늘 빠진다
+      // (사본 지도에 데이터베이스가 없다 — 새 id 를 주면 데이터베이스 행 없는 데이터베이스 블록을 만들게 된다).
       const copy = pages.get(block.id)
       if (copy !== undefined) out.push({ ...block, id: copy })
       continue
