@@ -251,8 +251,10 @@ export function planExport(snapshot: ExportSnapshot, options: { readonly untitle
         // 스냅샷의 자식이 아닌 참조 — 권한 · 범위 때문에 읽는 단계가 뺀 페이지다.
         if (!childIds.has(id)) return null
         const child = nodeOf(id)
-        if (child.kind !== 'page') return null
-        return { href: inFolder(`${nameIn(names, `node:${id}`)}.md`), title: plainTitle(child) || untitled }
+        const name = nameIn(names, `node:${id}`)
+        // 인라인 데이터베이스(I-4a) — 소스가 하나면 그 표의 `.csv` · 여럿이면 그 폴더(`emitDatabase` 와 같은 자리)
+        if (child.kind === 'database') return { href: inFolder(child.sources.length === 1 ? `${name}.csv` : name), title: plainTitle(child) || untitled }
+        return { href: inFolder(`${name}.md`), title: plainTitle(child) || untitled }
       },
       image: (source) => {
         if (source.kind === 'external') return source.url

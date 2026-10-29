@@ -456,6 +456,18 @@ describe('④ 참조와 잃은 것', () => {
     assert.equal(textOf(html), '하위 [페이지]')
   })
 
+  test('★ 인라인 데이터베이스 참조(I-4a)도 같은 길 — 그 자리에 표(CSV)로의 링크 · 빼면 센다', () => {
+    const db = block('database')
+    const { html } = convert([block('paragraph', '앞'), db], {
+      page: (id) => (id === db.id ? { href: '페이지/할 일.csv', title: '할 일' } : null),
+      image: () => null,
+    })
+    const href = /href="([^"]+)"/.exec(html)?.[1] ?? ''
+    assert.equal(decodeURI(href), '페이지/할 일.csv', html)
+    assert.equal(textOf(html), '앞할 일')
+    assert.equal(convert([block('database')]).losses.omittedPages, 1)
+  })
+
   test('★ 호출자가 뺀 참조는 흔적 없이 빠지고 센다', () => {
     const { html, losses } = convert([block('paragraph', '앞'), block('page'), block('paragraph', '뒤')])
     assert.equal(html, '<p>앞</p><p>뒤</p>')
