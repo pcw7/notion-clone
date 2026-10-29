@@ -54,7 +54,7 @@ import type { CommandDeps } from '@/lib/editor/commands'
 import { createEditor, type EditorDeps } from '@/lib/editor/create-editor'
 import { createNodeViews } from '@/lib/editor/node-views'
 import { containerAt, findContainerById } from '@/lib/editor/pm-blocks'
-import { PAGE_REF_NODE } from '@/lib/editor/schema'
+import { isRefNodeName } from '@/lib/editor/schema'
 import {
   closeSlashMenu,
   filterSlashCommands,
@@ -314,11 +314,11 @@ const CLOSED_MENU: MenuUi = { open: false, query: '', index: 0, left: 0, top: 0 
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
-/** 문서에 있는 하위 페이지 참조의 blockId. */
+/** 문서에 있는 참조(하위 페이지 · 인라인 데이터베이스 — I-2)의 blockId. 모르는 것이 오면 이름 맵을 다시 읽는다. */
 function pageRefIds(view: EditorView): string[] {
   const ids: string[] = []
   view.state.doc.descendants((node, _pos, parent) => {
-    if (node.type.name !== PAGE_REF_NODE) return true
+    if (!isRefNodeName(node.type.name)) return true
     const id = String(parent?.attrs.blockId ?? '')
     if (id !== '') ids.push(id)
     return false
@@ -950,8 +950,11 @@ export function BodyEditor({
    *
    * `/쿼리` 를 지운 편집이 **서버에 쌓인 뒤에** 넘긴다 — 먼저 넘기면 서버가 보는 그 블록에는 아직 `/페이지` 글자가 있어
    * 대체가 아니라 뒤에 들어간다.
+   *
+   * 인라인 데이터베이스(26번 트랙 I-2)도 같은 흐름이다 — 참조 노드(`database_ref`)를 서버가 그 자리에 넣는다(`createInlineDatabase`).
    */
-  const createSubpage = useCallback(async () => {
+  const createRef = useCallback(async (kind: 'page' | 'database') => {
+    const label = kind === 'page' ? '하위 페이지' : '데이터베이스'
     const view = viewRef.current
     const connection = connectionRef.current
     if (!view || !connection) return
@@ -972,25 +975,32 @@ export function BodyEditor({
         }),
       ])
     } catch {
-      setStatus({ kind: 'error', message: '연결이 끊겨 하위 페이지를 만들지 못했습니다. 연결이 돌아오면 다시 시도해 주세요.' })
+      setStatus({ kind: 'error', message: `연결이 끊겨 ${label}를 만들지 못했습니다. 연결이 돌아오면 다시 시도해 주세요.` })
       return
     }
 
     let id: string
     try {
-      const res = await fetch(`/api/workspaces/${workspaceId}/pages`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ parentPageId: pageId, at }),
-      })
+      const res =
+        kind === 'page'
+          ? await fetch(`/api/workspaces/${workspaceId}/pages`, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ parentPageId: pageId, at }),
+            })
+          : await fetch(`/api/workspaces/${workspaceId}/pages/${pageId}/databases`, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify(at === null ? {} : { at }),
+            })
       const data = await res.json()
       if (!res.ok) {
-        setStatus({ kind: 'error', message: '하위 페이지를 만들지 못했습니다.' })
+        setStatus({ kind: 'error', message: `${label}를 만들지 못했습니다.` })
         return
       }
-      id = String(data.page.id)
-      // 만든 사람은 그 페이지를 볼 수 있다. 참조가 도착하기 전에 맵에 넣어 둔다.
-      pageRefTitlesRef.current.set(id, String(data.page.title ?? ''))
+      id = kind === 'page' ? String(data.page.id) : String(data.database.id)
+      // 만든 사람은 그 페이지 · 데이터베이스를 볼 수 있다. 참조가 도착하기 전에 맵에 넣어 둔다.
+      pageRefTitlesRef.current.set(id, kind === 'page' ? String(data.page.title ?? '') : String(data.database.name ?? ''))
     } catch {
       setStatus({ kind: 'error', message: '연결에 실패했습니다.' })
       return
@@ -1133,8 +1143,8 @@ export function BodyEditor({
       const view = viewRef.current
       if (!view) return
 
-      if (command.kind === 'page') {
-        void createSubpage()
+      if (command.kind === 'page' || command.kind === 'database') {
+        void createRef(command.kind)
         return
       }
       // 컬럼(Phase 2 1c) — 지금 블록을 첫 컬럼으로. 컬럼 안이면 아무것도 하지 않는다(중첩 금지).
@@ -1167,7 +1177,7 @@ export function BodyEditor({
       if (ran && target !== null && command.id === EQUATION_TYPE) openEquationUi(target)
       if (ran && target !== null && command.id === BUTTON_TYPE) setButtonUi({ blockId: target, label: '' })
     },
-    [createSubpage, openEquationUi],
+    [createRef, openEquationUi],
   )
 
   // ── 코드 블록의 오버레이 (8a-2) ─────────────────────────────────────
@@ -1284,6 +1294,8 @@ export function BodyEditor({
         viewRef.current?.dispatch(viewRef.current.state.tr)
       },
       openPage: (id) => router.push(`/w/${workspaceId}/${id}`),
+      // 인라인 데이터베이스(I-2) — 데이터베이스 화면으로
+      openDatabase: (id) => router.push(`/w/${workspaceId}/db/${id}`),
       pageRefTitle: (id) => pageRefTitlesRef.current.get(id),
       pageIcon: (id) => pageIconsRef.current.get(id) ?? null,
       mentionLabel: (kind, id) => (kind === 'user' ? mentionLabelsRef.current.users : mentionLabelsRef.current.pages).get(id),

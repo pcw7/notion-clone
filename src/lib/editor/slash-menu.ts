@@ -72,6 +72,15 @@ export type PageSlashCommand = SlashCommandBase & {
 }
 
 /**
+ * 인라인 데이터베이스 만들기(26번 트랙 I-2 · F-04-14) — 하위 페이지와 같이 **서버 왕복이 필요하다**: 데이터베이스 블록 · 소스 · 기본 뷰를 만들고
+ * 참조 노드를 서버가 넣는다(`createInlineDatabase`). 호출자가 비동기로 다룬다.
+ */
+export type DatabaseSlashCommand = SlashCommandBase & {
+  readonly kind: 'database'
+  readonly id: 'database'
+}
+
+/**
  * 컬럼 만들기(Phase 2 1c · F-01-12) — 블록 타입이 아니다. 컬럼의 틀은 `/` 로 하나씩 만들지 않고 N열째로 만든다(`columns.ts`).
  */
 export type ColumnsSlashCommand = SlashCommandBase & {
@@ -89,7 +98,13 @@ export type TableSlashCommand = SlashCommandBase & { readonly kind: 'table'; rea
  */
 export type ColorSlashCommand = SlashCommandBase & { readonly kind: 'color'; readonly id: `color:${Color}`; readonly color: Color }
 
-export type SlashCommand = BlockSlashCommand | PageSlashCommand | ColumnsSlashCommand | TableSlashCommand | ColorSlashCommand
+export type SlashCommand =
+  | BlockSlashCommand
+  | PageSlashCommand
+  | DatabaseSlashCommand
+  | ColumnsSlashCommand
+  | TableSlashCommand
+  | ColorSlashCommand
 
 /**
  * 타입별 라벨·별칭.
@@ -146,6 +161,15 @@ const PAGE_COMMAND: PageSlashCommand = {
   group: '페이지',
 }
 
+/** 인라인 데이터베이스(I-2) — 본문 안의 표. `/표` 는 심플 테이블이 먼저 쓴다 — "데이터베이스" · "db" 로 찾는다. */
+const DATABASE_COMMAND: DatabaseSlashCommand = {
+  kind: 'database',
+  id: 'database',
+  label: '데이터베이스',
+  aliases: ['데이터베이스', 'database', 'db', '인라인 데이터베이스', 'inline database'],
+  group: '페이지',
+}
+
 /** 컬럼(Phase 2 1c) — 노션의 Layout 자리. "열" · "컬럼"으로 둘 다 찾는다. */
 const COLUMN_COMMANDS: readonly ColumnsSlashCommand[] = [
   { kind: 'columns', id: 'columns_2', count: 2, label: '2열', aliases: ['2열', '2단', '2 columns', '2columns', '컬럼', 'columns', '열'], group: '고급 블록' },
@@ -177,6 +201,7 @@ const BLOCK_COMMANDS: readonly BlockSlashCommand[] = BODY_BLOCK_TYPES.map((id) =
 export const SLASH_COMMANDS: readonly SlashCommand[] = [
   ...BLOCK_COMMANDS.filter((c) => c.group === '기본 블록'),
   PAGE_COMMAND,
+  DATABASE_COMMAND,
   ...BLOCK_COMMANDS.filter((c) => c.group === '미디어'),
   ...BLOCK_COMMANDS.filter((c) => c.group === '고급 블록'),
   TABLE_COMMAND,

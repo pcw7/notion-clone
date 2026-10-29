@@ -41,6 +41,10 @@ export type NodeViewDeps = ImageViewDeps & CodeViewDeps & TocViewDeps & Breadcru
   /** 하위 페이지로 이동. */
   openPage: (pageId: string) => void
   /**
+   * 인라인 데이터베이스(I-2)를 연다 — 데이터베이스 화면으로. 없으면(읽기 전용 미리보기 · 검사) 단추가 꺼진다.
+   */
+  openDatabase?: (databaseId: string) => void
+  /**
    * 하위 페이지 참조의 제목 — 볼 수 있으면 평문, 볼 수 없으면 `null`, 모르면 `undefined`. 참조 노드는 제목을 싣지 않는다
    * (`schema.ts`) — 서버가 권한으로 거른 맵에서 읽는다(`loadPageBody` 의 `pageRefTitles`).
    */
@@ -237,6 +241,53 @@ function pageRefNodeView(
 }
 
 /**
+ * database_ref — 인라인 데이터베이스(26번 트랙 I-2 · 정본 §3.5 [보강 I-1]). 하위 페이지 링크와 같은 규칙이다: 이름 · 아이콘은 노드에 없고
+ * 권한으로 거른 맵(하위 페이지와 같은 맵 — 서버의 `pageRefLabelsOf` 가 데이터베이스도 싣는다)에서 읽는다. 볼 수 없으면 자리만("접근 권한
+ * 없음") · 누르면 데이터베이스 화면으로. 본문 안에 표를 그리는 것은 I-3 이다.
+ */
+function databaseRefNodeView(
+  node: PmNode,
+  view: EditorView,
+  getPos: () => number | undefined,
+  deps: NodeViewDeps,
+): NodeView {
+  const dom = document.createElement('div')
+  dom.className = 'blk blk-database-ref'
+
+  const link = document.createElement('button')
+  link.type = 'button'
+  link.className = 'blk-database-link'
+  const id = containerIdAt(view, getPos)
+  const title = deps.pageRefTitle(id)
+  if (title === null) {
+    link.textContent = '접근 권한 없음'
+    link.disabled = true
+    link.classList.add('blk-page-link-denied')
+  } else {
+    // 아이콘 — 데이터베이스의 것(없으면 표 글리프). 아직 모르는 참조(`undefined`)도 글리프로 자리를 지킨다.
+    const icon = title === undefined ? null : pageIconElement(deps.pageIcon(id), { fallback: false, className: 'blk-page-icon', workspaceId: deps.workspaceId })
+    if (icon !== null) link.append(icon)
+    else {
+      const glyph = document.createElement('span')
+      glyph.className = 'blk-database-glyph'
+      glyph.setAttribute('aria-hidden', 'true')
+      glyph.textContent = '▦'
+      link.append(glyph)
+    }
+    link.append(title === undefined ? '데이터베이스' : title || '제목 없는 데이터베이스')
+    if (deps.openDatabase === undefined) link.disabled = true
+  }
+  link.addEventListener('mousedown', (event) => event.preventDefault())
+  link.addEventListener('click', () => {
+    const at = containerIdAt(view, getPos)
+    if (at !== '' && deps.pageRefTitle(at) !== null) deps.openDatabase?.(at)
+  })
+
+  dom.append(link)
+  return { dom, stopEvent: () => true }
+}
+
+/**
  * mention — 사람 · 페이지 칩. 이름은 노드에 없다(`schema.ts` — `plainText` 는 비어 있다). 권한으로 거른 맵에서 읽고,
  * 볼 수 없는 페이지는 자리만 보이고 열리지 않는다(하위 페이지 참조와 같은 규칙 · §3.2-22).
  */
@@ -327,6 +378,8 @@ export function createNodeViews(deps: NodeViewDeps): Record<
     // 키는 노드 이름이다 — 코드 블록의 노드는 `code_block`(8a-1).
     [nodeNameOf(CODE_TYPE)]: (node, view, getPos) => codeNodeView(node, view, getPos, deps),
     page_ref: (node, view, getPos) => pageRefNodeView(node, view, getPos, deps),
+    // 인라인 데이터베이스 참조(I-2)
+    database_ref: (node, view, getPos) => databaseRefNodeView(node, view, getPos, deps),
     // 목차(8b-1) — 목록은 `toc-plugin.ts` 가 단 노드 데코레이션에서 읽는다.
     [nodeNameOf(TOC_TYPE)]: (node, view, _getPos, decorations) => tocNodeView(node, view, decorations, deps),
     // breadcrumb(8b-2) — 경로는 `breadcrumb-plugin.ts` 가 단 노드 데코레이션에서 읽는다.

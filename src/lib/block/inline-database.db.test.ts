@@ -12,6 +12,7 @@
  *   ⑤ ★ 토글 안으로 옮기면 행까지 경로가 따라간다(relocateSubtree)
  *   ⑥ 이 본문의 데이터베이스가 아닌 참조는 빠진다 — 데이터베이스 확장 없는 데이터베이스 행이 생기지 않는다
  *   ⑦ 부모 본문의 색인에 데이터베이스 이름이 들지 않는다(그 데이터베이스의 것이다)
+ *   ⑧ ★ 이름 맵(I-2) — 편집기가 노드 뷰에 그릴 이름 · 아이콘을 하위 페이지와 같은 맵으로 받는다(아이콘은 데이터베이스 표에서)
  *
  * ⚠ skip 은 테스트마다 `ctx.skip` 으로 건다(`describe` 의 skip 옵션은 등록 시점에 평가된다 — HANDOFF §5).
  */
@@ -206,5 +207,17 @@ describe('⑦ 색인', () => {
     assert.equal((await savePageBody(actor.ctx, pageId as never, { blocks: [para('앞 글', front), dbRef(dbId)] })).ok, true)
     const doc = await queryOne<{ body_text: string }>(`SELECT body_text FROM search_document WHERE page_id = $1`, [pageId])
     assert.ok(doc.body_text.includes('앞 글') && !doc.body_text.includes('할 일'), doc.body_text)
+  })
+})
+
+describe('⑧ 이름 맵(I-2)', () => {
+  test('★ 노드 뷰가 그릴 이름 · 아이콘을 하위 페이지와 같은 맵으로', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const actor = await owner()
+    const { pageId, dbId } = await pageWithInlineDb(actor)
+    await query(`UPDATE database SET icon = '{"type":"emoji","emoji":"📋"}'::jsonb WHERE id = $1`, [dbId])
+    const body = await loadPageBody(actor.ctx, pageId as never)
+    assert.equal(body?.pageRefTitles[dbId], '할 일')
+    assert.deepEqual(body?.pageRefIcons[dbId], { type: 'emoji', emoji: '📋' })
   })
 })
