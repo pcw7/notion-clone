@@ -12,7 +12,7 @@
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { breadcrumbTrail, rowTrail, sameTrail, templateTrail } from './breadcrumb.ts'
+import { breadcrumbTrail, databaseTrail, rowTrail, sameTrail, templateTrail } from './breadcrumb.ts'
 
 const WS = '00000000-0000-4000-8000-0000000000aa'
 const TS = '00000000-0000-4000-8000-0000000000bb'
@@ -81,6 +81,33 @@ describe('③-2 데이터베이스 행 (8f-1)', () => {
     assert.deepEqual(trail.map((i) => [i.kind, i.label, i.href]), [
       ['workspace', '워크스페이스', `/w/${WS}`],
       ['current', '내 제출', null],
+    ])
+  })
+})
+
+describe('③-3 인라인 데이터베이스 (I-4c)', () => {
+  test('★ 데이터베이스 화면 — 워크스페이스 · 그 데이터베이스가 놓인 페이지들 · 이 데이터베이스', () => {
+    const trail = databaseTrail({ workspaceId: WS, ancestors: [{ id: A, plainTitle: '위키' }, { id: B, plainTitle: '' }], database: { id: C, name: '할 일', icon: null } })
+    assert.deepEqual(trail.map((i) => [i.kind, i.label, i.href]), [
+      ['workspace', '워크스페이스', `/w/${WS}`],
+      ['page', '위키', `/w/${WS}/${A}`],
+      ['page', '제목 없음', `/w/${WS}/${B}`],
+      ['current', '할 일', null],
+    ])
+  })
+
+  test('최상위 데이터베이스는 전과 같은 두 칸 · 이름이 비면 "제목 없음"', () => {
+    const trail = databaseTrail({ workspaceId: WS, ancestors: [], database: { id: C, name: '', icon: null } })
+    assert.deepEqual(trail.map((i) => [i.kind, i.label]), [['workspace', '워크스페이스'], ['current', '제목 없음']])
+  })
+
+  test('★ 행 페이지 — 그 표 위에 표가 놓인 페이지들', () => {
+    const trail = rowTrail({ workspaceId: WS, ancestors: [{ id: A, plainTitle: '위키' }], database: { id: B, name: '할 일', icon: null }, row: { id: C, title: '첫 일', icon: null } })
+    assert.deepEqual(trail.map((i) => [i.kind, i.label, i.href]), [
+      ['workspace', '워크스페이스', `/w/${WS}`],
+      ['page', '위키', `/w/${WS}/${A}`],
+      ['database', '할 일', `/w/${WS}/db/${B}`],
+      ['current', '첫 일', null],
     ])
   })
 })

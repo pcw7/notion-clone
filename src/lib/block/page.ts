@@ -604,7 +604,7 @@ export async function listTeamspacePages(ctx: SessionContext, teamspaceId: strin
  */
 export async function listAncestors(
   ctx: SessionContext,
-  page: PageDetail,
+  page: Pick<PageDetail, 'ancestors'>,
 ): Promise<PageSummary[]> {
   if (page.ancestors.length === 0) return []
 
