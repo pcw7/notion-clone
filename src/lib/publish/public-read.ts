@@ -17,12 +17,12 @@ import { readTitle } from '../block/page.ts'
 import { pageIconOfFormat, readPageIcon, type PageIcon } from '../block/page-icon.ts'
 import { cellsOf } from '../block/table.ts'
 import { codeCaptionRuns } from '../block/code.ts'
-import { PAGE_TYPE } from '../block/types.ts'
+import { DATABASE_TYPE, PAGE_TYPE, isRefType } from '../block/types.ts'
 import { customEmojiIdOfRun, mentionTarget, type RichTextRun } from '../contracts/rich-text.ts'
 import { withReadTransaction, type Tx } from '../db/tx.ts'
 import { rowsToDoc, type BodyRow, type EditorBlock, type EditorDoc } from '../editor/document.ts'
 import { openablePagesIn, resolvePublicPageIn, type PublicAccessFailure, type PublicTarget } from './public-access.ts'
-import { readPublicRowPropertiesIn, readPublicTableIn, type PublicRowProperties, type PublicTable } from './public-database.ts'
+import { publicTableOf, readPublicRowPropertiesIn, readPublicTableIn, type PublicRowProperties, type PublicTable } from './public-database.ts'
 import { resolveSiteTokenIn, siteBasePath } from './site.ts'
 
 /** 공개 화면 하나를 그릴 재료. */
@@ -48,6 +48,10 @@ export type PublicPageView = {
    */
   readonly emoji: ReadonlyMap<string, { readonly name: string; readonly deleted: boolean }>
   /** 게시된 데이터베이스를 여는 화면이면 그 표(6a-2c-2 — 본문 대신). 아니면 null. */
+  /**
+   * 본문 안의 인라인 데이터베이스(I-4b)마다 그 공개 표 — 열 수 있는 것만(없는 id 의 참조는 이미 문서에서 뺐다). 이름은 `pages` 에 있다.
+   */
+  readonly databases: ReadonlyMap<string, PublicTable>
   readonly table: PublicTable | null
   /** 연 페이지가 데이터베이스의 행이면 그 속성 묶음(6a-2c-2 — 제목 아래). 아니면 null. */
   readonly rowProperties: PublicRowProperties | null
@@ -56,9 +60,6 @@ export type PublicPageView = {
 export type PublicRead =
   | { readonly ok: true; readonly value: PublicPageView }
   | { readonly ok: false; readonly reason: PublicAccessFailure }
-
-/** 본문에서 그리지 않는 타입 — 데이터베이스는 읽기 전용 표와 함께(6a-2c). */
-const SKIPPED_TYPES: ReadonlySet<string> = new Set(['database'])
 
 type ScopeRow = BodyRow & { lifecycle: string }
 
@@ -80,12 +81,17 @@ export async function readPublicPage(token: string, pageId?: string, options: { 
       : null
     const scope = isDatabase ? [] : await readScope(tx, target.workspaceId, target.pageId)
 
-    // 하위 페이지 참조 · 페이지 멘션 중 이 토큰으로 열 수 있는 것
-    const refIds = scope.filter((row) => row.type === PAGE_TYPE).map((row) => row.id)
-    const draft = rowsToDoc(target.pageId, scope.filter((row) => row.lifecycle === 'live' && !SKIPPED_TYPES.has(row.type)))
+    // 하위 페이지 · 인라인 데이터베이스(I-4b) 참조 · 페이지 멘션 중 이 토큰으로 열 수 있는 것
+    const refIds = scope.filter((row) => isRefType(row.type)).map((row) => row.id)
+    const draft = rowsToDoc(target.pageId, scope.filter((row) => row.lifecycle === 'live'))
     const mentions = mentionsOf(draft.blocks)
     const openable = await openablePagesIn(tx, target.workspaceId, target.rootId, [...refIds, ...mentions.pages])
     const doc: EditorDoc = { blocks: withoutClosedRefs(draft.blocks, openable) }
+    // 본문 안의 인라인 데이터베이스(I-4b) — 열 수 있는 것마다 공개 표(공개 표와 같은 규칙 · 서버가 한 번에 그린다)
+    const inlineDatabases = new Map<string, PublicTable>()
+    for (const row of scope) {
+      if (row.type === DATABASE_TYPE && row.lifecycle === 'live' && openable.has(row.id)) inlineDatabases.set(row.id, await publicTableOf(tx, row.id))
+    }
 
     const titled = [...new Set([...target.chain, ...openable])]
     const titles = await tx.query<{ id: string; properties: Record<string, unknown> | null }>(
@@ -123,6 +129,7 @@ export async function readPublicPage(token: string, pageId?: string, options: { 
         people: new Map(people.map((row) => [row.id, row.name])),
         emoji: new Map(emoji.map((row) => [row.id, { name: row.name, deleted: row.deleted }])),
         table: isDatabase ? await readPublicTableIn(tx, target) : null,
+        databases: inlineDatabases,
         rowProperties: isDatabase ? null : await readPublicRowPropertiesIn(tx, target),
       },
     } as const
@@ -164,10 +171,10 @@ async function readScope(tx: Tx, workspaceId: string, pageId: string): Promise<S
   )
 }
 
-/** 열 수 없는 하위 페이지 참조를 뺀다 — 자식까지(참조는 자식이 없지만 계약 밖의 값에도 안전하게). */
+/** 열 수 없는 하위 페이지 · 인라인 데이터베이스 참조를 뺀다 — 자식까지(참조는 자식이 없지만 계약 밖의 값에도 안전하게). */
 function withoutClosedRefs(blocks: readonly EditorBlock[], openable: ReadonlySet<string>): EditorBlock[] {
   return blocks
-    .filter((block) => block.type !== PAGE_TYPE || openable.has(block.id))
+    .filter((block) => !isRefType(block.type) || openable.has(block.id))
     .map((block) => (block.children && block.children.length > 0 ? { ...block, children: withoutClosedRefs(block.children, openable) } : block))
 }
 

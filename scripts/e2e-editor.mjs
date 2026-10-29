@@ -25959,6 +25959,52 @@ async function main() {
         await evaluate('location.pathname'))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('인라인 데이터베이스 — 공개 화면 (I-4b · F-06-08)')) { try {
+      // 게시된 페이지의 본문 자리에 인라인 데이터베이스의 이름 줄과 읽기 전용 표 · 행 제목은 그 행의 공개 화면 · 이름 줄은 그 데이터베이스의
+      // 공개 화면(본문 대신 표). 정본 §3.3 웹 게시 ⑫ [정정 I-4b] · §3.5 [보강 I-1] ⑥. 공개 화면은 세션을 읽지 않으므로 로그인한 채로 열어도 같다.
+      const stamp = Date.now()
+      const apiP = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const host = (await apiP('POST', '/pages', { title: `공개 인라인 ${stamp}` })).body.page.id
+      await saveBody(host, { blocks: [{ id: randomUUID(), type: 'paragraph', title: [textRun('앞 글')], properties: {}, format: {}, children: [] }] })
+      const db = (await apiP('POST', `/pages/${host}/databases`, { name: '공개 할 일' })).body.database
+      const titleProp = (await apiP('GET', `/views/${db.defaultViewId}`)).body.view.columns.find((col) => col.type === 'title').propertyId
+      const rowIds = []
+      for (const title of ['가 행', '나 행']) {
+        rowIds.push((await apiP('POST', `/views/${db.defaultViewId}/rows`, { cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } }] })).body.row.id)
+      }
+      const token = (await apiP('PUT', `/pages/${host}/publish`)).body?.token
+      try {
+        const INLINE = `[data-testid="public-inline-database"][data-database-id="${db.id}"]`
+        const shape = () => evaluate(`JSON.stringify({
+          name: document.querySelector('${INLINE} > a.pub-page-ref')?.textContent?.trim() ?? null,
+          rows: [...document.querySelectorAll('${INLINE} [data-testid="public-db-row"]')].map((e) => e.dataset.rowId),
+          before: document.querySelector('${INLINE}')?.previousElementSibling?.textContent?.trim() ?? null,
+        })`)
+        await send('Page.navigate', { url: `${BASE}/p/${token}` })
+        const shown = await waitFor(`document.querySelectorAll('${INLINE} [data-testid="public-db-row"]').length === 2`, 15000)
+        const seen = JSON.parse(await shape())
+        check('★ 게시된 페이지의 본문 자리에 인라인 데이터베이스 — 이름 줄 · 읽기 전용 표(만든 행 둘)',
+          typeof token === 'string' && shown && (seen.name ?? '').includes('공개 할 일') && seen.rows.every((id) => rowIds.includes(id)) && (seen.before ?? '').includes('앞 글'),
+          JSON.stringify({ token: typeof token, seen }))
+
+        await clickSelector(`${INLINE} [data-row-id="${rowIds[0]}"] [data-testid="public-db-row-link"]`)
+        check('★ 표의 행 제목은 그 행의 공개 화면으로', await waitFor(`location.pathname === ${JSON.stringify(`/p/${token}/${rowIds[0]}`)} && (document.querySelector('[data-testid="public-title"]')?.textContent ?? '').includes('가 행')`, 15000),
+          await evaluate('location.pathname'))
+
+        await send('Page.navigate', { url: `${BASE}/p/${token}` })
+        await waitFor(`!!document.querySelector('${INLINE} > a.pub-page-ref')`, 15000)
+        await clickSelector(`${INLINE} > a.pub-page-ref`)
+        check('이름 줄은 그 데이터베이스의 공개 화면으로 — 본문 대신 표',
+          await waitFor(`location.pathname === ${JSON.stringify(`/p/${token}/${db.id}`)} && document.querySelectorAll('[data-testid="public-table"] [data-testid="public-db-row"]').length === 2 && !document.querySelector('[data-testid="public-inline-database"]')`, 15000),
+          await evaluate('location.pathname'))
+      } finally {
+        await apiP('DELETE', `/pages/${host}/publish`)
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).
