@@ -3,7 +3,8 @@
  *
  *   ① 다시 읽은 것으로 바꾼다 — 새 행이 서고 빠진 행은 빠진다 · 값이 바뀐 행은 새 값
  *   ② 펼쳐 둔 행의 자식이 다시 선다(펼침이 풀리지 않는다) · 사라진 행의 펼침은 빠진다
- *   ③ 내가 고친 행이 결과에 없으면 옛 자리에 남기고 알린다 · 다른 사람이 고쳐 나간 행은 빠진다
+ *   ③ 내가 고친 행이 결과에 없으면 옛 자리에 남기고 알린다 · 다른 사람이 고쳐 나간 행은 빠진다 · 트리에서 부모를 바꿔 옮겨 간 행은
+ *     남기지 않는다(M-1 — 조건 밖이 아니라 자리가 바뀌었다)
  *   ④ 늦게 온 옛 결과는 화면의 새 행(더 새 버전)을 덮지 않는다
  */
 
@@ -72,6 +73,37 @@ describe('③ 내가 고친 행', () => {
     const merged = flat([row('mine')], [row('mine', '고침')], new Set(['mine']))
     assert.deepEqual([...merged.outside], [])
     assert.equal(merged.rows[0]!.title, '고침')
+  })
+
+  // M-1 — 트리에서 부모를 바꿔 접힌 다른 부모 밑으로 옮긴 행. 행의 지금 부모는 `parent` 칸으로 흉내 낸다.
+  const child = (id: string, parent: string | null): RowJson => ({ ...row(id), properties: { parent } })
+  const parentOf = (r: RowJson) => (r.properties.parent as string | null | undefined) ?? null
+  const tree = (previous: RowJson[], childrenOfA: RowJson[]) =>
+    mergeReloaded({
+      previous,
+      depthOf: new Map([['x', 1]]),
+      top: [row('a'), row('b')],
+      childrenOf: new Map([['a', childrenOfA]]),
+      expanded: new Set(['a']),
+      touched: new Set(['x']),
+      parentOf,
+    })
+
+  test('★ 부모를 바꿔 접힌 다른 부모 밑으로 옮긴 행은 남기지 않는다 — 조건 밖이 아니다(M-1)', () => {
+    const merged = tree([row('a'), child('x', 'b'), row('b')], [])
+    assert.deepEqual(ids(merged.rows), ['a', 'b'])
+    assert.deepEqual([...merged.outside], [])
+  })
+
+  test('부모가 그대로면 예전처럼 남기고 알린다(조건에 맞지 않게 된 것)', () => {
+    const merged = tree([row('a'), child('x', 'a'), row('b')], [])
+    assert.deepEqual(ids(merged.rows), ['a', 'x', 'b'])
+    assert.deepEqual([...merged.outside], ['x'])
+  })
+
+  test('최상위로 꺼냈는데 결과에 없으면(아직 읽지 않은 페이지) 남기지 않는다', () => {
+    const merged = tree([row('a'), child('x', null), row('b')], [])
+    assert.deepEqual([...merged.outside], [])
   })
 })
 
