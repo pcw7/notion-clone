@@ -63,7 +63,7 @@ import type { BlockId } from '../ids.ts'
 import { withReadTransaction, withTransaction, type Tx } from '../db/tx.ts'
 import { DATABASE_TYPE, isRefType, PAGE_TYPE } from './types.ts'
 import { plainTitleOf } from './page.ts'
-import { pageIconOfFormat, type PageIcon } from './page-icon.ts'
+import { pageIconOfFormat, readPageIcon, type PageIcon } from './page-icon.ts'
 import { indexPageText } from '../search/index-page.ts'
 import { notifyMentions } from '../notification/fanout.ts'
 import { projectLinkEdges } from './link-edges.ts'
@@ -867,8 +867,17 @@ async function readableLivePage(tx: Tx, ctx: SessionContext, pageId: BlockId): P
  * (`LoadedBody.pageRefTitles`). 아이콘은 그 페이지 **행의** `format` 에서 읽는다 — 본문(Y.Doc)의 참조 노드에는 없다.
  */
 async function pageRefLabelsOf(tx: Tx, ctx: SessionContext, live: readonly ScopeRow[]): Promise<PageRefLabels> {
-  const refs = live.filter((r) => r.type === PAGE_TYPE)
+  // 인라인 데이터베이스 참조(I-2)도 같은 맵에 — 이름은 블록의 제목, 아이콘은 데이터베이스 표에 있다(페이지는 format 의 page_icon)
+  const refs = live.filter((r) => isRefType(r.type))
   const readable = new Set(refs.length === 0 ? [] : await readableScopes(tx, ctx))
+  const databaseIds = refs.filter((r) => r.type === DATABASE_TYPE && readable.has(r.perm_scope_id)).map((r) => r.id)
+  const databaseIcons = new Map(
+    databaseIds.length === 0
+      ? []
+      : (await tx.query<{ id: string; icon: unknown }>(`SELECT id, icon FROM database WHERE id = ANY($1::uuid[])`, [databaseIds])).map(
+          (row) => [row.id, readPageIcon(row.icon)] as const,
+        ),
+  )
   const titles: Record<string, string | null> = {}
   const icons: Record<string, PageIcon> = {}
   for (const r of refs) {
@@ -877,7 +886,7 @@ async function pageRefLabelsOf(tx: Tx, ctx: SessionContext, live: readonly Scope
       continue
     }
     titles[r.id] = plainTitleOf(r.properties as { title?: unknown } | null)
-    const icon = pageIconOfFormat(r.format)
+    const icon = r.type === DATABASE_TYPE ? (databaseIcons.get(r.id) ?? null) : pageIconOfFormat(r.format)
     if (icon !== null) icons[r.id] = icon
   }
   return { titles, icons }

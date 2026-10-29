@@ -496,6 +496,25 @@
   text-underline-offset: 3px;
 }
 
+/* 인라인 데이터베이스 참조(I-2) — 이름 줄. 본문 안의 표는 I-3 이다. 하위 페이지 링크와 같은 글자 · 밑줄 없이 굵게(표의 머리처럼). */
+.blk-database-ref .blk-database-link {
+  border: 0;
+  background: none;
+  padding: 0.25rem 0;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+}
+.blk-database-ref .blk-database-link:disabled {
+  cursor: default;
+}
+.blk-database-ref .blk-database-glyph {
+  display: inline-block;
+  margin-inline-end: 0.375rem;
+  color: #9ca3af;
+}
+
 /*
   하위 페이지 블록 · 페이지 멘션의 아이콘(8c-2) — 이름 앞. 없으면 기본 문서 글리프(SVG · 회색). 밑줄이 아이콘 밑까지 그어지지 않게
   inline-block 으로 둔다(밑줄은 글자의 장식이다).

@@ -25856,6 +25856,56 @@ async function main() {
       check('새 부모를 펴면 그 밑에 선다', await waitFor(`${shapeJs} === '가:0|나:0|옮길 것:1|나의 것:1|다:0'`, 10000), await evaluate(shapeJs))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('인라인 데이터베이스 — 만들기 (I-2 · F-04-14)')) { try {
+      // 빈 줄에서 `/데이터베이스` → 그 자리에 인라인 데이터베이스가 선다(참조는 서버가 넣고 동기화로 온다 — 로컬에 넣지 않는다) · 이름 줄을
+      // 누르면 데이터베이스 화면으로 · 새로 읽어도 그 자리에 · 서버에도 페이지 밑의 인라인 데이터베이스. 정본 §3.5 [보강 I-1] ⑥. 자기 데이터를
+      // 스스로 만든다.
+      const stamp = Date.now()
+      const apiC = `${BASE}/api/workspaces/${workspaceId}`
+      const host = (await (await fetch(`${apiC}/pages`, { method: 'POST', headers: authed, body: JSON.stringify({ title: `인라인 DB ${stamp}` }) })).json()).page.id
+      const front = randomUUID()
+      const line = randomUUID()
+      await saveBody(host, { blocks: [
+        { id: front, type: 'paragraph', title: [textRun('앞 글')], properties: {}, format: {}, children: [] },
+        { id: line, type: 'paragraph', title: [], properties: {}, format: {}, children: [] },
+      ] })
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${host}` })
+      await waitFor(`!!document.querySelector('[data-block-id="${line}"] p')`, 15000)
+      let focused = false
+      for (let i = 0; i < 20 && !focused; i += 1) {
+        await clickSelector(`[data-block-id="${line}"] p`)
+        focused = await waitFor(`document.activeElement?.classList.contains('ProseMirror') && document.querySelector('[data-block-id="${line}"]')?.contains(window.getSelection()?.anchorNode ?? null)`, 500)
+      }
+      check('전제 — 빈 줄에 캐럿이 섰다', focused)
+
+      await typeText('/')
+      await typeText('데이터베이스')
+      await waitFor(`[...document.querySelectorAll('[role="listbox"][aria-label="블록 삽입"] [role="option"]')].some((o) => (o.textContent ?? '').includes('데이터베이스'))`, 3000)
+      await key('Enter')
+      const LINK = '.blk-editor .blk-database-ref .blk-database-link'
+      const appeared = await waitFor(`!!document.querySelector('${LINK}') && document.querySelector('${LINK}').textContent.includes('제목 없는 데이터베이스')`, 10000)
+      const order = await evaluate(`[...document.querySelectorAll('.blk-editor [data-block-id]')].filter((e) => e.parentElement?.closest('[data-block-id]') === null).map((e) => e.querySelector('.blk-database-ref') ? 'db' : (e.textContent ?? '').trim()).join('|')`)
+      check('★ /데이터베이스 — 빈 줄 자리에 인라인 데이터베이스가 선다(이름 줄 · 제목 없는 데이터베이스)', appeared && order === '앞 글|db', JSON.stringify({ appeared, order }))
+
+      const body = await readBody(host)
+      const dbBlock = body.doc.blocks.find((b) => b.type === 'database')
+      const src = (p) => new URL(`../src/lib/${p}`, import.meta.url).href
+      const { withReadTransaction } = await import(src('db/tx.ts'))
+      const db = dbBlock === undefined ? null : await withReadTransaction((tx) => tx.queryMaybe(
+        `SELECT d.is_inline, b.parent_id, (SELECT count(*)::int FROM view v WHERE v.database_id = d.id) AS views
+           FROM database d JOIN block b ON b.id = d.id WHERE d.id = $1`, [dbBlock.id]))
+      check('★ 서버에도 — 본문에 데이터베이스 참조 · 그 데이터베이스는 이 페이지 밑의 인라인이고 기본 뷰를 가진다',
+        dbBlock !== undefined && db?.is_inline === true && db?.parent_id === host && db?.views >= 1,
+        JSON.stringify({ types: body.doc.blocks.map((b) => b.type), db }))
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${host}` })
+      check('새로 읽어도 그 자리에 선다', await waitFor(`!!document.querySelector('${LINK}')`, 15000))
+      await waitHydrated(LINK)
+      await clickSelector(LINK)
+      check('★ 이름 줄을 누르면 데이터베이스 화면으로', await waitFor(`location.pathname === ${JSON.stringify(`/w/${workspaceId}/db/${dbBlock?.id}`)} && !!document.querySelector('[data-testid="db-table"]')`, 15000),
+        await evaluate('location.pathname'))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

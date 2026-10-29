@@ -92,6 +92,15 @@ describe('커맨드 카탈로그', () => {
     assert.equal((MVP_BLOCK_TYPES as readonly string[]).includes('page'), false)
   })
 
+  test('★ 인라인 데이터베이스 커맨드(I-2) — 페이지 바로 뒤 · 블록 타입이 아니다 · /표 는 심플 테이블 그대로', () => {
+    const at = SLASH_COMMANDS.findIndex((c) => c.kind === 'database')
+    assert.ok(at > 0, '/데이터베이스 가 없다')
+    assert.equal(SLASH_COMMANDS[at - 1]?.kind, 'page')
+    assert.equal(filterSlashCommands('데이터')[0]?.kind, 'database')
+    assert.equal(filterSlashCommands('db')[0]?.kind, 'database')
+    assert.equal(filterSlashCommands('표')[0]?.kind, 'table', '/표 는 심플 테이블이 먼저')
+  })
+
   test('그룹 순서는 기본 블록 → 페이지 → 미디어 → 고급 블록 → 색이다(색은 맨 끝 — Phase 2 1e-1)', () => {
     const groups: string[] = []
     for (const c of SLASH_COMMANDS) {
