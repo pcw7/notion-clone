@@ -205,7 +205,8 @@ async function openableChainsIn(
 }
 
 /**
- * 사슬이 열리는가 — 루트는 페이지 또는 데이터베이스(6a-2c-1) · 끝은 페이지(루트 자신이면 데이터베이스도) · 사슬 전체가 `live` · 막는
+ * 사슬이 열리는가 — 루트는 페이지 또는 데이터베이스(6a-2c-1) · 끝은 페이지 또는 데이터베이스(I-4b — 게시된 페이지 안의 인라인 데이터베이스도
+ * 같은 조건으로 · 정본 웹 게시 ⑫ [정정 I-4b]) · 사슬 전체가 `live` · 막는
  * 모더레이션 없음 · 템플릿 행이 없음 · 루트 아래에서 상속이 끊기지 않음.
  */
 function chainOpens(path: readonly string[], rootAt: number, byId: ReadonlyMap<string, ChainRow>): boolean {
@@ -222,5 +223,5 @@ function chainOpens(path: readonly string[], rootAt: number, byId: ReadonlyMap<s
   const root = byId.get(path[rootAt]!)?.type
   const end = byId.get(path[path.length - 1]!)?.type
   if (root !== 'page' && root !== 'database') return false
-  return end === 'page' || (end === 'database' && path.length - 1 === rootAt)
+  return end === 'page' || end === 'database'
 }

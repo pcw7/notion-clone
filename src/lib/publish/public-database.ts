@@ -86,13 +86,20 @@ const isPublicType = (type: string): type is PublicCellType => PUBLIC_SET.has(ty
 type ColumnRow = { property_id: string; name: string; type: string; unique_id_prefix: string | null }
 
 /**
- * 루트가 데이터베이스이고 그 데이터베이스를 여는 공개 화면의 표. 아니면 null. 부르는 쪽이 같은 트랜잭션에서 판정(`resolvePublicPageIn`)을
- * 지났다 — 이 함수는 판정을 다시 하지 않고 **행마다의 공개 조건**만 건다.
+ * 데이터베이스를 여는 공개 화면의 표 — 게시 루트인 데이터베이스(6a-2c-2) · 게시된 페이지 안의 인라인 데이터베이스(I-4b). 연 것이
+ * 데이터베이스가 아니면 null. 부르는 쪽이 같은 트랜잭션에서 판정(`resolvePublicPageIn`)을 지났다.
  */
 export async function readPublicTableIn(tx: Tx, target: PublicTarget): Promise<PublicTable | null> {
-  if (target.pageId !== target.rootId) return null
-  const root = await tx.queryMaybe<{ type: string }>(`SELECT type FROM block WHERE id = $1`, [target.rootId])
-  if (root?.type !== 'database') return null
+  const node = await tx.queryMaybe<{ type: string }>(`SELECT type FROM block WHERE id = $1`, [target.pageId])
+  if (node?.type !== 'database') return null
+  return publicTableOf(tx, target.pageId)
+}
+
+/**
+ * 데이터베이스 하나의 공개 표. 부르는 쪽이 그 데이터베이스가 열린다는 것을 같은 트랜잭션에서 확인했다(`resolvePublicPageIn` ·
+ * `openablePagesIn` — 공개 본문의 인라인 데이터베이스 · I-4b). 이 함수는 판정을 다시 하지 않고 **행마다의 공개 조건**만 건다.
+ */
+export async function publicTableOf(tx: Tx, databaseId: string): Promise<PublicTable> {
 
   // 소유한 data source 의 첫 뷰 — 붙인 소스(linked)는 다른 데이터베이스의 행이다(그 데이터베이스는 게시되지 않았다)
   const view = await tx.queryMaybe<{ id: string; name: string | null; data_source_id: string; filter: unknown; sorts: unknown }>(
@@ -102,7 +109,7 @@ export async function readPublicTableIn(tx: Tx, target: PublicTarget): Promise<P
       WHERE v.database_id = $1 AND v.owner_kind = 'database_view' AND ds.owner_database_id = $1 AND ds.lifecycle = 'live'
       ORDER BY v.order_idx, v.id
       LIMIT 1`,
-    [target.rootId],
+    [databaseId],
   )
   if (view === null) return { viewName: '', columns: [], rows: [], truncated: false }
 

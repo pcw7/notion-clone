@@ -19,13 +19,15 @@ import { calloutGlyph } from '@/lib/block/callout'
 import { cellsOf, COLUMN_HEADER_KEY, ROW_HEADER_KEY, TABLE_TYPE } from '@/lib/block/table'
 import { TOC_TYPE, headingsOfBlocks, tocEntries } from '@/lib/block/toc'
 import { BREADCRUMB_TYPE } from '@/lib/block/breadcrumb'
-import { COLUMN_RATIO_KEY, PAGE_TYPE } from '@/lib/block/types'
+import { COLUMN_RATIO_KEY, DATABASE_TYPE, PAGE_TYPE } from '@/lib/block/types'
 import { isSafeLinkUrl } from '@/lib/contracts/link-url'
 import { customEmojiIdOfRun, mentionTarget, toPlainText, type RichTextRun } from '@/lib/contracts/rich-text'
 import type { EditorBlock } from '@/lib/editor/document'
 import { codeSegments, grammarOf, loadGrammar } from '@/lib/editor/code-grammars'
 import { renderEquation } from '@/lib/editor/equation-render'
 import type { PublicPageView } from '@/lib/publish/public-read'
+// 표는 이 파일의 부품(RichText · publicHref)을 쓴다 — 서로를 부르는 것은 그릴 때뿐이라 순환해도 된다
+import { PublicTableView } from './public-table'
 
 /** 제목 없는 페이지의 이름. */
 export const UNTITLED = '제목 없음'
@@ -330,6 +332,20 @@ function Block({ block, view }: { block: EditorBlock; view: PublicPageView }): R
         <a className="pub-block pub-page-ref" href={publicHref(view, block.id)}>
           <span aria-hidden="true">📄</span> {titleText(title)}
         </a>
+      )
+    }
+    case DATABASE_TYPE: {
+      // 인라인 데이터베이스(I-4b) — 이름 줄(누르면 그 데이터베이스의 공개 화면) + 읽기 전용 표. 열 수 없는 것은 읽는 쪽이 이미 뺐다
+      const title = view.pages.get(block.id)
+      const table = view.databases.get(block.id)
+      if (title === undefined || table === undefined) return null
+      return (
+        <div className="pub-block pub-inline-db" data-testid="public-inline-database" data-database-id={block.id}>
+          <a className="pub-page-ref" href={publicHref(view, block.id)}>
+            <span aria-hidden="true">▦</span> {titleText(title)}
+          </a>
+          <PublicTableView table={table} view={view} />
+        </div>
       )
     }
     default:

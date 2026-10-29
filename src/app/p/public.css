@@ -110,6 +110,8 @@
 /* 6b-1b — 신고 */
 /* 공개 표 · 행의 속성(6a-2c-2) — 옵션 칩의 색은 편집기의 [data-color] 배경이다 */
 .pub-db { display: flex; flex-direction: column; gap: 0.5rem; }
+/* 본문 안의 인라인 데이터베이스(I-4b) — 이름 줄 아래에 표 */
+.pub-inline-db { display: flex; flex-direction: column; gap: 0.25rem; }
 .pub-db-view { font-size: 0.875rem; font-weight: 600; color: #6b7280; }
 .pub-db-table { width: 100%; font-size: 0.875rem; }
 .pub-db-table td { vertical-align: top; }

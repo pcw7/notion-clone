@@ -3,12 +3,14 @@
  *
  * 이 파일이 지키는 것(정본 §3.3 끝 [보강] 공개 화면 ②③④).
  *
- *   ① 본문은 그 페이지의 문서 범위다 — 글 블록이 순서대로 오고 · 하위 페이지의 본문은 따라오지 않는다 · 데이터베이스 블록은 빠진다
+ *   ① 본문은 그 페이지의 문서 범위다 — 글 블록이 순서대로 오고 · 하위 페이지의 본문은 따라오지 않는다
  *   ② ★ 하위 페이지 참조는 이 토큰으로 열 수 있는 것만 — 상속을 끊은 하위 · 휴지통의 하위는 문서에서 빠지고 제목도 지도에 없다
  *   ③ ★ 페이지 멘션 — 공개 안이면 지도에 제목 · 공개 밖이면 지도에 없다(제목을 싣지 않는다) · 사람 멘션은 이 워크스페이스 사람만 이름
  *   ④ 사슬의 제목 — 루트에서 이 페이지까지만(루트 위의 조상은 없다)
  *   ⑤ 판정이 거절하면 그대로 — 없는 페이지 · 만료
  *   ⑥ 게시된 데이터베이스(6a-2c-2) — 본문 대신 표 · 아이콘은 데이터베이스의 칸 · 그 행을 열면 속성 묶음(표는 없다) · 보통 페이지는 둘 다 없다
+ *   ⑦ ★ 인라인 데이터베이스(I-4b · 정본 웹 게시 ⑫ [정정 I-4b]) — 게시된 페이지의 본문 자리에 들고 그 공개 표가 실린다 · 그 데이터베이스와
+ *      행을 같은 토큰으로 연다 · 상속을 끊은 것은 본문에서 빠지고 열리지도 않는다
  */
 
 import { test, describe, before, after } from 'node:test'
@@ -18,7 +20,7 @@ import { createPage, titleFromPlainText } from '../block/page.ts'
 import { savePageBody } from '../block/save-page-body.ts'
 import { trashPage } from '../block/trash.ts'
 import { pageMentionRun, textRun, userMentionRun, type RichTextRun } from '../contracts/rich-text.ts'
-import { createDatabase, setDatabaseIcon } from '../database/database.ts'
+import { createDatabase, createInlineDatabase, setDatabaseIcon } from '../database/database.ts'
 import { createRow } from '../database/row.ts'
 import { query } from '../db/pool.ts'
 import type { EditorBlock } from '../editor/document.ts'
@@ -105,17 +107,18 @@ describe('① 본문 — 그 페이지의 문서 범위', () => {
     assert.equal(plain(view.title).startsWith('위키'), true)
   })
 
-  test('데이터베이스 블록은 빠진다(6a-2c)', async (t) => {
+  test('데이터베이스 블록은 표의 자리다 — 본문에 들고 그 표가 따로 실린다(I-4b · 전에는 빠졌다)', async (t) => {
     if (skipReason) return t.skip(skipReason)
     const { boss } = await office()
     const doc = await pageNamed(boss, unique('표가 든 문서'))
-    const db = await createDatabase(boss.ctx, { name: unique('표') })
-    assert.ok(db.ok)
-    // 인라인 표처럼 — 데이터베이스 블록을 이 페이지 밑에 둔다(행의 모양만 · 화면 경로와 무관)
-    await query(`UPDATE block SET parent_type = 'block', parent_id = $2, ancestor_path = ARRAY[$2]::uuid[] WHERE id = $1`, [db.value.id, doc])
+    const db = await createInlineDatabase(boss.ctx, { parentPageId: doc, name: unique('표') })
+    assert.ok(db.ok, JSON.stringify(db))
     const token = await tokenOf(boss, doc)
     const view = await readOk(token)
-    assert.ok(view.doc.blocks.every((b) => b.id !== db.value.id))
+    const at = view.doc.blocks.find((b) => b.id === db.value.id)
+    assert.equal(at?.type, 'database')
+    assert.deepEqual(at?.children ?? [], [], '표의 행은 본문이 아니다')
+    assert.ok(view.databases.has(db.value.id))
   })
 })
 
@@ -240,3 +243,54 @@ describe('⑥ 게시된 데이터베이스(6a-2c-2)', () => {
   })
 })
 
+
+// ── ⑦ 인라인 데이터베이스 ─────────────────────────────────────────────
+
+describe('⑦ ★ 인라인 데이터베이스(I-4b)', () => {
+  test('★ 본문 자리에 들고 공개 표가 실린다 · 그 데이터베이스와 행을 같은 토큰으로 연다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { boss } = await office()
+    const doc = await pageNamed(boss, unique('게시 문서'))
+    const front = block('paragraph', [textRun('앞 글')])
+    assert.ok((await savePageBody(boss.ctx, doc, { blocks: [front, block('paragraph', [textRun('뒤 글')])] })).ok)
+    const db = await createInlineDatabase(boss.ctx, { parentPageId: doc, name: '할 일', at: front.id })
+    assert.ok(db.ok, JSON.stringify(db))
+    const row = await createRow(boss.ctx, db.value.dataSourceId)
+    assert.ok(row.ok)
+    const token = await tokenOf(boss, doc)
+
+    const view = await readOk(token)
+    assert.deepEqual(view.doc.blocks.map((b) => b.type), ['paragraph', 'database', 'paragraph'], '본문의 자리(앞 글 바로 뒤)')
+    assert.equal(plain(view.pages.get(db.value.id)), '할 일', '이름은 열 수 있는 것의 지도에')
+    assert.deepEqual(view.databases.get(db.value.id)?.rows.map((r) => r.id), [row.value.id], '그 공개 표')
+    assert.equal(view.table, null, '페이지 자신은 표가 아니다')
+
+    const opened = await readOk(token, db.value.id)
+    assert.deepEqual(opened.target.chain, [doc, db.value.id])
+    assert.deepEqual(opened.table?.rows.map((r) => r.id), [row.value.id], '데이터베이스를 열면 본문 대신 표')
+
+    const rowView = await readOk(token, row.value.id)
+    assert.deepEqual(rowView.target.chain, [doc, db.value.id, row.value.id])
+    assert.ok(rowView.rowProperties !== null, '행은 속성 묶음')
+  })
+
+  test('★ 상속을 끊은 인라인 데이터베이스는 본문에서 빠지고 열리지도 않는다 — 이름도 싣지 않는다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { boss } = await office()
+    const doc = await pageNamed(boss, unique('게시 문서'))
+    const db = await createInlineDatabase(boss.ctx, { parentPageId: doc, name: '비밀 표' })
+    assert.ok(db.ok, JSON.stringify(db))
+    const row = await createRow(boss.ctx, db.value.dataSourceId)
+    assert.ok(row.ok)
+    assert.ok((await stopInheriting(boss.ctx, db.value.id as BlockId)).ok)
+    const token = await tokenOf(boss, doc)
+
+    const view = await readOk(token)
+    assert.ok(view.doc.blocks.every((b) => b.id !== db.value.id))
+    assert.equal(view.pages.has(db.value.id), false)
+    assert.equal(view.databases.size, 0)
+    assert.ok(!JSON.stringify([...view.pages.values()]).includes('비밀'))
+    assert.equal((await readPublicPage(token, db.value.id)).ok, false)
+    assert.equal((await readPublicPage(token, row.value.id)).ok, false, '그 행도')
+  })
+})
