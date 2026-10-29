@@ -13,6 +13,7 @@
  *   ⑥ 이 본문의 데이터베이스가 아닌 참조는 빠진다 — 데이터베이스 확장 없는 데이터베이스 행이 생기지 않는다
  *   ⑦ 부모 본문의 색인에 데이터베이스 이름이 들지 않는다(그 데이터베이스의 것이다)
  *   ⑧ ★ 이름 맵(I-2) — 편집기가 노드 뷰에 그릴 이름 · 아이콘을 하위 페이지와 같은 맵으로 받는다(아이콘은 데이터베이스 표에서)
+ *   ⑨ ★ 경로 · 사이드바(I-4c) — 데이터베이스가 놓인 페이지들(위에서 아래로 · 최상위면 없다) · 사이드바는 그 페이지 밑에 둔다
  *
  * ⚠ skip 은 테스트마다 `ctx.skip` 으로 건다(`describe` 의 skip 옵션은 등록 시점에 평가된다 — HANDOFF §5).
  */
@@ -219,5 +220,50 @@ describe('⑧ 이름 맵(I-2)', () => {
     const body = await loadPageBody(actor.ctx, pageId as never)
     assert.equal(body?.pageRefTitles[dbId], '할 일')
     assert.deepEqual(body?.pageRefIcons[dbId], { type: 'emoji', emoji: '📋' })
+  })
+})
+
+describe('⑨ 경로 · 사이드바(I-4c)', () => {
+  test('★ 데이터베이스가 놓인 페이지들 — 위에서 아래로 · 최상위 데이터베이스는 없다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const actor = await owner()
+    const { pageId, dbId } = await pageWithInlineDb(actor)
+    const { listDatabaseAncestors, createDatabase: createTop } = await import('../database/database.ts')
+    assert.deepEqual((await listDatabaseAncestors(actor.ctx, dbId)).map((p) => p.id), [pageId])
+
+    const grand = (await createPage(actor.ctx, { title: titleFromPlainText('위') })).id as string
+    const host = (await createPage(actor.ctx, { parentPageId: grand as never, title: titleFromPlainText('가운데') })).id as string
+    const nested = await createInlineDatabase(actor.ctx, { parentPageId: host, name: '깊은 표' })
+    assert.equal(nested.ok, true, JSON.stringify(nested))
+    if (!nested.ok) return
+    assert.deepEqual((await listDatabaseAncestors(actor.ctx, nested.value.id)).map((p) => p.id), [grand, host])
+
+    const top = await createTop(actor.ctx, { name: '최상위 표' })
+    assert.equal(top.ok, true)
+    if (!top.ok) return
+    assert.deepEqual(await listDatabaseAncestors(actor.ctx, top.value.id), [])
+  })
+
+  test('사이드바 — 인라인 데이터베이스는 그 페이지 밑에 선다(행은 서지 않는다)', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const actor = await owner()
+    const { pageId, dbId, dataSourceId } = await pageWithInlineDb(actor)
+    const { createRow } = await import('../database/row.ts')
+    assert.equal((await createRow(actor.ctx, dataSourceId)).ok, true)
+    const { listPageTree } = await import('./page-tree.ts')
+    const find = (nodes: readonly { id: string; children: readonly unknown[] }[], id: string): { id: string; kind?: string; children: readonly unknown[] } | undefined => {
+      for (const node of nodes) {
+        if (node.id === id) return node
+        const inner = find(node.children as never, id)
+        if (inner !== undefined) return inner
+      }
+      return undefined
+    }
+    const tree = await listPageTree(actor.ctx)
+    const host = find(tree as never, pageId)
+    assert.ok(host !== undefined, '페이지가 사이드바에')
+    const child = (host.children as { id: string; kind: string; children: unknown[] }[]).find((c) => c.id === dbId)
+    assert.equal(child?.kind, 'database', '그 페이지 밑에 데이터베이스로')
+    assert.deepEqual(child?.children, [], '행은 서지 않는다')
   })
 })

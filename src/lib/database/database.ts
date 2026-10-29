@@ -50,7 +50,7 @@ import { effectiveCaps, readableScopes, teamspaceCaps } from '../permissions/eff
 import { canOpenDatabase } from './row-access.ts'
 import { isLocked } from '../permissions/lock.ts'
 import { orderKeyBetween } from '../block/order-key.ts'
-import { lockParentPage, nextSiblingKey, PageError, titleFromPlainText, plainTitleOf } from '../block/page.ts'
+import { listAncestors, lockParentPage, nextSiblingKey, PageError, titleFromPlainText, plainTitleOf, type PageSummary } from '../block/page.ts'
 import { openPageBody } from '../block/body-write.ts'
 import { appendPageRef, placePageRefAt } from '../block/page-refs.ts'
 import { pageIconJson, parsePageIconInput, readPageIcon, samePageIcon, type PageIcon } from '../block/page-icon.ts'
@@ -583,4 +583,21 @@ async function loadDatabase(
       WHERE b.id = $1 AND b.workspace_id = $2 AND b.lifecycle = 'live'`,
     [databaseId, ctx.workspaceId],
   )
+}
+
+/**
+ * 데이터베이스가 놓인 페이지들 — 경로(I-4c)의 조상 줄. 인라인 데이터베이스면 그 페이지와 조상(볼 수 있는 것만 · 위에서 아래로 ·
+ * `listAncestors` 와 같은 규칙), 최상위 데이터베이스면 빈 목록. 부르는 쪽이 이 데이터베이스를 볼 수 있다는 것을 이미 확인했다
+ * (`getDatabase`) — 없거나 휴지통이면 빈 목록.
+ */
+export async function listDatabaseAncestors(ctx: SessionContext, databaseId: string): Promise<PageSummary[]> {
+  if (!isUuid(databaseId)) return []
+  const row = await withReadTransaction((tx) =>
+    tx.queryMaybe<{ ancestor_path: string[] }>(
+      `SELECT ancestor_path FROM live_block WHERE id = $1 AND workspace_id = $2 AND type = 'database'`,
+      [databaseId, ctx.workspaceId],
+    ),
+  )
+  if (row === null || row.ancestor_path.length === 0) return []
+  return listAncestors(ctx, { ancestors: row.ancestor_path as PageSummary['id'][] })
 }

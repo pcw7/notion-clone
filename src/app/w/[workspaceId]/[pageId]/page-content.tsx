@@ -151,7 +151,8 @@ export async function PageContent({
   ])
 
   // 경로 — 머리와 본문의 breadcrumb 블록(8b-2)이 같은 줄을 그린다(`block/breadcrumb.ts` — 볼 수 있는 조상만 · teamspace 는 멤버에게만).
-  // 행이면 조상 대신 그 행의 데이터베이스다(8f-1).
+  // 행이면 그 행의 데이터베이스가 부모 자리다(8f-1) · 인라인 데이터베이스면 그 위에 데이터베이스가 놓인 페이지들(I-4c — `ancestors` 는
+  // 행의 조상 중 볼 수 있는 페이지만이라 데이터베이스는 들지 않는다).
   const trail =
     rowPage !== null
       ? rowTrail({
@@ -159,6 +160,7 @@ export async function PageContent({
           // 못 여는 데이터베이스는 경로에 세우지 않는다(6f-2b-2)
           database: rowPage.databaseOpenable ? { id: rowPage.databaseId, name: rowPage.databaseName, icon: rowPage.databaseIcon } : null,
           row: { id: page.id, title: rowPage.row.title, icon: page.icon },
+          ancestors,
         })
       : breadcrumbTrail({
           workspaceId,

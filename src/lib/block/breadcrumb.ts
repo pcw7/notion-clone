@@ -72,14 +72,36 @@ export function breadcrumbTrail(input: BreadcrumbInput): BreadcrumbTrail {
             href: `/w/${workspaceId}/teamspaces/${input.teamspace.id}`,
           },
         ]),
-    ...input.ancestors.map((a) => ({
-      kind: 'page' as const,
-      id: a.id,
-      label: a.plainTitle || UNTITLED_PAGE,
-      icon: a.icon ?? null,
-      href: `/w/${workspaceId}/${a.id}`,
-    })),
+    ...ancestorItems(workspaceId, input.ancestors),
     { kind: 'current', id: input.page.id, label: input.page.plainTitle || UNTITLED_PAGE, icon: input.page.icon ?? null, href: null },
+  ]
+}
+
+/** 볼 수 있는 조상 페이지의 줄 — 위에서 아래로. */
+function ancestorItems(workspaceId: string, ancestors: BreadcrumbInput['ancestors']): BreadcrumbItem[] {
+  return ancestors.map((a) => ({
+    kind: 'page' as const,
+    id: a.id,
+    label: a.plainTitle || UNTITLED_PAGE,
+    icon: a.icon ?? null,
+    href: `/w/${workspaceId}/${a.id}`,
+  }))
+}
+
+/**
+ * 데이터베이스 화면의 경로(I-4c) — 워크스페이스 · 그 데이터베이스가 놓인 페이지들(인라인 데이터베이스의 페이지와 그 조상 — 볼 수 있는
+ * 것만) · 이 데이터베이스. 최상위 데이터베이스는 조상이 없어 워크스페이스 · 이 데이터베이스다(전과 같다).
+ */
+export function databaseTrail(input: {
+  readonly workspaceId: string
+  readonly ancestors: BreadcrumbInput['ancestors']
+  readonly database: { readonly id: string; readonly name: string; readonly icon: PageIcon | null }
+}): BreadcrumbTrail {
+  const { workspaceId } = input
+  return [
+    { kind: 'workspace', id: workspaceId, label: WORKSPACE_LABEL, icon: null, href: `/w/${workspaceId}` },
+    ...ancestorItems(workspaceId, input.ancestors),
+    { kind: 'current', id: input.database.id, label: input.database.name || UNTITLED_PAGE, icon: input.database.icon, href: null },
   ]
 }
 
@@ -104,8 +126,9 @@ export function templateTrail(input: {
 }
 
 /**
- * 데이터베이스 행 페이지의 경로 — 워크스페이스 · 그 표 · 이 행(8f-1). 행은 페이지 트리에 서지 않으므로(사이드바에 없다 · §3.3-179) 조상
- * 대신 그 행이 속한 데이터베이스가 부모 자리다. 템플릿 화면의 경로와 같은 모양이다.
+ * 데이터베이스 행 페이지의 경로 — 워크스페이스 · (그 표가 놓인 페이지들 — I-4c) · 그 표 · 이 행(8f-1). 행은 페이지 트리에 서지 않으므로
+ * (사이드바에 없다 · §3.3-179) 그 행이 속한 데이터베이스가 부모 자리다. 인라인 데이터베이스면 그 위에 데이터베이스가 놓인 페이지와 그
+ * 조상(볼 수 있는 것만 · `listAncestors` 가 행의 조상 중 페이지만 준다)이 선다. 템플릿 화면의 경로와 같은 모양이다.
  */
 export function rowTrail(input: {
   readonly workspaceId: string
@@ -115,10 +138,13 @@ export function rowTrail(input: {
    */
   readonly database: { readonly id: string; readonly name: string; readonly icon: PageIcon | null } | null
   readonly row: { readonly id: string; readonly title: string; readonly icon: PageIcon | null }
+  /** 그 데이터베이스가 놓인 페이지들(I-4c) — 위에서 아래로 · 볼 수 있는 것만. 최상위 데이터베이스의 행이면 없다. */
+  readonly ancestors?: BreadcrumbInput['ancestors']
 }): BreadcrumbTrail {
   const { workspaceId } = input
   return [
     { kind: 'workspace', id: workspaceId, label: WORKSPACE_LABEL, icon: null, href: `/w/${workspaceId}` },
+    ...ancestorItems(workspaceId, input.ancestors ?? []),
     ...(input.database === null
       ? []
       : [

@@ -26005,6 +26005,35 @@ async function main() {
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('인라인 데이터베이스 — 경로 (I-4c · F-01-16)')) { try {
+      // 인라인 데이터베이스의 화면 경로는 워크스페이스 · 그 데이터베이스가 놓인 페이지 · 그 데이터베이스 — 페이지를 누르면 그 페이지로 · 행
+      // 페이지의 경로도 그 표 위에 같은 페이지. 정본 §3.5 [보강 I-1] ⑥(I-4c). 자기 데이터를 스스로 만든다(API).
+      const stamp = Date.now()
+      const apiT = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const hostTitle = `경로 호스트 ${stamp}`
+      const host = (await apiT('POST', '/pages', { title: hostTitle })).body.page.id
+      const db = (await apiT('POST', `/pages/${host}/databases`, { name: '경로 표' })).body.database
+      const titleProp = (await apiT('GET', `/views/${db.defaultViewId}`)).body.view.columns.find((col) => col.type === 'title').propertyId
+      const row = (await apiT('POST', `/views/${db.defaultViewId}/rows`, { cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun('경로 행')] } }] })).body.row.id
+      const crumbs = `[...document.querySelectorAll('nav[aria-label="상위 경로"] a, nav[aria-label="상위 경로"] span.text-neutral-400')].map((e) => e.textContent.trim())`
+      const HOST_LINK = `nav[aria-label="상위 경로"] a[href="/w/${workspaceId}/${host}"]`
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      const dbTrail = await waitFor(`JSON.stringify(${crumbs}) === ${JSON.stringify(JSON.stringify(['워크스페이스', hostTitle, '경로 표']))}`, 15000)
+      check('★ 데이터베이스 화면의 경로 — 워크스페이스 · 그 데이터베이스가 놓인 페이지 · 그 데이터베이스', dbTrail, await evaluate(`JSON.stringify(${crumbs})`))
+      await waitHydrated(HOST_LINK)
+      await clickSelector(HOST_LINK)
+      check('경로의 페이지를 누르면 그 페이지로', await waitFor(`location.pathname === ${JSON.stringify(`/w/${workspaceId}/${host}`)}`, 15000), await evaluate('location.pathname'))
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${row}` })
+      const rowTrailOk = await waitFor(`JSON.stringify(${crumbs}) === ${JSON.stringify(JSON.stringify(['워크스페이스', hostTitle, '경로 표', '경로 행']))}
+        && !!document.querySelector('nav[aria-label="상위 경로"] a[href="/w/${workspaceId}/db/${db.id}"]')`, 15000)
+      check('★ 행 페이지의 경로 — 그 표 위에 표가 놓인 페이지', rowTrailOk, await evaluate(`JSON.stringify(${crumbs})`))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

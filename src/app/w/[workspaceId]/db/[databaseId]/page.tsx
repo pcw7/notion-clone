@@ -53,7 +53,7 @@ import { notFound } from 'next/navigation'
 import { isUuid } from '@/lib/ids'
 import { requirePageSession } from '@/lib/auth/page-session'
 import { feedClock } from '@/lib/database/row-feed'
-import { getDatabase } from '@/lib/database/database'
+import { getDatabase, listDatabaseAncestors } from '@/lib/database/database'
 import { databaseLockState } from '@/lib/permissions/lock'
 import { readForm } from '@/lib/database/form'
 import { getView, listViews } from '@/lib/database/view'
@@ -86,11 +86,12 @@ import { GroupedRows } from './grouped-rows'
 import { SubGroupedBoard, type LaneJson } from './sub-grouped-board'
 import { DatabaseBoard, type BoardGroupJson, type GroupProperty } from './database-board'
 import { listTeamspaceDestinations } from '@/lib/block/move-page'
+import { databaseTrail } from '@/lib/block/breadcrumb'
+import { DatabaseTrailNav } from './database-trail'
 import { MovePageControl } from '../../[pageId]/move-page-control'
 import { LockButton } from '../../[pageId]/lock-button'
 import { SharePanel } from '../../[pageId]/share-panel'
 import { PageIconControl } from '../../[pageId]/page-icon-control'
-import { PageIconView } from '../../page-icon-view'
 import { ViewTabs } from './view-tabs'
 import { FormEditor } from './form-editor'
 import { ViewToolbar, type BoardSettings } from './view-toolbar'
@@ -113,8 +114,6 @@ import { RowPeek } from './row-peek'
 import { peekNeighbors, rowOpenHref } from '@/lib/database/open-pages'
 import { contentTitle } from '@/lib/nav/screen-title'
 import { DocumentTitle } from '../../document-title'
-
-const UNTITLED = '제목 없음'
 
 /** "데이터 소스" 창의 항목 — 소스마다 그 소스를 보는 첫 뷰(열기 · 떼기 뒤의 이동)를 단다. */
 function panelSourcesOf(
@@ -165,6 +164,8 @@ export default async function DatabasePage({
   // 옮길 수 있는 teamspace 최상위(7c-8) — 페이지 화면과 같은 목록이다. 페이지 대상은 주지 않는다: 풀페이지 표는
   // 최상위 사이에서만 옮긴다(본문 참조가 없다 · move-page.ts).
   const moveTeamspaces = await listTeamspaceDestinations(ctx)
+  // 경로(I-4c) — 인라인 데이터베이스면 그 데이터베이스가 놓인 페이지들(볼 수 있는 것만). 최상위면 빈 목록(전과 같은 두 칸)
+  const ancestors = await listDatabaseAncestors(ctx, databaseId)
 
   const views = await listViews(ctx, databaseId)
   if (!views.ok || views.value.length === 0) notFound()
@@ -182,16 +183,7 @@ export default async function DatabasePage({
       <main className="flex min-h-screen min-w-0 flex-col gap-6 px-10 py-12">
         {/* 탭 제목(10d-7b) — 그 데이터베이스의 이름 */}
         <DocumentTitle title={contentTitle(database.value.name)} />
-        <nav aria-label="상위 경로" className="flex flex-wrap items-center gap-1 text-sm text-neutral-500">
-          <Link href={`/w/${workspaceId}`} className="hover:underline underline-offset-4">
-            워크스페이스
-          </Link>
-          <span aria-hidden>/</span>
-          <span className="text-neutral-400">
-            <PageIconView icon={database.value.icon} className="mr-1" />
-            {database.value.name || UNTITLED}
-          </span>
-        </nav>
+        <DatabaseTrailNav trail={databaseTrail({ workspaceId, ancestors, database: { id: databaseId, name: database.value.name, icon: database.value.icon } })} />
         <div className="group/header flex flex-col gap-2">
           <PageIconControl
             workspaceId={workspaceId}
@@ -561,16 +553,7 @@ export default async function DatabasePage({
       {/* 상대 날짜 필터(R-1)면 서버의 오늘을 이 기기의 오늘에 맞춘다 — 처음 방문(쿠키 없음)이면 한 번 새로 받는다 */}
       <ViewerTodaySync today={usesRelativeDate(view.value.effectiveFilter) ? viewerToday : null} />
       <div className="flex items-start justify-between gap-3">
-        <nav aria-label="상위 경로" className="flex flex-wrap items-center gap-1 text-sm text-neutral-500">
-          <Link href={`/w/${workspaceId}`} className="hover:underline underline-offset-4">
-            워크스페이스
-          </Link>
-          <span aria-hidden>/</span>
-          <span className="text-neutral-400">
-            <PageIconView icon={icon} className="mr-1" />
-            {name || UNTITLED}
-          </span>
-        </nav>
+        <DatabaseTrailNav trail={databaseTrail({ workspaceId, ancestors, database: { id: databaseId, name, icon } })} />
         <div className="flex items-center gap-2">
           <LockButton
             lockUrl={`/api/workspaces/${workspaceId}/databases/${databaseId}/lock`}
