@@ -514,6 +514,53 @@
   margin-inline-end: 0.375rem;
   color: #9ca3af;
 }
+/* 본문 안의 표(I-3) — 미리보기. 칸을 고치는 것은 데이터베이스 화면에서다. 좁은 본문(컬럼 · 폰)에서는 가로로 굴린다. */
+.blk-database-preview {
+  overflow-x: auto;
+  font-size: 0.875rem;
+}
+.blk-database-preview[data-state='loading'],
+.blk-database-preview[data-state='error'],
+.blk-database-preview .blk-database-empty {
+  color: #9ca3af;
+  padding: 0.25rem 0;
+}
+.blk-database-table {
+  border-collapse: collapse;
+  min-width: 100%;
+}
+.blk-database-table th,
+.blk-database-table td {
+  border: 1px solid #e5e7eb;
+  padding: 0.25rem 0.5rem;
+  text-align: start;
+  white-space: nowrap;
+}
+.blk-database-table th {
+  color: #6b7280;
+  font-weight: 500;
+}
+.blk-database-row-open {
+  border: 0;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+  font-weight: 500;
+}
+.blk-database-more {
+  border: 0;
+  background: none;
+  padding: 0.375rem 0;
+  cursor: pointer;
+  color: #6b7280;
+  font: inherit;
+}
+:root[data-theme='dark'] .blk-database-table th,
+:root[data-theme='dark'] .blk-database-table td {
+  border-color: #374151;
+}
 
 /*
   하위 페이지 블록 · 페이지 멘션의 아이콘(8c-2) — 이름 앞. 없으면 기본 문서 글리프(SVG · 회색). 밑줄이 아이콘 밑까지 그어지지 않게

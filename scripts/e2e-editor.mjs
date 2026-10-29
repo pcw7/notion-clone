@@ -25906,6 +25906,59 @@ async function main() {
         await evaluate('location.pathname'))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('인라인 데이터베이스 — 본문 안의 표 (I-3 · F-04-14)')) { try {
+      // 본문의 인라인 데이터베이스가 이름 줄 아래에 첫 뷰의 처음 10행을 작은 표로 그린다 — 머리(보이는 칸 열) · 선택은 옵션 이름 · 더 있으면
+      // "더 보기" · 행이 없으면 "비어 있습니다" · 제목 칸을 누르면 그 행 페이지 · "더 보기" 는 데이터베이스 화면. 정본 §3.5 [보강 I-1] ⑥(I-3).
+      // 자기 데이터를 스스로 만든다(API).
+      const stamp = Date.now()
+      const apiI = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const host = (await apiI('POST', '/pages', { title: `인라인 표 ${stamp}` })).body.page.id
+      await saveBody(host, { blocks: [{ id: randomUUID(), type: 'paragraph', title: [textRun('앞 글')], properties: {}, format: {}, children: [] }] })
+      const filled = (await apiI('POST', `/pages/${host}/databases`, { name: '미리 할 일' })).body.database
+      const empty = (await apiI('POST', `/pages/${host}/databases`, { name: '빈 표' })).body.database
+      const statusProp = (await apiI('POST', `/data-sources/${filled.dataSourceId}/properties`, { name: '상태', type: 'select' })).body.property.id
+      const doing = (await apiI('POST', `/data-sources/${filled.dataSourceId}/properties/${statusProp}/options`, { name: '진행 중' })).body.option.id
+      const titleProp = (await apiI('GET', `/views/${filled.defaultViewId}`)).body.view.columns.find((col) => col.type === 'title').propertyId
+      const rows = []
+      for (let i = 1; i <= 12; i += 1) {
+        const cells = [{ propertyId: titleProp, value: { type: 'title', title: [textRun(`행 ${i}`)] } }]
+        if (i === 1) cells.push({ propertyId: statusProp, value: { type: 'select', select: { id: doing } } })
+        rows.push((await apiI('POST', `/views/${filled.defaultViewId}/rows`, { cells })).body.row.id)
+      }
+      const BOX = (id) => `[data-block-id="${id}"] .blk-database-preview`
+      const shape = () => evaluate(`JSON.stringify({
+        state: document.querySelector('${BOX(filled.id)}')?.dataset.state ?? null,
+        headers: [...document.querySelectorAll('${BOX(filled.id)} th')].map((e) => e.textContent),
+        rows: [...document.querySelectorAll('${BOX(filled.id)} tbody tr')].map((e) => e.dataset.rowId),
+        first: [...document.querySelectorAll('${BOX(filled.id)} tbody tr')].find((e) => e.dataset.rowId === ${JSON.stringify(rows[0])})?.textContent ?? null,
+        more: document.querySelector('${BOX(filled.id)} .blk-database-more')?.textContent ?? null,
+        empty: document.querySelector('${BOX(empty.id)}')?.textContent ?? null,
+      })`)
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${host}` })
+      const ready = await waitFor(`document.querySelector('${BOX(filled.id)}')?.dataset.state === 'ready' && document.querySelector('${BOX(empty.id)}')?.dataset.state === 'ready'`, 15000)
+      const seen = JSON.parse(await shape())
+      check('★ 이름 줄 아래에 첫 뷰의 표 — 머리(제목 · 상태) · 처음 10행 · 만든 행들',
+        ready && seen.headers.length === 2 && seen.headers[1] === '상태' && seen.rows.length === 10 && seen.rows.every((id) => rows.includes(id)),
+        JSON.stringify(seen))
+      check('선택 칸은 옵션 이름으로 — id 를 그리지 않는다', (seen.first ?? '').includes('행 1') && (seen.first ?? '').includes('진행 중'), JSON.stringify(seen))
+      check('★ 더 있으면 "더 보기" · 행이 없으면 "비어 있습니다"', seen.more === '더 보기 — 데이터베이스 열기' && seen.empty === '비어 있습니다', JSON.stringify(seen))
+
+      await waitHydrated(`${BOX(filled.id)} .blk-database-row-open`)
+      await clickSelector(`${BOX(filled.id)} tr[data-row-id="${rows[0]}"] .blk-database-row-open`)
+      check('★ 제목 칸을 누르면 그 행 페이지로', await waitFor(`location.pathname === ${JSON.stringify(`/w/${workspaceId}/${rows[0]}`)}`, 15000), await evaluate('location.pathname'))
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${host}` })
+      await waitFor(`document.querySelector('${BOX(filled.id)}')?.dataset.state === 'ready'`, 15000)
+      await waitHydrated(`${BOX(filled.id)} .blk-database-more`)
+      await clickSelector(`${BOX(filled.id)} .blk-database-more`)
+      check('"더 보기" 는 데이터베이스 화면으로', await waitFor(`location.pathname === ${JSON.stringify(`/w/${workspaceId}/db/${filled.id}`)} && !!document.querySelector('[data-testid="db-table"]')`, 15000),
+        await evaluate('location.pathname'))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).
