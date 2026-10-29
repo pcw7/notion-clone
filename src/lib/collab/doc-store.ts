@@ -100,7 +100,7 @@ import { isUuid } from '../ids.ts'
 import { effectiveCaps } from '../permissions/effective.ts'
 import { isLocked } from '../permissions/lock.ts'
 import { can } from '../permissions/levels.ts'
-import { MENTION_NODE, PAGE_REF_NODE } from '../editor/schema.ts'
+import { DATABASE_REF_NODE, MENTION_NODE, PAGE_REF_NODE } from '../editor/schema.ts'
 import { recordVersionIfDue, type VersionIntent } from '../history/record.ts'
 import { writeEditorChange, type EditorChange } from './body-edit.ts'
 import { repairBodyYDoc } from './repair.ts'
@@ -285,7 +285,8 @@ export async function openBodyDoc(
     applyUpdate(update) {
       assertOpen()
       const watch = (transaction: Y.Transaction): void => {
-        if (touchesElement(ydoc, transaction, PAGE_REF_NODE)) touchedPageRefs = true
+        // 인라인 데이터베이스 참조(I-1)도 같다 — 지움이 미뤄지면 거부할 수 없다
+        if (touchesElement(ydoc, transaction, PAGE_REF_NODE) || touchesElement(ydoc, transaction, DATABASE_REF_NODE)) touchedPageRefs = true
         if (touchesElement(ydoc, transaction, MENTION_NODE)) touchedMentions = true
       }
       ydoc.on('afterTransaction', watch)

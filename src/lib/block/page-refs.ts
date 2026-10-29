@@ -23,13 +23,22 @@ import type { Transaction } from '@tiptap/pm/state'
 import type { EditorChange } from '../collab/body-edit.ts'
 import { emptyParagraphContainer, pmToDoc } from '../editor/pm-adapter.ts'
 import { findContainerById, isBlankLeaf } from '../editor/pm-blocks.ts'
-import { blockSchema, PAGE_REF_NODE } from '../editor/schema.ts'
+import { blockSchema, DATABASE_REF_NODE, PAGE_REF_NODE } from '../editor/schema.ts'
 
 const { blockContainer: CONTAINER, blockGroup: GROUP } = blockSchema.nodes
 
+/** 참조의 종류 — 하위 페이지 · 인라인 데이터베이스(I-1 · 정본 §3.5 [보강 I-1]). 둘 다 같은 모양의 컨테이너다. */
+export type RefKind = 'page' | 'database'
+
 /** 하위 페이지 참조 노드. 제목을 싣지 않는다 — 그 페이지의 것이고 볼 권한이 있어야 한다(`editor/schema.ts`). */
 export function pageRefNode(pageId: string): PmNode {
-  return CONTAINER.create({ blockId: pageId }, [blockSchema.nodes[PAGE_REF_NODE].create({ props: {}, format: {} })])
+  return refNode(pageId, 'page')
+}
+
+/** 참조 노드 — 인라인 데이터베이스면 `database_ref`(이름을 싣지 않는다 · 하위 페이지와 같은 까닭). */
+export function refNode(blockId: string, kind: RefKind): PmNode {
+  const name = kind === 'database' ? DATABASE_REF_NODE : PAGE_REF_NODE
+  return CONTAINER.create({ blockId }, [blockSchema.nodes[name].create({ props: {}, format: {} })])
 }
 
 /** 본문이 비었는가 — 저장 가능한 문서로 읽으면 블록이 없다(빈 문단 하나). */
@@ -46,10 +55,10 @@ function replaceBodyWith(tr: Transaction, ref: PmNode): void {
  *
  * @throws 부모 컨테이너가 본문에 없으면 — 행과 Y.Doc 이 어긋나 있다는 뜻이다
  */
-export function appendPageRef(parentBlockId: string | null, pageId: string): EditorChange {
+export function appendPageRef(parentBlockId: string | null, pageId: string, kind: RefKind = 'page'): EditorChange {
   return (tr) => {
     if (findContainerById(tr.doc, pageId) !== null) return
-    const ref = pageRefNode(pageId)
+    const ref = refNode(pageId, kind)
     if (parentBlockId === null) {
       if (isEmptyBody(tr)) replaceBodyWith(tr, ref)
       else tr.insert(tr.doc.content.size - 1, ref) // 마지막 루트 그룹의 끝
@@ -74,10 +83,11 @@ export function insertPageRefAfter(
   pageId: string,
   parentBlockId: string | null,
   afterBlockId: string | null,
+  kind: RefKind = 'page',
 ): EditorChange {
   return (tr) => {
     if (findContainerById(tr.doc, pageId) !== null) return
-    const ref = pageRefNode(pageId)
+    const ref = refNode(pageId, kind)
     const after = afterBlockId === null ? null : findContainerById(tr.doc, afterBlockId)
     if (after !== null) {
       tr.insert(after.pos + after.node.nodeSize, ref)
@@ -105,15 +115,15 @@ export function insertPageRefAfter(
  * 그 블록이 본문에 없으면(그 사이 지워졌다 · 다른 본문의 블록이다 · 아직 서버에 닿지 않았다) 본문 **맨 뒤**다 — 거부하지 않는다.
  * 페이지는 이미 만들었고 자리만 흔들린다.
  */
-export function placePageRefAt(pageId: string, atBlockId: string): EditorChange {
+export function placePageRefAt(pageId: string, atBlockId: string, kind: RefKind = 'page'): EditorChange {
   return (tr, doc) => {
     if (findContainerById(tr.doc, pageId) !== null) return
     const at = findContainerById(tr.doc, atBlockId)
     if (at === null) {
-      appendPageRef(null, pageId)(tr, doc)
+      appendPageRef(null, pageId, kind)(tr, doc)
       return
     }
-    const ref = pageRefNode(pageId)
+    const ref = refNode(pageId, kind)
     if (isBlankLeaf(at)) tr.replaceWith(at.pos, at.pos + at.node.nodeSize, ref)
     else tr.insert(at.pos + at.node.nodeSize, ref)
   }

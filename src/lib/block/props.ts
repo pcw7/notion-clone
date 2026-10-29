@@ -35,7 +35,7 @@ import { clampExpression } from './equation.ts'
 import { clampButtonLabel } from './button.ts'
 import { COLUMN_HEADER_KEY, ROW_HEADER_KEY } from './table.ts'
 import { CALLOUT_ICON_KEY, CALLOUT_TYPE, isCalloutIcon } from './callout.ts'
-import { normalizeFormat, PAGE_TYPE, specOf, UNSUPPORTED_TYPE, type BlockFormat, type BlockType } from './types.ts'
+import { isRefType, normalizeFormat, PAGE_TYPE, specOf, UNSUPPORTED_TYPE, type BlockFormat, type BlockType } from './types.ts'
 import { PAGE_ICON_KEY } from './page-icon.ts'
 
 export type SanitizedAttrs = {
@@ -65,7 +65,8 @@ export function sanitizeBlockAttrs(type: BlockType, props: Record<string, unknow
     delete rest[PAGE_ICON_KEY]
     return { props: nextProps, format: rest, changed: true }
   }
-  if (type === PAGE_TYPE || type === UNSUPPORTED_TYPE) {
+  // 참조(하위 페이지 · 인라인 데이터베이스 — I-1)와 모르는 타입은 레지스트리의 속성 규칙을 대지 않는다 — 내용은 그 블록의 것이다
+  if (isRefType(type) || type === UNSUPPORTED_TYPE) {
     return { props: nextProps, format: safeFormat, changed: nextProps !== props || safeFormat !== format }
   }
   const spec = specOf(type)

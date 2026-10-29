@@ -49,9 +49,9 @@ import {
 } from '../contracts/rich-text.ts'
 import {
   isKnownBlockType,
+  isRefType,
   normalizeFormat,
   specOf,
-  PAGE_TYPE,
   UNSUPPORTED_TYPE,
   type BlockFormat,
   type BlockType,
@@ -64,8 +64,8 @@ import {
   BOOLEAN_MARK_NAMES,
   EQUATION_NODE,
   MENTION_NODE,
+  isRefNodeName,
   nodeNameOf,
-  PAGE_REF_NODE,
   TABLE_CELL_NODE,
   TABLE_NODE,
   TABLE_ROW_NODE,
@@ -214,15 +214,15 @@ function contentNodeFor(block: EditorBlock): PmNode {
   // 정본 ⑧ — 로그가 저장마다 한 줄씩 자랐다).
   const known: BlockType = isKnownBlockType(block.type) ? block.type : UNSUPPORTED_TYPE
   const { props, format } = sanitizeBlockAttrs(
-    block.type === PAGE_TYPE ? PAGE_TYPE : known,
+    isRefType(block.type) ? block.type : known,
     { ...(block.properties ?? {}) },
     normalizeFormat(known, block.format),
   )
 
-  if (block.type === PAGE_TYPE) {
-    // 참조 노드는 제목을 싣지 않는다(`schema.ts` · HANDOFF §3.2-22). 받은 문서에 제목이 있어도(옛 클라이언트 · 저장 큐) 버린다 —
-    // 여기서 옮기면 본문 저장이 그 제목을 Y.Doc 에 써 넣는다.
-    return blockSchema.nodes[PAGE_REF_NODE].create({ props, format })
+  if (isRefType(block.type)) {
+    // 참조 노드(하위 페이지 · 인라인 데이터베이스 — I-1)는 제목 · 이름을 싣지 않는다(`schema.ts` · HANDOFF §3.2-22). 받은 문서에 제목이
+    // 있어도(옛 클라이언트 · 저장 큐) 버린다 — 여기서 옮기면 본문 저장이 그 제목을 Y.Doc 에 써 넣는다.
+    return blockSchema.nodes[nodeNameOf(block.type)].create({ props, format })
   }
 
   const type: BlockType = isKnownBlockType(block.type) ? block.type : UNSUPPORTED_TYPE
@@ -279,10 +279,11 @@ export function containerFor(block: EditorBlock): PmNode {
   const content = contentNodeFor(block)
   const children = block.children ?? []
 
-  // 자식 페이지의 본문은 이 문서의 것이 아니다(document.ts 가 검증한다). 표의 행은 내용 노드 안에 이미 실었다(Phase 2 1d).
+  // 참조(자식 페이지 · 인라인 데이터베이스)의 내용은 이 문서의 것이 아니다(document.ts 가 검증한다). 표의 행은 내용 노드 안에 이미
+  // 실었다(Phase 2 1d).
   const inContent = isKnownBlockType(block.type) && specOf(block.type).childrenInContent === true
   const group =
-    block.type !== PAGE_TYPE && !inContent && children.length > 0
+    !isRefType(block.type) && !inContent && children.length > 0
       ? [blockSchema.nodes.blockGroup.create(null, children.map(containerFor))]
       : []
 
@@ -331,9 +332,9 @@ export function blockFromContainer(container: PmNode): EditorBlock {
   const props = { ...((content.attrs.props ?? {}) as Record<string, unknown>) }
   const format = { ...((content.attrs.format ?? {}) as BlockFormat) }
 
-  if (content.type.name === PAGE_REF_NODE) {
-    // 참조 노드는 순서만 의미가 있다. 제목은 프로젝터가 무시한다.
-    return { id: blockId, type: PAGE_TYPE, title: [], properties: props, format }
+  if (isRefNodeName(content.type.name)) {
+    // 참조 노드(하위 페이지 · 인라인 데이터베이스)는 순서만 의미가 있다. 제목 · 이름은 프로젝터가 무시한다.
+    return { id: blockId, type: blockTypeOfNode(content.type.name), title: [], properties: props, format }
   }
 
   // 표(Phase 2 1d) — 행 노드가 자식 행 블록이 된다(id = `rowId` · 셀 = 셀 노드의 런). 비었으면 찍는다(`blockId` 와 같은 방어선).

@@ -37,7 +37,7 @@
 import { cellsOf, TABLE_ROW_TYPE } from '../block/table.ts'
 import type { Tx } from '../db/tx.ts'
 import { toPlainText, type RichTextRun } from '../contracts/rich-text.ts'
-import { PAGE_TYPE, specOf, isKnownBlockType } from '../block/types.ts'
+import { isRefType, specOf, isKnownBlockType } from '../block/types.ts'
 import { detectLang } from './script.ts'
 
 /**
@@ -60,7 +60,8 @@ function blockText(type: string, properties: Record<string, unknown> | null): st
   // 자식 페이지의 제목은 **그 페이지의 색인 행**이 갖는다. 여기서 넣으면 부모
   // 본문을 검색했을 때 자식 제목이 걸리고, 자식 이름을 바꿔도 부모 색인은
   // 낡는다(쓰기자가 둘이 된다).
-  if (type === PAGE_TYPE) return ''
+  // 인라인 데이터베이스(I-1)의 이름도 같다 — 그 데이터베이스의 것이다(이름 색인은 0108 의 데이터베이스 행이 갖는다).
+  if (isRefType(type)) return ''
 
   const parts: string[] = []
   if (specOf(type).hasRichText) {

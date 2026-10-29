@@ -61,7 +61,7 @@
 import type { SessionContext } from '../auth/session-context.ts'
 import type { BlockId } from '../ids.ts'
 import { withReadTransaction, withTransaction, type Tx } from '../db/tx.ts'
-import { PAGE_TYPE } from './types.ts'
+import { DATABASE_TYPE, isRefType, PAGE_TYPE } from './types.ts'
 import { plainTitleOf } from './page.ts'
 import { pageIconOfFormat, type PageIcon } from './page-icon.ts'
 import { indexPageText } from '../search/index-page.ts'
@@ -192,10 +192,11 @@ async function readScopeIn(tx: Tx, workspaceId: string, pageId: string): Promise
                 c.lifecycle, c.ancestor_path, c.perm_scope_id
            FROM block c
            JOIN doc_scope s ON c.parent_id = s.id
-          WHERE s.type <> $3 AND c.workspace_id = $2
+          WHERE s.type <> $3 AND s.type <> $4 AND c.workspace_id = $2
      )
      SELECT * FROM doc_scope`,
-    [pageId, workspaceId, PAGE_TYPE],
+    // 하위 페이지 · 인라인 데이터베이스(I-1)에서 멈춘다 — 그 밑은 그 페이지의 문서 · 그 데이터베이스의 것이다
+    [pageId, workspaceId, PAGE_TYPE, DATABASE_TYPE],
   )
 }
 
@@ -431,13 +432,15 @@ async function projectRows(
   // 문서의 참조는 이 본문 범위의 살아 있는 하위 페이지여야 한다 — 부르는 쪽이 읽기에서 뺐다(`body-write.ts` `pageRefs`). 여기 닿으면
   // 그 거르기가 빠진 것이다. 넣으면 페이지 행을 만들거나(유령 페이지) 휴지통 · 다른 본문의 페이지를 옮기게 된다(머리말). 검사로
   // 강제하지 못한 방어다 — 거르기가 있는 한 닿는 입력이 없어 이 줄을 빼는 반사실에서 검사가 전부 통과했다(HANDOFF §3.3-113).
-  const liveChildPages = new Set(scope.filter((r) => r.type === PAGE_TYPE && r.lifecycle === 'live').map((r) => r.id))
-  const stray = projection.blocks.find((b) => b.type === PAGE_TYPE && !liveChildPages.has(b.id))
+  // 인라인 데이터베이스 참조(I-1)도 같다 — 넣으면 `database` 확장 없는 데이터베이스 행을 만들게 된다.
+  const liveChildPages = new Set(scope.filter((r) => isRefType(r.type) && r.lifecycle === 'live').map((r) => r.id))
+  const stray = projection.blocks.find((b) => isRefType(b.type) && !liveChildPages.has(b.id))
   if (stray !== undefined) throw new Error(`투영에 이 본문의 살아 있는 하위 페이지가 아닌 참조가 왔다: ${stray.id}`)
 
   // ── 자식 페이지 정합성 ────────────────────────────────────────────
   const docIds = new Set(projection.blocks.map((b) => b.id))
-  const livePageRefs = scope.filter((r) => r.type === PAGE_TYPE && r.lifecycle === 'live')
+  // 참조 둘(하위 페이지 · 인라인 데이터베이스 — I-1)을 함께 센다. 데이터베이스 블록을 지우면 CASCADE 로 소스 · 속성 · 뷰 · 행이 통째로 사라진다.
+  const livePageRefs = scope.filter((r) => isRefType(r.type) && r.lifecycle === 'live')
 
   const missing = livePageRefs.filter((r) => !docIds.has(r.id)).map((r) => r.id)
   if (missing.length > 0 && missingPageRefs === 'refuse') {
@@ -470,7 +473,7 @@ async function projectRows(
   // 토글 행의 경로는 따라가고 하위 페이지와 그 서브트리의 경로는 옛 자리에 남았다(검사가 재현했다). 깊이 검사도 건너뛰었다.
   const currentRowOf = new Map(scope.map((r) => [r.id, r]))
   const pageRefMoves = projection.blocks.filter((b) => {
-    if (b.type !== PAGE_TYPE) return false
+    if (!isRefType(b.type)) return false
     const row = currentRowOf.get(b.id)
     return row?.parent_id !== b.parentId || stableJson(row.ancestor_path) !== stableJson(b.ancestorPath)
   })
@@ -479,7 +482,7 @@ async function projectRows(
   const occupiedByParent = new Map<string, Set<string>>()
   for (const row of scope) {
     if (docIds.has(row.id)) continue
-    if (row.type !== PAGE_TYPE) continue // 본문 블록은 지워질 것이므로 비켜줄 필요가 없다
+    if (!isRefType(row.type)) continue // 본문 블록은 지워질 것이므로 비켜줄 필요가 없다
     const set = occupiedByParent.get(row.parent_id) ?? new Set<string>()
     set.add(row.order_key)
     occupiedByParent.set(row.parent_id, set)
@@ -490,7 +493,7 @@ async function projectRows(
   // ── 차집합 ────────────────────────────────────────────────────────
   const existing = new Map(scope.map((r) => [r.id, r]))
   const toDelete = scope
-    .filter((r) => !docIds.has(r.id) && r.type !== PAGE_TYPE)
+    .filter((r) => !docIds.has(r.id) && !isRefType(r.type))
     .map((r) => r.id)
 
   const toInsert: ProjectedBlock[] = []
@@ -512,8 +515,8 @@ async function projectRows(
     if (row.order_key !== target.orderKey || row.parent_id !== target.parentId) {
       keyChanges.push(target)
     }
-    if (row.type === PAGE_TYPE) {
-      // 자식 페이지는 순서(그리고 필요하면 부모)만. 내용은 그 페이지의 것이다.
+    if (isRefType(row.type)) {
+      // 자식 페이지 · 인라인 데이터베이스(I-1)는 순서(그리고 필요하면 부모)만. 내용(이름 · 아이콘 · format)은 그 블록의 것이다.
       continue
     }
     const changed =
@@ -625,7 +628,8 @@ async function projectRows(
         ctx,
         {
           id: row.id,
-          type: 'page', // 본문 참조 이동의 대상은 하위 페이지뿐이다(데이터베이스는 본문에 참조가 없다 · 7c-8)
+          // 본문 참조 이동의 대상 — 하위 페이지 · 인라인 데이터베이스(I-1 — 행은 그릇의 경로를 따르므로 서브트리째 함께 옮겨진다)
+          type: row.type === DATABASE_TYPE ? 'database' : 'page',
           parent_type: 'block',
           parent_id: row.parent_id,
           ancestor_path: row.ancestor_path,
@@ -670,9 +674,9 @@ async function projectRows(
   // 자식 페이지는 양쪽 모두에서 뺀다. 그 행의 properties 는 그 페이지의
   // 것이고 이 프로젝터가 쓰지 않으므로, 한쪽에만 세면 저장할 때마다 같은 값이
   // 올라가거나 내려간다.
-  const before = countFileReferences(scope.filter((r) => r.type !== PAGE_TYPE))
+  const before = countFileReferences(scope.filter((r) => !isRefType(r.type)))
   const after = countFileReferences(
-    projection.blocks.filter((b) => b.type !== PAGE_TYPE).map((b) => ({ properties: b.properties })),
+    projection.blocks.filter((b) => !isRefType(b.type)).map((b) => ({ properties: b.properties })),
   )
   for (const [fileId, delta] of fileReferenceDelta(before, after)) {
     // 워크스페이스로 한정한다 — 다른 워크스페이스의 파일 id 를 문서에 적어

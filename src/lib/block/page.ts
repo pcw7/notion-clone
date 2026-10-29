@@ -355,6 +355,19 @@ async function lockParent(
 }
 
 /**
+ * 부모 **페이지**를 확정하고 잠근다 — `lockParent` 의 페이지 갈래만(권한 `create_child` · 깊이 · 휴지통 · 다른 워크스페이스는 모두
+ * `parent_not_found`). 인라인 데이터베이스(I-1 · `database.ts` `createInlineDatabase`)가 하위 페이지와 같은 규칙으로 자리를 얻는다.
+ */
+export async function lockParentPage(
+  tx: Tx,
+  ctx: SessionContext,
+  parentPageId: BlockId,
+): Promise<{ readonly parentId: string; readonly ancestorPath: string[]; readonly permScopeId: string }> {
+  const placement = await lockParent(tx, ctx, parentPageId, null, false)
+  return { parentId: placement.parentId, ancestorPath: placement.ancestorPath, permScopeId: placement.permScopeId ?? placement.parentId }
+}
+
+/**
  * 형제 맨 뒤의 order_key 를 만든다.
  *
  * ⚠ **형제는 페이지만이 아니다.** `ux_block_sibling_order` 는

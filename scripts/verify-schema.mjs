@@ -3183,6 +3183,26 @@ try {
     await client.query('ROLLBACK TO SAVEPOINT probe')
     await rejectBy('★ 기본을 따로 적는다(nested — 기본은 NULL 하나 · 0120)', 'ck_view_sub_item_display', setDisplay, [viewId, 'nested'])
     await rejectBy('모르는 표시 방식(0120)', 'ck_view_sub_item_display', setDisplay, [viewId, 'card'])
+    // 휴지통에 가는 타입(0121 · 인라인 데이터베이스 I-1) — 페이지 · 데이터베이스만
+    const trashableDb = (await client.query(`SELECT database_id AS id FROM view WHERE id = $1`, [viewId])).rows[0].id
+    await client.query('SAVEPOINT probe')
+    try {
+      await client.query(
+        `UPDATE block SET lifecycle = 'trashed', trashed_at = now(), trash_root_id = id, purge_after = now() + interval '30 days' WHERE id = $1`,
+        [trashableDb],
+      )
+      ok('데이터베이스 블록이 휴지통에 간다(0121) — 정상 경로가 통과한다')
+    } catch (e) {
+      fail(`정상 경로가 거부됐다 (${e.constraint ?? e.code})`)
+    }
+    await client.query('ROLLBACK TO SAVEPOINT probe')
+    await rejectBy('★ 본문 블록(문단)은 여전히 휴지통에 가지 않는다(0121)', 'ck_lifecycle_page',
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key, ancestor_path, perm_scope_id, properties, format,
+                          lifecycle, trashed_at, trash_root_id, purge_after, created_at, last_edited_at)
+       SELECT $1::uuid, workspace_id, 'paragraph', 'block', id, 'zz9', ancestor_path || id, perm_scope_id, '{}'::jsonb, '{}'::jsonb,
+              'trashed', now(), $1::uuid, now() + interval '30 days', now(), now()
+         FROM block WHERE id = $2`,
+      [randomUUID(), trashableDb])
 
     console.log('\n[42] 개인 필터 · 정렬 (0059 / §3.6 view_user_override · 2h-1조각)')
     const someUser = (await client.query(`SELECT id FROM "user" LIMIT 1`)).rows[0].id

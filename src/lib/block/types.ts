@@ -73,10 +73,33 @@ export type TableBlockType = (typeof TABLE_BLOCK_TYPES)[number]
 /** 페이지도 블록이다(C-3). 레지스트리에는 있지만 `/` 메뉴에는 없다. */
 export const PAGE_TYPE = 'page' as const
 
+/**
+ * 데이터베이스도 블록이다(X-2). 본문 안에 있으면 인라인 데이터베이스다 — 자리는 부모 본문의 참조 노드(`database_ref`)이고 내용은 그
+ * 데이터베이스의 것이다(정본 §3.5 [보강 I-1]).
+ */
+export const DATABASE_TYPE = 'database' as const
+
 /** 모르는 타입의 보존용 폴백. */
 export const UNSUPPORTED_TYPE = 'unsupported' as const
 
-export type BlockType = BodyBlockType | LayoutBlockType | TableBlockType | typeof PAGE_TYPE | typeof UNSUPPORTED_TYPE
+export type BlockType =
+  | BodyBlockType
+  | LayoutBlockType
+  | TableBlockType
+  | typeof PAGE_TYPE
+  | typeof DATABASE_TYPE
+  | typeof UNSUPPORTED_TYPE
+
+/**
+ * 참조 타입 — 본문에는 자리(참조 노드)만 있고 내용은 그 블록의 것이다: 하위 페이지 · 인라인 데이터베이스(정본 §3.5 [보강 I-1] ②). 투영은
+ * 순서와 자리만 쓰고, 문서에 없어도 지우지 않으며(거부하거나 휴지통으로), 자리를 옮기면 서브트리의 경로를 다시 쓴다. 본문 범위를 읽는 재귀도
+ * 여기서 멈춘다.
+ */
+export type RefBlockType = typeof PAGE_TYPE | typeof DATABASE_TYPE
+
+export function isRefType(t: unknown): t is RefBlockType {
+  return t === PAGE_TYPE || t === DATABASE_TYPE
+}
 
 const MVP_SET: ReadonlySet<string> = new Set(MVP_BLOCK_TYPES)
 
@@ -144,6 +167,8 @@ export type BlockTypeSpec = {
 
 export const BLOCK_TYPES: Readonly<Record<BlockType, BlockTypeSpec>> = Object.freeze({
   page: { hasRichText: true, canHaveChildren: true, supportsColor: true },
+  // 인라인 데이터베이스의 참조(I-1) — 본문에서는 글도 자식도 색도 없는 자리다. 이름 · 아이콘은 그 데이터베이스의 것이다.
+  database: { hasRichText: false, canHaveChildren: false, supportsColor: false },
 
   paragraph: { hasRichText: true, canHaveChildren: true, supportsColor: true },
   heading_1: { hasRichText: true, canHaveChildren: false, supportsColor: true, markdownPrefix: ['# '] },

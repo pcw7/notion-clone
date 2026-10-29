@@ -47,6 +47,7 @@ import {
   BLOCK_TYPES,
   BODY_BLOCK_TYPES,
   LAYOUT_BLOCK_TYPES,
+  DATABASE_TYPE,
   PAGE_TYPE,
   UNSUPPORTED_TYPE,
   isKnownBlockType,
@@ -58,6 +59,14 @@ import { COLORS } from '../contracts/rich-text.ts'
 
 /** 자식 페이지 참조 노드의 이름. 우리 모델의 `type='page'` 다. */
 export const PAGE_REF_NODE = 'page_ref'
+
+/** 인라인 데이터베이스 참조 노드의 이름(I-1). 우리 모델의 `type='database'` 다. */
+export const DATABASE_REF_NODE = 'database_ref'
+
+/** 참조 노드인가 — 하위 페이지 · 인라인 데이터베이스(정본 §3.5 [보강 I-1] ②). 내용은 그 블록의 것이고 본문에는 자리만 있다. */
+export function isRefNodeName(name: string): boolean {
+  return name === PAGE_REF_NODE || name === DATABASE_REF_NODE
+}
 
 /**
  * 심플 테이블(Phase 2 1d)의 노드 — 표의 내용 노드(`table`)가 행(`table_row`)을 담고 행이 셀(`table_cell`)을 담는다. 행은 컨테이너가
@@ -128,6 +137,7 @@ const RENDER_TAG: Readonly<Record<BodyBlockType, string>> = {
  */
 export function nodeNameOf(type: BlockType): string {
   if (type === PAGE_TYPE) return PAGE_REF_NODE
+  if (type === DATABASE_TYPE) return DATABASE_REF_NODE
   return BLOCK_TYPES[type].nodeName ?? type
 }
 
@@ -141,6 +151,7 @@ const TYPE_OF_RENAMED_NODE: ReadonlyMap<string, BlockType> = new Map(
 /** ProseMirror 노드(= Y.Doc 요소) 이름 → 블록 타입. 모르는 이름은 `unsupported`. `nodeNameOf` 의 역이다. */
 export function blockTypeOfNode(name: string): BlockType {
   if (name === PAGE_REF_NODE) return PAGE_TYPE
+  if (name === DATABASE_REF_NODE) return DATABASE_TYPE
   const renamed = TYPE_OF_RENAMED_NODE.get(name)
   if (renamed !== undefined) return renamed
   // 이름을 바꾼 타입의 원래 이름(`code`)은 노드가 아니다 — 그 이름의 노드는 없으므로 여기 오지 않지만, 오면 모르는 것이다.
@@ -347,6 +358,17 @@ nodes[PAGE_REF_NODE] = {
   selectable: true,
   attrs: { props: blockAttrSpec.props, format: blockAttrSpec.format },
   toDOM: () => ['div', { class: 'blk blk-page-ref' }, '하위 페이지'],
+}
+
+// 인라인 데이터베이스 참조(I-1 · 정본 §3.5 [보강 I-1]). 하위 페이지 참조와 같은 모양이다 — 본문에 보이지만 내용은 그 데이터베이스의
+// 것이고, **이름을 싣지 않는다**(부모를 볼 수 있다고 그 데이터베이스를 볼 수 있는 것이 아니다 · 위와 같은 까닭). parseDOM 이 없다 —
+// 붙여넣기로 만들 수 없다(만드는 길은 서버 명령뿐이다).
+nodes[DATABASE_REF_NODE] = {
+  group: 'blockContent',
+  atom: true,
+  selectable: true,
+  attrs: { props: blockAttrSpec.props, format: blockAttrSpec.format },
+  toDOM: () => ['div', { class: 'blk blk-database-ref' }, '데이터베이스'],
 }
 
 // 모르는 타입의 보존 노드. 렌더는 회색 박스(F-01-02).

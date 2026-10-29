@@ -50,6 +50,7 @@ import {
   MAX_TREE_DEPTH,
   MIN_COLUMNS,
   PAGE_TYPE,
+  isRefType,
   UNSUPPORTED_TYPE,
   type BlockFormat,
   type BlockType,
@@ -189,11 +190,13 @@ export function validateDoc(doc: EditorDoc): DocIssue[] {
 
       const children = block.children ?? []
       if (children.length > 0) {
-        if (block.type === PAGE_TYPE) {
+        if (isRefType(block.type)) {
           issues.push({
             path: `${p}.children`,
             message:
-              '자식 페이지의 본문은 그 페이지의 문서에 속합니다. 여기에 넣으면 두 문서가 같은 블록을 소유합니다.',
+              block.type === PAGE_TYPE
+                ? '자식 페이지의 본문은 그 페이지의 문서에 속합니다. 여기에 넣으면 두 문서가 같은 블록을 소유합니다.'
+                : '인라인 데이터베이스의 내용은 그 데이터베이스의 것입니다. 본문에서는 자식을 가질 수 없습니다.',
           })
           return
         }
@@ -265,13 +268,14 @@ export function rowsToDoc(pageId: string, rows: readonly BodyRow[]): EditorDoc {
         type,
         // 하위 페이지 참조는 제목을 싣지 않는다 — 그 페이지의 제목이고 보려면 그 페이지를 볼 권한이 있어야 한다. 부모 본문을 읽는
         // 사람이 하위 페이지를 볼 수 있다는 보장이 없다(HANDOFF §3.2-22). 화면은 `loadPageBody` 의 `pageRefTitles` 를 쓴다.
-        title: type !== PAGE_TYPE && Array.isArray(title) ? (title as RichTextRun[]) : [],
+        title: !isRefType(type) && Array.isArray(title) ? (title as RichTextRun[]) : [],
         properties: rest,
         // 하위 페이지 참조는 그 페이지 행의 모습(아이콘 · 8c-1)도 싣지 않는다 — 제목과 같은 까닭이다. 본문의 규칙(`normalizeFormat`)으로
         // 거른다(편집기 · Y.Doc 으로 가는 길도 같은 함수가 한 번 더 거른다 — `contentNodeFor`).
-        format: (type === PAGE_TYPE ? normalizeFormat(PAGE_TYPE, row.format) : (row.format ?? {})) as BlockFormat,
-        // 자식 페이지의 본문은 따라가지 않는다.
-        children: type === PAGE_TYPE ? [] : build(row.id),
+        // 인라인 데이터베이스 참조(I-1)도 같다 — 이름 · 아이콘은 그 데이터베이스의 것이다.
+        format: (isRefType(type) ? normalizeFormat(type, row.format) : (row.format ?? {})) as BlockFormat,
+        // 자식 페이지 · 인라인 데이터베이스의 내용은 따라가지 않는다.
+        children: isRefType(type) ? [] : build(row.id),
       }
     })
 
@@ -389,9 +393,9 @@ export function projectDocument(
       }
       blocks.push(projected)
 
-      if (type === PAGE_TYPE) {
-        pageRefIds.push(block.id)
-        return // 자식 페이지의 본문은 이 문서의 것이 아니다
+      if (isRefType(type)) {
+        if (type === PAGE_TYPE) pageRefIds.push(block.id)
+        return // 자식 페이지의 본문 · 인라인 데이터베이스의 내용은 이 문서의 것이 아니다(I-1)
       }
 
       const children = block.children ?? []

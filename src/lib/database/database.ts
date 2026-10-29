@@ -40,6 +40,7 @@
  */
 
 import { randomUUID } from 'node:crypto'
+import { asBlockId, isUuid } from '../ids.ts'
 
 import type { SessionContext } from '../auth/session-context.ts'
 import { withCommandTransaction, withReadTransaction, type Tx } from '../db/tx.ts'
@@ -49,7 +50,9 @@ import { effectiveCaps, readableScopes, teamspaceCaps } from '../permissions/eff
 import { canOpenDatabase } from './row-access.ts'
 import { isLocked } from '../permissions/lock.ts'
 import { orderKeyBetween } from '../block/order-key.ts'
-import { nextSiblingKey, titleFromPlainText, plainTitleOf } from '../block/page.ts'
+import { lockParentPage, nextSiblingKey, PageError, titleFromPlainText, plainTitleOf } from '../block/page.ts'
+import { openPageBody } from '../block/body-write.ts'
+import { appendPageRef, placePageRefAt } from '../block/page-refs.ts'
 import { pageIconJson, parsePageIconInput, readPageIcon, samePageIcon, type PageIcon } from '../block/page-icon.ts'
 import { isUsableIcon, moveIconFileReference } from '../file/icon-reference.ts'
 import { indexPageTitle } from '../search/index-page.ts'
@@ -118,6 +121,8 @@ export type DatabaseFailure =
   | 'invalid_icon'
   /** 데이터베이스(구조) · 행 페이지가 잠겼다(7f-2 · F-06-16) — 풀어야 고친다. */
   | 'locked'
+  /** 인라인 데이터베이스(I-1)의 자리가 트리 깊이 상한을 넘는다(`MAX_TREE_DEPTH` — 하위 페이지와 같은 상한). */
+  | 'too_deep'
 
 export type DatabaseResult<T> =
   | { readonly ok: true; readonly value: T }
@@ -222,39 +227,100 @@ export async function createDatabase(
     if (privateTop) await enterPrivateRoot(tx, ctx, id)
     else if (teamspaceId === null) await inheritFromWorkspace(tx, ctx, id)
 
+    const value = await insertDatabaseRows(tx, { id, name, isInline: false })
+    return { ok: true, value: { ...value, teamspaceId, ownerUserId } } as const
+  })
+}
+
+/**
+ * 데이터베이스 행과 그 최소 한 벌(data source · 소유 부착 행 · 제목 속성 · 기본 뷰)을 넣는다 — 풀페이지(`createDatabase`)와
+ * 인라인(`createInlineDatabase`)이 같은 함수를 쓴다. 블록 행은 부르는 쪽이 먼저 넣었다.
+ */
+async function insertDatabaseRows(
+  tx: Tx,
+  input: { readonly id: string; readonly name: string; readonly isInline: boolean },
+): Promise<Omit<CreatedDatabase, 'teamspaceId' | 'ownerUserId'>> {
+  const { id, name, isInline } = input
+  await tx.query(
+    `INSERT INTO database (id, title_rich, is_inline, created_at, updated_at)
+     VALUES ($1, $2::jsonb, $3, now(), now())`,
+    [id, JSON.stringify(titleFromPlainText(name)), isInline],
+  )
+
+  // data source 하나와 그 최소 한 벌(소유 부착 행 · 제목 속성 · 기본 뷰) — 더하기(`addDataSource`)와 같은 함수다.
+  //
+  // ★ 기본 뷰. **뷰가 없는 데이터베이스는 화면에 그릴 것이 없다** — `deleteView` 가 마지막 뷰 삭제를 막는 이유와 같다. 여기서
+  //   만들지 않으면 표를 만든 사람이 뷰를 먼저 만들어야 하는 상태가 된다.
+  const sourceName = name === '' ? '표' : name
+  const sourceOrder = orderKeyBetween(null, null)
+  const { dataSourceId, viewId } = await insertOwnedDataSource(tx, {
+    databaseId: id,
+    name: sourceName,
+    sourceOrder,
+    viewOrder: orderKeyBetween(null, null),
+  })
+
+  return {
+    id,
+    name,
+    icon: null,
+    dataSources: [{ id: dataSourceId, name: sourceName, owned: true, orderKey: sourceOrder, readable: true, ownerDatabaseId: id }],
+    dataSourceId,
+    isInline,
+    defaultViewId: viewId,
+  }
+}
+
+/**
+ * 인라인 데이터베이스를 만든다(26번 트랙 I-1 · 정본 §3.5 [보강 I-1] ①) — 부모 페이지 본문 안의 데이터베이스.
+ *
+ * 하위 페이지를 만드는 것과 같은 순서다(`page.ts` `createPageIn`): 부모 페이지를 잠그고(권한 `create_child` · 깊이 — 하위 페이지와 같은
+ * 규칙) **행을 넣기 전에** 부모 본문을 연 뒤, 데이터베이스 블록(부모 = 그 페이지 · 경로 · 권한 스코프는 물려받는다 · ACL 행을 두지 않는다)과
+ * 그 한 벌을 넣고, 본문에 참조 노드(`database_ref`)를 넣어 투영한다 — 한 트랜잭션. `at` 을 주면 그 블록 자리(비었으면 대체 · 아니면 바로 뒤),
+ * 없으면 본문 맨 뒤. 투영이 자리(부모 · 순서 키 · 경로)를 문서 위치로 매긴다 — 토글 안이면 부모가 그 토글이다.
+ *
+ * **라우트가 없다** — 만드는 길은 I-2 가 연다. 휴지통 · 되살리기 · 복제 · 되돌리기의 규칙(I-1b)이 먼저 서야 한다(반쯤 열면 데이터가
+ * 사라지는 길이 생긴다 — 정본 ⑤). 지금은 검사가 쓴다.
+ */
+export async function createInlineDatabase(
+  ctx: SessionContext,
+  input: { readonly parentPageId: string; readonly name?: string; readonly at?: string },
+): Promise<DatabaseResult<CreatedDatabase>> {
+  const name = normalizeName(input.name)
+  // uuid 가 아니면 없는 것과 같이 답한다(존재를 알리지 않는다 · asBlockId 는 던진다)
+  if (!isUuid(input.parentPageId)) return { ok: false, reason: 'not_found' }
+  return withCommandTransaction(async (tx) => {
+    let placement: Awaited<ReturnType<typeof lockParentPage>>
+    try {
+      placement = await lockParentPage(tx, ctx, asBlockId(input.parentPageId))
+    } catch (e) {
+      if (e instanceof PageError) return { ok: false, reason: e.code === 'too_deep' ? 'too_deep' : 'not_found' } as const
+      throw e
+    }
+    // 하위 페이지와 같다 — 행을 넣기 **전에** 부모 본문을 연다(명령이 자기가 바꾼 것을 자기가 쓰는 순서 · `body-write.ts` 머리말).
+    const parentBody = await openPageBody(tx, ctx, placement.parentId)
+    const orderKey = await nextSiblingKey(tx, placement.parentId)
+    const id = randomUUID()
     await tx.query(
-      `INSERT INTO database (id, title_rich, is_inline, created_at, updated_at)
-       VALUES ($1, $2::jsonb, false, now(), now())`,
-      [id, JSON.stringify(titleFromPlainText(name))],
+      `INSERT INTO block (
+         id, workspace_id, type,
+         parent_type, parent_id, order_key, ancestor_path, perm_scope_id,
+         properties, format, created_by, created_at, last_edited_by, last_edited_at
+       ) VALUES (
+         $1, $2, 'database',
+         'block', $3, $4, $5, $6,
+         $7::jsonb, '{}'::jsonb, $8, now(), $8, now()
+       )`,
+      [id, ctx.workspaceId, placement.parentId, orderKey, placement.ancestorPath, placement.permScopeId, JSON.stringify({ title: titleFromPlainText(name) }), ctx.userId],
     )
+    await indexPageTitle(tx, id, name)
+    const value = await insertDatabaseRows(tx, { id, name, isInline: true })
 
-    // data source 하나와 그 최소 한 벌(소유 부착 행 · 제목 속성 · 기본 뷰) — 더하기(`addDataSource`)와 같은 함수다.
-    //
-    // ★ 기본 뷰. **뷰가 없는 데이터베이스는 화면에 그릴 것이 없다** — `deleteView` 가 마지막 뷰 삭제를 막는 이유와 같다. 여기서
-    //   만들지 않으면 표를 만든 사람이 뷰를 먼저 만들어야 하는 상태가 된다.
-    const sourceName = name === '' ? '표' : name
-    const sourceOrder = orderKeyBetween(null, null)
-    const { dataSourceId, viewId } = await insertOwnedDataSource(tx, {
-      databaseId: id,
-      name: sourceName,
-      sourceOrder,
-      viewOrder: orderKeyBetween(null, null),
-    })
-
-    return {
-      ok: true,
-      value: {
-        id,
-        name,
-        icon: null,
-        dataSources: [{ id: dataSourceId, name: sourceName, owned: true, orderKey: sourceOrder, readable: true, ownerDatabaseId: id }],
-        dataSourceId,
-        isInline: false,
-        teamspaceId,
-        ownerUserId,
-        defaultViewId: viewId,
-      },
-    } as const
+    parentBody.change(input.at ? placePageRefAt(id, input.at, 'database') : appendPageRef(null, id, 'database'))
+    const result = await parentBody.finish()
+    if (!result.ok && result.reason === 'page_ref_too_deep') return { ok: false, reason: 'too_deep' } as const
+    if (!result.ok) throw new Error(`본문 투영이 인라인 데이터베이스 생성을 거부했다(${result.reason}): ${placement.parentId}`)
+    return { ok: true, value: { ...value, teamspaceId: null, ownerUserId: null } } as const
   })
 }
 
