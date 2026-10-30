@@ -26142,6 +26142,59 @@ async function main() {
         JSON.stringify(sources))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('풀페이지 데이터베이스의 휴지통 — 화면 (T-2 · F-11-05)')) { try {
+      // 데이터베이스 화면의 "삭제" → 워크스페이스 홈으로 · 사이드바에서 사라진다 · 휴지통에 데이터베이스로 한 줄(함께 간 항목 수) · 되살리면 사이드바에
+      // 돌아온다. 인라인 데이터베이스를 그 화면에서 지우면 놓인 페이지로 돌아가고 본문에서 빠진다. 정본 §3.5 [보강 T-1] ⑤. 자기 데이터를 스스로 만든다.
+      const stamp = Date.now()
+      const apiD = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const dbName = `버릴 표 ${stamp}`
+      const db = (await apiD('POST', '/databases', { name: dbName })).body.database
+      await apiD('POST', `/views/${db.defaultViewId}/rows`, { cells: [] })
+      const LINK = `a[href="/w/${workspaceId}/db/${db.id}"]`
+      const DELETE = '[data-testid="page-delete"]'
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      check('전제 — 데이터베이스 화면에 "삭제" 가 서고 사이드바에 그 데이터베이스가 있다', await waitFor(`!!document.querySelector('${DELETE}') && !!document.querySelector('${LINK}')`, 15000))
+      await waitHydrated(DELETE)
+      await clickSelector(DELETE)
+      check('★ 지우면 워크스페이스 홈으로 · 사이드바에서 사라진다',
+        await waitFor(`location.pathname === ${JSON.stringify(`/w/${workspaceId}`)} && !document.querySelector('${LINK}')`, 15000),
+        await evaluate('location.pathname'))
+
+      const entrySel = `[data-testid="trash-entry"][data-trash-id="${db.id}"]`
+      await waitFor(`!!document.querySelector('[data-testid="trash-toggle"]')`, 15000)
+      for (let i = 0; i < 6 && !(await evaluate(`!!document.querySelector(${JSON.stringify(entrySel)})`)); i += 1) {
+        await clickSelector('[data-testid="trash-toggle"]')
+        await waitFor(`!!document.querySelector(${JSON.stringify(entrySel)})`, 1500)
+      }
+      check('★ 휴지통에 데이터베이스로 한 줄 — 이름 · "데이터베이스" · 함께 간 항목 수',
+        await waitFor(`(() => { const e = document.querySelector(${JSON.stringify(entrySel)})
+          return !!e && e.getAttribute('data-trash-kind') === 'database' && e.textContent.includes(${JSON.stringify(dbName)})
+            && e.textContent.includes('데이터베이스 · ') && e.textContent.includes('항목 1개 포함') })()`, 5000),
+        String(await evaluate(`document.querySelector(${JSON.stringify(entrySel)})?.textContent ?? null`)))
+      await clickSelector(`${entrySel} [data-testid="trash-restore"]`)
+      check('★ 되살리면 사이드바에 돌아오고 데이터베이스 화면이 다시 열린다',
+        (await waitFor(`!document.querySelector(${JSON.stringify(entrySel)}) && !!document.querySelector('${LINK}')`, 15000))
+          && (await rawFetch(`${BASE}/w/${workspaceId}/db/${db.id}`, { headers: { cookie: authed.cookie } })).status === 200)
+
+      // 인라인 — 그 화면에서 지우면 놓인 페이지로 · 본문에서 빠진다
+      const host = (await apiD('POST', '/pages', { title: `버릴 표의 호스트 ${stamp}` })).body.page.id
+      const inline = (await apiD('POST', `/pages/${host}/databases`, { name: '본문의 표' })).body.database
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${inline.id}` })
+      await waitFor(`!!document.querySelector('${DELETE}')`, 15000)
+      await waitHydrated(DELETE)
+      await clickSelector(DELETE)
+      const back = await waitFor(`location.pathname === ${JSON.stringify(`/w/${workspaceId}/${host}`)} && !!document.querySelector('.blk-editor')`, 15000)
+      await sleep(500)
+      const body = await readBody(host)
+      check('인라인 데이터베이스를 그 화면에서 지우면 놓인 페이지로 돌아가고 본문에서 빠진다',
+        back && !body.doc.blocks.some((b) => b.type === 'database') && !(await evaluate(`!!document.querySelector('.blk-editor .blk-database-ref')`)),
+        JSON.stringify({ at: await evaluate('location.pathname'), types: body.doc.blocks.map((b) => b.type) }))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

@@ -3,7 +3,7 @@
  *
  * 정본: 00-canonical-data-model.md §3.5 [보강 T-1]
  *
- *   ① ★ 최상위 데이터베이스를 버린다 — 블록 · 행이 같은 삭제 루트로 · 사이드바 · 데이터베이스 화면에서 사라지고 휴지통 목록에(아이콘은 데이터베이스의 것)
+ *   ① ★ 최상위 데이터베이스를 버린다 — 블록 · 행이 같은 삭제 루트로 · 사이드바 · 데이터베이스 화면에서 사라지고 휴지통 목록에(종류는 데이터베이스 · 아이콘은 데이터베이스의 것)
  *   ② ★ 되살린다 — 원래 자리 그대로 · 행도 · 따로 먼저 버린 행은 휴지통에 남는다(B3)
  *   ③ 영구 삭제 — purged · 목록에서 사라진다
  *   ④ ★ 권한 — 볼 수만 있으면 forbidden · 볼 수 없으면 not_found(있는지 알리지 않는다)
@@ -93,7 +93,7 @@ describe('① 버리기', () => {
 
     const entry = (await listTrash(fx.owner.ctx)).find((e) => e.id === db.id)
     assert.ok(entry !== undefined, '휴지통 목록에')
-    assert.equal(entry.kind, 'page')
+    assert.equal(entry.kind, 'database', '종류는 데이터베이스(T-2 — 화면이 표의 모양으로 그린다)')
     assert.deepEqual(entry.icon, { type: 'emoji', emoji: '📦' }, '아이콘은 데이터베이스의 것')
   })
 })

@@ -107,7 +107,7 @@ describe('③ 휴지통 목록', () => {
     const f = await fixture()
     await trashPage(f.actor.ctx, f.dbId as never)
     const entry = (await listTrash(f.actor.ctx)).find((e) => e.id === f.dbId)
-    assert.deepEqual(entry && { kind: entry.kind, title: entry.title, descendants: entry.descendantCount }, { kind: 'page', title: '할 일', descendants: 2 })
+    assert.deepEqual(entry && { kind: entry.kind, title: entry.title, descendants: entry.descendantCount }, { kind: 'database', title: '할 일', descendants: 2 }, '종류는 데이터베이스(T-2)')
   })
 })
 

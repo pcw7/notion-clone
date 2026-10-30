@@ -91,6 +91,7 @@ import { DatabaseTrailNav } from './database-trail'
 import { MovePageControl } from '../../[pageId]/move-page-control'
 import { LockButton } from '../../[pageId]/lock-button'
 import { SharePanel } from '../../[pageId]/share-panel'
+import { DeletePageButton } from '../../[pageId]/delete-page-button'
 import { PageIconControl } from '../../[pageId]/page-icon-control'
 import { ViewTabs } from './view-tabs'
 import { FormEditor } from './form-editor'
@@ -576,6 +577,11 @@ export default async function DatabasePage({
           {access.canViewAllRows && <ExportButton workspaceId={workspaceId} rootId={databaseId} />}
           {/* 공유(6f-1) — 페이지와 같은 패널 · 레벨에 "내용 편집"이 선다 · 웹 게시 절은 없다 */}
           {access.canViewAllRows && <SharePanel workspaceId={workspaceId} pageId={databaseId} kind="database" />}
+          {/* 휴지통으로(28번 트랙 T-2 · 정본 [보강 T-1]) — 그 데이터베이스의 "내용 편집" 이 있을 때만(서버가 다시 묻는다). 지우면 놓인 페이지로
+              (인라인이면 그 페이지 — 경로의 마지막 조상) · 최상위면 워크스페이스 홈 */}
+          {access.canEditContent && (
+            <DeletePageButton workspaceId={workspaceId} pageId={databaseId} childCount={0} parentPageId={ancestors.at(-1)?.id ?? null} />
+          )}
         </div>
       </div>
 

@@ -18,13 +18,13 @@ import { SIDEBAR_ICON, SIDEBAR_ICON_STROKE, SIDEBAR_ROW } from './sidebar-style'
 import { useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 
-import type { PageIcon } from '@/lib/block/page-icon'
+import { DATABASE_GLYPH, type PageIcon } from '@/lib/block/page-icon'
 import { PageIconView } from './page-icon-view'
 
 export type TrashRow = {
   id: string
   /** 페이지(행 · 템플릿 포함)인가 data source 인가(8e-3a). */
-  kind: 'page' | 'data_source'
+  kind: 'page' | 'database' | 'data_source'
   /** data source 면 그 데이터베이스의 이름. */
   databaseName: string | null
   title: string
@@ -146,13 +146,20 @@ export function TrashPanel({
                   >
                     <div className="min-w-0">
                       <p className="truncate text-sm">
-                        <PageIconView icon={e.icon} fallback className="mr-1.5 align-[-0.125em]" />
+                        <PageIconView
+                          icon={e.icon}
+                          fallback
+                          {...(e.kind === 'page' ? {} : { glyph: DATABASE_GLYPH })}
+                          className="mr-1.5 align-[-0.125em]"
+                        />
                         {e.title || UNTITLED}
                       </p>
                       <p className="text-xs text-neutral-400">
                         {e.kind === 'data_source' && `데이터 소스 · ${e.databaseName || UNTITLED} · `}
+                        {/* 데이터베이스(T-2) — 함께 간 것은 그 항목(행)과 하위 페이지다 */}
+                        {e.kind === 'database' && '데이터베이스 · '}
                         {e.descendantCount > 0 &&
-                          (e.kind === 'data_source' ? `항목 ${e.descendantCount}개 포함 · ` : `하위 ${e.descendantCount}개 포함 · `)}
+                          (e.kind === 'page' ? `하위 ${e.descendantCount}개 포함 · ` : `항목 ${e.descendantCount}개 포함 · `)}
                         {left === null ? '보관 기한 없음' : `${left}일 남음`}
                       </p>
                     </div>
