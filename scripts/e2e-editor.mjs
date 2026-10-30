@@ -26195,6 +26195,36 @@ async function main() {
         JSON.stringify({ at: await evaluate('location.pathname'), types: body.doc.blocks.map((b) => b.type) }))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('데이터베이스 복제 — 내용 없이 (D-1 · F-02-09)')) { try {
+      // 라우트 `POST /databases/{id}/duplicate` `{ content: false }` → 사본의 데이터베이스 화면이 열리고 같은 열(사본의 속성) · 행은 없다 · 이름은
+      // "… (1)" · `content` 가 false 가 아니면 400(내용과 함께는 아직). 정본 §3.5 [보강 D-1]. 자기 데이터를 스스로 만든다(API).
+      const stamp = Date.now()
+      const apiC = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const name = `복제할 표 ${stamp}`
+      const db = (await apiC('POST', '/databases', { name })).body.database
+      await apiC('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '단계', type: 'select' })
+      await apiC('POST', `/views/${db.defaultViewId}/rows`, { cells: [] })
+      const refused = await apiC('POST', `/databases/${db.id}/duplicate`, {})
+      const copied = await apiC('POST', `/databases/${db.id}/duplicate`, { content: false })
+      check('★ 라우트 — 내용 없이 복제(201) · content 가 false 가 아니면 400',
+        copied.status === 201 && typeof copied.body?.database?.id === 'string' && copied.body.database.id !== db.id && refused.status === 400,
+        JSON.stringify({ copied: copied.status, refused: refused.status }))
+
+      const copyId = copied.body.database.id
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${copyId}` })
+      const ready = await waitFor(`!!document.querySelector('[data-testid="db-table"]')`, 15000)
+      const seen = JSON.parse(await evaluate(`JSON.stringify({
+        title: document.querySelector('input[aria-label="데이터베이스 이름"]')?.value ?? document.querySelector('main h1')?.textContent ?? '',
+        heads: [...document.querySelectorAll('[data-testid="db-table"] thead th')].map((th) => th.textContent.trim()).filter(Boolean),
+        rows: document.querySelectorAll('[data-testid="db-table"] [data-row-id]').length,
+      })`))
+      check('★ 사본의 화면 — 같은 열 · 행은 없다 · 이름은 "… (1)"',
+        ready && seen.heads.some((h) => h.includes('단계')) && seen.rows === 0 && seen.title.includes(`${name} (1)`), JSON.stringify(seen))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).
