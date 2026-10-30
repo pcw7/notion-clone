@@ -26247,6 +26247,44 @@ async function main() {
       check('그 행의 본문이 따라왔다', JSON.stringify(body?.doc?.blocks ?? []).includes('행 안의 글'), JSON.stringify(body?.doc?.blocks?.map((b) => b.type) ?? null))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('데이터베이스 복제 — 화면 (D-4 · F-02-09)')) { try {
+      // 데이터베이스 화면의 "복제" → "내용 없이 복제" → 사본의 화면(같은 열 · 행 없음) · 사이드바의 ⧉ → 내용과 함께 사본(그 행). 정본 §3.5 [보강 D-1] ⑨.
+      const stamp = Date.now()
+      const apiV = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const name = `화면 복제 ${stamp}`
+      const db = (await apiV('POST', '/databases', { name })).body.database
+      const titleProp = (await apiV('GET', `/views/${db.defaultViewId}`)).body.view.columns.find((col) => col.type === 'title').propertyId
+      await apiV('POST', `/views/${db.defaultViewId}/rows`, { cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun('화면의 행')] } }] })
+      const atCopy = (copyName) => `(document.querySelector('input[aria-label="데이터베이스 이름"]')?.value ?? document.querySelector('main h1')?.textContent ?? '') === ${JSON.stringify(copyName)}
+        && location.pathname.startsWith(${JSON.stringify(`/w/${workspaceId}/db/`)}) && location.pathname !== ${JSON.stringify(`/w/${workspaceId}/db/${db.id}`)}`
+      const rowCount = `document.querySelectorAll('[data-testid="db-table"] [data-row-id]').length`
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      await waitFor(`!!document.querySelector('[data-testid="db-duplicate"]')`, 15000)
+      await waitHydrated('[data-testid="db-duplicate"]')
+      await clickUntil('[data-testid="db-duplicate"]', `!!document.querySelector('[data-testid="db-duplicate-menu"]')`)
+      await clickSelector('[data-testid="db-duplicate-without"]')
+      const withoutOk = await waitFor(`${atCopy(`${name} (1)`)} && !!document.querySelector('[data-testid="db-table"]') && ${rowCount} === 0`, 15000)
+      check('★ 데이터베이스 화면의 "내용 없이 복제" — 사본의 화면으로 · 행은 없다', withoutOk,
+        JSON.stringify({ at: await evaluate('location.pathname'), rows: await evaluate(rowCount) }))
+
+      const ITEM = `[data-testid="sidebar-nav"] a[href="/w/${workspaceId}/db/${db.id}"]`
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${db.id}` })
+      await waitFor(`!!document.querySelector('${ITEM}')`, 15000)
+      const dupSel = await evaluate(`(() => { const a = document.querySelector('${ITEM}'); const row = a?.closest('li') ?? a?.parentElement
+        const b = row?.querySelector('[data-testid="sidebar-duplicate"]'); if (!b) return null; b.setAttribute('data-e2e-dup', '1'); return '[data-e2e-dup="1"]' })()`)
+      check('전제 — 사이드바의 데이터베이스 항목에 ⧉ 가 선다', typeof dupSel === 'string', String(dupSel))
+      if (typeof dupSel === 'string') {
+        await waitHydrated(dupSel)
+        await clickSelector(dupSel)
+        const withOk = await waitFor(`${atCopy(`${name} (1)`)} && [...document.querySelectorAll('[data-testid="db-table"] [data-row-id]')].some((e) => e.textContent.includes('화면의 행'))`, 15000)
+        check('★ 사이드바의 ⧉ — 내용과 함께 사본(그 행)으로', withOk, JSON.stringify({ at: await evaluate('location.pathname'), rows: await evaluate(rowCount) }))
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

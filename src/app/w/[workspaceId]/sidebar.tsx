@@ -61,7 +61,7 @@ import { ChevronRight, Home, Inbox, Library, Search, Settings } from 'lucide-rea
 import { SIDEBAR_ICON, SIDEBAR_ICON_STROKE, SIDEBAR_ROW, SIDEBAR_ROW_CURRENT, SIDEBAR_SECTION_HEAD } from './sidebar-style'
 import { openSearchOverlay } from './search-overlay'
 import { PageIconView } from './page-icon-view'
-import { requestDuplicate } from './duplicate-page'
+import { requestDatabaseDuplicate, requestDuplicate } from './duplicate-page'
 import { TAB_DRAG_THRESHOLD, tabDropBefore, tabDropLineX, type TabBox } from '@/lib/database/tab-drag'
 import { RECENT_FETCH_LIMIT, SECTION_COUNT_OPTIONS, sectionCount, sectionCountLabel, visibleRowCount, type NavSectionKey, type SectionCounts } from '@/lib/nav/section-count'
 import { overlayVisits } from '@/lib/nav/recent-overlay'
@@ -293,11 +293,12 @@ export function Sidebar({
    * 트리는 어느 쪽이든 새로 받는다 — 사본이 원본 바로 뒤에 서야 한다.
    */
   const duplicate = useCallback(
-    async (pageId: string) => {
+    async (pageId: string, kind: 'page' | 'database' = 'page') => {
       setBusy(true)
       setNote(null)
       try {
-        const result = await requestDuplicate(workspaceId, pageId)
+        // 데이터베이스(29번 트랙 D-4)는 내용과 함께 복제한다 — 노션의 "복제" 와 같다(내용 없이는 데이터베이스 화면의 목록에서)
+        const result = kind === 'database' ? await requestDatabaseDuplicate(workspaceId, pageId, true) : await requestDuplicate(workspaceId, pageId)
         if (!result.ok) {
           router.refresh()
           setNote({ text: result.message, tone: 'error' })
@@ -306,7 +307,7 @@ export function Sidebar({
         // 옮겨 가면 **옮긴 뒤에** 새로 읽는다 — 먼저 새로 읽으면 옮겨 간 화면이 사본이 없는 트리를 그대로 쓴다(복제 단추와 같다)
         if (result.note.navigate) {
           startTransition(() => {
-            router.push(`/w/${workspaceId}/${result.pageId}`)
+            router.push(kind === 'database' ? `/w/${workspaceId}/db/${result.pageId}` : `/w/${workspaceId}/${result.pageId}`)
             router.refresh()
           })
           return
@@ -772,7 +773,7 @@ function TreeItem({
   busy: boolean
   onToggle: (id: string) => void
   onAddChild: (parentPageId: string) => void
-  onDuplicate: (pageId: string) => void
+  onDuplicate: (pageId: string, kind?: 'page' | 'database') => void
 }) {
   const isOpen = expanded.has(node.id)
   const isCurrent = node.id === currentPageId
@@ -827,12 +828,12 @@ function TreeItem({
           </button>
         )}
 
-        {/* 데이터베이스는 이 엔진이 복제하지 못한다 — 표의 스키마 · 행 · 엣지는 다른 조각이다(§7). */}
-        {node.kind === 'page' && (
+        {/* 페이지 · 데이터베이스(29번 트랙 D-4 — 내용과 함께) 모두 */}
+        {(node.kind === 'page' || node.kind === 'database') && (
           <button
             type="button"
             disabled={busy}
-            onClick={() => onDuplicate(node.id)}
+            onClick={() => onDuplicate(node.id, node.kind === 'database' ? 'database' : 'page')}
             aria-label={`${node.title || UNTITLED} 복제`}
             title="복제"
             data-testid="sidebar-duplicate"

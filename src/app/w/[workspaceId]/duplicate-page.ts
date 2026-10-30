@@ -70,3 +70,39 @@ export async function requestDuplicate(workspaceId: string, pageId: string): Pro
     return { ok: false, message: '연결에 실패했습니다.' }
   }
 }
+
+/**
+ * 데이터베이스를 복제한 뒤 할 말(29번 트랙 D-4 · 정본 [보강 D-1]) — 바깥 표를 가리켜 한쪽으로 바꾼 관계 · 볼 수 없어 빠진 하위 페이지.
+ * 말할 것이 없으면 사본으로 옮겨 간다 — 페이지 복제와 같은 규칙(말할 것이 있으면 멈춰서 말한다).
+ */
+export function databaseDuplicateNote(oneWayRelations: number, skippedPages: number): DuplicateNote {
+  const parts: string[] = []
+  if (oneWayRelations > 0) parts.push(`다른 데이터베이스와의 관계 ${oneWayRelations}개는 한쪽 관계로 복제했습니다.`)
+  if (skippedPages > 0) parts.push(`볼 수 없는 하위 페이지 ${skippedPages}개는 복제하지 못했습니다.`)
+  if (parts.length === 0) return { text: null, navigate: true }
+  return { text: `사본을 만들었습니다. ${parts.join(' ')}`, navigate: false }
+}
+
+/** 데이터베이스 복제를 청한다 — 내용과 함께(기본) · 내용 없이. 자리는 서버가 정한다(원본과 같은 자리). */
+export async function requestDatabaseDuplicate(workspaceId: string, databaseId: string, content: boolean): Promise<DuplicateOutcome> {
+  try {
+    const res = await fetch(`/api/workspaces/${workspaceId}/databases/${databaseId}/duplicate`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ content }),
+    })
+    const body = (await res.json().catch(() => null)) as
+      | { database?: { id?: string; oneWayRelations?: number; skippedPages?: number }; error?: unknown }
+      | null
+    if (!res.ok || typeof body?.database?.id !== 'string') {
+      return { ok: false, message: duplicateError(res.status, body?.error) }
+    }
+    return {
+      ok: true,
+      pageId: body.database.id,
+      note: databaseDuplicateNote(Number(body.database.oneWayRelations ?? 0), Number(body.database.skippedPages ?? 0)),
+    }
+  } catch {
+    return { ok: false, message: '연결에 실패했습니다.' }
+  }
+}

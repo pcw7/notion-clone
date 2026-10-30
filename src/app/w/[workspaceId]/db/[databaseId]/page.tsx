@@ -92,6 +92,7 @@ import { MovePageControl } from '../../[pageId]/move-page-control'
 import { LockButton } from '../../[pageId]/lock-button'
 import { SharePanel } from '../../[pageId]/share-panel'
 import { DeletePageButton } from '../../[pageId]/delete-page-button'
+import { DuplicateDatabaseButton } from './duplicate-database-button'
 import { PageIconControl } from '../../[pageId]/page-icon-control'
 import { ViewTabs } from './view-tabs'
 import { FormEditor } from './form-editor'
@@ -580,6 +581,8 @@ export default async function DatabasePage({
           {access.canViewAllRows && <SharePanel workspaceId={workspaceId} pageId={databaseId} kind="database" />}
           {/* 휴지통으로(28번 트랙 T-2 · 정본 [보강 T-1]) — 그 데이터베이스의 "내용 편집" 이 있을 때만(서버가 다시 묻는다). 지우면 놓인 페이지로
               (인라인이면 그 페이지 — 경로의 마지막 조상) · 최상위면 워크스페이스 홈 */}
+          {/* 복제(29번 트랙 D-4) — 원본을 볼 수 있는 사람(복제는 원본을 고치지 않는다 · 사본의 자리에 만들 수 있는지는 서버가 묻는다) */}
+          {access.canViewAllRows && <DuplicateDatabaseButton workspaceId={workspaceId} databaseId={databaseId} />}
           {access.canEditContent && (
             <DeletePageButton workspaceId={workspaceId} pageId={databaseId} childCount={0} parentPageId={ancestors.at(-1)?.id ?? null} />
           )}

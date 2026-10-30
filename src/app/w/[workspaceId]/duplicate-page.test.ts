@@ -13,7 +13,7 @@
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { duplicateError, duplicateNote } from './duplicate-page.ts'
+import { databaseDuplicateNote, duplicateError, duplicateNote } from './duplicate-page.ts'
 
 describe('① · ② 복제한 뒤 할 말', () => {
   test('★ 빠진 하위 페이지가 있으면 **멈춰서** 개수를 말한다', () => {
@@ -61,5 +61,17 @@ describe('③ 실패의 이유', () => {
     assert.match(duplicateError(500, undefined), /서버/)
     assert.equal(duplicateError(400, 'nonsense').length > 0, true)
     assert.equal(duplicateError(400, null).length > 0, true)
+  })
+})
+
+describe('④ 데이터베이스를 복제한 뒤 할 말(29번 트랙 D-4)', () => {
+  test('★ 말할 것이 없으면 옮겨 간다 · 한쪽이 된 관계 · 빠진 하위 페이지는 멈춰서 말한다', () => {
+    assert.deepEqual(databaseDuplicateNote(0, 0), { text: null, navigate: true })
+    const oneWay = databaseDuplicateNote(2, 0)
+    assert.equal(oneWay.navigate, false)
+    assert.ok(oneWay.text?.includes('다른 데이터베이스와의 관계 2개는 한쪽 관계로 복제했습니다.'))
+    const both = databaseDuplicateNote(1, 3)
+    assert.ok(both.text?.includes('관계 1개') && both.text.includes('하위 페이지 3개'))
+    assert.deepEqual(databaseDuplicateNote(Number.NaN, Number.NaN), { text: null, navigate: true }, 'NaN 은 말하지 않는다')
   })
 })
