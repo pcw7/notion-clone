@@ -26285,6 +26285,37 @@ async function main() {
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('페이지 복제의 인라인 데이터베이스 (E-1 · F-02-09)')) { try {
+      // 인라인 데이터베이스가 든 페이지를 복제하면 사본 페이지에 **새** 데이터베이스(이름 그대로)와 그 행이 서고 · 말할 것이 없다(빠진 것 0) ·
+      // 원본 페이지의 데이터베이스는 그대로. 정본 §3.5 [보강 D-1] ⑩.
+      const stamp = Date.now()
+      const apiE = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const host = (await apiE('POST', '/pages', { title: `복제할 호스트 ${stamp}` })).body.page.id
+      const db = (await apiE('POST', `/pages/${host}/databases`, { name: '안의 표' })).body.database
+      const titleProp = (await apiE('GET', `/views/${db.defaultViewId}`)).body.view.columns.find((col) => col.type === 'title').propertyId
+      for (const title of ['안의 행 하나', '안의 행 둘']) {
+        await apiE('POST', `/views/${db.defaultViewId}/rows`, { cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun(title)] } }] })
+      }
+      const copied = await apiE('POST', `/pages/${host}/duplicate`, {})
+      check('★ 페이지 복제 — 빠진 인라인 데이터베이스 0', copied.status === 201 && copied.body?.skippedDatabases === 0, JSON.stringify(copied.body))
+
+      const copyPage = copied.body.page.id
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${copyPage}` })
+      const ready = await waitFor(`document.querySelector('.blk-editor .blk-database-preview')?.dataset.state === 'ready'`, 15000)
+      const seen = JSON.parse(await evaluate(`JSON.stringify({
+        id: document.querySelector('.blk-editor .blk-database-ref')?.closest('[data-block-id]')?.getAttribute('data-block-id') ?? null,
+        name: document.querySelector('.blk-editor .blk-database-link')?.textContent ?? null,
+        rows: [...document.querySelectorAll('.blk-editor .blk-database-preview tbody tr')].map((tr) => tr.textContent),
+      })`))
+      check('★ 사본 페이지에 새 데이터베이스 — 이름 그대로 · 그 행', ready && seen.id !== null && seen.id !== db.id && (seen.name ?? '').includes('안의 표')
+        && seen.rows.length === 2 && seen.rows.some((r) => r.includes('안의 행 하나')), JSON.stringify(seen))
+      const original = await readBody(host)
+      check('원본 페이지의 데이터베이스는 그대로', original.doc.blocks.some((b) => b.type === 'database' && b.id === db.id), JSON.stringify(original.doc.blocks.map((b) => b.type)))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).
