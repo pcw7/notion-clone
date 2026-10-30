@@ -553,9 +553,10 @@ export default async function DatabasePage({
       <DocumentTitle title={contentTitle(database.value.name)} />
       {/* 상대 날짜 필터(R-1)면 서버의 오늘을 이 기기의 오늘에 맞춘다 — 처음 방문(쿠키 없음)이면 한 번 새로 받는다 */}
       <ViewerTodaySync today={usesRelativeDate(view.value.effectiveFilter) ? viewerToday : null} />
-      <div className="flex items-start justify-between gap-3">
+      {/* 좁은 화면(폰)에서는 감는다 — 단추가 늘면(휴지통 T-2) 한 줄이 화면 폭을 넘어 문서가 가로로 흘렀다(10j-2) */}
+      <div className="flex flex-wrap items-start justify-between gap-3">
         <DatabaseTrailNav trail={databaseTrail({ workspaceId, ancestors, database: { id: databaseId, name, icon } })} />
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <LockButton
             lockUrl={`/api/workspaces/${workspaceId}/databases/${databaseId}/lock`}
             locked={lock?.locked ?? false}
