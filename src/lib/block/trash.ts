@@ -124,7 +124,7 @@ export async function trashPage(ctx: SessionContext, pageId: BlockId): Promise<T
     // 잠금 순서는 본문 페이지 행 → 대상 행 → 스냅샷 한 방향이다(`body-write.ts`).
     const peek = await tx.queryMaybe<{ parent_type: string; parent_id: string }>(
       `SELECT parent_type, parent_id FROM block
-        WHERE id = $1 AND workspace_id = $2 AND (type = 'page' OR (type = 'database' AND parent_type = 'block')) AND lifecycle = 'live'`,
+        WHERE id = $1 AND workspace_id = $2 AND type IN ('page', 'database') AND lifecycle = 'live'`,
       [pageId, ctx.workspaceId],
     )
     if (!peek) throw new TrashError('not_found', '페이지를 찾을 수 없습니다.')
@@ -133,7 +133,7 @@ export async function trashPage(ctx: SessionContext, pageId: BlockId): Promise<T
 
     const target = await tx.queryMaybe<{ id: string; parent_id: string }>(
       `SELECT id, parent_id FROM block
-        WHERE id = $1 AND workspace_id = $2 AND (type = 'page' OR (type = 'database' AND parent_type = 'block')) AND lifecycle = 'live'
+        WHERE id = $1 AND workspace_id = $2 AND type IN ('page', 'database') AND lifecycle = 'live'
         FOR UPDATE`,
       [pageId, ctx.workspaceId],
     )
@@ -180,7 +180,7 @@ export async function restorePage(ctx: SessionContext, pageId: BlockId): Promise
     // 올리고 어느 본문도 바꾸지 않는다. 본문 페이지 행을 대상보다 먼저 잡는다(`trashPage` 와 같은 순서).
     const peek = await tx.queryMaybe<{ parent_type: string; parent_id: string }>(
       `SELECT parent_type, parent_id FROM block
-        WHERE id = $1 AND workspace_id = $2 AND (type = 'page' OR (type = 'database' AND parent_type = 'block')) AND lifecycle = 'trashed'`,
+        WHERE id = $1 AND workspace_id = $2 AND type IN ('page', 'database') AND lifecycle = 'trashed'`,
       [pageId, ctx.workspaceId],
     )
     let owner: string | null = null
@@ -198,7 +198,7 @@ export async function restorePage(ctx: SessionContext, pageId: BlockId): Promise
     >(
       `SELECT id, type, parent_type, parent_id, ancestor_path, perm_scope_id, owner_user_id, trash_root_id, order_key, properties
          FROM block
-        WHERE id = $1 AND workspace_id = $2 AND (type = 'page' OR (type = 'database' AND parent_type = 'block')) AND lifecycle = 'trashed'
+        WHERE id = $1 AND workspace_id = $2 AND type IN ('page', 'database') AND lifecycle = 'trashed'
         FOR UPDATE`,
       [pageId, ctx.workspaceId],
     )
@@ -335,7 +335,7 @@ export async function purgePage(ctx: SessionContext, pageId: BlockId): Promise<P
   return withTransaction(async (tx) => {
     const target = await tx.queryMaybe<{ id: string; type: string; trash_root_id: string | null }>(
       `SELECT id, type, trash_root_id FROM block
-        WHERE id = $1 AND workspace_id = $2 AND (type = 'page' OR (type = 'database' AND parent_type = 'block')) AND lifecycle = 'trashed'
+        WHERE id = $1 AND workspace_id = $2 AND type IN ('page', 'database') AND lifecycle = 'trashed'
         FOR UPDATE`,
       [pageId, ctx.workspaceId],
     )
@@ -416,14 +416,14 @@ export async function listTrash(ctx: SessionContext): Promise<TrashEntry[]> {
       purge_after: Date | null
       descendant_count: string
     }>(
-      // 인라인 데이터베이스(I-1b)의 아이콘은 데이터베이스 표에 있다(페이지는 format 의 page_icon)
+      // 데이터베이스(인라인 I-1b · 최상위 T-1)의 아이콘은 데이터베이스 표에 있다(페이지는 format 의 page_icon)
       `SELECT t.id, t.properties, coalesce(t.format -> 'page_icon', (SELECT d.icon FROM database d WHERE d.id = t.id)) AS page_icon,
               t.trashed_at, t.purge_after,
               (SELECT count(*) FROM block d
                 WHERE d.trash_root_id = t.id AND d.id <> t.id
                   AND d.workspace_id = t.workspace_id) AS descendant_count
          FROM block t
-        WHERE t.workspace_id = $1 AND (t.type = 'page' OR (t.type = 'database' AND t.parent_type = 'block'))
+        WHERE t.workspace_id = $1 AND t.type IN ('page', 'database')
           AND t.lifecycle = 'trashed' AND t.trash_root_id = t.id
           AND t.perm_scope_id = ANY($2::uuid[])
         ORDER BY t.trashed_at DESC, t.id`,
