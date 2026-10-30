@@ -381,8 +381,11 @@ export async function purgePage(ctx: SessionContext, pageId: BlockId): Promise<P
 export type TrashEntry = {
   /** 페이지(행 · 템플릿 포함)면 블록 id, data source 면 그 소스의 id(8e-3a). */
   readonly id: string
-  /** 무엇이 휴지통에 있는가 — 되살리기 · 영구 삭제가 가는 주소가 다르다. */
-  readonly kind: 'page' | 'data_source'
+  /**
+   * 무엇이 휴지통에 있는가 — 되살리기 · 영구 삭제가 가는 주소가 다르다(데이터베이스는 페이지와 같은 주소 · 화면이 표의 모양으로 그린다 —
+   * 28번 트랙 T-2).
+   */
+  readonly kind: 'page' | 'database' | 'data_source'
   /** data source 면 그 주인 데이터베이스의 이름(목록이 "어느 데이터베이스의 소스인가"를 말한다). 페이지면 null. */
   readonly databaseName: string | null
   readonly title: string
@@ -410,6 +413,7 @@ export async function listTrash(ctx: SessionContext): Promise<TrashEntry[]> {
     if (scopes.length === 0) return { pages: [], sources: [] }
     const pages = await tx.query<{
       id: string
+      type: string
       properties: { title?: unknown } | null
       page_icon: unknown
       trashed_at: Date
@@ -417,7 +421,7 @@ export async function listTrash(ctx: SessionContext): Promise<TrashEntry[]> {
       descendant_count: string
     }>(
       // 데이터베이스(인라인 I-1b · 최상위 T-1)의 아이콘은 데이터베이스 표에 있다(페이지는 format 의 page_icon)
-      `SELECT t.id, t.properties, coalesce(t.format -> 'page_icon', (SELECT d.icon FROM database d WHERE d.id = t.id)) AS page_icon,
+      `SELECT t.id, t.type, t.properties, coalesce(t.format -> 'page_icon', (SELECT d.icon FROM database d WHERE d.id = t.id)) AS page_icon,
               t.trashed_at, t.purge_after,
               (SELECT count(*) FROM block d
                 WHERE d.trash_root_id = t.id AND d.id <> t.id
@@ -458,7 +462,7 @@ export async function listTrash(ctx: SessionContext): Promise<TrashEntry[]> {
       const raw = row.properties?.title
       return {
         id: row.id,
-        kind: 'page' as const,
+        kind: row.type === 'database' ? ('database' as const) : ('page' as const),
         databaseName: null,
         // 읽기는 관대하게 — 제목이 망가졌다고 휴지통 전체가 500 이 되면 복구 경로가 없다.
         title: Array.isArray(raw) ? toPlainText(raw as RichTextRun[]) : '',
