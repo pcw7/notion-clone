@@ -28,6 +28,7 @@ import { lockParentPage, nextSiblingKey, PageError, readTitle } from '../block/p
 import { openPageBody, ownerPageOf } from '../block/body-write.ts'
 import { insertPageRefAfter } from '../block/page-refs.ts'
 import { duplicateTitle } from '../block/duplicate-remap.ts'
+import { DuplicateError, duplicateSubtree, type SubtreeRow } from '../block/duplicate.ts'
 import { readPageIcon } from '../block/page-icon.ts'
 import { addIconFileReference } from '../file/icon-reference.ts'
 import { indexPageTitle } from '../search/index-page.ts'
@@ -50,8 +51,10 @@ export type DuplicateDatabaseResult =
         readonly defaultViewId: string | null
         /** 바깥 표를 가리켜 한쪽으로 바꾼 relation 수 — 화면이 "일부 관계는 한쪽으로 복제했습니다" 를 말할 수 있게. */
         readonly oneWayRelations: number
-        /** 함께 복제한 행 수(내용 없이면 0). */
+        /** 함께 복제한 행 수(내용 없이면 0 · 템플릿은 세지 않는다). */
         readonly rows: number
+        /** 볼 수 없어서 복제하지 않은 하위 페이지 수(행 · 템플릿의 본문 안 — 페이지 복제와 같은 규칙). */
+        readonly skippedPages: number
       }
     }
   | { readonly ok: false; readonly reason: DuplicateDatabaseFailure }
@@ -68,6 +71,16 @@ export async function duplicateDatabase(
   options: { readonly content: boolean },
 ): Promise<DuplicateDatabaseResult> {
   if (!isUuid(databaseId)) return { ok: false, reason: 'not_found' }
+  try {
+    return await duplicateIn(ctx, databaseId, options)
+  } catch (e) {
+    // 행 · 템플릿의 본문 복제(엔진)가 크기 · 깊이로 거부하면 — 던진 것이라 트랜잭션은 이미 되돌아갔다
+    if (e instanceof DuplicateError && (e.code === 'too_large' || e.code === 'too_deep')) return { ok: false, reason: e.code }
+    throw e
+  }
+}
+
+async function duplicateIn(ctx: SessionContext, databaseId: string, options: { readonly content: boolean }): Promise<DuplicateDatabaseResult> {
   return withCommandTransaction(async (tx) => {
     const source = await tx.queryMaybe<{
       id: string
@@ -213,7 +226,12 @@ export async function duplicateDatabase(
     await insertRows(tx, 'automation', buttons.map((b) => fresh(b, { created_by: ctx.userId })))
     await insertRows(tx, 'automation_action', actions.map((x) => remapIds(x, ids)))
 
-    const rows = options.content ? await copyRows(tx, ctx, { databaseId, copyId: id, sources, properties, viewIds, ids, now }) : 0
+    // 행 · 템플릿 — 템플릿은 내용 없이도 함께(데이터베이스의 설정이다 · 뷰의 기본 템플릿이 가리킨다) · 행은 내용과 함께일 때만
+    const copiedRows = await copyRows(tx, ctx, { databaseId, copyId: id, sources, properties, viewIds, ids, now, withRows: options.content })
+    for (const v of views) {
+      const template = v.default_template_page_id == null ? undefined : ids.get(String(v.default_template_page_id))
+      if (template !== undefined) await tx.query(`UPDATE view SET default_template_page_id = $2 WHERE id = $1`, [ids.get(String(v.id)), template])
+    }
 
     if (inlineBody !== null) {
       inlineBody.change(insertPageRefAfter(id, null, databaseId, 'database'))
@@ -225,7 +243,14 @@ export async function duplicateDatabase(
     const first = views.find((v) => v.owner_kind === 'database_view')
     return {
       ok: true,
-      value: { id, name, defaultViewId: first === undefined ? null : (ids.get(String(first.id)) ?? null), oneWayRelations: oneWay, rows },
+      value: {
+        id,
+        name,
+        defaultViewId: first === undefined ? null : (ids.get(String(first.id)) ?? null),
+        oneWayRelations: oneWay,
+        rows: copiedRows.rows,
+        skippedPages: copiedRows.skippedPages,
+      },
     } as const
   })
 }
@@ -251,25 +276,32 @@ async function copyRows(
     readonly viewIds: readonly string[]
     readonly ids: Map<string, string>
     readonly now: string
+    /** 템플릿이 아닌 행까지(내용과 함께). 아니면 템플릿만. */
+    readonly withRows: boolean
   },
-): Promise<number> {
+): Promise<{ readonly rows: number; readonly skippedPages: number }> {
   const { ids, now } = input
   const sourceIds = input.sources.map((s) => String(s.id))
   const propertyIds = input.properties.map((p) => String(p.id))
   const blocks = await readRows(tx,
     `SELECT to_jsonb(b) AS row FROM block b JOIN page p ON p.id = b.id
-      WHERE b.parent_type = 'data_source' AND b.parent_id = ANY($1::uuid[]) AND b.type = 'page' AND b.lifecycle = 'live' AND NOT p.is_template
-      ORDER BY b.order_key, b.id`, [sourceIds])
-  if (blocks.length === 0) return 0
+      WHERE b.parent_type = 'data_source' AND b.parent_id = ANY($1::uuid[]) AND b.type = 'page' AND b.lifecycle = 'live' AND (p.is_template OR $2)
+      ORDER BY b.order_key, b.id`, [sourceIds, input.withRows])
+  if (blocks.length === 0) return { rows: 0, skippedPages: 0 }
   const rowIds = blocks.map((b) => String(b.id))
   for (const rowId of rowIds) ids.set(rowId, randomUUID())
   const pages = await readRows(tx, `SELECT to_jsonb(p) AS row FROM page p WHERE p.id = ANY($1::uuid[])`, [rowIds])
+  const templateIds = new Set(pages.filter((p) => p.is_template === true).map((p) => String(p.id)))
   const cells = await readRows(tx,
     `SELECT to_jsonb(v) AS row FROM page_property_value v WHERE v.page_id = ANY($1::uuid[]) AND v.property_id = ANY($2::text[])`, [rowIds, propertyIds])
   const edges = await readRows(tx,
     `SELECT to_jsonb(e) AS row FROM relation_edge e WHERE e.property_id = ANY($1::text[]) AND e.from_page_id = ANY($2::uuid[])`, [propertyIds, rowIds])
   const positions = await readRows(tx,
     `SELECT to_jsonb(r) AS row FROM row_position r WHERE r.view_id = ANY($1::uuid[]) AND r.row_id = ANY($2::uuid[])`, [input.viewIds, rowIds])
+  // 본문이 있는 행 · 템플릿 — 문서 기록이 있는 것(본문의 정본은 Y.Doc 이다 · X-1). 그 본문 · 하위 페이지는 페이지 복제 엔진이 옮긴다
+  const withBody = new Set((await tx.query<{ page_id: string }>(
+    `SELECT page_id FROM doc_snapshot WHERE page_id = ANY($1::uuid[])
+     UNION SELECT DISTINCT page_id FROM doc_update WHERE page_id = ANY($1::uuid[])`, [rowIds])).map((r) => r.page_id))
   const place = await tx.queryOne<{ perm_scope_id: string; ancestor_path: string[] }>(
     `SELECT perm_scope_id, ancestor_path FROM block WHERE id = $1`, [input.copyId])
   // 같은 표 안을 가리키는 relation 속성 — 그 엣지는 대상 행도 복제됐을 때만
@@ -292,7 +324,8 @@ async function copyRows(
     version: 0,
   })))
   for (const b of blocks) {
-    await addIconFileReference(tx, ctx, readPageIcon((b.format as Row | null)?.page_icon ?? null))
+    // 아이콘 파일의 참조 — 본문을 엔진이 옮기는 행은 엔진이 올린다(두 번 세지 않는다)
+    if (!withBody.has(String(b.id))) await addIconFileReference(tx, ctx, readPageIcon((b.format as Row | null)?.page_icon ?? null))
     await indexPageTitle(tx, String(ids.get(String(b.id))), toPlainText(readTitle(b.properties as { title?: unknown } | null)))
   }
   await insertRows(tx, 'page', pages.map((p) => remapIds(p, ids)))
@@ -302,10 +335,33 @@ async function copyRows(
     .map((e) => remapIds(e, ids)))
   await insertRows(tx, 'row_position', positions.map((r) => remapIds(r, ids)))
   // 고유 ID 의 다음 번호 — 행의 번호를 그대로 가져왔으니 소스의 번호도 원본의 것
-  for (const s of input.sources) {
-    await tx.query(`UPDATE data_source SET unique_id_counter = $2 WHERE id = $1`, [ids.get(String(s.id)), Number(s.unique_id_counter ?? 0)])
+  if (input.withRows) {
+    for (const s of input.sources) {
+      await tx.query(`UPDATE data_source SET unique_id_counter = $2 WHERE id = $1`, [ids.get(String(s.id)), Number(s.unique_id_counter ?? 0)])
+    }
   }
-  return blocks.length
+
+  // 본문 · 하위 페이지 — 페이지 복제 엔진(`duplicateSubtree`). 뿌리(행)는 이미 넣었으니 그 id 를 돌려줄 뿐이다 · 제목은 원본 그대로(꼬리표 없음 ·
+  // 템플릿으로 행을 만드는 길과 같다). 엔진이 그 행의 본문을 다시 매겨 쓰고(하위 페이지 참조 · 안쪽 멘션은 사본을) 하위 페이지를 그 밑에 만든다.
+  // id 순으로 — 잠금의 한 방향.
+  let skippedPages = 0
+  for (const b of [...blocks].filter((x) => withBody.has(String(x.id))).sort((x, y) => (String(x.id) < String(y.id) ? -1 : 1))) {
+    const source: SubtreeRow = {
+      id: String(b.id),
+      parent_id: String(b.parent_id),
+      ancestor_path: b.ancestor_path as string[],
+      properties: b.properties as SubtreeRow['properties'],
+      format: b.format as SubtreeRow['format'],
+    }
+    const copyId = String(ids.get(source.id))
+    const copied = await duplicateSubtree(tx, ctx, source, {
+      depth: place.ancestor_path.length + 1,
+      title: readTitle(source.properties),
+      create: async () => copyId,
+    })
+    skippedPages += copied.skipped
+  }
+  return { rows: blocks.filter((b) => !templateIds.has(String(b.id))).length, skippedPages }
 }
 
 async function insertBlock(
