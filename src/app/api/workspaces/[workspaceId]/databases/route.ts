@@ -46,11 +46,13 @@ export async function POST(
  * 볼 수 없는 표는 목록에 없다(`listDatabases` — 권한이 쿼리 안에 있다).
  */
 export async function GET(
-  _request: Request,
+  request: Request,
   ctx: RouteContext<'/api/workspaces/[workspaceId]/databases'>,
 ): Promise<Response> {
   const { workspaceId } = await ctx.params
   const session = await requireWorkspaceSession(workspaceId)
   if (!session.ok) return session.response
-  return Response.json({ ok: true, databases: await listDatabases(session.ctx) })
+  // 이름으로 거르기(L-2) — `?q=`. 없거나 비면 전처럼 상한까지
+  const q = new URL(request.url).searchParams.get('q')
+  return Response.json({ ok: true, databases: await listDatabases(session.ctx, { query: q }) })
 }

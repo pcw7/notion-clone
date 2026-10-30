@@ -9,6 +9,7 @@
  *   ④ ★ 내보내기 — 그릇은 노드가 아니다(붙인 소스는 원본에서 한 번 나간다) · 본문의 참조는 뺀 참조로 센다
  *   ⑤ ★ 공개 화면 — 소유한 소스가 없는 그릇은 공개 본문에 그리지 않는다(이름도 싣지 않는다)
  *   ⑥ 휴지통 · 되살리기 — 그릇만 간다 · 원본은 그대로
+ *   ⑦ ★ 목록의 이름 거르기(L-2 — 고르개) — 이름의 일부로 찾는다 · 대소문자를 가리지 않는다 · `%` 는 글자다 · 볼 수 없는 것은 없다 · 비면 전처럼
  */
 
 import { test, describe, before, after } from 'node:test'
@@ -21,7 +22,7 @@ import { textRun } from '../contracts/rich-text.ts'
 import { createPage, titleFromPlainText } from '../block/page.ts'
 import { loadPageBody } from '../block/save-page-body.ts'
 import { restorePage, trashPage } from '../block/trash.ts'
-import { createDatabase, createInlineDatabase, getDatabase } from './database.ts'
+import { createDatabase, createInlineDatabase, getDatabase, listDatabases } from './database.ts'
 import { getSchema } from './property.ts'
 import { createRow } from './row.ts'
 import { queryRows } from './query.ts'
@@ -210,5 +211,27 @@ describe('⑥ 휴지통', () => {
     await restorePage(fx.owner.ctx, made.id as never)
     assert.equal(await lifecycle(made.id), 'live')
     assert.deepEqual((await attachedOf(made.id)), [{ data_source_id: source.ds, owned: false }], '부착은 그대로')
+  })
+})
+
+describe('⑦ 목록의 이름 거르기(L-2)', () => {
+  test('★ 이름의 일부 · 대소문자 무시 · % 는 글자 · 볼 수 없는 것은 없다 · 비면 전처럼', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const stamp = `${Date.now()}`
+    const mine = await original(`Roadmap 계획 ${stamp}`)
+    const other1 = await original(`다른 표 ${stamp}`)
+    const percent = await original(`할인 50% ${stamp}`)
+    const secret = await original(`Roadmap 비밀 ${stamp}`)
+    assert.equal((await stopInheriting(fx.owner.ctx, secret.id)).ok, true)
+    assert.equal((await grantAccess(fx.owner.ctx, secret.id, { type: 'user', id: fx.owner.userId }, 'full_access')).ok, true)
+    assert.equal((await revokeAccess(fx.owner.ctx, secret.id, { type: 'workspace_everyone', id: null })).ok, true)
+    const ids = async (actor: Actor, query: unknown) => (await listDatabases(actor.ctx, { query })).map((i) => i.id)
+
+    assert.deepEqual(await ids(other, `roadmap 계획 ${stamp}`), [mine.id], '대소문자를 가리지 않는다')
+    assert.deepEqual((await ids(other, `${stamp}`)).sort(), [mine.id, other1.id, percent.id].sort(), '볼 수 없는 것(비밀)은 없다')
+    assert.deepEqual((await ids(fx.owner, `Roadmap`)).filter((id) => id === mine.id || id === secret.id).sort(), [mine.id, secret.id].sort(), '볼 수 있으면 나온다')
+    assert.deepEqual(await ids(other, `50% ${stamp}`), [percent.id], '% 는 글자다')
+    assert.deepEqual(await ids(other, `%${stamp}`), [], '% 로 시작하는 이름은 없다 — 전부를 고르지 않는다')
+    assert.deepEqual(await ids(other, '   '), await ids(other, undefined), '비면 전처럼')
   })
 })

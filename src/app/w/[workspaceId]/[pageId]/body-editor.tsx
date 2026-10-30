@@ -79,6 +79,8 @@ import { TableControls } from './table-controls'
 import { FormatToolbar, type FormatToolbarAt } from './format-toolbar'
 import { CodeCaptionEditor } from './code-caption-editor'
 import { CodeLanguageMenu } from './code-language-menu'
+import { LinkedDatabasePicker } from './linked-database-picker'
+import type { DatabaseListItem } from '@/lib/database/database'
 import { EquationEditor } from './equation-editor'
 import { ButtonBlockSettings } from './button-block-settings'
 import { EmojiPicker } from './emoji-picker'
@@ -195,6 +197,8 @@ type CodeUiGeometry = { top: number; left: number; width: number; minHeight: num
 
 /** 언어 목록의 폭(`code-language-menu.tsx` 의 w-64). */
 const CODE_MENU_WIDTH = 256
+/** 연결된 데이터베이스의 원본 고르개 폭(L-2 · `w-72`). */
+const LINK_PICKER_WIDTH = 288
 
 /**
  * 이 오버레이를 연 트리거인가 — 같은 블록의 같은 종류(`data-code-ui` · `code-view.ts`). 오버레이의 바깥 누르기는 트리거를 건너뛴다 —
@@ -438,6 +442,8 @@ export function BodyEditor({
   const [commentTarget, setCommentTarget] = useState<CommentTarget | null>(null)
   // 코드 블록의 오버레이(8a-2). ref 는 트랜잭션 콜백(편집기를 만들 때 한 번 묶인다)이 읽는다.
   const [codeUi, setCodeUi] = useState<CodeUi | null>(null)
+  // 연결된 데이터베이스의 원본 고르개(27번 트랙 L-2) — 캐럿이 있던 블록(`at`)과 프레임 좌표
+  const [linkUi, setLinkUi] = useState<{ at: string | null; top: number; left: number } | null>(null)
   const codeUiRef = useRef<CodeUi | null>(null)
   /** 열린 오버레이가 스스로 닫는 길 — 캡션은 쓰던 글자를 저장하고 닫는다. 트리거를 다시 누르면 부른다. */
   const codeUiCloseRef = useRef<((restoreFocus: boolean) => void) | null>(null)
@@ -954,12 +960,16 @@ export function BodyEditor({
    *
    * 인라인 데이터베이스(26번 트랙 I-2)도 같은 흐름이다 — 참조 노드(`database_ref`)를 서버가 그 자리에 넣는다(`createInlineDatabase`).
    */
-  const createRef = useCallback(async (kind: 'page' | 'database') => {
-    const label = kind === 'page' ? '하위 페이지' : '데이터베이스'
+  const createRef = useCallback(async (
+    kind: 'page' | 'database',
+    // 연결된 데이터베이스(L-2) — 고르개를 열 때 잡은 자리(`at`)와 붙일 원본. 없으면 지금 캐럿 · 새 데이터베이스
+    options: { readonly at?: string | null; readonly linkedDataSourceId?: string } = {},
+  ) => {
+    const label = kind === 'page' ? '하위 페이지' : options.linkedDataSourceId === undefined ? '데이터베이스' : '연결된 데이터베이스'
     const view = viewRef.current
     const connection = connectionRef.current
     if (!view || !connection) return
-    const at = containerAt(view.state.selection.$from)?.id ?? null
+    const at = options.at !== undefined ? options.at : (containerAt(view.state.selection.$from)?.id ?? null)
 
     // 메뉴가 열려 있으면 `/쿼리` 를 지운다. 서버 왕복 사이에 더 입력했어도 플러그인 상태가 매핑을 따라온다.
     const tr = view.state.tr
@@ -992,7 +1002,10 @@ export function BodyEditor({
           : await fetch(`/api/workspaces/${workspaceId}/pages/${pageId}/databases`, {
               method: 'POST',
               headers: { 'content-type': 'application/json' },
-              body: JSON.stringify(at === null ? {} : { at }),
+              body: JSON.stringify({
+                ...(at === null ? {} : { at }),
+                ...(options.linkedDataSourceId === undefined ? {} : { linkedDataSourceId: options.linkedDataSourceId }),
+              }),
             })
       const data = await res.json()
       if (!res.ok) {
@@ -1139,6 +1152,49 @@ export function BodyEditor({
     setEquationUi(next)
   }, [])
 
+  // ── 연결된 데이터베이스의 원본 고르개 (27번 트랙 L-2) ────────────────
+
+  /**
+   * `/연결된 데이터베이스` — `/쿼리` 를 지우고 캐럿 아래에 원본 고르개를 연다. 캐럿이 있던 블록(`at`)을 **지금** 잡는다 — 고르는 동안
+   * 포커스가 고르개에 있어도 그 자리에 넣는다(비었으면 대체 · 아니면 바로 뒤 — 하위 페이지와 같다). 닫으면 지운 `/쿼리` 는 돌아오지
+   * 않는다(노션과 같다).
+   */
+  const openLinkPicker = useCallback(() => {
+    const view = viewRef.current
+    const frame = frameRef.current
+    if (!view || !frame) return
+    const at = containerAt(view.state.selection.$from)?.id ?? null
+    const tr = view.state.tr
+    const state = slashMenuState(view.state)
+    if (state.active && view.state.selection.head > state.from) tr.delete(state.from, view.state.selection.head)
+    view.dispatch(closeMentionMenu(closeSlashMenu(tr)))
+    const caret = view.coordsAtPos(view.state.selection.head)
+    const box = frame.getBoundingClientRect()
+    setLinkUi({ at, top: caret.bottom - box.top + 4, left: Math.max(0, Math.min(caret.left - box.left, box.width - LINK_PICKER_WIDTH)) })
+  }, [])
+
+  /** 고르개를 닫는다 — Esc · Tab 이거나 편집기 안을 눌러 닫았으면 편집기로 포커스를 돌려준다(언어 목록과 같다). */
+  const closeLinkPicker = useCallback((restoreFocus: boolean, outside?: EventTarget | null) => {
+    setLinkUi(null)
+    const view = viewRef.current
+    if (view && (restoreFocus || (outside instanceof Node && view.dom.contains(outside)))) view.focus()
+  }, [])
+
+  /** 후보 — 볼 수 있는 데이터베이스의 소스(이름으로 서버가 거른다 · 목록에는 상한이 있다). 못 읽으면 null. */
+  const loadLinkCandidates = useCallback(
+    async (query: string): Promise<DatabaseListItem[] | null> => {
+      try {
+        const q = query.trim()
+        const res = await fetch(`/api/workspaces/${workspaceId}/databases${q === '' ? '' : `?q=${encodeURIComponent(q)}`}`)
+        if (!res.ok) return null
+        return ((await res.json()).databases ?? []) as DatabaseListItem[]
+      } catch {
+        return null
+      }
+    },
+    [workspaceId],
+  )
+
   const execute = useCallback(
     (command: SlashCommand) => {
       const view = viewRef.current
@@ -1146,6 +1202,11 @@ export function BodyEditor({
 
       if (command.kind === 'page' || command.kind === 'database') {
         void createRef(command.kind)
+        return
+      }
+      // 연결된 데이터베이스(L-2) — 원본을 먼저 고른다
+      if (command.kind === 'linked_database') {
+        openLinkPicker()
         return
       }
       // 컬럼(Phase 2 1c) — 지금 블록을 첫 컬럼으로. 컬럼 안이면 아무것도 하지 않는다(중첩 금지).
@@ -1178,7 +1239,7 @@ export function BodyEditor({
       if (ran && target !== null && command.id === EQUATION_TYPE) openEquationUi(target)
       if (ran && target !== null && command.id === BUTTON_TYPE) setButtonUi({ blockId: target, label: '' })
     },
-    [createRef, openEquationUi],
+    [createRef, openEquationUi, openLinkPicker],
   )
 
   // ── 코드 블록의 오버레이 (8a-2) ─────────────────────────────────────
@@ -1790,6 +1851,21 @@ export function BodyEditor({
               insertInlineEquationCommand(openInlineEquationUi)(view.state, view.dispatch.bind(view))
               view.focus()
             }}
+          />
+        )}
+
+        {/* 연결된 데이터베이스의 원본 고르개(27번 트랙 L-2) — 편집기 밖 · 프레임 좌표. 고르면 서버가 원본을 다시 묻고 그 자리에 넣는다 */}
+        {editable && linkUi !== null && (
+          <LinkedDatabasePicker
+            top={linkUi.top}
+            left={linkUi.left}
+            load={loadLinkCandidates}
+            onPick={(item) => {
+              const at = linkUi.at
+              closeLinkPicker(true)
+              void createRef('database', { at, linkedDataSourceId: item.dataSourceId })
+            }}
+            onClose={closeLinkPicker}
           />
         )}
 

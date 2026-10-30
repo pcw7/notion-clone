@@ -81,6 +81,15 @@ export type DatabaseSlashCommand = SlashCommandBase & {
 }
 
 /**
+ * 본문 안의 연결된 데이터베이스(27번 트랙 L-2 · F-04-13 — 노션의 `/linked`) — 원본을 고른 뒤 서버가 붙인 소스만 가진 그릇을 만들고 참조를 넣는다
+ * (`createInlineDatabase` 의 `linkedDataSourceId`). 호출자가 고르개를 열고 비동기로 다룬다.
+ */
+export type LinkedDatabaseSlashCommand = SlashCommandBase & {
+  readonly kind: 'linked_database'
+  readonly id: 'linked_database'
+}
+
+/**
  * 컬럼 만들기(Phase 2 1c · F-01-12) — 블록 타입이 아니다. 컬럼의 틀은 `/` 로 하나씩 만들지 않고 N열째로 만든다(`columns.ts`).
  */
 export type ColumnsSlashCommand = SlashCommandBase & {
@@ -102,6 +111,7 @@ export type SlashCommand =
   | BlockSlashCommand
   | PageSlashCommand
   | DatabaseSlashCommand
+  | LinkedDatabaseSlashCommand
   | ColumnsSlashCommand
   | TableSlashCommand
   | ColorSlashCommand
@@ -170,6 +180,15 @@ const DATABASE_COMMAND: DatabaseSlashCommand = {
   group: '페이지',
 }
 
+/** 연결된 데이터베이스(L-2) — 다른 데이터베이스를 본문에서 본다. "연결" · "linked" 로 찾는다. */
+const LINKED_DATABASE_COMMAND: LinkedDatabaseSlashCommand = {
+  kind: 'linked_database',
+  id: 'linked_database',
+  label: '연결된 데이터베이스',
+  aliases: ['연결된 데이터베이스', '연결된 뷰', '연결', 'linked', 'linked database', 'linked view'],
+  group: '페이지',
+}
+
 /** 컬럼(Phase 2 1c) — 노션의 Layout 자리. "열" · "컬럼"으로 둘 다 찾는다. */
 const COLUMN_COMMANDS: readonly ColumnsSlashCommand[] = [
   { kind: 'columns', id: 'columns_2', count: 2, label: '2열', aliases: ['2열', '2단', '2 columns', '2columns', '컬럼', 'columns', '열'], group: '고급 블록' },
@@ -202,6 +221,7 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
   ...BLOCK_COMMANDS.filter((c) => c.group === '기본 블록'),
   PAGE_COMMAND,
   DATABASE_COMMAND,
+  LINKED_DATABASE_COMMAND,
   ...BLOCK_COMMANDS.filter((c) => c.group === '미디어'),
   ...BLOCK_COMMANDS.filter((c) => c.group === '고급 블록'),
   TABLE_COMMAND,

@@ -26076,6 +26076,72 @@ async function main() {
         await evaluate('location.pathname'))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('본문 안의 연결된 데이터베이스 — 편집기 (L-2 · F-04-13)')) { try {
+      // 빈 줄에서 `/연결` → 원본 고르개 → 이름으로 찾아 Enter → 그 자리에 붙인 소스만 가진 그릇(이름 줄은 원본의 이름 · 미리보기는 원본의
+      // 행) · Esc 는 만들지 않고 닫는다. 정본 §3.5 [보강 L-1] ⑤. 자기 데이터를 스스로 만든다.
+      const stamp = Date.now()
+      const apiK = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const sourceName = `고를 원본 ${stamp}`
+      const source = (await apiK('POST', '/databases', { name: sourceName })).body.database
+      const titleProp = (await apiK('GET', `/views/${source.defaultViewId}`)).body.view.columns.find((col) => col.type === 'title').propertyId
+      const row = (await apiK('POST', `/views/${source.defaultViewId}/rows`, { cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun('원본의 행')] } }] })).body.row.id
+      const host = (await apiK('POST', '/pages', { title: `연결 편집 ${stamp}` })).body.page.id
+      const front = randomUUID()
+      const line = randomUUID()
+      await saveBody(host, { blocks: [
+        { id: front, type: 'paragraph', title: [textRun('앞 글')], properties: {}, format: {}, children: [] },
+        { id: line, type: 'paragraph', title: [], properties: {}, format: {}, children: [] },
+      ] })
+      const PICKER = '[data-testid="linked-database-picker"]'
+      const focusLine = async () => {
+        let focused = false
+        for (let i = 0; i < 20 && !focused; i += 1) {
+          await clickSelector(`[data-block-id="${line}"] p`)
+          focused = await waitFor(`document.activeElement?.classList.contains('ProseMirror') && document.querySelector('[data-block-id="${line}"]')?.contains(window.getSelection()?.anchorNode ?? null)`, 500)
+        }
+        return focused
+      }
+      const openPicker = async () => {
+        await typeText('/')
+        await typeText('연결')
+        await waitFor(`[...document.querySelectorAll('[role="listbox"][aria-label="블록 삽입"] [role="option"]')].some((o) => (o.textContent ?? '').includes('연결된 데이터베이스'))`, 3000)
+        await key('Enter')
+        return waitFor(`!!document.querySelector('${PICKER}') && document.activeElement?.dataset.testid === 'linked-database-search'`, 5000)
+      }
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${host}` })
+      await waitFor(`!!document.querySelector('[data-block-id="${line}"] p')`, 15000)
+      check('전제 — 빈 줄에 캐럿이 섰다', await focusLine())
+
+      check('★ /연결 → 원본 고르개가 열리고 검색칸이 포커스를 갖는다', await openPicker())
+      await key('Escape')
+      const closed = await waitFor(`!document.querySelector('${PICKER}')`, 3000)
+      await sleep(400)
+      check('Esc 는 만들지 않고 닫는다', closed && !(await evaluate(`!!document.querySelector('.blk-editor .blk-database-ref')`)))
+
+      await focusLine()
+      await openPicker()
+      await typeText(sourceName)
+      const found = await waitFor(`(() => { const o = [...document.querySelectorAll('${PICKER} [data-testid="linked-database-option"]')]
+        return o.length === 1 && o[0].dataset.dataSourceId === ${JSON.stringify(source.dataSourceId)} })()`, 8000)
+      check('★ 이름으로 찾는다 — 서버가 거른 그 원본 하나', found,
+        await evaluate(`JSON.stringify([...document.querySelectorAll('${PICKER} [data-testid="linked-database-option"]')].map((o) => o.textContent))`))
+      await key('Enter')
+      const LINK = '.blk-editor .blk-database-ref .blk-database-link'
+      const placed = await waitFor(`!document.querySelector('${PICKER}') && (document.querySelector('${LINK}')?.textContent ?? '').includes(${JSON.stringify(sourceName)})
+        && [...document.querySelectorAll('.blk-editor .blk-database-preview tbody tr')].some((tr) => tr.dataset.rowId === ${JSON.stringify(row)})`, 15000)
+      const order = await evaluate(`[...document.querySelectorAll('.blk-editor [data-block-id]')].filter((e) => e.parentElement?.closest('[data-block-id]') === null).map((e) => e.querySelector('.blk-database-ref') ? 'db' : (e.textContent ?? '').trim()).join('|')`)
+      check('★ 고르면 그 자리에 연결된 데이터베이스 — 이름 줄은 원본의 이름 · 미리보기는 원본의 행', placed && order === '앞 글|db', JSON.stringify({ placed, order }))
+
+      const body = await readBody(host)
+      const dbBlock = body.doc.blocks.find((b) => b.type === 'database')
+      const sources = dbBlock === undefined ? null : (await apiK('GET', `/databases/${dbBlock.id}/data-sources`)).body?.dataSources
+      check('서버에도 — 그 그릇은 소유한 소스 없이 원본의 소스 하나', Array.isArray(sources) && sources.length === 1 && sources[0].id === source.dataSourceId && sources[0].owned === false,
+        JSON.stringify(sources))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).
