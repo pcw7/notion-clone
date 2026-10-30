@@ -82,6 +82,8 @@ export function DataSourcePanel(props: {
   /** 연결 고르개의 후보 — null 이면 닫혀 있다(2l-3). */
   const [candidates, setCandidates] = useState<DatabaseListItem[] | null>(null)
   const [target, setTarget] = useState('')
+  /** 연결 고르개의 검색어(31번 트랙 N-1) — 서버가 이름으로 거른다(목록의 상한 밖도 찾는다). */
+  const [linkQuery, setLinkQuery] = useState('')
   const boxRef = useRef<HTMLDivElement>(null)
   const single = sources.length === 1
 
@@ -145,17 +147,41 @@ export function DataSourcePanel(props: {
     setAsking(null)
     setDetaching(null)
     setBusy(true)
+    setLinkQuery('')
     const listed = await api.listDatabases(workspaceId)
     setBusy(false)
     if (!listed.ok) {
       setError(listed.message)
       return
     }
-    const attached = new Set(sources.map((s) => s.id))
-    const choices = listed.value.filter((item) => item.id !== databaseId && !attached.has(item.dataSourceId))
-    setCandidates(choices)
-    setTarget(choices[0]?.dataSourceId ?? '')
+    applyCandidates(listed.value)
   }
+
+  /** 후보를 정한다 — 이 데이터베이스의 것 · 이미 붙은 것을 뺀다. 고른 것이 사라졌으면 첫째로. */
+  const applyCandidates = (listed: readonly DatabaseListItem[]) => {
+    const attached = new Set(sources.map((s) => s.id))
+    const choices = listed.filter((item) => item.id !== databaseId && !attached.has(item.dataSourceId))
+    setCandidates(choices)
+    setTarget((current) => (choices.some((c) => c.dataSourceId === current) ? current : (choices[0]?.dataSourceId ?? '')))
+  }
+
+  // 검색어가 바뀌면 잠시 뒤 서버에 묻는다(글자마다 묻지 않는다 · 늦게 온 앞의 답은 버린다) — 고르개가 열려 있을 때만
+  const linkOpen = candidates !== null
+  useEffect(() => {
+    if (!linkOpen) return
+    let alive = true
+    const timer = window.setTimeout(() => {
+      void api.listDatabases(workspaceId, linkQuery).then((listed) => {
+        if (alive && listed.ok) applyCandidates(listed.value)
+      })
+    }, 200)
+    return () => {
+      alive = false
+      window.clearTimeout(timer)
+    }
+    // 후보를 정하는 함수는 소스 목록으로만 달라진다 — 검색어 · 열림만 본다
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [linkQuery, linkOpen, workspaceId])
 
   const link = async () => {
     if (target === '') return
@@ -353,6 +379,8 @@ export function DataSourcePanel(props: {
               candidates={candidates}
               target={target}
               busy={busy}
+              query={linkQuery}
+              onQuery={setLinkQuery}
               onTarget={setTarget}
               onConfirm={() => void link()}
               onCancel={() => setCandidates(null)}
@@ -520,6 +548,8 @@ function LinkPicker({
   candidates,
   target,
   busy,
+  query,
+  onQuery,
   onTarget,
   onConfirm,
   onCancel,
@@ -527,6 +557,9 @@ function LinkPicker({
   candidates: readonly DatabaseListItem[]
   target: string
   busy: boolean
+  /** 검색어(N-1) — 서버가 이름으로 거른다. */
+  query: string
+  onQuery: (query: string) => void
   onTarget: (dataSourceId: string) => void
   onConfirm: () => void
   onCancel: () => void
@@ -538,8 +571,18 @@ function LinkPicker({
       data-testid="db-source-link-picker"
       className="mt-1 rounded border border-neutral-200 p-2 text-xs text-neutral-600 dark:border-neutral-800 dark:text-neutral-300"
     >
+      {/* 검색(N-1) — 목록에는 상한이 있다 · 서버가 이름으로 거른다 */}
+      <input
+        type="search"
+        aria-label="연결할 데이터베이스 검색"
+        data-testid="db-source-link-search"
+        value={query}
+        onChange={(e) => onQuery(e.target.value)}
+        placeholder="데이터베이스 이름으로 찾기"
+        className="mb-2 w-full rounded border border-neutral-200 bg-white px-1 py-1 text-sm dark:border-neutral-800 dark:bg-neutral-950"
+      />
       {candidates.length === 0 ? (
-        <p data-testid="db-source-link-empty">연결할 수 있는 데이터베이스가 없습니다.</p>
+        <p data-testid="db-source-link-empty">{query.trim() === '' ? '연결할 수 있는 데이터베이스가 없습니다.' : '맞는 데이터베이스가 없습니다.'}</p>
       ) : (
         <>
           <p>다른 데이터베이스의 소스를 이 데이터베이스에 붙입니다. 항목과 속성은 원본의 것이고, 뷰는 이 데이터베이스의 것입니다.</p>

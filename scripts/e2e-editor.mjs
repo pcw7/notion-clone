@@ -26316,6 +26316,51 @@ async function main() {
       check('원본 페이지의 데이터베이스는 그대로', original.doc.blocks.some((b) => b.type === 'database' && b.id === db.id), JSON.stringify(original.doc.blocks.map((b) => b.type)))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('연결 고르개의 검색 (N-1 · F-04-13)')) { try {
+      // 데이터 소스 패널의 "다른 데이터베이스 연결" — 검색칸에 이름을 치면 서버가 거른 그 원본 하나 · 맞지 않으면 "맞는 데이터베이스가 없습니다" ·
+      // 고른 것을 연결한다. 정본 §3.6 [보강] 다중 data source ⑪ · HANDOFF §7 "고르개에 검색이 없다". 자기 데이터를 스스로 만든다(API).
+      const stamp = Date.now()
+      const apiN = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const originalName = `찾을원본${stamp}`
+      const original = (await apiN('POST', '/databases', { name: originalName })).body.database
+      const container = (await apiN('POST', '/databases', { name: `찾는그릇${stamp}` })).body.database
+      // 미끼 — 검색이 없으면 후보가 둘 이상이다(홀로 돌릴 때도 '하나' 가 검색을 가려내게)
+      await apiN('POST', '/databases', { name: `다른미끼${stamp}` })
+      const PANEL = '[data-testid="db-sources-panel"]'
+      const SEARCH = '[data-testid="db-source-link-search"]'
+      const options = `[...document.querySelectorAll('[data-testid="db-source-link-select"] option')].map((o) => o.value)`
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${container.id}` })
+      await waitFor(`!!document.querySelector('[data-testid="db-sources-button"]')`, 15000)
+      for (let i = 0; i < 5 && !(await evaluate(`!!document.querySelector('${PANEL}')`)); i += 1) {
+        await clickSelector('[data-testid="db-sources-button"]')
+        await waitFor(`!!document.querySelector('${PANEL}')`, 1500)
+      }
+      await clickSelector('[data-testid="db-source-link"]')
+      check('전제 — 연결 고르개에 검색칸이 선다', await waitFor(`!!document.querySelector('${SEARCH}')`, 5000))
+
+      await clickSelector(SEARCH)
+      await typeText(originalName)
+      const found = await waitFor(`(() => { const v = ${options}; return v.length === 1 && v[0] === ${JSON.stringify(original.dataSourceId)} })()`, 8000)
+      check('★ 이름을 치면 서버가 거른 그 원본 하나', found, JSON.stringify(await evaluate(options)))
+      await typeText('없는글자')
+      check('맞지 않으면 "맞는 데이터베이스가 없습니다"', await waitFor(`(document.querySelector('[data-testid="db-source-link-empty"]')?.textContent ?? '').includes('맞는 데이터베이스가 없습니다')`, 8000))
+      for (let i = 0; i < '없는글자'.length; i += 1) await key('Backspace')
+      await waitFor(`(() => { const v = ${options}; return v.length === 1 && v[0] === ${JSON.stringify(original.dataSourceId)} })()`, 8000)
+      await clickSelector('[data-testid="db-source-link-confirm"]')
+      const linked = await (async () => {
+        for (let i = 0; i < 60; i += 1) {
+          const views = (await apiN('GET', `/databases/${container.id}/views`)).body?.views ?? []
+          if (views.some((v) => v.dataSourceId === original.dataSourceId)) return true
+          await sleep(250)
+        }
+        return false
+      })()
+      check('★ 찾은 원본을 연결한다', linked)
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

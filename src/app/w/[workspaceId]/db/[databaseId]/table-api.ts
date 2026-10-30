@@ -549,8 +549,10 @@ export function createLinkedRow(
 }
 
 /** 볼 수 있는 데이터베이스 — relation 의 대상을 고를 때. */
-export function listDatabases(workspaceId: string): Promise<ApiResult<DatabaseListItem[]>> {
-  return call(`${base(workspaceId)}/databases`, { method: 'GET' }, (body) => (body.databases ?? []) as DatabaseListItem[])
+export function listDatabases(workspaceId: string, query = ''): Promise<ApiResult<DatabaseListItem[]>> {
+  // 이름으로 거르기(L-2 · N-1) — 목록에는 상한이 있어 데이터베이스가 많으면 찾는 것이 목록 밖에 있다
+  const q = query.trim()
+  return call(`${base(workspaceId)}/databases${q === '' ? '' : `?q=${encodeURIComponent(q)}`}`, { method: 'GET' }, (body) => (body.databases ?? []) as DatabaseListItem[])
 }
 
 export type AddRelationInput = {
