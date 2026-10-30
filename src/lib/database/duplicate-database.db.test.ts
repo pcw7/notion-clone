@@ -11,6 +11,8 @@
  *   ⑤ 폼은 닫힌 채 — 공개 주소는 사본의 것이 아니다 · 질문은 사본의 속성
  *   ⑥ 붙인 소스 — 부착과 그 뷰가 함께 · 원본의 소스는 그대로(새 소스를 만들지 않는다)
  *   ⑦ 개인 최상위의 사본은 복제한 사람의 개인 최상위
+ *   ⑧ ★ 내용과 함께(D-2) — 살아 있는 행만(템플릿 · 휴지통은 빼고) · 칸은 사본의 속성 · 옵션 · 같은 표의 relation 은 사본 행끼리 두 방향 ·
+ *      바깥 relation 은 한쪽으로 원본의 바깥 행을 · 바깥 표에 거울상을 만들지 않는다 · 수동 순서 · 고유 ID 번호 · 이름 색인 · 원본은 그대로
  */
 
 import { test, describe, before, after } from 'node:test'
@@ -21,13 +23,17 @@ import { probeDatabase, makeFixture, createUser, joinAs, type Actor, type Fixtur
 import { query } from '../db/pool.ts'
 import { grantAccess, revokeAccess, stopInheriting } from '../permissions/acl.ts'
 import { createPage, titleFromPlainText } from '../block/page.ts'
+import { textRun } from '../contracts/rich-text.ts'
 import { loadPageBody } from '../block/save-page-body.ts'
 import { createDatabase, createInlineDatabase, getDatabase } from './database.ts'
 import { addProperty, addSelectOption, getSchema } from './property.ts'
 import { addFormulaProperty } from './formula-property.ts'
 import { addRelationProperty } from './relation.ts'
 import { addRollupProperty } from './rollup.ts'
-import { createRow } from './row.ts'
+import { createRow, trashRow } from './row.ts'
+import { linkRows } from './relation.ts'
+import { createTemplate } from './template.ts'
+import { moveViewRow } from './row-order.ts'
 import { queryRows } from './query.ts'
 import { getView, listViews, updateView } from './view.ts'
 import { createFormView } from './form.ts'
@@ -242,5 +248,72 @@ describe('⑦ 개인 최상위', () => {
     const copied = await copy(fx.owner, made.id)
     const row = (await query<{ parent_type: string; owner_user_id: string | null }>(`SELECT parent_type, owner_user_id FROM block WHERE id = $1`, [copied.id]))[0]
     assert.deepEqual(row, { parent_type: 'workspace', owner_user_id: fx.owner.userId })
+  })
+})
+
+describe('⑧ 내용과 함께(D-2)', () => {
+  test('★ 행 · 칸 · 같은 표 relation(두 방향) · 바깥 relation(한쪽) · 순서 · 고유 ID · 색인', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const outside = unwrap(await createDatabase(fx.owner.ctx, { name: unique('바깥 표') }))
+    const outsideTitle = unwrap(await getSchema(fx.owner.ctx, outside.dataSourceId)).properties.find((p) => p.type === 'title')!.id
+    const far = unwrap(await createRow(fx.owner.ctx, outside.dataSourceId, { cells: [{ propertyId: outsideTitle, value: { type: 'title', title: [textRun('바깥 행')] } }] })).id
+
+    const made = unwrap(await createDatabase(fx.owner.ctx, { name: unique('내용 표') }))
+    const ds = made.dataSourceId
+    unwrap(await addProperty(fx.owner.ctx, ds, { name: '숫자', type: 'number' }))
+    unwrap(await addProperty(fx.owner.ctx, ds, { name: '단계', type: 'select' }))
+    unwrap(await addProperty(fx.owner.ctx, ds, { name: '번호', type: 'unique_id' }))
+    const schema = unwrap(await getSchema(fx.owner.ctx, ds))
+    const titleId = schema.properties.find((p) => p.type === 'title')!.id
+    const numberId = schema.properties.find((p) => p.name === '숫자')!.id
+    const stageId = schema.properties.find((p) => p.name === '단계')!.id
+    const doing = unwrap(await addSelectOption(fx.owner.ctx, ds, stageId, { name: '진행 중' })).option.id
+    const inner = unwrap(await addRelationProperty(fx.owner.ctx, ds, { name: '관련', targetDataSourceId: ds, twoWay: { name: '역관련' } }))
+    const outer = unwrap(await addRelationProperty(fx.owner.ctx, ds, { name: '바깥', targetDataSourceId: outside.dataSourceId, twoWay: { name: '안쪽' } }))
+    const titled = (text: string) => ({ propertyId: titleId, value: { type: 'title', title: [textRun(text)] } })
+    const a = unwrap(await createRow(fx.owner.ctx, ds, { cells: [titled('가'), { propertyId: numberId, value: { type: 'number', number: 3 } },
+      { propertyId: stageId, value: { type: 'select', select: { id: doing } } }] })).id
+    const b = unwrap(await createRow(fx.owner.ctx, ds, { cells: [titled('나')] })).id
+    const gone = unwrap(await createRow(fx.owner.ctx, ds, { cells: [titled('버린 행')] })).id
+    unwrap(await linkRows(fx.owner.ctx, a, inner.propertyId, { add: [b] }))
+    unwrap(await linkRows(fx.owner.ctx, a, outer.propertyId, { add: [far] }))
+    unwrap(await linkRows(fx.owner.ctx, a, inner.propertyId, { add: [gone] }))
+    unwrap(await trashRow(fx.owner.ctx, gone))
+    unwrap(await createTemplate(fx.owner.ctx, ds, { title: '양식' }))
+    unwrap(await moveViewRow(fx.owner.ctx, made.defaultViewId, { rowId: b, beforeRowId: a }))
+    const originalCounter = (await query<{ n: number }>(`SELECT unique_id_counter AS n FROM data_source WHERE id = $1`, [ds]))[0]!.n
+
+    const copied = unwrap(await duplicateDatabase(fx.owner.ctx, made.id, { content: true }))
+    assert.equal(copied.rows, 2, '살아 있는 행 둘 — 템플릿 · 휴지통은 빼고')
+    const copyDs = await sourceOf(copied.id)
+    const byName = new Map((await propsOf(copyDs)).map((p) => [p.name, p.id]))
+    const view = unwrap(await listViews(fx.owner.ctx, copied.id))[0]!
+    const rows = unwrap(await queryRows(fx.owner.ctx, copyDs, { manualOrderViewId: view.id })).rows
+    assert.deepEqual(rows.map((r) => r.title), ['나', '가'], '수동 순서 그대로')
+    assert.ok(rows.every((r) => r.id !== a && r.id !== b), '새 id')
+    const copyA = rows.find((r) => r.title === '가')!
+    const copyB = rows.find((r) => r.title === '나')!
+    assert.deepEqual(copyA.properties[byName.get('숫자')!], { type: 'number', number: 3 })
+    const copyOption = (await query<{ id: string }>(`SELECT id FROM select_option WHERE property_id = $1`, [byName.get('단계')!]))[0]!.id
+    assert.deepEqual(copyA.properties[byName.get('단계')!], { type: 'select', select: { id: copyOption } }, '선택 칸은 사본의 옵션')
+
+    const edgesOf = async (property: string) =>
+      (await query<{ from_page_id: string; to_page_id: string }>(`SELECT from_page_id, to_page_id FROM relation_edge WHERE property_id = $1`, [property]))
+    assert.deepEqual(await edgesOf(byName.get('관련')!), [{ from_page_id: copyA.id, to_page_id: copyB.id }], '같은 표 — 사본 행끼리 · 휴지통 행으로의 엣지는 뺀다')
+    assert.deepEqual(await edgesOf(byName.get('역관련')!), [{ from_page_id: copyB.id, to_page_id: copyA.id }], '거울상도')
+    assert.deepEqual(await edgesOf(byName.get('바깥')!), [{ from_page_id: copyA.id, to_page_id: far }], '바깥 — 한쪽으로 원본의 바깥 행을')
+    const farEdges = await query<{ to_page_id: string }>(`SELECT to_page_id FROM relation_edge WHERE property_id = $1`, [outer.syncedPropertyId])
+    assert.deepEqual(farEdges.map((e) => e.to_page_id), [a], '바깥 표의 짝은 원본만 — 사본의 거울상을 만들지 않는다')
+
+    const seqs = await query<{ title: string; unique_seq: string }>(
+      `SELECT b.properties -> 'title' -> 0 ->> 'plain_text' AS title, p.unique_seq FROM page p JOIN block b ON b.id = p.id WHERE p.data_source_id = $1 ORDER BY 1`, [copyDs])
+    const originalSeqs = await query<{ title: string; unique_seq: string }>(
+      `SELECT b.properties -> 'title' -> 0 ->> 'plain_text' AS title, p.unique_seq FROM page p JOIN block b ON b.id = p.id
+        WHERE p.data_source_id = $1 AND b.lifecycle = 'live' AND NOT p.is_template ORDER BY 1`, [ds])
+    assert.deepEqual(seqs, originalSeqs, '고유 ID 번호 그대로')
+    assert.equal((await query<{ n: number }>(`SELECT unique_id_counter AS n FROM data_source WHERE id = $1`, [copyDs]))[0]!.n, originalCounter, '다음 번호도')
+    const indexed = await query<{ title_text: string }>(`SELECT title_text FROM search_document WHERE doc_id = $1`, [copyA.id])
+    assert.equal(indexed[0]?.title_text, '가', '이름 색인')
+    assert.equal(unwrap(await queryRows(fx.owner.ctx, ds)).rows.length, 2, '원본은 그대로')
   })
 })

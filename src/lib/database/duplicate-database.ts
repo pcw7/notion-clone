@@ -35,7 +35,10 @@ import { toPlainText, type RichTextRun } from '../contracts/rich-text.ts'
 import { newPropertyId } from './property.ts'
 import { remapIds, remapRelationConfig, type IdMap } from './duplicate-database-remap.ts'
 
-export type DuplicateDatabaseFailure = 'not_found' | 'too_deep'
+export type DuplicateDatabaseFailure = 'not_found' | 'too_deep' | 'too_large'
+
+/** 내용과 함께 복제할 수 있는 행 수 — v1 은 동기 복제다(페이지 복제와 같은 까닭 · 08 *"동기 복제 + 상한 · 초과 시 비동기 큐"* — 큐는 아직 없다). */
+export const MAX_DUPLICATE_DATABASE_ROWS = 1000
 
 export type DuplicateDatabaseResult =
   | {
@@ -47,19 +50,23 @@ export type DuplicateDatabaseResult =
         readonly defaultViewId: string | null
         /** 바깥 표를 가리켜 한쪽으로 바꾼 relation 수 — 화면이 "일부 관계는 한쪽으로 복제했습니다" 를 말할 수 있게. */
         readonly oneWayRelations: number
+        /** 함께 복제한 행 수(내용 없이면 0). */
+        readonly rows: number
       }
     }
   | { readonly ok: false; readonly reason: DuplicateDatabaseFailure }
 
 type Row = Record<string, unknown>
 
-/** 데이터베이스를 내용 없이 복제한다(정본 [보강 D-1]). */
+/**
+ * 데이터베이스를 복제한다 — 내용 없이(정본 [보강 D-1]) · 내용과 함께(`content` — 행 · 칸 · relation 엣지 · 수동 순서 · 고유 ID 번호 ·
+ * [보강 D-2]). 행의 본문 · 템플릿은 D-3 이 더한다.
+ */
 export async function duplicateDatabase(
   ctx: SessionContext,
   databaseId: string,
-  options: { readonly content: false },
+  options: { readonly content: boolean },
 ): Promise<DuplicateDatabaseResult> {
-  void options
   if (!isUuid(databaseId)) return { ok: false, reason: 'not_found' }
   return withCommandTransaction(async (tx) => {
     const source = await tx.queryMaybe<{
@@ -75,6 +82,15 @@ export async function duplicateDatabase(
     )
     // 구조를 읽는다 — "만들기만" 으로는 복제하지 않는다(모든 행 · 속성을 볼 수 있어야 한다)
     if (source === null || !can(await effectiveCaps(tx, ctx, databaseId), 'view')) return { ok: false, reason: 'not_found' } as const
+    // 행 수의 상한 — **아무것도 쓰기 전에** 본다(반쯤 복제하고 멈추지 않는다)
+    if (options.content) {
+      const counted = await tx.queryOne<{ n: string }>(
+        `SELECT count(*) AS n FROM block b JOIN page p ON p.id = b.id JOIN data_source ds ON ds.id = b.parent_id
+          WHERE ds.owner_database_id = $1 AND ds.lifecycle = 'live' AND b.parent_type = 'data_source' AND b.lifecycle = 'live' AND NOT p.is_template`,
+        [databaseId],
+      )
+      if (Number(counted.n) > MAX_DUPLICATE_DATABASE_ROWS) return { ok: false, reason: 'too_large' } as const
+    }
     const title = duplicateTitle(readTitle(source.properties))
     const name = toPlainText(title)
     const id = randomUUID()
@@ -129,7 +145,7 @@ export async function duplicateDatabase(
       `SELECT to_jsonb(p) AS row FROM property p WHERE p.data_source_id = ANY($1::uuid[]) AND p.deleted_at IS NULL ORDER BY p.order_idx, p.id`, [sourceIds])
     const propertyIds = properties.map((p) => String(p.id))
     const statusGroups = await readRows(tx, `SELECT to_jsonb(g) AS row FROM status_group g WHERE g.property_id = ANY($1::text[])`, [propertyIds])
-    const options = await readRows(tx, `SELECT to_jsonb(o) AS row FROM select_option o WHERE o.property_id = ANY($1::text[]) ORDER BY o.order_idx, o.id`, [propertyIds])
+    const selectOptions = await readRows(tx, `SELECT to_jsonb(o) AS row FROM select_option o WHERE o.property_id = ANY($1::text[]) ORDER BY o.order_idx, o.id`, [propertyIds])
     const dependencies = await readRows(tx,
       `SELECT to_jsonb(d) AS row FROM property_dependency d WHERE d.dependent_property_id = ANY($1::text[])`, [propertyIds])
     // 뷰 — 데이터베이스의 탭(살아 있는 소유 소스 · 붙인 소스의 것) · 행 페이지 레이아웃의 탭이 쓰는 뷰
@@ -157,7 +173,7 @@ export async function duplicateDatabase(
     const ids = new Map<string, string>([[databaseId, id]])
     for (const s of sources) ids.set(String(s.id), randomUUID())
     for (const p of properties) ids.set(String(p.id), newPropertyId())
-    for (const rows of [statusGroups, options, views, tabs, modules, rules, buttons, actions]) for (const r of rows) ids.set(String(r.id ?? r.view_id), randomUUID())
+    for (const rows of [statusGroups, selectOptions, views, tabs, modules, rules, buttons, actions]) for (const r of rows) ids.set(String(r.id ?? r.view_id), randomUUID())
     const now = new Date().toISOString()
     const fresh = (row: Row, extra: Row = {}): Row => ({ ...remapIds(row, ids), ...stamped(row, now), ...extra })
 
@@ -175,7 +191,7 @@ export async function duplicateDatabase(
       return fresh(p, { config })
     }))
     await insertRows(tx, 'status_group', statusGroups.map((g) => remapIds(g, ids)))
-    await insertRows(tx, 'select_option', options.map((o) => remapIds(o, ids)))
+    await insertRows(tx, 'select_option', selectOptions.map((o) => remapIds(o, ids)))
     await insertRows(tx, 'property_dependency', dependencies.map((d) => remapIds(d, ids)))
     // 뷰 — 대시보드 뷰를 가리키는 칸은 뷰를 다 넣은 뒤 · 템플릿은 아직 없다(행이 없다 — D-3)
     await insertRows(tx, 'view', views.map((v) => fresh(v, { dashboard_view_id: null, default_template_page_id: null, owner_user_id: null })))
@@ -197,6 +213,8 @@ export async function duplicateDatabase(
     await insertRows(tx, 'automation', buttons.map((b) => fresh(b, { created_by: ctx.userId })))
     await insertRows(tx, 'automation_action', actions.map((x) => remapIds(x, ids)))
 
+    const rows = options.content ? await copyRows(tx, ctx, { databaseId, copyId: id, sources, properties, viewIds, ids, now }) : 0
+
     if (inlineBody !== null) {
       inlineBody.change(insertPageRefAfter(id, null, databaseId, 'database'))
       const result = await inlineBody.finish()
@@ -207,9 +225,87 @@ export async function duplicateDatabase(
     const first = views.find((v) => v.owner_kind === 'database_view')
     return {
       ok: true,
-      value: { id, name, defaultViewId: first === undefined ? null : (ids.get(String(first.id)) ?? null), oneWayRelations: oneWay },
+      value: { id, name, defaultViewId: first === undefined ? null : (ids.get(String(first.id)) ?? null), oneWayRelations: oneWay, rows },
     } as const
   })
+}
+
+/**
+ * 행을 복제한다(정본 [보강 D-2]) — 살아 있고 템플릿이 아닌 행을 새 id 로. 지도에 행 id 를 더해 칸 · 엣지 · 순서가 사본의 행을 가리키게 한다.
+ *
+ *   - **블록** — 사본 소스 밑 · 순서 키 그대로 · 경로와 권한 스코프는 사본 데이터베이스의 것(행에 따로 준 부여는 따라가지 않는다 — 스코프를
+ *     행 자신으로 두면 ACL 이 없는 루트가 되어 아무도 못 본다) · 신고 처리 상태는 새 행의 기본값(사본은 신고된 적이 없다) · 만든 사람은 복제한 사람.
+ *   - **칸**(EAV) — 값 안의 옵션 id 도 지도로. 캐시는 넣는 순간 트리거가 다시 쓴다(`tg_page_cache_rebuild`).
+ *   - **엣지** — 이쪽 속성의 것만(바깥 표의 짝 속성 엣지는 그 표의 것이다). 같은 표 안이면 두 방향 다(짝 트리거가 거울상을 본다) · 대상 행이
+ *     복제되지 않았으면(템플릿 · 휴지통) 뺀다. 바깥이면 대상은 그대로(한쪽 relation).
+ *   - **수동 순서** · **고유 ID 번호**(행의 번호와 소스의 다음 번호) 그대로.
+ */
+async function copyRows(
+  tx: Tx,
+  ctx: SessionContext,
+  input: {
+    readonly databaseId: string
+    readonly copyId: string
+    readonly sources: readonly Row[]
+    readonly properties: readonly Row[]
+    readonly viewIds: readonly string[]
+    readonly ids: Map<string, string>
+    readonly now: string
+  },
+): Promise<number> {
+  const { ids, now } = input
+  const sourceIds = input.sources.map((s) => String(s.id))
+  const propertyIds = input.properties.map((p) => String(p.id))
+  const blocks = await readRows(tx,
+    `SELECT to_jsonb(b) AS row FROM block b JOIN page p ON p.id = b.id
+      WHERE b.parent_type = 'data_source' AND b.parent_id = ANY($1::uuid[]) AND b.type = 'page' AND b.lifecycle = 'live' AND NOT p.is_template
+      ORDER BY b.order_key, b.id`, [sourceIds])
+  if (blocks.length === 0) return 0
+  const rowIds = blocks.map((b) => String(b.id))
+  for (const rowId of rowIds) ids.set(rowId, randomUUID())
+  const pages = await readRows(tx, `SELECT to_jsonb(p) AS row FROM page p WHERE p.id = ANY($1::uuid[])`, [rowIds])
+  const cells = await readRows(tx,
+    `SELECT to_jsonb(v) AS row FROM page_property_value v WHERE v.page_id = ANY($1::uuid[]) AND v.property_id = ANY($2::text[])`, [rowIds, propertyIds])
+  const edges = await readRows(tx,
+    `SELECT to_jsonb(e) AS row FROM relation_edge e WHERE e.property_id = ANY($1::text[]) AND e.from_page_id = ANY($2::uuid[])`, [propertyIds, rowIds])
+  const positions = await readRows(tx,
+    `SELECT to_jsonb(r) AS row FROM row_position r WHERE r.view_id = ANY($1::uuid[]) AND r.row_id = ANY($2::uuid[])`, [input.viewIds, rowIds])
+  const place = await tx.queryOne<{ perm_scope_id: string; ancestor_path: string[] }>(
+    `SELECT perm_scope_id, ancestor_path FROM block WHERE id = $1`, [input.copyId])
+  // 같은 표 안을 가리키는 relation 속성 — 그 엣지는 대상 행도 복제됐을 때만
+  const internal = new Set(input.properties
+    .filter((p) => p.type === 'relation' && typeof p.config === 'object' && p.config !== null
+      && sourceIds.includes(String((p.config as Row).target_data_source_id)))
+    .map((p) => String(p.id)))
+
+  await insertRows(tx, 'block', blocks.map((b) => ({
+    ...remapIds(b, ids),
+    ancestor_path: [...place.ancestor_path, input.copyId],
+    perm_scope_id: place.perm_scope_id,
+    owner_user_id: null,
+    moderation_state: 'none',
+    public_exposure: false,
+    created_by: ctx.userId,
+    created_at: now,
+    last_edited_by: ctx.userId,
+    last_edited_at: now,
+    version: 0,
+  })))
+  for (const b of blocks) {
+    await addIconFileReference(tx, ctx, readPageIcon((b.format as Row | null)?.page_icon ?? null))
+    await indexPageTitle(tx, String(ids.get(String(b.id))), toPlainText(readTitle(b.properties as { title?: unknown } | null)))
+  }
+  await insertRows(tx, 'page', pages.map((p) => remapIds(p, ids)))
+  await insertRows(tx, 'page_property_value', cells.map((c) => ({ ...remapIds(c, ids), updated_at: now })))
+  await insertRows(tx, 'relation_edge', edges
+    .filter((e) => !internal.has(String(e.property_id)) || ids.has(String(e.to_page_id)))
+    .map((e) => remapIds(e, ids)))
+  await insertRows(tx, 'row_position', positions.map((r) => remapIds(r, ids)))
+  // 고유 ID 의 다음 번호 — 행의 번호를 그대로 가져왔으니 소스의 번호도 원본의 것
+  for (const s of input.sources) {
+    await tx.query(`UPDATE data_source SET unique_id_counter = $2 WHERE id = $1`, [ids.get(String(s.id)), Number(s.unique_id_counter ?? 0)])
+  }
+  return blocks.length
 }
 
 async function insertBlock(
