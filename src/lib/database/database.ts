@@ -58,6 +58,7 @@ import { isUsableIcon, moveIconFileReference } from '../file/icon-reference.ts'
 import { indexPageTitle } from '../search/index-page.ts'
 import { insertLinkedAttachment, insertOwnedDataSource, readDataSources, type DataSourceSummary } from './data-source.ts'
 import { canViewOwnerDatabase } from './source-access.ts'
+import { normalizeDatabaseQuery } from './linked-picker.ts'
 
 export { DEFAULT_TITLE_PROPERTY_NAME } from './data-source.ts'
 
@@ -574,7 +575,10 @@ export const MAX_DATABASE_LIST = 200
  * 권한은 목록 필터와 같은 축이다(`readableScopes` — 사이드바 · 검색 · 제목 맵과 같다): 볼 수 없는 표는 **쿼리 밖으로 나오지
  * 않는다.** 뽑아서 거르지 않는다 — 거르기를 빠뜨려 이름이 새는 경로를 만들지 않는다. 이름순으로 준다(같은 이름은 만든 순서).
  */
-export async function listDatabases(ctx: SessionContext): Promise<DatabaseListItem[]> {
+export async function listDatabases(ctx: SessionContext, options: { readonly query?: unknown } = {}): Promise<DatabaseListItem[]> {
+  // 이름으로 거르기(27번 트랙 L-2 — 본문의 연결 고르개) — 상한 밖의 데이터베이스를 찾는다. 검색 색인의 이름(`search_document.title_text`
+  // — 데이터베이스 노드에도 있다 · 10p-2)을 pg_bigm 의 `likequery` 로(`%` · `_` 를 막는다 · 검색과 같은 함수). 대소문자는 가리지 않는다.
+  const query = normalizeDatabaseQuery(options.query)
   return withReadTransaction(async (tx) => {
     const scopes = await readableScopes(tx, ctx)
     if (scopes.length === 0) return []
@@ -594,9 +598,10 @@ export async function listDatabases(ctx: SessionContext): Promise<DatabaseListIt
          JOIN database_data_source dds ON dds.database_id = d.id AND dds.data_source_id = ds.id
         WHERE b.workspace_id = $1 AND b.type = 'database' AND b.lifecycle = 'live' AND ds.lifecycle = 'live'
           AND b.perm_scope_id = ANY($2::uuid[])
+          ${query === null ? '' : `AND EXISTS (SELECT 1 FROM search_document sd WHERE sd.doc_id = b.id AND sd.title_text ILIKE likequery($4))`}
         ORDER BY b.created_at, b.id, dds.order_idx, ds.id
         LIMIT $3`,
-      [ctx.workspaceId, scopes, MAX_DATABASE_LIST],
+      [ctx.workspaceId, scopes, MAX_DATABASE_LIST, ...(query === null ? [] : [query])],
     )
     // 이름순은 안정 정렬이다 — 같은 데이터베이스의 소스들이 부착 순서를 지킨다.
     return rows
