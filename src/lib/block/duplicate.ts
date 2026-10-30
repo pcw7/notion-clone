@@ -67,6 +67,7 @@ import { pageIconOfFormat } from './page-icon.ts'
 import { addIconFileReference } from '../file/icon-reference.ts'
 import { MAX_TREE_DEPTH, PAGE_TYPE } from './types.ts'
 import type { RichTextRun } from '../contracts/rich-text.ts'
+import { duplicateDatabaseUnder } from '../database/duplicate-database.ts'
 
 /** 한 번에 복제할 수 있는 페이지 수(자기 포함). 넘으면 거부한다 — 비동기 잡은 아직 없다(머리말). */
 export const MAX_DUPLICATE_PAGES = 50
@@ -300,6 +301,33 @@ export async function duplicateSubtree(
   }
   if (rootId === null) throw new Error(`복제할 원본이 서브트리에 없다: ${source.id}`)
 
+  // ── ②' 인라인 데이터베이스 — 사본 페이지 밑에 복제한다(30번 트랙 E-1 · 정본 [보강 D-1] ⑩) ──
+  // 서브트리 안의 페이지 본문에 놓인 데이터베이스(다른 인라인 데이터베이스의 행 안의 것은 그 데이터베이스의 복제가 옮긴다). 놓인 페이지가 복제되지
+  // 않았으면(볼 수 없다) 함께 빠진다. 사본의 id 를 지도에 넣으면 ③ 의 본문 다시 매기기가 그 참조를 사본으로 바꾼다 — 넣지 않으면 참조가 빠진다.
+  const databases = await tx.query<{ id: string; ancestor_path: string[] }>(
+    `SELECT b.id, b.ancestor_path FROM block b
+      WHERE b.workspace_id = $1 AND b.type = 'database' AND b.lifecycle = 'live' AND b.parent_type = 'block'
+        AND b.ancestor_path @> ARRAY[$2]::uuid[]
+        AND NOT EXISTS (SELECT 1 FROM block db WHERE db.id = ANY(b.ancestor_path) AND db.type = 'database' AND db.ancestor_path @> ARRAY[$2]::uuid[])
+      ORDER BY b.id`,
+    [ctx.workspaceId, source.id],
+  )
+  let skippedDatabases = 0
+  for (const db of databases) {
+    const owner = [...db.ancestor_path].reverse().find((id) => copies.has(id) && subtree.some((r) => r.id === id))
+    const ownerCopy = owner === undefined ? undefined : copies.get(owner)
+    if (ownerCopy === undefined) {
+      skippedDatabases += 1
+      continue
+    }
+    const copied = await duplicateDatabaseUnder(tx, ctx, db.id, ownerCopy)
+    if (!copied.ok) {
+      skippedDatabases += 1
+      continue
+    }
+    copies.set(db.id, copied.value.id)
+  }
+
   // ── ③ 사본 본문을 쓴다 ──
   for (const row of byDepth) {
     const body = bodies.get(row.id)
@@ -321,7 +349,7 @@ export async function duplicateSubtree(
     }
   }
 
-  return { rootId, pages: subtree.length, skipped: totalPages - subtree.length, skippedDatabases: await countInlineDatabases(tx, ctx, source.id) }
+  return { rootId, pages: subtree.length, skipped: totalPages - subtree.length, skippedDatabases }
 }
 
 /** 이 행의 부모 **페이지**의 사본. 부모가 본문 안의 블록이면 조상 경로에서 가장 가까운 복제 대상이 부모다. */
@@ -382,15 +410,6 @@ async function readSubtree(
   }
   // 빠진 수는 여기서 바로 나온다 — 다시 세지 않는다(제목은 읽지 않았다 · 개수만 말한다).
   return { subtree: [...kept.values()], totalPages: rows.length + 1 }
-}
-
-/** 서브트리의 살아 있는 인라인 데이터베이스 수(I-1b) — 사본에 싣지 않는다. 볼 수 없는 것도 센다(볼 수 없는 하위 페이지의 수와 같이 수만 말한다). */
-async function countInlineDatabases(tx: Tx, ctx: SessionContext, sourceId: string): Promise<number> {
-  const row = await tx.queryOne<{ n: string }>(
-    `SELECT count(*) AS n FROM block WHERE workspace_id = $1 AND type = 'database' AND lifecycle = 'live' AND ancestor_path @> ARRAY[$2]::uuid[]`,
-    [ctx.workspaceId, sourceId],
-  )
-  return Number(row.n)
 }
 
 /** 서브트리의 살아 있는 블록 수 — 본문 블록까지. 상한 검사용이라 세기만 한다. */

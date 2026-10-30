@@ -81,7 +81,31 @@ export async function duplicateDatabase(
 }
 
 async function duplicateIn(ctx: SessionContext, databaseId: string, options: { readonly content: boolean }): Promise<DuplicateDatabaseResult> {
-  return withCommandTransaction(async (tx) => {
+  return withCommandTransaction((tx) => duplicateCore(tx, ctx, databaseId, options, { kind: 'same' }))
+}
+
+/** 사본이 놓일 자리 — 원본과 같은 자리(화면의 복제) · 사본 페이지 밑(페이지 복제가 그 안의 인라인 데이터베이스를 함께 — 30번 트랙 E-1). */
+type DuplicatePlacement = { readonly kind: 'same' } | { readonly kind: 'under'; readonly parentPageId: string }
+
+/**
+ * 페이지 복제(엔진)가 서브트리 안의 인라인 데이터베이스를 사본 페이지 밑에 복제한다(정본 [보강 D-1] ⑩ · 30번 트랙 E-1) — 같은 트랜잭션에서 ·
+ * 내용과 함께 · 이름은 원본 그대로(하위 페이지처럼 꼬리표 없음) · 본문은 바꾸지 않는다(엔진이 사본 페이지의 본문을 쓸 때 참조가 사본을 가리킨다).
+ * 볼 수 없으면 `not_found`(엔진이 빼고 센다) · 행이 상한을 넘으면 던진다(페이지 복제 전체가 되돌아간다 — 반쯤 복제하지 않는다).
+ */
+export async function duplicateDatabaseUnder(tx: Tx, ctx: SessionContext, databaseId: string, parentPageId: string): Promise<DuplicateDatabaseResult> {
+  const copied = await duplicateCore(tx, ctx, databaseId, { content: true }, { kind: 'under', parentPageId })
+  if (!copied.ok && copied.reason === 'too_large') throw new DuplicateError('too_large', '인라인 데이터베이스의 행이 너무 많아 한 번에 복제할 수 없습니다.')
+  return copied
+}
+
+async function duplicateCore(
+  tx: Tx,
+  ctx: SessionContext,
+  databaseId: string,
+  options: { readonly content: boolean },
+  placement: DuplicatePlacement,
+): Promise<DuplicateDatabaseResult> {
+  {
     const source = await tx.queryMaybe<{
       id: string
       parent_type: string
@@ -104,13 +128,20 @@ async function duplicateIn(ctx: SessionContext, databaseId: string, options: { r
       )
       if (Number(counted.n) > MAX_DUPLICATE_DATABASE_ROWS) return { ok: false, reason: 'too_large' } as const
     }
-    const title = duplicateTitle(readTitle(source.properties))
+    // 원본과 같은 자리면 "… (1)" · 사본 페이지 밑이면 원본 이름 그대로(하위 페이지와 같다)
+    const title = placement.kind === 'under' ? [...readTitle(source.properties)] : duplicateTitle(readTitle(source.properties))
     const name = toPlainText(title)
     const id = randomUUID()
 
     // ── 자리 · 블록 ──
     let inlineBody: Awaited<ReturnType<typeof openPageBody>> | null = null
-    if (source.parent_type === 'block') {
+    if (placement.kind === 'under') {
+      // 사본 페이지 밑 — 그 페이지는 이 트랜잭션에서 방금 만들었다(복제한 사람이 만들 수 있는 자리) · 참조는 엔진이 사본 페이지의 본문을 쓸 때 들어간다
+      const parent = await tx.queryOne<{ ancestor_path: string[]; perm_scope_id: string }>(
+        `SELECT ancestor_path, perm_scope_id FROM block WHERE id = $1`, [placement.parentPageId])
+      await insertBlock(tx, ctx, { id, title, parentType: 'block', parentId: placement.parentPageId, orderKey: await nextSiblingKey(tx, placement.parentPageId),
+        ancestorPath: [...parent.ancestor_path, placement.parentPageId], permScopeId: parent.perm_scope_id, ownerUserId: null })
+    } else if (source.parent_type === 'block') {
       const host = await ownerPageOf(tx, ctx, source.parent_id)
       if (host === null) return { ok: false, reason: 'not_found' } as const
       let placement: Awaited<ReturnType<typeof lockParentPage>>
@@ -252,7 +283,7 @@ async function duplicateIn(ctx: SessionContext, databaseId: string, options: { r
         skippedPages: copiedRows.skippedPages,
       },
     } as const
-  })
+  }
 }
 
 /**

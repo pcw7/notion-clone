@@ -26,8 +26,8 @@ export function duplicateNote(skipped: number, skippedDatabases = 0): DuplicateN
   //   (검사가 잡았다 — 서버가 그 값을 주지 않는 날이 오면 그렇게 된다).
   const parts: string[] = []
   if (skipped > 0) parts.push(`볼 수 없는 하위 페이지 ${skipped}개는 복제하지 못했습니다.`)
-  // 인라인 데이터베이스(I-1b)는 사본에 싣지 않는다(v1 — 데이터베이스를 깊이 복사하지 않는다)
-  if (skippedDatabases > 0) parts.push(`인라인 데이터베이스 ${skippedDatabases}개는 복제하지 않았습니다.`)
+  // 인라인 데이터베이스는 함께 복제한다(30번 트랙 E-1) — 볼 수 없는 것만 빠진다
+  if (skippedDatabases > 0) parts.push(`볼 수 없는 인라인 데이터베이스 ${skippedDatabases}개는 복제하지 못했습니다.`)
   if (parts.length === 0) return { text: null, navigate: true }
   return { text: `사본을 만들었습니다. ${parts.join(' ')}`, navigate: false }
 }
