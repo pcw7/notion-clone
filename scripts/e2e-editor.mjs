@@ -26197,7 +26197,7 @@ async function main() {
 
     if (sectionIf('데이터베이스 복제 — 내용 없이 (D-1 · F-02-09)')) { try {
       // 라우트 `POST /databases/{id}/duplicate` `{ content: false }` → 사본의 데이터베이스 화면이 열리고 같은 열(사본의 속성) · 행은 없다 · 이름은
-      // "… (1)" · `content` 가 false 가 아니면 400(내용과 함께는 아직). 정본 §3.5 [보강 D-1]. 자기 데이터를 스스로 만든다(API).
+      // "… (1)" · `content` 가 참 · 거짓이 아니면 400. 정본 §3.5 [보강 D-1]. 자기 데이터를 스스로 만든다(API).
       const stamp = Date.now()
       const apiC = async (method, path, body) => {
         const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
@@ -26207,9 +26207,9 @@ async function main() {
       const db = (await apiC('POST', '/databases', { name })).body.database
       await apiC('POST', `/data-sources/${db.dataSourceId}/properties`, { name: '단계', type: 'select' })
       await apiC('POST', `/views/${db.defaultViewId}/rows`, { cells: [] })
-      const refused = await apiC('POST', `/databases/${db.id}/duplicate`, {})
+      const refused = await apiC('POST', `/databases/${db.id}/duplicate`, { content: 'yes' })
       const copied = await apiC('POST', `/databases/${db.id}/duplicate`, { content: false })
-      check('★ 라우트 — 내용 없이 복제(201) · content 가 false 가 아니면 400',
+      check('★ 라우트 — 내용 없이 복제(201) · content 가 참 · 거짓이 아니면 400',
         copied.status === 201 && typeof copied.body?.database?.id === 'string' && copied.body.database.id !== db.id && refused.status === 400,
         JSON.stringify({ copied: copied.status, refused: refused.status }))
 
@@ -26223,6 +26223,28 @@ async function main() {
       })`))
       check('★ 사본의 화면 — 같은 열 · 행은 없다 · 이름은 "… (1)"',
         ready && seen.heads.some((h) => h.includes('단계')) && seen.rows === 0 && seen.title.includes(`${name} (1)`), JSON.stringify(seen))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
+    if (sectionIf('데이터베이스 복제 — 내용과 함께 (D-3 · F-02-09)')) { try {
+      // 라우트의 기본(`{}`)은 내용과 함께 — 사본의 화면에 행이 서고(새 id) · 그 행을 열면 본문이 따라왔다 · 원본은 그대로. 정본 §3.5 [보강 D-1] ⑦ ⑧.
+      const stamp = Date.now()
+      const apiW = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const db = (await apiW('POST', '/databases', { name: `내용 복제 ${stamp}` })).body.database
+      const titleProp = (await apiW('GET', `/views/${db.defaultViewId}`)).body.view.columns.find((col) => col.type === 'title').propertyId
+      const row = (await apiW('POST', `/views/${db.defaultViewId}/rows`, { cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun('복제될 행')] } }] })).body.row.id
+      await saveBody(row, { blocks: [{ id: randomUUID(), type: 'paragraph', title: [textRun('행 안의 글')], properties: {}, format: {}, children: [] }] })
+      const copied = await apiW('POST', `/databases/${db.id}/duplicate`, {})
+      check('★ 라우트의 기본은 내용과 함께 — 201 · 행 하나', copied.status === 201 && copied.body?.database?.rows === 1, JSON.stringify(copied))
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/db/${copied.body.database.id}` })
+      const shown = await waitFor(`[...document.querySelectorAll('[data-testid="db-table"] [data-row-id]')].some((e) => e.textContent.includes('복제될 행'))`, 15000)
+      const copyRow = await evaluate(`[...document.querySelectorAll('[data-testid="db-table"] [data-row-id]')].find((e) => e.textContent.includes('복제될 행'))?.getAttribute('data-row-id') ?? null`)
+      check('★ 사본의 화면에 그 행이 선다 — 새 id', shown && typeof copyRow === 'string' && copyRow !== row, JSON.stringify({ copyRow, row }))
+      const body = copyRow === null ? null : await readBody(copyRow)
+      check('그 행의 본문이 따라왔다', JSON.stringify(body?.doc?.blocks ?? []).includes('행 안의 글'), JSON.stringify(body?.doc?.blocks?.map((b) => b.type) ?? null))
     } catch (thrown) { await sectionThrew(thrown) } }
 
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {

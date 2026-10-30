@@ -13,6 +13,7 @@
  *   ⑦ 개인 최상위의 사본은 복제한 사람의 개인 최상위
  *   ⑧ ★ 내용과 함께(D-2) — 살아 있는 행만(템플릿 · 휴지통은 빼고) · 칸은 사본의 속성 · 옵션 · 같은 표의 relation 은 사본 행끼리 두 방향 ·
  *      바깥 relation 은 한쪽으로 원본의 바깥 행을 · 바깥 표에 거울상을 만들지 않는다 · 수동 순서 · 고유 ID 번호 · 이름 색인 · 원본은 그대로
+ *   ⑨ ★ 본문(D-3) — 행의 본문 · 하위 페이지(그 본문까지) · 템플릿과 그 본문 · 뷰의 기본 템플릿은 사본의 템플릿 · 내용 없이도 템플릿은 함께(행은 없다)
  */
 
 import { test, describe, before, after } from 'node:test'
@@ -24,7 +25,7 @@ import { query } from '../db/pool.ts'
 import { grantAccess, revokeAccess, stopInheriting } from '../permissions/acl.ts'
 import { createPage, titleFromPlainText } from '../block/page.ts'
 import { textRun } from '../contracts/rich-text.ts'
-import { loadPageBody } from '../block/save-page-body.ts'
+import { loadPageBody, savePageBody } from '../block/save-page-body.ts'
 import { createDatabase, createInlineDatabase, getDatabase } from './database.ts'
 import { addProperty, addSelectOption, getSchema } from './property.ts'
 import { addFormulaProperty } from './formula-property.ts'
@@ -306,7 +307,7 @@ describe('⑧ 내용과 함께(D-2)', () => {
     assert.deepEqual(farEdges.map((e) => e.to_page_id), [a], '바깥 표의 짝은 원본만 — 사본의 거울상을 만들지 않는다')
 
     const seqs = await query<{ title: string; unique_seq: string }>(
-      `SELECT b.properties -> 'title' -> 0 ->> 'plain_text' AS title, p.unique_seq FROM page p JOIN block b ON b.id = p.id WHERE p.data_source_id = $1 ORDER BY 1`, [copyDs])
+      `SELECT b.properties -> 'title' -> 0 ->> 'plain_text' AS title, p.unique_seq FROM page p JOIN block b ON b.id = p.id WHERE p.data_source_id = $1 AND NOT p.is_template ORDER BY 1`, [copyDs])
     const originalSeqs = await query<{ title: string; unique_seq: string }>(
       `SELECT b.properties -> 'title' -> 0 ->> 'plain_text' AS title, p.unique_seq FROM page p JOIN block b ON b.id = p.id
         WHERE p.data_source_id = $1 AND b.lifecycle = 'live' AND NOT p.is_template ORDER BY 1`, [ds])
@@ -315,5 +316,49 @@ describe('⑧ 내용과 함께(D-2)', () => {
     const indexed = await query<{ title_text: string }>(`SELECT title_text FROM search_document WHERE doc_id = $1`, [copyA.id])
     assert.equal(indexed[0]?.title_text, '가', '이름 색인')
     assert.equal(unwrap(await queryRows(fx.owner.ctx, ds)).rows.length, 2, '원본은 그대로')
+  })
+})
+
+describe('⑨ 본문 · 하위 페이지 · 템플릿(D-3)', () => {
+  const para = (text: string) => ({ id: crypto.randomUUID(), type: 'paragraph', title: [textRun(text)] }) as never
+  const bodyText = async (pageId: string) => JSON.stringify((await loadPageBody(fx.owner.ctx, pageId as never))?.doc.blocks ?? [])
+
+  test('★ 행의 본문 · 하위 페이지 · 템플릿과 그 본문 · 기본 템플릿 · 내용 없이도 템플릿', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const made = unwrap(await createDatabase(fx.owner.ctx, { name: unique('본문 표') }))
+    const ds = made.dataSourceId
+    const titleId = unwrap(await getSchema(fx.owner.ctx, ds)).properties.find((p) => p.type === 'title')!.id
+    const row = unwrap(await createRow(fx.owner.ctx, ds, { cells: [{ propertyId: titleId, value: { type: 'title', title: [textRun('본문 있는 행')] } }] })).id
+    assert.equal((await savePageBody(fx.owner.ctx, row as never, { blocks: [para('행의 본문 글')] })).ok, true)
+    const sub = (await createPage(fx.owner.ctx, { parentPageId: row as never, title: titleFromPlainText('행의 하위') })).id as string
+    assert.equal((await savePageBody(fx.owner.ctx, sub as never, { blocks: [para('하위의 본문 글')] })).ok, true)
+    const template = unwrap(await createTemplate(fx.owner.ctx, ds, { title: '회의록' })).id
+    assert.equal((await savePageBody(fx.owner.ctx, template as never, { blocks: [para('양식의 본문 글')] })).ok, true)
+    unwrap(await updateView(fx.owner.ctx, made.defaultViewId, { defaultTemplateId: template }))
+
+    const copied = unwrap(await duplicateDatabase(fx.owner.ctx, made.id, { content: true }))
+    const copyDs = await sourceOf(copied.id)
+    const copyRow = (await query<{ id: string }>(
+      `SELECT p.id FROM page p WHERE p.data_source_id = $1 AND NOT p.is_template`, [copyDs]))[0]!.id
+    assert.ok((await bodyText(copyRow)).includes('행의 본문 글'), '행의 본문')
+    const copySub = (await query<{ id: string; title: string }>(
+      `SELECT id, properties -> 'title' -> 0 ->> 'plain_text' AS title FROM block WHERE parent_id = $1 AND type = 'page' AND lifecycle = 'live'`, [copyRow]))
+    assert.equal(copySub.length, 1)
+    assert.notEqual(copySub[0]!.id, sub, '하위 페이지도 새 id')
+    assert.equal(copySub[0]!.title, '행의 하위')
+    assert.ok((await bodyText(copySub[0]!.id)).includes('하위의 본문 글'), '하위 페이지의 본문')
+    assert.ok((await bodyText(copyRow)).includes(copySub[0]!.id), '행의 본문은 사본의 하위 페이지를 가리킨다')
+    const copyTemplate = (await query<{ id: string }>(`SELECT p.id FROM page p WHERE p.data_source_id = $1 AND p.is_template`, [copyDs]))[0]!.id
+    assert.ok((await bodyText(copyTemplate)).includes('양식의 본문 글'), '템플릿의 본문')
+    const view = (await query<{ default_template_page_id: string | null }>(
+      `SELECT default_template_page_id FROM view WHERE database_id = $1`, [copied.id]))[0]
+    assert.equal(view?.default_template_page_id, copyTemplate, '기본 템플릿은 사본의 템플릿')
+    assert.ok((await bodyText(row)).includes(sub), '원본 행의 본문은 그대로')
+
+    const shape = unwrap(await duplicateDatabase(fx.owner.ctx, made.id, { content: false }))
+    const shapeDs = await sourceOf(shape.id)
+    const shapePages = await query<{ is_template: boolean }>(`SELECT is_template FROM page WHERE data_source_id = $1`, [shapeDs])
+    assert.deepEqual(shapePages.map((p) => p.is_template), [true], '내용 없이 — 템플릿만(행은 없다)')
+    assert.equal(shape.rows, 0)
   })
 })
