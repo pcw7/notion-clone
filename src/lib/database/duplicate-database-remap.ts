@@ -53,8 +53,9 @@ export function remapRelationConfig(config: Readonly<Record<string, unknown>>, i
   const target = typeof config.target_data_source_id === 'string' ? config.target_data_source_id : null
   const remapped = remapIds({ ...config }, ids)
   if (target !== null && !ids.has(target)) {
-    const { synced_property_id: _drop, ...rest } = remapped
-    return rest
+    const oneWay: Record<string, unknown> = { ...remapped }
+    delete oneWay.synced_property_id
+    return oneWay
   }
   return remapped
 }

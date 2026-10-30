@@ -15,6 +15,7 @@
 
 import { test, describe, before, after } from 'node:test'
 import assert from 'node:assert/strict'
+import { randomBytes } from 'node:crypto'
 
 import { probeDatabase, makeFixture, createUser, joinAs, type Actor, type Fixture } from '../testing/db-fixtures.ts'
 import { query } from '../db/pool.ts'
@@ -201,7 +202,7 @@ describe('⑤ 폼', () => {
     if (skipReason) return t.skip(skipReason)
     const made = unwrap(await createDatabase(fx.owner.ctx, { name: unique('설문 표') }))
     const form = unwrap(await createFormView(fx.owner.ctx, made.id, { name: '설문' }))
-    await query(`UPDATE form_view SET access = 'public', token = $2 WHERE view_id = $1`, [form.viewId, 'abcdefghijklmnopqrstu1'])
+    await query(`UPDATE form_view SET access = 'public', token = $2 WHERE view_id = $1`, [form.viewId, randomBytes(16).toString('base64url').slice(0, 22)])
     const originalQuestions = await query<{ property_id: string }>(`SELECT property_id FROM form_question WHERE view_id = $1`, [form.viewId])
 
     const copied = await copy(fx.owner, made.id)
