@@ -438,6 +438,87 @@
   display: none;
 }
 
+/* 파일 블록(F-1b · 정본 §3.4 [보강 F-1] ⑧) — 카드: 📎 이름 · 크기 · 누르면 내려받기. 빈 상태 · 올리는 중은 이미지와 같은 점선 상자. */
+.blk-file[data-state='empty'] .blk-file-controls,
+.blk-file[data-state='uploading'] .blk-file-controls {
+  border: 1px dashed #d1d5db;
+  border-radius: 0.375rem;
+  padding: 0.75rem;
+  color: #9ca3af;
+  font-size: 0.875rem;
+}
+.blk-file-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+.blk-file-pick,
+.blk-file-url-add {
+  border: 1px solid #e5e7eb;
+  border-radius: 0.25rem;
+  background: none;
+  padding: 0.25rem 0.5rem;
+  color: inherit;
+  font: inherit;
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+.blk-file-pick:hover,
+.blk-file-url-add:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+.blk-file-card {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.375rem;
+  color: inherit;
+  text-decoration: none;
+}
+.blk-file-card:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+.blk-file-name {
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.blk-file-size {
+  color: #6b7280;
+  font-size: 0.875rem;
+  white-space: nowrap;
+}
+.blk-file-caption {
+  font-size: 0.875rem;
+  color: #6b7280;
+  margin-top: 0.25rem;
+}
+.blk-file .blk-file-replace,
+.blk-file .blk-file-caption-open {
+  margin-top: 0.25rem;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.25rem;
+  background: none;
+  padding: 0.125rem 0.5rem;
+  color: #6b7280;
+  font: inherit;
+  font-size: 0.75rem;
+  cursor: pointer;
+  opacity: 0;
+}
+.blk-file:hover .blk-file-replace,
+.blk-file .blk-file-replace:focus-visible,
+.blk-file:hover .blk-file-caption-open,
+.blk-file .blk-file-caption-open:focus-visible {
+  opacity: 1;
+}
+.blk-editor[contenteditable='false'] .blk-file-replace,
+.blk-editor[contenteditable='false'] .blk-file-caption-open {
+  display: none;
+}
+
 /* 올리기 취소 · 다시 올리기(10n-73) — 상태 줄 · 실패 줄 옆에 늘 보인다(머물 때만이 아니다 — 지금 할 일이다). 읽기 전용 편집기는 올리지 않아
    서지 않는다. */
 .blk-image .blk-image-upload-cancel,

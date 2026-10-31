@@ -53,6 +53,19 @@ import { pasteBlocksCommand, withFreshBlockIds } from './block-clipboard.ts'
 
 export const imageDropPluginKey = new PluginKey('imageDrop')
 
+/** 떨어진(붙여넣은) 파일 하나와 그것이 될 블록 — 받는 이미지면 이미지 블록 · 그 밖은 파일 블록(F-1b · 정본 §3.4 [보강 F-1] ⑧). */
+export type DroppedFile = { readonly file: File; readonly type: 'image' | 'file' }
+
+/** 파일마다 될 블록을 정한다 — 차례를 지킨다. 거절은 없다(크기 · 빈 파일은 서버가 거절하고 노드 뷰가 말한다). */
+export function classifyFiles(files: ArrayLike<File> | null | undefined): DroppedFile[] {
+  const out: DroppedFile[] = []
+  for (let i = 0; i < (files?.length ?? 0); i += 1) {
+    const file = files![i]
+    out.push({ file, type: isAllowedMime(file.type) ? 'image' : 'file' })
+  }
+  return out
+}
+
 /** 이미지만 이 자리에서 처리한다. 나머지는 몇 개였는지만 세어 알린다. */
 export type FilePartition = { readonly images: File[]; readonly rejected: number }
 
@@ -83,6 +96,11 @@ export function emptyImageBlock(id: string): EditorBlock {
   return { id, type: 'image', title: [], properties: {}, format: {}, children: [] }
 }
 
+/** 빈 파일 블록(F-1b) — 이미지와 같은 모양의 원자. */
+export function emptyFileBlock(id: string): EditorBlock {
+  return { id, type: 'file', title: [], properties: {}, format: {}, children: [] }
+}
+
 /**
  * 빈 이미지 블록 `ids.length` 개를 지금 위치에 넣는다.
  *
@@ -91,10 +109,16 @@ export function emptyImageBlock(id: string): EditorBlock {
  * 이미지 블록이 이미 있을 때 엉뚱한 것을 고른다.
  */
 export function insertImageBlocksCommand(ids: readonly string[], deps: CommandDeps): Command {
-  if (ids.length === 0) return () => false
+  return insertAtomBlocksCommand(ids.map((id) => ({ id, type: 'image' as const })), deps)
+}
+
+/** 빈 이미지 · 파일 블록들을 지금 위치에 넣는다(F-1b) — id 는 밖에서 받는다(위와 같은 까닭). */
+export function insertAtomBlocksCommand(entries: readonly { readonly id: string; readonly type: 'image' | 'file' }[], deps: CommandDeps): Command {
+  if (entries.length === 0) return () => false
+  const ids = entries.map((entry) => entry.id)
 
   return (state, dispatch) => {
-    const blocks = ids.map(emptyImageBlock)
+    const blocks = entries.map((entry) => (entry.type === 'image' ? emptyImageBlock(entry.id) : emptyFileBlock(entry.id)))
 
     // 블록 선택을 대체하는 일은 붙여넣기와 완전히 같다.
     if (isBlockSelection(state.selection)) {
@@ -173,6 +197,20 @@ export function takeQueuedUpload(view: EditorView, blockId: string): File | null
  *
  * @returns 하나라도 처리했으면 true — 이벤트를 우리가 먹었다는 뜻이다.
  */
+/**
+ * 떨어진 파일들을 블록으로 만든다(F-1b) — 이미지는 이미지 블록 · 그 밖은 파일 블록. 넣을 자리는 현재 선택이다.
+ *
+ * @returns 하나라도 처리했으면 true — 이벤트를 우리가 먹었다는 뜻이다.
+ */
+export function insertDroppedFiles(view: EditorView, dropped: readonly DroppedFile[], deps: CommandDeps): boolean {
+  if (dropped.length === 0) return false
+  const entries = dropped.map((d) => ({ id: (deps.newId ?? newBlockId)(), type: d.type }))
+  entries.forEach((entry, i) => queueUpload(view, entry.id, dropped[i].file))
+  const ok = insertAtomBlocksCommand(entries, deps)(view.state, view.dispatch.bind(view))
+  if (!ok) for (const entry of entries) takeQueuedUpload(view, entry.id)
+  return ok
+}
+
 export function insertImageFiles(view: EditorView, files: FilePartition, deps: CommandDeps): boolean {
   if (files.rejected > 0) deps.onRefused?.(rejectionNotice(files.rejected))
   if (files.images.length === 0) return files.rejected > 0
@@ -214,20 +252,21 @@ export function imageDropPlugin(deps: CommandDeps): Plugin {
       handleDrop: (view, event, _slice, moved) => {
         // 에디터 안에서 블록을 끌어다 놓은 것이다. 그건 블록 핸들의 일이다.
         if (moved) return false
-        const files = partitionImageFiles((event as DragEvent).dataTransfer?.files)
-        if (files.images.length === 0 && files.rejected === 0) return false
+        // 이미지가 아니면 파일 블록(F-1b · 정본 §3.4 [보강 F-1] ⑧) — 거절은 없다
+        const dropped = classifyFiles((event as DragEvent).dataTransfer?.files)
+        if (dropped.length === 0) return false
 
         event.preventDefault()
         placeCaretAtDrop(view, (event as DragEvent).clientX, (event as DragEvent).clientY)
-        return insertImageFiles(view, files, deps)
+        return insertDroppedFiles(view, dropped, deps)
       },
 
       handlePaste: (view, event) => {
-        const files = partitionImageFiles((event as ClipboardEvent).clipboardData?.files)
+        const dropped = classifyFiles((event as ClipboardEvent).clipboardData?.files)
         // 파일이 하나도 없으면 평범한 붙여넣기다. 클립보드 플러그인에게 넘긴다.
-        if (files.images.length === 0) return false
+        if (dropped.length === 0) return false
         event.preventDefault()
-        return insertImageFiles(view, files, deps)
+        return insertDroppedFiles(view, dropped, deps)
       },
 
       handleDOMEvents: {

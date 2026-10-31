@@ -1737,10 +1737,11 @@ async function main() {
       })()`, 15000),
       await evaluate(`(${newImageSelector(idsBeforePaste)})?.querySelector('.blk-image')?.dataset.state ?? '(블록 없음)'`))
 
-    // ② 드롭 — 이미지가 아닌 파일은 받지 않되 이유를 말한다.
+    // ② 드롭 — 이미지가 아닌 파일은 파일 블록이 된다(F-1b · 정본 §3.4 [보강 F-1] ⑧ — 전에는 "이미지만" 이라며 거절했다).
     const dropLine = await line(ids.A)
     const dropAt = { x: dropLine.x + 20, y: dropLine.y + dropLine.h / 2 }
     const beforeReject = await countImages()
+    const beforeFiles = await evaluate(`document.querySelectorAll('.blk-editor .blk-file').length`)
     await evaluate(`(() => {
       const dt = new DataTransfer()
       dt.items.add(new File(['hello'], '메모.txt', { type: 'text/plain' }))
@@ -1748,9 +1749,11 @@ async function main() {
         new DragEvent('drop', { dataTransfer: dt, bubbles: true, cancelable: true, clientX: ${dropAt.x}, clientY: ${dropAt.y} }),
       )
     })()`)
-    check('★ 이미지가 아닌 파일은 조용히 버리지 않고 이유를 말한다',
-      await waitFor(`[...document.querySelectorAll('[role="status"]'), ...document.querySelectorAll('[role="alert"]')].some((e) => e.textContent.includes('이미지만'))`, 3000))
-    check('거부한 파일은 블록을 만들지 않는다', (await countImages()) === beforeReject, `${await countImages()} vs ${beforeReject}`)
+    check('★ 이미지가 아닌 파일을 놓으면 파일 블록이 되어 올라간다 — 카드에 그 이름(조용히 버리지도 거절하지도 않는다)',
+      await waitFor(`document.querySelectorAll('.blk-editor .blk-file').length === ${beforeFiles + 1}
+        && [...document.querySelectorAll('.blk-editor .blk-file')].some((f) => f.dataset.state === 'ready' && f.querySelector('.blk-file-name')?.textContent === '메모.txt')`, 15000),
+      await evaluate(`[...document.querySelectorAll('.blk-editor .blk-file')].map((f) => f.dataset.state + ':' + (f.querySelector('.blk-file-name')?.textContent ?? '')).join(',')`))
+    check('이미지가 아닌 파일은 이미지 블록을 만들지 않는다', (await countImages()) === beforeReject, `${await countImages()} vs ${beforeReject}`)
 
     // ③ 드롭 — 놓은 줄 바로 다음에 들어간다.
     const beforeDrop = await countImages()
@@ -26484,6 +26487,92 @@ async function main() {
         pageHtml.includes('data-testid="public-file"') && pageHtml.includes(`악성 ${stamp}.html`) && pageHtml.includes(`${html.byteLength} B`)
           && pageHtml.includes(`/p/${token}/blocks/${blockId}/file`) && pageHtml.includes('회의록'),
         JSON.stringify({ card: pageHtml.includes('data-testid="public-file"'), name: pageHtml.includes(`악성 ${stamp}.html`), size: pageHtml.includes(`${html.byteLength} B`) }))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
+    if (sectionIf('파일 블록 — 편집기 (F-1b · F-01-15)')) { try {
+      // 파일 블록의 편집기(정본 §3.4 [보강 F-1] ⑧) — `/파일` 로 빈 블록 · 고른 파일을 kind=file 로 올려 카드(📎 이름 · 크기 · 내려받기 주소) ·
+      // 이름 · 크기는 GET /files/{id} 에서 · 캡션은 편집기 밖의 입력칸 · 새로고침 뒤에도 남는다(서버 저장) · 바깥 주소는 주소의 이름.
+      const stamp = Date.now().toString(36)
+      const page = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: JSON.stringify({ title: `파일 편집 ${stamp}` }) })).json()).page.id
+      const first = randomUUID()
+      await saveBody(page, { blocks: [{ id: first, type: 'paragraph', title: [], properties: {}, format: {}, children: [] }] })
+      const dir = mkdtempSync(join(tmpdir(), 'nc-file-'))
+      const txtPath = join(dir, `회의록-${stamp}.txt`)
+      // 1 KB 를 넘겨야 크기 글자가 `n.n KB` 다(`formatFileSize` — 1024 미만은 `n B`)
+      const txtBytes = Buffer.from(`회의록 ${stamp}\n`.repeat(100), 'utf8')
+      writeFileSync(txtPath, txtBytes)
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+      await waitFor(`!!document.querySelector('[data-block-id="${first}"]') && document.querySelector('.ProseMirror')?.getAttribute('contenteditable') === 'true'`, 15000)
+      await waitHydrated(`[data-block-id="${first}"]`)
+      const MENU = '[role="listbox"][aria-label="블록 삽입"]'
+      await clickSelector(`[data-block-id="${first}"] .blk`)
+      await typeText('/')
+      await typeText('파일')
+      const menuShown = await waitFor(`!!document.querySelector('${MENU}') && (document.querySelector('${MENU}')?.textContent ?? '').includes('파일')`, 5000)
+      await key('Enter')
+      const fileBlock = await waitFor(`!!document.querySelector('.blk-file[data-state="empty"] [data-testid="file-pick"]')`, 5000)
+      check('★ /파일 — 미디어 그룹의 "파일" 을 고르면 빈 파일 블록(올리기 · 주소)이 선다', menuShown && fileBlock,
+        JSON.stringify({ menuShown, fileBlock, menu: await evaluate(`document.querySelector('${MENU}')?.textContent?.slice(0, 120) ?? null`) }))
+      const blockId = await evaluate(`document.querySelector('.blk-file')?.closest('[data-block-id]')?.getAttribute('data-block-id') ?? null`)
+
+      // 올리기 — 숨은 파일 입력에 txt 를 준다
+      await send('DOM.enable')
+      const root = (await send('DOM.getDocument', { depth: -1 })).root.nodeId
+      const input = (await send('DOM.querySelector', { nodeId: root, selector: `[data-block-id="${blockId}"] .blk-file-file` })).nodeId
+      await send('DOM.setFileInputFiles', { files: [txtPath], nodeId: input })
+      const ready = await waitFor(`(() => { const f = document.querySelector('[data-block-id="${blockId}"] .blk-file'); return f?.dataset.state === 'ready' && !!f.querySelector('[data-testid="file-card"]') })()`, 15000)
+      const cardOf = () => evaluate(`(() => { const c = document.querySelector('[data-block-id="${blockId}"] [data-testid="file-card"]'); return c ? { href: c.getAttribute('href'), download: c.getAttribute('download'), name: c.querySelector('.blk-file-name')?.textContent, size: c.querySelector('.blk-file-size')?.textContent } : null })()`)
+      const named = ready && await waitFor(`(document.querySelector('[data-block-id="${blockId}"] .blk-file-name')?.textContent ?? '') === ${JSON.stringify(`회의록-${stamp}.txt`)} && (document.querySelector('[data-block-id="${blockId}"] .blk-file-size')?.textContent ?? '') !== ''`, 8000)
+      const card = await cardOf()
+      check('★ 고른 파일을 올리면 카드 — 이름(GET /files/{id}) · 크기 · 내려받기 주소(앱의 파일 경로)',
+        named && typeof card?.href === 'string' && /\/api\/workspaces\/[^/]+\/files\/[0-9a-f-]+\/content$/.test(card.href) && card.download === `회의록-${stamp}.txt` && card.size === `${(txtBytes.byteLength / 1024).toFixed(1)} KB`,
+        JSON.stringify({ ready, named, card, bytes: txtBytes.byteLength }))
+
+      // 캡션 — 편집기 밖의 입력칸 · 저장되면 figcaption
+      await clickSelector(`[data-block-id="${blockId}"] [data-testid="file-caption-open"]`)
+      const captionBox = await waitFor(`!!document.querySelector('[data-testid="code-caption-input"]')`, 5000)
+      if (captionBox) {
+        await clickSelector('[data-testid="code-caption-input"]')
+        await typeText(`첨부 ${stamp}`)
+        await key('Enter')
+      }
+      const captioned = await waitFor(`(document.querySelector('[data-block-id="${blockId}"] .blk-file-caption')?.textContent ?? '') === ${JSON.stringify(`첨부 ${stamp}`)}`, 5000)
+      check('캡션 — 코드 · 이미지와 같은 입력칸으로 쓰고 카드 아래에 선다', captionBox && captioned, JSON.stringify({ captionBox, captioned }))
+
+      // 서버에 남는다 — 협업 서버가 투영하기를 서버 함수로 기다린 뒤 새로고침 · 카드 · 캡션 · 참조 수
+      const fileId = (card?.href ?? '').split('/').at(-2) ?? ''
+      const savedOnServer = await (async () => {
+        for (let i = 0; i < 60; i += 1) {
+          const body = await loadPageBody(ctx, page)
+          const found = body?.doc.blocks.find((b) => b.id === blockId)
+          if (found && found.type === 'file' && found.properties?.source?.file_id === fileId && Array.isArray(found.properties?.caption) && found.properties.caption.length > 0) return true
+          await sleep(250)
+        }
+        return false
+      })()
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+      const persisted = await waitFor(`(document.querySelector('[data-block-id="${blockId}"] .blk-file-name')?.textContent ?? '') === ${JSON.stringify(`회의록-${stamp}.txt`)} && (document.querySelector('[data-block-id="${blockId}"] .blk-file-caption')?.textContent ?? '') === ${JSON.stringify(`첨부 ${stamp}`)}`, 15000)
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const refs = fileId === '' ? null : (await dbQuery(`SELECT ref_count FROM file WHERE id = $1`, [fileId]))[0] ?? null
+      check('★ 새로고침해도 카드 · 캡션이 남고(서버 저장) 그 파일의 참조 수가 1 이다(투영이 셌다)', savedOnServer && persisted && Number(refs?.ref_count) === 1, JSON.stringify({ savedOnServer, persisted, fileId, refs }))
+
+      // 바깥 주소 — 빈 블록에 주소를 넣으면 주소의 이름으로 카드 · 새 탭
+      await clickSelector(`[data-block-id="${blockId}"] .blk`)
+      await key('End')
+      await key('Enter')
+      await typeText('/')
+      await typeText('파일')
+      await waitFor(`!!document.querySelector('${MENU}')`, 5000)
+      await key('Enter')
+      const second = await waitFor(`document.querySelectorAll('.blk-file[data-state="empty"]').length === 1`, 5000)
+      const secondId = await evaluate(`document.querySelector('.blk-file[data-state="empty"]')?.closest('[data-block-id]')?.getAttribute('data-block-id') ?? null`)
+      await clickSelector(`[data-block-id="${secondId}"] .blk-file-url-input`)
+      await typeText('https://example.com/files/%EC%9E%90%EB%A3%8C.zip')
+      // 폼 제출은 "추가" 단추로 — 합성 Enter 는 암묵 제출을 일으키지 않을 수 있다
+      await clickSelector(`[data-block-id="${secondId}"] .blk-file-url-add`)
+      const external = await waitFor(`(() => { const c = document.querySelector('[data-block-id="${secondId}"] [data-testid="file-card"]'); return !!c && c.getAttribute('href') === 'https://example.com/files/%EC%9E%90%EB%A3%8C.zip' && c.getAttribute('target') === '_blank' && c.querySelector('.blk-file-name')?.textContent === '자료.zip' })()`, 8000)
+      check('바깥 주소 — 카드의 이름은 주소의 마지막 조각(디코드) · 새 탭으로 연다', second && external,
+        JSON.stringify({ second, external, card: await evaluate(`document.querySelector('[data-block-id="${secondId}"] [data-testid="file-card"]')?.outerHTML?.slice(0, 200) ?? null`) }))
     } catch (thrown) { await sectionThrew(thrown) } }
 
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
