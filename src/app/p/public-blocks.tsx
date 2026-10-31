@@ -14,6 +14,7 @@ import type { CSSProperties, ReactNode } from 'react'
 
 import { codeCaptionRuns, codeLanguageOf } from '@/lib/block/code'
 import { imageAltText, readCaption, readImageLayout, readImageSource } from '@/lib/block/image'
+import { FILE_TYPE, fileDisplayName, formatFileSize, readFileSource } from '@/lib/block/file-block'
 import { EQUATION_TYPE, equationExpressionOf } from '@/lib/block/equation'
 import { calloutGlyph } from '@/lib/block/callout'
 import { cellsOf, COLUMN_HEADER_KEY, ROW_HEADER_KEY, TABLE_TYPE } from '@/lib/block/table'
@@ -65,7 +66,7 @@ export function titleText(runs: readonly RichTextRun[] | undefined): string {
 }
 
 /** 공개 파일의 주소 — 블록 id 로 연다(파일 id 로 열지 않는다 · 정본 [보강] 공개 화면 ⑨). */
-export function publicFileHref(view: Pick<PublicPageView, 'token'>, blockId: string, kind: 'image' | 'icon'): string {
+export function publicFileHref(view: Pick<PublicPageView, 'token'>, blockId: string, kind: 'image' | 'icon' | 'file'): string {
   return `/p/${view.token}/blocks/${blockId}/${kind}`
 }
 
@@ -320,6 +321,31 @@ function Block({ block, view }: { block: EditorBlock; view: PublicPageView }): R
         >
           {/* eslint-disable-next-line @next/next/no-img-element -- 공개 화면은 최적화 경로를 거치지 않는다(바깥 주소 · 토큰 경로) */}
           <img src={src} alt={imageAltText(block.format, props)} loading="lazy" referrerPolicy="no-referrer" />
+          {caption !== '' && <figcaption>{caption}</figcaption>}
+        </figure>
+      )
+    }
+    case FILE_TYPE: {
+      // 파일 블록(F-1a · 정본 §3.4 [보강 F-1] ⑤) — 카드: 이름 · 크기 · 내려받기. 올린 파일은 토큰 경로(내려받기로만 열린다 · 메타가 없으면
+      // 이 워크스페이스의 파일이 아니다 — 그리지 않는다) · 바깥 주소는 그 주소로(새 탭 · noreferrer).
+      const source = readFileSource(props)
+      if (source === null) return null
+      const meta = source.kind === 'file' ? view.files.get(source.fileId) : undefined
+      if (source.kind === 'file' && meta === undefined) return null
+      const name = meta?.name ?? fileDisplayName(source, null)
+      const href = source.kind === 'file' ? publicFileHref(view, block.id, 'file') : source.url
+      const caption = readCaption(props).trim()
+      return (
+        <figure className="pub-block pub-file" data-testid="public-file">
+          <a
+            className="pub-file-card"
+            href={href}
+            {...(source.kind === 'file' ? { download: name } : { target: '_blank', rel: 'noopener noreferrer' })}
+          >
+            <span aria-hidden="true">📎</span>
+            <span className="pub-file-name">{name}</span>
+            {meta !== undefined && <span className="pub-file-size">{formatFileSize(meta.sizeBytes)}</span>}
+          </a>
           {caption !== '' && <figcaption>{caption}</figcaption>}
         </figure>
       )

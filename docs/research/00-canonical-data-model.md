@@ -1947,6 +1947,45 @@ CREATE VIEW live_block AS SELECT * FROM block WHERE lifecycle = 'live';
 > ④ **편집기 · 공개 화면이 같은 규칙으로 그린다**(`readImageLayout`). 마크다운 내보내기에는 폭 · 정렬의 자리가 없어 싣지 않는다(그림은 원래
 > 크기다). 화면: 그림 아래의 정렬 단추 셋(편집할 수 있을 때만 · 고른 것이 눌려 있다 — 10n-63) · 끌어서 폭 바꾸기는 10n-64
 
+**[보강 F-1] 파일 블록 — `type='file'` · 올린 파일 또는 바깥 주소 · 같은 출처에서는 내려받기로만 연다** ⟨32번 트랙 F-1a · 01 F-01-15 P1 *"파일 드래그 앤 드롭 → 타입에 따라 image/video/audio/pdf/file 블록"* / 마이그레이션 없음⟩
+
+> 01 F-01-15 는 image 만 P0 으로 섰고 file · bookmark · video 는 P1 로 미뤄졌다(00-feature-ownership 597행 *"축소 — image 업로드만"*). 파일 블록을
+> 먼저 세운다 — 이미지와 같은 저장 모양이라 새 테이블도 마이그레이션도 없다. 편집기(`/파일` · 드롭 · 붙여넣기 · 노드 뷰)는 F-1b, 비디오는 F-2,
+> 북마크는 F-3 · F-4 다.
+>
+> ① **저장 모양 — 이미지와 같다.** `block.type = 'file'` · `properties.source` 는 `{type:'file', file_id}` 또는 `{type:'external', url}`(http/https 만 ·
+> 이미지의 `readImageSource` 를 그대로 쓴다) · `properties.caption`(RichText) · 본문 글자 · 자식 · 색이 없는 원자(`BLOCK_TYPES` 의 image 줄과 같다).
+> **이름 · 크기 · MIME 은 블록에 적지 않는다** — `file` 행(`original_name` · `size_bytes` · `mime`)의 것이고 화면 · 공개 · 내보내기가 읽을 때 합친다
+> (두 곳에 적으면 어긋난다). 바깥 주소의 이름은 주소의 마지막 경로 조각(없으면 호스트). 파일에는 폭 · 정렬 · 대체 텍스트가 없다(`format` 검증은
+> 이미지만).
+>
+> ② **올리기 — 같은 길에 `kind` 가 생긴다.** `POST /files`(formData `file` · `kind`) → `uploadFile(ctx, {…, kind})`. `kind='image'`(기본 — 지금 그대로 ·
+> 받는 4종 · 매직 바이트)와 `kind='file'`(**MIME 을 제한하지 않는다** — 브라우저가 준 MIME 이 비면 `application/octet-stream` · 크기 한도는 같다
+> (F-12-09 ① · Free 5MB) · 이름 900B). 저장 키의 확장자는 `bin` — 원본 이름의 확장자를 믿지 않는다(F-09-08 *"content_type 을 근거로 확장자가
+> 자동 보정"*). 이름은 `original_name` 에 그대로 남아 내려받을 때 쓴다. `file` 행의 `mime` 은 브라우저가 준 값(가린 것이 아니다)이라 **서빙은 그 값을
+> 믿지 않는다**(③).
+>
+> ③ **서빙 — 이미지가 아니면 내려받기만.** `GET /files/{id}/content` 는 저장된 `mime` 이 받는 이미지 4종이면 지금처럼 `inline`, 아니면
+> **`content-type: application/octet-stream` · `content-disposition: attachment; filename*=UTF-8''<이름>`**(RFC 6266 · 5987 · 이름은
+> percent-encoding · `nosniff` 그대로). 01 F-01-15 가 *"별도 도메인에서 서빙(XSS 격리) · `Content-Disposition: attachment`"* 둘을 들었는데 별도 도메인이
+> 없으니 **같은 출처에서 HTML · SVG 가 렌더되는 길을 아예 두지 않는다** — 받은 MIME 이 `text/html` 이어도 내려받기다. 비디오(F-2)가 inline 목록을 넓힐
+> 때도 매직 바이트로 가린 것만 넣는다.
+>
+> ④ **참조 수 — 같은 장부.** `countFileReferences` 는 블록 타입을 보지 않고 `properties.source` 만 보므로 파일 블록도 투영 · 버전 · 영구 삭제의 같은
+> 장부에 저절로 든다(FS1). 같은 `file_id` 를 이미지 블록과 파일 블록이 함께 가리키면 참조는 둘이다.
+>
+> ⑤ **공개 화면** — `/p/{token}/blocks/{blockId}/file` — 이미지와 같은 문(블록 id 로 열고 · 그 블록이 든 페이지가 이 토큰으로 열려야 · **지금** 가리키는
+> 파일만 · 이유는 말하지 않는다 404). 응답은 ③ 과 같이 내려받기다. 본문 자리는 카드(📎 이름 · 크기 · 내려받기) — 공개 읽기가 파일의 이름 · 크기를
+> 블록과 함께 싣는다(`view.files` · 이 워크스페이스의 살아 있는 파일만). 바깥 주소는 그 주소로 가는 링크(`rel="noopener noreferrer"`).
+>
+> ⑥ **내보내기** — 첨부 폴더에 이미지와 함께(`attachmentsOf`) · 마크다운은 `[이름](상대경로)` · 바깥 주소는 `[이름](url)` · 뺀 것은 `omittedFiles` 로
+> 센다(이미지의 `omittedImages` 와 같은 자리). ZIP 안의 이름은 이름 지도(`file:{id}` — 원본 이름의 줄기 · 충돌은 지도가 푼다)에 **원본 이름의 확장자**
+> (영숫자 1~10자만 · 없으면 `bin`)를 붙인다 — 이미지는 지금처럼 MIME 의 확장자다. 받은 사람이 제 파일을 그 이름으로 돌려받는 것이 내보내기의 뜻이고,
+> ZIP 안의 확장자는 저장소의 키가 아니다(②).
+>
+> ⑦ **Y.Doc 계약** — `validateFileProperties`(source · caption — 이미지와 같은 검사)가 `document.ts` 의 같은 자리에서 거부한다. 클립보드의 평문은
+> `[이름](바깥 주소 또는 빈 주소)` — 올린 파일의 앱 안 주소는 싣지 않는다(이미지와 같은 까닭 · 10n-65).
+
 **[보강] 편집기 메뉴의 접근성 — 편집기 루트가 열린 목록과 지금 항목을 가리킨다** ⟨플랫폼 잔여 10d-3 · F-12-13 / 마이그레이션 없음⟩
 
 > 12 F-12-13 *"슬래시 메뉴/멘션 팝업은 role="listbox" + aria-activedescendant 로 조합 위젯 패턴을 따라야 하며, 포커스를 입력에서 빼앗으면

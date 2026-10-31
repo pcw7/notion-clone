@@ -26421,6 +26421,71 @@ async function main() {
           && calcOpen(htmlC) && htmlC.includes('data-testid="db-column-menu"'), summary(htmlC))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('파일 블록 — 서버 (F-1a · F-01-15)')) { try {
+      // 파일 블록(정본 §3.4 [보강 F-1]) — 올리기는 kind=file 로 무엇이든(이미지 길은 그대로 4종) · 서빙은 이미지가 아니면 내려받기(octet-stream ·
+      // attachment · nosniff) · 공개 화면은 블록 id 로 열고 같은 규칙으로 내려준다 · 카드는 이름 · 크기. 본문은 서버 함수로 쓴다(편집기는 F-1b).
+      const stamp = Date.now()
+      const cookieOnly = { cookie: authed.cookie }
+      const upload = async (name, type, bytes, kind) => {
+        const form = new FormData()
+        form.append('file', new Blob([bytes], { type }), name)
+        if (kind !== undefined) form.append('kind', kind)
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}/files`, { method: 'POST', headers: cookieOnly, body: form })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const head = async (url, headers = cookieOnly) => {
+        const r = await fetch(url, { headers })
+        return {
+          status: r.status, type: r.headers.get('content-type') ?? '', disposition: r.headers.get('content-disposition') ?? '',
+          sniff: r.headers.get('x-content-type-options') ?? '', length: Number(r.headers.get('content-length') ?? 0),
+        }
+      }
+      const html = new TextEncoder().encode(`<html><script>alert(${stamp})</script></html>`)
+      const asFile = await upload(`악성 ${stamp}.html`, 'text/html', html, 'file')
+      const asImage = await upload(`악성 ${stamp}.html`, 'text/html', html)
+      check('★ kind=file 은 무엇이든 받는다(HTML 도) · kind 없이는 지금처럼 이미지 4종만(415)',
+        asFile.status === 200 && asFile.body?.ok === true && asFile.body.file.mime === 'text/html' && asImage.status === 415,
+        JSON.stringify({ asFile: asFile.status, asImage: asImage.status, body: asFile.body }))
+      const content = await head(`${BASE}/api/workspaces/${workspaceId}/files/${asFile.body?.file?.id}/content`)
+      check('★ 이미지가 아닌 파일은 내려받기로만 — octet-stream · attachment(filename*) · nosniff(같은 출처에서 HTML 이 렌더되는 길이 없다)',
+        content.status === 200 && content.type === 'application/octet-stream' && content.disposition.startsWith('attachment;')
+          && content.disposition.includes("filename*=UTF-8''") && content.sniff === 'nosniff' && content.length === html.byteLength,
+        JSON.stringify(content))
+      const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64')
+      const pngAsFile = await upload(`그림 ${stamp}.png`, 'image/png', png, 'file')
+      const pngContent = pngAsFile.body?.file ? await head(`${BASE}/api/workspaces/${workspaceId}/files/${pngAsFile.body.file.id}/content`) : null
+      check('kind=file 로 올린 PNG 는 이미지라 그대로(inline · image/png)',
+        pngContent !== null && pngContent.type === 'image/png' && pngContent.disposition === 'inline', JSON.stringify(pngContent))
+      const badKind = await upload(`a ${stamp}.txt`, 'text/plain', html, 'video')
+      check('모르는 kind 는 400', badKind.status === 400, JSON.stringify(badKind.status))
+
+      // 공개 화면 — 본문에 파일 블록(서버 함수로 쓴다) → 게시 → 블록 id 로 내려받기 · 종류가 어긋나면 404 · 카드
+      const apiF = async (method, path, body) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, { method, headers: authed, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const page = (await apiF('POST', '/pages', { title: `파일 공개 ${stamp}` })).body.page.id
+      const blockId = randomUUID()
+      const saved = await savePageBody(ctx, page, { blocks: [
+        { id: randomUUID(), type: 'paragraph', title: [textRun('첨부')] },
+        { id: blockId, type: 'file', title: [], properties: { source: { type: 'file', file_id: asFile.body.file.id }, caption: [textRun('회의록')] } },
+      ] })
+      const { publishPage } = await import(new URL('../src/lib/publish/public-link.ts', import.meta.url).href)
+      const published = await publishPage(ctx, page)
+      const token = published.ok ? published.value.token : null
+      const pub = token === null ? null : await head(`${BASE}/p/${token}/blocks/${blockId}/file`, {})
+      const wrongKind = token === null ? null : await head(`${BASE}/p/${token}/blocks/${blockId}/image`, {})
+      check('★ 공개 화면의 파일 — 블록 id 로 내려받기(attachment · octet-stream) · 종류가 어긋나면 404',
+        saved.ok && pub !== null && pub.status === 200 && pub.type === 'application/octet-stream' && pub.disposition.startsWith('attachment;')
+          && pub.length === html.byteLength && wrongKind?.status === 404,
+        JSON.stringify({ saved: saved.ok, pub, wrongKind: wrongKind?.status }))
+      const pageHtml = token === null ? '' : await (await fetch(`${BASE}/p/${token}`)).text()
+      check('공개 본문의 카드 — 이름 · 크기 · 내려받기 링크 · 캡션',
+        pageHtml.includes('data-testid="public-file"') && pageHtml.includes(`악성 ${stamp}.html`) && pageHtml.includes(`${html.byteLength} B`)
+          && pageHtml.includes(`/p/${token}/blocks/${blockId}/file`) && pageHtml.includes('회의록'),
+        JSON.stringify({ card: pageHtml.includes('data-testid="public-file"'), name: pageHtml.includes(`악성 ${stamp}.html`), size: pageHtml.includes(`${html.byteLength} B`) }))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

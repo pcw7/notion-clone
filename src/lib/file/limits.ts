@@ -21,7 +21,7 @@
  * 'business')` 를 코드에 흩뿌리지 않는다).
  *
  * ──────────────────────────────────────────────────────────────────────
- * MVP 는 이미지만이다
+ * MVP 는 이미지만이었다 — 파일 블록(F-1a · 정본 §3.4 [보강 F-1])은 `kind='file'` 로 무엇이든 받는다
  * ──────────────────────────────────────────────────────────────────────
  *
  * `00-feature-ownership.md` 13번: F-01-15 를 *"(a) image 업로드만(F-12-09 와 한 묶음).
@@ -50,6 +50,19 @@ export type UploadRejection =
   | 'unsupported_type'
   | 'name_too_long'
 
+/**
+ * 올리는 쪽이 말하는 쓰임(F-1a · 정본 §3.4 [보강 F-1] ②) — `image` 는 받는 4종만 · `file` 은 MIME 을 제한하지 않는다(서빙이 내려받기로만
+ * 연다 · `serve.ts`). 크기 · 이름 한도는 둘이 같다.
+ */
+export type UploadKind = 'image' | 'file'
+
+export function isUploadKind(value: unknown): value is UploadKind {
+  return value === 'image' || value === 'file'
+}
+
+/** 브라우저가 MIME 을 주지 않은 파일(F-1a)의 MIME · 이미지가 아닌 파일을 내려주는 MIME. */
+export const OCTET_STREAM = 'application/octet-stream'
+
 export function isAllowedMime(mime: string): mime is AllowedMime {
   return (ALLOWED_IMAGE_MIME as readonly string[]).includes(mime)
 }
@@ -60,12 +73,16 @@ export function isAllowedMime(mime: string): mime is AllowedMime {
  * 파일명은 **바이트**로 센다(글자 수가 아니라). 한글은 글자당 3바이트라 글자 수로
  * 세면 900자까지 받아들이고 DB 의 CHECK 에서 터진다.
  */
-export function validateUpload(input: {
-  mime: string
-  size: number
-  originalName: string | null
-}): UploadRejection | null {
-  if (!isAllowedMime(input.mime)) return 'unsupported_type'
+export function validateUpload(
+  input: {
+    mime: string
+    size: number
+    originalName: string | null
+  },
+  kind: UploadKind = 'image',
+): UploadRejection | null {
+  // 이미지만 MIME 을 가린다 — 파일(F-1a)은 무엇이든 받고 서빙이 내려받기로만 연다(`serve.ts`)
+  if (kind === 'image' && !isAllowedMime(input.mime)) return 'unsupported_type'
   if (input.size <= 0) return 'empty_file'
   if (input.size > MAX_UPLOAD_BYTES) return 'too_large'
   if (input.originalName !== null && Buffer.byteLength(input.originalName, 'utf8') > MAX_FILENAME_BYTES) {
@@ -109,6 +126,7 @@ export function extensionFor(mime: AllowedMime): string {
  * 파일 id 가 uuid 라 충돌하지 않으므로 원본 파일명은 키에 넣지 않는다(경로 주입·길이
  * 문제를 아예 없앤다).
  */
-export function storageKeyFor(workspaceId: string, fileId: string, mime: AllowedMime): string {
-  return `${workspaceId}/${fileId}.${extensionFor(mime)}`
+export function storageKeyFor(workspaceId: string, fileId: string, mime: string): string {
+  // 받는 이미지가 아니면 `bin` — 원본 이름의 확장자를 믿지 않는다(F-09-08 · 정본 [보강 F-1] ②)
+  return `${workspaceId}/${fileId}.${isAllowedMime(mime) ? extensionFor(mime) : 'bin'}`
 }

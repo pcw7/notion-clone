@@ -78,7 +78,9 @@ describe('커맨드 카탈로그', () => {
     // 카탈로그가 Record<BodyBlockType, …> 이라 타입 검사도 강제하지만,
     // 목록이 실제로 생성되는지 런타임에서도 본다.
     const blockIds = SLASH_COMMANDS.filter((c) => c.kind === 'block').map((c) => c.id)
-    assert.deepEqual(blockIds.slice().sort(), [...BODY_BLOCK_TYPES].sort())
+    // 파일(F-1a)은 편집기(F-1b)가 열릴 때까지 메뉴에서 뺀다 — 카탈로그 항목은 있되 목록에는 없다.
+    assert.deepEqual(blockIds.slice().sort(), [...BODY_BLOCK_TYPES].filter((t) => t !== 'file').sort())
+    assert.equal(blockIds.includes('file'), false)
     for (const t of MVP_BLOCK_TYPES) assert.ok(blockIds.includes(t), t)
     assert.ok(blockIds.includes('code'))
   })

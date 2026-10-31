@@ -18,6 +18,7 @@ import { readTitle } from '../block/page.ts'
 import { pageIconOfFormat, readPageIcon } from '../block/page-icon.ts'
 import { customEmojiIdOfRun } from '../contracts/rich-text.ts'
 import { readImageSource } from '../block/image.ts'
+import { FILE_TYPE, readFileSource } from '../block/file-block.ts'
 import { PAGE_TYPE } from '../block/types.ts'
 import { withReadTransaction, type Tx } from '../db/tx.ts'
 import { fileStorage } from '../file/storage.ts'
@@ -25,8 +26,8 @@ import { isUuid } from '../ids.ts'
 import { openablePagesIn, resolvePublicPageIn } from './public-access.ts'
 import type { AiCrawler, RobotsDirective } from './public-token.ts'
 
-/** 공개 파일의 종류 — 본문의 이미지 블록 · 페이지의 이미지 아이콘. */
-export const PUBLIC_FILE_KINDS = ['image', 'icon'] as const
+/** 공개 파일의 종류 — 본문의 이미지 블록 · 페이지의 이미지 아이콘 · 본문의 파일 블록(F-1a — 내려받기로만 연다). */
+export const PUBLIC_FILE_KINDS = ['image', 'icon', 'file'] as const
 export type PublicFileKind = (typeof PUBLIC_FILE_KINDS)[number]
 
 export function isPublicFileKind(value: string): value is PublicFileKind {
@@ -37,6 +38,8 @@ export type PublicFile = {
   readonly bytes: Uint8Array
   readonly mime: string
   readonly sizeBytes: number
+  /** 원본 이름 — 파일 블록(F-1a)의 내려받기 이름. 이미지 · 아이콘 · 이모지는 쓰지 않는다. */
+  readonly originalName: string | null
   /** 링크의 색인 설정 — 파일 응답의 `X-Robots-Tag` 가 따른다. */
   readonly robots: RobotsDirective
   readonly aiCrawler: AiCrawler
@@ -81,15 +84,21 @@ export async function readPublicBlockFile(token: string, blockId: string, kind: 
               )?.file_id ?? null)
             : null
     } else {
-      const source = block.type === 'image' ? readImageSource(block.properties) : null
+      // 본문 블록 — 종류와 블록 타입이 맞아야 한다(image ↔ 이미지 블록 · file ↔ 파일 블록 — F-1a). 어긋나면 없는 것과 같다.
+      const source =
+        kind === 'image' && block.type === 'image'
+          ? readImageSource(block.properties)
+          : kind === 'file' && block.type === FILE_TYPE
+            ? readFileSource(block.properties)
+            : null
       pageId = await ownerPageOf(tx, block.ancestor_path)
       fileId = source?.kind === 'file' ? source.fileId : null
     }
     if (pageId === null || fileId === null) return null
     if (!(await openablePagesIn(tx, root.workspaceId, root.rootId, [pageId])).has(pageId)) return null
 
-    const file = await tx.queryMaybe<{ storage_key: string; mime: string; size_bytes: string }>(
-      `SELECT storage_key, mime, size_bytes FROM file WHERE id = $1 AND workspace_id = $2`,
+    const file = await tx.queryMaybe<{ storage_key: string; mime: string; size_bytes: string; original_name: string | null }>(
+      `SELECT storage_key, mime, size_bytes, original_name FROM file WHERE id = $1 AND workspace_id = $2`,
       [fileId, root.workspaceId],
     )
     return file === null ? null : { file, robots: root.robots, aiCrawler: root.aiCrawler }
@@ -99,7 +108,7 @@ export async function readPublicBlockFile(token: string, blockId: string, kind: 
   // 바이트는 스냅샷 밖에서 읽는다 — 파일은 id 로 불변이다(내용을 바꾸면 새 파일이다)
   const bytes = await fileStorage().read(found.file.storage_key)
   if (bytes === null) return null
-  return { bytes, mime: found.file.mime, sizeBytes: Number(found.file.size_bytes), robots: found.robots, aiCrawler: found.aiCrawler }
+  return { bytes, mime: found.file.mime, sizeBytes: Number(found.file.size_bytes), originalName: found.file.original_name, robots: found.robots, aiCrawler: found.aiCrawler }
 }
 
 /**
@@ -138,7 +147,7 @@ export async function readPublicEmojiFile(token: string, blockId: string, emojiI
   if (found === null) return null
   const bytes = await fileStorage().read(found.file.storage_key)
   if (bytes === null) return null
-  return { bytes, mime: found.file.mime, sizeBytes: Number(found.file.size_bytes), robots: found.robots, aiCrawler: found.aiCrawler }
+  return { bytes, mime: found.file.mime, sizeBytes: Number(found.file.size_bytes), originalName: null, robots: found.robots, aiCrawler: found.aiCrawler }
 }
 
 /** 본문 블록이 든 페이지 — 조상 중 가장 가까운 페이지. */

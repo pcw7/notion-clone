@@ -37,6 +37,7 @@
  */
 
 import { readImageSource } from '../block/image.ts'
+import { FILE_TYPE, UNTITLED_FILE, attachmentExtensionOf, externalFileName, fileDisplayName } from '../block/file-block.ts'
 import { textRun, toPlainText, type RichTextRun } from '../contracts/rich-text.ts'
 import type { EditorBlock, EditorDoc } from '../editor/document.ts'
 import { extensionFor, isAllowedMime } from '../file/limits.ts'
@@ -134,6 +135,8 @@ export type ExportReport = {
     readonly unsupported: number
     readonly omitted_pages: number
     readonly omitted_images: number
+    /** `links.file` 이 뺀 파일 블록(F-1a) — 파일 정보를 찾지 못한 올린 파일. */
+    readonly omitted_files: number
   }
   readonly csv_guarded_formulas: number
   /** 흘려보내며 저장소에서 읽지 못한 첨부. 계획 단계에서는 0 이고 `archive.ts` 가 채운다. */
@@ -164,7 +167,7 @@ export function planExport(snapshot: ExportSnapshot, options: { readonly untitle
   const { untitled } = options
   const entries: ExportEntry[] = []
   const visited = new Set<string>()
-  const losses: Counters = { color: 0, flattened: 0, unsafeLink: 0, unsupported: 0, omittedPages: 0, omittedImages: 0 }
+  const losses: Counters = { color: 0, flattened: 0, unsafeLink: 0, unsupported: 0, omittedPages: 0, omittedImages: 0, omittedFiles: 0 }
   const counts = { pages: 0, databases: 0, rows: 0, attachments: 0 }
   let renamedFiles = 0
   let guardedFormulas = 0
@@ -202,7 +205,7 @@ export function planExport(snapshot: ExportSnapshot, options: { readonly untitle
       ...files.map((file) => ({
         key: `file:${file.id}`,
         id: file.id,
-        base: safeFileName(stemOf(file.originalName), ATTACHMENT_FALLBACK),
+        base: safeFileName(stemOf(file.originalName), isAllowedMime(file.mime) ? ATTACHMENT_FALLBACK : UNTITLED_FILE),
         extensions: [`.${extensionOf(file)}`],
       })),
     ]
@@ -260,6 +263,12 @@ export function planExport(snapshot: ExportSnapshot, options: { readonly untitle
         if (source.kind === 'external') return source.url
         const file = snapshot.files.get(source.fileId)
         return file === undefined ? null : inFolder(fileName(names, file))
+      },
+      // 파일 블록(F-1a) — 첨부의 자리와 보이는 이름(원본 이름 · 바깥 주소는 주소의 이름)
+      file: (source) => {
+        if (source.kind === 'external') return { href: source.url, name: externalFileName(source.url) }
+        const file = snapshot.files.get(source.fileId)
+        return file === undefined ? null : { href: inFolder(fileName(names, file)), name: fileDisplayName(source, file.originalName) }
       },
       // 글자에 건 앱 링크(10n-66) — 이 ZIP 안의 페이지 · 데이터베이스면 이 파일이 있는 폴더(`folder`)에서의 상대 경로 · 해시(블록)는 뗀다
       href: (url) => {
@@ -356,6 +365,7 @@ export function planExport(snapshot: ExportSnapshot, options: { readonly untitle
         unsupported: losses.unsupported,
         omitted_pages: losses.omittedPages,
         omitted_images: losses.omittedImages,
+        omitted_files: losses.omittedFiles,
       },
       csv_guarded_formulas: guardedFormulas,
       missing_attachments: 0,
@@ -382,7 +392,8 @@ function stemOf(originalName: string | null): string {
 }
 
 function extensionOf(file: ExportFile): string {
-  return isAllowedMime(file.mime) ? extensionFor(file.mime) : 'bin'
+  // 이미지는 MIME 의 확장자 · 파일(F-1a)은 원본 이름의 확장자(정본 §3.4 [보강 F-1] ⑥ — 받는 사람이 제 파일을 그 이름으로 돌려받는다)
+  return isAllowedMime(file.mime) ? extensionFor(file.mime) : attachmentExtensionOf(file.originalName)
 }
 
 /** 본문이 가리키는 우리 파일. 문서 순서대로, 같은 파일은 한 번만. */
@@ -391,7 +402,8 @@ function attachmentsOf(doc: EditorDoc, files: ReadonlyMap<string, ExportFile>): 
   const seen = new Set<string>()
   const walk = (blocks: readonly EditorBlock[]): void => {
     for (const block of blocks) {
-      if (block.type === 'image') {
+      // 이미지 · 파일 블록(F-1a) — 출처의 모양이 같다
+      if (block.type === 'image' || block.type === FILE_TYPE) {
         const source = readImageSource(block.properties)
         const file = source?.kind === 'file' ? files.get(source.fileId) : undefined
         if (file !== undefined && !seen.has(file.id)) {
@@ -473,6 +485,7 @@ export function reportNotes(report: ExportReport): string[] {
   if (m.unsupported > 0) notes.push(`이 앱이 모르는 블록 ${m.unsupported}개는 HTML 주석으로 흔적만 남겼다.`)
   if (m.omitted_pages > 0) notes.push(`볼 수 없거나 범위 밖인 하위 페이지 참조 ${m.omitted_pages}개를 문서에서 뺐다.`)
   if (m.omitted_images > 0) notes.push(`파일 정보를 찾지 못한 이미지 ${m.omitted_images}개를 문서에서 뺐다.`)
+  if (m.omitted_files > 0) notes.push(`파일 정보를 찾지 못한 파일 ${m.omitted_files}개를 문서에서 뺐다.`)
   if (report.missing_attachments > 0) {
     notes.push(`저장소에서 읽지 못한 첨부 파일 ${report.missing_attachments}개는 ZIP 에 없다 — 문서 안의 그 링크는 열리지 않는다.`)
   }

@@ -47,6 +47,7 @@
 
 import { codeCaptionRuns, codeLanguageOf, fencedCode } from '../block/code.ts'
 import { imageAltText, readImageSource, type ImageSource } from '../block/image.ts'
+import { FILE_TYPE, externalFileName, readFileSource, type FileSource } from '../block/file-block.ts'
 import { TOC_TYPE, headingsOfBlocks, tocEntries, type TocEntry } from '../block/toc.ts'
 import { BREADCRUMB_TYPE } from '../block/breadcrumb.ts'
 import { EQUATION_TYPE, equationDisplayLines } from '../block/equation.ts'
@@ -78,6 +79,8 @@ export type MarkdownLinks = {
   readonly page: (pageId: string) => PageLinkTarget | null
   /** 이미지 주소. `null` 이면 그 이미지를 뺀다. */
   readonly image: (source: ImageSource) => string | null
+  /** 파일 블록(F-1a)의 자리와 이름. `null` 이면 그 파일을 뺀다. 없으면 바깥 주소만 싣고 올린 파일은 뺀다. */
+  readonly file?: (source: FileSource) => { readonly href: string; readonly name: string } | null
   /**
    * 본문 글자에 건 링크의 주소를 바꾼다(10n-66) — 이 앱의 주소가 이 내보내기 안의 페이지를 가리키면 ZIP 안의 상대 경로로(`plan.ts`). 주지
    * 않으면 그대로. 안전한 주소인지는 바꾼 **뒤에** 본다(상대 경로는 안전하다 · 바꾸지 못한 `javascript:` 는 여전히 뺀다).
@@ -103,12 +106,14 @@ export type MarkdownLosses = {
   readonly omittedPages: number
   /** `links.image` 가 뺀 이미지. 출처가 없는 빈 이미지 블록은 세지 않는다. */
   readonly omittedImages: number
+  /** `links.file` 이 뺀 파일(F-1a). 출처가 없는 빈 파일 블록은 세지 않는다. */
+  readonly omittedFiles: number
 }
 
 type Counters = { -readonly [K in keyof MarkdownLosses]: number }
 
 export function emptyLosses(): MarkdownLosses {
-  return { color: 0, flattened: 0, unsafeLink: 0, unsupported: 0, omittedPages: 0, omittedImages: 0 }
+  return { color: 0, flattened: 0, unsafeLink: 0, unsupported: 0, omittedPages: 0, omittedImages: 0, omittedFiles: 0 }
 }
 
 export type MarkdownResult = {
@@ -719,6 +724,24 @@ function renderBlock(block: EditorBlock, ctx: Ctx, number: number): string[] {
       // 대체 텍스트(10d-1a) — 장식이면 빈 말 · 있으면 그것 · 없으면 캡션(편집기 · 공개 화면과 같은 함수)
       const alt = escapeText(imageAltText(block.format, block.properties).replace(/\s+/g, ' ').trim())
       return [`![${alt}](${linkDestination(href)})`]
+    }
+    case FILE_TYPE: {
+      // 파일 블록(F-1a · 정본 §3.4 [보강 F-1] ⑥) — `[이름](주소)`. 올린 파일은 `links.file` 이 첨부의 자리를 준다(없으면 뺀다) ·
+      // 바깥 주소는 그대로. 출처가 없는 빈 블록은 잃은 것이 없다.
+      const source = readFileSource(block.properties)
+      if (source === null) return []
+      const target =
+        links.file !== undefined
+          ? links.file(source)
+          : source.kind === 'external'
+            ? { href: source.url, name: externalFileName(source.url) }
+            : null
+      if (target === null) {
+        losses.omittedFiles += 1
+        return []
+      }
+      const name = escapeText(target.name.replace(/\s+/g, ' ').trim() || '파일')
+      return [`[${name}](${linkDestination(target.href)})`]
     }
 
     // 인라인 데이터베이스(I-4a)도 하위 페이지와 같이 링크 한 줄 — 표는 그 옆의 CSV 다(노션의 Markdown & CSV 내보내기와 같다)

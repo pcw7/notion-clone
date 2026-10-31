@@ -32,10 +32,11 @@ import { createHash } from 'node:crypto'
 import type { SessionContext } from '../auth/session-context.ts'
 import { withReadTransaction, withTransaction, type Tx } from '../db/tx.ts'
 import {
-  isAllowedMime,
+  OCTET_STREAM,
   storageKeyFor,
   validateUpload,
   type AllowedMime,
+  type UploadKind,
   type UploadRejection,
 } from './limits.ts'
 import { fileStorage } from './storage.ts'
@@ -44,7 +45,8 @@ export type StoredFile = {
   readonly id: string
   readonly workspaceId: string
   readonly storageKey: string
-  readonly mime: AllowedMime
+  /** 브라우저가 말한 MIME — `kind='image'` 면 받는 4종 · `kind='file'`(F-1a)이면 무엇이든. 서빙은 이 값을 믿지 않는다(`serve.ts`). */
+  readonly mime: string
   readonly sizeBytes: number
   readonly originalName: string | null
   readonly checksum: string
@@ -67,7 +69,7 @@ function toStoredFile(row: FileRow): StoredFile {
     id: row.id,
     workspaceId: row.workspace_id,
     storageKey: row.storage_key,
-    mime: row.mime as AllowedMime,
+    mime: row.mime,
     sizeBytes: Number(row.size_bytes),
     originalName: row.original_name,
     checksum: row.checksum ?? '',
@@ -88,16 +90,20 @@ export type UploadResult =
  */
 export async function uploadFile(
   ctx: SessionContext,
-  input: { bytes: Uint8Array; mime: string; originalName: string | null },
+  input: { bytes: Uint8Array; mime: string; originalName: string | null; kind?: UploadKind },
 ): Promise<UploadResult> {
-  const rejection = validateUpload({
-    mime: input.mime,
-    size: input.bytes.byteLength,
-    originalName: input.originalName,
-  })
+  const kind: UploadKind = input.kind ?? 'image'
+  const rejection = validateUpload(
+    {
+      mime: input.mime,
+      size: input.bytes.byteLength,
+      originalName: input.originalName,
+    },
+    kind,
+  )
   if (rejection !== null) return { ok: false, reason: rejection }
-  if (!isAllowedMime(input.mime)) return { ok: false, reason: 'unsupported_type' }
-  const mime = input.mime
+  // 파일(F-1a)은 MIME 을 가리지 않는다 — 비면 octet-stream. 이미지는 `validateUpload` 가 4종으로 좁혔다.
+  const mime = kind === 'image' ? input.mime : input.mime.trim() === '' ? OCTET_STREAM : input.mime
 
   const id = randomUUID()
   const storageKey = storageKeyFor(ctx.workspaceId, id, mime)
@@ -126,7 +132,7 @@ export async function uploadFile(
 async function insertFileRow(
   tx: Tx,
   ctx: SessionContext,
-  row: { id: string; storageKey: string; mime: AllowedMime; size: number; originalName: string | null; checksum: string },
+  row: { id: string; storageKey: string; mime: string; size: number; originalName: string | null; checksum: string },
 ): Promise<FileRow | null> {
   const workspace = await tx.queryMaybe<{ region_id: string }>(`SELECT region_id FROM workspace WHERE id = $1`, [ctx.workspaceId])
   if (workspace === null) return null

@@ -370,3 +370,33 @@ describe('본문 글자에 건 앱 링크 → 상대 경로 (10n-66)', () => {
     assert.ok(textAt(p, '부모/아이.md').includes('[부모로](../부모.md)'), textAt(p, '부모/아이.md'))
   })
 })
+// ── 파일 블록(F-1a · 정본 §3.4 [보강 F-1] ⑥) ─────────────────────────
+describe('⑧ 파일 블록의 첨부', () => {
+  const fileBlock = (source: Record<string, unknown>): EditorBlock => ({ id: randomUUID(), type: 'file', title: [], properties: { source } })
+
+  test('★ 올린 파일은 첨부 폴더에 원본 이름의 확장자로 · 마크다운은 [이름](상대경로)', () => {
+    const fileId = randomUUID()
+    const root = pageNode('문서', [fileBlock({ type: 'file', file_id: fileId })])
+    const p = plan(snapshot([root.id], [root], [{ id: fileId, mime: 'application/pdf', originalName: '보고서.PDF', sizeBytes: 12 }]))
+    assert.deepEqual(paths(p), ['문서.md', '문서/보고서.pdf'])
+    assert.ok(textAt(p, '문서.md').includes('[보고서.PDF](문서/보고서.pdf)'), textAt(p, '문서.md'))
+    assert.equal(p.report.markdown_losses.omitted_files, 0)
+  })
+
+  test('이름 없는 파일은 "파일" · 확장자 없으면 bin · 이미지 블록과 같은 파일을 가리켜도 한 번만 넣는다', () => {
+    const shared = randomUUID()
+    const root = pageNode('문서', [fileBlock({ type: 'file', file_id: shared }), fileImage(shared)])
+    const p = plan(snapshot([root.id], [root], [{ id: shared, mime: 'application/octet-stream', originalName: null, sizeBytes: 3 }]))
+    assert.deepEqual(paths(p), ['문서.md', '문서/파일.bin'])
+    assert.ok(textAt(p, '문서.md').includes('[파일](문서/파일.bin)'), textAt(p, '문서.md'))
+  })
+
+  test('바깥 주소는 그대로 · 파일 정보가 없는 올린 파일은 뺀다(omitted_files)', () => {
+    const root = pageNode('문서', [fileBlock({ type: 'external', url: 'https://a.test/d/%EC%9E%90%EB%A3%8C.zip' }), fileBlock({ type: 'file', file_id: randomUUID() })])
+    const p = plan(snapshot([root.id], [root]))
+    assert.deepEqual(paths(p), ['문서.md'])
+    assert.ok(textAt(p, '문서.md').includes('[자료.zip](https://a.test/d/%EC%9E%90%EB%A3%8C.zip)'), textAt(p, '문서.md'))
+    assert.equal(p.report.markdown_losses.omitted_files, 1)
+    assert.ok(reportNotes(p.report).some((n) => n.includes('파일 1개')), reportNotes(p.report).join('\n'))
+  })
+})

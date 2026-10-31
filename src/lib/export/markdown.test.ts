@@ -537,6 +537,7 @@ describe('④ 참조와 잃은 것', () => {
       unsupported: 0,
       omittedPages: 0,
       omittedImages: 0,
+      omittedFiles: 0,
     })
   })
 })
@@ -581,5 +582,37 @@ describe('글자 링크의 주소 바꾸기 — links.href (10n-66)', () => {
     assert.ok(!markdown.includes('javascript'), markdown)
     assert.ok(markdown.includes('[안전](../그%20페이지.md)') || markdown.includes('[ 안전](../그%20페이지.md)'), markdown)
     assert.equal(losses.unsafeLink, 1)
+  })
+})
+// ── 파일 블록(F-1a · 정본 §3.4 [보강 F-1] ⑥ ⑦) ─────────────────────
+describe('⑥ 파일 블록', () => {
+  const fileBlock = (source: Record<string, unknown>, extra: Partial<Omit<EditorBlock, 'id' | 'type' | 'title'>> = {}): EditorBlock =>
+    block('file', [], { properties: { source }, ...extra })
+
+  test('★ links.file 이 준 자리와 이름으로 [이름](주소) · 없다고 하면 뺀다(omittedFiles)', () => {
+    const fileId = randomUUID()
+    const links: MarkdownLinks = {
+      page: () => null,
+      image: () => null,
+      file: (source) => (source.kind === 'file' && source.fileId === fileId ? { href: '문서/회의 록.pdf', name: '회의 록.pdf' } : null),
+    }
+    const { markdown, losses } = pageToMarkdown(
+      { title: [textRun('T')], doc: { blocks: [fileBlock({ type: 'file', file_id: fileId }), fileBlock({ type: 'file', file_id: randomUUID() }), fileBlock({})] } },
+      links,
+      { untitled: 'x' },
+    )
+    assert.ok(markdown.includes('[회의 록.pdf](<문서/회의 록.pdf>)') || markdown.includes('[회의 록.pdf](문서/회의%20록.pdf)'), markdown)
+    assert.equal(losses.omittedFiles, 1, '파일 정보가 없는 것 하나 — 출처 없는 빈 블록은 세지 않는다')
+  })
+
+  test('links.file 이 없으면 바깥 주소만 싣고 올린 파일은 뺀다 · 이름의 마크다운 글자는 이스케이프', () => {
+    const { markdown, losses } = pageToMarkdown(
+      { title: [textRun('T')], doc: { blocks: [fileBlock({ type: 'external', url: 'https://a.test/a_b*.zip' }), fileBlock({ type: 'file', file_id: randomUUID() })] } },
+      NO_LINKS,
+      { untitled: 'x' },
+    )
+    assert.ok(markdown.includes('](https://a.test/a_b*.zip)'), markdown)
+    assert.ok(markdown.includes('a\\_b\\*.zip') || markdown.includes('a_b\\*.zip'), markdown)
+    assert.equal(losses.omittedFiles, 1)
   })
 })
