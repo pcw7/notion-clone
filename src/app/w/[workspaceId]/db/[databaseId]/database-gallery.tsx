@@ -31,6 +31,7 @@ import { useContext, useEffect, useMemo, useRef, useState, type KeyboardEvent, t
 import { useRouter } from 'next/navigation'
 
 import type { DatabaseAccess } from '@/lib/database/database'
+import type { ViewAccess } from '@/lib/database/linked-access'
 import type { RowJson } from '@/lib/database/http'
 import type { ViewColumn } from '@/lib/database/view'
 import { cellText, parseDraft, readCell, sameValue } from '@/lib/database/cell-format'
@@ -98,6 +99,8 @@ export function DatabaseGallery(props: {
   /** 사람 칸의 이름(6g-2) — 첫 화면의 것은 서버가 준다. */
   peopleNames?: PeopleNames
   access: DatabaseAccess
+  /** 뷰 안의 일(카드의 차례 · 기본 템플릿)에 쓰는 그릇의 권한(N-2 · `linked-access.ts`) — 없으면 `access` 와 같다. */
+  viewAccess?: ViewAccess
   defaultTemplate?: DefaultTemplate | null
   /** 뷰 검색어(2e-2) — "더 보기"도 같은 검색어를 싣는다. */
   search?: string | null
@@ -121,6 +124,8 @@ export function DatabaseGallery(props: {
   live?: boolean
 }) {
   const { workspaceId, viewId, dataSourceId, tableName, columns, access } = props
+  // 뷰 안의 일(카드의 차례 · 기본 템플릿)은 그릇의 권한이다(N-2) — 소유한 소스의 뷰는 `access` 와 같다.
+  const viewAccess: ViewAccess = props.viewAccess ?? access
   const router = useRouter()
   const [rows, setRows] = useState<readonly RowJson[]>(props.rows)
   const [cursor, setCursor] = useState<string | null>(props.hasMore ? props.nextCursor : null)
@@ -272,7 +277,7 @@ export function DatabaseGallery(props: {
 
   // ── 카드 끌기(10n-61 · F-04-01 · HANDOFF §3.2-297) ─────────────────
   /** 손으로 둔 차례를 바꿀 수 있는가 — 고칠 수 있고 정렬이 없다(서버 렌더가 `manualOrder` 로 준다 · 서버도 `sorted` 로 거부). */
-  const canReorder = access.canEditContent && props.manualOrder === true
+  const canReorder = viewAccess.canEditContent && props.manualOrder === true
   const gridRef = useRef<HTMLUListElement>(null)
   /** 잡은 카드 · 잡은 자리 · 끌기가 시작됐는가 · 지금 표시를 그리게 한 다른 덩이(G-3b — 떠나면 그 표시를 지운다). */
   const cardGrab = useRef<{ id: string; x: number; y: number; active: boolean; lane: GroupLane | null } | null>(null)
@@ -532,7 +537,7 @@ export function DatabaseGallery(props: {
               viewId={viewId}
               dataSourceId={dataSourceId}
               defaultTemplate={defaultTemplate}
-              canSetDefault={access.canEditStructure}
+              canSetDefault={viewAccess.canEditStructure}
               canPickTemplate={access.canViewAllRows}
               busy={busy}
               onCreate={(templateId) => void addCard(templateId)}

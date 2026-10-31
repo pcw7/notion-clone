@@ -42,9 +42,10 @@
  * 내용 자리에 "접근 권한 없음"을 그린다 — 뷰 이름은 그릇의 것이지만 소스 이름 · 컬럼 · 행은 원본의 것이다. 고르지 않았으면 그런 뷰를
  * 건너뛴 첫 뷰가 기본이다.
  *
- * 열리는 붙인 뷰에서 칸 · 행 · 속성을 고칠 수 있는지는 **그릇과 원본의 교집합**으로 보인다. 서버는 칸 · 행 · 속성을 원본으로, 뷰 안의
- * 자리 · 계산 · 필터를 그릇으로 묻는다 — 둘을 다 갖춘 것만 열면 어느 쪽을 묻는 길이든 넘쳐 보이지 않는다. 도구줄 · 탭 · 소스 창은 뷰의
- * 것이라 그릇의 권한 그대로다.
+ * 열리는 붙인 뷰의 동작은 **서버가 묻는 쪽**을 따른다(N-2 · `linked-access.ts`): 칸 · 행 · 속성 · 옵션 · 템플릿은 원본의 권한
+ * (`contentAccess`), 뷰 안의 차례 · 열 집계 · 그룹 숨기기 · 기본 템플릿은 그릇의 권한(`viewAccess`), 보드의 카드 끌기 · 칼럼 메뉴는 둘 다.
+ * 전에는 교집합 하나로 열어 그릇은 볼 수만 있고 원본은 고칠 수 있는 사람에게 칸이 닫혔다(§3.2-139 ① 의 과소 표시). 도구줄 · 탭 ·
+ * 소스 창은 뷰의 것이라 그릇의 권한 그대로다.
  */
 
 import Link from '@/app/link'
@@ -108,7 +109,7 @@ import { DataSourcePanel, type DataSourceEntry } from './data-source-panel'
 import { AutomationPanel } from './automation-panel'
 import { dbAutomationBadge } from '@/lib/automation/db-automation'
 import type { DataSourceSummary } from '@/lib/database/data-source'
-import type { DatabaseAccess } from '@/lib/database/database'
+import { splitLinkedAccess } from '@/lib/database/linked-access'
 import { asBlockId } from '@/lib/ids'
 import { databaseHref } from '@/lib/database/open-pages'
 import { PageContent } from '../../[pageId]/page-content'
@@ -131,18 +132,6 @@ function panelSourcesOf(
     firstViewId: views.find((v) => v.dataSourceId === source.id)?.id ?? null,
   }))
 }
-
-/** 두 권한의 교집합 — 붙인 뷰의 칸 · 행 · 속성(머리말 "붙인 소스의 뷰"). */
-function bothOf(a: DatabaseAccess, b: DatabaseAccess): DatabaseAccess {
-  return {
-    canViewAllRows: a.canViewAllRows && b.canViewAllRows,
-    canEditContent: a.canEditContent && b.canEditContent,
-    canCreateRows: a.canCreateRows && b.canCreateRows,
-    canEditStructure: a.canEditStructure && b.canEditStructure,
-  }
-}
-
-const NO_ACCESS: DatabaseAccess = { canViewAllRows: false, canEditContent: false, canCreateRows: false, canEditStructure: false }
 
 export default async function DatabasePage({
   params,
@@ -313,16 +302,21 @@ export default async function DatabasePage({
   // 거부한다. 행 · 셀은 그대로다(`canEditContent` · `canCreateRows` 는 건드리지 않는다).
   const lock = await databaseLockState(ctx, databaseId)
   const access = lock?.locked ? { ...granted, canEditStructure: false } : granted
-  // 붙인 소스의 뷰(2l-3) — 칸 · 행 · 속성은 그릇과 원본의 교집합으로 연다(머리말). 원본의 잠금은 원본의 구조를 닫는다.
+  // 붙인 소스의 뷰(2l-3 · N-2) — 칸 · 행 · 속성은 원본의 권한, 뷰 안의 차례 · 열 집계 · 기본 템플릿은 그릇의 권한(머리말 ·
+  // `linked-access.ts`). 원본의 잠금은 원본의 구조를 닫는다.
   const ownerId = currentSource !== null && !currentSource.owned ? currentSource.ownerDatabaseId : null
   const original = ownerId === null ? null : await getDatabase(ctx, ownerId)
   const originalLock = ownerId === null ? null : await databaseLockState(ctx, ownerId)
-  const contentAccess =
+  const { access: contentAccess, viewAccess } = splitLinkedAccess(
+    access,
     original === null
-      ? access
+      ? null
       : original.ok
-        ? bothOf(access, originalLock?.locked ? { ...original.value.access, canEditStructure: false } : original.value.access)
-        : NO_ACCESS
+        ? originalLock?.locked
+          ? { ...original.value.access, canEditStructure: false }
+          : original.value.access
+        : 'hidden',
+  )
   // DB automation(5b-3a) — 그 표(소스)의 전체 권한이 있을 때만 배지가 온다(정의의 문과 같다 · 없으면 null). 실행 쪽이 보는 잠금은 소스의
   // 원본 데이터베이스의 것이다 — 붙인 소스면 원본의 잠금.
   const automationBadge = await dbAutomationBadge(ctx, view.value.dataSourceId)
@@ -730,6 +724,7 @@ export default async function DatabasePage({
               peopleNames,
               relationIcons: relation.icons,
               access: contentAccess,
+              viewAccess,
               defaultTemplate,
               rollupValues,
               formulaPlan,
@@ -754,6 +749,7 @@ export default async function DatabasePage({
             peopleNames={peopleNames}
             relationIcons={relation.icons}
             access={contentAccess}
+            viewAccess={viewAccess}
             defaultTemplate={defaultTemplate}
             calculation={groupCalculation}
             rollupValues={rollupValues}
@@ -820,6 +816,7 @@ export default async function DatabasePage({
               peopleNames,
               relationIcons: relation.icons,
               access: contentAccess,
+              viewAccess,
               defaultTemplate,
               search,
               layout: view.value.gallery,
@@ -847,6 +844,7 @@ export default async function DatabasePage({
             peopleNames={peopleNames}
             relationIcons={relation.icons}
             access={contentAccess}
+            viewAccess={viewAccess}
             defaultTemplate={defaultTemplate}
             search={search}
             layout={view.value.gallery}
@@ -880,6 +878,7 @@ export default async function DatabasePage({
             rollupValues,
             formulaPlan,
             access: contentAccess,
+            viewAccess,
             sorts,
             defaultTemplate,
             search,
@@ -908,6 +907,7 @@ export default async function DatabasePage({
             rollupValues={rollupValues}
             formulaPlan={formulaPlan}
             access={contentAccess}
+            viewAccess={viewAccess}
             sorts={sorts}
             defaultTemplate={defaultTemplate}
             subItems={subItems}

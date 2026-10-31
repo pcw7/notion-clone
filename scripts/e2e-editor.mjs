@@ -26361,6 +26361,66 @@ async function main() {
       check('★ 찾은 원본을 연결한다', linked)
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('붙인 뷰의 권한 — 동작마다 (N-2 · F-04-13)')) { try {
+      // 붙인 뷰의 동작은 서버가 묻는 쪽을 따른다(정본 §3.6 [보강] 다중 data source ⑫ [N-2] · HANDOFF §7 ②): 칸 · 새 행은 원본의 권한,
+      // 열 집계는 그릇의 권한, 칼럼 메뉴는 둘 다. 전에는 교집합이라 그릇은 볼 수만 있고 원본은 고칠 수 있는 사람에게 칸이 닫혔다.
+      // 자기 데이터를 스스로 만든다(API) · 서버 렌더를 동료로 읽는다.
+      const stamp = Date.now()
+      const apiN = async (method, path, body, headers = authed) => {
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}${path}`, { method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const original = (await apiN('POST', '/databases', { name: `권한원본${stamp}` })).body.database
+      const titleProp = (await apiN('GET', `/views/${original.defaultViewId}`)).body.view.columns.find((c) => c.type === 'title').propertyId
+      const originRow = `원본행${stamp}`
+      await apiN('POST', `/views/${original.defaultViewId}/rows`, { cells: [{ propertyId: titleProp, value: { type: 'title', title: [textRun(originRow)] } }] })
+      const container = (await apiN('POST', '/databases', { name: `권한그릇${stamp}` })).body.database
+      const linked = await apiN('POST', `/databases/${container.id}/linked-sources`, { dataSourceId: original.dataSourceId })
+      const linkedViewId = linked.body?.viewId ?? null
+      check('전제 — 그릇에 원본의 소스를 붙이면 그 소스를 보는 뷰가 생긴다', linked.status === 201 && linkedViewId !== null, JSON.stringify(linked))
+
+      const aclMod = await import(new URL('../src/lib/permissions/acl.ts', import.meta.url).href)
+      const mate = await joinAs(workspaceId, await createUser(`붙인 뷰 권한 동료 ${stamp}`), 'member')
+      const asMate = { cookie: `nc_session=${mate.token}` }
+      /** 그 데이터베이스의 상속을 끊고 동료에게 그 수준만 준다(나는 전체). */
+      const restrict = async (databaseId, level) => [
+        await aclMod.stopInheriting(ctx, databaseId),
+        await aclMod.grantAccess(ctx, databaseId, { type: 'user', id: ctx.userId }, 'full_access'),
+        await aclMod.revokeAccess(ctx, databaseId, { type: 'workspace_everyone', id: null }),
+        await aclMod.grantAccess(ctx, databaseId, { type: 'user', id: mate.userId }, level),
+      ].every((r) => r.ok)
+      const htmlOf = async (viewId, headers) => (await fetch(`${BASE}/w/${workspaceId}/db/${container.id}?v=${viewId}`, { headers })).text()
+      /** 열 집계 단추가 서고 닫혀 있지 않다 — 속성 `disabled=""` 로 본다(클래스의 `disabled:hover:…` 글자에 걸리지 않게 · `calculation-cell.tsx`). */
+      const calcOpen = (h) => /<button[^>]*data-testid="db-calc-button"[^>]*>/.test(h) && !/<button[^>]*data-testid="db-calc-button"[^>]*\sdisabled=""/.test(h)
+      const summary = (h) => JSON.stringify({
+        row: h.includes(originRow), readOnly: h.includes('aria-readonly="true"'), addRow: h.includes('data-testid="db-add-row"'),
+        calc: calcOpen(h), columnMenu: h.includes('data-testid="db-column-menu"'),
+      })
+
+      // ① 그릇은 볼 수만 있고 원본은 고칠 수 있다(원본은 기본 — 멤버 전체 full_access)
+      const a = await restrict(container.id, 'view')
+      const htmlA = await htmlOf(linkedViewId, asMate)
+      check('★ 그릇은 볼 수만 있고 원본은 고칠 수 있는 동료 — 붙인 뷰의 칸이 열리고 새 행 단추가 선다(원본의 권한 · 전에는 교집합이라 닫혔다)',
+        a && htmlA.includes(originRow) && !htmlA.includes('aria-readonly="true"') && htmlA.includes('data-testid="db-add-row"'), summary(htmlA))
+      check('그 동료에게 열 집계는 닫히고 칼럼 메뉴는 없다(뷰 안의 일은 그릇의 권한 · 메뉴는 둘 다)',
+        a && /data-testid="db-calc-button"/.test(htmlA) && !calcOpen(htmlA) && !htmlA.includes('data-testid="db-column-menu"'), summary(htmlA))
+      const ownA = await htmlOf(container.defaultViewId, asMate)
+      check('그릇의 제 뷰에서는 새 행 단추가 없다(그릇은 볼 수만 있다 — 권한이 소스마다 간다)', !ownA.includes('data-testid="db-add-row"'), summary(ownA))
+
+      // ② 그릇은 고칠 수 있고 원본은 볼 수만 있다
+      const b = (await aclMod.grantAccess(ctx, container.id, { type: 'user', id: mate.userId }, 'full_access')).ok && (await restrict(original.id, 'view'))
+      const htmlB = await htmlOf(linkedViewId, asMate)
+      check('★ 그릇은 고칠 수 있고 원본은 볼 수만 있는 동료 — 칸은 읽기 전용 · 새 행 없음 · 열 집계는 열린다(그릇의 권한) · 칼럼 메뉴는 없다(둘 다)',
+        b && htmlB.includes(originRow) && htmlB.includes('aria-readonly="true"') && !htmlB.includes('data-testid="db-add-row"')
+          && calcOpen(htmlB) && !htmlB.includes('data-testid="db-column-menu"'), summary(htmlB))
+
+      // ③ 둘 다 고칠 수 있는 사람(나)
+      const htmlC = await htmlOf(linkedViewId, authed)
+      check('둘 다 고칠 수 있는 사람 — 칸 · 새 행 · 열 집계 · 칼럼 메뉴가 모두 선다',
+        htmlC.includes(originRow) && !htmlC.includes('aria-readonly="true"') && htmlC.includes('data-testid="db-add-row"')
+          && calcOpen(htmlC) && htmlC.includes('data-testid="db-column-menu"'), summary(htmlC))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).
