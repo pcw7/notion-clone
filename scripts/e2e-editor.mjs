@@ -1737,10 +1737,11 @@ async function main() {
       })()`, 15000),
       await evaluate(`(${newImageSelector(idsBeforePaste)})?.querySelector('.blk-image')?.dataset.state ?? '(블록 없음)'`))
 
-    // ② 드롭 — 이미지가 아닌 파일은 받지 않되 이유를 말한다.
+    // ② 드롭 — 이미지가 아닌 파일은 파일 블록이 된다(F-1b · 정본 §3.4 [보강 F-1] ⑧ — 전에는 "이미지만" 이라며 거절했다).
     const dropLine = await line(ids.A)
     const dropAt = { x: dropLine.x + 20, y: dropLine.y + dropLine.h / 2 }
     const beforeReject = await countImages()
+    const beforeFiles = await evaluate(`document.querySelectorAll('.blk-editor .blk-file').length`)
     await evaluate(`(() => {
       const dt = new DataTransfer()
       dt.items.add(new File(['hello'], '메모.txt', { type: 'text/plain' }))
@@ -1748,9 +1749,11 @@ async function main() {
         new DragEvent('drop', { dataTransfer: dt, bubbles: true, cancelable: true, clientX: ${dropAt.x}, clientY: ${dropAt.y} }),
       )
     })()`)
-    check('★ 이미지가 아닌 파일은 조용히 버리지 않고 이유를 말한다',
-      await waitFor(`[...document.querySelectorAll('[role="status"]'), ...document.querySelectorAll('[role="alert"]')].some((e) => e.textContent.includes('이미지만'))`, 3000))
-    check('거부한 파일은 블록을 만들지 않는다', (await countImages()) === beforeReject, `${await countImages()} vs ${beforeReject}`)
+    check('★ 이미지가 아닌 파일을 놓으면 파일 블록이 되어 올라간다 — 카드에 그 이름(조용히 버리지도 거절하지도 않는다)',
+      await waitFor(`document.querySelectorAll('.blk-editor .blk-file').length === ${beforeFiles + 1}
+        && [...document.querySelectorAll('.blk-editor .blk-file')].some((f) => f.dataset.state === 'ready' && f.querySelector('.blk-file-name')?.textContent === '메모.txt')`, 15000),
+      await evaluate(`[...document.querySelectorAll('.blk-editor .blk-file')].map((f) => f.dataset.state + ':' + (f.querySelector('.blk-file-name')?.textContent ?? '')).join(',')`))
+    check('이미지가 아닌 파일은 이미지 블록을 만들지 않는다', (await countImages()) === beforeReject, `${await countImages()} vs ${beforeReject}`)
 
     // ③ 드롭 — 놓은 줄 바로 다음에 들어간다.
     const beforeDrop = await countImages()
