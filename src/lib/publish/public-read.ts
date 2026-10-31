@@ -18,6 +18,7 @@ import { pageIconOfFormat, readPageIcon, type PageIcon } from '../block/page-ico
 import { cellsOf } from '../block/table.ts'
 import { codeCaptionRuns } from '../block/code.ts'
 import { DATABASE_TYPE, PAGE_TYPE, isRefType } from '../block/types.ts'
+import { FILE_TYPE, fileDisplayName, readFileSource } from '../block/file-block.ts'
 import { customEmojiIdOfRun, mentionTarget, type RichTextRun } from '../contracts/rich-text.ts'
 import { withReadTransaction, type Tx } from '../db/tx.ts'
 import { rowsToDoc, type BodyRow, type EditorBlock, type EditorDoc } from '../editor/document.ts'
@@ -52,10 +53,15 @@ export type PublicPageView = {
    * 본문 안의 인라인 데이터베이스(I-4b)마다 그 공개 표 — 열 수 있는 것만(없는 id 의 참조는 이미 문서에서 뺐다). 이름은 `pages` 에 있다.
    */
   readonly databases: ReadonlyMap<string, PublicTable>
+  /** 본문의 파일 블록(F-1a)이 가리키는 이 워크스페이스의 파일 — 이름 · 크기(정본 §3.4 [보강 F-1] ⑤). 없는 id 는 없다(그 카드는 그리지 않는다). */
+  readonly files: ReadonlyMap<string, PublicFileMeta>
   readonly table: PublicTable | null
   /** 연 페이지가 데이터베이스의 행이면 그 속성 묶음(6a-2c-2 — 제목 아래). 아니면 null. */
   readonly rowProperties: PublicRowProperties | null
 }
+
+/** 공개 파일 카드의 메타(F-1a). */
+export type PublicFileMeta = { readonly name: string; readonly sizeBytes: number }
 
 export type PublicRead =
   | { readonly ok: true; readonly value: PublicPageView }
@@ -98,6 +104,8 @@ export async function readPublicPage(token: string, pageId?: string, options: { 
     }
     const shown: ReadonlySet<string> = hidden.size === 0 ? openable : new Set([...openable].filter((id) => !hidden.has(id)))
     const doc: EditorDoc = { blocks: withoutClosedRefs(draft.blocks, shown) }
+    // 파일 블록의 이름 · 크기(F-1a) — 이 워크스페이스의 파일만
+    const files = await publicFilesIn(tx, target.workspaceId, doc)
 
     const titled = [...new Set([...target.chain, ...shown])]
     const titles = await tx.query<{ id: string; properties: Record<string, unknown> | null }>(
@@ -136,6 +144,7 @@ export async function readPublicPage(token: string, pageId?: string, options: { 
         emoji: new Map(emoji.map((row) => [row.id, { name: row.name, deleted: row.deleted }])),
         table: isDatabase ? await readPublicTableIn(tx, target) : null,
         databases: inlineDatabases,
+        files,
         rowProperties: isDatabase ? null : await readPublicRowPropertiesIn(tx, target),
       },
     } as const
@@ -188,6 +197,27 @@ function withoutClosedRefs(blocks: readonly EditorBlock[], openable: ReadonlySet
 /** 런들에 나오는 커스텀 이모지 id(소문자) — 7c-3c. */
 function emojiIdsOf(runs: readonly RichTextRun[]): string[] {
   return runs.map(customEmojiIdOfRun).filter((id): id is string => id !== null).map((id) => id.toLowerCase())
+}
+
+/** 본문의 파일 블록이 가리키는 **이 워크스페이스**의 파일 — 이름 · 크기(F-1a · 정본 [보강 F-1] ⑤). 다른 워크스페이스의 id 는 없는 것과 같다. */
+async function publicFilesIn(tx: Tx, workspaceId: string, doc: EditorDoc): Promise<Map<string, PublicFileMeta>> {
+  const ids = new Set<string>()
+  const walk = (blocks: readonly EditorBlock[]): void => {
+    for (const block of blocks) {
+      if (block.type === FILE_TYPE) {
+        const source = readFileSource(block.properties)
+        if (source?.kind === 'file') ids.add(source.fileId)
+      }
+      walk(block.children ?? [])
+    }
+  }
+  walk(doc.blocks)
+  if (ids.size === 0) return new Map()
+  const rows = await tx.query<{ id: string; original_name: string | null; size_bytes: string | number }>(
+    `SELECT id, original_name, size_bytes FROM file WHERE workspace_id = $1 AND id = ANY($2::uuid[])`,
+    [workspaceId, [...ids]],
+  )
+  return new Map(rows.map((row) => [row.id, { name: fileDisplayName({ kind: 'file', fileId: row.id }, row.original_name), sizeBytes: Number(row.size_bytes) }]))
 }
 
 function mentionsOf(blocks: readonly EditorBlock[]): { pages: string[]; people: string[]; emoji: string[] } {

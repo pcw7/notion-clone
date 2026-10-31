@@ -52,7 +52,7 @@ export type MvpBlockType = (typeof MVP_BLOCK_TYPES)[number]
  *
  * ⚠ 순서가 뜻을 갖는다 — 첫 항목(`paragraph`)이 새 블록의 기본형이다(`editor/schema.ts`). 더하는 것은 뒤에 붙인다.
  */
-export const BODY_BLOCK_TYPES = [...MVP_BLOCK_TYPES, 'code', 'table_of_contents', 'breadcrumb', 'equation', 'button'] as const
+export const BODY_BLOCK_TYPES = [...MVP_BLOCK_TYPES, 'code', 'table_of_contents', 'breadcrumb', 'equation', 'button', 'file'] as const
 export type BodyBlockType = (typeof BODY_BLOCK_TYPES)[number]
 
 /**
@@ -192,6 +192,8 @@ export const BLOCK_TYPES: Readonly<Record<BlockType, BlockTypeSpec>> = Object.fr
   // divider 와 image 는 텍스트를 담지 않고 색도 없다.
   divider: { hasRichText: false, canHaveChildren: false, supportsColor: false, markdownPrefix: ['---'] },
   image: { hasRichText: false, canHaveChildren: false, supportsColor: false, hasCaption: true },
+  // 파일(F-1a · 정본 §3.4 [보강 F-1]) — 이미지와 같은 모양의 원자(글 · 자식 · 색 없음 · 캡션). 이름 · 크기는 `file` 행의 것이다.
+  file: { hasRichText: false, canHaveChildren: false, supportsColor: false, hasCaption: true },
 
   // 코드 블록(F-01-14 · 8a-1) — 본문은 평문 · 색 없음(F-01-02 GAP: `code` 에는 color 필드가 없다) · 자식 없음.
   code: {

@@ -143,6 +143,7 @@ const CATALOG: Readonly<Record<BodyBlockType, SlashCommandBase>> = {
   callout: { label: '콜아웃', aliases: ['콜아웃', 'callout'], group: '기본 블록' },
   divider: { label: '구분선', aliases: ['구분선', 'divider', 'div', 'hr'], group: '기본 블록' },
   image: { label: '이미지', aliases: ['이미지', 'image', 'img', '사진'], group: '미디어' },
+  file: { label: '파일', aliases: ['파일', 'file', '첨부', 'attachment'], group: '미디어' },
   code: { label: '코드', aliases: ['코드', 'code', 'codeblock', '```'], group: '기본 블록' },
   // 목차(8b-1) — 노션의 'Advanced blocks' 자리.
   table_of_contents: { label: '목차', aliases: ['목차', '차례', 'toc', 'table of contents', 'contents'], group: '고급 블록' },
@@ -205,7 +206,8 @@ const COLOR_COMMANDS: readonly ColorSlashCommand[] = COLORS.map((color) => ({
   kind: 'color', id: `color:${color}`, color, label: colorLabel(color), aliases: colorAliases(color), group: '색',
 }))
 
-const BLOCK_COMMANDS: readonly BlockSlashCommand[] = BODY_BLOCK_TYPES.map((id) => ({
+// 파일(F-1a)은 편집기(노드 뷰 · 올리기 — F-1b)가 열릴 때까지 메뉴에서 뺀다 — 카탈로그 항목 자체는 `Record` 가 강제한다.
+const BLOCK_COMMANDS: readonly BlockSlashCommand[] = BODY_BLOCK_TYPES.filter((id) => id !== 'file').map((id) => ({
   kind: 'block',
   id,
   ...CATALOG[id],

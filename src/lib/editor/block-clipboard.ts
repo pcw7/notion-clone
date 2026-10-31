@@ -58,6 +58,7 @@ import { codeCaptionText, codeLanguageOf, fencedCode } from '../block/code.ts'
 import { equationDisplayLines } from '../block/equation.ts'
 import { buttonPlainText } from '../block/button.ts'
 import { imageAltText, readImageSource } from '../block/image.ts'
+import { fileDisplayName, readFileSource } from '../block/file-block.ts'
 import { cellsOf, TABLE_TYPE } from '../block/table.ts'
 import { isKnownBlockType, isRefType, specOf } from '../block/types.ts'
 import { textRun, toPlainText } from '../contracts/rich-text.ts'
@@ -173,6 +174,12 @@ export function plainTextForBlocks(blocks: readonly EditorBlock[]): string {
           // 않는다(평문은 바깥으로 나가는 모양이다 · 앱 안의 붙여넣기는 블록 MIME 을 쓴다)
           const source = readImageSource(block.properties)
           lines.push(`${indent}![${imageAltText(block.format, block.properties)}](${source?.kind === 'external' ? source.url : ''})`)
+          break
+        }
+        case 'file': {
+          // 파일 블록(F-1a) — `[이름](바깥 주소 또는 빈)`. 올린 파일의 앱 안 주소는 싣지 않는다(이미지와 같은 까닭) · 이름은 블록에 없어 "파일".
+          const source = readFileSource(block.properties)
+          lines.push(`${indent}[${fileDisplayName(source, null)}](${source?.kind === 'external' ? source.url : ''})`)
           break
         }
         case 'equation':

@@ -11,6 +11,7 @@
  */
 
 import { isPublicFileKind, readPublicBlockFile, robotsHeaderOf } from '@/lib/publish/public-file'
+import { fileResponseHeaders } from '@/lib/file/serve'
 
 export async function GET(_request: Request, ctx: RouteContext<'/p/[token]/blocks/[blockId]/[kind]'>): Promise<Response> {
   const { token, blockId, kind } = await ctx.params
@@ -19,11 +20,10 @@ export async function GET(_request: Request, ctx: RouteContext<'/p/[token]/block
   if (file === null) return new Response(null, { status: 404, headers: { 'x-robots-tag': 'noindex, nofollow' } })
   return new Response(file.bytes as BodyInit, {
     headers: {
-      'content-type': file.mime,
+      // 이미지 · 아이콘은 inline · 파일 블록(F-1a)은 내려받기(octet-stream · attachment — 정본 §3.4 [보강 F-1] ③ ⑤)
+      ...fileResponseHeaders(file),
       'content-length': String(file.sizeBytes),
       'cache-control': 'private, max-age=60',
-      'x-content-type-options': 'nosniff',
-      'content-disposition': 'inline',
       'x-robots-tag': robotsHeaderOf(file),
       'referrer-policy': 'no-referrer',
     },

@@ -19,6 +19,7 @@
 
 import { requireWorkspaceSession } from '@/lib/auth/route-session'
 import { readFile } from '@/lib/file/file'
+import { fileResponseHeaders } from '@/lib/file/serve'
 
 export async function GET(
   _request: Request,
@@ -35,13 +36,12 @@ export async function GET(
 
   return new Response(found.bytes as BodyInit, {
     headers: {
-      'content-type': found.file.mime,
+      // 받는 이미지 4종은 inline · 그 밖은 내려받기(`application/octet-stream` · attachment — 정본 §3.4 [보강 F-1] ③). 이미지라고 하고
+      // HTML 을 흘려보내는 경로를 막는다(nosniff) — SVG 를 받지 않는 것과 한 쌍이다.
+      ...fileResponseHeaders(found.file),
       'content-length': String(found.file.sizeBytes),
       // 같은 id 의 내용은 바뀌지 않는다. `private` — 공용 캐시에는 두지 않는다.
       'cache-control': 'private, max-age=31536000, immutable',
-      // 이미지라고 하고 HTML 을 흘려보내는 경로를 막는다. SVG 를 받지 않는 것과 한 쌍이다.
-      'x-content-type-options': 'nosniff',
-      'content-disposition': 'inline',
     },
   })
 }

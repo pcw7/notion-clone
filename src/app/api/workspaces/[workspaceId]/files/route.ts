@@ -12,7 +12,7 @@
 
 import { requireWorkspaceSession } from '@/lib/auth/route-session'
 import { uploadFile } from '@/lib/file/file'
-import { MAX_UPLOAD_BYTES, type UploadRejection } from '@/lib/file/limits'
+import { MAX_UPLOAD_BYTES, isUploadKind, type UploadRejection } from '@/lib/file/limits'
 
 const STATUS: Readonly<Record<UploadRejection, number>> = {
   empty_file: 400,
@@ -57,11 +57,18 @@ export async function POST(
   // 이름이 비어 있으면(클립보드 이미지 등) 없는 것으로 둔다 — 빈 문자열을 저장하면
   // "이름이 있는데 빈 이름"인 상태가 생긴다.
   const originalName = value.name.trim() === '' ? null : value.name
+  // 쓰임(F-1a · 정본 §3.4 [보강 F-1] ②) — `kind` 가 없으면 이미지(지금까지의 호출자 그대로). 모르는 값은 400.
+  const kindValue = form.get('kind')
+  const kind = kindValue === null ? 'image' : isUploadKind(kindValue) ? kindValue : null
+  if (kind === null) {
+    return Response.json({ error: 'invalid_body', message: '`kind` 는 image 또는 file 입니다.' }, { status: 400 })
+  }
 
   const result = await uploadFile(session.ctx, {
     bytes: new Uint8Array(await value.arrayBuffer()),
     mime: value.type,
     originalName,
+    kind,
   })
 
   if (!result.ok) {

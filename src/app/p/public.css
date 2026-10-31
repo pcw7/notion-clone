@@ -103,6 +103,14 @@
 .pub-image[data-width] img, .pub-image[data-width] figcaption { width: var(--pub-image-width); }
 .pub-image[data-align='center'] img, .pub-image[data-align='center'] figcaption { margin-inline: auto; }
 .pub-image[data-align='center'] figcaption { text-align: center; }
+/* 파일 블록(F-1a) — 카드: 📎 이름 · 크기 · 누르면 내려받기(올린 파일) 또는 바깥 주소 */
+.pub-block.pub-file { padding-left: 0; padding-right: 0; }
+.pub-file-card { display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 0.75rem; border: 1px solid rgba(135, 131, 120, 0.25); border-radius: 4px; text-decoration: none !important; color: inherit; }
+.pub-file-card:hover { background: rgba(135, 131, 120, 0.08); }
+.pub-file-name { font-weight: 500; overflow-wrap: anywhere; }
+.pub-file-size { color: #6b7280; font-size: 0.875rem; white-space: nowrap; }
+.pub-file figcaption { font-size: 0.875rem; color: #6b7280; margin-top: 0.25rem; }
+:root[data-theme='dark'] .pub-file-card { border-color: rgba(255, 255, 255, 0.14); }
 .pub-image[data-align='right'] img, .pub-image[data-align='right'] figcaption { margin-left: auto; }
 .pub-image[data-align='right'] figcaption { text-align: right; }
 .pub-icon-image { width: 4.5rem; height: 4.5rem; object-fit: cover; border-radius: 4px; margin-bottom: 0.5rem; }

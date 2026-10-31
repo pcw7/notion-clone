@@ -40,6 +40,7 @@
 
 import type { SessionContext } from '../auth/session-context.ts'
 import { readImageSource } from '../block/image.ts'
+import { FILE_TYPE } from '../block/file-block.ts'
 import { plainTitleOf, readTitle } from '../block/page.ts'
 import { PAGE_TYPE, isRefType } from '../block/types.ts'
 import { DEFAULT_PROPERTY_TYPE, isMvpPropertyType, isOptionType } from '../database/property-types.ts'
@@ -475,7 +476,8 @@ async function readRelationTitles(
 async function readFiles(tx: Tx, ctx: SessionContext, blocks: readonly BlockRow[]): Promise<Map<string, ExportFile>> {
   const ids = new Set<string>()
   for (const block of blocks) {
-    if (block.type !== 'image') continue
+    // 이미지 · 파일 블록(F-1a) — 출처의 모양이 같다
+    if (block.type !== 'image' && block.type !== FILE_TYPE) continue
     const source = readImageSource(block.properties)
     if (source?.kind === 'file') ids.add(source.fileId)
   }
