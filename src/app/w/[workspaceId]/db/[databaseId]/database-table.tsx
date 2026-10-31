@@ -77,6 +77,7 @@ import {
 import { useRouter } from 'next/navigation'
 
 import type { DatabaseAccess } from '@/lib/database/database'
+import type { ViewAccess } from '@/lib/database/linked-access'
 import type { SortKey } from '@/lib/database/filter'
 import { sortFirst } from '@/lib/database/filter-draft'
 import type { RowJson } from '@/lib/database/http'
@@ -191,6 +192,8 @@ export function DatabaseTable(props: {
   hasMore: boolean
   nextCursor: string | null
   access: DatabaseAccess
+  /** 뷰 안의 일(차례 · 열 집계 · 기본 템플릿)에 쓰는 그릇의 권한(N-2 · `linked-access.ts`) — 없으면 `access` 와 같다(소유한 소스의 뷰). */
+  viewAccess?: ViewAccess
   /** 지금 뷰의 정렬(지워진 속성의 키를 뺀 것). 머리 메뉴의 정렬이 이것을 고친다. */
   sorts: readonly SortKey[]
   /** `list` 면 같은 격자를 목록 모양으로 그린다(머리말). 기본은 `table`. */
@@ -252,6 +255,8 @@ export function DatabaseTable(props: {
   liveTick?: number
 }) {
   const { workspaceId, viewId, dataSourceId, tableName, access } = props
+  // 뷰 안의 일(차례 · 열 집계 · 기본 템플릿)은 그릇의 권한이다(N-2) — 소유한 소스의 뷰는 `access` 와 같다.
+  const viewAccess: ViewAccess = props.viewAccess ?? access
   const variant: TableVariant = props.variant ?? 'table'
   const isList = variant === 'list'
   /** 한 행을 세로로 펼친 모양 — 템플릿 편집 화면(6c-3 · F-08-02). 칸마다 속성 이름이 왼쪽에 선다. */
@@ -1355,7 +1360,8 @@ export function DatabaseTable(props: {
    * 트리가 아니다(펼친 자식 묶음을 함께 옮기는 규칙은 아직 없다 — §7). 서버는 이 뷰의 `row_position('*')` 에 둔다(10n-59).
    */
   // 그룹 덩이(G-2b · 정본 [보강 G-1] ⑦)에서는 덩이 안의 차례 — 보드 열의 자리(`group_key`)라 표의 `'*'` 자리와 따로다(`moveRowTo`)
-  const canReorder = access.canEditContent && props.sorts.length === 0 && (variant === 'table' || variant === 'list') && subItems === null
+  // 차례는 이 뷰 안의 자리(`row_position`)라 그릇의 권한이다(N-2).
+  const canReorder = viewAccess.canEditContent && props.sorts.length === 0 && (variant === 'table' || variant === 'list') && subItems === null
   /**
    * 덩이에 남은 "조건 밖" 행(G-1 ④) — 고쳐서 다른 그룹 값이 됐다. 덩이 안에서 옮기면 값이 이 덩이 것으로 되돌아가므로 손잡이를 그리지 않고
    * 놓을 자리 · 키의 한 칸에서 건너뛴다(그사이를 서버의 `within` 이 막는다). 평평한 표의 조건 밖 행은 옮겨도 된다 — 셀이 없다.
@@ -1601,8 +1607,9 @@ export function DatabaseTable(props: {
                       {column.name}
                       <span className="sr-only"> ({TYPE_LABEL[column.type]})</span>
                     </span>
-                    {/* 감춘 머리 안의 버튼은 Tab 으로는 닿는데 보이지 않는다 — List 에는 두지 않는다. */}
-                    {access.canEditStructure && isGrid && (
+                    {/* 감춘 머리 안의 버튼은 Tab 으로는 닿는데 보이지 않는다 — List 에는 두지 않는다. 속성(원본)과 뷰 설정(그릇)을 함께
+                        여는 메뉴라 둘 다 있어야 선다(N-2). */}
+                    {access.canEditStructure && viewAccess.canEditStructure && isGrid && (
                       <ColumnMenu
                         name={column.name}
                         isTitle={column.type === 'title'}
@@ -1984,7 +1991,8 @@ export function DatabaseTable(props: {
                       type={column.type}
                       calculation={column.calculation ?? null}
                       result={calculations?.[column.propertyId]}
-                      canEdit={access.canEditStructure}
+                      // 열 집계는 뷰의 것이다(`view_property.calculation`) — 그릇의 권한(N-2)
+                      canEdit={viewAccess.canEditStructure}
                       onPick={async (calculation) =>
                         afterStructure(await api.setColumnCalculation(workspaceId, viewId, column.propertyId, calculation))
                       }
@@ -2032,7 +2040,8 @@ export function DatabaseTable(props: {
             viewId={viewId}
             dataSourceId={dataSourceId}
             defaultTemplate={defaultTemplate}
-            canSetDefault={access.canEditStructure}
+            // 기본 템플릿은 뷰의 것이다(`view.default_template_page_id`) — 그릇의 권한(N-2) · 고르는 것은 원본의 목록을 읽는 일
+            canSetDefault={viewAccess.canEditStructure}
             canPickTemplate={access.canViewAllRows}
             busy={addingRow}
             onCreate={(templateId) => void addRow(templateId)}

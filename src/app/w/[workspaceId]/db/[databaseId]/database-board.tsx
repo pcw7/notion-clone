@@ -68,6 +68,7 @@ import {
 import { useRouter } from 'next/navigation'
 
 import type { DatabaseAccess } from '@/lib/database/database'
+import type { ViewAccess } from '@/lib/database/linked-access'
 import type { RowJson } from '@/lib/database/http'
 import { PageIconView } from '../../page-icon-view'
 import type { GroupBy } from '@/lib/database/group'
@@ -194,6 +195,8 @@ export function DatabaseBoard(props: {
   manualOrder: boolean
   groups: BoardGroupJson[]
   access: DatabaseAccess
+  /** 뷰 안의 일(카드의 자리 · 그룹 숨기기 · 기본 템플릿)에 쓰는 그릇의 권한(N-2 · `linked-access.ts`) — 없으면 `access` 와 같다. */
+  viewAccess?: ViewAccess
   /** 첫 화면의 relation 제목(서버 렌더가 준다). 그 뒤에 온 카드의 것은 `useRelationLabels` 가 받는다. */
   relationLabels: RelationLabels
   /** 그 행들의 아이콘(8c-3a) — 제목 맵과 같은 답에서 왔다. */
@@ -230,6 +233,10 @@ export function DatabaseBoard(props: {
   live?: boolean
 }) {
   const { workspaceId, viewId, dataSourceId, tableName, columns, property, groupBy, manualOrder, access } = props
+  // 뷰 안의 일(카드의 자리 · 그룹 숨기기 · 기본 템플릿)은 그릇의 권한이다(N-2) — 소유한 소스의 뷰는 `access` 와 같다.
+  const viewAccess: ViewAccess = props.viewAccess ?? access
+  // 카드 끌기 · 옮기기 메뉴는 칸(원본)과 이 뷰 안의 자리(그릇 · `row_position`)를 함께 쓴다 — 둘 다(정본 ⑫).
+  const canMoveCards = access.canEditContent && viewAccess.canEditContent
   const router = useRouter()
   /** 가로줄들이 서로를 찾는 자리(B-4d) — 하위 그룹이 있는 보드 밖이면 null. */
   const boardLanes = useContext(BoardLanesContext)
@@ -415,7 +422,7 @@ export function DatabaseBoard(props: {
   }
 
   const onCardPointerDown = (row: RowJson, key: string, event: ReactPointerEvent<HTMLLIElement>) => {
-    if (event.button !== 0 || !access.canEditContent) return
+    if (event.button !== 0 || !canMoveCards) return
     if (editingRef.current?.rowId === row.id) return
     // 카드 안의 버튼 · 링크는 제 일을 한다.
     if ((event.target as HTMLElement).closest('button, a, input, select, textarea')) return
@@ -844,7 +851,7 @@ export function DatabaseBoard(props: {
                       viewId={viewId}
                       dataSourceId={dataSourceId}
                       defaultTemplate={defaultTemplate}
-                      canSetDefault={access.canEditStructure}
+                      canSetDefault={viewAccess.canEditStructure}
                       canPickTemplate={access.canViewAllRows}
                       busy={busyKey !== null}
                       onCreate={(templateId) => void addCard(group, templateId)}
@@ -860,7 +867,7 @@ export function DatabaseBoard(props: {
                       testId="db-board-add"
                     />
                   )}
-                  {access.canEditStructure && (
+                  {viewAccess.canEditStructure && (
                     <button
                       type="button"
                       aria-label={`${label} 그룹 숨기기`}
@@ -893,7 +900,7 @@ export function DatabaseBoard(props: {
                     dragging={draggingId === row.id}
                     dropBefore={isTarget && drop.beforeRowId === row.id}
                     editing={editing?.rowId === row.id ? editing : null}
-                    canDrag={access.canEditContent}
+                    canDrag={canMoveCards}
                     inputRef={titleInputRef}
                     onDraft={(draft) => setEditing({ rowId: row.id, draft })}
                     onTitleKeyDown={onTitleKeyDown}
@@ -906,7 +913,7 @@ export function DatabaseBoard(props: {
                       endDrag()
                     }}
                     onContextMenu={onCardContextMenu}
-                    move={access.canEditContent ? cardMove(row.id) : null}
+                    move={canMoveCards ? cardMove(row.id) : null}
                     onMove={(target) => moveByMenu(row.id, group.key, target)}
                   />
                 ))}
@@ -953,7 +960,7 @@ export function DatabaseBoard(props: {
               >
                 {label}
                 <span className="tabular-nums text-neutral-400">{group.count}</span>
-                {access.canEditStructure && (
+                {viewAccess.canEditStructure && (
                   <button
                     type="button"
                     aria-label={`${label} 그룹 보이기`}
