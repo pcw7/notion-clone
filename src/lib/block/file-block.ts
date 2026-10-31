@@ -8,7 +8,7 @@
  * 순수 모듈이다 — 편집기(클라이언트) · 공개 화면 · 내보내기가 함께 읽는다.
  */
 
-import { readImageSource, validateImageProperties, type ImageSource } from './image.ts'
+import { isSafeImageUrl, readImageSource, validateImageProperties, type ImageSource } from './image.ts'
 
 export const FILE_TYPE = 'file' as const
 
@@ -17,6 +17,9 @@ export type FileSource = ImageSource
 
 /** `properties.source` 를 읽는다 — 모양이 틀리면 null(빈 블록). */
 export const readFileSource: (properties: unknown) => FileSource | null = readImageSource
+
+/** 바깥 주소로 받는 것 — http · https 만(이미지와 같은 검사). */
+export const isSafeFileUrl: (value: unknown) => value is string = isSafeImageUrl
 
 /** Y.Doc 계약의 검증 — source · caption(이미지와 같은 검사 · 정본 ⑦). */
 export function validateFileProperties(properties: unknown, path: string): { path: string; message: string }[] {

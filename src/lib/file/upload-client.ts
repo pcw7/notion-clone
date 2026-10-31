@@ -30,7 +30,7 @@
  * 화면이 "다시 올리기" 를 세우지 않는다.
  */
 
-import { MAX_UPLOAD_BYTES, validateUpload, type UploadRejection } from './limits.ts'
+import { MAX_UPLOAD_BYTES, validateUpload, type UploadKind, type UploadRejection } from './limits.ts'
 
 export type UploadOutcome =
   | { readonly ok: true; readonly fileId: string }
@@ -92,16 +92,27 @@ export type UploadHandlers = {
  * 예외를 삼키면 블록이 "올리는 중" 상태에 영원히 남는다. 실패도 값이어야
  * 화면을 되돌릴 수 있다.
  */
-export function uploadImageFile(
+export function uploadImageFile(workspaceId: string, file: File, handlers: UploadHandlers = {}): Promise<UploadOutcome> {
+  return uploadFileOf(workspaceId, file, handlers, 'image')
+}
+
+/**
+ * 파일을 올린다 — `kind`(F-1a · 정본 §3.4 [보강 F-1] ②): `image` 는 받는 4종을 여기서 먼저 가리고 · `file` 은 무엇이든(크기 · 이름만 본다).
+ */
+export function uploadFileOf(
   workspaceId: string,
   file: File,
   handlers: UploadHandlers = {},
+  kind: UploadKind = 'image',
 ): Promise<UploadOutcome> {
-  const rejection = validateUpload({
-    mime: file.type,
-    size: file.size,
-    originalName: file.name === '' ? null : file.name,
-  })
+  const rejection = validateUpload(
+    {
+      mime: file.type,
+      size: file.size,
+      originalName: file.name === '' ? null : file.name,
+    },
+    kind,
+  )
   if (rejection !== null) {
     return Promise.resolve({ ok: false, message: REJECTION_MESSAGE[rejection] })
   }
@@ -112,6 +123,7 @@ export function uploadImageFile(
     const form = new FormData()
     // 필드명은 `file` 이다 (F-09-08).
     form.append('file', file)
+    if (kind !== 'image') form.append('kind', kind)
 
     const xhr = new XMLHttpRequest()
     xhr.open('POST', uploadUrl(workspaceId))

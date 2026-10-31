@@ -125,7 +125,7 @@ export function editingPlugins(deps: EditorDeps): Plugin[] {
     // 블록 선택 하이라이트(F-01-09). 상태는 `state.selection` 이 갖고 있고
     // 이 플러그인은 그리기만 한다.
     blockSelectionPlugin(),
-    // 이미지 드롭·붙여넣기(F-01-15)는 **클립보드 플러그인보다 앞**이다. 스크린샷을
+    // 이미지 · 파일 드롭·붙여넣기(F-01-15 · 이미지가 아니면 파일 블록 — F-1b)는 **클립보드 플러그인보다 앞**이다. 스크린샷을
     // 붙이면 파일과 HTML 이 같이 실려 오는 경우가 있어서, 뒤에 두면 HTML 경로가
     // 먼저 먹는다.
     imageDropPlugin(deps),

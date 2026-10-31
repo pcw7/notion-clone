@@ -27,7 +27,10 @@ import type { EditorBlock } from './document.ts'
 import type { CommandDeps } from './commands.ts'
 import type { BlockType } from '../block/types.ts'
 import {
+  classifyFiles,
+  emptyFileBlock,
   emptyImageBlock,
+  insertAtomBlocksCommand,
   insertImageBlocksCommand,
   partitionImageFiles,
   queueUpload,
@@ -219,5 +222,47 @@ describe('올릴 파일 큐 — 에디터마다 따로', () => {
 
   test('큐에 없는 블록은 null — 평범한 빈 이미지 블록이다', () => {
     assert.equal(takeQueuedUpload(fakeView(), '없는블록'), null)
+  })
+})
+// ── 파일 블록(F-1b · 정본 §3.4 [보강 F-1] ⑧) — 이미지가 아니면 파일 블록 ──────────────
+describe('classifyFiles — 이미지가 아니면 파일 블록 · 거절은 없다', () => {
+  test('★ 차례를 지키며 가른다 — PNG 는 image · PDF · SVG · 빈 MIME 은 file', () => {
+    const files = [png(), other('a.pdf', 'application/pdf'), other('b.svg', 'image/svg+xml'), other('c', ''), png('d.png')]
+    assert.deepEqual(classifyFiles(files).map((d) => d.type), ['image', 'file', 'file', 'file', 'image'])
+    assert.deepEqual(classifyFiles(files).map((d) => d.file.name), ['a.png', 'a.pdf', 'b.svg', 'c', 'd.png'])
+  })
+
+  test('없거나 비면 빈 목록', () => {
+    assert.deepEqual(classifyFiles(null), [])
+    assert.deepEqual(classifyFiles([]), [])
+  })
+})
+
+describe('insertAtomBlocksCommand — 이미지 · 파일 블록을 함께 넣는다', () => {
+  test('빈 파일 블록은 이미지와 같은 모양의 원자다', () => {
+    const block = emptyFileBlock(nextId())
+    assert.equal(block.type, 'file')
+    assert.deepEqual(block.title, [])
+    assert.deepEqual(block.properties, {})
+  })
+
+  test('★ 받은 id 와 타입대로 차례를 지켜 넣는다 — 빈 문단은 바꾸고 아니면 뒤에', () => {
+    const a = nextId()
+    const state = caretIn(stateOf([blk(a, 'paragraph', '글')]), a)
+    const ids = [nextId(), nextId()]
+    const next = run(state, insertAtomBlocksCommand([{ id: ids[0], type: 'file' }, { id: ids[1], type: 'image' }], deps()))
+    assert.ok(next)
+    const blocks = pmToDoc(next.doc).blocks
+    assert.deepEqual(blocks.map((b) => b.type), ['paragraph', 'file', 'image'])
+    assert.deepEqual(blocks.slice(1).map((b) => b.id), ids)
+    const empty = caretIn(stateOf([blk(a)]), a)
+    const replaced = run(empty, insertAtomBlocksCommand([{ id: ids[0], type: 'file' }], deps()))
+    assert.ok(replaced)
+    assert.deepEqual(pmToDoc(replaced.doc).blocks.map((b) => [b.type, b.id]), [['file', ids[0]]])
+  })
+
+  test('빈 목록은 아무것도 하지 않는다', () => {
+    const a = nextId()
+    assert.equal(run(caretIn(stateOf([blk(a)]), a), insertAtomBlocksCommand([], deps())), null)
   })
 })

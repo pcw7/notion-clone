@@ -206,8 +206,7 @@ const COLOR_COMMANDS: readonly ColorSlashCommand[] = COLORS.map((color) => ({
   kind: 'color', id: `color:${color}`, color, label: colorLabel(color), aliases: colorAliases(color), group: '색',
 }))
 
-// 파일(F-1a)은 편집기(노드 뷰 · 올리기 — F-1b)가 열릴 때까지 메뉴에서 뺀다 — 카탈로그 항목 자체는 `Record` 가 강제한다.
-const BLOCK_COMMANDS: readonly BlockSlashCommand[] = BODY_BLOCK_TYPES.filter((id) => id !== 'file').map((id) => ({
+const BLOCK_COMMANDS: readonly BlockSlashCommand[] = BODY_BLOCK_TYPES.map((id) => ({
   kind: 'block',
   id,
   ...CATALOG[id],

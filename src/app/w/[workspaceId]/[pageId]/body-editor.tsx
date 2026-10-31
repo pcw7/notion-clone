@@ -70,7 +70,8 @@ import { openPendingEditStore, pendingEditKey } from '@/lib/collab/pending-store
 import { BODY_FRAGMENT, readBodyYDoc } from '@/lib/collab/ydoc'
 import { acceptAnchor, textRangeAnchor } from '@/lib/comment/anchor'
 import { commentHighlightPlugin, setCommentThreads, type AnchoredThread } from '@/lib/comment/highlight'
-import { uploadImageFile } from '@/lib/file/upload-client'
+import { uploadFileOf, uploadImageFile } from '@/lib/file/upload-client'
+import { fileMetaOfResponse, fileMetaSource } from '@/lib/editor/file-meta'
 import { customEmojiImagePath, type PageIcon } from '@/lib/block/page-icon'
 import { searchCustomEmoji } from '@/lib/emoji/custom-emoji-rules'
 import { closeEmojiMenu, emojiMenuState, insertCustomEmoji, replaceColonEmoji } from '@/lib/editor/emoji-menu'
@@ -89,6 +90,7 @@ import { randomEmoji } from '@/lib/emoji/catalog'
 import { calloutIconAt, setCalloutIconCommand } from '@/lib/editor/callout-block'
 import { ImageAltDialog } from './image-alt-dialog'
 import { imageBlockInfo, imageCaptionInfo, setImageAltCommand, setImageCaptionCommand } from '@/lib/editor/image-block'
+import { fileCaptionInfo, setFileCaptionCommand } from '@/lib/editor/file-block-commands'
 import type { ImageAlt } from '@/lib/block/image'
 import { FindBar } from './find-bar'
 import { perfEditorReady, perfEditorStarted } from '../perf-reporter'
@@ -182,8 +184,8 @@ function mentionIdsIn(view: EditorView): { users: string[]; pages: string[]; emo
  * 코드를 늘리거나 위에 블록을 넣으면 블록이 움직인다.
  */
 type CodeUi = CodeUiGeometry & {
-  /** `image_caption` — 이미지 블록의 캡션(10n-62 · 같은 입력칸 · 같은 열고 닫기 · 자리 다시 재기). */
-  kind: 'language' | 'caption' | 'image_caption'
+  /** `image_caption` — 이미지 블록의 캡션(10n-62 · 같은 입력칸 · 같은 열고 닫기 · 자리 다시 재기) · `file_caption` — 파일 블록의 캡션(F-1b). */
+  kind: 'language' | 'caption' | 'image_caption' | 'file_caption'
   blockId: string
   language: string | null
   caption: string
@@ -219,6 +221,10 @@ function codeUiTarget(
   kind: CodeUi['kind'],
   blockId: string,
 ): Pick<CodeBlockInfo, 'pos' | 'node' | 'language' | 'caption' | 'captionFormatted'> | null {
+  if (kind === 'file_caption') {
+    const file = fileCaptionInfo(state, blockId)
+    return file === null ? null : { pos: file.pos, node: file.node, language: null, caption: file.caption, captionFormatted: file.captionFormatted }
+  }
   if (kind !== 'image_caption') return codeBlockInfo(state, blockId)
   const info = imageCaptionInfo(state, blockId)
   return info === null ? null : { pos: info.pos, node: info.node, language: null, caption: info.caption, captionFormatted: info.captionFormatted }
@@ -228,6 +234,16 @@ function codeUiTarget(
 function measureCodeUi(view: EditorView, frame: HTMLElement, kind: CodeUi['kind'], contentPos: number): CodeUiGeometry | null {
   const box = view.nodeDOM(contentPos)
   if (!(box instanceof HTMLElement)) return null
+  if (kind === 'file_caption') {
+    // 파일의 캡션 자리(F-1b) — 카드 바로 아래, 같은 폭. 캡션이 있으면 그 글자를 다 가린다(이미지와 같다)
+    const card = box.querySelector<HTMLElement>('.blk-file-card')
+    if (!card) return null
+    const fr = frame.getBoundingClientRect()
+    const k = card.getBoundingClientRect()
+    const shown = box.querySelector<HTMLElement>('.blk-file-caption')
+    const c = shown === null ? null : shown.getBoundingClientRect()
+    return { top: (c?.top ?? k.bottom + 4) - fr.top, left: k.left - fr.left, width: k.width, minHeight: c?.height ?? 0 }
+  }
   if (kind === 'image_caption') {
     // 이미지의 캡션 자리(10n-62) — 그림 바로 아래, 같은 폭. 캡션이 있으면 그 글자를 다 가린다(코드 캡션과 같다)
     const img = box.querySelector<HTMLElement>('img')
@@ -1348,6 +1364,12 @@ export function BodyEditor({
       workspaceId,
       // 업로드는 XHR 로 한다(진행률). 자세한 이유는 `upload-client.ts`.
       uploadImage: (file, onProgress, signal) => uploadImageFile(workspaceId, file, { onProgress, signal }),
+      // 파일 블록(F-1b) — kind=file(MIME 을 가리지 않는다) · 이름 · 크기는 `GET /files/{id}` 로(블록에는 id 만 있다 · 정본 [보강 F-1] ⑧)
+      uploadFile: (file, onProgress, signal) => uploadFileOf(workspaceId, file, { onProgress, signal }, 'file'),
+      fileMeta: fileMetaSource(async (fileId) => {
+        const res = await fetch(`/api/workspaces/${workspaceId}/files/${fileId}`)
+        return res.ok ? fileMetaOfResponse(await res.json()) : null
+      }),
       isCollapsed: (id) => collapsedRef.current.has(id),
       expand: expandBlock,
       toggleCollapsed: (id) => {
@@ -1385,6 +1407,8 @@ export function BodyEditor({
       openCodeCaption: (id) => openCodeUi('caption', id),
       // 이미지의 캡션(10n-62) — 코드 캡션과 같은 입력칸 · 같은 열고 닫기
       openImageCaption: (id) => openCodeUi('image_caption', id),
+      // 파일의 캡션(F-1b) — 같은 입력칸
+      openFileCaption: (id) => openCodeUi('file_caption', id),
       // 블록 수식(Phase 2 1a) — 누르거나 골라서 Enter 를 치면 입력창.
       openEquation: (id) => openEquationUi(id),
       // 콜아웃 아이콘(디자인-4c) — 누르면 이모지 고르개(편집기 밖 · 아이콘 칸 아래). 같은 콜아웃을 다시 누르면 닫는다.
@@ -1885,10 +1909,10 @@ export function BodyEditor({
             isTrigger={(target) => isCodeUiTrigger(target, codeUi)}
           />
         )}
-        {editable && (codeUi?.kind === 'caption' || codeUi?.kind === 'image_caption') && (
+        {editable && (codeUi?.kind === 'caption' || codeUi?.kind === 'image_caption' || codeUi?.kind === 'file_caption') && (
           <CodeCaptionEditor
             key={`${codeUi.kind}:${codeUi.blockId}`}
-            label={codeUi.kind === 'image_caption' ? '이미지 캡션' : '코드 캡션'}
+            label={codeUi.kind === 'image_caption' ? '이미지 캡션' : codeUi.kind === 'file_caption' ? '파일 캡션' : '코드 캡션'}
             initial={codeUi.caption}
             formatted={codeUi.captionFormatted}
             top={codeUi.top}
@@ -1898,7 +1922,8 @@ export function BodyEditor({
             onSave={(text) => {
               const view = viewRef.current
               if (!view?.editable) return
-              const save = codeUi.kind === 'image_caption' ? setImageCaptionCommand : setCodeCaptionCommand
+              const save =
+                codeUi.kind === 'image_caption' ? setImageCaptionCommand : codeUi.kind === 'file_caption' ? setFileCaptionCommand : setCodeCaptionCommand
               save(codeUi.blockId, text)(view.state, view.dispatch.bind(view))
             }}
             onClose={closeCodeUi}
