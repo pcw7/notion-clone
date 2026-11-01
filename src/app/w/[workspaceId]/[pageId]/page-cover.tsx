@@ -29,14 +29,18 @@ import {
   samePageCover,
   type PageCover,
 } from '@/lib/block/page-cover'
+import { imageContentPath } from '@/lib/block/image'
+import { ALLOWED_IMAGE_MIME } from '@/lib/file/limits'
+import { uploadImageFile } from '@/lib/file/upload-client'
 
 const MESSAGES: Record<string, string> = {
   locked: '잠긴 페이지입니다 — 잠금을 풀어야 커버를 바꿀 수 있습니다.',
   forbidden: '이 페이지를 고칠 권한이 없습니다.',
-  invalid_cover: '커버는 내장 커버나 http(s) 이미지 주소여야 합니다.',
+  invalid_cover: '커버는 내장 커버 · http(s) 이미지 주소 · 이 워크스페이스에 올린 이미지여야 합니다.',
 }
 
 type CoverState = {
+  readonly workspaceId: string
   readonly cover: PageCover | null
   readonly readOnly: boolean
   readonly error: string | null
@@ -100,7 +104,7 @@ export function PageCoverProvider({
     [pageId, readOnly, router, workspaceId],
   )
 
-  const value = useMemo<CoverState>(() => ({ cover, readOnly, error, save }), [cover, readOnly, error, save])
+  const value = useMemo<CoverState>(() => ({ workspaceId, cover, readOnly, error, save }), [workspaceId, cover, readOnly, error, save])
   return <CoverContext.Provider value={value}>{children}</CoverContext.Provider>
 }
 
@@ -161,6 +165,8 @@ export function PageCoverBanner({ frame }: { frame: 'page' | 'peek' }) {
         style={{ background: cover.type === 'gallery' ? coverBackground(cover) : COVER_FALLBACK_BACKGROUND }}
       >
         {cover.type === 'external' && <CoverImage key={cover.url} src={cover.url} />}
+        {/* 올린 이미지(PC-2) — 세션으로 인증되는 워크스페이스의 파일 경로(이미지 블록 · 아이콘과 같다 · 주소는 파생값) */}
+        {cover.type === 'file' && <CoverImage key={cover.file_id} src={imageContentPath(state.workspaceId, cover.file_id)} />}
         {!state.readOnly && (
           <div className="absolute bottom-3 right-4 flex gap-1 opacity-0 focus-within:opacity-100 group-hover/cover:opacity-100 touch:opacity-100">
             <button
@@ -179,6 +185,7 @@ export function PageCoverBanner({ frame }: { frame: 'page' | 'peek' }) {
       </div>
       {open && !state.readOnly && (
         <CoverPicker
+          workspaceId={state.workspaceId}
           current={cover}
           onPick={(next) => {
             close(true)
@@ -209,12 +216,14 @@ function CoverImage({ src }: { src: string }) {
 }
 
 function CoverPicker({
+  workspaceId,
   current,
   onPick,
   onRemove,
   onClose,
   isTrigger,
 }: {
+  workspaceId: string
   current: PageCover
   onPick(next: PageCover): void
   onRemove(): void
@@ -222,7 +231,7 @@ function CoverPicker({
   isTrigger(target: EventTarget | null): boolean
 }) {
   const rootRef = useRef<HTMLDivElement | null>(null)
-  const [tab, setTab] = useState<'gallery' | 'link'>(current.type === 'external' ? 'link' : 'gallery')
+  const [tab, setTab] = useState<'gallery' | 'upload' | 'link'>(current.type === 'external' ? 'link' : current.type === 'file' ? 'upload' : 'gallery')
   const [url, setUrl] = useState(current.type === 'external' ? current.url : '')
   const [urlError, setUrlError] = useState<string | null>(null)
 
@@ -269,6 +278,7 @@ function CoverPicker({
           {(
             [
               ['gallery', '내장'],
+              ['upload', '올리기'],
               ['link', '링크'],
             ] as const
           ).map(([key, label]) => (
@@ -314,6 +324,8 @@ function CoverPicker({
             )
           })}
         </div>
+      ) : tab === 'upload' ? (
+        <UploadPanel workspaceId={workspaceId} onPick={onPick} />
       ) : (
         <form
           className="flex flex-col gap-2 p-1"
@@ -347,6 +359,71 @@ function CoverPicker({
             커버로
           </button>
         </form>
+      )}
+    </div>
+  )
+}
+
+/**
+ * "올리기" 탭(PC-2) — 파일을 올리고 그 파일 id 를 커버로 넘긴다(아이콘의 이미지 탭과 같은 `uploadImageFile`). 올리는 동안 고르개가 닫혀도
+ * (바깥을 눌렀다) 끝난 응답을 넘기지 않는다 — 닫은 사람이 고른 것이 아니다.
+ */
+function UploadPanel({ workspaceId, onPick }: { workspaceId: string; onPick(next: PageCover): void }) {
+  const [uploading, setUploading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const fileRef = useRef<HTMLInputElement | null>(null)
+  const alive = useRef(true)
+  useEffect(() => {
+    alive.current = true
+    return () => {
+      alive.current = false
+    }
+  }, [])
+
+  const upload = async (file: File): Promise<void> => {
+    setError(null)
+    setUploading(true)
+    const outcome = await uploadImageFile(workspaceId, file)
+    if (!alive.current) return
+    setUploading(false)
+    if (!outcome.ok) {
+      setError(outcome.message)
+      return
+    }
+    onPick({ type: 'file', file_id: outcome.fileId })
+  }
+
+  return (
+    <div role="tabpanel" aria-label="올리기" data-testid="page-cover-upload-panel" className="flex flex-col gap-1 p-1">
+      <button
+        type="button"
+        data-testid="page-cover-upload"
+        disabled={uploading}
+        onClick={() => fileRef.current?.click()}
+        className="rounded border border-neutral-300 px-3 py-1.5 text-sm hover:bg-neutral-50 disabled:opacity-50 dark:border-neutral-700 dark:hover:bg-neutral-800"
+      >
+        {uploading ? '올리는 중…' : '파일 올리기'}
+      </button>
+      <input
+        ref={fileRef}
+        type="file"
+        accept={ALLOWED_IMAGE_MIME.join(',')}
+        data-testid="page-cover-upload-input"
+        tabIndex={-1}
+        aria-hidden
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0]
+          // 같은 파일을 다시 고를 수 있게 비운다(같은 값이면 change 가 오지 않는다).
+          e.target.value = ''
+          if (file !== undefined) void upload(file)
+        }}
+      />
+      <p className="text-xs text-neutral-500">PNG · JPEG · GIF · WebP, 5MB 까지. 가로로 넓은 그림(1500px 이상)이 잘 맞습니다.</p>
+      {error !== null && (
+        <p role="alert" className="text-xs text-red-600">
+          {error}
+        </p>
       )}
     </div>
   )

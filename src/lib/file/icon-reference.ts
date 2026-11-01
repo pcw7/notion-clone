@@ -1,7 +1,11 @@
 /**
- * 이미지 아이콘의 파일 참조 — 잔여 묶음 8c-4 (F-02-05 · DB)
+ * 이미지 아이콘 · 커버의 파일 참조 — 잔여 묶음 8c-4 · 34번 트랙 PC-2 (F-02-05 · F-02-06 · DB)
  *
- * 정본: 00-canonical-data-model.md §3.4 [보강] 페이지 아이콘 ⑤ · §3.10 `file.ref_count`(불변식 FS1 — `ref_count > 0` 은 지우지 않는다)
+ * 정본: 00-canonical-data-model.md §3.4 [보강] 페이지 아이콘 ⑤ · [보강 PC-2] 올린 이미지 커버 · §3.10 `file.ref_count`(불변식 FS1 —
+ *       `ref_count > 0` 은 지우지 않는다)
+ *
+ * 커버(PC-2 · `format.page_cover` 의 `{type:'file', file_id}`)도 같은 장부다 — 페이지 행의 `format` 에 든 파일 참조는 아이콘과 커버 둘이고,
+ * 바꾸는 명령(`setPageCover`)과 복제(`addFormatFileReferences`)가 같은 트랜잭션에서 센다.
  *
  * 올린 파일을 아이콘으로 쓰면(`{type:'file', file_id}`) 그 아이콘은 이미지 블록과 똑같이 **그 파일의 참조**다. 세지 않으면 아이콘만
  * 가리키는 파일은 `ref_count = 0` 으로 남아 GC(§7 — 아직 없다)가 바이트를 지우고, 사이드바의 아이콘이 깨진다.
@@ -17,7 +21,8 @@
 
 import type { SessionContext } from '../auth/session-context.ts'
 import type { Tx } from '../db/tx.ts'
-import { iconFileId, type PageIcon } from '../block/page-icon.ts'
+import { iconFileId, pageIconOfFormat, type PageIcon } from '../block/page-icon.ts'
+import { coverFileId, pageCoverOfFormat } from '../block/page-cover.ts'
 import { ALLOWED_IMAGE_MIME } from './limits.ts'
 
 /**
@@ -27,7 +32,7 @@ import { ALLOWED_IMAGE_MIME } from './limits.ts'
  *     [보강] 커스텀 이모지 ⑤). 이모지의 파일 참조는 이모지가 쥐므로 여기서 세지 않는다(`iconFileId` 가 null)
  */
 export async function isUsableIcon(tx: Tx, ctx: SessionContext, icon: PageIcon): Promise<boolean> {
-  if (icon.type === 'file') return isIconFile(tx, ctx, icon.file_id)
+  if (icon.type === 'file') return isWorkspaceImage(tx, ctx, icon.file_id)
   if (icon.type === 'custom_emoji') {
     const row = await tx.queryMaybe<{ id: string }>(
       `SELECT id FROM custom_emoji WHERE id = $1 AND workspace_id = $2 AND deleted_at IS NULL`,
@@ -39,10 +44,10 @@ export async function isUsableIcon(tx: Tx, ctx: SessionContext, icon: PageIcon):
 }
 
 /**
- * 아이콘으로 쓸 수 있는 파일인가 — **이 워크스페이스의 이미지**여야 한다. 다른 워크스페이스의 파일 · 없는 id 는 쓸 수 없다(보이지도
+ * 아이콘 · 커버로 쓸 수 있는 파일인가 — **이 워크스페이스의 이미지**여야 한다. 다른 워크스페이스의 파일 · 없는 id 는 쓸 수 없다(보이지도
  * 않는다 — 파일 경로가 워크스페이스로 한정된다). 지금 받는 형식은 전부 이미지지만 파일 표는 형식을 가리지 않으므로 함께 묻는다.
  */
-async function isIconFile(tx: Tx, ctx: SessionContext, fileId: string): Promise<boolean> {
+export async function isWorkspaceImage(tx: Tx, ctx: SessionContext, fileId: string): Promise<boolean> {
   const row = await tx.queryMaybe<{ id: string }>(
     `SELECT id FROM file WHERE id = $1 AND workspace_id = $2 AND mime = ANY($3::text[])`,
     [fileId, ctx.workspaceId, [...ALLOWED_IMAGE_MIME]],
@@ -57,14 +62,27 @@ export async function moveIconFileReference(
   before: PageIcon | null,
   after: PageIcon | null,
 ): Promise<void> {
-  const from = iconFileId(before)
-  const to = iconFileId(after)
+  await moveFileReference(tx, ctx, iconFileId(before), iconFileId(after))
+}
+
+/** 한 자리(아이콘 · 커버)의 파일이 `from` 에서 `to` 로 바뀔 때 — 같은 파일이면 아무것도 하지 않는다. */
+export async function moveFileReference(tx: Tx, ctx: SessionContext, from: string | null, to: string | null): Promise<void> {
   if (from === to) return
   if (from !== null) await adjust(tx, ctx, from, -1)
   if (to !== null) await adjust(tx, ctx, to, 1)
 }
 
-/** 아이콘을 하나 더 만들었다(복제) — 그 파일의 참조를 하나 올린다. 파일 아이콘이 아니면 아무것도 하지 않는다. */
+/**
+ * 페이지 행의 `format` 을 하나 더 만들었다(복제 · 템플릿으로 만든 행) — 그 안의 파일 참조(올린 이미지 아이콘 · 커버)를 하나씩 올린다.
+ * 둘이 같은 파일이면 둘 다 센다(참조가 둘이다).
+ */
+export async function addFormatFileReferences(tx: Tx, ctx: SessionContext, format: unknown): Promise<void> {
+  for (const fileId of [iconFileId(pageIconOfFormat(format)), coverFileId(pageCoverOfFormat(format))]) {
+    if (fileId !== null) await adjust(tx, ctx, fileId, 1)
+  }
+}
+
+/** 아이콘을 하나 더 만들었다(데이터베이스 아이콘의 복제) — 그 파일의 참조를 하나 올린다. 파일 아이콘이 아니면 아무것도 하지 않는다. */
 export async function addIconFileReference(tx: Tx, ctx: SessionContext, icon: PageIcon | null): Promise<void> {
   const fileId = iconFileId(icon)
   if (fileId !== null) await adjust(tx, ctx, fileId, 1)

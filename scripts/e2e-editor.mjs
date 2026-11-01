@@ -27089,6 +27089,58 @@ async function main() {
         refused.status === 403 && invalid.status === 400 && (await invalid.json()).error === 'invalid_cover', JSON.stringify([refused.status, invalid.status]))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('페이지 커버 — 올린 이미지 (PC-2 · F-02-06)')) { try {
+      // 올린 이미지 커버(정본 §3.4 [보강 PC-2]) — 고르개의 "올리기" 탭에서 파일을 고르면 올라가고 배너가 그 그림이 된다(워크스페이스의 파일
+      // 경로) · 그 파일의 참조가 하나 · 복제하면 사본이 같은 파일을 가리키고 참조가 둘 · 내장 커버로 바꾸면 원본의 참조는 내려간다.
+      const stamp = Date.now().toString(36)
+      const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
+      const { getPage } = await import(new URL('../src/lib/block/page.ts', import.meta.url).href)
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const { writeFileSync } = await import('node:fs')
+      const { tmpdir } = await import('node:os')
+      const pngFile = join(tmpdir(), `cover-${stamp}.png`)
+      writeFileSync(pngFile, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64'))
+      const page = (await (await fetch(pagesUrl, { method: 'POST', headers: authed, body: JSON.stringify({ title: `올린 커버 ${stamp}` }) })).json()).page.id
+      const seeded = await fetch(`${pagesUrl}/${page}`, { method: 'PATCH', headers: authed, body: JSON.stringify({ cover: { type: 'gallery', gallery: 'solid_beige' } }) })
+      const COVER = '[data-testid="page-cover"]'
+      const PICKER = '[data-testid="page-cover-picker"]'
+      const coverKey = () => evaluate(`document.querySelector('${COVER}')?.getAttribute('data-page-cover') ?? null`)
+      const refCount = async (fileId) => (await dbQuery(`SELECT ref_count FROM file WHERE id = $1`, [fileId]))[0]?.ref_count ?? null
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+      check('전제 — 내장 커버가 선 페이지', seeded.ok && (await waitFor(`document.querySelector('${COVER}')?.getAttribute('data-page-cover') === 'gallery:solid_beige'`, 15000)))
+      await waitHydrated(COVER)
+      const box = await rect(COVER)
+      if (box) await move(box.x + box.w / 2, box.y + box.h / 2)
+      await clickSelector('[data-testid="page-cover-change"]')
+      await waitFor(`!!document.querySelector('${PICKER}')`, 5000)
+      await clickSelector('[data-testid="page-cover-tab-upload"]')
+      check('고르개의 "올리기" 탭 — 파일 올리기', await waitFor(`!!document.querySelector('[data-testid="page-cover-upload-panel"] [data-testid="page-cover-upload"]')`, 3000))
+      await send('DOM.enable')
+      const docRoot = (await send('DOM.getDocument', { depth: -1 })).root.nodeId
+      const uploadNode = (await send('DOM.querySelector', { nodeId: docRoot, selector: '[data-testid="page-cover-upload-input"]' })).nodeId
+      await send('DOM.setFileInputFiles', { files: [pngFile], nodeId: uploadNode })
+      const uploaded = await waitFor(`(() => { const img = document.querySelector('${COVER} img')
+        return !document.querySelector('${PICKER}') && !!img && img.complete && img.naturalWidth > 0
+          && (img.getAttribute('src') ?? '').startsWith('/api/workspaces/${workspaceId}/files/') })()`, 15000)
+      const key = String(await coverKey())
+      const fileId = key.startsWith('file:') ? key.slice(5) : null
+      let stored = null
+      for (let i = 0; i < 40 && stored?.type !== 'file'; i += 1) { stored = (await getPage(ctx, page))?.cover ?? null; if (stored?.type !== 'file') await sleep(100) }
+      check('★ 파일을 고르면 올라가고 배너가 그 그림이 된다 — 워크스페이스의 파일 경로 · 서버에도 그 파일',
+        uploaded && fileId !== null && stored?.file_id === fileId, JSON.stringify({ key, stored }))
+      check('★ 그 파일의 참조가 하나다', fileId !== null && (await refCount(fileId)) === 1, String(fileId && (await refCount(fileId))))
+
+      const dup = await fetch(`${pagesUrl}/${page}/duplicate`, { method: 'POST', headers: authed, body: '{}' })
+      const copyId = dup.ok ? (await dup.json()).page.id : null
+      check('★ 복제하면 사본이 같은 파일을 가리키고 참조가 둘이다(다시 올리지 않는다)',
+        copyId !== null && (await getPage(ctx, copyId))?.cover?.file_id === fileId && (await refCount(fileId)) === 2,
+        JSON.stringify({ status: dup.status, copyCover: copyId && (await getPage(ctx, copyId))?.cover, ref: fileId && (await refCount(fileId)) }))
+
+      const swapped = await fetch(`${pagesUrl}/${page}`, { method: 'PATCH', headers: authed, body: JSON.stringify({ cover: { type: 'gallery', gallery: 'gradient_3' } }) })
+      check('원본을 내장 커버로 바꾸면 원본의 참조만 내려간다 — 사본의 참조는 남는다', swapped.ok && (await refCount(fileId)) === 1, String(await refCount(fileId)))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).
