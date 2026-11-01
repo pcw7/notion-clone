@@ -9,6 +9,7 @@
  *   block_selection  uuid[]                 — 고른 블록들(블록 선택) · 불변식 S7: cursor 와 동시에 서지 않는다
  *   mode             'view' | 'edit'
  *   ts               epoch ms               — 위치가 바뀐 때(같은 사람의 여러 탭은 가장 최근 것)
+ *   visible          boolean                — 이 탭이 보인다(AW-2 — 숨은 탭은 "지금 보는 사람" 이 아니다 · 알림 배달 ③ 이 읽는다)
  *
  * 순수 모듈이다 — 서버(다듬기)와 화면(동료 목록 · 색)이 함께 쓴다.
  */
@@ -21,6 +22,8 @@ export type PresenceState = {
   readonly block_selection: readonly string[]
   readonly mode: 'view' | 'edit'
   readonly ts: number
+  /** 이 탭이 보인다(AW-2) — 연결이 싣는다(`document.visibilityState`). 모르면 보이지 않는 것. */
+  readonly visible: boolean
 }
 
 /** 화면이 보내는 몫 — 사람은 서버가 채운다. */
@@ -52,6 +55,7 @@ export function sanitizePresence(raw: unknown, user: PresenceUser, now: number =
     block_selection: cursor === null ? selection : [],
     mode: r.mode === 'edit' ? 'edit' : 'view',
     ts,
+    visible: r.visible === true,
   }
 }
 

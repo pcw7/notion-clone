@@ -103,6 +103,7 @@ import { collabDocumentName, confirmationReply, parseConfirmationRequest } from 
 import { loadDocState, pageAccess, readDocUpdatesAfter } from './doc-store.ts'
 import { createProjectionScheduler, type ProjectionScheduler } from './projection-scheduler.ts'
 import { sanitizePresence } from './presence.ts'
+import { viewersOf, type PresenceStore } from './presence-registry.ts'
 import { withReadTransaction } from '../db/tx.ts'
 
 /** y-protocols/sync 의 메시지 종류. SyncStep1(0)은 state vector 뿐이고 답으로 본문이 간다. 둘 · 셋이 update 를 싣는다. */
@@ -128,6 +129,11 @@ export type CollabServerOptions = {
   readonly openFeed?: (handlers: ChangeFeedHandlers) => Promise<ChangeFeed>
   /** 밀린 투영의 창. 없으면 `projectPendingBody` 를 기본 창(`PROJECTION_DELAY_MS`)으로. 검사가 창을 길게 두고 `flush` 로 돌린다. */
   readonly projector?: ProjectionScheduler
+  /**
+   * 지금 그 페이지를 보는 사람을 적는 곳(AW-2 · `presence-registry.ts`) — 알림 배달의 ③ 이 읽는다. 없으면 적지 않는다(검사).
+   * `npm run collab`(`scripts/collab-server.mjs`)은 Valkey 에 적는다.
+   */
+  readonly presenceStore?: PresenceStore
   /** 첫 동기화의 판정 직전에 기다린다 — 검사가 "등록됐지만 아직 판정 전" 인 창을 붙잡아 둔다(10n-55). 없으면 기다리지 않는다. */
   readonly beforeFirstSyncVerdict?: (context: CollabContext) => Promise<void>
 }
@@ -365,6 +371,16 @@ export function createCollabServer(options: CollabServerOptions): Server<CollabC
       const user = { user_id: context.session.userId, name: context.userName }
       // `states` 는 받은 update 를 푼 임시 상태다 — 이것을 고쳐야 다시 싸서 퍼뜨린다(`awareness` 는 문서의 살아 있는 상태라 고치지 않는다)
       for (const [clientId, state] of [...states]) states.set(clientId, sanitizePresence(state, user))
+    },
+
+    /**
+     * 지금 보는 사람(AW-2 · 정본 §3.7 presence [보강 AW-2]) — awareness 가 바뀌거나 갱신될 때마다(provider 는 15초마다) 그 페이지의
+     * 접속자를 통째로 다시 적는다. 연결이 나가 상태가 지워질 때도 온다(마지막 사람이 나가면 지운다). 다듬은 뒤의 상태다(`user` 는 서버가 채웠다).
+     */
+    async onAwarenessUpdate({ documentName, awareness }) {
+      if (options.presenceStore === undefined) return
+      const address = parseCollabDocumentName(documentName)
+      if (address !== null) options.presenceStore.record(address.pageId, viewersOf(awareness.getStates()))
     },
 
     async onLoadDocument({ context, document }) {

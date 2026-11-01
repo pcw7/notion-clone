@@ -97,11 +97,20 @@ export async function queryMaybe<T extends QueryResultRow = QueryResultRow>(
 
 export type { PoolClient }
 
-/** 테스트·스크립트 종료용. 애플리케이션 코드에서는 부르지 않는다. */
+/**
+ * 테스트·스크립트 종료용. 애플리케이션 코드에서는 부르지 않는다.
+ *
+ * Valkey 연결이 열려 있으면 함께 닫는다 — 알림을 만드는 쓰기가 Valkey 를 읽는다(배달 3단 ③ · AW-2). 그대로 두면 DB 를 쓰는 검사의
+ * 프로세스가 열린 연결에 붙들려 끝나지 않는다(검사 파일들은 모두 끝에 이것을 부른다).
+ */
 export async function closePool(): Promise<void> {
   const pool = globalThis.__notionClonePool
   if (pool) {
     globalThis.__notionClonePool = undefined
     await pool.end()
+  }
+  if (globalThis.__notionCloneValkey !== undefined) {
+    const { closeValkey } = await import('../valkey.ts')
+    await closeValkey().catch(() => {})
   }
 }

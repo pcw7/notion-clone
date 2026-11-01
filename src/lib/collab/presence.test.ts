@@ -11,18 +11,19 @@ const NOW = 1_800_000_000_000
 
 describe('sanitizePresence — 서버의 다듬기', () => {
   test('★ user 는 인증된 사람으로 덮어쓴다 — 클라이언트가 보낸 이름 · id 는 버린다 · 모르는 칸도 버린다', () => {
-    const out = sanitizePresence({ user: { user_id: 'evil', name: '사칭' }, cursor: { block_id: A }, mode: 'edit', ts: NOW - 5, extra: 'x'.repeat(1000) }, ME, NOW)
-    assert.deepEqual(out, { user: ME, cursor: { block_id: A }, block_selection: [], mode: 'edit', ts: NOW - 5 })
+    const out = sanitizePresence({ user: { user_id: 'evil', name: '사칭' }, cursor: { block_id: A }, mode: 'edit', ts: NOW - 5, visible: true, extra: 'x'.repeat(1000) }, ME, NOW)
+    assert.deepEqual(out, { user: ME, cursor: { block_id: A }, block_selection: [], mode: 'edit', ts: NOW - 5, visible: true })
     assert.equal('extra' in out, false)
   })
 
-  test('모양이 틀린 칸은 빈 값 — uuid 가 아닌 블록 · 모르는 모드 · 앞날의 ts', () => {
-    assert.deepEqual(sanitizePresence({ cursor: { block_id: 'nope' }, block_selection: ['x', B], mode: 'admin', ts: NOW + 999_999 }, ME, NOW), {
+  test('모양이 틀린 칸은 빈 값 — uuid 가 아닌 블록 · 모르는 모드 · 앞날의 ts · 참이 아닌 visible(AW-2)', () => {
+    assert.deepEqual(sanitizePresence({ cursor: { block_id: 'nope' }, block_selection: ['x', B], mode: 'admin', ts: NOW + 999_999, visible: 'yes' }, ME, NOW), {
       user: ME,
       cursor: null,
       block_selection: [B],
       mode: 'view',
       ts: NOW,
+      visible: false,
     })
     assert.deepEqual(sanitizePresence(null, ME, NOW).cursor, null)
   })

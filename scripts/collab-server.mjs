@@ -27,10 +27,12 @@ for (const [key, value] of Object.entries(loadEnv())) process.env[key] ??= value
 
 // 환경을 채운 뒤에 불러온다 — DB 풀이 DATABASE_URL 을 읽는다.
 const { createCollabServer } = await import('../src/lib/collab/collab-server.ts')
+const { valkeyPresenceStore } = await import('../src/lib/collab/presence-registry.ts')
 
 const port = Number(process.env.COLLAB_PORT ?? 3001)
 const appOrigin = new URL(process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000').origin
 
-const server = createCollabServer({ port, allowedOrigins: [appOrigin], quiet: true })
+// 지금 보는 사람을 Valkey 에 적는다(AW-2) — 알림 배달의 ③ 이 읽는다(REDIS_URL · 기본 localhost:6379)
+const server = createCollabServer({ port, allowedOrigins: [appOrigin], quiet: true, presenceStore: valkeyPresenceStore() })
 await server.listen()
 console.log(`협업 서버 — ws://localhost:${server.address.port} · 받는 Origin ${appOrigin}`)

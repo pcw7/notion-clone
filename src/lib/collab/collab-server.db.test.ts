@@ -940,4 +940,21 @@ describe('⑮ 등록할 때의 awareness 도 첫 판정 뒤로 (10n-56)', () => 
     assert.notEqual(seen.user?.name, '대표인 척')
     assert.equal('secret' in seen, false, '모르는 칸이 퍼졌다')
   })
+
+  test('★ 지금 보는 사람을 적는다 — 서버가 채운 사람마다 보이는 탭이 있는지 · 나가면 빠진다(AW-2)', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { owner, member, name, pageId } = await pageFixture(['원문'])
+    const records: { pageId: string; viewers: Map<string, boolean> }[] = []
+    const server = await startServer(t, { presenceStore: { record: (page, viewers) => void records.push({ pageId: page, viewers: new Map(viewers) }) } })
+    const [seer, hider] = [join(t, server.url, name, cookieOf(owner)), join(t, server.url, name, cookieOf(member))]
+    await ready(seer, hider)
+    // 사람은 싣지 않는다 — 서버가 채운다. 보이는지만 다르다
+    seer.provider.awareness?.setLocalState({ cursor: null, block_selection: [], mode: 'edit', ts: Date.now(), visible: true })
+    hider.provider.awareness?.setLocalState({ cursor: null, block_selection: [], mode: 'view', ts: Date.now(), visible: false })
+    const last = () => records.at(-1)
+    await waitFor('둘 다 적힌다', () => last()?.viewers.get(owner.userId) === true && last()?.viewers.get(member.userId) === false)
+    assert.equal(last()?.pageId, pageId)
+    hider.provider.destroy()
+    await waitFor('나간 사람은 빠진다', () => last()?.viewers.has(member.userId) === false && last()?.viewers.get(owner.userId) === true)
+  })
 })
