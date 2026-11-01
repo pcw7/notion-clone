@@ -4880,6 +4880,38 @@ try {
     await rejects('모르는 이동', `('LCP', 1, '/', 1, 'teleport')`, 'ck_perf_event_navigation')
   }
 
+  console.log('\n[80] 북마크의 메타 캐시 (0122 / §3.4 [보강 F-4] · F-4a조각)')
+  {
+    // 전역 캐시 — 열쇠는 sha256(64 hex) · 상태 셋 · 메타는 ok 일 때만 · 길이 · 그림은 http(s) · 만료는 가져온 뒤.
+    const hash = 'a'.repeat(64)
+    await client.query(
+      `INSERT INTO link_preview (url_hash, url, status, title, description, image_url, site_name, expires_at)
+       VALUES ($1, 'https://example.com/', 'ok', '제목', '설명', 'https://example.com/c.png', '예시', now() + interval '7 days')`,
+      [hash],
+    )
+    await client.query(`INSERT INTO link_preview (url_hash, url, status, expires_at) VALUES ($1, 'http://plain.example/', 'skipped', now() + interval '30 days')`, ['b'.repeat(64)])
+    ok('★ 가져온 메타 · 건너뛴 빈 줄 — 통과한다')
+    const rejects = async (label, sql, params, constraint) => {
+      await client.query('SAVEPOINT probe')
+      try {
+        await client.query(sql, params)
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        fail(`${label} — 거부되어야 하는데 통과했다`)
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        if (e.code === '23514' && e.constraint === constraint) ok(`${label} — ${constraint} 가 거부함`)
+        else fail(`${label} — ${constraint} 의 23514 가 아니라 ${e.constraint ?? '-'} ${e.code} (${e.message})`)
+      }
+    }
+    const insert = (cols, values) => `INSERT INTO link_preview (url_hash, url, status, expires_at${cols}) VALUES ('${'c'.repeat(64)}', 'https://x.example/', ${values})`
+    await rejects('열쇠가 sha256 이 아니다', `INSERT INTO link_preview (url_hash, url, status, expires_at) VALUES ('nothex', 'https://x.example/', 'ok', now() + interval '1 day')`, [], 'ck_link_preview_hash')
+    await rejects('모르는 상태', insert('', `'pending', now() + interval '1 day'`), [], 'ck_link_preview_status')
+    await rejects('★ 실패인데 메타가 있다', insert(', title', `'failed', now() + interval '1 day', '제목'`), [], 'ck_link_preview_meta_only_ok')
+    await rejects('제목이 300자를 넘는다', `UPDATE link_preview SET title = repeat('가', 301) WHERE url_hash = $1`, [hash], 'ck_link_preview_title')
+    await rejects('★ 그림 주소가 http(s) 가 아니다', `UPDATE link_preview SET image_url = 'javascript:alert(1)' WHERE url_hash = $1`, [hash], 'ck_link_preview_image')
+    await rejects('만료가 가져온 때보다 앞이다', `UPDATE link_preview SET expires_at = fetched_at - interval '1 second' WHERE url_hash = $1`, [hash], 'ck_link_preview_expiry')
+  }
+
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
 } catch (e) {

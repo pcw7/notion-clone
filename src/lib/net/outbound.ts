@@ -156,6 +156,180 @@ const failed = (reason: OutboundFailure, detail: string, status: number | null =
   detail: detail.slice(0, 500),
 })
 
+/** 연결할 곳 — 검사한 URL · 호스트 · 그 이름을 풀어 고른 주소 하나. */
+type Pinned = { readonly url: URL; readonly host: string; readonly target: ResolvedAddress }
+
+/**
+ * 모양 → 이름 풀이 → 막힌 대역(머리말 ① ② ③) — 연결할 주소 하나를 정한다. 풀린 주소가 **하나라도** 막힌 대역이면 보내지 않는다.
+ * POST(웹훅)와 GET(북마크 메타 · F-4a)이 이 함수 하나를 지난다 — 리다이렉트를 따라갈 때는 hop 마다 처음부터 다시 부른다.
+ */
+async function pinTarget(
+  rawUrl: string,
+  resolve: Resolver | undefined,
+): Promise<({ readonly ok: true } & Pinned) | { readonly ok: false; readonly failure: Extract<OutboundResult, { ok: false }> }> {
+  const reject = (reason: OutboundFailure, detail: string) => ({ ok: false as const, failure: failed(reason, detail) as Extract<OutboundResult, { ok: false }> })
+  const checked = checkOutboundUrl(rawUrl)
+  if (!checked.ok) return reject('blocked_url', checked.problem)
+  const url = checked.url
+  const host = hostOf(url)
+  const allowListed = isAllowListed(url)
+  let target: ResolvedAddress
+  if (isIP(host) !== 0) {
+    target = { address: host, family: isIP(host) }
+  } else {
+    let addresses: readonly ResolvedAddress[]
+    try {
+      addresses = await (resolve ?? systemResolver)(host)
+    } catch (e) {
+      return reject('dns', e instanceof Error ? e.message : String(e))
+    }
+    if (addresses.length === 0) return reject('dns', '주소가 없다')
+    target = addresses[0] as ResolvedAddress
+    if (!allowListed) {
+      const blocked = addresses.find((a) => isBlockedAddress(a.address))
+      if (blocked !== undefined) return reject('blocked_address', blocked.address)
+    }
+  }
+  if (!allowListed && isBlockedAddress(target.address)) return reject('blocked_address', target.address)
+  return { ok: true, url, host, target }
+}
+
+/** 검사한 그 주소로만 연결하는 lookup(머리말 ③) — `all` 로 묻는 쪽(autoSelectFamily)과 하나로 묻는 쪽 둘 다 받는다. */
+function pinnedLookup(target: ResolvedAddress): NonNullable<RequestOptions['lookup']> {
+  return (_hostname, opts, callback) => {
+    if (typeof opts === 'object' && opts !== null && 'all' in opts && opts.all) {
+      ;(callback as (e: Error | null, addresses: ResolvedAddress[]) => void)(null, [target])
+    } else {
+      ;(callback as (e: Error | null, address: string, family: number) => void)(null, target.address, target.family)
+    }
+  }
+}
+
+// ── GET HTML — 북마크 메타(F-4a · 정본 §3.4 [보강 F-4] ②) ──────────────
+
+/** 한 번 가져오기의 시간 상한 — 웹훅보다 짧다(사람이 카드를 기다린다). */
+export const HTML_TIMEOUT_MS = 5_000
+/** 읽는 본문의 상한 — 메타는 `<head>` 에 있다. 넘으면 거기서 자르고 읽은 데까지 쓴다. */
+export const MAX_HTML_BYTES = 512 * 1024
+/** 따라가는 리다이렉트의 상한 — hop 마다 모양 · 이름 · 대역을 처음부터 다시 본다. */
+export const MAX_HTML_REDIRECTS = 3
+
+export type HtmlFailure = OutboundFailure | 'not_html' | 'too_many_redirects'
+
+export type HtmlResult =
+  | { readonly ok: true; readonly status: number; readonly finalUrl: string; readonly html: string; readonly truncated: boolean }
+  | { readonly ok: false; readonly reason: HtmlFailure; readonly status: number | null; readonly detail: string }
+
+type HtmlHop =
+  | { readonly kind: 'done'; readonly result: HtmlResult }
+  | { readonly kind: 'redirect'; readonly location: string; readonly status: number }
+
+const isHtmlType = (contentType: string | undefined): boolean => {
+  const type = (contentType ?? '').split(';')[0]?.trim().toLowerCase() ?? ''
+  return type === 'text/html' || type === 'application/xhtml+xml'
+}
+
+/** 고정한 주소로 GET 한 번 — 3xx 는 위치만 돌려준다(따라가는 일은 부르는 쪽 · hop 마다 다시 고정한다). */
+function getOnce(pinned: Pinned, timeoutMs: number, maxBytes: number): Promise<HtmlHop> {
+  const { url, host, target } = pinned
+  const requestOptions: RequestOptions = {
+    method: 'GET',
+    hostname: host,
+    port: portOf(url),
+    path: `${url.pathname}${url.search}`,
+    agent: false,
+    headers: {
+      accept: 'text/html,application/xhtml+xml;q=0.9',
+      'accept-encoding': 'identity',
+      'user-agent': 'notion-clone-linkpreview/1',
+    },
+    lookup: pinnedLookup(target),
+  }
+  return new Promise<HtmlHop>((resolve) => {
+    let settled = false
+    const send = url.protocol === 'https:' ? httpsRequest : httpRequest
+    const req = send(requestOptions, (res: IncomingMessage) => {
+      const status = res.statusCode ?? 0
+      if (status >= 300 && status < 400) {
+        res.resume()
+        settle({ kind: 'redirect', location: typeof res.headers.location === 'string' ? res.headers.location : '', status })
+        return
+      }
+      if (status < 200 || status >= 300) {
+        res.resume()
+        settle({ kind: 'done', result: { ok: false, reason: 'http_error', status, detail: `HTTP ${status}` } })
+        return
+      }
+      if (!isHtmlType(res.headers['content-type'])) {
+        res.destroy()
+        settle({ kind: 'done', result: { ok: false, reason: 'not_html', status, detail: String(res.headers['content-type'] ?? '').slice(0, 200) } })
+        return
+      }
+      const chunks: Buffer[] = []
+      let seen = 0
+      let truncated = false
+      res.on('data', (chunk: Buffer) => {
+        if (truncated) return
+        const room = maxBytes - seen
+        if (chunk.length >= room) {
+          chunks.push(chunk.subarray(0, room))
+          seen = maxBytes
+          truncated = true
+          res.destroy()
+        } else {
+          chunks.push(chunk)
+          seen += chunk.length
+        }
+      })
+      const finish = () =>
+        settle({ kind: 'done', result: { ok: true, status, finalUrl: url.href, html: Buffer.concat(chunks).toString('utf8'), truncated } })
+      res.on('end', finish)
+      res.on('close', finish)
+      res.on('error', finish)
+    })
+    const deadline = setTimeout(() => {
+      req.destroy(new Error('timeout'))
+      settle({ kind: 'done', result: { ok: false, reason: 'timeout', status: null, detail: `${timeoutMs}ms` } })
+    }, timeoutMs)
+    function settle(hop: HtmlHop): void {
+      if (settled) return
+      settled = true
+      clearTimeout(deadline)
+      resolve(hop)
+    }
+    req.on('error', (e) => settle({ kind: 'done', result: { ok: false, reason: 'network', status: null, detail: e.message.slice(0, 500) } }))
+    req.end()
+  })
+}
+
+/**
+ * HTML 을 GET 한다 — 북마크 메타(F-4a). 모양 · 이름 풀이 · 주소 검사 · 고정 연결은 POST 와 같고(`pinTarget`), 다른 것: 리다이렉트를
+ * 상한까지 따라가되 **hop 마다 처음부터 다시 검사**한다(첫 주소는 공개인데 두 번째가 169.254.169.254 인 길을 막는다) · HTML 이 아니면
+ * `not_html` · 본문은 상한까지만 읽는다 · 글자는 UTF-8 로 읽는다. 던지지 않는다 — 실패는 결과로 준다.
+ *
+ * @param options.resolve 이름 풀이를 바꿔 끼운다(검사만)
+ */
+export async function getHtml(
+  rawUrl: string,
+  options: { readonly resolve?: Resolver; readonly timeoutMs?: number; readonly maxBytes?: number; readonly maxRedirects?: number } = {},
+): Promise<HtmlResult> {
+  const maxRedirects = options.maxRedirects ?? MAX_HTML_REDIRECTS
+  let current = rawUrl
+  for (let hop = 0; hop <= maxRedirects; hop += 1) {
+    const pinned = await pinTarget(current, options.resolve)
+    if (!pinned.ok) return pinned.failure
+    const result = await getOnce(pinned, options.timeoutMs ?? HTML_TIMEOUT_MS, options.maxBytes ?? MAX_HTML_BYTES)
+    if (result.kind === 'done') return result.result
+    if (result.location === '') return { ok: false, reason: 'redirect', status: result.status, detail: '위치가 없다' }
+    try {
+      current = new URL(result.location, pinned.url).href
+    } catch {
+      return { ok: false, reason: 'redirect', status: result.status, detail: result.location.slice(0, 500) }
+    }
+  }
+  return { ok: false, reason: 'too_many_redirects', status: null, detail: `${maxRedirects}번 넘게` }
+}
+
 /**
  * JSON 을 POST 한다 — 모양 · 이름 풀이 · 주소 검사 · 고정 연결(머리말 ① ~ ④). 던지지 않는다 — 실패는 결과로 준다.
  *
@@ -166,31 +340,9 @@ export async function postJson(
   body: unknown,
   options: { readonly resolve?: Resolver; readonly timeoutMs?: number; readonly headers?: Readonly<Record<string, string>> } = {},
 ): Promise<OutboundResult> {
-  const checked = checkOutboundUrl(rawUrl)
-  if (!checked.ok) return failed('blocked_url', checked.problem)
-  const url = checked.url
-  const host = hostOf(url)
-  const allowListed = isAllowListed(url)
-
-  let target: ResolvedAddress
-  if (isIP(host) !== 0) {
-    target = { address: host, family: isIP(host) }
-  } else {
-    let addresses: readonly ResolvedAddress[]
-    try {
-      addresses = await (options.resolve ?? systemResolver)(host)
-    } catch (e) {
-      return failed('dns', e instanceof Error ? e.message : String(e))
-    }
-    if (addresses.length === 0) return failed('dns', '주소가 없다')
-    const first = addresses[0] as ResolvedAddress
-    target = first
-    if (!allowListed) {
-      const blocked = addresses.find((a) => isBlockedAddress(a.address))
-      if (blocked !== undefined) return failed('blocked_address', blocked.address)
-    }
-  }
-  if (!allowListed && isBlockedAddress(target.address)) return failed('blocked_address', target.address)
+  const pinned = await pinTarget(rawUrl, options.resolve)
+  if (!pinned.ok) return pinned.failure
+  const { url, host, target } = pinned
 
   const payload = Buffer.from(JSON.stringify(body), 'utf8')
   const timeoutMs = options.timeoutMs ?? OUTBOUND_TIMEOUT_MS
@@ -206,14 +358,8 @@ export async function postJson(
       'content-length': String(payload.length),
       'user-agent': 'notion-clone-webhook/1',
     },
-    // 검사한 그 주소로만 연결한다(머리말 ③) — `all` 로 묻는 쪽(autoSelectFamily)과 하나로 묻는 쪽 둘 다 받는다
-    lookup: (_hostname, opts, callback) => {
-      if (typeof opts === 'object' && opts !== null && 'all' in opts && opts.all) {
-        ;(callback as (e: Error | null, addresses: ResolvedAddress[]) => void)(null, [target])
-      } else {
-        ;(callback as (e: Error | null, address: string, family: number) => void)(null, target.address, target.family)
-      }
-    },
+    // 검사한 그 주소로만 연결한다(머리말 ③)
+    lookup: pinnedLookup(target),
   }
 
   return new Promise<OutboundResult>((resolve) => {
