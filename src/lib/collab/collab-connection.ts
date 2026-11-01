@@ -62,6 +62,7 @@
  */
 
 import * as Y from 'yjs'
+import type { LocalPresence } from './presence.ts'
 import {
   HocuspocusProvider,
   HocuspocusProviderWebsocket,
@@ -168,6 +169,11 @@ export type CollabConnectionOptions = {
   readonly firstConnectGraceMs?: number
   onChange?(snapshot: CollabSnapshot): void
   onDiscarded?(discarded: DiscardedDoc): void
+  /**
+   * 접속자 표시(AW-1) — 이 문서의 awareness 상태들이 바뀔 때(다른 사람이 들어오고 · 움직이고 · 나갈 때). 사람(`user`)은 서버가 채운 것이다.
+   * `selfClientId` 는 지금 provider 의 자기 연결 — provider 를 다시 만들면 바뀐다.
+   */
+  onPresence?(states: ReadonlyMap<number, unknown>, selfClientId: number): void
 }
 
 export type CollabConnection = {
@@ -184,6 +190,11 @@ export type CollabConnection = {
   confirm(): Promise<void>
   /** provider 를 내린다. 보존본은 지우지 않는다 — 탭을 닫아도 확인받지 못한 편집은 남아야 한다. 밀린 보존본 쓰기를 기다린다. */
   destroy(): Promise<void>
+  /**
+   * 접속자 표시(AW-1) — 이 연결의 자리(커서 블록 · 고른 블록 · 모드)를 싣는다. provider 를 다시 만들어도 마지막 것을 다시 싣는다.
+   * 사람은 서버가 채운다. 같은 상태를 거듭 보내지 않는 일은 부르는 쪽이 한다(`sameLocalPresence`).
+   */
+  setPresence(local: LocalPresence): void
 }
 
 /** 서버가 준 첫 상태 · 되살린 보존본을 적용하는 Y 트랜잭션의 origin — 로컬 편집으로 쌓지 않는다. */
@@ -223,6 +234,8 @@ export async function openCollabConnection(options: CollabConnectionOptions): Pr
   }
 
   let provider: HocuspocusProvider | null = null
+  /** 접속자 표시(AW-1)의 마지막 지역 상태 — provider 를 다시 만들 때 다시 싣는다. */
+  let localPresence: LocalPresence | null = null
   let readOnly: boolean | null = null
   let online = false
   let connecting = true
@@ -427,6 +440,14 @@ export async function openCollabConnection(options: CollabConnectionOptions): Pr
     next.on('close', ({ event }: { event: { reason?: string } }) => {
       if (mine() && event.reason) onRejected(event.reason)
     })
+    // 접속자 표시(AW-1) — 다른 사람들의 상태를 알리고, 마지막 지역 상태를 이 provider 에 다시 싣는다
+    const awareness = next.awareness
+    if (awareness) {
+      awareness.on('change', () => {
+        if (mine()) options.onPresence?.(awareness.getStates(), awareness.clientID)
+      })
+      if (localPresence !== null) awareness.setLocalState({ ...localPresence, ts: Date.now() })
+    }
     // 소켓을 넘겨받은 provider 는 스스로 붙지 않는다. 이벤트를 단 뒤에 붙인다.
     next.attach()
   }
@@ -530,6 +551,10 @@ export async function openCollabConnection(options: CollabConnectionOptions): Pr
       }
       sendConfirm()
       return pending
+    },
+    setPresence(local) {
+      localPresence = local
+      if (!destroyed) provider?.awareness?.setLocalState({ ...local, ts: Date.now() })
     },
     async destroy() {
       destroyed = true

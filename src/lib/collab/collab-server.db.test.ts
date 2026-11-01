@@ -213,8 +213,9 @@ describe('② 볼 수만 있는 연결', () => {
 
     edit(reader.doc, insertAtStart(ids[0], '몰래 '))
     // 같은 연결로 뒤이어 보낸 awareness 가 쓰는 쪽에 닿으면, 앞의 편집은 서버가 이미 처리했다.
-    reader.provider.setAwarenessField('mark', 'after-edit')
-    await waitFor('읽는 쪽의 awareness 가 닿는다', () => writer.provider.awareness?.getStates().get(reader.doc.clientID)?.mark === 'after-edit')
+    // 서버는 awareness 의 정해진 칸만 퍼뜨린다(AW-1) — 표지는 `ts` 에 싣는다
+    reader.provider.setAwarenessField('ts', 424242)
+    await waitFor('읽는 쪽의 awareness 가 닿는다', () => writer.provider.awareness?.getStates().get(reader.doc.clientID)?.ts === 424242)
 
     assert.deepEqual(textsOf(bodyOf(writer.doc, pageId)), ['원문'], '읽기 전용 연결의 편집이 퍼졌다')
     assert.deepEqual(await logOf(pageId), before, '읽기 전용 연결의 편집이 쌓였다')
@@ -895,8 +896,9 @@ describe('⑮ 등록할 때의 awareness 도 첫 판정 뒤로 (10n-56)', () => 
     const { server, waiting, release } = await holdingServer(t, member.userId)
     const [writer, witness] = [join(t, server.url, name, cookieOf(owner)), join(t, server.url, name, cookieOf(owner))]
     await ready(writer, witness)
+    // 이름은 서버가 채운다(AW-1) — 보낸 '비밀 이름' 대신 그 사람의 이름이 간다. 먼저 붙은 연결은 누군가의 이름을 본다.
     writer.provider.setAwarenessField('user', { name: '비밀 이름' })
-    await waitFor('먼저 붙은 연결은 이름을 본다', () => namesSeenBy(witness).includes('비밀 이름'))
+    await waitFor('먼저 붙은 연결은 이름을 본다', () => namesSeenBy(witness).some((n) => n !== '' && n !== '비밀 이름'))
 
     const late = join(t, server.url, name, cookieOf(member))
     await waitFor('늦은 연결이 첫 판정에서 기다린다', () => waiting.length === 1)
@@ -921,6 +923,21 @@ describe('⑮ 등록할 때의 awareness 도 첫 판정 뒤로 (10n-56)', () => 
     await waitFor('늦은 연결이 첫 판정에서 기다린다', () => waiting.length === 1)
     release()
     await ready(late)
-    await waitFor('지나면 이름을 본다', () => namesSeenBy(late).includes('함께 쓰는 이'))
+    // 이름은 서버가 채운다(AW-1) — 보낸 '함께 쓰는 이' 가 아니라 그 사람의 이름
+    await waitFor('지나면 이름을 본다', () => namesSeenBy(late).some((n) => n !== '' && n !== '함께 쓰는 이'))
+  })
+
+  test('★ 사칭할 수 없다 — awareness 의 user 는 서버가 그 연결의 사람(id · 이름)으로 덮어쓰고 모르는 칸은 버린다(AW-1)', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { owner, member, name } = await pageFixture(['원문'])
+    const server = await startServer(t)
+    const [liar, witness] = [join(t, server.url, name, cookieOf(member)), join(t, server.url, name, cookieOf(owner))]
+    await ready(liar, witness)
+    liar.provider.awareness?.setLocalState({ user: { user_id: owner.userId, name: '대표인 척' }, cursor: null, block_selection: [], mode: 'edit', ts: Date.now(), secret: 'x' })
+    await waitFor('지켜보는 쪽이 받는다', () => witness.provider.awareness?.getStates().get(liar.doc.clientID)?.mode === 'edit')
+    const seen = witness.provider.awareness?.getStates().get(liar.doc.clientID) as { user?: { user_id?: string; name?: string }; secret?: unknown }
+    assert.equal(seen.user?.user_id, member.userId, '사칭한 id 가 퍼졌다')
+    assert.notEqual(seen.user?.name, '대표인 척')
+    assert.equal('secret' in seen, false, '모르는 칸이 퍼졌다')
   })
 })
