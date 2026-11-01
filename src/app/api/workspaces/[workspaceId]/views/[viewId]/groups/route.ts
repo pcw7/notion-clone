@@ -25,7 +25,7 @@ import { isUuid } from '@/lib/ids'
 import { readJsonBody, requireWorkspaceSession } from '@/lib/auth/route-session'
 import { moveRow, queryGroupCalculations, queryGroupColumnCalculations, queryGroupRows, queryGroups } from '@/lib/database/group'
 import { getView } from '@/lib/database/view'
-import { readCardCovers } from '@/lib/database/gallery-covers'
+import { readGalleryCovers } from '@/lib/database/gallery-covers'
 import { readViewerToday } from '@/lib/settings/time-zone-cookie'
 import { failureResponse, groupFailureStatus, rowJson } from '@/lib/database/http'
 import { normalizeSearch } from '@/lib/database/search'
@@ -73,8 +73,8 @@ export async function GET(request: Request, ctx: Ctx): Promise<Response> {
       if (calculated.ok) calculations = calculated.value[group] ?? {}
     }
     const covers =
-      view.ok && view.value.type === 'gallery' && view.value.gallery.cover === 'page_content'
-        ? await readCardCovers(session.ctx, page.value.rows.map((r) => r.id))
+      view.ok && view.value.type === 'gallery' && view.value.gallery.cover !== 'none'
+        ? await readGalleryCovers(session.ctx, view.value.gallery.cover, page.value.rows.map((r) => r.id))
         : undefined
     return Response.json({
       ok: true,

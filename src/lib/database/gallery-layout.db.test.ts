@@ -26,7 +26,8 @@ import { createDatabase } from './database.ts'
 import { createRow, trashRow } from './row.ts'
 import { createView, getView, updateView } from './view.ts'
 import { DEFAULT_GALLERY_LAYOUT, type GalleryLayout } from './gallery.ts'
-import { readCardCovers } from './gallery-covers.ts'
+import { readCardCovers, readGalleryCovers } from './gallery-covers.ts'
+import { coverBackground } from '../block/page-cover.ts'
 import { createPage } from '../block/page.ts'
 
 const REQUIRE_DB = process.env.REQUIRE_DB === '1'
@@ -74,7 +75,8 @@ describe('① 레이아웃', () => {
     const stored = await withTransaction((tx) => tx.queryOne<{ configuration: Record<string, unknown> }>(`SELECT configuration FROM view WHERE id = $1`, [view.id]))
     assert.equal(stored.configuration.other, 1, 'configuration 의 다른 키를 덮지 않는다')
 
-    for (const bad of [{ cover: 'page_cover' }, { cover_size: 'huge' }, { color: 'red' }, {}]) {
+    // 'page_cover' 는 PC-5 부터 받는다(0125) — 모르는 미리보기의 예는 'cover_image'
+    for (const bad of [{ cover: 'cover_image' }, { cover_size: 'huge' }, { color: 'red' }, {}]) {
       const r = await updateView(fx.owner.ctx, view.id, { gallery: bad as Partial<GalleryLayout> })
       assert.equal(!r.ok && r.reason, 'invalid_layout', JSON.stringify(bad))
     }
@@ -148,5 +150,38 @@ describe('② 카드 미리보기 — 본문의 첫 이미지', () => {
     assert.ok(Object.keys(await readCardCovers(fx.owner.ctx, [id])).length === 1, '주인에게는 보인다')
     const other = await makeFixture()
     assert.deepEqual(await readCardCovers(other.owner.ctx, [id]), {}, '다른 워크스페이스의 세션')
+  })
+})
+
+describe('③ 카드 미리보기 — 행 페이지의 커버(PC-5)', () => {
+  test('★ 레이아웃이 page_cover 를 받는다 · 내장 커버는 배경 · 주소는 그 주소 · 올린 이미지는 파일 경로 · 커버가 없거나 휴지통의 행은 빠진다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const db = unwrap(await createDatabase(fx.owner.ctx, { name: `커버 카드 ${Date.now()}` }))
+    const view = unwrap(await createView(fx.owner.ctx, db.id, { type: 'gallery' }))
+    unwrap(await updateView(fx.owner.ctx, view.id, { gallery: { cover: 'page_cover' } }))
+    assert.equal(unwrap(await getView(fx.owner.ctx, view.id)).gallery.cover, 'page_cover')
+
+    const row = async () => unwrap(await createRow(fx.owner.ctx, db.dataSourceId, {})).id
+    const [gallery, external, file, none, trashed] = [await row(), await row(), await row(), await row(), await row()]
+    const fileId = randomUUID()
+    await withTransaction(async (tx) => {
+      for (const [id, cover] of [
+        [gallery, { type: 'gallery', gallery: 'gradient_3' }],
+        [external, { type: 'external', url: 'https://example.com/cover.png' }],
+        [file, { type: 'file', file_id: fileId }],
+        [trashed, { type: 'gallery', gallery: 'solid_red' }],
+      ] as const) {
+        await tx.query(`UPDATE block SET format = format || jsonb_build_object('page_cover', $2::jsonb) WHERE id = $1`, [id, JSON.stringify(cover)])
+      }
+    })
+    unwrap(await trashRow(fx.owner.ctx, trashed))
+
+    assert.deepEqual(await readGalleryCovers(fx.owner.ctx, 'page_cover', [gallery, external, file, none, trashed]), {
+      [gallery]: { background: coverBackground({ type: 'gallery', gallery: 'gradient_3' }) },
+      [external]: 'https://example.com/cover.png',
+      [file]: `/api/workspaces/${fx.owner.ctx.workspaceId}/files/${fileId}/content`,
+    })
+    assert.deepEqual(await readGalleryCovers(fx.owner.ctx, 'none', [gallery]), {}, '미리보기 없음')
+    assert.deepEqual(await readGalleryCovers(fx.owner.ctx, 'page_content', [gallery]), {}, '본문의 첫 이미지 — 커버는 본문이 아니다')
   })
 })

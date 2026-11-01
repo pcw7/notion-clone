@@ -3130,7 +3130,8 @@ try {
       fail(`정상 경로가 거부됐다 (${e.constraint ?? e.code})`)
     }
     await client.query('ROLLBACK TO SAVEPOINT probe')
-    await rejectBy('★ 모르는 미리보기', 'ck_view_gallery_layout', setConfig, [viewId, layout({ cover: 'page_cover' })])
+    // 'page_cover' 는 0125(PC-5)부터 받는다 — 모르는 미리보기의 예는 'cover_image'
+    await rejectBy('★ 모르는 미리보기', 'ck_view_gallery_layout', setConfig, [viewId, layout({ cover: 'cover_image' })])
     await rejectBy('★ 키가 빠졌다(NULL 이면 통과하는 구멍)', 'ck_view_gallery_layout', setConfig,
       [viewId, JSON.stringify({ gallery: { cover: 'none', cover_size: 'small' } })])
     await rejectBy('모르는 크기', 'ck_view_gallery_layout', setConfig, [viewId, layout({ cover_size: 'huge' })])
@@ -4984,6 +4985,30 @@ try {
     await rejects('1 을 넘는다', { page_cover: cover, page_cover_position: 1.5 })
     await rejects('음수', { page_cover: cover, page_cover_position: -0.1 })
     await rejects('★ 수가 아니다(글) — 오류가 아니라 거부', { page_cover: cover, page_cover_position: '0.5' })
+  }
+
+  console.log('\n[83] 갤러리 카드의 페이지 커버 (0125 / §3.6 [보강] 갤러리 ④ · §3.4 [보강 PC-5] · PC-5조각)')
+  {
+    // 0057 의 CHECK 을 다시 세웠다 — 미리보기의 셋째 값 'page_cover'. 모르는 값은 여전히 거부.
+    const viewRow = (await client.query(`SELECT id FROM view WHERE configuration ? 'gallery' LIMIT 1`)).rows[0]
+      ?? (await client.query(`SELECT id FROM view LIMIT 1`)).rows[0]
+    if (!viewRow) {
+      ok('뷰가 없다 — 건너뛴다(CHECK 은 마이그레이션이 세웠다)')
+    } else {
+      const set = `UPDATE view SET configuration = jsonb_set(coalesce(configuration, '{}'::jsonb), '{gallery}', $2::jsonb, true) WHERE id = $1`
+      await client.query(set, [viewRow.id, JSON.stringify({ cover: 'page_cover', cover_size: 'medium', cover_aspect: 'cover' })])
+      ok('★ 미리보기 page_cover — 통과한다')
+      await client.query('SAVEPOINT probe')
+      try {
+        await client.query(set, [viewRow.id, JSON.stringify({ cover: 'cover_image', cover_size: 'medium', cover_aspect: 'cover' })])
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        fail('모르는 미리보기(cover_image) — 거부되어야 하는데 통과했다')
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        if (e.code === '23514' && e.constraint === 'ck_view_gallery_layout') ok('모르는 미리보기(cover_image) — ck_view_gallery_layout 가 거부함')
+        else fail(`모르는 미리보기 — ck_view_gallery_layout 의 23514 가 아니라 ${e.constraint ?? '-'} ${e.code} (${e.message})`)
+      }
+    }
   }
 
   await client.query('ROLLBACK')

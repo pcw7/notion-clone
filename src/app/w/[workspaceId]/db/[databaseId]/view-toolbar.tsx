@@ -1508,7 +1508,7 @@ function NumberSizeField({
 
 // ── 카드 (갤러리) ─────────────────────────────────────────────────────
 
-const COVER_LABEL: Readonly<Record<GalleryLayout['cover'], string>> = { page_content: '본문의 첫 이미지', none: '없음' }
+const COVER_LABEL: Readonly<Record<GalleryLayout['cover'], string>> = { page_content: '본문의 첫 이미지', page_cover: '페이지 커버', none: '없음' }
 const SIZE_LABEL: Readonly<Record<GalleryLayout['cover_size'], string>> = { small: '작게', medium: '보통', large: '크게' }
 const ASPECT_LABEL: Readonly<Record<GalleryLayout['cover_aspect'], string>> = { cover: '채우기', contain: '전체 보이기' }
 
