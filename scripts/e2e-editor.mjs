@@ -27235,6 +27235,49 @@ async function main() {
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('페이지 커버 — 공개 화면 (PC-4 · F-02-06)')) { try {
+      // 공개 화면의 커버(정본 §3.4 [보강 PC-4]) — 게시한 페이지의 내장 커버는 본문 칸보다 넓은 그라디언트 배너 · 올린 이미지 커버는 공개 파일
+      // 경로(페이지 id 로 연다 · 세션 없이 200 · 위치는 앱과 같다) · 커버를 내장으로 바꾸면 그 경로가 닫힌다 · 해제하면 화면도 경로도 없다.
+      const stamp = Date.now().toString(36)
+      const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
+      const page = (await (await fetch(pagesUrl, { method: 'POST', headers: authed, body: JSON.stringify({ title: `공개 커버 ${stamp}` }) })).json()).page.id
+      const patch = (body) => fetch(`${pagesUrl}/${page}`, { method: 'PATCH', headers: authed, body: JSON.stringify(body) })
+      const form = new FormData()
+      form.append('file', new Blob([Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64')], { type: 'image/png' }), '커버.png')
+      const uploaded = await (await fetch(`${BASE}/api/workspaces/${workspaceId}/files`, { method: 'POST', headers: { cookie: authed.cookie, origin: BASE }, body: form })).json()
+      const fileId = uploaded.file.id
+      await patch({ cover: { type: 'gallery', gallery: 'gradient_2' } })
+      const token = (await (await fetch(`${pagesUrl}/${page}/publish`, { method: 'PUT', headers: authed })).json()).token
+      const COVER = '[data-testid="public-cover"]'
+
+      await send('Page.navigate', { url: `${BASE}/p/${token}` })
+      await waitFor(`!!document.querySelector('[data-testid="public-title"]')`, 15000)
+      const galleryShown = await evaluate(`(() => { const c = document.querySelector('${COVER}'); const m = document.querySelector('[data-testid="public-page"]')
+        return c ? { key: c.getAttribute('data-page-cover'), bg: c.style.background.includes('linear-gradient'), wider: c.getBoundingClientRect().width > m.getBoundingClientRect().width, outside: !m.contains(c) } : null })()`)
+      check('★ 게시한 페이지의 내장 커버 — 본문 칸 밖의 전체 폭 그라디언트 배너', galleryShown?.key === 'gallery:gradient_2' && galleryShown.bg && galleryShown.wider && galleryShown.outside,
+        JSON.stringify({ token: !!token, galleryShown }))
+
+      const filed = await patch({ cover: { type: 'file', file_id: fileId } })
+      const positioned = await patch({ coverPosition: 0.25 })
+      const coverPath = `/p/${token}/blocks/${page}/cover`
+      const anonymous = await rawFetch(`${BASE}${coverPath}`)
+      check('★ 올린 이미지 커버의 공개 경로 — 세션 없이 200 · 그림 · referrer 를 보내지 않게',
+        filed.ok && positioned.ok && anonymous.status === 200 && anonymous.headers.get('content-type') === 'image/png' && anonymous.headers.get('referrer-policy') === 'no-referrer',
+        JSON.stringify({ filed: filed.status, positioned: positioned.status, status: anonymous.status, type: anonymous.headers.get('content-type') }))
+      await send('Page.reload', {})
+      const fileShown = await waitFor(`(() => { const img = document.querySelector('${COVER} img')
+        return !!img && img.getAttribute('src') === ${JSON.stringify(coverPath)} && img.complete && img.naturalWidth > 0 && img.getAttribute('referrerpolicy') === 'no-referrer'
+          && parseFloat(img.style.objectPosition.split(' ')[1]) === 25 })()`, 15000)
+      check('★ 공개 화면은 그 경로로 그림을 그린다 — 위치는 앱과 같다(25%)', fileShown,
+        String(await evaluate(`document.querySelector('${COVER}')?.outerHTML?.slice(0, 300) ?? '(없음)'`)))
+
+      await patch({ cover: { type: 'gallery', gallery: 'solid_red' } })
+      check('커버를 내장으로 바꾸면 그 공개 경로가 닫힌다(지금의 커버를 본다)', (await rawFetch(`${BASE}${coverPath}`)).status === 404)
+      await patch({ cover: { type: 'file', file_id: fileId } })
+      await fetch(`${pagesUrl}/${page}/publish`, { method: 'DELETE', headers: authed })
+      check('해제하면 커버의 공개 경로도 없다', (await rawFetch(`${BASE}${coverPath}`)).status === 404)
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

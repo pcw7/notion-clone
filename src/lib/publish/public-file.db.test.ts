@@ -305,3 +305,47 @@ describe('⑤ ★ 인라인 커스텀 이모지(7c-3c)', () => {
     assert.equal(await emojiFill(token, para, party), null)
   })
 })
+
+// ── 커버(PC-4) ───────────────────────────────────────────────────────
+
+describe('커버 — 페이지의 올린 이미지 커버(PC-4)', () => {
+  test('★ 열린 페이지의 올린 이미지 커버는 준다 · 공개 읽기가 커버와 위치를 싣는다 · 내장 · 주소 커버는 파일이 없다 · 닫힌 하위 · 해제하면 없다', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const { boss } = await office()
+    const doc = await pageNamed(boss, unique('커버 문서'))
+    const coverFile = await fileOf(boss, 5)
+    await query(`UPDATE block SET format = coalesce(format, '{}'::jsonb) || $2::jsonb WHERE id = $1`, [
+      doc,
+      JSON.stringify({ page_cover: { type: 'file', file_id: coverFile }, page_cover_position: 0.25 }),
+    ])
+    const closed = await pageNamed(boss, unique('닫힌 하위'), doc)
+    await query(`UPDATE block SET format = coalesce(format, '{}'::jsonb) || $2::jsonb WHERE id = $1`, [
+      closed,
+      JSON.stringify({ page_cover: { type: 'file', file_id: await fileOf(boss, 6) } }),
+    ])
+    assert.ok((await stopInheriting(boss.ctx, closed)).ok)
+    const token = await tokenOf(boss, doc)
+
+    const file = await readPublicBlockFile(token, doc, 'cover')
+    assert.equal(file?.bytes[8], 5)
+    assert.equal(file?.mime, 'image/png')
+    const read = await readPublicPage(token)
+    assert.ok(read.ok)
+    assert.deepEqual([read.value.cover, read.value.coverPosition], [{ type: 'file', file_id: coverFile }, 0.25])
+    assert.equal(await readPublicBlockFile(token, closed, 'cover'), null, '상속을 끊은 하위의 커버')
+    assert.equal(await readPublicBlockFile(token, doc, 'icon'), null, '종류가 다르면 없다(아이콘이 아니다)')
+
+    await query(`UPDATE block SET format = (format - 'page_cover_position') || $2::jsonb WHERE id = $1`, [
+      doc,
+      JSON.stringify({ page_cover: { type: 'gallery', gallery: 'gradient_1' } }),
+    ])
+    assert.equal(await readPublicBlockFile(token, doc, 'cover'), null, '내장 커버는 파일이 없다')
+    const galleryRead = await readPublicPage(token)
+    assert.ok(galleryRead.ok)
+    assert.deepEqual([galleryRead.value.cover, galleryRead.value.coverPosition], [{ type: 'gallery', gallery: 'gradient_1' }, 0.5])
+
+    await query(`UPDATE block SET format = format || $2::jsonb WHERE id = $1`, [doc, JSON.stringify({ page_cover: { type: 'file', file_id: coverFile } })])
+    assert.ok((await unpublishPage(boss.ctx, doc)).ok)
+    assert.equal(await readPublicBlockFile(token, doc, 'cover'), null, '해제하면 없다')
+  })
+})

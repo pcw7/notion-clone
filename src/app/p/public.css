@@ -135,6 +135,14 @@
 .pub-image[data-align='right'] figcaption { text-align: right; }
 .pub-icon-image { width: 4.5rem; height: 4.5rem; object-fit: cover; border-radius: 4px; margin-bottom: 0.5rem; }
 
+/* 커버(PC-4) — 본문 칸 밖의 전체 폭 배너(앱과 같은 높이 — 30vh · 120~280px). 커버가 있으면 아이콘이 배너 아래 끝에 걸친다(본문 칸의 위 여백을 거둔다). */
+.pub-cover { width: 100%; height: 30vh; min-height: 120px; max-height: 280px; overflow: hidden; }
+.pub-cover img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.pub-page-covered { padding-top: 0; }
+.pub-page-covered > .pub-icon:first-child, .pub-page-covered > .pub-icon-image:first-child { position: relative; margin-top: -40px; }
+.pub-page-covered > .pub-title:first-child { margin-top: 24px; }
+.pub-page-covered > .pub-trail:first-child { margin-top: 16px; }
+
 /* 6b-1b — 신고 */
 /* 공개 표 · 행의 속성(6a-2c-2) — 옵션 칩의 색은 편집기의 [data-color] 배경이다 */
 .pub-db { display: flex; flex-direction: column; gap: 0.5rem; }

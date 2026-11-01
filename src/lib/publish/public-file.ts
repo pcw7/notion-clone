@@ -1,5 +1,5 @@
 /**
- * 공개 화면의 파일 — 블록이 가리키는 이미지 · 페이지의 이미지 아이콘 (게시 · 공유 6a-2b · F-06-08 · F-17-11)
+ * 공개 화면의 파일 — 블록이 가리키는 이미지 · 페이지의 이미지 아이콘 · 커버 (게시 · 공유 6a-2b · PC-4 · F-06-08 · F-17-11 · F-02-06)
  *
  * 정본: 00-canonical-data-model.md §3.3 끝 [보강] 공개 화면 ⑨
  *
@@ -7,7 +7,7 @@
  * 공개 쪽에는 세션이 없으므로 **파일 id 로 열지 않는다.** 블록 id 로 연다:
  *
  *   토큰 → 루트(`resolvePublicPageIn` — 게시 · 정책 · 만료 · 루트의 사슬)
- *   → 그 블록이 · 이미지 블록이면 그 블록이 든 페이지(가장 가까운 페이지 조상)가 · 아이콘이면 그 페이지 자신이 이 토큰으로 열린다
+ *   → 그 블록이 · 이미지 블록이면 그 블록이 든 페이지(가장 가까운 페이지 조상)가 · 아이콘 · 커버면 그 페이지 자신이 이 토큰으로 열린다
  *   → 그 블록이 **지금** 가리키는 파일 하나(이 워크스페이스의 것) — 아이콘이 커스텀 이모지면(7c-2a) 그 이모지(살아 있는 것)의 파일
  *
  * 그래서 공개 주소를 알아도 다른 파일 id 를 찍어 읽을 수 없고, 이미지를 본문에서 지우거나 페이지를 닫으면 그 주소도 닫힌다.
@@ -16,6 +16,7 @@
 
 import { readTitle } from '../block/page.ts'
 import { pageIconOfFormat, readPageIcon } from '../block/page-icon.ts'
+import { coverFileId, pageCoverOfFormat } from '../block/page-cover.ts'
 import { customEmojiIdOfRun } from '../contracts/rich-text.ts'
 import { readImageSource } from '../block/image.ts'
 import { FILE_TYPE, readFileSource } from '../block/file-block.ts'
@@ -27,8 +28,8 @@ import { isUuid } from '../ids.ts'
 import { openablePagesIn, resolvePublicPageIn } from './public-access.ts'
 import type { AiCrawler, RobotsDirective } from './public-token.ts'
 
-/** 공개 파일의 종류 — 본문의 이미지 블록 · 페이지의 이미지 아이콘 · 본문의 파일 블록(F-1a — 내려받기로만 연다). */
-export const PUBLIC_FILE_KINDS = ['image', 'icon', 'file', 'video'] as const
+/** 공개 파일의 종류 — 본문의 이미지 블록 · 페이지의 이미지 아이콘 · 본문의 파일 블록(F-1a — 내려받기로만 연다) · 비디오 · 페이지의 올린 이미지 커버(PC-4). */
+export const PUBLIC_FILE_KINDS = ['image', 'icon', 'file', 'video', 'cover'] as const
 export type PublicFileKind = (typeof PUBLIC_FILE_KINDS)[number]
 
 export function isPublicFileKind(value: string): value is PublicFileKind {
@@ -84,6 +85,10 @@ export async function readPublicBlockFile(token: string, blockId: string, kind: 
                 )
               )?.file_id ?? null)
             : null
+    } else if (kind === 'cover') {
+      // 페이지 커버(PC-4) — 페이지 행의 올린 이미지 커버만(데이터베이스 · 본문 블록 · 내장 커버 · 주소 커버는 없다)
+      pageId = block.id
+      fileId = block.type === PAGE_TYPE ? coverFileId(pageCoverOfFormat(block.format)) : null
     } else {
       // 본문 블록 — 종류와 블록 타입이 맞아야 한다(image ↔ 이미지 블록 · file ↔ 파일 블록 — F-1a). 어긋나면 없는 것과 같다.
       const source =
