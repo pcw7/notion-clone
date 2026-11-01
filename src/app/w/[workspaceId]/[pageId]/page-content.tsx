@@ -250,6 +250,8 @@ export async function PageContent({
             hint="잠긴 페이지 — 본문과 제목을 고칠 수 없습니다"
             part="badge"
           />
+          {/* 접속자 줄(AW-1)의 자리 — 본문 편집기가 이 자리에 그린다(포털) */}
+          <div id="page-presence-slot" data-testid="presence-slot" className="flex items-center" />
           <CommentPanel
             workspaceId={workspaceId}
             pageId={page.id}

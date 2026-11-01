@@ -26,7 +26,8 @@
  * 접힘 상태는 여전히 이 컴포넌트의 `useRef` 에 있다(F-01-13: *"문서 데이터로 저장하면 상대 화면이 멋대로 접힘"*).
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { createPortal } from 'react-dom'
 import { useRouter } from 'next/navigation'
 import { NodeSelection, TextSelection } from '@tiptap/pm/state'
 import type { EditorView } from '@tiptap/pm/view'
@@ -73,6 +74,9 @@ import { commentHighlightPlugin, setCommentThreads, type AnchoredThread } from '
 import { uploadFileOf, uploadImageFile } from '@/lib/file/upload-client'
 import { fileMetaOfResponse, fileMetaSource } from '@/lib/editor/file-meta'
 import { bookmarkMetaOfResponse, bookmarkMetaSource } from '@/lib/editor/bookmark-meta'
+import { presencePeers, sameLocalPresence, type LocalPresence, type PresencePeer } from '@/lib/collab/presence'
+import { setPresenceMarkers } from '@/lib/editor/presence-plugin'
+import { PresenceStack } from './presence-stack'
 import { customEmojiImagePath, type PageIcon } from '@/lib/block/page-icon'
 import { searchCustomEmoji } from '@/lib/emoji/custom-emoji-rules'
 import { closeEmojiMenu, emojiMenuState, insertCustomEmoji, replaceColonEmoji } from '@/lib/editor/emoji-menu'
@@ -383,6 +387,11 @@ function pageRefIds(view: EditorView): string[] {
   return ids
 }
 
+/** 상단 바의 접속자 줄 자리(AW-1 · `page-content.tsx` 의 `page-presence-slot`) — 서버에서는 없다. */
+const noSubscription = (): (() => void) => () => {}
+const findPresenceSlot = (): HTMLElement | null => document.getElementById('page-presence-slot')
+const noPresenceSlot = (): HTMLElement | null => null
+
 export function BodyEditor({
   workspaceId,
   pageId,
@@ -425,6 +434,11 @@ export function BodyEditor({
   const openMenuRef = useRef<(() => void) | null>(null)
   const viewRef = useRef<EditorView | null>(null)
   const connectionRef = useRef<CollabConnection | null>(null)
+  // 접속자 표시(AW-1) — 다른 사람들 · 마지막으로 보낸 내 자리 · 상단 바의 자리(포털)
+  const [peers, setPeers] = useState<PresencePeer[]>([])
+  const lastPresenceRef = useRef<LocalPresence | null>(null)
+  // 상단 바의 자리는 서버가 그린 요소다 — 서버에서는 없고 하이드레이션 뒤 그 요소(바뀌지 않는다 · 구독할 것이 없다)
+  const presenceSlot = useSyncExternalStore(noSubscription, findPresenceSlot, noPresenceSlot)
   /** 지금 편집기가 붙어 있는 Y.Doc — 연결이 문서를 버리고 다시 열면 바뀐다. */
   const boundDocRef = useRef<Y.Doc | null>(null)
   /** 협업 편집기가 돌려준 deps — 노드 뷰를 다시 만들 때 그대로 쓴다(되돌리기 짝이 들어 있다). */
@@ -1389,6 +1403,12 @@ export function BodyEditor({
     }
   }, [codeUiOpen, remeasureCodeUi])
 
+  // ── 접속자 표시(AW-1) ─────────────────────────────────────────────────
+  useEffect(() => {
+    const view = viewRef.current
+    if (view !== null && !view.isDestroyed) setPresenceMarkers(view, peers)
+  }, [peers])
+
   // ── 편집기 · 연결 ───────────────────────────────────────────────────
 
   useEffect(() => {
@@ -1449,6 +1469,12 @@ export function BodyEditor({
       openFileCaption: (id) => openCodeUi('file_caption', id),
       openVideoCaption: (id) => openCodeUi('video_caption', id),
       openBookmarkCaption: (id) => openCodeUi('bookmark_caption', id),
+      // 접속자 표시(AW-1) — 내 자리가 바뀌면 싣는다(같은 자리면 보내지 않는다 · 연결 전이면 붙을 때 싣는다)
+      onLocalPresence: (local) => {
+        if (sameLocalPresence(lastPresenceRef.current, local)) return
+        lastPresenceRef.current = local
+        connectionRef.current?.setPresence(local)
+      },
       // 북마크 카드의 메타(F-4b) — 서버가 전역 캐시에서 주거나 가져와 적는다(SSRF 방어 · 속도 제한은 서버의 일)
       bookmarkMeta: bookmarkMetaSource(async (url) => {
         const res = await fetch(`/api/workspaces/${workspaceId}/link-preview?url=${encodeURIComponent(url)}`)
@@ -1617,6 +1643,8 @@ export function BodyEditor({
           // 버리고 다시 연 문서 — 편집기를 그 문서로 다시 만든다.
           if (!disposed && snapshot.doc !== boundDocRef.current) bind(snapshot.doc)
         },
+        // 접속자 표시(AW-1) — 다른 사람들(자기 연결 · 자기 다른 탭은 빼고 · 사람마다 하나)
+        onPresence: (states, selfClientId) => setPeers(presencePeers(states, selfClientId, userId)),
         onDiscarded: (discarded: DiscardedDoc) => {
           if (!discarded.unconfirmed) return
           const text = plainTextForBlocks(readBodyYDoc(discarded.doc, pageId).doc.blocks)
@@ -1632,6 +1660,8 @@ export function BodyEditor({
         return
       }
       connectionRef.current = connection
+      // 연결 전에 정해진 내 자리를 싣는다(AW-1)
+      if (lastPresenceRef.current !== null) connection.setPresence(lastPresenceRef.current)
       bind(connection.snapshot().doc)
       checkUnknownRefs(viewRef.current!)
     })()
@@ -2240,6 +2270,18 @@ export function BodyEditor({
       <p role="status" aria-live="polite" className="mt-2 h-4 text-xs text-neutral-400">
         {syncing ? '동기화 중…' : ''}
       </p>
+      {/* 접속자 줄(AW-1) — 상단 바의 자리(`page-presence-slot`)에 그린다. 누르면 그 사람이 있는 블록으로. */}
+      {presenceSlot !== null &&
+        createPortal(
+          <PresenceStack
+            peers={peers}
+            onJump={(peer) => {
+              if (peer.blockId === null) return
+              document.querySelector(`.blk-editor [data-block-id="${peer.blockId}"]`)?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+            }}
+          />,
+          presenceSlot,
+        )}
     </section>
   )
 }

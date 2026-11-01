@@ -26842,6 +26842,67 @@ async function main() {
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('접속자 표시 (AW-1 · F-05-03)')) { try {
+      // 접속자 표시(정본 §3.7 presence [보강 AW-1]) — 두 번째 사람(Node 의 provider · 쿠키 헤더)이 이름을 사칭한 awareness 로 한 블록에 서면
+      // 브라우저의 상단 바에 **그 사람의 진짜 이름**으로 아바타가 서고(서버가 덮어쓴다) 그 블록에 표시가 붙는다 · 누르면 그 블록으로 · 브라우저의
+      // 자리도 그 사람에게 닿는다(서버가 채운 내 id) · 나가면 아바타가 사라진다.
+      const stamp = Date.now().toString(36)
+      const { HocuspocusProvider } = await import('@hocuspocus/provider')
+      const Y = await import('yjs')
+      const { collabDocumentName } = await import(new URL('../src/lib/collab/collab-protocol.ts', import.meta.url).href)
+      const page = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: JSON.stringify({ title: `접속자 ${stamp}` }) })).json()).page.id
+      const ids = Array.from({ length: 40 }, () => randomUUID())
+      await saveBody(page, { blocks: ids.map((id, i) => ({ id, type: 'paragraph', title: [textRun(`줄 ${i + 1}`)], properties: {}, format: {}, children: [] })) })
+      const first = ids[0]
+      const last = ids[ids.length - 1]
+      const mateName = `붙은 동료 ${stamp}`
+      const mate = await joinAs(workspaceId, await createUser(mateName), 'member')
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+      await waitFor(`!!document.querySelector('[data-block-id="${first}"]') && document.querySelector('.ProseMirror')?.getAttribute('contenteditable') === 'true'`, 15000)
+      await waitHydrated(`[data-block-id="${first}"]`)
+
+      class HeaderSocket extends WebSocket {
+        constructor(address) {
+          super(address, { headers: { cookie: `nc_session=${mate.token}`, origin: BASE } })
+        }
+      }
+      const mateDoc = new Y.Doc()
+      const provider = new HocuspocusProvider({ url: COLLAB_URL, name: collabDocumentName(workspaceId, page), document: mateDoc, WebSocketPolyfill: HeaderSocket })
+      try {
+        for (let i = 0; i < 100 && !provider.isSynced; i += 1) await sleep(100)
+        // 사칭 — 대표의 id 와 다른 이름을 싣는다(서버가 이 연결의 사람으로 덮어써야 한다)
+        provider.awareness.setLocalState({ user: { user_id: ctx.userId, name: '사칭 이름' }, cursor: { block_id: last }, block_selection: [], mode: 'edit', ts: Date.now() })
+        const AV = `[data-testid="presence-avatar"][data-user-id="${mate.userId}"]`
+        const shown = await waitFor(`(() => { const a = document.querySelector('${AV}'); return !!a && a.getAttribute('data-block-id') === ${JSON.stringify(last)} && (a.getAttribute('title') ?? '').includes(${JSON.stringify(mateName)}) })()`, 10000)
+        check('★ 다른 사람이 들어오면 상단 바에 그 사람의 아바타 — 이름은 서버가 채운 진짜 이름(사칭한 것이 아니다) · 그 사람의 블록',
+          shown && !(await evaluate(`[...document.querySelectorAll('[data-testid="presence-avatar"]')].some((a) => (a.getAttribute('title') ?? '').includes('사칭'))`)),
+          JSON.stringify(await evaluate(`[...document.querySelectorAll('[data-testid="presence-avatar"]')].map((a) => [a.getAttribute('data-user-id'), a.getAttribute('title')])`)))
+        const marked = await waitFor(`(document.querySelector('.blk-container[data-block-id="${last}"]')?.getAttribute('data-presence-names') ?? '').includes(${JSON.stringify(mateName)})`, 5000)
+        check('★ 그 사람이 있는 블록에 표시가 붙는다(글자 · 이름)', marked,
+          JSON.stringify(await evaluate(`(() => { const c = document.querySelector('.blk-container[data-block-id="${last}"]'); return c ? [c.getAttribute('data-presence'), c.getAttribute('data-presence-names')] : null })()`)))
+        await evaluate(`window.scrollTo(0, 0)`)
+        await clickSelector(AV)
+        const jumped = await waitFor(`(() => { const r = document.querySelector('[data-block-id="${last}"]')?.getBoundingClientRect(); return !!r && r.top >= 0 && r.bottom <= window.innerHeight })()`, 5000)
+        check('아바타를 누르면 그 사람이 있는 블록으로 간다', jumped)
+        // 브라우저의 자리가 그 사람에게 닿는다 — 첫 블록에 캐럿
+        await clickSelector(`[data-block-id="${first}"] .blk`)
+        const seenByMate = await (async () => {
+          for (let i = 0; i < 50; i += 1) {
+            const mine = [...provider.awareness.getStates().entries()].filter(([id]) => id !== mateDoc.clientID).map(([, s]) => s)
+            if (mine.some((s) => s?.user?.user_id === ctx.userId && s?.cursor?.block_id === first)) return true
+            await sleep(200)
+          }
+          return false
+        })()
+        check('★ 내 자리도 그 사람에게 닿는다 — 서버가 채운 내 id 와 캐럿의 블록', seenByMate,
+          JSON.stringify([...provider.awareness.getStates().values()].map((s) => [s?.user?.user_id, s?.cursor?.block_id ?? null])))
+      } finally {
+        provider.destroy()
+      }
+      const gone = await waitFor(`!document.querySelector('[data-testid="presence-avatar"][data-user-id="${mate.userId}"]') && !document.querySelector('.blk-container[data-presence]')`, 15000)
+      check('그 사람이 나가면 아바타 · 블록 표시가 사라진다', gone)
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

@@ -56,6 +56,8 @@ import { tocPlugin } from './toc-plugin.ts'
 import { mentionMenuPlugin } from './mention-menu.ts'
 import { emojiMenuPlugin } from './emoji-menu.ts'
 import type { EditorDoc } from './document.ts'
+import { presencePlugin } from './presence-plugin.ts'
+import type { LocalPresence } from '../collab/presence.ts'
 
 export type EditorDeps = EditorKeymapDeps & NodeViewDeps & {
   /**
@@ -63,6 +65,8 @@ export type EditorDeps = EditorKeymapDeps & NodeViewDeps & {
    * 메타 트랜잭션으로 넣는다(`setBreadcrumbTrail`). 없으면 경로 없이 그린다(검사).
    */
   readonly breadcrumbTrail?: () => BreadcrumbTrail | null
+  /** 접속자 표시(AW-1) — 내 자리(캐럿의 블록 · 고른 블록 · 모드)가 바뀔 때. 없으면(검사 · 미리보기) 알리지 않는다. */
+  readonly onLocalPresence?: (local: LocalPresence) => void
 }
 
 export type CreateEditorOptions = {
@@ -125,6 +129,8 @@ export function editingPlugins(deps: EditorDeps): Plugin[] {
     // 블록 선택 하이라이트(F-01-09). 상태는 `state.selection` 이 갖고 있고
     // 이 플러그인은 그리기만 한다.
     blockSelectionPlugin(),
+    // 접속자 표시(AW-1) — 다른 사람이 있는 블록에 속성(노드 데코레이션)만 · 내 자리를 알린다
+    presencePlugin(deps.onLocalPresence),
     // 이미지 · 파일 드롭·붙여넣기(F-01-15 · 이미지가 아니면 파일 블록 — F-1b)는 **클립보드 플러그인보다 앞**이다. 스크린샷을
     // 붙이면 파일과 HTML 이 같이 실려 오는 경우가 있어서, 뒤에 두면 HTML 경로가
     // 먼저 먹는다.

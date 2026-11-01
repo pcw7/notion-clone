@@ -102,6 +102,8 @@ import { openChangeFeed, type ChangeFeed, type ChangeFeedHandlers, type CollabSi
 import { collabDocumentName, confirmationReply, parseConfirmationRequest } from './collab-protocol.ts'
 import { loadDocState, pageAccess, readDocUpdatesAfter } from './doc-store.ts'
 import { createProjectionScheduler, type ProjectionScheduler } from './projection-scheduler.ts'
+import { sanitizePresence } from './presence.ts'
+import { withReadTransaction } from '../db/tx.ts'
 
 /** y-protocols/sync 의 메시지 종류. SyncStep1(0)은 state vector 뿐이고 답으로 본문이 간다. 둘 · 셋이 update 를 싣는다. */
 const SYNC_STEP_1 = 0
@@ -136,6 +138,8 @@ export type CollabContext = {
   readonly pageId: string
   /** 연결을 받을 때 해석한 세션 — 문서를 불러오고 다시 판정할 범위를 고르는 데만 쓴다. 판정은 매번 다시 해석한다. */
   readonly session: SessionContext
+  /** 그 사람의 이름 — 접속자 표시(AW-1)의 awareness `user` 를 서버가 채울 때 쓴다(클라이언트가 보낸 이름은 버린다). */
+  readonly userName: string
 }
 
 /** provider 가 받는 거부 이유 — 머리말. 쓰기 거부는 `appendDocUpdate` 의 이유 그대로다. */
@@ -343,8 +347,24 @@ export function createCollabServer(options: CollabServerOptions): Server<CollabC
       if (access === 'none') throw rejection('not_found')
       connectionConfig.readOnly = access !== 'edit'
 
-      const context: CollabContext = { token, ...address, session: resolved.context }
+      // 접속자 표시(AW-1) — awareness 의 이름은 서버가 채운다. 연결을 받을 때 한 번 읽는다(이름을 바꾸면 다시 붙을 때 바뀐다).
+      const named = await withReadTransaction((tx) =>
+        tx.queryMaybe<{ name: string }>(`SELECT name FROM "user" WHERE id = $1`, [resolved.context.userId]),
+      )
+      const context: CollabContext = { token, ...address, session: resolved.context, userName: named?.name ?? '' }
       return context
+    },
+
+    /**
+     * 접속자 표시(AW-1 · 정본 §3.7 presence [보강 AW-1] ①) — 받은 awareness 를 퍼뜨리기 전에 다듬는다: 정해진 칸만 남기고 `user` 는
+     * **이 연결의 사람**으로 덮어쓴다. 클라이언트가 보낸 이름 · id 를 믿으면 남의 이름으로 자리를 띄울 수 있다. 서버 안에서 쓴
+     * awareness(연결이 없다)는 그대로다.
+     */
+    async beforeHandleAwareness({ states, context }) {
+      if (context === undefined) return
+      const user = { user_id: context.session.userId, name: context.userName }
+      // `states` 는 받은 update 를 푼 임시 상태다 — 이것을 고쳐야 다시 싸서 퍼뜨린다(`awareness` 는 문서의 살아 있는 상태라 고치지 않는다)
+      for (const [clientId, state] of [...states]) states.set(clientId, sanitizePresence(state, user))
     },
 
     async onLoadDocument({ context, document }) {
