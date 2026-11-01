@@ -75,6 +75,8 @@ import { DATABASE_GLYPH, type PageIcon } from '@/lib/block/page-icon'
 import type { PeopleNames } from './db/[databaseId]/cell-view'
 import { PeopleEditor } from './db/[databaseId]/people-editor'
 import { PageIconView } from './page-icon-view'
+import { formatCommandShortcut, matchCommandActions, type CommandAction } from '@/lib/nav/command-actions'
+import { requestSidebarToggle, toggleThemeNow } from './app-commands'
 
 /** 사이드바 버튼처럼 오버레이 밖에서 여는 경로. */
 const OPEN_EVENT = 'nc:open-search'
@@ -244,6 +246,17 @@ export function SearchOverlay({
     return result?.kind === 'results' ? result.rows : []
   }, [searching, result, recent])
 
+  // 작업(CP-1 · F-07-11) — 입력이 있을 때만 · 결과 위에 선다(07 *"액션 우선"*). 고르는 차례는 작업 → 결과가 한 줄로 잇는다.
+  const actions = useMemo(() => (open ? matchCommandActions(query, { pageId: currentPageId }) : []), [open, query, currentPageId])
+  const count = actions.length + rows.length
+  /** 작업을 한 뒤의 짧은 알림(링크 복사 · 실패) — 오버레이를 닫은 뒤에도 몇 초 남는다. */
+  const [notice, setNotice] = useState<{ readonly text: string; readonly error: boolean } | null>(null)
+  useEffect(() => {
+    if (notice === null) return
+    const timer = setTimeout(() => setNotice(null), 3000)
+    return () => clearTimeout(timer)
+  }, [notice])
+
   const close = useCallback(() => {
     setOpen(false)
     setPicker(null)
@@ -365,6 +378,58 @@ export function SearchOverlay({
     [close, router, workspaceId],
   )
 
+  /**
+   * 작업을 한다(CP-1) — 닫기가 포커스를 되돌리므로 먼저 닫는다(`openRow` 와 같은 까닭). 이미 있는 길만 부른다: 페이지 만들기(사이드바의 "새
+   * 페이지" 와 같은 개인 최상위) · 설정의 테마(단축키와 같은 함수) · 사이드바의 접기(같은 일을 이벤트로) · 화면 이동. 링크 복사는 클립보드가
+   * 거부하면 조용히 넘기지 않고 말한다(07 엣지).
+   */
+  const runAction = useCallback(
+    (action: CommandAction) => {
+      close()
+      switch (action.id) {
+        case 'new-page':
+          void fetch(`/api/workspaces/${workspaceId}/pages`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ privateTop: true }),
+          })
+            .then(async (res) => {
+              const data = (await res.json().catch(() => null)) as { page?: { id?: string } } | null
+              if (!res.ok || typeof data?.page?.id !== 'string') throw new Error('create failed')
+              router.push(`/w/${workspaceId}/${data.page.id}`)
+              router.refresh()
+            })
+            .catch(() => setNotice({ text: '새 페이지를 만들지 못했습니다.', error: true }))
+          return
+        case 'copy-link': {
+          if (currentPageId === null) return
+          const url = `${window.location.origin}/w/${workspaceId}/${currentPageId}`
+          void navigator.clipboard
+            .writeText(url)
+            .then(() => setNotice({ text: '링크를 복사했습니다.', error: false }))
+            .catch(() => setNotice({ text: '링크를 복사하지 못했습니다 — 브라우저가 클립보드를 막았습니다.', error: true }))
+          return
+        }
+        case 'toggle-theme':
+          toggleThemeNow(workspaceId, () => router.refresh())
+          return
+        case 'toggle-sidebar':
+          requestSidebarToggle()
+          return
+        case 'open-settings':
+          router.push(`/w/${workspaceId}/settings`)
+          return
+        case 'open-inbox':
+          router.push(`/w/${workspaceId}/inbox`)
+          return
+        case 'go-home':
+          router.push(`/w/${workspaceId}`)
+          return
+      }
+    },
+    [close, currentPageId, router, workspaceId],
+  )
+
   useEffect(() => {
     if (!open) return
     const onKeyDown = (event: KeyboardEvent) => {
@@ -404,25 +469,42 @@ export function SearchOverlay({
         close()
         return
       }
-      if (rows.length === 0) return
+      // 작업과 결과는 한 줄로 잇는다(CP-1) — 0..작업 수-1 이 작업, 그 뒤가 결과
+      if (count === 0) return
 
       if (event.key === 'ArrowDown') {
         event.preventDefault()
-        setIndex((i) => (i + 1) % rows.length)
+        setIndex((i) => (i + 1) % count)
       } else if (event.key === 'ArrowUp') {
         event.preventDefault()
-        setIndex((i) => (i - 1 + rows.length) % rows.length)
+        setIndex((i) => (i - 1 + count) % count)
       } else if (event.key === 'Enter') {
         event.preventDefault()
-        const row = rows[Math.min(index, rows.length - 1)]
-        if (row) openRow(row)
+        const at = Math.min(index, count - 1)
+        if (at < actions.length) runAction(actions[at]!)
+        else {
+          const row = rows[at - actions.length]
+          if (row) openRow(row)
+        }
       }
     }
     window.addEventListener('keydown', onKeyDown, true)
     return () => window.removeEventListener('keydown', onKeyDown, true)
-  }, [open, rows, index, close, openRow, picker])
+  }, [open, rows, actions, count, index, close, openRow, runAction, picker])
 
-  if (!open) return null
+  // 작업 뒤의 알림(CP-1) — 오버레이가 닫혀도 남는다
+  const noticeView =
+    notice === null ? null : (
+      <div
+        role={notice.error ? 'alert' : 'status'}
+        data-testid="command-notice"
+        className={`fixed bottom-6 left-1/2 z-50 -translate-x-1/2 rounded-md px-3 py-2 text-sm shadow-lg ${notice.error ? 'bg-red-600 text-white' : 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900'}`}
+      >
+        {notice.text}
+      </div>
+    )
+  if (!open) return noticeView
+  const mac = typeof navigator !== 'undefined' && /mac|iphone|ipad/i.test(navigator.platform)
 
   /** 사람 필터 값의 이름 — 나 · 고른 사람(모르면 떠난 사용자). */
   const personName = (value: string): string => (value === SEARCH_ME ? '나' : Object.hasOwn(names, value) ? names[value]! : LEFT_USER)
@@ -473,7 +555,11 @@ export function SearchOverlay({
           ref={inputRef}
           type="search"
           value={query}
-          onChange={(event) => setQuery(event.target.value)}
+          // 입력이 바뀌면 첫 줄로 — 작업(CP-1)은 결과보다 먼저 서므로 옛 자리가 다른 줄을 가리키지 않게
+          onChange={(event) => {
+            setQuery(event.target.value)
+            setIndex(0)
+          }}
           placeholder="페이지 검색 또는 이동"
           aria-label="검색어"
           data-testid="search-input"
@@ -642,6 +728,34 @@ export function SearchOverlay({
         )}
 
         <div className="min-h-0 flex-1 overflow-auto" data-testid="search-results">
+          {/* 작업(CP-1 · F-07-11) — 입력에 맞는 것만 · 결과 위 · 단축키가 있으면 함께 적는다(07 *"학습 유도"*) */}
+          {actions.length > 0 && (
+            <>
+              <p className="px-4 pt-3 text-xs font-medium text-neutral-400">작업</p>
+              <ul role="listbox" aria-label="작업" data-testid="command-actions">
+                {actions.map((action, i) => (
+                  <li key={action.id}>
+                    <button
+                      type="button"
+                      role="option"
+                      aria-selected={i === index}
+                      data-testid="command-action"
+                      data-action={action.id}
+                      onMouseEnter={() => setIndex(i)}
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => runAction(action)}
+                      className={`flex w-full items-center justify-between px-4 py-2 text-left text-sm ${i === index ? 'bg-neutral-100 dark:bg-neutral-800' : ''}`}
+                    >
+                      <span>{action.label}</span>
+                      {action.shortcut !== null && (
+                        <kbd className="text-xs text-neutral-400">{formatCommandShortcut(action.shortcut, mac)}</kbd>
+                      )}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
           {!searching && rows.length > 0 && (
             <p className="px-4 pt-3 text-xs font-medium text-neutral-400">최근 방문</p>
           )}
@@ -660,13 +774,13 @@ export function SearchOverlay({
                   <a
                     href={rowHref(workspaceId, row)}
                     role="option"
-                    aria-selected={i === index}
+                    aria-selected={actions.length + i === index}
                     data-testid="search-hit"
                     data-page-id={row.pageId}
                     data-kind={row.kind}
                     // 마우스가 지나가면 선택을 옮긴다 — 키보드 선택과 마우스
                     // 호버가 따로 보이면 Enter 가 어디로 갈지 알 수 없다.
-                    onMouseEnter={() => setIndex(i)}
+                    onMouseEnter={() => setIndex(actions.length + i)}
                     onClick={(event) => {
                       // `cmd+click`(새 탭)은 브라우저에게 맡긴다(F-07-01).
                       if (event.metaKey || event.ctrlKey || event.shiftKey) return
@@ -674,7 +788,7 @@ export function SearchOverlay({
                       openRow(row)
                     }}
                     className={`block px-4 py-2 ${
-                      i === index ? 'bg-neutral-100 dark:bg-neutral-800' : ''
+                      actions.length + i === index ? 'bg-neutral-100 dark:bg-neutral-800' : ''
                     }`}
                   >
                     <span className="block truncate text-sm">
