@@ -108,12 +108,13 @@ export async function ensureLinkPreview(ctx: SessionContext, url: string, option
   const normalized = normalizePreviewUrl(url)
   if (normalized === null) return { ok: false, reason: 'invalid_url' }
   const now = options.now ?? new Date()
-  const cached = (await readLinkPreviews([normalized], now)).get(normalized)
-  if (cached !== undefined) return { ok: true, preview: cached, cached: true }
   const key = previewKey(normalized)
+  // 진행 중인 같은 주소를 **기다리기 전에** 본다 — 캐시를 읽느라 기다리는 틈에 앞의 일이 끝나 표시를 지우면 다시 가져갔다(부하에서 검사가 잡았다)
   const running = INFLIGHT.get(key)
   if (running !== undefined) return running
   const work = (async (): Promise<EnsureResult> => {
+    const cached = (await readLinkPreviews([normalized], now)).get(normalized)
+    if (cached !== undefined) return { ok: true, preview: cached, cached: true }
     const shape = checkOutboundUrl(normalized)
     if (!shape.ok) {
       // http 는 건너뛴다 · 막힌 모양은 실패 — 둘 다 가져오지 않으니 속도 제한에 세지 않는다
