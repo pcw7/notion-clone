@@ -26742,6 +26742,60 @@ async function main() {
         JSON.stringify({ card: pageHtml.includes('data-testid="public-bookmark"'), rel: pageHtml.includes('nofollow ugc'), caption: pageHtml.includes(`참고 ${stamp}`) }))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('북마크 메타 — 서버 (F-4a · F-01-15)')) { try {
+      // 북마크의 메타(정본 §3.4 [보강 F-4]) — 라우트가 그 주소에서 HTML 을 가져와 OG 메타를 주고 전역 캐시에 적는다(두 번째는 가져오지 않는다) ·
+      // 리다이렉트를 따라간다 · HTML 이 아니면 failed · 메타데이터 주소(169.254.169.254)는 가져오지 않는다 · http 는 건너뛴다 · 주소가 아니면 400.
+      // 가져올 곳은 이 판의 받는 서버(127.0.0.1:HOOK_PORT — 앱은 `OUTBOUND_ALLOW_HOSTS` 로 그 주소만 검사를 비켜 간다).
+      const stamp = Date.now().toString(36)
+      const { createServer } = await import('node:http')
+      const hits = []
+      const site = createServer((req, res) => {
+        hits.push(req.url ?? '')
+        const path = (req.url ?? '').split('?')[0]
+        if (path === '/page') {
+          res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }).end(`<!doctype html><html><head><title>예비 제목</title>
+            <meta property="og:title" content="메타 제목 ${stamp}"><meta property="og:description" content="설명 &amp; 요약">
+            <meta property="og:image" content="/cover.png"><meta property="og:site_name" content="예시 사이트"></head><body>본문</body></html>`)
+        } else if (path === '/moved') res.writeHead(302, { location: `/page?from=moved&s=${stamp}` }).end()
+        else if (path === '/text') res.writeHead(200, { 'content-type': 'text/plain' }).end('그냥 글')
+        else res.writeHead(404).end()
+      })
+      await new Promise((r) => site.listen(HOOK_PORT, '127.0.0.1', r))
+      try {
+        const ask = async (url) => {
+          const r = await fetch(`${BASE}/api/workspaces/${workspaceId}/link-preview?url=${encodeURIComponent(url)}`, { headers: { cookie: authed.cookie } })
+          return { status: r.status, body: await r.json().catch(() => null) }
+        }
+        const origin = `http://127.0.0.1:${HOOK_PORT}`
+        const first = await ask(`${origin}/page?s=${stamp}`)
+        check('★ 그 주소에서 HTML 을 가져와 OG 메타를 준다 — 제목 · 설명(엔티티를 푼다) · 그림(최종 주소 기준) · 사이트 이름',
+          first.status === 200 && first.body?.preview?.status === 'ok' && first.body.preview.title === `메타 제목 ${stamp}` && first.body.preview.description === '설명 & 요약'
+            && first.body.preview.imageUrl === `${origin}/cover.png` && first.body.preview.siteName === '예시 사이트',
+          JSON.stringify(first))
+        const pageHits = hits.filter((h) => h.startsWith('/page')).length
+        const second = await ask(`${origin}/page?s=${stamp}#다른-자리`)
+        check('★ 두 번째는 전역 캐시 — 받는 서버가 다시 맞지 않는다(해시를 뗀 같은 주소)',
+          second.status === 200 && second.body?.preview?.title === `메타 제목 ${stamp}` && hits.filter((h) => h.startsWith('/page')).length === pageHits,
+          JSON.stringify({ second: second.body?.preview?.status, pageHits, now: hits.filter((h) => h.startsWith('/page')).length }))
+        const moved = await ask(`${origin}/moved?s=${stamp}`)
+        check('리다이렉트를 따라가 옮겨 간 곳의 메타를 준다', moved.status === 200 && moved.body?.preview?.title === `메타 제목 ${stamp}` && hits.includes(`/page?from=moved&s=${stamp}`),
+          JSON.stringify({ moved: moved.body?.preview, hits: hits.slice(-3) }))
+        const text = await ask(`${origin}/text?s=${stamp}`)
+        check('HTML 이 아니면 failed — 메타 없이', text.status === 200 && text.body?.preview?.status === 'failed' && text.body.preview.title === null, JSON.stringify(text.body))
+        const before = hits.length
+        const metadata = await ask('https://169.254.169.254/latest/meta-data/')
+        const plain = await ask(`http://plain-${stamp}.example/`)
+        check('★ 메타데이터 주소는 가져오지 않는다(failed) · http 는 건너뛴다(skipped) — 받는 서버도 맞지 않는다',
+          metadata.body?.preview?.status === 'failed' && plain.body?.preview?.status === 'skipped' && hits.length === before,
+          JSON.stringify({ metadata: metadata.body?.preview?.status, plain: plain.body?.preview?.status, hits: hits.length - before }))
+        const bad = await ask('javascript:alert(1)')
+        check('주소가 아니면 400', bad.status === 400 && bad.body?.error === 'invalid_url', JSON.stringify(bad))
+      } finally {
+        site.closeAllConnections?.()
+        await new Promise((r) => site.close(() => r()))
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).
