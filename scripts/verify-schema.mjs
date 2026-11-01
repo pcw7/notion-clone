@@ -4954,6 +4954,38 @@ try {
     await rejects('객체가 아니다', pageId, 'gradient_1')
   }
 
+  console.log('\n[82] 페이지 커버의 위치 (0124 / §3.4 [보강 PC-3] · PC-3조각)')
+  {
+    // format.page_cover_position — 페이지 행 · 커버가 있을 때만 · 0~1 의 수. 그림 커버인지는 명령이 본다.
+    const pageId = randomUUID()
+    await client.query(
+      `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key,
+                          ancestor_path, perm_scope_id, properties, format, created_at, last_edited_at)
+       VALUES ($1, $2, 'page', 'workspace', $2, $3, '{}', $1, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+      [pageId, wsId, `cover-pos-${pageId}`],
+    )
+    const set = `UPDATE block SET format = $2::jsonb WHERE id = $1`
+    const cover = { type: 'external', url: 'https://example.com/tall.png' }
+    for (const position of [0, 0.25, 1]) await client.query(set, [pageId, JSON.stringify({ page_cover: cover, page_cover_position: position })])
+    ok('★ 커버와 함께 0 · 0.25 · 1 — 통과한다')
+    const rejects = async (label, format) => {
+      await client.query('SAVEPOINT probe')
+      try {
+        await client.query(set, [pageId, JSON.stringify(format)])
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        fail(`${label} — 거부되어야 하는데 통과했다`)
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        if (e.code === '23514' && e.constraint === 'block_page_cover_position') ok(`${label} — block_page_cover_position 가 거부함`)
+        else fail(`${label} — block_page_cover_position 의 23514 가 아니라 ${e.constraint ?? '-'} ${e.code} (${e.message})`)
+      }
+    }
+    await rejects('★ 커버 없이 위치만', { page_cover_position: 0.3 })
+    await rejects('1 을 넘는다', { page_cover: cover, page_cover_position: 1.5 })
+    await rejects('음수', { page_cover: cover, page_cover_position: -0.1 })
+    await rejects('★ 수가 아니다(글) — 오류가 아니라 거부', { page_cover: cover, page_cover_position: '0.5' })
+  }
+
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
 } catch (e) {

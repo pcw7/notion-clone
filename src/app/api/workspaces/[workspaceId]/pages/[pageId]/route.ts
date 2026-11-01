@@ -11,11 +11,12 @@
  *
  * 커버(PC-1 · PC-2 · `cover`)는 `{ type: 'gallery', gallery } | { type: 'external', url } | { type: 'file', file_id } | null` — 올린 이미지는
  * 먼저 `POST …/files` 로 올린 id. 아이콘 다음 · 제목 앞에 쓴다(각자 트랜잭션).
+ * 커버의 위치(PC-3 · `coverPosition`)는 0~1 의 수 — 커버 다음에 쓴다(그림 커버일 때만).
  */
 
 import { asBlockId } from '@/lib/ids'
 import { readJsonBody, requireWorkspaceSession } from '@/lib/auth/route-session'
-import { renamePage, setPageCover, setPageIcon, titleFromPlainText, PageError } from '@/lib/block/page'
+import { renamePage, setPageCover, setPageCoverPosition, setPageIcon, titleFromPlainText, PageError } from '@/lib/block/page'
 import { parsePageCoverInput, type PageCover } from '@/lib/block/page-cover'
 import { parsePageIconInput, type PageIcon } from '@/lib/block/page-icon'
 
@@ -37,10 +38,10 @@ export async function PATCH(
   const parsed = await readJsonBody(request)
   if (!parsed.ok) return parsed.response
   // 객체가 아닌 몸체(문자열 · 숫자)에 `in` 을 쓰면 던진다 — 빈 몸체와 같이 다룬다.
-  const body = (typeof parsed.body === 'object' && parsed.body !== null ? parsed.body : {}) as { title?: unknown; icon?: unknown; cover?: unknown }
+  const body = (typeof parsed.body === 'object' && parsed.body !== null ? parsed.body : {}) as { title?: unknown; icon?: unknown; cover?: unknown; coverPosition?: unknown }
 
-  if (body.title === undefined && !('icon' in body) && !('cover' in body)) {
-    return Response.json({ error: 'invalid_input', message: 'title · icon · cover 중 하나는 있어야 합니다' }, { status: 400 })
+  if (body.title === undefined && !('icon' in body) && !('cover' in body) && !('coverPosition' in body)) {
+    return Response.json({ error: 'invalid_input', message: 'title · icon · cover · coverPosition 중 하나는 있어야 합니다' }, { status: 400 })
   }
   if (body.title !== undefined && typeof body.title !== 'string') {
     return Response.json({ error: 'invalid_input', message: 'title 은 문자열이어야 합니다' }, { status: 400 })
@@ -76,10 +77,18 @@ export async function PATCH(
   try {
     const saved = icon === undefined ? undefined : await setPageIcon(session.ctx, pageId, icon)
     const savedCover = cover === undefined ? undefined : await setPageCover(session.ctx, pageId, cover)
+    // 위치는 명령이 검사한다(0~1 의 수 · 그림 커버) — 수가 아니면 명령의 invalid_cover_position 이 400 이 된다
+    const savedPosition = 'coverPosition' in body ? await setPageCoverPosition(session.ctx, pageId, body.coverPosition as number) : undefined
     if (typeof body.title !== 'string') {
+      const onlyCover = cover !== undefined || savedPosition !== undefined
       return Response.json({
         ok: true,
-        page: { id: pageId, ...(cover === undefined || 'icon' in body ? { icon: saved ?? null } : {}), ...(savedCover === undefined ? {} : { cover: savedCover }) },
+        page: {
+          id: pageId,
+          ...(!onlyCover || 'icon' in body ? { icon: saved ?? null } : {}),
+          ...(savedCover === undefined ? {} : { cover: savedCover }),
+          ...(savedPosition === undefined ? {} : { coverPosition: savedPosition }),
+        },
       })
     }
     const page = await renamePage(session.ctx, pageId, titleFromPlainText(body.title))
@@ -87,7 +96,7 @@ export async function PATCH(
   } catch (e) {
     if (e instanceof PageError) {
       // 볼 수 없으면 없는 페이지와 같다(404) · 볼 수만 있으면 403 · 잠겼으면 409(입력은 맞는데 지금 상태가 허락하지 않는다).
-      const status = e.code === 'not_found' ? 404 : e.code === 'forbidden' ? 403 : e.code === 'locked' ? 409 : 400 // invalid_title · invalid_icon · invalid_cover
+      const status = e.code === 'not_found' ? 404 : e.code === 'forbidden' ? 403 : e.code === 'locked' ? 409 : 400 // invalid_title · invalid_icon · invalid_cover · invalid_cover_position
       return Response.json({ error: e.code, message: e.message }, { status })
     }
     throw e

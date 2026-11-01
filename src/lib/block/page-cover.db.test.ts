@@ -9,6 +9,7 @@
  *   ④ 상세(`getPage`)만 커버를 싣는다 — 사이드바 · 하위 목록의 요약에는 없다
  *   ⑤ 본문은 커버를 싣지 않는다 — 행에서 부모의 Y.Doc 을 지어도 · 부모의 본문을 저장해도 하위 페이지의 커버는 그 행에 그대로
  *   ⑥ 복제는 커버를 옮긴다
+ *   ⑦ 위치(PC-3) — 그림 커버만 · 0~1 · 같으면 쓰지 않음 · 커버를 바꾸거나 지우면 위치도 지운다 · 복제는 위치를 옮긴다
  */
 
 import { test, describe, before, after } from 'node:test'
@@ -17,7 +18,17 @@ import { randomUUID } from 'node:crypto'
 import * as Y from 'yjs'
 
 import { createUser, joinAs, probeDatabase, makeFixture, type Fixture } from '../testing/db-fixtures.ts'
-import { createPage, getPage, listChildPages, setPageCover, setPageIcon, titleFromPlainText, PageError, type PageDetail } from './page.ts'
+import {
+  createPage,
+  getPage,
+  listChildPages,
+  setPageCover,
+  setPageCoverPosition,
+  setPageIcon,
+  titleFromPlainText,
+  PageError,
+  type PageDetail,
+} from './page.ts'
 import { loadPageBody, savePageBody } from './save-page-body.ts'
 import { duplicatePage } from './duplicate.ts'
 import { grantAccess } from '../permissions/acl.ts'
@@ -204,5 +215,48 @@ describe('⑥ 복제', () => {
     await setPageCover(fx.owner.ctx, page.id, gallery('gradient_4'))
     const copy = await duplicatePage(fx.owner.ctx, page.id)
     assert.deepEqual((await getPage(fx.owner.ctx, copy.page.id))?.cover, gallery('gradient_4'))
+  })
+})
+
+describe('⑦ 위치(PC-3)', () => {
+  test('★ 그림 커버에 위치를 정한다 — 같으면 쓰지 않음 · 상세가 싣는다 · 내장 커버 · 커버 없음 · 범위 밖은 invalid_cover_position', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const page = await newPage('위치 정할 페이지')
+    await rejects(() => setPageCoverPosition(fx.owner.ctx, page.id, 0.3), 'invalid_cover_position')
+    await setPageCover(fx.owner.ctx, page.id, gallery('solid_red'))
+    await rejects(() => setPageCoverPosition(fx.owner.ctx, page.id, 0.3), 'invalid_cover_position')
+
+    await setPageCover(fx.owner.ctx, page.id, { type: 'external', url: 'https://example.com/tall.png' })
+    assert.equal((await getPage(fx.owner.ctx, page.id))?.coverPosition, 0.5, '정하지 않으면 가운데')
+    const v0 = (await rowOf(page.id)).version
+    assert.equal(await setPageCoverPosition(fx.owner.ctx, page.id, 0.123456), 0.1235)
+    const r1 = await rowOf(page.id)
+    assert.equal(r1.format.page_cover_position, 0.1235)
+    assert.equal(BigInt(r1.version), BigInt(v0) + 1n)
+    await setPageCoverPosition(fx.owner.ctx, page.id, 0.1235)
+    assert.equal((await rowOf(page.id)).version, r1.version, '같은 위치에 version 이 올랐다')
+    assert.equal((await getPage(fx.owner.ctx, page.id))?.coverPosition, 0.1235)
+    for (const bad of [-0.1, 1.5, Number.NaN]) await rejects(() => setPageCoverPosition(fx.owner.ctx, page.id, bad), 'invalid_cover_position')
+
+    const copy = await duplicatePage(fx.owner.ctx, page.id)
+    assert.equal((await getPage(fx.owner.ctx, copy.page.id))?.coverPosition, 0.1235, '복제는 위치를 옮긴다')
+
+    await setPageCover(fx.owner.ctx, page.id, { type: 'external', url: 'https://example.com/other.png' })
+    assert.equal('page_cover_position' in (await rowOf(page.id)).format, false, '커버를 바꾸면 위치를 지운다')
+    await setPageCoverPosition(fx.owner.ctx, page.id, 0.8)
+    await setPageCover(fx.owner.ctx, page.id, null)
+    assert.deepEqual(Object.keys((await rowOf(page.id)).format).filter((k) => k.startsWith('page_cover')), [], '커버를 지우면 위치도')
+  })
+
+  test('볼 수만 있는 사람은 forbidden · 잠기면 locked', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const page = await newPage('위치 지키는 페이지', { privateTop: true })
+    await setPageCover(fx.owner.ctx, page.id, { type: 'external', url: 'https://example.com/tall.png' })
+    const reader = await joinAs(fx.workspaceId, await createUser('위치 읽기만'), 'member')
+    assert.ok((await grantAccess(fx.owner.ctx, page.id, { type: 'user', id: reader.userId }, 'view')).ok)
+    await rejects(() => setPageCoverPosition(reader.ctx, page.id, 0.2), 'forbidden')
+    assert.ok((await setPageLock(fx.owner.ctx, page.id, true)).ok)
+    await rejects(() => setPageCoverPosition(fx.owner.ctx, page.id, 0.2), 'locked')
+    assert.ok((await setPageLock(fx.owner.ctx, page.id, false)).ok)
   })
 })

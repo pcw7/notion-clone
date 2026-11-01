@@ -38,7 +38,7 @@ import { COLUMN_HEADER_KEY, ROW_HEADER_KEY } from './table.ts'
 import { CALLOUT_ICON_KEY, CALLOUT_TYPE, isCalloutIcon } from './callout.ts'
 import { isRefType, normalizeFormat, PAGE_TYPE, specOf, UNSUPPORTED_TYPE, type BlockFormat, type BlockType } from './types.ts'
 import { PAGE_ICON_KEY } from './page-icon.ts'
-import { PAGE_COVER_KEY } from './page-cover.ts'
+import { PAGE_COVER_KEY, PAGE_COVER_POSITION_KEY } from './page-cover.ts'
 
 export type SanitizedAttrs = {
   readonly props: Record<string, unknown>
@@ -63,10 +63,11 @@ export function sanitizeBlockAttrs(type: BlockType, props: Record<string, unknow
   let nextProps = safeRecord(props)
   const safeFormat = safeRecord(format) as BlockFormat
   // 페이지 커버(PC-1)도 같다 — 그 페이지 행의 모습이다(정본 §3.4 [보강 PC-1] ③)
-  if (type === PAGE_TYPE && (Object.hasOwn(safeFormat, PAGE_ICON_KEY) || Object.hasOwn(safeFormat, PAGE_COVER_KEY))) {
+  if (type === PAGE_TYPE && (Object.hasOwn(safeFormat, PAGE_ICON_KEY) || Object.hasOwn(safeFormat, PAGE_COVER_KEY) || Object.hasOwn(safeFormat, PAGE_COVER_POSITION_KEY))) {
     const rest: BlockFormat = { ...safeFormat }
     delete rest[PAGE_ICON_KEY]
     delete rest[PAGE_COVER_KEY]
+    delete rest[PAGE_COVER_POSITION_KEY]
     return { props: nextProps, format: rest, changed: true }
   }
   // 참조(하위 페이지 · 인라인 데이터베이스 — I-1)와 모르는 타입은 레지스트리의 속성 규칙을 대지 않는다 — 내용은 그 블록의 것이다

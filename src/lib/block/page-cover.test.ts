@@ -6,6 +6,11 @@ import {
   COVER_FALLBACK_BACKGROUND,
   COVER_GALLERY,
   coverBackground,
+  coverOverflow,
+  coverPositionOfFormat,
+  dragCoverPosition,
+  isRepositionable,
+  parseCoverPosition,
   pageCoverJson,
   pageCoverKey,
   pageCoverOfFormat,
@@ -75,5 +80,34 @@ describe('같은가 · 저장 모양 · 무작위', () => {
       assert.notEqual(cover.gallery, 'solid_red')
     }
     assert.equal(randomGalleryCover(null, () => 0.999999).gallery, COVER_GALLERY[COVER_GALLERY.length - 1]?.id)
+  })
+})
+
+describe('위치(PC-3) — 0~1 · 끌기', () => {
+  test('★ 받기는 0~1 의 유한한 수(넷째 자리) · 읽기는 관대하게(아니면 가운데) · 그림 커버만 위치가 있다', () => {
+    assert.equal(parseCoverPosition(0.123456), 0.1235)
+    assert.equal(parseCoverPosition(0), 0)
+    assert.equal(parseCoverPosition(1), 1)
+    for (const bad of [-0.01, 1.01, Number.NaN, Infinity, '0.5', null]) assert.equal(parseCoverPosition(bad), undefined, String(bad))
+    assert.equal(coverPositionOfFormat({ page_cover_position: 0.2 }), 0.2)
+    assert.equal(coverPositionOfFormat({ page_cover_position: 7 }), 0.5)
+    assert.equal(coverPositionOfFormat(null), 0.5)
+    assert.equal(isRepositionable({ type: 'external', url: 'https://e.com/a.png' }), true)
+    assert.equal(isRepositionable({ type: 'file', file_id: FILE }), true)
+    assert.equal(isRepositionable({ type: 'gallery', gallery: 'solid_red' }), false)
+    assert.equal(isRepositionable(null), false)
+  })
+
+  test('넘치는 높이 · 끌기 — 아래로 끌면 위가 드러난다(위치가 준다) · 0~1 로 자른다 · 넘치지 않으면 그대로', () => {
+    // 1000×2000 그림을 폭 1000 · 높이 280 배너에 — 가로를 채우면 높이 2000 · 넘치는 1720
+    assert.equal(coverOverflow(1000, 2000, 1000, 280), 1720)
+    // 납작한 그림 — 세로를 채우고 가로가 넘친다 · 세로로 옮길 것이 없다
+    assert.equal(coverOverflow(4000, 500, 1000, 280), 0)
+    assert.equal(coverOverflow(0, 0, 1000, 280), 0)
+    assert.equal(dragCoverPosition(0.5, 172, 1720), 0.4)
+    assert.equal(dragCoverPosition(0.5, -172, 1720), 0.6)
+    assert.equal(dragCoverPosition(0.1, 10_000, 1720), 0)
+    assert.equal(dragCoverPosition(0.9, -10_000, 1720), 1)
+    assert.equal(dragCoverPosition(0.3, 50, 0), 0.3)
   })
 })

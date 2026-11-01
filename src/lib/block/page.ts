@@ -41,7 +41,19 @@ import { recordActivity, recordCoalescedActivity } from '../notification/activit
 import { openPageBody } from './body-write.ts'
 import { appendPageRef, placePageRefAt } from './page-refs.ts'
 import { PAGE_ICON_KEY, pageIconJson, pageIconOfFormat, parsePageIconInput, samePageIcon, type PageIcon } from './page-icon.ts'
-import { PAGE_COVER_KEY, coverFileId, pageCoverJson, pageCoverOfFormat, parsePageCoverInput, samePageCover, type PageCover } from './page-cover.ts'
+import {
+  PAGE_COVER_KEY,
+  PAGE_COVER_POSITION_KEY,
+  coverFileId,
+  coverPositionOfFormat,
+  isRepositionable,
+  pageCoverJson,
+  pageCoverOfFormat,
+  parseCoverPosition,
+  parsePageCoverInput,
+  samePageCover,
+  type PageCover,
+} from './page-cover.ts'
 import { isUsableIcon, isWorkspaceImage, moveFileReference, moveIconFileReference } from '../file/icon-reference.ts'
 import {
   normalizeRichText,
@@ -70,6 +82,7 @@ export type PageErrorCode =
   | 'locked' // 고칠 수 있지만 페이지가 잠겼다(7f-1)
   | 'invalid_icon' // 아이콘이 이모지 한 글자가 아니다(8c-1)
   | 'invalid_cover' // 커버가 내장 커버 · 이미지 주소 · 이 워크스페이스에 올린 이미지가 아니다(PC-1 · PC-2)
+  | 'invalid_cover_position' // 위치가 0~1 의 수가 아니거나 그림 커버가 없다(PC-3)
 
 export class PageError extends Error {
   // 파라미터 프로퍼티(`constructor(readonly code: ...)`)를 쓰지 않는다 —
@@ -109,6 +122,8 @@ export type PageSummary = {
 export type PageDetail = PageSummary & {
   /** 페이지 커버(PC-1 · `format.page_cover`) — 페이지 하나를 열 때만 읽는다(사이드바 · 목록은 싣지 않는다 — 02 F-02-06). 없으면 null. */
   readonly cover: PageCover | null
+  /** 커버의 세로 위치(PC-3 · `format.page_cover_position`) — 0~1 · 없으면 가운데(0.5). */
+  readonly coverPosition: number
   /** 루트→부모까지의 조상 페이지. breadcrumb 용. 루트 페이지면 빈 배열. */
   readonly ancestors: readonly BlockId[]
   readonly permScopeId: string
@@ -142,6 +157,7 @@ function toDetail(row: PageRow): PageDetail {
   return {
     ...toSummary(row),
     cover: pageCoverOfFormat(row.format),
+    coverPosition: coverPositionOfFormat(row.format),
     ancestors: row.ancestor_path.map(asBlockId),
     permScopeId: row.perm_scope_id,
     version: row.version,
@@ -764,6 +780,7 @@ export async function setPageIcon(ctx: SessionContext, pageId: BlockId, icon: Pa
  * 권한 · 잠금 · DB 행 · 같으면 쓰지 않음 · `last_edited_*` · `version` 은 아이콘(`setPageIcon`)과 같다. 검색 색인은 다시 쓰지 않는다.
  * 받는 것은 내장 커버(지금 표에 있는 id) · http(s) 이미지 주소 · **이 워크스페이스에 올린 이미지**(PC-2 — 아니면 `invalid_cover`)다.
  * 올린 이미지는 그 파일의 참조다 — 같은 트랜잭션에서 옛 파일은 하나 내리고 새 파일은 하나 올린다(아이콘과 같은 장부 · FS1).
+ * 커버가 바뀌면 위치(PC-3)는 지운다 — 다른 그림의 위치는 뜻이 없다(새 커버는 가운데부터).
  */
 export async function setPageCover(ctx: SessionContext, pageId: BlockId, cover: PageCover | null): Promise<PageCover | null> {
   const parsed = parsePageCoverInput(cover)
@@ -791,8 +808,8 @@ export async function setPageCover(ctx: SessionContext, pageId: BlockId, cover: 
     }
     await tx.query(
       `UPDATE block
-          SET format = CASE WHEN $3::jsonb IS NULL THEN format - '${PAGE_COVER_KEY}'
-                            ELSE jsonb_set(format, '{${PAGE_COVER_KEY}}', $3::jsonb, true) END,
+          SET format = CASE WHEN $3::jsonb IS NULL THEN format - '${PAGE_COVER_KEY}' - '${PAGE_COVER_POSITION_KEY}'
+                            ELSE jsonb_set(format - '${PAGE_COVER_POSITION_KEY}', '{${PAGE_COVER_KEY}}', $3::jsonb, true) END,
               last_edited_by = $4,
               last_edited_at = now(),
               version = version + 1
@@ -800,6 +817,47 @@ export async function setPageCover(ctx: SessionContext, pageId: BlockId, cover: 
       [pageId, ctx.workspaceId, parsed === null ? null : JSON.stringify(pageCoverJson(parsed)), ctx.userId],
     )
     await moveFileReference(tx, ctx, coverFileId(current), coverFileId(parsed))
+    return parsed
+  })
+}
+
+/**
+ * 커버의 세로 위치를 바꾼다(34번 트랙 PC-3 · F-02-06 · 정본 §3.4 [보강 PC-3]) — 0(그림의 위 끝)~1(아래 끝). 돌려주는 것은 저장된 위치다.
+ *
+ * 권한 · 잠금 · DB 행 · 같으면 쓰지 않음 · version 은 커버와 같다. 커버가 **그림**(올린 이미지 · 주소)일 때만 — 커버가 없거나 내장 커버면
+ * `invalid_cover_position`(단색 · 그라디언트에는 위치가 뜻이 없다). 가운데(0.5)도 키로 적는다(사람이 정한 값이다).
+ */
+export async function setPageCoverPosition(ctx: SessionContext, pageId: BlockId, position: number): Promise<number> {
+  const parsed = parseCoverPosition(position)
+  if (parsed === undefined) throw new PageError('invalid_cover_position', '위치는 0 에서 1 사이의 수여야 합니다.')
+
+  return withTransaction(async (tx) => {
+    const target = await tx.queryMaybe<{ format: Record<string, unknown> | null }>(
+      `SELECT format FROM block
+        WHERE id = $1 AND workspace_id = $2 AND type = 'page' AND lifecycle = 'live'
+        FOR UPDATE`,
+      [pageId, ctx.workspaceId],
+    )
+    if (target === null) throw new PageError('not_found', '페이지를 찾을 수 없습니다.')
+    const caps = await effectiveCaps(tx, ctx, pageId)
+    if (!can(caps, 'view')) throw new PageError('not_found', '페이지를 찾을 수 없습니다.')
+    if (!can(caps, 'edit_content')) throw new PageError('forbidden', '이 페이지를 고칠 권한이 없습니다.')
+    if (await isLocked(tx, pageId)) throw new PageError('locked', '잠긴 페이지입니다. 잠금을 풀어야 커버를 바꿀 수 있습니다.')
+    if (!isRepositionable(pageCoverOfFormat(target.format))) {
+      throw new PageError('invalid_cover_position', '위치는 그림 커버(올린 이미지 · 이미지 주소)에만 정할 수 있습니다.')
+    }
+
+    const format = target.format ?? {}
+    if (Object.hasOwn(format, PAGE_COVER_POSITION_KEY) && coverPositionOfFormat(format) === parsed) return parsed
+    await tx.query(
+      `UPDATE block
+          SET format = jsonb_set(format, '{${PAGE_COVER_POSITION_KEY}}', to_jsonb($3::numeric), true),
+              last_edited_by = $4,
+              last_edited_at = now(),
+              version = version + 1
+        WHERE id = $1 AND workspace_id = $2`,
+      [pageId, ctx.workspaceId, parsed, ctx.userId],
+    )
     return parsed
   })
 }

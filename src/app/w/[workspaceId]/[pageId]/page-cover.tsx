@@ -22,7 +22,11 @@ import { useRouter } from 'next/navigation'
 import {
   COVER_FALLBACK_BACKGROUND,
   COVER_GALLERY,
+  DEFAULT_COVER_POSITION,
   coverBackground,
+  coverOverflow,
+  dragCoverPosition,
+  isRepositionable,
   pageCoverKey,
   parsePageCoverInput,
   randomGalleryCover,
@@ -37,14 +41,18 @@ const MESSAGES: Record<string, string> = {
   locked: '잠긴 페이지입니다 — 잠금을 풀어야 커버를 바꿀 수 있습니다.',
   forbidden: '이 페이지를 고칠 권한이 없습니다.',
   invalid_cover: '커버는 내장 커버 · http(s) 이미지 주소 · 이 워크스페이스에 올린 이미지여야 합니다.',
+  invalid_cover_position: '위치는 그림 커버(올린 이미지 · 이미지 주소)에만 정할 수 있습니다.',
 }
 
 type CoverState = {
   readonly workspaceId: string
   readonly cover: PageCover | null
+  /** 커버의 세로 위치(PC-3) — 0~1 · 가운데 0.5. */
+  readonly position: number
   readonly readOnly: boolean
   readonly error: string | null
   save(next: PageCover | null): Promise<void>
+  savePosition(next: number): Promise<void>
 }
 
 const CoverContext = createContext<CoverState | null>(null)
@@ -53,12 +61,15 @@ export function PageCoverProvider({
   workspaceId,
   pageId,
   initialCover,
+  initialPosition,
   readOnly,
   children,
 }: {
   workspaceId: string
   pageId: string
   initialCover: PageCover | null
+  /** 커버의 세로 위치(PC-3 · `PageDetail.coverPosition`). */
+  initialPosition: number
   /** 고칠 수 없다 — 볼 수만 있거나 잠긴 페이지. */
   readOnly: boolean
   children: ReactNode
@@ -68,6 +79,8 @@ export function PageCoverProvider({
   const [error, setError] = useState<string | null>(null)
   /** 마지막으로 서버에 반영된 값. */
   const saved = useRef<PageCover | null>(initialCover)
+  const [position, setPosition] = useState(initialPosition)
+  const savedPosition = useRef(initialPosition)
 
   // 다른 곳에서 바뀌어 서버 렌더가 새 값을 주면 따라간다(저장된 값이 달라졌을 때만 — 아이콘과 같은 규칙).
   useEffect(() => {
@@ -76,12 +89,21 @@ export function PageCoverProvider({
       setCover(initialCover)
     }
   }, [initialCover])
+  useEffect(() => {
+    if (initialPosition !== savedPosition.current) {
+      savedPosition.current = initialPosition
+      setPosition(initialPosition)
+    }
+  }, [initialPosition])
 
   const save = useCallback(
     async (next: PageCover | null): Promise<void> => {
       if (readOnly) return
       setError(null)
       setCover(next)
+      // 커버가 바뀌면 위치는 가운데부터(서버도 지운다 — 다른 그림의 위치는 뜻이 없다)
+      const positionBefore = savedPosition.current
+      setPosition(DEFAULT_COVER_POSITION)
       try {
         const res = await fetch(`/api/workspaces/${workspaceId}/pages/${pageId}`, {
           method: 'PATCH',
@@ -92,19 +114,56 @@ export function PageCoverProvider({
           const data = (await res.json().catch(() => ({}))) as { error?: unknown }
           setError(MESSAGES[String(data.error)] ?? '커버를 저장하지 못했습니다.')
           setCover(saved.current)
+          setPosition(positionBefore)
           return
         }
         saved.current = next
+        savedPosition.current = DEFAULT_COVER_POSITION
         router.refresh()
       } catch {
         setError('연결에 실패했습니다.')
         setCover(saved.current)
+        setPosition(positionBefore)
       }
     },
     [pageId, readOnly, router, workspaceId],
   )
 
-  const value = useMemo<CoverState>(() => ({ workspaceId, cover, readOnly, error, save }), [workspaceId, cover, readOnly, error, save])
+  /** 위치 저장(PC-3) — 화면은 먼저 옮기고 거부되면 마지막으로 저장된 위치로. */
+  const savePosition = useCallback(
+    async (next: number): Promise<void> => {
+      if (readOnly) return
+      setError(null)
+      setPosition(next)
+      try {
+        const res = await fetch(`/api/workspaces/${workspaceId}/pages/${pageId}`, {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ coverPosition: next }),
+        })
+        if (!res.ok) {
+          const data = (await res.json().catch(() => ({}))) as { error?: unknown }
+          setError(MESSAGES[String(data.error)] ?? '위치를 저장하지 못했습니다.')
+          setPosition(savedPosition.current)
+          return
+        }
+        const body = (await res.json().catch(() => ({}))) as { page?: { coverPosition?: unknown } }
+        const stored = typeof body.page?.coverPosition === 'number' ? body.page.coverPosition : next
+        savedPosition.current = stored
+        setPosition(stored)
+        router.refresh()
+      } catch {
+        setError('연결에 실패했습니다.')
+        setPosition(savedPosition.current)
+      }
+    },
+    [pageId, readOnly, router, workspaceId],
+  )
+
+  const value = useMemo<CoverState>(
+    () => ({ workspaceId, cover, position, readOnly, error, save, savePosition }),
+    [workspaceId, cover, position, readOnly, error, save, savePosition],
+  )
   return <CoverContext.Provider value={value}>{children}</CoverContext.Provider>
 }
 
@@ -145,7 +204,11 @@ export function PageCoverAddButton() {
 export function PageCoverBanner({ frame }: { frame: 'page' | 'peek' }) {
   const state = useContext(CoverContext)
   const [open, setOpen] = useState(false)
+  /** 위치 조정 중의 위치(PC-3) — null 이면 조정하지 않는다. 저장하면 공급자로 넘긴다. */
+  const [draft, setDraft] = useState<number | null>(null)
   const triggerRef = useRef<HTMLButtonElement | null>(null)
+  const bannerRef = useRef<HTMLDivElement | null>(null)
+  const drag = useRef<{ readonly startY: number; readonly from: number; readonly overflow: number } | null>(null)
   const close = useCallback((restoreFocus: boolean) => {
     setOpen(false)
     if (restoreFocus) triggerRef.current?.focus()
@@ -153,37 +216,123 @@ export function PageCoverBanner({ frame }: { frame: 'page' | 'peek' }) {
   const isTrigger = useCallback((target: EventTarget | null) => target instanceof Node && !!triggerRef.current?.contains(target), [])
   if (state === null || state.cover === null) return null
   const { cover } = state
+  const repositioning = draft !== null && isRepositionable(cover)
+  const shownPosition = repositioning ? draft : state.position
+
+  /** 가로를 꽉 채운 그림이 배너보다 얼마나 높은가 — 그림을 아직 못 불러왔으면 0(옮길 것이 없다). */
+  const overflowNow = (): number => {
+    const banner = bannerRef.current
+    const img = banner?.querySelector('img')
+    if (!banner || !img) return 0
+    const r = banner.getBoundingClientRect()
+    return coverOverflow(img.naturalWidth, img.naturalHeight, r.width, r.height)
+  }
+  const finish = (save: boolean): void => {
+    if (save && draft !== null) void state.savePosition(draft)
+    setDraft(null)
+    drag.current = null
+  }
 
   return (
     <div className="relative w-full shrink-0">
       <div
+        ref={bannerRef}
         data-testid="page-cover"
         data-page-cover={pageCoverKey(cover)}
-        role="img"
+        data-cover-position={shownPosition}
+        role="group"
         aria-label="페이지 커버"
         className={`group/cover relative w-full overflow-hidden ${frame === 'page' ? 'h-[30vh] max-h-[280px] min-h-[120px]' : 'h-[120px] rounded-md'}`}
         style={{ background: cover.type === 'gallery' ? coverBackground(cover) : COVER_FALLBACK_BACKGROUND }}
       >
-        {cover.type === 'external' && <CoverImage key={cover.url} src={cover.url} />}
+        {cover.type === 'external' && <CoverImage key={cover.url} src={cover.url} position={shownPosition} />}
         {/* 올린 이미지(PC-2) — 세션으로 인증되는 워크스페이스의 파일 경로(이미지 블록 · 아이콘과 같다 · 주소는 파생값) */}
-        {cover.type === 'file' && <CoverImage key={cover.file_id} src={imageContentPath(state.workspaceId, cover.file_id)} />}
+        {cover.type === 'file' && <CoverImage key={cover.file_id} src={imageContentPath(state.workspaceId, cover.file_id)} position={shownPosition} />}
+        {repositioning && (
+          // 위치 조정(PC-3) — 위아래로 끌거나 화살표(위 · 아래)로 옮긴다 · Enter 저장 · Esc 취소. 그림을 아래로 끌면 위쪽이 드러난다.
+          <div
+            data-testid="page-cover-reposition-surface"
+            role="slider"
+            aria-label="커버의 세로 위치"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={Math.round(draft * 100)}
+            tabIndex={0}
+            onPointerDown={(e) => {
+              e.preventDefault()
+              e.currentTarget.setPointerCapture(e.pointerId)
+              drag.current = { startY: e.clientY, from: draft, overflow: overflowNow() }
+            }}
+            onPointerMove={(e) => {
+              const d = drag.current
+              if (d !== null) setDraft(dragCoverPosition(d.from, e.clientY - d.startY, d.overflow))
+            }}
+            onPointerUp={() => {
+              drag.current = null
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+                e.preventDefault()
+                setDraft((v) => Math.min(1, Math.max(0, (v ?? DEFAULT_COVER_POSITION) + (e.key === 'ArrowUp' ? 0.05 : -0.05))))
+              } else if (e.key === 'Enter') {
+                e.preventDefault()
+                finish(true)
+              } else if (e.key === 'Escape') {
+                e.preventDefault()
+                e.stopPropagation()
+                finish(false)
+              }
+            }}
+            className="absolute inset-0 flex cursor-move touch-none select-none items-center justify-center focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-4 focus-visible:outline-blue-500"
+          >
+            <span className="rounded bg-black/50 px-2 py-1 text-xs text-white">끌어서 위치를 맞추세요</span>
+          </div>
+        )}
         {!state.readOnly && (
-          <div className="absolute bottom-3 right-4 flex gap-1 opacity-0 focus-within:opacity-100 group-hover/cover:opacity-100 touch:opacity-100">
-            <button
-              ref={triggerRef}
-              type="button"
-              data-testid="page-cover-change"
-              aria-haspopup="dialog"
-              aria-expanded={open}
-              onClick={() => setOpen((v) => !v)}
-              className="rounded bg-white/90 px-2 py-1 text-xs text-neutral-700 shadow-sm hover:bg-white dark:bg-neutral-900/90 dark:text-neutral-200 dark:hover:bg-neutral-900"
-            >
-              커버 바꾸기
-            </button>
+          <div
+            className={`absolute bottom-3 right-4 z-10 flex gap-1 ${repositioning ? '' : 'opacity-0 focus-within:opacity-100 group-hover/cover:opacity-100 touch:opacity-100'}`}
+          >
+            {repositioning ? (
+              <>
+                <button type="button" data-testid="page-cover-reposition-save" onClick={() => finish(true)} className={COVER_BUTTON}>
+                  위치 저장
+                </button>
+                <button type="button" data-testid="page-cover-reposition-cancel" onClick={() => finish(false)} className={COVER_BUTTON}>
+                  취소
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  ref={triggerRef}
+                  type="button"
+                  data-testid="page-cover-change"
+                  aria-haspopup="dialog"
+                  aria-expanded={open}
+                  onClick={() => setOpen((v) => !v)}
+                  className={COVER_BUTTON}
+                >
+                  커버 바꾸기
+                </button>
+                {isRepositionable(cover) && (
+                  <button
+                    type="button"
+                    data-testid="page-cover-reposition"
+                    onClick={() => {
+                      setOpen(false)
+                      setDraft(state.position)
+                    }}
+                    className={COVER_BUTTON}
+                  >
+                    위치 조정
+                  </button>
+                )}
+              </>
+            )}
           </div>
         )}
       </div>
-      {open && !state.readOnly && (
+      {open && !state.readOnly && !repositioning && (
         <CoverPicker
           workspaceId={state.workspaceId}
           current={cover}
@@ -206,13 +355,29 @@ export function PageCoverBanner({ frame }: { frame: 'page' | 'peek' }) {
   )
 }
 
-/** 외부 이미지 — 가로 꽉 · 잘라 채움 · referrer 를 보내지 않는다(아이콘과 같다) · 못 불러오면 회색 판(배너의 바탕). */
-function CoverImage({ src }: { src: string }) {
+const COVER_BUTTON =
+  'rounded bg-white/90 px-2 py-1 text-xs text-neutral-700 shadow-sm hover:bg-white dark:bg-neutral-900/90 dark:text-neutral-200 dark:hover:bg-neutral-900'
+
+/**
+ * 그림 커버 — 가로 꽉 · 잘라 채움 · 세로 위치(PC-3 — `object-position` 의 세로 %) · referrer 를 보내지 않는다(아이콘과 같다) · 못 불러오면
+ * 회색 판(배너의 바탕).
+ */
+function CoverImage({ src, position }: { src: string; position: number }) {
   const [failed, setFailed] = useState(false)
   if (failed) return null
   // 외부 주소를 그대로 그린다 — next/image 의 최적화 서버를 거치지 않는다(임의의 호스트 · 아이콘과 같다).
-  // eslint-disable-next-line @next/next/no-img-element
-  return <img src={src} alt="" referrerPolicy="no-referrer" onError={() => setFailed(true)} className="h-full w-full object-cover" />
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={src}
+      alt=""
+      referrerPolicy="no-referrer"
+      draggable={false}
+      onError={() => setFailed(true)}
+      className="pointer-events-none h-full w-full object-cover"
+      style={{ objectPosition: `center ${position * 100}%` }}
+    />
+  )
 }
 
 function CoverPicker({
