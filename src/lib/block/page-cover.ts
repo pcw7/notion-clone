@@ -21,6 +21,13 @@ import { isSafeImageUrl } from './image.ts'
 /** `block.format` 의 키. 본문(Y.Doc)의 `format` 에는 없다(머리말). */
 export const PAGE_COVER_KEY = 'page_cover'
 
+/**
+ * 커버의 세로 위치(PC-3) — 0(그림의 위 끝)~1(아래 끝) · 없으면 가운데. 커버에 딸린 값이라 커버를 바꾸거나 지우면 함께 지운다(0124 의 CHECK 이
+ * "커버가 있을 때만" 을 막는다). 본문의 `format` 에는 없다(커버와 같다).
+ */
+export const PAGE_COVER_POSITION_KEY = 'page_cover_position'
+export const DEFAULT_COVER_POSITION = 0.5
+
 /** 외부 이미지 주소의 상한 — 아이콘과 같다(DB 의 CHECK(0123)과 같은 값). */
 export const MAX_COVER_URL_LENGTH = 2048
 
@@ -153,6 +160,49 @@ export function randomGalleryCover(except: string | null = null, random: () => n
 /** 올린 이미지 커버의 파일 — 참조 장부가 센다(PC-2). 다른 종류는 null. */
 export function coverFileId(cover: PageCover | null): string | null {
   return cover !== null && cover.type === 'file' ? cover.file_id : null
+}
+
+/** 위치를 조정할 수 있는 커버 — 그림(올린 이미지 · 주소). 내장 커버는 단색 · 그라디언트라 위치가 뜻이 없다. */
+export function isRepositionable(cover: PageCover | null): boolean {
+  return cover !== null && (cover.type === 'file' || cover.type === 'external')
+}
+
+const inUnit = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1
+
+/** 저장된 위치를 읽는다 — 0~1 의 수가 아니면 가운데(관대하게). */
+export function readCoverPosition(raw: unknown): number {
+  return inUnit(raw) ? raw : DEFAULT_COVER_POSITION
+}
+
+/** 페이지 행의 `format` 에서 위치를 읽는다. */
+export function coverPositionOfFormat(format: unknown): number {
+  if (typeof format !== 'object' || format === null || Array.isArray(format)) return DEFAULT_COVER_POSITION
+  return readCoverPosition((format as Record<string, unknown>)[PAGE_COVER_POSITION_KEY])
+}
+
+/** 받은 위치 — 0~1 의 유한한 수(소수 넷째 자리로 반올림 — 끌기의 잔 떨림을 저장하지 않는다). 아니면 undefined. */
+export function parseCoverPosition(raw: unknown): number | undefined {
+  if (!inUnit(raw)) return undefined
+  return Math.round(raw * 10_000) / 10_000
+}
+
+/**
+ * 넘치는 높이(px) — 가로를 꽉 채운 그림(`object-fit: cover`)이 배너보다 얼마나 높은가. 그림이 배너보다 납작하면(세로가 모자라 가로가
+ * 넘친다) 0 — 세로로 옮길 것이 없다.
+ */
+export function coverOverflow(naturalWidth: number, naturalHeight: number, bannerWidth: number, bannerHeight: number): number {
+  if (!(naturalWidth > 0 && naturalHeight > 0 && bannerWidth > 0 && bannerHeight > 0)) return 0
+  const scale = Math.max(bannerWidth / naturalWidth, bannerHeight / naturalHeight)
+  return Math.max(0, naturalHeight * scale - bannerHeight)
+}
+
+/**
+ * 끌기 — 시작 위치 `start` 에서 `dy`(아래로 +) 만큼 끌었을 때의 위치. 그림을 아래로 끌면 위쪽이 드러나므로 위치가 줄어든다. 넘치는
+ * 높이가 없으면 그대로. 0~1 로 자른다.
+ */
+export function dragCoverPosition(start: number, dy: number, overflow: number): number {
+  if (!(overflow > 0)) return start
+  return Math.min(1, Math.max(0, start - dy / overflow))
 }
 
 /** 내장 커버의 CSS `background` — 표에서 빠진 id 는 회색 판. */

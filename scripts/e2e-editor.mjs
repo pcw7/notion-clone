@@ -27141,6 +27141,100 @@ async function main() {
       check('원본을 내장 커버로 바꾸면 원본의 참조만 내려간다 — 사본의 참조는 남는다', swapped.ok && (await refCount(fileId)) === 1, String(await refCount(fileId)))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('페이지 커버 — 위치 조정 (PC-3 · F-02-06)')) { try {
+      // 커버 위치 조정(정본 §3.4 [보강 PC-3]) — 세로로 긴 그림 커버에서 "위치 조정" → 아래로 끌면 위쪽이 드러난다(위치가 준다) → "위치 저장" →
+      // 서버 · 다시 열어도 그 위치 · 키보드(위 화살표 · Esc 는 취소) · 내장 커버에는 "위치 조정" 이 없다 · 라우트는 내장 커버의 위치를 거부.
+      const stamp = Date.now().toString(36)
+      const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
+      const { getPage } = await import(new URL('../src/lib/block/page.ts', import.meta.url).href)
+      const { createServer } = await import('node:http')
+      const TALL = '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="1000" viewBox="0 0 100 1000"><rect width="100" height="500" fill="#e16259"/><rect y="500" width="100" height="500" fill="#0b6e99"/></svg>'
+      const images = createServer((req, res) => res.writeHead(200, { 'content-type': 'image/svg+xml' }).end(TALL))
+      await new Promise((r) => images.listen(HOOK_PORT, '127.0.0.1', r))
+      try {
+        const page = (await (await fetch(pagesUrl, { method: 'POST', headers: authed, body: JSON.stringify({ title: `위치 ${stamp}` }) })).json()).page.id
+        const url = `http://127.0.0.1:${HOOK_PORT}/tall-${stamp}.svg`
+        const seeded = await fetch(`${pagesUrl}/${page}`, { method: 'PATCH', headers: authed, body: JSON.stringify({ cover: { type: 'external', url } }) })
+        const COVER = '[data-testid="page-cover"]'
+        const SURFACE = '[data-testid="page-cover-reposition-surface"]'
+        const shown = () => evaluate(`Number(document.querySelector('${COVER}')?.getAttribute('data-cover-position'))`)
+        // 그림의 세로 % — 브라우저가 인라인 스타일의 수를 줄여 돌려주므로(유효 숫자 여섯) 오차로 견준다
+        const imgY = () => evaluate(`parseFloat((document.querySelector('${COVER} img')?.style.objectPosition ?? '').split(' ')[1])`)
+        const hover = async () => {
+          const box = await rect(COVER)
+          if (box) await move(box.x + box.w / 2, box.y + box.h / 2)
+        }
+
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+        const loaded = await waitFor(`(() => { const img = document.querySelector('${COVER} img'); return !!img && img.complete && img.naturalHeight > 0 })()`, 15000)
+        await waitHydrated(COVER)
+        check('전제 — 세로로 긴 그림 커버 · 처음 위치는 가운데', seeded.ok && loaded && (await shown()) === 0.5 && (await imgY()) === 50,
+          JSON.stringify([await shown(), await imgY()]))
+
+        await hover()
+        await clickSelector('[data-testid="page-cover-reposition"]')
+        check('"위치 조정" 을 누르면 조정 판 — 저장 · 취소가 보인다',
+          await waitFor(`!!document.querySelector('${SURFACE}') && !!document.querySelector('[data-testid="page-cover-reposition-save"]') && !!document.querySelector('[data-testid="page-cover-reposition-cancel"]')`, 5000))
+        const box = await rect(SURFACE)
+        const x = box.x + box.w / 2
+        const y = box.y + box.h / 2
+        await move(x, y)
+        await press(x, y)
+        for (let i = 1; i <= 10; i += 1) await move(x, y + i * 10, true)
+        await release(x, y + 100)
+        const dragged = await shown()
+        check('★ 아래로 끌면 위쪽이 드러난다 — 위치가 준다 · 그림이 따라 움직인다',
+          dragged < 0.5 && dragged > 0 && Math.abs((await imgY()) - dragged * 100) < 0.01, JSON.stringify([dragged, await imgY()]))
+
+        await clickSelector('[data-testid="page-cover-reposition-save"]')
+        let stored = null
+        for (let i = 0; i < 40; i += 1) {
+          stored = (await getPage(ctx, page))?.coverPosition ?? null
+          if (stored !== null && stored !== 0.5) break
+          await sleep(100)
+        }
+        check('★ "위치 저장" — 서버에 그 위치(넷째 자리) · 판이 닫힌다',
+          stored !== null && Math.abs(stored - dragged) < 0.0001 && stored === Math.round(stored * 10_000) / 10_000 && !(await evaluate(`!!document.querySelector('${SURFACE}')`)),
+          JSON.stringify({ stored, dragged }))
+
+        // 사람이 저장한 값(끈 위치를 넷째 자리로)과 견준다 — 서버에서 읽은 값과 견주면 서버가 틀려도 서로 맞는다(반사실이 잡았다)
+        const saved = Math.round(dragged * 10_000) / 10_000
+        await send('Page.reload', {})
+        check('★ 다시 열어도 그 위치다', await waitFor(`Number(document.querySelector('${COVER}')?.getAttribute('data-cover-position')) === ${saved}`, 15000)
+          && Math.abs((await imgY()) - saved * 100) < 0.01, JSON.stringify([saved, await shown(), await imgY()]))
+
+        // 키보드 — 판은 슬라이더 · 위 화살표 5% · Esc 는 취소(저장된 위치로)
+        await waitHydrated(COVER)
+        await hover()
+        await clickSelector('[data-testid="page-cover-reposition"]')
+        await waitFor(`!!document.querySelector('${SURFACE}')`, 5000)
+        await evaluate(`document.querySelector('${SURFACE}').focus()`)
+        await key('ArrowUp')
+        await key('ArrowUp')
+        const keyed = await shown()
+        await key('Escape')
+        const canceled = await waitFor(`!document.querySelector('${SURFACE}') && Number(document.querySelector('${COVER}')?.getAttribute('data-cover-position')) === ${stored}`, 3000)
+        check('키보드 — 위 화살표로 옮기고 Esc 는 취소(저장된 위치로)', Math.abs(keyed - (stored + 0.1)) < 1e-9 && canceled,
+          JSON.stringify({ keyed, stored, now: await shown() }))
+        check('Esc 로 취소한 위치는 서버에 가지 않았다', (await getPage(ctx, page))?.coverPosition === stored)
+
+        // 내장 커버 — "위치 조정" 이 없다 · 라우트는 거부
+        await fetch(`${pagesUrl}/${page}`, { method: 'PATCH', headers: authed, body: JSON.stringify({ cover: { type: 'gallery', gallery: 'solid_blue' } }) })
+        await send('Page.reload', {})
+        await waitFor(`document.querySelector('${COVER}')?.getAttribute('data-page-cover') === 'gallery:solid_blue'`, 15000)
+        await waitHydrated(COVER)
+        await hover()
+        const refused = await fetch(`${pagesUrl}/${page}`, { method: 'PATCH', headers: authed, body: JSON.stringify({ coverPosition: 0.2 }) })
+        check('★ 내장 커버에는 "위치 조정" 이 없고 라우트는 400 invalid_cover_position · 커버를 바꾸면 위치가 지워졌다',
+          !(await evaluate(`!!document.querySelector('[data-testid="page-cover-reposition"]')`)) && refused.status === 400
+            && (await refused.json()).error === 'invalid_cover_position' && (await getPage(ctx, page))?.coverPosition === 0.5,
+          JSON.stringify([refused.status]))
+      } finally {
+        images.closeAllConnections()
+        await new Promise((r) => images.close(() => r()))
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

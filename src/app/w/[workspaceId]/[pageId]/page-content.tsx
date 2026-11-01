@@ -311,7 +311,13 @@ export async function PageContent({
       </div>
 
       {/* 커버(PC-1 · F-02-06) — 상단 바 아래 전체 폭. 배너와 머리의 "커버 추가" 가 상태를 함께 쥔다(공급자는 DOM 을 만들지 않는다). */}
-      <PageCoverProvider workspaceId={workspaceId} pageId={page.id} initialCover={page.cover} readOnly={access !== 'edit'}>
+      <PageCoverProvider
+        workspaceId={workspaceId}
+        pageId={page.id}
+        initialCover={page.cover}
+        initialPosition={page.coverPosition}
+        readOnly={access !== 'edit'}
+      >
       <PageCoverBanner frame={frame === 'page' ? 'page' : 'peek'} />
 
       {/* 본문 칸 — 페이지는 가운데 720px(전체 폭이면 넓게) · 피크는 패널의 줄 그대로(`contents`) */}

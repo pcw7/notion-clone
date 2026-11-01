@@ -15,7 +15,7 @@
 
 import { isColor, type Color } from '../contracts/rich-text.ts'
 import { PAGE_ICON_KEY } from './page-icon.ts'
-import { PAGE_COVER_KEY } from './page-cover.ts'
+import { PAGE_COVER_KEY, PAGE_COVER_POSITION_KEY } from './page-cover.ts'
 
 /**
  * 최대 트리 깊이.
@@ -389,5 +389,6 @@ export function normalizeFormat(type: BlockType, format: unknown): BlockFormat {
   delete out[PAGE_ICON_KEY]
   // 페이지 커버(PC-1)도 페이지 행의 것이다 — 아이콘과 같은 까닭으로 늘 버린다(정본 §3.4 [보강 PC-1] ③).
   delete out[PAGE_COVER_KEY]
+  delete out[PAGE_COVER_POSITION_KEY]
   return out
 }
