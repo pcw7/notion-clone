@@ -28,6 +28,9 @@ const MESSAGE: Readonly<Record<UploadRejection, string>> = {
   too_large: `파일이 너무 큽니다. ${Math.round(MAX_UPLOAD_BYTES / 1024 / 1024)}MB 까지 올릴 수 있습니다.`,
 }
 
+/** 비디오 길(F-2)의 형식 거절 — 머리 바이트가 mp4 · webm 이 아니다. */
+const VIDEO_UNSUPPORTED = 'MP4 · WEBM 비디오만 올릴 수 있습니다.'
+
 export async function POST(
   request: Request,
   ctx: RouteContext<'/api/workspaces/[workspaceId]/files'>,
@@ -61,7 +64,7 @@ export async function POST(
   const kindValue = form.get('kind')
   const kind = kindValue === null ? 'image' : isUploadKind(kindValue) ? kindValue : null
   if (kind === null) {
-    return Response.json({ error: 'invalid_body', message: '`kind` 는 image 또는 file 입니다.' }, { status: 400 })
+    return Response.json({ error: 'invalid_body', message: '`kind` 는 image · file · video 중 하나입니다.' }, { status: 400 })
   }
 
   const result = await uploadFile(session.ctx, {
@@ -73,7 +76,7 @@ export async function POST(
 
   if (!result.ok) {
     return Response.json(
-      { error: result.reason, message: MESSAGE[result.reason] },
+      { error: result.reason, message: result.reason === 'unsupported_type' && kind === 'video' ? VIDEO_UNSUPPORTED : MESSAGE[result.reason] },
       { status: STATUS[result.reason] },
     )
   }

@@ -400,3 +400,13 @@ describe('⑧ 파일 블록의 첨부', () => {
     assert.ok(reportNotes(p.report).some((n) => n.includes('파일 1개')), reportNotes(p.report).join('\n'))
   })
 })
+describe('⑨ 비디오 블록의 첨부 (F-2 · 정본 [보강 F-2] ⑤)', () => {
+  test('★ 첨부 폴더에 MIME 의 확장자로 · 마크다운은 [이름](경로) 링크', () => {
+    const fileId = randomUUID()
+    const video: EditorBlock = { id: randomUUID(), type: 'video', title: [], properties: { source: { type: 'file', file_id: fileId } } }
+    const root = pageNode('문서', [video])
+    const p = plan(snapshot([root.id], [root], [{ id: fileId, mime: 'video/webm', originalName: '발표.mov', sizeBytes: 9 }]))
+    assert.deepEqual(paths(p), ['문서.md', '문서/발표.webm'])
+    assert.ok(textAt(p, '문서.md').includes('[발표.mov](문서/발표.webm)'), textAt(p, '문서.md'))
+  })
+})

@@ -15,6 +15,7 @@ import type { CSSProperties, ReactNode } from 'react'
 import { codeCaptionRuns, codeLanguageOf } from '@/lib/block/code'
 import { imageAltText, readCaption, readImageLayout, readImageSource } from '@/lib/block/image'
 import { FILE_TYPE, fileDisplayName, formatFileSize, readFileSource } from '@/lib/block/file-block'
+import { VIDEO_TYPE, readVideoSource } from '@/lib/block/video-block'
 import { EQUATION_TYPE, equationExpressionOf } from '@/lib/block/equation'
 import { calloutGlyph } from '@/lib/block/callout'
 import { cellsOf, COLUMN_HEADER_KEY, ROW_HEADER_KEY, TABLE_TYPE } from '@/lib/block/table'
@@ -66,7 +67,7 @@ export function titleText(runs: readonly RichTextRun[] | undefined): string {
 }
 
 /** 공개 파일의 주소 — 블록 id 로 연다(파일 id 로 열지 않는다 · 정본 [보강] 공개 화면 ⑨). */
-export function publicFileHref(view: Pick<PublicPageView, 'token'>, blockId: string, kind: 'image' | 'icon' | 'file'): string {
+export function publicFileHref(view: Pick<PublicPageView, 'token'>, blockId: string, kind: 'image' | 'icon' | 'file' | 'video'): string {
   return `/p/${view.token}/blocks/${blockId}/${kind}`
 }
 
@@ -321,6 +322,26 @@ function Block({ block, view }: { block: EditorBlock; view: PublicPageView }): R
         >
           {/* eslint-disable-next-line @next/next/no-img-element -- 공개 화면은 최적화 경로를 거치지 않는다(바깥 주소 · 토큰 경로) */}
           <img src={src} alt={imageAltText(block.format, props)} loading="lazy" referrerPolicy="no-referrer" />
+          {caption !== '' && <figcaption>{caption}</figcaption>}
+        </figure>
+      )
+    }
+    case VIDEO_TYPE: {
+      // 비디오(F-2 · 정본 §3.4 [보강 F-2] ⑤) — 토큰 경로(inline — 가린 바이트만 그렇게 준다) 또는 바깥 직접 주소 · 폭 · 정렬은 이미지와 같은 규칙
+      const source = readVideoSource(props)
+      if (source === null) return null
+      const caption = readCaption(props).trim()
+      const src = source.kind === 'file' ? publicFileHref(view, block.id, 'video') : source.url
+      const layout = readImageLayout(block.format)
+      return (
+        <figure
+          className="pub-block pub-video"
+          data-testid="public-video"
+          data-width={layout.width ?? undefined}
+          data-align={layout.align === 'left' ? undefined : layout.align}
+          style={layout.width === null ? undefined : ({ '--pub-video-width': `${layout.width * 100}%` } as CSSProperties)}
+        >
+          <video src={src} controls preload="metadata" />
           {caption !== '' && <figcaption>{caption}</figcaption>}
         </figure>
       )

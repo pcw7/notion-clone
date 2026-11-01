@@ -111,6 +111,14 @@
 .pub-file-size { color: #6b7280; font-size: 0.875rem; white-space: nowrap; }
 .pub-file figcaption { font-size: 0.875rem; color: #6b7280; margin-top: 0.25rem; }
 :root[data-theme='dark'] .pub-file-card { border-color: rgba(255, 255, 255, 0.14); }
+/* 비디오 블록(F-2) — 이미지와 같은 폭 · 정렬 규칙 */
+.pub-block.pub-video { padding-left: 0; padding-right: 0; }
+.pub-video video { display: block; max-width: 100%; border-radius: 2px; background: #000; }
+.pub-video figcaption { font-size: 0.875rem; color: #6b7280; margin-top: 0.25rem; }
+.pub-video[data-width] video, .pub-video[data-width] figcaption { width: var(--pub-video-width); }
+.pub-video[data-align='center'] video, .pub-video[data-align='center'] figcaption { margin-inline: auto; }
+.pub-video[data-align='center'] figcaption { text-align: center; }
+.pub-video[data-align='right'] video, .pub-video[data-align='right'] figcaption { margin-left: auto; }
 .pub-image[data-align='right'] img, .pub-image[data-align='right'] figcaption { margin-left: auto; }
 .pub-image[data-align='right'] figcaption { text-align: right; }
 .pub-icon-image { width: 4.5rem; height: 4.5rem; object-fit: cover; border-radius: 4px; margin-bottom: 0.5rem; }

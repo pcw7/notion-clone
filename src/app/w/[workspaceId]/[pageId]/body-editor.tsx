@@ -90,7 +90,7 @@ import { randomEmoji } from '@/lib/emoji/catalog'
 import { calloutIconAt, setCalloutIconCommand } from '@/lib/editor/callout-block'
 import { ImageAltDialog } from './image-alt-dialog'
 import { imageBlockInfo, imageCaptionInfo, setImageAltCommand, setImageCaptionCommand } from '@/lib/editor/image-block'
-import { fileCaptionInfo, setFileCaptionCommand } from '@/lib/editor/file-block-commands'
+import { fileCaptionInfo, setFileCaptionCommand, setVideoCaptionCommand, videoCaptionInfo } from '@/lib/editor/file-block-commands'
 import type { ImageAlt } from '@/lib/block/image'
 import { FindBar } from './find-bar'
 import { perfEditorReady, perfEditorStarted } from '../perf-reporter'
@@ -185,7 +185,7 @@ function mentionIdsIn(view: EditorView): { users: string[]; pages: string[]; emo
  */
 type CodeUi = CodeUiGeometry & {
   /** `image_caption` — 이미지 블록의 캡션(10n-62 · 같은 입력칸 · 같은 열고 닫기 · 자리 다시 재기) · `file_caption` — 파일 블록의 캡션(F-1b). */
-  kind: 'language' | 'caption' | 'image_caption' | 'file_caption'
+  kind: 'language' | 'caption' | 'image_caption' | 'file_caption' | 'video_caption'
   blockId: string
   language: string | null
   caption: string
@@ -221,6 +221,10 @@ function codeUiTarget(
   kind: CodeUi['kind'],
   blockId: string,
 ): Pick<CodeBlockInfo, 'pos' | 'node' | 'language' | 'caption' | 'captionFormatted'> | null {
+  if (kind === 'video_caption') {
+    const video = videoCaptionInfo(state, blockId)
+    return video === null ? null : { pos: video.pos, node: video.node, language: null, caption: video.caption, captionFormatted: video.captionFormatted }
+  }
   if (kind === 'file_caption') {
     const file = fileCaptionInfo(state, blockId)
     return file === null ? null : { pos: file.pos, node: file.node, language: null, caption: file.caption, captionFormatted: file.captionFormatted }
@@ -234,6 +238,16 @@ function codeUiTarget(
 function measureCodeUi(view: EditorView, frame: HTMLElement, kind: CodeUi['kind'], contentPos: number): CodeUiGeometry | null {
   const box = view.nodeDOM(contentPos)
   if (!(box instanceof HTMLElement)) return null
+  if (kind === 'video_caption') {
+    // 비디오의 캡션 자리(F-2) — 틀 바로 아래, 같은 폭(이미지와 같다)
+    const vframe = box.querySelector<HTMLElement>('.blk-video-frame')
+    if (!vframe) return null
+    const fr = frame.getBoundingClientRect()
+    const v = vframe.getBoundingClientRect()
+    const shown = box.querySelector<HTMLElement>('.blk-video-caption')
+    const c = shown === null ? null : shown.getBoundingClientRect()
+    return { top: (c?.top ?? v.bottom + 4) - fr.top, left: v.left - fr.left, width: v.width, minHeight: c?.height ?? 0 }
+  }
   if (kind === 'file_caption') {
     // 파일의 캡션 자리(F-1b) — 카드 바로 아래, 같은 폭. 캡션이 있으면 그 글자를 다 가린다(이미지와 같다)
     const card = box.querySelector<HTMLElement>('.blk-file-card')
@@ -1366,6 +1380,8 @@ export function BodyEditor({
       uploadImage: (file, onProgress, signal) => uploadImageFile(workspaceId, file, { onProgress, signal }),
       // 파일 블록(F-1b) — kind=file(MIME 을 가리지 않는다) · 이름 · 크기는 `GET /files/{id}` 로(블록에는 id 만 있다 · 정본 [보강 F-1] ⑧)
       uploadFile: (file, onProgress, signal) => uploadFileOf(workspaceId, file, { onProgress, signal }, 'file'),
+      // 비디오(F-2) — kind=video(서버가 mp4 · webm 의 머리 바이트로 가린다)
+      uploadVideo: (file, onProgress, signal) => uploadFileOf(workspaceId, file, { onProgress, signal }, 'video'),
       fileMeta: fileMetaSource(async (fileId) => {
         const res = await fetch(`/api/workspaces/${workspaceId}/files/${fileId}`)
         return res.ok ? fileMetaOfResponse(await res.json()) : null
@@ -1409,6 +1425,7 @@ export function BodyEditor({
       openImageCaption: (id) => openCodeUi('image_caption', id),
       // 파일의 캡션(F-1b) — 같은 입력칸
       openFileCaption: (id) => openCodeUi('file_caption', id),
+      openVideoCaption: (id) => openCodeUi('video_caption', id),
       // 블록 수식(Phase 2 1a) — 누르거나 골라서 Enter 를 치면 입력창.
       openEquation: (id) => openEquationUi(id),
       // 콜아웃 아이콘(디자인-4c) — 누르면 이모지 고르개(편집기 밖 · 아이콘 칸 아래). 같은 콜아웃을 다시 누르면 닫는다.
@@ -1909,10 +1926,10 @@ export function BodyEditor({
             isTrigger={(target) => isCodeUiTrigger(target, codeUi)}
           />
         )}
-        {editable && (codeUi?.kind === 'caption' || codeUi?.kind === 'image_caption' || codeUi?.kind === 'file_caption') && (
+        {editable && (codeUi?.kind === 'caption' || codeUi?.kind === 'image_caption' || codeUi?.kind === 'file_caption' || codeUi?.kind === 'video_caption') && (
           <CodeCaptionEditor
             key={`${codeUi.kind}:${codeUi.blockId}`}
-            label={codeUi.kind === 'image_caption' ? '이미지 캡션' : codeUi.kind === 'file_caption' ? '파일 캡션' : '코드 캡션'}
+            label={codeUi.kind === 'image_caption' ? '이미지 캡션' : codeUi.kind === 'file_caption' ? '파일 캡션' : codeUi.kind === 'video_caption' ? '비디오 캡션' : '코드 캡션'}
             initial={codeUi.caption}
             formatted={codeUi.captionFormatted}
             top={codeUi.top}
@@ -1923,7 +1940,11 @@ export function BodyEditor({
               const view = viewRef.current
               if (!view?.editable) return
               const save =
-                codeUi.kind === 'image_caption' ? setImageCaptionCommand : codeUi.kind === 'file_caption' ? setFileCaptionCommand : setCodeCaptionCommand
+                codeUi.kind === 'image_caption' ? setImageCaptionCommand : codeUi.kind === 'file_caption'
+                    ? setFileCaptionCommand
+                    : codeUi.kind === 'video_caption'
+                      ? setVideoCaptionCommand
+                      : setCodeCaptionCommand
               save(codeUi.blockId, text)(view.state, view.dispatch.bind(view))
             }}
             onClose={closeCodeUi}

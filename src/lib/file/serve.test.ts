@@ -32,3 +32,11 @@ describe('파일 응답의 머리', () => {
     assert.ok(!attachmentDisposition('a\r\nb.txt').includes('\n'))
   })
 })
+describe('비디오의 서빙 (F-2 · 정본 [보강 F-2] ③)', () => {
+  test('★ 받는 비디오 둘은 inline — 그 밖의 video/* 는 내려받기', () => {
+    assert.equal(servesInline('video/mp4'), true)
+    assert.equal(servesInline('video/webm'), true)
+    assert.equal(servesInline('video/quicktime'), false)
+    assert.equal(fileResponseHeaders({ mime: 'video/mp4', originalName: 'a.mp4' })['content-disposition'], 'inline')
+  })
+})

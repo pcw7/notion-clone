@@ -26459,7 +26459,8 @@ async function main() {
       const pngContent = pngAsFile.body?.file ? await head(`${BASE}/api/workspaces/${workspaceId}/files/${pngAsFile.body.file.id}/content`) : null
       check('kind=file 로 올린 PNG 는 이미지라 그대로(inline · image/png)',
         pngContent !== null && pngContent.type === 'image/png' && pngContent.disposition === 'inline', JSON.stringify(pngContent))
-      const badKind = await upload(`a ${stamp}.txt`, 'text/plain', html, 'video')
+      // 비디오는 F-2 에서 아는 kind 가 됐다 — 오디오(P2)는 아직 모른다
+      const badKind = await upload(`a ${stamp}.txt`, 'text/plain', html, 'audio')
       check('모르는 kind 는 400', badKind.status === 400, JSON.stringify(badKind.status))
 
       // 공개 화면 — 본문에 파일 블록(서버 함수로 쓴다) → 게시 → 블록 id 로 내려받기 · 종류가 어긋나면 404 · 카드
@@ -26573,6 +26574,94 @@ async function main() {
       const external = await waitFor(`(() => { const c = document.querySelector('[data-block-id="${secondId}"] [data-testid="file-card"]'); return !!c && c.getAttribute('href') === 'https://example.com/files/%EC%9E%90%EB%A3%8C.zip' && c.getAttribute('target') === '_blank' && c.querySelector('.blk-file-name')?.textContent === '자료.zip' })()`, 8000)
       check('바깥 주소 — 카드의 이름은 주소의 마지막 조각(디코드) · 새 탭으로 연다', second && external,
         JSON.stringify({ second, external, card: await evaluate(`document.querySelector('[data-block-id="${secondId}"] [data-testid="file-card"]')?.outerHTML?.slice(0, 200) ?? null`) }))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
+    if (sectionIf('비디오 블록 (F-2 · F-01-15)')) { try {
+      // 비디오 블록(정본 §3.4 [보강 F-2]) — 올리기 kind=video 는 머리 바이트로 가려 그 MIME 으로 적고 inline 으로 준다 · 가짜는 415 · 파일 길이
+      // 말한 비디오 MIME 은 바이트가 맞지 않으면 octet-stream(내려받기) · /비디오 로 넣고 올리면 <video src> · 정렬은 이미지의 format 키 · 공개 화면.
+      const stamp = Date.now().toString(36)
+      const cookieOnly = { cookie: authed.cookie }
+      const upload = async (name, type, bytes, kind) => {
+        const form = new FormData()
+        form.append('file', new Blob([bytes], { type }), name)
+        form.append('kind', kind)
+        const r = await fetch(`${BASE}/api/workspaces/${workspaceId}/files`, { method: 'POST', headers: cookieOnly, body: form })
+        return { status: r.status, body: await r.json().catch(() => null) }
+      }
+      const headOf = async (url, headers = cookieOnly) => {
+        const r = await fetch(url, { headers })
+        return { status: r.status, type: r.headers.get('content-type') ?? '', disposition: r.headers.get('content-disposition') ?? '' }
+      }
+      // mp4 의 머리(ftyp 상자) + 채움 — 재생할 수는 없지만 서버의 가리기는 지난다
+      const mp4 = Buffer.concat([Buffer.from([0, 0, 0, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d, 0, 0, 2, 0]), Buffer.alloc(2048, 7)])
+      const html = Buffer.from(`<html><script>alert(${JSON.stringify(stamp)})</script></html>`)
+      const real = await upload(`클립-${stamp}.mp4`, 'video/mp4', mp4, 'video')
+      const realHead = real.body?.file ? await headOf(`${BASE}/api/workspaces/${workspaceId}/files/${real.body.file.id}/content`) : null
+      check('★ kind=video — 머리 바이트가 mp4 면 그 MIME 으로 적고 inline 으로 준다(<video> 가 재생할 수 있게)',
+        real.status === 200 && real.body?.file?.mime === 'video/mp4' && realHead?.type === 'video/mp4' && realHead.disposition === 'inline',
+        JSON.stringify({ real: real.status, mime: real.body?.file?.mime, realHead }))
+      const fake = await upload(`가짜-${stamp}.mp4`, 'video/mp4', html, 'video')
+      const viaFile = await upload(`가짜-${stamp}.mp4`, 'video/mp4', html, 'file')
+      const viaFileHead = viaFile.body?.file ? await headOf(`${BASE}/api/workspaces/${workspaceId}/files/${viaFile.body.file.id}/content`) : null
+      check('★ 가짜 비디오 — 비디오 길은 415(MP4 · WEBM 만) · 파일 길은 octet-stream 으로 적어 내려받기로만 연다',
+        fake.status === 415 && String(fake.body?.message ?? '').includes('MP4') && viaFile.body?.file?.mime === 'application/octet-stream'
+          && viaFileHead?.type === 'application/octet-stream' && viaFileHead.disposition.startsWith('attachment;'),
+        JSON.stringify({ fake: [fake.status, fake.body?.message], viaFile: viaFile.body?.file?.mime, viaFileHead }))
+
+      // 편집기 — /비디오 → 빈 블록 → 고른 mp4 를 올리면 <video src=…/content>
+      const page = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: JSON.stringify({ title: `비디오 ${stamp}` }) })).json()).page.id
+      const first = randomUUID()
+      await saveBody(page, { blocks: [{ id: first, type: 'paragraph', title: [], properties: {}, format: {}, children: [] }] })
+      const dir = mkdtempSync(join(tmpdir(), 'nc-video-'))
+      const mp4Path = join(dir, `발표-${stamp}.mp4`)
+      writeFileSync(mp4Path, mp4)
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+      await waitFor(`!!document.querySelector('[data-block-id="${first}"]') && document.querySelector('.ProseMirror')?.getAttribute('contenteditable') === 'true'`, 15000)
+      await waitHydrated(`[data-block-id="${first}"]`)
+      const MENU = '[role="listbox"][aria-label="블록 삽입"]'
+      await clickSelector(`[data-block-id="${first}"] .blk`)
+      await typeText('/')
+      await typeText('비디오')
+      const menuShown = await waitFor(`(document.querySelector('${MENU}')?.textContent ?? '').includes('비디오')`, 5000)
+      await key('Enter')
+      const empty = await waitFor(`!!document.querySelector('.blk-video[data-state="empty"] [data-testid="video-pick"]')`, 5000)
+      check('★ /비디오 — 미디어 그룹의 "비디오" 를 고르면 빈 비디오 블록(올리기 · 주소)이 선다', menuShown && empty, JSON.stringify({ menuShown, empty }))
+      const blockId = await evaluate(`document.querySelector('.blk-video')?.closest('[data-block-id]')?.getAttribute('data-block-id') ?? null`)
+      await send('DOM.enable')
+      const root = (await send('DOM.getDocument', { depth: -1 })).root.nodeId
+      const input = (await send('DOM.querySelector', { nodeId: root, selector: `[data-block-id="${blockId}"] .blk-video-file` })).nodeId
+      await send('DOM.setFileInputFiles', { files: [mp4Path], nodeId: input })
+      // 정규식은 node 쪽에서 — evaluate 로 보내는 템플릿 글자 안의 `\/` 는 `/` 로 풀려 `//` 주석이 된다(D-4 때 겪었다)
+      const ready = await waitFor(`(() => { const f = document.querySelector('[data-block-id="${blockId}"] .blk-video'); const v = f?.querySelector('video'); return f?.dataset.state === 'ready' && !!v && (v.getAttribute('src') ?? '').endsWith('/content') && v.controls })()`, 15000)
+      const videoSrc = await evaluate(`document.querySelector('[data-block-id="${blockId}"] .blk-video video')?.getAttribute('src') ?? ''`)
+      check('★ 고른 mp4 를 올리면 플레이어 — <video controls src=앱의 파일 경로>',
+        ready && /\/api\/workspaces\/[^/]+\/files\/[0-9a-f-]+\/content$/.test(videoSrc), JSON.stringify(await evaluate(`(() => { const f = document.querySelector('[data-block-id="${blockId}"] .blk-video'); return { state: f?.dataset.state, src: f?.querySelector('video')?.getAttribute('src'), alert: f?.querySelector('[role="alert"]')?.textContent ?? '' } })()`)))
+
+      // 정렬 — 이미지의 format 키(block_align) 로 서버에 남는다
+      await clickSelector(`[data-block-id="${blockId}"] [data-testid="video-align-center"]`)
+      const centered = await waitFor(`document.querySelector('[data-block-id="${blockId}"] .blk-video')?.dataset.align === 'center'`, 5000)
+      const saved = await (async () => {
+        for (let i = 0; i < 60; i += 1) {
+          const body = await loadPageBody(ctx, page)
+          const found = body?.doc.blocks.find((b) => b.id === blockId)
+          if (found?.type === 'video' && found.format?.block_align === 'center' && found.properties?.source?.type === 'file') return found
+          await sleep(250)
+        }
+        return null
+      })()
+      check('★ 가운데 정렬 — 이미지와 같은 format.block_align 으로 서버에 남는다(출처는 file_id)', centered && saved !== null,
+        JSON.stringify({ centered, saved: saved === null ? null : { format: saved.format, source: saved.properties?.source } }))
+
+      // 공개 화면 — 토큰 경로(inline) · 본문의 <video>
+      const { publishPage } = await import(new URL('../src/lib/publish/public-link.ts', import.meta.url).href)
+      const published = await publishPage(ctx, page)
+      const token = published.ok ? published.value.token : null
+      const pub = token === null ? null : await headOf(`${BASE}/p/${token}/blocks/${blockId}/video`, {})
+      const pageHtml = token === null ? '' : await (await fetch(`${BASE}/p/${token}`)).text()
+      check('공개 화면 — 비디오는 블록 id 로 inline(video/mp4) · 본문에 <video controls> · 가운데 정렬',
+        pub?.status === 200 && pub.type === 'video/mp4' && pub.disposition === 'inline' && pageHtml.includes('data-testid="public-video"')
+          && pageHtml.includes(`/p/${token}/blocks/${blockId}/video`) && /data-align="center"/.test(pageHtml),
+        JSON.stringify({ pub, card: pageHtml.includes('data-testid="public-video"') }))
     } catch (thrown) { await sectionThrew(thrown) } }
 
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {

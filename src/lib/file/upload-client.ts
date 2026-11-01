@@ -114,7 +114,10 @@ export function uploadFileOf(
     kind,
   )
   if (rejection !== null) {
-    return Promise.resolve({ ok: false, message: REJECTION_MESSAGE[rejection] })
+    return Promise.resolve({
+      ok: false,
+      message: rejection === 'unsupported_type' && kind === 'video' ? 'MP4 · WEBM 비디오만 올릴 수 있습니다.' : REJECTION_MESSAGE[rejection],
+    })
   }
 
   if (handlers.signal?.aborted === true) return Promise.resolve({ ok: false, message: '업로드를 취소했습니다.', cancelled: true })

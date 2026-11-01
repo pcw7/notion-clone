@@ -42,7 +42,7 @@ import { TextSelection } from '@tiptap/pm/state'
 import { Plugin, PluginKey, type Command } from '@tiptap/pm/state'
 import type { EditorView } from '@tiptap/pm/view'
 
-import { isAllowedMime } from '../file/limits.ts'
+import { isAllowedMime, isVideoMime } from '../file/limits.ts'
 import { specOf } from '../block/types.ts'
 import { containerFor, newBlockId } from './pm-adapter.ts'
 import { blockTypeOf, containerAt } from './pm-blocks.ts'
@@ -54,14 +54,18 @@ import { pasteBlocksCommand, withFreshBlockIds } from './block-clipboard.ts'
 export const imageDropPluginKey = new PluginKey('imageDrop')
 
 /** 떨어진(붙여넣은) 파일 하나와 그것이 될 블록 — 받는 이미지면 이미지 블록 · 그 밖은 파일 블록(F-1b · 정본 §3.4 [보강 F-1] ⑧). */
-export type DroppedFile = { readonly file: File; readonly type: 'image' | 'file' }
+export type DroppedFile = { readonly file: File; readonly type: AtomUploadType }
+
+/** 떨어진 파일이 될 원자 블록의 타입 — 이미지 · 비디오(F-2) · 그 밖은 파일. */
+export type AtomUploadType = 'image' | 'video' | 'file'
 
 /** 파일마다 될 블록을 정한다 — 차례를 지킨다. 거절은 없다(크기 · 빈 파일은 서버가 거절하고 노드 뷰가 말한다). */
 export function classifyFiles(files: ArrayLike<File> | null | undefined): DroppedFile[] {
   const out: DroppedFile[] = []
   for (let i = 0; i < (files?.length ?? 0); i += 1) {
     const file = files![i]
-    out.push({ file, type: isAllowedMime(file.type) ? 'image' : 'file' })
+    // 가리기는 서버가 한다(머리 바이트) — 여기서는 MIME 으로 고른다. 비디오라 말했는데 아니면 서버가 거절하고 노드 뷰가 말한다.
+    out.push({ file, type: isAllowedMime(file.type) ? 'image' : isVideoMime(file.type) ? 'video' : 'file' })
   }
   return out
 }
@@ -101,6 +105,11 @@ export function emptyFileBlock(id: string): EditorBlock {
   return { id, type: 'file', title: [], properties: {}, format: {}, children: [] }
 }
 
+/** 빈 비디오 블록(F-2). */
+export function emptyVideoBlock(id: string): EditorBlock {
+  return { id, type: 'video', title: [], properties: {}, format: {}, children: [] }
+}
+
 /**
  * 빈 이미지 블록 `ids.length` 개를 지금 위치에 넣는다.
  *
@@ -113,12 +122,14 @@ export function insertImageBlocksCommand(ids: readonly string[], deps: CommandDe
 }
 
 /** 빈 이미지 · 파일 블록들을 지금 위치에 넣는다(F-1b) — id 는 밖에서 받는다(위와 같은 까닭). */
-export function insertAtomBlocksCommand(entries: readonly { readonly id: string; readonly type: 'image' | 'file' }[], deps: CommandDeps): Command {
+export function insertAtomBlocksCommand(entries: readonly { readonly id: string; readonly type: AtomUploadType }[], deps: CommandDeps): Command {
   if (entries.length === 0) return () => false
   const ids = entries.map((entry) => entry.id)
 
   return (state, dispatch) => {
-    const blocks = entries.map((entry) => (entry.type === 'image' ? emptyImageBlock(entry.id) : emptyFileBlock(entry.id)))
+    const blocks = entries.map((entry) =>
+      entry.type === 'image' ? emptyImageBlock(entry.id) : entry.type === 'video' ? emptyVideoBlock(entry.id) : emptyFileBlock(entry.id),
+    )
 
     // 블록 선택을 대체하는 일은 붙여넣기와 완전히 같다.
     if (isBlockSelection(state.selection)) {

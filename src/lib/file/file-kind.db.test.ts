@@ -96,3 +96,25 @@ describe('uploadFile — kind (F-1a)', () => {
     assert.ok(result.file.storageKey.endsWith('.png'), result.file.storageKey)
   })
 })
+describe('uploadFile — kind=video · 파일 길의 바이트 확인 (F-2 · 정본 [보강 F-2] ②)', () => {
+  test('★ kind=video 는 가린 바이트의 MIME 으로 적고 저장 키는 그 확장자 · 가짜는 거절', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const ok = await uploadFile(fx.owner.ctx, { bytes: new Uint8Array([0x1a, 0x45, 0xdf, 0xa3, 0x9f, 0x42, 0x86, 0x81, 1, 2, 3, 4]), mime: 'video/mp4', originalName: '클립.mp4', kind: 'video' })
+    assert.ok(ok.ok, JSON.stringify(ok))
+    assert.equal(ok.file.mime, 'video/webm')
+    assert.ok(ok.file.storageKey.endsWith('.webm'), ok.file.storageKey)
+    const fake = await uploadFile(fx.owner.ctx, { bytes: new TextEncoder().encode('<html>x</html>'), mime: 'video/mp4', originalName: 'a.mp4', kind: 'video' })
+    assert.deepEqual(fake, { ok: false, reason: 'unsupported_type' })
+  })
+
+  test('★ 파일 길이 말한 이미지 · 비디오 MIME 은 바이트가 맞을 때만 — 아니면 octet-stream(inline 으로 열리지 않는다)', async (t) => {
+    if (skipReason) return t.skip(skipReason)
+    const fakeVideo = await uploadFile(fx.owner.ctx, { bytes: new TextEncoder().encode('<html>x</html>'), mime: 'video/mp4', originalName: 'a.mp4', kind: 'file' })
+    assert.ok(fakeVideo.ok)
+    assert.equal(fakeVideo.file.mime, OCTET_STREAM)
+    const fakeImage = await uploadFile(fx.owner.ctx, { bytes: new TextEncoder().encode('<html>x</html>'), mime: 'image/png', originalName: 'a.png', kind: 'file' })
+    assert.ok(fakeImage.ok)
+    assert.equal(fakeImage.file.mime, OCTET_STREAM)
+    assert.ok(fakeImage.file.storageKey.endsWith('.bin'))
+  })
+})

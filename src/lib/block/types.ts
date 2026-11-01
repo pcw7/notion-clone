@@ -52,7 +52,7 @@ export type MvpBlockType = (typeof MVP_BLOCK_TYPES)[number]
  *
  * ⚠ 순서가 뜻을 갖는다 — 첫 항목(`paragraph`)이 새 블록의 기본형이다(`editor/schema.ts`). 더하는 것은 뒤에 붙인다.
  */
-export const BODY_BLOCK_TYPES = [...MVP_BLOCK_TYPES, 'code', 'table_of_contents', 'breadcrumb', 'equation', 'button', 'file'] as const
+export const BODY_BLOCK_TYPES = [...MVP_BLOCK_TYPES, 'code', 'table_of_contents', 'breadcrumb', 'equation', 'button', 'file', 'video'] as const
 export type BodyBlockType = (typeof BODY_BLOCK_TYPES)[number]
 
 /**
@@ -194,6 +194,8 @@ export const BLOCK_TYPES: Readonly<Record<BlockType, BlockTypeSpec>> = Object.fr
   image: { hasRichText: false, canHaveChildren: false, supportsColor: false, hasCaption: true },
   // 파일(F-1a · 정본 §3.4 [보강 F-1]) — 이미지와 같은 모양의 원자(글 · 자식 · 색 없음 · 캡션). 이름 · 크기는 `file` 행의 것이다.
   file: { hasRichText: false, canHaveChildren: false, supportsColor: false, hasCaption: true },
+  // 비디오(F-2 · 정본 §3.4 [보강 F-2]) — 이미지와 같은 모양의 원자. 폭 · 정렬은 이미지의 format 키를 쓴다.
+  video: { hasRichText: false, canHaveChildren: false, supportsColor: false, hasCaption: true },
 
   // 코드 블록(F-01-14 · 8a-1) — 본문은 평문 · 색 없음(F-01-02 GAP: `code` 에는 color 필드가 없다) · 자식 없음.
   code: {
@@ -372,7 +374,9 @@ export function normalizeFormat(type: BlockType, format: unknown): BlockFormat {
   if (type !== 'image') {
     delete out.alt_text
     delete out.alt_decorative
-    // 폭 · 정렬(10n-63)도 이미지의 것이다(정본 §3.4 [보강 10n-63] ③)
+  }
+  // 폭 · 정렬(10n-63)은 이미지와 비디오의 것이다(정본 §3.4 [보강 10n-63] ③ · [보강 F-2] ①)
+  if (type !== 'image' && type !== 'video') {
     delete out.block_width
     delete out.block_align
   }
