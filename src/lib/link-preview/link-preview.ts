@@ -14,7 +14,7 @@
 import { createHash } from 'node:crypto'
 
 import type { SessionContext } from '../auth/session-context.ts'
-import { isBookmarkUrl } from '../block/bookmark-block.ts'
+import { bookmarkCacheUrl } from '../block/bookmark-block.ts'
 import { withReadTransaction, withTransaction } from '../db/tx.ts'
 import { checkOutboundUrl, getHtml, type HtmlResult } from '../net/outbound.ts'
 import { consume, type RateLimitRule } from '../rate-limit.ts'
@@ -40,10 +40,8 @@ const EMPTY = { title: null, description: null, imageUrl: null, siteName: null }
 
 /** 캐시의 열쇠가 되는 주소 — 북마크로 받는 주소가 아니면 null · 해시(`#…`)는 뗀다(같은 문서다). */
 export function normalizePreviewUrl(url: string): string | null {
-  if (!isBookmarkUrl(url)) return null
-  const parsed = new URL(url)
-  parsed.hash = ''
-  return parsed.href
+  // 화면(편집기 · 공개)도 같은 열쇠로 찾는다 — 순수 모듈의 것 하나(F-4b)
+  return bookmarkCacheUrl(url)
 }
 
 export function previewKey(normalizedUrl: string): string {

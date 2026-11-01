@@ -72,6 +72,7 @@ import { acceptAnchor, textRangeAnchor } from '@/lib/comment/anchor'
 import { commentHighlightPlugin, setCommentThreads, type AnchoredThread } from '@/lib/comment/highlight'
 import { uploadFileOf, uploadImageFile } from '@/lib/file/upload-client'
 import { fileMetaOfResponse, fileMetaSource } from '@/lib/editor/file-meta'
+import { bookmarkMetaOfResponse, bookmarkMetaSource } from '@/lib/editor/bookmark-meta'
 import { customEmojiImagePath, type PageIcon } from '@/lib/block/page-icon'
 import { searchCustomEmoji } from '@/lib/emoji/custom-emoji-rules'
 import { closeEmojiMenu, emojiMenuState, insertCustomEmoji, replaceColonEmoji } from '@/lib/editor/emoji-menu'
@@ -1448,6 +1449,11 @@ export function BodyEditor({
       openFileCaption: (id) => openCodeUi('file_caption', id),
       openVideoCaption: (id) => openCodeUi('video_caption', id),
       openBookmarkCaption: (id) => openCodeUi('bookmark_caption', id),
+      // 북마크 카드의 메타(F-4b) — 서버가 전역 캐시에서 주거나 가져와 적는다(SSRF 방어 · 속도 제한은 서버의 일)
+      bookmarkMeta: bookmarkMetaSource(async (url) => {
+        const res = await fetch(`/api/workspaces/${workspaceId}/link-preview?url=${encodeURIComponent(url)}`)
+        return res.ok ? bookmarkMetaOfResponse(await res.json()) : null
+      }),
       // 블록 수식(Phase 2 1a) — 누르거나 골라서 Enter 를 치면 입력창.
       openEquation: (id) => openEquationUi(id),
       // 콜아웃 아이콘(디자인-4c) — 누르면 이모지 고르개(편집기 밖 · 아이콘 칸 아래). 같은 콜아웃을 다시 누르면 닫는다.

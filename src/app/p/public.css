@@ -121,8 +121,11 @@
 .pub-video[data-align='right'] video, .pub-video[data-align='right'] figcaption { margin-left: auto; }
 /* 북마크 블록(F-3) — 카드 */
 .pub-block.pub-bookmark { padding-left: 0; padding-right: 0; }
-.pub-bookmark-card { display: flex; flex-direction: column; gap: 0.125rem; padding: 0.625rem 0.75rem; border: 1px solid rgba(135, 131, 120, 0.25); border-radius: 4px; text-decoration: none !important; color: inherit; overflow: hidden; }
+.pub-bookmark-card { display: flex; flex-direction: row; gap: 0.75rem; padding: 0.625rem 0.75rem; border: 1px solid rgba(135, 131, 120, 0.25); border-radius: 4px; text-decoration: none !important; color: inherit; overflow: hidden; }
 .pub-bookmark-card:hover { background: rgba(135, 131, 120, 0.08); }
+.pub-bookmark-text { display: flex; flex: 1; flex-direction: column; gap: 0.125rem; min-width: 0; }
+.pub-bookmark-description { color: #6b7280; font-size: 0.8125rem; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.pub-bookmark-image { flex: none; width: 8rem; max-height: 5.5rem; object-fit: cover; border-radius: 2px; }
 .pub-bookmark-title { font-weight: 500; overflow-wrap: anywhere; }
 .pub-bookmark-host { color: #6b7280; font-size: 0.8125rem; }
 .pub-bookmark-link { color: #9ca3af; font-size: 0.75rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

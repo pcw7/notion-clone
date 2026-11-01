@@ -42,6 +42,8 @@ import type { SessionContext } from '../auth/session-context.ts'
 import { readImageSource } from '../block/image.ts'
 import { FILE_TYPE } from '../block/file-block.ts'
 import { VIDEO_TYPE } from '../block/video-block.ts'
+import { BOOKMARK_TYPE, bookmarkCacheUrl, readBookmarkUrl } from '../block/bookmark-block.ts'
+import { readLinkPreviews } from '../link-preview/link-preview.ts'
 import { plainTitleOf, readTitle } from '../block/page.ts'
 import { PAGE_TYPE, isRefType } from '../block/types.ts'
 import { DEFAULT_PROPERTY_TYPE, isMvpPropertyType, isOptionType } from '../database/property-types.ts'
@@ -297,6 +299,8 @@ export async function readExportSnapshot(
         rootIds: roots.sort(byOrder).map((root) => root.id),
         nodes,
         files: await readFiles(tx, ctx, blocks),
+        // 북마크의 제목(F-4b) — 메타 캐시를 읽기만
+        bookmarkTitles: await readBookmarkTitles(blocks),
         excluded: {},
       },
     } as const
@@ -471,6 +475,20 @@ async function readRelationTitles(
     grouped.set(key, cell)
   }
   return new Map([...grouped].map(([key, cell]) => [key, { type: 'relation_titles', titles: cell.titles, hidden: cell.hidden }]))
+}
+
+/** 본문 북마크의 제목(F-4b) — 메타 캐시를 읽기만 한다(내보내기가 가져오기를 일으키지 않는다). 열쇠는 해시를 뗀 주소. */
+async function readBookmarkTitles(blocks: readonly BlockRow[]): Promise<Map<string, string>> {
+  const urls = new Set<string>()
+  for (const block of blocks) {
+    if (block.type !== BOOKMARK_TYPE) continue
+    const url = readBookmarkUrl(block.properties)
+    const key = url === null ? null : bookmarkCacheUrl(url)
+    if (key !== null) urls.add(key)
+  }
+  if (urls.size === 0) return new Map()
+  const previews = await readLinkPreviews([...urls])
+  return new Map([...previews].flatMap(([key, preview]) => (preview.title === null ? [] : [[key, preview.title] as const])))
 }
 
 /** 본문이 가리키는 우리 파일 중 **이 워크스페이스** 것의 메타. 다른 워크스페이스의 id 는 없는 것과 같다. */

@@ -16,7 +16,7 @@ import { codeCaptionRuns, codeLanguageOf } from '@/lib/block/code'
 import { imageAltText, readCaption, readImageLayout, readImageSource } from '@/lib/block/image'
 import { FILE_TYPE, fileDisplayName, formatFileSize, readFileSource } from '@/lib/block/file-block'
 import { VIDEO_TYPE, readVideoSource } from '@/lib/block/video-block'
-import { BOOKMARK_TYPE, bookmarkHost, bookmarkTitle, readBookmarkUrl } from '@/lib/block/bookmark-block'
+import { BOOKMARK_TYPE, bookmarkCacheUrl, bookmarkHost, bookmarkTitle, readBookmarkUrl } from '@/lib/block/bookmark-block'
 import { EQUATION_TYPE, equationExpressionOf } from '@/lib/block/equation'
 import { calloutGlyph } from '@/lib/block/callout'
 import { cellsOf, COLUMN_HEADER_KEY, ROW_HEADER_KEY, TABLE_TYPE } from '@/lib/block/table'
@@ -332,12 +332,22 @@ function Block({ block, view }: { block: EditorBlock; view: PublicPageView }): R
       const url = readBookmarkUrl(props)
       if (url === null) return null
       const caption = readCaption(props).trim()
+      // 메타(F-4b) — 캐시에 있으면(편집기가 읽을 때 적었다) 제목 · 설명 · 사이트 · 그림 · 없으면 주소가 제목
+      const cacheKey = bookmarkCacheUrl(url)
+      const meta = cacheKey === null ? undefined : view.bookmarks.get(cacheKey)
       return (
         <figure className="pub-block pub-bookmark" data-testid="public-bookmark">
           <a className="pub-bookmark-card" href={url} target="_blank" rel="noopener noreferrer nofollow ugc">
-            <span className="pub-bookmark-title">{bookmarkTitle(url)}</span>
-            <span className="pub-bookmark-host">{bookmarkHost(url)}</span>
-            <span className="pub-bookmark-link">{url}</span>
+            <span className="pub-bookmark-text">
+              <span className="pub-bookmark-title">{bookmarkTitle(url, meta?.title)}</span>
+              {meta?.description && <span className="pub-bookmark-description">{meta.description}</span>}
+              <span className="pub-bookmark-host">{meta?.siteName ?? bookmarkHost(url)}</span>
+              <span className="pub-bookmark-link">{url}</span>
+            </span>
+            {meta?.imageUrl && (
+              // eslint-disable-next-line @next/next/no-img-element -- 바깥 주소 그대로(핫링크 · 보내는 쪽 주소를 싣지 않는다)
+              <img className="pub-bookmark-image" src={meta.imageUrl} alt="" loading="lazy" referrerPolicy="no-referrer" />
+            )}
           </a>
           {caption !== '' && <figcaption>{caption}</figcaption>}
         </figure>

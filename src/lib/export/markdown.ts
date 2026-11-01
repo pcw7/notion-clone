@@ -83,6 +83,8 @@ export type MarkdownLinks = {
   readonly image: (source: ImageSource) => string | null
   /** 파일 블록(F-1a)의 자리와 이름. `null` 이면 그 파일을 뺀다. 없으면 바깥 주소만 싣고 올린 파일은 뺀다. */
   readonly file?: (source: FileSource) => { readonly href: string; readonly name: string } | null
+  /** 북마크의 제목(F-4b — 메타 캐시) · 없거나 null 이면 주소가 제목이다. */
+  readonly bookmarkTitle?: (url: string) => string | null
   /**
    * 본문 글자에 건 링크의 주소를 바꾼다(10n-66) — 이 앱의 주소가 이 내보내기 안의 페이지를 가리키면 ZIP 안의 상대 경로로(`plan.ts`). 주지
    * 않으면 그대로. 안전한 주소인지는 바꾼 **뒤에** 본다(상대 경로는 안전하다 · 바꾸지 못한 `javascript:` 는 여전히 뺀다).
@@ -752,7 +754,7 @@ function renderBlock(block: EditorBlock, ctx: Ctx, number: number): string[] {
       // 북마크(F-3 · 정본 §3.4 [보강 F-3] ④) — `[제목](주소)` 한 줄 · 캡션은 그 뒤의 문단(코드 캡션과 같은 이스케이프). 주소는 http · https 뿐이다.
       const url = readBookmarkUrl(block.properties)
       if (url === null) return []
-      const line = `[${escapeText(bookmarkTitle(url))}](${linkDestination(url)})`
+      const line = `[${escapeText(bookmarkTitle(url, links.bookmarkTitle?.(url)))}](${linkDestination(url)})`
       const caption = trimBreaks(richTextToMarkdown(codeCaptionRuns(block.properties), ctx.losses, ctx.rewrite))
       return caption === '' ? [line] : [line, '', ...escapeLineStarts(caption).split('\n')]
     }
