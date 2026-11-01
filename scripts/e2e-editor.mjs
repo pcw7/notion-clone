@@ -6904,7 +6904,14 @@ async function main() {
       check('다시 열 수 있다', await clickIn(THREAD, '다시 열기'))
 
       // ⑤ 다른 사람이 코멘트를 달면 인박스로 온다 — 알림은 자기 글에는 오지 않으므로 동료가 필요하다.
+      // 그 페이지를 **떠난 뒤에** 단다 — 보고 있는 동안 온 알림은 읽음으로 만들어진다(AW-2 · 배달 3단 ③). 협업 서버의 기록이 지워질 때까지 기다린다.
       const mate = await joinAs(workspaceId, await createUser('동료'), 'member')
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
+      {
+        const { getValkey } = await import(new URL('../src/lib/valkey.ts', import.meta.url).href)
+        const { presenceKey } = await import(new URL('../src/lib/collab/presence-registry.ts', import.meta.url).href)
+        for (let i = 0; i < 150 && (await getValkey().hget(presenceKey(commentPage), ctx.userId)) !== null; i += 1) await sleep(100)
+      }
       const fromMate = await createDiscussion(mate.ctx, {
         pageId: commentPage,
         richText: [textRun('동료가 남긴 코멘트')],
