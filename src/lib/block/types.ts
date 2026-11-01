@@ -15,6 +15,7 @@
 
 import { isColor, type Color } from '../contracts/rich-text.ts'
 import { PAGE_ICON_KEY } from './page-icon.ts'
+import { PAGE_COVER_KEY } from './page-cover.ts'
 
 /**
  * 최대 트리 깊이.
@@ -386,5 +387,7 @@ export function normalizeFormat(type: BlockType, format: unknown): BlockFormat {
   // 타입으로 가르지 않고 늘 버린다: 행에서 본문을 지을 때(`rowsToDoc` → `docToPm`) 참조 노드가 자식 행의 format 을 받아 와, 볼 수
   // 없는 하위 페이지의 아이콘이 부모 본문을 타고 퍼졌을 것이다(제목이 그랬다 — §3.2-22 · 정본 §3.4 [보강] 페이지 아이콘 ③).
   delete out[PAGE_ICON_KEY]
+  // 페이지 커버(PC-1)도 페이지 행의 것이다 — 아이콘과 같은 까닭으로 늘 버린다(정본 §3.4 [보강 PC-1] ③).
+  delete out[PAGE_COVER_KEY]
   return out
 }

@@ -26971,6 +26971,124 @@ async function main() {
         JSON.stringify({ back, left, hiddenInbox, leftInbox }))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('페이지 커버 (PC-1 · F-02-06)')) { try {
+      // 페이지 커버(정본 §3.4 [보강 PC-1]) — "커버 추가" 는 머리에 마우스를 올려야 보이고 누르면 내장 커버가 곧바로 선다 · 배너는 본문 칸보다
+      // 넓다 · "커버 바꾸기" 로 내장 커버를 고르고 · 링크 탭에 이미지 주소(안전하지 않은 주소는 화면이 거부) · 다시 열어도 그대로(서버) · 지우면
+      // "커버 추가" 로 돌아온다 · 볼 수만 있는 사람은 배너만(라우트는 403).
+      const stamp = Date.now().toString(36)
+      const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
+      const { createPage, getPage, titleFromPlainText } = await import(new URL('../src/lib/block/page.ts', import.meta.url).href)
+      const { grantAccess } = await import(new URL('../src/lib/permissions/acl.ts', import.meta.url).href)
+      const page = (await (await fetch(pagesUrl, { method: 'POST', headers: authed, body: JSON.stringify({ title: `커버 ${stamp}` }) })).json()).page.id
+      const COVER = '[data-testid="page-cover"]'
+      const ADD = '[data-testid="page-cover-add"]'
+      const CHANGE = '[data-testid="page-cover-change"]'
+      const PICKER = '[data-testid="page-cover-picker"]'
+      const TITLE = 'input[aria-label="페이지 제목"]'
+      const coverKey = () => evaluate(`document.querySelector('${COVER}')?.getAttribute('data-page-cover') ?? null`)
+      const serverCover = async () => (await getPage(ctx, page))?.cover ?? null
+      const { createServer } = await import('node:http')
+      const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64')
+      let referer = 'unset'
+      const images = createServer((req, res) => {
+        referer = req.headers.referer ?? null
+        res.writeHead(200, { 'content-type': 'image/png' }).end(PNG)
+      })
+      await new Promise((r) => images.listen(HOOK_PORT, '127.0.0.1', r))
+      try {
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+        await waitFor(`!!document.querySelector('${TITLE}') && !!document.querySelector('${ADD}')`, 15000)
+        await waitHydrated(ADD)
+        const hiddenBefore = await evaluate(`getComputedStyle(document.querySelector('${ADD}')).opacity`)
+        const titleBox = await rect(TITLE)
+        if (titleBox) await move(titleBox.x + 20, titleBox.y + titleBox.h / 2)
+        check('★ 커버가 없으면 배너가 없고 "커버 추가" 는 머리에 마우스를 올려야 보인다',
+          !(await evaluate(`!!document.querySelector('${COVER}')`)) && hiddenBefore === '0'
+            && (await waitFor(`getComputedStyle(document.querySelector('${ADD}')).opacity === '1'`, 2000)),
+          `${hiddenBefore} → ${await evaluate(`getComputedStyle(document.querySelector('${ADD}')).opacity`)}`)
+
+        await clickSelector(ADD)
+        const added = await waitFor(`(document.querySelector('${COVER}')?.getAttribute('data-page-cover') ?? '').startsWith('gallery:') && !document.querySelector('${ADD}')`, 8000)
+        const addedKey = await coverKey()
+        let stored = null
+        for (let i = 0; i < 40 && stored === null; i += 1) { stored = await serverCover(); if (stored === null) await sleep(100) }
+        check('★ "커버 추가" 를 누르면 내장 커버가 곧바로 선다 — 서버에도 그 커버', added && stored?.type === 'gallery' && addedKey === `gallery:${stored.gallery}`,
+          JSON.stringify({ addedKey, stored }))
+        const widths = await evaluate(`JSON.stringify({ cover: document.querySelector('${COVER}')?.getBoundingClientRect().width ?? 0, title: document.querySelector('${TITLE}')?.getBoundingClientRect().width ?? 0, icon: document.querySelector('[data-testid="page-icon-add"]') ? 'add' : 'none' })`).then(JSON.parse)
+        check('배너는 전체 폭이다 — 본문 칸(제목)보다 넓다', widths.cover > widths.title + 100, JSON.stringify(widths))
+
+        const coverBox = await rect(COVER)
+        if (coverBox) await move(coverBox.x + coverBox.w / 2, coverBox.y + coverBox.h / 2)
+        await clickSelector(CHANGE)
+        check('배너의 "커버 바꾸기" 를 누르면 고르개가 열린다 — 내장 커버 12', await waitFor(`document.querySelectorAll('${PICKER} [data-testid="page-cover-gallery"]').length === 12`, 5000))
+        await clickSelector(`${PICKER} [data-gallery="gradient_7"]`)
+        const picked = await waitFor(`!document.querySelector('${PICKER}') && document.querySelector('${COVER}')?.getAttribute('data-page-cover') === 'gallery:gradient_7'`, 5000)
+        let pickedStored = null
+        for (let i = 0; i < 40 && pickedStored?.gallery !== 'gradient_7'; i += 1) { pickedStored = await serverCover(); await sleep(100) }
+        check('★ 내장 커버를 고르면 닫히고 그 커버가 선다 — 그라디언트 · 서버에도',
+          picked && pickedStored?.gallery === 'gradient_7' && (await evaluate(`document.querySelector('${COVER}').style.background.includes('linear-gradient')`)),
+          JSON.stringify({ key: await coverKey(), pickedStored }))
+
+        // 링크 — 안전하지 않은 주소는 화면이 거부 · 이미지 주소는 그 그림(referrer 없이)
+        await clickSelector(CHANGE)
+        await waitFor(`!!document.querySelector('${PICKER}')`, 5000)
+        await clickSelector('[data-testid="page-cover-tab-link"]')
+        await clickSelector('[data-testid="page-cover-url"]')
+        await typeText('javascript:alert(1)')
+        await clickSelector('[data-testid="page-cover-url-submit"]')
+        check('링크 탭 — http(s) 가 아닌 주소는 거부하고 커버는 그대로',
+          (await waitFor(`!!document.querySelector('${PICKER} [role="alert"]')`, 3000)) && (await coverKey()) === 'gallery:gradient_7')
+        const imageUrl = `http://127.0.0.1:${HOOK_PORT}/cover-${stamp}.png`
+        await evaluate(`(() => { const el = document.querySelector('[data-testid="page-cover-url"]'); el.select() })()`)
+        await typeText(imageUrl)
+        await clickSelector('[data-testid="page-cover-url-submit"]')
+        const shown = await waitFor(`(() => { const img = document.querySelector('${COVER} img'); return !!img && img.complete && img.naturalWidth > 0 && img.getAttribute('referrerpolicy') === 'no-referrer' })()`, 8000)
+        check('★ 이미지 주소를 넣으면 그 그림이 배너에 선다 — referrer 를 보내지 않는다',
+          shown && (await coverKey()) === `external:${imageUrl}` && referer === null,
+          JSON.stringify({ key: await coverKey(), referer }))
+
+        // 아이콘을 달고 다시 연다 — 아이콘은 배너 아래 끝에 걸친다(위는 배너 안 · 아래는 배너 밖)
+        await fetch(`${pagesUrl}/${page}`, { method: 'PATCH', headers: authed, body: JSON.stringify({ icon: { type: 'emoji', emoji: '🌱' } }) })
+        await send('Page.reload', {})
+        check('★ 다시 열어도 그 커버다(서버)', await waitFor(`document.querySelector('${COVER}')?.getAttribute('data-page-cover') === ${JSON.stringify(`external:${imageUrl}`)}`, 15000),
+          String(await coverKey()))
+        const overlap = await evaluate(`(() => {
+          const c = document.querySelector('${COVER}')?.getBoundingClientRect(); const i = document.querySelector('[data-testid="page-icon"]')?.getBoundingClientRect()
+          return c && i ? { coverBottom: Math.round(c.bottom), iconTop: Math.round(i.top), iconBottom: Math.round(i.bottom) } : null })()`)
+        check('아이콘은 배너 아래 끝에 걸친다', !!overlap && overlap.iconTop < overlap.coverBottom && overlap.iconBottom > overlap.coverBottom, JSON.stringify(overlap))
+
+        await waitHydrated(COVER)
+        const again = await rect(COVER)
+        if (again) await move(again.x + again.w / 2, again.y + again.h / 2)
+        await clickSelector(CHANGE)
+        await waitFor(`!!document.querySelector('${PICKER}')`, 5000)
+        await clickSelector('[data-testid="page-cover-remove"]')
+        const removed = await waitFor(`!document.querySelector('${COVER}') && !!document.querySelector('${ADD}')`, 5000)
+        let cleared = 'unset'
+        for (let i = 0; i < 40 && cleared !== null; i += 1) { cleared = await serverCover(); if (cleared !== null) await sleep(100) }
+        check('★ 지우면 배너가 사라지고 "커버 추가" 로 돌아온다 — 서버에서도 지워졌다', removed && cleared === null, JSON.stringify(cleared))
+      } finally {
+        images.closeAllConnections()
+        await new Promise((r) => images.close(() => r()))
+      }
+
+      // 볼 수만 있는 사람 — 배너만(바꾸기 · 추가 없음) · 라우트는 403 · 모양이 아니면 400
+      const secret = await createPage(ctx, { title: titleFromPlainText(`커버 비밀 ${stamp}`), privateTop: true })
+      const reader = await joinAs(workspaceId, await createUser(`커버 독자 ${stamp}`), 'member')
+      const marked = await fetch(`${pagesUrl}/${secret.id}`, { method: 'PATCH', headers: authed, body: JSON.stringify({ cover: { type: 'gallery', gallery: 'solid_blue' } }) })
+      const shared = await grantAccess(ctx, secret.id, { type: 'user', id: reader.userId }, 'view')
+      const asReader = { ...json, cookie: `nc_session=${reader.token}` }
+      const readerHtml = await (await fetch(`${BASE}/w/${workspaceId}/${secret.id}`, { headers: asReader })).text()
+      check('★ 볼 수만 있는 사람 — 배너는 보이고 "커버 바꾸기" · "커버 추가" 가 없다',
+        marked.ok && shared.ok && readerHtml.includes('data-page-cover="gallery:solid_blue"') && !readerHtml.includes('data-testid="page-cover-change"')
+          && !readerHtml.includes('data-testid="page-cover-add"'),
+        JSON.stringify([marked.status, shared.ok, readerHtml.length]))
+      const refused = await fetch(`${pagesUrl}/${secret.id}`, { method: 'PATCH', headers: asReader, body: JSON.stringify({ cover: null }) })
+      const invalid = await fetch(`${pagesUrl}/${secret.id}`, { method: 'PATCH', headers: authed, body: JSON.stringify({ cover: { type: 'gallery', gallery: 'nope' } }) })
+      check('라우트 — 볼 수만 있는 사람은 403 · 표에 없는 내장 커버는 400 invalid_cover',
+        refused.status === 403 && invalid.status === 400 && (await invalid.json()).error === 'invalid_cover', JSON.stringify([refused.status, invalid.status]))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

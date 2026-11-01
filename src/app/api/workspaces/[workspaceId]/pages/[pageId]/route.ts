@@ -1,5 +1,5 @@
 /**
- * PATCH /api/workspaces/[workspaceId]/pages/[pageId] — 제목 · 아이콘 변경
+ * PATCH /api/workspaces/[workspaceId]/pages/[pageId] — 제목 · 아이콘 · 커버 변경
  *
  * 본문(블록) 저장은 여기가 아니다 — 본문을 쓰는 길은 협업 서버 하나다(CRDT 6e).
  *
@@ -8,11 +8,14 @@
  * 올린 id · 커스텀 이모지는 7c-2a — 이 워크스페이스의 살아 있는 이모지). 아이콘(8c-1)은 제목과 따로 쓴다 — DB 행은
  * 아이콘만 이 길로 고친다(행의 제목은 셀이다 · `renamePage`). 둘 다 오면 아이콘을 먼저 쓰고 제목을 쓴다(각자 트랜잭션 — 제목이 거부되면
  * 아이콘은 이미 바뀌었다. 화면은 둘을 함께 보내지 않는다).
+ *
+ * 커버(PC-1 · `cover`)는 `{ type: 'gallery', gallery } | { type: 'external', url } | null` — 아이콘 다음 · 제목 앞에 쓴다(각자 트랜잭션).
  */
 
 import { asBlockId } from '@/lib/ids'
 import { readJsonBody, requireWorkspaceSession } from '@/lib/auth/route-session'
-import { renamePage, setPageIcon, titleFromPlainText, PageError } from '@/lib/block/page'
+import { renamePage, setPageCover, setPageIcon, titleFromPlainText, PageError } from '@/lib/block/page'
+import { parsePageCoverInput, type PageCover } from '@/lib/block/page-cover'
 import { parsePageIconInput, type PageIcon } from '@/lib/block/page-icon'
 
 export async function PATCH(
@@ -33,10 +36,10 @@ export async function PATCH(
   const parsed = await readJsonBody(request)
   if (!parsed.ok) return parsed.response
   // 객체가 아닌 몸체(문자열 · 숫자)에 `in` 을 쓰면 던진다 — 빈 몸체와 같이 다룬다.
-  const body = (typeof parsed.body === 'object' && parsed.body !== null ? parsed.body : {}) as { title?: unknown; icon?: unknown }
+  const body = (typeof parsed.body === 'object' && parsed.body !== null ? parsed.body : {}) as { title?: unknown; icon?: unknown; cover?: unknown }
 
-  if (body.title === undefined && !('icon' in body)) {
-    return Response.json({ error: 'invalid_input', message: 'title 이나 icon 이 있어야 합니다' }, { status: 400 })
+  if (body.title === undefined && !('icon' in body) && !('cover' in body)) {
+    return Response.json({ error: 'invalid_input', message: 'title · icon · cover 중 하나는 있어야 합니다' }, { status: 400 })
   }
   if (body.title !== undefined && typeof body.title !== 'string') {
     return Response.json({ error: 'invalid_input', message: 'title 은 문자열이어야 합니다' }, { status: 400 })
@@ -58,15 +61,32 @@ export async function PATCH(
     }
   }
 
+  let cover: PageCover | null | undefined
+  if ('cover' in body) {
+    cover = parsePageCoverInput(body.cover)
+    if (cover === undefined) {
+      return Response.json(
+        { error: 'invalid_cover', message: 'cover 는 내장 커버({ type: "gallery", gallery }) · 이미지 주소({ type: "external", url }) 이거나 null 이어야 합니다' },
+        { status: 400 },
+      )
+    }
+  }
+
   try {
     const saved = icon === undefined ? undefined : await setPageIcon(session.ctx, pageId, icon)
-    if (typeof body.title !== 'string') return Response.json({ ok: true, page: { id: pageId, icon: saved ?? null } })
+    const savedCover = cover === undefined ? undefined : await setPageCover(session.ctx, pageId, cover)
+    if (typeof body.title !== 'string') {
+      return Response.json({
+        ok: true,
+        page: { id: pageId, ...(cover === undefined || 'icon' in body ? { icon: saved ?? null } : {}), ...(savedCover === undefined ? {} : { cover: savedCover }) },
+      })
+    }
     const page = await renamePage(session.ctx, pageId, titleFromPlainText(body.title))
     return Response.json({ ok: true, page: { id: page.id, title: page.plainTitle, icon: page.icon, version: page.version } })
   } catch (e) {
     if (e instanceof PageError) {
       // 볼 수 없으면 없는 페이지와 같다(404) · 볼 수만 있으면 403 · 잠겼으면 409(입력은 맞는데 지금 상태가 허락하지 않는다).
-      const status = e.code === 'not_found' ? 404 : e.code === 'forbidden' ? 403 : e.code === 'locked' ? 409 : 400 // invalid_title · invalid_icon
+      const status = e.code === 'not_found' ? 404 : e.code === 'forbidden' ? 403 : e.code === 'locked' ? 409 : 400 // invalid_title · invalid_icon · invalid_cover
       return Response.json({ error: e.code, message: e.message }, { status })
     }
     throw e

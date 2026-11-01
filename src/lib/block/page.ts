@@ -41,6 +41,7 @@ import { recordActivity, recordCoalescedActivity } from '../notification/activit
 import { openPageBody } from './body-write.ts'
 import { appendPageRef, placePageRefAt } from './page-refs.ts'
 import { PAGE_ICON_KEY, pageIconJson, pageIconOfFormat, parsePageIconInput, samePageIcon, type PageIcon } from './page-icon.ts'
+import { PAGE_COVER_KEY, pageCoverJson, pageCoverOfFormat, parsePageCoverInput, samePageCover, type PageCover } from './page-cover.ts'
 import { isUsableIcon, moveIconFileReference } from '../file/icon-reference.ts'
 import {
   normalizeRichText,
@@ -68,6 +69,7 @@ export type PageErrorCode =
   | 'forbidden' // 볼 수는 있지만 고칠 수 없음(`edit_content` 없음)
   | 'locked' // 고칠 수 있지만 페이지가 잠겼다(7f-1)
   | 'invalid_icon' // 아이콘이 이모지 한 글자가 아니다(8c-1)
+  | 'invalid_cover' // 커버가 내장 커버 · 이미지 주소가 아니다(PC-1)
 
 export class PageError extends Error {
   // 파라미터 프로퍼티(`constructor(readonly code: ...)`)를 쓰지 않는다 —
@@ -105,6 +107,8 @@ export type PageSummary = {
 }
 
 export type PageDetail = PageSummary & {
+  /** 페이지 커버(PC-1 · `format.page_cover`) — 페이지 하나를 열 때만 읽는다(사이드바 · 목록은 싣지 않는다 — 02 F-02-06). 없으면 null. */
+  readonly cover: PageCover | null
   /** 루트→부모까지의 조상 페이지. breadcrumb 용. 루트 페이지면 빈 배열. */
   readonly ancestors: readonly BlockId[]
   readonly permScopeId: string
@@ -131,6 +135,17 @@ type PageRow = {
   created_at: Date
   last_edited_at: Date
   version: string
+}
+
+/** 페이지 하나의 상세 — 요약 + 커버 · 조상 · 스코프 · 버전. */
+function toDetail(row: PageRow): PageDetail {
+  return {
+    ...toSummary(row),
+    cover: pageCoverOfFormat(row.format),
+    ancestors: row.ancestor_path.map(asBlockId),
+    permScopeId: row.perm_scope_id,
+    version: row.version,
+  }
 }
 
 function toSummary(row: PageRow): PageSummary {
@@ -493,12 +508,7 @@ export async function createPageIn(
       current = await tx.queryOne<PageRow>(`SELECT ${PAGE_COLUMNS} FROM block WHERE id = $1`, [id])
     }
 
-    return {
-      ...toSummary(current),
-      ancestors: current.ancestor_path.map(asBlockId),
-      permScopeId: current.perm_scope_id,
-      version: current.version,
-    }
+    return toDetail(current)
   }
 }
 
@@ -524,12 +534,7 @@ export async function getPage(ctx: SessionContext, pageId: BlockId): Promise<Pag
   // 존재도 노출 금지"). 403 과 404 를 구분해 주면 id 를 찍어 존재를 알아낼 수 있다.
   if (!(await canViewPage(ctx, pageId))) return null
 
-  return {
-    ...toSummary(row),
-    ancestors: row.ancestor_path.map(asBlockId),
-    permScopeId: row.perm_scope_id,
-    version: row.version,
-  }
+  return toDetail(row)
 }
 
 /**
@@ -682,17 +687,12 @@ export async function renamePage(
     const row = rows[0]
     if (!row) throw new PageError('not_found', '페이지를 찾을 수 없습니다.')
 
-    const summary = toSummary(row)
-    await indexPageTitle(tx, pageId, summary.plainTitle)
+    const detail = toDetail(row)
+    await indexPageTitle(tx, pageId, detail.plainTitle)
     // 활동 — 제목도 사람이 친 글이다(4d-2 · 본문 편집과 같은 종류 · 같은 접기)
     await recordCoalescedActivity(tx, ctx, { pageId, type: 'block.updated' })
 
-    return {
-      ...summary,
-      ancestors: row.ancestor_path.map(asBlockId),
-      permScopeId: row.perm_scope_id,
-      version: row.version,
-    }
+    return detail
   })
 }
 
@@ -752,6 +752,49 @@ export async function setPageIcon(ctx: SessionContext, pageId: BlockId, icon: Pa
       [pageId, ctx.workspaceId, parsed === null ? null : JSON.stringify(pageIconJson(parsed)), ctx.userId],
     )
     await moveIconFileReference(tx, ctx, current, parsed)
+    return parsed
+  })
+}
+
+// ── 커버 ────────────────────────────────────────────────────────────
+
+/**
+ * 페이지 커버를 바꾼다 — `null` 이면 지운다(34번 트랙 PC-1 · F-02-06 · 정본 §3.4 [보강 PC-1] ④). 돌려주는 것은 저장된 커버다.
+ *
+ * 권한 · 잠금 · DB 행 · 같으면 쓰지 않음 · `last_edited_*` · `version` 은 아이콘(`setPageIcon`)과 같다. 검색 색인은 다시 쓰지 않는다.
+ * 받는 것은 내장 커버(지금 표에 있는 id) · http(s) 이미지 주소다 — **올린 이미지(`file`)는 아직 받지 않는다**(파일 참조 장부와 함께
+ * PC-2 가 연다 · 읽기 · DB 의 모양은 이미 받는다).
+ */
+export async function setPageCover(ctx: SessionContext, pageId: BlockId, cover: PageCover | null): Promise<PageCover | null> {
+  const parsed = parsePageCoverInput(cover)
+  if (parsed === undefined || parsed?.type === 'file') {
+    throw new PageError('invalid_cover', '커버는 내장 커버 · http(s) 이미지 주소여야 합니다.')
+  }
+
+  return withTransaction(async (tx) => {
+    const target = await tx.queryMaybe<{ format: Record<string, unknown> | null }>(
+      `SELECT format FROM block
+        WHERE id = $1 AND workspace_id = $2 AND type = 'page' AND lifecycle = 'live'
+        FOR UPDATE`,
+      [pageId, ctx.workspaceId],
+    )
+    if (target === null) throw new PageError('not_found', '페이지를 찾을 수 없습니다.')
+    const caps = await effectiveCaps(tx, ctx, pageId)
+    if (!can(caps, 'view')) throw new PageError('not_found', '페이지를 찾을 수 없습니다.')
+    if (!can(caps, 'edit_content')) throw new PageError('forbidden', '이 페이지를 고칠 권한이 없습니다.')
+    if (await isLocked(tx, pageId)) throw new PageError('locked', '잠긴 페이지입니다. 잠금을 풀어야 커버를 바꿀 수 있습니다.')
+
+    if (samePageCover(pageCoverOfFormat(target.format), parsed)) return parsed
+    await tx.query(
+      `UPDATE block
+          SET format = CASE WHEN $3::jsonb IS NULL THEN format - '${PAGE_COVER_KEY}'
+                            ELSE jsonb_set(format, '{${PAGE_COVER_KEY}}', $3::jsonb, true) END,
+              last_edited_by = $4,
+              last_edited_at = now(),
+              version = version + 1
+        WHERE id = $1 AND workspace_id = $2`,
+      [pageId, ctx.workspaceId, parsed === null ? null : JSON.stringify(pageCoverJson(parsed)), ctx.userId],
+    )
     return parsed
   })
 }
