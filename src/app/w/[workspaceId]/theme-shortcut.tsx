@@ -7,13 +7,14 @@
  * `toggledTheme`). 설정 화면의 테마와 **같은 설정**(`account.theme`)을 같은 라우트로 쓴다.
  *
  * 먼저 칠하고(`<html data-theme>`) 저장한다 — 거부되거나 끊기면 되돌린다. 저장되면 서버가 다시 그린다(루트 레이아웃이 같은 값을 싣고,
- * 설정 화면의 고르개가 따라온다). 한글 조합 중의 키는 건드리지 않는다. 그리는 것이 없다.
+ * 설정 화면의 고르개가 따라온다). 한글 조합 중의 키는 건드리지 않는다. 그리는 것이 없다. 하는 일은 커맨드 팔레트의 "테마 바꾸기"
+ * (CP-1)와 같다 — `toggleThemeNow`(`app-commands.ts`).
  */
 
 import { useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 
-import { isTheme, toggledTheme } from '@/lib/settings/registry'
+import { toggleThemeNow } from './app-commands'
 
 export function ThemeShortcut({ workspaceId }: { workspaceId: string }) {
   const router = useRouter()
@@ -22,22 +23,7 @@ export function ThemeShortcut({ workspaceId }: { workspaceId: string }) {
     const onKey = (e: KeyboardEvent) => {
       if (!(e.ctrlKey || e.metaKey) || !e.shiftKey || e.altKey || e.isComposing || e.key.toLowerCase() !== 'l') return
       e.preventDefault()
-      const root = document.documentElement
-      const before = isTheme(root.dataset.theme) ? root.dataset.theme : 'system'
-      const next = toggledTheme(before, window.matchMedia('(prefers-color-scheme: dark)').matches)
-      root.dataset.theme = next
-      fetch(`/api/workspaces/${workspaceId}/settings/account.theme`, {
-        method: 'PUT',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ value: next }),
-      })
-        .then((res) => {
-          if (res.ok) router.refresh()
-          else root.dataset.theme = before
-        })
-        .catch(() => {
-          root.dataset.theme = before
-        })
+      toggleThemeNow(workspaceId, () => router.refresh())
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)

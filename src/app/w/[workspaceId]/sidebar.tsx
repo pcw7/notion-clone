@@ -55,6 +55,7 @@ import { WorkspaceSwitcher, type SwitcherOtherAccount, type SwitcherWorkspace } 
 import { ImportButton } from './import-dialog'
 import { teamspaceIcon } from './teamspace-messages'
 import { TrashPanel, type TrashRow } from './trash-panel'
+import { SIDEBAR_TOGGLE_EVENT } from './app-commands'
 import { getSidebarStore } from './sidebar-state'
 import { getVisitHistory } from './visit-history'
 import { ChevronRight, Home, Inbox, Library, Search, Settings } from 'lucide-react'
@@ -259,7 +260,12 @@ export function Sidebar({
       if (event.key === 'Escape') setDrawerOpenAt(null)
     }
     window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
+    // 커맨드 팔레트의 "사이드바 접기 · 펴기"(CP-1) — 같은 일을 DOM 이벤트로 받는다(`requestSidebarToggle`)
+    window.addEventListener(SIDEBAR_TOGGLE_EVENT, toggleSidebar)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener(SIDEBAR_TOGGLE_EVENT, toggleSidebar)
+    }
   }, [toggleSidebar])
 
   /** 새 페이지를 만들고 연다 — 자리는 부모 페이지 · 워크스페이스 직속(`parentPageId: null`) · teamspace 의 최상위 · 내 개인 최상위다. */

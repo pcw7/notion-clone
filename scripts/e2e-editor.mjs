@@ -27337,6 +27337,108 @@ async function main() {
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('검색 오버레이의 작업 (CP-1 · F-07-11)')) { try {
+      // 커맨드 팔레트의 첫 판(정본 §3.9 [보강 CP-1]) — 입력에 맞는 작업이 결과 위에 선다(첫 줄 · 단축키 함께) · Enter 로 한다: 테마 바꾸기(서버에도) ·
+      // 링크 복사(지금 페이지의 주소 · 알림) · 사이드바 접기 · 펴기 · 새 페이지(개인 최상위로 옮겨 간다) · 마우스로 설정 열기 · 페이지가 없으면 링크 복사가
+      // 없다 · ↓ 로 작업에서 결과로 넘어가 Enter 로 그 페이지.
+      const stamp = Date.now().toString(36)
+      const pagesUrl = `${BASE}/api/workspaces/${workspaceId}/pages`
+      const page = (await (await fetch(pagesUrl, { method: 'POST', headers: authed, body: JSON.stringify({ title: `인박스 정리 ${stamp}` }) })).json()).page.id
+      const OVERLAY = '[data-testid="search-overlay"]'
+      const ACTION = (id) => `[data-testid="command-action"][data-action="${id}"]`
+      const openPalette = async (text) => {
+        await key('k', MOD)
+        await waitFor(`!!document.querySelector('[data-testid="search-input"]') && document.activeElement === document.querySelector('[data-testid="search-input"]')`, 5000)
+        await typeText(text)
+      }
+      const themeNow = () => evaluate(`document.documentElement.dataset.theme ?? 'system'`)
+      const { query: dbQuery } = await import(new URL('../src/lib/db/pool.ts', import.meta.url).href)
+      const storedTheme = async () => (await dbQuery(`SELECT value FROM setting_value WHERE user_id = $1 AND key = 'account.theme'`, [ctx.userId]))[0]?.value ?? null
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+      await waitFor(`!!document.querySelector('input[aria-label="페이지 제목"]')`, 15000)
+      await waitHydrated('input[aria-label="페이지 제목"]')
+
+      // ① 테마 — 첫 줄 · 단축키 · Enter 로 바뀌고 서버에도
+      const before = await themeNow()
+      await openPalette('테마')
+      const first = await waitFor(`(() => { const a = document.querySelector('[data-testid="command-action"]'); return !!a && a.dataset.action === 'toggle-theme' && a.getAttribute('aria-selected') === 'true' })()`, 3000)
+      const kbd = await evaluate(`document.querySelector('${ACTION('toggle-theme')} kbd')?.textContent ?? null`)
+      check('★ 입력에 맞는 작업이 결과 위의 첫 줄에 선다 — 단축키를 함께 적는다', first && (kbd === 'Ctrl+Shift+L' || kbd === '⌘⇧L'), JSON.stringify({ first, kbd }))
+      await key('Enter')
+      const flipped = await waitFor(`!document.querySelector('${OVERLAY}') && (document.documentElement.dataset.theme ?? 'system') !== ${JSON.stringify(before)}`, 5000)
+      const after = await themeNow()
+      let saved = null
+      for (let i = 0; i < 30 && saved !== after; i += 1) {
+        saved = await storedTheme()
+        if (saved !== after) await sleep(100)
+      }
+      check('★ Enter — 오버레이가 닫히고 테마가 바뀐다(서버에도)', flipped && saved === after, JSON.stringify({ before, after, saved }))
+      // 되돌려 둔다(다른 절이 밝은 화면을 본다)
+      await openPalette('테마')
+      await waitFor(`!!document.querySelector('${ACTION('toggle-theme')}')`, 3000)
+      await key('Enter')
+      await waitFor(`!document.querySelector('${OVERLAY}')`, 3000)
+
+      // ② 링크 복사 — 지금 페이지의 주소 · 알림
+      await evaluate(`(() => { window.__copied = null; navigator.clipboard.writeText = (t) => { window.__copied = t; return Promise.resolve() } })()`)
+      await openPalette('링크')
+      await waitFor(`!!document.querySelector('${ACTION('copy-link')}')`, 3000)
+      await key('Enter')
+      const copied = await waitFor(`window.__copied === ${JSON.stringify(`${BASE}/w/${workspaceId}/${page}`)} && (document.querySelector('[data-testid="command-notice"]')?.textContent ?? '').includes('링크를 복사했습니다')`, 5000)
+      check('★ 링크 복사 — 지금 페이지의 주소가 클립보드에 · 알림', copied, String(await evaluate('window.__copied')))
+      await evaluate(`navigator.clipboard.writeText = () => Promise.reject(new Error('denied'))`)
+      await openPalette('링크')
+      await waitFor(`!!document.querySelector('${ACTION('copy-link')}')`, 3000)
+      await key('Enter')
+      check('클립보드가 거부하면 조용히 넘기지 않고 말한다',
+        await waitFor(`(() => { const n = document.querySelector('[data-testid="command-notice"]'); return !!n && n.getAttribute('role') === 'alert' && n.textContent.includes('복사하지 못했습니다') })()`, 5000))
+
+      // ③ 사이드바 접기 · 펴기
+      const sidebarShown = () => evaluate(`!!document.querySelector('nav[aria-label="페이지 트리"]') && document.querySelector('nav[aria-label="페이지 트리"]').getBoundingClientRect().width > 0`)
+      const wasShown = await sidebarShown()
+      await openPalette('사이드바')
+      await waitFor(`!!document.querySelector('${ACTION('toggle-sidebar')}')`, 3000)
+      await key('Enter')
+      const toggled = await waitFor(`(!!document.querySelector('nav[aria-label="페이지 트리"]') && document.querySelector('nav[aria-label="페이지 트리"]').getBoundingClientRect().width > 0) === ${!wasShown}`, 5000)
+      await openPalette('sidebar')
+      await waitFor(`!!document.querySelector('${ACTION('toggle-sidebar')}')`, 3000)
+      await key('Enter')
+      const back = await waitFor(`(!!document.querySelector('nav[aria-label="페이지 트리"]') && document.querySelector('nav[aria-label="페이지 트리"]').getBoundingClientRect().width > 0) === ${wasShown}`, 5000)
+      check('★ 사이드바 접기 · 펴기 — 영어 낱말로도 찾는다 · 두 번이면 제자리', toggled && back, JSON.stringify({ wasShown, toggled, back }))
+
+      // ④ ↓ 로 작업에서 결과로 — Enter 로 그 페이지
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
+      await waitFor(`document.readyState === 'complete' && !!document.querySelector('nav[aria-label="페이지 트리"]')`, 15000)
+      await waitHydrated('nav[aria-label="페이지 트리"]')
+      await openPalette('인박스')
+      const both = await waitFor(`!!document.querySelector('${ACTION('open-inbox')}') && !!document.querySelector('[data-testid="search-hit"][data-page-id="${page}"]')`, 8000)
+      const noCopy = !(await evaluate(`!!document.querySelector('${ACTION('copy-link')}')`))
+      await key('ArrowDown')
+      const moved = await waitFor(`document.querySelector('[data-testid="search-hit"][data-page-id="${page}"]')?.getAttribute('aria-selected') === 'true'
+        && document.querySelector('${ACTION('open-inbox')}')?.getAttribute('aria-selected') === 'false'`, 3000)
+      await key('Enter')
+      const opened = await waitFor(`location.pathname === ${JSON.stringify(`/w/${workspaceId}/${page}`)}`, 10000)
+      check('★ 작업과 결과가 한 줄로 잇는다 — ↓ 로 결과에 · Enter 로 그 페이지', both && moved && opened, JSON.stringify({ both, moved, opened }))
+      await openPalette('링크')
+      check('페이지에서는 "링크 복사" 가 있다 · 홈에서는 없었다', noCopy && (await waitFor(`!!document.querySelector('${ACTION('copy-link')}')`, 3000)))
+      await key('Escape')
+
+      // ⑤ 새 페이지 — 개인 최상위로 만들어 옮겨 간다 · 마우스로 설정 열기
+      await openPalette('새 페이지')
+      await waitFor(`!!document.querySelector('${ACTION('new-page')}')`, 3000)
+      await key('Enter')
+      const created = await waitFor(`/^\\/w\\/${workspaceId}\\/[0-9a-f-]{36}$/.test(location.pathname) && location.pathname !== ${JSON.stringify(`/w/${workspaceId}/${page}`)}
+        && !!document.querySelector('input[aria-label="페이지 제목"]')`, 10000)
+      const newId = (await evaluate('location.pathname')).split('/').pop()
+      check('★ 새 페이지 — 만들고 그 페이지로 옮겨 간다', created, JSON.stringify({ newId }))
+      await waitHydrated('input[aria-label="페이지 제목"]')
+      await openPalette('설정')
+      await waitFor(`!!document.querySelector('${ACTION('open-settings')}')`, 3000)
+      await clickSelector(ACTION('open-settings'))
+      check('마우스로 고른 작업도 한다 — 설정 열기', await waitFor(`location.pathname === ${JSON.stringify(`/w/${workspaceId}/settings`)}`, 10000))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).
