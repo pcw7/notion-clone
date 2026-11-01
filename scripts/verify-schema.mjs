@@ -4912,6 +4912,48 @@ try {
     await rejects('만료가 가져온 때보다 앞이다', `UPDATE link_preview SET expires_at = fetched_at - interval '1 second' WHERE url_hash = $1`, [hash], 'ck_link_preview_expiry')
   }
 
+  console.log('\n[81] 페이지 커버의 모양 (0123 / §3.4 [보강 PC-1] · PC-1조각)')
+  {
+    // 페이지 행의 format.page_cover — gallery(id) | file(file_id) | external(url). 지금 표에 있는 내장 커버인지 · 파일이 이 워크스페이스의
+    // 이미지인지는 명령이 본다.
+    const pageId = randomUUID()
+    const paraId = randomUUID()
+    for (const [id, type, key] of [[pageId, 'page', 'cover'], [paraId, 'paragraph', 'cover-para']]) {
+      await client.query(
+        `INSERT INTO block (id, workspace_id, type, parent_type, parent_id, order_key,
+                            ancestor_path, perm_scope_id, properties, format, created_at, last_edited_at)
+         VALUES ($1, $2, $3, 'workspace', $2, $4, '{}', $1, '{}'::jsonb, '{}'::jsonb, now(), now())`,
+        [id, wsId, type, `${key}-${id}`],
+      )
+    }
+    const set = `UPDATE block SET format = $2::jsonb WHERE id = $1`
+    await client.query(set, [pageId, JSON.stringify({ page_cover: { type: 'gallery', gallery: 'gradient_1' }, page_icon: { type: 'emoji', emoji: '🌱' } })])
+    await client.query(set, [pageId, JSON.stringify({ page_cover: { type: 'external', url: 'https://example.com/cover.png' } })])
+    await client.query(set, [pageId, JSON.stringify({ page_cover: { type: 'file', file_id: randomUUID() } })])
+    ok('★ 내장 커버(아이콘과 함께) · 외부 이미지 · 올린 파일 — 페이지 행에서 통과한다')
+    const rejects = async (label, id, cover) => {
+      await client.query('SAVEPOINT probe')
+      try {
+        await client.query(set, [id, JSON.stringify({ page_cover: cover })])
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        fail(`${label} — 거부되어야 하는데 통과했다`)
+      } catch (e) {
+        await client.query('ROLLBACK TO SAVEPOINT probe')
+        if (e.code === '23514' && e.constraint === 'block_page_cover_shape') ok(`${label} — block_page_cover_shape 가 거부함`)
+        else fail(`${label} — block_page_cover_shape 의 23514 가 아니라 ${e.constraint ?? '-'} ${e.code} (${e.message})`)
+      }
+    }
+    await rejects('★ 페이지가 아닌 블록의 커버', paraId, { type: 'gallery', gallery: 'gradient_1' })
+    await rejects('내장 커버 id 에 대문자 · 공백', pageId, { type: 'gallery', gallery: 'Gradient 1' })
+    await rejects('내장 커버 id 가 41자', pageId, { type: 'gallery', gallery: 'a'.repeat(41) })
+    await rejects('내장 커버에 다른 키', pageId, { type: 'gallery', gallery: 'gradient_1', url: 'https://example.com/a.png' })
+    await rejects('★ javascript: 주소', pageId, { type: 'external', url: 'javascript:alert(1)' })
+    await rejects('2048자를 넘는 주소', pageId, { type: 'external', url: `https://example.com/${'a'.repeat(2048)}` })
+    await rejects('file_id 가 uuid 가 아니다', pageId, { type: 'file', file_id: 'nope' })
+    await rejects('모르는 종류(emoji)', pageId, { type: 'emoji', emoji: '🌱' })
+    await rejects('객체가 아니다', pageId, 'gradient_1')
+  }
+
   await client.query('ROLLBACK')
   console.log('\n  · 검증 데이터는 롤백됨 (DB 는 깨끗한 상태)')
 } catch (e) {

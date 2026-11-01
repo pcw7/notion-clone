@@ -18,7 +18,7 @@
  * 서버 렌더(사이드바 · 경로)를 다시 그린다(`router.refresh` — 제목과 같다). 다른 곳에서 바뀌어 서버가 새 값을 주면 따라간다.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { useRouter } from 'next/navigation'
 
 import { DATABASE_GLYPH, PAGE_GLYPH, pageIconLabel, samePageIcon, type PageIcon } from '@/lib/block/page-icon'
@@ -26,6 +26,7 @@ import { randomEmoji } from '@/lib/emoji/catalog'
 import { EmojiPicker } from './emoji-picker'
 import { loadEmojiCatalog } from './emoji-catalog-loader'
 import { PageIconView } from '../page-icon-view'
+import { useHasPageCover } from './page-cover'
 
 type IconOwner = 'page' | 'database'
 
@@ -51,6 +52,7 @@ export function PageIconControl({
   initialIcon,
   readOnly = false,
   header = false,
+  actions,
 }: {
   workspaceId: string
   /** 아이콘의 주인 — 페이지(행 · 템플릿 포함) 또는 데이터베이스의 id. */
@@ -65,8 +67,13 @@ export function PageIconControl({
    * 않는다 — 마우스를 올려 보여도 제목이 움직이지 않는다). 데이터베이스의 머리는 쓰지 않는다(그 화면의 조각에서).
    */
   header?: boolean
+  /** 아이콘 칸의 줄에 함께 서는 단추들 — 페이지 머리의 "커버 추가"(PC-1). 아이콘이 없으면 "아이콘 추가" 옆, 있으면 아이콘 위. */
+  actions?: ReactNode
 }) {
   const router = useRouter()
+  // 커버가 있으면(PC-1) 아이콘이 배너 아래 끝에 걸친다 — 본문 칸의 위 48px 과 아이콘의 위 48px 을 거두고 40px 을 더 올린다
+  const hasCover = useHasPageCover()
+  const iconTop = hasCover ? 'relative z-10 mb-3 -mt-[88px]' : 'mb-3 mt-12'
   const [icon, setIcon] = useState<PageIcon | null>(initialIcon)
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -152,7 +159,7 @@ export function PageIconControl({
         data-testid="page-icon"
         role="img"
         aria-label={`${OWNER_LABEL[kind]} 아이콘 ${pageIconLabel(icon)}`}
-        className={`w-fit leading-none ${header ? 'mb-3 mt-12 text-[78px]' : 'text-6xl'}`}
+        className={`w-fit leading-none ${header ? `${iconTop} text-[78px]` : 'text-6xl'}`}
       >
         {face(icon)}
       </div>
@@ -160,18 +167,21 @@ export function PageIconControl({
   }
 
   return (
-    <div className={header ? (icon === null ? 'relative h-9' : 'relative mb-3 mt-12 w-fit') : 'relative w-fit'}>
+    <div className={header ? (icon === null ? 'relative h-9' : `relative ${iconTop} w-fit`) : 'relative w-fit'}>
       {icon === null ? (
+        <div className={`${header ? 'absolute bottom-1 left-0 ' : ''}flex items-center gap-1 whitespace-nowrap`}>
         <button
           ref={triggerRef}
           type="button"
           data-testid="page-icon-add"
           disabled={busy}
           onClick={() => void saveRandom(null)}
-          className={`${header ? 'absolute bottom-1 left-0 ' : ''}rounded px-1.5 py-0.5 text-sm text-neutral-400 opacity-0 hover:bg-neutral-100 hover:text-neutral-600 focus-visible:opacity-100 group-hover/header:opacity-100 touch:not-disabled:opacity-100 disabled:opacity-40 dark:hover:bg-neutral-800`}
+          className={`rounded px-1.5 py-0.5 text-sm text-neutral-400 opacity-0 hover:bg-neutral-100 hover:text-neutral-600 focus-visible:opacity-100 group-hover/header:opacity-100 touch:not-disabled:opacity-100 disabled:opacity-40 dark:hover:bg-neutral-800`}
         >
           ☺ 아이콘 추가
         </button>
+        {actions}
+        </div>
       ) : (
         <button
           ref={triggerRef}
@@ -185,6 +195,9 @@ export function PageIconControl({
         >
           {face(icon)}
         </button>
+      )}
+      {icon !== null && actions !== undefined && (
+        <div className={`${header ? 'absolute bottom-full left-0 mb-2 ' : ''}flex items-center gap-1 whitespace-nowrap`}>{actions}</div>
       )}
       {open && icon !== null && (
         <EmojiPicker

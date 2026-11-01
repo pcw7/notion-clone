@@ -21,7 +21,8 @@
  *   · format: `normalizeFormat`(타입이 받지 않는 색 · 코드가 아닌 타입의 `code_wrap` · `true` 가 아닌 `code_wrap`)
  *   · 하위 페이지 참조 · `unsupported` 는 JSON 안전만 — 앞은 다른 페이지의 것이고, 뒤는 모르는 타입의 원본 보존이다. 하나 예외:
  *     하위 페이지 참조의 `format` 에서 **페이지 아이콘**(`page_icon` · 8c-1)은 뺀다 — 아이콘은 그 페이지 행의 것이고 본문은 싣지
- *     않는다(볼 수 없는 하위 페이지의 아이콘이 부모 본문을 타고 퍼진다 — 정본 §3.4 [보강] 페이지 아이콘 ③). 다른 타입은 `normalizeFormat`
+ *     않는다(볼 수 없는 하위 페이지의 아이콘이 부모 본문을 타고 퍼진다 — 정본 §3.4 [보강] 페이지 아이콘 ③). 커버(`page_cover` · PC-1)도
+ *     같다. 다른 타입은 `normalizeFormat`
  *     이 뺀다
  *
  * **던지지 않는다**(정규화는 전체 함수다) — 그래서 값을 `JSON.stringify` 로 비교하지 않는다(bigint 에서 던진다). 규칙이 실제로 바꾼
@@ -37,6 +38,7 @@ import { COLUMN_HEADER_KEY, ROW_HEADER_KEY } from './table.ts'
 import { CALLOUT_ICON_KEY, CALLOUT_TYPE, isCalloutIcon } from './callout.ts'
 import { isRefType, normalizeFormat, PAGE_TYPE, specOf, UNSUPPORTED_TYPE, type BlockFormat, type BlockType } from './types.ts'
 import { PAGE_ICON_KEY } from './page-icon.ts'
+import { PAGE_COVER_KEY } from './page-cover.ts'
 
 export type SanitizedAttrs = {
   readonly props: Record<string, unknown>
@@ -60,9 +62,11 @@ function shallowSame(a: Readonly<Record<string, unknown>>, b: Readonly<Record<st
 export function sanitizeBlockAttrs(type: BlockType, props: Record<string, unknown>, format: BlockFormat): SanitizedAttrs {
   let nextProps = safeRecord(props)
   const safeFormat = safeRecord(format) as BlockFormat
-  if (type === PAGE_TYPE && Object.hasOwn(safeFormat, PAGE_ICON_KEY)) {
+  // 페이지 커버(PC-1)도 같다 — 그 페이지 행의 모습이다(정본 §3.4 [보강 PC-1] ③)
+  if (type === PAGE_TYPE && (Object.hasOwn(safeFormat, PAGE_ICON_KEY) || Object.hasOwn(safeFormat, PAGE_COVER_KEY))) {
     const rest: BlockFormat = { ...safeFormat }
     delete rest[PAGE_ICON_KEY]
+    delete rest[PAGE_COVER_KEY]
     return { props: nextProps, format: rest, changed: true }
   }
   // 참조(하위 페이지 · 인라인 데이터베이스 — I-1)와 모르는 타입은 레지스트리의 속성 규칙을 대지 않는다 — 내용은 그 블록의 것이다

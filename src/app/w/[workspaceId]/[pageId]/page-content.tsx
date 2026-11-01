@@ -34,6 +34,7 @@ import { NewPageButton } from '../new-page-button'
 import { ExportButton } from '../export-button'
 import { PageTitle } from './page-title'
 import { PageIconControl } from './page-icon-control'
+import { PageCoverAddButton, PageCoverBanner, PageCoverProvider } from './page-cover'
 import { PageIconView } from '../page-icon-view'
 import { BodyEditor } from './body-editor'
 import { MovePageControl } from './move-page-control'
@@ -309,6 +310,10 @@ export async function PageContent({
         </div>
       </div>
 
+      {/* 커버(PC-1 · F-02-06) — 상단 바 아래 전체 폭. 배너와 머리의 "커버 추가" 가 상태를 함께 쥔다(공급자는 DOM 을 만들지 않는다). */}
+      <PageCoverProvider workspaceId={workspaceId} pageId={page.id} initialCover={page.cover} readOnly={access !== 'edit'}>
+      <PageCoverBanner frame={frame === 'page' ? 'page' : 'peek'} />
+
       {/* 본문 칸 — 페이지는 가운데 720px(전체 폭이면 넓게) · 피크는 패널의 줄 그대로(`contents`) */}
       <div
         className={
@@ -322,7 +327,14 @@ export async function PageContent({
         노션 실측: 아이콘이 있으면 상단 바 아래 96px · 78px · 제목까지 12px, 없으면 제목 위 84px). 피크는 패널의 줄 그대로(간격 없이).
       */}
       <div className={`group/header flex flex-col ${frame === 'page' ? '' : 'gap-2'}`}>
-        <PageIconControl workspaceId={workspaceId} pageId={page.id} initialIcon={page.icon} readOnly={access !== 'edit'} header={frame === 'page'} />
+        <PageIconControl
+          workspaceId={workspaceId}
+          pageId={page.id}
+          initialIcon={page.icon}
+          readOnly={access !== 'edit'}
+          header={frame === 'page'}
+          actions={<PageCoverAddButton />}
+        />
         {rowPage !== null && rowAccess !== null ? (
           <RowTitle
             workspaceId={workspaceId}
@@ -439,6 +451,7 @@ export async function PageContent({
         <NewPageButton workspaceId={workspaceId} parentPageId={page.id} label="하위 페이지" />
       </section>
       </div>
+      </PageCoverProvider>
     </Frame>
   )
 }
