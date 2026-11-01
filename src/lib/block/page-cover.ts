@@ -8,8 +8,8 @@
  *
  *   { "type": "gallery", "gallery": "gradient_1" }   내장 커버 — 그라디언트 · 단색(그림은 이 파일의 표 `COVER_GALLERY` 가 안다)
  *   { "type": "external", "url": "https://…" }       외부 이미지 — 값 자체가 주소다(아이콘과 같은 규칙 · http · https · 2048자 · 공백 없음)
- *   { "type": "file", "file_id": "…uuid…" }          올린 이미지 — **PC-2** 가 참조 장부와 함께 연다. 읽기 · DB 는 지금 받고 명령은 아직
- *                                                    받지 않는다(`setPageCover`)
+ *   { "type": "file", "file_id": "…uuid…" }          올린 이미지(PC-2) — 이 워크스페이스의 이미지 · 그 파일의 참조다(`file.ref_count` —
+ *                                                    `icon-reference.ts` 의 장부를 아이콘과 함께 쓴다) · 주소는 파생값이다(FS2)
  *
  * ⚠ **본문(Y.Doc)은 커버를 싣지 않는다** — 아이콘과 같은 까닭(볼 수 없는 하위 페이지의 모습이 부모 본문을 타고 퍼진다). 본문의 `format`
  * 을 거르는 `normalizeFormat` · 하위 페이지 참조를 거르는 `sanitizeBlockAttrs` 가 이 키를 늘 버린다.
@@ -148,6 +148,11 @@ export function randomGalleryCover(except: string | null = null, random: () => n
   const pool = COVER_GALLERY.filter((entry) => entry.id !== except)
   const entry = pool[Math.min(pool.length - 1, Math.floor(random() * pool.length))] ?? COVER_GALLERY[0]
   return { type: 'gallery', gallery: (entry as GalleryEntry).id }
+}
+
+/** 올린 이미지 커버의 파일 — 참조 장부가 센다(PC-2). 다른 종류는 null. */
+export function coverFileId(cover: PageCover | null): string | null {
+  return cover !== null && cover.type === 'file' ? cover.file_id : null
 }
 
 /** 내장 커버의 CSS `background` — 표에서 빠진 id 는 회색 판. */

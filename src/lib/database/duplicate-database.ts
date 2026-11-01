@@ -30,7 +30,7 @@ import { insertPageRefAfter } from '../block/page-refs.ts'
 import { duplicateTitle } from '../block/duplicate-remap.ts'
 import { DuplicateError, duplicateSubtree, type SubtreeRow } from '../block/duplicate.ts'
 import { readPageIcon } from '../block/page-icon.ts'
-import { addIconFileReference } from '../file/icon-reference.ts'
+import { addFormatFileReferences, addIconFileReference } from '../file/icon-reference.ts'
 import { indexPageTitle } from '../search/index-page.ts'
 import { toPlainText, type RichTextRun } from '../contracts/rich-text.ts'
 import { newPropertyId } from './property.ts'
@@ -355,8 +355,8 @@ async function copyRows(
     version: 0,
   })))
   for (const b of blocks) {
-    // 아이콘 파일의 참조 — 본문을 엔진이 옮기는 행은 엔진이 올린다(두 번 세지 않는다)
-    if (!withBody.has(String(b.id))) await addIconFileReference(tx, ctx, readPageIcon((b.format as Row | null)?.page_icon ?? null))
+    // 아이콘 · 커버 파일의 참조(PC-2) — 본문을 엔진이 옮기는 행은 엔진이 올린다(두 번 세지 않는다)
+    if (!withBody.has(String(b.id))) await addFormatFileReferences(tx, ctx, b.format)
     await indexPageTitle(tx, String(ids.get(String(b.id))), toPlainText(readTitle(b.properties as { title?: unknown } | null)))
   }
   await insertRows(tx, 'page', pages.map((p) => remapIds(p, ids)))

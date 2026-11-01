@@ -4,7 +4,7 @@
  * 이 파일이 지키는 것.
  *
  *   ① 자리는 `format.page_cover` 하나 — 다른 키(아이콘 포함)는 그대로 · 지우면 키가 없다 · 바뀔 때만 version 이 오른다
- *   ② 권한 · 잠금 · 모양은 아이콘과 같다 — 거부는 아무것도 바꾸지 않는다 · 올린 이미지는 아직(PC-2) · 표에 없는 내장 커버도 거부
+ *   ② 권한 · 잠금 · 모양은 아이콘과 같다 — 거부는 아무것도 바꾸지 않는다 · 없는 파일 · 표에 없는 내장 커버도 거부(올린 이미지의 장부는 file/cover-reference.db.test.ts)
  *   ③ DB 행도 받는다(표를 고칠 수 있는 사람)
  *   ④ 상세(`getPage`)만 커버를 싣는다 — 사이드바 · 하위 목록의 요약에는 없다
  *   ⑤ 본문은 커버를 싣지 않는다 — 행에서 부모의 Y.Doc 을 지어도 · 부모의 본문을 저장해도 하위 페이지의 커버는 그 행에 그대로
@@ -107,7 +107,7 @@ describe('① 달고 · 바꾸고 · 지운다', () => {
 })
 
 describe('② 거부는 아무것도 바꾸지 않는다', () => {
-  test('★ 볼 수만 있는 사람 forbidden · 볼 수 없는 사람 not_found · 잠긴 페이지 locked · 모양 · 표에 없는 커버 · 올린 이미지(아직) invalid_cover', async (t) => {
+  test('★ 볼 수만 있는 사람 forbidden · 볼 수 없는 사람 not_found · 잠긴 페이지 locked · 모양 · 표에 없는 커버 · 없는 파일 invalid_cover', async (t) => {
     if (skipReason) return t.skip(skipReason)
     const page = await newPage('지키는 페이지', { privateTop: true })
     await setPageCover(fx.owner.ctx, page.id, gallery('solid_blue'))

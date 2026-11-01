@@ -41,8 +41,8 @@ import { recordActivity, recordCoalescedActivity } from '../notification/activit
 import { openPageBody } from './body-write.ts'
 import { appendPageRef, placePageRefAt } from './page-refs.ts'
 import { PAGE_ICON_KEY, pageIconJson, pageIconOfFormat, parsePageIconInput, samePageIcon, type PageIcon } from './page-icon.ts'
-import { PAGE_COVER_KEY, pageCoverJson, pageCoverOfFormat, parsePageCoverInput, samePageCover, type PageCover } from './page-cover.ts'
-import { isUsableIcon, moveIconFileReference } from '../file/icon-reference.ts'
+import { PAGE_COVER_KEY, coverFileId, pageCoverJson, pageCoverOfFormat, parsePageCoverInput, samePageCover, type PageCover } from './page-cover.ts'
+import { isUsableIcon, isWorkspaceImage, moveFileReference, moveIconFileReference } from '../file/icon-reference.ts'
 import {
   normalizeRichText,
   toPlainText,
@@ -69,7 +69,7 @@ export type PageErrorCode =
   | 'forbidden' // 볼 수는 있지만 고칠 수 없음(`edit_content` 없음)
   | 'locked' // 고칠 수 있지만 페이지가 잠겼다(7f-1)
   | 'invalid_icon' // 아이콘이 이모지 한 글자가 아니다(8c-1)
-  | 'invalid_cover' // 커버가 내장 커버 · 이미지 주소가 아니다(PC-1)
+  | 'invalid_cover' // 커버가 내장 커버 · 이미지 주소 · 이 워크스페이스에 올린 이미지가 아니다(PC-1 · PC-2)
 
 export class PageError extends Error {
   // 파라미터 프로퍼티(`constructor(readonly code: ...)`)를 쓰지 않는다 —
@@ -762,13 +762,13 @@ export async function setPageIcon(ctx: SessionContext, pageId: BlockId, icon: Pa
  * 페이지 커버를 바꾼다 — `null` 이면 지운다(34번 트랙 PC-1 · F-02-06 · 정본 §3.4 [보강 PC-1] ④). 돌려주는 것은 저장된 커버다.
  *
  * 권한 · 잠금 · DB 행 · 같으면 쓰지 않음 · `last_edited_*` · `version` 은 아이콘(`setPageIcon`)과 같다. 검색 색인은 다시 쓰지 않는다.
- * 받는 것은 내장 커버(지금 표에 있는 id) · http(s) 이미지 주소다 — **올린 이미지(`file`)는 아직 받지 않는다**(파일 참조 장부와 함께
- * PC-2 가 연다 · 읽기 · DB 의 모양은 이미 받는다).
+ * 받는 것은 내장 커버(지금 표에 있는 id) · http(s) 이미지 주소 · **이 워크스페이스에 올린 이미지**(PC-2 — 아니면 `invalid_cover`)다.
+ * 올린 이미지는 그 파일의 참조다 — 같은 트랜잭션에서 옛 파일은 하나 내리고 새 파일은 하나 올린다(아이콘과 같은 장부 · FS1).
  */
 export async function setPageCover(ctx: SessionContext, pageId: BlockId, cover: PageCover | null): Promise<PageCover | null> {
   const parsed = parsePageCoverInput(cover)
-  if (parsed === undefined || parsed?.type === 'file') {
-    throw new PageError('invalid_cover', '커버는 내장 커버 · http(s) 이미지 주소여야 합니다.')
+  if (parsed === undefined) {
+    throw new PageError('invalid_cover', '커버는 내장 커버 · http(s) 이미지 주소 · 올린 이미지여야 합니다.')
   }
 
   return withTransaction(async (tx) => {
@@ -784,7 +784,11 @@ export async function setPageCover(ctx: SessionContext, pageId: BlockId, cover: 
     if (!can(caps, 'edit_content')) throw new PageError('forbidden', '이 페이지를 고칠 권한이 없습니다.')
     if (await isLocked(tx, pageId)) throw new PageError('locked', '잠긴 페이지입니다. 잠금을 풀어야 커버를 바꿀 수 있습니다.')
 
-    if (samePageCover(pageCoverOfFormat(target.format), parsed)) return parsed
+    const current = pageCoverOfFormat(target.format)
+    if (samePageCover(current, parsed)) return parsed
+    if (parsed?.type === 'file' && !(await isWorkspaceImage(tx, ctx, parsed.file_id))) {
+      throw new PageError('invalid_cover', '이 워크스페이스에 올린 이미지가 아닙니다.')
+    }
     await tx.query(
       `UPDATE block
           SET format = CASE WHEN $3::jsonb IS NULL THEN format - '${PAGE_COVER_KEY}'
@@ -795,6 +799,7 @@ export async function setPageCover(ctx: SessionContext, pageId: BlockId, cover: 
         WHERE id = $1 AND workspace_id = $2`,
       [pageId, ctx.workspaceId, parsed === null ? null : JSON.stringify(pageCoverJson(parsed)), ctx.userId],
     )
+    await moveFileReference(tx, ctx, coverFileId(current), coverFileId(parsed))
     return parsed
   })
 }
