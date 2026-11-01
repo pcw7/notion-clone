@@ -19,6 +19,8 @@ import { cellsOf } from '../block/table.ts'
 import { codeCaptionRuns } from '../block/code.ts'
 import { DATABASE_TYPE, PAGE_TYPE, isRefType } from '../block/types.ts'
 import { FILE_TYPE, fileDisplayName, readFileSource } from '../block/file-block.ts'
+import { BOOKMARK_TYPE, bookmarkCacheUrl, readBookmarkUrl } from '../block/bookmark-block.ts'
+import { readLinkPreviews, type LinkPreview } from '../link-preview/link-preview.ts'
 import { customEmojiIdOfRun, mentionTarget, type RichTextRun } from '../contracts/rich-text.ts'
 import { withReadTransaction, type Tx } from '../db/tx.ts'
 import { rowsToDoc, type BodyRow, type EditorBlock, type EditorDoc } from '../editor/document.ts'
@@ -55,6 +57,8 @@ export type PublicPageView = {
   readonly databases: ReadonlyMap<string, PublicTable>
   /** 본문의 파일 블록(F-1a)이 가리키는 이 워크스페이스의 파일 — 이름 · 크기(정본 §3.4 [보강 F-1] ⑤). 없는 id 는 없다(그 카드는 그리지 않는다). */
   readonly files: ReadonlyMap<string, PublicFileMeta>
+  /** 본문 북마크의 메타(F-4b · 정본 §3.4 [보강 F-4] ⑤) — 열쇠는 해시를 뗀 주소. 캐시를 **읽기만** 한다(익명 방문이 가져오기를 일으키지 않는다). */
+  readonly bookmarks: ReadonlyMap<string, LinkPreview>
   readonly table: PublicTable | null
   /** 연 페이지가 데이터베이스의 행이면 그 속성 묶음(6a-2c-2 — 제목 아래). 아니면 null. */
   readonly rowProperties: PublicRowProperties | null
@@ -106,6 +110,8 @@ export async function readPublicPage(token: string, pageId?: string, options: { 
     const doc: EditorDoc = { blocks: withoutClosedRefs(draft.blocks, shown) }
     // 파일 블록의 이름 · 크기(F-1a) — 이 워크스페이스의 파일만
     const files = await publicFilesIn(tx, target.workspaceId, doc)
+    // 북마크의 메타(F-4b) — 전역 캐시를 읽기만(가져오지 않는다)
+    const bookmarks = await readLinkPreviews(bookmarkUrlsOf(doc.blocks))
 
     const titled = [...new Set([...target.chain, ...shown])]
     const titles = await tx.query<{ id: string; properties: Record<string, unknown> | null }>(
@@ -145,6 +151,7 @@ export async function readPublicPage(token: string, pageId?: string, options: { 
         table: isDatabase ? await readPublicTableIn(tx, target) : null,
         databases: inlineDatabases,
         files,
+        bookmarks,
         rowProperties: isDatabase ? null : await readPublicRowPropertiesIn(tx, target),
       },
     } as const
@@ -218,6 +225,23 @@ async function publicFilesIn(tx: Tx, workspaceId: string, doc: EditorDoc): Promi
     [workspaceId, [...ids]],
   )
   return new Map(rows.map((row) => [row.id, { name: fileDisplayName({ kind: 'file', fileId: row.id }, row.original_name), sizeBytes: Number(row.size_bytes) }]))
+}
+
+/** 본문의 북마크 주소 — 캐시 열쇠(해시를 뗀 주소)로. */
+function bookmarkUrlsOf(blocks: readonly EditorBlock[]): string[] {
+  const out = new Set<string>()
+  const walk = (list: readonly EditorBlock[]): void => {
+    for (const block of list) {
+      if (block.type === BOOKMARK_TYPE) {
+        const url = readBookmarkUrl(block.properties)
+        const key = url === null ? null : bookmarkCacheUrl(url)
+        if (key !== null) out.add(key)
+      }
+      walk(block.children ?? [])
+    }
+  }
+  walk(blocks)
+  return [...out]
 }
 
 function mentionsOf(blocks: readonly EditorBlock[]): { pages: string[]; people: string[]; emoji: string[] } {

@@ -637,3 +637,16 @@ describe('⑦ 북마크 블록', () => {
     assert.equal(losses.unsupported, 0)
   })
 })
+
+describe('⑧ 북마크의 제목 — 메타 캐시(F-4b)', () => {
+  test('links.bookmarkTitle 이 주면 그 제목 · null 이면 주소', () => {
+    const links: MarkdownLinks = { page: () => null, image: () => null, bookmarkTitle: (url) => (url.includes('known') ? '캐시의 제목(F-4b)' : null) }
+    const { markdown } = pageToMarkdown(
+      { title: [textRun('T')], doc: { blocks: [block('bookmark', [], { properties: { url: 'https://known.test/' } }), block('bookmark', [], { properties: { url: 'https://other.test/' } })] } },
+      links,
+      { untitled: 'x' },
+    )
+    assert.ok(markdown.includes('[캐시의 제목(F-4b)](https://known.test/)'), markdown)
+    assert.ok(markdown.includes('](https://other.test/)'), markdown)
+  })
+})

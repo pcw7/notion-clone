@@ -39,6 +39,14 @@ export function withBookmarkUrl(properties: Readonly<Record<string, unknown>> | 
   return next
 }
 
+/** 메타 캐시의 열쇠가 되는 주소(F-4 · 정본 §3.4 [보강 F-4] ①) — 북마크 주소가 아니면 null · 해시(`#…`)는 뗀다(같은 문서다). */
+export function bookmarkCacheUrl(url: string): string | null {
+  if (!isBookmarkUrl(url)) return null
+  const parsed = new URL(url)
+  parsed.hash = ''
+  return parsed.href
+}
+
 /** 카드의 호스트 — `www.` 는 뗀다. 읽지 못하면 빈 글. */
 export function bookmarkHost(url: string): string {
   try {

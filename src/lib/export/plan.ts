@@ -39,6 +39,7 @@
 import { readImageSource } from '../block/image.ts'
 import { FILE_TYPE, UNTITLED_FILE, attachmentExtensionOf, externalFileName, fileDisplayName } from '../block/file-block.ts'
 import { VIDEO_TYPE } from '../block/video-block.ts'
+import { bookmarkCacheUrl } from '../block/bookmark-block.ts'
 import { textRun, toPlainText, type RichTextRun } from '../contracts/rich-text.ts'
 import type { EditorBlock, EditorDoc } from '../editor/document.ts'
 import { inlineExtensionFor, isAllowedMime, isVideoMime } from '../file/limits.ts'
@@ -107,6 +108,8 @@ export type ExportSnapshot = {
   readonly files: ReadonlyMap<string, ExportFile>
   /** 읽는 단계가 범위에서 뺀 것. 사유 → 개수. 보고서에 그대로 싣는다. */
   readonly excluded?: Readonly<Record<string, number>>
+  /** 본문 북마크의 제목(F-4b) — 열쇠는 해시를 뗀 주소. 메타 캐시를 읽기만 한 것 · 없으면 주소가 제목이다. */
+  readonly bookmarkTitles?: ReadonlyMap<string, string>
 }
 
 // ── 계획 (출력) ───────────────────────────────────────────────────────
@@ -264,6 +267,11 @@ export function planExport(snapshot: ExportSnapshot, options: { readonly untitle
         if (source.kind === 'external') return source.url
         const file = snapshot.files.get(source.fileId)
         return file === undefined ? null : inFolder(fileName(names, file))
+      },
+      // 북마크(F-4b) — 메타 캐시의 제목(없으면 주소)
+      bookmarkTitle: (url) => {
+        const key = bookmarkCacheUrl(url)
+        return key === null ? null : (snapshot.bookmarkTitles?.get(key) ?? null)
       },
       // 파일 블록(F-1a) — 첨부의 자리와 보이는 이름(원본 이름 · 바깥 주소는 주소의 이름)
       file: (source) => {

@@ -26796,6 +26796,52 @@ async function main() {
       }
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('북마크 카드의 메타 (F-4b · F-01-15)')) { try {
+      // 북마크 카드의 메타(정본 §3.4 [보강 F-4] ⑤) — 편집기가 라우트로 물어 카드에 제목 · 설명 · 사이트 · 그림(no-referrer)을 그린다 · 공개 화면은
+      // 캐시를 읽기만 해 같은 제목을 그린다(받는 서버가 다시 맞지 않는다). 가져올 곳은 이 판의 받는 서버(127.0.0.1:HOOK_PORT).
+      const stamp = Date.now().toString(36)
+      const { createServer } = await import('node:http')
+      const hits = []
+      const site = createServer((req, res) => {
+        hits.push(req.url ?? '')
+        if ((req.url ?? '').startsWith('/article')) {
+          res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }).end(`<html><head><meta property="og:title" content="카드 제목 ${stamp}">
+            <meta property="og:description" content="카드 설명"><meta property="og:site_name" content="카드 사이트"><meta property="og:image" content="/thumb.png"></head></html>`)
+        } else if ((req.url ?? '').startsWith('/thumb.png')) {
+          // 진짜 그림이어야 한다 — 못 불러오면 노드 뷰가 그림을 걷는다(설계대로)
+          res.writeHead(200, { 'content-type': 'image/png' }).end(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64'))
+        } else res.writeHead(404).end()
+      })
+      await new Promise((r) => site.listen(HOOK_PORT, '127.0.0.1', r))
+      try {
+        const url = `http://127.0.0.1:${HOOK_PORT}/article?s=${stamp}`
+        const page = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: JSON.stringify({ title: `북마크 메타 ${stamp}` }) })).json()).page.id
+        const blockId = randomUUID()
+        await saveBody(page, { blocks: [{ id: blockId, type: 'bookmark', title: [], properties: { url }, format: {}, children: [] }] })
+        await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+        const B = `[data-block-id="${blockId}"]`
+        const drawn = await waitFor(`(document.querySelector('${B} .blk-bookmark-title')?.textContent ?? '') === ${JSON.stringify(`카드 제목 ${stamp}`)}`, 15000)
+        await waitFor(`(() => { const i = document.querySelector('${B} .blk-bookmark-image'); return !!i && i.complete && i.naturalWidth > 0 })()`, 8000)
+        const card = await evaluate(`(() => { const c = document.querySelector('${B} [data-testid="bookmark-card"]'); const img = c?.querySelector('.blk-bookmark-image'); return {
+          description: c?.querySelector('.blk-bookmark-description')?.textContent ?? null, hidden: c?.querySelector('.blk-bookmark-description')?.hidden ?? null,
+          host: c?.querySelector('.blk-bookmark-host')?.textContent ?? null, img: img?.getAttribute('src') ?? null, referrer: img?.getAttribute('referrerpolicy') ?? img?.referrerPolicy ?? null } })()`)
+        check('★ 편집기의 카드에 메타 — 제목 · 설명 · 사이트 이름(호스트 대신)', drawn && card.description === '카드 설명' && card.hidden === false && card.host === '카드 사이트', JSON.stringify({ drawn, card }))
+        check('카드의 그림 — 바깥 주소 그대로(최종 주소 기준) · 보내는 쪽 주소를 싣지 않는다(no-referrer)',
+          card.img === `http://127.0.0.1:${HOOK_PORT}/thumb.png` && card.referrer === 'no-referrer', JSON.stringify(card))
+        const fetchedOnce = hits.filter((h) => h.startsWith('/article')).length
+        const { publishPage } = await import(new URL('../src/lib/publish/public-link.ts', import.meta.url).href)
+        const published = await publishPage(ctx, page)
+        const token = published.ok ? published.value.token : null
+        const html = token === null ? '' : await (await fetch(`${BASE}/p/${token}`)).text()
+        check('★ 공개 화면은 캐시를 읽기만 — 같은 제목 · 설명 · 사이트를 그리고 받는 서버는 다시 맞지 않는다',
+          html.includes(`카드 제목 ${stamp}`) && html.includes('카드 설명') && html.includes('카드 사이트') && hits.filter((h) => h.startsWith('/article')).length === fetchedOnce && fetchedOnce === 1,
+          JSON.stringify({ title: html.includes(`카드 제목 ${stamp}`), fetchedOnce, now: hits.filter((h) => h.startsWith('/article')).length }))
+      } finally {
+        site.closeAllConnections?.()
+        await new Promise((r) => site.close(() => r()))
+      }
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

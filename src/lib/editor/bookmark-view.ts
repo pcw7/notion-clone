@@ -10,10 +10,13 @@ import type { EditorView, NodeView } from '@tiptap/pm/view'
 
 import { readCaption } from '../block/image.ts'
 import { BOOKMARK_TYPE, MAX_BOOKMARK_URL_LENGTH, bookmarkHost, bookmarkTitle, isBookmarkUrl, readBookmarkUrl, withBookmarkUrl } from '../block/bookmark-block.ts'
+import type { BookmarkMeta, BookmarkMetaSource } from './bookmark-meta.ts'
 
 export type BookmarkViewDeps = {
   /** 캡션 입력을 연다 — 편집기 밖의 입력칸. 읽기 전용 편집기는 아무것도 하지 않는다. */
   readonly openBookmarkCaption: (blockId: string) => void
+  /** 카드의 메타(F-4b — 서버의 전역 캐시 · `GET /link-preview`). 없으면(읽기 전용 미리보기 · 검사) 주소가 제목이다. */
+  readonly bookmarkMeta?: BookmarkMetaSource
 }
 
 function containerIdAt(view: EditorView, getPos: () => number | undefined): string {
@@ -86,10 +89,40 @@ export function bookmarkNodeView(node: PmNode, view: EditorView, getPos: () => n
     card.href = url
     card.target = '_blank'
     card.rel = 'noopener noreferrer'
+    const text = element('span', 'blk-bookmark-text')
     const title = element('span', 'blk-bookmark-title', bookmarkTitle(url))
+    const description = element('span', 'blk-bookmark-description')
+    description.hidden = true
     const host = element('span', 'blk-bookmark-host', bookmarkHost(url))
     const link = element('span', 'blk-bookmark-link', url)
-    card.append(title, host, link)
+    text.append(title, description, host, link)
+    card.append(text)
+    /** 메타를 카드에 — 제목 · 설명 · 사이트 이름 · 그림(바깥 이미지 블록과 같은 핫링크 · 보내는 쪽 주소를 싣지 않는다 · 못 불러오면 걷는다). */
+    const apply = (meta: BookmarkMeta): void => {
+      title.textContent = bookmarkTitle(url, meta.title)
+      description.textContent = meta.description ?? ''
+      description.hidden = meta.description === null
+      host.textContent = meta.siteName ?? bookmarkHost(url)
+      card.querySelector('.blk-bookmark-image')?.remove()
+      if (meta.imageUrl !== null) {
+        const img = document.createElement('img')
+        img.className = 'blk-bookmark-image'
+        img.alt = ''
+        img.loading = 'lazy'
+        img.referrerPolicy = 'no-referrer'
+        img.src = meta.imageUrl
+        img.addEventListener('error', () => img.remove())
+        card.append(img)
+      }
+      dom.dataset.meta = meta.status
+    }
+    const known = deps.bookmarkMeta?.peek(url) ?? null
+    if (known !== null) apply(known)
+    else
+      void deps.bookmarkMeta?.get(url).then((meta) => {
+        // 그 사이에 주소가 바뀌었으면 낡은 답이다
+        if (meta !== null && readBookmarkUrl(current.attrs.props) === url) apply(meta)
+      })
     dom.prepend(card)
   }
 
