@@ -26664,6 +26664,84 @@ async function main() {
         JSON.stringify({ pub, card: pageHtml.includes('data-testid="public-video"') }))
     } catch (thrown) { await sectionThrew(thrown) } }
 
+    if (sectionIf('북마크 블록 (F-3 · F-01-15)')) { try {
+      // 북마크 블록(정본 §3.4 [보강 F-3]) — /북마크 로 빈 블록(주소 입력칸) · http · https 가 아니면 쓰지 않고 이유를 말한다 · 넣으면 카드(제목은
+      // 메타가 없어 주소 · 호스트 · 새 탭) · 캡션 · "주소 고치기" 는 빈 상태로(캡션은 남는다) · 서버 · 공개 화면(nofollow ugc).
+      const stamp = Date.now().toString(36)
+      const page = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: JSON.stringify({ title: `북마크 ${stamp}` }) })).json()).page.id
+      const first = randomUUID()
+      await saveBody(page, { blocks: [{ id: first, type: 'paragraph', title: [], properties: {}, format: {}, children: [] }] })
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+      await waitFor(`!!document.querySelector('[data-block-id="${first}"]') && document.querySelector('.ProseMirror')?.getAttribute('contenteditable') === 'true'`, 15000)
+      await waitHydrated(`[data-block-id="${first}"]`)
+      const MENU = '[role="listbox"][aria-label="블록 삽입"]'
+      await clickSelector(`[data-block-id="${first}"] .blk`)
+      await typeText('/')
+      await typeText('북마크')
+      const menuShown = await waitFor(`(document.querySelector('${MENU}')?.textContent ?? '').includes('웹 북마크')`, 5000)
+      await key('Enter')
+      const empty = await waitFor(`!!document.querySelector('.blk-bookmark[data-state="empty"] .blk-bookmark-url-input')`, 5000)
+      check('★ /북마크 — 미디어 그룹의 "웹 북마크" 를 고르면 주소 입력칸 하나의 빈 블록이 선다', menuShown && empty, JSON.stringify({ menuShown, empty }))
+      const blockId = await evaluate(`document.querySelector('.blk-bookmark')?.closest('[data-block-id]')?.getAttribute('data-block-id') ?? null`)
+      const B = `[data-block-id="${blockId}"]`
+
+      // javascript: 는 쓰지 않고 이유를 말한다
+      await clickSelector(`${B} .blk-bookmark-url-input`)
+      await typeText('javascript:alert(1)')
+      await clickSelector(`${B} .blk-bookmark-url-add`)
+      const refused = await waitFor(`(document.querySelector('${B} [role="alert"]')?.textContent ?? '').includes('http') && document.querySelector('${B} .blk-bookmark')?.dataset.state === 'empty'`, 5000)
+      check('★ http · https 가 아닌 주소(javascript:)는 쓰지 않고 이유를 말한다', refused,
+        JSON.stringify(await evaluate(`({ state: document.querySelector('${B} .blk-bookmark')?.dataset.state, alert: document.querySelector('${B} [role="alert"]')?.textContent ?? '' })`)))
+
+      // 바른 주소 — 카드
+      const url = `https://www.example.com/docs/${stamp}?q=1`
+      await evaluate(`(() => { const i = document.querySelector('${B} .blk-bookmark-url-input'); i.value = ''; i.dispatchEvent(new Event('input', { bubbles: true })) })()`)
+      await clickSelector(`${B} .blk-bookmark-url-input`)
+      await typeText(url)
+      await clickSelector(`${B} .blk-bookmark-url-add`)
+      const card = await waitFor(`(() => { const c = document.querySelector('${B} [data-testid="bookmark-card"]'); return !!c && c.getAttribute('href') === ${JSON.stringify(url)} && c.getAttribute('target') === '_blank' && (c.getAttribute('rel') ?? '').includes('noopener') && c.querySelector('.blk-bookmark-title')?.textContent === ${JSON.stringify(url)} && c.querySelector('.blk-bookmark-host')?.textContent === 'example.com' })()`, 5000)
+      check('★ 넣으면 카드 — 제목은 주소(메타 없음) · 호스트(www. 뗌) · 새 탭 · noopener', card,
+        JSON.stringify(await evaluate(`document.querySelector('${B} [data-testid="bookmark-card"]')?.outerHTML?.slice(0, 300) ?? null`)))
+
+      // 캡션 → 서버에 남는다(주소 · 캡션)
+      await clickSelector(`${B} [data-testid="bookmark-caption-open"]`)
+      const captionBox = await waitFor(`!!document.querySelector('[data-testid="code-caption-input"]')`, 5000)
+      if (captionBox) {
+        await clickSelector('[data-testid="code-caption-input"]')
+        await typeText(`참고 ${stamp}`)
+        await key('Enter')
+      }
+      const saved = await (async () => {
+        for (let i = 0; i < 60; i += 1) {
+          const body = await loadPageBody(ctx, page)
+          const found = body?.doc.blocks.find((b) => b.id === blockId)
+          if (found?.type === 'bookmark' && found.properties?.url === url && Array.isArray(found.properties?.caption) && found.properties.caption.length > 0) return true
+          await sleep(250)
+        }
+        return false
+      })()
+      check('캡션 — 같은 입력칸으로 쓰고 주소 · 캡션이 서버에 남는다', captionBox && saved, JSON.stringify({ captionBox, saved }))
+
+      // 주소 고치기 — 빈 상태로(캡션은 남는다) → 다시 넣는다
+      await clickSelector(`${B} [data-testid="bookmark-edit"]`)
+      const reopened = await waitFor(`document.querySelector('${B} .blk-bookmark')?.dataset.state === 'empty' && !!document.querySelector('${B} .blk-bookmark-url-input')`, 5000)
+      await clickSelector(`${B} .blk-bookmark-url-input`)
+      await typeText(url)
+      await clickSelector(`${B} .blk-bookmark-url-add`)
+      const back = await waitFor(`!!document.querySelector('${B} [data-testid="bookmark-card"]') && (document.querySelector('${B} .blk-bookmark-caption')?.textContent ?? '') === ${JSON.stringify(`참고 ${stamp}`)}`, 5000)
+      check('"주소 고치기" 는 빈 상태로 되돌리고 캡션은 남는다', reopened && back, JSON.stringify({ reopened, back }))
+
+      // 공개 화면
+      await sleep(1500)
+      const { publishPage } = await import(new URL('../src/lib/publish/public-link.ts', import.meta.url).href)
+      const published = await publishPage(ctx, page)
+      const token = published.ok ? published.value.token : null
+      const pageHtml = token === null ? '' : await (await fetch(`${BASE}/p/${token}`)).text()
+      check('공개 화면 — 같은 카드(제목 · 호스트 · 새 탭 · nofollow ugc) · 캡션',
+        pageHtml.includes('data-testid="public-bookmark"') && pageHtml.includes(`href="${url.replace('&', '&amp;')}"`) && pageHtml.includes('nofollow ugc') && pageHtml.includes(`참고 ${stamp}`),
+        JSON.stringify({ card: pageHtml.includes('data-testid="public-bookmark"'), rel: pageHtml.includes('nofollow ugc'), caption: pageHtml.includes(`참고 ${stamp}`) }))
+    } catch (thrown) { await sectionThrew(thrown) } }
+
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
       // 필터(상태 ≠ 완료)가 걸린 보드에서 카드를 "옮기기" 메뉴로 옮긴다 — 필터 안의 열이면 안내가 없고, 완료 열이면 서버가 "조건 밖" 이라
       // 말해 화면이 그 까닭을 말한다 · 카드는 곧 빠진다(표 변경 알림의 다시 읽기 — 04 F-04-03) · 다시 열어도 없다(서버에 옮겨졌다).

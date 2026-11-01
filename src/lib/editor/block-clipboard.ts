@@ -59,6 +59,7 @@ import { equationDisplayLines } from '../block/equation.ts'
 import { buttonPlainText } from '../block/button.ts'
 import { imageAltText, readImageSource } from '../block/image.ts'
 import { fileDisplayName, readFileSource } from '../block/file-block.ts'
+import { readBookmarkUrl } from '../block/bookmark-block.ts'
 import { cellsOf, TABLE_TYPE } from '../block/table.ts'
 import { isKnownBlockType, isRefType, specOf } from '../block/types.ts'
 import { textRun, toPlainText } from '../contracts/rich-text.ts'
@@ -174,6 +175,12 @@ export function plainTextForBlocks(blocks: readonly EditorBlock[]): string {
           // 않는다(평문은 바깥으로 나가는 모양이다 · 앱 안의 붙여넣기는 블록 MIME 을 쓴다)
           const source = readImageSource(block.properties)
           lines.push(`${indent}![${imageAltText(block.format, block.properties)}](${source?.kind === 'external' ? source.url : ''})`)
+          break
+        }
+        case 'bookmark': {
+          // 북마크(F-3) — `[주소](주소)`(평문은 바깥으로 나가는 모양 · 주소가 없으면 줄을 남기지 않는다)
+          const url = readBookmarkUrl(block.properties)
+          if (url !== null) lines.push(`${indent}[${url}](${url})`)
           break
         }
         case 'file':

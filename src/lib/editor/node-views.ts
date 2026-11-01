@@ -30,6 +30,7 @@ import { inlineEquationNodeView, type InlineEquationViewDeps } from './inline-eq
 import { imageNodeView, type ImageViewDeps } from './image-view.ts'
 import { fileNodeView, type FileViewDeps } from './file-view.ts'
 import { videoNodeView, type VideoViewDeps } from './video-view.ts'
+import { bookmarkNodeView, type BookmarkViewDeps } from './bookmark-view.ts'
 import { customEmojiIdOf, customEmojiText, mentionDisplay, mentionTargetOf, type EmojiLabel } from './mention-label.ts'
 import { pageIconElement } from './page-icon-dom.ts'
 import { customEmojiImagePath, type PageIcon } from '../block/page-icon.ts'
@@ -38,7 +39,7 @@ import { tocNodeView, type TocViewDeps } from './toc-view.ts'
 import { paintBlockColor } from './paint-block-color.ts'
 import { calloutNodeView, type CalloutViewDeps } from './callout-view.ts'
 
-export type NodeViewDeps = ImageViewDeps & FileViewDeps & VideoViewDeps & CodeViewDeps & TocViewDeps & BreadcrumbViewDeps & EquationViewDeps & InlineEquationViewDeps & ButtonViewDeps & CalloutViewDeps & {
+export type NodeViewDeps = ImageViewDeps & FileViewDeps & VideoViewDeps & BookmarkViewDeps & CodeViewDeps & TocViewDeps & BreadcrumbViewDeps & EquationViewDeps & InlineEquationViewDeps & ButtonViewDeps & CalloutViewDeps & {
   isCollapsed: (blockId: string) => boolean
   toggleCollapsed: (blockId: string) => void
   /** 하위 페이지로 이동. */
@@ -477,6 +478,8 @@ export function createNodeViews(deps: NodeViewDeps): Record<
     file: (node, view, getPos) => fileNodeView(node, view, getPos, deps),
     // 비디오(F-2) — 틀 · 폭 손잡이 · 정렬 · 캡션
     video: (node, view, getPos) => videoNodeView(node, view, getPos, deps),
+    // 북마크(F-3) — 주소 입력 · 카드 · 캡션
+    bookmark: (node, view, getPos) => bookmarkNodeView(node, view, getPos, deps),
     // 키는 노드 이름이다 — 코드 블록의 노드는 `code_block`(8a-1).
     [nodeNameOf(CODE_TYPE)]: (node, view, getPos) => codeNodeView(node, view, getPos, deps),
     page_ref: (node, view, getPos) => pageRefNodeView(node, view, getPos, deps),

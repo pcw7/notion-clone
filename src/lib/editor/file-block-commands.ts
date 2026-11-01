@@ -10,12 +10,13 @@ import type { Command, EditorState } from '@tiptap/pm/state'
 
 import { FILE_TYPE } from '../block/file-block.ts'
 import { VIDEO_TYPE } from '../block/video-block.ts'
+import { BOOKMARK_TYPE } from '../block/bookmark-block.ts'
 import { codeCaptionText, isCaptionFormatted, withCodeCaption } from '../block/code.ts'
 import { sameJsonValue } from '../contracts/json-safe.ts'
 import { separateUndoStep } from './code-block.ts'
 import { blockTypeOf, findContainerById } from './pm-blocks.ts'
 
-type CaptionedType = typeof FILE_TYPE | typeof VIDEO_TYPE
+type CaptionedType = typeof FILE_TYPE | typeof VIDEO_TYPE | typeof BOOKMARK_TYPE
 
 export type FileBlockInfo = { readonly blockId: string; readonly pos: number; readonly node: PmNode }
 export type FileCaptionInfo = FileBlockInfo & { readonly caption: string; readonly captionFormatted: boolean }
@@ -73,3 +74,10 @@ export function videoCaptionInfo(state: EditorState, blockId: string): FileCapti
 }
 
 export const setVideoCaptionCommand = captionCommand(VIDEO_TYPE)
+
+/** 북마크(F-3) — 같은 입력칸 · 같은 명령. */
+export function bookmarkCaptionInfo(state: EditorState, blockId: string): FileCaptionInfo | null {
+  return captionInfoOf(blockInfoOf(state, blockId, BOOKMARK_TYPE))
+}
+
+export const setBookmarkCaptionCommand = captionCommand(BOOKMARK_TYPE)

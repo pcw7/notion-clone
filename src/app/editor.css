@@ -656,6 +656,97 @@
   display: none;
 }
 
+/* 북마크 블록(F-3 · 정본 §3.4 [보강 F-3] ②) — 카드: 제목 · 호스트 · 주소 · 누르면 새 탭. 빈 상태는 점선 상자 안의 주소 입력칸. */
+.blk-bookmark[data-state='empty'] .blk-bookmark-controls {
+  border: 1px dashed #d1d5db;
+  border-radius: 0.375rem;
+  padding: 0.75rem;
+  color: #9ca3af;
+  font-size: 0.875rem;
+}
+.blk-bookmark-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+.blk-bookmark-url {
+  display: flex;
+  flex: 1;
+  gap: 0.5rem;
+}
+.blk-bookmark-url-input {
+  flex: 1;
+  min-width: 0;
+}
+.blk-bookmark-url-add {
+  border: 1px solid #e5e7eb;
+  border-radius: 0.25rem;
+  background: none;
+  padding: 0.25rem 0.5rem;
+  color: inherit;
+  font: inherit;
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+.blk-bookmark-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  padding: 0.625rem 0.75rem;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.375rem;
+  color: inherit;
+  text-decoration: none;
+  overflow: hidden;
+}
+.blk-bookmark-card:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+.blk-bookmark-title {
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.blk-bookmark-host {
+  color: #6b7280;
+  font-size: 0.8125rem;
+}
+.blk-bookmark-link {
+  color: #9ca3af;
+  font-size: 0.75rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.blk-bookmark-caption {
+  font-size: 0.875rem;
+  color: #6b7280;
+  margin-top: 0.25rem;
+}
+.blk-bookmark .blk-bookmark-caption-open,
+.blk-bookmark .blk-bookmark-edit {
+  margin-top: 0.25rem;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.25rem;
+  background: none;
+  padding: 0.125rem 0.5rem;
+  color: #6b7280;
+  font: inherit;
+  font-size: 0.75rem;
+  cursor: pointer;
+  opacity: 0;
+}
+.blk-bookmark:hover .blk-bookmark-caption-open,
+.blk-bookmark .blk-bookmark-caption-open:focus-visible,
+.blk-bookmark:hover .blk-bookmark-edit,
+.blk-bookmark .blk-bookmark-edit:focus-visible {
+  opacity: 1;
+}
+.blk-editor[contenteditable='false'] .blk-bookmark-caption-open,
+.blk-editor[contenteditable='false'] .blk-bookmark-edit {
+  display: none;
+}
+
 /* 올리기 취소 · 다시 올리기(10n-73) — 상태 줄 · 실패 줄 옆에 늘 보인다(머물 때만이 아니다 — 지금 할 일이다). 읽기 전용 편집기는 올리지 않아
    서지 않는다. */
 .blk-image .blk-image-upload-cancel,

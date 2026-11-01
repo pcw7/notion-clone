@@ -16,6 +16,7 @@ import { codeCaptionRuns, codeLanguageOf } from '@/lib/block/code'
 import { imageAltText, readCaption, readImageLayout, readImageSource } from '@/lib/block/image'
 import { FILE_TYPE, fileDisplayName, formatFileSize, readFileSource } from '@/lib/block/file-block'
 import { VIDEO_TYPE, readVideoSource } from '@/lib/block/video-block'
+import { BOOKMARK_TYPE, bookmarkHost, bookmarkTitle, readBookmarkUrl } from '@/lib/block/bookmark-block'
 import { EQUATION_TYPE, equationExpressionOf } from '@/lib/block/equation'
 import { calloutGlyph } from '@/lib/block/callout'
 import { cellsOf, COLUMN_HEADER_KEY, ROW_HEADER_KEY, TABLE_TYPE } from '@/lib/block/table'
@@ -322,6 +323,22 @@ function Block({ block, view }: { block: EditorBlock; view: PublicPageView }): R
         >
           {/* eslint-disable-next-line @next/next/no-img-element -- 공개 화면은 최적화 경로를 거치지 않는다(바깥 주소 · 토큰 경로) */}
           <img src={src} alt={imageAltText(block.format, props)} loading="lazy" referrerPolicy="no-referrer" />
+          {caption !== '' && <figcaption>{caption}</figcaption>}
+        </figure>
+      )
+    }
+    case BOOKMARK_TYPE: {
+      // 북마크(F-3 · 정본 §3.4 [보강 F-3] ④) — 카드: 제목(메타가 없으면 주소) · 호스트 · 주소 · 새 탭 · 남의 사이트라 nofollow ugc
+      const url = readBookmarkUrl(props)
+      if (url === null) return null
+      const caption = readCaption(props).trim()
+      return (
+        <figure className="pub-block pub-bookmark" data-testid="public-bookmark">
+          <a className="pub-bookmark-card" href={url} target="_blank" rel="noopener noreferrer nofollow ugc">
+            <span className="pub-bookmark-title">{bookmarkTitle(url)}</span>
+            <span className="pub-bookmark-host">{bookmarkHost(url)}</span>
+            <span className="pub-bookmark-link">{url}</span>
+          </a>
           {caption !== '' && <figcaption>{caption}</figcaption>}
         </figure>
       )
