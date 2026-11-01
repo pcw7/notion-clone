@@ -13,9 +13,12 @@ import {
   MAX_FILENAME_BYTES,
   MAX_UPLOAD_BYTES,
   extensionFor,
+  inlineExtensionFor,
   isAllowedMime,
   sniffImageMime,
+  sniffVideoMime,
   storageKeyFor,
+  storedMimeOf,
   validateUpload,
 } from './limits.ts'
 
@@ -102,5 +105,39 @@ describe('sniffImageMime — 이름 없는 바이트의 형식(잔여 묶음 8m-
     // RIFF 이지만 WEBP 가 아니다(WAV)
     assert.equal(sniffImageMime(bytes(...Buffer.from('RIFF\x10\x00\x00\x00WAVEfmt '))), null)
     assert.equal(sniffImageMime(bytes(...Buffer.from('GIF89b'))), null)
+  })
+})
+// ── 비디오(F-2 · 정본 §3.4 [보강 F-2] ②) ─────────────────────────────
+describe('비디오 — 머리 바이트 · 저장 MIME · 확장자 (F-2 · 정본 [보강 F-2])', () => {
+  test('★ mp4 는 4~7 바이트의 ftyp · webm 은 EBML 머리 · 그 밖은 null', () => {
+    assert.equal(sniffVideoMime(new Uint8Array([0, 0, 0, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d, 0, 0, 2, 0])), 'video/mp4')
+    assert.equal(sniffVideoMime(new Uint8Array([0x1a, 0x45, 0xdf, 0xa3, 0x9f, 0x42, 0x86, 0x81, 1, 2, 3, 4])), 'video/webm')
+    assert.equal(sniffVideoMime(new TextEncoder().encode('<html>x</html>')), null)
+    assert.equal(sniffVideoMime(new Uint8Array(3)), null)
+  })
+
+  test('kind=video 는 받는 둘을 말해야 하고 크기 한도는 같다', () => {
+    assert.equal(validateUpload({ mime: 'video/mp4', size: 10, originalName: 'a.mp4' }, 'video'), null)
+    assert.equal(validateUpload({ mime: 'video/quicktime', size: 10, originalName: 'a.mov' }, 'video'), 'unsupported_type')
+    assert.equal(validateUpload({ mime: 'video/webm', size: MAX_UPLOAD_BYTES + 1, originalName: null }, 'video'), 'too_large')
+  })
+
+  test('★ 저장 MIME — 비디오 길은 가린 바이트의 것(아니면 거절) · 파일 길은 말한 이미지 · 비디오를 바이트로 확인한다', () => {
+    assert.equal(storedMimeOf('video', 'video/mp4', new Uint8Array([0x1a, 0x45, 0xdf, 0xa3, 0x9f, 0x42, 0x86, 0x81, 1, 2, 3, 4])), 'video/webm')
+    assert.equal(storedMimeOf('video', 'video/mp4', new TextEncoder().encode('<html>x</html>')), null)
+    assert.equal(storedMimeOf('file', 'video/mp4', new Uint8Array([0, 0, 0, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d, 0, 0, 2, 0])), 'video/mp4')
+    assert.equal(storedMimeOf('file', 'video/mp4', new TextEncoder().encode('<html>x</html>')), 'application/octet-stream')
+    assert.equal(storedMimeOf('file', 'image/png', new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4])), 'image/png')
+    assert.equal(storedMimeOf('file', 'image/png', new TextEncoder().encode('<html>x</html>')), 'application/octet-stream')
+    assert.equal(storedMimeOf('file', 'text/html', new TextEncoder().encode('<html>x</html>')), 'text/html')
+    assert.equal(storedMimeOf('file', '', new TextEncoder().encode('<html>x</html>')), 'application/octet-stream')
+    assert.equal(storedMimeOf('image', 'image/png', new TextEncoder().encode('<html>x</html>')), 'image/png', '이미지 길은 지금처럼 말한 4종(그림 MIME 은 실행되지 않는다)')
+  })
+
+  test('inline 목록의 확장자 — 이미지 · 비디오 · 그 밖은 null', () => {
+    assert.equal(inlineExtensionFor('video/mp4'), 'mp4')
+    assert.equal(inlineExtensionFor('video/webm'), 'webm')
+    assert.equal(inlineExtensionFor('image/jpeg'), 'jpg')
+    assert.equal(inlineExtensionFor('application/pdf'), null)
   })
 })

@@ -149,7 +149,8 @@ describe('rowsToDoc', () => {
   test('모르는 타입의 행은 unsupported 로 읽는다', () => {
     const pageId = id()
     const doc = rowsToDoc(pageId, [
-      row({ id: id(), parent_id: pageId, order_key: 'a0', type: 'video' }),
+      // 비디오는 F-2 에서 섰다 — 오디오(P2)는 아직 없다
+      row({ id: id(), parent_id: pageId, order_key: 'a0', type: 'audio' }),
     ])
     assert.equal(doc.blocks[0].type, UNSUPPORTED_TYPE)
   })

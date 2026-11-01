@@ -48,6 +48,7 @@
 import { codeCaptionRuns, codeLanguageOf, fencedCode } from '../block/code.ts'
 import { imageAltText, readImageSource, type ImageSource } from '../block/image.ts'
 import { FILE_TYPE, externalFileName, readFileSource, type FileSource } from '../block/file-block.ts'
+import { VIDEO_TYPE } from '../block/video-block.ts'
 import { TOC_TYPE, headingsOfBlocks, tocEntries, type TocEntry } from '../block/toc.ts'
 import { BREADCRUMB_TYPE } from '../block/breadcrumb.ts'
 import { EQUATION_TYPE, equationDisplayLines } from '../block/equation.ts'
@@ -725,7 +726,9 @@ function renderBlock(block: EditorBlock, ctx: Ctx, number: number): string[] {
       const alt = escapeText(imageAltText(block.format, block.properties).replace(/\s+/g, ' ').trim())
       return [`![${alt}](${linkDestination(href)})`]
     }
-    case FILE_TYPE: {
+    // 비디오(F-2) — 마크다운에는 비디오가 없어 파일과 같은 링크로(정본 §3.4 [보강 F-2] ⑤)
+    case FILE_TYPE:
+    case VIDEO_TYPE: {
       // 파일 블록(F-1a · 정본 §3.4 [보강 F-1] ⑥) — `[이름](주소)`. 올린 파일은 `links.file` 이 첨부의 자리를 준다(없으면 뺀다) ·
       // 바깥 주소는 그대로. 출처가 없는 빈 블록은 잃은 것이 없다.
       const source = readFileSource(block.properties)

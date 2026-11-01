@@ -7,13 +7,13 @@
  * 순수 모듈이다 — 테스트가 머리만 본다.
  */
 
-import { isAllowedMime, OCTET_STREAM } from './limits.ts'
+import { isAllowedMime, isVideoMime, OCTET_STREAM } from './limits.ts'
 
 export { OCTET_STREAM }
 
-/** 같은 출처에서 그대로 열어도 되는 MIME — 받는 이미지 4종만. */
+/** 같은 출처에서 그대로 열어도 되는 MIME — 받는 이미지 4종 · 비디오 2종(F-2 — 저장할 때 바이트로 가린 것 · `storedMimeOf`). */
 export function servesInline(mime: string): boolean {
-  return isAllowedMime(mime)
+  return isAllowedMime(mime) || isVideoMime(mime)
 }
 
 /**

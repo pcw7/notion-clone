@@ -38,9 +38,10 @@
 
 import { readImageSource } from '../block/image.ts'
 import { FILE_TYPE, UNTITLED_FILE, attachmentExtensionOf, externalFileName, fileDisplayName } from '../block/file-block.ts'
+import { VIDEO_TYPE } from '../block/video-block.ts'
 import { textRun, toPlainText, type RichTextRun } from '../contracts/rich-text.ts'
 import type { EditorBlock, EditorDoc } from '../editor/document.ts'
-import { extensionFor, isAllowedMime } from '../file/limits.ts'
+import { inlineExtensionFor, isAllowedMime, isVideoMime } from '../file/limits.ts'
 import { cellPlainText, tableToCsv, type CsvColumn } from './csv.ts'
 import { pageToMarkdown, type MarkdownLinks, type MarkdownLosses } from './markdown.ts'
 import { encodeHrefSegment, resolveNames, safeFileName, type NameRequest } from './names.ts'
@@ -205,7 +206,7 @@ export function planExport(snapshot: ExportSnapshot, options: { readonly untitle
       ...files.map((file) => ({
         key: `file:${file.id}`,
         id: file.id,
-        base: safeFileName(stemOf(file.originalName), isAllowedMime(file.mime) ? ATTACHMENT_FALLBACK : UNTITLED_FILE),
+        base: safeFileName(stemOf(file.originalName), isAllowedMime(file.mime) ? ATTACHMENT_FALLBACK : isVideoMime(file.mime) ? 'video' : UNTITLED_FILE),
         extensions: [`.${extensionOf(file)}`],
       })),
     ]
@@ -393,7 +394,8 @@ function stemOf(originalName: string | null): string {
 
 function extensionOf(file: ExportFile): string {
   // 이미지는 MIME 의 확장자 · 파일(F-1a)은 원본 이름의 확장자(정본 §3.4 [보강 F-1] ⑥ — 받는 사람이 제 파일을 그 이름으로 돌려받는다)
-  return isAllowedMime(file.mime) ? extensionFor(file.mime) : attachmentExtensionOf(file.originalName)
+  // 비디오(F-2)도 MIME 의 확장자다 — 저장할 때 바이트로 가렸다
+  return inlineExtensionFor(file.mime) ?? attachmentExtensionOf(file.originalName)
 }
 
 /** 본문이 가리키는 우리 파일. 문서 순서대로, 같은 파일은 한 번만. */
@@ -403,7 +405,7 @@ function attachmentsOf(doc: EditorDoc, files: ReadonlyMap<string, ExportFile>): 
   const walk = (blocks: readonly EditorBlock[]): void => {
     for (const block of blocks) {
       // 이미지 · 파일 블록(F-1a) — 출처의 모양이 같다
-      if (block.type === 'image' || block.type === FILE_TYPE) {
+      if (block.type === 'image' || block.type === FILE_TYPE || block.type === VIDEO_TYPE) {
         const source = readImageSource(block.properties)
         const file = source?.kind === 'file' ? files.get(source.fileId) : undefined
         if (file !== undefined && !seen.has(file.id)) {

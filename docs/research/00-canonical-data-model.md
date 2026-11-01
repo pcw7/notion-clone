@@ -2002,9 +2002,11 @@ CREATE VIEW live_block AS SELECT * FROM block WHERE lifecycle = 'live';
 > 남긴다). 대체 텍스트는 없다 — 비디오의 말은 캡션이다. 글 · 자식 · 색이 없는 원자.
 >
 > ② **올리기 `kind='video'`** — MIME 은 `video/mp4` · `video/webm` 둘이고 **매직 바이트**로 가린다(mp4: 4~7 바이트 `ftyp` · webm: `1A 45 DF A3`) — 이름 · MIME
-> 을 믿지 않는다(이미지와 같다). 크기 한도는 같다(F-12-09 ① — Free 5MB 는 짧은 클립만이다 · 플랜 한도는 그 표가 들어올 때). `kind='file'` 로 올린 것이
-> 비디오 MIME 을 **말해도 가린 것이 아니므로** `application/octet-stream` 으로 적는다 — 서빙의 inline 목록은 "매직 바이트로 가린 것만" 이어야 하기 때문이다
-> ([보강 F-1] ③). 그래서 `file` 행의 `mime` 이 비디오 둘 중 하나면 그것은 가린 바이트다.
+> 을 믿지 않는다 — 저장하는 MIME 은 **가린 바이트의 것**이다. 크기 한도는 같다(F-12-09 ① — Free 5MB 는 짧은 클립만이다 · 플랜 한도는 그 표가 들어올 때).
+> `kind='file'` 로 올린 것이 inline 목록의 MIME(이미지 4 · 비디오 2)을 **말하면 바이트로 확인해** 맞을 때만 그 MIME 으로 적고, 맞지 않으면
+> `application/octet-stream` 으로 적는다 — 서빙의 inline 목록은 "매직 바이트로 가린 것만" 이어야 하기 때문이다([보강 F-1] ③ — 이 조각에서 파일 길도
+> 그렇게 좁혔다 · 전에는 파일 길이 말한 이미지 MIME 을 그대로 적었다). 이미지 길(`kind='image'`)은 지금처럼 말한 4종을 받는다(그림 MIME 은 실행되지
+> 않는다 · nosniff).
 >
 > ③ **서빙** — inline 목록이 이미지 4종 + 비디오 2종이 된다(`serve.ts` — 앱 · 공개 경로가 같은 함수). `<video>` 는 `preload="metadata"` · `controls` 다. **Range
 > 요청은 아직 받지 않는다** — 되감기는 되나 임의 탐색은 처음부터 다시 받는다(§7 에 적는다 · R2 드라이버가 서명 URL 로 302 하면 저장소가 Range 를 받는다).

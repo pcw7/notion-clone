@@ -13,6 +13,7 @@ import type { Command, EditorState } from '@tiptap/pm/state'
 import { IMAGE_TYPE, readImageAlt, readImageLayout, withImageAlt, withImageLayout, type ImageAlt, type ImageLayout } from '../block/image.ts'
 import { codeCaptionText, isCaptionFormatted, withCodeCaption } from '../block/code.ts'
 import { sameJsonValue } from '../contracts/json-safe.ts'
+import { VIDEO_TYPE } from '../block/video-block.ts'
 import { separateUndoStep } from './code-block.ts'
 import { blockTypeOf, findContainerById } from './pm-blocks.ts'
 
@@ -96,9 +97,17 @@ export function setImageCaptionCommand(blockId: string, text: string): Command {
  * 폭 · 정렬을 바꾼다 — 주지 않은 쪽은 지금 값 그대로(`withImageLayout` — 왼쪽 · 없는 폭은 키를 지운다 · 폭은 둥근다). 같은 값이면 거절(되돌리기
  * 기록을 더럽히지 않게). 정렬 단추(10n-63)와 끌어서 폭 바꾸기(10n-64)가 쓴다.
  */
+/** 폭 · 정렬을 갖는 블록 — 이미지 · 비디오(F-2 · 정본 §3.4 [보강 F-2] ①). */
+function layoutBlockInfo(state: EditorState, blockId: string): { readonly pos: number; readonly node: PmNode } | null {
+  const info = findContainerById(state.doc, blockId)
+  if (!info) return null
+  const type = blockTypeOf(info.contentNode)
+  return type === IMAGE_TYPE || type === VIDEO_TYPE ? { pos: info.contentPos, node: info.contentNode } : null
+}
+
 export function setImageLayoutCommand(blockId: string, change: Partial<ImageLayout>): Command {
   return (state, dispatch) => {
-    const current = imageBlockInfo(state, blockId)
+    const current = layoutBlockInfo(state, blockId)
     if (current === null) return false
     const format = (current.node.attrs.format ?? {}) as Record<string, unknown>
     const now = readImageLayout(format)

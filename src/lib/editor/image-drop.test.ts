@@ -266,3 +266,18 @@ describe('insertAtomBlocksCommand — 이미지 · 파일 블록을 함께 넣�
     assert.equal(run(caretIn(stateOf([blk(a)]), a), insertAtomBlocksCommand([], deps())), null)
   })
 })
+describe('비디오 — 드롭 가르기 · 빈 블록 (F-2 · 정본 [보강 F-2] ④)', () => {
+  test('★ MIME 이 mp4 · webm 이면 비디오 블록 · 그 밖의 video/* 는 파일', () => {
+    const files = [other('a.mp4', 'video/mp4'), other('b.webm', 'video/webm'), other('c.mov', 'video/quicktime'), png()]
+    assert.deepEqual(classifyFiles(files).map((d) => d.type), ['video', 'video', 'file', 'image'])
+  })
+
+  test('비디오 블록도 차례대로 넣는다', () => {
+    const a = nextId()
+    const state = caretIn(stateOf([blk(a, 'paragraph', '글')]), a)
+    const ids = [nextId(), nextId()]
+    const next = run(state, insertAtomBlocksCommand([{ id: ids[0], type: 'video' }, { id: ids[1], type: 'file' }], deps()))
+    assert.ok(next)
+    assert.deepEqual(pmToDoc(next.doc).blocks.map((b) => b.type), ['paragraph', 'video', 'file'])
+  })
+})

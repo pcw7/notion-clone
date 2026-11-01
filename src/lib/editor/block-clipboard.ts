@@ -176,7 +176,8 @@ export function plainTextForBlocks(blocks: readonly EditorBlock[]): string {
           lines.push(`${indent}![${imageAltText(block.format, block.properties)}](${source?.kind === 'external' ? source.url : ''})`)
           break
         }
-        case 'file': {
+        case 'file':
+        case 'video': {
           // 파일 블록(F-1a) — `[이름](바깥 주소 또는 빈)`. 올린 파일의 앱 안 주소는 싣지 않는다(이미지와 같은 까닭) · 이름은 블록에 없어 "파일".
           const source = readFileSource(block.properties)
           lines.push(`${indent}[${fileDisplayName(source, null)}](${source?.kind === 'external' ? source.url : ''})`)

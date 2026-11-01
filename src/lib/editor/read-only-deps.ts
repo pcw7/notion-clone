@@ -47,9 +47,11 @@ export function readOnlyEditorDeps(workspaceId: string, labels: PreviewLabels): 
     openImageCaption: nothing,
     // 파일 블록(F-1b) — 캡션 입력칸도 없다
     openFileCaption: nothing,
+    openVideoCaption: nothing,
     pressButtonBlock: async () => ({ text: '미리보기에서는 누를 수 없습니다.', tone: 'warn' }),
     uploadImage: async () => ({ ok: false, message: '미리보기에서는 올릴 수 없습니다.' }),
     uploadFile: async () => ({ ok: false, message: '미리보기에서는 올릴 수 없습니다.' }),
+    uploadVideo: async () => ({ ok: false, message: '미리보기에서는 올릴 수 없습니다.' }),
     breadcrumbTrail: () => null,
     pageRefTitle: (id) => lookup(labels.pages, id),
     mentionLabel: (kind, id) => lookup(kind === 'user' ? labels.users : labels.pages, id),

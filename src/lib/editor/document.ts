@@ -57,6 +57,7 @@ import {
 } from '../block/types.ts'
 import { IMAGE_TYPE, validateImageFormat, validateImageProperties } from '../block/image.ts'
 import { FILE_TYPE, validateFileProperties } from '../block/file-block.ts'
+import { VIDEO_TYPE, validateVideoProperties } from '../block/video-block.ts'
 import { CALLOUT_TYPE, validateCalloutProperties } from '../block/callout.ts'
 import { CODE_TYPE, validateCodeProperties } from '../block/code.ts'
 import { TABLE_CELLS_KEY, TABLE_ROW_TYPE, validateTableRow, validateTableWidths } from '../block/table.ts'
@@ -180,6 +181,11 @@ export function validateDoc(doc: EditorDoc): DocIssue[] {
       // 파일 블록(F-1a) — 출처는 내려받기 링크에 그대로 들어간다(이미지와 같은 까닭 · 정본 §3.4 [보강 F-1] ⑦)
       if (block.type === FILE_TYPE) {
         issues.push(...validateFileProperties(block.properties, `${p}.properties`))
+      }
+      // 비디오(F-2) — 출처는 `<video src>` 에 · 폭 · 정렬은 이미지의 검사 그대로(정본 §3.4 [보강 F-2] ①)
+      if (block.type === VIDEO_TYPE) {
+        issues.push(...validateVideoProperties(block.properties, `${p}.properties`))
+        issues.push(...validateImageFormat(block.format, `${p}.format`))
       }
       // 코드 블록의 언어 · 캡션(8a-1) — 같은 까닭(API 로 직접 저장하는 경로).
       if (block.type === CALLOUT_TYPE) {

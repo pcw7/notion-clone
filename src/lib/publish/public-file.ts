@@ -19,6 +19,7 @@ import { pageIconOfFormat, readPageIcon } from '../block/page-icon.ts'
 import { customEmojiIdOfRun } from '../contracts/rich-text.ts'
 import { readImageSource } from '../block/image.ts'
 import { FILE_TYPE, readFileSource } from '../block/file-block.ts'
+import { VIDEO_TYPE, readVideoSource } from '../block/video-block.ts'
 import { PAGE_TYPE } from '../block/types.ts'
 import { withReadTransaction, type Tx } from '../db/tx.ts'
 import { fileStorage } from '../file/storage.ts'
@@ -27,7 +28,7 @@ import { openablePagesIn, resolvePublicPageIn } from './public-access.ts'
 import type { AiCrawler, RobotsDirective } from './public-token.ts'
 
 /** 공개 파일의 종류 — 본문의 이미지 블록 · 페이지의 이미지 아이콘 · 본문의 파일 블록(F-1a — 내려받기로만 연다). */
-export const PUBLIC_FILE_KINDS = ['image', 'icon', 'file'] as const
+export const PUBLIC_FILE_KINDS = ['image', 'icon', 'file', 'video'] as const
 export type PublicFileKind = (typeof PUBLIC_FILE_KINDS)[number]
 
 export function isPublicFileKind(value: string): value is PublicFileKind {
@@ -90,7 +91,9 @@ export async function readPublicBlockFile(token: string, blockId: string, kind: 
           ? readImageSource(block.properties)
           : kind === 'file' && block.type === FILE_TYPE
             ? readFileSource(block.properties)
-            : null
+            : kind === 'video' && block.type === VIDEO_TYPE
+              ? readVideoSource(block.properties)
+              : null
       pageId = await ownerPageOf(tx, block.ancestor_path)
       fileId = source?.kind === 'file' ? source.fileId : null
     }

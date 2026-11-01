@@ -54,10 +54,19 @@ export type UploadRejection =
  * 올리는 쪽이 말하는 쓰임(F-1a · 정본 §3.4 [보강 F-1] ②) — `image` 는 받는 4종만 · `file` 은 MIME 을 제한하지 않는다(서빙이 내려받기로만
  * 연다 · `serve.ts`). 크기 · 이름 한도는 둘이 같다.
  */
-export type UploadKind = 'image' | 'file'
+export type UploadKind = 'image' | 'file' | 'video'
 
 export function isUploadKind(value: unknown): value is UploadKind {
-  return value === 'image' || value === 'file'
+  return value === 'image' || value === 'file' || value === 'video'
+}
+
+/** 받는 비디오(F-2 · 정본 §3.4 [보강 F-2] ②) — 머리 바이트로 가린다(`sniffVideoMime`). */
+export const ALLOWED_VIDEO_MIME = ['video/mp4', 'video/webm'] as const
+
+export type VideoMime = (typeof ALLOWED_VIDEO_MIME)[number]
+
+export function isVideoMime(mime: string): mime is VideoMime {
+  return (ALLOWED_VIDEO_MIME as readonly string[]).includes(mime)
 }
 
 /** 브라우저가 MIME 을 주지 않은 파일(F-1a)의 MIME · 이미지가 아닌 파일을 내려주는 MIME. */
@@ -81,8 +90,9 @@ export function validateUpload(
   },
   kind: UploadKind = 'image',
 ): UploadRejection | null {
-  // 이미지만 MIME 을 가린다 — 파일(F-1a)은 무엇이든 받고 서빙이 내려받기로만 연다(`serve.ts`)
+  // 이미지 · 비디오만 MIME 을 가린다 — 파일(F-1a)은 무엇이든 받고 서빙이 내려받기로만 연다(`serve.ts`)
   if (kind === 'image' && !isAllowedMime(input.mime)) return 'unsupported_type'
+  if (kind === 'video' && !isVideoMime(input.mime)) return 'unsupported_type'
   if (input.size <= 0) return 'empty_file'
   if (input.size > MAX_UPLOAD_BYTES) return 'too_large'
   if (input.originalName !== null && Buffer.byteLength(input.originalName, 'utf8') > MAX_FILENAME_BYTES) {
@@ -104,6 +114,29 @@ export function sniffImageMime(bytes: Uint8Array): AllowedMime | null {
   return null
 }
 
+/**
+ * 바이트의 머리로 비디오 형식을 가린다(F-2) — mp4 는 4~7 바이트의 `ftyp` 상자 · webm 은 EBML 머리 `1A 45 DF A3`. 받는 둘이 아니면 null.
+ */
+export function sniffVideoMime(bytes: Uint8Array): VideoMime | null {
+  const at = (offset: number, ...signature: number[]) => signature.every((b, k) => bytes[offset + k] === b)
+  if (at(4, 0x66, 0x74, 0x79, 0x70)) return 'video/mp4'
+  if (at(0, 0x1a, 0x45, 0xdf, 0xa3)) return 'video/webm'
+  return null
+}
+
+/**
+ * 저장할 MIME(정본 §3.4 [보강 F-2] ②) — 이미지 길은 말한 4종 그대로 · 비디오 길은 **가린 바이트의 것**(아니면 null — 거절) · 파일 길은
+ * inline 목록의 MIME(이미지 4 · 비디오 2)을 말하면 바이트로 확인해 맞을 때만 그것, 아니면 octet-stream · 그 밖은 말한 것(비면 octet-stream).
+ * 서빙의 inline 목록이 "가린 바이트만" 이 되게 한다([보강 F-1] ③).
+ */
+export function storedMimeOf(kind: UploadKind, declared: string, bytes: Uint8Array): string | null {
+  if (kind === 'image') return declared
+  if (kind === 'video') return sniffVideoMime(bytes)
+  if (isAllowedMime(declared)) return sniffImageMime(bytes) === declared ? declared : OCTET_STREAM
+  if (isVideoMime(declared)) return sniffVideoMime(bytes) ?? OCTET_STREAM
+  return declared.trim() === '' ? OCTET_STREAM : declared
+}
+
 const EXTENSION: Readonly<Record<AllowedMime, string>> = {
   'image/png': 'png',
   'image/jpeg': 'jpg',
@@ -120,6 +153,15 @@ export function extensionFor(mime: AllowedMime): string {
   return EXTENSION[mime]
 }
 
+const VIDEO_EXTENSION: Readonly<Record<VideoMime, string>> = { 'video/mp4': 'mp4', 'video/webm': 'webm' }
+
+/** inline 목록의 MIME(이미지 4 · 비디오 2)이면 그 확장자 · 아니면 null(부르는 쪽이 `bin` 이나 원본 이름의 것을 쓴다). */
+export function inlineExtensionFor(mime: string): string | null {
+  if (isAllowedMime(mime)) return EXTENSION[mime]
+  if (isVideoMime(mime)) return VIDEO_EXTENSION[mime]
+  return null
+}
+
 /**
  * 스토리지 키. **워크스페이스로 접두어를 준다** — 리전·버킷이 갈릴 때 옮기는 단위가
  * 워크스페이스이고, 목록을 보면 어느 워크스페이스 것인지 바로 보인다.
@@ -128,5 +170,5 @@ export function extensionFor(mime: AllowedMime): string {
  */
 export function storageKeyFor(workspaceId: string, fileId: string, mime: string): string {
   // 받는 이미지가 아니면 `bin` — 원본 이름의 확장자를 믿지 않는다(F-09-08 · 정본 [보강 F-1] ②)
-  return `${workspaceId}/${fileId}.${isAllowedMime(mime) ? extensionFor(mime) : 'bin'}`
+  return `${workspaceId}/${fileId}.${inlineExtensionFor(mime) ?? 'bin'}`
 }

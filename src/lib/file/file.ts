@@ -32,8 +32,8 @@ import { createHash } from 'node:crypto'
 import type { SessionContext } from '../auth/session-context.ts'
 import { withReadTransaction, withTransaction, type Tx } from '../db/tx.ts'
 import {
-  OCTET_STREAM,
   storageKeyFor,
+  storedMimeOf,
   validateUpload,
   type AllowedMime,
   type UploadKind,
@@ -102,8 +102,9 @@ export async function uploadFile(
     kind,
   )
   if (rejection !== null) return { ok: false, reason: rejection }
-  // 파일(F-1a)은 MIME 을 가리지 않는다 — 비면 octet-stream. 이미지는 `validateUpload` 가 4종으로 좁혔다.
-  const mime = kind === 'image' ? input.mime : input.mime.trim() === '' ? OCTET_STREAM : input.mime
+  // 저장할 MIME(정본 §3.4 [보강 F-2] ②) — 비디오는 가린 바이트의 것 · 파일이 말한 이미지 · 비디오 MIME 은 바이트로 확인한다
+  const mime = storedMimeOf(kind, input.mime, input.bytes)
+  if (mime === null) return { ok: false, reason: 'unsupported_type' }
 
   const id = randomUUID()
   const storageKey = storageKeyFor(ctx.workspaceId, id, mime)
