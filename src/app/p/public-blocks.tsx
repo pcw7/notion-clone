@@ -68,7 +68,7 @@ export function titleText(runs: readonly RichTextRun[] | undefined): string {
 }
 
 /** 공개 파일의 주소 — 블록 id 로 연다(파일 id 로 열지 않는다 · 정본 [보강] 공개 화면 ⑨). */
-export function publicFileHref(view: Pick<PublicPageView, 'token'>, blockId: string, kind: 'image' | 'icon' | 'file' | 'video'): string {
+export function publicFileHref(view: Pick<PublicPageView, 'token'>, blockId: string, kind: 'image' | 'icon' | 'file' | 'video' | 'cover'): string {
   return `/p/${view.token}/blocks/${blockId}/${kind}`
 }
 

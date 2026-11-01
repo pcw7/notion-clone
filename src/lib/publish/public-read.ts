@@ -15,6 +15,7 @@
 
 import { readTitle } from '../block/page.ts'
 import { pageIconOfFormat, readPageIcon, type PageIcon } from '../block/page-icon.ts'
+import { coverPositionOfFormat, pageCoverOfFormat, type PageCover } from '../block/page-cover.ts'
 import { cellsOf } from '../block/table.ts'
 import { codeCaptionRuns } from '../block/code.ts'
 import { DATABASE_TYPE, PAGE_TYPE, isRefType } from '../block/types.ts'
@@ -40,6 +41,10 @@ export type PublicPageView = {
   readonly title: readonly RichTextRun[]
   /** 페이지 아이콘 — 이모지 · 이미지(파일이면 공개 파일 경로로 · 6a-2b). */
   readonly icon: PageIcon | null
+  /** 페이지 커버(PC-4 · 정본 §3.4 [보강 PC-4]) — 게시된 데이터베이스는 없다(`database.cover` 는 아직 쓰지 않는다). 올린 이미지는 공개 파일 경로(`cover`)로 그린다. */
+  readonly cover: PageCover | null
+  /** 커버의 세로 위치(PC-3) — 0~1 · 가운데 0.5. */
+  readonly coverPosition: number
   readonly doc: EditorDoc
   /** 이 토큰으로 열 수 있는 페이지의 제목 — 사슬 · 하위 페이지 참조 · 페이지 멘션. **없는 id 는 열 수 없다**(가린다). */
   readonly pages: ReadonlyMap<string, readonly RichTextRun[]>
@@ -144,6 +149,8 @@ export async function readPublicPage(token: string, pageId?: string, options: { 
         target,
         title: readTitle(page.properties),
         icon: await liveIconIn(tx, target.workspaceId, isDatabase ? databaseIcon : pageIconOfFormat(page.format)),
+        cover: isDatabase ? null : pageCoverOfFormat(page.format),
+        coverPosition: coverPositionOfFormat(page.format),
         doc,
         pages: new Map(titles.map((row) => [row.id, readTitle(row.properties)])),
         people: new Map(people.map((row) => [row.id, row.name])),

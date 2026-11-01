@@ -14,6 +14,8 @@ import type { Metadata } from 'next'
 import { notFound } from 'next/navigation'
 import { cache, type ReactNode } from 'react'
 
+import { COVER_FALLBACK_BACKGROUND, coverBackground, pageCoverKey } from '@/lib/block/page-cover'
+
 import { readPublicPage, readSitePage, type PublicRead } from '@/lib/publish/public-read'
 import { publicTitle } from '@/lib/nav/screen-title'
 import { Blocks, RichText, Trail, UNTITLED, publicFileHref, titleText } from './public-blocks'
@@ -68,8 +70,30 @@ function PublicView({ read }: { read: PublicRead }): ReactNode {
   }
   const view = read.value
   const untitled = titleText(view.title) === UNTITLED
+  const cover = view.cover
   return (
-    <main className="pub-page" data-testid="public-page" data-page-id={view.target.pageId}>
+    <>
+    {/* 커버(PC-4 · 정본 §3.4 [보강 PC-4]) — 본문 칸(768px) 밖의 전체 폭 배너. 내장은 CSS · 주소는 그 주소 · 올린 이미지는 공개 파일 경로(블록 id 로 연다).
+        referrer 를 보내지 않는다 · 위치는 앱과 같은 object-position. */}
+    {cover !== null && (
+      <div
+        className="pub-cover"
+        data-testid="public-cover"
+        data-page-cover={pageCoverKey(cover)}
+        style={{ background: cover.type === 'gallery' ? coverBackground(cover) : COVER_FALLBACK_BACKGROUND }}
+      >
+        {cover.type !== 'gallery' && (
+          // eslint-disable-next-line @next/next/no-img-element -- 공개 화면은 최적화 경로를 거치지 않는다(바깥 주소 · 토큰 경로)
+          <img
+            alt=""
+            referrerPolicy="no-referrer"
+            src={cover.type === 'external' ? cover.url : publicFileHref(view, view.target.pageId, 'cover')}
+            style={{ objectPosition: `center ${view.coverPosition * 100}%` }}
+          />
+        )}
+      </div>
+    )}
+    <main className={cover === null ? 'pub-page' : 'pub-page pub-page-covered'} data-testid="public-page" data-page-id={view.target.pageId}>
       {view.target.chain.length > 1 && (
         <nav className="pub-trail" aria-label="이동 경로" data-testid="public-trail">
           <Trail view={view} />
@@ -111,5 +135,6 @@ function PublicView({ read }: { read: PublicRead }): ReactNode {
         </a>
       </footer>
     </main>
+    </>
   )
 }
