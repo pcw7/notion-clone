@@ -249,6 +249,18 @@ export async function openCollabConnection(options: CollabConnectionOptions): Pr
   let reopening = false
   let closed: CollabClosed | null = null
   let destroyed = false
+  /**
+   * 접속자 표시의 지역 상태를 싣는다 — 이 탭이 보이는지(AW-2 · `visible`)를 함께. 숨은 탭(다른 탭 · 최소화)은 "지금 보는 사람" 이
+   * 아니다(알림 배달 ③ 이 억제하지 않는다). 브라우저 밖(검사)에는 문서가 없다 — 보이는 것으로.
+   */
+  const publishPresence = (awareness: { setLocalState(state: Record<string, unknown> | null): void } | null | undefined): void => {
+    if (localPresence === null || awareness == null) return
+    const visible = typeof document === 'undefined' || document.visibilityState !== 'hidden'
+    awareness.setLocalState({ ...localPresence, visible, ts: Date.now() })
+  }
+  const onVisibilityChange = (): void => {
+    if (!destroyed) publishPresence(provider?.awareness)
+  }
   let retryDelayMs = firstRetryDelayMs
   let retryTimer: ReturnType<typeof setTimeout> | null = null
   let confirmTimer: ReturnType<typeof setTimeout> | null = null
@@ -446,7 +458,7 @@ export async function openCollabConnection(options: CollabConnectionOptions): Pr
       awareness.on('change', () => {
         if (mine()) options.onPresence?.(awareness.getStates(), awareness.clientID)
       })
-      if (localPresence !== null) awareness.setLocalState({ ...localPresence, ts: Date.now() })
+      publishPresence(awareness)
     }
     // 소켓을 넘겨받은 provider 는 스스로 붙지 않는다. 이벤트를 단 뒤에 붙인다.
     next.attach()
@@ -523,6 +535,7 @@ export async function openCollabConnection(options: CollabConnectionOptions): Pr
   }
   const onlineSource = options.onlineSource ?? (typeof window === 'undefined' ? null : window)
   onlineSource?.addEventListener('online', onBrowserOnline)
+  if (typeof document !== 'undefined') document.addEventListener('visibilitychange', onVisibilityChange)
 
   doc.on('update', onLocalUpdate)
   connect(doc, false)
@@ -554,11 +567,12 @@ export async function openCollabConnection(options: CollabConnectionOptions): Pr
     },
     setPresence(local) {
       localPresence = local
-      if (!destroyed) provider?.awareness?.setLocalState({ ...local, ts: Date.now() })
+      if (!destroyed) publishPresence(provider?.awareness)
     },
     async destroy() {
       destroyed = true
       onlineSource?.removeEventListener('online', onBrowserOnline)
+      if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVisibilityChange)
       failWaiting('연결을 내렸다')
       if (retryTimer !== null) clearTimeout(retryTimer)
       if (confirmTimer !== null) clearTimeout(confirmTimer)

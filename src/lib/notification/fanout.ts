@@ -13,7 +13,10 @@
  *   · **②는 인박스를 읽을 때 한다**(`inbox.ts`). 인앱 인박스에는 "배달 시점"이 따로 없다 — 사용자가 보는 순간이
  *     배달이다. 게다가 팬아웃 시점에는 받는 사람의 **세션이 없어** `effective()` 를 부를 수도 없다(불변식 A9:
  *     "effective() 의 입력은 user_id 가 아니다"). 정본 §3.8 에 그 보강을 적었다
- *   · **③은 없다** — presence(F-05-03)가 아직 없다. 순서는 지킨다: 생기면 ② 다음에 들어간다(§7)
+ *   · **③은 만들 때 한다**(AW-2 · 정본 §3.7 presence [보강 AW-2]) — 그 페이지를 **보이는 탭으로** 보고 있는 사람의 알림은 **읽음으로**
+ *     만든다(`presence-registry.ts` 의 Valkey 기록 · 지우지 않는다 — 인박스에는 남는다). 다른 사람의 활동이 그 페이지에서 일으킨 것만
+ *     (코멘트 · 멘션 · 담당) — 접근 요청 · 허락은 그 사람에게 온 일이고 리마인더는 시각이 일으킨다. 순서는 정본과 다르게 보이지만
+ *     ②가 읽을 때라 ③이 먼저 정해질 뿐이다 — 읽을 때 볼 수 없으면 읽음이든 아니든 보이지 않는다
  *
  * ──────────────────────────────────────────────────────────────────────
  * 누가 받는가 (코멘트)
@@ -33,6 +36,7 @@ import { randomUUID } from 'node:crypto'
 
 import type { SessionContext } from '../auth/session-context.ts'
 import type { Tx } from '../db/tx.ts'
+import { activeViewersOf } from '../collab/presence-registry.ts'
 import { recordActivity, type ActivityActor } from './activity.ts'
 import { subscribersOf } from './subscription.ts'
 
@@ -102,11 +106,12 @@ export async function notifyComment(tx: Tx, ctx: SessionContext, event: CommentE
   if (recipients.size === 0) return 0
 
   const groupKey = discussionGroupKey(event.discussionId)
+  const viewing = await activeViewersOf(event.pageId, [...recipients.keys()])
   for (const [userId, kind] of recipients) {
     await tx.query(
-      `INSERT INTO notification (id, recipient_id, workspace_id, page_id, event_ids, kind, group_key, created_at)
-       VALUES ($1, $2, $3, $4, ARRAY[$5::uuid], $6, $7, now())`,
-      [randomUUID(), userId, ctx.workspaceId, event.pageId, activity.id, kind, groupKey],
+      `INSERT INTO notification (id, recipient_id, workspace_id, page_id, event_ids, kind, group_key, created_at, read_at)
+       VALUES ($1, $2, $3, $4, ARRAY[$5::uuid], $6, $7, now(), CASE WHEN $8::boolean THEN now() END)`,
+      [randomUUID(), userId, ctx.workspaceId, event.pageId, activity.id, kind, groupKey, viewing.has(userId)],
     )
   }
   return recipients.size
@@ -154,11 +159,12 @@ export async function notifyMentions(tx: Tx, ctx: SessionContext, event: Mention
     payload: event.blockId === null ? {} : { block_id: event.blockId },
   })
   const groupKey = mentionGroupKey(event.pageId)
+  const viewing = await activeViewersOf(event.pageId, recipients)
   for (const userId of recipients) {
     await tx.query(
-      `INSERT INTO notification (id, recipient_id, workspace_id, page_id, event_ids, kind, group_key, created_at)
-       VALUES ($1, $2, $3, $4, ARRAY[$5::uuid], 'mention', $6, now())`,
-      [randomUUID(), userId, ctx.workspaceId, event.pageId, activity.id, groupKey],
+      `INSERT INTO notification (id, recipient_id, workspace_id, page_id, event_ids, kind, group_key, created_at, read_at)
+       VALUES ($1, $2, $3, $4, ARRAY[$5::uuid], 'mention', $6, now(), CASE WHEN $7::boolean THEN now() END)`,
+      [randomUUID(), userId, ctx.workspaceId, event.pageId, activity.id, groupKey, viewing.has(userId)],
     )
   }
   return recipients.length
@@ -248,6 +254,7 @@ export async function notifyAssigned(tx: Tx, ctx: ActivityActor, event: AssignEv
     'person_property_assigned',
     assignGroupKey(event.rowId, event.propertyId),
     recipients,
+    await activeViewersOf(event.rowId, recipients),
   )
   return recipients.length
 }
@@ -260,12 +267,14 @@ async function insertNotifications(
   kind: NotificationKind,
   groupKey: string,
   recipients: readonly string[],
+  /** 지금 그 페이지를 보는 사람(배달 3단 ③) — 이들의 알림은 읽음으로 만든다. */
+  viewing: ReadonlySet<string> = new Set(),
 ): Promise<void> {
   for (const userId of recipients) {
     await tx.query(
-      `INSERT INTO notification (id, recipient_id, workspace_id, page_id, event_ids, kind, group_key, created_at)
-       VALUES ($1, $2, $3, $4, ARRAY[$5::uuid], $6, $7, now())`,
-      [randomUUID(), userId, ctx.workspaceId, pageId, eventId, kind, groupKey],
+      `INSERT INTO notification (id, recipient_id, workspace_id, page_id, event_ids, kind, group_key, created_at, read_at)
+       VALUES ($1, $2, $3, $4, ARRAY[$5::uuid], $6, $7, now(), CASE WHEN $8::boolean THEN now() END)`,
+      [randomUUID(), userId, ctx.workspaceId, pageId, eventId, kind, groupKey, viewing.has(userId)],
     )
   }
 }

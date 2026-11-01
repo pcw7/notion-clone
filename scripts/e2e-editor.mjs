@@ -6904,7 +6904,14 @@ async function main() {
       check('다시 열 수 있다', await clickIn(THREAD, '다시 열기'))
 
       // ⑤ 다른 사람이 코멘트를 달면 인박스로 온다 — 알림은 자기 글에는 오지 않으므로 동료가 필요하다.
+      // 그 페이지를 **떠난 뒤에** 단다 — 보고 있는 동안 온 알림은 읽음으로 만들어진다(AW-2 · 배달 3단 ③). 협업 서버의 기록이 지워질 때까지 기다린다.
       const mate = await joinAs(workspaceId, await createUser('동료'), 'member')
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
+      {
+        const { getValkey } = await import(new URL('../src/lib/valkey.ts', import.meta.url).href)
+        const { presenceKey } = await import(new URL('../src/lib/collab/presence-registry.ts', import.meta.url).href)
+        for (let i = 0; i < 150 && (await getValkey().hget(presenceKey(commentPage), ctx.userId)) !== null; i += 1) await sleep(100)
+      }
       const fromMate = await createDiscussion(mate.ctx, {
         pageId: commentPage,
         richText: [textRun('동료가 남긴 코멘트')],
@@ -26901,6 +26908,67 @@ async function main() {
       }
       const gone = await waitFor(`!document.querySelector('[data-testid="presence-avatar"][data-user-id="${mate.userId}"]') && !document.querySelector('.blk-container[data-presence]')`, 15000)
       check('그 사람이 나가면 아바타 · 블록 표시가 사라진다', gone)
+    } catch (thrown) { await sectionThrew(thrown) } }
+
+    if (sectionIf('지금 보는 사람의 알림 (AW-2 · F-05-03 · §3.8 ③)')) { try {
+      // 배달 3단 ③(정본 §3.7 presence [보강 AW-2]) — 대표가 페이지를 보고 있는 동안 동료가 코멘트를 달면 대표의 알림은 **읽음으로** 만들어진다
+      // (인박스에는 남는다). 탭을 숨기면 · 페이지를 떠나면 다시 읽지 않음. 협업 서버(`npm run collab`)가 Valkey 에 적은 것을 앱의 API 가 읽는다 —
+      // 두 프로세스를 잇는 길 전체다. 대표는 페이지를 만든 사람이라 그 페이지의 모든 코멘트를 받는다(auto_created 구독).
+      const stamp = Date.now().toString(36)
+      const { getValkey } = await import(new URL('../src/lib/valkey.ts', import.meta.url).href)
+      const { presenceKey } = await import(new URL('../src/lib/collab/presence-registry.ts', import.meta.url).href)
+      const page = (await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages`, { method: 'POST', headers: authed, body: JSON.stringify({ title: `보는 중 ${stamp}` }) })).json()).page.id
+      const first = randomUUID()
+      await saveBody(page, { blocks: [{ id: first, type: 'paragraph', title: [textRun('지금 보는 중')], properties: {}, format: {}, children: [] }] })
+      const mate = await joinAs(workspaceId, await createUser(`코멘트 다는 동료 ${stamp}`), 'member')
+      const asMate = { ...json, cookie: `nc_session=${mate.token}` }
+      const mine = () => getValkey().hget(presenceKey(page), ctx.userId)
+      const until = async (want, ms = 15000) => {
+        for (let i = 0; i < ms / 100; i += 1) {
+          if ((await mine()) === want) return true
+          await sleep(100)
+        }
+        return false
+      }
+      const inboxOf = async () => {
+        const body = await (await fetch(`${BASE}/api/workspaces/${workspaceId}/inbox`, { headers: authed })).json()
+        const item = (body.items ?? []).find((i) => i.pageId === page)
+        return item === undefined ? null : { count: item.count, unread: item.unreadCount, kind: item.kind }
+      }
+
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}/${page}` })
+      await waitFor(`!!document.querySelector('[data-block-id="${first}"]') && document.querySelector('.ProseMirror')?.getAttribute('contenteditable') === 'true'`, 15000)
+      await waitHydrated(`[data-block-id="${first}"]`)
+      const seen = await until('1')
+      const opened = await (await fetch(`${BASE}/api/workspaces/${workspaceId}/pages/${page}/discussions`, {
+        method: 'POST', headers: asMate, body: JSON.stringify({ action: 'open', richText: [textRun('보고 계시죠')] }),
+      })).json()
+      const viewingInbox = await inboxOf()
+      check('★ 보고 있는 동안 온 코멘트는 읽음으로 만들어진다 — 인박스에는 남고 읽지 않음에는 서지 않는다',
+        seen && opened.ok === true && viewingInbox?.count === 1 && viewingInbox?.unread === 0,
+        JSON.stringify({ seen, opened: opened.ok ?? opened.error, viewingInbox }))
+
+      const reply = (text) => fetch(`${BASE}/api/workspaces/${workspaceId}/discussions`, {
+        method: 'POST', headers: asMate, body: JSON.stringify({ action: 'reply', discussionId: opened.discussionId, richText: [textRun(text)] }),
+      }).then((r) => r.json())
+      // 탭을 숨긴다 — 브라우저가 보내는 것과 같은 visibilitychange
+      await evaluate(`Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' }); document.dispatchEvent(new Event('visibilitychange'))`)
+      const hidden = await until('0')
+      const hiddenReply = await reply('숨은 탭에')
+      const hiddenInbox = await inboxOf()
+      // 앞 검사와 따로 본다 — 하나 늘고 그것이 읽지 않음이다
+      const grew = (before, after) => !!before && !!after && after.count === before.count + 1 && after.unread === before.unread + 1
+      check('★ 탭이 숨어 있으면 보는 사람이 아니다 — 읽지 않음', hidden && hiddenReply.ok === true && grew(viewingInbox, hiddenInbox),
+        JSON.stringify({ hidden, viewingInbox, hiddenInbox }))
+
+      await evaluate(`delete document.visibilityState; document.dispatchEvent(new Event('visibilitychange'))`)
+      const back = await until('1')
+      await send('Page.navigate', { url: `${BASE}/w/${workspaceId}` })
+      const left = await until(null)
+      const leftReply = await reply('떠난 뒤에')
+      const leftInbox = await inboxOf()
+      check('페이지를 떠나면 지워진다 — 그 뒤의 코멘트는 읽지 않음', back && left && leftReply.ok === true && grew(hiddenInbox, leftInbox),
+        JSON.stringify({ back, left, hiddenInbox, leftInbox }))
     } catch (thrown) { await sectionThrew(thrown) } }
 
     if (sectionIf('보드 — 조건 밖으로 옮긴 카드의 안내 (10n-15 · F-04-03 · F-04-24)')) { try {
