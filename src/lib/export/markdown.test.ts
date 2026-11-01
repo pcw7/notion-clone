@@ -616,3 +616,24 @@ describe('⑥ 파일 블록', () => {
     assert.equal(losses.omittedFiles, 1)
   })
 })
+// ── 북마크 블록(F-3 · 정본 §3.4 [보강 F-3] ④) ───────────────────────
+describe('⑦ 북마크 블록', () => {
+  test('★ [제목](주소) 한 줄 — 메타가 없어 제목은 주소 · 캡션은 그 뒤의 문단(이스케이프) · 주소 없는 빈 블록은 아무것도 남기지 않는다', () => {
+    const { markdown, losses } = pageToMarkdown(
+      {
+        title: [textRun('T')],
+        doc: {
+          blocks: [
+            block('bookmark', [], { properties: { url: 'https://a.test/x_y', caption: [textRun('참고 *자료*')] } }),
+            block('bookmark', [], { properties: {} }),
+          ],
+        },
+      },
+      NO_LINKS,
+      { untitled: 'x' },
+    )
+    assert.ok(markdown.includes('](https://a.test/x_y)'), markdown)
+    assert.ok(markdown.includes('참고 \\*자료\\*'), markdown)
+    assert.equal(losses.unsupported, 0)
+  })
+})

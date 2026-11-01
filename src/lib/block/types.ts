@@ -52,7 +52,7 @@ export type MvpBlockType = (typeof MVP_BLOCK_TYPES)[number]
  *
  * ⚠ 순서가 뜻을 갖는다 — 첫 항목(`paragraph`)이 새 블록의 기본형이다(`editor/schema.ts`). 더하는 것은 뒤에 붙인다.
  */
-export const BODY_BLOCK_TYPES = [...MVP_BLOCK_TYPES, 'code', 'table_of_contents', 'breadcrumb', 'equation', 'button', 'file', 'video'] as const
+export const BODY_BLOCK_TYPES = [...MVP_BLOCK_TYPES, 'code', 'table_of_contents', 'breadcrumb', 'equation', 'button', 'file', 'video', 'bookmark'] as const
 export type BodyBlockType = (typeof BODY_BLOCK_TYPES)[number]
 
 /**
@@ -196,6 +196,8 @@ export const BLOCK_TYPES: Readonly<Record<BlockType, BlockTypeSpec>> = Object.fr
   file: { hasRichText: false, canHaveChildren: false, supportsColor: false, hasCaption: true },
   // 비디오(F-2 · 정본 §3.4 [보강 F-2]) — 이미지와 같은 모양의 원자. 폭 · 정렬은 이미지의 format 키를 쓴다.
   video: { hasRichText: false, canHaveChildren: false, supportsColor: false, hasCaption: true },
+  // 북마크(F-3 · 정본 §3.4 [보강 F-3]) — 주소 하나와 캡션의 원자. 메타는 블록에 없다.
+  bookmark: { hasRichText: false, canHaveChildren: false, supportsColor: false, hasCaption: true },
 
   // 코드 블록(F-01-14 · 8a-1) — 본문은 평문 · 색 없음(F-01-02 GAP: `code` 에는 color 필드가 없다) · 자식 없음.
   code: {

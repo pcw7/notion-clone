@@ -119,6 +119,15 @@
 .pub-video[data-align='center'] video, .pub-video[data-align='center'] figcaption { margin-inline: auto; }
 .pub-video[data-align='center'] figcaption { text-align: center; }
 .pub-video[data-align='right'] video, .pub-video[data-align='right'] figcaption { margin-left: auto; }
+/* 북마크 블록(F-3) — 카드 */
+.pub-block.pub-bookmark { padding-left: 0; padding-right: 0; }
+.pub-bookmark-card { display: flex; flex-direction: column; gap: 0.125rem; padding: 0.625rem 0.75rem; border: 1px solid rgba(135, 131, 120, 0.25); border-radius: 4px; text-decoration: none !important; color: inherit; overflow: hidden; }
+.pub-bookmark-card:hover { background: rgba(135, 131, 120, 0.08); }
+.pub-bookmark-title { font-weight: 500; overflow-wrap: anywhere; }
+.pub-bookmark-host { color: #6b7280; font-size: 0.8125rem; }
+.pub-bookmark-link { color: #9ca3af; font-size: 0.75rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pub-bookmark figcaption { font-size: 0.875rem; color: #6b7280; margin-top: 0.25rem; }
+:root[data-theme='dark'] .pub-bookmark-card { border-color: rgba(255, 255, 255, 0.14); }
 .pub-image[data-align='right'] img, .pub-image[data-align='right'] figcaption { margin-left: auto; }
 .pub-image[data-align='right'] figcaption { text-align: right; }
 .pub-icon-image { width: 4.5rem; height: 4.5rem; object-fit: cover; border-radius: 4px; margin-bottom: 0.5rem; }

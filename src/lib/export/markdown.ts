@@ -49,6 +49,7 @@ import { codeCaptionRuns, codeLanguageOf, fencedCode } from '../block/code.ts'
 import { imageAltText, readImageSource, type ImageSource } from '../block/image.ts'
 import { FILE_TYPE, externalFileName, readFileSource, type FileSource } from '../block/file-block.ts'
 import { VIDEO_TYPE } from '../block/video-block.ts'
+import { BOOKMARK_TYPE, bookmarkTitle, readBookmarkUrl } from '../block/bookmark-block.ts'
 import { TOC_TYPE, headingsOfBlocks, tocEntries, type TocEntry } from '../block/toc.ts'
 import { BREADCRUMB_TYPE } from '../block/breadcrumb.ts'
 import { EQUATION_TYPE, equationDisplayLines } from '../block/equation.ts'
@@ -747,6 +748,14 @@ function renderBlock(block: EditorBlock, ctx: Ctx, number: number): string[] {
       return [`[${name}](${linkDestination(target.href)})`]
     }
 
+    case BOOKMARK_TYPE: {
+      // 북마크(F-3 · 정본 §3.4 [보강 F-3] ④) — `[제목](주소)` 한 줄 · 캡션은 그 뒤의 문단(코드 캡션과 같은 이스케이프). 주소는 http · https 뿐이다.
+      const url = readBookmarkUrl(block.properties)
+      if (url === null) return []
+      const line = `[${escapeText(bookmarkTitle(url))}](${linkDestination(url)})`
+      const caption = trimBreaks(richTextToMarkdown(codeCaptionRuns(block.properties), ctx.losses, ctx.rewrite))
+      return caption === '' ? [line] : [line, '', ...escapeLineStarts(caption).split('\n')]
+    }
     // 인라인 데이터베이스(I-4a)도 하위 페이지와 같이 링크 한 줄 — 표는 그 옆의 CSV 다(노션의 Markdown & CSV 내보내기와 같다)
     case PAGE_TYPE:
     case DATABASE_TYPE: {
